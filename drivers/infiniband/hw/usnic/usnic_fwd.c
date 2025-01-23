@@ -1,9 +1,24 @@
 /*
  * Copyright (c) 2013, Cisco Systems, Inc. All rights reserved.
  *
- * This program is free software; you may redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * BSD license below:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      - Redistributions of source code must retain the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer.
+ *
+ *      - Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials
+ *        provided with the distribution.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
  * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
@@ -77,8 +92,8 @@ struct usnic_fwd_dev *usnic_fwd_dev_alloc(struct pci_dev *pdev)
 	ufdev->pdev = pdev;
 	ufdev->netdev = pci_get_drvdata(pdev);
 	spin_lock_init(&ufdev->lock);
-	strncpy(ufdev->name, netdev_name(ufdev->netdev),
-			sizeof(ufdev->name) - 1);
+	BUILD_BUG_ON(sizeof(ufdev->name) != sizeof(ufdev->netdev->name));
+	strcpy(ufdev->name, ufdev->netdev->name);
 
 	return ufdev;
 }
@@ -88,27 +103,19 @@ void usnic_fwd_dev_free(struct usnic_fwd_dev *ufdev)
 	kfree(ufdev);
 }
 
-void usnic_fwd_set_mac(struct usnic_fwd_dev *ufdev, char mac[ETH_ALEN])
+void usnic_fwd_set_mac(struct usnic_fwd_dev *ufdev, const char mac[ETH_ALEN])
 {
 	spin_lock(&ufdev->lock);
 	memcpy(&ufdev->mac, mac, sizeof(ufdev->mac));
 	spin_unlock(&ufdev->lock);
 }
 
-int usnic_fwd_add_ipaddr(struct usnic_fwd_dev *ufdev, __be32 inaddr)
+void usnic_fwd_add_ipaddr(struct usnic_fwd_dev *ufdev, __be32 inaddr)
 {
-	int status;
-
 	spin_lock(&ufdev->lock);
-	if (ufdev->inaddr == 0) {
+	if (!ufdev->inaddr)
 		ufdev->inaddr = inaddr;
-		status = 0;
-	} else {
-		status = -EFAULT;
-	}
 	spin_unlock(&ufdev->lock);
-
-	return status;
 }
 
 void usnic_fwd_del_ipaddr(struct usnic_fwd_dev *ufdev)
@@ -207,7 +214,7 @@ usnic_fwd_alloc_flow(struct usnic_fwd_dev *ufdev, struct filter *filter,
 	if (!flow)
 		return ERR_PTR(-ENOMEM);
 
-	tlv = pci_alloc_consistent(pdev, tlv_size, &tlv_pa);
+	tlv = dma_alloc_coherent(&pdev->dev, tlv_size, &tlv_pa, GFP_ATOMIC);
 	if (!tlv) {
 		usnic_err("Failed to allocate memory\n");
 		status = -ENOMEM;
@@ -251,7 +258,7 @@ usnic_fwd_alloc_flow(struct usnic_fwd_dev *ufdev, struct filter *filter,
 
 out_free_tlv:
 	spin_unlock(&ufdev->lock);
-	pci_free_consistent(pdev, tlv_size, tlv, tlv_pa);
+	dma_free_coherent(&pdev->dev, tlv_size, tlv, tlv_pa);
 	if (!status)
 		return flow;
 out_free_flow:

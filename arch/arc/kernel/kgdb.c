@@ -1,15 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kgdb support for ARC
  *
  * Copyright (C) 2012 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/kgdb.h>
 #include <linux/sched.h>
+#include <linux/sched/task_stack.h>
 #include <asm/disasm.h>
 #include <asm/cacheflush.h>
 
@@ -142,6 +140,7 @@ int kgdb_arch_handle_exception(int e_vector, int signo, int err_code,
 		ptr = &remcomInBuffer[1];
 		if (kgdb_hex2long(&ptr, &addr))
 			regs->ret = addr;
+		fallthrough;
 
 	case 'D':
 	case 'k':
@@ -156,11 +155,6 @@ int kgdb_arch_handle_exception(int e_vector, int signo, int err_code,
 		return 0;
 	}
 	return -1;
-}
-
-unsigned long kgdb_arch_pc(int exception, struct pt_regs *regs)
-{
-	return instruction_pointer(regs);
 }
 
 int kgdb_arch_init(void)
@@ -181,7 +175,7 @@ void kgdb_trap(struct pt_regs *regs)
 	 * with trap_s 4 (compiled) breakpoints, continuation needs to
 	 * start after the breakpoint.
 	 */
-	if (regs->ecr_param == 3)
+	if (regs->ecr.param == 3)
 		instruction_pointer(regs) -= BREAK_INSTR_SIZE;
 
 	kgdb_handle_exception(1, SIGTRAP, 0, regs);
@@ -196,19 +190,13 @@ void kgdb_arch_set_pc(struct pt_regs *regs, unsigned long ip)
 	instruction_pointer(regs) = ip;
 }
 
-static void kgdb_call_nmi_hook(void *ignored)
+void kgdb_call_nmi_hook(void *ignored)
 {
+	/* Default implementation passes get_irq_regs() but we don't */
 	kgdb_nmicallback(raw_smp_processor_id(), NULL);
 }
 
-void kgdb_roundup_cpus(unsigned long flags)
-{
-	local_irq_enable();
-	smp_call_function(kgdb_call_nmi_hook, NULL, 0);
-	local_irq_disable();
-}
-
-struct kgdb_arch arch_kgdb_ops = {
+const struct kgdb_arch arch_kgdb_ops = {
 	/* breakpoint instruction: TRAP_S 0x3 */
 #ifdef CONFIG_CPU_BIG_ENDIAN
 	.gdb_bpt_instr		= {0x78, 0x7e},

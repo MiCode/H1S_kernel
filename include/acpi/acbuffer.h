@@ -1,45 +1,11 @@
+/* SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0 */
 /******************************************************************************
  *
  * Name: acbuffer.h - Support for buffers returned by ACPI predefined names
  *
+ * Copyright (C) 2000 - 2023, Intel Corp.
+ *
  *****************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #ifndef __ACBUFFER_H__
 #define __ACBUFFER_H__
@@ -111,7 +77,9 @@ struct acpi_gtm_info {
 struct acpi_pld_info {
 	u8 revision;
 	u8 ignore_color;
-	u32 color;
+	u8 red;
+	u8 green;
+	u8 blue;
 	u16 width;
 	u16 height;
 	u8 user_visible;
@@ -145,6 +113,7 @@ struct acpi_pld_info {
  *        (Intended for BIOS use only)
  */
 #define ACPI_PLD_REV1_BUFFER_SIZE               16	/* For Revision 1 of the buffer (From ACPI spec) */
+#define ACPI_PLD_REV2_BUFFER_SIZE               20	/* For Revision 2 of the buffer (From ACPI spec) */
 #define ACPI_PLD_BUFFER_SIZE                    20	/* For Revision 2 of the buffer (From ACPI spec) */
 
 /* First 32-bit dword, bits 0:32 */
@@ -155,8 +124,14 @@ struct acpi_pld_info {
 #define ACPI_PLD_GET_IGNORE_COLOR(dword)        ACPI_GET_BITS (dword, 7, ACPI_1BIT_MASK)
 #define ACPI_PLD_SET_IGNORE_COLOR(dword,value)  ACPI_SET_BITS (dword, 7, ACPI_1BIT_MASK, value)	/* Offset 7, Len 1 */
 
-#define ACPI_PLD_GET_COLOR(dword)               ACPI_GET_BITS (dword, 8, ACPI_24BIT_MASK)
-#define ACPI_PLD_SET_COLOR(dword,value)         ACPI_SET_BITS (dword, 8, ACPI_24BIT_MASK, value)	/* Offset 8, Len 24 */
+#define ACPI_PLD_GET_RED(dword)                 ACPI_GET_BITS (dword, 8, ACPI_8BIT_MASK)
+#define ACPI_PLD_SET_RED(dword,value)           ACPI_SET_BITS (dword, 8, ACPI_8BIT_MASK, value)	/* Offset 8, Len 8 */
+
+#define ACPI_PLD_GET_GREEN(dword)               ACPI_GET_BITS (dword, 16, ACPI_8BIT_MASK)
+#define ACPI_PLD_SET_GREEN(dword,value)         ACPI_SET_BITS (dword, 16, ACPI_8BIT_MASK, value)	/* Offset 16, Len 8 */
+
+#define ACPI_PLD_GET_BLUE(dword)                ACPI_GET_BITS (dword, 24, ACPI_8BIT_MASK)
+#define ACPI_PLD_SET_BLUE(dword,value)          ACPI_SET_BITS (dword, 24, ACPI_8BIT_MASK, value)	/* Offset 24, Len 8 */
 
 /* Second 32-bit dword, bits 33:63 */
 
@@ -231,5 +206,15 @@ struct acpi_pld_info {
 
 #define ACPI_PLD_GET_HORIZ_OFFSET(dword)        ACPI_GET_BITS (dword, 16, ACPI_16BIT_MASK)
 #define ACPI_PLD_SET_HORIZ_OFFSET(dword,value)  ACPI_SET_BITS (dword, 16, ACPI_16BIT_MASK, value)	/* Offset 128+16=144, Len 16 */
+
+/* Panel position defined in _PLD section of ACPI Specification 6.3 */
+
+#define ACPI_PLD_PANEL_TOP      0
+#define ACPI_PLD_PANEL_BOTTOM   1
+#define ACPI_PLD_PANEL_LEFT     2
+#define ACPI_PLD_PANEL_RIGHT    3
+#define ACPI_PLD_PANEL_FRONT    4
+#define ACPI_PLD_PANEL_BACK     5
+#define ACPI_PLD_PANEL_UNKNOWN  6
 
 #endif				/* ACBUFFER_H */

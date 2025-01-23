@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Freescale LBC and UPM routines.
  *
@@ -7,11 +8,6 @@
  * Author: Anton Vorontsov <avorontsov@ru.mvista.com>
  * Author: Jack Lan <Jack.Lan@freescale.com>
  * Author: Roy Zang <tie-fei.zang@freescale.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/init.h>
@@ -22,15 +18,17 @@
 #include <linux/types.h>
 #include <linux/io.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
 #include <linux/mod_devicetable.h>
-#include <asm/prom.h>
+#include <linux/syscore_ops.h>
 #include <asm/fsl_lbc.h>
 
-static spinlock_t fsl_lbc_lock = __SPIN_LOCK_UNLOCKED(fsl_lbc_lock);
+static DEFINE_SPINLOCK(fsl_lbc_lock);
 struct fsl_lbc_ctrl *fsl_lbc_ctrl_dev;
 EXPORT_SYMBOL(fsl_lbc_ctrl_dev);
 
@@ -40,7 +38,7 @@ EXPORT_SYMBOL(fsl_lbc_ctrl_dev);
  *
  * This function converts a base address of lbc into the right format for the
  * BR register. If the SOC has eLBC then it returns 32bit physical address
- * else it convers a 34bit local bus physical address to correct format of
+ * else it converts a 34bit local bus physical address to correct format of
  * 32bit address for BR register (Example: MPC8641).
  */
 u32 fsl_lbc_addr(phys_addr_t addr_base)
@@ -243,8 +241,6 @@ static irqreturn_t fsl_lbc_ctrl_irq(int irqno, void *data)
 	if (status & LTESR_CS)
 		dev_err(ctrl->dev, "Chip select error: "
 			"LTESR 0x%08X\n", status);
-	if (status & LTESR_UPM)
-		;
 	if (status & LTESR_FCT) {
 		dev_err(ctrl->dev, "FCM command time-out: "
 			"LTESR 0x%08X\n", status);
@@ -354,24 +350,42 @@ err:
 #ifdef CONFIG_SUSPEND
 
 /* save lbc registers */
-static int fsl_lbc_suspend(struct platform_device *pdev, pm_message_t state)
+static int fsl_lbc_syscore_suspend(void)
 {
-	struct fsl_lbc_ctrl *ctrl = dev_get_drvdata(&pdev->dev);
-	struct fsl_lbc_regs __iomem *lbc = ctrl->regs;
+	struct fsl_lbc_ctrl *ctrl;
+	struct fsl_lbc_regs __iomem *lbc;
+
+	ctrl = fsl_lbc_ctrl_dev;
+	if (!ctrl)
+		goto out;
+
+	lbc = ctrl->regs;
+	if (!lbc)
+		goto out;
 
 	ctrl->saved_regs = kmalloc(sizeof(struct fsl_lbc_regs), GFP_KERNEL);
 	if (!ctrl->saved_regs)
 		return -ENOMEM;
 
 	_memcpy_fromio(ctrl->saved_regs, lbc, sizeof(struct fsl_lbc_regs));
+
+out:
 	return 0;
 }
 
 /* restore lbc registers */
-static int fsl_lbc_resume(struct platform_device *pdev)
+static void fsl_lbc_syscore_resume(void)
 {
-	struct fsl_lbc_ctrl *ctrl = dev_get_drvdata(&pdev->dev);
-	struct fsl_lbc_regs __iomem *lbc = ctrl->regs;
+	struct fsl_lbc_ctrl *ctrl;
+	struct fsl_lbc_regs __iomem *lbc;
+
+	ctrl = fsl_lbc_ctrl_dev;
+	if (!ctrl)
+		goto out;
+
+	lbc = ctrl->regs;
+	if (!lbc)
+		goto out;
 
 	if (ctrl->saved_regs) {
 		_memcpy_toio(lbc, ctrl->saved_regs,
@@ -379,7 +393,9 @@ static int fsl_lbc_resume(struct platform_device *pdev)
 		kfree(ctrl->saved_regs);
 		ctrl->saved_regs = NULL;
 	}
-	return 0;
+
+out:
+	return;
 }
 #endif /* CONFIG_SUSPEND */
 
@@ -391,20 +407,26 @@ static const struct of_device_id fsl_lbc_match[] = {
 	{},
 };
 
+#ifdef CONFIG_SUSPEND
+static struct syscore_ops lbc_syscore_pm_ops = {
+	.suspend = fsl_lbc_syscore_suspend,
+	.resume = fsl_lbc_syscore_resume,
+};
+#endif
+
 static struct platform_driver fsl_lbc_ctrl_driver = {
 	.driver = {
 		.name = "fsl-lbc",
 		.of_match_table = fsl_lbc_match,
 	},
 	.probe = fsl_lbc_ctrl_probe,
-#ifdef CONFIG_SUSPEND
-	.suspend     = fsl_lbc_suspend,
-	.resume      = fsl_lbc_resume,
-#endif
 };
 
 static int __init fsl_lbc_init(void)
 {
+#ifdef CONFIG_SUSPEND
+	register_syscore_ops(&lbc_syscore_pm_ops);
+#endif
 	return platform_driver_register(&fsl_lbc_ctrl_driver);
 }
-module_init(fsl_lbc_init);
+subsys_initcall(fsl_lbc_init);

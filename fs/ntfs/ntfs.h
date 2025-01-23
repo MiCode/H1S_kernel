@@ -1,24 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * ntfs.h - Defines for NTFS Linux kernel driver. Part of the Linux-NTFS
- *	    project.
+ * ntfs.h - Defines for NTFS Linux kernel driver.
  *
- * Copyright (c) 2001-2005 Anton Altaparmakov
+ * Copyright (c) 2001-2014 Anton Altaparmakov and Tuxera Inc.
  * Copyright (C) 2002 Richard Russon
- *
- * This program/include file is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as published
- * by the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program/include file is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program (in the main directory of the Linux-NTFS
- * distribution in the file COPYING); if not, write to the Free Software
- * Foundation,Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #ifndef _LINUX_NTFS_H
@@ -44,7 +29,7 @@ typedef enum {
 	NTFS_MAX_NAME_LEN	= 255,
 	NTFS_MAX_ATTR_NAME_LEN	= 255,
 	NTFS_MAX_CLUSTER_SIZE	= 64 * 1024,	/* 64kiB */
-	NTFS_MAX_PAGES_PER_CLUSTER = NTFS_MAX_CLUSTER_SIZE / PAGE_CACHE_SIZE,
+	NTFS_MAX_PAGES_PER_CLUSTER = NTFS_MAX_CLUSTER_SIZE / PAGE_SIZE,
 } NTFS_CONSTANTS;
 
 /* Global variables. */
@@ -57,7 +42,8 @@ extern struct kmem_cache *ntfs_attr_ctx_cache;
 extern struct kmem_cache *ntfs_index_ctx_cache;
 
 /* The various operations structs defined throughout the driver files. */
-extern const struct address_space_operations ntfs_aops;
+extern const struct address_space_operations ntfs_normal_aops;
+extern const struct address_space_operations ntfs_compressed_aops;
 extern const struct address_space_operations ntfs_mst_aops;
 
 extern const struct  file_operations ntfs_file_ops;

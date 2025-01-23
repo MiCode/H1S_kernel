@@ -1,6 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LAPB_H
 #define _LAPB_H 
 #include <linux/lapb.h>
+#include <linux/refcount.h>
 
 #define	LAPB_HEADER_LEN	20		/* LAPB over Ethernet + a bit more */
 
@@ -90,6 +92,7 @@ struct lapb_cb {
 	unsigned short		n2, n2count;
 	unsigned short		t1, t2;
 	struct timer_list	t1timer, t2timer;
+	bool			t1timer_running, t2timer_running;
 
 	/* Internal control information */
 	struct sk_buff_head	write_queue;
@@ -101,7 +104,8 @@ struct lapb_cb {
 	struct lapb_frame	frmr_data;
 	unsigned char		frmr_type;
 
-	atomic_t		refcnt;
+	spinlock_t		lock;
+	refcount_t		refcnt;
 };
 
 /* lapb_iface.c */

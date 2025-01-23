@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
 
     bttv - Bt848 frame grabber driver
@@ -7,19 +8,6 @@
 
     (c) 2000-2002 Gerd Knorr <kraxel@bytesex.org>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
 #ifndef _BTTVP_H_
@@ -38,10 +26,11 @@
 #include <media/v4l2-common.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-fh.h>
-#include <media/videobuf-dma-sg.h>
+#include <media/videobuf2-dma-sg.h>
 #include <media/tveeprom.h>
 #include <media/rc-core.h>
-#include <media/ir-kbd-i2c.h>
+#include <media/i2c/ir-kbd-i2c.h>
+#include <media/drv-intf/tea575x.h>
 
 #include "bt848.h"
 #include "bttv.h"
@@ -61,7 +50,6 @@
 #define RISC_SLOT_E_FIELD     12
 #define RISC_SLOT_LOOP        14
 
-#define RESOURCE_OVERLAY       1
 #define RESOURCE_VIDEO_STREAM  2
 #define RESOURCE_VBI           4
 #define RESOURCE_VIDEO_READ    8
@@ -110,7 +98,6 @@ struct bttv_tvnorm {
 extern const struct bttv_tvnorm bttv_tvnorms[];
 
 struct bttv_format {
-	char *name;
 	int  fourcc;          /* video4linux 2      */
 	int  btformat;        /* BT848_COLOR_FMT_*  */
 	int  btswap;          /* BT848_COLOR_CTL_*  */
@@ -121,6 +108,7 @@ struct bttv_format {
 
 struct bttv_ir {
 	struct rc_dev           *dev;
+	struct bttv		*btv;
 	struct timer_list       timer;
 
 	char                    name[32];
@@ -133,15 +121,13 @@ struct bttv_ir {
 	u32                     polling;
 	u32                     last_gpio;
 	int                     shift_by;
-	int                     start; // What should RC5_START() be
-	int                     addr; // What RC5_ADDR() should be.
 	int                     rc5_remote_gap;
 
 	/* RC5 gpio */
 	bool			rc5_gpio;   /* Is RC5 legacy GPIO enabled? */
 	u32                     last_bit;   /* last raw bit seen */
 	u32                     code;       /* raw code under construction */
-	struct timeval          base_time;  /* time of last seen code */
+	ktime_t						base_time;  /* time of last seen code */
 	bool                    active;     /* building raw code */
 };
 
@@ -156,19 +142,15 @@ struct bttv_geometry {
 
 struct bttv_buffer {
 	/* common v4l buffer stuff -- must be first */
-	struct videobuf_buffer     vb;
+	struct vb2_v4l2_buffer vbuf;
+	struct list_head list;
 
 	/* bttv specific */
-	const struct bttv_format   *fmt;
-	unsigned int               tvnorm;
 	int                        btformat;
 	int                        btswap;
 	struct bttv_geometry       geo;
 	struct btcx_riscmem        top;
 	struct btcx_riscmem        bottom;
-	struct v4l2_rect           crop;
-	unsigned int               vbi_skip[2];
-	unsigned int               vbi_count[2];
 };
 
 struct bttv_buffer_set {
@@ -176,15 +158,6 @@ struct bttv_buffer_set {
 	struct bttv_buffer     *bottom;    /* bottom field buffer */
 	unsigned int           top_irq;
 	unsigned int           frame_irq;
-};
-
-struct bttv_overlay {
-	unsigned int           tvnorm;
-	struct v4l2_rect       w;
-	enum v4l2_field        field;
-	struct v4l2_clip       *clips;
-	int                    nclips;
-	int                    setup_ok;
 };
 
 struct bttv_vbi_fmt {
@@ -199,6 +172,8 @@ struct bttv_vbi_fmt {
 };
 
 /* bttv-vbi.c */
+extern const struct vb2_ops bttv_vbi_qops;
+
 void bttv_vbi_fmt_reset(struct bttv_vbi_fmt *f, unsigned int norm);
 
 struct bttv_crop {
@@ -213,35 +188,6 @@ struct bttv_crop {
 	__s32                  min_scaled_height;
 	__s32                  max_scaled_width;
 	__s32                  max_scaled_height;
-};
-
-struct bttv_fh {
-	/* This must be the first field in this struct */
-	struct v4l2_fh		 fh;
-
-	struct bttv              *btv;
-	int resources;
-	enum v4l2_buf_type       type;
-
-	/* video capture */
-	struct videobuf_queue    cap;
-	const struct bttv_format *fmt;
-	int                      width;
-	int                      height;
-
-	/* video overlay */
-	const struct bttv_format *ovfmt;
-	struct bttv_overlay      ov;
-
-	/* Application called VIDIOC_S_CROP. */
-	int                      do_crop;
-
-	/* vbi capture */
-	struct videobuf_queue    vbi;
-	/* Current VBI capture window as seen through this fh (cannot
-	   be global for compatibility with earlier drivers). Protected
-	   by struct bttv.lock and struct bttv_fh.vbi.lock. */
-	struct bttv_vbi_fmt      vbi_fmt;
 };
 
 /* ---------------------------------------------------------- */
@@ -264,25 +210,26 @@ int bttv_risc_hook(struct bttv *btv, int slot, struct btcx_riscmem *risc,
 int bttv_buffer_risc(struct bttv *btv, struct bttv_buffer *buf);
 int bttv_buffer_activate_video(struct bttv *btv,
 			       struct bttv_buffer_set *set);
+int bttv_buffer_risc_vbi(struct bttv *btv, struct bttv_buffer *buf);
 int bttv_buffer_activate_vbi(struct bttv *btv,
 			     struct bttv_buffer *vbi);
-void bttv_dma_free(struct videobuf_queue *q, struct bttv *btv,
-		   struct bttv_buffer *buf);
-
-/* overlay handling */
-int bttv_overlay_risc(struct bttv *btv, struct bttv_overlay *ov,
-		      const struct bttv_format *fmt,
-		      struct bttv_buffer *buf);
-
 
 /* ---------------------------------------------------------- */
 /* bttv-vbi.c                                                 */
 
+/*
+ * 2048 for compatibility with earlier driver versions. The driver really
+ * stores 1024 + tvnorm->vbipack * 4 samples per line in the buffer. Note
+ * tvnorm->vbipack is <= 0xFF (limit of VBIPACK_LO + HI is 0x1FF DWORDs) and
+ * VBI read()s store a frame counter in the last four bytes of the VBI image.
+ */
+#define VBI_BPL 2048
+
+#define VBI_DEFLINES 16
+
 int bttv_try_fmt_vbi_cap(struct file *file, void *fh, struct v4l2_format *f);
 int bttv_g_fmt_vbi_cap(struct file *file, void *fh, struct v4l2_format *f);
 int bttv_s_fmt_vbi_cap(struct file *file, void *fh, struct v4l2_format *f);
-
-extern struct videobuf_queue_ops bttv_vbi_qops;
 
 /* ---------------------------------------------------------- */
 /* bttv-gpio.c */
@@ -290,11 +237,6 @@ extern struct videobuf_queue_ops bttv_vbi_qops;
 extern struct bus_type bttv_sub_bus_type;
 int bttv_sub_add_device(struct bttv_core *core, char *name);
 int bttv_sub_del_devices(struct bttv_core *core);
-
-/* ---------------------------------------------------------- */
-/* bttv-cards.c                                               */
-
-extern int no_overlay;
 
 /* ---------------------------------------------------------- */
 /* bttv-input.c                                               */
@@ -313,6 +255,8 @@ extern int fini_bttv_i2c(struct bttv *btv);
 extern unsigned int bttv_verbose;
 extern unsigned int bttv_debug;
 extern unsigned int bttv_gpio;
+int check_alloc_btres_lock(struct bttv *btv, int bit);
+void free_btres_lock(struct bttv *btv, int bits);
 extern void bttv_gpio_tracking(struct bttv *btv, char *comment);
 
 #define dprintk(fmt, ...)			\
@@ -361,6 +305,10 @@ struct bttv_suspend_state {
 	struct bttv_buffer     *vbi;
 };
 
+struct bttv_tea575x_gpio {
+	u8 data, clk, wren, most;
+};
+
 struct bttv {
 	struct bttv_core c;
 
@@ -396,14 +344,14 @@ struct bttv {
 	int                        i2c_state, i2c_rc;
 	int                        i2c_done;
 	wait_queue_head_t          i2c_queue;
-	struct v4l2_subdev 	  *sd_msp34xx;
-	struct v4l2_subdev 	  *sd_tvaudio;
+	struct v4l2_subdev	  *sd_msp34xx;
+	struct v4l2_subdev	  *sd_tvaudio;
 	struct v4l2_subdev	  *sd_tda7432;
 
 	/* video4linux (1) */
-	struct video_device *video_dev;
-	struct video_device *radio_dev;
-	struct video_device *vbi_dev;
+	struct video_device video_dev;
+	struct video_device radio_dev;
+	struct video_device vbi_dev;
 
 	/* controls */
 	struct v4l2_ctrl_handler   ctrl_handler;
@@ -430,7 +378,7 @@ struct bttv {
 	v4l2_std_id std;
 	int hue, contrast, bright, saturation;
 	struct v4l2_framebuffer fbuf;
-	unsigned int field_count;
+	__u32 field_count;
 
 	/* various options */
 	int opt_combfilter;
@@ -447,12 +395,9 @@ struct bttv {
 
 	/* miro/pinnacle + Aimslab VHX
 	   philips matchbox (tea5757 radio tuner) support */
-	int has_matchbox;
-	int mbox_we;
-	int mbox_data;
-	int mbox_clk;
-	int mbox_most;
-	int mbox_mask;
+	int has_tea575x;
+	struct bttv_tea575x_gpio tea_gpio;
+	struct snd_tea575x tea;
 
 	/* ISA stuff (Terratec Active Radio Upgrade) */
 	int mbox_ior;
@@ -466,7 +411,6 @@ struct bttv {
 	   - must acquire s_lock before changing these
 	   - only the irq handler is supported to touch top + bottom + vcurr */
 	struct btcx_riscmem     main;
-	struct bttv_buffer      *screen;    /* overlay             */
 	struct list_head        capture;    /* video capture queue */
 	struct list_head        vcapture;   /* vbi capture queue   */
 	struct bttv_buffer_set  curr;       /* active buffers      */
@@ -474,7 +418,6 @@ struct bttv {
 	int                     loop_irq;
 	int                     new_input;
 
-	unsigned long cap_ctl;
 	unsigned long dma_on;
 	struct timer_list timeout;
 	struct bttv_suspend_state state;
@@ -486,12 +429,30 @@ struct bttv {
 	unsigned int irq_me;
 
 	unsigned int users;
-	struct bttv_fh init;
+	struct v4l2_fh fh;
+	enum v4l2_buf_type type;
+
+	enum v4l2_field field;
+	int field_last;
+
+	/* video capture */
+	struct vb2_queue capq;
+	const struct bttv_format *fmt;
+	int width;
+	int height;
+
+	/* vbi capture */
+	struct vb2_queue vbiq;
+	struct bttv_vbi_fmt vbi_fmt;
+	unsigned int vbi_count[2];
+
+	/* Application called VIDIOC_S_SELECTION. */
+	int do_crop;
 
 	/* used to make dvb-bt8xx autoloadable */
 	struct work_struct request_module_wk;
 
-	/* Default (0) and current (1) video capturing and overlay
+	/* Default (0) and current (1) video capturing
 	   cropping parameters in bttv_tvnorm.cropcap units. Protected
 	   by bttv.lock. */
 	struct bttv_crop crop[2];
@@ -525,6 +486,8 @@ static inline unsigned int bttv_muxsel(const struct bttv *btv,
 
 #endif
 
+void init_irqreg(struct bttv *btv);
+
 #define btwrite(dat,adr)    writel((dat), btv->bt848_mmio+(adr))
 #define btread(adr)         readl(btv->bt848_mmio+(adr))
 
@@ -533,9 +496,3 @@ static inline unsigned int bttv_muxsel(const struct bttv *btv,
 #define btaor(dat,mask,adr) btwrite((dat) | ((mask) & btread(adr)), adr)
 
 #endif /* _BTTVP_H_ */
-
-/*
- * Local variables:
- * c-basic-offset: 8
- * End:
- */

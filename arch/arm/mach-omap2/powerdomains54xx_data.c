@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMAP54XX Power domains framework
  *
@@ -12,10 +13,6 @@
  * with the public linux-omap@vger.kernel.org mailing list and the
  * authors above to ensure that the autogeneration scripts are kept
  * up-to-date with the file contents.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -35,7 +32,7 @@ static struct powerdomain core_54xx_pwrdm = {
 	.prcm_offs	  = OMAP54XX_PRM_CORE_INST,
 	.prcm_partition	  = OMAP54XX_PRM_PARTITION,
 	.pwrsts		  = PWRSTS_RET_ON,
-	.pwrsts_logic_ret = PWRSTS_OFF_RET,
+	.pwrsts_logic_ret = PWRSTS_RET,
 	.banks		  = 5,
 	.pwrsts_mem_ret	= {
 		[0] = PWRSTS_OFF_RET,	/* core_nret_bank */
@@ -107,8 +104,8 @@ static struct powerdomain cpu0_54xx_pwrdm = {
 	.voltdm		  = { .name = "mpu" },
 	.prcm_offs	  = OMAP54XX_PRCM_MPU_PRM_C0_INST,
 	.prcm_partition	  = OMAP54XX_PRCM_MPU_PARTITION,
-	.pwrsts		  = PWRSTS_OFF_RET_ON,
-	.pwrsts_logic_ret = PWRSTS_OFF_RET,
+	.pwrsts		  = PWRSTS_RET_ON,
+	.pwrsts_logic_ret = PWRSTS_RET,
 	.banks		  = 1,
 	.pwrsts_mem_ret	= {
 		[0] = PWRSTS_OFF_RET,	/* cpu0_l1 */
@@ -124,8 +121,8 @@ static struct powerdomain cpu1_54xx_pwrdm = {
 	.voltdm		  = { .name = "mpu" },
 	.prcm_offs	  = OMAP54XX_PRCM_MPU_PRM_C1_INST,
 	.prcm_partition	  = OMAP54XX_PRCM_MPU_PARTITION,
-	.pwrsts		  = PWRSTS_OFF_RET_ON,
-	.pwrsts_logic_ret = PWRSTS_OFF_RET,
+	.pwrsts		  = PWRSTS_RET_ON,
+	.pwrsts_logic_ret = PWRSTS_RET,
 	.banks		  = 1,
 	.pwrsts_mem_ret	= {
 		[0] = PWRSTS_OFF_RET,	/* cpu1_l1 */
@@ -158,7 +155,7 @@ static struct powerdomain mpu_54xx_pwrdm = {
 	.prcm_offs	  = OMAP54XX_PRM_MPU_INST,
 	.prcm_partition	  = OMAP54XX_PRM_PARTITION,
 	.pwrsts		  = PWRSTS_RET_ON,
-	.pwrsts_logic_ret = PWRSTS_OFF_RET,
+	.pwrsts_logic_ret = PWRSTS_RET,
 	.banks		  = 2,
 	.pwrsts_mem_ret	= {
 		[0] = PWRSTS_OFF_RET,	/* mpu_l2 */

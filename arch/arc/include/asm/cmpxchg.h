@@ -1,143 +1,143 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __ASM_ARC_CMPXCHG_H
 #define __ASM_ARC_CMPXCHG_H
 
+#include <linux/build_bug.h>
 #include <linux/types.h>
+
+#include <asm/barrier.h>
 #include <asm/smp.h>
 
 #ifdef CONFIG_ARC_HAS_LLSC
 
-static inline unsigned long
-__cmpxchg(volatile void *ptr, unsigned long expected, unsigned long new)
-{
-	unsigned long prev;
-
-	__asm__ __volatile__(
-	"1:	llock   %0, [%1]	\n"
-	"	brne    %0, %2, 2f	\n"
-	"	scond   %3, [%1]	\n"
-	"	bnz     1b		\n"
-	"2:				\n"
-	: "=&r"(prev)
-	: "r"(ptr), "ir"(expected),
-	  "r"(new) /* can't be "ir". scond can't take limm for "b" */
-	: "cc");
-
-	return prev;
-}
-
-#else
-
-static inline unsigned long
-__cmpxchg(volatile void *ptr, unsigned long expected, unsigned long new)
-{
-	unsigned long flags;
-	int prev;
-	volatile unsigned long *p = ptr;
-
-	atomic_ops_lock(flags);
-	prev = *p;
-	if (prev == expected)
-		*p = new;
-	atomic_ops_unlock(flags);
-	return prev;
-}
-
-#endif /* CONFIG_ARC_HAS_LLSC */
-
-#define cmpxchg(ptr, o, n) ((typeof(*(ptr)))__cmpxchg((ptr), \
-				(unsigned long)(o), (unsigned long)(n)))
-
 /*
- * Since not supported natively, ARC cmpxchg() uses atomic_ops_lock (UP/SMP)
- * just to gaurantee semantics.
- * atomic_cmpxchg() needs to use the same locks as it's other atomic siblings
- * which also happens to be atomic_ops_lock.
- *
- * Thus despite semantically being different, implementation of atomic_cmpxchg()
- * is same as cmpxchg().
+ * if (*ptr == @old)
+ *      *ptr = @new
  */
-#define atomic_cmpxchg(v, o, n) ((int)cmpxchg(&((v)->counter), (o), (n)))
+#define __cmpxchg(ptr, old, new)					\
+({									\
+	__typeof__(*(ptr)) _prev;					\
+									\
+	__asm__ __volatile__(						\
+	"1:	llock  %0, [%1]	\n"					\
+	"	brne   %0, %2, 2f	\n"				\
+	"	scond  %3, [%1]	\n"					\
+	"	bnz     1b		\n"				\
+	"2:				\n"				\
+	: "=&r"(_prev)	/* Early clobber prevent reg reuse */		\
+	: "r"(ptr),	/* Not "m": llock only supports reg */		\
+	  "ir"(old),							\
+	  "r"(new)	/* Not "ir": scond can't take LIMM */		\
+	: "cc",								\
+	  "memory");	/* gcc knows memory is clobbered */		\
+									\
+	_prev;								\
+})
 
-
-/*
- * xchg (reg with memory) based on "Native atomic" EX insn
- */
-static inline unsigned long __xchg(unsigned long val, volatile void *ptr,
-				   int size)
-{
-	extern unsigned long __xchg_bad_pointer(void);
-
-	switch (size) {
-	case 4:
-		__asm__ __volatile__(
-		"	ex  %0, [%1]	\n"
-		: "+r"(val)
-		: "r"(ptr)
-		: "memory");
-
-		return val;
-	}
-	return __xchg_bad_pointer();
-}
-
-#define _xchg(ptr, with) ((typeof(*(ptr)))__xchg((unsigned long)(with), (ptr), \
-						 sizeof(*(ptr))))
-
-/*
- * On ARC700, EX insn is inherently atomic, so by default "vanilla" xchg() need
- * not require any locking. However there's a quirk.
- * ARC lacks native CMPXCHG, thus emulated (see above), using external locking -
- * incidently it "reuses" the same atomic_ops_lock used by atomic APIs.
- * Now, llist code uses cmpxchg() and xchg() on same data, so xchg() needs to
- * abide by same serializing rules, thus ends up using atomic_ops_lock as well.
- *
- * This however is only relevant if SMP and/or ARC lacks LLSC
- *   if (UP or LLSC)
- *      xchg doesn't need serialization
- *   else <==> !(UP or LLSC) <==> (!UP and !LLSC) <==> (SMP and !LLSC)
- *      xchg needs serialization
- */
-
-#if !defined(CONFIG_ARC_HAS_LLSC) && defined(CONFIG_SMP)
-
-#define xchg(ptr, with)			\
-({					\
-	unsigned long flags;		\
-	typeof(*(ptr)) old_val;		\
-					\
-	atomic_ops_lock(flags);		\
-	old_val = _xchg(ptr, with);	\
-	atomic_ops_unlock(flags);	\
-	old_val;			\
+#define arch_cmpxchg_relaxed(ptr, old, new)				\
+({									\
+	__typeof__(ptr) _p_ = (ptr);					\
+	__typeof__(*(ptr)) _o_ = (old);					\
+	__typeof__(*(ptr)) _n_ = (new);					\
+	__typeof__(*(ptr)) _prev_;					\
+									\
+	switch(sizeof((_p_))) {						\
+	case 4:								\
+		_prev_ = __cmpxchg(_p_, _o_, _n_);			\
+		break;							\
+	default:							\
+		BUILD_BUG();						\
+	}								\
+	_prev_;								\
 })
 
 #else
 
-#define xchg(ptr, with)  _xchg(ptr, with)
+#define arch_cmpxchg(ptr, old, new)				        \
+({									\
+	volatile __typeof__(ptr) _p_ = (ptr);				\
+	__typeof__(*(ptr)) _o_ = (old);					\
+	__typeof__(*(ptr)) _n_ = (new);					\
+	__typeof__(*(ptr)) _prev_;					\
+	unsigned long __flags;						\
+									\
+	BUILD_BUG_ON(sizeof(_p_) != 4);					\
+									\
+	/*								\
+	 * spin lock/unlock provide the needed smp_mb() before/after	\
+	 */								\
+	atomic_ops_lock(__flags);					\
+	_prev_ = *_p_;							\
+	if (_prev_ == _o_)						\
+		*_p_ = _n_;						\
+	atomic_ops_unlock(__flags);					\
+	_prev_;								\
+})
 
 #endif
 
 /*
- * "atomic" variant of xchg()
- * REQ: It needs to follow the same serialization rules as other atomic_xxx()
- * Since xchg() doesn't always do that, it would seem that following defintion
- * is incorrect. But here's the rationale:
- *   SMP : Even xchg() takes the atomic_ops_lock, so OK.
- *   LLSC: atomic_ops_lock are not relevent at all (even if SMP, since LLSC
- *         is natively "SMP safe", no serialization required).
- *   UP  : other atomics disable IRQ, so no way a difft ctxt atomic_xchg()
- *         could clobber them. atomic_xchg() itself would be 1 insn, so it
- *         can't be clobbered by others. Thus no serialization required when
- *         atomic_xchg is involved.
+ * xchg
  */
-#define atomic_xchg(v, new) (xchg(&((v)->counter), new))
+#ifdef CONFIG_ARC_HAS_LLSC
+
+#define __arch_xchg(ptr, val)						\
+({									\
+	__asm__ __volatile__(						\
+	"	ex  %0, [%1]	\n"	/* set new value */	        \
+	: "+r"(val)							\
+	: "r"(ptr)							\
+	: "memory");							\
+	_val_;		/* get old value */				\
+})
+
+#define arch_xchg_relaxed(ptr, val)					\
+({									\
+	__typeof__(ptr) _p_ = (ptr);					\
+	__typeof__(*(ptr)) _val_ = (val);				\
+									\
+	switch(sizeof(*(_p_))) {					\
+	case 4:								\
+		_val_ = __arch_xchg(_p_, _val_);			\
+		break;							\
+	default:							\
+		BUILD_BUG();						\
+	}								\
+	_val_;								\
+})
+
+#else  /* !CONFIG_ARC_HAS_LLSC */
+
+/*
+ * EX instructions is baseline and present in !LLSC too. But in this
+ * regime it still needs use @atomic_ops_lock spinlock to allow interop
+ * with cmpxchg() which uses spinlock in !LLSC
+ * (llist.h use xchg and cmpxchg on sama data)
+ */
+
+#define arch_xchg(ptr, val)					        \
+({									\
+	__typeof__(ptr) _p_ = (ptr);					\
+	__typeof__(*(ptr)) _val_ = (val);				\
+									\
+	unsigned long __flags;						\
+									\
+	atomic_ops_lock(__flags);					\
+									\
+	__asm__ __volatile__(						\
+	"	ex  %0, [%1]	\n"					\
+	: "+r"(_val_)							\
+	: "r"(_p_)							\
+	: "memory");							\
+									\
+	atomic_ops_unlock(__flags);					\
+	_val_;								\
+})
+
+#endif
 
 #endif

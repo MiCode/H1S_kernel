@@ -1,11 +1,8 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0
+ *
  * linux/sound/soc-dpcm.h -- ALSA SoC Dynamic PCM Support
  *
  * Author:		Liam Girdwood <lrg@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __LINUX_SND_SOC_DPCM_H
@@ -81,8 +78,6 @@ struct snd_soc_dpcm {
 	struct list_head list_be;
 	struct list_head list_fe;
 
-	/* hw params for this link - may be different for each link */
-	struct snd_pcm_hw_params hw_params;
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *debugfs_state;
 #endif
@@ -96,13 +91,28 @@ struct snd_soc_dpcm_runtime {
 	struct list_head fe_clients;
 
 	int users;
-	struct snd_pcm_runtime *runtime;
 	struct snd_pcm_hw_params hw_params;
 
 	/* state and update */
 	enum snd_soc_dpcm_update runtime_update;
 	enum snd_soc_dpcm_state state;
+
+	int trigger_pending; /* trigger cmd + 1 if pending, 0 if not */
+
+	int be_start; /* refcount protected by BE stream pcm lock */
+	int be_pause; /* refcount protected by BE stream pcm lock */
+	bool fe_pause; /* used to track STOP after PAUSE */
 };
+
+#define for_each_dpcm_fe(be, stream, _dpcm)				\
+	list_for_each_entry(_dpcm, &(be)->dpcm[stream].fe_clients, list_fe)
+
+#define for_each_dpcm_be(fe, stream, _dpcm)				\
+	list_for_each_entry(_dpcm, &(fe)->dpcm[stream].be_clients, list_be)
+#define for_each_dpcm_be_safe(fe, stream, _dpcm, __dpcm)			\
+	list_for_each_entry_safe(_dpcm, __dpcm, &(fe)->dpcm[stream].be_clients, list_be)
+#define for_each_dpcm_be_rollback(fe, stream, _dpcm)			\
+	list_for_each_entry_continue_reverse(_dpcm, &(fe)->dpcm[stream].be_clients, list_be)
 
 /* can this BE stop and free */
 int snd_soc_dpcm_can_be_free_stop(struct snd_soc_pcm_runtime *fe,
@@ -111,6 +121,10 @@ int snd_soc_dpcm_can_be_free_stop(struct snd_soc_pcm_runtime *fe,
 /* can this BE perform a hw_params() */
 int snd_soc_dpcm_can_be_params(struct snd_soc_pcm_runtime *fe,
 		struct snd_soc_pcm_runtime *be, int stream);
+
+/* can this BE perform prepare */
+int snd_soc_dpcm_can_be_prepared(struct snd_soc_pcm_runtime *fe,
+				 struct snd_soc_pcm_runtime *be, int stream);
 
 /* is the current PCM operation for this FE ? */
 int snd_soc_dpcm_fe_can_update(struct snd_soc_pcm_runtime *fe, int stream);
@@ -123,38 +137,40 @@ int snd_soc_dpcm_be_can_update(struct snd_soc_pcm_runtime *fe,
 struct snd_pcm_substream *
 	snd_soc_dpcm_get_substream(struct snd_soc_pcm_runtime *be, int stream);
 
-/* get the BE runtime state */
-enum snd_soc_dpcm_state
-	snd_soc_dpcm_be_get_state(struct snd_soc_pcm_runtime *be, int stream);
+/* update audio routing between PCMs and any DAI links */
+int snd_soc_dpcm_runtime_update(struct snd_soc_card *card);
 
-/* set the BE runtime state */
-void snd_soc_dpcm_be_set_state(struct snd_soc_pcm_runtime *be, int stream,
-	enum snd_soc_dpcm_state state);
-
-/* internal use only */
-int soc_dpcm_be_digital_mute(struct snd_soc_pcm_runtime *fe, int mute);
-int soc_dpcm_debugfs_add(struct snd_soc_pcm_runtime *rtd);
-int soc_dpcm_runtime_update(struct snd_soc_card *);
+#ifdef CONFIG_DEBUG_FS
+void soc_dpcm_debugfs_add(struct snd_soc_pcm_runtime *rtd);
+#else
+static inline void soc_dpcm_debugfs_add(struct snd_soc_pcm_runtime *rtd)
+{
+}
+#endif
 
 int dpcm_path_get(struct snd_soc_pcm_runtime *fe,
 	int stream, struct snd_soc_dapm_widget_list **list_);
+void dpcm_path_put(struct snd_soc_dapm_widget_list **list);
 int dpcm_process_paths(struct snd_soc_pcm_runtime *fe,
 	int stream, struct snd_soc_dapm_widget_list **list, int new);
 int dpcm_be_dai_startup(struct snd_soc_pcm_runtime *fe, int stream);
-int dpcm_be_dai_shutdown(struct snd_soc_pcm_runtime *fe, int stream);
+void dpcm_be_dai_stop(struct snd_soc_pcm_runtime *fe, int stream,
+		      int do_hw_free, struct snd_soc_dpcm *last);
 void dpcm_be_disconnect(struct snd_soc_pcm_runtime *fe, int stream);
 void dpcm_clear_pending_state(struct snd_soc_pcm_runtime *fe, int stream);
-int dpcm_be_dai_hw_free(struct snd_soc_pcm_runtime *fe, int stream);
+void dpcm_be_dai_hw_free(struct snd_soc_pcm_runtime *fe, int stream);
 int dpcm_be_dai_hw_params(struct snd_soc_pcm_runtime *fe, int tream);
 int dpcm_be_dai_trigger(struct snd_soc_pcm_runtime *fe, int stream, int cmd);
 int dpcm_be_dai_prepare(struct snd_soc_pcm_runtime *fe, int stream);
 int dpcm_dapm_stream_event(struct snd_soc_pcm_runtime *fe, int dir,
 	int event);
+bool dpcm_end_walk_at_be(struct snd_soc_dapm_widget *widget, enum snd_soc_dapm_direction dir);
+int widget_in_list(struct snd_soc_dapm_widget_list *list,
+		   struct snd_soc_dapm_widget *widget);
 
-static inline void dpcm_path_put(struct snd_soc_dapm_widget_list **list)
-{
-	kfree(*list);
-}
-
+#define dpcm_be_dai_startup_rollback(fe, stream, last)	\
+						dpcm_be_dai_stop(fe, stream, 0, last)
+#define dpcm_be_dai_startup_unwind(fe, stream)	dpcm_be_dai_stop(fe, stream, 0, NULL)
+#define dpcm_be_dai_shutdown(fe, stream)	dpcm_be_dai_stop(fe, stream, 1, NULL)
 
 #endif

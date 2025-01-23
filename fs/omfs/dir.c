@@ -1,7 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMFS (as used by RIO Karma) directory operations.
  * Copyright (C) 2005 Bob Copeland <me@bobcopeland.com>
- * Released under GPL v2.
  */
 
 #include <linux/fs.h>
@@ -110,7 +110,7 @@ int omfs_make_empty(struct inode *inode, struct super_block *sb)
 
 static int omfs_add_link(struct dentry *dentry, struct inode *inode)
 {
-	struct inode *dir = dentry->d_parent->d_inode;
+	struct inode *dir = d_inode(dentry->d_parent);
 	const char *name = dentry->d_name.name;
 	int namelen = dentry->d_name.len;
 	struct omfs_inode *oi;
@@ -143,7 +143,7 @@ static int omfs_add_link(struct dentry *dentry, struct inode *inode)
 	mark_buffer_dirty(bh);
 	brelse(bh);
 
-	dir->i_ctime = CURRENT_TIME_SEC;
+	inode_set_ctime_current(dir);
 
 	/* mark affected inodes dirty to rebuild checksums */
 	mark_inode_dirty(dir);
@@ -155,7 +155,7 @@ out:
 
 static int omfs_delete_entry(struct dentry *dentry)
 {
-	struct inode *dir = dentry->d_parent->d_inode;
+	struct inode *dir = d_inode(dentry->d_parent);
 	struct inode *dirty;
 	const char *name = dentry->d_name.name;
 	int namelen = dentry->d_name.len;
@@ -237,7 +237,7 @@ static int omfs_dir_is_empty(struct inode *inode)
 
 static int omfs_remove(struct inode *dir, struct dentry *dentry)
 {
-	struct inode *inode = dentry->d_inode;
+	struct inode *inode = d_inode(dentry);
 	int ret;
 
 
@@ -279,13 +279,14 @@ out_free_inode:
 	return err;
 }
 
-static int omfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
+static int omfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
+		      struct dentry *dentry, umode_t mode)
 {
 	return omfs_add_node(dir, dentry, mode | S_IFDIR);
 }
 
-static int omfs_create(struct inode *dir, struct dentry *dentry, umode_t mode,
-		bool excl)
+static int omfs_create(struct mnt_idmap *idmap, struct inode *dir,
+		       struct dentry *dentry, umode_t mode, bool excl)
 {
 	return omfs_add_node(dir, dentry, mode | S_IFREG);
 }
@@ -305,11 +306,10 @@ static struct dentry *omfs_lookup(struct inode *dir, struct dentry *dentry,
 		ino_t ino = be64_to_cpu(oi->i_head.h_self);
 		brelse(bh);
 		inode = omfs_iget(dir->i_sb, ino);
-		if (IS_ERR(inode))
-			return ERR_CAST(inode);
+	} else if (bh != ERR_PTR(-ENOENT)) {
+		inode = ERR_CAST(bh);
 	}
-	d_add(dentry, inode);
-	return NULL;
+	return d_splice_alias(inode, dentry);
 }
 
 /* sanity check block's self pointer */
@@ -370,12 +370,16 @@ static bool omfs_fill_chain(struct inode *dir, struct dir_context *ctx,
 	return true;
 }
 
-static int omfs_rename(struct inode *old_dir, struct dentry *old_dentry,
-		struct inode *new_dir, struct dentry *new_dentry)
+static int omfs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
+		       struct dentry *old_dentry, struct inode *new_dir,
+		       struct dentry *new_dentry, unsigned int flags)
 {
-	struct inode *new_inode = new_dentry->d_inode;
-	struct inode *old_inode = old_dentry->d_inode;
+	struct inode *new_inode = d_inode(new_dentry);
+	struct inode *old_inode = d_inode(old_dentry);
 	int err;
+
+	if (flags & ~RENAME_NOREPLACE)
+		return -EINVAL;
 
 	if (new_inode) {
 		/* overwriting existing file/dir */
@@ -395,7 +399,7 @@ static int omfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	if (err)
 		goto out;
 
-	old_inode->i_ctime = CURRENT_TIME_SEC;
+	inode_set_ctime_current(old_inode);
 	mark_inode_dirty(old_inode);
 out:
 	return err;
@@ -452,6 +456,6 @@ const struct inode_operations omfs_dir_inops = {
 
 const struct file_operations omfs_dir_operations = {
 	.read = generic_read_dir,
-	.iterate = omfs_readdir,
+	.iterate_shared = omfs_readdir,
 	.llseek = generic_file_llseek,
 };

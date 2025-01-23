@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* include/net/dsfield.h - Manipulation of the Differentiated Services field */
 
 /* Written 1998-2000 by Werner Almesberger, EPFL ICA */
@@ -20,7 +21,7 @@ static inline __u8 ipv4_get_dsfield(const struct iphdr *iph)
 
 static inline __u8 ipv6_get_dsfield(const struct ipv6hdr *ipv6h)
 {
-	return ntohs(*(const __be16 *)ipv6h) >> 4;
+	return ntohs(*(__force const __be16 *)ipv6h) >> 4;
 }
 
 

@@ -1,7 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * vvar.h: Shared vDSO/kernel variable declarations
  * Copyright (c) 2011 Andy Lutomirski
- * Subject to the GNU General Public License, version 2
  *
  * A handful of variables are accessible (read-only) from userspace
  * code in the vsyscall page and the vdso.  They are declared here.
@@ -16,35 +16,40 @@
  * you mess up, the linker will catch it.)
  */
 
-/* Base address of vvars.  This is not ABI. */
-#define VVAR_ADDRESS (-10*1024*1024 - 4096)
+#ifndef _ASM_X86_VVAR_H
+#define _ASM_X86_VVAR_H
 
-#if defined(__VVAR_KERNEL_LDS)
-
-/* The kernel linker script defines its own magic to put vvars in the
- * right place.
+#ifdef EMIT_VVAR
+/*
+ * EMIT_VVAR() is used by the kernel linker script to put vvars in the
+ * right place. Also, it's used by kernel code to import offsets values.
  */
 #define DECLARE_VVAR(offset, type, name) \
 	EMIT_VVAR(name, offset)
 
 #else
 
+extern char __vvar_page;
+
 #define DECLARE_VVAR(offset, type, name)				\
-	static type const * const vvaraddr_ ## name =			\
-		(void *)(VVAR_ADDRESS + (offset));
+	extern type vvar_ ## name[CS_BASES]				\
+	__attribute__((visibility("hidden")));				\
+	extern type timens_ ## name[CS_BASES]				\
+	__attribute__((visibility("hidden")));				\
+
+#define VVAR(name) (vvar_ ## name)
+#define TIMENS(name) (timens_ ## name)
 
 #define DEFINE_VVAR(type, name)						\
-	type name							\
+	type name[CS_BASES]						\
 	__attribute__((section(".vvar_" #name), aligned(16))) __visible
-
-#define VVAR(name) (*vvaraddr_ ## name)
 
 #endif
 
 /* DECLARE_VVAR(offset, type, name) */
 
-DECLARE_VVAR(0, volatile unsigned long, jiffies)
-DECLARE_VVAR(16, int, vgetcpu_mode)
-DECLARE_VVAR(128, struct vsyscall_gtod_data, vsyscall_gtod_data)
+DECLARE_VVAR(128, struct vdso_data, _vdso_data)
 
 #undef DECLARE_VVAR
+
+#endif

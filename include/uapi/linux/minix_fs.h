@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 #ifndef _LINUX_MINIX_FS_H
 #define _LINUX_MINIX_FS_H
 
@@ -96,11 +97,11 @@ struct minix3_super_block {
 
 struct minix_dir_entry {
 	__u16 inode;
-	char name[0];
+	char name[];
 };
 
 struct minix3_dir_entry {
 	__u32 inode;
-	char name[0];
+	char name[];
 };
 #endif

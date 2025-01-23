@@ -1,27 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2011-2012 Calxeda, Inc.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/ctype.h>
 #include <linux/edac.h>
 #include <linux/interrupt.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
-#include <linux/of_platform.h>
 
-#include "edac_core.h"
 #include "edac_module.h"
 
 #define SR_CLR_SB_ECC_INTR	0x0

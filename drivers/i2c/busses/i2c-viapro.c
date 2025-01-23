@@ -1,22 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
     Copyright (c) 1998 - 2002  Frodo Looijaard <frodol@dds.nl>,
     Philip Edelbrock <phil@netroedge.com>, Kyösti Mälkki <kmalkki@cc.hut.fi>,
     Mark D. Studebaker <mdsxyz123@yahoo.com>
     Copyright (C) 2005 - 2008  Jean Delvare <jdelvare@suse.de>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
 /*
@@ -98,7 +86,7 @@ MODULE_PARM_DESC(force, "Forcibly enable the SMBus. DANGEROUS!");
 /* If force_addr is set to anything different from 0, we forcibly enable
    the VT596 at the given address. VERY DANGEROUS! */
 static u16 force_addr;
-module_param(force_addr, ushort, 0);
+module_param_hw(force_addr, ushort, ioport, 0);
 MODULE_PARM_DESC(force_addr,
 		 "Forcibly enable the SMBus at the given address. "
 		 "EXTREMELY DANGEROUS!");
@@ -240,7 +228,7 @@ static s32 vt596_access(struct i2c_adapter *adap, u16 addr,
 			goto exit_unsupported;
 		if (read_write == I2C_SMBUS_READ)
 			outb_p(data->block[0], SMBHSTDAT0);
-		/* Fall through */
+		fallthrough;
 	case I2C_SMBUS_BLOCK_DATA:
 		outb_p(command, SMBHSTCMD);
 		if (read_write == I2C_SMBUS_WRITE) {
@@ -442,7 +430,7 @@ release_region:
 	return error;
 }
 
-static DEFINE_PCI_DEVICE_TABLE(vt596_ids) = {
+static const struct pci_device_id vt596_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_82C596_3),
 	  .driver_data = SMBBA1 },
 	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_82C596B_3),
@@ -501,9 +489,9 @@ static void __exit i2c_vt596_exit(void)
 	}
 }
 
-MODULE_AUTHOR("Kyosti Malkki <kmalkki@cc.hut.fi>, "
-	      "Mark D. Studebaker <mdsxyz123@yahoo.com> and "
-	      "Jean Delvare <jdelvare@suse.de>");
+MODULE_AUTHOR("Kyosti Malkki <kmalkki@cc.hut.fi>");
+MODULE_AUTHOR("Mark D. Studebaker <mdsxyz123@yahoo.com>");
+MODULE_AUTHOR("Jean Delvare <jdelvare@suse.de>");
 MODULE_DESCRIPTION("vt82c596 SMBus driver");
 MODULE_LICENSE("GPL");
 

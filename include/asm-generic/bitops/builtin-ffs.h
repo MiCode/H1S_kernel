@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_GENERIC_BITOPS_BUILTIN_FFS_H_
 #define _ASM_GENERIC_BITOPS_BUILTIN_FFS_H_
 
@@ -7,11 +8,8 @@
  *
  * This is defined the same way as
  * the libc and compiler builtin ffs routines, therefore
- * differs in spirit from the above ffz (man ffs).
+ * differs in spirit from ffz (man ffs).
  */
-static __always_inline int ffs(int x)
-{
-	return __builtin_ffs(x);
-}
+#define ffs(x) __builtin_ffs(x)
 
 #endif

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) 2011 Bosch Sensortec GmbH
  * Copyright (c) 2011 Unixphere
@@ -8,26 +9,11 @@
  *
  * The datasheet for the BMA150 chip can be found here:
  * http://www.bosch-sensortec.com/content/language1/downloads/BST-BMA150-DS000-07.pdf
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/i2c.h>
 #include <linux/input.h>
-#include <linux/input-polldev.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
@@ -136,7 +122,6 @@
 
 struct bma150_data {
 	struct i2c_client *client;
-	struct input_polled_dev *input_polled;
 	struct input_dev *input;
 	u8 mode;
 };
@@ -146,7 +131,7 @@ struct bma150_data {
  * are stated and verified by Bosch Sensortec where they are configured
  * to provide a generic sensitivity performance.
  */
-static struct bma150_cfg default_cfg = {
+static const struct bma150_cfg default_cfg = {
 	.any_motion_int = 1,
 	.hg_int = 1,
 	.lg_int = 1,
@@ -206,7 +191,7 @@ static int bma150_set_mode(struct bma150_data *bma150, u8 mode)
 		return error;
 
 	if (mode == BMA150_MODE_NORMAL)
-		msleep(2);
+		usleep_range(2000, 2100);
 
 	bma150->mode = mode;
 	return 0;
@@ -221,7 +206,7 @@ static int bma150_soft_reset(struct bma150_data *bma150)
 	if (error)
 		return error;
 
-	msleep(2);
+	usleep_range(2000, 2100);
 	return 0;
 }
 
@@ -332,10 +317,9 @@ static void bma150_report_xyz(struct bma150_data *bma150)
 	y = ((0xc0 & data[2]) >> 6) | (data[3] << 2);
 	z = ((0xc0 & data[4]) >> 6) | (data[5] << 2);
 
-	/* sign extension */
-	x = (s16) (x << 6) >> 6;
-	y = (s16) (y << 6) >> 6;
-	z = (s16) (z << 6) >> 6;
+	x = sign_extend32(x, 9);
+	y = sign_extend32(y, 9);
+	z = sign_extend32(z, 9);
 
 	input_report_abs(bma150->input, ABS_X, x);
 	input_report_abs(bma150->input, ABS_Y, y);
@@ -350,13 +334,16 @@ static irqreturn_t bma150_irq_thread(int irq, void *dev)
 	return IRQ_HANDLED;
 }
 
-static void bma150_poll(struct input_polled_dev *dev)
+static void bma150_poll(struct input_dev *input)
 {
-	bma150_report_xyz(dev->private);
+	struct bma150_data *bma150 = input_get_drvdata(input);
+
+	bma150_report_xyz(bma150);
 }
 
-static int bma150_open(struct bma150_data *bma150)
+static int bma150_open(struct input_dev *input)
 {
+	struct bma150_data *bma150 = input_get_drvdata(input);
 	int error;
 
 	error = pm_runtime_get_sync(&bma150->client->dev);
@@ -376,44 +363,18 @@ static int bma150_open(struct bma150_data *bma150)
 	return 0;
 }
 
-static void bma150_close(struct bma150_data *bma150)
+static void bma150_close(struct input_dev *input)
 {
+	struct bma150_data *bma150 = input_get_drvdata(input);
+
 	pm_runtime_put_sync(&bma150->client->dev);
 
 	if (bma150->mode != BMA150_MODE_SLEEP)
 		bma150_set_mode(bma150, BMA150_MODE_SLEEP);
 }
 
-static int bma150_irq_open(struct input_dev *input)
-{
-	struct bma150_data *bma150 = input_get_drvdata(input);
-
-	return bma150_open(bma150);
-}
-
-static void bma150_irq_close(struct input_dev *input)
-{
-	struct bma150_data *bma150 = input_get_drvdata(input);
-
-	bma150_close(bma150);
-}
-
-static void bma150_poll_open(struct input_polled_dev *ipoll_dev)
-{
-	struct bma150_data *bma150 = ipoll_dev->private;
-
-	bma150_open(bma150);
-}
-
-static void bma150_poll_close(struct input_polled_dev *ipoll_dev)
-{
-	struct bma150_data *bma150 = ipoll_dev->private;
-
-	bma150_close(bma150);
-}
-
 static int bma150_initialize(struct bma150_data *bma150,
-				       const struct bma150_cfg *cfg)
+			     const struct bma150_cfg *cfg)
 {
 	int error;
 
@@ -453,83 +414,13 @@ static int bma150_initialize(struct bma150_data *bma150,
 	return bma150_set_mode(bma150, BMA150_MODE_SLEEP);
 }
 
-static void bma150_init_input_device(struct bma150_data *bma150,
-						struct input_dev *idev)
-{
-	idev->name = BMA150_DRIVER;
-	idev->phys = BMA150_DRIVER "/input0";
-	idev->id.bustype = BUS_I2C;
-	idev->dev.parent = &bma150->client->dev;
-
-	idev->evbit[0] = BIT_MASK(EV_ABS);
-	input_set_abs_params(idev, ABS_X, ABSMIN_ACC_VAL, ABSMAX_ACC_VAL, 0, 0);
-	input_set_abs_params(idev, ABS_Y, ABSMIN_ACC_VAL, ABSMAX_ACC_VAL, 0, 0);
-	input_set_abs_params(idev, ABS_Z, ABSMIN_ACC_VAL, ABSMAX_ACC_VAL, 0, 0);
-}
-
-static int bma150_register_input_device(struct bma150_data *bma150)
-{
-	struct input_dev *idev;
-	int error;
-
-	idev = input_allocate_device();
-	if (!idev)
-		return -ENOMEM;
-
-	bma150_init_input_device(bma150, idev);
-
-	idev->open = bma150_irq_open;
-	idev->close = bma150_irq_close;
-	input_set_drvdata(idev, bma150);
-
-	error = input_register_device(idev);
-	if (error) {
-		input_free_device(idev);
-		return error;
-	}
-
-	bma150->input = idev;
-	return 0;
-}
-
-static int bma150_register_polled_device(struct bma150_data *bma150)
-{
-	struct input_polled_dev *ipoll_dev;
-	int error;
-
-	ipoll_dev = input_allocate_polled_device();
-	if (!ipoll_dev)
-		return -ENOMEM;
-
-	ipoll_dev->private = bma150;
-	ipoll_dev->open = bma150_poll_open;
-	ipoll_dev->close = bma150_poll_close;
-	ipoll_dev->poll = bma150_poll;
-	ipoll_dev->poll_interval = BMA150_POLL_INTERVAL;
-	ipoll_dev->poll_interval_min = BMA150_POLL_MIN;
-	ipoll_dev->poll_interval_max = BMA150_POLL_MAX;
-
-	bma150_init_input_device(bma150, ipoll_dev->input);
-
-	error = input_register_polled_device(ipoll_dev);
-	if (error) {
-		input_free_polled_device(ipoll_dev);
-		return error;
-	}
-
-	bma150->input_polled = ipoll_dev;
-	bma150->input = ipoll_dev->input;
-
-	return 0;
-}
-
-static int bma150_probe(struct i2c_client *client,
-				  const struct i2c_device_id *id)
+static int bma150_probe(struct i2c_client *client)
 {
 	const struct bma150_platform_data *pdata =
 			dev_get_platdata(&client->dev);
 	const struct bma150_cfg *cfg;
 	struct bma150_data *bma150;
+	struct input_dev *idev;
 	int chip_id;
 	int error;
 
@@ -544,7 +435,7 @@ static int bma150_probe(struct i2c_client *client,
 		return -EINVAL;
 	}
 
-	bma150 = kzalloc(sizeof(struct bma150_data), GFP_KERNEL);
+	bma150 = devm_kzalloc(&client->dev, sizeof(*bma150), GFP_KERNEL);
 	if (!bma150)
 		return -ENOMEM;
 
@@ -557,7 +448,7 @@ static int bma150_probe(struct i2c_client *client,
 				dev_err(&client->dev,
 					"IRQ GPIO conf. error %d, error %d\n",
 					client->irq, error);
-				goto err_free_mem;
+				return error;
 			}
 		}
 		cfg = &pdata->cfg;
@@ -567,14 +458,42 @@ static int bma150_probe(struct i2c_client *client,
 
 	error = bma150_initialize(bma150, cfg);
 	if (error)
-		goto err_free_mem;
+		return error;
+
+	idev = devm_input_allocate_device(&bma150->client->dev);
+	if (!idev)
+		return -ENOMEM;
+
+	input_set_drvdata(idev, bma150);
+	bma150->input = idev;
+
+	idev->name = BMA150_DRIVER;
+	idev->phys = BMA150_DRIVER "/input0";
+	idev->id.bustype = BUS_I2C;
+
+	idev->open = bma150_open;
+	idev->close = bma150_close;
+
+	input_set_abs_params(idev, ABS_X, ABSMIN_ACC_VAL, ABSMAX_ACC_VAL, 0, 0);
+	input_set_abs_params(idev, ABS_Y, ABSMIN_ACC_VAL, ABSMAX_ACC_VAL, 0, 0);
+	input_set_abs_params(idev, ABS_Z, ABSMIN_ACC_VAL, ABSMAX_ACC_VAL, 0, 0);
+
+	if (client->irq <= 0) {
+		error = input_setup_polling(idev, bma150_poll);
+		if (error)
+			return error;
+
+		input_set_poll_interval(idev, BMA150_POLL_INTERVAL);
+		input_set_min_poll_interval(idev, BMA150_POLL_MIN);
+		input_set_max_poll_interval(idev, BMA150_POLL_MAX);
+	}
+
+	error = input_register_device(idev);
+	if (error)
+		return error;
 
 	if (client->irq > 0) {
-		error = bma150_register_input_device(bma150);
-		if (error)
-			goto err_free_mem;
-
-		error = request_threaded_irq(client->irq,
+		error = devm_request_threaded_irq(&client->dev, client->irq,
 					NULL, bma150_irq_thread,
 					IRQF_TRIGGER_RISING | IRQF_ONESHOT,
 					BMA150_DRIVER, bma150);
@@ -582,13 +501,8 @@ static int bma150_probe(struct i2c_client *client,
 			dev_err(&client->dev,
 				"irq request failed %d, error %d\n",
 				client->irq, error);
-			input_unregister_device(bma150->input);
-			goto err_free_mem;
+			return error;
 		}
-	} else {
-		error = bma150_register_polled_device(bma150);
-		if (error)
-			goto err_free_mem;
 	}
 
 	i2c_set_clientdata(client, bma150);
@@ -596,33 +510,14 @@ static int bma150_probe(struct i2c_client *client,
 	pm_runtime_enable(&client->dev);
 
 	return 0;
-
-err_free_mem:
-	kfree(bma150);
-	return error;
 }
 
-static int bma150_remove(struct i2c_client *client)
+static void bma150_remove(struct i2c_client *client)
 {
-	struct bma150_data *bma150 = i2c_get_clientdata(client);
-
 	pm_runtime_disable(&client->dev);
-
-	if (client->irq > 0) {
-		free_irq(client->irq, bma150);
-		input_unregister_device(bma150->input);
-	} else {
-		input_unregister_polled_device(bma150->input_polled);
-		input_free_polled_device(bma150->input_polled);
-	}
-
-	kfree(bma150);
-
-	return 0;
 }
 
-#ifdef CONFIG_PM
-static int bma150_suspend(struct device *dev)
+static int __maybe_unused bma150_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct bma150_data *bma150 = i2c_get_clientdata(client);
@@ -630,14 +525,13 @@ static int bma150_suspend(struct device *dev)
 	return bma150_set_mode(bma150, BMA150_MODE_SLEEP);
 }
 
-static int bma150_resume(struct device *dev)
+static int __maybe_unused bma150_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct bma150_data *bma150 = i2c_get_clientdata(client);
 
 	return bma150_set_mode(bma150, BMA150_MODE_NORMAL);
 }
-#endif
 
 static UNIVERSAL_DEV_PM_OPS(bma150_pm, bma150_suspend, bma150_resume, NULL);
 
@@ -652,7 +546,6 @@ MODULE_DEVICE_TABLE(i2c, bma150_id);
 
 static struct i2c_driver bma150_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= BMA150_DRIVER,
 		.pm	= &bma150_pm,
 	},

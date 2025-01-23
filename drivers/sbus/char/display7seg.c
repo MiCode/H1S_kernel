@@ -1,9 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* display7seg.c - Driver implementation for the 7-segment display
  *                 present on Sun Microsystems CP1400 and CP1500
  *
  * Copyright (c) 2000 Eric Brower (ebrower@usa.net)
  */
 
+#include <linux/device.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/fs.h>
@@ -14,14 +16,13 @@
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/atomic.h>
-#include <asm/uaccess.h>		/* put_/get_user			*/
+#include <linux/uaccess.h>		/* put_/get_user			*/
 #include <asm/io.h>
 
 #include <asm/display7seg.h>
 
-#define D7S_MINOR	193
 #define DRIVER_NAME	"d7s"
 #define PFX		DRIVER_NAME ": "
 
@@ -49,7 +50,6 @@ MODULE_PARM_DESC(sol_compat,
 MODULE_AUTHOR("Eric Brower <ebrower@usa.net>");
 MODULE_DESCRIPTION("7-Segment Display driver for Sun Microsystems CP1400/1500");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("d7s");
 
 struct d7s {
 	void __iomem	*regs;
@@ -143,10 +143,7 @@ static long d7s_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case D7SIOCTM:
 		/* toggle device mode-- flip display orientation */
-		if (regs & D7S_FLIP)
-			regs &= ~D7S_FLIP;
-		else
-			regs |= D7S_FLIP;
+		regs ^= D7S_FLIP;
 		writeb(regs, p->regs);
 		break;
 	}
@@ -158,7 +155,7 @@ static long d7s_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 static const struct file_operations d7s_fops = {
 	.owner =		THIS_MODULE,
 	.unlocked_ioctl =	d7s_ioctl,
-	.compat_ioctl =		d7s_ioctl,
+	.compat_ioctl =		compat_ptr_ioctl,
 	.open =			d7s_open,
 	.release =		d7s_release,
 	.llseek = noop_llseek,
@@ -180,7 +177,7 @@ static int d7s_probe(struct platform_device *op)
 	if (d7s_device)
 		goto out;
 
-	p = kzalloc(sizeof(*p), GFP_KERNEL);
+	p = devm_kzalloc(&op->dev, sizeof(*p), GFP_KERNEL);
 	err = -ENOMEM;
 	if (!p)
 		goto out;
@@ -188,7 +185,7 @@ static int d7s_probe(struct platform_device *op)
 	p->regs = of_ioremap(&op->resource[0], 0, sizeof(u8), "d7s");
 	if (!p->regs) {
 		printk(KERN_ERR PFX "Cannot map chip registers\n");
-		goto out_free;
+		goto out;
 	}
 
 	err = misc_register(&d7s_miscdev);
@@ -203,9 +200,8 @@ static int d7s_probe(struct platform_device *op)
 	 */
 	regs = readb(p->regs);
 	opts = of_find_node_by_path("/options");
-	if (opts &&
-	    of_get_property(opts, "d7s-flipped?", NULL))
-		p->flipped = true;
+	if (opts)
+	    p->flipped = of_property_read_bool(opts, "d7s-flipped?");
 
 	if (p->flipped)
 		regs |= D7S_FLIP;
@@ -214,8 +210,8 @@ static int d7s_probe(struct platform_device *op)
 
 	writeb(regs,  p->regs);
 
-	printk(KERN_INFO PFX "7-Segment Display%s at [%s:0x%llx] %s\n",
-	       op->dev.of_node->full_name,
+	printk(KERN_INFO PFX "7-Segment Display%pOF at [%s:0x%llx] %s\n",
+	       op->dev.of_node,
 	       (regs & D7S_FLIP) ? " (FLIPPED)" : "",
 	       op->resource[0].start,
 	       sol_compat ? "in sol_compat mode" : "");
@@ -223,15 +219,13 @@ static int d7s_probe(struct platform_device *op)
 	dev_set_drvdata(&op->dev, p);
 	d7s_device = p;
 	err = 0;
+	of_node_put(opts);
 
 out:
 	return err;
 
 out_iounmap:
 	of_iounmap(&op->resource[0], p->regs, sizeof(u8));
-
-out_free:
-	kfree(p);
 	goto out;
 }
 
@@ -251,7 +245,6 @@ static int d7s_remove(struct platform_device *op)
 
 	misc_deregister(&d7s_miscdev);
 	of_iounmap(&op->resource[0], p->regs, sizeof(u8));
-	kfree(p);
 
 	return 0;
 }
@@ -267,7 +260,6 @@ MODULE_DEVICE_TABLE(of, d7s_match);
 static struct platform_driver d7s_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = d7s_match,
 	},
 	.probe		= d7s_probe,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/mm/msync.c
  *
@@ -13,6 +14,7 @@
 #include <linux/file.h>
 #include <linux/syscalls.h>
 #include <linux/sched.h>
+#include <linux/page_size_compat.h>
 
 /*
  * MS_SYNC syncs the entire file - including mappings.
@@ -36,14 +38,16 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 	int unmapped_error = 0;
 	int error = -EINVAL;
 
+	start = untagged_addr(start);
+
 	if (flags & ~(MS_ASYNC | MS_INVALIDATE | MS_SYNC))
 		goto out;
-	if (start & ~PAGE_MASK)
+	if (__offset_in_page_log(start))
 		goto out;
 	if ((flags & MS_ASYNC) && (flags & MS_SYNC))
 		goto out;
 	error = -ENOMEM;
-	len = (len + ~PAGE_MASK) & PAGE_MASK;
+	len = (len + ~__PAGE_MASK) & __PAGE_MASK;
 	end = start + len;
 	if (end < start)
 		goto out;
@@ -52,12 +56,15 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 		goto out;
 	/*
 	 * If the interval [start,end) covers some unmapped address ranges,
-	 * just ignore them, but return -ENOMEM at the end.
+	 * just ignore them, but return -ENOMEM at the end. Besides, if the
+	 * flag is MS_ASYNC (w/o MS_INVALIDATE) the result would be -ENOMEM
+	 * anyway and there is nothing left to do, so return immediately.
 	 */
-	down_read(&mm->mmap_sem);
+	mmap_read_lock(mm);
 	vma = find_vma(mm, start);
 	for (;;) {
 		struct file *file;
+		loff_t fstart, fend;
 
 		/* Still start < end. */
 		error = -ENOMEM;
@@ -65,6 +72,8 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 			goto out_unlock;
 		/* Here start < vma->vm_end. */
 		if (start < vma->vm_start) {
+			if (flags == MS_ASYNC)
+				goto out_unlock;
 			start = vma->vm_start;
 			if (start >= end)
 				goto out_unlock;
@@ -77,27 +86,30 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 			goto out_unlock;
 		}
 		file = vma->vm_file;
+		fstart = (start - vma->vm_start) +
+			 ((loff_t)vma->vm_pgoff << PAGE_SHIFT);
+		fend = fstart + (min(end, vma->vm_end) - start) - 1;
 		start = vma->vm_end;
 		if ((flags & MS_SYNC) && file &&
 				(vma->vm_flags & VM_SHARED)) {
 			get_file(file);
-			up_read(&mm->mmap_sem);
-			error = vfs_fsync(file, 0);
+			mmap_read_unlock(mm);
+			error = vfs_fsync_range(file, fstart, fend, 1);
 			fput(file);
 			if (error || start >= end)
 				goto out;
-			down_read(&mm->mmap_sem);
+			mmap_read_lock(mm);
 			vma = find_vma(mm, start);
 		} else {
 			if (start >= end) {
 				error = 0;
 				goto out_unlock;
 			}
-			vma = vma->vm_next;
+			vma = find_vma(mm, vma->vm_end);
 		}
 	}
 out_unlock:
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 out:
 	return error ? : unmapped_error;
 }

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
     Auvitek AU8522 QAM/8VSB demodulator driver
 
@@ -6,24 +7,11 @@
     Copyright (C) 2005-2008 Auvitek International, Ltd.
     Copyright (C) 2012 Michael Krufky <mkrufky@linuxtv.org>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 */
 
 #include <linux/i2c.h>
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "au8522_priv.h"
 
 static int debug;
@@ -44,14 +32,14 @@ int au8522_writereg(struct au8522_state *state, u16 reg, u8 data)
 	int ret;
 	u8 buf[] = { (reg >> 8) | 0x80, reg & 0xff, data };
 
-	struct i2c_msg msg = { .addr = state->config->demod_address,
+	struct i2c_msg msg = { .addr = state->config.demod_address,
 			       .flags = 0, .buf = buf, .len = 3 };
 
 	ret = i2c_transfer(state->i2c, &msg, 1);
 
 	if (ret != 1)
-		printk("%s: writereg error (reg == 0x%02x, val == 0x%04x, "
-		       "ret == %i)\n", __func__, reg, data, ret);
+		printk("%s: writereg error (reg == 0x%02x, val == 0x%04x, ret == %i)\n",
+		       __func__, reg, data, ret);
 
 	return (ret != 1) ? -1 : 0;
 }
@@ -64,9 +52,9 @@ u8 au8522_readreg(struct au8522_state *state, u16 reg)
 	u8 b1[] = { 0 };
 
 	struct i2c_msg msg[] = {
-		{ .addr = state->config->demod_address, .flags = 0,
+		{ .addr = state->config.demod_address, .flags = 0,
 		  .buf = b0, .len = 2 },
-		{ .addr = state->config->demod_address, .flags = I2C_M_RD,
+		{ .addr = state->config.demod_address, .flags = I2C_M_RD,
 		  .buf = b1, .len = 1 } };
 
 	ret = i2c_transfer(state->i2c, msg, 2);
@@ -140,7 +128,7 @@ EXPORT_SYMBOL(au8522_release_state);
 
 static int au8522_led_gpio_enable(struct au8522_state *state, int onoff)
 {
-	struct au8522_led_config *led_config = state->config->led_cfg;
+	struct au8522_led_config *led_config = state->config.led_cfg;
 	u8 val;
 
 	/* bail out if we can't control an LED */
@@ -170,7 +158,7 @@ static int au8522_led_gpio_enable(struct au8522_state *state, int onoff)
  */
 int au8522_led_ctrl(struct au8522_state *state, int led)
 {
-	struct au8522_led_config *led_config = state->config->led_cfg;
+	struct au8522_led_config *led_config = state->config.led_cfg;
 	int i, ret = 0;
 
 	/* bail out if we can't control an LED */
@@ -234,6 +222,7 @@ int au8522_init(struct dvb_frontend *fe)
 	   chip, so that when it gets powered back up it won't think
 	   that it is already tuned */
 	state->current_frequency = 0;
+	state->current_modulation = VSB_8;
 
 	au8522_writereg(state, 0xa4, 1 << 5);
 

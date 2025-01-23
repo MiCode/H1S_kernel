@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*****************************************************************************
  *                                                                           *
  * File: pm3393.c                                                            *
@@ -7,16 +8,6 @@
  *  PMC/SIERRA (pm3393) MAC-PHY functionality.                               *
  *  part of the Chelsio 10Gb Ethernet Driver.                                *
  *                                                                           *
- * This program is free software; you can redistribute it and/or modify      *
- * it under the terms of the GNU General Public License, version 2, as       *
- * published by the Free Software Foundation.                                *
- *                                                                           *
- * You should have received a copy of the GNU General Public License along   *
- * with this program; if not, see <http://www.gnu.org/licenses/>.            *
- *                                                                           *
- * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR IMPLIED    *
- * WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF      *
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.                     *
  *                                                                           *
  * http://www.chelsio.com                                                    *
  *                                                                           *
@@ -46,9 +37,6 @@
 #include <linux/slab.h>
 
 #define OFFSET(REG_ADDR)    ((REG_ADDR) << 2)
-
-/* Max frame size PM3393 can handle. Includes Ethernet header and CRC. */
-#define MAX_FRAME_SIZE  9600
 
 #define IPG 12
 #define TXXG_CONF1_VAL ((IPG << SUNI1x10GEXP_BITOFF_TXXG_IPGT) | \
@@ -331,10 +319,7 @@ static int pm3393_set_mtu(struct cmac *cmac, int mtu)
 {
 	int enabled = cmac->instance->enabled;
 
-	/* MAX_FRAME_SIZE includes header + FCS, mtu doesn't */
-	mtu += 14 + 4;
-	if (mtu > MAX_FRAME_SIZE)
-		return -EINVAL;
+	mtu += ETH_HLEN + ETH_FCS_LEN;
 
 	/* Disable Rx/Tx MAC before configuring it. */
 	if (enabled)
@@ -502,7 +487,7 @@ static int pm3393_macaddress_get(struct cmac *cmac, u8 mac_addr[6])
 	return 0;
 }
 
-static int pm3393_macaddress_set(struct cmac *cmac, u8 ma[6])
+static int pm3393_macaddress_set(struct cmac *cmac, const u8 ma[6])
 {
 	u32 val, lo, mid, hi, enabled = cmac->instance->enabled;
 
@@ -570,7 +555,7 @@ static void pm3393_destroy(struct cmac *cmac)
 	kfree(cmac);
 }
 
-static struct cmac_ops pm3393_ops = {
+static const struct cmac_ops pm3393_ops = {
 	.destroy                 = pm3393_destroy,
 	.reset                   = pm3393_reset,
 	.interrupt_enable        = pm3393_interrupt_enable,

@@ -1,30 +1,23 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*  paravirtual clock -- common code used by kvm/xen
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
+#include <linux/clocksource.h>
 #include <linux/kernel.h>
 #include <linux/percpu.h>
 #include <linux/notifier.h>
 #include <linux/sched.h>
 #include <linux/gfp.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
+#include <linux/nmi.h>
+
 #include <asm/fixmap.h>
 #include <asm/pvclock.h>
+#include <asm/vgtod.h>
 
 static u8 valid_flags __read_mostly = 0;
+static struct pvclock_vsyscall_time_info *pvti_cpu0_va __read_mostly;
 
 void pvclock_set_flags(u8 flags)
 {
@@ -61,28 +54,31 @@ void pvclock_resume(void)
 u8 pvclock_read_flags(struct pvclock_vcpu_time_info *src)
 {
 	unsigned version;
-	cycle_t ret;
 	u8 flags;
 
 	do {
-		version = __pvclock_read_cycles(src, &ret, &flags);
-	} while ((src->version & 1) || version != src->version);
+		version = pvclock_read_begin(src);
+		flags = src->flags;
+	} while (pvclock_read_retry(src, version));
 
 	return flags & valid_flags;
 }
 
-cycle_t pvclock_clocksource_read(struct pvclock_vcpu_time_info *src)
+static __always_inline
+u64 __pvclock_clocksource_read(struct pvclock_vcpu_time_info *src, bool dowd)
 {
 	unsigned version;
-	cycle_t ret;
+	u64 ret;
 	u64 last;
 	u8 flags;
 
 	do {
-		version = __pvclock_read_cycles(src, &ret, &flags);
-	} while ((src->version & 1) || version != src->version);
+		version = pvclock_read_begin(src);
+		ret = __pvclock_read_cycles(src, rdtsc_ordered());
+		flags = src->flags;
+	} while (pvclock_read_retry(src, version));
 
-	if (unlikely((flags & PVCLOCK_GUEST_STOPPED) != 0)) {
+	if (dowd && unlikely((flags & PVCLOCK_GUEST_STOPPED) != 0)) {
 		src->flags &= ~PVCLOCK_GUEST_STOPPED;
 		pvclock_touch_watchdogs();
 	}
@@ -94,7 +90,7 @@ cycle_t pvclock_clocksource_read(struct pvclock_vcpu_time_info *src)
 	/*
 	 * Assumption here is that last_value, a global accumulator, always goes
 	 * forward. If we are less than that, we should not be much smaller.
-	 * We assume there is an error marging we're inside, and then the correction
+	 * We assume there is an error margin we're inside, and then the correction
 	 * does not sacrifice accuracy.
 	 *
 	 * For reads: global may have changed between test and return,
@@ -105,62 +101,66 @@ cycle_t pvclock_clocksource_read(struct pvclock_vcpu_time_info *src)
 	 * updating at the same time, and one of them could be slightly behind,
 	 * making the assumption that last_value always go forward fail to hold.
 	 */
-	last = atomic64_read(&last_value);
+	last = raw_atomic64_read(&last_value);
 	do {
-		if (ret < last)
+		if (ret <= last)
 			return last;
-		last = atomic64_cmpxchg(&last_value, last, ret);
-	} while (unlikely(last != ret));
+	} while (!raw_atomic64_try_cmpxchg(&last_value, &last, ret));
 
 	return ret;
 }
 
+u64 pvclock_clocksource_read(struct pvclock_vcpu_time_info *src)
+{
+	return __pvclock_clocksource_read(src, true);
+}
+
+noinstr u64 pvclock_clocksource_read_nowd(struct pvclock_vcpu_time_info *src)
+{
+	return __pvclock_clocksource_read(src, false);
+}
+
 void pvclock_read_wallclock(struct pvclock_wall_clock *wall_clock,
 			    struct pvclock_vcpu_time_info *vcpu_time,
-			    struct timespec *ts)
+			    struct timespec64 *ts)
 {
 	u32 version;
 	u64 delta;
-	struct timespec now;
+	struct timespec64 now;
 
 	/* get wallclock at system boot */
 	do {
 		version = wall_clock->version;
 		rmb();		/* fetch version before time */
+		/*
+		 * Note: wall_clock->sec is a u32 value, so it can
+		 * only store dates between 1970 and 2106. To allow
+		 * times beyond that, we need to create a new hypercall
+		 * interface with an extended pvclock_wall_clock structure
+		 * like ARM has.
+		 */
 		now.tv_sec  = wall_clock->sec;
 		now.tv_nsec = wall_clock->nsec;
 		rmb();		/* fetch time before checking version */
 	} while ((wall_clock->version & 1) || (version != wall_clock->version));
 
 	delta = pvclock_clocksource_read(vcpu_time);	/* time since system boot */
-	delta += now.tv_sec * (u64)NSEC_PER_SEC + now.tv_nsec;
+	delta += now.tv_sec * NSEC_PER_SEC + now.tv_nsec;
 
 	now.tv_nsec = do_div(delta, NSEC_PER_SEC);
 	now.tv_sec = delta;
 
-	set_normalized_timespec(ts, now.tv_sec, now.tv_nsec);
+	set_normalized_timespec64(ts, now.tv_sec, now.tv_nsec);
 }
 
-#ifdef CONFIG_X86_64
-/*
- * Initialize the generic pvclock vsyscall state.  This will allocate
- * a/some page(s) for the per-vcpu pvclock information, set up a
- * fixmap mapping for the page(s)
- */
-
-int __init pvclock_init_vsyscall(struct pvclock_vsyscall_time_info *i,
-				 int size)
+void pvclock_set_pvti_cpu0_va(struct pvclock_vsyscall_time_info *pvti)
 {
-	int idx;
-
-	WARN_ON (size != PVCLOCK_VSYSCALL_NR_PAGES*PAGE_SIZE);
-
-	for (idx = 0; idx <= (PVCLOCK_FIXMAP_END-PVCLOCK_FIXMAP_BEGIN); idx++) {
-		__set_fixmap(PVCLOCK_FIXMAP_BEGIN + idx,
-			     __pa(i) + (idx*PAGE_SIZE),
-			     PAGE_KERNEL_VVAR);
-	}
-
-	return 0;
+	WARN_ON(vclock_was_used(VDSO_CLOCKMODE_PVCLOCK));
+	pvti_cpu0_va = pvti;
 }
-#endif
+
+struct pvclock_vsyscall_time_info *pvclock_get_pvti_cpu0_va(void)
+{
+	return pvti_cpu0_va;
+}
+EXPORT_SYMBOL_GPL(pvclock_get_pvti_cpu0_va);

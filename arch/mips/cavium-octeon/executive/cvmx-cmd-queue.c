@@ -42,14 +42,14 @@
 #include <asm/octeon/cvmx-pexp-defs.h>
 #include <asm/octeon/cvmx-pko-defs.h>
 
-/**
+/*
  * This application uses this pointer to access the global queue
  * state. It points to a bootmem named block.
  */
 __cvmx_cmd_queue_all_state_t *__cvmx_cmd_queue_state_ptr;
 EXPORT_SYMBOL_GPL(__cvmx_cmd_queue_state_ptr);
 
-/**
+/*
  * Initialize the Global queue state pointer.
  *
  * Returns CVMX_CMD_QUEUE_SUCCESS or a failure code
@@ -57,14 +57,11 @@ EXPORT_SYMBOL_GPL(__cvmx_cmd_queue_state_ptr);
 static cvmx_cmd_queue_result_t __cvmx_cmd_queue_init_state_ptr(void)
 {
 	char *alloc_name = "cvmx_cmd_queues";
-#if defined(CONFIG_CAVIUM_RESERVE32) && CONFIG_CAVIUM_RESERVE32
 	extern uint64_t octeon_reserve32_memory;
-#endif
 
 	if (likely(__cvmx_cmd_queue_state_ptr))
 		return CVMX_CMD_QUEUE_SUCCESS;
 
-#if defined(CONFIG_CAVIUM_RESERVE32) && CONFIG_CAVIUM_RESERVE32
 	if (octeon_reserve32_memory)
 		__cvmx_cmd_queue_state_ptr =
 		    cvmx_bootmem_alloc_named_range(sizeof(*__cvmx_cmd_queue_state_ptr),
@@ -73,7 +70,6 @@ static cvmx_cmd_queue_result_t __cvmx_cmd_queue_init_state_ptr(void)
 						   (CONFIG_CAVIUM_RESERVE32 <<
 						    20) - 1, 128, alloc_name);
 	else
-#endif
 		__cvmx_cmd_queue_state_ptr =
 		    cvmx_bootmem_alloc_named(sizeof(*__cvmx_cmd_queue_state_ptr),
 					    128,
@@ -97,7 +93,7 @@ static cvmx_cmd_queue_result_t __cvmx_cmd_queue_init_state_ptr(void)
 	return CVMX_CMD_QUEUE_SUCCESS;
 }
 
-/**
+/*
  * Initialize a command queue for use. The initial FPA buffer is
  * allocated and the hardware unit is configured to point to the
  * new command queue.
@@ -195,7 +191,7 @@ cvmx_cmd_queue_result_t cvmx_cmd_queue_initialize(cvmx_cmd_queue_id_t queue_id,
 	}
 }
 
-/**
+/*
  * Shutdown a queue a free it's command buffers to the FPA. The
  * hardware connected to the queue must be stopped before this
  * function is called.
@@ -231,7 +227,7 @@ cvmx_cmd_queue_result_t cvmx_cmd_queue_shutdown(cvmx_cmd_queue_id_t queue_id)
 	return CVMX_CMD_QUEUE_SUCCESS;
 }
 
-/**
+/*
  * Return the number of command words pending in the queue. This
  * function may be relatively slow for some hardware units.
  *
@@ -266,7 +262,7 @@ int cvmx_cmd_queue_length(cvmx_cmd_queue_id_t queue_id)
 		} else {
 			union cvmx_pko_mem_debug8 debug8;
 			debug8.u64 = cvmx_read_csr(CVMX_PKO_MEM_DEBUG8);
-			return debug8.cn58xx.doorbell;
+			return debug8.cn50xx.doorbell;
 		}
 	case CVMX_CMD_QUEUE_ZIP:
 	case CVMX_CMD_QUEUE_DFA:
@@ -287,7 +283,7 @@ int cvmx_cmd_queue_length(cvmx_cmd_queue_id_t queue_id)
 	return CVMX_CMD_QUEUE_INVALID_PARAM;
 }
 
-/**
+/*
  * Return the command buffer to be written to. The purpose of this
  * function is to allow CVMX routine access t othe low level buffer
  * for initial hardware setup. User applications should not call this

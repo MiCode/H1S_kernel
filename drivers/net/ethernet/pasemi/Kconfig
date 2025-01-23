@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # PA Semi network device configuration
 #
@@ -5,11 +6,9 @@
 config NET_VENDOR_PASEMI
 	bool "PA Semi devices"
 	default y
-	depends on PPC_PASEMI && PCI && INET
-	---help---
-	  If you have a network (Ethernet) card belonging to this class, say Y
-	  and read the Ethernet-HOWTO, available from
-	  <http://www.tldp.org/docs.html#howto>.
+	depends on PPC_PASEMI && PCI
+	help
+	  If you have a network (Ethernet) card belonging to this class, say Y.
 
 	  Note that the answer to this question doesn't directly affect the
 	  kernel: saying N will just cause the configurator to skip all
@@ -20,10 +19,9 @@ if NET_VENDOR_PASEMI
 
 config PASEMI_MAC
 	tristate "PA Semi 1/10Gbit MAC"
-	depends on PPC_PASEMI && PCI && INET
+	depends on PPC_PASEMI && PCI
 	select PHYLIB
-	select INET_LRO
-	---help---
+	help
 	  This driver supports the on-chip 1/10Gbit Ethernet controller on
 	  PA Semi's PWRficient line of chips.
 

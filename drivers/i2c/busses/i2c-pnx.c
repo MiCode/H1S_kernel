@@ -18,7 +18,6 @@
 #include <linux/timer.h>
 #include <linux/completion.h>
 #include <linux/platform_device.h>
-#include <linux/i2c-pnx.h>
 #include <linux/io.h>
 #include <linux/err.h>
 #include <linux/clk.h>
@@ -28,6 +27,26 @@
 #define I2C_PNX_TIMEOUT_DEFAULT		10 /* msec */
 #define I2C_PNX_SPEED_KHZ_DEFAULT	100
 #define I2C_PNX_REGION_SIZE		0x100
+
+struct i2c_pnx_mif {
+	int			ret;		/* Return value */
+	int			mode;		/* Interface mode */
+	struct completion	complete;	/* I/O completion */
+	struct timer_list	timer;		/* Timeout */
+	u8 *			buf;		/* Data buffer */
+	int			len;		/* Length of data buffer */
+	int			order;		/* RX Bytes to order via TX */
+};
+
+struct i2c_pnx_algo_data {
+	void __iomem		*ioaddr;
+	struct i2c_pnx_mif	mif;
+	int			last;
+	struct clk		*clk;
+	struct i2c_adapter	adapter;
+	int			irq;
+	u32			timeout;
+};
 
 enum {
 	mstatus_tdi = 0x00000001,
@@ -112,7 +131,6 @@ static inline void i2c_pnx_arm_timer(struct i2c_pnx_algo_data *alg_data)
 		jiffies, expires);
 
 	timer->expires = jiffies + expires;
-	timer->data = (unsigned long)alg_data;
 
 	add_timer(timer);
 }
@@ -120,7 +138,7 @@ static inline void i2c_pnx_arm_timer(struct i2c_pnx_algo_data *alg_data)
 /**
  * i2c_pnx_start - start a device
  * @slave_addr:		slave address
- * @adap:		pointer to adapter structure
+ * @alg_data:		pointer to local driver data structure
  *
  * Generate a START signal in the desired mode.
  */
@@ -176,7 +194,7 @@ static int i2c_pnx_start(unsigned char slave_addr,
 
 /**
  * i2c_pnx_stop - stop a device
- * @adap:		pointer to I2C adapter structure
+ * @alg_data:		pointer to local driver data structure
  *
  * Generate a STOP signal to terminate the master transaction.
  */
@@ -205,7 +223,7 @@ static void i2c_pnx_stop(struct i2c_pnx_algo_data *alg_data)
 
 /**
  * i2c_pnx_master_xmit - transmit data to slave
- * @adap:		pointer to I2C adapter structure
+ * @alg_data:		pointer to local driver data structure
  *
  * Sends one byte of data to the slave
  */
@@ -275,7 +293,7 @@ static int i2c_pnx_master_xmit(struct i2c_pnx_algo_data *alg_data)
 
 /**
  * i2c_pnx_master_rcv - receive data from slave
- * @adap:		pointer to I2C adapter structure
+ * @alg_data:		pointer to local driver data structure
  *
  * Reads one byte data from the slave
  */
@@ -435,9 +453,9 @@ static irqreturn_t i2c_pnx_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static void i2c_pnx_timeout(unsigned long data)
+static void i2c_pnx_timeout(struct timer_list *t)
 {
-	struct i2c_pnx_algo_data *alg_data = (struct i2c_pnx_algo_data *)data;
+	struct i2c_pnx_algo_data *alg_data = from_timer(alg_data, t, mif.timer);
 	u32 ctl;
 
 	dev_err(&alg_data->adapter.dev,
@@ -496,7 +514,7 @@ i2c_pnx_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 	struct i2c_msg *pmsg;
 	int rc = 0, completed = 0, i;
 	struct i2c_pnx_algo_data *alg_data = adap->algo_data;
-	u32 stat = ioread32(I2C_REG_STS(alg_data));
+	u32 stat;
 
 	dev_dbg(&alg_data->adapter.dev,
 		"%s(): entering: %d messages, stat = %04x.\n",
@@ -590,17 +608,16 @@ static u32 i2c_pnx_func(struct i2c_adapter *adapter)
 	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL;
 }
 
-static struct i2c_algorithm pnx_algorithm = {
+static const struct i2c_algorithm pnx_algorithm = {
 	.master_xfer = i2c_pnx_xfer,
 	.functionality = i2c_pnx_func,
 };
 
-#ifdef CONFIG_PM_SLEEP
 static int i2c_pnx_controller_suspend(struct device *dev)
 {
 	struct i2c_pnx_algo_data *alg_data = dev_get_drvdata(dev);
 
-	clk_disable(alg_data->clk);
+	clk_disable_unprepare(alg_data->clk);
 
 	return 0;
 }
@@ -609,15 +626,12 @@ static int i2c_pnx_controller_resume(struct device *dev)
 {
 	struct i2c_pnx_algo_data *alg_data = dev_get_drvdata(dev);
 
-	return clk_enable(alg_data->clk);
+	return clk_prepare_enable(alg_data->clk);
 }
 
-static SIMPLE_DEV_PM_OPS(i2c_pnx_pm,
-			 i2c_pnx_controller_suspend, i2c_pnx_controller_resume);
-#define PNX_I2C_PM	(&i2c_pnx_pm)
-#else
-#define PNX_I2C_PM	NULL
-#endif
+static DEFINE_SIMPLE_DEV_PM_OPS(i2c_pnx_pm,
+				i2c_pnx_controller_suspend,
+				i2c_pnx_controller_resume);
 
 static int i2c_pnx_probe(struct platform_device *pdev)
 {
@@ -659,20 +673,17 @@ static int i2c_pnx_probe(struct platform_device *pdev)
 	if (IS_ERR(alg_data->clk))
 		return PTR_ERR(alg_data->clk);
 
-	init_timer(&alg_data->mif.timer);
-	alg_data->mif.timer.function = i2c_pnx_timeout;
-	alg_data->mif.timer.data = (unsigned long)alg_data;
+	timer_setup(&alg_data->mif.timer, i2c_pnx_timeout, 0);
 
 	snprintf(alg_data->adapter.name, sizeof(alg_data->adapter.name),
 		 "%s", pdev->name);
 
 	/* Register I/O resource */
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	alg_data->ioaddr = devm_ioremap_resource(&pdev->dev, res);
+	alg_data->ioaddr = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(alg_data->ioaddr))
 		return PTR_ERR(alg_data->ioaddr);
 
-	ret = clk_enable(alg_data->clk);
+	ret = clk_prepare_enable(alg_data->clk);
 	if (ret)
 		return ret;
 
@@ -704,7 +715,6 @@ static int i2c_pnx_probe(struct platform_device *pdev)
 
 	alg_data->irq = platform_get_irq(pdev, 0);
 	if (alg_data->irq < 0) {
-		dev_err(&pdev->dev, "Failed to get IRQ from platform resource\n");
 		ret = alg_data->irq;
 		goto out_clock;
 	}
@@ -715,29 +725,25 @@ static int i2c_pnx_probe(struct platform_device *pdev)
 
 	/* Register this adapter with the I2C subsystem */
 	ret = i2c_add_numbered_adapter(&alg_data->adapter);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "I2C: Failed to add bus\n");
+	if (ret < 0)
 		goto out_clock;
-	}
 
-	dev_dbg(&pdev->dev, "%s: Master at %#8x, irq %d.\n",
-		alg_data->adapter.name, res->start, alg_data->irq);
+	dev_dbg(&pdev->dev, "%s: Master at %pap, irq %d.\n",
+		alg_data->adapter.name, &res->start, alg_data->irq);
 
 	return 0;
 
 out_clock:
-	clk_disable(alg_data->clk);
+	clk_disable_unprepare(alg_data->clk);
 	return ret;
 }
 
-static int i2c_pnx_remove(struct platform_device *pdev)
+static void i2c_pnx_remove(struct platform_device *pdev)
 {
 	struct i2c_pnx_algo_data *alg_data = platform_get_drvdata(pdev);
 
 	i2c_del_adapter(&alg_data->adapter);
-	clk_disable(alg_data->clk);
-
-	return 0;
+	clk_disable_unprepare(alg_data->clk);
 }
 
 #ifdef CONFIG_OF
@@ -751,12 +757,11 @@ MODULE_DEVICE_TABLE(of, i2c_pnx_of_match);
 static struct platform_driver i2c_pnx_driver = {
 	.driver = {
 		.name = "pnx-i2c",
-		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(i2c_pnx_of_match),
-		.pm = PNX_I2C_PM,
+		.pm = pm_sleep_ptr(&i2c_pnx_pm),
 	},
 	.probe = i2c_pnx_probe,
-	.remove = i2c_pnx_remove,
+	.remove_new = i2c_pnx_remove,
 };
 
 static int __init i2c_adap_pnx_init(void)
@@ -769,7 +774,8 @@ static void __exit i2c_adap_pnx_exit(void)
 	platform_driver_unregister(&i2c_pnx_driver);
 }
 
-MODULE_AUTHOR("Vitaly Wool, Dennis Kovalev <source@mvista.com>");
+MODULE_AUTHOR("Vitaly Wool");
+MODULE_AUTHOR("Dennis Kovalev <source@mvista.com>");
 MODULE_DESCRIPTION("I2C driver for Philips IP3204-based I2C busses");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:pnx-i2c");

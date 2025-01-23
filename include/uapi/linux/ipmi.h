@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /*
  * ipmi.h
  *
@@ -9,26 +10,6 @@
  *
  * Copyright 2002 MontaVista Software Inc.
  *
- *  This program is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License as published by the
- *  Free Software Foundation; either version 2 of the License, or (at your
- *  option) any later version.
- *
- *
- *  THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
- *  WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- *  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- *  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
- *  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- *  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
- *  OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- *  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
- *  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
- *  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #ifndef _UAPI__LINUX_IPMI_H
@@ -97,6 +78,20 @@ struct ipmi_ipmb_addr {
 	short         channel;
 	unsigned char slave_addr;
 	unsigned char lun;
+};
+
+/*
+ * Used for messages received directly from an IPMB that have not gone
+ * through a MC.  This is for systems that sit right on an IPMB so
+ * they can receive commands and respond to them.
+ */
+#define IPMI_IPMB_DIRECT_ADDR_TYPE	0x81
+struct ipmi_ipmb_direct_addr {
+	int           addr_type;
+	short         channel;
+	unsigned char slave_addr;
+	unsigned char rs_lun;
+	unsigned char rq_lun;
 };
 
 /*
@@ -177,7 +172,7 @@ struct kernel_ipmi_msg {
  * is used for the receive in-kernel interface and in the receive
  * IOCTL.
  *
- * The "IPMI_RESPONSE_RESPNOSE_TYPE" is a little strange sounding, but
+ * The "IPMI_RESPONSE_RESPONSE_TYPE" is a little strange sounding, but
  * it allows you to get the message results when you send a response
  * message.
  */
@@ -355,7 +350,7 @@ struct ipmi_cmdspec {
 #define IPMICTL_REGISTER_FOR_CMD	_IOR(IPMI_IOC_MAGIC, 14,	\
 					     struct ipmi_cmdspec)
 /*
- * Unregister a regsitered command.  error values:
+ * Unregister a registered command.  error values:
  *  - EFAULT - an address supplied was invalid.
  *  - ENOENT - The netfn/cmd was not found registered for this user.
  */

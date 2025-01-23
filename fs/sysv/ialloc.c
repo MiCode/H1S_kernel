@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/sysv/ialloc.c
  *
@@ -162,9 +163,9 @@ struct inode * sysv_new_inode(const struct inode * dir, umode_t mode)
 	*sbi->s_sb_fic_count = cpu_to_fs16(sbi, count);
 	fs16_add(sbi, sbi->s_sb_total_free_inodes, -1);
 	dirty_sb(sb);
-	inode_init_owner(inode, dir, mode);
+	inode_init_owner(&nop_mnt_idmap, inode, dir, mode);
 	inode->i_ino = fs16_to_cpu(sbi, ino);
-	inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME_SEC;
+	inode->i_mtime = inode->i_atime = inode_set_ctime_current(inode);
 	inode->i_blocks = 0;
 	memset(SYSV_I(inode)->i_data, 0, sizeof(SYSV_I(inode)->i_data));
 	SYSV_I(inode)->i_dir_start_lookup = 0;
@@ -220,7 +221,7 @@ Einval:
 	printk("sysv_count_free_inodes: "
 		"free inode count was %d, correcting to %d\n",
 		sb_count, count);
-	if (!(sb->s_flags & MS_RDONLY)) {
+	if (!sb_rdonly(sb)) {
 		*sbi->s_sb_total_free_inodes = cpu_to_fs16(SYSV_SB(sb), count);
 		dirty_sb(sb);
 	}

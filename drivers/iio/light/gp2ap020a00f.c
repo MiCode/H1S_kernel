@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2013 Samsung Electronics Co., Ltd.
  * Author: Jacek Anaszewski <j.anaszewski@samsung.com>
@@ -5,13 +6,13 @@
  * IIO features supported by the driver:
  *
  * Read-only raw channels:
- *   - illiminance_clear [lux]
- *   - illiminance_ir
+ *   - illuminance_clear [lux]
+ *   - illuminance_ir
  *   - proximity
  *
  * Triggered buffer:
- *   - illiminance_clear
- *   - illiminance_ir
+ *   - illuminance_clear
+ *   - illuminance_ir
  *   - proximity
  *
  * Events:
@@ -28,10 +29,6 @@
  * with any triggers or illuminance events. Enabling/disabling
  * one of the proximity events automatically enables/disables
  * the other one.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
  */
 
 #include <linux/debugfs.h>
@@ -41,11 +38,12 @@
 #include <linux/irq.h>
 #include <linux/irq_work.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/mutex.h>
-#include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
+#include <asm/unaligned.h>
 #include <linux/iio/buffer.h>
 #include <linux/iio/events.h>
 #include <linux/iio/iio.h>
@@ -827,7 +825,7 @@ static void gp2ap020a00f_iio_trigger_work(struct irq_work *work)
 	struct gp2ap020a00f_data *data =
 		container_of(work, struct gp2ap020a00f_data, work);
 
-	iio_trigger_poll(data->trig, 0);
+	iio_trigger_poll(data->trig);
 }
 
 static irqreturn_t gp2ap020a00f_prox_sensing_handler(int irq, void *data)
@@ -850,7 +848,7 @@ static irqreturn_t gp2ap020a00f_prox_sensing_handler(int irq, void *data)
 				    GP2AP020A00F_SCAN_MODE_PROXIMITY,
 				    IIO_EV_TYPE_ROC,
 				    IIO_EV_DIR_RISING),
-			       iio_get_time_ns());
+			       iio_get_time_ns(indio_dev));
 		} else {
 			iio_push_event(indio_dev,
 			       IIO_UNMOD_EVENT_CODE(
@@ -858,7 +856,7 @@ static irqreturn_t gp2ap020a00f_prox_sensing_handler(int irq, void *data)
 				    GP2AP020A00F_SCAN_MODE_PROXIMITY,
 				    IIO_EV_TYPE_ROC,
 				    IIO_EV_DIR_FALLING),
-			       iio_get_time_ns());
+			       iio_get_time_ns(indio_dev));
 		}
 	}
 
@@ -924,7 +922,7 @@ static irqreturn_t gp2ap020a00f_thresh_event_handler(int irq, void *data)
 					    IIO_MOD_LIGHT_CLEAR,
 					    IIO_EV_TYPE_THRESH,
 					    IIO_EV_DIR_RISING),
-				       iio_get_time_ns());
+				       iio_get_time_ns(indio_dev));
 		}
 
 		if (test_bit(GP2AP020A00F_FLAG_ALS_FALLING_EV, &priv->flags)) {
@@ -938,7 +936,7 @@ static irqreturn_t gp2ap020a00f_thresh_event_handler(int irq, void *data)
 					    IIO_MOD_LIGHT_CLEAR,
 					    IIO_EV_TYPE_THRESH,
 					    IIO_EV_DIR_FALLING),
-				       iio_get_time_ns());
+				       iio_get_time_ns(indio_dev));
 		}
 	}
 
@@ -966,7 +964,6 @@ static irqreturn_t gp2ap020a00f_trigger_handler(int irq, void *data)
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct gp2ap020a00f_data *priv = iio_priv(indio_dev);
 	size_t d_size = 0;
-	__le32 light_lux;
 	int i, out_val, ret;
 
 	for_each_set_bit(i, indio_dev->active_scan_mask,
@@ -981,8 +978,8 @@ static irqreturn_t gp2ap020a00f_trigger_handler(int irq, void *data)
 		    i == GP2AP020A00F_SCAN_MODE_LIGHT_IR) {
 			out_val = le16_to_cpup((__le16 *)&priv->buffer[d_size]);
 			gp2ap020a00f_output_to_lux(priv, &out_val);
-			light_lux = cpu_to_le32(out_val);
-			memcpy(&priv->buffer[d_size], (u8 *)&light_lux, 4);
+
+			put_unaligned_le32(out_val, &priv->buffer[d_size]);
 			d_size += 4;
 		} else {
 			d_size += 2;
@@ -1287,22 +1284,14 @@ static int gp2ap020a00f_read_raw(struct iio_dev *indio_dev,
 	struct gp2ap020a00f_data *data = iio_priv(indio_dev);
 	int err = -EINVAL;
 
-	mutex_lock(&data->lock);
-
-	switch (mask) {
-	case IIO_CHAN_INFO_RAW:
-		if (iio_buffer_enabled(indio_dev)) {
-			err = -EBUSY;
-			goto error_unlock;
-		}
+	if (mask == IIO_CHAN_INFO_RAW) {
+		err = iio_device_claim_direct_mode(indio_dev);
+		if (err)
+			return err;
 
 		err = gp2ap020a00f_read_channel(data, chan, val);
-		break;
+		iio_device_release_direct_mode(indio_dev);
 	}
-
-error_unlock:
-	mutex_unlock(&data->lock);
-
 	return err < 0 ? err : IIO_VAL_INT;
 }
 
@@ -1392,7 +1381,6 @@ static const struct iio_info gp2ap020a00f_info = {
 	.read_event_config = &gp2ap020a00f_read_event_config,
 	.write_event_value = &gp2ap020a00f_write_event_val,
 	.write_event_config = &gp2ap020a00f_write_event_config,
-	.driver_module = THIS_MODULE,
 };
 
 static int gp2ap020a00f_buffer_postenable(struct iio_dev *indio_dev)
@@ -1432,12 +1420,8 @@ static int gp2ap020a00f_buffer_postenable(struct iio_dev *indio_dev)
 		goto error_unlock;
 
 	data->buffer = kmalloc(indio_dev->scan_bytes, GFP_KERNEL);
-	if (!data->buffer) {
+	if (!data->buffer)
 		err = -ENOMEM;
-		goto error_unlock;
-	}
-
-	err = iio_triggered_buffer_postenable(indio_dev);
 
 error_unlock:
 	mutex_unlock(&data->lock);
@@ -1448,13 +1432,9 @@ error_unlock:
 static int gp2ap020a00f_buffer_predisable(struct iio_dev *indio_dev)
 {
 	struct gp2ap020a00f_data *data = iio_priv(indio_dev);
-	int i, err;
+	int i, err = 0;
 
 	mutex_lock(&data->lock);
-
-	err = iio_triggered_buffer_predisable(indio_dev);
-	if (err < 0)
-		goto error_unlock;
 
 	for_each_set_bit(i, indio_dev->active_scan_mask,
 		indio_dev->masklength) {
@@ -1477,7 +1457,6 @@ static int gp2ap020a00f_buffer_predisable(struct iio_dev *indio_dev)
 	if (err == 0)
 		kfree(data->buffer);
 
-error_unlock:
 	mutex_unlock(&data->lock);
 
 	return err;
@@ -1488,13 +1467,9 @@ static const struct iio_buffer_setup_ops gp2ap020a00f_buffer_setup_ops = {
 	.predisable = &gp2ap020a00f_buffer_predisable,
 };
 
-static const struct iio_trigger_ops gp2ap020a00f_trigger_ops = {
-	.owner = THIS_MODULE,
-};
-
-static int gp2ap020a00f_probe(struct i2c_client *client,
-				const struct i2c_device_id *id)
+static int gp2ap020a00f_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct gp2ap020a00f_data *data;
 	struct iio_dev *indio_dev;
 	struct regmap *regmap;
@@ -1539,7 +1514,6 @@ static int gp2ap020a00f_probe(struct i2c_client *client,
 	init_waitqueue_head(&data->data_ready_queue);
 
 	mutex_init(&data->lock);
-	indio_dev->dev.parent = &client->dev;
 	indio_dev->channels = gp2ap020a00f_channels;
 	indio_dev->num_channels = ARRAY_SIZE(gp2ap020a00f_channels);
 	indio_dev->info = &gp2ap020a00f_info;
@@ -1573,9 +1547,6 @@ static int gp2ap020a00f_probe(struct i2c_client *client,
 		goto error_uninit_buffer;
 	}
 
-	data->trig->ops = &gp2ap020a00f_trigger_ops;
-	data->trig->dev.parent = &data->client->dev;
-
 	init_irq_work(&data->work, gp2ap020a00f_iio_trigger_work);
 
 	err = iio_trigger_register(data->trig);
@@ -1602,7 +1573,7 @@ error_regulator_disable:
 	return err;
 }
 
-static int gp2ap020a00f_remove(struct i2c_client *client)
+static void gp2ap020a00f_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct gp2ap020a00f_data *data = iio_priv(indio_dev);
@@ -1618,8 +1589,6 @@ static int gp2ap020a00f_remove(struct i2c_client *client)
 	free_irq(client->irq, indio_dev);
 	iio_triggered_buffer_cleanup(indio_dev);
 	regulator_disable(data->vled_reg);
-
-	return 0;
 }
 
 static const struct i2c_device_id gp2ap020a00f_id[] = {
@@ -1629,18 +1598,16 @@ static const struct i2c_device_id gp2ap020a00f_id[] = {
 
 MODULE_DEVICE_TABLE(i2c, gp2ap020a00f_id);
 
-#ifdef CONFIG_OF
 static const struct of_device_id gp2ap020a00f_of_match[] = {
 	{ .compatible = "sharp,gp2ap020a00f" },
 	{ }
 };
-#endif
+MODULE_DEVICE_TABLE(of, gp2ap020a00f_of_match);
 
 static struct i2c_driver gp2ap020a00f_driver = {
 	.driver = {
 		.name	= GP2A_I2C_NAME,
-		.of_match_table = of_match_ptr(gp2ap020a00f_of_match),
-		.owner	= THIS_MODULE,
+		.of_match_table = gp2ap020a00f_of_match,
 	},
 	.probe		= gp2ap020a00f_probe,
 	.remove		= gp2ap020a00f_remove,

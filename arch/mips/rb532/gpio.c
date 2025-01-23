@@ -32,10 +32,20 @@
 #include <linux/export.h>
 #include <linux/spinlock.h>
 #include <linux/platform_device.h>
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 
 #include <asm/mach-rc32434/rb.h>
 #include <asm/mach-rc32434/gpio.h>
+
+#define GPIOBASE	0x050000
+/* Offsets relative to GPIOBASE */
+#define GPIOFUNC	0x00
+#define GPIOCFG		0x04
+#define GPIOD		0x08
+#define GPIOILEVEL	0x0C
+#define GPIOISTAT	0x10
+#define GPIONMIEN	0x14
+#define IMASK6		0x38
 
 struct rb532_gpio_chip {
 	struct gpio_chip chip;
@@ -79,7 +89,7 @@ static inline void rb532_set_bit(unsigned bitval,
  */
 static inline int rb532_get_bit(unsigned offset, void __iomem *ioaddr)
 {
-	return (readl(ioaddr) & (1 << offset));
+	return readl(ioaddr) & (1 << offset);
 }
 
 /*
@@ -88,8 +98,8 @@ static int rb532_gpio_get(struct gpio_chip *chip, unsigned offset)
 {
 	struct rb532_gpio_chip	*gpch;
 
-	gpch = container_of(chip, struct rb532_gpio_chip, chip);
-	return rb532_get_bit(offset, gpch->regbase + GPIOD);
+	gpch = gpiochip_get_data(chip);
+	return !!rb532_get_bit(offset, gpch->regbase + GPIOD);
 }
 
 /*
@@ -100,7 +110,7 @@ static void rb532_gpio_set(struct gpio_chip *chip,
 {
 	struct rb532_gpio_chip	*gpch;
 
-	gpch = container_of(chip, struct rb532_gpio_chip, chip);
+	gpch = gpiochip_get_data(chip);
 	rb532_set_bit(value, offset, gpch->regbase + GPIOD);
 }
 
@@ -111,7 +121,7 @@ static int rb532_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 {
 	struct rb532_gpio_chip	*gpch;
 
-	gpch = container_of(chip, struct rb532_gpio_chip, chip);
+	gpch = gpiochip_get_data(chip);
 
 	/* disable alternate function in case it's set */
 	rb532_set_bit(0, offset, gpch->regbase + GPIOFUNC);
@@ -128,7 +138,7 @@ static int rb532_gpio_direction_output(struct gpio_chip *chip,
 {
 	struct rb532_gpio_chip	*gpch;
 
-	gpch = container_of(chip, struct rb532_gpio_chip, chip);
+	gpch = gpiochip_get_data(chip);
 
 	/* disable alternate function in case it's set */
 	rb532_set_bit(0, offset, gpch->regbase + GPIOFUNC);
@@ -140,6 +150,11 @@ static int rb532_gpio_direction_output(struct gpio_chip *chip,
 	return 0;
 }
 
+static int rb532_gpio_to_irq(struct gpio_chip *chip, unsigned gpio)
+{
+	return 8 + 4 * 32 + gpio;
+}
+
 static struct rb532_gpio_chip rb532_gpio_chip[] = {
 	[0] = {
 		.chip = {
@@ -148,6 +163,7 @@ static struct rb532_gpio_chip rb532_gpio_chip[] = {
 			.direction_output	= rb532_gpio_direction_output,
 			.get			= rb532_gpio_get,
 			.set			= rb532_gpio_set,
+			.to_irq			= rb532_gpio_to_irq,
 			.base			= 0,
 			.ngpio			= 32,
 		},
@@ -186,7 +202,7 @@ int __init rb532_gpio_init(void)
 	struct resource *r;
 
 	r = rb532_gpio_reg0_res;
-	rb532_gpio_chip->regbase = ioremap_nocache(r->start, resource_size(r));
+	rb532_gpio_chip->regbase = ioremap(r->start, resource_size(r));
 
 	if (!rb532_gpio_chip->regbase) {
 		printk(KERN_ERR "rb532: cannot remap GPIO register 0\n");
@@ -194,7 +210,7 @@ int __init rb532_gpio_init(void)
 	}
 
 	/* Register our GPIO chip */
-	gpiochip_add(&rb532_gpio_chip->chip);
+	gpiochip_add_data(&rb532_gpio_chip->chip, rb532_gpio_chip);
 
 	return 0;
 }

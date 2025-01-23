@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Definitions for diskquota-operations. When diskquota is configured these
  * macros expand to the right source-code.
@@ -19,11 +20,12 @@ static inline struct quota_info *sb_dqopt(struct super_block *sb)
 }
 
 /* i_mutex must being held */
-static inline bool is_quota_modification(struct inode *inode, struct iattr *ia)
+static inline bool is_quota_modification(struct mnt_idmap *idmap,
+					 struct inode *inode, struct iattr *ia)
 {
-	return (ia->ia_valid & ATTR_SIZE && ia->ia_size != inode->i_size) ||
-		(ia->ia_valid & ATTR_UID && !uid_eq(ia->ia_uid, inode->i_uid)) ||
-		(ia->ia_valid & ATTR_GID && !gid_eq(ia->ia_gid, inode->i_gid));
+	return ((ia->ia_valid & ATTR_SIZE) ||
+		i_uid_needs_update(idmap, ia, inode) ||
+		i_gid_needs_update(idmap, ia, inode));
 }
 
 #if defined(CONFIG_QUOTA)
@@ -38,14 +40,28 @@ void __quota_error(struct super_block *sb, const char *func,
 /*
  * declaration of quota_function calls in kernel.
  */
-void inode_add_rsv_space(struct inode *inode, qsize_t number);
-void inode_claim_rsv_space(struct inode *inode, qsize_t number);
-void inode_sub_rsv_space(struct inode *inode, qsize_t number);
-void inode_reclaim_rsv_space(struct inode *inode, qsize_t number);
-
-void dquot_initialize(struct inode *inode);
+int dquot_initialize(struct inode *inode);
+bool dquot_initialize_needed(struct inode *inode);
 void dquot_drop(struct inode *inode);
 struct dquot *dqget(struct super_block *sb, struct kqid qid);
+static inline struct dquot *dqgrab(struct dquot *dquot)
+{
+	/* Make sure someone else has active reference to dquot */
+	WARN_ON_ONCE(!atomic_read(&dquot->dq_count));
+	WARN_ON_ONCE(!test_bit(DQ_ACTIVE_B, &dquot->dq_flags));
+	atomic_inc(&dquot->dq_count);
+	return dquot;
+}
+
+static inline bool dquot_is_busy(struct dquot *dquot)
+{
+	if (test_bit(DQ_MOD_B, &dquot->dq_flags))
+		return true;
+	if (atomic_read(&dquot->dq_count) > 0)
+		return true;
+	return false;
+}
+
 void dqput(struct dquot *dquot);
 int dquot_scan_active(struct super_block *sb,
 		      int (*fn)(struct dquot *dquot, unsigned long priv),
@@ -56,10 +72,10 @@ void dquot_destroy(struct dquot *dquot);
 int __dquot_alloc_space(struct inode *inode, qsize_t number, int flags);
 void __dquot_free_space(struct inode *inode, qsize_t number, int flags);
 
-int dquot_alloc_inode(const struct inode *inode);
+int dquot_alloc_inode(struct inode *inode);
 
 int dquot_claim_space_nodirty(struct inode *inode, qsize_t number);
-void dquot_free_inode(const struct inode *inode);
+void dquot_free_inode(struct inode *inode);
 void dquot_reclaim_space_nodirty(struct inode *inode, qsize_t number);
 
 int dquot_disable(struct super_block *sb, int type, unsigned int flags);
@@ -74,28 +90,34 @@ int dquot_commit(struct dquot *dquot);
 int dquot_acquire(struct dquot *dquot);
 int dquot_release(struct dquot *dquot);
 int dquot_commit_info(struct super_block *sb, int type);
+int dquot_get_next_id(struct super_block *sb, struct kqid *qid);
 int dquot_mark_dquot_dirty(struct dquot *dquot);
 
 int dquot_file_open(struct inode *inode, struct file *file);
 
-int dquot_enable(struct inode *inode, int type, int format_id,
+int dquot_load_quota_sb(struct super_block *sb, int type, int format_id,
+	unsigned int flags);
+int dquot_load_quota_inode(struct inode *inode, int type, int format_id,
 	unsigned int flags);
 int dquot_quota_on(struct super_block *sb, int type, int format_id,
- 	struct path *path);
+	const struct path *path);
 int dquot_quota_on_mount(struct super_block *sb, char *qf_name,
  	int format_id, int type);
 int dquot_quota_off(struct super_block *sb, int type);
 int dquot_writeback_dquots(struct super_block *sb, int type);
 int dquot_quota_sync(struct super_block *sb, int type);
-int dquot_get_dqinfo(struct super_block *sb, int type, struct if_dqinfo *ii);
-int dquot_set_dqinfo(struct super_block *sb, int type, struct if_dqinfo *ii);
+int dquot_get_state(struct super_block *sb, struct qc_state *state);
+int dquot_set_dqinfo(struct super_block *sb, int type, struct qc_info *ii);
 int dquot_get_dqblk(struct super_block *sb, struct kqid id,
-		struct fs_disk_quota *di);
+		struct qc_dqblk *di);
+int dquot_get_next_dqblk(struct super_block *sb, struct kqid *id,
+		struct qc_dqblk *di);
 int dquot_set_dqblk(struct super_block *sb, struct kqid id,
-		struct fs_disk_quota *di);
+		struct qc_dqblk *di);
 
 int __dquot_transfer(struct inode *inode, struct dquot **transfer_to);
-int dquot_transfer(struct inode *inode, struct iattr *iattr);
+int dquot_transfer(struct mnt_idmap *idmap, struct inode *inode,
+		   struct iattr *iattr);
 
 static inline struct mem_dqinfo *sb_dqinfo(struct super_block *sb, int type)
 {
@@ -126,10 +148,7 @@ static inline bool sb_has_quota_suspended(struct super_block *sb, int type)
 
 static inline unsigned sb_any_quota_suspended(struct super_block *sb)
 {
-	unsigned type, tmsk = 0;
-	for (type = 0; type < MAXQUOTAS; type++)
-		tmsk |= sb_has_quota_suspended(sb, type) << type;
-	return tmsk;
+	return dquot_state_types(sb_dqopt(sb)->flags, DQUOT_SUSPENDED);
 }
 
 /* Does kernel know about any quota information for given sb + type? */
@@ -141,10 +160,7 @@ static inline bool sb_has_quota_loaded(struct super_block *sb, int type)
 
 static inline unsigned sb_any_quota_loaded(struct super_block *sb)
 {
-	unsigned type, tmsk = 0;
-	for (type = 0; type < MAXQUOTAS; type++)
-		tmsk |= sb_has_quota_loaded(sb, type) << type;
-	return	tmsk;
+	return dquot_state_types(sb_dqopt(sb)->flags, DQUOT_USAGE_ENABLED);
 }
 
 static inline bool sb_has_quota_active(struct super_block *sb, int type)
@@ -157,7 +173,7 @@ static inline bool sb_has_quota_active(struct super_block *sb, int type)
  * Operations supported for diskquotas.
  */
 extern const struct dquot_operations dquot_operations;
-extern const struct quotactl_ops dquot_quotactl_ops;
+extern const struct quotactl_ops dquot_quotactl_sysfile_ops;
 
 #else
 
@@ -197,24 +213,31 @@ static inline int sb_has_quota_active(struct super_block *sb, int type)
 	return 0;
 }
 
-static inline void dquot_initialize(struct inode *inode)
+static inline int dquot_initialize(struct inode *inode)
 {
+	return 0;
+}
+
+static inline bool dquot_initialize_needed(struct inode *inode)
+{
+	return false;
 }
 
 static inline void dquot_drop(struct inode *inode)
 {
 }
 
-static inline int dquot_alloc_inode(const struct inode *inode)
+static inline int dquot_alloc_inode(struct inode *inode)
 {
 	return 0;
 }
 
-static inline void dquot_free_inode(const struct inode *inode)
+static inline void dquot_free_inode(struct inode *inode)
 {
 }
 
-static inline int dquot_transfer(struct inode *inode, struct iattr *iattr)
+static inline int dquot_transfer(struct mnt_idmap *idmap,
+				 struct inode *inode, struct iattr *iattr)
 {
 	return 0;
 }
@@ -377,5 +400,7 @@ static inline void dquot_release_reservation_block(struct inode *inode,
 {
 	__dquot_free_space(inode, nr << inode->i_blkbits, DQUOT_SPACE_RESERVE);
 }
+
+unsigned int qtype_enforce_flag(int type);
 
 #endif /* _LINUX_QUOTAOPS_ */

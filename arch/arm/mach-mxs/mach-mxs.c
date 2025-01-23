@@ -1,13 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright 2012 Freescale Semiconductor, Inc.
  * Copyright 2012 Linaro Ltd.
- *
- * The code contained herein is licensed under the GNU General Public
- * License. You may obtain a copy of the GNU General Public License
- * Version 2 or later at the following locations:
- *
- * http://www.opensource.org/licenses/gpl-license.html
- * http://www.gnu.org/copyleft/gpl.html
  */
 
 #include <linux/clk.h>
@@ -17,17 +11,16 @@
 #include <linux/err.h>
 #include <linux/gpio.h>
 #include <linux/init.h>
-#include <linux/irqchip/mxs.h>
 #include <linux/reboot.h>
 #include <linux/micrel_phy.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/phy.h>
-#include <linux/pinctrl/consumer.h>
 #include <linux/sys_soc.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/mach/time.h>
+#include <asm/system_info.h>
 #include <asm/system_misc.h>
 
 #include "pm.h"
@@ -56,6 +49,9 @@
 #define MXS_SET_ADDR		0x4
 #define MXS_CLR_ADDR		0x8
 #define MXS_TOG_ADDR		0xc
+
+#define HW_OCOTP_OPS2		19	/* offset 0x150 */
+#define HW_OCOTP_OPS3		20	/* offset 0x160 */
 
 static u32 chipid;
 static u32 socid;
@@ -157,6 +153,8 @@ enum mac_oui {
 	OUI_FSL,
 	OUI_DENX,
 	OUI_CRYSTALFONTZ,
+	OUI_I2SE,
+	OUI_ARMADEUS,
 };
 
 static void __init update_fec_mac_prop(enum mac_oui oui)
@@ -175,7 +173,7 @@ static void __init update_fec_mac_prop(enum mac_oui oui)
 
 		from = np;
 
-		if (of_get_property(np, "local-mac-address", NULL))
+		if (of_property_present(np, "local-mac-address"))
 			continue;
 
 		newmac = kzalloc(sizeof(*newmac) + 6, GFP_KERNEL);
@@ -211,6 +209,16 @@ static void __init update_fec_mac_prop(enum mac_oui oui)
 			macaddr[1] = 0xb9;
 			macaddr[2] = 0xe1;
 			break;
+		case OUI_I2SE:
+			macaddr[0] = 0x00;
+			macaddr[1] = 0x01;
+			macaddr[2] = 0x87;
+			break;
+		case OUI_ARMADEUS:
+			macaddr[0] = 0x00;
+			macaddr[1] = 0x1e;
+			macaddr[2] = 0xac;
+			break;
 		}
 		val = ocotp[i];
 		macaddr[3] = (val >> 16) & 0xff;
@@ -236,6 +244,11 @@ static void __init imx28_evk_init(void)
 	mxs_saif_clkmux_select(MXS_DIGCTL_SAIF_CLKMUX_EXTMSTR0);
 }
 
+static void __init imx28_apf28_init(void)
+{
+	update_fec_mac_prop(OUI_ARMADEUS);
+}
+
 static int apx4devkit_phy_fixup(struct phy_device *phy)
 {
 	phy->dev_flags |= MICREL_PHY_50MHZ_CLK;
@@ -251,83 +264,14 @@ static void __init apx4devkit_init(void)
 					   apx4devkit_phy_fixup);
 }
 
-#define ENET0_MDC__GPIO_4_0	MXS_GPIO_NR(4, 0)
-#define ENET0_MDIO__GPIO_4_1	MXS_GPIO_NR(4, 1)
-#define ENET0_RX_EN__GPIO_4_2	MXS_GPIO_NR(4, 2)
-#define ENET0_RXD0__GPIO_4_3	MXS_GPIO_NR(4, 3)
-#define ENET0_RXD1__GPIO_4_4	MXS_GPIO_NR(4, 4)
-#define ENET0_TX_EN__GPIO_4_6	MXS_GPIO_NR(4, 6)
-#define ENET0_TXD0__GPIO_4_7	MXS_GPIO_NR(4, 7)
-#define ENET0_TXD1__GPIO_4_8	MXS_GPIO_NR(4, 8)
-#define ENET_CLK__GPIO_4_16	MXS_GPIO_NR(4, 16)
-
-#define TX28_FEC_PHY_POWER	MXS_GPIO_NR(3, 29)
-#define TX28_FEC_PHY_RESET	MXS_GPIO_NR(4, 13)
-#define TX28_FEC_nINT		MXS_GPIO_NR(4, 5)
-
-static const struct gpio tx28_gpios[] __initconst = {
-	{ ENET0_MDC__GPIO_4_0, GPIOF_OUT_INIT_LOW, "GPIO_4_0" },
-	{ ENET0_MDIO__GPIO_4_1, GPIOF_OUT_INIT_LOW, "GPIO_4_1" },
-	{ ENET0_RX_EN__GPIO_4_2, GPIOF_OUT_INIT_LOW, "GPIO_4_2" },
-	{ ENET0_RXD0__GPIO_4_3, GPIOF_OUT_INIT_LOW, "GPIO_4_3" },
-	{ ENET0_RXD1__GPIO_4_4, GPIOF_OUT_INIT_LOW, "GPIO_4_4" },
-	{ ENET0_TX_EN__GPIO_4_6, GPIOF_OUT_INIT_LOW, "GPIO_4_6" },
-	{ ENET0_TXD0__GPIO_4_7, GPIOF_OUT_INIT_LOW, "GPIO_4_7" },
-	{ ENET0_TXD1__GPIO_4_8, GPIOF_OUT_INIT_LOW, "GPIO_4_8" },
-	{ ENET_CLK__GPIO_4_16, GPIOF_OUT_INIT_LOW, "GPIO_4_16" },
-	{ TX28_FEC_PHY_POWER, GPIOF_OUT_INIT_LOW, "fec-phy-power" },
-	{ TX28_FEC_PHY_RESET, GPIOF_OUT_INIT_LOW, "fec-phy-reset" },
-	{ TX28_FEC_nINT, GPIOF_DIR_IN, "fec-int" },
-};
-
-static void __init tx28_post_init(void)
-{
-	struct device_node *np;
-	struct platform_device *pdev;
-	struct pinctrl *pctl;
-	int ret;
-
-	enable_clk_enet_out();
-
-	np = of_find_compatible_node(NULL, NULL, "fsl,imx28-fec");
-	pdev = of_find_device_by_node(np);
-	if (!pdev) {
-		pr_err("%s: failed to find fec device\n", __func__);
-		return;
-	}
-
-	pctl = pinctrl_get_select(&pdev->dev, "gpio_mode");
-	if (IS_ERR(pctl)) {
-		pr_err("%s: failed to get pinctrl state\n", __func__);
-		return;
-	}
-
-	ret = gpio_request_array(tx28_gpios, ARRAY_SIZE(tx28_gpios));
-	if (ret) {
-		pr_err("%s: failed to request gpios: %d\n", __func__, ret);
-		return;
-	}
-
-	/* Power up fec phy */
-	gpio_set_value(TX28_FEC_PHY_POWER, 1);
-	msleep(26); /* 25ms according to data sheet */
-
-	/* Mode strap pins */
-	gpio_set_value(ENET0_RX_EN__GPIO_4_2, 1);
-	gpio_set_value(ENET0_RXD0__GPIO_4_3, 1);
-	gpio_set_value(ENET0_RXD1__GPIO_4_4, 1);
-
-	udelay(100); /* minimum assertion time for nRST */
-
-	/* Deasserting FEC PHY RESET */
-	gpio_set_value(TX28_FEC_PHY_RESET, 1);
-
-	pinctrl_put(pctl);
-}
-
 static void __init crystalfontz_init(void)
 {
 	update_fec_mac_prop(OUI_CRYSTALFONTZ);
+}
+
+static void __init duckbill_init(void)
+{
+	update_fec_mac_prop(OUI_I2SE);
 }
 
 static void __init m28cu3_init(void)
@@ -426,12 +370,19 @@ static int __init mxs_restart_init(void)
 	return 0;
 }
 
+static void __init eukrea_mbmx283lc_init(void)
+{
+	mxs_saif_clkmux_select(MXS_DIGCTL_SAIF_CLKMUX_EXTMSTR0);
+}
+
 static void __init mxs_machine_init(void)
 {
 	struct device_node *root;
 	struct device *parent;
 	struct soc_device *soc_dev;
 	struct soc_device_attribute *soc_dev_attr;
+	u64 soc_uid = 0;
+	const u32 *ocotp = mxs_get_ocotp();
 	int ret;
 
 	soc_dev_attr = kzalloc(sizeof(*soc_dev_attr), GFP_KERNEL);
@@ -440,15 +391,30 @@ static void __init mxs_machine_init(void)
 
 	root = of_find_node_by_path("/");
 	ret = of_property_read_string(root, "model", &soc_dev_attr->machine);
-	if (ret)
+	if (ret) {
+		kfree(soc_dev_attr);
 		return;
+	}
 
 	soc_dev_attr->family = "Freescale MXS Family";
 	soc_dev_attr->soc_id = mxs_get_soc_id();
 	soc_dev_attr->revision = mxs_get_revision();
 
+	if (socid == HW_DIGCTL_CHIPID_MX23) {
+		soc_uid = system_serial_low = ocotp[HW_OCOTP_OPS3];
+	} else if (socid == HW_DIGCTL_CHIPID_MX28) {
+		soc_uid = system_serial_high = ocotp[HW_OCOTP_OPS2];
+		soc_uid <<= 32;
+		system_serial_low = ocotp[HW_OCOTP_OPS3];
+		soc_uid |= system_serial_low;
+	}
+
+	if (soc_uid)
+		soc_dev_attr->serial_number = kasprintf(GFP_KERNEL, "%016llX", soc_uid);
+
 	soc_dev = soc_device_register(soc_dev_attr);
 	if (IS_ERR(soc_dev)) {
+		kfree(soc_dev_attr->serial_number);
 		kfree(soc_dev_attr->revision);
 		kfree(soc_dev_attr);
 		return;
@@ -458,20 +424,23 @@ static void __init mxs_machine_init(void)
 
 	if (of_machine_is_compatible("fsl,imx28-evk"))
 		imx28_evk_init();
+	if (of_machine_is_compatible("armadeus,imx28-apf28"))
+		imx28_apf28_init();
 	else if (of_machine_is_compatible("bluegiga,apx4devkit"))
 		apx4devkit_init();
 	else if (of_machine_is_compatible("crystalfontz,cfa10036"))
 		crystalfontz_init();
+	else if (of_machine_is_compatible("eukrea,mbmx283lc"))
+		eukrea_mbmx283lc_init();
+	else if (of_machine_is_compatible("i2se,duckbill") ||
+		 of_machine_is_compatible("i2se,duckbill-2"))
+		duckbill_init();
 	else if (of_machine_is_compatible("msr,m28cu3"))
 		m28cu3_init();
 
-	of_platform_populate(NULL, of_default_bus_match_table,
-			     NULL, parent);
+	of_platform_default_populate(NULL, NULL, parent);
 
 	mxs_restart_init();
-
-	if (of_machine_is_compatible("karo,tx28"))
-		tx28_post_init();
 }
 
 #define MXS_CLKCTRL_RESET_CHIP		(1 << 1)
@@ -495,14 +464,13 @@ static void mxs_restart(enum reboot_mode mode, const char *cmd)
 	soft_restart(0);
 }
 
-static const char *mxs_dt_compat[] __initdata = {
+static const char *const mxs_dt_compat[] __initconst = {
 	"fsl,imx28",
 	"fsl,imx23",
 	NULL,
 };
 
 DT_MACHINE_START(MXS, "Freescale MXS (Device Tree)")
-	.handle_irq	= icoll_handle_irq,
 	.init_machine	= mxs_machine_init,
 	.init_late      = mxs_pm_init,
 	.dt_compat	= mxs_dt_compat,

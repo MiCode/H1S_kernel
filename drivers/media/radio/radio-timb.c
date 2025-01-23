@@ -1,19 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * radio-timb.c Timberdale FPGA Radio driver
  * Copyright (c) 2009 Intel Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/io.h>
@@ -26,7 +14,7 @@
 #include <linux/slab.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
-#include <media/timb_radio.h>
+#include <linux/platform_data/media/timb_radio.h>
 
 #define DRIVER_NAME "timb-radio"
 
@@ -43,11 +31,9 @@ struct timbradio {
 static int timbradio_vidioc_querycap(struct file *file, void  *priv,
 	struct v4l2_capability *v)
 {
-	strlcpy(v->driver, DRIVER_NAME, sizeof(v->driver));
-	strlcpy(v->card, "Timberdale Radio", sizeof(v->card));
+	strscpy(v->driver, DRIVER_NAME, sizeof(v->driver));
+	strscpy(v->card, "Timberdale Radio", sizeof(v->card));
 	snprintf(v->bus_info, sizeof(v->bus_info), "platform:"DRIVER_NAME);
-	v->device_caps = V4L2_CAP_TUNER | V4L2_CAP_RADIO;
-	v->capabilities = v->device_caps | V4L2_CAP_DEVICE_CAPS;
 	return 0;
 }
 
@@ -119,16 +105,16 @@ static int timbradio_probe(struct platform_device *pdev)
 	tr->pdata = *pdata;
 	mutex_init(&tr->lock);
 
-	strlcpy(tr->video_dev.name, "Timberdale Radio",
+	strscpy(tr->video_dev.name, "Timberdale Radio",
 		sizeof(tr->video_dev.name));
 	tr->video_dev.fops = &timbradio_fops;
 	tr->video_dev.ioctl_ops = &timbradio_ioctl_ops;
 	tr->video_dev.release = video_device_release_empty;
 	tr->video_dev.minor = -1;
 	tr->video_dev.lock = &tr->lock;
-	set_bit(V4L2_FL_USE_FH_PRIO, &tr->video_dev.flags);
+	tr->video_dev.device_caps = V4L2_CAP_TUNER | V4L2_CAP_RADIO;
 
-	strlcpy(tr->v4l2_dev.name, DRIVER_NAME, sizeof(tr->v4l2_dev.name));
+	strscpy(tr->v4l2_dev.name, DRIVER_NAME, sizeof(tr->v4l2_dev.name));
 	err = v4l2_device_register(NULL, &tr->v4l2_dev);
 	if (err)
 		goto err;
@@ -139,8 +125,10 @@ static int timbradio_probe(struct platform_device *pdev)
 		i2c_get_adapter(pdata->i2c_adapter), pdata->tuner, NULL);
 	tr->sd_dsp = v4l2_i2c_new_subdev_board(&tr->v4l2_dev,
 		i2c_get_adapter(pdata->i2c_adapter), pdata->dsp, NULL);
-	if (tr->sd_tuner == NULL || tr->sd_dsp == NULL)
+	if (tr->sd_tuner == NULL || tr->sd_dsp == NULL) {
+		err = -ENODEV;
 		goto err_video_req;
+	}
 
 	tr->v4l2_dev.ctrl_handler = tr->sd_dsp->ctrl_handler;
 
@@ -163,22 +151,20 @@ err:
 	return err;
 }
 
-static int timbradio_remove(struct platform_device *pdev)
+static void timbradio_remove(struct platform_device *pdev)
 {
 	struct timbradio *tr = platform_get_drvdata(pdev);
 
 	video_unregister_device(&tr->video_dev);
 	v4l2_device_unregister(&tr->v4l2_dev);
-	return 0;
 }
 
 static struct platform_driver timbradio_platform_driver = {
 	.driver = {
 		.name	= DRIVER_NAME,
-		.owner	= THIS_MODULE,
 	},
 	.probe		= timbradio_probe,
-	.remove		= timbradio_remove,
+	.remove_new	= timbradio_remove,
 };
 
 module_platform_driver(timbradio_platform_driver);

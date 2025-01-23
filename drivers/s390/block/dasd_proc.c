@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Author(s)......: Holger Smolinski <Holger.Smolinski@de.ibm.com>
  *		    Horst Hummel <Horst.Hummel@de.ibm.com>
  *		    Carsten Otte <Cotte@de.ibm.com>
  *		    Martin Schwidefsky <schwidefsky@de.ibm.com>
  * Bugreports.to..: <Linux390@de.ibm.com>
- * Coypright IBM Corp. 1999, 2002
+ * Copyright IBM Corp. 1999, 2002
  *
  * /proc interface for the dasd driver.
  *
@@ -20,7 +21,7 @@
 #include <linux/proc_fs.h>
 
 #include <asm/debug.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 /* This is ugly... */
 #define PRINTK_HEADER "dasd_proc:"
@@ -90,7 +91,7 @@ dasd_devices_show(struct seq_file *m, void *v)
 			seq_printf(m, "n/f	 ");
 		else
 			seq_printf(m,
-				   "at blocksize: %d, %lld blocks, %lld MB",
+				   "at blocksize: %u, %lu blocks, %lu MB",
 				   block->bp_block, block->blocks,
 				   ((block->bp_block >> 9) *
 				    block->blocks) >> 11);
@@ -128,19 +129,6 @@ static const struct seq_operations dasd_devices_seq_ops = {
 	.next		= dasd_devices_next,
 	.stop		= dasd_devices_stop,
 	.show		= dasd_devices_show,
-};
-
-static int dasd_devices_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &dasd_devices_seq_ops);
-}
-
-static const struct file_operations dasd_devices_file_ops = {
-	.owner		= THIS_MODULE,
-	.open		= dasd_devices_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= seq_release,
 };
 
 #ifdef CONFIG_DASD_PROFILE
@@ -212,14 +200,15 @@ static int dasd_stats_proc_show(struct seq_file *m, void *v)
 	struct dasd_profile_info *prof;
 	int factor;
 
-	/* check for active profiling */
-	if (!dasd_global_profile_level) {
+	spin_lock_bh(&dasd_global_profile.lock);
+	prof = dasd_global_profile.data;
+	if (!prof) {
+		spin_unlock_bh(&dasd_global_profile.lock);
 		seq_printf(m, "Statistics are off - they might be "
 				    "switched on using 'echo set on > "
 				    "/proc/dasd/statistics'\n");
 		return 0;
 	}
-	prof = &dasd_global_profile_data;
 
 	/* prevent counter 'overflow' on output */
 	for (factor = 1; (prof->dasd_io_reqs / factor) > 9999999;
@@ -255,6 +244,7 @@ static int dasd_stats_proc_show(struct seq_file *m, void *v)
 	dasd_statistics_array(m, prof->dasd_io_time3, factor);
 	seq_printf(m, "# of req in chanq at enqueuing (1..32) \n");
 	dasd_statistics_array(m, prof->dasd_io_nr_req, factor);
+	spin_unlock_bh(&dasd_global_profile.lock);
 #else
 	seq_printf(m, "Statistics are not activated in this kernel\n");
 #endif
@@ -291,14 +281,19 @@ static ssize_t dasd_stats_proc_write(struct file *file,
 				dasd_stats_all_block_off();
 				goto out_error;
 			}
-			dasd_global_profile_reset();
+			rc = dasd_profile_on(&dasd_global_profile);
+			if (rc) {
+				dasd_stats_all_block_off();
+				goto out_error;
+			}
+			dasd_profile_reset(&dasd_global_profile);
 			dasd_global_profile_level = DASD_PROFILE_ON;
 			pr_info("The statistics feature has been switched "
 				"on\n");
 		} else if (strcmp(str, "off") == 0) {
-			/* switch off and reset statistics profiling */
+			/* switch off statistics profiling */
 			dasd_global_profile_level = DASD_PROFILE_OFF;
-			dasd_global_profile_reset();
+			dasd_profile_off(&dasd_global_profile);
 			dasd_stats_all_block_off();
 			pr_info("The statistics feature has been switched "
 				"off\n");
@@ -306,7 +301,7 @@ static ssize_t dasd_stats_proc_write(struct file *file,
 			goto out_parse_error;
 	} else if (strncmp(str, "reset", 5) == 0) {
 		/* reset the statistics */
-		dasd_global_profile_reset();
+		dasd_profile_reset(&dasd_global_profile);
 		dasd_stats_all_block_reset();
 		pr_info("The statistics have been reset\n");
 	} else
@@ -315,24 +310,22 @@ static ssize_t dasd_stats_proc_write(struct file *file,
 	return user_len;
 out_parse_error:
 	rc = -EINVAL;
-	pr_warning("%s is not a supported value for /proc/dasd/statistics\n",
-		str);
+	pr_warn("%s is not a supported value for /proc/dasd/statistics\n", str);
 out_error:
 	vfree(buffer);
 	return rc;
 #else
-	pr_warning("/proc/dasd/statistics: is not activated in this kernel\n");
+	pr_warn("/proc/dasd/statistics: is not activated in this kernel\n");
 	return user_len;
 #endif				/* CONFIG_DASD_PROFILE */
 }
 
-static const struct file_operations dasd_stats_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= dasd_stats_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-	.write		= dasd_stats_proc_write,
+static const struct proc_ops dasd_stats_proc_ops = {
+	.proc_open	= dasd_stats_proc_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+	.proc_write	= dasd_stats_proc_write,
 };
 
 /*
@@ -345,16 +338,15 @@ dasd_proc_init(void)
 	dasd_proc_root_entry = proc_mkdir("dasd", NULL);
 	if (!dasd_proc_root_entry)
 		goto out_nodasd;
-	dasd_devices_entry = proc_create("devices",
-					 S_IFREG | S_IRUGO | S_IWUSR,
+	dasd_devices_entry = proc_create_seq("devices", 0444,
 					 dasd_proc_root_entry,
-					 &dasd_devices_file_ops);
+					 &dasd_devices_seq_ops);
 	if (!dasd_devices_entry)
 		goto out_nodevices;
 	dasd_statistics_entry = proc_create("statistics",
 					    S_IFREG | S_IRUGO | S_IWUSR,
 					    dasd_proc_root_entry,
-					    &dasd_stats_proc_fops);
+					    &dasd_stats_proc_ops);
 	if (!dasd_statistics_entry)
 		goto out_nostatistics;
 	return 0;

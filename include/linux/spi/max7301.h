@@ -1,7 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef LINUX_SPI_MAX7301_H
 #define LINUX_SPI_MAX7301_H
 
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 
 /*
  * Some registers must be read back to modify.
@@ -30,6 +31,6 @@ struct max7301_platform_data {
 	u32		input_pullup_active;
 };
 
-extern int __max730x_remove(struct device *dev);
+extern void __max730x_remove(struct device *dev);
 extern int __max730x_probe(struct max7301 *ts);
 #endif

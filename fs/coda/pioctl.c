@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Pioctl operations for Coda.
  * Original version: (C) 1996 Peter Braam
@@ -16,15 +17,15 @@
 #include <linux/string.h>
 #include <linux/namei.h>
 #include <linux/module.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include <linux/coda.h>
-#include <linux/coda_psdev.h>
-
+#include "coda_psdev.h"
 #include "coda_linux.h"
 
 /* pioctl ops */
-static int coda_ioctl_permission(struct inode *inode, int mask);
+static int coda_ioctl_permission(struct mnt_idmap *idmap,
+				 struct inode *inode, int mask);
 static long coda_pioctl(struct file *filp, unsigned int cmd,
 			unsigned long user_data);
 
@@ -35,13 +36,13 @@ const struct inode_operations coda_ioctl_inode_operations = {
 };
 
 const struct file_operations coda_ioctl_operations = {
-	.owner		= THIS_MODULE,
 	.unlocked_ioctl	= coda_pioctl,
 	.llseek		= noop_llseek,
 };
 
 /* the coda pioctl inode ops */
-static int coda_ioctl_permission(struct inode *inode, int mask)
+static int coda_ioctl_permission(struct mnt_idmap *idmap,
+				 struct inode *inode, int mask)
 {
 	return (mask & MAY_EXEC) ? -EACCES : 0;
 }
@@ -64,15 +65,12 @@ static long coda_pioctl(struct file *filp, unsigned int cmd,
 	 * Look up the pathname. Note that the pathname is in
 	 * user memory, and namei takes care of this
 	 */
-	if (data.follow)
-		error = user_path(data.path, &path);
-	else
-		error = user_lpath(data.path, &path);
-
+	error = user_path_at(AT_FDCWD, data.path,
+			     data.follow ? LOOKUP_FOLLOW : 0, &path);
 	if (error)
 		return error;
 
-	target_inode = path.dentry->d_inode;
+	target_inode = d_inode(path.dentry);
 
 	/* return if it is not a Coda inode */
 	if (target_inode->i_sb != inode->i_sb) {

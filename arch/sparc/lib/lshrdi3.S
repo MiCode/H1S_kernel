@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#include <linux/export.h>
 #include <linux/linkage.h>
 
 ENTRY(__lshrdi3)
@@ -25,3 +27,4 @@ ENTRY(__lshrdi3)
 	retl 
 	 nop 
 ENDPROC(__lshrdi3)
+EXPORT_SYMBOL(__lshrdi3)

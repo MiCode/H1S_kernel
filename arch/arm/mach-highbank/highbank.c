@@ -1,35 +1,23 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2010-2011 Calxeda, Inc.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <linux/clk.h>
 #include <linux/clkdev.h>
 #include <linux/clocksource.h>
-#include <linux/dma-mapping.h>
+#include <linux/dma-map-ops.h>
 #include <linux/input.h>
 #include <linux/io.h>
 #include <linux/irqchip.h>
-#include <linux/mailbox.h>
+#include <linux/pl320-ipc.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
 #include <linux/of_address.h>
 #include <linux/reboot.h>
 #include <linux/amba/bus.h>
 #include <linux/platform_device.h>
+#include <linux/psci.h>
 
-#include <asm/psci.h>
 #include <asm/hardware/cache-l2x0.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
@@ -51,11 +39,13 @@ static void __init highbank_scu_map_io(void)
 }
 
 
-static void highbank_l2x0_disable(void)
+static void highbank_l2c310_write_sec(unsigned long val, unsigned reg)
 {
-	outer_flush_all();
-	/* Disable PL310 L2 Cache controller */
-	highbank_smc1(0x102, 0x0);
+	if (reg == L2X0_CTRL)
+		highbank_smc1(0x102, val);
+	else
+		WARN_ONCE(1, "Highbank L2C310: ignoring write to reg 0x%x\n",
+			  reg);
 }
 
 static void __init highbank_init_irq(void)
@@ -64,14 +54,6 @@ static void __init highbank_init_irq(void)
 
 	if (of_find_compatible_node(NULL, NULL, "arm,cortex-a9"))
 		highbank_scu_map_io();
-
-	/* Enable PL310 L2 Cache controller */
-	if (IS_ENABLED(CONFIG_CACHE_L2X0) &&
-	    of_find_compatible_node(NULL, NULL, "arm,pl310-cache")) {
-		highbank_smc1(0x102, 0x1);
-		l2x0_of_init(0, ~0UL);
-		outer_cache.disable = highbank_l2x0_disable;
-	}
 }
 
 static void highbank_power_off(void)
@@ -116,7 +98,7 @@ static int highbank_platform_notifier(struct notifier_block *nb,
 	if (of_property_read_bool(dev->of_node, "dma-coherent")) {
 		val = readl(sregs_base + reg);
 		writel(val | 0xff01, sregs_base + reg);
-		set_dma_ops(dev, &arm_coherent_dma_ops);
+		dev->dma_coherent = true;
 	}
 
 	return NOTIFY_OK;
@@ -169,13 +151,11 @@ static void __init highbank_init(void)
 
 	pl320_ipc_register_notifier(&hb_keys_nb);
 
-	of_platform_populate(NULL, of_default_bus_match_table, NULL, NULL);
-
 	if (psci_ops.cpu_suspend)
 		platform_device_register(&highbank_cpuidle_device);
 }
 
-static const char *highbank_match[] __initconst = {
+static const char *const highbank_match[] __initconst = {
 	"calxeda,highbank",
 	"calxeda,ecx-2000",
 	NULL,
@@ -185,6 +165,9 @@ DT_MACHINE_START(HIGHBANK, "Highbank")
 #if defined(CONFIG_ZONE_DMA) && defined(CONFIG_ARM_LPAE)
 	.dma_zone_size	= (4ULL * SZ_1G),
 #endif
+	.l2c_aux_val	= 0,
+	.l2c_aux_mask	= ~0,
+	.l2c_write_sec	= highbank_l2c310_write_sec,
 	.init_irq	= highbank_init_irq,
 	.init_machine	= highbank_init,
 	.dt_compat	= highbank_match,

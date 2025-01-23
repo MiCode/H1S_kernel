@@ -24,7 +24,7 @@ MODULE_LICENSE("GPL");
 
 static const struct ssb_device_id ssb_gige_tbl[] = {
 	SSB_DEVICE(SSB_VENDOR_BROADCOM, SSB_DEV_ETHERNET_GBIT, SSB_ANY_REV),
-	SSB_DEVTABLE_END
+	{},
 };
 /* MODULE_DEVICE_TABLE(ssb, ssb_gige_tbl); */
 
@@ -242,7 +242,7 @@ static int ssb_gige_probe(struct ssb_device *sdev,
 bool pdev_is_ssb_gige_core(struct pci_dev *pdev)
 {
 	if (!pdev->resource[0].name)
-		return 0;
+		return false;
 	return (strcmp(pdev->resource[0].name, SSB_GIGE_MEM_RES_NAME) == 0);
 }
 EXPORT_SYMBOL(pdev_is_ssb_gige_core);

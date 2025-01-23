@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * SCSI low-level driver for the 53c94 SCSI bus adaptor found
  * on Power Macintosh computers, controlling the external SCSI chain.
@@ -18,11 +19,11 @@
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
+#include <linux/pci.h>
+#include <linux/pgtable.h>
 #include <asm/dbdma.h>
 #include <asm/io.h>
-#include <asm/pgtable.h>
 #include <asm/prom.h>
-#include <asm/pci-bridge.h>
 #include <asm/macio.h>
 
 #include <scsi/scsi.h>
@@ -65,8 +66,7 @@ static irqreturn_t do_mac53c94_interrupt(int, void *);
 static void cmd_done(struct fsc_state *, int result);
 static void set_dma_cmds(struct fsc_state *, struct scsi_cmnd *);
 
-
-static int mac53c94_queue_lck(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
+static int mac53c94_queue_lck(struct scsi_cmnd *cmd)
 {
 	struct fsc_state *state;
 
@@ -82,7 +82,6 @@ static int mac53c94_queue_lck(struct scsi_cmnd *cmd, void (*done)(struct scsi_cm
 	}
 #endif
 
-	cmd->scsi_done = done;
 	cmd->host_scribble = NULL;
 
 	state = (struct fsc_state *) cmd->device->host->hostdata;
@@ -126,7 +125,6 @@ static void mac53c94_init(struct fsc_state *state)
 {
 	struct mac53c94_regs __iomem *regs = state->regs;
 	struct dbdma_regs __iomem *dma = state->dma;
-	int x;
 
 	writeb(state->host->this_id | CF1_PAR_ENABLE, &regs->config1);
 	writeb(TIMO_VAL(250), &regs->sel_timeout);	/* 250ms */
@@ -135,7 +133,7 @@ static void mac53c94_init(struct fsc_state *state)
 	writeb(0, &regs->config3);
 	writeb(0, &regs->sync_period);
 	writeb(0, &regs->sync_offset);
-	x = readb(&regs->interrupt);
+	(void)readb(&regs->interrupt);
 	writel((RUN|PAUSE|FLUSH|WAKE) << 16, &dma->control);
 }
 
@@ -195,7 +193,8 @@ static void mac53c94_interrupt(int irq, void *dev_id)
 	struct fsc_state *state = (struct fsc_state *) dev_id;
 	struct mac53c94_regs __iomem *regs = state->regs;
 	struct dbdma_regs __iomem *dma = state->dma;
-	struct scsi_cmnd *cmd = state->current_req;
+	struct scsi_cmnd *const cmd = state->current_req;
+	struct mac53c94_cmd_priv *const mcmd = mac53c94_priv(cmd);
 	int nb, stat, seq, intr;
 	static int mac53c94_errors;
 
@@ -235,7 +234,7 @@ static void mac53c94_interrupt(int irq, void *dev_id)
 		++mac53c94_errors;
 		writeb(CMD_NOP + CMD_DMA_MODE, &regs->command);
 	}
-	if (cmd == 0) {
+	if (!cmd) {
 		printk(KERN_DEBUG "53c94: interrupt with no command active?\n");
 		return;
 	}
@@ -265,10 +264,10 @@ static void mac53c94_interrupt(int irq, void *dev_id)
 		/* set DMA controller going if any data to transfer */
 		if ((stat & (STAT_MSG|STAT_CD)) == 0
 		    && (scsi_sg_count(cmd) > 0 || scsi_bufflen(cmd))) {
-			nb = cmd->SCp.this_residual;
+			nb = mcmd->this_residual;
 			if (nb > 0xfff0)
 				nb = 0xfff0;
-			cmd->SCp.this_residual -= nb;
+			mcmd->this_residual -= nb;
 			writeb(nb, &regs->count_lo);
 			writeb(nb >> 8, &regs->count_mid);
 			writeb(CMD_DMA_MODE + CMD_NOP, &regs->command);
@@ -295,13 +294,13 @@ static void mac53c94_interrupt(int irq, void *dev_id)
 			cmd_done(state, DID_ERROR << 16);
 			return;
 		}
-		if (cmd->SCp.this_residual != 0
+		if (mcmd->this_residual != 0
 		    && (stat & (STAT_MSG|STAT_CD)) == 0) {
 			/* Set up the count regs to transfer more */
-			nb = cmd->SCp.this_residual;
+			nb = mcmd->this_residual;
 			if (nb > 0xfff0)
 				nb = 0xfff0;
-			cmd->SCp.this_residual -= nb;
+			mcmd->this_residual -= nb;
 			writeb(nb, &regs->count_lo);
 			writeb(nb >> 8, &regs->count_mid);
 			writeb(CMD_DMA_MODE + CMD_NOP, &regs->command);
@@ -323,9 +322,8 @@ static void mac53c94_interrupt(int irq, void *dev_id)
 			cmd_done(state, DID_ERROR << 16);
 			return;
 		}
-		cmd->SCp.Status = readb(&regs->fifo);
-		cmd->SCp.Message = readb(&regs->fifo);
-		cmd->result = CMD_ACCEPT_MSG;
+		mcmd->status = readb(&regs->fifo);
+		mcmd->message = readb(&regs->fifo);
 		writeb(CMD_ACCEPT_MSG, &regs->command);
 		state->phase = busfreeing;
 		break;
@@ -333,8 +331,7 @@ static void mac53c94_interrupt(int irq, void *dev_id)
 		if (intr != INTR_DISCONNECT) {
 			printk(KERN_DEBUG "got intr %x when expected disconnect\n", intr);
 		}
-		cmd_done(state, (DID_OK << 16) + (cmd->SCp.Message << 8)
-			 + cmd->SCp.Status);
+		cmd_done(state, (DID_OK << 16) + (mcmd->message << 8) + mcmd->status);
 		break;
 	default:
 		printk(KERN_DEBUG "don't know about phase %d\n", state->phase);
@@ -346,9 +343,9 @@ static void cmd_done(struct fsc_state *state, int result)
 	struct scsi_cmnd *cmd;
 
 	cmd = state->current_req;
-	if (cmd != 0) {
+	if (cmd) {
 		cmd->result = result;
-		(*cmd->scsi_done)(cmd);
+		scsi_done(cmd);
 		state->current_req = NULL;
 	}
 	state->phase = idle;
@@ -382,20 +379,20 @@ static void set_dma_cmds(struct fsc_state *state, struct scsi_cmnd *cmd)
 		if (dma_len > 0xffff)
 			panic("mac53c94: scatterlist element >= 64k");
 		total += dma_len;
-		st_le16(&dcmds->req_count, dma_len);
-		st_le16(&dcmds->command, dma_cmd);
-		st_le32(&dcmds->phy_addr, dma_addr);
+		dcmds->req_count = cpu_to_le16(dma_len);
+		dcmds->command = cpu_to_le16(dma_cmd);
+		dcmds->phy_addr = cpu_to_le32(dma_addr);
 		dcmds->xfer_status = 0;
 		++dcmds;
 	}
 
 	dma_cmd += OUTPUT_LAST - OUTPUT_MORE;
-	st_le16(&dcmds[-1].command, dma_cmd);
-	st_le16(&dcmds->command, DBDMA_STOP);
-	cmd->SCp.this_residual = total;
+	dcmds[-1].command = cpu_to_le16(dma_cmd);
+	dcmds->command = cpu_to_le16(DBDMA_STOP);
+	mac53c94_priv(cmd)->this_residual = total;
 }
 
-static struct scsi_host_template mac53c94_template = {
+static const struct scsi_host_template mac53c94_template = {
 	.proc_name	= "53c94",
 	.name		= "53C94",
 	.queuecommand	= mac53c94_queue,
@@ -403,8 +400,8 @@ static struct scsi_host_template mac53c94_template = {
 	.can_queue	= 1,
 	.this_id	= 7,
 	.sg_tablesize	= SG_ALL,
-	.cmd_per_lun	= 1,
-	.use_clustering	= DISABLE_CLUSTERING,
+	.max_segment_size = 65535,
+	.cmd_size	= sizeof(struct mac53c94_cmd_priv),
 };
 
 static int mac53c94_probe(struct macio_dev *mdev, const struct of_device_id *match)
@@ -449,15 +446,14 @@ static int mac53c94_probe(struct macio_dev *mdev, const struct of_device_id *mat
 		ioremap(macio_resource_start(mdev, 1), 0x1000);
 	state->dmaintr = macio_irq(mdev, 1);
 	if (state->regs == NULL || state->dma == NULL) {
-		printk(KERN_ERR "mac53c94: ioremap failed for %s\n",
-		       node->full_name);
+		printk(KERN_ERR "mac53c94: ioremap failed for %pOF\n", node);
 		goto out_free;
 	}
 
 	clkprop = of_get_property(node, "clock-frequency", &proplen);
        	if (clkprop == NULL || proplen != sizeof(int)) {
-       		printk(KERN_ERR "%s: can't get clock frequency, "
-       		       "assuming 25MHz\n", node->full_name);
+       		printk(KERN_ERR "%pOF: can't get clock frequency, "
+       		       "assuming 25MHz\n", node);
        		state->clk_freq = 25000000;
        	} else
        		state->clk_freq = *(int *)clkprop;
@@ -466,14 +462,16 @@ static int mac53c94_probe(struct macio_dev *mdev, const struct of_device_id *mat
        	 * +1 to allow for aligning.
 	 * XXX FIXME: Use DMA consistent routines
 	 */
-       	dma_cmd_space = kmalloc((host->sg_tablesize + 2) *
-       				sizeof(struct dbdma_cmd), GFP_KERNEL);
-       	if (dma_cmd_space == 0) {
-       		printk(KERN_ERR "mac53c94: couldn't allocate dma "
-       		       "command space for %s\n", node->full_name);
+       	dma_cmd_space = kmalloc_array(host->sg_tablesize + 2,
+					     sizeof(struct dbdma_cmd),
+					     GFP_KERNEL);
+	if (!dma_cmd_space) {
+		printk(KERN_ERR "mac53c94: couldn't allocate dma "
+		       "command space for %pOF\n", node);
 		rc = -ENOMEM;
-       		goto out_free;
-       	}
+		goto out_free;
+	}
+
 	state->dma_cmds = (struct dbdma_cmd *)DBDMA_ALIGN(dma_cmd_space);
 	memset(state->dma_cmds, 0, (host->sg_tablesize + 1)
 	       * sizeof(struct dbdma_cmd));
@@ -482,8 +480,8 @@ static int mac53c94_probe(struct macio_dev *mdev, const struct of_device_id *mat
 	mac53c94_init(state);
 
 	if (request_irq(state->intr, do_mac53c94_interrupt, 0, "53C94",state)) {
-		printk(KERN_ERR "mac53C94: can't get irq %d for %s\n",
-		       state->intr, node->full_name);
+		printk(KERN_ERR "mac53C94: can't get irq %d for %pOF\n",
+		       state->intr, node);
 		goto out_free_dma;
 	}
 

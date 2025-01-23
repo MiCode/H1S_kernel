@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Driver for Zilog serial chips found on SGI workstations and
  * servers.  This driver could actually be made more generic.
@@ -30,16 +31,12 @@
 #include <linux/spinlock.h>
 #include <linux/init.h>
 
-#include <asm/io.h>
+#include <linux/io.h>
 #include <asm/irq.h>
 #include <asm/sgialib.h>
 #include <asm/sgi/ioc.h>
 #include <asm/sgi/hpc3.h>
 #include <asm/sgi/ip22.h>
-
-#if defined(CONFIG_SERIAL_IP22_ZILOG_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
-#define SUPPORT_SYSRQ
-#endif
 
 #include <linux/serial_core.h>
 
@@ -251,8 +248,8 @@ static void ip22zilog_maybe_update_regs(struct uart_ip22zilog_port *up,
 static bool ip22zilog_receive_chars(struct uart_ip22zilog_port *up,
 						  struct zilog_channel *channel)
 {
-	unsigned char ch, flag;
 	unsigned int r1;
+	u8 ch, flag;
 	bool push = up->port.state != NULL;
 
 	for (;;) {
@@ -412,8 +409,7 @@ static void ip22zilog_transmit_chars(struct uart_ip22zilog_port *up,
 	ZSDELAY();
 	ZS_WSYNC(channel);
 
-	xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-	up->port.icount.tx++;
+	uart_xmit_advance(&up->port, 1);
 
 	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 		uart_write_wakeup(&up->port);
@@ -544,7 +540,8 @@ static unsigned int ip22zilog_get_mctrl(struct uart_port *port)
 /* The port lock is held and interrupts are disabled.  */
 static void ip22zilog_set_mctrl(struct uart_port *port, unsigned int mctrl)
 {
-	struct uart_ip22zilog_port *up = (struct uart_ip22zilog_port *) port;
+	struct uart_ip22zilog_port *up =
+		container_of(port, struct uart_ip22zilog_port, port);
 	struct zilog_channel *channel = ZILOG_CHANNEL_FROM_PORT(port);
 	unsigned char set_bits, clear_bits;
 
@@ -568,7 +565,8 @@ static void ip22zilog_set_mctrl(struct uart_port *port, unsigned int mctrl)
 /* The port lock is held and interrupts are disabled.  */
 static void ip22zilog_stop_tx(struct uart_port *port)
 {
-	struct uart_ip22zilog_port *up = (struct uart_ip22zilog_port *) port;
+	struct uart_ip22zilog_port *up =
+		container_of(port, struct uart_ip22zilog_port, port);
 
 	up->flags |= IP22ZILOG_FLAG_TX_STOPPED;
 }
@@ -576,7 +574,8 @@ static void ip22zilog_stop_tx(struct uart_port *port)
 /* The port lock is held and interrupts are disabled.  */
 static void ip22zilog_start_tx(struct uart_port *port)
 {
-	struct uart_ip22zilog_port *up = (struct uart_ip22zilog_port *) port;
+	struct uart_ip22zilog_port *up =
+		container_of(port, struct uart_ip22zilog_port, port);
 	struct zilog_channel *channel = ZILOG_CHANNEL_FROM_PORT(port);
 	unsigned char status;
 
@@ -603,12 +602,13 @@ static void ip22zilog_start_tx(struct uart_port *port)
 	} else {
 		struct circ_buf *xmit = &port->state->xmit;
 
+		if (uart_circ_empty(xmit))
+			return;
 		writeb(xmit->buf[xmit->tail], &channel->data);
 		ZSDELAY();
 		ZS_WSYNC(channel);
 
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		port->icount.tx++;
+		uart_xmit_advance(port, 1);
 
 		if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 			uart_write_wakeup(&up->port);
@@ -634,7 +634,8 @@ static void ip22zilog_stop_rx(struct uart_port *port)
 /* The port lock is held.  */
 static void ip22zilog_enable_ms(struct uart_port *port)
 {
-	struct uart_ip22zilog_port *up = (struct uart_ip22zilog_port *) port;
+	struct uart_ip22zilog_port *up =
+		container_of(port, struct uart_ip22zilog_port, port);
 	struct zilog_channel *channel = ZILOG_CHANNEL_FROM_PORT(port);
 	unsigned char new_reg;
 
@@ -650,7 +651,8 @@ static void ip22zilog_enable_ms(struct uart_port *port)
 /* The port lock is not held.  */
 static void ip22zilog_break_ctl(struct uart_port *port, int break_state)
 {
-	struct uart_ip22zilog_port *up = (struct uart_ip22zilog_port *) port;
+	struct uart_ip22zilog_port *up =
+		container_of(port, struct uart_ip22zilog_port, port);
 	struct zilog_channel *channel = ZILOG_CHANNEL_FROM_PORT(port);
 	unsigned char set_bits, clear_bits, new_reg;
 	unsigned long flags;
@@ -850,7 +852,7 @@ ip22zilog_convert_to_zs(struct uart_ip22zilog_port *up, unsigned int cflag,
 	up->port.read_status_mask = Rx_OVR;
 	if (iflag & INPCK)
 		up->port.read_status_mask |= CRC_ERR | PAR_ERR;
-	if (iflag & (BRKINT | PARMRK))
+	if (iflag & (IGNBRK | BRKINT | PARMRK))
 		up->port.read_status_mask |= BRK_ABRT;
 
 	up->port.ignore_status_mask = 0;
@@ -869,9 +871,10 @@ ip22zilog_convert_to_zs(struct uart_ip22zilog_port *up, unsigned int cflag,
 /* The port lock is not held.  */
 static void
 ip22zilog_set_termios(struct uart_port *port, struct ktermios *termios,
-		      struct ktermios *old)
+		      const struct ktermios *old)
 {
-	struct uart_ip22zilog_port *up = (struct uart_ip22zilog_port *) port;
+	struct uart_ip22zilog_port *up =
+		container_of(port, struct uart_ip22zilog_port, port);
 	unsigned long flags;
 	int baud, brg;
 
@@ -922,7 +925,7 @@ static int ip22zilog_verify_port(struct uart_port *port, struct serial_struct *s
 	return -EINVAL;
 }
 
-static struct uart_ops ip22zilog_pops = {
+static const struct uart_ops ip22zilog_pops = {
 	.tx_empty	=	ip22zilog_tx_empty,
 	.set_mctrl	=	ip22zilog_set_mctrl,
 	.get_mctrl	=	ip22zilog_get_mctrl,
@@ -985,7 +988,7 @@ static struct zilog_layout * __init get_zs(int chip)
 #define ZS_PUT_CHAR_MAX_DELAY	2000	/* 10 ms */
 
 #ifdef CONFIG_SERIAL_IP22_ZILOG_CONSOLE
-static void ip22zilog_put_char(struct uart_port *port, int ch)
+static void ip22zilog_put_char(struct uart_port *port, unsigned char ch)
 {
 	struct zilog_channel *channel = ZILOG_CHANNEL_FROM_PORT(port);
 	int loops = ZS_PUT_CHAR_MAX_DELAY;
@@ -1071,6 +1074,7 @@ static struct uart_driver ip22zilog_reg = {
 
 static void __init ip22zilog_prepare(void)
 {
+	unsigned char sysrq_on = IS_ENABLED(CONFIG_SERIAL_IP22_ZILOG_CONSOLE);
 	struct uart_ip22zilog_port *up;
 	struct zilog_layout *rp;
 	int channel, chip;
@@ -1106,6 +1110,7 @@ static void __init ip22zilog_prepare(void)
 		up[(chip * 2) + 0].port.irq = zilog_irq;
 		up[(chip * 2) + 0].port.uartclk = ZS_CLOCK;
 		up[(chip * 2) + 0].port.fifosize = 1;
+		up[(chip * 2) + 0].port.has_sysrq = sysrq_on;
 		up[(chip * 2) + 0].port.ops = &ip22zilog_pops;
 		up[(chip * 2) + 0].port.type = PORT_IP22ZILOG;
 		up[(chip * 2) + 0].port.flags = 0;
@@ -1117,6 +1122,7 @@ static void __init ip22zilog_prepare(void)
 		up[(chip * 2) + 1].port.irq = zilog_irq;
 		up[(chip * 2) + 1].port.uartclk = ZS_CLOCK;
 		up[(chip * 2) + 1].port.fifosize = 1;
+		up[(chip * 2) + 1].port.has_sysrq = sysrq_on;
 		up[(chip * 2) + 1].port.ops = &ip22zilog_pops;
 		up[(chip * 2) + 1].port.type = PORT_IP22ZILOG;
 		up[(chip * 2) + 1].port.line = (chip * 2) + 1;

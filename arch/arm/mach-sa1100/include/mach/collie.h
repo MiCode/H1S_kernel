@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * arch/arm/mach-sa1100/include/mach/collie.h
  *
@@ -13,7 +14,7 @@
 #ifndef __ASM_ARCH_COLLIE_H
 #define __ASM_ARCH_COLLIE_H
 
-extern void locomolcd_power(int on);
+#include "hardware.h" /* Gives GPIO_MAX */
 
 #define COLLIE_SCOOP_GPIO_BASE	(GPIO_MAX + 1)
 #define COLLIE_GPIO_CHARGE_ON	(COLLIE_SCOOP_GPIO_BASE + 0)
@@ -78,7 +79,7 @@ extern void locomolcd_power(int on);
 #define COLLIE_TC35143_GPIO_VERSION0    UCB_IO_0
 #define COLLIE_TC35143_GPIO_TBL_CHK     UCB_IO_1
 #define COLLIE_TC35143_GPIO_VPEN_ON     UCB_IO_2
-#define COLLIE_TC35143_GPIO_IR_ON       UCB_IO_3
+#define COLLIE_GPIO_IR_ON		(COLLIE_TC35143_GPIO_BASE + 3)
 #define COLLIE_TC35143_GPIO_AMP_ON      UCB_IO_4
 #define COLLIE_TC35143_GPIO_VERSION1    UCB_IO_5
 #define COLLIE_TC35143_GPIO_FS8KLPF     UCB_IO_5

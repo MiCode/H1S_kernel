@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * General MIPS MT support routines, usable in AP/SP, SMVP, or SMTC kernels
+ * General MIPS MT support routines, usable in AP/SP and SMVP.
  * Copyright (C) 2005 Mips Technologies, Inc
  */
 #include <linux/cpu.h>
@@ -9,9 +10,11 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/sched.h>
+#include <linux/sched/task.h>
+#include <linux/cred.h>
 #include <linux/security.h>
 #include <linux/types.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 /*
  * CPU mask used to set process affinity for MT VPEs/TCs with FPUs
@@ -73,13 +76,13 @@ asmlinkage long mipsmt_sys_sched_setaffinity(pid_t pid, unsigned int len,
 	if (copy_from_user(&new_mask, user_mask_ptr, sizeof(new_mask)))
 		return -EFAULT;
 
-	get_online_cpus();
+	cpus_read_lock();
 	rcu_read_lock();
 
 	p = find_process_by_pid(pid);
 	if (!p) {
 		rcu_read_unlock();
-		put_online_cpus();
+		cpus_read_unlock();
 		return -ESRCH;
 	}
 
@@ -99,9 +102,10 @@ asmlinkage long mipsmt_sys_sched_setaffinity(pid_t pid, unsigned int len,
 		retval = -ENOMEM;
 		goto out_free_new_mask;
 	}
-	retval = -EPERM;
-	if (!check_same_owner(p) && !capable(CAP_SYS_NICE))
+	if (!check_same_owner(p) && !capable(CAP_SYS_NICE)) {
+		retval = -EPERM;
 		goto out_unlock;
+	}
 
 	retval = security_task_setscheduler(p);
 	if (retval)
@@ -114,8 +118,8 @@ asmlinkage long mipsmt_sys_sched_setaffinity(pid_t pid, unsigned int len,
 	/* Compute new global allowed CPU set if necessary */
 	ti = task_thread_info(p);
 	if (test_ti_thread_flag(ti, TIF_FPUBOUND) &&
-	    cpus_intersects(*new_mask, mt_fpu_cpumask)) {
-		cpus_and(*effective_mask, *new_mask, mt_fpu_cpumask);
+	    cpumask_intersects(new_mask, &mt_fpu_cpumask)) {
+		cpumask_and(effective_mask, new_mask, &mt_fpu_cpumask);
 		retval = set_cpus_allowed_ptr(p, effective_mask);
 	} else {
 		cpumask_copy(effective_mask, new_mask);
@@ -143,7 +147,7 @@ out_free_cpus_allowed:
 	free_cpumask_var(cpus_allowed);
 out_put_task:
 	put_task_struct(p);
-	put_online_cpus();
+	cpus_read_unlock();
 	return retval;
 }
 
@@ -154,7 +158,7 @@ asmlinkage long mipsmt_sys_sched_getaffinity(pid_t pid, unsigned int len,
 				      unsigned long __user *user_mask_ptr)
 {
 	unsigned int real_len;
-	cpumask_t mask;
+	cpumask_t allowed, mask;
 	int retval;
 	struct task_struct *p;
 
@@ -162,8 +166,8 @@ asmlinkage long mipsmt_sys_sched_getaffinity(pid_t pid, unsigned int len,
 	if (len < real_len)
 		return -EINVAL;
 
-	get_online_cpus();
-	read_lock(&tasklist_lock);
+	cpus_read_lock();
+	rcu_read_lock();
 
 	retval = -ESRCH;
 	p = find_process_by_pid(pid);
@@ -173,11 +177,12 @@ asmlinkage long mipsmt_sys_sched_getaffinity(pid_t pid, unsigned int len,
 	if (retval)
 		goto out_unlock;
 
-	cpumask_and(&mask, &p->thread.user_cpus_allowed, cpu_possible_mask);
+	cpumask_or(&allowed, &p->thread.user_cpus_allowed, p->cpus_ptr);
+	cpumask_and(&mask, &allowed, cpu_active_mask);
 
 out_unlock:
-	read_unlock(&tasklist_lock);
-	put_online_cpus();
+	rcu_read_unlock();
+	cpus_read_unlock();
 	if (retval)
 		return retval;
 	if (copy_to_user(user_mask_ptr, &mask, real_len))

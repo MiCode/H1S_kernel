@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * QNAP TS-x09 Boards common functions
  *
  * Maintainers: Lennert Buytenhek <buytenh@marvell.com>
  *		Byron Bradley <byron.bbradley@gmail.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -15,7 +11,7 @@
 #include <linux/mv643xx_eth.h>
 #include <linux/timex.h>
 #include <linux/serial_reg.h>
-#include <mach/orion5x.h>
+#include "orion5x.h"
 #include "tsx09-common.h"
 #include "common.h"
 
@@ -101,9 +97,7 @@ static int __init qnap_tsx09_check_mac_addr(const char *addr_str)
 		addr[i] = byte;
 	}
 
-	printk(KERN_INFO "tsx09: found ethernet mac address ");
-	for (i = 0; i < 6; i++)
-		printk("%.2x%s", addr[i], (i < 5) ? ":" : ".\n");
+	printk(KERN_INFO "tsx09: found ethernet mac address %pM\n", addr);
 
 	memcpy(qnap_tsx09_eth_data.mac_addr, addr, 6);
 

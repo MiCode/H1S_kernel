@@ -1,28 +1,38 @@
-netfilter-objs := core.o nf_log.o nf_queue.o nf_sockopt.o
+# SPDX-License-Identifier: GPL-2.0
+netfilter-objs := core.o nf_log.o nf_queue.o nf_sockopt.o utils.o
 
-nf_conntrack-y	:= nf_conntrack_core.o nf_conntrack_standalone.o nf_conntrack_expect.o nf_conntrack_helper.o nf_conntrack_proto.o nf_conntrack_l3proto_generic.o nf_conntrack_proto_generic.o nf_conntrack_proto_tcp.o nf_conntrack_proto_udp.o nf_conntrack_extend.o nf_conntrack_acct.o nf_conntrack_seqadj.o
+nf_conntrack-y	:= nf_conntrack_core.o nf_conntrack_standalone.o nf_conntrack_expect.o nf_conntrack_helper.o \
+		   nf_conntrack_proto.o nf_conntrack_proto_generic.o nf_conntrack_proto_tcp.o nf_conntrack_proto_udp.o \
+		   nf_conntrack_proto_icmp.o \
+		   nf_conntrack_extend.o nf_conntrack_acct.o nf_conntrack_seqadj.o
+
+nf_conntrack-$(subst m,y,$(CONFIG_IPV6)) += nf_conntrack_proto_icmpv6.o
 nf_conntrack-$(CONFIG_NF_CONNTRACK_TIMEOUT) += nf_conntrack_timeout.o
 nf_conntrack-$(CONFIG_NF_CONNTRACK_TIMESTAMP) += nf_conntrack_timestamp.o
 nf_conntrack-$(CONFIG_NF_CONNTRACK_EVENTS) += nf_conntrack_ecache.o
 nf_conntrack-$(CONFIG_NF_CONNTRACK_LABELS) += nf_conntrack_labels.o
+nf_conntrack-$(CONFIG_NF_CONNTRACK_OVS) += nf_conntrack_ovs.o
+nf_conntrack-$(CONFIG_NF_CT_PROTO_DCCP) += nf_conntrack_proto_dccp.o
+nf_conntrack-$(CONFIG_NF_CT_PROTO_SCTP) += nf_conntrack_proto_sctp.o
+nf_conntrack-$(CONFIG_NF_CT_PROTO_GRE) += nf_conntrack_proto_gre.o
+ifeq ($(CONFIG_NF_CONNTRACK),m)
+nf_conntrack-$(CONFIG_DEBUG_INFO_BTF_MODULES) += nf_conntrack_bpf.o
+else ifeq ($(CONFIG_NF_CONNTRACK),y)
+nf_conntrack-$(CONFIG_DEBUG_INFO_BTF) += nf_conntrack_bpf.o
+endif
 
 obj-$(CONFIG_NETFILTER) = netfilter.o
+obj-$(CONFIG_NETFILTER_BPF_LINK) += nf_bpf_link.o
 
 obj-$(CONFIG_NETFILTER_NETLINK) += nfnetlink.o
 obj-$(CONFIG_NETFILTER_NETLINK_ACCT) += nfnetlink_acct.o
-nfnetlink_queue-y := nfnetlink_queue_core.o
-nfnetlink_queue-$(CONFIG_NETFILTER_NETLINK_QUEUE_CT) += nfnetlink_queue_ct.o
 obj-$(CONFIG_NETFILTER_NETLINK_QUEUE) += nfnetlink_queue.o
 obj-$(CONFIG_NETFILTER_NETLINK_LOG) += nfnetlink_log.o
+obj-$(CONFIG_NETFILTER_NETLINK_OSF) += nfnetlink_osf.o
+obj-$(CONFIG_NETFILTER_NETLINK_HOOK) += nfnetlink_hook.o
 
 # connection tracking
 obj-$(CONFIG_NF_CONNTRACK) += nf_conntrack.o
-
-# SCTP protocol connection tracking
-obj-$(CONFIG_NF_CT_PROTO_DCCP) += nf_conntrack_proto_dccp.o
-obj-$(CONFIG_NF_CT_PROTO_GRE) += nf_conntrack_proto_gre.o
-obj-$(CONFIG_NF_CT_PROTO_SCTP) += nf_conntrack_proto_sctp.o
-obj-$(CONFIG_NF_CT_PROTO_UDPLITE) += nf_conntrack_proto_udplite.o
 
 # netlink interface for nf_conntrack
 obj-$(CONFIG_NF_CT_NETLINK) += nf_conntrack_netlink.o
@@ -44,15 +54,20 @@ obj-$(CONFIG_NF_CONNTRACK_SANE) += nf_conntrack_sane.o
 obj-$(CONFIG_NF_CONNTRACK_SIP) += nf_conntrack_sip.o
 obj-$(CONFIG_NF_CONNTRACK_TFTP) += nf_conntrack_tftp.o
 
-nf_nat-y	:= nf_nat_core.o nf_nat_proto_unknown.o nf_nat_proto_common.o \
-		   nf_nat_proto_udp.o nf_nat_proto_tcp.o nf_nat_helper.o
+nf_nat-y	:= nf_nat_core.o nf_nat_proto.o nf_nat_helper.o
+
+obj-$(CONFIG_NF_LOG_SYSLOG) += nf_log_syslog.o
 
 obj-$(CONFIG_NF_NAT) += nf_nat.o
+nf_nat-$(CONFIG_NF_NAT_REDIRECT) += nf_nat_redirect.o
+nf_nat-$(CONFIG_NF_NAT_MASQUERADE) += nf_nat_masquerade.o
+nf_nat-$(CONFIG_NF_NAT_OVS) += nf_nat_ovs.o
 
-# NAT protocols (nf_nat)
-obj-$(CONFIG_NF_NAT_PROTO_DCCP) += nf_nat_proto_dccp.o
-obj-$(CONFIG_NF_NAT_PROTO_UDPLITE) += nf_nat_proto_udplite.o
-obj-$(CONFIG_NF_NAT_PROTO_SCTP) += nf_nat_proto_sctp.o
+ifeq ($(CONFIG_NF_NAT),m)
+nf_nat-$(CONFIG_DEBUG_INFO_BTF_MODULES) += nf_nat_bpf.o
+else ifeq ($(CONFIG_NF_NAT),y)
+nf_nat-$(CONFIG_DEBUG_INFO_BTF) += nf_nat_bpf.o
+endif
 
 # NAT helpers
 obj-$(CONFIG_NF_NAT_AMANDA) += nf_nat_amanda.o
@@ -64,34 +79,82 @@ obj-$(CONFIG_NF_NAT_TFTP) += nf_nat_tftp.o
 # SYNPROXY
 obj-$(CONFIG_NETFILTER_SYNPROXY) += nf_synproxy_core.o
 
+obj-$(CONFIG_NETFILTER_CONNCOUNT) += nf_conncount.o
+
+# generic packet duplication from netdev family
+obj-$(CONFIG_NF_DUP_NETDEV)	+= nf_dup_netdev.o
+
 # nf_tables
-nf_tables-objs += nf_tables_core.o nf_tables_api.o
-nf_tables-objs += nft_immediate.o nft_cmp.o nft_lookup.o
-nf_tables-objs += nft_bitwise.o nft_byteorder.o nft_payload.o
+nf_tables-objs := nf_tables_core.o nf_tables_api.o nft_chain_filter.o \
+		  nf_tables_trace.o nft_immediate.o nft_cmp.o nft_range.o \
+		  nft_bitwise.o nft_byteorder.o nft_payload.o nft_lookup.o \
+		  nft_dynset.o nft_meta.o nft_rt.o nft_exthdr.o nft_last.o \
+		  nft_counter.o nft_objref.o nft_inner.o \
+		  nft_chain_route.o nf_tables_offload.o \
+		  nft_set_hash.o nft_set_bitmap.o nft_set_rbtree.o \
+		  nft_set_pipapo.o
+
+ifdef CONFIG_X86_64
+ifndef CONFIG_UML
+nf_tables-objs += nft_set_pipapo_avx2.o
+endif
+endif
+
+ifdef CONFIG_NFT_CT
+ifdef CONFIG_RETPOLINE
+nf_tables-objs += nft_ct_fast.o
+endif
+endif
 
 obj-$(CONFIG_NF_TABLES)		+= nf_tables.o
-obj-$(CONFIG_NF_TABLES_INET)	+= nf_tables_inet.o
 obj-$(CONFIG_NFT_COMPAT)	+= nft_compat.o
-obj-$(CONFIG_NFT_EXTHDR)	+= nft_exthdr.o
-obj-$(CONFIG_NFT_META)		+= nft_meta.o
+obj-$(CONFIG_NFT_CONNLIMIT)	+= nft_connlimit.o
+obj-$(CONFIG_NFT_NUMGEN)	+= nft_numgen.o
 obj-$(CONFIG_NFT_CT)		+= nft_ct.o
+obj-$(CONFIG_NFT_FLOW_OFFLOAD)	+= nft_flow_offload.o
 obj-$(CONFIG_NFT_LIMIT)		+= nft_limit.o
 obj-$(CONFIG_NFT_NAT)		+= nft_nat.o
 obj-$(CONFIG_NFT_QUEUE)		+= nft_queue.o
+obj-$(CONFIG_NFT_QUOTA)		+= nft_quota.o
 obj-$(CONFIG_NFT_REJECT) 	+= nft_reject.o
-obj-$(CONFIG_NFT_RBTREE)	+= nft_rbtree.o
-obj-$(CONFIG_NFT_HASH)		+= nft_hash.o
-obj-$(CONFIG_NFT_COUNTER)	+= nft_counter.o
+obj-$(CONFIG_NFT_REJECT_INET)	+= nft_reject_inet.o
+obj-$(CONFIG_NFT_REJECT_NETDEV)	+= nft_reject_netdev.o
+obj-$(CONFIG_NFT_TUNNEL)	+= nft_tunnel.o
 obj-$(CONFIG_NFT_LOG)		+= nft_log.o
+obj-$(CONFIG_NFT_MASQ)		+= nft_masq.o
+obj-$(CONFIG_NFT_REDIR)		+= nft_redir.o
+obj-$(CONFIG_NFT_HASH)		+= nft_hash.o
+obj-$(CONFIG_NFT_FIB)		+= nft_fib.o
+obj-$(CONFIG_NFT_FIB_INET)	+= nft_fib_inet.o
+obj-$(CONFIG_NFT_FIB_NETDEV)	+= nft_fib_netdev.o
+obj-$(CONFIG_NFT_SOCKET)	+= nft_socket.o
+obj-$(CONFIG_NFT_OSF)		+= nft_osf.o
+obj-$(CONFIG_NFT_TPROXY)	+= nft_tproxy.o
+obj-$(CONFIG_NFT_XFRM)		+= nft_xfrm.o
+obj-$(CONFIG_NFT_SYNPROXY)	+= nft_synproxy.o
 
-# generic X tables 
+obj-$(CONFIG_NFT_NAT)		+= nft_chain_nat.o
+
+# nf_tables netdev
+obj-$(CONFIG_NFT_DUP_NETDEV)	+= nft_dup_netdev.o
+obj-$(CONFIG_NFT_FWD_NETDEV)	+= nft_fwd_netdev.o
+
+# flow table infrastructure
+obj-$(CONFIG_NF_FLOW_TABLE)	+= nf_flow_table.o
+nf_flow_table-objs		:= nf_flow_table_core.o nf_flow_table_ip.o \
+				   nf_flow_table_offload.o
+nf_flow_table-$(CONFIG_NF_FLOW_TABLE_PROCFS) += nf_flow_table_procfs.o
+
+obj-$(CONFIG_NF_FLOW_TABLE_INET) += nf_flow_table_inet.o
+
+# generic X tables
 obj-$(CONFIG_NETFILTER_XTABLES) += x_tables.o xt_tcpudp.o
 
 # combos
 obj-$(CONFIG_NETFILTER_XT_MARK) += xt_mark.o
 obj-$(CONFIG_NETFILTER_XT_CONNMARK) += xt_connmark.o
 obj-$(CONFIG_NETFILTER_XT_SET) += xt_set.o
-obj-$(CONFIG_NF_NAT) += xt_nat.o
+obj-$(CONFIG_NETFILTER_XT_NAT) += xt_nat.o
 
 # targets
 obj-$(CONFIG_NETFILTER_XT_TARGET_AUDIT) += xt_AUDIT.o
@@ -109,6 +172,7 @@ obj-$(CONFIG_NETFILTER_XT_TARGET_NFLOG) += xt_NFLOG.o
 obj-$(CONFIG_NETFILTER_XT_TARGET_NFQUEUE) += xt_NFQUEUE.o
 obj-$(CONFIG_NETFILTER_XT_TARGET_RATEEST) += xt_RATEEST.o
 obj-$(CONFIG_NETFILTER_XT_TARGET_REDIRECT) += xt_REDIRECT.o
+obj-$(CONFIG_NETFILTER_XT_TARGET_MASQUERADE) += xt_MASQUERADE.o
 obj-$(CONFIG_NETFILTER_XT_TARGET_SECMARK) += xt_SECMARK.o
 obj-$(CONFIG_NETFILTER_XT_TARGET_TPROXY) += xt_TPROXY.o
 obj-$(CONFIG_NETFILTER_XT_TARGET_TCPMSS) += xt_TCPMSS.o
@@ -151,6 +215,7 @@ obj-$(CONFIG_NETFILTER_XT_MATCH_PHYSDEV) += xt_physdev.o
 obj-$(CONFIG_NETFILTER_XT_MATCH_PKTTYPE) += xt_pkttype.o
 obj-$(CONFIG_NETFILTER_XT_MATCH_POLICY) += xt_policy.o
 obj-$(CONFIG_NETFILTER_XT_MATCH_QUOTA) += xt_quota.o
+obj-$(CONFIG_NETFILTER_XT_MATCH_QUOTA2) += xt_quota2.o
 obj-$(CONFIG_NETFILTER_XT_MATCH_RATEEST) += xt_rateest.o
 obj-$(CONFIG_NETFILTER_XT_MATCH_REALM) += xt_realm.o
 obj-$(CONFIG_NETFILTER_XT_MATCH_RECENT) += xt_recent.o
@@ -168,3 +233,6 @@ obj-$(CONFIG_IP_SET) += ipset/
 
 # IPVS
 obj-$(CONFIG_IP_VS) += ipvs/
+
+# lwtunnel
+obj-$(CONFIG_LWTUNNEL) += nf_hooks_lwtunnel.o

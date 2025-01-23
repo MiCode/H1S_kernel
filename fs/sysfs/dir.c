@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * fs/sysfs/dir.c - sysfs core and dir operation implementation
  *
@@ -5,12 +6,10 @@
  * Copyright (c) 2007 SUSE Linux Products GmbH
  * Copyright (c) 2007 Tejun Heo <teheo@suse.de>
  *
- * This file is released under the GPLv2.
- *
- * Please see Documentation/filesystems/sysfs.txt for more information.
+ * Please see Documentation/filesystems/sysfs.rst for more information.
  */
 
-#undef DEBUG
+#define pr_fmt(fmt)	"sysfs: " fmt
 
 #include <linux/fs.h>
 #include <linux/kobject.h>
@@ -19,39 +18,18 @@
 
 DEFINE_SPINLOCK(sysfs_symlink_target_lock);
 
-/**
- *	sysfs_pathname - return full path to sysfs dirent
- *	@kn: kernfs_node whose path we want
- *	@path: caller allocated buffer of size PATH_MAX
- *
- *	Gives the name "/" to the sysfs_root entry; any path returned
- *	is relative to wherever sysfs is mounted.
- */
-static char *sysfs_pathname(struct kernfs_node *kn, char *path)
-{
-	if (kn->parent) {
-		sysfs_pathname(kn->parent, path);
-		strlcat(path, "/", PATH_MAX);
-	}
-	strlcat(path, kn->name, PATH_MAX);
-	return path;
-}
-
 void sysfs_warn_dup(struct kernfs_node *parent, const char *name)
 {
-	char *path;
+	char *buf;
 
-	path = kzalloc(PATH_MAX, GFP_KERNEL);
-	if (path) {
-		sysfs_pathname(parent, path);
-		strlcat(path, "/", PATH_MAX);
-		strlcat(path, name, PATH_MAX);
-	}
+	buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (buf)
+		kernfs_path(parent, buf, PATH_MAX);
 
-	WARN(1, KERN_WARNING "sysfs: cannot create duplicate filename '%s'\n",
-	     path ? path : name);
+	pr_warn("cannot create duplicate filename '%s/%s'\n", buf, name);
+	dump_stack();
 
-	kfree(path);
+	kfree(buf);
 }
 
 /**
@@ -62,8 +40,11 @@ void sysfs_warn_dup(struct kernfs_node *parent, const char *name)
 int sysfs_create_dir_ns(struct kobject *kobj, const void *ns)
 {
 	struct kernfs_node *parent, *kn;
+	kuid_t uid;
+	kgid_t gid;
 
-	BUG_ON(!kobj);
+	if (WARN_ON(!kobj))
+		return -EINVAL;
 
 	if (kobj->parent)
 		parent = kobj->parent->sd;
@@ -73,8 +54,10 @@ int sysfs_create_dir_ns(struct kobject *kobj, const void *ns)
 	if (!parent)
 		return -ENOENT;
 
-	kn = kernfs_create_dir_ns(parent, kobject_name(kobj),
-				  S_IRWXU | S_IRUGO | S_IXUGO, kobj, ns);
+	kobject_get_ownership(kobj, &uid, &gid);
+
+	kn = kernfs_create_dir_ns(parent, kobject_name(kobj), 0755, uid, gid,
+				  kobj, ns);
 	if (IS_ERR(kn)) {
 		if (PTR_ERR(kn) == -EEXIST)
 			sysfs_warn_dup(parent, kobject_name(kobj));
@@ -122,9 +105,13 @@ void sysfs_remove_dir(struct kobject *kobj)
 int sysfs_rename_dir_ns(struct kobject *kobj, const char *new_name,
 			const void *new_ns)
 {
-	struct kernfs_node *parent = kobj->sd->parent;
+	struct kernfs_node *parent;
+	int ret;
 
-	return kernfs_rename_ns(kobj->sd, parent, new_name, new_ns);
+	parent = kernfs_get_parent(kobj->sd);
+	ret = kernfs_rename_ns(kobj->sd, parent, new_name, new_ns);
+	kernfs_put(parent);
+	return ret;
 }
 
 int sysfs_move_dir_ns(struct kobject *kobj, struct kobject *new_parent_kobj,
@@ -133,9 +120,42 @@ int sysfs_move_dir_ns(struct kobject *kobj, struct kobject *new_parent_kobj,
 	struct kernfs_node *kn = kobj->sd;
 	struct kernfs_node *new_parent;
 
-	BUG_ON(!kn->parent);
 	new_parent = new_parent_kobj && new_parent_kobj->sd ?
 		new_parent_kobj->sd : sysfs_root_kn;
 
 	return kernfs_rename_ns(kn, new_parent, kn->name, new_ns);
 }
+
+/**
+ * sysfs_create_mount_point - create an always empty directory
+ * @parent_kobj:  kobject that will contain this always empty directory
+ * @name: The name of the always empty directory to add
+ */
+int sysfs_create_mount_point(struct kobject *parent_kobj, const char *name)
+{
+	struct kernfs_node *kn, *parent = parent_kobj->sd;
+
+	kn = kernfs_create_empty_dir(parent, name);
+	if (IS_ERR(kn)) {
+		if (PTR_ERR(kn) == -EEXIST)
+			sysfs_warn_dup(parent, name);
+		return PTR_ERR(kn);
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(sysfs_create_mount_point);
+
+/**
+ *	sysfs_remove_mount_point - remove an always empty directory.
+ *	@parent_kobj: kobject that will contain this always empty directory
+ *	@name: The name of the always empty directory to remove
+ *
+ */
+void sysfs_remove_mount_point(struct kobject *parent_kobj, const char *name)
+{
+	struct kernfs_node *parent = parent_kobj->sd;
+
+	kernfs_remove_by_name_ns(parent, name, NULL);
+}
+EXPORT_SYMBOL_GPL(sysfs_remove_mount_point);

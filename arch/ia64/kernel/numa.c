@@ -1,17 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  *
  * ia64 kernel NUMA specific stuff
  *
@@ -39,7 +27,7 @@ void map_cpu_to_node(int cpu, int nid)
 	}
 	/* sanity check first */
 	oldnid = cpu_to_node_map[cpu];
-	if (cpu_isset(cpu, node_to_cpu_mask[oldnid])) {
+	if (cpumask_test_cpu(cpu, &node_to_cpu_mask[oldnid])) {
 		return; /* nothing to do */
 	}
 	/* we don't have cpu-driven node hot add yet...
@@ -47,16 +35,16 @@ void map_cpu_to_node(int cpu, int nid)
 	if (!node_online(nid))
 		nid = first_online_node;
 	cpu_to_node_map[cpu] = nid;
-	cpu_set(cpu, node_to_cpu_mask[nid]);
+	cpumask_set_cpu(cpu, &node_to_cpu_mask[nid]);
 	return;
 }
 
 void unmap_cpu_from_node(int cpu, int nid)
 {
-	WARN_ON(!cpu_isset(cpu, node_to_cpu_mask[nid]));
+	WARN_ON(!cpumask_test_cpu(cpu, &node_to_cpu_mask[nid]));
 	WARN_ON(cpu_to_node_map[cpu] != nid);
 	cpu_to_node_map[cpu] = 0;
-	cpu_clear(cpu, node_to_cpu_mask[nid]);
+	cpumask_clear_cpu(cpu, &node_to_cpu_mask[nid]);
 }
 
 
@@ -71,10 +59,10 @@ void __init build_cpu_to_node_map(void)
 	int cpu, i, node;
 
 	for(node=0; node < MAX_NUMNODES; node++)
-		cpus_clear(node_to_cpu_mask[node]);
+		cpumask_clear(&node_to_cpu_mask[node]);
 
 	for_each_possible_early_cpu(cpu) {
-		node = -1;
+		node = NUMA_NO_NODE;
 		for (i = 0; i < NR_CPUS; ++i)
 			if (cpu_physical_id(cpu) == node_cpuid[i].phys_id) {
 				node = node_cpuid[i].nid;

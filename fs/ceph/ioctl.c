@@ -1,11 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
+#include <linux/ceph/ceph_debug.h>
 #include <linux/in.h>
 
 #include "super.h"
 #include "mds_client.h"
-#include <linux/ceph/ceph_debug.h>
-
 #include "ioctl.h"
-
+#include <linux/ceph/striper.h>
+#include <linux/fscrypt.h>
 
 /*
  * ioctls
@@ -20,13 +21,13 @@ static long ceph_ioctl_get_layout(struct file *file, void __user *arg)
 	struct ceph_ioctl_layout l;
 	int err;
 
-	err = ceph_do_getattr(file_inode(file), CEPH_STAT_CAP_LAYOUT);
+	err = ceph_do_getattr(file_inode(file), CEPH_STAT_CAP_LAYOUT, false);
 	if (!err) {
-		l.stripe_unit = ceph_file_layout_su(ci->i_layout);
-		l.stripe_count = ceph_file_layout_stripe_count(ci->i_layout);
-		l.object_size = ceph_file_layout_object_size(ci->i_layout);
-		l.data_pool = le32_to_cpu(ci->i_layout.fl_pg_pool);
-		l.preferred_osd = (s32)-1;
+		l.stripe_unit = ci->i_layout.stripe_unit;
+		l.stripe_count = ci->i_layout.stripe_count;
+		l.object_size = ci->i_layout.object_size;
+		l.data_pool = ci->i_layout.pool_id;
+		l.preferred_osd = -1;
 		if (copy_to_user(arg, &l, sizeof(l)))
 			return -EFAULT;
 	}
@@ -42,7 +43,7 @@ static long __validate_layout(struct ceph_mds_client *mdsc,
 	/* validate striping parameters */
 	if ((l->object_size & ~PAGE_MASK) ||
 	    (l->stripe_unit & ~PAGE_MASK) ||
-	    (l->stripe_unit != 0 &&
+	    ((unsigned)l->stripe_unit != 0 &&
 	     ((unsigned)l->object_size % (unsigned)l->stripe_unit)))
 		return -EINVAL;
 
@@ -64,8 +65,7 @@ static long __validate_layout(struct ceph_mds_client *mdsc,
 static long ceph_ioctl_set_layout(struct file *file, void __user *arg)
 {
 	struct inode *inode = file_inode(file);
-	struct inode *parent_inode;
-	struct ceph_mds_client *mdsc = ceph_sb_to_client(inode->i_sb)->mdsc;
+	struct ceph_mds_client *mdsc = ceph_sb_to_fs_client(inode->i_sb)->mdsc;
 	struct ceph_mds_request *req;
 	struct ceph_ioctl_layout l;
 	struct ceph_inode_info *ci = ceph_inode(file_inode(file));
@@ -76,7 +76,7 @@ static long ceph_ioctl_set_layout(struct file *file, void __user *arg)
 		return -EFAULT;
 
 	/* validate changed params against current layout */
-	err = ceph_do_getattr(file_inode(file), CEPH_STAT_CAP_LAYOUT);
+	err = ceph_do_getattr(file_inode(file), CEPH_STAT_CAP_LAYOUT, false);
 	if (err)
 		return err;
 
@@ -84,22 +84,22 @@ static long ceph_ioctl_set_layout(struct file *file, void __user *arg)
 	if (l.stripe_count)
 		nl.stripe_count = l.stripe_count;
 	else
-		nl.stripe_count = ceph_file_layout_stripe_count(ci->i_layout);
+		nl.stripe_count = ci->i_layout.stripe_count;
 	if (l.stripe_unit)
 		nl.stripe_unit = l.stripe_unit;
 	else
-		nl.stripe_unit = ceph_file_layout_su(ci->i_layout);
+		nl.stripe_unit = ci->i_layout.stripe_unit;
 	if (l.object_size)
 		nl.object_size = l.object_size;
 	else
-		nl.object_size = ceph_file_layout_object_size(ci->i_layout);
+		nl.object_size = ci->i_layout.object_size;
 	if (l.data_pool)
 		nl.data_pool = l.data_pool;
 	else
-		nl.data_pool = ceph_file_layout_pg_pool(ci->i_layout);
+		nl.data_pool = ci->i_layout.pool_id;
 
 	/* this is obsolete, and always -1 */
-	nl.preferred_osd = le64_to_cpu(-1);
+	nl.preferred_osd = -1;
 
 	err = __validate_layout(mdsc, &nl);
 	if (err)
@@ -111,6 +111,8 @@ static long ceph_ioctl_set_layout(struct file *file, void __user *arg)
 		return PTR_ERR(req);
 	req->r_inode = inode;
 	ihold(inode);
+	req->r_num_caps = 1;
+
 	req->r_inode_drop = CEPH_CAP_FILE_SHARED | CEPH_CAP_FILE_EXCL;
 
 	req->r_args.setlayout.layout.fl_stripe_unit =
@@ -121,9 +123,7 @@ static long ceph_ioctl_set_layout(struct file *file, void __user *arg)
 		cpu_to_le32(l.object_size);
 	req->r_args.setlayout.layout.fl_pg_pool = cpu_to_le32(l.data_pool);
 
-	parent_inode = ceph_get_dentry_parent_inode(file->f_dentry);
-	err = ceph_mdsc_do_request(mdsc, parent_inode, req);
-	iput(parent_inode);
+	err = ceph_mdsc_do_request(mdsc, NULL, req);
 	ceph_mdsc_put_request(req);
 	return err;
 }
@@ -140,7 +140,7 @@ static long ceph_ioctl_set_layout_policy (struct file *file, void __user *arg)
 	struct ceph_mds_request *req;
 	struct ceph_ioctl_layout l;
 	int err;
-	struct ceph_mds_client *mdsc = ceph_sb_to_client(inode->i_sb)->mdsc;
+	struct ceph_mds_client *mdsc = ceph_sb_to_fs_client(inode->i_sb)->mdsc;
 
 	/* copy and validate */
 	if (copy_from_user(&l, arg, sizeof(l)))
@@ -157,6 +157,7 @@ static long ceph_ioctl_set_layout_policy (struct file *file, void __user *arg)
 		return PTR_ERR(req);
 	req->r_inode = inode;
 	ihold(inode);
+	req->r_num_caps = 1;
 
 	req->r_args.setlayout.layout.fl_stripe_unit =
 			cpu_to_le32(l.stripe_unit);
@@ -182,10 +183,10 @@ static long ceph_ioctl_get_dataloc(struct file *file, void __user *arg)
 	struct inode *inode = file_inode(file);
 	struct ceph_inode_info *ci = ceph_inode(inode);
 	struct ceph_osd_client *osdc =
-		&ceph_sb_to_client(inode->i_sb)->client->osdc;
+		&ceph_sb_to_fs_client(inode->i_sb)->client->osdc;
 	struct ceph_object_locator oloc;
-	struct ceph_object_id oid;
-	u64 len = 1, olen;
+	CEPH_DEFINE_OID_ONSTACK(oid);
+	u32 xlen;
 	u64 tmp;
 	struct ceph_pg pgid;
 	int r;
@@ -194,17 +195,12 @@ static long ceph_ioctl_get_dataloc(struct file *file, void __user *arg)
 	if (copy_from_user(&dl, arg, sizeof(dl)))
 		return -EFAULT;
 
-	down_read(&osdc->map_sem);
-	r = ceph_calc_file_object_mapping(&ci->i_layout, dl.file_offset, len,
-					  &dl.object_no, &dl.object_offset,
-					  &olen);
-	if (r < 0) {
-		up_read(&osdc->map_sem);
-		return -EIO;
-	}
+	down_read(&osdc->lock);
+	ceph_calc_file_object_mapping(&ci->i_layout, dl.file_offset, 1,
+				      &dl.object_no, &dl.object_offset, &xlen);
 	dl.file_offset -= dl.object_offset;
-	dl.object_size = ceph_file_layout_object_size(ci->i_layout);
-	dl.block_size = ceph_file_layout_su(ci->i_layout);
+	dl.object_size = ci->i_layout.object_size;
+	dl.block_size = ci->i_layout.stripe_unit;
 
 	/* block_offset = object_offset % block_size */
 	tmp = dl.object_offset;
@@ -213,16 +209,19 @@ static long ceph_ioctl_get_dataloc(struct file *file, void __user *arg)
 	snprintf(dl.object_name, sizeof(dl.object_name), "%llx.%08llx",
 		 ceph_ino(inode), dl.object_no);
 
-	oloc.pool = ceph_file_layout_pg_pool(ci->i_layout);
-	ceph_oid_set_name(&oid, dl.object_name);
+	oloc.pool = ci->i_layout.pool_id;
+	oloc.pool_ns = ceph_try_get_string(ci->i_layout.pool_ns);
+	ceph_oid_printf(&oid, "%s", dl.object_name);
 
-	r = ceph_oloc_oid_to_pg(osdc->osdmap, &oloc, &oid, &pgid);
+	r = ceph_object_locator_to_pg(osdc->osdmap, &oid, &oloc, &pgid);
+
+	ceph_oloc_destroy(&oloc);
 	if (r < 0) {
-		up_read(&osdc->map_sem);
+		up_read(&osdc->lock);
 		return r;
 	}
 
-	dl.osd = ceph_calc_pg_primary(osdc->osdmap, pgid);
+	dl.osd = ceph_pg_to_acting_primary(osdc->osdmap, &pgid);
 	if (dl.osd >= 0) {
 		struct ceph_entity_addr *a =
 			ceph_osd_addr(osdc->osdmap, dl.osd);
@@ -231,7 +230,7 @@ static long ceph_ioctl_get_dataloc(struct file *file, void __user *arg)
 	} else {
 		memset(&dl.osd_addr, 0, sizeof(dl.osd_addr));
 	}
-	up_read(&osdc->map_sem);
+	up_read(&osdc->lock);
 
 	/* send result back to user */
 	if (copy_to_user(arg, &dl, sizeof(dl)))
@@ -245,16 +244,17 @@ static long ceph_ioctl_lazyio(struct file *file)
 	struct ceph_file_info *fi = file->private_data;
 	struct inode *inode = file_inode(file);
 	struct ceph_inode_info *ci = ceph_inode(inode);
+	struct ceph_mds_client *mdsc = ceph_inode_to_fs_client(inode)->mdsc;
 
 	if ((fi->fmode & CEPH_FILE_MODE_LAZY) == 0) {
 		spin_lock(&ci->i_ceph_lock);
-		ci->i_nr_by_mode[fi->fmode]--;
 		fi->fmode |= CEPH_FILE_MODE_LAZY;
-		ci->i_nr_by_mode[fi->fmode]++;
+		ci->i_nr_by_mode[ffs(CEPH_FILE_MODE_LAZY)]++;
+		__ceph_touch_fmode(ci, mdsc, fi->fmode);
 		spin_unlock(&ci->i_ceph_lock);
 		dout("ioctl_layzio: file %p marked lazy\n", file);
 
-		ceph_check_caps(ci, 0, NULL);
+		ceph_check_caps(ci, 0);
 	} else {
 		dout("ioctl_layzio: file %p already lazy\n", file);
 	}
@@ -269,9 +269,96 @@ static long ceph_ioctl_syncio(struct file *file)
 	return 0;
 }
 
+static int vet_mds_for_fscrypt(struct file *file)
+{
+	int i, ret = -EOPNOTSUPP;
+	struct ceph_mds_client	*mdsc = ceph_sb_to_mdsc(file_inode(file)->i_sb);
+
+	mutex_lock(&mdsc->mutex);
+	for (i = 0; i < mdsc->max_sessions; i++) {
+		struct ceph_mds_session *s = mdsc->sessions[i];
+
+		if (!s)
+			continue;
+		if (test_bit(CEPHFS_FEATURE_ALTERNATE_NAME, &s->s_features))
+			ret = 0;
+		break;
+	}
+	mutex_unlock(&mdsc->mutex);
+	return ret;
+}
+
+static long ceph_set_encryption_policy(struct file *file, unsigned long arg)
+{
+	int ret, got = 0;
+	struct inode *inode = file_inode(file);
+	struct ceph_inode_info *ci = ceph_inode(inode);
+
+	/* encrypted directories can't have striped layout */
+	if (ci->i_layout.stripe_count > 1)
+		return -EINVAL;
+
+	ret = vet_mds_for_fscrypt(file);
+	if (ret)
+		return ret;
+
+	/*
+	 * Ensure we hold these caps so that we _know_ that the rstats check
+	 * in the empty_dir check is reliable.
+	 */
+	ret = ceph_get_caps(file, CEPH_CAP_FILE_SHARED, 0, -1, &got);
+	if (ret)
+		return ret;
+
+	ret = fscrypt_ioctl_set_policy(file, (const void __user *)arg);
+	if (got)
+		ceph_put_cap_refs(ci, got);
+
+	return ret;
+}
+
+static const char *ceph_ioctl_cmd_name(const unsigned int cmd)
+{
+	switch (cmd) {
+	case CEPH_IOC_GET_LAYOUT:
+		return "get_layout";
+	case CEPH_IOC_SET_LAYOUT:
+		return "set_layout";
+	case CEPH_IOC_SET_LAYOUT_POLICY:
+		return "set_layout_policy";
+	case CEPH_IOC_GET_DATALOC:
+		return "get_dataloc";
+	case CEPH_IOC_LAZYIO:
+		return "lazyio";
+	case CEPH_IOC_SYNCIO:
+		return "syncio";
+	case FS_IOC_SET_ENCRYPTION_POLICY:
+		return "set_encryption_policy";
+	case FS_IOC_GET_ENCRYPTION_POLICY:
+		return "get_encryption_policy";
+	case FS_IOC_GET_ENCRYPTION_POLICY_EX:
+		return "get_encryption_policy_ex";
+	case FS_IOC_ADD_ENCRYPTION_KEY:
+		return "add_encryption_key";
+	case FS_IOC_REMOVE_ENCRYPTION_KEY:
+		return "remove_encryption_key";
+	case FS_IOC_REMOVE_ENCRYPTION_KEY_ALL_USERS:
+		return "remove_encryption_key_all_users";
+	case FS_IOC_GET_ENCRYPTION_KEY_STATUS:
+		return "get_encryption_key_status";
+	case FS_IOC_GET_ENCRYPTION_NONCE:
+		return "get_encryption_nonce";
+	default:
+		return "unknown";
+	}
+}
+
 long ceph_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-	dout("ioctl file %p cmd %u arg %lu\n", file, cmd, arg);
+	int ret;
+
+	dout("ioctl file %p cmd %s arg %lu\n", file,
+	     ceph_ioctl_cmd_name(cmd), arg);
 	switch (cmd) {
 	case CEPH_IOC_GET_LAYOUT:
 		return ceph_ioctl_get_layout(file, (void __user *)arg);
@@ -290,6 +377,43 @@ long ceph_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case CEPH_IOC_SYNCIO:
 		return ceph_ioctl_syncio(file);
+
+	case FS_IOC_SET_ENCRYPTION_POLICY:
+		return ceph_set_encryption_policy(file, arg);
+
+	case FS_IOC_GET_ENCRYPTION_POLICY:
+		ret = vet_mds_for_fscrypt(file);
+		if (ret)
+			return ret;
+		return fscrypt_ioctl_get_policy(file, (void __user *)arg);
+
+	case FS_IOC_GET_ENCRYPTION_POLICY_EX:
+		ret = vet_mds_for_fscrypt(file);
+		if (ret)
+			return ret;
+		return fscrypt_ioctl_get_policy_ex(file, (void __user *)arg);
+
+	case FS_IOC_ADD_ENCRYPTION_KEY:
+		ret = vet_mds_for_fscrypt(file);
+		if (ret)
+			return ret;
+		return fscrypt_ioctl_add_key(file, (void __user *)arg);
+
+	case FS_IOC_REMOVE_ENCRYPTION_KEY:
+		return fscrypt_ioctl_remove_key(file, (void __user *)arg);
+
+	case FS_IOC_REMOVE_ENCRYPTION_KEY_ALL_USERS:
+		return fscrypt_ioctl_remove_key_all_users(file,
+							  (void __user *)arg);
+
+	case FS_IOC_GET_ENCRYPTION_KEY_STATUS:
+		return fscrypt_ioctl_get_key_status(file, (void __user *)arg);
+
+	case FS_IOC_GET_ENCRYPTION_NONCE:
+		ret = vet_mds_for_fscrypt(file);
+		if (ret)
+			return ret;
+		return fscrypt_ioctl_get_nonce(file, (void __user *)arg);
 	}
 
 	return -ENOTTY;

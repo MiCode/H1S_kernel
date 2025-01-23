@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Marvell 88PM860x Interface
  *
  * Copyright (C) 2009 Marvell International Ltd.
  * 	Haojian Zhuang <haojian.zhuang@marvell.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __LINUX_MFD_88PM860X_H
@@ -475,13 +472,7 @@ extern int pm860x_bulk_read(struct i2c_client *, int, int, unsigned char *);
 extern int pm860x_bulk_write(struct i2c_client *, int, int, unsigned char *);
 extern int pm860x_set_bits(struct i2c_client *, int, unsigned char,
 			   unsigned char);
-extern int pm860x_page_reg_read(struct i2c_client *, int);
 extern int pm860x_page_reg_write(struct i2c_client *, int, unsigned char);
 extern int pm860x_page_bulk_read(struct i2c_client *, int, int,
 				 unsigned char *);
-extern int pm860x_page_bulk_write(struct i2c_client *, int, int,
-				  unsigned char *);
-extern int pm860x_page_set_bits(struct i2c_client *, int, unsigned char,
-				unsigned char);
-
 #endif /* __LINUX_MFD_88PM860X_H */

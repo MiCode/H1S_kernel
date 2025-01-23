@@ -1,33 +1,8 @@
-/*******************************************************************************
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright(c) 1999 - 2018 Intel Corporation. */
 
-  Intel PRO/1000 Linux driver
-  Copyright(c) 1999 - 2013 Intel Corporation.
-
-  This program is free software; you can redistribute it and/or modify it
-  under the terms and conditions of the GNU General Public License,
-  version 2, as published by the Free Software Foundation.
-
-  This program is distributed in the hope it will be useful, but WITHOUT
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
-  more details.
-
-  You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc.,
-  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
-
-  The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
-
-  Contact Information:
-  Linux NICS <linux.nics@intel.com>
-  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
-  Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
-
-*******************************************************************************/
-
-#ifndef _E1000_HW_H_
-#define _E1000_HW_H_
+#ifndef _E1000E_HW_H_
+#define _E1000E_HW_H_
 
 #include "regs.h"
 #include "defines.h"
@@ -94,6 +69,61 @@ struct e1000_hw;
 #define E1000_DEV_ID_PCH_I218_V2		0x15A1
 #define E1000_DEV_ID_PCH_I218_LM3		0x15A2	/* Wildcat Point PCH */
 #define E1000_DEV_ID_PCH_I218_V3		0x15A3	/* Wildcat Point PCH */
+#define E1000_DEV_ID_PCH_SPT_I219_LM		0x156F	/* SPT PCH */
+#define E1000_DEV_ID_PCH_SPT_I219_V		0x1570	/* SPT PCH */
+#define E1000_DEV_ID_PCH_SPT_I219_LM2		0x15B7	/* SPT-H PCH */
+#define E1000_DEV_ID_PCH_SPT_I219_V2		0x15B8	/* SPT-H PCH */
+#define E1000_DEV_ID_PCH_LBG_I219_LM3		0x15B9	/* LBG PCH */
+#define E1000_DEV_ID_PCH_SPT_I219_LM4		0x15D7
+#define E1000_DEV_ID_PCH_SPT_I219_V4		0x15D8
+#define E1000_DEV_ID_PCH_SPT_I219_LM5		0x15E3
+#define E1000_DEV_ID_PCH_SPT_I219_V5		0x15D6
+#define E1000_DEV_ID_PCH_CNP_I219_LM6		0x15BD
+#define E1000_DEV_ID_PCH_CNP_I219_V6		0x15BE
+#define E1000_DEV_ID_PCH_CNP_I219_LM7		0x15BB
+#define E1000_DEV_ID_PCH_CNP_I219_V7		0x15BC
+#define E1000_DEV_ID_PCH_ICP_I219_LM8		0x15DF
+#define E1000_DEV_ID_PCH_ICP_I219_V8		0x15E0
+#define E1000_DEV_ID_PCH_ICP_I219_LM9		0x15E1
+#define E1000_DEV_ID_PCH_ICP_I219_V9		0x15E2
+#define E1000_DEV_ID_PCH_CMP_I219_LM10		0x0D4E
+#define E1000_DEV_ID_PCH_CMP_I219_V10		0x0D4F
+#define E1000_DEV_ID_PCH_CMP_I219_LM11		0x0D4C
+#define E1000_DEV_ID_PCH_CMP_I219_V11		0x0D4D
+#define E1000_DEV_ID_PCH_CMP_I219_LM12		0x0D53
+#define E1000_DEV_ID_PCH_CMP_I219_V12		0x0D55
+#define E1000_DEV_ID_PCH_TGP_I219_LM13		0x15FB
+#define E1000_DEV_ID_PCH_TGP_I219_V13		0x15FC
+#define E1000_DEV_ID_PCH_TGP_I219_LM14		0x15F9
+#define E1000_DEV_ID_PCH_TGP_I219_V14		0x15FA
+#define E1000_DEV_ID_PCH_TGP_I219_LM15		0x15F4
+#define E1000_DEV_ID_PCH_TGP_I219_V15		0x15F5
+#define E1000_DEV_ID_PCH_RPL_I219_LM23		0x0DC5
+#define E1000_DEV_ID_PCH_RPL_I219_V23		0x0DC6
+#define E1000_DEV_ID_PCH_ADP_I219_LM16		0x1A1E
+#define E1000_DEV_ID_PCH_ADP_I219_V16		0x1A1F
+#define E1000_DEV_ID_PCH_ADP_I219_LM17		0x1A1C
+#define E1000_DEV_ID_PCH_ADP_I219_V17		0x1A1D
+#define E1000_DEV_ID_PCH_RPL_I219_LM22		0x0DC7
+#define E1000_DEV_ID_PCH_RPL_I219_V22		0x0DC8
+#define E1000_DEV_ID_PCH_MTP_I219_LM18		0x550A
+#define E1000_DEV_ID_PCH_MTP_I219_V18		0x550B
+#define E1000_DEV_ID_PCH_MTP_I219_LM19		0x550C
+#define E1000_DEV_ID_PCH_MTP_I219_V19		0x550D
+#define E1000_DEV_ID_PCH_LNP_I219_LM20		0x550E
+#define E1000_DEV_ID_PCH_LNP_I219_V20		0x550F
+#define E1000_DEV_ID_PCH_LNP_I219_LM21		0x5510
+#define E1000_DEV_ID_PCH_LNP_I219_V21		0x5511
+#define E1000_DEV_ID_PCH_ARL_I219_LM24		0x57A0
+#define E1000_DEV_ID_PCH_ARL_I219_V24		0x57A1
+#define E1000_DEV_ID_PCH_PTP_I219_LM25		0x57B3
+#define E1000_DEV_ID_PCH_PTP_I219_V25		0x57B4
+#define E1000_DEV_ID_PCH_PTP_I219_LM26		0x57B5
+#define E1000_DEV_ID_PCH_PTP_I219_V26		0x57B6
+#define E1000_DEV_ID_PCH_PTP_I219_LM27		0x57B7
+#define E1000_DEV_ID_PCH_PTP_I219_V27		0x57B8
+#define E1000_DEV_ID_PCH_NVL_I219_LM29		0x57B9
+#define E1000_DEV_ID_PCH_NVL_I219_V29		0x57BA
 
 #define E1000_REVISION_4	4
 
@@ -115,6 +145,14 @@ enum e1000_mac_type {
 	e1000_pchlan,
 	e1000_pch2lan,
 	e1000_pch_lpt,
+	e1000_pch_spt,
+	e1000_pch_cnp,
+	e1000_pch_tgp,
+	e1000_pch_adp,
+	e1000_pch_mtp,
+	e1000_pch_lnp,
+	e1000_pch_ptp,
+	e1000_pch_nvp,
 };
 
 enum e1000_media_type {
@@ -160,6 +198,7 @@ enum e1000_bus_width {
 	e1000_bus_width_pcie_x1,
 	e1000_bus_width_pcie_x2,
 	e1000_bus_width_pcie_x4 = 4,
+	e1000_bus_width_pcie_x8 = 8,
 	e1000_bus_width_32,
 	e1000_bus_width_64,
 	e1000_bus_width_reserved
@@ -476,8 +515,9 @@ struct e1000_mac_operations {
 	s32  (*setup_led)(struct e1000_hw *);
 	void (*write_vfta)(struct e1000_hw *, u32, u32);
 	void (*config_collision_dist)(struct e1000_hw *);
-	void (*rar_set)(struct e1000_hw *, u8 *, u32);
+	int  (*rar_set)(struct e1000_hw *, u8 *, u32);
 	s32  (*read_mac_addr)(struct e1000_hw *);
+	u32  (*rar_get_count)(struct e1000_hw *);
 };
 
 /* When to use various PHY register access functions:
@@ -588,6 +628,7 @@ struct e1000_phy_info {
 	u32 id;
 	u32 reset_delay_us;	/* in usec */
 	u32 revision;
+	u32 retry_count;
 
 	enum e1000_media_type media_type;
 
@@ -604,6 +645,7 @@ struct e1000_phy_info {
 	bool polarity_correction;
 	bool speed_downgraded;
 	bool autoneg_wait_to_complete;
+	bool retry_enabled;
 };
 
 struct e1000_nvm_info {
@@ -655,12 +697,20 @@ struct e1000_shadow_ram {
 
 #define E1000_ICH8_SHADOW_RAM_WORDS		2048
 
+/* I218 PHY Ultra Low Power (ULP) states */
+enum e1000_ulp_state {
+	e1000_ulp_state_unknown,
+	e1000_ulp_state_off,
+	e1000_ulp_state_on,
+};
+
 struct e1000_dev_spec_ich8lan {
 	bool kmrn_lock_loss_workaround_enabled;
 	struct e1000_shadow_ram shadow_ram[E1000_ICH8_SHADOW_RAM_WORDS];
 	bool nvm_k1_enabled;
 	bool eee_disable;
 	u16 eee_lp_ability;
+	enum e1000_ulp_state ulp_state;
 };
 
 struct e1000_hw {
@@ -687,4 +737,4 @@ struct e1000_hw {
 #include "80003es2lan.h"
 #include "ich8lan.h"
 
-#endif
+#endif /* _E1000E_HW_H_ */

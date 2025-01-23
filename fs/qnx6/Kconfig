@@ -1,6 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-only
 config QNX6FS_FS
 	tristate "QNX6 file system support (read only)"
 	depends on BLOCK && CRC32
+	select BUFFER_HEAD
 	help
 	  This is the file system used by the real-time operating systems
 	  QNX 6 (also called QNX RTP).

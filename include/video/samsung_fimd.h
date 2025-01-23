@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /* include/video/samsung_fimd.h
  *
  * Copyright 2008 Openmoko, Inc.
@@ -9,16 +10,13 @@
  *
  * This is the register set for the fimd and new style framebuffer interface
  * found from the S3C2443 onwards into the S3C2416, S3C2450, the
- * S3C64XX series such as the S3C6400 and S3C6410, and EXYNOS series.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * S3C64XX series such as the S3C6400 and S3C6410, and Exynos series.
 */
 
 /* VIDCON0 */
 
 #define VIDCON0					0x00
+#define VIDCON0_DSI_EN				(1 << 30)
 #define VIDCON0_INTERLACE			(1 << 29)
 #define VIDCON0_VIDOUT_MASK			(0x7 << 26)
 #define VIDCON0_VIDOUT_SHIFT			26
@@ -107,7 +105,7 @@
 #define VIDCON2_ORGYCbCr			(1 << 8)
 #define VIDCON2_YUVORDCrCb			(1 << 7)
 
-/* PRTCON (S3C6410, S5PC100)
+/* PRTCON (S3C6410)
  * Might not be present in the S3C6410 documentation,
  * but tests prove it's there almost for sure; shouldn't hurt in any case.
  */
@@ -197,6 +195,7 @@
 #define WINCONx_BURSTLEN_8WORD			(0x1 << 9)
 #define WINCONx_BURSTLEN_4WORD			(0x2 << 9)
 #define WINCONx_ENWIN				(1 << 0)
+#define WINCONx_BLEND_MODE_MASK			(0xc2)
 
 #define WINCON0_BPPMODE_MASK			(0xf << 2)
 #define WINCON0_BPPMODE_SHIFT			2
@@ -210,6 +209,7 @@
 #define WINCON0_BPPMODE_24BPP_888		(0xb << 2)
 
 #define WINCON1_LOCALSEL_CAMIF			(1 << 23)
+#define WINCON1_ALPHA_MUL			(1 << 7)
 #define WINCON1_BLD_PIX				(1 << 6)
 #define WINCON1_BPPMODE_MASK			(0xf << 2)
 #define WINCON1_BPPMODE_SHIFT			2
@@ -288,8 +288,14 @@
 #define VIDISD14C_ALPHA1_B_LIMIT		0xf
 #define VIDISD14C_ALPHA1_B(_x)			((_x) << 0)
 
+#define VIDW_ALPHA				0x021c
+#define VIDW_ALPHA_R(_x)			((_x) << 16)
+#define VIDW_ALPHA_G(_x)			((_x) << 8)
+#define VIDW_ALPHA_B(_x)			((_x) << 0)
+
 /* Video buffer addresses */
 #define VIDW_BUF_START(_buff)			(0xA0 + ((_buff) * 8))
+#define VIDW_BUF_START_S(_buff)			(0x40A0 + ((_buff) * 8))
 #define VIDW_BUF_START1(_buff)			(0xA4 + ((_buff) * 8))
 #define VIDW_BUF_END(_buff)			(0xD0 + ((_buff) * 8))
 #define VIDW_BUF_END1(_buff)			(0xD4 + ((_buff) * 8))
@@ -355,7 +361,7 @@
 #define VIDINTCON0_INT_ENABLE			(1 << 0)
 
 #define VIDINTCON1				0x134
-#define VIDINTCON1_INT_I180			(1 << 2)
+#define VIDINTCON1_INT_I80			(1 << 2)
 #define VIDINTCON1_INT_FRAME			(1 << 1)
 #define VIDINTCON1_INT_FIFO			(1 << 0)
 
@@ -430,10 +436,24 @@
 #define WPALCON_W0PAL_16BPP_565			(0x6 << 0)
 
 /* Blending equation control */
+#define BLENDEQx(_win)				(0x244 + ((_win - 1) * 4))
+#define BLENDEQ_ZERO				0x0
+#define BLENDEQ_ONE				0x1
+#define BLENDEQ_ALPHA_A				0x2
+#define BLENDEQ_ONE_MINUS_ALPHA_A		0x3
+#define BLENDEQ_ALPHA0				0x6
+#define BLENDEQ_B_FUNC_F(_x)			(_x << 6)
+#define BLENDEQ_A_FUNC_F(_x)			(_x << 0)
 #define BLENDCON				0x260
 #define BLENDCON_NEW_MASK			(1 << 0)
 #define BLENDCON_NEW_8BIT_ALPHA_VALUE		(1 << 0)
 #define BLENDCON_NEW_4BIT_ALPHA_VALUE		(0 << 0)
+
+/* Display port clock control */
+#define DP_MIE_CLKCON				0x27c
+#define DP_MIE_CLK_DISABLE			0x0
+#define DP_MIE_CLK_DP_ENABLE			0x2
+#define DP_MIE_CLK_MIE_ENABLE			0x3
 
 /* Notes on per-window bpp settings
  *
@@ -455,6 +475,10 @@
  * 1110		-none-	 -none-	  -none-   -none-    -none-
  * 1111		-none-	 -none-   -none-   -none-    -none-
 */
+
+#define WIN_RGB_ORDER(_win)			(0x2020 + ((_win) * 4))
+#define WIN_RGB_ORDER_FORWARD			(0 << 11)
+#define WIN_RGB_ORDER_REVERSE			(1 << 11)
 
 /* FIMD Version 8 register offset definitions */
 #define FIMD_V8_VIDTCON0	0x20010

@@ -1,19 +1,8 @@
-/* Driver for Realtek RTS51xx USB card reader
+// SPDX-License-Identifier: GPL-2.0+
+/*
+ * Driver for Realtek RTS51xx USB card reader
  *
  * Copyright(c) 2009 Realtek Semiconductor Corp. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2, or (at your option) any
- * later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  * Author:
  *   wwang (wei_wang@realsil.com.cn)
@@ -39,15 +28,18 @@
 #include "transport.h"
 #include "protocol.h"
 #include "debug.h"
+#include "scsiglue.h"
+
+#define DRV_NAME "ums-realtek"
 
 MODULE_DESCRIPTION("Driver for Realtek USB Card Reader");
 MODULE_AUTHOR("wwang <wei_wang@realsil.com.cn>");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("1.03");
+MODULE_IMPORT_NS(USB_STORAGE);
 
 static int auto_delink_en = 1;
 module_param(auto_delink_en, int, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(auto_delink_en, "enable auto delink");
+MODULE_PARM_DESC(auto_delink_en, "auto delink mode (0=firmware, 1=software [default])");
 
 #ifdef CONFIG_REALTEK_AUTOPM
 static int ss_en = 1;
@@ -115,7 +107,7 @@ struct rts51x_chip {
 	enum RTS51X_STAT state;
 	int support_auto_delink;
 #endif
-	/* used to back up the protocal choosen in probe1 phase */
+	/* used to back up the protocol chosen in probe1 phase */
 	proto_cmnd proto_handler_backup;
 };
 
@@ -264,8 +256,10 @@ static int rts51x_bulk_transport(struct us_data *us, u8 lun,
 	if (bcs->Tag != us->tag)
 		return USB_STOR_TRANSPORT_ERROR;
 
-	/* try to compute the actual residue, based on how much data
-	 * was really transferred and what the device tells us */
+	/*
+	 * try to compute the actual residue, based on how much data
+	 * was really transferred and what the device tells us
+	 */
 	if (residue)
 		residue = residue < buf_len ? residue : buf_len;
 
@@ -283,7 +277,8 @@ static int rts51x_bulk_transport(struct us_data *us, u8 lun,
 		return USB_STOR_TRANSPORT_FAILED;
 
 	case US_BULK_STAT_PHASE:
-		/* phase error -- note that a transport reset will be
+		/*
+		 * phase error -- note that a transport reset will be
 		 * invoked by the invoke_transport() function
 		 */
 		return USB_STOR_TRANSPORT_ERROR;
@@ -370,7 +365,7 @@ static int rts51x_read_mem(struct us_data *us, u16 addr, u8 *data, u16 len)
 
 	buf = kmalloc(len, GFP_NOIO);
 	if (buf == NULL)
-		return USB_STOR_TRANSPORT_ERROR;
+		return -ENOMEM;
 
 	usb_stor_dbg(us, "addr = 0x%x, len = %d\n", addr, len);
 
@@ -626,6 +621,7 @@ static int config_autodelink_after_power_on(struct us_data *us)
 	return 0;
 }
 
+#ifdef CONFIG_PM
 static int config_autodelink_before_power_down(struct us_data *us)
 {
 	struct rts51x_chip *chip = (struct rts51x_chip *)(us->extra);
@@ -716,6 +712,7 @@ static void fw5895_init(struct us_data *us)
 		}
 	}
 }
+#endif
 
 #ifdef CONFIG_REALTEK_AUTOPM
 static void fw5895_set_mmc_wp(struct us_data *us)
@@ -755,9 +752,9 @@ static void rts51x_modi_suspend_timer(struct rts51x_chip *chip)
 	mod_timer(&chip->rts51x_suspend_timer, chip->timer_expires);
 }
 
-static void rts51x_suspend_timer_fn(unsigned long data)
+static void rts51x_suspend_timer_fn(struct timer_list *t)
 {
-	struct rts51x_chip *chip = (struct rts51x_chip *)data;
+	struct rts51x_chip *chip = from_timer(chip, t, rts51x_suspend_timer);
 	struct us_data *us = chip->us;
 
 	switch (rts51x_get_stat(chip)) {
@@ -767,18 +764,16 @@ static void rts51x_suspend_timer_fn(unsigned long data)
 		break;
 	case RTS51X_STAT_IDLE:
 	case RTS51X_STAT_SS:
-		usb_stor_dbg(us, "RTS51X_STAT_SS, intf->pm_usage_cnt:%d, power.usage:%d\n",
-			     atomic_read(&us->pusb_intf->pm_usage_cnt),
+		usb_stor_dbg(us, "RTS51X_STAT_SS, power.usage:%d\n",
 			     atomic_read(&us->pusb_intf->dev.power.usage_count));
 
-		if (atomic_read(&us->pusb_intf->pm_usage_cnt) > 0) {
+		if (atomic_read(&us->pusb_intf->dev.power.usage_count) > 0) {
 			usb_stor_dbg(us, "Ready to enter SS state\n");
 			rts51x_set_stat(chip, RTS51X_STAT_SS);
 			/* ignore mass storage interface's children */
 			pm_suspend_ignore_children(&us->pusb_intf->dev, true);
 			usb_autopm_put_interface_async(us->pusb_intf);
-			usb_stor_dbg(us, "RTS51X_STAT_SS 01, intf->pm_usage_cnt:%d, power.usage:%d\n",
-				     atomic_read(&us->pusb_intf->pm_usage_cnt),
+			usb_stor_dbg(us, "RTS51X_STAT_SS 01, power.usage:%d\n",
 				     atomic_read(&us->pusb_intf->dev.power.usage_count));
 		}
 		break;
@@ -811,11 +806,10 @@ static void rts51x_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 	int ret;
 
 	if (working_scsi(srb)) {
-		usb_stor_dbg(us, "working scsi, intf->pm_usage_cnt:%d, power.usage:%d\n",
-			     atomic_read(&us->pusb_intf->pm_usage_cnt),
+		usb_stor_dbg(us, "working scsi, power.usage:%d\n",
 			     atomic_read(&us->pusb_intf->dev.power.usage_count));
 
-		if (atomic_read(&us->pusb_intf->pm_usage_cnt) <= 0) {
+		if (atomic_read(&us->pusb_intf->dev.power.usage_count) <= 0) {
 			ret = usb_autopm_get_interface(us->pusb_intf);
 			usb_stor_dbg(us, "working scsi, ret=%d\n", ret);
 		}
@@ -921,11 +915,10 @@ static int realtek_cr_autosuspend_setup(struct us_data *us)
 	us->proto_handler = rts51x_invoke_transport;
 
 	chip->timer_expires = 0;
-	setup_timer(&chip->rts51x_suspend_timer, rts51x_suspend_timer_fn,
-			(unsigned long)chip);
+	timer_setup(&chip->rts51x_suspend_timer, rts51x_suspend_timer_fn, 0);
 	fw5895_init(us);
 
-	/* enable autosuspend funciton of the usb device */
+	/* enable autosuspend function of the usb device */
 	usb_enable_autosuspend(us->pusb_dev);
 
 	return 0;
@@ -1004,12 +997,15 @@ static int init_realtek_cr(struct us_data *us)
 			goto INIT_FAIL;
 	}
 
-	if (CHECK_FW_VER(chip, 0x5888) || CHECK_FW_VER(chip, 0x5889) ||
-	    CHECK_FW_VER(chip, 0x5901))
-		SET_AUTO_DELINK(chip);
-	if (STATUS_LEN(chip) == 16) {
-		if (SUPPORT_AUTO_DELINK(chip))
+	if (CHECK_PID(chip, 0x0138) || CHECK_PID(chip, 0x0158) ||
+	    CHECK_PID(chip, 0x0159)) {
+		if (CHECK_FW_VER(chip, 0x5888) || CHECK_FW_VER(chip, 0x5889) ||
+				CHECK_FW_VER(chip, 0x5901))
 			SET_AUTO_DELINK(chip);
+		if (STATUS_LEN(chip) == 16) {
+			if (SUPPORT_AUTO_DELINK(chip))
+				SET_AUTO_DELINK(chip);
+		}
 	}
 #ifdef CONFIG_REALTEK_AUTOPM
 	if (ss_en)
@@ -1032,6 +1028,8 @@ INIT_FAIL:
 	return -EIO;
 }
 
+static struct scsi_host_template realtek_cr_host_template;
+
 static int realtek_cr_probe(struct usb_interface *intf,
 			    const struct usb_device_id *id)
 {
@@ -1042,7 +1040,8 @@ static int realtek_cr_probe(struct usb_interface *intf,
 
 	result = usb_stor_probe1(&us, intf, id,
 				 (id - realtek_cr_ids) +
-				 realtek_cr_unusual_dev_list);
+				 realtek_cr_unusual_dev_list,
+				 &realtek_cr_host_template);
 	if (result)
 		return result;
 
@@ -1052,7 +1051,7 @@ static int realtek_cr_probe(struct usb_interface *intf,
 }
 
 static struct usb_driver realtek_cr_driver = {
-	.name = "ums-realtek",
+	.name = DRV_NAME,
 	.probe = realtek_cr_probe,
 	.disconnect = usb_stor_disconnect,
 	/* .suspend =      usb_stor_suspend, */
@@ -1068,4 +1067,4 @@ static struct usb_driver realtek_cr_driver = {
 	.no_dynamic_id = 1,
 };
 
-module_usb_driver(realtek_cr_driver);
+module_usb_stor_driver(realtek_cr_driver, realtek_cr_host_template, DRV_NAME);

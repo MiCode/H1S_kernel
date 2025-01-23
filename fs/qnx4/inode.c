@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * QNX4 file system, Linux implementation.
  *
@@ -28,14 +29,14 @@
 static const struct super_operations qnx4_sops;
 
 static struct inode *qnx4_alloc_inode(struct super_block *sb);
-static void qnx4_destroy_inode(struct inode *inode);
+static void qnx4_free_inode(struct inode *inode);
 static int qnx4_remount(struct super_block *sb, int *flags, char *data);
 static int qnx4_statfs(struct dentry *, struct kstatfs *);
 
 static const struct super_operations qnx4_sops =
 {
 	.alloc_inode	= qnx4_alloc_inode,
-	.destroy_inode	= qnx4_destroy_inode,
+	.free_inode	= qnx4_free_inode,
 	.statfs		= qnx4_statfs,
 	.remount_fs	= qnx4_remount,
 };
@@ -44,9 +45,10 @@ static int qnx4_remount(struct super_block *sb, int *flags, char *data)
 {
 	struct qnx4_sb_info *qs;
 
+	sync_filesystem(sb);
 	qs = qnx4_sb(sb);
 	qs->Version = QNX4_VERSION;
-	*flags |= MS_RDONLY;
+	*flags |= SB_RDONLY;
 	return 0;
 }
 
@@ -135,8 +137,7 @@ static int qnx4_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_bfree   = qnx4_count_free_blocks(sb);
 	buf->f_bavail  = buf->f_bfree;
 	buf->f_namelen = QNX4_NAME_MAX;
-	buf->f_fsid.val[0] = (u32)id;
-	buf->f_fsid.val[1] = (u32)(id >> 32);
+	buf->f_fsid    = u64_to_fsid(id);
 
 	return 0;
 }
@@ -198,7 +199,9 @@ static int qnx4_fill_super(struct super_block *s, void *data, int silent)
 
 	s->s_op = &qnx4_sops;
 	s->s_magic = QNX4_SUPER_MAGIC;
-	s->s_flags |= MS_RDONLY;	/* Yup, read-only yet */
+	s->s_flags |= SB_RDONLY;	/* Yup, read-only yet */
+	s->s_time_min = 0;
+	s->s_time_max = U32_MAX;
 
 	/* Check the superblock signature. Since the qnx4 code is
 	   dangerous, we should leave as quickly as possible
@@ -242,17 +245,18 @@ static void qnx4_kill_sb(struct super_block *sb)
 	}
 }
 
-static int qnx4_readpage(struct file *file, struct page *page)
+static int qnx4_read_folio(struct file *file, struct folio *folio)
 {
-	return block_read_full_page(page,qnx4_get_block);
+	return block_read_full_folio(folio, qnx4_get_block);
 }
 
 static sector_t qnx4_bmap(struct address_space *mapping, sector_t block)
 {
 	return generic_block_bmap(mapping,block,qnx4_get_block);
 }
+
 static const struct address_space_operations qnx4_aops = {
-	.readpage	= qnx4_readpage,
+	.read_folio	= qnx4_read_folio,
 	.bmap		= qnx4_bmap
 };
 
@@ -301,8 +305,7 @@ struct inode *qnx4_iget(struct super_block *sb, unsigned long ino)
 	inode->i_mtime.tv_nsec = 0;
 	inode->i_atime.tv_sec   = le32_to_cpu(raw_inode->di_atime);
 	inode->i_atime.tv_nsec = 0;
-	inode->i_ctime.tv_sec   = le32_to_cpu(raw_inode->di_ctime);
-	inode->i_ctime.tv_nsec = 0;
+	inode_set_ctime(inode, le32_to_cpu(raw_inode->di_ctime), 0);
 	inode->i_blocks  = le32_to_cpu(raw_inode->di_first_xtnt.xtnt_size);
 
 	memcpy(qnx4_inode, raw_inode, QNX4_DIR_ENTRY_SIZE);
@@ -315,6 +318,7 @@ struct inode *qnx4_iget(struct super_block *sb, unsigned long ino)
 		inode->i_fop = &qnx4_dir_operations;
 	} else if (S_ISLNK(inode->i_mode)) {
 		inode->i_op = &page_symlink_inode_operations;
+		inode_nohighmem(inode);
 		inode->i_mapping->a_ops = &qnx4_aops;
 		qnx4_i(inode)->mmu_private = inode->i_size;
 	} else {
@@ -334,21 +338,15 @@ static struct kmem_cache *qnx4_inode_cachep;
 static struct inode *qnx4_alloc_inode(struct super_block *sb)
 {
 	struct qnx4_inode_info *ei;
-	ei = kmem_cache_alloc(qnx4_inode_cachep, GFP_KERNEL);
+	ei = alloc_inode_sb(sb, qnx4_inode_cachep, GFP_KERNEL);
 	if (!ei)
 		return NULL;
 	return &ei->vfs_inode;
 }
 
-static void qnx4_i_callback(struct rcu_head *head)
+static void qnx4_free_inode(struct inode *inode)
 {
-	struct inode *inode = container_of(head, struct inode, i_rcu);
 	kmem_cache_free(qnx4_inode_cachep, qnx4_i(inode));
-}
-
-static void qnx4_destroy_inode(struct inode *inode)
-{
-	call_rcu(&inode->i_rcu, qnx4_i_callback);
 }
 
 static void init_once(void *foo)
@@ -363,7 +361,7 @@ static int init_inodecache(void)
 	qnx4_inode_cachep = kmem_cache_create("qnx4_inode_cache",
 					     sizeof(struct qnx4_inode_info),
 					     0, (SLAB_RECLAIM_ACCOUNT|
-						SLAB_MEM_SPREAD),
+						SLAB_MEM_SPREAD|SLAB_ACCOUNT),
 					     init_once);
 	if (qnx4_inode_cachep == NULL)
 		return -ENOMEM;
@@ -422,4 +420,5 @@ static void __exit exit_qnx4_fs(void)
 module_init(init_qnx4_fs)
 module_exit(exit_qnx4_fs)
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(ANDROID_GKI_VFS_EXPORT_ONLY);
 

@@ -1,20 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * rtc-rc5t583.c -- RICOH RC5T583 Real Time Clock
  *
  * Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved.
  * Author: Venu Byravarasu <vbyravarasu@nvidia.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>. */
+ */
 
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -128,6 +118,7 @@ static int rc5t583_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alm)
 		return ret;
 	}
 
+	alm->time.tm_sec = 0;
 	alm->time.tm_min = bcd2bin(alarm_data[0]);
 	alm->time.tm_hour = bcd2bin(alarm_data[1]);
 	alm->time.tm_mday = bcd2bin(alarm_data[2]);
@@ -271,12 +262,11 @@ static int rc5t583_rtc_probe(struct platform_device *pdev)
  * Disable rc5t583 RTC interrupts.
  * Sets status flag to free.
  */
-static int rc5t583_rtc_remove(struct platform_device *pdev)
+static void rc5t583_rtc_remove(struct platform_device *pdev)
 {
 	struct rc5t583_rtc *rc5t583_rtc = platform_get_drvdata(pdev);
 
 	rc5t583_rtc_alarm_irq_enable(&rc5t583_rtc->rtc->dev, 0);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -308,9 +298,8 @@ static SIMPLE_DEV_PM_OPS(rc5t583_rtc_pm_ops, rc5t583_rtc_suspend,
 
 static struct platform_driver rc5t583_rtc_driver = {
 	.probe		= rc5t583_rtc_probe,
-	.remove		= rc5t583_rtc_remove,
+	.remove_new	= rc5t583_rtc_remove,
 	.driver		= {
-		.owner	= THIS_MODULE,
 		.name	= "rtc-rc5t583",
 		.pm	= &rc5t583_rtc_pm_ops,
 	},

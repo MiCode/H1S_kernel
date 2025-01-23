@@ -1,11 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright 2011-2012, Meador Inge, Mentor Graphics Corporation.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; version 2 of the
- * License.
- *
  */
 
 #ifndef _ASM_MPIC_MSGR_H
@@ -122,9 +117,9 @@ static inline void mpic_msgr_set_destination(struct mpic_msgr *msgr,
  * @msgr:	the message register whose IRQ is to be returned
  *
  * Returns the IRQ number associated with the given message register.
- * NO_IRQ is returned if this message register is not capable of
- * receiving interrupts.  What message register can and cannot receive
- * interrupts is specified in the device tree for the system.
+ * 0 is returned if this message register is not capable of receiving
+ * interrupts.  What message register can and cannot receive interrupts is
+ * specified in the device tree for the system.
  */
 static inline int mpic_msgr_get_irq(struct mpic_msgr *msgr)
 {

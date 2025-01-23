@@ -1,47 +1,69 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
 #include <linux/smp.h>
 #include <linux/reboot.h>
 #include <linux/kexec.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/crash_dump.h>
 #include <linux/delay.h>
 #include <linux/irq.h>
 #include <linux/types.h>
 #include <linux/sched.h>
+#include <linux/sched/task_stack.h>
 
 /* This keeps a track of which one is crashing cpu. */
 static int crashing_cpu = -1;
 static cpumask_t cpus_in_crash = CPU_MASK_NONE;
 
 #ifdef CONFIG_SMP
-static void crash_shutdown_secondary(void *ignore)
+static void crash_shutdown_secondary(void *passed_regs)
 {
-	struct pt_regs *regs;
+	struct pt_regs *regs = passed_regs;
 	int cpu = smp_processor_id();
 
-	regs = task_pt_regs(current);
+	/*
+	 * If we are passed registers, use those.  Otherwise get the
+	 * regs from the last interrupt, which should be correct, as
+	 * we are in an interrupt.  But if the regs are not there,
+	 * pull them from the top of the stack.  They are probably
+	 * wrong, but we need something to keep from crashing again.
+	 */
+	if (!regs)
+		regs = get_irq_regs();
+	if (!regs)
+		regs = task_pt_regs(current);
 
 	if (!cpu_online(cpu))
 		return;
 
+	/* We won't be sent IPIs any more. */
+	set_cpu_online(cpu, false);
+
 	local_irq_disable();
-	if (!cpu_isset(cpu, cpus_in_crash))
+	if (!cpumask_test_cpu(cpu, &cpus_in_crash))
 		crash_save_cpu(regs, cpu);
-	cpu_set(cpu, cpus_in_crash);
+	cpumask_set_cpu(cpu, &cpus_in_crash);
 
 	while (!atomic_read(&kexec_ready_to_reboot))
 		cpu_relax();
-	relocated_kexec_smp_wait(NULL);
+
+	kexec_reboot();
+
 	/* NOTREACHED */
 }
 
 static void crash_kexec_prepare_cpus(void)
 {
+	static int cpus_stopped;
 	unsigned int msecs;
+	unsigned int ncpus;
 
-	unsigned int ncpus = num_online_cpus() - 1;/* Excluding the panic cpu */
+	if (cpus_stopped)
+		return;
 
-	dump_send_ipi(crash_shutdown_secondary);
+	ncpus = num_online_cpus() - 1;/* Excluding the panic cpu */
+
+	smp_call_function(crash_shutdown_secondary, NULL, 0);
 	smp_wmb();
 
 	/*
@@ -50,10 +72,21 @@ static void crash_kexec_prepare_cpus(void)
 	 */
 	pr_emerg("Sending IPI to other cpus...\n");
 	msecs = 10000;
-	while ((cpus_weight(cpus_in_crash) < ncpus) && (--msecs > 0)) {
+	while ((cpumask_weight(&cpus_in_crash) < ncpus) && (--msecs > 0)) {
 		cpu_relax();
 		mdelay(1);
 	}
+
+	cpus_stopped = 1;
+}
+
+/* Override the weak function in kernel/panic.c */
+void crash_smp_send_stop(void)
+{
+	if (_crash_smp_send_stop)
+		_crash_smp_send_stop();
+
+	crash_kexec_prepare_cpus();
 }
 
 #else /* !defined(CONFIG_SMP)  */
@@ -66,5 +99,5 @@ void default_machine_crash_shutdown(struct pt_regs *regs)
 	crashing_cpu = smp_processor_id();
 	crash_save_cpu(regs, crashing_cpu);
 	crash_kexec_prepare_cpus();
-	cpu_set(crashing_cpu, cpus_in_crash);
+	cpumask_set_cpu(crashing_cpu, &cpus_in_crash);
 }

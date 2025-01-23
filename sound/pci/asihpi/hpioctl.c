@@ -1,22 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*******************************************************************************
-
     AudioScience HPI driver
-    Copyright (C) 1997-2011  AudioScience Inc. <support@audioscience.com>
+    Common Linux HPI ioctl and module probe/remove functions
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of version 2 of the GNU General Public License as
-    published by the Free Software Foundation;
+    Copyright (C) 1997-2014  AudioScience Inc. <support@audioscience.com>
 
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
-
-Common Linux HPI ioctl and module probe/remove functions
 *******************************************************************************/
 #define SOURCEFILE_NAME "hpioctl.c"
 
@@ -29,12 +18,15 @@ Common Linux HPI ioctl and module probe/remove functions
 #include "hpicmn.h"
 
 #include <linux/fs.h>
+#include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/moduleparam.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/pci.h>
 #include <linux/stringify.h>
 #include <linux/module.h>
+#include <linux/vmalloc.h>
+#include <linux/nospec.h>
 
 #ifdef MODULE_FIRMWARE
 MODULE_FIRMWARE("asihpi/dsp5000.bin");
@@ -47,14 +39,14 @@ MODULE_FIRMWARE("asihpi/dsp8900.bin");
 #endif
 
 static int prealloc_stream_buf;
-module_param(prealloc_stream_buf, int, S_IRUGO);
+module_param(prealloc_stream_buf, int, 0444);
 MODULE_PARM_DESC(prealloc_stream_buf,
 	"Preallocate size for per-adapter stream buffer");
 
 /* Allow the debug level to be changed after module load.
  E.g.   echo 2 > /sys/module/asihpi/parameters/hpiDebugLevel
 */
-module_param(hpi_debug_level, int, S_IRUGO | S_IWUSR);
+module_param(hpi_debug_level, int, 0644);
 MODULE_PARM_DESC(hpi_debug_level, "debug verbosity 0..5");
 
 /* List of adapters found */
@@ -105,6 +97,7 @@ long asihpi_hpi_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	void __user *puhr;
 	union hpi_message_buffer_v1 *hm;
 	union hpi_response_buffer_v1 *hr;
+	u16 msg_size;
 	u16 res_max_size;
 	u32 uncopied_bytes;
 	int err = 0;
@@ -113,7 +106,7 @@ long asihpi_hpi_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		return -EINVAL;
 
 	hm = kmalloc(sizeof(*hm), GFP_KERNEL);
-	hr = kmalloc(sizeof(*hr), GFP_KERNEL);
+	hr = kzalloc(sizeof(*hr), GFP_KERNEL);
 	if (!hm || !hr) {
 		err = -ENOMEM;
 		goto out;
@@ -129,21 +122,24 @@ long asihpi_hpi_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	}
 
 	/* Now read the message size and data from user space.  */
-	if (get_user(hm->h.size, (u16 __user *)puhm)) {
+	if (get_user(msg_size, (u16 __user *)puhm)) {
 		err = -EFAULT;
 		goto out;
 	}
-	if (hm->h.size > sizeof(*hm))
-		hm->h.size = sizeof(*hm);
+	if (msg_size > sizeof(*hm))
+		msg_size = sizeof(*hm);
 
 	/* printk(KERN_INFO "message size %d\n", hm->h.wSize); */
 
-	uncopied_bytes = copy_from_user(hm, puhm, hm->h.size);
+	uncopied_bytes = copy_from_user(hm, puhm, msg_size);
 	if (uncopied_bytes) {
 		HPI_DEBUG_LOG(ERROR, "uncopied bytes %d\n", uncopied_bytes);
 		err = -EFAULT;
 		goto out;
 	}
+
+	/* Override h.size in case it is changed between two userspace fetches */
+	hm->h.size = msg_size;
 
 	if (get_user(res_max_size, (u16 __user *)puhr)) {
 		err = -EFAULT;
@@ -155,6 +151,8 @@ long asihpi_hpi_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		err = -EFAULT;
 		goto out;
 	}
+
+	res_max_size = min_t(size_t, res_max_size, sizeof(*hr));
 
 	switch (hm->h.function) {
 	case HPI_SUBSYS_CREATE_ADAPTER:
@@ -182,7 +180,8 @@ long asihpi_hpi_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		struct hpi_adapter *pa = NULL;
 
 		if (hm->h.adapter_index < ARRAY_SIZE(adapters))
-			pa = &adapters[hm->h.adapter_index];
+			pa = &adapters[array_index_nospec(hm->h.adapter_index,
+							  ARRAY_SIZE(adapters))];
 
 		if (!pa || !pa->adapter || !pa->adapter->type) {
 			hpi_init_response(&hr->r0, hm->h.object,
@@ -307,16 +306,53 @@ out:
 	return err;
 }
 
+static int asihpi_irq_count;
+
+static irqreturn_t asihpi_isr(int irq, void *dev_id)
+{
+	struct hpi_adapter *a = dev_id;
+	int handled;
+
+	if (!a->adapter->irq_query_and_clear) {
+		pr_err("asihpi_isr ASI%04X:%d no handler\n", a->adapter->type,
+			a->adapter->index);
+		return IRQ_NONE;
+	}
+
+	handled = a->adapter->irq_query_and_clear(a->adapter, 0);
+
+	if (!handled)
+		return IRQ_NONE;
+
+	asihpi_irq_count++;
+	/* printk(KERN_INFO "asihpi_isr %d ASI%04X:%d irq handled\n",
+	   asihpi_irq_count, a->adapter->type, a->adapter->index); */
+
+	if (a->interrupt_callback)
+		return IRQ_WAKE_THREAD;
+
+	return IRQ_HANDLED;
+}
+
+static irqreturn_t asihpi_isr_thread(int irq, void *dev_id)
+{
+	struct hpi_adapter *a = dev_id;
+
+	if (a->interrupt_callback)
+		a->interrupt_callback(a);
+	return IRQ_HANDLED;
+}
+
 int asihpi_adapter_probe(struct pci_dev *pci_dev,
 			 const struct pci_device_id *pci_id)
 {
-	int idx, nm;
+	int idx, nm, low_latency_mode = 0, irq_supported = 0;
 	int adapter_index;
 	unsigned int memlen;
 	struct hpi_message hm;
 	struct hpi_response hr;
 	struct hpi_adapter adapter;
-	struct hpi_pci pci;
+	struct hpi_pci pci = { 0 };
 
 	memset(&adapter, 0, sizeof(adapter));
 
@@ -325,7 +361,7 @@ int asihpi_adapter_probe(struct pci_dev *pci_dev,
 		pci_dev->device, pci_dev->subsystem_vendor,
 		pci_dev->subsystem_device, pci_dev->devfn);
 
-	if (pci_enable_device(pci_dev) < 0) {
+	if (pcim_enable_device(pci_dev) < 0) {
 		dev_err(&pci_dev->dev,
 			"pci_enable_device failed, disabling device\n");
 		return -EIO;
@@ -388,8 +424,38 @@ int asihpi_adapter_probe(struct pci_dev *pci_dev,
 	hm.adapter_index = adapter.adapter->index;
 	hpi_send_recv_ex(&hm, &hr, HOWNER_KERNEL);
 
-	if (hr.error)
+	if (hr.error) {
+		HPI_DEBUG_LOG(ERROR, "HPI_ADAPTER_OPEN failed, aborting\n");
 		goto err;
+	}
+
+	/* Check if current mode == Low Latency mode */
+	hpi_init_message_response(&hm, &hr, HPI_OBJ_ADAPTER,
+		HPI_ADAPTER_GET_MODE);
+	hm.adapter_index = adapter.adapter->index;
+	hpi_send_recv_ex(&hm, &hr, HOWNER_KERNEL);
+
+	if (!hr.error
+		&& hr.u.ax.mode.adapter_mode == HPI_ADAPTER_MODE_LOW_LATENCY)
+		low_latency_mode = 1;
+	else
+		dev_info(&pci_dev->dev,
+			"Adapter at index %d is not in low latency mode\n",
+			adapter.adapter->index);
+
+	/* Check if IRQs are supported */
+	hpi_init_message_response(&hm, &hr, HPI_OBJ_ADAPTER,
+		HPI_ADAPTER_GET_PROPERTY);
+	hm.adapter_index = adapter.adapter->index;
+	hm.u.ax.property_set.property = HPI_ADAPTER_PROPERTY_SUPPORTS_IRQ;
+	hpi_send_recv_ex(&hm, &hr, HOWNER_KERNEL);
+	if (hr.error || !hr.u.ax.property_get.parameter1) {
+		dev_info(&pci_dev->dev,
+			"IRQs not supported by adapter at index %d\n",
+			adapter.adapter->index);
+	} else {
+		irq_supported = 1;
+	}
 
 	/* WARNING can't init mutex in 'adapter'
 	 * and then copy it to adapters[] ?!?!
@@ -398,13 +464,52 @@ int asihpi_adapter_probe(struct pci_dev *pci_dev,
 	mutex_init(&adapters[adapter_index].mutex);
 	pci_set_drvdata(pci_dev, &adapters[adapter_index]);
 
+	if (low_latency_mode && irq_supported) {
+		if (!adapter.adapter->irq_query_and_clear) {
+			dev_err(&pci_dev->dev,
+				"no IRQ handler for adapter %d, aborting\n",
+				adapter.adapter->index);
+			goto err;
+		}
+
+		/* Disable IRQ generation on DSP side by setting the rate to 0 */
+		hpi_init_message_response(&hm, &hr, HPI_OBJ_ADAPTER,
+			HPI_ADAPTER_SET_PROPERTY);
+		hm.adapter_index = adapter.adapter->index;
+		hm.u.ax.property_set.property = HPI_ADAPTER_PROPERTY_IRQ_RATE;
+		hm.u.ax.property_set.parameter1 = 0;
+		hm.u.ax.property_set.parameter2 = 0;
+		hpi_send_recv_ex(&hm, &hr, HOWNER_KERNEL);
+		if (hr.error) {
+			HPI_DEBUG_LOG(ERROR,
+				"HPI_ADAPTER_GET_MODE failed, aborting\n");
+			goto err;
+		}
+
+		/* Note: request_irq calls asihpi_isr here */
+		if (request_threaded_irq(pci_dev->irq, asihpi_isr,
+					 asihpi_isr_thread, IRQF_SHARED,
+					 "asihpi", &adapters[adapter_index])) {
+			dev_err(&pci_dev->dev, "request_irq(%d) failed\n",
+				pci_dev->irq);
+			goto err;
+		}
+
+		adapters[adapter_index].interrupt_mode = 1;
+
+		dev_info(&pci_dev->dev, "using irq %d\n", pci_dev->irq);
+		adapters[adapter_index].irq = pci_dev->irq;
+	} else {
+		dev_info(&pci_dev->dev, "using polled mode\n");
+	}
+
 	dev_info(&pci_dev->dev, "probe succeeded for ASI%04X HPI index %d\n",
 		 adapter.adapter->type, adapter_index);
 
 	return 0;
 
 err:
-	for (idx = 0; idx < HPI_MAX_ADAPTER_MEM_SPACES; idx++) {
+	while (--idx >= 0) {
 		if (pci.ap_mem_base[idx]) {
 			iounmap(pci.ap_mem_base[idx]);
 			pci.ap_mem_base[idx] = NULL;
@@ -431,19 +536,28 @@ void asihpi_adapter_remove(struct pci_dev *pci_dev)
 	pa = pci_get_drvdata(pci_dev);
 	pci = pa->adapter->pci;
 
+	/* Disable IRQ generation on DSP side */
+	hpi_init_message_response(&hm, &hr, HPI_OBJ_ADAPTER,
+		HPI_ADAPTER_SET_PROPERTY);
+	hm.adapter_index = pa->adapter->index;
+	hm.u.ax.property_set.property = HPI_ADAPTER_PROPERTY_IRQ_RATE;
+	hm.u.ax.property_set.parameter1 = 0;
+	hm.u.ax.property_set.parameter2 = 0;
+	hpi_send_recv_ex(&hm, &hr, HOWNER_KERNEL);
+
 	hpi_init_message_response(&hm, &hr, HPI_OBJ_ADAPTER,
 		HPI_ADAPTER_DELETE);
 	hm.adapter_index = pa->adapter->index;
 	hpi_send_recv_ex(&hm, &hr, HOWNER_KERNEL);
 
 	/* unmap PCI memory space, mapped during device init. */
-	for (idx = 0; idx < HPI_MAX_ADAPTER_MEM_SPACES; idx++) {
-		if (pci.ap_mem_base[idx])
-			iounmap(pci.ap_mem_base[idx]);
-	}
+	for (idx = 0; idx < HPI_MAX_ADAPTER_MEM_SPACES; ++idx)
+		iounmap(pci.ap_mem_base[idx]);
 
-	if (pa->p_buffer)
-		vfree(pa->p_buffer);
+	if (pa->irq)
+		free_irq(pa->irq, pa);
+
+	vfree(pa->p_buffer);
 
 	if (1)
 		dev_info(&pci_dev->dev,

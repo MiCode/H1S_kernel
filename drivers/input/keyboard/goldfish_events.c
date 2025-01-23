@@ -1,16 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2007 Google, Inc.
  * Copyright (C) 2012 Intel, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
 
 #include <linux/module.h>
@@ -22,6 +13,7 @@
 #include <linux/slab.h>
 #include <linux/irq.h>
 #include <linux/io.h>
+#include <linux/acpi.h>
 
 enum {
 	REG_READ        = 0x00,
@@ -38,13 +30,13 @@ struct event_dev {
 	struct input_dev *input;
 	int irq;
 	void __iomem *addr;
-	char name[0];
+	char name[];
 };
 
 static irqreturn_t events_interrupt(int irq, void *dev_id)
 {
 	struct event_dev *edev = dev_id;
-	unsigned type, code, value;
+	unsigned int type, code, value;
 
 	type = __raw_readl(edev->addr + REG_READ);
 	code = __raw_readl(edev->addr + REG_READ);
@@ -56,7 +48,7 @@ static irqreturn_t events_interrupt(int irq, void *dev_id)
 }
 
 static void events_import_bits(struct event_dev *edev,
-			unsigned long bits[], unsigned type, size_t count)
+			unsigned long bits[], unsigned int type, size_t count)
 {
 	void __iomem *addr = edev->addr;
 	int i, j;
@@ -98,6 +90,7 @@ static void events_import_abs_params(struct event_dev *edev)
 
 		for (j = 0; j < ARRAY_SIZE(val); j++) {
 			int offset = (i * ARRAY_SIZE(val) + j) * sizeof(u32);
+
 			val[j] = __raw_readl(edev->addr + REG_DATA + offset);
 		}
 
@@ -111,7 +104,7 @@ static int events_probe(struct platform_device *pdev)
 	struct input_dev *input_dev;
 	struct event_dev *edev;
 	struct resource *res;
-	unsigned keymapnamelen;
+	unsigned int keymapnamelen;
 	void __iomem *addr;
 	int irq;
 	int i;
@@ -149,7 +142,7 @@ static int events_probe(struct platform_device *pdev)
 	for (i = 0; i < keymapnamelen; i++)
 		edev->name[i] = __raw_readb(edev->addr + REG_DATA + i);
 
-	pr_debug("events_probe() keymap=%s\n", edev->name);
+	pr_debug("%s: keymap=%s\n", __func__, edev->name);
 
 	input_dev->name = edev->name;
 	input_dev->id.bustype = BUS_HOST;
@@ -178,11 +171,26 @@ static int events_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static const struct of_device_id goldfish_events_of_match[] = {
+	{ .compatible = "google,goldfish-events-keypad", },
+	{},
+};
+MODULE_DEVICE_TABLE(of, goldfish_events_of_match);
+
+#ifdef CONFIG_ACPI
+static const struct acpi_device_id goldfish_events_acpi_match[] = {
+	{ "GFSH0002", 0 },
+	{ },
+};
+MODULE_DEVICE_TABLE(acpi, goldfish_events_acpi_match);
+#endif
+
 static struct platform_driver events_driver = {
 	.probe	= events_probe,
 	.driver	= {
-		.owner	= THIS_MODULE,
 		.name	= "goldfish_events",
+		.of_match_table = goldfish_events_of_match,
+		.acpi_match_table = ACPI_PTR(goldfish_events_acpi_match),
 	},
 };
 

@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Support for Compaq iPAQ H3600 handheld computer
  *
  * Copyright (c) 2000,1 Compaq Computer Corporation. (Author: Jamey Hicks)
  * Copyright (c) 2009 Dmitry Artamonow <mad_soft@inbox.ru>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #include <linux/init.h>
@@ -18,7 +14,6 @@
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
-#include <asm/mach/irda.h>
 
 #include <mach/h3xxx.h>
 #include <mach/irqs.h>
@@ -94,55 +89,11 @@ static void __init h3600_map_io(void)
 	h3xxx_map_io();
 }
 
-/*
- * This turns the IRDA power on or off on the Compaq H3600
- */
-static struct gpio h3600_irda_gpio[] = {
-	{ H3600_EGPIO_IR_ON,	GPIOF_OUT_INIT_LOW, "IrDA power" },
-	{ H3600_EGPIO_IR_FSEL,	GPIOF_OUT_INIT_LOW, "IrDA fsel" },
-};
-
-static int h3600_irda_set_power(struct device *dev, unsigned int state)
-{
-	gpio_set_value(H3600_EGPIO_IR_ON, state);
-	return 0;
-}
-
-static void h3600_irda_set_speed(struct device *dev, unsigned int speed)
-{
-	gpio_set_value(H3600_EGPIO_IR_FSEL, !(speed < 4000000));
-}
-
-static int h3600_irda_startup(struct device *dev)
-{
-	return gpio_request_array(h3600_irda_gpio, sizeof(h3600_irda_gpio));
-}
-
-static void h3600_irda_shutdown(struct device *dev)
-{
-	return gpio_free_array(h3600_irda_gpio, sizeof(h3600_irda_gpio));
-}
-
-static struct irda_platform_data h3600_irda_data = {
-	.set_power	= h3600_irda_set_power,
-	.set_speed	= h3600_irda_set_speed,
-	.startup	= h3600_irda_startup,
-	.shutdown	= h3600_irda_shutdown,
-};
-
-static struct gpio_default_state h3600_default_gpio[] = {
-	{ H3XXX_GPIO_COM_DCD,	GPIO_MODE_IN,	"COM DCD" },
-	{ H3XXX_GPIO_COM_CTS,	GPIO_MODE_IN,	"COM CTS" },
-	{ H3XXX_GPIO_COM_RTS,	GPIO_MODE_OUT0,	"COM RTS" },
-};
-
 static void __init h3600_mach_init(void)
 {
-	h3xxx_init_gpio(h3600_default_gpio, ARRAY_SIZE(h3600_default_gpio));
 	h3xxx_mach_init();
 
 	sa11x0_register_lcd(&h3600_lcd_info);
-	sa11x0_register_irda(&h3600_irda_data);
 }
 
 MACHINE_START(H3600, "Compaq iPAQ H3600")

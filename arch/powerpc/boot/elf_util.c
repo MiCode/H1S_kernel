@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) Paul Mackerras 1997.
  *
  * Updates for PPC64 by Todd Inglett, Dave Engebretsen & Peter Bergner.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -26,7 +22,11 @@ int parse_elf64(void *hdr, struct elf_info *info)
 	      elf64->e_ident[EI_MAG2]  == ELFMAG2	&&
 	      elf64->e_ident[EI_MAG3]  == ELFMAG3	&&
 	      elf64->e_ident[EI_CLASS] == ELFCLASS64	&&
+#ifdef __LITTLE_ENDIAN__
+	      elf64->e_ident[EI_DATA]  == ELFDATA2LSB	&&
+#else
 	      elf64->e_ident[EI_DATA]  == ELFDATA2MSB	&&
+#endif
 	      (elf64->e_type            == ET_EXEC ||
 	       elf64->e_type            == ET_DYN)	&&
 	      elf64->e_machine         == EM_PPC64))

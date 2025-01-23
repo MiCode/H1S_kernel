@@ -66,7 +66,7 @@ int superhyway_add_device(unsigned long base, struct superhyway_device *sdev,
 	superhyway_read_vcr(dev, base, &dev->vcr);
 
 	if (!dev->resource) {
-		dev->resource = kmalloc(sizeof(struct resource), GFP_KERNEL);
+		dev->resource = kzalloc(sizeof(struct resource), GFP_KERNEL);
 		if (!dev->resource) {
 			kfree(dev);
 			return -ENOMEM;
@@ -150,17 +150,13 @@ static int superhyway_device_probe(struct device *dev)
 	return -ENODEV;
 }
 
-static int superhyway_device_remove(struct device *dev)
+static void superhyway_device_remove(struct device *dev)
 {
 	struct superhyway_device *shyway_dev = to_superhyway_device(dev);
 	struct superhyway_driver *shyway_drv = to_superhyway_driver(dev->driver);
 
-	if (shyway_drv && shyway_drv->remove) {
+	if (shyway_drv->remove)
 		shyway_drv->remove(shyway_dev);
-		return 0;
-	}
-
-	return -ENODEV;
 }
 
 /**
@@ -209,7 +205,7 @@ struct bus_type superhyway_bus_type = {
 	.name		= "superhyway",
 	.match		= superhyway_bus_match,
 #ifdef CONFIG_SYSFS
-	.dev_attrs	= superhyway_dev_attrs,
+	.dev_groups	= superhyway_dev_groups,
 #endif
 	.probe		= superhyway_device_probe,
 	.remove		= superhyway_device_remove,

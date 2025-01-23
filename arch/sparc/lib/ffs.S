@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#include <linux/export.h>
 #include <linux/linkage.h>
 
 	.register	%g2,#scratch
@@ -65,6 +67,8 @@ ENTRY(__ffs)
 	 add	%o2, %g1, %o0
 ENDPROC(ffs)
 ENDPROC(__ffs)
+EXPORT_SYMBOL(__ffs)
+EXPORT_SYMBOL(ffs)
 
 	.section	.popc_6insn_patch, "ax"
 	.word		ffs

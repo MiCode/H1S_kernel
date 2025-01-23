@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* net/atm/common.c - ATM sockets (common part for PVC and SVC) */
 
 /* Written 1995-2000 by Werner Almesberger, EPFL LRC/ICA */
@@ -13,8 +14,8 @@
 #include <linux/errno.h>	/* error codes */
 #include <linux/capability.h>
 #include <linux/mm.h>
-#include <linux/sched.h>
-#include <linux/time.h>		/* struct timeval */
+#include <linux/sched/signal.h>
+#include <linux/time64.h>	/* 64-bit time for seconds */
 #include <linux/skbuff.h>
 #include <linux/bitops.h>
 #include <linux/init.h>
@@ -62,21 +63,16 @@ static void vcc_remove_socket(struct sock *sk)
 	write_unlock_irq(&vcc_sklist_lock);
 }
 
-static struct sk_buff *alloc_tx(struct atm_vcc *vcc, unsigned int size)
+static bool vcc_tx_ready(struct atm_vcc *vcc, unsigned int size)
 {
-	struct sk_buff *skb;
 	struct sock *sk = sk_atm(vcc);
 
 	if (sk_wmem_alloc_get(sk) && !atm_may_send(vcc, size)) {
 		pr_debug("Sorry: wmem_alloc = %d, size = %d, sndbuf = %d\n",
 			 sk_wmem_alloc_get(sk), size, sk->sk_sndbuf);
-		return NULL;
+		return false;
 	}
-	while (!(skb = alloc_skb(size, GFP_KERNEL)))
-		schedule();
-	pr_debug("%d += %d\n", sk_wmem_alloc_get(sk), skb->truesize);
-	atomic_add(skb->truesize, &sk->sk_wmem_alloc);
-	return skb;
+	return true;
 }
 
 static void vcc_sock_destruct(struct sock *sk)
@@ -85,9 +81,9 @@ static void vcc_sock_destruct(struct sock *sk)
 		printk(KERN_DEBUG "%s: rmem leakage (%d bytes) detected.\n",
 		       __func__, atomic_read(&sk->sk_rmem_alloc));
 
-	if (atomic_read(&sk->sk_wmem_alloc))
+	if (refcount_read(&sk->sk_wmem_alloc))
 		printk(KERN_DEBUG "%s: wmem leakage (%d bytes) detected.\n",
-		       __func__, atomic_read(&sk->sk_wmem_alloc));
+		       __func__, refcount_read(&sk->sk_wmem_alloc));
 }
 
 static void vcc_def_wakeup(struct sock *sk)
@@ -96,7 +92,7 @@ static void vcc_def_wakeup(struct sock *sk)
 
 	rcu_read_lock();
 	wq = rcu_dereference(sk->sk_wq);
-	if (wq_has_sleeper(wq))
+	if (skwq_has_sleeper(wq))
 		wake_up(&wq->wait);
 	rcu_read_unlock();
 }
@@ -106,7 +102,7 @@ static inline int vcc_writable(struct sock *sk)
 	struct atm_vcc *vcc = atm_sk(sk);
 
 	return (vcc->qos.txtp.max_sdu +
-		atomic_read(&sk->sk_wmem_alloc)) <= sk->sk_sndbuf;
+		refcount_read(&sk->sk_wmem_alloc)) <= sk->sk_sndbuf;
 }
 
 static void vcc_write_space(struct sock *sk)
@@ -117,7 +113,7 @@ static void vcc_write_space(struct sock *sk)
 
 	if (vcc_writable(sk)) {
 		wq = rcu_dereference(sk->sk_wq);
-		if (wq_has_sleeper(wq))
+		if (skwq_has_sleeper(wq))
 			wake_up_interruptible(&wq->wait);
 
 		sk_wake_async(sk, SOCK_WAKE_SPACE, POLL_OUT);
@@ -141,7 +137,7 @@ static struct proto vcc_proto = {
 	.release_cb = vcc_release_cb,
 };
 
-int vcc_create(struct net *net, struct socket *sock, int protocol, int family)
+int vcc_create(struct net *net, struct socket *sock, int protocol, int family, int kern)
 {
 	struct sock *sk;
 	struct atm_vcc *vcc;
@@ -149,7 +145,7 @@ int vcc_create(struct net *net, struct socket *sock, int protocol, int family)
 	sock->sk = NULL;
 	if (sock->type == SOCK_STREAM)
 		return -EINVAL;
-	sk = sk_alloc(net, family, GFP_KERNEL, &vcc_proto);
+	sk = sk_alloc(net, family, GFP_KERNEL, &vcc_proto, kern);
 	if (!sk)
 		return -ENOMEM;
 	sock_init_data(sock, sk);
@@ -161,7 +157,7 @@ int vcc_create(struct net *net, struct socket *sock, int protocol, int family)
 	memset(&vcc->local, 0, sizeof(struct sockaddr_atmsvc));
 	memset(&vcc->remote, 0, sizeof(struct sockaddr_atmsvc));
 	vcc->qos.txtp.max_sdu = 1 << 16; /* for meta VCs */
-	atomic_set(&sk->sk_wmem_alloc, 1);
+	refcount_set(&sk->sk_wmem_alloc, 1);
 	atomic_set(&sk->sk_rmem_alloc, 0);
 	vcc->push = NULL;
 	vcc->pop = NULL;
@@ -181,18 +177,18 @@ static void vcc_destroy_socket(struct sock *sk)
 
 	set_bit(ATM_VF_CLOSE, &vcc->flags);
 	clear_bit(ATM_VF_READY, &vcc->flags);
-	if (vcc->dev) {
-		if (vcc->dev->ops->close)
-			vcc->dev->ops->close(vcc);
-		if (vcc->push)
-			vcc->push(vcc, NULL); /* atmarpd has no push */
-		module_put(vcc->owner);
+	if (vcc->dev && vcc->dev->ops->close)
+		vcc->dev->ops->close(vcc);
+	if (vcc->push)
+		vcc->push(vcc, NULL); /* atmarpd has no push */
+	module_put(vcc->owner);
 
-		while ((skb = skb_dequeue(&sk->sk_receive_queue)) != NULL) {
-			atm_return(vcc, skb->truesize);
-			kfree_skb(skb);
-		}
+	while ((skb = skb_dequeue(&sk->sk_receive_queue)) != NULL) {
+		atm_return(vcc, skb->truesize);
+		kfree_skb(skb);
+	}
 
+	if (vcc->dev && vcc->dev->ops->owner) {
 		module_put(vcc->dev->ops->owner);
 		atm_dev_put(vcc->dev);
 	}
@@ -300,8 +296,8 @@ static int adjust_tp(struct atm_trafprm *tp, unsigned char aal)
 		max_sdu = ATM_MAX_AAL34_PDU;
 		break;
 	default:
-		pr_warning("AAL problems ... (%d)\n", aal);
-		/* fall through */
+		pr_warn("AAL problems ... (%d)\n", aal);
+		fallthrough;
 	case ATM_AAL5:
 		max_sdu = ATM_MAX_AAL5_PDU;
 	}
@@ -421,7 +417,7 @@ static int __vcc_connect(struct atm_vcc *vcc, struct atm_dev *dev, short vpi,
 	case ATM_NO_AAL:
 		/* ATM_AAL5 is also used in the "0 for default" case */
 		vcc->qos.aal = ATM_AAL5;
-		/* fall through */
+		fallthrough;
 	case ATM_AAL5:
 		error = atm_init_aal5(vcc);
 		vcc->stats = &dev->stats.aal5;
@@ -523,8 +519,8 @@ int vcc_connect(struct socket *sock, int itf, short vpi, int vci)
 	return 0;
 }
 
-int vcc_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
-		size_t size, int flags)
+int vcc_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
+		int flags)
 {
 	struct sock *sk = sock->sk;
 	struct atm_vcc *vcc;
@@ -544,7 +540,7 @@ int vcc_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 	    !test_bit(ATM_VF_READY, &vcc->flags))
 		return 0;
 
-	skb = skb_recv_datagram(sk, flags, flags & MSG_DONTWAIT, &error);
+	skb = skb_recv_datagram(sk, flags, &error);
 	if (!skb)
 		return error;
 
@@ -554,10 +550,10 @@ int vcc_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 		msg->msg_flags |= MSG_TRUNC;
 	}
 
-	error = skb_copy_datagram_iovec(skb, 0, msg->msg_iov, copied);
+	error = skb_copy_datagram_msg(skb, 0, msg, copied);
 	if (error)
 		return error;
-	sock_recv_ts_and_drops(msg, sk, skb);
+	sock_recv_cmsgs(msg, sk, skb);
 
 	if (!(flags & MSG_PEEK)) {
 		pr_debug("%d -= %d\n", atomic_read(&sk->sk_rmem_alloc),
@@ -569,16 +565,13 @@ int vcc_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 	return copied;
 }
 
-int vcc_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *m,
-		size_t total_len)
+int vcc_sendmsg(struct socket *sock, struct msghdr *m, size_t size)
 {
 	struct sock *sk = sock->sk;
 	DEFINE_WAIT(wait);
 	struct atm_vcc *vcc;
 	struct sk_buff *skb;
 	int eff, error;
-	const void __user *buff;
-	int size;
 
 	lock_sock(sk);
 	if (sock->state != SS_CONNECTED) {
@@ -589,12 +582,6 @@ int vcc_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *m,
 		error = -EISCONN;
 		goto out;
 	}
-	if (m->msg_iovlen != 1) {
-		error = -ENOSYS; /* fix this later @@@ */
-		goto out;
-	}
-	buff = m->msg_iov->iov_base;
-	size = m->msg_iov->iov_len;
 	vcc = ATM_SD(sock);
 	if (test_bit(ATM_VF_RELEASED, &vcc->flags) ||
 	    test_bit(ATM_VF_CLOSE, &vcc->flags) ||
@@ -607,7 +594,7 @@ int vcc_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *m,
 		error = 0;
 		goto out;
 	}
-	if (size < 0 || size > vcc->qos.txtp.max_sdu) {
+	if (size > vcc->qos.txtp.max_sdu) {
 		error = -EMSGSIZE;
 		goto out;
 	}
@@ -615,7 +602,7 @@ int vcc_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *m,
 	eff = (size+3) & ~3; /* align to word boundary */
 	prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
 	error = 0;
-	while (!(skb = alloc_tx(vcc, eff))) {
+	while (!vcc_tx_ready(vcc, eff)) {
 		if (m->msg_flags & MSG_DONTWAIT) {
 			error = -EAGAIN;
 			break;
@@ -637,9 +624,17 @@ int vcc_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *m,
 	finish_wait(sk_sleep(sk), &wait);
 	if (error)
 		goto out;
+
+	skb = alloc_skb(eff, GFP_KERNEL);
+	if (!skb) {
+		error = -ENOMEM;
+		goto out;
+	}
+	pr_debug("%d += %d\n", sk_wmem_alloc_get(sk), skb->truesize);
+	atm_account_tx(vcc, skb);
+
 	skb->dev = NULL; /* for paths shared with net_device interfaces */
-	ATM_SKB(skb)->atm_options = vcc->atm_options;
-	if (copy_from_user(skb_put(skb, size), buff, size)) {
+	if (!copy_from_iter_full(skb_put(skb, size), size, &m->msg_iter)) {
 		kfree_skb(skb);
 		error = -EFAULT;
 		goto out;
@@ -653,28 +648,28 @@ out:
 	return error;
 }
 
-unsigned int vcc_poll(struct file *file, struct socket *sock, poll_table *wait)
+__poll_t vcc_poll(struct file *file, struct socket *sock, poll_table *wait)
 {
 	struct sock *sk = sock->sk;
 	struct atm_vcc *vcc;
-	unsigned int mask;
+	__poll_t mask;
 
-	sock_poll_wait(file, sk_sleep(sk), wait);
+	sock_poll_wait(file, sock, wait);
 	mask = 0;
 
 	vcc = ATM_SD(sock);
 
 	/* exceptional events */
 	if (sk->sk_err)
-		mask = POLLERR;
+		mask = EPOLLERR;
 
 	if (test_bit(ATM_VF_RELEASED, &vcc->flags) ||
 	    test_bit(ATM_VF_CLOSE, &vcc->flags))
-		mask |= POLLHUP;
+		mask |= EPOLLHUP;
 
 	/* readable? */
-	if (!skb_queue_empty(&sk->sk_receive_queue))
-		mask |= POLLIN | POLLRDNORM;
+	if (!skb_queue_empty_lockless(&sk->sk_receive_queue))
+		mask |= EPOLLIN | EPOLLRDNORM;
 
 	/* writable? */
 	if (sock->state == SS_CONNECTING &&
@@ -683,7 +678,7 @@ unsigned int vcc_poll(struct file *file, struct socket *sock, poll_table *wait)
 
 	if (vcc->qos.txtp.traffic_class != ATM_NONE &&
 	    vcc_writable(sk))
-		mask |= POLLOUT | POLLWRNORM | POLLWRBAND;
+		mask |= EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 
 	return mask;
 }
@@ -750,7 +745,7 @@ static int check_qos(const struct atm_qos *qos)
 }
 
 int vcc_setsockopt(struct socket *sock, int level, int optname,
-		   char __user *optval, unsigned int optlen)
+		   sockptr_t optval, unsigned int optlen)
 {
 	struct atm_vcc *vcc;
 	unsigned long value;
@@ -765,7 +760,7 @@ int vcc_setsockopt(struct socket *sock, int level, int optname,
 	{
 		struct atm_qos qos;
 
-		if (copy_from_user(&qos, optval, sizeof(qos)))
+		if (copy_from_sockptr(&qos, optval, sizeof(qos)))
 			return -EFAULT;
 		error = check_qos(&qos);
 		if (error)
@@ -779,7 +774,7 @@ int vcc_setsockopt(struct socket *sock, int level, int optname,
 		return 0;
 	}
 	case SO_SETCLP:
-		if (get_user(value, (unsigned long __user *)optval))
+		if (copy_from_sockptr(&value, optval, sizeof(value)))
 			return -EFAULT;
 		if (value)
 			vcc->atm_options |= ATM_ATMOPT_CLP;
@@ -787,13 +782,8 @@ int vcc_setsockopt(struct socket *sock, int level, int optname,
 			vcc->atm_options &= ~ATM_ATMOPT_CLP;
 		return 0;
 	default:
-		if (level == SOL_SOCKET)
-			return -EINVAL;
-		break;
-	}
-	if (!vcc->dev || !vcc->dev->ops->setsockopt)
 		return -EINVAL;
-	return vcc->dev->ops->setsockopt(vcc, level, optname, optval, optlen);
+	}
 }
 
 int vcc_getsockopt(struct socket *sock, int level, int optname,
@@ -831,13 +821,8 @@ int vcc_getsockopt(struct socket *sock, int level, int optname,
 		return copy_to_user(optval, &pvc, sizeof(pvc)) ? -EFAULT : 0;
 	}
 	default:
-		if (level == SOL_SOCKET)
-			return -EINVAL;
-		break;
-	}
-	if (!vcc->dev || !vcc->dev->ops->getsockopt)
 		return -EINVAL;
-	return vcc->dev->ops->getsockopt(vcc, level, optname, optval, len);
+	}
 }
 
 int register_atmdevice_notifier(struct notifier_block *nb)

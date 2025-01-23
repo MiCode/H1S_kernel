@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * wm8971.c  --  WM8971 ALSA SoC Audio driver
  *
@@ -6,11 +7,6 @@
  * Author: Kenneth Kiraly <kiraly@lab126.com>
  *
  * Based on wm8753.c by Liam Girdwood
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
  */
 
 #include <linux/module.h>
@@ -31,11 +27,11 @@
 
 #define	WM8971_REG_COUNT		43
 
-static struct workqueue_struct *wm8971_workq = NULL;
-
 /* codec private data */
 struct wm8971_priv {
 	unsigned int sysclk;
+	struct delayed_work charge_work;
+	struct regmap *regmap;
 };
 
 /*
@@ -89,7 +85,7 @@ static const struct reg_default wm8971_reg_defaults[] = {
 	{ 42, 0x0079 },
 };
 
-#define wm8971_reset(c)	snd_soc_write(c, WM8971_RESET, 0)
+#define wm8971_reset(c)	snd_soc_component_write(c, WM8971_RESET, 0)
 
 /* WM8971 Controls */
 static const char *wm8971_bass[] = { "Linear Control", "Adaptive Boost" };
@@ -433,8 +429,8 @@ static int get_coeff(int mclk, int rate)
 static int wm8971_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 		int clk_id, unsigned int freq, int dir)
 {
-	struct snd_soc_codec *codec = codec_dai->codec;
-	struct wm8971_priv *wm8971 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = codec_dai->component;
+	struct wm8971_priv *wm8971 = snd_soc_component_get_drvdata(component);
 
 	switch (freq) {
 	case 11289600:
@@ -451,7 +447,7 @@ static int wm8971_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 static int wm8971_set_dai_fmt(struct snd_soc_dai *codec_dai,
 		unsigned int fmt)
 {
-	struct snd_soc_codec *codec = codec_dai->codec;
+	struct snd_soc_component *component = codec_dai->component;
 	u16 iface = 0;
 
 	/* set master/slave audio interface */
@@ -502,7 +498,7 @@ static int wm8971_set_dai_fmt(struct snd_soc_dai *codec_dai,
 		return -EINVAL;
 	}
 
-	snd_soc_write(codec, WM8971_IFACE, iface);
+	snd_soc_component_write(component, WM8971_IFACE, iface);
 	return 0;
 }
 
@@ -510,72 +506,90 @@ static int wm8971_pcm_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *params,
 	struct snd_soc_dai *dai)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct wm8971_priv *wm8971 = snd_soc_codec_get_drvdata(codec);
-	u16 iface = snd_soc_read(codec, WM8971_IFACE) & 0x1f3;
-	u16 srate = snd_soc_read(codec, WM8971_SRATE) & 0x1c0;
+	struct snd_soc_component *component = dai->component;
+	struct wm8971_priv *wm8971 = snd_soc_component_get_drvdata(component);
+	u16 iface = snd_soc_component_read(component, WM8971_IFACE) & 0x1f3;
+	u16 srate = snd_soc_component_read(component, WM8971_SRATE) & 0x1c0;
 	int coeff = get_coeff(wm8971->sysclk, params_rate(params));
 
 	/* bit size */
-	switch (params_format(params)) {
-	case SNDRV_PCM_FORMAT_S16_LE:
+	switch (params_width(params)) {
+	case 16:
 		break;
-	case SNDRV_PCM_FORMAT_S20_3LE:
+	case 20:
 		iface |= 0x0004;
 		break;
-	case SNDRV_PCM_FORMAT_S24_LE:
+	case 24:
 		iface |= 0x0008;
 		break;
-	case SNDRV_PCM_FORMAT_S32_LE:
+	case 32:
 		iface |= 0x000c;
 		break;
 	}
 
 	/* set iface & srate */
-	snd_soc_write(codec, WM8971_IFACE, iface);
+	snd_soc_component_write(component, WM8971_IFACE, iface);
 	if (coeff >= 0)
-		snd_soc_write(codec, WM8971_SRATE, srate |
+		snd_soc_component_write(component, WM8971_SRATE, srate |
 			(coeff_div[coeff].sr << 1) | coeff_div[coeff].usb);
 
 	return 0;
 }
 
-static int wm8971_mute(struct snd_soc_dai *dai, int mute)
+static int wm8971_mute(struct snd_soc_dai *dai, int mute, int direction)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	u16 mute_reg = snd_soc_read(codec, WM8971_ADCDAC) & 0xfff7;
+	struct snd_soc_component *component = dai->component;
+	u16 mute_reg = snd_soc_component_read(component, WM8971_ADCDAC) & 0xfff7;
 
 	if (mute)
-		snd_soc_write(codec, WM8971_ADCDAC, mute_reg | 0x8);
+		snd_soc_component_write(component, WM8971_ADCDAC, mute_reg | 0x8);
 	else
-		snd_soc_write(codec, WM8971_ADCDAC, mute_reg);
+		snd_soc_component_write(component, WM8971_ADCDAC, mute_reg);
 	return 0;
 }
 
-static int wm8971_set_bias_level(struct snd_soc_codec *codec,
+static void wm8971_charge_work(struct work_struct *work)
+{
+	struct wm8971_priv *wm8971 =
+		container_of(work, struct wm8971_priv, charge_work.work);
+
+	/* Set to 500k */
+	regmap_update_bits(wm8971->regmap, WM8971_PWR1, 0x0180, 0x0100);
+}
+
+static int wm8971_set_bias_level(struct snd_soc_component *component,
 	enum snd_soc_bias_level level)
 {
-	u16 pwr_reg = snd_soc_read(codec, WM8971_PWR1) & 0xfe3e;
+	struct wm8971_priv *wm8971 = snd_soc_component_get_drvdata(component);
+	u16 pwr_reg = snd_soc_component_read(component, WM8971_PWR1) & 0xfe3e;
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
 		/* set vmid to 50k and unmute dac */
-		snd_soc_write(codec, WM8971_PWR1, pwr_reg | 0x00c1);
+		snd_soc_component_write(component, WM8971_PWR1, pwr_reg | 0x00c1);
 		break;
 	case SND_SOC_BIAS_PREPARE:
+		/* Wait until fully charged */
+		flush_delayed_work(&wm8971->charge_work);
 		break;
 	case SND_SOC_BIAS_STANDBY:
-		if (codec->dapm.bias_level == SND_SOC_BIAS_OFF)
-			snd_soc_cache_sync(codec);
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
+			snd_soc_component_cache_sync(component);
+			/* charge output caps - set vmid to 5k for quick power up */
+			snd_soc_component_write(component, WM8971_PWR1, pwr_reg | 0x01c0);
+			queue_delayed_work(system_power_efficient_wq,
+				&wm8971->charge_work, msecs_to_jiffies(1000));
+		} else {
+			/* mute dac and set vmid to 500k, enable VREF */
+			snd_soc_component_write(component, WM8971_PWR1, pwr_reg | 0x0140);
+		}
 
-		/* mute dac and set vmid to 500k, enable VREF */
-		snd_soc_write(codec, WM8971_PWR1, pwr_reg | 0x0140);
 		break;
 	case SND_SOC_BIAS_OFF:
-		snd_soc_write(codec, WM8971_PWR1, 0x0001);
+		cancel_delayed_work_sync(&wm8971->charge_work);
+		snd_soc_component_write(component, WM8971_PWR1, 0x0001);
 		break;
 	}
-	codec->dapm.bias_level = level;
 	return 0;
 }
 
@@ -588,9 +602,10 @@ static int wm8971_set_bias_level(struct snd_soc_codec *codec,
 
 static const struct snd_soc_dai_ops wm8971_dai_ops = {
 	.hw_params	= wm8971_pcm_hw_params,
-	.digital_mute	= wm8971_mute,
+	.mute_stream	= wm8971_mute,
 	.set_fmt	= wm8971_set_dai_fmt,
 	.set_sysclk	= wm8971_set_dai_sysclk,
+	.no_capture_mute = 1,
 };
 
 static struct snd_soc_dai_driver wm8971_dai = {
@@ -610,101 +625,40 @@ static struct snd_soc_dai_driver wm8971_dai = {
 	.ops = &wm8971_dai_ops,
 };
 
-static void wm8971_work(struct work_struct *work)
+static int wm8971_probe(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm =
-		container_of(work, struct snd_soc_dapm_context,
-			     delayed_work.work);
-	struct snd_soc_codec *codec = dapm->codec;
-	wm8971_set_bias_level(codec, codec->dapm.bias_level);
-}
+	struct wm8971_priv *wm8971 = snd_soc_component_get_drvdata(component);
 
-static int wm8971_suspend(struct snd_soc_codec *codec)
-{
-	wm8971_set_bias_level(codec, SND_SOC_BIAS_OFF);
-	return 0;
-}
+	INIT_DELAYED_WORK(&wm8971->charge_work, wm8971_charge_work);
 
-static int wm8971_resume(struct snd_soc_codec *codec)
-{
-	u16 reg;
-
-	wm8971_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
-
-	/* charge wm8971 caps */
-	if (codec->dapm.suspend_bias_level == SND_SOC_BIAS_ON) {
-		reg = snd_soc_read(codec, WM8971_PWR1) & 0xfe3e;
-		snd_soc_write(codec, WM8971_PWR1, reg | 0x01c0);
-		codec->dapm.bias_level = SND_SOC_BIAS_ON;
-		queue_delayed_work(wm8971_workq, &codec->dapm.delayed_work,
-			msecs_to_jiffies(1000));
-	}
-
-	return 0;
-}
-
-static int wm8971_probe(struct snd_soc_codec *codec)
-{
-	int ret = 0;
-	u16 reg;
-
-	ret = snd_soc_codec_set_cache_io(codec, 7, 9, SND_SOC_REGMAP);
-	if (ret < 0) {
-		printk(KERN_ERR "wm8971: failed to set cache I/O: %d\n", ret);
-		return ret;
-	}
-
-	INIT_DELAYED_WORK(&codec->dapm.delayed_work, wm8971_work);
-	wm8971_workq = create_workqueue("wm8971");
-	if (wm8971_workq == NULL)
-		return -ENOMEM;
-
-	wm8971_reset(codec);
-
-	/* charge output caps - set vmid to 5k for quick power up */
-	reg = snd_soc_read(codec, WM8971_PWR1) & 0xfe3e;
-	snd_soc_write(codec, WM8971_PWR1, reg | 0x01c0);
-	codec->dapm.bias_level = SND_SOC_BIAS_STANDBY;
-	queue_delayed_work(wm8971_workq, &codec->dapm.delayed_work,
-		msecs_to_jiffies(1000));
+	wm8971_reset(component);
 
 	/* set the update bits */
-	snd_soc_update_bits(codec, WM8971_LDAC, 0x0100, 0x0100);
-	snd_soc_update_bits(codec, WM8971_RDAC, 0x0100, 0x0100);
-	snd_soc_update_bits(codec, WM8971_LOUT1V, 0x0100, 0x0100);
-	snd_soc_update_bits(codec, WM8971_ROUT1V, 0x0100, 0x0100);
-	snd_soc_update_bits(codec, WM8971_LOUT2V, 0x0100, 0x0100);
-	snd_soc_update_bits(codec, WM8971_ROUT2V, 0x0100, 0x0100);
-	snd_soc_update_bits(codec, WM8971_LINVOL, 0x0100, 0x0100);
-	snd_soc_update_bits(codec, WM8971_RINVOL, 0x0100, 0x0100);
+	snd_soc_component_update_bits(component, WM8971_LDAC, 0x0100, 0x0100);
+	snd_soc_component_update_bits(component, WM8971_RDAC, 0x0100, 0x0100);
+	snd_soc_component_update_bits(component, WM8971_LOUT1V, 0x0100, 0x0100);
+	snd_soc_component_update_bits(component, WM8971_ROUT1V, 0x0100, 0x0100);
+	snd_soc_component_update_bits(component, WM8971_LOUT2V, 0x0100, 0x0100);
+	snd_soc_component_update_bits(component, WM8971_ROUT2V, 0x0100, 0x0100);
+	snd_soc_component_update_bits(component, WM8971_LINVOL, 0x0100, 0x0100);
+	snd_soc_component_update_bits(component, WM8971_RINVOL, 0x0100, 0x0100);
 
-	return ret;
-}
-
-
-/* power down chip */
-static int wm8971_remove(struct snd_soc_codec *codec)
-{
-	wm8971_set_bias_level(codec, SND_SOC_BIAS_OFF);
-
-	if (wm8971_workq)
-		destroy_workqueue(wm8971_workq);
 	return 0;
 }
 
-static struct snd_soc_codec_driver soc_codec_dev_wm8971 = {
-	.probe =	wm8971_probe,
-	.remove =	wm8971_remove,
-	.suspend =	wm8971_suspend,
-	.resume =	wm8971_resume,
-	.set_bias_level = wm8971_set_bias_level,
-
-	.controls = wm8971_snd_controls,
-	.num_controls = ARRAY_SIZE(wm8971_snd_controls),
-	.dapm_widgets = wm8971_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(wm8971_dapm_widgets),
-	.dapm_routes = wm8971_dapm_routes,
-	.num_dapm_routes = ARRAY_SIZE(wm8971_dapm_routes),
+static const struct snd_soc_component_driver soc_component_dev_wm8971 = {
+	.probe			= wm8971_probe,
+	.set_bias_level		= wm8971_set_bias_level,
+	.controls		= wm8971_snd_controls,
+	.num_controls		= ARRAY_SIZE(wm8971_snd_controls),
+	.dapm_widgets		= wm8971_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(wm8971_dapm_widgets),
+	.dapm_routes		= wm8971_dapm_routes,
+	.num_dapm_routes	= ARRAY_SIZE(wm8971_dapm_routes),
+	.suspend_bias_off	= 1,
+	.idle_bias_on		= 1,
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
 };
 
 static const struct regmap_config wm8971_regmap = {
@@ -714,37 +668,26 @@ static const struct regmap_config wm8971_regmap = {
 
 	.reg_defaults = wm8971_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8971_reg_defaults),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 };
 
-static int wm8971_i2c_probe(struct i2c_client *i2c,
-			    const struct i2c_device_id *id)
+static int wm8971_i2c_probe(struct i2c_client *i2c)
 {
 	struct wm8971_priv *wm8971;
-	struct regmap *regmap;
-	int ret;
 
 	wm8971 = devm_kzalloc(&i2c->dev, sizeof(struct wm8971_priv),
 			      GFP_KERNEL);
 	if (wm8971 == NULL)
 		return -ENOMEM;
 
-	regmap = devm_regmap_init_i2c(i2c, &wm8971_regmap);
-	if (IS_ERR(regmap))
-		return PTR_ERR(regmap);
+	wm8971->regmap = devm_regmap_init_i2c(i2c, &wm8971_regmap);
+	if (IS_ERR(wm8971->regmap))
+		return PTR_ERR(wm8971->regmap);
 
 	i2c_set_clientdata(i2c, wm8971);
 
-	ret = snd_soc_register_codec(&i2c->dev,
-			&soc_codec_dev_wm8971, &wm8971_dai, 1);
-
-	return ret;
-}
-
-static int wm8971_i2c_remove(struct i2c_client *client)
-{
-	snd_soc_unregister_codec(&client->dev);
-	return 0;
+	return devm_snd_soc_register_component(&i2c->dev,
+			&soc_component_dev_wm8971, &wm8971_dai, 1);
 }
 
 static const struct i2c_device_id wm8971_i2c_id[] = {
@@ -756,10 +699,8 @@ MODULE_DEVICE_TABLE(i2c, wm8971_i2c_id);
 static struct i2c_driver wm8971_i2c_driver = {
 	.driver = {
 		.name = "wm8971",
-		.owner = THIS_MODULE,
 	},
-	.probe =    wm8971_i2c_probe,
-	.remove =   wm8971_i2c_remove,
+	.probe = wm8971_i2c_probe,
 	.id_table = wm8971_i2c_id,
 };
 

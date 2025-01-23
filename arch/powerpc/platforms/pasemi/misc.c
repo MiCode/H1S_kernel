@@ -1,20 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2007 PA Semi, Inc
  *
  * Parts based on arch/powerpc/sysdev/fsl_soc.c:
  *
  * 2006 (c) MontaVista Software, Inc.
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/pci.h>
 #include <linux/of.h>
+#include <linux/of_irq.h>
 #include <linux/i2c.h>
 
 #ifdef CONFIG_I2C_BOARDINFO
@@ -39,8 +36,7 @@ static int __init find_i2c_driver(struct device_node *node,
 	for (i = 0; i < ARRAY_SIZE(i2c_devices); i++) {
 		if (!of_device_is_compatible(node, i2c_devices[i].of_device))
 			continue;
-		if (strlcpy(info->type, i2c_devices[i].i2c_type,
-			    I2C_NAME_SIZE) >= I2C_NAME_SIZE)
+		if (strscpy(info->type, i2c_devices[i].i2c_type, I2C_NAME_SIZE) < 0)
 			return -ENOMEM;
 		return 0;
 	}
@@ -60,8 +56,7 @@ static int __init pasemi_register_i2c_devices(void)
 		if (!adap_node)
 			continue;
 
-		node = NULL;
-		while ((node = of_get_next_child(adap_node, node))) {
+		for_each_child_of_node(adap_node, node) {
 			struct i2c_board_info info = {};
 			const u32 *addr;
 			int len;
@@ -69,14 +64,12 @@ static int __init pasemi_register_i2c_devices(void)
 			addr = of_get_property(node, "reg", &len);
 			if (!addr || len < sizeof(int) ||
 			    *addr > (1 << 10) - 1) {
-				printk(KERN_WARNING
-					"pasemi_register_i2c_devices: "
-					"invalid i2c device entry\n");
+				pr_warn("pasemi_register_i2c_devices: invalid i2c device entry\n");
 				continue;
 			}
 
 			info.irq = irq_of_parse_and_map(node, 0);
-			if (info.irq == NO_IRQ)
+			if (!info.irq)
 				info.irq = -1;
 
 			if (find_i2c_driver(node, &info) < 0)

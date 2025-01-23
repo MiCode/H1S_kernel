@@ -1,10 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _NET_AH_H
 #define _NET_AH_H
 
 #include <linux/skbuff.h>
-
-/* This is the maximum truncated ICV length that we know of. */
-#define MAX_AH_AUTH_LEN	64
 
 struct crypto_ahash;
 

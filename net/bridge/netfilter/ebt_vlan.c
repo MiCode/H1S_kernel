@@ -1,20 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Description: EBTables 802.1Q match extension kernelspace module.
  * Authors: Nick Fedchik <nick@fedchik.org.ua>
  *          Bart De Schuymer <bdschuym@pandora.be>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/if_ether.h>
@@ -45,8 +33,8 @@ ebt_vlan_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	/* VLAN encapsulated Type/Length field, given from orig frame */
 	__be16 encap;
 
-	if (vlan_tx_tag_present(skb)) {
-		TCI = vlan_tx_tag_get(skb);
+	if (skb_vlan_tag_present(skb)) {
+		TCI = skb_vlan_tag_get(skb);
 		encap = skb->protocol;
 	} else {
 		const struct vlan_hdr *fp;
@@ -66,7 +54,8 @@ ebt_vlan_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	 * - Canonical Format Indicator (CFI). The Canonical Format Indicator
 	 * (CFI) is a single bit flag value. Currently ignored.
 	 * - VLAN Identifier (VID). The VID is encoded as
-	 * an unsigned binary number. */
+	 * an unsigned binary number.
+	 */
 	id = TCI & VLAN_VID_MASK;
 	prio = (TCI >> 13) & 0x7;
 
@@ -98,7 +87,8 @@ static int ebt_vlan_mt_check(const struct xt_mtchk_param *par)
 	}
 
 	/* Check for bitmask range
-	 * True if even one bit is out of mask */
+	 * True if even one bit is out of mask
+	 */
 	if (info->bitmask & ~EBT_VLAN_MASK) {
 		pr_debug("bitmask %2X is out of mask (%2X)\n",
 			 info->bitmask, EBT_VLAN_MASK);
@@ -117,7 +107,8 @@ static int ebt_vlan_mt_check(const struct xt_mtchk_param *par)
 	 * 0 - The null VLAN ID.
 	 * 1 - The default Port VID (PVID)
 	 * 0x0FFF - Reserved for implementation use.
-	 * if_vlan.h: VLAN_N_VID 4096. */
+	 * if_vlan.h: VLAN_N_VID 4096.
+	 */
 	if (GET_BITMASK(EBT_VLAN_ID)) {
 		if (!!info->id) { /* if id!=0 => check vid range */
 			if (info->id > VLAN_N_VID) {
@@ -128,7 +119,8 @@ static int ebt_vlan_mt_check(const struct xt_mtchk_param *par)
 			/* Note: This is valid VLAN-tagged frame point.
 			 * Any value of user_priority are acceptable,
 			 * but should be ignored according to 802.1Q Std.
-			 * So we just drop the prio flag. */
+			 * So we just drop the prio flag.
+			 */
 			info->bitmask &= ~EBT_VLAN_PRIO;
 		}
 		/* Else, id=0 (null VLAN ID)  => user_priority range (any?) */
@@ -143,7 +135,8 @@ static int ebt_vlan_mt_check(const struct xt_mtchk_param *par)
 	}
 	/* Check for encapsulated proto range - it is possible to be
 	 * any value for u_short range.
-	 * if_ether.h:  ETH_ZLEN        60   -  Min. octets in frame sans FCS */
+	 * if_ether.h:  ETH_ZLEN        60   -  Min. octets in frame sans FCS
+	 */
 	if (GET_BITMASK(EBT_VLAN_ENCAP)) {
 		if ((unsigned short) ntohs(info->encap) < ETH_ZLEN) {
 			pr_debug("encap frame length %d is less than "

@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AD5504, AD5501 High Voltage Digital to Analog Converter
  *
  * Copyright 2011 Analog Devices Inc.
- *
- * Licensed under the GPL-2.
  */
 
 #include <linux/interrupt.h>
@@ -15,17 +14,16 @@
 #include <linux/sysfs.h>
 #include <linux/regulator/consumer.h>
 #include <linux/module.h>
+#include <linux/bitops.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/events.h>
 #include <linux/iio/dac/ad5504.h>
 
-#define AD5505_BITS			12
-#define AD5504_RES_MASK			((1 << (AD5505_BITS)) - 1)
-
-#define AD5504_CMD_READ			(1 << 15)
-#define AD5504_CMD_WRITE		(0 << 15)
+#define AD5504_RES_MASK			GENMASK(11, 0)
+#define AD5504_CMD_READ			BIT(15)
+#define AD5504_CMD_WRITE		0
 #define AD5504_ADDR(addr)		((addr) << 12)
 
 /* Registers */
@@ -41,12 +39,12 @@
 #define AD5504_DAC_PWRDN_3STATE		1
 
 /**
- * struct ad5446_state - driver instance specific data
- * @us:			spi_device
+ * struct ad5504_state - driver instance specific data
+ * @spi:			spi_device
  * @reg:		supply regulator
  * @vref_mv:		actual reference voltage used
- * @pwr_down_mask	power down mask
- * @pwr_down_mode	current power down mode
+ * @pwr_down_mask:	power down mask
+ * @pwr_down_mode:	current power down mode
  * @data:		transfer buffer
  */
 struct ad5504_state {
@@ -56,13 +54,12 @@ struct ad5504_state {
 	unsigned			pwr_down_mask;
 	unsigned			pwr_down_mode;
 
-	__be16				data[2] ____cacheline_aligned;
+	__be16				data[2] __aligned(IIO_DMA_MINALIGN);
 };
 
-/**
+/*
  * ad5504_supported_device_ids:
  */
-
 enum ad5504_supported_device_ids {
 	ID_AD5504,
 	ID_AD5501,
@@ -126,7 +123,6 @@ static int ad5504_write_raw(struct iio_dev *indio_dev,
 			       long mask)
 {
 	struct ad5504_state *st = iio_priv(indio_dev);
-	int ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
@@ -135,10 +131,8 @@ static int ad5504_write_raw(struct iio_dev *indio_dev,
 
 		return ad5504_spi_write(st, chan->address, val);
 	default:
-		ret = -EINVAL;
+		return -EINVAL;
 	}
-
-	return -EINVAL;
 }
 
 static const char * const ad5504_powerdown_modes[] = {
@@ -176,8 +170,8 @@ static ssize_t ad5504_read_dac_powerdown(struct iio_dev *indio_dev,
 {
 	struct ad5504_state *st = iio_priv(indio_dev);
 
-	return sprintf(buf, "%d\n",
-			!(st->pwr_down_mask & (1 << chan->channel)));
+	return sysfs_emit(buf, "%d\n",
+			  !(st->pwr_down_mask & (1 << chan->channel)));
 }
 
 static ssize_t ad5504_write_dac_powerdown(struct iio_dev *indio_dev,
@@ -188,14 +182,14 @@ static ssize_t ad5504_write_dac_powerdown(struct iio_dev *indio_dev,
 	int ret;
 	struct ad5504_state *st = iio_priv(indio_dev);
 
-	ret = strtobool(buf, &pwr_down);
+	ret = kstrtobool(buf, &pwr_down);
 	if (ret)
 		return ret;
 
 	if (pwr_down)
-		st->pwr_down_mask |= (1 << chan->channel);
-	else
 		st->pwr_down_mask &= ~(1 << chan->channel);
+	else
+		st->pwr_down_mask |= (1 << chan->channel);
 
 	ret = ad5504_spi_write(st, AD5504_ADDR_CTRL,
 				AD5504_DAC_PWRDWN_MODE(st->pwr_down_mode) |
@@ -216,9 +210,8 @@ static struct attribute *ad5504_ev_attributes[] = {
 	NULL,
 };
 
-static struct attribute_group ad5504_ev_attribute_group = {
+static const struct attribute_group ad5504_ev_attribute_group = {
 	.attrs = ad5504_ev_attributes,
-	.name = "events",
 };
 
 static irqreturn_t ad5504_event_handler(int irq, void *private)
@@ -228,7 +221,7 @@ static irqreturn_t ad5504_event_handler(int irq, void *private)
 					    0,
 					    IIO_EV_TYPE_THRESH,
 					    IIO_EV_DIR_RISING),
-		       iio_get_time_ns());
+		       iio_get_time_ns(private));
 
 	return IRQ_HANDLED;
 }
@@ -237,7 +230,6 @@ static const struct iio_info ad5504_info = {
 	.write_raw = ad5504_write_raw,
 	.read_raw = ad5504_read_raw,
 	.event_attrs = &ad5504_ev_attribute_group,
-	.driver_module = THIS_MODULE,
 };
 
 static const struct iio_chan_spec_ext_info ad5504_ext_info[] = {
@@ -249,7 +241,7 @@ static const struct iio_chan_spec_ext_info ad5504_ext_info[] = {
 	},
 	IIO_ENUM("powerdown_mode", IIO_SHARED_BY_TYPE,
 		 &ad5504_powerdown_mode_enum),
-	IIO_ENUM_AVAILABLE("powerdown_mode", &ad5504_powerdown_mode_enum),
+	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE, &ad5504_powerdown_mode_enum),
 	{ },
 };
 
@@ -311,7 +303,6 @@ static int ad5504_probe(struct spi_device *spi)
 
 	st->reg = reg;
 	st->spi = spi;
-	indio_dev->dev.parent = &spi->dev;
 	indio_dev->name = spi_get_device_id(st->spi)->name;
 	indio_dev->info = &ad5504_info;
 	if (spi_get_device_id(st->spi)->driver_data == ID_AD5501)
@@ -345,7 +336,7 @@ error_disable_reg:
 	return ret;
 }
 
-static int ad5504_remove(struct spi_device *spi)
+static void ad5504_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ad5504_state *st = iio_priv(indio_dev);
@@ -354,8 +345,6 @@ static int ad5504_remove(struct spi_device *spi)
 
 	if (!IS_ERR(st->reg))
 		regulator_disable(st->reg);
-
-	return 0;
 }
 
 static const struct spi_device_id ad5504_id[] = {
@@ -368,7 +357,6 @@ MODULE_DEVICE_TABLE(spi, ad5504_id);
 static struct spi_driver ad5504_driver = {
 	.driver = {
 		   .name = "ad5504",
-		   .owner = THIS_MODULE,
 		   },
 	.probe = ad5504_probe,
 	.remove = ad5504_remove,
@@ -376,6 +364,6 @@ static struct spi_driver ad5504_driver = {
 };
 module_spi_driver(ad5504_driver);
 
-MODULE_AUTHOR("Michael Hennerich <hennerich@blackfin.uclinux.org>");
+MODULE_AUTHOR("Michael Hennerich <michael.hennerich@analog.com>");
 MODULE_DESCRIPTION("Analog Devices AD5501/AD5501 DAC");
 MODULE_LICENSE("GPL v2");

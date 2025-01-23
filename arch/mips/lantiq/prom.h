@@ -1,9 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- *  This program is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License version 2 as published
- *  by the Free Software Foundation.
  *
- * Copyright (C) 2010 John Crispin <blogic@openwrt.org>
+ * Copyright (C) 2010 John Crispin <john@phrozen.org>
  */
 
 #ifndef _LTQ_PROM_H__
@@ -25,7 +23,5 @@ struct ltq_soc_info {
 
 extern void ltq_soc_detect(struct ltq_soc_info *i);
 extern void ltq_soc_init(void);
-
-extern struct boot_param_header __dtb_start;
 
 #endif

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_UML_INIT_H
 #define _LINUX_UML_INIT_H
 
@@ -40,39 +41,19 @@
 typedef int (*initcall_t)(void);
 typedef void (*exitcall_t)(void);
 
-#ifndef __KERNEL__
-#ifndef __section
-# define __section(S) __attribute__ ((__section__(#S)))
-#endif
+#include <linux/compiler_types.h>
 
-#if __GNUC__ == 3
-
-#if __GNUC_MINOR__ >= 3
-# define __used			__attribute__((__used__))
-#else
-# define __used			__attribute__((__unused__))
-#endif
-
-#else
-#if __GNUC__ == 4
-# define __used			__attribute__((__used__))
-#endif
-#endif
-
-#else
-#include <linux/compiler.h>
-#endif
 /* These are for everybody (although not all archs will actually
    discard it in modules) */
-#define __init		__section(.init.text)
-#define __initdata	__section(.init.data)
-#define __exitdata	__section(.exit.data)
-#define __exit_call	__used __section(.exitcall.exit)
+#define __init		__section(".init.text")
+#define __initdata	__section(".init.data")
+#define __exitdata	__section(".exit.data")
+#define __exit_call	__used __section(".exitcall.exit")
 
 #ifdef MODULE
-#define __exit		__section(.exit.text)
+#define __exit		__section(".exit.text")
 #else
-#define __exit		__used __section(.exit.text)
+#define __exit		__used __section(".exit.text")
 #endif
 
 #endif
@@ -83,13 +64,9 @@ struct uml_param {
         int (*setup_func)(char *, int *);
 };
 
-extern initcall_t __uml_initcall_start, __uml_initcall_end;
 extern initcall_t __uml_postsetup_start, __uml_postsetup_end;
 extern const char *__uml_help_start, *__uml_help_end;
 #endif
-
-#define __uml_initcall(fn)					  	\
-	static initcall_t __uml_initcall_##fn __uml_init_call = fn
 
 #define __uml_exitcall(fn)						\
 	static exitcall_t __uml_exitcall_##fn __uml_exit_call = fn
@@ -125,13 +102,12 @@ extern struct uml_param __uml_setup_start, __uml_setup_end;
  * Mark functions and data as being only used at initialization
  * or exit time.
  */
-#define __uml_init_setup	__used __section(.uml.setup.init)
-#define __uml_setup_help	__used __section(.uml.help.init)
-#define __uml_init_call		__used __section(.uml.initcall.init)
-#define __uml_postsetup_call	__used __section(.uml.postsetup.init)
-#define __uml_exit_call		__used __section(.uml.exitcall.exit)
+#define __uml_init_setup	__used __section(".uml.setup.init")
+#define __uml_setup_help	__used __section(".uml.help.init")
+#define __uml_postsetup_call	__used __section(".uml.postsetup.init")
+#define __uml_exit_call		__used __section(".uml.exitcall.exit")
 
-#ifndef __KERNEL__
+#ifdef __UM_HOST__
 
 #define __define_initcall(level,fn) \
 	static initcall_t __initcall_##fn __used \
@@ -144,7 +120,7 @@ extern struct uml_param __uml_setup_start, __uml_setup_end;
 
 #define __exitcall(fn) static exitcall_t __exitcall_##fn __exit_call = fn
 
-#define __init_call	__used __section(.initcall.init)
+#define __init_call	__used __section(".initcall.init")
 
 #endif
 

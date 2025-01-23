@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * x86 TSC related functions
  */
@@ -5,9 +6,7 @@
 #define _ASM_X86_TSC_H
 
 #include <asm/processor.h>
-
-#define NS_SCALE	10 /* 2^10, carefully chosen */
-#define US_SCALE	32 /* 2^32, arbitralrily chosen */
+#include <asm/cpufeature.h>
 
 /*
  * Standard way to access the cycle counter.
@@ -21,51 +20,51 @@ extern void disable_TSC(void);
 
 static inline cycles_t get_cycles(void)
 {
-	unsigned long long ret = 0;
-
-#ifndef CONFIG_X86_TSC
-	if (!cpu_has_tsc)
+	if (!IS_ENABLED(CONFIG_X86_TSC) &&
+	    !cpu_feature_enabled(X86_FEATURE_TSC))
 		return 0;
-#endif
-	rdtscll(ret);
-
-	return ret;
+	return rdtsc();
 }
+#define get_cycles get_cycles
 
-static __always_inline cycles_t vget_cycles(void)
-{
-	/*
-	 * We only do VDSOs on TSC capable CPUs, so this shouldn't
-	 * access boot_cpu_data (which is not VDSO-safe):
-	 */
-#ifndef CONFIG_X86_TSC
-	if (!cpu_has_tsc)
-		return 0;
-#endif
-	return (cycles_t)__native_read_tsc();
-}
+extern struct system_counterval_t convert_art_to_tsc(u64 art);
+extern struct system_counterval_t convert_art_ns_to_tsc(u64 art_ns);
 
+extern void tsc_early_init(void);
 extern void tsc_init(void);
 extern void mark_tsc_unstable(char *reason);
 extern int unsynchronized_tsc(void);
 extern int check_tsc_unstable(void);
-extern int check_tsc_disabled(void);
+extern void mark_tsc_async_resets(char *reason);
+extern unsigned long native_calibrate_cpu_early(void);
 extern unsigned long native_calibrate_tsc(void);
+extern unsigned long long native_sched_clock_from_tsc(u64 tsc);
 
 extern int tsc_clocksource_reliable;
+#ifdef CONFIG_X86_TSC
+extern bool tsc_async_resets;
+#else
+# define tsc_async_resets	false
+#endif
 
 /*
  * Boot-time check whether the TSCs are synchronized across
  * all CPUs/cores:
  */
-extern void check_tsc_sync_source(int cpu);
+#ifdef CONFIG_X86_TSC
+extern bool tsc_store_and_check_tsc_adjust(bool bootcpu);
+extern void tsc_verify_tsc_adjust(bool resume);
 extern void check_tsc_sync_target(void);
+#else
+static inline bool tsc_store_and_check_tsc_adjust(bool bootcpu) { return false; }
+static inline void tsc_verify_tsc_adjust(bool resume) { }
+static inline void check_tsc_sync_target(void) { }
+#endif
 
 extern int notsc_setup(char *);
 extern void tsc_save_sched_clock_state(void);
 extern void tsc_restore_sched_clock_state(void);
 
-/* MSR based TSC calibration for Intel Atom SoC platforms */
-int try_msr_calibrate_tsc(unsigned long *fast_calibrate);
+unsigned long cpu_khz_from_msr(void);
 
 #endif /* _ASM_X86_TSC_H */

@@ -1,22 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * This file is part of wl18xx
  *
  * Copyright (C) 2011 Texas Instruments. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #ifndef __WL18XX_CMD_H__
@@ -45,8 +31,52 @@ struct wl18xx_cmd_channel_switch {
 	u8 padding[2];
 } __packed;
 
+struct wl18xx_cmd_smart_config_start {
+	struct wl1271_cmd_header header;
+
+	__le32 group_id_bitmask;
+} __packed;
+
+struct wl18xx_cmd_smart_config_set_group_key {
+	struct wl1271_cmd_header header;
+
+	__le32 group_id;
+
+	u8 key[16];
+} __packed;
+
+struct wl18xx_cmd_dfs_radar_debug {
+	struct wl1271_cmd_header header;
+
+	u8 channel;
+	u8 padding[3];
+} __packed;
+
+struct wl18xx_cmd_dfs_master_restart {
+	struct wl1271_cmd_header header;
+
+	u8 role_id;
+	u8 padding[3];
+} __packed;
+
+/* cac_start and cac_stop share the same params */
+struct wlcore_cmd_cac_start {
+	struct wl1271_cmd_header header;
+
+	u8 role_id;
+	u8 channel;
+	u8 band;
+	u8 bandwidth;
+} __packed;
+
 int wl18xx_cmd_channel_switch(struct wl1271 *wl,
 			      struct wl12xx_vif *wlvif,
 			      struct ieee80211_channel_switch *ch_switch);
-
+int wl18xx_cmd_smart_config_start(struct wl1271 *wl, u32 group_bitmap);
+int wl18xx_cmd_smart_config_stop(struct wl1271 *wl);
+int wl18xx_cmd_smart_config_set_group_key(struct wl1271 *wl, u16 group_id,
+					  u8 key_len, u8 *key);
+int wl18xx_cmd_set_cac(struct wl1271 *wl, struct wl12xx_vif *wlvif, bool start);
+int wl18xx_cmd_radar_detection_debug(struct wl1271 *wl, u8 channel);
+int wl18xx_cmd_dfs_master_restart(struct wl1271 *wl, struct wl12xx_vif *wlvif);
 #endif

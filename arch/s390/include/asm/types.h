@@ -1,28 +1,19 @@
-/*
- *  S390 version
- *
- *  Derived from "include/asm-i386/types.h"
- */
-#ifndef _S390_TYPES_H
-#define _S390_TYPES_H
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+
+#ifndef _ASM_S390_TYPES_H
+#define _ASM_S390_TYPES_H
 
 #include <uapi/asm/types.h>
 
-/*
- * These aren't exported outside the kernel to avoid name space clashes
- */
-
 #ifndef __ASSEMBLY__
 
-#ifndef CONFIG_64BIT
-typedef union {
-	unsigned long long pair;
+union register_pair {
+	unsigned __int128 pair;
 	struct {
 		unsigned long even;
 		unsigned long odd;
-	} subreg;
-} register_pair;
+	};
+};
 
-#endif /* ! CONFIG_64BIT   */
-#endif /* __ASSEMBLY__  */
-#endif /* _S390_TYPES_H */
+#endif /* __ASSEMBLY__ */
+#endif /* _ASM_S390_TYPES_H */

@@ -13,16 +13,17 @@
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/phy.h>
-#include <linux/of_platform.h>
 #include <linux/slab.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_mdio.h>
+#include <linux/platform_device.h>
 #include <asm/io.h>
 #include <asm/mpc52xx.h>
 #include "fec_mpc52xx.h"
 
 struct mpc52xx_fec_mdio_priv {
 	struct mpc52xx_fec __iomem *regs;
-	int mdio_irqs[PHY_MAX_ADDR];
 };
 
 static int mpc52xx_fec_mdio_transfer(struct mii_bus *bus, int phy_id,
@@ -83,9 +84,6 @@ static int mpc52xx_fec_mdio_probe(struct platform_device *of)
 	bus->read = mpc52xx_fec_mdio_read;
 	bus->write = mpc52xx_fec_mdio_write;
 
-	/* setup irqs */
-	bus->irq = priv->mdio_irqs;
-
 	/* setup registers */
 	err = of_address_to_resource(np, 0, &res);
 	if (err)
@@ -103,8 +101,7 @@ static int mpc52xx_fec_mdio_probe(struct platform_device *of)
 	dev_set_drvdata(dev, bus);
 
 	/* set MII speed */
-	out_be32(&priv->regs->mii_speed,
-		((mpc5xxx_get_bus_frequency(of->dev.of_node) >> 20) / 5) << 1);
+	out_be32(&priv->regs->mii_speed, ((mpc5xxx_get_bus_frequency(dev) >> 20) / 5) << 1);
 
 	err = of_mdiobus_register(bus, np);
 	if (err)
@@ -121,7 +118,7 @@ static int mpc52xx_fec_mdio_probe(struct platform_device *of)
 	return err;
 }
 
-static int mpc52xx_fec_mdio_remove(struct platform_device *of)
+static void mpc52xx_fec_mdio_remove(struct platform_device *of)
 {
 	struct mii_bus *bus = platform_get_drvdata(of);
 	struct mpc52xx_fec_mdio_priv *priv = bus->priv;
@@ -130,11 +127,9 @@ static int mpc52xx_fec_mdio_remove(struct platform_device *of)
 	iounmap(priv->regs);
 	kfree(priv);
 	mdiobus_free(bus);
-
-	return 0;
 }
 
-static struct of_device_id mpc52xx_fec_mdio_match[] = {
+static const struct of_device_id mpc52xx_fec_mdio_match[] = {
 	{ .compatible = "fsl,mpc5200b-mdio", },
 	{ .compatible = "fsl,mpc5200-mdio", },
 	{ .compatible = "mpc5200b-fec-phy", },
@@ -149,7 +144,7 @@ struct platform_driver mpc52xx_fec_mdio_driver = {
 		.of_match_table = mpc52xx_fec_mdio_match,
 	},
 	.probe = mpc52xx_fec_mdio_probe,
-	.remove = mpc52xx_fec_mdio_remove,
+	.remove_new = mpc52xx_fec_mdio_remove,
 };
 
 /* let fec driver call it, since this has to be registered before it */

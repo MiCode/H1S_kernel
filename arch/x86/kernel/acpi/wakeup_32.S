@@ -1,21 +1,23 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 	.text
 #include <linux/linkage.h>
 #include <asm/segment.h>
 #include <asm/page_types.h>
 
-# Copyright 2003, 2008 Pavel Machek <pavel@suse.cz>, distribute under GPLv2
+# Copyright 2003, 2008 Pavel Machek <pavel@suse.cz
 
 	.code32
 	ALIGN
 
-ENTRY(wakeup_pmode_return)
-wakeup_pmode_return:
+SYM_CODE_START(wakeup_pmode_return)
 	movw	$__KERNEL_DS, %ax
 	movw	%ax, %ss
-	movw	%ax, %ds
-	movw	%ax, %es
 	movw	%ax, %fs
 	movw	%ax, %gs
+
+	movw	$__USER_DS, %ax
+	movw	%ax, %ds
+	movw	%ax, %es
 
 	# reload the gdt, as we need the full 32 bit address
 	lidt	saved_idt
@@ -36,6 +38,7 @@ wakeup_pmode_return:
 	# jump to place where we left off
 	movl	saved_eip, %eax
 	jmp	*%eax
+SYM_CODE_END(wakeup_pmode_return)
 
 bogus_magic:
 	jmp	bogus_magic
@@ -57,7 +60,7 @@ save_registers:
 	popl	saved_context_eflags
 
 	movl	$ret_point, saved_eip
-	ret
+	RET
 
 
 restore_registers:
@@ -67,9 +70,9 @@ restore_registers:
 	movl	saved_context_edi, %edi
 	pushl	saved_context_eflags
 	popfl
-	ret
+	RET
 
-ENTRY(do_suspend_lowlevel)
+SYM_CODE_START(do_suspend_lowlevel)
 	call	save_processor_state
 	call	save_registers
 	pushl	$3
@@ -83,12 +86,13 @@ ENTRY(do_suspend_lowlevel)
 ret_point:
 	call	restore_registers
 	call	restore_processor_state
-	ret
+	RET
+SYM_CODE_END(do_suspend_lowlevel)
 
 .data
 ALIGN
-ENTRY(saved_magic)	.long	0
-ENTRY(saved_eip)	.long	0
+SYM_DATA(saved_magic,	.long 0)
+saved_eip:		.long 0
 
 # saved registers
 saved_idt:	.long	0,0

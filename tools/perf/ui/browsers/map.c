@@ -1,16 +1,20 @@
-#include "../libslang.h"
+// SPDX-License-Identifier: GPL-2.0
 #include <elf.h>
 #include <inttypes.h>
 #include <sys/ttydefaults.h>
+#include <stdlib.h>
 #include <string.h>
 #include <linux/bitops.h>
-#include "../../util/util.h"
 #include "../../util/debug.h"
+#include "../../util/map.h"
+#include "../../util/dso.h"
 #include "../../util/symbol.h"
 #include "../browser.h"
 #include "../helpline.h"
 #include "../keysyms.h"
 #include "map.h"
+
+#include <linux/ctype.h>
 
 struct map_browser {
 	struct ui_browser b;
@@ -26,13 +30,13 @@ static void map_browser__write(struct ui_browser *browser, void *nd, int row)
 	int width;
 
 	ui_browser__set_percent_color(browser, 0, current_entry);
-	slsmg_printf("%*" PRIx64 " %*" PRIx64 " %c ",
-		     mb->addrlen, sym->start, mb->addrlen, sym->end,
-		     sym->binding == STB_GLOBAL ? 'g' :
-		     sym->binding == STB_LOCAL  ? 'l' : 'w');
+	ui_browser__printf(browser, "%*" PRIx64 " %*" PRIx64 " %c ",
+			   mb->addrlen, sym->start, mb->addrlen, sym->end,
+			   sym->binding == STB_GLOBAL ? 'g' :
+				sym->binding == STB_LOCAL  ? 'l' : 'w');
 	width = browser->width - ((mb->addrlen * 2) + 4);
 	if (width > 0)
-		slsmg_write_nstring(sym->name, width);
+		ui_browser__write_nstring(browser, sym->name, width);
 }
 
 /* FIXME uber-kludgy, see comment on cmd_report... */
@@ -53,9 +57,9 @@ static int map_browser__search(struct map_browser *browser)
 
 	if (target[0] == '0' && tolower(target[1]) == 'x') {
 		u64 addr = strtoull(target, NULL, 16);
-		sym = map__find_symbol(browser->map, addr, NULL);
+		sym = map__find_symbol(browser->map, addr);
 	} else
-		sym = map__find_symbol_by_name(browser->map, target, NULL);
+		sym = map__find_symbol_by_name(browser->map, target);
 
 	if (sym != NULL) {
 		u32 *idx = symbol__browser_index(sym);
@@ -72,9 +76,9 @@ static int map_browser__run(struct map_browser *browser)
 {
 	int key;
 
-	if (ui_browser__show(&browser->b, browser->map->dso->long_name,
-			     "Press <- or ESC to exit, %s / to search",
-			     verbose ? "" : "restart with -v to use") < 0)
+	if (ui_browser__show(&browser->b, map__dso(browser->map)->long_name,
+			     "Press ESC to exit, %s / to search",
+			     verbose > 0 ? "" : "restart with -v to use") < 0)
 		return -1;
 
 	while (1) {
@@ -82,7 +86,7 @@ static int map_browser__run(struct map_browser *browser)
 
 		switch (key) {
 		case '/':
-			if (verbose)
+			if (verbose > 0)
 				map_browser__search(browser);
 		default:
 			break;
@@ -102,7 +106,7 @@ int map__browse(struct map *map)
 {
 	struct map_browser mb = {
 		.b = {
-			.entries = &map->dso->symbols[map->type],
+			.entries = &map__dso(map)->symbols,
 			.refresh = ui_browser__rb_tree_refresh,
 			.seek	 = ui_browser__rb_tree_seek,
 			.write	 = map_browser__write,
@@ -118,7 +122,7 @@ int map__browse(struct map *map)
 
 		if (maxaddr < pos->end)
 			maxaddr = pos->end;
-		if (verbose) {
+		if (verbose > 0) {
 			u32 *idx = symbol__browser_index(pos);
 			*idx = mb.b.nr_entries;
 		}

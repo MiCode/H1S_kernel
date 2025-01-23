@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * init_ohci1394_dma.c - Initializes physical DMA on all OHCI 1394 controllers
  *
@@ -16,20 +17,6 @@
  * To use physical DMA after the initialization of the firewire stack,
  * be sure that the stack enables it and (re-)attach after the bus reset
  * which may be caused by the firewire stack initialization.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
 #include <linux/delay.h>
@@ -264,7 +251,7 @@ static inline void __init init_ohci1394_controller(int num, int slot, int func)
 }
 
 /**
- * debug_init_ohci1394_dma - scan for OHCI1394 controllers and init DMA on them
+ * init_ohci1394_dma_on_all_controllers - scan for OHCI1394 controllers and init DMA on them
  * Scans the whole PCI space for OHCI1394 controllers and inits DMA on them
  */
 void __init init_ohci1394_dma_on_all_controllers(void)
@@ -296,7 +283,7 @@ void __init init_ohci1394_dma_on_all_controllers(void)
 }
 
 /**
- * setup_init_ohci1394_early - enables early OHCI1394 DMA initialization
+ * setup_ohci1394_dma - enables early OHCI1394 DMA initialization
  */
 static int __init setup_ohci1394_dma(char *opt)
 {

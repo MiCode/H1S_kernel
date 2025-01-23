@@ -1,10 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # ALSA soundcard-configuration
 config SND_TIMER
 	tristate
 
 config SND_PCM
 	tristate
-	select SND_TIMER
+	select SND_TIMER if SND_PCM_TIMER
+
+config SND_PCM_ELD
+	bool
+
+config SND_PCM_IEC958
+	bool
 
 config SND_DMAENGINE_PCM
 	tristate
@@ -12,53 +19,50 @@ config SND_DMAENGINE_PCM
 config SND_HWDEP
 	tristate
 
+config SND_SEQ_DEVICE
+	tristate
+
 config SND_RAWMIDI
 	tristate
+	select SND_SEQ_DEVICE if SND_SEQUENCER != n
+
+config SND_UMP
+	tristate
+	select SND_RAWMIDI
+
+config SND_UMP_LEGACY_RAWMIDI
+	bool "Legacy raw MIDI support for UMP streams"
+	depends on SND_UMP
+	help
+	  This option enables the legacy raw MIDI support for UMP streams.
+	  When this option is set, an additional rawmidi device for the
+	  legacy MIDI 1.0 byte streams is created for each UMP Endpoint.
+	  The device contains 16 substreams corresponding to UMP groups.
 
 config SND_COMPRESS_OFFLOAD
 	tristate
 
-# To be effective this also requires INPUT - users should say:
-#    select SND_JACK if INPUT=y || INPUT=SND
-# to avoid having to force INPUT on.
 config SND_JACK
 	bool
 
-config SND_SEQUENCER
-	tristate "Sequencer support"
-	select SND_TIMER
-	help
-	  Say Y or M to enable MIDI sequencer and router support.  This
-	  feature allows routing and enqueueing of MIDI events.  Events
-	  can be processed at a given time.
-
-	  Many programs require this feature, so you should enable it
-	  unless you know what you're doing.
-
-config SND_SEQ_DUMMY
-	tristate "Sequencer dummy client"
-	depends on SND_SEQUENCER
-	help
-	  Say Y here to enable the dummy sequencer client.  This client
-	  is a simple MIDI-through client: all normal input events are
-	  redirected to the output port immediately.
-
-	  You don't need this unless you want to connect many MIDI
-	  devices or applications together.
-
-	  To compile this driver as a module, choose M here: the module
-	  will be called snd-seq-dummy.
+# enable input device support in jack layer
+config SND_JACK_INPUT_DEV
+	bool
+	depends on SND_JACK
+	default y if INPUT=y || INPUT=SND
 
 config SND_OSSEMUL
+	bool "Enable OSS Emulation"
 	select SOUND_OSS_CORE
-	bool
+	help
+	  This option enables the build of OSS emulation layer.
 
 config SND_MIXER_OSS
 	tristate "OSS Mixer API"
-	select SND_OSSEMUL
+	depends on SND_OSSEMUL
 	help
 	  To enable OSS mixer API emulation (/dev/mixer*), say Y here
-	  and read <file:Documentation/sound/alsa/OSS-Emulation.txt>.
+	  and read <file:Documentation/sound/designs/oss-emulation.rst>.
 
 	  Many programs still use the OSS API, so say Y.
 
@@ -67,11 +71,11 @@ config SND_MIXER_OSS
 
 config SND_PCM_OSS
 	tristate "OSS PCM (digital audio) API"
-	select SND_OSSEMUL
+	depends on SND_OSSEMUL
 	select SND_PCM
 	help
 	  To enable OSS digital audio (PCM) emulation (/dev/dsp*), say Y
-	  here and read <file:Documentation/sound/alsa/OSS-Emulation.txt>.
+	  here and read <file:Documentation/sound/designs/oss-emulation.rst>.
 
 	  Many programs still use the OSS API, so say Y.
 
@@ -81,25 +85,22 @@ config SND_PCM_OSS
 config SND_PCM_OSS_PLUGINS
 	bool "OSS PCM (digital audio) API - Include plugin system"
 	depends on SND_PCM_OSS
-        default y
+	default y
 	help
-          If you disable this option, the ALSA's OSS PCM API will not
-          support conversion of channels, formats and rates. It will
-          behave like most of new OSS/Free drivers in 2.4/2.6 kernels.
+	  If you disable this option, the ALSA's OSS PCM API will not
+	  support conversion of channels, formats and rates. It will
+	  behave like most of new OSS/Free drivers in 2.4/2.6 kernels.
 
-config SND_SEQUENCER_OSS
-	bool "OSS Sequencer API"
-	depends on SND_SEQUENCER
-	select SND_OSSEMUL
+config SND_PCM_TIMER
+	bool "PCM timer interface" if EXPERT
+	default y
 	help
-	  Say Y here to enable OSS sequencer emulation (both
-	  /dev/sequencer and /dev/music interfaces).
+	  If you disable this option, pcm timer will be unavailable, so
+	  those stubs that use pcm timer (e.g. dmix, dsnoop & co) may work
+	  incorrectly.
 
-	  Many programs still use the OSS API, so say Y.
-
-	  If you choose M in "Sequencer support" (SND_SEQUENCER),
-	  this will be compiled as a module. The module will be called
-	  snd-seq-oss.
+	  For some embedded devices, we may disable it to reduce memory
+	  footprint, about 20KB on x86_64 platform.
 
 config SND_HRTIMER
 	tristate "HR-timer backend support"
@@ -112,43 +113,6 @@ config SND_HRTIMER
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called snd-hrtimer.
-
-config SND_SEQ_HRTIMER_DEFAULT
-	bool "Use HR-timer as default sequencer timer"
-	depends on SND_HRTIMER && SND_SEQUENCER
-	default y
-	help
-	  Say Y here to use the HR-timer backend as the default sequencer
-	  timer.
-
-config SND_RTCTIMER
-	tristate "RTC Timer support"
-	depends on RTC
-	select SND_TIMER
-	help
-	  Say Y here to enable RTC timer support for ALSA.  ALSA uses
-	  the RTC timer as a precise timing source and maps the RTC
-	  timer to ALSA's timer interface.  The ALSA sequencer code also
-	  can use this timing source.
-
-	  To compile this driver as a module, choose M here: the module
-	  will be called snd-rtctimer.
-
-	  Note that this option is exclusive with the new RTC drivers
-	  (CONFIG_RTC_CLASS) since this requires the old API.
-
-config SND_SEQ_RTCTIMER_DEFAULT
-	bool "Use RTC as default sequencer timer"
-	depends on SND_RTCTIMER && SND_SEQUENCER
-	depends on !SND_SEQ_HRTIMER_DEFAULT
-	default y
-	help
-	  Say Y here to use the RTC timer as the default sequencer
-	  timer.  This is strongly recommended because it ensures
-	  precise MIDI timing even when the system timer runs at less
-	  than 1000 Hz.
-
-	  If in doubt, say Y.
 
 config SND_DYNAMIC_MINORS
 	bool "Dynamic device file minor numbers"
@@ -176,14 +140,23 @@ config SND_SUPPORT_OLD_API
 	  Say Y here to support the obsolete ALSA PCM API (ver.0.9.0 rc3
 	  or older).
 
-config SND_VERBOSE_PROCFS
-	bool "Verbose procfs contents"
+config SND_PROC_FS
+	bool "Sound Proc FS Support" if EXPERT
 	depends on PROC_FS
 	default y
 	help
+	  Say 'N' to disable Sound proc FS, which may reduce code size about
+	  9KB on x86_64 platform.
+	  If unsure say Y.
+
+config SND_VERBOSE_PROCFS
+	bool "Verbose procfs contents"
+	depends on SND_PROC_FS
+	default y
+	help
 	  Say Y here to include code for verbose procfs contents (provides
-          useful information to developers when a problem occurs).  On the
-          other side, it makes the ALSA subsystem larger.
+	  useful information to developers when a problem occurs).  On the
+	  other side, it makes the ALSA subsystem larger.
 
 config SND_VERBOSE_PRINTK
 	bool "Verbose printk"
@@ -193,6 +166,16 @@ config SND_VERBOSE_PRINTK
 	  printed messages.
 
 	  You don't need this unless you're debugging ALSA.
+
+config SND_CTL_FAST_LOOKUP
+	bool "Fast lookup of control elements" if EXPERT
+	default y
+	select XARRAY_MULTI
+	help
+	  This option enables the faster lookup of control elements.
+	  It will consume more memory because of the additional Xarray.
+	  If you want to choose the memory footprint over the performance
+	  inevitably, turn this off.
 
 config SND_DEBUG
 	bool "Debug"
@@ -204,7 +187,7 @@ config SND_DEBUG_VERBOSE
 	depends on SND_DEBUG
 	help
 	  Say Y here to enable extra-verbose debugging messages.
-	  
+
 	  Let me repeat: it enables EXTRA-VERBOSE DEBUGGING messages.
 	  So, say Y only if you are ready to be annoyed.
 
@@ -218,14 +201,50 @@ config SND_PCM_XRUN_DEBUG
 	  sound clicking when system is loaded, it may help to determine
 	  the process or driver which causes the scheduling gaps.
 
-config SND_VMASTER
-	bool
+config SND_CTL_INPUT_VALIDATION
+	bool "Validate input data to control API"
+	help
+	  Say Y to enable the additional validation for the input data to
+	  each control element, including the value range checks.
+	  An error is returned from ALSA core for invalid inputs without
+	  passing to the driver.  This is a kind of hardening for drivers
+	  that have no proper error checks, at the cost of a slight
+	  performance overhead.
 
-config SND_KCTL_JACK
+config SND_CTL_DEBUG
+	bool "Enable debugging feature for control API"
+	depends on SND_DEBUG
+	help
+	  Say Y to enable the debugging feature for ALSA control API.
+	  It performs the additional sanity-checks for each control element
+	  read access, such as whether the values returned from the driver
+	  are in the proper ranges or the check of the invalid access at
+	  out-of-array areas.  The error is printed when the driver gives
+	  such unexpected values.
+	  When you develop a driver that deals with control elements, it's
+	  strongly recommended to try this one once and verify whether you see
+	  any relevant errors or not.
+
+config SND_JACK_INJECTION_DEBUG
+	bool "Sound jack injection interface via debugfs"
+	depends on SND_JACK && SND_DEBUG && DEBUG_FS
+	help
+	  This option can be used to enable or disable sound jack
+	  software injection.
+	  Say Y if you are debugging via jack injection interface.
+	  If unsure select "N".
+
+config SND_VMASTER
 	bool
 
 config SND_DMA_SGBUF
 	def_bool y
 	depends on X86
+
+config SND_CTL_LED
+	tristate
+	select NEW_LEDS if SND_CTL_LED
+	select LEDS_TRIGGERS if SND_CTL_LED
+	select LEDS_TRIGGER_AUDIO if SND_CTL_LED
 
 source "sound/core/seq/Kconfig"

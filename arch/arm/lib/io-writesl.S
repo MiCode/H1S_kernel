@@ -1,18 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/arch/arm/lib/io-writesl.S
  *
  *  Copyright (C) 1995-2000 Russell King
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #include <linux/linkage.h>
 #include <asm/assembler.h>
 
 ENTRY(__raw_writesl)
 		teq	r2, #0		@ do we have to check for the zero len?
-		moveq	pc, lr
+		reteq	lr
 		ands	ip, r1, #3
 		bne	3f
 
@@ -28,12 +25,12 @@ ENTRY(__raw_writesl)
 		bpl	1b
 		ldmfd	sp!, {r4, lr}
 2:		movs	r2, r2, lsl #31
-		ldmcsia	r1!, {r3, ip}
+		ldmiacs	r1!, {r3, ip}
 		strcs	r3, [r0, #0]
 		ldrne	r3, [r1, #0]
 		strcs	ip, [r0, #0]
 		strne	r3, [r0, #0]
-		mov	pc, lr
+		ret	lr
 
 3:		bic	r1, r1, #3
 		ldr	r3, [r1], #4
@@ -41,27 +38,27 @@ ENTRY(__raw_writesl)
 		blt	5f
 		bgt	6f
 
-4:		mov	ip, r3, pull #16
+4:		mov	ip, r3, lspull #16
 		ldr	r3, [r1], #4
 		subs	r2, r2, #1
-		orr	ip, ip, r3, push #16
+		orr	ip, ip, r3, lspush #16
 		str	ip, [r0]
 		bne	4b
-		mov	pc, lr
+		ret	lr
 
-5:		mov	ip, r3, pull #8
+5:		mov	ip, r3, lspull #8
 		ldr	r3, [r1], #4
 		subs	r2, r2, #1
-		orr	ip, ip, r3, push #24
+		orr	ip, ip, r3, lspush #24
 		str	ip, [r0]
 		bne	5b
-		mov	pc, lr
+		ret	lr
 
-6:		mov	ip, r3, pull #24
+6:		mov	ip, r3, lspull #24
 		ldr	r3, [r1], #4
 		subs	r2, r2, #1
-		orr	ip, ip, r3, push #8
+		orr	ip, ip, r3, lspush #8
 		str	ip, [r0]
 		bne	6b
-		mov	pc, lr
+		ret	lr
 ENDPROC(__raw_writesl)

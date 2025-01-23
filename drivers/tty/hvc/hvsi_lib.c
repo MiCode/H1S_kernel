@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/types.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
@@ -405,8 +406,7 @@ void hvsilib_close(struct hvsi_priv *pv, struct hvc_struct *hp)
 		hvsi_send_close(pv);
 	}
 
-	if (pv->tty)
-		tty_kref_put(pv->tty);
+	tty_kref_put(pv->tty);
 	pv->tty = NULL;
 }
 

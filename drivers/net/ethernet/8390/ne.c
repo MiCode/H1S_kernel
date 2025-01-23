@@ -1,12 +1,10 @@
+// SPDX-License-Identifier: GPL-1.0+
 /* ne.c: A general non-shared-memory NS8390 ethernet driver for linux. */
 /*
     Written 1992-94 by Donald Becker.
 
     Copyright 1993 United States Government as represented by the
     Director, National Security Agency.
-
-    This software may be used and distributed according to the terms
-    of the GNU General Public License, incorporated herein by reference.
 
     The author may be reached as becker@scyld.com, or C/O
     Scyld Computing Corporation, 410 Severn Ave., Suite 210, Annapolis MD 21403
@@ -52,6 +50,7 @@ static const char version2[] =
 #include <linux/etherdevice.h>
 #include <linux/jiffies.h>
 #include <linux/platform_device.h>
+#include <net/Space.h>
 
 #include <asm/io.h>
 
@@ -74,10 +73,10 @@ static int bad[MAX_NE_CARDS];
 static u32 ne_msg_enable;
 
 #ifdef MODULE
-module_param_array(io, int, NULL, 0);
-module_param_array(irq, int, NULL, 0);
+module_param_hw_array(io, int, ioport, NULL, 0);
+module_param_hw_array(irq, int, irq, NULL, 0);
 module_param_array(bad, int, NULL, 0);
-module_param_named(msg_enable, ne_msg_enable, uint, (S_IRUSR|S_IRGRP|S_IROTH));
+module_param_named(msg_enable, ne_msg_enable, uint, 0444);
 MODULE_PARM_DESC(io, "I/O base address(es),required");
 MODULE_PARM_DESC(irq, "IRQ number(s)");
 MODULE_PARM_DESC(bad, "Accept card(s) with bad signatures");
@@ -99,7 +98,7 @@ MODULE_LICENSE("GPL");
 that the ne2k probe is the last 8390 based probe to take place (as it
 is at boot) and so the probe will get confused by any other 8390 cards.
 ISA device autoprobes on a running machine are not recommended anyway. */
-#if !defined(MODULE) && (defined(CONFIG_ISA) || defined(CONFIG_M32R))
+#if !defined(MODULE) && defined(CONFIG_ISA)
 /* Do we need a portlist for the ISA auto-probe ? */
 #define NEEDS_PORTLIST
 #endif
@@ -164,11 +163,10 @@ bad_clone_list[] __initdata = {
 #define NESM_START_PG	0x40	/* First page of TX buffer */
 #define NESM_STOP_PG	0x80	/* Last page +1 of RX ring */
 
-#if defined(CONFIG_PLAT_MAPPI)
-#  define DCR_VAL 0x4b
-#elif defined(CONFIG_PLAT_OAKS32R)  || \
-   defined(CONFIG_MACH_TX49XX)
+#if defined(CONFIG_MACH_TX49XX)
 #  define DCR_VAL 0x48		/* 8-bit mode */
+#elif defined(CONFIG_ATARI)	/* 8-bit mode on Atari, normal on Q40 */
+#  define DCR_VAL (MACH_IS_ATARI ? 0x48 : 0x49)
 #else
 #  define DCR_VAL 0x49
 #endif
@@ -420,12 +418,7 @@ static int __init ne_probe1(struct net_device *dev, unsigned long ioaddr)
 		stop_page  = NE1SM_STOP_PG;
 	}
 
-#if  defined(CONFIG_PLAT_MAPPI) || defined(CONFIG_PLAT_OAKS32R)
-	neX000 = ((SA_prom[14] == 0x57  &&  SA_prom[15] == 0x57)
-		|| (SA_prom[14] == 0x42 && SA_prom[15] == 0x42));
-#else
 	neX000 = (SA_prom[14] == 0x57  &&  SA_prom[15] == 0x57);
-#endif
 	ctron =  (SA_prom[0] == 0x00 && SA_prom[1] == 0x00 && SA_prom[2] == 0x1d);
 	copam =  (SA_prom[14] == 0x49 && SA_prom[15] == 0x00);
 
@@ -483,7 +476,7 @@ static int __init ne_probe1(struct net_device *dev, unsigned long ioaddr)
 		mdelay(10);		/* wait 10ms for interrupt to propagate */
 		outb_p(0x00, ioaddr + EN0_IMR); 		/* Mask it again. */
 		dev->irq = probe_irq_off(cookie);
-		if (netif_msg_probe(ei_local))
+		if (ne_msg_enable & NETIF_MSG_PROBE)
 			pr_cont(" autoirq is %d", dev->irq);
 	} else if (dev->irq == 2)
 		/* Fixup for users that don't know that IRQ 2 is really IRQ 9,
@@ -506,18 +499,7 @@ static int __init ne_probe1(struct net_device *dev, unsigned long ioaddr)
 
 	dev->base_addr = ioaddr;
 
-#ifdef CONFIG_PLAT_MAPPI
-	outb_p(E8390_NODMA + E8390_PAGE1 + E8390_STOP,
-		ioaddr + E8390_CMD); /* 0x61 */
-	for (i = 0; i < ETH_ALEN; i++) {
-		dev->dev_addr[i] = SA_prom[i]
-			= inb_p(ioaddr + EN1_PHYS_SHIFT(i));
-	}
-#else
-	for (i = 0; i < ETH_ALEN; i++) {
-		dev->dev_addr[i] = SA_prom[i];
-	}
-#endif
+	eth_hw_addr_set(dev, SA_prom);
 
 	pr_cont("%pM\n", dev->dev_addr);
 
@@ -725,7 +707,7 @@ static void ne_block_output(struct net_device *dev, int count,
 retry:
 #endif
 
-#ifdef NE8390_RW_BUGFIX
+#ifdef NE_RW_BUGFIX
 	/* Handle the read-before-write bug the same way as the
 	   Crynwr packet driver -- the NatSemi method doesn't work.
 	   Actually this doesn't always work either, but if you have
@@ -918,7 +900,6 @@ static struct platform_driver ne_driver = {
 	.resume		= ne_drv_resume,
 	.driver		= {
 		.name	= DRV_NAME,
-		.owner	= THIS_MODULE,
 	},
 };
 
@@ -938,13 +919,16 @@ static void __init ne_add_devices(void)
 	}
 }
 
-#ifdef MODULE
-int __init init_module(void)
+static int __init ne_init(void)
 {
 	int retval;
-	ne_add_devices();
+
+	if (IS_MODULE(CONFIG_NE2000))
+		ne_add_devices();
+
 	retval = platform_driver_probe(&ne_driver, ne_drv_probe);
-	if (retval) {
+
+	if (IS_MODULE(CONFIG_NE2000) && retval) {
 		if (io[0] == 0)
 			pr_notice("ne.c: You must supply \"io=0xNNN\""
 			       " value(s) for ISA cards.\n");
@@ -956,17 +940,9 @@ int __init init_module(void)
 	ne_loop_rm_unreg(0);
 	return retval;
 }
-#else /* MODULE */
-static int __init ne_init(void)
-{
-	int retval = platform_driver_probe(&ne_driver, ne_drv_probe);
-
-	/* Unregister unused platform_devices. */
-	ne_loop_rm_unreg(0);
-	return retval;
-}
 module_init(ne_init);
 
+#if !defined(MODULE) && defined(CONFIG_NETDEV_LEGACY_INIT)
 struct net_device * __init ne_probe(int unit)
 {
 	int this_dev;
@@ -1007,7 +983,7 @@ struct net_device * __init ne_probe(int unit)
 
 	return ERR_PTR(-ENODEV);
 }
-#endif /* MODULE */
+#endif
 
 static void __exit ne_exit(void)
 {

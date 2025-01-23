@@ -1,10 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* String matching match for iptables
  *
  * (C) 2005 Pablo Neira Ayuso <pablo@eurodev.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/gfp.h>
@@ -21,19 +18,18 @@ MODULE_DESCRIPTION("Xtables: string-based matching");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("ipt_string");
 MODULE_ALIAS("ip6t_string");
+MODULE_ALIAS("ebt_string");
 
 static bool
 string_mt(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	const struct xt_string_info *conf = par->matchinfo;
-	struct ts_state state;
 	bool invert;
 
-	memset(&state, 0, sizeof(struct ts_state));
 	invert = conf->u.v1.flags & XT_STRING_FLAG_INVERT;
 
 	return (skb_find_text((struct sk_buff *)skb, conf->from_offset,
-			     conf->to_offset, conf->config, &state)
+			     conf->to_offset, conf->config)
 			     != UINT_MAX) ^ invert;
 }
 
@@ -79,6 +75,7 @@ static struct xt_match xt_string_mt_reg __read_mostly = {
 	.match      = string_mt,
 	.destroy    = string_mt_destroy,
 	.matchsize  = sizeof(struct xt_string_info),
+	.usersize   = offsetof(struct xt_string_info, config),
 	.me         = THIS_MODULE,
 };
 

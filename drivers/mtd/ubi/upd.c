@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) International Business Machines Corp., 2006
  * Copyright (c) Nokia Corporation, 2006
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See
- * the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  *
  * Author: Artem Bityutskiy (Битюцкий Артём)
  *
@@ -133,6 +120,10 @@ int ubi_start_update(struct ubi_device *ubi, struct ubi_volume *vol,
 	ubi_assert(!vol->updating && !vol->changing_leb);
 	vol->updating = 1;
 
+	vol->upd_buf = vmalloc(ubi->leb_size);
+	if (!vol->upd_buf)
+		return -ENOMEM;
+
 	err = set_update_marker(ubi, vol);
 	if (err)
 		return err;
@@ -144,21 +135,19 @@ int ubi_start_update(struct ubi_device *ubi, struct ubi_volume *vol,
 			return err;
 	}
 
-	if (bytes == 0) {
-		err = ubi_wl_flush(ubi, UBI_ALL, UBI_ALL);
-		if (err)
-			return err;
+	err = ubi_wl_flush(ubi, UBI_ALL, UBI_ALL);
+	if (err)
+		return err;
 
+	if (bytes == 0) {
 		err = clear_update_marker(ubi, vol, 0);
 		if (err)
 			return err;
+
+		vfree(vol->upd_buf);
 		vol->updating = 0;
 		return 0;
 	}
-
-	vol->upd_buf = vmalloc(ubi->leb_size);
-	if (!vol->upd_buf)
-		return -ENOMEM;
 
 	vol->upd_ebs = div_u64(bytes + vol->usable_leb_size - 1,
 			       vol->usable_leb_size);
@@ -191,7 +180,7 @@ int ubi_start_leb_change(struct ubi_device *ubi, struct ubi_volume *vol,
 	vol->changing_leb = 1;
 	vol->ch_lnum = req->lnum;
 
-	vol->upd_buf = vmalloc(req->bytes);
+	vol->upd_buf = vmalloc(ALIGN((int)req->bytes, ubi->min_io_size));
 	if (!vol->upd_buf)
 		return -ENOMEM;
 

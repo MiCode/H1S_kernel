@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* Linux driver for Philips webcam
    Decompression frontend.
    (C) 1999-2003 Nemosoft Unv.
@@ -8,22 +9,6 @@
    Please send bug reports and support requests to <luc@saillard.org>.
    The decompression routines have been implemented by reverse-engineering the
    Nemosoft binary pwcx module. Caveat emptor.
-
-   This program is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 2 of the License, or
-   (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
-
-   vim: set ts=8:
 */
 
 #include <asm/current.h>
@@ -40,7 +25,7 @@ int pwc_decompress(struct pwc_device *pdev, struct pwc_frame_buf *fbuf)
 	u16 *src;
 	u16 *dsty, *dstu, *dstv;
 
-	image = vb2_plane_vaddr(&fbuf->vb, 0);
+	image = vb2_plane_vaddr(&fbuf->vb.vb2_buf, 0);
 
 	yuv = fbuf->data + pdev->frame_header_size;  /* Skip header */
 
@@ -54,13 +39,13 @@ int pwc_decompress(struct pwc_device *pdev, struct pwc_frame_buf *fbuf)
 			 * first 3 bytes is filled (Nala case). We can
 			 * determine this using the type of the webcam */
 		memcpy(raw_frame->cmd, pdev->cmd_buf, 4);
-		memcpy(raw_frame+1, yuv, pdev->frame_size);
-		vb2_set_plane_payload(&fbuf->vb, 0,
-			pdev->frame_size + sizeof(struct pwc_raw_frame));
+		memcpy(raw_frame->rawframe, yuv, pdev->frame_size);
+		vb2_set_plane_payload(&fbuf->vb.vb2_buf, 0,
+			struct_size(raw_frame, rawframe, pdev->frame_size));
 		return 0;
 	}
 
-	vb2_set_plane_payload(&fbuf->vb, 0,
+	vb2_set_plane_payload(&fbuf->vb.vb2_buf, 0,
 			      pdev->width * pdev->height * 3 / 2);
 
 	if (pdev->vbandlength == 0) {

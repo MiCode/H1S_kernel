@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * generic videomode helper
  *
  * Copyright (c) 2012 Steffen Trumtrar <s.trumtrar@pengutronix.de>, Pengutronix
- *
- * This file is released under the GPLv2
  */
 #include <linux/errno.h>
 #include <linux/export.h>
@@ -15,9 +14,9 @@
 
 /**
  * of_get_videomode - get the videomode #<index> from devicetree
- * @np - devicenode with the display_timings
- * @vm - set to return value
- * @index - index into list of display_timings
+ * @np: devicenode with the display_timings
+ * @vm: set to return value
+ * @index: index into list of display_timings
  *	    (Set this to OF_USE_NATIVE_MODE to use whatever mode is
  *	     specified as native mode in the DT.)
  *
@@ -36,7 +35,7 @@ int of_get_videomode(struct device_node *np, struct videomode *vm,
 
 	disp = of_get_display_timings(np);
 	if (!disp) {
-		pr_err("%s: no timings specified\n", of_node_full_name(np));
+		pr_err("%pOF: no timings specified\n", np);
 		return -EINVAL;
 	}
 
@@ -44,11 +43,9 @@ int of_get_videomode(struct device_node *np, struct videomode *vm,
 		index = disp->native_mode;
 
 	ret = videomode_from_timings(disp, vm, index);
-	if (ret)
-		return ret;
 
 	display_timings_release(disp);
 
-	return 0;
+	return ret;
 }
 EXPORT_SYMBOL_GPL(of_get_videomode);

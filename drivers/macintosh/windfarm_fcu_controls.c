@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Windfarm PowerMac thermal control. FCU fan control
  *
  * Copyright 2012 Benjamin Herrenschmidt, IBM Corp.
- *
- * Released under the term of the GNU GPL v2.
  */
 #undef DEBUG
 
@@ -15,7 +14,7 @@
 #include <linux/init.h>
 #include <linux/wait.h>
 #include <linux/i2c.h>
-#include <asm/prom.h>
+
 #include <asm/machdep.h>
 #include <asm/io.h>
 #include <asm/sections.h>
@@ -425,25 +424,25 @@ static void wf_fcu_lookup_fans(struct wf_fcu_priv *pv)
 		{ "CPU B 2",		"cpu-fan-b-1",		},
 		{ "CPU B 3",		"cpu-fan-c-1",		},
 	};
-	struct device_node *np = NULL, *fcu = pv->i2c->dev.of_node;
+	struct device_node *np, *fcu = pv->i2c->dev.of_node;
 	int i;
 
 	DBG("Looking up FCU controls in device-tree...\n");
 
-	while ((np = of_get_next_child(fcu, np)) != NULL) {
+	for_each_child_of_node(fcu, np) {
 		int id, type = -1;
 		const char *loc;
 		const char *name;
 		const u32 *reg;
 
-		DBG(" control: %s, type: %s\n", np->name, np->type);
+		DBG(" control: %pOFn, type: %s\n", np, of_node_get_device_type(np));
 
 		/* Detect control type */
-		if (!strcmp(np->type, "fan-rpm-control") ||
-		    !strcmp(np->type, "fan-rpm"))
+		if (of_node_is_type(np, "fan-rpm-control") ||
+		    of_node_is_type(np, "fan-rpm"))
 			type = FCU_FAN_RPM;
-		if (!strcmp(np->type, "fan-pwm-control") ||
-		    !strcmp(np->type, "fan-pwm"))
+		if (of_node_is_type(np, "fan-pwm-control") ||
+		    of_node_is_type(np, "fan-pwm"))
 			type = FCU_FAN_PWM;
 		/* Only care about fans for now */
 		if (type == -1)
@@ -469,9 +468,7 @@ static void wf_fcu_lookup_fans(struct wf_fcu_priv *pv)
 			else
 				id = ((*reg) - 0x30) / 2;
 			if (id > 7) {
-				pr_warning("wf_fcu: Can't parse "
-				       "fan ID in device-tree for %s\n",
-					   np->full_name);
+				pr_warn("wf_fcu: Can't parse fan ID in device-tree for %pOF\n", np);
 				break;
 			}
 			wf_fcu_add_fan(pv, name, type, id);
@@ -517,8 +514,7 @@ static int wf_fcu_init_chip(struct wf_fcu_priv *pv)
 	return 0;
 }
 
-static int wf_fcu_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int wf_fcu_probe(struct i2c_client *client)
 {
 	struct wf_fcu_priv *pv;
 
@@ -563,7 +559,7 @@ static int wf_fcu_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int wf_fcu_remove(struct i2c_client *client)
+static void wf_fcu_remove(struct i2c_client *client)
 {
 	struct wf_fcu_priv *pv = dev_get_drvdata(&client->dev);
 	struct wf_fcu_fan *fan;
@@ -574,7 +570,6 @@ static int wf_fcu_remove(struct i2c_client *client)
 		wf_unregister_control(&fan->ctrl);
 	}
 	kref_put(&pv->ref, wf_fcu_release);
-	return 0;
 }
 
 static const struct i2c_device_id wf_fcu_id[] = {
@@ -583,9 +578,16 @@ static const struct i2c_device_id wf_fcu_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, wf_fcu_id);
 
+static const struct of_device_id wf_fcu_of_id[] = {
+	{ .compatible = "fcu", },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, wf_fcu_of_id);
+
 static struct i2c_driver wf_fcu_driver = {
 	.driver = {
 		.name	= "wf_fcu",
+		.of_match_table = wf_fcu_of_id,
 	},
 	.probe		= wf_fcu_probe,
 	.remove		= wf_fcu_remove,

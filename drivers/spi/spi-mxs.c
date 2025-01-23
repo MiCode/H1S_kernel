@@ -1,39 +1,27 @@
-/*
- * Freescale MXS SPI master driver
- *
- * Copyright 2012 DENX Software Engineering, GmbH.
- * Copyright 2012 Freescale Semiconductor, Inc.
- * Copyright 2008 Embedded Alley Solutions, Inc All Rights Reserved.
- *
- * Rework and transition to new API by:
- * Marek Vasut <marex@denx.de>
- *
- * Based on previous attempt by:
- * Fabio Estevam <fabio.estevam@freescale.com>
- *
- * Based on code from U-Boot bootloader by:
- * Marek Vasut <marex@denx.de>
- *
- * Based on spi-stmp.c, which is:
- * Author: Dmitry Pervushin <dimka@embeddedalley.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+// SPDX-License-Identifier: GPL-2.0+
+//
+// Freescale MXS SPI master driver
+//
+// Copyright 2012 DENX Software Engineering, GmbH.
+// Copyright 2012 Freescale Semiconductor, Inc.
+// Copyright 2008 Embedded Alley Solutions, Inc All Rights Reserved.
+//
+// Rework and transition to new API by:
+// Marek Vasut <marex@denx.de>
+//
+// Based on previous attempt by:
+// Fabio Estevam <fabio.estevam@freescale.com>
+//
+// Based on code from U-Boot bootloader by:
+// Marek Vasut <marex@denx.de>
+//
+// Based on spi-stmp.c, which is:
+// Author: Dmitry Pervushin <dimka@embeddedalley.com>
 
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
-#include <linux/of_gpio.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -43,12 +31,14 @@
 #include <linux/clk.h>
 #include <linux/err.h>
 #include <linux/completion.h>
-#include <linux/gpio.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/regulator/consumer.h>
+#include <linux/pm_runtime.h>
 #include <linux/module.h>
 #include <linux/stmp_device.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/mxs-spi.h>
+#include <trace/events/spi.h>
 
 #define DRIVER_NAME		"mxs-spi"
 
@@ -86,7 +76,7 @@ static int mxs_spi_setup_transfer(struct spi_device *dev,
 		mxs_ssp_set_clk_rate(ssp, hz);
 		/*
 		 * Save requested rate, hz, rather than the actual rate,
-		 * ssp->clk_rate.  Otherwise we would set the rate every trasfer
+		 * ssp->clk_rate.  Otherwise we would set the rate every transfer
 		 * when the actual rate is not quite the same as requested rate.
 		 */
 		spi->sck = hz;
@@ -155,12 +145,14 @@ static int mxs_ssp_wait(struct mxs_spi *spi, int offset, int mask, bool set)
 static void mxs_ssp_dma_irq_callback(void *param)
 {
 	struct mxs_spi *spi = param;
+
 	complete(&spi->c);
 }
 
 static irqreturn_t mxs_ssp_irq_handler(int irq, void *dev_id)
 {
 	struct mxs_ssp *ssp = dev_id;
+
 	dev_err(ssp->dev, "%s[%i] CTRL1=%08x STATUS=%08x\n",
 		__func__, __LINE__,
 		readl(ssp->base + HW_SSP_CTRL1(ssp)),
@@ -181,7 +173,6 @@ static int mxs_spi_txrx_dma(struct mxs_spi *spi,
 	int min, ret;
 	u32 ctrl0;
 	struct page *vm_page;
-	void *sg_buf;
 	struct {
 		u32			pio[4];
 		struct scatterlist	sg;
@@ -190,7 +181,7 @@ static int mxs_spi_txrx_dma(struct mxs_spi *spi,
 	if (!len)
 		return -EINVAL;
 
-	dma_xfer = kzalloc(sizeof(*dma_xfer) * sgs, GFP_KERNEL);
+	dma_xfer = kcalloc(sgs, sizeof(*dma_xfer), GFP_KERNEL);
 	if (!dma_xfer)
 		return -ENOMEM;
 
@@ -231,13 +222,14 @@ static int mxs_spi_txrx_dma(struct mxs_spi *spi,
 				ret = -ENOMEM;
 				goto err_vmalloc;
 			}
-			sg_buf = page_address(vm_page) +
-				((size_t)buf & ~PAGE_MASK);
+
+			sg_init_table(&dma_xfer[sg_count].sg, 1);
+			sg_set_page(&dma_xfer[sg_count].sg, vm_page,
+				    min, offset_in_page(buf));
 		} else {
-			sg_buf = buf;
+			sg_init_one(&dma_xfer[sg_count].sg, buf, min);
 		}
 
-		sg_init_one(&dma_xfer[sg_count].sg, sg_buf, min);
 		ret = dma_map_sg(ssp->dev, &dma_xfer[sg_count].sg, 1,
 			(flags & TXRX_WRITE) ? DMA_TO_DEVICE : DMA_FROM_DEVICE);
 
@@ -281,9 +273,8 @@ static int mxs_spi_txrx_dma(struct mxs_spi *spi,
 	dmaengine_submit(desc);
 	dma_async_issue_pending(ssp->dmach);
 
-	ret = wait_for_completion_timeout(&spi->c,
-				msecs_to_jiffies(SSP_TIMEOUT));
-	if (!ret) {
+	if (!wait_for_completion_timeout(&spi->c,
+					 msecs_to_jiffies(SSP_TIMEOUT))) {
 		dev_err(ssp->dev, "DMA transfer timeout\n");
 		ret = -ETIMEDOUT;
 		dmaengine_terminate_all(ssp->dmach);
@@ -371,17 +362,19 @@ static int mxs_spi_transfer_one(struct spi_master *master,
 {
 	struct mxs_spi *spi = spi_master_get_devdata(master);
 	struct mxs_ssp *ssp = &spi->ssp;
-	struct spi_transfer *t, *tmp_t;
+	struct spi_transfer *t;
 	unsigned int flag;
 	int status = 0;
 
 	/* Program CS register bits here, it will be used for all transfers. */
 	writel(BM_SSP_CTRL0_WAIT_FOR_CMD | BM_SSP_CTRL0_WAIT_FOR_IRQ,
 	       ssp->base + HW_SSP_CTRL0 + STMP_OFFSET_REG_CLR);
-	writel(mxs_spi_cs_to_reg(m->spi->chip_select),
+	writel(mxs_spi_cs_to_reg(spi_get_chipselect(m->spi, 0)),
 	       ssp->base + HW_SSP_CTRL0 + STMP_OFFSET_REG_SET);
 
-	list_for_each_entry_safe(t, tmp_t, &m->transfers, transfer_list) {
+	list_for_each_entry(t, &m->transfers, transfer_list) {
+
+		trace_spi_transfer_start(m, t);
 
 		status = mxs_spi_setup_transfer(m->spi, t);
 		if (status)
@@ -428,6 +421,8 @@ static int mxs_spi_transfer_one(struct spi_master *master,
 						flag);
 		}
 
+		trace_spi_transfer_stop(m, t);
+
 		if (status) {
 			stmp_reset_block(ssp->base);
 			break;
@@ -441,6 +436,85 @@ static int mxs_spi_transfer_one(struct spi_master *master,
 
 	return status;
 }
+
+static int mxs_spi_runtime_suspend(struct device *dev)
+{
+	struct spi_master *master = dev_get_drvdata(dev);
+	struct mxs_spi *spi = spi_master_get_devdata(master);
+	struct mxs_ssp *ssp = &spi->ssp;
+	int ret;
+
+	clk_disable_unprepare(ssp->clk);
+
+	ret = pinctrl_pm_select_idle_state(dev);
+	if (ret) {
+		int ret2 = clk_prepare_enable(ssp->clk);
+
+		if (ret2)
+			dev_warn(dev, "Failed to reenable clock after failing pinctrl request (pinctrl: %d, clk: %d)\n",
+				 ret, ret2);
+	}
+
+	return ret;
+}
+
+static int mxs_spi_runtime_resume(struct device *dev)
+{
+	struct spi_master *master = dev_get_drvdata(dev);
+	struct mxs_spi *spi = spi_master_get_devdata(master);
+	struct mxs_ssp *ssp = &spi->ssp;
+	int ret;
+
+	ret = pinctrl_pm_select_default_state(dev);
+	if (ret)
+		return ret;
+
+	ret = clk_prepare_enable(ssp->clk);
+	if (ret)
+		pinctrl_pm_select_idle_state(dev);
+
+	return ret;
+}
+
+static int __maybe_unused mxs_spi_suspend(struct device *dev)
+{
+	struct spi_master *master = dev_get_drvdata(dev);
+	int ret;
+
+	ret = spi_master_suspend(master);
+	if (ret)
+		return ret;
+
+	if (!pm_runtime_suspended(dev))
+		return mxs_spi_runtime_suspend(dev);
+	else
+		return 0;
+}
+
+static int __maybe_unused mxs_spi_resume(struct device *dev)
+{
+	struct spi_master *master = dev_get_drvdata(dev);
+	int ret;
+
+	if (!pm_runtime_suspended(dev))
+		ret = mxs_spi_runtime_resume(dev);
+	else
+		ret = 0;
+	if (ret)
+		return ret;
+
+	ret = spi_master_resume(master);
+	if (ret < 0 && !pm_runtime_suspended(dev))
+		mxs_spi_runtime_suspend(dev);
+
+	return ret;
+}
+
+static const struct dev_pm_ops mxs_spi_pm = {
+	SET_RUNTIME_PM_OPS(mxs_spi_runtime_suspend,
+			   mxs_spi_runtime_resume, NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(mxs_spi_suspend, mxs_spi_resume)
+};
 
 static const struct of_device_id mxs_spi_dt_ids[] = {
 	{ .compatible = "fsl,imx23-spi", .data = (void *) IMX23_SSP, },
@@ -457,7 +531,6 @@ static int mxs_spi_probe(struct platform_device *pdev)
 	struct spi_master *master;
 	struct mxs_spi *spi;
 	struct mxs_ssp *ssp;
-	struct resource *iores;
 	struct clk *clk;
 	void __iomem *base;
 	int devid, clk_freq;
@@ -470,12 +543,11 @@ static int mxs_spi_probe(struct platform_device *pdev)
 	 */
 	const int clk_freq_default = 160000000;
 
-	iores = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	irq_err = platform_get_irq(pdev, 0);
 	if (irq_err < 0)
-		return -EINVAL;
+		return irq_err;
 
-	base = devm_ioremap_resource(&pdev->dev, iores);
+	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
@@ -493,12 +565,15 @@ static int mxs_spi_probe(struct platform_device *pdev)
 	if (!master)
 		return -ENOMEM;
 
+	platform_set_drvdata(pdev, master);
+
 	master->transfer_one_message = mxs_spi_transfer_one;
 	master->bits_per_word_mask = SPI_BPW_MASK(8);
 	master->mode_bits = SPI_CPOL | SPI_CPHA;
 	master->num_chipselect = 3;
 	master->dev.of_node = np;
-	master->flags = SPI_MASTER_HALF_DUPLEX;
+	master->flags = SPI_CONTROLLER_HALF_DUPLEX;
+	master->auto_runtime_pm = true;
 
 	spi = spi_master_get_devdata(master);
 	ssp = &spi->ssp;
@@ -510,39 +585,52 @@ static int mxs_spi_probe(struct platform_device *pdev)
 	init_completion(&spi->c);
 
 	ret = devm_request_irq(&pdev->dev, irq_err, mxs_ssp_irq_handler, 0,
-			       DRIVER_NAME, ssp);
+			       dev_name(&pdev->dev), ssp);
 	if (ret)
 		goto out_master_free;
 
-	ssp->dmach = dma_request_slave_channel(&pdev->dev, "rx-tx");
-	if (!ssp->dmach) {
+	ssp->dmach = dma_request_chan(&pdev->dev, "rx-tx");
+	if (IS_ERR(ssp->dmach)) {
 		dev_err(ssp->dev, "Failed to request DMA\n");
-		ret = -ENODEV;
+		ret = PTR_ERR(ssp->dmach);
 		goto out_master_free;
 	}
 
-	ret = clk_prepare_enable(ssp->clk);
-	if (ret)
-		goto out_dma_release;
+	pm_runtime_enable(ssp->dev);
+	if (!pm_runtime_enabled(ssp->dev)) {
+		ret = mxs_spi_runtime_resume(ssp->dev);
+		if (ret < 0) {
+			dev_err(ssp->dev, "runtime resume failed\n");
+			goto out_dma_release;
+		}
+	}
+
+	ret = pm_runtime_resume_and_get(ssp->dev);
+	if (ret < 0) {
+		dev_err(ssp->dev, "runtime_get_sync failed\n");
+		goto out_pm_runtime_disable;
+	}
 
 	clk_set_rate(ssp->clk, clk_freq);
 
 	ret = stmp_reset_block(ssp->base);
 	if (ret)
-		goto out_disable_clk;
-
-	platform_set_drvdata(pdev, master);
+		goto out_pm_runtime_put;
 
 	ret = devm_spi_register_master(&pdev->dev, master);
 	if (ret) {
 		dev_err(&pdev->dev, "Cannot register SPI master, %d\n", ret);
-		goto out_disable_clk;
+		goto out_pm_runtime_put;
 	}
+
+	pm_runtime_put(ssp->dev);
 
 	return 0;
 
-out_disable_clk:
-	clk_disable_unprepare(ssp->clk);
+out_pm_runtime_put:
+	pm_runtime_put(ssp->dev);
+out_pm_runtime_disable:
+	pm_runtime_disable(ssp->dev);
 out_dma_release:
 	dma_release_channel(ssp->dmach);
 out_master_free:
@@ -550,7 +638,7 @@ out_master_free:
 	return ret;
 }
 
-static int mxs_spi_remove(struct platform_device *pdev)
+static void mxs_spi_remove(struct platform_device *pdev)
 {
 	struct spi_master *master;
 	struct mxs_spi *spi;
@@ -560,19 +648,20 @@ static int mxs_spi_remove(struct platform_device *pdev)
 	spi = spi_master_get_devdata(master);
 	ssp = &spi->ssp;
 
-	clk_disable_unprepare(ssp->clk);
-	dma_release_channel(ssp->dmach);
+	pm_runtime_disable(&pdev->dev);
+	if (!pm_runtime_status_suspended(&pdev->dev))
+		mxs_spi_runtime_suspend(&pdev->dev);
 
-	return 0;
+	dma_release_channel(ssp->dmach);
 }
 
 static struct platform_driver mxs_spi_driver = {
 	.probe	= mxs_spi_probe,
-	.remove	= mxs_spi_remove,
+	.remove_new = mxs_spi_remove,
 	.driver	= {
 		.name	= DRIVER_NAME,
-		.owner	= THIS_MODULE,
 		.of_match_table = mxs_spi_dt_ids,
+		.pm = &mxs_spi_pm,
 	},
 };
 

@@ -1,10 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- *  This program is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License version 2 as published
- *  by the Free Software Foundation.
  *
  * Copyright (C) 2010 Thomas Langer <thomas.langer@lantiq.com>
- * Copyright (C) 2010 John Crispin <blogic@openwrt.org>
+ * Copyright (C) 2010 John Crispin <john@phrozen.org>
  */
 #include <linux/io.h>
 #include <linux/export.h>
@@ -52,6 +50,7 @@ struct clk *clk_get_io(void)
 {
 	return &cpu_clk_generic[2];
 }
+EXPORT_SYMBOL_GPL(clk_get_io);
 
 struct clk *clk_get_ppe(void)
 {
@@ -99,6 +98,23 @@ int clk_set_rate(struct clk *clk, unsigned long rate)
 }
 EXPORT_SYMBOL(clk_set_rate);
 
+long clk_round_rate(struct clk *clk, unsigned long rate)
+{
+	if (unlikely(!clk_good(clk)))
+		return 0;
+	if (clk->rates && *clk->rates) {
+		unsigned long *r = clk->rates;
+
+		while (*r && (*r != rate))
+			r++;
+		if (!*r) {
+			return clk->rate;
+		}
+	}
+	return rate;
+}
+EXPORT_SYMBOL(clk_round_rate);
+
 int clk_enable(struct clk *clk)
 {
 	if (unlikely(!clk_good(clk)))
@@ -143,10 +159,17 @@ void clk_deactivate(struct clk *clk)
 }
 EXPORT_SYMBOL(clk_deactivate);
 
-struct clk *of_clk_get_from_provider(struct of_phandle_args *clkspec)
+struct clk *clk_get_parent(struct clk *clk)
 {
 	return NULL;
 }
+EXPORT_SYMBOL(clk_get_parent);
+
+int clk_set_parent(struct clk *clk, struct clk *parent)
+{
+	return 0;
+}
+EXPORT_SYMBOL(clk_set_parent);
 
 static inline u32 get_counter_resolution(void)
 {

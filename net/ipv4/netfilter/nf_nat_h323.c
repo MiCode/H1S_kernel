@@ -1,13 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * H.323 extension for NAT alteration.
  *
  * Copyright (c) 2006 Jing Min Zhao <zhaojingmin@users.sourceforge.net>
  * Copyright (c) 2006-2012 Patrick McHardy <kaber@trash.net>
  *
- * This source code is licensed under General Public License version 2.
- *
  * Based on the 'brute force' H.323 NAT module by
- * Jozsef Kadlecsik <kadlec@blackhole.kfki.hu>
+ * Jozsef Kadlecsik <kadlec@netfilter.org>
  */
 
 #include <linux/module.h>
@@ -59,7 +58,7 @@ static int set_addr(struct sk_buff *skb, unsigned int protoff,
 			net_notice_ratelimited("nf_nat_h323: nf_nat_mangle_udp_packet error\n");
 			return -1;
 		}
-		/* nf_nat_mangle_udp_packet uses skb_make_writable() to copy
+		/* nf_nat_mangle_udp_packet uses skb_ensure_writable() to copy
 		 * or pull everything in a linear buffer, so we can safely
 		 * use the skb pointers now */
 		*data = skb->data + ip_hdrlen(skb) + sizeof(struct udphdr);
@@ -222,14 +221,17 @@ static int nat_rtp_rtcp(struct sk_buff *skb, struct nf_conn *ct,
 		int ret;
 
 		rtp_exp->tuple.dst.u.udp.port = htons(nated_port);
-		ret = nf_ct_expect_related(rtp_exp);
+		ret = nf_ct_expect_related(rtp_exp, 0);
 		if (ret == 0) {
 			rtcp_exp->tuple.dst.u.udp.port =
 			    htons(nated_port + 1);
-			ret = nf_ct_expect_related(rtcp_exp);
+			ret = nf_ct_expect_related(rtcp_exp, 0);
 			if (ret == 0)
 				break;
-			else if (ret != -EBUSY) {
+			else if (ret == -EBUSY) {
+				nf_ct_unexpect_related(rtp_exp);
+				continue;
+			} else if (ret < 0) {
 				nf_ct_unexpect_related(rtp_exp);
 				nated_port = 0;
 				break;
@@ -249,15 +251,15 @@ static int nat_rtp_rtcp(struct sk_buff *skb, struct nf_conn *ct,
 	if (set_h245_addr(skb, protoff, data, dataoff, taddr,
 			  &ct->tuplehash[!dir].tuple.dst.u3,
 			  htons((port & htons(1)) ? nated_port + 1 :
-						    nated_port)) == 0) {
-		/* Save ports */
-		info->rtp_port[i][dir] = rtp_port;
-		info->rtp_port[i][!dir] = htons(nated_port);
-	} else {
+						    nated_port))) {
 		nf_ct_unexpect_related(rtp_exp);
 		nf_ct_unexpect_related(rtcp_exp);
 		return -1;
 	}
+
+	/* Save ports */
+	info->rtp_port[i][dir] = rtp_port;
+	info->rtp_port[i][!dir] = htons(nated_port);
 
 	/* Success */
 	pr_debug("nf_nat_h323: expect RTP %pI4:%hu->%pI4:%hu\n",
@@ -289,20 +291,7 @@ static int nat_t120(struct sk_buff *skb, struct nf_conn *ct,
 	exp->expectfn = nf_nat_follow_master;
 	exp->dir = !dir;
 
-	/* Try to get same port: if not, try to change it. */
-	for (; nated_port != 0; nated_port++) {
-		int ret;
-
-		exp->tuple.dst.u.tcp.port = htons(nated_port);
-		ret = nf_ct_expect_related(exp);
-		if (ret == 0)
-			break;
-		else if (ret != -EBUSY) {
-			nated_port = 0;
-			break;
-		}
-	}
-
+	nated_port = nf_nat_exp_find_port(exp, nated_port);
 	if (nated_port == 0) {	/* No port available */
 		net_notice_ratelimited("nf_nat_h323: out of TCP ports\n");
 		return 0;
@@ -345,20 +334,7 @@ static int nat_h245(struct sk_buff *skb, struct nf_conn *ct,
 	if (info->sig_port[dir] == port)
 		nated_port = ntohs(info->sig_port[!dir]);
 
-	/* Try to get same port: if not, try to change it. */
-	for (; nated_port != 0; nated_port++) {
-		int ret;
-
-		exp->tuple.dst.u.tcp.port = htons(nated_port);
-		ret = nf_ct_expect_related(exp);
-		if (ret == 0)
-			break;
-		else if (ret != -EBUSY) {
-			nated_port = 0;
-			break;
-		}
-	}
-
+	nated_port = nf_nat_exp_find_port(exp, nated_port);
 	if (nated_port == 0) {	/* No port available */
 		net_notice_ratelimited("nf_nat_q931: out of TCP ports\n");
 		return 0;
@@ -367,14 +343,14 @@ static int nat_h245(struct sk_buff *skb, struct nf_conn *ct,
 	/* Modify signal */
 	if (set_h225_addr(skb, protoff, data, dataoff, taddr,
 			  &ct->tuplehash[!dir].tuple.dst.u3,
-			  htons(nated_port)) == 0) {
-		/* Save ports */
-		info->sig_port[dir] = port;
-		info->sig_port[!dir] = htons(nated_port);
-	} else {
+			  htons(nated_port))) {
 		nf_ct_unexpect_related(exp);
 		return -1;
 	}
+
+	/* Save ports */
+	info->sig_port[dir] = port;
+	info->sig_port[!dir] = htons(nated_port);
 
 	pr_debug("nf_nat_q931: expect H.245 %pI4:%hu->%pI4:%hu\n",
 		 &exp->tuple.src.u3.ip,
@@ -392,7 +368,7 @@ static int nat_h245(struct sk_buff *skb, struct nf_conn *ct,
 static void ip_nat_q931_expect(struct nf_conn *new,
 			       struct nf_conntrack_expect *this)
 {
-	struct nf_nat_range range;
+	struct nf_nat_range2 range;
 
 	if (this->tuple.src.u3.ip != 0) {	/* Only accept calls from GK */
 		nf_nat_follow_master(new, this);
@@ -437,20 +413,7 @@ static int nat_q931(struct sk_buff *skb, struct nf_conn *ct,
 	if (info->sig_port[dir] == port)
 		nated_port = ntohs(info->sig_port[!dir]);
 
-	/* Try to get same port: if not, try to change it. */
-	for (; nated_port != 0; nated_port++) {
-		int ret;
-
-		exp->tuple.dst.u.tcp.port = htons(nated_port);
-		ret = nf_ct_expect_related(exp);
-		if (ret == 0)
-			break;
-		else if (ret != -EBUSY) {
-			nated_port = 0;
-			break;
-		}
-	}
-
+	nated_port = nf_nat_exp_find_port(exp, nated_port);
 	if (nated_port == 0) {	/* No port available */
 		net_notice_ratelimited("nf_nat_ras: out of TCP ports\n");
 		return 0;
@@ -459,22 +422,25 @@ static int nat_q931(struct sk_buff *skb, struct nf_conn *ct,
 	/* Modify signal */
 	if (set_h225_addr(skb, protoff, data, 0, &taddr[idx],
 			  &ct->tuplehash[!dir].tuple.dst.u3,
-			  htons(nated_port)) == 0) {
-		/* Save ports */
-		info->sig_port[dir] = port;
-		info->sig_port[!dir] = htons(nated_port);
-
-		/* Fix for Gnomemeeting */
-		if (idx > 0 &&
-		    get_h225_addr(ct, *data, &taddr[0], &addr, &port) &&
-		    (ntohl(addr.ip) & 0xff000000) == 0x7f000000) {
-			set_h225_addr(skb, protoff, data, 0, &taddr[0],
-				      &ct->tuplehash[!dir].tuple.dst.u3,
-				      info->sig_port[!dir]);
-		}
-	} else {
+			  htons(nated_port))) {
 		nf_ct_unexpect_related(exp);
 		return -1;
+	}
+
+	/* Save ports */
+	info->sig_port[dir] = port;
+	info->sig_port[!dir] = htons(nated_port);
+
+	/* Fix for Gnomemeeting */
+	if (idx > 0 &&
+	    get_h225_addr(ct, *data, &taddr[0], &addr, &port) &&
+	    (ntohl(addr.ip) & 0xff000000) == 0x7f000000) {
+		if (set_h225_addr(skb, protoff, data, 0, &taddr[0],
+				  &ct->tuplehash[!dir].tuple.dst.u3,
+				  info->sig_port[!dir])) {
+			nf_ct_unexpect_related(exp);
+			return -1;
+		}
 	}
 
 	/* Success */
@@ -491,7 +457,7 @@ static int nat_q931(struct sk_buff *skb, struct nf_conn *ct,
 static void ip_nat_callforwarding_expect(struct nf_conn *new,
 					 struct nf_conntrack_expect *this)
 {
-	struct nf_nat_range range;
+	struct nf_nat_range2 range;
 
 	/* This must be a fresh one. */
 	BUG_ON(new->status & IPS_NAT_DONE_MASK);
@@ -527,29 +493,16 @@ static int nat_callforwarding(struct sk_buff *skb, struct nf_conn *ct,
 	exp->expectfn = ip_nat_callforwarding_expect;
 	exp->dir = !dir;
 
-	/* Try to get same port: if not, try to change it. */
-	for (nated_port = ntohs(port); nated_port != 0; nated_port++) {
-		int ret;
-
-		exp->tuple.dst.u.tcp.port = htons(nated_port);
-		ret = nf_ct_expect_related(exp);
-		if (ret == 0)
-			break;
-		else if (ret != -EBUSY) {
-			nated_port = 0;
-			break;
-		}
-	}
-
+	nated_port = nf_nat_exp_find_port(exp, ntohs(port));
 	if (nated_port == 0) {	/* No port available */
 		net_notice_ratelimited("nf_nat_q931: out of TCP ports\n");
 		return 0;
 	}
 
 	/* Modify signal */
-	if (!set_h225_addr(skb, protoff, data, dataoff, taddr,
-			   &ct->tuplehash[!dir].tuple.dst.u3,
-			   htons(nated_port)) == 0) {
+	if (set_h225_addr(skb, protoff, data, dataoff, taddr,
+			  &ct->tuplehash[!dir].tuple.dst.u3,
+			  htons(nated_port))) {
 		nf_ct_unexpect_related(exp);
 		return -1;
 	}
@@ -574,55 +527,41 @@ static struct nf_ct_helper_expectfn callforwarding_nat = {
 	.expectfn	= ip_nat_callforwarding_expect,
 };
 
-/****************************************************************************/
-static int __init init(void)
-{
-	BUG_ON(set_h245_addr_hook != NULL);
-	BUG_ON(set_h225_addr_hook != NULL);
-	BUG_ON(set_sig_addr_hook != NULL);
-	BUG_ON(set_ras_addr_hook != NULL);
-	BUG_ON(nat_rtp_rtcp_hook != NULL);
-	BUG_ON(nat_t120_hook != NULL);
-	BUG_ON(nat_h245_hook != NULL);
-	BUG_ON(nat_callforwarding_hook != NULL);
-	BUG_ON(nat_q931_hook != NULL);
+static const struct nfct_h323_nat_hooks nathooks = {
+	.set_h245_addr = set_h245_addr,
+	.set_h225_addr = set_h225_addr,
+	.set_sig_addr = set_sig_addr,
+	.set_ras_addr = set_ras_addr,
+	.nat_rtp_rtcp = nat_rtp_rtcp,
+	.nat_t120 = nat_t120,
+	.nat_h245 = nat_h245,
+	.nat_callforwarding = nat_callforwarding,
+	.nat_q931 = nat_q931,
+};
 
-	RCU_INIT_POINTER(set_h245_addr_hook, set_h245_addr);
-	RCU_INIT_POINTER(set_h225_addr_hook, set_h225_addr);
-	RCU_INIT_POINTER(set_sig_addr_hook, set_sig_addr);
-	RCU_INIT_POINTER(set_ras_addr_hook, set_ras_addr);
-	RCU_INIT_POINTER(nat_rtp_rtcp_hook, nat_rtp_rtcp);
-	RCU_INIT_POINTER(nat_t120_hook, nat_t120);
-	RCU_INIT_POINTER(nat_h245_hook, nat_h245);
-	RCU_INIT_POINTER(nat_callforwarding_hook, nat_callforwarding);
-	RCU_INIT_POINTER(nat_q931_hook, nat_q931);
+/****************************************************************************/
+static int __init nf_nat_h323_init(void)
+{
+	RCU_INIT_POINTER(nfct_h323_nat_hook, &nathooks);
 	nf_ct_helper_expectfn_register(&q931_nat);
 	nf_ct_helper_expectfn_register(&callforwarding_nat);
 	return 0;
 }
 
 /****************************************************************************/
-static void __exit fini(void)
+static void __exit nf_nat_h323_fini(void)
 {
-	RCU_INIT_POINTER(set_h245_addr_hook, NULL);
-	RCU_INIT_POINTER(set_h225_addr_hook, NULL);
-	RCU_INIT_POINTER(set_sig_addr_hook, NULL);
-	RCU_INIT_POINTER(set_ras_addr_hook, NULL);
-	RCU_INIT_POINTER(nat_rtp_rtcp_hook, NULL);
-	RCU_INIT_POINTER(nat_t120_hook, NULL);
-	RCU_INIT_POINTER(nat_h245_hook, NULL);
-	RCU_INIT_POINTER(nat_callforwarding_hook, NULL);
-	RCU_INIT_POINTER(nat_q931_hook, NULL);
+	RCU_INIT_POINTER(nfct_h323_nat_hook, NULL);
 	nf_ct_helper_expectfn_unregister(&q931_nat);
 	nf_ct_helper_expectfn_unregister(&callforwarding_nat);
 	synchronize_rcu();
 }
 
 /****************************************************************************/
-module_init(init);
-module_exit(fini);
+module_init(nf_nat_h323_init);
+module_exit(nf_nat_h323_fini);
 
 MODULE_AUTHOR("Jing Min Zhao <zhaojingmin@users.sourceforge.net>");
 MODULE_DESCRIPTION("H.323 NAT helper");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("ip_nat_h323");
+MODULE_ALIAS_NF_NAT_HELPER("h323");

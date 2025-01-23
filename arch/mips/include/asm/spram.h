@@ -1,10 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _MIPS_SPRAM_H
 #define _MIPS_SPRAM_H
 
-#ifdef CONFIG_CPU_MIPSR2
+#if defined(CONFIG_MIPS_SPRAM)
 extern __init void spram_config(void);
 #else
-static inline void spram_config(void) { };
-#endif /* CONFIG_CPU_MIPSR2 */
+static inline void spram_config(void) { }
+#endif /* CONFIG_MIPS_SPRAM */
 
 #endif /* _MIPS_SPRAM_H */

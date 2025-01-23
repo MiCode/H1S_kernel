@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  Floating proportions with flexible aging period
  *
@@ -17,7 +18,7 @@
  *
  *   \Sum_{j} p_{j} = 1,
  *
- * This formula can be straightforwardly computed by maintaing denominator
+ * This formula can be straightforwardly computed by maintaining denominator
  * (let's call it 'd') and for each event type its numerator (let's call it
  * 'n_j'). When an event of type 'j' happens, we simply need to do:
  *   n_j++; d++;
@@ -34,13 +35,13 @@
  */
 #include <linux/flex_proportions.h>
 
-int fprop_global_init(struct fprop_global *p)
+int fprop_global_init(struct fprop_global *p, gfp_t gfp)
 {
 	int err;
 
 	p->period = 0;
 	/* Use 1 to avoid dealing with periods with 0 events... */
-	err = percpu_counter_init(&p->events, 1);
+	err = percpu_counter_init(&p->events, 1, gfp);
 	if (err)
 		return err;
 	seqcount_init(&p->sequence);
@@ -62,18 +63,14 @@ void fprop_global_destroy(struct fprop_global *p)
  */
 bool fprop_new_period(struct fprop_global *p, int periods)
 {
-	s64 events;
-	unsigned long flags;
+	s64 events = percpu_counter_sum(&p->events);
 
-	local_irq_save(flags);
-	events = percpu_counter_sum(&p->events);
 	/*
 	 * Don't do anything if there are no events.
 	 */
-	if (events <= 1) {
-		local_irq_restore(flags);
+	if (events <= 1)
 		return false;
-	}
+	preempt_disable_nested();
 	write_seqcount_begin(&p->sequence);
 	if (periods < 64)
 		events -= events >> periods;
@@ -81,7 +78,7 @@ bool fprop_new_period(struct fprop_global *p, int periods)
 	percpu_counter_add(&p->events, -events);
 	p->period += periods;
 	write_seqcount_end(&p->sequence);
-	local_irq_restore(flags);
+	preempt_enable_nested();
 
 	return true;
 }
@@ -168,11 +165,11 @@ void fprop_fraction_single(struct fprop_global *p,
  */
 #define PROP_BATCH (8*(1+ilog2(nr_cpu_ids)))
 
-int fprop_local_init_percpu(struct fprop_local_percpu *pl)
+int fprop_local_init_percpu(struct fprop_local_percpu *pl, gfp_t gfp)
 {
 	int err;
 
-	err = percpu_counter_init(&pl->events, 0);
+	err = percpu_counter_init(&pl->events, 0, gfp);
 	if (err)
 		return err;
 	pl->period = 0;
@@ -207,7 +204,7 @@ static void fprop_reflect_period_percpu(struct fprop_global *p,
 		if (val < (nr_cpu_ids * PROP_BATCH))
 			val = percpu_counter_sum(&pl->events);
 
-		__percpu_counter_add(&pl->events,
+		percpu_counter_add_batch(&pl->events,
 			-val + (val >> (period-pl->period)), PROP_BATCH);
 	} else
 		percpu_counter_set(&pl->events, 0);
@@ -216,11 +213,12 @@ static void fprop_reflect_period_percpu(struct fprop_global *p,
 }
 
 /* Event of type pl happened */
-void __fprop_inc_percpu(struct fprop_global *p, struct fprop_local_percpu *pl)
+void __fprop_add_percpu(struct fprop_global *p, struct fprop_local_percpu *pl,
+		long nr)
 {
 	fprop_reflect_period_percpu(p, pl);
-	__percpu_counter_add(&pl->events, 1, PROP_BATCH);
-	percpu_counter_add(&p->events, 1);
+	percpu_counter_add_batch(&pl->events, nr, PROP_BATCH);
+	percpu_counter_add(&p->events, nr);
 }
 
 void fprop_fraction_percpu(struct fprop_global *p,
@@ -252,21 +250,29 @@ void fprop_fraction_percpu(struct fprop_global *p,
 }
 
 /*
- * Like __fprop_inc_percpu() except that event is counted only if the given
+ * Like __fprop_add_percpu() except that event is counted only if the given
  * type has fraction smaller than @max_frac/FPROP_FRAC_BASE
  */
-void __fprop_inc_percpu_max(struct fprop_global *p,
-			    struct fprop_local_percpu *pl, int max_frac)
+void __fprop_add_percpu_max(struct fprop_global *p,
+		struct fprop_local_percpu *pl, int max_frac, long nr)
 {
 	if (unlikely(max_frac < FPROP_FRAC_BASE)) {
 		unsigned long numerator, denominator;
+		s64 tmp;
 
 		fprop_fraction_percpu(p, pl, &numerator, &denominator);
-		if (numerator >
-		    (((u64)denominator) * max_frac) >> FPROP_FRAC_SHIFT)
+		/* Adding 'nr' to fraction exceeds max_frac/FPROP_FRAC_BASE? */
+		tmp = (u64)denominator * max_frac -
+					((u64)numerator << FPROP_FRAC_SHIFT);
+		if (tmp < 0) {
+			/* Maximum fraction already exceeded? */
 			return;
-	} else
-		fprop_reflect_period_percpu(p, pl);
-	__percpu_counter_add(&pl->events, 1, PROP_BATCH);
-	percpu_counter_add(&p->events, 1);
+		} else if (tmp < nr * (FPROP_FRAC_BASE - max_frac)) {
+			/* Add just enough for the fraction to saturate */
+			nr = div_u64(tmp + FPROP_FRAC_BASE - max_frac - 1,
+					FPROP_FRAC_BASE - max_frac);
+		}
+	}
+
+	__fprop_add_percpu(p, pl, nr);
 }

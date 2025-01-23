@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/fs/hfsplus/super.c
  *
@@ -11,13 +12,14 @@
 #include <linux/init.h>
 #include <linux/pagemap.h>
 #include <linux/blkdev.h>
+#include <linux/backing-dev.h>
 #include <linux/fs.h>
 #include <linux/slab.h>
 #include <linux/vfs.h>
 #include <linux/nls.h>
 
 static struct inode *hfsplus_alloc_inode(struct super_block *sb);
-static void hfsplus_destroy_inode(struct inode *inode);
+static void hfsplus_free_inode(struct inode *inode);
 
 #include "hfsplus_fs.h"
 #include "xattr.h"
@@ -66,6 +68,7 @@ struct inode *hfsplus_iget(struct super_block *sb, unsigned long ino)
 		return inode;
 
 	INIT_LIST_HEAD(&HFSPLUS_I(inode)->open_dir_list);
+	spin_lock_init(&HFSPLUS_I(inode)->open_dir_lock);
 	mutex_init(&HFSPLUS_I(inode)->extents_lock);
 	HFSPLUS_I(inode)->flags = 0;
 	HFSPLUS_I(inode)->extent_state = 0;
@@ -131,9 +134,10 @@ static int hfsplus_system_write_inode(struct inode *inode)
 	hfsplus_inode_write_fork(inode, fork);
 	if (tree) {
 		int err = hfs_btree_write(tree);
+
 		if (err) {
 			pr_err("b-tree write err: %d, ino %lu\n",
-					err, inode->i_ino);
+			       err, inode->i_ino);
 			return err;
 		}
 	}
@@ -161,7 +165,7 @@ static int hfsplus_write_inode(struct inode *inode,
 static void hfsplus_evict_inode(struct inode *inode)
 {
 	hfs_dbg(INODE, "hfsplus_evict_inode: %lu\n", inode->i_ino);
-	truncate_inode_pages(&inode->i_data, 0);
+	truncate_inode_pages_final(&inode->i_data);
 	clear_inode(inode);
 	if (HFSPLUS_IS_RSRC(inode)) {
 		HFSPLUS_I(HFSPLUS_I(inode)->rsrc_inode)->rsrc_inode = NULL;
@@ -217,7 +221,8 @@ static int hfsplus_sync_fs(struct super_block *sb, int wait)
 
 	error2 = hfsplus_submit_bio(sb,
 				   sbi->part_start + HFSPLUS_VOLHEAD_SECTOR,
-				   sbi->s_vhdr_buf, NULL, WRITE_SYNC);
+				   sbi->s_vhdr_buf, NULL, REQ_OP_WRITE |
+				   REQ_SYNC);
 	if (!error)
 		error = error2;
 	if (!write_backup)
@@ -225,7 +230,8 @@ static int hfsplus_sync_fs(struct super_block *sb, int wait)
 
 	error2 = hfsplus_submit_bio(sb,
 				  sbi->part_start + sbi->sect_count - 2,
-				  sbi->s_backup_vhdr_buf, NULL, WRITE_SYNC);
+				  sbi->s_backup_vhdr_buf, NULL, REQ_OP_WRITE |
+				  REQ_SYNC);
 	if (!error)
 		error2 = error;
 out:
@@ -233,7 +239,7 @@ out:
 	mutex_unlock(&sbi->vh_mutex);
 
 	if (!test_bit(HFSPLUS_SB_NOBARRIER, &sbi->flags))
-		blkdev_issue_flush(sb->s_bdev, GFP_KERNEL, NULL);
+		blkdev_issue_flush(sb->s_bdev);
 
 	return error;
 }
@@ -259,7 +265,7 @@ void hfsplus_mark_mdb_dirty(struct super_block *sb)
 	struct hfsplus_sb_info *sbi = HFSPLUS_SB(sb);
 	unsigned long delay;
 
-	if (sb->s_flags & MS_RDONLY)
+	if (sb_rdonly(sb))
 		return;
 
 	spin_lock(&sbi->work_lock);
@@ -279,7 +285,7 @@ static void hfsplus_put_super(struct super_block *sb)
 
 	cancel_delayed_work_sync(&sbi->sync_work);
 
-	if (!(sb->s_flags & MS_RDONLY) && sbi->s_vhdr) {
+	if (!sb_rdonly(sb) && sbi->s_vhdr) {
 		struct hfsplus_vh *vhdr = sbi->s_vhdr;
 
 		vhdr->modify_date = hfsp_now2mt();
@@ -289,11 +295,11 @@ static void hfsplus_put_super(struct super_block *sb)
 		hfsplus_sync_fs(sb, 1);
 	}
 
+	iput(sbi->alloc_file);
+	iput(sbi->hidden_dir);
 	hfs_btree_close(sbi->attr_tree);
 	hfs_btree_close(sbi->cat_tree);
 	hfs_btree_close(sbi->ext_tree);
-	iput(sbi->alloc_file);
-	iput(sbi->hidden_dir);
 	kfree(sbi->s_vhdr_buf);
 	kfree(sbi->s_backup_vhdr_buf);
 	unload_nls(sbi->nls);
@@ -314,8 +320,7 @@ static int hfsplus_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_bavail = buf->f_bfree;
 	buf->f_files = 0xFFFFFFFF;
 	buf->f_ffree = 0xFFFFFFFF - sbi->next_cnid;
-	buf->f_fsid.val[0] = (u32)id;
-	buf->f_fsid.val[1] = (u32)(id >> 32);
+	buf->f_fsid = u64_to_fsid(id);
 	buf->f_namelen = HFSPLUS_MAX_STRLEN;
 
 	return 0;
@@ -323,9 +328,10 @@ static int hfsplus_statfs(struct dentry *dentry, struct kstatfs *buf)
 
 static int hfsplus_remount(struct super_block *sb, int *flags, char *data)
 {
-	if ((*flags & MS_RDONLY) == (sb->s_flags & MS_RDONLY))
+	sync_filesystem(sb);
+	if ((bool)(*flags & SB_RDONLY) == sb_rdonly(sb))
 		return 0;
-	if (!(*flags & MS_RDONLY)) {
+	if (!(*flags & SB_RDONLY)) {
 		struct hfsplus_vh *vhdr = HFSPLUS_SB(sb)->s_vhdr;
 		int force = 0;
 
@@ -334,20 +340,20 @@ static int hfsplus_remount(struct super_block *sb, int *flags, char *data)
 
 		if (!(vhdr->attributes & cpu_to_be32(HFSPLUS_VOL_UNMNT))) {
 			pr_warn("filesystem was not cleanly unmounted, running fsck.hfsplus is recommended.  leaving read-only.\n");
-			sb->s_flags |= MS_RDONLY;
-			*flags |= MS_RDONLY;
+			sb->s_flags |= SB_RDONLY;
+			*flags |= SB_RDONLY;
 		} else if (force) {
 			/* nothing */
 		} else if (vhdr->attributes &
 				cpu_to_be32(HFSPLUS_VOL_SOFTLOCK)) {
 			pr_warn("filesystem is marked locked, leaving read-only.\n");
-			sb->s_flags |= MS_RDONLY;
-			*flags |= MS_RDONLY;
+			sb->s_flags |= SB_RDONLY;
+			*flags |= SB_RDONLY;
 		} else if (vhdr->attributes &
 				cpu_to_be32(HFSPLUS_VOL_JOURNALED)) {
 			pr_warn("filesystem is marked journaled, leaving read-only.\n");
-			sb->s_flags |= MS_RDONLY;
-			*flags |= MS_RDONLY;
+			sb->s_flags |= SB_RDONLY;
+			*flags |= SB_RDONLY;
 		}
 	}
 	return 0;
@@ -355,7 +361,7 @@ static int hfsplus_remount(struct super_block *sb, int *flags, char *data)
 
 static const struct super_operations hfsplus_sops = {
 	.alloc_inode	= hfsplus_alloc_inode,
-	.destroy_inode	= hfsplus_destroy_inode,
+	.free_inode	= hfsplus_free_inode,
 	.write_inode	= hfsplus_write_inode,
 	.evict_inode	= hfsplus_evict_inode,
 	.put_super	= hfsplus_put_super,
@@ -435,7 +441,7 @@ static int hfsplus_fill_super(struct super_block *sb, void *data, int silent)
 	err = -EFBIG;
 	last_fs_block = sbi->total_blocks - 1;
 	last_fs_page = (last_fs_block << sbi->alloc_blksz_shift) >>
-			PAGE_CACHE_SHIFT;
+			PAGE_SHIFT;
 
 	if ((last_fs_block > (sector_t)(~0ULL) >> (sbi->alloc_blksz_shift - 9)) ||
 	    (last_fs_page > (pgoff_t)(~0ULL))) {
@@ -449,16 +455,16 @@ static int hfsplus_fill_super(struct super_block *sb, void *data, int silent)
 
 	if (!(vhdr->attributes & cpu_to_be32(HFSPLUS_VOL_UNMNT))) {
 		pr_warn("Filesystem was not cleanly unmounted, running fsck.hfsplus is recommended.  mounting read-only.\n");
-		sb->s_flags |= MS_RDONLY;
+		sb->s_flags |= SB_RDONLY;
 	} else if (test_and_clear_bit(HFSPLUS_SB_FORCE, &sbi->flags)) {
 		/* nothing */
 	} else if (vhdr->attributes & cpu_to_be32(HFSPLUS_VOL_SOFTLOCK)) {
 		pr_warn("Filesystem is marked locked, mounting read-only.\n");
-		sb->s_flags |= MS_RDONLY;
+		sb->s_flags |= SB_RDONLY;
 	} else if ((vhdr->attributes & cpu_to_be32(HFSPLUS_VOL_JOURNALED)) &&
-			!(sb->s_flags & MS_RDONLY)) {
+			!sb_rdonly(sb)) {
 		pr_warn("write access to a journaled filesystem is not supported, use the force option at your own risk, mounting read-only.\n");
-		sb->s_flags |= MS_RDONLY;
+		sb->s_flags |= SB_RDONLY;
 	}
 
 	err = -EINVAL;
@@ -513,11 +519,15 @@ static int hfsplus_fill_super(struct super_block *sb, void *data, int silent)
 	err = hfs_find_init(sbi->cat_tree, &fd);
 	if (err)
 		goto out_put_root;
-	hfsplus_cat_build_key(sb, fd.search_key, HFSPLUS_ROOT_CNID, &str);
+	err = hfsplus_cat_build_key(sb, fd.search_key, HFSPLUS_ROOT_CNID, &str);
+	if (unlikely(err < 0))
+		goto out_put_root;
 	if (!hfs_brec_read(&fd, &entry, sizeof(entry))) {
 		hfs_find_exit(&fd);
-		if (entry.type != cpu_to_be16(HFSPLUS_FOLDER))
+		if (entry.type != cpu_to_be16(HFSPLUS_FOLDER)) {
+			err = -EINVAL;
 			goto out_put_root;
+		}
 		inode = hfsplus_iget(sb, be32_to_cpu(entry.folder.id));
 		if (IS_ERR(inode)) {
 			err = PTR_ERR(inode);
@@ -527,7 +537,7 @@ static int hfsplus_fill_super(struct super_block *sb, void *data, int silent)
 	} else
 		hfs_find_exit(&fd);
 
-	if (!(sb->s_flags & MS_RDONLY)) {
+	if (!sb_rdonly(sb)) {
 		/*
 		 * H+LX == hfsplusutils, H+Lx == this driver, H+lx is unused
 		 * all three are registered with Apple for our use
@@ -541,7 +551,7 @@ static int hfsplus_fill_super(struct super_block *sb, void *data, int silent)
 
 		if (!sbi->hidden_dir) {
 			mutex_lock(&sbi->vh_mutex);
-			sbi->hidden_dir = hfsplus_new_inode(sb, S_IFDIR);
+			sbi->hidden_dir = hfsplus_new_inode(sb, root, S_IFDIR);
 			if (!sbi->hidden_dir) {
 				mutex_unlock(&sbi->vh_mutex);
 				err = -ENOMEM;
@@ -554,8 +564,8 @@ static int hfsplus_fill_super(struct super_block *sb, void *data, int silent)
 				goto out_put_hidden_dir;
 			}
 
-			err = hfsplus_init_inode_security(sbi->hidden_dir,
-								root, &str);
+			err = hfsplus_init_security(sbi->hidden_dir,
+							root, &str);
 			if (err == -EOPNOTSUPP)
 				err = 0; /* Operation is not supported. */
 			else if (err) {
@@ -580,6 +590,7 @@ static int hfsplus_fill_super(struct super_block *sb, void *data, int silent)
 	return 0;
 
 out_put_hidden_dir:
+	cancel_delayed_work_sync(&sbi->sync_work);
 	iput(sbi->hidden_dir);
 out_put_root:
 	dput(sb->s_root);
@@ -606,6 +617,7 @@ out:
 MODULE_AUTHOR("Brad Boyer");
 MODULE_DESCRIPTION("Extended Macintosh Filesystem");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(ANDROID_GKI_VFS_EXPORT_ONLY);
 
 static struct kmem_cache *hfsplus_inode_cachep;
 
@@ -613,20 +625,13 @@ static struct inode *hfsplus_alloc_inode(struct super_block *sb)
 {
 	struct hfsplus_inode_info *i;
 
-	i = kmem_cache_alloc(hfsplus_inode_cachep, GFP_KERNEL);
+	i = alloc_inode_sb(sb, hfsplus_inode_cachep, GFP_KERNEL);
 	return i ? &i->vfs_inode : NULL;
 }
 
-static void hfsplus_i_callback(struct rcu_head *head)
+static void hfsplus_free_inode(struct inode *inode)
 {
-	struct inode *inode = container_of(head, struct inode, i_rcu);
-
 	kmem_cache_free(hfsplus_inode_cachep, HFSPLUS_I(inode));
-}
-
-static void hfsplus_destroy_inode(struct inode *inode)
-{
-	call_rcu(&inode->i_rcu, hfsplus_i_callback);
 }
 
 #define HFSPLUS_INODE_SIZE	sizeof(struct hfsplus_inode_info)
@@ -658,7 +663,7 @@ static int __init init_hfsplus_fs(void)
 	int err;
 
 	hfsplus_inode_cachep = kmem_cache_create("hfsplus_icache",
-		HFSPLUS_INODE_SIZE, 0, SLAB_HWCACHE_ALIGN,
+		HFSPLUS_INODE_SIZE, 0, SLAB_HWCACHE_ALIGN|SLAB_ACCOUNT,
 		hfsplus_init_once);
 	if (!hfsplus_inode_cachep)
 		return -ENOMEM;

@@ -1,10 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/sh/mm/cache-sh2.c
  *
  * Copyright (C) 2002 Paul Mundt
  * Copyright (C) 2008 Yoshinori Sato
- *
- * Released under the terms of the GNU GPL v2.0.
  */
 
 #include <linux/init.h>
@@ -63,9 +62,9 @@ static void sh2__flush_invalidate_region(void *start, int size)
 	local_irq_save(flags);
 	jump_to_uncached();
 
-	ccr = __raw_readl(CCR);
+	ccr = __raw_readl(SH_CCR);
 	ccr |= CCR_CACHE_INVALIDATE;
-	__raw_writel(ccr, CCR);
+	__raw_writel(ccr, SH_CCR);
 
 	back_to_cached();
 	local_irq_restore(flags);

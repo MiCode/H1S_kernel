@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause) */
 /*
  * General structure definitions for universal mode switching modules
  *
@@ -90,7 +91,7 @@ struct SiS_Ext {
 	unsigned char VB_ExtTVYFilterIndex;
 	unsigned char VB_ExtTVYFilterIndexROM661;
 	unsigned char REFindex;
-	char ROMMODEIDX661;
+	signed char ROMMODEIDX661;
 };
 
 struct SiS_Ext2 {

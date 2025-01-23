@@ -42,11 +42,7 @@
  * $FreeBSD$
  */
 
-#ifdef __linux__
 #include "../queue.h"
-#else
-#include <sys/queue.h>
-#endif
 
 typedef enum {
 	UNINITIALIZED,
@@ -112,7 +108,7 @@ struct macro_arg {
 	regex_t	arg_regex;
 	char   *replacement_text;
 };
-STAILQ_HEAD(macro_arg_list, macro_arg) args;
+STAILQ_HEAD(macro_arg_list, macro_arg);
 
 struct macro_info {
 	struct macro_arg_list args;

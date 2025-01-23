@@ -35,11 +35,148 @@
 #include <asm/octeon/cvmx-pko.h>
 #include <asm/octeon/cvmx-helper.h>
 
-/**
+/*
  * Internal state of packet output
  */
 
-/**
+static int __cvmx_pko_int(int interface, int index)
+{
+	switch (interface) {
+	case 0:
+		return index;
+	case 1:
+		return 4;
+	case 2:
+		return index + 0x08;
+	case 3:
+		return index + 0x0c;
+	case 4:
+		return index + 0x10;
+	case 5:
+		return 0x1c;
+	case 6:
+		return 0x1d;
+	case 7:
+		return 0x1e;
+	case 8:
+		return 0x1f;
+	default:
+		return -1;
+	}
+}
+
+static void __cvmx_pko_iport_config(int pko_port)
+{
+	int queue;
+	const int num_queues = 1;
+	const int base_queue = pko_port;
+	const int static_priority_end = 1;
+	const int static_priority_base = 1;
+
+	for (queue = 0; queue < num_queues; queue++) {
+		union cvmx_pko_mem_iqueue_ptrs config;
+		cvmx_cmd_queue_result_t cmd_res;
+		uint64_t *buf_ptr;
+
+		config.u64		= 0;
+		config.s.index		= queue;
+		config.s.qid		= base_queue + queue;
+		config.s.ipid		= pko_port;
+		config.s.tail		= (queue == (num_queues - 1));
+		config.s.s_tail		= (queue == static_priority_end);
+		config.s.static_p	= (static_priority_base >= 0);
+		config.s.static_q	= (queue <= static_priority_end);
+		config.s.qos_mask	= 0xff;
+
+		cmd_res = cvmx_cmd_queue_initialize(
+				CVMX_CMD_QUEUE_PKO(base_queue + queue),
+				CVMX_PKO_MAX_QUEUE_DEPTH,
+				CVMX_FPA_OUTPUT_BUFFER_POOL,
+				(CVMX_FPA_OUTPUT_BUFFER_POOL_SIZE -
+				 CVMX_PKO_COMMAND_BUFFER_SIZE_ADJUST * 8));
+
+		WARN(cmd_res,
+		     "%s: cmd_res=%d pko_port=%d base_queue=%d num_queues=%d queue=%d\n",
+			__func__, (int)cmd_res, pko_port, base_queue,
+			num_queues, queue);
+
+		buf_ptr = (uint64_t *)cvmx_cmd_queue_buffer(
+				CVMX_CMD_QUEUE_PKO(base_queue + queue));
+		config.s.buf_ptr = cvmx_ptr_to_phys(buf_ptr) >> 7;
+		CVMX_SYNCWS;
+		cvmx_write_csr(CVMX_PKO_MEM_IQUEUE_PTRS, config.u64);
+	}
+}
+
+static void __cvmx_pko_queue_alloc_o68(void)
+{
+	int port;
+
+	for (port = 0; port < 48; port++)
+		__cvmx_pko_iport_config(port);
+}
+
+static void __cvmx_pko_port_map_o68(void)
+{
+	int port;
+	int interface, index;
+	cvmx_helper_interface_mode_t mode;
+	union cvmx_pko_mem_iport_ptrs config;
+
+	/*
+	 * Initialize every iport with the invalid eid.
+	 */
+	config.u64 = 0;
+	config.s.eid = 31; /* Invalid */
+	for (port = 0; port < 128; port++) {
+		config.s.ipid = port;
+		cvmx_write_csr(CVMX_PKO_MEM_IPORT_PTRS, config.u64);
+	}
+
+	/*
+	 * Set up PKO_MEM_IPORT_PTRS
+	 */
+	for (port = 0; port < 48; port++) {
+		interface = cvmx_helper_get_interface_num(port);
+		index = cvmx_helper_get_interface_index_num(port);
+		mode = cvmx_helper_interface_get_mode(interface);
+		if (mode == CVMX_HELPER_INTERFACE_MODE_DISABLED)
+			continue;
+
+		config.s.ipid = port;
+		config.s.qos_mask = 0xff;
+		config.s.crc = 1;
+		config.s.min_pkt = 1;
+		config.s.intr = __cvmx_pko_int(interface, index);
+		config.s.eid = config.s.intr;
+		config.s.pipe = (mode == CVMX_HELPER_INTERFACE_MODE_LOOP) ?
+			index : port;
+		cvmx_write_csr(CVMX_PKO_MEM_IPORT_PTRS, config.u64);
+	}
+}
+
+static void __cvmx_pko_chip_init(void)
+{
+	int i;
+
+	if (OCTEON_IS_MODEL(OCTEON_CN68XX)) {
+		__cvmx_pko_port_map_o68();
+		__cvmx_pko_queue_alloc_o68();
+		return;
+	}
+
+	/*
+	 * Initialize queues
+	 */
+	for (i = 0; i < CVMX_PKO_MAX_OUTPUT_QUEUES; i++) {
+		const uint64_t priority = 8;
+
+		cvmx_pko_config_port(CVMX_PKO_MEM_QUEUE_PTRS_ILLEGAL_PID, i, 1,
+				     &priority);
+	}
+}
+
+/*
  * Call before any other calls to initialize the packet
  * output system.  This does chip global config, and should only be
  * done by one core.
@@ -47,14 +184,12 @@
 
 void cvmx_pko_initialize_global(void)
 {
-	int i;
-	uint64_t priority = 8;
 	union cvmx_pko_reg_cmd_buf config;
 
 	/*
 	 * Set the size of the PKO command buffers to an odd number of
 	 * 64bit words. This allows the normal two word send to stay
-	 * aligned and never span a comamnd word buffer.
+	 * aligned and never span a command word buffer.
 	 */
 	config.u64 = 0;
 	config.s.pool = CVMX_FPA_OUTPUT_BUFFER_POOL;
@@ -62,9 +197,10 @@ void cvmx_pko_initialize_global(void)
 
 	cvmx_write_csr(CVMX_PKO_REG_CMD_BUF, config.u64);
 
-	for (i = 0; i < CVMX_PKO_MAX_OUTPUT_QUEUES; i++)
-		cvmx_pko_config_port(CVMX_PKO_MEM_QUEUE_PTRS_ILLEGAL_PID, i, 1,
-				     &priority);
+	/*
+	 * Chip-specific setup.
+	 */
+	__cvmx_pko_chip_init();
 
 	/*
 	 * If we aren't using all of the queues optimize PKO's
@@ -93,21 +229,7 @@ void cvmx_pko_initialize_global(void)
 	}
 }
 
-/**
- * This function does per-core initialization required by the PKO routines.
- * This must be called on all cores that will do packet output, and must
- * be called after the FPA has been initialized and filled with pages.
- *
- * Returns 0 on success
- *	   !0 on failure
- */
-int cvmx_pko_initialize_local(void)
-{
-	/* Nothing to do */
-	return 0;
-}
-
-/**
+/*
  * Enables the packet output hardware. It must already be
  * configured.
  */
@@ -130,7 +252,7 @@ void cvmx_pko_enable(void)
 	cvmx_write_csr(CVMX_PKO_REG_FLAGS, flags.u64);
 }
 
-/**
+/*
  * Disables the packet output. Does not affect any configuration.
  */
 void cvmx_pko_disable(void)
@@ -142,7 +264,7 @@ void cvmx_pko_disable(void)
 }
 EXPORT_SYMBOL_GPL(cvmx_pko_disable);
 
-/**
+/*
  * Reset the packet output.
  */
 static void __cvmx_pko_reset(void)
@@ -153,7 +275,7 @@ static void __cvmx_pko_reset(void)
 	cvmx_write_csr(CVMX_PKO_REG_FLAGS, pko_reg_flags.u64);
 }
 
-/**
+/*
  * Shutdown and free resources required by packet output.
  */
 void cvmx_pko_shutdown(void)
@@ -184,7 +306,7 @@ void cvmx_pko_shutdown(void)
 }
 EXPORT_SYMBOL_GPL(cvmx_pko_shutdown);
 
-/**
+/*
  * Configure a output port and the associated queues for use.
  *
  * @port:	Port to configure.
@@ -211,6 +333,9 @@ cvmx_pko_status_t cvmx_pko_config_port(uint64_t port, uint64_t base_queue,
 	union cvmx_pko_reg_queue_ptrs1 config1;
 	int static_priority_base = -1;
 	int static_priority_end = -1;
+
+	if (OCTEON_IS_MODEL(OCTEON_CN68XX))
+		return CVMX_PKO_SUCCESS;
 
 	if ((port >= CVMX_PKO_NUM_OUTPUT_PORTS)
 	    && (port != CVMX_PKO_MEM_QUEUE_PTRS_ILLEGAL_PID)) {
@@ -252,7 +377,7 @@ cvmx_pko_status_t cvmx_pko_config_port(uint64_t port, uint64_t base_queue,
 			/*
 			 * Check to make sure all static priority
 			 * queues are contiguous.  Also catches some
-			 * cases of static priorites not starting at
+			 * cases of static priorities not starting at
 			 * queue 0.
 			 */
 			if (static_priority_end != -1
@@ -346,11 +471,11 @@ cvmx_pko_status_t cvmx_pko_config_port(uint64_t port, uint64_t base_queue,
 			config.s.qos_mask = 0xff;
 			break;
 		case CVMX_PKO_QUEUE_STATIC_PRIORITY:
-			/* Pass 1 will fall through to the error case */
 			if (!cvmx_octeon_is_pass1()) {
 				config.s.qos_mask = 0xff;
 				break;
 			}
+			fallthrough;	/* to the error case, when Pass 1 */
 		default:
 			cvmx_dprintf("ERROR: cvmx_pko_config_port: Invalid "
 				     "priority %llu\n",
@@ -409,7 +534,7 @@ cvmx_pko_status_t cvmx_pko_config_port(uint64_t port, uint64_t base_queue,
 }
 
 #ifdef PKO_DEBUG
-/**
+/*
  * Show map of ports -> queues for different cores.
  */
 void cvmx_pko_show_queue_map()
@@ -434,7 +559,7 @@ void cvmx_pko_show_queue_map()
 }
 #endif
 
-/**
+/*
  * Rate limit a PKO port to a max packets/sec. This function is only
  * supported on CN51XX and higher, excluding CN58XX.
  *
@@ -467,7 +592,7 @@ int cvmx_pko_rate_limit_packets(int port, int packets_s, int burst)
 	return 0;
 }
 
-/**
+/*
  * Rate limit a PKO port to a max bits/sec. This function is only
  * supported on CN51XX and higher, excluding CN58XX.
  *

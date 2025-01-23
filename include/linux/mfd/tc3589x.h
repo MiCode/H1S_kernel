@@ -1,7 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) ST-Ericsson SA 2010
- *
- * License Terms: GNU General Public License, version 2
  */
 
 #ifndef __LINUX_MFD_TC3589x_H
@@ -19,6 +18,9 @@ enum tx3589x_block {
 #define TC3589x_RSTCTRL_ROTRST	(1 << 2)
 #define TC3589x_RSTCTRL_KBDRST	(1 << 1)
 #define TC3589x_RSTCTRL_GPIRST	(1 << 0)
+
+#define TC3589x_DKBDMSK_ELINT	(1 << 1)
+#define TC3589x_DKBDMSK_EINT	(1 << 0)
 
 /* Keyboard Configuration Registers */
 #define TC3589x_KBDSETTLE_REG   0x01
@@ -102,6 +104,9 @@ enum tx3589x_block {
 #define TC3589x_GPIOODM2	0xE4
 #define TC3589x_GPIOODE2	0xE5
 
+#define TC3589x_DIRECT0		0xEC
+#define TC3589x_DKBDMSK		0xF3
+
 #define TC3589x_INT_GPIIRQ	0
 #define TC3589x_INT_TI0IRQ	1
 #define TC3589x_INT_TI1IRQ	2
@@ -111,7 +116,6 @@ enum tx3589x_block {
 #define TC3589x_INT_PORIRQ	7
 
 #define TC3589x_NR_INTERNAL_IRQS	8
-#define TC3589x_INT_GPIO(x)	(TC3589x_NR_INTERNAL_IRQS + (x))
 
 struct tc3589x {
 	struct mutex lock;
@@ -141,56 +145,13 @@ extern int tc3589x_set_bits(struct tc3589x *tc3589x, u8 reg, u8 mask, u8 val);
 #define TC_KPD_DEBOUNCE_PERIOD  0xA3
 #define TC_KPD_SETTLE_TIME      0xA3
 
-/**
- * struct tc35893_platform_data - data structure for platform specific data
- * @keymap_data:        matrix scan code table for keycodes
- * @krow:               mask for available rows, value is 0xFF
- * @kcol:               mask for available columns, value is 0xFF
- * @debounce_period:    platform specific debounce time
- * @settle_time:        platform specific settle down time
- * @irqtype:            type of interrupt, falling or rising edge
- * @enable_wakeup:      specifies if keypad event can wake up system from sleep
- * @no_autorepeat:      flag for auto repetition
- */
-struct tc3589x_keypad_platform_data {
-	const struct matrix_keymap_data *keymap_data;
-	u8                      krow;
-	u8                      kcol;
-	u8                      debounce_period;
-	u8                      settle_time;
-	unsigned long           irqtype;
-	bool                    enable_wakeup;
-	bool                    no_autorepeat;
-};
-
-/**
- * struct tc3589x_gpio_platform_data - TC3589x GPIO platform data
- * @gpio_base: first gpio number assigned to TC3589x.  A maximum of
- *	       %TC3589x_NR_GPIOS GPIOs will be allocated.
- * @setup: callback for board-specific initialization
- * @remove: callback for board-specific teardown
- */
-struct tc3589x_gpio_platform_data {
-	int gpio_base;
-	void (*setup)(struct tc3589x *tc3589x, unsigned gpio_base);
-	void (*remove)(struct tc3589x *tc3589x, unsigned gpio_base);
-};
 
 /**
  * struct tc3589x_platform_data - TC3589x platform data
  * @block: bitmask of blocks to enable (use TC3589x_BLOCK_*)
- * @irq_base: base IRQ number.  %TC3589x_NR_IRQS irqs will be used.
- * @gpio: GPIO-specific platform data
- * @keypad: keypad-specific platform data
  */
 struct tc3589x_platform_data {
 	unsigned int block;
-	int irq_base;
-	struct tc3589x_gpio_platform_data *gpio;
-	const struct tc3589x_keypad_platform_data *keypad;
 };
-
-#define TC3589x_NR_GPIOS	24
-#define TC3589x_NR_IRQS		TC3589x_INT_GPIO(TC3589x_NR_GPIOS)
 
 #endif

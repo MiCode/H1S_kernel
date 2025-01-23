@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * drivers/mfd/si476x-i2c.c -- Core device driver for si476x MFD
  * device
@@ -6,16 +7,6 @@
  * Copyright (C) 2013 Andrey Smirnov
  *
  * Author: Andrey Smirnov <andrew.smirnov@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
  */
 #include <linux/module.h>
 
@@ -359,7 +350,7 @@ static inline void si476x_core_start_rds_drainer_once(struct si476x_core *core)
 	mutex_unlock(&core->rds_drainer_status_lock);
 }
 /**
- * si476x_drain_rds_fifo() - RDS buffer drainer.
+ * si476x_core_drain_rds_fifo() - RDS buffer drainer.
  * @work: struct work_struct being ppassed to the function by the
  * kernel.
  *
@@ -463,7 +454,7 @@ int si476x_core_i2c_xfer(struct si476x_core *core,
 EXPORT_SYMBOL_GPL(si476x_core_i2c_xfer);
 
 /**
- * si476x_get_status()
+ * si476x_core_get_status()
  * @core: Core device structure
  *
  * Get the status byte of the core device by berforming one byte I2C
@@ -482,7 +473,7 @@ static int si476x_core_get_status(struct si476x_core *core)
 }
 
 /**
- * si476x_get_and_signal_status() - IRQ dispatcher
+ * si476x_core_get_and_signal_status() - IRQ dispatcher
  * @core: Core device structure
  *
  * Dispatch the arrived interrupt request based on the value of the
@@ -541,8 +532,13 @@ static irqreturn_t si476x_core_interrupt(int irq, void *dev)
 }
 
 /**
- * si476x_firmware_version_to_revision()
+ * si476x_core_fwver_to_revision()
  * @core: Core device structure
+ * @func: Selects the boot function of the device:
+ *         *_BOOTLOADER  - Boot loader
+ *         *_FM_RECEIVER - FM receiver
+ *         *_AM_RECEIVER - AM receiver
+ *         *_WB_RECEIVER - Weatherband receiver
  * @major:  Firmware major number
  * @minor1: Firmware first minor number
  * @minor2: Firmware second minor number
@@ -592,7 +588,7 @@ static int si476x_core_fwver_to_revision(struct si476x_core *core,
 			goto unknown_revision;
 		}
 	case SI476X_FUNC_BOOTLOADER:
-	default:		/* FALLTHROUG */
+	default:		/* FALLTHROUGH */
 		BUG();
 		return -1;
 	}
@@ -600,14 +596,14 @@ static int si476x_core_fwver_to_revision(struct si476x_core *core,
 unknown_revision:
 	dev_err(&core->client->dev,
 		"Unsupported version of the firmware: %d.%d.%d, "
-		"reverting to A10 comptible functions\n",
+		"reverting to A10 compatible functions\n",
 		major, minor1, minor2);
 
 	return SI476X_REVISION_A10;
 }
 
 /**
- * si476x_get_revision_info()
+ * si476x_core_get_revision_info()
  * @core: Core device structure
  *
  * Get the firmware version number of the device. It is done in
@@ -687,9 +683,9 @@ bool si476x_core_is_powered_up(struct si476x_core *core)
 }
 EXPORT_SYMBOL_GPL(si476x_core_is_powered_up);
 
-static int si476x_core_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static int si476x_core_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	int rval;
 	struct si476x_core          *core;
 	struct si476x_platform_data *pdata;
@@ -697,11 +693,9 @@ static int si476x_core_probe(struct i2c_client *client,
 	int              cell_num;
 
 	core = devm_kzalloc(&client->dev, sizeof(*core), GFP_KERNEL);
-	if (!core) {
-		dev_err(&client->dev,
-			"failed to allocate 'struct si476x_core'\n");
+	if (!core)
 		return -ENOMEM;
-	}
+
 	core->client = client;
 
 	core->regmap = devm_regmap_init_si476x(core);
@@ -753,7 +747,7 @@ static int si476x_core_probe(struct i2c_client *client,
 				       ARRAY_SIZE(core->supplies),
 				       core->supplies);
 	if (rval) {
-		dev_err(&client->dev, "Failet to gett all of the regulators\n");
+		dev_err(&client->dev, "Failed to get all of the regulators\n");
 		goto free_gpio;
 	}
 
@@ -766,7 +760,7 @@ static int si476x_core_probe(struct i2c_client *client,
 			   sizeof(struct v4l2_rds_data),
 			   GFP_KERNEL);
 	if (rval) {
-		dev_err(&client->dev, "Could not alloate the FIFO\n");
+		dev_err(&client->dev, "Could not allocate the FIFO\n");
 		goto free_gpio;
 	}
 	mutex_init(&core->rds_drainer_status_lock);
@@ -777,7 +771,8 @@ static int si476x_core_probe(struct i2c_client *client,
 		rval = devm_request_threaded_irq(&client->dev,
 						 client->irq, NULL,
 						 si476x_core_interrupt,
-						 IRQF_TRIGGER_FALLING,
+						 IRQF_TRIGGER_FALLING |
+						 IRQF_ONESHOT,
 						 client->name, core);
 		if (rval < 0) {
 			dev_err(&client->dev, "Could not request IRQ %d\n",
@@ -840,7 +835,7 @@ free_gpio:
 	return rval;
 }
 
-static int si476x_core_remove(struct i2c_client *client)
+static void si476x_core_remove(struct i2c_client *client)
 {
 	struct si476x_core *core = i2c_get_clientdata(client);
 
@@ -856,8 +851,6 @@ static int si476x_core_remove(struct i2c_client *client)
 
 	if (gpio_is_valid(core->gpio_reset))
 		gpio_free(core->gpio_reset);
-
-	return 0;
 }
 
 
@@ -872,7 +865,6 @@ MODULE_DEVICE_TABLE(i2c, si476x_id);
 static struct i2c_driver si476x_core_driver = {
 	.driver		= {
 		.name	= "si476x-core",
-		.owner  = THIS_MODULE,
 	},
 	.probe		= si476x_core_probe,
 	.remove         = si476x_core_remove,

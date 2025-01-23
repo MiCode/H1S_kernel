@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * AMD Family 10h mmconfig enablement
  */
@@ -94,7 +95,7 @@ static void get_fam10h_pci_mmconf_base(void)
 		return;
 
 	/* SYS_CFG */
-	address = MSR_K8_SYSCFG;
+	address = MSR_AMD64_SYSCFG;
 	rdmsrl(address, val);
 
 	/* TOP_MEM2 is not enabled? */

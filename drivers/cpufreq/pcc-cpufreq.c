@@ -31,6 +31,7 @@
 #include <linux/cpufreq.h>
 #include <linux/compiler.h>
 #include <linux/slab.h>
+#include <linux/platform_device.h>
 
 #include <linux/acpi.h>
 #include <linux/io.h>
@@ -109,7 +110,7 @@ struct pcc_cpu {
 
 static struct pcc_cpu __percpu *pcc_cpu_info;
 
-static int pcc_cpufreq_verify(struct cpufreq_policy *policy)
+static int pcc_cpufreq_verify(struct cpufreq_policy_data *policy)
 {
 	cpufreq_verify_within_cpu_limits(policy);
 	return 0;
@@ -204,7 +205,6 @@ static int pcc_cpufreq_target(struct cpufreq_policy *policy,
 	u32 input_buffer;
 	int cpu;
 
-	spin_lock(&pcc_lock);
 	cpu = policy->cpu;
 	pcc_cpu_data = per_cpu_ptr(pcc_cpu_info, cpu);
 
@@ -215,7 +215,8 @@ static int pcc_cpufreq_target(struct cpufreq_policy *policy,
 
 	freqs.old = policy->cur;
 	freqs.new = target_freq;
-	cpufreq_notify_transition(policy, &freqs, CPUFREQ_PRECHANGE);
+	cpufreq_freq_transition_begin(policy, &freqs);
+	spin_lock(&pcc_lock);
 
 	input_buffer = 0x1 | (((target_freq * 100)
 			       / (ioread32(&pcch_hdr->nominal) * 1000)) << 8);
@@ -231,8 +232,8 @@ static int pcc_cpufreq_target(struct cpufreq_policy *policy,
 	status = ioread16(&pcch_hdr->status);
 	iowrite16(0, &pcch_hdr->status);
 
-	cpufreq_notify_post_transition(policy, &freqs, status != CMD_COMPLETE);
 	spin_unlock(&pcc_lock);
+	cpufreq_freq_transition_end(policy, &freqs, status != CMD_COMPLETE);
 
 	if (status != CMD_COMPLETE) {
 		pr_debug("target: FAILED for cpu %d, with status: 0x%x\n",
@@ -268,7 +269,7 @@ static int pcc_get_offset(int cpu)
 	if (!pccp || pccp->type != ACPI_TYPE_PACKAGE) {
 		ret = -ENODEV;
 		goto out_free;
-	};
+	}
 
 	offset = &(pccp->package.elements[0]);
 	if (!offset || offset->type != ACPI_TYPE_INTEGER) {
@@ -384,7 +385,7 @@ out_free:
 	return ret;
 }
 
-static int __init pcc_cpufreq_probe(void)
+static int __init pcc_cpufreq_evaluate(void)
 {
 	acpi_status status;
 	struct acpi_buffer output = {ACPI_ALLOCATE_BUFFER, NULL};
@@ -445,7 +446,7 @@ static int __init pcc_cpufreq_probe(void)
 		goto out_free;
 	}
 
-	pcch_virt_addr = ioremap_nocache(mem_resource->minimum,
+	pcch_virt_addr = ioremap(mem_resource->minimum,
 					mem_resource->address_length);
 	if (pcch_virt_addr == NULL) {
 		pr_debug("probe: could not map shared mem region\n");
@@ -487,7 +488,7 @@ static int __init pcc_cpufreq_probe(void)
 	doorbell.space_id = reg_resource->space_id;
 	doorbell.bit_width = reg_resource->bit_width;
 	doorbell.bit_offset = reg_resource->bit_offset;
-	doorbell.access_width = 64;
+	doorbell.access_width = 4;
 	doorbell.address = reg_resource->address;
 
 	pr_debug("probe: doorbell: space_id is %d, bit_width is %d, "
@@ -576,17 +577,30 @@ static struct cpufreq_driver pcc_cpufreq_driver = {
 	.name = "pcc-cpufreq",
 };
 
-static int __init pcc_cpufreq_init(void)
+static int __init pcc_cpufreq_probe(struct platform_device *pdev)
 {
 	int ret;
 
-	if (acpi_disabled)
-		return 0;
+	/* Skip initialization if another cpufreq driver is there. */
+	if (cpufreq_get_current_driver())
+		return -ENODEV;
 
-	ret = pcc_cpufreq_probe();
+	if (acpi_disabled)
+		return -ENODEV;
+
+	ret = pcc_cpufreq_evaluate();
 	if (ret) {
-		pr_debug("pcc_cpufreq_init: PCCH evaluation failed\n");
+		pr_debug("pcc_cpufreq_probe: PCCH evaluation failed\n");
 		return ret;
+	}
+
+	if (num_present_cpus() > 4) {
+		pcc_cpufreq_driver.flags |= CPUFREQ_NO_AUTO_DYNAMIC_SWITCHING;
+		pr_err("%s: Too many CPUs, dynamic performance scaling disabled\n",
+		       __func__);
+		pr_err("%s: Try to enable another scaling driver through BIOS settings\n",
+		       __func__);
+		pr_err("%s: and complain to the system vendor\n", __func__);
 	}
 
 	ret = cpufreq_register_driver(&pcc_cpufreq_driver);
@@ -594,7 +608,7 @@ static int __init pcc_cpufreq_init(void)
 	return ret;
 }
 
-static void __exit pcc_cpufreq_exit(void)
+static void pcc_cpufreq_remove(struct platform_device *pdev)
 {
 	cpufreq_unregister_driver(&pcc_cpufreq_driver);
 
@@ -602,6 +616,25 @@ static void __exit pcc_cpufreq_exit(void)
 
 	free_percpu(pcc_cpu_info);
 }
+
+static struct platform_driver pcc_cpufreq_platdrv = {
+	.driver = {
+		.name	= "pcc-cpufreq",
+	},
+	.remove_new	= pcc_cpufreq_remove,
+};
+
+static int __init pcc_cpufreq_init(void)
+{
+	return platform_driver_probe(&pcc_cpufreq_platdrv, pcc_cpufreq_probe);
+}
+
+static void __exit pcc_cpufreq_exit(void)
+{
+	platform_driver_unregister(&pcc_cpufreq_platdrv);
+}
+
+MODULE_ALIAS("platform:pcc-cpufreq");
 
 MODULE_AUTHOR("Matthew Garrett, Naga Chumbalkar");
 MODULE_VERSION(PCC_VERSION);

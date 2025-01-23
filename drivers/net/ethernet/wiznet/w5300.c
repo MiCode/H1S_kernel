@@ -1,16 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Ethernet driver for the WIZnet W5300 chip.
  *
  * Copyright (C) 2008-2009 WIZnet Co.,Ltd.
  * Copyright (C) 2011 Taehun Kim <kth3321 <at> gmail.com>
  * Copyright (C) 2012 Mike Sinkovsky <msink@permonline.ru>
- *
- * Licensed under the GPL-2 or later.
  */
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/kconfig.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/platform_device.h>
@@ -63,7 +61,7 @@ MODULE_LICENSE("GPL");
 #define   IDR_W5300		  0x5300  /* =0x5300 for WIZnet W5300 */
 #define W5300_S0_MR		0x0200	/* S0 Mode Register */
 #define   S0_MR_CLOSED		  0x0000  /* Close mode */
-#define   S0_MR_MACRAW		  0x0004  /* MAC RAW mode (promiscous) */
+#define   S0_MR_MACRAW		  0x0004  /* MAC RAW mode (promiscuous) */
 #define   S0_MR_MACRAW_MF	  0x0044  /* MAC RAW mode (filtered) */
 #define W5300_S0_CR		0x0202	/* S0 Command Register */
 #define   S0_CR_OPEN		  0x0001  /* OPEN command */
@@ -142,7 +140,6 @@ static u16 w5300_read_indirect(struct w5300_priv *priv, u16 addr)
 
 	spin_lock_irqsave(&priv->reg_lock, flags);
 	w5300_write_direct(priv, W5300_IDM_AR, addr);
-	mmiowb();
 	data = w5300_read_direct(priv, W5300_IDM_DR);
 	spin_unlock_irqrestore(&priv->reg_lock, flags);
 
@@ -155,9 +152,7 @@ static void w5300_write_indirect(struct w5300_priv *priv, u16 addr, u16 data)
 
 	spin_lock_irqsave(&priv->reg_lock, flags);
 	w5300_write_direct(priv, W5300_IDM_AR, addr);
-	mmiowb();
 	w5300_write_direct(priv, W5300_IDM_DR, data);
-	mmiowb();
 	spin_unlock_irqrestore(&priv->reg_lock, flags);
 }
 
@@ -193,7 +188,6 @@ static int w5300_command(struct w5300_priv *priv, u16 cmd)
 	unsigned long timeout = jiffies + msecs_to_jiffies(100);
 
 	w5300_write(priv, W5300_S0_CR, cmd);
-	mmiowb();
 
 	while (w5300_read(priv, W5300_S0_CR) != 0) {
 		if (time_after(jiffies, timeout))
@@ -242,18 +236,15 @@ static void w5300_write_macaddr(struct w5300_priv *priv)
 	w5300_write(priv, W5300_SHARH,
 		      ndev->dev_addr[4] << 8 |
 		      ndev->dev_addr[5]);
-	mmiowb();
 }
 
 static void w5300_hw_reset(struct w5300_priv *priv)
 {
 	w5300_write_direct(priv, W5300_MR, MR_RST);
-	mmiowb();
 	mdelay(5);
 	w5300_write_direct(priv, W5300_MR, priv->indirect ?
 				 MR_WDF(7) | MR_PB | MR_IND :
 				 MR_WDF(7) | MR_PB);
-	mmiowb();
 	w5300_write(priv, W5300_IMR, 0);
 	w5300_write_macaddr(priv);
 
@@ -265,24 +256,20 @@ static void w5300_hw_reset(struct w5300_priv *priv)
 	w5300_write32(priv, W5300_TMSRL, 64 << 24);
 	w5300_write32(priv, W5300_TMSRH, 0);
 	w5300_write(priv, W5300_MTYPE, 0x00ff);
-	mmiowb();
 }
 
 static void w5300_hw_start(struct w5300_priv *priv)
 {
 	w5300_write(priv, W5300_S0_MR, priv->promisc ?
 			  S0_MR_MACRAW : S0_MR_MACRAW_MF);
-	mmiowb();
 	w5300_command(priv, S0_CR_OPEN);
 	w5300_write(priv, W5300_S0_IMR, S0_IR_RECV | S0_IR_SENDOK);
 	w5300_write(priv, W5300_IMR, IR_S0);
-	mmiowb();
 }
 
 static void w5300_hw_close(struct w5300_priv *priv)
 {
 	w5300_write(priv, W5300_IMR, 0);
-	mmiowb();
 	w5300_command(priv, S0_CR_CLOSE);
 }
 
@@ -295,9 +282,9 @@ static void w5300_hw_close(struct w5300_priv *priv)
 static void w5300_get_drvinfo(struct net_device *ndev,
 			      struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, dev_name(ndev->dev.parent),
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, dev_name(ndev->dev.parent),
 		sizeof(info->bus_info));
 }
 
@@ -354,7 +341,7 @@ static void w5300_get_regs(struct net_device *ndev,
 	}
 }
 
-static void w5300_tx_timeout(struct net_device *ndev)
+static void w5300_tx_timeout(struct net_device *ndev, unsigned int txqueue)
 {
 	struct w5300_priv *priv = netdev_priv(ndev);
 
@@ -362,18 +349,17 @@ static void w5300_tx_timeout(struct net_device *ndev)
 	w5300_hw_reset(priv);
 	w5300_hw_start(priv);
 	ndev->stats.tx_errors++;
-	ndev->trans_start = jiffies;
+	netif_trans_update(ndev);
 	netif_wake_queue(ndev);
 }
 
-static int w5300_start_tx(struct sk_buff *skb, struct net_device *ndev)
+static netdev_tx_t w5300_start_tx(struct sk_buff *skb, struct net_device *ndev)
 {
 	struct w5300_priv *priv = netdev_priv(ndev);
 
 	netif_stop_queue(ndev);
 
 	w5300_write_frame(priv, skb->data, skb->len);
-	mmiowb();
 	ndev->stats.tx_packets++;
 	ndev->stats.tx_bytes += skb->len;
 	dev_kfree_skb(skb);
@@ -418,9 +404,8 @@ static int w5300_napi_poll(struct napi_struct *napi, int budget)
 	}
 
 	if (rx_count < budget) {
+		napi_complete_done(napi, rx_count);
 		w5300_write(priv, W5300_IMR, IR_S0);
-		mmiowb();
-		napi_complete(napi);
 	}
 
 	return rx_count;
@@ -435,7 +420,6 @@ static irqreturn_t w5300_interrupt(int irq, void *ndev_instance)
 	if (!ir)
 		return IRQ_NONE;
 	w5300_write(priv, W5300_S0_IR, ir);
-	mmiowb();
 
 	if (ir & S0_IR_SENDOK) {
 		netif_dbg(priv, tx_done, ndev, "tx done\n");
@@ -445,7 +429,6 @@ static irqreturn_t w5300_interrupt(int irq, void *ndev_instance)
 	if (ir & S0_IR_RECV) {
 		if (napi_schedule_prep(&priv->napi)) {
 			w5300_write(priv, W5300_IMR, 0);
-			mmiowb();
 			__napi_schedule(&priv->napi);
 		}
 	}
@@ -489,7 +472,7 @@ static int w5300_set_macaddr(struct net_device *ndev, void *addr)
 
 	if (!is_valid_ether_addr(sock_addr->sa_data))
 		return -EADDRNOTAVAIL;
-	memcpy(ndev->dev_addr, sock_addr->sa_data, ETH_ALEN);
+	eth_hw_addr_set(ndev, sock_addr->sa_data);
 	w5300_write_macaddr(priv);
 	return 0;
 }
@@ -537,7 +520,6 @@ static const struct net_device_ops w5300_netdev_ops = {
 	.ndo_set_rx_mode	= w5300_set_rx_mode,
 	.ndo_set_mac_address	= w5300_set_macaddr,
 	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_change_mtu		= eth_change_mtu,
 };
 
 static int w5300_hw_probe(struct platform_device *pdev)
@@ -552,20 +534,17 @@ static int w5300_hw_probe(struct platform_device *pdev)
 	int ret;
 
 	if (data && is_valid_ether_addr(data->mac_addr)) {
-		memcpy(ndev->dev_addr, data->mac_addr, ETH_ALEN);
+		eth_hw_addr_set(ndev, data->mac_addr);
 	} else {
 		eth_hw_addr_random(ndev);
 	}
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!mem)
-		return -ENXIO;
+	priv->base = devm_ioremap_resource(&pdev->dev, mem);
+	if (IS_ERR(priv->base))
+		return PTR_ERR(priv->base);
+
 	mem_size = resource_size(mem);
-	if (!devm_request_mem_region(&pdev->dev, mem->start, mem_size, name))
-		return -EBUSY;
-	priv->base = devm_ioremap(&pdev->dev, mem->start, mem_size);
-	if (!priv->base)
-		return -EBUSY;
 
 	spin_lock_init(&priv->reg_lock);
 	priv->indirect = mem_size < W5300_BUS_DIRECT_SIZE;
@@ -621,11 +600,10 @@ static int w5300_probe(struct platform_device *pdev)
 	priv = netdev_priv(ndev);
 	priv->ndev = ndev;
 
-	ether_setup(ndev);
 	ndev->netdev_ops = &w5300_netdev_ops;
 	ndev->ethtool_ops = &w5300_ethtool_ops;
 	ndev->watchdog_timeo = HZ;
-	netif_napi_add(ndev, &priv->napi, w5300_napi_poll, 16);
+	netif_napi_add_weight(ndev, &priv->napi, w5300_napi_poll, 16);
 
 	/* This chip doesn't support VLAN packets with normal MTU,
 	 * so disable VLAN for this device.
@@ -667,8 +645,7 @@ static int w5300_remove(struct platform_device *pdev)
 #ifdef CONFIG_PM_SLEEP
 static int w5300_suspend(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct net_device *ndev = platform_get_drvdata(pdev);
+	struct net_device *ndev = dev_get_drvdata(dev);
 	struct w5300_priv *priv = netdev_priv(ndev);
 
 	if (netif_running(ndev)) {
@@ -682,8 +659,7 @@ static int w5300_suspend(struct device *dev)
 
 static int w5300_resume(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct net_device *ndev = platform_get_drvdata(pdev);
+	struct net_device *ndev = dev_get_drvdata(dev);
 	struct w5300_priv *priv = netdev_priv(ndev);
 
 	if (!netif_running(ndev)) {
@@ -704,7 +680,6 @@ static SIMPLE_DEV_PM_OPS(w5300_pm_ops, w5300_suspend, w5300_resume);
 static struct platform_driver w5300_driver = {
 	.driver		= {
 		.name	= DRV_NAME,
-		.owner	= THIS_MODULE,
 		.pm	= &w5300_pm_ops,
 	},
 	.probe		= w5300_probe,

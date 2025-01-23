@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM target
 
@@ -6,7 +7,7 @@
 
 #include <linux/tracepoint.h>
 #include <linux/trace_seq.h>
-#include <scsi/scsi.h>
+#include <scsi/scsi_proto.h>
 #include <scsi/scsi_tcq.h>
 #include <target/target_core_base.h>
 
@@ -96,7 +97,7 @@
 		scsi_opcode_name(WRITE_16),			\
 		scsi_opcode_name(VERIFY_16),			\
 		scsi_opcode_name(WRITE_SAME_16),		\
-		scsi_opcode_name(SERVICE_ACTION_IN),		\
+		scsi_opcode_name(SERVICE_ACTION_IN_16),		\
 		scsi_opcode_name(SAI_READ_CAPACITY_16),		\
 		scsi_opcode_name(SAI_GET_LBA_STATUS),		\
 		scsi_opcode_name(MI_REPORT_TARGET_PGS),		\
@@ -109,10 +110,10 @@
 
 #define show_task_attribute_name(val)				\
 	__print_symbolic(val,					\
-		{ MSG_SIMPLE_TAG,	"SIMPLE"	},	\
-		{ MSG_HEAD_TAG,		"HEAD"		},	\
-		{ MSG_ORDERED_TAG,	"ORDERED"	},	\
-		{ MSG_ACA_TAG,		"ACA"		} )
+		{ TCM_SIMPLE_TAG,	"SIMPLE"	},	\
+		{ TCM_HEAD_TAG,		"HEAD"		},	\
+		{ TCM_ORDERED_TAG,	"ORDERED"	},	\
+		{ TCM_ACA_TAG,		"ACA"		} )
 
 #define show_scsi_status_name(val)				\
 	__print_symbolic(val,					\
@@ -136,30 +137,32 @@ TRACE_EVENT(target_sequencer_start,
 
 	TP_STRUCT__entry(
 		__field( unsigned int,	unpacked_lun	)
+		__field( unsigned long long,	tag	)
 		__field( unsigned int,	opcode		)
 		__field( unsigned int,	data_length	)
 		__field( unsigned int,	task_attribute  )
+		__field( unsigned char,	control		)
 		__array( unsigned char,	cdb, TCM_MAX_COMMAND_SIZE	)
 		__string( initiator,	cmd->se_sess->se_node_acl->initiatorname	)
 	),
 
 	TP_fast_assign(
 		__entry->unpacked_lun	= cmd->orig_fe_lun;
+		__entry->tag		= cmd->tag;
 		__entry->opcode		= cmd->t_task_cdb[0];
 		__entry->data_length	= cmd->data_length;
 		__entry->task_attribute	= cmd->sam_task_attr;
+		__entry->control	= scsi_command_control(cmd->t_task_cdb);
 		memcpy(__entry->cdb, cmd->t_task_cdb, TCM_MAX_COMMAND_SIZE);
 		__assign_str(initiator, cmd->se_sess->se_node_acl->initiatorname);
 	),
 
-	TP_printk("%s -> LUN %03u %s data_length %6u  CDB %s  (TA:%s C:%02x)",
+	TP_printk("%s -> LUN %03u tag %#llx %s data_length %6u  CDB %s  (TA:%s C:%02x)",
 		  __get_str(initiator), __entry->unpacked_lun,
-		  show_opcode_name(__entry->opcode),
+		  __entry->tag, show_opcode_name(__entry->opcode),
 		  __entry->data_length, __print_hex(__entry->cdb, 16),
 		  show_task_attribute_name(__entry->task_attribute),
-		  scsi_command_size(__entry->cdb) <= 16 ?
-			__entry->cdb[scsi_command_size(__entry->cdb) - 1] :
-			__entry->cdb[1]
+		  __entry->control
 	)
 );
 
@@ -171,9 +174,11 @@ TRACE_EVENT(target_cmd_complete,
 
 	TP_STRUCT__entry(
 		__field( unsigned int,	unpacked_lun	)
+		__field( unsigned long long,	tag	)
 		__field( unsigned int,	opcode		)
 		__field( unsigned int,	data_length	)
 		__field( unsigned int,	task_attribute  )
+		__field( unsigned char,	control		)
 		__field( unsigned char,	scsi_status	)
 		__field( unsigned char,	sense_length	)
 		__array( unsigned char,	cdb, TCM_MAX_COMMAND_SIZE	)
@@ -183,9 +188,11 @@ TRACE_EVENT(target_cmd_complete,
 
 	TP_fast_assign(
 		__entry->unpacked_lun	= cmd->orig_fe_lun;
+		__entry->tag		= cmd->tag;
 		__entry->opcode		= cmd->t_task_cdb[0];
 		__entry->data_length	= cmd->data_length;
 		__entry->task_attribute	= cmd->sam_task_attr;
+		__entry->control	= scsi_command_control(cmd->t_task_cdb);
 		__entry->scsi_status	= cmd->scsi_status;
 		__entry->sense_length	= cmd->scsi_status == SAM_STAT_CHECK_CONDITION ?
 			min(18, ((u8 *) cmd->sense_buffer)[SPC_ADD_SENSE_LEN_OFFSET] + 8) : 0;
@@ -194,17 +201,16 @@ TRACE_EVENT(target_cmd_complete,
 		__assign_str(initiator, cmd->se_sess->se_node_acl->initiatorname);
 	),
 
-	TP_printk("%s <- LUN %03u status %s (sense len %d%s%s)  %s data_length %6u  CDB %s  (TA:%s C:%02x)",
+	TP_printk("%s <- LUN %03u tag %#llx status %s (sense len %d%s%s)  %s data_length %6u  CDB %s  (TA:%s C:%02x)",
 		  __get_str(initiator), __entry->unpacked_lun,
+		  __entry->tag,
 		  show_scsi_status_name(__entry->scsi_status),
 		  __entry->sense_length, __entry->sense_length ? " / " : "",
 		  __print_hex(__entry->sense_data, __entry->sense_length),
 		  show_opcode_name(__entry->opcode),
 		  __entry->data_length, __print_hex(__entry->cdb, 16),
 		  show_task_attribute_name(__entry->task_attribute),
-		  scsi_command_size(__entry->cdb) <= 16 ?
-			__entry->cdb[scsi_command_size(__entry->cdb) - 1] :
-			__entry->cdb[1]
+		  __entry->control
 	)
 );
 

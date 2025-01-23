@@ -1,31 +1,22 @@
+// SPDX-License-Identifier: ISC
 /*
  * Copyright (c) 2005-2011 Atheros Communications Inc.
- * Copyright (c) 2011-2013 Qualcomm Atheros, Inc.
- *
- * Permission to use, copy, modify, and/or distribute this software for any
- * purpose with or without fee is hereby granted, provided that the above
- * copyright notice and this permission notice appear in all copies.
- *
- * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
- * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
- * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
- * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
- * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * Copyright (c) 2011-2014,2016-2017 Qualcomm Atheros, Inc.
  */
 
 #include "bmi.h"
 #include "hif.h"
 #include "debug.h"
 #include "htc.h"
+#include "hw.h"
 
 void ath10k_bmi_start(struct ath10k *ar)
 {
-	ath10k_dbg(ATH10K_DBG_BMI, "bmi start\n");
+	ath10k_dbg(ar, ATH10K_DBG_BMI, "bmi start\n");
 
 	ar->bmi.done_sent = false;
 }
+EXPORT_SYMBOL(ath10k_bmi_start);
 
 int ath10k_bmi_done(struct ath10k *ar)
 {
@@ -33,10 +24,10 @@ int ath10k_bmi_done(struct ath10k *ar)
 	u32 cmdlen = sizeof(cmd.id) + sizeof(cmd.done);
 	int ret;
 
-	ath10k_dbg(ATH10K_DBG_BMI, "bmi done\n");
+	ath10k_dbg(ar, ATH10K_DBG_BMI, "bmi done\n");
 
 	if (ar->bmi.done_sent) {
-		ath10k_dbg(ATH10K_DBG_BMI, "bmi skipped\n");
+		ath10k_dbg(ar, ATH10K_DBG_BMI, "bmi skipped\n");
 		return 0;
 	}
 
@@ -45,7 +36,7 @@ int ath10k_bmi_done(struct ath10k *ar)
 
 	ret = ath10k_hif_exchange_bmi_msg(ar, &cmd, cmdlen, NULL, NULL);
 	if (ret) {
-		ath10k_warn("unable to write to the device: %d\n", ret);
+		ath10k_warn(ar, "unable to write to the device: %d\n", ret);
 		return ret;
 	}
 
@@ -61,10 +52,10 @@ int ath10k_bmi_get_target_info(struct ath10k *ar,
 	u32 resplen = sizeof(resp.get_target_info);
 	int ret;
 
-	ath10k_dbg(ATH10K_DBG_BMI, "bmi get target info\n");
+	ath10k_dbg(ar, ATH10K_DBG_BMI, "bmi get target info\n");
 
 	if (ar->bmi.done_sent) {
-		ath10k_warn("BMI Get Target Info Command disallowed\n");
+		ath10k_warn(ar, "BMI Get Target Info Command disallowed\n");
 		return -EBUSY;
 	}
 
@@ -72,14 +63,85 @@ int ath10k_bmi_get_target_info(struct ath10k *ar,
 
 	ret = ath10k_hif_exchange_bmi_msg(ar, &cmd, cmdlen, &resp, &resplen);
 	if (ret) {
-		ath10k_warn("unable to get target info from device\n");
+		ath10k_warn(ar, "unable to get target info from device\n");
 		return ret;
 	}
 
 	if (resplen < sizeof(resp.get_target_info)) {
-		ath10k_warn("invalid get_target_info response length (%d)\n",
+		ath10k_warn(ar, "invalid get_target_info response length (%d)\n",
 			    resplen);
 		return -EIO;
+	}
+
+	target_info->version = __le32_to_cpu(resp.get_target_info.version);
+	target_info->type    = __le32_to_cpu(resp.get_target_info.type);
+
+	return 0;
+}
+
+#define TARGET_VERSION_SENTINAL 0xffffffffu
+
+int ath10k_bmi_get_target_info_sdio(struct ath10k *ar,
+				    struct bmi_target_info *target_info)
+{
+	struct bmi_cmd cmd;
+	union bmi_resp resp;
+	u32 cmdlen = sizeof(cmd.id) + sizeof(cmd.get_target_info);
+	u32 resplen, ver_len;
+	__le32 tmp;
+	int ret;
+
+	ath10k_dbg(ar, ATH10K_DBG_BMI, "bmi get target info SDIO\n");
+
+	if (ar->bmi.done_sent) {
+		ath10k_warn(ar, "BMI Get Target Info Command disallowed\n");
+		return -EBUSY;
+	}
+
+	cmd.id = __cpu_to_le32(BMI_GET_TARGET_INFO);
+
+	/* Step 1: Read 4 bytes of the target info and check if it is
+	 * the special sentinel version word or the first word in the
+	 * version response.
+	 */
+	resplen = sizeof(u32);
+	ret = ath10k_hif_exchange_bmi_msg(ar, &cmd, cmdlen, &tmp, &resplen);
+	if (ret) {
+		ath10k_warn(ar, "unable to read from device\n");
+		return ret;
+	}
+
+	/* Some SDIO boards have a special sentinel byte before the real
+	 * version response.
+	 */
+	if (__le32_to_cpu(tmp) == TARGET_VERSION_SENTINAL) {
+		/* Step 1b: Read the version length */
+		resplen = sizeof(u32);
+		ret = ath10k_hif_exchange_bmi_msg(ar, NULL, 0, &tmp,
+						  &resplen);
+		if (ret) {
+			ath10k_warn(ar, "unable to read from device\n");
+			return ret;
+		}
+	}
+
+	ver_len = __le32_to_cpu(tmp);
+
+	/* Step 2: Check the target info length */
+	if (ver_len != sizeof(resp.get_target_info)) {
+		ath10k_warn(ar, "Unexpected target info len: %u. Expected: %zu\n",
+			    ver_len, sizeof(resp.get_target_info));
+		return -EINVAL;
+	}
+
+	/* Step 3: Read the rest of the version response */
+	resplen = sizeof(resp.get_target_info) - sizeof(u32);
+	ret = ath10k_hif_exchange_bmi_msg(ar, NULL, 0,
+					  &resp.get_target_info.version,
+					  &resplen);
+	if (ret) {
+		ath10k_warn(ar, "unable to read from device\n");
+		return ret;
 	}
 
 	target_info->version = __le32_to_cpu(resp.get_target_info.version);
@@ -97,11 +159,11 @@ int ath10k_bmi_read_memory(struct ath10k *ar,
 	u32 rxlen;
 	int ret;
 
-	ath10k_dbg(ATH10K_DBG_BMI, "bmi read address 0x%x length %d\n",
+	ath10k_dbg(ar, ATH10K_DBG_BMI, "bmi read address 0x%x length %d\n",
 		   address, length);
 
 	if (ar->bmi.done_sent) {
-		ath10k_warn("command disallowed\n");
+		ath10k_warn(ar, "command disallowed\n");
 		return -EBUSY;
 	}
 
@@ -115,7 +177,7 @@ int ath10k_bmi_read_memory(struct ath10k *ar,
 		ret = ath10k_hif_exchange_bmi_msg(ar, &cmd, cmdlen,
 						  &resp, &rxlen);
 		if (ret) {
-			ath10k_warn("unable to read from the device (%d)\n",
+			ath10k_warn(ar, "unable to read from the device (%d)\n",
 				    ret);
 			return ret;
 		}
@@ -128,6 +190,70 @@ int ath10k_bmi_read_memory(struct ath10k *ar,
 
 	return 0;
 }
+EXPORT_SYMBOL(ath10k_bmi_read_memory);
+
+int ath10k_bmi_write_soc_reg(struct ath10k *ar, u32 address, u32 reg_val)
+{
+	struct bmi_cmd cmd;
+	u32 cmdlen = sizeof(cmd.id) + sizeof(cmd.write_soc_reg);
+	int ret;
+
+	ath10k_dbg(ar, ATH10K_DBG_BMI,
+		   "bmi write soc register 0x%08x val 0x%08x\n",
+		   address, reg_val);
+
+	if (ar->bmi.done_sent) {
+		ath10k_warn(ar, "bmi write soc register command in progress\n");
+		return -EBUSY;
+	}
+
+	cmd.id = __cpu_to_le32(BMI_WRITE_SOC_REGISTER);
+	cmd.write_soc_reg.addr = __cpu_to_le32(address);
+	cmd.write_soc_reg.value = __cpu_to_le32(reg_val);
+
+	ret = ath10k_hif_exchange_bmi_msg(ar, &cmd, cmdlen, NULL, NULL);
+	if (ret) {
+		ath10k_warn(ar, "Unable to write soc register to device: %d\n",
+			    ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+int ath10k_bmi_read_soc_reg(struct ath10k *ar, u32 address, u32 *reg_val)
+{
+	struct bmi_cmd cmd;
+	union bmi_resp resp;
+	u32 cmdlen = sizeof(cmd.id) + sizeof(cmd.read_soc_reg);
+	u32 resplen = sizeof(resp.read_soc_reg);
+	int ret;
+
+	ath10k_dbg(ar, ATH10K_DBG_BMI, "bmi read soc register 0x%08x\n",
+		   address);
+
+	if (ar->bmi.done_sent) {
+		ath10k_warn(ar, "bmi read soc register command in progress\n");
+		return -EBUSY;
+	}
+
+	cmd.id = __cpu_to_le32(BMI_READ_SOC_REGISTER);
+	cmd.read_soc_reg.addr = __cpu_to_le32(address);
+
+	ret = ath10k_hif_exchange_bmi_msg(ar, &cmd, cmdlen, &resp, &resplen);
+	if (ret) {
+		ath10k_warn(ar, "Unable to read soc register from device: %d\n",
+			    ret);
+		return ret;
+	}
+
+	*reg_val = __le32_to_cpu(resp.read_soc_reg.value);
+
+	ath10k_dbg(ar, ATH10K_DBG_BMI, "bmi read soc register value 0x%08x\n",
+		   *reg_val);
+
+	return 0;
+}
 
 int ath10k_bmi_write_memory(struct ath10k *ar,
 			    u32 address, const void *buffer, u32 length)
@@ -137,11 +263,11 @@ int ath10k_bmi_write_memory(struct ath10k *ar,
 	u32 txlen;
 	int ret;
 
-	ath10k_dbg(ATH10K_DBG_BMI, "bmi write address 0x%x length %d\n",
+	ath10k_dbg(ar, ATH10K_DBG_BMI, "bmi write address 0x%x length %d\n",
 		   address, length);
 
 	if (ar->bmi.done_sent) {
-		ath10k_warn("command disallowed\n");
+		ath10k_warn(ar, "command disallowed\n");
 		return -EBUSY;
 	}
 
@@ -159,7 +285,7 @@ int ath10k_bmi_write_memory(struct ath10k *ar,
 		ret = ath10k_hif_exchange_bmi_msg(ar, &cmd, hdrlen + txlen,
 						  NULL, NULL);
 		if (ret) {
-			ath10k_warn("unable to write to the device (%d)\n",
+			ath10k_warn(ar, "unable to write to the device (%d)\n",
 				    ret);
 			return ret;
 		}
@@ -175,7 +301,7 @@ int ath10k_bmi_write_memory(struct ath10k *ar,
 	return 0;
 }
 
-int ath10k_bmi_execute(struct ath10k *ar, u32 address, u32 *param)
+int ath10k_bmi_execute(struct ath10k *ar, u32 address, u32 param, u32 *result)
 {
 	struct bmi_cmd cmd;
 	union bmi_resp resp;
@@ -183,31 +309,81 @@ int ath10k_bmi_execute(struct ath10k *ar, u32 address, u32 *param)
 	u32 resplen = sizeof(resp.execute);
 	int ret;
 
-	ath10k_dbg(ATH10K_DBG_BMI, "bmi execute address 0x%x param 0x%x\n",
-		   address, *param);
+	ath10k_dbg(ar, ATH10K_DBG_BMI, "bmi execute address 0x%x param 0x%x\n",
+		   address, param);
 
 	if (ar->bmi.done_sent) {
-		ath10k_warn("command disallowed\n");
+		ath10k_warn(ar, "command disallowed\n");
 		return -EBUSY;
 	}
 
 	cmd.id            = __cpu_to_le32(BMI_EXECUTE);
 	cmd.execute.addr  = __cpu_to_le32(address);
-	cmd.execute.param = __cpu_to_le32(*param);
+	cmd.execute.param = __cpu_to_le32(param);
 
 	ret = ath10k_hif_exchange_bmi_msg(ar, &cmd, cmdlen, &resp, &resplen);
 	if (ret) {
-		ath10k_warn("unable to read from the device\n");
+		ath10k_warn(ar, "unable to read from the device\n");
 		return ret;
 	}
 
 	if (resplen < sizeof(resp.execute)) {
-		ath10k_warn("invalid execute response length (%d)\n",
+		ath10k_warn(ar, "invalid execute response length (%d)\n",
 			    resplen);
-		return ret;
+		return -EIO;
 	}
 
-	*param = __le32_to_cpu(resp.execute.result);
+	*result = __le32_to_cpu(resp.execute.result);
+
+	ath10k_dbg(ar, ATH10K_DBG_BMI, "bmi execute result 0x%x\n", *result);
+
+	return 0;
+}
+
+static int ath10k_bmi_lz_data_large(struct ath10k *ar, const void *buffer, u32 length)
+{
+	struct bmi_cmd *cmd;
+	u32 hdrlen = sizeof(cmd->id) + sizeof(cmd->lz_data);
+	u32 txlen;
+	int ret;
+	size_t buf_len;
+
+	ath10k_dbg(ar, ATH10K_DBG_BMI, "large bmi lz data buffer 0x%pK length %d\n",
+		   buffer, length);
+
+	if (ar->bmi.done_sent) {
+		ath10k_warn(ar, "command disallowed\n");
+		return -EBUSY;
+	}
+
+	buf_len = sizeof(*cmd) + BMI_MAX_LARGE_DATA_SIZE - BMI_MAX_DATA_SIZE;
+	cmd = kzalloc(buf_len, GFP_KERNEL);
+	if (!cmd)
+		return -ENOMEM;
+
+	while (length) {
+		txlen = min(length, BMI_MAX_LARGE_DATA_SIZE - hdrlen);
+
+		WARN_ON_ONCE(txlen & 3);
+
+		cmd->id          = __cpu_to_le32(BMI_LZ_DATA);
+		cmd->lz_data.len = __cpu_to_le32(txlen);
+		memcpy(cmd->lz_data.payload, buffer, txlen);
+
+		ret = ath10k_hif_exchange_bmi_msg(ar, cmd, hdrlen + txlen,
+						  NULL, NULL);
+		if (ret) {
+			ath10k_warn(ar, "unable to write to the device\n");
+			kfree(cmd);
+			return ret;
+		}
+
+		buffer += txlen;
+		length -= txlen;
+	}
+
+	kfree(cmd);
+
 	return 0;
 }
 
@@ -218,11 +394,11 @@ int ath10k_bmi_lz_data(struct ath10k *ar, const void *buffer, u32 length)
 	u32 txlen;
 	int ret;
 
-	ath10k_dbg(ATH10K_DBG_BMI, "bmi lz data buffer 0x%p length %d\n",
+	ath10k_dbg(ar, ATH10K_DBG_BMI, "bmi lz data buffer 0x%pK length %d\n",
 		   buffer, length);
 
 	if (ar->bmi.done_sent) {
-		ath10k_warn("command disallowed\n");
+		ath10k_warn(ar, "command disallowed\n");
 		return -EBUSY;
 	}
 
@@ -238,7 +414,7 @@ int ath10k_bmi_lz_data(struct ath10k *ar, const void *buffer, u32 length)
 		ret = ath10k_hif_exchange_bmi_msg(ar, &cmd, hdrlen + txlen,
 						  NULL, NULL);
 		if (ret) {
-			ath10k_warn("unable to write to the device\n");
+			ath10k_warn(ar, "unable to write to the device\n");
 			return ret;
 		}
 
@@ -255,11 +431,11 @@ int ath10k_bmi_lz_stream_start(struct ath10k *ar, u32 address)
 	u32 cmdlen = sizeof(cmd.id) + sizeof(cmd.lz_start);
 	int ret;
 
-	ath10k_dbg(ATH10K_DBG_BMI, "bmi lz stream start address 0x%x\n",
+	ath10k_dbg(ar, ATH10K_DBG_BMI, "bmi lz stream start address 0x%x\n",
 		   address);
 
 	if (ar->bmi.done_sent) {
-		ath10k_warn("command disallowed\n");
+		ath10k_warn(ar, "command disallowed\n");
 		return -EBUSY;
 	}
 
@@ -268,7 +444,7 @@ int ath10k_bmi_lz_stream_start(struct ath10k *ar, u32 address)
 
 	ret = ath10k_hif_exchange_bmi_msg(ar, &cmd, cmdlen, NULL, NULL);
 	if (ret) {
-		ath10k_warn("unable to Start LZ Stream to the device\n");
+		ath10k_warn(ar, "unable to Start LZ Stream to the device\n");
 		return ret;
 	}
 
@@ -283,8 +459,8 @@ int ath10k_bmi_fast_download(struct ath10k *ar,
 	u32 trailer_len = length - head_len;
 	int ret;
 
-	ath10k_dbg(ATH10K_DBG_BMI,
-		   "bmi fast download address 0x%x buffer 0x%p length %d\n",
+	ath10k_dbg(ar, ATH10K_DBG_BMI,
+		   "bmi fast download address 0x%x buffer 0x%pK length %d\n",
 		   address, buffer, length);
 
 	ret = ath10k_bmi_lz_stream_start(ar, address);
@@ -295,7 +471,11 @@ int ath10k_bmi_fast_download(struct ath10k *ar,
 	if (trailer_len > 0)
 		memcpy(trailer, buffer + head_len, trailer_len);
 
-	ret = ath10k_bmi_lz_data(ar, buffer, head_len);
+	if (ar->hw_params.bmi_large_size_download)
+		ret = ath10k_bmi_lz_data_large(ar, buffer, head_len);
+	else
+		ret = ath10k_bmi_lz_data(ar, buffer, head_len);
+
 	if (ret)
 		return ret;
 
@@ -312,4 +492,27 @@ int ath10k_bmi_fast_download(struct ath10k *ar,
 	ret = ath10k_bmi_lz_stream_start(ar, 0x00);
 
 	return ret;
+}
+
+int ath10k_bmi_set_start(struct ath10k *ar, u32 address)
+{
+	struct bmi_cmd cmd;
+	u32 cmdlen = sizeof(cmd.id) + sizeof(cmd.set_app_start);
+	int ret;
+
+	if (ar->bmi.done_sent) {
+		ath10k_warn(ar, "bmi set start command disallowed\n");
+		return -EBUSY;
+	}
+
+	cmd.id = __cpu_to_le32(BMI_SET_APP_START);
+	cmd.set_app_start.addr = __cpu_to_le32(address);
+
+	ret = ath10k_hif_exchange_bmi_msg(ar, &cmd, cmdlen, NULL, NULL);
+	if (ret) {
+		ath10k_warn(ar, "unable to set start to the device:%d\n", ret);
+		return ret;
+	}
+
+	return 0;
 }

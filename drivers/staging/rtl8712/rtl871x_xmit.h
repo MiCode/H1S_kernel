@@ -1,19 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2010 Realtek Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
  *
  * Modifications for inclusion into the Linux staging tree are
  * Copyright(c) 2010 Larry Finger. All rights reserved.
@@ -53,24 +41,25 @@ do { \
 	pattrib_iv[0] = txpn._byte_.TSC0;\
 	pattrib_iv[1] = txpn._byte_.TSC1;\
 	pattrib_iv[2] = txpn._byte_.TSC2;\
-	pattrib_iv[3] = ((keyidx & 0x3)<<6);\
-	txpn.val = (txpn.val == 0xffffff) ? 0 : (txpn.val+1);\
+	pattrib_iv[3] = ((keyidx & 0x3) << 6);\
+	txpn.val = (txpn.val == 0xffffff) ? 0 : (txpn.val + 1);\
 } while (0)
 
 /* Fixed the Big Endian bug when doing the Tx.
- * The Linksys WRH54G will check this.*/
+ * The Linksys WRH54G will check this.
+ */
 #define TKIP_IV(pattrib_iv, txpn, keyidx)\
 do { \
 	pattrib_iv[0] = txpn._byte_.TSC1;\
 	pattrib_iv[1] = (txpn._byte_.TSC1 | 0x20) & 0x7f;\
 	pattrib_iv[2] = txpn._byte_.TSC0;\
-	pattrib_iv[3] = BIT(5) | ((keyidx & 0x3)<<6);\
+	pattrib_iv[3] = BIT(5) | ((keyidx & 0x3) << 6);\
 	pattrib_iv[4] = txpn._byte_.TSC2;\
 	pattrib_iv[5] = txpn._byte_.TSC3;\
 	pattrib_iv[6] = txpn._byte_.TSC4;\
 	pattrib_iv[7] = txpn._byte_.TSC5;\
 	txpn.val = txpn.val == 0xffffffffffffULL ? 0 : \
-	(txpn.val+1);\
+	(txpn.val + 1);\
 } while (0)
 
 #define AES_IV(pattrib_iv, txpn, keyidx)\
@@ -78,13 +67,13 @@ do { \
 	pattrib_iv[0] = txpn._byte_.TSC0;\
 	pattrib_iv[1] = txpn._byte_.TSC1;\
 	pattrib_iv[2] = 0;\
-	pattrib_iv[3] = BIT(5) | ((keyidx & 0x3)<<6);\
+	pattrib_iv[3] = BIT(5) | ((keyidx & 0x3) << 6);\
 	pattrib_iv[4] = txpn._byte_.TSC2;\
 	pattrib_iv[5] = txpn._byte_.TSC3;\
 	pattrib_iv[6] = txpn._byte_.TSC4;\
 	pattrib_iv[7] = txpn._byte_.TSC5;\
 	txpn.val = txpn.val == 0xffffffffffffULL ? 0 : \
-	(txpn.val+1);\
+	(txpn.val + 1);\
 } while (0)
 
 struct hw_xmit {
@@ -105,7 +94,8 @@ struct pkt_attrib {
 	u16	seqnum;
 	u16	ether_type;
 	u16	pktlen;		/* the original 802.3 pkt raw_data len
-				 * (not include ether_hdr data) */
+				 * (not include ether_hdr data)
+				 */
 	u16	last_txcmdsz;
 
 	u8	pkt_hdrlen;	/*the original 802.3 pkt header len*/
@@ -119,12 +109,13 @@ struct pkt_attrib {
 
 	u8	priority;
 	u8	encrypt;	/* when 0 indicate no encrypt. when non-zero,
-				 * indicate the encrypt algorithm*/
+				 * indicate the encrypt algorithm
+				 */
 	u8	iv_len;
 	u8	icv_len;
 	unsigned char iv[8];
 	unsigned char icv[8];
-	u8	dst[ETH_ALEN];
+	u8	dst[ETH_ALEN] __aligned(2);	/* for ether_addr_copy */
 	u8	src[ETH_ALEN];
 	u8	ta[ETH_ALEN];
 	u8	ra[ETH_ALEN];
@@ -157,8 +148,8 @@ struct xmit_frame {
 	_pkt *pkt;
 	int frame_tag;
 	struct _adapter *padapter;
-	 u8 *buf_addr;
-	 struct xmit_buf *pxmitbuf;
+	u8 *buf_addr;
+	struct xmit_buf *pxmitbuf;
 	u8 *mem_addr;
 	u16 sz[8];
 	struct urb *pxmit_urb[8];
@@ -176,7 +167,8 @@ struct sta_xmit_priv {
 	spinlock_t lock;
 	sint	option;
 	sint	apsd_setting;	/* When bit mask is on, the associated edca
-				 * queue supports APSD.*/
+				 * queue supports APSD.
+				 */
 	struct tx_servq	be_q;	/* priority == 0,3 */
 	struct tx_servq	bk_q;	/* priority == 1,2*/
 	struct tx_servq	vi_q;	/*priority == 4,5*/
@@ -190,11 +182,11 @@ struct sta_xmit_priv {
 };
 
 struct	hw_txqueue {
-	/*volatile*/ sint	head;
-	/*volatile*/ sint	tail;
-	/*volatile*/ sint	free_sz;	/*in units of 64 bytes*/
-	/*volatile*/ sint      free_cmdsz;
-	/*volatile*/ sint	 txsz[8];
+	sint	head;
+	sint	tail;
+	sint	free_sz;	/* in units of 64 bytes */
+	sint	free_cmdsz;
+	sint	txsz[8];
 	uint	ff_hwaddr;
 	uint	cmd_hwaddr;
 	sint	ac_tag;
@@ -233,9 +225,9 @@ struct	xmit_priv {
 	u8	hwxmit_entry;
 	u8	txirp_cnt;
 	struct tasklet_struct xmit_tasklet;
-	_workitem xmit_pipe4_reset_wi;
-	_workitem xmit_pipe6_reset_wi;
-	_workitem xmit_piped_reset_wi;
+	struct work_struct xmit_pipe4_reset_wi;
+	struct work_struct xmit_pipe6_reset_wi;
+	struct work_struct xmit_piped_reset_wi;
 	/*per AC pending irp*/
 	int beq_cnt;
 	int bkq_cnt;
@@ -257,14 +249,8 @@ struct	xmit_priv {
 	uint free_xmitbuf_cnt;
 };
 
-static inline struct  __queue *get_free_xmit_queue(
-				struct xmit_priv *pxmitpriv)
-{
-	return &(pxmitpriv->free_xmit_queue);
-}
-
-int r8712_free_xmitbuf(struct xmit_priv *pxmitpriv,
-		       struct xmit_buf *pxmitbuf);
+void r8712_free_xmitbuf(struct xmit_priv *pxmitpriv,
+			struct xmit_buf *pxmitbuf);
 struct xmit_buf *r8712_alloc_xmitbuf(struct xmit_priv *pxmitpriv);
 void r8712_update_protection(struct _adapter *padapter, u8 *ie, uint ie_len);
 struct xmit_frame *r8712_alloc_xmitframe(struct xmit_priv *pxmitpriv);
@@ -272,29 +258,29 @@ void r8712_free_xmitframe(struct xmit_priv *pxmitpriv,
 			  struct xmit_frame *pxmitframe);
 void r8712_free_xmitframe_queue(struct xmit_priv *pxmitpriv,
 				struct  __queue *pframequeue);
-sint r8712_xmit_classifier(struct _adapter *padapter,
-			    struct xmit_frame *pxmitframe);
+int r8712_xmit_classifier(struct _adapter *padapter,
+			  struct xmit_frame *pxmitframe);
 sint r8712_xmitframe_coalesce(struct _adapter *padapter, _pkt *pkt,
 			      struct xmit_frame *pxmitframe);
 sint _r8712_init_hw_txqueue(struct hw_txqueue *phw_txqueue, u8 ac_tag);
 void _r8712_init_sta_xmit_priv(struct sta_xmit_priv *psta_xmitpriv);
-sint r8712_update_attrib(struct _adapter *padapter, _pkt *pkt,
-			 struct pkt_attrib *pattrib);
+int r8712_update_attrib(struct _adapter *padapter, _pkt *pkt,
+			struct pkt_attrib *pattrib);
 int r8712_txframes_sta_ac_pending(struct _adapter *padapter,
 				  struct pkt_attrib *pattrib);
-sint _r8712_init_xmit_priv(struct xmit_priv *pxmitpriv,
-			   struct _adapter *padapter);
+int _r8712_init_xmit_priv(struct xmit_priv *pxmitpriv,
+			  struct _adapter *padapter);
 void _free_xmit_priv(struct xmit_priv *pxmitpriv);
 void r8712_free_xmitframe_ex(struct xmit_priv *pxmitpriv,
 			     struct xmit_frame *pxmitframe);
 int r8712_pre_xmit(struct _adapter *padapter, struct xmit_frame *pxmitframe);
 int r8712_xmit_enqueue(struct _adapter *padapter,
 		       struct xmit_frame *pxmitframe);
-int r8712_xmit_direct(struct _adapter *padapter, struct xmit_frame *pxmitframe);
-void r8712_xmit_bh(void *priv);
+void r8712_xmit_direct(struct _adapter *padapter, struct xmit_frame *pxmitframe);
+void r8712_xmit_bh(struct tasklet_struct *t);
 
 void xmitframe_xmitbuf_attach(struct xmit_frame *pxmitframe,
-			struct xmit_buf *pxmitbuf);
+			      struct xmit_buf *pxmitbuf);
 
 #include "rtl8712_xmit.h"
 

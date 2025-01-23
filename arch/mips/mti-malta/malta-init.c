@@ -14,13 +14,14 @@
 #include <linux/init.h>
 #include <linux/string.h>
 #include <linux/kernel.h>
-#include <linux/serial_8250.h>
+#include <linux/pci_regs.h>
+#include <linux/serial_core.h>
 
 #include <asm/cacheflush.h>
 #include <asm/smp-ops.h>
 #include <asm/traps.h>
 #include <asm/fw/fw.h>
-#include <asm/gcmpregs.h>
+#include <asm/mips-cps.h>
 #include <asm/mips-boards/generic.h>
 #include <asm/mips-boards/malta.h>
 
@@ -74,7 +75,7 @@ static void __init console_config(void)
 	if ((strstr(fw_getcmdline(), "earlycon=")) == NULL) {
 		sprintf(console_string, "uart8250,io,0x3f8,%d%c%c", baud,
 			parity, bits);
-		setup_early_serial8250_console(console_string);
+		setup_earlycon(console_string);
 	}
 
 	if ((strstr(fw_getcmdline(), "console=")) == NULL) {
@@ -89,33 +90,33 @@ static void __init console_config(void)
 static void __init mips_nmi_setup(void)
 {
 	void *base;
-	extern char except_vec_nmi;
 
 	base = cpu_has_veic ?
 		(void *)(CAC_BASE + 0xa80) :
 		(void *)(CAC_BASE + 0x380);
-	memcpy(base, &except_vec_nmi, 0x80);
+	memcpy(base, except_vec_nmi, 0x80);
 	flush_icache_range((unsigned long)base, (unsigned long)base + 0x80);
 }
 
 static void __init mips_ejtag_setup(void)
 {
 	void *base;
-	extern char except_vec_ejtag_debug;
+	extern char except_vec_ejtag_debug[];
 
 	base = cpu_has_veic ?
 		(void *)(CAC_BASE + 0xa00) :
 		(void *)(CAC_BASE + 0x300);
-	memcpy(base, &except_vec_ejtag_debug, 0x80);
+	memcpy(base, except_vec_ejtag_debug, 0x80);
 	flush_icache_range((unsigned long)base, (unsigned long)base + 0x80);
 }
 
-extern struct plat_smp_ops msmtc_smp_ops;
+phys_addr_t mips_cpc_default_phys_base(void)
+{
+	return CPC_BASE_ADDR;
+}
 
 void __init prom_init(void)
 {
-	mips_display_message("LINUX");
-
 	/*
 	 * early setup of _pcictrl_bonito so that we can determine
 	 * the system controller on a CORE_EMUL board
@@ -238,9 +239,18 @@ mips_pci_controller:
 			  MSC01_PCI_SWAP_BYTESWAP << MSC01_PCI_SWAP_MEM_SHF |
 			  MSC01_PCI_SWAP_BYTESWAP << MSC01_PCI_SWAP_BAR0_SHF);
 #endif
-		/* Fix up target memory mapping.  */
-		MSC_READ(MSC01_PCI_BAR0, mask);
-		MSC_WRITE(MSC01_PCI_P2SCMSKL, mask & MSC01_PCI_BAR0_SIZE_MSK);
+
+		/*
+		 * Setup the Malta max (2GB) memory for PCI DMA in host bridge
+		 * in transparent addressing mode.
+		 */
+		mask = PHYS_OFFSET | PCI_BASE_ADDRESS_MEM_PREFETCH;
+		MSC_WRITE(MSC01_PCI_BAR0, mask);
+		MSC_WRITE(MSC01_PCI_HEAD4, mask);
+
+		mask &= MSC01_PCI_BAR0_SIZE_MSK;
+		MSC_WRITE(MSC01_PCI_P2SCMSKL, mask);
+		MSC_WRITE(MSC01_PCI_P2SCMAPL, mask);
 
 		/* Don't handle target retries indefinitely.  */
 		if ((data & MSC01_PCI_CFG_MAXRTRY_MSK) ==
@@ -264,7 +274,6 @@ mips_pci_controller:
 
 	default:
 		/* Unknown system controller */
-		mips_display_message("SC Error");
 		while (1);	/* We die here... */
 	}
 	board_nmi_handler_setup = mips_nmi_setup;
@@ -276,14 +285,11 @@ mips_pci_controller:
 	console_config();
 #endif
 	/* Early detection of CMP support */
-	if (gcmp_probe(GCMP_BASE_ADDR, GCMP_ADDRSPACE_SZ))
-		if (!register_cmp_smp_ops())
-			return;
+	mips_cpc_probe();
 
+	if (!register_cps_smp_ops())
+		return;
 	if (!register_vsmp_smp_ops())
 		return;
-
-#ifdef CONFIG_MIPS_MT_SMTC
-	register_smp_ops(&msmtc_smp_ops);
-#endif
+	register_up_smp_ops();
 }

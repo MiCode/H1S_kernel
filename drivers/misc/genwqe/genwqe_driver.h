@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef __GENWQE_DRIVER_H__
 #define __GENWQE_DRIVER_H__
 
@@ -8,17 +9,8 @@
  *
  * Author: Frank Haverkamp <haver@linux.vnet.ibm.com>
  * Author: Joerg-Stephan Vogt <jsvogt@de.ibm.com>
- * Author: Michael Jung <mijung@de.ibm.com>
+ * Author: Michael Jung <mijung@gmx.net>
  * Author: Michael Ruettger <michael@ibmra.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License (version 2 only)
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 #include <linux/types.h>
@@ -36,7 +28,7 @@
 #include <asm/byteorder.h>
 #include <linux/genwqe/genwqe_card.h>
 
-#define DRV_VERS_STRING		"2.0.0"
+#define DRV_VERSION		"2.0.25"
 
 /*
  * Static minor number assignement, until we decide/implement

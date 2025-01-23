@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * drivers/watchdog/ar7_wdt.c
  *
@@ -8,19 +9,6 @@
  * National Semiconductor SCx200 Watchdog support
  * Copyright (c) 2001,2002 Christer Weinigel <wingel@nano-system.com>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -28,7 +16,6 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/errno.h>
-#include <linux/init.h>
 #include <linux/miscdevice.h>
 #include <linux/platform_device.h>
 #include <linux/watchdog.h>
@@ -76,8 +63,6 @@ static DEFINE_SPINLOCK(wdt_lock);
 /* XXX currently fixed, allows max margin ~68.72 secs */
 #define prescale_value 0xffff
 
-/* Resource of the WDT registers */
-static struct resource *ar7_regs_wdt;
 /* Pointer to the remapped WDT IO space */
 static struct ar7_wdt *ar7_wdt;
 
@@ -176,7 +161,7 @@ static int ar7_wdt_open(struct inode *inode, struct file *file)
 	ar7_wdt_enable_wdt();
 	expect_close = 0;
 
-	return nonseekable_open(inode, file);
+	return stream_open(inode, file);
 }
 
 static int ar7_wdt_release(struct inode *inode, struct file *file)
@@ -248,7 +233,7 @@ static long ar7_wdt_ioctl(struct file *file,
 		ar7_wdt_update_margin(new_margin);
 		ar7_wdt_kick(1);
 		spin_unlock(&wdt_lock);
-
+		fallthrough;
 	case WDIOC_GETTIMEOUT:
 		if (put_user(margin, (int *)arg))
 			return -EFAULT;
@@ -262,6 +247,7 @@ static const struct file_operations ar7_wdt_fops = {
 	.owner		= THIS_MODULE,
 	.write		= ar7_wdt_write,
 	.unlocked_ioctl	= ar7_wdt_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
 	.open		= ar7_wdt_open,
 	.release	= ar7_wdt_release,
 	.llseek		= no_llseek,
@@ -277,9 +263,7 @@ static int ar7_wdt_probe(struct platform_device *pdev)
 {
 	int rc;
 
-	ar7_regs_wdt =
-		platform_get_resource_byname(pdev, IORESOURCE_MEM, "regs");
-	ar7_wdt = devm_ioremap_resource(&pdev->dev, ar7_regs_wdt);
+	ar7_wdt = devm_platform_ioremap_resource_byname(pdev, "regs");
 	if (IS_ERR(ar7_wdt))
 		return PTR_ERR(ar7_wdt);
 
@@ -306,12 +290,11 @@ out:
 	return rc;
 }
 
-static int ar7_wdt_remove(struct platform_device *pdev)
+static void ar7_wdt_remove(struct platform_device *pdev)
 {
 	misc_deregister(&ar7_wdt_miscdev);
 	clk_put(vbus_clk);
 	vbus_clk = NULL;
-	return 0;
 }
 
 static void ar7_wdt_shutdown(struct platform_device *pdev)
@@ -322,10 +305,9 @@ static void ar7_wdt_shutdown(struct platform_device *pdev)
 
 static struct platform_driver ar7_wdt_driver = {
 	.probe = ar7_wdt_probe,
-	.remove = ar7_wdt_remove,
+	.remove_new = ar7_wdt_remove,
 	.shutdown = ar7_wdt_shutdown,
 	.driver = {
-		.owner = THIS_MODULE,
 		.name = "ar7_wdt",
 	},
 };

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/sys_jensen.c
  *
@@ -6,7 +7,12 @@
  *
  * Code supporting the Jensen.
  */
+#define __EXTERN_INLINE
+#include <asm/io.h>
+#include <asm/jensen.h>
+#undef  __EXTERN_INLINE
 
+#include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/mm.h>
@@ -16,15 +22,9 @@
 
 #include <asm/ptrace.h>
 
-#define __EXTERN_INLINE inline
-#include <asm/io.h>
-#include <asm/jensen.h>
-#undef  __EXTERN_INLINE
-
 #include <asm/dma.h>
 #include <asm/irq.h>
 #include <asm/mmu_context.h>
-#include <asm/pgtable.h>
 #include <asm/tlbflush.h>
 
 #include "proto.h"

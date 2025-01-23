@@ -1,24 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *   ALSA driver for ICEnsemble VT17xx
  *
  *   Lowlevel functions for WM8776 codec
  *
  *	Copyright (c) 2012 Ondrej Zary <linux@rainbow-software.org>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <linux/delay.h>
@@ -48,13 +34,9 @@ static void snd_wm8776_activate_ctl(struct snd_wm8776 *wm,
 	struct snd_card *card = wm->card;
 	struct snd_kcontrol *kctl;
 	struct snd_kcontrol_volatile *vd;
-	struct snd_ctl_elem_id elem_id;
 	unsigned int index_offset;
 
-	memset(&elem_id, 0, sizeof(elem_id));
-	strlcpy(elem_id.name, ctl_name, sizeof(elem_id.name));
-	elem_id.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
-	kctl = snd_ctl_find_id(card, &elem_id);
+	kctl = snd_ctl_find_id_mixer(card, ctl_name);
 	if (!kctl)
 		return;
 	index_offset = snd_ctl_get_ioff(kctl, &kctl->id);
@@ -143,7 +125,7 @@ static const DECLARE_TLV_DB_SCALE(wm8776_ngth_tlv, -7800, 600, 0);
 static const DECLARE_TLV_DB_SCALE(wm8776_maxatten_lim_tlv, -1200, 100, 0);
 static const DECLARE_TLV_DB_SCALE(wm8776_maxatten_alc_tlv, -2100, 400, 0);
 
-static struct snd_wm8776_ctl snd_wm8776_default_ctl[WM8776_CTL_COUNT] = {
+static const struct snd_wm8776_ctl snd_wm8776_default_ctl[WM8776_CTL_COUNT] = {
 	[WM8776_CTL_DAC_VOL] = {
 		.name = "Master Playback Volume",
 		.type = SNDRV_CTL_ELEM_TYPE_INTEGER,
@@ -452,21 +434,6 @@ void snd_wm8776_resume(struct snd_wm8776 *wm)
 		snd_wm8776_write(wm, i, wm->regs[i]);
 }
 
-void snd_wm8776_set_dac_if(struct snd_wm8776 *wm, u16 dac)
-{
-	snd_wm8776_write(wm, WM8776_REG_DACIFCTRL, dac);
-}
-
-void snd_wm8776_set_adc_if(struct snd_wm8776 *wm, u16 adc)
-{
-	snd_wm8776_write(wm, WM8776_REG_ADCIFCTRL, adc);
-}
-
-void snd_wm8776_set_master_mode(struct snd_wm8776 *wm, u16 mode)
-{
-	snd_wm8776_write(wm, WM8776_REG_MSTRCTRL, mode);
-}
-
 void snd_wm8776_set_power(struct snd_wm8776 *wm, u16 power)
 {
 	snd_wm8776_write(wm, WM8776_REG_PWRDOWN, power);
@@ -543,7 +510,7 @@ static int snd_wm8776_ctl_put(struct snd_kcontrol *kcontrol,
 	int n = kcontrol->private_value;
 	u16 val, regval1, regval2;
 
-	/* this also works for enum because value is an union */
+	/* this also works for enum because value is a union */
 	regval1 = ucontrol->value.integer.value[0];
 	regval2 = ucontrol->value.integer.value[1];
 	if (wm->ctl[n].flags & WM8776_FLAG_INVERT) {

@@ -1,5 +1,4 @@
-#ifdef CONFIG_RANDOMIZE_BASE
-
+// SPDX-License-Identifier: GPL-2.0
 #include "../cpuflags.c"
 
 bool has_cpuflag(int flag)
@@ -8,5 +7,3 @@ bool has_cpuflag(int flag)
 
 	return test_bit(flag, cpu.flags);
 }
-
-#endif

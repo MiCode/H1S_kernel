@@ -1,21 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * (C) Copyright David Gibson <dwg@au1.ibm.com>, IBM Corporation.  2005.
- *
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of the
- * License, or (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307
- *                                                                   USA
  */
 
 #include "dtc.h"
@@ -36,10 +21,10 @@ void data_free(struct data d)
 		free(d.val);
 }
 
-struct data data_grow_for(struct data d, int xlen)
+struct data data_grow_for(struct data d, unsigned int xlen)
 {
 	struct data nd;
-	int newsize;
+	unsigned int newsize;
 
 	if (xlen == 0)
 		return d;
@@ -74,7 +59,8 @@ struct data data_copy_escape_string(const char *s, int len)
 	struct data d;
 	char *q;
 
-	d = data_grow_for(empty_data, strlen(s)+1);
+	d = data_add_marker(empty_data, TYPE_STRING, NULL);
+	d = data_grow_for(d, len + 1);
 
 	q = d.val;
 	while (i < len) {
@@ -94,10 +80,11 @@ struct data data_copy_file(FILE *f, size_t maxlen)
 {
 	struct data d = empty_data;
 
+	d = data_add_marker(d, TYPE_NONE, NULL);
 	while (!feof(f) && (d.len < maxlen)) {
 		size_t chunksize, ret;
 
-		if (maxlen == -1)
+		if (maxlen == (size_t)-1)
 			chunksize = 4096;
 		else
 			chunksize = maxlen - d.len;
@@ -171,9 +158,9 @@ struct data data_merge(struct data d1, struct data d2)
 struct data data_append_integer(struct data d, uint64_t value, int bits)
 {
 	uint8_t value_8;
-	uint16_t value_16;
-	uint32_t value_32;
-	uint64_t value_64;
+	fdt16_t value_16;
+	fdt32_t value_32;
+	fdt64_t value_64;
 
 	switch (bits) {
 	case 8:
@@ -197,14 +184,14 @@ struct data data_append_integer(struct data d, uint64_t value, int bits)
 	}
 }
 
-struct data data_append_re(struct data d, const struct fdt_reserve_entry *re)
+struct data data_append_re(struct data d, uint64_t address, uint64_t size)
 {
-	struct fdt_reserve_entry bere;
+	struct fdt_reserve_entry re;
 
-	bere.address = cpu_to_fdt64(re->address);
-	bere.size = cpu_to_fdt64(re->size);
+	re.address = cpu_to_fdt64(address);
+	re.size = cpu_to_fdt64(size);
 
-	return data_append_data(d, &bere, sizeof(bere));
+	return data_append_data(d, &re, sizeof(re));
 }
 
 struct data data_append_cell(struct data d, cell_t word)
@@ -250,20 +237,20 @@ struct data data_add_marker(struct data d, enum markertype type, char *ref)
 	return data_append_markers(d, m);
 }
 
-int data_is_one_string(struct data d)
+bool data_is_one_string(struct data d)
 {
 	int i;
 	int len = d.len;
 
 	if (len == 0)
-		return 0;
+		return false;
 
 	for (i = 0; i < len-1; i++)
 		if (d.val[i] == '\0')
-			return 0;
+			return false;
 
 	if (d.val[len-1] != '\0')
-		return 0;
+		return false;
 
-	return 1;
+	return true;
 }

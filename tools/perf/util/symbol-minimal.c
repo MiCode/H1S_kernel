@@ -1,12 +1,17 @@
+#include "dso.h"
 #include "symbol.h"
-#include "util.h"
+#include "symsrc.h"
 
+#include <errno.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <fcntl.h>
 #include <string.h>
+#include <stdlib.h>
 #include <byteswap.h>
 #include <sys/stat.h>
-
+#include <linux/zalloc.h>
+#include <internal/lib.h>
 
 static bool check_need_swap(int file_endian)
 {
@@ -26,9 +31,10 @@ static bool check_need_swap(int file_endian)
 
 #define NT_GNU_BUILD_ID	3
 
-static int read_build_id(void *note_data, size_t note_len, void *bf,
-			 size_t size, bool need_swap)
+static int read_build_id(void *note_data, size_t note_len, struct build_id *bid,
+			 bool need_swap)
 {
+	size_t size = sizeof(bid->data);
 	struct {
 		u32 n_namesz;
 		u32 n_descsz;
@@ -58,8 +64,9 @@ static int read_build_id(void *note_data, size_t note_len, void *bf,
 		    nhdr->n_namesz == sizeof("GNU")) {
 			if (memcmp(name, "GNU", sizeof("GNU")) == 0) {
 				size_t sz = min(size, descsz);
-				memcpy(bf, ptr, sz);
-				memset(bf + sz, 0, size - sz);
+				memcpy(bid->data, ptr, sz);
+				memset(bid->data + sz, 0, size - sz);
+				bid->size = sz;
 				return 0;
 			}
 		}
@@ -79,7 +86,7 @@ int filename__read_debuglink(const char *filename __maybe_unused,
 /*
  * Just try PT_NOTE header otherwise fails
  */
-int filename__read_build_id(const char *filename, void *bf, size_t size)
+int filename__read_build_id(const char *filename, struct build_id *bid)
 {
 	FILE *fp;
 	int ret = -1;
@@ -129,6 +136,7 @@ int filename__read_build_id(const char *filename, void *bf, size_t size)
 
 		for (i = 0, phdr = buf; i < ehdr.e_phnum; i++, phdr++) {
 			void *tmp;
+			long offset;
 
 			if (need_swap) {
 				phdr->p_type = bswap_32(phdr->p_type);
@@ -140,18 +148,19 @@ int filename__read_build_id(const char *filename, void *bf, size_t size)
 				continue;
 
 			buf_size = phdr->p_filesz;
+			offset = phdr->p_offset;
 			tmp = realloc(buf, buf_size);
 			if (tmp == NULL)
 				goto out_free;
 
 			buf = tmp;
-			fseek(fp, phdr->p_offset, SEEK_SET);
+			fseek(fp, offset, SEEK_SET);
 			if (fread(buf, buf_size, 1, fp) != 1)
 				goto out_free;
 
-			ret = read_build_id(buf, buf_size, bf, size, need_swap);
+			ret = read_build_id(buf, buf_size, bid, need_swap);
 			if (ret == 0)
-				ret = size;
+				ret = bid->size;
 			break;
 		}
 	} else {
@@ -178,6 +187,7 @@ int filename__read_build_id(const char *filename, void *bf, size_t size)
 
 		for (i = 0, phdr = buf; i < ehdr.e_phnum; i++, phdr++) {
 			void *tmp;
+			long offset;
 
 			if (need_swap) {
 				phdr->p_type = bswap_32(phdr->p_type);
@@ -189,18 +199,19 @@ int filename__read_build_id(const char *filename, void *bf, size_t size)
 				continue;
 
 			buf_size = phdr->p_filesz;
+			offset = phdr->p_offset;
 			tmp = realloc(buf, buf_size);
 			if (tmp == NULL)
 				goto out_free;
 
 			buf = tmp;
-			fseek(fp, phdr->p_offset, SEEK_SET);
+			fseek(fp, offset, SEEK_SET);
 			if (fread(buf, buf_size, 1, fp) != 1)
 				goto out_free;
 
-			ret = read_build_id(buf, buf_size, bf, size, need_swap);
+			ret = read_build_id(buf, buf_size, bid, need_swap);
 			if (ret == 0)
-				ret = size;
+				ret = bid->size;
 			break;
 		}
 	}
@@ -211,7 +222,7 @@ out:
 	return ret;
 }
 
-int sysfs__read_build_id(const char *filename, void *build_id, size_t size)
+int sysfs__read_build_id(const char *filename, struct build_id *bid)
 {
 	int fd;
 	int ret = -1;
@@ -234,7 +245,7 @@ int sysfs__read_build_id(const char *filename, void *build_id, size_t size)
 	if (read(fd, buf, buf_size) != (ssize_t) buf_size)
 		goto out_free;
 
-	ret = read_build_id(buf, buf_size, build_id, size, false);
+	ret = read_build_id(buf, buf_size, bid, false);
 out_free:
 	free(buf);
 out:
@@ -242,13 +253,12 @@ out:
 	return ret;
 }
 
-int symsrc__init(struct symsrc *ss, struct dso *dso __maybe_unused,
-		 const char *name,
+int symsrc__init(struct symsrc *ss, struct dso *dso, const char *name,
 	         enum dso_binary_type type)
 {
 	int fd = open(name, O_RDONLY);
 	if (fd < 0)
-		return -1;
+		goto out_errno;
 
 	ss->name = strdup(name);
 	if (!ss->name)
@@ -260,6 +270,8 @@ int symsrc__init(struct symsrc *ss, struct dso *dso __maybe_unused,
 	return 0;
 out_close:
 	close(fd);
+out_errno:
+	dso->load_errno = errno;
 	return -1;
 }
 
@@ -281,25 +293,63 @@ void symsrc__destroy(struct symsrc *ss)
 }
 
 int dso__synthesize_plt_symbols(struct dso *dso __maybe_unused,
-				struct symsrc *ss __maybe_unused,
-				struct map *map __maybe_unused,
-				symbol_filter_t filter __maybe_unused)
+				struct symsrc *ss __maybe_unused)
 {
 	return 0;
+}
+
+static int fd__is_64_bit(int fd)
+{
+	u8 e_ident[EI_NIDENT];
+
+	if (lseek(fd, 0, SEEK_SET))
+		return -1;
+
+	if (readn(fd, e_ident, sizeof(e_ident)) != sizeof(e_ident))
+		return -1;
+
+	if (memcmp(e_ident, ELFMAG, SELFMAG) ||
+	    e_ident[EI_VERSION] != EV_CURRENT)
+		return -1;
+
+	return e_ident[EI_CLASS] == ELFCLASS64;
+}
+
+enum dso_type dso__type_fd(int fd)
+{
+	Elf64_Ehdr ehdr;
+	int ret;
+
+	ret = fd__is_64_bit(fd);
+	if (ret < 0)
+		return DSO__TYPE_UNKNOWN;
+
+	if (ret)
+		return DSO__TYPE_64BIT;
+
+	if (readn(fd, &ehdr, sizeof(ehdr)) != sizeof(ehdr))
+		return DSO__TYPE_UNKNOWN;
+
+	if (ehdr.e_machine == EM_X86_64)
+		return DSO__TYPE_X32BIT;
+
+	return DSO__TYPE_32BIT;
 }
 
 int dso__load_sym(struct dso *dso, struct map *map __maybe_unused,
 		  struct symsrc *ss,
 		  struct symsrc *runtime_ss __maybe_unused,
-		  symbol_filter_t filter __maybe_unused,
 		  int kmodule __maybe_unused)
 {
-	unsigned char *build_id[BUILD_ID_SIZE];
+	struct build_id bid;
+	int ret;
 
-	if (filename__read_build_id(ss->name, build_id, BUILD_ID_SIZE) > 0) {
-		dso__set_build_id(dso, build_id);
-		return 1;
-	}
+	ret = fd__is_64_bit(ss->fd);
+	if (ret >= 0)
+		dso->is_64_bit = ret;
+
+	if (filename__read_build_id(ss->name, &bid) > 0)
+		dso__set_build_id(dso, &bid);
 	return 0;
 }
 
@@ -327,4 +377,16 @@ int kcore_copy(const char *from_dir __maybe_unused,
 
 void symbol__elf_init(void)
 {
+}
+
+char *dso__demangle_sym(struct dso *dso __maybe_unused,
+			int kmodule __maybe_unused,
+			const char *elf_name __maybe_unused)
+{
+	return NULL;
+}
+
+bool filename__has_section(const char *filename __maybe_unused, const char *sec __maybe_unused)
+{
+	return false;
 }

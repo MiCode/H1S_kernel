@@ -1,50 +1,27 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef IOPRIO_H
 #define IOPRIO_H
 
 #include <linux/sched.h>
+#include <linux/sched/rt.h>
 #include <linux/iocontext.h>
 
-/*
- * Gives us 8 prio classes with 13-bits of data for each class
- */
-#define IOPRIO_BITS		(16)
-#define IOPRIO_CLASS_SHIFT	(13)
-#define IOPRIO_PRIO_MASK	((1UL << IOPRIO_CLASS_SHIFT) - 1)
-
-#define IOPRIO_PRIO_CLASS(mask)	((mask) >> IOPRIO_CLASS_SHIFT)
-#define IOPRIO_PRIO_DATA(mask)	((mask) & IOPRIO_PRIO_MASK)
-#define IOPRIO_PRIO_VALUE(class, data)	(((class) << IOPRIO_CLASS_SHIFT) | data)
-
-#define ioprio_valid(mask)	(IOPRIO_PRIO_CLASS((mask)) != IOPRIO_CLASS_NONE)
+#include <uapi/linux/ioprio.h>
 
 /*
- * These are the io priority groups as implemented by CFQ. RT is the realtime
- * class, it always gets premium service. BE is the best-effort scheduling
- * class, the default for any process. IDLE is the idle scheduling class, it
- * is only served when no one else is using the disk.
+ * Default IO priority.
  */
-enum {
-	IOPRIO_CLASS_NONE,
-	IOPRIO_CLASS_RT,
-	IOPRIO_CLASS_BE,
-	IOPRIO_CLASS_IDLE,
-};
+#define IOPRIO_DEFAULT	IOPRIO_PRIO_VALUE(IOPRIO_CLASS_NONE, 0)
 
 /*
- * 8 best effort priority levels are supported
+ * Check that a priority value has a valid class.
  */
-#define IOPRIO_BE_NR	(8)
+static inline bool ioprio_valid(unsigned short ioprio)
+{
+	unsigned short class = IOPRIO_PRIO_CLASS(ioprio);
 
-enum {
-	IOPRIO_WHO_PROCESS = 1,
-	IOPRIO_WHO_PGRP,
-	IOPRIO_WHO_USER,
-};
-
-/*
- * Fallback BE priority
- */
-#define IOPRIO_NORM	(4)
+	return class > IOPRIO_CLASS_NONE && class <= IOPRIO_CLASS_IDLE;
+}
 
 /*
  * if process has set io priority explicitly, use that. if not, convert
@@ -63,17 +40,35 @@ static inline int task_nice_ioclass(struct task_struct *task)
 {
 	if (task->policy == SCHED_IDLE)
 		return IOPRIO_CLASS_IDLE;
-	else if (task->policy == SCHED_FIFO || task->policy == SCHED_RR)
+	else if (task_is_realtime(task))
 		return IOPRIO_CLASS_RT;
 	else
 		return IOPRIO_CLASS_BE;
 }
 
-/*
- * For inheritance, return the highest of the two given priorities
- */
-extern int ioprio_best(unsigned short aprio, unsigned short bprio);
+#ifdef CONFIG_BLOCK
+int __get_task_ioprio(struct task_struct *p);
+#else
+static inline int __get_task_ioprio(struct task_struct *p)
+{
+	return IOPRIO_DEFAULT;
+}
+#endif /* CONFIG_BLOCK */
+
+static inline int get_current_ioprio(void)
+{
+	return __get_task_ioprio(current);
+}
 
 extern int set_task_ioprio(struct task_struct *task, int ioprio);
+
+#ifdef CONFIG_BLOCK
+extern int ioprio_check_cap(int ioprio);
+#else
+static inline int ioprio_check_cap(int ioprio)
+{
+	return -ENOTBLK;
+}
+#endif /* CONFIG_BLOCK */
 
 #endif

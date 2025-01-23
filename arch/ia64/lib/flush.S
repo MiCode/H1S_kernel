@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Cache flushing routines.
  *
@@ -7,8 +8,8 @@
  * 05/28/05 Zoltan Menyhart	Dynamic stride size
  */
 
+#include <linux/export.h>
 #include <asm/asmmacro.h>
-
 
 	/*
 	 * flush_icache_range(start,end)
@@ -60,6 +61,7 @@ GLOBAL_ENTRY(flush_icache_range)
 	mov	ar.lc=r3		// restore ar.lc
 	br.ret.sptk.many rp
 END(flush_icache_range)
+EXPORT_SYMBOL_GPL(flush_icache_range)
 
 	/*
 	 * clflush_cache_range(start,size)

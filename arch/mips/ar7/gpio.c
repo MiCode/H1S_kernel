@@ -1,27 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2007 Felix Fietkau <nbd@openwrt.org>
  * Copyright (C) 2007 Eugene Konev <ejka@openwrt.org>
  * Copyright (C) 2009-2010 Florian Fainelli <florian@openwrt.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
-#include <linux/module.h>
-#include <linux/gpio.h>
+#include <linux/init.h>
+#include <linux/export.h>
+#include <linux/gpio/driver.h>
 
-#include <asm/mach-ar7/gpio.h>
+#include <asm/mach-ar7/ar7.h>
+
+#define AR7_GPIO_MAX 32
+#define TITAN_GPIO_MAX 51
 
 struct ar7_gpio_chip {
 	void __iomem		*regs;
@@ -30,17 +21,15 @@ struct ar7_gpio_chip {
 
 static int ar7_gpio_get_value(struct gpio_chip *chip, unsigned gpio)
 {
-	struct ar7_gpio_chip *gpch =
-				container_of(chip, struct ar7_gpio_chip, chip);
+	struct ar7_gpio_chip *gpch = gpiochip_get_data(chip);
 	void __iomem *gpio_in = gpch->regs + AR7_GPIO_INPUT;
 
-	return readl(gpio_in) & (1 << gpio);
+	return !!(readl(gpio_in) & (1 << gpio));
 }
 
 static int titan_gpio_get_value(struct gpio_chip *chip, unsigned gpio)
 {
-	struct ar7_gpio_chip *gpch =
-				container_of(chip, struct ar7_gpio_chip, chip);
+	struct ar7_gpio_chip *gpch = gpiochip_get_data(chip);
 	void __iomem *gpio_in0 = gpch->regs + TITAN_GPIO_INPUT_0;
 	void __iomem *gpio_in1 = gpch->regs + TITAN_GPIO_INPUT_1;
 
@@ -50,8 +39,7 @@ static int titan_gpio_get_value(struct gpio_chip *chip, unsigned gpio)
 static void ar7_gpio_set_value(struct gpio_chip *chip,
 				unsigned gpio, int value)
 {
-	struct ar7_gpio_chip *gpch =
-				container_of(chip, struct ar7_gpio_chip, chip);
+	struct ar7_gpio_chip *gpch = gpiochip_get_data(chip);
 	void __iomem *gpio_out = gpch->regs + AR7_GPIO_OUTPUT;
 	unsigned tmp;
 
@@ -64,8 +52,7 @@ static void ar7_gpio_set_value(struct gpio_chip *chip,
 static void titan_gpio_set_value(struct gpio_chip *chip,
 				unsigned gpio, int value)
 {
-	struct ar7_gpio_chip *gpch =
-				container_of(chip, struct ar7_gpio_chip, chip);
+	struct ar7_gpio_chip *gpch = gpiochip_get_data(chip);
 	void __iomem *gpio_out0 = gpch->regs + TITAN_GPIO_OUTPUT_0;
 	void __iomem *gpio_out1 = gpch->regs + TITAN_GPIO_OUTPUT_1;
 	unsigned tmp;
@@ -78,8 +65,7 @@ static void titan_gpio_set_value(struct gpio_chip *chip,
 
 static int ar7_gpio_direction_input(struct gpio_chip *chip, unsigned gpio)
 {
-	struct ar7_gpio_chip *gpch =
-				container_of(chip, struct ar7_gpio_chip, chip);
+	struct ar7_gpio_chip *gpch = gpiochip_get_data(chip);
 	void __iomem *gpio_dir = gpch->regs + AR7_GPIO_DIR;
 
 	writel(readl(gpio_dir) | (1 << gpio), gpio_dir);
@@ -89,8 +75,7 @@ static int ar7_gpio_direction_input(struct gpio_chip *chip, unsigned gpio)
 
 static int titan_gpio_direction_input(struct gpio_chip *chip, unsigned gpio)
 {
-	struct ar7_gpio_chip *gpch =
-				container_of(chip, struct ar7_gpio_chip, chip);
+	struct ar7_gpio_chip *gpch = gpiochip_get_data(chip);
 	void __iomem *gpio_dir0 = gpch->regs + TITAN_GPIO_DIR_0;
 	void __iomem *gpio_dir1 = gpch->regs + TITAN_GPIO_DIR_1;
 
@@ -105,8 +90,7 @@ static int titan_gpio_direction_input(struct gpio_chip *chip, unsigned gpio)
 static int ar7_gpio_direction_output(struct gpio_chip *chip,
 					unsigned gpio, int value)
 {
-	struct ar7_gpio_chip *gpch =
-				container_of(chip, struct ar7_gpio_chip, chip);
+	struct ar7_gpio_chip *gpch = gpiochip_get_data(chip);
 	void __iomem *gpio_dir = gpch->regs + AR7_GPIO_DIR;
 
 	ar7_gpio_set_value(chip, gpio, value);
@@ -118,8 +102,7 @@ static int ar7_gpio_direction_output(struct gpio_chip *chip,
 static int titan_gpio_direction_output(struct gpio_chip *chip,
 					unsigned gpio, int value)
 {
-	struct ar7_gpio_chip *gpch =
-				container_of(chip, struct ar7_gpio_chip, chip);
+	struct ar7_gpio_chip *gpch = gpiochip_get_data(chip);
 	void __iomem *gpio_dir0 = gpch->regs + TITAN_GPIO_DIR_0;
 	void __iomem *gpio_dir1 = gpch->regs + TITAN_GPIO_DIR_1;
 
@@ -325,17 +308,18 @@ int __init ar7_gpio_init(void)
 		size = 0x1f;
 	}
 
-	gpch->regs = ioremap_nocache(AR7_REGS_GPIO, size);
+	gpch->regs = ioremap(AR7_REGS_GPIO, size);
 	if (!gpch->regs) {
 		printk(KERN_ERR "%s: failed to ioremap regs\n",
 					gpch->chip.label);
 		return -ENOMEM;
 	}
 
-	ret = gpiochip_add(&gpch->chip);
+	ret = gpiochip_add_data(&gpch->chip, gpch);
 	if (ret) {
 		printk(KERN_ERR "%s: failed to add gpiochip\n",
 					gpch->chip.label);
+		iounmap(gpch->regs);
 		return ret;
 	}
 	printk(KERN_INFO "%s: registered %d GPIOs\n",

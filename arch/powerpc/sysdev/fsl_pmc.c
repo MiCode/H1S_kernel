@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Suspend/resume support
  *
  * Copyright 2009  MontaVista Software, Inc.
  *
  * Author: Anton Vorontsov <avorontsov@ru.mvista.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/init.h>
@@ -17,9 +13,9 @@
 #include <linux/export.h>
 #include <linux/suspend.h>
 #include <linux/delay.h>
-#include <linux/device.h>
+#include <linux/mod_devicetable.h>
 #include <linux/of_address.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 
 struct pmc_regs {
 	__be32 devdisr;
@@ -80,14 +76,9 @@ static const struct of_device_id pmc_ids[] = {
 static struct platform_driver pmc_driver = {
 	.driver = {
 		.name = "fsl-pmc",
-		.owner = THIS_MODULE,
 		.of_match_table = pmc_ids,
 	},
 	.probe = pmc_probe,
 };
 
-static int __init pmc_init(void)
-{
-	return platform_driver_register(&pmc_driver);
-}
-device_initcall(pmc_init);
+builtin_platform_driver(pmc_driver);

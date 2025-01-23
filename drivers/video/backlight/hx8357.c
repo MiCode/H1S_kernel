@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for the Himax HX-8357 LCD Controller
  *
  * Copyright 2012 Free Electrons
- *
- * Licensed under the GPLv2 or later.
  */
 
 #include <linux/delay.h>
@@ -587,10 +586,8 @@ static int hx8357_probe(struct spi_device *spi)
 	int i, ret;
 
 	lcd = devm_kzalloc(&spi->dev, sizeof(*lcd), GFP_KERNEL);
-	if (!lcd) {
-		dev_err(&spi->dev, "Couldn't allocate lcd internal structure!\n");
+	if (!lcd)
 		return -ENOMEM;
-	}
 
 	ret = spi_setup(spi);
 	if (ret < 0) {
@@ -620,7 +617,7 @@ static int hx8357_probe(struct spi_device *spi)
 		return -EINVAL;
 	}
 
-	if (of_find_property(spi->dev.of_node, "im-gpios", NULL)) {
+	if (of_property_present(spi->dev.of_node, "im-gpios")) {
 		lcd->use_im_pins = 1;
 
 		for (i = 0; i < HX8357_NUM_IM_PINS; i++) {

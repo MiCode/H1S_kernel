@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * A security context is a set of security attributes
  * associated with each subject and object controlled
@@ -10,7 +11,7 @@
  * security server and can be changed without affecting
  * clients of the security server.
  *
- * Author : Stephen Smalley, <sds@epoch.ncsc.mil>
+ * Author : Stephen Smalley, <stephen.smalley.work@gmail.com>
  */
 #ifndef _SS_CONTEXT_H_
 #define _SS_CONTEXT_H_
@@ -37,7 +38,7 @@ static inline void mls_context_init(struct context *c)
 	memset(&c->range, 0, sizeof(c->range));
 }
 
-static inline int mls_context_cpy(struct context *dst, struct context *src)
+static inline int mls_context_cpy(struct context *dst, const struct context *src)
 {
 	int rc;
 
@@ -57,7 +58,7 @@ out:
 /*
  * Sets both levels in the MLS range of 'dst' to the low level of 'src'.
  */
-static inline int mls_context_cpy_low(struct context *dst, struct context *src)
+static inline int mls_context_cpy_low(struct context *dst, const struct context *src)
 {
 	int rc;
 
@@ -77,7 +78,7 @@ out:
 /*
  * Sets both levels in the MLS range of 'dst' to the high level of 'src'.
  */
-static inline int mls_context_cpy_high(struct context *dst, struct context *src)
+static inline int mls_context_cpy_high(struct context *dst, const struct context *src)
 {
 	int rc;
 
@@ -94,7 +95,40 @@ out:
 	return rc;
 }
 
-static inline int mls_context_cmp(struct context *c1, struct context *c2)
+
+static inline int mls_context_glblub(struct context *dst,
+				     const struct context *c1, const struct context *c2)
+{
+	struct mls_range *dr = &dst->range;
+	const struct mls_range *r1 = &c1->range, *r2 = &c2->range;
+	int rc = 0;
+
+	if (r1->level[1].sens < r2->level[0].sens ||
+	    r2->level[1].sens < r1->level[0].sens)
+		/* These ranges have no common sensitivities */
+		return -EINVAL;
+
+	/* Take the greatest of the low */
+	dr->level[0].sens = max(r1->level[0].sens, r2->level[0].sens);
+
+	/* Take the least of the high */
+	dr->level[1].sens = min(r1->level[1].sens, r2->level[1].sens);
+
+	rc = ebitmap_and(&dr->level[0].cat,
+			 &r1->level[0].cat, &r2->level[0].cat);
+	if (rc)
+		goto out;
+
+	rc = ebitmap_and(&dr->level[1].cat,
+			 &r1->level[1].cat, &r2->level[1].cat);
+	if (rc)
+		goto out;
+
+out:
+	return rc;
+}
+
+static inline int mls_context_cmp(const struct context *c1, const struct context *c2)
 {
 	return ((c1->range.level[0].sens == c2->range.level[0].sens) &&
 		ebitmap_cmp(&c1->range.level[0].cat, &c2->range.level[0].cat) &&
@@ -114,7 +148,7 @@ static inline void context_init(struct context *c)
 	memset(c, 0, sizeof(*c));
 }
 
-static inline int context_cpy(struct context *dst, struct context *src)
+static inline int context_cpy(struct context *dst, const struct context *src)
 {
 	int rc;
 
@@ -133,6 +167,8 @@ static inline int context_cpy(struct context *dst, struct context *src)
 	rc = mls_context_cpy(dst, src);
 	if (rc) {
 		kfree(dst->str);
+		dst->str = NULL;
+		dst->len = 0;
 		return rc;
 	}
 	return 0;
@@ -147,7 +183,7 @@ static inline void context_destroy(struct context *c)
 	mls_context_destroy(c);
 }
 
-static inline int context_cmp(struct context *c1, struct context *c2)
+static inline int context_cmp(const struct context *c1, const struct context *c2)
 {
 	if (c1->len && c2->len)
 		return (c1->len == c2->len && !strcmp(c1->str, c2->str));
@@ -158,6 +194,8 @@ static inline int context_cmp(struct context *c1, struct context *c2)
 		(c1->type == c2->type) &&
 		mls_context_cmp(c1, c2));
 }
+
+u32 context_compute_hash(const struct context *c);
 
 #endif	/* _SS_CONTEXT_H_ */
 

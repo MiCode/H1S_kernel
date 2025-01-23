@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for AzureWave 6007 DVB-C/T USB2.0 and clones
  *
@@ -7,23 +8,14 @@
  *	http://linux.terratec.de/files/TERRATEC_H7/20110323_TERRATEC_H7_Linux.tar.gz
  * The original driver's license is GPL, as declared with MODULE_LICENSE()
  *
- * Copyright (c) 2010-2012 Mauro Carvalho Chehab <mchehab@redhat.com>
+ * Copyright (c) 2010-2012 Mauro Carvalho Chehab
  *	Driver modified by in order to work with upstream drxk driver, and
  *	tons of bugs got fixed, and converted to use dvb-usb-v2.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation under version 2 of the License.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include "drxk.h"
 #include "mt2063.h"
-#include "dvb_ca_en50221.h"
+#include <media/dvb_ca_en50221.h>
 #include "dvb_usb.h"
 #include "cypress_firmware.h"
 
@@ -207,24 +199,33 @@ static int az6007_streaming_ctrl(struct dvb_frontend *fe, int onoff)
 static int az6007_rc_query(struct dvb_usb_device *d)
 {
 	struct az6007_device_state *st = d_to_priv(d);
-	unsigned code = 0;
+	unsigned code;
+	enum rc_proto proto;
 
-	az6007_read(d, AZ6007_READ_IR, 0, 0, st->data, 10);
+	if (az6007_read(d, AZ6007_READ_IR, 0, 0, st->data, 10) < 0)
+		return -EIO;
 
 	if (st->data[1] == 0x44)
 		return 0;
 
-	if ((st->data[1] ^ st->data[2]) == 0xff)
-		code = st->data[1];
-	else
-		code = st->data[1] << 8 | st->data[2];
+	if ((st->data[3] ^ st->data[4]) == 0xff) {
+		if ((st->data[1] ^ st->data[2]) == 0xff) {
+			code = RC_SCANCODE_NEC(st->data[1], st->data[3]);
+			proto = RC_PROTO_NEC;
+		} else {
+			code = RC_SCANCODE_NECX(st->data[1] << 8 | st->data[2],
+						st->data[3]);
+			proto = RC_PROTO_NECX;
+		}
+	} else {
+		code = RC_SCANCODE_NEC32(st->data[1] << 24 |
+					 st->data[2] << 16 |
+					 st->data[3] << 8  |
+					 st->data[4]);
+		proto = RC_PROTO_NEC32;
+	}
 
-	if ((st->data[3] ^ st->data[4]) == 0xff)
-		code = code << 8 | st->data[3];
-	else
-		code = code << 16 | st->data[3] << 8 | st->data[4];
-
-	rc_keydown(d->rc_dev, code, st->data[5]);
+	rc_keydown(d->rc_dev, proto, code, st->data[5]);
 
 	return 0;
 }
@@ -233,7 +234,8 @@ static int az6007_get_rc_config(struct dvb_usb_device *d, struct dvb_usb_rc *rc)
 {
 	pr_debug("Getting az6007 Remote Control properties\n");
 
-	rc->allowed_protos = RC_BIT_NEC;
+	rc->allowed_protos = RC_PROTO_BIT_NEC | RC_PROTO_BIT_NECX |
+						RC_PROTO_BIT_NEC32;
 	rc->query          = az6007_rc_query;
 	rc->interval       = 400;
 
@@ -247,7 +249,7 @@ static int az6007_ci_read_attribute_mem(struct dvb_ca_en50221 *ca,
 					int slot,
 					int address)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
+	struct dvb_usb_device *d = ca->data;
 	struct az6007_device_state *state = d_to_priv(d);
 
 	int ret;
@@ -289,7 +291,7 @@ static int az6007_ci_write_attribute_mem(struct dvb_ca_en50221 *ca,
 					 int address,
 					 u8 value)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
+	struct dvb_usb_device *d = ca->data;
 	struct az6007_device_state *state = d_to_priv(d);
 
 	int ret;
@@ -320,7 +322,7 @@ static int az6007_ci_read_cam_control(struct dvb_ca_en50221 *ca,
 				      int slot,
 				      u8 address)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
+	struct dvb_usb_device *d = ca->data;
 	struct az6007_device_state *state = d_to_priv(d);
 
 	int ret;
@@ -366,7 +368,7 @@ static int az6007_ci_write_cam_control(struct dvb_ca_en50221 *ca,
 				       u8 address,
 				       u8 value)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
+	struct dvb_usb_device *d = ca->data;
 	struct az6007_device_state *state = d_to_priv(d);
 
 	int ret;
@@ -397,7 +399,7 @@ failed:
 
 static int CI_CamReady(struct dvb_ca_en50221 *ca, int slot)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
+	struct dvb_usb_device *d = ca->data;
 
 	int ret;
 	u8 req;
@@ -428,7 +430,7 @@ static int CI_CamReady(struct dvb_ca_en50221 *ca, int slot)
 
 static int az6007_ci_slot_reset(struct dvb_ca_en50221 *ca, int slot)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
+	struct dvb_usb_device *d = ca->data;
 	struct az6007_device_state *state = d_to_priv(d);
 
 	int ret, i;
@@ -484,7 +486,7 @@ static int az6007_ci_slot_shutdown(struct dvb_ca_en50221 *ca, int slot)
 
 static int az6007_ci_slot_ts_enable(struct dvb_ca_en50221 *ca, int slot)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
+	struct dvb_usb_device *d = ca->data;
 	struct az6007_device_state *state = d_to_priv(d);
 
 	int ret;
@@ -513,7 +515,7 @@ failed:
 
 static int az6007_ci_poll_slot_status(struct dvb_ca_en50221 *ca, int slot, int open)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
+	struct dvb_usb_device *d = ca->data;
 	struct az6007_device_state *state = d_to_priv(d);
 	int ret;
 	u8 req;
@@ -786,6 +788,10 @@ static int az6007_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[],
 			if (az6007_xfer_debug)
 				printk(KERN_DEBUG "az6007: I2C W addr=0x%x len=%d\n",
 				       addr, msgs[i].len);
+			if (msgs[i].len < 1) {
+				ret = -EIO;
+				goto err;
+			}
 			req = AZ6007_I2C_WR;
 			index = msgs[i].buf[0];
 			value = addr | (1 << 8);
@@ -800,6 +806,10 @@ static int az6007_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[],
 			if (az6007_xfer_debug)
 				printk(KERN_DEBUG "az6007: I2C R addr=0x%x len=%d\n",
 				       addr, msgs[i].len);
+			if (msgs[i].len < 1) {
+				ret = -EIO;
+				goto err;
+			}
 			req = AZ6007_I2C_RD;
 			index = msgs[i].buf[0];
 			value = addr;
@@ -925,7 +935,7 @@ static struct dvb_usb_device_properties az6007_cablestar_hdci_props = {
 	}
 };
 
-static struct usb_device_id az6007_usb_table[] = {
+static const struct usb_device_id az6007_usb_table[] = {
 	{DVB_USB_DEVICE(USB_VID_AZUREWAVE, USB_PID_AZUREWAVE_6007,
 		&az6007_props, "Azurewave 6007", RC_MAP_EMPTY)},
 	{DVB_USB_DEVICE(USB_VID_TERRATEC, USB_PID_TERRATEC_H7,
@@ -975,7 +985,7 @@ static struct usb_driver az6007_usb_driver = {
 module_usb_driver(az6007_usb_driver);
 
 MODULE_AUTHOR("Henry Wang <Henry.wang@AzureWave.com>");
-MODULE_AUTHOR("Mauro Carvalho Chehab <mchehab@redhat.com>");
+MODULE_AUTHOR("Mauro Carvalho Chehab");
 MODULE_DESCRIPTION("Driver for AzureWave 6007 DVB-C/T USB2.0 and clones");
 MODULE_VERSION("2.0");
 MODULE_LICENSE("GPL");

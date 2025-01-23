@@ -1,14 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Asymmetric public-key cryptography key subtype
  *
- * See Documentation/security/asymmetric-keys.txt
+ * See Documentation/crypto/asymmetric-keys.rst
  *
  * Copyright (C) 2012 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public Licence
- * as published by the Free Software Foundation; either version
- * 2 of the Licence, or (at your option) any later version.
  */
 
 #ifndef _KEYS_ASYMMETRIC_SUBTYPE_H
@@ -17,6 +13,8 @@
 #include <linux/seq_file.h>
 #include <keys/asymmetric-type.h>
 
+struct kernel_pkey_query;
+struct kernel_pkey_params;
 struct public_key_signature;
 
 /*
@@ -32,7 +30,14 @@ struct asymmetric_key_subtype {
 	void (*describe)(const struct key *key, struct seq_file *m);
 
 	/* Destroy a key of this subtype */
-	void (*destroy)(void *payload);
+	void (*destroy)(void *payload_crypto, void *payload_auth);
+
+	int (*query)(const struct kernel_pkey_params *params,
+		     struct kernel_pkey_query *info);
+
+	/* Encrypt/decrypt/sign data */
+	int (*eds_op)(struct kernel_pkey_params *params,
+		      const void *in, void *out);
 
 	/* Verify the signature on a key of this subtype (optional) */
 	int (*verify_signature)(const struct key *key,
@@ -49,7 +54,7 @@ struct asymmetric_key_subtype {
 static inline
 struct asymmetric_key_subtype *asymmetric_key_subtype(const struct key *key)
 {
-	return key->type_data.p[0];
+	return key->payload.data[asym_subtype];
 }
 
 #endif /* _KEYS_ASYMMETRIC_SUBTYPE_H */

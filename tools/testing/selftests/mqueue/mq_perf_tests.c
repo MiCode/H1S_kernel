@@ -35,8 +35,12 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/param.h>
 #include <mqueue.h>
 #include <popt.h>
+#include <error.h>
+
+#include "../kselftest.h"
 
 static char *usage =
 "Usage:\n"
@@ -70,7 +74,6 @@ static char *usage =
 char *MAX_MSGS = "/proc/sys/fs/mqueue/msg_max";
 char *MAX_MSGSIZE = "/proc/sys/fs/mqueue/msgsize_max";
 
-#define min(a, b) ((a) < (b) ? (a) : (b))
 #define MAX_CPUS 64
 char *cpu_option_string;
 int cpus_to_pin[MAX_CPUS];
@@ -176,6 +179,9 @@ void shutdown(int exit_val, char *err_cause, int line_no)
 	/* In case we get called by multiple threads or from an sighandler */
 	if (in_shutdown++)
 		return;
+
+	/* Free the cpu_set allocated using CPU_ALLOC in main function */
+	CPU_FREE(cpu_set);
 
 	for (i = 0; i < num_cpus_to_pin; i++)
 		if (cpu_threads[i]) {
@@ -296,9 +302,9 @@ static inline void open_queue(struct mq_attr *attr)
 	printf("\n\tQueue %s created:\n", queue_path);
 	printf("\t\tmq_flags:\t\t\t%s\n", result.mq_flags & O_NONBLOCK ?
 	       "O_NONBLOCK" : "(null)");
-	printf("\t\tmq_maxmsg:\t\t\t%d\n", result.mq_maxmsg);
-	printf("\t\tmq_msgsize:\t\t\t%d\n", result.mq_msgsize);
-	printf("\t\tmq_curmsgs:\t\t\t%d\n", result.mq_curmsgs);
+	printf("\t\tmq_maxmsg:\t\t\t%lu\n", result.mq_maxmsg);
+	printf("\t\tmq_msgsize:\t\t\t%lu\n", result.mq_msgsize);
+	printf("\t\tmq_curmsgs:\t\t\t%lu\n", result.mq_curmsgs);
 }
 
 void *fake_cont_thread(void *arg)
@@ -440,7 +446,7 @@ void *perf_test_thread(void *arg)
 		shutdown(2, "clock_getres()", __LINE__);
 
 	printf("\t\tMax priorities:\t\t\t%d\n", mq_prio_max);
-	printf("\t\tClock resolution:\t\t%d nsec%s\n", res.tv_nsec,
+	printf("\t\tClock resolution:\t\t%lu nsec%s\n", res.tv_nsec,
 	       res.tv_nsec > 1 ? "s" : "");
 
 
@@ -454,20 +460,20 @@ void *perf_test_thread(void *arg)
 	recv_total.tv_nsec = 0;
 	for (i = 0; i < TEST1_LOOPS; i++)
 		do_send_recv();
-	printf("\t\tSend msg:\t\t\t%d.%ds total time\n",
+	printf("\t\tSend msg:\t\t\t%ld.%lus total time\n",
 	       send_total.tv_sec, send_total.tv_nsec);
 	nsec = ((unsigned long long)send_total.tv_sec * 1000000000 +
 		 send_total.tv_nsec) / TEST1_LOOPS;
-	printf("\t\t\t\t\t\t%d nsec/msg\n", nsec);
-	printf("\t\tRecv msg:\t\t\t%d.%ds total time\n",
+	printf("\t\t\t\t\t\t%lld nsec/msg\n", nsec);
+	printf("\t\tRecv msg:\t\t\t%ld.%lus total time\n",
 	       recv_total.tv_sec, recv_total.tv_nsec);
 	nsec = ((unsigned long long)recv_total.tv_sec * 1000000000 +
 		recv_total.tv_nsec) / TEST1_LOOPS;
-	printf("\t\t\t\t\t\t%d nsec/msg\n", nsec);
+	printf("\t\t\t\t\t\t%lld nsec/msg\n", nsec);
 
 
 	for (cur_test = test2; cur_test->desc != NULL; cur_test++) {
-		printf(cur_test->desc);
+		printf("%s:\n", cur_test->desc);
 		printf("\t\t(%d iterations)\n", TEST2_LOOPS);
 		prio_out = 0;
 		send_total.tv_sec = 0;
@@ -493,16 +499,16 @@ void *perf_test_thread(void *arg)
 			cur_test->func(&prio_out);
 		}
 		printf("done.\n");
-		printf("\t\tSend msg:\t\t\t%d.%ds total time\n",
+		printf("\t\tSend msg:\t\t\t%ld.%lus total time\n",
 		       send_total.tv_sec, send_total.tv_nsec);
 		nsec = ((unsigned long long)send_total.tv_sec * 1000000000 +
 			 send_total.tv_nsec) / TEST2_LOOPS;
-		printf("\t\t\t\t\t\t%d nsec/msg\n", nsec);
-		printf("\t\tRecv msg:\t\t\t%d.%ds total time\n",
+		printf("\t\t\t\t\t\t%lld nsec/msg\n", nsec);
+		printf("\t\tRecv msg:\t\t\t%ld.%lus total time\n",
 		       recv_total.tv_sec, recv_total.tv_nsec);
 		nsec = ((unsigned long long)recv_total.tv_sec * 1000000000 +
 			recv_total.tv_nsec) / TEST2_LOOPS;
-		printf("\t\t\t\t\t\t%d nsec/msg\n", nsec);
+		printf("\t\t\t\t\t\t%lld nsec/msg\n", nsec);
 		printf("\t\tDraining queue...");
 		fflush(stdout);
 		clock_gettime(clock, &start);
@@ -536,10 +542,9 @@ int main(int argc, char *argv[])
 {
 	struct mq_attr attr;
 	char *option, *next_option;
-	int i, cpu;
+	int i, cpu, rc;
 	struct sigaction sa;
 	poptContext popt_context;
-	char rc;
 	void *retval;
 
 	main_thread = pthread_self();
@@ -549,7 +554,13 @@ int main(int argc, char *argv[])
 		perror("sysconf(_SC_NPROCESSORS_ONLN)");
 		exit(1);
 	}
-	cpus_online = min(MAX_CPUS, sysconf(_SC_NPROCESSORS_ONLN));
+
+	if (getuid() != 0)
+		ksft_exit_skip("Not running as root, but almost all tests "
+			"require root in order to modify\nsystem settings.  "
+			"Exiting.\n");
+
+	cpus_online = MIN(MAX_CPUS, sysconf(_SC_NPROCESSORS_ONLN));
 	cpu_set = CPU_ALLOC(cpus_online);
 	if (cpu_set == NULL) {
 		perror("CPU_ALLOC()");
@@ -587,7 +598,7 @@ int main(int argc, char *argv[])
 						cpu_set)) {
 					fprintf(stderr, "Any given CPU may "
 						"only be given once.\n");
-					exit(1);
+					goto err_code;
 				} else
 					CPU_SET_S(cpus_to_pin[cpu],
 						  cpu_set_size, cpu_set);
@@ -605,7 +616,7 @@ int main(int argc, char *argv[])
 				queue_path = malloc(strlen(option) + 2);
 				if (!queue_path) {
 					perror("malloc()");
-					exit(1);
+					goto err_code;
 				}
 				queue_path[0] = '/';
 				queue_path[1] = 0;
@@ -620,17 +631,10 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "Must pass at least one CPU to continuous "
 			"mode.\n");
 		poptPrintUsage(popt_context, stderr, 0);
-		exit(1);
+		goto err_code;
 	} else if (!continuous_mode) {
 		num_cpus_to_pin = 1;
 		cpus_to_pin[0] = cpus_online - 1;
-	}
-
-	if (getuid() != 0) {
-		fprintf(stderr, "Not running as root, but almost all tests "
-			"require root in order to modify\nsystem settings.  "
-			"Exiting.\n");
-		exit(1);
 	}
 
 	max_msgs = fopen(MAX_MSGS, "r+");
@@ -653,8 +657,10 @@ int main(int argc, char *argv[])
 	/* Tell the user our initial state */
 	printf("\nInitial system state:\n");
 	printf("\tUsing queue path:\t\t\t%s\n", queue_path);
-	printf("\tRLIMIT_MSGQUEUE(soft):\t\t\t%d\n", saved_limits.rlim_cur);
-	printf("\tRLIMIT_MSGQUEUE(hard):\t\t\t%d\n", saved_limits.rlim_max);
+	printf("\tRLIMIT_MSGQUEUE(soft):\t\t\t%ld\n",
+		(long) saved_limits.rlim_cur);
+	printf("\tRLIMIT_MSGQUEUE(hard):\t\t\t%ld\n",
+		(long) saved_limits.rlim_max);
 	printf("\tMaximum Message Size:\t\t\t%d\n", saved_max_msgsize);
 	printf("\tMaximum Queue Size:\t\t\t%d\n", saved_max_msgs);
 	printf("\tNice value:\t\t\t\t%d\n", cur_nice);
@@ -667,10 +673,10 @@ int main(int argc, char *argv[])
 		printf("\tRLIMIT_MSGQUEUE(soft):\t\t\t(unlimited)\n");
 		printf("\tRLIMIT_MSGQUEUE(hard):\t\t\t(unlimited)\n");
 	} else {
-		printf("\tRLIMIT_MSGQUEUE(soft):\t\t\t%d\n",
-		       cur_limits.rlim_cur);
-		printf("\tRLIMIT_MSGQUEUE(hard):\t\t\t%d\n",
-		       cur_limits.rlim_max);
+		printf("\tRLIMIT_MSGQUEUE(soft):\t\t\t%ld\n",
+		       (long) cur_limits.rlim_cur);
+		printf("\tRLIMIT_MSGQUEUE(hard):\t\t\t%ld\n",
+		       (long) cur_limits.rlim_max);
 	}
 	printf("\tMaximum Message Size:\t\t\t%d\n", cur_max_msgsize);
 	printf("\tMaximum Queue Size:\t\t\t%d\n", cur_max_msgs);
@@ -738,4 +744,9 @@ int main(int argc, char *argv[])
 			sleep(1);
 	}
 	shutdown(0, "", 0);
+
+err_code:
+	CPU_FREE(cpu_set);
+	exit(1);
+
 }

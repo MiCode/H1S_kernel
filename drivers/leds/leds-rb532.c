@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * LEDs driver for the "User LED" on Routerboard532
  *
@@ -20,7 +21,6 @@ static void rb532_led_set(struct led_classdev *cdev,
 {
 	if (brightness)
 		set_latch_u5(LO_ULED, 0);
-
 	else
 		set_latch_u5(0, LO_ULED);
 }
@@ -53,7 +53,6 @@ static struct platform_driver rb532_led_driver = {
 	.remove = rb532_led_remove,
 	.driver = {
 		.name = "rb532-led",
-		.owner = THIS_MODULE,
 	},
 };
 

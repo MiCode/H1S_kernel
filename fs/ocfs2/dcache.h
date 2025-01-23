@@ -1,26 +1,10 @@
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/*
  * dcache.h
  *
  * Function prototypes
  *
  * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
 #ifndef OCFS2_DCACHE_H
@@ -29,13 +13,8 @@
 extern const struct dentry_operations ocfs2_dentry_ops;
 
 struct ocfs2_dentry_lock {
-	/* Use count of dentry lock */
 	unsigned int		dl_count;
-	union {
-		/* Linked list of dentry locks to release */
-		struct ocfs2_dentry_lock *dl_next;
-		u64			dl_parent_blkno;
-	};
+	u64			dl_parent_blkno;
 
 	/*
 	 * The ocfs2_dentry_lock keeps an inode reference until
@@ -49,13 +28,8 @@ struct ocfs2_dentry_lock {
 int ocfs2_dentry_attach_lock(struct dentry *dentry, struct inode *inode,
 			     u64 parent_blkno);
 
-extern spinlock_t dentry_list_lock;
-
 void ocfs2_dentry_lock_put(struct ocfs2_super *osb,
 			   struct ocfs2_dentry_lock *dl);
-
-void ocfs2_drop_dl_inodes(struct work_struct *work);
-void ocfs2_drop_all_dl_inodes(struct ocfs2_super *osb);
 
 struct dentry *ocfs2_find_local_alias(struct inode *inode, u64 parent_blkno,
 				      int skip_unhashed);

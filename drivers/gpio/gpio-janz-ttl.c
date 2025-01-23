@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Janz MODULbus VMOD-TTL GPIO Driver
  *
  * Copyright (c) 2010 Ira W. Snyder <iws@ovro.caltech.edu>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -16,8 +12,9 @@
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 #include <linux/slab.h>
+#include <linux/bitops.h>
 
 #include <linux/mfd/janz.h>
 
@@ -33,9 +30,9 @@
 #define MASTER_INT_CTL		0x00
 #define MASTER_CONF_CTL		0x01
 
-#define CONF_PAE		(1 << 2)
-#define CONF_PBE		(1 << 7)
-#define CONF_PCE		(1 << 4)
+#define CONF_PAE		BIT(2)
+#define CONF_PBE		BIT(7)
+#define CONF_PCE		BIT(4)
 
 struct ttl_control_regs {
 	__be16 portc;
@@ -59,7 +56,7 @@ struct ttl_module {
 
 static int ttl_get_value(struct gpio_chip *gpio, unsigned offset)
 {
-	struct ttl_module *mod = dev_get_drvdata(gpio->dev);
+	struct ttl_module *mod = dev_get_drvdata(gpio->parent);
 	u8 *shadow;
 	int ret;
 
@@ -74,14 +71,14 @@ static int ttl_get_value(struct gpio_chip *gpio, unsigned offset)
 	}
 
 	spin_lock(&mod->lock);
-	ret = *shadow & (1 << offset);
+	ret = *shadow & BIT(offset);
 	spin_unlock(&mod->lock);
-	return ret;
+	return !!ret;
 }
 
 static void ttl_set_value(struct gpio_chip *gpio, unsigned offset, int value)
 {
-	struct ttl_module *mod = dev_get_drvdata(gpio->dev);
+	struct ttl_module *mod = dev_get_drvdata(gpio->parent);
 	void __iomem *port;
 	u8 *shadow;
 
@@ -100,9 +97,9 @@ static void ttl_set_value(struct gpio_chip *gpio, unsigned offset, int value)
 
 	spin_lock(&mod->lock);
 	if (value)
-		*shadow |= (1 << offset);
+		*shadow |= BIT(offset);
 	else
-		*shadow &= ~(1 << offset);
+		*shadow &= ~BIT(offset);
 
 	iowrite16be(*shadow, port);
 	spin_unlock(&mod->lock);
@@ -143,49 +140,33 @@ static void ttl_setup_device(struct ttl_module *mod)
 static int ttl_probe(struct platform_device *pdev)
 {
 	struct janz_platform_data *pdata;
-	struct device *dev = &pdev->dev;
 	struct ttl_module *mod;
 	struct gpio_chip *gpio;
-	struct resource *res;
 	int ret;
 
 	pdata = dev_get_platdata(&pdev->dev);
 	if (!pdata) {
-		dev_err(dev, "no platform data\n");
-		ret = -ENXIO;
-		goto out_return;
+		dev_err(&pdev->dev, "no platform data\n");
+		return -ENXIO;
 	}
 
-	mod = kzalloc(sizeof(*mod), GFP_KERNEL);
-	if (!mod) {
-		dev_err(dev, "unable to allocate private data\n");
-		ret = -ENOMEM;
-		goto out_return;
-	}
+	mod = devm_kzalloc(&pdev->dev, sizeof(*mod), GFP_KERNEL);
+	if (!mod)
+		return -ENOMEM;
 
 	platform_set_drvdata(pdev, mod);
 	spin_lock_init(&mod->lock);
 
 	/* get access to the MODULbus registers for this module */
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		dev_err(dev, "MODULbus registers not found\n");
-		ret = -ENODEV;
-		goto out_free_mod;
-	}
-
-	mod->regs = ioremap(res->start, resource_size(res));
-	if (!mod->regs) {
-		dev_err(dev, "MODULbus registers not ioremap\n");
-		ret = -ENOMEM;
-		goto out_free_mod;
-	}
+	mod->regs = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(mod->regs))
+		return PTR_ERR(mod->regs);
 
 	ttl_setup_device(mod);
 
 	/* Initialize the GPIO data structures */
 	gpio = &mod->gpio;
-	gpio->dev = &pdev->dev;
+	gpio->parent = &pdev->dev;
 	gpio->label = pdev->name;
 	gpio->get = ttl_get_value;
 	gpio->set = ttl_set_value;
@@ -195,46 +176,20 @@ static int ttl_probe(struct platform_device *pdev)
 	gpio->base = -1;
 	gpio->ngpio = 20;
 
-	ret = gpiochip_add(gpio);
+	ret = devm_gpiochip_add_data(&pdev->dev, gpio, NULL);
 	if (ret) {
-		dev_err(dev, "unable to add GPIO chip\n");
-		goto out_iounmap_regs;
-	}
-
-	return 0;
-
-out_iounmap_regs:
-	iounmap(mod->regs);
-out_free_mod:
-	kfree(mod);
-out_return:
-	return ret;
-}
-
-static int ttl_remove(struct platform_device *pdev)
-{
-	struct ttl_module *mod = platform_get_drvdata(pdev);
-	struct device *dev = &pdev->dev;
-	int ret;
-
-	ret = gpiochip_remove(&mod->gpio);
-	if (ret) {
-		dev_err(dev, "unable to remove GPIO chip\n");
+		dev_err(&pdev->dev, "unable to add GPIO chip\n");
 		return ret;
 	}
 
-	iounmap(mod->regs);
-	kfree(mod);
 	return 0;
 }
 
 static struct platform_driver ttl_driver = {
 	.driver		= {
 		.name	= DRV_NAME,
-		.owner	= THIS_MODULE,
 	},
 	.probe		= ttl_probe,
-	.remove		= ttl_remove,
 };
 
 module_platform_driver(ttl_driver);

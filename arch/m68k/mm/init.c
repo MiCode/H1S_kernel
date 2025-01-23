@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/arch/m68k/mm/init.c
  *
@@ -16,11 +17,11 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/init.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/gfp.h>
 
 #include <asm/setup.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/page.h>
 #include <asm/pgalloc.h>
 #include <asm/traps.h>
@@ -39,38 +40,12 @@
 void *empty_zero_page;
 EXPORT_SYMBOL(empty_zero_page);
 
-#if !defined(CONFIG_SUN3) && !defined(CONFIG_COLDFIRE)
-extern void init_pointer_table(unsigned long ptable);
-extern pmd_t *zero_pgtable;
-#endif
-
 #ifdef CONFIG_MMU
-
-pg_data_t pg_data_map[MAX_NUMNODES];
-EXPORT_SYMBOL(pg_data_map);
 
 int m68k_virt_to_node_shift;
 
-#ifndef CONFIG_SINGLE_MEMORY_CHUNK
-pg_data_t *pg_data_table[65];
-EXPORT_SYMBOL(pg_data_table);
-#endif
-
 void __init m68k_setup_node(int node)
 {
-#ifndef CONFIG_SINGLE_MEMORY_CHUNK
-	struct m68k_mem_info *info = m68k_memory + node;
-	int i, end;
-
-	i = (unsigned long)phys_to_virt(info->addr) >> __virt_to_node_shift();
-	end = (unsigned long)phys_to_virt(info->addr + info->size - 1) >> __virt_to_node_shift();
-	for (; i <= end; i++) {
-		if (pg_data_table[i])
-			printk("overlap at %u for chunk %u\n", i, node);
-		pg_data_table[i] = pg_data_map + node;
-	}
-#endif
-	pg_data_map[node].bdata = bootmem_node_data + node;
 	node_set_online(node);
 }
 
@@ -89,20 +64,16 @@ void __init paging_init(void)
 	 * page_alloc get different views of the world.
 	 */
 	unsigned long end_mem = memory_end & PAGE_MASK;
-	unsigned long zones_size[MAX_NR_ZONES] = { 0, };
+	unsigned long max_zone_pfn[MAX_NR_ZONES] = { 0, };
 
 	high_memory = (void *) end_mem;
 
-	empty_zero_page = alloc_bootmem_pages(PAGE_SIZE);
-	memset(empty_zero_page, 0, PAGE_SIZE);
-
-	/*
-	 * Set up SFC/DFC registers (user data space).
-	 */
-	set_fs (USER_DS);
-
-	zones_size[ZONE_DMA] = (end_mem - PAGE_OFFSET) >> PAGE_SHIFT;
-	free_area_init(zones_size);
+	empty_zero_page = memblock_alloc(PAGE_SIZE, PAGE_SIZE);
+	if (!empty_zero_page)
+		panic("%s: Failed to allocate %lu bytes align=0x%lx\n",
+		      __func__, PAGE_SIZE, PAGE_SIZE);
+	max_zone_pfn[ZONE_DMA] = end_mem >> PAGE_SHIFT;
+	free_area_init(max_zone_pfn);
 }
 
 #endif /* CONFIG_MMU */
@@ -120,62 +91,40 @@ void free_initmem(void)
 #define VECTORS	_ramvec
 #endif
 
-void __init print_memmap(void)
-{
-#define UL(x) ((unsigned long) (x))
-#define MLK(b, t) UL(b), UL(t), (UL(t) - UL(b)) >> 10
-#define MLM(b, t) UL(b), UL(t), (UL(t) - UL(b)) >> 20
-#define MLK_ROUNDUP(b, t) b, t, DIV_ROUND_UP(((t) - (b)), 1024)
-
-	pr_notice("Virtual kernel memory layout:\n"
-		"    vector  : 0x%08lx - 0x%08lx   (%4ld KiB)\n"
-		"    kmap    : 0x%08lx - 0x%08lx   (%4ld MiB)\n"
-		"    vmalloc : 0x%08lx - 0x%08lx   (%4ld MiB)\n"
-		"    lowmem  : 0x%08lx - 0x%08lx   (%4ld MiB)\n"
-		"      .init : 0x%p" " - 0x%p" "   (%4d KiB)\n"
-		"      .text : 0x%p" " - 0x%p" "   (%4d KiB)\n"
-		"      .data : 0x%p" " - 0x%p" "   (%4d KiB)\n"
-		"      .bss  : 0x%p" " - 0x%p" "   (%4d KiB)\n",
-		MLK(VECTORS, VECTORS + 256),
-		MLM(KMAP_START, KMAP_END),
-		MLM(VMALLOC_START, VMALLOC_END),
-		MLM(PAGE_OFFSET, (unsigned long)high_memory),
-		MLK_ROUNDUP(__init_begin, __init_end),
-		MLK_ROUNDUP(_stext, _etext),
-		MLK_ROUNDUP(_sdata, _edata),
-		MLK_ROUNDUP(__bss_start, __bss_stop));
-}
-
 static inline void init_pointer_tables(void)
 {
 #if defined(CONFIG_MMU) && !defined(CONFIG_SUN3) && !defined(CONFIG_COLDFIRE)
-	int i;
+	int i, j;
 
 	/* insert pointer tables allocated so far into the tablelist */
-	init_pointer_table((unsigned long)kernel_pg_dir);
+	init_pointer_table(kernel_pg_dir, TABLE_PGD);
 	for (i = 0; i < PTRS_PER_PGD; i++) {
-		if (pgd_present(kernel_pg_dir[i]))
-			init_pointer_table(__pgd_page(kernel_pg_dir[i]));
-	}
+		pud_t *pud = (pud_t *)&kernel_pg_dir[i];
+		pmd_t *pmd_dir;
 
-	/* insert also pointer table that we used to unmap the zero page */
-	if (zero_pgtable)
-		init_pointer_table((unsigned long)zero_pgtable);
+		if (!pud_present(*pud))
+			continue;
+
+		pmd_dir = (pmd_t *)pgd_page_vaddr(kernel_pg_dir[i]);
+		init_pointer_table(pmd_dir, TABLE_PMD);
+
+		for (j = 0; j < PTRS_PER_PMD; j++) {
+			pmd_t *pmd = &pmd_dir[j];
+			pte_t *pte_dir;
+
+			if (!pmd_present(*pmd))
+				continue;
+
+			pte_dir = (pte_t *)pmd_page_vaddr(*pmd);
+			init_pointer_table(pte_dir, TABLE_PTE);
+		}
+	}
 #endif
 }
 
 void __init mem_init(void)
 {
 	/* this will put all memory onto the freelists */
-	free_all_bootmem();
+	memblock_free_all();
 	init_pointer_tables();
-	mem_init_print_info(NULL);
-	print_memmap();
 }
-
-#ifdef CONFIG_BLK_DEV_INITRD
-void free_initrd_mem(unsigned long start, unsigned long end)
-{
-	free_reserved_area((void *)start, (void *)end, -1, "initrd");
-}
-#endif

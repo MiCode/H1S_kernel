@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  sata_sil.c - Silicon Image SATA
  *
@@ -8,36 +9,18 @@
  *  Copyright 2003-2005 Red Hat, Inc.
  *  Copyright 2003 Benjamin Herrenschmidt
  *
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2, or (at your option)
- *  any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; see the file COPYING.  If not, write to
- *  the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
- *
- *
  *  libata documentation is available via 'make {ps|pdf}docs',
- *  as Documentation/DocBook/libata.*
+ *  as Documentation/driver-api/libata.rst
  *
  *  Documentation for SiI 3112:
  *  http://gkernel.sourceforge.net/specs/sii/3112A_SiI-DS-0095-B2.pdf.bz2
  *
  *  Other errata and documentation available under NDA.
- *
  */
 
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -113,14 +96,14 @@ enum {
 };
 
 static int sil_init_one(struct pci_dev *pdev, const struct pci_device_id *ent);
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int sil_pci_device_resume(struct pci_dev *pdev);
 #endif
 static void sil_dev_config(struct ata_device *dev);
 static int sil_scr_read(struct ata_link *link, unsigned int sc_reg, u32 *val);
 static int sil_scr_write(struct ata_link *link, unsigned int sc_reg, u32 val);
 static int sil_set_mode(struct ata_link *link, struct ata_device **r_failed);
-static void sil_qc_prep(struct ata_queued_cmd *qc);
+static enum ata_completion_errors sil_qc_prep(struct ata_queued_cmd *qc);
 static void sil_bmdma_setup(struct ata_queued_cmd *qc);
 static void sil_bmdma_start(struct ata_queued_cmd *qc);
 static void sil_bmdma_stop(struct ata_queued_cmd *qc);
@@ -157,6 +140,7 @@ static const struct sil_drivelist {
 	{ "ST380011ASL",	SIL_QUIRK_MOD15WRITE },
 	{ "ST3120022ASL",	SIL_QUIRK_MOD15WRITE },
 	{ "ST3160021ASL",	SIL_QUIRK_MOD15WRITE },
+	{ "TOSHIBA MK2561GSYN",	SIL_QUIRK_MOD15WRITE },
 	{ "Maxtor 4D060H3",	SIL_QUIRK_UDMA5MAX },
 	{ }
 };
@@ -166,13 +150,13 @@ static struct pci_driver sil_pci_driver = {
 	.id_table		= sil_pci_tbl,
 	.probe			= sil_init_one,
 	.remove			= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= ata_pci_device_suspend,
 	.resume			= sil_pci_device_resume,
 #endif
 };
 
-static struct scsi_host_template sil_sht = {
+static const struct scsi_host_template sil_sht = {
 	ATA_BASE_SHT(DRV_NAME),
 	/** These controllers support Large Block Transfer which allows
 	    transfer chunks up to 2GB and which cross 64KB boundaries,
@@ -323,7 +307,6 @@ static void sil_fill_sg(struct ata_queued_cmd *qc)
 
 		prd->addr = cpu_to_le32(addr);
 		prd->flags_len = cpu_to_le32(sg_len);
-		VPRINTK("PRD[%u] = (0x%X, 0x%X)\n", si, addr, sg_len);
 
 		last_prd = prd;
 		prd++;
@@ -333,12 +316,14 @@ static void sil_fill_sg(struct ata_queued_cmd *qc)
 		last_prd->flags_len |= cpu_to_le32(ATA_PRD_EOT);
 }
 
-static void sil_qc_prep(struct ata_queued_cmd *qc)
+static enum ata_completion_errors sil_qc_prep(struct ata_queued_cmd *qc)
 {
 	if (!(qc->flags & ATA_QCFLAG_DMAMAP))
-		return;
+		return AC_ERR_OK;
 
 	sil_fill_sg(qc);
+
+	return AC_ERR_OK;
 }
 
 static unsigned char sil_get_device_cache_line(struct pci_dev *pdev)
@@ -630,6 +615,9 @@ static void sil_dev_config(struct ata_device *dev)
 	unsigned int n, quirks = 0;
 	unsigned char model_num[ATA_ID_PROD_LEN + 1];
 
+	/* This controller doesn't support trim */
+	dev->horkage |= ATA_HORKAGE_NOTRIM;
+
 	ata_id_c_string(dev->id, model_num, ATA_ID_PROD, sizeof(model_num));
 
 	for (n = 0; sil_blacklist[n].product; n++)
@@ -770,10 +758,7 @@ static int sil_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		return rc;
 	host->iomap = pcim_iomap_table(pdev);
 
-	rc = pci_set_dma_mask(pdev, ATA_DMA_MASK);
-	if (rc)
-		return rc;
-	rc = pci_set_consistent_dma_mask(pdev, ATA_DMA_MASK);
+	rc = dma_set_mask_and_coherent(&pdev->dev, ATA_DMA_MASK);
 	if (rc)
 		return rc;
 
@@ -802,7 +787,7 @@ static int sil_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 				 &sil_sht);
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int sil_pci_device_resume(struct pci_dev *pdev)
 {
 	struct ata_host *host = pci_get_drvdata(pdev);

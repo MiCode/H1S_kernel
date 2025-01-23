@@ -1,7 +1,7 @@
 /*
  * Nvidia AGPGART routines.
  * Based upon a 2.4 agpgart diff by the folks from NVIDIA, and hacked up
- * to work in 2.5 by Dave Jones <davej@redhat.com>
+ * to work in 2.5 by Dave Jones.
  */
 
 #include <linux/module.h>
@@ -261,7 +261,8 @@ static int nvidia_remove_memory(struct agp_memory *mem, off_t pg_start, int type
 static void nvidia_tlbflush(struct agp_memory *mem)
 {
 	unsigned long end;
-	u32 wbc_reg, temp;
+	u32 wbc_reg;
+	u32 __maybe_unused temp;
 	int i;
 
 	/* flush chipset */
@@ -340,11 +341,17 @@ static int agp_nvidia_probe(struct pci_dev *pdev,
 	u8 cap_ptr;
 
 	nvidia_private.dev_1 =
-		pci_get_bus_and_slot((unsigned int)pdev->bus->number, PCI_DEVFN(0, 1));
+		pci_get_domain_bus_and_slot(pci_domain_nr(pdev->bus),
+					    (unsigned int)pdev->bus->number,
+					    PCI_DEVFN(0, 1));
 	nvidia_private.dev_2 =
-		pci_get_bus_and_slot((unsigned int)pdev->bus->number, PCI_DEVFN(0, 2));
+		pci_get_domain_bus_and_slot(pci_domain_nr(pdev->bus),
+					    (unsigned int)pdev->bus->number,
+					    PCI_DEVFN(0, 2));
 	nvidia_private.dev_3 =
-		pci_get_bus_and_slot((unsigned int)pdev->bus->number, PCI_DEVFN(30, 0));
+		pci_get_domain_bus_and_slot(pci_domain_nr(pdev->bus),
+					    (unsigned int)pdev->bus->number,
+					    PCI_DEVFN(30, 0));
 
 	if (!nvidia_private.dev_1 || !nvidia_private.dev_2 || !nvidia_private.dev_3) {
 		printk(KERN_INFO PFX "Detected an NVIDIA nForce/nForce2 "
@@ -376,7 +383,7 @@ static int agp_nvidia_probe(struct pci_dev *pdev,
 		return -ENOMEM;
 
 	bridge->driver = &nvidia_driver;
-	bridge->dev_private_data = &nvidia_private,
+	bridge->dev_private_data = &nvidia_private;
 	bridge->dev = pdev;
 	bridge->capndx = cap_ptr;
 
@@ -397,30 +404,15 @@ static void agp_nvidia_remove(struct pci_dev *pdev)
 	agp_put_bridge(bridge);
 }
 
-#ifdef CONFIG_PM
-static int agp_nvidia_suspend(struct pci_dev *pdev, pm_message_t state)
+static int agp_nvidia_resume(struct device *dev)
 {
-	pci_save_state(pdev);
-	pci_set_power_state(pdev, PCI_D3hot);
-
-	return 0;
-}
-
-static int agp_nvidia_resume(struct pci_dev *pdev)
-{
-	/* set power state 0 and restore PCI space */
-	pci_set_power_state(pdev, PCI_D0);
-	pci_restore_state(pdev);
-
 	/* reconfigure AGP hardware again */
 	nvidia_configure();
 
 	return 0;
 }
-#endif
 
-
-static struct pci_device_id agp_nvidia_pci_table[] = {
+static const struct pci_device_id agp_nvidia_pci_table[] = {
 	{
 	.class		= (PCI_CLASS_BRIDGE_HOST << 8),
 	.class_mask	= ~0,
@@ -442,15 +434,14 @@ static struct pci_device_id agp_nvidia_pci_table[] = {
 
 MODULE_DEVICE_TABLE(pci, agp_nvidia_pci_table);
 
+static DEFINE_SIMPLE_DEV_PM_OPS(agp_nvidia_pm_ops, NULL, agp_nvidia_resume);
+
 static struct pci_driver agp_nvidia_pci_driver = {
 	.name		= "agpgart-nvidia",
 	.id_table	= agp_nvidia_pci_table,
 	.probe		= agp_nvidia_probe,
 	.remove		= agp_nvidia_remove,
-#ifdef CONFIG_PM
-	.suspend	= agp_nvidia_suspend,
-	.resume		= agp_nvidia_resume,
-#endif
+	.driver.pm	= &agp_nvidia_pm_ops,
 };
 
 static int __init agp_nvidia_init(void)

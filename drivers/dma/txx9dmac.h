@@ -1,11 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Driver for the TXx9 SoC DMA Controller
  *
  * Copyright (C) 2009 Atsushi Nemoto
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #ifndef TXX9DMAC_H
 #define TXX9DMAC_H
@@ -67,7 +64,7 @@ static inline bool txx9_dma_have_SMPCHN(void)
 
 /* Hardware register definitions. */
 struct txx9dmac_cregs {
-#if defined(CONFIG_32BIT) && !defined(CONFIG_64BIT_PHYS_ADDR)
+#if defined(CONFIG_32BIT) && !defined(CONFIG_PHYS_ADDR_T_64BIT)
 	TXX9_DMA_REG32(CHAR);	/* Chain Address Register */
 #else
 	u64 CHAR;		/* Chain Address Register */
@@ -201,7 +198,7 @@ static inline bool is_dmac64(const struct txx9dmac_chan *dc)
 #ifdef TXX9_DMA_USE_SIMPLE_CHAIN
 /* Hardware descriptor definition. (for simple-chain) */
 struct txx9dmac_hwdesc {
-#if defined(CONFIG_32BIT) && !defined(CONFIG_64BIT_PHYS_ADDR)
+#if defined(CONFIG_32BIT) && !defined(CONFIG_PHYS_ADDR_T_64BIT)
 	TXX9_DMA_REG32(CHAR);
 #else
 	u64 CHAR;

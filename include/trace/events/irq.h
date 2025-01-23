@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM irq
 
@@ -9,19 +10,34 @@
 struct irqaction;
 struct softirq_action;
 
-#define softirq_name(sirq) { sirq##_SOFTIRQ, #sirq }
+#define SOFTIRQ_NAME_LIST				\
+			 softirq_name(HI)		\
+			 softirq_name(TIMER)		\
+			 softirq_name(NET_TX)		\
+			 softirq_name(NET_RX)		\
+			 softirq_name(BLOCK)		\
+			 softirq_name(IRQ_POLL)		\
+			 softirq_name(TASKLET)		\
+			 softirq_name(SCHED)		\
+			 softirq_name(HRTIMER)		\
+			 softirq_name_end(RCU)
+
+#undef softirq_name
+#undef softirq_name_end
+
+#define softirq_name(sirq) TRACE_DEFINE_ENUM(sirq##_SOFTIRQ);
+#define softirq_name_end(sirq)  TRACE_DEFINE_ENUM(sirq##_SOFTIRQ);
+
+SOFTIRQ_NAME_LIST
+
+#undef softirq_name
+#undef softirq_name_end
+
+#define softirq_name(sirq) { sirq##_SOFTIRQ, #sirq },
+#define softirq_name_end(sirq) { sirq##_SOFTIRQ, #sirq }
+
 #define show_softirq_name(val)				\
-	__print_symbolic(val,				\
-			 softirq_name(HI),		\
-			 softirq_name(TIMER),		\
-			 softirq_name(NET_TX),		\
-			 softirq_name(NET_RX),		\
-			 softirq_name(BLOCK),		\
-			 softirq_name(BLOCK_IOPOLL),	\
-			 softirq_name(TASKLET),		\
-			 softirq_name(SCHED),		\
-			 softirq_name(HRTIMER),		\
-			 softirq_name(RCU))
+	__print_symbolic(val, SOFTIRQ_NAME_LIST)
 
 /**
  * irq_handler_entry - called immediately before the irq action handler
@@ -60,7 +76,7 @@ TRACE_EVENT(irq_handler_entry,
  * @ret: return value
  *
  * If the @ret value is set to IRQ_HANDLED, then we know that the corresponding
- * @action->handler scuccessully handled this irq. Otherwise, the irq might be
+ * @action->handler successfully handled this irq. Otherwise, the irq might be
  * a shared irq line, or the irq was not handled successfully. Can be used in
  * conjunction with the irq_handler_entry to understand irq handler latencies.
  */
@@ -107,7 +123,7 @@ DECLARE_EVENT_CLASS(softirq,
  * @vec_nr:  softirq vector number
  *
  * When used in combination with the softirq_exit tracepoint
- * we can determine the softirq handler runtine.
+ * we can determine the softirq handler routine.
  */
 DEFINE_EVENT(softirq, softirq_entry,
 
@@ -121,7 +137,7 @@ DEFINE_EVENT(softirq, softirq_entry,
  * @vec_nr:  softirq vector number
  *
  * When used in combination with the softirq_entry tracepoint
- * we can determine the softirq handler runtine.
+ * we can determine the softirq handler routine.
  */
 DEFINE_EVENT(softirq, softirq_exit,
 
@@ -142,6 +158,53 @@ DEFINE_EVENT(softirq, softirq_raise,
 	TP_PROTO(unsigned int vec_nr),
 
 	TP_ARGS(vec_nr)
+);
+
+DECLARE_EVENT_CLASS(tasklet,
+
+	TP_PROTO(struct tasklet_struct *t, void *func),
+
+	TP_ARGS(t, func),
+
+	TP_STRUCT__entry(
+		__field(	void *,	tasklet)
+		__field(	void *,	func)
+	),
+
+	TP_fast_assign(
+		__entry->tasklet = t;
+		__entry->func = func;
+	),
+
+	TP_printk("tasklet=%ps function=%ps", __entry->tasklet, __entry->func)
+);
+
+/**
+ * tasklet_entry - called immediately before the tasklet is run
+ * @t: tasklet pointer
+ * @func: tasklet callback or function being run
+ *
+ * Used to find individual tasklet execution time
+ */
+DEFINE_EVENT(tasklet, tasklet_entry,
+
+	TP_PROTO(struct tasklet_struct *t, void *func),
+
+	TP_ARGS(t, func)
+);
+
+/**
+ * tasklet_exit - called immediately after the tasklet is run
+ * @t: tasklet pointer
+ * @func: tasklet callback or function being run
+ *
+ * Used to find individual tasklet execution time
+ */
+DEFINE_EVENT(tasklet, tasklet_exit,
+
+	TP_PROTO(struct tasklet_struct *t, void *func),
+
+	TP_ARGS(t, func)
 );
 
 #endif /*  _TRACE_IRQ_H */

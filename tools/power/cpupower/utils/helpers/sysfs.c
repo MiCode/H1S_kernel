@@ -1,8 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  (C) 2004-2009  Dominik Brodowski <linux@dominikbrodowski.de>
  *  (C) 2011       Thomas Renninger <trenn@novell.com> Novell Inc.
- *
- *  Licensed under the terms of the GNU GPL License version 2.
  */
 
 #include <stdio.h>
@@ -81,7 +80,7 @@ int sysfs_is_cpu_online(unsigned int cpu)
 	close(fd);
 
 	value = strtoull(linebuf, &endp, 0);
-	if (value > 1 || value < 0)
+	if (value > 1)
 		return -EINVAL;
 
 	return value;
@@ -361,7 +360,7 @@ unsigned int sysfs_get_idlestate_count(unsigned int cpu)
 
 	snprintf(file, SYSFS_PATH_MAX, PATH_TO_CPU "cpuidle");
 	if (stat(file, &statbuf) != 0 || !S_ISDIR(statbuf.st_mode))
-		return -ENODEV;
+		return 0;
 
 	snprintf(file, SYSFS_PATH_MAX, PATH_TO_CPU "cpu%u/cpuidle/state0", cpu);
 	if (stat(file, &statbuf) != 0 || !S_ISDIR(statbuf.st_mode))

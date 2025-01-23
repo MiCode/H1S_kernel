@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * For the STS-Thompson TDA7432 audio processor chip
  *
@@ -8,8 +9,8 @@
  * Muting and tone control by Jonathan Isom <jisom@ematic.com>
  *
  * Copyright (c) 2000 Eric Sandeen <eric_sandeen@bigfoot.com>
- * Copyright (c) 2006 Mauro Carvalho Chehab <mchehab@infradead.org>
- * This code is placed under the terms of the GNU General Public License
+ * Copyright (c) 2006 Mauro Carvalho Chehab <mchehab@kernel.org>
+ *
  * Based on tda9855.c by Steve VanDeBogart (vandebo@uclink.berkeley.edu)
  * Which was based on tda8425.c by Greg Alexander (c) 1998
  *
@@ -19,7 +20,7 @@
  *
  * loudness - set between 0 and 15 for varying degrees of loudness effect
  *
- * maxvol   - set maximium volume to +20db (1), default is 0db(0)
+ * maxvol   - set maximum volume to +20db (1), default is 0db(0)
  */
 
 #include <linux/module.h>
@@ -36,7 +37,6 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-ctrls.h>
-#include <media/i2c-addr.h>
 
 #ifndef VIDEO_AUDIO_BALANCE
 # define VIDEO_AUDIO_BALANCE 32
@@ -54,7 +54,7 @@ MODULE_PARM_DESC(debug, "Set debugging level from 0 to 3. Default is off(0).");
 module_param(loudness, int, S_IRUGO);
 MODULE_PARM_DESC(loudness, "Turn loudness on(1) else off(0). Default is off(0).");
 module_param(maxvol, int, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(maxvol, "Set maximium volume to +20dB(0) else +0dB(1). Default is +20dB(0).");
+MODULE_PARM_DESC(maxvol, "Set maximum volume to +20dB(0) else +0dB(1). Default is +20dB(0).");
 
 
 /* Structure of address and subaddresses for the tda7432 */
@@ -293,7 +293,7 @@ static int tda7432_s_ctrl(struct v4l2_ctrl *ctrl)
 		if (t->mute->val) {
 			lf |= TDA7432_MUTE;
 			lr |= TDA7432_MUTE;
-			lf |= TDA7432_MUTE;
+			rf |= TDA7432_MUTE;
 			rr |= TDA7432_MUTE;
 		}
 		/* Mute & update balance*/
@@ -331,13 +331,6 @@ static const struct v4l2_ctrl_ops tda7432_ctrl_ops = {
 
 static const struct v4l2_subdev_core_ops tda7432_core_ops = {
 	.log_status = tda7432_log_status,
-	.g_ext_ctrls = v4l2_subdev_g_ext_ctrls,
-	.try_ext_ctrls = v4l2_subdev_try_ext_ctrls,
-	.s_ext_ctrls = v4l2_subdev_s_ext_ctrls,
-	.g_ctrl = v4l2_subdev_g_ctrl,
-	.s_ctrl = v4l2_subdev_s_ctrl,
-	.queryctrl = v4l2_subdev_queryctrl,
-	.querymenu = v4l2_subdev_querymenu,
 };
 
 static const struct v4l2_subdev_ops tda7432_ops = {
@@ -350,8 +343,7 @@ static const struct v4l2_subdev_ops tda7432_ops = {
  * i2c interface functions *
  * *********************** */
 
-static int tda7432_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int tda7432_probe(struct i2c_client *client)
 {
 	struct tda7432 *t;
 	struct v4l2_subdev *sd;
@@ -397,7 +389,7 @@ static int tda7432_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int tda7432_remove(struct i2c_client *client)
+static void tda7432_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct tda7432 *t = to_state(sd);
@@ -405,7 +397,6 @@ static int tda7432_remove(struct i2c_client *client)
 	tda7432_set(sd);
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&t->hdl);
-	return 0;
 }
 
 static const struct i2c_device_id tda7432_id[] = {
@@ -416,7 +407,6 @@ MODULE_DEVICE_TABLE(i2c, tda7432_id);
 
 static struct i2c_driver tda7432_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "tda7432",
 	},
 	.probe		= tda7432_probe,

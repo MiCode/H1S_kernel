@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * An RTC driver for Allwinner A10/A20
  *
  * Copyright (c) 2013, Carlo Caione <carlo.caione@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
 #include <linux/delay.h>
@@ -27,8 +14,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/rtc.h>
 #include <linux/types.h>
@@ -133,7 +118,7 @@ struct sunxi_rtc_data_year {
 	unsigned char leap_shift;	/* bit shift to get the leap year */
 };
 
-static struct sunxi_rtc_data_year data_year_param[] = {
+static const struct sunxi_rtc_data_year data_year_param[] = {
 	[0] = {
 		.min		= 2010,
 		.max		= 2073,
@@ -151,7 +136,7 @@ static struct sunxi_rtc_data_year data_year_param[] = {
 struct sunxi_rtc_dev {
 	struct rtc_device *rtc;
 	struct device *dev;
-	struct sunxi_rtc_data_year *data_year;
+	const struct sunxi_rtc_data_year *data_year;
 	void __iomem *base;
 	int irq;
 };
@@ -175,7 +160,7 @@ static irqreturn_t sunxi_rtc_alarmirq(int irq, void *id)
 	return IRQ_NONE;
 }
 
-static void sunxi_rtc_setaie(int to, struct sunxi_rtc_dev *chip)
+static void sunxi_rtc_setaie(unsigned int to, struct sunxi_rtc_dev *chip)
 {
 	u32 alrm_val = 0;
 	u32 alrm_irq_val = 0;
@@ -261,7 +246,7 @@ static int sunxi_rtc_gettime(struct device *dev, struct rtc_time *rtc_tm)
 	 */
 	rtc_tm->tm_year += SUNXI_YEAR_OFF(chip->data_year);
 
-	return rtc_valid_tm(rtc_tm);
+	return 0;
 }
 
 static int sunxi_rtc_setalarm(struct device *dev, struct rtc_wkalrm *wkalrm)
@@ -269,14 +254,13 @@ static int sunxi_rtc_setalarm(struct device *dev, struct rtc_wkalrm *wkalrm)
 	struct sunxi_rtc_dev *chip = dev_get_drvdata(dev);
 	struct rtc_time *alrm_tm = &wkalrm->time;
 	struct rtc_time tm_now;
-	u32 alrm = 0;
-	unsigned long time_now = 0;
-	unsigned long time_set = 0;
-	unsigned long time_gap = 0;
-	unsigned long time_gap_day = 0;
-	unsigned long time_gap_hour = 0;
-	unsigned long time_gap_min = 0;
-	int ret = 0;
+	u32 alrm;
+	time64_t diff;
+	unsigned long time_gap;
+	unsigned long time_gap_day;
+	unsigned long time_gap_hour;
+	unsigned long time_gap_min;
+	int ret;
 
 	ret = sunxi_rtc_gettime(dev, &tm_now);
 	if (ret < 0) {
@@ -284,25 +268,24 @@ static int sunxi_rtc_setalarm(struct device *dev, struct rtc_wkalrm *wkalrm)
 		return -EINVAL;
 	}
 
-	rtc_tm_to_time(alrm_tm, &time_set);
-	rtc_tm_to_time(&tm_now, &time_now);
-	if (time_set <= time_now) {
+	diff = rtc_tm_sub(alrm_tm, &tm_now);
+	if (diff <= 0) {
 		dev_err(dev, "Date to set in the past\n");
 		return -EINVAL;
 	}
 
-	time_gap = time_set - time_now;
+	if (diff > 255 * SEC_IN_DAY) {
+		dev_err(dev, "Day must be in the range 0 - 255\n");
+		return -EINVAL;
+	}
+
+	time_gap = diff;
 	time_gap_day = time_gap / SEC_IN_DAY;
 	time_gap -= time_gap_day * SEC_IN_DAY;
 	time_gap_hour = time_gap / SEC_IN_HOUR;
 	time_gap -= time_gap_hour * SEC_IN_HOUR;
 	time_gap_min = time_gap / SEC_IN_MIN;
 	time_gap -= time_gap_min * SEC_IN_MIN;
-
-	if (time_gap_day > 255) {
-		dev_err(dev, "Day must be in the range 0 - 255\n");
-		return -EINVAL;
-	}
 
 	sunxi_rtc_setaie(0, chip);
 	writel(0, chip->base + SUNXI_ALRM_DHMS);
@@ -345,7 +328,7 @@ static int sunxi_rtc_settime(struct device *dev, struct rtc_time *rtc_tm)
 	struct sunxi_rtc_dev *chip = dev_get_drvdata(dev);
 	u32 date = 0;
 	u32 time = 0;
-	int year;
+	unsigned int year;
 
 	/*
 	 * the input rtc_tm->tm_year is the offset relative to 1900. We use
@@ -355,8 +338,8 @@ static int sunxi_rtc_settime(struct device *dev, struct rtc_time *rtc_tm)
 
 	year = rtc_tm->tm_year + 1900;
 	if (year < chip->data_year->min || year > chip->data_year->max) {
-		dev_err(dev, "rtc only supports year in range %d - %d\n",
-				chip->data_year->min, chip->data_year->max);
+		dev_err(dev, "rtc only supports year in range %u - %u\n",
+			chip->data_year->min, chip->data_year->max);
 		return -EINVAL;
 	}
 
@@ -428,7 +411,7 @@ static const struct rtc_class_ops sunxi_rtc_ops = {
 };
 
 static const struct of_device_id sunxi_rtc_dt_ids[] = {
-	{ .compatible = "allwinner,sun4i-rtc", .data = &data_year_param[0] },
+	{ .compatible = "allwinner,sun4i-a10-rtc", .data = &data_year_param[0] },
 	{ .compatible = "allwinner,sun7i-a20-rtc", .data = &data_year_param[1] },
 	{ /* sentinel */ },
 };
@@ -437,8 +420,6 @@ MODULE_DEVICE_TABLE(of, sunxi_rtc_dt_ids);
 static int sunxi_rtc_probe(struct platform_device *pdev)
 {
 	struct sunxi_rtc_dev *chip;
-	struct resource *res;
-	const struct of_device_id *of_id;
 	int ret;
 
 	chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
@@ -448,16 +429,17 @@ static int sunxi_rtc_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, chip);
 	chip->dev = &pdev->dev;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	chip->base = devm_ioremap_resource(&pdev->dev, res);
+	chip->rtc = devm_rtc_allocate_device(&pdev->dev);
+	if (IS_ERR(chip->rtc))
+		return PTR_ERR(chip->rtc);
+
+	chip->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(chip->base))
 		return PTR_ERR(chip->base);
 
 	chip->irq = platform_get_irq(pdev, 0);
-	if (chip->irq < 0) {
-		dev_err(&pdev->dev, "No IRQ resource\n");
+	if (chip->irq < 0)
 		return chip->irq;
-	}
 	ret = devm_request_irq(&pdev->dev, chip->irq, sunxi_rtc_alarmirq,
 			0, dev_name(&pdev->dev), chip);
 	if (ret) {
@@ -465,12 +447,11 @@ static int sunxi_rtc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	of_id = of_match_device(sunxi_rtc_dt_ids, &pdev->dev);
-	if (!of_id) {
+	chip->data_year = of_device_get_match_data(&pdev->dev);
+	if (!chip->data_year) {
 		dev_err(&pdev->dev, "Unable to setup RTC data\n");
 		return -ENODEV;
 	}
-	chip->data_year = (struct sunxi_rtc_data_year *) of_id->data;
 
 	/* clear the alarm count value */
 	writel(0, chip->base + SUNXI_ALRM_DHMS);
@@ -485,33 +466,15 @@ static int sunxi_rtc_probe(struct platform_device *pdev)
 	writel(SUNXI_ALRM_IRQ_STA_CNT_IRQ_PEND, chip->base +
 			SUNXI_ALRM_IRQ_STA);
 
-	chip->rtc = rtc_device_register("rtc-sunxi", &pdev->dev,
-			&sunxi_rtc_ops, THIS_MODULE);
-	if (IS_ERR(chip->rtc)) {
-		dev_err(&pdev->dev, "unable to register device\n");
-		return PTR_ERR(chip->rtc);
-	}
+	chip->rtc->ops = &sunxi_rtc_ops;
 
-	dev_info(&pdev->dev, "RTC enabled\n");
-
-	return 0;
-}
-
-static int sunxi_rtc_remove(struct platform_device *pdev)
-{
-	struct sunxi_rtc_dev *chip = platform_get_drvdata(pdev);
-
-	rtc_device_unregister(chip->rtc);
-
-	return 0;
+	return devm_rtc_register_device(chip->rtc);
 }
 
 static struct platform_driver sunxi_rtc_driver = {
 	.probe		= sunxi_rtc_probe,
-	.remove		= sunxi_rtc_remove,
 	.driver		= {
 		.name		= "sunxi-rtc",
-		.owner		= THIS_MODULE,
 		.of_match_table = sunxi_rtc_dt_ids,
 	},
 };

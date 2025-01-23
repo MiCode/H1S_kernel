@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: ((GPL-2.0-only WITH Linux-syscall-note) OR BSD-3-Clause) */
 /*
  * linux/can/gw.h
  *
@@ -41,8 +42,8 @@
  * DAMAGE.
  */
 
-#ifndef CAN_GW_H
-#define CAN_GW_H
+#ifndef _UAPI_CAN_GW_H
+#define _UAPI_CAN_GW_H
 
 #include <linux/types.h>
 #include <linux/can.h>
@@ -78,6 +79,11 @@ enum {
 	CGW_FILTER,	/* specify struct can_filter on source CAN device */
 	CGW_DELETED,	/* number of deleted CAN frames (see max_hops param) */
 	CGW_LIM_HOPS,	/* limit the number of hops of this specific rule */
+	CGW_MOD_UID,	/* user defined identifier for modification updates */
+	CGW_FDMOD_AND,	/* CAN FD frame modification binary AND */
+	CGW_FDMOD_OR,	/* CAN FD frame modification binary OR */
+	CGW_FDMOD_XOR,	/* CAN FD frame modification binary XOR */
+	CGW_FDMOD_SET,	/* CAN FD frame modification set alternate values */
 	__CGW_MAX
 };
 
@@ -86,15 +92,18 @@ enum {
 #define CGW_FLAGS_CAN_ECHO 0x01
 #define CGW_FLAGS_CAN_SRC_TSTAMP 0x02
 #define CGW_FLAGS_CAN_IIF_TX_OK 0x04
+#define CGW_FLAGS_CAN_FD 0x08
 
 #define CGW_MOD_FUNCS 4 /* AND OR XOR SET */
 
 /* CAN frame elements that are affected by curr. 3 CAN frame modifications */
 #define CGW_MOD_ID	0x01
-#define CGW_MOD_DLC	0x02
+#define CGW_MOD_DLC	0x02		/* Classical CAN data length code */
+#define CGW_MOD_LEN	CGW_MOD_DLC	/* CAN FD (plain) data length */
 #define CGW_MOD_DATA	0x04
+#define CGW_MOD_FLAGS	0x08		/* CAN FD flags */
 
-#define CGW_FRAME_MODS 3 /* ID DLC DATA */
+#define CGW_FRAME_MODS 4 /* ID DLC/LEN DATA FLAGS */
 
 #define MAX_MODFUNCTIONS (CGW_MOD_FUNCS * CGW_FRAME_MODS)
 
@@ -103,7 +112,13 @@ struct cgw_frame_mod {
 	__u8 modtype;
 } __attribute__((packed));
 
+struct cgw_fdframe_mod {
+	struct canfd_frame cf;
+	__u8 modtype;
+} __attribute__((packed));
+
 #define CGW_MODATTR_LEN sizeof(struct cgw_frame_mod)
+#define CGW_FDMODATTR_LEN sizeof(struct cgw_fdframe_mod)
 
 struct cgw_csum_xor {
 	__s8 from_idx;
@@ -162,6 +177,10 @@ enum {
  * load time of the can-gw module). This value is used to reduce the number of
  * possible hops for this gateway rule to a value smaller then max_hops.
  *
+ * CGW_MOD_UID (length 4 bytes):
+ * Optional non-zero user defined routing job identifier to alter existing
+ * modification settings at runtime.
+ *
  * CGW_CS_XOR (length 4 bytes):
  * Set a simple XOR checksum starting with an initial value into
  * data[result-idx] using data[start-idx] .. data[end-idx]
@@ -200,4 +219,4 @@ enum {
  *         Beware of sending unpacked or aligned structs!
  */
 
-#endif
+#endif /* !_UAPI_CAN_GW_H */

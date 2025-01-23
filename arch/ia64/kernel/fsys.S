@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * This file contains the light-weight system call handlers (fsyscall-handlers).
  *
@@ -24,10 +25,10 @@
 #include <asm/unistd.h>
 
 #include "entry.h"
-#include "paravirt_inst.h"
+#include <asm/native/inst.h>
 
 /*
- * See Documentation/ia64/fsys.txt for details on fsyscalls.
+ * See Documentation/arch/ia64/fsys.rst for details on fsyscalls.
  *
  * On entry to an fsyscall handler:
  *   r10	= 0 (i.e., defaults to "successful syscall return")
@@ -61,16 +62,16 @@ ENTRY(fsys_getpid)
 	.prologue
 	.altrp b6
 	.body
-	add r17=IA64_TASK_GROUP_LEADER_OFFSET,r16
+	add r17=IA64_TASK_SIGNAL_OFFSET,r16
 	;;
-	ld8 r17=[r17]				// r17 = current->group_leader
+	ld8 r17=[r17]				// r17 = current->signal
 	add r9=TI_FLAGS+IA64_TASK_SIZE,r16
 	;;
 	ld4 r9=[r9]
-	add r17=IA64_TASK_TGIDLINK_OFFSET,r17
+	add r17=IA64_SIGNAL_PIDS_TGID_OFFSET,r17
 	;;
 	and r9=TIF_ALLWORK_MASK,r9
-	ld8 r17=[r17]				// r17 = current->group_leader->pids[PIDTYPE_PID].pid
+	ld8 r17=[r17]				// r17 = current->signal->pids[PIDTYPE_TGID]
 	;;
 	add r8=IA64_PID_LEVEL_OFFSET,r17
 	;;
@@ -95,11 +96,11 @@ ENTRY(fsys_set_tid_address)
 	.altrp b6
 	.body
 	add r9=TI_FLAGS+IA64_TASK_SIZE,r16
-	add r17=IA64_TASK_TGIDLINK_OFFSET,r16
+	add r17=IA64_TASK_THREAD_PID_OFFSET,r16
 	;;
 	ld4 r9=[r9]
 	tnat.z p6,p7=r32		// check argument register for being NaT
-	ld8 r17=[r17]				// r17 = current->pids[PIDTYPE_PID].pid
+	ld8 r17=[r17]				// r17 = current->thread_pid
 	;;
 	and r9=TIF_ALLWORK_MASK,r9
 	add r8=IA64_PID_LEVEL_OFFSET,r17
@@ -171,7 +172,7 @@ ENTRY(fsys_gettimeofday)
 	// r25 = itc_lastcycle value
 	// r26 = address clocksource cycle_last
 	// r27 = (not used)
-	// r28 = sequence number at the beginning of critcal section
+	// r28 = sequence number at the beginning of critical section
 	// r29 = address of itc_jitter
 	// r30 = time processing flags / memory address
 	// r31 = pointer to result
@@ -235,9 +236,9 @@ ENTRY(fsys_gettimeofday)
 	MOV_FROM_ITC(p8, p6, r2, r10)	// CPU_TIMER. 36 clocks latency!!!
 (p9)	ld8 r2 = [r30]		// MMIO_TIMER. Could also have latency issues..
 (p13)	ld8 r25 = [r19]		// get itc_lastcycle value
-	ld8 r9 = [r22],IA64_TIMESPEC_TV_NSEC_OFFSET	// tv_sec
+	ld8 r9 = [r22],IA64_TIME_SN_SPEC_SNSEC_OFFSET	// sec
 	;;
-	ld8 r8 = [r22],-IA64_TIMESPEC_TV_NSEC_OFFSET	// tv_nsec
+	ld8 r8 = [r22],-IA64_TIME_SN_SPEC_SNSEC_OFFSET	// snsec
 (p13)	sub r3 = r25,r2		// Diff needed before comparison (thanks davidm)
 	;;
 (p13)	cmp.gt.unc p6,p7 = r3,r0 // check if it is less than last. p6,p7 cleared
@@ -265,9 +266,9 @@ EX(.fail_efault, probe.w.fault r31, 3)
 	mf
 	;;
 	ld4 r10 = [r20]		// gtod_lock.sequence
-	shr.u r2 = r2,r23	// shift by factor
-	;;
 	add r8 = r8,r2		// Add xtime.nsecs
+	;;
+	shr.u r8 = r8,r23	// shift by factor
 	cmp4.ne p7,p0 = r28,r10
 (p7)	br.cond.dpnt.few .time_redo	// sequence number changed, redo
 	// End critical section.
@@ -402,7 +403,7 @@ ENTRY(fsys_fallback_syscall)
 	mov r26=ar.pfs
 END(fsys_fallback_syscall)
 	/* FALL THROUGH */
-GLOBAL_ENTRY(paravirt_fsys_bubble_down)
+GLOBAL_ENTRY(fsys_bubble_down)
 	.prologue
 	.altrp b6
 	.body
@@ -431,7 +432,7 @@ GLOBAL_ENTRY(paravirt_fsys_bubble_down)
 	 *	- r29: psr
 	 *
 	 * We used to clear some PSR bits here but that requires slow
-	 * serialization.  Fortuntely, that isn't really necessary.
+	 * serialization.  Fortunately, that isn't really necessary.
 	 * The rationale is as follows: we used to clear bits
 	 * ~PSR_PRESERVED_BITS in PSR.L.  Since
 	 * PSR_PRESERVED_BITS==PSR.{UP,MFL,MFH,PK,DT,PP,SP,RT,IC}, we
@@ -440,7 +441,7 @@ GLOBAL_ENTRY(paravirt_fsys_bubble_down)
 	 *
 	 * PSR.BE : already is turned off in __kernel_syscall_via_epc()
 	 * PSR.AC : don't care (kernel normally turns PSR.AC on)
-	 * PSR.I  : already turned off by the time paravirt_fsys_bubble_down gets
+	 * PSR.I  : already turned off by the time fsys_bubble_down gets
 	 *	    invoked
 	 * PSR.DFL: always 0 (kernel never turns it on)
 	 * PSR.DFH: don't care --- kernel never touches f32-f127 on its own
@@ -450,7 +451,7 @@ GLOBAL_ENTRY(paravirt_fsys_bubble_down)
 	 * PSR.DB : don't care --- kernel never enables kernel-level
 	 *	    breakpoints
 	 * PSR.TB : must be 0 already; if it wasn't zero on entry to
-	 *          __kernel_syscall_via_epc, the branch to paravirt_fsys_bubble_down
+	 *          __kernel_syscall_via_epc, the branch to fsys_bubble_down
 	 *          will trigger a taken branch; the taken-trap-handler then
 	 *          converts the syscall into a break-based system-call.
 	 */
@@ -541,14 +542,14 @@ GLOBAL_ENTRY(paravirt_fsys_bubble_down)
 	nop.m 0
 (p8)	br.call.sptk.many b6=b6			// B    (ignore return address)
 	br.cond.spnt ia64_trace_syscall		// B
-END(paravirt_fsys_bubble_down)
+END(fsys_bubble_down)
 
 	.rodata
 	.align 8
-	.globl paravirt_fsyscall_table
+	.globl fsyscall_table
 
-	data8 paravirt_fsys_bubble_down
-paravirt_fsyscall_table:
+	data8 fsys_bubble_down
+fsyscall_table:
 	data8 fsys_ni_syscall
 	data8 0				// exit			// 1025
 	data8 0				// read
@@ -833,4 +834,4 @@ paravirt_fsyscall_table:
 
 	// fill in zeros for the remaining entries
 	.zero:
-	.space paravirt_fsyscall_table + 8*NR_syscalls - .zero, 0
+	.space fsyscall_table + 8*NR_syscalls - .zero, 0

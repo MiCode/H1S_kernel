@@ -1,51 +1,51 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2009 Renesas Solutions Corp.
  *
  * Kuninori Morimoto <morimoto.kuninori@renesas.com>
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
-
-#include <linux/init.h>
-#include <linux/device.h>
-#include <linux/platform_device.h>
-#include <linux/mmc/host.h>
-#include <linux/mmc/sh_mmcif.h>
-#include <linux/mmc/sh_mobile_sdhi.h>
-#include <linux/mtd/physmap.h>
-#include <linux/mfd/tmio.h>
-#include <linux/gpio.h>
-#include <linux/interrupt.h>
-#include <linux/io.h>
-#include <linux/delay.h>
-#include <linux/regulator/fixed.h>
-#include <linux/regulator/machine.h>
-#include <linux/usb/r8a66597.h>
-#include <linux/usb/renesas_usbhs.h>
-#include <linux/i2c.h>
-#include <linux/i2c/tsc2007.h>
-#include <linux/spi/spi.h>
-#include <linux/spi/sh_msiof.h>
-#include <linux/spi/mmc_spi.h>
-#include <linux/input.h>
-#include <linux/input/sh_keysc.h>
-#include <linux/platform_data/gpio_backlight.h>
-#include <linux/sh_eth.h>
-#include <linux/sh_intc.h>
-#include <linux/videodev2.h>
-#include <video/sh_mobile_lcdc.h>
-#include <sound/sh_fsi.h>
-#include <sound/simple_card.h>
-#include <media/sh_mobile_ceu.h>
-#include <media/soc_camera.h>
-#include <media/tw9910.h>
-#include <media/mt9t112.h>
-#include <asm/heartbeat.h>
 #include <asm/clock.h>
+#include <asm/heartbeat.h>
 #include <asm/suspend.h>
 #include <cpu/sh7724.h>
+#include <linux/delay.h>
+#include <linux/device.h>
+#include <linux/i2c.h>
+#include <linux/io.h>
+#include <linux/init.h>
+#include <linux/input.h>
+#include <linux/input/sh_keysc.h>
+#include <linux/interrupt.h>
+#include <linux/memblock.h>
+#include <linux/mfd/tmio.h>
+#include <linux/mmc/host.h>
+#include <linux/platform_data/sh_mmcif.h>
+#include <linux/mtd/physmap.h>
+#include <linux/gpio.h>
+#include <linux/gpio/machine.h>
+#include <linux/platform_data/gpio_backlight.h>
+#include <linux/platform_data/tsc2007.h>
+#include <linux/platform_device.h>
+#include <linux/regulator/fixed.h>
+#include <linux/regulator/machine.h>
+#include <linux/sh_eth.h>
+#include <linux/sh_intc.h>
+#include <linux/spi/mmc_spi.h>
+#include <linux/spi/sh_msiof.h>
+#include <linux/spi/spi.h>
+#include <linux/usb/r8a66597.h>
+#include <linux/usb/renesas_usbhs.h>
+#include <linux/videodev2.h>
+#include <linux/dma-map-ops.h>
+
+#include <media/drv-intf/renesas-ceu.h>
+#include <media/i2c/mt9t112.h>
+#include <media/i2c/tw9910.h>
+
+#include <sound/sh_fsi.h>
+#include <sound/simple_card.h>
+
+#include <video/sh_mobile_lcdc.h>
 
 /*
  *  Address      Interface        BusWidth
@@ -81,6 +81,10 @@
  * amixer set 'Out Mixer Left DAC Left' on
  * amixer set 'Out Mixer Right DAC Right' on
  */
+
+#define CEU_BUFFER_MEMORY_SIZE		(4 << 20)
+static phys_addr_t ceu0_dma_membase;
+static phys_addr_t ceu1_dma_membase;
 
 /* Heartbeat */
 static unsigned char led_pos[] = { 0, 1, 2, 3 };
@@ -160,7 +164,6 @@ static struct resource sh_eth_resources[] = {
 
 static struct sh_eth_plat_data sh_eth_plat = {
 	.phy = 0x1f, /* SMSC LAN8700 */
-	.edmac_endian = EDMAC_LITTLE_ENDIAN,
 	.phy_interface = PHY_INTERFACE_MODE_MII,
 	.ether_link_active_low = 1
 };
@@ -369,23 +372,51 @@ static struct platform_device lcdc_device = {
 	},
 };
 
-static struct gpio_backlight_platform_data gpio_backlight_data = {
-	.fbdev = &lcdc_device.dev,
-	.gpio = GPIO_PTR1,
-	.def_value = 1,
-	.name = "backlight",
-};
-
-static struct platform_device gpio_backlight_device = {
-	.name = "gpio-backlight",
-	.dev = {
-		.platform_data = &gpio_backlight_data,
+static struct gpiod_lookup_table gpio_backlight_lookup = {
+	.dev_id		= "gpio-backlight.0",
+	.table = {
+		GPIO_LOOKUP("sh7724_pfc", GPIO_PTR1, NULL, GPIO_ACTIVE_HIGH),
+		{ }
 	},
 };
 
+static struct property_entry gpio_backlight_props[] = {
+	PROPERTY_ENTRY_BOOL("default-on"),
+	{ }
+};
+
+static struct gpio_backlight_platform_data gpio_backlight_data = {
+	.dev = &lcdc_device.dev,
+};
+
+static const struct platform_device_info gpio_backlight_device_info = {
+	.name = "gpio-backlight",
+	.data = &gpio_backlight_data,
+	.size_data = sizeof(gpio_backlight_data),
+	.properties = gpio_backlight_props,
+};
+
+static struct platform_device *gpio_backlight_device;
+
 /* CEU0 */
-static struct sh_mobile_ceu_info sh_mobile_ceu0_info = {
-	.flags = SH_CEU_FLAG_USE_8BIT_BUS,
+static struct ceu_platform_data ceu0_pdata = {
+	.num_subdevs			= 2,
+	.subdevs = {
+		{ /* [0] = mt9t112  */
+			.flags		= 0,
+			.bus_width	= 8,
+			.bus_shift	= 0,
+			.i2c_adapter_id	= 0,
+			.i2c_address	= 0x3c,
+		},
+		{ /* [1] = tw9910  */
+			.flags		= 0,
+			.bus_width	= 8,
+			.bus_shift	= 0,
+			.i2c_adapter_id	= 0,
+			.i2c_address	= 0x45,
+		},
+	},
 };
 
 static struct resource ceu0_resources[] = {
@@ -399,24 +430,30 @@ static struct resource ceu0_resources[] = {
 		.start  = evt2irq(0x880),
 		.flags  = IORESOURCE_IRQ,
 	},
-	[2] = {
-		/* place holder for contiguous memory */
-	},
 };
 
 static struct platform_device ceu0_device = {
-	.name		= "sh_mobile_ceu",
-	.id             = 0, /* "ceu0" clock */
+	.name		= "renesas-ceu",
+	.id             = 0, /* ceu.0 */
 	.num_resources	= ARRAY_SIZE(ceu0_resources),
 	.resource	= ceu0_resources,
 	.dev	= {
-		.platform_data	= &sh_mobile_ceu0_info,
+		.platform_data	= &ceu0_pdata,
 	},
 };
 
 /* CEU1 */
-static struct sh_mobile_ceu_info sh_mobile_ceu1_info = {
-	.flags = SH_CEU_FLAG_USE_8BIT_BUS,
+static struct ceu_platform_data ceu1_pdata = {
+	.num_subdevs			= 1,
+	.subdevs = {
+		{ /* [0] = mt9t112  */
+			.flags		= 0,
+			.bus_width	= 8,
+			.bus_shift	= 0,
+			.i2c_adapter_id	= 1,
+			.i2c_address	= 0x3c,
+		},
+	},
 };
 
 static struct resource ceu1_resources[] = {
@@ -430,25 +467,70 @@ static struct resource ceu1_resources[] = {
 		.start  = evt2irq(0x9e0),
 		.flags  = IORESOURCE_IRQ,
 	},
-	[2] = {
-		/* place holder for contiguous memory */
-	},
 };
 
 static struct platform_device ceu1_device = {
-	.name		= "sh_mobile_ceu",
-	.id             = 1, /* "ceu1" clock */
+	.name		= "renesas-ceu",
+	.id             = 1, /* ceu.1 */
 	.num_resources	= ARRAY_SIZE(ceu1_resources),
 	.resource	= ceu1_resources,
 	.dev	= {
-		.platform_data	= &sh_mobile_ceu1_info,
+		.platform_data	= &ceu1_pdata,
+	},
+};
+
+/* Power up/down GPIOs for camera devices and video decoder */
+static struct gpiod_lookup_table tw9910_gpios = {
+	.dev_id		= "0-0045",
+	.table		= {
+		GPIO_LOOKUP("sh7724_pfc", GPIO_PTU2, "pdn", GPIO_ACTIVE_HIGH),
+	},
+};
+
+static struct gpiod_lookup_table mt9t112_0_gpios = {
+	.dev_id		= "0-003c",
+	.table		= {
+		GPIO_LOOKUP("sh7724_pfc", GPIO_PTA3, "standby",
+			    GPIO_ACTIVE_HIGH),
+	},
+};
+
+static struct gpiod_lookup_table mt9t112_1_gpios = {
+	.dev_id		= "1-003c",
+	.table		= {
+		GPIO_LOOKUP("sh7724_pfc", GPIO_PTA4, "standby",
+			    GPIO_ACTIVE_HIGH),
 	},
 };
 
 /* I2C device */
+static struct tw9910_video_info tw9910_info = {
+	.buswidth	= 8,
+	.mpout		= TW9910_MPO_FIELD,
+};
+
+static struct mt9t112_platform_data mt9t112_0_pdata = {
+	.flags = MT9T112_FLAG_PCLK_RISING_EDGE,
+	.divider = { 0x49, 0x6, 0, 6, 0, 9, 9, 6, 0 }, /* for 24MHz */
+};
+
+static struct mt9t112_platform_data mt9t112_1_pdata = {
+	.flags = MT9T112_FLAG_PCLK_RISING_EDGE,
+	.divider = { 0x49, 0x6, 0, 6, 0, 9, 9, 6, 0 }, /* for 24MHz */
+};
+
 static struct i2c_board_info i2c0_devices[] = {
 	{
 		I2C_BOARD_INFO("da7210", 0x1a),
+	},
+	{
+		I2C_BOARD_INFO("tw9910", 0x45),
+		.platform_data = &tw9910_info,
+	},
+	{
+		/* 1st camera */
+		I2C_BOARD_INFO("mt9t112", 0x3c),
+		.platform_data = &mt9t112_0_pdata,
 	},
 };
 
@@ -459,7 +541,12 @@ static struct i2c_board_info i2c1_devices[] = {
 	{
 		I2C_BOARD_INFO("lis3lv02d", 0x1c),
 		.irq = evt2irq(0x620),
-	}
+	},
+	{
+		/* 2nd camera */
+		I2C_BOARD_INFO("mt9t112", 0x3c),
+		.platform_data = &mt9t112_1_pdata,
+	},
 };
 
 /* KEYSC */
@@ -556,8 +643,6 @@ static struct regulator_init_data cn12_power_init_data = {
 static struct fixed_voltage_config cn12_power_info = {
 	.supply_name = "CN12 SD/MMC Vdd",
 	.microvolts = 3300000,
-	.gpio = GPIO_PTB7,
-	.enable_high = 1,
 	.init_data = &cn12_power_init_data,
 };
 
@@ -566,6 +651,16 @@ static struct platform_device cn12_power = {
 	.id   = 0,
 	.dev  = {
 		.platform_data = &cn12_power_info,
+	},
+};
+
+static struct gpiod_lookup_table cn12_power_gpiod_table = {
+	.dev_id = "reg-fixed-voltage.0",
+	.table = {
+		/* Offset 7 on port B */
+		GPIO_LOOKUP("sh7724_pfc", GPIO_PTB7,
+			    NULL, GPIO_ACTIVE_HIGH),
+		{ },
 	},
 };
 
@@ -588,8 +683,6 @@ static struct regulator_init_data sdhi0_power_init_data = {
 static struct fixed_voltage_config sdhi0_power_info = {
 	.supply_name = "CN11 SD/MMC Vdd",
 	.microvolts = 3300000,
-	.gpio = GPIO_PTB6,
-	.enable_high = 1,
 	.init_data = &sdhi0_power_init_data,
 };
 
@@ -601,13 +694,30 @@ static struct platform_device sdhi0_power = {
 	},
 };
 
-static struct sh_mobile_sdhi_info sdhi0_info = {
-	.dma_slave_tx	= SHDMA_SLAVE_SDHI0_TX,
-	.dma_slave_rx	= SHDMA_SLAVE_SDHI0_RX,
-	.tmio_caps      = MMC_CAP_SDIO_IRQ | MMC_CAP_POWER_OFF_CARD |
+static struct gpiod_lookup_table sdhi0_power_gpiod_table = {
+	.dev_id = "reg-fixed-voltage.1",
+	.table = {
+		/* Offset 6 on port B */
+		GPIO_LOOKUP("sh7724_pfc", GPIO_PTB6,
+			    NULL, GPIO_ACTIVE_HIGH),
+		{ },
+	},
+};
+
+static struct gpiod_lookup_table sdhi0_gpio_table = {
+	.dev_id = "sh_mobile_sdhi.0",
+	.table = {
+		/* Card detect */
+		GPIO_LOOKUP("sh7724_pfc", GPIO_PTY7, "cd", GPIO_ACTIVE_LOW),
+		{ },
+	},
+};
+
+static struct tmio_mmc_data sdhi0_info = {
+	.chan_priv_tx	= (void *)SHDMA_SLAVE_SDHI0_TX,
+	.chan_priv_rx	= (void *)SHDMA_SLAVE_SDHI0_RX,
+	.capabilities	= MMC_CAP_SDIO_IRQ | MMC_CAP_POWER_OFF_CARD |
 			  MMC_CAP_NEEDS_POLL,
-	.tmio_flags	= TMIO_MMC_USE_GPIO_CD,
-	.cd_gpio	= GPIO_PTY7,
 };
 
 static struct resource sdhi0_resources[] = {
@@ -635,13 +745,20 @@ static struct platform_device sdhi0_device = {
 
 #if !defined(CONFIG_MMC_SH_MMCIF) && !defined(CONFIG_MMC_SH_MMCIF_MODULE)
 /* SDHI1 */
-static struct sh_mobile_sdhi_info sdhi1_info = {
-	.dma_slave_tx	= SHDMA_SLAVE_SDHI1_TX,
-	.dma_slave_rx	= SHDMA_SLAVE_SDHI1_RX,
-	.tmio_caps      = MMC_CAP_SDIO_IRQ | MMC_CAP_POWER_OFF_CARD |
+static struct tmio_mmc_data sdhi1_info = {
+	.chan_priv_tx	= (void *)SHDMA_SLAVE_SDHI1_TX,
+	.chan_priv_rx	= (void *)SHDMA_SLAVE_SDHI1_RX,
+	.capabilities	= MMC_CAP_SDIO_IRQ | MMC_CAP_POWER_OFF_CARD |
 			  MMC_CAP_NEEDS_POLL,
-	.tmio_flags	= TMIO_MMC_USE_GPIO_CD,
-	.cd_gpio	= GPIO_PTW7,
+};
+
+static struct gpiod_lookup_table sdhi1_gpio_table = {
+	.dev_id = "sh_mobile_sdhi.1",
+	.table = {
+		/* Card detect */
+		GPIO_LOOKUP("sh7724_pfc", GPIO_PTW7, "cd", GPIO_ACTIVE_LOW),
+		{ },
+	},
 };
 
 static struct resource sdhi1_resources[] = {
@@ -681,9 +798,19 @@ static struct mmc_spi_platform_data mmc_spi_info = {
 	.caps2 = MMC_CAP2_RO_ACTIVE_HIGH,
 	.ocr_mask = MMC_VDD_32_33 | MMC_VDD_33_34, /* 3.3V only */
 	.setpower = mmc_spi_setpower,
-	.flags = MMC_SPI_USE_CD_GPIO | MMC_SPI_USE_RO_GPIO,
-	.cd_gpio = GPIO_PTY7,
-	.ro_gpio = GPIO_PTY6,
+};
+
+static struct gpiod_lookup_table mmc_spi_gpio_table = {
+	.dev_id = "mmc_spi.0", /* device "mmc_spi" @ CS0 */
+	.table = {
+		/* Card detect */
+		GPIO_LOOKUP_IDX("sh7724_pfc", GPIO_PTY7, NULL, 0,
+				GPIO_ACTIVE_LOW),
+		/* Write protect */
+		GPIO_LOOKUP_IDX("sh7724_pfc", GPIO_PTY6, NULL, 1,
+				GPIO_ACTIVE_HIGH),
+		{ },
+	},
 };
 
 static struct spi_board_info spi_bus[] = {
@@ -692,7 +819,6 @@ static struct spi_board_info spi_bus[] = {
 		.platform_data	= &mmc_spi_info,
 		.max_speed_hz	= 5000000,
 		.mode		= SPI_MODE_0,
-		.controller_data = (void *) GPIO_PTM4,
 	},
 };
 
@@ -724,116 +850,15 @@ static struct platform_device msiof0_device = {
 	.resource	= msiof0_resources,
 };
 
+static struct gpiod_lookup_table msiof_gpio_table = {
+	.dev_id = "spi_sh_msiof.0",
+	.table = {
+		GPIO_LOOKUP("sh7724_pfc", GPIO_PTM4, "cs", GPIO_ACTIVE_HIGH),
+		{ },
+	},
+};
+
 #endif
-
-/* I2C Video/Camera */
-static struct i2c_board_info i2c_camera[] = {
-	{
-		I2C_BOARD_INFO("tw9910", 0x45),
-	},
-	{
-		/* 1st camera */
-		I2C_BOARD_INFO("mt9t112", 0x3c),
-	},
-	{
-		/* 2nd camera */
-		I2C_BOARD_INFO("mt9t112", 0x3c),
-	},
-};
-
-/* tw9910 */
-static int tw9910_power(struct device *dev, int mode)
-{
-	int val = mode ? 0 : 1;
-
-	gpio_set_value(GPIO_PTU2, val);
-	if (mode)
-		mdelay(100);
-
-	return 0;
-}
-
-static struct tw9910_video_info tw9910_info = {
-	.buswidth	= SOCAM_DATAWIDTH_8,
-	.mpout		= TW9910_MPO_FIELD,
-};
-
-static struct soc_camera_link tw9910_link = {
-	.i2c_adapter_id	= 0,
-	.bus_id		= 1,
-	.power		= tw9910_power,
-	.board_info	= &i2c_camera[0],
-	.priv		= &tw9910_info,
-};
-
-/* mt9t112 */
-static int mt9t112_power1(struct device *dev, int mode)
-{
-	gpio_set_value(GPIO_PTA3, mode);
-	if (mode)
-		mdelay(100);
-
-	return 0;
-}
-
-static struct mt9t112_camera_info mt9t112_info1 = {
-	.flags = MT9T112_FLAG_PCLK_RISING_EDGE | MT9T112_FLAG_DATAWIDTH_8,
-	.divider = { 0x49, 0x6, 0, 6, 0, 9, 9, 6, 0 }, /* for 24MHz */
-};
-
-static struct soc_camera_link mt9t112_link1 = {
-	.i2c_adapter_id	= 0,
-	.power		= mt9t112_power1,
-	.bus_id		= 0,
-	.board_info	= &i2c_camera[1],
-	.priv		= &mt9t112_info1,
-};
-
-static int mt9t112_power2(struct device *dev, int mode)
-{
-	gpio_set_value(GPIO_PTA4, mode);
-	if (mode)
-		mdelay(100);
-
-	return 0;
-}
-
-static struct mt9t112_camera_info mt9t112_info2 = {
-	.flags = MT9T112_FLAG_PCLK_RISING_EDGE | MT9T112_FLAG_DATAWIDTH_8,
-	.divider = { 0x49, 0x6, 0, 6, 0, 9, 9, 6, 0 }, /* for 24MHz */
-};
-
-static struct soc_camera_link mt9t112_link2 = {
-	.i2c_adapter_id	= 1,
-	.power		= mt9t112_power2,
-	.bus_id		= 1,
-	.board_info	= &i2c_camera[2],
-	.priv		= &mt9t112_info2,
-};
-
-static struct platform_device camera_devices[] = {
-	{
-		.name	= "soc-camera-pdrv",
-		.id	= 0,
-		.dev	= {
-			.platform_data = &tw9910_link,
-		},
-	},
-	{
-		.name	= "soc-camera-pdrv",
-		.id	= 1,
-		.dev	= {
-			.platform_data = &mt9t112_link1,
-		},
-	},
-	{
-		.name	= "soc-camera-pdrv",
-		.id	= 2,
-		.dev	= {
-			.platform_data = &mt9t112_link2,
-		},
-	},
-};
 
 /* FSI */
 static struct resource fsi_resources[] = {
@@ -861,14 +886,12 @@ static struct asoc_simple_card_info fsi_da7210_info = {
 	.card		= "FSIB-DA7210",
 	.codec		= "da7210.0-001a",
 	.platform	= "sh_fsi.0",
-	.daifmt		= SND_SOC_DAIFMT_I2S,
+	.daifmt		= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_CBP_CFP,
 	.cpu_dai = {
 		.name	= "fsib-dai",
-		.fmt	= SND_SOC_DAIFMT_CBS_CFS | SND_SOC_DAIFMT_IB_NF,
 	},
 	.codec_dai = {
 		.name	= "da7210-hifi",
-		.fmt	= SND_SOC_DAIFMT_CBM_CFM,
 	},
 };
 
@@ -876,6 +899,8 @@ static struct platform_device fsi_da7210_device = {
 	.name	= "asoc-simple-card",
 	.dev	= {
 		.platform_data	= &fsi_da7210_info,
+		.coherent_dma_mask = DMA_BIT_MASK(32),
+		.dma_mask = &fsi_da7210_device.dev.coherent_dma_mask,
 	},
 };
 
@@ -900,8 +925,8 @@ static struct platform_device irda_device = {
 	.resource       = irda_resources,
 };
 
-#include <media/ak881x.h>
-#include <media/sh_vou.h>
+#include <media/i2c/ak881x.h>
+#include <media/drv-intf/sh_vou.h>
 
 static struct ak881x_pdata ak881x_pdata = {
 	.flags = AK881X_IF_MODE_SLAVE,
@@ -981,6 +1006,11 @@ static struct platform_device sh_mmcif_device = {
 };
 #endif
 
+static struct platform_device *ecovec_ceu_devices[] __initdata = {
+	&ceu0_device,
+	&ceu1_device,
+};
+
 static struct platform_device *ecovec_devices[] __initdata = {
 	&heartbeat_device,
 	&nor_flash_device,
@@ -989,9 +1019,6 @@ static struct platform_device *ecovec_devices[] __initdata = {
 	&usb1_common_device,
 	&usbhs_device,
 	&lcdc_device,
-	&gpio_backlight_device,
-	&ceu0_device,
-	&ceu1_device,
 	&keysc_device,
 	&cn12_power,
 #if defined(CONFIG_MMC_SDHI) || defined(CONFIG_MMC_SDHI_MODULE)
@@ -1003,9 +1030,6 @@ static struct platform_device *ecovec_devices[] __initdata = {
 #else
 	&msiof0_device,
 #endif
-	&camera_devices[0],
-	&camera_devices[1],
-	&camera_devices[2],
 	&fsi_device,
 	&fsi_da7210_device,
 	&irda_device,
@@ -1196,7 +1220,7 @@ static int __init arch_setup(void)
 		lcdc_info.ch[0].num_modes		= ARRAY_SIZE(ecovec_dvi_modes);
 
 		/* No backlight */
-		gpio_backlight_data.fbdev = NULL;
+		gpio_backlight_data.dev = NULL;
 
 		gpio_set_value(GPIO_PTA2, 1);
 		gpio_set_value(GPIO_PTU1, 1);
@@ -1242,7 +1266,6 @@ static int __init arch_setup(void)
 	gpio_request(GPIO_FN_VIO0_CLK, NULL);
 	gpio_request(GPIO_FN_VIO0_FLD, NULL);
 	gpio_request(GPIO_FN_VIO0_HD,  NULL);
-	platform_resource_setup_memory(&ceu0_device, "ceu0", 4 << 20);
 
 	/* enable CEU1 */
 	gpio_request(GPIO_FN_VIO1_D7,  NULL);
@@ -1257,7 +1280,6 @@ static int __init arch_setup(void)
 	gpio_request(GPIO_FN_VIO1_HD,  NULL);
 	gpio_request(GPIO_FN_VIO1_VD,  NULL);
 	gpio_request(GPIO_FN_VIO1_CLK, NULL);
-	platform_resource_setup_memory(&ceu1_device, "ceu1", 4 << 20);
 
 	/* enable KEYSC */
 	gpio_request(GPIO_FN_KEYOUT5_IN5, NULL);
@@ -1293,11 +1315,11 @@ static int __init arch_setup(void)
 	gpio_request(GPIO_FN_MSIOF0_TXD, NULL);
 	gpio_request(GPIO_FN_MSIOF0_RXD, NULL);
 	gpio_request(GPIO_FN_MSIOF0_TSCK, NULL);
-	gpio_request(GPIO_PTM4, NULL); /* software CS control of TSYNC pin */
-	gpio_direction_output(GPIO_PTM4, 1); /* active low CS */
 	gpio_request(GPIO_PTB6, NULL); /* 3.3V power control */
 	gpio_direction_output(GPIO_PTB6, 0); /* disable power by default */
 
+	gpiod_add_lookup_table(&mmc_spi_gpio_table);
+	gpiod_add_lookup_table(&msiof_gpio_table);
 	spi_register_board_info(spi_bus, ARRAY_SIZE(spi_bus));
 #endif
 
@@ -1333,16 +1355,6 @@ static int __init arch_setup(void)
 		/* I/O buffer drive ability is high for CN12 */
 		__raw_writew((__raw_readw(IODRIVEA) & ~0x3000) | 0x2000,
 			     IODRIVEA);
-
-	/* enable Video */
-	gpio_request(GPIO_PTU2, NULL);
-	gpio_direction_output(GPIO_PTU2, 1);
-
-	/* enable Camera */
-	gpio_request(GPIO_PTA3, NULL);
-	gpio_request(GPIO_PTA4, NULL);
-	gpio_direction_output(GPIO_PTA3, 0);
-	gpio_direction_output(GPIO_PTA4, 0);
 
 	/* enable FSI */
 	gpio_request(GPIO_FN_FSIMCKB,    NULL);
@@ -1392,6 +1404,11 @@ static int __init arch_setup(void)
 	gpio_request(GPIO_PTU5, NULL);
 	gpio_direction_output(GPIO_PTU5, 0);
 
+	/* Register gpio lookup tables for cameras and video decoder */
+	gpiod_add_lookup_table(&tw9910_gpios);
+	gpiod_add_lookup_table(&mt9t112_0_gpios);
+	gpiod_add_lookup_table(&mt9t112_1_gpios);
+
 	/* enable I2C device */
 	i2c_register_board_info(0, i2c0_devices,
 				ARRAY_SIZE(i2c0_devices));
@@ -1433,6 +1450,34 @@ static int __init arch_setup(void)
 	gpio_set_value(GPIO_PTG4, 1);
 #endif
 
+	/* Initialize CEU platform devices separately to map memory first */
+	device_initialize(&ecovec_ceu_devices[0]->dev);
+	dma_declare_coherent_memory(&ecovec_ceu_devices[0]->dev,
+				    ceu0_dma_membase, ceu0_dma_membase,
+				    CEU_BUFFER_MEMORY_SIZE);
+	platform_device_add(ecovec_ceu_devices[0]);
+
+	device_initialize(&ecovec_ceu_devices[1]->dev);
+	dma_declare_coherent_memory(&ecovec_ceu_devices[1]->dev,
+				    ceu1_dma_membase, ceu1_dma_membase,
+				    CEU_BUFFER_MEMORY_SIZE);
+	platform_device_add(ecovec_ceu_devices[1]);
+
+	gpiod_add_lookup_table(&cn12_power_gpiod_table);
+#if defined(CONFIG_MMC_SDHI) || defined(CONFIG_MMC_SDHI_MODULE)
+	gpiod_add_lookup_table(&sdhi0_power_gpiod_table);
+	gpiod_add_lookup_table(&sdhi0_gpio_table);
+#if !defined(CONFIG_MMC_SH_MMCIF) && !defined(CONFIG_MMC_SH_MMCIF_MODULE)
+	gpiod_add_lookup_table(&sdhi1_gpio_table);
+#endif
+#endif
+
+	gpiod_add_lookup_table(&gpio_backlight_lookup);
+	gpio_backlight_device = platform_device_register_full(
+					&gpio_backlight_device_info);
+	if (IS_ERR(gpio_backlight_device))
+		return PTR_ERR(gpio_backlight_device);
+
 	return platform_add_devices(ecovec_devices,
 				    ARRAY_SIZE(ecovec_devices));
 }
@@ -1445,6 +1490,30 @@ static int __init devices_setup(void)
 }
 device_initcall(devices_setup);
 
+/* Reserve a portion of memory for CEU 0 and CEU 1 buffers */
+static void __init ecovec_mv_mem_reserve(void)
+{
+	phys_addr_t phys;
+	phys_addr_t size = CEU_BUFFER_MEMORY_SIZE;
+
+	phys = memblock_phys_alloc(size, PAGE_SIZE);
+	if (!phys)
+		panic("Failed to allocate CEU0 memory\n");
+
+	memblock_phys_free(phys, size);
+	memblock_remove(phys, size);
+	ceu0_dma_membase = phys;
+
+	phys = memblock_phys_alloc(size, PAGE_SIZE);
+	if (!phys)
+		panic("Failed to allocate CEU1 memory\n");
+
+	memblock_phys_free(phys, size);
+	memblock_remove(phys, size);
+	ceu1_dma_membase = phys;
+}
+
 static struct sh_machine_vector mv_ecovec __initmv = {
 	.mv_name	= "R0P7724 (EcoVec)",
+	.mv_mem_reserve	= ecovec_mv_mem_reserve,
 };

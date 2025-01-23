@@ -1,15 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012 Linaro : Daniel Lezcano <daniel.lezcano@linaro.org> (IBM)
  *
  * Based on the work of Rickard Andersson <rickard.andersson@stericsson.com>
  * and Jonas Aaberg <jonas.aberg@stericsson.com>.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
-#include <linux/module.h>
+#include <linux/init.h>
 #include <linux/cpuidle.h>
 #include <linux/spinlock.h>
 #include <linux/atomic.h>
@@ -19,7 +16,6 @@
 #include <linux/platform_device.h>
 
 #include <asm/cpuidle.h>
-#include <asm/proc-fns.h>
 
 static atomic_t master = ATOMIC_INIT(0);
 static DEFINE_SPINLOCK(master_lock);
@@ -101,8 +97,7 @@ static struct cpuidle_driver ux500_idle_driver = {
 			.enter		  = ux500_enter_idle,
 			.exit_latency	  = 70,
 			.target_residency = 260,
-			.flags		  = CPUIDLE_FLAG_TIME_VALID |
-			                    CPUIDLE_FLAG_TIMER_STOP,
+			.flags		  = CPUIDLE_FLAG_TIMER_STOP,
 			.name		  = "ApIdle",
 			.desc		  = "ARM Retention",
 		},
@@ -122,10 +117,8 @@ static int dbx500_cpuidle_probe(struct platform_device *pdev)
 
 static struct platform_driver dbx500_cpuidle_plat_driver = {
 	.driver = {
-		.name = "cpuidle-dbx500",
-		.owner = THIS_MODULE,
+		.name = "db8500-cpuidle",
 	},
 	.probe = dbx500_cpuidle_probe,
 };
-
-module_platform_driver(dbx500_cpuidle_plat_driver);
+builtin_platform_driver(dbx500_cpuidle_plat_driver);

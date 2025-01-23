@@ -1,10 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # USB device configuration
 #
-
-# These are unused now, remove them once they are no longer selected
-config USB_ARCH_HAS_OHCI
-	bool
 
 config USB_OHCI_BIG_ENDIAN_DESC
 	bool
@@ -14,11 +11,8 @@ config USB_OHCI_BIG_ENDIAN_MMIO
 
 config USB_OHCI_LITTLE_ENDIAN
 	bool
-	default n if STB03xxx || PPC_MPC52xx
+	default n if PPC_MPC52xx
 	default y
-
-config USB_ARCH_HAS_EHCI
-	bool
 
 config USB_EHCI_BIG_ENDIAN_MMIO
 	bool
@@ -26,33 +20,34 @@ config USB_EHCI_BIG_ENDIAN_MMIO
 config USB_EHCI_BIG_ENDIAN_DESC
 	bool
 
-config USB_ARCH_HAS_XHCI
+config USB_UHCI_BIG_ENDIAN_MMIO
+	bool
+
+config USB_UHCI_BIG_ENDIAN_DESC
 	bool
 
 menuconfig USB_SUPPORT
 	bool "USB support"
 	depends on HAS_IOMEM
 	default y
-	---help---
+	help
 	  This option adds core support for Universal Serial Bus (USB).
 	  You will also need drivers from the following menu to make use of it.
 
 if USB_SUPPORT
 
-config USB_COMMON
-	tristate
-	default y
-	depends on USB || USB_GADGET
+source "drivers/usb/common/Kconfig"
 
 config USB_ARCH_HAS_HCD
 	def_bool y
 
-# ARM SA1111 chips have a non-PCI based "OHCI-compatible" USB host interface.
 config USB
 	tristate "Support for Host-side USB"
 	depends on USB_ARCH_HAS_HCD
+	select GENERIC_ALLOCATOR
+	select USB_COMMON
 	select NLS  # for UTF-8 strings
-	---help---
+	help
 	  Universal Serial Bus (USB) is a specification for a serial bus
 	  subsystem which offers higher speeds and more features than the
 	  traditional PC serial port.  The bus supplies power to peripherals
@@ -79,18 +74,28 @@ config USB
 	  After choosing your HCD, then select drivers for the USB peripherals
 	  you'll be using.  You may want to check out the information provided
 	  in <file:Documentation/usb/> and especially the links given in
-	  <file:Documentation/usb/usb-help.txt>.
+	  <file:Documentation/usb/usb-help.rst>.
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called usbcore.
+
+config USB_PCI
+	bool "PCI based USB host interface"
+	depends on PCI
+	default y
+	help
+	  Many embedded system SOCs (e.g. freescale T2080) have both
+	  PCI and USB modules with the USB module directly controlled by
+	  registers and having no relationship to the PCI module.
+
+	  If you have such a device you may say N here and PCI related code
+	  will not be built in the USB driver.
 
 if USB
 
 source "drivers/usb/core/Kconfig"
 
 source "drivers/usb/mon/Kconfig"
-
-source "drivers/usb/wusbcore/Kconfig"
 
 source "drivers/usb/host/Kconfig"
 
@@ -102,7 +107,17 @@ source "drivers/usb/storage/Kconfig"
 
 source "drivers/usb/image/Kconfig"
 
+source "drivers/usb/usbip/Kconfig"
+
 endif
+
+comment "USB dual-mode controller drivers"
+
+source "drivers/usb/cdns3/Kconfig"
+
+source "drivers/usb/fotg210/Kconfig"
+
+source "drivers/usb/mtu3/Kconfig"
 
 source "drivers/usb/musb/Kconfig"
 
@@ -112,38 +127,11 @@ source "drivers/usb/dwc2/Kconfig"
 
 source "drivers/usb/chipidea/Kconfig"
 
+source "drivers/usb/isp1760/Kconfig"
+
 comment "USB port drivers"
 
 if USB
-
-config USB_USS720
-	tristate "USS720 parport driver"
-	depends on PARPORT
-	select PARPORT_NOT_PC
-	---help---
-	  This driver is for USB parallel port adapters that use the Lucent
-	  Technologies USS-720 chip. These cables are plugged into your USB
-	  port and provide USB compatibility to peripherals designed with
-	  parallel port interfaces.
-
-	  The chip has two modes: automatic mode and manual mode. In automatic
-	  mode, it looks to the computer like a standard USB printer. Only
-	  printers may be connected to the USS-720 in this mode. The generic
-	  USB printer driver ("USB Printer support", above) may be used in
-	  that mode, and you can say N here if you want to use the chip only
-	  in this mode.
-
-	  Manual mode is not limited to printers, any parallel port
-	  device should work. This driver utilizes manual mode.
-	  Note however that some operations are three orders of magnitude
-	  slower than on a PCI/ISA Parallel Port, so timing critical
-	  applications might not work.
-
-	  Say Y here if you own an USS-720 USB->Parport cable and intend to
-	  connect anything other than a printer to it.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called uss720.
 
 source "drivers/usb/serial/Kconfig"
 
@@ -156,5 +144,13 @@ endif # USB
 source "drivers/usb/phy/Kconfig"
 
 source "drivers/usb/gadget/Kconfig"
+
+source "drivers/usb/typec/Kconfig"
+
+source "drivers/usb/roles/Kconfig"
+
+source "drivers/usb/repeater/Kconfig"
+
+source "drivers/usb/redriver/Kconfig"
 
 endif # USB_SUPPORT

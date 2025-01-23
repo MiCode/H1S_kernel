@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Driver for Quantek QT1010 silicon tuner
  *
  *  Copyright (C) 2006 Antti Palosaari <crope@iki.fi>
  *                     Aapo Tahkola <aet@rasterburn.org>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 #include "qt1010.h"
 #include "qt1010_priv.h"
@@ -235,23 +222,24 @@ static int qt1010_init_meas1(struct qt1010_priv *priv,
 		{ QT1010_WR, reg, reg_init_val },
 		{ QT1010_WR, 0x1e, 0x00 },
 		{ QT1010_WR, 0x1e, oper },
-		{ QT1010_RD, reg, 0xff }
 	};
 
 	for (i = 0; i < ARRAY_SIZE(i2c_data); i++) {
-		if (i2c_data[i].oper == QT1010_WR) {
-			err = qt1010_writereg(priv, i2c_data[i].reg,
-					      i2c_data[i].val);
-		} else {
-			err = qt1010_readreg(priv, i2c_data[i].reg, &val2);
-		}
-		if (err) return err;
+		err = qt1010_writereg(priv, i2c_data[i].reg,
+				      i2c_data[i].val);
+		if (err)
+			return err;
 	}
 
+	err = qt1010_readreg(priv, reg, &val2);
+	if (err)
+		return err;
 	do {
 		val1 = val2;
 		err = qt1010_readreg(priv, reg, &val2);
-		if (err) return err;
+		if (err)
+			return err;
+
 		dev_dbg(&priv->i2c->dev, "%s: compare reg:%02x %02x %02x\n",
 				__func__, reg, val1, val2);
 	} while (val1 != val2);
@@ -263,7 +251,7 @@ static int qt1010_init_meas1(struct qt1010_priv *priv,
 static int qt1010_init_meas2(struct qt1010_priv *priv,
 			    u8 reg_init_val, u8 *retval)
 {
-	u8 i, val;
+	u8 i, val = 0xff;
 	int err;
 	qt1010_i2c_oper_t i2c_data[] = {
 		{ QT1010_WR, 0x07, reg_init_val },
@@ -274,6 +262,7 @@ static int qt1010_init_meas2(struct qt1010_priv *priv,
 		{ QT1010_WR, 0x1e, 0x00 },
 		{ QT1010_WR, 0x22, 0xff }
 	};
+
 	for (i = 0; i < ARRAY_SIZE(i2c_data); i++) {
 		if (i2c_data[i].oper == QT1010_WR) {
 			err = qt1010_writereg(priv, i2c_data[i].reg,
@@ -281,7 +270,8 @@ static int qt1010_init_meas2(struct qt1010_priv *priv,
 		} else {
 			err = qt1010_readreg(priv, i2c_data[i].reg, &val);
 		}
-		if (err) return err;
+		if (err)
+			return err;
 	}
 	*retval = val;
 	return 0;
@@ -294,7 +284,7 @@ static int qt1010_init(struct dvb_frontend *fe)
 	int err = 0;
 	u8 i, tmpval, *valptr = NULL;
 
-	qt1010_i2c_oper_t i2c_data[] = {
+	static const qt1010_i2c_oper_t i2c_data[] = {
 		{ QT1010_WR, 0x01, 0x80 },
 		{ QT1010_WR, 0x0d, 0x84 },
 		{ QT1010_WR, 0x0e, 0xb7 },
@@ -354,13 +344,18 @@ static int qt1010_init(struct dvb_frontend *fe)
 				valptr = &priv->reg1f_init_val;
 			else
 				valptr = &tmpval;
-			err = qt1010_init_meas1(priv, i2c_data[i+1].reg,
-						i2c_data[i].reg,
-						i2c_data[i].val, valptr);
+
+			if (i >= ARRAY_SIZE(i2c_data) - 1)
+				err = -EIO;
+			else
+				err = qt1010_init_meas1(priv, i2c_data[i + 1].reg,
+							i2c_data[i].reg,
+							i2c_data[i].val, valptr);
 			i++;
 			break;
 		}
-		if (err) return err;
+		if (err)
+			return err;
 	}
 
 	for (i = 0x31; i < 0x3a; i++) /* 0x31 - 0x39 */
@@ -373,11 +368,10 @@ static int qt1010_init(struct dvb_frontend *fe)
 	return qt1010_set_params(fe);
 }
 
-static int qt1010_release(struct dvb_frontend *fe)
+static void qt1010_release(struct dvb_frontend *fe)
 {
 	kfree(fe->tuner_priv);
 	fe->tuner_priv = NULL;
-	return 0;
 }
 
 static int qt1010_get_frequency(struct dvb_frontend *fe, u32 *frequency)
@@ -395,10 +389,10 @@ static int qt1010_get_if_frequency(struct dvb_frontend *fe, u32 *frequency)
 
 static const struct dvb_tuner_ops qt1010_tuner_ops = {
 	.info = {
-		.name           = "Quantek QT1010",
-		.frequency_min  = QT1010_MIN_FREQ,
-		.frequency_max  = QT1010_MAX_FREQ,
-		.frequency_step = QT1010_STEP,
+		.name              = "Quantek QT1010",
+		.frequency_min_hz  = QT1010_MIN_FREQ,
+		.frequency_max_hz  = QT1010_MAX_FREQ,
+		.frequency_step_hz = QT1010_STEP,
 	},
 
 	.release       = qt1010_release,
@@ -447,7 +441,7 @@ struct dvb_frontend * qt1010_attach(struct dvb_frontend *fe,
 	fe->tuner_priv = priv;
 	return fe;
 }
-EXPORT_SYMBOL(qt1010_attach);
+EXPORT_SYMBOL_GPL(qt1010_attach);
 
 MODULE_DESCRIPTION("Quantek QT1010 silicon tuner driver");
 MODULE_AUTHOR("Antti Palosaari <crope@iki.fi>");

@@ -1,19 +1,19 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 
 #ifndef __BUDGET_DVB__
 #define __BUDGET_DVB__
 
-#include "dvb_frontend.h"
-#include "dvbdev.h"
-#include "demux.h"
-#include "dvb_demux.h"
-#include "dmxdev.h"
-#include "dvb_filter.h"
-#include "dvb_net.h"
+#include <media/dvb_frontend.h>
+#include <media/dvbdev.h>
+#include <media/demux.h>
+#include <media/dvb_demux.h>
+#include <media/dmxdev.h>
+#include <media/dvb_net.h>
 
 #include <linux/module.h>
 #include <linux/mutex.h>
 
-#include <media/saa7146.h>
+#include <media/drv-intf/saa7146.h>
 
 extern int budget_debug;
 
@@ -21,8 +21,13 @@ extern int budget_debug;
 #undef dprintk
 #endif
 
-#define dprintk(level,args...) \
-	    do { if ((budget_debug & level)) { printk("%s: %s(): ", KBUILD_MODNAME, __func__); printk(args); } } while (0)
+#define dprintk(level, fmt, arg...) do {				\
+	if (level & budget_debug)					\
+		printk(KERN_DEBUG KBUILD_MODNAME ": %s(): " fmt,	\
+		       __func__, ##arg);				\
+} while (0)
+
+#define TS_SIZE        188
 
 struct budget_info {
 	char *name;
@@ -72,7 +77,7 @@ struct budget {
 
 	struct dvb_adapter dvb_adapter;
 	struct dvb_frontend *dvb_frontend;
-	int (*read_fe_status)(struct dvb_frontend *fe, fe_status_t *status);
+	int (*read_fe_status)(struct dvb_frontend *fe, enum fe_status *status);
 	int fe_synced;
 
 	void *priv;

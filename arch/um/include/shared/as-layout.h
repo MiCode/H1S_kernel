@@ -1,6 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
- * Licensed under the GPL
  */
 
 #ifndef __START_H__
@@ -20,18 +20,11 @@
  * 'UL' and other type specifiers unilaterally.  We
  * use the following macros to deal with this.
  */
-
-#ifdef __ASSEMBLY__
-#define _UML_AC(X, Y)	(Y)
-#else
-#define __UML_AC(X, Y)	(X(Y))
-#define _UML_AC(X, Y)	__UML_AC(X, Y)
-#endif
-
-#define STUB_START _UML_AC(, 0x100000)
-#define STUB_CODE _UML_AC((unsigned long), STUB_START)
-#define STUB_DATA _UML_AC((unsigned long), STUB_CODE + UM_KERN_PAGE_SIZE)
-#define STUB_END _UML_AC((unsigned long), STUB_DATA + UM_KERN_PAGE_SIZE)
+#define STUB_START stub_start
+#define STUB_CODE STUB_START
+#define STUB_DATA (STUB_CODE + UM_KERN_PAGE_SIZE)
+#define STUB_DATA_PAGES 1 /* must be a power of two */
+#define STUB_END (STUB_DATA + STUB_DATA_PAGES * UM_KERN_PAGE_SIZE)
 
 #ifndef __ASSEMBLY__
 
@@ -54,8 +47,10 @@ extern unsigned long long highmem;
 extern unsigned long brk_start;
 
 extern unsigned long host_task_size;
+extern unsigned long stub_start;
 
 extern int linux_main(int argc, char **argv);
+extern void uml_finishsetup(void);
 
 struct siginfo;
 extern void (*sig_info[])(int, struct siginfo *si, struct uml_pt_regs *);

@@ -103,7 +103,7 @@ struct hilse_node {
 
 /* Methods for back-end drivers, e.g. hp_sdc_mlc */
 typedef int	(hil_mlc_cts) (hil_mlc *mlc);
-typedef void	(hil_mlc_out) (hil_mlc *mlc);
+typedef int	(hil_mlc_out) (hil_mlc *mlc);
 typedef int	(hil_mlc_in)  (hil_mlc *mlc, suseconds_t timeout);
 
 struct hil_mlc_devinfo {
@@ -144,12 +144,12 @@ struct hil_mlc {
 	hil_packet		ipacket[16];
 	hil_packet		imatch;
 	int			icount;
-	struct timeval		instart;
-	suseconds_t		intimeout;
+	unsigned long		instart;
+	unsigned long		intimeout;
 
 	int			ddi;	/* Last operational device id */
 	int			lcv;	/* LCV to throttle loops */
-	struct timeval		lcv_tv; /* Time loop was started */
+	time64_t		lcv_time; /* Time loop was started */
 
 	int			di_map[7]; /* Maps below items to live devs */
 	struct hil_mlc_devinfo	di[HIL_MLC_DEVMEM];

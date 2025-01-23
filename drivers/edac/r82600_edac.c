@@ -20,9 +20,8 @@
 #include <linux/pci.h>
 #include <linux/pci_ids.h>
 #include <linux/edac.h>
-#include "edac_core.h"
+#include "edac_module.h"
 
-#define R82600_REVISION	" Ver: 2.0.2"
 #define EDAC_MOD_STR	"r82600_edac"
 
 #define r82600_printk(level, fmt, arg...) \
@@ -205,7 +204,6 @@ static void r82600_check(struct mem_ctl_info *mci)
 {
 	struct r82600_error_info info;
 
-	edac_dbg(1, "MC%d\n", mci->mc_idx);
 	r82600_get_error_info(mci, &info);
 	r82600_process_error_info(mci, &info, 1);
 }
@@ -316,7 +314,6 @@ static int r82600_probe1(struct pci_dev *pdev, int dev_idx)
 		mci->edac_cap = EDAC_FLAG_NONE;
 
 	mci->mod_name = EDAC_MOD_STR;
-	mci->mod_ver = R82600_REVISION;
 	mci->ctl_name = "R82600";
 	mci->dev_name = pci_name(pdev);
 	mci->edac_check = r82600_check;
@@ -418,8 +415,7 @@ module_init(r82600_init);
 module_exit(r82600_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Tim Small <tim@buttersideup.com> - WPAD Ltd. "
-		"on behalf of EADS Astrium");
+MODULE_AUTHOR("Tim Small <tim@buttersideup.com> - WPAD Ltd. on behalf of EADS Astrium");
 MODULE_DESCRIPTION("MC support for Radisys 82600 memory controllers");
 
 module_param(disable_hardware_scrub, bool, 0644);

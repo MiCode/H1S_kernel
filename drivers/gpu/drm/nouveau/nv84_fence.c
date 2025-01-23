@@ -21,40 +21,36 @@
  *
  * Authors: Ben Skeggs
  */
-
-#include <core/object.h>
-#include <core/client.h>
-#include <core/class.h>
-
-#include <engine/fifo.h>
-
-#include "nouveau_drm.h"
+#include "nouveau_drv.h"
 #include "nouveau_dma.h"
 #include "nouveau_fence.h"
+#include "nouveau_vmm.h"
 
 #include "nv50_display.h"
 
-u64
-nv84_fence_crtc(struct nouveau_channel *chan, int crtc)
-{
-	struct nv84_fence_chan *fctx = chan->fence;
-	return fctx->dispc_vma[crtc].offset;
-}
+#include <nvif/push206e.h>
+
+#include <nvhw/class/cl826f.h>
 
 static int
 nv84_fence_emit32(struct nouveau_channel *chan, u64 virtual, u32 sequence)
 {
-	int ret = RING_SPACE(chan, 8);
+	struct nvif_push *push = chan->chan.push;
+	int ret = PUSH_WAIT(push, 8);
 	if (ret == 0) {
-		BEGIN_NV04(chan, 0, NV11_SUBCHAN_DMA_SEMAPHORE, 1);
-		OUT_RING  (chan, chan->vram);
-		BEGIN_NV04(chan, 0, NV84_SUBCHAN_SEMAPHORE_ADDRESS_HIGH, 5);
-		OUT_RING  (chan, upper_32_bits(virtual));
-		OUT_RING  (chan, lower_32_bits(virtual));
-		OUT_RING  (chan, sequence);
-		OUT_RING  (chan, NV84_SUBCHAN_SEMAPHORE_TRIGGER_WRITE_LONG);
-		OUT_RING  (chan, 0x00000000);
-		FIRE_RING (chan);
+		PUSH_MTHD(push, NV826F, SET_CONTEXT_DMA_SEMAPHORE, chan->vram.handle);
+
+		PUSH_MTHD(push, NV826F, SEMAPHOREA,
+			  NVVAL(NV826F, SEMAPHOREA, OFFSET_UPPER, upper_32_bits(virtual)),
+
+					SEMAPHOREB, lower_32_bits(virtual),
+					SEMAPHOREC, sequence,
+
+					SEMAPHORED,
+			  NVDEF(NV826F, SEMAPHORED, OPERATION, RELEASE),
+
+					NON_STALLED_INTERRUPT, 0);
+		PUSH_KICK(push);
 	}
 	return ret;
 }
@@ -62,18 +58,28 @@ nv84_fence_emit32(struct nouveau_channel *chan, u64 virtual, u32 sequence)
 static int
 nv84_fence_sync32(struct nouveau_channel *chan, u64 virtual, u32 sequence)
 {
-	int ret = RING_SPACE(chan, 7);
+	struct nvif_push *push = chan->chan.push;
+	int ret = PUSH_WAIT(push, 7);
 	if (ret == 0) {
-		BEGIN_NV04(chan, 0, NV11_SUBCHAN_DMA_SEMAPHORE, 1);
-		OUT_RING  (chan, chan->vram);
-		BEGIN_NV04(chan, 0, NV84_SUBCHAN_SEMAPHORE_ADDRESS_HIGH, 4);
-		OUT_RING  (chan, upper_32_bits(virtual));
-		OUT_RING  (chan, lower_32_bits(virtual));
-		OUT_RING  (chan, sequence);
-		OUT_RING  (chan, NV84_SUBCHAN_SEMAPHORE_TRIGGER_ACQUIRE_GEQUAL);
-		FIRE_RING (chan);
+		PUSH_MTHD(push, NV826F, SET_CONTEXT_DMA_SEMAPHORE, chan->vram.handle);
+
+		PUSH_MTHD(push, NV826F, SEMAPHOREA,
+			  NVVAL(NV826F, SEMAPHOREA, OFFSET_UPPER, upper_32_bits(virtual)),
+
+					SEMAPHOREB, lower_32_bits(virtual),
+					SEMAPHOREC, sequence,
+
+					SEMAPHORED,
+			  NVDEF(NV826F, SEMAPHORED, OPERATION, ACQ_GEQ));
+		PUSH_KICK(push);
 	}
 	return ret;
+}
+
+static inline u32
+nv84_fence_chid(struct nouveau_channel *chan)
+{
+	return chan->drm->runl[chan->runlist].chan_id_base + chan->chid;
 }
 
 static int
@@ -81,15 +87,9 @@ nv84_fence_emit(struct nouveau_fence *fence)
 {
 	struct nouveau_channel *chan = fence->channel;
 	struct nv84_fence_chan *fctx = chan->fence;
-	struct nouveau_fifo_chan *fifo = (void *)chan->object;
-	u64 addr = fifo->chid * 16;
+	u64 addr = fctx->vma->addr + nv84_fence_chid(chan) * 16;
 
-	if (fence->sysmem)
-		addr += fctx->vma_gart.offset;
-	else
-		addr += fctx->vma.offset;
-
-	return fctx->base.emit32(chan, addr, fence->sequence);
+	return fctx->base.emit32(chan, addr, fence->base.seqno);
 }
 
 static int
@@ -97,78 +97,55 @@ nv84_fence_sync(struct nouveau_fence *fence,
 		struct nouveau_channel *prev, struct nouveau_channel *chan)
 {
 	struct nv84_fence_chan *fctx = chan->fence;
-	struct nouveau_fifo_chan *fifo = (void *)prev->object;
-	u64 addr = fifo->chid * 16;
+	u64 addr = fctx->vma->addr + nv84_fence_chid(prev) * 16;
 
-	if (fence->sysmem)
-		addr += fctx->vma_gart.offset;
-	else
-		addr += fctx->vma.offset;
-
-	return fctx->base.sync32(chan, addr, fence->sequence);
+	return fctx->base.sync32(chan, addr, fence->base.seqno);
 }
 
 static u32
 nv84_fence_read(struct nouveau_channel *chan)
 {
-	struct nouveau_fifo_chan *fifo = (void *)chan->object;
 	struct nv84_fence_priv *priv = chan->drm->fence;
-	return nouveau_bo_rd32(priv->bo, fifo->chid * 16/4);
+	return nouveau_bo_rd32(priv->bo, nv84_fence_chid(chan) * 16/4);
 }
 
 static void
 nv84_fence_context_del(struct nouveau_channel *chan)
 {
-	struct drm_device *dev = chan->drm->dev;
 	struct nv84_fence_priv *priv = chan->drm->fence;
 	struct nv84_fence_chan *fctx = chan->fence;
-	int i;
 
-	for (i = 0; i < dev->mode_config.num_crtc; i++) {
-		struct nouveau_bo *bo = nv50_display_crtc_sema(dev, i);
-		nouveau_bo_vma_del(bo, &fctx->dispc_vma[i]);
-	}
-
-	nouveau_bo_vma_del(priv->bo, &fctx->vma_gart);
-	nouveau_bo_vma_del(priv->bo, &fctx->vma);
+	nouveau_bo_wr32(priv->bo, nv84_fence_chid(chan) * 16 / 4, fctx->base.sequence);
+	mutex_lock(&priv->mutex);
+	nouveau_vma_del(&fctx->vma);
+	mutex_unlock(&priv->mutex);
 	nouveau_fence_context_del(&fctx->base);
 	chan->fence = NULL;
-	kfree(fctx);
+	nouveau_fence_context_free(&fctx->base);
 }
 
 int
 nv84_fence_context_new(struct nouveau_channel *chan)
 {
-	struct nouveau_fifo_chan *fifo = (void *)chan->object;
-	struct nouveau_client *client = nouveau_client(fifo);
 	struct nv84_fence_priv *priv = chan->drm->fence;
 	struct nv84_fence_chan *fctx;
-	int ret, i;
+	int ret;
 
 	fctx = chan->fence = kzalloc(sizeof(*fctx), GFP_KERNEL);
 	if (!fctx)
 		return -ENOMEM;
 
-	nouveau_fence_context_new(&fctx->base);
+	nouveau_fence_context_new(chan, &fctx->base);
 	fctx->base.emit = nv84_fence_emit;
 	fctx->base.sync = nv84_fence_sync;
 	fctx->base.read = nv84_fence_read;
 	fctx->base.emit32 = nv84_fence_emit32;
 	fctx->base.sync32 = nv84_fence_sync32;
+	fctx->base.sequence = nv84_fence_read(chan);
 
-	ret = nouveau_bo_vma_add(priv->bo, client->vm, &fctx->vma);
-	if (ret == 0) {
-		ret = nouveau_bo_vma_add(priv->bo_gart, client->vm,
-					&fctx->vma_gart);
-	}
-
-	/* map display semaphore buffers into channel's vm */
-	for (i = 0; !ret && i < chan->drm->dev->mode_config.num_crtc; i++) {
-		struct nouveau_bo *bo = nv50_display_crtc_sema(chan->drm->dev, i);
-		ret = nouveau_bo_vma_add(bo, client->vm, &fctx->dispc_vma[i]);
-	}
-
-	nouveau_bo_wr32(priv->bo, fifo->chid * 16/4, 0x00000000);
+	mutex_lock(&priv->mutex);
+	ret = nouveau_vma_new(priv->bo, chan->vmm, &fctx->vma);
+	mutex_unlock(&priv->mutex);
 
 	if (ret)
 		nv84_fence_context_del(chan);
@@ -178,13 +155,12 @@ nv84_fence_context_new(struct nouveau_channel *chan)
 static bool
 nv84_fence_suspend(struct nouveau_drm *drm)
 {
-	struct nouveau_fifo *pfifo = nouveau_fifo(drm->device);
 	struct nv84_fence_priv *priv = drm->fence;
 	int i;
 
-	priv->suspend = vmalloc((pfifo->max + 1) * sizeof(u32));
+	priv->suspend = vmalloc(array_size(sizeof(u32), drm->chan_total));
 	if (priv->suspend) {
-		for (i = 0; i <= pfifo->max; i++)
+		for (i = 0; i < drm->chan_total; i++)
 			priv->suspend[i] = nouveau_bo_rd32(priv->bo, i*4);
 	}
 
@@ -194,12 +170,11 @@ nv84_fence_suspend(struct nouveau_drm *drm)
 static void
 nv84_fence_resume(struct nouveau_drm *drm)
 {
-	struct nouveau_fifo *pfifo = nouveau_fifo(drm->device);
 	struct nv84_fence_priv *priv = drm->fence;
 	int i;
 
 	if (priv->suspend) {
-		for (i = 0; i <= pfifo->max; i++)
+		for (i = 0; i < drm->chan_total; i++)
 			nouveau_bo_wr32(priv->bo, i*4, priv->suspend[i]);
 		vfree(priv->suspend);
 		priv->suspend = NULL;
@@ -210,10 +185,6 @@ static void
 nv84_fence_destroy(struct nouveau_drm *drm)
 {
 	struct nv84_fence_priv *priv = drm->fence;
-	nouveau_bo_unmap(priv->bo_gart);
-	if (priv->bo_gart)
-		nouveau_bo_unpin(priv->bo_gart);
-	nouveau_bo_ref(NULL, &priv->bo_gart);
 	nouveau_bo_unmap(priv->bo);
 	if (priv->bo)
 		nouveau_bo_unpin(priv->bo);
@@ -225,8 +196,8 @@ nv84_fence_destroy(struct nouveau_drm *drm)
 int
 nv84_fence_create(struct nouveau_drm *drm)
 {
-	struct nouveau_fifo *pfifo = nouveau_fifo(drm->device);
 	struct nv84_fence_priv *priv;
+	u32 domain;
 	int ret;
 
 	priv = drm->fence = kzalloc(sizeof(*priv), GFP_KERNEL);
@@ -239,13 +210,22 @@ nv84_fence_create(struct nouveau_drm *drm)
 	priv->base.context_new = nv84_fence_context_new;
 	priv->base.context_del = nv84_fence_context_del;
 
-	init_waitqueue_head(&priv->base.waiting);
 	priv->base.uevent = true;
 
-	ret = nouveau_bo_new(drm->dev, 16 * (pfifo->max + 1), 0,
-			     TTM_PL_FLAG_VRAM, 0, 0, NULL, &priv->bo);
+	mutex_init(&priv->mutex);
+
+	/* Use VRAM if there is any ; otherwise fallback to system memory */
+	domain = drm->client.device.info.ram_size != 0 ?
+		NOUVEAU_GEM_DOMAIN_VRAM :
+		 /*
+		  * fences created in sysmem must be non-cached or we
+		  * will lose CPU/GPU coherency!
+		  */
+		NOUVEAU_GEM_DOMAIN_GART | NOUVEAU_GEM_DOMAIN_COHERENT;
+	ret = nouveau_bo_new(&drm->client, 16 * drm->chan_total, 0,
+			     domain, 0, 0, NULL, NULL, &priv->bo);
 	if (ret == 0) {
-		ret = nouveau_bo_pin(priv->bo, TTM_PL_FLAG_VRAM);
+		ret = nouveau_bo_pin(priv->bo, domain, false);
 		if (ret == 0) {
 			ret = nouveau_bo_map(priv->bo);
 			if (ret)
@@ -253,21 +233,6 @@ nv84_fence_create(struct nouveau_drm *drm)
 		}
 		if (ret)
 			nouveau_bo_ref(NULL, &priv->bo);
-	}
-
-	if (ret == 0)
-		ret = nouveau_bo_new(drm->dev, 16 * (pfifo->max + 1), 0,
-				     TTM_PL_FLAG_TT, 0, 0, NULL,
-				     &priv->bo_gart);
-	if (ret == 0) {
-		ret = nouveau_bo_pin(priv->bo_gart, TTM_PL_FLAG_TT);
-		if (ret == 0) {
-			ret = nouveau_bo_map(priv->bo_gart);
-			if (ret)
-				nouveau_bo_unpin(priv->bo_gart);
-		}
-		if (ret)
-			nouveau_bo_ref(NULL, &priv->bo_gart);
 	}
 
 	if (ret)

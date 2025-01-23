@@ -1,18 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2005-2010 Brocade Communications Systems, Inc.
+ * Copyright (c) 2005-2014 Brocade Communications Systems, Inc.
+ * Copyright (c) 2014- QLogic Corporation.
  * All rights reserved
- * www.brocade.com
+ * www.qlogic.com
  *
- * Linux driver for Brocade Fibre Channel Host Bus Adapter.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License (GPL) Version 2 as
- * published by the Free Software Foundation
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
+ * Linux driver for QLogic BR-series Fibre Channel Host Bus Adapter.
  */
 
 /*
@@ -26,7 +19,7 @@
 #include <linux/fs.h>
 #include <linux/pci.h>
 #include <linux/firmware.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/fcntl.h>
 
 #include "bfad_drv.h"
@@ -57,15 +50,15 @@ int		pcie_max_read_reqsz;
 int		bfa_debugfs_enable = 1;
 int		msix_disable_cb = 0, msix_disable_ct = 0;
 int		max_xfer_size = BFAD_MAX_SECTORS >> 1;
-int		max_rport_logins = BFA_FCS_MAX_RPORT_LOGINS;
+static int	max_rport_logins = BFA_FCS_MAX_RPORT_LOGINS;
 
 /* Firmware releated */
 u32	bfi_image_cb_size, bfi_image_ct_size, bfi_image_ct2_size;
 u32	*bfi_image_cb, *bfi_image_ct, *bfi_image_ct2;
 
-#define BFAD_FW_FILE_CB		"cbfw-3.2.3.0.bin"
-#define BFAD_FW_FILE_CT		"ctfw-3.2.3.0.bin"
-#define BFAD_FW_FILE_CT2	"ct2fw-3.2.3.0.bin"
+#define BFAD_FW_FILE_CB		"cbfw-3.2.5.1.bin"
+#define BFAD_FW_FILE_CT		"ctfw-3.2.5.1.bin"
+#define BFAD_FW_FILE_CT2	"ct2fw-3.2.5.1.bin"
 
 static u32 *bfad_load_fwimg(struct pci_dev *pdev);
 static void bfad_free_fwimg(void);
@@ -130,13 +123,9 @@ MODULE_PARM_DESC(bfa_linkup_delay, "Link up delay, default=30 secs for "
 			"boot port. Otherwise 10 secs in RHEL4 & 0 for "
 			"[RHEL5, SLES10, ESX40] Range[>0]");
 module_param(msix_disable_cb, int, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(msix_disable_cb, "Disable Message Signaled Interrupts "
-			"for Brocade-415/425/815/825 cards, default=0, "
-			" Range[false:0|true:1]");
+MODULE_PARM_DESC(msix_disable_cb, "Disable Message Signaled Interrupts for QLogic-415/425/815/825 cards, default=0 Range[false:0|true:1]");
 module_param(msix_disable_ct, int, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(msix_disable_ct, "Disable Message Signaled Interrupts "
-			"if possible for Brocade-1010/1020/804/1007/902/1741 "
-			"cards, default=0, Range[false:0|true:1]");
+MODULE_PARM_DESC(msix_disable_ct, "Disable Message Signaled Interrupts if possible for QLogic-1010/1020/804/1007/902/1741 cards, default=0, Range[false:0|true:1]");
 module_param(fdmi_enable, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(fdmi_enable, "Enables fdmi registration, default=1, "
 				"Range[false:0|true:1]");
@@ -507,7 +496,7 @@ bfa_fcb_pbc_vport_create(struct bfad_s *bfad, struct bfi_pbc_vport_s pbc_vport)
 	struct bfad_vport_s   *vport;
 	int rc;
 
-	vport = kzalloc(sizeof(struct bfad_vport_s), GFP_KERNEL);
+	vport = kzalloc(sizeof(struct bfad_vport_s), GFP_ATOMIC);
 	if (!vport) {
 		bfa_trc(bfad, 0);
 		return;
@@ -613,13 +602,12 @@ bfad_hal_mem_alloc(struct bfad_s *bfad)
 	/* Iterate through the KVA meminfo queue */
 	list_for_each(km_qe, &kva_info->qe) {
 		kva_elem = (struct bfa_mem_kva_s *) km_qe;
-		kva_elem->kva = vmalloc(kva_elem->mem_len);
+		kva_elem->kva = vzalloc(kva_elem->mem_len);
 		if (kva_elem->kva == NULL) {
 			bfad_hal_mem_release(bfad);
 			rc = BFA_STATUS_ENOMEM;
 			goto ext;
 		}
-		memset(kva_elem->kva, 0, kva_elem->mem_len);
 	}
 
 	/* Iterate through the DMA meminfo queue */
@@ -695,9 +683,9 @@ ext:
 }
 
 void
-bfad_bfa_tmo(unsigned long data)
+bfad_bfa_tmo(struct timer_list *t)
 {
-	struct bfad_s	      *bfad = (struct bfad_s *) data;
+	struct bfad_s	      *bfad = from_timer(bfad, t, hal_tmo);
 	unsigned long	flags;
 	struct list_head	       doneq;
 
@@ -722,9 +710,7 @@ bfad_bfa_tmo(unsigned long data)
 void
 bfad_init_timer(struct bfad_s *bfad)
 {
-	init_timer(&bfad->hal_tmo);
-	bfad->hal_tmo.function = bfad_bfa_tmo;
-	bfad->hal_tmo.data = (unsigned long)bfad;
+	timer_setup(&bfad->hal_tmo, bfad_bfa_tmo, 0);
 
 	mod_timer(&bfad->hal_tmo,
 		  jiffies + msecs_to_jiffies(BFA_TIMER_FREQ));
@@ -733,7 +719,7 @@ bfad_init_timer(struct bfad_s *bfad)
 int
 bfad_pci_init(struct pci_dev *pdev, struct bfad_s *bfad)
 {
-	int		rc = -ENODEV;
+	int rc = -ENODEV;
 
 	if (pci_enable_device(pdev)) {
 		printk(KERN_ERR "pci_enable_device fail %p\n", pdev);
@@ -745,24 +731,19 @@ bfad_pci_init(struct pci_dev *pdev, struct bfad_s *bfad)
 
 	pci_set_master(pdev);
 
-
-	if ((pci_set_dma_mask(pdev, DMA_BIT_MASK(64)) != 0) ||
-	    (pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64)) != 0)) {
-		if ((pci_set_dma_mask(pdev, DMA_BIT_MASK(32)) != 0) ||
-		   (pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32)) != 0)) {
-			printk(KERN_ERR "pci_set_dma_mask fail %p\n", pdev);
-			goto out_release_region;
-		}
+	rc = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
+	if (rc) {
+		rc = -ENODEV;
+		printk(KERN_ERR "dma_set_mask_and_coherent fail %p\n", pdev);
+		goto out_release_region;
 	}
-
-	/* Enable PCIE Advanced Error Recovery (AER) if kernel supports */
-	pci_enable_pcie_error_reporting(pdev);
 
 	bfad->pci_bar0_kva = pci_iomap(pdev, 0, pci_resource_len(pdev, 0));
 	bfad->pci_bar2_kva = pci_iomap(pdev, 2, pci_resource_len(pdev, 2));
 
 	if (bfad->pci_bar0_kva == NULL) {
 		printk(KERN_ERR "Fail to map bar0\n");
+		rc = -ENODEV;
 		goto out_release_region;
 	}
 
@@ -817,8 +798,6 @@ bfad_pci_uninit(struct pci_dev *pdev, struct bfad_s *bfad)
 	pci_iounmap(pdev, bfad->pci_bar0_kva);
 	pci_iounmap(pdev, bfad->pci_bar2_kva);
 	pci_release_regions(pdev);
-	/* Disable PCIE Advanced Error Recovery (AER) */
-	pci_disable_pcie_error_reporting(pdev);
 	pci_disable_device(pdev);
 }
 
@@ -838,8 +817,7 @@ bfad_drv_init(struct bfad_s *bfad)
 		printk(KERN_WARNING "bfad%d bfad_hal_mem_alloc failure\n",
 		       bfad->inst_no);
 		printk(KERN_WARNING
-			"Not enough memory to attach all Brocade HBA ports, %s",
-			"System may need more memory.\n");
+			"Not enough memory to attach all QLogic BR-series HBA ports. System may need more memory.\n");
 		return BFA_STATUS_FAILED;
 	}
 
@@ -987,20 +965,20 @@ bfad_start_ops(struct bfad_s *bfad) {
 
 	/* Fill the driver_info info to fcs*/
 	memset(&driver_info, 0, sizeof(driver_info));
-	strncpy(driver_info.version, BFAD_DRIVER_VERSION,
-		sizeof(driver_info.version) - 1);
+	strscpy(driver_info.version, BFAD_DRIVER_VERSION,
+		sizeof(driver_info.version));
 	if (host_name)
-		strncpy(driver_info.host_machine_name, host_name,
-			sizeof(driver_info.host_machine_name) - 1);
+		strscpy(driver_info.host_machine_name, host_name,
+			sizeof(driver_info.host_machine_name));
 	if (os_name)
-		strncpy(driver_info.host_os_name, os_name,
-			sizeof(driver_info.host_os_name) - 1);
+		strscpy(driver_info.host_os_name, os_name,
+			sizeof(driver_info.host_os_name));
 	if (os_patch)
-		strncpy(driver_info.host_os_patch, os_patch,
-			sizeof(driver_info.host_os_patch) - 1);
+		strscpy(driver_info.host_os_patch, os_patch,
+			sizeof(driver_info.host_os_patch));
 
-	strncpy(driver_info.os_device_name, bfad->pci_name,
-		sizeof(driver_info.os_device_name) - 1);
+	strscpy(driver_info.os_device_name, bfad->pci_name,
+		sizeof(driver_info.os_device_name));
 
 	/* FCS driver info init */
 	spin_lock_irqsave(&bfad->bfad_lock, flags);
@@ -1079,22 +1057,18 @@ bfad_start_ops(struct bfad_s *bfad) {
 int
 bfad_worker(void *ptr)
 {
-	struct bfad_s *bfad;
-	unsigned long   flags;
+	struct bfad_s *bfad = ptr;
+	unsigned long flags;
 
-	bfad = (struct bfad_s *)ptr;
+	if (kthread_should_stop())
+		return 0;
 
-	while (!kthread_should_stop()) {
+	/* Send event BFAD_E_INIT_SUCCESS */
+	bfa_sm_send_event(bfad, BFAD_E_INIT_SUCCESS);
 
-		/* Send event BFAD_E_INIT_SUCCESS */
-		bfa_sm_send_event(bfad, BFAD_E_INIT_SUCCESS);
-
-		spin_lock_irqsave(&bfad->bfad_lock, flags);
-		bfad->bfad_tsk = NULL;
-		spin_unlock_irqrestore(&bfad->bfad_lock, flags);
-
-		break;
-	}
+	spin_lock_irqsave(&bfad->bfad_lock, flags);
+	bfad->bfad_tsk = NULL;
+	spin_unlock_irqrestore(&bfad->bfad_lock, flags);
 
 	return 0;
 }
@@ -1219,7 +1193,7 @@ bfad_install_msix_handler(struct bfad_s *bfad)
 int
 bfad_setup_intr(struct bfad_s *bfad)
 {
-	int error = 0;
+	int error;
 	u32 mask = 0, i, num_bit = 0, max_bit = 0;
 	struct msix_entry msix_entries[MAX_MSIX_ENTRY];
 	struct pci_dev *pdev = bfad->pcidev;
@@ -1234,34 +1208,24 @@ bfad_setup_intr(struct bfad_s *bfad)
 	if ((bfa_asic_id_ctc(pdev->device) && !msix_disable_ct) ||
 	   (bfa_asic_id_cb(pdev->device) && !msix_disable_cb)) {
 
-		error = pci_enable_msix(bfad->pcidev, msix_entries, bfad->nvec);
-		if (error) {
-			/* In CT1 & CT2, try to allocate just one vector */
-			if (bfa_asic_id_ctc(pdev->device)) {
-				printk(KERN_WARNING "bfa %s: trying one msix "
-				       "vector failed to allocate %d[%d]\n",
-				       bfad->pci_name, bfad->nvec, error);
-				bfad->nvec = 1;
-				error = pci_enable_msix(bfad->pcidev,
-						msix_entries, bfad->nvec);
-			}
+		error = pci_enable_msix_exact(bfad->pcidev,
+					      msix_entries, bfad->nvec);
+		/* In CT1 & CT2, try to allocate just one vector */
+		if (error == -ENOSPC && bfa_asic_id_ctc(pdev->device)) {
+			printk(KERN_WARNING "bfa %s: trying one msix "
+			       "vector failed to allocate %d[%d]\n",
+			       bfad->pci_name, bfad->nvec, error);
+			bfad->nvec = 1;
+			error = pci_enable_msix_exact(bfad->pcidev,
+						      msix_entries, 1);
+		}
 
-			/*
-			 * Only error number of vector is available.
-			 * We don't have a mechanism to map multiple
-			 * interrupts into one vector, so even if we
-			 * can try to request less vectors, we don't
-			 * know how to associate interrupt events to
-			 *  vectors. Linux doesn't duplicate vectors
-			 * in the MSIX table for this case.
-			 */
-			if (error) {
-				printk(KERN_WARNING "bfad%d: "
-				       "pci_enable_msix failed (%d), "
-				       "use line based.\n",
-					bfad->inst_no, error);
-				goto line_based;
-			}
+		if (error) {
+			printk(KERN_WARNING "bfad%d: "
+			       "pci_enable_msix_exact failed (%d), "
+			       "use line based.\n",
+				bfad->inst_no, error);
+			goto line_based;
 		}
 
 		/* Disable INTX in MSI-X mode */
@@ -1281,20 +1245,18 @@ bfad_setup_intr(struct bfad_s *bfad)
 
 		bfad->bfad_flags |= BFAD_MSIX_ON;
 
-		return error;
+		return 0;
 	}
 
 line_based:
-	error = 0;
-	if (request_irq
-	    (bfad->pcidev->irq, (irq_handler_t) bfad_intx, BFAD_IRQ_FLAGS,
-	     BFAD_DRIVER_NAME, bfad) != 0) {
-		/* Enable interrupt handler failed */
-		return 1;
-	}
+	error = request_irq(bfad->pcidev->irq, (irq_handler_t)bfad_intx,
+			    BFAD_IRQ_FLAGS, BFAD_DRIVER_NAME, bfad);
+	if (error)
+		return error;
+
 	bfad->bfad_flags |= BFAD_INTX_ON;
 
-	return error;
+	return 0;
 }
 
 void
@@ -1518,8 +1480,7 @@ bfad_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
 	return ret;
 }
 
-int
-restart_bfa(struct bfad_s *bfad)
+static int restart_bfa(struct bfad_s *bfad)
 {
 	unsigned long flags;
 	struct pci_dev *pdev = bfad->pcidev;
@@ -1561,6 +1522,7 @@ bfad_pci_slot_reset(struct pci_dev *pdev)
 {
 	struct bfad_s *bfad = pci_get_drvdata(pdev);
 	u8 byte;
+	int rc;
 
 	dev_printk(KERN_ERR, &pdev->dev,
 		   "bfad_pci_slot_reset flags: 0x%x\n", bfad->bfad_flags);
@@ -1588,16 +1550,13 @@ bfad_pci_slot_reset(struct pci_dev *pdev)
 	pci_save_state(pdev);
 	pci_set_master(pdev);
 
-	if (pci_set_dma_mask(bfad->pcidev, DMA_BIT_MASK(64)) != 0)
-		if (pci_set_dma_mask(bfad->pcidev, DMA_BIT_MASK(32)) != 0)
-			goto out_disable_device;
-
-	pci_cleanup_aer_uncorrect_error_status(pdev);
+	rc = dma_set_mask_and_coherent(&bfad->pcidev->dev, DMA_BIT_MASK(64));
+	if (rc)
+		goto out_disable_device;
 
 	if (restart_bfa(bfad) == -1)
 		goto out_disable_device;
 
-	pci_enable_pcie_error_reporting(pdev);
 	dev_printk(KERN_WARNING, &pdev->dev,
 		   "slot_reset completed  flags: 0x%x!\n", bfad->bfad_flags);
 
@@ -1726,7 +1685,7 @@ bfad_init(void)
 {
 	int		error = 0;
 
-	printk(KERN_INFO "Brocade BFA FC/FCOE SCSI driver - version: %s\n",
+	pr_info("QLogic BR-series BFA FC/FCOE SCSI driver - version: %s\n",
 			BFAD_DRIVER_VERSION);
 
 	if (num_sgpgs > 0)
@@ -1833,6 +1792,6 @@ bfad_free_fwimg(void)
 module_init(bfad_init);
 module_exit(bfad_exit);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Brocade Fibre Channel HBA Driver" BFAD_PROTO_NAME);
-MODULE_AUTHOR("Brocade Communications Systems, Inc.");
+MODULE_DESCRIPTION("QLogic BR-series Fibre Channel HBA Driver" BFAD_PROTO_NAME);
+MODULE_AUTHOR("QLogic Corporation");
 MODULE_VERSION(BFAD_DRIVER_VERSION);

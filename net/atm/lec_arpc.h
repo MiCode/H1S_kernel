@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Lec arp cache
  *
@@ -43,11 +44,11 @@ struct lec_arp_table {
 	u8 *tlvs;
 	u32 sizeoftlvs;			/*
 					 * LANE2: Each MAC address can have TLVs
-					 * associated with it.  sizeoftlvs tells the
+					 * associated with it.  sizeoftlvs tells
 					 * the length of the tlvs array
 					 */
 	struct sk_buff_head tx_wait;	/* wait queue for outgoing packets */
-	atomic_t usage;			/* usage count */
+	refcount_t usage;		/* usage count */
 };
 
 /*

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_HEXAGON_FUTEX_H
 #define _ASM_HEXAGON_FUTEX_H
 
@@ -15,12 +16,12 @@
 	    /* For example: %1 = %4 */ \
 	    insn \
 	"2: memw_locked(%3,p2) = %1;\n" \
-	"   if !p2 jump 1b;\n" \
+	"   if (!p2) jump 1b;\n" \
 	"   %1 = #0;\n" \
 	"3:\n" \
 	".section .fixup,\"ax\"\n" \
 	"4: %1 = #%5;\n" \
-	"   jump 3b\n" \
+	"   jump ##3b\n" \
 	".previous\n" \
 	".section __ex_table,\"a\"\n" \
 	".long 1b,4b,2b,4b\n" \
@@ -31,20 +32,12 @@
 
 
 static inline int
-futex_atomic_op_inuser(int encoded_op, int __user *uaddr)
+arch_futex_atomic_op_inuser(int op, int oparg, int *oval, u32 __user *uaddr)
 {
-	int op = (encoded_op >> 28) & 7;
-	int cmp = (encoded_op >> 24) & 15;
-	int oparg = (encoded_op << 8) >> 20;
-	int cmparg = (encoded_op << 20) >> 20;
 	int oldval = 0, ret;
-	if (encoded_op & (FUTEX_OP_OPARG_SHIFT << 28))
-		oparg = 1 << oparg;
 
-	if (!access_ok(VERIFY_WRITE, uaddr, sizeof(int)))
+	if (!access_ok(uaddr, sizeof(u32)))
 		return -EFAULT;
-
-	pagefault_disable();
 
 	switch (op) {
 	case FUTEX_OP_SET:
@@ -70,32 +63,9 @@ futex_atomic_op_inuser(int encoded_op, int __user *uaddr)
 		ret = -ENOSYS;
 	}
 
-	pagefault_enable();
+	if (!ret)
+		*oval = oldval;
 
-	if (!ret) {
-		switch (cmp) {
-		case FUTEX_OP_CMP_EQ:
-			ret = (oldval == cmparg);
-			break;
-		case FUTEX_OP_CMP_NE:
-			ret = (oldval != cmparg);
-			break;
-		case FUTEX_OP_CMP_LT:
-			ret = (oldval < cmparg);
-			break;
-		case FUTEX_OP_CMP_GE:
-			ret = (oldval >= cmparg);
-			break;
-		case FUTEX_OP_CMP_LE:
-			ret = (oldval <= cmparg);
-			break;
-		case FUTEX_OP_CMP_GT:
-			ret = (oldval > cmparg);
-			break;
-		default:
-			ret = -ENOSYS;
-		}
-	}
 	return ret;
 }
 
@@ -106,21 +76,21 @@ futex_atomic_cmpxchg_inatomic(u32 *uval, u32 __user *uaddr, u32 oldval,
 	int prev;
 	int ret;
 
-	if (!access_ok(VERIFY_WRITE, uaddr, sizeof(u32)))
+	if (!access_ok(uaddr, sizeof(u32)))
 		return -EFAULT;
 
 	__asm__ __volatile__ (
 	"1: %1 = memw_locked(%3)\n"
 	"   {\n"
 	"      p2 = cmp.eq(%1,%4)\n"
-	"      if !p2.new jump:NT 3f\n"
+	"      if (!p2.new) jump:NT 3f\n"
 	"   }\n"
 	"2: memw_locked(%3,p2) = %5\n"
-	"   if !p2 jump 1b\n"
+	"   if (!p2) jump 1b\n"
 	"3:\n"
 	".section .fixup,\"ax\"\n"
 	"4: %0 = #%6\n"
-	"   jump 3b\n"
+	"   jump ##3b\n"
 	".previous\n"
 	".section __ex_table,\"a\"\n"
 	".long 1b,4b,2b,4b\n"

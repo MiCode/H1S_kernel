@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * w6692.c     mISDN driver for Winbond w6692 based cards
  *
@@ -5,20 +6,6 @@
  *             based on the w6692 I4L driver from Petr Novak <petr.novak@i.cz>
  *
  * Copyright 2009  by Karsten Keil <keil@isdn4linux.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  */
 
 #include <linux/interrupt.h>
@@ -52,10 +39,7 @@ static const struct w6692map  w6692_map[] =
 	{W6692_USR, "USR W6692"}
 };
 
-#ifndef PCI_VENDOR_ID_USR
-#define PCI_VENDOR_ID_USR	0x16ec
 #define PCI_DEVICE_ID_USR_6692	0x3409
-#endif
 
 struct w6692_ch {
 	struct bchannel		bch;
@@ -101,7 +85,7 @@ _set_debug(struct w6692_hw *card)
 }
 
 static int
-set_debug(const char *val, struct kernel_param *kp)
+set_debug(const char *val, const struct kernel_param *kp)
 {
 	int ret;
 	struct w6692_hw *card;
@@ -311,7 +295,6 @@ W6692_fill_Dfifo(struct w6692_hw *card)
 		pr_debug("%s: fill_Dfifo dbusytimer running\n", card->name);
 		del_timer(&dch->timer);
 	}
-	init_timer(&dch->timer);
 	dch->timer.expires = jiffies + ((DBUSY_TIMER_VALUE * HZ) / 1000);
 	add_timer(&dch->timer);
 	if (debug & DEBUG_HW_DFIFO) {
@@ -373,8 +356,7 @@ handle_rxD(struct w6692_hw *card) {
 			card->dch.err_rx++;
 #endif
 		}
-		if (card->dch.rx_skb)
-			dev_kfree_skb(card->dch.rx_skb);
+		dev_kfree_skb(card->dch.rx_skb);
 		card->dch.rx_skb = NULL;
 		WriteW6692(card, W_D_CMDR, W_D_CMDR_RACK | W_D_CMDR_RRST);
 	} else {
@@ -393,8 +375,7 @@ handle_txD(struct w6692_hw *card) {
 	if (card->dch.tx_skb && card->dch.tx_idx < card->dch.tx_skb->len) {
 		W6692_fill_Dfifo(card);
 	} else {
-		if (card->dch.tx_skb)
-			dev_kfree_skb(card->dch.tx_skb);
+		dev_kfree_skb(card->dch.tx_skb);
 		if (get_next_dframe(&card->dch))
 			W6692_fill_Dfifo(card);
 	}
@@ -485,8 +466,8 @@ W6692_empty_Bfifo(struct w6692_ch *wch, int count)
 		WriteW6692B(wch, W_B_CMDR, W_B_CMDR_RACK | W_B_CMDR_RACT);
 		if (wch->bch.rx_skb)
 			skb_trim(wch->bch.rx_skb, 0);
-		pr_warning("%s.B%d: No bufferspace for %d bytes\n",
-			   card->name, wch->bch.nr, count);
+		pr_warn("%s.B%d: No bufferspace for %d bytes\n",
+			card->name, wch->bch.nr, count);
 		return;
 	}
 	ptr = skb_put(wch->bch.rx_skb, count);
@@ -653,8 +634,7 @@ send_next(struct w6692_ch *wch)
 	if (wch->bch.tx_skb && wch->bch.tx_idx < wch->bch.tx_skb->len) {
 		W6692_fill_Bfifo(wch);
 	} else {
-		if (wch->bch.tx_skb)
-			dev_kfree_skb(wch->bch.tx_skb);
+		dev_kfree_skb(wch->bch.tx_skb);
 		if (get_next_bframe(&wch->bch)) {
 			W6692_fill_Bfifo(wch);
 			test_and_clear_bit(FLG_TX_EMPTY, &wch->bch.Flags);
@@ -749,8 +729,8 @@ W6692B_interrupt(struct w6692_hw *card, int ch)
 				 wch->bch.nr, star);
 		}
 		if (star & W_B_STAR_XDOW) {
-			pr_warning("%s: B%d XDOW proto=%x\n", card->name,
-				   wch->bch.nr, wch->bch.state);
+			pr_warn("%s: B%d XDOW proto=%x\n", card->name,
+				wch->bch.nr, wch->bch.state);
 #ifdef ERROR_STATISTIC
 			wch->bch.err_xdu++;
 #endif
@@ -767,8 +747,8 @@ W6692B_interrupt(struct w6692_hw *card, int ch)
 			return; /* handle XDOW only once */
 	}
 	if (stat & W_B_EXI_XDUN) {
-		pr_warning("%s: B%d XDUN proto=%x\n", card->name,
-			   wch->bch.nr, wch->bch.state);
+		pr_warn("%s: B%d XDUN proto=%x\n", card->name,
+			wch->bch.nr, wch->bch.state);
 #ifdef ERROR_STATISTIC
 		wch->bch.err_xdu++;
 #endif
@@ -819,8 +799,9 @@ w6692_irq(int intno, void *dev_id)
 }
 
 static void
-dbusy_timer_handler(struct dchannel *dch)
+dbusy_timer_handler(struct timer_list *t)
 {
+	struct dchannel *dch = from_timer(dch, t, timer);
 	struct w6692_hw	*card = dch->hw;
 	int		rbch, star;
 	u_long		flags;
@@ -848,13 +829,11 @@ dbusy_timer_handler(struct dchannel *dch)
 	}
 }
 
-void initW6692(struct w6692_hw *card)
+static void initW6692(struct w6692_hw *card)
 {
 	u8	val;
 
-	card->dch.timer.function = (void *)dbusy_timer_handler;
-	card->dch.timer.data = (u_long)&card->dch;
-	init_timer(&card->dch.timer);
+	timer_setup(&card->dch.timer, dbusy_timer_handler, 0);
 	w6692_mode(&card->bc[0], ISDN_P_NONE);
 	w6692_mode(&card->bc[1], ISDN_P_NONE);
 	WriteW6692(card, W_D_CTL, 0x00);
@@ -1176,10 +1155,10 @@ w6692_l1callback(struct dchannel *dch, u32 cmd)
 }
 
 static int
-open_dchannel(struct w6692_hw *card, struct channel_req *rq)
+open_dchannel(struct w6692_hw *card, struct channel_req *rq, void *caller)
 {
 	pr_debug("%s: %s dev(%d) open from %p\n", card->name, __func__,
-		 card->dch.dev.id, __builtin_return_address(1));
+		 card->dch.dev.id, caller);
 	if (rq->protocol != ISDN_P_TE_S0)
 		return -EINVAL;
 	if (rq->adr.channel == 1)
@@ -1207,7 +1186,7 @@ w6692_dctrl(struct mISDNchannel *ch, u32 cmd, void *arg)
 	case OPEN_CHANNEL:
 		rq = arg;
 		if (rq->protocol == ISDN_P_TE_S0)
-			err = open_dchannel(card, rq);
+			err = open_dchannel(card, rq, __builtin_return_address(0));
 		else
 			err = open_bchannel(card, rq);
 		if (err)
@@ -1399,7 +1378,7 @@ w6692_remove_pci(struct pci_dev *pdev)
 			pr_notice("%s: drvdata already removed\n", __func__);
 }
 
-static struct pci_device_id w6692_ids[] = {
+static const struct pci_device_id w6692_ids[] = {
 	{ PCI_VENDOR_ID_DYNALINK, PCI_DEVICE_ID_DYNALINK_IS64PH,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, (ulong)&w6692_map[0]},
 	{ PCI_VENDOR_ID_WINBOND2, PCI_DEVICE_ID_WINBOND2_6692,

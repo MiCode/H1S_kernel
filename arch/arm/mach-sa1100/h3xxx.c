@@ -1,22 +1,19 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Support for Compaq iPAQ H3100 and H3600 handheld computers (common code)
  *
  * Copyright (c) 2000,1 Compaq Computer Corporation. (Author: Jamey Hicks)
  * Copyright (c) 2009 Dmitry Artamonow <mad_soft@inbox.ru>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #include <linux/kernel.h>
+#include <linux/gpio/machine.h>
 #include <linux/gpio.h>
 #include <linux/gpio_keys.h>
 #include <linux/input.h>
-#include <linux/mfd/htc-egpio.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
+#include <linux/platform_data/gpio-htc-egpio.h>
 #include <linux/platform_data/sa11x0-serial.h>
 #include <linux/platform_device.h>
 #include <linux/serial_core.h>
@@ -25,39 +22,9 @@
 #include <asm/mach/map.h>
 
 #include <mach/h3xxx.h>
+#include <mach/irqs.h>
 
 #include "generic.h"
-
-void h3xxx_init_gpio(struct gpio_default_state *s, size_t n)
-{
-	while (n--) {
-		const char *name = s->name;
-		int err;
-
-		if (!name)
-			name = "[init]";
-		err = gpio_request(s->gpio, name);
-		if (err) {
-			printk(KERN_ERR "gpio%u: unable to request: %d\n",
-				s->gpio, err);
-			continue;
-		}
-		if (s->mode >= 0) {
-			err = gpio_direction_output(s->gpio, s->mode);
-		} else {
-			err = gpio_direction_input(s->gpio);
-		}
-		if (err) {
-			printk(KERN_ERR "gpio%u: unable to set direction: %d\n",
-				s->gpio, err);
-			continue;
-		}
-		if (!s->name)
-			gpio_free(s->gpio);
-		s++;
-	}
-}
-
 
 /*
  * H3xxx flash support
@@ -116,30 +83,6 @@ static struct resource h3xxx_flash_resource =
 /*
  * H3xxx uart support
  */
-static void h3xxx_uart_set_mctrl(struct uart_port *port, u_int mctrl)
-{
-	if (port->mapbase == _Ser3UTCR0) {
-		gpio_set_value(H3XXX_GPIO_COM_RTS, !(mctrl & TIOCM_RTS));
-	}
-}
-
-static u_int h3xxx_uart_get_mctrl(struct uart_port *port)
-{
-	u_int ret = TIOCM_CD | TIOCM_CTS | TIOCM_DSR;
-
-	if (port->mapbase == _Ser3UTCR0) {
-		/*
-		 * DCD and CTS bits are inverted in GPLR by RS232 transceiver
-		 */
-		if (gpio_get_value(H3XXX_GPIO_COM_DCD))
-			ret &= ~TIOCM_CD;
-		if (gpio_get_value(H3XXX_GPIO_COM_CTS))
-			ret &= ~TIOCM_CTS;
-	}
-
-	return ret;
-}
-
 static void h3xxx_uart_pm(struct uart_port *port, u_int state, u_int oldstate)
 {
 	if (port->mapbase == _Ser3UTCR0) {
@@ -172,10 +115,18 @@ static int h3xxx_uart_set_wake(struct uart_port *port, u_int enable)
 }
 
 static struct sa1100_port_fns h3xxx_port_fns __initdata = {
-	.set_mctrl	= h3xxx_uart_set_mctrl,
-	.get_mctrl	= h3xxx_uart_get_mctrl,
 	.pm		= h3xxx_uart_pm,
 	.set_wake	= h3xxx_uart_set_wake,
+};
+
+static struct gpiod_lookup_table h3xxx_uart3_gpio_table = {
+	.dev_id = "sa11x0-uart.3",
+	.table = {
+		GPIO_LOOKUP("gpio", H3XXX_GPIO_COM_DCD, "dcd", GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("gpio", H3XXX_GPIO_COM_CTS, "cts", GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("gpio", H3XXX_GPIO_COM_RTS, "rts", GPIO_ACTIVE_LOW),
+		{ },
+	},
 };
 
 /*
@@ -248,13 +199,44 @@ static struct platform_device h3xxx_keys = {
 	},
 };
 
+static struct resource h3xxx_micro_resources[] = {
+	DEFINE_RES_MEM(0x80010000, SZ_4K),
+	DEFINE_RES_MEM(0x80020000, SZ_4K),
+	DEFINE_RES_IRQ(IRQ_Ser1UART),
+};
+
+struct platform_device h3xxx_micro_asic = {
+	.name = "ipaq-h3xxx-micro",
+	.id = -1,
+	.resource = h3xxx_micro_resources,
+	.num_resources = ARRAY_SIZE(h3xxx_micro_resources),
+};
+
 static struct platform_device *h3xxx_devices[] = {
 	&h3xxx_egpio,
 	&h3xxx_keys,
+	&h3xxx_micro_asic,
+};
+
+static struct gpiod_lookup_table h3xxx_pcmcia_gpio_table = {
+	.dev_id = "sa11x0-pcmcia",
+	.table = {
+		GPIO_LOOKUP("gpio", H3XXX_GPIO_PCMCIA_CD0,
+			    "pcmcia0-detect", GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("gpio", H3XXX_GPIO_PCMCIA_IRQ0,
+			    "pcmcia0-ready", GPIO_ACTIVE_HIGH),
+		GPIO_LOOKUP("gpio", H3XXX_GPIO_PCMCIA_CD1,
+			    "pcmcia1-detect", GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("gpio", H3XXX_GPIO_PCMCIA_IRQ1,
+			    "pcmcia1-ready", GPIO_ACTIVE_HIGH),
+		{ },
+	},
 };
 
 void __init h3xxx_mach_init(void)
 {
+	gpiod_add_lookup_table(&h3xxx_pcmcia_gpio_table);
+	gpiod_add_lookup_table(&h3xxx_uart3_gpio_table);
 	sa1100_register_uart_fns(&h3xxx_port_fns);
 	sa11x0_register_mtd(&h3xxx_flash_data, &h3xxx_flash_resource, 1);
 	platform_add_devices(h3xxx_devices, ARRAY_SIZE(h3xxx_devices));

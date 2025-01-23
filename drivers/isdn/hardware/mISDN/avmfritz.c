@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * avm_fritz.c    low level stuff for AVM FRITZ!CARD PCI ISDN cards
  *                Thanks to AVM, Berlin for informations
@@ -5,20 +6,6 @@
  * Author       Karsten Keil <keil@isdn4linux.de>
  *
  * Copyright 2009  by Karsten Keil <keil@isdn4linux.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  */
 #include <linux/interrupt.h>
 #include <linux/module.h>
@@ -156,7 +143,7 @@ _set_debug(struct fritzcard *card)
 }
 
 static int
-set_debug(const char *val, struct kernel_param *kp)
+set_debug(const char *val, const struct kernel_param *kp)
 {
 	int ret;
 	struct fritzcard *card;
@@ -284,7 +271,7 @@ __write_ctrl_pciv2(struct fritzcard *fc, struct hdlc_hw *hdlc, u32 channel) {
 					  AVM_HDLC_STATUS_1));
 }
 
-void
+static void
 write_ctrl(struct bchannel *bch, int which) {
 	struct fritzcard *fc = bch->hw;
 	struct hdlc_hw *hdlc;
@@ -361,6 +348,7 @@ modehdlc(struct bchannel *bch, int protocol)
 	switch (protocol) {
 	case -1: /* used for init */
 		bch->state = -1;
+		fallthrough;
 	case ISDN_P_NONE:
 		if (bch->state == ISDN_P_NONE)
 			break;
@@ -414,8 +402,8 @@ hdlc_empty_fifo(struct bchannel *bch, int count)
 	} else {
 		cnt = bchannel_get_rxbuf(bch, count);
 		if (cnt < 0) {
-			pr_warning("%s.B%d: No bufferspace for %d bytes\n",
-				   fc->name, bch->nr, count);
+			pr_warn("%s.B%d: No bufferspace for %d bytes\n",
+				fc->name, bch->nr, count);
 			return;
 		}
 		p = skb_put(bch->rx_skb, count);
@@ -521,8 +509,7 @@ HDLC_irq_xpr(struct bchannel *bch)
 	if (bch->tx_skb && bch->tx_idx < bch->tx_skb->len) {
 		hdlc_fill_fifo(bch);
 	} else {
-		if (bch->tx_skb)
-			dev_kfree_skb(bch->tx_skb);
+		dev_kfree_skb(bch->tx_skb);
 		if (get_next_bframe(bch)) {
 			hdlc_fill_fifo(bch);
 			test_and_clear_bit(FLG_TX_EMPTY, &bch->Flags);
@@ -551,8 +538,8 @@ HDLC_irq(struct bchannel *bch, u32 stat)
 	}
 	if (stat & HDLC_INT_RPR) {
 		if (stat & HDLC_STAT_RDO) {
-			pr_warning("%s: ch%d stat %x RDO\n",
-				   fc->name, bch->nr, stat);
+			pr_warn("%s: ch%d stat %x RDO\n",
+				fc->name, bch->nr, stat);
 			hdlc->ctrl.sr.xml = 0;
 			hdlc->ctrl.sr.cmd |= HDLC_CMD_RRS;
 			write_ctrl(bch, 1);
@@ -574,8 +561,8 @@ HDLC_irq(struct bchannel *bch, u32 stat)
 				    HDLC_STAT_CRCVFR) {
 					recv_Bchannel(bch, 0, false);
 				} else {
-					pr_warning("%s: got invalid frame\n",
-						   fc->name);
+					pr_warn("%s: got invalid frame\n",
+						fc->name);
 					skb_trim(bch->rx_skb, 0);
 				}
 			}
@@ -587,8 +574,8 @@ handle_tx:
 		 * restart transmitting the whole frame on HDLC
 		 * in transparent mode we send the next data
 		 */
-		pr_warning("%s: ch%d stat %x XDU %s\n", fc->name, bch->nr,
-			   stat, bch->tx_skb ? "tx_skb" : "no tx_skb");
+		pr_warn("%s: ch%d stat %x XDU %s\n", fc->name, bch->nr,
+			stat, bch->tx_skb ? "tx_skb" : "no tx_skb");
 		if (bch->tx_skb && bch->tx_skb->len) {
 			if (!test_bit(FLG_TRANSPARENT, &bch->Flags))
 				bch->tx_idx = 0;
@@ -741,7 +728,7 @@ inithdlc(struct fritzcard *fc)
 	modehdlc(&fc->bch[1], -1);
 }
 
-void
+static void
 clear_pending_hdlc_ints(struct fritzcard *fc)
 {
 	u32 val;
@@ -962,7 +949,7 @@ avm_dctrl(struct mISDNchannel *ch, u32 cmd, void *arg)
 	return err;
 }
 
-int
+static int
 setup_fritz(struct fritzcard *fc)
 {
 	u32 val, ver;
@@ -1142,7 +1129,7 @@ fritz_remove_pci(struct pci_dev *pdev)
 			pr_info("%s: drvdata already removed\n", __func__);
 }
 
-static struct pci_device_id fcpci_ids[] = {
+static const struct pci_device_id fcpci_ids[] = {
 	{ PCI_VENDOR_ID_AVM, PCI_DEVICE_ID_AVM_A1, PCI_ANY_ID, PCI_ANY_ID,
 	  0, 0, (unsigned long) "Fritz!Card PCI"},
 	{ PCI_VENDOR_ID_AVM, PCI_DEVICE_ID_AVM_A1_V2, PCI_ANY_ID, PCI_ANY_ID,

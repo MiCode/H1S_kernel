@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * emc6w201.c - Hardware monitoring driver for the SMSC EMC6W201
  * Copyright (C) 2011  Jean Delvare <jdelvare@suse.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
@@ -56,9 +43,9 @@ enum subfeature { input, min, max };
  */
 
 struct emc6w201_data {
-	struct device *hwmon_dev;
+	struct i2c_client *client;
 	struct mutex update_lock;
-	char valid; /* zero until following fields are valid */
+	bool valid; /* false until following fields are valid */
 	unsigned long last_updated; /* in jiffies */
 
 	/* registers values */
@@ -134,8 +121,8 @@ static int emc6w201_write8(struct i2c_client *client, u8 reg, u8 val)
 
 static struct emc6w201_data *emc6w201_update_device(struct device *dev)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct emc6w201_data *data = i2c_get_clientdata(client);
+	struct emc6w201_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	int nr;
 
 	mutex_lock(&data->update_lock);
@@ -175,7 +162,7 @@ static struct emc6w201_data *emc6w201_update_device(struct device *dev)
 		}
 
 		data->last_updated = jiffies;
-		data->valid = 1;
+		data->valid = true;
 	}
 
 	mutex_unlock(&data->update_lock);
@@ -189,8 +176,8 @@ static struct emc6w201_data *emc6w201_update_device(struct device *dev)
 
 static const s16 nominal_mv[6] = { 2500, 1500, 3300, 5000, 1500, 1500 };
 
-static ssize_t show_in(struct device *dev, struct device_attribute *devattr,
-	char *buf)
+static ssize_t in_show(struct device *dev, struct device_attribute *devattr,
+		       char *buf)
 {
 	struct emc6w201_data *data = emc6w201_update_device(dev);
 	int sf = to_sensor_dev_attr_2(devattr)->index;
@@ -200,11 +187,11 @@ static ssize_t show_in(struct device *dev, struct device_attribute *devattr,
 		       (unsigned)data->in[sf][nr] * nominal_mv[nr] / 0xC0);
 }
 
-static ssize_t set_in(struct device *dev, struct device_attribute *devattr,
-		      const char *buf, size_t count)
+static ssize_t in_store(struct device *dev, struct device_attribute *devattr,
+			const char *buf, size_t count)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct emc6w201_data *data = i2c_get_clientdata(client);
+	struct emc6w201_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	int sf = to_sensor_dev_attr_2(devattr)->index;
 	int nr = to_sensor_dev_attr_2(devattr)->nr;
 	int err;
@@ -215,20 +202,21 @@ static ssize_t set_in(struct device *dev, struct device_attribute *devattr,
 	if (err < 0)
 		return err;
 
-	val = DIV_ROUND_CLOSEST(val * 0xC0, nominal_mv[nr]);
+	val = clamp_val(val, 0, 255 * nominal_mv[nr] / 192);
+	val = DIV_ROUND_CLOSEST(val * 192, nominal_mv[nr]);
 	reg = (sf == min) ? EMC6W201_REG_IN_LOW(nr)
 			  : EMC6W201_REG_IN_HIGH(nr);
 
 	mutex_lock(&data->update_lock);
-	data->in[sf][nr] = clamp_val(val, 0, 255);
+	data->in[sf][nr] = val;
 	err = emc6w201_write8(client, reg, data->in[sf][nr]);
 	mutex_unlock(&data->update_lock);
 
 	return err < 0 ? err : count;
 }
 
-static ssize_t show_temp(struct device *dev, struct device_attribute *devattr,
-	char *buf)
+static ssize_t temp_show(struct device *dev, struct device_attribute *devattr,
+			 char *buf)
 {
 	struct emc6w201_data *data = emc6w201_update_device(dev);
 	int sf = to_sensor_dev_attr_2(devattr)->index;
@@ -237,11 +225,12 @@ static ssize_t show_temp(struct device *dev, struct device_attribute *devattr,
 	return sprintf(buf, "%d\n", (int)data->temp[sf][nr] * 1000);
 }
 
-static ssize_t set_temp(struct device *dev, struct device_attribute *devattr,
-			const char *buf, size_t count)
+static ssize_t temp_store(struct device *dev,
+			  struct device_attribute *devattr, const char *buf,
+			  size_t count)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct emc6w201_data *data = i2c_get_clientdata(client);
+	struct emc6w201_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	int sf = to_sensor_dev_attr_2(devattr)->index;
 	int nr = to_sensor_dev_attr_2(devattr)->nr;
 	int err;
@@ -252,20 +241,21 @@ static ssize_t set_temp(struct device *dev, struct device_attribute *devattr,
 	if (err < 0)
 		return err;
 
-	val /= 1000;
+	val = clamp_val(val, -127000, 127000);
+	val = DIV_ROUND_CLOSEST(val, 1000);
 	reg = (sf == min) ? EMC6W201_REG_TEMP_LOW(nr)
 			  : EMC6W201_REG_TEMP_HIGH(nr);
 
 	mutex_lock(&data->update_lock);
-	data->temp[sf][nr] = clamp_val(val, -127, 128);
+	data->temp[sf][nr] = val;
 	err = emc6w201_write8(client, reg, data->temp[sf][nr]);
 	mutex_unlock(&data->update_lock);
 
 	return err < 0 ? err : count;
 }
 
-static ssize_t show_fan(struct device *dev, struct device_attribute *devattr,
-	char *buf)
+static ssize_t fan_show(struct device *dev, struct device_attribute *devattr,
+			char *buf)
 {
 	struct emc6w201_data *data = emc6w201_update_device(dev);
 	int sf = to_sensor_dev_attr_2(devattr)->index;
@@ -280,11 +270,11 @@ static ssize_t show_fan(struct device *dev, struct device_attribute *devattr,
 	return sprintf(buf, "%u\n", rpm);
 }
 
-static ssize_t set_fan(struct device *dev, struct device_attribute *devattr,
-		       const char *buf, size_t count)
+static ssize_t fan_store(struct device *dev, struct device_attribute *devattr,
+			 const char *buf, size_t count)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct emc6w201_data *data = i2c_get_clientdata(client);
+	struct emc6w201_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	int sf = to_sensor_dev_attr_2(devattr)->index;
 	int nr = to_sensor_dev_attr_2(devattr)->nr;
 	int err;
@@ -310,85 +300,56 @@ static ssize_t set_fan(struct device *dev, struct device_attribute *devattr,
 	return err < 0 ? err : count;
 }
 
-static SENSOR_DEVICE_ATTR_2(in0_input, S_IRUGO, show_in, NULL, 0, input);
-static SENSOR_DEVICE_ATTR_2(in0_min, S_IRUGO | S_IWUSR, show_in, set_in,
-			    0, min);
-static SENSOR_DEVICE_ATTR_2(in0_max, S_IRUGO | S_IWUSR, show_in, set_in,
-			    0, max);
-static SENSOR_DEVICE_ATTR_2(in1_input, S_IRUGO, show_in, NULL, 1, input);
-static SENSOR_DEVICE_ATTR_2(in1_min, S_IRUGO | S_IWUSR, show_in, set_in,
-			    1, min);
-static SENSOR_DEVICE_ATTR_2(in1_max, S_IRUGO | S_IWUSR, show_in, set_in,
-			    1, max);
-static SENSOR_DEVICE_ATTR_2(in2_input, S_IRUGO, show_in, NULL, 2, input);
-static SENSOR_DEVICE_ATTR_2(in2_min, S_IRUGO | S_IWUSR, show_in, set_in,
-			    2, min);
-static SENSOR_DEVICE_ATTR_2(in2_max, S_IRUGO | S_IWUSR, show_in, set_in,
-			    2, max);
-static SENSOR_DEVICE_ATTR_2(in3_input, S_IRUGO, show_in, NULL, 3, input);
-static SENSOR_DEVICE_ATTR_2(in3_min, S_IRUGO | S_IWUSR, show_in, set_in,
-			    3, min);
-static SENSOR_DEVICE_ATTR_2(in3_max, S_IRUGO | S_IWUSR, show_in, set_in,
-			    3, max);
-static SENSOR_DEVICE_ATTR_2(in4_input, S_IRUGO, show_in, NULL, 4, input);
-static SENSOR_DEVICE_ATTR_2(in4_min, S_IRUGO | S_IWUSR, show_in, set_in,
-			    4, min);
-static SENSOR_DEVICE_ATTR_2(in4_max, S_IRUGO | S_IWUSR, show_in, set_in,
-			    4, max);
-static SENSOR_DEVICE_ATTR_2(in5_input, S_IRUGO, show_in, NULL, 5, input);
-static SENSOR_DEVICE_ATTR_2(in5_min, S_IRUGO | S_IWUSR, show_in, set_in,
-			    5, min);
-static SENSOR_DEVICE_ATTR_2(in5_max, S_IRUGO | S_IWUSR, show_in, set_in,
-			    5, max);
+static SENSOR_DEVICE_ATTR_2_RO(in0_input, in, 0, input);
+static SENSOR_DEVICE_ATTR_2_RW(in0_min, in, 0, min);
+static SENSOR_DEVICE_ATTR_2_RW(in0_max, in, 0, max);
+static SENSOR_DEVICE_ATTR_2_RO(in1_input, in, 1, input);
+static SENSOR_DEVICE_ATTR_2_RW(in1_min, in, 1, min);
+static SENSOR_DEVICE_ATTR_2_RW(in1_max, in, 1, max);
+static SENSOR_DEVICE_ATTR_2_RO(in2_input, in, 2, input);
+static SENSOR_DEVICE_ATTR_2_RW(in2_min, in, 2, min);
+static SENSOR_DEVICE_ATTR_2_RW(in2_max, in, 2, max);
+static SENSOR_DEVICE_ATTR_2_RO(in3_input, in, 3, input);
+static SENSOR_DEVICE_ATTR_2_RW(in3_min, in, 3, min);
+static SENSOR_DEVICE_ATTR_2_RW(in3_max, in, 3, max);
+static SENSOR_DEVICE_ATTR_2_RO(in4_input, in, 4, input);
+static SENSOR_DEVICE_ATTR_2_RW(in4_min, in, 4, min);
+static SENSOR_DEVICE_ATTR_2_RW(in4_max, in, 4, max);
+static SENSOR_DEVICE_ATTR_2_RO(in5_input, in, 5, input);
+static SENSOR_DEVICE_ATTR_2_RW(in5_min, in, 5, min);
+static SENSOR_DEVICE_ATTR_2_RW(in5_max, in, 5, max);
 
-static SENSOR_DEVICE_ATTR_2(temp1_input, S_IRUGO, show_temp, NULL, 0, input);
-static SENSOR_DEVICE_ATTR_2(temp1_min, S_IRUGO | S_IWUSR, show_temp, set_temp,
-			    0, min);
-static SENSOR_DEVICE_ATTR_2(temp1_max, S_IRUGO | S_IWUSR, show_temp, set_temp,
-			    0, max);
-static SENSOR_DEVICE_ATTR_2(temp2_input, S_IRUGO, show_temp, NULL, 1, input);
-static SENSOR_DEVICE_ATTR_2(temp2_min, S_IRUGO | S_IWUSR, show_temp, set_temp,
-			    1, min);
-static SENSOR_DEVICE_ATTR_2(temp2_max, S_IRUGO | S_IWUSR, show_temp, set_temp,
-			    1, max);
-static SENSOR_DEVICE_ATTR_2(temp3_input, S_IRUGO, show_temp, NULL, 2, input);
-static SENSOR_DEVICE_ATTR_2(temp3_min, S_IRUGO | S_IWUSR, show_temp, set_temp,
-			    2, min);
-static SENSOR_DEVICE_ATTR_2(temp3_max, S_IRUGO | S_IWUSR, show_temp, set_temp,
-			    2, max);
-static SENSOR_DEVICE_ATTR_2(temp4_input, S_IRUGO, show_temp, NULL, 3, input);
-static SENSOR_DEVICE_ATTR_2(temp4_min, S_IRUGO | S_IWUSR, show_temp, set_temp,
-			    3, min);
-static SENSOR_DEVICE_ATTR_2(temp4_max, S_IRUGO | S_IWUSR, show_temp, set_temp,
-			    3, max);
-static SENSOR_DEVICE_ATTR_2(temp5_input, S_IRUGO, show_temp, NULL, 4, input);
-static SENSOR_DEVICE_ATTR_2(temp5_min, S_IRUGO | S_IWUSR, show_temp, set_temp,
-			    4, min);
-static SENSOR_DEVICE_ATTR_2(temp5_max, S_IRUGO | S_IWUSR, show_temp, set_temp,
-			    4, max);
-static SENSOR_DEVICE_ATTR_2(temp6_input, S_IRUGO, show_temp, NULL, 5, input);
-static SENSOR_DEVICE_ATTR_2(temp6_min, S_IRUGO | S_IWUSR, show_temp, set_temp,
-			    5, min);
-static SENSOR_DEVICE_ATTR_2(temp6_max, S_IRUGO | S_IWUSR, show_temp, set_temp,
-			    5, max);
+static SENSOR_DEVICE_ATTR_2_RO(temp1_input, temp, 0, input);
+static SENSOR_DEVICE_ATTR_2_RW(temp1_min, temp, 0, min);
+static SENSOR_DEVICE_ATTR_2_RW(temp1_max, temp, 0, max);
+static SENSOR_DEVICE_ATTR_2_RO(temp2_input, temp, 1, input);
+static SENSOR_DEVICE_ATTR_2_RW(temp2_min, temp, 1, min);
+static SENSOR_DEVICE_ATTR_2_RW(temp2_max, temp, 1, max);
+static SENSOR_DEVICE_ATTR_2_RO(temp3_input, temp, 2, input);
+static SENSOR_DEVICE_ATTR_2_RW(temp3_min, temp, 2, min);
+static SENSOR_DEVICE_ATTR_2_RW(temp3_max, temp, 2, max);
+static SENSOR_DEVICE_ATTR_2_RO(temp4_input, temp, 3, input);
+static SENSOR_DEVICE_ATTR_2_RW(temp4_min, temp, 3, min);
+static SENSOR_DEVICE_ATTR_2_RW(temp4_max, temp, 3, max);
+static SENSOR_DEVICE_ATTR_2_RO(temp5_input, temp, 4, input);
+static SENSOR_DEVICE_ATTR_2_RW(temp5_min, temp, 4, min);
+static SENSOR_DEVICE_ATTR_2_RW(temp5_max, temp, 4, max);
+static SENSOR_DEVICE_ATTR_2_RO(temp6_input, temp, 5, input);
+static SENSOR_DEVICE_ATTR_2_RW(temp6_min, temp, 5, min);
+static SENSOR_DEVICE_ATTR_2_RW(temp6_max, temp, 5, max);
 
-static SENSOR_DEVICE_ATTR_2(fan1_input, S_IRUGO, show_fan, NULL, 0, input);
-static SENSOR_DEVICE_ATTR_2(fan1_min, S_IRUGO | S_IWUSR, show_fan, set_fan,
-			    0, min);
-static SENSOR_DEVICE_ATTR_2(fan2_input, S_IRUGO, show_fan, NULL, 1, input);
-static SENSOR_DEVICE_ATTR_2(fan2_min, S_IRUGO | S_IWUSR, show_fan, set_fan,
-			    1, min);
-static SENSOR_DEVICE_ATTR_2(fan3_input, S_IRUGO, show_fan, NULL, 2, input);
-static SENSOR_DEVICE_ATTR_2(fan3_min, S_IRUGO | S_IWUSR, show_fan, set_fan,
-			    2, min);
-static SENSOR_DEVICE_ATTR_2(fan4_input, S_IRUGO, show_fan, NULL, 3, input);
-static SENSOR_DEVICE_ATTR_2(fan4_min, S_IRUGO | S_IWUSR, show_fan, set_fan,
-			    3, min);
-static SENSOR_DEVICE_ATTR_2(fan5_input, S_IRUGO, show_fan, NULL, 4, input);
-static SENSOR_DEVICE_ATTR_2(fan5_min, S_IRUGO | S_IWUSR, show_fan, set_fan,
-			    4, min);
+static SENSOR_DEVICE_ATTR_2_RO(fan1_input, fan, 0, input);
+static SENSOR_DEVICE_ATTR_2_RW(fan1_min, fan, 0, min);
+static SENSOR_DEVICE_ATTR_2_RO(fan2_input, fan, 1, input);
+static SENSOR_DEVICE_ATTR_2_RW(fan2_min, fan, 1, min);
+static SENSOR_DEVICE_ATTR_2_RO(fan3_input, fan, 2, input);
+static SENSOR_DEVICE_ATTR_2_RW(fan3_min, fan, 2, min);
+static SENSOR_DEVICE_ATTR_2_RO(fan4_input, fan, 3, input);
+static SENSOR_DEVICE_ATTR_2_RW(fan4_min, fan, 3, min);
+static SENSOR_DEVICE_ATTR_2_RO(fan5_input, fan, 4, input);
+static SENSOR_DEVICE_ATTR_2_RW(fan5_min, fan, 4, min);
 
-static struct attribute *emc6w201_attributes[] = {
+static struct attribute *emc6w201_attrs[] = {
 	&sensor_dev_attr_in0_input.dev_attr.attr,
 	&sensor_dev_attr_in0_min.dev_attr.attr,
 	&sensor_dev_attr_in0_max.dev_attr.attr,
@@ -440,9 +401,7 @@ static struct attribute *emc6w201_attributes[] = {
 	NULL
 };
 
-static const struct attribute_group emc6w201_group = {
-	.attrs = emc6w201_attributes,
-};
+ATTRIBUTE_GROUPS(emc6w201);
 
 /*
  * Driver interface
@@ -466,7 +425,7 @@ static int emc6w201_detect(struct i2c_client *client,
 	if (verstep < 0 || (verstep & 0xF0) != 0xB0)
 		return -ENODEV;
 	if ((verstep & 0x0F) > 2) {
-		dev_dbg(&client->dev, "Unknwown EMC6W201 stepping %d\n",
+		dev_dbg(&client->dev, "Unknown EMC6W201 stepping %d\n",
 			verstep & 0x0F);
 		return -ENODEV;
 	}
@@ -480,52 +439,28 @@ static int emc6w201_detect(struct i2c_client *client,
 		return -ENODEV;
 	}
 
-	strlcpy(info->type, "emc6w201", I2C_NAME_SIZE);
+	strscpy(info->type, "emc6w201", I2C_NAME_SIZE);
 
 	return 0;
 }
 
-static int emc6w201_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int emc6w201_probe(struct i2c_client *client)
 {
+	struct device *dev = &client->dev;
 	struct emc6w201_data *data;
-	int err;
+	struct device *hwmon_dev;
 
-	data = devm_kzalloc(&client->dev, sizeof(struct emc6w201_data),
-			    GFP_KERNEL);
+	data = devm_kzalloc(dev, sizeof(struct emc6w201_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	i2c_set_clientdata(client, data);
+	data->client = client;
 	mutex_init(&data->update_lock);
 
-	/* Create sysfs attribute */
-	err = sysfs_create_group(&client->dev.kobj, &emc6w201_group);
-	if (err)
-		return err;
-
-	/* Expose as a hwmon device */
-	data->hwmon_dev = hwmon_device_register(&client->dev);
-	if (IS_ERR(data->hwmon_dev)) {
-		err = PTR_ERR(data->hwmon_dev);
-		goto exit_remove;
-	}
-
-	return 0;
-
- exit_remove:
-	sysfs_remove_group(&client->dev.kobj, &emc6w201_group);
-	return err;
-}
-
-static int emc6w201_remove(struct i2c_client *client)
-{
-	struct emc6w201_data *data = i2c_get_clientdata(client);
-
-	hwmon_device_unregister(data->hwmon_dev);
-	sysfs_remove_group(&client->dev.kobj, &emc6w201_group);
-
-	return 0;
+	hwmon_dev = devm_hwmon_device_register_with_groups(dev, client->name,
+							   data,
+							   emc6w201_groups);
+	return PTR_ERR_OR_ZERO(hwmon_dev);
 }
 
 static const struct i2c_device_id emc6w201_id[] = {
@@ -540,7 +475,6 @@ static struct i2c_driver emc6w201_driver = {
 		.name	= "emc6w201",
 	},
 	.probe		= emc6w201_probe,
-	.remove		= emc6w201_remove,
 	.id_table	= emc6w201_id,
 	.detect		= emc6w201_detect,
 	.address_list	= normal_i2c,

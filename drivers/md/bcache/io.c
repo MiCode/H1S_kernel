@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Some low level IO code, and hacks for various block layer limitations
  *
@@ -11,121 +12,22 @@
 
 #include <linux/blkdev.h>
 
-static unsigned bch_bio_max_sectors(struct bio *bio)
-{
-	struct request_queue *q = bdev_get_queue(bio->bi_bdev);
-	struct bio_vec bv;
-	struct bvec_iter iter;
-	unsigned ret = 0, seg = 0;
-
-	if (bio->bi_rw & REQ_DISCARD)
-		return min(bio_sectors(bio), q->limits.max_discard_sectors);
-
-	bio_for_each_segment(bv, bio, iter) {
-		struct bvec_merge_data bvm = {
-			.bi_bdev	= bio->bi_bdev,
-			.bi_sector	= bio->bi_iter.bi_sector,
-			.bi_size	= ret << 9,
-			.bi_rw		= bio->bi_rw,
-		};
-
-		if (seg == min_t(unsigned, BIO_MAX_PAGES,
-				 queue_max_segments(q)))
-			break;
-
-		if (q->merge_bvec_fn &&
-		    q->merge_bvec_fn(q, &bvm, &bv) < (int) bv.bv_len)
-			break;
-
-		seg++;
-		ret += bv.bv_len >> 9;
-	}
-
-	ret = min(ret, queue_max_sectors(q));
-
-	WARN_ON(!ret);
-	ret = max_t(int, ret, bio_iovec(bio).bv_len >> 9);
-
-	return ret;
-}
-
-static void bch_bio_submit_split_done(struct closure *cl)
-{
-	struct bio_split_hook *s = container_of(cl, struct bio_split_hook, cl);
-
-	s->bio->bi_end_io = s->bi_end_io;
-	s->bio->bi_private = s->bi_private;
-	bio_endio_nodec(s->bio, 0);
-
-	closure_debug_destroy(&s->cl);
-	mempool_free(s, s->p->bio_split_hook);
-}
-
-static void bch_bio_submit_split_endio(struct bio *bio, int error)
-{
-	struct closure *cl = bio->bi_private;
-	struct bio_split_hook *s = container_of(cl, struct bio_split_hook, cl);
-
-	if (error)
-		clear_bit(BIO_UPTODATE, &s->bio->bi_flags);
-
-	bio_put(bio);
-	closure_put(cl);
-}
-
-void bch_generic_make_request(struct bio *bio, struct bio_split_pool *p)
-{
-	struct bio_split_hook *s;
-	struct bio *n;
-
-	if (!bio_has_data(bio) && !(bio->bi_rw & REQ_DISCARD))
-		goto submit;
-
-	if (bio_sectors(bio) <= bch_bio_max_sectors(bio))
-		goto submit;
-
-	s = mempool_alloc(p->bio_split_hook, GFP_NOIO);
-	closure_init(&s->cl, NULL);
-
-	s->bio		= bio;
-	s->p		= p;
-	s->bi_end_io	= bio->bi_end_io;
-	s->bi_private	= bio->bi_private;
-	bio_get(bio);
-
-	do {
-		n = bio_next_split(bio, bch_bio_max_sectors(bio),
-				   GFP_NOIO, s->p->bio_split);
-
-		n->bi_end_io	= bch_bio_submit_split_endio;
-		n->bi_private	= &s->cl;
-
-		closure_get(&s->cl);
-		generic_make_request(n);
-	} while (n != bio);
-
-	continue_at(&s->cl, bch_bio_submit_split_done, NULL);
-submit:
-	generic_make_request(bio);
-}
-
 /* Bios with headers */
 
 void bch_bbio_free(struct bio *bio, struct cache_set *c)
 {
 	struct bbio *b = container_of(bio, struct bbio, bio);
-	mempool_free(b, c->bio_meta);
+
+	mempool_free(b, &c->bio_meta);
 }
 
 struct bio *bch_bbio_alloc(struct cache_set *c)
 {
-	struct bbio *b = mempool_alloc(c->bio_meta, GFP_NOIO);
+	struct bbio *b = mempool_alloc(&c->bio_meta, GFP_NOIO);
 	struct bio *bio = &b->bio;
 
-	bio_init(bio);
-	bio->bi_flags		|= BIO_POOL_NONE << BIO_POOL_OFFSET;
-	bio->bi_max_vecs	 = bucket_pages(c);
-	bio->bi_io_vec		 = bio->bi_inline_vecs;
+	bio_init(bio, NULL, bio->bi_inline_vecs,
+		 meta_bucket_pages(&c->cache->sb), 0);
 
 	return bio;
 }
@@ -135,23 +37,52 @@ void __bch_submit_bbio(struct bio *bio, struct cache_set *c)
 	struct bbio *b = container_of(bio, struct bbio, bio);
 
 	bio->bi_iter.bi_sector	= PTR_OFFSET(&b->key, 0);
-	bio->bi_bdev		= PTR_CACHE(c, &b->key, 0)->bdev;
+	bio_set_dev(bio, c->cache->bdev);
 
 	b->submit_time_us = local_clock_us();
-	closure_bio_submit(bio, bio->bi_private, PTR_CACHE(c, &b->key, 0));
+	closure_bio_submit(c, bio, bio->bi_private);
 }
 
 void bch_submit_bbio(struct bio *bio, struct cache_set *c,
-		     struct bkey *k, unsigned ptr)
+		     struct bkey *k, unsigned int ptr)
 {
 	struct bbio *b = container_of(bio, struct bbio, bio);
+
 	bch_bkey_copy_single_ptr(&b->key, k, ptr);
 	__bch_submit_bbio(bio, c);
 }
 
 /* IO errors */
+void bch_count_backing_io_errors(struct cached_dev *dc, struct bio *bio)
+{
+	unsigned int errors;
 
-void bch_count_io_errors(struct cache *ca, int error, const char *m)
+	WARN_ONCE(!dc, "NULL pointer of struct cached_dev");
+
+	/*
+	 * Read-ahead requests on a degrading and recovering md raid
+	 * (e.g. raid6) device might be failured immediately by md
+	 * raid code, which is not a real hardware media failure. So
+	 * we shouldn't count failed REQ_RAHEAD bio to dc->io_errors.
+	 */
+	if (bio->bi_opf & REQ_RAHEAD) {
+		pr_warn_ratelimited("%pg: Read-ahead I/O failed on backing device, ignore\n",
+				    dc->bdev);
+		return;
+	}
+
+	errors = atomic_add_return(1, &dc->io_errors);
+	if (errors < dc->error_limit)
+		pr_err("%pg: IO error on backing device, unrecoverable\n",
+			dc->bdev);
+	else
+		bch_cached_dev_error(dc);
+}
+
+void bch_count_io_errors(struct cache *ca,
+			 blk_status_t error,
+			 int is_read,
+			 const char *m)
 {
 	/*
 	 * The halflife of an error is:
@@ -159,16 +90,16 @@ void bch_count_io_errors(struct cache *ca, int error, const char *m)
 	 */
 
 	if (ca->set->error_decay) {
-		unsigned count = atomic_inc_return(&ca->io_count);
+		unsigned int count = atomic_inc_return(&ca->io_count);
 
 		while (count > ca->set->error_decay) {
-			unsigned errors;
-			unsigned old = count;
-			unsigned new = count - ca->set->error_decay;
+			unsigned int errors;
+			unsigned int old = count;
+			unsigned int new = count - ca->set->error_decay;
 
 			/*
 			 * First we subtract refresh from count; each time we
-			 * succesfully do so, we rescale the errors once:
+			 * successfully do so, we rescale the errors once:
 			 */
 
 			count = atomic_cmpxchg(&ca->io_count, old, new);
@@ -188,39 +119,40 @@ void bch_count_io_errors(struct cache *ca, int error, const char *m)
 	}
 
 	if (error) {
-		char buf[BDEVNAME_SIZE];
-		unsigned errors = atomic_add_return(1 << IO_ERROR_SHIFT,
+		unsigned int errors = atomic_add_return(1 << IO_ERROR_SHIFT,
 						    &ca->io_errors);
 		errors >>= IO_ERROR_SHIFT;
 
 		if (errors < ca->set->error_limit)
-			pr_err("%s: IO error on %s, recovering",
-			       bdevname(ca->bdev, buf), m);
+			pr_err("%pg: IO error on %s%s\n",
+			       ca->bdev, m,
+			       is_read ? ", recovering." : ".");
 		else
 			bch_cache_set_error(ca->set,
-					    "%s: too many IO errors %s",
-					    bdevname(ca->bdev, buf), m);
+					    "%pg: too many IO errors %s\n",
+					    ca->bdev, m);
 	}
 }
 
 void bch_bbio_count_io_errors(struct cache_set *c, struct bio *bio,
-			      int error, const char *m)
+			      blk_status_t error, const char *m)
 {
 	struct bbio *b = container_of(bio, struct bbio, bio);
-	struct cache *ca = PTR_CACHE(c, &b->key, 0);
+	struct cache *ca = c->cache;
+	int is_read = (bio_data_dir(bio) == READ ? 1 : 0);
 
-	unsigned threshold = bio->bi_rw & REQ_WRITE
+	unsigned int threshold = op_is_write(bio_op(bio))
 		? c->congested_write_threshold_us
 		: c->congested_read_threshold_us;
 
 	if (threshold) {
-		unsigned t = local_clock_us();
-
+		unsigned int t = local_clock_us();
 		int us = t - b->submit_time_us;
 		int congested = atomic_read(&c->congested);
 
 		if (us > (int) threshold) {
 			int ms = us / 1024;
+
 			c->congested_last_us = t;
 
 			ms = min(ms, CONGESTED_MAX + congested);
@@ -229,11 +161,11 @@ void bch_bbio_count_io_errors(struct cache_set *c, struct bio *bio,
 			atomic_inc(&c->congested);
 	}
 
-	bch_count_io_errors(ca, error, m);
+	bch_count_io_errors(ca, error, is_read, m);
 }
 
 void bch_bbio_endio(struct cache_set *c, struct bio *bio,
-		    int error, const char *m)
+		    blk_status_t error, const char *m)
 {
 	struct closure *cl = bio->bi_private;
 

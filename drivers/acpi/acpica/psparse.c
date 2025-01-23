@@ -1,45 +1,11 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: psparse - Parser top level AML parse routines
  *
+ * Copyright (C) 2000 - 2023, Intel Corp.
+ *
  *****************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 /*
  * Parse the AML and build an operation tree as most interpreters,
@@ -56,6 +22,7 @@
 #include "acdispat.h"
 #include "amlcode.h"
 #include "acinterp.h"
+#include "acnamesp.h"
 
 #define _COMPONENT          ACPI_PARSER
 ACPI_MODULE_NAME("psparse")
@@ -105,7 +72,7 @@ u16 acpi_ps_peek_opcode(struct acpi_parse_state * parser_state)
 	aml = parser_state->aml;
 	opcode = (u16) ACPI_GET8(aml);
 
-	if (opcode == AML_EXTENDED_OP_PREFIX) {
+	if (opcode == AML_EXTENDED_PREFIX) {
 
 		/* Extended opcode, get the second opcode byte */
 
@@ -130,8 +97,8 @@ u16 acpi_ps_peek_opcode(struct acpi_parse_state * parser_state)
  ******************************************************************************/
 
 acpi_status
-acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
-			 union acpi_parse_object * op)
+acpi_ps_complete_this_op(struct acpi_walk_state *walk_state,
+			 union acpi_parse_object *op)
 {
 	union acpi_parse_object *prev;
 	union acpi_parse_object *next;
@@ -146,6 +113,8 @@ acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
 	if (!op) {
 		return_ACPI_STATUS(AE_OK);	/* OK for now */
 	}
+
+	acpi_ex_stop_trace_opcode(op, walk_state);
 
 	/* Delete this op and the subtree below it if asked to */
 
@@ -185,7 +154,8 @@ acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
 			 * op must be replaced by a placeholder return op
 			 */
 			replacement_op =
-			    acpi_ps_alloc_op(AML_INT_RETURN_VALUE_OP);
+			    acpi_ps_alloc_op(AML_INT_RETURN_VALUE_OP,
+					     op->common.aml);
 			if (!replacement_op) {
 				status = AE_NO_MEMORY;
 			}
@@ -207,9 +177,10 @@ acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
 			    || (op->common.parent->common.aml_opcode ==
 				AML_BANK_FIELD_OP)
 			    || (op->common.parent->common.aml_opcode ==
-				AML_VAR_PACKAGE_OP)) {
+				AML_VARIABLE_PACKAGE_OP)) {
 				replacement_op =
-				    acpi_ps_alloc_op(AML_INT_RETURN_VALUE_OP);
+				    acpi_ps_alloc_op(AML_INT_RETURN_VALUE_OP,
+						     op->common.aml);
 				if (!replacement_op) {
 					status = AE_NO_MEMORY;
 				}
@@ -221,10 +192,11 @@ acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
 				if ((op->common.aml_opcode == AML_BUFFER_OP)
 				    || (op->common.aml_opcode == AML_PACKAGE_OP)
 				    || (op->common.aml_opcode ==
-					AML_VAR_PACKAGE_OP)) {
+					AML_VARIABLE_PACKAGE_OP)) {
 					replacement_op =
 					    acpi_ps_alloc_op(op->common.
-							     aml_opcode);
+							     aml_opcode,
+							     op->common.aml);
 					if (!replacement_op) {
 						status = AE_NO_MEMORY;
 					} else {
@@ -240,7 +212,8 @@ acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
 		default:
 
 			replacement_op =
-			    acpi_ps_alloc_op(AML_INT_RETURN_VALUE_OP);
+			    acpi_ps_alloc_op(AML_INT_RETURN_VALUE_OP,
+					     op->common.aml);
 			if (!replacement_op) {
 				status = AE_NO_MEMORY;
 			}
@@ -410,7 +383,7 @@ acpi_ps_next_parse_state(struct acpi_walk_state *walk_state,
 	default:
 
 		status = callback_status;
-		if ((callback_status & AE_CODE_MASK) == AE_CODE_CONTROL) {
+		if (ACPI_CNTL_EXCEPTION(callback_status)) {
 			status = AE_OK;
 		}
 		break;
@@ -447,7 +420,7 @@ acpi_status acpi_ps_parse_aml(struct acpi_walk_state *walk_state)
 			  walk_state->parser_state.aml_size));
 
 	if (!walk_state->parser_state.aml) {
-		return_ACPI_STATUS(AE_NULL_OBJECT);
+		return_ACPI_STATUS(AE_BAD_ADDRESS);
 	}
 
 	/* Create and initialize a new thread state */
@@ -506,6 +479,21 @@ acpi_status acpi_ps_parse_aml(struct acpi_walk_state *walk_state)
 				  "Completed one call to walk loop, %s State=%p\n",
 				  acpi_format_exception(status), walk_state));
 
+		if (walk_state->method_pathname && walk_state->method_is_nested) {
+
+			/* Optional object evaluation log */
+
+			ACPI_DEBUG_PRINT_RAW((ACPI_DB_EVALUATION,
+					      "%-26s:  %*s%s\n",
+					      "   Exit nested method",
+					      (walk_state->
+					       method_nesting_depth + 1) * 3,
+					      " ",
+					      &walk_state->method_pathname[1]));
+
+			ACPI_FREE(walk_state->method_pathname);
+			walk_state->method_is_nested = FALSE;
+		}
 		if (status == AE_CTRL_TRANSFER) {
 			/*
 			 * A method call was detected.
@@ -520,8 +508,8 @@ acpi_status acpi_ps_parse_aml(struct acpi_walk_state *walk_state)
 			}
 
 			/*
-			 * If the transfer to the new method method call worked, a new walk
-			 * state was created -- get it
+			 * If the transfer to the new method method call worked,
+			 * a new walk state was created -- get it
 			 */
 			walk_state = acpi_ds_get_current_walk_state(thread);
 			continue;
@@ -531,15 +519,24 @@ acpi_status acpi_ps_parse_aml(struct acpi_walk_state *walk_state)
 
 			/* Either the method parse or actual execution failed */
 
-			ACPI_ERROR_METHOD("Method parse/execution failed",
-					  walk_state->method_node, NULL,
-					  status);
+			acpi_ex_exit_interpreter();
+			if (status == AE_ABORT_METHOD) {
+				acpi_ns_print_node_pathname(walk_state->
+							    method_node,
+							    "Aborting method");
+				acpi_os_printf("\n");
+			} else {
+				ACPI_ERROR_METHOD("Aborting method",
+						  walk_state->method_node, NULL,
+						  status);
+			}
+			acpi_ex_enter_interpreter();
 
 			/* Check for possible multi-thread reentrancy problem */
 
 			if ((status == AE_ALREADY_EXISTS) &&
-			    (!(walk_state->method_desc->method.
-			       info_flags & ACPI_METHOD_SERIALIZED))) {
+			    (!(walk_state->method_desc->method.info_flags &
+			       ACPI_METHOD_SERIALIZED))) {
 				/*
 				 * Method is not serialized and tried to create an object
 				 * twice. The probable cause is that the method cannot
@@ -565,7 +562,9 @@ acpi_status acpi_ps_parse_aml(struct acpi_walk_state *walk_state)
 		 * cleanup to do
 		 */
 		if (((walk_state->parse_flags & ACPI_PARSE_MODE_MASK) ==
-		     ACPI_PARSE_EXECUTE) || (ACPI_FAILURE(status))) {
+		     ACPI_PARSE_EXECUTE &&
+		     !(walk_state->parse_flags & ACPI_PARSE_MODULE_LEVEL)) ||
+		    (ACPI_FAILURE(status))) {
 			acpi_ds_terminate_control_method(walk_state->
 							 method_desc,
 							 walk_state);

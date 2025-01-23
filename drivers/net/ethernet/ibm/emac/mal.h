@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * drivers/net/ethernet/ibm/emac/mal.h
  *
@@ -14,12 +15,6 @@
  * Based on original work by
  *      Armin Kuster <akuster@mvista.com>
  *      Copyright 2002 MontaVista Softare Inc.
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
- *
  */
 #ifndef __IBM_NEWEMAC_MAL_H
 #define __IBM_NEWEMAC_MAL_H
@@ -95,24 +90,20 @@
 
 
 #define MAL_IER			0x02
+/* MAL IER bits */
 #define   MAL_IER_DE		0x00000010
 #define   MAL_IER_OTE		0x00000004
 #define   MAL_IER_OE		0x00000002
 #define   MAL_IER_PE		0x00000001
-/* MAL V1 IER bits */
-#define   MAL1_IER_NWE		0x00000008
-#define   MAL1_IER_SOC_EVENTS	MAL1_IER_NWE
-#define   MAL1_IER_EVENTS	(MAL1_IER_SOC_EVENTS | MAL_IER_DE | \
-				 MAL_IER_OTE | MAL_IER_OE | MAL_IER_PE)
 
-/* MAL V2 IER bits */
-#define   MAL2_IER_PT		0x00000080
-#define   MAL2_IER_PRE		0x00000040
-#define   MAL2_IER_PWE		0x00000020
-#define   MAL2_IER_SOC_EVENTS	(MAL2_IER_PT | MAL2_IER_PRE | MAL2_IER_PWE)
-#define   MAL2_IER_EVENTS	(MAL2_IER_SOC_EVENTS | MAL_IER_DE | \
-				 MAL_IER_OTE | MAL_IER_OE | MAL_IER_PE)
+/* PLB read/write/timeout errors */
+#define   MAL_IER_PTE		0x00000080
+#define   MAL_IER_PRE		0x00000040
+#define   MAL_IER_PWE		0x00000020
 
+#define   MAL_IER_SOC_EVENTS	(MAL_IER_PTE | MAL_IER_PRE | MAL_IER_PWE)
+#define   MAL_IER_EVENTS	(MAL_IER_SOC_EVENTS | MAL_IER_DE | \
+				 MAL_IER_OTE | MAL_IER_OE | MAL_IER_PE)
 
 #define MAL_TXCASR		0x04
 #define MAL_TXCARR		0x05
@@ -140,7 +131,7 @@ static inline int mal_rx_size(int len)
 
 static inline int mal_tx_chunks(int len)
 {
-	return (len + MAL_MAX_TX_SIZE - 1) / MAL_MAX_TX_SIZE;
+	return DIV_ROUND_UP(len, MAL_MAX_TX_SIZE);
 }
 
 #define MAL_CHAN_MASK(n)	(0x80000000 >> (n))

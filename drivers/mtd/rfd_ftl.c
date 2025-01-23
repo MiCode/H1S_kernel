@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * rfd_ftl.c -- resident flash disk (flash translation layer)
  *
@@ -189,12 +190,10 @@ static int scan_header(struct partition *part)
 	if (!part->blocks)
 		goto err;
 
-	part->sector_map = vmalloc(part->sector_count * sizeof(u_long));
-	if (!part->sector_map) {
-		printk(KERN_ERR PREFIX "'%s': unable to allocate memory for "
-			"sector map", part->mbd.mtd->name);
+	part->sector_map = vmalloc(array_size(sizeof(u_long),
+					      part->sector_count));
+	if (!part->sector_map)
 		goto err;
-	}
 
 	for (i=0; i<part->sector_count; i++)
 		part->sector_map[i] = -1;
@@ -240,7 +239,7 @@ err:
 
 static int rfd_ftl_readsect(struct mtd_blktrans_dev *dev, u_long sector, char *buf)
 {
-	struct partition *part = (struct partition*)dev;
+	struct partition *part = container_of(dev, struct partition, mbd);
 	u_long addr;
 	size_t retlen;
 	int rc;
@@ -266,91 +265,54 @@ static int rfd_ftl_readsect(struct mtd_blktrans_dev *dev, u_long sector, char *b
 	return 0;
 }
 
-static void erase_callback(struct erase_info *erase)
-{
-	struct partition *part;
-	u16 magic;
-	int i, rc;
-	size_t retlen;
-
-	part = (struct partition*)erase->priv;
-
-	i = (u32)erase->addr / part->block_size;
-	if (i >= part->total_blocks || part->blocks[i].offset != erase->addr ||
-	    erase->addr > UINT_MAX) {
-		printk(KERN_ERR PREFIX "erase callback for unknown offset %llx "
-				"on '%s'\n", (unsigned long long)erase->addr, part->mbd.mtd->name);
-		return;
-	}
-
-	if (erase->state != MTD_ERASE_DONE) {
-		printk(KERN_WARNING PREFIX "erase failed at 0x%llx on '%s', "
-				"state %d\n", (unsigned long long)erase->addr,
-				part->mbd.mtd->name, erase->state);
-
-		part->blocks[i].state = BLOCK_FAILED;
-		part->blocks[i].free_sectors = 0;
-		part->blocks[i].used_sectors = 0;
-
-		kfree(erase);
-
-		return;
-	}
-
-	magic = cpu_to_le16(RFD_MAGIC);
-
-	part->blocks[i].state = BLOCK_ERASED;
-	part->blocks[i].free_sectors = part->data_sectors_per_block;
-	part->blocks[i].used_sectors = 0;
-	part->blocks[i].erases++;
-
-	rc = mtd_write(part->mbd.mtd, part->blocks[i].offset, sizeof(magic),
-		       &retlen, (u_char *)&magic);
-
-	if (!rc && retlen != sizeof(magic))
-		rc = -EIO;
-
-	if (rc) {
-		printk(KERN_ERR PREFIX "'%s': unable to write RFD "
-				"header at 0x%lx\n",
-				part->mbd.mtd->name,
-				part->blocks[i].offset);
-		part->blocks[i].state = BLOCK_FAILED;
-	}
-	else
-		part->blocks[i].state = BLOCK_OK;
-
-	kfree(erase);
-}
-
 static int erase_block(struct partition *part, int block)
 {
 	struct erase_info *erase;
-	int rc = -ENOMEM;
+	int rc;
 
 	erase = kmalloc(sizeof(struct erase_info), GFP_KERNEL);
 	if (!erase)
-		goto err;
+		return -ENOMEM;
 
-	erase->mtd = part->mbd.mtd;
-	erase->callback = erase_callback;
 	erase->addr = part->blocks[block].offset;
 	erase->len = part->block_size;
-	erase->priv = (u_long)part;
 
 	part->blocks[block].state = BLOCK_ERASING;
 	part->blocks[block].free_sectors = 0;
 
 	rc = mtd_erase(part->mbd.mtd, erase);
-
 	if (rc) {
 		printk(KERN_ERR PREFIX "erase of region %llx,%llx on '%s' "
 				"failed\n", (unsigned long long)erase->addr,
 				(unsigned long long)erase->len, part->mbd.mtd->name);
-		kfree(erase);
+		part->blocks[block].state = BLOCK_FAILED;
+		part->blocks[block].free_sectors = 0;
+		part->blocks[block].used_sectors = 0;
+	} else {
+		u16 magic = cpu_to_le16(RFD_MAGIC);
+		size_t retlen;
+
+		part->blocks[block].state = BLOCK_ERASED;
+		part->blocks[block].free_sectors = part->data_sectors_per_block;
+		part->blocks[block].used_sectors = 0;
+		part->blocks[block].erases++;
+
+		rc = mtd_write(part->mbd.mtd, part->blocks[block].offset,
+			       sizeof(magic), &retlen, (u_char *)&magic);
+		if (!rc && retlen != sizeof(magic))
+			rc = -EIO;
+
+		if (rc) {
+			pr_err(PREFIX "'%s': unable to write RFD header at 0x%lx\n",
+			       part->mbd.mtd->name, part->blocks[block].offset);
+			part->blocks[block].state = BLOCK_FAILED;
+		} else {
+			part->blocks[block].state = BLOCK_OK;
+		}
 	}
 
-err:
+	kfree(erase);
+
 	return rc;
 }
 
@@ -602,8 +564,7 @@ static int mark_sector_deleted(struct partition *part, u_long old_addr)
 	if (rc) {
 		printk(KERN_ERR PREFIX "error writing '%s' at "
 			"0x%lx\n", part->mbd.mtd->name, addr);
-		if (rc)
-			goto err;
+		goto err;
 	}
 	if (block == part->current_block)
 		part->header_cache[offset + HEADER_MAP_OFFSET] = del;
@@ -639,7 +600,7 @@ static int find_free_sector(const struct partition *part, const struct block *bl
 
 static int do_writesect(struct mtd_blktrans_dev *dev, u_long sector, char *buf, ulong *old_addr)
 {
-	struct partition *part = (struct partition*)dev;
+	struct partition *part = container_of(dev, struct partition, mbd);
 	struct block *block;
 	u_long addr;
 	int i;
@@ -675,8 +636,7 @@ static int do_writesect(struct mtd_blktrans_dev *dev, u_long sector, char *buf, 
 	if (rc) {
 		printk(KERN_ERR PREFIX "error writing '%s' at 0x%lx\n",
 				part->mbd.mtd->name, addr);
-		if (rc)
-			goto err;
+		goto err;
 	}
 
 	part->sector_map[sector] = addr;
@@ -695,8 +655,7 @@ static int do_writesect(struct mtd_blktrans_dev *dev, u_long sector, char *buf, 
 	if (rc) {
 		printk(KERN_ERR PREFIX "error writing '%s' at 0x%lx\n",
 				part->mbd.mtd->name, addr);
-		if (rc)
-			goto err;
+		goto err;
 	}
 	block->used_sectors++;
 	block->free_sectors--;
@@ -707,7 +666,7 @@ err:
 
 static int rfd_ftl_writesect(struct mtd_blktrans_dev *dev, u_long sector, char *buf)
 {
-	struct partition *part = (struct partition*)dev;
+	struct partition *part = container_of(dev, struct partition, mbd);
 	u_long old_addr;
 	int i;
 	int rc = 0;
@@ -746,9 +705,37 @@ err:
 	return rc;
 }
 
+static int rfd_ftl_discardsect(struct mtd_blktrans_dev *dev,
+			       unsigned long sector, unsigned int nr_sects)
+{
+	struct partition *part = container_of(dev, struct partition, mbd);
+	u_long addr;
+	int rc;
+
+	while (nr_sects) {
+		if (sector >= part->sector_count)
+			return -EIO;
+
+		addr = part->sector_map[sector];
+
+		if (addr != -1) {
+			rc = mark_sector_deleted(part, addr);
+			if (rc)
+				return rc;
+
+			part->sector_map[sector] = -1;
+		}
+
+		sector++;
+		nr_sects--;
+	}
+
+	return 0;
+}
+
 static int rfd_ftl_getgeo(struct mtd_blktrans_dev *dev, struct hd_geometry *geo)
 {
-	struct partition *part = (struct partition*)dev;
+	struct partition *part = container_of(dev, struct partition, mbd);
 
 	geo->heads = 1;
 	geo->sectors = SECTORS_PER_TRACK;
@@ -761,7 +748,8 @@ static void rfd_ftl_add_mtd(struct mtd_blktrans_ops *tr, struct mtd_info *mtd)
 {
 	struct partition *part;
 
-	if (mtd->type != MTD_NORFLASH || mtd->size > UINT_MAX)
+	if ((mtd->type != MTD_NORFLASH && mtd->type != MTD_RAM) ||
+	    mtd->size > UINT_MAX)
 		return;
 
 	part = kzalloc(sizeof(struct partition), GFP_KERNEL);
@@ -795,7 +783,7 @@ static void rfd_ftl_add_mtd(struct mtd_blktrans_ops *tr, struct mtd_info *mtd)
 		printk(KERN_INFO PREFIX "name: '%s' type: %d flags %x\n",
 				mtd->name, mtd->type, mtd->flags);
 
-		if (!add_mtd_blktrans_dev((void*)part))
+		if (!add_mtd_blktrans_dev(&part->mbd))
 			return;
 	}
 out:
@@ -804,7 +792,7 @@ out:
 
 static void rfd_ftl_remove_dev(struct mtd_blktrans_dev *dev)
 {
-	struct partition *part = (struct partition*)dev;
+	struct partition *part = container_of(dev, struct partition, mbd);
 	int i;
 
 	for (i=0; i<part->total_blocks; i++) {
@@ -812,10 +800,10 @@ static void rfd_ftl_remove_dev(struct mtd_blktrans_dev *dev)
 			part->mbd.mtd->name, i, part->blocks[i].erases);
 	}
 
-	del_mtd_blktrans_dev(dev);
 	vfree(part->sector_map);
 	kfree(part->header_cache);
 	kfree(part->blocks);
+	del_mtd_blktrans_dev(&part->mbd);
 }
 
 static struct mtd_blktrans_ops rfd_ftl_tr = {
@@ -826,24 +814,14 @@ static struct mtd_blktrans_ops rfd_ftl_tr = {
 
 	.readsect	= rfd_ftl_readsect,
 	.writesect	= rfd_ftl_writesect,
+	.discard	= rfd_ftl_discardsect,
 	.getgeo		= rfd_ftl_getgeo,
 	.add_mtd	= rfd_ftl_add_mtd,
 	.remove_dev	= rfd_ftl_remove_dev,
 	.owner		= THIS_MODULE,
 };
 
-static int __init init_rfd_ftl(void)
-{
-	return register_mtd_blktrans(&rfd_ftl_tr);
-}
-
-static void __exit cleanup_rfd_ftl(void)
-{
-	deregister_mtd_blktrans(&rfd_ftl_tr);
-}
-
-module_init(init_rfd_ftl);
-module_exit(cleanup_rfd_ftl);
+module_mtd_blktrans(rfd_ftl_tr);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Sean Young <sean@mess.org>");

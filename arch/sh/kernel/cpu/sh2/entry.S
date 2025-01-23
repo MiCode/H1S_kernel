@@ -1,14 +1,11 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0
+ *
  * arch/sh/kernel/cpu/sh2/entry.S
  *
  * The SH-2 exception entry
  *
  * Copyright (C) 2005-2008 Yoshinori Sato
  * Copyright (C) 2005  AXE,Inc.
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 
 #include <linux/linkage.h>
@@ -47,6 +44,13 @@ ENTRY(exception_handler)
 	mov.l	r3,@-sp
 	cli
 	mov.l	$cpu_mode,r2
+#ifdef CONFIG_SMP
+	mov.l	$cpuid,r3
+	mov.l	@r3,r3
+	mov.l	@r3,r3
+	shll2	r3
+	add	r3,r2
+#endif
 	mov.l	@r2,r0
 	mov.l	@(5*4,r15),r3	! previous SR
 	or	r0,r3		! set MD
@@ -57,6 +61,13 @@ ENTRY(exception_handler)
 	mov.l	__md_bit,r0
 	mov.l	r0,@r2		! enter kernel mode
 	mov.l	$current_thread_info,r2
+#ifdef CONFIG_SMP
+	mov.l	$cpuid,r0
+	mov.l	@r0,r0
+	mov.l	@r0,r0
+	shll2	r0
+	add	r0,r2
+#endif
 	mov.l	@r2,r2
 	mov	#(THREAD_SIZE >> 8),r0
 	shll8	r0
@@ -144,9 +155,14 @@ ENTRY(exception_handler)
 	mov	#64,r8
 	cmp/hs	r8,r9
 	bt	interrupt_entry	! vec >= 64 is interrupt
-	mov	#32,r8
+	mov	#31,r8
 	cmp/hs	r8,r9
-	bt	trap_entry	! 64 > vec >= 32  is trap
+	bt	trap_entry	! 64 > vec >= 31  is trap
+#ifdef CONFIG_CPU_J2
+	mov	#16,r8
+	cmp/hs	r8,r9
+	bt	interrupt_entry	! 31 > vec >= 16 is interrupt
+#endif
 
 	mov.l	4f,r8
 	mov	r9,r4
@@ -178,9 +194,9 @@ interrupt_entry:
 
 trap_entry:
 	mov	#0x30,r8
-	cmp/ge	r8,r9		! vector 0x20-0x2f is systemcall
+	cmp/ge	r8,r9		! vector 0x1f-0x2f is systemcall
 	bt	1f
-	add	#-0x10,r9	! convert SH2 to SH3/4 ABI
+	mov     #0x1f,r9	! convert to unified SH2/3/4 trap number
 1:	
 	shll2	r9			! TRA
 	bra	system_call	! jump common systemcall entry
@@ -260,6 +276,13 @@ restore_all:
 	lds.l	@r0+,macl
 	mov	r15,r0
 	mov.l	$cpu_mode,r2
+#ifdef CONFIG_SMP
+	mov.l	$cpuid,r3
+	mov.l	@r3,r3
+	mov.l	@r3,r3
+	shll2	r3
+	add	r3,r2
+#endif
 	mov	#OFF_SR,r3
 	mov.l	@(r0,r3),r1
 	mov.l	__md_bit,r3
@@ -276,6 +299,13 @@ restore_all:
 	mov.l	r1,@r2				! set pc
 	get_current_thread_info r0, r1
 	mov.l	$current_thread_info,r1
+#ifdef CONFIG_SMP
+	mov.l	$cpuid,r3
+	mov.l	@r3,r3
+	mov.l	@r3,r3
+	shll2	r3
+	add	r3,r1
+#endif
 	mov.l	r0,@r1
 	mov.l	@r15+,r0
 	mov.l	@r15+,r1
@@ -303,19 +333,41 @@ $current_thread_info:
 	.long	__current_thread_info
 $cpu_mode:	
 	.long	__cpu_mode
+#ifdef CONFIG_SMP
+$cpuid:
+	.long sh2_cpuid_addr
+#endif
 		
 ! common exception handler
 #include "../../entry-common.S"
+
+#ifdef CONFIG_NR_CPUS
+#define NR_CPUS CONFIG_NR_CPUS
+#else
+#define NR_CPUS 1
+#endif
 	
 	.data
 ! cpu operation mode 
 ! bit30 = MD (compatible SH3/4)
 __cpu_mode:
+	.rept	NR_CPUS
 	.long	0x40000000
+	.endr
+
+#ifdef CONFIG_SMP
+.global sh2_cpuid_addr
+sh2_cpuid_addr:
+	.long	dummy_cpuid
+dummy_cpuid:
+	.long	0
+#endif
 		
 	.section	.bss
 __current_thread_info:
+	.rept	NR_CPUS
 	.long	0
+	.endr
 
 ENTRY(exception_handling_table)
 	.space	4*32

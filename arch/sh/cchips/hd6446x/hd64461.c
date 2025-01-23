@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	Copyright (C) 2000 YAEGASHI Takeshi
  *	Hitachi HD64461 companion chip support
@@ -56,7 +57,7 @@ static struct irq_chip hd64461_irq_chip = {
 	.irq_unmask	= hd64461_unmask_irq,
 };
 
-static void hd64461_irq_demux(unsigned int irq, struct irq_desc *desc)
+static void hd64461_irq_demux(struct irq_desc *desc)
 {
 	unsigned short intv = __raw_readw(HD64461_NIRR);
 	unsigned int ext_irq = HD64461_IRQBASE;

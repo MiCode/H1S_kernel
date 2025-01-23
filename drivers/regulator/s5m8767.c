@@ -1,21 +1,11 @@
-/*
- * s5m8767.c
- *
- * Copyright (c) 2011 Samsung Electronics Co., Ltd
- *              http://www.samsung.com
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
- */
+// SPDX-License-Identifier: GPL-2.0+
+//
+// Copyright (c) 2011 Samsung Electronics Co., Ltd
+//              http://www.samsung.com
 
-#include <linux/bug.h>
 #include <linux/err.h>
-#include <linux/gpio.h>
 #include <linux/of_gpio.h>
-#include <linux/slab.h>
+#include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/driver.h>
@@ -31,7 +21,6 @@ struct s5m8767_info {
 	struct device *dev;
 	struct sec_pmic_dev *iodev;
 	int num_regulators;
-	struct regulator_dev **rdev;
 	struct sec_opmode_data *opmode;
 
 	int ramp_delay;
@@ -126,7 +115,7 @@ static const struct sec_voltage_desc *reg_voltage_map[] = {
 	[S5M8767_BUCK9] = &buck_voltage_val3,
 };
 
-static unsigned int s5m8767_opmode_reg[][4] = {
+static const unsigned int s5m8767_opmode_reg[][4] = {
 	/* {OFF, ON, LOWPOWER, SUSPEND} */
 	/* LDO1 ... LDO28 */
 	{0x0, 0x3, 0x2, 0x1}, /* LDO1 */
@@ -170,12 +159,11 @@ static unsigned int s5m8767_opmode_reg[][4] = {
 	{0x0, 0x3, 0x1, 0x1}, /* BUCK9 */
 };
 
-static int s5m8767_get_register(struct regulator_dev *rdev, int *reg,
-				int *enable_ctrl)
+static int s5m8767_get_register(struct s5m8767_info *s5m8767, int reg_id,
+				int *reg, int *enable_ctrl)
 {
-	int i, reg_id = rdev_get_id(rdev);
+	int i;
 	unsigned int mode;
-	struct s5m8767_info *s5m8767 = rdev_get_drvdata(rdev);
 
 	switch (reg_id) {
 	case S5M8767_LDO1 ... S5M8767_LDO2:
@@ -207,58 +195,12 @@ static int s5m8767_get_register(struct regulator_dev *rdev, int *reg,
 		}
 	}
 
-	if (i < s5m8767->num_regulators)
-		*enable_ctrl =
-		s5m8767_opmode_reg[reg_id][mode] << S5M8767_ENCTRL_SHIFT;
+	if (i >= s5m8767->num_regulators)
+		return -EINVAL;
+
+	*enable_ctrl = s5m8767_opmode_reg[reg_id][mode] << S5M8767_ENCTRL_SHIFT;
 
 	return 0;
-}
-
-static int s5m8767_reg_is_enabled(struct regulator_dev *rdev)
-{
-	struct s5m8767_info *s5m8767 = rdev_get_drvdata(rdev);
-	int ret, reg;
-	int enable_ctrl;
-	unsigned int val;
-
-	ret = s5m8767_get_register(rdev, &reg, &enable_ctrl);
-	if (ret == -EINVAL)
-		return 1;
-	else if (ret)
-		return ret;
-
-	ret = regmap_read(s5m8767->iodev->regmap_pmic, reg, &val);
-	if (ret)
-		return ret;
-
-	return (val & S5M8767_ENCTRL_MASK) == enable_ctrl;
-}
-
-static int s5m8767_reg_enable(struct regulator_dev *rdev)
-{
-	struct s5m8767_info *s5m8767 = rdev_get_drvdata(rdev);
-	int ret, reg;
-	int enable_ctrl;
-
-	ret = s5m8767_get_register(rdev, &reg, &enable_ctrl);
-	if (ret)
-		return ret;
-
-	return regmap_update_bits(s5m8767->iodev->regmap_pmic, reg,
-			S5M8767_ENCTRL_MASK, enable_ctrl);
-}
-
-static int s5m8767_reg_disable(struct regulator_dev *rdev)
-{
-	struct s5m8767_info *s5m8767 = rdev_get_drvdata(rdev);
-	int ret, reg, enable_ctrl;
-
-	ret = s5m8767_get_register(rdev, &reg, &enable_ctrl);
-	if (ret)
-		return ret;
-
-	return regmap_update_bits(s5m8767->iodev->regmap_pmic, reg,
-			S5M8767_ENCTRL_MASK, ~S5M8767_ENCTRL_MASK);
 }
 
 static int s5m8767_get_vsel_reg(int reg_id, struct s5m8767_info *s5m8767)
@@ -397,32 +339,28 @@ static int s5m8767_set_voltage_time_sel(struct regulator_dev *rdev,
 					     unsigned int new_sel)
 {
 	struct s5m8767_info *s5m8767 = rdev_get_drvdata(rdev);
-	const struct sec_voltage_desc *desc;
-	int reg_id = rdev_get_id(rdev);
-
-	desc = reg_voltage_map[reg_id];
 
 	if ((old_sel < new_sel) && s5m8767->ramp_delay)
-		return DIV_ROUND_UP(desc->step * (new_sel - old_sel),
+		return DIV_ROUND_UP(rdev->desc->uV_step * (new_sel - old_sel),
 					s5m8767->ramp_delay * 1000);
 	return 0;
 }
 
-static struct regulator_ops s5m8767_ops = {
+static const struct regulator_ops s5m8767_ops = {
 	.list_voltage		= regulator_list_voltage_linear,
-	.is_enabled		= s5m8767_reg_is_enabled,
-	.enable			= s5m8767_reg_enable,
-	.disable		= s5m8767_reg_disable,
+	.is_enabled		= regulator_is_enabled_regmap,
+	.enable			= regulator_enable_regmap,
+	.disable		= regulator_disable_regmap,
 	.get_voltage_sel	= regulator_get_voltage_sel_regmap,
 	.set_voltage_sel	= s5m8767_set_voltage_sel,
 	.set_voltage_time_sel	= s5m8767_set_voltage_time_sel,
 };
 
-static struct regulator_ops s5m8767_buck78_ops = {
+static const struct regulator_ops s5m8767_buck78_ops = {
 	.list_voltage		= regulator_list_voltage_linear,
-	.is_enabled		= s5m8767_reg_is_enabled,
-	.enable			= s5m8767_reg_enable,
-	.disable		= s5m8767_reg_disable,
+	.is_enabled		= regulator_is_enabled_regmap,
+	.enable			= regulator_enable_regmap,
+	.disable		= regulator_disable_regmap,
 	.get_voltage_sel	= regulator_get_voltage_sel_regmap,
 	.set_voltage_sel	= regulator_set_voltage_sel_regmap,
 };
@@ -483,6 +421,65 @@ static struct regulator_desc regulators[] = {
 	s5m8767_regulator_desc(BUCK9),
 };
 
+/*
+ * Enable GPIO control over BUCK9 in regulator_config for that regulator.
+ */
+static void s5m8767_regulator_config_ext_control(struct s5m8767_info *s5m8767,
+		struct sec_regulator_data *rdata,
+		struct regulator_config *config)
+{
+	int i, mode = 0;
+
+	if (rdata->id != S5M8767_BUCK9)
+		return;
+
+	/* Check if opmode for regulator matches S5M8767_ENCTRL_USE_GPIO */
+	for (i = 0; i < s5m8767->num_regulators; i++) {
+		const struct sec_opmode_data *opmode = &s5m8767->opmode[i];
+		if (opmode->id == rdata->id) {
+			mode = s5m8767_opmode_reg[rdata->id][opmode->mode];
+			break;
+		}
+	}
+	if (mode != S5M8767_ENCTRL_USE_GPIO) {
+		dev_warn(s5m8767->dev,
+				"ext-control for %pOFn: mismatched op_mode (%x), ignoring\n",
+				rdata->reg_node, mode);
+		return;
+	}
+
+	if (!rdata->ext_control_gpiod) {
+		dev_warn(s5m8767->dev,
+				"ext-control for %pOFn: GPIO not valid, ignoring\n",
+			 rdata->reg_node);
+		return;
+	}
+
+	config->ena_gpiod = rdata->ext_control_gpiod;
+}
+
+/*
+ * Turn on GPIO control over BUCK9.
+ */
+static int s5m8767_enable_ext_control(struct s5m8767_info *s5m8767,
+		struct regulator_dev *rdev)
+{
+	int id = rdev_get_id(rdev);
+	int ret, reg, enable_ctrl;
+
+	if (id != S5M8767_BUCK9)
+		return -EINVAL;
+
+	ret = s5m8767_get_register(s5m8767, id, &reg, &enable_ctrl);
+	if (ret)
+		return ret;
+
+	return regmap_update_bits(s5m8767->iodev->regmap_pmic,
+			reg, S5M8767_ENCTRL_MASK,
+			S5M8767_ENCTRL_USE_GPIO << S5M8767_ENCTRL_SHIFT);
+}
+
+
 #ifdef CONFIG_OF
 static int s5m8767_pmic_dt_parse_dvs_gpio(struct sec_pmic_dev *iodev,
 			struct sec_platform_data *pdata,
@@ -535,7 +532,7 @@ static int s5m8767_pmic_dt_parse_pdata(struct platform_device *pdev,
 		return -ENODEV;
 	}
 
-	regulators_np = of_find_node_by_name(pmic_np, "regulators");
+	regulators_np = of_get_child_by_name(pmic_np, "regulators");
 	if (!regulators_np) {
 		dev_err(iodev->dev, "could not find regulators sub-node\n");
 		return -EINVAL;
@@ -544,19 +541,19 @@ static int s5m8767_pmic_dt_parse_pdata(struct platform_device *pdev,
 	/* count the number of regulators to be supported in pmic */
 	pdata->num_regulators = of_get_child_count(regulators_np);
 
-	rdata = devm_kzalloc(&pdev->dev, sizeof(*rdata) *
-				pdata->num_regulators, GFP_KERNEL);
+	rdata = devm_kcalloc(&pdev->dev,
+			     pdata->num_regulators, sizeof(*rdata),
+			     GFP_KERNEL);
 	if (!rdata) {
-		dev_err(iodev->dev,
-			"could not allocate memory for regulator data\n");
+		of_node_put(regulators_np);
 		return -ENOMEM;
 	}
 
-	rmode = devm_kzalloc(&pdev->dev, sizeof(*rmode) *
-				pdata->num_regulators, GFP_KERNEL);
+	rmode = devm_kcalloc(&pdev->dev,
+			     pdata->num_regulators, sizeof(*rmode),
+			     GFP_KERNEL);
 	if (!rmode) {
-		dev_err(iodev->dev,
-			"could not allocate memory for regulator mode\n");
+		of_node_put(regulators_np);
 		return -ENOMEM;
 	}
 
@@ -564,34 +561,51 @@ static int s5m8767_pmic_dt_parse_pdata(struct platform_device *pdev,
 	pdata->opmode = rmode;
 	for_each_child_of_node(regulators_np, reg_np) {
 		for (i = 0; i < ARRAY_SIZE(regulators); i++)
-			if (!of_node_cmp(reg_np->name, regulators[i].name))
+			if (of_node_name_eq(reg_np, regulators[i].name))
 				break;
 
 		if (i == ARRAY_SIZE(regulators)) {
 			dev_warn(iodev->dev,
-			"don't know how to configure regulator %s\n",
-			reg_np->name);
+			"don't know how to configure regulator %pOFn\n",
+			reg_np);
 			continue;
+		}
+
+		rdata->ext_control_gpiod = devm_fwnode_gpiod_get(
+			&pdev->dev,
+			of_fwnode_handle(reg_np),
+			"s5m8767,pmic-ext-control",
+			GPIOD_OUT_HIGH | GPIOD_FLAGS_BIT_NONEXCLUSIVE,
+			"s5m8767");
+		if (PTR_ERR(rdata->ext_control_gpiod) == -ENOENT) {
+			rdata->ext_control_gpiod = NULL;
+		} else if (IS_ERR(rdata->ext_control_gpiod)) {
+			of_node_put(reg_np);
+			of_node_put(regulators_np);
+			return PTR_ERR(rdata->ext_control_gpiod);
 		}
 
 		rdata->id = i;
 		rdata->initdata = of_get_regulator_init_data(
-						&pdev->dev, reg_np);
+						&pdev->dev, reg_np,
+						&regulators[i]);
 		rdata->reg_node = reg_np;
 		rdata++;
 		rmode->id = i;
 		if (of_property_read_u32(reg_np, "op_mode",
 				&rmode->mode)) {
 			dev_warn(iodev->dev,
-				"no op_mode property property at %s\n",
-				reg_np->full_name);
+				"no op_mode property at %pOF\n",
+				reg_np);
 
 			rmode->mode = S5M8767_OPMODE_NORMAL_MODE;
 		}
 		rmode++;
 	}
 
-	if (of_get_property(pmic_np, "s5m8767,pmic-buck2-uses-gpio-dvs", NULL)) {
+	of_node_put(regulators_np);
+
+	if (of_property_read_bool(pmic_np, "s5m8767,pmic-buck2-uses-gpio-dvs")) {
 		pdata->buck2_gpiodvs = true;
 
 		if (of_property_read_u32_array(pmic_np,
@@ -602,7 +616,7 @@ static int s5m8767_pmic_dt_parse_pdata(struct platform_device *pdev,
 		}
 	}
 
-	if (of_get_property(pmic_np, "s5m8767,pmic-buck3-uses-gpio-dvs", NULL)) {
+	if (of_property_read_bool(pmic_np, "s5m8767,pmic-buck3-uses-gpio-dvs")) {
 		pdata->buck3_gpiodvs = true;
 
 		if (of_property_read_u32_array(pmic_np,
@@ -613,7 +627,7 @@ static int s5m8767_pmic_dt_parse_pdata(struct platform_device *pdev,
 		}
 	}
 
-	if (of_get_property(pmic_np, "s5m8767,pmic-buck4-uses-gpio-dvs", NULL)) {
+	if (of_property_read_bool(pmic_np, "s5m8767,pmic-buck4-uses-gpio-dvs")) {
 		pdata->buck4_gpiodvs = true;
 
 		if (of_property_read_u32_array(pmic_np,
@@ -647,14 +661,9 @@ static int s5m8767_pmic_dt_parse_pdata(struct platform_device *pdev,
 	if (ret)
 		return -EINVAL;
 
-	if (of_get_property(pmic_np, "s5m8767,pmic-buck2-ramp-enable", NULL))
-		pdata->buck2_ramp_enable = true;
-
-	if (of_get_property(pmic_np, "s5m8767,pmic-buck3-ramp-enable", NULL))
-		pdata->buck3_ramp_enable = true;
-
-	if (of_get_property(pmic_np, "s5m8767,pmic-buck4-ramp-enable", NULL))
-		pdata->buck4_ramp_enable = true;
+	pdata->buck2_ramp_enable = of_property_read_bool(pmic_np, "s5m8767,pmic-buck2-ramp-enable");
+	pdata->buck3_ramp_enable = of_property_read_bool(pmic_np, "s5m8767,pmic-buck3-ramp-enable");
+	pdata->buck4_ramp_enable = of_property_read_bool(pmic_np, "s5m8767,pmic-buck4-ramp-enable");
 
 	if (pdata->buck2_ramp_enable || pdata->buck3_ramp_enable
 			|| pdata->buck4_ramp_enable) {
@@ -678,9 +687,8 @@ static int s5m8767_pmic_probe(struct platform_device *pdev)
 	struct sec_pmic_dev *iodev = dev_get_drvdata(pdev->dev.parent);
 	struct sec_platform_data *pdata = iodev->pdata;
 	struct regulator_config config = { };
-	struct regulator_dev **rdev;
 	struct s5m8767_info *s5m8767;
-	int i, ret, size, buck_init;
+	int i, ret, buck_init;
 
 	if (!pdata) {
 		dev_err(pdev->dev.parent, "Platform data not supplied\n");
@@ -719,12 +727,6 @@ static int s5m8767_pmic_probe(struct platform_device *pdev)
 	if (!s5m8767)
 		return -ENOMEM;
 
-	size = sizeof(struct regulator_dev *) * (S5M8767_REG_MAX - 2);
-	s5m8767->rdev = devm_kzalloc(&pdev->dev, size, GFP_KERNEL);
-	if (!s5m8767->rdev)
-		return -ENOMEM;
-
-	rdev = s5m8767->rdev;
 	s5m8767->dev = &pdev->dev;
 	s5m8767->iodev = iodev;
 	s5m8767->num_regulators = pdata->num_regulators;
@@ -843,18 +845,15 @@ static int s5m8767_pmic_probe(struct platform_device *pdev)
 	/* DS4 GPIO */
 	gpio_direction_output(pdata->buck_ds[2], 0x0);
 
-	if (pdata->buck2_gpiodvs || pdata->buck3_gpiodvs ||
-	   pdata->buck4_gpiodvs) {
-		regmap_update_bits(s5m8767->iodev->regmap_pmic,
-				S5M8767_REG_BUCK2CTRL, 1 << 1,
-				(pdata->buck2_gpiodvs) ? (1 << 1) : (0 << 1));
-		regmap_update_bits(s5m8767->iodev->regmap_pmic,
-				S5M8767_REG_BUCK3CTRL, 1 << 1,
-				(pdata->buck3_gpiodvs) ? (1 << 1) : (0 << 1));
-		regmap_update_bits(s5m8767->iodev->regmap_pmic,
-				S5M8767_REG_BUCK4CTRL, 1 << 1,
-				(pdata->buck4_gpiodvs) ? (1 << 1) : (0 << 1));
-	}
+	regmap_update_bits(s5m8767->iodev->regmap_pmic,
+			   S5M8767_REG_BUCK2CTRL, 1 << 1,
+			   (pdata->buck2_gpiodvs) ? (1 << 1) : (0 << 1));
+	regmap_update_bits(s5m8767->iodev->regmap_pmic,
+			   S5M8767_REG_BUCK3CTRL, 1 << 1,
+			   (pdata->buck3_gpiodvs) ? (1 << 1) : (0 << 1));
+	regmap_update_bits(s5m8767->iodev->regmap_pmic,
+			   S5M8767_REG_BUCK4CTRL, 1 << 1,
+			   (pdata->buck4_gpiodvs) ? (1 << 1) : (0 << 1));
 
 	/* Initialize GPIO DVS registers */
 	for (i = 0; i < 8; i++) {
@@ -919,7 +918,13 @@ static int s5m8767_pmic_probe(struct platform_device *pdev)
 
 	for (i = 0; i < pdata->num_regulators; i++) {
 		const struct sec_voltage_desc *desc;
-		int id = pdata->regulators[i].id;
+		unsigned int id = pdata->regulators[i].id;
+		int enable_reg, enable_val;
+		struct regulator_dev *rdev;
+
+		BUILD_BUG_ON(ARRAY_SIZE(regulators) != ARRAY_SIZE(reg_voltage_map));
+		if (WARN_ON_ONCE(id >= ARRAY_SIZE(regulators)))
+			continue;
 
 		desc = reg_voltage_map[id];
 		if (desc) {
@@ -933,6 +938,16 @@ static int s5m8767_pmic_probe(struct platform_device *pdev)
 				regulators[id].vsel_mask = 0x3f;
 			else
 				regulators[id].vsel_mask = 0xff;
+
+			ret = s5m8767_get_register(s5m8767, id, &enable_reg,
+					     &enable_val);
+			if (ret) {
+				dev_err(s5m8767->dev, "error reading registers\n");
+				return ret;
+			}
+			regulators[id].enable_reg = enable_reg;
+			regulators[id].enable_mask = S5M8767_ENCTRL_MASK;
+			regulators[id].enable_val = enable_val;
 		}
 
 		config.dev = s5m8767->dev;
@@ -940,14 +955,35 @@ static int s5m8767_pmic_probe(struct platform_device *pdev)
 		config.driver_data = s5m8767;
 		config.regmap = iodev->regmap_pmic;
 		config.of_node = pdata->regulators[i].reg_node;
+		config.ena_gpiod = NULL;
+		if (pdata->regulators[i].ext_control_gpiod) {
+			/* Assigns config.ena_gpiod */
+			s5m8767_regulator_config_ext_control(s5m8767,
+					&pdata->regulators[i], &config);
 
-		rdev[i] = devm_regulator_register(&pdev->dev, &regulators[id],
+			/*
+			 * Hand the GPIO descriptor management over to the
+			 * regulator core, remove it from devres management.
+			 */
+			devm_gpiod_unhinge(s5m8767->dev, config.ena_gpiod);
+		}
+		rdev = devm_regulator_register(&pdev->dev, &regulators[id],
 						  &config);
-		if (IS_ERR(rdev[i])) {
-			ret = PTR_ERR(rdev[i]);
+		if (IS_ERR(rdev)) {
+			ret = PTR_ERR(rdev);
 			dev_err(s5m8767->dev, "regulator init failed for %d\n",
 					id);
 			return ret;
+		}
+
+		if (pdata->regulators[i].ext_control_gpiod) {
+			ret = s5m8767_enable_ext_control(s5m8767, rdev);
+			if (ret < 0) {
+				dev_err(s5m8767->dev,
+						"failed to enable gpio control over %s: %d\n",
+						rdev->desc->name, ret);
+				return ret;
+			}
 		}
 	}
 
@@ -963,25 +999,14 @@ MODULE_DEVICE_TABLE(platform, s5m8767_pmic_id);
 static struct platform_driver s5m8767_pmic_driver = {
 	.driver = {
 		.name = "s5m8767-pmic",
-		.owner = THIS_MODULE,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe = s5m8767_pmic_probe,
 	.id_table = s5m8767_pmic_id,
 };
-
-static int __init s5m8767_pmic_init(void)
-{
-	return platform_driver_register(&s5m8767_pmic_driver);
-}
-subsys_initcall(s5m8767_pmic_init);
-
-static void __exit s5m8767_pmic_exit(void)
-{
-	platform_driver_unregister(&s5m8767_pmic_driver);
-}
-module_exit(s5m8767_pmic_exit);
+module_platform_driver(s5m8767_pmic_driver);
 
 /* Module information */
 MODULE_AUTHOR("Sangbeom Kim <sbkim73@samsung.com>");
-MODULE_DESCRIPTION("SAMSUNG S5M8767 Regulator Driver");
+MODULE_DESCRIPTION("Samsung S5M8767 Regulator Driver");
 MODULE_LICENSE("GPL");

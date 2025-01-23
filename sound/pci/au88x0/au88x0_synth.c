@@ -1,17 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU Library General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
 /*
@@ -90,7 +78,7 @@ static int vortex_wt_allocroute(vortex_t * vortex, int wt, int nr_ch)
 	hwwrite(vortex->mmio, WT_PARM(wt, 2), 0);
 
 	temp = hwread(vortex->mmio, WT_PARM(wt, 3));
-	printk(KERN_DEBUG "vortex: WT PARM3: %x\n", temp);
+	dev_dbg(vortex->card->dev, "WT PARM3: %x\n", temp);
 	//hwwrite(vortex->mmio, WT_PARM(wt, 3), temp);
 
 	hwwrite(vortex->mmio, WT_DELAY(wt, 0), 0);
@@ -98,7 +86,8 @@ static int vortex_wt_allocroute(vortex_t * vortex, int wt, int nr_ch)
 	hwwrite(vortex->mmio, WT_DELAY(wt, 2), 0);
 	hwwrite(vortex->mmio, WT_DELAY(wt, 3), 0);
 
-	printk(KERN_DEBUG "vortex: WT GMODE: %x\n", hwread(vortex->mmio, WT_GMODE(wt)));
+	dev_dbg(vortex->card->dev, "WT GMODE: %x\n",
+		hwread(vortex->mmio, WT_GMODE(wt)));
 
 	hwwrite(vortex->mmio, WT_PARM(wt, 2), 0xffffffff);
 	hwwrite(vortex->mmio, WT_PARM(wt, 3), 0xcff1c810);
@@ -106,7 +95,8 @@ static int vortex_wt_allocroute(vortex_t * vortex, int wt, int nr_ch)
 	voice->parm0 = voice->parm1 = 0xcfb23e2f;
 	hwwrite(vortex->mmio, WT_PARM(wt, 0), voice->parm0);
 	hwwrite(vortex->mmio, WT_PARM(wt, 1), voice->parm1);
-	printk(KERN_DEBUG "vortex: WT GMODE 2 : %x\n", hwread(vortex->mmio, WT_GMODE(wt)));
+	dev_dbg(vortex->card->dev, "WT GMODE 2 : %x\n",
+		hwread(vortex->mmio, WT_GMODE(wt)));
 	return 0;
 }
 
@@ -196,14 +186,15 @@ vortex_wt_SetReg(vortex_t * vortex, unsigned char reg, int wt,
 
 	if ((reg == 5) || ((reg >= 7) && (reg <= 10)) || (reg == 0xc)) {
 		if (wt >= (NR_WT / NR_WT_PB)) {
-			printk
-			    ("vortex: WT SetReg: bank out of range. reg=0x%x, wt=%d\n",
-			     reg, wt);
+			dev_warn(vortex->card->dev,
+				 "WT SetReg: bank out of range. reg=0x%x, wt=%d\n",
+				 reg, wt);
 			return 0;
 		}
 	} else {
 		if (wt >= NR_WT) {
-			printk(KERN_ERR "vortex: WT SetReg: voice out of range\n");
+			dev_err(vortex->card->dev,
+				"WT SetReg: voice out of range\n");
 			return 0;
 		}
 	}
@@ -214,42 +205,42 @@ vortex_wt_SetReg(vortex_t * vortex, unsigned char reg, int wt,
 		/* Voice specific parameters */
 	case 0:		/* running */
 		/*
-		printk(KERN_DEBUG "vortex: WT SetReg(0x%x) = 0x%08x\n",
+		pr_debug( "vortex: WT SetReg(0x%x) = 0x%08x\n",
 		       WT_RUN(wt), (int)val);
 		*/
 		hwwrite(vortex->mmio, WT_RUN(wt), val);
 		return 0xc;
 	case 1:		/* param 0 */
 		/*
-		printk(KERN_DEBUG "vortex: WT SetReg(0x%x) = 0x%08x\n",
+		pr_debug( "vortex: WT SetReg(0x%x) = 0x%08x\n",
 		       WT_PARM(wt,0), (int)val);
 		*/
 		hwwrite(vortex->mmio, WT_PARM(wt, 0), val);
 		return 0xc;
 	case 2:		/* param 1 */
 		/*
-		printk(KERN_DEBUG "vortex: WT SetReg(0x%x) = 0x%08x\n",
+		pr_debug( "vortex: WT SetReg(0x%x) = 0x%08x\n",
 		       WT_PARM(wt,1), (int)val);
 		*/
 		hwwrite(vortex->mmio, WT_PARM(wt, 1), val);
 		return 0xc;
 	case 3:		/* param 2 */
 		/*
-		printk(KERN_DEBUG "vortex: WT SetReg(0x%x) = 0x%08x\n",
+		pr_debug( "vortex: WT SetReg(0x%x) = 0x%08x\n",
 		       WT_PARM(wt,2), (int)val);
 		*/
 		hwwrite(vortex->mmio, WT_PARM(wt, 2), val);
 		return 0xc;
 	case 4:		/* param 3 */
 		/*
-		printk(KERN_DEBUG "vortex: WT SetReg(0x%x) = 0x%08x\n",
+		pr_debug( "vortex: WT SetReg(0x%x) = 0x%08x\n",
 		       WT_PARM(wt,3), (int)val);
 		*/
 		hwwrite(vortex->mmio, WT_PARM(wt, 3), val);
 		return 0xc;
 	case 6:		/* mute */
 		/*
-		printk(KERN_DEBUG "vortex: WT SetReg(0x%x) = 0x%08x\n",
+		pr_debug( "vortex: WT SetReg(0x%x) = 0x%08x\n",
 		       WT_MUTE(wt), (int)val);
 		*/
 		hwwrite(vortex->mmio, WT_MUTE(wt), val);
@@ -257,7 +248,7 @@ vortex_wt_SetReg(vortex_t * vortex, unsigned char reg, int wt,
 	case 0xb:
 			/* delay */
 		/*
-		printk(KERN_DEBUG "vortex: WT SetReg(0x%x) = 0x%08x\n",
+		pr_debug( "vortex: WT SetReg(0x%x) = 0x%08x\n",
 		       WT_DELAY(wt,0), (int)val);
 		*/
 		hwwrite(vortex->mmio, WT_DELAY(wt, 3), val);
@@ -285,7 +276,7 @@ vortex_wt_SetReg(vortex_t * vortex, unsigned char reg, int wt,
 		return 0;
 	}
 	/*
-	printk(KERN_DEBUG "vortex: WT SetReg(0x%x) = 0x%08x\n", ecx, (int)val);
+	pr_debug( "vortex: WT SetReg(0x%x) = 0x%08x\n", ecx, (int)val);
 	*/
 	hwwrite(vortex->mmio, ecx, val);
 	return 1;

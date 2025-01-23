@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * lm78.c - Part of lm_sensors, Linux kernel modules for hardware
  *	    monitoring
  * Copyright (c) 1998, 1999  Frodo Looijaard <frodol@dds.nl>
  * Copyright (c) 2007, 2011  Jean Delvare <jdelvare@suse.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -73,7 +60,6 @@ enum chips { lm78, lm79 };
 #define LM78_REG_CHIPID 0x49
 #define LM78_REG_I2C_ADDR 0x48
 
-
 /*
  * Conversions. Rounding and limit checking is only done on the TO_REG
  * variants.
@@ -108,7 +94,7 @@ static inline int FAN_FROM_REG(u8 val, int div)
  * TEMP: mC (-128C to +127C)
  * REG: 1C/bit, two's complement
  */
-static inline s8 TEMP_TO_REG(int val)
+static inline s8 TEMP_TO_REG(long val)
 {
 	int nval = clamp_val(val, -128000, 127000) ;
 	return nval < 0 ? (nval - 500) / 1000 : (nval + 500) / 1000;
@@ -123,7 +109,6 @@ static inline int TEMP_FROM_REG(s8 val)
 
 struct lm78_data {
 	struct i2c_client *client;
-	struct device *hwmon_dev;
 	struct mutex lock;
 	enum chips type;
 
@@ -132,7 +117,7 @@ struct lm78_data {
 	int isa_addr;
 
 	struct mutex update_lock;
-	char valid;		/* !=0 if following fields are valid */
+	bool valid;		/* true if following fields are valid */
 	unsigned long last_updated;	/* In jiffies */
 
 	u8 in[7];		/* Register value */
@@ -148,15 +133,13 @@ struct lm78_data {
 	u16 alarms;		/* Register encoding, combined */
 };
 
-
 static int lm78_read_value(struct lm78_data *data, u8 reg);
 static int lm78_write_value(struct lm78_data *data, u8 reg, u8 value);
 static struct lm78_data *lm78_update_device(struct device *dev);
 static void lm78_init_device(struct lm78_data *data);
 
-
 /* 7 Voltages */
-static ssize_t show_in(struct device *dev, struct device_attribute *da,
+static ssize_t in_show(struct device *dev, struct device_attribute *da,
 		       char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
@@ -164,7 +147,7 @@ static ssize_t show_in(struct device *dev, struct device_attribute *da,
 	return sprintf(buf, "%d\n", IN_FROM_REG(data->in[attr->index]));
 }
 
-static ssize_t show_in_min(struct device *dev, struct device_attribute *da,
+static ssize_t in_min_show(struct device *dev, struct device_attribute *da,
 			   char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
@@ -172,7 +155,7 @@ static ssize_t show_in_min(struct device *dev, struct device_attribute *da,
 	return sprintf(buf, "%d\n", IN_FROM_REG(data->in_min[attr->index]));
 }
 
-static ssize_t show_in_max(struct device *dev, struct device_attribute *da,
+static ssize_t in_max_show(struct device *dev, struct device_attribute *da,
 			   char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
@@ -180,8 +163,8 @@ static ssize_t show_in_max(struct device *dev, struct device_attribute *da,
 	return sprintf(buf, "%d\n", IN_FROM_REG(data->in_max[attr->index]));
 }
 
-static ssize_t set_in_min(struct device *dev, struct device_attribute *da,
-			  const char *buf, size_t count)
+static ssize_t in_min_store(struct device *dev, struct device_attribute *da,
+			    const char *buf, size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
 	struct lm78_data *data = dev_get_drvdata(dev);
@@ -200,8 +183,8 @@ static ssize_t set_in_min(struct device *dev, struct device_attribute *da,
 	return count;
 }
 
-static ssize_t set_in_max(struct device *dev, struct device_attribute *da,
-			  const char *buf, size_t count)
+static ssize_t in_max_store(struct device *dev, struct device_attribute *da,
+			    const char *buf, size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
 	struct lm78_data *data = dev_get_drvdata(dev);
@@ -220,39 +203,46 @@ static ssize_t set_in_max(struct device *dev, struct device_attribute *da,
 	return count;
 }
 
-#define show_in_offset(offset)					\
-static SENSOR_DEVICE_ATTR(in##offset##_input, S_IRUGO,		\
-		show_in, NULL, offset);				\
-static SENSOR_DEVICE_ATTR(in##offset##_min, S_IRUGO | S_IWUSR,	\
-		show_in_min, set_in_min, offset);		\
-static SENSOR_DEVICE_ATTR(in##offset##_max, S_IRUGO | S_IWUSR,	\
-		show_in_max, set_in_max, offset);
-
-show_in_offset(0);
-show_in_offset(1);
-show_in_offset(2);
-show_in_offset(3);
-show_in_offset(4);
-show_in_offset(5);
-show_in_offset(6);
+static SENSOR_DEVICE_ATTR_RO(in0_input, in, 0);
+static SENSOR_DEVICE_ATTR_RW(in0_min, in_min, 0);
+static SENSOR_DEVICE_ATTR_RW(in0_max, in_max, 0);
+static SENSOR_DEVICE_ATTR_RO(in1_input, in, 1);
+static SENSOR_DEVICE_ATTR_RW(in1_min, in_min, 1);
+static SENSOR_DEVICE_ATTR_RW(in1_max, in_max, 1);
+static SENSOR_DEVICE_ATTR_RO(in2_input, in, 2);
+static SENSOR_DEVICE_ATTR_RW(in2_min, in_min, 2);
+static SENSOR_DEVICE_ATTR_RW(in2_max, in_max, 2);
+static SENSOR_DEVICE_ATTR_RO(in3_input, in, 3);
+static SENSOR_DEVICE_ATTR_RW(in3_min, in_min, 3);
+static SENSOR_DEVICE_ATTR_RW(in3_max, in_max, 3);
+static SENSOR_DEVICE_ATTR_RO(in4_input, in, 4);
+static SENSOR_DEVICE_ATTR_RW(in4_min, in_min, 4);
+static SENSOR_DEVICE_ATTR_RW(in4_max, in_max, 4);
+static SENSOR_DEVICE_ATTR_RO(in5_input, in, 5);
+static SENSOR_DEVICE_ATTR_RW(in5_min, in_min, 5);
+static SENSOR_DEVICE_ATTR_RW(in5_max, in_max, 5);
+static SENSOR_DEVICE_ATTR_RO(in6_input, in, 6);
+static SENSOR_DEVICE_ATTR_RW(in6_min, in_min, 6);
+static SENSOR_DEVICE_ATTR_RW(in6_max, in_max, 6);
 
 /* Temperature */
-static ssize_t show_temp(struct device *dev, struct device_attribute *da,
-			 char *buf)
+static ssize_t temp1_input_show(struct device *dev,
+				struct device_attribute *da, char *buf)
 {
 	struct lm78_data *data = lm78_update_device(dev);
 	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp));
 }
 
-static ssize_t show_temp_over(struct device *dev, struct device_attribute *da,
+static ssize_t temp1_max_show(struct device *dev, struct device_attribute *da,
 			      char *buf)
 {
 	struct lm78_data *data = lm78_update_device(dev);
 	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp_over));
 }
 
-static ssize_t set_temp_over(struct device *dev, struct device_attribute *da,
-			     const char *buf, size_t count)
+static ssize_t temp1_max_store(struct device *dev,
+			       struct device_attribute *da, const char *buf,
+			       size_t count)
 {
 	struct lm78_data *data = dev_get_drvdata(dev);
 	long val;
@@ -269,15 +259,16 @@ static ssize_t set_temp_over(struct device *dev, struct device_attribute *da,
 	return count;
 }
 
-static ssize_t show_temp_hyst(struct device *dev, struct device_attribute *da,
-			      char *buf)
+static ssize_t temp1_max_hyst_show(struct device *dev,
+				   struct device_attribute *da, char *buf)
 {
 	struct lm78_data *data = lm78_update_device(dev);
 	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp_hyst));
 }
 
-static ssize_t set_temp_hyst(struct device *dev, struct device_attribute *da,
-			     const char *buf, size_t count)
+static ssize_t temp1_max_hyst_store(struct device *dev,
+				    struct device_attribute *da,
+				    const char *buf, size_t count)
 {
 	struct lm78_data *data = dev_get_drvdata(dev);
 	long val;
@@ -294,14 +285,12 @@ static ssize_t set_temp_hyst(struct device *dev, struct device_attribute *da,
 	return count;
 }
 
-static DEVICE_ATTR(temp1_input, S_IRUGO, show_temp, NULL);
-static DEVICE_ATTR(temp1_max, S_IRUGO | S_IWUSR,
-		show_temp_over, set_temp_over);
-static DEVICE_ATTR(temp1_max_hyst, S_IRUGO | S_IWUSR,
-		show_temp_hyst, set_temp_hyst);
+static DEVICE_ATTR_RO(temp1_input);
+static DEVICE_ATTR_RW(temp1_max);
+static DEVICE_ATTR_RW(temp1_max_hyst);
 
 /* 3 Fans */
-static ssize_t show_fan(struct device *dev, struct device_attribute *da,
+static ssize_t fan_show(struct device *dev, struct device_attribute *da,
 			char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
@@ -311,7 +300,7 @@ static ssize_t show_fan(struct device *dev, struct device_attribute *da,
 		DIV_FROM_REG(data->fan_div[nr])));
 }
 
-static ssize_t show_fan_min(struct device *dev, struct device_attribute *da,
+static ssize_t fan_min_show(struct device *dev, struct device_attribute *da,
 			    char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
@@ -321,8 +310,8 @@ static ssize_t show_fan_min(struct device *dev, struct device_attribute *da,
 		DIV_FROM_REG(data->fan_div[nr])));
 }
 
-static ssize_t set_fan_min(struct device *dev, struct device_attribute *da,
-			   const char *buf, size_t count)
+static ssize_t fan_min_store(struct device *dev, struct device_attribute *da,
+			     const char *buf, size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
 	struct lm78_data *data = dev_get_drvdata(dev);
@@ -341,7 +330,7 @@ static ssize_t set_fan_min(struct device *dev, struct device_attribute *da,
 	return count;
 }
 
-static ssize_t show_fan_div(struct device *dev, struct device_attribute *da,
+static ssize_t fan_div_show(struct device *dev, struct device_attribute *da,
 			    char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
@@ -355,8 +344,8 @@ static ssize_t show_fan_div(struct device *dev, struct device_attribute *da,
  * least surprise; the user doesn't expect the fan minimum to change just
  * because the divisor changed.
  */
-static ssize_t set_fan_div(struct device *dev, struct device_attribute *da,
-			   const char *buf, size_t count)
+static ssize_t fan_div_store(struct device *dev, struct device_attribute *da,
+			     const char *buf, size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
 	struct lm78_data *data = dev_get_drvdata(dev);
@@ -414,61 +403,56 @@ static ssize_t set_fan_div(struct device *dev, struct device_attribute *da,
 	return count;
 }
 
-#define show_fan_offset(offset)				\
-static SENSOR_DEVICE_ATTR(fan##offset##_input, S_IRUGO,		\
-		show_fan, NULL, offset - 1);			\
-static SENSOR_DEVICE_ATTR(fan##offset##_min, S_IRUGO | S_IWUSR,	\
-		show_fan_min, set_fan_min, offset - 1);
-
-show_fan_offset(1);
-show_fan_offset(2);
-show_fan_offset(3);
+static SENSOR_DEVICE_ATTR_RO(fan1_input, fan, 0);
+static SENSOR_DEVICE_ATTR_RW(fan1_min, fan_min, 0);
+static SENSOR_DEVICE_ATTR_RO(fan2_input, fan, 1);
+static SENSOR_DEVICE_ATTR_RW(fan2_min, fan_min, 1);
+static SENSOR_DEVICE_ATTR_RO(fan3_input, fan, 2);
+static SENSOR_DEVICE_ATTR_RW(fan3_min, fan_min, 2);
 
 /* Fan 3 divisor is locked in H/W */
-static SENSOR_DEVICE_ATTR(fan1_div, S_IRUGO | S_IWUSR,
-		show_fan_div, set_fan_div, 0);
-static SENSOR_DEVICE_ATTR(fan2_div, S_IRUGO | S_IWUSR,
-		show_fan_div, set_fan_div, 1);
-static SENSOR_DEVICE_ATTR(fan3_div, S_IRUGO, show_fan_div, NULL, 2);
+static SENSOR_DEVICE_ATTR_RW(fan1_div, fan_div, 0);
+static SENSOR_DEVICE_ATTR_RW(fan2_div, fan_div, 1);
+static SENSOR_DEVICE_ATTR_RO(fan3_div, fan_div, 2);
 
 /* VID */
-static ssize_t show_vid(struct device *dev, struct device_attribute *da,
-			char *buf)
+static ssize_t cpu0_vid_show(struct device *dev, struct device_attribute *da,
+			     char *buf)
 {
 	struct lm78_data *data = lm78_update_device(dev);
 	return sprintf(buf, "%d\n", vid_from_reg(data->vid, 82));
 }
-static DEVICE_ATTR(cpu0_vid, S_IRUGO, show_vid, NULL);
+static DEVICE_ATTR_RO(cpu0_vid);
 
 /* Alarms */
-static ssize_t show_alarms(struct device *dev, struct device_attribute *da,
+static ssize_t alarms_show(struct device *dev, struct device_attribute *da,
 			   char *buf)
 {
 	struct lm78_data *data = lm78_update_device(dev);
 	return sprintf(buf, "%u\n", data->alarms);
 }
-static DEVICE_ATTR(alarms, S_IRUGO, show_alarms, NULL);
+static DEVICE_ATTR_RO(alarms);
 
-static ssize_t show_alarm(struct device *dev, struct device_attribute *da,
+static ssize_t alarm_show(struct device *dev, struct device_attribute *da,
 			  char *buf)
 {
 	struct lm78_data *data = lm78_update_device(dev);
 	int nr = to_sensor_dev_attr(da)->index;
 	return sprintf(buf, "%u\n", (data->alarms >> nr) & 1);
 }
-static SENSOR_DEVICE_ATTR(in0_alarm, S_IRUGO, show_alarm, NULL, 0);
-static SENSOR_DEVICE_ATTR(in1_alarm, S_IRUGO, show_alarm, NULL, 1);
-static SENSOR_DEVICE_ATTR(in2_alarm, S_IRUGO, show_alarm, NULL, 2);
-static SENSOR_DEVICE_ATTR(in3_alarm, S_IRUGO, show_alarm, NULL, 3);
-static SENSOR_DEVICE_ATTR(in4_alarm, S_IRUGO, show_alarm, NULL, 8);
-static SENSOR_DEVICE_ATTR(in5_alarm, S_IRUGO, show_alarm, NULL, 9);
-static SENSOR_DEVICE_ATTR(in6_alarm, S_IRUGO, show_alarm, NULL, 10);
-static SENSOR_DEVICE_ATTR(fan1_alarm, S_IRUGO, show_alarm, NULL, 6);
-static SENSOR_DEVICE_ATTR(fan2_alarm, S_IRUGO, show_alarm, NULL, 7);
-static SENSOR_DEVICE_ATTR(fan3_alarm, S_IRUGO, show_alarm, NULL, 11);
-static SENSOR_DEVICE_ATTR(temp1_alarm, S_IRUGO, show_alarm, NULL, 4);
+static SENSOR_DEVICE_ATTR_RO(in0_alarm, alarm, 0);
+static SENSOR_DEVICE_ATTR_RO(in1_alarm, alarm, 1);
+static SENSOR_DEVICE_ATTR_RO(in2_alarm, alarm, 2);
+static SENSOR_DEVICE_ATTR_RO(in3_alarm, alarm, 3);
+static SENSOR_DEVICE_ATTR_RO(in4_alarm, alarm, 8);
+static SENSOR_DEVICE_ATTR_RO(in5_alarm, alarm, 9);
+static SENSOR_DEVICE_ATTR_RO(in6_alarm, alarm, 10);
+static SENSOR_DEVICE_ATTR_RO(fan1_alarm, alarm, 6);
+static SENSOR_DEVICE_ATTR_RO(fan2_alarm, alarm, 7);
+static SENSOR_DEVICE_ATTR_RO(fan3_alarm, alarm, 11);
+static SENSOR_DEVICE_ATTR_RO(temp1_alarm, alarm, 4);
 
-static struct attribute *lm78_attributes[] = {
+static struct attribute *lm78_attrs[] = {
 	&sensor_dev_attr_in0_input.dev_attr.attr,
 	&sensor_dev_attr_in0_min.dev_attr.attr,
 	&sensor_dev_attr_in0_max.dev_attr.attr,
@@ -519,9 +503,7 @@ static struct attribute *lm78_attributes[] = {
 	NULL
 };
 
-static const struct attribute_group lm78_group = {
-	.attrs = lm78_attributes,
-};
+ATTRIBUTE_GROUPS(lm78);
 
 /*
  * ISA related code
@@ -532,19 +514,6 @@ static const struct attribute_group lm78_group = {
 static struct platform_device *pdev;
 
 static unsigned short isa_address = 0x290;
-
-/*
- * I2C devices get this name attribute automatically, but for ISA devices
- * we must create it by ourselves.
- */
-static ssize_t show_name(struct device *dev, struct device_attribute
-			 *devattr, char *buf)
-{
-	struct lm78_data *data = dev_get_drvdata(dev);
-
-	return sprintf(buf, "%s\n", data->name);
-}
-static DEVICE_ATTR(name, S_IRUGO, show_name, NULL);
 
 static struct lm78_data *lm78_data_if_isa(void)
 {
@@ -648,7 +617,7 @@ static int lm78_i2c_detect(struct i2c_client *client,
 	if (isa)
 		mutex_unlock(&isa->update_lock);
 
-	strlcpy(info->type, client_name, I2C_NAME_SIZE);
+	strscpy(info->type, client_name, I2C_NAME_SIZE);
 
 	return 0;
 
@@ -658,49 +627,27 @@ static int lm78_i2c_detect(struct i2c_client *client,
 	return -ENODEV;
 }
 
-static int lm78_i2c_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
-{
-	struct lm78_data *data;
-	int err;
+static const struct i2c_device_id lm78_i2c_id[];
 
-	data = devm_kzalloc(&client->dev, sizeof(struct lm78_data), GFP_KERNEL);
+static int lm78_i2c_probe(struct i2c_client *client)
+{
+	struct device *dev = &client->dev;
+	struct device *hwmon_dev;
+	struct lm78_data *data;
+
+	data = devm_kzalloc(dev, sizeof(struct lm78_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	i2c_set_clientdata(client, data);
 	data->client = client;
-	data->type = id->driver_data;
+	data->type = i2c_match_id(lm78_i2c_id, client)->driver_data;
 
 	/* Initialize the LM78 chip */
 	lm78_init_device(data);
 
-	/* Register sysfs hooks */
-	err = sysfs_create_group(&client->dev.kobj, &lm78_group);
-	if (err)
-		return err;
-
-	data->hwmon_dev = hwmon_device_register(&client->dev);
-	if (IS_ERR(data->hwmon_dev)) {
-		err = PTR_ERR(data->hwmon_dev);
-		goto error;
-	}
-
-	return 0;
-
-error:
-	sysfs_remove_group(&client->dev.kobj, &lm78_group);
-	return err;
-}
-
-static int lm78_i2c_remove(struct i2c_client *client)
-{
-	struct lm78_data *data = i2c_get_clientdata(client);
-
-	hwmon_device_unregister(data->hwmon_dev);
-	sysfs_remove_group(&client->dev.kobj, &lm78_group);
-
-	return 0;
+	hwmon_dev = devm_hwmon_device_register_with_groups(dev, client->name,
+							   data, lm78_groups);
+	return PTR_ERR_OR_ZERO(hwmon_dev);
 }
 
 static const struct i2c_device_id lm78_i2c_id[] = {
@@ -716,7 +663,6 @@ static struct i2c_driver lm78_driver = {
 		.name	= "lm78",
 	},
 	.probe		= lm78_i2c_probe,
-	.remove		= lm78_i2c_remove,
 	.id_table	= lm78_i2c_id,
 	.detect		= lm78_i2c_detect,
 	.address_list	= normal_i2c,
@@ -826,7 +772,7 @@ static struct lm78_data *lm78_update_device(struct device *dev)
 		data->alarms = lm78_read_value(data, LM78_REG_ALARM1) +
 		    (lm78_read_value(data, LM78_REG_ALARM2) << 8);
 		data->last_updated = jiffies;
-		data->valid = 1;
+		data->valid = true;
 
 		data->fan_div[2] = 1;
 	}
@@ -839,17 +785,18 @@ static struct lm78_data *lm78_update_device(struct device *dev)
 #ifdef CONFIG_ISA
 static int lm78_isa_probe(struct platform_device *pdev)
 {
-	int err;
+	struct device *dev = &pdev->dev;
+	struct device *hwmon_dev;
 	struct lm78_data *data;
 	struct resource *res;
 
 	/* Reserve the ISA region */
 	res = platform_get_resource(pdev, IORESOURCE_IO, 0);
-	if (!devm_request_region(&pdev->dev, res->start + LM78_ADDR_REG_OFFSET,
+	if (!devm_request_region(dev, res->start + LM78_ADDR_REG_OFFSET,
 				 2, "lm78"))
 		return -EBUSY;
 
-	data = devm_kzalloc(&pdev->dev, sizeof(struct lm78_data), GFP_KERNEL);
+	data = devm_kzalloc(dev, sizeof(struct lm78_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -868,46 +815,16 @@ static int lm78_isa_probe(struct platform_device *pdev)
 	/* Initialize the LM78 chip */
 	lm78_init_device(data);
 
-	/* Register sysfs hooks */
-	err = sysfs_create_group(&pdev->dev.kobj, &lm78_group);
-	if (err)
-		goto exit_remove_files;
-	err = device_create_file(&pdev->dev, &dev_attr_name);
-	if (err)
-		goto exit_remove_files;
-
-	data->hwmon_dev = hwmon_device_register(&pdev->dev);
-	if (IS_ERR(data->hwmon_dev)) {
-		err = PTR_ERR(data->hwmon_dev);
-		goto exit_remove_files;
-	}
-
-	return 0;
-
- exit_remove_files:
-	sysfs_remove_group(&pdev->dev.kobj, &lm78_group);
-	device_remove_file(&pdev->dev, &dev_attr_name);
-	return err;
-}
-
-static int lm78_isa_remove(struct platform_device *pdev)
-{
-	struct lm78_data *data = platform_get_drvdata(pdev);
-
-	hwmon_device_unregister(data->hwmon_dev);
-	sysfs_remove_group(&pdev->dev.kobj, &lm78_group);
-	device_remove_file(&pdev->dev, &dev_attr_name);
-
-	return 0;
+	hwmon_dev = devm_hwmon_device_register_with_groups(dev, data->name,
+							   data, lm78_groups);
+	return PTR_ERR_OR_ZERO(hwmon_dev);
 }
 
 static struct platform_driver lm78_isa_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "lm78",
 	},
 	.probe		= lm78_isa_probe,
-	.remove		= lm78_isa_remove,
 };
 
 /* return 1 if a supported chip is found, 0 otherwise */

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, Mellanox Technologies inc.  All rights reserved.
+ * Copyright (c) 2013-2015, Mellanox Technologies. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -32,6 +32,7 @@
 
 #include <linux/kref.h>
 #include <linux/slab.h>
+#include <linux/sched/mm.h>
 #include <rdma/ib_umem.h>
 
 #include "mlx5_ib.h"
@@ -41,19 +42,20 @@ struct mlx5_ib_user_db_page {
 	struct ib_umem	       *umem;
 	unsigned long		user_virt;
 	int			refcnt;
+	struct mm_struct	*mm;
 };
 
 int mlx5_ib_db_map_user(struct mlx5_ib_ucontext *context, unsigned long virt,
 			struct mlx5_db *db)
 {
 	struct mlx5_ib_user_db_page *page;
-	struct ib_umem_chunk *chunk;
 	int err = 0;
 
 	mutex_lock(&context->db_page_mutex);
 
 	list_for_each_entry(page, &context->db_page_list, list)
-		if (page->user_virt == (virt & PAGE_MASK))
+		if ((current->mm == page->mm) &&
+		    (page->user_virt == (virt & PAGE_MASK)))
 			goto found;
 
 	page = kmalloc(sizeof(*page), GFP_KERNEL);
@@ -64,19 +66,21 @@ int mlx5_ib_db_map_user(struct mlx5_ib_ucontext *context, unsigned long virt,
 
 	page->user_virt = (virt & PAGE_MASK);
 	page->refcnt    = 0;
-	page->umem      = ib_umem_get(&context->ibucontext, virt & PAGE_MASK,
-				      PAGE_SIZE, 0, 0);
+	page->umem = ib_umem_get(context->ibucontext.device, virt & PAGE_MASK,
+				 PAGE_SIZE, 0);
 	if (IS_ERR(page->umem)) {
 		err = PTR_ERR(page->umem);
 		kfree(page);
 		goto out;
 	}
+	mmgrab(current->mm);
+	page->mm = current->mm;
 
 	list_add(&page->list, &context->db_page_list);
 
 found:
-	chunk = list_entry(page->umem->chunk_list.next, struct ib_umem_chunk, list);
-	db->dma		= sg_dma_address(chunk->page_list) + (virt & ~PAGE_MASK);
+	db->dma = sg_dma_address(page->umem->sgt_append.sgt.sgl) +
+		  (virt & ~PAGE_MASK);
 	db->u.user_page = page;
 	++page->refcnt;
 
@@ -92,6 +96,7 @@ void mlx5_ib_db_unmap_user(struct mlx5_ib_ucontext *context, struct mlx5_db *db)
 
 	if (!--db->u.user_page->refcnt) {
 		list_del(&db->u.user_page->list);
+		mmdrop(db->u.user_page->mm);
 		ib_umem_release(db->u.user_page->umem);
 		kfree(db->u.user_page);
 	}

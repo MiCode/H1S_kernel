@@ -1,22 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for LM70EVAL-LLP board for the LM70 sensor
  *
  * Copyright (C) 2006 Kaiwan N Billimoria <kaiwan@designergraphix.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -27,10 +16,8 @@
 #include <linux/sysfs.h>
 #include <linux/workqueue.h>
 
-
 #include <linux/spi/spi.h>
 #include <linux/spi/spi_bitbang.h>
-
 
 /*
  * The LM70 communicates with a host processor using a 3-wire variant of
@@ -47,7 +34,7 @@
  * available (on page 4) here:
  *  http://www.national.com/appinfo/tempsensors/files/LM70LLPEVALmanual.pdf
  *
- * Also see Documentation/spi/spi-lm70llp.  The SPI<->parport code here is
+ * Also see Documentation/spi/spi-lm70llp.rst.  The SPI<->parport code here is
  * (heavily) based on spi-butterfly by David Brownell.
  *
  * The LM70 LLP connects to the PC parallel port in the following manner:
@@ -92,7 +79,6 @@ struct spi_lm70llp {
 /* REVISIT : ugly global ; provides "exclusive open" facility */
 static struct spi_lm70llp *lm70llp;
 
-
 /*-------------------------------------------------------------------*/
 
 static inline struct spi_lm70llp *spidev_to_pp(struct spi_device *spi)
@@ -126,12 +112,14 @@ static inline void assertCS(struct spi_lm70llp *pp)
 static inline void clkHigh(struct spi_lm70llp *pp)
 {
 	u8 data = parport_read_data(pp->port);
+
 	parport_write_data(pp->port, data | SCLK);
 }
 
 static inline void clkLow(struct spi_lm70llp *pp)
 {
 	u8 data = parport_read_data(pp->port);
+
 	parport_write_data(pp->port, data & ~SCLK);
 }
 
@@ -170,8 +158,10 @@ static inline void setmosi(struct spi_device *s, int is_on)
 static inline int getmiso(struct spi_device *s)
 {
 	struct spi_lm70llp *pp = spidev_to_pp(s);
-	return ((SIO == (parport_read_status(pp->port) & SIO)) ? 0 : 1 );
+
+	return ((SIO == (parport_read_status(pp->port) & SIO)) ? 0 : 1);
 }
+
 /*--------------------------------------------------------------------*/
 
 #include "spi-bitbang-txrx.h"
@@ -189,9 +179,10 @@ static void lm70_chipselect(struct spi_device *spi, int value)
 /*
  * Our actual bitbanger routine.
  */
-static u32 lm70_txrx(struct spi_device *spi, unsigned nsecs, u32 word, u8 bits)
+static u32 lm70_txrx(struct spi_device *spi, unsigned nsecs, u32 word, u8 bits,
+		     unsigned flags)
 {
-	return bitbang_txrx_be_cpha0(spi, nsecs, 0, 0, word, bits);
+	return bitbang_txrx_be_cpha0(spi, nsecs, 0, flags, word, bits);
 }
 
 static void spi_lm70llp_attach(struct parport *p)
@@ -200,11 +191,10 @@ static void spi_lm70llp_attach(struct parport *p)
 	struct spi_lm70llp	*pp;
 	struct spi_master	*master;
 	int			status;
+	struct pardev_cb	lm70llp_cb;
 
 	if (lm70llp) {
-		printk(KERN_WARNING
-			"%s: spi_lm70llp instance already loaded. Aborting.\n",
-			DRVNAME);
+		pr_warn("spi_lm70llp instance already loaded. Aborting.\n");
 		return;
 	}
 
@@ -212,7 +202,7 @@ static void spi_lm70llp_attach(struct parport *p)
 	 * the lm70 driver could verify it, reading the manf ID.
 	 */
 
-	master = spi_alloc_master(p->physport->dev, sizeof *pp);
+	master = spi_alloc_master(p->physport->dev, sizeof(*pp));
 	if (!master) {
 		status = -ENOMEM;
 		goto out_fail;
@@ -231,9 +221,11 @@ static void spi_lm70llp_attach(struct parport *p)
 	 * Parport hookup
 	 */
 	pp->port = p;
-	pd = parport_register_device(p, DRVNAME,
-			NULL, NULL, NULL,
-			PARPORT_FLAG_EXCL, pp);
+	memset(&lm70llp_cb, 0, sizeof(lm70llp_cb));
+	lm70llp_cb.private = pp;
+	lm70llp_cb.flags = PARPORT_FLAG_EXCL;
+	pd = parport_register_dev_model(p, DRVNAME, &lm70llp_cb, 0);
+
 	if (!pd) {
 		status = -ENOMEM;
 		goto out_free_master;
@@ -249,9 +241,8 @@ static void spi_lm70llp_attach(struct parport *p)
 	 */
 	status = spi_bitbang_start(&pp->bitbang);
 	if (status < 0) {
-		printk(KERN_WARNING
-			"%s: spi_bitbang_start failed with status %d\n",
-			DRVNAME, status);
+		dev_warn(&pd->dev, "spi_bitbang_start failed with status %d\n",
+			 status);
 		goto out_off_and_release;
 	}
 
@@ -276,9 +267,9 @@ static void spi_lm70llp_attach(struct parport *p)
 	pp->spidev_lm70 = spi_new_device(pp->bitbang.master, &pp->info);
 	if (pp->spidev_lm70)
 		dev_dbg(&pp->spidev_lm70->dev, "spidev_lm70 at %s\n",
-				dev_name(&pp->spidev_lm70->dev));
+			dev_name(&pp->spidev_lm70->dev));
 	else {
-		printk(KERN_WARNING "%s: spi_new_device failed\n", DRVNAME);
+		dev_warn(&pd->dev, "spi_new_device failed\n");
 		status = -ENODEV;
 		goto out_bitbang_stop;
 	}
@@ -297,9 +288,9 @@ out_off_and_release:
 out_parport_unreg:
 	parport_unregister_device(pd);
 out_free_master:
-	(void) spi_master_put(master);
+	spi_master_put(master);
 out_fail:
-	pr_info("%s: spi_lm70llp probe fail, status %d\n", DRVNAME, status);
+	pr_info("spi_lm70llp probe fail, status %d\n", status);
 }
 
 static void spi_lm70llp_detach(struct parport *p)
@@ -318,29 +309,18 @@ static void spi_lm70llp_detach(struct parport *p)
 	parport_release(pp->pd);
 	parport_unregister_device(pp->pd);
 
-	(void) spi_master_put(pp->bitbang.master);
+	spi_master_put(pp->bitbang.master);
 
 	lm70llp = NULL;
 }
 
-
 static struct parport_driver spi_lm70llp_drv = {
 	.name =		DRVNAME,
-	.attach =	spi_lm70llp_attach,
+	.match_port =	spi_lm70llp_attach,
 	.detach =	spi_lm70llp_detach,
+	.devmodel =	true,
 };
-
-static int __init init_spi_lm70llp(void)
-{
-	return parport_register_driver(&spi_lm70llp_drv);
-}
-module_init(init_spi_lm70llp);
-
-static void __exit cleanup_spi_lm70llp(void)
-{
-	parport_unregister_driver(&spi_lm70llp_drv);
-}
-module_exit(cleanup_spi_lm70llp);
+module_parport_driver(spi_lm70llp_drv);
 
 MODULE_AUTHOR("Kaiwan N Billimoria <kaiwan@designergraphix.com>");
 MODULE_DESCRIPTION(

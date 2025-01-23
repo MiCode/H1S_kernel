@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Freescale QUICC Engine USB Host Controller Driver
  *
@@ -8,11 +9,6 @@
  *               Peter Barada <peterb@logicpd.com>
  * Copyright (c) MontaVista Software, Inc. 2008.
  *               Anton Vorontsov <avorontsov@ru.mvista.com>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/module.h>
@@ -26,12 +22,13 @@
 #include <linux/io.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
-#include <linux/of_gpio.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <asm/qe.h>
+#include <linux/gpio/consumer.h>
+#include <soc/fsl/qe/qe.h>
 #include <asm/fsl_gtm.h>
 #include "fhci.h"
 
@@ -154,15 +151,15 @@ int fhci_ioports_check_bus_state(struct fhci_hcd *fhci)
 	u8 bits = 0;
 
 	/* check USBOE,if transmitting,exit */
-	if (!gpio_get_value(fhci->gpios[GPIO_USBOE]))
+	if (!gpiod_get_value(fhci->gpiods[GPIO_USBOE]))
 		return -1;
 
 	/* check USBRP */
-	if (gpio_get_value(fhci->gpios[GPIO_USBRP]))
+	if (gpiod_get_value(fhci->gpiods[GPIO_USBRP]))
 		bits |= 0x2;
 
 	/* check USBRN */
-	if (gpio_get_value(fhci->gpios[GPIO_USBRN]))
+	if (gpiod_get_value(fhci->gpiods[GPIO_USBRN]))
 		bits |= 0x1;
 
 	return bits;
@@ -310,10 +307,8 @@ static struct fhci_usb *fhci_create_lld(struct fhci_hcd *fhci)
 
 	/* allocate memory for SCC data structure */
 	usb = kzalloc(sizeof(*usb), GFP_KERNEL);
-	if (!usb) {
-		fhci_err(fhci, "no memory for SCC data struct\n");
+	if (!usb)
 		return NULL;
-	}
 
 	usb->fhci = fhci;
 	usb->hc_list = fhci->hc_list;
@@ -360,12 +355,12 @@ static int fhci_start(struct usb_hcd *hcd)
 	hcd->state = HC_STATE_RUNNING;
 
 	/*
-	 * From here on, khubd concurrently accesses the root
+	 * From here on, hub_wq concurrently accesses the root
 	 * hub; drivers will be talking to enumerated devices.
-	 * (On restart paths, khubd already knows about the root
+	 * (On restart paths, hub_wq already knows about the root
 	 * hub and could find work as soon as we wrote FLAG_CF.)
 	 *
-	 * Before this point the HC was idle/ready.  After, khubd
+	 * Before this point the HC was idle/ready.  After, hub_wq
 	 * and device drivers may start it running.
 	 */
 	fhci_usb_enable(fhci);
@@ -402,6 +397,7 @@ static int fhci_urb_enqueue(struct usb_hcd *hcd, struct urb *urb,
 	case PIPE_CONTROL:
 		/* 1 td fro setup,1 for ack */
 		size = 2;
+		fallthrough;
 	case PIPE_BULK:
 		/* one td for every 4096 bytes(can be up to 8k) */
 		size += urb->transfer_buffer_length / 4096;
@@ -413,8 +409,7 @@ static int fhci_urb_enqueue(struct usb_hcd *hcd, struct urb *urb,
 			size++;
 		else if ((urb->transfer_flags & URB_ZERO_PACKET) != 0
 			 && (urb->transfer_buffer_length
-			     % usb_maxpacket(urb->dev, pipe,
-					     usb_pipeout(pipe))) != 0)
+			     % usb_maxpacket(urb->dev, pipe)) != 0)
 			size++;
 		break;
 	case PIPE_ISOCHRONOUS:
@@ -544,7 +539,7 @@ static const struct hc_driver fhci_driver = {
 
 	/* generic hardware linkage */
 	.irq = fhci_irq,
-	.flags = HCD_USB11 | HCD_MEMORY,
+	.flags = HCD_DMA | HCD_USB11 | HCD_MEMORY,
 
 	/* basic lifecycle operation */
 	.start = fhci_start,
@@ -636,45 +631,28 @@ static int of_fhci_probe(struct platform_device *ofdev)
 
 	/* GPIOs and pins */
 	for (i = 0; i < NUM_GPIOS; i++) {
-		int gpio;
-		enum of_gpio_flags flags;
+		if (i < GPIO_SPEED)
+			fhci->gpiods[i] = devm_gpiod_get_index(dev,
+					NULL, i, GPIOD_IN);
 
-		gpio = of_get_gpio_flags(node, i, &flags);
-		fhci->gpios[i] = gpio;
-		fhci->alow_gpios[i] = flags & OF_GPIO_ACTIVE_LOW;
+		else
+			fhci->gpiods[i] = devm_gpiod_get_index_optional(dev,
+					NULL, i, GPIOD_OUT_LOW);
 
-		if (!gpio_is_valid(gpio)) {
-			if (i < GPIO_SPEED) {
-				dev_err(dev, "incorrect GPIO%d: %d\n",
-					i, gpio);
-				goto err_gpios;
-			} else {
-				dev_info(dev, "assuming board doesn't have "
-					"%s gpio\n", i == GPIO_SPEED ?
-					"speed" : "power");
-				continue;
-			}
-		}
-
-		ret = gpio_request(gpio, dev_name(dev));
-		if (ret) {
-			dev_err(dev, "failed to request gpio %d", i);
+		if (IS_ERR(fhci->gpiods[i])) {
+			dev_err(dev, "incorrect GPIO%d: %ld\n",
+				i, PTR_ERR(fhci->gpiods[i]));
 			goto err_gpios;
 		}
-
-		if (i >= GPIO_SPEED) {
-			ret = gpio_direction_output(gpio, 0);
-			if (ret) {
-				dev_err(dev, "failed to set gpio %d as "
-					"an output\n", i);
-				i++;
-				goto err_gpios;
-			}
+		if (!fhci->gpiods[i]) {
+			dev_info(dev, "assuming board doesn't have "
+				 "%s gpio\n", i == GPIO_SPEED ?
+				 "speed" : "power");
 		}
 	}
 
 	for (j = 0; j < NUM_PINS; j++) {
-		fhci->pins[j] = qe_pin_request(node, j);
+		fhci->pins[j] = qe_pin_request(dev, j);
 		if (IS_ERR(fhci->pins[j])) {
 			ret = PTR_ERR(fhci->pins[j]);
 			dev_err(dev, "can't get pin %d: %d\n", j, ret);
@@ -699,7 +677,7 @@ static int of_fhci_probe(struct platform_device *ofdev)
 
 	/* USB Host interrupt. */
 	usb_irq = irq_of_parse_and_map(node, 0);
-	if (usb_irq == NO_IRQ) {
+	if (!usb_irq) {
 		dev_err(dev, "could not get usb irq\n");
 		ret = -EINVAL;
 		goto err_usb_irq;
@@ -772,10 +750,6 @@ err_pins:
 	while (--j >= 0)
 		qe_pin_free(fhci->pins[j]);
 err_gpios:
-	while (--i >= 0) {
-		if (gpio_is_valid(fhci->gpios[i]))
-			gpio_free(fhci->gpios[i]);
-	}
 	cpm_muram_free(pram_addr);
 err_pram:
 	iounmap(hcd->regs);
@@ -784,32 +758,25 @@ err_regs:
 	return ret;
 }
 
-static int fhci_remove(struct device *dev)
+static void fhci_remove(struct device *dev)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
 	struct fhci_hcd *fhci = hcd_to_fhci(hcd);
-	int i;
 	int j;
 
 	usb_remove_hcd(hcd);
 	free_irq(fhci->timer->irq, hcd);
 	gtm_put_timer16(fhci->timer);
 	cpm_muram_free(cpm_muram_offset(fhci->pram));
-	for (i = 0; i < NUM_GPIOS; i++) {
-		if (!gpio_is_valid(fhci->gpios[i]))
-			continue;
-		gpio_free(fhci->gpios[i]);
-	}
 	for (j = 0; j < NUM_PINS; j++)
 		qe_pin_free(fhci->pins[j]);
 	fhci_dfs_destroy(fhci);
 	usb_put_hcd(hcd);
-	return 0;
 }
 
-static int of_fhci_remove(struct platform_device *ofdev)
+static void of_fhci_remove(struct platform_device *ofdev)
 {
-	return fhci_remove(&ofdev->dev);
+	fhci_remove(&ofdev->dev);
 }
 
 static const struct of_device_id of_fhci_match[] = {
@@ -821,11 +788,10 @@ MODULE_DEVICE_TABLE(of, of_fhci_match);
 static struct platform_driver of_fhci_driver = {
 	.driver = {
 		.name = "fsl,usb-fhci",
-		.owner = THIS_MODULE,
 		.of_match_table = of_fhci_match,
 	},
 	.probe		= of_fhci_probe,
-	.remove		= of_fhci_remove,
+	.remove_new	= of_fhci_remove,
 };
 
 module_platform_driver(of_fhci_driver);

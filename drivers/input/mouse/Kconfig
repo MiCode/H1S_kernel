@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Mouse driver configuration
 #
@@ -17,7 +18,7 @@ config MOUSE_PS2
 	default y
 	select SERIO
 	select SERIO_LIBPS2
-	select SERIO_I8042 if X86
+	select SERIO_I8042 if ARCH_MIGHT_HAVE_PC_SERIO
 	select SERIO_GSCPS2 if GSC
 	help
 	  Say Y here if you have a PS/2 mouse connected to your system. This
@@ -48,12 +49,22 @@ config MOUSE_PS2_ALPS
 
 	  If unsure, say Y.
 
+config MOUSE_PS2_BYD
+	bool "BYD PS/2 mouse protocol extension" if EXPERT
+	default y
+	depends on MOUSE_PS2
+	help
+	  Say Y here if you have a BYD PS/2 touchpad connected to
+	  your system.
+
+	  If unsure, say Y.
+
 config MOUSE_PS2_LOGIPS2PP
 	bool "Logitech PS/2++ mouse protocol extension" if EXPERT
 	default y
 	depends on MOUSE_PS2
 	help
-	  Say Y here if you have a Logictech PS/2++ mouse connected to
+	  Say Y here if you have a Logitech PS/2++ mouse connected to
 	  your system.
 
 	  If unsure, say Y.
@@ -68,15 +79,27 @@ config MOUSE_PS2_SYNAPTICS
 
 	  If unsure, say Y.
 
-config MOUSE_PS2_CYPRESS
-       bool "Cypress PS/2 mouse protocol extension" if EXPERT
-       default y
-       depends on MOUSE_PS2
-       help
-         Say Y here if you have a Cypress PS/2 Trackpad connected to
-         your system.
+config MOUSE_PS2_SYNAPTICS_SMBUS
+	bool "Synaptics PS/2 SMbus companion" if EXPERT
+	default y
+	depends on MOUSE_PS2
+	depends on I2C=y || I2C=MOUSE_PS2
+	select MOUSE_PS2_SMBUS
+	help
+	  Say Y here if you have a Synaptics RMI4 touchpad connected to
+	  to an SMBus, but enumerated through PS/2.
 
-         If unsure, say Y.
+	  If unsure, say Y.
+
+config MOUSE_PS2_CYPRESS
+	bool "Cypress PS/2 mouse protocol extension" if EXPERT
+	default y
+	depends on MOUSE_PS2
+	help
+	  Say Y here if you have a Cypress PS/2 Trackpad connected to
+	  your system.
+
+	  If unsure, say Y.
 
 config MOUSE_PS2_LIFEBOOK
 	bool "Fujitsu Lifebook PS/2 mouse protocol extension" if EXPERT
@@ -105,18 +128,23 @@ config MOUSE_PS2_ELANTECH
 	  Say Y here if you have an Elantech PS/2 touchpad connected
 	  to your system.
 
-	  Note that if you enable this driver you will need an updated
-	  X.org Synaptics driver that does not require ABS_PRESSURE
-	  reports from the touchpad (i.e. post 1.5.0 version). You can
-	  grab a patch for the driver here:
-
-	  http://userweb.kernel.org/~dtor/synaptics-no-abspressure.patch
+	  This driver exposes some configuration registers via sysfs
+	  entries. For further information,
+	  see <file:Documentation/input/devices/elantech.rst>.
 
 	  If unsure, say N.
 
-	  This driver exposes some configuration registers via sysfs
-	  entries. For further information,
-	  see <file:Documentation/input/elantech.txt>.
+config MOUSE_PS2_ELANTECH_SMBUS
+	bool "Elantech PS/2 SMbus companion" if EXPERT
+	default y
+	depends on MOUSE_PS2 && MOUSE_PS2_ELANTECH
+	depends on I2C=y || I2C=MOUSE_PS2
+	select MOUSE_PS2_SMBUS
+	help
+	  Say Y here if you have a Elantech touchpad connected to
+	  to an SMBus, but enumerated through PS/2.
+
+	  If unsure, say Y.
 
 config MOUSE_PS2_SENTELIC
 	bool "Sentelic Finger Sensing Pad PS/2 protocol extension"
@@ -145,6 +173,32 @@ config MOUSE_PS2_OLPC
 	  touchpad an HGPK.
 
 	  If unsure, say N.
+
+config MOUSE_PS2_FOCALTECH
+	bool "FocalTech PS/2 mouse protocol extension" if EXPERT
+	default y
+	depends on MOUSE_PS2
+	help
+	  Say Y here if you have a FocalTech PS/2 TouchPad connected to
+	  your system.
+
+	  If unsure, say Y.
+
+config MOUSE_PS2_VMMOUSE
+	bool "Virtual mouse (vmmouse)"
+	depends on MOUSE_PS2 && X86 && HYPERVISOR_GUEST
+	help
+	  Say Y here if you are running under control of VMware hypervisor
+	  (ESXi, Workstation or Fusion). Also make sure that when you enable
+	  this option, you remove the xf86-input-vmmouse user-space driver
+	  or upgrade it to at least xf86-input-vmmouse 13.1.0, which doesn't
+	  load in the presence of an in-kernel vmmouse driver.
+
+	  If unsure, say N.
+
+config MOUSE_PS2_SMBUS
+	bool
+	depends on MOUSE_PS2
 
 config MOUSE_SERIAL
 	tristate "Serial mouse"
@@ -175,7 +229,7 @@ config MOUSE_APPLETOUCH
 	  scrolling in X11.
 
 	  For further information, see
-	  <file:Documentation/input/appletouch.txt>.
+	  <file:Documentation/input/devices/appletouch.rst>.
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called appletouch.
@@ -198,7 +252,7 @@ config MOUSE_BCM5974
 
 	  The interface is currently identical to the appletouch interface,
 	  for further information, see
-	  <file:Documentation/input/appletouch.txt>.
+	  <file:Documentation/input/devices/appletouch.rst>.
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called bcm5974.
@@ -206,6 +260,7 @@ config MOUSE_BCM5974
 config MOUSE_CYAPA
 	tristate "Cypress APA I2C Trackpad support"
 	depends on I2C
+	select CRC_ITU_T
 	help
 	  This driver adds support for Cypress All Points Addressable (APA)
 	  I2C Trackpads, including the ones used in 2012 Samsung Chromebooks.
@@ -214,6 +269,36 @@ config MOUSE_CYAPA
 
 	  To compile this driver as a module, choose M here: the module will be
 	  called cyapa.
+
+config MOUSE_ELAN_I2C
+	tristate "ELAN I2C Touchpad support"
+	depends on I2C
+	help
+	  This driver adds support for Elan I2C/SMbus Trackpads.
+
+	  Say Y here if you have a ELAN I2C/SMbus Touchpad.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called elan_i2c.
+
+config MOUSE_ELAN_I2C_I2C
+	bool "Enable I2C support"
+	depends on MOUSE_ELAN_I2C
+	default y
+	help
+	   Say Y here if Elan Touchpad in your system is connected to
+	   a standard I2C controller.
+
+	   If unsure, say Y.
+
+config MOUSE_ELAN_I2C_SMBUS
+	bool "Enable SMbus support"
+	depends on MOUSE_ELAN_I2C
+	help
+	   Say Y here if Elan Touchpad in your system is connected to
+	   a SMbus adapter.
+
+	   If unsure, say Y.
 
 config MOUSE_INPORT
 	tristate "InPort/MS/ATIXL busmouse"
@@ -287,7 +372,7 @@ config MOUSE_VSXXXAA
 	select SERIO
 	help
 	  Say Y (or M) if you want to use a DEC VSXXX-AA (hockey
-	  puck) or a VSXXX-GA (rectangular) mouse. Theses mice are
+	  puck) or a VSXXX-GA (rectangular) mouse. These mice are
 	  typically used on DECstations or VAXstations, but can also
 	  be used on any box capable of RS232 (with some adaptor
 	  described in the source file). This driver also works with the
@@ -295,8 +380,7 @@ config MOUSE_VSXXXAA
 
 config MOUSE_GPIO
 	tristate "GPIO mouse"
-	depends on GPIOLIB
-	select INPUT_POLLDEV
+	depends on GPIOLIB || COMPILE_TEST
 	help
 	  This driver simulates a mouse on GPIO lines of various CPUs (and some
 	  other chips).
@@ -308,12 +392,6 @@ config MOUSE_GPIO
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called gpio_mouse.
-
-config MOUSE_PXA930_TRKBALL
-	tristate "PXA930 Trackball mouse"
-	depends on CPU_PXA930 || CPU_PXA935
-	help
-	  Say Y here to support PXA930 Trackball mouse.
 
 config MOUSE_MAPLE
 	tristate "Maple mouse (for the Dreamcast)"

@@ -1,56 +1,20 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: evrgnini- ACPI address_space (op_region) init
  *
+ * Copyright (C) 2000 - 2023, Intel Corp.
+ *
  *****************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
 #include "acevents.h"
 #include "acnamesp.h"
+#include "acinterp.h"
 
 #define _COMPONENT          ACPI_EVENTS
 ACPI_MODULE_NAME("evrgnini")
-
-/* Local prototypes */
-static u8 acpi_ev_is_pci_root_bridge(struct acpi_namespace_node *node);
 
 /*******************************************************************************
  *
@@ -66,7 +30,6 @@ static u8 acpi_ev_is_pci_root_bridge(struct acpi_namespace_node *node);
  * DESCRIPTION: Setup a system_memory operation region
  *
  ******************************************************************************/
-
 acpi_status
 acpi_ev_system_memory_region_setup(acpi_handle handle,
 				   u32 function,
@@ -75,6 +38,7 @@ acpi_ev_system_memory_region_setup(acpi_handle handle,
 	union acpi_operand_object *region_desc =
 	    (union acpi_operand_object *)handle;
 	struct acpi_mem_space_context *local_region_context;
+	struct acpi_mem_mapping *mm;
 
 	ACPI_FUNCTION_TRACE(ev_system_memory_region_setup);
 
@@ -83,13 +47,14 @@ acpi_ev_system_memory_region_setup(acpi_handle handle,
 			local_region_context =
 			    (struct acpi_mem_space_context *)*region_context;
 
-			/* Delete a cached mapping if present */
+			/* Delete memory mappings if present */
 
-			if (local_region_context->mapped_length) {
-				acpi_os_unmap_memory(local_region_context->
-						     mapped_logical_address,
-						     local_region_context->
-						     mapped_length);
+			while (local_region_context->first_mm) {
+				mm = local_region_context->first_mm;
+				local_region_context->first_mm = mm->next_mm;
+				acpi_os_unmap_memory(mm->logical_address,
+						     mm->length);
+				ACPI_FREE(mm);
 			}
 			ACPI_FREE(local_region_context);
 			*region_context = NULL;
@@ -227,7 +192,7 @@ acpi_ev_pci_config_region_setup(acpi_handle handle,
 
 				/* Install a handler for this PCI root bridge */
 
-				status = acpi_install_address_space_handler((acpi_handle) pci_root_node, ACPI_ADR_SPACE_PCI_CONFIG, ACPI_DEFAULT_HANDLER, NULL, NULL);
+				status = acpi_install_address_space_handler((acpi_handle)pci_root_node, ACPI_ADR_SPACE_PCI_CONFIG, ACPI_DEFAULT_HANDLER, NULL, NULL);
 				if (ACPI_FAILURE(status)) {
 					if (status == AE_SAME_HANDLER) {
 						/*
@@ -235,7 +200,6 @@ acpi_ev_pci_config_region_setup(acpi_handle handle,
 						 * root bridge. Still need to return a context object
 						 * for the new PCI_Config operation region, however.
 						 */
-						status = AE_OK;
 					} else {
 						ACPI_EXCEPTION((AE_INFO, status,
 								"Could not install PciConfig handler "
@@ -346,7 +310,7 @@ acpi_ev_pci_config_region_setup(acpi_handle handle,
  *
  ******************************************************************************/
 
-static u8 acpi_ev_is_pci_root_bridge(struct acpi_namespace_node *node)
+u8 acpi_ev_is_pci_root_bridge(struct acpi_namespace_node *node)
 {
 	acpi_status status;
 	struct acpi_pnp_device_id *hid;
@@ -444,6 +408,58 @@ acpi_ev_cmos_region_setup(acpi_handle handle,
 
 /*******************************************************************************
  *
+ * FUNCTION:    acpi_ev_data_table_region_setup
+ *
+ * PARAMETERS:  handle              - Region we are interested in
+ *              function            - Start or stop
+ *              handler_context     - Address space handler context
+ *              region_context      - Region specific context
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: Setup a data_table_region
+ *
+ * MUTEX:       Assumes namespace is not locked
+ *
+ ******************************************************************************/
+
+acpi_status
+acpi_ev_data_table_region_setup(acpi_handle handle,
+				u32 function,
+				void *handler_context, void **region_context)
+{
+	union acpi_operand_object *region_desc =
+	    (union acpi_operand_object *)handle;
+	struct acpi_data_table_mapping *local_region_context;
+
+	ACPI_FUNCTION_TRACE(ev_data_table_region_setup);
+
+	if (function == ACPI_REGION_DEACTIVATE) {
+		if (*region_context) {
+			ACPI_FREE(*region_context);
+			*region_context = NULL;
+		}
+		return_ACPI_STATUS(AE_OK);
+	}
+
+	/* Create a new context */
+
+	local_region_context =
+	    ACPI_ALLOCATE_ZEROED(sizeof(struct acpi_data_table_mapping));
+	if (!(local_region_context)) {
+		return_ACPI_STATUS(AE_NO_MEMORY);
+	}
+
+	/* Save the data table pointer for use in the handler */
+
+	local_region_context->pointer = region_desc->region.pointer;
+
+	*region_context = local_region_context;
+	return_ACPI_STATUS(AE_OK);
+}
+
+/*******************************************************************************
+ *
  * FUNCTION:    acpi_ev_default_region_setup
  *
  * PARAMETERS:  handle              - Region we are interested in
@@ -478,7 +494,6 @@ acpi_ev_default_region_setup(acpi_handle handle,
  * FUNCTION:    acpi_ev_initialize_region
  *
  * PARAMETERS:  region_obj      - Region we are initializing
- *              acpi_ns_locked  - Is namespace locked?
  *
  * RETURN:      Status
  *
@@ -496,22 +511,28 @@ acpi_ev_default_region_setup(acpi_handle handle,
  * MUTEX:       Interpreter should be unlocked, because we may run the _REG
  *              method for this region.
  *
+ * NOTE:        Possible incompliance:
+ *              There is a behavior conflict in automatic _REG execution:
+ *              1. When the interpreter is evaluating a method, we can only
+ *                 automatically run _REG for the following case:
+ *                   operation_region (OPR1, 0x80, 0x1000010, 0x4)
+ *              2. When the interpreter is loading a table, we can also
+ *                 automatically run _REG for the following case:
+ *                   operation_region (OPR1, 0x80, 0x1000010, 0x4)
+ *              Though this may not be compliant to the de-facto standard, the
+ *              logic is kept in order not to trigger regressions. And keeping
+ *              this logic should be taken care by the caller of this function.
+ *
  ******************************************************************************/
 
-acpi_status
-acpi_ev_initialize_region(union acpi_operand_object *region_obj,
-			  u8 acpi_ns_locked)
+acpi_status acpi_ev_initialize_region(union acpi_operand_object *region_obj)
 {
 	union acpi_operand_object *handler_obj;
 	union acpi_operand_object *obj_desc;
 	acpi_adr_space_type space_id;
 	struct acpi_namespace_node *node;
-	acpi_status status;
-	struct acpi_namespace_node *method_node;
-	acpi_name *reg_name_ptr = (acpi_name *) METHOD_NAME__REG;
-	union acpi_operand_object *region_obj2;
 
-	ACPI_FUNCTION_TRACE_U32(ev_initialize_region, acpi_ns_locked);
+	ACPI_FUNCTION_TRACE(ev_initialize_region);
 
 	if (!region_obj) {
 		return_ACPI_STATUS(AE_BAD_PARAMETER);
@@ -521,38 +542,14 @@ acpi_ev_initialize_region(union acpi_operand_object *region_obj,
 		return_ACPI_STATUS(AE_OK);
 	}
 
-	region_obj2 = acpi_ns_get_secondary_object(region_obj);
-	if (!region_obj2) {
-		return_ACPI_STATUS(AE_NOT_EXIST);
-	}
+	region_obj->common.flags |= AOPOBJ_OBJECT_INITIALIZED;
 
 	node = region_obj->region.node->parent;
 	space_id = region_obj->region.space_id;
 
-	/* Setup defaults */
-
-	region_obj->region.handler = NULL;
-	region_obj2->extra.method_REG = NULL;
-	region_obj->common.flags &= ~(AOPOBJ_SETUP_COMPLETE);
-	region_obj->common.flags |= AOPOBJ_OBJECT_INITIALIZED;
-
-	/* Find any "_REG" method associated with this region definition */
-
-	status =
-	    acpi_ns_search_one_scope(*reg_name_ptr, node, ACPI_TYPE_METHOD,
-				     &method_node);
-	if (ACPI_SUCCESS(status)) {
-		/*
-		 * The _REG method is optional and there can be only one per region
-		 * definition. This will be executed when the handler is attached
-		 * or removed
-		 */
-		region_obj2->extra.method_REG = method_node;
-	}
-
 	/*
 	 * The following loop depends upon the root Node having no parent
-	 * ie: acpi_gbl_root_node->parent_entry being set to NULL
+	 * ie: acpi_gbl_root_node->Parent being set to NULL
 	 */
 	while (node) {
 
@@ -566,33 +563,10 @@ acpi_ev_initialize_region(union acpi_operand_object *region_obj,
 
 			switch (node->type) {
 			case ACPI_TYPE_DEVICE:
-
-				handler_obj = obj_desc->device.handler;
-				break;
-
 			case ACPI_TYPE_PROCESSOR:
-
-				handler_obj = obj_desc->processor.handler;
-				break;
-
 			case ACPI_TYPE_THERMAL:
 
-				handler_obj = obj_desc->thermal_zone.handler;
-				break;
-
-			case ACPI_TYPE_METHOD:
-				/*
-				 * If we are executing module level code, the original
-				 * Node's object was replaced by this Method object and we
-				 * saved the handler in the method object.
-				 *
-				 * See acpi_ns_exec_module_code
-				 */
-				if (obj_desc->method.
-				    info_flags & ACPI_METHOD_MODULE_LEVEL) {
-					handler_obj =
-					    obj_desc->method.dispatch.handler;
-				}
+				handler_obj = obj_desc->common_notify.handler;
 				break;
 
 			default:
@@ -602,60 +576,29 @@ acpi_ev_initialize_region(union acpi_operand_object *region_obj,
 				break;
 			}
 
-			while (handler_obj) {
+			handler_obj =
+			    acpi_ev_find_region_handler(space_id, handler_obj);
+			if (handler_obj) {
 
-				/* Is this handler of the correct type? */
+				/* Found correct handler */
 
-				if (handler_obj->address_space.space_id ==
-				    space_id) {
+				ACPI_DEBUG_PRINT((ACPI_DB_OPREGION,
+						  "Found handler %p for region %p in obj %p\n",
+						  handler_obj, region_obj,
+						  obj_desc));
 
-					/* Found correct handler */
+				(void)acpi_ev_attach_region(handler_obj,
+							    region_obj, FALSE);
 
-					ACPI_DEBUG_PRINT((ACPI_DB_OPREGION,
-							  "Found handler %p for region %p in obj %p\n",
-							  handler_obj,
-							  region_obj,
-							  obj_desc));
-
-					status =
-					    acpi_ev_attach_region(handler_obj,
-								  region_obj,
-								  acpi_ns_locked);
-
-					/*
-					 * Tell all users that this region is usable by
-					 * running the _REG method
-					 */
-					if (acpi_ns_locked) {
-						status =
-						    acpi_ut_release_mutex
-						    (ACPI_MTX_NAMESPACE);
-						if (ACPI_FAILURE(status)) {
-							return_ACPI_STATUS
-							    (status);
-						}
-					}
-
-					status =
-					    acpi_ev_execute_reg_method
-					    (region_obj, ACPI_REG_CONNECT);
-
-					if (acpi_ns_locked) {
-						status =
-						    acpi_ut_acquire_mutex
-						    (ACPI_MTX_NAMESPACE);
-						if (ACPI_FAILURE(status)) {
-							return_ACPI_STATUS
-							    (status);
-						}
-					}
-
-					return_ACPI_STATUS(AE_OK);
-				}
-
-				/* Try next handler in the list */
-
-				handler_obj = handler_obj->address_space.next;
+				/*
+				 * Tell all users that this region is usable by
+				 * running the _REG method
+				 */
+				acpi_ex_exit_interpreter();
+				(void)acpi_ev_execute_reg_method(region_obj,
+								 ACPI_REG_CONNECT);
+				acpi_ex_enter_interpreter();
+				return_ACPI_STATUS(AE_OK);
 			}
 		}
 
@@ -664,12 +607,15 @@ acpi_ev_initialize_region(union acpi_operand_object *region_obj,
 		node = node->parent;
 	}
 
-	/* If we get here, there is no handler for this region */
-
+	/*
+	 * If we get here, there is no handler for this region. This is not
+	 * fatal because many regions get created before a handler is installed
+	 * for said region.
+	 */
 	ACPI_DEBUG_PRINT((ACPI_DB_OPREGION,
 			  "No handler for RegionType %s(%X) (RegionObj %p)\n",
 			  acpi_ut_get_region_name(space_id), space_id,
 			  region_obj));
 
-	return_ACPI_STATUS(AE_NOT_EXIST);
+	return_ACPI_STATUS(AE_OK);
 }

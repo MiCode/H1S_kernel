@@ -1,19 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * timbuart.c timberdale FPGA UART driver
  * Copyright (c) 2009 Intel Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 /* Supports:
@@ -99,9 +87,7 @@ static void timbuart_rx_chars(struct uart_port *port)
 		tty_insert_flip_char(tport, ch, TTY_NORMAL);
 	}
 
-	spin_unlock(&port->lock);
 	tty_flip_buffer_push(tport);
-	spin_lock(&port->lock);
 
 	dev_dbg(port->dev, "%s - total read %d bytes\n",
 		__func__, port->icount.rx);
@@ -115,8 +101,7 @@ static void timbuart_tx_chars(struct uart_port *port)
 		!uart_circ_empty(xmit)) {
 		iowrite8(xmit->buf[xmit->tail],
 			port->membase + TIMBUART_TXFIFO);
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		port->icount.tx++;
+		uart_xmit_advance(port, 1);
 	}
 
 	dev_dbg(port->dev,
@@ -184,9 +169,9 @@ static void timbuart_handle_rx_port(struct uart_port *port, u32 isr, u32 *ier)
 	dev_dbg(port->dev, "%s - leaving\n", __func__);
 }
 
-static void timbuart_tasklet(unsigned long arg)
+static void timbuart_tasklet(struct tasklet_struct *t)
 {
-	struct timbuart_port *uart = (struct timbuart_port *)arg;
+	struct timbuart_port *uart = from_tasklet(uart, t, tasklet);
 	u32 isr, ier = 0;
 
 	spin_lock(&uart->port.lock);
@@ -244,11 +229,6 @@ static void timbuart_mctrl_check(struct uart_port *port, u32 isr, u32 *ier)
 	*ier |= CTS_DELTA;
 }
 
-static void timbuart_enable_ms(struct uart_port *port)
-{
-	/* N/A */
-}
-
 static void timbuart_break_ctl(struct uart_port *port, int ctl)
 {
 	/* N/A */
@@ -278,6 +258,8 @@ static void timbuart_shutdown(struct uart_port *port)
 	dev_dbg(port->dev, "%s\n", __func__);
 	free_irq(port->irq, uart);
 	iowrite32(0, port->membase + TIMBUART_IER);
+
+	timbuart_flush_buffer(port);
 }
 
 static int get_bindex(int baud)
@@ -292,8 +274,8 @@ static int get_bindex(int baud)
 }
 
 static void timbuart_set_termios(struct uart_port *port,
-	struct ktermios *termios,
-	struct ktermios *old)
+				 struct ktermios *termios,
+				 const struct ktermios *old)
 {
 	unsigned int baud;
 	short bindex;
@@ -397,7 +379,7 @@ static int timbuart_verify_port(struct uart_port *port,
 	return -EINVAL;
 }
 
-static struct uart_ops timbuart_ops = {
+static const struct uart_ops timbuart_ops = {
 	.tx_empty = timbuart_tx_empty,
 	.set_mctrl = timbuart_set_mctrl,
 	.get_mctrl = timbuart_get_mctrl,
@@ -405,7 +387,6 @@ static struct uart_ops timbuart_ops = {
 	.start_tx = timbuart_start_tx,
 	.flush_buffer = timbuart_flush_buffer,
 	.stop_rx = timbuart_stop_rx,
-	.enable_ms = timbuart_enable_ms,
 	.break_ctl = timbuart_break_ctl,
 	.startup = timbuart_startup,
 	.shutdown = timbuart_shutdown,
@@ -467,7 +448,7 @@ static int timbuart_probe(struct platform_device *dev)
 	}
 	uart->port.irq = irq;
 
-	tasklet_init(&uart->tasklet, timbuart_tasklet, (unsigned long)uart);
+	tasklet_setup(&uart->tasklet, timbuart_tasklet);
 
 	err = uart_register_driver(&timbuart_driver);
 	if (err)
@@ -507,7 +488,6 @@ static int timbuart_remove(struct platform_device *dev)
 static struct platform_driver timbuart_platform_driver = {
 	.driver = {
 		.name	= "timb-uart",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= timbuart_probe,
 	.remove		= timbuart_remove,

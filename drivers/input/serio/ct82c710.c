@@ -1,29 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (c) 1999-2001 Vojtech Pavlik
  */
 
 /*
  *  82C710 C&T mouse port chip driver for Linux
- */
-
-/*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
- * Should you need to contact me, the author, you can do so either by
- * e-mail - mail your message to <vojtech@ucw.cz>, or by paper mail:
- * Vojtech Pavlik, Simunkova 1594, Prague 8, 182 00 Czech Republic
  */
 
 #include <linux/delay.h>
@@ -186,7 +167,7 @@ static int ct82c710_probe(struct platform_device *dev)
 	ct82c710_port->open = ct82c710_open;
 	ct82c710_port->close = ct82c710_close;
 	ct82c710_port->write = ct82c710_write;
-	strlcpy(ct82c710_port->name, "C&T 82c710 mouse port",
+	strscpy(ct82c710_port->name, "C&T 82c710 mouse port",
 		sizeof(ct82c710_port->name));
 	snprintf(ct82c710_port->phys, sizeof(ct82c710_port->phys),
 		 "isa%16llx/serio0", (unsigned long long)CT82C710_DATA);
@@ -209,7 +190,6 @@ static int ct82c710_remove(struct platform_device *dev)
 static struct platform_driver ct82c710_driver = {
 	.driver		= {
 		.name	= "ct82c710",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= ct82c710_probe,
 	.remove		= ct82c710_remove,

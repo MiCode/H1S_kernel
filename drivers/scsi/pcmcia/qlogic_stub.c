@@ -38,14 +38,17 @@
 #include <linux/string.h>
 #include <linux/ioport.h>
 #include <asm/io.h>
-#include <scsi/scsi.h>
 #include <linux/major.h>
 #include <linux/blkdev.h>
-#include <scsi/scsi_ioctl.h>
 #include <linux/interrupt.h>
 
-#include "scsi.h"
+#include <scsi/scsi.h>
+#include <scsi/scsi_cmnd.h>
+#include <scsi/scsi_device.h>
+#include <scsi/scsi_eh.h>
 #include <scsi/scsi_host.h>
+#include <scsi/scsi_ioctl.h>
+#include <scsi/scsi_tcq.h>
 #include "../qlogicfas408.h"
 
 #include <pcmcia/cistpl.h>
@@ -67,13 +70,12 @@ static struct scsi_host_template qlogicfas_driver_template = {
 	.info			= qlogicfas408_info,
 	.queuecommand		= qlogicfas408_queuecommand,
 	.eh_abort_handler	= qlogicfas408_abort,
-	.eh_bus_reset_handler	= qlogicfas408_bus_reset,
+	.eh_host_reset_handler	= qlogicfas408_host_reset,
 	.bios_param		= qlogicfas408_biosparam,
 	.can_queue		= 1,
 	.this_id		= -1,
 	.sg_tablesize		= SG_ALL,
-	.cmd_per_lun		= 1,
-	.use_clustering		= DISABLE_CLUSTERING,
+	.dma_boundary		= PAGE_SIZE - 1,
 };
 
 /*====================================================================*/
@@ -255,8 +257,12 @@ static void qlogic_release(struct pcmcia_device *link)
 static int qlogic_resume(struct pcmcia_device *link)
 {
 	scsi_info_t *info = link->priv;
+	int ret;
 
-	pcmcia_enable_device(link);
+	ret = pcmcia_enable_device(link);
+	if (ret)
+		return ret;
+
 	if ((info->manf_id == MANFID_MACNICA) ||
 	    (info->manf_id == MANFID_PIONEER) ||
 	    (info->manf_id == 0x0098)) {
@@ -265,7 +271,7 @@ static int qlogic_resume(struct pcmcia_device *link)
 		outb(0x04, link->resource[0]->start + 0xd);
 	}
 	/* Ugggglllyyyy!!! */
-	qlogicfas408_bus_reset(NULL);
+	qlogicfas408_host_reset(NULL);
 
 	return 0;
 }
@@ -301,18 +307,7 @@ static struct pcmcia_driver qlogic_cs_driver = {
 	.resume		= qlogic_resume,
 };
 
-static int __init init_qlogic_cs(void)
-{
-	return pcmcia_register_driver(&qlogic_cs_driver);
-}
-
-static void __exit exit_qlogic_cs(void)
-{
-	pcmcia_unregister_driver(&qlogic_cs_driver);
-}
-
 MODULE_AUTHOR("Tom Zerucha, Michael Griffith");
 MODULE_DESCRIPTION("Driver for the PCMCIA Qlogic FAS SCSI controllers");
 MODULE_LICENSE("GPL");
-module_init(init_qlogic_cs);
-module_exit(exit_qlogic_cs);
+module_pcmcia_driver(qlogic_cs_driver);

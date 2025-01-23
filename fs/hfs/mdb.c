@@ -9,7 +9,7 @@
  */
 
 #include <linux/cdrom.h>
-#include <linux/genhd.h>
+#include <linux/blkdev.h>
 #include <linux/nls.h>
 #include <linux/slab.h>
 
@@ -32,29 +32,35 @@
 static int hfs_get_last_session(struct super_block *sb,
 				sector_t *start, sector_t *size)
 {
-	struct cdrom_multisession ms_info;
-	struct cdrom_tocentry te;
-	int res;
+	struct cdrom_device_info *cdi = disk_to_cdi(sb->s_bdev->bd_disk);
 
 	/* default values */
 	*start = 0;
-	*size = sb->s_bdev->bd_inode->i_size >> 9;
+	*size = bdev_nr_sectors(sb->s_bdev);
 
 	if (HFS_SB(sb)->session >= 0) {
+		struct cdrom_tocentry te;
+	
+		if (!cdi)
+			return -EINVAL;
+
 		te.cdte_track = HFS_SB(sb)->session;
 		te.cdte_format = CDROM_LBA;
-		res = ioctl_by_bdev(sb->s_bdev, CDROMREADTOCENTRY, (unsigned long)&te);
-		if (!res && (te.cdte_ctrl & CDROM_DATA_TRACK) == 4) {
-			*start = (sector_t)te.cdte_addr.lba << 2;
-			return 0;
+		if (cdrom_read_tocentry(cdi, &te) ||
+		    (te.cdte_ctrl & CDROM_DATA_TRACK) != 4) {
+			pr_err("invalid session number or type of track\n");
+			return -EINVAL;
 		}
-		pr_err("invalid session number or type of track\n");
-		return -EINVAL;
+
+		*start = (sector_t)te.cdte_addr.lba << 2;
+	} else if (cdi) {
+		struct cdrom_multisession ms_info;
+
+		ms_info.addr_format = CDROM_LBA;
+		if (cdrom_multisession(cdi, &ms_info) == 0 && ms_info.xa_flag)
+			*start = (sector_t)ms_info.addr.lba << 2;
 	}
-	ms_info.addr_format = CDROM_LBA;
-	res = ioctl_by_bdev(sb->s_bdev, CDROMMULTISESSION, (unsigned long)&ms_info);
-	if (!res && ms_info.xa_flag)
-		*start = (sector_t)ms_info.addr.lba << 2;
+
 	return 0;
 }
 
@@ -166,7 +172,7 @@ int hfs_mdb_get(struct super_block *sb)
 		pr_warn("continuing without an alternate MDB\n");
 	}
 
-	HFS_SB(sb)->bitmap = (__be32 *)__get_free_pages(GFP_KERNEL, PAGE_SIZE < 8192 ? 1 : 0);
+	HFS_SB(sb)->bitmap = kmalloc(8192, GFP_KERNEL);
 	if (!HFS_SB(sb)->bitmap)
 		goto out;
 
@@ -204,13 +210,13 @@ int hfs_mdb_get(struct super_block *sb)
 	attrib = mdb->drAtrb;
 	if (!(attrib & cpu_to_be16(HFS_SB_ATTRIB_UNMNT))) {
 		pr_warn("filesystem was not cleanly unmounted, running fsck.hfs is recommended.  mounting read-only.\n");
-		sb->s_flags |= MS_RDONLY;
+		sb->s_flags |= SB_RDONLY;
 	}
 	if ((attrib & cpu_to_be16(HFS_SB_ATTRIB_SLOCK))) {
 		pr_warn("filesystem is marked locked, mounting read-only.\n");
-		sb->s_flags |= MS_RDONLY;
+		sb->s_flags |= SB_RDONLY;
 	}
-	if (!(sb->s_flags & MS_RDONLY)) {
+	if (!sb_rdonly(sb)) {
 		/* Mark the volume uncleanly unmounted in case we crash */
 		attrib &= cpu_to_be16(~HFS_SB_ATTRIB_UNMNT);
 		attrib |= cpu_to_be16(HFS_SB_ATTRIB_INCNSTNT);
@@ -259,7 +265,7 @@ void hfs_mdb_commit(struct super_block *sb)
 {
 	struct hfs_mdb *mdb = HFS_SB(sb)->mdb;
 
-	if (sb->s_flags & MS_RDONLY)
+	if (sb_rdonly(sb))
 		return;
 
 	lock_buffer(HFS_SB(sb)->mdb_bh);
@@ -334,7 +340,7 @@ void hfs_mdb_commit(struct super_block *sb)
 void hfs_mdb_close(struct super_block *sb)
 {
 	/* update volume attributes */
-	if (sb->s_flags & MS_RDONLY)
+	if (sb_rdonly(sb))
 		return;
 	HFS_SB(sb)->mdb->drAtrb |= cpu_to_be16(HFS_SB_ATTRIB_UNMNT);
 	HFS_SB(sb)->mdb->drAtrb &= cpu_to_be16(~HFS_SB_ATTRIB_INCNSTNT);
@@ -360,7 +366,7 @@ void hfs_mdb_put(struct super_block *sb)
 	unload_nls(HFS_SB(sb)->nls_io);
 	unload_nls(HFS_SB(sb)->nls_disk);
 
-	free_pages((unsigned long)HFS_SB(sb)->bitmap, PAGE_SIZE < 8192 ? 1 : 0);
+	kfree(HFS_SB(sb)->bitmap);
 	kfree(HFS_SB(sb));
 	sb->s_fs_info = NULL;
 }

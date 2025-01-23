@@ -1,22 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * E3C EC168 DVB USB driver
  *
  * Copyright (C) 2009 Antti Palosaari <crope@iki.fi>
- *
- *    This program is free software; you can redistribute it and/or modify
- *    it under the terms of the GNU General Public License as published by
- *    the Free Software Foundation; either version 2 of the License, or
- *    (at your option) any later version.
- *
- *    This program is distributed in the hope that it will be useful,
- *    but WITHOUT ANY WARRANTY; without even the implied warranty of
- *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU General Public License for more details.
- *
- *    You should have received a copy of the GNU General Public License
- *    along with this program; if not, write to the Free Software
- *    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  */
 
 #include "ec168.h"
@@ -129,6 +115,10 @@ static int ec168_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
 	while (i < num) {
 		if (num > i + 1 && (msg[i+1].flags & I2C_M_RD)) {
 			if (msg[i].addr == ec168_ec100_config.demod_address) {
+				if (msg[i].len < 1) {
+					i = -EOPNOTSUPP;
+					break;
+				}
 				req.cmd = READ_DEMOD;
 				req.value = 0;
 				req.index = 0xff00 + msg[i].buf[0]; /* reg */
@@ -145,6 +135,10 @@ static int ec168_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
 			}
 		} else {
 			if (msg[i].addr == ec168_ec100_config.demod_address) {
+				if (msg[i].len < 1) {
+					i = -EOPNOTSUPP;
+					break;
+				}
 				req.cmd = WRITE_DEMOD;
 				req.value = msg[i].buf[1]; /* val */
 				req.index = 0xff00 + msg[i].buf[0]; /* reg */
@@ -153,6 +147,10 @@ static int ec168_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
 				ret = ec168_ctrl_msg(d, &req);
 				i += 1;
 			} else {
+				if (msg[i].len < 1) {
+					i = -EOPNOTSUPP;
+					break;
+				}
 				req.cmd = WRITE_I2C;
 				req.value = msg[i].buf[0]; /* val */
 				req.index = 0x0100 + msg[i].addr; /* I2C addr */
@@ -323,7 +321,7 @@ static int ec168_streaming_ctrl(struct dvb_frontend *fe, int onoff)
 /* DVB USB Driver stuff */
 /* bInterfaceNumber 0 is HID
  * bInterfaceNumber 1 is DVB-T */
-static struct dvb_usb_device_properties ec168_props = {
+static const struct dvb_usb_device_properties ec168_props = {
 	.driver_name = KBUILD_MODNAME,
 	.owner = THIS_MODULE,
 	.adapter_nr = adapter_nr,
@@ -346,22 +344,17 @@ static struct dvb_usb_device_properties ec168_props = {
 	},
 };
 
-static const struct dvb_usb_driver_info ec168_driver_info = {
-	.name = "E3C EC168 reference design",
-	.props = &ec168_props,
-};
-
 static const struct usb_device_id ec168_id[] = {
-	{ USB_DEVICE(USB_VID_E3C, USB_PID_E3C_EC168),
-		.driver_info = (kernel_ulong_t) &ec168_driver_info },
-	{ USB_DEVICE(USB_VID_E3C, USB_PID_E3C_EC168_2),
-		.driver_info = (kernel_ulong_t) &ec168_driver_info },
-	{ USB_DEVICE(USB_VID_E3C, USB_PID_E3C_EC168_3),
-		.driver_info = (kernel_ulong_t) &ec168_driver_info },
-	{ USB_DEVICE(USB_VID_E3C, USB_PID_E3C_EC168_4),
-		.driver_info = (kernel_ulong_t) &ec168_driver_info },
-	{ USB_DEVICE(USB_VID_E3C, USB_PID_E3C_EC168_5),
-		.driver_info = (kernel_ulong_t) &ec168_driver_info },
+	{ DVB_USB_DEVICE(USB_VID_E3C, USB_PID_E3C_EC168,
+		     &ec168_props, "E3C EC168 reference design", NULL)},
+	{ DVB_USB_DEVICE(USB_VID_E3C, USB_PID_E3C_EC168_2,
+		     &ec168_props, "E3C EC168 reference design", NULL)},
+	{ DVB_USB_DEVICE(USB_VID_E3C, USB_PID_E3C_EC168_3,
+		     &ec168_props, "E3C EC168 reference design", NULL)},
+	{ DVB_USB_DEVICE(USB_VID_E3C, USB_PID_E3C_EC168_4,
+		     &ec168_props, "E3C EC168 reference design", NULL)},
+	{ DVB_USB_DEVICE(USB_VID_E3C, USB_PID_E3C_EC168_5,
+		     &ec168_props, "E3C EC168 reference design", NULL)},
 	{}
 };
 MODULE_DEVICE_TABLE(usb, ec168_id);

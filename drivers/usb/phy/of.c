@@ -1,10 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * USB of helper code
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -27,7 +23,7 @@ static const char *const usbphy_modes[] = {
  * @np:	Pointer to the given device_node
  *
  * The function gets phy interface string from property 'phy_type',
- * and returns the correspondig enum usb_phy_interface
+ * and returns the corresponding enum usb_phy_interface
  */
 enum usb_phy_interface of_usb_get_phy_mode(struct device_node *np)
 {

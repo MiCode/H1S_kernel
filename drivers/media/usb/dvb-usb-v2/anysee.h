@@ -1,21 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * DVB USB Linux driver for Anysee E30 DVB-C & DVB-T USB2.0 receiver
  *
  * Copyright (C) 2007 Antti Palosaari <crope@iki.fi>
- *
- *    This program is free software; you can redistribute it and/or modify
- *    it under the terms of the GNU General Public License as published by
- *    the Free Software Foundation; either version 2 of the License, or
- *    (at your option) any later version.
- *
- *    This program is distributed in the hope that it will be useful,
- *    but WITHOUT ANY WARRANTY; without even the implied warranty of
- *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU General Public License for more details.
- *
- *    You should have received a copy of the GNU General Public License
- *    along with this program; if not, write to the Free Software
- *    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * TODO:
  * - add smart card reader support for Conditional Access (CA)
@@ -36,7 +23,7 @@
 
 #define DVB_USB_LOG_PREFIX "anysee"
 #include "dvb_usb.h"
-#include "dvb_ca_en50221.h"
+#include <media/dvb_ca_en50221.h>
 
 enum cmd {
 	CMD_I2C_READ            = 0x33,
@@ -55,8 +42,11 @@ struct anysee_state {
 	u8 buf[64];
 	u8 seq;
 	u8 hw; /* PCB ID */
+	#define ANYSEE_I2C_CLIENT_MAX 1
+	struct i2c_client *i2c_client[ANYSEE_I2C_CLIENT_MAX];
 	u8 fe_id:1; /* frondend ID */
 	u8 has_ci:1;
+	u8 has_tda18212:1;
 	u8 ci_attached:1;
 	struct dvb_ca_en50221 ci;
 	unsigned long ci_cam_ready; /* jiffies */

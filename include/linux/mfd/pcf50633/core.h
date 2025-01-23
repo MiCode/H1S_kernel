@@ -1,13 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * core.h  -- Core driver for NXP PCF50633
  *
  * (C) 2006-2008 by Openmoko, Inc.
  * All rights reserved.
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #ifndef __LINUX_MFD_PCF50633_CORE_H
@@ -17,6 +13,7 @@
 #include <linux/workqueue.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
+#include <linux/pm.h>
 #include <linux/power_supply.h>
 #include <linux/mfd/pcf50633/backlight.h>
 
@@ -230,9 +227,6 @@ static inline struct pcf50633 *dev_to_pcf50633(struct device *dev)
 
 int pcf50633_irq_init(struct pcf50633 *pcf, int irq);
 void pcf50633_irq_free(struct pcf50633 *pcf);
-#ifdef CONFIG_PM
-int pcf50633_irq_suspend(struct pcf50633 *pcf);
-int pcf50633_irq_resume(struct pcf50633 *pcf);
-#endif
+extern const struct dev_pm_ops pcf50633_pm;
 
 #endif

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* arch/sparc64/mm/tlb.c
  *
  * Copyright (C) 2004 David S. Miller <davem@redhat.com>
@@ -8,9 +9,8 @@
 #include <linux/mm.h>
 #include <linux/swap.h>
 #include <linux/preempt.h>
+#include <linux/pagemap.h>
 
-#include <asm/pgtable.h>
-#include <asm/pgalloc.h>
 #include <asm/tlbflush.h>
 #include <asm/cacheflush.h>
 #include <asm/mmu_context.h>
@@ -52,14 +52,14 @@ out:
 
 void arch_enter_lazy_mmu_mode(void)
 {
-	struct tlb_batch *tb = &__get_cpu_var(tlb_batch);
+	struct tlb_batch *tb = this_cpu_ptr(&tlb_batch);
 
 	tb->active = 1;
 }
 
 void arch_leave_lazy_mmu_mode(void)
 {
-	struct tlb_batch *tb = &__get_cpu_var(tlb_batch);
+	struct tlb_batch *tb = this_cpu_ptr(&tlb_batch);
 
 	if (tb->tlb_nr)
 		flush_tlb_pending();
@@ -67,7 +67,7 @@ void arch_leave_lazy_mmu_mode(void)
 }
 
 static void tlb_batch_add_one(struct mm_struct *mm, unsigned long vaddr,
-			      bool exec)
+			      bool exec, unsigned int hugepage_shift)
 {
 	struct tlb_batch *tb = &get_cpu_var(tlb_batch);
 	unsigned long nr;
@@ -84,13 +84,21 @@ static void tlb_batch_add_one(struct mm_struct *mm, unsigned long vaddr,
 	}
 
 	if (!tb->active) {
-		flush_tsb_user_page(mm, vaddr);
+		flush_tsb_user_page(mm, vaddr, hugepage_shift);
 		global_flush_tlb_page(mm, vaddr);
 		goto out;
 	}
 
-	if (nr == 0)
+	if (nr == 0) {
 		tb->mm = mm;
+		tb->hugepage_shift = hugepage_shift;
+	}
+
+	if (tb->hugepage_shift != hugepage_shift) {
+		flush_tlb_pending();
+		tb->hugepage_shift = hugepage_shift;
+		nr = 0;
+	}
 
 	tb->vaddrs[nr] = vaddr;
 	tb->tlb_nr = ++nr;
@@ -102,13 +110,15 @@ out:
 }
 
 void tlb_batch_add(struct mm_struct *mm, unsigned long vaddr,
-		   pte_t *ptep, pte_t orig, int fullmm)
+		   pte_t *ptep, pte_t orig, int fullmm,
+		   unsigned int hugepage_shift)
 {
 	if (tlb_type != hypervisor &&
 	    pte_dirty(orig)) {
 		unsigned long paddr, pfn = pte_pfn(orig);
 		struct address_space *mapping;
 		struct page *page;
+		struct folio *folio;
 
 		if (!pfn_valid(pfn))
 			goto no_cache_flush;
@@ -118,53 +128,71 @@ void tlb_batch_add(struct mm_struct *mm, unsigned long vaddr,
 			goto no_cache_flush;
 
 		/* A real file page? */
-		mapping = page_mapping(page);
+		folio = page_folio(page);
+		mapping = folio_flush_mapping(folio);
 		if (!mapping)
 			goto no_cache_flush;
 
 		paddr = (unsigned long) page_address(page);
 		if ((paddr ^ vaddr) & (1 << 13))
-			flush_dcache_page_all(mm, page);
+			flush_dcache_folio_all(mm, folio);
 	}
 
 no_cache_flush:
 	if (!fullmm)
-		tlb_batch_add_one(mm, vaddr, pte_exec(orig));
+		tlb_batch_add_one(mm, vaddr, pte_exec(orig), hugepage_shift);
 }
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 static void tlb_batch_pmd_scan(struct mm_struct *mm, unsigned long vaddr,
-			       pmd_t pmd, bool exec)
+			       pmd_t pmd)
 {
 	unsigned long end;
 	pte_t *pte;
 
 	pte = pte_offset_map(&pmd, vaddr);
+	if (!pte)
+		return;
 	end = vaddr + HPAGE_SIZE;
 	while (vaddr < end) {
-		if (pte_val(*pte) & _PAGE_VALID)
-			tlb_batch_add_one(mm, vaddr, exec);
+		if (pte_val(*pte) & _PAGE_VALID) {
+			bool exec = pte_exec(*pte);
+
+			tlb_batch_add_one(mm, vaddr, exec, PAGE_SHIFT);
+		}
 		pte++;
 		vaddr += PAGE_SIZE;
 	}
 	pte_unmap(pte);
 }
 
-void set_pmd_at(struct mm_struct *mm, unsigned long addr,
-		pmd_t *pmdp, pmd_t pmd)
+
+static void __set_pmd_acct(struct mm_struct *mm, unsigned long addr,
+			   pmd_t orig, pmd_t pmd)
 {
-	pmd_t orig = *pmdp;
-
-	*pmdp = pmd;
-
 	if (mm == &init_mm)
 		return;
 
 	if ((pmd_val(pmd) ^ pmd_val(orig)) & _PAGE_PMD_HUGE) {
-		if (pmd_val(pmd) & _PAGE_PMD_HUGE)
-			mm->context.huge_pte_count++;
-		else
-			mm->context.huge_pte_count--;
+		/*
+		 * Note that this routine only sets pmds for THP pages.
+		 * Hugetlb pages are handled elsewhere.  We need to check
+		 * for huge zero page.  Huge zero pages are like hugetlb
+		 * pages in that there is no RSS, but there is the need
+		 * for TSB entries.  So, huge zero page counts go into
+		 * hugetlb_pte_count.
+		 */
+		if (pmd_val(pmd) & _PAGE_PMD_HUGE) {
+			if (is_huge_zero_page(pmd_page(pmd)))
+				mm->context.hugetlb_pte_count++;
+			else
+				mm->context.thp_pte_count++;
+		} else {
+			if (is_huge_zero_page(pmd_page(orig)))
+				mm->context.hugetlb_pte_count--;
+			else
+				mm->context.thp_pte_count--;
+		}
 
 		/* Do not try to allocate the TSB hash table if we
 		 * don't have one already.  We have various locks held
@@ -177,17 +205,64 @@ void set_pmd_at(struct mm_struct *mm, unsigned long addr,
 	}
 
 	if (!pmd_none(orig)) {
-		pte_t orig_pte = __pte(pmd_val(orig));
-		bool exec = pte_exec(orig_pte);
-
 		addr &= HPAGE_MASK;
 		if (pmd_trans_huge(orig)) {
-			tlb_batch_add_one(mm, addr, exec);
-			tlb_batch_add_one(mm, addr + REAL_HPAGE_SIZE, exec);
+			pte_t orig_pte = __pte(pmd_val(orig));
+			bool exec = pte_exec(orig_pte);
+
+			tlb_batch_add_one(mm, addr, exec, REAL_HPAGE_SHIFT);
+			tlb_batch_add_one(mm, addr + REAL_HPAGE_SIZE, exec,
+					  REAL_HPAGE_SHIFT);
 		} else {
-			tlb_batch_pmd_scan(mm, addr, orig, exec);
+			tlb_batch_pmd_scan(mm, addr, orig);
 		}
 	}
+}
+
+void set_pmd_at(struct mm_struct *mm, unsigned long addr,
+		pmd_t *pmdp, pmd_t pmd)
+{
+	pmd_t orig = *pmdp;
+
+	*pmdp = pmd;
+	__set_pmd_acct(mm, addr, orig, pmd);
+}
+
+static inline pmd_t pmdp_establish(struct vm_area_struct *vma,
+		unsigned long address, pmd_t *pmdp, pmd_t pmd)
+{
+	pmd_t old;
+
+	do {
+		old = *pmdp;
+	} while (cmpxchg64(&pmdp->pmd, old.pmd, pmd.pmd) != old.pmd);
+	__set_pmd_acct(vma->vm_mm, address, old, pmd);
+
+	return old;
+}
+
+/*
+ * This routine is only called when splitting a THP
+ */
+pmd_t pmdp_invalidate(struct vm_area_struct *vma, unsigned long address,
+		     pmd_t *pmdp)
+{
+	pmd_t old, entry;
+
+	entry = __pmd(pmd_val(*pmdp) & ~_PAGE_VALID);
+	old = pmdp_establish(vma, address, pmdp, entry);
+	flush_tlb_range(vma, address, address + HPAGE_PMD_SIZE);
+
+	/*
+	 * set_pmd_at() will not be called in a way to decrement
+	 * thp_pte_count when splitting a THP, so do it now.
+	 * Sanity check pmd before doing the actual decrement.
+	 */
+	if ((pmd_val(entry) & _PAGE_PMD_HUGE) &&
+	    !is_huge_zero_page(pmd_page(entry)))
+		(vma->vm_mm)->context.thp_pte_count--;
+
+	return old;
 }
 
 void pgtable_trans_huge_deposit(struct mm_struct *mm, pmd_t *pmdp,

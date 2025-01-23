@@ -79,20 +79,14 @@ enum csio_dev_state {
 };
 
 #define FW_PARAM_DEV(param) \
-	(FW_PARAMS_MNEM(FW_PARAMS_MNEM_DEV) | \
-	 FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_DEV_##param))
+	(FW_PARAMS_MNEM_V(FW_PARAMS_MNEM_DEV) | \
+	 FW_PARAMS_PARAM_X_V(FW_PARAMS_PARAM_DEV_##param))
 
 #define FW_PARAM_PFVF(param) \
-	(FW_PARAMS_MNEM(FW_PARAMS_MNEM_PFVF) | \
-	 FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_PFVF_##param)|  \
-	 FW_PARAMS_PARAM_Y(0) | \
-	 FW_PARAMS_PARAM_Z(0))
-
-enum {
-	PAUSE_RX      = 1 << 0,
-	PAUSE_TX      = 1 << 1,
-	PAUSE_AUTONEG = 1 << 2
-};
+	(FW_PARAMS_MNEM_V(FW_PARAMS_MNEM_PFVF) | \
+	 FW_PARAMS_PARAM_X_V(FW_PARAMS_PARAM_PFVF_##param)|  \
+	 FW_PARAMS_PARAM_Y_V(0) | \
+	 FW_PARAMS_PARAM_Z_V(0))
 
 #define CSIO_INIT_MBP(__mbp, __cp,  __tmo, __priv, __fn, __clear)	\
 do {									\
@@ -137,6 +131,7 @@ struct csio_mbm {
 	uint32_t		a_mbox;			/* Async mbox num */
 	uint32_t		intr_idx;		/* Interrupt index */
 	struct timer_list	timer;			/* Mbox timer */
+	struct csio_hw		*hw;			/* Hardware pointer */
 	struct list_head	req_q;			/* Mbox request queue */
 	struct list_head	cbfn_q;			/* Mbox completion q */
 	struct csio_mb		*mcurrent;		/* Current mailbox */
@@ -188,7 +183,8 @@ void csio_mb_port(struct csio_hw *, struct csio_mb *, uint32_t,
 		  void (*) (struct csio_hw *, struct csio_mb *));
 
 void csio_mb_process_read_port_rsp(struct csio_hw *, struct csio_mb *,
-				   enum fw_retval *, uint16_t *);
+				   enum fw_retval *, uint16_t,
+				   uint32_t *, uint32_t *);
 
 void csio_mb_initialize(struct csio_hw *, struct csio_mb *, uint32_t,
 			void (*)(struct csio_hw *, struct csio_mb *));
@@ -252,7 +248,7 @@ void csio_mb_process_portparams_rsp(struct csio_hw *hw, struct csio_mb *mbp,
 
 /* MB module functions */
 int csio_mbm_init(struct csio_mbm *, struct csio_hw *,
-			    void (*)(uintptr_t));
+			    void (*)(struct timer_list *));
 void csio_mbm_exit(struct csio_mbm *);
 void csio_mb_intr_enable(struct csio_hw *);
 void csio_mb_intr_disable(struct csio_hw *);

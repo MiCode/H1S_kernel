@@ -1,18 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2012 IBM Corporation
  *
- * Author: Ashley Lai <adlai@us.ibm.com>
+ * Author: Ashley Lai <ashleydlai@gmail.com>
  *
  * Maintained by: <tpmdd-devel@lists.sourceforge.net>
  *
  * Device driver for TCG/TCPA TPM (trusted platform module).
  * Specifications at www.trustedcomputinggroup.org
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation, version 2 of the
- * License.
- *
  */
 
 #ifndef __TPM_IBMVTPM_H__
@@ -22,15 +17,16 @@
 struct ibmvtpm_crq {
 	u8 valid;
 	u8 msg;
-	u16 len;
-	u32 data;
-	u64 reserved;
+	__be16 len;
+	__be32 data;
+	__be64 reserved;
 } __attribute__((packed, aligned(8)));
 
 struct ibmvtpm_crq_queue {
 	struct ibmvtpm_crq *crq_addr;
 	u32 index;
 	u32 num_entry;
+	wait_queue_head_t wq;
 };
 
 struct ibmvtpm_dev {
@@ -45,6 +41,7 @@ struct ibmvtpm_dev {
 	wait_queue_head_t wq;
 	u16 res_len;
 	u32 vtpm_version;
+	u8 tpm_processing_cmd;
 };
 
 #define CRQ_RES_BUF_SIZE	PAGE_SIZE

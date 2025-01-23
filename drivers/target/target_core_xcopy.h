@@ -1,14 +1,22 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#include <target/target_core_base.h>
+
+#define XCOPY_HDR_LEN			16
 #define XCOPY_TARGET_DESC_LEN		32
 #define XCOPY_SEGMENT_DESC_LEN		28
 #define XCOPY_NAA_IEEE_REGEX_LEN	16
-#define XCOPY_MAX_SECTORS		1024
+#define XCOPY_MAX_BYTES			16777216 /* 16 MB */
+
+/*
+ * SPC4r37 6.4.6.1
+ * Table 150 — CSCD descriptor ID values
+ */
+#define XCOPY_CSCD_DESC_ID_LIST_OFF_MAX	0x07FF
 
 enum xcopy_origin_list {
 	XCOL_SOURCE_RECV_OP = 0x01,
 	XCOL_DEST_RECV_OP = 0x02,
 };
-
-struct xcopy_pt_cmd;
 
 struct xcopy_op {
 	int op_origin;
@@ -19,17 +27,15 @@ struct xcopy_op {
 	struct se_device *dst_dev;
 	unsigned char dst_tid_wwn[XCOPY_NAA_IEEE_REGEX_LEN];
 	unsigned char local_dev_wwn[XCOPY_NAA_IEEE_REGEX_LEN];
+	struct percpu_ref *remote_lun_ref;
 
 	sector_t src_lba;
 	sector_t dst_lba;
 	unsigned short stdi;
 	unsigned short dtdi;
 	unsigned short nolb;
-	unsigned int dbl;
 
-	struct xcopy_pt_cmd *src_pt_cmd;
-	struct xcopy_pt_cmd *dst_pt_cmd;
-
+	u32 xop_data_bytes;
 	u32 xop_data_nents;
 	struct scatterlist *xop_data_sg;
 	struct work_struct xop_work;

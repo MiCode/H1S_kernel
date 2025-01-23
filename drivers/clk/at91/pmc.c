@@ -1,37 +1,25 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (C) 2013 Boris BREZILLON <b.brezillon@overkiz.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
  */
 
+#include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/clkdev.h>
 #include <linux/clk/at91_pmc.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/io.h>
-#include <linux/interrupt.h>
-#include <linux/irq.h>
-#include <linux/irqchip/chained_irq.h>
-#include <linux/irqdomain.h>
-#include <linux/of_irq.h>
+#include <linux/mfd/syscon.h>
+#include <linux/platform_device.h>
+#include <linux/regmap.h>
+#include <linux/syscore_ops.h>
 
 #include <asm/proc-fns.h>
 
 #include "pmc.h"
 
-void __iomem *at91_pmc_base;
-EXPORT_SYMBOL_GPL(at91_pmc_base);
-
-void at91sam9_idle(void)
-{
-	at91_pmc_write(AT91_PMC_SCDR, AT91_PMC_PCK);
-	cpu_do_idle();
-}
+#define PMC_MAX_IDS 128
+#define PMC_MAX_PCKS 8
 
 int of_at91_get_clk_range(struct device_node *np, const char *propname,
 			  struct clk_range *range)
@@ -56,340 +44,150 @@ int of_at91_get_clk_range(struct device_node *np, const char *propname,
 }
 EXPORT_SYMBOL_GPL(of_at91_get_clk_range);
 
-static void pmc_irq_mask(struct irq_data *d)
+struct clk_hw *of_clk_hw_pmc_get(struct of_phandle_args *clkspec, void *data)
 {
-	struct at91_pmc *pmc = irq_data_get_irq_chip_data(d);
+	unsigned int type = clkspec->args[0];
+	unsigned int idx = clkspec->args[1];
+	struct pmc_data *pmc_data = data;
 
-	pmc_write(pmc, AT91_PMC_IDR, 1 << d->hwirq);
-}
-
-static void pmc_irq_unmask(struct irq_data *d)
-{
-	struct at91_pmc *pmc = irq_data_get_irq_chip_data(d);
-
-	pmc_write(pmc, AT91_PMC_IER, 1 << d->hwirq);
-}
-
-static int pmc_irq_set_type(struct irq_data *d, unsigned type)
-{
-	if (type != IRQ_TYPE_LEVEL_HIGH) {
-		pr_warn("PMC: type not supported (support only IRQ_TYPE_LEVEL_HIGH type)\n");
-		return -EINVAL;
+	switch (type) {
+	case PMC_TYPE_CORE:
+		if (idx < pmc_data->ncore)
+			return pmc_data->chws[idx];
+		break;
+	case PMC_TYPE_SYSTEM:
+		if (idx < pmc_data->nsystem)
+			return pmc_data->shws[idx];
+		break;
+	case PMC_TYPE_PERIPHERAL:
+		if (idx < pmc_data->nperiph)
+			return pmc_data->phws[idx];
+		break;
+	case PMC_TYPE_GCK:
+		if (idx < pmc_data->ngck)
+			return pmc_data->ghws[idx];
+		break;
+	case PMC_TYPE_PROGRAMMABLE:
+		if (idx < pmc_data->npck)
+			return pmc_data->pchws[idx];
+		break;
+	default:
+		break;
 	}
 
-	return 0;
+	pr_err("%s: invalid type (%u) or index (%u)\n", __func__, type, idx);
+
+	return ERR_PTR(-EINVAL);
 }
 
-static struct irq_chip pmc_irq = {
-	.name = "PMC",
-	.irq_disable = pmc_irq_mask,
-	.irq_mask = pmc_irq_mask,
-	.irq_unmask = pmc_irq_unmask,
-	.irq_set_type = pmc_irq_set_type,
-};
-
-static struct lock_class_key pmc_lock_class;
-
-static int pmc_irq_map(struct irq_domain *h, unsigned int virq,
-		       irq_hw_number_t hw)
+struct pmc_data *pmc_data_allocate(unsigned int ncore, unsigned int nsystem,
+				   unsigned int nperiph, unsigned int ngck,
+				   unsigned int npck)
 {
-	struct at91_pmc	*pmc = h->host_data;
+	unsigned int num_clks = ncore + nsystem + nperiph + ngck + npck;
+	struct pmc_data *pmc_data;
 
-	irq_set_lockdep_class(virq, &pmc_lock_class);
-
-	irq_set_chip_and_handler(virq, &pmc_irq,
-				 handle_level_irq);
-	set_irq_flags(virq, IRQF_VALID);
-	irq_set_chip_data(virq, pmc);
-
-	return 0;
-}
-
-static int pmc_irq_domain_xlate(struct irq_domain *d,
-				struct device_node *ctrlr,
-				const u32 *intspec, unsigned int intsize,
-				irq_hw_number_t *out_hwirq,
-				unsigned int *out_type)
-{
-	struct at91_pmc *pmc = d->host_data;
-	const struct at91_pmc_caps *caps = pmc->caps;
-
-	if (WARN_ON(intsize < 1))
-		return -EINVAL;
-
-	*out_hwirq = intspec[0];
-
-	if (!(caps->available_irqs & (1 << *out_hwirq)))
-		return -EINVAL;
-
-	*out_type = IRQ_TYPE_LEVEL_HIGH;
-
-	return 0;
-}
-
-static struct irq_domain_ops pmc_irq_ops = {
-	.map	= pmc_irq_map,
-	.xlate	= pmc_irq_domain_xlate,
-};
-
-static irqreturn_t pmc_irq_handler(int irq, void *data)
-{
-	struct at91_pmc *pmc = (struct at91_pmc *)data;
-	unsigned long sr;
-	int n;
-
-	sr = pmc_read(pmc, AT91_PMC_SR) & pmc_read(pmc, AT91_PMC_IMR);
-	if (!sr)
-		return IRQ_NONE;
-
-	for_each_set_bit(n, &sr, BITS_PER_LONG)
-		generic_handle_irq(irq_find_mapping(pmc->irqdomain, n));
-
-	return IRQ_HANDLED;
-}
-
-static const struct at91_pmc_caps at91rm9200_caps = {
-	.available_irqs = AT91_PMC_MOSCS | AT91_PMC_LOCKA | AT91_PMC_LOCKB |
-			  AT91_PMC_MCKRDY | AT91_PMC_PCK0RDY |
-			  AT91_PMC_PCK1RDY | AT91_PMC_PCK2RDY |
-			  AT91_PMC_PCK3RDY,
-};
-
-static const struct at91_pmc_caps at91sam9260_caps = {
-	.available_irqs = AT91_PMC_MOSCS | AT91_PMC_LOCKA | AT91_PMC_LOCKB |
-			  AT91_PMC_MCKRDY | AT91_PMC_PCK0RDY |
-			  AT91_PMC_PCK1RDY,
-};
-
-static const struct at91_pmc_caps at91sam9g45_caps = {
-	.available_irqs = AT91_PMC_MOSCS | AT91_PMC_LOCKA | AT91_PMC_MCKRDY |
-			  AT91_PMC_LOCKU | AT91_PMC_PCK0RDY |
-			  AT91_PMC_PCK1RDY,
-};
-
-static const struct at91_pmc_caps at91sam9n12_caps = {
-	.available_irqs = AT91_PMC_MOSCS | AT91_PMC_LOCKA | AT91_PMC_LOCKB |
-			  AT91_PMC_MCKRDY | AT91_PMC_PCK0RDY |
-			  AT91_PMC_PCK1RDY | AT91_PMC_MOSCSELS |
-			  AT91_PMC_MOSCRCS | AT91_PMC_CFDEV,
-};
-
-static const struct at91_pmc_caps at91sam9x5_caps = {
-	.available_irqs = AT91_PMC_MOSCS | AT91_PMC_LOCKA | AT91_PMC_MCKRDY |
-			  AT91_PMC_LOCKU | AT91_PMC_PCK0RDY |
-			  AT91_PMC_PCK1RDY | AT91_PMC_MOSCSELS |
-			  AT91_PMC_MOSCRCS | AT91_PMC_CFDEV,
-};
-
-static const struct at91_pmc_caps sama5d3_caps = {
-	.available_irqs = AT91_PMC_MOSCS | AT91_PMC_LOCKA | AT91_PMC_MCKRDY |
-			  AT91_PMC_LOCKU | AT91_PMC_PCK0RDY |
-			  AT91_PMC_PCK1RDY | AT91_PMC_PCK2RDY |
-			  AT91_PMC_MOSCSELS | AT91_PMC_MOSCRCS |
-			  AT91_PMC_CFDEV,
-};
-
-static struct at91_pmc *__init at91_pmc_init(struct device_node *np,
-					     void __iomem *regbase, int virq,
-					     const struct at91_pmc_caps *caps)
-{
-	struct at91_pmc *pmc;
-
-	if (!regbase || !virq ||  !caps)
+	pmc_data = kzalloc(struct_size(pmc_data, hwtable, num_clks),
+			   GFP_KERNEL);
+	if (!pmc_data)
 		return NULL;
 
-	at91_pmc_base = regbase;
+	pmc_data->ncore = ncore;
+	pmc_data->chws = pmc_data->hwtable;
 
-	pmc = kzalloc(sizeof(*pmc), GFP_KERNEL);
-	if (!pmc)
-		return NULL;
+	pmc_data->nsystem = nsystem;
+	pmc_data->shws = pmc_data->chws + ncore;
 
-	spin_lock_init(&pmc->lock);
-	pmc->regbase = regbase;
-	pmc->virq = virq;
-	pmc->caps = caps;
+	pmc_data->nperiph = nperiph;
+	pmc_data->phws = pmc_data->shws + nsystem;
 
-	pmc->irqdomain = irq_domain_add_linear(np, 32, &pmc_irq_ops, pmc);
+	pmc_data->ngck = ngck;
+	pmc_data->ghws = pmc_data->phws + nperiph;
 
-	if (!pmc->irqdomain)
-		goto out_free_pmc;
+	pmc_data->npck = npck;
+	pmc_data->pchws = pmc_data->ghws + ngck;
 
-	pmc_write(pmc, AT91_PMC_IDR, 0xffffffff);
-	if (request_irq(pmc->virq, pmc_irq_handler, IRQF_SHARED, "pmc", pmc))
-		goto out_remove_irqdomain;
-
-	return pmc;
-
-out_remove_irqdomain:
-	irq_domain_remove(pmc->irqdomain);
-out_free_pmc:
-	kfree(pmc);
-
-	return NULL;
+	return pmc_data;
 }
 
-static const struct of_device_id pmc_clk_ids[] __initconst = {
-	/* Main clock */
-	{
-		.compatible = "atmel,at91rm9200-clk-main",
-		.data = of_at91rm9200_clk_main_setup,
-	},
-	/* PLL clocks */
-	{
-		.compatible = "atmel,at91rm9200-clk-pll",
-		.data = of_at91rm9200_clk_pll_setup,
-	},
-	{
-		.compatible = "atmel,at91sam9g45-clk-pll",
-		.data = of_at91sam9g45_clk_pll_setup,
-	},
-	{
-		.compatible = "atmel,at91sam9g20-clk-pllb",
-		.data = of_at91sam9g20_clk_pllb_setup,
-	},
-	{
-		.compatible = "atmel,sama5d3-clk-pll",
-		.data = of_sama5d3_clk_pll_setup,
-	},
-	{
-		.compatible = "atmel,at91sam9x5-clk-plldiv",
-		.data = of_at91sam9x5_clk_plldiv_setup,
-	},
-	/* Master clock */
-	{
-		.compatible = "atmel,at91rm9200-clk-master",
-		.data = of_at91rm9200_clk_master_setup,
-	},
-	{
-		.compatible = "atmel,at91sam9x5-clk-master",
-		.data = of_at91sam9x5_clk_master_setup,
-	},
-	/* System clocks */
-	{
-		.compatible = "atmel,at91rm9200-clk-system",
-		.data = of_at91rm9200_clk_sys_setup,
-	},
-	/* Peripheral clocks */
-	{
-		.compatible = "atmel,at91rm9200-clk-peripheral",
-		.data = of_at91rm9200_clk_periph_setup,
-	},
-	{
-		.compatible = "atmel,at91sam9x5-clk-peripheral",
-		.data = of_at91sam9x5_clk_periph_setup,
-	},
-	/* Programmable clocks */
-	{
-		.compatible = "atmel,at91rm9200-clk-programmable",
-		.data = of_at91rm9200_clk_prog_setup,
-	},
-	{
-		.compatible = "atmel,at91sam9g45-clk-programmable",
-		.data = of_at91sam9g45_clk_prog_setup,
-	},
-	{
-		.compatible = "atmel,at91sam9x5-clk-programmable",
-		.data = of_at91sam9x5_clk_prog_setup,
-	},
-	/* UTMI clock */
-#if defined(CONFIG_HAVE_AT91_UTMI)
-	{
-		.compatible = "atmel,at91sam9x5-clk-utmi",
-		.data = of_at91sam9x5_clk_utmi_setup,
-	},
-#endif
-	/* USB clock */
-#if defined(CONFIG_HAVE_AT91_USB_CLK)
-	{
-		.compatible = "atmel,at91rm9200-clk-usb",
-		.data = of_at91rm9200_clk_usb_setup,
-	},
-	{
-		.compatible = "atmel,at91sam9x5-clk-usb",
-		.data = of_at91sam9x5_clk_usb_setup,
-	},
-	{
-		.compatible = "atmel,at91sam9n12-clk-usb",
-		.data = of_at91sam9n12_clk_usb_setup,
-	},
-#endif
-	/* SMD clock */
-#if defined(CONFIG_HAVE_AT91_SMD)
-	{
-		.compatible = "atmel,at91sam9x5-clk-smd",
-		.data = of_at91sam9x5_clk_smd_setup,
-	},
-#endif
-	{ /*sentinel*/ }
+#ifdef CONFIG_PM
+
+/* Address in SECURAM that say if we suspend to backup mode. */
+static void __iomem *at91_pmc_backup_suspend;
+
+static int at91_pmc_suspend(void)
+{
+	unsigned int backup;
+
+	if (!at91_pmc_backup_suspend)
+		return 0;
+
+	backup = readl_relaxed(at91_pmc_backup_suspend);
+	if (!backup)
+		return 0;
+
+	return clk_save_context();
+}
+
+static void at91_pmc_resume(void)
+{
+	unsigned int backup;
+
+	if (!at91_pmc_backup_suspend)
+		return;
+
+	backup = readl_relaxed(at91_pmc_backup_suspend);
+	if (!backup)
+		return;
+
+	clk_restore_context();
+}
+
+static struct syscore_ops pmc_syscore_ops = {
+	.suspend = at91_pmc_suspend,
+	.resume = at91_pmc_resume,
 };
 
-static void __init of_at91_pmc_setup(struct device_node *np,
-				     const struct at91_pmc_caps *caps)
+static const struct of_device_id pmc_dt_ids[] = {
+	{ .compatible = "atmel,sama5d2-pmc" },
+	{ .compatible = "microchip,sama7g5-pmc", },
+	{ /* sentinel */ }
+};
+
+static int __init pmc_register_ops(void)
 {
-	struct at91_pmc *pmc;
-	struct device_node *childnp;
-	void (*clk_setup)(struct device_node *, struct at91_pmc *);
-	const struct of_device_id *clk_id;
-	void __iomem *regbase = of_iomap(np, 0);
-	int virq;
+	struct device_node *np;
 
-	if (!regbase)
-		return;
+	np = of_find_matching_node(NULL, pmc_dt_ids);
+	if (!np)
+		return -ENODEV;
 
-	virq = irq_of_parse_and_map(np, 0);
-	if (!virq)
-		return;
-
-	pmc = at91_pmc_init(np, regbase, virq, caps);
-	if (!pmc)
-		return;
-	for_each_child_of_node(np, childnp) {
-		clk_id = of_match_node(pmc_clk_ids, childnp);
-		if (!clk_id)
-			continue;
-		clk_setup = clk_id->data;
-		clk_setup(childnp, pmc);
+	if (!of_device_is_available(np)) {
+		of_node_put(np);
+		return -ENODEV;
 	}
-}
+	of_node_put(np);
 
-static void __init of_at91rm9200_pmc_setup(struct device_node *np)
-{
-	of_at91_pmc_setup(np, &at91rm9200_caps);
-}
-CLK_OF_DECLARE(at91rm9200_clk_pmc, "atmel,at91rm9200-pmc",
-	       of_at91rm9200_pmc_setup);
+	np = of_find_compatible_node(NULL, NULL, "atmel,sama5d2-securam");
+	if (!np)
+		return -ENODEV;
 
-static void __init of_at91sam9260_pmc_setup(struct device_node *np)
-{
-	of_at91_pmc_setup(np, &at91sam9260_caps);
-}
-CLK_OF_DECLARE(at91sam9260_clk_pmc, "atmel,at91sam9260-pmc",
-	       of_at91sam9260_pmc_setup);
+	if (!of_device_is_available(np)) {
+		of_node_put(np);
+		return -ENODEV;
+	}
+	of_node_put(np);
 
-static void __init of_at91sam9g45_pmc_setup(struct device_node *np)
-{
-	of_at91_pmc_setup(np, &at91sam9g45_caps);
-}
-CLK_OF_DECLARE(at91sam9g45_clk_pmc, "atmel,at91sam9g45-pmc",
-	       of_at91sam9g45_pmc_setup);
+	at91_pmc_backup_suspend = of_iomap(np, 0);
+	if (!at91_pmc_backup_suspend) {
+		pr_warn("%s(): unable to map securam\n", __func__);
+		return -ENOMEM;
+	}
 
-static void __init of_at91sam9n12_pmc_setup(struct device_node *np)
-{
-	of_at91_pmc_setup(np, &at91sam9n12_caps);
-}
-CLK_OF_DECLARE(at91sam9n12_clk_pmc, "atmel,at91sam9n12-pmc",
-	       of_at91sam9n12_pmc_setup);
+	register_syscore_ops(&pmc_syscore_ops);
 
-static void __init of_at91sam9x5_pmc_setup(struct device_node *np)
-{
-	of_at91_pmc_setup(np, &at91sam9x5_caps);
+	return 0;
 }
-CLK_OF_DECLARE(at91sam9x5_clk_pmc, "atmel,at91sam9x5-pmc",
-	       of_at91sam9x5_pmc_setup);
-
-static void __init of_sama5d3_pmc_setup(struct device_node *np)
-{
-	of_at91_pmc_setup(np, &sama5d3_caps);
-}
-CLK_OF_DECLARE(sama5d3_clk_pmc, "atmel,sama5d3-pmc",
-	       of_sama5d3_pmc_setup);
+/* This has to happen before arch_initcall because of the tcb_clksrc driver */
+postcore_initcall(pmc_register_ops);
+#endif

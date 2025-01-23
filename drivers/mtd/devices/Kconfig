@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 menu "Self-contained MTD device drivers"
 	depends on MTD!=n
 	depends on HAS_IOMEM
@@ -5,7 +6,7 @@ menu "Self-contained MTD device drivers"
 config MTD_PMC551
 	tristate "Ramix PMC551 PCI Mezzanine RAM card support"
 	depends on PCI
-	---help---
+	help
 	  This provides a MTD device driver for the Ramix PMC551 RAM PCI card
 	  from Ramix Inc. <http://www.ramix.com/products/memory/pmc551.html>.
 	  These devices come in memory configurations from 32M - 1G.  If you
@@ -47,7 +48,7 @@ config MTD_MS02NV
 
 	  If you want to compile this driver as a module ( = code which can be
 	  inserted in and removed from the running kernel whenever you want),
-	  say M here and read <file:Documentation/kbuild/modules.txt>.
+	  say M here and read <file:Documentation/kbuild/modules.rst>.
 	  The module will be called ms02-nv.
 
 config MTD_DATAFLASH
@@ -78,26 +79,25 @@ config MTD_DATAFLASH_OTP
 	  other key product data.  The second half is programmed with a
 	  unique-to-each-chip bit pattern at the factory.
 
-config MTD_M25P80
-	tristate "Support most SPI Flash chips (AT26DF, M25P, W25X, ...)"
+config MTD_MCHP23K256
+	tristate "Microchip 23K256 SRAM"
 	depends on SPI_MASTER
 	help
-	  This enables access to most modern SPI flash chips, used for
-	  program and data storage.   Series supported include Atmel AT26DF,
-	  Spansion S25SL, SST 25VF, ST M25P, and Winbond W25X.  Other chips
-	  are supported as well.  See the driver source for the current list,
-	  or to add other chips.
+	  This enables access to Microchip 23K256 SRAM chips, using SPI.
 
-	  Note that the original DataFlash chips (AT45 series, not AT26DF),
-	  need an entirely different driver.
+	  Set up your spi devices with the right board-specific
+	  platform data, or a device tree description if you want to
+	  specify device partitioning
 
-	  Set up your spi devices with the right board-specific platform data,
-	  if you want to specify device partitioning or to use a device which
-	  doesn't support the JEDEC ID instruction.
+config MTD_MCHP48L640
+	tristate "Microchip 48L640 EERAM"
+	depends on SPI_MASTER
+	help
+	  This enables access to Microchip 48L640 EERAM chips, using SPI.
 
 config MTD_SPEAR_SMI
 	tristate "SPEAR MTD NOR Support through SMI controller"
-	depends on PLAT_SPEAR
+	depends on PLAT_SPEAR || COMPILE_TEST
 	default y
 	help
 	  This enable SNOR support on SPEAR platforms using SMI controller
@@ -113,12 +113,12 @@ config MTD_SST25L
 	  if you want to specify device partitioning.
 
 config MTD_BCM47XXSFLASH
-	tristate "R/O support for serial flash on BCMA bus"
-	depends on BCMA_SFLASH
+	tristate "Support for serial flash on BCMA bus"
+	depends on BCMA_SFLASH && (MIPS || ARM)
 	help
 	  BCMA bus can have various flash memories attached, they are
 	  registered by bcma as platform devices. This enables driver for
-	  serial flash memories (only read-only mode is implemented).
+	  serial flash memories.
 
 config MTD_SLRAM
 	tristate "Uncached system RAM"
@@ -135,14 +135,6 @@ config MTD_PHRAM
 	  Use this driver to access physical memory that the kernel proper
 	  doesn't have access to, memory beyond the mem=xxx limit, nvram,
 	  memory on the video card, etc...
-
-config MTD_LART
-	tristate "28F160xx flash driver for LART"
-	depends on SA1100_LART
-	help
-	  This enables the flash driver for LART. Please note that you do
-	  not need any mapping/chip driver for LART. This one does it all
-	  for you, so go disable all of those if you enabled some of them (:
 
 config MTD_MTDRAM
 	tristate "Test driver using RAM"
@@ -171,18 +163,6 @@ config MTDRAM_ERASE_SIZE
 	  as a module, it is also possible to specify this as a parameter when
 	  loading the module.
 
-#If not a module (I don't want to test it as a module)
-config MTDRAM_ABS_POS
-	hex "SRAM Hexadecimal Absolute position or 0"
-	depends on MTD_MTDRAM=y
-	default "0"
-	help
-	  If you have system RAM accessible by the CPU but not used by Linux
-	  in normal operation, you can give the physical address at which the
-	  available RAM starts, and the MTDRAM driver will use it instead of
-	  allocating space from Linux's available memory. Otherwise, leave
-	  this set to zero. Most people will want to leave this as zero.
-
 config MTD_BLOCK2MTD
 	tristate "MTD using block device"
 	depends on BLOCK
@@ -195,20 +175,36 @@ config MTD_BLOCK2MTD
 	  Testing MTD users (eg JFFS2) on large media and media that might
 	  be removed during a write (using the floppy drive).
 
+config MTD_POWERNV_FLASH
+	tristate "powernv flash MTD driver"
+	depends on PPC_POWERNV
+	help
+	  This provides an MTD device to access flash on powernv OPAL
+	  platforms from Linux. This device abstracts away the
+	  firmware interface for flash access.
+
 comment "Disk-On-Chip Device Drivers"
 
 config MTD_DOCG3
 	tristate "M-Systems Disk-On-Chip G3"
 	select BCH
-	select BCH_CONST_PARAMS
+	select BCH_CONST_PARAMS if !MTD_NAND_ECC_SW_BCH
 	select BITREVERSE
-	---help---
+	help
 	  This provides an MTD device driver for the M-Systems DiskOnChip
 	  G3 devices.
 
 	  The driver provides access to G3 DiskOnChip, distributed by
 	  M-Systems and now Sandisk. The support is very experimental,
 	  and doesn't give access to any write operations.
+
+config MTD_ST_SPI_FSM
+	tristate "ST Microelectronics SPI FSM Serial Flash Controller"
+	depends on ARCH_STI
+	help
+	  This provides an MTD device driver for the ST Microelectronics
+	  SPI Fast Sequence Mode (FSM) Serial Flash Controller and support
+	  for a subset of connected Serial Flash devices.
 
 if MTD_DOCG3
 config BCH_CONST_M

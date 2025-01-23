@@ -1,47 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2000-2005 Silicon Graphics, Inc.
  * All Rights Reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it would be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write the Free Software Foundation,
- * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
-#include <linux/mm.h>
-#include <linux/highmem.h>
-#include <linux/slab.h>
-#include <linux/swap.h>
-#include <linux/blkdev.h>
-#include <linux/backing-dev.h>
-#include "time.h"
-#include "kmem.h"
+#include "xfs.h"
 #include "xfs_message.h"
-
-/*
- * Greedy allocation.  May fail and may return vmalloced memory.
- */
-void *
-kmem_zalloc_greedy(size_t *size, size_t minsize, size_t maxsize)
-{
-	void		*ptr;
-	size_t		kmsize = maxsize;
-
-	while (!(ptr = vzalloc(kmsize))) {
-		if ((kmsize >>= 1) <= minsize)
-			kmsize = minsize;
-	}
-	if (ptr)
-		*size = kmsize;
-	return ptr;
-}
+#include "xfs_trace.h"
 
 void *
 kmem_alloc(size_t size, xfs_km_flags_t flags)
@@ -50,70 +14,17 @@ kmem_alloc(size_t size, xfs_km_flags_t flags)
 	gfp_t	lflags = kmem_flags_convert(flags);
 	void	*ptr;
 
+	trace_kmem_alloc(size, flags, _RET_IP_);
+
 	do {
 		ptr = kmalloc(size, lflags);
-		if (ptr || (flags & (KM_MAYFAIL|KM_NOSLEEP)))
+		if (ptr || (flags & KM_MAYFAIL))
 			return ptr;
 		if (!(++retries % 100))
 			xfs_err(NULL,
-		"possible memory allocation deadlock in %s (mode:0x%x)",
-					__func__, lflags);
-		congestion_wait(BLK_RW_ASYNC, HZ/50);
-	} while (1);
-}
-
-void *
-kmem_zalloc_large(size_t size, xfs_km_flags_t flags)
-{
-	void	*ptr;
-
-	ptr = kmem_zalloc(size, flags | KM_MAYFAIL);
-	if (ptr)
-		return ptr;
-	return vzalloc(size);
-}
-
-void
-kmem_free(const void *ptr)
-{
-	if (!is_vmalloc_addr(ptr)) {
-		kfree(ptr);
-	} else {
-		vfree(ptr);
-	}
-}
-
-void *
-kmem_realloc(const void *ptr, size_t newsize, size_t oldsize,
-	     xfs_km_flags_t flags)
-{
-	void	*new;
-
-	new = kmem_alloc(newsize, flags);
-	if (ptr) {
-		if (new)
-			memcpy(new, ptr,
-				((oldsize < newsize) ? oldsize : newsize));
-		kmem_free(ptr);
-	}
-	return new;
-}
-
-void *
-kmem_zone_alloc(kmem_zone_t *zone, xfs_km_flags_t flags)
-{
-	int	retries = 0;
-	gfp_t	lflags = kmem_flags_convert(flags);
-	void	*ptr;
-
-	do {
-		ptr = kmem_cache_alloc(zone, lflags);
-		if (ptr || (flags & (KM_MAYFAIL|KM_NOSLEEP)))
-			return ptr;
-		if (!(++retries % 100))
-			xfs_err(NULL,
-		"possible memory allocation deadlock in %s (mode:0x%x)",
-					__func__, lflags);
-		congestion_wait(BLK_RW_ASYNC, HZ/50);
+	"%s(%u) possible memory allocation deadlock size %u in %s (mode:0x%x)",
+				current->comm, current->pid,
+				(unsigned int)size, __func__, lflags);
+		memalloc_retry_wait(lflags);
 	} while (1);
 }

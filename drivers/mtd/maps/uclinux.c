@@ -4,11 +4,13 @@
  *	uclinux.c -- generic memory mapped MTD driver for uclinux
  *
  *	(C) Copyright 2002, Greg Ungerer (gerg@snapgear.com)
+ *
+ *      License: GPL
  */
 
 /****************************************************************************/
 
-#include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/types.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -29,13 +31,7 @@
 #define MAP_NAME "ram"
 #endif
 
-/*
- * Blackfin uses uclinux_ram_map during startup, so it must not be static.
- * Provide a dummy declaration to make sparse happy.
- */
-extern struct map_info uclinux_ram_map;
-
-struct map_info uclinux_ram_map = {
+static struct map_info uclinux_ram_map = {
 	.name = MAP_NAME,
 	.size = 0,
 };
@@ -47,7 +43,7 @@ static struct mtd_info *uclinux_ram_mtdinfo;
 
 /****************************************************************************/
 
-static struct mtd_partition uclinux_romfs[] = {
+static const struct mtd_partition uclinux_romfs[] = {
 	{ .name = "ROMfs" }
 };
 
@@ -117,27 +113,6 @@ static int __init uclinux_mtd_init(void)
 
 	return(0);
 }
-
-/****************************************************************************/
-
-static void __exit uclinux_mtd_cleanup(void)
-{
-	if (uclinux_ram_mtdinfo) {
-		mtd_device_unregister(uclinux_ram_mtdinfo);
-		map_destroy(uclinux_ram_mtdinfo);
-		uclinux_ram_mtdinfo = NULL;
-	}
-	if (uclinux_ram_map.virt)
-		uclinux_ram_map.virt = 0;
-}
-
-/****************************************************************************/
-
-module_init(uclinux_mtd_init);
-module_exit(uclinux_mtd_cleanup);
-
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Greg Ungerer <gerg@snapgear.com>");
-MODULE_DESCRIPTION("Generic MTD for uClinux");
+device_initcall(uclinux_mtd_init);
 
 /****************************************************************************/

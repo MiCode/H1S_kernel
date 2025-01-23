@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_KGDB_H_
 #define __ASM_KGDB_H_
 
@@ -17,7 +18,7 @@
 #ifdef CONFIG_32BIT
 #define KGDB_GDB_REG_SIZE	32
 #define GDB_SIZEOF_REG		sizeof(u32)
-#else /* CONFIG_CPU_32BIT */
+#else /* CONFIG_32BIT */
 #define KGDB_GDB_REG_SIZE	64
 #define GDB_SIZEOF_REG		sizeof(u64)
 #endif
@@ -33,7 +34,6 @@
 #define CACHE_FLUSH_IS_SAFE	0
 
 extern void arch_kgdb_breakpoint(void);
-extern int kgdb_early_setup;
 extern void *saved_vectors[32];
 extern void handle_exception(struct pt_regs *regs);
 extern void breakinst(void);

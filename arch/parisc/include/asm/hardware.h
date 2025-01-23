@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _PARISC_HARDWARE_H
 #define _PARISC_HARDWARE_H
 
@@ -9,12 +10,12 @@
 #define SVERSION_ANY_ID		PA_SVERSION_ANY_ID
 
 struct hp_hardware {
-	unsigned short	hw_type:5;	/* HPHW_xxx */
-	unsigned short	hversion;
-	unsigned long	sversion:28;
-	unsigned short	opt;
-	const char	name[80];	/* The hardware description */
-};
+	unsigned int	hw_type:8;	/* HPHW_xxx */
+	unsigned int	hversion:12;
+	unsigned int	sversion:12;
+	unsigned char	opt;
+	unsigned char	name[59];	/* The hardware description */
+} __packed;
 
 struct parisc_device;
 
@@ -119,7 +120,7 @@ extern void get_pci_node_path(struct pci_dev *dev, struct hardware_path *path);
 extern void init_parisc_bus(void);
 extern struct device *hwpath_to_device(struct hardware_path *modpath);
 extern void device_to_hwpath(struct device *dev, struct hardware_path *path);
-
+extern int machine_has_merced_bus(void);
 
 /* inventory.c: */
 extern void do_memory_inventory(void);

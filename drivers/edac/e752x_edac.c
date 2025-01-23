@@ -7,7 +7,7 @@
  * Implement support for the e7520, E7525, e7320 and i3100 memory controllers.
  *
  * Datasheets:
- *	http://www.intel.in/content/www/in/en/chipsets/e7525-memory-controller-hub-datasheet.html
+ *	https://www.intel.in/content/www/in/en/chipsets/e7525-memory-controller-hub-datasheet.html
  *	ftp://download.intel.com/design/intarch/datashts/31345803.pdf
  *
  * Written by Tom Zimmerman
@@ -24,9 +24,8 @@
 #include <linux/pci.h>
 #include <linux/pci_ids.h>
 #include <linux/edac.h>
-#include "edac_core.h"
+#include "edac_module.h"
 
-#define E752X_REVISION	" Ver: 2.0.2"
 #define EDAC_MOD_STR	"e752x_edac"
 
 static int report_non_memory_errors;
@@ -209,7 +208,6 @@ enum e752x_chips {
  */
 
 struct e752x_pvt {
-	struct pci_dev *bridge_ck;
 	struct pci_dev *dev_d0f0;
 	struct pci_dev *dev_d0f1;
 	u32 tolm;
@@ -891,7 +889,7 @@ static void e752x_get_error_info(struct mem_ctl_info *mci,
 					info->buf_ferr);
 
 		if (info->dram_ferr)
-			pci_write_bits16(pvt->bridge_ck, E752X_DRAM_FERR,
+			pci_write_bits16(pvt->dev_d0f1, E752X_DRAM_FERR,
 					 info->dram_ferr, info->dram_ferr);
 
 		pci_write_config_dword(dev, E752X_FERR_GLOBAL,
@@ -936,7 +934,7 @@ static void e752x_get_error_info(struct mem_ctl_info *mci,
 					info->buf_nerr);
 
 		if (info->dram_nerr)
-			pci_write_bits16(pvt->bridge_ck, E752X_DRAM_NERR,
+			pci_write_bits16(pvt->dev_d0f1, E752X_DRAM_NERR,
 					 info->dram_nerr, info->dram_nerr);
 
 		pci_write_config_dword(dev, E752X_NERR_GLOBAL,
@@ -982,7 +980,6 @@ static void e752x_check(struct mem_ctl_info *mci)
 {
 	struct e752x_error_info info;
 
-	edac_dbg(3, "\n");
 	e752x_get_error_info(mci, &info);
 	e752x_process_error_info(mci, &info, 1);
 }
@@ -1177,38 +1174,33 @@ static void e752x_init_mem_map_table(struct pci_dev *pdev,
 static int e752x_get_devs(struct pci_dev *pdev, int dev_idx,
 			struct e752x_pvt *pvt)
 {
-	struct pci_dev *dev;
+	pvt->dev_d0f1 = pci_get_device(PCI_VENDOR_ID_INTEL,
+				pvt->dev_info->err_dev, NULL);
 
-	pvt->bridge_ck = pci_get_device(PCI_VENDOR_ID_INTEL,
-				pvt->dev_info->err_dev, pvt->bridge_ck);
-
-	if (pvt->bridge_ck == NULL) {
-		pvt->bridge_ck = pci_scan_single_device(pdev->bus,
+	if (pvt->dev_d0f1 == NULL) {
+		pvt->dev_d0f1 = pci_scan_single_device(pdev->bus,
 							PCI_DEVFN(0, 1));
-		pci_dev_get(pvt->bridge_ck);
+		pci_dev_get(pvt->dev_d0f1);
 	}
 
-	if (pvt->bridge_ck == NULL) {
+	if (pvt->dev_d0f1 == NULL) {
 		e752x_printk(KERN_ERR, "error reporting device not found:"
 			"vendor %x device 0x%x (broken BIOS?)\n",
 			PCI_VENDOR_ID_INTEL, e752x_devs[dev_idx].err_dev);
 		return 1;
 	}
 
-	dev = pci_get_device(PCI_VENDOR_ID_INTEL,
+	pvt->dev_d0f0 = pci_get_device(PCI_VENDOR_ID_INTEL,
 				e752x_devs[dev_idx].ctl_dev,
 				NULL);
 
-	if (dev == NULL)
+	if (pvt->dev_d0f0 == NULL)
 		goto fail;
-
-	pvt->dev_d0f0 = dev;
-	pvt->dev_d0f1 = pci_dev_get(pvt->bridge_ck);
 
 	return 0;
 
 fail:
-	pci_dev_put(pvt->bridge_ck);
+	pci_dev_put(pvt->dev_d0f1);
 	return 1;
 }
 
@@ -1309,7 +1301,6 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 		(EDAC_FLAG_NONE | EDAC_FLAG_SECDED | EDAC_FLAG_S4ECD4ED);
 	/* FIXME - what if different memory types are in different csrows? */
 	mci->mod_name = EDAC_MOD_STR;
-	mci->mod_ver = E752X_REVISION;
 	mci->pdev = &pdev->dev;
 
 	edac_dbg(3, "init pvt\n");
@@ -1385,7 +1376,6 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 fail:
 	pci_dev_put(pvt->dev_d0f0);
 	pci_dev_put(pvt->dev_d0f1);
-	pci_dev_put(pvt->bridge_ck);
 	edac_mc_free(mci);
 
 	return -ENODEV;
@@ -1419,7 +1409,6 @@ static void e752x_remove_one(struct pci_dev *pdev)
 	pvt = (struct e752x_pvt *)mci->pvt_info;
 	pci_dev_put(pvt->dev_d0f0);
 	pci_dev_put(pvt->dev_d0f1);
-	pci_dev_put(pvt->bridge_ck);
 	edac_mc_free(mci);
 }
 
@@ -1456,8 +1445,8 @@ static int __init e752x_init(void)
 
 	edac_dbg(3, "\n");
 
-       /* Ensure that the OPSTATE is set correctly for POLL or NMI */
-       opstate_init();
+	/* Ensure that the OPSTATE is set correctly for POLL or NMI */
+	opstate_init();
 
 	pci_rc = pci_register_driver(&e752x_driver);
 	return (pci_rc < 0) ? pci_rc : 0;
@@ -1473,7 +1462,7 @@ module_init(e752x_init);
 module_exit(e752x_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Linux Networx (http://lnxi.com) Tom Zimmerman\n");
+MODULE_AUTHOR("Linux Networx (http://lnxi.com) Tom Zimmerman");
 MODULE_DESCRIPTION("MC support for Intel e752x/3100 memory controllers");
 
 module_param(force_function_unhide, int, 0444);

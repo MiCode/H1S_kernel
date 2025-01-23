@@ -1,9 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * blockops.S: Common block zero optimized routines.
  *
  * Copyright (C) 1996 David S. Miller (davem@caip.rutgers.edu)
  */
 
+#include <linux/export.h>
 #include <linux/linkage.h>
 #include <asm/page.h>
 
@@ -64,6 +66,7 @@ ENTRY(bzero_1page)
 	retl
 	 nop
 ENDPROC(bzero_1page)
+EXPORT_SYMBOL(bzero_1page)
 
 ENTRY(__copy_1page)
 /* NOTE: If you change the number of insns of this routine, please check
@@ -87,3 +90,4 @@ ENTRY(__copy_1page)
 	retl
 	 nop
 ENDPROC(__copy_1page)
+EXPORT_SYMBOL(__copy_1page)

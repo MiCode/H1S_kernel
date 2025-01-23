@@ -1,7 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASMARM_ELF_H
 #define __ASMARM_ELF_H
 
+#include <asm/auxvec.h>
 #include <asm/hwcap.h>
+#include <asm/vdso_datapage.h>
 
 /*
  * ELF register definitions..
@@ -48,17 +51,26 @@ typedef struct user_fp elf_fpregset_t;
 #define R_ARM_NONE		0
 #define R_ARM_PC24		1
 #define R_ARM_ABS32		2
+#define R_ARM_REL32		3
 #define R_ARM_CALL		28
 #define R_ARM_JUMP24		29
+#define R_ARM_TARGET1		38
 #define R_ARM_V4BX		40
 #define R_ARM_PREL31		42
 #define R_ARM_MOVW_ABS_NC	43
 #define R_ARM_MOVT_ABS		44
+#define R_ARM_MOVW_PREL_NC	45
+#define R_ARM_MOVT_PREL		46
+#define R_ARM_ALU_PC_G0_NC	57
+#define R_ARM_ALU_PC_G1_NC	59
+#define R_ARM_LDR_PC_G2		63
 
 #define R_ARM_THM_CALL		10
 #define R_ARM_THM_JUMP24	30
 #define R_ARM_THM_MOVW_ABS_NC	47
 #define R_ARM_THM_MOVT_ABS	48
+#define R_ARM_THM_MOVW_PREL_NC	49
+#define R_ARM_THM_MOVT_PREL	50
 
 /*
  * These are used to set parameters in the core dumps.
@@ -97,38 +109,45 @@ struct elf32_hdr;
 extern int elf_check_arch(const struct elf32_hdr *);
 #define elf_check_arch elf_check_arch
 
+#define ELFOSABI_ARM_FDPIC  65	/* ARM FDPIC platform */
+#define elf_check_fdpic(x)  ((x)->e_ident[EI_OSABI] == ELFOSABI_ARM_FDPIC)
+#define elf_check_const_displacement(x)  ((x)->e_flags & EF_ARM_PIC)
+#define ELF_FDPIC_CORE_EFLAGS  0
+
 #define vmcore_elf64_check_arch(x) (0)
 
-extern int arm_elf_read_implies_exec(const struct elf32_hdr *, int);
-#define elf_read_implies_exec(ex,stk) arm_elf_read_implies_exec(&(ex), stk)
-
-struct task_struct;
-int dump_task_regs(struct task_struct *t, elf_gregset_t *elfregs);
-#define ELF_CORE_COPY_TASK_REGS dump_task_regs
+extern int arm_elf_read_implies_exec(int);
+#define elf_read_implies_exec(ex,stk) arm_elf_read_implies_exec(stk)
 
 #define CORE_DUMP_USE_REGSET
 #define ELF_EXEC_PAGESIZE	4096
 
-/* This is the location that an ET_DYN program is loaded if exec'ed.  Typical
-   use of this is to invoke "./ld.so someprog" to test out a new version of
-   the loader.  We need to make sure that it is out of the way of the program
-   that it will "exec", and that there is sufficient room for the brk.  */
-
-#define ELF_ET_DYN_BASE	(2 * TASK_SIZE / 3)
+/* This is the base location for PIE (ET_DYN with INTERP) loads. */
+#define ELF_ET_DYN_BASE		0x400000UL
 
 /* When the program starts, a1 contains a pointer to a function to be 
    registered with atexit, as per the SVR4 ABI.  A value of 0 means we 
    have no such handler.  */
 #define ELF_PLAT_INIT(_r, load_addr)	(_r)->ARM_r0 = 0
 
+#define ELF_FDPIC_PLAT_INIT(_r, _exec_map_addr, _interp_map_addr, dynamic_addr) \
+	do { \
+		(_r)->ARM_r7 = _exec_map_addr; \
+		(_r)->ARM_r8 = _interp_map_addr; \
+		(_r)->ARM_r9 = dynamic_addr; \
+	} while(0)
+
 extern void elf_set_personality(const struct elf32_hdr *);
 #define SET_PERSONALITY(ex)	elf_set_personality(&(ex))
 
-struct mm_struct;
-extern unsigned long arch_randomize_brk(struct mm_struct *mm);
-#define arch_randomize_brk arch_randomize_brk
-
 #ifdef CONFIG_MMU
+#ifdef CONFIG_VDSO
+#define ARCH_DLINFO						\
+do {								\
+	NEW_AUX_ENT(AT_SYSINFO_EHDR,				\
+		    (elf_addr_t)current->mm->context.vdso);	\
+} while (0)
+#endif
 #define ARCH_HAS_SETUP_ADDITIONAL_PAGES 1
 struct linux_binprm;
 int arch_setup_additional_pages(struct linux_binprm *, int);

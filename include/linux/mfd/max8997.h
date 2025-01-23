@@ -1,22 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * max8997.h - Driver for the Maxim 8997/8966
  *
  *  Copyright (C) 2009-2010 Samsung Electrnoics
  *  MyungJoo Ham <myungjoo.ham@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  * This driver is based on max8998.h
  *
@@ -27,13 +14,13 @@
  * others and b) it can be enabled simply by using MAX17042 driver.
  */
 
-#ifndef __LINUX_MFD_MAX8998_H
-#define __LINUX_MFD_MAX8998_H
+#ifndef __LINUX_MFD_MAX8997_H
+#define __LINUX_MFD_MAX8997_H
 
 #include <linux/regulator/consumer.h>
 
 /* MAX8997/8966 regulator IDs */
-enum max8998_regulators {
+enum max8997_regulators {
 	MAX8997_LDO1 = 0,
 	MAX8997_LDO2,
 	MAX8997_LDO3,
@@ -123,8 +110,6 @@ enum max8997_haptic_pwm_divisor {
 
 /**
  * max8997_haptic_platform_data
- * @pwm_channel_id: channel number of PWM device
- *		    valid for MAX8997_EXTERNAL_MODE
  * @pwm_period: period in nano second for PWM device
  *		valid for MAX8997_EXTERNAL_MODE
  * @type: motor type
@@ -141,7 +126,6 @@ enum max8997_haptic_pwm_divisor {
  *     [0 - 255]: available period
  */
 struct max8997_haptic_platform_data {
-	unsigned int pwm_channel_id;
 	unsigned int pwm_period;
 
 	enum max8997_haptic_motor_type type;
@@ -178,7 +162,6 @@ struct max8997_led_platform_data {
 struct max8997_platform_data {
 	/* IRQ */
 	int ono;
-	int wakeup;
 
 	/* ---- PMIC ---- */
 	struct max8997_regulator_data *regulators;
@@ -221,4 +204,4 @@ struct max8997_platform_data {
 	struct max8997_led_platform_data *led_pdata;
 };
 
-#endif /* __LINUX_MFD_MAX8998_H */
+#endif /* __LINUX_MFD_MAX8997_H */

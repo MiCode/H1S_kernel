@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * OPAL asynchronus Memory error handling support in PowreNV.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * OPAL asynchronus Memory error handling support in PowerNV.
  *
  * Copyright 2013 IBM Corporation
  * Author: Mahesh Salgaonkar <mahesh@linux.vnet.ibm.com>
@@ -27,6 +14,7 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 
+#include <asm/machdep.h>
 #include <asm/opal.h>
 #include <asm/cputable.h>
 
@@ -43,23 +31,23 @@ static void handle_memory_error_event(struct OpalMemoryErrorData *merr_evt)
 {
 	uint64_t paddr_start, paddr_end;
 
-	pr_debug("%s: Retrived memory error event, type: 0x%x\n",
+	pr_debug("%s: Retrieved memory error event, type: 0x%x\n",
 		  __func__, merr_evt->type);
 	switch (merr_evt->type) {
 	case OPAL_MEM_ERR_TYPE_RESILIENCE:
-		paddr_start = merr_evt->u.resilience.physical_address_start;
-		paddr_end = merr_evt->u.resilience.physical_address_end;
+		paddr_start = be64_to_cpu(merr_evt->u.resilience.physical_address_start);
+		paddr_end = be64_to_cpu(merr_evt->u.resilience.physical_address_end);
 		break;
 	case OPAL_MEM_ERR_TYPE_DYN_DALLOC:
-		paddr_start = merr_evt->u.dyn_dealloc.physical_address_start;
-		paddr_end = merr_evt->u.dyn_dealloc.physical_address_end;
+		paddr_start = be64_to_cpu(merr_evt->u.dyn_dealloc.physical_address_start);
+		paddr_end = be64_to_cpu(merr_evt->u.dyn_dealloc.physical_address_end);
 		break;
 	default:
 		return;
 	}
 
 	for (; paddr_start < paddr_end; paddr_start += PAGE_SIZE) {
-		memory_failure(paddr_start >> PAGE_SHIFT, 0, 0);
+		memory_failure(paddr_start >> PAGE_SHIFT, 0);
 	}
 }
 
@@ -94,7 +82,7 @@ static DECLARE_WORK(mem_error_work, mem_error_handler);
 
 /*
  * opal_memory_err_event - notifier handler that queues up the opal message
- * to be preocessed later.
+ * to be processed later.
  */
 static int opal_memory_err_event(struct notifier_block *nb,
 			  unsigned long msg_type, void *msg)
@@ -111,7 +99,7 @@ static int opal_memory_err_event(struct notifier_block *nb,
 		       "handled\n");
 		return -ENOMEM;
 	}
-	memcpy(&msg_node->msg, msg, sizeof(struct opal_msg));
+	memcpy(&msg_node->msg, msg, sizeof(msg_node->msg));
 
 	spin_lock_irqsave(&opal_mem_err_lock, flags);
 	list_add(&msg_node->list, &opal_memory_err_list);
@@ -143,4 +131,4 @@ static int __init opal_mem_err_init(void)
 	}
 	return 0;
 }
-subsys_initcall(opal_mem_err_init);
+machine_device_initcall(powernv, opal_mem_err_init);

@@ -1,5 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_APICDEF_H
 #define _ASM_X86_APICDEF_H
+
+#include <linux/bits.h>
 
 /*
  * Constants for various Intel APICs. (local APIC, IOAPIC, etc.)
@@ -88,18 +91,12 @@
 #define		APIC_DM_EXTINT		0x00700
 #define		APIC_VECTOR_MASK	0x000FF
 #define	APIC_ICR2	0x310
-#define		GET_APIC_DEST_FIELD(x)	(((x) >> 24) & 0xFF)
-#define		SET_APIC_DEST_FIELD(x)	((x) << 24)
+#define		GET_XAPIC_DEST_FIELD(x)	(((x) >> 24) & 0xFF)
+#define		SET_XAPIC_DEST_FIELD(x)	((x) << 24)
 #define	APIC_LVTT	0x320
 #define	APIC_LVTTHMR	0x330
 #define	APIC_LVTPC	0x340
 #define	APIC_LVT0	0x350
-#define		APIC_LVT_TIMER_BASE_MASK	(0x3 << 18)
-#define		GET_APIC_TIMER_BASE(x)		(((x) >> 18) & 0x3)
-#define		SET_APIC_TIMER_BASE(x)		(((x) << 18))
-#define		APIC_TIMER_BASE_CLKIN		0x0
-#define		APIC_TIMER_BASE_TMBASE		0x1
-#define		APIC_TIMER_BASE_DIV		0x2
 #define		APIC_LVT_TIMER_ONESHOT		(0 << 17)
 #define		APIC_LVT_TIMER_PERIODIC		(1 << 17)
 #define		APIC_LVT_TIMER_TSCDEADLINE	(2 << 17)
@@ -143,9 +140,10 @@
 #define		APIC_EILVT_MASKED	(1 << 16)
 
 #define APIC_BASE (fix_to_virt(FIX_APIC_BASE))
-#define APIC_BASE_MSR	0x800
-#define XAPIC_ENABLE	(1UL << 11)
-#define X2APIC_ENABLE	(1UL << 10)
+#define APIC_BASE_MSR		0x800
+#define APIC_X2APIC_ID_MSR	0x802
+#define XAPIC_ENABLE		BIT(11)
+#define X2APIC_ENABLE		BIT(10)
 
 #ifdef CONFIG_X86_32
 # define MAX_IO_APICS 64
@@ -167,6 +165,7 @@
 #define APIC_CPUID(apicid)	((apicid) & XAPIC_DEST_CPUS_MASK)
 #define NUM_APIC_CLUSTERS	((BAD_APICID + 1) >> XAPIC_DEST_CPUS_SHIFT)
 
+#ifndef __ASSEMBLY__
 /*
  * the local APIC register structure, memory mapped. Not terribly well
  * tested, but we might eventually use this one in the future - the
@@ -431,15 +430,14 @@ struct local_apic {
  #define BAD_APICID 0xFFFFu
 #endif
 
-enum ioapic_irq_destination_types {
-	dest_Fixed		= 0,
-	dest_LowestPrio		= 1,
-	dest_SMI		= 2,
-	dest__reserved_1	= 3,
-	dest_NMI		= 4,
-	dest_INIT		= 5,
-	dest__reserved_2	= 6,
-	dest_ExtINT		= 7
+enum apic_delivery_modes {
+	APIC_DELIVERY_MODE_FIXED	= 0,
+	APIC_DELIVERY_MODE_LOWESTPRIO   = 1,
+	APIC_DELIVERY_MODE_SMI		= 2,
+	APIC_DELIVERY_MODE_NMI		= 4,
+	APIC_DELIVERY_MODE_INIT		= 5,
+	APIC_DELIVERY_MODE_EXTINT	= 7,
 };
 
+#endif /* !__ASSEMBLY__ */
 #endif /* _ASM_X86_APICDEF_H */

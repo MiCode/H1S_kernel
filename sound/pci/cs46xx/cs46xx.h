@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef __SOUND_CS46XX_H
 #define __SOUND_CS46XX_H
 
@@ -5,22 +6,6 @@
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>,
  *		     Cirrus Logic, Inc.
  *  Definitions for Cirrus Logic CS46xx chips
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <sound/pcm.h>
@@ -1650,7 +1635,6 @@ struct snd_cs46xx_region {
 	unsigned long base;
 	void __iomem *remap_addr;
 	unsigned long size;
-	struct resource *resource;
 };
 
 struct snd_cs46xx {
@@ -1733,16 +1717,15 @@ struct snd_cs46xx {
 
 int snd_cs46xx_create(struct snd_card *card,
 		      struct pci_dev *pci,
-		      int external_amp, int thinkpad,
-		      struct snd_cs46xx **rcodec);
+		      int external_amp, int thinkpad);
 extern const struct dev_pm_ops snd_cs46xx_pm;
 
-int snd_cs46xx_pcm(struct snd_cs46xx *chip, int device, struct snd_pcm **rpcm);
-int snd_cs46xx_pcm_rear(struct snd_cs46xx *chip, int device, struct snd_pcm **rpcm);
-int snd_cs46xx_pcm_iec958(struct snd_cs46xx *chip, int device, struct snd_pcm **rpcm);
-int snd_cs46xx_pcm_center_lfe(struct snd_cs46xx *chip, int device, struct snd_pcm **rpcm);
+int snd_cs46xx_pcm(struct snd_cs46xx *chip, int device);
+int snd_cs46xx_pcm_rear(struct snd_cs46xx *chip, int device);
+int snd_cs46xx_pcm_iec958(struct snd_cs46xx *chip, int device);
+int snd_cs46xx_pcm_center_lfe(struct snd_cs46xx *chip, int device);
 int snd_cs46xx_mixer(struct snd_cs46xx *chip, int spdif_device);
-int snd_cs46xx_midi(struct snd_cs46xx *chip, int device, struct snd_rawmidi **rmidi);
+int snd_cs46xx_midi(struct snd_cs46xx *chip, int device);
 int snd_cs46xx_start_dsp(struct snd_cs46xx *chip);
 int snd_cs46xx_gameport(struct snd_cs46xx *chip);
 

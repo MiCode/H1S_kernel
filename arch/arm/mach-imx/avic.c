@@ -1,27 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright 2004-2007 Freescale Semiconductor, Inc. All Rights Reserved.
  * Copyright 2008 Juergen Beisert, kernel@pengutronix.de
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
- * MA  02110-1301, USA.
  */
 
 #include <linux/module.h>
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
+#include <linux/irqchip.h>
 #include <linux/io.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <asm/mach/irq.h>
 #include <asm/exception.h>
 
@@ -51,27 +40,29 @@
 
 #define AVIC_NUM_IRQS 64
 
+/* low power interrupt mask registers */
+#define MX25_CCM_LPIMR0	0x68
+#define MX25_CCM_LPIMR1	0x6C
+
 static void __iomem *avic_base;
+static void __iomem *mx25_ccm_base;
 static struct irq_domain *domain;
 
 #ifdef CONFIG_FIQ
-static int avic_set_irq_fiq(unsigned int irq, unsigned int type)
+static int avic_set_irq_fiq(unsigned int hwirq, unsigned int type)
 {
-	struct irq_data *d = irq_get_irq_data(irq);
 	unsigned int irqt;
 
-	irq = d->hwirq;
-
-	if (irq >= AVIC_NUM_IRQS)
+	if (hwirq >= AVIC_NUM_IRQS)
 		return -EINVAL;
 
-	if (irq < AVIC_NUM_IRQS / 2) {
-		irqt = __raw_readl(avic_base + AVIC_INTTYPEL) & ~(1 << irq);
-		__raw_writel(irqt | (!!type << irq), avic_base + AVIC_INTTYPEL);
+	if (hwirq < AVIC_NUM_IRQS / 2) {
+		irqt = imx_readl(avic_base + AVIC_INTTYPEL) & ~(1 << hwirq);
+		imx_writel(irqt | (!!type << hwirq), avic_base + AVIC_INTTYPEL);
 	} else {
-		irq -= AVIC_NUM_IRQS / 2;
-		irqt = __raw_readl(avic_base + AVIC_INTTYPEH) & ~(1 << irq);
-		__raw_writel(irqt | (!!type << irq), avic_base + AVIC_INTTYPEH);
+		hwirq -= AVIC_NUM_IRQS / 2;
+		irqt = imx_readl(avic_base + AVIC_INTTYPEH) & ~(1 << hwirq);
+		imx_writel(irqt | (!!type << hwirq), avic_base + AVIC_INTTYPEH);
 	}
 
 	return 0;
@@ -94,8 +85,20 @@ static void avic_irq_suspend(struct irq_data *d)
 	struct irq_chip_type *ct = gc->chip_types;
 	int idx = d->hwirq >> 5;
 
-	avic_saved_mask_reg[idx] = __raw_readl(avic_base + ct->regs.mask);
-	__raw_writel(gc->wake_active, avic_base + ct->regs.mask);
+	avic_saved_mask_reg[idx] = imx_readl(avic_base + ct->regs.mask);
+	imx_writel(gc->wake_active, avic_base + ct->regs.mask);
+
+	if (mx25_ccm_base) {
+		u8 offs = d->hwirq < AVIC_NUM_IRQS / 2 ?
+			MX25_CCM_LPIMR0 : MX25_CCM_LPIMR1;
+		/*
+		 * The interrupts which are still enabled will be used as wakeup
+		 * sources. Allow those interrupts in low-power mode.
+		 * The LPIMR registers use 0 to allow an interrupt, the AVIC
+		 * registers use 1.
+		 */
+		imx_writel(~gc->wake_active, mx25_ccm_base + offs);
+	}
 }
 
 static void avic_irq_resume(struct irq_data *d)
@@ -104,7 +107,14 @@ static void avic_irq_resume(struct irq_data *d)
 	struct irq_chip_type *ct = gc->chip_types;
 	int idx = d->hwirq >> 5;
 
-	__raw_writel(avic_saved_mask_reg[idx], avic_base + ct->regs.mask);
+	imx_writel(avic_saved_mask_reg[idx], avic_base + ct->regs.mask);
+
+	if (mx25_ccm_base) {
+		u8 offs = d->hwirq < AVIC_NUM_IRQS / 2 ?
+			MX25_CCM_LPIMR0 : MX25_CCM_LPIMR1;
+
+		imx_writel(0xffffffff, mx25_ccm_base + offs);
+	}
 }
 
 #else
@@ -135,16 +145,16 @@ static __init void avic_init_gc(int idx, unsigned int irq_start)
 	irq_setup_generic_chip(gc, IRQ_MSK(32), 0, IRQ_NOREQUEST, 0);
 }
 
-asmlinkage void __exception_irq_entry avic_handle_irq(struct pt_regs *regs)
+static void __exception_irq_entry avic_handle_irq(struct pt_regs *regs)
 {
 	u32 nivector;
 
 	do {
-		nivector = __raw_readl(avic_base + AVIC_NIVECSR) >> 16;
+		nivector = imx_readl(avic_base + AVIC_NIVECSR) >> 16;
 		if (nivector == 0xffff)
 			break;
 
-		handle_IRQ(irq_find_mapping(domain, nivector), regs);
+		generic_handle_domain_irq(domain, nivector);
 	} while (1);
 }
 
@@ -153,7 +163,7 @@ asmlinkage void __exception_irq_entry avic_handle_irq(struct pt_regs *regs)
  * interrupts. It registers the interrupt enable and disable functions
  * to the kernel for each interrupt source.
  */
-void __init mxc_init_irq(void __iomem *irqbase)
+static void __init mxc_init_irq(void __iomem *irqbase)
 {
 	struct device_node *np;
 	int irq_base;
@@ -161,19 +171,31 @@ void __init mxc_init_irq(void __iomem *irqbase)
 
 	avic_base = irqbase;
 
+	np = of_find_compatible_node(NULL, NULL, "fsl,imx25-ccm");
+	mx25_ccm_base = of_iomap(np, 0);
+
+	if (mx25_ccm_base) {
+		/*
+		 * By default, we mask all interrupts. We set the actual mask
+		 * before we go into low-power mode.
+		 */
+		imx_writel(0xffffffff, mx25_ccm_base + MX25_CCM_LPIMR0);
+		imx_writel(0xffffffff, mx25_ccm_base + MX25_CCM_LPIMR1);
+	}
+
 	/* put the AVIC into the reset value with
 	 * all interrupts disabled
 	 */
-	__raw_writel(0, avic_base + AVIC_INTCNTL);
-	__raw_writel(0x1f, avic_base + AVIC_NIMASK);
+	imx_writel(0, avic_base + AVIC_INTCNTL);
+	imx_writel(0x1f, avic_base + AVIC_NIMASK);
 
 	/* disable all interrupts */
-	__raw_writel(0, avic_base + AVIC_INTENABLEH);
-	__raw_writel(0, avic_base + AVIC_INTENABLEL);
+	imx_writel(0, avic_base + AVIC_INTENABLEH);
+	imx_writel(0, avic_base + AVIC_INTENABLEL);
 
 	/* all IRQ no FIQ */
-	__raw_writel(0, avic_base + AVIC_INTTYPEH);
-	__raw_writel(0, avic_base + AVIC_INTTYPEL);
+	imx_writel(0, avic_base + AVIC_INTTYPEH);
+	imx_writel(0, avic_base + AVIC_INTTYPEL);
 
 	irq_base = irq_alloc_descs(-1, 0, AVIC_NUM_IRQS, numa_node_id());
 	WARN_ON(irq_base < 0);
@@ -188,7 +210,9 @@ void __init mxc_init_irq(void __iomem *irqbase)
 
 	/* Set default priority value (0) for all IRQ's */
 	for (i = 0; i < 8; i++)
-		__raw_writel(0, avic_base + AVIC_NIPRIORITY(i));
+		imx_writel(0, avic_base + AVIC_NIPRIORITY(i));
+
+	set_handle_irq(avic_handle_irq);
 
 #ifdef CONFIG_FIQ
 	/* Initialize FIQ */
@@ -197,3 +221,16 @@ void __init mxc_init_irq(void __iomem *irqbase)
 
 	printk(KERN_INFO "MXC IRQ initialized\n");
 }
+
+static int __init imx_avic_init(struct device_node *node,
+			       struct device_node *parent)
+{
+	void __iomem *avic_base;
+
+	avic_base = of_iomap(node, 0);
+	BUG_ON(!avic_base);
+	mxc_init_irq(avic_base);
+	return 0;
+}
+
+IRQCHIP_DECLARE(imx_avic, "fsl,avic", imx_avic_init);

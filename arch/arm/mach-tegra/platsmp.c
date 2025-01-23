@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/mach-tegra/platsmp.c
  *
@@ -6,32 +7,29 @@
  *
  *  Copyright (C) 2009 Palm
  *  All Rights Reserved
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
-#include <linux/init.h>
-#include <linux/errno.h>
+
+#include <linux/clk/tegra.h>
 #include <linux/delay.h>
 #include <linux/device.h>
+#include <linux/errno.h>
+#include <linux/init.h>
+#include <linux/io.h>
 #include <linux/jiffies.h>
 #include <linux/smp.h>
-#include <linux/io.h>
-#include <linux/clk/tegra.h>
+
+#include <soc/tegra/flowctrl.h>
+#include <soc/tegra/fuse.h>
+#include <soc/tegra/pmc.h>
 
 #include <asm/cacheflush.h>
 #include <asm/mach-types.h>
-#include <asm/smp_scu.h>
 #include <asm/smp_plat.h>
-
-#include "fuse.h"
-#include "flowctrl.h"
-#include "reset.h"
-#include "pmc.h"
+#include <asm/smp_scu.h>
 
 #include "common.h"
 #include "iomap.h"
+#include "reset.h"
 
 static cpumask_t tegra_cpu_init_mask;
 
@@ -85,7 +83,7 @@ static int tegra30_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	 * For warm boot CPU that was resumed from CPU hotplug, the
 	 * power will be resumed automatically after un-halting the
 	 * flow controller of the warm boot CPU. We need to wait for
-	 * the confirmaiton that the CPU is powered then removing
+	 * the confirmation that the CPU is powered then removing
 	 * the IO clamps.
 	 * For cold boot CPU, do not wait. After the cold boot CPU be
 	 * booted, it will run to tegra_secondary_init() and set
@@ -107,19 +105,9 @@ static int tegra30_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	 * be un-gated by un-toggling the power gate register
 	 * manually.
 	 */
-	if (!tegra_pmc_cpu_is_powered(cpu)) {
-		ret = tegra_pmc_cpu_power_on(cpu);
-		if (ret)
-			return ret;
-
-		/* Wait for the power to come up. */
-		timeout = jiffies + msecs_to_jiffies(100);
-		while (tegra_pmc_cpu_is_powered(cpu)) {
-			if (time_after(jiffies, timeout))
-				return -ETIMEDOUT;
-			udelay(10);
-		}
-	}
+	ret = tegra_pmc_cpu_power_on(cpu);
+	if (ret)
+		return ret;
 
 remove_clamps:
 	/* CPU partition is powered. Enable the CPU clock. */
@@ -170,13 +158,13 @@ static int tegra114_boot_secondary(unsigned int cpu, struct task_struct *idle)
 static int tegra_boot_secondary(unsigned int cpu,
 					  struct task_struct *idle)
 {
-	if (IS_ENABLED(CONFIG_ARCH_TEGRA_2x_SOC) && tegra_chip_id == TEGRA20)
+	if (IS_ENABLED(CONFIG_ARCH_TEGRA_2x_SOC) && tegra_get_chip_id() == TEGRA20)
 		return tegra20_boot_secondary(cpu, idle);
-	if (IS_ENABLED(CONFIG_ARCH_TEGRA_3x_SOC) && tegra_chip_id == TEGRA30)
+	if (IS_ENABLED(CONFIG_ARCH_TEGRA_3x_SOC) && tegra_get_chip_id() == TEGRA30)
 		return tegra30_boot_secondary(cpu, idle);
-	if (IS_ENABLED(CONFIG_ARCH_TEGRA_114_SOC) && tegra_chip_id == TEGRA114)
+	if (IS_ENABLED(CONFIG_ARCH_TEGRA_114_SOC) && tegra_get_chip_id() == TEGRA114)
 		return tegra114_boot_secondary(cpu, idle);
-	if (IS_ENABLED(CONFIG_ARCH_TEGRA_124_SOC) && tegra_chip_id == TEGRA124)
+	if (IS_ENABLED(CONFIG_ARCH_TEGRA_124_SOC) && tegra_get_chip_id() == TEGRA124)
 		return tegra114_boot_secondary(cpu, idle);
 
 	return -EINVAL;
@@ -191,7 +179,7 @@ static void __init tegra_smp_prepare_cpus(unsigned int max_cpus)
 		scu_enable(IO_ADDRESS(scu_a9_get_base()));
 }
 
-struct smp_operations tegra_smp_ops __initdata = {
+const struct smp_operations tegra_smp_ops __initconst = {
 	.smp_prepare_cpus	= tegra_smp_prepare_cpus,
 	.smp_secondary_init	= tegra_secondary_init,
 	.smp_boot_secondary	= tegra_boot_secondary,

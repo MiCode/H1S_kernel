@@ -1,16 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * MX25 CPU type detection
  *
  * Copyright (c) 2009 Daniel Mack <daniel@caiaq.de>
  * Copyright (C) 2011 Freescale Semiconductor, Inc. All Rights Reserved
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 #include <linux/module.h>
 #include <linux/io.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
 
 #include "iim.h"
 #include "hardware.h"
@@ -20,13 +18,23 @@ static int mx25_cpu_rev = -1;
 static int mx25_read_cpu_rev(void)
 {
 	u32 rev;
+	void __iomem *iim_base;
+	struct device_node *np;
 
-	rev = __raw_readl(MX25_IO_ADDRESS(MX25_IIM_BASE_ADDR + MXC_IIMSREV));
+	np = of_find_compatible_node(NULL, NULL, "fsl,imx25-iim");
+	iim_base = of_iomap(np, 0);
+	of_node_put(np);
+	BUG_ON(!iim_base);
+	rev = readl(iim_base + MXC_IIMSREV);
+	iounmap(iim_base);
+
 	switch (rev) {
 	case 0x00:
 		return IMX_CHIP_REVISION_1_0;
 	case 0x01:
 		return IMX_CHIP_REVISION_1_1;
+	case 0x02:
+		return IMX_CHIP_REVISION_1_2;
 	default:
 		return IMX_CHIP_REVISION_UNKNOWN;
 	}

@@ -1,65 +1,54 @@
-/*
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License
- *	as published by the Free Software Foundation; version 2
- *	of the License.
- *
- */
+/* SPDX-License-Identifier: GPL-2.0-only */
 #include <linux/linkage.h>
-#include <asm/alternative-asm.h>
-#include <asm/frame.h>
-#include <asm/dwarf2.h>
-
-#ifdef CONFIG_SMP
-#define SEG_PREFIX %gs:
-#else
-#define SEG_PREFIX
-#endif
+#include <asm/percpu.h>
+#include <asm/processor-flags.h>
 
 .text
 
 /*
+ * Emulate 'cmpxchg16b %gs:(%rsi)'
+ *
  * Inputs:
  * %rsi : memory location to compare
  * %rax : low 64 bits of old value
  * %rdx : high 64 bits of old value
  * %rbx : low 64 bits of new value
  * %rcx : high 64 bits of new value
- * %al  : Operation successful
+ *
+ * Notably this is not LOCK prefixed and is not safe against NMIs
  */
-ENTRY(this_cpu_cmpxchg16b_emu)
-CFI_STARTPROC
+SYM_FUNC_START(this_cpu_cmpxchg16b_emu)
 
-#
-# Emulate 'cmpxchg16b %gs:(%rsi)' except we return the result in %al not
-# via the ZF.  Caller will access %al to get result.
-#
-# Note that this is only useful for a cpuops operation.  Meaning that we
-# do *not* have a fully atomic operation but just an operation that is
-# *atomic* on a single cpu (as provided by the this_cpu_xx class of
-# macros).
-#
-this_cpu_cmpxchg16b_emu:
-	pushf
+	pushfq
 	cli
 
-	cmpq SEG_PREFIX(%rsi), %rax
-	jne not_same
-	cmpq SEG_PREFIX 8(%rsi), %rdx
-	jne not_same
+	/* if (*ptr == old) */
+	cmpq	PER_CPU_VAR(0(%rsi)), %rax
+	jne	.Lnot_same
+	cmpq	PER_CPU_VAR(8(%rsi)), %rdx
+	jne	.Lnot_same
 
-	movq %rbx, SEG_PREFIX(%rsi)
-	movq %rcx, SEG_PREFIX 8(%rsi)
+	/* *ptr = new */
+	movq	%rbx, PER_CPU_VAR(0(%rsi))
+	movq	%rcx, PER_CPU_VAR(8(%rsi))
 
-	popf
-	mov $1, %al
-	ret
+	/* set ZF in EFLAGS to indicate success */
+	orl	$X86_EFLAGS_ZF, (%rsp)
 
- not_same:
-	popf
-	xor %al,%al
-	ret
+	popfq
+	RET
 
-CFI_ENDPROC
+.Lnot_same:
+	/* *ptr != old */
 
-ENDPROC(this_cpu_cmpxchg16b_emu)
+	/* old = *ptr */
+	movq	PER_CPU_VAR(0(%rsi)), %rax
+	movq	PER_CPU_VAR(8(%rsi)), %rdx
+
+	/* clear ZF in EFLAGS to indicate failure */
+	andl	$(~X86_EFLAGS_ZF), (%rsp)
+
+	popfq
+	RET
+
+SYM_FUNC_END(this_cpu_cmpxchg16b_emu)

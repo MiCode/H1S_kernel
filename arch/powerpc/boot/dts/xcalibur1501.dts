@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2008 Extreme Engineering Solutions, Inc.
  * Based on MPC8572DS device tree from Freescale Semiconductor, Inc.
  *
  * XCalibur1501 6U CompactPCI single-board computer based on MPC8572E
- *
- * This is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 /dts-v1/;
@@ -238,7 +235,7 @@
 			};
 
 			rtc@68 {
-				compatible = "stm,m41t00",
+				compatible = "st,m41t00",
 				             "dallas,ds1338";
 				reg = <0x68>;
 			};

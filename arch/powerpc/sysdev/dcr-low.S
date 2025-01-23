@@ -1,20 +1,17 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * "Indirect" DCR access
  *
  * Copyright (c) 2004 Eugene Surovegin <ebs@ebshome.net>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under  the terms of  the GNU General Public License as published by the
- * Free Software Foundation;  either version 2 of the License, or (at your
- * option) any later version.
  */
 
+#include <linux/export.h>
 #include <asm/ppc_asm.h>
 #include <asm/processor.h>
 #include <asm/bug.h>
 
 #define DCR_ACCESS_PROLOG(table) \
-	cmpli	cr0,r3,1024;	 \
+	cmplwi	cr0,r3,1024;	 \
 	rlwinm  r3,r3,4,18,27;   \
 	lis     r5,table@h;      \
 	ori     r5,r5,table@l;   \
@@ -28,9 +25,11 @@
 
 _GLOBAL(__mfdcr)
 	DCR_ACCESS_PROLOG(__mfdcr_table)
+EXPORT_SYMBOL(__mfdcr)
 
 _GLOBAL(__mtdcr)
 	DCR_ACCESS_PROLOG(__mtdcr_table)
+EXPORT_SYMBOL(__mtdcr)
 
 __mfdcr_table:
 	mfdcr  r3,0; blr

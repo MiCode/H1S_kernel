@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 # core
 ssb-y					+= main.o scan.o
 ssb-$(CONFIG_SSB_EMBEDDED)		+= embedded.o
@@ -5,8 +6,9 @@ ssb-$(CONFIG_SSB_SPROM)			+= sprom.o
 
 # host support
 ssb-$(CONFIG_SSB_PCIHOST)		+= pci.o pcihost_wrapper.o
-ssb-$(CONFIG_SSB_PCMCIAHOST)		+= pcmcia.o
+ssb-$(CONFIG_SSB_PCMCIAHOST)		+= pcmcia.o bridge_pcmcia_80211.o
 ssb-$(CONFIG_SSB_SDIOHOST)		+= sdio.o
+ssb-$(CONFIG_SSB_HOST_SOC)		+= host_soc.o
 
 # built-in drivers
 ssb-y					+= driver_chipcommon.o

@@ -3,7 +3,7 @@
  * License.  See the file "COPYING" in the main directory of this archive
  * for more details.
  *
- * Copyright (C) 2013 by John Crispin <blogic@openwrt.org>
+ * Copyright (C) 2013 by John Crispin <john@phrozen.org>
  */
 
 #include <linux/clockchips.h>
@@ -36,8 +36,8 @@ struct systick_device {
 	int freq_scale;
 };
 
-static void systick_set_clock_mode(enum clock_event_mode mode,
-				struct clock_event_device *evt);
+static int systick_set_oneshot(struct clock_event_device *evt);
+static int systick_shutdown(struct clock_event_device *evt);
 
 static int systick_next_event(unsigned long delta,
 				struct clock_event_device *evt)
@@ -48,7 +48,7 @@ static int systick_next_event(unsigned long delta,
 	sdev = container_of(evt, struct systick_device, dev);
 	count = ioread32(sdev->membase + SYSTICK_COUNT);
 	count = (count + delta) % SYSTICK_FREQ;
-	iowrite32(count + delta, sdev->membase + SYSTICK_COMPARE);
+	iowrite32(count, sdev->membase + SYSTICK_COMPARE);
 
 	return 0;
 }
@@ -73,73 +73,81 @@ static struct systick_device systick = {
 		 * cevt-r4k uses 300, make sure systick
 		 * gets used if available
 		 */
-		.rating		= 310,
-		.features	= CLOCK_EVT_FEAT_ONESHOT,
-		.set_next_event	= systick_next_event,
-		.set_mode	= systick_set_clock_mode,
-		.event_handler	= systick_event_handler,
+		.rating			= 310,
+		.features		= CLOCK_EVT_FEAT_ONESHOT,
+		.set_next_event		= systick_next_event,
+		.set_state_shutdown	= systick_shutdown,
+		.set_state_oneshot	= systick_set_oneshot,
+		.event_handler		= systick_event_handler,
 	},
 };
 
-static struct irqaction systick_irqaction = {
-	.handler = systick_interrupt,
-	.flags = IRQF_PERCPU | IRQF_TIMER,
-	.dev_id = &systick.dev,
-};
-
-static void systick_set_clock_mode(enum clock_event_mode mode,
-				struct clock_event_device *evt)
+static int systick_shutdown(struct clock_event_device *evt)
 {
 	struct systick_device *sdev;
 
 	sdev = container_of(evt, struct systick_device, dev);
 
-	switch (mode) {
-	case CLOCK_EVT_MODE_ONESHOT:
-		if (!sdev->irq_requested)
-			setup_irq(systick.dev.irq, &systick_irqaction);
-		sdev->irq_requested = 1;
-		iowrite32(CFG_EXT_STK_EN | CFG_CNT_EN,
-				systick.membase + SYSTICK_CONFIG);
-		break;
+	if (sdev->irq_requested)
+		free_irq(systick.dev.irq, &systick.dev);
+	sdev->irq_requested = 0;
+	iowrite32(0, systick.membase + SYSTICK_CONFIG);
 
-	case CLOCK_EVT_MODE_SHUTDOWN:
-		if (sdev->irq_requested)
-			free_irq(systick.dev.irq, &systick_irqaction);
-		sdev->irq_requested = 0;
-		iowrite32(0, systick.membase + SYSTICK_CONFIG);
-		break;
-
-	default:
-		pr_err("%s: Unhandeled mips clock_mode\n", systick.dev.name);
-		break;
-	}
+	return 0;
 }
 
-static void __init ralink_systick_init(struct device_node *np)
+static int systick_set_oneshot(struct clock_event_device *evt)
 {
+	const char *name = systick.dev.name;
+	struct systick_device *sdev;
+	int irq = systick.dev.irq;
+
+	sdev = container_of(evt, struct systick_device, dev);
+
+	if (!sdev->irq_requested) {
+		if (request_irq(irq, systick_interrupt,
+				IRQF_PERCPU | IRQF_TIMER, name, &systick.dev))
+			pr_err("Failed to request irq %d (%s)\n", irq, name);
+	}
+	sdev->irq_requested = 1;
+	iowrite32(CFG_EXT_STK_EN | CFG_CNT_EN,
+		  systick.membase + SYSTICK_CONFIG);
+
+	return 0;
+}
+
+static int __init ralink_systick_init(struct device_node *np)
+{
+	int ret;
+
 	systick.membase = of_iomap(np, 0);
 	if (!systick.membase)
-		return;
+		return -ENXIO;
 
-	systick_irqaction.name = np->name;
 	systick.dev.name = np->name;
 	clockevents_calc_mult_shift(&systick.dev, SYSTICK_FREQ, 60);
 	systick.dev.max_delta_ns = clockevent_delta2ns(0x7fff, &systick.dev);
+	systick.dev.max_delta_ticks = 0x7fff;
 	systick.dev.min_delta_ns = clockevent_delta2ns(0x3, &systick.dev);
+	systick.dev.min_delta_ticks = 0x3;
 	systick.dev.irq = irq_of_parse_and_map(np, 0);
 	if (!systick.dev.irq) {
-		pr_err("%s: request_irq failed", np->name);
-		return;
+		pr_err("%pOFn: request_irq failed", np);
+		return -EINVAL;
 	}
 
-	clocksource_mmio_init(systick.membase + SYSTICK_COUNT, np->name,
-			SYSTICK_FREQ, 301, 16, clocksource_mmio_readl_up);
+	ret = clocksource_mmio_init(systick.membase + SYSTICK_COUNT, np->name,
+				    SYSTICK_FREQ, 301, 16,
+				    clocksource_mmio_readl_up);
+	if (ret)
+		return ret;
 
 	clockevents_register_device(&systick.dev);
 
-	pr_info("%s: running - mult: %d, shift: %d\n",
-			np->name, systick.dev.mult, systick.dev.shift);
+	pr_info("%pOFn: running - mult: %d, shift: %d\n",
+			np, systick.dev.mult, systick.dev.shift);
+
+	return 0;
 }
 
-CLOCKSOURCE_OF_DECLARE(systick, "ralink,cevt-systick", ralink_systick_init);
+TIMER_OF_DECLARE(systick, "ralink,cevt-systick", ralink_systick_init);

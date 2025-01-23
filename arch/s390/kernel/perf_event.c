@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Performance event support for s390x
  *
  *  Copyright IBM Corp. 2012, 2013
  *  Author(s): Hendrik Brueckner <brueckner@linux.vnet.ibm.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License (version 2 only)
- * as published by the Free Software Foundation.
  */
 #define KMSG_COMPONENT	"perf"
 #define pr_fmt(fmt)	KMSG_COMPONENT ": " fmt
@@ -24,27 +21,7 @@
 #include <asm/lowcore.h>
 #include <asm/processor.h>
 #include <asm/sysinfo.h>
-
-const char *perf_pmu_name(void)
-{
-	if (cpum_cf_avail() || cpum_sf_avail())
-		return "CPU-Measurement Facilities (CPU-MF)";
-	return "pmu";
-}
-EXPORT_SYMBOL(perf_pmu_name);
-
-int perf_num_counters(void)
-{
-	int num = 0;
-
-	if (cpum_cf_avail())
-		num += PERF_CPUM_CF_MAX_CTR;
-	if (cpum_sf_avail())
-		num += PERF_CPUM_SF_MAX_CTR;
-
-	return num;
-}
-EXPORT_SYMBOL(perf_num_counters);
+#include <asm/unwind.h>
 
 static struct kvm_s390_sie_block *sie_block(struct pt_regs *regs)
 {
@@ -53,7 +30,7 @@ static struct kvm_s390_sie_block *sie_block(struct pt_regs *regs)
 	if (!stack)
 		return NULL;
 
-	return (struct kvm_s390_sie_block *) stack->empty1[0];
+	return (struct kvm_s390_sie_block *)stack->sie_control_block;
 }
 
 static bool is_in_guest(struct pt_regs *regs)
@@ -74,7 +51,7 @@ static unsigned long guest_is_user_mode(struct pt_regs *regs)
 
 static unsigned long instruction_pointer_guest(struct pt_regs *regs)
 {
-	return sie_block(regs)->gpsw.addr & PSW_ADDR_INSN;
+	return sie_block(regs)->gpsw.addr;
 }
 
 unsigned long perf_instruction_pointer(struct pt_regs *regs)
@@ -121,7 +98,7 @@ unsigned long perf_misc_flags(struct pt_regs *regs)
 			       : PERF_RECORD_MISC_KERNEL;
 }
 
-void print_debug_cf(void)
+static void print_debug_cf(void)
 {
 	struct cpumf_ctr_info cf_info;
 	int cpu = smp_processor_id();
@@ -222,103 +199,25 @@ static int __init service_level_perf_register(void)
 }
 arch_initcall(service_level_perf_register);
 
-/* See also arch/s390/kernel/traps.c */
-static unsigned long __store_trace(struct perf_callchain_entry *entry,
-				   unsigned long sp,
-				   unsigned long low, unsigned long high)
+void perf_callchain_kernel(struct perf_callchain_entry_ctx *entry,
+			   struct pt_regs *regs)
 {
-	struct stack_frame *sf;
-	struct pt_regs *regs;
+	struct unwind_state state;
+	unsigned long addr;
 
-	while (1) {
-		sp = sp & PSW_ADDR_INSN;
-		if (sp < low || sp > high - sizeof(*sf))
-			return sp;
-		sf = (struct stack_frame *) sp;
-		perf_callchain_store(entry, sf->gprs[8] & PSW_ADDR_INSN);
-		/* Follow the backchain. */
-		while (1) {
-			low = sp;
-			sp = sf->back_chain & PSW_ADDR_INSN;
-			if (!sp)
-				break;
-			if (sp <= low || sp > high - sizeof(*sf))
-				return sp;
-			sf = (struct stack_frame *) sp;
-			perf_callchain_store(entry,
-					     sf->gprs[8] & PSW_ADDR_INSN);
-		}
-		/* Zero backchain detected, check for interrupt frame. */
-		sp = (unsigned long) (sf + 1);
-		if (sp <= low || sp > high - sizeof(*regs))
-			return sp;
-		regs = (struct pt_regs *) sp;
-		perf_callchain_store(entry, sf->gprs[8] & PSW_ADDR_INSN);
-		low = sp;
-		sp = regs->gprs[15];
+	unwind_for_each_frame(&state, current, regs, 0) {
+		addr = unwind_get_return_address(&state);
+		if (!addr || perf_callchain_store(entry, addr))
+			return;
 	}
 }
 
-void perf_callchain_kernel(struct perf_callchain_entry *entry,
-			   struct pt_regs *regs)
-{
-	unsigned long head;
-	struct stack_frame *head_sf;
-
-	if (user_mode(regs))
-		return;
-
-	head = regs->gprs[15];
-	head_sf = (struct stack_frame *) head;
-
-	if (!head_sf || !head_sf->back_chain)
-		return;
-
-	head = head_sf->back_chain;
-	head = __store_trace(entry, head, S390_lowcore.async_stack - ASYNC_SIZE,
-			     S390_lowcore.async_stack);
-
-	__store_trace(entry, head, S390_lowcore.thread_info,
-		      S390_lowcore.thread_info + THREAD_SIZE);
-}
-
-/* Perf defintions for PMU event attributes in sysfs */
+/* Perf definitions for PMU event attributes in sysfs */
 ssize_t cpumf_events_sysfs_show(struct device *dev,
 				struct device_attribute *attr, char *page)
 {
 	struct perf_pmu_events_attr *pmu_attr;
 
 	pmu_attr = container_of(attr, struct perf_pmu_events_attr, attr);
-	return sprintf(page, "event=0x%04llx,name=%s\n",
-		       pmu_attr->id, attr->attr.name);
+	return sprintf(page, "event=0x%04llx\n", pmu_attr->id);
 }
-
-/* Reserve/release functions for sharing perf hardware */
-static DEFINE_SPINLOCK(perf_hw_owner_lock);
-static void *perf_sampling_owner;
-
-int perf_reserve_sampling(void)
-{
-	int err;
-
-	err = 0;
-	spin_lock(&perf_hw_owner_lock);
-	if (perf_sampling_owner) {
-		pr_warn("The sampling facility is already reserved by %p\n",
-			perf_sampling_owner);
-		err = -EBUSY;
-	} else
-		perf_sampling_owner = __builtin_return_address(0);
-	spin_unlock(&perf_hw_owner_lock);
-	return err;
-}
-EXPORT_SYMBOL(perf_reserve_sampling);
-
-void perf_release_sampling(void)
-{
-	spin_lock(&perf_hw_owner_lock);
-	WARN_ON(!perf_sampling_owner);
-	perf_sampling_owner = NULL;
-	spin_unlock(&perf_hw_owner_lock);
-}
-EXPORT_SYMBOL(perf_release_sampling);

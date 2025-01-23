@@ -225,13 +225,7 @@ ath5k_hw_setup_tx_queue(struct ath5k_hw *ah, enum ath5k_tx_queue queue_type,
 	} else {
 		switch (queue_type) {
 		case AR5K_TX_QUEUE_DATA:
-			for (queue = AR5K_TX_QUEUE_ID_DATA_MIN;
-				ah->ah_txq[queue].tqi_type !=
-				AR5K_TX_QUEUE_INACTIVE; queue++) {
-
-				if (queue > AR5K_TX_QUEUE_ID_DATA_MAX)
-					return -EINVAL;
-			}
+			queue = queue_info->tqi_subtype;
 			break;
 		case AR5K_TX_QUEUE_UAPSD:
 			queue = AR5K_TX_QUEUE_ID_UAPSD;
@@ -332,8 +326,6 @@ ath5k_hw_reset_tx_queue(struct ath5k_hw *ah, unsigned int queue)
 	struct ath5k_txq_info *tq = &ah->ah_txq[queue];
 
 	AR5K_ASSERT_ENTRY(queue, ah->ah_capabilities.cap_queues.q_tx_num);
-
-	tq = &ah->ah_txq[queue];
 
 	/* Skip if queue inactive or if we are on AR5210
 	 * that doesn't have QCU/DCU */
@@ -565,7 +557,7 @@ ath5k_hw_reset_tx_queue(struct ath5k_hw *ah, unsigned int queue)
 int ath5k_hw_set_ifs_intervals(struct ath5k_hw *ah, unsigned int slot_time)
 {
 	struct ieee80211_channel *channel = ah->ah_current_channel;
-	enum ieee80211_band band;
+	enum nl80211_band band;
 	struct ieee80211_supported_band *sband;
 	struct ieee80211_rate *rate;
 	u32 ack_tx_time, eifs, eifs_clock, sifs, sifs_clock;
@@ -602,10 +594,10 @@ int ath5k_hw_set_ifs_intervals(struct ath5k_hw *ah, unsigned int slot_time)
 	 *
 	 * Also we have different lowest rate for 802.11a
 	 */
-	if (channel->band == IEEE80211_BAND_5GHZ)
-		band = IEEE80211_BAND_5GHZ;
+	if (channel->band == NL80211_BAND_5GHZ)
+		band = NL80211_BAND_5GHZ;
 	else
-		band = IEEE80211_BAND_2GHZ;
+		band = NL80211_BAND_2GHZ;
 
 	switch (ah->ah_bwmode) {
 	case AR5K_BWMODE_5MHZ:

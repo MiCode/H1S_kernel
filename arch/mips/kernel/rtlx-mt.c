@@ -36,7 +36,6 @@ static irqreturn_t rtlx_interrupt(int irq, void *dev_id)
 	unsigned long flags;
 	int i;
 
-	/* Ought not to be strictly necessary for SMTC builds */
 	local_irq_save(flags);
 	vpeflags = dvpe();
 	set_c0_status(0x100 << MIPS_CPU_RTLX_IRQ);
@@ -51,11 +50,6 @@ static irqreturn_t rtlx_interrupt(int irq, void *dev_id)
 
 	return IRQ_HANDLED;
 }
-
-static struct irqaction rtlx_irq = {
-	.handler	= rtlx_interrupt,
-	.name		= "RTLX",
-};
 
 static int rtlx_irq_num = MIPS_CPU_IRQ_BASE + MIPS_CPU_RTLX_IRQ;
 
@@ -104,6 +98,9 @@ int __init rtlx_module_init(void)
 		dev = device_create(mt_class, NULL, MKDEV(major, i), NULL,
 				    "%s%d", RTLX_MODULE_NAME, i);
 		if (IS_ERR(dev)) {
+			while (i--)
+				device_destroy(mt_class, MKDEV(major, i));
+
 			err = PTR_ERR(dev);
 			goto out_chrdev;
 		}
@@ -122,8 +119,7 @@ int __init rtlx_module_init(void)
 		goto out_class;
 	}
 
-	rtlx_irq.dev_id = rtlx;
-	err = setup_irq(rtlx_irq_num, &rtlx_irq);
+	err = request_irq(rtlx_irq_num, rtlx_interrupt, 0, "RTLX", rtlx);
 	if (err)
 		goto out_class;
 
@@ -144,5 +140,8 @@ void __exit rtlx_module_exit(void)
 
 	for (i = 0; i < RTLX_CHANNELS; i++)
 		device_destroy(mt_class, MKDEV(major, i));
+
 	unregister_chrdev(major, RTLX_MODULE_NAME);
+
+	aprp_hook = NULL;
 }

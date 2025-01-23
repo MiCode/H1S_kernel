@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2004, Instant802 Networks, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Copyright 2013-2014  Intel Mobile Communications GmbH
+ * Copyright (C) 2022 Intel Corporation
  */
 
 #include <linux/netdevice.h>
@@ -52,11 +51,49 @@ static int wme_downgrade_ac(struct sk_buff *skb)
 	}
 }
 
-static u16 ieee80211_downgrade_queue(struct ieee80211_sub_if_data *sdata,
-				     struct sk_buff *skb)
+/**
+ * ieee80211_fix_reserved_tid - return the TID to use if this one is reserved
+ * @tid: the assumed-reserved TID
+ *
+ * Returns: the alternative TID to use, or 0 on error
+ */
+static inline u8 ieee80211_fix_reserved_tid(u8 tid)
 {
+	switch (tid) {
+	case 0:
+		return 3;
+	case 1:
+		return 2;
+	case 2:
+		return 1;
+	case 3:
+		return 0;
+	case 4:
+		return 5;
+	case 5:
+		return 4;
+	case 6:
+		return 7;
+	case 7:
+		return 6;
+	}
+
+	return 0;
+}
+
+static u16 ieee80211_downgrade_queue(struct ieee80211_sub_if_data *sdata,
+				     struct sta_info *sta, struct sk_buff *skb)
+{
+	struct ieee80211_if_managed *ifmgd = &sdata->u.mgd;
+
 	/* in case we are a client verify acm is not set for this ac */
-	while (unlikely(sdata->wmm_acm & BIT(skb->priority))) {
+	while (sdata->wmm_acm & BIT(skb->priority)) {
+		int ac = ieee802_1d_to_ac[skb->priority];
+
+		if (ifmgd->tx_tspec[ac].admitted_time &&
+		    skb->priority == ifmgd->tx_tspec[ac].up)
+			return ac;
+
 		if (wme_downgrade_ac(skb)) {
 			/*
 			 * This should not really happen. The AP has marked all
@@ -68,6 +105,10 @@ static u16 ieee80211_downgrade_queue(struct ieee80211_sub_if_data *sdata,
 		}
 	}
 
+	/* Check to see if this is a reserved TID */
+	if (sta && sta->reserved_tid == skb->priority)
+		skb->priority = ieee80211_fix_reserved_tid(skb->priority);
+
 	/* look up which queue to use for frames with this 1d tag */
 	return ieee802_1d_to_ac[skb->priority];
 }
@@ -78,9 +119,14 @@ u16 ieee80211_select_queue_80211(struct ieee80211_sub_if_data *sdata,
 				 struct ieee80211_hdr *hdr)
 {
 	struct ieee80211_local *local = sdata->local;
+	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	u8 *p;
 
-	if (local->hw.queues < IEEE80211_NUM_ACS)
+	/* Ensure hash is set prior to potential SW encryption */
+	skb_get_hash(skb);
+
+	if ((info->control.flags & IEEE80211_TX_CTRL_DONT_REORDER) ||
+	    local->hw.queues < IEEE80211_NUM_ACS)
 		return 0;
 
 	if (!ieee80211_is_data(hdr->frame_control)) {
@@ -95,74 +141,47 @@ u16 ieee80211_select_queue_80211(struct ieee80211_sub_if_data *sdata,
 	p = ieee80211_get_qos_ctl(hdr);
 	skb->priority = *p & IEEE80211_QOS_CTL_TAG1D_MASK;
 
-	return ieee80211_downgrade_queue(sdata, skb);
+	return ieee80211_downgrade_queue(sdata, NULL, skb);
 }
 
-/* Indicate which queue to use. */
 u16 ieee80211_select_queue(struct ieee80211_sub_if_data *sdata,
-			   struct sk_buff *skb)
+			   struct sta_info *sta, struct sk_buff *skb)
 {
-	struct ieee80211_local *local = sdata->local;
-	struct sta_info *sta = NULL;
-	const u8 *ra = NULL;
-	bool qos = false;
+	const struct ethhdr *eth = (void *)skb->data;
 	struct mac80211_qos_map *qos_map;
+	bool qos;
 
-	if (local->hw.queues < IEEE80211_NUM_ACS || skb->len < 6) {
-		skb->priority = 0; /* required for correct WPA/11i MIC */
-		return 0;
-	}
+	/* Ensure hash is set prior to potential SW encryption */
+	skb_get_hash(skb);
 
-	rcu_read_lock();
-	switch (sdata->vif.type) {
-	case NL80211_IFTYPE_AP_VLAN:
-		sta = rcu_dereference(sdata->u.vlan.sta);
-		if (sta) {
-			qos = test_sta_flag(sta, WLAN_STA_WME);
-			break;
-		}
-	case NL80211_IFTYPE_AP:
-		ra = skb->data;
-		break;
-	case NL80211_IFTYPE_WDS:
-		ra = sdata->u.wds.remote_addr;
-		break;
-#ifdef CONFIG_MAC80211_MESH
-	case NL80211_IFTYPE_MESH_POINT:
+	/* all mesh/ocb stations are required to support WME */
+	if ((sdata->vif.type == NL80211_IFTYPE_MESH_POINT &&
+	    !is_multicast_ether_addr(eth->h_dest)) ||
+	    (sdata->vif.type == NL80211_IFTYPE_OCB && sta))
 		qos = true;
-		break;
-#endif
-	case NL80211_IFTYPE_STATION:
-		ra = sdata->u.mgd.bssid;
-		break;
-	case NL80211_IFTYPE_ADHOC:
-		ra = skb->data;
-		break;
-	default:
-		break;
-	}
-
-	if (!sta && ra && !is_multicast_ether_addr(ra)) {
-		sta = sta_info_get(sdata, ra);
-		if (sta)
-			qos = test_sta_flag(sta, WLAN_STA_WME);
-	}
-	rcu_read_unlock();
+	else if (sta)
+		qos = sta->sta.wme;
+	else
+		qos = false;
 
 	if (!qos) {
 		skb->priority = 0; /* required for correct WPA/11i MIC */
 		return IEEE80211_AC_BE;
 	}
 
+	if (skb->protocol == sdata->control_port_protocol) {
+		skb->priority = 7;
+		goto downgrade;
+	}
+
 	/* use the data classifier to determine what 802.1d tag the
 	 * data frame has */
-	rcu_read_lock();
 	qos_map = rcu_dereference(sdata->qos_map);
 	skb->priority = cfg80211_classify8021d(skb, qos_map ?
 					       &qos_map->qos_map : NULL);
-	rcu_read_unlock();
 
-	return ieee80211_downgrade_queue(sdata, skb);
+ downgrade:
+	return ieee80211_downgrade_queue(sdata, sta, skb);
 }
 
 /**
@@ -176,26 +195,43 @@ void ieee80211_set_qos_hdr(struct ieee80211_sub_if_data *sdata,
 {
 	struct ieee80211_hdr *hdr = (void *)skb->data;
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+	u8 tid = skb->priority & IEEE80211_QOS_CTL_TAG1D_MASK;
+	u8 flags;
 	u8 *p;
-	u8 ack_policy, tid;
 
 	if (!ieee80211_is_data_qos(hdr->frame_control))
 		return;
 
 	p = ieee80211_get_qos_ctl(hdr);
-	tid = skb->priority & IEEE80211_QOS_CTL_TAG1D_MASK;
 
-	/* preserve EOSP bit */
-	ack_policy = *p & IEEE80211_QOS_CTL_EOSP;
+	/* don't overwrite the QoS field of injected frames */
+	if (info->flags & IEEE80211_TX_CTL_INJECTED) {
+		/* do take into account Ack policy of injected frames */
+		if (*p & IEEE80211_QOS_CTL_ACK_POLICY_NOACK)
+			info->flags |= IEEE80211_TX_CTL_NO_ACK;
+		return;
+	}
+
+	/* set up the first byte */
+
+	/*
+	 * preserve everything but the TID and ACK policy
+	 * (which we both write here)
+	 */
+	flags = *p & ~(IEEE80211_QOS_CTL_TID_MASK |
+		       IEEE80211_QOS_CTL_ACK_POLICY_MASK);
 
 	if (is_multicast_ether_addr(hdr->addr1) ||
 	    sdata->noack_map & BIT(tid)) {
-		ack_policy |= IEEE80211_QOS_CTL_ACK_POLICY_NOACK;
+		flags |= IEEE80211_QOS_CTL_ACK_POLICY_NOACK;
 		info->flags |= IEEE80211_TX_CTL_NO_ACK;
 	}
 
-	/* qos header is 2 bytes */
-	*p++ = ack_policy | tid;
+	*p = flags | tid;
+
+	/* set up the second byte */
+	p++;
+
 	if (ieee80211_vif_is_mesh(&sdata->vif)) {
 		/* preserve RSPI and Mesh PS Level bit */
 		*p &= ((IEEE80211_QOS_CTL_RSPI |

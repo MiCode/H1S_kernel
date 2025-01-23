@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for C-Media CMI8328-based soundcards, such as AudioExcel AV500
  * Copyright (c) 2012 Ondrej Zary
@@ -26,12 +27,12 @@ MODULE_AUTHOR("Ondrej Zary <linux@rainbow-software.org>");
 MODULE_DESCRIPTION("C-Media CMI8328");
 MODULE_LICENSE("GPL");
 
-#if defined(CONFIG_GAMEPORT) || defined(CONFIG_GAMEPORT_MODULE)
+#if IS_ENABLED(CONFIG_GAMEPORT)
 #define SUPPORT_JOYSTICK 1
 #endif
 
 /* I/O port is configured by jumpers on the card to one of these */
-static int cmi8328_ports[] = { 0x530, 0xe80, 0xf40, 0x604 };
+static const int cmi8328_ports[] = { 0x530, 0xe80, 0xf40, 0x604 };
 #define CMI8328_MAX	ARRAY_SIZE(cmi8328_ports)
 
 static int index[CMI8328_MAX] =     {[0 ... (CMI8328_MAX-1)] = -1};
@@ -51,18 +52,18 @@ MODULE_PARM_DESC(index, "Index value for CMI8328 soundcard.");
 module_param_array(id, charp, NULL, 0444);
 MODULE_PARM_DESC(id, "ID string for CMI8328 soundcard.");
 
-module_param_array(port, long, NULL, 0444);
+module_param_hw_array(port, long, ioport, NULL, 0444);
 MODULE_PARM_DESC(port, "Port # for CMI8328 driver.");
-module_param_array(irq, int, NULL, 0444);
+module_param_hw_array(irq, int, irq, NULL, 0444);
 MODULE_PARM_DESC(irq, "IRQ # for CMI8328 driver.");
-module_param_array(dma1, int, NULL, 0444);
+module_param_hw_array(dma1, int, dma, NULL, 0444);
 MODULE_PARM_DESC(dma1, "DMA1 for CMI8328 driver.");
-module_param_array(dma2, int, NULL, 0444);
+module_param_hw_array(dma2, int, dma, NULL, 0444);
 MODULE_PARM_DESC(dma2, "DMA2 for CMI8328 driver.");
 
-module_param_array(mpuport, long, NULL, 0444);
+module_param_hw_array(mpuport, long, ioport, NULL, 0444);
 MODULE_PARM_DESC(mpuport, "MPU-401 port # for CMI8328 driver.");
-module_param_array(mpuirq, int, NULL, 0444);
+module_param_hw_array(mpuirq, int, irq, NULL, 0444);
 MODULE_PARM_DESC(mpuirq, "IRQ # for CMI8328 MPU-401 port.");
 #ifdef SUPPORT_JOYSTICK
 module_param_array(gameport, bool, NULL, 0444);
@@ -192,7 +193,7 @@ static int snd_cmi8328_mixer(struct snd_wss *chip)
 }
 
 /* find index of an item in "-1"-ended array */
-int array_find(int array[], int item)
+static int array_find(const int array[], int item)
 {
 	int i;
 
@@ -203,7 +204,7 @@ int array_find(int array[], int item)
 	return -1;
 }
 /* the same for long */
-int array_find_l(long array[], long item)
+static int array_find_l(const long array[], long item)
 {
 	int i;
 
@@ -223,16 +224,16 @@ static int snd_cmi8328_probe(struct device *pdev, unsigned int ndev)
 	struct resource *res;
 #endif
 	int err, pos;
-	static long mpu_ports[] = { 0x330, 0x300, 0x310, 0x320, 0x332, 0x334,
+	static const long mpu_ports[] = { 0x330, 0x300, 0x310, 0x320, 0x332, 0x334,
 				   0x336, -1 };
-	static u8 mpu_port_bits[] = { 3, 0, 1, 2, 4, 5, 6 };
-	static int mpu_irqs[] = { 9, 7, 5, 3, -1 };
-	static u8 mpu_irq_bits[] = { 3, 2, 1, 0 };
-	static int irqs[] = { 9, 10, 11, 7, -1 };
-	static u8 irq_bits[] = { 2, 3, 4, 1 };
-	static int dma1s[] = { 3, 1, 0, -1 };
-	static u8 dma_bits[] = { 3, 2, 1 };
-	static int dma2s[][2] = { {1, -1}, {0, -1}, {-1, -1}, {0, -1} };
+	static const u8 mpu_port_bits[] = { 3, 0, 1, 2, 4, 5, 6 };
+	static const int mpu_irqs[] = { 9, 7, 5, 3, -1 };
+	static const u8 mpu_irq_bits[] = { 3, 2, 1, 0 };
+	static const int irqs[] = { 9, 10, 11, 7, -1 };
+	static const u8 irq_bits[] = { 2, 3, 4, 1 };
+	static const int dma1s[] = { 3, 1, 0, -1 };
+	static const u8 dma_bits[] = { 3, 2, 1 };
+	static const int dma2s[][2] = { {1, -1}, {0, -1}, {-1, -1}, {0, -1} };
 	u16 port = cmi8328_ports[ndev];
 	u8 val;
 
@@ -293,7 +294,7 @@ static int snd_cmi8328_probe(struct device *pdev, unsigned int ndev)
 	}
 	outb(val, port);
 
-	err = snd_card_create(index[ndev], id[ndev], THIS_MODULE,
+	err = snd_devm_card_new(pdev, index[ndev], id[ndev], THIS_MODULE,
 				sizeof(struct snd_cmi8328), &card);
 	if (err < 0)
 		return err;
@@ -301,25 +302,24 @@ static int snd_cmi8328_probe(struct device *pdev, unsigned int ndev)
 	cmi->card = card;
 	cmi->port = port;
 	cmi->wss_cfg = val;
-	snd_card_set_dev(card, pdev);
 
 	err = snd_wss_create(card, port + 4, -1, irq[ndev], dma1[ndev],
 			dma2[ndev], WSS_HW_DETECT, 0, &cmi->wss);
 	if (err < 0)
-		goto error;
+		return err;
 
-	err = snd_wss_pcm(cmi->wss, 0, NULL);
+	err = snd_wss_pcm(cmi->wss, 0);
 	if (err < 0)
-		goto error;
+		return err;
 
 	err = snd_wss_mixer(cmi->wss);
 	if (err < 0)
-		goto error;
+		return err;
 	err = snd_cmi8328_mixer(cmi->wss);
 	if (err < 0)
-		goto error;
+		return err;
 
-	if (snd_wss_timer(cmi->wss, 0, NULL) < 0)
+	if (snd_wss_timer(cmi->wss, 0) < 0)
 		snd_printk(KERN_WARNING "error initializing WSS timer\n");
 
 	if (mpuport[ndev] == SNDRV_AUTO_PORT) {
@@ -371,24 +371,21 @@ static int snd_cmi8328_probe(struct device *pdev, unsigned int ndev)
 	dev_set_drvdata(pdev, card);
 	err = snd_card_register(card);
 	if (err < 0)
-		goto error;
+		return err;
 #ifdef SUPPORT_JOYSTICK
 	if (!gameport[ndev])
 		return 0;
 	/* gameport is hardwired to 0x200 */
-	res = request_region(0x200, 8, "CMI8328 gameport");
+	res = devm_request_region(pdev, 0x200, 8, "CMI8328 gameport");
 	if (!res)
 		snd_printk(KERN_WARNING "unable to allocate gameport I/O port\n");
 	else {
 		struct gameport *gp = cmi->gameport = gameport_allocate_port();
-		if (!cmi->gameport)
-			release_and_free_resource(res);
-		else {
+		if (cmi->gameport) {
 			gameport_set_name(gp, "CMI8328 Gameport");
 			gameport_set_phys(gp, "%s/gameport0", dev_name(pdev));
 			gameport_set_dev_parent(gp, pdev);
 			gp->io = 0x200;
-			gameport_set_port_data(gp, res);
 			/* Enable gameport */
 			snd_cmi8328_cfg_write(port, CFG1,
 					CFG1_SB_DISABLE | CFG1_GAMEPORT);
@@ -397,30 +394,21 @@ static int snd_cmi8328_probe(struct device *pdev, unsigned int ndev)
 	}
 #endif
 	return 0;
-error:
-	snd_card_free(card);
-
-	return err;
 }
 
-static int snd_cmi8328_remove(struct device *pdev, unsigned int dev)
+static void snd_cmi8328_remove(struct device *pdev, unsigned int dev)
 {
 	struct snd_card *card = dev_get_drvdata(pdev);
 	struct snd_cmi8328 *cmi = card->private_data;
 
 #ifdef SUPPORT_JOYSTICK
-	if (cmi->gameport) {
-		struct resource *res = gameport_get_port_data(cmi->gameport);
+	if (cmi->gameport)
 		gameport_unregister_port(cmi->gameport);
-		release_and_free_resource(res);
-	}
 #endif
 	/* disable everything */
 	snd_cmi8328_cfg_write(cmi->port, CFG1, CFG1_SB_DISABLE);
 	snd_cmi8328_cfg_write(cmi->port, CFG2, 0);
 	snd_cmi8328_cfg_write(cmi->port, CFG3, 0);
-	snd_card_free(card);
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -435,7 +423,6 @@ static int snd_cmi8328_suspend(struct device *pdev, unsigned int n,
 	cmi = card->private_data;
 	snd_cmi8328_cfg_save(cmi->port, cmi->cfg);
 	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
-	snd_pcm_suspend_all(cmi->wss->pcm);
 	cmi->wss->suspend(cmi->wss);
 
 	return 0;
@@ -470,15 +457,4 @@ static struct isa_driver snd_cmi8328_driver = {
 	},
 };
 
-static int __init alsa_card_cmi8328_init(void)
-{
-	return isa_register_driver(&snd_cmi8328_driver, CMI8328_MAX);
-}
-
-static void __exit alsa_card_cmi8328_exit(void)
-{
-	isa_unregister_driver(&snd_cmi8328_driver);
-}
-
-module_init(alsa_card_cmi8328_init)
-module_exit(alsa_card_cmi8328_exit)
+module_isa_driver(snd_cmi8328_driver, CMI8328_MAX);

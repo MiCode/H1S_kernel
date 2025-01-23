@@ -23,8 +23,6 @@
  *  675 Mass Ave, Cambridge, MA 02139, USA.
  *
  *  Notes :
- *	This file must ONLY be built when CONFIG_GPIOLIB=y and
- *	 CONFIG_ALCHEMY_GPIO_INDIRECT=n, otherwise compilation will fail!
  *	au1000 SoC have only one GPIO block : GPIO1
  *	Au1100, Au15x0, Au12x0 have a second one : GPIO2
  *	Au1300 is totally different: 1 block with up to 128 GPIOs
@@ -32,15 +30,14 @@
 
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/module.h>
 #include <linux/types.h>
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 #include <asm/mach-au1x00/gpio-au1000.h>
 #include <asm/mach-au1x00/gpio-au1300.h>
 
 static int gpio2_get(struct gpio_chip *chip, unsigned offset)
 {
-	return alchemy_gpio2_get_value(offset + ALCHEMY_GPIO2_BASE);
+	return !!alchemy_gpio2_get_value(offset + ALCHEMY_GPIO2_BASE);
 }
 
 static void gpio2_set(struct gpio_chip *chip, unsigned offset, int value)
@@ -68,7 +65,7 @@ static int gpio2_to_irq(struct gpio_chip *chip, unsigned offset)
 
 static int gpio1_get(struct gpio_chip *chip, unsigned offset)
 {
-	return alchemy_gpio1_get_value(offset + ALCHEMY_GPIO1_BASE);
+	return !!alchemy_gpio1_get_value(offset + ALCHEMY_GPIO1_BASE);
 }
 
 static void gpio1_set(struct gpio_chip *chip,
@@ -119,7 +116,7 @@ struct gpio_chip alchemy_gpio_chip[] = {
 
 static int alchemy_gpic_get(struct gpio_chip *chip, unsigned int off)
 {
-	return au1300_gpio_get_value(off + AU1300_GPIO_BASE);
+	return !!au1300_gpio_get_value(off + AU1300_GPIO_BASE);
 }
 
 static void alchemy_gpic_set(struct gpio_chip *chip, unsigned int off, int v)
@@ -160,14 +157,14 @@ static int __init alchemy_gpiochip_init(void)
 
 	switch (alchemy_get_cputype()) {
 	case ALCHEMY_CPU_AU1000:
-		ret = gpiochip_add(&alchemy_gpio_chip[0]);
+		ret = gpiochip_add_data(&alchemy_gpio_chip[0], NULL);
 		break;
 	case ALCHEMY_CPU_AU1500...ALCHEMY_CPU_AU1200:
-		ret = gpiochip_add(&alchemy_gpio_chip[0]);
-		ret |= gpiochip_add(&alchemy_gpio_chip[1]);
+		ret = gpiochip_add_data(&alchemy_gpio_chip[0], NULL);
+		ret |= gpiochip_add_data(&alchemy_gpio_chip[1], NULL);
 		break;
 	case ALCHEMY_CPU_AU1300:
-		ret = gpiochip_add(&au1300_gpiochip);
+		ret = gpiochip_add_data(&au1300_gpiochip, NULL);
 		break;
 	}
 	return ret;

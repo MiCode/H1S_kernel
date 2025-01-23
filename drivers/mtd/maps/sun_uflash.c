@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* sun_uflash.c - Driver for user-programmable flash on
  *                Sun Microsystems SME boardsets.
  *
@@ -11,13 +12,12 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/errno.h>
-#include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <asm/prom.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 
 #include <linux/mtd/mtd.h>
@@ -32,7 +32,6 @@
 
 MODULE_AUTHOR("Eric Brower <ebrower@usa.net>");
 MODULE_DESCRIPTION("User-programmable flash device on Sun Microsystems boardsets");
-MODULE_SUPPORTED_DEVICE(DRIVER_NAME);
 MODULE_LICENSE("GPL");
 MODULE_VERSION("2.1");
 
@@ -56,17 +55,15 @@ int uflash_devinit(struct platform_device *op, struct device_node *dp)
 		/* Non-CFI userflash device-- once I find one we
 		 * can work on supporting it.
 		 */
-		printk(KERN_ERR PFX "Unsupported device at %s, 0x%llx\n",
-		       dp->full_name, (unsigned long long)op->resource[0].start);
+		printk(KERN_ERR PFX "Unsupported device at %pOF, 0x%llx\n",
+		       dp, (unsigned long long)op->resource[0].start);
 
 		return -ENODEV;
 	}
 
 	up = kzalloc(sizeof(struct uflash_dev), GFP_KERNEL);
-	if (!up) {
-		printk(KERN_ERR PFX "Cannot allocate struct uflash_dev\n");
+	if (!up)
 		return -ENOMEM;
-	}
 
 	/* copy defaults and tweak parameters */
 	memcpy(&up->map, &uflash_map_templ, sizeof(uflash_map_templ));
@@ -115,7 +112,7 @@ static int uflash_probe(struct platform_device *op)
 	/* Flashprom must have the "user" property in order to
 	 * be used by this driver.
 	 */
-	if (!of_find_property(dp, "user", NULL))
+	if (!of_property_read_bool(dp, "user"))
 		return -ENODEV;
 
 	return uflash_devinit(op, dp);
@@ -151,7 +148,6 @@ MODULE_DEVICE_TABLE(of, uflash_match);
 static struct platform_driver uflash_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = uflash_match,
 	},
 	.probe		= uflash_probe,

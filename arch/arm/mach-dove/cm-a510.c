@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/mach-dove/cm-a510.c
  *
@@ -5,10 +6,6 @@
  * Konstantin Sinyuk <kostyas@compulab.co.il>
  *
  * Based on Marvell DB-MV88AP510-BP Development Board Setup
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/kernel.h>
@@ -22,8 +19,7 @@
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
-#include <mach/dove.h>
-
+#include "dove.h"
 #include "common.h"
 
 static struct mv643xx_eth_platform_data cm_a510_ge00_data = {
@@ -88,6 +84,7 @@ static void __init cm_a510_init(void)
 
 MACHINE_START(CM_A510, "Compulab CM-A510 Board")
 	.atag_offset	= 0x100,
+	.nr_irqs	= DOVE_NR_IRQS,
 	.init_machine	= cm_a510_init,
 	.map_io		= dove_map_io,
 	.init_early	= dove_init_early,

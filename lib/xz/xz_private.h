@@ -37,6 +37,9 @@
 #		ifdef CONFIG_XZ_DEC_SPARC
 #			define XZ_DEC_SPARC
 #		endif
+#		ifdef CONFIG_XZ_DEC_MICROLZMA
+#			define XZ_DEC_MICROLZMA
+#		endif
 #		define memeq(a, b, size) (memcmp(a, b, size) == 0)
 #		define memzero(buf, size) memset(buf, 0, size)
 #	endif
@@ -100,6 +103,10 @@
 			|| defined(XZ_DEC_SPARC)
 #		define XZ_DEC_BCJ
 #	endif
+#endif
+
+#ifndef CRC32_POLY_LE
+#define CRC32_POLY_LE 0xedb88320
 #endif
 
 /*

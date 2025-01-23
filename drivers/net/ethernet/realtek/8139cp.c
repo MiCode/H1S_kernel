@@ -6,7 +6,7 @@
 	Copyright (C) 2000, 2001 David S. Miller (davem@redhat.com) [sungem.c]
 	Copyright 2001 Manfred Spraul				    [natsemi.c]
 	Copyright 1999-2001 by Donald Becker.			    [natsemi.c]
-       	Written 1997-2001 by Donald Becker.			    [8139too.c]
+	Written 1997-2001 by Donald Becker.			    [8139too.c]
 	Copyright 1998-2001 by Jes Sorensen, <jes@trained-monkey.org>. [acenic.c]
 
 	This software may be used and distributed according to the terms of
@@ -76,7 +76,7 @@
 #include <linux/cache.h>
 #include <asm/io.h>
 #include <asm/irq.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 /* These identify the driver base version and may not be removed. */
 static char version[] =
@@ -157,6 +157,7 @@ enum {
 	NWayAdvert	= 0x66, /* MII ADVERTISE */
 	NWayLPAR	= 0x68, /* MII LPA */
 	NWayExpansion	= 0x6A, /* MII Expansion */
+	TxDmaOkLowDesc  = 0x82, /* Low 16 bit address of a Tx descriptor. */
 	Config5		= 0xD8,	/* Config5 */
 	TxPoll		= 0xD9,	/* Tell chip to check Tx descriptors for work */
 	RxMaxSize	= 0xDA, /* Max size of an Rx packet (8169 only) */
@@ -174,7 +175,7 @@ enum {
 	LastFrag	= (1 << 28), /* Final segment of a packet */
 	LargeSend	= (1 << 27), /* TCP Large Send Offload (TSO) */
 	MSSShift	= 16,	     /* MSS value position */
-	MSSMask		= 0xfff,     /* MSS value: 11 bits */
+	MSSMask		= 0x7ff,     /* MSS value: 11 bits */
 	TxError		= (1 << 23), /* Tx error summary */
 	RxError		= (1 << 20), /* Rx error summary */
 	IPCS		= (1 << 18), /* Calculate IP checksum */
@@ -341,6 +342,7 @@ struct cp_private {
 	unsigned		tx_tail;
 	struct cp_desc		*tx_ring;
 	struct sk_buff		*tx_skb[CP_TX_RING_SIZE];
+	u32			tx_opts[CP_TX_RING_SIZE];
 
 	unsigned		rx_buf_sz;
 	unsigned		wol_enabled : 1; /* Is Wake-on-LAN enabled? */
@@ -381,13 +383,6 @@ static int cp_get_eeprom(struct net_device *dev,
 			 struct ethtool_eeprom *eeprom, u8 *data);
 static int cp_set_eeprom(struct net_device *dev,
 			 struct ethtool_eeprom *eeprom, u8 *data);
-
-static DEFINE_PCI_DEVICE_TABLE(cp_pci_tbl) = {
-	{ PCI_DEVICE(PCI_VENDOR_ID_REALTEK,	PCI_DEVICE_ID_REALTEK_8139), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_TTTECH,	PCI_DEVICE_ID_TTTECH_MC322), },
-	{ },
-};
-MODULE_DEVICE_TABLE(pci, cp_pci_tbl);
 
 static struct {
 	const char str[ETH_GSTRING_LEN];
@@ -470,13 +465,11 @@ static int cp_rx_poll(struct napi_struct *napi, int budget)
 	struct cp_private *cp = container_of(napi, struct cp_private, napi);
 	struct net_device *dev = cp->dev;
 	unsigned int rx_tail = cp->rx_tail;
-	int rx;
+	int rx = 0;
 
-rx_status_loop:
-	rx = 0;
 	cpw16(IntrStatus, cp_rx_intr_mask);
 
-	while (1) {
+	while (rx < budget) {
 		u32 status, len;
 		dma_addr_t mapping, new_mapping;
 		struct sk_buff *skb, *new_skb;
@@ -514,14 +507,14 @@ rx_status_loop:
 		netif_dbg(cp, rx_status, dev, "rx slot %d status 0x%x len %d\n",
 			  rx_tail, status, len);
 
-		new_skb = netdev_alloc_skb_ip_align(dev, buflen);
+		new_skb = napi_alloc_skb(napi, buflen);
 		if (!new_skb) {
 			dev->stats.rx_dropped++;
 			goto rx_next;
 		}
 
 		new_mapping = dma_map_single(&cp->pdev->dev, new_skb->data, buflen,
-					 PCI_DMA_FROMDEVICE);
+					 DMA_FROM_DEVICE);
 		if (dma_mapping_error(&cp->pdev->dev, new_mapping)) {
 			dev->stats.rx_dropped++;
 			kfree_skb(new_skb);
@@ -529,7 +522,7 @@ rx_status_loop:
 		}
 
 		dma_unmap_single(&cp->pdev->dev, mapping,
-				 buflen, PCI_DMA_FROMDEVICE);
+				 buflen, DMA_FROM_DEVICE);
 
 		/* Handle checksum offloading for incoming packets. */
 		if (cp_rx_csum_ok(status))
@@ -554,9 +547,6 @@ rx_next:
 		else
 			desc->opts1 = cpu_to_le32(DescOwn | cp->rx_buf_sz);
 		rx_tail = NEXT_RX(rx_tail);
-
-		if (rx >= budget)
-			break;
 	}
 
 	cp->rx_tail = rx_tail;
@@ -564,15 +554,10 @@ rx_next:
 	/* if we did not reach work limit, then we're done with
 	 * this round of polling
 	 */
-	if (rx < budget) {
+	if (rx < budget && napi_complete_done(napi, rx)) {
 		unsigned long flags;
 
-		if (cpr16(IntrStatus) & cp_rx_intr_mask)
-			goto rx_status_loop;
-
-		napi_gro_flush(napi, false);
 		spin_lock_irqsave(&cp->lock, flags);
-		__napi_complete(napi);
 		cpw16_f(IntrMask, cp_intr_mask);
 		spin_unlock_irqrestore(&cp->lock, flags);
 	}
@@ -586,12 +571,17 @@ static irqreturn_t cp_interrupt (int irq, void *dev_instance)
 	struct cp_private *cp;
 	int handled = 0;
 	u16 status;
+	u16 mask;
 
 	if (unlikely(dev == NULL))
 		return IRQ_NONE;
 	cp = netdev_priv(dev);
 
 	spin_lock(&cp->lock);
+
+	mask = cpr16(IntrMask);
+	if (!mask)
+		goto out_unlock;
 
 	status = cpr16(IntrStatus);
 	if (!status || (status == 0xFFFF))
@@ -675,8 +665,8 @@ static void cp_tx (struct cp_private *cp)
 		BUG_ON(!skb);
 
 		dma_unmap_single(&cp->pdev->dev, le64_to_cpu(txd->addr),
-				 le32_to_cpu(txd->opts1) & 0xffff,
-				 PCI_DMA_TODEVICE);
+				 cp->tx_opts[tx_tail] & 0xffff,
+				 DMA_TO_DEVICE);
 
 		if (status & LastFrag) {
 			if (status & (TxError | TxFIFOUnder)) {
@@ -701,7 +691,7 @@ static void cp_tx (struct cp_private *cp)
 			}
 			bytes_compl += skb->len;
 			pkts_compl++;
-			dev_kfree_skb_irq(skb);
+			dev_consume_skb_irq(skb);
 		}
 
 		cp->tx_skb[tx_tail] = NULL;
@@ -718,8 +708,8 @@ static void cp_tx (struct cp_private *cp)
 
 static inline u32 cp_tx_vlan_tag(struct sk_buff *skb)
 {
-	return vlan_tx_tag_present(skb) ?
-		TxVlanTag | swab16(vlan_tx_tag_get(skb)) : 0x00;
+	return skb_vlan_tag_present(skb) ?
+		TxVlanTag | swab16(skb_vlan_tag_get(skb)) : 0x00;
 }
 
 static void unwind_tx_frag_mapping(struct cp_private *cp, struct sk_buff *skb,
@@ -734,7 +724,7 @@ static void unwind_tx_frag_mapping(struct cp_private *cp, struct sk_buff *skb,
 		txd = &cp->tx_ring[index];
 		this_frag = &skb_shinfo(skb)->frags[frag];
 		dma_unmap_single(&cp->pdev->dev, le64_to_cpu(txd->addr),
-				 skb_frag_size(this_frag), PCI_DMA_TODEVICE);
+				 skb_frag_size(this_frag), DMA_TO_DEVICE);
 	}
 }
 
@@ -743,7 +733,7 @@ static netdev_tx_t cp_start_xmit (struct sk_buff *skb,
 {
 	struct cp_private *cp = netdev_priv(dev);
 	unsigned entry;
-	u32 eor, flags;
+	u32 eor, opts1;
 	unsigned long intr_flags;
 	__le32 opts2;
 	int mss = 0;
@@ -762,7 +752,28 @@ static netdev_tx_t cp_start_xmit (struct sk_buff *skb,
 	eor = (entry == (CP_TX_RING_SIZE - 1)) ? RingEnd : 0;
 	mss = skb_shinfo(skb)->gso_size;
 
+	if (mss > MSSMask) {
+		netdev_WARN_ONCE(dev, "Net bug: GSO size %d too large for 8139CP\n",
+				 mss);
+		goto out_dma_error;
+	}
+
 	opts2 = cpu_to_le32(cp_tx_vlan_tag(skb));
+	opts1 = DescOwn;
+	if (mss)
+		opts1 |= LargeSend | (mss << MSSShift);
+	else if (skb->ip_summed == CHECKSUM_PARTIAL) {
+		const struct iphdr *ip = ip_hdr(skb);
+		if (ip->protocol == IPPROTO_TCP)
+			opts1 |= IPCS | TCPCS;
+		else if (ip->protocol == IPPROTO_UDP)
+			opts1 |= IPCS | UDPCS;
+		else {
+			WARN_ONCE(1,
+				  "Net bug: asked to checksum invalid Legacy IP packet\n");
+			goto out_dma_error;
+		}
+	}
 
 	if (skb_shinfo(skb)->nr_frags == 0) {
 		struct cp_desc *txd = &cp->tx_ring[entry];
@@ -770,7 +781,7 @@ static netdev_tx_t cp_start_xmit (struct sk_buff *skb,
 		dma_addr_t mapping;
 
 		len = skb->len;
-		mapping = dma_map_single(&cp->pdev->dev, skb->data, len, PCI_DMA_TODEVICE);
+		mapping = dma_map_single(&cp->pdev->dev, skb->data, len, DMA_TO_DEVICE);
 		if (dma_mapping_error(&cp->pdev->dev, mapping))
 			goto out_dma_error;
 
@@ -778,31 +789,20 @@ static netdev_tx_t cp_start_xmit (struct sk_buff *skb,
 		txd->addr = cpu_to_le64(mapping);
 		wmb();
 
-		flags = eor | len | DescOwn | FirstFrag | LastFrag;
+		opts1 |= eor | len | FirstFrag | LastFrag;
 
-		if (mss)
-			flags |= LargeSend | ((mss & MSSMask) << MSSShift);
-		else if (skb->ip_summed == CHECKSUM_PARTIAL) {
-			const struct iphdr *ip = ip_hdr(skb);
-			if (ip->protocol == IPPROTO_TCP)
-				flags |= IPCS | TCPCS;
-			else if (ip->protocol == IPPROTO_UDP)
-				flags |= IPCS | UDPCS;
-			else
-				WARN_ON(1);	/* we need a WARN() */
-		}
-
-		txd->opts1 = cpu_to_le32(flags);
+		txd->opts1 = cpu_to_le32(opts1);
 		wmb();
 
 		cp->tx_skb[entry] = skb;
-		entry = NEXT_TX(entry);
+		cp->tx_opts[entry] = opts1;
+		netif_dbg(cp, tx_queued, cp->dev, "tx queued, slot %d, skblen %d\n",
+			  entry, skb->len);
 	} else {
 		struct cp_desc *txd;
-		u32 first_len, first_eor;
+		u32 first_len, first_eor, ctrl;
 		dma_addr_t first_mapping;
 		int frag, first_entry = entry;
-		const struct iphdr *ip = ip_hdr(skb);
 
 		/* We must give this initial chunk to the device last.
 		 * Otherwise we could race with the device.
@@ -810,23 +810,23 @@ static netdev_tx_t cp_start_xmit (struct sk_buff *skb,
 		first_eor = eor;
 		first_len = skb_headlen(skb);
 		first_mapping = dma_map_single(&cp->pdev->dev, skb->data,
-					       first_len, PCI_DMA_TODEVICE);
+					       first_len, DMA_TO_DEVICE);
 		if (dma_mapping_error(&cp->pdev->dev, first_mapping))
 			goto out_dma_error;
 
 		cp->tx_skb[entry] = skb;
-		entry = NEXT_TX(entry);
 
 		for (frag = 0; frag < skb_shinfo(skb)->nr_frags; frag++) {
 			const skb_frag_t *this_frag = &skb_shinfo(skb)->frags[frag];
 			u32 len;
-			u32 ctrl;
 			dma_addr_t mapping;
+
+			entry = NEXT_TX(entry);
 
 			len = skb_frag_size(this_frag);
 			mapping = dma_map_single(&cp->pdev->dev,
 						 skb_frag_address(this_frag),
-						 len, PCI_DMA_TODEVICE);
+						 len, DMA_TO_DEVICE);
 			if (dma_mapping_error(&cp->pdev->dev, mapping)) {
 				unwind_tx_frag_mapping(cp, skb, first_entry, entry);
 				goto out_dma_error;
@@ -834,19 +834,7 @@ static netdev_tx_t cp_start_xmit (struct sk_buff *skb,
 
 			eor = (entry == (CP_TX_RING_SIZE - 1)) ? RingEnd : 0;
 
-			ctrl = eor | len | DescOwn;
-
-			if (mss)
-				ctrl |= LargeSend |
-					((mss & MSSMask) << MSSShift);
-			else if (skb->ip_summed == CHECKSUM_PARTIAL) {
-				if (ip->protocol == IPPROTO_TCP)
-					ctrl |= IPCS | TCPCS;
-				else if (ip->protocol == IPPROTO_UDP)
-					ctrl |= IPCS | UDPCS;
-				else
-					BUG();
-			}
+			ctrl = opts1 | eor | len;
 
 			if (frag == skb_shinfo(skb)->nr_frags - 1)
 				ctrl |= LastFrag;
@@ -859,8 +847,8 @@ static netdev_tx_t cp_start_xmit (struct sk_buff *skb,
 			txd->opts1 = cpu_to_le32(ctrl);
 			wmb();
 
+			cp->tx_opts[entry] = ctrl;
 			cp->tx_skb[entry] = skb;
-			entry = NEXT_TX(entry);
 		}
 
 		txd = &cp->tx_ring[first_entry];
@@ -868,27 +856,17 @@ static netdev_tx_t cp_start_xmit (struct sk_buff *skb,
 		txd->addr = cpu_to_le64(first_mapping);
 		wmb();
 
-		if (skb->ip_summed == CHECKSUM_PARTIAL) {
-			if (ip->protocol == IPPROTO_TCP)
-				txd->opts1 = cpu_to_le32(first_eor | first_len |
-							 FirstFrag | DescOwn |
-							 IPCS | TCPCS);
-			else if (ip->protocol == IPPROTO_UDP)
-				txd->opts1 = cpu_to_le32(first_eor | first_len |
-							 FirstFrag | DescOwn |
-							 IPCS | UDPCS);
-			else
-				BUG();
-		} else
-			txd->opts1 = cpu_to_le32(first_eor | first_len |
-						 FirstFrag | DescOwn);
+		ctrl = opts1 | first_eor | first_len | FirstFrag;
+		txd->opts1 = cpu_to_le32(ctrl);
 		wmb();
+
+		cp->tx_opts[first_entry] = ctrl;
+		netif_dbg(cp, tx_queued, cp->dev, "tx queued, slots %d-%d, skblen %d\n",
+			  first_entry, entry, skb->len);
 	}
-	cp->tx_head = entry;
+	cp->tx_head = NEXT_TX(entry);
 
 	netdev_sent_queue(dev, skb->len);
-	netif_dbg(cp, tx_queued, cp->dev, "tx queued, slot %d, skblen %d\n",
-		  entry, skb->len);
 	if (TX_BUFFS_AVAIL(cp) <= (MAX_SKB_FRAGS + 1))
 		netif_stop_queue(dev);
 
@@ -899,7 +877,7 @@ out_unlock:
 
 	return NETDEV_TX_OK;
 out_dma_error:
-	kfree_skb(skb);
+	dev_kfree_skb_any(skb);
 	cp->dev->stats.tx_dropped++;
 	goto out_unlock;
 }
@@ -969,8 +947,8 @@ static struct net_device_stats *cp_get_stats(struct net_device *dev)
 
 	/* The chip only need report frame silently dropped. */
 	spin_lock_irqsave(&cp->lock, flags);
- 	if (netif_running(dev) && netif_device_present(dev))
- 		__cp_get_stats(cp);
+	if (netif_running(dev) && netif_device_present(dev))
+		__cp_get_stats(cp);
 	spin_unlock_irqrestore(&cp->lock, flags);
 
 	return &dev->stats;
@@ -1091,7 +1069,7 @@ static int cp_refill_rx(struct cp_private *cp)
 			goto err_out;
 
 		mapping = dma_map_single(&cp->pdev->dev, skb->data,
-					 cp->rx_buf_sz, PCI_DMA_FROMDEVICE);
+					 cp->rx_buf_sz, DMA_FROM_DEVICE);
 		if (dma_mapping_error(&cp->pdev->dev, mapping)) {
 			kfree_skb(skb);
 			goto err_out;
@@ -1125,6 +1103,7 @@ static int cp_init_rings (struct cp_private *cp)
 {
 	memset(cp->tx_ring, 0, sizeof(struct cp_desc) * CP_TX_RING_SIZE);
 	cp->tx_ring[CP_TX_RING_SIZE - 1].opts1 = cpu_to_le32(RingEnd);
+	memset(cp->tx_opts, 0, sizeof(cp->tx_opts));
 
 	cp_init_rings_index(cp);
 
@@ -1160,8 +1139,8 @@ static void cp_clean_rings (struct cp_private *cp)
 		if (cp->rx_skb[i]) {
 			desc = cp->rx_ring + i;
 			dma_unmap_single(&cp->pdev->dev,le64_to_cpu(desc->addr),
-					 cp->rx_buf_sz, PCI_DMA_FROMDEVICE);
-			dev_kfree_skb(cp->rx_skb[i]);
+					 cp->rx_buf_sz, DMA_FROM_DEVICE);
+			dev_kfree_skb_any(cp->rx_skb[i]);
 		}
 	}
 
@@ -1172,9 +1151,9 @@ static void cp_clean_rings (struct cp_private *cp)
 			desc = cp->tx_ring + i;
 			dma_unmap_single(&cp->pdev->dev,le64_to_cpu(desc->addr),
 					 le32_to_cpu(desc->opts1) & 0xffff,
-					 PCI_DMA_TODEVICE);
+					 DMA_TO_DEVICE);
 			if (le32_to_cpu(desc->opts1) & LastFrag)
-				dev_kfree_skb(skb);
+				dev_kfree_skb_any(skb);
 			cp->dev->stats.tx_dropped++;
 		}
 	}
@@ -1182,6 +1161,7 @@ static void cp_clean_rings (struct cp_private *cp)
 
 	memset(cp->rx_ring, 0, sizeof(struct cp_desc) * CP_RX_RING_SIZE);
 	memset(cp->tx_ring, 0, sizeof(struct cp_desc) * CP_TX_RING_SIZE);
+	memset(cp->tx_opts, 0, sizeof(cp->tx_opts));
 
 	memset(cp->rx_skb, 0, sizeof(struct sk_buff *) * CP_RX_RING_SIZE);
 	memset(cp->tx_skb, 0, sizeof(struct sk_buff *) * CP_TX_RING_SIZE);
@@ -1255,11 +1235,11 @@ static int cp_close (struct net_device *dev)
 	return 0;
 }
 
-static void cp_tx_timeout(struct net_device *dev)
+static void cp_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct cp_private *cp = netdev_priv(dev);
 	unsigned long flags;
-	int rc;
+	int i;
 
 	netdev_warn(dev, "Transmit timeout, status %2x %4x %4x %4x\n",
 		    cpr8(Cmd), cpr16(CpCmd),
@@ -1267,13 +1247,26 @@ static void cp_tx_timeout(struct net_device *dev)
 
 	spin_lock_irqsave(&cp->lock, flags);
 
+	netif_dbg(cp, tx_err, cp->dev, "TX ring head %d tail %d desc %x\n",
+		  cp->tx_head, cp->tx_tail, cpr16(TxDmaOkLowDesc));
+	for (i = 0; i < CP_TX_RING_SIZE; i++) {
+		netif_dbg(cp, tx_err, cp->dev,
+			  "TX slot %d @%p: %08x (%08x) %08x %llx %p\n",
+			  i, &cp->tx_ring[i], le32_to_cpu(cp->tx_ring[i].opts1),
+			  cp->tx_opts[i], le32_to_cpu(cp->tx_ring[i].opts2),
+			  le64_to_cpu(cp->tx_ring[i].addr),
+			  cp->tx_skb[i]);
+	}
+
 	cp_stop_hw(cp);
 	cp_clean_rings(cp);
-	rc = cp_init_rings(cp);
+	cp_init_rings(cp);
 	cp_start_hw(cp);
-	cp_enable_irq(cp);
+	__cp_set_rx_mode(dev);
+	cpw16_f(IntrMask, cp_norx_intr_mask);
 
 	netif_wake_queue(dev);
+	napi_schedule_irqoff(&cp->napi);
 
 	spin_unlock_irqrestore(&cp->lock, flags);
 }
@@ -1281,10 +1274,6 @@ static void cp_tx_timeout(struct net_device *dev)
 static int cp_change_mtu(struct net_device *dev, int new_mtu)
 {
 	struct cp_private *cp = netdev_priv(dev);
-
-	/* check for invalid MTU, according to hardware limits */
-	if (new_mtu < CP_MIN_MTU || new_mtu > CP_MAX_MTU)
-		return -EINVAL;
 
 	/* if network interface not up, no need for complexity */
 	if (!netif_running(dev)) {
@@ -1393,13 +1382,15 @@ static void cp_get_drvinfo (struct net_device *dev, struct ethtool_drvinfo *info
 {
 	struct cp_private *cp = netdev_priv(dev);
 
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, pci_name(cp->pdev), sizeof(info->bus_info));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, pci_name(cp->pdev), sizeof(info->bus_info));
 }
 
 static void cp_get_ringparam(struct net_device *dev,
-				struct ethtool_ringparam *ring)
+			     struct ethtool_ringparam *ring,
+			     struct kernel_ethtool_ringparam *kernel_ring,
+			     struct netlink_ext_ack *extack)
 {
 	ring->rx_max_pending = CP_RX_RING_SIZE;
 	ring->tx_max_pending = CP_TX_RING_SIZE;
@@ -1422,27 +1413,28 @@ static int cp_get_sset_count (struct net_device *dev, int sset)
 	}
 }
 
-static int cp_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int cp_get_link_ksettings(struct net_device *dev,
+				 struct ethtool_link_ksettings *cmd)
 {
 	struct cp_private *cp = netdev_priv(dev);
-	int rc;
 	unsigned long flags;
 
 	spin_lock_irqsave(&cp->lock, flags);
-	rc = mii_ethtool_gset(&cp->mii_if, cmd);
+	mii_ethtool_get_link_ksettings(&cp->mii_if, cmd);
 	spin_unlock_irqrestore(&cp->lock, flags);
 
-	return rc;
+	return 0;
 }
 
-static int cp_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int cp_set_link_ksettings(struct net_device *dev,
+				 const struct ethtool_link_ksettings *cmd)
 {
 	struct cp_private *cp = netdev_priv(dev);
 	int rc;
 	unsigned long flags;
 
 	spin_lock_irqsave(&cp->lock, flags);
-	rc = mii_ethtool_sset(&cp->mii_if, cmd);
+	rc = mii_ethtool_set_link_ksettings(&cp->mii_if, cmd);
 	spin_unlock_irqrestore(&cp->lock, flags);
 
 	return rc;
@@ -1594,8 +1586,6 @@ static const struct ethtool_ops cp_ethtool_ops = {
 	.get_drvinfo		= cp_get_drvinfo,
 	.get_regs_len		= cp_get_regs_len,
 	.get_sset_count		= cp_get_sset_count,
-	.get_settings		= cp_get_settings,
-	.set_settings		= cp_set_settings,
 	.nway_reset		= cp_nway_reset,
 	.get_link		= ethtool_op_get_link,
 	.get_msglevel		= cp_get_msglevel,
@@ -1609,6 +1599,8 @@ static const struct ethtool_ops cp_ethtool_ops = {
 	.get_eeprom		= cp_get_eeprom,
 	.set_eeprom		= cp_set_eeprom,
 	.get_ringparam		= cp_get_ringparam,
+	.get_link_ksettings	= cp_get_link_ksettings,
+	.set_link_ksettings	= cp_set_link_ksettings,
 };
 
 static int cp_ioctl (struct net_device *dev, struct ifreq *rq, int cmd)
@@ -1634,7 +1626,7 @@ static int cp_set_mac_address(struct net_device *dev, void *p)
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
+	eth_hw_addr_set(dev, addr->sa_data);
 
 	spin_lock_irq(&cp->lock);
 
@@ -1863,6 +1855,15 @@ static void cp_set_d3_state (struct cp_private *cp)
 	pci_set_power_state (cp->pdev, PCI_D3hot);
 }
 
+static netdev_features_t cp_features_check(struct sk_buff *skb,
+					   struct net_device *dev,
+					   netdev_features_t features)
+{
+	if (skb_shinfo(skb)->gso_size > MSSMask)
+		features &= ~NETIF_F_TSO;
+
+	return vlan_features_check(skb, features);
+}
 static const struct net_device_ops cp_netdev_ops = {
 	.ndo_open		= cp_open,
 	.ndo_stop		= cp_close,
@@ -1870,11 +1871,12 @@ static const struct net_device_ops cp_netdev_ops = {
 	.ndo_set_mac_address 	= cp_set_mac_address,
 	.ndo_set_rx_mode	= cp_set_rx_mode,
 	.ndo_get_stats		= cp_get_stats,
-	.ndo_do_ioctl		= cp_ioctl,
+	.ndo_eth_ioctl		= cp_ioctl,
 	.ndo_start_xmit		= cp_start_xmit,
 	.ndo_tx_timeout		= cp_tx_timeout,
 	.ndo_set_features	= cp_set_features,
 	.ndo_change_mtu		= cp_change_mtu,
+	.ndo_features_check	= cp_features_check,
 
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= cp_poll_controller,
@@ -1889,12 +1891,9 @@ static int cp_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 	void __iomem *regs;
 	resource_size_t pciaddr;
 	unsigned int addr_len, i, pci_using_dac;
+	__le16 addr[ETH_ALEN / 2];
 
-#ifndef MODULE
-	static int version_printed;
-	if (version_printed++ == 0)
-		pr_info("%s", version);
-#endif
+	pr_info_once("%s", version);
 
 	if (pdev->vendor == PCI_VENDOR_ID_REALTEK &&
 	    pdev->device == PCI_DEVICE_ID_REALTEK_8139 && pdev->revision < 0x20) {
@@ -1949,22 +1948,15 @@ static int cp_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	/* Configure DMA attributes. */
 	if ((sizeof(dma_addr_t) > 4) &&
-	    !pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64)) &&
-	    !pci_set_dma_mask(pdev, DMA_BIT_MASK(64))) {
+	    !dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64))) {
 		pci_using_dac = 1;
 	} else {
 		pci_using_dac = 0;
 
-		rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+		rc = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
 		if (rc) {
 			dev_err(&pdev->dev,
 				"No usable DMA configuration, aborting\n");
-			goto err_out_res;
-		}
-		rc = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
-		if (rc) {
-			dev_err(&pdev->dev,
-				"No usable consistent DMA configuration, aborting\n");
 			goto err_out_res;
 		}
 	}
@@ -1990,24 +1982,28 @@ static int cp_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 	/* read MAC address from EEPROM */
 	addr_len = read_eeprom (regs, 0, 8) == 0x8129 ? 8 : 6;
 	for (i = 0; i < 3; i++)
-		((__le16 *) (dev->dev_addr))[i] =
-		    cpu_to_le16(read_eeprom (regs, i + 7, addr_len));
+		addr[i] = cpu_to_le16(read_eeprom (regs, i + 7, addr_len));
+	eth_hw_addr_set(dev, (u8 *)addr);
 
 	dev->netdev_ops = &cp_netdev_ops;
-	netif_napi_add(dev, &cp->napi, cp_rx_poll, 16);
+	netif_napi_add_weight(dev, &cp->napi, cp_rx_poll, 16);
 	dev->ethtool_ops = &cp_ethtool_ops;
 	dev->watchdog_timeo = TX_TIMEOUT;
 
-	dev->features |= NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX;
+	dev->features |= NETIF_F_SG | NETIF_F_IP_CSUM | NETIF_F_TSO |
+		NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX;
 
 	if (pci_using_dac)
 		dev->features |= NETIF_F_HIGHDMA;
 
-	/* disabled by default until verified */
 	dev->hw_features |= NETIF_F_SG | NETIF_F_IP_CSUM | NETIF_F_TSO |
 		NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX;
 	dev->vlan_features = NETIF_F_SG | NETIF_F_IP_CSUM | NETIF_F_TSO |
 		NETIF_F_HIGHDMA;
+
+	/* MTU range: 60 - 4096 */
+	dev->min_mtu = CP_MIN_MTU;
+	dev->max_mtu = CP_MAX_MTU;
 
 	rc = register_netdev(dev);
 	if (rc)
@@ -2054,10 +2050,9 @@ static void cp_remove_one (struct pci_dev *pdev)
 	free_netdev(dev);
 }
 
-#ifdef CONFIG_PM
-static int cp_suspend (struct pci_dev *pdev, pm_message_t state)
+static int __maybe_unused cp_suspend(struct device *device)
 {
-	struct net_device *dev = pci_get_drvdata(pdev);
+	struct net_device *dev = dev_get_drvdata(device);
 	struct cp_private *cp = netdev_priv(dev);
 	unsigned long flags;
 
@@ -2075,16 +2070,14 @@ static int cp_suspend (struct pci_dev *pdev, pm_message_t state)
 
 	spin_unlock_irqrestore (&cp->lock, flags);
 
-	pci_save_state(pdev);
-	pci_enable_wake(pdev, pci_choose_state(pdev, state), cp->wol_enabled);
-	pci_set_power_state(pdev, pci_choose_state(pdev, state));
+	device_set_wakeup_enable(device, cp->wol_enabled);
 
 	return 0;
 }
 
-static int cp_resume (struct pci_dev *pdev)
+static int __maybe_unused cp_resume(struct device *device)
 {
-	struct net_device *dev = pci_get_drvdata (pdev);
+	struct net_device *dev = dev_get_drvdata(device);
 	struct cp_private *cp = netdev_priv(dev);
 	unsigned long flags;
 
@@ -2092,10 +2085,6 @@ static int cp_resume (struct pci_dev *pdev)
 		return 0;
 
 	netif_device_attach (dev);
-
-	pci_set_power_state(pdev, PCI_D0);
-	pci_restore_state(pdev);
-	pci_enable_wake(pdev, PCI_D0, 0);
 
 	/* FIXME: sh*t may happen if the Rx ring buffer is depleted */
 	cp_init_rings_index (cp);
@@ -2111,31 +2100,22 @@ static int cp_resume (struct pci_dev *pdev)
 
 	return 0;
 }
-#endif /* CONFIG_PM */
+
+static const struct pci_device_id cp_pci_tbl[] = {
+        { PCI_DEVICE(PCI_VENDOR_ID_REALTEK,     PCI_DEVICE_ID_REALTEK_8139), },
+        { PCI_DEVICE(PCI_VENDOR_ID_TTTECH,      PCI_DEVICE_ID_TTTECH_MC322), },
+        { },
+};
+MODULE_DEVICE_TABLE(pci, cp_pci_tbl);
+
+static SIMPLE_DEV_PM_OPS(cp_pm_ops, cp_suspend, cp_resume);
 
 static struct pci_driver cp_driver = {
 	.name         = DRV_NAME,
 	.id_table     = cp_pci_tbl,
 	.probe        =	cp_init_one,
 	.remove       = cp_remove_one,
-#ifdef CONFIG_PM
-	.resume       = cp_resume,
-	.suspend      = cp_suspend,
-#endif
+	.driver.pm    = &cp_pm_ops,
 };
 
-static int __init cp_init (void)
-{
-#ifdef MODULE
-	pr_info("%s", version);
-#endif
-	return pci_register_driver(&cp_driver);
-}
-
-static void __exit cp_exit (void)
-{
-	pci_unregister_driver (&cp_driver);
-}
-
-module_init(cp_init);
-module_exit(cp_exit);
+module_pci_driver(cp_driver);

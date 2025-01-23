@@ -1,6 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
- *  zcrypt 2.1.0
- *
  *  Copyright IBM Corp. 2001, 2012
  *  Author(s): Robert Burroughs
  *	       Eric Rossman (edrossma@us.ibm.com)
@@ -8,20 +7,6 @@
  *  Hotplug & misc device support: Jochen Roehrig (roehrig@de.ibm.com)
  *  Major cleanup & driver split: Martin Schwidefsky <schwidefsky@de.ibm.com>
  *  MSGTYPE restruct:		  Holger Dengler <hd@linux.vnet.ibm.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #ifndef _ZCRYPT_MSGTYPE6_H_
@@ -34,10 +19,8 @@
 #define MSGTYPE06_VARIANT_NORNG		1
 #define MSGTYPE06_VARIANT_EP11		2
 
-#define MSGTYPE06_MAX_MSG_SIZE		(12*1024)
-
 /**
- * The type 6 message family is associated with PCICC or PCIXCC cards.
+ * The type 6 message family is associated with CEXxC/CEXxP cards.
  *
  * It contains a message header followed by a CPRB, both of which
  * are described below.
@@ -56,29 +39,24 @@ struct type6_hdr {
 	unsigned int  offset2;		/* 0x00000000			*/
 	unsigned int  offset3;		/* 0x00000000			*/
 	unsigned int  offset4;		/* 0x00000000			*/
-	unsigned char agent_id[16];	/* PCICC:			*/
-					/*    0x0100			*/
-					/*    0x4343412d4150504c202020	*/
-					/*    0x010101			*/
-					/* PCIXCC:			*/
-					/*    0x4341000000000000	*/
-					/*    0x0000000000000000	*/
+	unsigned char agent_id[16];	/* 0x4341000000000000		*/
+					/* 0x0000000000000000		*/
 	unsigned char rqid[2];		/* rqid.  internal to 603	*/
 	unsigned char reserved5[2];	/* 0x0000			*/
 	unsigned char function_code[2];	/* for PKD, 0x5044 (ascii 'PD')	*/
 	unsigned char reserved6[2];	/* 0x0000			*/
-	unsigned int  ToCardLen1;	/* (request CPRB len + 3) & -4	*/
-	unsigned int  ToCardLen2;	/* db len 0x00000000 for PKD	*/
-	unsigned int  ToCardLen3;	/* 0x00000000			*/
-	unsigned int  ToCardLen4;	/* 0x00000000			*/
-	unsigned int  FromCardLen1;	/* response buffer length	*/
-	unsigned int  FromCardLen2;	/* db len 0x00000000 for PKD	*/
-	unsigned int  FromCardLen3;	/* 0x00000000			*/
-	unsigned int  FromCardLen4;	/* 0x00000000			*/
+	unsigned int  tocardlen1;	/* (request CPRB len + 3) & -4	*/
+	unsigned int  tocardlen2;	/* db len 0x00000000 for PKD	*/
+	unsigned int  tocardlen3;	/* 0x00000000			*/
+	unsigned int  tocardlen4;	/* 0x00000000			*/
+	unsigned int  fromcardlen1;	/* response buffer length	*/
+	unsigned int  fromcardlen2;	/* db len 0x00000000 for PKD	*/
+	unsigned int  fromcardlen3;	/* 0x00000000			*/
+	unsigned int  fromcardlen4;	/* 0x00000000			*/
 } __packed;
 
 /**
- * The type 86 message family is associated with PCICC and PCIXCC cards.
+ * The type 86 message family is associated with CEXxC/CEXxP cards.
  *
  * It contains a message header followed by a CPRB.  The CPRB is
  * the same as the request CPRB, which is described above.
@@ -116,15 +94,31 @@ struct type86_fmt2_ext {
 	unsigned int	  offset4;	/* 0x00000000			*/
 } __packed;
 
+int prep_cca_ap_msg(bool userspace, struct ica_xcRB *xcrb,
+		    struct ap_message *ap_msg,
+		    unsigned int *fc, unsigned short **dom);
+int prep_ep11_ap_msg(bool userspace, struct ep11_urb *xcrb,
+		     struct ap_message *ap_msg,
+		     unsigned int *fc, unsigned int *dom);
+int prep_rng_ap_msg(struct ap_message *ap_msg,
+		    int *fc, unsigned int *dom);
+
+#define LOW	10
+#define MEDIUM	100
+#define HIGH	500
+
+int speed_idx_cca(int);
+int speed_idx_ep11(int);
+
 /**
  * Prepare a type6 CPRB message for random number generation
  *
  * @ap_dev: AP device pointer
  * @ap_msg: pointer to AP message
  */
-static inline void rng_type6CPRB_msgX(struct ap_device *ap_dev,
-			       struct ap_message *ap_msg,
-			       unsigned random_number_length)
+static inline void rng_type6cprb_msgx(struct ap_message *ap_msg,
+				      unsigned int random_number_length,
+				      unsigned int *domain)
 {
 	struct {
 		struct type6_hdr hdr;
@@ -134,14 +128,14 @@ static inline void rng_type6CPRB_msgX(struct ap_device *ap_dev,
 		char rule[8];
 		short int verb_length;
 		short int key_length;
-	} __packed * msg = ap_msg->message;
+	} __packed * msg = ap_msg->msg;
 	static struct type6_hdr static_type6_hdrX = {
 		.type		= 0x06,
 		.offset1	= 0x00000058,
 		.agent_id	= {'C', 'A'},
 		.function_code	= {'R', 'L'},
-		.ToCardLen1	= sizeof(*msg) - sizeof(msg->hdr),
-		.FromCardLen1	= sizeof(*msg) - sizeof(msg->hdr),
+		.tocardlen1	= sizeof(*msg) - sizeof(msg->hdr),
+		.fromcardlen1	= sizeof(*msg) - sizeof(msg->hdr),
 	};
 	static struct CPRBX local_cprbx = {
 		.cprb_len	= 0x00dc,
@@ -153,19 +147,19 @@ static inline void rng_type6CPRB_msgX(struct ap_device *ap_dev,
 	};
 
 	msg->hdr = static_type6_hdrX;
-	msg->hdr.FromCardLen2 = random_number_length,
+	msg->hdr.fromcardlen2 = random_number_length;
 	msg->cprbx = local_cprbx;
-	msg->cprbx.rpl_datal = random_number_length,
-	msg->cprbx.domain = AP_QID_QUEUE(ap_dev->qid);
+	msg->cprbx.rpl_datal = random_number_length;
 	memcpy(msg->function_code, msg->hdr.function_code, 0x02);
 	msg->rule_length = 0x0a;
 	memcpy(msg->rule, "RANDOM  ", 8);
 	msg->verb_length = 0x02;
 	msg->key_length = 0x02;
-	ap_msg->length = sizeof(*msg);
+	ap_msg->len = sizeof(*msg);
+	*domain = (unsigned short)msg->cprbx.domain;
 }
 
-int zcrypt_msgtype6_init(void);
+void zcrypt_msgtype6_init(void);
 void zcrypt_msgtype6_exit(void);
 
 #endif /* _ZCRYPT_MSGTYPE6_H_ */

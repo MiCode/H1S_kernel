@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /* 
  * Copyright (C) 2000, 2001 Jeff Dike (jdike@karaya.com)
- * Licensed under the GPL
  */
 
 #include <linux/posix_types.h>
@@ -53,9 +53,7 @@ static struct line_driver driver = {
 	.minor_start 		= 0,
 	.type 		 	= TTY_DRIVER_TYPE_CONSOLE,
 	.subtype 	 	= SYSTEM_TYPE_CONSOLE,
-	.read_irq 		= CONSOLE_IRQ,
 	.read_irq_name 		= "console",
-	.write_irq 		= CONSOLE_WRITE_IRQ,
 	.write_irq_name 	= "console-write",
 	.mc  = {
 		.list		= LIST_HEAD_INIT(driver.mc.list),
@@ -90,7 +88,7 @@ static int con_remove(int n, char **error_out)
 }
 
 /* Set in an initcall, checked in an exitcall */
-static int con_init_done = 0;
+static int con_init_done;
 
 static int con_install(struct tty_driver *driver, struct tty_struct *tty)
 {
@@ -102,12 +100,10 @@ static const struct tty_operations console_ops = {
 	.install		= con_install,
 	.close 	 		= line_close,
 	.write 	 		= line_write,
-	.put_char 		= line_put_char,
 	.write_room		= line_write_room,
 	.chars_in_buffer 	= line_chars_in_buffer,
 	.flush_buffer 		= line_flush_buffer,
 	.flush_chars 		= line_flush_chars,
-	.set_termios 		= line_set_termios,
 	.throttle 		= line_throttle,
 	.unthrottle 		= line_unthrottle,
 	.hangup			= line_hangup,
@@ -192,6 +188,9 @@ __uml_exitcall(console_exit);
 
 static int console_chan_setup(char *str)
 {
+	if (!strncmp(str, "sole=", 5))	/* console= option specifies tty */
+		return 0;
+
 	line_setup(vt_conf, MAX_TTYS, &def_conf, str, "console");
 	return 1;
 }

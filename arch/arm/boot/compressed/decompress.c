@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #define _LINUX_STRING_H_
 
 #include <linux/compiler.h>	/* for inline */
@@ -5,10 +6,7 @@
 #include <linux/stddef.h>	/* for NULL */
 #include <linux/linkage.h>
 #include <asm/string.h>
-
-extern unsigned long free_mem_ptr;
-extern unsigned long free_mem_end_ptr;
-extern void error(char *);
+#include "misc.h"
 
 #define STATIC static
 #define STATIC_RW_DATA	/* non-static please */
@@ -32,6 +30,10 @@ extern void error(char *);
 
 /* Not needed, but used in some headers pulled in by decompressors */
 extern char * strstr(const char * s1, const char *s2);
+extern size_t strlen(const char *s);
+extern int strcmp(const char *cs, const char *ct);
+extern int memcmp(const void *cs, const void *ct, size_t count);
+extern char * strchrnul(const char *, int);
 
 #ifdef CONFIG_KERNEL_GZIP
 #include "../../../../lib/decompress_inflate.c"
@@ -46,7 +48,10 @@ extern char * strstr(const char * s1, const char *s2);
 #endif
 
 #ifdef CONFIG_KERNEL_XZ
+/* Prevent KASAN override of string helpers in decompressor */
+#undef memmove
 #define memmove memmove
+#undef memcpy
 #define memcpy memcpy
 #include "../../../../lib/decompress_unxz.c"
 #endif
@@ -57,5 +62,5 @@ extern char * strstr(const char * s1, const char *s2);
 
 int do_decompress(u8 *input, int len, u8 *output, void (*error)(char *x))
 {
-	return decompress(input, len, NULL, NULL, output, NULL, error);
+	return __decompress(input, len, NULL, NULL, output, 0, NULL, error);
 }

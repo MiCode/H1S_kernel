@@ -1,21 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
 	Mantis PCI bridge driver
 
 	Copyright (C) Manu Abraham (abraham.manu@gmail.com)
 
-	This program is free software; you can redistribute it and/or modify
-	it under the terms of the GNU General Public License as published by
-	the Free Software Foundation; either version 2 of the License, or
-	(at your option) any later version.
-
-	This program is distributed in the hope that it will be useful,
-	but WITHOUT ANY WARRANTY; without even the implied warranty of
-	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-	GNU General Public License for more details.
-
-	You should have received a copy of the GNU General Public License
-	along with this program; if not, write to the Free Software
-	Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
 #include <linux/kernel.h>
@@ -25,16 +13,18 @@
 #include <linux/signal.h>
 #include <linux/sched.h>
 #include <linux/interrupt.h>
+#include <linux/pci.h>
 
-#include "dmxdev.h"
-#include "dvbdev.h"
-#include "dvb_demux.h"
-#include "dvb_frontend.h"
-#include "dvb_net.h"
+#include <media/dmxdev.h>
+#include <media/dvbdev.h>
+#include <media/dvb_demux.h>
+#include <media/dvb_frontend.h>
+#include <media/dvb_net.h>
 
 #include "mantis_common.h"
 #include "mantis_reg.h"
 #include "mantis_uart.h"
+#include "mantis_input.h"
 
 struct mantis_uart_params {
 	enum mantis_baud	baud_rate;
@@ -59,51 +49,61 @@ static struct {
 	{ "EVEN" }
 };
 
-#define UART_MAX_BUF			16
-
-static int mantis_uart_read(struct mantis_pci *mantis, u8 *data)
+static void mantis_uart_read(struct mantis_pci *mantis)
 {
 	struct mantis_hwconfig *config = mantis->hwconfig;
-	u32 stat = 0, i;
+	int i, scancode = 0, err = 0;
 
 	/* get data */
+	dprintk(MANTIS_DEBUG, 1, "UART Reading ...");
 	for (i = 0; i < (config->bytes + 1); i++) {
+		int data = mmread(MANTIS_UART_RXD);
 
-		stat = mmread(MANTIS_UART_STAT);
+		dprintk(MANTIS_DEBUG, 0, " <%02x>", data);
 
-		if (stat & MANTIS_UART_RXFIFO_FULL) {
-			dprintk(MANTIS_ERROR, 1, "RX Fifo FULL");
-		}
-		data[i] = mmread(MANTIS_UART_RXD) & 0x3f;
+		scancode = (scancode << 8) | (data & 0x3f);
+		err |= data;
 
-		dprintk(MANTIS_DEBUG, 1, "Reading ... <%02x>", data[i] & 0x3f);
-
-		if (data[i] & (1 << 7)) {
+		if (data & (1 << 7))
 			dprintk(MANTIS_ERROR, 1, "UART framing error");
-			return -EINVAL;
-		}
-		if (data[i] & (1 << 6)) {
-			dprintk(MANTIS_ERROR, 1, "UART parity error");
-			return -EINVAL;
-		}
-	}
 
-	return 0;
+		if (data & (1 << 6))
+			dprintk(MANTIS_ERROR, 1, "UART parity error");
+	}
+	dprintk(MANTIS_DEBUG, 0, "\n");
+
+	if ((err & 0xC0) == 0)
+		mantis_input_process(mantis, scancode);
 }
 
 static void mantis_uart_work(struct work_struct *work)
 {
 	struct mantis_pci *mantis = container_of(work, struct mantis_pci, uart_work);
-	struct mantis_hwconfig *config = mantis->hwconfig;
-	u8 buf[16];
-	int i;
+	u32 stat;
+	unsigned long timeout;
 
-	mantis_uart_read(mantis, buf);
+	stat = mmread(MANTIS_UART_STAT);
 
-	for (i = 0; i < (config->bytes + 1); i++)
-		dprintk(MANTIS_INFO, 1, "UART BUF:%d <%02x> ", i, buf[i]);
+	if (stat & MANTIS_UART_RXFIFO_FULL)
+		dprintk(MANTIS_ERROR, 1, "RX Fifo FULL");
 
-	dprintk(MANTIS_DEBUG, 0, "\n");
+	/*
+	 * MANTIS_UART_RXFIFO_DATA is only set if at least
+	 * config->bytes + 1 bytes are in the FIFO.
+	 */
+
+	/* FIXME: is 10ms good enough ? */
+	timeout = jiffies +  msecs_to_jiffies(10);
+	while (stat & MANTIS_UART_RXFIFO_DATA) {
+		mantis_uart_read(mantis);
+		stat = mmread(MANTIS_UART_STAT);
+
+		if (!time_is_after_jiffies(timeout))
+			break;
+	}
+
+	/* re-enable UART (RX) interrupt */
+	mantis_unmask_ints(mantis, MANTIS_INT_IRQ1);
 }
 
 static int mantis_uart_setup(struct mantis_pci *mantis,
@@ -152,9 +152,6 @@ int mantis_uart_init(struct mantis_pci *mantis)
 		rates[params.baud_rate].string,
 		parity[params.parity].string);
 
-	init_waitqueue_head(&mantis->uart_wq);
-	spin_lock_init(&mantis->uart_lock);
-
 	INIT_WORK(&mantis->uart_work, mantis_uart_work);
 
 	/* disable interrupt */
@@ -169,8 +166,8 @@ int mantis_uart_init(struct mantis_pci *mantis)
 	mmwrite((mmread(MANTIS_UART_CTL) | MANTIS_UART_RXFLUSH), MANTIS_UART_CTL);
 
 	/* enable interrupt */
-	mmwrite(mmread(MANTIS_INT_MASK) | 0x800, MANTIS_INT_MASK);
 	mmwrite(mmread(MANTIS_UART_CTL) | MANTIS_UART_RXINT, MANTIS_UART_CTL);
+	mantis_unmask_ints(mantis, MANTIS_INT_IRQ1);
 
 	schedule_work(&mantis->uart_work);
 	dprintk(MANTIS_DEBUG, 1, "UART successfully initialized");
@@ -182,6 +179,7 @@ EXPORT_SYMBOL_GPL(mantis_uart_init);
 void mantis_uart_exit(struct mantis_pci *mantis)
 {
 	/* disable interrupt */
+	mantis_mask_ints(mantis, MANTIS_INT_IRQ1);
 	mmwrite(mmread(MANTIS_UART_CTL) & 0xffef, MANTIS_UART_CTL);
 	flush_work(&mantis->uart_work);
 }

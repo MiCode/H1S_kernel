@@ -101,7 +101,9 @@ static struct dsp56k_device {
 	int tx_wsize, rx_wsize;
 } dsp56k;
 
-static struct class *dsp56k_class;
+static const struct class dsp56k_class = {
+	.name = "dsp56k",
+};
 
 static int dsp56k_reset(void)
 {
@@ -325,7 +327,7 @@ static long dsp56k_ioctl(struct file *file, unsigned int cmd,
 			if(get_user(bin, &binary->bin) < 0)
 				return -EFAULT;
 		
-			if (len == 0) {
+			if (len <= 0) {
 				return -EINVAL;      /* nothing to upload?!? */
 			}
 			if (len > DSP56K_MAX_BINARY_LENGTH) {
@@ -383,7 +385,7 @@ static long dsp56k_ioctl(struct file *file, unsigned int cmd,
 			return put_user(status, &hf->status);
 		}
 		case DSP56K_HOST_CMD:
-			if (arg > 31 || arg < 0)
+			if (arg > 31)
 				return -EINVAL;
 			mutex_lock(&dsp56k_mutex);
 			dsp56k_host_interface.cvr = (u_char)((arg & DSP56K_CVR_HV_MASK) |
@@ -406,7 +408,7 @@ static long dsp56k_ioctl(struct file *file, unsigned int cmd,
  * Do I need this function at all???
  */
 #if 0
-static unsigned int dsp56k_poll(struct file *file, poll_table *wait)
+static __poll_t dsp56k_poll(struct file *file, poll_table *wait)
 {
 	int dev = iminor(file_inode(file)) & 0x0f;
 
@@ -414,7 +416,7 @@ static unsigned int dsp56k_poll(struct file *file, poll_table *wait)
 	{
 	case DSP56K_DEV_56001:
 		/* poll_wait(file, ???, wait); */
-		return POLLIN | POLLRDNORM | POLLOUT;
+		return EPOLLIN | EPOLLRDNORM | EPOLLOUT;
 
 	default:
 		printk("DSP56k driver: Unknown minor device: %d\n", dev);
@@ -489,11 +491,11 @@ static const struct file_operations dsp56k_fops = {
 
 /****** Init and module functions ******/
 
-static char banner[] __initdata = KERN_INFO "DSP56k driver installed\n";
+static const char banner[] __initconst = KERN_INFO "DSP56k driver installed\n";
 
 static int __init dsp56k_init_driver(void)
 {
-	int err = 0;
+	int err;
 
 	if(!MACH_IS_ATARI || !ATARIHW_PRESENT(DSP56K)) {
 		printk("DSP56k driver: Hardware not present\n");
@@ -504,12 +506,10 @@ static int __init dsp56k_init_driver(void)
 		printk("DSP56k driver: Unable to register driver\n");
 		return -ENODEV;
 	}
-	dsp56k_class = class_create(THIS_MODULE, "dsp56k");
-	if (IS_ERR(dsp56k_class)) {
-		err = PTR_ERR(dsp56k_class);
+	err = class_register(&dsp56k_class);
+	if (err)
 		goto out_chrdev;
-	}
-	device_create(dsp56k_class, NULL, MKDEV(DSP56K_MAJOR, 0), NULL,
+	device_create(&dsp56k_class, NULL, MKDEV(DSP56K_MAJOR, 0), NULL,
 		      "dsp56k");
 
 	printk(banner);
@@ -524,8 +524,8 @@ module_init(dsp56k_init_driver);
 
 static void __exit dsp56k_cleanup_driver(void)
 {
-	device_destroy(dsp56k_class, MKDEV(DSP56K_MAJOR, 0));
-	class_destroy(dsp56k_class);
+	device_destroy(&dsp56k_class, MKDEV(DSP56K_MAJOR, 0));
+	class_unregister(&dsp56k_class);
 	unregister_chrdev(DSP56K_MAJOR, "dsp56k");
 }
 module_exit(dsp56k_cleanup_driver);

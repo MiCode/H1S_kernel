@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* drivers/atm/idt77105.c - IDT77105 (PHY) driver */
  
 /* Written 1999 by Greg Banks, NEC Australia <gnb@linuxfan.com>. Based on suni.c */
@@ -17,7 +18,7 @@
 #include <linux/spinlock.h>
 #include <linux/slab.h>
 #include <asm/param.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "idt77105.h"
 
@@ -45,12 +46,12 @@ static DEFINE_SPINLOCK(idt77105_priv_lock);
 #define PUT(val,reg) dev->ops->phy_put(dev,val,IDT77105_##reg)
 #define GET(reg) dev->ops->phy_get(dev,IDT77105_##reg)
 
-static void idt77105_stats_timer_func(unsigned long);
-static void idt77105_restart_timer_func(unsigned long);
+static void idt77105_stats_timer_func(struct timer_list *);
+static void idt77105_restart_timer_func(struct timer_list *);
 
 
-static DEFINE_TIMER(stats_timer, idt77105_stats_timer_func, 0, 0);
-static DEFINE_TIMER(restart_timer, idt77105_restart_timer_func, 0, 0);
+static DEFINE_TIMER(stats_timer, idt77105_stats_timer_func);
+static DEFINE_TIMER(restart_timer, idt77105_restart_timer_func);
 static int start_timer = 1;
 static struct idt77105_priv *idt77105_all = NULL;
 
@@ -80,7 +81,7 @@ static u16 get_counter(struct atm_dev *dev, int counter)
  * a separate copy of the stats allows implementation of
  * an ioctl which gathers the stats *without* zero'ing them.
  */
-static void idt77105_stats_timer_func(unsigned long dummy)
+static void idt77105_stats_timer_func(struct timer_list *unused)
 {
 	struct idt77105_priv *walk;
 	struct atm_dev *dev;
@@ -109,7 +110,7 @@ static void idt77105_stats_timer_func(unsigned long dummy)
  * interrupts need to be disabled when the cable is pulled out
  * to avoid lots of spurious cell error interrupts.
  */
-static void idt77105_restart_timer_func(unsigned long dummy)
+static void idt77105_restart_timer_func(struct timer_list *unused)
 {
 	struct idt77105_priv *walk;
 	struct atm_dev *dev;
@@ -191,7 +192,7 @@ static int idt77105_ioctl(struct atm_dev *dev,unsigned int cmd,void __user *arg)
 	switch (cmd) {
 		case IDT77105_GETSTATZ:
 			if (!capable(CAP_NET_ADMIN)) return -EPERM;
-			/* fall through */
+			fallthrough;
 		case IDT77105_GETSTAT:
 			return fetch_stats(dev, arg, cmd == IDT77105_GETSTATZ);
 		case ATM_SETLOOP:
@@ -261,7 +262,7 @@ static int idt77105_start(struct atm_dev *dev)
 {
 	unsigned long flags;
 
-	if (!(dev->dev_data = kmalloc(sizeof(struct idt77105_priv),GFP_KERNEL)))
+	if (!(dev->phy_data = kmalloc(sizeof(struct idt77105_priv),GFP_KERNEL)))
 		return -ENOMEM;
 	PRIV(dev)->dev = dev;
 	spin_lock_irqsave(&idt77105_priv_lock, flags);
@@ -306,14 +307,10 @@ static int idt77105_start(struct atm_dev *dev)
 	if (start_timer) {
 		start_timer = 0;
                 
-		init_timer(&stats_timer);
 		stats_timer.expires = jiffies+IDT77105_STATS_TIMER_PERIOD;
-		stats_timer.function = idt77105_stats_timer_func;
 		add_timer(&stats_timer);
                 
-		init_timer(&restart_timer);
 		restart_timer.expires = jiffies+IDT77105_RESTART_TIMER_PERIOD;
-		restart_timer.function = idt77105_restart_timer_func;
 		add_timer(&restart_timer);
 	}
 	spin_unlock_irqrestore(&idt77105_priv_lock, flags);
@@ -340,7 +337,7 @@ static int idt77105_stop(struct atm_dev *dev)
                 else
                     idt77105_all = walk->next;
 	        dev->phy = NULL;
-                dev->dev_data = NULL;
+                dev->phy_data = NULL;
                 kfree(walk);
                 break;
             }
@@ -368,9 +365,9 @@ EXPORT_SYMBOL(idt77105_init);
 
 static void __exit idt77105_exit(void)
 {
-        /* turn off timers */
-        del_timer(&stats_timer);
-        del_timer(&restart_timer);
+	/* turn off timers */
+	del_timer_sync(&stats_timer);
+	del_timer_sync(&restart_timer);
 }
 
 module_exit(idt77105_exit);

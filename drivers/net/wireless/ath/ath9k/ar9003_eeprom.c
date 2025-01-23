@@ -15,6 +15,7 @@
  */
 
 #include <asm/unaligned.h>
+#include <linux/kernel.h>
 #include "hw.h"
 #include "ar9003_phy.h"
 #include "ar9003_eeprom.h"
@@ -23,8 +24,8 @@
 #define COMP_HDR_LEN 4
 #define COMP_CKSUM_LEN 2
 
-#define LE16(x) __constant_cpu_to_le16(x)
-#define LE32(x) __constant_cpu_to_le32(x)
+#define LE16(x) cpu_to_le16(x)
+#define LE32(x) cpu_to_le32(x)
 
 /* Local defines to distinguish between extension and control CTL's */
 #define EXT_ADDITIVE (0x8000)
@@ -53,7 +54,7 @@ static const struct ar9300_eeprom ar9300_default = {
 		.txrxMask =  0x77, /* 4 bits tx and 4 bits rx */
 		.opCapFlags = {
 			.opFlags = AR5416_OPFLAGS_11G | AR5416_OPFLAGS_11A,
-			.eepMisc = 0,
+			.eepMisc = AR9300_EEPMISC_LITTLE_ENDIAN,
 		},
 		.rfSilent = 0,
 		.blueToothOptions = 0,
@@ -631,7 +632,7 @@ static const struct ar9300_eeprom ar9300_x113 = {
 		.txrxMask =  0x77, /* 4 bits tx and 4 bits rx */
 		.opCapFlags = {
 			.opFlags = AR5416_OPFLAGS_11A,
-			.eepMisc = 0,
+			.eepMisc = AR9300_EEPMISC_LITTLE_ENDIAN,
 		},
 		.rfSilent = 0,
 		.blueToothOptions = 0,
@@ -1210,7 +1211,7 @@ static const struct ar9300_eeprom ar9300_h112 = {
 		.txrxMask =  0x77, /* 4 bits tx and 4 bits rx */
 		.opCapFlags = {
 			.opFlags = AR5416_OPFLAGS_11G | AR5416_OPFLAGS_11A,
-			.eepMisc = 0,
+			.eepMisc = AR9300_EEPMISC_LITTLE_ENDIAN,
 		},
 		.rfSilent = 0,
 		.blueToothOptions = 0,
@@ -1789,7 +1790,7 @@ static const struct ar9300_eeprom ar9300_x112 = {
 		.txrxMask =  0x77, /* 4 bits tx and 4 bits rx */
 		.opCapFlags = {
 			.opFlags = AR5416_OPFLAGS_11G | AR5416_OPFLAGS_11A,
-			.eepMisc = 0,
+			.eepMisc = AR9300_EEPMISC_LITTLE_ENDIAN,
 		},
 		.rfSilent = 0,
 		.blueToothOptions = 0,
@@ -2367,7 +2368,7 @@ static const struct ar9300_eeprom ar9300_h116 = {
 		.txrxMask =  0x33, /* 4 bits tx and 4 bits rx */
 		.opCapFlags = {
 			.opFlags = AR5416_OPFLAGS_11G | AR5416_OPFLAGS_11A,
-			.eepMisc = 0,
+			.eepMisc = AR9300_EEPMISC_LITTLE_ENDIAN,
 		},
 		.rfSilent = 0,
 		.blueToothOptions = 0,
@@ -2946,14 +2947,12 @@ static const struct ar9300_eeprom *ar9300_eep_templates[] = {
 
 static const struct ar9300_eeprom *ar9003_eeprom_struct_find_by_id(int id)
 {
-#define N_LOOP (sizeof(ar9300_eep_templates) / sizeof(ar9300_eep_templates[0]))
 	int it;
 
-	for (it = 0; it < N_LOOP; it++)
+	for (it = 0; it < ARRAY_SIZE(ar9300_eep_templates); it++)
 		if (ar9300_eep_templates[it]->templateVersion == id)
 			return ar9300_eep_templates[it];
 	return NULL;
-#undef N_LOOP
 }
 
 static int ath9k_hw_ar9300_check_eeprom(struct ath_hw *ah)
@@ -3085,13 +3084,13 @@ error:
 
 static bool ar9300_otp_read_word(struct ath_hw *ah, int addr, u32 *data)
 {
-	REG_READ(ah, AR9300_OTP_BASE + (4 * addr));
+	REG_READ(ah, AR9300_OTP_BASE(ah) + (4 * addr));
 
-	if (!ath9k_hw_wait(ah, AR9300_OTP_STATUS, AR9300_OTP_STATUS_TYPE,
+	if (!ath9k_hw_wait(ah, AR9300_OTP_STATUS(ah), AR9300_OTP_STATUS_TYPE,
 			   AR9300_OTP_STATUS_VALID, 1000))
 		return false;
 
-	*data = REG_READ(ah, AR9300_OTP_READ_DATA);
+	*data = REG_READ(ah, AR9300_OTP_READ_DATA(ah));
 	return true;
 }
 
@@ -3202,8 +3201,7 @@ static int ar9300_compress_decision(struct ath_hw *ah,
 			it, length);
 		break;
 	case _CompressBlock:
-		if (reference == 0) {
-		} else {
+		if (reference != 0) {
 			eep = ar9003_eeprom_struct_find_by_id(reference);
 			if (eep == NULL) {
 				ath_dbg(common, EEPROM,
@@ -3253,7 +3251,8 @@ static int ar9300_eeprom_restore_flash(struct ath_hw *ah, u8 *mptr,
 	int i;
 
 	for (i = 0; i < mdata_size / 2; i++, data++)
-		ath9k_hw_nvram_read(ah, i, data);
+		if (!ath9k_hw_nvram_read(ah, i, data))
+			return -EIO;
 
 	return 0;
 }
@@ -3283,7 +3282,8 @@ static int ar9300_eeprom_restore_internal(struct ath_hw *ah,
 	if (ath9k_hw_use_flash(ah)) {
 		u8 txrx;
 
-		ar9300_eeprom_restore_flash(ah, mptr, mdata_size);
+		if (ar9300_eeprom_restore_flash(ah, mptr, mdata_size))
+			return -EIO;
 
 		/* check if eeprom contains valid data */
 		eep = (struct ar9300_eeprom *) mptr;
@@ -3305,6 +3305,12 @@ static int ar9300_eeprom_restore_internal(struct ath_hw *ah,
 		cptr = AR9300_BASE_ADDR_512;
 	else
 		cptr = AR9300_BASE_ADDR;
+	ath_dbg(common, EEPROM, "Trying EEPROM access at Address 0x%04x\n",
+		cptr);
+	if (ar9300_check_eeprom_header(ah, read, cptr))
+		goto found;
+
+	cptr = AR9300_BASE_ADDR_4K;
 	ath_dbg(common, EEPROM, "Trying EEPROM access at Address 0x%04x\n",
 		cptr);
 	if (ar9300_check_eeprom_header(ah, read, cptr))
@@ -3345,7 +3351,8 @@ found:
 			"Found block at %x: code=%d ref=%d length=%d major=%d minor=%d\n",
 			cptr, code, reference, length, major, minor);
 		if ((!AR_SREV_9485(ah) && length >= 1024) ||
-		    (AR_SREV_9485(ah) && length > EEPROM_DATA_LEN_9485)) {
+		    (AR_SREV_9485(ah) && length > EEPROM_DATA_LEN_9485) ||
+		    (length > cptr)) {
 			ath_dbg(common, EEPROM, "Skipping bad header\n");
 			cptr -= COMP_HDR_LEN;
 			continue;
@@ -3430,6 +3437,60 @@ static u32 ar9003_dump_modal_eeprom(char *buf, u32 len, u32 size,
 	return len;
 }
 
+static u32 ar9003_dump_cal_data(struct ath_hw *ah, char *buf, u32 len, u32 size,
+				bool is_2g)
+{
+	struct ar9300_eeprom *eep = &ah->eeprom.ar9300_eep;
+	struct ar9300_base_eep_hdr *pBase;
+	struct ar9300_cal_data_per_freq_op_loop *cal_pier;
+	int cal_pier_nr;
+	int freq;
+	int i, j;
+
+	pBase = &eep->baseEepHeader;
+
+	if (is_2g)
+		cal_pier_nr = AR9300_NUM_2G_CAL_PIERS;
+	else
+		cal_pier_nr = AR9300_NUM_5G_CAL_PIERS;
+
+	for (i = 0; i < AR9300_MAX_CHAINS; i++) {
+		if (!((pBase->txrxMask >> i) & 1))
+			continue;
+
+		len += scnprintf(buf + len, size - len, "Chain %d\n", i);
+
+		len += scnprintf(buf + len, size - len,
+			"Freq\t ref\tvolt\ttemp\tnf_cal\tnf_pow\trx_temp\n");
+
+		for (j = 0; j < cal_pier_nr; j++) {
+			if (is_2g) {
+				cal_pier = &eep->calPierData2G[i][j];
+				freq = 2300 + eep->calFreqPier2G[j];
+			} else {
+				cal_pier = &eep->calPierData5G[i][j];
+				freq = 4800 + eep->calFreqPier5G[j] * 5;
+			}
+
+			len += scnprintf(buf + len, size - len,
+				"%d\t", freq);
+
+			len += scnprintf(buf + len, size - len,
+				"%d\t%d\t%d\t%d\t%d\t%d\n",
+				cal_pier->refPower,
+				cal_pier->voltMeas,
+				cal_pier->tempMeas,
+				cal_pier->rxTempMeas ?
+				N2DBM(cal_pier->rxNoisefloorCal) : 0,
+				cal_pier->rxTempMeas ?
+				N2DBM(cal_pier->rxNoisefloorPower) : 0,
+				cal_pier->rxTempMeas);
+		}
+	}
+
+	return len;
+}
+
 static u32 ath9k_hw_ar9003_dump_eeprom(struct ath_hw *ah, bool dump_base_hdr,
 				       u8 *buf, u32 len, u32 size)
 {
@@ -3441,10 +3502,18 @@ static u32 ath9k_hw_ar9003_dump_eeprom(struct ath_hw *ah, bool dump_base_hdr,
 				 "%20s :\n", "2GHz modal Header");
 		len = ar9003_dump_modal_eeprom(buf, len, size,
 						&eep->modalHeader2G);
+
+		len += scnprintf(buf + len, size - len, "Calibration data\n");
+		len = ar9003_dump_cal_data(ah, buf, len, size, true);
+
 		len += scnprintf(buf + len, size - len,
 				 "%20s :\n", "5GHz modal Header");
 		len = ar9003_dump_modal_eeprom(buf, len, size,
 						&eep->modalHeader5G);
+
+		len += scnprintf(buf + len, size - len, "Calibration data\n");
+		len = ar9003_dump_cal_data(ah, buf, len, size, false);
+
 		goto out;
 	}
 
@@ -3467,7 +3536,8 @@ static u32 ath9k_hw_ar9003_dump_eeprom(struct ath_hw *ah, bool dump_base_hdr,
 					AR5416_OPFLAGS_N_5G_HT20));
 	PR_EEP("Disable 5Ghz HT40", !!(pBase->opCapFlags.opFlags &
 					AR5416_OPFLAGS_N_5G_HT40));
-	PR_EEP("Big Endian", !!(pBase->opCapFlags.eepMisc & 0x01));
+	PR_EEP("Big Endian", !!(pBase->opCapFlags.eepMisc &
+				AR5416_EEPMISC_BIG_ENDIAN));
 	PR_EEP("RF Silent", pBase->rfSilent);
 	PR_EEP("BT option", pBase->blueToothOptions);
 	PR_EEP("Device Cap", pBase->deviceCap);
@@ -3535,16 +3605,17 @@ static void ar9003_hw_xpa_bias_level_apply(struct ath_hw *ah, bool is2ghz)
 {
 	int bias = ar9003_modal_header(ah, is2ghz)->xpaBiasLvl;
 
-	if (AR_SREV_9485(ah) || AR_SREV_9330(ah) || AR_SREV_9340(ah))
-		REG_RMW_FIELD(ah, AR_CH0_TOP2, AR_CH0_TOP2_XPABIASLVL, bias);
+	if (AR_SREV_9485(ah) || AR_SREV_9330(ah) || AR_SREV_9340(ah) ||
+	    AR_SREV_9531(ah) || AR_SREV_9561(ah))
+		REG_RMW_FIELD(ah, AR_CH0_TOP2(ah), AR_CH0_TOP2_XPABIASLVL, bias);
 	else if (AR_SREV_9462(ah) || AR_SREV_9550(ah) || AR_SREV_9565(ah))
-		REG_RMW_FIELD(ah, AR_CH0_TOP, AR_CH0_TOP_XPABIASLVL, bias);
+		REG_RMW_FIELD(ah, AR_CH0_TOP(ah), AR_CH0_TOP_XPABIASLVL, bias);
 	else {
-		REG_RMW_FIELD(ah, AR_CH0_TOP, AR_CH0_TOP_XPABIASLVL, bias);
-		REG_RMW_FIELD(ah, AR_CH0_THERM,
+		REG_RMW_FIELD(ah, AR_CH0_TOP(ah), AR_CH0_TOP_XPABIASLVL, bias);
+		REG_RMW_FIELD(ah, AR_CH0_THERM(ah),
 				AR_CH0_THERM_XPABIASLVL_MSB,
 				bias >> 2);
-		REG_RMW_FIELD(ah, AR_CH0_THERM,
+		REG_RMW_FIELD(ah, AR_CH0_THERM(ah),
 				AR_CH0_THERM_XPASHORT2GND, 1);
 	}
 }
@@ -3589,8 +3660,8 @@ static void ar9003_hw_ant_ctrl_apply(struct ath_hw *ah, bool is2ghz)
 		else
 			gpio = AR9300_EXT_LNA_CTL_GPIO_AR9485;
 
-		ath9k_hw_cfg_output(ah, gpio,
-				    AR_GPIO_OUTPUT_MUX_AS_PCIE_ATTENTION_LED);
+		ath9k_hw_gpio_request_out(ah, gpio, NULL,
+					  AR_GPIO_OUTPUT_MUX_AS_PCIE_ATTENTION_LED);
 	}
 
 	value = ar9003_hw_ant_ctrl_common_get(ah, is2ghz);
@@ -3598,7 +3669,7 @@ static void ar9003_hw_ant_ctrl_apply(struct ath_hw *ah, bool is2ghz)
 	if (AR_SREV_9462(ah) || AR_SREV_9565(ah)) {
 		REG_RMW_FIELD(ah, AR_PHY_SWITCH_COM,
 				AR_SWITCH_TABLE_COM_AR9462_ALL, value);
-	} else if (AR_SREV_9550(ah) || AR_SREV_9531(ah)) {
+	} else if (AR_SREV_9550(ah) || AR_SREV_9531(ah) || AR_SREV_9561(ah)) {
 		REG_RMW_FIELD(ah, AR_PHY_SWITCH_COM,
 				AR_SWITCH_TABLE_COM_AR9550_ALL, value);
 	} else
@@ -3840,7 +3911,7 @@ static void ar9003_hw_atten_apply(struct ath_hw *ah, struct ath9k_channel *chan)
 	}
 
 	/* Test value. if 0 then attenuation is unused. Don't load anything. */
-	for (i = 0; i < 3; i++) {
+	for (i = 0; i < AR9300_MAX_CHAINS; i++) {
 		if (ah->txchainmask & BIT(i)) {
 			value = ar9003_hw_atten_chain_get(ah, i, chan);
 			REG_RMW_FIELD(ah, ext_atten_reg[i],
@@ -3889,9 +3960,9 @@ void ar9003_hw_internal_regulator_apply(struct ath_hw *ah)
 		if (AR_SREV_9330(ah) || AR_SREV_9485(ah)) {
 			int reg_pmu_set;
 
-			reg_pmu_set = REG_READ(ah, AR_PHY_PMU2) & ~AR_PHY_PMU2_PGM;
-			REG_WRITE(ah, AR_PHY_PMU2, reg_pmu_set);
-			if (!is_pmu_set(ah, AR_PHY_PMU2, reg_pmu_set))
+			reg_pmu_set = REG_READ(ah, AR_PHY_PMU2(ah)) & ~AR_PHY_PMU2_PGM;
+			REG_WRITE(ah, AR_PHY_PMU2(ah), reg_pmu_set);
+			if (!is_pmu_set(ah, AR_PHY_PMU2(ah), reg_pmu_set))
 				return;
 
 			if (AR_SREV_9330(ah)) {
@@ -3913,24 +3984,28 @@ void ar9003_hw_internal_regulator_apply(struct ath_hw *ah)
 					      (3 << 24) | (1 << 28);
 			}
 
-			REG_WRITE(ah, AR_PHY_PMU1, reg_pmu_set);
-			if (!is_pmu_set(ah, AR_PHY_PMU1, reg_pmu_set))
+			REG_WRITE(ah, AR_PHY_PMU1(ah), reg_pmu_set);
+			if (!is_pmu_set(ah, AR_PHY_PMU1(ah), reg_pmu_set))
 				return;
 
-			reg_pmu_set = (REG_READ(ah, AR_PHY_PMU2) & ~0xFFC00000)
+			reg_pmu_set = (REG_READ(ah, AR_PHY_PMU2(ah)) & ~0xFFC00000)
 					| (4 << 26);
-			REG_WRITE(ah, AR_PHY_PMU2, reg_pmu_set);
-			if (!is_pmu_set(ah, AR_PHY_PMU2, reg_pmu_set))
+			REG_WRITE(ah, AR_PHY_PMU2(ah), reg_pmu_set);
+			if (!is_pmu_set(ah, AR_PHY_PMU2(ah), reg_pmu_set))
 				return;
 
-			reg_pmu_set = (REG_READ(ah, AR_PHY_PMU2) & ~0x00200000)
+			reg_pmu_set = (REG_READ(ah, AR_PHY_PMU2(ah)) & ~0x00200000)
 					| (1 << 21);
-			REG_WRITE(ah, AR_PHY_PMU2, reg_pmu_set);
-			if (!is_pmu_set(ah, AR_PHY_PMU2, reg_pmu_set))
+			REG_WRITE(ah, AR_PHY_PMU2(ah), reg_pmu_set);
+			if (!is_pmu_set(ah, AR_PHY_PMU2(ah), reg_pmu_set))
 				return;
-		} else if (AR_SREV_9462(ah) || AR_SREV_9565(ah)) {
+		} else if (AR_SREV_9462(ah) || AR_SREV_9565(ah) ||
+			   AR_SREV_9561(ah)) {
 			reg_val = le32_to_cpu(pBase->swreg);
-			REG_WRITE(ah, AR_PHY_PMU1, reg_val);
+			REG_WRITE(ah, AR_PHY_PMU1(ah), reg_val);
+
+			if (AR_SREV_9561(ah))
+				REG_WRITE(ah, AR_PHY_PMU2(ah), 0x10200000);
 		} else {
 			/* Internal regulator is ON. Write swreg register. */
 			reg_val = le32_to_cpu(pBase->swreg);
@@ -3946,25 +4021,25 @@ void ar9003_hw_internal_regulator_apply(struct ath_hw *ah)
 		}
 	} else {
 		if (AR_SREV_9330(ah) || AR_SREV_9485(ah)) {
-			REG_RMW_FIELD(ah, AR_PHY_PMU2, AR_PHY_PMU2_PGM, 0);
-			while (REG_READ_FIELD(ah, AR_PHY_PMU2,
+			REG_RMW_FIELD(ah, AR_PHY_PMU2(ah), AR_PHY_PMU2_PGM, 0);
+			while (REG_READ_FIELD(ah, AR_PHY_PMU2(ah),
 						AR_PHY_PMU2_PGM))
 				udelay(10);
 
-			REG_RMW_FIELD(ah, AR_PHY_PMU1, AR_PHY_PMU1_PWD, 0x1);
-			while (!REG_READ_FIELD(ah, AR_PHY_PMU1,
+			REG_RMW_FIELD(ah, AR_PHY_PMU1(ah), AR_PHY_PMU1_PWD, 0x1);
+			while (!REG_READ_FIELD(ah, AR_PHY_PMU1(ah),
 						AR_PHY_PMU1_PWD))
 				udelay(10);
-			REG_RMW_FIELD(ah, AR_PHY_PMU2, AR_PHY_PMU2_PGM, 0x1);
-			while (!REG_READ_FIELD(ah, AR_PHY_PMU2,
+			REG_RMW_FIELD(ah, AR_PHY_PMU2(ah), AR_PHY_PMU2_PGM, 0x1);
+			while (!REG_READ_FIELD(ah, AR_PHY_PMU2(ah),
 						AR_PHY_PMU2_PGM))
 				udelay(10);
 		} else if (AR_SREV_9462(ah) || AR_SREV_9565(ah))
-			REG_RMW_FIELD(ah, AR_PHY_PMU1, AR_PHY_PMU1_PWD, 0x1);
+			REG_RMW_FIELD(ah, AR_PHY_PMU1(ah), AR_PHY_PMU1_PWD, 0x1);
 		else {
-			reg_val = REG_READ(ah, AR_RTC_SLEEP_CLK) |
+			reg_val = REG_READ(ah, AR_RTC_SLEEP_CLK(ah)) |
 				AR_RTC_FORCE_SWREG_PRD;
-			REG_WRITE(ah, AR_RTC_SLEEP_CLK, reg_val);
+			REG_WRITE(ah, AR_RTC_SLEEP_CLK(ah), reg_val);
 		}
 	}
 
@@ -3980,9 +4055,9 @@ static void ar9003_hw_apply_tuning_caps(struct ath_hw *ah)
 
 	if (eep->baseEepHeader.featureEnable & 0x40) {
 		tuning_caps_param &= 0x7f;
-		REG_RMW_FIELD(ah, AR_CH0_XTAL, AR_CH0_XTAL_CAPINDAC,
+		REG_RMW_FIELD(ah, AR_CH0_XTAL(ah), AR_CH0_XTAL_CAPINDAC,
 			      tuning_caps_param);
-		REG_RMW_FIELD(ah, AR_CH0_XTAL, AR_CH0_XTAL_CAPOUTDAC,
+		REG_RMW_FIELD(ah, AR_CH0_XTAL(ah), AR_CH0_XTAL_CAPOUTDAC,
 			      tuning_caps_param);
 	}
 }
@@ -4033,7 +4108,8 @@ static void ar9003_hw_xpa_timing_control_apply(struct ath_hw *ah, bool is2ghz)
 	if (!AR_SREV_9300(ah) &&
 	    !AR_SREV_9340(ah) &&
 	    !AR_SREV_9580(ah) &&
-	    !AR_SREV_9531(ah))
+	    !AR_SREV_9531(ah) &&
+	    !AR_SREV_9561(ah))
 		return;
 
 	xpa_ctl = ar9003_modal_header(ah, is2ghz)->txFrameToXpaOn;
@@ -4078,28 +4154,29 @@ static int ar9003_hw_get_thermometer(struct ath_hw *ah)
 
 static void ar9003_hw_thermometer_apply(struct ath_hw *ah)
 {
+	struct ath9k_hw_capabilities *pCap = &ah->caps;
 	int thermometer = ar9003_hw_get_thermometer(ah);
 	u8 therm_on = (thermometer < 0) ? 0 : 1;
 
 	REG_RMW_FIELD(ah, AR_PHY_65NM_CH0_RXTX4,
 		      AR_PHY_65NM_CH0_RXTX4_THERM_ON_OVR, therm_on);
-	if (ah->caps.tx_chainmask & BIT(1))
+	if (pCap->chip_chainmask & BIT(1))
 		REG_RMW_FIELD(ah, AR_PHY_65NM_CH1_RXTX4,
 			      AR_PHY_65NM_CH0_RXTX4_THERM_ON_OVR, therm_on);
-	if (ah->caps.tx_chainmask & BIT(2))
+	if (pCap->chip_chainmask & BIT(2))
 		REG_RMW_FIELD(ah, AR_PHY_65NM_CH2_RXTX4,
 			      AR_PHY_65NM_CH0_RXTX4_THERM_ON_OVR, therm_on);
 
-	therm_on = (thermometer < 0) ? 0 : (thermometer == 0);
+	therm_on = thermometer == 0;
 	REG_RMW_FIELD(ah, AR_PHY_65NM_CH0_RXTX4,
 		      AR_PHY_65NM_CH0_RXTX4_THERM_ON, therm_on);
-	if (ah->caps.tx_chainmask & BIT(1)) {
-		therm_on = (thermometer < 0) ? 0 : (thermometer == 1);
+	if (pCap->chip_chainmask & BIT(1)) {
+		therm_on = thermometer == 1;
 		REG_RMW_FIELD(ah, AR_PHY_65NM_CH1_RXTX4,
 			      AR_PHY_65NM_CH0_RXTX4_THERM_ON, therm_on);
 	}
-	if (ah->caps.tx_chainmask & BIT(2)) {
-		therm_on = (thermometer < 0) ? 0 : (thermometer == 2);
+	if (pCap->chip_chainmask & BIT(2)) {
+		therm_on = thermometer == 2;
 		REG_RMW_FIELD(ah, AR_PHY_65NM_CH2_RXTX4,
 			      AR_PHY_65NM_CH0_RXTX4_THERM_ON, therm_on);
 	}
@@ -4107,7 +4184,7 @@ static void ar9003_hw_thermometer_apply(struct ath_hw *ah)
 
 static void ar9003_hw_thermo_cal_apply(struct ath_hw *ah)
 {
-	u32 data, ko, kg;
+	u32 data = 0, ko, kg;
 
 	if (!AR_SREV_9462_20_OR_LATER(ah))
 		return;
@@ -4169,7 +4246,7 @@ static void ath9k_hw_ar9300_set_board_values(struct ath_hw *ah,
 	if (!AR_SREV_9330(ah) && !AR_SREV_9340(ah) && !AR_SREV_9531(ah))
 		ar9003_hw_internal_regulator_apply(ah);
 	ar9003_hw_apply_tuning_caps(ah);
-	ar9003_hw_apply_minccapwr_thresh(ah, chan);
+	ar9003_hw_apply_minccapwr_thresh(ah, is2ghz);
 	ar9003_hw_txend_to_xpa_off_apply(ah, is2ghz);
 	ar9003_hw_thermometer_apply(ah);
 	ar9003_hw_thermo_cal_apply(ah);
@@ -4375,8 +4452,27 @@ static u8 ar9003_hw_eeprom_get_cck_tgt_pwr(struct ath_hw *ah,
 						 targetPowerArray, numPiers);
 }
 
+static void ar9003_hw_selfgen_tpc_txpower(struct ath_hw *ah,
+					  struct ath9k_channel *chan,
+					  u8 *pwr_array)
+{
+	u32 val;
+
+	/* target power values for self generated frames (ACK,RTS/CTS) */
+	if (IS_CHAN_2GHZ(chan)) {
+		val = SM(pwr_array[ALL_TARGET_LEGACY_1L_5L], AR_TPC_ACK) |
+		      SM(pwr_array[ALL_TARGET_LEGACY_1L_5L], AR_TPC_CTS) |
+		      SM(0x3f, AR_TPC_CHIRP) | SM(0x3f, AR_TPC_RPT);
+	} else {
+		val = SM(pwr_array[ALL_TARGET_LEGACY_6_24], AR_TPC_ACK) |
+		      SM(pwr_array[ALL_TARGET_LEGACY_6_24], AR_TPC_CTS) |
+		      SM(0x3f, AR_TPC_CHIRP) | SM(0x3f, AR_TPC_RPT);
+	}
+	REG_WRITE(ah, AR_TPC, val);
+}
+
 /* Set tx power registers to array of values passed in */
-static int ar9003_hw_tx_power_regwrite(struct ath_hw *ah, u8 * pPwrArray)
+int ar9003_hw_tx_power_regwrite(struct ath_hw *ah, u8 * pPwrArray)
 {
 #define POW_SM(_r, _s)     (((_r) & 0x3f) << (_s))
 	/* make sure forced gain is not set */
@@ -4651,16 +4747,16 @@ static void ar9003_hw_get_target_power_eeprom(struct ath_hw *ah,
 }
 
 static int ar9003_hw_cal_pier_get(struct ath_hw *ah,
-				  int mode,
+				  bool is2ghz,
 				  int ipier,
 				  int ichain,
 				  int *pfrequency,
 				  int *pcorrection,
-				  int *ptemperature, int *pvoltage)
+				  int *ptemperature, int *pvoltage,
+				  int *pnf_cal, int *pnf_power)
 {
 	u8 *pCalPier;
 	struct ar9300_cal_data_per_freq_op_loop *pCalPierStruct;
-	int is2GHz;
 	struct ar9300_eeprom *eep = &ah->eeprom.ar9300_eep;
 	struct ath_common *common = ath9k_hw_common(ah);
 
@@ -4671,17 +4767,7 @@ static int ar9003_hw_cal_pier_get(struct ath_hw *ah,
 		return -1;
 	}
 
-	if (mode) {		/* 5GHz */
-		if (ipier >= AR9300_NUM_5G_CAL_PIERS) {
-			ath_dbg(common, EEPROM,
-				"Invalid 5GHz cal pier index, must be less than %d\n",
-				AR9300_NUM_5G_CAL_PIERS);
-			return -1;
-		}
-		pCalPier = &(eep->calFreqPier5G[ipier]);
-		pCalPierStruct = &(eep->calPierData5G[ichain][ipier]);
-		is2GHz = 0;
-	} else {
+	if (is2ghz) {
 		if (ipier >= AR9300_NUM_2G_CAL_PIERS) {
 			ath_dbg(common, EEPROM,
 				"Invalid 2GHz cal pier index, must be less than %d\n",
@@ -4691,13 +4777,25 @@ static int ar9003_hw_cal_pier_get(struct ath_hw *ah,
 
 		pCalPier = &(eep->calFreqPier2G[ipier]);
 		pCalPierStruct = &(eep->calPierData2G[ichain][ipier]);
-		is2GHz = 1;
+	} else {
+		if (ipier >= AR9300_NUM_5G_CAL_PIERS) {
+			ath_dbg(common, EEPROM,
+				"Invalid 5GHz cal pier index, must be less than %d\n",
+				AR9300_NUM_5G_CAL_PIERS);
+			return -1;
+		}
+		pCalPier = &(eep->calFreqPier5G[ipier]);
+		pCalPierStruct = &(eep->calPierData5G[ichain][ipier]);
 	}
 
-	*pfrequency = ath9k_hw_fbin2freq(*pCalPier, is2GHz);
+	*pfrequency = ath9k_hw_fbin2freq(*pCalPier, is2ghz);
 	*pcorrection = pCalPierStruct->refPower;
 	*ptemperature = pCalPierStruct->tempMeas;
 	*pvoltage = pCalPierStruct->voltMeas;
+	*pnf_cal = pCalPierStruct->rxTempMeas ?
+			N2DBM(pCalPierStruct->rxNoisefloorCal) : 0;
+	*pnf_power = pCalPierStruct->rxTempMeas ?
+			N2DBM(pCalPierStruct->rxNoisefloorPower) : 0;
 
 	return 0;
 }
@@ -4791,44 +4889,55 @@ static void ar9003_hw_power_control_override(struct ath_hw *ah,
 	}
 
 tempslope:
-	if (AR_SREV_9550(ah) || AR_SREV_9531(ah)) {
+	if (AR_SREV_9550(ah) || AR_SREV_9531(ah) || AR_SREV_9561(ah)) {
+		u8 txmask = (eep->baseEepHeader.txrxMask & 0xf0) >> 4;
+
 		/*
 		 * AR955x has tempSlope register for each chain.
 		 * Check whether temp_compensation feature is enabled or not.
 		 */
 		if (eep->baseEepHeader.featureEnable & 0x1) {
 			if (frequency < 4000) {
-				REG_RMW_FIELD(ah, AR_PHY_TPC_19,
-					      AR_PHY_TPC_19_ALPHA_THERM,
-					      eep->base_ext2.tempSlopeLow);
-				REG_RMW_FIELD(ah, AR_PHY_TPC_19_B1,
-					      AR_PHY_TPC_19_ALPHA_THERM,
-					      temp_slope);
-				REG_RMW_FIELD(ah, AR_PHY_TPC_19_B2,
-					      AR_PHY_TPC_19_ALPHA_THERM,
-					      eep->base_ext2.tempSlopeHigh);
+				if (txmask & BIT(0))
+					REG_RMW_FIELD(ah, AR_PHY_TPC_19,
+						      AR_PHY_TPC_19_ALPHA_THERM,
+						      eep->base_ext2.tempSlopeLow);
+				if (txmask & BIT(1))
+					REG_RMW_FIELD(ah, AR_PHY_TPC_19_B1,
+						      AR_PHY_TPC_19_ALPHA_THERM,
+						      temp_slope);
+				if (txmask & BIT(2))
+					REG_RMW_FIELD(ah, AR_PHY_TPC_19_B2,
+						      AR_PHY_TPC_19_ALPHA_THERM,
+						      eep->base_ext2.tempSlopeHigh);
 			} else {
-				REG_RMW_FIELD(ah, AR_PHY_TPC_19,
-					      AR_PHY_TPC_19_ALPHA_THERM,
-					      temp_slope);
-				REG_RMW_FIELD(ah, AR_PHY_TPC_19_B1,
-					      AR_PHY_TPC_19_ALPHA_THERM,
-					      temp_slope1);
-				REG_RMW_FIELD(ah, AR_PHY_TPC_19_B2,
-					      AR_PHY_TPC_19_ALPHA_THERM,
-					      temp_slope2);
+				if (txmask & BIT(0))
+					REG_RMW_FIELD(ah, AR_PHY_TPC_19,
+						      AR_PHY_TPC_19_ALPHA_THERM,
+						      temp_slope);
+				if (txmask & BIT(1))
+					REG_RMW_FIELD(ah, AR_PHY_TPC_19_B1,
+						      AR_PHY_TPC_19_ALPHA_THERM,
+						      temp_slope1);
+				if (txmask & BIT(2))
+					REG_RMW_FIELD(ah, AR_PHY_TPC_19_B2,
+						      AR_PHY_TPC_19_ALPHA_THERM,
+						      temp_slope2);
 			}
 		} else {
 			/*
 			 * If temp compensation is not enabled,
 			 * set all registers to 0.
 			 */
-			REG_RMW_FIELD(ah, AR_PHY_TPC_19,
-				      AR_PHY_TPC_19_ALPHA_THERM, 0);
-			REG_RMW_FIELD(ah, AR_PHY_TPC_19_B1,
-				      AR_PHY_TPC_19_ALPHA_THERM, 0);
-			REG_RMW_FIELD(ah, AR_PHY_TPC_19_B2,
-				      AR_PHY_TPC_19_ALPHA_THERM, 0);
+			if (txmask & BIT(0))
+				REG_RMW_FIELD(ah, AR_PHY_TPC_19,
+					      AR_PHY_TPC_19_ALPHA_THERM, 0);
+			if (txmask & BIT(1))
+				REG_RMW_FIELD(ah, AR_PHY_TPC_19_B1,
+					      AR_PHY_TPC_19_ALPHA_THERM, 0);
+			if (txmask & BIT(2))
+				REG_RMW_FIELD(ah, AR_PHY_TPC_19_B2,
+					      AR_PHY_TPC_19_ALPHA_THERM, 0);
 		}
 	} else {
 		REG_RMW_FIELD(ah, AR_PHY_TPC_19,
@@ -4848,24 +4957,27 @@ tempslope:
 static int ar9003_hw_calibration_apply(struct ath_hw *ah, int frequency)
 {
 	int ichain, ipier, npier;
-	int mode;
 	int lfrequency[AR9300_MAX_CHAINS],
 	    lcorrection[AR9300_MAX_CHAINS],
-	    ltemperature[AR9300_MAX_CHAINS], lvoltage[AR9300_MAX_CHAINS];
+	    ltemperature[AR9300_MAX_CHAINS], lvoltage[AR9300_MAX_CHAINS],
+	    lnf_cal[AR9300_MAX_CHAINS], lnf_pwr[AR9300_MAX_CHAINS];
 	int hfrequency[AR9300_MAX_CHAINS],
 	    hcorrection[AR9300_MAX_CHAINS],
-	    htemperature[AR9300_MAX_CHAINS], hvoltage[AR9300_MAX_CHAINS];
+	    htemperature[AR9300_MAX_CHAINS], hvoltage[AR9300_MAX_CHAINS],
+	    hnf_cal[AR9300_MAX_CHAINS], hnf_pwr[AR9300_MAX_CHAINS];
 	int fdiff;
 	int correction[AR9300_MAX_CHAINS],
-	    voltage[AR9300_MAX_CHAINS], temperature[AR9300_MAX_CHAINS];
-	int pfrequency, pcorrection, ptemperature, pvoltage;
+	    voltage[AR9300_MAX_CHAINS], temperature[AR9300_MAX_CHAINS],
+	    nf_cal[AR9300_MAX_CHAINS], nf_pwr[AR9300_MAX_CHAINS];
+	int pfrequency, pcorrection, ptemperature, pvoltage,
+	    pnf_cal, pnf_pwr;
 	struct ath_common *common = ath9k_hw_common(ah);
+	bool is2ghz = frequency < 4000;
 
-	mode = (frequency >= 4000);
-	if (mode)
-		npier = AR9300_NUM_5G_CAL_PIERS;
-	else
+	if (is2ghz)
 		npier = AR9300_NUM_2G_CAL_PIERS;
+	else
+		npier = AR9300_NUM_5G_CAL_PIERS;
 
 	for (ichain = 0; ichain < AR9300_MAX_CHAINS; ichain++) {
 		lfrequency[ichain] = 0;
@@ -4874,9 +4986,10 @@ static int ar9003_hw_calibration_apply(struct ath_hw *ah, int frequency)
 	/* identify best lower and higher frequency calibration measurement */
 	for (ichain = 0; ichain < AR9300_MAX_CHAINS; ichain++) {
 		for (ipier = 0; ipier < npier; ipier++) {
-			if (!ar9003_hw_cal_pier_get(ah, mode, ipier, ichain,
+			if (!ar9003_hw_cal_pier_get(ah, is2ghz, ipier, ichain,
 						    &pfrequency, &pcorrection,
-						    &ptemperature, &pvoltage)) {
+						    &ptemperature, &pvoltage,
+						    &pnf_cal, &pnf_pwr)) {
 				fdiff = frequency - pfrequency;
 
 				/*
@@ -4898,6 +5011,8 @@ static int ar9003_hw_calibration_apply(struct ath_hw *ah, int frequency)
 						htemperature[ichain] =
 						    ptemperature;
 						hvoltage[ichain] = pvoltage;
+						hnf_cal[ichain] = pnf_cal;
+						hnf_pwr[ichain] = pnf_pwr;
 					}
 				}
 				if (fdiff >= 0) {
@@ -4914,6 +5029,8 @@ static int ar9003_hw_calibration_apply(struct ath_hw *ah, int frequency)
 						ltemperature[ichain] =
 						    ptemperature;
 						lvoltage[ichain] = pvoltage;
+						lnf_cal[ichain] = pnf_cal;
+						lnf_pwr[ichain] = pnf_pwr;
 					}
 				}
 			}
@@ -4922,15 +5039,20 @@ static int ar9003_hw_calibration_apply(struct ath_hw *ah, int frequency)
 
 	/* interpolate  */
 	for (ichain = 0; ichain < AR9300_MAX_CHAINS; ichain++) {
-		ath_dbg(common, EEPROM, "ch=%d f=%d low=%d %d h=%d %d\n",
+		ath_dbg(common, EEPROM,
+			"ch=%d f=%d low=%d %d h=%d %d n=%d %d p=%d %d\n",
 			ichain, frequency, lfrequency[ichain],
 			lcorrection[ichain], hfrequency[ichain],
-			hcorrection[ichain]);
+			hcorrection[ichain], lnf_cal[ichain],
+			hnf_cal[ichain], lnf_pwr[ichain],
+			hnf_pwr[ichain]);
 		/* they're the same, so just pick one */
 		if (hfrequency[ichain] == lfrequency[ichain]) {
 			correction[ichain] = lcorrection[ichain];
 			voltage[ichain] = lvoltage[ichain];
 			temperature[ichain] = ltemperature[ichain];
+			nf_cal[ichain] = lnf_cal[ichain];
+			nf_pwr[ichain] = lnf_pwr[ichain];
 		}
 		/* the low frequency is good */
 		else if (frequency - lfrequency[ichain] < 1000) {
@@ -4954,12 +5076,26 @@ static int ar9003_hw_calibration_apply(struct ath_hw *ah, int frequency)
 						hfrequency[ichain],
 						lvoltage[ichain],
 						hvoltage[ichain]);
+
+				nf_cal[ichain] = interpolate(frequency,
+						lfrequency[ichain],
+						hfrequency[ichain],
+						lnf_cal[ichain],
+						hnf_cal[ichain]);
+
+				nf_pwr[ichain] = interpolate(frequency,
+						lfrequency[ichain],
+						hfrequency[ichain],
+						lnf_pwr[ichain],
+						hnf_pwr[ichain]);
 			}
 			/* only low is good, use it */
 			else {
 				correction[ichain] = lcorrection[ichain];
 				temperature[ichain] = ltemperature[ichain];
 				voltage[ichain] = lvoltage[ichain];
+				nf_cal[ichain] = lnf_cal[ichain];
+				nf_pwr[ichain] = lnf_pwr[ichain];
 			}
 		}
 		/* only high is good, use it */
@@ -4967,10 +5103,14 @@ static int ar9003_hw_calibration_apply(struct ath_hw *ah, int frequency)
 			correction[ichain] = hcorrection[ichain];
 			temperature[ichain] = htemperature[ichain];
 			voltage[ichain] = hvoltage[ichain];
+			nf_cal[ichain] = hnf_cal[ichain];
+			nf_pwr[ichain] = hnf_pwr[ichain];
 		} else {	/* nothing is good, presume 0???? */
 			correction[ichain] = 0;
 			temperature[ichain] = 0;
 			voltage[ichain] = 0;
+			nf_cal[ichain] = 0;
+			nf_pwr[ichain] = 0;
 		}
 	}
 
@@ -4980,6 +5120,16 @@ static int ar9003_hw_calibration_apply(struct ath_hw *ah, int frequency)
 	ath_dbg(common, EEPROM,
 		"for frequency=%d, calibration correction = %d %d %d\n",
 		frequency, correction[0], correction[1], correction[2]);
+
+	/* Store calibrated noise floor values */
+	for (ichain = 0; ichain < AR9300_MAX_CHAINS; ichain++)
+		if (is2ghz) {
+			ah->nf_2g.cal[ichain] = nf_cal[ichain];
+			ah->nf_2g.pwr[ichain] = nf_pwr[ichain];
+		} else {
+			ah->nf_5g.cal[ichain] = nf_cal[ichain];
+			ah->nf_5g.pwr[ichain] = nf_pwr[ichain];
+		}
 
 	return 0;
 }
@@ -5065,6 +5215,10 @@ static u16 ar9003_hw_get_max_edge_power(struct ar9300_eeprom *eep,
 			break;
 		}
 	}
+
+	if (is2GHz && !twiceMaxEdgePower)
+		twiceMaxEdgePower = 60;
+
 	return twiceMaxEdgePower;
 }
 
@@ -5291,10 +5445,9 @@ static void ath9k_hw_ar9300_set_txpower(struct ath_hw *ah,
 {
 	struct ath_regulatory *regulatory = ath9k_hw_regulatory(ah);
 	struct ath_common *common = ath9k_hw_common(ah);
-	struct ar9300_eeprom *eep = &ah->eeprom.ar9300_eep;
-	struct ar9300_modal_eep_header *modal_hdr;
 	u8 targetPowerValT2[ar9300RateSize];
 	u8 target_power_val_t2_eep[ar9300RateSize];
+	u8 targetPowerValT2_tpc[ar9300RateSize];
 	unsigned int i = 0, paprd_scale_factor = 0;
 	u8 pwr_idx, min_pwridx = 0;
 
@@ -5306,17 +5459,12 @@ static void ath9k_hw_ar9300_set_txpower(struct ath_hw *ah,
 	ar9003_hw_get_target_power_eeprom(ah, chan, targetPowerValT2);
 
 	if (ar9003_is_paprd_enabled(ah)) {
-		if (IS_CHAN_2GHZ(chan))
-			modal_hdr = &eep->modalHeader2G;
-		else
-			modal_hdr = &eep->modalHeader5G;
-
 		ah->paprd_ratemask =
-			le32_to_cpu(modal_hdr->papdRateMaskHt20) &
+			ar9003_get_paprd_rate_mask_ht20(ah, IS_CHAN_2GHZ(chan)) &
 			AR9300_PAPRD_RATE_MASK;
 
 		ah->paprd_ratemask_ht40 =
-			le32_to_cpu(modal_hdr->papdRateMaskHt40) &
+			ar9003_get_paprd_rate_mask_ht40(ah, IS_CHAN_2GHZ(chan)) &
 			AR9300_PAPRD_RATE_MASK;
 
 		paprd_scale_factor = ar9003_get_paprd_scale_factor(ah, chan);
@@ -5345,6 +5493,9 @@ static void ath9k_hw_ar9300_set_txpower(struct ath_hw *ah,
 					   targetPowerValT2, cfgCtl,
 					   twiceAntennaReduction,
 					   powerLimit);
+
+	memcpy(targetPowerValT2_tpc, targetPowerValT2,
+	       sizeof(targetPowerValT2));
 
 	if (ar9003_is_paprd_enabled(ah)) {
 		for (i = 0; i < ar9300RateSize; i++) {
@@ -5379,6 +5530,30 @@ static void ath9k_hw_ar9300_set_txpower(struct ath_hw *ah,
 	ar9003_hw_tx_power_regwrite(ah, targetPowerValT2);
 	ar9003_hw_calibration_apply(ah, chan->channel);
 	ar9003_paprd_set_txpower(ah, chan, targetPowerValT2);
+
+	ar9003_hw_selfgen_tpc_txpower(ah, chan, targetPowerValT2);
+
+	/* TPC initializations */
+	if (ah->tpc_enabled) {
+		u32 val;
+
+		ar9003_hw_init_rate_txpower(ah, targetPowerValT2_tpc, chan);
+
+		/* Enable TPC */
+		REG_WRITE(ah, AR_PHY_PWRTX_MAX,
+			  AR_PHY_POWER_TX_RATE_MAX_TPC_ENABLE);
+		/* Disable per chain power reduction */
+		val = REG_READ(ah, AR_PHY_POWER_TX_SUB);
+		if (AR_SREV_9340(ah))
+			REG_WRITE(ah, AR_PHY_POWER_TX_SUB,
+				  val & 0xFFFFFFC0);
+		else
+			REG_WRITE(ah, AR_PHY_POWER_TX_SUB,
+				  val & 0xFFFFF000);
+	} else {
+		/* Disable TPC */
+		REG_WRITE(ah, AR_PHY_PWRTX_MAX, 0);
+	}
 }
 
 static u16 ath9k_hw_ar9300_get_spur_channel(struct ath_hw *ah,
@@ -5406,25 +5581,40 @@ u8 *ar9003_get_spur_chan_ptr(struct ath_hw *ah, bool is2ghz)
 	return ar9003_modal_header(ah, is2ghz)->spurChans;
 }
 
+u32 ar9003_get_paprd_rate_mask_ht20(struct ath_hw *ah, bool is2ghz)
+{
+	return le32_to_cpu(ar9003_modal_header(ah, is2ghz)->papdRateMaskHt20);
+}
+
+u32 ar9003_get_paprd_rate_mask_ht40(struct ath_hw *ah, bool is2ghz)
+{
+	return le32_to_cpu(ar9003_modal_header(ah, is2ghz)->papdRateMaskHt40);
+}
+
 unsigned int ar9003_get_paprd_scale_factor(struct ath_hw *ah,
 					   struct ath9k_channel *chan)
 {
-	struct ar9300_eeprom *eep = &ah->eeprom.ar9300_eep;
+	bool is2ghz = IS_CHAN_2GHZ(chan);
 
-	if (IS_CHAN_2GHZ(chan))
-		return MS(le32_to_cpu(eep->modalHeader2G.papdRateMaskHt20),
+	if (is2ghz)
+		return MS(ar9003_get_paprd_rate_mask_ht20(ah, is2ghz),
 			  AR9300_PAPRD_SCALE_1);
 	else {
 		if (chan->channel >= 5700)
-		return MS(le32_to_cpu(eep->modalHeader5G.papdRateMaskHt20),
-			  AR9300_PAPRD_SCALE_1);
+			return MS(ar9003_get_paprd_rate_mask_ht20(ah, is2ghz),
+				  AR9300_PAPRD_SCALE_1);
 		else if (chan->channel >= 5400)
-			return MS(le32_to_cpu(eep->modalHeader5G.papdRateMaskHt40),
-				   AR9300_PAPRD_SCALE_2);
+			return MS(ar9003_get_paprd_rate_mask_ht40(ah, is2ghz),
+				  AR9300_PAPRD_SCALE_2);
 		else
-			return MS(le32_to_cpu(eep->modalHeader5G.papdRateMaskHt40),
+			return MS(ar9003_get_paprd_rate_mask_ht40(ah, is2ghz),
 				  AR9300_PAPRD_SCALE_1);
 	}
+}
+
+static u8 ar9003_get_eepmisc(struct ath_hw *ah)
+{
+	return ah->eeprom.ar9300_eep.baseEepHeader.opCapFlags.eepMisc;
 }
 
 const struct eeprom_ops eep_ar9300_ops = {
@@ -5437,5 +5627,6 @@ const struct eeprom_ops eep_ar9300_ops = {
 	.set_board_values = ath9k_hw_ar9300_set_board_values,
 	.set_addac = ath9k_hw_ar9300_set_addac,
 	.set_txpower = ath9k_hw_ar9300_set_txpower,
-	.get_spur_channel = ath9k_hw_ar9300_get_spur_channel
+	.get_spur_channel = ath9k_hw_ar9300_get_spur_channel,
+	.get_eepmisc = ar9003_get_eepmisc
 };

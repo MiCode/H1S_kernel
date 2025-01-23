@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2000, 2001, 2002, 2003, 2004 Broadcom Corporation
  * Copyright (C) 2004 by Ralf Baechle (ralf@linux-mips.org)
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 
 /*
@@ -23,8 +10,7 @@
 
 #include <linux/spinlock.h>
 #include <linux/mm.h>
-#include <linux/bootmem.h>
-#include <linux/blkdev.h>
+#include <linux/memblock.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/screen_info.h>
@@ -38,7 +24,7 @@
 #include <asm/time.h>
 #include <asm/traps.h>
 #include <asm/sibyte/sb1250.h>
-#if defined(CONFIG_SIBYTE_BCM1x55) || defined(CONFIG_SIBYTE_BCM1x80)
+#ifdef CONFIG_SIBYTE_BCM1x80
 #include <asm/sibyte/bcm1480_regs.h>
 #elif defined(CONFIG_SIBYTE_SB1250) || defined(CONFIG_SIBYTE_BCM112X)
 #include <asm/sibyte/sb1250_regs.h>
@@ -48,7 +34,7 @@
 #include <asm/sibyte/sb1250_genbus.h>
 #include <asm/sibyte/board.h>
 
-#if defined(CONFIG_SIBYTE_BCM1x55) || defined(CONFIG_SIBYTE_BCM1x80)
+#ifdef CONFIG_SIBYTE_BCM1x80
 extern void bcm1480_setup(void);
 #elif defined(CONFIG_SIBYTE_SB1250) || defined(CONFIG_SIBYTE_BCM112X)
 extern void sb1250_setup(void);
@@ -57,12 +43,12 @@ extern void sb1250_setup(void);
 #endif
 
 extern int xicor_probe(void);
-extern int xicor_set_time(unsigned long);
-extern unsigned long xicor_get_time(void);
+extern int xicor_set_time(time64_t);
+extern time64_t xicor_get_time(void);
 
 extern int m41t81_probe(void);
-extern int m41t81_set_time(unsigned long);
-extern unsigned long m41t81_get_time(void);
+extern int m41t81_set_time(time64_t);
+extern time64_t m41t81_get_time(void);
 
 const char *get_system_type(void)
 {
@@ -76,7 +62,7 @@ int swarm_be_handler(struct pt_regs *regs, int is_fixup)
 		printk("DBE physical address: %010Lx\n",
 		       __read_64bit_c0_register($26, 1));
 	}
-	return (is_fixup ? MIPS_BE_FIXUP : MIPS_BE_FATAL);
+	return is_fixup ? MIPS_BE_FIXUP : MIPS_BE_FATAL;
 }
 
 enum swarm_rtc_type {
@@ -87,9 +73,9 @@ enum swarm_rtc_type {
 
 enum swarm_rtc_type swarm_rtc_type;
 
-void read_persistent_clock(struct timespec *ts)
+void read_persistent_clock64(struct timespec64 *ts)
 {
-	unsigned long sec;
+	time64_t sec;
 
 	switch (swarm_rtc_type) {
 	case RTC_XICOR:
@@ -102,15 +88,17 @@ void read_persistent_clock(struct timespec *ts)
 
 	case RTC_NONE:
 	default:
-		sec = mktime(2000, 1, 1, 0, 0, 0);
+		sec = mktime64(2000, 1, 1, 0, 0, 0);
 		break;
 	}
 	ts->tv_sec = sec;
 	ts->tv_nsec = 0;
 }
 
-int rtc_mips_set_time(unsigned long sec)
+int update_persistent_clock64(struct timespec64 now)
 {
+	time64_t sec = now.tv_sec;
+
 	switch (swarm_rtc_type) {
 	case RTC_XICOR:
 		return xicor_set_time(sec);
@@ -126,7 +114,7 @@ int rtc_mips_set_time(unsigned long sec)
 
 void __init plat_mem_setup(void)
 {
-#if defined(CONFIG_SIBYTE_BCM1x55) || defined(CONFIG_SIBYTE_BCM1x80)
+#ifdef CONFIG_SIBYTE_BCM1x80
 	bcm1480_setup();
 #elif defined(CONFIG_SIBYTE_SB1250) || defined(CONFIG_SIBYTE_BCM112X)
 	sb1250_setup();
@@ -134,7 +122,7 @@ void __init plat_mem_setup(void)
 #error invalid SiByte board configuration
 #endif
 
-	board_be_handler = swarm_be_handler;
+	mips_set_be_handler(swarm_be_handler);
 
 	if (xicor_probe())
 		swarm_rtc_type = RTC_XICOR;
@@ -157,12 +145,6 @@ void __init plat_mem_setup(void)
 }
 
 #ifdef LEDS_PHYS
-
-#ifdef CONFIG_SIBYTE_CARMEL
-/* XXXKW need to detect Monterey/LittleSur/etc */
-#undef LEDS_PHYS
-#define LEDS_PHYS MLEDS_PHYS
-#endif
 
 void setleds(char *str)
 {

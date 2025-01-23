@@ -1,20 +1,17 @@
-/*
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License
- *	as published by the Free Software Foundation; version 2
- *	of the License.
- *
- */
+/* SPDX-License-Identifier: GPL-2.0-only */
 
 #include <linux/linkage.h>
-#include <asm/alternative-asm.h>
-#include <asm/frame.h>
-#include <asm/dwarf2.h>
-
+#include <asm/export.h>
+#include <asm/percpu.h>
+#include <asm/processor-flags.h>
 
 .text
 
+#ifndef CONFIG_X86_CMPXCHG64
+
 /*
+ * Emulate 'cmpxchg8b (%esi)' on UP
+ *
  * Inputs:
  * %esi : memory location to compare
  * %eax : low 32 bits of old value
@@ -22,36 +19,67 @@
  * %ebx : low 32 bits of new value
  * %ecx : high 32 bits of new value
  */
-ENTRY(cmpxchg8b_emu)
-CFI_STARTPROC
+SYM_FUNC_START(cmpxchg8b_emu)
 
-#
-# Emulate 'cmpxchg8b (%esi)' on UP except we don't
-# set the whole ZF thing (caller will just compare
-# eax:edx with the expected value)
-#
-cmpxchg8b_emu:
 	pushfl
 	cli
 
-	cmpl  (%esi), %eax
-	jne not_same
-	cmpl 4(%esi), %edx
-	jne half_same
+	cmpl	0(%esi), %eax
+	jne	.Lnot_same
+	cmpl	4(%esi), %edx
+	jne	.Lnot_same
 
-	movl %ebx,  (%esi)
-	movl %ecx, 4(%esi)
+	movl	%ebx, 0(%esi)
+	movl	%ecx, 4(%esi)
 
-	popfl
-	ret
-
- not_same:
-	movl  (%esi), %eax
- half_same:
-	movl 4(%esi), %edx
+	orl	$X86_EFLAGS_ZF, (%esp)
 
 	popfl
-	ret
+	RET
 
-CFI_ENDPROC
-ENDPROC(cmpxchg8b_emu)
+.Lnot_same:
+	movl	0(%esi), %eax
+	movl	4(%esi), %edx
+
+	andl	$(~X86_EFLAGS_ZF), (%esp)
+
+	popfl
+	RET
+
+SYM_FUNC_END(cmpxchg8b_emu)
+EXPORT_SYMBOL(cmpxchg8b_emu)
+
+#endif
+
+#ifndef CONFIG_UML
+
+SYM_FUNC_START(this_cpu_cmpxchg8b_emu)
+
+	pushfl
+	cli
+
+	cmpl	PER_CPU_VAR(0(%esi)), %eax
+	jne	.Lnot_same2
+	cmpl	PER_CPU_VAR(4(%esi)), %edx
+	jne	.Lnot_same2
+
+	movl	%ebx, PER_CPU_VAR(0(%esi))
+	movl	%ecx, PER_CPU_VAR(4(%esi))
+
+	orl	$X86_EFLAGS_ZF, (%esp)
+
+	popfl
+	RET
+
+.Lnot_same2:
+	movl	PER_CPU_VAR(0(%esi)), %eax
+	movl	PER_CPU_VAR(4(%esi)), %edx
+
+	andl	$(~X86_EFLAGS_ZF), (%esp)
+
+	popfl
+	RET
+
+SYM_FUNC_END(this_cpu_cmpxchg8b_emu)
+
+#endif

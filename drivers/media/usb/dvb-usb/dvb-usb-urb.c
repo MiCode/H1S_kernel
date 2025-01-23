@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /* dvb-usb-urb.c is part of the DVB USB library.
  *
- * Copyright (C) 2004-6 Patrick Boettcher (patrick.boettcher@desy.de)
+ * Copyright (C) 2004-6 Patrick Boettcher (patrick.boettcher@posteo.de)
  * see dvb-usb-init.c for copyright information.
  *
  * This file keeps functions for initializing and handling the
@@ -11,7 +12,7 @@
 int dvb_usb_generic_rw(struct dvb_usb_device *d, u8 *wbuf, u16 wlen, u8 *rbuf,
 	u16 rlen, int delay_ms)
 {
-	int actlen,ret = -ENOMEM;
+	int actlen = 0, ret = -ENOMEM;
 
 	if (!d || wbuf == NULL || wlen == 0)
 		return -EINVAL;

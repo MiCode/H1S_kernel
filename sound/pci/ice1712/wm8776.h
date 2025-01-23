@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef __SOUND_WM8776_H
 #define __SOUND_WM8776_H
 
@@ -7,21 +8,6 @@
  *   Lowlevel functions for WM8776 codec
  *
  *	Copyright (c) 2012 Ondrej Zary <linux@rainbow-software.org>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #define WM8776_REG_HPLVOL	0x00
@@ -216,9 +202,6 @@ struct snd_wm8776 {
 
 void snd_wm8776_init(struct snd_wm8776 *wm);
 void snd_wm8776_resume(struct snd_wm8776 *wm);
-void snd_wm8776_set_dac_if(struct snd_wm8776 *wm, u16 dac);
-void snd_wm8776_set_adc_if(struct snd_wm8776 *wm, u16 adc);
-void snd_wm8776_set_master_mode(struct snd_wm8776 *wm, u16 mode);
 void snd_wm8776_set_power(struct snd_wm8776 *wm, u16 power);
 void snd_wm8776_volume_restore(struct snd_wm8776 *wm);
 int snd_wm8776_build_controls(struct snd_wm8776 *wm);

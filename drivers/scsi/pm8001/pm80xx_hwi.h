@@ -167,8 +167,12 @@
 #define LINKMODE_AUTO			(0x03 << 12)
 #define LINKRATE_15			(0x01 << 8)
 #define LINKRATE_30			(0x02 << 8)
-#define LINKRATE_60			(0x06 << 8)
+#define LINKRATE_60			(0x04 << 8)
 #define LINKRATE_120			(0x08 << 8)
+
+/*phy_stop*/
+#define PHY_STOP_SUCCESS		0x00
+#define PHY_STOP_ERR_DEVICE_ATTACHED	0x1046
 
 /* phy_profile */
 #define SAS_PHY_ANALOG_SETTINGS_PAGE	0x04
@@ -177,7 +181,8 @@
 /* Thermal related */
 #define	THERMAL_ENABLE			0x1
 #define	THERMAL_LOG_ENABLE		0x1
-#define THERMAL_OP_CODE			0x6
+#define THERMAL_PAGE_CODE_7H		0x6
+#define THERMAL_PAGE_CODE_8H		0x7
 #define LTEMPHIL			 70
 #define RTEMPHIL			100
 
@@ -215,8 +220,9 @@
 #define SAS_DOPNRJT_RTRY_TMO            128
 #define SAS_COPNRJT_RTRY_TMO            128
 
-/* for phy state */
-#define PHY_STATE_LINK_UP_SPCV		0x2
+#define SPCV_DOORBELL_CLEAR_TIMEOUT	(30 * 50) /* 30 sec */
+#define SPC_DOORBELL_CLEAR_TIMEOUT	(15 * 50) /* 15 sec */
+
 /*
   Making ORR bigger than IT NEXUS LOSS which is 2000000us = 2 second.
   Assuming a bigger value 3 second, 3000000/128 = 23437.5 where 128
@@ -227,6 +233,104 @@
 #define SAS_MAX_AIP                     0x200000
 #define IT_NEXUS_TIMEOUT       0x7D0
 #define PORT_RECOVERY_TIMEOUT  ((IT_NEXUS_TIMEOUT/100) + 30)
+/* Port recovery timeout, 10000 ms for PM8006 controller */
+#define CHIP_8006_PORT_RECOVERY_TIMEOUT 0x640000
+
+#ifdef __LITTLE_ENDIAN_BITFIELD
+struct sas_identify_frame_local {
+	/* Byte 0 */
+	u8  frame_type:4;
+	u8  dev_type:3;
+	u8  _un0:1;
+
+	/* Byte 1 */
+	u8  _un1;
+
+	/* Byte 2 */
+	union {
+		struct {
+			u8  _un20:1;
+			u8  smp_iport:1;
+			u8  stp_iport:1;
+			u8  ssp_iport:1;
+			u8  _un247:4;
+		};
+		u8 initiator_bits;
+	};
+
+	/* Byte 3 */
+	union {
+		struct {
+			u8  _un30:1;
+			u8 smp_tport:1;
+			u8 stp_tport:1;
+			u8 ssp_tport:1;
+			u8 _un347:4;
+		};
+		u8 target_bits;
+	};
+
+	/* Byte 4 - 11 */
+	u8 _un4_11[8];
+
+	/* Byte 12 - 19 */
+	u8 sas_addr[SAS_ADDR_SIZE];
+
+	/* Byte 20 */
+	u8 phy_id;
+
+	u8 _un21_27[7];
+
+} __packed;
+
+#elif defined(__BIG_ENDIAN_BITFIELD)
+struct sas_identify_frame_local {
+	/* Byte 0 */
+	u8  _un0:1;
+	u8  dev_type:3;
+	u8  frame_type:4;
+
+	/* Byte 1 */
+	u8  _un1;
+
+	/* Byte 2 */
+	union {
+		struct {
+			u8  _un247:4;
+			u8  ssp_iport:1;
+			u8  stp_iport:1;
+			u8  smp_iport:1;
+			u8  _un20:1;
+		};
+		u8 initiator_bits;
+	};
+
+	/* Byte 3 */
+	union {
+		struct {
+			u8 _un347:4;
+			u8 ssp_tport:1;
+			u8 stp_tport:1;
+			u8 smp_tport:1;
+			u8 _un30:1;
+		};
+		u8 target_bits;
+	};
+
+	/* Byte 4 - 11 */
+	u8 _un4_11[8];
+
+	/* Byte 12 - 19 */
+	u8 sas_addr[SAS_ADDR_SIZE];
+
+	/* Byte 20 */
+	u8 phy_id;
+
+	u8 _un21_27[7];
+} __packed;
+#else
+#error "Bitfield order not defined!"
+#endif
 
 struct mpi_msg_hdr {
 	__le32	header;	/* Bits [11:0] - Message operation code */
@@ -247,7 +351,7 @@ struct mpi_msg_hdr {
 struct phy_start_req {
 	__le32	tag;
 	__le32	ase_sh_lm_slr_phyid;
-	struct sas_identify_frame sas_identify; /* 28 Bytes */
+	struct sas_identify_frame_local sas_identify; /* 28 Bytes */
 	__le32 spasti;
 	u32	reserved[21];
 } __attribute__((packed, aligned(4)));
@@ -568,11 +672,6 @@ struct task_abort_req {
 	u32	reserved[27];
 } __attribute__((packed, aligned(4)));
 
-/* These flags used for SSP SMP & SATA Abort */
-#define ABORT_MASK		0x3
-#define ABORT_SINGLE		0x0
-#define ABORT_ALL		0x1
-
 /**
  * brief the data structure of SSP SATA SMP Abort Response
  * use to describe SSP SMP & SATA Abort Response ( 64 bytes)
@@ -632,7 +731,7 @@ struct sata_start_req {
 	__le32	tag;
 	__le32	device_id;
 	__le32	data_len;
-	__le32	ncqtag_atap_dir_m_dad;
+	__le32	retfis_ncqtag_atap_dir_m_dad;
 	struct host_to_dev_fis	sata_fis;
 	u32	reserved1;
 	u32	reserved2;	/* dword 11. rsvd for normal I/O. */
@@ -868,7 +967,7 @@ struct dek_mgmt_req {
 struct set_phy_profile_req {
 	__le32	tag;
 	__le32	ppc_phyid;
-	u32	reserved[29];
+	__le32	reserved[29];
 } __attribute__((packed, aligned(4)));
 
 /**
@@ -1168,13 +1267,14 @@ typedef struct SASProtocolTimerConfig SASProtocolTimerConfig_t;
 #define IO_OPEN_CNX_ERROR_IT_NEXUS_LOSS_OPEN_COLLIDE	0x47
 #define IO_OPEN_CNX_ERROR_IT_NEXUS_LOSS_PATHWAY_BLOCKED	0x48
 #define IO_DS_INVALID					0x49
+#define IO_FATAL_ERROR					0x51
 /* WARNING: the value is not contiguous from here */
 #define IO_XFER_ERR_LAST_PIO_DATAIN_CRC_ERR	0x52
 #define IO_XFER_DMA_ACTIVATE_TIMEOUT		0x53
 #define IO_XFER_ERROR_INTERNAL_CRC_ERROR	0x54
 #define MPI_IO_RQE_BUSY_FULL			0x55
 #define IO_XFER_ERR_EOB_DATA_OVERRUN		0x56
-#define IO_XFR_ERROR_INVALID_SSP_RSP_FRAME	0x57
+#define IO_XFER_ERROR_INVALID_SSP_RSP_FRAME	0x57
 #define IO_OPEN_CNX_ERROR_OPEN_PREEMPTED	0x58
 
 #define MPI_ERR_IO_RESOURCE_UNAVAILABLE		0x1004
@@ -1261,8 +1361,21 @@ typedef struct SASProtocolTimerConfig SASProtocolTimerConfig_t;
 #define MSGU_HOST_SCRATCH_PAD_3			0x60
 #define MSGU_HOST_SCRATCH_PAD_4			0x64
 #define MSGU_HOST_SCRATCH_PAD_5			0x68
-#define MSGU_HOST_SCRATCH_PAD_6			0x6C
-#define MSGU_HOST_SCRATCH_PAD_7			0x70
+#define MSGU_SCRATCH_PAD_RSVD_0			0x6C
+#define MSGU_SCRATCH_PAD_RSVD_1			0x70
+
+#define MSGU_SCRATCHPAD1_RAAE_STATE_ERR(x) ((x & 0x3) == 0x2)
+#define MSGU_SCRATCHPAD1_ILA_STATE_ERR(x) (((x >> 2) & 0x3) == 0x2)
+#define MSGU_SCRATCHPAD1_BOOTLDR_STATE_ERR(x) ((((x >> 4) & 0x7) == 0x7) || \
+						(((x >> 4) & 0x7) == 0x4))
+#define MSGU_SCRATCHPAD1_IOP0_STATE_ERR(x) (((x >> 10) & 0x3) == 0x2)
+#define MSGU_SCRATCHPAD1_IOP1_STATE_ERR(x) (((x >> 12) & 0x3) == 0x2)
+#define MSGU_SCRATCHPAD1_STATE_FATAL_ERROR(x)  \
+			(MSGU_SCRATCHPAD1_RAAE_STATE_ERR(x) ||      \
+			 MSGU_SCRATCHPAD1_ILA_STATE_ERR(x) ||       \
+			 MSGU_SCRATCHPAD1_BOOTLDR_STATE_ERR(x) ||   \
+			 MSGU_SCRATCHPAD1_IOP0_STATE_ERR(x) ||      \
+			 MSGU_SCRATCHPAD1_IOP1_STATE_ERR(x))
 
 /* bit definition for ODMR register */
 #define ODMR_MASK_ALL			0xFFFFFFFF/* mask all
@@ -1287,6 +1400,13 @@ typedef struct SASProtocolTimerConfig SASProtocolTimerConfig_t;
 #define SCRATCH_PAD_BOOT_LOAD_SUCCESS	0x0
 #define SCRATCH_PAD_IOP0_READY		0xC00
 #define SCRATCH_PAD_IOP1_READY		0x3000
+#define SCRATCH_PAD_MIPSALL_READY_16PORT	(SCRATCH_PAD_IOP1_READY | \
+					SCRATCH_PAD_IOP0_READY | \
+					SCRATCH_PAD_ILA_READY | \
+					SCRATCH_PAD_RAAE_READY)
+#define SCRATCH_PAD_MIPSALL_READY_8PORT	(SCRATCH_PAD_IOP0_READY | \
+					SCRATCH_PAD_ILA_READY | \
+					SCRATCH_PAD_RAAE_READY)
 
 /* boot loader state */
 #define SCRATCH_PAD1_BOOTSTATE_MASK		0x70	/* Bit 4-6 */
@@ -1313,6 +1433,11 @@ typedef struct SASProtocolTimerConfig SASProtocolTimerConfig_t;
 
 #define SCRATCH_PAD_ERROR_MASK		0xFFFFFC00 /* Error mask bits */
 #define SCRATCH_PAD_STATE_MASK		0x00000003 /* State Mask bits */
+
+/*state definition for Scratchpad Rsvd 0, Offset 0x6C, Non-fatal*/
+#define NON_FATAL_SPBC_LBUS_ECC_ERR	0x70000001
+#define NON_FATAL_BDMA_ERR		0xE0000001
+#define NON_FATAL_THERM_OVERTEMP_ERR	0x80000001
 
 /* main configuration offset - byte offset */
 #define MAIN_SIGNATURE_OFFSET		0x00 /* DWORD 0x00 */
@@ -1348,6 +1473,8 @@ typedef struct SASProtocolTimerConfig SASProtocolTimerConfig_t;
 #define MAIN_SAS_PHY_ATTR_TABLE_OFFSET	0x90 /* DWORD 0x24 */
 #define MAIN_PORT_RECOVERY_TIMER	0x94 /* DWORD 0x25 */
 #define MAIN_INT_REASSERTION_DELAY	0x98 /* DWORD 0x26 */
+#define MAIN_MPI_ILA_RELEASE_TYPE	0xA4 /* DWORD 0x29 */
+#define MAIN_MPI_INACTIVE_FW_VERSION	0XB0 /* DWORD 0x2C */
 
 /* Gereral Status Table offset - byte offset */
 #define GST_GSTLEN_MPIS_OFFSET		0x00
@@ -1530,3 +1657,9 @@ typedef struct SASProtocolTimerConfig SASProtocolTimerConfig_t;
 
 #define MEMBASE_II_SHIFT_REGISTER       0x1010
 #endif
+
+/**
+ * As we know sleep (1~20) ms may result in sleep longer than ~20 ms, hence we
+ * choose 20 ms interval.
+ */
+#define FW_READY_INTERVAL	20

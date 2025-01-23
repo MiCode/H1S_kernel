@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * symlink.c
  *
@@ -11,9 +12,10 @@
 #include <linux/buffer_head.h>
 #include "efs.h"
 
-static int efs_symlink_readpage(struct file *file, struct page *page)
+static int efs_symlink_read_folio(struct file *file, struct folio *folio)
 {
-	char *link = kmap(page);
+	struct page *page = &folio->page;
+	char *link = page_address(page);
 	struct buffer_head * bh;
 	struct inode * inode = page->mapping->host;
 	efs_block_t size = inode->i_size;
@@ -39,16 +41,14 @@ static int efs_symlink_readpage(struct file *file, struct page *page)
 	}
 	link[size] = '\0';
 	SetPageUptodate(page);
-	kunmap(page);
 	unlock_page(page);
 	return 0;
 fail:
 	SetPageError(page);
-	kunmap(page);
 	unlock_page(page);
 	return err;
 }
 
 const struct address_space_operations efs_symlink_aops = {
-	.readpage	= efs_symlink_readpage
+	.read_folio	= efs_symlink_read_folio
 };

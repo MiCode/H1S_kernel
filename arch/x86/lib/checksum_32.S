@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * INET		An implementation of the TCP/IP protocol suite for the LINUX
  *		operating system.  INET is implemented using the  BSD Socket
@@ -18,18 +19,14 @@
  *			     handling.
  *		Andi Kleen,  add zeroing on error
  *                   converted to pure assembler
- *
- *		This program is free software; you can redistribute it and/or
- *		modify it under the terms of the GNU General Public License
- *		as published by the Free Software Foundation; either version
- *		2 of the License, or (at your option) any later version.
  */
 
 #include <linux/linkage.h>
-#include <asm/dwarf2.h>
 #include <asm/errno.h>
 #include <asm/asm.h>
-				
+#include <asm/export.h>
+#include <asm/nospec-branch.h>
+
 /*
  * computes a partial checksum, e.g. for TCP/UDP fragments
  */
@@ -49,12 +46,9 @@ unsigned int csum_partial(const unsigned char * buff, int len, unsigned int sum)
 	   * Fortunately, it is easy to convert 2-byte alignment to 4-byte
 	   * alignment for the unrolled loop.
 	   */		
-ENTRY(csum_partial)
-	CFI_STARTPROC
-	pushl_cfi %esi
-	CFI_REL_OFFSET esi, 0
-	pushl_cfi %ebx
-	CFI_REL_OFFSET ebx, 0
+SYM_FUNC_START(csum_partial)
+	pushl %esi
+	pushl %ebx
 	movl 20(%esp),%eax	# Function arg: unsigned int sum
 	movl 16(%esp),%ecx	# Function arg: int len
 	movl 12(%esp),%esi	# Function arg: unsigned char *buff
@@ -127,28 +121,22 @@ ENTRY(csum_partial)
 6:	addl %ecx,%eax
 	adcl $0, %eax 
 7:	
-	testl $1, 12(%esp)
+	testb $1, 12(%esp)
 	jz 8f
 	roll $8, %eax
 8:
-	popl_cfi %ebx
-	CFI_RESTORE ebx
-	popl_cfi %esi
-	CFI_RESTORE esi
-	ret
-	CFI_ENDPROC
-ENDPROC(csum_partial)
+	popl %ebx
+	popl %esi
+	RET
+SYM_FUNC_END(csum_partial)
 
 #else
 
 /* Version for PentiumII/PPro */
 
-ENTRY(csum_partial)
-	CFI_STARTPROC
-	pushl_cfi %esi
-	CFI_REL_OFFSET esi, 0
-	pushl_cfi %ebx
-	CFI_REL_OFFSET ebx, 0
+SYM_FUNC_START(csum_partial)
+	pushl %esi
+	pushl %ebx
 	movl 20(%esp),%eax	# Function arg: unsigned int sum
 	movl 16(%esp),%ecx	# Function arg: int len
 	movl 12(%esp),%esi	# Function arg:	const unsigned char *buf
@@ -165,7 +153,7 @@ ENTRY(csum_partial)
 	negl %ebx
 	lea 45f(%ebx,%ebx,2), %ebx
 	testl %esi, %esi
-	jmp *%ebx
+	JMP_NOSPEC ebx
 
 	# Handle 2-byte-aligned regions
 20:	addw (%esi), %ax
@@ -251,73 +239,55 @@ ENTRY(csum_partial)
 	addl %ebx,%eax
 	adcl $0,%eax
 80: 
-	testl $1, 12(%esp)
+	testb $1, 12(%esp)
 	jz 90f
 	roll $8, %eax
 90: 
-	popl_cfi %ebx
-	CFI_RESTORE ebx
-	popl_cfi %esi
-	CFI_RESTORE esi
-	ret
-	CFI_ENDPROC
-ENDPROC(csum_partial)
+	popl %ebx
+	popl %esi
+	RET
+SYM_FUNC_END(csum_partial)
 				
 #endif
+EXPORT_SYMBOL(csum_partial)
 
 /*
 unsigned int csum_partial_copy_generic (const char *src, char *dst,
-				  int len, int sum, int *src_err_ptr, int *dst_err_ptr)
+				  int len)
  */ 
 
 /*
  * Copy from ds while checksumming, otherwise like csum_partial
- *
- * The macros SRC and DST specify the type of access for the instruction.
- * thus we can call a custom exception handler for all access types.
- *
- * FIXME: could someone double-check whether I haven't mixed up some SRC and
- *	  DST definitions? It's damn hard to trigger all cases.  I hope I got
- *	  them all but there's no guarantee.
  */
 
-#define SRC(y...)			\
-	9999: y;			\
-	_ASM_EXTABLE(9999b, 6001f)
-
-#define DST(y...)			\
-	9999: y;			\
-	_ASM_EXTABLE(9999b, 6002f)
+#define EXC(y...)						\
+	9999: y;						\
+	_ASM_EXTABLE_TYPE(9999b, 7f, EX_TYPE_UACCESS | EX_FLAG_CLEAR_AX)
 
 #ifndef CONFIG_X86_USE_PPRO_CHECKSUM
 
 #define ARGBASE 16		
 #define FP		12
 		
-ENTRY(csum_partial_copy_generic)
-	CFI_STARTPROC
+SYM_FUNC_START(csum_partial_copy_generic)
 	subl  $4,%esp	
-	CFI_ADJUST_CFA_OFFSET 4
-	pushl_cfi %edi
-	CFI_REL_OFFSET edi, 0
-	pushl_cfi %esi
-	CFI_REL_OFFSET esi, 0
-	pushl_cfi %ebx
-	CFI_REL_OFFSET ebx, 0
-	movl ARGBASE+16(%esp),%eax	# sum
+	pushl %edi
+	pushl %esi
+	pushl %ebx
 	movl ARGBASE+12(%esp),%ecx	# len
 	movl ARGBASE+4(%esp),%esi	# src
 	movl ARGBASE+8(%esp),%edi	# dst
 
+	movl $-1, %eax			# sum
 	testl $2, %edi			# Check alignment. 
 	jz 2f				# Jump if alignment is ok.
 	subl $2, %ecx			# Alignment uses up two bytes.
 	jae 1f				# Jump if we had at least two bytes.
 	addl $2, %ecx			# ecx was < 2.  Deal with it.
 	jmp 4f
-SRC(1:	movw (%esi), %bx	)
+EXC(1:	movw (%esi), %bx	)
 	addl $2, %esi
-DST(	movw %bx, (%edi)	)
+EXC(	movw %bx, (%edi)	)
 	addl $2, %edi
 	addw %bx, %ax	
 	adcl $0, %eax
@@ -325,34 +295,34 @@ DST(	movw %bx, (%edi)	)
 	movl %ecx, FP(%esp)
 	shrl $5, %ecx
 	jz 2f
-	testl %esi, %esi
-SRC(1:	movl (%esi), %ebx	)
-SRC(	movl 4(%esi), %edx	)
+	testl %esi, %esi		# what's wrong with clc?
+EXC(1:	movl (%esi), %ebx	)
+EXC(	movl 4(%esi), %edx	)
 	adcl %ebx, %eax
-DST(	movl %ebx, (%edi)	)
+EXC(	movl %ebx, (%edi)	)
 	adcl %edx, %eax
-DST(	movl %edx, 4(%edi)	)
+EXC(	movl %edx, 4(%edi)	)
 
-SRC(	movl 8(%esi), %ebx	)
-SRC(	movl 12(%esi), %edx	)
+EXC(	movl 8(%esi), %ebx	)
+EXC(	movl 12(%esi), %edx	)
 	adcl %ebx, %eax
-DST(	movl %ebx, 8(%edi)	)
+EXC(	movl %ebx, 8(%edi)	)
 	adcl %edx, %eax
-DST(	movl %edx, 12(%edi)	)
+EXC(	movl %edx, 12(%edi)	)
 
-SRC(	movl 16(%esi), %ebx 	)
-SRC(	movl 20(%esi), %edx	)
+EXC(	movl 16(%esi), %ebx 	)
+EXC(	movl 20(%esi), %edx	)
 	adcl %ebx, %eax
-DST(	movl %ebx, 16(%edi)	)
+EXC(	movl %ebx, 16(%edi)	)
 	adcl %edx, %eax
-DST(	movl %edx, 20(%edi)	)
+EXC(	movl %edx, 20(%edi)	)
 
-SRC(	movl 24(%esi), %ebx	)
-SRC(	movl 28(%esi), %edx	)
+EXC(	movl 24(%esi), %ebx	)
+EXC(	movl 28(%esi), %edx	)
 	adcl %ebx, %eax
-DST(	movl %ebx, 24(%edi)	)
+EXC(	movl %ebx, 24(%edi)	)
 	adcl %edx, %eax
-DST(	movl %edx, 28(%edi)	)
+EXC(	movl %edx, 28(%edi)	)
 
 	lea 32(%esi), %esi
 	lea 32(%edi), %edi
@@ -364,9 +334,9 @@ DST(	movl %edx, 28(%edi)	)
 	andl $0x1c, %edx
 	je 4f
 	shrl $2, %edx			# This clears CF
-SRC(3:	movl (%esi), %ebx	)
+EXC(3:	movl (%esi), %ebx	)
 	adcl %ebx, %eax
-DST(	movl %ebx, (%edi)	)
+EXC(	movl %ebx, (%edi)	)
 	lea 4(%esi), %esi
 	lea 4(%edi), %edi
 	dec %edx
@@ -376,81 +346,49 @@ DST(	movl %ebx, (%edi)	)
 	jz 7f
 	cmpl $2, %ecx
 	jb 5f
-SRC(	movw (%esi), %cx	)
+EXC(	movw (%esi), %cx	)
 	leal 2(%esi), %esi
-DST(	movw %cx, (%edi)	)
+EXC(	movw %cx, (%edi)	)
 	leal 2(%edi), %edi
 	je 6f
 	shll $16,%ecx
-SRC(5:	movb (%esi), %cl	)
-DST(	movb %cl, (%edi)	)
+EXC(5:	movb (%esi), %cl	)
+EXC(	movb %cl, (%edi)	)
 6:	addl %ecx, %eax
 	adcl $0, %eax
 7:
-5000:
 
-# Exception handler:
-.section .fixup, "ax"							
-
-6001:
-	movl ARGBASE+20(%esp), %ebx	# src_err_ptr
-	movl $-EFAULT, (%ebx)
-
-	# zero the complete destination - computing the rest
-	# is too much work 
-	movl ARGBASE+8(%esp), %edi	# dst
-	movl ARGBASE+12(%esp), %ecx	# len
-	xorl %eax,%eax
-	rep ; stosb
-
-	jmp 5000b
-
-6002:
-	movl ARGBASE+24(%esp), %ebx	# dst_err_ptr
-	movl $-EFAULT,(%ebx)
-	jmp 5000b
-
-.previous
-
-	popl_cfi %ebx
-	CFI_RESTORE ebx
-	popl_cfi %esi
-	CFI_RESTORE esi
-	popl_cfi %edi
-	CFI_RESTORE edi
-	popl_cfi %ecx			# equivalent to addl $4,%esp
-	ret	
-	CFI_ENDPROC
-ENDPROC(csum_partial_copy_generic)
+	popl %ebx
+	popl %esi
+	popl %edi
+	popl %ecx			# equivalent to addl $4,%esp
+	RET
+SYM_FUNC_END(csum_partial_copy_generic)
 
 #else
 
 /* Version for PentiumII/PPro */
 
 #define ROUND1(x) \
-	SRC(movl x(%esi), %ebx	)	;	\
+	EXC(movl x(%esi), %ebx	)	;	\
 	addl %ebx, %eax			;	\
-	DST(movl %ebx, x(%edi)	)	; 
+	EXC(movl %ebx, x(%edi)	)	;
 
 #define ROUND(x) \
-	SRC(movl x(%esi), %ebx	)	;	\
+	EXC(movl x(%esi), %ebx	)	;	\
 	adcl %ebx, %eax			;	\
-	DST(movl %ebx, x(%edi)	)	;
+	EXC(movl %ebx, x(%edi)	)	;
 
 #define ARGBASE 12
 		
-ENTRY(csum_partial_copy_generic)
-	CFI_STARTPROC
-	pushl_cfi %ebx
-	CFI_REL_OFFSET ebx, 0
-	pushl_cfi %edi
-	CFI_REL_OFFSET edi, 0
-	pushl_cfi %esi
-	CFI_REL_OFFSET esi, 0
+SYM_FUNC_START(csum_partial_copy_generic)
+	pushl %ebx
+	pushl %edi
+	pushl %esi
 	movl ARGBASE+4(%esp),%esi	#src
 	movl ARGBASE+8(%esp),%edi	#dst	
 	movl ARGBASE+12(%esp),%ecx	#len
-	movl ARGBASE+16(%esp),%eax	#sum
+	movl $-1, %eax			#sum
 #	movl %ecx, %edx  
 	movl %ecx, %ebx  
 	movl %esi, %edx
@@ -463,10 +401,10 @@ ENTRY(csum_partial_copy_generic)
 	andl $-32,%edx
 	lea 3f(%ebx,%ebx), %ebx
 	testl %esi, %esi 
-	jmp *%ebx
+	JMP_NOSPEC ebx
 1:	addl $64,%esi
 	addl $64,%edi 
-	SRC(movb -32(%edx),%bl)	; SRC(movb (%edx),%bl)
+	EXC(movb -32(%edx),%bl)	; EXC(movb (%edx),%bl)
 	ROUND1(-64) ROUND(-60) ROUND(-56) ROUND(-52)	
 	ROUND (-48) ROUND(-44) ROUND(-40) ROUND(-36)	
 	ROUND (-32) ROUND(-28) ROUND(-24) ROUND(-20)	
@@ -480,43 +418,27 @@ ENTRY(csum_partial_copy_generic)
 	jz 7f
 	cmpl $2, %edx
 	jb 5f
-SRC(	movw (%esi), %dx         )
+EXC(	movw (%esi), %dx         )
 	leal 2(%esi), %esi
-DST(	movw %dx, (%edi)         )
+EXC(	movw %dx, (%edi)         )
 	leal 2(%edi), %edi
 	je 6f
 	shll $16,%edx
 5:
-SRC(	movb (%esi), %dl         )
-DST(	movb %dl, (%edi)         )
+EXC(	movb (%esi), %dl         )
+EXC(	movb %dl, (%edi)         )
 6:	addl %edx, %eax
 	adcl $0, %eax
 7:
-.section .fixup, "ax"
-6001:	movl	ARGBASE+20(%esp), %ebx	# src_err_ptr	
-	movl $-EFAULT, (%ebx)
-	# zero the complete destination (computing the rest is too much work)
-	movl ARGBASE+8(%esp),%edi	# dst
-	movl ARGBASE+12(%esp),%ecx	# len
-	xorl %eax,%eax
-	rep; stosb
-	jmp 7b
-6002:	movl ARGBASE+24(%esp), %ebx	# dst_err_ptr
-	movl $-EFAULT, (%ebx)
-	jmp  7b			
-.previous				
 
-	popl_cfi %esi
-	CFI_RESTORE esi
-	popl_cfi %edi
-	CFI_RESTORE edi
-	popl_cfi %ebx
-	CFI_RESTORE ebx
-	ret
-	CFI_ENDPROC
-ENDPROC(csum_partial_copy_generic)
+	popl %esi
+	popl %edi
+	popl %ebx
+	RET
+SYM_FUNC_END(csum_partial_copy_generic)
 				
 #undef ROUND
 #undef ROUND1		
 		
 #endif
+EXPORT_SYMBOL(csum_partial_copy_generic)

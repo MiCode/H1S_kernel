@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * GPIO driver for Analog Devices ADP5520 MFD PMICs
  *
  * Copyright 2009 Analog Devices Inc.
- *
- * Licensed under the GPL-2 or later.
  */
 
 #include <linux/module.h>
@@ -12,8 +11,7 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/mfd/adp5520.h>
-
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 
 struct adp5520_gpio {
 	struct device *master;
@@ -27,7 +25,7 @@ static int adp5520_gpio_get_value(struct gpio_chip *chip, unsigned off)
 	struct adp5520_gpio *dev;
 	uint8_t reg_val;
 
-	dev = container_of(chip, struct adp5520_gpio, gpio_chip);
+	dev = gpiochip_get_data(chip);
 
 	/*
 	 * There are dedicated registers for GPIO IN/OUT.
@@ -46,7 +44,7 @@ static void adp5520_gpio_set_value(struct gpio_chip *chip,
 		unsigned off, int val)
 {
 	struct adp5520_gpio *dev;
-	dev = container_of(chip, struct adp5520_gpio, gpio_chip);
+	dev = gpiochip_get_data(chip);
 
 	if (val)
 		adp5520_set_bits(dev->master, ADP5520_GPIO_OUT, dev->lut[off]);
@@ -57,7 +55,7 @@ static void adp5520_gpio_set_value(struct gpio_chip *chip,
 static int adp5520_gpio_direction_input(struct gpio_chip *chip, unsigned off)
 {
 	struct adp5520_gpio *dev;
-	dev = container_of(chip, struct adp5520_gpio, gpio_chip);
+	dev = gpiochip_get_data(chip);
 
 	clear_bit(off, &dev->output);
 
@@ -70,7 +68,7 @@ static int adp5520_gpio_direction_output(struct gpio_chip *chip,
 {
 	struct adp5520_gpio *dev;
 	int ret = 0;
-	dev = container_of(chip, struct adp5520_gpio, gpio_chip);
+	dev = gpiochip_get_data(chip);
 
 	set_bit(off, &dev->output);
 
@@ -106,10 +104,8 @@ static int adp5520_gpio_probe(struct platform_device *pdev)
 	}
 
 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
-	if (dev == NULL) {
-		dev_err(&pdev->dev, "failed to alloc memory\n");
+	if (dev == NULL)
 		return -ENOMEM;
-	}
 
 	dev->master = pdev->dev.parent;
 
@@ -117,10 +113,8 @@ static int adp5520_gpio_probe(struct platform_device *pdev)
 		if (pdata->gpio_en_mask & (1 << i))
 			dev->lut[gpios++] = 1 << i;
 
-	if (gpios < 1) {
-		ret = -EINVAL;
-		goto err;
-	}
+	if (gpios < 1)
+		return -EINVAL;
 
 	gc = &dev->gpio_chip;
 	gc->direction_input  = adp5520_gpio_direction_input;
@@ -152,48 +146,22 @@ static int adp5520_gpio_probe(struct platform_device *pdev)
 
 	if (ret) {
 		dev_err(&pdev->dev, "failed to write\n");
-		goto err;
-	}
-
-	ret = gpiochip_add(&dev->gpio_chip);
-	if (ret)
-		goto err;
-
-	platform_set_drvdata(pdev, dev);
-	return 0;
-
-err:
-	return ret;
-}
-
-static int adp5520_gpio_remove(struct platform_device *pdev)
-{
-	struct adp5520_gpio *dev;
-	int ret;
-
-	dev = platform_get_drvdata(pdev);
-	ret = gpiochip_remove(&dev->gpio_chip);
-	if (ret) {
-		dev_err(&pdev->dev, "%s failed, %d\n",
-				"gpiochip_remove()", ret);
 		return ret;
 	}
 
-	return 0;
+	return devm_gpiochip_add_data(&pdev->dev, &dev->gpio_chip, dev);
 }
 
 static struct platform_driver adp5520_gpio_driver = {
 	.driver	= {
 		.name	= "adp5520-gpio",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= adp5520_gpio_probe,
-	.remove		= adp5520_gpio_remove,
 };
 
 module_platform_driver(adp5520_gpio_driver);
 
-MODULE_AUTHOR("Michael Hennerich <hennerich@blackfin.uclinux.org>");
+MODULE_AUTHOR("Michael Hennerich <michael.hennerich@analog.com>");
 MODULE_DESCRIPTION("GPIO ADP5520 Driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:adp5520-gpio");

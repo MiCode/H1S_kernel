@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * xfi linux driver.
  *
  * Copyright (C) 2008, Creative Technology Ltd. All Rights Reserved.
- *
- * This source file is released under GPL v2 license (no other versions).
- * See the COPYING file included in the main directory of this source
- * distribution for the license terms and conditions.
  */
 
 #include <linux/init.h>
@@ -21,14 +18,13 @@
 MODULE_AUTHOR("Creative Technology Ltd");
 MODULE_DESCRIPTION("X-Fi driver version 1.03");
 MODULE_LICENSE("GPL v2");
-MODULE_SUPPORTED_DEVICE("{{Creative Labs, Sound Blaster X-Fi}");
 
 static unsigned int reference_rate = 48000;
 static unsigned int multiple = 2;
 MODULE_PARM_DESC(reference_rate, "Reference rate (default=48000)");
-module_param(reference_rate, uint, S_IRUGO);
+module_param(reference_rate, uint, 0444);
 MODULE_PARM_DESC(multiple, "Rate multiplier (default=2)");
-module_param(multiple, uint, S_IRUGO);
+module_param(multiple, uint, 0444);
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;
@@ -44,7 +40,7 @@ MODULE_PARM_DESC(enable, "Enable Creative X-Fi driver");
 module_param_array(subsystem, int, NULL, 0444);
 MODULE_PARM_DESC(subsystem, "Override subsystem ID for Creative X-Fi driver");
 
-static DEFINE_PCI_DEVICE_TABLE(ct_pci_dev_ids) = {
+static const struct pci_device_id ct_pci_dev_ids[] = {
 	/* only X-Fi is supported, so... */
 	{ PCI_DEVICE(PCI_VENDOR_ID_CREATIVE, PCI_DEVICE_ID_CREATIVE_20K1),
 	  .driver_data = ATC20K1,
@@ -71,21 +67,23 @@ ct_card_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 		dev++;
 		return -ENOENT;
 	}
-	err = snd_card_create(index[dev], id[dev], THIS_MODULE, 0, &card);
+	err = snd_card_new(&pci->dev, index[dev], id[dev], THIS_MODULE,
+			   0, &card);
 	if (err)
 		return err;
 	if ((reference_rate != 48000) && (reference_rate != 44100)) {
-		printk(KERN_ERR "ctxfi: Invalid reference_rate value %u!!!\n",
-		       reference_rate);
-		printk(KERN_ERR "ctxfi: The valid values for reference_rate "
-		       "are 48000 and 44100, Value 48000 is assumed.\n");
+		dev_err(card->dev,
+			"Invalid reference_rate value %u!!!\n",
+			reference_rate);
+		dev_err(card->dev,
+			"The valid values for reference_rate are 48000 and 44100, Value 48000 is assumed.\n");
 		reference_rate = 48000;
 	}
 	if ((multiple != 1) && (multiple != 2) && (multiple != 4)) {
-		printk(KERN_ERR "ctxfi: Invalid multiple value %u!!!\n",
-		       multiple);
-		printk(KERN_ERR "ctxfi: The valid values for multiple are "
-		       "1, 2 and 4, Value 2 is assumed.\n");
+		dev_err(card->dev, "Invalid multiple value %u!!!\n",
+			multiple);
+		dev_err(card->dev,
+			"The valid values for multiple are 1, 2 and 4, Value 2 is assumed.\n");
 		multiple = 2;
 	}
 	err = ct_atc_create(card, pci, reference_rate, multiple,

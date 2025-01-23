@@ -1,14 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * miscellaneous helper functions
  *
  * Copyright (c) Clemens Ladisch <clemens@ladisch.de>
- * Licensed under the terms of the GNU General Public License, version 2.
  */
 
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/firewire.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include "lib.h"
 
 #define ERROR_RETRY_DELAY_MS	20
@@ -68,4 +69,4 @@ EXPORT_SYMBOL(snd_fw_transaction);
 
 MODULE_DESCRIPTION("FireWire audio helper functions");
 MODULE_AUTHOR("Clemens Ladisch <clemens@ladisch.de>");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

@@ -1,18 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * PCM1681 ASoC codec driver
  *
  * Copyright (c) StreamUnlimited GmbH 2013
  *	Marek Belisko <marek.belisko@streamunlimited.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -73,7 +64,7 @@ static bool pcm1681_accessible_reg(struct device *dev, unsigned int reg)
 	return !((reg == 0x00) || (reg == 0x0f));
 }
 
-static bool pcm1681_writeable_reg(struct device *dev, unsigned register reg)
+static bool pcm1681_writeable_reg(struct device *dev, unsigned int reg)
 {
 	return pcm1681_accessible_reg(dev, reg) &&
 		(reg != PCM1681_ZERO_DETECT_STATUS);
@@ -90,22 +81,27 @@ struct pcm1681_private {
 
 static const int pcm1681_deemph[] = { 44100, 48000, 32000 };
 
-static int pcm1681_set_deemph(struct snd_soc_codec *codec)
+static int pcm1681_set_deemph(struct snd_soc_component *component)
 {
-	struct pcm1681_private *priv = snd_soc_codec_get_drvdata(codec);
-	int i = 0, val = -1, enable = 0;
+	struct pcm1681_private *priv = snd_soc_component_get_drvdata(component);
+	int i, val = -1, enable = 0;
 
-	if (priv->deemph)
-		for (i = 0; i < ARRAY_SIZE(pcm1681_deemph); i++)
-			if (pcm1681_deemph[i] == priv->rate)
+	if (priv->deemph) {
+		for (i = 0; i < ARRAY_SIZE(pcm1681_deemph); i++) {
+			if (pcm1681_deemph[i] == priv->rate) {
 				val = i;
+				break;
+			}
+		}
+	}
 
 	if (val != -1) {
 		regmap_update_bits(priv->regmap, PCM1681_DEEMPH_CONTROL,
-					PCM1681_DEEMPH_RATE_MASK, val);
+				   PCM1681_DEEMPH_RATE_MASK, val << 3);
 		enable = 1;
-	} else
+	} else {
 		enable = 0;
+	}
 
 	/* enable/disable deemphasis functionality */
 	return regmap_update_bits(priv->regmap, PCM1681_DEEMPH_CONTROL,
@@ -115,10 +111,10 @@ static int pcm1681_set_deemph(struct snd_soc_codec *codec)
 static int pcm1681_get_deemph(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
-	struct pcm1681_private *priv = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct pcm1681_private *priv = snd_soc_component_get_drvdata(component);
 
-	ucontrol->value.enumerated.item[0] = priv->deemph;
+	ucontrol->value.integer.value[0] = priv->deemph;
 
 	return 0;
 }
@@ -126,23 +122,23 @@ static int pcm1681_get_deemph(struct snd_kcontrol *kcontrol,
 static int pcm1681_put_deemph(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
-	struct pcm1681_private *priv = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct pcm1681_private *priv = snd_soc_component_get_drvdata(component);
 
-	priv->deemph = ucontrol->value.enumerated.item[0];
+	priv->deemph = ucontrol->value.integer.value[0];
 
-	return pcm1681_set_deemph(codec);
+	return pcm1681_set_deemph(component);
 }
 
 static int pcm1681_set_dai_fmt(struct snd_soc_dai *codec_dai,
 			      unsigned int format)
 {
-	struct snd_soc_codec *codec = codec_dai->codec;
-	struct pcm1681_private *priv = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = codec_dai->component;
+	struct pcm1681_private *priv = snd_soc_component_get_drvdata(component);
 
-	/* The PCM1681 can only be slave to all clocks */
-	if ((format & SND_SOC_DAIFMT_MASTER_MASK) != SND_SOC_DAIFMT_CBS_CFS) {
-		dev_err(codec->dev, "Invalid clocking mode\n");
+	/* The PCM1681 can only be consumer to all clocks */
+	if ((format & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) != SND_SOC_DAIFMT_CBC_CFC) {
+		dev_err(component->dev, "Invalid clocking mode\n");
 		return -EINVAL;
 	}
 
@@ -151,10 +147,10 @@ static int pcm1681_set_dai_fmt(struct snd_soc_dai *codec_dai,
 	return 0;
 }
 
-static int pcm1681_digital_mute(struct snd_soc_dai *dai, int mute)
+static int pcm1681_mute(struct snd_soc_dai *dai, int mute, int direction)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct pcm1681_private *priv = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = dai->component;
+	struct pcm1681_private *priv = snd_soc_component_get_drvdata(component);
 	int val;
 
 	if (mute)
@@ -169,19 +165,24 @@ static int pcm1681_hw_params(struct snd_pcm_substream *substream,
 			     struct snd_pcm_hw_params *params,
 			     struct snd_soc_dai *dai)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct pcm1681_private *priv = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = dai->component;
+	struct pcm1681_private *priv = snd_soc_component_get_drvdata(component);
 	int val = 0, ret;
-	int pcm_format = params_format(params);
 
 	priv->rate = params_rate(params);
 
 	switch (priv->format & SND_SOC_DAIFMT_FORMAT_MASK) {
 	case SND_SOC_DAIFMT_RIGHT_J:
-		if (pcm_format == SNDRV_PCM_FORMAT_S24_LE)
-			val = 0x00;
-		else if (pcm_format == SNDRV_PCM_FORMAT_S16_LE)
-			val = 0x03;
+		switch (params_width(params)) {
+		case 24:
+			val = 0;
+			break;
+		case 16:
+			val = 3;
+			break;
+		default:
+			return -EINVAL;
+		}
 		break;
 	case SND_SOC_DAIFMT_I2S:
 		val = 0x04;
@@ -190,7 +191,7 @@ static int pcm1681_hw_params(struct snd_pcm_substream *substream,
 		val = 0x05;
 		break;
 	default:
-		dev_err(codec->dev, "Invalid DAI format\n");
+		dev_err(component->dev, "Invalid DAI format\n");
 		return -EINVAL;
 	}
 
@@ -198,13 +199,14 @@ static int pcm1681_hw_params(struct snd_pcm_substream *substream,
 	if (ret < 0)
 		return ret;
 
-	return pcm1681_set_deemph(codec);
+	return pcm1681_set_deemph(component);
 }
 
 static const struct snd_soc_dai_ops pcm1681_dai_ops = {
 	.set_fmt	= pcm1681_set_dai_fmt,
 	.hw_params	= pcm1681_hw_params,
-	.digital_mute	= pcm1681_digital_mute,
+	.mute_stream	= pcm1681_mute,
+	.no_capture_mute = 1,
 };
 
 static const struct snd_soc_dapm_widget pcm1681_dapm_widgets[] = {
@@ -278,13 +280,16 @@ static const struct regmap_config pcm1681_regmap = {
 	.readable_reg		= pcm1681_accessible_reg,
 };
 
-static struct snd_soc_codec_driver soc_codec_dev_pcm1681 = {
+static const struct snd_soc_component_driver soc_component_dev_pcm1681 = {
 	.controls		= pcm1681_controls,
 	.num_controls		= ARRAY_SIZE(pcm1681_controls),
 	.dapm_widgets		= pcm1681_dapm_widgets,
 	.num_dapm_widgets	= ARRAY_SIZE(pcm1681_dapm_widgets),
 	.dapm_routes		= pcm1681_dapm_routes,
 	.num_dapm_routes	= ARRAY_SIZE(pcm1681_dapm_routes),
+	.idle_bias_on		= 1,
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
 };
 
 static const struct i2c_device_id pcm1681_i2c_id[] = {
@@ -293,8 +298,7 @@ static const struct i2c_device_id pcm1681_i2c_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, pcm1681_i2c_id);
 
-static int pcm1681_i2c_probe(struct i2c_client *client,
-			      const struct i2c_device_id *id)
+static int pcm1681_i2c_probe(struct i2c_client *client)
 {
 	int ret;
 	struct pcm1681_private *priv;
@@ -312,25 +316,18 @@ static int pcm1681_i2c_probe(struct i2c_client *client,
 
 	i2c_set_clientdata(client, priv);
 
-	return snd_soc_register_codec(&client->dev, &soc_codec_dev_pcm1681,
+	return devm_snd_soc_register_component(&client->dev,
+		&soc_component_dev_pcm1681,
 		&pcm1681_dai, 1);
-}
-
-static int pcm1681_i2c_remove(struct i2c_client *client)
-{
-	snd_soc_unregister_codec(&client->dev);
-	return 0;
 }
 
 static struct i2c_driver pcm1681_i2c_driver = {
 	.driver = {
 		.name	= "pcm1681",
-		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(pcm1681_dt_ids),
 	},
 	.id_table	= pcm1681_i2c_id,
 	.probe		= pcm1681_i2c_probe,
-	.remove		= pcm1681_i2c_remove,
 };
 
 module_i2c_driver(pcm1681_i2c_driver);

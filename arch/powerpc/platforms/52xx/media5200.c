@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Support for 'media5200-platform' compatible boards.
  *
  * Copyright (C) 2008 Secret Lab Technologies Ltd.
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  *
  * Description:
  * This code implements support for the Freescape Media5200 platform
@@ -17,7 +13,6 @@
  * a cascaded interrupt controller driver which attaches itself to the
  * Virtual IRQ subsystem after the primary mpc5200 interrupt controller
  * is initialized.
- *
  */
 
 #undef DEBUG
@@ -25,12 +20,13 @@
 #include <linux/irq.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <asm/time.h>
-#include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/mpc52xx.h>
 
-static struct of_device_id mpc5200_gpio_ids[] __initdata = {
+static const struct of_device_id mpc5200_gpio_ids[] __initconst = {
 	{ .compatible = "fsl,mpc5200-gpio", },
 	{ .compatible = "mpc5200-gpio", },
 	{}
@@ -80,10 +76,10 @@ static struct irq_chip media5200_irq_chip = {
 	.irq_mask_ack = media5200_irq_mask,
 };
 
-void media5200_irq_cascade(unsigned int virq, struct irq_desc *desc)
+static void media5200_irq_cascade(struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
-	int sub_virq, val;
+	int val;
 	u32 status, enable;
 
 	/* Mask off the cascaded IRQ */
@@ -97,11 +93,10 @@ void media5200_irq_cascade(unsigned int virq, struct irq_desc *desc)
 	enable = in_be32(media5200_irq.regs + MEDIA5200_IRQ_STATUS);
 	val = ffs((status & enable) >> MEDIA5200_IRQ_SHIFT);
 	if (val) {
-		sub_virq = irq_linear_revmap(media5200_irq.irqhost, val - 1);
-		/* pr_debug("%s: virq=%i s=%.8x e=%.8x hwirq=%i subvirq=%i\n",
-		 *          __func__, virq, status, enable, val - 1, sub_virq);
+		generic_handle_domain_irq(media5200_irq.irqhost, val - 1);
+		/* pr_debug("%s: virq=%i s=%.8x e=%.8x hwirq=%i\n",
+		 *          __func__, virq, status, enable, val - 1);
 		 */
-		generic_handle_irq(sub_virq);
 	}
 
 	/* Processing done; can reenable the cascade now */
@@ -156,7 +151,7 @@ static void __init media5200_init_irq(void)
 	fpga_np = of_find_compatible_node(NULL, NULL, "fsl,media5200-fpga");
 	if (!fpga_np)
 		goto out;
-	pr_debug("%s: found fpga node: %s\n", __func__, fpga_np->full_name);
+	pr_debug("%s: found fpga node: %pOF\n", __func__, fpga_np);
 
 	media5200_irq.regs = of_iomap(fpga_np, 0);
 	if (!media5200_irq.regs)
@@ -179,6 +174,8 @@ static void __init media5200_init_irq(void)
 		goto out;
 	pr_debug("%s: allocated irqhost\n", __func__);
 
+	of_node_put(fpga_np);
+
 	irq_set_handler_data(cascade_virq, &media5200_irq);
 	irq_set_chained_handler(cascade_virq, media5200_irq_cascade);
 
@@ -186,6 +183,7 @@ static void __init media5200_init_irq(void)
 
  out:
 	pr_err("Could not find Media5200 FPGA; PCI interrupts will not work\n");
+	of_node_put(fpga_np);
 }
 
 /*
@@ -206,8 +204,6 @@ static void __init media5200_setup_arch(void)
 
 	/* Some mpc5200 & mpc5200b related configuration */
 	mpc5200_setup_xlb_arbiter();
-
-	mpc52xx_setup_pci();
 
 	np = of_find_matching_node(NULL, mpc5200_gpio_ids);
 	gpio = of_iomap(np, 0);
@@ -231,27 +227,13 @@ static void __init media5200_setup_arch(void)
 
 }
 
-/* list of the supported boards */
-static const char * const board[] __initconst = {
-	"fsl,media5200",
-	NULL
-};
-
-/*
- * Called very early, MMU is off, device-tree isn't unflattened
- */
-static int __init media5200_probe(void)
-{
-	return of_flat_dt_match(of_get_flat_dt_root(), board);
-}
-
 define_machine(media5200_platform) {
 	.name		= "media5200-platform",
-	.probe		= media5200_probe,
+	.compatible	= "fsl,media5200",
 	.setup_arch	= media5200_setup_arch,
+	.discover_phbs	= mpc52xx_setup_pci,
 	.init		= mpc52xx_declare_of_platform_devices,
 	.init_IRQ	= media5200_init_irq,
 	.get_irq	= mpc52xx_get_irq,
 	.restart	= mpc52xx_restart,
-	.calibrate_decr	= generic_calibrate_decr,
 };

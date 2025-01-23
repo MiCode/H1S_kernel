@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *	Copyright IBM Corp. 2001, 2007
  *	Authors:	Fritz Elfert (felfert@millenux.com)
@@ -99,6 +100,7 @@ enum ctcm_channel_types {
 #define CTCM_PROTO_MPC		4
 #define CTCM_PROTO_MAX		4
 
+#define CTCM_STATSIZE_LIMIT	64
 #define CTCM_BUFSIZE_LIMIT	65535
 #define CTCM_BUFSIZE_DEFAULT	32768
 #define MPC_BUFSIZE_DEFAULT	CTCM_BUFSIZE_LIMIT
@@ -121,7 +123,7 @@ struct ctcm_profile {
 	unsigned long doios_multi;
 	unsigned long txlen;
 	unsigned long tx_time;
-	struct timespec send_stamp;
+	unsigned long send_stamp;
 };
 
 /*
@@ -296,11 +298,6 @@ struct mpc_group *ctcmpc_init_mpc_group(struct ctcm_priv *priv);
 
 /* test if struct ctcm_priv of struct net_device has MPC protocol setting */
 #define IS_MPCDEV(dev) IS_MPC((struct ctcm_priv *)dev->ml_priv)
-
-static inline gfp_t gfp_type(void)
-{
-	return in_interrupt() ? GFP_ATOMIC : GFP_KERNEL;
-}
 
 /*
  * Definition of our link level header.

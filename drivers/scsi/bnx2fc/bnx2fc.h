@@ -1,8 +1,8 @@
-#ifndef _BNX2FC_H_
-#define _BNX2FC_H_
-/* bnx2fc.h: Broadcom NetXtreme II Linux FCoE offload driver.
+/* bnx2fc.h: QLogic Linux FCoE offload driver.
  *
- * Copyright (c) 2008 - 2013 Broadcom Corporation
+ * Copyright (c) 2008-2013 Broadcom Corporation
+ * Copyright (c) 2014-2016 QLogic Corporation
+ * Copyright (c) 2016-2017 Cavium Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -11,6 +11,8 @@
  * Written by: Bhanu Prakash Gollapudi (bprakash@broadcom.com)
  */
 
+#ifndef _BNX2FC_H_
+#define _BNX2FC_H_
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
@@ -38,7 +40,7 @@
 #include <linux/bitops.h>
 #include <linux/log2.h>
 #include <linux/interrupt.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/io.h>
 
 #include <scsi/scsi.h>
@@ -49,7 +51,6 @@
 #include <scsi/scsi_tcq.h>
 #include <scsi/libfc.h>
 #include <scsi/libfcoe.h>
-#include <scsi/fc_encode.h>
 #include <scsi/scsi_transport.h>
 #include <scsi/scsi_transport_fc.h>
 #include <scsi/fc/fc_fip.h>
@@ -64,7 +65,7 @@
 #include "bnx2fc_constants.h"
 
 #define BNX2FC_NAME		"bnx2fc"
-#define BNX2FC_VERSION		"2.4.1"
+#define BNX2FC_VERSION		"2.12.13"
 
 #define PFX			"bnx2fc: "
 
@@ -73,8 +74,9 @@
 #define BNX2X_DOORBELL_PCI_BAR		2
 
 #define BNX2FC_MAX_BD_LEN		0xffff
-#define BNX2FC_BD_SPLIT_SZ		0x8000
-#define BNX2FC_MAX_BDS_PER_CMD		256
+#define BNX2FC_BD_SPLIT_SZ		0xffff
+#define BNX2FC_MAX_BDS_PER_CMD		255
+#define BNX2FC_FW_MAX_BDS_PER_CMD	255
 
 #define BNX2FC_SQ_WQES_MAX	256
 
@@ -135,8 +137,6 @@
 #define BNX2FC_FW_TIMEOUT		(3 * HZ)
 #define PORT_MAX			2
 
-#define CMD_SCSI_STATUS(Cmnd)		((Cmnd)->SCp.Status)
-
 /* FC FCP Status */
 #define	FC_GOOD				0
 
@@ -190,6 +190,7 @@ struct bnx2fc_hba {
 	struct bnx2fc_cmd_mgr *cmd_mgr;
 	spinlock_t hba_lock;
 	struct mutex hba_mutex;
+	struct mutex hba_stats_mutex;
 	unsigned long adapter_state;
 		#define ADAPTER_STATE_UP		0
 		#define ADAPTER_STATE_GOING_DOWN	1
@@ -260,6 +261,7 @@ struct bnx2fc_interface {
 	u8 vlan_enabled;
 	int vlan_id;
 	bool enabled;
+	u8 tm_timeout;
 };
 
 #define bnx2fc_from_ctlr(x)			\
@@ -302,7 +304,6 @@ struct bnx2fc_rport {
 #define BNX2FC_FLAG_OFLD_REQ_CMPL	0x5
 #define BNX2FC_FLAG_CTX_ALLOC_FAILURE	0x6
 #define BNX2FC_FLAG_UPLD_REQ_COMPL	0x7
-#define BNX2FC_FLAG_EXPL_LOGO		0x8
 #define BNX2FC_FLAG_DISABLE_FAILED	0x9
 #define BNX2FC_FLAG_ENABLED		0xa
 
@@ -367,6 +368,7 @@ struct bnx2fc_rport {
 	atomic_t num_active_ios;
 	u32 flush_in_prog;
 	unsigned long timestamp;
+	unsigned long retry_delay_timestamp;
 	struct list_head free_task_list;
 	struct bnx2fc_cmd *pending_queue[BNX2FC_SQ_WQES_MAX+1];
 	struct list_head active_cmd_queue;
@@ -429,8 +431,10 @@ struct bnx2fc_cmd {
 	void (*cb_func)(struct bnx2fc_els_cb_arg *cb_arg);
 	struct bnx2fc_els_cb_arg *cb_arg;
 	struct delayed_work timeout_work; /* timer for ULP timeouts */
-	struct completion tm_done;
-	int wait_for_comp;
+	struct completion abts_done;
+	struct completion cleanup_done;
+	int wait_for_abts_comp;
+	int wait_for_cleanup_comp;
 	u16 xid;
 	struct fcoe_err_report_entry err_entry;
 	struct fcoe_task_ctx_entry *task;
@@ -451,6 +455,7 @@ struct bnx2fc_cmd {
 #define BNX2FC_FLAG_ELS_TIMEOUT		0xb
 #define BNX2FC_FLAG_CMD_LOST		0xc
 #define BNX2FC_FLAG_SRR_SENT		0xd
+#define BNX2FC_FLAG_ISSUE_CLEANUP_REQ	0xe
 	u8 rec_retry;
 	u8 srr_retry;
 	u32 srr_offset;
@@ -474,7 +479,10 @@ struct io_bdt {
 struct bnx2fc_work {
 	struct list_head list;
 	struct bnx2fc_rport *tgt;
+	struct fcoe_task_ctx_entry *task;
+	unsigned char rq_data[BNX2FC_RQ_BUF_SZ];
 	u16 wqe;
+	u8 num_rq;
 };
 struct bnx2fc_unsol_els {
 	struct fc_lport *lport;
@@ -483,7 +491,14 @@ struct bnx2fc_unsol_els {
 	struct work_struct unsol_els_work;
 };
 
+struct bnx2fc_priv {
+	struct bnx2fc_cmd *io_req;
+};
 
+static inline struct bnx2fc_priv *bnx2fc_priv(struct scsi_cmnd *cmd)
+{
+	return scsi_cmd_priv(cmd);
+}
 
 struct bnx2fc_cmd *bnx2fc_cmd_alloc(struct bnx2fc_rport *tgt);
 struct bnx2fc_cmd *bnx2fc_elstm_alloc(struct bnx2fc_rport *tgt, int type);
@@ -535,7 +550,6 @@ void bnx2fc_init_task(struct bnx2fc_cmd *io_req,
 void bnx2fc_add_2_sq(struct bnx2fc_rport *tgt, u16 xid);
 void bnx2fc_ring_doorbell(struct bnx2fc_rport *tgt);
 int bnx2fc_eh_abort(struct scsi_cmnd *sc_cmd);
-int bnx2fc_eh_host_reset(struct scsi_cmnd *sc_cmd);
 int bnx2fc_eh_target_reset(struct scsi_cmnd *sc_cmd);
 int bnx2fc_eh_device_reset(struct scsi_cmnd *sc_cmd);
 void bnx2fc_rport_event_handler(struct fc_lport *lport,
@@ -543,7 +557,7 @@ void bnx2fc_rport_event_handler(struct fc_lport *lport,
 				enum fc_rport_event event);
 void bnx2fc_process_scsi_cmd_compl(struct bnx2fc_cmd *io_req,
 				   struct fcoe_task_ctx_entry *task,
-				   u8 num_rq);
+				   u8 num_rq, unsigned char *rq_data);
 void bnx2fc_process_cleanup_compl(struct bnx2fc_cmd *io_req,
 			       struct fcoe_task_ctx_entry *task,
 			       u8 num_rq);
@@ -552,7 +566,7 @@ void bnx2fc_process_abts_compl(struct bnx2fc_cmd *io_req,
 			       u8 num_rq);
 void bnx2fc_process_tm_compl(struct bnx2fc_cmd *io_req,
 			     struct fcoe_task_ctx_entry *task,
-			     u8 num_rq);
+			     u8 num_rq, unsigned char *rq_data);
 void bnx2fc_process_els_compl(struct bnx2fc_cmd *els_req,
 			      struct fcoe_task_ctx_entry *task,
 			      u8 num_rq);
@@ -570,7 +584,9 @@ struct fc_seq *bnx2fc_elsct_send(struct fc_lport *lport, u32 did,
 				      void *arg, u32 timeout);
 void bnx2fc_arm_cq(struct bnx2fc_rport *tgt);
 int bnx2fc_process_new_cqes(struct bnx2fc_rport *tgt);
-void bnx2fc_process_cq_compl(struct bnx2fc_rport *tgt, u16 wqe);
+void bnx2fc_process_cq_compl(struct bnx2fc_rport *tgt, u16 wqe,
+			     unsigned char *rq_data, u8 num_rq,
+			     struct fcoe_task_ctx_entry *task);
 struct bnx2fc_rport *bnx2fc_tgt_lookup(struct fcoe_port *port,
 					     u32 port_id);
 void bnx2fc_process_l2_frame_compl(struct bnx2fc_rport *tgt,

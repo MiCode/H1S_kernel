@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  fs/partitions/mac.h
  */
@@ -41,4 +42,3 @@ struct mac_driver_desc {
     /* ... more stuff */
 };
 
-int mac_partition(struct parsed_partitions *state);

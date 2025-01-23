@@ -1,45 +1,9 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /*******************************************************************************
  *
  * Module Name: hwpci - Obtain PCI bus, device, and function numbers
  *
  ******************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -123,7 +87,7 @@ acpi_hw_derive_pci_id(struct acpi_pci_id *pci_id,
 		      acpi_handle root_pci_device, acpi_handle pci_region)
 {
 	acpi_status status;
-	struct acpi_pci_device *list_head = NULL;
+	struct acpi_pci_device *list_head;
 
 	ACPI_FUNCTION_TRACE(hw_derive_pci_id);
 
@@ -140,11 +104,12 @@ acpi_hw_derive_pci_id(struct acpi_pci_id *pci_id,
 		/* Walk the list, updating the PCI device/function/bus numbers */
 
 		status = acpi_hw_process_pci_list(pci_id, list_head);
+
+		/* Delete the list */
+
+		acpi_hw_delete_pci_list(list_head);
 	}
 
-	/* Always delete the list */
-
-	acpi_hw_delete_pci_list(list_head);
 	return_ACPI_STATUS(status);
 }
 
@@ -176,37 +141,44 @@ acpi_hw_build_pci_list(acpi_handle root_pci_device,
 	acpi_handle parent_device;
 	acpi_status status;
 	struct acpi_pci_device *list_element;
-	struct acpi_pci_device *list_head = NULL;
 
 	/*
 	 * Ascend namespace branch until the root_pci_device is reached, building
 	 * a list of device nodes. Loop will exit when either the PCI device is
 	 * found, or the root of the namespace is reached.
 	 */
+	*return_list_head = NULL;
 	current_device = pci_region;
 	while (1) {
 		status = acpi_get_parent(current_device, &parent_device);
 		if (ACPI_FAILURE(status)) {
+
+			/* Must delete the list before exit */
+
+			acpi_hw_delete_pci_list(*return_list_head);
 			return (status);
 		}
 
 		/* Finished when we reach the PCI root device (PNP0A03 or PNP0A08) */
 
 		if (parent_device == root_pci_device) {
-			*return_list_head = list_head;
 			return (AE_OK);
 		}
 
 		list_element = ACPI_ALLOCATE(sizeof(struct acpi_pci_device));
 		if (!list_element) {
+
+			/* Must delete the list before exit */
+
+			acpi_hw_delete_pci_list(*return_list_head);
 			return (AE_NO_MEMORY);
 		}
 
 		/* Put new element at the head of the list */
 
-		list_element->next = list_head;
+		list_element->next = *return_list_head;
 		list_element->device = parent_device;
-		list_head = list_element;
+		*return_list_head = list_element;
 
 		current_device = parent_device;
 	}

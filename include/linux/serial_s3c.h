@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  *  Internal header file for Samsung S3C2410 serial ports (UART0-2)
  *
@@ -10,21 +11,7 @@
  *  Internal header file for MX1ADS serial ports (UART1 & 2)
  *
  *  Copyright (C) 2002 Shane Nay (shane@minirl.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
-*/
+ */
 
 #ifndef __ASM_ARM_REGS_SERIAL_H
 #define __ASM_ARM_REGS_SERIAL_H
@@ -96,13 +83,38 @@
 #define S3C2410_UCON_RXIRQMODE	  (1<<0)
 #define S3C2410_UCON_RXFIFO_TOI	  (1<<7)
 #define S3C2443_UCON_RXERR_IRQEN  (1<<6)
-#define S3C2443_UCON_LOOPBACK	  (1<<5)
+#define S3C2410_UCON_LOOPBACK	  (1<<5)
 
 #define S3C2410_UCON_DEFAULT	  (S3C2410_UCON_TXILEVEL  | \
 				   S3C2410_UCON_RXILEVEL  | \
 				   S3C2410_UCON_TXIRQMODE | \
 				   S3C2410_UCON_RXIRQMODE | \
 				   S3C2410_UCON_RXFIFO_TOI)
+
+#define S3C64XX_UCON_TXBURST_1          (0<<20)
+#define S3C64XX_UCON_TXBURST_4          (1<<20)
+#define S3C64XX_UCON_TXBURST_8          (2<<20)
+#define S3C64XX_UCON_TXBURST_16         (3<<20)
+#define S3C64XX_UCON_TXBURST_MASK       (0xf<<20)
+#define S3C64XX_UCON_RXBURST_1          (0<<16)
+#define S3C64XX_UCON_RXBURST_4          (1<<16)
+#define S3C64XX_UCON_RXBURST_8          (2<<16)
+#define S3C64XX_UCON_RXBURST_16         (3<<16)
+#define S3C64XX_UCON_RXBURST_MASK       (0xf<<16)
+#define S3C64XX_UCON_TIMEOUT_SHIFT      (12)
+#define S3C64XX_UCON_TIMEOUT_MASK       (0xf<<12)
+#define S3C64XX_UCON_EMPTYINT_EN        (1<<11)
+#define S3C64XX_UCON_DMASUS_EN          (1<<10)
+#define S3C64XX_UCON_TXINT_LEVEL        (1<<9)
+#define S3C64XX_UCON_RXINT_LEVEL        (1<<8)
+#define S3C64XX_UCON_TIMEOUT_EN         (1<<7)
+#define S3C64XX_UCON_ERRINT_EN          (1<<6)
+#define S3C64XX_UCON_TXMODE_DMA         (2<<2)
+#define S3C64XX_UCON_TXMODE_CPU         (1<<2)
+#define S3C64XX_UCON_TXMODE_MASK        (3<<2)
+#define S3C64XX_UCON_RXMODE_DMA         (2<<0)
+#define S3C64XX_UCON_RXMODE_CPU         (1<<0)
+#define S3C64XX_UCON_RXMODE_MASK        (3<<0)
 
 #define S3C2410_UFCON_FIFOMODE	  (1<<0)
 #define S3C2410_UFCON_TXTRIG0	  (0<<6)
@@ -155,6 +167,7 @@
 #define S3C2440_UFSTAT_TXMASK	  (63<<8)
 #define S3C2440_UFSTAT_RXMASK	  (63)
 
+#define S3C2410_UTRSTAT_TIMEOUT   (1<<3)
 #define S3C2410_UTRSTAT_TXE	  (1<<2)
 #define S3C2410_UTRSTAT_TXFE	  (1<<1)
 #define S3C2410_UTRSTAT_RXDR	  (1<<0)
@@ -179,8 +192,10 @@
 #define S3C64XX_UINTM		0x38
 
 #define S3C64XX_UINTM_RXD	(0)
+#define S3C64XX_UINTM_ERROR     (1)
 #define S3C64XX_UINTM_TXD	(2)
 #define S3C64XX_UINTM_RXD_MSK	(1 << S3C64XX_UINTM_RXD)
+#define S3C64XX_UINTM_ERR_MSK   (1 << S3C64XX_UINTM_ERROR)
 #define S3C64XX_UINTM_TXD_MSK	(1 << S3C64XX_UINTM_TXD)
 
 /* Following are specific to S5PV210 */
@@ -231,13 +246,34 @@
 				 S5PV210_UFCON_TXTRIG4 |	\
 				 S5PV210_UFCON_RXTRIG4)
 
+#define APPLE_S5L_UCON_RXTO_ENA		9
+#define APPLE_S5L_UCON_RXTHRESH_ENA	12
+#define APPLE_S5L_UCON_TXTHRESH_ENA	13
+#define APPLE_S5L_UCON_RXTO_ENA_MSK	(1 << APPLE_S5L_UCON_RXTO_ENA)
+#define APPLE_S5L_UCON_RXTHRESH_ENA_MSK	(1 << APPLE_S5L_UCON_RXTHRESH_ENA)
+#define APPLE_S5L_UCON_TXTHRESH_ENA_MSK	(1 << APPLE_S5L_UCON_TXTHRESH_ENA)
+
+#define APPLE_S5L_UCON_DEFAULT		(S3C2410_UCON_TXIRQMODE | \
+					 S3C2410_UCON_RXIRQMODE | \
+					 S3C2410_UCON_RXFIFO_TOI)
+#define APPLE_S5L_UCON_MASK		(APPLE_S5L_UCON_RXTO_ENA_MSK | \
+					 APPLE_S5L_UCON_RXTHRESH_ENA_MSK | \
+					 APPLE_S5L_UCON_TXTHRESH_ENA_MSK)
+
+#define APPLE_S5L_UTRSTAT_RXTHRESH	(1<<4)
+#define APPLE_S5L_UTRSTAT_TXTHRESH	(1<<5)
+#define APPLE_S5L_UTRSTAT_RXTO		(1<<9)
+#define APPLE_S5L_UTRSTAT_ALL_FLAGS	(0x3f0)
+
 #ifndef __ASSEMBLY__
+
+#include <linux/serial_core.h>
 
 /* configuration structure for per-machine configurations for the
  * serial port
  *
  * the pointer is setup by the machine specific initialisation from the
- * arch/arm/mach-s3c2410/ directory.
+ * arch/arm/mach-s3c/ directory.
 */
 
 struct s3c2410_uartcfg {

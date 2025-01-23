@@ -1,7 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #include <linux/errno.h>
 #include <linux/linkage.h>
 #include <asm/asm-offsets.h>
 #include <asm/assembler.h>
+#include <asm/smp.h>
 
 	.text
 /*
@@ -26,7 +28,7 @@
  *	aff0 = mpidr_masked & 0xff;
  *	aff1 = mpidr_masked & 0xff00;
  *	aff2 = mpidr_masked & 0xff0000;
- *	aff2 = mpidr_masked & 0xff00000000;
+ *	aff3 = mpidr_masked & 0xff00000000;
  *	dst = (aff0 >> rs0 | aff1 >> rs1 | aff2 >> rs2 | aff3 >> rs3);
  *}
  * Input registers: rs0, rs1, rs2, rs3, mpidr, mask
@@ -49,31 +51,33 @@
 	orr	\dst, \dst, \mask		// dst|=(aff3>>rs3)
 	.endm
 /*
- * Save CPU state for a suspend.  This saves callee registers, and allocates
- * space on the kernel stack to save the CPU specific registers + some
- * other data for resume.
+ * Save CPU state in the provided sleep_stack_data area, and publish its
+ * location for cpu_resume()'s use in sleep_save_stash.
  *
- *  x0 = suspend finisher argument
+ * cpu_resume() will restore this saved state, and return. Because the
+ * link-register is saved and restored, it will appear to return from this
+ * function. So that the caller can tell the suspend/resume paths apart,
+ * __cpu_suspend_enter() will always return a non-zero value, whereas the
+ * path through cpu_resume() will return 0.
+ *
+ *  x0 = struct sleep_stack_data area
  */
-ENTRY(__cpu_suspend)
-	stp	x29, lr, [sp, #-96]!
-	stp	x19, x20, [sp,#16]
-	stp	x21, x22, [sp,#32]
-	stp	x23, x24, [sp,#48]
-	stp	x25, x26, [sp,#64]
-	stp	x27, x28, [sp,#80]
+SYM_FUNC_START(__cpu_suspend_enter)
+	stp	x29, lr, [x0, #SLEEP_STACK_DATA_CALLEE_REGS]
+	stp	x19, x20, [x0,#SLEEP_STACK_DATA_CALLEE_REGS+16]
+	stp	x21, x22, [x0,#SLEEP_STACK_DATA_CALLEE_REGS+32]
+	stp	x23, x24, [x0,#SLEEP_STACK_DATA_CALLEE_REGS+48]
+	stp	x25, x26, [x0,#SLEEP_STACK_DATA_CALLEE_REGS+64]
+	stp	x27, x28, [x0,#SLEEP_STACK_DATA_CALLEE_REGS+80]
+
+	/* save the sp in cpu_suspend_ctx */
 	mov	x2, sp
-	sub	sp, sp, #CPU_SUSPEND_SZ	// allocate cpu_suspend_ctx
-	mov	x1, sp
-	/*
-	 * x1 now points to struct cpu_suspend_ctx allocated on the stack
-	 */
-	str	x2, [x1, #CPU_CTX_SP]
-	ldr	x2, =sleep_save_sp
-	ldr	x2, [x2, #SLEEP_SAVE_SP_VIRT]
-#ifdef CONFIG_SMP
+	str	x2, [x0, #SLEEP_STACK_DATA_SYSTEM_REGS + CPU_CTX_SP]
+
+	/* find the mpidr_hash */
+	ldr_l	x1, sleep_save_stash
 	mrs	x7, mpidr_el1
-	ldr	x9, =mpidr_hash
+	adr_l	x9, mpidr_hash
 	ldr	x10, [x9, #MPIDR_HASH_MASK]
 	/*
 	 * Following code relies on the struct mpidr_hash
@@ -82,103 +86,73 @@ ENTRY(__cpu_suspend)
 	ldp	w3, w4, [x9, #MPIDR_HASH_SHIFTS]
 	ldp	w5, w6, [x9, #(MPIDR_HASH_SHIFTS + 8)]
 	compute_mpidr_hash x8, x3, x4, x5, x6, x7, x10
-	add	x2, x2, x8, lsl #3
+	add	x1, x1, x8, lsl #3
+
+	str	x0, [x1]
+	add	x0, x0, #SLEEP_STACK_DATA_SYSTEM_REGS
+	stp	x29, lr, [sp, #-16]!
+	bl	cpu_do_suspend
+	ldp	x29, lr, [sp], #16
+	mov	x0, #1
+	ret
+SYM_FUNC_END(__cpu_suspend_enter)
+
+	.pushsection ".idmap.text", "a"
+SYM_CODE_START(cpu_resume)
+	mov	x0, xzr
+	bl	init_kernel_el
+	mov	x19, x0			// preserve boot mode
+#if VA_BITS > 48
+	ldr_l	x0, vabits_actual
 #endif
-	bl	__cpu_suspend_finisher
-        /*
-	 * Never gets here, unless suspend fails.
-	 * Successful cpu_suspend should return from cpu_resume, returning
-	 * through this code path is considered an error
-	 * If the return value is set to 0 force x0 = -EOPNOTSUPP
-	 * to make sure a proper error condition is propagated
-	 */
-	cmp	x0, #0
-	mov	x3, #-EOPNOTSUPP
-	csel	x0, x3, x0, eq
-	add	sp, sp, #CPU_SUSPEND_SZ	// rewind stack pointer
-	ldp	x19, x20, [sp, #16]
-	ldp	x21, x22, [sp, #32]
-	ldp	x23, x24, [sp, #48]
-	ldp	x25, x26, [sp, #64]
-	ldp	x27, x28, [sp, #80]
-	ldp	x29, lr, [sp], #96
-	ret
-ENDPROC(__cpu_suspend)
+	bl	__cpu_setup
+	/* enable the MMU early - so we can access sleep_save_stash by va */
+	adrp	x1, swapper_pg_dir
+	adrp	x2, idmap_pg_dir
+	bl	__enable_mmu
+	ldr	x8, =_cpu_resume
+	br	x8
+SYM_CODE_END(cpu_resume)
 	.ltorg
+	.popsection
 
-/*
- * x0 must contain the sctlr value retrieved from restored context
- */
-ENTRY(cpu_resume_mmu)
-	ldr	x3, =cpu_resume_after_mmu
-	msr	sctlr_el1, x0		// restore sctlr_el1
-	isb
-	br	x3			// global jump to virtual address
-ENDPROC(cpu_resume_mmu)
-cpu_resume_after_mmu:
-	mov	x0, #0			// return zero on success
-	ldp	x19, x20, [sp, #16]
-	ldp	x21, x22, [sp, #32]
-	ldp	x23, x24, [sp, #48]
-	ldp	x25, x26, [sp, #64]
-	ldp	x27, x28, [sp, #80]
-	ldp	x29, lr, [sp], #96
-	ret
-ENDPROC(cpu_resume_after_mmu)
+SYM_FUNC_START(_cpu_resume)
+	mov	x0, x19
+	bl	finalise_el2
 
-	.data
-ENTRY(cpu_resume)
-	bl	el2_setup		// if in EL2 drop to EL1 cleanly
-#ifdef CONFIG_SMP
 	mrs	x1, mpidr_el1
-	adr	x4, mpidr_hash_ptr
-	ldr	x5, [x4]
-	add	x8, x4, x5		// x8 = struct mpidr_hash phys address
-        /* retrieve mpidr_hash members to compute the hash */
+	adr_l	x8, mpidr_hash		// x8 = struct mpidr_hash virt address
+
+	/* retrieve mpidr_hash members to compute the hash */
 	ldr	x2, [x8, #MPIDR_HASH_MASK]
 	ldp	w3, w4, [x8, #MPIDR_HASH_SHIFTS]
 	ldp	w5, w6, [x8, #(MPIDR_HASH_SHIFTS + 8)]
 	compute_mpidr_hash x7, x3, x4, x5, x6, x1, x2
-        /* x7 contains hash index, let's use it to grab context pointer */
-#else
-	mov	x7, xzr
-#endif
-	adr	x0, sleep_save_sp
-	ldr	x0, [x0, #SLEEP_SAVE_SP_PHYS]
+
+	/* x7 contains hash index, let's use it to grab context pointer */
+	ldr_l	x0, sleep_save_stash
 	ldr	x0, [x0, x7, lsl #3]
+	add	x29, x0, #SLEEP_STACK_DATA_CALLEE_REGS
+	add	x0, x0, #SLEEP_STACK_DATA_SYSTEM_REGS
 	/* load sp from context */
 	ldr	x2, [x0, #CPU_CTX_SP]
-	adr	x1, sleep_idmap_phys
-	/* load physical address of identity map page table in x1 */
-	ldr	x1, [x1]
 	mov	sp, x2
 	/*
-	 * cpu_do_resume expects x0 to contain context physical address
-	 * pointer and x1 to contain physical address of 1:1 page tables
+	 * cpu_do_resume expects x0 to contain context address pointer
 	 */
-	bl	cpu_do_resume		// PC relative jump, MMU off
-	b	cpu_resume_mmu		// Resume MMU, never returns
-ENDPROC(cpu_resume)
+	bl	cpu_do_resume
 
-	.align 3
-mpidr_hash_ptr:
-	/*
-	 * offset of mpidr_hash symbol from current location
-	 * used to obtain run-time mpidr_hash address with MMU off
-         */
-	.quad	mpidr_hash - .
-/*
- * physical address of identity mapped page tables
- */
-	.type	sleep_idmap_phys, #object
-ENTRY(sleep_idmap_phys)
-	.quad	0
-/*
- * struct sleep_save_sp {
- *	phys_addr_t *save_ptr_stash;
- *	phys_addr_t save_ptr_stash_phys;
- * };
- */
-	.type	sleep_save_sp, #object
-ENTRY(sleep_save_sp)
-	.space	SLEEP_SAVE_SP_SZ	// struct sleep_save_sp
+#if defined(CONFIG_KASAN) && defined(CONFIG_KASAN_STACK)
+	mov	x0, sp
+	bl	kasan_unpoison_task_stack_below
+#endif
+
+	ldp	x19, x20, [x29, #16]
+	ldp	x21, x22, [x29, #32]
+	ldp	x23, x24, [x29, #48]
+	ldp	x25, x26, [x29, #64]
+	ldp	x27, x28, [x29, #80]
+	ldp	x29, lr, [x29]
+	mov	x0, #0
+	ret
+SYM_FUNC_END(_cpu_resume)

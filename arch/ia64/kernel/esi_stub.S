@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * ESI call stub.
  *
@@ -33,6 +34,7 @@
 #define PSR_BITS_TO_SET							\
 	(IA64_PSR_BN)
 
+#include <linux/export.h>
 #include <asm/processor.h>
 #include <asm/asmmacro.h>
 
@@ -94,3 +96,4 @@ GLOBAL_ENTRY(esi_call_phys)
 	mov gp=loc2
 	br.ret.sptk.many rp
 END(esi_call_phys)
+EXPORT_SYMBOL_GPL(esi_call_phys)

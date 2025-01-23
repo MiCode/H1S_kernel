@@ -1,9 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* bzero.S: Simple prefetching memset, bzero, and clear_user
  *          implementations.
  *
  * Copyright (C) 2005 David S. Miller <davem@davemloft.net>
  */
 
+#include <linux/export.h>
 #include <linux/linkage.h>
 
 	.text
@@ -78,6 +80,8 @@ __bzero_done:
 	 mov		%o3, %o0
 ENDPROC(__bzero)
 ENDPROC(memset)
+EXPORT_SYMBOL(__bzero)
+EXPORT_SYMBOL(memset)
 
 #define EX_ST(x,y)		\
 98:	x,y;			\
@@ -143,3 +147,4 @@ __clear_user_done:
 	retl
 	 clr		%o0
 ENDPROC(__clear_user)
+EXPORT_SYMBOL(__clear_user)

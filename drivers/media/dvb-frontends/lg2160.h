@@ -1,30 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *    Support for LG2160 - ATSC/MH
  *
  *    Copyright (C) 2010 Michael Krufky <mkrufky@linuxtv.org>
- *
- *    This program is free software; you can redistribute it and/or modify
- *    it under the terms of the GNU General Public License as published by
- *    the Free Software Foundation; either version 2 of the License, or
- *    (at your option) any later version.
- *
- *    This program is distributed in the hope that it will be useful,
- *    but WITHOUT ANY WARRANTY; without even the implied warranty of
- *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU General Public License for more details.
- *
- *    You should have received a copy of the GNU General Public License
- *    along with this program; if not, write to the Free Software
- *    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  */
 
 #ifndef _LG2160_H_
 #define _LG2160_H_
 
-#include <linux/kconfig.h>
 #include <linux/i2c.h>
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 
 enum lg_chip_type {
 	LG2160 = 0,
@@ -67,7 +52,7 @@ struct lg2160_config {
 	enum lg_chip_type lg_chip;
 };
 
-#if IS_ENABLED(CONFIG_DVB_LG2160)
+#if IS_REACHABLE(CONFIG_DVB_LG2160)
 extern
 struct dvb_frontend *lg2160_attach(const struct lg2160_config *config,
 				     struct i2c_adapter *i2c_adap);

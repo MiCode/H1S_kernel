@@ -1,15 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Base driver for Dialog Semiconductor DA9030/DA9034
  *
  * Copyright (C) 2008 Compulab, Ltd.
- * 	Mike Rapoport <mike@compulab.co.il>
+ *	Mike Rapoport <mike@compulab.co.il>
  *
  * Copyright (C) 2006-2008 Marvell International Ltd.
- * 	Eric Miao <eric.miao@marvell.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ *	Eric Miao <eric.miao@marvell.com>
  */
 
 #include <linux/kernel.h>
@@ -60,7 +57,7 @@ struct da903x_chip_ops {
 struct da903x_chip {
 	struct i2c_client	*client;
 	struct device		*dev;
-	struct da903x_chip_ops	*ops;
+	const struct da903x_chip_ops *ops;
 
 	int			type;
 	uint32_t		events_mask;
@@ -424,7 +421,7 @@ static irqreturn_t da903x_irq_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static struct da903x_chip_ops da903x_ops[] = {
+static const struct da903x_chip_ops da903x_ops[] = {
 	[0] = {
 		.init_chip	= da9030_init_chip,
 		.unmask_events	= da9030_unmask_events,
@@ -491,9 +488,9 @@ failed:
 	return ret;
 }
 
-static int da903x_probe(struct i2c_client *client,
-				  const struct i2c_device_id *id)
+static int da903x_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct da903x_platform_data *pdata = dev_get_platdata(&client->dev);
 	struct da903x_chip *chip;
 	unsigned int tmp;
@@ -532,25 +529,19 @@ static int da903x_probe(struct i2c_client *client,
 		return ret;
 	}
 
-	ret = da903x_add_subdevs(chip, pdata);
-	if (ret)
-		return ret;
-
-	return 0;
+	return da903x_add_subdevs(chip, pdata);
 }
 
-static int da903x_remove(struct i2c_client *client)
+static void da903x_remove(struct i2c_client *client)
 {
 	struct da903x_chip *chip = i2c_get_clientdata(client);
 
 	da903x_remove_subdevs(chip);
-	return 0;
 }
 
 static struct i2c_driver da903x_driver = {
 	.driver	= {
 		.name	= "da903x",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= da903x_probe,
 	.remove		= da903x_remove,
@@ -570,6 +561,5 @@ static void __exit da903x_exit(void)
 module_exit(da903x_exit);
 
 MODULE_DESCRIPTION("PMIC Driver for Dialog Semiconductor DA9034");
-MODULE_AUTHOR("Eric Miao <eric.miao@marvell.com>"
-	      "Mike Rapoport <mike@compulab.co.il>");
-MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Eric Miao <eric.miao@marvell.com>");
+MODULE_AUTHOR("Mike Rapoport <mike@compulab.co.il>");

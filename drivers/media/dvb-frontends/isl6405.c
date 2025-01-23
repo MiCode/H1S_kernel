@@ -1,28 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * isl6405.c - driver for dual lnb supply and control ic ISL6405
  *
  * Copyright (C) 2008 Hartmut Hackmann
  * Copyright (C) 2006 Oliver Endriss
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
- * Or, point your browser to http://www.gnu.org/copyleft/gpl.html
- *
- *
- * the project's page is at http://www.linuxtv.org
+ * the project's page is at https://linuxtv.org
  */
 #include <linux/delay.h>
 #include <linux/errno.h>
@@ -32,7 +15,7 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "isl6405.h"
 
 struct isl6405 {
@@ -43,7 +26,8 @@ struct isl6405 {
 	u8			i2c_addr;
 };
 
-static int isl6405_set_voltage(struct dvb_frontend *fe, fe_sec_voltage_t voltage)
+static int isl6405_set_voltage(struct dvb_frontend *fe,
+			       enum fe_sec_voltage voltage)
 {
 	struct isl6405 *isl6405 = (struct isl6405 *) fe->sec_priv;
 	struct i2c_msg msg = {	.addr = isl6405->i2c_addr, .flags = 0,
@@ -157,7 +141,7 @@ struct dvb_frontend *isl6405_attach(struct dvb_frontend *fe, struct i2c_adapter 
 
 	return fe;
 }
-EXPORT_SYMBOL(isl6405_attach);
+EXPORT_SYMBOL_GPL(isl6405_attach);
 
 MODULE_DESCRIPTION("Driver for lnb supply and control ic isl6405");
 MODULE_AUTHOR("Hartmut Hackmann & Oliver Endriss");

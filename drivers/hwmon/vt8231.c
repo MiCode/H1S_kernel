@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * vt8231.c - Part of lm_sensors, Linux kernel modules
  *	      for hardware monitoring
@@ -5,20 +6,6 @@
  * Copyright (c) 2005 Roger Lucas <vt8231@hiddenengine.co.uk>
  * Copyright (c) 2002 Mark D. Studebaker <mdsxyz123@yahoo.com>
  *		      Aaron M. Marsh <amarsh@sdf.lonestar.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 /*
@@ -35,7 +22,6 @@
 #include <linux/platform_device.h>
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
-#include <linux/hwmon-vid.h>
 #include <linux/err.h>
 #include <linux/mutex.h>
 #include <linux/acpi.h>
@@ -50,6 +36,8 @@ static struct platform_device *pdev;
 #define VT8231_EXTENT 0x80
 #define VT8231_BASE_REG 0x70
 #define VT8231_ENABLE_REG 0x74
+
+#define DRIVER_NAME "vt8231"
 
 /*
  * The VT8231 registers
@@ -158,7 +146,7 @@ struct vt8231_data {
 
 	struct mutex update_lock;
 	struct device *hwmon_dev;
-	char valid;		/* !=0 if following fields are valid */
+	bool valid;		/* true if following fields are valid */
 	unsigned long last_updated;	/* In jiffies */
 
 	u8 in[6];		/* Register value */
@@ -175,10 +163,6 @@ struct vt8231_data {
 };
 
 static struct pci_dev *s_bridge;
-static int vt8231_probe(struct platform_device *pdev);
-static int vt8231_remove(struct platform_device *pdev);
-static struct vt8231_data *vt8231_update_device(struct device *dev);
-static void vt8231_init_device(struct vt8231_data *data);
 
 static inline int vt8231_read_value(struct vt8231_data *data, u8 reg)
 {
@@ -191,9 +175,77 @@ static inline void vt8231_write_value(struct vt8231_data *data, u8 reg,
 	outb_p(value, data->addr + reg);
 }
 
+static struct vt8231_data *vt8231_update_device(struct device *dev)
+{
+	struct vt8231_data *data = dev_get_drvdata(dev);
+	int i;
+	u16 low;
+
+	mutex_lock(&data->update_lock);
+
+	if (time_after(jiffies, data->last_updated + HZ + HZ / 2)
+	    || !data->valid) {
+		for (i = 0; i < 6; i++) {
+			if (ISVOLT(i, data->uch_config)) {
+				data->in[i] = vt8231_read_value(data,
+						regvolt[i]);
+				data->in_min[i] = vt8231_read_value(data,
+						regvoltmin[i]);
+				data->in_max[i] = vt8231_read_value(data,
+						regvoltmax[i]);
+			}
+		}
+		for (i = 0; i < 2; i++) {
+			data->fan[i] = vt8231_read_value(data,
+						VT8231_REG_FAN(i));
+			data->fan_min[i] = vt8231_read_value(data,
+						VT8231_REG_FAN_MIN(i));
+		}
+
+		low = vt8231_read_value(data, VT8231_REG_TEMP_LOW01);
+		low = (low >> 6) | ((low & 0x30) >> 2)
+		    | (vt8231_read_value(data, VT8231_REG_TEMP_LOW25) << 4);
+		for (i = 0; i < 6; i++) {
+			if (ISTEMP(i, data->uch_config)) {
+				data->temp[i] = (vt8231_read_value(data,
+						       regtemp[i]) << 2)
+						| ((low >> (2 * i)) & 0x03);
+				data->temp_max[i] = vt8231_read_value(data,
+						      regtempmax[i]);
+				data->temp_min[i] = vt8231_read_value(data,
+						      regtempmin[i]);
+			}
+		}
+
+		i = vt8231_read_value(data, VT8231_REG_FANDIV);
+		data->fan_div[0] = (i >> 4) & 0x03;
+		data->fan_div[1] = i >> 6;
+		data->alarms = vt8231_read_value(data, VT8231_REG_ALARM1) |
+			(vt8231_read_value(data, VT8231_REG_ALARM2) << 8);
+
+		/* Set alarm flags correctly */
+		if (!data->fan[0] && data->fan_min[0])
+			data->alarms |= 0x40;
+		else if (data->fan[0] && !data->fan_min[0])
+			data->alarms &= ~0x40;
+
+		if (!data->fan[1] && data->fan_min[1])
+			data->alarms |= 0x80;
+		else if (data->fan[1] && !data->fan_min[1])
+			data->alarms &= ~0x80;
+
+		data->last_updated = jiffies;
+		data->valid = true;
+	}
+
+	mutex_unlock(&data->update_lock);
+
+	return data;
+}
+
 /* following are the sysfs callback functions */
-static ssize_t show_in(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t in_show(struct device *dev, struct device_attribute *attr,
+		       char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -202,8 +254,8 @@ static ssize_t show_in(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", ((data->in[nr] - 3) * 10000) / 958);
 }
 
-static ssize_t show_in_min(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t in_min_show(struct device *dev, struct device_attribute *attr,
+			   char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -212,8 +264,8 @@ static ssize_t show_in_min(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", ((data->in_min[nr] - 3) * 10000) / 958);
 }
 
-static ssize_t show_in_max(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t in_max_show(struct device *dev, struct device_attribute *attr,
+			   char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -222,8 +274,8 @@ static ssize_t show_in_max(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", (((data->in_max[nr] - 3) * 10000) / 958));
 }
 
-static ssize_t set_in_min(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t in_min_store(struct device *dev, struct device_attribute *attr,
+			    const char *buf, size_t count)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -242,8 +294,8 @@ static ssize_t set_in_min(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-static ssize_t set_in_max(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t in_max_store(struct device *dev, struct device_attribute *attr,
+			    const char *buf, size_t count)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -263,8 +315,8 @@ static ssize_t set_in_max(struct device *dev, struct device_attribute *attr,
 }
 
 /* Special case for input 5 as this has 3.3V scaling built into the chip */
-static ssize_t show_in5(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t in5_input_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
 {
 	struct vt8231_data *data = vt8231_update_device(dev);
 
@@ -272,7 +324,7 @@ static ssize_t show_in5(struct device *dev, struct device_attribute *attr,
 		(((data->in[5] - 3) * 10000 * 54) / (958 * 34)));
 }
 
-static ssize_t show_in5_min(struct device *dev, struct device_attribute *attr,
+static ssize_t in5_min_show(struct device *dev, struct device_attribute *attr,
 		char *buf)
 {
 	struct vt8231_data *data = vt8231_update_device(dev);
@@ -281,7 +333,7 @@ static ssize_t show_in5_min(struct device *dev, struct device_attribute *attr,
 		(((data->in_min[5] - 3) * 10000 * 54) / (958 * 34)));
 }
 
-static ssize_t show_in5_max(struct device *dev, struct device_attribute *attr,
+static ssize_t in5_max_show(struct device *dev, struct device_attribute *attr,
 		char *buf)
 {
 	struct vt8231_data *data = vt8231_update_device(dev);
@@ -290,8 +342,9 @@ static ssize_t show_in5_max(struct device *dev, struct device_attribute *attr,
 		(((data->in_max[5] - 3) * 10000 * 54) / (958 * 34)));
 }
 
-static ssize_t set_in5_min(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t in5_min_store(struct device *dev,
+			     struct device_attribute *attr, const char *buf,
+			     size_t count)
 {
 	struct vt8231_data *data = dev_get_drvdata(dev);
 	unsigned long val;
@@ -309,8 +362,9 @@ static ssize_t set_in5_min(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-static ssize_t set_in5_max(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t in5_max_store(struct device *dev,
+			     struct device_attribute *attr, const char *buf,
+			     size_t count)
 {
 	struct vt8231_data *data = dev_get_drvdata(dev);
 	unsigned long val;
@@ -328,48 +382,51 @@ static ssize_t set_in5_max(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-#define define_voltage_sysfs(offset)				\
-static SENSOR_DEVICE_ATTR(in##offset##_input, S_IRUGO,		\
-		show_in, NULL, offset);				\
-static SENSOR_DEVICE_ATTR(in##offset##_min, S_IRUGO | S_IWUSR,	\
-		show_in_min, set_in_min, offset);		\
-static SENSOR_DEVICE_ATTR(in##offset##_max, S_IRUGO | S_IWUSR,	\
-		show_in_max, set_in_max, offset)
+static SENSOR_DEVICE_ATTR_RO(in0_input, in, 0);
+static SENSOR_DEVICE_ATTR_RW(in0_min, in_min, 0);
+static SENSOR_DEVICE_ATTR_RW(in0_max, in_max, 0);
+static SENSOR_DEVICE_ATTR_RO(in1_input, in, 1);
+static SENSOR_DEVICE_ATTR_RW(in1_min, in_min, 1);
+static SENSOR_DEVICE_ATTR_RW(in1_max, in_max, 1);
+static SENSOR_DEVICE_ATTR_RO(in2_input, in, 2);
+static SENSOR_DEVICE_ATTR_RW(in2_min, in_min, 2);
+static SENSOR_DEVICE_ATTR_RW(in2_max, in_max, 2);
+static SENSOR_DEVICE_ATTR_RO(in3_input, in, 3);
+static SENSOR_DEVICE_ATTR_RW(in3_min, in_min, 3);
+static SENSOR_DEVICE_ATTR_RW(in3_max, in_max, 3);
+static SENSOR_DEVICE_ATTR_RO(in4_input, in, 4);
+static SENSOR_DEVICE_ATTR_RW(in4_min, in_min, 4);
+static SENSOR_DEVICE_ATTR_RW(in4_max, in_max, 4);
 
-define_voltage_sysfs(0);
-define_voltage_sysfs(1);
-define_voltage_sysfs(2);
-define_voltage_sysfs(3);
-define_voltage_sysfs(4);
-
-static DEVICE_ATTR(in5_input, S_IRUGO, show_in5, NULL);
-static DEVICE_ATTR(in5_min, S_IRUGO | S_IWUSR, show_in5_min, set_in5_min);
-static DEVICE_ATTR(in5_max, S_IRUGO | S_IWUSR, show_in5_max, set_in5_max);
+static DEVICE_ATTR_RO(in5_input);
+static DEVICE_ATTR_RW(in5_min);
+static DEVICE_ATTR_RW(in5_max);
 
 /* Temperatures */
-static ssize_t show_temp0(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t temp1_input_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
 	struct vt8231_data *data = vt8231_update_device(dev);
 	return sprintf(buf, "%d\n", data->temp[0] * 250);
 }
 
-static ssize_t show_temp0_max(struct device *dev, struct device_attribute *attr,
+static ssize_t temp1_max_show(struct device *dev, struct device_attribute *attr,
 		char *buf)
 {
 	struct vt8231_data *data = vt8231_update_device(dev);
 	return sprintf(buf, "%d\n", data->temp_max[0] * 1000);
 }
 
-static ssize_t show_temp0_min(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t temp1_max_hyst_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
 {
 	struct vt8231_data *data = vt8231_update_device(dev);
 	return sprintf(buf, "%d\n", data->temp_min[0] * 1000);
 }
 
-static ssize_t set_temp0_max(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t temp1_max_store(struct device *dev,
+			       struct device_attribute *attr, const char *buf,
+			       size_t count)
 {
 	struct vt8231_data *data = dev_get_drvdata(dev);
 	long val;
@@ -385,8 +442,9 @@ static ssize_t set_temp0_max(struct device *dev, struct device_attribute *attr,
 	mutex_unlock(&data->update_lock);
 	return count;
 }
-static ssize_t set_temp0_min(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t temp1_max_hyst_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
 {
 	struct vt8231_data *data = dev_get_drvdata(dev);
 	long val;
@@ -403,8 +461,8 @@ static ssize_t set_temp0_min(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-static ssize_t show_temp(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t temp_show(struct device *dev, struct device_attribute *attr,
+			 char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -412,8 +470,8 @@ static ssize_t show_temp(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp[nr]));
 }
 
-static ssize_t show_temp_max(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t temp_max_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -421,8 +479,8 @@ static ssize_t show_temp_max(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", TEMP_MAXMIN_FROM_REG(data->temp_max[nr]));
 }
 
-static ssize_t show_temp_min(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t temp_min_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -430,8 +488,9 @@ static ssize_t show_temp_min(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", TEMP_MAXMIN_FROM_REG(data->temp_min[nr]));
 }
 
-static ssize_t set_temp_max(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t temp_max_store(struct device *dev,
+			      struct device_attribute *attr, const char *buf,
+			      size_t count)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -449,8 +508,9 @@ static ssize_t set_temp_max(struct device *dev, struct device_attribute *attr,
 	mutex_unlock(&data->update_lock);
 	return count;
 }
-static ssize_t set_temp_min(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t temp_min_store(struct device *dev,
+			      struct device_attribute *attr, const char *buf,
+			      size_t count)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -473,28 +533,30 @@ static ssize_t set_temp_min(struct device *dev, struct device_attribute *attr,
  * Note that these map the Linux temperature sensor numbering (1-6) to the VIA
  * temperature sensor numbering (0-5)
  */
-#define define_temperature_sysfs(offset)				\
-static SENSOR_DEVICE_ATTR(temp##offset##_input, S_IRUGO,		\
-		show_temp, NULL, offset - 1);				\
-static SENSOR_DEVICE_ATTR(temp##offset##_max, S_IRUGO | S_IWUSR,	\
-		show_temp_max, set_temp_max, offset - 1);		\
-static SENSOR_DEVICE_ATTR(temp##offset##_max_hyst, S_IRUGO | S_IWUSR,	\
-		show_temp_min, set_temp_min, offset - 1)
 
-static DEVICE_ATTR(temp1_input, S_IRUGO, show_temp0, NULL);
-static DEVICE_ATTR(temp1_max, S_IRUGO | S_IWUSR, show_temp0_max, set_temp0_max);
-static DEVICE_ATTR(temp1_max_hyst, S_IRUGO | S_IWUSR, show_temp0_min,
-		   set_temp0_min);
+static DEVICE_ATTR_RO(temp1_input);
+static DEVICE_ATTR_RW(temp1_max);
+static DEVICE_ATTR_RW(temp1_max_hyst);
 
-define_temperature_sysfs(2);
-define_temperature_sysfs(3);
-define_temperature_sysfs(4);
-define_temperature_sysfs(5);
-define_temperature_sysfs(6);
+static SENSOR_DEVICE_ATTR_RO(temp2_input, temp, 1);
+static SENSOR_DEVICE_ATTR_RW(temp2_max, temp_max, 1);
+static SENSOR_DEVICE_ATTR_RW(temp2_max_hyst, temp_min, 1);
+static SENSOR_DEVICE_ATTR_RO(temp3_input, temp, 2);
+static SENSOR_DEVICE_ATTR_RW(temp3_max, temp_max, 2);
+static SENSOR_DEVICE_ATTR_RW(temp3_max_hyst, temp_min, 2);
+static SENSOR_DEVICE_ATTR_RO(temp4_input, temp, 3);
+static SENSOR_DEVICE_ATTR_RW(temp4_max, temp_max, 3);
+static SENSOR_DEVICE_ATTR_RW(temp4_max_hyst, temp_min, 3);
+static SENSOR_DEVICE_ATTR_RO(temp5_input, temp, 4);
+static SENSOR_DEVICE_ATTR_RW(temp5_max, temp_max, 4);
+static SENSOR_DEVICE_ATTR_RW(temp5_max_hyst, temp_min, 4);
+static SENSOR_DEVICE_ATTR_RO(temp6_input, temp, 5);
+static SENSOR_DEVICE_ATTR_RW(temp6_max, temp_max, 5);
+static SENSOR_DEVICE_ATTR_RW(temp6_max_hyst, temp_min, 5);
 
 /* Fans */
-static ssize_t show_fan(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t fan_show(struct device *dev, struct device_attribute *attr,
+			char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -503,8 +565,8 @@ static ssize_t show_fan(struct device *dev, struct device_attribute *attr,
 				DIV_FROM_REG(data->fan_div[nr])));
 }
 
-static ssize_t show_fan_min(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t fan_min_show(struct device *dev, struct device_attribute *attr,
+			    char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -513,8 +575,8 @@ static ssize_t show_fan_min(struct device *dev, struct device_attribute *attr,
 			DIV_FROM_REG(data->fan_div[nr])));
 }
 
-static ssize_t show_fan_div(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t fan_div_show(struct device *dev, struct device_attribute *attr,
+			    char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -522,8 +584,9 @@ static ssize_t show_fan_div(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", DIV_FROM_REG(data->fan_div[nr]));
 }
 
-static ssize_t set_fan_min(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t fan_min_store(struct device *dev,
+			     struct device_attribute *attr, const char *buf,
+			     size_t count)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -542,8 +605,9 @@ static ssize_t set_fan_min(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-static ssize_t set_fan_div(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t fan_div_store(struct device *dev,
+			     struct device_attribute *attr, const char *buf,
+			     size_t count)
 {
 	struct vt8231_data *data = dev_get_drvdata(dev);
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
@@ -590,56 +654,51 @@ static ssize_t set_fan_div(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-
-#define define_fan_sysfs(offset)					\
-static SENSOR_DEVICE_ATTR(fan##offset##_input, S_IRUGO,			\
-		show_fan, NULL, offset - 1);				\
-static SENSOR_DEVICE_ATTR(fan##offset##_div, S_IRUGO | S_IWUSR,		\
-		show_fan_div, set_fan_div, offset - 1);			\
-static SENSOR_DEVICE_ATTR(fan##offset##_min, S_IRUGO | S_IWUSR,		\
-		show_fan_min, set_fan_min, offset - 1)
-
-define_fan_sysfs(1);
-define_fan_sysfs(2);
+static SENSOR_DEVICE_ATTR_RO(fan1_input, fan, 0);
+static SENSOR_DEVICE_ATTR_RW(fan1_min, fan_min, 0);
+static SENSOR_DEVICE_ATTR_RW(fan1_div, fan_div, 0);
+static SENSOR_DEVICE_ATTR_RO(fan2_input, fan, 1);
+static SENSOR_DEVICE_ATTR_RW(fan2_min, fan_min, 1);
+static SENSOR_DEVICE_ATTR_RW(fan2_div, fan_div, 1);
 
 /* Alarms */
-static ssize_t show_alarms(struct device *dev, struct device_attribute *attr,
+static ssize_t alarms_show(struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
 	struct vt8231_data *data = vt8231_update_device(dev);
 	return sprintf(buf, "%d\n", data->alarms);
 }
-static DEVICE_ATTR(alarms, S_IRUGO, show_alarms, NULL);
+static DEVICE_ATTR_RO(alarms);
 
-static ssize_t show_alarm(struct device *dev, struct device_attribute *attr,
+static ssize_t alarm_show(struct device *dev, struct device_attribute *attr,
 			  char *buf)
 {
 	int bitnr = to_sensor_dev_attr(attr)->index;
 	struct vt8231_data *data = vt8231_update_device(dev);
 	return sprintf(buf, "%u\n", (data->alarms >> bitnr) & 1);
 }
-static SENSOR_DEVICE_ATTR(temp1_alarm, S_IRUGO, show_alarm, NULL, 4);
-static SENSOR_DEVICE_ATTR(temp2_alarm, S_IRUGO, show_alarm, NULL, 11);
-static SENSOR_DEVICE_ATTR(temp3_alarm, S_IRUGO, show_alarm, NULL, 0);
-static SENSOR_DEVICE_ATTR(temp4_alarm, S_IRUGO, show_alarm, NULL, 1);
-static SENSOR_DEVICE_ATTR(temp5_alarm, S_IRUGO, show_alarm, NULL, 3);
-static SENSOR_DEVICE_ATTR(temp6_alarm, S_IRUGO, show_alarm, NULL, 8);
-static SENSOR_DEVICE_ATTR(in0_alarm, S_IRUGO, show_alarm, NULL, 11);
-static SENSOR_DEVICE_ATTR(in1_alarm, S_IRUGO, show_alarm, NULL, 0);
-static SENSOR_DEVICE_ATTR(in2_alarm, S_IRUGO, show_alarm, NULL, 1);
-static SENSOR_DEVICE_ATTR(in3_alarm, S_IRUGO, show_alarm, NULL, 3);
-static SENSOR_DEVICE_ATTR(in4_alarm, S_IRUGO, show_alarm, NULL, 8);
-static SENSOR_DEVICE_ATTR(in5_alarm, S_IRUGO, show_alarm, NULL, 2);
-static SENSOR_DEVICE_ATTR(fan1_alarm, S_IRUGO, show_alarm, NULL, 6);
-static SENSOR_DEVICE_ATTR(fan2_alarm, S_IRUGO, show_alarm, NULL, 7);
+static SENSOR_DEVICE_ATTR_RO(temp1_alarm, alarm, 4);
+static SENSOR_DEVICE_ATTR_RO(temp2_alarm, alarm, 11);
+static SENSOR_DEVICE_ATTR_RO(temp3_alarm, alarm, 0);
+static SENSOR_DEVICE_ATTR_RO(temp4_alarm, alarm, 1);
+static SENSOR_DEVICE_ATTR_RO(temp5_alarm, alarm, 3);
+static SENSOR_DEVICE_ATTR_RO(temp6_alarm, alarm, 8);
+static SENSOR_DEVICE_ATTR_RO(in0_alarm, alarm, 11);
+static SENSOR_DEVICE_ATTR_RO(in1_alarm, alarm, 0);
+static SENSOR_DEVICE_ATTR_RO(in2_alarm, alarm, 1);
+static SENSOR_DEVICE_ATTR_RO(in3_alarm, alarm, 3);
+static SENSOR_DEVICE_ATTR_RO(in4_alarm, alarm, 8);
+static SENSOR_DEVICE_ATTR_RO(in5_alarm, alarm, 2);
+static SENSOR_DEVICE_ATTR_RO(fan1_alarm, alarm, 6);
+static SENSOR_DEVICE_ATTR_RO(fan2_alarm, alarm, 7);
 
-static ssize_t show_name(struct device *dev, struct device_attribute
+static ssize_t name_show(struct device *dev, struct device_attribute
 			 *devattr, char *buf)
 {
 	struct vt8231_data *data = dev_get_drvdata(dev);
 	return sprintf(buf, "%s\n", data->name);
 }
-static DEVICE_ATTR(name, S_IRUGO, show_name, NULL);
+static DEVICE_ATTR_RO(name);
 
 static struct attribute *vt8231_attributes_temps[6][5] = {
 	{
@@ -757,30 +816,11 @@ static const struct attribute_group vt8231_group = {
 	.attrs = vt8231_attributes,
 };
 
-static struct platform_driver vt8231_driver = {
-	.driver = {
-		.owner	= THIS_MODULE,
-		.name	= "vt8231",
-	},
-	.probe	= vt8231_probe,
-	.remove	= vt8231_remove,
-};
-
-static const struct pci_device_id vt8231_pci_ids[] = {
-	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_8231_4) },
-	{ 0, }
-};
-
-MODULE_DEVICE_TABLE(pci, vt8231_pci_ids);
-
-static int vt8231_pci_probe(struct pci_dev *dev,
-				      const struct pci_device_id *id);
-
-static struct pci_driver vt8231_pci_driver = {
-	.name		= "vt8231",
-	.id_table	= vt8231_pci_ids,
-	.probe		= vt8231_pci_probe,
-};
+static void vt8231_init_device(struct vt8231_data *data)
+{
+	vt8231_write_value(data, VT8231_REG_TEMP1_CONFIG, 0);
+	vt8231_write_value(data, VT8231_REG_TEMP2_CONFIG, 0);
+}
 
 static int vt8231_probe(struct platform_device *pdev)
 {
@@ -791,7 +831,7 @@ static int vt8231_probe(struct platform_device *pdev)
 	/* Reserve the ISA region */
 	res = platform_get_resource(pdev, IORESOURCE_IO, 0);
 	if (!devm_request_region(&pdev->dev, res->start, VT8231_EXTENT,
-				 vt8231_driver.driver.name)) {
+				 DRIVER_NAME)) {
 		dev_err(&pdev->dev, "Region 0x%lx-0x%lx already in use!\n",
 			(unsigned long)res->start, (unsigned long)res->end);
 		return -ENODEV;
@@ -803,7 +843,7 @@ static int vt8231_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, data);
 	data->addr = res->start;
-	data->name = "vt8231";
+	data->name = DRIVER_NAME;
 
 	mutex_init(&data->update_lock);
 	vt8231_init_device(data);
@@ -870,86 +910,28 @@ static int vt8231_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static void vt8231_init_device(struct vt8231_data *data)
-{
-	vt8231_write_value(data, VT8231_REG_TEMP1_CONFIG, 0);
-	vt8231_write_value(data, VT8231_REG_TEMP2_CONFIG, 0);
-}
 
-static struct vt8231_data *vt8231_update_device(struct device *dev)
-{
-	struct vt8231_data *data = dev_get_drvdata(dev);
-	int i;
-	u16 low;
+static struct platform_driver vt8231_driver = {
+	.driver = {
+		.name	= DRIVER_NAME,
+	},
+	.probe	= vt8231_probe,
+	.remove	= vt8231_remove,
+};
 
-	mutex_lock(&data->update_lock);
+static const struct pci_device_id vt8231_pci_ids[] = {
+	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_8231_4) },
+	{ 0, }
+};
 
-	if (time_after(jiffies, data->last_updated + HZ + HZ / 2)
-	    || !data->valid) {
-		for (i = 0; i < 6; i++) {
-			if (ISVOLT(i, data->uch_config)) {
-				data->in[i] = vt8231_read_value(data,
-						regvolt[i]);
-				data->in_min[i] = vt8231_read_value(data,
-						regvoltmin[i]);
-				data->in_max[i] = vt8231_read_value(data,
-						regvoltmax[i]);
-			}
-		}
-		for (i = 0; i < 2; i++) {
-			data->fan[i] = vt8231_read_value(data,
-						VT8231_REG_FAN(i));
-			data->fan_min[i] = vt8231_read_value(data,
-						VT8231_REG_FAN_MIN(i));
-		}
-
-		low = vt8231_read_value(data, VT8231_REG_TEMP_LOW01);
-		low = (low >> 6) | ((low & 0x30) >> 2)
-		    | (vt8231_read_value(data, VT8231_REG_TEMP_LOW25) << 4);
-		for (i = 0; i < 6; i++) {
-			if (ISTEMP(i, data->uch_config)) {
-				data->temp[i] = (vt8231_read_value(data,
-						       regtemp[i]) << 2)
-						| ((low >> (2 * i)) & 0x03);
-				data->temp_max[i] = vt8231_read_value(data,
-						      regtempmax[i]);
-				data->temp_min[i] = vt8231_read_value(data,
-						      regtempmin[i]);
-			}
-		}
-
-		i = vt8231_read_value(data, VT8231_REG_FANDIV);
-		data->fan_div[0] = (i >> 4) & 0x03;
-		data->fan_div[1] = i >> 6;
-		data->alarms = vt8231_read_value(data, VT8231_REG_ALARM1) |
-			(vt8231_read_value(data, VT8231_REG_ALARM2) << 8);
-
-		/* Set alarm flags correctly */
-		if (!data->fan[0] && data->fan_min[0])
-			data->alarms |= 0x40;
-		else if (data->fan[0] && !data->fan_min[0])
-			data->alarms &= ~0x40;
-
-		if (!data->fan[1] && data->fan_min[1])
-			data->alarms |= 0x80;
-		else if (data->fan[1] && !data->fan_min[1])
-			data->alarms &= ~0x80;
-
-		data->last_updated = jiffies;
-		data->valid = 1;
-	}
-
-	mutex_unlock(&data->update_lock);
-
-	return data;
-}
+MODULE_DEVICE_TABLE(pci, vt8231_pci_ids);
 
 static int vt8231_device_add(unsigned short address)
 {
 	struct resource res = {
 		.start	= address,
 		.end	= address + VT8231_EXTENT - 1,
-		.name	= "vt8231",
+		.name	= DRIVER_NAME,
 		.flags	= IORESOURCE_IO,
 	};
 	int err;
@@ -958,7 +940,7 @@ static int vt8231_device_add(unsigned short address)
 	if (err)
 		goto exit;
 
-	pdev = platform_device_alloc("vt8231", address);
+	pdev = platform_device_alloc(DRIVER_NAME, address);
 	if (!pdev) {
 		err = -ENOMEM;
 		pr_err("Device allocation failed\n");
@@ -989,18 +971,20 @@ static int vt8231_pci_probe(struct pci_dev *dev,
 				const struct pci_device_id *id)
 {
 	u16 address, val;
+	int ret;
+
 	if (force_addr) {
 		address = force_addr & 0xff00;
 		dev_warn(&dev->dev, "Forcing ISA address 0x%x\n",
 			 address);
 
-		if (PCIBIOS_SUCCESSFUL !=
-		    pci_write_config_word(dev, VT8231_BASE_REG, address | 1))
+		ret = pci_write_config_word(dev, VT8231_BASE_REG, address | 1);
+		if (ret != PCIBIOS_SUCCESSFUL)
 			return -ENODEV;
 	}
 
-	if (PCIBIOS_SUCCESSFUL != pci_read_config_word(dev, VT8231_BASE_REG,
-							&val))
+	pci_read_config_word(dev, VT8231_BASE_REG, &val);
+	if (val == (u16)~0)
 		return -ENODEV;
 
 	address = val & ~(VT8231_EXTENT - 1);
@@ -1009,15 +993,14 @@ static int vt8231_pci_probe(struct pci_dev *dev,
 		return -ENODEV;
 	}
 
-	if (PCIBIOS_SUCCESSFUL != pci_read_config_word(dev, VT8231_ENABLE_REG,
-							&val))
+	pci_read_config_word(dev, VT8231_ENABLE_REG, &val);
+	if (val == (u16)~0)
 		return -ENODEV;
 
 	if (!(val & 0x0001)) {
 		dev_warn(&dev->dev, "enabling sensors\n");
-		if (PCIBIOS_SUCCESSFUL !=
-			pci_write_config_word(dev, VT8231_ENABLE_REG,
-							val | 0x0001))
+		ret = pci_write_config_word(dev, VT8231_ENABLE_REG, val | 0x1);
+		if (ret != PCIBIOS_SUCCESSFUL)
 			return -ENODEV;
 	}
 
@@ -1046,6 +1029,12 @@ exit_unregister:
 exit:
 	return -ENODEV;
 }
+
+static struct pci_driver vt8231_pci_driver = {
+	.name		= DRIVER_NAME,
+	.id_table	= vt8231_pci_ids,
+	.probe		= vt8231_pci_probe,
+};
 
 static int __init sm_vt8231_init(void)
 {

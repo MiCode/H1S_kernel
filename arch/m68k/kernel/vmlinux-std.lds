@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* ld script to make m68k Linux kernel */
 
 #include <asm-generic/vmlinux.lds.h>
@@ -15,6 +16,8 @@ SECTIONS
   .text : {
 	HEAD_TEXT
 	TEXT_TEXT
+	IRQENTRY_TEXT
+	SOFTIRQENTRY_TEXT
 	SCHED_TEXT
 	LOCK_TEXT
 	*(.fixup)
@@ -27,9 +30,9 @@ SECTIONS
 
   _sdata = .;			/* Start of data section */
 
-  RODATA
+  RO_DATA(4096)
 
-  RW_DATA_SECTION(16, PAGE_SIZE, THREAD_SIZE)
+  RW_DATA(16, PAGE_SIZE, THREAD_SIZE)
 
   BSS_SECTION(0, 0, 0)
 
@@ -45,7 +48,6 @@ SECTIONS
 	*(.m68k_fixup)
 	__stop_fixup = .;
   }
-  NOTES
   .init_end : {
 	/* This ALIGN be in a section so that _end is at the end of the
 	   load segment. */
@@ -56,7 +58,7 @@ SECTIONS
   _end = . ;
 
   STABS_DEBUG
-  .comment 0 : { *(.comment) }
+  ELF_DETAILS
 
   /* Sections to be discarded */
   DISCARDS

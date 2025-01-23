@@ -1,18 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * linux/mfd/tps65217.h
  *
  * Functions to access TPS65217 power management chip.
  *
- * Copyright (C) 2011 Texas Instruments Incorporated - http://www.ti.com/
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (C) 2011 Texas Instruments Incorporated - https://www.ti.com/
  */
 
 #ifndef __LINUX_MFD_TPS65217_H
@@ -60,6 +52,8 @@
 #define TPS65217_REG_SEQ5		0X1D
 #define TPS65217_REG_SEQ6		0X1E
 
+#define TPS65217_REG_MAX		TPS65217_REG_SEQ6
+
 /* Register field definitions */
 #define TPS65217_CHIPID_CHIP_MASK	0xF0
 #define TPS65217_CHIPID_REV_MASK	0x0F
@@ -77,6 +71,9 @@
 #define TPS65217_INT_PBI		BIT(2)
 #define TPS65217_INT_ACI		BIT(1)
 #define TPS65217_INT_USBI		BIT(0)
+#define TPS65217_INT_SHIFT		4
+#define TPS65217_INT_MASK		(TPS65217_INT_PBM | TPS65217_INT_ACM | \
+					TPS65217_INT_USBM)
 
 #define TPS65217_CHGCONFIG0_TREG	BIT(7)
 #define TPS65217_CHGCONFIG0_DPPM	BIT(6)
@@ -231,6 +228,12 @@ struct tps65217_bl_pdata {
 	int dft_brightness;
 };
 
+/* Interrupt numbers */
+#define TPS65217_IRQ_USB		0
+#define TPS65217_IRQ_AC			1
+#define TPS65217_IRQ_PB			2
+#define TPS65217_NUM_IRQ		3
+
 /**
  * struct tps65217_board - packages regulator init data
  * @tps65217_regulator_data: regulator initialization values
@@ -252,20 +255,18 @@ struct tps65217_board {
 struct tps65217 {
 	struct device *dev;
 	struct tps65217_board *pdata;
-	unsigned int id;
 	struct regulator_desc desc[TPS65217_NUM_REGULATOR];
-	struct regulator_dev *rdev[TPS65217_NUM_REGULATOR];
 	struct regmap *regmap;
+	u8 *strobes;
+	struct irq_domain *irq_domain;
+	struct mutex irq_lock;
+	u8 irq_mask;
+	int irq;
 };
 
 static inline struct tps65217 *dev_to_tps65217(struct device *dev)
 {
 	return dev_get_drvdata(dev);
-}
-
-static inline int tps65217_chip_id(struct tps65217 *tps65217)
-{
-	return tps65217->id;
 }
 
 int tps65217_reg_read(struct tps65217 *tps, unsigned int reg,

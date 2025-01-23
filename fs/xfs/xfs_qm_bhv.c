@@ -1,31 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2000-2006 Silicon Graphics, Inc.
  * All Rights Reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it would be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write the Free Software Foundation,
- * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #include "xfs.h"
 #include "xfs_fs.h"
+#include "xfs_shared.h"
 #include "xfs_format.h"
 #include "xfs_log_format.h"
 #include "xfs_trans_resv.h"
-#include "xfs_sb.h"
-#include "xfs_ag.h"
 #include "xfs_quota.h"
 #include "xfs_mount.h"
 #include "xfs_inode.h"
-#include "xfs_error.h"
 #include "xfs_trans.h"
 #include "xfs_qm.h"
 
@@ -35,26 +21,26 @@ xfs_fill_statvfs_from_dquot(
 	struct kstatfs		*statp,
 	struct xfs_dquot	*dqp)
 {
-	__uint64_t		limit;
+	uint64_t		limit;
 
-	limit = dqp->q_core.d_blk_softlimit ?
-		be64_to_cpu(dqp->q_core.d_blk_softlimit) :
-		be64_to_cpu(dqp->q_core.d_blk_hardlimit);
+	limit = dqp->q_blk.softlimit ?
+		dqp->q_blk.softlimit :
+		dqp->q_blk.hardlimit;
 	if (limit && statp->f_blocks > limit) {
 		statp->f_blocks = limit;
 		statp->f_bfree = statp->f_bavail =
-			(statp->f_blocks > dqp->q_res_bcount) ?
-			 (statp->f_blocks - dqp->q_res_bcount) : 0;
+			(statp->f_blocks > dqp->q_blk.reserved) ?
+			 (statp->f_blocks - dqp->q_blk.reserved) : 0;
 	}
 
-	limit = dqp->q_core.d_ino_softlimit ?
-		be64_to_cpu(dqp->q_core.d_ino_softlimit) :
-		be64_to_cpu(dqp->q_core.d_ino_hardlimit);
+	limit = dqp->q_ino.softlimit ?
+		dqp->q_ino.softlimit :
+		dqp->q_ino.hardlimit;
 	if (limit && statp->f_files > limit) {
 		statp->f_files = limit;
 		statp->f_ffree =
-			(statp->f_files > dqp->q_res_icount) ?
-			 (statp->f_ffree - dqp->q_res_icount) : 0;
+			(statp->f_files > dqp->q_ino.reserved) ?
+			 (statp->f_files - dqp->q_ino.reserved) : 0;
 	}
 }
 
@@ -68,13 +54,13 @@ xfs_fill_statvfs_from_dquot(
  */
 void
 xfs_qm_statvfs(
-	xfs_inode_t		*ip,
+	struct xfs_inode	*ip,
 	struct kstatfs		*statp)
 {
-	xfs_mount_t		*mp = ip->i_mount;
-	xfs_dquot_t		*dqp;
+	struct xfs_mount	*mp = ip->i_mount;
+	struct xfs_dquot	*dqp;
 
-	if (!xfs_qm_dqget(mp, NULL, xfs_get_projid(ip), XFS_DQ_PROJ, 0, &dqp)) {
+	if (!xfs_qm_dqget(mp, ip->i_projid, XFS_DQTYPE_PROJ, false, &dqp)) {
 		xfs_fill_statvfs_from_dquot(statp, dqp);
 		xfs_qm_dqput(dqp);
 	}
@@ -89,7 +75,7 @@ xfs_qm_newmount(
 	uint		quotaondisk;
 	uint		uquotaondisk = 0, gquotaondisk = 0, pquotaondisk = 0;
 
-	quotaondisk = xfs_sb_version_hasquota(&mp->m_sb) &&
+	quotaondisk = xfs_has_quota(mp) &&
 				(mp->m_sb.sb_qflags & XFS_ALL_QUOTA_ACCT);
 
 	if (quotaondisk) {
@@ -117,7 +103,7 @@ xfs_qm_newmount(
 			(uquotaondisk ? " usrquota" : ""),
 			(gquotaondisk ? " grpquota" : ""),
 			(pquotaondisk ? " prjquota" : ""));
-		return XFS_ERROR(EPERM);
+		return -EPERM;
 	}
 
 	if (XFS_IS_QUOTA_ON(mp) || quotaondisk) {

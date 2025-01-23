@@ -1,23 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SPU file system
  *
  * (C) Copyright IBM Deutschland Entwicklung GmbH 2005
  *
  * Author: Arnd Bergmann <arndb@de.ibm.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 #ifndef SPUFS_H
 #define SPUFS_H
@@ -27,6 +14,7 @@
 #include <linux/spinlock.h>
 #include <linux/fs.h>
 #include <linux/cpumask.h>
+#include <linux/sched/signal.h>
 
 #include <asm/spu.h>
 #include <asm/spu_csa.h>
@@ -34,7 +22,6 @@
 
 #define SPUFS_PS_MAP_SIZE	0x20000
 #define SPUFS_MFC_MAP_SIZE	0x1000
-#define SPUFS_CNTL_MAP_SIZE	0x1000
 #define SPUFS_CNTL_MAP_SIZE	0x1000
 #define SPUFS_SIGNAL_MAP_SIZE	PAGE_SIZE
 #define SPUFS_MSS_MAP_SIZE	0x1000
@@ -69,7 +56,7 @@ struct switch_log {
 	unsigned long		head;
 	unsigned long		tail;
 	struct switch_log_entry {
-		struct timespec	tstamp;
+		struct timespec64 tstamp;
 		s32		spu_id;
 		u32		type;
 		u32		val;
@@ -89,7 +76,7 @@ struct spu_context {
 	struct address_space *mss;	   /* 'mss' area mappings. */
 	struct address_space *psmap;	   /* 'psmap' area mappings. */
 	struct mutex mapping_lock;
-	u64 object_id;		   /* user space pointer for oprofile */
+	u64 object_id;		   /* user space pointer for GNU Debugger */
 
 	enum { SPU_STATE_RUNNABLE, SPU_STATE_SAVED } state;
 	struct mutex state_mutex;
@@ -103,9 +90,6 @@ struct spu_context {
 	wait_queue_head_t stop_wq;
 	wait_queue_head_t mfc_wq;
 	wait_queue_head_t run_wq;
-	struct fasync_struct *ibox_fasync;
-	struct fasync_struct *wbox_fasync;
-	struct fasync_struct *mfc_fasync;
 	u32 tagwait;
 	struct spu_context_ops *ops;
 	struct work_struct reap_work;
@@ -188,8 +172,7 @@ struct mfc_dma_command {
 struct spu_context_ops {
 	int (*mbox_read) (struct spu_context * ctx, u32 * data);
 	 u32(*mbox_stat_read) (struct spu_context * ctx);
-	unsigned int (*mbox_stat_poll)(struct spu_context *ctx,
-					unsigned int events);
+	__poll_t (*mbox_stat_poll)(struct spu_context *ctx, __poll_t events);
 	int (*ibox_read) (struct spu_context * ctx, u32 * data);
 	int (*wbox_write) (struct spu_context * ctx, u32 data);
 	 u32(*signal1_read) (struct spu_context * ctx);
@@ -249,7 +232,7 @@ extern const struct spufs_tree_descr spufs_dir_debug_contents[];
 extern struct spufs_calls spufs_calls;
 struct coredump_params;
 long spufs_run_spu(struct spu_context *ctx, u32 *npc, u32 *status);
-long spufs_create(struct path *nd, struct dentry *dentry, unsigned int flags,
+long spufs_create(const struct path *nd, struct dentry *dentry, unsigned int flags,
 			umode_t mode, struct file *filp);
 /* ELF coredump callbacks for writing SPU ELF notes */
 extern int spufs_coredump_extra_notes_size(void);
@@ -298,7 +281,6 @@ void spu_del_from_rq(struct spu_context *ctx);
 int spu_activate(struct spu_context *ctx, unsigned long flags);
 void spu_deactivate(struct spu_context *ctx);
 void spu_yield(struct spu_context *ctx);
-void spu_switch_notify(struct spu *spu, struct spu_context *ctx);
 void spu_switch_log_notify(struct spu *spu, struct spu_context *ctx,
 		u32 type, u32 val);
 void spu_set_timeslice(struct spu_context *ctx);
@@ -351,16 +333,13 @@ void spufs_stop_callback(struct spu *spu, int irq);
 void spufs_mfc_callback(struct spu *spu);
 void spufs_dma_callback(struct spu *spu, int type);
 
-extern struct spu_coredump_calls spufs_coredump_calls;
 struct spufs_coredump_reader {
 	char *name;
-	ssize_t (*read)(struct spu_context *ctx,
-			char __user *buffer, size_t size, loff_t *pos);
+	ssize_t (*dump)(struct spu_context *ctx, struct coredump_params *cprm);
 	u64 (*get)(struct spu_context *ctx);
 	size_t size;
 };
 extern const struct spufs_coredump_reader spufs_coredump_read[];
-extern int spufs_coredump_num_notes;
 
 extern int spu_init_csa(struct spu_state *csa);
 extern void spu_fini_csa(struct spu_state *csa);

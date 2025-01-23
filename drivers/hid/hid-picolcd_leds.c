@@ -1,20 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /***************************************************************************
  *   Copyright (C) 2010-2012 by Bruno Prémont <bonbons@linux-vserver.org>  *
  *                                                                         *
  *   Based on Logitech G13 driver (v0.4)                                   *
  *     Copyright (C) 2009 by Rick L. Vinyard, Jr. <rvinyard@cs.nmsu.edu>   *
  *                                                                         *
- *   This program is free software: you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation, version 2 of the License.               *
- *                                                                         *
- *   This driver is distributed in the hope that it will be useful, but    *
- *   WITHOUT ANY WARRANTY; without even the implied warranty of            *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU      *
- *   General Public License for more details.                              *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this software. If not see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #include <linux/hid.h>
@@ -66,7 +56,7 @@ static void picolcd_led_set_brightness(struct led_classdev *led_cdev,
 	int i, state = 0;
 
 	dev  = led_cdev->dev->parent;
-	hdev = container_of(dev, struct hid_device, dev);
+	hdev = to_hid_device(dev);
 	data = hid_get_drvdata(hdev);
 	if (!data)
 		return;
@@ -93,7 +83,7 @@ static enum led_brightness picolcd_led_get_brightness(struct led_classdev *led_c
 	int i, value = 0;
 
 	dev  = led_cdev->dev->parent;
-	hdev = container_of(dev, struct hid_device, dev);
+	hdev = to_hid_device(dev);
 	data = hid_get_drvdata(hdev);
 	for (i = 0; i < 8; i++)
 		if (led_cdev == data->led[i]) {

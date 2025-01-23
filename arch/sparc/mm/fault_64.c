@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sparc64/mm/fault.c: Page fault handlers for the 64-bit Sparc.
  *
@@ -10,11 +11,12 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
 #include <linux/ptrace.h>
 #include <linux/mman.h>
 #include <linux/signal.h>
 #include <linux/mm.h>
-#include <linux/module.h>
+#include <linux/extable.h>
 #include <linux/init.h>
 #include <linux/perf_event.h>
 #include <linux/interrupt.h>
@@ -22,32 +24,18 @@
 #include <linux/kdebug.h>
 #include <linux/percpu.h>
 #include <linux/context_tracking.h>
+#include <linux/uaccess.h>
 
 #include <asm/page.h>
-#include <asm/pgtable.h>
 #include <asm/openprom.h>
 #include <asm/oplib.h>
-#include <asm/uaccess.h>
 #include <asm/asi.h>
 #include <asm/lsu.h>
 #include <asm/sections.h>
 #include <asm/mmu_context.h>
+#include <asm/setup.h>
 
 int show_unhandled_signals = 1;
-
-static inline __kprobes int notify_page_fault(struct pt_regs *regs)
-{
-	int ret = 0;
-
-	/* kprobe_running() needs smp_processor_id() */
-	if (kprobes_built_in() && !user_mode(regs)) {
-		preempt_disable();
-		if (kprobe_running() && kprobe_fault_handler(regs, 0))
-			ret = 1;
-		preempt_enable();
-	}
-	return ret;
-}
 
 static void __kprobes unhandled_fault(unsigned long address,
 				      struct task_struct *tsk,
@@ -82,7 +70,7 @@ static void __kprobes bad_kernel_pc(struct pt_regs *regs, unsigned long vaddr)
 }
 
 /*
- * We now make sure that mmap_sem is held in all paths that call 
+ * We now make sure that mmap_lock is held in all paths that call
  * this. Additionally, to prevent kswapd from ripping ptes from
  * under us, raise interrupts around the time that we look at the
  * pte, kswapd will have to wait to get his smp ipi response from
@@ -91,43 +79,60 @@ static void __kprobes bad_kernel_pc(struct pt_regs *regs, unsigned long vaddr)
 static unsigned int get_user_insn(unsigned long tpc)
 {
 	pgd_t *pgdp = pgd_offset(current->mm, tpc);
+	p4d_t *p4dp;
 	pud_t *pudp;
 	pmd_t *pmdp;
 	pte_t *ptep, pte;
 	unsigned long pa;
 	u32 insn = 0;
-	unsigned long pstate;
 
-	if (pgd_none(*pgdp))
-		goto outret;
-	pudp = pud_offset(pgdp, tpc);
-	if (pud_none(*pudp))
-		goto outret;
-	pmdp = pmd_offset(pudp, tpc);
-	if (pmd_none(*pmdp))
-		goto outret;
-
-	/* This disables preemption for us as well. */
-	__asm__ __volatile__("rdpr %%pstate, %0" : "=r" (pstate));
-	__asm__ __volatile__("wrpr %0, %1, %%pstate"
-				: : "r" (pstate), "i" (PSTATE_IE));
-	ptep = pte_offset_map(pmdp, tpc);
-	pte = *ptep;
-	if (!pte_present(pte))
+	if (pgd_none(*pgdp) || unlikely(pgd_bad(*pgdp)))
+		goto out;
+	p4dp = p4d_offset(pgdp, tpc);
+	if (p4d_none(*p4dp) || unlikely(p4d_bad(*p4dp)))
+		goto out;
+	pudp = pud_offset(p4dp, tpc);
+	if (pud_none(*pudp) || unlikely(pud_bad(*pudp)))
 		goto out;
 
-	pa  = (pte_pfn(pte) << PAGE_SHIFT);
-	pa += (tpc & ~PAGE_MASK);
+	/* This disables preemption for us as well. */
+	local_irq_disable();
 
-	/* Use phys bypass so we don't pollute dtlb/dcache. */
-	__asm__ __volatile__("lduwa [%1] %2, %0"
-			     : "=r" (insn)
-			     : "r" (pa), "i" (ASI_PHYS_USE_EC));
+	pmdp = pmd_offset(pudp, tpc);
+again:
+	if (pmd_none(*pmdp) || unlikely(pmd_bad(*pmdp)))
+		goto out_irq_enable;
 
+#if defined(CONFIG_HUGETLB_PAGE) || defined(CONFIG_TRANSPARENT_HUGEPAGE)
+	if (is_hugetlb_pmd(*pmdp)) {
+		pa  = pmd_pfn(*pmdp) << PAGE_SHIFT;
+		pa += tpc & ~HPAGE_MASK;
+
+		/* Use phys bypass so we don't pollute dtlb/dcache. */
+		__asm__ __volatile__("lduwa [%1] %2, %0"
+				     : "=r" (insn)
+				     : "r" (pa), "i" (ASI_PHYS_USE_EC));
+	} else
+#endif
+	{
+		ptep = pte_offset_map(pmdp, tpc);
+		if (!ptep)
+			goto again;
+		pte = *ptep;
+		if (pte_present(pte)) {
+			pa  = (pte_pfn(pte) << PAGE_SHIFT);
+			pa += (tpc & ~PAGE_MASK);
+
+			/* Use phys bypass so we don't pollute dtlb/dcache. */
+			__asm__ __volatile__("lduwa [%1] %2, %0"
+					     : "=r" (insn)
+					     : "r" (pa), "i" (ASI_PHYS_USE_EC));
+		}
+		pte_unmap(ptep);
+	}
+out_irq_enable:
+	local_irq_enable();
 out:
-	pte_unmap(ptep);
-	__asm__ __volatile__("wrpr %0, 0x0, %%pstate" : : "r" (pstate));
-outret:
 	return insn;
 }
 
@@ -141,7 +146,7 @@ show_signal_msg(struct pt_regs *regs, int sig, int code,
 	if (!printk_ratelimit())
 		return;
 
-	printk("%s%s[%d]: segfault at %lx ip %p (rpc %p) sp %p error %x",
+	printk("%s%s[%d]: segfault at %lx ip %px (rpc %px) sp %px error %x",
 	       task_pid_nr(tsk) > 1 ? KERN_INFO : KERN_EMERG,
 	       tsk->comm, task_pid_nr(tsk), address,
 	       (void *)regs->tpc, (void *)regs->u_regs[UREG_I7],
@@ -153,29 +158,29 @@ show_signal_msg(struct pt_regs *regs, int sig, int code,
 }
 
 static void do_fault_siginfo(int code, int sig, struct pt_regs *regs,
-			     unsigned int insn, int fault_code)
+			     unsigned long fault_addr, unsigned int insn,
+			     int fault_code)
 {
 	unsigned long addr;
-	siginfo_t info;
 
-	info.si_code = code;
-	info.si_signo = sig;
-	info.si_errno = 0;
-	if (fault_code & FAULT_CODE_ITLB)
+	if (fault_code & FAULT_CODE_ITLB) {
 		addr = regs->tpc;
-	else
-		addr = compute_effective_address(regs, insn, 0);
-	info.si_addr = (void __user *) addr;
-	info.si_trapno = 0;
+	} else {
+		/* If we were able to probe the faulting instruction, use it
+		 * to compute a precise fault address.  Otherwise use the fault
+		 * time provided address which may only have page granularity.
+		 */
+		if (insn)
+			addr = compute_effective_address(regs, insn, 0);
+		else
+			addr = fault_addr;
+	}
 
 	if (unlikely(show_unhandled_signals))
 		show_signal_msg(regs, sig, code, addr, current);
 
-	force_sig_info(sig, &info, current);
+	force_sig_fault(sig, code, (void __user *) addr);
 }
-
-extern int handle_ldf_stq(u32, struct pt_regs *);
-extern int handle_ld_nf(u32, struct pt_regs *);
 
 static unsigned int get_fault_insn(struct pt_regs *regs, unsigned int insn)
 {
@@ -239,7 +244,7 @@ static void __kprobes do_kernel_fault(struct pt_regs *regs, int si_code,
 		/* The si_code was set to make clear whether
 		 * this was a SEGV_MAPERR or SEGV_ACCERR fault.
 		 */
-		do_fault_siginfo(si_code, SIGSEGV, regs, insn, fault_code);
+		do_fault_siginfo(si_code, SIGSEGV, regs, address, insn, fault_code);
 		return;
 	}
 
@@ -259,31 +264,20 @@ static void noinline __kprobes bogus_32bit_fault_tpc(struct pt_regs *regs)
 	show_regs(regs);
 }
 
-static void noinline __kprobes bogus_32bit_fault_address(struct pt_regs *regs,
-							 unsigned long addr)
-{
-	static int times;
-
-	if (times++ < 10)
-		printk(KERN_ERR "FAULT[%s:%d]: 32-bit process "
-		       "reports 64-bit fault address [%lx]\n",
-		       current->comm, current->pid, addr);
-	show_regs(regs);
-}
-
 asmlinkage void __kprobes do_sparc64_fault(struct pt_regs *regs)
 {
 	enum ctx_state prev_state = exception_enter();
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
 	unsigned int insn = 0;
-	int si_code, fault_code, fault;
+	int si_code, fault_code;
+	vm_fault_t fault;
 	unsigned long address, mm_rss;
-	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+	unsigned int flags = FAULT_FLAG_DEFAULT;
 
 	fault_code = get_thread_fault_code();
 
-	if (notify_page_fault(regs))
+	if (kprobe_page_fault(regs, 0))
 		goto exit_exception;
 
 	si_code = SEGV_MAPERR;
@@ -300,10 +294,8 @@ asmlinkage void __kprobes do_sparc64_fault(struct pt_regs *regs)
 				goto intr_or_no_mm;
 			}
 		}
-		if (unlikely((address >> 32) != 0)) {
-			bogus_32bit_fault_address(regs, address);
+		if (unlikely((address >> 32) != 0))
 			goto intr_or_no_mm;
-		}
 	}
 
 	if (regs->tstate & TSTATE_PRIV) {
@@ -324,12 +316,12 @@ asmlinkage void __kprobes do_sparc64_fault(struct pt_regs *regs)
 	 * If we're in an interrupt or have no user
 	 * context, we must not take the fault..
 	 */
-	if (in_atomic() || !mm)
+	if (faulthandler_disabled() || !mm)
 		goto intr_or_no_mm;
 
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
 
-	if (!down_read_trylock(&mm->mmap_sem)) {
+	if (!mmap_read_trylock(mm)) {
 		if ((regs->tstate & TSTATE_PRIV) &&
 		    !search_exception_tables(regs->tpc)) {
 			insn = get_fault_insn(regs, insn);
@@ -337,8 +329,11 @@ asmlinkage void __kprobes do_sparc64_fault(struct pt_regs *regs)
 		}
 
 retry:
-		down_read(&mm->mmap_sem);
+		mmap_read_lock(mm);
 	}
+
+	if (fault_code & FAULT_CODE_BAD_RA)
+		goto do_sigbus;
 
 	vma = find_vma(mm, address);
 	if (!vma)
@@ -391,8 +386,9 @@ continue_fault:
 				goto bad_area;
 		}
 	}
-	if (expand_stack(vma, address))
-		goto bad_area;
+	vma = expand_stack(mm, address);
+	if (!vma)
+		goto bad_area_nosemaphore;
 	/*
 	 * Ok, we have a good vm_area for this memory access, so
 	 * we can handle it..
@@ -404,8 +400,9 @@ good_area:
 	 * that here.
 	 */
 	if ((fault_code & FAULT_CODE_ITLB) && !(vma->vm_flags & VM_EXEC)) {
-		BUG_ON(address != regs->tpc);
-		BUG_ON(regs->tstate & TSTATE_PRIV);
+		WARN(address != regs->tpc,
+		     "address (%lx) != regs->tpc (%lx)\n", address, regs->tpc);
+		WARN_ON(regs->tstate & TSTATE_PRIV);
 		goto bad_area;
 	}
 
@@ -429,52 +426,53 @@ good_area:
 			goto bad_area;
 	}
 
-	fault = handle_mm_fault(mm, vma, address, flags);
+	fault = handle_mm_fault(vma, address, flags, regs);
 
-	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
+	if (fault_signal_pending(fault, regs)) {
+		if (regs->tstate & TSTATE_PRIV) {
+			insn = get_fault_insn(regs, insn);
+			goto handle_kernel_fault;
+		}
 		goto exit_exception;
+	}
+
+	/* The fault is fully completed (including releasing mmap lock) */
+	if (fault & VM_FAULT_COMPLETED)
+		goto lock_released;
 
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
+		else if (fault & VM_FAULT_SIGSEGV)
+			goto bad_area;
 		else if (fault & VM_FAULT_SIGBUS)
 			goto do_sigbus;
 		BUG();
 	}
 
-	if (flags & FAULT_FLAG_ALLOW_RETRY) {
-		if (fault & VM_FAULT_MAJOR) {
-			current->maj_flt++;
-			perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS_MAJ,
-				      1, regs, address);
-		} else {
-			current->min_flt++;
-			perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS_MIN,
-				      1, regs, address);
-		}
-		if (fault & VM_FAULT_RETRY) {
-			flags &= ~FAULT_FLAG_ALLOW_RETRY;
-			flags |= FAULT_FLAG_TRIED;
+	if (fault & VM_FAULT_RETRY) {
+		flags |= FAULT_FLAG_TRIED;
 
-			/* No need to up_read(&mm->mmap_sem) as we would
-			 * have already released it in __lock_page_or_retry
-			 * in mm/filemap.c.
-			 */
+		/* No need to mmap_read_unlock(mm) as we would
+		 * have already released it in __lock_page_or_retry
+		 * in mm/filemap.c.
+		 */
 
-			goto retry;
-		}
+		goto retry;
 	}
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 
+lock_released:
 	mm_rss = get_mm_rss(mm);
-#if defined(CONFIG_HUGETLB_PAGE) || defined(CONFIG_TRANSPARENT_HUGEPAGE)
-	mm_rss -= (mm->context.huge_pte_count * (HPAGE_SIZE / PAGE_SIZE));
+#if defined(CONFIG_TRANSPARENT_HUGEPAGE)
+	mm_rss -= (mm->context.thp_pte_count * (HPAGE_SIZE / PAGE_SIZE));
 #endif
 	if (unlikely(mm_rss >
 		     mm->context.tsb_block[MM_TSB_BASE].tsb_rss_limit))
 		tsb_grow(mm, MM_TSB_BASE, mm_rss);
 #if defined(CONFIG_HUGETLB_PAGE) || defined(CONFIG_TRANSPARENT_HUGEPAGE)
-	mm_rss = mm->context.huge_pte_count;
+	mm_rss = mm->context.hugetlb_pte_count + mm->context.thp_pte_count;
+	mm_rss *= REAL_HPAGE_PER_HPAGE;
 	if (unlikely(mm_rss >
 		     mm->context.tsb_block[MM_TSB_HUGE].tsb_rss_limit)) {
 		if (mm->context.tsb_block[MM_TSB_HUGE].tsb)
@@ -493,8 +491,9 @@ exit_exception:
 	 * Fix it, but check if it's kernel or user first..
 	 */
 bad_area:
+	mmap_read_unlock(mm);
+bad_area_nosemaphore:
 	insn = get_fault_insn(regs, insn);
-	up_read(&mm->mmap_sem);
 
 handle_kernel_fault:
 	do_kernel_fault(regs, si_code, fault_code, insn, address);
@@ -506,7 +505,7 @@ handle_kernel_fault:
  */
 out_of_memory:
 	insn = get_fault_insn(regs, insn);
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 	if (!(regs->tstate & TSTATE_PRIV)) {
 		pagefault_out_of_memory();
 		goto exit_exception;
@@ -519,13 +518,13 @@ intr_or_no_mm:
 
 do_sigbus:
 	insn = get_fault_insn(regs, insn);
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 
 	/*
 	 * Send a sigbus, regardless of whether we were in kernel
 	 * or user mode.
 	 */
-	do_fault_siginfo(BUS_ADRERR, SIGBUS, regs, insn, fault_code);
+	do_fault_siginfo(BUS_ADRERR, SIGBUS, regs, address, insn, fault_code);
 
 	/* Kernel mode? Handle exceptions or die */
 	if (regs->tstate & TSTATE_PRIV)

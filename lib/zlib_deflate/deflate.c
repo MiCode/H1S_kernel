@@ -52,16 +52,19 @@
 #include <linux/zutil.h>
 #include "defutil.h"
 
+/* architecture-specific bits */
+#ifdef CONFIG_ZLIB_DFLTCC
+#  include "../zlib_dfltcc/dfltcc_deflate.h"
+#else
+#define DEFLATE_RESET_HOOK(strm) do {} while (0)
+#define DEFLATE_HOOK(strm, flush, bstate) 0
+#define DEFLATE_NEED_CHECKSUM(strm) 1
+#define DEFLATE_DFLTCC_ENABLED() 0
+#endif
 
 /* ===========================================================================
  *  Function prototypes.
  */
-typedef enum {
-    need_more,      /* block not completed, need more input or more output */
-    block_done,     /* block flush performed */
-    finish_started, /* finish started, need only more output at next deflate */
-    finish_done     /* finish done, accept no more input or output */
-} block_state;
 
 typedef block_state (*compress_func) (deflate_state *s, int flush);
 /* Compression function. Returns the block state after the call. */
@@ -72,7 +75,6 @@ static block_state deflate_fast   (deflate_state *s, int flush);
 static block_state deflate_slow   (deflate_state *s, int flush);
 static void lm_init        (deflate_state *s);
 static void putShortMSB    (deflate_state *s, uInt b);
-static void flush_pending  (z_streamp strm);
 static int read_buf        (z_streamp strm, Byte *buf, unsigned size);
 static uInt longest_match  (deflate_state *s, IPos cur_match);
 
@@ -97,6 +99,25 @@ static  void check_match (deflate_state *s, IPos start, IPos match,
 /* Minimum amount of lookahead, except at the end of the input file.
  * See deflate.c for comments about the MIN_MATCH+1.
  */
+
+/* Workspace to be allocated for deflate processing */
+typedef struct deflate_workspace {
+    /* State memory for the deflator */
+    deflate_state deflate_memory;
+#ifdef CONFIG_ZLIB_DFLTCC
+    /* State memory for s390 hardware deflate */
+    struct dfltcc_deflate_state dfltcc_memory;
+#endif
+    Byte *window_memory;
+    Pos *prev_memory;
+    Pos *head_memory;
+    char *overlay_memory;
+} deflate_workspace;
+
+#ifdef CONFIG_ZLIB_DFLTCC
+/* dfltcc_state must be doubleword aligned for DFLTCC call */
+static_assert(offsetof(struct deflate_workspace, dfltcc_memory) % 8 == 0);
+#endif
 
 /* Values for max_lazy_match, good_match and max_chain_length, depending on
  * the desired pack level (0..9). The values given below have been tuned to
@@ -207,7 +228,15 @@ int zlib_deflateInit2(
      */
     next = (char *) mem;
     next += sizeof(*mem);
+#ifdef CONFIG_ZLIB_DFLTCC
+    /*
+     *  DFLTCC requires the window to be page aligned.
+     *  Thus, we overallocate and take the aligned portion of the buffer.
+     */
+    mem->window_memory = (Byte *) PTR_ALIGN(next, PAGE_SIZE);
+#else
     mem->window_memory = (Byte *) next;
+#endif
     next += zlib_deflate_window_memsize(windowBits);
     mem->prev_memory = (Pos *) next;
     next += zlib_deflate_prev_memsize(windowBits);
@@ -250,52 +279,6 @@ int zlib_deflateInit2(
 }
 
 /* ========================================================================= */
-#if 0
-int zlib_deflateSetDictionary(
-	z_streamp strm,
-	const Byte *dictionary,
-	uInt  dictLength
-)
-{
-    deflate_state *s;
-    uInt length = dictLength;
-    uInt n;
-    IPos hash_head = 0;
-
-    if (strm == NULL || strm->state == NULL || dictionary == NULL)
-	return Z_STREAM_ERROR;
-
-    s = (deflate_state *) strm->state;
-    if (s->status != INIT_STATE) return Z_STREAM_ERROR;
-
-    strm->adler = zlib_adler32(strm->adler, dictionary, dictLength);
-
-    if (length < MIN_MATCH) return Z_OK;
-    if (length > MAX_DIST(s)) {
-	length = MAX_DIST(s);
-#ifndef USE_DICT_HEAD
-	dictionary += dictLength - length; /* use the tail of the dictionary */
-#endif
-    }
-    memcpy((char *)s->window, dictionary, length);
-    s->strstart = length;
-    s->block_start = (long)length;
-
-    /* Insert all strings in the hash table (except for the last two bytes).
-     * s->lookahead stays null, so s->ins_h will be recomputed at the next
-     * call of fill_window.
-     */
-    s->ins_h = s->window[0];
-    UPDATE_HASH(s, s->ins_h, s->window[1]);
-    for (n = 0; n <= length - MIN_MATCH; n++) {
-	INSERT_STRING(s, n, hash_head);
-    }
-    if (hash_head) hash_head = 0;  /* to make compiler happy */
-    return Z_OK;
-}
-#endif  /*  0  */
-
-/* ========================================================================= */
 int zlib_deflateReset(
 	z_streamp strm
 )
@@ -323,47 +306,10 @@ int zlib_deflateReset(
     zlib_tr_init(s);
     lm_init(s);
 
+    DEFLATE_RESET_HOOK(strm);
+
     return Z_OK;
 }
-
-/* ========================================================================= */
-#if 0
-int zlib_deflateParams(
-	z_streamp strm,
-	int level,
-	int strategy
-)
-{
-    deflate_state *s;
-    compress_func func;
-    int err = Z_OK;
-
-    if (strm == NULL || strm->state == NULL) return Z_STREAM_ERROR;
-    s = (deflate_state *) strm->state;
-
-    if (level == Z_DEFAULT_COMPRESSION) {
-	level = 6;
-    }
-    if (level < 0 || level > 9 || strategy < 0 || strategy > Z_HUFFMAN_ONLY) {
-	return Z_STREAM_ERROR;
-    }
-    func = configuration_table[s->level].func;
-
-    if (func != configuration_table[level].func && strm->total_in != 0) {
-	/* Flush the last buffer: */
-	err = zlib_deflate(strm, Z_PARTIAL_FLUSH);
-    }
-    if (s->level != level) {
-	s->level = level;
-	s->max_lazy_match   = configuration_table[level].max_lazy;
-	s->good_match       = configuration_table[level].good_length;
-	s->nice_match       = configuration_table[level].nice_length;
-	s->max_chain_length = configuration_table[level].max_chain;
-    }
-    s->strategy = strategy;
-    return err;
-}
-#endif  /*  0  */
 
 /* =========================================================================
  * Put a short in the pending buffer. The 16-bit value is put in MSB order.
@@ -378,35 +324,6 @@ static void putShortMSB(
     put_byte(s, (Byte)(b >> 8));
     put_byte(s, (Byte)(b & 0xff));
 }   
-
-/* =========================================================================
- * Flush as much pending output as possible. All deflate() output goes
- * through this function so some applications may wish to modify it
- * to avoid allocating a large strm->next_out buffer and copying into it.
- * (See also read_buf()).
- */
-static void flush_pending(
-	z_streamp strm
-)
-{
-    deflate_state *s = (deflate_state *) strm->state;
-    unsigned len = s->pending;
-
-    if (len > strm->avail_out) len = strm->avail_out;
-    if (len == 0) return;
-
-    if (strm->next_out != NULL) {
-	memcpy(strm->next_out, s->pending_out, len);
-	strm->next_out += len;
-    }
-    s->pending_out += len;
-    strm->total_out += len;
-    strm->avail_out  -= len;
-    s->pending -= len;
-    if (s->pending == 0) {
-        s->pending_out = s->pending_buf;
-    }
-}
 
 /* ========================================================================= */
 int zlib_deflate(
@@ -489,7 +406,8 @@ int zlib_deflate(
         (flush != Z_NO_FLUSH && s->status != FINISH_STATE)) {
         block_state bstate;
 
-	bstate = (*(configuration_table[s->level].func))(s, flush);
+	bstate = DEFLATE_HOOK(strm, flush, &bstate) ? bstate :
+		 (*(configuration_table[s->level].func))(s, flush);
 
         if (bstate == finish_started || bstate == finish_done) {
             s->status = FINISH_STATE;
@@ -533,17 +451,24 @@ int zlib_deflate(
     Assert(strm->avail_out > 0, "bug2");
 
     if (flush != Z_FINISH) return Z_OK;
-    if (s->noheader) return Z_STREAM_END;
 
-    /* Write the zlib trailer (adler32) */
-    putShortMSB(s, (uInt)(strm->adler >> 16));
-    putShortMSB(s, (uInt)(strm->adler & 0xffff));
+    if (!s->noheader) {
+	/* Write zlib trailer (adler32) */
+	putShortMSB(s, (uInt)(strm->adler >> 16));
+	putShortMSB(s, (uInt)(strm->adler & 0xffff));
+    }
     flush_pending(strm);
     /* If avail_out is zero, the application will call deflate again
      * to flush the rest.
      */
-    s->noheader = -1; /* write the trailer only once! */
-    return s->pending != 0 ? Z_OK : Z_STREAM_END;
+    if (!s->noheader) {
+	s->noheader = -1; /* write the trailer only once! */
+    }
+    if (s->pending == 0) {
+	Assert(s->bi_valid == 0, "bi_buf not flushed");
+	return Z_STREAM_END;
+    }
+    return Z_OK;
 }
 
 /* ========================================================================= */
@@ -568,64 +493,6 @@ int zlib_deflateEnd(
     return status == BUSY_STATE ? Z_DATA_ERROR : Z_OK;
 }
 
-/* =========================================================================
- * Copy the source state to the destination state.
- */
-#if 0
-int zlib_deflateCopy (
-	z_streamp dest,
-	z_streamp source
-)
-{
-#ifdef MAXSEG_64K
-    return Z_STREAM_ERROR;
-#else
-    deflate_state *ds;
-    deflate_state *ss;
-    ush *overlay;
-    deflate_workspace *mem;
-
-
-    if (source == NULL || dest == NULL || source->state == NULL) {
-        return Z_STREAM_ERROR;
-    }
-
-    ss = (deflate_state *) source->state;
-
-    *dest = *source;
-
-    mem = (deflate_workspace *) dest->workspace;
-
-    ds = &(mem->deflate_memory);
-
-    dest->state = (struct internal_state *) ds;
-    *ds = *ss;
-    ds->strm = dest;
-
-    ds->window = (Byte *) mem->window_memory;
-    ds->prev   = (Pos *)  mem->prev_memory;
-    ds->head   = (Pos *)  mem->head_memory;
-    overlay = (ush *) mem->overlay_memory;
-    ds->pending_buf = (uch *) overlay;
-
-    memcpy(ds->window, ss->window, ds->w_size * 2 * sizeof(Byte));
-    memcpy(ds->prev, ss->prev, ds->w_size * sizeof(Pos));
-    memcpy(ds->head, ss->head, ds->hash_size * sizeof(Pos));
-    memcpy(ds->pending_buf, ss->pending_buf, (uInt)ds->pending_buf_size);
-
-    ds->pending_out = ds->pending_buf + (ss->pending_out - ss->pending_buf);
-    ds->d_buf = overlay + ds->lit_bufsize/sizeof(ush);
-    ds->l_buf = ds->pending_buf + (1+sizeof(ush))*ds->lit_bufsize;
-
-    ds->l_desc.dyn_tree = ds->dyn_ltree;
-    ds->d_desc.dyn_tree = ds->dyn_dtree;
-    ds->bl_desc.dyn_tree = ds->bl_tree;
-
-    return Z_OK;
-#endif
-}
-#endif  /*  0  */
-
 /* ===========================================================================
  * Read a new buffer from the current input stream, update the adler32
  * and total number of bytes read.  All deflate() input goes through
@@ -646,7 +513,8 @@ static int read_buf(
 
     strm->avail_in  -= len;
 
-    if (!((deflate_state *)(strm->state))->noheader) {
+    if (!DEFLATE_NEED_CHECKSUM(strm)) {}
+    else if (!((deflate_state *)(strm->state))->noheader) {
         strm->adler = zlib_adler32(strm->adler, strm->next_in, len);
     }
     memcpy(buf, strm->next_in, len);
@@ -1277,4 +1145,9 @@ int zlib_deflate_workspacesize(int windowBits, int memLevel)
         + zlib_deflate_prev_memsize(windowBits)
         + zlib_deflate_head_memsize(memLevel)
         + zlib_deflate_overlay_memsize(memLevel);
+}
+
+int zlib_deflate_dfltcc_enabled(void)
+{
+	return DEFLATE_DFLTCC_ENABLED();
 }

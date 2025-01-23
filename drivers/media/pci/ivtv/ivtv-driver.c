@@ -23,7 +23,6 @@
  * Driver for the Conexant CX23415/CX23416 chip.
  * Author: Kevin Thayer (nufan_wfk at yahoo.com)
  * License: GPL
- * http://www.ivtvdriver.org
  *
  * -----
  * MPG600/MPG160 support by  T.Adachi <tadachi@tadachi-net.com>
@@ -57,8 +56,9 @@
 #include "ivtv-gpio.h"
 #include <linux/dma-mapping.h>
 #include <media/tveeprom.h>
-#include <media/saa7115.h>
-#include "tuner-xc2028.h"
+#include <media/i2c/saa7115.h>
+#include "xc2028.h"
+#include <uapi/linux/sched/types.h>
 
 /* If you have already X v4l cards, then set this to X. This way
    the device numbers stay matched. Example: you have a WinTV card
@@ -72,7 +72,7 @@ int (*ivtv_ext_init)(struct ivtv *);
 EXPORT_SYMBOL(ivtv_ext_init);
 
 /* add your revision and whatnot here */
-static struct pci_device_id ivtv_pci_tbl[] = {
+static const struct pci_device_id ivtv_pci_tbl[] = {
 	{PCI_VENDOR_ID_ICOMP, PCI_DEVICE_ID_IVTV15,
 	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{PCI_VENDOR_ID_ICOMP, PCI_DEVICE_ID_IVTV16,
@@ -275,9 +275,6 @@ MODULE_PARM_DESC(ivtv_first_minor, "Set device node number assigned to first car
 
 MODULE_AUTHOR("Kevin Thayer, Chris Kennedy, Hans Verkuil");
 MODULE_DESCRIPTION("CX23415/CX23416 driver");
-MODULE_SUPPORTED_DEVICE
-    ("CX23415/CX23416 MPEG2 encoder (WinTV PVR-150/250/350/500,\n"
-		"\t\t\tYuan MPG series and similar)");
 MODULE_LICENSE("GPL");
 
 MODULE_VERSION(IVTV_VERSION);
@@ -408,7 +405,7 @@ void ivtv_read_eeprom(struct ivtv *itv, struct tveeprom *tv)
 
 	itv->i2c_client.addr = 0xA0 >> 1;
 	tveeprom_read(&itv->i2c_client, eedata, sizeof(eedata));
-	tveeprom_hauppauge_analog(&itv->i2c_client, tv, eedata);
+	tveeprom_hauppauge_analog(tv, eedata);
 }
 
 static void ivtv_process_eeprom(struct ivtv *itv)
@@ -722,7 +719,7 @@ done:
 		IVTV_ERR("              %s based\n", chipname);
 		IVTV_ERR("Defaulting to %s card\n", itv->card->name);
 		IVTV_ERR("Please mail the vendor/device and subsystem vendor/device IDs and what kind of\n");
-		IVTV_ERR("card you have to the ivtv-devel mailinglist (www.ivtvdriver.org)\n");
+		IVTV_ERR("card you have to the linux-media mailinglist (www.linuxtv.org)\n");
 		IVTV_ERR("Prefix your subject line with [UNKNOWN IVTV CARD].\n");
 	}
 	itv->v4l2_cap = itv->card->v4l2_capabilities;
@@ -737,8 +734,6 @@ done:
  */
 static int ivtv_init_struct1(struct ivtv *itv)
 {
-	struct sched_param param = { .sched_priority = 99 };
-
 	itv->base_addr = pci_resource_start(itv->pdev, 0);
 	itv->enc_mbox.max_mbox = 2; /* the encoder has 3 mailboxes (0-2) */
 	itv->dec_mbox.max_mbox = 1; /* the decoder has 2 mailboxes (0-1) */
@@ -750,7 +745,7 @@ static int ivtv_init_struct1(struct ivtv *itv)
 	spin_lock_init(&itv->lock);
 	spin_lock_init(&itv->dma_reg_lock);
 
-	init_kthread_worker(&itv->irq_worker);
+	kthread_init_worker(&itv->irq_worker);
 	itv->irq_worker_task = kthread_run(kthread_worker_fn, &itv->irq_worker,
 					   "%s", itv->v4l2_dev.name);
 	if (IS_ERR(itv->irq_worker_task)) {
@@ -758,9 +753,9 @@ static int ivtv_init_struct1(struct ivtv *itv)
 		return -1;
 	}
 	/* must use the FIFO scheduler as it is realtime sensitive */
-	sched_setscheduler(itv->irq_worker_task, SCHED_FIFO, &param);
+	sched_set_fifo(itv->irq_worker_task);
 
-	init_kthread_work(&itv->irq_work, ivtv_irq_work_handler);
+	kthread_init_work(&itv->irq_work, ivtv_irq_work_handler);
 
 	/* Initial settings */
 	itv->cxhdl.port = CX2341X_PORT_MEMORY;
@@ -769,9 +764,7 @@ static int ivtv_init_struct1(struct ivtv *itv)
 	init_waitqueue_head(&itv->event_waitq);
 	init_waitqueue_head(&itv->vsync_waitq);
 	init_waitqueue_head(&itv->dma_waitq);
-	init_timer(&itv->dma_timer);
-	itv->dma_timer.function = ivtv_unfinished_dma;
-	itv->dma_timer.data = (unsigned long)itv;
+	timer_setup(&itv->dma_timer, ivtv_unfinished_dma, 0);
 
 	itv->cur_dma_stream = -1;
 	itv->cur_pio_stream = -1;
@@ -826,7 +819,7 @@ static void ivtv_init_struct2(struct ivtv *itv)
 				IVTV_CARD_INPUT_VID_TUNER)
 			break;
 	}
-	if (i == itv->nof_inputs)
+	if (i >= itv->nof_inputs)
 		i = 0;
 	itv->active_input = i;
 	itv->audio_input = itv->card->video_inputs[i].audio_index;
@@ -844,7 +837,7 @@ static int ivtv_setup_pci(struct ivtv *itv, struct pci_dev *pdev,
 		IVTV_ERR("Can't enable device!\n");
 		return -EIO;
 	}
-	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
+	if (dma_set_mask(&pdev->dev, DMA_BIT_MASK(32))) {
 		IVTV_ERR("No suitable DMA available.\n");
 		return -EIO;
 	}
@@ -877,6 +870,11 @@ static int ivtv_setup_pci(struct ivtv *itv, struct pci_dev *pdev,
 		pci_read_config_word(pdev, PCI_COMMAND, &cmd);
 		if (!(cmd & PCI_COMMAND_MASTER)) {
 			IVTV_ERR("Bus Mastering is not enabled\n");
+			if (itv->has_cx23415)
+				release_mem_region(itv->base_addr + IVTV_DECODER_OFFSET,
+						   IVTV_DECODER_SIZE);
+			release_mem_region(itv->base_addr, IVTV_ENCODER_SIZE);
+			release_mem_region(itv->base_addr + IVTV_REG_OFFSET, IVTV_REG_SIZE);
 			return -ENXIO;
 		}
 	}
@@ -885,8 +883,8 @@ static int ivtv_setup_pci(struct ivtv *itv, struct pci_dev *pdev,
 	pci_read_config_byte(pdev, PCI_LATENCY_TIMER, &pci_latency);
 
 	if (pci_latency < 64 && ivtv_pci_latency) {
-		IVTV_INFO("Unreasonably low latency timer, "
-			       "setting to 64 (was %d)\n", pci_latency);
+		IVTV_INFO("Unreasonably low latency timer, setting to 64 (was %d)\n",
+			  pci_latency);
 		pci_write_config_byte(pdev, PCI_LATENCY_TIMER, 64);
 		pci_read_config_byte(pdev, PCI_LATENCY_TIMER, &pci_latency);
 	}
@@ -896,8 +894,7 @@ static int ivtv_setup_pci(struct ivtv *itv, struct pci_dev *pdev,
 	   these problems. */
 	pci_write_config_dword(pdev, 0x40, 0xffff);
 
-	IVTV_DEBUG_INFO("%d (rev %d) at %02x:%02x.%x, "
-		   "irq: %d, latency: %d, memory: 0x%llx\n",
+	IVTV_DEBUG_INFO("%d (rev %d) at %02x:%02x.%x, irq: %d, latency: %d, memory: 0x%llx\n",
 		   pdev->device, pdev->revision, pdev->bus->number,
 		   PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn),
 		   pdev->irq, pci_latency, (u64)itv->base_addr);
@@ -912,7 +909,7 @@ static void ivtv_load_and_init_modules(struct ivtv *itv)
 
 	/* check which i2c devices are actually found */
 	for (i = 0; i < 32; i++) {
-		u32 device = 1 << i;
+		u32 device = BIT(i);
 
 		if (!(device & hw))
 			continue;
@@ -1001,7 +998,7 @@ static int ivtv_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 	int vbi_buf_size;
 	struct ivtv *itv;
 
-	itv = kzalloc(sizeof(struct ivtv), GFP_ATOMIC);
+	itv = kzalloc(sizeof(struct ivtv), GFP_KERNEL);
 	if (itv == NULL)
 		return -ENOMEM;
 	itv->pdev = pdev;
@@ -1044,16 +1041,13 @@ static int ivtv_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 	/* map io memory */
 	IVTV_DEBUG_INFO("attempting ioremap at 0x%llx len 0x%08x\n",
 		   (u64)itv->base_addr + IVTV_ENCODER_OFFSET, IVTV_ENCODER_SIZE);
-	itv->enc_mem = ioremap_nocache(itv->base_addr + IVTV_ENCODER_OFFSET,
+	itv->enc_mem = ioremap(itv->base_addr + IVTV_ENCODER_OFFSET,
 				       IVTV_ENCODER_SIZE);
 	if (!itv->enc_mem) {
-		IVTV_ERR("ioremap failed. Can't get a window into CX23415/6 "
-			 "encoder memory\n");
-		IVTV_ERR("Each capture card with a CX23415/6 needs 8 MB of "
-			 "vmalloc address space for this window\n");
+		IVTV_ERR("ioremap failed. Can't get a window into CX23415/6 encoder memory\n");
+		IVTV_ERR("Each capture card with a CX23415/6 needs 8 MB of vmalloc address space for this window\n");
 		IVTV_ERR("Check the output of 'grep Vmalloc /proc/meminfo'\n");
-		IVTV_ERR("Use the vmalloc= kernel command line option to set "
-			 "VmallocTotal to a larger value\n");
+		IVTV_ERR("Use the vmalloc= kernel command line option to set VmallocTotal to a larger value\n");
 		retval = -ENOMEM;
 		goto free_mem;
 	}
@@ -1061,17 +1055,13 @@ static int ivtv_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 	if (itv->has_cx23415) {
 		IVTV_DEBUG_INFO("attempting ioremap at 0x%llx len 0x%08x\n",
 				(u64)itv->base_addr + IVTV_DECODER_OFFSET, IVTV_DECODER_SIZE);
-		itv->dec_mem = ioremap_nocache(itv->base_addr + IVTV_DECODER_OFFSET,
+		itv->dec_mem = ioremap(itv->base_addr + IVTV_DECODER_OFFSET,
 				IVTV_DECODER_SIZE);
 		if (!itv->dec_mem) {
-			IVTV_ERR("ioremap failed. Can't get a window into "
-				 "CX23415 decoder memory\n");
-			IVTV_ERR("Each capture card with a CX23415 needs 8 MB "
-				 "of vmalloc address space for this window\n");
-			IVTV_ERR("Check the output of 'grep Vmalloc "
-				 "/proc/meminfo'\n");
-			IVTV_ERR("Use the vmalloc= kernel command line option "
-				 "to set VmallocTotal to a larger value\n");
+			IVTV_ERR("ioremap failed. Can't get a window into CX23415 decoder memory\n");
+			IVTV_ERR("Each capture card with a CX23415 needs 8 MB of vmalloc address space for this window\n");
+			IVTV_ERR("Check the output of 'grep Vmalloc /proc/meminfo'\n");
+			IVTV_ERR("Use the vmalloc= kernel command line option to set VmallocTotal to a larger value\n");
 			retval = -ENOMEM;
 			goto free_mem;
 		}
@@ -1084,15 +1074,12 @@ static int ivtv_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 	IVTV_DEBUG_INFO("attempting ioremap at 0x%llx len 0x%08x\n",
 		   (u64)itv->base_addr + IVTV_REG_OFFSET, IVTV_REG_SIZE);
 	itv->reg_mem =
-	    ioremap_nocache(itv->base_addr + IVTV_REG_OFFSET, IVTV_REG_SIZE);
+	    ioremap(itv->base_addr + IVTV_REG_OFFSET, IVTV_REG_SIZE);
 	if (!itv->reg_mem) {
-		IVTV_ERR("ioremap failed. Can't get a window into CX23415/6 "
-			 "register space\n");
-		IVTV_ERR("Each capture card with a CX23415/6 needs 64 kB of "
-			 "vmalloc address space for this window\n");
+		IVTV_ERR("ioremap failed. Can't get a window into CX23415/6 register space\n");
+		IVTV_ERR("Each capture card with a CX23415/6 needs 64 kB of vmalloc address space for this window\n");
 		IVTV_ERR("Check the output of 'grep Vmalloc /proc/meminfo'\n");
-		IVTV_ERR("Use the vmalloc= kernel command line option to set "
-			 "VmallocTotal to a larger value\n");
+		IVTV_ERR("Use the vmalloc= kernel command line option to set VmallocTotal to a larger value\n");
 		retval = -ENOMEM;
 		goto free_io;
 	}
@@ -1284,7 +1271,7 @@ static int ivtv_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 	return 0;
 
 free_streams:
-	ivtv_streams_cleanup(itv, 1);
+	ivtv_streams_cleanup(itv);
 free_irq:
 	free_irq(itv->pdev->irq, (void *)itv);
 free_i2c:
@@ -1403,7 +1390,7 @@ int ivtv_init_on_first_open(struct ivtv *itv)
 
 static void ivtv_remove(struct pci_dev *pdev)
 {
-	struct v4l2_device *v4l2_dev = dev_get_drvdata(&pdev->dev);
+	struct v4l2_device *v4l2_dev = pci_get_drvdata(pdev);
 	struct ivtv *itv = to_ivtv(v4l2_dev);
 	int i;
 
@@ -1438,13 +1425,13 @@ static void ivtv_remove(struct pci_dev *pdev)
 
 	/* Interrupts */
 	ivtv_set_irq_mask(itv, 0xffffffff);
-	del_timer_sync(&itv->dma_timer);
+	timer_shutdown_sync(&itv->dma_timer);
 
 	/* Kill irq worker */
-	flush_kthread_worker(&itv->irq_worker);
+	kthread_flush_worker(&itv->irq_worker);
 	kthread_stop(itv->irq_worker_task);
 
-	ivtv_streams_cleanup(itv, 1);
+	ivtv_streams_cleanup(itv);
 	ivtv_udma_free(itv);
 
 	v4l2_ctrl_handler_free(&itv->cxhdl.hdl);
@@ -1463,7 +1450,7 @@ static void ivtv_remove(struct pci_dev *pdev)
 	for (i = 0; i < IVTV_VBI_FRAMES; i++)
 		kfree(itv->vbi.sliced_mpeg_data[i]);
 
-	printk(KERN_INFO "ivtv: Removed %s\n", itv->card_name);
+	pr_info("Removed %s\n", itv->card_name);
 
 	v4l2_device_unregister(&itv->v4l2_dev);
 	kfree(itv);
@@ -1479,25 +1466,25 @@ static struct pci_driver ivtv_pci_driver = {
 
 static int __init module_start(void)
 {
-	printk(KERN_INFO "ivtv: Start initialization, version %s\n", IVTV_VERSION);
+	pr_info("Start initialization, version %s\n", IVTV_VERSION);
 
 	/* Validate parameters */
 	if (ivtv_first_minor < 0 || ivtv_first_minor >= IVTV_MAX_CARDS) {
-		printk(KERN_ERR "ivtv: Exiting, ivtv_first_minor must be between 0 and %d\n",
+		pr_err("Exiting, ivtv_first_minor must be between 0 and %d\n",
 		     IVTV_MAX_CARDS - 1);
 		return -1;
 	}
 
 	if (ivtv_debug < 0 || ivtv_debug > 2047) {
 		ivtv_debug = 0;
-		printk(KERN_INFO "ivtv: Debug value must be >= 0 and <= 2047\n");
+		pr_info("Debug value must be >= 0 and <= 2047\n");
 	}
 
 	if (pci_register_driver(&ivtv_pci_driver)) {
-		printk(KERN_ERR "ivtv: Error detecting PCI card\n");
+		pr_err("Error detecting PCI card\n");
 		return -ENODEV;
 	}
-	printk(KERN_INFO "ivtv: End initialization\n");
+	pr_info("End initialization\n");
 	return 0;
 }
 

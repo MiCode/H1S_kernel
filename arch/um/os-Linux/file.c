@@ -1,18 +1,25 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2002 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
- * Licensed under the GPL
  */
 
 #include <stdio.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <linux/falloc.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/un.h>
+#include <sys/types.h>
+#include <sys/eventfd.h>
+#include <poll.h>
 #include <os.h>
 
 static void copy_stat(struct uml_stat *dst, const struct stat64 *src)
@@ -237,6 +244,12 @@ void os_close_file(int fd)
 {
 	close(fd);
 }
+int os_fsync_file(int fd)
+{
+	if (fsync(fd) < 0)
+	    return -errno;
+	return 0;
+}
 
 int os_seek_file(int fd, unsigned long long offset)
 {
@@ -257,6 +270,15 @@ int os_read_file(int fd, void *buf, int len)
 	return n;
 }
 
+int os_pread_file(int fd, void *buf, int len, unsigned long long offset)
+{
+	int n = pread(fd, buf, len, offset);
+
+	if (n < 0)
+		return -errno;
+	return n;
+}
+
 int os_write_file(int fd, const void *buf, int len)
 {
 	int n = write(fd, (void *) buf, len);
@@ -268,12 +290,22 @@ int os_write_file(int fd, const void *buf, int len)
 
 int os_sync_file(int fd)
 {
-	int n = fsync(fd);
+	int n = fdatasync(fd);
 
 	if (n < 0)
 		return -errno;
 	return n;
 }
+
+int os_pwrite_file(int fd, const void *buf, int len, unsigned long long offset)
+{
+	int n = pwrite(fd, (void *) buf, len, offset);
+
+	if (n < 0)
+		return -errno;
+	return n;
+}
+
 
 int os_file_size(const char *file, unsigned long long *size_out)
 {
@@ -313,7 +345,7 @@ int os_file_size(const char *file, unsigned long long *size_out)
 	return 0;
 }
 
-int os_file_modtime(const char *file, unsigned long *modtime)
+int os_file_modtime(const char *file, long long *modtime)
 {
 	struct uml_stat buf;
 	int err;
@@ -582,4 +614,94 @@ unsigned os_minor(unsigned long long dev)
 unsigned long long os_makedev(unsigned major, unsigned minor)
 {
 	return makedev(major, minor);
+}
+
+int os_falloc_punch(int fd, unsigned long long offset, int len)
+{
+	int n = fallocate(fd, FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE, offset, len);
+
+	if (n < 0)
+		return -errno;
+	return n;
+}
+
+int os_falloc_zeroes(int fd, unsigned long long offset, int len)
+{
+	int n = fallocate(fd, FALLOC_FL_ZERO_RANGE|FALLOC_FL_KEEP_SIZE, offset, len);
+
+	if (n < 0)
+		return -errno;
+	return n;
+}
+
+int os_eventfd(unsigned int initval, int flags)
+{
+	int fd = eventfd(initval, flags);
+
+	if (fd < 0)
+		return -errno;
+	return fd;
+}
+
+int os_sendmsg_fds(int fd, const void *buf, unsigned int len, const int *fds,
+		   unsigned int fds_num)
+{
+	struct iovec iov = {
+		.iov_base = (void *) buf,
+		.iov_len = len,
+	};
+	union {
+		char control[CMSG_SPACE(sizeof(*fds) * OS_SENDMSG_MAX_FDS)];
+		struct cmsghdr align;
+	} u;
+	unsigned int fds_size = sizeof(*fds) * fds_num;
+	struct msghdr msg = {
+		.msg_iov = &iov,
+		.msg_iovlen = 1,
+		.msg_control = u.control,
+		.msg_controllen = CMSG_SPACE(fds_size),
+	};
+	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+	int err;
+
+	if (fds_num > OS_SENDMSG_MAX_FDS)
+		return -EINVAL;
+	memset(u.control, 0, sizeof(u.control));
+	cmsg->cmsg_level = SOL_SOCKET;
+	cmsg->cmsg_type = SCM_RIGHTS;
+	cmsg->cmsg_len = CMSG_LEN(fds_size);
+	memcpy(CMSG_DATA(cmsg), fds, fds_size);
+	err = sendmsg(fd, &msg, 0);
+
+	if (err < 0)
+		return -errno;
+	return err;
+}
+
+int os_poll(unsigned int n, const int *fds)
+{
+	/* currently need 2 FDs at most so avoid dynamic allocation */
+	struct pollfd pollfds[2] = {};
+	unsigned int i;
+	int ret;
+
+	if (n > ARRAY_SIZE(pollfds))
+		return -EINVAL;
+
+	for (i = 0; i < n; i++) {
+		pollfds[i].fd = fds[i];
+		pollfds[i].events = POLLIN;
+	}
+
+	ret = poll(pollfds, n, -1);
+	if (ret < 0)
+		return -errno;
+
+	/* Return the index of the available FD */
+	for (i = 0; i < n; i++) {
+		if (pollfds[i].revents)
+			return i;
+	}
+
+	return -EIO;
 }

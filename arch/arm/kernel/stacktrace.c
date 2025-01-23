@@ -1,8 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/export.h>
+#include <linux/kprobes.h>
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
 #include <linux/stacktrace.h>
 
+#include <asm/sections.h>
 #include <asm/stacktrace.h>
+#include <asm/traps.h>
+
+#include "reboot.h"
 
 #if defined(CONFIG_FRAME_POINTER) && !defined(CONFIG_ARM_UNWIND)
 /*
@@ -18,38 +25,114 @@
  * A simple function epilogue looks like this:
  *	ldm	sp, {fp, sp, pc}
  *
+ * When compiled with clang, pc and sp are not pushed. A simple function
+ * prologue looks like this when built with clang:
+ *
+ *	stmdb	{..., fp, lr}
+ *	add	fp, sp, #x
+ *	sub	sp, sp, #y
+ *
+ * A simple function epilogue looks like this when built with clang:
+ *
+ *	sub	sp, fp, #x
+ *	ldm	{..., fp, pc}
+ *
+ *
  * Note that with framepointer enabled, even the leaf functions have the same
  * prologue and epilogue, therefore we can ignore the LR value in this case.
  */
-int notrace unwind_frame(struct stackframe *frame)
+
+extern unsigned long call_with_stack_end;
+
+static int frame_pointer_check(struct stackframe *frame)
 {
 	unsigned long high, low;
 	unsigned long fp = frame->fp;
+	unsigned long pc = frame->pc;
+
+	/*
+	 * call_with_stack() is the only place we allow SP to jump from one
+	 * stack to another, with FP and SP pointing to different stacks,
+	 * skipping the FP boundary check at this point.
+	 */
+	if (pc >= (unsigned long)&call_with_stack &&
+			pc < (unsigned long)&call_with_stack_end)
+		return 0;
 
 	/* only go to a higher address on the stack */
 	low = frame->sp;
 	high = ALIGN(low, THREAD_SIZE);
 
 	/* check current frame pointer is within bounds */
+#ifdef CONFIG_CC_IS_CLANG
+	if (fp < low + 4 || fp > high - 4)
+		return -EINVAL;
+#else
 	if (fp < low + 12 || fp > high - 4)
 		return -EINVAL;
+#endif
+
+	return 0;
+}
+
+int notrace unwind_frame(struct stackframe *frame)
+{
+	unsigned long fp = frame->fp;
+
+	if (frame_pointer_check(frame))
+		return -EINVAL;
+
+	/*
+	 * When we unwind through an exception stack, include the saved PC
+	 * value into the stack trace.
+	 */
+	if (frame->ex_frame) {
+		struct pt_regs *regs = (struct pt_regs *)frame->sp;
+
+		/*
+		 * We check that 'regs + sizeof(struct pt_regs)' (that is,
+		 * &regs[1]) does not exceed the bottom of the stack to avoid
+		 * accessing data outside the task's stack. This may happen
+		 * when frame->ex_frame is a false positive.
+		 */
+		if ((unsigned long)&regs[1] > ALIGN(frame->sp, THREAD_SIZE))
+			return -EINVAL;
+
+		frame->pc = regs->ARM_pc;
+		frame->ex_frame = false;
+		return 0;
+	}
 
 	/* restore the registers from the stack frame */
-	frame->fp = *(unsigned long *)(fp - 12);
-	frame->sp = *(unsigned long *)(fp - 8);
-	frame->pc = *(unsigned long *)(fp - 4);
+#ifdef CONFIG_CC_IS_CLANG
+	frame->sp = frame->fp;
+	frame->fp = READ_ONCE_NOCHECK(*(unsigned long *)(fp));
+	frame->pc = READ_ONCE_NOCHECK(*(unsigned long *)(fp + 4));
+#else
+	frame->fp = READ_ONCE_NOCHECK(*(unsigned long *)(fp - 12));
+	frame->sp = READ_ONCE_NOCHECK(*(unsigned long *)(fp - 8));
+	frame->pc = READ_ONCE_NOCHECK(*(unsigned long *)(fp - 4));
+#endif
+#ifdef CONFIG_KRETPROBES
+	if (is_kretprobe_trampoline(frame->pc))
+		frame->pc = kretprobe_find_ret_addr(frame->tsk,
+					(void *)frame->fp, &frame->kr_cur);
+#endif
+
+	if (in_entry_text(frame->pc))
+		frame->ex_frame = true;
 
 	return 0;
 }
 #endif
 
 void notrace walk_stackframe(struct stackframe *frame,
-		     int (*fn)(struct stackframe *, void *), void *data)
+		     bool (*fn)(void *, unsigned long), void *data)
 {
 	while (1) {
 		int ret;
 
-		if (fn(frame, data))
+		if (!fn(data, frame->pc))
 			break;
 		ret = unwind_frame(frame);
 		if (ret < 0)
@@ -59,73 +142,56 @@ void notrace walk_stackframe(struct stackframe *frame,
 EXPORT_SYMBOL(walk_stackframe);
 
 #ifdef CONFIG_STACKTRACE
-struct stack_trace_data {
-	struct stack_trace *trace;
-	unsigned int no_sched_functions;
-	unsigned int skip;
-};
-
-static int save_trace(struct stackframe *frame, void *d)
+static void start_stack_trace(struct stackframe *frame, struct task_struct *task,
+			      unsigned long fp, unsigned long sp,
+			      unsigned long lr, unsigned long pc)
 {
-	struct stack_trace_data *data = d;
-	struct stack_trace *trace = data->trace;
-	unsigned long addr = frame->pc;
-
-	if (data->no_sched_functions && in_sched_functions(addr))
-		return 0;
-	if (data->skip) {
-		data->skip--;
-		return 0;
-	}
-
-	trace->entries[trace->nr_entries++] = addr;
-
-	return trace->nr_entries >= trace->max_entries;
+	frame->fp = fp;
+	frame->sp = sp;
+	frame->lr = lr;
+	frame->pc = pc;
+#ifdef CONFIG_KRETPROBES
+	frame->kr_cur = NULL;
+	frame->tsk = task;
+#endif
+#ifdef CONFIG_UNWINDER_FRAME_POINTER
+	frame->ex_frame = in_entry_text(frame->pc);
+#endif
 }
 
-void save_stack_trace_tsk(struct task_struct *tsk, struct stack_trace *trace)
+void arch_stack_walk(stack_trace_consume_fn consume_entry, void *cookie,
+		     struct task_struct *task, struct pt_regs *regs)
 {
-	struct stack_trace_data data;
 	struct stackframe frame;
 
-	data.trace = trace;
-	data.skip = trace->skip;
-
-	if (tsk != current) {
+	if (regs) {
+		start_stack_trace(&frame, NULL, regs->ARM_fp, regs->ARM_sp,
+				  regs->ARM_lr, regs->ARM_pc);
+	} else if (task != current) {
 #ifdef CONFIG_SMP
 		/*
 		 * What guarantees do we have here that 'tsk' is not
 		 * running on another CPU?  For now, ignore it as we
 		 * can't guarantee we won't explode.
 		 */
-		if (trace->nr_entries < trace->max_entries)
-			trace->entries[trace->nr_entries++] = ULONG_MAX;
 		return;
 #else
-		data.no_sched_functions = 1;
-		frame.fp = thread_saved_fp(tsk);
-		frame.sp = thread_saved_sp(tsk);
-		frame.lr = 0;		/* recovered from the stack */
-		frame.pc = thread_saved_pc(tsk);
+		start_stack_trace(&frame, task, thread_saved_fp(task),
+				  thread_saved_sp(task), 0,
+				  thread_saved_pc(task));
 #endif
 	} else {
-		register unsigned long current_sp asm ("sp");
-
-		data.no_sched_functions = 0;
-		frame.fp = (unsigned long)__builtin_frame_address(0);
-		frame.sp = current_sp;
-		frame.lr = (unsigned long)__builtin_return_address(0);
-		frame.pc = (unsigned long)save_stack_trace_tsk;
+here:
+		start_stack_trace(&frame, task,
+				  (unsigned long)__builtin_frame_address(0),
+				  current_stack_pointer,
+				  (unsigned long)__builtin_return_address(0),
+				  (unsigned long)&&here);
+		/* skip this function */
+		if (unwind_frame(&frame))
+			return;
 	}
 
-	walk_stackframe(&frame, save_trace, &data);
-	if (trace->nr_entries < trace->max_entries)
-		trace->entries[trace->nr_entries++] = ULONG_MAX;
+	walk_stackframe(&frame, consume_entry, cookie);
 }
-
-void save_stack_trace(struct stack_trace *trace)
-{
-	save_stack_trace_tsk(current, trace);
-}
-EXPORT_SYMBOL_GPL(save_stack_trace);
 #endif

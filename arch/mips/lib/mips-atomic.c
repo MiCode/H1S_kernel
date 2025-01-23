@@ -15,7 +15,7 @@
 #include <linux/export.h>
 #include <linux/stringify.h>
 
-#if !defined(CONFIG_CPU_MIPSR2) || defined(CONFIG_MIPS_MT_SMTC)
+#if !defined(CONFIG_CPU_HAS_DIEI)
 
 /*
  * For cli() we have to insert nops to make sure that the new value
@@ -37,68 +37,48 @@
  */
 notrace void arch_local_irq_disable(void)
 {
-	preempt_disable();
+	preempt_disable_notrace();
 
 	__asm__ __volatile__(
 	"	.set	push						\n"
 	"	.set	noat						\n"
-#ifdef CONFIG_MIPS_MT_SMTC
-	"	mfc0	$1, $2, 1					\n"
-	"	ori	$1, 0x400					\n"
-	"	.set	noreorder					\n"
-	"	mtc0	$1, $2, 1					\n"
-#elif defined(CONFIG_CPU_MIPSR2)
-	/* see irqflags.h for inline function */
-#else
 	"	mfc0	$1,$12						\n"
 	"	ori	$1,0x1f						\n"
 	"	xori	$1,0x1f						\n"
 	"	.set	noreorder					\n"
 	"	mtc0	$1,$12						\n"
-#endif
 	"	" __stringify(__irq_disable_hazard) "			\n"
 	"	.set	pop						\n"
 	: /* no outputs */
 	: /* no inputs */
 	: "memory");
 
-	preempt_enable();
+	preempt_enable_notrace();
 }
 EXPORT_SYMBOL(arch_local_irq_disable);
-
 
 notrace unsigned long arch_local_irq_save(void)
 {
 	unsigned long flags;
 
-	preempt_disable();
+	preempt_disable_notrace();
 
 	__asm__ __volatile__(
 	"	.set	push						\n"
 	"	.set	reorder						\n"
 	"	.set	noat						\n"
-#ifdef CONFIG_MIPS_MT_SMTC
-	"	mfc0	%[flags], $2, 1				\n"
-	"	ori	$1, %[flags], 0x400				\n"
-	"	.set	noreorder					\n"
-	"	mtc0	$1, $2, 1					\n"
-	"	andi	%[flags], %[flags], 0x400			\n"
-#elif defined(CONFIG_CPU_MIPSR2)
-	/* see irqflags.h for inline function */
-#else
 	"	mfc0	%[flags], $12					\n"
 	"	ori	$1, %[flags], 0x1f				\n"
 	"	xori	$1, 0x1f					\n"
 	"	.set	noreorder					\n"
 	"	mtc0	$1, $12						\n"
-#endif
 	"	" __stringify(__irq_disable_hazard) "			\n"
 	"	.set	pop						\n"
 	: [flags] "=r" (flags)
 	: /* no inputs */
 	: "memory");
 
-	preempt_enable();
+	preempt_enable_notrace();
 
 	return flags;
 }
@@ -108,88 +88,26 @@ notrace void arch_local_irq_restore(unsigned long flags)
 {
 	unsigned long __tmp1;
 
-#ifdef CONFIG_MIPS_MT_SMTC
-	/*
-	 * SMTC kernel needs to do a software replay of queued
-	 * IPIs, at the cost of branch and call overhead on each
-	 * local_irq_restore()
-	 */
-	if (unlikely(!(flags & 0x0400)))
-		smtc_ipi_replay();
-#endif
-	preempt_disable();
+	preempt_disable_notrace();
 
 	__asm__ __volatile__(
 	"	.set	push						\n"
 	"	.set	noreorder					\n"
 	"	.set	noat						\n"
-#ifdef CONFIG_MIPS_MT_SMTC
-	"	mfc0	$1, $2, 1					\n"
-	"	andi	%[flags], 0x400					\n"
-	"	ori	$1, 0x400					\n"
-	"	xori	$1, 0x400					\n"
-	"	or	%[flags], $1					\n"
-	"	mtc0	%[flags], $2, 1					\n"
-#elif defined(CONFIG_CPU_MIPSR2) && defined(CONFIG_IRQ_CPU)
-	/* see irqflags.h for inline function */
-#elif defined(CONFIG_CPU_MIPSR2)
-	/* see irqflags.h for inline function */
-#else
 	"	mfc0	$1, $12						\n"
 	"	andi	%[flags], 1					\n"
 	"	ori	$1, 0x1f					\n"
 	"	xori	$1, 0x1f					\n"
 	"	or	%[flags], $1					\n"
 	"	mtc0	%[flags], $12					\n"
-#endif
 	"	" __stringify(__irq_disable_hazard) "			\n"
 	"	.set	pop						\n"
 	: [flags] "=r" (__tmp1)
 	: "0" (flags)
 	: "memory");
 
-	preempt_enable();
+	preempt_enable_notrace();
 }
 EXPORT_SYMBOL(arch_local_irq_restore);
 
-
-notrace void __arch_local_irq_restore(unsigned long flags)
-{
-	unsigned long __tmp1;
-
-	preempt_disable();
-
-	__asm__ __volatile__(
-	"	.set	push						\n"
-	"	.set	noreorder					\n"
-	"	.set	noat						\n"
-#ifdef CONFIG_MIPS_MT_SMTC
-	"	mfc0	$1, $2, 1					\n"
-	"	andi	%[flags], 0x400					\n"
-	"	ori	$1, 0x400					\n"
-	"	xori	$1, 0x400					\n"
-	"	or	%[flags], $1					\n"
-	"	mtc0	%[flags], $2, 1					\n"
-#elif defined(CONFIG_CPU_MIPSR2) && defined(CONFIG_IRQ_CPU)
-	/* see irqflags.h for inline function */
-#elif defined(CONFIG_CPU_MIPSR2)
-	/* see irqflags.h for inline function */
-#else
-	"	mfc0	$1, $12						\n"
-	"	andi	%[flags], 1					\n"
-	"	ori	$1, 0x1f					\n"
-	"	xori	$1, 0x1f					\n"
-	"	or	%[flags], $1					\n"
-	"	mtc0	%[flags], $12					\n"
-#endif
-	"	" __stringify(__irq_disable_hazard) "			\n"
-	"	.set	pop						\n"
-	: [flags] "=r" (__tmp1)
-	: "0" (flags)
-	: "memory");
-
-	preempt_enable();
-}
-EXPORT_SYMBOL(__arch_local_irq_restore);
-
-#endif /* !defined(CONFIG_CPU_MIPSR2) || defined(CONFIG_MIPS_MT_SMTC) */
+#endif /* !CONFIG_CPU_HAS_DIEI */

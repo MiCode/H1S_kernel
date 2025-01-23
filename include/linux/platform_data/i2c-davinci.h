@@ -16,8 +16,8 @@
 struct davinci_i2c_platform_data {
 	unsigned int	bus_freq;	/* standard bus frequency (kHz) */
 	unsigned int	bus_delay;	/* post-transaction delay (usec) */
-	unsigned int    sda_pin;        /* GPIO pin ID to use for SDA */
-	unsigned int    scl_pin;        /* GPIO pin ID to use for SCL */
+	bool		gpio_recovery;	/* Use GPIO recovery method */
+	bool		has_pfunc;	/* Chip has a ICPFUNC register */
 };
 
 /* for board setup code */

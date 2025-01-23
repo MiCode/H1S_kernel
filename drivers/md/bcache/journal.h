@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _BCACHE_JOURNAL_H
 #define _BCACHE_JOURNAL_H
 
@@ -95,12 +96,16 @@ struct journal_write {
 
 	struct cache_set	*c;
 	struct closure_waitlist	wait;
+	bool			dirty;
 	bool			need_write;
 };
 
 /* Embedded in struct cache_set */
 struct journal {
 	spinlock_t		lock;
+	spinlock_t		flush_write_lock;
+	bool			btree_flushing;
+	bool			do_reserve;
 	/* used when waiting because the journal was full */
 	struct closure_waitlist	wait;
 	struct closure		io;
@@ -108,7 +113,7 @@ struct journal {
 	struct delayed_work	work;
 
 	/* Number of blocks free in the bucket(s) we're currently writing to */
-	unsigned		blocks_free;
+	unsigned int		blocks_free;
 	uint64_t		seq;
 	DECLARE_FIFO(atomic_t, pin);
 
@@ -129,13 +134,13 @@ struct journal_device {
 	uint64_t		seq[SB_JOURNAL_BUCKETS];
 
 	/* Journal bucket we're currently writing to */
-	unsigned		cur_idx;
+	unsigned int		cur_idx;
 
 	/* Last journal bucket that still contains an open journal entry */
-	unsigned		last_idx;
+	unsigned int		last_idx;
 
 	/* Next journal bucket to be discarded */
-	unsigned		discard_idx;
+	unsigned int		discard_idx;
 
 #define DISCARD_READY		0
 #define DISCARD_IN_FLIGHT	1
@@ -152,6 +157,8 @@ struct journal_device {
 	struct bio_vec		bv[8];
 };
 
+#define BTREE_FLUSH_NR	8
+
 #define journal_pin_cmp(c, l, r)				\
 	(fifo_idx(&(c)->journal.pin, (l)) > fifo_idx(&(c)->journal.pin, (r)))
 
@@ -165,14 +172,17 @@ struct cache_set;
 struct btree_op;
 struct keylist;
 
-atomic_t *bch_journal(struct cache_set *, struct keylist *, struct closure *);
-void bch_journal_next(struct journal *);
-void bch_journal_mark(struct cache_set *, struct list_head *);
-void bch_journal_meta(struct cache_set *, struct closure *);
-int bch_journal_read(struct cache_set *, struct list_head *);
-int bch_journal_replay(struct cache_set *, struct list_head *);
+atomic_t *bch_journal(struct cache_set *c,
+		      struct keylist *keys,
+		      struct closure *parent);
+void bch_journal_next(struct journal *j);
+void bch_journal_mark(struct cache_set *c, struct list_head *list);
+void bch_journal_meta(struct cache_set *c, struct closure *cl);
+int bch_journal_read(struct cache_set *c, struct list_head *list);
+int bch_journal_replay(struct cache_set *c, struct list_head *list);
 
-void bch_journal_free(struct cache_set *);
-int bch_journal_alloc(struct cache_set *);
+void bch_journal_free(struct cache_set *c);
+int bch_journal_alloc(struct cache_set *c);
+void bch_journal_space_reserve(struct journal *j);
 
 #endif /* _BCACHE_JOURNAL_H */

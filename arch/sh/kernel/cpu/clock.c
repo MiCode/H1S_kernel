@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/kernel/cpu/clock.c - SuperH clock framework
  *
@@ -9,10 +10,6 @@
  *	Written by Tuukka Tikkanen <tuukka.tikkanen@elektrobit.com>
  *
  *  Modified for omap shared clock framework by Tony Lindgren <tony@atomide.com>
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -24,11 +21,13 @@ int __init clk_init(void)
 {
 	int ret;
 
+#ifndef CONFIG_COMMON_CLK
 	ret = arch_clk_init();
 	if (unlikely(ret)) {
 		pr_err("%s: CPU clock registration failed.\n", __func__);
 		return ret;
 	}
+#endif
 
 	if (sh_mv.mv_clk_init) {
 		ret = sh_mv.mv_clk_init();
@@ -39,11 +38,13 @@ int __init clk_init(void)
 		}
 	}
 
+#ifndef CONFIG_COMMON_CLK
 	/* Kick the child clocks.. */
 	recalculate_root_clocks();
 
 	/* Enable the necessary init clocks */
 	clk_enable_init_clocks();
+#endif
 
 	return ret;
 }

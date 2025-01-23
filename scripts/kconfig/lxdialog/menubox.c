@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *  menubox.c -- implements the menu box
  *
  *  ORIGINAL AUTHOR: Savio Lam (lam836@cs.cuhk.hk)
  *  MODIFIED FOR LINUX KERNEL CONFIG BY: William Roadcap (roadcapw@cfw.com)
- *
- *  This program is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public License
- *  as published by the Free Software Foundation; either version 2
- *  of the License, or (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 /*
@@ -64,7 +51,7 @@ static int menu_width, item_x;
  * Print menu item
  */
 static void do_print_item(WINDOW * win, const char *item, int line_y,
-                          int selected, int hotkey)
+			  int selected, int hotkey)
 {
 	int j;
 	char *menu_item = malloc(menu_width + 1);
@@ -76,15 +63,7 @@ static void do_print_item(WINDOW * win, const char *item, int line_y,
 	/* Clear 'residue' of last item */
 	wattrset(win, dlg.menubox.atr);
 	wmove(win, line_y, 0);
-#if OLD_NCURSES
-	{
-		int i;
-		for (i = 0; i < menu_width; i++)
-			waddch(win, ' ');
-	}
-#else
 	wclrtoeol(win);
-#endif
 	wattrset(win, selected ? dlg.item_selected.atr : dlg.item.atr);
 	mvwaddstr(win, line_y, item_x, menu_item);
 	if (hotkey) {
@@ -157,11 +136,11 @@ static void print_buttons(WINDOW * win, int height, int width, int selected)
 	int x = width / 2 - 28;
 	int y = height - 2;
 
-	print_button(win, gettext("Select"), y, x, selected == 0);
-	print_button(win, gettext(" Exit "), y, x + 12, selected == 1);
-	print_button(win, gettext(" Help "), y, x + 24, selected == 2);
-	print_button(win, gettext(" Save "), y, x + 36, selected == 3);
-	print_button(win, gettext(" Load "), y, x + 48, selected == 4);
+	print_button(win, "Select", y, x, selected == 0);
+	print_button(win, " Exit ", y, x + 12, selected == 1);
+	print_button(win, " Help ", y, x + 24, selected == 2);
+	print_button(win, " Save ", y, x + 36, selected == 3);
+	print_button(win, " Load ", y, x + 48, selected == 4);
 
 	wmove(win, y, x + 1 + 12 * selected);
 	wrefresh(win);
@@ -182,7 +161,7 @@ static void do_scroll(WINDOW *win, int *scroll, int n)
  * Display a menu for choosing among a number of options
  */
 int dialog_menu(const char *title, const char *prompt,
-                const void *selected, int *s_scroll)
+		const void *selected, int *s_scroll)
 {
 	int i, j, x, y, box_x, box_y;
 	int height, width, menu_height;

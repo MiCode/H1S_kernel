@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
+#define _GNU_SOURCE
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
-#include <linux/msg.h>
+#include <sys/msg.h>
 #include <fcntl.h>
+
+#include "../kselftest.h"
 
 #define MAX_MSG_SIZE		32
 
@@ -65,12 +69,12 @@ int restore_queue(struct msgque_data *msgque)
 			printf("msgsnd failed (%m)\n");
 			ret = -errno;
 			goto destroy;
-		};
+		}
 	}
 	return 0;
 
 destroy:
-	if (msgctl(id, IPC_RMID, 0))
+	if (msgctl(id, IPC_RMID, NULL))
 		printf("Failed to destroy queue: %d\n", -errno);
 	return ret;
 }
@@ -117,7 +121,7 @@ int check_and_destroy_queue(struct msgque_data *msgque)
 
 	ret = 0;
 err:
-	if (msgctl(msgque->msq_id, IPC_RMID, 0)) {
+	if (msgctl(msgque->msq_id, IPC_RMID, NULL)) {
 		printf("Failed to destroy queue: %d\n", -errno);
 		return -errno;
 	}
@@ -126,14 +130,14 @@ err:
 
 int dump_queue(struct msgque_data *msgque)
 {
-	struct msqid64_ds ds;
+	struct msqid_ds ds;
 	int kern_id;
 	int i, ret;
 
 	for (kern_id = 0; kern_id < 256; kern_id++) {
 		ret = msgctl(kern_id, MSG_STAT, &ds);
 		if (ret < 0) {
-			if (errno == -EINVAL)
+			if (errno == EINVAL)
 				continue;
 			printf("Failed to get stats for IPC queue with id %d\n",
 					kern_id);
@@ -176,7 +180,7 @@ int fill_msgque(struct msgque_data *msgque)
 				IPC_NOWAIT) != 0) {
 		printf("First message send failed (%m)\n");
 		return -errno;
-	};
+	}
 
 	msgbuf.mtype = ANOTHER_MSG_TYPE;
 	memcpy(msgbuf.mtext, ANOTHER_TEST_STRING, sizeof(ANOTHER_TEST_STRING));
@@ -184,7 +188,7 @@ int fill_msgque(struct msgque_data *msgque)
 				IPC_NOWAIT) != 0) {
 		printf("Second message send failed (%m)\n");
 		return -errno;
-	};
+	}
 	return 0;
 }
 
@@ -193,54 +197,59 @@ int main(int argc, char **argv)
 	int msg, pid, err;
 	struct msgque_data msgque;
 
+	if (getuid() != 0)
+		return ksft_exit_skip(
+				"Please run the test as root - Exiting.\n");
+
 	msgque.key = ftok(argv[0], 822155650);
 	if (msgque.key == -1) {
-		printf("Can't make key\n");
-		return -errno;
+		printf("Can't make key: %d\n", -errno);
+		return ksft_exit_fail();
 	}
 
 	msgque.msq_id = msgget(msgque.key, IPC_CREAT | IPC_EXCL | 0666);
 	if (msgque.msq_id == -1) {
-		printf("Can't create queue\n");
+		err = -errno;
+		printf("Can't create queue: %d\n", err);
 		goto err_out;
 	}
 
 	err = fill_msgque(&msgque);
 	if (err) {
-		printf("Failed to fill queue\n");
+		printf("Failed to fill queue: %d\n", err);
 		goto err_destroy;
 	}
 
 	err = dump_queue(&msgque);
 	if (err) {
-		printf("Failed to dump queue\n");
+		printf("Failed to dump queue: %d\n", err);
 		goto err_destroy;
 	}
 
 	err = check_and_destroy_queue(&msgque);
 	if (err) {
-		printf("Failed to check and destroy queue\n");
+		printf("Failed to check and destroy queue: %d\n", err);
 		goto err_out;
 	}
 
 	err = restore_queue(&msgque);
 	if (err) {
-		printf("Failed to restore queue\n");
+		printf("Failed to restore queue: %d\n", err);
 		goto err_destroy;
 	}
 
 	err = check_and_destroy_queue(&msgque);
 	if (err) {
-		printf("Failed to test queue\n");
+		printf("Failed to test queue: %d\n", err);
 		goto err_out;
 	}
-	return 0;
+	return ksft_exit_pass();
 
 err_destroy:
-	if (msgctl(msgque.msq_id, IPC_RMID, 0)) {
+	if (msgctl(msgque.msq_id, IPC_RMID, NULL)) {
 		printf("Failed to destroy queue: %d\n", -errno);
-		return -errno;
+		return ksft_exit_fail();
 	}
 err_out:
-	return err;
+	return ksft_exit_fail();
 }

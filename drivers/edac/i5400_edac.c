@@ -6,9 +6,9 @@
  *
  * Copyright (c) 2008 by:
  *	 Ben Woodard <woodard@redhat.com>
- *	 Mauro Carvalho Chehab <mchehab@redhat.com>
+ *	 Mauro Carvalho Chehab
  *
- * Red Hat Inc. http://www.redhat.com
+ * Red Hat Inc. https://www.redhat.com
  *
  * Forked and adapted from the i5000_edac driver which was
  * written by Douglas Thompson Linux Networx <norsk5@xmission.com>
@@ -32,7 +32,7 @@
 #include <linux/edac.h>
 #include <linux/mmzone.h>
 
-#include "edac_core.h"
+#include "edac_module.h"
 
 /*
  * Alter this version for the I5400 module when modifications are made
@@ -279,7 +279,8 @@ static inline int from_nf_ferr(unsigned int mask)
 #define FERR_NF_RECOVERABLE	to_nf_mask(ERROR_NF_RECOVERABLE)
 #define FERR_NF_UNCORRECTABLE	to_nf_mask(ERROR_NF_UNCORRECTABLE)
 
-/* Defines to extract the vaious fields from the
+/*
+ * Defines to extract the various fields from the
  *	MTRx - Memory Technology Registers
  */
 #define MTR_DIMMS_PRESENT(mtr)		((mtr) & (1 << 10))
@@ -368,7 +369,7 @@ struct i5400_error_info {
 
 	/* These registers are input ONLY if there was a Non-Rec Error */
 	u16 nrecmema;		/* Non-Recoverable Mem log A */
-	u16 nrecmemb;		/* Non-Recoverable Mem log B */
+	u32 nrecmemb;		/* Non-Recoverable Mem log B */
 
 };
 
@@ -458,7 +459,7 @@ static void i5400_get_error_info(struct mem_ctl_info *mci,
 				NERR_FAT_FBD, &info->nerr_fat_fbd);
 		pci_read_config_word(pvt->branchmap_werrors,
 				NRECMEMA, &info->nrecmema);
-		pci_read_config_word(pvt->branchmap_werrors,
+		pci_read_config_dword(pvt->branchmap_werrors,
 				NRECMEMB, &info->nrecmemb);
 
 		/* Clear the error bits, by writing them back */
@@ -548,8 +549,8 @@ static void i5400_proccess_non_recoverable_info(struct mem_ctl_info *mci,
 	ras = nrec_ras(info);
 	cas = nrec_cas(info);
 
-	edac_dbg(0, "\t\tDIMM= %d  Channels= %d,%d  (Branch= %d DRAM Bank= %d Buffer ID = %d rdwr= %s ras= %d cas= %d)\n",
-		 rank, channel, channel + 1, branch >> 1, bank,
+	edac_dbg(0, "\t\t%s DIMM= %d  Channels= %d,%d  (Branch= %d DRAM Bank= %d Buffer ID = %d rdwr= %s ras= %d cas= %d)\n",
+		 type, rank, channel, channel + 1, branch >> 1, bank,
 		 buf_id, rdwr_str(rdwr), ras, cas);
 
 	/* Only 1 bit will be on */
@@ -686,7 +687,7 @@ static void i5400_clear_error(struct mem_ctl_info *mci)
 static void i5400_check_error(struct mem_ctl_info *mci)
 {
 	struct i5400_error_info info;
-	edac_dbg(4, "MC%d\n", mci->mc_idx);
+
 	i5400_get_error_info(mci, &info);
 	i5400_process_error_info(mci, &info);
 }
@@ -1054,8 +1055,6 @@ static void i5400_get_mc_regs(struct mem_ctl_info *mci)
 	u32 actual_tolm;
 	u16 limit;
 	int slot_row;
-	int maxch;
-	int maxdimmperch;
 	int way0, way1;
 
 	pvt = mci->pvt_info;
@@ -1064,9 +1063,6 @@ static void i5400_get_mc_regs(struct mem_ctl_info *mci)
 			&pvt->u.ambase_bottom);
 	pci_read_config_dword(pvt->system_address, AMBASE + sizeof(u32),
 			&pvt->u.ambase_top);
-
-	maxdimmperch = pvt->maxdimmperch;
-	maxch = pvt->maxch;
 
 	edac_dbg(2, "AMBASE= 0x%lx  MAXCH= %d  MAX-DIMM-Per-CH= %d\n",
 		 (long unsigned int)pvt->ambase, pvt->maxch, pvt->maxdimmperch);
@@ -1170,16 +1166,12 @@ static int i5400_init_dimms(struct mem_ctl_info *mci)
 {
 	struct i5400_pvt *pvt;
 	struct dimm_info *dimm;
-	int ndimms, channel_count;
-	int max_dimms;
+	int ndimms;
 	int mtr;
 	int size_mb;
 	int  channel, slot;
 
 	pvt = mci->pvt_info;
-
-	channel_count = pvt->maxch;
-	max_dimms = pvt->maxdimmperch;
 
 	ndimms = 0;
 
@@ -1196,8 +1188,7 @@ static int i5400_init_dimms(struct mem_ctl_info *mci)
 			if (!MTR_DIMMS_PRESENT(mtr))
 				continue;
 
-			dimm = EDAC_DIMM_PTR(mci->layers, mci->dimms, mci->n_layers,
-				       channel / 2, channel % 2, slot);
+			dimm = edac_get_dimm(mci, channel / 2, channel % 2, slot);
 
 			size_mb =  pvt->dimm_info[slot][channel].megabytes;
 
@@ -1207,13 +1198,14 @@ static int i5400_init_dimms(struct mem_ctl_info *mci)
 
 			dimm->nr_pages = size_mb << 8;
 			dimm->grain = 8;
-			dimm->dtype = MTR_DRAM_WIDTH(mtr) ? DEV_X8 : DEV_X4;
+			dimm->dtype = MTR_DRAM_WIDTH(mtr) == 8 ?
+				      DEV_X8 : DEV_X4;
 			dimm->mtype = MEM_FB_DDR2;
 			/*
 			 * The eccc mechanism is SDDC (aka SECC), with
 			 * is similar to Chipkill.
 			 */
-			dimm->edac_mode = MTR_DRAM_WIDTH(mtr) ?
+			dimm->edac_mode = MTR_DRAM_WIDTH(mtr) == 8 ?
 					  EDAC_S8ECD8ED : EDAC_S4ECD4ED;
 			ndimms++;
 		}
@@ -1314,7 +1306,6 @@ static int i5400_probe1(struct pci_dev *pdev, int dev_idx)
 	mci->edac_ctl_cap = EDAC_FLAG_NONE;
 	mci->edac_cap = EDAC_FLAG_NONE;
 	mci->mod_name = "i5400_edac.c";
-	mci->mod_ver = I5400_REVISION;
 	mci->ctl_name = i5400_devs[dev_idx].ctl_name;
 	mci->dev_name = pci_name(pdev);
 	mci->ctl_page_to_phys = NULL;
@@ -1408,6 +1399,8 @@ static void i5400_remove_one(struct pci_dev *pdev)
 	/* retrieve references to resources, and free those resources */
 	i5400_put_devices(mci);
 
+	pci_disable_device(pdev);
+
 	edac_mc_free(mci);
 }
 
@@ -1467,8 +1460,8 @@ module_exit(i5400_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Ben Woodard <woodard@redhat.com>");
-MODULE_AUTHOR("Mauro Carvalho Chehab <mchehab@redhat.com>");
-MODULE_AUTHOR("Red Hat Inc. (http://www.redhat.com)");
+MODULE_AUTHOR("Mauro Carvalho Chehab");
+MODULE_AUTHOR("Red Hat Inc. (https://www.redhat.com)");
 MODULE_DESCRIPTION("MC Driver for Intel I5400 memory controllers - "
 		   I5400_REVISION);
 

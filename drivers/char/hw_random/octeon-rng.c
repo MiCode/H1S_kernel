@@ -10,7 +10,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/device.h>
 #include <linux/hw_random.h>
@@ -34,7 +33,7 @@ static int octeon_rng_init(struct hwrng *rng)
 	ctl.u64 = 0;
 	ctl.s.ent_en = 1; /* Enable the entropy source.  */
 	ctl.s.rng_en = 1; /* Enable the RNG hardware.  */
-	cvmx_write_csr((u64)p->control_status, ctl.u64);
+	cvmx_write_csr((__force u64)p->control_status, ctl.u64);
 	return 0;
 }
 
@@ -45,14 +44,14 @@ static void octeon_rng_cleanup(struct hwrng *rng)
 
 	ctl.u64 = 0;
 	/* Disable everything.  */
-	cvmx_write_csr((u64)p->control_status, ctl.u64);
+	cvmx_write_csr((__force u64)p->control_status, ctl.u64);
 }
 
 static int octeon_rng_data_read(struct hwrng *rng, u32 *data)
 {
 	struct octeon_rng *p = container_of(rng, struct octeon_rng, ops);
 
-	*data = cvmx_read64_uint32((u64)p->result);
+	*data = cvmx_read64_uint32((__force u64)p->result);
 	return sizeof(u32);
 }
 
@@ -82,13 +81,13 @@ static int octeon_rng_probe(struct platform_device *pdev)
 		return -ENOENT;
 
 
-	rng->control_status = devm_ioremap_nocache(&pdev->dev,
+	rng->control_status = devm_ioremap(&pdev->dev,
 						   res_ports->start,
 						   sizeof(u64));
 	if (!rng->control_status)
 		return -ENOENT;
 
-	rng->result = devm_ioremap_nocache(&pdev->dev,
+	rng->result = devm_ioremap(&pdev->dev,
 					   res_result->start,
 					   sizeof(u64));
 	if (!rng->result)
@@ -97,7 +96,7 @@ static int octeon_rng_probe(struct platform_device *pdev)
 	rng->ops = ops;
 
 	platform_set_drvdata(pdev, &rng->ops);
-	ret = hwrng_register(&rng->ops);
+	ret = devm_hwrng_register(&pdev->dev, &rng->ops);
 	if (ret)
 		return -ENOENT;
 
@@ -106,22 +105,11 @@ static int octeon_rng_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __exit octeon_rng_remove(struct platform_device *pdev)
-{
-	struct hwrng *rng = platform_get_drvdata(pdev);
-
-	hwrng_unregister(rng);
-
-	return 0;
-}
-
 static struct platform_driver octeon_rng_driver = {
 	.driver = {
 		.name		= "octeon_rng",
-		.owner		= THIS_MODULE,
 	},
 	.probe		= octeon_rng_probe,
-	.remove		= __exit_p(octeon_rng_remove),
 };
 
 module_platform_driver(octeon_rng_driver);

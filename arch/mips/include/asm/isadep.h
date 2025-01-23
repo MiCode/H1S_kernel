@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Various ISA level dependent constants.
  * Most of the following constants reflect the different layout
@@ -9,7 +10,7 @@
 #ifndef __ASM_ISADEP_H
 #define __ASM_ISADEP_H
 
-#if defined(CONFIG_CPU_R3000) || defined(CONFIG_CPU_TX39XX)
+#if defined(CONFIG_CPU_R3000)
 /*
  * R2000 or R3000
  */

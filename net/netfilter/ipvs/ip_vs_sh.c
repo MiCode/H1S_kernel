@@ -1,15 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * IPVS:        Source Hashing scheduling module
  *
  * Authors:     Wensong Zhang <wensong@gnuchina.org>
  *
- *              This program is free software; you can redistribute it and/or
- *              modify it under the terms of the GNU General Public License
- *              as published by the Free Software Foundation; either version
- *              2 of the License, or (at your option) any later version.
- *
  * Changes:
- *
  */
 
 /*
@@ -96,7 +91,8 @@ ip_vs_sh_hashkey(int af, const union nf_inet_addr *addr,
 		addr_fold = addr->ip6[0]^addr->ip6[1]^
 			    addr->ip6[2]^addr->ip6[3];
 #endif
-	return (offset + (ntohs(port) + ntohl(addr_fold))*2654435761UL) &
+	return (offset + hash_32(ntohs(port) + ntohl(addr_fold),
+				 IP_VS_SH_TAB_BITS)) &
 		IP_VS_SH_TAB_MASK;
 }
 
@@ -138,7 +134,7 @@ ip_vs_sh_get_fallback(struct ip_vs_service *svc, struct ip_vs_sh_state *s,
 		return dest;
 
 	IP_VS_DBG_BUF(6, "SH: selected unavailable server %s:%d, reselecting",
-		      IP_VS_DBG_ADDR(svc->af, &dest->addr), ntohs(dest->port));
+		      IP_VS_DBG_ADDR(dest->af, &dest->addr), ntohs(dest->port));
 
 	/* if the original dest is unavailable, loop around the table
 	 * starting from ihash to find a new dest
@@ -153,7 +149,7 @@ ip_vs_sh_get_fallback(struct ip_vs_service *svc, struct ip_vs_sh_state *s,
 			return dest;
 		IP_VS_DBG_BUF(6, "SH: selected unavailable "
 			      "server %s:%d (offset %d), reselecting",
-			      IP_VS_DBG_ADDR(svc->af, &dest->addr),
+			      IP_VS_DBG_ADDR(dest->af, &dest->addr),
 			      ntohs(dest->port), roffset);
 	}
 
@@ -192,7 +188,7 @@ ip_vs_sh_reassign(struct ip_vs_sh_state *s, struct ip_vs_service *svc)
 			RCU_INIT_POINTER(b->dest, dest);
 
 			IP_VS_DBG_BUF(6, "assigned i: %d dest: %s weight: %d\n",
-				      i, IP_VS_DBG_ADDR(svc->af, &dest->addr),
+				      i, IP_VS_DBG_ADDR(dest->af, &dest->addr),
 				      atomic_read(&dest->weight));
 
 			/* Don't move to next dest until filling weight */
@@ -239,7 +235,7 @@ static int ip_vs_sh_init_svc(struct ip_vs_service *svc)
 		return -ENOMEM;
 
 	svc->sched_data = s;
-	IP_VS_DBG(6, "SH hash table (memory=%Zdbytes) allocated for "
+	IP_VS_DBG(6, "SH hash table (memory=%zdbytes) allocated for "
 		  "current service\n",
 		  sizeof(struct ip_vs_sh_bucket)*IP_VS_SH_TAB_SIZE);
 
@@ -259,7 +255,7 @@ static void ip_vs_sh_done_svc(struct ip_vs_service *svc)
 
 	/* release the table itself */
 	kfree_rcu(s, rcu_head);
-	IP_VS_DBG(6, "SH hash table (memory=%Zdbytes) released\n",
+	IP_VS_DBG(6, "SH hash table (memory=%zdbytes) released\n",
 		  sizeof(struct ip_vs_sh_bucket)*IP_VS_SH_TAB_SIZE);
 }
 
@@ -280,35 +276,29 @@ static int ip_vs_sh_dest_changed(struct ip_vs_service *svc,
 static inline __be16
 ip_vs_sh_get_port(const struct sk_buff *skb, struct ip_vs_iphdr *iph)
 {
-	__be16 port;
-	struct tcphdr _tcph, *th;
-	struct udphdr _udph, *uh;
-	sctp_sctphdr_t _sctph, *sh;
+	__be16 _ports[2], *ports;
 
+	/* At this point we know that we have a valid packet of some kind.
+	 * Because ICMP packets are only guaranteed to have the first 8
+	 * bytes, let's just grab the ports.  Fortunately they're in the
+	 * same position for all three of the protocols we care about.
+	 */
 	switch (iph->protocol) {
 	case IPPROTO_TCP:
-		th = skb_header_pointer(skb, iph->len, sizeof(_tcph), &_tcph);
-		if (unlikely(th == NULL))
-			return 0;
-		port = th->source;
-		break;
 	case IPPROTO_UDP:
-		uh = skb_header_pointer(skb, iph->len, sizeof(_udph), &_udph);
-		if (unlikely(uh == NULL))
-			return 0;
-		port = uh->source;
-		break;
 	case IPPROTO_SCTP:
-		sh = skb_header_pointer(skb, iph->len, sizeof(_sctph), &_sctph);
-		if (unlikely(sh == NULL))
+		ports = skb_header_pointer(skb, iph->len, sizeof(_ports),
+					   &_ports);
+		if (unlikely(!ports))
 			return 0;
-		port = sh->source;
-		break;
-	default:
-		port = 0;
-	}
 
-	return port;
+		if (likely(!ip_vs_iph_inverse(iph)))
+			return ports[0];
+		else
+			return ports[1];
+	default:
+		return 0;
+	}
 }
 
 
@@ -322,6 +312,9 @@ ip_vs_sh_schedule(struct ip_vs_service *svc, const struct sk_buff *skb,
 	struct ip_vs_dest *dest;
 	struct ip_vs_sh_state *s;
 	__be16 port = 0;
+	const union nf_inet_addr *hash_addr;
+
+	hash_addr = ip_vs_iph_inverse(iph) ? &iph->daddr : &iph->saddr;
 
 	IP_VS_DBG(6, "ip_vs_sh_schedule(): Scheduling...\n");
 
@@ -331,9 +324,9 @@ ip_vs_sh_schedule(struct ip_vs_service *svc, const struct sk_buff *skb,
 	s = (struct ip_vs_sh_state *) svc->sched_data;
 
 	if (svc->flags & IP_VS_SVC_F_SCHED_SH_FALLBACK)
-		dest = ip_vs_sh_get_fallback(svc, s, &iph->saddr, port);
+		dest = ip_vs_sh_get_fallback(svc, s, hash_addr, port);
 	else
-		dest = ip_vs_sh_get(svc, s, &iph->saddr, port);
+		dest = ip_vs_sh_get(svc, s, hash_addr, port);
 
 	if (!dest) {
 		ip_vs_scheduler_err(svc, "no destination available");
@@ -341,8 +334,8 @@ ip_vs_sh_schedule(struct ip_vs_service *svc, const struct sk_buff *skb,
 	}
 
 	IP_VS_DBG_BUF(6, "SH: source IP address %s --> server %s:%d\n",
-		      IP_VS_DBG_ADDR(svc->af, &iph->saddr),
-		      IP_VS_DBG_ADDR(svc->af, &dest->addr),
+		      IP_VS_DBG_ADDR(svc->af, hash_addr),
+		      IP_VS_DBG_ADDR(dest->af, &dest->addr),
 		      ntohs(dest->port));
 
 	return dest;

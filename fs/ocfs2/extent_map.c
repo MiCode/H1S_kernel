@@ -1,25 +1,10 @@
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
  * extent_map.c
  *
  * Block/Cluster mapping functions
  *
  * Copyright (C) 2004 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License, version 2,  as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
 #include <linux/fs.h>
@@ -38,6 +23,7 @@
 #include "inode.h"
 #include "super.h"
 #include "symlink.h"
+#include "aops.h"
 #include "ocfs2_trace.h"
 
 #include "buffer_head_io.h"
@@ -305,8 +291,8 @@ static int ocfs2_last_eb_is_empty(struct inode *inode,
 
 	if (el->l_tree_depth) {
 		ocfs2_error(inode->i_sb,
-			    "Inode %lu has non zero tree depth in "
-			    "leaf block %llu\n", inode->i_ino,
+			    "Inode %lu has non zero tree depth in leaf block %llu\n",
+			    inode->i_ino,
 			    (unsigned long long)eb_bh->b_blocknr);
 		ret = -EROFS;
 		goto out;
@@ -415,7 +401,7 @@ static int ocfs2_get_clusters_nocache(struct inode *inode,
 {
 	int i, ret, tree_height, len;
 	struct ocfs2_dinode *di;
-	struct ocfs2_extent_block *uninitialized_var(eb);
+	struct ocfs2_extent_block *eb;
 	struct ocfs2_extent_list *el;
 	struct ocfs2_extent_rec *rec;
 	struct buffer_head *eb_bh = NULL;
@@ -441,8 +427,8 @@ static int ocfs2_get_clusters_nocache(struct inode *inode,
 
 		if (el->l_tree_depth) {
 			ocfs2_error(inode->i_sb,
-				    "Inode %lu has non zero tree depth in "
-				    "leaf block %llu\n", inode->i_ino,
+				    "Inode %lu has non zero tree depth in leaf block %llu\n",
+				    inode->i_ino,
 				    (unsigned long long)eb_bh->b_blocknr);
 			ret = -EROFS;
 			goto out;
@@ -475,8 +461,9 @@ static int ocfs2_get_clusters_nocache(struct inode *inode,
 	BUG_ON(v_cluster < le32_to_cpu(rec->e_cpos));
 
 	if (!rec->e_blkno) {
-		ocfs2_error(inode->i_sb, "Inode %lu has bad extent "
-			    "record (%u, %u, 0)", inode->i_ino,
+		ocfs2_error(inode->i_sb,
+			    "Inode %lu has bad extent record (%u, %u, 0)\n",
+			    inode->i_ino,
 			    le32_to_cpu(rec->e_cpos),
 			    ocfs2_rec_clusters(el, rec));
 		ret = -EROFS;
@@ -564,8 +551,8 @@ int ocfs2_xattr_get_clusters(struct inode *inode, u32 v_cluster,
 
 		if (el->l_tree_depth) {
 			ocfs2_error(inode->i_sb,
-				    "Inode %lu has non zero tree depth in "
-				    "xattr leaf block %llu\n", inode->i_ino,
+				    "Inode %lu has non zero tree depth in xattr leaf block %llu\n",
+				    inode->i_ino,
 				    (unsigned long long)eb_bh->b_blocknr);
 			ret = -EROFS;
 			goto out;
@@ -582,8 +569,9 @@ int ocfs2_xattr_get_clusters(struct inode *inode, u32 v_cluster,
 		BUG_ON(v_cluster < le32_to_cpu(rec->e_cpos));
 
 		if (!rec->e_blkno) {
-			ocfs2_error(inode->i_sb, "Inode %lu has bad extent "
-				    "record (%u, %u, 0) in xattr", inode->i_ino,
+			ocfs2_error(inode->i_sb,
+				    "Inode %lu has bad extent record (%u, %u, 0) in xattr\n",
+				    inode->i_ino,
 				    le32_to_cpu(rec->e_cpos),
 				    ocfs2_rec_clusters(el, rec));
 			ret = -EROFS;
@@ -600,8 +588,7 @@ int ocfs2_xattr_get_clusters(struct inode *inode, u32 v_cluster,
 			*extent_flags = rec->e_flags;
 	}
 out:
-	if (eb_bh)
-		brelse(eb_bh);
+	brelse(eb_bh);
 	return ret;
 }
 
@@ -610,7 +597,7 @@ int ocfs2_get_clusters(struct inode *inode, u32 v_cluster,
 		       unsigned int *extent_flags)
 {
 	int ret;
-	unsigned int uninitialized_var(hole_len), flags = 0;
+	unsigned int hole_len, flags = 0;
 	struct buffer_head *di_bh = NULL;
 	struct ocfs2_extent_rec rec;
 
@@ -744,8 +731,6 @@ static int ocfs2_fiemap_inline(struct inode *inode, struct buffer_head *di_bh,
 	return 0;
 }
 
-#define OCFS2_FIEMAP_FLAGS	(FIEMAP_FLAG_SYNC)
-
 int ocfs2_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 		 u64 map_start, u64 map_len)
 {
@@ -757,7 +742,7 @@ int ocfs2_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 	struct buffer_head *di_bh = NULL;
 	struct ocfs2_extent_rec rec;
 
-	ret = fiemap_check_flags(fieinfo, OCFS2_FIEMAP_FLAGS);
+	ret = fiemap_prep(inode, fieinfo, map_start, &map_len, 0);
 	if (ret)
 		return ret;
 
@@ -827,6 +812,50 @@ out_unlock:
 	ocfs2_inode_unlock(inode, 0);
 out:
 
+	return ret;
+}
+
+/* Is IO overwriting allocated blocks? */
+int ocfs2_overwrite_io(struct inode *inode, struct buffer_head *di_bh,
+		       u64 map_start, u64 map_len)
+{
+	int ret = 0, is_last;
+	u32 mapping_end, cpos;
+	struct ocfs2_super *osb = OCFS2_SB(inode->i_sb);
+	struct ocfs2_extent_rec rec;
+
+	if (OCFS2_I(inode)->ip_dyn_features & OCFS2_INLINE_DATA_FL) {
+		if (ocfs2_size_fits_inline_data(di_bh, map_start + map_len))
+			return ret;
+		else
+			return -EAGAIN;
+	}
+
+	cpos = map_start >> osb->s_clustersize_bits;
+	mapping_end = ocfs2_clusters_for_bytes(inode->i_sb,
+					       map_start + map_len);
+	is_last = 0;
+	while (cpos < mapping_end && !is_last) {
+		ret = ocfs2_get_clusters_nocache(inode, di_bh, cpos,
+						 NULL, &rec, &is_last);
+		if (ret) {
+			mlog_errno(ret);
+			goto out;
+		}
+
+		if (rec.e_blkno == 0ULL)
+			break;
+
+		if (rec.e_flags & OCFS2_EXT_REFCOUNTED)
+			break;
+
+		cpos = le32_to_cpu(rec.e_cpos) +
+			le16_to_cpu(rec.e_leaf_clusters);
+	}
+
+	if (cpos < mapping_end)
+		ret = -EAGAIN;
+out:
 	return ret;
 }
 

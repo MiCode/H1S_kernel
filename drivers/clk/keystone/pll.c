@@ -1,16 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * PLL clock driver for Keystone devices
  *
  * Copyright (C) 2013 Texas Instruments Inc.
  *	Murali Karicheri <m-karicheri2@ti.com>
  *	Santosh Shilimkar <santosh.shilimkar@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
-#include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/err.h>
 #include <linux/io.h>
@@ -37,7 +32,8 @@
  *	Main PLL or any other PLLs in the device such as ARM PLL, DDR PLL
  *	or PA PLL available on keystone2. These PLLs are controlled by
  *	this register. Main PLL is controlled by a PLL controller.
- * @pllm: PLL register map address
+ * @pllm: PLL register map address for multiplier bits
+ * @pllod: PLL register map address for post divider bits
  * @pll_ctl0: PLL controller map address
  * @pllm_lower_mask: multiplier lower mask
  * @pllm_upper_mask: multiplier upper mask
@@ -53,6 +49,7 @@ struct clk_pll_data {
 	u32 phy_pllm;
 	u32 phy_pll_ctl0;
 	void __iomem *pllm;
+	void __iomem *pllod;
 	void __iomem *pll_ctl0;
 	u32 pllm_lower_mask;
 	u32 pllm_upper_mask;
@@ -102,7 +99,11 @@ static unsigned long clk_pllclk_recalc(struct clk_hw *hw,
 		/* read post divider from od bits*/
 		postdiv = ((val & pll_data->clkod_mask) >>
 				 pll_data->clkod_shift) + 1;
-	else
+	else if (pll_data->pllod) {
+		postdiv = readl(pll_data->pllod);
+		postdiv = ((postdiv & pll_data->clkod_mask) >>
+				pll_data->clkod_shift) + 1;
+	} else
 		postdiv = pll_data->postdiv;
 
 	rate /= (prediv + 1);
@@ -149,10 +150,10 @@ out:
 }
 
 /**
- * _of_clk_init - PLL initialisation via DT
+ * _of_pll_clk_init - PLL initialisation via DT
  * @node: device tree node for this clock
  * @pllctrl: If true, lower 6 bits of multiplier is in pllm register of
- *		pll controller, else it is in the control regsiter0(bit 11-6)
+ *		pll controller, else it is in the control register0(bit 11-6)
  */
 static void __init _of_pll_clk_init(struct device_node *node, bool pllctrl)
 {
@@ -172,12 +173,21 @@ static void __init _of_pll_clk_init(struct device_node *node, bool pllctrl)
 		/* assume the PLL has output divider register bits */
 		pll_data->clkod_mask = CLKOD_MASK;
 		pll_data->clkod_shift = CLKOD_SHIFT;
+
+		/*
+		 * Check if there is an post-divider register. If not
+		 * assume od bits are part of control register.
+		 */
+		i = of_property_match_string(node, "reg-names",
+					     "post-divider");
+		pll_data->pllod = of_iomap(node, i);
 	}
 
 	i = of_property_match_string(node, "reg-names", "control");
 	pll_data->pll_ctl0 = of_iomap(node, i);
 	if (!pll_data->pll_ctl0) {
 		pr_err("%s: ioremap failed\n", __func__);
+		iounmap(pll_data->pllod);
 		goto out;
 	}
 
@@ -193,18 +203,19 @@ static void __init _of_pll_clk_init(struct device_node *node, bool pllctrl)
 		pll_data->pllm = of_iomap(node, i);
 		if (!pll_data->pllm) {
 			iounmap(pll_data->pll_ctl0);
+			iounmap(pll_data->pllod);
 			goto out;
 		}
 	}
 
 	clk = clk_register_pll(NULL, node->name, parent_name, pll_data);
-	if (clk) {
+	if (!IS_ERR_OR_NULL(clk)) {
 		of_clk_add_provider(node, of_clk_src_simple_get, clk);
 		return;
 	}
 
 out:
-	pr_err("%s: error initializing pll %s\n", __func__, node->name);
+	pr_err("%s: error initializing pll %pOFn\n", __func__, node);
 	kfree(pll_data);
 }
 
@@ -220,7 +231,7 @@ CLK_OF_DECLARE(keystone_pll_clock, "ti,keystone,pll-clock",
 					of_keystone_pll_clk_init);
 
 /**
- * of_keystone_pll_main_clk_init - Main PLL initialisation DT wrapper
+ * of_keystone_main_pll_clk_init - Main PLL initialisation DT wrapper
  * @node: device tree node for this clock
  */
 static void __init of_keystone_main_pll_clk_init(struct device_node *node)
@@ -252,25 +263,31 @@ static void __init of_pll_div_clk_init(struct device_node *node)
 	parent_name = of_clk_get_parent_name(node, 0);
 	if (!parent_name) {
 		pr_err("%s: missing parent clock\n", __func__);
+		iounmap(reg);
 		return;
 	}
 
 	if (of_property_read_u32(node, "bit-shift", &shift)) {
 		pr_err("%s: missing 'shift' property\n", __func__);
+		iounmap(reg);
 		return;
 	}
 
 	if (of_property_read_u32(node, "bit-mask", &mask)) {
 		pr_err("%s: missing 'bit-mask' property\n", __func__);
+		iounmap(reg);
 		return;
 	}
 
 	clk = clk_register_divider(NULL, clk_name, parent_name, 0, reg, shift,
 				 mask, 0, NULL);
-	if (clk)
-		of_clk_add_provider(node, of_clk_src_simple_get, clk);
-	else
+	if (IS_ERR(clk)) {
 		pr_err("%s: error registering divider %s\n", __func__, clk_name);
+		iounmap(reg);
+		return;
+	}
+
+	of_clk_add_provider(node, of_clk_src_simple_get, clk);
 }
 CLK_OF_DECLARE(pll_divider_clock, "ti,keystone,pll-divider-clock", of_pll_div_clk_init);
 
@@ -293,8 +310,7 @@ static void __init of_pll_mux_clk_init(struct device_node *node)
 		return;
 	}
 
-	parents[0] = of_clk_get_parent_name(node, 0);
-	parents[1] = of_clk_get_parent_name(node, 1);
+	of_clk_parent_fill(node, parents, 2);
 	if (!parents[0] || !parents[1]) {
 		pr_err("%s: missing parent clocks\n", __func__);
 		return;
@@ -313,9 +329,16 @@ static void __init of_pll_mux_clk_init(struct device_node *node)
 	clk = clk_register_mux(NULL, clk_name, (const char **)&parents,
 				ARRAY_SIZE(parents) , 0, reg, shift, mask,
 				0, NULL);
-	if (clk)
-		of_clk_add_provider(node, of_clk_src_simple_get, clk);
-	else
+	if (IS_ERR(clk)) {
 		pr_err("%s: error registering mux %s\n", __func__, clk_name);
+		return;
+	}
+
+	of_clk_add_provider(node, of_clk_src_simple_get, clk);
 }
 CLK_OF_DECLARE(pll_mux_clock, "ti,keystone,pll-mux-clock", of_pll_mux_clk_init);
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("PLL clock driver for Keystone devices");
+MODULE_AUTHOR("Murali Karicheri <m-karicheri2@ti.com>");
+MODULE_AUTHOR("Santosh Shilimkar <santosh.shilimkar@ti.com>");

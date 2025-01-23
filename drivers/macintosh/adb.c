@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Device driver for the Apple Desktop Bus
  * and the /dev/adb device on macintoshes.
@@ -23,7 +24,7 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/mm.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/adb.h>
 #include <linux/cuda.h>
 #include <linux/pmu.h>
@@ -37,10 +38,10 @@
 #include <linux/kthread.h>
 #include <linux/platform_device.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #ifdef CONFIG_PPC
-#include <asm/prom.h>
 #include <asm/machdep.h>
 #endif
 
@@ -48,7 +49,6 @@
 EXPORT_SYMBOL(adb_client_list);
 
 extern struct adb_driver via_macii_driver;
-extern struct adb_driver via_maciisi_driver;
 extern struct adb_driver via_cuda_driver;
 extern struct adb_driver adb_iop_driver;
 extern struct adb_driver via_pmu_driver;
@@ -59,16 +59,13 @@ static struct adb_driver *adb_driver_list[] = {
 #ifdef CONFIG_ADB_MACII
 	&via_macii_driver,
 #endif
-#ifdef CONFIG_ADB_MACIISI
-	&via_maciisi_driver,
-#endif
 #ifdef CONFIG_ADB_CUDA
 	&via_cuda_driver,
 #endif
 #ifdef CONFIG_ADB_IOP
 	&adb_iop_driver,
 #endif
-#if defined(CONFIG_ADB_PMU) || defined(CONFIG_ADB_PMU68K)
+#ifdef CONFIG_ADB_PMU
 	&via_pmu_driver,
 #endif
 #ifdef CONFIG_ADB_MACIO
@@ -83,7 +80,7 @@ static struct adb_driver *adb_controller;
 BLOCKING_NOTIFIER_HEAD(adb_client_list);
 static int adb_got_sleep;
 static int adb_inited;
-static DEFINE_SEMAPHORE(adb_probe_mutex);
+static DEFINE_SEMAPHORE(adb_probe_mutex, 1);
 static int sleepy_trackpad;
 static int autopoll_devs;
 int __adb_probe_sync;
@@ -166,7 +163,7 @@ static int adb_scan_bus(void)
 			 * See if anybody actually moved. This is suggested
 			 * by HW TechNote 01:
 			 *
-			 * http://developer.apple.com/technotes/hw/hw_01.html
+			 * https://developer.apple.com/technotes/hw/hw_01.html
 			 */
 			adb_request(&req, NULL, ADBREQ_SYNC | ADBREQ_REPLY, 1,
 				    (highFree << 4) | 0xf);
@@ -193,8 +190,7 @@ static int adb_scan_bus(void)
 					break;
 
 				noMovement = 0;
-			}
-			else {
+			} else {
 				/*
 				 * No devices left at address i; move the
 				 * one(s) we moved to `highFree' back to i.
@@ -207,18 +203,17 @@ static int adb_scan_bus(void)
 	}
 
 	/* Now fill in the handler_id field of the adb_handler entries. */
-	printk(KERN_DEBUG "adb devices:");
 	for (i = 1; i < 16; i++) {
 		if (adb_handler[i].original_address == 0)
 			continue;
 		adb_request(&req, NULL, ADBREQ_SYNC | ADBREQ_REPLY, 1,
 			    (i << 4) | 0xf);
 		adb_handler[i].handler_id = req.reply[2];
-		printk(" [%d]: %d %x", i, adb_handler[i].original_address,
+		printk(KERN_DEBUG "adb device [%d]: %d 0x%X\n", i,
+		       adb_handler[i].original_address,
 		       adb_handler[i].handler_id);
 		devmask |= 1 << i;
 	}
-	printk("\n");
 	return devmask;
 }
 
@@ -229,9 +224,9 @@ static int adb_scan_bus(void)
 static int
 adb_probe_task(void *x)
 {
-	printk(KERN_INFO "adb: starting probe task...\n");
+	pr_debug("adb: starting probe task...\n");
 	do_adb_reset_bus();
-	printk(KERN_INFO "adb: finished probe task...\n");
+	pr_debug("adb: finished probe task...\n");
 
 	up(&adb_probe_mutex);
 
@@ -263,7 +258,7 @@ adb_reset_bus(void)
 /*
  * notify clients before sleep
  */
-static int adb_suspend(struct platform_device *dev, pm_message_t state)
+static int __adb_suspend(struct platform_device *dev, pm_message_t state)
 {
 	adb_got_sleep = 1;
 	/* We need to get a lock on the probe thread */
@@ -276,16 +271,36 @@ static int adb_suspend(struct platform_device *dev, pm_message_t state)
 	return 0;
 }
 
+static int adb_suspend(struct device *dev)
+{
+	return __adb_suspend(to_platform_device(dev), PMSG_SUSPEND);
+}
+
+static int adb_freeze(struct device *dev)
+{
+	return __adb_suspend(to_platform_device(dev), PMSG_FREEZE);
+}
+
+static int adb_poweroff(struct device *dev)
+{
+	return __adb_suspend(to_platform_device(dev), PMSG_HIBERNATE);
+}
+
 /*
  * reset bus after sleep
  */
-static int adb_resume(struct platform_device *dev)
+static int __adb_resume(struct platform_device *dev)
 {
 	adb_got_sleep = 0;
 	up(&adb_probe_mutex);
 	adb_reset_bus();
 
 	return 0;
+}
+
+static int adb_resume(struct device *dev)
+{
+	return __adb_resume(to_platform_device(dev));
 }
 #endif /* CONFIG_PM */
 
@@ -321,7 +336,7 @@ static int __init adb_init(void)
 	    adb_controller->init())
 		adb_controller = NULL;
 	if (adb_controller == NULL) {
-		printk(KERN_WARNING "Warning: no ADB interface detected\n");
+		pr_warn("Warning: no ADB interface detected\n");
 	} else {
 #ifdef CONFIG_PPC
 		if (of_machine_is_compatible("AAPL,PowerBook1998") ||
@@ -392,6 +407,7 @@ adb_poll(void)
 		return;
 	adb_controller->poll();
 }
+EXPORT_SYMBOL(adb_poll);
 
 static void adb_sync_req_done(struct adb_request *req)
 {
@@ -441,6 +457,7 @@ adb_request(struct adb_request *req, void (*done)(struct adb_request *),
 
 	return rc;
 }
+EXPORT_SYMBOL(adb_request);
 
  /* Ultimately this should return the number of devices with
     the given default id.
@@ -461,9 +478,8 @@ adb_register(int default_id, int handler_id, struct adb_ids *ids,
 		if ((adb_handler[i].original_address == default_id) &&
 		    (!handler_id || (handler_id == adb_handler[i].handler_id) || 
 		    try_handler_change(i, handler_id))) {
-			if (adb_handler[i].handler != 0) {
-				printk(KERN_ERR
-				       "Two handlers for ADB device %d\n",
+			if (adb_handler[i].handler) {
+				pr_err("Two handlers for ADB device %d\n",
 				       default_id);
 				continue;
 			}
@@ -476,6 +492,7 @@ adb_register(int default_id, int handler_id, struct adb_ids *ids,
 	mutex_unlock(&adb_handler_mutex);
 	return ids->nids;
 }
+EXPORT_SYMBOL(adb_register);
 
 int
 adb_unregister(int index)
@@ -497,12 +514,13 @@ adb_unregister(int index)
 	mutex_unlock(&adb_handler_mutex);
 	return ret;
 }
+EXPORT_SYMBOL(adb_unregister);
 
 void
 adb_input(unsigned char *buf, int nb, int autopoll)
 {
 	int i, id;
-	static int dump_adb_input = 0;
+	static int dump_adb_input;
 	unsigned long flags;
 	
 	void (*handler)(unsigned char *, int, int);
@@ -515,10 +533,10 @@ adb_input(unsigned char *buf, int nb, int autopoll)
 		
 	id = buf[0] >> 4;
 	if (dump_adb_input) {
-		printk(KERN_INFO "adb packet: ");
+		pr_info("adb packet: ");
 		for (i = 0; i < nb; ++i)
-			printk(" %x", buf[i]);
-		printk(", id = %d\n", id);
+			pr_cont(" %x", buf[i]);
+		pr_cont(", id = %d\n", id);
 	}
 	write_lock_irqsave(&adb_handler_lock, flags);
 	handler = adb_handler[id].handler;
@@ -561,8 +579,11 @@ adb_try_handler_change(int address, int new_id)
 	mutex_lock(&adb_handler_mutex);
 	ret = try_handler_change(address, new_id);
 	mutex_unlock(&adb_handler_mutex);
+	if (ret)
+		pr_debug("adb handler change: [%d] 0x%X\n", address, new_id);
 	return ret;
 }
+EXPORT_SYMBOL(adb_try_handler_change);
 
 int
 adb_get_infos(int address, int *original_address, int *handler_id)
@@ -624,10 +645,9 @@ do_adb_query(struct adb_request *req)
 {
 	int	ret = -EINVAL;
 
-	switch(req->data[1])
-	{
+	switch(req->data[1]) {
 	case ADB_QUERY_GETDEVINFO:
-		if (req->nbytes < 3)
+		if (req->nbytes < 3 || req->data[2] >= 16)
 			break;
 		mutex_lock(&adb_handler_mutex);
 		req->reply[0] = adb_handler[req->data[2]].original_address;
@@ -653,7 +673,7 @@ static int adb_open(struct inode *inode, struct file *file)
 		goto out;
 	}
 	state = kmalloc(sizeof(struct adbdev_state), GFP_KERNEL);
-	if (state == 0) {
+	if (!state) {
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -697,15 +717,13 @@ static ssize_t adb_read(struct file *file, char __user *buf,
 	int ret = 0;
 	struct adbdev_state *state = file->private_data;
 	struct adb_request *req;
-	DECLARE_WAITQUEUE(wait,current);
+	DECLARE_WAITQUEUE(wait, current);
 	unsigned long flags;
 
 	if (count < 2)
 		return -EINVAL;
 	if (count > sizeof(req->reply))
 		count = sizeof(req->reply);
-	if (!access_ok(VERIFY_WRITE, buf, count))
-		return -EFAULT;
 
 	req = NULL;
 	spin_lock_irqsave(&state->lock, flags);
@@ -762,8 +780,6 @@ static ssize_t adb_write(struct file *file, const char __user *buf,
 		return -EINVAL;
 	if (adb_controller == NULL)
 		return -ENXIO;
-	if (!access_ok(VERIFY_READ, buf, count))
-		return -EFAULT;
 
 	req = kmalloc(sizeof(struct adb_request),
 					     GFP_KERNEL);
@@ -794,8 +810,8 @@ static ssize_t adb_write(struct file *file, const char __user *buf,
 	}
 	/* Special case for ADB_BUSRESET request, all others are sent to
 	   the controller */
-	else if ((req->data[0] == ADB_PACKET)&&(count > 1)
-		&&(req->data[1] == ADB_BUSRESET)) {
+	else if ((req->data[0] == ADB_PACKET) && (count > 1)
+		&& (req->data[1] == ADB_BUSRESET)) {
 		ret = do_adb_reset_bus();
 		up(&adb_probe_mutex);
 		atomic_dec(&state->n_pending);
@@ -831,14 +847,25 @@ static const struct file_operations adb_fops = {
 	.release	= adb_release,
 };
 
+#ifdef CONFIG_PM
+static const struct dev_pm_ops adb_dev_pm_ops = {
+	.suspend = adb_suspend,
+	.resume = adb_resume,
+	/* Hibernate hooks */
+	.freeze = adb_freeze,
+	.thaw = adb_resume,
+	.poweroff = adb_poweroff,
+	.restore = adb_resume,
+};
+#endif
+
 static struct platform_driver adb_pfdrv = {
 	.driver = {
 		.name = "adb",
-	},
 #ifdef CONFIG_PM
-	.suspend = adb_suspend,
-	.resume = adb_resume,
+		.pm = &adb_dev_pm_ops,
 #endif
+	},
 };
 
 static struct platform_device adb_pfdev = {
@@ -857,11 +884,11 @@ static void __init
 adbdev_init(void)
 {
 	if (register_chrdev(ADB_MAJOR, "adb", &adb_fops)) {
-		printk(KERN_ERR "adb: unable to get major %d\n", ADB_MAJOR);
+		pr_err("adb: unable to get major %d\n", ADB_MAJOR);
 		return;
 	}
 
-	adb_dev_class = class_create(THIS_MODULE, "adb");
+	adb_dev_class = class_create("adb");
 	if (IS_ERR(adb_dev_class))
 		return;
 	device_create(adb_dev_class, NULL, MKDEV(ADB_MAJOR, 0), NULL, "adb");

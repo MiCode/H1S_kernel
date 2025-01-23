@@ -1,28 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * net/9p/protocol.c
- *
  * 9P Protocol Support Code
  *
  *  Copyright (C) 2008 by Eric Van Hensbergen <ericvh@gmail.com>
  *
  *  Base on code from Anthony Liguori <aliguori@us.ibm.com>
  *  Copyright (C) 2008 by IBM, Corp.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2
- *  as published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to:
- *  Free Software Foundation
- *  51 Franklin Street, Fifth Floor
- *  Boston, MA  02111-1301  USA
- *
  */
 
 #include <linux/module.h>
@@ -33,11 +16,179 @@
 #include <linux/sched.h>
 #include <linux/stddef.h>
 #include <linux/types.h>
+#include <linux/uio.h>
 #include <net/9p/9p.h>
 #include <net/9p/client.h>
 #include "protocol.h"
 
 #include <trace/events/9p.h>
+
+/* len[2] text[len] */
+#define P9_STRLEN(s) \
+	(2 + min_t(size_t, s ? strlen(s) : 0, USHRT_MAX))
+
+/**
+ * p9_msg_buf_size - Returns a buffer size sufficiently large to hold the
+ * intended 9p message.
+ * @c: client
+ * @type: message type
+ * @fmt: format template for assembling request message
+ * (see p9pdu_vwritef)
+ * @ap: variable arguments to be fed to passed format template
+ * (see p9pdu_vwritef)
+ *
+ * Note: Even for response types (P9_R*) the format template and variable
+ * arguments must always be for the originating request type (P9_T*).
+ */
+size_t p9_msg_buf_size(struct p9_client *c, enum p9_msg_t type,
+			const char *fmt, va_list ap)
+{
+	/* size[4] type[1] tag[2] */
+	const int hdr = 4 + 1 + 2;
+	/* ename[s] errno[4] */
+	const int rerror_size = hdr + P9_ERRMAX + 4;
+	/* ecode[4] */
+	const int rlerror_size = hdr + 4;
+	const int err_size =
+		c->proto_version == p9_proto_2000L ? rlerror_size : rerror_size;
+
+	static_assert(NAME_MAX <= 4*1024, "p9_msg_buf_size() currently assumes "
+				  "a max. allowed directory entry name length of 4k");
+
+	switch (type) {
+
+	/* message types not used at all */
+	case P9_TERROR:
+	case P9_TLERROR:
+	case P9_TAUTH:
+	case P9_RAUTH:
+		BUG();
+
+	/* variable length & potentially large message types */
+	case P9_TATTACH:
+		BUG_ON(strcmp("ddss?u", fmt));
+		va_arg(ap, int32_t);
+		va_arg(ap, int32_t);
+		{
+			const char *uname = va_arg(ap, const char *);
+			const char *aname = va_arg(ap, const char *);
+			/* fid[4] afid[4] uname[s] aname[s] n_uname[4] */
+			return hdr + 4 + 4 + P9_STRLEN(uname) + P9_STRLEN(aname) + 4;
+		}
+	case P9_TWALK:
+		BUG_ON(strcmp("ddT", fmt));
+		va_arg(ap, int32_t);
+		va_arg(ap, int32_t);
+		{
+			uint i, nwname = va_arg(ap, int);
+			size_t wname_all;
+			const char **wnames = va_arg(ap, const char **);
+			for (i = 0, wname_all = 0; i < nwname; ++i) {
+				wname_all += P9_STRLEN(wnames[i]);
+			}
+			/* fid[4] newfid[4] nwname[2] nwname*(wname[s]) */
+			return hdr + 4 + 4 + 2 + wname_all;
+		}
+	case P9_RWALK:
+		BUG_ON(strcmp("ddT", fmt));
+		va_arg(ap, int32_t);
+		va_arg(ap, int32_t);
+		{
+			uint nwname = va_arg(ap, int);
+			/* nwqid[2] nwqid*(wqid[13]) */
+			return max_t(size_t, hdr + 2 + nwname * 13, err_size);
+		}
+	case P9_TCREATE:
+		BUG_ON(strcmp("dsdb?s", fmt));
+		va_arg(ap, int32_t);
+		{
+			const char *name = va_arg(ap, const char *);
+			if (c->proto_version == p9_proto_legacy) {
+				/* fid[4] name[s] perm[4] mode[1] */
+				return hdr + 4 + P9_STRLEN(name) + 4 + 1;
+			} else {
+				va_arg(ap, int32_t);
+				va_arg(ap, int);
+				{
+					const char *ext = va_arg(ap, const char *);
+					/* fid[4] name[s] perm[4] mode[1] extension[s] */
+					return hdr + 4 + P9_STRLEN(name) + 4 + 1 + P9_STRLEN(ext);
+				}
+			}
+		}
+	case P9_TLCREATE:
+		BUG_ON(strcmp("dsddg", fmt));
+		va_arg(ap, int32_t);
+		{
+			const char *name = va_arg(ap, const char *);
+			/* fid[4] name[s] flags[4] mode[4] gid[4] */
+			return hdr + 4 + P9_STRLEN(name) + 4 + 4 + 4;
+		}
+	case P9_RREAD:
+	case P9_RREADDIR:
+		BUG_ON(strcmp("dqd", fmt));
+		va_arg(ap, int32_t);
+		va_arg(ap, int64_t);
+		{
+			const int32_t count = va_arg(ap, int32_t);
+			/* count[4] data[count] */
+			return max_t(size_t, hdr + 4 + count, err_size);
+		}
+	case P9_TWRITE:
+		BUG_ON(strcmp("dqV", fmt));
+		va_arg(ap, int32_t);
+		va_arg(ap, int64_t);
+		{
+			const int32_t count = va_arg(ap, int32_t);
+			/* fid[4] offset[8] count[4] data[count] */
+			return hdr + 4 + 8 + 4 + count;
+		}
+	case P9_TRENAMEAT:
+		BUG_ON(strcmp("dsds", fmt));
+		va_arg(ap, int32_t);
+		{
+			const char *oldname, *newname;
+			oldname = va_arg(ap, const char *);
+			va_arg(ap, int32_t);
+			newname = va_arg(ap, const char *);
+			/* olddirfid[4] oldname[s] newdirfid[4] newname[s] */
+			return hdr + 4 + P9_STRLEN(oldname) + 4 + P9_STRLEN(newname);
+		}
+	case P9_TSYMLINK:
+		BUG_ON(strcmp("dssg", fmt));
+		va_arg(ap, int32_t);
+		{
+			const char *name = va_arg(ap, const char *);
+			const char *symtgt = va_arg(ap, const char *);
+			/* fid[4] name[s] symtgt[s] gid[4] */
+			return hdr + 4 + P9_STRLEN(name) + P9_STRLEN(symtgt) + 4;
+		}
+
+	case P9_RERROR:
+		return rerror_size;
+	case P9_RLERROR:
+		return rlerror_size;
+
+	/* small message types */
+	case P9_TWSTAT:
+	case P9_RSTAT:
+	case P9_RREADLINK:
+	case P9_TXATTRWALK:
+	case P9_TXATTRCREATE:
+	case P9_TLINK:
+	case P9_TMKDIR:
+	case P9_TMKNOD:
+	case P9_TRENAME:
+	case P9_TUNLINKAT:
+	case P9_TLOCK:
+		return 8 * 1024;
+
+	/* tiny message types */
+	default:
+		return 4 * 1024;
+
+	}
+}
 
 static int
 p9pdu_writef(struct p9_fcall *pdu, int proto_version, const char *fmt, ...);
@@ -45,16 +196,22 @@ p9pdu_writef(struct p9_fcall *pdu, int proto_version, const char *fmt, ...);
 void p9stat_free(struct p9_wstat *stbuf)
 {
 	kfree(stbuf->name);
+	stbuf->name = NULL;
 	kfree(stbuf->uid);
+	stbuf->uid = NULL;
 	kfree(stbuf->gid);
+	stbuf->gid = NULL;
 	kfree(stbuf->muid);
+	stbuf->muid = NULL;
 	kfree(stbuf->extension);
+	stbuf->extension = NULL;
 }
 EXPORT_SYMBOL(p9stat_free);
 
 size_t pdu_read(struct p9_fcall *pdu, void *data, size_t size)
 {
 	size_t len = min(pdu->size - pdu->offset, size);
+
 	memcpy(data, &pdu->sdata[pdu->offset], len);
 	pdu->offset += len;
 	return size - len;
@@ -63,42 +220,43 @@ size_t pdu_read(struct p9_fcall *pdu, void *data, size_t size)
 static size_t pdu_write(struct p9_fcall *pdu, const void *data, size_t size)
 {
 	size_t len = min(pdu->capacity - pdu->size, size);
+
 	memcpy(&pdu->sdata[pdu->size], data, len);
 	pdu->size += len;
 	return size - len;
 }
 
 static size_t
-pdu_write_u(struct p9_fcall *pdu, const char __user *udata, size_t size)
+pdu_write_u(struct p9_fcall *pdu, struct iov_iter *from, size_t size)
 {
 	size_t len = min(pdu->capacity - pdu->size, size);
-	if (copy_from_user(&pdu->sdata[pdu->size], udata, len))
+
+	if (!copy_from_iter_full(&pdu->sdata[pdu->size], len, from))
 		len = 0;
 
 	pdu->size += len;
 	return size - len;
 }
 
-/*
-	b - int8_t
-	w - int16_t
-	d - int32_t
-	q - int64_t
-	s - string
-	u - numeric uid
-	g - numeric gid
-	S - stat
-	Q - qid
-	D - data blob (int32_t size followed by void *, results are not freed)
-	T - array of strings (int16_t count, followed by strings)
-	R - array of qids (int16_t count, followed by qids)
-	A - stat for 9p2000.L (p9_stat_dotl)
-	? - if optional = 1, continue parsing
-*/
+/*	b - int8_t
+ *	w - int16_t
+ *	d - int32_t
+ *	q - int64_t
+ *	s - string
+ *	u - numeric uid
+ *	g - numeric gid
+ *	S - stat
+ *	Q - qid
+ *	D - data blob (int32_t size followed by void *, results are not freed)
+ *	T - array of strings (int16_t count, followed by strings)
+ *	R - array of qids (int16_t count, followed by qids)
+ *	A - stat for 9p2000.L (p9_stat_dotl)
+ *	? - if optional = 1, continue parsing
+ */
 
 static int
 p9pdu_vreadf(struct p9_fcall *pdu, int proto_version, const char *fmt,
-	va_list ap)
+	     va_list ap)
 {
 	const char *ptr;
 	int errcode = 0;
@@ -154,7 +312,7 @@ p9pdu_vreadf(struct p9_fcall *pdu, int proto_version, const char *fmt,
 
 				*sptr = kmalloc(len + 1, GFP_NOFS);
 				if (*sptr == NULL) {
-					errcode = -EFAULT;
+					errcode = -ENOMEM;
 					break;
 				}
 				if (pdu_read(pdu, *sptr, len)) {
@@ -236,14 +394,19 @@ p9pdu_vreadf(struct p9_fcall *pdu, int proto_version, const char *fmt,
 				uint16_t *nwname = va_arg(ap, uint16_t *);
 				char ***wnames = va_arg(ap, char ***);
 
+				*wnames = NULL;
+
 				errcode = p9pdu_readf(pdu, proto_version,
 								"w", nwname);
 				if (!errcode) {
 					*wnames =
-					    kmalloc(sizeof(char *) * *nwname,
-						    GFP_NOFS);
+					    kmalloc_array(*nwname,
+							  sizeof(char *),
+							  GFP_NOFS);
 					if (!*wnames)
 						errcode = -ENOMEM;
+					else
+						(*wnames)[0] = NULL;
 				}
 
 				if (!errcode) {
@@ -255,8 +418,10 @@ p9pdu_vreadf(struct p9_fcall *pdu, int proto_version, const char *fmt,
 								proto_version,
 								"s",
 								&(*wnames)[i]);
-						if (errcode)
+						if (errcode) {
+							(*wnames)[i] = NULL;
 							break;
+						}
 					}
 				}
 
@@ -264,16 +429,19 @@ p9pdu_vreadf(struct p9_fcall *pdu, int proto_version, const char *fmt,
 					if (*wnames) {
 						int i;
 
-						for (i = 0; i < *nwname; i++)
+						for (i = 0; i < *nwname; i++) {
+							if (!(*wnames)[i])
+								break;
 							kfree((*wnames)[i]);
+						}
+						kfree(*wnames);
+						*wnames = NULL;
 					}
-					kfree(*wnames);
-					*wnames = NULL;
 				}
 			}
 			break;
 		case 'R':{
-				int16_t *nwqid = va_arg(ap, int16_t *);
+				uint16_t *nwqid = va_arg(ap, uint16_t *);
 				struct p9_qid **wqids =
 				    va_arg(ap, struct p9_qid **);
 
@@ -283,9 +451,9 @@ p9pdu_vreadf(struct p9_fcall *pdu, int proto_version, const char *fmt,
 				    p9pdu_readf(pdu, proto_version, "w", nwqid);
 				if (!errcode) {
 					*wqids =
-					    kmalloc(*nwqid *
-						    sizeof(struct p9_qid),
-						    GFP_NOFS);
+					    kmalloc_array(*nwqid,
+							  sizeof(struct p9_qid),
+							  GFP_NOFS);
 					if (*wqids == NULL)
 						errcode = -ENOMEM;
 				}
@@ -437,23 +605,13 @@ p9pdu_vwritef(struct p9_fcall *pdu, int proto_version, const char *fmt,
 						 stbuf->extension, stbuf->n_uid,
 						 stbuf->n_gid, stbuf->n_muid);
 			} break;
-		case 'D':{
+		case 'V':{
 				uint32_t count = va_arg(ap, uint32_t);
-				const void *data = va_arg(ap, const void *);
-
+				struct iov_iter *from =
+						va_arg(ap, struct iov_iter *);
 				errcode = p9pdu_writef(pdu, proto_version, "d",
 									count);
-				if (!errcode && pdu_write(pdu, data, count))
-					errcode = -EFAULT;
-			}
-			break;
-		case 'U':{
-				int32_t count = va_arg(ap, int32_t);
-				const char __user *udata =
-						va_arg(ap, const void __user *);
-				errcode = p9pdu_writef(pdu, proto_version, "d",
-									count);
-				if (!errcode && pdu_write_u(pdu, udata, count))
+				if (!errcode && pdu_write_u(pdu, from, count))
 					errcode = -EFAULT;
 			}
 			break;
@@ -479,7 +637,7 @@ p9pdu_vwritef(struct p9_fcall *pdu, int proto_version, const char *fmt,
 			}
 			break;
 		case 'R':{
-				int16_t nwqid = va_arg(ap, int);
+				uint16_t nwqid = va_arg(ap, int);
 				struct p9_qid *wqids =
 				    va_arg(ap, struct p9_qid *);
 
@@ -573,9 +731,10 @@ int p9stat_read(struct p9_client *clnt, char *buf, int len, struct p9_wstat *st)
 	if (ret) {
 		p9_debug(P9_DEBUG_9P, "<<< p9stat_read failed: %d\n", ret);
 		trace_9p_protocol_dump(clnt, &fake_pdu);
+		return ret;
 	}
 
-	return ret;
+	return fake_pdu.offset;
 }
 EXPORT_SYMBOL(p9stat_read);
 
@@ -624,13 +783,19 @@ int p9dirent_read(struct p9_client *clnt, char *buf, int len,
 	if (ret) {
 		p9_debug(P9_DEBUG_9P, "<<< p9dirent_read failed: %d\n", ret);
 		trace_9p_protocol_dump(clnt, &fake_pdu);
-		goto out;
+		return ret;
 	}
 
-	strcpy(dirent->d_name, nameptr);
+	ret = strscpy(dirent->d_name, nameptr, sizeof(dirent->d_name));
+	if (ret < 0) {
+		p9_debug(P9_DEBUG_ERROR,
+			 "On the wire dirent name too long: %s\n",
+			 nameptr);
+		kfree(nameptr);
+		return ret;
+	}
 	kfree(nameptr);
 
-out:
 	return fake_pdu.offset;
 }
 EXPORT_SYMBOL(p9dirent_read);

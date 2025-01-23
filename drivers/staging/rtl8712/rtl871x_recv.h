@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _RTL871X_RECV_H_
 #define _RTL871X_RECV_H_
 
@@ -10,8 +11,6 @@
 #define RXFRAME_ALIGN_SZ	(1 << RXFRAME_ALIGN)
 
 #define MAX_SUBFRAME_COUNT	64
-
-#define SNAP_SIZE sizeof(struct ieee80211_snap_hdr)
 
 /* for Rx reordering buffer control */
 struct recv_reorder_ctrl {
@@ -30,7 +29,6 @@ struct	stainfo_rxcache	{
 #define		PHY_RSSI_SLID_WIN_MAX			100
 #define		PHY_LINKQUALITY_SLID_WIN_MAX		20
 
-
 struct smooth_rssi_data {
 	u32	elements[100];	/* array to store values */
 	u32	index;		/* index to current array to store */
@@ -39,7 +37,6 @@ struct smooth_rssi_data {
 };
 
 struct rx_pkt_attrib {
-
 	u8	amsdu;
 	u8	order;
 	u8	qos;
@@ -52,7 +49,7 @@ struct rx_pkt_attrib {
 	u8	privacy; /* in frame_ctrl field */
 	u8	bdecrypted;
 	int	hdrlen;	 /* the WLAN Header Len */
-	int	encrypt; /* 0 no encrypt. != 0 encrypt algorith */
+	int	encrypt; /* 0 no encrypt. != 0 encrypt algorithm */
 	int	iv_len;
 	int	icv_len;
 	int	priority;
@@ -74,12 +71,12 @@ struct rx_pkt_attrib {
 };
 
 /*
-accesser of recv_priv: recv_entry(dispatch / passive level);
-recv_thread(passive) ; returnpkt(dispatch)
-; halt(passive) ;
-
-using enter_critical section to protect
-*/
+ * accesser of recv_priv: recv_entry(dispatch / passive level);
+ * recv_thread(passive) ; returnpkt(dispatch)
+ * ; halt(passive) ;
+ *
+ * using enter_critical section to protect
+ */
 struct recv_priv {
 	spinlock_t lock;
 	struct  __queue	free_recv_queue;
@@ -104,7 +101,7 @@ struct recv_priv {
 	u8 *precv_buf;    /* 4 alignment */
 	struct  __queue	free_recv_buf_queue;
 	u32	free_recv_buf_queue_cnt;
-	/* For the phy informatiom */
+	/* For the phy information */
 	s8 rssi;
 	u8 signal;
 	u8 noise;
@@ -127,7 +124,7 @@ struct sta_recv_priv {
 
 /* get a free recv_frame from pfree_recv_queue */
 union recv_frame *r8712_alloc_recvframe(struct  __queue *pfree_recv_queue);
-int r8712_free_recvframe(union recv_frame *precvframe,
+void r8712_free_recvframe(union recv_frame *precvframe,
 			  struct  __queue *pfree_recv_queue);
 void r8712_free_recvframe_queue(struct  __queue *pframequeue,
 				 struct  __queue *pfree_recv_queue);
@@ -137,24 +134,17 @@ int recv_func(struct _adapter *padapter, void *pcontext);
 static inline u8 *get_rxmem(union recv_frame *precvframe)
 {
 	/* always return rx_head... */
-	if (precvframe == NULL)
+	if (!precvframe)
 		return NULL;
 	return precvframe->u.hdr.rx_head;
-}
-
-static inline u8 *get_recvframe_data(union recv_frame *precvframe)
-{
-	/* always return rx_data */
-	if (precvframe == NULL)
-		return NULL;
-	return precvframe->u.hdr.rx_data;
 }
 
 static inline u8 *recvframe_pull(union recv_frame *precvframe, sint sz)
 {
 	/* used for extract sz bytes from rx_data, update rx_data and return
-	 *  the updated rx_data to the caller */
-	if (precvframe == NULL)
+	 * the updated rx_data to the caller
+	 */
+	if (!precvframe)
 		return NULL;
 	precvframe->u.hdr.rx_data += sz;
 	if (precvframe->u.hdr.rx_data > precvframe->u.hdr.rx_tail) {
@@ -169,12 +159,10 @@ static inline u8 *recvframe_put(union recv_frame *precvframe, sint sz)
 {
 	/* used for append sz bytes from ptr to rx_tail, update rx_tail and
 	 * return the updated rx_tail to the caller
-	 * after putting, rx_tail must be still larger than rx_end. */
-	unsigned char *prev_rx_tail;
-
-	if (precvframe == NULL)
+	 * after putting, rx_tail must be still larger than rx_end.
+	 */
+	if (!precvframe)
 		return NULL;
-	prev_rx_tail = precvframe->u.hdr.rx_tail;
 	precvframe->u.hdr.rx_tail += sz;
 	if (precvframe->u.hdr.rx_tail > precvframe->u.hdr.rx_end) {
 		precvframe->u.hdr.rx_tail -= sz;
@@ -189,8 +177,9 @@ static inline u8 *recvframe_pull_tail(union recv_frame *precvframe, sint sz)
 	/* rmv data from rx_tail (by yitsen)
 	 * used for extract sz bytes from rx_end, update rx_end and return the
 	 * updated rx_end to the caller
-	 * after pulling, rx_end must be still larger than rx_data. */
-	if (precvframe == NULL)
+	 * after pulling, rx_end must be still larger than rx_data.
+	 */
+	if (!precvframe)
 		return NULL;
 	precvframe->u.hdr.rx_tail -= sz;
 	if (precvframe->u.hdr.rx_tail < precvframe->u.hdr.rx_data) {

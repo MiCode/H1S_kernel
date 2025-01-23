@@ -1,5 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
-# Makefile to build the iSCSI driver for ServerEngine's BladeEngine.
+# Makefile to build the iSCSI driver for Emulex OneConnect.
 #
 #
 

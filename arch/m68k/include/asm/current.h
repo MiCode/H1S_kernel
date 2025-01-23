@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _M68K_CURRENT_H
 #define _M68K_CURRENT_H
 
@@ -23,6 +24,8 @@ static inline struct task_struct *get_current(void)
 
 #define	current	get_current()
 
-#endif /* CONFNIG_MMU */
+#endif /* CONFIG_MMU */
+
+register unsigned long current_stack_pointer __asm__("sp");
 
 #endif /* !(_M68K_CURRENT_H) */

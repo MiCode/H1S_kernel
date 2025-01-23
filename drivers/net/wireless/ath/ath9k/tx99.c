@@ -54,6 +54,7 @@ static struct sk_buff *ath9k_build_tx99_skb(struct ath_softc *sc)
 	struct ieee80211_hdr *hdr;
 	struct ieee80211_tx_info *tx_info;
 	struct sk_buff *skb;
+	struct ath_vif *avp;
 
 	skb = alloc_skb(len, GFP_KERNEL);
 	if (!skb)
@@ -71,12 +72,15 @@ static struct sk_buff *ath9k_build_tx99_skb(struct ath_softc *sc)
 	memcpy(hdr->addr2, hw->wiphy->perm_addr, ETH_ALEN);
 	memcpy(hdr->addr3, hw->wiphy->perm_addr, ETH_ALEN);
 
-	hdr->seq_ctrl |= cpu_to_le16(sc->tx.seq_no);
+	if (sc->tx99_vif) {
+		avp = (struct ath_vif *) sc->tx99_vif->drv_priv;
+		hdr->seq_ctrl |= cpu_to_le16(avp->seq_no);
+	}
 
 	tx_info = IEEE80211_SKB_CB(skb);
 	memset(tx_info, 0, sizeof(*tx_info));
 	rate = &tx_info->control.rates[0];
-	tx_info->band = hw->conf.chandef.chan->band;
+	tx_info->band = sc->cur_chan->chandef.chan->band;
 	tx_info->flags = IEEE80211_TX_CTL_NO_ACK;
 	tx_info->control.vif = sc->tx99_vif;
 	rate->count = 1;
@@ -93,7 +97,7 @@ static struct sk_buff *ath9k_build_tx99_skb(struct ath_softc *sc)
 
 static void ath9k_tx99_deinit(struct ath_softc *sc)
 {
-	ath_reset(sc);
+	ath_reset(sc, NULL);
 
 	ath9k_ps_wakeup(sc);
 	ath9k_tx99_stop(sc);
@@ -108,7 +112,7 @@ static int ath9k_tx99_init(struct ath_softc *sc)
 	struct ath_tx_control txctl;
 	int r;
 
-	if (test_bit(SC_OP_INVALID, &sc->sc_flags)) {
+	if (test_bit(ATH_OP_INVALID, &common->op_flags)) {
 		ath_err(common,
 			"driver is in invalid state unable to use TX99");
 		return -EINVAL;
@@ -121,12 +125,11 @@ static int ath9k_tx99_init(struct ath_softc *sc)
 	memset(&txctl, 0, sizeof(txctl));
 	txctl.txq = sc->tx.txq_map[IEEE80211_AC_VO];
 
-	ath_reset(sc);
+	ath_reset(sc, NULL);
 
 	ath9k_ps_wakeup(sc);
 
 	ath9k_hw_disable_interrupts(ah);
-	atomic_set(&ah->intr_ref_cnt, -1);
 	ath_drain_all_txq(sc);
 	ath_stoprecv(sc);
 
@@ -148,7 +151,7 @@ static int ath9k_tx99_init(struct ath_softc *sc)
 		sc->tx99_power,
 		sc->tx99_power / 2);
 
-	/* We leave the harware awake as it will be chugging on */
+	/* We leave the hardware awake as it will be chugging on */
 
 	return 0;
 }
@@ -169,37 +172,41 @@ static ssize_t write_file_tx99(struct file *file, const char __user *user_buf,
 {
 	struct ath_softc *sc = file->private_data;
 	struct ath_common *common = ath9k_hw_common(sc->sc_ah);
-	char buf[32];
 	bool start;
-	ssize_t len;
+	ssize_t ret;
 	int r;
 
-	if (sc->nvifs > 1)
+	if (count < 1)
+		return -EINVAL;
+
+	if (sc->cur_chan->nvifs > 1)
 		return -EOPNOTSUPP;
 
-	len = min(count, sizeof(buf) - 1);
-	if (copy_from_user(buf, user_buf, len))
-		return -EFAULT;
+	ret = kstrtobool_from_user(user_buf, count, &start);
+	if (ret)
+		return ret;
 
-	if (strtobool(buf, &start))
-		return -EINVAL;
+	mutex_lock(&sc->mutex);
 
 	if (start == sc->tx99_state) {
 		if (!start)
-			return count;
+			goto out;
 		ath_dbg(common, XMIT, "Resetting TX99\n");
 		ath9k_tx99_deinit(sc);
 	}
 
 	if (!start) {
 		ath9k_tx99_deinit(sc);
-		return count;
+		goto out;
 	}
 
 	r = ath9k_tx99_init(sc);
-	if (r)
+	if (r) {
+		mutex_unlock(&sc->mutex);
 		return r;
-
+	}
+out:
+	mutex_unlock(&sc->mutex);
 	return count;
 }
 
@@ -260,13 +267,13 @@ static const struct file_operations fops_tx99_power = {
 
 void ath9k_tx99_init_debug(struct ath_softc *sc)
 {
-	if (!AR_SREV_9300_20_OR_LATER(sc->sc_ah))
+	if (!AR_SREV_9280_20_OR_LATER(sc->sc_ah))
 		return;
 
-	debugfs_create_file("tx99", S_IRUSR | S_IWUSR,
+	debugfs_create_file("tx99", 0600,
 			    sc->debug.debugfs_phy, sc,
 			    &fops_tx99);
-	debugfs_create_file("tx99_power", S_IRUSR | S_IWUSR,
+	debugfs_create_file("tx99_power", 0600,
 			    sc->debug.debugfs_phy, sc,
 			    &fops_tx99_power);
 }

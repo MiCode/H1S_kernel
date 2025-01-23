@@ -1,9 +1,5 @@
-/* Copyright (C) 2003-2013 Jozsef Kadlecsik <kadlec@blackhole.kfki.hu>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- */
+// SPDX-License-Identifier: GPL-2.0-only
+/* Copyright (C) 2003-2013 Jozsef Kadlecsik <kadlec@netfilter.org> */
 
 /* Kernel module implementing an IP set type: the bitmap:port type */
 
@@ -22,10 +18,11 @@
 
 #define IPSET_TYPE_REV_MIN	0
 /*				1	   Counter support added */
-#define IPSET_TYPE_REV_MAX	2	/* Comment support added */
+/*				2	   Comment support added */
+#define IPSET_TYPE_REV_MAX	3	/* skbinfo support added */
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Jozsef Kadlecsik <kadlec@blackhole.kfki.hu>");
+MODULE_AUTHOR("Jozsef Kadlecsik <kadlec@netfilter.org>");
 IP_SET_MODULE_DESC("bitmap:port", IPSET_TYPE_REV_MIN, IPSET_TYPE_REV_MAX);
 MODULE_ALIAS("ip_set_bitmap:port");
 
@@ -33,13 +30,15 @@ MODULE_ALIAS("ip_set_bitmap:port");
 
 /* Type structure */
 struct bitmap_port {
-	void *members;		/* the set members */
-	void *extensions;	/* data extensions */
+	unsigned long *members;	/* the set members */
 	u16 first_port;		/* host byte order, included in range */
 	u16 last_port;		/* host byte order, included in range */
 	u32 elements;		/* number of max elements in the set */
 	size_t memsize;		/* members size */
 	struct timer_list gc;	/* garbage collection */
+	struct ip_set *set;	/* attached to this ip_set */
+	unsigned char extensions[]	/* data extensions */
+		__aligned(__alignof__(u64));
 };
 
 /* ADT structure for generic function args */
@@ -47,7 +46,7 @@ struct bitmap_port_adt_elem {
 	u16 id;
 };
 
-static inline u16
+static u16
 port_to_id(const struct bitmap_port *m, u16 port)
 {
 	return port - m->first_port;
@@ -55,34 +54,34 @@ port_to_id(const struct bitmap_port *m, u16 port)
 
 /* Common functions */
 
-static inline int
+static int
 bitmap_port_do_test(const struct bitmap_port_adt_elem *e,
 		    const struct bitmap_port *map, size_t dsize)
 {
 	return !!test_bit(e->id, map->members);
 }
 
-static inline int
+static int
 bitmap_port_gc_test(u16 id, const struct bitmap_port *map, size_t dsize)
 {
 	return !!test_bit(id, map->members);
 }
 
-static inline int
+static int
 bitmap_port_do_add(const struct bitmap_port_adt_elem *e,
 		   struct bitmap_port *map, u32 flags, size_t dsize)
 {
-	return !!test_and_set_bit(e->id, map->members);
+	return !!test_bit(e->id, map->members);
 }
 
-static inline int
+static int
 bitmap_port_do_del(const struct bitmap_port_adt_elem *e,
 		   struct bitmap_port *map)
 {
 	return !test_and_clear_bit(e->id, map->members);
 }
 
-static inline int
+static int
 bitmap_port_do_list(struct sk_buff *skb, const struct bitmap_port *map, u32 id,
 		    size_t dsize)
 {
@@ -90,11 +89,38 @@ bitmap_port_do_list(struct sk_buff *skb, const struct bitmap_port *map, u32 id,
 			     htons(map->first_port + id));
 }
 
-static inline int
+static int
 bitmap_port_do_head(struct sk_buff *skb, const struct bitmap_port *map)
 {
 	return nla_put_net16(skb, IPSET_ATTR_PORT, htons(map->first_port)) ||
 	       nla_put_net16(skb, IPSET_ATTR_PORT_TO, htons(map->last_port));
+}
+
+static bool
+ip_set_get_ip_port(const struct sk_buff *skb, u8 pf, bool src, __be16 *port)
+{
+	bool ret;
+	u8 proto;
+
+	switch (pf) {
+	case NFPROTO_IPV4:
+		ret = ip_set_get_ip4_port(skb, src, port, &proto);
+		break;
+	case NFPROTO_IPV6:
+		ret = ip_set_get_ip6_port(skb, src, port, &proto);
+		break;
+	default:
+		return false;
+	}
+	if (!ret)
+		return ret;
+	switch (proto) {
+	case IPPROTO_TCP:
+	case IPPROTO_UDP:
+		return true;
+	default:
+		return false;
+	}
 }
 
 static int
@@ -104,7 +130,7 @@ bitmap_port_kadt(struct ip_set *set, const struct sk_buff *skb,
 {
 	struct bitmap_port *map = set->data;
 	ipset_adtfn adtfn = set->variant->adt[adt];
-	struct bitmap_port_adt_elem e = {};
+	struct bitmap_port_adt_elem e = { .id = 0 };
 	struct ip_set_ext ext = IP_SET_INIT_KEXT(skb, opt, set);
 	__be16 __port;
 	u16 port = 0;
@@ -129,21 +155,18 @@ bitmap_port_uadt(struct ip_set *set, struct nlattr *tb[],
 {
 	struct bitmap_port *map = set->data;
 	ipset_adtfn adtfn = set->variant->adt[adt];
-	struct bitmap_port_adt_elem e = {};
+	struct bitmap_port_adt_elem e = { .id = 0 };
 	struct ip_set_ext ext = IP_SET_INIT_UEXT(set);
 	u32 port;	/* wraparound */
 	u16 port_to;
 	int ret = 0;
 
-	if (unlikely(!ip_set_attr_netorder(tb, IPSET_ATTR_PORT) ||
-		     !ip_set_optattr_netorder(tb, IPSET_ATTR_PORT_TO) ||
-		     !ip_set_optattr_netorder(tb, IPSET_ATTR_TIMEOUT) ||
-		     !ip_set_optattr_netorder(tb, IPSET_ATTR_PACKETS) ||
-		     !ip_set_optattr_netorder(tb, IPSET_ATTR_BYTES)))
-		return -IPSET_ERR_PROTOCOL;
-
 	if (tb[IPSET_ATTR_LINENO])
 		*lineno = nla_get_u32(tb[IPSET_ATTR_LINENO]);
+
+	if (unlikely(!ip_set_attr_netorder(tb, IPSET_ATTR_PORT) ||
+		     !ip_set_optattr_netorder(tb, IPSET_ATTR_PORT_TO)))
+		return -IPSET_ERR_PROTOCOL;
 
 	port = ip_set_get_h16(tb[IPSET_ATTR_PORT]);
 	if (port < map->first_port || port > map->last_port)
@@ -164,8 +187,9 @@ bitmap_port_uadt(struct ip_set *set, struct nlattr *tb[],
 			if (port < map->first_port)
 				return -IPSET_ERR_BITMAP_RANGE;
 		}
-	} else
+	} else {
 		port_to = port;
+	}
 
 	if (port_to > map->last_port)
 		return -IPSET_ERR_BITMAP_RANGE;
@@ -176,8 +200,8 @@ bitmap_port_uadt(struct ip_set *set, struct nlattr *tb[],
 
 		if (ret && !ip_set_eexist(ret, flags))
 			return ret;
-		else
-			ret = 0;
+
+		ret = 0;
 	}
 	return ret;
 }
@@ -207,20 +231,14 @@ static bool
 init_map_port(struct ip_set *set, struct bitmap_port *map,
 	      u16 first_port, u16 last_port)
 {
-	map->members = ip_set_alloc(map->memsize);
+	map->members = bitmap_zalloc(map->elements, GFP_KERNEL | __GFP_NOWARN);
 	if (!map->members)
 		return false;
-	if (set->dsize) {
-		map->extensions = ip_set_alloc(set->dsize * map->elements);
-		if (!map->extensions) {
-			kfree(map->members);
-			return false;
-		}
-	}
 	map->first_port = first_port;
 	map->last_port = last_port;
 	set->timeout = IPSET_NO_TIMEOUT;
 
+	map->set = set;
 	set->data = map;
 	set->family = NFPROTO_UNSPEC;
 
@@ -233,6 +251,7 @@ bitmap_port_create(struct net *net, struct ip_set *set, struct nlattr *tb[],
 {
 	struct bitmap_port *map;
 	u16 first_port, last_port;
+	u32 elements;
 
 	if (unlikely(!ip_set_attr_netorder(tb, IPSET_ATTR_PORT) ||
 		     !ip_set_attr_netorder(tb, IPSET_ATTR_PORT_TO) ||
@@ -242,23 +261,20 @@ bitmap_port_create(struct net *net, struct ip_set *set, struct nlattr *tb[],
 
 	first_port = ip_set_get_h16(tb[IPSET_ATTR_PORT]);
 	last_port = ip_set_get_h16(tb[IPSET_ATTR_PORT_TO]);
-	if (first_port > last_port) {
-		u16 tmp = first_port;
+	if (first_port > last_port)
+		swap(first_port, last_port);
 
-		first_port = last_port;
-		last_port = tmp;
-	}
-
-	map = kzalloc(sizeof(*map), GFP_KERNEL);
+	elements = last_port - first_port + 1;
+	set->dsize = ip_set_elem_len(set, tb, 0, 0);
+	map = ip_set_alloc(sizeof(*map) + elements * set->dsize);
 	if (!map)
 		return -ENOMEM;
 
-	map->elements = last_port - first_port + 1;
-	map->memsize = bitmap_bytes(0, map->elements);
+	map->elements = elements;
+	map->memsize = BITS_TO_LONGS(elements) * sizeof(unsigned long);
 	set->variant = &bitmap_port;
-	set->dsize = ip_set_elem_len(set, tb, 0);
 	if (!init_map_port(set, map, first_port, last_port)) {
-		kfree(map);
+		ip_set_free(map);
 		return -ENOMEM;
 	}
 	if (tb[IPSET_ATTR_TIMEOUT]) {
@@ -290,7 +306,11 @@ static struct ip_set_type bitmap_port_type = {
 		[IPSET_ATTR_LINENO]	= { .type = NLA_U32 },
 		[IPSET_ATTR_BYTES]	= { .type = NLA_U64 },
 		[IPSET_ATTR_PACKETS]	= { .type = NLA_U64 },
-		[IPSET_ATTR_COMMENT]	= { .type = NLA_NUL_STRING },
+		[IPSET_ATTR_COMMENT]	= { .type = NLA_NUL_STRING,
+					    .len  = IPSET_MAX_COMMENT_SIZE },
+		[IPSET_ATTR_SKBMARK]	= { .type = NLA_U64 },
+		[IPSET_ATTR_SKBPRIO]	= { .type = NLA_U32 },
+		[IPSET_ATTR_SKBQUEUE]	= { .type = NLA_U16 },
 	},
 	.me		= THIS_MODULE,
 };
@@ -304,6 +324,7 @@ bitmap_port_init(void)
 static void __exit
 bitmap_port_fini(void)
 {
+	rcu_barrier();
 	ip_set_type_unregister(&bitmap_port_type);
 }
 

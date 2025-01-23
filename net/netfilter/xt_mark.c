@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *	xt_mark - Netfilter module to match NFMARK value
  *
  *	(C) 1999-2001 Marc Boucher <marc@mbsi.ca>
  *	Copyright © CC Computer Consultants GmbH, 2007 - 2008
  *	Jan Engelhardt <jengelh@medozas.de>
- *
- *	This program is free software; you can redistribute it and/or modify
- *	it under the terms of the GNU General Public License version 2 as
- *	published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -23,6 +20,7 @@ MODULE_ALIAS("ipt_mark");
 MODULE_ALIAS("ip6t_mark");
 MODULE_ALIAS("ipt_MARK");
 MODULE_ALIAS("ip6t_MARK");
+MODULE_ALIAS("arpt_MARK");
 
 static unsigned int
 mark_tg(struct sk_buff *skb, const struct xt_action_param *par)

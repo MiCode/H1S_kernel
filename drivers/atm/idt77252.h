@@ -184,6 +184,8 @@ struct aal1 {
 	unsigned char		sequence;
 };
 
+struct vc_map;
+
 struct rate_estimator {
 	struct timer_list	timer;
 	unsigned int		interval;
@@ -193,6 +195,7 @@ struct rate_estimator {
 	long			avcps;
 	u32			cps;
 	u32			maxcps;
+	struct vc_map		*vc;
 };
 
 struct vc_map {
@@ -786,7 +789,7 @@ struct idt77252_skb_prv {
 	struct scqe	tbd;	/* Transmit Buffer Descriptor */
 	dma_addr_t	paddr;	/* DMA handle */
 	u32		pool;	/* sb_pool handle */
-};
+} __packed;
 
 #define IDT77252_PRV_TBD(skb)	\
 	(((struct idt77252_skb_prv *)(ATM_SKB(skb)+1))->tbd)

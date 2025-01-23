@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __BEN_VLAN_802_1Q_INC__
 #define __BEN_VLAN_802_1Q_INC__
 
@@ -35,16 +36,16 @@ struct vlan_info {
 	struct rcu_head		rcu;
 };
 
-static inline unsigned int vlan_proto_idx(__be16 proto)
+static inline int vlan_proto_idx(__be16 proto)
 {
 	switch (proto) {
-	case __constant_htons(ETH_P_8021Q):
+	case htons(ETH_P_8021Q):
 		return VLAN_PROTO_8021Q;
-	case __constant_htons(ETH_P_8021AD):
+	case htons(ETH_P_8021AD):
 		return VLAN_PROTO_8021AD;
 	default:
-		BUG();
-		return 0;
+		WARN(1, "invalid VLAN protocol: 0x%04x\n", ntohs(proto));
+		return -EINVAL;
 	}
 }
 
@@ -56,6 +57,10 @@ static inline struct net_device *__vlan_group_get_device(struct vlan_group *vg,
 
 	array = vg->vlan_devices_arrays[pidx]
 				       [vlan_id / VLAN_GROUP_ARRAY_PART_LEN];
+
+	/* paired with smp_wmb() in vlan_group_prealloc_vid() */
+	smp_rmb();
+
 	return array ? array[vlan_id % VLAN_GROUP_ARRAY_PART_LEN] : NULL;
 }
 
@@ -63,17 +68,24 @@ static inline struct net_device *vlan_group_get_device(struct vlan_group *vg,
 						       __be16 vlan_proto,
 						       u16 vlan_id)
 {
-	return __vlan_group_get_device(vg, vlan_proto_idx(vlan_proto), vlan_id);
+	int pidx = vlan_proto_idx(vlan_proto);
+
+	if (pidx < 0)
+		return NULL;
+
+	return __vlan_group_get_device(vg, pidx, vlan_id);
 }
 
 static inline void vlan_group_set_device(struct vlan_group *vg,
 					 __be16 vlan_proto, u16 vlan_id,
 					 struct net_device *dev)
 {
+	int pidx = vlan_proto_idx(vlan_proto);
 	struct net_device **array;
-	if (!vg)
+
+	if (!vg || pidx < 0)
 		return;
-	array = vg->vlan_devices_arrays[vlan_proto_idx(vlan_proto)]
+	array = vg->vlan_devices_arrays[pidx]
 				       [vlan_id / VLAN_GROUP_ARRAY_PART_LEN];
 	array[vlan_id % VLAN_GROUP_ARRAY_PART_LEN] = dev;
 }
@@ -91,24 +103,45 @@ static inline struct net_device *vlan_find_dev(struct net_device *real_dev,
 	return NULL;
 }
 
+static inline netdev_features_t vlan_tnl_features(struct net_device *real_dev)
+{
+	netdev_features_t ret;
+
+	ret = real_dev->hw_enc_features &
+	      (NETIF_F_CSUM_MASK | NETIF_F_GSO_SOFTWARE |
+	       NETIF_F_GSO_ENCAP_ALL);
+
+	if ((ret & NETIF_F_GSO_ENCAP_ALL) && (ret & NETIF_F_CSUM_MASK))
+		return (ret & ~NETIF_F_CSUM_MASK) | NETIF_F_HW_CSUM;
+	return 0;
+}
+
 #define vlan_group_for_each_dev(grp, i, dev) \
 	for ((i) = 0; i < VLAN_PROTO_NUM * VLAN_N_VID; i++) \
 		if (((dev) = __vlan_group_get_device((grp), (i) / VLAN_N_VID, \
 							    (i) % VLAN_N_VID)))
+
+int vlan_filter_push_vids(struct vlan_info *vlan_info, __be16 proto);
+void vlan_filter_drop_vids(struct vlan_info *vlan_info, __be16 proto);
 
 /* found in vlan_dev.c */
 void vlan_dev_set_ingress_priority(const struct net_device *dev,
 				   u32 skb_prio, u16 vlan_prio);
 int vlan_dev_set_egress_priority(const struct net_device *dev,
 				 u32 skb_prio, u16 vlan_prio);
+void vlan_dev_free_egress_priority(const struct net_device *dev);
 int vlan_dev_change_flags(const struct net_device *dev, u32 flag, u32 mask);
-void vlan_dev_get_realdev_name(const struct net_device *dev, char *result);
+void vlan_dev_get_realdev_name(const struct net_device *dev, char *result,
+			       size_t size);
 
 int vlan_check_real_dev(struct net_device *real_dev,
-			__be16 protocol, u16 vlan_id);
+			__be16 protocol, u16 vlan_id,
+			struct netlink_ext_ack *extack);
 void vlan_setup(struct net_device *dev);
-int register_vlan_dev(struct net_device *dev);
+int register_vlan_dev(struct net_device *dev, struct netlink_ext_ack *extack);
 void unregister_vlan_dev(struct net_device *dev, struct list_head *head);
+bool vlan_dev_inherit_address(struct net_device *dev,
+			      struct net_device *real_dev);
 
 static inline u32 vlan_get_ingress_priority(struct net_device *dev,
 					    u16 vlan_tci)
@@ -157,7 +190,7 @@ void vlan_netlink_fini(void);
 
 extern struct rtnl_link_ops vlan_link_ops;
 
-extern int vlan_net_id;
+extern unsigned int vlan_net_id;
 
 struct proc_dir_entry;
 

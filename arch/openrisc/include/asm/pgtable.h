@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * OpenRISC Linux
  *
@@ -9,14 +10,9 @@
  * Copyright (C) 2003 Matjaz Breskvar <phoenix@bsemi.com>
  * Copyright (C) 2010-2011 Jonas Bonn <jonas@southpole.se>
  * et al.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
-/* or32 pgtable.h - macros and functions to manipulate page tables
+/* or1k pgtable.h - macros and functions to manipulate page tables
  *
  * Based on:
  * include/asm-cris/pgtable.h
@@ -33,14 +29,14 @@
 
 /*
  * The Linux memory management assumes a three-level page table setup. On
- * or32, we use that, but "fold" the mid level into the top-level page
+ * or1k, we use that, but "fold" the mid level into the top-level page
  * table. Since the MMU TLB is software loaded through an interrupt, it
  * supports any page table structure, so we could have used a three-level
  * setup, but for the amounts of memory we normally use, a two-level is
  * probably more efficient.
  *
  * This file contains the functions and defines necessary to modify and use
- * the or32 page table tree.
+ * the or1k page table tree.
  */
 
 extern void paging_init(void);
@@ -50,7 +46,7 @@ extern void paging_init(void);
  * hook is made available.
  */
 #define set_pte(pteptr, pteval) ((*(pteptr)) = (pteval))
-#define set_pte_at(mm, addr, ptep, pteval) set_pte(ptep, pteval)
+
 /*
  * (pmds are folded into pgds so this doesn't get actually called,
  * but the define is needed for a generic inline function.)
@@ -69,7 +65,7 @@ extern void paging_init(void);
  */
 #define PTRS_PER_PTE	(1UL << (PAGE_SHIFT-2))
 
-#define PTRS_PER_PGD	(1UL << (PAGE_SHIFT-2))
+#define PTRS_PER_PGD	(1UL << (32-PGDIR_SHIFT))
 
 /* calculate how many PGD entries a user-level program can use
  * the first mappable virtual address is 0
@@ -77,7 +73,6 @@ extern void paging_init(void);
  */
 
 #define USER_PTRS_PER_PGD       (TASK_SIZE/PGDIR_SIZE)
-#define FIRST_USER_ADDRESS      0
 
 /*
  * Kernels own virtual memory area.
@@ -93,14 +88,14 @@ extern void paging_init(void);
  * 64 MB of vmalloc area is comparable to what's available on other arches.
  */
 
-#define VMALLOC_START	(PAGE_OFFSET-0x04000000)
+#define VMALLOC_START	(PAGE_OFFSET-0x04000000UL)
 #define VMALLOC_END	(PAGE_OFFSET)
 #define VMALLOC_VMADDR(x) ((unsigned long)(x))
 
 /* Define some higher level generic page attributes.
  *
  * If you change _PAGE_CI definition be sure to change it in
- * io.h for ioremap_nocache() too.
+ * io.h for ioremap() too.
  */
 
 /*
@@ -125,7 +120,6 @@ extern void paging_init(void);
 #define _PAGE_CC       0x001 /* software: pte contains a translation */
 #define _PAGE_CI       0x002 /* cache inhibit          */
 #define _PAGE_WBC      0x004 /* write back cache       */
-#define _PAGE_FILE     0x004 /* set: pagecache, unset: swap (when !PRESENT) */
 #define _PAGE_WOM      0x008 /* weakly ordered memory  */
 
 #define _PAGE_A        0x010 /* accessed               */
@@ -160,6 +154,9 @@ extern void paging_init(void);
 #define _KERNPG_TABLE \
 	(_PAGE_BASE | _PAGE_SRE | _PAGE_SWE | _PAGE_ACCESSED | _PAGE_DIRTY)
 
+/* We borrow bit 11 to store the exclusive marker in swap PTEs. */
+#define _PAGE_SWP_EXCLUSIVE	_PAGE_U_SHARED
+
 #define PAGE_NONE       __pgprot(_PAGE_ALL)
 #define PAGE_READONLY   __pgprot(_PAGE_ALL | _PAGE_URE | _PAGE_SRE)
 #define PAGE_READONLY_X __pgprot(_PAGE_ALL | _PAGE_URE | _PAGE_SRE | _PAGE_EXEC)
@@ -181,24 +178,6 @@ extern void paging_init(void);
 #define PAGE_KERNEL_NOCACHE \
 	__pgprot(_PAGE_ALL | _PAGE_SRE | _PAGE_SWE \
 		 | _PAGE_SHARED | _PAGE_DIRTY | _PAGE_EXEC | _PAGE_CI)
-
-#define __P000	PAGE_NONE
-#define __P001	PAGE_READONLY_X
-#define __P010	PAGE_COPY
-#define __P011	PAGE_COPY_X
-#define __P100	PAGE_READONLY
-#define __P101	PAGE_READONLY_X
-#define __P110	PAGE_COPY
-#define __P111	PAGE_COPY_X
-
-#define __S000	PAGE_NONE
-#define __S001	PAGE_READONLY_X
-#define __S010	PAGE_SHARED
-#define __S011	PAGE_SHARED_X
-#define __S100	PAGE_READONLY
-#define __S101	PAGE_READONLY_X
-#define __S110	PAGE_SHARED
-#define __S111	PAGE_SHARED_X
 
 /* zero page used for uninitialized stuff */
 extern unsigned long empty_zero_page[2048];
@@ -240,9 +219,6 @@ static inline int pte_write(pte_t pte) { return pte_val(pte) & _PAGE_WRITE; }
 static inline int pte_exec(pte_t pte)  { return pte_val(pte) & _PAGE_EXEC; }
 static inline int pte_dirty(pte_t pte) { return pte_val(pte) & _PAGE_DIRTY; }
 static inline int pte_young(pte_t pte) { return pte_val(pte) & _PAGE_ACCESSED; }
-static inline int pte_file(pte_t pte)  { return pte_val(pte) & _PAGE_FILE; }
-static inline int pte_special(pte_t pte) { return 0; }
-static inline pte_t pte_mkspecial(pte_t pte) { return pte; }
 
 static inline pte_t pte_wrprotect(pte_t pte)
 {
@@ -274,7 +250,7 @@ static inline pte_t pte_mkold(pte_t pte)
 	return pte;
 }
 
-static inline pte_t pte_mkwrite(pte_t pte)
+static inline pte_t pte_mkwrite_novma(pte_t pte)
 {
 	pte_val(pte) |= _PAGE_WRITE;
 	return pte;
@@ -370,39 +346,18 @@ static inline void pmd_set(pmd_t *pmdp, pte_t *ptep)
 	pmd_val(*pmdp) = _KERNPG_TABLE | (unsigned long) ptep;
 }
 
+#define pmd_pfn(pmd)		(pmd_val(pmd) >> PAGE_SHIFT)
 #define pmd_page(pmd)		(pfn_to_page(pmd_val(pmd) >> PAGE_SHIFT))
-#define pmd_page_kernel(pmd)    ((unsigned long) __va(pmd_val(pmd) & PAGE_MASK))
 
-/* to find an entry in a page-table-directory. */
-#define pgd_index(address)      ((address >> PGDIR_SHIFT) & (PTRS_PER_PGD-1))
-
-#define __pgd_offset(address)   pgd_index(address)
-
-#define pgd_offset(mm, address) ((mm)->pgd+pgd_index(address))
-
-/* to find an entry in a kernel page-table-directory */
-#define pgd_offset_k(address) pgd_offset(&init_mm, address)
+static inline unsigned long pmd_page_vaddr(pmd_t pmd)
+{
+	return ((unsigned long) __va(pmd_val(pmd) & PAGE_MASK));
+}
 
 #define __pmd_offset(address) \
 	(((address) >> PMD_SHIFT) & (PTRS_PER_PMD-1))
 
-/*
- * the pte page can be thought of an array like this: pte_t[PTRS_PER_PTE]
- *
- * this macro returns the index of the entry in the pte page which would
- * control the given virtual address
- */
-#define __pte_offset(address)                   \
-	(((address) >> PAGE_SHIFT) & (PTRS_PER_PTE - 1))
-#define pte_offset_kernel(dir, address)         \
-	((pte_t *) pmd_page_kernel(*(dir)) +  __pte_offset(address))
-#define pte_offset_map(dir, address)	        \
-	((pte_t *)page_address(pmd_page(*(dir))) + __pte_offset(address))
-#define pte_offset_map_nested(dir, address)     \
-	pte_offset_map(dir, address)
-
-#define pte_unmap(pte)          do { } while (0)
-#define pte_unmap_nested(pte)   do { } while (0)
+#define PFN_PTE_SHIFT		PAGE_SHIFT
 #define pte_pfn(x)		((unsigned long)(((x).pte)) >> PAGE_SHIFT)
 #define pfn_pte(pfn, prot)  __pte((((pfn) << PAGE_SHIFT)) | pgprot_val(prot))
 
@@ -415,43 +370,65 @@ static inline void pmd_set(pmd_t *pmdp, pte_t *ptep)
 
 extern pgd_t swapper_pg_dir[PTRS_PER_PGD]; /* defined in head.S */
 
-/*
- * or32 doesn't have any external MMU info: the kernel page
- * tables contain all the necessary information.
- *
- * Actually I am not sure on what this could be used for.
- */
-static inline void update_mmu_cache(struct vm_area_struct *vma,
+struct vm_area_struct;
+
+static inline void update_tlb(struct vm_area_struct *vma,
 	unsigned long address, pte_t *pte)
 {
 }
 
+extern void update_cache(struct vm_area_struct *vma,
+	unsigned long address, pte_t *pte);
+
+static inline void update_mmu_cache_range(struct vm_fault *vmf,
+		struct vm_area_struct *vma, unsigned long address,
+		pte_t *ptep, unsigned int nr)
+{
+	update_tlb(vma, address, ptep);
+	update_cache(vma, address, ptep);
+}
+
+#define update_mmu_cache(vma, addr, ptep) \
+	update_mmu_cache_range(NULL, vma, addr, ptep, 1)
+
 /* __PHX__ FIXME, SWAP, this probably doesn't work */
 
-/* Encode and de-code a swap entry (must be !pte_none(e) && !pte_present(e)) */
-/* Since the PAGE_PRESENT bit is bit 4, we can use the bits above */
-
-#define __swp_type(x)			(((x).val >> 5) & 0x7f)
+/*
+ * Encode/decode swap entries and swap PTEs. Swap PTEs are all PTEs that
+ * are !pte_none() && !pte_present().
+ *
+ * Format of swap PTEs:
+ *
+ *   3 3 2 2 2 2 2 2 2 2 2 2 1 1 1 1 1 1 1 1 1 1
+ *   1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0
+ *   <-------------- offset ---------------> E <- type --> 0 0 0 0 0
+ *
+ *   E is the exclusive marker that is not stored in swap entries.
+ *   The zero'ed bits include _PAGE_PRESENT.
+ */
+#define __swp_type(x)			(((x).val >> 5) & 0x3f)
 #define __swp_offset(x)			((x).val >> 12)
 #define __swp_entry(type, offset) \
-	((swp_entry_t) { ((type) << 5) | ((offset) << 12) })
+	((swp_entry_t) { (((type) & 0x3f) << 5) | ((offset) << 12) })
 #define __pte_to_swp_entry(pte)		((swp_entry_t) { pte_val(pte) })
 #define __swp_entry_to_pte(x)		((pte_t) { (x).val })
 
-/* Encode and decode a nonlinear file mapping entry */
+static inline int pte_swp_exclusive(pte_t pte)
+{
+	return pte_val(pte) & _PAGE_SWP_EXCLUSIVE;
+}
 
-#define PTE_FILE_MAX_BITS               26
-#define pte_to_pgoff(x)	                (pte_val(x) >> 6)
-#define pgoff_to_pte(x)	                __pte(((x) << 6) | _PAGE_FILE)
+static inline pte_t pte_swp_mkexclusive(pte_t pte)
+{
+	pte_val(pte) |= _PAGE_SWP_EXCLUSIVE;
+	return pte;
+}
 
-#define kern_addr_valid(addr)           (1)
-
-#include <asm-generic/pgtable.h>
-
-/*
- * No page table caches to initialise
- */
-#define pgtable_cache_init()		do { } while (0)
+static inline pte_t pte_swp_clear_exclusive(pte_t pte)
+{
+	pte_val(pte) &= ~_PAGE_SWP_EXCLUSIVE;
+	return pte;
+}
 
 typedef pte_t *pte_addr_t;
 

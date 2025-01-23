@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Filtering ARP tables module.
  *
@@ -25,67 +26,65 @@ static const struct xt_table packet_filter = {
 	.priority	= NF_IP_PRI_FILTER,
 };
 
-/* The work comes in here from netfilter.c */
-static unsigned int
-arptable_filter_hook(const struct nf_hook_ops *ops, struct sk_buff *skb,
-		     const struct net_device *in, const struct net_device *out,
-		     int (*okfn)(struct sk_buff *))
-{
-	const struct net *net = dev_net((in != NULL) ? in : out);
-
-	return arpt_do_table(skb, ops->hooknum, in, out,
-			     net->ipv4.arptable_filter);
-}
-
 static struct nf_hook_ops *arpfilter_ops __read_mostly;
 
-static int __net_init arptable_filter_net_init(struct net *net)
+static int arptable_filter_table_init(struct net *net)
 {
 	struct arpt_replace *repl;
-	
+	int err;
+
 	repl = arpt_alloc_initial_table(&packet_filter);
 	if (repl == NULL)
 		return -ENOMEM;
-	net->ipv4.arptable_filter =
-		arpt_register_table(net, &packet_filter, repl);
+	err = arpt_register_table(net, &packet_filter, repl, arpfilter_ops);
 	kfree(repl);
-	return PTR_ERR_OR_ZERO(net->ipv4.arptable_filter);
+	return err;
+}
+
+static void __net_exit arptable_filter_net_pre_exit(struct net *net)
+{
+	arpt_unregister_table_pre_exit(net, "filter");
 }
 
 static void __net_exit arptable_filter_net_exit(struct net *net)
 {
-	arpt_unregister_table(net->ipv4.arptable_filter);
+	arpt_unregister_table(net, "filter");
 }
 
 static struct pernet_operations arptable_filter_net_ops = {
-	.init = arptable_filter_net_init,
 	.exit = arptable_filter_net_exit,
+	.pre_exit = arptable_filter_net_pre_exit,
 };
 
 static int __init arptable_filter_init(void)
 {
-	int ret;
+	int ret = xt_register_template(&packet_filter,
+				       arptable_filter_table_init);
 
-	ret = register_pernet_subsys(&arptable_filter_net_ops);
 	if (ret < 0)
 		return ret;
 
-	arpfilter_ops = xt_hook_link(&packet_filter, arptable_filter_hook);
+	arpfilter_ops = xt_hook_ops_alloc(&packet_filter, arpt_do_table);
 	if (IS_ERR(arpfilter_ops)) {
-		ret = PTR_ERR(arpfilter_ops);
-		goto cleanup_table;
+		xt_unregister_template(&packet_filter);
+		return PTR_ERR(arpfilter_ops);
 	}
-	return ret;
 
-cleanup_table:
-	unregister_pernet_subsys(&arptable_filter_net_ops);
+	ret = register_pernet_subsys(&arptable_filter_net_ops);
+	if (ret < 0) {
+		xt_unregister_template(&packet_filter);
+		kfree(arpfilter_ops);
+		return ret;
+	}
+
 	return ret;
 }
 
 static void __exit arptable_filter_fini(void)
 {
-	xt_hook_unlink(&packet_filter, arpfilter_ops);
 	unregister_pernet_subsys(&arptable_filter_net_ops);
+	xt_unregister_template(&packet_filter);
+	kfree(arpfilter_ops);
 }
 
 module_init(arptable_filter_init);

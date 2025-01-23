@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Standard Hot Plug Controller Driver
  *
@@ -7,21 +8,6 @@
  * Copyright (C) 2003-2004 Intel Corporation
  *
  * All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or (at
- * your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
- * NON INFRINGEMENT.  See the GNU General Public License for more
- * details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * Send feedback to <greg@kroah.com>, <kristen.c.accardi@intel.com>
  *
@@ -162,7 +148,7 @@ u8 shpchp_handle_power_fault(u8 hp_slot, struct controller *ctrl)
 
 	p_slot = shpchp_find_slot(ctrl, hp_slot + ctrl->slot_device_offset);
 
-	if ( !(p_slot->hpc_ops->query_power_fault(p_slot))) {
+	if (!(p_slot->hpc_ops->query_power_fault(p_slot))) {
 		/*
 		 * Power fault Cleared
 		 */
@@ -195,9 +181,10 @@ static int change_bus_speed(struct controller *ctrl, struct slot *p_slot,
 	int rc = 0;
 
 	ctrl_dbg(ctrl, "Change speed to %d\n", speed);
-	if ((rc = p_slot->hpc_ops->set_bus_speed_mode(p_slot, speed))) {
-		ctrl_err(ctrl, "%s: Issue of set bus speed mode command "
-			 "failed\n", __func__);
+	rc = p_slot->hpc_ops->set_bus_speed_mode(p_slot, speed);
+	if (rc) {
+		ctrl_err(ctrl, "%s: Issue of set bus speed mode command failed\n",
+			 __func__);
 		return WRONG_BUS_FREQUENCY;
 	}
 	return rc;
@@ -215,8 +202,8 @@ static int fix_bus_speed(struct controller *ctrl, struct slot *pslot,
 	 */
 	if (flag) {
 		if (asp < bsp) {
-			ctrl_err(ctrl, "Speed of bus %x and adapter %x "
-				 "mismatch\n", bsp, asp);
+			ctrl_err(ctrl, "Speed of bus %x and adapter %x mismatch\n",
+				 bsp, asp);
 			rc = WRONG_BUS_FREQUENCY;
 		}
 		return rc;
@@ -250,8 +237,7 @@ static int board_added(struct slot *p_slot)
 
 	hp_slot = p_slot->device - ctrl->slot_device_offset;
 
-	ctrl_dbg(ctrl,
-		 "%s: p_slot->device, slot_offset, hp_slot = %d, %d ,%d\n",
+	ctrl_dbg(ctrl, "%s: p_slot->device, slot_offset, hp_slot = %d, %d ,%d\n",
 		 __func__, p_slot->device, ctrl->slot_device_offset, hp_slot);
 
 	/* Power on slot without connecting to bus */
@@ -262,14 +248,16 @@ static int board_added(struct slot *p_slot)
 	}
 
 	if ((ctrl->pci_dev->vendor == 0x8086) && (ctrl->pci_dev->device == 0x0332)) {
-		if ((rc = p_slot->hpc_ops->set_bus_speed_mode(p_slot, PCI_SPEED_33MHz))) {
-			ctrl_err(ctrl, "%s: Issue of set bus speed mode command"
-				 " failed\n", __func__);
+		rc = p_slot->hpc_ops->set_bus_speed_mode(p_slot, PCI_SPEED_33MHz);
+		if (rc) {
+			ctrl_err(ctrl, "%s: Issue of set bus speed mode command failed\n",
+				 __func__);
 			return WRONG_BUS_FREQUENCY;
 		}
 
 		/* turn on board, blink green LED, turn off Amber LED */
-		if ((rc = p_slot->hpc_ops->slot_enable(p_slot))) {
+		rc = p_slot->hpc_ops->slot_enable(p_slot);
+		if (rc) {
 			ctrl_err(ctrl, "Issue of Slot Enable command failed\n");
 			return rc;
 		}
@@ -277,20 +265,19 @@ static int board_added(struct slot *p_slot)
 
 	rc = p_slot->hpc_ops->get_adapter_speed(p_slot, &asp);
 	if (rc) {
-		ctrl_err(ctrl, "Can't get adapter speed or "
-			 "bus mode mismatch\n");
+		ctrl_err(ctrl, "Can't get adapter speed or bus mode mismatch\n");
 		return WRONG_BUS_FREQUENCY;
 	}
 
-	bsp = ctrl->pci_dev->bus->cur_bus_speed;
-	msp = ctrl->pci_dev->bus->max_bus_speed;
+	bsp = ctrl->pci_dev->subordinate->cur_bus_speed;
+	msp = ctrl->pci_dev->subordinate->max_bus_speed;
 
 	/* Check if there are other slots or devices on the same bus */
 	if (!list_empty(&ctrl->pci_dev->subordinate->devices))
 		slots_not_empty = 1;
 
-	ctrl_dbg(ctrl, "%s: slots_not_empty %d, adapter_speed %d, bus_speed %d,"
-		 " max_bus_speed %d\n", __func__, slots_not_empty, asp,
+	ctrl_dbg(ctrl, "%s: slots_not_empty %d, adapter_speed %d, bus_speed %d, max_bus_speed %d\n",
+		 __func__, slots_not_empty, asp,
 		 bsp, msp);
 
 	rc = fix_bus_speed(ctrl, p_slot, slots_not_empty, asp, bsp, msp);
@@ -298,7 +285,8 @@ static int board_added(struct slot *p_slot)
 		return rc;
 
 	/* turn on board, blink green LED, turn off Amber LED */
-	if ((rc = p_slot->hpc_ops->slot_enable(p_slot))) {
+	rc = p_slot->hpc_ops->slot_enable(p_slot);
+	if (rc) {
 		ctrl_err(ctrl, "Issue of Slot Enable command failed\n");
 		return rc;
 	}
@@ -311,7 +299,6 @@ static int board_added(struct slot *p_slot)
 	if (p_slot->status == 0xFF) {
 		/* power fault occurred, but it was benign */
 		ctrl_dbg(ctrl, "%s: Power fault\n", __func__);
-		rc = POWER_FAILURE;
 		p_slot->status = 0;
 		goto err_exit;
 	}
@@ -353,8 +340,7 @@ static int remove_board(struct slot *p_slot)
 	u8 hp_slot;
 	int rc;
 
-	if (shpchp_unconfigure_device(p_slot))
-		return(1);
+	shpchp_unconfigure_device(p_slot);
 
 	hp_slot = p_slot->device - ctrl->slot_device_offset;
 	p_slot = shpchp_find_slot(ctrl, hp_slot + ctrl->slot_device_offset);
@@ -458,23 +444,12 @@ void shpchp_queue_pushbutton_work(struct work_struct *work)
 	mutex_unlock(&p_slot->lock);
 }
 
-static int update_slot_info (struct slot *slot)
+static void update_slot_info(struct slot *slot)
 {
-	struct hotplug_slot_info *info;
-	int result;
-
-	info = kmalloc(sizeof(*info), GFP_KERNEL);
-	if (!info)
-		return -ENOMEM;
-
-	slot->hpc_ops->get_power_status(slot, &(info->power_status));
-	slot->hpc_ops->get_attention_status(slot, &(info->attention_status));
-	slot->hpc_ops->get_latch_status(slot, &(info->latch_status));
-	slot->hpc_ops->get_adapter_status(slot, &(info->adapter_status));
-
-	result = pci_hp_change_slot_info(slot->hotplug_slot, info);
-	kfree (info);
-	return result;
+	slot->hpc_ops->get_power_status(slot, &slot->pwr_save);
+	slot->hpc_ops->get_attention_status(slot, &slot->attention_save);
+	slot->hpc_ops->get_latch_status(slot, &slot->latch_save);
+	slot->hpc_ops->get_adapter_status(slot, &slot->presence_save);
 }
 
 /*
@@ -490,12 +465,12 @@ static void handle_button_press_event(struct slot *p_slot)
 		p_slot->hpc_ops->get_power_status(p_slot, &getstatus);
 		if (getstatus) {
 			p_slot->state = BLINKINGOFF_STATE;
-			ctrl_info(ctrl, "PCI slot #%s - powering off due to "
-				  "button press.\n", slot_name(p_slot));
+			ctrl_info(ctrl, "PCI slot #%s - powering off due to button press\n",
+				  slot_name(p_slot));
 		} else {
 			p_slot->state = BLINKINGON_STATE;
-			ctrl_info(ctrl, "PCI slot #%s - powering on due to "
-				  "button press.\n", slot_name(p_slot));
+			ctrl_info(ctrl, "PCI slot #%s - powering on due to button press\n",
+				  slot_name(p_slot));
 		}
 		/* blink green LED and turn off amber */
 		p_slot->hpc_ops->green_led_blink(p_slot);
@@ -518,8 +493,8 @@ static void handle_button_press_event(struct slot *p_slot)
 		else
 			p_slot->hpc_ops->green_led_off(p_slot);
 		p_slot->hpc_ops->set_attention_status(p_slot, 0);
-		ctrl_info(ctrl, "PCI slot #%s - action canceled due to "
-			  "button press\n", slot_name(p_slot));
+		ctrl_info(ctrl, "PCI slot #%s - action canceled due to button press\n",
+			  slot_name(p_slot));
 		p_slot->state = STATIC_STATE;
 		break;
 	case POWEROFF_STATE:
@@ -597,13 +572,13 @@ static int shpchp_enable_slot (struct slot *p_slot)
 	ctrl_dbg(ctrl, "%s: p_slot->pwr_save %x\n", __func__, p_slot->pwr_save);
 	p_slot->hpc_ops->get_latch_status(p_slot, &getstatus);
 
-	if(((p_slot->ctrl->pci_dev->vendor == PCI_VENDOR_ID_AMD) ||
-	    (p_slot->ctrl->pci_dev->device == PCI_DEVICE_ID_AMD_POGO_7458))
+	if ((p_slot->ctrl->pci_dev->vendor == PCI_VENDOR_ID_AMD &&
+	     p_slot->ctrl->pci_dev->device == PCI_DEVICE_ID_AMD_POGO_7458)
 	     && p_slot->ctrl->num_slots == 1) {
-		/* handle amd pogo errata; this must be done before enable  */
+		/* handle AMD POGO errata; this must be done before enable  */
 		amd_pogo_errata_save_misc_reg(p_slot);
 		retval = board_added(p_slot);
-		/* handle amd pogo errata; this must be done after enable  */
+		/* handle AMD POGO errata; this must be done after enable  */
 		amd_pogo_errata_restore_misc_reg(p_slot);
 	} else
 		retval = board_added(p_slot);
@@ -666,6 +641,7 @@ int shpchp_sysfs_enable_slot(struct slot *p_slot)
 	switch (p_slot->state) {
 	case BLINKINGON_STATE:
 		cancel_delayed_work(&p_slot->work);
+		fallthrough;
 	case STATIC_STATE:
 		p_slot->state = POWERON_STATE;
 		mutex_unlock(&p_slot->lock);
@@ -701,6 +677,7 @@ int shpchp_sysfs_disable_slot(struct slot *p_slot)
 	switch (p_slot->state) {
 	case BLINKINGOFF_STATE:
 		cancel_delayed_work(&p_slot->work);
+		fallthrough;
 	case STATIC_STATE:
 		p_slot->state = POWEROFF_STATE;
 		mutex_unlock(&p_slot->lock);

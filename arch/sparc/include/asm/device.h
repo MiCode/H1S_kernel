@@ -1,7 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Arch specific extensions to struct device
- *
- * This file is released under the GPLv2
  */
 #ifndef _ASM_SPARC_DEVICE_H
 #define _ASM_SPARC_DEVICE_H
@@ -19,7 +18,7 @@ struct dev_archdata {
 	int			numa_node;
 };
 
-extern void of_propagate_archdata(struct platform_device *bus);
+void of_propagate_archdata(struct platform_device *bus);
 
 struct pdev_archdata {
 	struct resource		resource[PROMREG_MAX];

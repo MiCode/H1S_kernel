@@ -1,36 +1,22 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Portions copyright (C) 2003 Russell King, PXA MMCI Driver
  * Portions copyright (C) 2004-2005 Pierre Ossman, W83L51xD SD/MMC driver
  *
  * Copyright 2008 Embedded Alley Solutions, Inc.
  * Copyright 2009-2011 Freescale Semiconductor, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
-#include <linux/of_gpio.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmaengine.h>
+#include <linux/dma/mxs-dma.h>
 #include <linux/highmem.h>
 #include <linux/clk.h>
 #include <linux/err.h>
@@ -39,7 +25,6 @@
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/sdio.h>
 #include <linux/mmc/slot-gpio.h>
-#include <linux/gpio.h>
 #include <linux/regulator/consumer.h>
 #include <linux/module.h>
 #include <linux/stmp_device.h>
@@ -70,6 +55,7 @@ struct mxs_mmc_host {
 	unsigned char			bus_width;
 	spinlock_t			lock;
 	int				sdio_irq_en;
+	bool				broken_cd;
 };
 
 static int mxs_mmc_get_cd(struct mmc_host *mmc)
@@ -78,11 +64,15 @@ static int mxs_mmc_get_cd(struct mmc_host *mmc)
 	struct mxs_ssp *ssp = &host->ssp;
 	int present, ret;
 
+	if (host->broken_cd)
+		return -ENOSYS;
+
 	ret = mmc_gpio_get_cd(mmc);
 	if (ret >= 0)
 		return ret;
 
-	present = !(readl(ssp->base + HW_SSP_STATUS(ssp)) &
+	present = mmc->caps & MMC_CAP_NEEDS_POLL ||
+		!(readl(ssp->base + HW_SSP_STATUS(ssp)) &
 			BM_SSP_STATUS_CARD_DETECT);
 
 	if (mmc->caps2 & MMC_CAP2_CD_ACTIVE_HIGH)
@@ -148,7 +138,11 @@ static void mxs_mmc_request_done(struct mxs_mmc_host *host)
 		}
 	}
 
-	if (data) {
+	if (cmd == mrq->sbc) {
+		/* Finished CMD23, now send actual command. */
+		mxs_mmc_start_cmd(host, mrq->cmd);
+		return;
+	} else if (data) {
 		dma_unmap_sg(mmc_dev(host->mmc), data->sg,
 			     data->sg_len, ssp->dma_dir);
 		/*
@@ -161,7 +155,7 @@ static void mxs_mmc_request_done(struct mxs_mmc_host *host)
 			data->bytes_xfered = 0;
 
 		host->data = NULL;
-		if (mrq->stop) {
+		if (data->stop && (data->error || !mrq->sbc)) {
 			mxs_mmc_start_cmd(host, mrq->stop);
 			return;
 		}
@@ -272,7 +266,7 @@ static void mxs_mmc_bc(struct mxs_mmc_host *host)
 	ssp->ssp_pio_words[2] = cmd1;
 	ssp->dma_dir = DMA_NONE;
 	ssp->slave_dirn = DMA_TRANS_NONE;
-	desc = mxs_mmc_prep_dma(host, DMA_CTRL_ACK);
+	desc = mxs_mmc_prep_dma(host, MXS_DMA_CTRL_WAIT4END);
 	if (!desc)
 		goto out;
 
@@ -304,6 +298,9 @@ static void mxs_mmc_ac(struct mxs_mmc_host *host)
 	cmd0 = BF_SSP(cmd->opcode, CMD0_CMD);
 	cmd1 = cmd->arg;
 
+	if (cmd->opcode == MMC_STOP_TRANSMISSION)
+		cmd0 |= BM_SSP_CMD0_APPEND_8CYC;
+
 	if (host->sdio_irq_en) {
 		ctrl0 |= BM_SSP_CTRL0_SDIO_IRQ_CHECK;
 		cmd0 |= BM_SSP_CMD0_CONT_CLKING_EN | BM_SSP_CMD0_SLOW_CLKING_EN;
@@ -314,7 +311,7 @@ static void mxs_mmc_ac(struct mxs_mmc_host *host)
 	ssp->ssp_pio_words[2] = cmd1;
 	ssp->dma_dir = DMA_NONE;
 	ssp->slave_dirn = DMA_TRANS_NONE;
-	desc = mxs_mmc_prep_dma(host, DMA_CTRL_ACK);
+	desc = mxs_mmc_prep_dma(host, MXS_DMA_CTRL_WAIT4END);
 	if (!desc)
 		goto out;
 
@@ -412,8 +409,7 @@ static void mxs_mmc_adtc(struct mxs_mmc_host *host)
 		       ssp->base + HW_SSP_BLOCK_SIZE);
 	}
 
-	if ((cmd->opcode == MMC_STOP_TRANSMISSION) ||
-	    (cmd->opcode == SD_IO_RW_EXTENDED))
+	if (cmd->opcode == SD_IO_RW_EXTENDED)
 		cmd0 |= BM_SSP_CMD0_APPEND_8CYC;
 
 	cmd1 = cmd->arg;
@@ -445,7 +441,7 @@ static void mxs_mmc_adtc(struct mxs_mmc_host *host)
 	host->data = data;
 	ssp->dma_dir = dma_data_dir;
 	ssp->slave_dirn = slave_dirn;
-	desc = mxs_mmc_prep_dma(host, DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
+	desc = mxs_mmc_prep_dma(host, DMA_PREP_INTERRUPT | MXS_DMA_CTRL_WAIT4END);
 	if (!desc)
 		goto out;
 
@@ -488,7 +484,11 @@ static void mxs_mmc_request(struct mmc_host *mmc, struct mmc_request *mrq)
 
 	WARN_ON(host->mrq != NULL);
 	host->mrq = mrq;
-	mxs_mmc_start_cmd(host, mrq->cmd);
+
+	if (mrq->sbc)
+		mxs_mmc_start_cmd(host, mrq->sbc);
+	else
+		mxs_mmc_start_cmd(host, mrq->cmd);
 }
 
 static void mxs_mmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
@@ -544,19 +544,6 @@ static const struct mmc_host_ops mxs_mmc_ops = {
 	.enable_sdio_irq = mxs_mmc_enable_sdio_irq,
 };
 
-static struct platform_device_id mxs_ssp_ids[] = {
-	{
-		.name = "imx23-mmc",
-		.driver_data = IMX23_SSP,
-	}, {
-		.name = "imx28-mmc",
-		.driver_data = IMX28_SSP,
-	}, {
-		/* sentinel */
-	}
-};
-MODULE_DEVICE_TABLE(platform, mxs_ssp_ids);
-
 static const struct of_device_id mxs_mmc_dt_ids[] = {
 	{ .compatible = "fsl,imx23-mmc", .data = (void *) IMX23_SSP, },
 	{ .compatible = "fsl,imx28-mmc", .data = (void *) IMX28_SSP, },
@@ -564,21 +551,23 @@ static const struct of_device_id mxs_mmc_dt_ids[] = {
 };
 MODULE_DEVICE_TABLE(of, mxs_mmc_dt_ids);
 
+static void mxs_mmc_regulator_disable(void *regulator)
+{
+	regulator_disable(regulator);
+}
+
 static int mxs_mmc_probe(struct platform_device *pdev)
 {
-	const struct of_device_id *of_id =
-			of_match_device(mxs_mmc_dt_ids, &pdev->dev);
+	struct device_node *np = pdev->dev.of_node;
 	struct mxs_mmc_host *host;
 	struct mmc_host *mmc;
-	struct resource *iores;
 	int ret = 0, irq_err;
 	struct regulator *reg_vmmc;
 	struct mxs_ssp *ssp;
 
-	iores = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	irq_err = platform_get_irq(pdev, 0);
-	if (!iores || irq_err < 0)
-		return -EINVAL;
+	if (irq_err < 0)
+		return irq_err;
 
 	mmc = mmc_alloc_host(sizeof(struct mxs_mmc_host), &pdev->dev);
 	if (!mmc)
@@ -587,13 +576,13 @@ static int mxs_mmc_probe(struct platform_device *pdev)
 	host = mmc_priv(mmc);
 	ssp = &host->ssp;
 	ssp->dev = &pdev->dev;
-	ssp->base = devm_ioremap_resource(&pdev->dev, iores);
+	ssp->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(ssp->base)) {
 		ret = PTR_ERR(ssp->base);
 		goto out_mmc_free;
 	}
 
-	ssp->devid = (enum mxs_ssp_id) of_id->data;
+	ssp->devid = (enum mxs_ssp_id)of_device_get_match_data(&pdev->dev);
 
 	host->mmc = mmc;
 	host->sdio_irq_en = 0;
@@ -606,6 +595,11 @@ static int mxs_mmc_probe(struct platform_device *pdev)
 				"Failed to enable vmmc regulator: %d\n", ret);
 			goto out_mmc_free;
 		}
+
+		ret = devm_add_action_or_reset(&pdev->dev, mxs_mmc_regulator_disable,
+					       reg_vmmc);
+		if (ret)
+			goto out_mmc_free;
 	}
 
 	ssp->clk = devm_clk_get(&pdev->dev, NULL);
@@ -613,7 +607,9 @@ static int mxs_mmc_probe(struct platform_device *pdev)
 		ret = PTR_ERR(ssp->clk);
 		goto out_mmc_free;
 	}
-	clk_prepare_enable(ssp->clk);
+	ret = clk_prepare_enable(ssp->clk);
+	if (ret)
+		goto out_mmc_free;
 
 	ret = mxs_mmc_reset(host);
 	if (ret) {
@@ -621,25 +617,27 @@ static int mxs_mmc_probe(struct platform_device *pdev)
 		goto out_clk_disable;
 	}
 
-	ssp->dmach = dma_request_slave_channel(&pdev->dev, "rx-tx");
-	if (!ssp->dmach) {
+	ssp->dmach = dma_request_chan(&pdev->dev, "rx-tx");
+	if (IS_ERR(ssp->dmach)) {
 		dev_err(mmc_dev(host->mmc),
 			"%s: failed to request dma\n", __func__);
-		ret = -ENODEV;
+		ret = PTR_ERR(ssp->dmach);
 		goto out_clk_disable;
 	}
 
 	/* set mmc core parameters */
 	mmc->ops = &mxs_mmc_ops;
 	mmc->caps = MMC_CAP_SD_HIGHSPEED | MMC_CAP_MMC_HIGHSPEED |
-		    MMC_CAP_SDIO_IRQ | MMC_CAP_NEEDS_POLL;
+		    MMC_CAP_SDIO_IRQ | MMC_CAP_NEEDS_POLL | MMC_CAP_CMD23;
+
+	host->broken_cd = of_property_read_bool(np, "broken-cd");
 
 	mmc->f_min = 400000;
 	mmc->f_max = 288000000;
 
 	ret = mmc_of_parse(mmc);
 	if (ret)
-		goto out_clk_disable;
+		goto out_free_dma;
 
 	mmc->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
 
@@ -651,12 +649,12 @@ static int mxs_mmc_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, mmc);
 
+	spin_lock_init(&host->lock);
+
 	ret = devm_request_irq(&pdev->dev, irq_err, mxs_mmc_irq_handler, 0,
-			       DRIVER_NAME, host);
+			       dev_name(&pdev->dev), host);
 	if (ret)
 		goto out_free_dma;
-
-	spin_lock_init(&host->lock);
 
 	ret = mmc_add_host(mmc);
 	if (ret)
@@ -667,8 +665,7 @@ static int mxs_mmc_probe(struct platform_device *pdev)
 	return 0;
 
 out_free_dma:
-	if (ssp->dmach)
-		dma_release_channel(ssp->dmach);
+	dma_release_channel(ssp->dmach);
 out_clk_disable:
 	clk_disable_unprepare(ssp->clk);
 out_mmc_free:
@@ -676,7 +673,7 @@ out_mmc_free:
 	return ret;
 }
 
-static int mxs_mmc_remove(struct platform_device *pdev)
+static void mxs_mmc_remove(struct platform_device *pdev)
 {
 	struct mmc_host *mmc = platform_get_drvdata(pdev);
 	struct mxs_mmc_host *host = mmc_priv(mmc);
@@ -690,11 +687,9 @@ static int mxs_mmc_remove(struct platform_device *pdev)
 	clk_disable_unprepare(ssp->clk);
 
 	mmc_free_host(mmc);
-
-	return 0;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int mxs_mmc_suspend(struct device *dev)
 {
 	struct mmc_host *mmc = dev_get_drvdata(dev);
@@ -711,26 +706,19 @@ static int mxs_mmc_resume(struct device *dev)
 	struct mxs_mmc_host *host = mmc_priv(mmc);
 	struct mxs_ssp *ssp = &host->ssp;
 
-	clk_prepare_enable(ssp->clk);
-	return 0;
+	return clk_prepare_enable(ssp->clk);
 }
-
-static const struct dev_pm_ops mxs_mmc_pm_ops = {
-	.suspend	= mxs_mmc_suspend,
-	.resume		= mxs_mmc_resume,
-};
 #endif
+
+static SIMPLE_DEV_PM_OPS(mxs_mmc_pm_ops, mxs_mmc_suspend, mxs_mmc_resume);
 
 static struct platform_driver mxs_mmc_driver = {
 	.probe		= mxs_mmc_probe,
-	.remove		= mxs_mmc_remove,
-	.id_table	= mxs_ssp_ids,
+	.remove_new	= mxs_mmc_remove,
 	.driver		= {
 		.name	= DRIVER_NAME,
-		.owner	= THIS_MODULE,
-#ifdef CONFIG_PM
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.pm	= &mxs_mmc_pm_ops,
-#endif
 		.of_match_table = mxs_mmc_dt_ids,
 	},
 };

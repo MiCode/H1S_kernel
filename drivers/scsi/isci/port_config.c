@@ -73,7 +73,7 @@ enum SCIC_SDS_APC_ACTIVITY {
  * ****************************************************************************** */
 
 /**
- *
+ * sci_sas_address_compare()
  * @address_one: A SAS Address to be compared.
  * @address_two: A SAS Address to be compared.
  *
@@ -102,9 +102,9 @@ static s32 sci_sas_address_compare(
 }
 
 /**
- *
- * @controller: The controller object used for the port search.
- * @phy: The phy object to match.
+ * sci_port_configuration_agent_find_port()
+ * @ihost: The controller object used for the port search.
+ * @iphy: The phy object to match.
  *
  * This routine will find a matching port for the phy.  This means that the
  * port and phy both have the same broadcast sas address and same received sas
@@ -145,9 +145,9 @@ static struct isci_port *sci_port_configuration_agent_find_port(
 }
 
 /**
- *
- * @controller: This is the controller object that contains the port agent
- * @port_agent: This is the port configruation agent for the controller.
+ * sci_port_configuration_agent_validate_ports()
+ * @ihost: This is the controller object that contains the port agent
+ * @port_agent: This is the port configuration agent for the controller.
  *
  * This routine will validate the port configuration is correct for the SCU
  * hardware.  The SCU hardware allows for port configurations as follows. LP0
@@ -291,7 +291,7 @@ sci_mpc_agent_validate_phy_configuration(struct isci_host *ihost,
 		 * Note: We have not moved the current phy_index so we will actually
 		 *       compare the startting phy with itself.
 		 *       This is expected and required to add the phy to the port. */
-		while (phy_index < SCI_MAX_PHYS) {
+		for (; phy_index < SCI_MAX_PHYS; phy_index++) {
 			if ((phy_mask & (1 << phy_index)) == 0)
 				continue;
 			sci_phy_get_sas_address(&ihost->phys[phy_index],
@@ -311,7 +311,6 @@ sci_mpc_agent_validate_phy_configuration(struct isci_host *ihost,
 					      &ihost->phys[phy_index]);
 
 			assigned_phy_mask |= (1 << phy_index);
-			phy_index++;
 		}
 
 	}
@@ -319,10 +318,10 @@ sci_mpc_agent_validate_phy_configuration(struct isci_host *ihost,
 	return sci_port_configuration_agent_validate_ports(ihost, port_agent);
 }
 
-static void mpc_agent_timeout(unsigned long data)
+static void mpc_agent_timeout(struct timer_list *t)
 {
 	u8 index;
-	struct sci_timer *tmr = (struct sci_timer *)data;
+	struct sci_timer *tmr = from_timer(tmr, t, timer);
 	struct sci_port_configuration_agent *port_agent;
 	struct isci_host *ihost;
 	unsigned long flags;
@@ -374,15 +373,16 @@ static void sci_mpc_agent_link_up(struct isci_host *ihost,
 }
 
 /**
- *
- * @controller: This is the controller object that receives the link down
+ * sci_mpc_agent_link_down()
+ * @ihost: This is the controller object that receives the link down
  *    notification.
- * @port: This is the port object associated with the phy.  If the is no
+ * @port_agent: This is the port configuration agent for the controller.
+ * @iport: This is the port object associated with the phy.  If the is no
  *    associated port this is an NULL.  The port is an invalid
  *    handle only if the phy was never port of this port.  This happens when
  *    the phy is not broadcasting the same SAS address as the other phys in the
  *    assigned port.
- * @phy: This is the phy object which has gone link down.
+ * @iphy: This is the phy object which has gone link down.
  *
  * This function handles the manual port configuration link down notifications.
  * Since all ports and phys are associated at initialization time we just turn
@@ -591,11 +591,12 @@ static void sci_apc_agent_configure_ports(struct isci_host *ihost,
 
 /**
  * sci_apc_agent_link_up - handle apc link up events
- * @scic: This is the controller object that receives the link up
+ * @ihost: This is the controller object that receives the link up
  *    notification.
- * @sci_port: This is the port object associated with the phy.  If the is no
+ * @port_agent: This is the port configuration agent for the controller.
+ * @iport: This is the port object associated with the phy.  If the is no
  *    associated port this is an NULL.
- * @sci_phy: This is the phy object which has gone link up.
+ * @iphy: This is the phy object which has gone link up.
  *
  * This method handles the automatic port configuration for link up
  * notifications. Is it possible to get a link down notification from a phy
@@ -615,22 +616,16 @@ static void sci_apc_agent_link_up(struct isci_host *ihost,
 					  SCIC_SDS_APC_WAIT_LINK_UP_NOTIFICATION);
 	} else {
 		/* the phy is already the part of the port */
-		u32 port_state = iport->sm.current_state_id;
-
-		/* if the PORT'S state is resetting then the link up is from
-		 * port hard reset in this case, we need to tell the port
-		 * that link up is recieved
-		 */
-		BUG_ON(port_state != SCI_PORT_RESETTING);
 		port_agent->phy_ready_mask |= 1 << phy_index;
 		sci_port_link_up(iport, iphy);
 	}
 }
 
 /**
- *
- * @controller: This is the controller object that receives the link down
+ * sci_apc_agent_link_down()
+ * @ihost: This is the controller object that receives the link down
  *    notification.
+ * @port_agent: This is the port configuration agent for the controller.
  * @iport: This is the port object associated with the phy.  If the is no
  *    associated port this is an NULL.
  * @iphy: This is the phy object which has gone link down.
@@ -661,10 +656,10 @@ static void sci_apc_agent_link_down(
 }
 
 /* configure the phys into ports when the timer fires */
-static void apc_agent_timeout(unsigned long data)
+static void apc_agent_timeout(struct timer_list *t)
 {
 	u32 index;
-	struct sci_timer *tmr = (struct sci_timer *)data;
+	struct sci_timer *tmr = from_timer(tmr, t, timer);
 	struct sci_port_configuration_agent *port_agent;
 	struct isci_host *ihost;
 	unsigned long flags;
@@ -705,9 +700,7 @@ done:
  * Public port configuration agent routines
  * ****************************************************************************** */
 
-/**
- *
- *
+/*
  * This method will construct the port configuration agent for operation. This
  * call is universal for both manual port configuration and automatic port
  * configuration modes.

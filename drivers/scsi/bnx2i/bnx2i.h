@@ -1,15 +1,17 @@
-/* bnx2i.h: Broadcom NetXtreme II iSCSI driver.
+/* bnx2i.h: QLogic NetXtreme II iSCSI driver.
  *
  * Copyright (c) 2006 - 2013 Broadcom Corporation
  * Copyright (c) 2007, 2008 Red Hat, Inc.  All rights reserved.
  * Copyright (c) 2007, 2008 Mike Christie
+ * Copyright (c) 2014, QLogic Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation.
  *
  * Written by: Anil Veerabhadrappa (anilgv@broadcom.com)
- * Maintained by: Eddie Wai (eddie.wai@broadcom.com)
+ * Previously Maintained by: Eddie Wai (eddie.wai@broadcom.com)
+ * Maintained by: QLogic-Storage-Upstream@qlogic.com
  */
 
 #ifndef _BNX2I_H_
@@ -23,7 +25,7 @@
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/in.h>
 #include <linux/kfifo.h>
 #include <linux/netdevice.h>
@@ -793,7 +795,7 @@ extern struct cnic_ulp_ops bnx2i_cnic_cb;
 extern unsigned int sq_size;
 extern unsigned int rq_size;
 
-extern struct device_attribute *bnx2i_dev_attributes[];
+extern const struct attribute_group *bnx2i_dev_groups[];
 
 
 
@@ -856,7 +858,7 @@ extern int bnx2i_alloc_qp_resc(struct bnx2i_hba *hba,
 			       struct bnx2i_endpoint *ep);
 extern void bnx2i_free_qp_resc(struct bnx2i_hba *hba,
 			       struct bnx2i_endpoint *ep);
-extern void bnx2i_ep_ofld_timer(unsigned long data);
+extern void bnx2i_ep_ofld_timer(struct timer_list *t);
 extern struct bnx2i_endpoint *bnx2i_find_ep_in_ofld_list(
 		struct bnx2i_hba *hba, u32 iscsi_cid);
 extern struct bnx2i_endpoint *bnx2i_find_ep_in_destroy_list(

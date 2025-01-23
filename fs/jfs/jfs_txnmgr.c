@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *   Copyright (C) International Business Machines Corp., 2000-2005
  *   Portions Copyright (C) Christoph Hellwig, 2001-2002
- *
- *   This program is free software;  you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY;  without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- *   the GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program;  if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 /*
@@ -118,7 +105,7 @@ static DEFINE_SPINLOCK(jfsTxnLock);
 #define TXN_LOCK()		spin_lock(&jfsTxnLock)
 #define TXN_UNLOCK()		spin_unlock(&jfsTxnLock)
 
-#define LAZY_LOCK_INIT()	spin_lock_init(&TxAnchor.LazyLock);
+#define LAZY_LOCK_INIT()	spin_lock_init(&TxAnchor.LazyLock)
 #define LAZY_LOCK(flags)	spin_lock_irqsave(&TxAnchor.LazyLock, flags)
 #define LAZY_UNLOCK(flags) spin_unlock_irqrestore(&TxAnchor.LazyLock, flags)
 
@@ -136,7 +123,6 @@ static inline void TXN_SLEEP_DROP_LOCK(wait_queue_head_t * event)
 	set_current_state(TASK_UNINTERRUPTIBLE);
 	TXN_UNLOCK();
 	io_schedule();
-	__set_current_state(TASK_RUNNING);
 	remove_wait_queue(event, &wait);
 }
 
@@ -162,10 +148,10 @@ static struct {
 /*
  * forward references
  */
-static int diLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
-		struct tlock * tlck, struct commit * cd);
-static int dataLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
-		struct tlock * tlck);
+static void diLog(struct jfs_log *log, struct tblock *tblk, struct lrd *lrd,
+		struct tlock *tlck, struct commit *cd);
+static void dataLog(struct jfs_log *log, struct tblock *tblk, struct lrd *lrd,
+		struct tlock *tlck);
 static void dtLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
 		struct tlock * tlck);
 static void mapLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
@@ -173,8 +159,8 @@ static void mapLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
 static void txAllocPMap(struct inode *ip, struct maplock * maplock,
 		struct tblock * tblk);
 static void txForce(struct tblock * tblk);
-static int txLog(struct jfs_log * log, struct tblock * tblk,
-		struct commit * cd);
+static void txLog(struct jfs_log *log, struct tblock *tblk,
+		struct commit *cd);
 static void txUpdateMap(struct tblock * tblk);
 static void txRelease(struct tblock * tblk);
 static void xtLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
@@ -367,6 +353,11 @@ tid_t txBegin(struct super_block *sb, int flag)
 
 	jfs_info("txBegin: flag = 0x%x", flag);
 	log = JFS_SBI(sb)->log;
+
+	if (!log) {
+		jfs_error(sb, "read-only filesystem\n");
+		return 0;
+	}
 
 	TXN_LOCK();
 
@@ -1270,8 +1261,7 @@ int txCommit(tid_t tid,		/* transaction identifier */
 	 *
 	 * txUpdateMap() resets XAD_NEW in XAD.
 	 */
-	if ((rc = txLog(log, tblk, &cd)))
-		goto TheEnd;
+	txLog(log, tblk, &cd);
 
 	/*
 	 * Ensure that inode isn't reused before
@@ -1379,9 +1369,8 @@ int txCommit(tid_t tid,		/* transaction identifier */
  *
  * RETURN :
  */
-static int txLog(struct jfs_log * log, struct tblock * tblk, struct commit * cd)
+static void txLog(struct jfs_log *log, struct tblock *tblk, struct commit *cd)
 {
-	int rc = 0;
 	struct inode *ip;
 	lid_t lid;
 	struct tlock *tlck;
@@ -1428,7 +1417,7 @@ static int txLog(struct jfs_log * log, struct tblock * tblk, struct commit * cd)
 		}
 	}
 
-	return rc;
+	return;
 }
 
 /*
@@ -1436,10 +1425,9 @@ static int txLog(struct jfs_log * log, struct tblock * tblk, struct commit * cd)
  *
  * function:	log inode tlock and format maplock to update bmap;
  */
-static int diLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
-		 struct tlock * tlck, struct commit * cd)
+static void diLog(struct jfs_log *log, struct tblock *tblk, struct lrd *lrd,
+		 struct tlock *tlck, struct commit *cd)
 {
-	int rc = 0;
 	struct metapage *mp;
 	pxd_t *pxd;
 	struct pxd_lock *pxdlock;
@@ -1488,7 +1476,7 @@ static int diLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
 		 * For the LOG_NOREDOINOEXT record, we need
 		 * to pass the IAG number and inode extent
 		 * index (within that IAG) from which the
-		 * the extent being released.  These have been
+		 * extent is being released.  These have been
 		 * passed to us in the iplist[1] and iplist[2].
 		 */
 		lrd->log.noredoinoext.iagnum =
@@ -1507,41 +1495,7 @@ static int diLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
 		tlck->flag |= tlckWRITEPAGE;
 	} else
 		jfs_err("diLog: UFO type tlck:0x%p", tlck);
-#ifdef  _JFS_WIP
-	/*
-	 *	alloc/free external EA extent
-	 *
-	 * a maplock for txUpdateMap() to update bPWMAP for alloc/free
-	 * of the extent has been formatted at txLock() time;
-	 */
-	else {
-		assert(tlck->type & tlckEA);
-
-		/* log LOG_UPDATEMAP for logredo() to update bmap for
-		 * alloc of new (and free of old) external EA extent;
-		 */
-		lrd->type = cpu_to_le16(LOG_UPDATEMAP);
-		pxdlock = (struct pxd_lock *) & tlck->lock;
-		nlock = pxdlock->index;
-		for (i = 0; i < nlock; i++, pxdlock++) {
-			if (pxdlock->flag & mlckALLOCPXD)
-				lrd->log.updatemap.type =
-				    cpu_to_le16(LOG_ALLOCPXD);
-			else
-				lrd->log.updatemap.type =
-				    cpu_to_le16(LOG_FREEPXD);
-			lrd->log.updatemap.nxd = cpu_to_le16(1);
-			lrd->log.updatemap.pxd = pxdlock->pxd;
-			lrd->backchain =
-			    cpu_to_le32(lmLog(log, tblk, lrd, NULL));
-		}
-
-		/* update bmap */
-		tlck->flag |= tlckUPDATEMAP;
-	}
-#endif				/* _JFS_WIP */
-
-	return rc;
+	return;
 }
 
 /*
@@ -1549,8 +1503,8 @@ static int diLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
  *
  * function:	log data tlock
  */
-static int dataLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
-	    struct tlock * tlck)
+static void dataLog(struct jfs_log *log, struct tblock *tblk, struct lrd *lrd,
+	    struct tlock *tlck)
 {
 	struct metapage *mp;
 	pxd_t *pxd;
@@ -1576,7 +1530,7 @@ static int dataLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
 		metapage_homeok(mp);
 		discard_metapage(mp);
 		tlck->mp = NULL;
-		return 0;
+		return;
 	}
 
 	PXDaddress(pxd, mp->index);
@@ -1587,7 +1541,7 @@ static int dataLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
 	/* mark page as homeward bound */
 	tlck->flag |= tlckWRITEPAGE;
 
-	return 0;
+	return;
 }
 
 /*
@@ -1765,7 +1719,7 @@ static void xtLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
 		if (lwm == next)
 			goto out;
 		if (lwm > next) {
-			jfs_err("xtLog: lwm > next\n");
+			jfs_err("xtLog: lwm > next");
 			goto out;
 		}
 		tlck->flag |= tlckUPDATEMAP;
@@ -1799,8 +1753,8 @@ static void xtLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
 			xadlock->xdlist = &p->xad[lwm];
 			tblk->xflag &= ~COMMIT_LAZY;
 		}
-		jfs_info("xtLog: alloc ip:0x%p mp:0x%p tlck:0x%p lwm:%d "
-			 "count:%d", tlck->ip, mp, tlck, lwm, xadlock->count);
+		jfs_info("xtLog: alloc ip:0x%p mp:0x%p tlck:0x%p lwm:%d count:%d",
+			 tlck->ip, mp, tlck, lwm, xadlock->count);
 
 		maplock->index = 1;
 
@@ -1929,8 +1883,7 @@ static void xtLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
 	 * header ?
 	 */
 	if (tlck->type & tlckTRUNCATE) {
-		/* This odd declaration suppresses a bogus gcc warning */
-		pxd_t pxd = pxd;	/* truncated extent of xad */
+		pxd_t pxd;	/* truncated extent of xad */
 		int twm;
 
 		/*
@@ -2026,8 +1979,7 @@ static void xtLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
 			xadlock->count = next - lwm;
 			xadlock->xdlist = &p->xad[lwm];
 
-			jfs_info("xtLog: alloc ip:0x%p mp:0x%p count:%d "
-				 "lwm:%d next:%d",
+			jfs_info("xtLog: alloc ip:0x%p mp:0x%p count:%d lwm:%d next:%d",
 				 tlck->ip, mp, xadlock->count, lwm, next);
 			maplock->index++;
 			xadlock++;
@@ -2048,8 +2000,8 @@ static void xtLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
 			pxdlock->count = 1;
 			pxdlock->pxd = pxd;
 
-			jfs_info("xtLog: truncate ip:0x%p mp:0x%p count:%d "
-				 "hwm:%d", ip, mp, pxdlock->count, hwm);
+			jfs_info("xtLog: truncate ip:0x%p mp:0x%p count:%d hwm:%d",
+				 ip, mp, pxdlock->count, hwm);
 			maplock->index++;
 			xadlock++;
 		}
@@ -2067,8 +2019,7 @@ static void xtLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
 			xadlock->count = hwm - next + 1;
 			xadlock->xdlist = &p->xad[next];
 
-			jfs_info("xtLog: free ip:0x%p mp:0x%p count:%d "
-				 "next:%d hwm:%d",
+			jfs_info("xtLog: free ip:0x%p mp:0x%p count:%d next:%d hwm:%d",
 				 tlck->ip, mp, xadlock->count, next, hwm);
 			maplock->index++;
 		}
@@ -2524,8 +2475,7 @@ void txFreeMap(struct inode *ip,
 					xlen = lengthXAD(xad);
 					dbUpdatePMap(ipbmap, true, xaddr,
 						     (s64) xlen, tblk);
-					jfs_info("freePMap: xaddr:0x%lx "
-						 "xlen:%d",
+					jfs_info("freePMap: xaddr:0x%lx xlen:%d",
 						 (ulong) xaddr, xlen);
 				}
 			}
@@ -2808,7 +2758,6 @@ int jfs_lazycommit(void *arg)
 			set_current_state(TASK_INTERRUPTIBLE);
 			LAZY_UNLOCK(flags);
 			schedule();
-			__set_current_state(TASK_RUNNING);
 			remove_wait_queue(&jfs_commit_thread_wait, &wq);
 		}
 	} while (!kthread_should_stop());
@@ -2816,7 +2765,7 @@ int jfs_lazycommit(void *arg)
 	if (!list_empty(&TxAnchor.unlock_queue))
 		jfs_err("jfs_lazycommit being killed w/pending transactions!");
 	else
-		jfs_info("jfs_lazycommit being killed\n");
+		jfs_info("jfs_lazycommit being killed");
 	return 0;
 }
 
@@ -2898,8 +2847,7 @@ restart:
 	 * on anon_list2.  Let's check.
 	 */
 	if (!list_empty(&TxAnchor.anon_list2)) {
-		list_splice(&TxAnchor.anon_list2, &TxAnchor.anon_list);
-		INIT_LIST_HEAD(&TxAnchor.anon_list2);
+		list_splice_init(&TxAnchor.anon_list2, &TxAnchor.anon_list);
 		goto restart;
 	}
 	TXN_UNLOCK();
@@ -2996,7 +2944,6 @@ int jfs_sync(void *arg)
 			set_current_state(TASK_INTERRUPTIBLE);
 			TXN_UNLOCK();
 			schedule();
-			__set_current_state(TASK_RUNNING);
 		}
 	} while (!kthread_should_stop());
 
@@ -3005,7 +2952,7 @@ int jfs_sync(void *arg)
 }
 
 #if defined(CONFIG_PROC_FS) && defined(CONFIG_JFS_DEBUG)
-static int jfs_txanchor_proc_show(struct seq_file *m, void *v)
+int jfs_txanchor_proc_show(struct seq_file *m, void *v)
 {
 	char *freewait;
 	char *freelockwait;
@@ -3039,23 +2986,10 @@ static int jfs_txanchor_proc_show(struct seq_file *m, void *v)
 		       list_empty(&TxAnchor.unlock_queue) ? "" : "not ");
 	return 0;
 }
-
-static int jfs_txanchor_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, jfs_txanchor_proc_show, NULL);
-}
-
-const struct file_operations jfs_txanchor_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= jfs_txanchor_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 #endif
 
 #if defined(CONFIG_PROC_FS) && defined(CONFIG_JFS_STATISTICS)
-static int jfs_txstats_proc_show(struct seq_file *m, void *v)
+int jfs_txstats_proc_show(struct seq_file *m, void *v)
 {
 	seq_printf(m,
 		       "JFS TxStats\n"
@@ -3080,17 +3014,4 @@ static int jfs_txstats_proc_show(struct seq_file *m, void *v)
 		       TxStat.txLockAlloc_freelock);
 	return 0;
 }
-
-static int jfs_txstats_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, jfs_txstats_proc_show, NULL);
-}
-
-const struct file_operations jfs_txstats_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= jfs_txstats_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 #endif

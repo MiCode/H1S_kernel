@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * max8907-regulator.c -- support regulators in max8907
  *
@@ -8,10 +9,6 @@
  *     Copyright 2010 Texas Instruments Inc.
  *     Author: Graeme Gregory <gg@slimlogic.co.uk>
  *     Author: Jorge Eduardo Candelaria <jedu@slimlogic.co.uk>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/err.h>
@@ -34,7 +31,6 @@
 
 struct max8907_regulator {
 	struct regulator_desc desc[MAX8907_NUM_REGULATORS];
-	struct regulator_dev *rdev[MAX8907_NUM_REGULATORS];
 };
 
 #define REG_MBATT() \
@@ -110,10 +106,10 @@ struct max8907_regulator {
 #define LDO_650_25(id, supply, base) REG_LDO(id, supply, (base), \
 			650000, 2225000, 25000)
 
-static struct regulator_ops max8907_mbatt_ops = {
+static const struct regulator_ops max8907_mbatt_ops = {
 };
 
-static struct regulator_ops max8907_ldo_ops = {
+static const struct regulator_ops max8907_ldo_ops = {
 	.list_voltage = regulator_list_voltage_linear,
 	.set_voltage_sel = regulator_set_voltage_sel_regmap,
 	.get_voltage_sel = regulator_get_voltage_sel_regmap,
@@ -122,34 +118,34 @@ static struct regulator_ops max8907_ldo_ops = {
 	.is_enabled = regulator_is_enabled_regmap,
 };
 
-static struct regulator_ops max8907_ldo_hwctl_ops = {
+static const struct regulator_ops max8907_ldo_hwctl_ops = {
 	.list_voltage = regulator_list_voltage_linear,
 	.set_voltage_sel = regulator_set_voltage_sel_regmap,
 	.get_voltage_sel = regulator_get_voltage_sel_regmap,
 };
 
-static struct regulator_ops max8907_fixed_ops = {
+static const struct regulator_ops max8907_fixed_ops = {
 	.list_voltage = regulator_list_voltage_linear,
 };
 
-static struct regulator_ops max8907_out5v_ops = {
+static const struct regulator_ops max8907_out5v_ops = {
 	.list_voltage = regulator_list_voltage_linear,
 	.enable = regulator_enable_regmap,
 	.disable = regulator_disable_regmap,
 	.is_enabled = regulator_is_enabled_regmap,
 };
 
-static struct regulator_ops max8907_out5v_hwctl_ops = {
+static const struct regulator_ops max8907_out5v_hwctl_ops = {
 	.list_voltage = regulator_list_voltage_linear,
 };
 
-static struct regulator_ops max8907_bbat_ops = {
+static const struct regulator_ops max8907_bbat_ops = {
 	.list_voltage = regulator_list_voltage_linear,
 	.set_voltage_sel = regulator_set_voltage_sel_regmap,
 	.get_voltage_sel = regulator_get_voltage_sel_regmap,
 };
 
-static struct regulator_desc max8907_regulators[] = {
+static const struct regulator_desc max8907_regulators[] = {
 	REG_MBATT(),
 	REG_LDO(SD1, "in-v1", MAX8907_REG_SDCTL1, 650000, 2225000, 25000),
 	REG_LDO(SD2, "in-v2", MAX8907_REG_SDCTL2, 637500, 1425000, 12500),
@@ -227,11 +223,11 @@ static int max8907_regulator_parse_dt(struct platform_device *pdev)
 	struct device_node *np, *regulators;
 	int ret;
 
-	np = of_node_get(pdev->dev.parent->of_node);
+	np = pdev->dev.parent->of_node;
 	if (!np)
 		return 0;
 
-	regulators = of_find_node_by_name(np, "regulators");
+	regulators = of_get_child_by_name(np, "regulators");
 	if (!regulators) {
 		dev_err(&pdev->dev, "regulators node not found\n");
 		return -EINVAL;
@@ -292,16 +288,18 @@ static int max8907_regulator_probe(struct platform_device *pdev)
 		return ret;
 
 	pmic = devm_kzalloc(&pdev->dev, sizeof(*pmic), GFP_KERNEL);
-	if (!pmic) {
-		dev_err(&pdev->dev, "Failed to alloc pmic\n");
+	if (!pmic)
 		return -ENOMEM;
-	}
+
 	platform_set_drvdata(pdev, pmic);
 
 	memcpy(pmic->desc, max8907_regulators, sizeof(pmic->desc));
 
 	/* Backwards compatibility with MAX8907B; SD1 uses different voltages */
-	regmap_read(max8907->regmap_gen, MAX8907_REG_II2RR, &val);
+	ret = regmap_read(max8907->regmap_gen, MAX8907_REG_II2RR, &val);
+	if (ret)
+		return ret;
+
 	if ((val & MAX8907_II2RR_VERSION_MASK) ==
 	    MAX8907_II2RR_VERSION_REV_B) {
 		pmic->desc[MAX8907_SD1].min_uV = 637500;
@@ -311,6 +309,8 @@ static int max8907_regulator_probe(struct platform_device *pdev)
 	}
 
 	for (i = 0; i < MAX8907_NUM_REGULATORS; i++) {
+		struct regulator_dev *rdev;
+
 		config.dev = pdev->dev.parent;
 		if (pdata)
 			idata = pdata->init_data[i];
@@ -336,27 +336,33 @@ static int max8907_regulator_probe(struct platform_device *pdev)
 		}
 
 		if (pmic->desc[i].ops == &max8907_ldo_ops) {
-			regmap_read(config.regmap, pmic->desc[i].enable_reg,
+			ret = regmap_read(config.regmap, pmic->desc[i].enable_reg,
 				    &val);
+			if (ret)
+				return ret;
+
 			if ((val & MAX8907_MASK_LDO_SEQ) !=
 			    MAX8907_MASK_LDO_SEQ)
 				pmic->desc[i].ops = &max8907_ldo_hwctl_ops;
 		} else if (pmic->desc[i].ops == &max8907_out5v_ops) {
-			regmap_read(config.regmap, pmic->desc[i].enable_reg,
+			ret = regmap_read(config.regmap, pmic->desc[i].enable_reg,
 				    &val);
+			if (ret)
+				return ret;
+
 			if ((val & (MAX8907_MASK_OUT5V_VINEN |
 						MAX8907_MASK_OUT5V_ENSRC)) !=
 			    MAX8907_MASK_OUT5V_ENSRC)
 				pmic->desc[i].ops = &max8907_out5v_hwctl_ops;
 		}
 
-		pmic->rdev[i] = devm_regulator_register(&pdev->dev,
+		rdev = devm_regulator_register(&pdev->dev,
 						&pmic->desc[i], &config);
-		if (IS_ERR(pmic->rdev[i])) {
+		if (IS_ERR(rdev)) {
 			dev_err(&pdev->dev,
 				"failed to register %s regulator\n",
 				pmic->desc[i].name);
-			return PTR_ERR(pmic->rdev[i]);
+			return PTR_ERR(rdev);
 		}
 	}
 
@@ -366,7 +372,7 @@ static int max8907_regulator_probe(struct platform_device *pdev)
 static struct platform_driver max8907_regulator_driver = {
 	.driver = {
 		   .name = "max8907-regulator",
-		   .owner = THIS_MODULE,
+		   .probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		   },
 	.probe = max8907_regulator_probe,
 };

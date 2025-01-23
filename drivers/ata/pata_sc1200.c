@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * New ATA layer SC1200 driver		Alan Cox <alan@lxorguk.ukuu.org.uk>
  *
@@ -13,26 +14,11 @@
  *
  * Development of this chipset driver was funded
  * by the nice folks at National Semiconductor.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <scsi/scsi_host.h>
@@ -206,9 +192,10 @@ static int sc1200_qc_defer(struct ata_queued_cmd *qc)
 	return 0;
 }
 
-static struct scsi_host_template sc1200_sht = {
-	ATA_BMDMA_SHT(DRV_NAME),
+static const struct scsi_host_template sc1200_sht = {
+	ATA_BASE_SHT(DRV_NAME),
 	.sg_tablesize	= LIBATA_DUMB_MAX_PRD,
+	.dma_boundary	= ATA_DMA_BOUNDARY,
 };
 
 static struct ata_port_operations sc1200_port_ops = {
@@ -255,7 +242,7 @@ static struct pci_driver sc1200_pci_driver = {
 	.id_table	= sc1200,
 	.probe 		= sc1200_init_one,
 	.remove		= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= ata_pci_device_resume,
 #endif

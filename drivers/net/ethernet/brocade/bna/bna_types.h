@@ -1,19 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Linux network driver for Brocade Converged Network Adapter.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License (GPL) Version 2 as
- * published by the Free Software Foundation
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
+ * Linux network driver for QLogic BR-series Converged Network Adapter.
  */
 /*
- * Copyright (c) 2005-2010 Brocade Communications Systems, Inc.
+ * Copyright (c) 2005-2014 Brocade Communications Systems, Inc.
+ * Copyright (c) 2014-2015 QLogic Corporation
  * All rights reserved
- * www.brocade.com
+ * www.qlogic.com
  */
 #ifndef __BNA_TYPES_H__
 #define __BNA_TYPES_H__
@@ -134,7 +127,6 @@ enum bna_tx_type {
 enum bna_tx_flags {
 	BNA_TX_F_ENET_STARTED	= 1,
 	BNA_TX_F_ENABLED	= 2,
-	BNA_TX_F_PRIO_CHANGED	= 4,
 	BNA_TX_F_BW_UPDATED	= 8,
 };
 
@@ -181,17 +173,11 @@ enum bna_rx_mod_flags {
 	BNA_RX_MOD_F_ENET_LOOPBACK	= 2,
 };
 
-enum bna_rxf_flags {
-	BNA_RXF_F_PAUSED		= 1,
-};
-
 enum bna_rxf_event {
 	RXF_E_START			= 1,
 	RXF_E_STOP			= 2,
 	RXF_E_FAIL			= 3,
 	RXF_E_CONFIG			= 4,
-	RXF_E_PAUSE			= 5,
-	RXF_E_RESUME			= 6,
 	RXF_E_FW_RESP			= 7,
 };
 
@@ -326,8 +312,10 @@ struct bna_attr {
 
 /* IOCEth */
 
+enum bna_ioceth_event;
+
 struct bna_ioceth {
-	bfa_fsm_t		fsm;
+	void (*fsm)(struct bna_ioceth *s, enum bna_ioceth_event e);
 	struct bfa_ioc ioc;
 
 	struct bna_attr attr;
@@ -348,8 +336,10 @@ struct bna_pause_config {
 	enum bna_status rx_pause;
 };
 
+enum bna_enet_event;
+
 struct bna_enet {
-	bfa_fsm_t		fsm;
+	void (*fsm)(struct bna_enet *s, enum bna_enet_event e);
 	enum bna_enet_flags flags;
 
 	enum bna_enet_type type;
@@ -360,9 +350,6 @@ struct bna_enet {
 	/* Callback for bna_enet_disable(), enet_stop() */
 	void (*stop_cbfn)(void *);
 	void			*stop_cbarg;
-
-	/* Callback for bna_enet_pause_config() */
-	void (*pause_cbfn)(struct bnad *);
 
 	/* Callback for bna_enet_mtu_set() */
 	void (*mtu_cbfn)(struct bnad *);
@@ -377,8 +364,10 @@ struct bna_enet {
 
 /* Ethport */
 
+enum bna_ethport_event;
+
 struct bna_ethport {
-	bfa_fsm_t		fsm;
+	void (*fsm)(struct bna_ethport *s, enum bna_ethport_event e);
 	enum bna_ethport_flags flags;
 
 	enum bna_link_status link_status;
@@ -471,13 +460,16 @@ struct bna_txq {
 };
 
 /* Tx object */
+
+enum bna_tx_event;
+
 struct bna_tx {
 	/* This should be the first one */
 	struct list_head			qe;
 	int			rid;
 	int			hw_id;
 
-	bfa_fsm_t		fsm;
+	void (*fsm)(struct bna_tx *s, enum bna_tx_event e);
 	enum bna_tx_flags flags;
 
 	enum bna_tx_type type;
@@ -496,9 +488,6 @@ struct bna_tx {
 	/* callback for bna_tx_disable(), bna_tx_stop() */
 	void (*stop_cbfn)(void *arg, struct bna_tx *tx);
 	void			*stop_cbarg;
-
-	/* callback for bna_tx_prio_set() */
-	void (*prio_change_cbfn)(struct bnad *bnad, struct bna_tx *tx);
 
 	struct bfa_msgq_cmd_entry msgq_cmd;
 	union {
@@ -599,6 +588,7 @@ struct bna_rxq {
 	u64		rx_bytes;
 	u64		rx_packets_with_error;
 	u64		rxbuf_alloc_failed;
+	u64		rxbuf_map_failed;
 };
 
 /* RxQ pair */
@@ -675,7 +665,6 @@ struct bna_rx_config {
 	enum bna_rx_type rx_type;
 	int			num_paths;
 	enum bna_rxp_type rxp_type;
-	int			paused;
 	int			coalescing_timeo;
 	/*
 	 * Small/Large (or Header/Data) buffer size to be configured
@@ -718,9 +707,11 @@ struct bna_rxp {
 };
 
 /* RxF structure (hardware Rx Function) */
+
+enum bna_rxf_event;
+
 struct bna_rxf {
-	bfa_fsm_t		fsm;
-	enum bna_rxf_flags flags;
+	void (*fsm)(struct bna_rxf *s, enum bna_rxf_event e);
 
 	struct bfa_msgq_cmd_entry msgq_cmd;
 	union {
@@ -740,10 +731,6 @@ struct bna_rxf {
 	/* callback for bna_rxf_stop() */
 	void (*stop_cbfn) (struct bna_rx *rx);
 	struct bna_rx *stop_cbarg;
-
-	/* callback for bna_rx_receive_pause() / bna_rx_receive_resume() */
-	void (*oper_state_cbfn) (struct bnad *bnad, struct bna_rx *rx);
-	struct bnad *oper_state_cbarg;
 
 	/**
 	 * callback for:
@@ -794,13 +781,16 @@ struct bna_rxf {
 };
 
 /* Rx object */
+
+enum bna_rx_event;
+
 struct bna_rx {
 	/* This should be the first one */
 	struct list_head			qe;
 	int			rid;
 	int			hw_id;
 
-	bfa_fsm_t		fsm;
+	void (*fsm)(struct bna_rx *s, enum bna_rx_event e);
 
 	enum bna_rx_type type;
 

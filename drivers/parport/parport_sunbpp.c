@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* parport_sunbpp.c: Parallel-port routines for SBUS
  * 
  * Author: Derrick J. Brashear <shadow@dementia.org>
@@ -27,7 +28,7 @@
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 
 #include <linux/parport.h>
 
@@ -286,12 +287,16 @@ static int bpp_probe(struct platform_device *op)
 
 	ops = kmemdup(&parport_sunbpp_ops, sizeof(struct parport_operations),
 		      GFP_KERNEL);
-        if (!ops)
+	if (!ops) {
+		err = -ENOMEM;
 		goto out_unmap;
+	}
 
 	dprintk(("register_port\n"));
-	if (!(p = parport_register_port((unsigned long)base, irq, dma, ops)))
+	if (!(p = parport_register_port((unsigned long)base, irq, dma, ops))) {
+		err = -ENOMEM;
 		goto out_free_ops;
+	}
 
 	p->size = size;
 	p->dev = &op->dev;
@@ -309,7 +314,7 @@ static int bpp_probe(struct platform_device *op)
 	value_tcr &= ~P_TCR_DIR;
 	sbus_writeb(value_tcr, &regs->p_tcr);
 
-	printk(KERN_INFO "%s: sunbpp at 0x%lx\n", p->name, p->base);
+	pr_info("%s: sunbpp at 0x%lx\n", p->name, p->base);
 
 	dev_set_drvdata(&op->dev, p);
 
@@ -362,7 +367,6 @@ MODULE_DEVICE_TABLE(of, bpp_match);
 static struct platform_driver bpp_sbus_driver = {
 	.driver = {
 		.name = "bpp",
-		.owner = THIS_MODULE,
 		.of_match_table = bpp_match,
 	},
 	.probe		= bpp_probe,
@@ -373,6 +377,5 @@ module_platform_driver(bpp_sbus_driver);
 
 MODULE_AUTHOR("Derrick J Brashear");
 MODULE_DESCRIPTION("Parport Driver for Sparc bidirectional Port");
-MODULE_SUPPORTED_DEVICE("Sparc Bidirectional Parallel Port");
 MODULE_VERSION("2.0");
 MODULE_LICENSE("GPL");

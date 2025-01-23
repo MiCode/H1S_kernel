@@ -1,16 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *  Register definitions specific to the A2 core
  *
  *  Copyright (C) 2008 Ben. Herrenschmidt (benh@kernel.crashing.org), IBM Corp.
- *
- *  This program is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public License
- *  as published by the Free Software Foundation; either version
- *  2 of the License, or (at your option) any later version.
  */
 
 #ifndef __ASM_POWERPC_REG_A2_H__
 #define __ASM_POWERPC_REG_A2_H__
+
+#include <asm/asm-const.h>
 
 #define SPRN_TENSR	0x1b5
 #define SPRN_TENS	0x1b6	/* Thread ENable Set */
@@ -109,15 +107,6 @@
 #define TLB1_SW			ASM_CONST(0x0000000000000004)
 #define TLB1_UR			ASM_CONST(0x0000000000000002)
 #define TLB1_SR			ASM_CONST(0x0000000000000001)
-
-#ifdef CONFIG_PPC_EARLY_DEBUG_WSP
-#define WSP_UART_PHYS	0xffc000c000
-/* This needs to be careful chosen to hit a !0 congruence class
- * in the TLB since we bolt it in way 3, which is already occupied
- * by our linear mapping primary bolted entry in CC 0.
- */
-#define WSP_UART_VIRT	0xf000000000001000
-#endif
 
 /* A2 erativax attributes definitions */
 #define ERATIVAX_RS_IS_ALL		0x000

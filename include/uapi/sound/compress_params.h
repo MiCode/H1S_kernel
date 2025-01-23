@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: ((GPL-2.0 WITH Linux-syscall-note) AND MIT) */
 /*
  *  compress_params.h - codec types and parameters for compressed data
  *  streaming interface
@@ -6,47 +7,13 @@
  *  Authors:	Pierre-Louis Bossart <pierre-louis.bossart@linux.intel.com>
  *              Vinod Koul <vinod.koul@linux.intel.com>
  *
- *  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; version 2 of the License.
- *
- *  This program is distributed in the hope that it will be useful, but
- *  WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
- *
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *
  * The definitions in this file are derived from the OpenMAX AL version 1.1
- * and OpenMAX IL v 1.1.2 header files which contain the copyright notice below.
+ * and OpenMAX IL v 1.1.2 header files which contain the copyright notice below
+ * and are licensed under the MIT license.
  *
  * Copyright (c) 2007-2010 The Khronos Group Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and/or associated documentation files (the
- * "Materials "), to deal in the Materials without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sublicense, and/or sell copies of the Materials, and to
- * permit persons to whom the Materials are furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Materials.
- *
- * THE MATERIALS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * MATERIALS OR THE USE OR OTHER DEALINGS IN THE MATERIALS.
- *
  */
 #ifndef __SND_COMPRESS_PARAMS_H
 #define __SND_COMPRESS_PARAMS_H
@@ -73,7 +40,10 @@
 #define SND_AUDIOCODEC_IEC61937              ((__u32) 0x0000000B)
 #define SND_AUDIOCODEC_G723_1                ((__u32) 0x0000000C)
 #define SND_AUDIOCODEC_G729                  ((__u32) 0x0000000D)
-#define SND_AUDIOCODEC_MAX                   SND_AUDIOCODEC_G729
+#define SND_AUDIOCODEC_BESPOKE               ((__u32) 0x0000000E)
+#define SND_AUDIOCODEC_ALAC                  ((__u32) 0x0000000F)
+#define SND_AUDIOCODEC_APE                   ((__u32) 0x00000010)
+#define SND_AUDIOCODEC_MAX                   SND_AUDIOCODEC_APE
 
 /*
  * Profile and modes are listed with bit masks. This allows for a
@@ -140,6 +110,9 @@
 #define SND_AUDIOPROFILE_WMA8                ((__u32) 0x00000002)
 #define SND_AUDIOPROFILE_WMA9                ((__u32) 0x00000004)
 #define SND_AUDIOPROFILE_WMA10               ((__u32) 0x00000008)
+#define SND_AUDIOPROFILE_WMA9_PRO            ((__u32) 0x00000010)
+#define SND_AUDIOPROFILE_WMA9_LOSSLESS       ((__u32) 0x00000020)
+#define SND_AUDIOPROFILE_WMA10_LOSSLESS      ((__u32) 0x00000040)
 
 #define SND_AUDIOMODE_WMA_LEVEL1             ((__u32) 0x00000001)
 #define SND_AUDIOMODE_WMA_LEVEL2             ((__u32) 0x00000002)
@@ -243,7 +216,7 @@ struct snd_enc_wma {
 
 
 /**
- * struct snd_enc_vorbis
+ * struct snd_enc_vorbis - Vorbis encoder parameters
  * @quality: Sets encoding quality to n, between -1 (low) and 10 (high).
  * In the default mode of operation, the quality level is 3.
  * Normal quality range is 0 - 10.
@@ -268,11 +241,11 @@ struct snd_enc_vorbis {
 	__u32 max_bit_rate;
 	__u32 min_bit_rate;
 	__u32 downmix;
-};
+} __attribute__((packed, aligned(4)));
 
 
 /**
- * struct snd_enc_real
+ * struct snd_enc_real - RealAudio encoder parameters
  * @quant_bits: number of coupling quantization bits in the stream
  * @start_region: coupling start region in the stream
  * @num_regions: number of regions value
@@ -284,10 +257,10 @@ struct snd_enc_real {
 	__u32 quant_bits;
 	__u32 start_region;
 	__u32 num_regions;
-};
+} __attribute__((packed, aligned(4)));
 
 /**
- * struct snd_enc_flac
+ * struct snd_enc_flac - FLAC encoder parameters
  * @num: serial number, valid only for OGG formats
  *	needs to be set by application
  * @gain: Add replay gain tags
@@ -308,12 +281,48 @@ struct snd_enc_real {
 struct snd_enc_flac {
 	__u32 num;
 	__u32 gain;
-};
+} __attribute__((packed, aligned(4)));
 
 struct snd_enc_generic {
 	__u32 bw;	/* encoder bandwidth */
-	__s32 reserved[15];
-};
+	__s32 reserved[15];	/* Can be used for SND_AUDIOCODEC_BESPOKE */
+} __attribute__((packed, aligned(4)));
+
+struct snd_dec_flac {
+	__u16 sample_size;
+	__u16 min_blk_size;
+	__u16 max_blk_size;
+	__u16 min_frame_size;
+	__u16 max_frame_size;
+	__u16 reserved;
+} __attribute__((packed, aligned(4)));
+
+struct snd_dec_wma {
+	__u32 encoder_option;
+	__u32 adv_encoder_option;
+	__u32 adv_encoder_option2;
+	__u32 reserved;
+} __attribute__((packed, aligned(4)));
+
+struct snd_dec_alac {
+	__u32 frame_length;
+	__u8 compatible_version;
+	__u8 pb;
+	__u8 mb;
+	__u8 kb;
+	__u32 max_run;
+	__u32 max_frame_bytes;
+} __attribute__((packed, aligned(4)));
+
+struct snd_dec_ape {
+	__u16 compatible_version;
+	__u16 compression_level;
+	__u32 format_flags;
+	__u32 blocks_per_frame;
+	__u32 final_frame_blocks;
+	__u32 total_frames;
+	__u32 seek_table_present;
+} __attribute__((packed, aligned(4)));
 
 union snd_codec_options {
 	struct snd_enc_wma wma;
@@ -321,7 +330,11 @@ union snd_codec_options {
 	struct snd_enc_real real;
 	struct snd_enc_flac flac;
 	struct snd_enc_generic generic;
-};
+	struct snd_dec_flac flac_d;
+	struct snd_dec_wma wma_d;
+	struct snd_dec_alac alac_d;
+	struct snd_dec_ape ape_d;
+} __attribute__((packed, aligned(4)));
 
 /** struct snd_codec_desc - description of codec capabilities
  * @max_ch: Maximum number of audio channels
@@ -358,7 +371,7 @@ struct snd_codec_desc {
 	__u32 formats;
 	__u32 min_buffer;
 	__u32 reserved[15];
-};
+} __attribute__((packed, aligned(4)));
 
 /** struct snd_codec
  * @id: Identifies the supported audio encoder/decoder.
@@ -399,6 +412,6 @@ struct snd_codec {
 	__u32 align;
 	union snd_codec_options options;
 	__u32 reserved[3];
-};
+} __attribute__((packed, aligned(4)));
 
 #endif

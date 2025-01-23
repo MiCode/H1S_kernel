@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 1997, 2001 Ralf Baechle (ralf@gnu.org),
  * derived from r4xx0.c by David S. Miller (davem@davemloft.net).
@@ -11,7 +12,6 @@
 #include <asm/bcache.h>
 #include <asm/cacheops.h>
 #include <asm/page.h>
-#include <asm/pgtable.h>
 #include <asm/mmu_context.h>
 #include <asm/r4kcache.h>
 
@@ -81,7 +81,7 @@ static inline int __init r5k_sc_probe(void)
 	unsigned long config = read_c0_config();
 
 	if (config & CONF_SC)
-		return(0);
+		return 0;
 
 	scache_size = (512 * 1024) << ((config & R5K_CONF_SS) >> 20);
 

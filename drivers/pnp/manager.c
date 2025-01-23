@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * manager.c - Resource Management, Conflict Resolution, Activation and Disabling of Devices
  *
@@ -97,8 +98,6 @@ static int pnp_assign_mem(struct pnp_dev *dev, struct pnp_mem *rule, int idx)
 	/* ??? rule->flags restricted to 8 bits, all tests bogus ??? */
 	if (!(rule->flags & IORESOURCE_MEM_WRITEABLE))
 		res->flags |= IORESOURCE_READONLY;
-	if (rule->flags & IORESOURCE_MEM_CACHEABLE)
-		res->flags |= IORESOURCE_CACHEABLE;
 	if (rule->flags & IORESOURCE_MEM_RANGELENGTH)
 		res->flags |= IORESOURCE_RANGELENGTH;
 	if (rule->flags & IORESOURCE_MEM_SHADOWABLE)
@@ -351,6 +350,7 @@ int pnp_start_dev(struct pnp_dev *dev)
 	dev_info(&dev->dev, "activated\n");
 	return 0;
 }
+EXPORT_SYMBOL(pnp_start_dev);
 
 /**
  * pnp_stop_dev - low-level disable of the PnP device
@@ -372,6 +372,7 @@ int pnp_stop_dev(struct pnp_dev *dev)
 	dev_info(&dev->dev, "disabled\n");
 	return 0;
 }
+EXPORT_SYMBOL(pnp_stop_dev);
 
 /**
  * pnp_activate_dev - activates a PnP device for use
@@ -397,6 +398,7 @@ int pnp_activate_dev(struct pnp_dev *dev)
 	dev->active = 1;
 	return 0;
 }
+EXPORT_SYMBOL(pnp_activate_dev);
 
 /**
  * pnp_disable_dev - disables device
@@ -424,8 +426,4 @@ int pnp_disable_dev(struct pnp_dev *dev)
 
 	return 0;
 }
-
-EXPORT_SYMBOL(pnp_start_dev);
-EXPORT_SYMBOL(pnp_stop_dev);
-EXPORT_SYMBOL(pnp_activate_dev);
 EXPORT_SYMBOL(pnp_disable_dev);

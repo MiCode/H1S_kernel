@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Interface for Dynamic Logical Partitioning of I/O Slots on
  * RPA-compliant PPC64 platform.
@@ -6,16 +7,12 @@
  * October 2003
  *
  * Copyright (C) 2003 IBM.
- *
- *      This program is free software; you can redistribute it and/or
- *      modify it under the terms of the GNU General Public License
- *      as published by the Free Software Foundation; either version
- *      2 of the License, or (at your option) any later version.
  */
 #include <linux/kobject.h>
 #include <linux/string.h>
 #include <linux/pci.h>
 #include <linux/pci_hotplug.h>
+#include "rpaphp.h"
 #include "rpadlpar.h"
 #include "../pci.h"
 
@@ -27,8 +24,6 @@
 #define ADD_SLOT_ATTR_NAME    add_slot
 #define REMOVE_SLOT_ATTR_NAME remove_slot
 
-#define MAX_DRC_NAME_LEN 64
-
 static ssize_t add_slot_store(struct kobject *kobj, struct kobj_attribute *attr,
 			      const char *buf, size_t nbytes)
 {
@@ -39,12 +34,11 @@ static ssize_t add_slot_store(struct kobject *kobj, struct kobj_attribute *attr,
 	if (nbytes >= MAX_DRC_NAME_LEN)
 		return 0;
 
-	memcpy(drc_name, buf, nbytes);
+	strscpy(drc_name, buf, nbytes + 1);
 
 	end = strchr(drc_name, '\n');
-	if (!end)
-		end = &drc_name[nbytes];
-	*end = '\0';
+	if (end)
+		*end = '\0';
 
 	rc = dlpar_add_slot(drc_name);
 	if (rc)
@@ -56,7 +50,7 @@ static ssize_t add_slot_store(struct kobject *kobj, struct kobj_attribute *attr,
 static ssize_t add_slot_show(struct kobject *kobj,
 			     struct kobj_attribute *attr, char *buf)
 {
-	return sprintf(buf, "0\n");
+	return sysfs_emit(buf, "0\n");
 }
 
 static ssize_t remove_slot_store(struct kobject *kobj,
@@ -70,12 +64,11 @@ static ssize_t remove_slot_store(struct kobject *kobj,
 	if (nbytes >= MAX_DRC_NAME_LEN)
 		return 0;
 
-	memcpy(drc_name, buf, nbytes);
+	strscpy(drc_name, buf, nbytes + 1);
 
 	end = strchr(drc_name, '\n');
-	if (!end)
-		end = &drc_name[nbytes];
-	*end = '\0';
+	if (end)
+		*end = '\0';
 
 	rc = dlpar_remove_slot(drc_name);
 	if (rc)
@@ -87,7 +80,7 @@ static ssize_t remove_slot_store(struct kobject *kobj,
 static ssize_t remove_slot_show(struct kobject *kobj,
 				struct kobj_attribute *attr, char *buf)
 {
-	return sprintf(buf, "0\n");
+	return sysfs_emit(buf, "0\n");
 }
 
 static struct kobj_attribute add_slot_attr =
@@ -102,7 +95,7 @@ static struct attribute *default_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group dlpar_attr_group = {
+static const struct attribute_group dlpar_attr_group = {
 	.attrs = default_attrs,
 };
 

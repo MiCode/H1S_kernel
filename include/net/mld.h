@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef LINUX_MLD_H
 #define LINUX_MLD_H
 
@@ -23,12 +24,12 @@ struct mld2_grec {
 	__u8		grec_auxwords;
 	__be16		grec_nsrcs;
 	struct in6_addr	grec_mca;
-	struct in6_addr	grec_src[0];
+	struct in6_addr	grec_src[];
 };
 
 struct mld2_report {
 	struct icmp6hdr		mld2r_hdr;
-	struct mld2_grec	mld2r_grec[0];
+	struct mld2_grec	mld2r_grec[];
 };
 
 #define mld2r_type		mld2r_hdr.icmp6_type
@@ -54,7 +55,7 @@ struct mld2_query {
 #endif
 	__u8			mld2q_qqic;
 	__be16			mld2q_nsrcs;
-	struct in6_addr		mld2q_srcs[0];
+	struct in6_addr		mld2q_srcs[];
 };
 
 #define mld2q_type		mld2q_hdr.icmp6_type
@@ -88,12 +89,18 @@ struct mld2_query {
 #define MLDV2_QQIC_EXP(value)	(((value) >> 4) & 0x07)
 #define MLDV2_QQIC_MAN(value)	((value) & 0x0f)
 
+#define MLD_EXP_MIN_LIMIT	32768UL
+#define MLDV1_MRD_MAX_COMPAT	(MLD_EXP_MIN_LIMIT - 1)
+
+#define MLD_MAX_QUEUE		8
+#define MLD_MAX_SKBS		32
+
 static inline unsigned long mldv2_mrc(const struct mld2_query *mlh2)
 {
 	/* RFC3810, 5.1.3. Maximum Response Code */
 	unsigned long ret, mc_mrc = ntohs(mlh2->mld2q_mrc);
 
-	if (mc_mrc < 32768) {
+	if (mc_mrc < MLD_EXP_MIN_LIMIT) {
 		ret = mc_mrc;
 	} else {
 		unsigned long mc_man, mc_exp;

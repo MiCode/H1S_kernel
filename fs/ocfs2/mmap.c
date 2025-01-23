@@ -1,26 +1,10 @@
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
  * mmap.c
  *
  * Code to deal with the mess that is clustered mmap.
  *
  * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
 #include <linux/fs.h>
@@ -44,37 +28,39 @@
 #include "ocfs2_trace.h"
 
 
-static int ocfs2_fault(struct vm_area_struct *area, struct vm_fault *vmf)
+static vm_fault_t ocfs2_fault(struct vm_fault *vmf)
 {
+	struct vm_area_struct *vma = vmf->vma;
 	sigset_t oldset;
-	int ret;
+	vm_fault_t ret;
 
 	ocfs2_block_signals(&oldset);
-	ret = filemap_fault(area, vmf);
+	ret = filemap_fault(vmf);
 	ocfs2_unblock_signals(&oldset);
 
-	trace_ocfs2_fault(OCFS2_I(area->vm_file->f_mapping->host)->ip_blkno,
-			  area, vmf->page, vmf->pgoff);
+	trace_ocfs2_fault(OCFS2_I(vma->vm_file->f_mapping->host)->ip_blkno,
+			  vma, vmf->page, vmf->pgoff);
 	return ret;
 }
 
-static int __ocfs2_page_mkwrite(struct file *file, struct buffer_head *di_bh,
-				struct page *page)
+static vm_fault_t __ocfs2_page_mkwrite(struct file *file,
+			struct buffer_head *di_bh, struct page *page)
 {
-	int ret = VM_FAULT_NOPAGE;
+	int err;
+	vm_fault_t ret = VM_FAULT_NOPAGE;
 	struct inode *inode = file_inode(file);
 	struct address_space *mapping = inode->i_mapping;
 	loff_t pos = page_offset(page);
-	unsigned int len = PAGE_CACHE_SIZE;
+	unsigned int len = PAGE_SIZE;
 	pgoff_t last_index;
 	struct page *locked_page = NULL;
 	void *fsdata;
 	loff_t size = i_size_read(inode);
 
-	last_index = (size - 1) >> PAGE_CACHE_SHIFT;
+	last_index = (size - 1) >> PAGE_SHIFT;
 
 	/*
-	 * There are cases that lead to the page no longer bebongs to the
+	 * There are cases that lead to the page no longer belonging to the
 	 * mapping.
 	 * 1) pagecache truncates locally due to memory pressure.
 	 * 2) pagecache truncates when another is taking EX lock against 
@@ -102,17 +88,14 @@ static int __ocfs2_page_mkwrite(struct file *file, struct buffer_head *di_bh,
 	 * because the "write" would invalidate their data.
 	 */
 	if (page->index == last_index)
-		len = ((size - 1) & ~PAGE_CACHE_MASK) + 1;
+		len = ((size - 1) & ~PAGE_MASK) + 1;
 
-	ret = ocfs2_write_begin_nolock(file, mapping, pos, len, 0, &locked_page,
-				       &fsdata, di_bh, page);
-	if (ret) {
-		if (ret != -ENOSPC)
-			mlog_errno(ret);
-		if (ret == -ENOMEM)
-			ret = VM_FAULT_OOM;
-		else
-			ret = VM_FAULT_SIGBUS;
+	err = ocfs2_write_begin_nolock(mapping, pos, len, OCFS2_WRITE_MMAP,
+				       &locked_page, &fsdata, di_bh, page);
+	if (err) {
+		if (err != -ENOSPC)
+			mlog_errno(err);
+		ret = vmf_error(err);
 		goto out;
 	}
 
@@ -120,21 +103,21 @@ static int __ocfs2_page_mkwrite(struct file *file, struct buffer_head *di_bh,
 		ret = VM_FAULT_NOPAGE;
 		goto out;
 	}
-	ret = ocfs2_write_end_nolock(mapping, pos, len, len, locked_page,
-				     fsdata);
-	BUG_ON(ret != len);
+	err = ocfs2_write_end_nolock(mapping, pos, len, len, fsdata);
+	BUG_ON(err != len);
 	ret = VM_FAULT_LOCKED;
 out:
 	return ret;
 }
 
-static int ocfs2_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
+static vm_fault_t ocfs2_page_mkwrite(struct vm_fault *vmf)
 {
 	struct page *page = vmf->page;
-	struct inode *inode = file_inode(vma->vm_file);
+	struct inode *inode = file_inode(vmf->vma->vm_file);
 	struct buffer_head *di_bh = NULL;
 	sigset_t oldset;
-	int ret;
+	int err;
+	vm_fault_t ret;
 
 	sb_start_pagefault(inode->i_sb);
 	ocfs2_block_signals(&oldset);
@@ -144,9 +127,10 @@ static int ocfs2_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
 	 * node. Taking the data lock will also ensure that we don't
 	 * attempt page truncation as part of a downconvert.
 	 */
-	ret = ocfs2_inode_lock(inode, &di_bh, 1);
-	if (ret < 0) {
-		mlog_errno(ret);
+	err = ocfs2_inode_lock(inode, &di_bh, 1);
+	if (err < 0) {
+		mlog_errno(err);
+		ret = vmf_error(err);
 		goto out;
 	}
 
@@ -157,7 +141,7 @@ static int ocfs2_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
 	 */
 	down_write(&OCFS2_I(inode)->ip_alloc_sem);
 
-	ret = __ocfs2_page_mkwrite(vma->vm_file, di_bh, page);
+	ret = __ocfs2_page_mkwrite(vmf->vma->vm_file, di_bh, page);
 
 	up_write(&OCFS2_I(inode)->ip_alloc_sem);
 
@@ -173,7 +157,6 @@ out:
 static const struct vm_operations_struct ocfs2_file_vm_ops = {
 	.fault		= ocfs2_fault,
 	.page_mkwrite	= ocfs2_page_mkwrite,
-	.remap_pages	= generic_file_remap_pages,
 };
 
 int ocfs2_mmap(struct file *file, struct vm_area_struct *vma)
@@ -181,7 +164,7 @@ int ocfs2_mmap(struct file *file, struct vm_area_struct *vma)
 	int ret = 0, lock_level = 0;
 
 	ret = ocfs2_inode_lock_atime(file_inode(file),
-				    file->f_path.mnt, &lock_level);
+				    file->f_path.mnt, &lock_level, 1);
 	if (ret < 0) {
 		mlog_errno(ret);
 		goto out;

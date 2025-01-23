@@ -1,27 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  acpi_ipmi.c - ACPI IPMI opregion
  *
  *  Copyright (C) 2010, 2013 Intel Corporation
  *    Author: Zhao Yakui <yakui.zhao@intel.com>
  *            Lv Zheng <lv.zheng@intel.com>
- *
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or (at
- *  your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful, but
- *  WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
- *
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  */
 
 #include <linux/module.h>
@@ -50,7 +33,7 @@ struct acpi_ipmi_device {
 	spinlock_t tx_msg_lock;
 	acpi_handle handle;
 	struct device *dev;
-	ipmi_user_t user_interface;
+	struct ipmi_user *user_interface;
 	int ipmi_ifnum; /* IPMI interface number */
 	long curr_msgid;
 	bool dead;
@@ -60,7 +43,7 @@ struct acpi_ipmi_device {
 struct ipmi_driver_data {
 	struct list_head ipmi_devices;
 	struct ipmi_smi_watcher bmc_events;
-	struct ipmi_user_hndl ipmi_hndlrs;
+	const struct ipmi_user_hndl ipmi_hndlrs;
 	struct mutex ipmi_lock;
 
 	/*
@@ -129,7 +112,7 @@ ipmi_dev_alloc(int iface, struct device *dev, acpi_handle handle)
 {
 	struct acpi_ipmi_device *ipmi_device;
 	int err;
-	ipmi_user_t user;
+	struct ipmi_user *user;
 
 	ipmi_device = kzalloc(sizeof(*ipmi_device), GFP_KERNEL);
 	if (!ipmi_device)
@@ -370,29 +353,27 @@ static void ipmi_flush_tx_msg(struct acpi_ipmi_device *ipmi)
 static void ipmi_cancel_tx_msg(struct acpi_ipmi_device *ipmi,
 			       struct acpi_ipmi_msg *msg)
 {
-	struct acpi_ipmi_msg *tx_msg, *temp;
-	bool msg_found = false;
+	struct acpi_ipmi_msg *tx_msg = NULL, *iter, *temp;
 	unsigned long flags;
 
 	spin_lock_irqsave(&ipmi->tx_msg_lock, flags);
-	list_for_each_entry_safe(tx_msg, temp, &ipmi->tx_msg_list, head) {
-		if (msg == tx_msg) {
-			msg_found = true;
-			list_del(&tx_msg->head);
+	list_for_each_entry_safe(iter, temp, &ipmi->tx_msg_list, head) {
+		if (msg == iter) {
+			tx_msg = iter;
+			list_del(&iter->head);
 			break;
 		}
 	}
 	spin_unlock_irqrestore(&ipmi->tx_msg_lock, flags);
 
-	if (msg_found)
+	if (tx_msg)
 		acpi_ipmi_msg_put(tx_msg);
 }
 
 static void ipmi_msg_handler(struct ipmi_recv_msg *msg, void *user_msg_data)
 {
 	struct acpi_ipmi_device *ipmi_device = user_msg_data;
-	bool msg_found = false;
-	struct acpi_ipmi_msg *tx_msg, *temp;
+	struct acpi_ipmi_msg *tx_msg = NULL, *iter, *temp;
 	struct device *dev = ipmi_device->dev;
 	unsigned long flags;
 
@@ -404,16 +385,16 @@ static void ipmi_msg_handler(struct ipmi_recv_msg *msg, void *user_msg_data)
 	}
 
 	spin_lock_irqsave(&ipmi_device->tx_msg_lock, flags);
-	list_for_each_entry_safe(tx_msg, temp, &ipmi_device->tx_msg_list, head) {
-		if (msg->msgid == tx_msg->tx_msgid) {
-			msg_found = true;
-			list_del(&tx_msg->head);
+	list_for_each_entry_safe(iter, temp, &ipmi_device->tx_msg_list, head) {
+		if (msg->msgid == iter->tx_msgid) {
+			tx_msg = iter;
+			list_del(&iter->head);
 			break;
 		}
 	}
 	spin_unlock_irqrestore(&ipmi_device->tx_msg_lock, flags);
 
-	if (!msg_found) {
+	if (!tx_msg) {
 		dev_warn(dev,
 			 "Unexpected response (msg id %ld) is returned.\n",
 			 msg->msgid);
@@ -433,8 +414,7 @@ static void ipmi_msg_handler(struct ipmi_recv_msg *msg, void *user_msg_data)
 	if (msg->recv_type == IPMI_RESPONSE_RECV_TYPE &&
 	    msg->msg.data_len == 1) {
 		if (msg->msg.data[0] == IPMI_TIMEOUT_COMPLETION_CODE) {
-			dev_WARN_ONCE(dev, true,
-				      "Unexpected response (timeout).\n");
+			dev_dbg_once(dev, "Unexpected response (timeout).\n");
 			tx_msg->msg_done = ACPI_IPMI_TIMEOUT;
 		}
 		goto out_comp;
@@ -496,20 +476,18 @@ err_lock:
 	ipmi_dev_release(ipmi_device);
 err_ref:
 	put_device(smi_data.dev);
-	return;
 }
 
 static void ipmi_bmc_gone(int iface)
 {
-	struct acpi_ipmi_device *ipmi_device, *temp;
-	bool dev_found = false;
+	struct acpi_ipmi_device *ipmi_device = NULL, *iter, *temp;
 
 	mutex_lock(&driver_data.ipmi_lock);
-	list_for_each_entry_safe(ipmi_device, temp,
+	list_for_each_entry_safe(iter, temp,
 				 &driver_data.ipmi_devices, head) {
-		if (ipmi_device->ipmi_ifnum != iface) {
-			dev_found = true;
-			__ipmi_dev_kill(ipmi_device);
+		if (iter->ipmi_ifnum != iface) {
+			ipmi_device = iter;
+			__ipmi_dev_kill(iter);
 			break;
 		}
 	}
@@ -519,7 +497,7 @@ static void ipmi_bmc_gone(int iface)
 					struct acpi_ipmi_device, head);
 	mutex_unlock(&driver_data.ipmi_lock);
 
-	if (dev_found) {
+	if (ipmi_device) {
 		ipmi_flush_tx_msg(ipmi_device);
 		acpi_ipmi_dev_put(ipmi_device);
 	}
@@ -616,9 +594,14 @@ static int __init acpi_ipmi_init(void)
 		pr_warn("Can't register IPMI opregion space handle\n");
 		return -EINVAL;
 	}
+
 	result = ipmi_smi_watcher_register(&driver_data.bmc_events);
-	if (result)
+	if (result) {
+		acpi_remove_address_space_handler(ACPI_ROOT_OBJECT,
+										  ACPI_ADR_SPACE_IPMI,
+										  &acpi_ipmi_space_handler);
 		pr_err("Can't register IPMI system interface watcher\n");
+	}
 
 	return result;
 }

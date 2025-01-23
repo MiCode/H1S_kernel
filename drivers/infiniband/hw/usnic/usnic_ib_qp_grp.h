@@ -1,9 +1,24 @@
 /*
  * Copyright (c) 2013, Cisco Systems, Inc. All rights reserved.
  *
- * This program is free software; you may redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * BSD license below:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      - Redistributions of source code must retain the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer.
+ *
+ *      - Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials
+ *        provided with the distribution.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
  * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
@@ -69,39 +84,16 @@ struct usnic_ib_qp_grp_flow {
 	char				dentry_name[32];
 };
 
-static const struct
-usnic_vnic_res_spec min_transport_spec[USNIC_TRANSPORT_MAX] = {
-	{ /*USNIC_TRANSPORT_UNKNOWN*/
-		.resources = {
-			{.type = USNIC_VNIC_RES_TYPE_EOL,	.cnt = 0,},
-		},
-	},
-	{ /*USNIC_TRANSPORT_ROCE_CUSTOM*/
-		.resources = {
-			{.type = USNIC_VNIC_RES_TYPE_WQ,	.cnt = 1,},
-			{.type = USNIC_VNIC_RES_TYPE_RQ,	.cnt = 1,},
-			{.type = USNIC_VNIC_RES_TYPE_CQ,	.cnt = 1,},
-			{.type = USNIC_VNIC_RES_TYPE_EOL,	.cnt = 0,},
-		},
-	},
-	{ /*USNIC_TRANSPORT_IPV4_UDP*/
-		.resources = {
-			{.type = USNIC_VNIC_RES_TYPE_WQ,	.cnt = 1,},
-			{.type = USNIC_VNIC_RES_TYPE_RQ,	.cnt = 1,},
-			{.type = USNIC_VNIC_RES_TYPE_CQ,	.cnt = 1,},
-			{.type = USNIC_VNIC_RES_TYPE_EOL,	.cnt = 0,},
-		},
-	},
-};
+extern const struct usnic_vnic_res_spec min_transport_spec[USNIC_TRANSPORT_MAX];
 
 const char *usnic_ib_qp_grp_state_to_string(enum ib_qp_state state);
 int usnic_ib_qp_grp_dump_hdr(char *buf, int buf_sz);
 int usnic_ib_qp_grp_dump_rows(void *obj, char *buf, int buf_sz);
-struct usnic_ib_qp_grp *
-usnic_ib_qp_grp_create(struct usnic_fwd_dev *ufdev, struct usnic_ib_vf *vf,
-			struct usnic_ib_pd *pd,
-			struct usnic_vnic_res_spec *res_spec,
-			struct usnic_transport_spec *trans_spec);
+int usnic_ib_qp_grp_create(struct usnic_ib_qp_grp *qp,
+			   struct usnic_fwd_dev *ufdev, struct usnic_ib_vf *vf,
+			   struct usnic_ib_pd *pd,
+			   struct usnic_vnic_res_spec *res_spec,
+			   struct usnic_transport_spec *trans_spec);
 void usnic_ib_qp_grp_destroy(struct usnic_ib_qp_grp *qp_grp);
 int usnic_ib_qp_grp_modify(struct usnic_ib_qp_grp *qp_grp,
 				enum ib_qp_state new_state,

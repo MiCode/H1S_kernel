@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * PCI Backend - Data structures for special overlays for broken devices.
  *
@@ -19,8 +20,6 @@ struct xen_pcibk_config_quirk {
 
 int xen_pcibk_config_quirks_add_field(struct pci_dev *dev, struct config_field
 				    *field);
-
-int xen_pcibk_config_quirks_remove_field(struct pci_dev *dev, int reg);
 
 int xen_pcibk_config_quirks_init(struct pci_dev *dev);
 

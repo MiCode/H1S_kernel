@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  linux/arch/arm/common/vic.c
  *
  *  Copyright (C) 1999 - 2003 ARM Limited
  *  Copyright (C) 2000 Deep Blue Solutions Ltd
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/export.h>
@@ -24,6 +11,8 @@
 #include <linux/list.h>
 #include <linux/io.h>
 #include <linux/irq.h>
+#include <linux/irqchip.h>
+#include <linux/irqchip/chained_irq.h>
 #include <linux/irqdomain.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -36,11 +25,12 @@
 #include <asm/exception.h>
 #include <asm/irq.h>
 
-#include "irqchip.h"
-
 #define VIC_IRQ_STATUS			0x00
 #define VIC_FIQ_STATUS			0x04
+#define VIC_RAW_STATUS			0x08
 #define VIC_INT_SELECT			0x0c	/* 1 = FIQ, 0 = IRQ */
+#define VIC_INT_ENABLE			0x10	/* 1 = enable, 0 = disable */
+#define VIC_INT_ENABLE_CLEAR		0x14
 #define VIC_INT_SOFT			0x18
 #define VIC_INT_SOFT_CLEAR		0x1c
 #define VIC_PROTECT			0x20
@@ -57,6 +47,7 @@
 
 /**
  * struct vic_device - VIC PM device
+ * @parent_irq: The parent IRQ number of the VIC if cascaded, or 0.
  * @irq: The IRQ number for the base of the VIC.
  * @base: The register base for the VIC.
  * @valid_sources: A bitmask of valid interrupts
@@ -166,13 +157,13 @@ static int vic_suspend(void)
 	return 0;
 }
 
-struct syscore_ops vic_syscore_ops = {
+static struct syscore_ops vic_syscore_ops = {
 	.suspend	= vic_suspend,
 	.resume		= vic_resume,
 };
 
 /**
- * vic_pm_init - initicall to register VIC pm
+ * vic_pm_init - initcall to register VIC pm
  *
  * This is called via late_initcall() to register
  * the resources for the VICs due to the early
@@ -200,7 +191,7 @@ static int vic_irqdomain_map(struct irq_domain *d, unsigned int irq,
 		return -EPERM;
 	irq_set_chip_and_handler(irq, &vic_chip, handle_level_irq);
 	irq_set_chip_data(irq, v->base);
-	set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
+	irq_set_probe(irq);
 	return 0;
 }
 
@@ -217,18 +208,34 @@ static int handle_one_vic(struct vic_device *vic, struct pt_regs *regs)
 
 	while ((stat = readl_relaxed(vic->base + VIC_IRQ_STATUS))) {
 		irq = ffs(stat) - 1;
-		handle_IRQ(irq_find_mapping(vic->domain, irq), regs);
+		generic_handle_domain_irq(vic->domain, irq);
 		handled = 1;
 	}
 
 	return handled;
 }
 
+static void vic_handle_irq_cascaded(struct irq_desc *desc)
+{
+	u32 stat, hwirq;
+	struct irq_chip *host_chip = irq_desc_get_chip(desc);
+	struct vic_device *vic = irq_desc_get_handler_data(desc);
+
+	chained_irq_enter(host_chip, desc);
+
+	while ((stat = readl_relaxed(vic->base + VIC_IRQ_STATUS))) {
+		hwirq = ffs(stat) - 1;
+		generic_handle_domain_irq(vic->domain, hwirq);
+	}
+
+	chained_irq_exit(host_chip, desc);
+}
+
 /*
  * Keep iterating over all registered VIC's until there are no pending
  * interrupts.
  */
-static asmlinkage void __exception_irq_entry vic_handle_irq(struct pt_regs *regs)
+static void __exception_irq_entry vic_handle_irq(struct pt_regs *regs)
 {
 	int i, handled;
 
@@ -238,7 +245,7 @@ static asmlinkage void __exception_irq_entry vic_handle_irq(struct pt_regs *regs
 	} while (handled);
 }
 
-static struct irq_domain_ops vic_irqdomain_ops = {
+static const struct irq_domain_ops vic_irqdomain_ops = {
 	.map = vic_irqdomain_map,
 	.xlate = irq_domain_xlate_onetwocell,
 };
@@ -246,6 +253,7 @@ static struct irq_domain_ops vic_irqdomain_ops = {
 /**
  * vic_register() - Register a VIC.
  * @base: The base address of the VIC.
+ * @parent_irq: The parent IRQ if cascaded, else 0.
  * @irq: The base IRQ for the VIC.
  * @valid_sources: bitmask of valid interrupts
  * @resume_sources: bitmask of interrupts allowed for resume sources.
@@ -257,7 +265,8 @@ static struct irq_domain_ops vic_irqdomain_ops = {
  *
  * This also configures the IRQ domain for the VIC.
  */
-static void __init vic_register(void __iomem *base, unsigned int irq,
+static void __init vic_register(void __iomem *base, unsigned int parent_irq,
+				unsigned int irq,
 				u32 valid_sources, u32 resume_sources,
 				struct device_node *node)
 {
@@ -273,15 +282,25 @@ static void __init vic_register(void __iomem *base, unsigned int irq,
 	v->base = base;
 	v->valid_sources = valid_sources;
 	v->resume_sources = resume_sources;
-	v->irq = irq;
 	set_handle_irq(vic_handle_irq);
 	vic_id++;
+
+	if (parent_irq) {
+		irq_set_chained_handler_and_data(parent_irq,
+						 vic_handle_irq_cascaded, v);
+	}
+
 	v->domain = irq_domain_add_simple(node, fls(valid_sources), irq,
 					  &vic_irqdomain_ops, v);
 	/* create an IRQ mapping for each valid IRQ */
 	for (i = 0; i < fls(valid_sources); i++)
 		if (valid_sources & (1 << i))
 			irq_create_mapping(v->domain, i);
+	/* If no base IRQ was passed, figure out our allocated base */
+	if (irq)
+		v->irq = irq;
+	else
+		v->irq = irq_find_mapping(v->domain, 0);
 }
 
 static void vic_ack_irq(struct irq_data *d)
@@ -378,7 +397,7 @@ static void __init vic_clear_interrupts(void __iomem *base)
 /*
  * The PL190 cell from ARM has been modified by ST to handle 64 interrupts.
  * The original cell has 32 interrupts, while the modified one has 64,
- * replocating two blocks 0x00..0x1f in 0x20..0x3f. In that case
+ * replicating two blocks 0x00..0x1f in 0x20..0x3f. In that case
  * the probe function is called twice, with base set to offset 000
  *  and 020 within the page. We call this "second block".
  */
@@ -409,10 +428,10 @@ static void __init vic_init_st(void __iomem *base, unsigned int irq_start,
 		writel(32, base + VIC_PL190_DEF_VECT_ADDR);
 	}
 
-	vic_register(base, irq_start, vic_sources, 0, node);
+	vic_register(base, 0, irq_start, vic_sources, 0, node);
 }
 
-void __init __vic_init(void __iomem *base, int irq_start,
+static void __init __vic_init(void __iomem *base, int parent_irq, int irq_start,
 			      u32 vic_sources, u32 resume_sources,
 			      struct device_node *node)
 {
@@ -436,7 +455,7 @@ void __init __vic_init(void __iomem *base, int irq_start,
 		return;
 	default:
 		printk(KERN_WARNING "VIC: unknown vendor, continuing anyways\n");
-		/* fall through */
+		fallthrough;
 	case AMBA_VENDOR_ARM:
 		break;
 	}
@@ -449,7 +468,7 @@ void __init __vic_init(void __iomem *base, int irq_start,
 
 	vic_init2(base);
 
-	vic_register(base, irq_start, vic_sources, resume_sources, node);
+	vic_register(base, parent_irq, irq_start, vic_sources, resume_sources, node);
 }
 
 /**
@@ -462,18 +481,17 @@ void __init __vic_init(void __iomem *base, int irq_start,
 void __init vic_init(void __iomem *base, unsigned int irq_start,
 		     u32 vic_sources, u32 resume_sources)
 {
-	__vic_init(base, irq_start, vic_sources, resume_sources, NULL);
+	__vic_init(base, 0, irq_start, vic_sources, resume_sources, NULL);
 }
 
 #ifdef CONFIG_OF
-int __init vic_of_init(struct device_node *node, struct device_node *parent)
+static int __init vic_of_init(struct device_node *node,
+			      struct device_node *parent)
 {
 	void __iomem *regs;
 	u32 interrupt_mask = ~0;
 	u32 wakeup_mask = ~0;
-
-	if (WARN(parent, "non-root VICs are not supported"))
-		return -EINVAL;
+	int parent_irq;
 
 	regs = of_iomap(node, 0);
 	if (WARN_ON(!regs))
@@ -481,11 +499,14 @@ int __init vic_of_init(struct device_node *node, struct device_node *parent)
 
 	of_property_read_u32(node, "valid-mask", &interrupt_mask);
 	of_property_read_u32(node, "valid-wakeup-mask", &wakeup_mask);
+	parent_irq = of_irq_get(node, 0);
+	if (parent_irq < 0)
+		parent_irq = 0;
 
 	/*
 	 * Passing 0 as first IRQ makes the simple domain allocate descriptors
 	 */
-	__vic_init(regs, 0, interrupt_mask, wakeup_mask, node);
+	__vic_init(regs, parent_irq, 0, interrupt_mask, wakeup_mask, node);
 
 	return 0;
 }

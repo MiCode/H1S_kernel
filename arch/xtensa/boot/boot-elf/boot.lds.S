@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/arch/xtensa/boot/boot-elf/boot.lds.S
  *
@@ -6,10 +7,6 @@
  *  Chris Zankel <chris@zankel.net>
  *  Marc Gauthier <marc@tensilica.com
  *  Pete Delaney <piet@tensilica.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <asm/vectors.h>
@@ -23,7 +20,7 @@ SECTIONS
 		*(.ResetVector.text)
 	}
 
-	.image KERNELOFFSET: AT (LOAD_MEMORY_ADDRESS)
+	.image KERNELOFFSET: AT (CONFIG_KERNEL_LOAD_ADDRESS)
 	{
 		_image_start = .;
 		*(image)
@@ -39,16 +36,5 @@ SECTIONS
 		*(.dynbss)
 		*(.bss)
 		__bss_end = .;
-	}
-
-	/*
-	 * This is a remapped copy of the Reset Vector Code.
-	 * It keeps gdb in sync with the PC after switching
-	 * to the temporary mapping used while setting up
-	 * the V2 MMU mappings for Linux.
-	 */
-	.ResetVector.remapped_text 0x46000000 (INFO):
-	{
-		*(.ResetVector.remapped_text)
 	}
 }

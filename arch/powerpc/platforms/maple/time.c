@@ -1,12 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  (c) Copyright 2004 Benjamin Herrenschmidt (benh@kernel.crashing.org),
  *                     IBM Corp. 
- *
- *  This program is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public License
- *  as published by the Free Software Foundation; either version
- *  2 of the License, or (at your option) any later version.
- *
  */
 
 #undef DEBUG
@@ -24,11 +19,10 @@
 #include <linux/interrupt.h>
 #include <linux/mc146818rtc.h>
 #include <linux/bcd.h>
+#include <linux/of_address.h>
 
 #include <asm/sections.h>
-#include <asm/prom.h>
 #include <asm/io.h>
-#include <asm/pgtable.h>
 #include <asm/machdep.h>
 #include <asm/time.h>
 
@@ -77,7 +71,7 @@ void maple_get_rtc_time(struct rtc_time *tm)
 	if ((tm->tm_year + 1900) < 1970)
 		tm->tm_year += 100;
 
-	GregorianDay(tm);
+	tm->tm_wday = -1;
 }
 
 int maple_set_rtc_time(struct rtc_time *tm)
@@ -134,10 +128,10 @@ int maple_set_rtc_time(struct rtc_time *tm)
 
 static struct resource rtc_iores = {
 	.name = "rtc",
-	.flags = IORESOURCE_BUSY,
+	.flags = IORESOURCE_IO | IORESOURCE_BUSY,
 };
 
-unsigned long __init maple_get_boot_time(void)
+time64_t __init maple_get_boot_time(void)
 {
 	struct rtc_time tm;
 	struct device_node *rtcs;
@@ -159,6 +153,7 @@ unsigned long __init maple_get_boot_time(void)
 		       maple_rtc_addr);
 	}
  bail:
+	of_node_put(rtcs);
 	if (maple_rtc_addr == 0) {
 		maple_rtc_addr = RTC_PORT(0); /* legacy address */
 		printk(KERN_INFO "Maple: No device node for RTC, assuming "
@@ -170,7 +165,6 @@ unsigned long __init maple_get_boot_time(void)
 	request_resource(&ioport_resource, &rtc_iores);
 
 	maple_get_rtc_time(&tm);
-	return mktime(tm.tm_year+1900, tm.tm_mon+1, tm.tm_mday,
-		      tm.tm_hour, tm.tm_min, tm.tm_sec);
+	return rtc_tm_to_time64(&tm);
 }
 

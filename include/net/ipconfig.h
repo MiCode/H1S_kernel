@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  Copyright (C) 1997 Martin Mares
  *
@@ -5,6 +6,8 @@
  */
 
 /* The following are initdata: */
+
+#include <linux/types.h>
 
 extern int ic_proto_enabled;	/* Protocols enabled (see IC_xxx) */
 extern int ic_set_manually;	/* IPconfig parameters set manually */

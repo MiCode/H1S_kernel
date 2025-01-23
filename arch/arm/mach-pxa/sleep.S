@@ -13,13 +13,14 @@
 
 #include <linux/linkage.h>
 #include <asm/assembler.h>
-#include <mach/hardware.h>
-#include <mach/smemc.h>
-#include <mach/pxa2xx-regs.h>
+#include "smemc.h"
+#include "pxa2xx-regs.h"
 
 #define MDREFR_KDIV	0x200a4000	// all banks
 #define CCCR_SLEEP	0x00000107	// L=7 2N=2 A=0 PPDIS=0 CPDIS=0
-
+#define CCCR_N_MASK     0x00000380
+#define CCCR_M_MASK     0x00000060
+#define CCCR_L_MASK     0x0000001f
 		.text
 
 #ifdef CONFIG_PXA3xx
@@ -157,7 +158,7 @@ pxa_cpu_do_suspend:
 	@ Do not reorder...
 	@ Intel PXA270 Specification Update notes problems performing
 	@ external accesses after SDRAM is put in self-refresh mode
-	@ (see Errata 39 ...hangs when entering self-refresh mode)
+	@ (see Errata 38 ...hangs when entering self-refresh mode)
 
 	@ force address lines low by reading at physical address 0
 	ldr	r3, [r2]

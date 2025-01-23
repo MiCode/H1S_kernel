@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* rc-streamzap.c - Keytable for Streamzap PC Remote, for use
  * with the Streamzap PC Remote IR Receiver.
  *
  * Copyright (c) 2010 by Jarod Wilson <jarod@redhat.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <media/rc-map.h>
@@ -15,9 +11,7 @@
 static struct rc_map_table streamzap[] = {
 /*
  * The Streamzap remote is almost, but not quite, RC-5, as it has an extra
- * bit in it, which throws the in-kernel RC-5 decoder for a loop. Currently,
- * an additional RC-5-sz decoder is being deployed to support it, but it
- * may be possible to merge it back with the standard RC-5 decoder.
+ * bit in it.
  */
 	{ 0x28c0, KEY_NUMERIC_0 },
 	{ 0x28c1, KEY_NUMERIC_1 },
@@ -59,10 +53,10 @@ static struct rc_map_table streamzap[] = {
 
 static struct rc_map_list streamzap_map = {
 	.map = {
-		.scan    = streamzap,
-		.size    = ARRAY_SIZE(streamzap),
-		.rc_type = RC_TYPE_RC5_SZ,
-		.name    = RC_MAP_STREAMZAP,
+		.scan     = streamzap,
+		.size     = ARRAY_SIZE(streamzap),
+		.rc_proto = RC_PROTO_RC5_SZ,
+		.name     = RC_MAP_STREAMZAP,
 	}
 };
 

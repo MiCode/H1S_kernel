@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/drivers/mfd/ucb1x00-core.c
  *
  *  Copyright (C) 2001 Russell King, All Rights Reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License.
  *
  *  The UCB1x00 core driver provides basic services for handling IO,
  *  the ADC, interrupts, and accessing registers.  It is designed
@@ -28,7 +25,7 @@
 #include <linux/mutex.h>
 #include <linux/mfd/ucb1x00.h>
 #include <linux/pm.h>
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 
 static DEFINE_MUTEX(ucb1x00_mutex);
 static LIST_HEAD(ucb1x00_drivers);
@@ -109,7 +106,7 @@ unsigned int ucb1x00_io_read(struct ucb1x00 *ucb)
 
 static void ucb1x00_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 {
-	struct ucb1x00 *ucb = container_of(chip, struct ucb1x00, gpio);
+	struct ucb1x00 *ucb = gpiochip_get_data(chip);
 	unsigned long flags;
 
 	spin_lock_irqsave(&ucb->io_lock, flags);
@@ -126,19 +123,19 @@ static void ucb1x00_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 
 static int ucb1x00_gpio_get(struct gpio_chip *chip, unsigned offset)
 {
-	struct ucb1x00 *ucb = container_of(chip, struct ucb1x00, gpio);
+	struct ucb1x00 *ucb = gpiochip_get_data(chip);
 	unsigned val;
 
 	ucb1x00_enable(ucb);
 	val = ucb1x00_reg_read(ucb, UCB_IO_DATA);
 	ucb1x00_disable(ucb);
 
-	return val & (1 << offset);
+	return !!(val & (1 << offset));
 }
 
 static int ucb1x00_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 {
-	struct ucb1x00 *ucb = container_of(chip, struct ucb1x00, gpio);
+	struct ucb1x00 *ucb = gpiochip_get_data(chip);
 	unsigned long flags;
 
 	spin_lock_irqsave(&ucb->io_lock, flags);
@@ -154,7 +151,7 @@ static int ucb1x00_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 static int ucb1x00_gpio_direction_output(struct gpio_chip *chip, unsigned offset
 		, int value)
 {
-	struct ucb1x00 *ucb = container_of(chip, struct ucb1x00, gpio);
+	struct ucb1x00 *ucb = gpiochip_get_data(chip);
 	unsigned long flags;
 	unsigned old, mask = 1 << offset;
 
@@ -181,7 +178,7 @@ static int ucb1x00_gpio_direction_output(struct gpio_chip *chip, unsigned offset
 
 static int ucb1x00_to_irq(struct gpio_chip *chip, unsigned offset)
 {
-	struct ucb1x00 *ucb = container_of(chip, struct ucb1x00, gpio);
+	struct ucb1x00 *ucb = gpiochip_get_data(chip);
 
 	return ucb->irq_base > 0 ? ucb->irq_base + offset : -ENXIO;
 }
@@ -282,7 +279,7 @@ void ucb1x00_adc_disable(struct ucb1x00 *ucb)
  * SIBCLK to talk to the chip.  We leave the clock running until
  * we have finished processing all interrupts from the chip.
  */
-static void ucb1x00_irq(unsigned int irq, struct irq_desc *desc)
+static void ucb1x00_irq(struct irq_desc *desc)
 {
 	struct ucb1x00 *ucb = irq_desc_get_handler_data(desc);
 	unsigned int isr, i;
@@ -292,7 +289,7 @@ static void ucb1x00_irq(unsigned int irq, struct irq_desc *desc)
 	ucb1x00_reg_write(ucb, UCB_IE_CLEAR, isr);
 	ucb1x00_reg_write(ucb, UCB_IE_CLEAR, 0);
 
-	for (i = 0; i < 16 && isr; i++, isr >>= 1, irq++)
+	for (i = 0; i < 16 && isr; i++, isr >>= 1)
 		if (isr & 1)
 			generic_handle_irq(ucb->irq_base + i);
 	ucb1x00_disable(ucb);
@@ -446,10 +443,6 @@ static int ucb1x00_detect_irq(struct ucb1x00 *ucb)
 	unsigned long mask;
 
 	mask = probe_irq_on();
-	if (!mask) {
-		probe_irq_off(mask);
-		return NO_IRQ;
-	}
 
 	/*
 	 * Enable the ADC interrupt.
@@ -541,7 +534,7 @@ static int ucb1x00_probe(struct mcp *mcp)
 	ucb1x00_enable(ucb);
 	ucb->irq = ucb1x00_detect_irq(ucb);
 	ucb1x00_disable(ucb);
-	if (ucb->irq == NO_IRQ) {
+	if (!ucb->irq) {
 		dev_err(&ucb->dev, "IRQ probe failed\n");
 		ret = -ENODEV;
 		goto err_no_irq;
@@ -562,16 +555,15 @@ static int ucb1x00_probe(struct mcp *mcp)
 
 		irq_set_chip_and_handler(irq, &ucb1x00_irqchip, handle_edge_irq);
 		irq_set_chip_data(irq, ucb);
-		set_irq_flags(irq, IRQF_VALID | IRQ_NOREQUEST);
+		irq_clear_status_flags(irq, IRQ_NOREQUEST);
 	}
 
 	irq_set_irq_type(ucb->irq, IRQ_TYPE_EDGE_RISING);
-	irq_set_handler_data(ucb->irq, ucb);
-	irq_set_chained_handler(ucb->irq, ucb1x00_irq);
+	irq_set_chained_handler_and_data(ucb->irq, ucb1x00_irq, ucb);
 
 	if (pdata && pdata->gpio_base) {
 		ucb->gpio.label = dev_name(&ucb->dev);
-		ucb->gpio.dev = &ucb->dev;
+		ucb->gpio.parent = &ucb->dev;
 		ucb->gpio.owner = THIS_MODULE;
 		ucb->gpio.base = pdata->gpio_base;
 		ucb->gpio.ngpio = 10;
@@ -580,7 +572,7 @@ static int ucb1x00_probe(struct mcp *mcp)
 		ucb->gpio.direction_input = ucb1x00_gpio_direction_input;
 		ucb->gpio.direction_output = ucb1x00_gpio_direction_output;
 		ucb->gpio.to_irq = ucb1x00_to_irq;
-		ret = gpiochip_add(&ucb->gpio);
+		ret = gpiochip_add_data(&ucb->gpio, ucb);
 		if (ret)
 			goto err_gpio_add;
 	} else
@@ -621,7 +613,6 @@ static void ucb1x00_remove(struct mcp *mcp)
 	struct ucb1x00_plat_data *pdata = mcp->attached_device.platform_data;
 	struct ucb1x00 *ucb = mcp_get_drvdata(mcp);
 	struct list_head *l, *n;
-	int ret;
 
 	mutex_lock(&ucb1x00_mutex);
 	list_del(&ucb->node);
@@ -631,11 +622,8 @@ static void ucb1x00_remove(struct mcp *mcp)
 	}
 	mutex_unlock(&ucb1x00_mutex);
 
-	if (ucb->gpio.base != -1) {
-		ret = gpiochip_remove(&ucb->gpio);
-		if (ret)
-			dev_err(&ucb->dev, "Can't remove gpio chip: %d\n", ret);
-	}
+	if (ucb->gpio.base != -1)
+		gpiochip_remove(&ucb->gpio);
 
 	irq_set_chained_handler(ucb->irq, NULL);
 	irq_free_descs(ucb->irq_base, 16);
@@ -672,7 +660,6 @@ void ucb1x00_unregister_driver(struct ucb1x00_driver *drv)
 	mutex_unlock(&ucb1x00_mutex);
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int ucb1x00_suspend(struct device *dev)
 {
 	struct ucb1x00_plat_data *pdata = dev_get_platdata(dev);
@@ -740,17 +727,15 @@ static int ucb1x00_resume(struct device *dev)
 	mutex_unlock(&ucb1x00_mutex);
 	return 0;
 }
-#endif
 
-static const struct dev_pm_ops ucb1x00_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(ucb1x00_suspend, ucb1x00_resume)
-};
+static DEFINE_SIMPLE_DEV_PM_OPS(ucb1x00_pm_ops,
+				ucb1x00_suspend, ucb1x00_resume);
 
 static struct mcp_driver ucb1x00_driver = {
 	.drv		= {
 		.name	= "ucb1x00",
 		.owner	= THIS_MODULE,
-		.pm	= &ucb1x00_pm_ops,
+		.pm	= pm_sleep_ptr(&ucb1x00_pm_ops),
 	},
 	.probe		= ucb1x00_probe,
 	.remove		= ucb1x00_remove,

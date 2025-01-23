@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) 2010, 2011 Fabien Marteau <fabien.marteau@armadeus.com>
  * Sponsored by ARMadeus Systems
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  *
  * Driver for Austria Microsystems joysticks AS5011
  *
@@ -225,8 +212,7 @@ static int as5011_configure_chip(struct as5011_device *as5011,
 	return 0;
 }
 
-static int as5011_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int as5011_probe(struct i2c_client *client)
 {
 	const struct as5011_platform_data *plat_data;
 	struct as5011_device *as5011;
@@ -269,9 +255,7 @@ static int as5011_probe(struct i2c_client *client,
 	input_dev->id.bustype = BUS_I2C;
 	input_dev->dev.parent = &client->dev;
 
-	__set_bit(EV_KEY, input_dev->evbit);
-	__set_bit(EV_ABS, input_dev->evbit);
-	__set_bit(BTN_JOYSTICK, input_dev->keybit);
+	input_set_capability(input_dev, EV_KEY, BTN_JOYSTICK);
 
 	input_set_abs_params(input_dev, ABS_X,
 		AS5011_MIN_AXIS, AS5011_MAX_AXIS, AS5011_FUZZ, AS5011_FLAT);
@@ -342,7 +326,7 @@ err_free_mem:
 	return error;
 }
 
-static int as5011_remove(struct i2c_client *client)
+static void as5011_remove(struct i2c_client *client)
 {
 	struct as5011_device *as5011 = i2c_get_clientdata(client);
 
@@ -352,8 +336,6 @@ static int as5011_remove(struct i2c_client *client)
 
 	input_unregister_device(as5011->input_dev);
 	kfree(as5011);
-
-	return 0;
 }
 
 static const struct i2c_device_id as5011_id[] = {

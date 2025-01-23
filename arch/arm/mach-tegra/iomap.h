@@ -1,26 +1,17 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2010 Google, Inc.
  *
  * Author:
  *	Colin Cross <ccross@google.com>
  *	Erik Gilling <konkers@google.com>
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
 
 #ifndef __MACH_TEGRA_IOMAP_H
 #define __MACH_TEGRA_IOMAP_H
 
-#include <asm/pgtable.h>
-#include <asm/sizes.h>
+#include <linux/pgtable.h>
+#include <linux/sizes.h>
 
 #define TEGRA_IRAM_BASE			0x40000000
 #define TEGRA_IRAM_SIZE			SZ_256K
@@ -30,21 +21,6 @@
 
 #define TEGRA_ARM_INT_DIST_BASE		0x50041000
 #define TEGRA_ARM_INT_DIST_SIZE		SZ_4K
-
-#define TEGRA_PRIMARY_ICTLR_BASE	0x60004000
-#define TEGRA_PRIMARY_ICTLR_SIZE	SZ_64
-
-#define TEGRA_SECONDARY_ICTLR_BASE	0x60004100
-#define TEGRA_SECONDARY_ICTLR_SIZE	SZ_64
-
-#define TEGRA_TERTIARY_ICTLR_BASE	0x60004200
-#define TEGRA_TERTIARY_ICTLR_SIZE	SZ_64
-
-#define TEGRA_QUATERNARY_ICTLR_BASE	0x60004300
-#define TEGRA_QUATERNARY_ICTLR_SIZE	SZ_64
-
-#define TEGRA_QUINARY_ICTLR_BASE	0x60004400
-#define TEGRA_QUINARY_ICTLR_SIZE	SZ_64
 
 #define TEGRA_TMR1_BASE			0x60005000
 #define TEGRA_TMR1_SIZE			SZ_8
@@ -96,9 +72,6 @@
 
 #define TEGRA_EMC_BASE			0x7000F400
 #define TEGRA_EMC_SIZE			SZ_1K
-
-#define TEGRA_FUSE_BASE			0x7000F800
-#define TEGRA_FUSE_SIZE			SZ_1K
 
 #define TEGRA_EMC0_BASE			0x7001A000
 #define TEGRA_EMC0_SIZE			SZ_2K

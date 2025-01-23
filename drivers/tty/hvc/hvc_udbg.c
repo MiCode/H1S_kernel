@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * udbg interface to hvc_console.c
  *
  * (C) Copyright David Gibson, IBM Corporation 2008.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <linux/console.h>
@@ -30,7 +17,7 @@
 
 #include "hvc_console.h"
 
-struct hvc_struct *hvc_udbg_dev;
+static struct hvc_struct *hvc_udbg_dev;
 
 static int hvc_udbg_put(uint32_t vtermno, const char *buf, int count)
 {
@@ -80,14 +67,7 @@ static int __init hvc_udbg_init(void)
 
 	return 0;
 }
-module_init(hvc_udbg_init);
-
-static void __exit hvc_udbg_exit(void)
-{
-	if (hvc_udbg_dev)
-		hvc_remove(hvc_udbg_dev);
-}
-module_exit(hvc_udbg_exit);
+device_initcall(hvc_udbg_init);
 
 static int __init hvc_udbg_console_init(void)
 {

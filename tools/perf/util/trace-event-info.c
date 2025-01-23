@@ -1,24 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2008,2009, Steven Rostedt <srostedt@redhat.com>
- *
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License (not later!)
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  */
-#include "util.h"
 #include <dirent.h>
 #include <mntent.h>
 #include <stdio.h>
@@ -28,32 +11,33 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
-#include <pthread.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <linux/list.h>
 #include <linux/kernel.h>
+#include <linux/zalloc.h>
+#include <internal/lib.h> // page_size
+#include <sys/param.h>
 
-#include "../perf.h"
 #include "trace-event.h"
-#include <api/fs/debugfs.h>
+#include "tracepoint.h"
+#include <api/fs/tracing_path.h>
 #include "evsel.h"
+#include "debug.h"
+#include "util.h"
 
-#define VERSION "0.5"
+#define VERSION "0.6"
+#define MAX_EVENT_LENGTH 512
 
 static int output_fd;
 
-
-int bigendian(void)
-{
-	unsigned char str[] = { 0x1, 0x2, 0x3, 0x4, 0x0, 0x0, 0x0, 0x0};
-	unsigned int *ptr;
-
-	ptr = (unsigned int *)(void *)str;
-	return *ptr == 0x01020304;
-}
+struct tracepoint_path {
+	char *system;
+	char *name;
+	struct tracepoint_path *next;
+};
 
 /* unfortunately, you can not stat debugfs or proc files for size */
 static int record_file(const char *file, ssize_t hdr_sz)
@@ -87,7 +71,7 @@ static int record_file(const char *file, ssize_t hdr_sz)
 
 	/* ugh, handle big-endian hdr_size == 4 */
 	sizep = (char*)&size;
-	if (bigendian())
+	if (host_is_bigendian())
 		sizep += sizeof(u64) - hdr_sz;
 
 	if (hdr_sz && pwrite(output_fd, sizep, hdr_sz, hdr_pos) < 0) {
@@ -103,11 +87,10 @@ out:
 
 static int record_header_files(void)
 {
-	char *path;
+	char *path = get_events_file("header_page");
 	struct stat st;
 	int err = -EIO;
 
-	path = get_tracing_file("events/header_page");
 	if (!path) {
 		pr_debug("can't get tracing/events/header_page");
 		return -ENOMEM;
@@ -128,9 +111,9 @@ static int record_header_files(void)
 		goto out;
 	}
 
-	put_tracing_file(path);
+	put_events_file(path);
 
-	path = get_tracing_file("events/header_event");
+	path = get_events_file("header_event");
 	if (!path) {
 		pr_debug("can't get tracing/events/header_event");
 		err = -ENOMEM;
@@ -154,7 +137,7 @@ static int record_header_files(void)
 
 	err = 0;
 out:
-	put_tracing_file(path);
+	put_events_file(path);
 	return err;
 }
 
@@ -168,6 +151,12 @@ static bool name_in_tp_list(char *sys, struct tracepoint_path *tps)
 
 	return false;
 }
+
+#define for_each_event_tps(dir, dent, tps)			\
+	while ((dent = readdir(dir)))				\
+		if (dent->d_type == DT_DIR &&			\
+		    (strcmp(dent->d_name, ".")) &&		\
+		    (strcmp(dent->d_name, "..")))		\
 
 static int copy_event_system(const char *sys, struct tracepoint_path *tps)
 {
@@ -185,18 +174,14 @@ static int copy_event_system(const char *sys, struct tracepoint_path *tps)
 		return -errno;
 	}
 
-	while ((dent = readdir(dir))) {
-		if (dent->d_type != DT_DIR ||
-		    strcmp(dent->d_name, ".") == 0 ||
-		    strcmp(dent->d_name, "..") == 0 ||
-		    !name_in_tp_list(dent->d_name, tps))
+	for_each_event_tps(dir, dent, tps) {
+		if (!name_in_tp_list(dent->d_name, tps))
 			continue;
-		format = malloc(strlen(sys) + strlen(dent->d_name) + 10);
-		if (!format) {
+
+		if (asprintf(&format, "%s/%s/format", sys, dent->d_name) < 0) {
 			err = -ENOMEM;
 			goto out;
 		}
-		sprintf(format, "%s/%s/format", sys, dent->d_name);
 		ret = stat(format, &st);
 		free(format);
 		if (ret < 0)
@@ -211,18 +196,14 @@ static int copy_event_system(const char *sys, struct tracepoint_path *tps)
 	}
 
 	rewinddir(dir);
-	while ((dent = readdir(dir))) {
-		if (dent->d_type != DT_DIR ||
-		    strcmp(dent->d_name, ".") == 0 ||
-		    strcmp(dent->d_name, "..") == 0 ||
-		    !name_in_tp_list(dent->d_name, tps))
+	for_each_event_tps(dir, dent, tps) {
+		if (!name_in_tp_list(dent->d_name, tps))
 			continue;
-		format = malloc(strlen(sys) + strlen(dent->d_name) + 10);
-		if (!format) {
+
+		if (asprintf(&format, "%s/%s/format", sys, dent->d_name) < 0) {
 			err = -ENOMEM;
 			goto out;
 		}
-		sprintf(format, "%s/%s/format", sys, dent->d_name);
 		ret = stat(format, &st);
 
 		if (ret >= 0) {
@@ -245,7 +226,7 @@ static int record_ftrace_files(struct tracepoint_path *tps)
 	char *path;
 	int ret;
 
-	path = get_tracing_file("events/ftrace");
+	path = get_events_file("ftrace");
 	if (!path) {
 		pr_debug("can't get tracing/events/ftrace");
 		return -ENOMEM;
@@ -293,13 +274,11 @@ static int record_event_files(struct tracepoint_path *tps)
 		goto out;
 	}
 
-	while ((dent = readdir(dir))) {
-		if (dent->d_type != DT_DIR ||
-		    strcmp(dent->d_name, ".") == 0 ||
-		    strcmp(dent->d_name, "..") == 0 ||
-		    strcmp(dent->d_name, "ftrace") == 0 ||
+	for_each_event_tps(dir, dent, tps) {
+		if (strcmp(dent->d_name, "ftrace") == 0 ||
 		    !system_in_tp_list(dent->d_name, tps))
 			continue;
+
 		count++;
 	}
 
@@ -310,19 +289,15 @@ static int record_event_files(struct tracepoint_path *tps)
 	}
 
 	rewinddir(dir);
-	while ((dent = readdir(dir))) {
-		if (dent->d_type != DT_DIR ||
-		    strcmp(dent->d_name, ".") == 0 ||
-		    strcmp(dent->d_name, "..") == 0 ||
-		    strcmp(dent->d_name, "ftrace") == 0 ||
+	for_each_event_tps(dir, dent, tps) {
+		if (strcmp(dent->d_name, "ftrace") == 0 ||
 		    !system_in_tp_list(dent->d_name, tps))
 			continue;
-		sys = malloc(strlen(path) + strlen(dent->d_name) + 2);
-		if (!sys) {
+
+		if (asprintf(&sys, "%s/%s", path, dent->d_name) < 0) {
 			err = -ENOMEM;
 			goto out;
 		}
-		sprintf(sys, "%s/%s", path, dent->d_name);
 		ret = stat(sys, &st);
 		if (ret >= 0) {
 			ssize_t size = strlen(dent->d_name) + 1;
@@ -346,20 +321,14 @@ out:
 
 static int record_proc_kallsyms(void)
 {
-	unsigned int size;
-	const char *path = "/proc/kallsyms";
-	struct stat st;
-	int ret, err = 0;
-
-	ret = stat(path, &st);
-	if (ret < 0) {
-		/* not found */
-		size = 0;
-		if (write(output_fd, &size, 4) != 4)
-			err = -EIO;
-		return err;
-	}
-	return record_file(path, 4);
+	unsigned long long size = 0;
+	/*
+	 * Just to keep older perf.data file parsers happy, record a zero
+	 * sized kallsyms file, i.e. do the same thing that was done when
+	 * /proc/kallsyms (or something specified via --kallsyms, in a
+	 * different path) couldn't be read.
+	 */
+	return write(output_fd, &size, 4) != 4 ? -EIO : 0;
 }
 
 static int record_ftrace_printk(void)
@@ -390,6 +359,34 @@ out:
 	return err;
 }
 
+static int record_saved_cmdline(void)
+{
+	unsigned long long size;
+	char *path;
+	struct stat st;
+	int ret, err = 0;
+
+	path = get_tracing_file("saved_cmdlines");
+	if (!path) {
+		pr_debug("can't get tracing/saved_cmdline");
+		return -ENOMEM;
+	}
+
+	ret = stat(path, &st);
+	if (ret < 0) {
+		/* not found */
+		size = 0;
+		if (write(output_fd, &size, 8) != 8)
+			err = -EIO;
+		goto out;
+	}
+	err = record_file(path, 8);
+
+out:
+	put_tracing_file(path);
+	return err;
+}
+
 static void
 put_tracepoints_path(struct tracepoint_path *tps)
 {
@@ -403,15 +400,115 @@ put_tracepoints_path(struct tracepoint_path *tps)
 	}
 }
 
+static struct tracepoint_path *tracepoint_id_to_path(u64 config)
+{
+	struct tracepoint_path *path = NULL;
+	DIR *sys_dir, *evt_dir;
+	struct dirent *sys_dirent, *evt_dirent;
+	char id_buf[24];
+	int fd;
+	u64 id;
+	char evt_path[MAXPATHLEN];
+	char *dir_path;
+
+	sys_dir = tracing_events__opendir();
+	if (!sys_dir)
+		return NULL;
+
+	for_each_subsystem(sys_dir, sys_dirent) {
+		dir_path = get_events_file(sys_dirent->d_name);
+		if (!dir_path)
+			continue;
+		evt_dir = opendir(dir_path);
+		if (!evt_dir)
+			goto next;
+
+		for_each_event(dir_path, evt_dir, evt_dirent) {
+
+			scnprintf(evt_path, MAXPATHLEN, "%s/%s/id", dir_path,
+				  evt_dirent->d_name);
+			fd = open(evt_path, O_RDONLY);
+			if (fd < 0)
+				continue;
+			if (read(fd, id_buf, sizeof(id_buf)) < 0) {
+				close(fd);
+				continue;
+			}
+			close(fd);
+			id = atoll(id_buf);
+			if (id == config) {
+				put_events_file(dir_path);
+				closedir(evt_dir);
+				closedir(sys_dir);
+				path = zalloc(sizeof(*path));
+				if (!path)
+					return NULL;
+				if (asprintf(&path->system, "%.*s",
+					     MAX_EVENT_LENGTH, sys_dirent->d_name) < 0) {
+					free(path);
+					return NULL;
+				}
+				if (asprintf(&path->name, "%.*s",
+					     MAX_EVENT_LENGTH, evt_dirent->d_name) < 0) {
+					zfree(&path->system);
+					free(path);
+					return NULL;
+				}
+				return path;
+			}
+		}
+		closedir(evt_dir);
+next:
+		put_events_file(dir_path);
+	}
+
+	closedir(sys_dir);
+	return NULL;
+}
+
+char *tracepoint_id_to_name(u64 config)
+{
+	struct tracepoint_path *path = tracepoint_id_to_path(config);
+	char *buf = NULL;
+
+	if (path && asprintf(&buf, "%s:%s", path->system, path->name) < 0)
+		buf = NULL;
+
+	put_tracepoints_path(path);
+	return buf;
+}
+
+static struct tracepoint_path *tracepoint_name_to_path(const char *name)
+{
+	struct tracepoint_path *path = zalloc(sizeof(*path));
+	char *str = strchr(name, ':');
+
+	if (path == NULL || str == NULL) {
+		free(path);
+		return NULL;
+	}
+
+	path->system = strndup(name, str - name);
+	path->name = strdup(str+1);
+
+	if (path->system == NULL || path->name == NULL) {
+		zfree(&path->system);
+		zfree(&path->name);
+		zfree(&path);
+	}
+
+	return path;
+}
+
 static struct tracepoint_path *
 get_tracepoints_path(struct list_head *pattrs)
 {
 	struct tracepoint_path path, *ppath = &path;
-	struct perf_evsel *pos;
+	struct evsel *pos;
 	int nr_tracepoints = 0;
 
-	list_for_each_entry(pos, pattrs, node) {
-		if (pos->attr.type != PERF_TYPE_TRACEPOINT)
+	list_for_each_entry(pos, pattrs, core.node) {
+		if (pos->core.attr.type != PERF_TYPE_TRACEPOINT)
 			continue;
 		++nr_tracepoints;
 
@@ -427,11 +524,11 @@ get_tracepoints_path(struct list_head *pattrs)
 		}
 
 try_id:
-		ppath->next = tracepoint_id_to_path(pos->attr.config);
+		ppath->next = tracepoint_id_to_path(pos->core.attr.config);
 		if (!ppath->next) {
 error:
 			pr_debug("No memory to alloc tracepoints list\n");
-			put_tracepoints_path(&path);
+			put_tracepoints_path(path.next);
 			return NULL;
 		}
 next:
@@ -443,10 +540,10 @@ next:
 
 bool have_tracepoints(struct list_head *pattrs)
 {
-	struct perf_evsel *pos;
+	struct evsel *pos;
 
-	list_for_each_entry(pos, pattrs, node)
-		if (pos->attr.type == PERF_TYPE_TRACEPOINT)
+	list_for_each_entry(pos, pattrs, core.node)
+		if (pos->core.attr.type == PERF_TYPE_TRACEPOINT)
 			return true;
 
 	return false;
@@ -471,7 +568,7 @@ static int tracing_data_header(void)
 		return -1;
 
 	/* save endian */
-	if (bigendian())
+	if (host_is_bigendian())
 		buf[0] = 1;
 	else
 		buf[0] = 0;
@@ -518,12 +615,14 @@ struct tracing_data *tracing_data_get(struct list_head *pattrs,
 			 "/tmp/perf-XXXXXX");
 		if (!mkstemp(tdata->temp_file)) {
 			pr_debug("Can't make temp file");
+			free(tdata);
 			return NULL;
 		}
 
 		temp_fd = open(tdata->temp_file, O_RDWR);
 		if (temp_fd < 0) {
 			pr_debug("Can't read '%s'", tdata->temp_file);
+			free(tdata);
 			return NULL;
 		}
 
@@ -550,6 +649,9 @@ struct tracing_data *tracing_data_get(struct list_head *pattrs,
 	if (err)
 		goto out;
 	err = record_ftrace_printk();
+	if (err)
+		goto out;
+	err = record_saved_cmdline();
 
 out:
 	/*

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * OpenRISC process.c
  *
@@ -9,21 +10,18 @@
  * Copyright (C) 2003 Matjaz Breskvar <phoenix@bsemi.com>
  * Copyright (C) 2010-2011 Jonas Bonn <jonas@southpole.se>
  *
- *      This program is free software; you can redistribute it and/or
- *      modify it under the terms of the GNU General Public License
- *      as published by the Free Software Foundation; either version
- *      2 of the License, or (at your option) any later version.
- *
  * This file handles the architecture-dependent parts of process handling...
  */
 
 #define __KERNEL_SYSCALLS__
-#include <stdarg.h>
-
+#include <linux/cpu.h>
 #include <linux/errno.h>
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
+#include <linux/sched/task.h>
+#include <linux/sched/task_stack.h>
 #include <linux/kernel.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/mm.h>
 #include <linux/stddef.h>
 #include <linux/unistd.h>
@@ -35,12 +33,13 @@
 #include <linux/init_task.h>
 #include <linux/mqueue.h>
 #include <linux/fs.h>
+#include <linux/reboot.h>
 
-#include <asm/uaccess.h>
-#include <asm/pgtable.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/spr_defs.h>
+#include <asm/switch_to.h>
 
 #include <linux/smp.h>
 
@@ -51,9 +50,27 @@
  */
 struct thread_info *current_thread_info_set[NR_CPUS] = { &init_thread_info, };
 
-void machine_restart(void)
+void machine_restart(char *cmd)
 {
-	printk(KERN_INFO "*** MACHINE RESTART ***\n");
+	do_kernel_restart(cmd);
+
+	__asm__("l.nop 13");
+
+	/* Give a grace period for failure to restart of 1s */
+	mdelay(1000);
+
+	/* Whoops - the platform was unable to reboot. Tell the user! */
+	pr_emerg("Reboot failed -- System halted\n");
+	while (1);
+}
+
+/*
+ * This is used if pm_power_off has not been set by a power management
+ * driver, in this case we can assume we are on a simulator.  On
+ * OpenRISC simulators l.nop 1 will trigger the simulator exit.
+ */
+static void default_power_off(void)
+{
 	__asm__("l.nop 1");
 }
 
@@ -72,10 +89,26 @@ void machine_halt(void)
 void machine_power_off(void)
 {
 	printk(KERN_INFO "*** MACHINE POWER OFF ***\n");
-	__asm__("l.nop 1");
+	if (pm_power_off != NULL)
+		pm_power_off();
+	else
+		default_power_off();
 }
 
-void (*pm_power_off) (void) = machine_power_off;
+/*
+ * Send the doze signal to the cpu if available.
+ * Make sure, that all interrupts are enabled
+ */
+void arch_cpu_idle(void)
+{
+	raw_local_irq_enable();
+	if (mfspr(SPR_UPR) & SPR_UPR_PMP)
+		mtspr(SPR_PMR, mfspr(SPR_PMR) | SPR_PMR_DME);
+	raw_local_irq_disable();
+}
+
+void (*pm_power_off)(void) = NULL;
+EXPORT_SYMBOL(pm_power_off);
 
 /*
  * When a process does an "exec", machine state like FPU and debug
@@ -88,20 +121,9 @@ void flush_thread(void)
 
 void show_regs(struct pt_regs *regs)
 {
-	extern void show_registers(struct pt_regs *regs);
-
 	show_regs_print_info(KERN_DEFAULT);
 	/* __PHX__ cleanup this mess */
 	show_registers(regs);
-}
-
-unsigned long thread_saved_pc(struct task_struct *t)
-{
-	return (unsigned long)user_regs(t->stack)->pc;
-}
-
-void release_thread(struct task_struct *dead_task)
-{
 }
 
 /*
@@ -116,7 +138,7 @@ extern asmlinkage void ret_from_fork(void);
  * @usp: user stack pointer or fn for kernel thread
  * @arg: arg to fn for kernel thread; always NULL for userspace thread
  * @p: the newly created task
- * @regs: CPU context to copy for userspace thread; always NULL for kthread
+ * @tls: the Thread Local Storage pointer for the new process
  *
  * At the top of a newly initialized kernel stack are two stacked pt_reg
  * structures.  The first (topmost) is the userspace context of the thread.
@@ -142,17 +164,17 @@ extern asmlinkage void ret_from_fork(void);
  */
 
 int
-copy_thread(unsigned long clone_flags, unsigned long usp,
-	    unsigned long arg, struct task_struct *p)
+copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 {
+	unsigned long clone_flags = args->flags;
+	unsigned long usp = args->stack;
+	unsigned long tls = args->tls;
 	struct pt_regs *userregs;
 	struct pt_regs *kregs;
 	unsigned long sp = (unsigned long)task_stack_page(p) + THREAD_SIZE;
 	unsigned long top_of_kernel_stack;
 
 	top_of_kernel_stack = sp;
-
-	p->set_child_tid = p->clear_child_tid = NULL;
 
 	/* Locate userspace context on stack... */
 	sp -= STACK_FRAME_OVERHEAD;	/* redzone */
@@ -164,15 +186,22 @@ copy_thread(unsigned long clone_flags, unsigned long usp,
 	sp -= sizeof(struct pt_regs);
 	kregs = (struct pt_regs *)sp;
 
-	if (unlikely(p->flags & PF_KTHREAD)) {
+	if (unlikely(args->fn)) {
 		memset(kregs, 0, sizeof(struct pt_regs));
-		kregs->gpr[20] = usp; /* fn, kernel thread */
-		kregs->gpr[22] = arg;
+		kregs->gpr[20] = (unsigned long)args->fn;
+		kregs->gpr[22] = (unsigned long)args->fn_arg;
 	} else {
 		*userregs = *current_pt_regs();
 
 		if (usp)
 			userregs->sp = usp;
+
+		/*
+		 * For CLONE_SETTLS set "tp" (r10) to the TLS pointer.
+		 */
+		if (clone_flags & CLONE_SETTLS)
+			userregs->gpr[10] = tls;
+
 		userregs->gpr[11] = 0;	/* Result from fork() */
 
 		kregs->gpr[20] = 0;	/* Userspace thread */
@@ -197,7 +226,6 @@ void start_thread(struct pt_regs *regs, unsigned long pc, unsigned long sp)
 {
 	unsigned long sr = mfspr(SPR_SR) & ~SPR_SR_SM;
 
-	set_fs(USER_DS);
 	memset(regs, 0, sizeof(struct pt_regs));
 
 	regs->pc = pc;
@@ -205,15 +233,9 @@ void start_thread(struct pt_regs *regs, unsigned long pc, unsigned long sp)
 	regs->sp = sp;
 }
 
-/* Fill in the fpu structure for a core dump.  */
-int dump_fpu(struct pt_regs *regs, elf_fpregset_t * fpu)
-{
-	/* TODO */
-	return 0;
-}
-
 extern struct thread_info *_switch(struct thread_info *old_ti,
 				   struct thread_info *new_ti);
+extern int lwa_flag;
 
 struct task_struct *__switch_to(struct task_struct *old,
 				struct task_struct *new)
@@ -230,6 +252,8 @@ struct task_struct *__switch_to(struct task_struct *old,
 	 */
 	new_ti = new->stack;
 	old_ti = old->stack;
+
+	lwa_flag = 0;
 
 	current_thread_info_set[smp_processor_id()] = new_ti;
 	last = (_switch(old_ti, new_ti))->task;
@@ -253,7 +277,7 @@ void dump_elf_thread(elf_greg_t *dest, struct pt_regs* regs)
 	dest[35] = 0;
 }
 
-unsigned long get_wchan(struct task_struct *p)
+unsigned long __get_wchan(struct task_struct *p)
 {
 	/* TODO */
 

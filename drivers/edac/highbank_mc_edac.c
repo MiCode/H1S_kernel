@@ -1,28 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2011-2012 Calxeda, Inc.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/ctype.h>
 #include <linux/edac.h>
 #include <linux/interrupt.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
-#include <linux/of_platform.h>
 #include <linux/uaccess.h>
 
-#include "edac_core.h"
 #include "edac_module.h"
 
 /* DDR Ctrlr Error Registers */
@@ -124,6 +113,13 @@ static ssize_t highbank_mc_inject_ctrl(struct device *dev,
 
 static DEVICE_ATTR(inject_ctrl, S_IWUSR, NULL, highbank_mc_inject_ctrl);
 
+static struct attribute *highbank_dev_attrs[] = {
+	&dev_attr_inject_ctrl.attr,
+	NULL
+};
+
+ATTRIBUTE_GROUPS(highbank_dev);
+
 struct hb_mc_settings {
 	int	err_offset;
 	int	int_offset;
@@ -139,7 +135,7 @@ static struct hb_mc_settings mw_settings = {
 	.int_offset = MW_DDR_ECC_INT_BASE,
 };
 
-static struct of_device_id hb_ddr_ctrl_of_match[] = {
+static const struct of_device_id hb_ddr_ctrl_of_match[] = {
 	{ .compatible = "calxeda,hb-ddr-ctrl",		.data = &hb_settings },
 	{ .compatible = "calxeda,ecx-2000-ddr-ctrl",	.data = &mw_settings },
 	{},
@@ -179,8 +175,10 @@ static int highbank_mc_probe(struct platform_device *pdev)
 	drvdata = mci->pvt_info;
 	platform_set_drvdata(pdev, mci);
 
-	if (!devres_open_group(&pdev->dev, NULL, GFP_KERNEL))
-		return -ENOMEM;
+	if (!devres_open_group(&pdev->dev, NULL, GFP_KERNEL)) {
+		res = -ENOMEM;
+		goto free;
+	}
 
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!r) {
@@ -218,7 +216,6 @@ static int highbank_mc_probe(struct platform_device *pdev)
 	mci->edac_ctl_cap = EDAC_FLAG_NONE | EDAC_FLAG_SECDED;
 	mci->edac_cap = EDAC_FLAG_SECDED;
 	mci->mod_name = pdev->dev.driver->name;
-	mci->mod_ver = "1";
 	mci->ctl_name = id->compatible;
 	mci->dev_name = dev_name(&pdev->dev);
 	mci->scrub_mode = SCRUB_SW_SRC;
@@ -231,7 +228,7 @@ static int highbank_mc_probe(struct platform_device *pdev)
 	dimm->mtype = MEM_DDR3;
 	dimm->edac_mode = EDAC_SECDED;
 
-	res = edac_mc_add_mc(mci);
+	res = edac_mc_add_mc_with_groups(mci, highbank_dev_groups);
 	if (res < 0)
 		goto err;
 
@@ -243,14 +240,13 @@ static int highbank_mc_probe(struct platform_device *pdev)
 		goto err2;
 	}
 
-	device_create_file(&mci->dev, &dev_attr_inject_ctrl);
-
 	devres_close_group(&pdev->dev, NULL);
 	return 0;
 err2:
 	edac_mc_del_mc(&pdev->dev);
 err:
 	devres_release_group(&pdev->dev, NULL);
+free:
 	edac_mc_free(mci);
 	return res;
 }
@@ -259,7 +255,6 @@ static int highbank_mc_remove(struct platform_device *pdev)
 {
 	struct mem_ctl_info *mci = platform_get_drvdata(pdev);
 
-	device_remove_file(&mci->dev, &dev_attr_inject_ctrl);
 	edac_mc_del_mc(&pdev->dev);
 	edac_mc_free(mci);
 	return 0;

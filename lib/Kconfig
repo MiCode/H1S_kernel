@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Library configuration
 #
@@ -10,23 +11,61 @@ menu "Library routines"
 config RAID6_PQ
 	tristate
 
+config RAID6_PQ_BENCHMARK
+	bool "Automatically choose fastest RAID6 PQ functions"
+	depends on RAID6_PQ
+	default y
+	help
+	  Benchmark all available RAID6 PQ functions on init and choose the
+	  fastest one.
+
+config LINEAR_RANGES
+	tristate
+
+config PACKING
+	bool "Generic bitfield packing and unpacking"
+	select BITREVERSE
+	default n
+	help
+	  This option provides the packing() helper function, which permits
+	  converting bitfields between a CPU-usable representation and a
+	  memory representation that can have any combination of these quirks:
+	    - Is little endian (bytes are reversed within a 32-bit group)
+	    - The least-significant 32-bit word comes first (within a 64-bit
+	      group)
+	    - The most significant bit of a byte is at its right (bit 0 of a
+	      register description is numerically 2^7).
+	  Drivers may use these helpers to match the bit indices as described
+	  in the data sheets of the peripherals they are in control of.
+
+	  When in doubt, say N.
+
 config BITREVERSE
 	tristate
 
-config RATIONAL
-	boolean
+config HAVE_ARCH_BITREVERSE
+	bool
+	default n
+	help
+	  This option enables the use of hardware bit-reversal instructions on
+	  architectures which support such operations.
+
+config ARCH_HAS_STRNCPY_FROM_USER
+	bool
+
+config ARCH_HAS_STRNLEN_USER
+	bool
 
 config GENERIC_STRNCPY_FROM_USER
-	bool
+	def_bool !ARCH_HAS_STRNCPY_FROM_USER
 
 config GENERIC_STRNLEN_USER
-	bool
+	def_bool !ARCH_HAS_STRNLEN_USER
 
 config GENERIC_NET_UTILS
 	bool
 
-config GENERIC_FIND_FIRST_BIT
-	bool
+source "lib/math/Kconfig"
 
 config NO_GENERIC_PCI_IOPORT_MAP
 	bool
@@ -38,18 +77,57 @@ config GENERIC_IOMAP
 	bool
 	select GENERIC_PCI_IOMAP
 
-config GENERIC_IO
-	boolean
-	default n
-
 config STMP_DEVICE
 	bool
 
-config PERCPU_RWSEM
-	boolean
-
 config ARCH_USE_CMPXCHG_LOCKREF
 	bool
+
+config ARCH_HAS_FAST_MULTIPLIER
+	bool
+
+config ARCH_USE_SYM_ANNOTATIONS
+	bool
+
+config INDIRECT_PIO
+	bool "Access I/O in non-MMIO mode"
+	depends on ARM64
+	depends on HAS_IOPORT
+	help
+	  On some platforms where no separate I/O space exists, there are I/O
+	  hosts which can not be accessed in MMIO mode. Using the logical PIO
+	  mechanism, the host-local I/O resource can be mapped into system
+	  logic PIO space shared with MMIO hosts, such as PCI/PCIe, then the
+	  system can access the I/O devices with the mapped-logic PIO through
+	  I/O accessors.
+
+	  This way has relatively little I/O performance cost. Please make
+	  sure your devices really need this configure item enabled.
+
+	  When in doubt, say N.
+
+config INDIRECT_IOMEM
+	bool
+	help
+	  This is selected by other options/architectures to provide the
+	  emulated iomem accessors.
+
+config INDIRECT_IOMEM_FALLBACK
+	bool
+	depends on INDIRECT_IOMEM
+	help
+	  If INDIRECT_IOMEM is selected, this enables falling back to plain
+	  mmio accesses when the IO memory address is not a registered
+	  emulated region.
+
+config TRACE_MMIO_ACCESS
+	bool "Register read/write tracing"
+	depends on TRACING && ARCH_HAVE_TRACE_MMIO_ACCESS
+	help
+	  Create tracepoints for MMIO read/write operations. These trace events
+	  can be used for logging all MMIO read/write operations.
+
+source "lib/crypto/Kconfig"
 
 config CRC_CCITT
 	tristate "CRC-CCITT functions"
@@ -76,6 +154,15 @@ config CRC_T10DIF
 	  kernel tree needs to calculate CRC checks for use with the
 	  SCSI data integrity subsystem.
 
+config CRC64_ROCKSOFT
+	tristate "CRC calculation for the Rocksoft model CRC64"
+	select CRC64
+	select CRYPTO
+	select CRYPTO_CRC64_ROCKSOFT
+	help
+	  This option provides a CRC64 API to a registered crypto driver.
+	  This is used with the block layer's data integrity subsystem.
+
 config CRC_ITU_T
 	tristate "CRC ITU-T V.41 functions"
 	help
@@ -95,8 +182,7 @@ config CRC32
 	  functions require M here.
 
 config CRC32_SELFTEST
-	bool "CRC32 perform self test on init"
-	default n
+	tristate "CRC32 perform self test on init"
 	depends on CRC32
 	help
 	  This option enables the CRC32 library functions to perform a
@@ -151,6 +237,22 @@ config CRC32_BIT
 
 endchoice
 
+config CRC64
+	tristate "CRC64 functions"
+	help
+	  This option is provided for the case where no in-kernel-tree
+	  modules require CRC64 functions, but a module built outside
+	  the kernel tree does. Such modules that use library CRC64
+	  functions require M here.
+
+config CRC4
+	tristate "CRC4 functions"
+	help
+	  This option is provided for the case where no in-kernel-tree
+	  modules require CRC4 functions, but a module built outside
+	  the kernel tree does. Such modules that use library CRC4
+	  functions require M here.
+
 config CRC7
 	tristate "CRC7 functions"
 	help
@@ -177,14 +279,25 @@ config CRC8
 	  when they need to do cyclic redundancy check according CRC8
 	  algorithm. Module will be called crc8.
 
+config XXHASH
+	tristate
+
 config AUDIT_GENERIC
 	bool
 	depends on AUDIT && !AUDIT_ARCH
 	default y
 
+config AUDIT_ARCH_COMPAT_GENERIC
+	bool
+	default n
+
+config AUDIT_COMPAT_GENERIC
+	bool
+	depends on AUDIT_GENERIC && AUDIT_ARCH_COMPAT_GENERIC && COMPAT
+	default y
+
 config RANDOM32_SELFTEST
 	bool "PRNG perform self test on init"
-	default n
 	help
 	  This option enables the 32 bit PRNG library functions to perform a
 	  self test on initialization.
@@ -192,11 +305,27 @@ config RANDOM32_SELFTEST
 #
 # compression support is select'ed if needed
 #
+config 842_COMPRESS
+	select CRC32
+	tristate
+
+config 842_DECOMPRESS
+	select CRC32
+	tristate
+
 config ZLIB_INFLATE
 	tristate
 
 config ZLIB_DEFLATE
 	tristate
+	select BITREVERSE
+
+config ZLIB_DFLTCC
+	def_bool y
+	depends on S390
+	prompt "Enable s390x DEFLATE CONVERSION CALL support for kernel zlib"
+	help
+	 Enable s390x hardware support for zlib in the kernel.
 
 config LZO_COMPRESS
 	tristate
@@ -211,6 +340,18 @@ config LZ4HC_COMPRESS
 	tristate
 
 config LZ4_DECOMPRESS
+	tristate
+
+config ZSTD_COMMON
+	select XXHASH
+	tristate
+
+config ZSTD_COMPRESS
+	select ZSTD_COMMON
+	tristate
+
+config ZSTD_DECOMPRESS
+	select ZSTD_COMMON
 	tristate
 
 source "lib/xz/Kconfig"
@@ -241,11 +382,15 @@ config DECOMPRESS_LZ4
 	select LZ4_DECOMPRESS
 	tristate
 
+config DECOMPRESS_ZSTD
+	select ZSTD_DECOMPRESS
+	tristate
+
 #
 # Generic allocator support is selected if needed
 #
 config GENERIC_ALLOCATOR
-	boolean
+	bool
 
 #
 # reed solomon support is select'ed if needed
@@ -254,25 +399,26 @@ config REED_SOLOMON
 	tristate
 	
 config REED_SOLOMON_ENC8
-	boolean
+	bool
 
 config REED_SOLOMON_DEC8
-	boolean
+	bool
 
 config REED_SOLOMON_ENC16
-	boolean
+	bool
 
 config REED_SOLOMON_DEC16
-	boolean
+	bool
 
 #
 # BCH support is selected if needed
 #
 config BCH
 	tristate
+	select BITREVERSE
 
 config BCH_CONST_PARAMS
-	boolean
+	bool
 	help
 	  Drivers may select this option to force specific constant
 	  values for parameters 'm' (Galois field order) and 't'
@@ -308,7 +454,7 @@ config BCH_CONST_T
 # Textsearch support is select'ed if needed
 #
 config TEXTSEARCH
-	boolean
+	bool
 
 config TEXTSEARCH_KMP
 	tristate
@@ -320,7 +466,31 @@ config TEXTSEARCH_FSM
 	tristate
 
 config BTREE
-	boolean
+	bool
+
+config INTERVAL_TREE
+	bool
+	help
+	  Simple, embeddable, interval-tree. Can find the start of an
+	  overlapping range in log(n) time and then iterate over all
+	  overlapping nodes. The algorithm is implemented as an
+	  augmented rbtree.
+
+	  See:
+
+		Documentation/core-api/rbtree.rst
+
+	  for more information.
+
+config INTERVAL_TREE_SPAN_ITER
+	bool
+	depends on INTERVAL_TREE
+
+config XARRAY_MULTI
+	bool
+	help
+	  Support entries which occupy multiple consecutive indices in the
+	  XArray.
 
 config ASSOCIATIVE_ARRAY
 	bool
@@ -332,25 +502,31 @@ config ASSOCIATIVE_ARRAY
 
 	  See:
 
-		Documentation/assoc_array.txt
+		Documentation/core-api/assoc_array.rst
 
 	  for more information.
 
 config HAS_IOMEM
-	boolean
+	bool
 	depends on !NO_IOMEM
-	select GENERIC_IO
 	default y
 
 config HAS_IOPORT
-	boolean
-	depends on HAS_IOMEM && !NO_IOPORT
+	bool
+
+config HAS_IOPORT_MAP
+	bool
+	depends on HAS_IOMEM && !NO_IOPORT_MAP
 	default y
 
-config HAS_DMA
-	boolean
-	depends on !NO_DMA
-	default y
+source "kernel/dma/Kconfig"
+
+config SGL_ALLOC
+	bool
+	default n
+
+config IOMMU_HELPER
+	bool
 
 config CHECK_SIGNATURE
 	bool
@@ -362,9 +538,14 @@ config CPUMASK_OFFSTACK
 	  them on the stack.  This is a bit more expensive, but avoids
 	  stack overflow.
 
-config DISABLE_OBSOLETE_CPUMASK_FUNCTIONS
-       bool "Disable obsolete cpumask functions" if DEBUG_PER_CPU_MAPS
-       depends on BROKEN
+config FORCE_NR_CPUS
+       bool "Set number of CPUs at compile time"
+       depends on SMP && EXPERT && !COMPILE_TEST
+       help
+         Say Yes if you have NR_CPUS set to an actual number of possible
+         CPUs in your system, not to a default value. This forces the core
+         code to rely on compile-time value and optimize kernel routines
+         better.
 
 config CPU_RMAP
 	bool
@@ -372,6 +553,38 @@ config CPU_RMAP
 
 config DQL
 	bool
+
+config GLOB
+	bool
+#	This actually supports modular compilation, but the module overhead
+#	is ridiculous for the amount of code involved.	Until an out-of-tree
+#	driver asks for it, we'll just link it directly it into the kernel
+#	when required.  Since we're ignoring out-of-tree users,	there's also
+#	no need bother prompting for a manual decision:
+#	prompt "glob_match() function"
+	help
+	  This option provides a glob_match function for performing
+	  simple text pattern matching.  It originated in the ATA code
+	  to blacklist particular drive models, but other device drivers
+	  may need similar functionality.
+
+	  All drivers in the Linux kernel tree that require this function
+	  should automatically select this option.  Say N unless you
+	  are compiling an out-of tree driver which tells you that it
+	  depends on this.
+
+config GLOB_SELFTEST
+	tristate "glob self-test on init"
+	depends on GLOB
+	help
+	  This option enables a simple self-test of the glob_match
+	  function on startup.	It is primarily useful for people
+	  working on the code to ensure they haven't introduced any
+	  regressions.
+
+	  It only adds a little bit of code and slows kernel boot (or
+	  module load) by a small amount, so you're welcome to play with
+	  it, but you probably don't need it.
 
 #
 # Netlink attribute parsing support is select'ed if needed
@@ -385,38 +598,16 @@ config NLATTR
 config GENERIC_ATOMIC64
        bool
 
-config ARCH_HAS_ATOMIC64_DEC_IF_POSITIVE
-	def_bool y if GENERIC_ATOMIC64
-
 config LRU_CACHE
 	tristate
-
-config AVERAGE
-	bool "Averaging functions"
-	help
-	  This option is provided for the case where no in-kernel-tree
-	  modules require averaging functions, but a module built outside
-	  the kernel tree does. Such modules that use library averaging
-	  functions require Y here.
-
-	  If unsure, say N.
 
 config CLZ_TAB
 	bool
 
-config CORDIC
-	tristate "CORDIC algorithm"
+config IRQ_POLL
+	bool "IRQ polling library"
 	help
-	  This option provides an implementation of the CORDIC algorithm;
-	  calculations are in fixed point. Module will be called cordic.
-
-config DDR
-	bool "JEDEC DDR data"
-	help
-	  Data from JEDEC specs for DDR SDRAM memories,
-	  particularly the AC timing parameters and addressing
-	  information. This data is useful for drivers handling
-	  DDR SDRAM controllers.
+	  Helper library to poll interrupt mitigation using polling.
 
 config MPILIB
 	tristate
@@ -428,12 +619,20 @@ config MPILIB
 
 config SIGNATURE
 	tristate
-	depends on KEYS && CRYPTO
+	depends on KEYS
+	select CRYPTO
 	select CRYPTO_SHA1
 	select MPILIB
 	help
 	  Digital signature verification. Currently only RSA is supported.
 	  Implementation is done using GnuPG MPI library
+
+config DIMLIB
+	bool
+	help
+	  Dynamic Interrupt Moderation library.
+	  Implements an algorithm for dynamically changing CQ moderation values
+	  according to run time performance.
 
 #
 # libfdt files, only selected if needed.
@@ -447,8 +646,121 @@ config OID_REGISTRY
 	  Enable fast lookup object identifier registry.
 
 config UCS2_STRING
-        tristate
+	tristate
+
+#
+# generic vdso
+#
+source "lib/vdso/Kconfig"
 
 source "lib/fonts/Kconfig"
 
+config SG_SPLIT
+	def_bool n
+	help
+	 Provides a helper to split scatterlists into chunks, each chunk being
+	 a scatterlist. This should be selected by a driver or an API which
+	 whishes to split a scatterlist amongst multiple DMA channels.
+
+config SG_POOL
+	def_bool n
+	help
+	 Provides a helper to allocate chained scatterlists. This should be
+	 selected by a driver or an API which whishes to allocate chained
+	 scatterlist.
+
+#
+# sg chaining option
+#
+
+config ARCH_NO_SG_CHAIN
+	def_bool n
+
+config ARCH_HAS_PMEM_API
+	bool
+
+config MEMREGION
+	bool
+
+config ARCH_HAS_CPU_CACHE_INVALIDATE_MEMREGION
+	bool
+
+config ARCH_HAS_MEMREMAP_COMPAT_ALIGN
+	bool
+
+# use memcpy to implement user copies for nommu architectures
+config UACCESS_MEMCPY
+	bool
+
+config ARCH_HAS_UACCESS_FLUSHCACHE
+	bool
+
+# arch has a concept of a recoverable synchronous exception due to a
+# memory-read error like x86 machine-check or ARM data-abort, and
+# implements copy_mc_to_{user,kernel} to abort and report
+# 'bytes-transferred' if that exception fires when accessing the source
+# buffer.
+config ARCH_HAS_COPY_MC
+	bool
+
+# Temporary. Goes away when all archs are cleaned up
+config ARCH_STACKWALK
+       bool
+
+config STACKDEPOT
+	bool
+	select STACKTRACE
+
+config STACKDEPOT_ALWAYS_INIT
+	bool
+	select STACKDEPOT
+
+config REF_TRACKER
+	bool
+	depends on STACKTRACE_SUPPORT
+	select STACKDEPOT
+
+config SBITMAP
+	bool
+
+config PARMAN
+	tristate "parman" if COMPILE_TEST
+
+config OBJAGG
+	tristate "objagg" if COMPILE_TEST
+
 endmenu
+
+config GENERIC_IOREMAP
+	bool
+
+config GENERIC_LIB_ASHLDI3
+	bool
+
+config GENERIC_LIB_ASHRDI3
+	bool
+
+config GENERIC_LIB_LSHRDI3
+	bool
+
+config GENERIC_LIB_MULDI3
+	bool
+
+config GENERIC_LIB_CMPDI2
+	bool
+
+config GENERIC_LIB_UCMPDI2
+	bool
+
+config GENERIC_LIB_DEVMEM_IS_ALLOWED
+	bool
+
+config PLDMFW
+	bool
+	default n
+
+config ASN1_ENCODER
+       tristate
+
+config POLYNOMIAL
+       tristate

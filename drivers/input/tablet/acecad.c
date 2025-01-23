@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (c) 2001-2005 Edouard TISSERANT   <edouard.tisserant@wanadoo.fr>
  *  Copyright (c) 2004-2005 Stephane VOLTZ      <svoltz@numericable.fr>
@@ -8,39 +9,14 @@
  *      v3.2 - Added sysfs support
  */
 
-/*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
- */
-
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/usb/input.h>
 
-/*
- * Version Information
- */
-#define DRIVER_VERSION "v3.2"
-#define DRIVER_DESC    "USB Acecad Flair tablet driver"
-#define DRIVER_LICENSE "GPL"
-#define DRIVER_AUTHOR  "Edouard TISSERANT <edouard.tisserant@wanadoo.fr>"
-
-MODULE_AUTHOR(DRIVER_AUTHOR);
-MODULE_DESCRIPTION(DRIVER_DESC);
-MODULE_LICENSE(DRIVER_LICENSE);
+MODULE_AUTHOR("Edouard TISSERANT <edouard.tisserant@wanadoo.fr>");
+MODULE_DESCRIPTION("USB Acecad Flair tablet driver");
+MODULE_LICENSE("GPL");
 
 #define USB_VENDOR_ID_ACECAD	0x0460
 #define USB_DEVICE_ID_FLAIR	0x0004
@@ -49,7 +25,6 @@ MODULE_LICENSE(DRIVER_LICENSE);
 struct usb_acecad {
 	char name[128];
 	char phys[64];
-	struct usb_device *usbdev;
 	struct usb_interface *intf;
 	struct input_dev *input;
 	struct urb *irq;
@@ -64,6 +39,7 @@ static void usb_acecad_irq(struct urb *urb)
 	unsigned char *data = acecad->data;
 	struct input_dev *dev = acecad->input;
 	struct usb_interface *intf = acecad->intf;
+	struct usb_device *udev = interface_to_usbdev(intf);
 	int prox, status;
 
 	switch (urb->status) {
@@ -110,15 +86,15 @@ resubmit:
 	if (status)
 		dev_err(&intf->dev,
 			"can't resubmit intr, %s-%s/input0, status %d\n",
-			acecad->usbdev->bus->bus_name,
-			acecad->usbdev->devpath, status);
+			udev->bus->bus_name,
+			udev->devpath, status);
 }
 
 static int usb_acecad_open(struct input_dev *dev)
 {
 	struct usb_acecad *acecad = input_get_drvdata(dev);
 
-	acecad->irq->dev = acecad->usbdev;
+	acecad->irq->dev = interface_to_usbdev(acecad->intf);
 	if (usb_submit_urb(acecad->irq, GFP_KERNEL))
 		return -EIO;
 
@@ -151,7 +127,7 @@ static int usb_acecad_probe(struct usb_interface *intf, const struct usb_device_
 		return -ENODEV;
 
 	pipe = usb_rcvintpipe(dev, endpoint->bEndpointAddress);
-	maxp = usb_maxpacket(dev, pipe, usb_pipeout(pipe));
+	maxp = usb_maxpacket(dev, pipe);
 
 	acecad = kzalloc(sizeof(struct usb_acecad), GFP_KERNEL);
 	input_dev = input_allocate_device();
@@ -172,12 +148,11 @@ static int usb_acecad_probe(struct usb_interface *intf, const struct usb_device_
 		goto fail2;
 	}
 
-	acecad->usbdev = dev;
 	acecad->intf = intf;
 	acecad->input = input_dev;
 
 	if (dev->manufacturer)
-		strlcpy(acecad->name, dev->manufacturer, sizeof(acecad->name));
+		strscpy(acecad->name, dev->manufacturer, sizeof(acecad->name));
 
 	if (dev->product) {
 		if (dev->manufacturer)
@@ -251,16 +226,17 @@ static int usb_acecad_probe(struct usb_interface *intf, const struct usb_device_
 static void usb_acecad_disconnect(struct usb_interface *intf)
 {
 	struct usb_acecad *acecad = usb_get_intfdata(intf);
+	struct usb_device *udev = interface_to_usbdev(intf);
 
 	usb_set_intfdata(intf, NULL);
 
 	input_unregister_device(acecad->input);
 	usb_free_urb(acecad->irq);
-	usb_free_coherent(acecad->usbdev, 8, acecad->data, acecad->data_dma);
+	usb_free_coherent(udev, 8, acecad->data, acecad->data_dma);
 	kfree(acecad);
 }
 
-static struct usb_device_id usb_acecad_id_table [] = {
+static const struct usb_device_id usb_acecad_id_table[] = {
 	{ USB_DEVICE(USB_VENDOR_ID_ACECAD, USB_DEVICE_ID_FLAIR), .driver_info = 0 },
 	{ USB_DEVICE(USB_VENDOR_ID_ACECAD, USB_DEVICE_ID_302),	 .driver_info = 1 },
 	{ }

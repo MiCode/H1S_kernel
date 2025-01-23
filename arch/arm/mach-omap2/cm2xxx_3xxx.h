@@ -1,13 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * OMAP2/3 Clock Management (CM) register definitions
  *
  * Copyright (C) 2007-2009 Texas Instruments, Inc.
  * Copyright (C) 2007-2010 Nokia Corporation
  * Paul Walmsley
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * The CM hardware modules on the OMAP2/3 are quite similar to each
  * other.  The CM modules/instances on OMAP4 are quite different, so
@@ -52,12 +49,12 @@
 
 static inline u32 omap2_cm_read_mod_reg(s16 module, u16 idx)
 {
-	return __raw_readl(cm_base + module + idx);
+	return readl_relaxed(cm_base.va + module + idx);
 }
 
 static inline void omap2_cm_write_mod_reg(u32 val, s16 module, u16 idx)
 {
-	__raw_writel(val, cm_base + module + idx);
+	writel_relaxed(val, cm_base.va + module + idx);
 }
 
 /* Read-modify-write a register in a CM module. Caller must lock */
@@ -95,11 +92,6 @@ static inline u32 omap2_cm_clear_mod_reg_bits(u32 bits, s16 module, s16 idx)
 {
 	return omap2_cm_rmw_mod_reg_bits(bits, 0x0, module, idx);
 }
-
-extern int omap2xxx_cm_apll54_enable(void);
-extern void omap2xxx_cm_apll54_disable(void);
-extern int omap2xxx_cm_apll96_enable(void);
-extern void omap2xxx_cm_apll96_disable(void);
 
 #endif
 

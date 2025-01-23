@@ -1,11 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * fs/kernfs/inode.c - kernfs inode implementation
  *
  * Copyright (c) 2001-3 Patrick Mochel
  * Copyright (c) 2007 SUSE Linux Products GmbH
  * Copyright (c) 2007, 2013 Tejun Heo <tj@kernel.org>
- *
- * This file is released under the GPLv2.
  */
 
 #include <linux/pagemap.h>
@@ -18,83 +17,75 @@
 
 #include "kernfs-internal.h"
 
-static const struct address_space_operations kernfs_aops = {
-	.readpage	= simple_readpage,
-	.write_begin	= simple_write_begin,
-	.write_end	= simple_write_end,
-};
-
-static struct backing_dev_info kernfs_bdi = {
-	.name		= "kernfs",
-	.ra_pages	= 0,	/* No readahead */
-	.capabilities	= BDI_CAP_NO_ACCT_AND_WRITEBACK,
-};
-
 static const struct inode_operations kernfs_iops = {
 	.permission	= kernfs_iop_permission,
 	.setattr	= kernfs_iop_setattr,
 	.getattr	= kernfs_iop_getattr,
-	.setxattr	= kernfs_iop_setxattr,
-	.removexattr	= kernfs_iop_removexattr,
-	.getxattr	= kernfs_iop_getxattr,
 	.listxattr	= kernfs_iop_listxattr,
 };
 
-void __init kernfs_inode_init(void)
+static struct kernfs_iattrs *__kernfs_iattrs(struct kernfs_node *kn, int alloc)
 {
-	if (bdi_init(&kernfs_bdi))
-		panic("failed to init kernfs_bdi");
+	static DEFINE_MUTEX(iattr_mutex);
+	struct kernfs_iattrs *ret;
+
+	mutex_lock(&iattr_mutex);
+
+	if (kn->iattr || !alloc)
+		goto out_unlock;
+
+	kn->iattr = kmem_cache_zalloc(kernfs_iattrs_cache, GFP_KERNEL);
+	if (!kn->iattr)
+		goto out_unlock;
+
+	/* assign default attributes */
+	kn->iattr->ia_uid = GLOBAL_ROOT_UID;
+	kn->iattr->ia_gid = GLOBAL_ROOT_GID;
+
+	ktime_get_real_ts64(&kn->iattr->ia_atime);
+	kn->iattr->ia_mtime = kn->iattr->ia_atime;
+	kn->iattr->ia_ctime = kn->iattr->ia_atime;
+
+	simple_xattrs_init(&kn->iattr->xattrs);
+	atomic_set(&kn->iattr->nr_user_xattrs, 0);
+	atomic_set(&kn->iattr->user_xattr_size, 0);
+out_unlock:
+	ret = kn->iattr;
+	mutex_unlock(&iattr_mutex);
+	return ret;
 }
 
 static struct kernfs_iattrs *kernfs_iattrs(struct kernfs_node *kn)
 {
-	struct iattr *iattrs;
-
-	if (kn->iattr)
-		return kn->iattr;
-
-	kn->iattr = kzalloc(sizeof(struct kernfs_iattrs), GFP_KERNEL);
-	if (!kn->iattr)
-		return NULL;
-	iattrs = &kn->iattr->ia_iattr;
-
-	/* assign default attributes */
-	iattrs->ia_mode = kn->mode;
-	iattrs->ia_uid = GLOBAL_ROOT_UID;
-	iattrs->ia_gid = GLOBAL_ROOT_GID;
-	iattrs->ia_atime = iattrs->ia_mtime = iattrs->ia_ctime = CURRENT_TIME;
-
-	simple_xattrs_init(&kn->iattr->xattrs);
-
-	return kn->iattr;
+	return __kernfs_iattrs(kn, 1);
 }
 
-static int __kernfs_setattr(struct kernfs_node *kn, const struct iattr *iattr)
+static struct kernfs_iattrs *kernfs_iattrs_noalloc(struct kernfs_node *kn)
+{
+	return __kernfs_iattrs(kn, 0);
+}
+
+int __kernfs_setattr(struct kernfs_node *kn, const struct iattr *iattr)
 {
 	struct kernfs_iattrs *attrs;
-	struct iattr *iattrs;
 	unsigned int ia_valid = iattr->ia_valid;
 
 	attrs = kernfs_iattrs(kn);
 	if (!attrs)
 		return -ENOMEM;
 
-	iattrs = &attrs->ia_iattr;
-
 	if (ia_valid & ATTR_UID)
-		iattrs->ia_uid = iattr->ia_uid;
+		attrs->ia_uid = iattr->ia_uid;
 	if (ia_valid & ATTR_GID)
-		iattrs->ia_gid = iattr->ia_gid;
+		attrs->ia_gid = iattr->ia_gid;
 	if (ia_valid & ATTR_ATIME)
-		iattrs->ia_atime = iattr->ia_atime;
+		attrs->ia_atime = iattr->ia_atime;
 	if (ia_valid & ATTR_MTIME)
-		iattrs->ia_mtime = iattr->ia_mtime;
+		attrs->ia_mtime = iattr->ia_mtime;
 	if (ia_valid & ATTR_CTIME)
-		iattrs->ia_ctime = iattr->ia_ctime;
-	if (ia_valid & ATTR_MODE) {
-		umode_t mode = iattr->ia_mode;
-		iattrs->ia_mode = kn->mode = mode;
-	}
+		attrs->ia_ctime = iattr->ia_ctime;
+	if (ia_valid & ATTR_MODE)
+		kn->mode = iattr->ia_mode;
 	return 0;
 }
 
@@ -103,29 +94,33 @@ static int __kernfs_setattr(struct kernfs_node *kn, const struct iattr *iattr)
  * @kn: target node
  * @iattr: iattr to set
  *
- * Returns 0 on success, -errno on failure.
+ * Return: %0 on success, -errno on failure.
  */
 int kernfs_setattr(struct kernfs_node *kn, const struct iattr *iattr)
 {
 	int ret;
+	struct kernfs_root *root = kernfs_root(kn);
 
-	mutex_lock(&kernfs_mutex);
+	down_write(&root->kernfs_iattr_rwsem);
 	ret = __kernfs_setattr(kn, iattr);
-	mutex_unlock(&kernfs_mutex);
+	up_write(&root->kernfs_iattr_rwsem);
 	return ret;
 }
 
-int kernfs_iop_setattr(struct dentry *dentry, struct iattr *iattr)
+int kernfs_iop_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
+		       struct iattr *iattr)
 {
-	struct inode *inode = dentry->d_inode;
-	struct kernfs_node *kn = dentry->d_fsdata;
+	struct inode *inode = d_inode(dentry);
+	struct kernfs_node *kn = inode->i_private;
+	struct kernfs_root *root;
 	int error;
 
 	if (!kn)
 		return -EINVAL;
 
-	mutex_lock(&kernfs_mutex);
-	error = inode_change_ok(inode, iattr);
+	root = kernfs_root(kn);
+	down_write(&root->kernfs_iattr_rwsem);
+	error = setattr_prepare(&nop_mnt_idmap, dentry, iattr);
 	if (error)
 		goto out;
 
@@ -134,124 +129,39 @@ int kernfs_iop_setattr(struct dentry *dentry, struct iattr *iattr)
 		goto out;
 
 	/* this ignores size changes */
-	setattr_copy(inode, iattr);
+	setattr_copy(&nop_mnt_idmap, inode, iattr);
 
 out:
-	mutex_unlock(&kernfs_mutex);
+	up_write(&root->kernfs_iattr_rwsem);
 	return error;
-}
-
-static int kernfs_node_setsecdata(struct kernfs_node *kn, void **secdata,
-				  u32 *secdata_len)
-{
-	struct kernfs_iattrs *attrs;
-	void *old_secdata;
-	size_t old_secdata_len;
-
-	attrs = kernfs_iattrs(kn);
-	if (!attrs)
-		return -ENOMEM;
-
-	old_secdata = attrs->ia_secdata;
-	old_secdata_len = attrs->ia_secdata_len;
-
-	attrs->ia_secdata = *secdata;
-	attrs->ia_secdata_len = *secdata_len;
-
-	*secdata = old_secdata;
-	*secdata_len = old_secdata_len;
-	return 0;
-}
-
-int kernfs_iop_setxattr(struct dentry *dentry, const char *name,
-			const void *value, size_t size, int flags)
-{
-	struct kernfs_node *kn = dentry->d_fsdata;
-	struct kernfs_iattrs *attrs;
-	void *secdata;
-	int error;
-	u32 secdata_len = 0;
-
-	attrs = kernfs_iattrs(kn);
-	if (!attrs)
-		return -ENOMEM;
-
-	if (!strncmp(name, XATTR_SECURITY_PREFIX, XATTR_SECURITY_PREFIX_LEN)) {
-		const char *suffix = name + XATTR_SECURITY_PREFIX_LEN;
-		error = security_inode_setsecurity(dentry->d_inode, suffix,
-						value, size, flags);
-		if (error)
-			return error;
-		error = security_inode_getsecctx(dentry->d_inode,
-						&secdata, &secdata_len);
-		if (error)
-			return error;
-
-		mutex_lock(&kernfs_mutex);
-		error = kernfs_node_setsecdata(kn, &secdata, &secdata_len);
-		mutex_unlock(&kernfs_mutex);
-
-		if (secdata)
-			security_release_secctx(secdata, secdata_len);
-		return error;
-	} else if (!strncmp(name, XATTR_TRUSTED_PREFIX, XATTR_TRUSTED_PREFIX_LEN)) {
-		return simple_xattr_set(&attrs->xattrs, name, value, size,
-					flags);
-	}
-
-	return -EINVAL;
-}
-
-int kernfs_iop_removexattr(struct dentry *dentry, const char *name)
-{
-	struct kernfs_node *kn = dentry->d_fsdata;
-	struct kernfs_iattrs *attrs;
-
-	attrs = kernfs_iattrs(kn);
-	if (!attrs)
-		return -ENOMEM;
-
-	return simple_xattr_remove(&attrs->xattrs, name);
-}
-
-ssize_t kernfs_iop_getxattr(struct dentry *dentry, const char *name, void *buf,
-			    size_t size)
-{
-	struct kernfs_node *kn = dentry->d_fsdata;
-	struct kernfs_iattrs *attrs;
-
-	attrs = kernfs_iattrs(kn);
-	if (!attrs)
-		return -ENOMEM;
-
-	return simple_xattr_get(&attrs->xattrs, name, buf, size);
 }
 
 ssize_t kernfs_iop_listxattr(struct dentry *dentry, char *buf, size_t size)
 {
-	struct kernfs_node *kn = dentry->d_fsdata;
+	struct kernfs_node *kn = kernfs_dentry_node(dentry);
 	struct kernfs_iattrs *attrs;
 
 	attrs = kernfs_iattrs(kn);
 	if (!attrs)
 		return -ENOMEM;
 
-	return simple_xattr_list(&attrs->xattrs, buf, size);
+	return simple_xattr_list(d_inode(dentry), &attrs->xattrs, buf, size);
 }
 
 static inline void set_default_inode_attr(struct inode *inode, umode_t mode)
 {
 	inode->i_mode = mode;
-	inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
+	inode->i_atime = inode->i_mtime = inode_set_ctime_current(inode);
 }
 
-static inline void set_inode_attr(struct inode *inode, struct iattr *iattr)
+static inline void set_inode_attr(struct inode *inode,
+				  struct kernfs_iattrs *attrs)
 {
-	inode->i_uid = iattr->ia_uid;
-	inode->i_gid = iattr->ia_gid;
-	inode->i_atime = iattr->ia_atime;
-	inode->i_mtime = iattr->ia_mtime;
-	inode->i_ctime = iattr->ia_ctime;
+	inode->i_uid = attrs->ia_uid;
+	inode->i_gid = attrs->ia_gid;
+	inode->i_atime = attrs->ia_atime;
+	inode->i_mtime = attrs->ia_mtime;
+	inode_set_ctime_to_ts(inode, attrs->ia_ctime);
 }
 
 static void kernfs_refresh_inode(struct kernfs_node *kn, struct inode *inode)
@@ -259,31 +169,30 @@ static void kernfs_refresh_inode(struct kernfs_node *kn, struct inode *inode)
 	struct kernfs_iattrs *attrs = kn->iattr;
 
 	inode->i_mode = kn->mode;
-	if (attrs) {
+	if (attrs)
 		/*
 		 * kernfs_node has non-default attributes get them from
 		 * persistent copy in kernfs_node.
 		 */
-		set_inode_attr(inode, &attrs->ia_iattr);
-		security_inode_notifysecctx(inode, attrs->ia_secdata,
-					    attrs->ia_secdata_len);
-	}
+		set_inode_attr(inode, attrs);
 
 	if (kernfs_type(kn) == KERNFS_DIR)
 		set_nlink(inode, kn->dir.subdirs + 2);
 }
 
-int kernfs_iop_getattr(struct vfsmount *mnt, struct dentry *dentry,
-		   struct kstat *stat)
+int kernfs_iop_getattr(struct mnt_idmap *idmap,
+		       const struct path *path, struct kstat *stat,
+		       u32 request_mask, unsigned int query_flags)
 {
-	struct kernfs_node *kn = dentry->d_fsdata;
-	struct inode *inode = dentry->d_inode;
+	struct inode *inode = d_inode(path->dentry);
+	struct kernfs_node *kn = inode->i_private;
+	struct kernfs_root *root = kernfs_root(kn);
 
-	mutex_lock(&kernfs_mutex);
+	down_read(&root->kernfs_iattr_rwsem);
 	kernfs_refresh_inode(kn, inode);
-	mutex_unlock(&kernfs_mutex);
+	generic_fillattr(&nop_mnt_idmap, request_mask, inode, stat);
+	up_read(&root->kernfs_iattr_rwsem);
 
-	generic_fillattr(inode, stat);
 	return 0;
 }
 
@@ -291,9 +200,9 @@ static void kernfs_init_inode(struct kernfs_node *kn, struct inode *inode)
 {
 	kernfs_get(kn);
 	inode->i_private = kn;
-	inode->i_mapping->a_ops = &kernfs_aops;
-	inode->i_mapping->backing_dev_info = &kernfs_bdi;
+	inode->i_mapping->a_ops = &ram_aops;
 	inode->i_op = &kernfs_iops;
+	inode->i_generation = kernfs_gen(kn);
 
 	set_default_inode_attr(inode, kn->mode);
 	kernfs_refresh_inode(kn, inode);
@@ -303,6 +212,8 @@ static void kernfs_init_inode(struct kernfs_node *kn, struct inode *inode)
 	case KERNFS_DIR:
 		inode->i_op = &kernfs_dir_iops;
 		inode->i_fop = &kernfs_dir_fops;
+		if (kn->flags & KERNFS_EMPTY_DIR)
+			make_empty_dir_inode(inode);
 		break;
 	case KERNFS_FILE:
 		inode->i_size = kn->attr.size;
@@ -327,17 +238,17 @@ static void kernfs_init_inode(struct kernfs_node *kn, struct inode *inode)
  *	allocated and basics are initialized.  New inode is returned
  *	locked.
  *
- *	LOCKING:
+ *	Locking:
  *	Kernel thread context (may sleep).
  *
- *	RETURNS:
- *	Pointer to allocated inode on success, NULL on failure.
+ *	Return:
+ *	Pointer to allocated inode on success, %NULL on failure.
  */
 struct inode *kernfs_get_inode(struct super_block *sb, struct kernfs_node *kn)
 {
 	struct inode *inode;
 
-	inode = iget_locked(sb, kn->ino);
+	inode = iget_locked(sb, kernfs_ino(kn));
 	if (inode && (inode->i_state & I_NEW))
 		kernfs_init_inode(kn, inode);
 
@@ -355,23 +266,188 @@ void kernfs_evict_inode(struct inode *inode)
 {
 	struct kernfs_node *kn = inode->i_private;
 
-	truncate_inode_pages(&inode->i_data, 0);
+	truncate_inode_pages_final(&inode->i_data);
 	clear_inode(inode);
 	kernfs_put(kn);
 }
 
-int kernfs_iop_permission(struct inode *inode, int mask)
+int kernfs_iop_permission(struct mnt_idmap *idmap,
+			  struct inode *inode, int mask)
 {
 	struct kernfs_node *kn;
+	struct kernfs_root *root;
+	int ret;
 
 	if (mask & MAY_NOT_BLOCK)
 		return -ECHILD;
 
 	kn = inode->i_private;
+	root = kernfs_root(kn);
 
-	mutex_lock(&kernfs_mutex);
+	down_read(&root->kernfs_iattr_rwsem);
 	kernfs_refresh_inode(kn, inode);
-	mutex_unlock(&kernfs_mutex);
+	ret = generic_permission(&nop_mnt_idmap, inode, mask);
+	up_read(&root->kernfs_iattr_rwsem);
 
-	return generic_permission(inode, mask);
+	return ret;
 }
+
+int kernfs_xattr_get(struct kernfs_node *kn, const char *name,
+		     void *value, size_t size)
+{
+	struct kernfs_iattrs *attrs = kernfs_iattrs_noalloc(kn);
+	if (!attrs)
+		return -ENODATA;
+
+	return simple_xattr_get(&attrs->xattrs, name, value, size);
+}
+
+int kernfs_xattr_set(struct kernfs_node *kn, const char *name,
+		     const void *value, size_t size, int flags)
+{
+	struct simple_xattr *old_xattr;
+	struct kernfs_iattrs *attrs = kernfs_iattrs(kn);
+	if (!attrs)
+		return -ENOMEM;
+
+	old_xattr = simple_xattr_set(&attrs->xattrs, name, value, size, flags);
+	if (IS_ERR(old_xattr))
+		return PTR_ERR(old_xattr);
+
+	simple_xattr_free(old_xattr);
+	return 0;
+}
+
+static int kernfs_vfs_xattr_get(const struct xattr_handler *handler,
+				struct dentry *unused, struct inode *inode,
+				const char *suffix, void *value, size_t size)
+{
+	const char *name = xattr_full_name(handler, suffix);
+	struct kernfs_node *kn = inode->i_private;
+
+	return kernfs_xattr_get(kn, name, value, size);
+}
+
+static int kernfs_vfs_xattr_set(const struct xattr_handler *handler,
+				struct mnt_idmap *idmap,
+				struct dentry *unused, struct inode *inode,
+				const char *suffix, const void *value,
+				size_t size, int flags)
+{
+	const char *name = xattr_full_name(handler, suffix);
+	struct kernfs_node *kn = inode->i_private;
+
+	return kernfs_xattr_set(kn, name, value, size, flags);
+}
+
+static int kernfs_vfs_user_xattr_add(struct kernfs_node *kn,
+				     const char *full_name,
+				     struct simple_xattrs *xattrs,
+				     const void *value, size_t size, int flags)
+{
+	atomic_t *sz = &kn->iattr->user_xattr_size;
+	atomic_t *nr = &kn->iattr->nr_user_xattrs;
+	struct simple_xattr *old_xattr;
+	int ret;
+
+	if (atomic_inc_return(nr) > KERNFS_MAX_USER_XATTRS) {
+		ret = -ENOSPC;
+		goto dec_count_out;
+	}
+
+	if (atomic_add_return(size, sz) > KERNFS_USER_XATTR_SIZE_LIMIT) {
+		ret = -ENOSPC;
+		goto dec_size_out;
+	}
+
+	old_xattr = simple_xattr_set(xattrs, full_name, value, size, flags);
+	if (!old_xattr)
+		return 0;
+
+	if (IS_ERR(old_xattr)) {
+		ret = PTR_ERR(old_xattr);
+		goto dec_size_out;
+	}
+
+	ret = 0;
+	size = old_xattr->size;
+	simple_xattr_free(old_xattr);
+dec_size_out:
+	atomic_sub(size, sz);
+dec_count_out:
+	atomic_dec(nr);
+	return ret;
+}
+
+static int kernfs_vfs_user_xattr_rm(struct kernfs_node *kn,
+				    const char *full_name,
+				    struct simple_xattrs *xattrs,
+				    const void *value, size_t size, int flags)
+{
+	atomic_t *sz = &kn->iattr->user_xattr_size;
+	atomic_t *nr = &kn->iattr->nr_user_xattrs;
+	struct simple_xattr *old_xattr;
+
+	old_xattr = simple_xattr_set(xattrs, full_name, value, size, flags);
+	if (!old_xattr)
+		return 0;
+
+	if (IS_ERR(old_xattr))
+		return PTR_ERR(old_xattr);
+
+	atomic_sub(old_xattr->size, sz);
+	atomic_dec(nr);
+	simple_xattr_free(old_xattr);
+	return 0;
+}
+
+static int kernfs_vfs_user_xattr_set(const struct xattr_handler *handler,
+				     struct mnt_idmap *idmap,
+				     struct dentry *unused, struct inode *inode,
+				     const char *suffix, const void *value,
+				     size_t size, int flags)
+{
+	const char *full_name = xattr_full_name(handler, suffix);
+	struct kernfs_node *kn = inode->i_private;
+	struct kernfs_iattrs *attrs;
+
+	if (!(kernfs_root(kn)->flags & KERNFS_ROOT_SUPPORT_USER_XATTR))
+		return -EOPNOTSUPP;
+
+	attrs = kernfs_iattrs(kn);
+	if (!attrs)
+		return -ENOMEM;
+
+	if (value)
+		return kernfs_vfs_user_xattr_add(kn, full_name, &attrs->xattrs,
+						 value, size, flags);
+	else
+		return kernfs_vfs_user_xattr_rm(kn, full_name, &attrs->xattrs,
+						value, size, flags);
+
+}
+
+static const struct xattr_handler kernfs_trusted_xattr_handler = {
+	.prefix = XATTR_TRUSTED_PREFIX,
+	.get = kernfs_vfs_xattr_get,
+	.set = kernfs_vfs_xattr_set,
+};
+
+static const struct xattr_handler kernfs_security_xattr_handler = {
+	.prefix = XATTR_SECURITY_PREFIX,
+	.get = kernfs_vfs_xattr_get,
+	.set = kernfs_vfs_xattr_set,
+};
+
+static const struct xattr_handler kernfs_user_xattr_handler = {
+	.prefix = XATTR_USER_PREFIX,
+	.get = kernfs_vfs_xattr_get,
+	.set = kernfs_vfs_user_xattr_set,
+};
+
+const struct xattr_handler *kernfs_xattr_handlers[] = {
+	&kernfs_trusted_xattr_handler,
+	&kernfs_security_xattr_handler,
+	&kernfs_user_xattr_handler,
+	NULL
+};

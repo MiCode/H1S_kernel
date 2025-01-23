@@ -1,7 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  (C) 2010,2011       Thomas Renninger <trenn@suse.de>, Novell Inc.
- *
- *  Licensed under the terms of the GNU GPL License version 2.
  *
  *  Ideas taken over from the perf userspace tool (included in the Linus
  *  kernel git repo): subcommand builtins and param parsing.
@@ -12,6 +11,10 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sched.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/utsname.h>
 
 #include "builtin.h"
 #include "helpers/helpers.h"
@@ -28,8 +31,11 @@ static int cmd_help(int argc, const char **argv);
  */
 struct cpupower_cpu_info cpupower_cpu_info;
 int run_as_root;
+int base_cpu;
 /* Affected cpus chosen by -c/--cpu param */
 struct bitmask *cpus_chosen;
+struct bitmask *online_cpus;
+struct bitmask *offline_cpus;
 
 #ifdef DEBUG
 int be_verbose;
@@ -48,6 +54,7 @@ static struct cmd_struct commands[] = {
 	{ "frequency-set",	cmd_freq_set,	1	},
 	{ "idle-info",		cmd_idle_info,	0	},
 	{ "idle-set",		cmd_idle_set,	1	},
+	{ "powercap-info",	cmd_cap_info,	0	},
 	{ "set",		cmd_set,	1	},
 	{ "info",		cmd_info,	0	},
 	{ "monitor",		cmd_monitor,	0	},
@@ -169,8 +176,13 @@ int main(int argc, const char *argv[])
 {
 	const char *cmd;
 	unsigned int i, ret;
+	struct stat statbuf;
+	struct utsname uts;
+	char pathname[32];
 
 	cpus_chosen = bitmask_alloc(sysconf(_SC_NPROCESSORS_CONF));
+	online_cpus = bitmask_alloc(sysconf(_SC_NPROCESSORS_CONF));
+	offline_cpus = bitmask_alloc(sysconf(_SC_NPROCESSORS_CONF));
 
 	argc--;
 	argv += 1;
@@ -193,8 +205,23 @@ int main(int argc, const char *argv[])
 		argv[0] = cmd = "help";
 	}
 
-	get_cpu_info(0, &cpupower_cpu_info);
-	run_as_root = !getuid();
+	base_cpu = sched_getcpu();
+	if (base_cpu < 0) {
+		fprintf(stderr, _("No valid cpus found.\n"));
+		return EXIT_FAILURE;
+	}
+
+	get_cpu_info(&cpupower_cpu_info);
+	run_as_root = !geteuid();
+	if (run_as_root) {
+		ret = uname(&uts);
+		sprintf(pathname, "/dev/cpu/%d/msr", base_cpu);
+		if (!ret && !strcmp(uts.machine, "x86_64") &&
+		    stat(pathname, &statbuf) != 0) {
+			if (system("modprobe msr") == -1)
+	fprintf(stderr, _("MSR access not available.\n"));
+		}
+	}
 
 	for (i = 0; i < ARRAY_SIZE(commands); i++) {
 		struct cmd_struct *p = commands + i;
@@ -208,6 +235,10 @@ int main(int argc, const char *argv[])
 		ret = p->main(argc, argv);
 		if (cpus_chosen)
 			bitmask_free(cpus_chosen);
+		if (online_cpus)
+			bitmask_free(online_cpus);
+		if (offline_cpus)
+			bitmask_free(offline_cpus);
 		return ret;
 	}
 	print_help();

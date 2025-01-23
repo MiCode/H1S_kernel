@@ -1,12 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *	klist.h - Some generic list helpers, extending struct list_head a bit.
  *
  *	Implementations are found in lib/klist.c
  *
- *
  *	Copyright (C) 2005 Patrick Mochel
- *
- *	This file is rleased under the GPL v2.
  */
 
 #ifndef _LINUX_KLIST_H
@@ -44,7 +42,7 @@ struct klist_node {
 
 extern void klist_add_tail(struct klist_node *n, struct klist *k);
 extern void klist_add_head(struct klist_node *n, struct klist *k);
-extern void klist_add_after(struct klist_node *n, struct klist_node *pos);
+extern void klist_add_behind(struct klist_node *n, struct klist_node *pos);
 extern void klist_add_before(struct klist_node *n, struct klist_node *pos);
 
 extern void klist_del(struct klist_node *n);
@@ -63,6 +61,7 @@ extern void klist_iter_init(struct klist *k, struct klist_iter *i);
 extern void klist_iter_init_node(struct klist *k, struct klist_iter *i,
 				 struct klist_node *n);
 extern void klist_iter_exit(struct klist_iter *i);
+extern struct klist_node *klist_prev(struct klist_iter *i);
 extern struct klist_node *klist_next(struct klist_iter *i);
 
 #endif

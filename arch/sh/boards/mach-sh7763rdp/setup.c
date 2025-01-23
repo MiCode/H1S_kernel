@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/arch/sh/boards/renesas/sh7763rdp/setup.c
  *
@@ -5,10 +6,6 @@
  *
  * Copyright (C) 2008 Renesas Solutions Corp.
  * Copyright (C) 2008 Nobuhiro Iwamatsu <iwamatsu.nobuhiro@renesas.com>
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -87,7 +84,6 @@ static struct resource sh_eth_resources[] = {
 
 static struct sh_eth_plat_data sh7763_eth_pdata = {
 	.phy = 1,
-	.edmac_endian = EDMAC_LITTLE_ENDIAN,
 	.phy_interface = PHY_INTERFACE_MODE_MII,
 };
 
@@ -123,7 +119,7 @@ static struct fb_videomode sh7763fb_videomode = {
 	.vsync_len = 1,
 	.sync = 0,
 	.vmode = FB_VMODE_NONINTERLACED,
-	.flag = FBINFO_FLAG_DEFAULT,
+	.flag = FB_MODE_IS_UNKNOWN,
 };
 
 static struct sh7760fb_platdata sh7763fb_def_pdata = {

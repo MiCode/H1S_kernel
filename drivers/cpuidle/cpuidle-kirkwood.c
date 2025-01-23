@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * CPU idle Marvell Kirkwood SoCs
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  *
  * The cpu idle uses wait-for-interrupt and DDR self refresh in order
  * to implement two idle states -
@@ -21,7 +18,6 @@
 #include <linux/cpuidle.h>
 #include <linux/io.h>
 #include <linux/export.h>
-#include <asm/proc-fns.h>
 #include <asm/cpuidle.h>
 
 #define KIRKWOOD_MAX_STATES	2
@@ -47,7 +43,6 @@ static struct cpuidle_driver kirkwood_idle_driver = {
 		.enter			= kirkwood_enter_idle,
 		.exit_latency		= 10,
 		.target_residency	= 100000,
-		.flags			= CPUIDLE_FLAG_TIME_VALID,
 		.name			= "DDR SR",
 		.desc			= "WFI and DDR Self Refresh",
 	},
@@ -57,10 +52,7 @@ static struct cpuidle_driver kirkwood_idle_driver = {
 /* Initialize CPU idle by registering the idle states */
 static int kirkwood_cpuidle_probe(struct platform_device *pdev)
 {
-	struct resource *res;
-
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	ddr_operation_base = devm_ioremap_resource(&pdev->dev, res);
+	ddr_operation_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(ddr_operation_base))
 		return PTR_ERR(ddr_operation_base);
 
@@ -78,7 +70,6 @@ static struct platform_driver kirkwood_cpuidle_driver = {
 	.remove = kirkwood_cpuidle_remove,
 	.driver = {
 		   .name = "kirkwood_cpuidle",
-		   .owner = THIS_MODULE,
 		   },
 };
 

@@ -26,9 +26,10 @@
 
 #include <linux/module.h>
 
-#include <drm/drmP.h>
-#include <drm/drm_crtc_helper.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_encoder_slave.h>
+#include <drm/drm_print.h>
+#include <drm/drm_probe_helper.h>
 #include <drm/i2c/sil164.h>
 
 struct sil164_priv {
@@ -43,7 +44,7 @@ struct sil164_priv {
 	((struct sil164_priv *)to_encoder_slave(x)->slave_priv)
 
 #define sil164_dbg(client, format, ...) do {				\
-		if (drm_debug & DRM_UT_KMS)				\
+		if (drm_debug_enabled(DRM_UT_KMS))			\
 			dev_printk(KERN_DEBUG, &client->dev,		\
 				   "%s: " format, __func__, ## __VA_ARGS__); \
 	} while (0)
@@ -252,14 +253,6 @@ sil164_encoder_restore(struct drm_encoder *encoder)
 				     priv->saved_slave_state);
 }
 
-static bool
-sil164_encoder_mode_fixup(struct drm_encoder *encoder,
-			  const struct drm_display_mode *mode,
-			  struct drm_display_mode *adjusted_mode)
-{
-	return true;
-}
-
 static int
 sil164_encoder_mode_valid(struct drm_encoder *encoder,
 			  struct drm_display_mode *mode)
@@ -334,20 +327,18 @@ sil164_encoder_destroy(struct drm_encoder *encoder)
 {
 	struct sil164_priv *priv = to_sil164_priv(encoder);
 
-	if (priv->duallink_slave)
-		i2c_unregister_device(priv->duallink_slave);
+	i2c_unregister_device(priv->duallink_slave);
 
 	kfree(priv);
 	drm_i2c_encoder_destroy(encoder);
 }
 
-static struct drm_encoder_slave_funcs sil164_encoder_funcs = {
+static const struct drm_encoder_slave_funcs sil164_encoder_funcs = {
 	.set_config = sil164_encoder_set_config,
 	.destroy = sil164_encoder_destroy,
 	.dpms = sil164_encoder_dpms,
 	.save = sil164_encoder_save,
 	.restore = sil164_encoder_restore,
-	.mode_fixup = sil164_encoder_mode_fixup,
 	.mode_valid = sil164_encoder_mode_valid,
 	.mode_set = sil164_encoder_mode_set,
 	.detect = sil164_encoder_detect,
@@ -359,7 +350,7 @@ static struct drm_encoder_slave_funcs sil164_encoder_funcs = {
 /* I2C driver functions */
 
 static int
-sil164_probe(struct i2c_client *client, const struct i2c_device_id *id)
+sil164_probe(struct i2c_client *client)
 {
 	int vendor = sil164_read(client, SIL164_VENDOR_HI) << 8 |
 		sil164_read(client, SIL164_VENDOR_LO);
@@ -376,12 +367,6 @@ sil164_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	sil164_info(client, "Detected device %x:%x.%x\n",
 		    vendor, device, rev);
 
-	return 0;
-}
-
-static int
-sil164_remove(struct i2c_client *client)
-{
 	return 0;
 }
 
@@ -402,7 +387,7 @@ sil164_detect_slave(struct i2c_client *client)
 		return NULL;
 	}
 
-	return i2c_new_device(adap, &info);
+	return i2c_new_client_device(adap, &info);
 }
 
 static int
@@ -411,6 +396,7 @@ sil164_encoder_init(struct i2c_client *client,
 		    struct drm_encoder_slave *encoder)
 {
 	struct sil164_priv *priv;
+	struct i2c_client *slave_client;
 
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -419,12 +405,14 @@ sil164_encoder_init(struct i2c_client *client,
 	encoder->slave_priv = priv;
 	encoder->slave_funcs = &sil164_encoder_funcs;
 
-	priv->duallink_slave = sil164_detect_slave(client);
+	slave_client = sil164_detect_slave(client);
+	if (!IS_ERR(slave_client))
+		priv->duallink_slave = slave_client;
 
 	return 0;
 }
 
-static struct i2c_device_id sil164_ids[] = {
+static const struct i2c_device_id sil164_ids[] = {
 	{ "sil164", 0 },
 	{ }
 };
@@ -433,7 +421,6 @@ MODULE_DEVICE_TABLE(i2c, sil164_ids);
 static struct drm_i2c_encoder_driver sil164_driver = {
 	.i2c_driver = {
 		.probe = sil164_probe,
-		.remove = sil164_remove,
 		.driver = {
 			.name = "sil164",
 		},

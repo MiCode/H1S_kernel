@@ -1,8 +1,9 @@
 /*
  * net/tipc/core.h: Include file for TIPC global declarations
  *
- * Copyright (c) 2005-2006, 2013 Ericsson AB
+ * Copyright (c) 2005-2006, 2013-2018 Ericsson AB
  * Copyright (c) 2005-2007, 2010-2013, Wind River Systems
+ * Copyright (c) 2020, Red Hat Inc
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -37,10 +38,9 @@
 #ifndef _TIPC_CORE_H
 #define _TIPC_CORE_H
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/tipc.h>
 #include <linux/tipc_config.h>
+#include <linux/tipc_netlink.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -50,57 +50,173 @@
 #include <linux/uaccess.h>
 #include <linux/interrupt.h>
 #include <linux/atomic.h>
-#include <asm/hardirq.h>
 #include <linux/netdevice.h>
 #include <linux/in.h>
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
+#include <linux/rtnetlink.h>
+#include <linux/etherdevice.h>
+#include <net/netns/generic.h>
+#include <linux/rhashtable.h>
+#include <net/genetlink.h>
+#include <net/netns/hash.h>
 
+#ifdef pr_fmt
+#undef pr_fmt
+#endif
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+struct tipc_node;
+struct tipc_bearer;
+struct tipc_bc_base;
+struct tipc_link;
+struct tipc_name_table;
+struct tipc_topsrv;
+struct tipc_monitor;
+#ifdef CONFIG_TIPC_CRYPTO
+struct tipc_crypto;
+#endif
 
 #define TIPC_MOD_VER "2.0.0"
 
-#define ULTRA_STRING_MAX_LEN	32768
-#define TIPC_MAX_SUBSCRIPTIONS	65535
-#define TIPC_MAX_PUBLICATIONS	65535
+#define NODE_HTABLE_SIZE       512
+#define MAX_BEARERS	         3
+#define TIPC_DEF_MON_THRESHOLD  32
+#define NODE_ID_LEN             16
+#define NODE_ID_STR_LEN        (NODE_ID_LEN * 2 + 1)
 
-struct tipc_msg;	/* msg.h */
-
-int tipc_snprintf(char *buf, int len, const char *fmt, ...);
-
-/*
- * TIPC-specific error codes
- */
-#define ELINKCONG EAGAIN	/* link congestion <=> resource unavailable */
-
-/*
- * Global configuration variables
- */
-extern u32 tipc_own_addr __read_mostly;
-extern int tipc_max_ports __read_mostly;
-extern int tipc_net_id __read_mostly;
-extern int tipc_remote_management __read_mostly;
+extern unsigned int tipc_net_id __read_mostly;
 extern int sysctl_tipc_rmem[3] __read_mostly;
+extern int sysctl_tipc_named_timeout __read_mostly;
 
-/*
- * Other global variables
- */
-extern int tipc_random __read_mostly;
+struct tipc_net {
+	u8  node_id[NODE_ID_LEN];
+	u32 node_addr;
+	u32 trial_addr;
+	unsigned long addr_trial_end;
+	char node_id_string[NODE_ID_STR_LEN];
+	int net_id;
+	int random;
+	bool legacy_addr_format;
 
-/*
- * Routines available to privileged subsystems
- */
-int tipc_core_start_net(unsigned long);
-int tipc_handler_start(void);
-void tipc_handler_stop(void);
-int tipc_netlink_start(void);
-void tipc_netlink_stop(void);
-int tipc_socket_init(void);
-void tipc_socket_stop(void);
-int tipc_sock_create_local(int type, struct socket **res);
-void tipc_sock_release_local(struct socket *sock);
-int tipc_sock_accept_local(struct socket *sock, struct socket **newsock,
-			   int flags);
+	/* Node table and node list */
+	spinlock_t node_list_lock;
+	struct hlist_head node_htable[NODE_HTABLE_SIZE];
+	struct list_head node_list;
+	u32 num_nodes;
+	u32 num_links;
+
+	/* Neighbor monitoring list */
+	struct tipc_monitor *monitors[MAX_BEARERS];
+	int mon_threshold;
+
+	/* Bearer list */
+	struct tipc_bearer __rcu *bearer_list[MAX_BEARERS + 1];
+
+	/* Broadcast link */
+	spinlock_t bclock;
+	struct tipc_bc_base *bcbase;
+	struct tipc_link *bcl;
+
+	/* Socket hash table */
+	struct rhashtable sk_rht;
+
+	/* Name table */
+	spinlock_t nametbl_lock;
+	struct name_table *nametbl;
+
+	/* Topology subscription server */
+	struct tipc_topsrv *topsrv;
+	atomic_t subscription_count;
+
+	/* Cluster capabilities */
+	u16 capabilities;
+
+	/* Tracing of node internal messages */
+	struct packet_type loopback_pt;
+
+#ifdef CONFIG_TIPC_CRYPTO
+	/* TX crypto handler */
+	struct tipc_crypto *crypto_tx;
+#endif
+	/* Work item for net finalize */
+	struct work_struct work;
+	/* The numbers of work queues in schedule */
+	atomic_t wq_count;
+};
+
+static inline struct tipc_net *tipc_net(struct net *net)
+{
+	return net_generic(net, tipc_net_id);
+}
+
+static inline int tipc_netid(struct net *net)
+{
+	return tipc_net(net)->net_id;
+}
+
+static inline struct list_head *tipc_nodes(struct net *net)
+{
+	return &tipc_net(net)->node_list;
+}
+
+static inline struct name_table *tipc_name_table(struct net *net)
+{
+	return tipc_net(net)->nametbl;
+}
+
+static inline struct tipc_topsrv *tipc_topsrv(struct net *net)
+{
+	return tipc_net(net)->topsrv;
+}
+
+static inline unsigned int tipc_hashfn(u32 addr)
+{
+	return addr & (NODE_HTABLE_SIZE - 1);
+}
+
+static inline u16 mod(u16 x)
+{
+	return x & 0xffffu;
+}
+
+static inline int less_eq(u16 left, u16 right)
+{
+	return mod(right - left) < 32768u;
+}
+
+static inline int more(u16 left, u16 right)
+{
+	return !less_eq(left, right);
+}
+
+static inline int less(u16 left, u16 right)
+{
+	return less_eq(left, right) && (mod(right) != mod(left));
+}
+
+static inline int tipc_in_range(u16 val, u16 min, u16 max)
+{
+	return !less(val, min) && !more(val, max);
+}
+
+static inline u32 tipc_net_hash_mixes(struct net *net, int tn_rand)
+{
+	return net_hash_mix(&init_net) ^ net_hash_mix(net) ^ tn_rand;
+}
+
+static inline u32 hash128to32(char *bytes)
+{
+	__be32 *tmp = (__be32 *)bytes;
+	u32 res;
+
+	res = ntohl(tmp[0] ^ tmp[1] ^ tmp[2] ^ tmp[3]);
+	if (likely(res))
+		return res;
+	return  ntohl(tmp[0] | tmp[1] | tmp[2] | tmp[3]);
+}
 
 #ifdef CONFIG_SYSCTL
 int tipc_register_sysctl(void);
@@ -109,98 +225,4 @@ void tipc_unregister_sysctl(void);
 #define tipc_register_sysctl() 0
 #define tipc_unregister_sysctl()
 #endif
-
-/*
- * TIPC timer and signal code
- */
-typedef void (*Handler) (unsigned long);
-
-u32 tipc_k_signal(Handler routine, unsigned long argument);
-
-/**
- * k_init_timer - initialize a timer
- * @timer: pointer to timer structure
- * @routine: pointer to routine to invoke when timer expires
- * @argument: value to pass to routine when timer expires
- *
- * Timer must be initialized before use (and terminated when no longer needed).
- */
-static inline void k_init_timer(struct timer_list *timer, Handler routine,
-				unsigned long argument)
-{
-	setup_timer(timer, routine, argument);
-}
-
-/**
- * k_start_timer - start a timer
- * @timer: pointer to timer structure
- * @msec: time to delay (in ms)
- *
- * Schedules a previously initialized timer for later execution.
- * If timer is already running, the new timeout overrides the previous request.
- *
- * To ensure the timer doesn't expire before the specified delay elapses,
- * the amount of delay is rounded up when converting to the jiffies
- * then an additional jiffy is added to account for the fact that
- * the starting time may be in the middle of the current jiffy.
- */
-static inline void k_start_timer(struct timer_list *timer, unsigned long msec)
-{
-	mod_timer(timer, jiffies + msecs_to_jiffies(msec) + 1);
-}
-
-/**
- * k_cancel_timer - cancel a timer
- * @timer: pointer to timer structure
- *
- * Cancels a previously initialized timer.
- * Can be called safely even if the timer is already inactive.
- *
- * WARNING: Must not be called when holding locks required by the timer's
- *          timeout routine, otherwise deadlock can occur on SMP systems!
- */
-static inline void k_cancel_timer(struct timer_list *timer)
-{
-	del_timer_sync(timer);
-}
-
-/**
- * k_term_timer - terminate a timer
- * @timer: pointer to timer structure
- *
- * Prevents further use of a previously initialized timer.
- *
- * WARNING: Caller must ensure timer isn't currently running.
- *
- * (Do not "enhance" this routine to automatically cancel an active timer,
- * otherwise deadlock can arise when a timeout routine calls k_term_timer.)
- */
-static inline void k_term_timer(struct timer_list *timer)
-{
-}
-
-/*
- * TIPC message buffer code
- *
- * TIPC message buffer headroom reserves space for the worst-case
- * link-level device header (in case the message is sent off-node).
- *
- * Note: Headroom should be a multiple of 4 to ensure the TIPC header fields
- *       are word aligned for quicker access
- */
-#define BUF_HEADROOM LL_MAX_HEADER
-
-struct tipc_skb_cb {
-	void *handle;
-};
-
-#define TIPC_SKB_CB(__skb) ((struct tipc_skb_cb *)&((__skb)->cb[0]))
-
-static inline struct tipc_msg *buf_msg(struct sk_buff *skb)
-{
-	return (struct tipc_msg *)skb->data;
-}
-
-struct sk_buff *tipc_buf_acquire(u32 size);
-
 #endif

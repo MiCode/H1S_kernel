@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *    Copyright IBM Corp. 2002
  *    Author(s): Cornelia Huck (cornelia.huck@de.ibm.com)
@@ -8,6 +9,7 @@
 
 #include <linux/module.h>
 #include <linux/init.h>
+#include <linux/io.h>
 
 #include <asm/ccwdev.h>
 #include <asm/cio.h>
@@ -26,6 +28,7 @@
 static void
 ccw_device_msg_control_check(struct ccw_device *cdev, struct irb *irb)
 {
+	struct subchannel *sch = to_subchannel(cdev->dev.parent);
 	char dbf_text[15];
 
 	if (!scsw_is_valid_cstat(&irb->scsw) ||
@@ -36,10 +39,10 @@ ccw_device_msg_control_check(struct ccw_device *cdev, struct irb *irb)
 		      "received"
 		      " ... device %04x on subchannel 0.%x.%04x, dev_stat "
 		      ": %02X sch_stat : %02X\n",
-		      cdev->private->dev_id.devno, cdev->private->schid.ssid,
-		      cdev->private->schid.sch_no,
+		      cdev->private->dev_id.devno, sch->schid.ssid,
+		      sch->schid.sch_no,
 		      scsw_dstat(&irb->scsw), scsw_cstat(&irb->scsw));
-	sprintf(dbf_text, "chk%x", cdev->private->schid.sch_no);
+	sprintf(dbf_text, "chk%x", sch->schid.sch_no);
 	CIO_TRACE_EVENT(0, dbf_text);
 	CIO_HEX_EVENT(0, irb, sizeof(struct irb));
 }
@@ -77,15 +80,15 @@ ccw_device_accumulate_ecw(struct ccw_device *cdev, struct irb *irb)
 	 * are condition that have to be met for the extended control
 	 * bit to have meaning. Sick.
 	 */
-	cdev->private->irb.scsw.cmd.ectl = 0;
+	cdev->private->dma_area->irb.scsw.cmd.ectl = 0;
 	if ((irb->scsw.cmd.stctl & SCSW_STCTL_ALERT_STATUS) &&
 	    !(irb->scsw.cmd.stctl & SCSW_STCTL_INTER_STATUS))
-		cdev->private->irb.scsw.cmd.ectl = irb->scsw.cmd.ectl;
+		cdev->private->dma_area->irb.scsw.cmd.ectl = irb->scsw.cmd.ectl;
 	/* Check if extended control word is valid. */
-	if (!cdev->private->irb.scsw.cmd.ectl)
+	if (!cdev->private->dma_area->irb.scsw.cmd.ectl)
 		return;
 	/* Copy concurrent sense / model dependent information. */
-	memcpy (&cdev->private->irb.ecw, irb->ecw, sizeof (irb->ecw));
+	memcpy(&cdev->private->dma_area->irb.ecw, irb->ecw, sizeof(irb->ecw));
 }
 
 /*
@@ -116,7 +119,7 @@ ccw_device_accumulate_esw(struct ccw_device *cdev, struct irb *irb)
 	if (!ccw_device_accumulate_esw_valid(irb))
 		return;
 
-	cdev_irb = &cdev->private->irb;
+	cdev_irb = &cdev->private->dma_area->irb;
 
 	/* Copy last path used mask. */
 	cdev_irb->esw.esw1.lpum = irb->esw.esw1.lpum;
@@ -208,7 +211,7 @@ ccw_device_accumulate_irb(struct ccw_device *cdev, struct irb *irb)
 		ccw_device_path_notoper(cdev);
 	/* No irb accumulation for transport mode irbs. */
 	if (scsw_is_tm(&irb->scsw)) {
-		memcpy(&cdev->private->irb, irb, sizeof(struct irb));
+		memcpy(&cdev->private->dma_area->irb, irb, sizeof(struct irb));
 		return;
 	}
 	/*
@@ -217,7 +220,7 @@ ccw_device_accumulate_irb(struct ccw_device *cdev, struct irb *irb)
 	if (!scsw_is_solicited(&irb->scsw))
 		return;
 
-	cdev_irb = &cdev->private->irb;
+	cdev_irb = &cdev->private->dma_area->irb;
 
 	/*
 	 * If the clear function had been performed, all formerly pending
@@ -225,7 +228,7 @@ ccw_device_accumulate_irb(struct ccw_device *cdev, struct irb *irb)
 	 * intermediate accumulated status to the device driver.
 	 */
 	if (irb->scsw.cmd.fctl & SCSW_FCTL_CLEAR_FUNC)
-		memset(&cdev->private->irb, 0, sizeof(struct irb));
+		memset(&cdev->private->dma_area->irb, 0, sizeof(struct irb));
 
 	/* Copy bits which are valid only for the start function. */
 	if (irb->scsw.cmd.fctl & SCSW_FCTL_START_FUNC) {
@@ -327,9 +330,9 @@ ccw_device_do_sense(struct ccw_device *cdev, struct irb *irb)
 	/*
 	 * We have ending status but no sense information. Do a basic sense.
 	 */
-	sense_ccw = &to_io_private(sch)->sense_ccw;
+	sense_ccw = &to_io_private(sch)->dma_area->sense_ccw;
 	sense_ccw->cmd_code = CCW_CMD_BASIC_SENSE;
-	sense_ccw->cda = (__u32) __pa(cdev->private->irb.ecw);
+	sense_ccw->cda = virt_to_phys(cdev->private->dma_area->irb.ecw);
 	sense_ccw->count = SENSE_MAX_COUNT;
 	sense_ccw->flags = CCW_FLAG_SLI;
 
@@ -362,7 +365,7 @@ ccw_device_accumulate_basic_sense(struct ccw_device *cdev, struct irb *irb)
 
 	if (!(irb->scsw.cmd.dstat & DEV_STAT_UNIT_CHECK) &&
 	    (irb->scsw.cmd.dstat & DEV_STAT_CHN_END)) {
-		cdev->private->irb.esw.esw0.erw.cons = 1;
+		cdev->private->dma_area->irb.esw.esw0.erw.cons = 1;
 		cdev->private->flags.dosense = 0;
 	}
 	/* Check if path verification is required. */
@@ -384,7 +387,7 @@ ccw_device_accumulate_and_sense(struct ccw_device *cdev, struct irb *irb)
 	/* Check for basic sense. */
 	if (cdev->private->flags.dosense &&
 	    !(irb->scsw.cmd.dstat & DEV_STAT_UNIT_CHECK)) {
-		cdev->private->irb.esw.esw0.erw.cons = 1;
+		cdev->private->dma_area->irb.esw.esw0.erw.cons = 1;
 		cdev->private->flags.dosense = 0;
 		return 0;
 	}

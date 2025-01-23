@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright (C) 2007,2008 Freescale semiconductor, Inc.
  *
@@ -5,20 +6,6 @@
  *         Jerry Huang <Chang-Ming.Huang@freescale.com>
  *
  * Initialization based on code from Shlomi Gridish.
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the  GNU General Public License along
- * with this program; if not, write  to the Free Software Foundation, Inc.,
- * 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
@@ -43,6 +30,13 @@
 #include <asm/unaligned.h>
 
 #include "phy-fsl-usb.h"
+
+#ifdef VERBOSE
+#define VDBG(fmt, args...) pr_debug("[%s]  " fmt, \
+				 __func__, ## args)
+#else
+#define VDBG(stuff...)	do {} while (0)
+#endif
 
 #define DRIVER_VERSION "Rev. 1.55"
 #define DRIVER_AUTHOR "Jerry Huang/Li Yang"
@@ -71,7 +65,7 @@ struct fsl_otg_timer *b_data_pulse_tmr, *b_vbus_pulse_tmr, *b_srp_fail_tmr,
 
 static struct list_head active_timers;
 
-static struct fsl_otg_config fsl_otg_initdata = {
+static const struct fsl_otg_config fsl_otg_initdata = {
 	.otg_port = 1,
 };
 
@@ -106,19 +100,6 @@ static void (*_fsl_writel)(u32 v, unsigned __iomem *p);
 #define fsl_readl(addr)		readl(addr)
 #define fsl_writel(val, addr)	writel(val, addr)
 #endif /* CONFIG_PPC32 */
-
-/* Routines to access transceiver ULPI registers */
-u8 view_ulpi(u8 addr)
-{
-	u32 temp;
-
-	temp = 0x40000000 | (addr << 16);
-	fsl_writel(temp, &usb_dr_regs->ulpiview);
-	udelay(1000);
-	while (temp & 0x40)
-		temp = fsl_readl(&usb_dr_regs->ulpiview);
-	return (le32_to_cpu(temp) & 0x0000ff00) >> 8;
-}
 
 int write_ulpi(u8 addr, u8 data)
 {
@@ -274,7 +255,7 @@ void b_srp_end(unsigned long foo)
 	fsl_otg_dischrg_vbus(0);
 	srp_wait_done = 1;
 
-	if ((fsl_otg_dev->phy.state == OTG_STATE_B_SRP_INIT) &&
+	if ((fsl_otg_dev->phy.otg->state == OTG_STATE_B_SRP_INIT) &&
 	    fsl_otg_dev->fsm.b_sess_vld)
 		fsl_otg_dev->fsm.b_srp_done = 1;
 }
@@ -460,28 +441,6 @@ static void fsl_otg_fsm_del_timer(struct otg_fsm *fsm, enum otg_fsm_timer t)
 	fsl_otg_del_timer(fsm, timer);
 }
 
-/*
- * Reduce timer count by 1, and find timeout conditions.
- * Called by fsl_otg 1ms timer interrupt
- */
-int fsl_otg_tick_timer(void)
-{
-	struct fsl_otg_timer *tmp_timer, *del_tmp;
-	int expired = 0;
-
-	list_for_each_entry_safe(tmp_timer, del_tmp, &active_timers, list) {
-		tmp_timer->count--;
-		/* check if timer expires */
-		if (!tmp_timer->count) {
-			list_del(&tmp_timer->list);
-			tmp_timer->function(tmp_timer->data);
-			expired = 1;
-		}
-	}
-
-	return expired;
-}
-
 /* Reset controller, not reset the bus */
 void otg_reset_controller(void)
 {
@@ -499,7 +458,8 @@ int fsl_otg_start_host(struct otg_fsm *fsm, int on)
 {
 	struct usb_otg *otg = fsm->otg;
 	struct device *dev;
-	struct fsl_otg *otg_dev = container_of(otg->phy, struct fsl_otg, phy);
+	struct fsl_otg *otg_dev =
+		container_of(otg->usb_phy, struct fsl_otg, phy);
 	u32 retval = 0;
 
 	if (!otg->host)
@@ -594,7 +554,7 @@ static int fsl_otg_set_host(struct usb_otg *otg, struct usb_bus *host)
 	if (!otg)
 		return -ENODEV;
 
-	otg_dev = container_of(otg->phy, struct fsl_otg, phy);
+	otg_dev = container_of(otg->usb_phy, struct fsl_otg, phy);
 	if (otg_dev != fsl_otg_dev)
 		return -ENODEV;
 
@@ -609,7 +569,7 @@ static int fsl_otg_set_host(struct usb_otg *otg, struct usb_bus *host)
 		otg->host->otg_port = fsl_otg_initdata.otg_port;
 		otg->host->is_b_host = otg_dev->fsm.id;
 		/*
-		 * must leave time for khubd to finish its thing
+		 * must leave time for hub_wq to finish its thing
 		 * before yanking the host driver out from under it,
 		 * so suspend the host after a short delay.
 		 */
@@ -623,7 +583,7 @@ static int fsl_otg_set_host(struct usb_otg *otg, struct usb_bus *host)
 			/* Mini-A cable connected */
 			struct otg_fsm *fsm = &otg_dev->fsm;
 
-			otg->phy->state = OTG_STATE_UNDEFINED;
+			otg->state = OTG_STATE_UNDEFINED;
 			fsm->protocol = PROTO_UNDEF;
 		}
 	}
@@ -644,7 +604,7 @@ static int fsl_otg_set_peripheral(struct usb_otg *otg,
 	if (!otg)
 		return -ENODEV;
 
-	otg_dev = container_of(otg->phy, struct fsl_otg, phy);
+	otg_dev = container_of(otg->usb_phy, struct fsl_otg, phy);
 	VDBG("otg_dev 0x%x\n", (int)otg_dev);
 	VDBG("fsl_otg_dev 0x%x\n", (int)fsl_otg_dev);
 	if (otg_dev != fsl_otg_dev)
@@ -676,17 +636,6 @@ static int fsl_otg_set_peripheral(struct usb_otg *otg,
 	return 0;
 }
 
-/* Set OTG port power, only for B-device */
-static int fsl_otg_set_power(struct usb_phy *phy, unsigned mA)
-{
-	if (!fsl_otg_dev)
-		return -ENODEV;
-	if (phy->state == OTG_STATE_B_PERIPHERAL)
-		pr_info("FSL OTG: Draw %d mA\n", mA);
-
-	return 0;
-}
-
 /*
  * Delayed pin detect interrupt processing.
  *
@@ -714,10 +663,10 @@ static int fsl_otg_start_srp(struct usb_otg *otg)
 {
 	struct fsl_otg *otg_dev;
 
-	if (!otg || otg->phy->state != OTG_STATE_B_IDLE)
+	if (!otg || otg->state != OTG_STATE_B_IDLE)
 		return -ENODEV;
 
-	otg_dev = container_of(otg->phy, struct fsl_otg, phy);
+	otg_dev = container_of(otg->usb_phy, struct fsl_otg, phy);
 	if (otg_dev != fsl_otg_dev)
 		return -ENODEV;
 
@@ -735,7 +684,7 @@ static int fsl_otg_start_hnp(struct usb_otg *otg)
 	if (!otg)
 		return -ENODEV;
 
-	otg_dev = container_of(otg->phy, struct fsl_otg, phy);
+	otg_dev = container_of(otg->usb_phy, struct fsl_otg, phy);
 	if (otg_dev != fsl_otg_dev)
 		return -ENODEV;
 
@@ -855,9 +804,8 @@ static int fsl_otg_conf(struct platform_device *pdev)
 	/* initialize the otg structure */
 	fsl_otg_tc->phy.label = DRIVER_DESC;
 	fsl_otg_tc->phy.dev = &pdev->dev;
-	fsl_otg_tc->phy.set_power = fsl_otg_set_power;
 
-	fsl_otg_tc->phy.otg->phy = &fsl_otg_tc->phy;
+	fsl_otg_tc->phy.otg->usb_phy = &fsl_otg_tc->phy;
 	fsl_otg_tc->phy.otg->set_host = fsl_otg_set_host;
 	fsl_otg_tc->phy.otg->set_peripheral = fsl_otg_set_peripheral;
 	fsl_otg_tc->phy.otg->start_hnp = fsl_otg_start_hnp;
@@ -913,6 +861,7 @@ int usb_otg_start(struct platform_device *pdev)
 	if (pdata->init && pdata->init(pdev) != 0)
 		return -EINVAL;
 
+#ifdef CONFIG_PPC32
 	if (pdata->big_endian_mmio) {
 		_fsl_readl = _fsl_readl_be;
 		_fsl_writel = _fsl_writel_be;
@@ -920,9 +869,12 @@ int usb_otg_start(struct platform_device *pdev)
 		_fsl_readl = _fsl_readl_le;
 		_fsl_writel = _fsl_writel_le;
 	}
+#endif
 
 	/* request irq */
 	p_otg->irq = platform_get_irq(pdev, 0);
+	if (p_otg->irq < 0)
+		return p_otg->irq;
 	status = request_irq(p_otg->irq, fsl_otg_isr,
 				IRQF_SHARED, driver_name, p_otg);
 	if (status) {
@@ -961,10 +913,10 @@ int usb_otg_start(struct platform_device *pdev)
 		break;
 	case FSL_USB2_PHY_UTMI_WIDE:
 		temp |= PORTSC_PTW_16BIT;
-		/* fall through */
+		fallthrough;
 	case FSL_USB2_PHY_UTMI:
 		temp |= PORTSC_PTS_UTMI;
-		/* fall through */
+		fallthrough;
 	default:
 		break;
 	}
@@ -989,10 +941,10 @@ int usb_otg_start(struct platform_device *pdev)
 	 * Also: record initial state of ID pin
 	 */
 	if (fsl_readl(&p_otg->dr_mem_map->otgsc) & OTGSC_STS_USB_ID) {
-		p_otg->phy.state = OTG_STATE_UNDEFINED;
+		p_otg->phy.otg->state = OTG_STATE_UNDEFINED;
 		p_otg->fsm.id = 1;
 	} else {
-		p_otg->phy.state = OTG_STATE_A_IDLE;
+		p_otg->phy.otg->state = OTG_STATE_A_IDLE;
 		p_otg->fsm.id = 0;
 	}
 
@@ -1006,154 +958,6 @@ int usb_otg_start(struct platform_device *pdev)
 
 	return 0;
 }
-
-/*
- * state file in sysfs
- */
-static int show_fsl_usb2_otg_state(struct device *dev,
-				   struct device_attribute *attr, char *buf)
-{
-	struct otg_fsm *fsm = &fsl_otg_dev->fsm;
-	char *next = buf;
-	unsigned size = PAGE_SIZE;
-	int t;
-
-	mutex_lock(&fsm->lock);
-
-	/* basic driver infomation */
-	t = scnprintf(next, size,
-			DRIVER_DESC "\n" "fsl_usb2_otg version: %s\n\n",
-			DRIVER_VERSION);
-	size -= t;
-	next += t;
-
-	/* Registers */
-	t = scnprintf(next, size,
-			"OTGSC:   0x%08x\n"
-			"PORTSC:  0x%08x\n"
-			"USBMODE: 0x%08x\n"
-			"USBCMD:  0x%08x\n"
-			"USBSTS:  0x%08x\n"
-			"USBINTR: 0x%08x\n",
-			fsl_readl(&usb_dr_regs->otgsc),
-			fsl_readl(&usb_dr_regs->portsc),
-			fsl_readl(&usb_dr_regs->usbmode),
-			fsl_readl(&usb_dr_regs->usbcmd),
-			fsl_readl(&usb_dr_regs->usbsts),
-			fsl_readl(&usb_dr_regs->usbintr));
-	size -= t;
-	next += t;
-
-	/* State */
-	t = scnprintf(next, size,
-		      "OTG state: %s\n\n",
-		      usb_otg_state_string(fsl_otg_dev->phy.state));
-	size -= t;
-	next += t;
-
-	/* State Machine Variables */
-	t = scnprintf(next, size,
-			"a_bus_req: %d\n"
-			"b_bus_req: %d\n"
-			"a_bus_resume: %d\n"
-			"a_bus_suspend: %d\n"
-			"a_conn: %d\n"
-			"a_sess_vld: %d\n"
-			"a_srp_det: %d\n"
-			"a_vbus_vld: %d\n"
-			"b_bus_resume: %d\n"
-			"b_bus_suspend: %d\n"
-			"b_conn: %d\n"
-			"b_se0_srp: %d\n"
-			"b_ssend_srp: %d\n"
-			"b_sess_vld: %d\n"
-			"id: %d\n",
-			fsm->a_bus_req,
-			fsm->b_bus_req,
-			fsm->a_bus_resume,
-			fsm->a_bus_suspend,
-			fsm->a_conn,
-			fsm->a_sess_vld,
-			fsm->a_srp_det,
-			fsm->a_vbus_vld,
-			fsm->b_bus_resume,
-			fsm->b_bus_suspend,
-			fsm->b_conn,
-			fsm->b_se0_srp,
-			fsm->b_ssend_srp,
-			fsm->b_sess_vld,
-			fsm->id);
-	size -= t;
-	next += t;
-
-	mutex_unlock(&fsm->lock);
-
-	return PAGE_SIZE - size;
-}
-
-static DEVICE_ATTR(fsl_usb2_otg_state, S_IRUGO, show_fsl_usb2_otg_state, NULL);
-
-
-/* Char driver interface to control some OTG input */
-
-/*
- * Handle some ioctl command, such as get otg
- * status and set host suspend
- */
-static long fsl_otg_ioctl(struct file *file, unsigned int cmd,
-			  unsigned long arg)
-{
-	u32 retval = 0;
-
-	switch (cmd) {
-	case GET_OTG_STATUS:
-		retval = fsl_otg_dev->host_working;
-		break;
-
-	case SET_A_SUSPEND_REQ:
-		fsl_otg_dev->fsm.a_suspend_req_inf = arg;
-		break;
-
-	case SET_A_BUS_DROP:
-		fsl_otg_dev->fsm.a_bus_drop = arg;
-		break;
-
-	case SET_A_BUS_REQ:
-		fsl_otg_dev->fsm.a_bus_req = arg;
-		break;
-
-	case SET_B_BUS_REQ:
-		fsl_otg_dev->fsm.b_bus_req = arg;
-		break;
-
-	default:
-		break;
-	}
-
-	otg_statemachine(&fsl_otg_dev->fsm);
-
-	return retval;
-}
-
-static int fsl_otg_open(struct inode *inode, struct file *file)
-{
-	return 0;
-}
-
-static int fsl_otg_release(struct inode *inode, struct file *file)
-{
-	return 0;
-}
-
-static const struct file_operations otg_fops = {
-	.owner = THIS_MODULE,
-	.llseek = NULL,
-	.read = NULL,
-	.write = NULL,
-	.unlocked_ioctl = fsl_otg_ioctl,
-	.open = fsl_otg_open,
-	.release = fsl_otg_release,
-};
 
 static int fsl_otg_probe(struct platform_device *pdev)
 {
@@ -1176,20 +980,10 @@ static int fsl_otg_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ret = register_chrdev(FSL_OTG_MAJOR, FSL_OTG_NAME, &otg_fops);
-	if (ret) {
-		dev_err(&pdev->dev, "unable to register FSL OTG device\n");
-		return ret;
-	}
-
-	ret = device_create_file(&pdev->dev, &dev_attr_fsl_usb2_otg_state);
-	if (ret)
-		dev_warn(&pdev->dev, "Can't register sysfs attribute\n");
-
 	return ret;
 }
 
-static int fsl_otg_remove(struct platform_device *pdev)
+static void fsl_otg_remove(struct platform_device *pdev)
 {
 	struct fsl_usb2_platform_data *pdata = dev_get_platdata(&pdev->dev);
 
@@ -1202,19 +996,13 @@ static int fsl_otg_remove(struct platform_device *pdev)
 	kfree(fsl_otg_dev->phy.otg);
 	kfree(fsl_otg_dev);
 
-	device_remove_file(&pdev->dev, &dev_attr_fsl_usb2_otg_state);
-
-	unregister_chrdev(FSL_OTG_MAJOR, FSL_OTG_NAME);
-
 	if (pdata->exit)
 		pdata->exit(pdev);
-
-	return 0;
 }
 
 struct platform_driver fsl_otg_driver = {
 	.probe = fsl_otg_probe,
-	.remove = fsl_otg_remove,
+	.remove_new = fsl_otg_remove,
 	.driver = {
 		.name = driver_name,
 		.owner = THIS_MODULE,

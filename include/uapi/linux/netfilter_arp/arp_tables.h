@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * 	Format of an ARP firewall descriptor
  *
@@ -11,6 +12,7 @@
 
 #include <linux/types.h>
 #include <linux/compiler.h>
+#include <linux/if.h>
 #include <linux/netfilter_arp.h>
 
 #include <linux/netfilter/x_tables.h>
@@ -107,7 +109,7 @@ struct arpt_entry
 	struct xt_counters counters;
 
 	/* The matches (if any), then the target. */
-	unsigned char elems[0];
+	unsigned char elems[];
 };
 
 /*
@@ -179,7 +181,7 @@ struct arpt_replace {
 	struct xt_counters __user *counters;
 
 	/* The entries (hang off end: not really an array). */
-	struct arpt_entry entries[0];
+	struct arpt_entry entries[];
 };
 
 /* The argument to ARPT_SO_GET_ENTRIES. */
@@ -191,13 +193,13 @@ struct arpt_get_entries {
 	unsigned int size;
 
 	/* The entries. */
-	struct arpt_entry entrytable[0];
+	struct arpt_entry entrytable[];
 };
 
 /* Helper functions */
 static __inline__ struct xt_entry_target *arpt_get_target(struct arpt_entry *e)
 {
-	return (void *)e + e->target_offset;
+	return (struct xt_entry_target *)((char *)e + e->target_offset);
 }
 
 /*

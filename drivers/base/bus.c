@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * bus.c - bus driver management
  *
@@ -5,11 +6,11 @@
  * Copyright (c) 2002-3 Open Source Development Labs
  * Copyright (c) 2007 Greg Kroah-Hartman <gregkh@suse.de>
  * Copyright (c) 2007 Novell Inc.
- *
- * This file is released under the GPLv2
- *
+ * Copyright (c) 2023 Greg Kroah-Hartman <gregkh@linuxfoundation.org>
  */
 
+#include <linux/async.h>
+#include <linux/device/bus.h>
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/errno.h>
@@ -24,6 +25,9 @@
 /* /sys/devices/system */
 static struct kset *system_kset;
 
+/* /sys/bus */
+static struct kset *bus_kset;
+
 #define to_bus_attr(_attr) container_of(_attr, struct bus_attribute, attr)
 
 /*
@@ -32,23 +36,70 @@ static struct kset *system_kset;
 
 #define to_drv_attr(_attr) container_of(_attr, struct driver_attribute, attr)
 
+#define DRIVER_ATTR_IGNORE_LOCKDEP(_name, _mode, _show, _store) \
+	struct driver_attribute driver_attr_##_name =		\
+		__ATTR_IGNORE_LOCKDEP(_name, _mode, _show, _store)
 
 static int __must_check bus_rescan_devices_helper(struct device *dev,
 						void *data);
 
-static struct bus_type *bus_get(struct bus_type *bus)
+/**
+ * bus_to_subsys - Turn a struct bus_type into a struct subsys_private
+ *
+ * @bus: pointer to the struct bus_type to look up
+ *
+ * The driver core internals needs to work on the subsys_private structure, not
+ * the external struct bus_type pointer.  This function walks the list of
+ * registered busses in the system and finds the matching one and returns the
+ * internal struct subsys_private that relates to that bus.
+ *
+ * Note, the reference count of the return value is INCREMENTED if it is not
+ * NULL.  A call to subsys_put() must be done when finished with the pointer in
+ * order for it to be properly freed.
+ */
+static struct subsys_private *bus_to_subsys(const struct bus_type *bus)
 {
-	if (bus) {
-		kset_get(&bus->p->subsys);
-		return bus;
+	struct subsys_private *sp = NULL;
+	struct kobject *kobj;
+
+	if (!bus || !bus_kset)
+		return NULL;
+
+	spin_lock(&bus_kset->list_lock);
+
+	if (list_empty(&bus_kset->list))
+		goto done;
+
+	list_for_each_entry(kobj, &bus_kset->list, entry) {
+		struct kset *kset = container_of(kobj, struct kset, kobj);
+
+		sp = container_of_const(kset, struct subsys_private, subsys);
+		if (sp->bus == bus)
+			goto done;
 	}
+	sp = NULL;
+done:
+	sp = subsys_get(sp);
+	spin_unlock(&bus_kset->list_lock);
+	return sp;
+}
+
+static const struct bus_type *bus_get(const struct bus_type *bus)
+{
+	struct subsys_private *sp = bus_to_subsys(bus);
+
+	if (sp)
+		return bus;
 	return NULL;
 }
 
-static void bus_put(struct bus_type *bus)
+static void bus_put(const struct bus_type *bus)
 {
-	if (bus)
-		kset_put(&bus->p->subsys);
+	struct subsys_private *sp = bus_to_subsys(bus);
+
+	/* two puts are required as the call to bus_to_subsys incremented it again */
+	subsys_put(sp);
+	subsys_put(sp);
 }
 
 static ssize_t drv_attr_show(struct kobject *kobj, struct attribute *attr,
@@ -88,7 +139,7 @@ static void driver_release(struct kobject *kobj)
 	kfree(drv_priv);
 }
 
-static struct kobj_type driver_ktype = {
+static const struct kobj_type driver_ktype = {
 	.sysfs_ops	= &driver_sysfs_ops,
 	.release	= driver_release,
 };
@@ -125,45 +176,49 @@ static const struct sysfs_ops bus_sysfs_ops = {
 	.store	= bus_attr_store,
 };
 
-int bus_create_file(struct bus_type *bus, struct bus_attribute *attr)
+int bus_create_file(const struct bus_type *bus, struct bus_attribute *attr)
 {
+	struct subsys_private *sp = bus_to_subsys(bus);
 	int error;
-	if (bus_get(bus)) {
-		error = sysfs_create_file(&bus->p->subsys.kobj, &attr->attr);
-		bus_put(bus);
-	} else
-		error = -EINVAL;
+
+	if (!sp)
+		return -EINVAL;
+
+	error = sysfs_create_file(&sp->subsys.kobj, &attr->attr);
+
+	subsys_put(sp);
 	return error;
 }
 EXPORT_SYMBOL_GPL(bus_create_file);
 
-void bus_remove_file(struct bus_type *bus, struct bus_attribute *attr)
+void bus_remove_file(const struct bus_type *bus, struct bus_attribute *attr)
 {
-	if (bus_get(bus)) {
-		sysfs_remove_file(&bus->p->subsys.kobj, &attr->attr);
-		bus_put(bus);
-	}
+	struct subsys_private *sp = bus_to_subsys(bus);
+
+	if (!sp)
+		return;
+
+	sysfs_remove_file(&sp->subsys.kobj, &attr->attr);
+	subsys_put(sp);
 }
 EXPORT_SYMBOL_GPL(bus_remove_file);
 
 static void bus_release(struct kobject *kobj)
 {
-	struct subsys_private *priv =
-		container_of(kobj, typeof(*priv), subsys.kobj);
-	struct bus_type *bus = priv->bus;
+	struct subsys_private *priv = to_subsys_private(kobj);
 
+	lockdep_unregister_key(&priv->lock_key);
 	kfree(priv);
-	bus->p = NULL;
 }
 
-static struct kobj_type bus_ktype = {
+static const struct kobj_type bus_ktype = {
 	.sysfs_ops	= &bus_sysfs_ops,
 	.release	= bus_release,
 };
 
-static int bus_uevent_filter(struct kset *kset, struct kobject *kobj)
+static int bus_uevent_filter(const struct kobject *kobj)
 {
-	struct kobj_type *ktype = get_ktype(kobj);
+	const struct kobj_type *ktype = get_ktype(kobj);
 
 	if (ktype == &bus_ktype)
 		return 1;
@@ -174,30 +229,24 @@ static const struct kset_uevent_ops bus_uevent_ops = {
 	.filter = bus_uevent_filter,
 };
 
-static struct kset *bus_kset;
-
 /* Manually detach a device from its associated driver. */
 static ssize_t unbind_store(struct device_driver *drv, const char *buf,
 			    size_t count)
 {
-	struct bus_type *bus = bus_get(drv->bus);
+	const struct bus_type *bus = bus_get(drv->bus);
 	struct device *dev;
 	int err = -ENODEV;
 
 	dev = bus_find_device_by_name(bus, NULL, buf);
 	if (dev && dev->driver == drv) {
-		if (dev->parent)	/* Needed for USB */
-			device_lock(dev->parent);
-		device_release_driver(dev);
-		if (dev->parent)
-			device_unlock(dev->parent);
+		device_driver_detach(dev);
 		err = count;
 	}
 	put_device(dev);
 	bus_put(bus);
 	return err;
 }
-static DRIVER_ATTR_WO(unbind);
+static DRIVER_ATTR_IGNORE_LOCKDEP(unbind, 0200, NULL, unbind_store);
 
 /*
  * Manually attach a device to a driver.
@@ -207,60 +256,67 @@ static DRIVER_ATTR_WO(unbind);
 static ssize_t bind_store(struct device_driver *drv, const char *buf,
 			  size_t count)
 {
-	struct bus_type *bus = bus_get(drv->bus);
+	const struct bus_type *bus = bus_get(drv->bus);
 	struct device *dev;
 	int err = -ENODEV;
 
 	dev = bus_find_device_by_name(bus, NULL, buf);
-	if (dev && dev->driver == NULL && driver_match_device(drv, dev)) {
-		if (dev->parent)	/* Needed for USB */
-			device_lock(dev->parent);
-		device_lock(dev);
-		err = driver_probe_device(drv, dev);
-		device_unlock(dev);
-		if (dev->parent)
-			device_unlock(dev->parent);
-
-		if (err > 0) {
+	if (dev && driver_match_device(drv, dev)) {
+		err = device_driver_attach(drv, dev);
+		if (!err) {
 			/* success */
 			err = count;
-		} else if (err == 0) {
-			/* driver didn't accept device */
-			err = -ENODEV;
 		}
 	}
 	put_device(dev);
 	bus_put(bus);
 	return err;
 }
-static DRIVER_ATTR_WO(bind);
+static DRIVER_ATTR_IGNORE_LOCKDEP(bind, 0200, NULL, bind_store);
 
-static ssize_t show_drivers_autoprobe(struct bus_type *bus, char *buf)
+static ssize_t drivers_autoprobe_show(const struct bus_type *bus, char *buf)
 {
-	return sprintf(buf, "%d\n", bus->p->drivers_autoprobe);
+	struct subsys_private *sp = bus_to_subsys(bus);
+	int ret;
+
+	if (!sp)
+		return -EINVAL;
+
+	ret = sysfs_emit(buf, "%d\n", sp->drivers_autoprobe);
+	subsys_put(sp);
+	return ret;
 }
 
-static ssize_t store_drivers_autoprobe(struct bus_type *bus,
+static ssize_t drivers_autoprobe_store(const struct bus_type *bus,
 				       const char *buf, size_t count)
 {
+	struct subsys_private *sp = bus_to_subsys(bus);
+
+	if (!sp)
+		return -EINVAL;
+
 	if (buf[0] == '0')
-		bus->p->drivers_autoprobe = 0;
+		sp->drivers_autoprobe = 0;
 	else
-		bus->p->drivers_autoprobe = 1;
+		sp->drivers_autoprobe = 1;
+
+	subsys_put(sp);
 	return count;
 }
 
-static ssize_t store_drivers_probe(struct bus_type *bus,
+static ssize_t drivers_probe_store(const struct bus_type *bus,
 				   const char *buf, size_t count)
 {
 	struct device *dev;
+	int err = -EINVAL;
 
 	dev = bus_find_device_by_name(bus, NULL, buf);
 	if (!dev)
 		return -ENODEV;
-	if (bus_rescan_devices_helper(dev, NULL) != 0)
-		return -EINVAL;
-	return count;
+	if (bus_rescan_devices_helper(dev, NULL) == 0)
+		err = count;
+	put_device(dev);
+	return err;
 }
 
 static struct device *next_device(struct klist_iter *i)
@@ -295,21 +351,23 @@ static struct device *next_device(struct klist_iter *i)
  * to retain this data, it should do so, and increment the reference
  * count in the supplied callback.
  */
-int bus_for_each_dev(struct bus_type *bus, struct device *start,
+int bus_for_each_dev(const struct bus_type *bus, struct device *start,
 		     void *data, int (*fn)(struct device *, void *))
 {
+	struct subsys_private *sp = bus_to_subsys(bus);
 	struct klist_iter i;
 	struct device *dev;
 	int error = 0;
 
-	if (!bus || !bus->p)
+	if (!sp)
 		return -EINVAL;
 
-	klist_iter_init_node(&bus->p->klist_devices, &i,
+	klist_iter_init_node(&sp->klist_devices, &i,
 			     (start ? &start->p->knode_bus : NULL));
-	while ((dev = next_device(&i)) && !error)
+	while (!error && (dev = next_device(&i)))
 		error = fn(dev, data);
 	klist_iter_exit(&i);
+	subsys_put(sp);
 	return error;
 }
 EXPORT_SYMBOL_GPL(bus_for_each_dev);
@@ -329,90 +387,27 @@ EXPORT_SYMBOL_GPL(bus_for_each_dev);
  * if it does.  If the callback returns non-zero, this function will
  * return to the caller and not iterate over any more devices.
  */
-struct device *bus_find_device(struct bus_type *bus,
-			       struct device *start, void *data,
-			       int (*match)(struct device *dev, void *data))
+struct device *bus_find_device(const struct bus_type *bus,
+			       struct device *start, const void *data,
+			       int (*match)(struct device *dev, const void *data))
 {
+	struct subsys_private *sp = bus_to_subsys(bus);
 	struct klist_iter i;
 	struct device *dev;
 
-	if (!bus || !bus->p)
+	if (!sp)
 		return NULL;
 
-	klist_iter_init_node(&bus->p->klist_devices, &i,
+	klist_iter_init_node(&sp->klist_devices, &i,
 			     (start ? &start->p->knode_bus : NULL));
 	while ((dev = next_device(&i)))
 		if (match(dev, data) && get_device(dev))
 			break;
 	klist_iter_exit(&i);
+	subsys_put(sp);
 	return dev;
 }
 EXPORT_SYMBOL_GPL(bus_find_device);
-
-static int match_name(struct device *dev, void *data)
-{
-	const char *name = data;
-
-	return sysfs_streq(name, dev_name(dev));
-}
-
-/**
- * bus_find_device_by_name - device iterator for locating a particular device of a specific name
- * @bus: bus type
- * @start: Device to begin with
- * @name: name of the device to match
- *
- * This is similar to the bus_find_device() function above, but it handles
- * searching by a name automatically, no need to write another strcmp matching
- * function.
- */
-struct device *bus_find_device_by_name(struct bus_type *bus,
-				       struct device *start, const char *name)
-{
-	return bus_find_device(bus, start, (void *)name, match_name);
-}
-EXPORT_SYMBOL_GPL(bus_find_device_by_name);
-
-/**
- * subsys_find_device_by_id - find a device with a specific enumeration number
- * @subsys: subsystem
- * @id: index 'id' in struct device
- * @hint: device to check first
- *
- * Check the hint's next object and if it is a match return it directly,
- * otherwise, fall back to a full list search. Either way a reference for
- * the returned object is taken.
- */
-struct device *subsys_find_device_by_id(struct bus_type *subsys, unsigned int id,
-					struct device *hint)
-{
-	struct klist_iter i;
-	struct device *dev;
-
-	if (!subsys)
-		return NULL;
-
-	if (hint) {
-		klist_iter_init_node(&subsys->p->klist_devices, &i, &hint->p->knode_bus);
-		dev = next_device(&i);
-		if (dev && dev->id == id && get_device(dev)) {
-			klist_iter_exit(&i);
-			return dev;
-		}
-		klist_iter_exit(&i);
-	}
-
-	klist_iter_init_node(&subsys->p->klist_devices, &i, NULL);
-	while ((dev = next_device(&i))) {
-		if (dev->id == id && get_device(dev)) {
-			klist_iter_exit(&i);
-			return dev;
-		}
-	}
-	klist_iter_exit(&i);
-	return NULL;
-}
-EXPORT_SYMBOL_GPL(subsys_find_device_by_id);
 
 static struct device_driver *next_driver(struct klist_iter *i)
 {
@@ -445,53 +440,26 @@ static struct device_driver *next_driver(struct klist_iter *i)
  * in the callback. It must also be sure to increment the refcount
  * so it doesn't disappear before returning to the caller.
  */
-int bus_for_each_drv(struct bus_type *bus, struct device_driver *start,
+int bus_for_each_drv(const struct bus_type *bus, struct device_driver *start,
 		     void *data, int (*fn)(struct device_driver *, void *))
 {
+	struct subsys_private *sp = bus_to_subsys(bus);
 	struct klist_iter i;
 	struct device_driver *drv;
 	int error = 0;
 
-	if (!bus)
+	if (!sp)
 		return -EINVAL;
 
-	klist_iter_init_node(&bus->p->klist_drivers, &i,
+	klist_iter_init_node(&sp->klist_drivers, &i,
 			     start ? &start->p->knode_bus : NULL);
 	while ((drv = next_driver(&i)) && !error)
 		error = fn(drv, data);
 	klist_iter_exit(&i);
+	subsys_put(sp);
 	return error;
 }
 EXPORT_SYMBOL_GPL(bus_for_each_drv);
-
-static int device_add_attrs(struct bus_type *bus, struct device *dev)
-{
-	int error = 0;
-	int i;
-
-	if (!bus->dev_attrs)
-		return 0;
-
-	for (i = 0; bus->dev_attrs[i].attr.name; i++) {
-		error = device_create_file(dev, &bus->dev_attrs[i]);
-		if (error) {
-			while (--i >= 0)
-				device_remove_file(dev, &bus->dev_attrs[i]);
-			break;
-		}
-	}
-	return error;
-}
-
-static void device_remove_attrs(struct bus_type *bus, struct device *dev)
-{
-	int i;
-
-	if (bus->dev_attrs) {
-		for (i = 0; bus->dev_attrs[i].attr.name; i++)
-			device_remove_file(dev, &bus->dev_attrs[i]);
-	}
-}
 
 /**
  * bus_add_device - add device to bus
@@ -503,37 +471,46 @@ static void device_remove_attrs(struct bus_type *bus, struct device *dev)
  */
 int bus_add_device(struct device *dev)
 {
-	struct bus_type *bus = bus_get(dev->bus);
-	int error = 0;
+	struct subsys_private *sp = bus_to_subsys(dev->bus);
+	int error;
 
-	if (bus) {
-		pr_debug("bus: '%s': add device %s\n", bus->name, dev_name(dev));
-		error = device_add_attrs(bus, dev);
-		if (error)
-			goto out_put;
-		error = device_add_groups(dev, bus->dev_groups);
-		if (error)
-			goto out_groups;
-		error = sysfs_create_link(&bus->p->devices_kset->kobj,
-						&dev->kobj, dev_name(dev));
-		if (error)
-			goto out_id;
-		error = sysfs_create_link(&dev->kobj,
-				&dev->bus->p->subsys.kobj, "subsystem");
-		if (error)
-			goto out_subsys;
-		klist_add_tail(&dev->p->knode_bus, &bus->p->klist_devices);
+	if (!sp) {
+		/*
+		 * This is a normal operation for many devices that do not
+		 * have a bus assigned to them, just say that all went
+		 * well.
+		 */
+		return 0;
 	}
+
+	/*
+	 * Reference in sp is now incremented and will be dropped when
+	 * the device is removed from the bus
+	 */
+
+	pr_debug("bus: '%s': add device %s\n", sp->bus->name, dev_name(dev));
+
+	error = device_add_groups(dev, sp->bus->dev_groups);
+	if (error)
+		goto out_put;
+
+	error = sysfs_create_link(&sp->devices_kset->kobj, &dev->kobj, dev_name(dev));
+	if (error)
+		goto out_groups;
+
+	error = sysfs_create_link(&dev->kobj, &sp->subsys.kobj, "subsystem");
+	if (error)
+		goto out_subsys;
+
+	klist_add_tail(&dev->p->knode_bus, &sp->klist_devices);
 	return 0;
 
 out_subsys:
-	sysfs_remove_link(&bus->p->devices_kset->kobj, dev_name(dev));
+	sysfs_remove_link(&sp->devices_kset->kobj, dev_name(dev));
 out_groups:
-	device_remove_groups(dev, bus->dev_groups);
-out_id:
-	device_remove_attrs(bus, dev);
+	device_remove_groups(dev, sp->bus->dev_groups);
 out_put:
-	bus_put(dev->bus);
+	subsys_put(sp);
 	return error;
 }
 
@@ -545,23 +522,21 @@ out_put:
  */
 void bus_probe_device(struct device *dev)
 {
-	struct bus_type *bus = dev->bus;
+	struct subsys_private *sp = bus_to_subsys(dev->bus);
 	struct subsys_interface *sif;
-	int ret;
 
-	if (!bus)
+	if (!sp)
 		return;
 
-	if (bus->p->drivers_autoprobe) {
-		ret = device_attach(dev);
-		WARN_ON(ret < 0);
-	}
+	if (sp->drivers_autoprobe)
+		device_initial_probe(dev);
 
-	mutex_lock(&bus->p->mutex);
-	list_for_each_entry(sif, &bus->p->interfaces, node)
+	mutex_lock(&sp->mutex);
+	list_for_each_entry(sif, &sp->interfaces, node)
 		if (sif->add_dev)
 			sif->add_dev(dev, sif);
-	mutex_unlock(&bus->p->mutex);
+	mutex_unlock(&sp->mutex);
+	subsys_put(sp);
 }
 
 /**
@@ -576,22 +551,20 @@ void bus_probe_device(struct device *dev)
  */
 void bus_remove_device(struct device *dev)
 {
-	struct bus_type *bus = dev->bus;
+	struct subsys_private *sp = bus_to_subsys(dev->bus);
 	struct subsys_interface *sif;
 
-	if (!bus)
+	if (!sp)
 		return;
 
-	mutex_lock(&bus->p->mutex);
-	list_for_each_entry(sif, &bus->p->interfaces, node)
+	mutex_lock(&sp->mutex);
+	list_for_each_entry(sif, &sp->interfaces, node)
 		if (sif->remove_dev)
 			sif->remove_dev(dev, sif);
-	mutex_unlock(&bus->p->mutex);
+	mutex_unlock(&sp->mutex);
 
 	sysfs_remove_link(&dev->kobj, "subsystem");
-	sysfs_remove_link(&dev->bus->p->devices_kset->kobj,
-			  dev_name(dev));
-	device_remove_attrs(dev->bus, dev);
+	sysfs_remove_link(&sp->devices_kset->kobj, dev_name(dev));
 	device_remove_groups(dev, dev->bus->dev_groups);
 	if (klist_node_attached(&dev->p->knode_bus))
 		klist_del(&dev->p->knode_bus);
@@ -599,7 +572,14 @@ void bus_remove_device(struct device *dev)
 	pr_debug("bus: '%s': remove device %s\n",
 		 dev->bus->name, dev_name(dev));
 	device_release_driver(dev);
-	bus_put(dev->bus);
+
+	/*
+	 * Decrement the reference count twice, once for the bus_to_subsys()
+	 * call in the start of this function, and the second one from the
+	 * reference increment in bus_add_device()
+	 */
+	subsys_put(sp);
+	subsys_put(sp);
 }
 
 static int __must_check add_bind_files(struct device_driver *drv)
@@ -621,11 +601,10 @@ static void remove_bind_files(struct device_driver *drv)
 	driver_remove_file(drv, &driver_attr_unbind);
 }
 
-static BUS_ATTR(drivers_probe, S_IWUSR, NULL, store_drivers_probe);
-static BUS_ATTR(drivers_autoprobe, S_IWUSR | S_IRUGO,
-		show_drivers_autoprobe, store_drivers_autoprobe);
+static BUS_ATTR_WO(drivers_probe);
+static BUS_ATTR_RW(drivers_autoprobe);
 
-static int add_probe_files(struct bus_type *bus)
+static int add_probe_files(const struct bus_type *bus)
 {
 	int retval;
 
@@ -640,7 +619,7 @@ out:
 	return retval;
 }
 
-static void remove_probe_files(struct bus_type *bus)
+static void remove_probe_files(const struct bus_type *bus)
 {
 	bus_remove_file(bus, &bus_attr_drivers_autoprobe);
 	bus_remove_file(bus, &bus_attr_drivers_probe);
@@ -649,11 +628,10 @@ static void remove_probe_files(struct bus_type *bus)
 static ssize_t uevent_store(struct device_driver *drv, const char *buf,
 			    size_t count)
 {
-	enum kobject_action action;
+	int rc;
 
-	if (kobject_action_type(buf, count, &action) == 0)
-		kobject_uevent(&drv->p->kobj, action);
-	return count;
+	rc = kobject_synth_uevent(&drv->p->kobj, buf, count);
+	return rc ? rc : count;
 }
 static DRIVER_ATTR_WO(uevent);
 
@@ -663,15 +641,18 @@ static DRIVER_ATTR_WO(uevent);
  */
 int bus_add_driver(struct device_driver *drv)
 {
-	struct bus_type *bus;
+	struct subsys_private *sp = bus_to_subsys(drv->bus);
 	struct driver_private *priv;
 	int error = 0;
 
-	bus = bus_get(drv->bus);
-	if (!bus)
+	if (!sp)
 		return -EINVAL;
 
-	pr_debug("bus: '%s': add driver %s\n", bus->name, drv->name);
+	/*
+	 * Reference in sp is now incremented and will be dropped when
+	 * the driver is removed from the bus
+	 */
+	pr_debug("bus: '%s': add driver %s\n", sp->bus->name, drv->name);
 
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv) {
@@ -681,17 +662,17 @@ int bus_add_driver(struct device_driver *drv)
 	klist_init(&priv->klist_devices, NULL, NULL);
 	priv->driver = drv;
 	drv->p = priv;
-	priv->kobj.kset = bus->p->drivers_kset;
+	priv->kobj.kset = sp->drivers_kset;
 	error = kobject_init_and_add(&priv->kobj, &driver_ktype, NULL,
 				     "%s", drv->name);
 	if (error)
 		goto out_unregister;
 
-	klist_add_tail(&priv->knode_bus, &bus->p->klist_drivers);
-	if (drv->bus->p->drivers_autoprobe) {
+	klist_add_tail(&priv->knode_bus, &sp->klist_drivers);
+	if (sp->drivers_autoprobe) {
 		error = driver_attach(drv);
 		if (error)
-			goto out_unregister;
+			goto out_del_list;
 	}
 	module_add_driver(drv->owner, drv);
 
@@ -700,10 +681,10 @@ int bus_add_driver(struct device_driver *drv)
 		printk(KERN_ERR "%s: uevent attr (%s) failed\n",
 			__func__, drv->name);
 	}
-	error = driver_add_groups(drv, bus->drv_groups);
+	error = driver_add_groups(drv, sp->bus->drv_groups);
 	if (error) {
 		/* How the hell do we get out of this pickle? Give up */
-		printk(KERN_ERR "%s: driver_create_groups(%s) failed\n",
+		printk(KERN_ERR "%s: driver_add_groups(%s) failed\n",
 			__func__, drv->name);
 	}
 
@@ -718,12 +699,14 @@ int bus_add_driver(struct device_driver *drv)
 
 	return 0;
 
+out_del_list:
+	klist_del(&priv->knode_bus);
 out_unregister:
 	kobject_put(&priv->kobj);
-	kfree(drv->p);
+	/* drv->p is freed in driver_release()  */
 	drv->p = NULL;
 out_put_bus:
-	bus_put(bus);
+	subsys_put(sp);
 	return error;
 }
 
@@ -737,19 +720,29 @@ out_put_bus:
  */
 void bus_remove_driver(struct device_driver *drv)
 {
-	if (!drv->bus)
+	struct subsys_private *sp = bus_to_subsys(drv->bus);
+
+	if (!sp)
 		return;
+
+	pr_debug("bus: '%s': remove driver %s\n", sp->bus->name, drv->name);
 
 	if (!drv->suppress_bind_attrs)
 		remove_bind_files(drv);
-	driver_remove_groups(drv, drv->bus->drv_groups);
+	driver_remove_groups(drv, sp->bus->drv_groups);
 	driver_remove_file(drv, &driver_attr_uevent);
 	klist_remove(&drv->p->knode_bus);
-	pr_debug("bus: '%s': remove driver %s\n", drv->bus->name, drv->name);
 	driver_detach(drv);
 	module_remove_driver(drv);
 	kobject_put(&drv->p->kobj);
-	bus_put(drv->bus);
+
+	/*
+	 * Decrement the reference count twice, once for the bus_to_subsys()
+	 * call in the start of this function, and the second one from the
+	 * reference increment in bus_add_driver()
+	 */
+	subsys_put(sp);
+	subsys_put(sp);
 }
 
 /* Helper for bus_rescan_devices's iter */
@@ -759,10 +752,10 @@ static int __must_check bus_rescan_devices_helper(struct device *dev,
 	int ret = 0;
 
 	if (!dev->driver) {
-		if (dev->parent)	/* Needed for USB */
+		if (dev->parent && dev->bus->need_parent_lock)
 			device_lock(dev->parent);
 		ret = device_attach(dev);
-		if (dev->parent)
+		if (dev->parent && dev->bus->need_parent_lock)
 			device_unlock(dev->parent);
 	}
 	return ret < 0 ? ret : 0;
@@ -776,7 +769,7 @@ static int __must_check bus_rescan_devices_helper(struct device *dev,
  * attached and rescan it against existing drivers to see if it matches
  * any by calling device_attach() for the unbound devices.
  */
-int bus_rescan_devices(struct bus_type *bus)
+int bus_rescan_devices(const struct bus_type *bus)
 {
 	return bus_for_each_dev(bus, NULL, NULL, bus_rescan_devices_helper);
 }
@@ -793,45 +786,11 @@ EXPORT_SYMBOL_GPL(bus_rescan_devices);
  */
 int device_reprobe(struct device *dev)
 {
-	if (dev->driver) {
-		if (dev->parent)        /* Needed for USB */
-			device_lock(dev->parent);
-		device_release_driver(dev);
-		if (dev->parent)
-			device_unlock(dev->parent);
-	}
+	if (dev->driver)
+		device_driver_detach(dev);
 	return bus_rescan_devices_helper(dev, NULL);
 }
 EXPORT_SYMBOL_GPL(device_reprobe);
-
-/**
- * find_bus - locate bus by name.
- * @name: name of bus.
- *
- * Call kset_find_obj() to iterate over list of buses to
- * find a bus by name. Return bus if found.
- *
- * Note that kset_find_obj increments bus' reference count.
- */
-#if 0
-struct bus_type *find_bus(char *name)
-{
-	struct kobject *k = kset_find_obj(bus_kset, name);
-	return k ? to_bus(k) : NULL;
-}
-#endif  /*  0  */
-
-static int bus_add_groups(struct bus_type *bus,
-			  const struct attribute_group **groups)
-{
-	return sysfs_create_groups(&bus->p->subsys.kobj, groups);
-}
-
-static void bus_remove_groups(struct bus_type *bus,
-			      const struct attribute_group **groups)
-{
-	sysfs_remove_groups(&bus->p->subsys.kobj, groups);
-}
 
 static void klist_devices_get(struct klist_node *n)
 {
@@ -849,16 +808,30 @@ static void klist_devices_put(struct klist_node *n)
 	put_device(dev);
 }
 
-static ssize_t bus_uevent_store(struct bus_type *bus,
+static ssize_t bus_uevent_store(const struct bus_type *bus,
 				const char *buf, size_t count)
 {
-	enum kobject_action action;
+	struct subsys_private *sp = bus_to_subsys(bus);
+	int ret;
 
-	if (kobject_action_type(buf, count, &action) == 0)
-		kobject_uevent(&bus->p->subsys.kobj, action);
+	if (!sp)
+		return -EINVAL;
+
+	ret = kobject_synth_uevent(&sp->subsys.kobj, buf, count);
+	subsys_put(sp);
+
+	if (ret)
+		return ret;
 	return count;
 }
-static BUS_ATTR(uevent, S_IWUSR, NULL, bus_uevent_store);
+/*
+ * "open code" the old BUS_ATTR() macro here.  We want to use BUS_ATTR_WO()
+ * here, but can not use it as earlier in the file we have
+ * DEVICE_ATTR_WO(uevent), which would cause a clash with the with the store
+ * function name.
+ */
+static struct bus_attribute bus_attr_uevent = __ATTR(uevent, 0200, NULL,
+						     bus_uevent_store);
 
 /**
  * bus_register - register a driver-core subsystem
@@ -868,27 +841,28 @@ static BUS_ATTR(uevent, S_IWUSR, NULL, bus_uevent_store);
  * infrastructure, then register the children subsystems it has:
  * the devices and drivers that belong to the subsystem.
  */
-int bus_register(struct bus_type *bus)
+int bus_register(const struct bus_type *bus)
 {
 	int retval;
 	struct subsys_private *priv;
-	struct lock_class_key *key = &bus->lock_key;
+	struct kobject *bus_kobj;
+	struct lock_class_key *key;
 
 	priv = kzalloc(sizeof(struct subsys_private), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
 	priv->bus = bus;
-	bus->p = priv;
 
 	BLOCKING_INIT_NOTIFIER_HEAD(&priv->bus_notifier);
 
-	retval = kobject_set_name(&priv->subsys.kobj, "%s", bus->name);
+	bus_kobj = &priv->subsys.kobj;
+	retval = kobject_set_name(bus_kobj, "%s", bus->name);
 	if (retval)
 		goto out;
 
-	priv->subsys.kobj.kset = bus_kset;
-	priv->subsys.kobj.ktype = &bus_ktype;
+	bus_kobj->kset = bus_kset;
+	bus_kobj->ktype = &bus_ktype;
 	priv->drivers_autoprobe = 1;
 
 	retval = kset_register(&priv->subsys);
@@ -899,21 +873,21 @@ int bus_register(struct bus_type *bus)
 	if (retval)
 		goto bus_uevent_fail;
 
-	priv->devices_kset = kset_create_and_add("devices", NULL,
-						 &priv->subsys.kobj);
+	priv->devices_kset = kset_create_and_add("devices", NULL, bus_kobj);
 	if (!priv->devices_kset) {
 		retval = -ENOMEM;
 		goto bus_devices_fail;
 	}
 
-	priv->drivers_kset = kset_create_and_add("drivers", NULL,
-						 &priv->subsys.kobj);
+	priv->drivers_kset = kset_create_and_add("drivers", NULL, bus_kobj);
 	if (!priv->drivers_kset) {
 		retval = -ENOMEM;
 		goto bus_drivers_fail;
 	}
 
 	INIT_LIST_HEAD(&priv->interfaces);
+	key = &priv->lock_key;
+	lockdep_register_key(key);
 	__mutex_init(&priv->mutex, "subsys mutex", key);
 	klist_init(&priv->klist_devices, klist_devices_get, klist_devices_put);
 	klist_init(&priv->klist_drivers, NULL, NULL);
@@ -922,7 +896,7 @@ int bus_register(struct bus_type *bus)
 	if (retval)
 		goto bus_probe_files_fail;
 
-	retval = bus_add_groups(bus, bus->bus_groups);
+	retval = sysfs_create_groups(bus_kobj, bus->bus_groups);
 	if (retval)
 		goto bus_groups_fail;
 
@@ -932,16 +906,15 @@ int bus_register(struct bus_type *bus)
 bus_groups_fail:
 	remove_probe_files(bus);
 bus_probe_files_fail:
-	kset_unregister(bus->p->drivers_kset);
+	kset_unregister(priv->drivers_kset);
 bus_drivers_fail:
-	kset_unregister(bus->p->devices_kset);
+	kset_unregister(priv->devices_kset);
 bus_devices_fail:
 	bus_remove_file(bus, &bus_attr_uevent);
 bus_uevent_fail:
-	kset_unregister(&bus->p->subsys);
+	kset_unregister(&priv->subsys);
 out:
-	kfree(bus->p);
-	bus->p = NULL;
+	kfree(priv);
 	return retval;
 }
 EXPORT_SYMBOL_GPL(bus_register);
@@ -953,43 +926,82 @@ EXPORT_SYMBOL_GPL(bus_register);
  * Unregister the child subsystems and the bus itself.
  * Finally, we call bus_put() to release the refcount
  */
-void bus_unregister(struct bus_type *bus)
+void bus_unregister(const struct bus_type *bus)
 {
+	struct subsys_private *sp = bus_to_subsys(bus);
+	struct kobject *bus_kobj;
+
+	if (!sp)
+		return;
+
 	pr_debug("bus: '%s': unregistering\n", bus->name);
-	if (bus->dev_root)
-		device_unregister(bus->dev_root);
-	bus_remove_groups(bus, bus->bus_groups);
+	if (sp->dev_root)
+		device_unregister(sp->dev_root);
+
+	bus_kobj = &sp->subsys.kobj;
+	sysfs_remove_groups(bus_kobj, bus->bus_groups);
 	remove_probe_files(bus);
-	kset_unregister(bus->p->drivers_kset);
-	kset_unregister(bus->p->devices_kset);
 	bus_remove_file(bus, &bus_attr_uevent);
-	kset_unregister(&bus->p->subsys);
+
+	kset_unregister(sp->drivers_kset);
+	kset_unregister(sp->devices_kset);
+	kset_unregister(&sp->subsys);
+	subsys_put(sp);
 }
 EXPORT_SYMBOL_GPL(bus_unregister);
 
-int bus_register_notifier(struct bus_type *bus, struct notifier_block *nb)
+int bus_register_notifier(const struct bus_type *bus, struct notifier_block *nb)
 {
-	return blocking_notifier_chain_register(&bus->p->bus_notifier, nb);
+	struct subsys_private *sp = bus_to_subsys(bus);
+	int retval;
+
+	if (!sp)
+		return -EINVAL;
+
+	retval = blocking_notifier_chain_register(&sp->bus_notifier, nb);
+	subsys_put(sp);
+	return retval;
 }
 EXPORT_SYMBOL_GPL(bus_register_notifier);
 
-int bus_unregister_notifier(struct bus_type *bus, struct notifier_block *nb)
+int bus_unregister_notifier(const struct bus_type *bus, struct notifier_block *nb)
 {
-	return blocking_notifier_chain_unregister(&bus->p->bus_notifier, nb);
+	struct subsys_private *sp = bus_to_subsys(bus);
+	int retval;
+
+	if (!sp)
+		return -EINVAL;
+	retval = blocking_notifier_chain_unregister(&sp->bus_notifier, nb);
+	subsys_put(sp);
+	return retval;
 }
 EXPORT_SYMBOL_GPL(bus_unregister_notifier);
 
-struct kset *bus_get_kset(struct bus_type *bus)
+void bus_notify(struct device *dev, enum bus_notifier_event value)
 {
-	return &bus->p->subsys;
+	struct subsys_private *sp = bus_to_subsys(dev->bus);
+
+	if (!sp)
+		return;
+
+	blocking_notifier_call_chain(&sp->bus_notifier, value, dev);
+	subsys_put(sp);
+}
+
+struct kset *bus_get_kset(const struct bus_type *bus)
+{
+	struct subsys_private *sp = bus_to_subsys(bus);
+	struct kset *kset;
+
+	if (!sp)
+		return NULL;
+
+	kset = &sp->subsys;
+	subsys_put(sp);
+
+	return kset;
 }
 EXPORT_SYMBOL_GPL(bus_get_kset);
-
-struct klist *bus_get_device_klist(struct bus_type *bus)
-{
-	return &bus->p->klist_devices;
-}
-EXPORT_SYMBOL_GPL(bus_get_device_klist);
 
 /*
  * Yes, this forcibly breaks the klist abstraction temporarily.  It
@@ -1002,13 +1014,11 @@ static void device_insertion_sort_klist(struct device *a, struct list_head *list
 					int (*compare)(const struct device *a,
 							const struct device *b))
 {
-	struct list_head *pos;
 	struct klist_node *n;
 	struct device_private *dev_prv;
 	struct device *b;
 
-	list_for_each(pos, list) {
-		n = container_of(pos, struct klist_node, n_node);
+	list_for_each_entry(n, list, n_node) {
 		dev_prv = to_device_private_bus(n);
 		b = dev_prv->device;
 		if (compare(a, b) <= 0) {
@@ -1024,31 +1034,38 @@ void bus_sort_breadthfirst(struct bus_type *bus,
 			   int (*compare)(const struct device *a,
 					  const struct device *b))
 {
+	struct subsys_private *sp = bus_to_subsys(bus);
 	LIST_HEAD(sorted_devices);
-	struct list_head *pos, *tmp;
-	struct klist_node *n;
+	struct klist_node *n, *tmp;
 	struct device_private *dev_prv;
 	struct device *dev;
 	struct klist *device_klist;
 
-	device_klist = bus_get_device_klist(bus);
+	if (!sp)
+		return;
+	device_klist = &sp->klist_devices;
 
 	spin_lock(&device_klist->k_lock);
-	list_for_each_safe(pos, tmp, &device_klist->k_list) {
-		n = container_of(pos, struct klist_node, n_node);
+	list_for_each_entry_safe(n, tmp, &device_klist->k_list, n_node) {
 		dev_prv = to_device_private_bus(n);
 		dev = dev_prv->device;
 		device_insertion_sort_klist(dev, &sorted_devices, compare);
 	}
 	list_splice(&sorted_devices, &device_klist->k_list);
 	spin_unlock(&device_klist->k_lock);
+	subsys_put(sp);
 }
 EXPORT_SYMBOL_GPL(bus_sort_breadthfirst);
+
+struct subsys_dev_iter {
+	struct klist_iter		ki;
+	const struct device_type	*type;
+};
 
 /**
  * subsys_dev_iter_init - initialize subsys device iterator
  * @iter: subsys iterator to initialize
- * @subsys: the subsys we wanna iterate over
+ * @sp: the subsys private (i.e. bus) we wanna iterate over
  * @start: the device to start iterating from, if any
  * @type: device_type of the devices to iterate over, NULL for all
  *
@@ -1057,17 +1074,16 @@ EXPORT_SYMBOL_GPL(bus_sort_breadthfirst);
  * otherwise if it is NULL, the iteration starts at the beginning of
  * the list.
  */
-void subsys_dev_iter_init(struct subsys_dev_iter *iter, struct bus_type *subsys,
-			  struct device *start, const struct device_type *type)
+static void subsys_dev_iter_init(struct subsys_dev_iter *iter, struct subsys_private *sp,
+				 struct device *start, const struct device_type *type)
 {
 	struct klist_node *start_knode = NULL;
 
 	if (start)
 		start_knode = &start->p->knode_bus;
-	klist_iter_init_node(&subsys->p->klist_devices, &iter->ki, start_knode);
+	klist_iter_init_node(&sp->klist_devices, &iter->ki, start_knode);
 	iter->type = type;
 }
-EXPORT_SYMBOL_GPL(subsys_dev_iter_init);
 
 /**
  * subsys_dev_iter_next - iterate to the next device
@@ -1081,7 +1097,7 @@ EXPORT_SYMBOL_GPL(subsys_dev_iter_init);
  * free to do whatever it wants to do with the device including
  * calling back into subsys code.
  */
-struct device *subsys_dev_iter_next(struct subsys_dev_iter *iter)
+static struct device *subsys_dev_iter_next(struct subsys_dev_iter *iter)
 {
 	struct klist_node *knode;
 	struct device *dev;
@@ -1090,12 +1106,11 @@ struct device *subsys_dev_iter_next(struct subsys_dev_iter *iter)
 		knode = klist_next(&iter->ki);
 		if (!knode)
 			return NULL;
-		dev = container_of(knode, struct device_private, knode_bus)->device;
+		dev = to_device_private_bus(knode)->device;
 		if (!iter->type || iter->type == dev->type)
 			return dev;
 	}
 }
-EXPORT_SYMBOL_GPL(subsys_dev_iter_next);
 
 /**
  * subsys_dev_iter_exit - finish iteration
@@ -1104,34 +1119,38 @@ EXPORT_SYMBOL_GPL(subsys_dev_iter_next);
  * Finish an iteration.  Always call this function after iteration is
  * complete whether the iteration ran till the end or not.
  */
-void subsys_dev_iter_exit(struct subsys_dev_iter *iter)
+static void subsys_dev_iter_exit(struct subsys_dev_iter *iter)
 {
 	klist_iter_exit(&iter->ki);
 }
-EXPORT_SYMBOL_GPL(subsys_dev_iter_exit);
 
 int subsys_interface_register(struct subsys_interface *sif)
 {
-	struct bus_type *subsys;
+	struct subsys_private *sp;
 	struct subsys_dev_iter iter;
 	struct device *dev;
 
 	if (!sif || !sif->subsys)
 		return -ENODEV;
 
-	subsys = bus_get(sif->subsys);
-	if (!subsys)
+	sp = bus_to_subsys(sif->subsys);
+	if (!sp)
 		return -EINVAL;
 
-	mutex_lock(&subsys->p->mutex);
-	list_add_tail(&sif->node, &subsys->p->interfaces);
+	/*
+	 * Reference in sp is now incremented and will be dropped when
+	 * the interface is removed from the bus
+	 */
+
+	mutex_lock(&sp->mutex);
+	list_add_tail(&sif->node, &sp->interfaces);
 	if (sif->add_dev) {
-		subsys_dev_iter_init(&iter, subsys, NULL, NULL);
+		subsys_dev_iter_init(&iter, sp, NULL, NULL);
 		while ((dev = subsys_dev_iter_next(&iter)))
 			sif->add_dev(dev, sif);
 		subsys_dev_iter_exit(&iter);
 	}
-	mutex_unlock(&subsys->p->mutex);
+	mutex_unlock(&sp->mutex);
 
 	return 0;
 }
@@ -1139,26 +1158,34 @@ EXPORT_SYMBOL_GPL(subsys_interface_register);
 
 void subsys_interface_unregister(struct subsys_interface *sif)
 {
-	struct bus_type *subsys;
+	struct subsys_private *sp;
 	struct subsys_dev_iter iter;
 	struct device *dev;
 
 	if (!sif || !sif->subsys)
 		return;
 
-	subsys = sif->subsys;
+	sp = bus_to_subsys(sif->subsys);
+	if (!sp)
+		return;
 
-	mutex_lock(&subsys->p->mutex);
+	mutex_lock(&sp->mutex);
 	list_del_init(&sif->node);
 	if (sif->remove_dev) {
-		subsys_dev_iter_init(&iter, subsys, NULL, NULL);
+		subsys_dev_iter_init(&iter, sp, NULL, NULL);
 		while ((dev = subsys_dev_iter_next(&iter)))
 			sif->remove_dev(dev, sif);
 		subsys_dev_iter_exit(&iter);
 	}
-	mutex_unlock(&subsys->p->mutex);
+	mutex_unlock(&sp->mutex);
 
-	bus_put(subsys);
+	/*
+	 * Decrement the reference count twice, once for the bus_to_subsys()
+	 * call in the start of this function, and the second one from the
+	 * reference increment in subsys_interface_register()
+	 */
+	subsys_put(sp);
+	subsys_put(sp);
 }
 EXPORT_SYMBOL_GPL(subsys_interface_unregister);
 
@@ -1171,12 +1198,19 @@ static int subsys_register(struct bus_type *subsys,
 			   const struct attribute_group **groups,
 			   struct kobject *parent_of_root)
 {
+	struct subsys_private *sp;
 	struct device *dev;
 	int err;
 
 	err = bus_register(subsys);
 	if (err < 0)
 		return err;
+
+	sp = bus_to_subsys(subsys);
+	if (!sp) {
+		err = -EINVAL;
+		goto err_sp;
+	}
 
 	dev = kzalloc(sizeof(struct device), GFP_KERNEL);
 	if (!dev) {
@@ -1196,7 +1230,8 @@ static int subsys_register(struct bus_type *subsys,
 	if (err < 0)
 		goto err_dev_reg;
 
-	subsys->dev_root = dev;
+	sp->dev_root = dev;
+	subsys_put(sp);
 	return 0;
 
 err_dev_reg:
@@ -1205,6 +1240,8 @@ err_dev_reg:
 err_name:
 	kfree(dev);
 err_dev:
+	subsys_put(sp);
+err_sp:
 	bus_unregister(subsys);
 	return err;
 }
@@ -1218,7 +1255,7 @@ err_dev:
  * with the name of the subsystem. The root device can carry subsystem-
  * wide attributes. All registered devices are below this single root
  * device and are named after the subsystem with a simple enumeration
- * number appended. The registered devices are not explicitely named;
+ * number appended. The registered devices are not explicitly named;
  * only 'id' in the device needs to be set.
  *
  * Do not use this interface for anything new, it exists for compatibility
@@ -1257,6 +1294,82 @@ int subsys_virtual_register(struct bus_type *subsys,
 	return subsys_register(subsys, groups, virtual_dir);
 }
 EXPORT_SYMBOL_GPL(subsys_virtual_register);
+
+/**
+ * driver_find - locate driver on a bus by its name.
+ * @name: name of the driver.
+ * @bus: bus to scan for the driver.
+ *
+ * Call kset_find_obj() to iterate over list of drivers on
+ * a bus to find driver by name. Return driver if found.
+ *
+ * This routine provides no locking to prevent the driver it returns
+ * from being unregistered or unloaded while the caller is using it.
+ * The caller is responsible for preventing this.
+ */
+struct device_driver *driver_find(const char *name, const struct bus_type *bus)
+{
+	struct subsys_private *sp = bus_to_subsys(bus);
+	struct kobject *k;
+	struct driver_private *priv;
+
+	if (!sp)
+		return NULL;
+
+	k = kset_find_obj(sp->drivers_kset, name);
+	subsys_put(sp);
+	if (!k)
+		return NULL;
+
+	priv = to_driver(k);
+
+	/* Drop reference added by kset_find_obj() */
+	kobject_put(k);
+	return priv->driver;
+}
+EXPORT_SYMBOL_GPL(driver_find);
+
+/*
+ * Warning, the value could go to "removed" instantly after calling this function, so be very
+ * careful when calling it...
+ */
+bool bus_is_registered(const struct bus_type *bus)
+{
+	struct subsys_private *sp = bus_to_subsys(bus);
+	bool is_initialized = false;
+
+	if (sp) {
+		is_initialized = true;
+		subsys_put(sp);
+	}
+	return is_initialized;
+}
+
+/**
+ * bus_get_dev_root - return a pointer to the "device root" of a bus
+ * @bus: bus to return the device root of.
+ *
+ * If a bus has a "device root" structure, return it, WITH THE REFERENCE
+ * COUNT INCREMENTED.
+ *
+ * Note, when finished with the device, a call to put_device() is required.
+ *
+ * If the device root is not present (or bus is not a valid pointer), NULL
+ * will be returned.
+ */
+struct device *bus_get_dev_root(const struct bus_type *bus)
+{
+	struct subsys_private *sp = bus_to_subsys(bus);
+	struct device *dev_root;
+
+	if (!sp)
+		return NULL;
+
+	dev_root = get_device(sp->dev_root);
+	subsys_put(sp);
+	return dev_root;
+}
+EXPORT_SYMBOL_GPL(bus_get_dev_root);
 
 int __init buses_init(void)
 {

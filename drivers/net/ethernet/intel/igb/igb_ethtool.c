@@ -1,29 +1,5 @@
-/*******************************************************************************
-
-  Intel(R) Gigabit Ethernet Linux driver
-  Copyright(c) 2007-2013 Intel Corporation.
-
-  This program is free software; you can redistribute it and/or modify it
-  under the terms and conditions of the GNU General Public License,
-  version 2, as published by the Free Software Foundation.
-
-  This program is distributed in the hope it will be useful, but WITHOUT
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
-  more details.
-
-  You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc.,
-  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
-
-  The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
-
-  Contact Information:
-  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
-  Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
-
-*******************************************************************************/
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright(c) 2007 - 2018 Intel Corporation. */
 
 /* ethtool support for igb */
 
@@ -50,7 +26,7 @@ struct igb_stats {
 
 #define IGB_STAT(_name, _stat) { \
 	.stat_string = _name, \
-	.sizeof_stat = FIELD_SIZEOF(struct igb_adapter, _stat), \
+	.sizeof_stat = sizeof_field(struct igb_adapter, _stat), \
 	.stat_offset = offsetof(struct igb_adapter, _stat) \
 }
 static const struct igb_stats igb_gstrings_stats[] = {
@@ -94,12 +70,13 @@ static const struct igb_stats igb_gstrings_stats[] = {
 	IGB_STAT("os2bmc_tx_by_host", stats.o2bspc),
 	IGB_STAT("os2bmc_rx_by_host", stats.b2ogprc),
 	IGB_STAT("tx_hwtstamp_timeouts", tx_hwtstamp_timeouts),
+	IGB_STAT("tx_hwtstamp_skipped", tx_hwtstamp_skipped),
 	IGB_STAT("rx_hwtstamp_cleared", rx_hwtstamp_cleared),
 };
 
 #define IGB_NETDEV_STAT(_net_stat) { \
 	.stat_string = __stringify(_net_stat), \
-	.sizeof_stat = FIELD_SIZEOF(struct rtnl_link_stats64, _net_stat), \
+	.sizeof_stat = sizeof_field(struct rtnl_link_stats64, _net_stat), \
 	.stat_offset = offsetof(struct rtnl_link_stats64, _net_stat) \
 }
 static const struct igb_stats igb_gstrings_net_stats[] = {
@@ -131,136 +108,161 @@ static const struct igb_stats igb_gstrings_net_stats[] = {
 #define IGB_STATS_LEN \
 	(IGB_GLOBAL_STATS_LEN + IGB_NETDEV_STATS_LEN + IGB_QUEUE_STATS_LEN)
 
+enum igb_diagnostics_results {
+	TEST_REG = 0,
+	TEST_EEP,
+	TEST_IRQ,
+	TEST_LOOP,
+	TEST_LINK
+};
+
 static const char igb_gstrings_test[][ETH_GSTRING_LEN] = {
-	"Register test  (offline)", "Eeprom test    (offline)",
-	"Interrupt test (offline)", "Loopback test  (offline)",
-	"Link test   (on/offline)"
+	[TEST_REG]  = "Register test  (offline)",
+	[TEST_EEP]  = "Eeprom test    (offline)",
+	[TEST_IRQ]  = "Interrupt test (offline)",
+	[TEST_LOOP] = "Loopback test  (offline)",
+	[TEST_LINK] = "Link test   (on/offline)"
 };
 #define IGB_TEST_LEN (sizeof(igb_gstrings_test) / ETH_GSTRING_LEN)
 
-static int igb_get_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
+static const char igb_priv_flags_strings[][ETH_GSTRING_LEN] = {
+#define IGB_PRIV_FLAGS_LEGACY_RX	BIT(0)
+	"legacy-rx",
+};
+
+#define IGB_PRIV_FLAGS_STR_LEN ARRAY_SIZE(igb_priv_flags_strings)
+
+static int igb_get_link_ksettings(struct net_device *netdev,
+				  struct ethtool_link_ksettings *cmd)
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 	struct e1000_hw *hw = &adapter->hw;
 	struct e1000_dev_spec_82575 *dev_spec = &hw->dev_spec._82575;
 	struct e1000_sfp_flags *eth_flags = &dev_spec->eth_flags;
 	u32 status;
+	u32 speed;
+	u32 supported, advertising;
 
-	status = rd32(E1000_STATUS);
+	status = pm_runtime_suspended(&adapter->pdev->dev) ?
+		 0 : rd32(E1000_STATUS);
 	if (hw->phy.media_type == e1000_media_type_copper) {
 
-		ecmd->supported = (SUPPORTED_10baseT_Half |
-				   SUPPORTED_10baseT_Full |
-				   SUPPORTED_100baseT_Half |
-				   SUPPORTED_100baseT_Full |
-				   SUPPORTED_1000baseT_Full|
-				   SUPPORTED_Autoneg |
-				   SUPPORTED_TP |
-				   SUPPORTED_Pause);
-		ecmd->advertising = ADVERTISED_TP;
+		supported = (SUPPORTED_10baseT_Half |
+			     SUPPORTED_10baseT_Full |
+			     SUPPORTED_100baseT_Half |
+			     SUPPORTED_100baseT_Full |
+			     SUPPORTED_1000baseT_Full|
+			     SUPPORTED_Autoneg |
+			     SUPPORTED_TP |
+			     SUPPORTED_Pause);
+		advertising = ADVERTISED_TP;
 
 		if (hw->mac.autoneg == 1) {
-			ecmd->advertising |= ADVERTISED_Autoneg;
+			advertising |= ADVERTISED_Autoneg;
 			/* the e1000 autoneg seems to match ethtool nicely */
-			ecmd->advertising |= hw->phy.autoneg_advertised;
+			advertising |= hw->phy.autoneg_advertised;
 		}
 
-		ecmd->port = PORT_TP;
-		ecmd->phy_address = hw->phy.addr;
-		ecmd->transceiver = XCVR_INTERNAL;
+		cmd->base.port = PORT_TP;
+		cmd->base.phy_address = hw->phy.addr;
 	} else {
-		ecmd->supported = (SUPPORTED_FIBRE |
-				   SUPPORTED_1000baseKX_Full |
-				   SUPPORTED_Autoneg |
-				   SUPPORTED_Pause);
-		ecmd->advertising = (ADVERTISED_FIBRE |
-				     ADVERTISED_1000baseKX_Full);
+		supported = (SUPPORTED_FIBRE |
+			     SUPPORTED_1000baseKX_Full |
+			     SUPPORTED_Autoneg |
+			     SUPPORTED_Pause);
+		advertising = (ADVERTISED_FIBRE |
+			       ADVERTISED_1000baseKX_Full);
 		if (hw->mac.type == e1000_i354) {
 			if ((hw->device_id ==
 			     E1000_DEV_ID_I354_BACKPLANE_2_5GBPS) &&
 			    !(status & E1000_STATUS_2P5_SKU_OVER)) {
-				ecmd->supported |= SUPPORTED_2500baseX_Full;
-				ecmd->supported &=
-					~SUPPORTED_1000baseKX_Full;
-				ecmd->advertising |= ADVERTISED_2500baseX_Full;
-				ecmd->advertising &=
-					~ADVERTISED_1000baseKX_Full;
+				supported |= SUPPORTED_2500baseX_Full;
+				supported &= ~SUPPORTED_1000baseKX_Full;
+				advertising |= ADVERTISED_2500baseX_Full;
+				advertising &= ~ADVERTISED_1000baseKX_Full;
 			}
 		}
-		if (eth_flags->e100_base_fx) {
-			ecmd->supported |= SUPPORTED_100baseT_Full;
-			ecmd->advertising |= ADVERTISED_100baseT_Full;
+		if (eth_flags->e100_base_fx || eth_flags->e100_base_lx) {
+			supported |= SUPPORTED_100baseT_Full;
+			advertising |= ADVERTISED_100baseT_Full;
 		}
 		if (hw->mac.autoneg == 1)
-			ecmd->advertising |= ADVERTISED_Autoneg;
+			advertising |= ADVERTISED_Autoneg;
 
-		ecmd->port = PORT_FIBRE;
-		ecmd->transceiver = XCVR_EXTERNAL;
+		cmd->base.port = PORT_FIBRE;
 	}
 	if (hw->mac.autoneg != 1)
-		ecmd->advertising &= ~(ADVERTISED_Pause |
-				       ADVERTISED_Asym_Pause);
+		advertising &= ~(ADVERTISED_Pause |
+				 ADVERTISED_Asym_Pause);
 
 	switch (hw->fc.requested_mode) {
 	case e1000_fc_full:
-		ecmd->advertising |= ADVERTISED_Pause;
+		advertising |= ADVERTISED_Pause;
 		break;
 	case e1000_fc_rx_pause:
-		ecmd->advertising |= (ADVERTISED_Pause |
-				      ADVERTISED_Asym_Pause);
+		advertising |= (ADVERTISED_Pause |
+				ADVERTISED_Asym_Pause);
 		break;
 	case e1000_fc_tx_pause:
-		ecmd->advertising |=  ADVERTISED_Asym_Pause;
+		advertising |=  ADVERTISED_Asym_Pause;
 		break;
 	default:
-		ecmd->advertising &= ~(ADVERTISED_Pause |
-				       ADVERTISED_Asym_Pause);
+		advertising &= ~(ADVERTISED_Pause |
+				 ADVERTISED_Asym_Pause);
 	}
 	if (status & E1000_STATUS_LU) {
 		if ((status & E1000_STATUS_2P5_SKU) &&
 		    !(status & E1000_STATUS_2P5_SKU_OVER)) {
-			ecmd->speed = SPEED_2500;
+			speed = SPEED_2500;
 		} else if (status & E1000_STATUS_SPEED_1000) {
-			ecmd->speed = SPEED_1000;
+			speed = SPEED_1000;
 		} else if (status & E1000_STATUS_SPEED_100) {
-			ecmd->speed = SPEED_100;
+			speed = SPEED_100;
 		} else {
-			ecmd->speed = SPEED_10;
+			speed = SPEED_10;
 		}
 		if ((status & E1000_STATUS_FD) ||
 		    hw->phy.media_type != e1000_media_type_copper)
-			ecmd->duplex = DUPLEX_FULL;
+			cmd->base.duplex = DUPLEX_FULL;
 		else
-			ecmd->duplex = DUPLEX_HALF;
+			cmd->base.duplex = DUPLEX_HALF;
 	} else {
-		ecmd->speed = -1;
-		ecmd->duplex = -1;
+		speed = SPEED_UNKNOWN;
+		cmd->base.duplex = DUPLEX_UNKNOWN;
 	}
+	cmd->base.speed = speed;
 	if ((hw->phy.media_type == e1000_media_type_fiber) ||
 	    hw->mac.autoneg)
-		ecmd->autoneg = AUTONEG_ENABLE;
+		cmd->base.autoneg = AUTONEG_ENABLE;
 	else
-		ecmd->autoneg = AUTONEG_DISABLE;
+		cmd->base.autoneg = AUTONEG_DISABLE;
 
 	/* MDI-X => 2; MDI =>1; Invalid =>0 */
 	if (hw->phy.media_type == e1000_media_type_copper)
-		ecmd->eth_tp_mdix = hw->phy.is_mdix ? ETH_TP_MDI_X :
+		cmd->base.eth_tp_mdix = hw->phy.is_mdix ? ETH_TP_MDI_X :
 						      ETH_TP_MDI;
 	else
-		ecmd->eth_tp_mdix = ETH_TP_MDI_INVALID;
+		cmd->base.eth_tp_mdix = ETH_TP_MDI_INVALID;
 
 	if (hw->phy.mdix == AUTO_ALL_MODES)
-		ecmd->eth_tp_mdix_ctrl = ETH_TP_MDI_AUTO;
+		cmd->base.eth_tp_mdix_ctrl = ETH_TP_MDI_AUTO;
 	else
-		ecmd->eth_tp_mdix_ctrl = hw->phy.mdix;
+		cmd->base.eth_tp_mdix_ctrl = hw->phy.mdix;
+
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.supported,
+						supported);
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.advertising,
+						advertising);
 
 	return 0;
 }
 
-static int igb_set_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
+static int igb_set_link_ksettings(struct net_device *netdev,
+				  const struct ethtool_link_ksettings *cmd)
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 	struct e1000_hw *hw = &adapter->hw;
+	u32 advertising;
 
 	/* When SoL/IDER sessions are active, autoneg/speed/duplex
 	 * cannot be changed
@@ -275,24 +277,27 @@ static int igb_set_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
 	 * some hardware doesn't allow MDI setting when speed or
 	 * duplex is forced.
 	 */
-	if (ecmd->eth_tp_mdix_ctrl) {
+	if (cmd->base.eth_tp_mdix_ctrl) {
 		if (hw->phy.media_type != e1000_media_type_copper)
 			return -EOPNOTSUPP;
 
-		if ((ecmd->eth_tp_mdix_ctrl != ETH_TP_MDI_AUTO) &&
-		    (ecmd->autoneg != AUTONEG_ENABLE)) {
+		if ((cmd->base.eth_tp_mdix_ctrl != ETH_TP_MDI_AUTO) &&
+		    (cmd->base.autoneg != AUTONEG_ENABLE)) {
 			dev_err(&adapter->pdev->dev, "forcing MDI/MDI-X state is not supported when link speed and/or duplex are forced\n");
 			return -EINVAL;
 		}
 	}
 
 	while (test_and_set_bit(__IGB_RESETTING, &adapter->state))
-		msleep(1);
+		usleep_range(1000, 2000);
 
-	if (ecmd->autoneg == AUTONEG_ENABLE) {
+	ethtool_convert_link_mode_to_legacy_u32(&advertising,
+						cmd->link_modes.advertising);
+
+	if (cmd->base.autoneg == AUTONEG_ENABLE) {
 		hw->mac.autoneg = 1;
 		if (hw->phy.media_type == e1000_media_type_fiber) {
-			hw->phy.autoneg_advertised = ecmd->advertising |
+			hw->phy.autoneg_advertised = advertising |
 						     ADVERTISED_FIBRE |
 						     ADVERTISED_Autoneg;
 			switch (adapter->link_speed) {
@@ -312,31 +317,31 @@ static int igb_set_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
 				break;
 			}
 		} else {
-			hw->phy.autoneg_advertised = ecmd->advertising |
+			hw->phy.autoneg_advertised = advertising |
 						     ADVERTISED_TP |
 						     ADVERTISED_Autoneg;
 		}
-		ecmd->advertising = hw->phy.autoneg_advertised;
+		advertising = hw->phy.autoneg_advertised;
 		if (adapter->fc_autoneg)
 			hw->fc.requested_mode = e1000_fc_default;
 	} else {
-		u32 speed = ethtool_cmd_speed(ecmd);
+		u32 speed = cmd->base.speed;
 		/* calling this overrides forced MDI setting */
-		if (igb_set_spd_dplx(adapter, speed, ecmd->duplex)) {
+		if (igb_set_spd_dplx(adapter, speed, cmd->base.duplex)) {
 			clear_bit(__IGB_RESETTING, &adapter->state);
 			return -EINVAL;
 		}
 	}
 
 	/* MDI-X => 2; MDI => 1; Auto => 3 */
-	if (ecmd->eth_tp_mdix_ctrl) {
+	if (cmd->base.eth_tp_mdix_ctrl) {
 		/* fix up the value for auto (3 => 0) as zero is mapped
 		 * internally to auto
 		 */
-		if (ecmd->eth_tp_mdix_ctrl == ETH_TP_MDI_AUTO)
+		if (cmd->base.eth_tp_mdix_ctrl == ETH_TP_MDI_AUTO)
 			hw->phy.mdix = AUTO_ALL_MODES;
 		else
-			hw->phy.mdix = ecmd->eth_tp_mdix_ctrl;
+			hw->phy.mdix = cmd->base.eth_tp_mdix_ctrl;
 	}
 
 	/* reset the link */
@@ -392,6 +397,7 @@ static int igb_set_pauseparam(struct net_device *netdev,
 	struct igb_adapter *adapter = netdev_priv(netdev);
 	struct e1000_hw *hw = &adapter->hw;
 	int retval = 0;
+	int i;
 
 	/* 100basefx does not support setting link flow control */
 	if (hw->dev_spec._82575.eth_flags.e100_base_fx)
@@ -400,7 +406,7 @@ static int igb_set_pauseparam(struct net_device *netdev,
 	adapter->fc_autoneg = pause->autoneg;
 
 	while (test_and_set_bit(__IGB_RESETTING, &adapter->state))
-		msleep(1);
+		usleep_range(1000, 2000);
 
 	if (adapter->fc_autoneg == AUTONEG_ENABLE) {
 		hw->fc.requested_mode = e1000_fc_default;
@@ -424,6 +430,13 @@ static int igb_set_pauseparam(struct net_device *netdev,
 
 		retval = ((hw->phy.media_type == e1000_media_type_copper) ?
 			  igb_force_mac_fc(hw) : igb_setup_link(hw));
+
+		/* Make sure SRRCTL considers new fc settings for each ring */
+		for (i = 0; i < adapter->num_rx_queues; i++) {
+			struct igb_ring *ring = adapter->rx_ring[i];
+
+			igb_setup_srrctl(adapter, ring);
+		}
 	}
 
 	clear_bit(__IGB_RESETTING, &adapter->state);
@@ -444,7 +457,7 @@ static void igb_set_msglevel(struct net_device *netdev, u32 data)
 
 static int igb_get_regs_len(struct net_device *netdev)
 {
-#define IGB_REGS_LEN 739
+#define IGB_REGS_LEN 740
 	return IGB_REGS_LEN * sizeof(u32);
 }
 
@@ -458,7 +471,7 @@ static void igb_get_regs(struct net_device *netdev,
 
 	memset(p, 0, IGB_REGS_LEN * sizeof(u32));
 
-	regs->version = (1 << 24) | (hw->revision_id << 16) | hw->device_id;
+	regs->version = (1u << 24) | (hw->revision_id << 16) | hw->device_id;
 
 	/* General Registers */
 	regs_buff[0] = rd32(E1000_CTRL);
@@ -671,41 +684,44 @@ static void igb_get_regs(struct net_device *netdev,
 		regs_buff[554] = adapter->stats.b2ogprc;
 	}
 
-	if (hw->mac.type != e1000_82576)
-		return;
-	for (i = 0; i < 12; i++)
-		regs_buff[555 + i] = rd32(E1000_SRRCTL(i + 4));
-	for (i = 0; i < 4; i++)
-		regs_buff[567 + i] = rd32(E1000_PSRTYPE(i + 4));
-	for (i = 0; i < 12; i++)
-		regs_buff[571 + i] = rd32(E1000_RDBAL(i + 4));
-	for (i = 0; i < 12; i++)
-		regs_buff[583 + i] = rd32(E1000_RDBAH(i + 4));
-	for (i = 0; i < 12; i++)
-		regs_buff[595 + i] = rd32(E1000_RDLEN(i + 4));
-	for (i = 0; i < 12; i++)
-		regs_buff[607 + i] = rd32(E1000_RDH(i + 4));
-	for (i = 0; i < 12; i++)
-		regs_buff[619 + i] = rd32(E1000_RDT(i + 4));
-	for (i = 0; i < 12; i++)
-		regs_buff[631 + i] = rd32(E1000_RXDCTL(i + 4));
+	if (hw->mac.type == e1000_82576) {
+		for (i = 0; i < 12; i++)
+			regs_buff[555 + i] = rd32(E1000_SRRCTL(i + 4));
+		for (i = 0; i < 4; i++)
+			regs_buff[567 + i] = rd32(E1000_PSRTYPE(i + 4));
+		for (i = 0; i < 12; i++)
+			regs_buff[571 + i] = rd32(E1000_RDBAL(i + 4));
+		for (i = 0; i < 12; i++)
+			regs_buff[583 + i] = rd32(E1000_RDBAH(i + 4));
+		for (i = 0; i < 12; i++)
+			regs_buff[595 + i] = rd32(E1000_RDLEN(i + 4));
+		for (i = 0; i < 12; i++)
+			regs_buff[607 + i] = rd32(E1000_RDH(i + 4));
+		for (i = 0; i < 12; i++)
+			regs_buff[619 + i] = rd32(E1000_RDT(i + 4));
+		for (i = 0; i < 12; i++)
+			regs_buff[631 + i] = rd32(E1000_RXDCTL(i + 4));
 
-	for (i = 0; i < 12; i++)
-		regs_buff[643 + i] = rd32(E1000_TDBAL(i + 4));
-	for (i = 0; i < 12; i++)
-		regs_buff[655 + i] = rd32(E1000_TDBAH(i + 4));
-	for (i = 0; i < 12; i++)
-		regs_buff[667 + i] = rd32(E1000_TDLEN(i + 4));
-	for (i = 0; i < 12; i++)
-		regs_buff[679 + i] = rd32(E1000_TDH(i + 4));
-	for (i = 0; i < 12; i++)
-		regs_buff[691 + i] = rd32(E1000_TDT(i + 4));
-	for (i = 0; i < 12; i++)
-		regs_buff[703 + i] = rd32(E1000_TXDCTL(i + 4));
-	for (i = 0; i < 12; i++)
-		regs_buff[715 + i] = rd32(E1000_TDWBAL(i + 4));
-	for (i = 0; i < 12; i++)
-		regs_buff[727 + i] = rd32(E1000_TDWBAH(i + 4));
+		for (i = 0; i < 12; i++)
+			regs_buff[643 + i] = rd32(E1000_TDBAL(i + 4));
+		for (i = 0; i < 12; i++)
+			regs_buff[655 + i] = rd32(E1000_TDBAH(i + 4));
+		for (i = 0; i < 12; i++)
+			regs_buff[667 + i] = rd32(E1000_TDLEN(i + 4));
+		for (i = 0; i < 12; i++)
+			regs_buff[679 + i] = rd32(E1000_TDH(i + 4));
+		for (i = 0; i < 12; i++)
+			regs_buff[691 + i] = rd32(E1000_TDT(i + 4));
+		for (i = 0; i < 12; i++)
+			regs_buff[703 + i] = rd32(E1000_TXDCTL(i + 4));
+		for (i = 0; i < 12; i++)
+			regs_buff[715 + i] = rd32(E1000_TDWBAL(i + 4));
+		for (i = 0; i < 12; i++)
+			regs_buff[727 + i] = rd32(E1000_TDWBAH(i + 4));
+	}
+
+	if (hw->mac.type == e1000_i210 || hw->mac.type == e1000_i211)
+		regs_buff[739] = rd32(E1000_I210_RR2DCDELAY);
 }
 
 static int igb_get_eeprom_len(struct net_device *netdev)
@@ -732,8 +748,8 @@ static int igb_get_eeprom(struct net_device *netdev,
 	first_word = eeprom->offset >> 1;
 	last_word = (eeprom->offset + eeprom->len - 1) >> 1;
 
-	eeprom_buff = kmalloc(sizeof(u16) *
-			(last_word - first_word + 1), GFP_KERNEL);
+	eeprom_buff = kmalloc_array(last_word - first_word + 1, sizeof(u16),
+				    GFP_KERNEL);
 	if (!eeprom_buff)
 		return -ENOMEM;
 
@@ -806,6 +822,8 @@ static int igb_set_eeprom(struct net_device *netdev,
 		 */
 		ret_val = hw->nvm.ops.read(hw, last_word, 1,
 				   &eeprom_buff[last_word - first_word]);
+		if (ret_val)
+			goto out;
 	}
 
 	/* Device's eeprom is always little-endian, word addressable */
@@ -815,7 +833,7 @@ static int igb_set_eeprom(struct net_device *netdev,
 	memcpy(ptr, bytes, eeprom->len);
 
 	for (i = 0; i < last_word - first_word + 1; i++)
-		eeprom_buff[i] = cpu_to_le16(eeprom_buff[i]);
+		cpu_to_le16s(&eeprom_buff[i]);
 
 	ret_val = hw->nvm.ops.write(hw, first_word,
 				    last_word - first_word + 1, eeprom_buff);
@@ -825,6 +843,7 @@ static int igb_set_eeprom(struct net_device *netdev,
 		hw->nvm.ops.update(hw);
 
 	igb_set_fw_version(adapter);
+out:
 	kfree(eeprom_buff);
 	return ret_val;
 }
@@ -834,24 +853,23 @@ static void igb_get_drvinfo(struct net_device *netdev,
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 
-	strlcpy(drvinfo->driver,  igb_driver_name, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, igb_driver_version, sizeof(drvinfo->version));
+	strscpy(drvinfo->driver,  igb_driver_name, sizeof(drvinfo->driver));
 
 	/* EEPROM image version # is reported as firmware version # for
 	 * 82575 controllers
 	 */
-	strlcpy(drvinfo->fw_version, adapter->fw_version,
+	strscpy(drvinfo->fw_version, adapter->fw_version,
 		sizeof(drvinfo->fw_version));
-	strlcpy(drvinfo->bus_info, pci_name(adapter->pdev),
+	strscpy(drvinfo->bus_info, pci_name(adapter->pdev),
 		sizeof(drvinfo->bus_info));
-	drvinfo->n_stats = IGB_STATS_LEN;
-	drvinfo->testinfo_len = IGB_TEST_LEN;
-	drvinfo->regdump_len = igb_get_regs_len(netdev);
-	drvinfo->eedump_len = igb_get_eeprom_len(netdev);
+
+	drvinfo->n_priv_flags = IGB_PRIV_FLAGS_STR_LEN;
 }
 
 static void igb_get_ringparam(struct net_device *netdev,
-			      struct ethtool_ringparam *ring)
+			      struct ethtool_ringparam *ring,
+			      struct kernel_ethtool_ringparam *kernel_ring,
+			      struct netlink_ext_ack *extack)
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 
@@ -862,7 +880,9 @@ static void igb_get_ringparam(struct net_device *netdev,
 }
 
 static int igb_set_ringparam(struct net_device *netdev,
-			     struct ethtool_ringparam *ring)
+			     struct ethtool_ringparam *ring,
+			     struct kernel_ethtool_ringparam *kernel_ring,
+			     struct netlink_ext_ack *extack)
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 	struct igb_ring *temp_ring;
@@ -887,7 +907,7 @@ static int igb_set_ringparam(struct net_device *netdev,
 	}
 
 	while (test_and_set_bit(__IGB_RESETTING, &adapter->state))
-		msleep(1);
+		usleep_range(1000, 2000);
 
 	if (!netif_running(adapter->netdev)) {
 		for (i = 0; i < adapter->num_tx_queues; i++)
@@ -900,11 +920,11 @@ static int igb_set_ringparam(struct net_device *netdev,
 	}
 
 	if (adapter->num_tx_queues > adapter->num_rx_queues)
-		temp_ring = vmalloc(adapter->num_tx_queues *
-				    sizeof(struct igb_ring));
+		temp_ring = vmalloc(array_size(sizeof(struct igb_ring),
+					       adapter->num_tx_queues));
 	else
-		temp_ring = vmalloc(adapter->num_rx_queues *
-				    sizeof(struct igb_ring));
+		temp_ring = vmalloc(array_size(sizeof(struct igb_ring),
+					       adapter->num_rx_queues));
 
 	if (!temp_ring) {
 		err = -ENOMEM;
@@ -1061,8 +1081,8 @@ static struct igb_reg_test reg_test_i350[] = {
 	{ E1000_TDT(0),	   0x100, 4,  PATTERN_TEST, 0x0000FFFF, 0x0000FFFF },
 	{ E1000_TDT(4),	   0x40,  4,  PATTERN_TEST, 0x0000FFFF, 0x0000FFFF },
 	{ E1000_RCTL,	   0x100, 1,  SET_READ_TEST, 0xFFFFFFFF, 0x00000000 },
-	{ E1000_RCTL, 	   0x100, 1,  SET_READ_TEST, 0x04CFB0FE, 0x003FFFFB },
-	{ E1000_RCTL, 	   0x100, 1,  SET_READ_TEST, 0x04CFB0FE, 0xFFFFFFFF },
+	{ E1000_RCTL,	   0x100, 1,  SET_READ_TEST, 0x04CFB0FE, 0x003FFFFB },
+	{ E1000_RCTL,	   0x100, 1,  SET_READ_TEST, 0x04CFB0FE, 0xFFFFFFFF },
 	{ E1000_TCTL,	   0x100, 1,  SET_READ_TEST, 0xFFFFFFFF, 0x00000000 },
 	{ E1000_RA,	   0, 16, TABLE64_TEST_LO,
 						0xFFFFFFFF, 0xFFFFFFFF },
@@ -1104,8 +1124,8 @@ static struct igb_reg_test reg_test_82580[] = {
 	{ E1000_TDT(0),	   0x100, 4,  PATTERN_TEST, 0x0000FFFF, 0x0000FFFF },
 	{ E1000_TDT(4),	   0x40,  4,  PATTERN_TEST, 0x0000FFFF, 0x0000FFFF },
 	{ E1000_RCTL,	   0x100, 1,  SET_READ_TEST, 0xFFFFFFFF, 0x00000000 },
-	{ E1000_RCTL, 	   0x100, 1,  SET_READ_TEST, 0x04CFB0FE, 0x003FFFFB },
-	{ E1000_RCTL, 	   0x100, 1,  SET_READ_TEST, 0x04CFB0FE, 0xFFFFFFFF },
+	{ E1000_RCTL,	   0x100, 1,  SET_READ_TEST, 0x04CFB0FE, 0x003FFFFB },
+	{ E1000_RCTL,	   0x100, 1,  SET_READ_TEST, 0x04CFB0FE, 0xFFFFFFFF },
 	{ E1000_TCTL,	   0x100, 1,  SET_READ_TEST, 0xFFFFFFFF, 0x00000000 },
 	{ E1000_RA,	   0, 16, TABLE64_TEST_LO,
 						0xFFFFFFFF, 0xFFFFFFFF },
@@ -1133,8 +1153,10 @@ static struct igb_reg_test reg_test_82576[] = {
 	{ E1000_RDBAH(4),  0x40, 12, PATTERN_TEST, 0xFFFFFFFF, 0xFFFFFFFF },
 	{ E1000_RDLEN(4),  0x40, 12, PATTERN_TEST, 0x000FFFF0, 0x000FFFFF },
 	/* Enable all RX queues before testing. */
-	{ E1000_RXDCTL(0), 0x100, 4,  WRITE_NO_TEST, 0, E1000_RXDCTL_QUEUE_ENABLE },
-	{ E1000_RXDCTL(4), 0x40, 12,  WRITE_NO_TEST, 0, E1000_RXDCTL_QUEUE_ENABLE },
+	{ E1000_RXDCTL(0), 0x100, 4, WRITE_NO_TEST, 0,
+	  E1000_RXDCTL_QUEUE_ENABLE },
+	{ E1000_RXDCTL(4), 0x40, 12, WRITE_NO_TEST, 0,
+	  E1000_RXDCTL_QUEUE_ENABLE },
 	/* RDH is read-only for 82576, only test RDT. */
 	{ E1000_RDT(0),	   0x100, 4,  PATTERN_TEST, 0x0000FFFF, 0x0000FFFF },
 	{ E1000_RDT(4),	   0x40, 12,  PATTERN_TEST, 0x0000FFFF, 0x0000FFFF },
@@ -1150,14 +1172,14 @@ static struct igb_reg_test reg_test_82576[] = {
 	{ E1000_TDBAH(4),  0x40, 12,  PATTERN_TEST, 0xFFFFFFFF, 0xFFFFFFFF },
 	{ E1000_TDLEN(4),  0x40, 12,  PATTERN_TEST, 0x000FFFF0, 0x000FFFFF },
 	{ E1000_RCTL,	   0x100, 1,  SET_READ_TEST, 0xFFFFFFFF, 0x00000000 },
-	{ E1000_RCTL, 	   0x100, 1,  SET_READ_TEST, 0x04CFB0FE, 0x003FFFFB },
-	{ E1000_RCTL, 	   0x100, 1,  SET_READ_TEST, 0x04CFB0FE, 0xFFFFFFFF },
+	{ E1000_RCTL,	   0x100, 1,  SET_READ_TEST, 0x04CFB0FE, 0x003FFFFB },
+	{ E1000_RCTL,	   0x100, 1,  SET_READ_TEST, 0x04CFB0FE, 0xFFFFFFFF },
 	{ E1000_TCTL,	   0x100, 1,  SET_READ_TEST, 0xFFFFFFFF, 0x00000000 },
 	{ E1000_RA,	   0, 16, TABLE64_TEST_LO, 0xFFFFFFFF, 0xFFFFFFFF },
 	{ E1000_RA,	   0, 16, TABLE64_TEST_HI, 0x83FFFFFF, 0xFFFFFFFF },
 	{ E1000_RA2,	   0, 8, TABLE64_TEST_LO, 0xFFFFFFFF, 0xFFFFFFFF },
 	{ E1000_RA2,	   0, 8, TABLE64_TEST_HI, 0x83FFFFFF, 0xFFFFFFFF },
-	{ E1000_MTA,	   0, 128,TABLE32_TEST, 0xFFFFFFFF, 0xFFFFFFFF },
+	{ E1000_MTA,	   0, 128, TABLE32_TEST, 0xFFFFFFFF, 0xFFFFFFFF },
 	{ 0, 0, 0, 0 }
 };
 
@@ -1171,7 +1193,8 @@ static struct igb_reg_test reg_test_82575[] = {
 	{ E1000_RDBAH(0),  0x100, 4, PATTERN_TEST, 0xFFFFFFFF, 0xFFFFFFFF },
 	{ E1000_RDLEN(0),  0x100, 4, PATTERN_TEST, 0x000FFF80, 0x000FFFFF },
 	/* Enable all four RX queues before testing. */
-	{ E1000_RXDCTL(0), 0x100, 4, WRITE_NO_TEST, 0, E1000_RXDCTL_QUEUE_ENABLE },
+	{ E1000_RXDCTL(0), 0x100, 4, WRITE_NO_TEST, 0,
+	  E1000_RXDCTL_QUEUE_ENABLE },
 	/* RDH is read-only for 82575, only test RDT. */
 	{ E1000_RDT(0),    0x100, 4, PATTERN_TEST, 0x0000FFFF, 0x0000FFFF },
 	{ E1000_RXDCTL(0), 0x100, 4, WRITE_NO_TEST, 0, 0 },
@@ -1197,8 +1220,8 @@ static bool reg_pattern_test(struct igb_adapter *adapter, u64 *data,
 {
 	struct e1000_hw *hw = &adapter->hw;
 	u32 pat, val;
-	static const u32 _test[] =
-		{0x5A5A5A5A, 0xA5A5A5A5, 0x00000000, 0xFFFFFFFF};
+	static const u32 _test[] = {
+		0x5A5A5A5A, 0xA5A5A5A5, 0x00000000, 0xFFFFFFFF};
 	for (pat = 0; pat < ARRAY_SIZE(_test); pat++) {
 		wr32(reg, (_test[pat] & write));
 		val = rd32(reg) & mask;
@@ -1207,11 +1230,11 @@ static bool reg_pattern_test(struct igb_adapter *adapter, u64 *data,
 				"pattern test reg %04X failed: got 0x%08X expected 0x%08X\n",
 				reg, val, (_test[pat] & write & mask));
 			*data = reg;
-			return 1;
+			return true;
 		}
 	}
 
-	return 0;
+	return false;
 }
 
 static bool reg_set_and_check(struct igb_adapter *adapter, u64 *data,
@@ -1219,17 +1242,18 @@ static bool reg_set_and_check(struct igb_adapter *adapter, u64 *data,
 {
 	struct e1000_hw *hw = &adapter->hw;
 	u32 val;
+
 	wr32(reg, write & mask);
 	val = rd32(reg);
 	if ((write & mask) != (val & mask)) {
 		dev_err(&adapter->pdev->dev,
-			"set/check reg %04X test failed: got 0x%08X expected 0x%08X\n", reg,
-			(val & mask), (write & mask));
+			"set/check reg %04X test failed: got 0x%08X expected 0x%08X\n",
+			reg, (val & mask), (write & mask));
 		*data = reg;
-		return 1;
+		return true;
 	}
 
-	return 0;
+	return false;
 }
 
 #define REG_PATTERN_TEST(reg, mask, write) \
@@ -1388,14 +1412,16 @@ static int igb_intr_test(struct igb_adapter *adapter, u64 *data)
 	/* Hook up test interrupt handler just for this test */
 	if (adapter->flags & IGB_FLAG_HAS_MSIX) {
 		if (request_irq(adapter->msix_entries[0].vector,
-		                igb_test_intr, 0, netdev->name, adapter)) {
+				igb_test_intr, 0, netdev->name, adapter)) {
 			*data = 1;
 			return -1;
 		}
+		wr32(E1000_IVAR_MISC, E1000_IVAR_VALID << 8);
+		wr32(E1000_EIMS, BIT(0));
 	} else if (adapter->flags & IGB_FLAG_HAS_MSI) {
 		shared_int = false;
 		if (request_irq(irq,
-		                igb_test_intr, 0, netdev->name, adapter)) {
+				igb_test_intr, 0, netdev->name, adapter)) {
 			*data = 1;
 			return -1;
 		}
@@ -1413,7 +1439,7 @@ static int igb_intr_test(struct igb_adapter *adapter, u64 *data)
 	/* Disable all the interrupts */
 	wr32(E1000_IMC, ~0);
 	wrfl();
-	msleep(10);
+	usleep_range(10000, 11000);
 
 	/* Define all writable bits for ICS */
 	switch (hw->mac.type) {
@@ -1440,7 +1466,7 @@ static int igb_intr_test(struct igb_adapter *adapter, u64 *data)
 	/* Test each interrupt */
 	for (; i < 31; i++) {
 		/* Interrupt to test */
-		mask = 1 << i;
+		mask = BIT(i);
 
 		if (!(mask & ics_mask))
 			continue;
@@ -1460,7 +1486,7 @@ static int igb_intr_test(struct igb_adapter *adapter, u64 *data)
 			wr32(E1000_IMC, mask);
 			wr32(E1000_ICS, mask);
 			wrfl();
-			msleep(10);
+			usleep_range(10000, 11000);
 
 			if (adapter->test_icr & mask) {
 				*data = 3;
@@ -1482,7 +1508,7 @@ static int igb_intr_test(struct igb_adapter *adapter, u64 *data)
 		wr32(E1000_IMS, mask);
 		wr32(E1000_ICS, mask);
 		wrfl();
-		msleep(10);
+		usleep_range(10000, 11000);
 
 		if (!(adapter->test_icr & mask)) {
 			*data = 4;
@@ -1504,7 +1530,7 @@ static int igb_intr_test(struct igb_adapter *adapter, u64 *data)
 			wr32(E1000_IMC, ~mask);
 			wr32(E1000_ICS, ~mask);
 			wrfl();
-			msleep(10);
+			usleep_range(10000, 11000);
 
 			if (adapter->test_icr & mask) {
 				*data = 5;
@@ -1516,7 +1542,7 @@ static int igb_intr_test(struct igb_adapter *adapter, u64 *data)
 	/* Disable all the interrupts */
 	wr32(E1000_IMC, ~0);
 	wrfl();
-	msleep(10);
+	usleep_range(10000, 11000);
 
 	/* Unhook test interrupt handler */
 	if (adapter->flags & IGB_FLAG_HAS_MSIX)
@@ -1643,7 +1669,7 @@ static int igb_integrated_phy_loopback(struct igb_adapter *adapter)
 	if (hw->phy.type == e1000_phy_m88)
 		igb_phy_disable_receiver(adapter);
 
-	mdelay(500);
+	msleep(500);
 	return 0;
 }
 
@@ -1665,8 +1691,8 @@ static int igb_setup_loopback_test(struct igb_adapter *adapter)
 		(hw->device_id == E1000_DEV_ID_DH89XXCC_SERDES) ||
 		(hw->device_id == E1000_DEV_ID_DH89XXCC_BACKPLANE) ||
 		(hw->device_id == E1000_DEV_ID_DH89XXCC_SFP) ||
-		(hw->device_id == E1000_DEV_ID_I354_SGMII)) {
-
+		(hw->device_id == E1000_DEV_ID_I354_SGMII) ||
+		(hw->device_id == E1000_DEV_ID_I354_BACKPLANE_2_5GBPS)) {
 			/* Enable DH89xxCC MPHY for near end loopback */
 			reg = rd32(E1000_MPHY_ADDR_CTL);
 			reg = (reg & E1000_MPHY_ADDR_CTL_OFFSET_MASK) |
@@ -1765,8 +1791,8 @@ static void igb_create_lbtest_frame(struct sk_buff *skb,
 	memset(skb->data, 0xFF, frame_size);
 	frame_size /= 2;
 	memset(&skb->data[frame_size], 0xAA, frame_size - 1);
-	memset(&skb->data[frame_size + 10], 0xBE, 1);
-	memset(&skb->data[frame_size + 12], 0xAF, 1);
+	skb->data[frame_size + 10] = 0xBE;
+	skb->data[frame_size + 12] = 0xAF;
 }
 
 static int igb_check_lbtest_frame(struct igb_rx_buffer *rx_buffer,
@@ -1777,14 +1803,14 @@ static int igb_check_lbtest_frame(struct igb_rx_buffer *rx_buffer,
 
 	frame_size >>= 1;
 
-	data = kmap(rx_buffer->page);
+	data = kmap_local_page(rx_buffer->page);
 
 	if (data[3] != 0xFF ||
 	    data[frame_size + 10] != 0xBE ||
 	    data[frame_size + 12] != 0xAF)
 		match = false;
 
-	kunmap(rx_buffer->page);
+	kunmap_local(data);
 
 	return match;
 }
@@ -1803,14 +1829,14 @@ static int igb_clean_test_rings(struct igb_ring *rx_ring,
 	tx_ntc = tx_ring->next_to_clean;
 	rx_desc = IGB_RX_DESC(rx_ring, rx_ntc);
 
-	while (igb_test_staterr(rx_desc, E1000_RXD_STAT_DD)) {
+	while (rx_desc->wb.upper.length) {
 		/* check Rx buffer */
 		rx_buffer_info = &rx_ring->rx_buffer_info[rx_ntc];
 
 		/* sync Rx buffer for CPU read */
 		dma_sync_single_for_cpu(rx_ring->dev,
 					rx_buffer_info->dma,
-					IGB_RX_BUFSZ,
+					size,
 					DMA_FROM_DEVICE);
 
 		/* verify contents of skb */
@@ -1820,12 +1846,21 @@ static int igb_clean_test_rings(struct igb_ring *rx_ring,
 		/* sync Rx buffer for device write */
 		dma_sync_single_for_device(rx_ring->dev,
 					   rx_buffer_info->dma,
-					   IGB_RX_BUFSZ,
+					   size,
 					   DMA_FROM_DEVICE);
 
 		/* unmap buffer on Tx side */
 		tx_buffer_info = &tx_ring->tx_buffer_info[tx_ntc];
-		igb_unmap_and_free_tx_resource(tx_ring, tx_buffer_info);
+
+		/* Free all the Tx ring sk_buffs */
+		dev_kfree_skb_any(tx_buffer_info->skb);
+
+		/* unmap skb header data */
+		dma_unmap_single(tx_ring->dev,
+				 dma_unmap_addr(tx_buffer_info, dma),
+				 dma_unmap_len(tx_buffer_info, len),
+				 DMA_TO_DEVICE);
+		dma_unmap_len_set(tx_buffer_info, len, 0);
 
 		/* increment Rx/Tx next to clean counters */
 		rx_ntc++;
@@ -1950,6 +1985,7 @@ static int igb_link_test(struct igb_adapter *adapter, u64 *data)
 	*data = 0;
 	if (hw->phy.media_type == e1000_media_type_internal_serdes) {
 		int i = 0;
+
 		hw->mac.serdes_has_link = false;
 
 		/* On some blade server designs, link establishment
@@ -2003,30 +2039,30 @@ static void igb_diag_test(struct net_device *netdev,
 		/* Link test performed before hardware reset so autoneg doesn't
 		 * interfere with test result
 		 */
-		if (igb_link_test(adapter, &data[4]))
+		if (igb_link_test(adapter, &data[TEST_LINK]))
 			eth_test->flags |= ETH_TEST_FL_FAILED;
 
 		if (if_running)
 			/* indicate we're in test mode */
-			dev_close(netdev);
+			igb_close(netdev);
 		else
 			igb_reset(adapter);
 
-		if (igb_reg_test(adapter, &data[0]))
+		if (igb_reg_test(adapter, &data[TEST_REG]))
 			eth_test->flags |= ETH_TEST_FL_FAILED;
 
 		igb_reset(adapter);
-		if (igb_eeprom_test(adapter, &data[1]))
+		if (igb_eeprom_test(adapter, &data[TEST_EEP]))
 			eth_test->flags |= ETH_TEST_FL_FAILED;
 
 		igb_reset(adapter);
-		if (igb_intr_test(adapter, &data[2]))
+		if (igb_intr_test(adapter, &data[TEST_IRQ]))
 			eth_test->flags |= ETH_TEST_FL_FAILED;
 
 		igb_reset(adapter);
 		/* power up link for loopback test */
 		igb_power_up_link(adapter);
-		if (igb_loopback_test(adapter, &data[3]))
+		if (igb_loopback_test(adapter, &data[TEST_LOOP]))
 			eth_test->flags |= ETH_TEST_FL_FAILED;
 
 		/* restore speed, duplex, autoneg settings */
@@ -2041,21 +2077,21 @@ static void igb_diag_test(struct net_device *netdev,
 
 		clear_bit(__IGB_TESTING, &adapter->state);
 		if (if_running)
-			dev_open(netdev);
+			igb_open(netdev);
 	} else {
 		dev_info(&adapter->pdev->dev, "online testing starting\n");
 
 		/* PHY is powered down when interface is down */
-		if (if_running && igb_link_test(adapter, &data[4]))
+		if (if_running && igb_link_test(adapter, &data[TEST_LINK]))
 			eth_test->flags |= ETH_TEST_FL_FAILED;
 		else
-			data[4] = 0;
+			data[TEST_LINK] = 0;
 
 		/* Online tests aren't run; pass by default */
-		data[0] = 0;
-		data[1] = 0;
-		data[2] = 0;
-		data[3] = 0;
+		data[TEST_REG] = 0;
+		data[TEST_EEP] = 0;
+		data[TEST_IRQ] = 0;
+		data[TEST_LOOP] = 0;
 
 		clear_bit(__IGB_TESTING, &adapter->state);
 	}
@@ -2097,7 +2133,7 @@ static int igb_set_wol(struct net_device *netdev, struct ethtool_wolinfo *wol)
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 
-	if (wol->wolopts & (WAKE_ARP | WAKE_MAGICSECURE))
+	if (wol->wolopts & (WAKE_ARP | WAKE_MAGICSECURE | WAKE_FILTER))
 		return -EOPNOTSUPP;
 
 	if (!(adapter->flags & IGB_FLAG_WOL_SUPPORTED))
@@ -2151,7 +2187,9 @@ static int igb_set_phys_id(struct net_device *netdev,
 }
 
 static int igb_set_coalesce(struct net_device *netdev,
-			    struct ethtool_coalesce *ec)
+			    struct ethtool_coalesce *ec,
+			    struct kernel_ethtool_coalesce *kernel_coal,
+			    struct netlink_ext_ack *extack)
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 	int i;
@@ -2207,7 +2245,9 @@ static int igb_set_coalesce(struct net_device *netdev,
 }
 
 static int igb_get_coalesce(struct net_device *netdev,
-			    struct ethtool_coalesce *ec)
+			    struct ethtool_coalesce *ec,
+			    struct kernel_ethtool_coalesce *kernel_coal,
+			    struct netlink_ext_ack *extack)
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 
@@ -2241,6 +2281,8 @@ static int igb_get_sset_count(struct net_device *netdev, int sset)
 		return IGB_STATS_LEN;
 	case ETH_SS_TEST:
 		return IGB_TEST_LEN;
+	case ETH_SS_PRIV_FLAGS:
+		return IGB_PRIV_FLAGS_STR_LEN;
 	default:
 		return -ENOTSUPP;
 	}
@@ -2257,7 +2299,7 @@ static void igb_get_ethtool_stats(struct net_device *netdev,
 	char *p;
 
 	spin_lock(&adapter->stats64_lock);
-	igb_update_stats(adapter, net_stats);
+	igb_update_stats(adapter);
 
 	for (i = 0; i < IGB_GLOBAL_STATS_LEN; i++) {
 		p = (char *)adapter + igb_gstrings_stats[i].stat_offset;
@@ -2274,15 +2316,15 @@ static void igb_get_ethtool_stats(struct net_device *netdev,
 
 		ring = adapter->tx_ring[j];
 		do {
-			start = u64_stats_fetch_begin_bh(&ring->tx_syncp);
+			start = u64_stats_fetch_begin(&ring->tx_syncp);
 			data[i]   = ring->tx_stats.packets;
 			data[i+1] = ring->tx_stats.bytes;
 			data[i+2] = ring->tx_stats.restart_queue;
-		} while (u64_stats_fetch_retry_bh(&ring->tx_syncp, start));
+		} while (u64_stats_fetch_retry(&ring->tx_syncp, start));
 		do {
-			start = u64_stats_fetch_begin_bh(&ring->tx_syncp2);
+			start = u64_stats_fetch_begin(&ring->tx_syncp2);
 			restart2  = ring->tx_stats.restart_queue2;
-		} while (u64_stats_fetch_retry_bh(&ring->tx_syncp2, start));
+		} while (u64_stats_fetch_retry(&ring->tx_syncp2, start));
 		data[i+2] += restart2;
 
 		i += IGB_TX_QUEUE_STATS_LEN;
@@ -2290,13 +2332,13 @@ static void igb_get_ethtool_stats(struct net_device *netdev,
 	for (j = 0; j < adapter->num_rx_queues; j++) {
 		ring = adapter->rx_ring[j];
 		do {
-			start = u64_stats_fetch_begin_bh(&ring->rx_syncp);
+			start = u64_stats_fetch_begin(&ring->rx_syncp);
 			data[i]   = ring->rx_stats.packets;
 			data[i+1] = ring->rx_stats.bytes;
 			data[i+2] = ring->rx_stats.drops;
 			data[i+3] = ring->rx_stats.csum_err;
 			data[i+4] = ring->rx_stats.alloc_failed;
-		} while (u64_stats_fetch_retry_bh(&ring->rx_syncp, start));
+		} while (u64_stats_fetch_retry(&ring->rx_syncp, start));
 		i += IGB_RX_QUEUE_STATS_LEN;
 	}
 	spin_unlock(&adapter->stats64_lock);
@@ -2310,41 +2352,32 @@ static void igb_get_strings(struct net_device *netdev, u32 stringset, u8 *data)
 
 	switch (stringset) {
 	case ETH_SS_TEST:
-		memcpy(data, *igb_gstrings_test,
-			IGB_TEST_LEN*ETH_GSTRING_LEN);
+		memcpy(data, igb_gstrings_test, sizeof(igb_gstrings_test));
 		break;
 	case ETH_SS_STATS:
-		for (i = 0; i < IGB_GLOBAL_STATS_LEN; i++) {
-			memcpy(p, igb_gstrings_stats[i].stat_string,
-			       ETH_GSTRING_LEN);
-			p += ETH_GSTRING_LEN;
-		}
-		for (i = 0; i < IGB_NETDEV_STATS_LEN; i++) {
-			memcpy(p, igb_gstrings_net_stats[i].stat_string,
-			       ETH_GSTRING_LEN);
-			p += ETH_GSTRING_LEN;
-		}
+		for (i = 0; i < IGB_GLOBAL_STATS_LEN; i++)
+			ethtool_sprintf(&p,
+					igb_gstrings_stats[i].stat_string);
+		for (i = 0; i < IGB_NETDEV_STATS_LEN; i++)
+			ethtool_sprintf(&p,
+					igb_gstrings_net_stats[i].stat_string);
 		for (i = 0; i < adapter->num_tx_queues; i++) {
-			sprintf(p, "tx_queue_%u_packets", i);
-			p += ETH_GSTRING_LEN;
-			sprintf(p, "tx_queue_%u_bytes", i);
-			p += ETH_GSTRING_LEN;
-			sprintf(p, "tx_queue_%u_restart", i);
-			p += ETH_GSTRING_LEN;
+			ethtool_sprintf(&p, "tx_queue_%u_packets", i);
+			ethtool_sprintf(&p, "tx_queue_%u_bytes", i);
+			ethtool_sprintf(&p, "tx_queue_%u_restart", i);
 		}
 		for (i = 0; i < adapter->num_rx_queues; i++) {
-			sprintf(p, "rx_queue_%u_packets", i);
-			p += ETH_GSTRING_LEN;
-			sprintf(p, "rx_queue_%u_bytes", i);
-			p += ETH_GSTRING_LEN;
-			sprintf(p, "rx_queue_%u_drops", i);
-			p += ETH_GSTRING_LEN;
-			sprintf(p, "rx_queue_%u_csum_err", i);
-			p += ETH_GSTRING_LEN;
-			sprintf(p, "rx_queue_%u_alloc_failed", i);
-			p += ETH_GSTRING_LEN;
+			ethtool_sprintf(&p, "rx_queue_%u_packets", i);
+			ethtool_sprintf(&p, "rx_queue_%u_bytes", i);
+			ethtool_sprintf(&p, "rx_queue_%u_drops", i);
+			ethtool_sprintf(&p, "rx_queue_%u_csum_err", i);
+			ethtool_sprintf(&p, "rx_queue_%u_alloc_failed", i);
 		}
 		/* BUG_ON(p - data != IGB_STATS_LEN * ETH_GSTRING_LEN); */
+		break;
+	case ETH_SS_PRIV_FLAGS:
+		memcpy(data, igb_priv_flags_strings,
+		       IGB_PRIV_FLAGS_STR_LEN * ETH_GSTRING_LEN);
 		break;
 	}
 }
@@ -2353,6 +2386,11 @@ static int igb_get_ts_info(struct net_device *dev,
 			   struct ethtool_ts_info *info)
 {
 	struct igb_adapter *adapter = netdev_priv(dev);
+
+	if (adapter->ptp_clock)
+		info->phc_index = ptp_clock_index(adapter->ptp_clock);
+	else
+		info->phc_index = -1;
 
 	switch (adapter->hw.mac.type) {
 	case e1000_82575:
@@ -2375,34 +2413,99 @@ static int igb_get_ts_info(struct net_device *dev,
 			SOF_TIMESTAMPING_RX_HARDWARE |
 			SOF_TIMESTAMPING_RAW_HARDWARE;
 
-		if (adapter->ptp_clock)
-			info->phc_index = ptp_clock_index(adapter->ptp_clock);
-		else
-			info->phc_index = -1;
-
 		info->tx_types =
-			(1 << HWTSTAMP_TX_OFF) |
-			(1 << HWTSTAMP_TX_ON);
+			BIT(HWTSTAMP_TX_OFF) |
+			BIT(HWTSTAMP_TX_ON);
 
-		info->rx_filters = 1 << HWTSTAMP_FILTER_NONE;
+		info->rx_filters = BIT(HWTSTAMP_FILTER_NONE);
 
 		/* 82576 does not support timestamping all packets. */
 		if (adapter->hw.mac.type >= e1000_82580)
-			info->rx_filters |= 1 << HWTSTAMP_FILTER_ALL;
+			info->rx_filters |= BIT(HWTSTAMP_FILTER_ALL);
 		else
 			info->rx_filters |=
-				(1 << HWTSTAMP_FILTER_PTP_V1_L4_SYNC) |
-				(1 << HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ) |
-				(1 << HWTSTAMP_FILTER_PTP_V2_L2_SYNC) |
-				(1 << HWTSTAMP_FILTER_PTP_V2_L4_SYNC) |
-				(1 << HWTSTAMP_FILTER_PTP_V2_L2_DELAY_REQ) |
-				(1 << HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ) |
-				(1 << HWTSTAMP_FILTER_PTP_V2_EVENT);
+				BIT(HWTSTAMP_FILTER_PTP_V1_L4_SYNC) |
+				BIT(HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ) |
+				BIT(HWTSTAMP_FILTER_PTP_V2_EVENT);
 
 		return 0;
 	default:
 		return -EOPNOTSUPP;
 	}
+}
+
+#define ETHER_TYPE_FULL_MASK cpu_to_be16(FIELD_MAX(U16_MAX))
+static int igb_get_ethtool_nfc_entry(struct igb_adapter *adapter,
+				     struct ethtool_rxnfc *cmd)
+{
+	struct ethtool_rx_flow_spec *fsp = &cmd->fs;
+	struct igb_nfc_filter *rule = NULL;
+
+	/* report total rule count */
+	cmd->data = IGB_MAX_RXNFC_FILTERS;
+
+	hlist_for_each_entry(rule, &adapter->nfc_filter_list, nfc_node) {
+		if (fsp->location <= rule->sw_idx)
+			break;
+	}
+
+	if (!rule || fsp->location != rule->sw_idx)
+		return -EINVAL;
+
+	if (rule->filter.match_flags) {
+		fsp->flow_type = ETHER_FLOW;
+		fsp->ring_cookie = rule->action;
+		if (rule->filter.match_flags & IGB_FILTER_FLAG_ETHER_TYPE) {
+			fsp->h_u.ether_spec.h_proto = rule->filter.etype;
+			fsp->m_u.ether_spec.h_proto = ETHER_TYPE_FULL_MASK;
+		}
+		if (rule->filter.match_flags & IGB_FILTER_FLAG_VLAN_TCI) {
+			fsp->flow_type |= FLOW_EXT;
+			fsp->h_ext.vlan_tci = rule->filter.vlan_tci;
+			fsp->m_ext.vlan_tci = htons(VLAN_PRIO_MASK);
+		}
+		if (rule->filter.match_flags & IGB_FILTER_FLAG_DST_MAC_ADDR) {
+			ether_addr_copy(fsp->h_u.ether_spec.h_dest,
+					rule->filter.dst_addr);
+			/* As we only support matching by the full
+			 * mask, return the mask to userspace
+			 */
+			eth_broadcast_addr(fsp->m_u.ether_spec.h_dest);
+		}
+		if (rule->filter.match_flags & IGB_FILTER_FLAG_SRC_MAC_ADDR) {
+			ether_addr_copy(fsp->h_u.ether_spec.h_source,
+					rule->filter.src_addr);
+			/* As we only support matching by the full
+			 * mask, return the mask to userspace
+			 */
+			eth_broadcast_addr(fsp->m_u.ether_spec.h_source);
+		}
+
+		return 0;
+	}
+	return -EINVAL;
+}
+
+static int igb_get_ethtool_nfc_all(struct igb_adapter *adapter,
+				   struct ethtool_rxnfc *cmd,
+				   u32 *rule_locs)
+{
+	struct igb_nfc_filter *rule;
+	int cnt = 0;
+
+	/* report total rule count */
+	cmd->data = IGB_MAX_RXNFC_FILTERS;
+
+	hlist_for_each_entry(rule, &adapter->nfc_filter_list, nfc_node) {
+		if (cnt == cmd->rule_cnt)
+			return -EMSGSIZE;
+		rule_locs[cnt] = rule->sw_idx;
+		cnt++;
+	}
+
+	cmd->rule_cnt = cnt;
+
+	return 0;
 }
 
 static int igb_get_rss_hash_opts(struct igb_adapter *adapter,
@@ -2414,9 +2517,11 @@ static int igb_get_rss_hash_opts(struct igb_adapter *adapter,
 	switch (cmd->flow_type) {
 	case TCP_V4_FLOW:
 		cmd->data |= RXH_L4_B_0_1 | RXH_L4_B_2_3;
+		fallthrough;
 	case UDP_V4_FLOW:
 		if (adapter->flags & IGB_FLAG_RSS_FIELD_IPV4_UDP)
 			cmd->data |= RXH_L4_B_0_1 | RXH_L4_B_2_3;
+		fallthrough;
 	case SCTP_V4_FLOW:
 	case AH_ESP_V4_FLOW:
 	case AH_V4_FLOW:
@@ -2426,9 +2531,11 @@ static int igb_get_rss_hash_opts(struct igb_adapter *adapter,
 		break;
 	case TCP_V6_FLOW:
 		cmd->data |= RXH_L4_B_0_1 | RXH_L4_B_2_3;
+		fallthrough;
 	case UDP_V6_FLOW:
 		if (adapter->flags & IGB_FLAG_RSS_FIELD_IPV6_UDP)
 			cmd->data |= RXH_L4_B_0_1 | RXH_L4_B_2_3;
+		fallthrough;
 	case SCTP_V6_FLOW:
 	case AH_ESP_V6_FLOW:
 	case AH_V6_FLOW:
@@ -2453,6 +2560,16 @@ static int igb_get_rxnfc(struct net_device *dev, struct ethtool_rxnfc *cmd,
 	case ETHTOOL_GRXRINGS:
 		cmd->data = adapter->num_rx_queues;
 		ret = 0;
+		break;
+	case ETHTOOL_GRXCLSRLCNT:
+		cmd->rule_cnt = adapter->nfc_filter_count;
+		ret = 0;
+		break;
+	case ETHTOOL_GRXCLSRULE:
+		ret = igb_get_ethtool_nfc_entry(adapter, cmd);
+		break;
+	case ETHTOOL_GRXCLSRLALL:
+		ret = igb_get_ethtool_nfc_all(adapter, cmd, rule_locs);
 		break;
 	case ETHTOOL_GRXFH:
 		ret = igb_get_rss_hash_opts(adapter, cmd);
@@ -2568,6 +2685,329 @@ static int igb_set_rss_hash_opt(struct igb_adapter *adapter,
 	return 0;
 }
 
+static int igb_rxnfc_write_etype_filter(struct igb_adapter *adapter,
+					struct igb_nfc_filter *input)
+{
+	struct e1000_hw *hw = &adapter->hw;
+	u8 i;
+	u32 etqf;
+	u16 etype;
+
+	/* find an empty etype filter register */
+	for (i = 0; i < MAX_ETYPE_FILTER; ++i) {
+		if (!adapter->etype_bitmap[i])
+			break;
+	}
+	if (i == MAX_ETYPE_FILTER) {
+		dev_err(&adapter->pdev->dev, "ethtool -N: etype filters are all used.\n");
+		return -EINVAL;
+	}
+
+	adapter->etype_bitmap[i] = true;
+
+	etqf = rd32(E1000_ETQF(i));
+	etype = ntohs(input->filter.etype & ETHER_TYPE_FULL_MASK);
+
+	etqf |= E1000_ETQF_FILTER_ENABLE;
+	etqf &= ~E1000_ETQF_ETYPE_MASK;
+	etqf |= (etype & E1000_ETQF_ETYPE_MASK);
+
+	etqf &= ~E1000_ETQF_QUEUE_MASK;
+	etqf |= ((input->action << E1000_ETQF_QUEUE_SHIFT)
+		& E1000_ETQF_QUEUE_MASK);
+	etqf |= E1000_ETQF_QUEUE_ENABLE;
+
+	wr32(E1000_ETQF(i), etqf);
+
+	input->etype_reg_index = i;
+
+	return 0;
+}
+
+static int igb_rxnfc_write_vlan_prio_filter(struct igb_adapter *adapter,
+					    struct igb_nfc_filter *input)
+{
+	struct e1000_hw *hw = &adapter->hw;
+	u8 vlan_priority;
+	u16 queue_index;
+	u32 vlapqf;
+
+	vlapqf = rd32(E1000_VLAPQF);
+	vlan_priority = FIELD_GET(VLAN_PRIO_MASK,
+				  ntohs(input->filter.vlan_tci));
+	queue_index = (vlapqf >> (vlan_priority * 4)) & E1000_VLAPQF_QUEUE_MASK;
+
+	/* check whether this vlan prio is already set */
+	if ((vlapqf & E1000_VLAPQF_P_VALID(vlan_priority)) &&
+	    (queue_index != input->action)) {
+		dev_err(&adapter->pdev->dev, "ethtool rxnfc set vlan prio filter failed.\n");
+		return -EEXIST;
+	}
+
+	vlapqf |= E1000_VLAPQF_P_VALID(vlan_priority);
+	vlapqf |= E1000_VLAPQF_QUEUE_SEL(vlan_priority, input->action);
+
+	wr32(E1000_VLAPQF, vlapqf);
+
+	return 0;
+}
+
+int igb_add_filter(struct igb_adapter *adapter, struct igb_nfc_filter *input)
+{
+	struct e1000_hw *hw = &adapter->hw;
+	int err = -EINVAL;
+
+	if (hw->mac.type == e1000_i210 &&
+	    !(input->filter.match_flags & ~IGB_FILTER_FLAG_SRC_MAC_ADDR)) {
+		dev_err(&adapter->pdev->dev,
+			"i210 doesn't support flow classification rules specifying only source addresses.\n");
+		return -EOPNOTSUPP;
+	}
+
+	if (input->filter.match_flags & IGB_FILTER_FLAG_ETHER_TYPE) {
+		err = igb_rxnfc_write_etype_filter(adapter, input);
+		if (err)
+			return err;
+	}
+
+	if (input->filter.match_flags & IGB_FILTER_FLAG_DST_MAC_ADDR) {
+		err = igb_add_mac_steering_filter(adapter,
+						  input->filter.dst_addr,
+						  input->action, 0);
+		err = min_t(int, err, 0);
+		if (err)
+			return err;
+	}
+
+	if (input->filter.match_flags & IGB_FILTER_FLAG_SRC_MAC_ADDR) {
+		err = igb_add_mac_steering_filter(adapter,
+						  input->filter.src_addr,
+						  input->action,
+						  IGB_MAC_STATE_SRC_ADDR);
+		err = min_t(int, err, 0);
+		if (err)
+			return err;
+	}
+
+	if (input->filter.match_flags & IGB_FILTER_FLAG_VLAN_TCI)
+		err = igb_rxnfc_write_vlan_prio_filter(adapter, input);
+
+	return err;
+}
+
+static void igb_clear_etype_filter_regs(struct igb_adapter *adapter,
+					u16 reg_index)
+{
+	struct e1000_hw *hw = &adapter->hw;
+	u32 etqf = rd32(E1000_ETQF(reg_index));
+
+	etqf &= ~E1000_ETQF_QUEUE_ENABLE;
+	etqf &= ~E1000_ETQF_QUEUE_MASK;
+	etqf &= ~E1000_ETQF_FILTER_ENABLE;
+
+	wr32(E1000_ETQF(reg_index), etqf);
+
+	adapter->etype_bitmap[reg_index] = false;
+}
+
+static void igb_clear_vlan_prio_filter(struct igb_adapter *adapter,
+				       u16 vlan_tci)
+{
+	struct e1000_hw *hw = &adapter->hw;
+	u8 vlan_priority;
+	u32 vlapqf;
+
+	vlan_priority = FIELD_GET(VLAN_PRIO_MASK, vlan_tci);
+
+	vlapqf = rd32(E1000_VLAPQF);
+	vlapqf &= ~E1000_VLAPQF_P_VALID(vlan_priority);
+	vlapqf &= ~E1000_VLAPQF_QUEUE_SEL(vlan_priority,
+						E1000_VLAPQF_QUEUE_MASK);
+
+	wr32(E1000_VLAPQF, vlapqf);
+}
+
+int igb_erase_filter(struct igb_adapter *adapter, struct igb_nfc_filter *input)
+{
+	if (input->filter.match_flags & IGB_FILTER_FLAG_ETHER_TYPE)
+		igb_clear_etype_filter_regs(adapter,
+					    input->etype_reg_index);
+
+	if (input->filter.match_flags & IGB_FILTER_FLAG_VLAN_TCI)
+		igb_clear_vlan_prio_filter(adapter,
+					   ntohs(input->filter.vlan_tci));
+
+	if (input->filter.match_flags & IGB_FILTER_FLAG_SRC_MAC_ADDR)
+		igb_del_mac_steering_filter(adapter, input->filter.src_addr,
+					    input->action,
+					    IGB_MAC_STATE_SRC_ADDR);
+
+	if (input->filter.match_flags & IGB_FILTER_FLAG_DST_MAC_ADDR)
+		igb_del_mac_steering_filter(adapter, input->filter.dst_addr,
+					    input->action, 0);
+
+	return 0;
+}
+
+static int igb_update_ethtool_nfc_entry(struct igb_adapter *adapter,
+					struct igb_nfc_filter *input,
+					u16 sw_idx)
+{
+	struct igb_nfc_filter *rule, *parent;
+	int err = -EINVAL;
+
+	parent = NULL;
+	rule = NULL;
+
+	hlist_for_each_entry(rule, &adapter->nfc_filter_list, nfc_node) {
+		/* hash found, or no matching entry */
+		if (rule->sw_idx >= sw_idx)
+			break;
+		parent = rule;
+	}
+
+	/* if there is an old rule occupying our place remove it */
+	if (rule && (rule->sw_idx == sw_idx)) {
+		if (!input)
+			err = igb_erase_filter(adapter, rule);
+
+		hlist_del(&rule->nfc_node);
+		kfree(rule);
+		adapter->nfc_filter_count--;
+	}
+
+	/* If no input this was a delete, err should be 0 if a rule was
+	 * successfully found and removed from the list else -EINVAL
+	 */
+	if (!input)
+		return err;
+
+	/* initialize node */
+	INIT_HLIST_NODE(&input->nfc_node);
+
+	/* add filter to the list */
+	if (parent)
+		hlist_add_behind(&input->nfc_node, &parent->nfc_node);
+	else
+		hlist_add_head(&input->nfc_node, &adapter->nfc_filter_list);
+
+	/* update counts */
+	adapter->nfc_filter_count++;
+
+	return 0;
+}
+
+static int igb_add_ethtool_nfc_entry(struct igb_adapter *adapter,
+				     struct ethtool_rxnfc *cmd)
+{
+	struct net_device *netdev = adapter->netdev;
+	struct ethtool_rx_flow_spec *fsp =
+		(struct ethtool_rx_flow_spec *)&cmd->fs;
+	struct igb_nfc_filter *input, *rule;
+	int err = 0;
+
+	if (!(netdev->hw_features & NETIF_F_NTUPLE))
+		return -EOPNOTSUPP;
+
+	/* Don't allow programming if the action is a queue greater than
+	 * the number of online Rx queues.
+	 */
+	if ((fsp->ring_cookie == RX_CLS_FLOW_DISC) ||
+	    (fsp->ring_cookie >= adapter->num_rx_queues)) {
+		dev_err(&adapter->pdev->dev, "ethtool -N: The specified action is invalid\n");
+		return -EINVAL;
+	}
+
+	/* Don't allow indexes to exist outside of available space */
+	if (fsp->location >= IGB_MAX_RXNFC_FILTERS) {
+		dev_err(&adapter->pdev->dev, "Location out of range\n");
+		return -EINVAL;
+	}
+
+	if ((fsp->flow_type & ~FLOW_EXT) != ETHER_FLOW)
+		return -EINVAL;
+
+	input = kzalloc(sizeof(*input), GFP_KERNEL);
+	if (!input)
+		return -ENOMEM;
+
+	if (fsp->m_u.ether_spec.h_proto == ETHER_TYPE_FULL_MASK) {
+		input->filter.etype = fsp->h_u.ether_spec.h_proto;
+		input->filter.match_flags = IGB_FILTER_FLAG_ETHER_TYPE;
+	}
+
+	/* Only support matching addresses by the full mask */
+	if (is_broadcast_ether_addr(fsp->m_u.ether_spec.h_source)) {
+		input->filter.match_flags |= IGB_FILTER_FLAG_SRC_MAC_ADDR;
+		ether_addr_copy(input->filter.src_addr,
+				fsp->h_u.ether_spec.h_source);
+	}
+
+	/* Only support matching addresses by the full mask */
+	if (is_broadcast_ether_addr(fsp->m_u.ether_spec.h_dest)) {
+		input->filter.match_flags |= IGB_FILTER_FLAG_DST_MAC_ADDR;
+		ether_addr_copy(input->filter.dst_addr,
+				fsp->h_u.ether_spec.h_dest);
+	}
+
+	if ((fsp->flow_type & FLOW_EXT) && fsp->m_ext.vlan_tci) {
+		if (fsp->m_ext.vlan_tci != htons(VLAN_PRIO_MASK)) {
+			err = -EINVAL;
+			goto err_out;
+		}
+		input->filter.vlan_tci = fsp->h_ext.vlan_tci;
+		input->filter.match_flags |= IGB_FILTER_FLAG_VLAN_TCI;
+	}
+
+	input->action = fsp->ring_cookie;
+	input->sw_idx = fsp->location;
+
+	spin_lock(&adapter->nfc_lock);
+
+	hlist_for_each_entry(rule, &adapter->nfc_filter_list, nfc_node) {
+		if (!memcmp(&input->filter, &rule->filter,
+			    sizeof(input->filter))) {
+			err = -EEXIST;
+			dev_err(&adapter->pdev->dev,
+				"ethtool: this filter is already set\n");
+			goto err_out_w_lock;
+		}
+	}
+
+	err = igb_add_filter(adapter, input);
+	if (err)
+		goto err_out_w_lock;
+
+	err = igb_update_ethtool_nfc_entry(adapter, input, input->sw_idx);
+	if (err)
+		goto err_out_input_filter;
+
+	spin_unlock(&adapter->nfc_lock);
+	return 0;
+
+err_out_input_filter:
+	igb_erase_filter(adapter, input);
+err_out_w_lock:
+	spin_unlock(&adapter->nfc_lock);
+err_out:
+	kfree(input);
+	return err;
+}
+
+static int igb_del_ethtool_nfc_entry(struct igb_adapter *adapter,
+				     struct ethtool_rxnfc *cmd)
+{
+	struct ethtool_rx_flow_spec *fsp =
+		(struct ethtool_rx_flow_spec *)&cmd->fs;
+	int err;
+
+	spin_lock(&adapter->nfc_lock);
+	err = igb_update_ethtool_nfc_entry(adapter, NULL, fsp->location);
+	spin_unlock(&adapter->nfc_lock);
+
+	return err;
+}
+
 static int igb_set_rxnfc(struct net_device *dev, struct ethtool_rxnfc *cmd)
 {
 	struct igb_adapter *adapter = netdev_priv(dev);
@@ -2576,6 +3016,12 @@ static int igb_set_rxnfc(struct net_device *dev, struct ethtool_rxnfc *cmd)
 	switch (cmd->cmd) {
 	case ETHTOOL_SRXFH:
 		ret = igb_set_rss_hash_opt(adapter, cmd);
+		break;
+	case ETHTOOL_SRXCLSRLINS:
+		ret = igb_add_ethtool_nfc_entry(adapter, cmd);
+		break;
+	case ETHTOOL_SRXCLSRLDEL:
+		ret = igb_del_ethtool_nfc_entry(adapter, cmd);
 		break;
 	default:
 		break;
@@ -2588,7 +3034,7 @@ static int igb_get_eee(struct net_device *netdev, struct ethtool_eee *edata)
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 	struct e1000_hw *hw = &adapter->hw;
-	u32 ipcnfg, eeer, ret_val;
+	u32 ret_val;
 	u16 phy_data;
 
 	if ((hw->mac.type < e1000_i350) ||
@@ -2597,16 +3043,25 @@ static int igb_get_eee(struct net_device *netdev, struct ethtool_eee *edata)
 
 	edata->supported = (SUPPORTED_1000baseT_Full |
 			    SUPPORTED_100baseT_Full);
+	if (!hw->dev_spec._82575.eee_disable)
+		edata->advertised =
+			mmd_eee_adv_to_ethtool_adv_t(adapter->eee_advert);
 
-	ipcnfg = rd32(E1000_IPCNFG);
-	eeer = rd32(E1000_EEER);
+	/* The IPCNFG and EEER registers are not supported on I354. */
+	if (hw->mac.type == e1000_i354) {
+		igb_get_eee_status_i354(hw, (bool *)&edata->eee_active);
+	} else {
+		u32 eeer;
 
-	/* EEE status on negotiated link */
-	if (ipcnfg & E1000_IPCNFG_EEE_1G_AN)
-		edata->advertised = ADVERTISED_1000baseT_Full;
+		eeer = rd32(E1000_EEER);
 
-	if (ipcnfg & E1000_IPCNFG_EEE_100M_AN)
-		edata->advertised |= ADVERTISED_100baseT_Full;
+		/* EEE status on negotiated link */
+		if (eeer & E1000_EEER_EEE_NEG)
+			edata->eee_active = true;
+
+		if (eeer & E1000_EEER_TX_LPI_EN)
+			edata->tx_lpi_enabled = true;
+	}
 
 	/* EEE Link Partner Advertised */
 	switch (hw->mac.type) {
@@ -2617,8 +3072,8 @@ static int igb_get_eee(struct net_device *netdev, struct ethtool_eee *edata)
 			return -ENODATA;
 
 		edata->lp_advertised = mmd_eee_adv_to_ethtool_adv_t(phy_data);
-
 		break;
+	case e1000_i354:
 	case e1000_i210:
 	case e1000_i211:
 		ret_val = igb_read_xmdio_reg(hw, E1000_EEE_LP_ADV_ADDR_I210,
@@ -2634,12 +3089,10 @@ static int igb_get_eee(struct net_device *netdev, struct ethtool_eee *edata)
 		break;
 	}
 
-	if (eeer & E1000_EEER_EEE_NEG)
-		edata->eee_active = true;
-
 	edata->eee_enabled = !hw->dev_spec._82575.eee_disable;
 
-	if (eeer & E1000_EEER_TX_LPI_EN)
+	if ((hw->mac.type == e1000_i354) &&
+	    (edata->eee_enabled))
 		edata->tx_lpi_enabled = true;
 
 	/* Report correct negotiated EEE status for devices that
@@ -2661,6 +3114,7 @@ static int igb_set_eee(struct net_device *netdev,
 	struct igb_adapter *adapter = netdev_priv(netdev);
 	struct e1000_hw *hw = &adapter->hw;
 	struct ethtool_eee eee_curr;
+	bool adv1g_eee = true, adv100m_eee = true;
 	s32 ret_val;
 
 	if ((hw->mac.type < e1000_i350) ||
@@ -2687,27 +3141,42 @@ static int igb_set_eee(struct net_device *netdev,
 			return -EINVAL;
 		}
 
-		if (eee_curr.advertised != edata->advertised) {
+		if (!edata->advertised || (edata->advertised &
+		    ~(ADVERTISE_100_FULL | ADVERTISE_1000_FULL))) {
 			dev_err(&adapter->pdev->dev,
-				"Setting EEE Advertisement is not supported\n");
+				"EEE Advertisement supports only 100Tx and/or 100T full duplex\n");
 			return -EINVAL;
 		}
+		adv100m_eee = !!(edata->advertised & ADVERTISE_100_FULL);
+		adv1g_eee = !!(edata->advertised & ADVERTISE_1000_FULL);
 
 	} else if (!edata->eee_enabled) {
 		dev_err(&adapter->pdev->dev,
 			"Setting EEE options are not supported with EEE disabled\n");
-			return -EINVAL;
-		}
+		return -EINVAL;
+	}
 
+	adapter->eee_advert = ethtool_adv_to_mmd_eee_adv_t(edata->advertised);
 	if (hw->dev_spec._82575.eee_disable != !edata->eee_enabled) {
 		hw->dev_spec._82575.eee_disable = !edata->eee_enabled;
-		igb_set_eee_i350(hw);
+		adapter->flags |= IGB_FLAG_EEE;
 
 		/* reset link */
 		if (netif_running(netdev))
 			igb_reinit_locked(adapter);
 		else
 			igb_reset(adapter);
+	}
+
+	if (hw->mac.type == e1000_i354)
+		ret_val = igb_set_eee_i354(hw, adv1g_eee, adv100m_eee);
+	else
+		ret_val = igb_set_eee_i350(hw, adv1g_eee, adv100m_eee);
+
+	if (ret_val) {
+		dev_err(&adapter->pdev->dev,
+			"Problem setting EEE advertisement options\n");
+		return -EINVAL;
 	}
 
 	return 0;
@@ -2718,7 +3187,7 @@ static int igb_get_module_info(struct net_device *netdev,
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 	struct e1000_hw *hw = &adapter->hw;
-	u32 status = E1000_SUCCESS;
+	u32 status = 0;
 	u16 sff8472_rev, addr_mode;
 	bool page_swap = false;
 
@@ -2728,12 +3197,12 @@ static int igb_get_module_info(struct net_device *netdev,
 
 	/* Check whether we support SFF-8472 or not */
 	status = igb_read_phy_reg_i2c(hw, IGB_SFF_8472_COMP, &sff8472_rev);
-	if (status != E1000_SUCCESS)
+	if (status)
 		return -EIO;
 
 	/* addressing mode is not supported */
 	status = igb_read_phy_reg_i2c(hw, IGB_SFF_8472_SWAP, &addr_mode);
-	if (status != E1000_SUCCESS)
+	if (status)
 		return -EIO;
 
 	/* addressing mode is not supported */
@@ -2760,7 +3229,7 @@ static int igb_get_module_eeprom(struct net_device *netdev,
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 	struct e1000_hw *hw = &adapter->hw;
-	u32 status = E1000_SUCCESS;
+	u32 status = 0;
 	u16 *dataword;
 	u16 first_word, last_word;
 	int i = 0;
@@ -2771,17 +3240,20 @@ static int igb_get_module_eeprom(struct net_device *netdev,
 	first_word = ee->offset >> 1;
 	last_word = (ee->offset + ee->len - 1) >> 1;
 
-	dataword = kmalloc(sizeof(u16) * (last_word - first_word + 1),
-			   GFP_KERNEL);
+	dataword = kmalloc_array(last_word - first_word + 1, sizeof(u16),
+				 GFP_KERNEL);
 	if (!dataword)
 		return -ENOMEM;
 
 	/* Read EEPROM block, SFF-8079/SFF-8472, word at a time */
 	for (i = 0; i < last_word - first_word + 1; i++) {
-		status = igb_read_phy_reg_i2c(hw, first_word + i, &dataword[i]);
-		if (status != E1000_SUCCESS)
+		status = igb_read_phy_reg_i2c(hw, (first_word + i) * 2,
+					      &dataword[i]);
+		if (status) {
 			/* Error occurred while reading module */
+			kfree(dataword);
 			return -EIO;
+		}
 
 		be16_to_cpus(&dataword[i]);
 	}
@@ -2810,11 +3282,16 @@ static u32 igb_get_rxfh_indir_size(struct net_device *netdev)
 	return IGB_RETA_SIZE;
 }
 
-static int igb_get_rxfh_indir(struct net_device *netdev, u32 *indir)
+static int igb_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
+			u8 *hfunc)
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 	int i;
 
+	if (hfunc)
+		*hfunc = ETH_RSS_HASH_TOP;
+	if (!indir)
+		return 0;
 	for (i = 0; i < IGB_RETA_SIZE; i++)
 		indir[i] = adapter->rss_indir_tbl[i];
 
@@ -2856,12 +3333,20 @@ void igb_write_rss_indir_tbl(struct igb_adapter *adapter)
 	}
 }
 
-static int igb_set_rxfh_indir(struct net_device *netdev, const u32 *indir)
+static int igb_set_rxfh(struct net_device *netdev, const u32 *indir,
+			const u8 *key, const u8 hfunc)
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 	struct e1000_hw *hw = &adapter->hw;
 	int i;
 	u32 num_queues;
+
+	/* We do not allow change in unsupported parameters */
+	if (key ||
+	    (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP))
+		return -EOPNOTSUPP;
+	if (!indir)
+		return 0;
 
 	num_queues = adapter->rss_queues;
 
@@ -2891,37 +3376,7 @@ static int igb_set_rxfh_indir(struct net_device *netdev, const u32 *indir)
 
 static unsigned int igb_max_channels(struct igb_adapter *adapter)
 {
-	struct e1000_hw *hw = &adapter->hw;
-	unsigned int max_combined = 0;
-
-	switch (hw->mac.type) {
-	case e1000_i211:
-		max_combined = IGB_MAX_RX_QUEUES_I211;
-		break;
-	case e1000_82575:
-	case e1000_i210:
-		max_combined = IGB_MAX_RX_QUEUES_82575;
-		break;
-	case e1000_i350:
-		if (!!adapter->vfs_allocated_count) {
-			max_combined = 1;
-			break;
-		}
-		/* fall through */
-	case e1000_82576:
-		if (!!adapter->vfs_allocated_count) {
-			max_combined = 2;
-			break;
-		}
-		/* fall through */
-	case e1000_82580:
-	case e1000_i354:
-	default:
-		max_combined = IGB_MAX_RX_QUEUES;
-		break;
-	}
-
-	return max_combined;
+	return igb_get_max_rss_queues(adapter);
 }
 
 static void igb_get_channels(struct net_device *netdev,
@@ -2946,6 +3401,7 @@ static int igb_set_channels(struct net_device *netdev,
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 	unsigned int count = ch->combined_count;
+	unsigned int max_combined = 0;
 
 	/* Verify they are not requesting separate vectors */
 	if (!count || ch->rx_count || ch->tx_count)
@@ -2956,11 +3412,13 @@ static int igb_set_channels(struct net_device *netdev,
 		return -EINVAL;
 
 	/* Verify the number of channels doesn't exceed hw limits */
-	if (count > igb_max_channels(adapter))
+	max_combined = igb_max_channels(adapter);
+	if (count > max_combined)
 		return -EINVAL;
 
 	if (count != adapter->rss_queues) {
 		adapter->rss_queues = count;
+		igb_set_flag_queue_pairs(adapter, max_combined);
 
 		/* Hardware has to reinitialize queues and interrupts to
 		 * match the new configuration.
@@ -2971,9 +3429,39 @@ static int igb_set_channels(struct net_device *netdev,
 	return 0;
 }
 
+static u32 igb_get_priv_flags(struct net_device *netdev)
+{
+	struct igb_adapter *adapter = netdev_priv(netdev);
+	u32 priv_flags = 0;
+
+	if (adapter->flags & IGB_FLAG_RX_LEGACY)
+		priv_flags |= IGB_PRIV_FLAGS_LEGACY_RX;
+
+	return priv_flags;
+}
+
+static int igb_set_priv_flags(struct net_device *netdev, u32 priv_flags)
+{
+	struct igb_adapter *adapter = netdev_priv(netdev);
+	unsigned int flags = adapter->flags;
+
+	flags &= ~IGB_FLAG_RX_LEGACY;
+	if (priv_flags & IGB_PRIV_FLAGS_LEGACY_RX)
+		flags |= IGB_FLAG_RX_LEGACY;
+
+	if (flags != adapter->flags) {
+		adapter->flags = flags;
+
+		/* reset interface to repopulate queues */
+		if (netif_running(netdev))
+			igb_reinit_locked(adapter);
+	}
+
+	return 0;
+}
+
 static const struct ethtool_ops igb_ethtool_ops = {
-	.get_settings		= igb_get_settings,
-	.set_settings		= igb_set_settings,
+	.supported_coalesce_params = ETHTOOL_COALESCE_USECS,
 	.get_drvinfo		= igb_get_drvinfo,
 	.get_regs_len		= igb_get_regs_len,
 	.get_regs		= igb_get_regs,
@@ -3005,15 +3493,19 @@ static const struct ethtool_ops igb_ethtool_ops = {
 	.get_module_info	= igb_get_module_info,
 	.get_module_eeprom	= igb_get_module_eeprom,
 	.get_rxfh_indir_size	= igb_get_rxfh_indir_size,
-	.get_rxfh_indir		= igb_get_rxfh_indir,
-	.set_rxfh_indir		= igb_set_rxfh_indir,
+	.get_rxfh		= igb_get_rxfh,
+	.set_rxfh		= igb_set_rxfh,
 	.get_channels		= igb_get_channels,
 	.set_channels		= igb_set_channels,
+	.get_priv_flags		= igb_get_priv_flags,
+	.set_priv_flags		= igb_set_priv_flags,
 	.begin			= igb_ethtool_begin,
 	.complete		= igb_ethtool_complete,
+	.get_link_ksettings	= igb_get_link_ksettings,
+	.set_link_ksettings	= igb_set_link_ksettings,
 };
 
 void igb_set_ethtool_ops(struct net_device *netdev)
 {
-	SET_ETHTOOL_OPS(netdev, &igb_ethtool_ops);
+	netdev->ethtool_ops = &igb_ethtool_ops;
 }

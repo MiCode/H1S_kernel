@@ -1,8 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * QLogic iSCSI HBA Driver
  * Copyright (c)   2003-2013 QLogic Corporation
- *
- * See LICENSE.qla4xxx for copyright and licensing details.
  */
 
 #include <linux/ratelimit.h>
@@ -46,11 +45,13 @@ int qla4_83xx_rd_reg_indirect(struct scsi_qla_host *ha, uint32_t addr,
 
 	ret_val = qla4_83xx_set_win_base(ha, addr);
 
-	if (ret_val == QLA_SUCCESS)
+	if (ret_val == QLA_SUCCESS) {
 		*data = qla4_83xx_rd_reg(ha, QLA83XX_WILDCARD);
-	else
+	} else {
+		*data = 0xffffffff;
 		ql4_printk(KERN_ERR, ha, "%s: failed read of addr 0x%x!\n",
 			   __func__, addr);
+	}
 
 	return ret_val;
 }
@@ -247,110 +248,6 @@ void qla4_83xx_rom_lock_recovery(struct scsi_qla_host *ha)
 	 * since we are restting, forcefully unlock
 	 */
 	qla4_83xx_flash_unlock(ha);
-}
-
-/**
- * qla4_83xx_ms_mem_write_128b - Writes data to MS/off-chip memory
- * @ha: Pointer to adapter structure
- * @addr: Flash address to write to
- * @data: Data to be written
- * @count: word_count to be written
- *
- * Return: On success return QLA_SUCCESS
- *	   On error return QLA_ERROR
- **/
-int qla4_83xx_ms_mem_write_128b(struct scsi_qla_host *ha, uint64_t addr,
-				uint32_t *data, uint32_t count)
-{
-	int i, j;
-	uint32_t agt_ctrl;
-	unsigned long flags;
-	int ret_val = QLA_SUCCESS;
-
-	/* Only 128-bit aligned access */
-	if (addr & 0xF) {
-		ret_val = QLA_ERROR;
-		goto exit_ms_mem_write;
-	}
-
-	write_lock_irqsave(&ha->hw_lock, flags);
-
-	/* Write address */
-	ret_val = qla4_83xx_wr_reg_indirect(ha, MD_MIU_TEST_AGT_ADDR_HI, 0);
-	if (ret_val == QLA_ERROR) {
-		ql4_printk(KERN_ERR, ha, "%s: write to AGT_ADDR_HI failed\n",
-			   __func__);
-		goto exit_ms_mem_write_unlock;
-	}
-
-	for (i = 0; i < count; i++, addr += 16) {
-		if (!((QLA8XXX_ADDR_IN_RANGE(addr, QLA8XXX_ADDR_QDR_NET,
-					     QLA8XXX_ADDR_QDR_NET_MAX)) ||
-		      (QLA8XXX_ADDR_IN_RANGE(addr, QLA8XXX_ADDR_DDR_NET,
-					     QLA8XXX_ADDR_DDR_NET_MAX)))) {
-			ret_val = QLA_ERROR;
-			goto exit_ms_mem_write_unlock;
-		}
-
-		ret_val = qla4_83xx_wr_reg_indirect(ha, MD_MIU_TEST_AGT_ADDR_LO,
-						    addr);
-		/* Write data */
-		ret_val |= qla4_83xx_wr_reg_indirect(ha,
-						     MD_MIU_TEST_AGT_WRDATA_LO,
-						     *data++);
-		ret_val |= qla4_83xx_wr_reg_indirect(ha,
-						     MD_MIU_TEST_AGT_WRDATA_HI,
-						     *data++);
-		ret_val |= qla4_83xx_wr_reg_indirect(ha,
-						     MD_MIU_TEST_AGT_WRDATA_ULO,
-						     *data++);
-		ret_val |= qla4_83xx_wr_reg_indirect(ha,
-						     MD_MIU_TEST_AGT_WRDATA_UHI,
-						     *data++);
-		if (ret_val == QLA_ERROR) {
-			ql4_printk(KERN_ERR, ha, "%s: write to AGT_WRDATA failed\n",
-				   __func__);
-			goto exit_ms_mem_write_unlock;
-		}
-
-		/* Check write status */
-		ret_val = qla4_83xx_wr_reg_indirect(ha, MD_MIU_TEST_AGT_CTRL,
-						    MIU_TA_CTL_WRITE_ENABLE);
-		ret_val |= qla4_83xx_wr_reg_indirect(ha, MD_MIU_TEST_AGT_CTRL,
-						     MIU_TA_CTL_WRITE_START);
-		if (ret_val == QLA_ERROR) {
-			ql4_printk(KERN_ERR, ha, "%s: write to AGT_CTRL failed\n",
-				   __func__);
-			goto exit_ms_mem_write_unlock;
-		}
-
-		for (j = 0; j < MAX_CTL_CHECK; j++) {
-			ret_val = qla4_83xx_rd_reg_indirect(ha,
-							MD_MIU_TEST_AGT_CTRL,
-							&agt_ctrl);
-			if (ret_val == QLA_ERROR) {
-				ql4_printk(KERN_ERR, ha, "%s: failed to read MD_MIU_TEST_AGT_CTRL\n",
-					   __func__);
-				goto exit_ms_mem_write_unlock;
-			}
-			if ((agt_ctrl & MIU_TA_CTL_BUSY) == 0)
-				break;
-		}
-
-		/* Status check failed */
-		if (j >= MAX_CTL_CHECK) {
-			printk_ratelimited(KERN_ERR "%s: MS memory write failed!\n",
-					   __func__);
-			ret_val = QLA_ERROR;
-			goto exit_ms_mem_write_unlock;
-		}
-	}
-
-exit_ms_mem_write_unlock:
-	write_unlock_irqrestore(&ha->hw_lock, flags);
-
-exit_ms_mem_write:
-	return ret_val;
 }
 
 #define INTENT_TO_RECOVER	0x01
@@ -575,8 +472,7 @@ int qla4_83xx_can_perform_reset(struct scsi_qla_host *ha)
 		} else if (device_map[i].device_type == ISCSI_CLASS) {
 			if (drv_active & (1 << device_map[i].func_num)) {
 				if (!iscsi_present ||
-				    (iscsi_present &&
-				     (iscsi_func_low > device_map[i].func_num)))
+				iscsi_func_low > device_map[i].func_num)
 					iscsi_func_low = device_map[i].func_num;
 
 				iscsi_present++;
@@ -760,7 +656,7 @@ static int qla4_83xx_copy_bootloader(struct scsi_qla_host *ha)
 			  __func__));
 
 	/* 128 bit/16 byte write to MS memory */
-	ret_val = qla4_83xx_ms_mem_write_128b(ha, dest, (uint32_t *)p_cache,
+	ret_val = qla4_8xxx_ms_mem_write_128b(ha, dest, (uint32_t *)p_cache,
 					      count);
 	if (ret_val == QLA_ERROR) {
 		ql4_printk(KERN_ERR, ha, "%s: Error writing firmware to MS\n",
@@ -932,7 +828,7 @@ void qla4_83xx_read_reset_template(struct scsi_qla_host *ha)
 	ret_val = qla4_83xx_flash_read_u32(ha, addr, p_buff,
 					   tmplt_hdr_def_size);
 	if (ret_val != QLA_SUCCESS) {
-		ql4_printk(KERN_ERR, ha, "%s: Failed to read reset tempelate\n",
+		ql4_printk(KERN_ERR, ha, "%s: Failed to read reset template\n",
 			   __func__);
 		goto exit_read_template_error;
 	}
@@ -1304,12 +1200,24 @@ static void qla4_83xx_process_init_seq(struct scsi_qla_host *ha)
 static int qla4_83xx_restart(struct scsi_qla_host *ha)
 {
 	int ret_val = QLA_SUCCESS;
+	uint32_t idc_ctrl;
 
 	qla4_83xx_process_stop_seq(ha);
 
-	/* Collect minidump*/
-	if (!test_and_clear_bit(AF_83XX_NO_FW_DUMP, &ha->flags))
+	/*
+	 * Collect minidump.
+	 * If IDC_CTRL BIT1 is set, clear it on going to INIT state and
+	 * don't collect minidump
+	 */
+	idc_ctrl = qla4_83xx_rd_reg(ha, QLA83XX_IDC_DRV_CTRL);
+	if (idc_ctrl & GRACEFUL_RESET_BIT1) {
+		qla4_83xx_wr_reg(ha, QLA83XX_IDC_DRV_CTRL,
+				 (idc_ctrl & ~GRACEFUL_RESET_BIT1));
+		ql4_printk(KERN_INFO, ha, "%s: Graceful RESET: Not collecting minidump\n",
+			   __func__);
+	} else {
 		qla4_8xxx_get_minidump(ha);
+	}
 
 	qla4_83xx_process_init_seq(ha);
 
@@ -1496,16 +1404,16 @@ exit_isp_reset:
 static void qla4_83xx_dump_pause_control_regs(struct scsi_qla_host *ha)
 {
 	u32 val = 0, val1 = 0;
-	int i, status = QLA_SUCCESS;
+	int i;
 
-	status = qla4_83xx_rd_reg_indirect(ha, QLA83XX_SRE_SHIM_CONTROL, &val);
+	qla4_83xx_rd_reg_indirect(ha, QLA83XX_SRE_SHIM_CONTROL, &val);
 	DEBUG2(ql4_printk(KERN_INFO, ha, "SRE-Shim Ctrl:0x%x\n", val));
 
 	/* Port 0 Rx Buffer Pause Threshold Registers. */
 	DEBUG2(ql4_printk(KERN_INFO, ha,
 		"Port 0 Rx Buffer Pause Threshold Registers[TC7..TC0]:"));
 	for (i = 0; i < 8; i++) {
-		status = qla4_83xx_rd_reg_indirect(ha,
+		qla4_83xx_rd_reg_indirect(ha,
 				QLA83XX_PORT0_RXB_PAUSE_THRS + (i * 0x4), &val);
 		DEBUG2(pr_info("0x%x ", val));
 	}
@@ -1516,7 +1424,7 @@ static void qla4_83xx_dump_pause_control_regs(struct scsi_qla_host *ha)
 	DEBUG2(ql4_printk(KERN_INFO, ha,
 		"Port 1 Rx Buffer Pause Threshold Registers[TC7..TC0]:"));
 	for (i = 0; i < 8; i++) {
-		status = qla4_83xx_rd_reg_indirect(ha,
+		qla4_83xx_rd_reg_indirect(ha,
 				QLA83XX_PORT1_RXB_PAUSE_THRS + (i * 0x4), &val);
 		DEBUG2(pr_info("0x%x  ", val));
 	}
@@ -1527,7 +1435,7 @@ static void qla4_83xx_dump_pause_control_regs(struct scsi_qla_host *ha)
 	DEBUG2(ql4_printk(KERN_INFO, ha,
 		"Port 0 RxB Traffic Class Max Cell Registers[3..0]:"));
 	for (i = 0; i < 4; i++) {
-		status = qla4_83xx_rd_reg_indirect(ha,
+		qla4_83xx_rd_reg_indirect(ha,
 			       QLA83XX_PORT0_RXB_TC_MAX_CELL + (i * 0x4), &val);
 		DEBUG2(pr_info("0x%x  ", val));
 	}
@@ -1538,7 +1446,7 @@ static void qla4_83xx_dump_pause_control_regs(struct scsi_qla_host *ha)
 	DEBUG2(ql4_printk(KERN_INFO, ha,
 		"Port 1 RxB Traffic Class Max Cell Registers[3..0]:"));
 	for (i = 0; i < 4; i++) {
-		status = qla4_83xx_rd_reg_indirect(ha,
+		qla4_83xx_rd_reg_indirect(ha,
 			       QLA83XX_PORT1_RXB_TC_MAX_CELL + (i * 0x4), &val);
 		DEBUG2(pr_info("0x%x  ", val));
 	}
@@ -1549,15 +1457,11 @@ static void qla4_83xx_dump_pause_control_regs(struct scsi_qla_host *ha)
 	DEBUG2(ql4_printk(KERN_INFO, ha,
 			  "Port 0 RxB Rx Traffic Class Stats [TC7..TC0]"));
 	for (i = 7; i >= 0; i--) {
-		status = qla4_83xx_rd_reg_indirect(ha,
-						   QLA83XX_PORT0_RXB_TC_STATS,
-						   &val);
+		qla4_83xx_rd_reg_indirect(ha, QLA83XX_PORT0_RXB_TC_STATS, &val);
 		val &= ~(0x7 << 29);    /* Reset bits 29 to 31 */
 		qla4_83xx_wr_reg_indirect(ha, QLA83XX_PORT0_RXB_TC_STATS,
 					  (val | (i << 29)));
-		status = qla4_83xx_rd_reg_indirect(ha,
-						   QLA83XX_PORT0_RXB_TC_STATS,
-						   &val);
+		qla4_83xx_rd_reg_indirect(ha, QLA83XX_PORT0_RXB_TC_STATS, &val);
 		DEBUG2(pr_info("0x%x  ", val));
 	}
 
@@ -1567,24 +1471,18 @@ static void qla4_83xx_dump_pause_control_regs(struct scsi_qla_host *ha)
 	DEBUG2(ql4_printk(KERN_INFO, ha,
 			  "Port 1 RxB Rx Traffic Class Stats [TC7..TC0]"));
 	for (i = 7; i >= 0; i--) {
-		status = qla4_83xx_rd_reg_indirect(ha,
-						   QLA83XX_PORT1_RXB_TC_STATS,
-						   &val);
+		qla4_83xx_rd_reg_indirect(ha, QLA83XX_PORT1_RXB_TC_STATS, &val);
 		val &= ~(0x7 << 29);    /* Reset bits 29 to 31 */
 		qla4_83xx_wr_reg_indirect(ha, QLA83XX_PORT1_RXB_TC_STATS,
 					  (val | (i << 29)));
-		status = qla4_83xx_rd_reg_indirect(ha,
-						   QLA83XX_PORT1_RXB_TC_STATS,
-						   &val);
+		qla4_83xx_rd_reg_indirect(ha, QLA83XX_PORT1_RXB_TC_STATS, &val);
 		DEBUG2(pr_info("0x%x  ", val));
 	}
 
 	DEBUG2(pr_info("\n"));
 
-	status = qla4_83xx_rd_reg_indirect(ha, QLA83XX_PORT2_IFB_PAUSE_THRS,
-					   &val);
-	status = qla4_83xx_rd_reg_indirect(ha, QLA83XX_PORT3_IFB_PAUSE_THRS,
-					   &val1);
+	qla4_83xx_rd_reg_indirect(ha, QLA83XX_PORT2_IFB_PAUSE_THRS, &val);
+	qla4_83xx_rd_reg_indirect(ha, QLA83XX_PORT3_IFB_PAUSE_THRS, &val1);
 
 	DEBUG2(ql4_printk(KERN_INFO, ha,
 			  "IFB-Pause Thresholds: Port 2:0x%x, Port 3:0x%x\n",
@@ -1663,4 +1561,24 @@ void qla4_83xx_disable_pause(struct scsi_qla_host *ha)
 	qla4_83xx_dump_pause_control_regs(ha);
 	__qla4_83xx_disable_pause(ha);
 	ha->isp_ops->idc_unlock(ha);
+}
+
+/**
+ * qla4_83xx_is_detached - Check if we are marked invisible.
+ * @ha: Pointer to host adapter structure.
+ **/
+int qla4_83xx_is_detached(struct scsi_qla_host *ha)
+{
+	uint32_t drv_active;
+
+	drv_active = qla4_8xxx_rd_direct(ha, QLA8XXX_CRB_DRV_ACTIVE);
+
+	if (test_bit(AF_INIT_DONE, &ha->flags) &&
+	    !(drv_active & (1 << ha->func_num))) {
+		DEBUG2(ql4_printk(KERN_INFO, ha, "%s: drv_active = 0x%X\n",
+				  __func__, drv_active));
+		return QLA_SUCCESS;
+	}
+
+	return QLA_ERROR;
 }

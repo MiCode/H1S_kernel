@@ -1,27 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Aic94xx SAS/SATA driver initialization.
  *
  * Copyright (C) 2005 Adaptec, Inc.  All rights reserved.
  * Copyright (C) 2005 Luben Tuikov <luben_tuikov@adaptec.com>
- *
- * This file is licensed under GPLv2.
- *
- * This file is part of the aic94xx driver.
- *
- * The aic94xx driver is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; version 2 of the
- * License.
- *
- * The aic94xx driver is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with the aic94xx driver; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
  */
 
 #include <linux/module.h>
@@ -49,40 +31,35 @@ MODULE_PARM_DESC(use_msi, "\n"
 	"\tEnable(1) or disable(0) using PCI MSI.\n"
 	"\tDefault: 0");
 
-static int lldd_max_execute_num = 0;
-module_param_named(collector, lldd_max_execute_num, int, S_IRUGO);
-MODULE_PARM_DESC(collector, "\n"
-	"\tIf greater than one, tells the SAS Layer to run in Task Collector\n"
-	"\tMode.  If 1 or 0, tells the SAS Layer to run in Direct Mode.\n"
-	"\tThe aic94xx SAS LLDD supports both modes.\n"
-	"\tDefault: 0 (Direct Mode).\n");
-
 static struct scsi_transport_template *aic94xx_transport_template;
 static int asd_scan_finished(struct Scsi_Host *, unsigned long);
 static void asd_scan_start(struct Scsi_Host *);
 
-static struct scsi_host_template aic94xx_sht = {
+static const struct scsi_host_template aic94xx_sht = {
 	.module			= THIS_MODULE,
 	/* .name is initialized */
 	.name			= "aic94xx",
 	.queuecommand		= sas_queuecommand,
+	.dma_need_drain		= ata_scsi_dma_need_drain,
 	.target_alloc		= sas_target_alloc,
 	.slave_configure	= sas_slave_configure,
 	.scan_finished		= asd_scan_finished,
 	.scan_start		= asd_scan_start,
 	.change_queue_depth	= sas_change_queue_depth,
-	.change_queue_type	= sas_change_queue_type,
 	.bios_param		= sas_bios_param,
 	.can_queue		= 1,
-	.cmd_per_lun		= 1,
 	.this_id		= -1,
 	.sg_tablesize		= SG_ALL,
 	.max_sectors		= SCSI_DEFAULT_MAX_SECTORS,
-	.use_clustering		= ENABLE_CLUSTERING,
 	.eh_device_reset_handler	= sas_eh_device_reset_handler,
-	.eh_bus_reset_handler	= sas_eh_bus_reset_handler,
+	.eh_target_reset_handler	= sas_eh_target_reset_handler,
+	.slave_alloc		= sas_slave_alloc,
 	.target_destroy		= sas_target_destroy,
 	.ioctl			= sas_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl		= sas_ioctl,
+#endif
+	.track_queue_depth	= 1,
 };
 
 static int asd_map_memio(struct asd_ha_struct *asd_ha)
@@ -108,15 +85,11 @@ static int asd_map_memio(struct asd_ha_struct *asd_ha)
 				   pci_name(asd_ha->pcidev));
 			goto Err;
 		}
-		if (io_handle->flags & IORESOURCE_CACHEABLE)
-			io_handle->addr = ioremap(io_handle->start,
-						  io_handle->len);
-		else
-			io_handle->addr = ioremap_nocache(io_handle->start,
-							  io_handle->len);
+		io_handle->addr = ioremap(io_handle->start, io_handle->len);
 		if (!io_handle->addr) {
 			asd_printk("couldn't map MBAR%d of %s\n", i==0?0:1,
 				   pci_name(asd_ha->pcidev));
+			err = -ENOMEM;
 			goto Err_unreq;
 		}
 	}
@@ -294,7 +267,7 @@ static ssize_t asd_show_dev_rev(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "%s\n",
 			asd_dev_rev[asd_ha->revision_id]);
 }
-static DEVICE_ATTR(revision, S_IRUGO, asd_show_dev_rev, NULL);
+static DEVICE_ATTR(aic_revision, S_IRUGO, asd_show_dev_rev, NULL);
 
 static ssize_t asd_show_dev_bios_build(struct device *dev,
 				       struct device_attribute *attr,char *buf)
@@ -363,7 +336,7 @@ static ssize_t asd_store_update_bios(struct device *dev,
 	int flash_command = FLASH_CMD_NONE;
 	int err = 0;
 
-	cmd_ptr = kzalloc(count*2, GFP_KERNEL);
+	cmd_ptr = kcalloc(count, 2, GFP_KERNEL);
 
 	if (!cmd_ptr) {
 		err = FAIL_OUT_MEMORY;
@@ -491,7 +464,7 @@ static int asd_create_dev_attrs(struct asd_ha_struct *asd_ha)
 {
 	int err;
 
-	err = device_create_file(&asd_ha->pcidev->dev, &dev_attr_revision);
+	err = device_create_file(&asd_ha->pcidev->dev, &dev_attr_aic_revision);
 	if (err)
 		return err;
 
@@ -513,13 +486,13 @@ err_update_bios:
 err_biosb:
 	device_remove_file(&asd_ha->pcidev->dev, &dev_attr_bios_build);
 err_rev:
-	device_remove_file(&asd_ha->pcidev->dev, &dev_attr_revision);
+	device_remove_file(&asd_ha->pcidev->dev, &dev_attr_aic_revision);
 	return err;
 }
 
 static void asd_remove_dev_attrs(struct asd_ha_struct *asd_ha)
 {
-	device_remove_file(&asd_ha->pcidev->dev, &dev_attr_revision);
+	device_remove_file(&asd_ha->pcidev->dev, &dev_attr_aic_revision);
 	device_remove_file(&asd_ha->pcidev->dev, &dev_attr_bios_build);
 	device_remove_file(&asd_ha->pcidev->dev, &dev_attr_pcba_sn);
 	device_remove_file(&asd_ha->pcidev->dev, &dev_attr_update_bios);
@@ -558,7 +531,7 @@ static int asd_create_ha_caches(struct asd_ha_struct *asd_ha)
 	return 0;
 }
 
-/**
+/*
  * asd_free_edbs -- free empty data buffers
  * asd_ha: pointer to host adapter structure
  */
@@ -597,8 +570,7 @@ static void asd_destroy_ha_caches(struct asd_ha_struct *asd_ha)
 	if (asd_ha->hw_prof.scb_ext)
 		asd_free_coherent(asd_ha, asd_ha->hw_prof.scb_ext);
 
-	if (asd_ha->hw_prof.ddb_bitmap)
-		kfree(asd_ha->hw_prof.ddb_bitmap);
+	kfree(asd_ha->hw_prof.ddb_bitmap);
 	asd_ha->hw_prof.ddb_bitmap = NULL;
 
 	for (i = 0; i < ASD_MAX_PHYS; i++) {
@@ -673,12 +645,10 @@ Err:
 
 static void asd_destroy_global_caches(void)
 {
-	if (asd_dma_token_cache)
-		kmem_cache_destroy(asd_dma_token_cache);
+	kmem_cache_destroy(asd_dma_token_cache);
 	asd_dma_token_cache = NULL;
 
-	if (asd_ascb_cache)
-		kmem_cache_destroy(asd_ascb_cache);
+	kmem_cache_destroy(asd_ascb_cache);
 	asd_ascb_cache = NULL;
 }
 
@@ -697,7 +667,6 @@ static int asd_register_sas_ha(struct asd_ha_struct *asd_ha)
 	}
 
 	asd_ha->sas_ha.sas_ha_name = (char *) asd_ha->name;
-	asd_ha->sas_ha.lldd_module = THIS_MODULE;
 	asd_ha->sas_ha.sas_addr = &asd_ha->hw_prof.sas_addr[0];
 
 	for (i = 0; i < ASD_MAX_PHYS; i++) {
@@ -709,9 +678,6 @@ static int asd_register_sas_ha(struct asd_ha_struct *asd_ha)
 	asd_ha->sas_ha.sas_port= sas_ports;
 	asd_ha->sas_ha.num_phys= ASD_MAX_PHYS;
 
-	asd_ha->sas_ha.lldd_queue_size = asd_ha->seq.can_queue;
-	asd_ha->sas_ha.lldd_max_execute_num = lldd_max_execute_num;
-
 	return sas_register_ha(&asd_ha->sas_ha);
 }
 
@@ -721,9 +687,8 @@ static int asd_unregister_sas_ha(struct asd_ha_struct *asd_ha)
 
 	err = sas_unregister_ha(&asd_ha->sas_ha);
 
-	sas_remove_host(asd_ha->sas_ha.core.shost);
-	scsi_remove_host(asd_ha->sas_ha.core.shost);
-	scsi_host_put(asd_ha->sas_ha.core.shost);
+	sas_remove_host(asd_ha->sas_ha.shost);
+	scsi_host_put(asd_ha->sas_ha.shost);
 
 	kfree(asd_ha->sas_ha.sas_phy);
 	kfree(asd_ha->sas_ha.sas_port);
@@ -773,7 +738,7 @@ static int asd_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	asd_printk("found %s, device %s\n", asd_ha->name, pci_name(dev));
 
 	SHOST_TO_SAS_HA(shost) = &asd_ha->sas_ha;
-	asd_ha->sas_ha.core.shost = shost;
+	asd_ha->sas_ha.shost = shost;
 	shost->transportt = aic94xx_transport_template;
 	shost->max_id = ~0;
 	shost->max_lun = ~0;
@@ -787,14 +752,11 @@ static int asd_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	if (err)
 		goto Err_remove;
 
-	err = -ENODEV;
-	if (!pci_set_dma_mask(dev, DMA_BIT_MASK(64))
-	    && !pci_set_consistent_dma_mask(dev, DMA_BIT_MASK(64)))
-		;
-	else if (!pci_set_dma_mask(dev, DMA_BIT_MASK(32))
-		 && !pci_set_consistent_dma_mask(dev, DMA_BIT_MASK(32)))
-		;
-	else {
+	err = dma_set_mask_and_coherent(&dev->dev, DMA_BIT_MASK(64));
+	if (err)
+		err = dma_set_mask_and_coherent(&dev->dev, DMA_BIT_MASK(32));
+	if (err) {
+		err = -ENODEV;
 		asd_printk("no suitable DMA mask for %s\n", pci_name(dev));
 		goto Err_remove;
 	}
@@ -973,11 +935,11 @@ static int asd_scan_finished(struct Scsi_Host *shost, unsigned long time)
 	return 1;
 }
 
-static ssize_t asd_version_show(struct device_driver *driver, char *buf)
+static ssize_t version_show(struct device_driver *driver, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%s\n", ASD_DRIVER_VERSION);
 }
-static DRIVER_ATTR(version, S_IRUGO, asd_version_show, NULL);
+static DRIVER_ATTR_RO(version);
 
 static int asd_create_driver_attrs(struct device_driver *driver)
 {
@@ -997,7 +959,6 @@ static struct sas_domain_function_template aic94xx_transport_functions = {
 
 	.lldd_abort_task	= asd_abort_task,
 	.lldd_abort_task_set	= asd_abort_task_set,
-	.lldd_clear_aca		= asd_clear_aca,
 	.lldd_clear_task_set	= asd_clear_task_set,
 	.lldd_I_T_nexus_reset	= asd_I_T_nexus_reset,
 	.lldd_lu_reset		= asd_lu_reset,
@@ -1047,8 +1008,10 @@ static int __init aic94xx_init(void)
 
 	aic94xx_transport_template =
 		sas_domain_attach_transport(&aic94xx_transport_functions);
-	if (!aic94xx_transport_template)
+	if (!aic94xx_transport_template) {
+		err = -ENOMEM;
 		goto out_destroy_caches;
+	}
 
 	err = pci_register_driver(&aic94xx_pci_driver);
 	if (err)

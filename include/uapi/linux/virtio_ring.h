@@ -1,7 +1,7 @@
 #ifndef _UAPI_LINUX_VIRTIO_RING_H
 #define _UAPI_LINUX_VIRTIO_RING_H
-/* An interface for efficient virtio implementation, currently for use by KVM
- * and lguest, but hopefully others soon.  Do NOT change this since it will
+/* An interface for efficient virtio implementation, currently for use by KVM,
+ * but hopefully others soon.  Do NOT change this since it will
  * break existing servers and clients.
  *
  * This header is BSD licensed so anyone can use the definitions to implement
@@ -31,7 +31,11 @@
  * SUCH DAMAGE.
  *
  * Copyright Rusty Russell IBM Corporation 2007. */
+#ifndef __KERNEL__
+#include <stdint.h>
+#endif
 #include <linux/types.h>
+#include <linux/virtio_types.h>
 
 /* This marks a buffer as continuing via the next field. */
 #define VRING_DESC_F_NEXT	1
@@ -39,6 +43,13 @@
 #define VRING_DESC_F_WRITE	2
 /* This means the buffer contains a list of buffer descriptors. */
 #define VRING_DESC_F_INDIRECT	4
+
+/*
+ * Mark a descriptor as available or used in packed ring.
+ * Notice: they are defined as shifts instead of shifted values.
+ */
+#define VRING_PACKED_DESC_F_AVAIL	7
+#define VRING_PACKED_DESC_F_USED	15
 
 /* The Host uses this in used->flags to advise the Guest: don't kick me when
  * you add a buffer.  It's unreliable, so it's simply an optimization.  Guest
@@ -49,6 +60,23 @@
  * optimization.  */
 #define VRING_AVAIL_F_NO_INTERRUPT	1
 
+/* Enable events in packed ring. */
+#define VRING_PACKED_EVENT_FLAG_ENABLE	0x0
+/* Disable events in packed ring. */
+#define VRING_PACKED_EVENT_FLAG_DISABLE	0x1
+/*
+ * Enable events for a specific descriptor in packed ring.
+ * (as specified by Descriptor Ring Change Event Offset/Wrap Counter).
+ * Only valid if VIRTIO_RING_F_EVENT_IDX has been negotiated.
+ */
+#define VRING_PACKED_EVENT_FLAG_DESC	0x2
+
+/*
+ * Wrap counter bit shift in event suppression structure
+ * of packed ring.
+ */
+#define VRING_PACKED_EVENT_F_WRAP_CTR	15
+
 /* We support indirect buffer descriptors */
 #define VIRTIO_RING_F_INDIRECT_DESC	28
 
@@ -58,47 +86,86 @@
  * at the end of the used ring. Guest should ignore the used->flags field. */
 #define VIRTIO_RING_F_EVENT_IDX		29
 
-/* Virtio ring descriptors: 16 bytes.  These can chain together via "next". */
+/* Alignment requirements for vring elements.
+ * When using pre-virtio 1.0 layout, these fall out naturally.
+ */
+#define VRING_AVAIL_ALIGN_SIZE 2
+#define VRING_USED_ALIGN_SIZE 4
+#define VRING_DESC_ALIGN_SIZE 16
+
+/**
+ * struct vring_desc - Virtio ring descriptors,
+ * 16 bytes long. These can chain together via @next.
+ *
+ * @addr: buffer address (guest-physical)
+ * @len: buffer length
+ * @flags: descriptor flags
+ * @next: index of the next descriptor in the chain,
+ *        if the VRING_DESC_F_NEXT flag is set. We chain unused
+ *        descriptors via this, too.
+ */
 struct vring_desc {
-	/* Address (guest-physical). */
-	__u64 addr;
-	/* Length. */
-	__u32 len;
-	/* The flags as indicated above. */
-	__u16 flags;
-	/* We chain unused descriptors via this, too */
-	__u16 next;
+	__virtio64 addr;
+	__virtio32 len;
+	__virtio16 flags;
+	__virtio16 next;
 };
 
 struct vring_avail {
-	__u16 flags;
-	__u16 idx;
-	__u16 ring[];
+	__virtio16 flags;
+	__virtio16 idx;
+	__virtio16 ring[];
 };
 
 /* u32 is used here for ids for padding reasons. */
 struct vring_used_elem {
 	/* Index of start of used descriptor chain. */
-	__u32 id;
+	__virtio32 id;
 	/* Total length of the descriptor chain which was used (written to) */
-	__u32 len;
+	__virtio32 len;
 };
 
+typedef struct vring_used_elem __attribute__((aligned(VRING_USED_ALIGN_SIZE)))
+	vring_used_elem_t;
+
 struct vring_used {
-	__u16 flags;
-	__u16 idx;
-	struct vring_used_elem ring[];
+	__virtio16 flags;
+	__virtio16 idx;
+	vring_used_elem_t ring[];
 };
+
+/*
+ * The ring element addresses are passed between components with different
+ * alignments assumptions. Thus, we might need to decrease the compiler-selected
+ * alignment, and so must use a typedef to make sure the aligned attribute
+ * actually takes hold:
+ *
+ * https://gcc.gnu.org/onlinedocs//gcc/Common-Type-Attributes.html#Common-Type-Attributes
+ *
+ * When used on a struct, or struct member, the aligned attribute can only
+ * increase the alignment; in order to decrease it, the packed attribute must
+ * be specified as well. When used as part of a typedef, the aligned attribute
+ * can both increase and decrease alignment, and specifying the packed
+ * attribute generates a warning.
+ */
+typedef struct vring_desc __attribute__((aligned(VRING_DESC_ALIGN_SIZE)))
+	vring_desc_t;
+typedef struct vring_avail __attribute__((aligned(VRING_AVAIL_ALIGN_SIZE)))
+	vring_avail_t;
+typedef struct vring_used __attribute__((aligned(VRING_USED_ALIGN_SIZE)))
+	vring_used_t;
 
 struct vring {
 	unsigned int num;
 
-	struct vring_desc *desc;
+	vring_desc_t *desc;
 
-	struct vring_avail *avail;
+	vring_avail_t *avail;
 
-	struct vring_used *used;
+	vring_used_t *used;
 };
+
+#ifndef VIRTIO_RING_NO_LEGACY
 
 /* The standard layout for the ring is a continuous chunk of memory which looks
  * like this.  We assume num is a power of 2.
@@ -109,45 +176,47 @@ struct vring {
  *	struct vring_desc desc[num];
  *
  *	// A ring of available descriptor heads with free-running index.
- *	__u16 avail_flags;
- *	__u16 avail_idx;
- *	__u16 available[num];
- *	__u16 used_event_idx;
+ *	__virtio16 avail_flags;
+ *	__virtio16 avail_idx;
+ *	__virtio16 available[num];
+ *	__virtio16 used_event_idx;
  *
  *	// Padding to the next align boundary.
  *	char pad[];
  *
  *	// A ring of used descriptor heads with free-running index.
- *	__u16 used_flags;
- *	__u16 used_idx;
+ *	__virtio16 used_flags;
+ *	__virtio16 used_idx;
  *	struct vring_used_elem used[num];
- *	__u16 avail_event_idx;
+ *	__virtio16 avail_event_idx;
  * };
  */
 /* We publish the used event index at the end of the available ring, and vice
  * versa. They are at the end for backwards compatibility. */
 #define vring_used_event(vr) ((vr)->avail->ring[(vr)->num])
-#define vring_avail_event(vr) (*(__u16 *)&(vr)->used->ring[(vr)->num])
+#define vring_avail_event(vr) (*(__virtio16 *)&(vr)->used->ring[(vr)->num])
 
 static inline void vring_init(struct vring *vr, unsigned int num, void *p,
 			      unsigned long align)
 {
 	vr->num = num;
 	vr->desc = p;
-	vr->avail = p + num*sizeof(struct vring_desc);
-	vr->used = (void *)(((unsigned long)&vr->avail->ring[num] + sizeof(__u16)
+	vr->avail = (struct vring_avail *)((char *)p + num * sizeof(struct vring_desc));
+	vr->used = (void *)(((uintptr_t)&vr->avail->ring[num] + sizeof(__virtio16)
 		+ align-1) & ~(align - 1));
 }
 
 static inline unsigned vring_size(unsigned int num, unsigned long align)
 {
-	return ((sizeof(struct vring_desc) * num + sizeof(__u16) * (3 + num)
+	return ((sizeof(struct vring_desc) * num + sizeof(__virtio16) * (3 + num)
 		 + align - 1) & ~(align - 1))
-		+ sizeof(__u16) * 3 + sizeof(struct vring_used_elem) * num;
+		+ sizeof(__virtio16) * 3 + sizeof(struct vring_used_elem) * num;
 }
 
+#endif /* VIRTIO_RING_NO_LEGACY */
+
 /* The following is used with USED_EVENT_IDX and AVAIL_EVENT_IDX */
-/* Assuming a given event_idx value from the other size, if
+/* Assuming a given event_idx value from the other side, if
  * we have just incremented index from old to new_idx,
  * should we trigger an event? */
 static inline int vring_need_event(__u16 event_idx, __u16 new_idx, __u16 old)
@@ -159,5 +228,23 @@ static inline int vring_need_event(__u16 event_idx, __u16 new_idx, __u16 old)
 	 * event indexes in virtio start at 0. */
 	return (__u16)(new_idx - event_idx - 1) < (__u16)(new_idx - old);
 }
+
+struct vring_packed_desc_event {
+	/* Descriptor Ring Change Event Offset/Wrap Counter. */
+	__le16 off_wrap;
+	/* Descriptor Ring Change Event Flags. */
+	__le16 flags;
+};
+
+struct vring_packed_desc {
+	/* Buffer Address. */
+	__le64 addr;
+	/* Buffer Length. */
+	__le32 len;
+	/* Buffer ID. */
+	__le16 id;
+	/* The flags depending on descriptor type. */
+	__le16 flags;
+};
 
 #endif /* _UAPI_LINUX_VIRTIO_RING_H */

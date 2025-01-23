@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * Joern Rennecke  <joern.rennecke@embecosm.com>: Jan 2012
  *  -Insn Scheduling improvements to csum core routines.
@@ -27,7 +24,7 @@
  */
 static inline __sum16 csum_fold(__wsum s)
 {
-	unsigned r = s << 16 | s >> 16;	/* ror */
+	unsigned int r = s << 16 | s >> 16;	/* ror */
 	s = ~s;
 	s -= r;
 	return s >> 16;
@@ -70,8 +67,8 @@ ip_fast_csum(const void *iph, unsigned int ihl)
  * SA [4], DA [4], zeroes [1], Proto[1], TCP Seg(hdr+data) Len [2]
  */
 static inline __wsum
-csum_tcpudp_nofold(__be32 saddr, __be32 daddr, unsigned short len,
-		   unsigned short proto, __wsum sum)
+csum_tcpudp_nofold(__be32 saddr, __be32 daddr, __u32 len,
+		   __u8 proto, __wsum sum)
 {
 	__asm__ __volatile__(
 	"	add.f %0, %0, %1	\n"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * ppp-ioctl.h - PPP ioctl definitions.
  *
@@ -67,7 +68,7 @@ struct ppp_option_data {
 struct pppol2tp_ioc_stats {
 	__u16		tunnel_id;	/* redundant */
 	__u16		session_id;	/* if zero, get tunnel stats */
-	__u32		using_ipsec:1;	/* valid only for session_id == 0 */
+	__u32		using_ipsec:1;
 	__aligned_u64	tx_packets;
 	__aligned_u64	tx_bytes;
 	__aligned_u64	tx_errors;
@@ -103,15 +104,19 @@ struct pppol2tp_ioc_stats {
 #define PPPIOCGDEBUG	_IOR('t', 65, int)	/* Read debug level */
 #define PPPIOCSDEBUG	_IOW('t', 64, int)	/* Set debug level */
 #define PPPIOCGIDLE	_IOR('t', 63, struct ppp_idle) /* get idle time */
+#define PPPIOCGIDLE32	_IOR('t', 63, struct ppp_idle32) /* 32-bit times */
+#define PPPIOCGIDLE64	_IOR('t', 63, struct ppp_idle64) /* 64-bit times */
 #define PPPIOCNEWUNIT	_IOWR('t', 62, int)	/* create new ppp unit */
 #define PPPIOCATTACH	_IOW('t', 61, int)	/* attach to ppp unit */
-#define PPPIOCDETACH	_IOW('t', 60, int)	/* detach from ppp unit/chan */
+#define PPPIOCDETACH	_IOW('t', 60, int)	/* obsolete, do not use */
 #define PPPIOCSMRRU	_IOW('t', 59, int)	/* set multilink MRU */
 #define PPPIOCCONNECT	_IOW('t', 58, int)	/* connect channel to unit */
 #define PPPIOCDISCONN	_IO('t', 57)		/* disconnect channel */
 #define PPPIOCATTCHAN	_IOW('t', 56, int)	/* attach to ppp channel */
 #define PPPIOCGCHAN	_IOR('t', 55, int)	/* get ppp channel number */
 #define PPPIOCGL2TPSTATS _IOR('t', 54, struct pppol2tp_ioc_stats)
+#define PPPIOCBRIDGECHAN _IOW('t', 53, int)	/* bridge one channel to another */
+#define PPPIOCUNBRIDGECHAN _IO('t', 52)	/* unbridge channel */
 
 #define SIOCGPPPSTATS   (SIOCDEVPRIVATE + 0)
 #define SIOCGPPPVER     (SIOCDEVPRIVATE + 1)	/* NEVER change this!! */

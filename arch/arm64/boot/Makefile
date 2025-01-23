@@ -14,18 +14,37 @@
 # Based on the ia64 boot/Makefile.
 #
 
-targets := Image Image.gz
+OBJCOPYFLAGS_Image :=-O binary -R .note -R .note.gnu.build-id -R .comment -S
+
+targets := Image Image.bz2 Image.gz Image.lz4 Image.lzma Image.lzo Image.zst
 
 $(obj)/Image: vmlinux FORCE
 	$(call if_changed,objcopy)
 
+$(obj)/Image.bz2: $(obj)/Image FORCE
+	$(call if_changed,bzip2)
+
 $(obj)/Image.gz: $(obj)/Image FORCE
 	$(call if_changed,gzip)
 
-install: $(obj)/Image
-	$(CONFIG_SHELL) $(srctree)/$(src)/install.sh $(KERNELRELEASE) \
-	$(obj)/Image System.map "$(INSTALL_PATH)"
+$(obj)/Image.lz4: $(obj)/Image FORCE
+	$(call if_changed,lz4)
 
-zinstall: $(obj)/Image.gz
-	$(CONFIG_SHELL) $(srctree)/$(src)/install.sh $(KERNELRELEASE) \
-	$(obj)/Image.gz System.map "$(INSTALL_PATH)"
+$(obj)/Image.lzma: $(obj)/Image FORCE
+	$(call if_changed,lzma)
+
+$(obj)/Image.lzo: $(obj)/Image FORCE
+	$(call if_changed,lzo)
+
+$(obj)/Image.zst: $(obj)/Image FORCE
+	$(call if_changed,zstd)
+
+EFI_ZBOOT_PAYLOAD	:= Image
+EFI_ZBOOT_BFD_TARGET	:= elf64-littleaarch64
+EFI_ZBOOT_MACH_TYPE	:= ARM64
+EFI_ZBOOT_FORWARD_CFI	:= $(CONFIG_ARM64_BTI_KERNEL)
+
+EFI_ZBOOT_OBJCOPY_FLAGS	= --add-symbol zboot_code_size=0x$(shell \
+				$(NM) vmlinux|grep _kernel_codesize|cut -d' ' -f1)
+
+include $(srctree)/drivers/firmware/efi/libstub/Makefile.zboot

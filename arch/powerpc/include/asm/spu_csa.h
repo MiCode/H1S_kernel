@@ -1,23 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * spu_csa.h: Definitions for SPU context save area (CSA).
  *
  * (C) Copyright IBM 2005
  *
  * Author: Mark Nutter <mnutter@us.ibm.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #ifndef _SPU_CSA_H_
@@ -241,12 +228,6 @@ struct spu_priv2_collapsed {
  */
 struct spu_state {
 	struct spu_lscsa *lscsa;
-#ifdef CONFIG_SPU_FS_64K_LS
-	int		use_big_pages;
-	/* One struct page per 64k page */
-#define SPU_LSCSA_NUM_BIG_PAGES	(sizeof(struct spu_lscsa) / 0x10000)
-	struct page	*lscsa_pages[SPU_LSCSA_NUM_BIG_PAGES];
-#endif
 	struct spu_problem_collapsed prob;
 	struct spu_priv1_collapsed priv1;
 	struct spu_priv2_collapsed priv2;

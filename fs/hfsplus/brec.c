@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/hfsplus/brec.c
  *
@@ -72,9 +73,10 @@ int hfs_brec_insert(struct hfs_find_data *fd, void *entry, int entry_len)
 	if (!fd->bnode) {
 		if (!tree->root)
 			hfs_btree_inc_height(tree);
-		fd->bnode = hfs_bnode_find(tree, tree->leaf_head);
-		if (IS_ERR(fd->bnode))
-			return PTR_ERR(fd->bnode);
+		node = hfs_bnode_find(tree, tree->leaf_head);
+		if (IS_ERR(node))
+			return PTR_ERR(node);
+		fd->bnode = node;
 		fd->record = -1;
 	}
 	new_node = NULL;
@@ -131,13 +133,16 @@ skip:
 	hfs_bnode_write(node, entry, data_off + key_len, entry_len);
 	hfs_bnode_dump(node);
 
-	if (new_node) {
-		/* update parent key if we inserted a key
-		 * at the start of the first node
-		 */
-		if (!rec && new_node != node)
-			hfs_brec_update_parent(fd);
+	/*
+	 * update parent key if we inserted a key
+	 * at the start of the node and it is not the new node
+	 */
+	if (!rec && new_node != node) {
+		hfs_bnode_read_key(node, fd->search_key, data_off + size);
+		hfs_brec_update_parent(fd);
+	}
 
+	if (new_node) {
 		hfs_bnode_put(fd->bnode);
 		if (!new_node->parent) {
 			hfs_btree_inc_height(tree);
@@ -167,9 +172,6 @@ skip:
 		}
 		goto again;
 	}
-
-	if (!rec)
-		hfs_brec_update_parent(fd);
 
 	return 0;
 }
@@ -370,6 +372,8 @@ again:
 	if (IS_ERR(parent))
 		return PTR_ERR(parent);
 	__hfs_brec_find(parent, fd, hfs_find_rec_by_key);
+	if (fd->record < 0)
+		return -ENOENT;
 	hfs_bnode_dump(parent);
 	rec = fd->record;
 
@@ -425,6 +429,10 @@ skip:
 	if (new_node) {
 		__be32 cnid;
 
+		if (!new_node->parent) {
+			hfs_btree_inc_height(tree);
+			new_node->parent = tree->root;
+		}
 		fd->bnode = hfs_bnode_find(tree, new_node->parent);
 		/* create index key and entry */
 		hfs_bnode_read_key(new_node, fd->search_key, 14);
@@ -441,6 +449,7 @@ skip:
 			/* restore search_key */
 			hfs_bnode_read_key(node, fd->search_key, 14);
 		}
+		new_node = NULL;
 	}
 
 	if (!rec && node->parent)

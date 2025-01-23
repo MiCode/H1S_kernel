@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 
 #include "hpi_internal.h"
 #include "hpimsginit.h"
@@ -2019,7 +2020,6 @@ u16 hpi_meter_get_peak(u32 h_control, short an_peakdB[HPI_MAX_CHANNELS]
 		HPI_CONTROL_GET_STATE);
 	if (hpi_handle_indexes(h_control, &hm.adapter_index, &hm.obj_index))
 		return HPI_ERROR_INVALID_HANDLE;
-	hm.obj_index = hm.obj_index;
 	hm.u.c.attribute = HPI_METER_PEAK;
 
 	hpi_send_recv(&hm, &hr);
@@ -2323,11 +2323,8 @@ u16 hpi_sample_clock_get_source_index(u32 h_control, u16 *pw_source_index)
 u16 hpi_sample_clock_query_local_rate(const u32 h_clock, const u32 index,
 	u32 *prate)
 {
-	u16 err;
-	err = hpi_control_query(h_clock, HPI_SAMPLECLOCK_LOCAL_SAMPLERATE,
-		index, 0, prate);
-
-	return err;
+	return hpi_control_query(h_clock, HPI_SAMPLECLOCK_LOCAL_SAMPLERATE,
+				 index, 0, prate);
 }
 
 u16 hpi_sample_clock_set_local_rate(u32 h_control, u32 sample_rate)

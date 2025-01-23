@@ -1,25 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  USB Hanwang tablet support
  *
  *  Copyright (c) 2010 Xing Wei <weixing@hanwang.com.cn>
- *
- */
-
-/*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
  */
 
 #include <linux/types.h>
@@ -28,13 +11,9 @@
 #include <linux/module.h>
 #include <linux/usb/input.h>
 
-#define DRIVER_AUTHOR   "Xing Wei <weixing@hanwang.com.cn>"
-#define DRIVER_DESC     "USB Hanwang tablet driver"
-#define DRIVER_LICENSE  "GPL"
-
-MODULE_AUTHOR(DRIVER_AUTHOR);
-MODULE_DESCRIPTION(DRIVER_DESC);
-MODULE_LICENSE(DRIVER_LICENSE);
+MODULE_AUTHOR("Xing Wei <weixing@hanwang.com.cn>");
+MODULE_DESCRIPTION("USB Hanwang tablet driver");
+MODULE_LICENSE("GPL");
 
 #define USB_VENDOR_ID_HANWANG		0x0b57
 #define HANWANG_TABLET_INT_CLASS	0x0003
@@ -340,6 +319,9 @@ static int hanwang_probe(struct usb_interface *intf, const struct usb_device_id 
 	int error;
 	int i;
 
+	if (intf->cur_altsetting->desc.bNumEndpoints < 1)
+		return -ENODEV;
+
 	hanwang = kzalloc(sizeof(struct hanwang), GFP_KERNEL);
 	input_dev = input_allocate_device();
 	if (!hanwang || !input_dev) {
@@ -371,7 +353,7 @@ static int hanwang_probe(struct usb_interface *intf, const struct usb_device_id 
 	usb_make_path(dev, hanwang->phys, sizeof(hanwang->phys));
 	strlcat(hanwang->phys, "/input0", sizeof(hanwang->phys));
 
-	strlcpy(hanwang->name, hanwang->features->name, sizeof(hanwang->name));
+	strscpy(hanwang->name, hanwang->features->name, sizeof(hanwang->name));
 	input_dev->name = hanwang->name;
 	input_dev->phys = hanwang->phys;
 	usb_to_input_id(dev, &input_dev->id);

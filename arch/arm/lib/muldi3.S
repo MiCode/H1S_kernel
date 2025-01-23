@@ -1,16 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/arch/arm/lib/muldi3.S
  *
  *  Author:     Nicolas Pitre
  *  Created:    Oct 19, 2005
  *  Copyright:  Monta Vista Software, Inc.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
  */
 
 #include <linux/linkage.h>
+#include <asm/assembler.h>
 
 #ifdef __ARMEB__
 #define xh r0
@@ -41,7 +39,7 @@ ENTRY(__aeabi_lmul)
 	adc	xh, xh, yh, lsr #16
 	adds	xl, xl, ip, lsl #16
 	adc	xh, xh, ip, lsr #16
-	mov	pc, lr
+	ret	lr
 
 ENDPROC(__muldi3)
 ENDPROC(__aeabi_lmul)

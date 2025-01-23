@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Cast5 Cipher 16-way parallel algorithm (AVX/x86_64)
  *
@@ -5,25 +6,10 @@
  *     <Johannes.Goetzfried@informatik.stud.uni-erlangen.de>
  *
  * Copyright © 2012 Jussi Kivilinna <jussi.kivilinna@mbnet.fi>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307
- * USA
- *
  */
 
 #include <linux/linkage.h>
+#include <asm/frame.h>
 
 .file "cast5-avx-x86_64-asm_64.S"
 
@@ -46,7 +32,7 @@
 /**********************************************************************
   16-way AVX cast5
  **********************************************************************/
-#define CTX %rdi
+#define CTX %r15
 
 #define RL1 %xmm0
 #define RR1 %xmm1
@@ -69,8 +55,8 @@
 
 #define RTMP %xmm15
 
-#define RID1  %rbp
-#define RID1d %ebp
+#define RID1  %rdi
+#define RID1d %edi
 #define RID2  %rsi
 #define RID2d %esi
 
@@ -98,15 +84,19 @@
 
 #define lookup_32bit(src, dst, op1, op2, op3, interleave_op, il_reg) \
 	movzbl		src ## bh,     RID1d;    \
+	leaq		s1(%rip),      RID2;     \
+	movl		(RID2,RID1,4), dst ## d; \
 	movzbl		src ## bl,     RID2d;    \
+	leaq		s2(%rip),      RID1;     \
+	op1		(RID1,RID2,4), dst ## d; \
 	shrq $16,	src;                     \
-	movl		s1(, RID1, 4), dst ## d; \
-	op1		s2(, RID2, 4), dst ## d; \
 	movzbl		src ## bh,     RID1d;    \
+	leaq		s3(%rip),      RID2;     \
+	op2		(RID2,RID1,4), dst ## d; \
 	movzbl		src ## bl,     RID2d;    \
 	interleave_op(il_reg);			 \
-	op2		s3(, RID1, 4), dst ## d; \
-	op3		s4(, RID2, 4), dst ## d;
+	leaq		s4(%rip),      RID1;     \
+	op3		(RID1,RID2,4), dst ## d;
 
 #define dummy(d) /* do nothing */
 
@@ -165,15 +155,15 @@
 	subround(l ## 3, r ## 3, l ## 4, r ## 4, f);
 
 #define enc_preload_rkr() \
-	vbroadcastss	.L16_mask,                RKR;      \
+	vbroadcastss	.L16_mask(%rip),          RKR;      \
 	/* add 16-bit rotation to key rotations (mod 32) */ \
 	vpxor		kr(CTX),                  RKR, RKR;
 
 #define dec_preload_rkr() \
-	vbroadcastss	.L16_mask,                RKR;      \
+	vbroadcastss	.L16_mask(%rip),          RKR;      \
 	/* add 16-bit rotation to key rotations (mod 32) */ \
 	vpxor		kr(CTX),                  RKR, RKR; \
-	vpshufb		.Lbswap128_mask,          RKR, RKR;
+	vpshufb		.Lbswap128_mask(%rip),    RKR, RKR;
 
 #define transpose_2x4(x0, x1, t0, t1) \
 	vpunpckldq		x1, x0, t0; \
@@ -194,28 +184,37 @@
 	vpshufb rmask,	x0, x0;           \
 	vpshufb rmask,	x1, x1;
 
-.data
-
+.section	.rodata.cst16.bswap_mask, "aM", @progbits, 16
 .align 16
 .Lbswap_mask:
 	.byte 3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12
+.section	.rodata.cst16.bswap128_mask, "aM", @progbits, 16
+.align 16
 .Lbswap128_mask:
 	.byte 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0
+.section	.rodata.cst16.bswap_iv_mask, "aM", @progbits, 16
+.align 16
 .Lbswap_iv_mask:
 	.byte 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0
+
+.section	.rodata.cst4.16_mask, "aM", @progbits, 4
+.align 4
 .L16_mask:
 	.byte 16, 16, 16, 16
+.section	.rodata.cst4.32_mask, "aM", @progbits, 4
+.align 4
 .L32_mask:
 	.byte 32, 0, 0, 0
+.section	.rodata.cst4.first_mask, "aM", @progbits, 4
+.align 4
 .Lfirst_mask:
 	.byte 0x1f, 0, 0, 0
 
 .text
 
-.align 16
-__cast5_enc_blk16:
+SYM_FUNC_START_LOCAL(__cast5_enc_blk16)
 	/* input:
-	 *	%rdi: ctx, CTX
+	 *	%rdi: ctx
 	 *	RL1: blocks 1 and 2
 	 *	RR1: blocks 3 and 4
 	 *	RL2: blocks 5 and 6
@@ -235,12 +234,14 @@ __cast5_enc_blk16:
 	 *	RR4: encrypted blocks 15 and 16
 	 */
 
-	pushq %rbp;
+	pushq %r15;
 	pushq %rbx;
 
-	vmovdqa .Lbswap_mask, RKM;
-	vmovd .Lfirst_mask, R1ST;
-	vmovd .L32_mask, R32;
+	movq %rdi, CTX;
+
+	vmovdqa .Lbswap_mask(%rip), RKM;
+	vmovd .Lfirst_mask(%rip), R1ST;
+	vmovd .L32_mask(%rip), R32;
 	enc_preload_rkr();
 
 	inpack_blocks(RL1, RR1, RTMP, RX, RKM);
@@ -272,22 +273,21 @@ __cast5_enc_blk16:
 
 .L__skip_enc:
 	popq %rbx;
-	popq %rbp;
+	popq %r15;
 
-	vmovdqa .Lbswap_mask, RKM;
+	vmovdqa .Lbswap_mask(%rip), RKM;
 
 	outunpack_blocks(RR1, RL1, RTMP, RX, RKM);
 	outunpack_blocks(RR2, RL2, RTMP, RX, RKM);
 	outunpack_blocks(RR3, RL3, RTMP, RX, RKM);
 	outunpack_blocks(RR4, RL4, RTMP, RX, RKM);
 
-	ret;
-ENDPROC(__cast5_enc_blk16)
+	RET;
+SYM_FUNC_END(__cast5_enc_blk16)
 
-.align 16
-__cast5_dec_blk16:
+SYM_FUNC_START_LOCAL(__cast5_dec_blk16)
 	/* input:
-	 *	%rdi: ctx, CTX
+	 *	%rdi: ctx
 	 *	RL1: encrypted blocks 1 and 2
 	 *	RR1: encrypted blocks 3 and 4
 	 *	RL2: encrypted blocks 5 and 6
@@ -307,12 +307,14 @@ __cast5_dec_blk16:
 	 *	RR4: decrypted blocks 15 and 16
 	 */
 
-	pushq %rbp;
+	pushq %r15;
 	pushq %rbx;
 
-	vmovdqa .Lbswap_mask, RKM;
-	vmovd .Lfirst_mask, R1ST;
-	vmovd .L32_mask, R32;
+	movq %rdi, CTX;
+
+	vmovdqa .Lbswap_mask(%rip), RKM;
+	vmovd .Lfirst_mask(%rip), R1ST;
+	vmovd .L32_mask(%rip), R32;
 	dec_preload_rkr();
 
 	inpack_blocks(RL1, RR1, RTMP, RX, RKM);
@@ -343,29 +345,32 @@ __cast5_dec_blk16:
 	round(RL, RR, 1, 2);
 	round(RR, RL, 0, 1);
 
-	vmovdqa .Lbswap_mask, RKM;
+	vmovdqa .Lbswap_mask(%rip), RKM;
 	popq %rbx;
-	popq %rbp;
+	popq %r15;
 
 	outunpack_blocks(RR1, RL1, RTMP, RX, RKM);
 	outunpack_blocks(RR2, RL2, RTMP, RX, RKM);
 	outunpack_blocks(RR3, RL3, RTMP, RX, RKM);
 	outunpack_blocks(RR4, RL4, RTMP, RX, RKM);
 
-	ret;
+	RET;
 
 .L__skip_dec:
 	vpsrldq $4, RKR, RKR;
 	jmp .L__dec_tail;
-ENDPROC(__cast5_dec_blk16)
+SYM_FUNC_END(__cast5_dec_blk16)
 
-ENTRY(cast5_ecb_enc_16way)
+SYM_FUNC_START(cast5_ecb_enc_16way)
 	/* input:
-	 *	%rdi: ctx, CTX
+	 *	%rdi: ctx
 	 *	%rsi: dst
 	 *	%rdx: src
 	 */
+	FRAME_BEGIN
+	pushq %r15;
 
+	movq %rdi, CTX;
 	movq %rsi, %r11;
 
 	vmovdqu (0*4*4)(%rdx), RL1;
@@ -388,16 +393,22 @@ ENTRY(cast5_ecb_enc_16way)
 	vmovdqu RR4, (6*4*4)(%r11);
 	vmovdqu RL4, (7*4*4)(%r11);
 
-	ret;
-ENDPROC(cast5_ecb_enc_16way)
+	popq %r15;
+	FRAME_END
+	RET;
+SYM_FUNC_END(cast5_ecb_enc_16way)
 
-ENTRY(cast5_ecb_dec_16way)
+SYM_FUNC_START(cast5_ecb_dec_16way)
 	/* input:
-	 *	%rdi: ctx, CTX
+	 *	%rdi: ctx
 	 *	%rsi: dst
 	 *	%rdx: src
 	 */
 
+	FRAME_BEGIN
+	pushq %r15;
+
+	movq %rdi, CTX;
 	movq %rsi, %r11;
 
 	vmovdqu (0*4*4)(%rdx), RL1;
@@ -420,18 +431,22 @@ ENTRY(cast5_ecb_dec_16way)
 	vmovdqu RR4, (6*4*4)(%r11);
 	vmovdqu RL4, (7*4*4)(%r11);
 
-	ret;
-ENDPROC(cast5_ecb_dec_16way)
+	popq %r15;
+	FRAME_END
+	RET;
+SYM_FUNC_END(cast5_ecb_dec_16way)
 
-ENTRY(cast5_cbc_dec_16way)
+SYM_FUNC_START(cast5_cbc_dec_16way)
 	/* input:
-	 *	%rdi: ctx, CTX
+	 *	%rdi: ctx
 	 *	%rsi: dst
 	 *	%rdx: src
 	 */
-
+	FRAME_BEGIN
 	pushq %r12;
+	pushq %r15;
 
+	movq %rdi, CTX;
 	movq %rsi, %r11;
 	movq %rdx, %r12;
 
@@ -467,21 +482,24 @@ ENTRY(cast5_cbc_dec_16way)
 	vmovdqu RR4, (6*16)(%r11);
 	vmovdqu RL4, (7*16)(%r11);
 
+	popq %r15;
 	popq %r12;
+	FRAME_END
+	RET;
+SYM_FUNC_END(cast5_cbc_dec_16way)
 
-	ret;
-ENDPROC(cast5_cbc_dec_16way)
-
-ENTRY(cast5_ctr_16way)
+SYM_FUNC_START(cast5_ctr_16way)
 	/* input:
-	 *	%rdi: ctx, CTX
+	 *	%rdi: ctx
 	 *	%rsi: dst
 	 *	%rdx: src
 	 *	%rcx: iv (big endian, 64bit)
 	 */
-
+	FRAME_BEGIN
 	pushq %r12;
+	pushq %r15;
 
+	movq %rdi, CTX;
 	movq %rsi, %r11;
 	movq %rdx, %r12;
 
@@ -490,8 +508,8 @@ ENTRY(cast5_ctr_16way)
 
 	vpcmpeqd RKR, RKR, RKR;
 	vpaddq RKR, RKR, RKR; /* low: -2, high: -2 */
-	vmovdqa .Lbswap_iv_mask, R1ST;
-	vmovdqa .Lbswap128_mask, RKM;
+	vmovdqa .Lbswap_iv_mask(%rip), R1ST;
+	vmovdqa .Lbswap128_mask(%rip), RKM;
 
 	/* load IV and byteswap */
 	vmovq (%rcx), RX;
@@ -540,7 +558,8 @@ ENTRY(cast5_ctr_16way)
 	vmovdqu RR4, (6*16)(%r11);
 	vmovdqu RL4, (7*16)(%r11);
 
+	popq %r15;
 	popq %r12;
-
-	ret;
-ENDPROC(cast5_ctr_16way)
+	FRAME_END
+	RET;
+SYM_FUNC_END(cast5_ctr_16way)

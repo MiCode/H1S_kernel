@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * NES, SNES, N64, MultiSystem, PSX gamepad driver for Linux
  *
@@ -8,26 +9,6 @@
  *	Andree Borrmann		John Dahlstrom
  *	David Kuder		Nathan Hand
  *	Raphael Assenat
- */
-
-/*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
- * Should you need to contact me, the author, you can do so either by
- * e-mail - mail your message to <vojtech@ucw.cz>, or by paper mail:
- * Vojtech Pavlik, Simunkova 1594, Prague 8, 182 00 Czech Republic
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -53,7 +34,7 @@ struct gc_config {
 	unsigned int nargs;
 };
 
-static struct gc_config gc_cfg[GC_MAX_PORTS] __initdata;
+static struct gc_config gc_cfg[GC_MAX_PORTS];
 
 module_param_array_named(map, gc_cfg[0].args, int, &gc_cfg[0].nargs, 0);
 MODULE_PARM_DESC(map, "Describes first set of devices (<parport#>,<pad1>,<pad2>,..<pad5>)");
@@ -92,6 +73,7 @@ struct gc {
 	struct timer_list timer;
 	int pad_count[GC_MAX];
 	int used;
+	int parportno;
 	struct mutex mutex;
 };
 
@@ -304,7 +286,7 @@ static int gc_n64_play_effect(struct input_dev *dev, void *data,
 	return 0;
 }
 
-static int __init gc_n64_init_ff(struct input_dev *dev, int i)
+static int gc_n64_init_ff(struct input_dev *dev, int i)
 {
 	struct gc_subdev *sdev;
 	int err;
@@ -500,7 +482,7 @@ static void gc_multi_process_packet(struct gc *gc)
 		switch (pad->type) {
 		case GC_MULTI2:
 			input_report_key(dev, BTN_THUMB, s & data[5]);
-			/* fall through */
+			fallthrough;
 
 		case GC_MULTI:
 			input_report_abs(dev, ABS_X,
@@ -653,6 +635,7 @@ static void gc_psx_report_one(struct gc_pad *pad, unsigned char psx_type,
 
 		input_report_key(dev, BTN_THUMBL, ~data[0] & 0x04);
 		input_report_key(dev, BTN_THUMBR, ~data[0] & 0x02);
+		fallthrough;
 
 	case GC_PSX_NEGCON:
 	case GC_PSX_ANALOG:
@@ -741,9 +724,9 @@ static void gc_psx_process_packet(struct gc *gc)
  * gc_timer() initiates reads of console pads data.
  */
 
-static void gc_timer(unsigned long private)
+static void gc_timer(struct timer_list *t)
 {
-	struct gc *gc = (void *) private;
+	struct gc *gc = from_timer(gc, t, timer);
 
 /*
  * N64 pads - must be read first, any read confuses them for 200 us
@@ -811,7 +794,7 @@ static void gc_close(struct input_dev *dev)
 	mutex_unlock(&gc->mutex);
 }
 
-static int __init gc_setup_pad(struct gc *gc, int idx, int pad_type)
+static int gc_setup_pad(struct gc *gc, int idx, int pad_type)
 {
 	struct gc_pad *pad = &gc->pads[idx];
 	struct input_dev *input_dev;
@@ -860,7 +843,7 @@ static int __init gc_setup_pad(struct gc *gc, int idx, int pad_type)
 
 	case GC_N64:
 		for (i = 0; i < 10; i++)
-			__set_bit(gc_n64_btn[i], input_dev->keybit);
+			input_set_capability(input_dev, EV_KEY, gc_n64_btn[i]);
 
 		for (i = 0; i < 2; i++) {
 			input_set_abs_params(input_dev, ABS_X + i, -127, 126, 0, 2);
@@ -869,31 +852,36 @@ static int __init gc_setup_pad(struct gc *gc, int idx, int pad_type)
 
 		err = gc_n64_init_ff(input_dev, idx);
 		if (err) {
-			pr_warning("Failed to initiate rumble for N64 device %d\n", idx);
+			pr_warn("Failed to initiate rumble for N64 device %d\n",
+				idx);
 			goto err_free_dev;
 		}
 
 		break;
 
 	case GC_SNESMOUSE:
-		__set_bit(BTN_LEFT, input_dev->keybit);
-		__set_bit(BTN_RIGHT, input_dev->keybit);
-		__set_bit(REL_X, input_dev->relbit);
-		__set_bit(REL_Y, input_dev->relbit);
+		input_set_capability(input_dev, EV_KEY, BTN_LEFT);
+		input_set_capability(input_dev, EV_KEY, BTN_RIGHT);
+		input_set_capability(input_dev, EV_REL, REL_X);
+		input_set_capability(input_dev, EV_REL, REL_Y);
 		break;
 
 	case GC_SNES:
 		for (i = 4; i < 8; i++)
-			__set_bit(gc_snes_btn[i], input_dev->keybit);
+			input_set_capability(input_dev, EV_KEY, gc_snes_btn[i]);
+		fallthrough;
+
 	case GC_NES:
 		for (i = 0; i < 4; i++)
-			__set_bit(gc_snes_btn[i], input_dev->keybit);
+			input_set_capability(input_dev, EV_KEY, gc_snes_btn[i]);
 		break;
 
 	case GC_MULTI2:
-		__set_bit(BTN_THUMB, input_dev->keybit);
+		input_set_capability(input_dev, EV_KEY, BTN_THUMB);
+		fallthrough;
+
 	case GC_MULTI:
-		__set_bit(BTN_TRIGGER, input_dev->keybit);
+		input_set_capability(input_dev, EV_KEY, BTN_TRIGGER);
 		break;
 
 	case GC_PSX:
@@ -901,15 +889,17 @@ static int __init gc_setup_pad(struct gc *gc, int idx, int pad_type)
 			input_set_abs_params(input_dev,
 					     gc_psx_abs[i], 4, 252, 0, 2);
 		for (i = 0; i < 12; i++)
-			__set_bit(gc_psx_btn[i], input_dev->keybit);
+			input_set_capability(input_dev, EV_KEY, gc_psx_btn[i]);
+		break;
 
 		break;
 
 	case GC_DDR:
 		for (i = 0; i < 4; i++)
-			__set_bit(gc_psx_ddr_btn[i], input_dev->keybit);
+			input_set_capability(input_dev, EV_KEY,
+					     gc_psx_ddr_btn[i]);
 		for (i = 0; i < 12; i++)
-			__set_bit(gc_psx_btn[i], input_dev->keybit);
+			input_set_capability(input_dev, EV_KEY, gc_psx_btn[i]);
 
 		break;
 	}
@@ -926,46 +916,56 @@ err_free_dev:
 	return err;
 }
 
-static struct gc __init *gc_probe(int parport, int *pads, int n_pads)
+static void gc_attach(struct parport *pp)
 {
 	struct gc *gc;
-	struct parport *pp;
 	struct pardevice *pd;
-	int i;
+	int i, port_idx;
 	int count = 0;
-	int err;
+	int *pads, n_pads;
+	struct pardev_cb gc_parport_cb;
 
-	pp = parport_find_number(parport);
-	if (!pp) {
-		pr_err("no such parport %d\n", parport);
-		err = -EINVAL;
-		goto err_out;
+	for (port_idx = 0; port_idx < GC_MAX_PORTS; port_idx++) {
+		if (gc_cfg[port_idx].nargs == 0 || gc_cfg[port_idx].args[0] < 0)
+			continue;
+
+		if (gc_cfg[port_idx].args[0] == pp->number)
+			break;
 	}
 
-	pd = parport_register_device(pp, "gamecon", NULL, NULL, NULL, PARPORT_DEV_EXCL, NULL);
+	if (port_idx == GC_MAX_PORTS) {
+		pr_debug("Not using parport%d.\n", pp->number);
+		return;
+	}
+	pads = gc_cfg[port_idx].args + 1;
+	n_pads = gc_cfg[port_idx].nargs - 1;
+
+	memset(&gc_parport_cb, 0, sizeof(gc_parport_cb));
+	gc_parport_cb.flags = PARPORT_FLAG_EXCL;
+
+	pd = parport_register_dev_model(pp, "gamecon", &gc_parport_cb,
+					port_idx);
 	if (!pd) {
 		pr_err("parport busy already - lp.o loaded?\n");
-		err = -EBUSY;
-		goto err_put_pp;
+		return;
 	}
 
 	gc = kzalloc(sizeof(struct gc), GFP_KERNEL);
 	if (!gc) {
 		pr_err("Not enough memory\n");
-		err = -ENOMEM;
 		goto err_unreg_pardev;
 	}
 
 	mutex_init(&gc->mutex);
 	gc->pd = pd;
-	setup_timer(&gc->timer, gc_timer, (long) gc);
+	gc->parportno = pp->number;
+	timer_setup(&gc->timer, gc_timer, 0);
 
 	for (i = 0; i < n_pads && i < GC_MAX_DEVICES; i++) {
 		if (!pads[i])
 			continue;
 
-		err = gc_setup_pad(gc, i, pads[i]);
-		if (err)
+		if (gc_setup_pad(gc, i, pads[i]))
 			goto err_unreg_devs;
 
 		count++;
@@ -973,12 +973,11 @@ static struct gc __init *gc_probe(int parport, int *pads, int n_pads)
 
 	if (count == 0) {
 		pr_err("No valid devices specified\n");
-		err = -EINVAL;
 		goto err_free_gc;
 	}
 
-	parport_put_port(pp);
-	return gc;
+	gc_base[port_idx] = gc;
+	return;
 
  err_unreg_devs:
 	while (--i >= 0)
@@ -988,15 +987,23 @@ static struct gc __init *gc_probe(int parport, int *pads, int n_pads)
 	kfree(gc);
  err_unreg_pardev:
 	parport_unregister_device(pd);
- err_put_pp:
-	parport_put_port(pp);
- err_out:
-	return ERR_PTR(err);
 }
 
-static void gc_remove(struct gc *gc)
+static void gc_detach(struct parport *port)
 {
 	int i;
+	struct gc *gc;
+
+	for (i = 0; i < GC_MAX_PORTS; i++) {
+		if (gc_base[i] && gc_base[i]->parportno == port->number)
+			break;
+	}
+
+	if (i == GC_MAX_PORTS)
+		return;
+
+	gc = gc_base[i];
+	gc_base[i] = NULL;
 
 	for (i = 0; i < GC_MAX_DEVICES; i++)
 		if (gc->pads[i].dev)
@@ -1005,11 +1012,17 @@ static void gc_remove(struct gc *gc)
 	kfree(gc);
 }
 
+static struct parport_driver gc_parport_driver = {
+	.name = "gamecon",
+	.match_port = gc_attach,
+	.detach = gc_detach,
+	.devmodel = true,
+};
+
 static int __init gc_init(void)
 {
 	int i;
 	int have_dev = 0;
-	int err = 0;
 
 	for (i = 0; i < GC_MAX_PORTS; i++) {
 		if (gc_cfg[i].nargs == 0 || gc_cfg[i].args[0] < 0)
@@ -1017,37 +1030,21 @@ static int __init gc_init(void)
 
 		if (gc_cfg[i].nargs < 2) {
 			pr_err("at least one device must be specified\n");
-			err = -EINVAL;
-			break;
-		}
-
-		gc_base[i] = gc_probe(gc_cfg[i].args[0],
-				      gc_cfg[i].args + 1, gc_cfg[i].nargs - 1);
-		if (IS_ERR(gc_base[i])) {
-			err = PTR_ERR(gc_base[i]);
-			break;
+			return -EINVAL;
 		}
 
 		have_dev = 1;
 	}
 
-	if (err) {
-		while (--i >= 0)
-			if (gc_base[i])
-				gc_remove(gc_base[i]);
-		return err;
-	}
+	if (!have_dev)
+		return -ENODEV;
 
-	return have_dev ? 0 : -ENODEV;
+	return parport_register_driver(&gc_parport_driver);
 }
 
 static void __exit gc_exit(void)
 {
-	int i;
-
-	for (i = 0; i < GC_MAX_PORTS; i++)
-		if (gc_base[i])
-			gc_remove(gc_base[i]);
+	parport_unregister_driver(&gc_parport_driver);
 }
 
 module_init(gc_init);

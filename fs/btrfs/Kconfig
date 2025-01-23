@@ -1,13 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0
+
 config BTRFS_FS
 	tristate "Btrfs filesystem support"
+	select BLK_CGROUP_PUNT_BIO
 	select CRYPTO
 	select CRYPTO_CRC32C
+	select LIBCRC32C
+	select CRYPTO_XXHASH
+	select CRYPTO_SHA256
+	select CRYPTO_BLAKE2B
 	select ZLIB_INFLATE
 	select ZLIB_DEFLATE
 	select LZO_COMPRESS
 	select LZO_DECOMPRESS
+	select ZSTD_COMPRESS
+	select ZSTD_DECOMPRESS
+	select FS_IOMAP
 	select RAID6_PQ
 	select XOR_BLOCKS
+	depends on PAGE_SIZE_LESS_THAN_256KB
 
 	help
 	  Btrfs is a general purpose copy-on-write filesystem with extents,
@@ -20,7 +31,7 @@ config BTRFS_FS
 	  continue to be mountable and usable by newer kernels.
 
 	  For more information, please see the web pages at
-	  http://btrfs.wiki.kernel.org.
+	  https://btrfs.readthedocs.io
 
 	  To compile this file system support as a module, choose M here. The
 	  module will be called btrfs.
@@ -35,15 +46,14 @@ config BTRFS_FS_POSIX_ACL
 	  POSIX Access Control Lists (ACLs) support permissions for users and
 	  groups beyond the owner/group/world scheme.
 
-	  To learn more about Access Control Lists, visit the POSIX ACLs for
-	  Linux website <http://acl.bestbits.at/>.
-
 	  If you don't know what Access Control Lists are, say N
 
 config BTRFS_FS_CHECK_INTEGRITY
-	bool "Btrfs with integrity check tool compiled in (DANGEROUS)"
+	bool "Btrfs with integrity check tool compiled in (DEPRECATED)"
 	depends on BTRFS_FS
 	help
+	  This feature has been deprecated and will be removed in 6.7.
+
 	  Adds code that examines all block write requests (including
 	  writes of the super block). The goal is to verify that the
 	  state of the filesystem on disk is always consistent, i.e.,
@@ -86,5 +96,16 @@ config BTRFS_ASSERT
 	help
 	  Enable run-time assertion checking.  This will result in panics if
 	  any of the assertions trip.  This is meant for btrfs developers only.
+
+	  If unsure, say N.
+
+config BTRFS_FS_REF_VERIFY
+	bool "Btrfs with the ref verify tool compiled in"
+	depends on BTRFS_FS
+	default n
+	help
+	  Enable run-time extent reference verification instrumentation.  This
+	  is meant to be used by btrfs developers for tracking down extent
+	  reference problems or verifying they didn't break something.
 
 	  If unsure, say N.

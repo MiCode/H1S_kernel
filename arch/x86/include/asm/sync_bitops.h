@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_SYNC_BITOPS_H
 #define _ASM_X86_SYNC_BITOPS_H
 
@@ -12,6 +13,8 @@
  *
  * bit 0 is the LSB of addr; bit 32 is the LSB of (addr+1).
  */
+
+#include <asm/rmwcc.h>
 
 #define ADDR (*(volatile long *)addr)
 
@@ -28,7 +31,7 @@
  */
 static inline void sync_set_bit(long nr, volatile unsigned long *addr)
 {
-	asm volatile("lock; bts %1,%0"
+	asm volatile("lock; " __ASM_SIZE(bts) " %1,%0"
 		     : "+m" (ADDR)
 		     : "Ir" (nr)
 		     : "memory");
@@ -41,12 +44,12 @@ static inline void sync_set_bit(long nr, volatile unsigned long *addr)
  *
  * sync_clear_bit() is atomic and may not be reordered.  However, it does
  * not contain a memory barrier, so if it is used for locking purposes,
- * you should call smp_mb__before_clear_bit() and/or smp_mb__after_clear_bit()
+ * you should call smp_mb__before_atomic() and/or smp_mb__after_atomic()
  * in order to ensure changes are visible on other processors.
  */
 static inline void sync_clear_bit(long nr, volatile unsigned long *addr)
 {
-	asm volatile("lock; btr %1,%0"
+	asm volatile("lock; " __ASM_SIZE(btr) " %1,%0"
 		     : "+m" (ADDR)
 		     : "Ir" (nr)
 		     : "memory");
@@ -63,7 +66,7 @@ static inline void sync_clear_bit(long nr, volatile unsigned long *addr)
  */
 static inline void sync_change_bit(long nr, volatile unsigned long *addr)
 {
-	asm volatile("lock; btc %1,%0"
+	asm volatile("lock; " __ASM_SIZE(btc) " %1,%0"
 		     : "+m" (ADDR)
 		     : "Ir" (nr)
 		     : "memory");
@@ -77,14 +80,9 @@ static inline void sync_change_bit(long nr, volatile unsigned long *addr)
  * This operation is atomic and cannot be reordered.
  * It also implies a memory barrier.
  */
-static inline int sync_test_and_set_bit(long nr, volatile unsigned long *addr)
+static inline bool sync_test_and_set_bit(long nr, volatile unsigned long *addr)
 {
-	int oldbit;
-
-	asm volatile("lock; bts %2,%1\n\tsbbl %0,%0"
-		     : "=r" (oldbit), "+m" (ADDR)
-		     : "Ir" (nr) : "memory");
-	return oldbit;
+	return GEN_BINARY_RMWcc("lock; " __ASM_SIZE(bts), *addr, c, "Ir", nr);
 }
 
 /**
@@ -97,12 +95,7 @@ static inline int sync_test_and_set_bit(long nr, volatile unsigned long *addr)
  */
 static inline int sync_test_and_clear_bit(long nr, volatile unsigned long *addr)
 {
-	int oldbit;
-
-	asm volatile("lock; btr %2,%1\n\tsbbl %0,%0"
-		     : "=r" (oldbit), "+m" (ADDR)
-		     : "Ir" (nr) : "memory");
-	return oldbit;
+	return GEN_BINARY_RMWcc("lock; " __ASM_SIZE(btr), *addr, c, "Ir", nr);
 }
 
 /**
@@ -115,12 +108,7 @@ static inline int sync_test_and_clear_bit(long nr, volatile unsigned long *addr)
  */
 static inline int sync_test_and_change_bit(long nr, volatile unsigned long *addr)
 {
-	int oldbit;
-
-	asm volatile("lock; btc %2,%1\n\tsbbl %0,%0"
-		     : "=r" (oldbit), "+m" (ADDR)
-		     : "Ir" (nr) : "memory");
-	return oldbit;
+	return GEN_BINARY_RMWcc("lock; " __ASM_SIZE(btc), *addr, c, "Ir", nr);
 }
 
 #define sync_test_bit(nr, addr) test_bit(nr, addr)

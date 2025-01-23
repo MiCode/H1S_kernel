@@ -8,29 +8,24 @@
  * Licensed under the GNU/GPL. See COPYING for details.
  */
 
-#include <linux/gpio.h>
+#include "ssb_private.h"
+
+#include <linux/gpio/driver.h>
 #include <linux/irq.h>
 #include <linux/interrupt.h>
 #include <linux/irqdomain.h>
 #include <linux/export.h>
 #include <linux/ssb/ssb.h>
 
-#include "ssb_private.h"
-
 
 /**************************************************
  * Shared
  **************************************************/
 
-static struct ssb_bus *ssb_gpio_get_bus(struct gpio_chip *chip)
-{
-	return container_of(chip, struct ssb_bus, gpio);
-}
-
 #if IS_ENABLED(CONFIG_SSB_EMBEDDED)
-static int ssb_gpio_to_irq(struct gpio_chip *chip, unsigned gpio)
+static int ssb_gpio_to_irq(struct gpio_chip *chip, unsigned int gpio)
 {
-	struct ssb_bus *bus = ssb_gpio_get_bus(chip);
+	struct ssb_bus *bus = gpiochip_get_data(chip);
 
 	if (bus->bustype == SSB_BUSTYPE_SSB)
 		return irq_find_mapping(bus->irq_domain, gpio);
@@ -43,43 +38,43 @@ static int ssb_gpio_to_irq(struct gpio_chip *chip, unsigned gpio)
  * ChipCommon
  **************************************************/
 
-static int ssb_gpio_chipco_get_value(struct gpio_chip *chip, unsigned gpio)
+static int ssb_gpio_chipco_get_value(struct gpio_chip *chip, unsigned int gpio)
 {
-	struct ssb_bus *bus = ssb_gpio_get_bus(chip);
+	struct ssb_bus *bus = gpiochip_get_data(chip);
 
 	return !!ssb_chipco_gpio_in(&bus->chipco, 1 << gpio);
 }
 
-static void ssb_gpio_chipco_set_value(struct gpio_chip *chip, unsigned gpio,
+static void ssb_gpio_chipco_set_value(struct gpio_chip *chip, unsigned int gpio,
 				      int value)
 {
-	struct ssb_bus *bus = ssb_gpio_get_bus(chip);
+	struct ssb_bus *bus = gpiochip_get_data(chip);
 
 	ssb_chipco_gpio_out(&bus->chipco, 1 << gpio, value ? 1 << gpio : 0);
 }
 
 static int ssb_gpio_chipco_direction_input(struct gpio_chip *chip,
-					   unsigned gpio)
+					   unsigned int gpio)
 {
-	struct ssb_bus *bus = ssb_gpio_get_bus(chip);
+	struct ssb_bus *bus = gpiochip_get_data(chip);
 
 	ssb_chipco_gpio_outen(&bus->chipco, 1 << gpio, 0);
 	return 0;
 }
 
 static int ssb_gpio_chipco_direction_output(struct gpio_chip *chip,
-					    unsigned gpio, int value)
+					    unsigned int gpio, int value)
 {
-	struct ssb_bus *bus = ssb_gpio_get_bus(chip);
+	struct ssb_bus *bus = gpiochip_get_data(chip);
 
 	ssb_chipco_gpio_outen(&bus->chipco, 1 << gpio, 1 << gpio);
 	ssb_chipco_gpio_out(&bus->chipco, 1 << gpio, value ? 1 << gpio : 0);
 	return 0;
 }
 
-static int ssb_gpio_chipco_request(struct gpio_chip *chip, unsigned gpio)
+static int ssb_gpio_chipco_request(struct gpio_chip *chip, unsigned int gpio)
 {
-	struct ssb_bus *bus = ssb_gpio_get_bus(chip);
+	struct ssb_bus *bus = gpiochip_get_data(chip);
 
 	ssb_chipco_gpio_control(&bus->chipco, 1 << gpio, 0);
 	/* clear pulldown */
@@ -90,9 +85,9 @@ static int ssb_gpio_chipco_request(struct gpio_chip *chip, unsigned gpio)
 	return 0;
 }
 
-static void ssb_gpio_chipco_free(struct gpio_chip *chip, unsigned gpio)
+static void ssb_gpio_chipco_free(struct gpio_chip *chip, unsigned int gpio)
 {
-	struct ssb_bus *bus = ssb_gpio_get_bus(chip);
+	struct ssb_bus *bus = gpiochip_get_data(chip);
 
 	/* clear pullup */
 	ssb_chipco_gpio_pullup(&bus->chipco, 1 << gpio, 0);
@@ -137,7 +132,8 @@ static irqreturn_t ssb_gpio_irq_chipco_handler(int irq, void *dev_id)
 		return IRQ_NONE;
 
 	for_each_set_bit(gpio, &irqs, bus->gpio.ngpio)
-		generic_handle_irq(ssb_gpio_to_irq(&bus->gpio, gpio));
+		generic_handle_domain_irq_safe(bus->irq_domain, gpio);
+
 	ssb_chipco_gpio_polarity(chipco, irqs, val & irqs);
 
 	return IRQ_HANDLED;
@@ -236,7 +232,8 @@ static int ssb_gpio_chipco_init(struct ssb_bus *bus)
 	chip->ngpio		= 16;
 	/* There is just one SoC in one device and its GPIO addresses should be
 	 * deterministic to address them more easily. The other buses could get
-	 * a random base number. */
+	 * a random base number.
+	 */
 	if (bus->bustype == SSB_BUSTYPE_SSB)
 		chip->base		= 0;
 	else
@@ -246,7 +243,7 @@ static int ssb_gpio_chipco_init(struct ssb_bus *bus)
 	if (err)
 		return err;
 
-	err = gpiochip_add(chip);
+	err = gpiochip_add_data(chip, bus);
 	if (err) {
 		ssb_gpio_irq_chipco_domain_exit(bus);
 		return err;
@@ -261,34 +258,34 @@ static int ssb_gpio_chipco_init(struct ssb_bus *bus)
 
 #ifdef CONFIG_SSB_DRIVER_EXTIF
 
-static int ssb_gpio_extif_get_value(struct gpio_chip *chip, unsigned gpio)
+static int ssb_gpio_extif_get_value(struct gpio_chip *chip, unsigned int gpio)
 {
-	struct ssb_bus *bus = ssb_gpio_get_bus(chip);
+	struct ssb_bus *bus = gpiochip_get_data(chip);
 
 	return !!ssb_extif_gpio_in(&bus->extif, 1 << gpio);
 }
 
-static void ssb_gpio_extif_set_value(struct gpio_chip *chip, unsigned gpio,
+static void ssb_gpio_extif_set_value(struct gpio_chip *chip, unsigned int gpio,
 				     int value)
 {
-	struct ssb_bus *bus = ssb_gpio_get_bus(chip);
+	struct ssb_bus *bus = gpiochip_get_data(chip);
 
 	ssb_extif_gpio_out(&bus->extif, 1 << gpio, value ? 1 << gpio : 0);
 }
 
 static int ssb_gpio_extif_direction_input(struct gpio_chip *chip,
-					  unsigned gpio)
+					  unsigned int gpio)
 {
-	struct ssb_bus *bus = ssb_gpio_get_bus(chip);
+	struct ssb_bus *bus = gpiochip_get_data(chip);
 
 	ssb_extif_gpio_outen(&bus->extif, 1 << gpio, 0);
 	return 0;
 }
 
 static int ssb_gpio_extif_direction_output(struct gpio_chip *chip,
-					   unsigned gpio, int value)
+					   unsigned int gpio, int value)
 {
-	struct ssb_bus *bus = ssb_gpio_get_bus(chip);
+	struct ssb_bus *bus = gpiochip_get_data(chip);
 
 	ssb_extif_gpio_outen(&bus->extif, 1 << gpio, 1 << gpio);
 	ssb_extif_gpio_out(&bus->extif, 1 << gpio, value ? 1 << gpio : 0);
@@ -334,7 +331,8 @@ static irqreturn_t ssb_gpio_irq_extif_handler(int irq, void *dev_id)
 		return IRQ_NONE;
 
 	for_each_set_bit(gpio, &irqs, bus->gpio.ngpio)
-		generic_handle_irq(ssb_gpio_to_irq(&bus->gpio, gpio));
+		generic_handle_domain_irq_safe(bus->irq_domain, gpio);
+
 	ssb_extif_gpio_polarity(extif, irqs, val & irqs);
 
 	return IRQ_HANDLED;
@@ -429,7 +427,8 @@ static int ssb_gpio_extif_init(struct ssb_bus *bus)
 	chip->ngpio		= 5;
 	/* There is just one SoC in one device and its GPIO addresses should be
 	 * deterministic to address them more easily. The other buses could get
-	 * a random base number. */
+	 * a random base number.
+	 */
 	if (bus->bustype == SSB_BUSTYPE_SSB)
 		chip->base		= 0;
 	else
@@ -439,7 +438,7 @@ static int ssb_gpio_extif_init(struct ssb_bus *bus)
 	if (err)
 		return err;
 
-	err = gpiochip_add(chip);
+	err = gpiochip_add_data(chip, bus);
 	if (err) {
 		ssb_gpio_irq_extif_domain_exit(bus);
 		return err;
@@ -465,9 +464,6 @@ int ssb_gpio_init(struct ssb_bus *bus)
 		return ssb_gpio_chipco_init(bus);
 	else if (ssb_extif_available(&bus->extif))
 		return ssb_gpio_extif_init(bus);
-	else
-		SSB_WARN_ON(1);
-
 	return -1;
 }
 
@@ -475,10 +471,8 @@ int ssb_gpio_unregister(struct ssb_bus *bus)
 {
 	if (ssb_chipco_available(&bus->chipco) ||
 	    ssb_extif_available(&bus->extif)) {
-		return gpiochip_remove(&bus->gpio);
-	} else {
-		SSB_WARN_ON(1);
+		gpiochip_remove(&bus->gpio);
+		return 0;
 	}
-
 	return -1;
 }

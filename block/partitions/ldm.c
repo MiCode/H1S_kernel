@@ -1,4 +1,5 @@
-/**
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
  * ldm - Support for Windows Logical Disk Manager (Dynamic Disks)
  *
  * Copyright (C) 2001,2002 Richard Russon <ldm@flatcap.org>
@@ -6,32 +7,19 @@
  * Copyright (C) 2001,2002 Jakob Kemi <jakob.kemi@telia.com>
  *
  * Documentation is available at http://www.linux-ntfs.org/doku.php?id=downloads 
- *
- * This program is free software; you can redistribute it and/or modify it under
- * the terms of the GNU General Public License as published by the Free Software
- * Foundation; either version 2 of the License, or (at your option) any later
- * version.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
- * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
- * details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program (in the main directory of the source in the file COPYING); if
- * not, write to the Free Software Foundation, Inc., 59 Temple Place, Suite 330,
- * Boston, MA  02111-1307  USA
  */
 
 #include <linux/slab.h>
 #include <linux/pagemap.h>
 #include <linux/stringify.h>
 #include <linux/kernel.h>
+#include <linux/uuid.h>
+#include <linux/msdos_partition.h>
+
 #include "ldm.h"
 #include "check.h"
-#include "msdos.h"
 
-/**
+/*
  * ldm_debug/info/error/crit - Output an error message
  * @f:    A printf format string containing the message
  * @...:  Variables to substitute into @f
@@ -63,60 +51,6 @@ void _ldm_printk(const char *level, const char *function, const char *fmt, ...)
 	printk("%s%s(): %pV\n", level, function, &vaf);
 
 	va_end(args);
-}
-
-/**
- * ldm_parse_hexbyte - Convert a ASCII hex number to a byte
- * @src:  Pointer to at least 2 characters to convert.
- *
- * Convert a two character ASCII hex string to a number.
- *
- * Return:  0-255  Success, the byte was parsed correctly
- *          -1     Error, an invalid character was supplied
- */
-static int ldm_parse_hexbyte (const u8 *src)
-{
-	unsigned int x;		/* For correct wrapping */
-	int h;
-
-	/* high part */
-	x = h = hex_to_bin(src[0]);
-	if (h < 0)
-		return -1;
-
-	/* low part */
-	h = hex_to_bin(src[1]);
-	if (h < 0)
-		return -1;
-
-	return (x << 4) + h;
-}
-
-/**
- * ldm_parse_guid - Convert GUID from ASCII to binary
- * @src:   36 char string of the form fa50ff2b-f2e8-45de-83fa-65417f2f49ba
- * @dest:  Memory block to hold binary GUID (16 bytes)
- *
- * N.B. The GUID need not be NULL terminated.
- *
- * Return:  'true'   @dest contains binary GUID
- *          'false'  @dest contents are undefined
- */
-static bool ldm_parse_guid (const u8 *src, u8 *dest)
-{
-	static const int size[] = { 4, 2, 2, 2, 6 };
-	int i, j, v;
-
-	if (src[8]  != '-' || src[13] != '-' ||
-	    src[18] != '-' || src[23] != '-')
-		return false;
-
-	for (j = 0; j < 5; j++, src++)
-		for (i = 0; i < size[j]; i++, src+=2, *dest++ = v)
-			if ((v = ldm_parse_hexbyte (src)) < 0)
-				return false;
-
-	return true;
 }
 
 /**
@@ -167,7 +101,7 @@ static bool ldm_parse_privhead(const u8 *data, struct privhead *ph)
 		ldm_error("PRIVHEAD disk size doesn't match real disk size");
 		return false;
 	}
-	if (!ldm_parse_guid(data + 0x0030, ph->disk_id)) {
+	if (uuid_parse(data + 0x0030, &ph->disk_id)) {
 		ldm_error("PRIVHEAD contains an invalid GUID.");
 		return false;
 	}
@@ -286,7 +220,7 @@ static bool ldm_compare_privheads (const struct privhead *ph1,
 		(ph1->logical_disk_size  == ph2->logical_disk_size)	&&
 		(ph1->config_start       == ph2->config_start)		&&
 		(ph1->config_size        == ph2->config_size)		&&
-		!memcmp (ph1->disk_id, ph2->disk_id, GUID_SIZE));
+		uuid_equal(&ph1->disk_id, &ph2->disk_id));
 }
 
 /**
@@ -370,7 +304,7 @@ static bool ldm_validate_privheads(struct parsed_partitions *state,
 		}
 	}
 
-	num_sects = state->bdev->bd_inode->i_size >> 9;
+	num_sects = get_capacity(state->disk);
 
 	if ((ph[0]->config_start > num_sects) ||
 	   ((ph[0]->config_start + ph[0]->config_size) > num_sects)) {
@@ -405,11 +339,11 @@ out:
 /**
  * ldm_validate_tocblocks - Validate the table of contents and its backups
  * @state: Partition check state including device holding the LDM Database
- * @base:  Offset, into @state->bdev, of the database
+ * @base:  Offset, into @state->disk, of the database
  * @ldb:   Cache of the database structures
  *
  * Find and compare the four tables of contents of the LDM Database stored on
- * @state->bdev and return the parsed information into @toc1.
+ * @state->disk and return the parsed information into @toc1.
  *
  * The offsets and sizes of the configs are range-checked against a privhead.
  *
@@ -430,7 +364,7 @@ static bool ldm_validate_tocblocks(struct parsed_partitions *state,
 	BUG_ON(!state || !ldb);
 	ph = &ldb->ph;
 	tb[0] = &ldb->toc;
-	tb[1] = kmalloc(sizeof(*tb[1]) * 3, GFP_KERNEL);
+	tb[1] = kmalloc_array(3, sizeof(*tb[1]), GFP_KERNEL);
 	if (!tb[1]) {
 		ldm_crit("Out of memory.");
 		goto err;
@@ -552,14 +486,14 @@ out:
  *       only likely to happen if the underlying device is strange.  If that IS
  *       the case we should return zero to let someone else try.
  *
- * Return:  'true'   @state->bdev is a dynamic disk
- *          'false'  @state->bdev is not a dynamic disk, or an error occurred
+ * Return:  'true'   @state->disk is a dynamic disk
+ *          'false'  @state->disk is not a dynamic disk, or an error occurred
  */
 static bool ldm_validate_partition_table(struct parsed_partitions *state)
 {
 	Sector sect;
 	u8 *data;
-	struct partition *p;
+	struct msdos_partition *p;
 	int i;
 	bool result = false;
 
@@ -574,9 +508,9 @@ static bool ldm_validate_partition_table(struct parsed_partitions *state)
 	if (*(__le16*) (data + 0x01FE) != cpu_to_le16 (MSDOS_LABEL_MAGIC))
 		goto out;
 
-	p = (struct partition*)(data + 0x01BE);
+	p = (struct msdos_partition *)(data + 0x01BE);
 	for (i = 0; i < 4; i++, p++)
-		if (SYS_IND (p) == LDM_PARTITION) {
+		if (p->sys_ind == LDM_PARTITION) {
 			result = true;
 			break;
 		}
@@ -609,7 +543,7 @@ static struct vblk * ldm_get_disk_objid (const struct ldmdb *ldb)
 
 	list_for_each (item, &ldb->v_disk) {
 		struct vblk *v = list_entry (item, struct vblk, list);
-		if (!memcmp (v->vblk.disk.disk_id, ldb->ph.disk_id, GUID_SIZE))
+		if (uuid_equal(&v->vblk.disk.disk_id, &ldb->ph.disk_id))
 			return v;
 	}
 
@@ -802,7 +736,6 @@ static bool ldm_parse_cmp3 (const u8 *buffer, int buflen, struct vblk *vb)
 		len = r_cols;
 	} else {
 		r_stripe = 0;
-		r_cols   = 0;
 		len = r_parent;
 	}
 	if (len < 0)
@@ -849,11 +782,8 @@ static int ldm_parse_dgr3 (const u8 *buffer, int buflen, struct vblk *vb)
 		r_id1 = ldm_relative (buffer, buflen, 0x24, r_diskid);
 		r_id2 = ldm_relative (buffer, buflen, 0x24, r_id1);
 		len = r_id2;
-	} else {
-		r_id1 = 0;
-		r_id2 = 0;
+	} else
 		len = r_diskid;
-	}
 	if (len < 0)
 		return false;
 
@@ -882,7 +812,6 @@ static bool ldm_parse_dgr4 (const u8 *buffer, int buflen, struct vblk *vb)
 {
 	char buf[64];
 	int r_objid, r_name, r_id1, r_id2, len;
-	struct vblk_dgrp *dgrp;
 
 	BUG_ON (!buffer || !vb);
 
@@ -893,19 +822,14 @@ static bool ldm_parse_dgr4 (const u8 *buffer, int buflen, struct vblk *vb)
 		r_id1 = ldm_relative (buffer, buflen, 0x44, r_name);
 		r_id2 = ldm_relative (buffer, buflen, 0x44, r_id1);
 		len = r_id2;
-	} else {
-		r_id1 = 0;
-		r_id2 = 0;
+	} else
 		len = r_name;
-	}
 	if (len < 0)
 		return false;
 
 	len += VBLK_SIZE_DGR4;
 	if (len != get_unaligned_be32(buffer + 0x14))
 		return false;
-
-	dgrp = &vb->vblk.dgrp;
 
 	ldm_get_vstr (buffer + 0x18 + r_objid, buf, sizeof (buf));
 	return true;
@@ -944,7 +868,7 @@ static bool ldm_parse_dsk3 (const u8 *buffer, int buflen, struct vblk *vb)
 	disk = &vb->vblk.disk;
 	ldm_get_vstr (buffer + 0x18 + r_diskid, disk->alt_name,
 		sizeof (disk->alt_name));
-	if (!ldm_parse_guid (buffer + 0x19 + r_name, disk->disk_id))
+	if (uuid_parse(buffer + 0x19 + r_name, &disk->disk_id))
 		return false;
 
 	return true;
@@ -979,7 +903,7 @@ static bool ldm_parse_dsk4 (const u8 *buffer, int buflen, struct vblk *vb)
 		return false;
 
 	disk = &vb->vblk.disk;
-	memcpy (disk->disk_id, buffer + 0x18 + r_name, GUID_SIZE);
+	import_uuid(&disk->disk_id, buffer + 0x18 + r_name);
 	return true;
 }
 
@@ -1032,10 +956,8 @@ static bool ldm_parse_prt3(const u8 *buffer, int buflen, struct vblk *vb)
 			return false;
 		}
 		len = r_index;
-	} else {
-		r_index = 0;
+	} else
 		len = r_diskid;
-	}
 	if (len < 0) {
 		ldm_error("len %d < 0", len);
 		return false;
@@ -1302,7 +1224,7 @@ static bool ldm_frag_add (const u8 *data, int size, struct list_head *frags)
 	BUG_ON (!data || !frags);
 
 	if (size < 2 * VBLK_SIZE_HEAD) {
-		ldm_error("Value of size is to small.");
+		ldm_error("Value of size is too small.");
 		return false;
 	}
 
@@ -1409,7 +1331,7 @@ static bool ldm_frag_commit (struct list_head *frags, struct ldmdb *ldb)
 /**
  * ldm_get_vblks - Read the on-disk database of VBLKs into memory
  * @state: Partition check state including device holding the LDM Database
- * @base:  Offset, into @state->bdev, of the database
+ * @base:  Offset, into @state->disk, of the database
  * @ldb:   Cache of the database structures
  *
  * To use the information from the VBLKs, they need to be read from the disk,
@@ -1501,10 +1423,10 @@ static void ldm_free_vblks (struct list_head *lh)
  * example, if the device is hda, we would have: hda1: LDM database, hda2, hda3,
  * and so on: the actual data containing partitions.
  *
- * Return:  1 Success, @state->bdev is a dynamic disk and we handled it
- *          0 Success, @state->bdev is not a dynamic disk
+ * Return:  1 Success, @state->disk is a dynamic disk and we handled it
+ *          0 Success, @state->disk is not a dynamic disk
  *         -1 An error occurred before enough information had been read
- *            Or @state->bdev is a dynamic disk, but it may be corrupted
+ *            Or @state->disk is a dynamic disk, but it may be corrupted
  */
 int ldm_partition(struct parsed_partitions *state)
 {

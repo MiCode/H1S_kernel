@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * PCAP2 Regulator Driver
  *
  * Copyright (c) 2009 Daniel Ribeiro <drwyrm@gmail.com>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -89,10 +85,6 @@ static const unsigned int SW1_table[] = {
 };
 
 #define SW2_table SW1_table
-
-static const unsigned int SW3_table[] = {
-	4000000, 4500000, 5000000, 5500000,
-};
 
 struct pcap_regulator {
 	const u8 reg;
@@ -210,7 +202,7 @@ static int pcap_regulator_is_enabled(struct regulator_dev *rdev)
 	return (tmp >> vreg->en) & 1;
 }
 
-static struct regulator_ops pcap_regulator_ops = {
+static const struct regulator_ops pcap_regulator_ops = {
 	.list_voltage	= regulator_list_voltage_table,
 	.set_voltage_sel = pcap_regulator_set_voltage_sel,
 	.get_voltage_sel = pcap_regulator_get_voltage_sel,
@@ -259,7 +251,7 @@ static int pcap_regulator_probe(struct platform_device *pdev)
 static struct platform_driver pcap_regulator_driver = {
 	.driver = {
 		.name	= "pcap-regulator",
-		.owner	= THIS_MODULE,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe	= pcap_regulator_probe,
 };

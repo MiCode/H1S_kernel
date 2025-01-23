@@ -1,15 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * HWMON Driver for Dialog DA9055
  *
  * Copyright(c) 2012 Dialog Semiconductor Ltd.
  *
  * Author: David Dajun Chen <dchen@diasemi.com>
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #include <linux/delay.h>
@@ -36,7 +31,6 @@
 
 struct da9055_hwmon {
 	struct da9055	*da9055;
-	struct device	*class_device;
 	struct mutex	hwmon_lock;
 	struct mutex	irq_lock;
 	struct completion done;
@@ -141,8 +135,9 @@ static int da9055_disable_auto_mode(struct da9055 *da9055, int channel)
 	return da9055_reg_update(da9055, DA9055_REG_ADC_CONT, 1 << channel, 0);
 }
 
-static ssize_t da9055_read_auto_ch(struct device *dev,
-				struct device_attribute *devattr, char *buf)
+static ssize_t da9055_auto_ch_show(struct device *dev,
+				   struct device_attribute *devattr,
+				   char *buf)
 {
 	struct da9055_hwmon *hwmon = dev_get_drvdata(dev);
 	int ret, adc;
@@ -177,7 +172,7 @@ hwmon_err:
 	return ret;
 }
 
-static ssize_t da9055_read_tjunc(struct device *dev,
+static ssize_t da9055_tjunc_show(struct device *dev,
 				 struct device_attribute *devattr, char *buf)
 {
 	struct da9055_hwmon *hwmon = dev_get_drvdata(dev);
@@ -200,46 +195,26 @@ static ssize_t da9055_read_tjunc(struct device *dev,
 							+ 3076332, 10000));
 }
 
-static ssize_t da9055_hwmon_show_name(struct device *dev,
-				      struct device_attribute *devattr,
-				      char *buf)
-{
-	return sprintf(buf, "da9055-hwmon\n");
-}
-
-static ssize_t show_label(struct device *dev,
+static ssize_t label_show(struct device *dev,
 			  struct device_attribute *devattr, char *buf)
 {
 	return sprintf(buf, "%s\n",
 		       input_names[to_sensor_dev_attr(devattr)->index]);
 }
 
-static SENSOR_DEVICE_ATTR(in0_input, S_IRUGO, da9055_read_auto_ch, NULL,
-			  DA9055_ADC_VSYS);
-static SENSOR_DEVICE_ATTR(in0_label, S_IRUGO, show_label, NULL,
-			  DA9055_ADC_VSYS);
-static SENSOR_DEVICE_ATTR(in1_input, S_IRUGO, da9055_read_auto_ch, NULL,
-			  DA9055_ADC_ADCIN1);
-static SENSOR_DEVICE_ATTR(in1_label, S_IRUGO, show_label, NULL,
-			  DA9055_ADC_ADCIN1);
-static SENSOR_DEVICE_ATTR(in2_input, S_IRUGO, da9055_read_auto_ch, NULL,
-			  DA9055_ADC_ADCIN2);
-static SENSOR_DEVICE_ATTR(in2_label, S_IRUGO, show_label, NULL,
-			  DA9055_ADC_ADCIN2);
-static SENSOR_DEVICE_ATTR(in3_input, S_IRUGO, da9055_read_auto_ch, NULL,
-			  DA9055_ADC_ADCIN3);
-static SENSOR_DEVICE_ATTR(in3_label, S_IRUGO, show_label, NULL,
-			  DA9055_ADC_ADCIN3);
+static SENSOR_DEVICE_ATTR_RO(in0_input, da9055_auto_ch, DA9055_ADC_VSYS);
+static SENSOR_DEVICE_ATTR_RO(in0_label, label, DA9055_ADC_VSYS);
+static SENSOR_DEVICE_ATTR_RO(in1_input, da9055_auto_ch, DA9055_ADC_ADCIN1);
+static SENSOR_DEVICE_ATTR_RO(in1_label, label, DA9055_ADC_ADCIN1);
+static SENSOR_DEVICE_ATTR_RO(in2_input, da9055_auto_ch, DA9055_ADC_ADCIN2);
+static SENSOR_DEVICE_ATTR_RO(in2_label, label, DA9055_ADC_ADCIN2);
+static SENSOR_DEVICE_ATTR_RO(in3_input, da9055_auto_ch, DA9055_ADC_ADCIN3);
+static SENSOR_DEVICE_ATTR_RO(in3_label, label, DA9055_ADC_ADCIN3);
 
-static SENSOR_DEVICE_ATTR(temp1_input, S_IRUGO, da9055_read_tjunc, NULL,
-			  DA9055_ADC_TJUNC);
-static SENSOR_DEVICE_ATTR(temp1_label, S_IRUGO, show_label, NULL,
-			  DA9055_ADC_TJUNC);
+static SENSOR_DEVICE_ATTR_RO(temp1_input, da9055_tjunc, DA9055_ADC_TJUNC);
+static SENSOR_DEVICE_ATTR_RO(temp1_label, label, DA9055_ADC_TJUNC);
 
-static DEVICE_ATTR(name, S_IRUGO, da9055_hwmon_show_name, NULL);
-
-static struct attribute *da9055_attr[] = {
-	&dev_attr_name.attr,
+static struct attribute *da9055_attrs[] = {
 	&sensor_dev_attr_in0_input.dev_attr.attr,
 	&sensor_dev_attr_in0_label.dev_attr.attr,
 	&sensor_dev_attr_in1_input.dev_attr.attr,
@@ -254,15 +229,16 @@ static struct attribute *da9055_attr[] = {
 	NULL
 };
 
-static const struct attribute_group da9055_attr_group = {.attrs = da9055_attr};
+ATTRIBUTE_GROUPS(da9055);
 
 static int da9055_hwmon_probe(struct platform_device *pdev)
 {
+	struct device *dev = &pdev->dev;
 	struct da9055_hwmon *hwmon;
+	struct device *hwmon_dev;
 	int hwmon_irq, ret;
 
-	hwmon = devm_kzalloc(&pdev->dev, sizeof(struct da9055_hwmon),
-			     GFP_KERNEL);
+	hwmon = devm_kzalloc(dev, sizeof(struct da9055_hwmon), GFP_KERNEL);
 	if (!hwmon)
 		return -ENOMEM;
 
@@ -272,13 +248,7 @@ static int da9055_hwmon_probe(struct platform_device *pdev)
 	init_completion(&hwmon->done);
 	hwmon->da9055 = dev_get_drvdata(pdev->dev.parent);
 
-	platform_set_drvdata(pdev, hwmon);
-
 	hwmon_irq = platform_get_irq_byname(pdev, "HWMON");
-	if (hwmon_irq < 0)
-		return hwmon_irq;
-
-	hwmon_irq = regmap_irq_get_virq(hwmon->da9055->irq_data, hwmon_irq);
 	if (hwmon_irq < 0)
 		return hwmon_irq;
 
@@ -292,39 +262,16 @@ static int da9055_hwmon_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ret = sysfs_create_group(&pdev->dev.kobj, &da9055_attr_group);
-	if (ret)
-		return ret;
-
-	hwmon->class_device = hwmon_device_register(&pdev->dev);
-	if (IS_ERR(hwmon->class_device)) {
-		ret = PTR_ERR(hwmon->class_device);
-		goto err;
-	}
-
-	return 0;
-
-err:
-	sysfs_remove_group(&pdev->dev.kobj, &da9055_attr_group);
-	return ret;
-}
-
-static int da9055_hwmon_remove(struct platform_device *pdev)
-{
-	struct da9055_hwmon *hwmon = platform_get_drvdata(pdev);
-
-	sysfs_remove_group(&pdev->dev.kobj, &da9055_attr_group);
-	hwmon_device_unregister(hwmon->class_device);
-
-	return 0;
+	hwmon_dev = devm_hwmon_device_register_with_groups(dev, "da9055",
+							   hwmon,
+							   da9055_groups);
+	return PTR_ERR_OR_ZERO(hwmon_dev);
 }
 
 static struct platform_driver da9055_hwmon_driver = {
 	.probe = da9055_hwmon_probe,
-	.remove = da9055_hwmon_remove,
 	.driver = {
 		.name = "da9055-hwmon",
-		.owner = THIS_MODULE,
 	},
 };
 

@@ -25,7 +25,7 @@
  *          Alex Deucher
  *          Jerome Glisse
  */
-#include <drm/drmP.h>
+
 #include "radeon.h"
 #include "radeon_asic.h"
 #include "atom.h"
@@ -44,7 +44,7 @@ int r520_mc_wait_for_idle(struct radeon_device *rdev)
 		if (tmp & R520_MC_STATUS_IDLE) {
 			return 0;
 		}
-		DRM_UDELAY(1);
+		udelay(1);
 	}
 	return -1;
 }
@@ -86,8 +86,7 @@ static void r520_gpu_init(struct radeon_device *rdev)
 	      (((gb_pipe_select >> 8) & 0xF) << 4);
 	WREG32_PLL(0x000D, tmp);
 	if (r520_mc_wait_for_idle(rdev)) {
-		printk(KERN_WARNING "Failed to wait MC idle while "
-		       "programming pipes. Bad things might happen.\n");
+		pr_warn("Failed to wait MC idle while programming pipes. Bad things might happen.\n");
 	}
 }
 
@@ -240,8 +239,6 @@ int r520_resume(struct radeon_device *rdev)
 	/* Initialize surface registers */
 	radeon_surface_init(rdev);
 
-	radeon_pm_resume(rdev);
-
 	rdev->accel_working = true;
 	r = r520_startup(rdev);
 	if (r) {
@@ -302,9 +299,7 @@ int r520_init(struct radeon_device *rdev)
 	r520_mc_init(rdev);
 	rv515_debugfs(rdev);
 	/* Fence driver */
-	r = radeon_fence_driver_init(rdev);
-	if (r)
-		return r;
+	radeon_fence_driver_init(rdev);
 	/* Memory manager */
 	r = radeon_bo_init(rdev);
 	if (r)

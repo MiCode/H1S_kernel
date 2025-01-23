@@ -1,23 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * Copyright (c) 1996, 2003 VIA Networking Technologies, Inc.
  * All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
- *
- * File: baseband.h
  *
  * Purpose: Implement functions to access baseband
  *
@@ -33,7 +17,6 @@
 #ifndef __BASEBAND_H__
 #define __BASEBAND_H__
 
-#include "tether.h"
 #include "device.h"
 
 #define PREAMBLE_LONG   0
@@ -81,37 +64,12 @@
 #define TOP_RATE_2M         0x00200000
 #define TOP_RATE_1M         0x00100000
 
-/* Length, Service, and Signal fields of Phy for Tx */
-struct vnt_phy_field {
-	u8 signal;
-	u8 service;
-	__le16 len;
-} __packed;
-
-unsigned int
-BBuGetFrameTime(
-     u8 byPreambleType,
-     u8 byFreqType,
-     unsigned int cbFrameLength,
-     u16 wRate
-    );
-
-void BBvCalculateParameter(struct vnt_private *, u32 cbFrameLength,
-	u16 wRate, u8 byPacketType, struct vnt_phy_field *);
-
-/* timer for antenna diversity */
-
-void TimerSQ3CallBack(struct vnt_private *);
-void TimerSQ3Tmax3CallBack(struct vnt_private *);
-
-void BBvAntennaDiversity(struct vnt_private *, u8 byRxRate, u8 bySQ3);
-
-void BBvSetShortSlotTime(struct vnt_private *);
-void BBvSetVGAGainOffset(struct vnt_private *, u8 byData);
-void BBvSetAntennaMode(struct vnt_private *, u8 byAntennaMode);
-int BBbVT3184Init(struct vnt_private *);
-void BBvSetDeepSleep(struct vnt_private *);
-void BBvExitDeepSleep(struct vnt_private *);
-void BBvUpdatePreEDThreshold(struct vnt_private *, int bScanning);
+int vnt_set_short_slot_time(struct vnt_private *priv);
+int vnt_set_vga_gain_offset(struct vnt_private *priv, u8 data);
+int vnt_set_antenna_mode(struct vnt_private *priv, u8 antenna_mode);
+int vnt_vt3184_init(struct vnt_private *priv);
+int vnt_set_deep_sleep(struct vnt_private *priv);
+int vnt_exit_deep_sleep(struct vnt_private *priv);
+int vnt_update_pre_ed_threshold(struct vnt_private *priv, int scanning);
 
 #endif /* __BASEBAND_H__ */

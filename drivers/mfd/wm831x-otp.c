@@ -1,15 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * wm831x-otp.c  --  OTP for Wolfson WM831x PMICs
  *
  * Copyright 2009 Wolfson Microelectronics PLC.
  *
  * Author: Mark Brown <broonie@opensource.wolfsonmicro.com>
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #include <linux/kernel.h>
@@ -43,27 +38,21 @@ static int wm831x_unique_id_read(struct wm831x *wm831x, char *id)
 	return 0;
 }
 
-static ssize_t wm831x_unique_id_show(struct device *dev,
-				     struct device_attribute *attr, char *buf)
+static ssize_t unique_id_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
 {
 	struct wm831x *wm831x = dev_get_drvdata(dev);
-	int i, rval;
+	int rval;
 	char id[WM831X_UNIQUE_ID_LEN];
-	ssize_t ret = 0;
 
 	rval = wm831x_unique_id_read(wm831x, id);
 	if (rval < 0)
 		return 0;
 
-	for (i = 0; i < WM831X_UNIQUE_ID_LEN; i++)
-		ret += sprintf(&buf[ret], "%02x", buf[i]);
-
-	ret += sprintf(&buf[ret], "\n");
-
-	return ret;
+	return sprintf(buf, "%*phN\n", WM831X_UNIQUE_ID_LEN, id);
 }
 
-static DEVICE_ATTR(unique_id, 0444, wm831x_unique_id_show, NULL);
+static DEVICE_ATTR_RO(unique_id);
 
 int wm831x_otp_init(struct wm831x *wm831x)
 {

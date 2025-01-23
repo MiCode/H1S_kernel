@@ -1,5 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef TARGET_CORE_RD_H
 #define TARGET_CORE_RD_H
+
+#include <linux/module.h>
+#include <linux/types.h>
+#include <target/target_core_base.h>
 
 #define RD_HBA_VERSION		"v4.0"
 #define RD_MCP_VERSION		"4.0"
@@ -23,6 +28,7 @@ struct rd_dev_sg_table {
 
 #define RDF_HAS_PAGE_COUNT	0x01
 #define RDF_NULLIO		0x02
+#define RDF_DUMMY		0x04
 
 struct rd_dev {
 	struct se_device dev;

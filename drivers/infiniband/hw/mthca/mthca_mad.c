@@ -58,8 +58,9 @@ static int mthca_update_rate(struct mthca_dev *dev, u8 port_num)
 
 	ret = ib_query_port(&dev->ib_dev, port_num, tprops);
 	if (ret) {
-		printk(KERN_WARNING "ib_query_port failed (%d) for %s port %d\n",
-		       ret, dev->ib_dev.name, port_num);
+		dev_warn(&dev->ib_dev.dev,
+			 "ib_query_port failed (%d) forport %d\n", ret,
+			 port_num);
 		goto out;
 	}
 
@@ -75,25 +76,26 @@ static void update_sm_ah(struct mthca_dev *dev,
 			 u8 port_num, u16 lid, u8 sl)
 {
 	struct ib_ah *new_ah;
-	struct ib_ah_attr ah_attr;
+	struct rdma_ah_attr ah_attr;
 	unsigned long flags;
 
 	if (!dev->send_agent[port_num - 1][0])
 		return;
 
 	memset(&ah_attr, 0, sizeof ah_attr);
-	ah_attr.dlid     = lid;
-	ah_attr.sl       = sl;
-	ah_attr.port_num = port_num;
+	ah_attr.type = rdma_ah_find_type(&dev->ib_dev, port_num);
+	rdma_ah_set_dlid(&ah_attr, lid);
+	rdma_ah_set_sl(&ah_attr, sl);
+	rdma_ah_set_port_num(&ah_attr, port_num);
 
-	new_ah = ib_create_ah(dev->send_agent[port_num - 1][0]->qp->pd,
-			      &ah_attr);
+	new_ah = rdma_create_ah(dev->send_agent[port_num - 1][0]->qp->pd,
+				&ah_attr, 0);
 	if (IS_ERR(new_ah))
 		return;
 
 	spin_lock_irqsave(&dev->sm_lock, flags);
 	if (dev->sm_ah[port_num - 1])
-		ib_destroy_ah(dev->sm_ah[port_num - 1]);
+		rdma_destroy_ah(dev->sm_ah[port_num - 1], 0);
 	dev->sm_ah[port_num - 1] = new_ah;
 	spin_unlock_irqrestore(&dev->sm_lock, flags);
 }
@@ -104,7 +106,7 @@ static void update_sm_ah(struct mthca_dev *dev,
  */
 static void smp_snoop(struct ib_device *ibdev,
 		      u8 port_num,
-		      struct ib_mad *mad,
+		      const struct ib_mad *mad,
 		      u16 prev_lid)
 {
 	struct ib_event event;
@@ -153,14 +155,15 @@ static void node_desc_override(struct ib_device *dev,
 	    mad->mad_hdr.method == IB_MGMT_METHOD_GET_RESP &&
 	    mad->mad_hdr.attr_id == IB_SMP_ATTR_NODE_DESC) {
 		mutex_lock(&to_mdev(dev)->cap_mask_mutex);
-		memcpy(((struct ib_smp *) mad)->data, dev->node_desc, 64);
+		memcpy(((struct ib_smp *) mad)->data, dev->node_desc,
+		       IB_DEVICE_NODE_DESC_MAX);
 		mutex_unlock(&to_mdev(dev)->cap_mask_mutex);
 	}
 }
 
 static void forward_trap(struct mthca_dev *dev,
-			 u8 port_num,
-			 struct ib_mad *mad)
+			 u32 port_num,
+			 const struct ib_mad *mad)
 {
 	int qpn = mad->mad_hdr.mgmt_class != IB_MGMT_CLASS_SUBN_LID_ROUTED;
 	struct ib_mad_send_buf *send_buf;
@@ -170,7 +173,8 @@ static void forward_trap(struct mthca_dev *dev,
 
 	if (agent) {
 		send_buf = ib_create_send_mad(agent, qpn, 0, 0, IB_MGMT_MAD_HDR,
-					      IB_MGMT_MAD_DATA, GFP_ATOMIC);
+					      IB_MGMT_MAD_DATA, GFP_ATOMIC,
+					      IB_MGMT_BASE_VERSION);
 		if (IS_ERR(send_buf))
 			return;
 		/*
@@ -192,23 +196,19 @@ static void forward_trap(struct mthca_dev *dev,
 	}
 }
 
-int mthca_process_mad(struct ib_device *ibdev,
-		      int mad_flags,
-		      u8 port_num,
-		      struct ib_wc *in_wc,
-		      struct ib_grh *in_grh,
-		      struct ib_mad *in_mad,
-		      struct ib_mad *out_mad)
+int mthca_process_mad(struct ib_device *ibdev, int mad_flags, u32 port_num,
+		      const struct ib_wc *in_wc, const struct ib_grh *in_grh,
+		      const struct ib_mad *in, struct ib_mad *out,
+		      size_t *out_mad_size, u16 *out_mad_pkey_index)
 {
 	int err;
-	u16 slid = in_wc ? in_wc->slid : be16_to_cpu(IB_LID_PERMISSIVE);
+	u16 slid = in_wc ? ib_lid_cpu16(in_wc->slid) : be16_to_cpu(IB_LID_PERMISSIVE);
 	u16 prev_lid = 0;
 	struct ib_port_attr pattr;
 
 	/* Forward locally generated traps to the SM */
-	if (in_mad->mad_hdr.method == IB_MGMT_METHOD_TRAP &&
-	    slid == 0) {
-		forward_trap(to_mdev(ibdev), port_num, in_mad);
+	if (in->mad_hdr.method == IB_MGMT_METHOD_TRAP && !slid) {
+		forward_trap(to_mdev(ibdev), port_num, in);
 		return IB_MAD_RESULT_SUCCESS | IB_MAD_RESULT_CONSUMED;
 	}
 
@@ -218,40 +218,39 @@ int mthca_process_mad(struct ib_device *ibdev,
 	 * Only handle PMA and Mellanox vendor-specific class gets and
 	 * sets for other classes.
 	 */
-	if (in_mad->mad_hdr.mgmt_class == IB_MGMT_CLASS_SUBN_LID_ROUTED ||
-	    in_mad->mad_hdr.mgmt_class == IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE) {
-		if (in_mad->mad_hdr.method   != IB_MGMT_METHOD_GET &&
-		    in_mad->mad_hdr.method   != IB_MGMT_METHOD_SET &&
-		    in_mad->mad_hdr.method   != IB_MGMT_METHOD_TRAP_REPRESS)
+	if (in->mad_hdr.mgmt_class == IB_MGMT_CLASS_SUBN_LID_ROUTED ||
+	    in->mad_hdr.mgmt_class == IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE) {
+		if (in->mad_hdr.method != IB_MGMT_METHOD_GET &&
+		    in->mad_hdr.method != IB_MGMT_METHOD_SET &&
+		    in->mad_hdr.method != IB_MGMT_METHOD_TRAP_REPRESS)
 			return IB_MAD_RESULT_SUCCESS;
 
 		/*
 		 * Don't process SMInfo queries or vendor-specific
 		 * MADs -- the SMA can't handle them.
 		 */
-		if (in_mad->mad_hdr.attr_id == IB_SMP_ATTR_SM_INFO ||
-		    ((in_mad->mad_hdr.attr_id & IB_SMP_ATTR_VENDOR_MASK) ==
+		if (in->mad_hdr.attr_id == IB_SMP_ATTR_SM_INFO ||
+		    ((in->mad_hdr.attr_id & IB_SMP_ATTR_VENDOR_MASK) ==
 		     IB_SMP_ATTR_VENDOR_MASK))
 			return IB_MAD_RESULT_SUCCESS;
-	} else if (in_mad->mad_hdr.mgmt_class == IB_MGMT_CLASS_PERF_MGMT ||
-		   in_mad->mad_hdr.mgmt_class == MTHCA_VENDOR_CLASS1     ||
-		   in_mad->mad_hdr.mgmt_class == MTHCA_VENDOR_CLASS2) {
-		if (in_mad->mad_hdr.method  != IB_MGMT_METHOD_GET &&
-		    in_mad->mad_hdr.method  != IB_MGMT_METHOD_SET)
+	} else if (in->mad_hdr.mgmt_class == IB_MGMT_CLASS_PERF_MGMT ||
+		   in->mad_hdr.mgmt_class == MTHCA_VENDOR_CLASS1     ||
+		   in->mad_hdr.mgmt_class == MTHCA_VENDOR_CLASS2) {
+		if (in->mad_hdr.method != IB_MGMT_METHOD_GET &&
+		    in->mad_hdr.method != IB_MGMT_METHOD_SET)
 			return IB_MAD_RESULT_SUCCESS;
 	} else
 		return IB_MAD_RESULT_SUCCESS;
-	if ((in_mad->mad_hdr.mgmt_class == IB_MGMT_CLASS_SUBN_LID_ROUTED ||
-	     in_mad->mad_hdr.mgmt_class == IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE) &&
-	    in_mad->mad_hdr.method == IB_MGMT_METHOD_SET &&
-	    in_mad->mad_hdr.attr_id == IB_SMP_ATTR_PORT_INFO &&
+	if ((in->mad_hdr.mgmt_class == IB_MGMT_CLASS_SUBN_LID_ROUTED ||
+	     in->mad_hdr.mgmt_class == IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE) &&
+	    in->mad_hdr.method == IB_MGMT_METHOD_SET &&
+	    in->mad_hdr.attr_id == IB_SMP_ATTR_PORT_INFO &&
 	    !ib_query_port(ibdev, port_num, &pattr))
-		prev_lid = pattr.lid;
+		prev_lid = ib_lid_cpu16(pattr.lid);
 
-	err = mthca_MAD_IFC(to_mdev(ibdev),
-			    mad_flags & IB_MAD_IGNORE_MKEY,
-			    mad_flags & IB_MAD_IGNORE_BKEY,
-			    port_num, in_wc, in_grh, in_mad, out_mad);
+	err = mthca_MAD_IFC(to_mdev(ibdev), mad_flags & IB_MAD_IGNORE_MKEY,
+			    mad_flags & IB_MAD_IGNORE_BKEY, port_num, in_wc,
+			    in_grh, in, out);
 	if (err == -EBADMSG)
 		return IB_MAD_RESULT_SUCCESS;
 	else if (err) {
@@ -259,16 +258,16 @@ int mthca_process_mad(struct ib_device *ibdev,
 		return IB_MAD_RESULT_FAILURE;
 	}
 
-	if (!out_mad->mad_hdr.status) {
-		smp_snoop(ibdev, port_num, in_mad, prev_lid);
-		node_desc_override(ibdev, out_mad);
+	if (!out->mad_hdr.status) {
+		smp_snoop(ibdev, port_num, in, prev_lid);
+		node_desc_override(ibdev, out);
 	}
 
 	/* set return bit in status of directed route responses */
-	if (in_mad->mad_hdr.mgmt_class == IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE)
-		out_mad->mad_hdr.status |= cpu_to_be16(1 << 15);
+	if (in->mad_hdr.mgmt_class == IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE)
+		out->mad_hdr.status |= cpu_to_be16(1 << 15);
 
-	if (in_mad->mad_hdr.method == IB_MGMT_METHOD_TRAP_REPRESS)
+	if (in->mad_hdr.method == IB_MGMT_METHOD_TRAP_REPRESS)
 		/* no response for trap repress */
 		return IB_MAD_RESULT_SUCCESS | IB_MAD_RESULT_CONSUMED;
 
@@ -294,7 +293,7 @@ int mthca_create_agents(struct mthca_dev *dev)
 			agent = ib_register_mad_agent(&dev->ib_dev, p + 1,
 						      q ? IB_QPT_GSI : IB_QPT_SMI,
 						      NULL, 0, send_handler,
-						      NULL, NULL);
+						      NULL, NULL, 0);
 			if (IS_ERR(agent)) {
 				ret = PTR_ERR(agent);
 				goto err;
@@ -336,6 +335,7 @@ void mthca_free_agents(struct mthca_dev *dev)
 		}
 
 		if (dev->sm_ah[p])
-			ib_destroy_ah(dev->sm_ah[p]);
+			rdma_destroy_ah(dev->sm_ah[p],
+					RDMA_DESTROY_AH_SLEEPABLE);
 	}
 }

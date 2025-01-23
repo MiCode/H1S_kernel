@@ -19,11 +19,11 @@
  *
  */
 
+#include <crypto/algapi.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mm.h>
 #include <asm/byteorder.h>
-#include <linux/crypto.h>
 #include <linux/types.h>
 
 #define KHAZAD_KEY_SIZE		16
@@ -819,7 +819,7 @@ static void khazad_crypt(const u64 roundKey[KHAZAD_ROUNDS + 1],
 			T6[(int)(state >>  8) & 0xff] ^
 			T7[(int)(state      ) & 0xff] ^
 			roundKey[r];
-    	}
+	}
 
 	state = (T0[(int)(state >> 56)       ] & 0xff00000000000000ULL) ^
 		(T1[(int)(state >> 48) & 0xff] & 0x00ff000000000000ULL) ^
@@ -848,6 +848,7 @@ static void khazad_decrypt(struct crypto_tfm *tfm, u8 *dst, const u8 *src)
 
 static struct crypto_alg khazad_alg = {
 	.cra_name		=	"khazad",
+	.cra_driver_name	=	"khazad-generic",
 	.cra_flags		=	CRYPTO_ALG_TYPE_CIPHER,
 	.cra_blocksize		=	KHAZAD_BLOCK_SIZE,
 	.cra_ctxsize		=	sizeof (struct khazad_ctx),
@@ -875,8 +876,9 @@ static void __exit khazad_mod_fini(void)
 }
 
 
-module_init(khazad_mod_init);
+subsys_initcall(khazad_mod_init);
 module_exit(khazad_mod_fini);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Khazad Cryptographic Algorithm");
+MODULE_ALIAS_CRYPTO("khazad");

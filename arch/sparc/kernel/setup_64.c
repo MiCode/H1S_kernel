@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/arch/sparc64/kernel/setup.c
  *
@@ -30,12 +31,14 @@
 #include <linux/cpu.h>
 #include <linux/initrd.h>
 #include <linux/module.h>
+#include <linux/start_kernel.h>
+#include <linux/memblock.h>
+#include <uapi/linux/mount.h>
 
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/oplib.h>
 #include <asm/page.h>
-#include <asm/pgtable.h>
 #include <asm/idprom.h>
 #include <asm/head.h>
 #include <asm/starfire.h>
@@ -49,6 +52,8 @@
 #include <asm/elf.h>
 #include <asm/mdesc.h>
 #include <asm/cacheflush.h>
+#include <asm/dma.h>
+#include <asm/irq.h>
 
 #ifdef CONFIG_IP_PNP
 #include <net/ipconfig.h>
@@ -76,7 +81,7 @@ struct screen_info screen_info = {
 };
 
 static void
-prom_console_write(struct console *con, const char *s, unsigned n)
+prom_console_write(struct console *con, const char *s, unsigned int n)
 {
 	prom_write(s, n);
 }
@@ -91,7 +96,7 @@ static struct console prom_early_console = {
 	.index =	-1,
 };
 
-/* 
+/*
  * Process kernel command line switches that are specific to the
  * SPARC or that require special low-level processing.
  */
@@ -129,7 +134,7 @@ static void __init boot_flags_init(char *commands)
 {
 	while (*commands) {
 		/* Move to the start of the next "argument". */
-		while (*commands && *commands == ' ')
+		while (*commands == ' ')
 			commands++;
 
 		/* Process any command switches, otherwise skip it. */
@@ -141,21 +146,9 @@ static void __init boot_flags_init(char *commands)
 				process_switch(*commands++);
 			continue;
 		}
-		if (!strncmp(commands, "mem=", 4)) {
-			/*
-			 * "mem=XXX[kKmM]" overrides the PROM-reported
-			 * memory size.
-			 */
-			cmdline_memory_size = simple_strtoul(commands + 4,
-							     &commands, 0);
-			if (*commands == 'K' || *commands == 'k') {
-				cmdline_memory_size <<= 10;
-				commands++;
-			} else if (*commands=='M' || *commands=='m') {
-				cmdline_memory_size <<= 20;
-				commands++;
-			}
-		}
+		if (!strncmp(commands, "mem=", 4))
+			cmdline_memory_size = memparse(commands + 4, &commands);
+
 		while (*commands && *commands != ' ')
 			commands++;
 	}
@@ -172,9 +165,7 @@ extern int root_mountflags;
 
 char reboot_command[COMMAND_LINE_SIZE];
 
-static struct pt_regs fake_swapper_regs = { { 0, }, 0, 0, 0, 0 };
-
-void __init per_cpu_patch(void)
+static void __init per_cpu_patch(void)
 {
 	struct cpuid_patch_entry *p;
 	unsigned long ver;
@@ -266,7 +257,25 @@ void sun4v_patch_2insn_range(struct sun4v_2insn_patch_entry *start,
 	}
 }
 
-void __init sun4v_patch(void)
+void sun_m7_patch_2insn_range(struct sun4v_2insn_patch_entry *start,
+			     struct sun4v_2insn_patch_entry *end)
+{
+	while (start < end) {
+		unsigned long addr = start->addr;
+
+		*(unsigned int *) (addr +  0) = start->insns[0];
+		wmb();
+		__asm__ __volatile__("flush	%0" : : "r" (addr +  0));
+
+		*(unsigned int *) (addr +  4) = start->insns[1];
+		wmb();
+		__asm__ __volatile__("flush	%0" : : "r" (addr +  4));
+
+		start++;
+	}
+}
+
+static void __init sun4v_patch(void)
 {
 	extern void sun4v_hvapi_init(void);
 
@@ -278,6 +287,24 @@ void __init sun4v_patch(void)
 
 	sun4v_patch_2insn_range(&__sun4v_2insn_patch,
 				&__sun4v_2insn_patch_end);
+
+	switch (sun4v_chip_type) {
+	case SUN4V_CHIP_SPARC_M7:
+	case SUN4V_CHIP_SPARC_M8:
+	case SUN4V_CHIP_SPARC_SN:
+		sun4v_patch_1insn_range(&__sun_m7_1insn_patch,
+					&__sun_m7_1insn_patch_end);
+		sun_m7_patch_2insn_range(&__sun_m7_2insn_patch,
+					 &__sun_m7_2insn_patch_end);
+		break;
+	default:
+		break;
+	}
+
+	if (sun4v_chip_type != SUN4V_CHIP_NIAGARA1) {
+		sun4v_patch_1insn_range(&__fast_win_ctrl_1insn_patch,
+					&__fast_win_ctrl_1insn_patch_end);
+	}
 
 	sun4v_hvapi_init();
 }
@@ -335,14 +362,27 @@ static void __init pause_patch(void)
 	}
 }
 
-#ifdef CONFIG_SMP
-void __init boot_cpu_id_too_large(int cpu)
+void __init start_early_boot(void)
 {
-	prom_printf("Serious problem, boot cpu id (%d) >= NR_CPUS (%d)\n",
-		    cpu, NR_CPUS);
-	prom_halt();
+	int cpu;
+
+	check_if_starfire();
+	per_cpu_patch();
+	sun4v_patch();
+	smp_init_cpu_poke();
+
+	cpu = hard_smp_processor_id();
+	if (cpu >= NR_CPUS) {
+		prom_printf("Serious problem, boot cpu id (%d) >= NR_CPUS (%d)\n",
+			    cpu, NR_CPUS);
+		prom_halt();
+	}
+	current_thread_info()->cpu = cpu;
+
+	time_init_early();
+	prom_init_report();
+	start_kernel();
 }
-#endif
 
 /* On Ultra, we support all of the v8 capabilities. */
 unsigned long sparc64_elf_hwcap = (HWCAP_SPARC_FLUSH | HWCAP_SPARC_STBAR |
@@ -359,7 +399,8 @@ static const char *hwcaps[] = {
 	 */
 	"mul32", "div32", "fsmuld", "v8plus", "popc", "vis", "vis2",
 	"ASIBlkInit", "fmaf", "vis3", "hpc", "random", "trans", "fjfmau",
-	"ima", "cspare", "pause", "cbcond",
+	"ima", "cspare", "pause", "cbcond", NULL /*reserved for crypto */,
+	"adp",
 };
 
 static const char *crypto_hwcaps[] = {
@@ -375,7 +416,7 @@ void cpucap_info(struct seq_file *m)
 	seq_puts(m, "cpucaps\t\t: ");
 	for (i = 0; i < ARRAY_SIZE(hwcaps); i++) {
 		unsigned long bit = 1UL << i;
-		if (caps & bit) {
+		if (hwcaps[i] && (caps & bit)) {
 			seq_printf(m, "%s%s",
 				   printed ? "," : "", hwcaps[i]);
 			printed++;
@@ -429,7 +470,7 @@ static void __init report_hwcaps(unsigned long caps)
 
 	for (i = 0; i < ARRAY_SIZE(hwcaps); i++) {
 		unsigned long bit = 1UL << i;
-		if (caps & bit)
+		if (hwcaps[i] && (caps & bit))
 			report_one_hwcap(&printed, hwcaps[i]);
 	}
 	if (caps & HWCAP_SPARC_CRYPTO)
@@ -464,7 +505,7 @@ static unsigned long __init mdesc_cpu_hwcap_list(void)
 		for (i = 0; i < ARRAY_SIZE(hwcaps); i++) {
 			unsigned long bit = 1UL << i;
 
-			if (!strcmp(prop, hwcaps[i])) {
+			if (hwcaps[i] && !strcmp(prop, hwcaps[i])) {
 				caps |= bit;
 				break;
 			}
@@ -500,12 +541,20 @@ static void __init init_sparc64_elf_hwcap(void)
 		    sun4v_chip_type == SUN4V_CHIP_NIAGARA3 ||
 		    sun4v_chip_type == SUN4V_CHIP_NIAGARA4 ||
 		    sun4v_chip_type == SUN4V_CHIP_NIAGARA5 ||
+		    sun4v_chip_type == SUN4V_CHIP_SPARC_M6 ||
+		    sun4v_chip_type == SUN4V_CHIP_SPARC_M7 ||
+		    sun4v_chip_type == SUN4V_CHIP_SPARC_M8 ||
+		    sun4v_chip_type == SUN4V_CHIP_SPARC_SN ||
 		    sun4v_chip_type == SUN4V_CHIP_SPARC64X)
 			cap |= HWCAP_SPARC_BLKINIT;
 		if (sun4v_chip_type == SUN4V_CHIP_NIAGARA2 ||
 		    sun4v_chip_type == SUN4V_CHIP_NIAGARA3 ||
 		    sun4v_chip_type == SUN4V_CHIP_NIAGARA4 ||
 		    sun4v_chip_type == SUN4V_CHIP_NIAGARA5 ||
+		    sun4v_chip_type == SUN4V_CHIP_SPARC_M6 ||
+		    sun4v_chip_type == SUN4V_CHIP_SPARC_M7 ||
+		    sun4v_chip_type == SUN4V_CHIP_SPARC_M8 ||
+		    sun4v_chip_type == SUN4V_CHIP_SPARC_SN ||
 		    sun4v_chip_type == SUN4V_CHIP_SPARC64X)
 			cap |= HWCAP_SPARC_N2;
 	}
@@ -533,6 +582,10 @@ static void __init init_sparc64_elf_hwcap(void)
 			    sun4v_chip_type == SUN4V_CHIP_NIAGARA3 ||
 			    sun4v_chip_type == SUN4V_CHIP_NIAGARA4 ||
 			    sun4v_chip_type == SUN4V_CHIP_NIAGARA5 ||
+			    sun4v_chip_type == SUN4V_CHIP_SPARC_M6 ||
+			    sun4v_chip_type == SUN4V_CHIP_SPARC_M7 ||
+			    sun4v_chip_type == SUN4V_CHIP_SPARC_M8 ||
+			    sun4v_chip_type == SUN4V_CHIP_SPARC_SN ||
 			    sun4v_chip_type == SUN4V_CHIP_SPARC64X)
 				cap |= (AV_SPARC_VIS | AV_SPARC_VIS2 |
 					AV_SPARC_ASI_BLK_INIT |
@@ -540,6 +593,10 @@ static void __init init_sparc64_elf_hwcap(void)
 			if (sun4v_chip_type == SUN4V_CHIP_NIAGARA3 ||
 			    sun4v_chip_type == SUN4V_CHIP_NIAGARA4 ||
 			    sun4v_chip_type == SUN4V_CHIP_NIAGARA5 ||
+			    sun4v_chip_type == SUN4V_CHIP_SPARC_M6 ||
+			    sun4v_chip_type == SUN4V_CHIP_SPARC_M7 ||
+			    sun4v_chip_type == SUN4V_CHIP_SPARC_M8 ||
+			    sun4v_chip_type == SUN4V_CHIP_SPARC_SN ||
 			    sun4v_chip_type == SUN4V_CHIP_SPARC64X)
 				cap |= (AV_SPARC_VIS3 | AV_SPARC_HPC |
 					AV_SPARC_FMAF);
@@ -555,11 +612,31 @@ static void __init init_sparc64_elf_hwcap(void)
 		pause_patch();
 }
 
+void __init alloc_irqstack_bootmem(void)
+{
+	unsigned int i, node;
+
+	for_each_possible_cpu(i) {
+		node = cpu_to_node(i);
+
+		softirq_stack[i] = memblock_alloc_node(THREAD_SIZE,
+						       THREAD_SIZE, node);
+		if (!softirq_stack[i])
+			panic("%s: Failed to allocate %lu bytes align=%lx nid=%d\n",
+			      __func__, THREAD_SIZE, THREAD_SIZE, node);
+		hardirq_stack[i] = memblock_alloc_node(THREAD_SIZE,
+						       THREAD_SIZE, node);
+		if (!hardirq_stack[i])
+			panic("%s: Failed to allocate %lu bytes align=%lx nid=%d\n",
+			      __func__, THREAD_SIZE, THREAD_SIZE, node);
+	}
+}
+
 void __init setup_arch(char **cmdline_p)
 {
 	/* Initialize PROM console and command line. */
 	*cmdline_p = prom_getbootargs();
-	strlcpy(boot_command_line, *cmdline_p, COMMAND_LINE_SIZE);
+	strscpy(boot_command_line, *cmdline_p, COMMAND_LINE_SIZE);
 	parse_early_param();
 
 	boot_flags_init(*cmdline_p);
@@ -569,13 +646,9 @@ void __init setup_arch(char **cmdline_p)
 		register_console(&prom_early_console);
 
 	if (tlb_type == hypervisor)
-		printk("ARCH: SUN4V\n");
+		pr_info("ARCH: SUN4V\n");
 	else
-		printk("ARCH: SUN4U\n");
-
-#ifdef CONFIG_DUMMY_CONSOLE
-	conswitchp = &dummy_con;
-#endif
+		pr_info("ARCH: SUN4U\n");
 
 	idprom_init();
 
@@ -584,17 +657,13 @@ void __init setup_arch(char **cmdline_p)
 	ROOT_DEV = old_decode_dev(root_dev);
 #ifdef CONFIG_BLK_DEV_RAM
 	rd_image_start = ram_flags & RAMDISK_IMAGE_START_MASK;
-	rd_prompt = ((ram_flags & RAMDISK_PROMPT_FLAG) != 0);
-	rd_doload = ((ram_flags & RAMDISK_LOAD_FLAG) != 0);	
 #endif
-
-	task_thread_info(&init_task)->kregs = &fake_swapper_regs;
 
 #ifdef CONFIG_IP_PNP
 	if (!ic_set_manually) {
 		phandle chosen = prom_finddevice("/chosen");
 		u32 cl, sv, gw;
-		
+
 		cl = prom_getintdefault (chosen, "client-ip", 0);
 		sv = prom_getintdefault (chosen, "server-ip", 0);
 		gw = prom_getintdefault (chosen, "gateway-ip", 0);
@@ -615,6 +684,13 @@ void __init setup_arch(char **cmdline_p)
 
 	paging_init();
 	init_sparc64_elf_hwcap();
+	smp_fill_in_cpu_possible_map();
+	/*
+	 * Once the OF device tree and MDESC have been setup and nr_cpus has
+	 * been parsed, we know the list of possible cpus.  Therefore we can
+	 * allocate the IRQ stacks.
+	 */
+	alloc_irqstack_bootmem();
 }
 
 extern int stop_a_enabled;

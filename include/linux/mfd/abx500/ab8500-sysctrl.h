@@ -1,7 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) ST-Ericsson SA 2010
  * Author: Mattias Nilsson <mattias.i.nilsson@stericsson.com> for ST Ericsson.
- * License terms: GNU General Public License (GPL) version 2
  */
 #ifndef __AB8500_SYSCTRL_H
 #define __AB8500_SYSCTRL_H
@@ -12,7 +12,6 @@
 
 int ab8500_sysctrl_read(u16 reg, u8 *value);
 int ab8500_sysctrl_write(u16 reg, u8 mask, u8 value);
-void ab8500_restart(char mode, const char *cmd);
 
 #else
 
@@ -37,12 +36,6 @@ static inline int ab8500_sysctrl_clear(u16 reg, u8 bits)
 {
 	return ab8500_sysctrl_write(reg, bits, 0);
 }
-
-/* Configuration data for SysClkReq1RfClkBuf - SysClkReq8RfClkBuf */
-struct ab8500_sysctrl_platform_data {
-	u8 initial_req_buf_config[8];
-	u16 (*reboot_reason_code)(const char *cmd);
-};
 
 /* Registers */
 #define AB8500_TURNONSTATUS		0x100

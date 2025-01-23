@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /* PF_KEY user interface, this is defined by rfc2367 so
  * do not make arbitrary modifications or else this header
  * file will not be compliant.
@@ -235,6 +236,18 @@ struct sadb_x_kmaddress {
 } __attribute__((packed));
 /* sizeof(struct sadb_x_kmaddress) == 8 */
 
+/* To specify the SA dump filter */
+struct sadb_x_filter {
+	__u16	sadb_x_filter_len;
+	__u16	sadb_x_filter_exttype;
+	__u32	sadb_x_filter_saddr[4];
+	__u32	sadb_x_filter_daddr[4];
+	__u16	sadb_x_filter_family;
+	__u8	sadb_x_filter_splen;
+	__u8	sadb_x_filter_dplen;
+} __attribute__((packed));
+/* sizeof(struct sadb_x_filter) == 40 */
+
 /* Message types */
 #define SADB_RESERVED		0
 #define SADB_GETSPI		1
@@ -296,6 +309,7 @@ struct sadb_x_kmaddress {
 #define SADB_X_AALG_SHA2_512HMAC	7
 #define SADB_X_AALG_RIPEMD160HMAC	8
 #define SADB_X_AALG_AES_XCBC_MAC	9
+#define SADB_X_AALG_SM3_256HMAC		10
 #define SADB_X_AALG_NULL		251	/* kame */
 #define SADB_AALG_MAX			251
 
@@ -316,6 +330,7 @@ struct sadb_x_kmaddress {
 #define SADB_X_EALG_AES_GCM_ICV16	20
 #define SADB_X_EALG_CAMELLIACBC		22
 #define SADB_X_EALG_NULL_AES_GMAC	23
+#define SADB_X_EALG_SM4CBC		24
 #define SADB_EALG_MAX                   253 /* last EALG */
 /* private allocations should use 249-255 (RFC2407) */
 #define SADB_X_EALG_SERPENTCBC  252     /* draft-ietf-ipsec-ciph-aes-cbc-00 */
@@ -358,7 +373,8 @@ struct sadb_x_kmaddress {
 #define SADB_X_EXT_SEC_CTX		24
 /* Used with MIGRATE to pass @ to IKE for negotiation */
 #define SADB_X_EXT_KMADDRESS		25
-#define SADB_EXT_MAX			25
+#define SADB_X_EXT_FILTER		26
+#define SADB_EXT_MAX			26
 
 /* Identity Extension values */
 #define SADB_IDENTTYPE_RESERVED	0

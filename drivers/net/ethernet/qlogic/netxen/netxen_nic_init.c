@@ -1,24 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2003 - 2009 NetXen, Inc.
  * Copyright (C) 2009 - QLogic Corporation.
  * All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
- *
- * The full GNU General Public License is included in this distribution
- * in the file called "COPYING".
- *
  */
 
 #include <linux/netdevice.h>
@@ -118,10 +102,8 @@ void netxen_release_rx_buffers(struct netxen_adapter *adapter)
 			rx_buf = &(rds_ring->rx_buf_arr[i]);
 			if (rx_buf->state == NETXEN_BUFFER_FREE)
 				continue;
-			pci_unmap_single(adapter->pdev,
-					rx_buf->dma,
-					rds_ring->dma_size,
-					PCI_DMA_FROMDEVICE);
+			dma_unmap_single(&adapter->pdev->dev, rx_buf->dma,
+					 rds_ring->dma_size, DMA_FROM_DEVICE);
 			if (rx_buf->skb != NULL)
 				dev_kfree_skb_any(rx_buf->skb);
 		}
@@ -135,20 +117,21 @@ void netxen_release_tx_buffers(struct netxen_adapter *adapter)
 	int i, j;
 	struct nx_host_tx_ring *tx_ring = adapter->tx_ring;
 
+	spin_lock_bh(&adapter->tx_clean_lock);
 	cmd_buf = tx_ring->cmd_buf_arr;
 	for (i = 0; i < tx_ring->num_desc; i++) {
 		buffrag = cmd_buf->frag_array;
 		if (buffrag->dma) {
-			pci_unmap_single(adapter->pdev, buffrag->dma,
-					 buffrag->length, PCI_DMA_TODEVICE);
+			dma_unmap_single(&adapter->pdev->dev, buffrag->dma,
+					 buffrag->length, DMA_TO_DEVICE);
 			buffrag->dma = 0ULL;
 		}
 		for (j = 1; j < cmd_buf->frag_count; j++) {
 			buffrag++;
 			if (buffrag->dma) {
-				pci_unmap_page(adapter->pdev, buffrag->dma,
-					       buffrag->length,
-					       PCI_DMA_TODEVICE);
+				dma_unmap_page(&adapter->pdev->dev,
+					       buffrag->dma, buffrag->length,
+					       DMA_TO_DEVICE);
 				buffrag->dma = 0ULL;
 			}
 		}
@@ -158,6 +141,7 @@ void netxen_release_tx_buffers(struct netxen_adapter *adapter)
 		}
 		cmd_buf++;
 	}
+	spin_unlock_bh(&adapter->tx_clean_lock);
 }
 
 void netxen_free_sw_resources(struct netxen_adapter *adapter)
@@ -601,7 +585,7 @@ static struct uni_table_desc *nx_get_table_desc(const u8 *unirom, int section)
 
 static int
 netxen_nic_validate_header(struct netxen_adapter *adapter)
- {
+{
 	const u8 *unirom = adapter->fw->data;
 	struct uni_table_desc *directory = (struct uni_table_desc *) &unirom[0];
 	u32 fw_file_size = adapter->fw->size;
@@ -1123,7 +1107,8 @@ netxen_validate_firmware(struct netxen_adapter *adapter)
 		return -EINVAL;
 	}
 	val = nx_get_bios_version(adapter);
-	netxen_rom_fast_read(adapter, NX_BIOS_VERSION_OFFSET, (int *)&bios);
+	if (netxen_rom_fast_read(adapter, NX_BIOS_VERSION_OFFSET, (int *)&bios))
+		return -EIO;
 	if ((__force u32)val != bios) {
 		dev_err(&pdev->dev, "%s: firmware bios is incompatible\n",
 				fw_name[fw_type]);
@@ -1263,9 +1248,10 @@ int netxen_init_dummy_dma(struct netxen_adapter *adapter)
 	if (!NX_IS_REVISION_P2(adapter->ahw.revision_id))
 		return 0;
 
-	adapter->dummy_dma.addr = pci_alloc_consistent(adapter->pdev,
-				 NETXEN_HOST_DUMMY_DMA_SIZE,
-				 &adapter->dummy_dma.phys_addr);
+	adapter->dummy_dma.addr = dma_alloc_coherent(&adapter->pdev->dev,
+						     NETXEN_HOST_DUMMY_DMA_SIZE,
+						     &adapter->dummy_dma.phys_addr,
+						     GFP_KERNEL);
 	if (adapter->dummy_dma.addr == NULL) {
 		dev_err(&adapter->pdev->dev,
 			"ERROR: Could not allocate dummy DMA memory\n");
@@ -1317,10 +1303,10 @@ void netxen_free_dummy_dma(struct netxen_adapter *adapter)
 	}
 
 	if (i) {
-		pci_free_consistent(adapter->pdev,
-			    NETXEN_HOST_DUMMY_DMA_SIZE,
-			    adapter->dummy_dma.addr,
-			    adapter->dummy_dma.phys_addr);
+		dma_free_coherent(&adapter->pdev->dev,
+				  NETXEN_HOST_DUMMY_DMA_SIZE,
+				  adapter->dummy_dma.addr,
+				  adapter->dummy_dma.phys_addr);
 		adapter->dummy_dma.addr = NULL;
 	} else
 		dev_err(&adapter->pdev->dev, "dma_watchdog_shutdown failed\n");
@@ -1373,13 +1359,8 @@ netxen_receive_peg_ready(struct netxen_adapter *adapter)
 
 	} while (--retries);
 
-	if (!retries) {
-		printk(KERN_ERR "Receive Peg initialization not "
-			      "complete, state: 0x%x.\n", val);
-		return -EIO;
-	}
-
-	return 0;
+	pr_err("Receive Peg initialization not complete, state: 0x%x.\n", val);
+	return -EIO;
 }
 
 int netxen_init_firmware(struct netxen_adapter *adapter)
@@ -1485,10 +1466,10 @@ netxen_alloc_rx_skb(struct netxen_adapter *adapter,
 	if (!adapter->ahw.cut_through)
 		skb_reserve(skb, 2);
 
-	dma = pci_map_single(pdev, skb->data,
-			rds_ring->dma_size, PCI_DMA_FROMDEVICE);
+	dma = dma_map_single(&pdev->dev, skb->data, rds_ring->dma_size,
+			     DMA_FROM_DEVICE);
 
-	if (pci_dma_mapping_error(pdev, dma)) {
+	if (dma_mapping_error(&pdev->dev, dma)) {
 		dev_kfree_skb_any(skb);
 		buffer->skb = NULL;
 		return 1;
@@ -1509,8 +1490,8 @@ static struct sk_buff *netxen_process_rxbuf(struct netxen_adapter *adapter,
 
 	buffer = &rds_ring->rx_buf_arr[index];
 
-	pci_unmap_single(adapter->pdev, buffer->dma, rds_ring->dma_size,
-			PCI_DMA_FROMDEVICE);
+	dma_unmap_single(&adapter->pdev->dev, buffer->dma, rds_ring->dma_size,
+			 DMA_FROM_DEVICE);
 
 	skb = buffer->skb;
 	if (!skb)
@@ -1704,6 +1685,7 @@ netxen_process_rcv_ring(struct nx_host_sds_ring *sds_ring, int max)
 			break;
 		case NETXEN_NIC_RESPONSE_DESC:
 			netxen_handle_fw_message(desc_cnt, consumer, sds_ring);
+			goto skip;
 		default:
 			goto skip;
 		}
@@ -1762,7 +1744,7 @@ int netxen_process_cmd_ring(struct netxen_adapter *adapter)
 	int done = 0;
 	struct nx_host_tx_ring *tx_ring = adapter->tx_ring;
 
-	if (!spin_trylock(&adapter->tx_clean_lock))
+	if (!spin_trylock_bh(&adapter->tx_clean_lock))
 		return 1;
 
 	sw_consumer = tx_ring->sw_consumer;
@@ -1772,13 +1754,13 @@ int netxen_process_cmd_ring(struct netxen_adapter *adapter)
 		buffer = &tx_ring->cmd_buf_arr[sw_consumer];
 		if (buffer->skb) {
 			frag = &buffer->frag_array[0];
-			pci_unmap_single(pdev, frag->dma, frag->length,
-					 PCI_DMA_TODEVICE);
+			dma_unmap_single(&pdev->dev, frag->dma, frag->length,
+					 DMA_TO_DEVICE);
 			frag->dma = 0ULL;
 			for (i = 1; i < buffer->frag_count; i++) {
 				frag++;	/* Get the next frag */
-				pci_unmap_page(pdev, frag->dma, frag->length,
-					       PCI_DMA_TODEVICE);
+				dma_unmap_page(&pdev->dev, frag->dma,
+					       frag->length, DMA_TO_DEVICE);
 				frag->dma = 0ULL;
 			}
 
@@ -1792,9 +1774,9 @@ int netxen_process_cmd_ring(struct netxen_adapter *adapter)
 			break;
 	}
 
-	if (count && netif_running(netdev)) {
-		tx_ring->sw_consumer = sw_consumer;
+	tx_ring->sw_consumer = sw_consumer;
 
+	if (count && netif_running(netdev)) {
 		smp_mb();
 
 		if (netif_queue_stopped(netdev) && netif_carrier_ok(netdev))
@@ -1817,7 +1799,7 @@ int netxen_process_cmd_ring(struct netxen_adapter *adapter)
 	 */
 	hw_consumer = le32_to_cpu(*(tx_ring->hw_consumer));
 	done = (sw_consumer == hw_consumer);
-	spin_unlock(&adapter->tx_clean_lock);
+	spin_unlock_bh(&adapter->tx_clean_lock);
 
 	return done;
 }

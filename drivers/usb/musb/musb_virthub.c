@@ -1,35 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * MUSB OTG driver virtual root hub support
  *
  * Copyright 2005 Mentor Graphics Corporation
  * Copyright (C) 2005-2006 by Texas Instruments
  * Copyright (C) 2006-2007 Nokia Corporation
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
- * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN
- * NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
- * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
- * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
  */
 
 #include <linux/module.h>
@@ -55,8 +30,7 @@ void musb_host_finish_resume(struct work_struct *work)
 
 	power = musb_readb(musb->mregs, MUSB_POWER);
 	power &= ~MUSB_POWER_RESUME;
-	dev_dbg(musb->controller, "root port resume stopped, power %02x\n",
-		power);
+	musb_dbg(musb, "root port resume stopped, power %02x", power);
 	musb_writeb(musb->mregs, MUSB_POWER, power);
 
 	/*
@@ -69,19 +43,18 @@ void musb_host_finish_resume(struct work_struct *work)
 	musb->port1_status |= USB_PORT_STAT_C_SUSPEND << 16;
 	usb_hcd_poll_rh_status(musb->hcd);
 	/* NOTE: it might really be A_WAIT_BCON ... */
-	musb->xceiv->state = OTG_STATE_A_HOST;
+	musb_set_state(musb, OTG_STATE_A_HOST);
 
 	spin_unlock_irqrestore(&musb->lock, flags);
 }
 
-void musb_port_suspend(struct musb *musb, bool do_suspend)
+int musb_port_suspend(struct musb *musb, bool do_suspend)
 {
-	struct usb_otg	*otg = musb->xceiv->otg;
 	u8		power;
 	void __iomem	*mbase = musb->mregs;
 
 	if (!is_host_active(musb))
-		return;
+		return 0;
 
 	/* NOTE:  this doesn't necessarily put PHY into low power mode,
 	 * turning off its clock; that's a function of PHY integration and
@@ -92,25 +65,30 @@ void musb_port_suspend(struct musb *musb, bool do_suspend)
 	if (do_suspend) {
 		int retries = 10000;
 
-		power &= ~MUSB_POWER_RESUME;
-		power |= MUSB_POWER_SUSPENDM;
-		musb_writeb(mbase, MUSB_POWER, power);
+		if (power & MUSB_POWER_RESUME)
+			return -EBUSY;
 
-		/* Needed for OPT A tests */
-		power = musb_readb(mbase, MUSB_POWER);
-		while (power & MUSB_POWER_SUSPENDM) {
+		if (!(power & MUSB_POWER_SUSPENDM)) {
+			power |= MUSB_POWER_SUSPENDM;
+			musb_writeb(mbase, MUSB_POWER, power);
+
+			/* Needed for OPT A tests */
 			power = musb_readb(mbase, MUSB_POWER);
-			if (retries-- < 1)
-				break;
+			while (power & MUSB_POWER_SUSPENDM) {
+				power = musb_readb(mbase, MUSB_POWER);
+				if (retries-- < 1)
+					break;
+			}
 		}
 
-		dev_dbg(musb->controller, "Root port suspended, power %02x\n", power);
+		musb_dbg(musb, "Root port suspended, power %02x", power);
 
 		musb->port1_status |= USB_PORT_STAT_SUSPEND;
-		switch (musb->xceiv->state) {
+		switch (musb_get_state(musb)) {
 		case OTG_STATE_A_HOST:
-			musb->xceiv->state = OTG_STATE_A_SUSPEND;
-			musb->is_active = otg->host->b_hnp_enable;
+			musb_set_state(musb, OTG_STATE_A_SUSPEND);
+			musb->is_active = musb->xceiv &&
+				musb->xceiv->otg->host->b_hnp_enable;
 			if (musb->is_active)
 				mod_timer(&musb->otg_timer, jiffies
 					+ msecs_to_jiffies(
@@ -118,25 +96,27 @@ void musb_port_suspend(struct musb *musb, bool do_suspend)
 			musb_platform_try_idle(musb, 0);
 			break;
 		case OTG_STATE_B_HOST:
-			musb->xceiv->state = OTG_STATE_B_WAIT_ACON;
-			musb->is_active = otg->host->b_hnp_enable;
+			musb_set_state(musb, OTG_STATE_B_WAIT_ACON);
+			musb->is_active = musb->xceiv &&
+				musb->xceiv->otg->host->b_hnp_enable;
 			musb_platform_try_idle(musb, 0);
 			break;
 		default:
-			dev_dbg(musb->controller, "bogus rh suspend? %s\n",
-				usb_otg_state_string(musb->xceiv->state));
+			musb_dbg(musb, "bogus rh suspend? %s",
+				 musb_otg_state_string(musb));
 		}
 	} else if (power & MUSB_POWER_SUSPENDM) {
 		power &= ~MUSB_POWER_SUSPENDM;
 		power |= MUSB_POWER_RESUME;
 		musb_writeb(mbase, MUSB_POWER, power);
 
-		dev_dbg(musb->controller, "Root port resuming, power %02x\n", power);
+		musb_dbg(musb, "Root port resuming, power %02x", power);
 
-		/* later, GetPortStatus will stop RESUME signaling */
 		musb->port1_status |= MUSB_PORT_STAT_RESUME;
-		schedule_delayed_work(&musb->finish_resume_work, 20);
+		schedule_delayed_work(&musb->finish_resume_work,
+				      msecs_to_jiffies(USB_RESUME_TIMEOUT));
 	}
+	return 0;
 }
 
 void musb_port_reset(struct musb *musb, bool do_reset)
@@ -144,8 +124,8 @@ void musb_port_reset(struct musb *musb, bool do_reset)
 	u8		power;
 	void __iomem	*mbase = musb->mregs;
 
-	if (musb->xceiv->state == OTG_STATE_B_IDLE) {
-		dev_dbg(musb->controller, "HNP: Returning from HNP; no hub reset from b_idle\n");
+	if (musb_get_state(musb) == OTG_STATE_B_IDLE) {
+		musb_dbg(musb, "HNP: Returning from HNP; no hub reset from b_idle");
 		musb->port1_status &= ~USB_PORT_STAT_RESET;
 		return;
 	}
@@ -158,7 +138,6 @@ void musb_port_reset(struct musb *musb, bool do_reset)
 	 */
 	power = musb_readb(mbase, MUSB_POWER);
 	if (do_reset) {
-
 		/*
 		 * If RESUME is set, we must make sure it stays minimum 20 ms.
 		 * Then we must clear RESUME and wait a bit to let musb start
@@ -167,11 +146,22 @@ void musb_port_reset(struct musb *musb, bool do_reset)
 		 * detected".
 		 */
 		if (power &  MUSB_POWER_RESUME) {
-			while (time_before(jiffies, musb->rh_timer))
-				msleep(1);
+			long remain = (unsigned long) musb->rh_timer - jiffies;
+
+			if (musb->rh_timer > 0 && remain > 0) {
+				/* take into account the minimum delay after resume */
+				schedule_delayed_work(
+					&musb->deassert_reset_work, remain);
+				return;
+			}
+
 			musb_writeb(mbase, MUSB_POWER,
-				power & ~MUSB_POWER_RESUME);
-			msleep(1);
+				    power & ~MUSB_POWER_RESUME);
+
+			/* Give the core 1 ms to clear MUSB_POWER_RESUME */
+			schedule_delayed_work(&musb->deassert_reset_work,
+					      msecs_to_jiffies(1));
+			return;
 		}
 
 		power &= 0xf0;
@@ -180,15 +170,18 @@ void musb_port_reset(struct musb *musb, bool do_reset)
 
 		musb->port1_status |= USB_PORT_STAT_RESET;
 		musb->port1_status &= ~USB_PORT_STAT_ENABLE;
-		schedule_delayed_work(&musb->deassert_reset_work, 50);
+		schedule_delayed_work(&musb->deassert_reset_work,
+				      msecs_to_jiffies(50));
 	} else {
-		dev_dbg(musb->controller, "root port reset stopped\n");
+		musb_dbg(musb, "root port reset stopped");
+		musb_platform_pre_root_reset_end(musb);
 		musb_writeb(mbase, MUSB_POWER,
 				power & ~MUSB_POWER_RESET);
+		musb_platform_post_root_reset_end(musb);
 
 		power = musb_readb(mbase, MUSB_POWER);
 		if (power & MUSB_POWER_HSMODE) {
-			dev_dbg(musb->controller, "high-speed device connected\n");
+			musb_dbg(musb, "high-speed device connected");
 			musb->port1_status |= USB_PORT_STAT_HIGH_SPEED;
 		}
 
@@ -204,34 +197,33 @@ void musb_port_reset(struct musb *musb, bool do_reset)
 
 void musb_root_disconnect(struct musb *musb)
 {
-	struct usb_otg	*otg = musb->xceiv->otg;
-
 	musb->port1_status = USB_PORT_STAT_POWER
 			| (USB_PORT_STAT_C_CONNECTION << 16);
 
 	usb_hcd_poll_rh_status(musb->hcd);
 	musb->is_active = 0;
 
-	switch (musb->xceiv->state) {
+	switch (musb_get_state(musb)) {
 	case OTG_STATE_A_SUSPEND:
-		if (otg->host->b_hnp_enable) {
-			musb->xceiv->state = OTG_STATE_A_PERIPHERAL;
+		if (musb->xceiv && musb->xceiv->otg->host->b_hnp_enable) {
+			musb_set_state(musb, OTG_STATE_A_PERIPHERAL);
 			musb->g.is_a_peripheral = 1;
 			break;
 		}
-		/* FALLTHROUGH */
+		fallthrough;
 	case OTG_STATE_A_HOST:
-		musb->xceiv->state = OTG_STATE_A_WAIT_BCON;
+		musb_set_state(musb, OTG_STATE_A_WAIT_BCON);
 		musb->is_active = 0;
 		break;
 	case OTG_STATE_A_WAIT_VFALL:
-		musb->xceiv->state = OTG_STATE_B_IDLE;
+		musb_set_state(musb, OTG_STATE_B_IDLE);
 		break;
 	default:
-		dev_dbg(musb->controller, "host disconnect (%s)\n",
-			usb_otg_state_string(musb->xceiv->state));
+		musb_dbg(musb, "host disconnect (%s)",
+			 musb_otg_state_string(musb));
 	}
 }
+EXPORT_SYMBOL_GPL(musb_root_disconnect);
 
 
 /*---------------------------------------------------------------------*/
@@ -261,9 +253,7 @@ static int musb_has_gadget(struct musb *musb)
 #ifdef CONFIG_USB_MUSB_HOST
 	return 1;
 #else
-	if (musb->port_mode == MUSB_PORT_MODE_HOST)
-		return 1;
-	return musb->g.dev.driver != NULL;
+	return musb->port_mode == MUSB_HOST;
 #endif
 }
 
@@ -279,6 +269,7 @@ int musb_hub_control(
 	u32		temp;
 	int		retval = 0;
 	unsigned long	flags;
+	bool		start_musb = false;
 
 	spin_lock_irqsave(&musb->lock, flags);
 
@@ -325,7 +316,7 @@ int musb_hub_control(
 		default:
 			goto error;
 		}
-		dev_dbg(musb->controller, "clear feature %d\n", wValue);
+		musb_dbg(musb, "clear feature %d", wValue);
 		musb->port1_status &= ~(1 << wValue);
 		break;
 	case GetHubDescriptor:
@@ -333,12 +324,12 @@ int musb_hub_control(
 		struct usb_hub_descriptor *desc = (void *)buf;
 
 		desc->bDescLength = 9;
-		desc->bDescriptorType = 0x29;
+		desc->bDescriptorType = USB_DT_HUB;
 		desc->bNbrPorts = 1;
 		desc->wHubCharacteristics = cpu_to_le16(
-				  0x0001	/* per-port power switching */
-				| 0x0010	/* no overcurrent reporting */
-				);
+			HUB_CHAR_INDV_PORT_LPSM /* per-port power switching */
+			| HUB_CHAR_NO_OCPM	/* no overcurrent reporting */
+			);
 		desc->bPwrOn2PwrGood = 5;	/* msec/2 */
 		desc->bHubContrCurrent = 0;
 
@@ -360,8 +351,7 @@ int musb_hub_control(
 				(__le32 *) buf);
 
 		/* port change status is more interesting */
-		dev_dbg(musb->controller, "port status %08x\n",
-				musb->port1_status);
+		musb_dbg(musb, "port status %08x", musb->port1_status);
 		break;
 	case SetPortFeature:
 		if ((wIndex & 0xff) != 1)
@@ -380,7 +370,7 @@ int musb_hub_control(
 			 * logic relating to VBUS power-up.
 			 */
 			if (!hcd->self.is_b_host && musb_has_gadget(musb))
-				musb_start(musb);
+				start_musb = true;
 			break;
 		case USB_PORT_FEAT_RESET:
 			musb_port_reset(musb, true);
@@ -394,25 +384,25 @@ int musb_hub_control(
 
 			wIndex >>= 8;
 			switch (wIndex) {
-			case 1:
-				pr_debug("TEST_J\n");
+			case USB_TEST_J:
+				pr_debug("USB_TEST_J\n");
 				temp = MUSB_TEST_J;
 				break;
-			case 2:
-				pr_debug("TEST_K\n");
+			case USB_TEST_K:
+				pr_debug("USB_TEST_K\n");
 				temp = MUSB_TEST_K;
 				break;
-			case 3:
-				pr_debug("TEST_SE0_NAK\n");
+			case USB_TEST_SE0_NAK:
+				pr_debug("USB_TEST_SE0_NAK\n");
 				temp = MUSB_TEST_SE0_NAK;
 				break;
-			case 4:
-				pr_debug("TEST_PACKET\n");
+			case USB_TEST_PACKET:
+				pr_debug("USB_TEST_PACKET\n");
 				temp = MUSB_TEST_PACKET;
 				musb_load_testpacket(musb);
 				break;
-			case 5:
-				pr_debug("TEST_FORCE_ENABLE\n");
+			case USB_TEST_FORCE_ENABLE:
+				pr_debug("USB_TEST_FORCE_ENABLE\n");
 				temp = MUSB_TEST_FORCE_HOST
 					| MUSB_TEST_FORCE_HS;
 
@@ -431,7 +421,7 @@ int musb_hub_control(
 		default:
 			goto error;
 		}
-		dev_dbg(musb->controller, "set feature %d\n", wValue);
+		musb_dbg(musb, "set feature %d", wValue);
 		musb->port1_status |= 1 << wValue;
 		break;
 
@@ -441,5 +431,9 @@ error:
 		retval = -EPIPE;
 	}
 	spin_unlock_irqrestore(&musb->lock, flags);
+
+	if (start_musb)
+		musb_start(musb);
+
 	return retval;
 }

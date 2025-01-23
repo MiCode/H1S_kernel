@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Dynamic DMA mapping support for AMD Hammer.
  *
@@ -5,10 +6,9 @@
  * This allows to use PCI devices that only support 32bit addresses on systems
  * with more than 4GB.
  *
- * See Documentation/DMA-API-HOWTO.txt for the interface specification.
+ * See Documentation/core-api/dma-api-howto.rst for the interface specification.
  *
  * Copyright 2002 Andi Kleen, SuSE Labs.
- * Subject to the GNU General Public License v2 only.
  */
 
 #include <linux/types.h>
@@ -17,10 +17,10 @@
 #include <linux/init.h>
 #include <linux/mm.h>
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
 #include <linux/string.h>
 #include <linux/spinlock.h>
 #include <linux/pci.h>
-#include <linux/module.h>
 #include <linux/topology.h>
 #include <linux/interrupt.h>
 #include <linux/bitmap.h>
@@ -31,17 +31,16 @@
 #include <linux/io.h>
 #include <linux/gfp.h>
 #include <linux/atomic.h>
+#include <linux/dma-direct.h>
+#include <linux/dma-map-ops.h>
 #include <asm/mtrr.h>
-#include <asm/pgtable.h>
 #include <asm/proto.h>
 #include <asm/iommu.h>
 #include <asm/gart.h>
-#include <asm/cacheflush.h>
-#include <asm/swiotlb.h>
+#include <asm/set_memory.h>
 #include <asm/dma.h>
 #include <asm/amd_nb.h>
 #include <asm/x86_init.h>
-#include <asm/iommu_table.h>
 
 static unsigned long iommu_bus_base;	/* GART remapping area (physical) */
 static unsigned long iommu_size;	/* size of remapping area bytes */
@@ -49,14 +48,12 @@ static unsigned long iommu_pages;	/* .. and in pages */
 
 static u32 *iommu_gatt_base;		/* Remapping table */
 
-static dma_addr_t bad_dma_addr;
-
 /*
  * If this is disabled the IOMMU will use an optimized flushing strategy
  * of only flushing when an mapping is reused. With it true the GART is
  * flushed for every mapping. Problem is that doing the lazy flush seems
  * to trigger bugs with some popular PCI cards, in particular 3ware (but
- * has been also also seen with Qlogic at least).
+ * has been also seen with Qlogic at least).
  */
 static int iommu_fullflush = 1;
 
@@ -72,8 +69,6 @@ static u32 gart_unmapped_entry;
 #define GPTE_ENCODE(x) \
 	(((x) & 0xfffff000) | (((x) >> 32) << 4) | GPTE_VALID | GPTE_COHERENT)
 #define GPTE_DECODE(x) (((x) & 0xfffff000) | (((u64)(x) & 0xff0) << 28))
-
-#define EMERGENCY_PAGES 32 /* = 128KB */
 
 #ifdef CONFIG_AGP
 #define AGPEXTERN extern
@@ -100,8 +95,7 @@ static unsigned long alloc_iommu(struct device *dev, int size,
 
 	base_index = ALIGN(iommu_bus_base & dma_get_seg_boundary(dev),
 			   PAGE_SIZE) >> PAGE_SHIFT;
-	boundary_size = ALIGN((u64)dma_get_seg_boundary(dev) + 1,
-			      PAGE_SIZE) >> PAGE_SHIFT;
+	boundary_size = dma_get_seg_boundary_nr_pages(dev, PAGE_SHIFT);
 
 	spin_lock_irqsave(&iommu_bitmap_lock, flags);
 	offset = iommu_area_alloc(iommu_gart_bitmap, iommu_pages, next_bit,
@@ -154,9 +148,6 @@ static void flush_gart(void)
 
 #ifdef CONFIG_IOMMU_LEAK
 /* Debugging aid for drivers that don't free their IOMMU tables */
-static int leak_trace;
-static int iommu_leak_pages = 20;
-
 static void dump_leak(void)
 {
 	static int dump;
@@ -165,7 +156,7 @@ static void dump_leak(void)
 		return;
 	dump = 1;
 
-	show_stack(NULL, NULL);
+	show_stack(NULL, NULL, KERN_ERR);
 	debug_dma_dump_mappings(NULL);
 }
 #endif
@@ -183,14 +174,6 @@ static void iommu_full(struct device *dev, size_t size, int dir)
 	 */
 
 	dev_err(dev, "PCI-DMA: Out of IOMMU space for %lu bytes\n", size);
-
-	if (size > PAGE_SIZE*EMERGENCY_PAGES) {
-		if (dir == PCI_DMA_FROMDEVICE || dir == PCI_DMA_BIDIRECTIONAL)
-			panic("PCI-DMA: Memory would be corrupted\n");
-		if (dir == PCI_DMA_TODEVICE || dir == PCI_DMA_BIDIRECTIONAL)
-			panic(KERN_ERR
-				"PCI-DMA: Random memory would be DMAed\n");
-	}
 #ifdef CONFIG_IOMMU_LEAK
 	dump_leak();
 #endif
@@ -199,13 +182,13 @@ static void iommu_full(struct device *dev, size_t size, int dir)
 static inline int
 need_iommu(struct device *dev, unsigned long addr, size_t size)
 {
-	return force_iommu || !dma_capable(dev, addr, size);
+	return force_iommu || !dma_capable(dev, addr, size, true);
 }
 
 static inline int
 nonforced_iommu(struct device *dev, unsigned long addr, size_t size)
 {
-	return !dma_capable(dev, addr, size);
+	return !dma_capable(dev, addr, size, true);
 }
 
 /* Map a single continuous physical area into the IOMMU.
@@ -219,7 +202,7 @@ static dma_addr_t dma_map_area(struct device *dev, dma_addr_t phys_mem,
 	int i;
 
 	if (unlikely(phys_mem + size > GART_MAX_PHYS_ADDR))
-		return bad_dma_addr;
+		return DMA_MAPPING_ERROR;
 
 	iommu_page = alloc_iommu(dev, npages, align_mask);
 	if (iommu_page == -1) {
@@ -228,7 +211,7 @@ static dma_addr_t dma_map_area(struct device *dev, dma_addr_t phys_mem,
 		if (panic_on_overflow)
 			panic("dma_map_area overflow %lu bytes\n", size);
 		iommu_full(dev, size, dir);
-		return bad_dma_addr;
+		return DMA_MAPPING_ERROR;
 	}
 
 	for (i = 0; i < npages; i++) {
@@ -242,13 +225,10 @@ static dma_addr_t dma_map_area(struct device *dev, dma_addr_t phys_mem,
 static dma_addr_t gart_map_page(struct device *dev, struct page *page,
 				unsigned long offset, size_t size,
 				enum dma_data_direction dir,
-				struct dma_attrs *attrs)
+				unsigned long attrs)
 {
 	unsigned long bus;
 	phys_addr_t paddr = page_to_phys(page) + offset;
-
-	if (!dev)
-		dev = &x86_dma_fallback_dev;
 
 	if (!need_iommu(dev, paddr, size))
 		return paddr;
@@ -264,13 +244,21 @@ static dma_addr_t gart_map_page(struct device *dev, struct page *page,
  */
 static void gart_unmap_page(struct device *dev, dma_addr_t dma_addr,
 			    size_t size, enum dma_data_direction dir,
-			    struct dma_attrs *attrs)
+			    unsigned long attrs)
 {
 	unsigned long iommu_page;
 	int npages;
 	int i;
 
-	if (dma_addr < iommu_bus_base + EMERGENCY_PAGES*PAGE_SIZE ||
+	if (WARN_ON_ONCE(dma_addr == DMA_MAPPING_ERROR))
+		return;
+
+	/*
+	 * This driver will not always use a GART mapping, but might have
+	 * created a direct mapping instead.  If that is the case there is
+	 * nothing to unmap here.
+	 */
+	if (dma_addr < iommu_bus_base ||
 	    dma_addr >= iommu_bus_base + iommu_size)
 		return;
 
@@ -286,7 +274,7 @@ static void gart_unmap_page(struct device *dev, dma_addr_t dma_addr,
  * Wrapper for pci_unmap_single working with scatterlists.
  */
 static void gart_unmap_sg(struct device *dev, struct scatterlist *sg, int nents,
-			  enum dma_data_direction dir, struct dma_attrs *attrs)
+			  enum dma_data_direction dir, unsigned long attrs)
 {
 	struct scatterlist *s;
 	int i;
@@ -294,7 +282,7 @@ static void gart_unmap_sg(struct device *dev, struct scatterlist *sg, int nents,
 	for_each_sg(sg, s, nents, i) {
 		if (!s->dma_length || !s->length)
 			break;
-		gart_unmap_page(dev, s->dma_address, s->dma_length, dir, NULL);
+		gart_unmap_page(dev, s->dma_address, s->dma_length, dir, 0);
 	}
 }
 
@@ -314,9 +302,9 @@ static int dma_map_sg_nonforce(struct device *dev, struct scatterlist *sg,
 
 		if (nonforced_iommu(dev, addr, s->length)) {
 			addr = dma_map_area(dev, addr, s->length, dir, 0);
-			if (addr == bad_dma_addr) {
+			if (addr == DMA_MAPPING_ERROR) {
 				if (i > 0)
-					gart_unmap_sg(dev, sg, i, dir, NULL);
+					gart_unmap_sg(dev, sg, i, dir, 0);
 				nents = 0;
 				sg[0].dma_length = 0;
 				break;
@@ -341,7 +329,7 @@ static int __dma_map_cont(struct device *dev, struct scatterlist *start,
 	int i;
 
 	if (iommu_start == -1)
-		return -1;
+		return -ENOMEM;
 
 	for_each_sg(start, s, nelems, i) {
 		unsigned long pages, addr;
@@ -387,19 +375,16 @@ dma_map_cont(struct device *dev, struct scatterlist *start, int nelems,
  * Merge chunks that have page aligned sizes into a continuous mapping.
  */
 static int gart_map_sg(struct device *dev, struct scatterlist *sg, int nents,
-		       enum dma_data_direction dir, struct dma_attrs *attrs)
+		       enum dma_data_direction dir, unsigned long attrs)
 {
 	struct scatterlist *s, *ps, *start_sg, *sgmap;
-	int need = 0, nextneed, i, out, start;
+	int need = 0, nextneed, i, out, start, ret;
 	unsigned long pages = 0;
 	unsigned int seg_size;
 	unsigned int max_seg_size;
 
 	if (nents == 0)
-		return 0;
-
-	if (!dev)
-		dev = &x86_dma_fallback_dev;
+		return -EINVAL;
 
 	out		= 0;
 	start		= 0;
@@ -427,8 +412,9 @@ static int gart_map_sg(struct device *dev, struct scatterlist *sg, int nents,
 			if (!iommu_merge || !nextneed || !need || s->offset ||
 			    (s->length + seg_size > max_seg_size) ||
 			    (ps->offset + ps->length) % PAGE_SIZE) {
-				if (dma_map_cont(dev, start_sg, i - start,
-						 sgmap, pages, need) < 0)
+				ret = dma_map_cont(dev, start_sg, i - start,
+						   sgmap, pages, need);
+				if (ret < 0)
 					goto error;
 				out++;
 
@@ -445,7 +431,8 @@ static int gart_map_sg(struct device *dev, struct scatterlist *sg, int nents,
 		pages += iommu_num_pages(s->offset, s->length, PAGE_SIZE);
 		ps = s;
 	}
-	if (dma_map_cont(dev, start_sg, i - start, sgmap, pages, need) < 0)
+	ret = dma_map_cont(dev, start_sg, i - start, sgmap, pages, need);
+	if (ret < 0)
 		goto error;
 	out++;
 	flush_gart();
@@ -457,7 +444,7 @@ static int gart_map_sg(struct device *dev, struct scatterlist *sg, int nents,
 
 error:
 	flush_gart();
-	gart_unmap_sg(dev, sg, out, dir, NULL);
+	gart_unmap_sg(dev, sg, out, dir, 0);
 
 	/* When it was forced or merged try again in a dumb way */
 	if (force_iommu || iommu_merge) {
@@ -469,55 +456,39 @@ error:
 		panic("dma_map_sg: overflow on %lu pages\n", pages);
 
 	iommu_full(dev, pages << PAGE_SHIFT, dir);
-	for_each_sg(sg, s, nents, i)
-		s->dma_address = bad_dma_addr;
-	return 0;
+	return ret;
 }
 
 /* allocate and map a coherent mapping */
 static void *
 gart_alloc_coherent(struct device *dev, size_t size, dma_addr_t *dma_addr,
-		    gfp_t flag, struct dma_attrs *attrs)
+		    gfp_t flag, unsigned long attrs)
 {
-	dma_addr_t paddr;
-	unsigned long align_mask;
-	struct page *page;
+	void *vaddr;
 
-	if (force_iommu && !(flag & GFP_DMA)) {
-		flag &= ~(__GFP_DMA | __GFP_HIGHMEM | __GFP_DMA32);
-		page = alloc_pages(flag | __GFP_ZERO, get_order(size));
-		if (!page)
-			return NULL;
+	vaddr = dma_direct_alloc(dev, size, dma_addr, flag, attrs);
+	if (!vaddr ||
+	    !force_iommu || dev->coherent_dma_mask <= DMA_BIT_MASK(24))
+		return vaddr;
 
-		align_mask = (1UL << get_order(size)) - 1;
-		paddr = dma_map_area(dev, page_to_phys(page), size,
-				     DMA_BIDIRECTIONAL, align_mask);
-
-		flush_gart();
-		if (paddr != bad_dma_addr) {
-			*dma_addr = paddr;
-			return page_address(page);
-		}
-		__free_pages(page, get_order(size));
-	} else
-		return dma_generic_alloc_coherent(dev, size, dma_addr, flag,
-						  attrs);
-
+	*dma_addr = dma_map_area(dev, virt_to_phys(vaddr), size,
+			DMA_BIDIRECTIONAL, (1UL << get_order(size)) - 1);
+	flush_gart();
+	if (unlikely(*dma_addr == DMA_MAPPING_ERROR))
+		goto out_free;
+	return vaddr;
+out_free:
+	dma_direct_free(dev, size, vaddr, *dma_addr, attrs);
 	return NULL;
 }
 
 /* free a coherent mapping */
 static void
 gart_free_coherent(struct device *dev, size_t size, void *vaddr,
-		   dma_addr_t dma_addr, struct dma_attrs *attrs)
+		   dma_addr_t dma_addr, unsigned long attrs)
 {
-	gart_unmap_page(dev, dma_addr, size, DMA_BIDIRECTIONAL, NULL);
-	free_pages((unsigned long)vaddr, get_order(size));
-}
-
-static int gart_mapping_error(struct device *dev, dma_addr_t dma_addr)
-{
-	return (dma_addr == bad_dma_addr);
+	gart_unmap_page(dev, dma_addr, size, DMA_BIDIRECTIONAL, 0);
+	dma_direct_free(dev, size, vaddr, dma_addr, attrs);
 }
 
 static int no_agp;
@@ -533,13 +504,12 @@ static __init unsigned long check_iommu_size(unsigned long aper, u64 aper_size)
 	}
 
 	a = aper + iommu_size;
-	iommu_size -= round_up(a, PMD_PAGE_SIZE) - a;
+	iommu_size -= round_up(a, PMD_SIZE) - a;
 
 	if (iommu_size < 64*1024*1024) {
-		pr_warning(
-			"PCI-DMA: Warning: Small IOMMU %luMB."
+		pr_warn("PCI-DMA: Warning: Small IOMMU %luMB."
 			" Consider increasing the AGP aperture in BIOS\n",
-				iommu_size >> 20);
+			iommu_size >> 20);
 	}
 
 	return iommu_size;
@@ -691,19 +661,23 @@ static __init int init_amd_gatt(struct agp_kern_info *info)
 
  nommu:
 	/* Should not happen anymore */
-	pr_warning("PCI-DMA: More than 4GB of RAM and no IOMMU\n"
-	       "falling back to iommu=soft.\n");
+	pr_warn("PCI-DMA: More than 4GB of RAM and no IOMMU - falling back to iommu=soft.\n");
 	return -1;
 }
 
-static struct dma_map_ops gart_dma_ops = {
+static const struct dma_map_ops gart_dma_ops = {
 	.map_sg				= gart_map_sg,
 	.unmap_sg			= gart_unmap_sg,
 	.map_page			= gart_map_page,
 	.unmap_page			= gart_unmap_page,
 	.alloc				= gart_alloc_coherent,
 	.free				= gart_free_coherent,
-	.mapping_error			= gart_mapping_error,
+	.mmap				= dma_common_mmap,
+	.get_sgtable			= dma_common_get_sgtable,
+	.dma_supported			= dma_direct_supported,
+	.get_required_mask		= dma_direct_get_required_mask,
+	.alloc_pages			= dma_direct_alloc_pages,
+	.free_pages			= dma_direct_free_pages,
 };
 
 static void gart_iommu_shutdown(void)
@@ -737,7 +711,6 @@ int __init gart_iommu_init(void)
 	unsigned long aper_base, aper_size;
 	unsigned long start_pfn, end_pfn;
 	unsigned long scratch;
-	long i;
 
 	if (!amd_nb_has_feature(AMD_NB_GART))
 		return 0;
@@ -757,8 +730,8 @@ int __init gart_iommu_init(void)
 	    !gart_iommu_aperture ||
 	    (no_agp && init_amd_gatt(&info) < 0)) {
 		if (max_pfn > MAX_DMA32_PFN) {
-			pr_warning("More than 4GB of memory but GART IOMMU not available.\n");
-			pr_warning("falling back to iommu=soft.\n");
+			pr_warn("More than 4GB of memory but GART IOMMU not available.\n");
+			pr_warn("falling back to iommu=soft.\n");
 		}
 		return 0;
 	}
@@ -770,7 +743,8 @@ int __init gart_iommu_init(void)
 
 	start_pfn = PFN_DOWN(aper_base);
 	if (!pfn_range_is_mapped(start_pfn, end_pfn))
-		init_memory_mapping(start_pfn<<PAGE_SHIFT, end_pfn<<PAGE_SHIFT);
+		init_memory_mapping(start_pfn<<PAGE_SHIFT, end_pfn<<PAGE_SHIFT,
+				    PAGE_KERNEL);
 
 	pr_info("PCI-DMA: using GART IOMMU.\n");
 	iommu_size = check_iommu_size(info.aper_base, aper_size);
@@ -781,29 +755,12 @@ int __init gart_iommu_init(void)
 	if (!iommu_gart_bitmap)
 		panic("Cannot allocate iommu bitmap\n");
 
-#ifdef CONFIG_IOMMU_LEAK
-	if (leak_trace) {
-		int ret;
-
-		ret = dma_debug_resize_entries(iommu_pages);
-		if (ret)
-			pr_debug("PCI-DMA: Cannot trace all the entries\n");
-	}
-#endif
-
-	/*
-	 * Out of IOMMU space handling.
-	 * Reserve some invalid pages at the beginning of the GART.
-	 */
-	bitmap_set(iommu_gart_bitmap, 0, EMERGENCY_PAGES);
-
 	pr_info("PCI-DMA: Reserving %luMB of IOMMU area in the AGP aperture\n",
 	       iommu_size >> 20);
 
 	agp_memory_reserved	= iommu_size;
 	iommu_start		= aper_size - iommu_size;
 	iommu_bus_base		= info.aper_base + iommu_start;
-	bad_dma_addr		= iommu_bus_base;
 	iommu_gatt_base		= agp_gatt_table + (iommu_start>>PAGE_SHIFT);
 
 	/*
@@ -845,13 +802,11 @@ int __init gart_iommu_init(void)
 	if (!scratch)
 		panic("Cannot allocate iommu scratch page");
 	gart_unmapped_entry = GPTE_ENCODE(__pa(scratch));
-	for (i = EMERGENCY_PAGES; i < iommu_pages; i++)
-		iommu_gatt_base[i] = gart_unmapped_entry;
 
 	flush_gart();
 	dma_ops = &gart_dma_ops;
 	x86_platform.iommu_shutdown = gart_iommu_shutdown;
-	swiotlb = 0;
+	x86_swiotlb_enable = false;
 
 	return 0;
 }
@@ -860,16 +815,6 @@ void __init gart_parse_options(char *p)
 {
 	int arg;
 
-#ifdef CONFIG_IOMMU_LEAK
-	if (!strncmp(p, "leak", 4)) {
-		leak_trace = 1;
-		p += 4;
-		if (*p == '=')
-			++p;
-		if (isdigit(*p) && get_option(&p, &arg))
-			iommu_leak_pages = arg;
-	}
-#endif
 	if (isdigit(*p) && get_option(&p, &arg))
 		iommu_size = arg;
 	if (!strncmp(p, "fullflush", 9))
@@ -895,4 +840,3 @@ void __init gart_parse_options(char *p)
 		}
 	}
 }
-IOMMU_INIT_POST(gart_iommu_hole_init);

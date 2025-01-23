@@ -162,7 +162,6 @@ int rds_info_getsockopt(struct socket *sock, int optname, char __user *optval,
 	struct rds_info_lengths lens;
 	unsigned long nr_pages = 0;
 	unsigned long start;
-	unsigned long i;
 	rds_info_func func;
 	struct page **pages = NULL;
 	int ret;
@@ -176,7 +175,7 @@ int rds_info_getsockopt(struct socket *sock, int optname, char __user *optval,
 
 	/* check for all kinds of wrapping and the like */
 	start = (unsigned long)optval;
-	if (len < 0 || len + PAGE_SIZE - 1 < len || start + len < start) {
+	if (len < 0 || len > INT_MAX - PAGE_SIZE + 1 || start + len < start) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -188,12 +187,12 @@ int rds_info_getsockopt(struct socket *sock, int optname, char __user *optval,
 	nr_pages = (PAGE_ALIGN(start + len) - (start & PAGE_MASK))
 			>> PAGE_SHIFT;
 
-	pages = kmalloc(nr_pages * sizeof(struct page *), GFP_KERNEL);
+	pages = kmalloc_array(nr_pages, sizeof(struct page *), GFP_KERNEL);
 	if (!pages) {
 		ret = -ENOMEM;
 		goto out;
 	}
-	ret = get_user_pages_fast(start, nr_pages, 1, pages);
+	ret = pin_user_pages_fast(start, nr_pages, FOLL_WRITE, pages);
 	if (ret != nr_pages) {
 		if (ret > 0)
 			nr_pages = ret;
@@ -235,8 +234,8 @@ call_func:
 		ret = -EFAULT;
 
 out:
-	for (i = 0; pages && i < nr_pages; i++)
-		put_page(pages[i]);
+	if (pages)
+		unpin_user_pages(pages, nr_pages);
 	kfree(pages);
 
 	return ret;

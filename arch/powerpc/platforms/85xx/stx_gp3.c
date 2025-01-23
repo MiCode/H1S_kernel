@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Based on MPC8560 ADS and arch/ppc stx_gp3 ports
  *
@@ -13,11 +14,6 @@
  *
  * Ported to 2.6, Matt Porter <mporter@kernel.crashing.org>
  * Copyright 2004-2005 MontaVista Software, Inc.
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/stddef.h>
@@ -26,13 +22,12 @@
 #include <linux/kdev_t.h>
 #include <linux/delay.h>
 #include <linux/seq_file.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
 
 #include <asm/time.h>
 #include <asm/machdep.h>
 #include <asm/pci-bridge.h>
 #include <asm/mpic.h>
-#include <asm/prom.h>
 #include <mm/mmu_decl.h>
 #include <asm/udbg.h>
 
@@ -88,24 +83,12 @@ static void stx_gp3_show_cpuinfo(struct seq_file *m)
 
 machine_arch_initcall(stx_gp3, mpc85xx_common_publish_devices);
 
-/*
- * Called very early, device-tree isn't unflattened
- */
-static int __init stx_gp3_probe(void)
-{
-	unsigned long root = of_get_flat_dt_root();
-
-	return of_flat_dt_is_compatible(root, "stx,gp3-8560");
-}
-
 define_machine(stx_gp3) {
 	.name			= "STX GP3",
-	.probe			= stx_gp3_probe,
+	.compatible		= "stx,gp3-8560",
 	.setup_arch		= stx_gp3_setup_arch,
 	.init_IRQ		= stx_gp3_pic_init,
 	.show_cpuinfo		= stx_gp3_show_cpuinfo,
 	.get_irq		= mpic_get_irq,
-	.restart		= fsl_rstcr_restart,
-	.calibrate_decr		= generic_calibrate_decr,
 	.progress		= udbg_progress,
 };

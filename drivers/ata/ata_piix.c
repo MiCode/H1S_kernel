@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *    ata_piix.c - Intel PATA/SATA controllers
  *
@@ -5,10 +6,8 @@
  *    		    Please ALWAYS copy linux-ide@vger.kernel.org
  *		    on emails.
  *
- *
  *	Copyright 2003-2005 Red Hat Inc
  *	Copyright 2003-2005 Jeff Garzik
- *
  *
  *	Copyright header from piix.c:
  *
@@ -16,24 +15,8 @@
  *  Copyright (C) 1998-2000 Andre Hedrick <andre@linux-ide.org>
  *  Copyright (C) 2003 Red Hat Inc
  *
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2, or (at your option)
- *  any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; see the file COPYING.  If not, write to
- *  the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
- *
- *
  *  libata documentation is available via 'make {ps|pdf}docs',
- *  as Documentation/DocBook/libata.*
+ *  as Documentation/driver-api/libata.rst
  *
  *  Hardware documentation available at http://developer.intel.com/
  *
@@ -94,6 +77,7 @@
 #include <scsi/scsi_host.h>
 #include <linux/libata.h>
 #include <linux/dmi.h>
+#include <trace/events/libata.h>
 
 #define DRV_NAME	"ata_piix"
 #define DRV_VERSION	"2.13"
@@ -340,6 +324,14 @@ static const struct pci_device_id piix_pci_tbl[] = {
 	{ 0x8086, 0x0F21, PCI_ANY_ID, PCI_ANY_ID, 0, 0, ich8_2port_sata_byt },
 	/* SATA Controller IDE (Coleto Creek) */
 	{ 0x8086, 0x23a6, PCI_ANY_ID, PCI_ANY_ID, 0, 0, ich8_2port_sata },
+	/* SATA Controller IDE (9 Series) */
+	{ 0x8086, 0x8c88, PCI_ANY_ID, PCI_ANY_ID, 0, 0, ich8_2port_sata_snb },
+	/* SATA Controller IDE (9 Series) */
+	{ 0x8086, 0x8c89, PCI_ANY_ID, PCI_ANY_ID, 0, 0, ich8_2port_sata_snb },
+	/* SATA Controller IDE (9 Series) */
+	{ 0x8086, 0x8c80, PCI_ANY_ID, PCI_ANY_ID, 0, 0, ich8_sata_snb },
+	/* SATA Controller IDE (9 Series) */
+	{ 0x8086, 0x8c81, PCI_ANY_ID, PCI_ANY_ID, 0, 0, ich8_sata_snb },
 
 	{ }	/* terminate list */
 };
@@ -450,7 +442,7 @@ static const struct piix_map_db *piix_map_db_table[] = {
 	[ich8_2port_sata_byt]	= &ich8_2port_map_db,
 };
 
-static struct pci_bits piix_enable_bits[] = {
+static const struct pci_bits piix_enable_bits[] = {
 	{ 0x41U, 1U, 0x80UL, 0x80UL },	/* port 0 */
 	{ 0x43U, 1U, 0x80UL, 0x80UL },	/* port 1 */
 };
@@ -484,6 +476,7 @@ static const struct ich_laptop ich_laptop[] = {
 	{ 0x27DF, 0x152D, 0x0778 },	/* ICH7 on unknown Intel */
 	{ 0x24CA, 0x1025, 0x0061 },	/* ICH4 on ACER Aspire 2023WLMi */
 	{ 0x24CA, 0x1025, 0x003d },	/* ICH4 on ACER TM290 */
+	{ 0x24CA, 0x10CF, 0x11AB },	/* ICH4M on Fujitsu-Siemens Lifebook S6120 */
 	{ 0x266F, 0x1025, 0x0066 },	/* ICH6 on ACER Aspire 1694WLMi */
 	{ 0x2653, 0x1043, 0x82D8 },	/* ICH6M on Asus Eee 701 */
 	{ 0x27df, 0x104d, 0x900e },	/* ICH7 on Sony TZ-90 */
@@ -824,13 +817,18 @@ static int piix_sidpr_set_lpm(struct ata_link *link, enum ata_lpm_policy policy,
 
 static bool piix_irq_check(struct ata_port *ap)
 {
+	unsigned char host_stat;
+
 	if (unlikely(!ap->ioaddr.bmdma_addr))
 		return false;
 
-	return ap->ops->bmdma_status(ap) & ATA_DMA_INTR;
+	host_stat = ap->ops->bmdma_status(ap);
+	trace_ata_bmdma_status(ap, host_stat);
+
+	return host_stat & ATA_DMA_INTR;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int piix_broken_suspend(void)
 {
 	static const struct dmi_system_id sysids[] = {
@@ -846,6 +844,12 @@ static int piix_broken_suspend(void)
 			.matches = {
 				DMI_MATCH(DMI_SYS_VENDOR, "TOSHIBA"),
 				DMI_MATCH(DMI_PRODUCT_NAME, "Tecra M3"),
+			},
+		},
+		{
+			.ident = "TECRA M3",
+			.matches = {
+				DMI_MATCH(DMI_OEM_STRING, "Tecra M3,"),
 			},
 		},
 		{
@@ -963,17 +967,9 @@ static int piix_broken_suspend(void)
 
 		{ }	/* terminate list */
 	};
-	static const char *oemstrs[] = {
-		"Tecra M3,",
-	};
-	int i;
 
 	if (dmi_check_system(sysids))
 		return 1;
-
-	for (i = 0; i < ARRAY_SIZE(oemstrs); i++)
-		if (dmi_find_device(DMI_DEV_TYPE_OEM_STRING, oemstrs[i], NULL))
-			return 1;
 
 	/* TECRA M4 sometimes forgets its identify and reports bogus
 	 * DMI information.  As the bogus information is a bit
@@ -997,11 +993,8 @@ static int piix_pci_device_suspend(struct pci_dev *pdev, pm_message_t mesg)
 {
 	struct ata_host *host = pci_get_drvdata(pdev);
 	unsigned long flags;
-	int rc = 0;
 
-	rc = ata_host_suspend(host, mesg);
-	if (rc)
-		return rc;
+	ata_host_suspend(host, mesg);
 
 	/* Some braindamaged ACPI suspend implementations expect the
 	 * controller to be awake on entry; otherwise, it burns cpu
@@ -1066,7 +1059,7 @@ static u8 piix_vmw_bmdma_status(struct ata_port *ap)
 	return ata_bmdma_status(ap) & ~ATA_DMA_ERR;
 }
 
-static struct scsi_host_template piix_sht = {
+static const struct scsi_host_template piix_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -1095,14 +1088,16 @@ static struct ata_port_operations ich_pata_ops = {
 	.set_dmamode		= ich_set_dmamode,
 };
 
-static struct device_attribute *piix_sidpr_shost_attrs[] = {
-	&dev_attr_link_power_management_policy,
+static struct attribute *piix_sidpr_shost_attrs[] = {
+	&dev_attr_link_power_management_policy.attr,
 	NULL
 };
 
-static struct scsi_host_template piix_sidpr_sht = {
+ATTRIBUTE_GROUPS(piix_sidpr_shost);
+
+static const struct scsi_host_template piix_sidpr_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
-	.shost_attrs		= piix_sidpr_shost_attrs,
+	.shost_groups		= piix_sidpr_shost_groups,
 };
 
 static struct ata_port_operations piix_sidpr_sata_ops = {
@@ -1353,7 +1348,6 @@ static void piix_init_pcs(struct ata_host *host,
 	new_pcs = pcs | map_db->port_enable;
 
 	if (new_pcs != pcs) {
-		DPRINTK("updating PCS from 0x%x to 0x%x\n", pcs, new_pcs);
 		pci_write_config_word(pdev, ICH5_PCS, new_pcs);
 		msleep(150);
 	}
@@ -1651,7 +1645,7 @@ static int piix_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct device *dev = &pdev->dev;
 	struct ata_port_info port_info[2];
 	const struct ata_port_info *ppi[] = { &port_info[0], &port_info[1] };
-	struct scsi_host_template *sht = &piix_sht;
+	const struct scsi_host_template *sht = &piix_sht;
 	unsigned long port_flags;
 	struct ata_host *host;
 	struct piix_host_priv *hpriv;
@@ -1767,7 +1761,7 @@ static struct pci_driver piix_pci_driver = {
 	.id_table		= piix_pci_tbl,
 	.probe			= piix_init_one,
 	.remove			= piix_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= piix_pci_device_suspend,
 	.resume			= piix_pci_device_resume,
 #endif
@@ -1777,14 +1771,12 @@ static int __init piix_init(void)
 {
 	int rc;
 
-	DPRINTK("pci_register_driver\n");
 	rc = pci_register_driver(&piix_pci_driver);
 	if (rc)
 		return rc;
 
 	in_module_init = 0;
 
-	DPRINTK("done\n");
 	return 0;
 }
 

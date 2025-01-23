@@ -1,27 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *  mxl5007t.h - driver for the MaxLinear MxL5007T silicon tuner
  *
  *  Copyright (C) 2008 Michael Krufky <mkrufky@linuxtv.org>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #ifndef __MXL5007T_H__
 #define __MXL5007T_H__
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 
 /* ------------------------------------------------------------------------- */
 
@@ -77,7 +64,7 @@ struct mxl5007t_config {
 	unsigned int clk_out_enable:1;
 };
 
-#if IS_ENABLED(CONFIG_MEDIA_TUNER_MXL5007T)
+#if IS_REACHABLE(CONFIG_MEDIA_TUNER_MXL5007T)
 extern struct dvb_frontend *mxl5007t_attach(struct dvb_frontend *fe,
 					    struct i2c_adapter *i2c, u8 addr,
 					    struct mxl5007t_config *cfg);
@@ -93,12 +80,3 @@ static inline struct dvb_frontend *mxl5007t_attach(struct dvb_frontend *fe,
 #endif
 
 #endif /* __MXL5007T_H__ */
-
-/*
- * Overrides for Emacs so that we follow Linus's tabbing style.
- * ---------------------------------------------------------------------------
- * Local variables:
- * c-basic-offset: 8
- * End:
- */
-

@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * drivers/char/watchdog/sp805-wdt.c
  *
  * Watchdog driver for ARM SP805 watchdog module
  *
  * Copyright (C) 2010 ST Microelectronics
- * Viresh Kumar <viresh.linux@gmail.com>
+ * Viresh Kumar <vireshk@kernel.org>
  *
  * This file is licensed under the terms of the GNU General Public
  * License version 2 or later. This program is licensed "as is" without any
@@ -16,7 +17,6 @@
 #include <linux/amba/bus.h>
 #include <linux/bitops.h>
 #include <linux/clk.h>
-#include <linux/init.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/kernel.h>
@@ -24,6 +24,7 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/pm.h>
+#include <linux/property.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
@@ -43,6 +44,7 @@
 	/* control register masks */
 	#define	INT_ENABLE	(1 << 0)
 	#define	RESET_ENABLE	(1 << 1)
+	#define	ENABLE_MASK	(INT_ENABLE | RESET_ENABLE)
 #define WDTINTCLR		0x00C
 #define WDTRIS			0x010
 #define WDTMIS			0x014
@@ -56,20 +58,20 @@
  * @wdd: instance of struct watchdog_device
  * @lock: spin lock protecting dev structure and io access
  * @base: base address of wdt
- * @clk: clock structure of wdt
+ * @clk: (optional) clock structure of wdt
+ * @rate: (optional) clock rate when provided via properties
  * @adev: amba device structure of wdt
  * @status: current status of wdt
  * @load_val: load value to be set for current timeout
- * @timeout: current programmed timeout
  */
 struct sp805_wdt {
 	struct watchdog_device		wdd;
 	spinlock_t			lock;
 	void __iomem			*base;
 	struct clk			*clk;
+	u64				rate;
 	struct amba_device		*adev;
 	unsigned int			load_val;
-	unsigned int			timeout;
 };
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
@@ -77,13 +79,22 @@ module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		"Set to 1 to keep watchdog running after device release");
 
-/* This routine finds load value that will reset system in required timout */
+/* returns true if wdt is running; otherwise returns false */
+static bool wdt_is_running(struct watchdog_device *wdd)
+{
+	struct sp805_wdt *wdt = watchdog_get_drvdata(wdd);
+	u32 wdtcontrol = readl_relaxed(wdt->base + WDTCONTROL);
+
+	return (wdtcontrol & ENABLE_MASK) == ENABLE_MASK;
+}
+
+/* This routine finds load value that will reset system in required timeout */
 static int wdt_setload(struct watchdog_device *wdd, unsigned int timeout)
 {
 	struct sp805_wdt *wdt = watchdog_get_drvdata(wdd);
 	u64 load, rate;
 
-	rate = clk_get_rate(wdt->clk);
+	rate = wdt->rate;
 
 	/*
 	 * sp805 runs counter with given value twice, after the end of first
@@ -99,7 +110,7 @@ static int wdt_setload(struct watchdog_device *wdd, unsigned int timeout)
 	spin_lock(&wdt->lock);
 	wdt->load_val = load;
 	/* roundup timeout to closest positive integer value */
-	wdt->timeout = div_u64((load + 1) * 2 + (rate / 2), rate);
+	wdd->timeout = div_u64((load + 1) * 2 + (rate / 2), rate);
 	spin_unlock(&wdt->lock);
 
 	return 0;
@@ -109,9 +120,7 @@ static int wdt_setload(struct watchdog_device *wdd, unsigned int timeout)
 static unsigned int wdt_timeleft(struct watchdog_device *wdd)
 {
 	struct sp805_wdt *wdt = watchdog_get_drvdata(wdd);
-	u64 load, rate;
-
-	rate = clk_get_rate(wdt->clk);
+	u64 load;
 
 	spin_lock(&wdt->lock);
 	load = readl_relaxed(wdt->base + WDTVALUE);
@@ -121,7 +130,23 @@ static unsigned int wdt_timeleft(struct watchdog_device *wdd)
 		load += wdt->load_val + 1;
 	spin_unlock(&wdt->lock);
 
-	return div_u64(load, rate);
+	return div_u64(load, wdt->rate);
+}
+
+static int
+wdt_restart(struct watchdog_device *wdd, unsigned long mode, void *cmd)
+{
+	struct sp805_wdt *wdt = watchdog_get_drvdata(wdd);
+
+	writel_relaxed(UNLOCK, wdt->base + WDTLOCK);
+	writel_relaxed(0, wdt->base + WDTCONTROL);
+	writel_relaxed(0, wdt->base + WDTLOAD);
+	writel_relaxed(INT_ENABLE | RESET_ENABLE, wdt->base + WDTCONTROL);
+
+	/* Flush posted writes. */
+	readl_relaxed(wdt->base + WDTLOCK);
+
+	return 0;
 }
 
 static int wdt_config(struct watchdog_device *wdd, bool ping)
@@ -142,12 +167,11 @@ static int wdt_config(struct watchdog_device *wdd, bool ping)
 
 	writel_relaxed(UNLOCK, wdt->base + WDTLOCK);
 	writel_relaxed(wdt->load_val, wdt->base + WDTLOAD);
+	writel_relaxed(INT_MASK, wdt->base + WDTINTCLR);
 
-	if (!ping) {
-		writel_relaxed(INT_MASK, wdt->base + WDTINTCLR);
+	if (!ping)
 		writel_relaxed(INT_ENABLE | RESET_ENABLE, wdt->base +
 				WDTCONTROL);
-	}
 
 	writel_relaxed(LOCK, wdt->base + WDTLOCK);
 
@@ -201,58 +225,77 @@ static const struct watchdog_ops wdt_ops = {
 	.ping		= wdt_ping,
 	.set_timeout	= wdt_setload,
 	.get_timeleft	= wdt_timeleft,
+	.restart	= wdt_restart,
 };
 
 static int
 sp805_wdt_probe(struct amba_device *adev, const struct amba_id *id)
 {
 	struct sp805_wdt *wdt;
+	u64 rate = 0;
 	int ret = 0;
-
-	if (!devm_request_mem_region(&adev->dev, adev->res.start,
-				resource_size(&adev->res), "sp805_wdt")) {
-		dev_warn(&adev->dev, "Failed to get memory region resource\n");
-		ret = -ENOENT;
-		goto err;
-	}
 
 	wdt = devm_kzalloc(&adev->dev, sizeof(*wdt), GFP_KERNEL);
 	if (!wdt) {
-		dev_warn(&adev->dev, "Kzalloc failed\n");
 		ret = -ENOMEM;
 		goto err;
 	}
 
-	wdt->base = devm_ioremap(&adev->dev, adev->res.start,
-			resource_size(&adev->res));
-	if (!wdt->base) {
-		ret = -ENOMEM;
-		dev_warn(&adev->dev, "ioremap fail\n");
-		goto err;
-	}
+	wdt->base = devm_ioremap_resource(&adev->dev, &adev->res);
+	if (IS_ERR(wdt->base))
+		return PTR_ERR(wdt->base);
 
-	wdt->clk = devm_clk_get(&adev->dev, NULL);
-	if (IS_ERR(wdt->clk)) {
-		dev_warn(&adev->dev, "Clock not found\n");
-		ret = PTR_ERR(wdt->clk);
-		goto err;
+	/*
+	 * When driver probe with ACPI device, clock devices
+	 * are not available, so watchdog rate get from
+	 * clock-frequency property given in _DSD object.
+	 */
+	device_property_read_u64(&adev->dev, "clock-frequency", &rate);
+
+	wdt->clk = devm_clk_get_optional(&adev->dev, NULL);
+	if (IS_ERR(wdt->clk))
+		return dev_err_probe(&adev->dev, PTR_ERR(wdt->clk), "Clock not found\n");
+
+	wdt->rate = clk_get_rate(wdt->clk);
+	if (!wdt->rate)
+		wdt->rate = rate;
+	if (!wdt->rate) {
+		dev_err(&adev->dev, "no clock-frequency property\n");
+		return -ENODEV;
 	}
 
 	wdt->adev = adev;
 	wdt->wdd.info = &wdt_info;
 	wdt->wdd.ops = &wdt_ops;
+	wdt->wdd.parent = &adev->dev;
 
 	spin_lock_init(&wdt->lock);
 	watchdog_set_nowayout(&wdt->wdd, nowayout);
 	watchdog_set_drvdata(&wdt->wdd, wdt);
-	wdt_setload(&wdt->wdd, DEFAULT_TIMEOUT);
+	watchdog_set_restart_priority(&wdt->wdd, 128);
+	watchdog_stop_on_unregister(&wdt->wdd);
 
-	ret = watchdog_register_device(&wdt->wdd);
-	if (ret) {
-		dev_err(&adev->dev, "watchdog_register_device() failed: %d\n",
-				ret);
-		goto err;
+	/*
+	 * If 'timeout-sec' devicetree property is specified, use that.
+	 * Otherwise, use DEFAULT_TIMEOUT
+	 */
+	wdt->wdd.timeout = DEFAULT_TIMEOUT;
+	watchdog_init_timeout(&wdt->wdd, 0, &adev->dev);
+	wdt_setload(&wdt->wdd, wdt->wdd.timeout);
+
+	/*
+	 * If HW is already running, enable/reset the wdt and set the running
+	 * bit to tell the wdt subsystem
+	 */
+	if (wdt_is_running(&wdt->wdd)) {
+		wdt_enable(&wdt->wdd);
+		set_bit(WDOG_HW_RUNNING, &wdt->wdd.status);
 	}
+
+	watchdog_stop_on_reboot(&wdt->wdd);
+	ret = watchdog_register_device(&wdt->wdd);
+	if (ret)
+		goto err;
 	amba_set_drvdata(adev, wdt);
 
 	dev_info(&adev->dev, "registration successful\n");
@@ -263,14 +306,12 @@ err:
 	return ret;
 }
 
-static int sp805_wdt_remove(struct amba_device *adev)
+static void sp805_wdt_remove(struct amba_device *adev)
 {
 	struct sp805_wdt *wdt = amba_get_drvdata(adev);
 
 	watchdog_unregister_device(&wdt->wdd);
 	watchdog_set_drvdata(&wdt->wdd, NULL);
-
-	return 0;
 }
 
 static int __maybe_unused sp805_wdt_suspend(struct device *dev)
@@ -296,10 +337,14 @@ static int __maybe_unused sp805_wdt_resume(struct device *dev)
 static SIMPLE_DEV_PM_OPS(sp805_wdt_dev_pm_ops, sp805_wdt_suspend,
 		sp805_wdt_resume);
 
-static struct amba_id sp805_wdt_ids[] = {
+static const struct amba_id sp805_wdt_ids[] = {
 	{
 		.id	= 0x00141805,
 		.mask	= 0x00ffffff,
+	},
+	{
+		.id     = 0x001bb824,
+		.mask   = 0x00ffffff,
 	},
 	{ 0, 0 },
 };
@@ -318,6 +363,6 @@ static struct amba_driver sp805_wdt_driver = {
 
 module_amba_driver(sp805_wdt_driver);
 
-MODULE_AUTHOR("Viresh Kumar <viresh.linux@gmail.com>");
+MODULE_AUTHOR("Viresh Kumar <vireshk@kernel.org>");
 MODULE_DESCRIPTION("ARM SP805 Watchdog Driver");
 MODULE_LICENSE("GPL");

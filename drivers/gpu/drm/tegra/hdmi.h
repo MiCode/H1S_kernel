@@ -1,10 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2012 Avionic Design GmbH
  * Copyright (C) 2012 NVIDIA CORPORATION.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef TEGRA_HDMI_H
@@ -190,13 +187,18 @@
 
 #define HDMI_NV_PDISP_SOR_CSTM					0x5a
 #define SOR_CSTM_ROTCLK(x) (((x) & 0xf) << 24)
+#define SOR_CSTM_PLLDIV (1 << 21)
+#define SOR_CSTM_LVDS_ENABLE (1 << 16)
+#define SOR_CSTM_MODE_LVDS (0 << 12)
+#define SOR_CSTM_MODE_TMDS (1 << 12)
+#define SOR_CSTM_MODE_MASK (3 << 12)
 
 #define HDMI_NV_PDISP_SOR_LVDS					0x5b
 #define HDMI_NV_PDISP_SOR_CRCA					0x5c
 #define HDMI_NV_PDISP_SOR_CRCB					0x5d
 #define HDMI_NV_PDISP_SOR_BLANK					0x5e
 #define HDMI_NV_PDISP_SOR_SEQ_CTL				0x5f
-#define SOR_SEQ_CTL_PU_PC(x) (((x) & 0xf) <<  0)
+#define SOR_SEQ_PU_PC(x)     (((x) & 0xf) <<  0)
 #define SOR_SEQ_PU_PC_ALT(x) (((x) & 0xf) <<  4)
 #define SOR_SEQ_PD_PC(x)     (((x) & 0xf) <<  8)
 #define SOR_SEQ_PD_PC_ALT(x) (((x) & 0xf) << 12)
@@ -463,9 +465,20 @@
 #define HDMI_NV_PDISP_KEY_SKEY_INDEX				0xa3
 
 #define HDMI_NV_PDISP_SOR_AUDIO_CNTRL0				0xac
-#define AUDIO_CNTRL0_INJECT_NULLSMPL (1 << 29)
+#define  SOR_AUDIO_CNTRL0_SOURCE_SELECT_AUTO	(0 << 20)
+#define  SOR_AUDIO_CNTRL0_SOURCE_SELECT_SPDIF	(1 << 20)
+#define  SOR_AUDIO_CNTRL0_SOURCE_SELECT_HDAL	(2 << 20)
+#define  SOR_AUDIO_CNTRL0_INJECT_NULLSMPL	(1 << 29)
+#define HDMI_NV_PDISP_SOR_AUDIO_SPARE0				0xae
+#define  SOR_AUDIO_SPARE0_HBR_ENABLE		(1 << 27)
+#define HDMI_NV_PDISP_SOR_AUDIO_HDA_CODEC_SCRATCH0		0xba
+#define  SOR_AUDIO_HDA_CODEC_SCRATCH0_VALID	(1 << 30)
+#define  SOR_AUDIO_HDA_CODEC_SCRATCH0_FMT_MASK	0xffff
+#define HDMI_NV_PDISP_SOR_AUDIO_HDA_CODEC_SCRATCH1		0xbb
 #define HDMI_NV_PDISP_SOR_AUDIO_HDA_ELD_BUFWR			0xbc
 #define HDMI_NV_PDISP_SOR_AUDIO_HDA_PRESENSE			0xbd
+#define  SOR_AUDIO_HDA_PRESENSE_VALID		(1 << 1)
+#define  SOR_AUDIO_HDA_PRESENSE_PRESENT		(1 << 0)
 
 #define HDMI_NV_PDISP_SOR_AUDIO_AVAL_0320    0xbf
 #define HDMI_NV_PDISP_SOR_AUDIO_AVAL_0441    0xc0
@@ -475,6 +488,14 @@
 #define HDMI_NV_PDISP_SOR_AUDIO_AVAL_0960    0xc4
 #define HDMI_NV_PDISP_SOR_AUDIO_AVAL_1920    0xc5
 #define HDMI_NV_PDISP_SOR_AUDIO_AVAL_DEFAULT 0xc5
+
+#define HDMI_NV_PDISP_INT_STATUS			0xcc
+#define  INT_SCRATCH		(1 << 3)
+#define  INT_CP_REQUEST		(1 << 2)
+#define  INT_CODEC_SCRATCH1	(1 << 1)
+#define  INT_CODEC_SCRATCH0	(1 << 0)
+#define HDMI_NV_PDISP_INT_MASK				0xcd
+#define HDMI_NV_PDISP_INT_ENABLE			0xce
 
 #define HDMI_NV_PDISP_SOR_IO_PEAK_CURRENT		0xd1
 #define PEAK_CURRENT_LANE0(x) (((x) & 0x7f) <<  0)

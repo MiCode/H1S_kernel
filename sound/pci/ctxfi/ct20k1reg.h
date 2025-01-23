@@ -1,13 +1,10 @@
-/**
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
  * Copyright (C) 2008, Creative Technology Ltd. All Rights Reserved.
- *
- * This source file is released under GPL v2 license (no other versions).
- * See the COPYING file included in the main directory of this source
- * distribution for the license terms and conditions.
  */
 
 #ifndef CT20K1REG_H
-#define CT20k1REG_H
+#define CT20K1REG_H
 
 /* 20k1 registers */
 #define 	DSPXRAM_START 			0x000000
@@ -632,5 +629,3 @@
 #define I2SD_R    0x19L
 
 #endif /* CT20K1REG_H */
-
-

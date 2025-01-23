@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  *  S390 version
  *
@@ -29,7 +30,7 @@ struct statfs {
 	unsigned int	f_namelen;
 	unsigned int	f_frsize;
 	unsigned int	f_flags;
-	unsigned int	f_spare[4];
+	unsigned int	f_spare[5];
 };
 
 struct statfs64 {
@@ -44,7 +45,7 @@ struct statfs64 {
 	unsigned int	f_namelen;
 	unsigned int	f_frsize;
 	unsigned int	f_flags;
-	unsigned int	f_spare[4];
+	unsigned int	f_spare[5];
 };
 
 #endif

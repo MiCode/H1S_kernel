@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
 **
 **  PCI Lower Bus Adapter (LBA) manager
@@ -5,10 +6,6 @@
 **	(c) Copyright 1999,2000 Grant Grundler
 **	(c) Copyright 1999,2000 Hewlett-Packard Company
 **
-**	This program is free software; you can redistribute it and/or modify
-**	it under the terms of the GNU General Public License as published by
-**      the Free Software Foundation; either version 2 of the License, or
-**      (at your option) any later version.
 **
 **
 ** This module primarily provides access to PCI bus (config/IOport
@@ -48,6 +45,8 @@
 #include <asm/hardware.h>	/* for register_parisc_driver() stuff */
 #include <asm/parisc-device.h>
 #include <asm/io.h>		/* read/write stuff */
+
+#include "iommu.h"
 
 #undef DEBUG_LBA	/* general stuff */
 #undef DEBUG_LBA_PORT	/* debug I/O Port access */
@@ -109,10 +108,10 @@ static u32 lba_t32;
 
 #define LBA_SKIP_PROBE(d) ((d)->flags & LBA_FLAG_SKIP_PROBE)
 
-
-/* Looks nice and keeps the compiler happy */
-#define LBA_DEV(d) ((struct lba_device *) (d))
-
+static inline struct lba_device *LBA_DEV(struct pci_hba_data *hba)
+{
+	return container_of(hba, struct lba_device, hba);
+}
 
 /*
 ** Only allow 8 subsidiary busses per LBA
@@ -405,7 +404,7 @@ static int elroy_cfg_read(struct pci_bus *bus, unsigned int devfn, int pos, int 
 static void
 lba_wr_cfg(struct lba_device *d, u32 tok, u8 reg, u32 data, u32 size)
 {
-	int error = 0;
+	int error __maybe_unused = 0;
 	u32 arb_mask = 0;
 	u32 error_config = 0;
 	u32 status_control = 0;
@@ -624,6 +623,10 @@ extend_lmmio_len(unsigned long start, unsigned long end, unsigned long lba_len)
 {
 	struct resource *tmp;
 
+	/* exit if not a C8000 */
+	if (boot_cpu_data.cpu_type < mako)
+		return end;
+
 	pr_debug("LMMIO mismatch: PAT length = 0x%lx, MASK register = 0x%lx\n",
 		end - start, lba_len);
 
@@ -631,10 +634,6 @@ extend_lmmio_len(unsigned long start, unsigned long end, unsigned long lba_len)
 
 	pr_debug("LBA: lmmio_space [0x%lx-0x%lx] - original\n", start, end);
 
-	if (boot_cpu_data.cpu_type < mako) {
-		pr_info("LBA: Not a C8000 system - not extending LMMIO range.\n");
-		return end;
-	}
 
 	end += lba_len;
 	if (end < start) /* fix overflow */
@@ -665,6 +664,42 @@ extend_lmmio_len(unsigned long start, unsigned long end, unsigned long lba_len)
 #define truncate_pat_collision(r,n)  (0)
 #endif
 
+static void pcibios_allocate_bridge_resources(struct pci_dev *dev)
+{
+	int idx;
+	struct resource *r;
+
+	for (idx = PCI_BRIDGE_RESOURCES; idx < PCI_NUM_RESOURCES; idx++) {
+		r = &dev->resource[idx];
+		if (!r->flags)
+			continue;
+		if (r->parent)	/* Already allocated */
+			continue;
+		if (!r->start || pci_claim_bridge_resource(dev, idx) < 0) {
+			/*
+			 * Something is wrong with the region.
+			 * Invalidate the resource to prevent
+			 * child resource allocations in this
+			 * range.
+			 */
+			r->start = r->end = 0;
+			r->flags = 0;
+		}
+	}
+}
+
+static void pcibios_allocate_bus_resources(struct pci_bus *bus)
+{
+	struct pci_bus *child;
+
+	/* Depth-First Search on bus tree */
+	if (bus->self)
+		pcibios_allocate_bridge_resources(bus->self);
+	list_for_each_entry(child, &bus->children, node)
+		pcibios_allocate_bus_resources(child);
+}
+
+
 /*
 ** The algorithm is generic code.
 ** But it needs to access local data structures to get the IRQ base.
@@ -691,12 +726,11 @@ lba_fixup_bus(struct pci_bus *bus)
 	** pci_alloc_primary_bus() mangles this.
 	*/
 	if (bus->parent) {
-		int i;
 		/* PCI-PCI Bridge */
 		pci_read_bridge_bases(bus);
-		for (i = PCI_BRIDGE_RESOURCES; i < PCI_NUM_RESOURCES; i++) {
-			pci_claim_resource(bus->self, i);
-		}
+
+		/* check and allocate bridge resources */
+		pcibios_allocate_bus_resources(bus);
 	} else {
 		/* Host-PCI Bridge */
 		int err;
@@ -791,8 +825,10 @@ lba_fixup_bus(struct pci_bus *bus)
                 /*
 		** P2PB's have no IRQs. ignore them.
 		*/
-		if ((dev->class >> 8) == PCI_CLASS_BRIDGE_PCI)
+		if ((dev->class >> 8) == PCI_CLASS_BRIDGE_PCI) {
+			pcibios_init_bridge(dev);
 			continue;
+		}
 
 		/* Adjust INTERRUPT_LINE for this dev */
 		iosapic_fixup_irq(ldev->iosapic_obj, dev);
@@ -982,7 +1018,7 @@ static void
 lba_pat_resources(struct parisc_device *pa_dev, struct lba_device *lba_dev)
 {
 	unsigned long bytecnt;
-	long io_count;
+	long io_count __maybe_unused;
 	long status;	/* PDC return status */
 	long pa_count;
 	pdc_pat_cell_mod_maddr_block_t *pa_pdc_cell;	/* PA_VIEW */
@@ -1098,7 +1134,7 @@ lba_pat_resources(struct parisc_device *pa_dev, struct lba_device *lba_dev)
 			** Postable I/O port space is per PCI host adapter.
 			** base of 64MB PIOP region
 			*/
-			lba_dev->iop_base = ioremap_nocache(p->start, 64 * 1024 * 1024);
+			lba_dev->iop_base = ioremap(p->start, 64 * 1024 * 1024);
 
 			sprintf(lba_dev->hba.io_name, "PCI%02x Ports",
 					(int)lba_dev->hba.bus_num.start);
@@ -1126,10 +1162,6 @@ lba_pat_resources(struct parisc_device *pa_dev, struct lba_device *lba_dev)
 #define lba_pat_port_ops lba_astro_port_ops
 #define lba_pat_resources(pa_dev, lba_dev)
 #endif	/* CONFIG_64BIT */
-
-
-extern void sba_distributed_lmmio(struct parisc_device *, struct resource *);
-extern void sba_directed_lmmio(struct parisc_device *, struct resource *);
 
 
 static void
@@ -1236,7 +1268,7 @@ lba_legacy_resources(struct parisc_device *pa_dev, struct lba_device *lba_dev)
 		r->flags = IORESOURCE_MEM;
 		/* mmio_mask also clears Enable bit */
 		r->start &= mmio_mask;
-		r->start = PCI_HOST_ADDR(HBA_DATA(lba_dev), r->start);
+		r->start = PCI_HOST_ADDR(&lba_dev->hba, r->start);
 		rsize = ~ READ_REG32(lba_dev->hba.base_addr + LBA_LMMIO_MASK);
 
 		/*
@@ -1282,7 +1314,7 @@ lba_legacy_resources(struct parisc_device *pa_dev, struct lba_device *lba_dev)
 		r->flags = IORESOURCE_MEM;
 		/* mmio_mask also clears Enable bit */
 		r->start &= mmio_mask;
-		r->start = PCI_HOST_ADDR(HBA_DATA(lba_dev), r->start);
+		r->start = PCI_HOST_ADDR(&lba_dev->hba, r->start);
 		rsize = READ_REG32(lba_dev->hba.base_addr + LBA_ELMMIO_MASK);
 		r->end = r->start + ~rsize;
 	}
@@ -1364,9 +1396,27 @@ lba_hw_init(struct lba_device *d)
 		WRITE_REG32(stat, d->hba.base_addr + LBA_ERROR_CONFIG);
 	}
 
-	/* Set HF mode as the default (vs. -1 mode). */
+
+	/*
+	 * Hard Fail vs. Soft Fail on PCI "Master Abort".
+	 *
+	 * "Master Abort" means the MMIO transaction timed out - usually due to
+	 * the device not responding to an MMIO read. We would like HF to be
+	 * enabled to find driver problems, though it means the system will
+	 * crash with a HPMC.
+	 *
+	 * In SoftFail mode "~0L" is returned as a result of a timeout on the
+	 * pci bus. This is like how PCI busses on x86 and most other
+	 * architectures behave.  In order to increase compatibility with
+	 * existing (x86) PCI hardware and existing Linux drivers we enable
+	 * Soft Faul mode on PA-RISC now too.
+	 */
         stat = READ_REG32(d->hba.base_addr + LBA_STAT_CTL);
+#if defined(ENABLE_HARDFAIL)
 	WRITE_REG32(stat | HF_ENABLE, d->hba.base_addr + LBA_STAT_CTL);
+#else
+	WRITE_REG32(stat & ~HF_ENABLE, d->hba.base_addr + LBA_STAT_CTL);
+#endif
 
 	/*
 	** Writing a zero to STAT_CTL.rf (bit 0) will clear reset signal
@@ -1422,8 +1472,12 @@ lba_driver_probe(struct parisc_device *dev)
 	u32 func_class;
 	void *tmp_obj;
 	char *version;
-	void __iomem *addr = ioremap_nocache(dev->hpa.start, 4096);
+	void __iomem *addr;
 	int max;
+
+	addr = ioremap(dev->hpa.start, 4096);
+	if (addr == NULL)
+		return -ENOMEM;
 
 	/* Read HW Rev First */
 	func_class = READ_REG32(addr + LBA_FCLASS);
@@ -1481,7 +1535,8 @@ lba_driver_probe(struct parisc_device *dev)
 	}
 
 	/* Tell I/O SAPIC driver we have a IRQ handler/region. */
-	tmp_obj = iosapic_register(dev->hpa.start + LBA_IOSAPIC_BASE);
+	tmp_obj = iosapic_register(dev->hpa.start + LBA_IOSAPIC_BASE,
+						addr + LBA_IOSAPIC_BASE);
 
 	/* NOTE: PCI devices (e.g. 103c:1005 graphics card) which don't
 	**	have an IRT entry will get NULL back from iosapic code.
@@ -1505,7 +1560,7 @@ lba_driver_probe(struct parisc_device *dev)
 
 	/* ------------ Second : initialize common stuff ---------- */
 	pci_bios = &lba_bios_ops;
-	pcibios_register_hba(HBA_DATA(lba_dev));
+	pcibios_register_hba(&lba_dev->hba);
 	spin_lock_init(&lba_dev->lba_lock);
 
 	if (lba_hw_init(lba_dev))
@@ -1521,7 +1576,7 @@ lba_driver_probe(struct parisc_device *dev)
 	} else {
 		if (!astro_iop_base) {
 			/* Sprockets PDC uses NPIOP region */
-			astro_iop_base = ioremap_nocache(LBA_PORT_BASE, 64 * 1024);
+			astro_iop_base = ioremap(LBA_PORT_BASE, 64 * 1024);
 			pci_port = &lba_astro_port_ops;
 		}
 
@@ -1557,8 +1612,11 @@ lba_driver_probe(struct parisc_device *dev)
 	if (lba_dev->hba.lmmio_space.flags)
 		pci_add_resource_offset(&resources, &lba_dev->hba.lmmio_space,
 					lba_dev->hba.lmmio_space_offset);
-	if (lba_dev->hba.gmmio_space.flags)
-		pci_add_resource(&resources, &lba_dev->hba.gmmio_space);
+	if (lba_dev->hba.gmmio_space.flags) {
+		/* Not registering GMMIO space - according to docs it's not
+		 * even used on HP-UX. */
+		/* pci_add_resource(&resources, &lba_dev->hba.gmmio_space); */
+	}
 
 	pci_add_resource(&resources, &lba_dev->hba.bus_num);
 
@@ -1607,14 +1665,14 @@ lba_driver_probe(struct parisc_device *dev)
 	return 0;
 }
 
-static struct parisc_device_id lba_tbl[] = {
+static const struct parisc_device_id lba_tbl[] __initconst = {
 	{ HPHW_BRIDGE, HVERSION_REV_ANY_ID, ELROY_HVERS, 0xa },
 	{ HPHW_BRIDGE, HVERSION_REV_ANY_ID, MERCURY_HVERS, 0xa },
 	{ HPHW_BRIDGE, HVERSION_REV_ANY_ID, QUICKSILVER_HVERS, 0xa },
 	{ 0, }
 };
 
-static struct parisc_driver lba_driver = {
+static struct parisc_driver lba_driver __refdata = {
 	.name =		MODULE_NAME,
 	.id_table =	lba_tbl,
 	.probe =	lba_driver_probe,
@@ -1624,10 +1682,11 @@ static struct parisc_driver lba_driver = {
 ** One time initialization to let the world know the LBA was found.
 ** Must be called exactly once before pci_init().
 */
-void __init lba_init(void)
+static int __init lba_init(void)
 {
-	register_parisc_driver(&lba_driver);
+	return register_parisc_driver(&lba_driver);
 }
+arch_initcall(lba_init);
 
 /*
 ** Initialize the IBASE/IMASK registers for LBA (Elroy).
@@ -1636,7 +1695,7 @@ void __init lba_init(void)
 */
 void lba_set_iregs(struct parisc_device *lba, u32 ibase, u32 imask)
 {
-	void __iomem * base_addr = ioremap_nocache(lba->hpa.start, 4096);
+	void __iomem * base_addr = ioremap(lba->hpa.start, 4096);
 
 	imask <<= 2;	/* adjust for hints - 2 more bits */
 
@@ -1650,3 +1709,48 @@ void lba_set_iregs(struct parisc_device *lba, u32 ibase, u32 imask)
 	iounmap(base_addr);
 }
 
+
+/*
+ * The design of the Diva management card in rp34x0 machines (rp3410, rp3440)
+ * seems rushed, so that many built-in components simply don't work.
+ * The following quirks disable the serial AUX port and the built-in ATI RV100
+ * Radeon 7000 graphics card which both don't have any external connectors and
+ * thus are useless, and even worse, e.g. the AUX port occupies ttyS0 and as
+ * such makes those machines the only PARISC machines on which we can't use
+ * ttyS0 as boot console.
+ */
+static void quirk_diva_ati_card(struct pci_dev *dev)
+{
+	if (dev->subsystem_vendor != PCI_VENDOR_ID_HP ||
+	    dev->subsystem_device != 0x1292)
+		return;
+
+	dev_info(&dev->dev, "Hiding Diva built-in ATI card");
+	dev->device = 0;
+}
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ATI, PCI_DEVICE_ID_ATI_RADEON_QY,
+	quirk_diva_ati_card);
+
+static void quirk_diva_aux_disable(struct pci_dev *dev)
+{
+	if (dev->subsystem_vendor != PCI_VENDOR_ID_HP ||
+	    dev->subsystem_device != 0x1291)
+		return;
+
+	dev_info(&dev->dev, "Hiding Diva built-in AUX serial device");
+	dev->device = 0;
+}
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_HP, PCI_DEVICE_ID_HP_DIVA_AUX,
+	quirk_diva_aux_disable);
+
+static void quirk_tosca_aux_disable(struct pci_dev *dev)
+{
+	if (dev->subsystem_vendor != PCI_VENDOR_ID_HP ||
+	    dev->subsystem_device != 0x104a)
+		return;
+
+	dev_info(&dev->dev, "Hiding Tosca secondary built-in AUX serial device");
+	dev->device = 0;
+}
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_HP, PCI_DEVICE_ID_HP_DIVA,
+	quirk_tosca_aux_disable);

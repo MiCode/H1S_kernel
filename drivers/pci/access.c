@@ -1,7 +1,6 @@
-#include <linux/delay.h>
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/pci.h>
 #include <linux/module.h>
-#include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/ioport.h>
 #include <linux/wait.h>
@@ -16,40 +15,51 @@
 DEFINE_RAW_SPINLOCK(pci_lock);
 
 /*
- *  Wrappers for all PCI configuration access functions.  They just check
- *  alignment, do locking and call the low-level functions pointed to
- *  by pci_dev->ops.
+ * Wrappers for all PCI configuration access functions.  They just check
+ * alignment, do locking and call the low-level functions pointed to
+ * by pci_dev->ops.
  */
 
 #define PCI_byte_BAD 0
 #define PCI_word_BAD (pos & 1)
 #define PCI_dword_BAD (pos & 3)
 
-#define PCI_OP_READ(size,type,len) \
-int pci_bus_read_config_##size \
+#ifdef CONFIG_PCI_LOCKLESS_CONFIG
+# define pci_lock_config(f)	do { (void)(f); } while (0)
+# define pci_unlock_config(f)	do { (void)(f); } while (0)
+#else
+# define pci_lock_config(f)	raw_spin_lock_irqsave(&pci_lock, f)
+# define pci_unlock_config(f)	raw_spin_unlock_irqrestore(&pci_lock, f)
+#endif
+
+#define PCI_OP_READ(size, type, len) \
+int noinline pci_bus_read_config_##size \
 	(struct pci_bus *bus, unsigned int devfn, int pos, type *value)	\
 {									\
 	int res;							\
 	unsigned long flags;						\
 	u32 data = 0;							\
 	if (PCI_##size##_BAD) return PCIBIOS_BAD_REGISTER_NUMBER;	\
-	raw_spin_lock_irqsave(&pci_lock, flags);			\
+	pci_lock_config(flags);						\
 	res = bus->ops->read(bus, devfn, pos, len, &data);		\
-	*value = (type)data;						\
-	raw_spin_unlock_irqrestore(&pci_lock, flags);		\
+	if (res)							\
+		PCI_SET_ERROR_RESPONSE(value);				\
+	else								\
+		*value = (type)data;					\
+	pci_unlock_config(flags);					\
 	return res;							\
 }
 
-#define PCI_OP_WRITE(size,type,len) \
-int pci_bus_write_config_##size \
+#define PCI_OP_WRITE(size, type, len) \
+int noinline pci_bus_write_config_##size \
 	(struct pci_bus *bus, unsigned int devfn, int pos, type value)	\
 {									\
 	int res;							\
 	unsigned long flags;						\
 	if (PCI_##size##_BAD) return PCIBIOS_BAD_REGISTER_NUMBER;	\
-	raw_spin_lock_irqsave(&pci_lock, flags);			\
+	pci_lock_config(flags);						\
 	res = bus->ops->write(bus, devfn, pos, len, value);		\
-	raw_spin_unlock_irqrestore(&pci_lock, flags);		\
+	pci_unlock_config(flags);					\
 	return res;							\
 }
 
@@ -66,6 +76,104 @@ EXPORT_SYMBOL(pci_bus_read_config_dword);
 EXPORT_SYMBOL(pci_bus_write_config_byte);
 EXPORT_SYMBOL(pci_bus_write_config_word);
 EXPORT_SYMBOL(pci_bus_write_config_dword);
+
+int pci_generic_config_read(struct pci_bus *bus, unsigned int devfn,
+			    int where, int size, u32 *val)
+{
+	void __iomem *addr;
+
+	addr = bus->ops->map_bus(bus, devfn, where);
+	if (!addr)
+		return PCIBIOS_DEVICE_NOT_FOUND;
+
+	if (size == 1)
+		*val = readb(addr);
+	else if (size == 2)
+		*val = readw(addr);
+	else
+		*val = readl(addr);
+
+	return PCIBIOS_SUCCESSFUL;
+}
+EXPORT_SYMBOL_GPL(pci_generic_config_read);
+
+int pci_generic_config_write(struct pci_bus *bus, unsigned int devfn,
+			     int where, int size, u32 val)
+{
+	void __iomem *addr;
+
+	addr = bus->ops->map_bus(bus, devfn, where);
+	if (!addr)
+		return PCIBIOS_DEVICE_NOT_FOUND;
+
+	if (size == 1)
+		writeb(val, addr);
+	else if (size == 2)
+		writew(val, addr);
+	else
+		writel(val, addr);
+
+	return PCIBIOS_SUCCESSFUL;
+}
+EXPORT_SYMBOL_GPL(pci_generic_config_write);
+
+int pci_generic_config_read32(struct pci_bus *bus, unsigned int devfn,
+			      int where, int size, u32 *val)
+{
+	void __iomem *addr;
+
+	addr = bus->ops->map_bus(bus, devfn, where & ~0x3);
+	if (!addr)
+		return PCIBIOS_DEVICE_NOT_FOUND;
+
+	*val = readl(addr);
+
+	if (size <= 2)
+		*val = (*val >> (8 * (where & 3))) & ((1 << (size * 8)) - 1);
+
+	return PCIBIOS_SUCCESSFUL;
+}
+EXPORT_SYMBOL_GPL(pci_generic_config_read32);
+
+int pci_generic_config_write32(struct pci_bus *bus, unsigned int devfn,
+			       int where, int size, u32 val)
+{
+	void __iomem *addr;
+	u32 mask, tmp;
+
+	addr = bus->ops->map_bus(bus, devfn, where & ~0x3);
+	if (!addr)
+		return PCIBIOS_DEVICE_NOT_FOUND;
+
+	if (size == 4) {
+		writel(val, addr);
+		return PCIBIOS_SUCCESSFUL;
+	}
+
+	/*
+	 * In general, hardware that supports only 32-bit writes on PCI is
+	 * not spec-compliant.  For example, software may perform a 16-bit
+	 * write.  If the hardware only supports 32-bit accesses, we must
+	 * do a 32-bit read, merge in the 16 bits we intend to write,
+	 * followed by a 32-bit write.  If the 16 bits we *don't* intend to
+	 * write happen to have any RW1C (write-one-to-clear) bits set, we
+	 * just inadvertently cleared something we shouldn't have.
+	 */
+	if (!bus->unsafe_warn) {
+		dev_warn(&bus->dev, "%d-byte config write to %04x:%02x:%02x.%d offset %#x may corrupt adjacent RW1C bits\n",
+			 size, pci_domain_nr(bus), bus->number,
+			 PCI_SLOT(devfn), PCI_FUNC(devfn), where);
+		bus->unsafe_warn = 1;
+	}
+
+	mask = ~(((1 << (size * 8)) - 1) << ((where & 0x3) * 8));
+	tmp = readl(addr) & mask;
+	tmp |= val << ((where & 0x3) * 8);
+	writel(tmp, addr);
+
+	return PCIBIOS_SUCCESSFUL;
+}
+EXPORT_SYMBOL_GPL(pci_generic_config_write32);
 
 /**
  * pci_bus_set_ops - Set raw operations of pci bus
@@ -87,38 +195,6 @@ struct pci_ops *pci_bus_set_ops(struct pci_bus *bus, struct pci_ops *ops)
 }
 EXPORT_SYMBOL(pci_bus_set_ops);
 
-/**
- * pci_read_vpd - Read one entry from Vital Product Data
- * @dev:	pci device struct
- * @pos:	offset in vpd space
- * @count:	number of bytes to read
- * @buf:	pointer to where to store result
- *
- */
-ssize_t pci_read_vpd(struct pci_dev *dev, loff_t pos, size_t count, void *buf)
-{
-	if (!dev->vpd || !dev->vpd->ops)
-		return -ENODEV;
-	return dev->vpd->ops->read(dev, pos, count, buf);
-}
-EXPORT_SYMBOL(pci_read_vpd);
-
-/**
- * pci_write_vpd - Write entry to Vital Product Data
- * @dev:	pci device struct
- * @pos:	offset in vpd space
- * @count:	number of bytes to write
- * @buf:	buffer containing write data
- *
- */
-ssize_t pci_write_vpd(struct pci_dev *dev, loff_t pos, size_t count, const void *buf)
-{
-	if (!dev->vpd || !dev->vpd->ops)
-		return -ENODEV;
-	return dev->vpd->ops->write(dev, pos, count, buf);
-}
-EXPORT_SYMBOL(pci_write_vpd);
-
 /*
  * The following routines are to prevent the user from accessing PCI config
  * space when it's unsafe to do so.  Some devices require this during BIST and
@@ -130,25 +206,21 @@ EXPORT_SYMBOL(pci_write_vpd);
 static DECLARE_WAIT_QUEUE_HEAD(pci_cfg_wait);
 
 static noinline void pci_wait_cfg(struct pci_dev *dev)
+	__must_hold(&pci_lock)
 {
-	DECLARE_WAITQUEUE(wait, current);
-
-	__add_wait_queue(&pci_cfg_wait, &wait);
 	do {
-		set_current_state(TASK_UNINTERRUPTIBLE);
 		raw_spin_unlock_irq(&pci_lock);
-		schedule();
+		wait_event(pci_cfg_wait, !dev->block_cfg_access);
 		raw_spin_lock_irq(&pci_lock);
 	} while (dev->block_cfg_access);
-	__remove_wait_queue(&pci_cfg_wait, &wait);
 }
 
 /* Returns 0 on success, negative values indicate error. */
-#define PCI_USER_READ_CONFIG(size,type)					\
+#define PCI_USER_READ_CONFIG(size, type)					\
 int pci_user_read_config_##size						\
 	(struct pci_dev *dev, int pos, type *val)			\
 {									\
-	int ret = 0;							\
+	int ret = PCIBIOS_SUCCESSFUL;					\
 	u32 data = -1;							\
 	if (PCI_##size##_BAD)						\
 		return -EINVAL;						\
@@ -158,19 +230,20 @@ int pci_user_read_config_##size						\
 	ret = dev->bus->ops->read(dev->bus, dev->devfn,			\
 					pos, sizeof(type), &data);	\
 	raw_spin_unlock_irq(&pci_lock);				\
-	*val = (type)data;						\
-	if (ret > 0)							\
-		ret = -EINVAL;						\
-	return ret;							\
+	if (ret)							\
+		PCI_SET_ERROR_RESPONSE(val);				\
+	else								\
+		*val = (type)data;					\
+	return pcibios_err_to_errno(ret);				\
 }									\
 EXPORT_SYMBOL_GPL(pci_user_read_config_##size);
 
 /* Returns 0 on success, negative values indicate error. */
-#define PCI_USER_WRITE_CONFIG(size,type)				\
+#define PCI_USER_WRITE_CONFIG(size, type)				\
 int pci_user_write_config_##size					\
 	(struct pci_dev *dev, int pos, type val)			\
 {									\
-	int ret = -EIO;							\
+	int ret = PCIBIOS_SUCCESSFUL;					\
 	if (PCI_##size##_BAD)						\
 		return -EINVAL;						\
 	raw_spin_lock_irq(&pci_lock);				\
@@ -179,9 +252,7 @@ int pci_user_write_config_##size					\
 	ret = dev->bus->ops->write(dev->bus, dev->devfn,		\
 					pos, sizeof(type), val);	\
 	raw_spin_unlock_irq(&pci_lock);				\
-	if (ret > 0)							\
-		ret = -EINVAL;						\
-	return ret;							\
+	return pcibios_err_to_errno(ret);				\
 }									\
 EXPORT_SYMBOL_GPL(pci_user_write_config_##size);
 
@@ -192,201 +263,13 @@ PCI_USER_WRITE_CONFIG(byte, u8)
 PCI_USER_WRITE_CONFIG(word, u16)
 PCI_USER_WRITE_CONFIG(dword, u32)
 
-/* VPD access through PCI 2.2+ VPD capability */
-
-#define PCI_VPD_PCI22_SIZE (PCI_VPD_ADDR_MASK + 1)
-
-struct pci_vpd_pci22 {
-	struct pci_vpd base;
-	struct mutex lock;
-	u16	flag;
-	bool	busy;
-	u8	cap;
-};
-
-/*
- * Wait for last operation to complete.
- * This code has to spin since there is no other notification from the PCI
- * hardware. Since the VPD is often implemented by serial attachment to an
- * EEPROM, it may take many milliseconds to complete.
- *
- * Returns 0 on success, negative values indicate error.
- */
-static int pci_vpd_pci22_wait(struct pci_dev *dev)
-{
-	struct pci_vpd_pci22 *vpd =
-		container_of(dev->vpd, struct pci_vpd_pci22, base);
-	unsigned long timeout = jiffies + HZ/20 + 2;
-	u16 status;
-	int ret;
-
-	if (!vpd->busy)
-		return 0;
-
-	for (;;) {
-		ret = pci_user_read_config_word(dev, vpd->cap + PCI_VPD_ADDR,
-						&status);
-		if (ret < 0)
-			return ret;
-
-		if ((status & PCI_VPD_ADDR_F) == vpd->flag) {
-			vpd->busy = false;
-			return 0;
-		}
-
-		if (time_after(jiffies, timeout)) {
-			dev_printk(KERN_DEBUG, &dev->dev,
-				   "vpd r/w failed.  This is likely a firmware "
-				   "bug on this device.  Contact the card "
-				   "vendor for a firmware update.");
-			return -ETIMEDOUT;
-		}
-		if (fatal_signal_pending(current))
-			return -EINTR;
-		if (!cond_resched())
-			udelay(10);
-	}
-}
-
-static ssize_t pci_vpd_pci22_read(struct pci_dev *dev, loff_t pos, size_t count,
-				  void *arg)
-{
-	struct pci_vpd_pci22 *vpd =
-		container_of(dev->vpd, struct pci_vpd_pci22, base);
-	int ret;
-	loff_t end = pos + count;
-	u8 *buf = arg;
-
-	if (pos < 0 || pos > vpd->base.len || end > vpd->base.len)
-		return -EINVAL;
-
-	if (mutex_lock_killable(&vpd->lock))
-		return -EINTR;
-
-	ret = pci_vpd_pci22_wait(dev);
-	if (ret < 0)
-		goto out;
-
-	while (pos < end) {
-		u32 val;
-		unsigned int i, skip;
-
-		ret = pci_user_write_config_word(dev, vpd->cap + PCI_VPD_ADDR,
-						 pos & ~3);
-		if (ret < 0)
-			break;
-		vpd->busy = true;
-		vpd->flag = PCI_VPD_ADDR_F;
-		ret = pci_vpd_pci22_wait(dev);
-		if (ret < 0)
-			break;
-
-		ret = pci_user_read_config_dword(dev, vpd->cap + PCI_VPD_DATA, &val);
-		if (ret < 0)
-			break;
-
-		skip = pos & 3;
-		for (i = 0;  i < sizeof(u32); i++) {
-			if (i >= skip) {
-				*buf++ = val;
-				if (++pos == end)
-					break;
-			}
-			val >>= 8;
-		}
-	}
-out:
-	mutex_unlock(&vpd->lock);
-	return ret ? ret : count;
-}
-
-static ssize_t pci_vpd_pci22_write(struct pci_dev *dev, loff_t pos, size_t count,
-				   const void *arg)
-{
-	struct pci_vpd_pci22 *vpd =
-		container_of(dev->vpd, struct pci_vpd_pci22, base);
-	const u8 *buf = arg;
-	loff_t end = pos + count;
-	int ret = 0;
-
-	if (pos < 0 || (pos & 3) || (count & 3) || end > vpd->base.len)
-		return -EINVAL;
-
-	if (mutex_lock_killable(&vpd->lock))
-		return -EINTR;
-
-	ret = pci_vpd_pci22_wait(dev);
-	if (ret < 0)
-		goto out;
-
-	while (pos < end) {
-		u32 val;
-
-		val = *buf++;
-		val |= *buf++ << 8;
-		val |= *buf++ << 16;
-		val |= *buf++ << 24;
-
-		ret = pci_user_write_config_dword(dev, vpd->cap + PCI_VPD_DATA, val);
-		if (ret < 0)
-			break;
-		ret = pci_user_write_config_word(dev, vpd->cap + PCI_VPD_ADDR,
-						 pos | PCI_VPD_ADDR_F);
-		if (ret < 0)
-			break;
-
-		vpd->busy = true;
-		vpd->flag = 0;
-		ret = pci_vpd_pci22_wait(dev);
-		if (ret < 0)
-			break;
-
-		pos += sizeof(u32);
-	}
-out:
-	mutex_unlock(&vpd->lock);
-	return ret ? ret : count;
-}
-
-static void pci_vpd_pci22_release(struct pci_dev *dev)
-{
-	kfree(container_of(dev->vpd, struct pci_vpd_pci22, base));
-}
-
-static const struct pci_vpd_ops pci_vpd_pci22_ops = {
-	.read = pci_vpd_pci22_read,
-	.write = pci_vpd_pci22_write,
-	.release = pci_vpd_pci22_release,
-};
-
-int pci_vpd_pci22_init(struct pci_dev *dev)
-{
-	struct pci_vpd_pci22 *vpd;
-	u8 cap;
-
-	cap = pci_find_capability(dev, PCI_CAP_ID_VPD);
-	if (!cap)
-		return -ENODEV;
-	vpd = kzalloc(sizeof(*vpd), GFP_ATOMIC);
-	if (!vpd)
-		return -ENOMEM;
-
-	vpd->base.len = PCI_VPD_PCI22_SIZE;
-	vpd->base.ops = &pci_vpd_pci22_ops;
-	mutex_init(&vpd->lock);
-	vpd->cap = cap;
-	vpd->busy = false;
-	dev->vpd = &vpd->base;
-	return 0;
-}
-
 /**
  * pci_cfg_access_lock - Lock PCI config reads/writes
  * @dev:	pci device struct
  *
  * When access is locked, any userspace reads or writes to config
  * space and concurrent lock requests will sleep until access is
- * allowed via pci_cfg_access_unlocked again.
+ * allowed via pci_cfg_access_unlock() again.
  */
 void pci_cfg_access_lock(struct pci_dev *dev)
 {
@@ -436,13 +319,16 @@ void pci_cfg_access_unlock(struct pci_dev *dev)
 
 	raw_spin_lock_irqsave(&pci_lock, flags);
 
-	/* This indicates a problem in the caller, but we don't need
-	 * to kill them, unlike a double-block above. */
+	/*
+	 * This indicates a problem in the caller, but we don't need
+	 * to kill them, unlike a double-block above.
+	 */
 	WARN_ON(!dev->block_cfg_access);
 
 	dev->block_cfg_access = 0;
-	wake_up_all(&pci_cfg_wait);
 	raw_spin_unlock_irqrestore(&pci_lock, flags);
+
+	wake_up_all(&pci_cfg_wait);
 }
 EXPORT_SYMBOL_GPL(pci_cfg_access_unlock);
 
@@ -451,7 +337,7 @@ static inline int pcie_cap_version(const struct pci_dev *dev)
 	return pcie_caps_reg(dev) & PCI_EXP_FLAGS_VERS;
 }
 
-static inline bool pcie_cap_has_lnkctl(const struct pci_dev *dev)
+bool pcie_cap_has_lnkctl(const struct pci_dev *dev)
 {
 	int type = pci_pcie_type(dev);
 
@@ -464,16 +350,18 @@ static inline bool pcie_cap_has_lnkctl(const struct pci_dev *dev)
 	       type == PCI_EXP_TYPE_PCIE_BRIDGE;
 }
 
+bool pcie_cap_has_lnkctl2(const struct pci_dev *dev)
+{
+	return pcie_cap_has_lnkctl(dev) && pcie_cap_version(dev) > 1;
+}
+
 static inline bool pcie_cap_has_sltctl(const struct pci_dev *dev)
 {
-	int type = pci_pcie_type(dev);
-
-	return (type == PCI_EXP_TYPE_ROOT_PORT ||
-		type == PCI_EXP_TYPE_DOWNSTREAM) &&
+	return pcie_downstream_port(dev) &&
 	       pcie_caps_reg(dev) & PCI_EXP_FLAGS_SLOT;
 }
 
-static inline bool pcie_cap_has_rtctl(const struct pci_dev *dev)
+bool pcie_cap_has_rtctl(const struct pci_dev *dev)
 {
 	int type = pci_pcie_type(dev);
 
@@ -507,10 +395,11 @@ static bool pcie_capability_reg_implemented(struct pci_dev *dev, int pos)
 		return pcie_cap_has_rtctl(dev);
 	case PCI_EXP_DEVCAP2:
 	case PCI_EXP_DEVCTL2:
+		return pcie_cap_version(dev) > 1;
 	case PCI_EXP_LNKCAP2:
 	case PCI_EXP_LNKCTL2:
 	case PCI_EXP_LNKSTA2:
-		return pcie_cap_version(dev) > 1;
+		return pcie_cap_has_lnkctl2(dev);
 	default:
 		return false;
 	}
@@ -527,14 +416,14 @@ int pcie_capability_read_word(struct pci_dev *dev, int pos, u16 *val)
 
 	*val = 0;
 	if (pos & 1)
-		return -EINVAL;
+		return PCIBIOS_BAD_REGISTER_NUMBER;
 
 	if (pcie_capability_reg_implemented(dev, pos)) {
 		ret = pci_read_config_word(dev, pci_pcie_cap(dev) + pos, val);
 		/*
-		 * Reset *val to 0 if pci_read_config_word() fails, it may
-		 * have been written as 0xFFFF if hardware error happens
-		 * during pci_read_config_word().
+		 * Reset *val to 0 if pci_read_config_word() fails; it may
+		 * have been written as 0xFFFF (PCI_ERROR_RESPONSE) if the
+		 * config read failed on PCI.
 		 */
 		if (ret)
 			*val = 0;
@@ -548,10 +437,9 @@ int pcie_capability_read_word(struct pci_dev *dev, int pos, u16 *val)
 	 * State bit in the Slot Status register of Downstream Ports,
 	 * which must be hardwired to 1b.  (PCIe Base Spec 3.0, sec 7.8)
 	 */
-	if (pci_is_pcie(dev) && pos == PCI_EXP_SLTSTA &&
-		 pci_pcie_type(dev) == PCI_EXP_TYPE_DOWNSTREAM) {
+	if (pci_is_pcie(dev) && pcie_downstream_port(dev) &&
+	    pos == PCI_EXP_SLTSTA)
 		*val = PCI_EXP_SLTSTA_PDS;
-	}
 
 	return 0;
 }
@@ -563,24 +451,23 @@ int pcie_capability_read_dword(struct pci_dev *dev, int pos, u32 *val)
 
 	*val = 0;
 	if (pos & 3)
-		return -EINVAL;
+		return PCIBIOS_BAD_REGISTER_NUMBER;
 
 	if (pcie_capability_reg_implemented(dev, pos)) {
 		ret = pci_read_config_dword(dev, pci_pcie_cap(dev) + pos, val);
 		/*
-		 * Reset *val to 0 if pci_read_config_dword() fails, it may
-		 * have been written as 0xFFFFFFFF if hardware error happens
-		 * during pci_read_config_dword().
+		 * Reset *val to 0 if pci_read_config_dword() fails; it may
+		 * have been written as 0xFFFFFFFF (PCI_ERROR_RESPONSE) if
+		 * the config read failed on PCI.
 		 */
 		if (ret)
 			*val = 0;
 		return ret;
 	}
 
-	if (pci_is_pcie(dev) && pos == PCI_EXP_SLTCTL &&
-		 pci_pcie_type(dev) == PCI_EXP_TYPE_DOWNSTREAM) {
+	if (pci_is_pcie(dev) && pcie_downstream_port(dev) &&
+	    pos == PCI_EXP_SLTSTA)
 		*val = PCI_EXP_SLTSTA_PDS;
-	}
 
 	return 0;
 }
@@ -589,7 +476,7 @@ EXPORT_SYMBOL(pcie_capability_read_dword);
 int pcie_capability_write_word(struct pci_dev *dev, int pos, u16 val)
 {
 	if (pos & 1)
-		return -EINVAL;
+		return PCIBIOS_BAD_REGISTER_NUMBER;
 
 	if (!pcie_capability_reg_implemented(dev, pos))
 		return 0;
@@ -601,7 +488,7 @@ EXPORT_SYMBOL(pcie_capability_write_word);
 int pcie_capability_write_dword(struct pci_dev *dev, int pos, u32 val)
 {
 	if (pos & 3)
-		return -EINVAL;
+		return PCIBIOS_BAD_REGISTER_NUMBER;
 
 	if (!pcie_capability_reg_implemented(dev, pos))
 		return 0;
@@ -610,22 +497,35 @@ int pcie_capability_write_dword(struct pci_dev *dev, int pos, u32 val)
 }
 EXPORT_SYMBOL(pcie_capability_write_dword);
 
-int pcie_capability_clear_and_set_word(struct pci_dev *dev, int pos,
-				       u16 clear, u16 set)
+int pcie_capability_clear_and_set_word_unlocked(struct pci_dev *dev, int pos,
+						u16 clear, u16 set)
 {
 	int ret;
 	u16 val;
 
 	ret = pcie_capability_read_word(dev, pos, &val);
-	if (!ret) {
-		val &= ~clear;
-		val |= set;
-		ret = pcie_capability_write_word(dev, pos, val);
-	}
+	if (ret)
+		return ret;
+
+	val &= ~clear;
+	val |= set;
+	return pcie_capability_write_word(dev, pos, val);
+}
+EXPORT_SYMBOL(pcie_capability_clear_and_set_word_unlocked);
+
+int pcie_capability_clear_and_set_word_locked(struct pci_dev *dev, int pos,
+					      u16 clear, u16 set)
+{
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&dev->pcie_cap_lock, flags);
+	ret = pcie_capability_clear_and_set_word_unlocked(dev, pos, clear, set);
+	spin_unlock_irqrestore(&dev->pcie_cap_lock, flags);
 
 	return ret;
 }
-EXPORT_SYMBOL(pcie_capability_clear_and_set_word);
+EXPORT_SYMBOL(pcie_capability_clear_and_set_word_locked);
 
 int pcie_capability_clear_and_set_dword(struct pci_dev *dev, int pos,
 					u32 clear, u32 set)
@@ -634,12 +534,67 @@ int pcie_capability_clear_and_set_dword(struct pci_dev *dev, int pos,
 	u32 val;
 
 	ret = pcie_capability_read_dword(dev, pos, &val);
-	if (!ret) {
-		val &= ~clear;
-		val |= set;
-		ret = pcie_capability_write_dword(dev, pos, val);
-	}
+	if (ret)
+		return ret;
 
-	return ret;
+	val &= ~clear;
+	val |= set;
+	return pcie_capability_write_dword(dev, pos, val);
 }
 EXPORT_SYMBOL(pcie_capability_clear_and_set_dword);
+
+int pci_read_config_byte(const struct pci_dev *dev, int where, u8 *val)
+{
+	if (pci_dev_is_disconnected(dev)) {
+		PCI_SET_ERROR_RESPONSE(val);
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	}
+	return pci_bus_read_config_byte(dev->bus, dev->devfn, where, val);
+}
+EXPORT_SYMBOL(pci_read_config_byte);
+
+int pci_read_config_word(const struct pci_dev *dev, int where, u16 *val)
+{
+	if (pci_dev_is_disconnected(dev)) {
+		PCI_SET_ERROR_RESPONSE(val);
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	}
+	return pci_bus_read_config_word(dev->bus, dev->devfn, where, val);
+}
+EXPORT_SYMBOL(pci_read_config_word);
+
+int pci_read_config_dword(const struct pci_dev *dev, int where,
+					u32 *val)
+{
+	if (pci_dev_is_disconnected(dev)) {
+		PCI_SET_ERROR_RESPONSE(val);
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	}
+	return pci_bus_read_config_dword(dev->bus, dev->devfn, where, val);
+}
+EXPORT_SYMBOL(pci_read_config_dword);
+
+int pci_write_config_byte(const struct pci_dev *dev, int where, u8 val)
+{
+	if (pci_dev_is_disconnected(dev))
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	return pci_bus_write_config_byte(dev->bus, dev->devfn, where, val);
+}
+EXPORT_SYMBOL(pci_write_config_byte);
+
+int pci_write_config_word(const struct pci_dev *dev, int where, u16 val)
+{
+	if (pci_dev_is_disconnected(dev))
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	return pci_bus_write_config_word(dev->bus, dev->devfn, where, val);
+}
+EXPORT_SYMBOL(pci_write_config_word);
+
+int pci_write_config_dword(const struct pci_dev *dev, int where,
+					 u32 val)
+{
+	if (pci_dev_is_disconnected(dev))
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	return pci_bus_write_config_dword(dev->bus, dev->devfn, where, val);
+}
+EXPORT_SYMBOL(pci_write_config_dword);

@@ -1,38 +1,45 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2012 Russell King
  *  Written from the i915 driver.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
+
 #include <linux/errno.h>
 #include <linux/fb.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 
-#include <drm/drmP.h>
+#include <drm/drm_crtc_helper.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_fb_helper.h>
+#include <drm/drm_fourcc.h>
+
 #include "armada_crtc.h"
 #include "armada_drm.h"
 #include "armada_fb.h"
 #include "armada_gem.h"
 
-static /*const*/ struct fb_ops armada_fb_ops = {
+static void armada_fbdev_fb_destroy(struct fb_info *info)
+{
+	struct drm_fb_helper *fbh = info->par;
+
+	drm_fb_helper_fini(fbh);
+
+	fbh->fb->funcs->destroy(fbh->fb);
+
+	drm_client_release(&fbh->client);
+	drm_fb_helper_unprepare(fbh);
+	kfree(fbh);
+}
+
+static const struct fb_ops armada_fb_ops = {
 	.owner		= THIS_MODULE,
-	.fb_check_var	= drm_fb_helper_check_var,
-	.fb_set_par	= drm_fb_helper_set_par,
-	.fb_fillrect	= cfb_fillrect,
-	.fb_copyarea	= cfb_copyarea,
-	.fb_imageblit	= cfb_imageblit,
-	.fb_pan_display	= drm_fb_helper_pan_display,
-	.fb_blank	= drm_fb_helper_blank,
-	.fb_setcmap	= drm_fb_helper_setcmap,
-	.fb_debug_enter	= drm_fb_helper_debug_enter,
-	.fb_debug_leave	= drm_fb_helper_debug_leave,
+	FB_DEFAULT_IOMEM_OPS,
+	DRM_FB_HELPER_DEFAULT_OPS,
+	.fb_destroy	= armada_fbdev_fb_destroy,
 };
 
-static int armada_fb_create(struct drm_fb_helper *fbh,
+static int armada_fbdev_create(struct drm_fb_helper *fbh,
 	struct drm_fb_helper_surface_size *sizes)
 {
 	struct drm_device *dev = fbh->dev;
@@ -59,13 +66,13 @@ static int armada_fb_create(struct drm_fb_helper *fbh,
 
 	ret = armada_gem_linear_back(dev, obj);
 	if (ret) {
-		drm_gem_object_unreference_unlocked(&obj->obj);
+		drm_gem_object_put(&obj->obj);
 		return ret;
 	}
 
 	ptr = armada_gem_map_object(dev, obj);
 	if (!ptr) {
-		drm_gem_object_unreference_unlocked(&obj->obj);
+		drm_gem_object_put(&obj->obj);
 		return -ENOMEM;
 	}
 
@@ -75,44 +82,32 @@ static int armada_fb_create(struct drm_fb_helper *fbh,
 	 * A reference is now held by the framebuffer object if
 	 * successful, otherwise this drops the ref for the error path.
 	 */
-	drm_gem_object_unreference_unlocked(&obj->obj);
+	drm_gem_object_put(&obj->obj);
 
 	if (IS_ERR(dfb))
 		return PTR_ERR(dfb);
 
-	info = framebuffer_alloc(0, dev->dev);
-	if (!info) {
-		ret = -ENOMEM;
+	info = drm_fb_helper_alloc_info(fbh);
+	if (IS_ERR(info)) {
+		ret = PTR_ERR(info);
 		goto err_fballoc;
 	}
 
-	ret = fb_alloc_cmap(&info->cmap, 256, 0);
-	if (ret) {
-		ret = -ENOMEM;
-		goto err_fbcmap;
-	}
-
-	strlcpy(info->fix.id, "armada-drmfb", sizeof(info->fix.id));
-	info->par = fbh;
-	info->flags = FBINFO_DEFAULT | FBINFO_CAN_FORCE_OUTPUT;
 	info->fbops = &armada_fb_ops;
 	info->fix.smem_start = obj->phys_addr;
 	info->fix.smem_len = obj->obj.size;
 	info->screen_size = obj->obj.size;
 	info->screen_base = ptr;
 	fbh->fb = &dfb->fb;
-	fbh->fbdev = info;
-	drm_fb_helper_fill_fix(info, dfb->fb.pitches[0], dfb->fb.depth);
-	drm_fb_helper_fill_var(info, fbh, sizes->fb_width, sizes->fb_height);
+
+	drm_fb_helper_fill_info(info, fbh, sizes);
 
 	DRM_DEBUG_KMS("allocated %dx%d %dbpp fb: 0x%08llx\n",
-		dfb->fb.width, dfb->fb.height, dfb->fb.bits_per_pixel,
+		dfb->fb.width, dfb->fb.height, dfb->fb.format->cpp[0] * 8,
 		(unsigned long long)obj->phys_addr);
 
 	return 0;
 
- err_fbcmap:
-	framebuffer_release(info);
  err_fballoc:
 	dfb->fb.funcs->destroy(&dfb->fb);
 	return ret;
@@ -124,89 +119,102 @@ static int armada_fb_probe(struct drm_fb_helper *fbh,
 	int ret = 0;
 
 	if (!fbh->fb) {
-		ret = armada_fb_create(fbh, sizes);
+		ret = armada_fbdev_create(fbh, sizes);
 		if (ret == 0)
 			ret = 1;
 	}
 	return ret;
 }
 
-static struct drm_fb_helper_funcs armada_fb_helper_funcs = {
-	.gamma_set	= armada_drm_crtc_gamma_set,
-	.gamma_get	= armada_drm_crtc_gamma_get,
+static const struct drm_fb_helper_funcs armada_fb_helper_funcs = {
 	.fb_probe	= armada_fb_probe,
 };
 
-int armada_fbdev_init(struct drm_device *dev)
+/*
+ * Fbdev client and struct drm_client_funcs
+ */
+
+static void armada_fbdev_client_unregister(struct drm_client_dev *client)
 {
-	struct armada_private *priv = dev->dev_private;
-	struct drm_fb_helper *fbh;
-	int ret;
+	struct drm_fb_helper *fbh = drm_fb_helper_from_client(client);
 
-	fbh = devm_kzalloc(dev->dev, sizeof(*fbh), GFP_KERNEL);
-	if (!fbh)
-		return -ENOMEM;
-
-	priv->fbdev = fbh;
-
-	fbh->funcs = &armada_fb_helper_funcs;
-
-	ret = drm_fb_helper_init(dev, fbh, 1, 1);
-	if (ret) {
-		DRM_ERROR("failed to initialize drm fb helper\n");
-		goto err_fb_helper;
+	if (fbh->info) {
+		drm_fb_helper_unregister_info(fbh);
+	} else {
+		drm_client_release(&fbh->client);
+		drm_fb_helper_unprepare(fbh);
+		kfree(fbh);
 	}
+}
 
-	ret = drm_fb_helper_single_add_all_connectors(fbh);
-	if (ret) {
-		DRM_ERROR("failed to add fb connectors\n");
-		goto err_fb_setup;
-	}
-
-	ret = drm_fb_helper_initial_config(fbh, 32);
-	if (ret) {
-		DRM_ERROR("failed to set initial config\n");
-		goto err_fb_setup;
-	}
+static int armada_fbdev_client_restore(struct drm_client_dev *client)
+{
+	drm_fb_helper_lastclose(client->dev);
 
 	return 0;
- err_fb_setup:
+}
+
+static int armada_fbdev_client_hotplug(struct drm_client_dev *client)
+{
+	struct drm_fb_helper *fbh = drm_fb_helper_from_client(client);
+	struct drm_device *dev = client->dev;
+	int ret;
+
+	if (dev->fb_helper)
+		return drm_fb_helper_hotplug_event(dev->fb_helper);
+
+	ret = drm_fb_helper_init(dev, fbh);
+	if (ret)
+		goto err_drm_err;
+
+	if (!drm_drv_uses_atomic_modeset(dev))
+		drm_helper_disable_unused_functions(dev);
+
+	ret = drm_fb_helper_initial_config(fbh);
+	if (ret)
+		goto err_drm_fb_helper_fini;
+
+	return 0;
+
+err_drm_fb_helper_fini:
 	drm_fb_helper_fini(fbh);
- err_fb_helper:
-	priv->fbdev = NULL;
+err_drm_err:
+	drm_err(dev, "armada: Failed to setup fbdev emulation (ret=%d)\n", ret);
 	return ret;
 }
 
-void armada_fbdev_lastclose(struct drm_device *dev)
+static const struct drm_client_funcs armada_fbdev_client_funcs = {
+	.owner		= THIS_MODULE,
+	.unregister	= armada_fbdev_client_unregister,
+	.restore	= armada_fbdev_client_restore,
+	.hotplug	= armada_fbdev_client_hotplug,
+};
+
+void armada_fbdev_setup(struct drm_device *dev)
 {
-	struct armada_private *priv = dev->dev_private;
+	struct drm_fb_helper *fbh;
+	int ret;
 
-	drm_modeset_lock_all(dev);
-	if (priv->fbdev)
-		drm_fb_helper_restore_fbdev_mode(priv->fbdev);
-	drm_modeset_unlock_all(dev);
-}
+	drm_WARN(dev, !dev->registered, "Device has not been registered.\n");
+	drm_WARN(dev, dev->fb_helper, "fb_helper is already set!\n");
 
-void armada_fbdev_fini(struct drm_device *dev)
-{
-	struct armada_private *priv = dev->dev_private;
-	struct drm_fb_helper *fbh = priv->fbdev;
+	fbh = kzalloc(sizeof(*fbh), GFP_KERNEL);
+	if (!fbh)
+		return;
+	drm_fb_helper_prepare(dev, fbh, 32, &armada_fb_helper_funcs);
 
-	if (fbh) {
-		struct fb_info *info = fbh->fbdev;
-
-		if (info) {
-			unregister_framebuffer(info);
-			if (info->cmap.len)
-				fb_dealloc_cmap(&info->cmap);
-			framebuffer_release(info);
-		}
-
-		drm_fb_helper_fini(fbh);
-
-		if (fbh->fb)
-			fbh->fb->funcs->destroy(fbh->fb);
-
-		priv->fbdev = NULL;
+	ret = drm_client_init(dev, &fbh->client, "fbdev", &armada_fbdev_client_funcs);
+	if (ret) {
+		drm_err(dev, "Failed to register client: %d\n", ret);
+		goto err_drm_client_init;
 	}
+
+	drm_client_register(&fbh->client);
+
+	return;
+
+err_drm_client_init:
+	drm_fb_helper_unprepare(fbh);
+	kfree(fbh);
+	return;
 }

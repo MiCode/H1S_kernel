@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *      sr.h by David Giller
  *      CD-ROM disk driver header file
@@ -17,8 +18,7 @@
 #ifndef _SR_H
 #define _SR_H
 
-#include <linux/genhd.h>
-#include <linux/kref.h>
+#include <linux/mutex.h>
 
 #define MAX_RETRIES	3
 #define SR_TIMEOUT	(30 * HZ)
@@ -31,11 +31,11 @@ struct scsi_device;
 
 
 typedef struct scsi_cd {
-	struct scsi_driver *driver;
 	unsigned capacity;	/* size in blocks                       */
 	struct scsi_device *device;
 	unsigned int vendor;	/* vendor code, see sr_vendor.c         */
 	unsigned long ms_offset;	/* for reading multisession-CD's        */
+	unsigned writeable : 1;
 	unsigned use:1;		/* is this device still supportable     */
 	unsigned xa_flag:1;	/* CD has XA sectors ? */
 	unsigned readcd_known:1;	/* drive supports READ_CD (0xbe) */
@@ -49,11 +49,12 @@ typedef struct scsi_cd {
 	bool ignore_get_event:1;	/* GET_EVENT is unreliable, use TUR */
 
 	struct cdrom_device_info cdi;
-	/* We hold gendisk and scsi_device references on probe and use
-	 * the refs on this kref to decide when to release them */
-	struct kref kref;
+	struct mutex lock;
 	struct gendisk *disk;
 } Scsi_CD;
+
+#define sr_printk(prefix, cd, fmt, a...) \
+	sdev_prefix_printk(prefix, (cd)->device, (cd)->cdi.name, fmt, ##a)
 
 int sr_do_ioctl(Scsi_CD *, struct packet_command *);
 

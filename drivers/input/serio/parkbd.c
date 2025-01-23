@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Parallel port to Keyboard port adapter driver for Linux
  *
  *  Copyright (c) 1999-2004 Vojtech Pavlik
  */
 
-/*
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- */
 
 /*
  * To connect an AT or XT keyboard to the parallel port, a fairly simple adapter
@@ -141,19 +137,16 @@ static void parkbd_interrupt(void *dev_id)
 	parkbd_last = jiffies;
 }
 
-static int parkbd_getport(void)
+static int parkbd_getport(struct parport *pp)
 {
-	struct parport *pp;
+	struct pardev_cb parkbd_parport_cb;
 
-	pp = parport_find_number(parkbd_pp_no);
+	memset(&parkbd_parport_cb, 0, sizeof(parkbd_parport_cb));
+	parkbd_parport_cb.irq_func = parkbd_interrupt;
+	parkbd_parport_cb.flags = PARPORT_FLAG_EXCL;
 
-	if (pp == NULL) {
-		printk(KERN_ERR "parkbd: no such parport\n");
-		return -ENODEV;
-	}
-
-	parkbd_dev = parport_register_device(pp, "parkbd", NULL, NULL, parkbd_interrupt, PARPORT_DEV_EXCL, NULL);
-	parport_put_port(pp);
+	parkbd_dev = parport_register_dev_model(pp, "parkbd",
+						&parkbd_parport_cb, 0);
 
 	if (!parkbd_dev)
 		return -ENODEV;
@@ -168,33 +161,36 @@ static int parkbd_getport(void)
 	return 0;
 }
 
-static struct serio * __init parkbd_allocate_serio(void)
+static struct serio *parkbd_allocate_serio(void)
 {
 	struct serio *serio;
 
 	serio = kzalloc(sizeof(struct serio), GFP_KERNEL);
 	if (serio) {
 		serio->id.type = parkbd_mode;
-		serio->write = parkbd_write,
-		strlcpy(serio->name, "PARKBD AT/XT keyboard adapter", sizeof(serio->name));
+		serio->write = parkbd_write;
+		strscpy(serio->name, "PARKBD AT/XT keyboard adapter", sizeof(serio->name));
 		snprintf(serio->phys, sizeof(serio->phys), "%s/serio0", parkbd_dev->port->name);
 	}
 
 	return serio;
 }
 
-static int __init parkbd_init(void)
+static void parkbd_attach(struct parport *pp)
 {
-	int err;
+	if (pp->number != parkbd_pp_no) {
+		pr_debug("Not using parport%d.\n", pp->number);
+		return;
+	}
 
-	err = parkbd_getport();
-	if (err)
-		return err;
+	if (parkbd_getport(pp))
+		return;
 
 	parkbd_port = parkbd_allocate_serio();
 	if (!parkbd_port) {
 		parport_release(parkbd_dev);
-		return -ENOMEM;
+		parport_unregister_device(parkbd_dev);
+		return;
 	}
 
 	parkbd_writelines(3);
@@ -204,15 +200,24 @@ static int __init parkbd_init(void)
 	printk(KERN_INFO "serio: PARKBD %s adapter on %s\n",
                         parkbd_mode ? "AT" : "XT", parkbd_dev->port->name);
 
-	return 0;
+	return;
 }
 
-static void __exit parkbd_exit(void)
+static void parkbd_detach(struct parport *port)
 {
+	if (!parkbd_port || port->number != parkbd_pp_no)
+		return;
+
 	parport_release(parkbd_dev);
 	serio_unregister_port(parkbd_port);
 	parport_unregister_device(parkbd_dev);
+	parkbd_port = NULL;
 }
 
-module_init(parkbd_init);
-module_exit(parkbd_exit);
+static struct parport_driver parkbd_parport_driver = {
+	.name = "parkbd",
+	.match_port = parkbd_attach,
+	.detach = parkbd_detach,
+	.devmodel = true,
+};
+module_parport_driver(parkbd_parport_driver);

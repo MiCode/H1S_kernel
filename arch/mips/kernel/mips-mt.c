@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * General MIPS MT support routines, usable in AP/SP, SMVP, or SMTC kernels
+ * General MIPS MT support routines, usable in AP/SP and SMVP.
  * Copyright (C) 2005 Mips Technologies, Inc
  */
 
@@ -57,9 +58,6 @@ void mips_mt_regdump(unsigned long mvpctl)
 	int tc;
 	unsigned long haltval;
 	unsigned long tcstatval;
-#ifdef CONFIG_MIPS_MT_SMTC
-	void smtc_soft_dump(void);
-#endif /* CONFIG_MIPT_MT_SMTC */
 
 	local_irq_save(flags);
 	vpflags = dvpe();
@@ -116,26 +114,15 @@ void mips_mt_regdump(unsigned long mvpctl)
 		if (!haltval)
 			write_tc_c0_tchalt(0);
 	}
-#ifdef CONFIG_MIPS_MT_SMTC
-	smtc_soft_dump();
-#endif /* CONFIG_MIPT_MT_SMTC */
 	printk("===========================\n");
 	evpe(vpflags);
 	local_irq_restore(flags);
 }
 
-static int mt_opt_norps;
 static int mt_opt_rpsctl = -1;
 static int mt_opt_nblsu = -1;
 static int mt_opt_forceconfig7;
 static int mt_opt_config7 = -1;
-
-static int __init rps_disable(char *s)
-{
-	mt_opt_norps = 1;
-	return 1;
-}
-__setup("norps", rps_disable);
 
 static int __init rpsctl_set(char *str)
 {
@@ -159,40 +146,6 @@ static int __init config7_set(char *str)
 }
 __setup("config7=", config7_set);
 
-/* Experimental cache flush control parameters that should go away some day */
-int mt_protiflush;
-int mt_protdflush;
-int mt_n_iflushes = 1;
-int mt_n_dflushes = 1;
-
-static int __init set_protiflush(char *s)
-{
-	mt_protiflush = 1;
-	return 1;
-}
-__setup("protiflush", set_protiflush);
-
-static int __init set_protdflush(char *s)
-{
-	mt_protdflush = 1;
-	return 1;
-}
-__setup("protdflush", set_protdflush);
-
-static int __init niflush(char *s)
-{
-	get_option(&s, &mt_n_iflushes);
-	return 1;
-}
-__setup("niflush=", niflush);
-
-static int __init ndflush(char *s)
-{
-	get_option(&s, &mt_n_dflushes);
-	return 1;
-}
-__setup("ndflush=", ndflush);
-
 static unsigned int itc_base;
 
 static int __init set_itc_base(char *str)
@@ -208,9 +161,6 @@ void mips_mt_set_cpuoptions(void)
 	unsigned int oconfig7 = read_c0_config7();
 	unsigned int nconfig7 = oconfig7;
 
-	if (mt_opt_norps) {
-		printk("\"norps\" option deprecated: use \"rpsctl=\"\n");
-	}
 	if (mt_opt_rpsctl >= 0) {
 		printk("34K return prediction stack override set to %d.\n",
 			mt_opt_rpsctl);
@@ -236,16 +186,6 @@ void mips_mt_set_cpuoptions(void)
 		ehb();
 		printk("Config7: 0x%08x\n", read_c0_config7());
 	}
-
-	/* Report Cache management debug options */
-	if (mt_protiflush)
-		printk("I-cache flushes single-threaded\n");
-	if (mt_protdflush)
-		printk("D-cache flushes single-threaded\n");
-	if (mt_n_iflushes != 1)
-		printk("I-Cache Flushes Repeated %d times\n", mt_n_iflushes);
-	if (mt_n_dflushes != 1)
-		printk("D-Cache Flushes Repeated %d times\n", mt_n_dflushes);
 
 	if (itc_base != 0) {
 		/*
@@ -288,38 +228,13 @@ void mips_mt_set_cpuoptions(void)
 	}
 }
 
-/*
- * Function to protect cache flushes from concurrent execution
- * depends on MP software model chosen.
- */
-
-void mt_cflush_lockdown(void)
-{
-#ifdef CONFIG_MIPS_MT_SMTC
-	void smtc_cflush_lockdown(void);
-
-	smtc_cflush_lockdown();
-#endif /* CONFIG_MIPS_MT_SMTC */
-	/* FILL IN VSMP and AP/SP VERSIONS HERE */
-}
-
-void mt_cflush_release(void)
-{
-#ifdef CONFIG_MIPS_MT_SMTC
-	void smtc_cflush_release(void);
-
-	smtc_cflush_release();
-#endif /* CONFIG_MIPS_MT_SMTC */
-	/* FILL IN VSMP and AP/SP VERSIONS HERE */
-}
-
 struct class *mt_class;
 
-static int __init mt_init(void)
+static int __init mips_mt_init(void)
 {
 	struct class *mtc;
 
-	mtc = class_create(THIS_MODULE, "mt");
+	mtc = class_create("mt");
 	if (IS_ERR(mtc))
 		return PTR_ERR(mtc);
 
@@ -328,4 +243,4 @@ static int __init mt_init(void)
 	return 0;
 }
 
-subsys_initcall(mt_init);
+subsys_initcall(mips_mt_init);

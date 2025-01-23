@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * lm63.c - driver for the National Semiconductor LM63 temperature sensor
  *          with integrated fan control
@@ -21,20 +22,6 @@
  * I had a explanation from National Semiconductor though. The two lower
  * bits of the read value have to be masked out. The value is still 16 bit
  * in width.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
@@ -46,6 +33,7 @@
 #include <linux/hwmon.h>
 #include <linux/err.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/sysfs.h>
 #include <linux/types.h>
 
@@ -126,24 +114,17 @@ static const unsigned short normal_i2c[] = { 0x18, 0x4c, 0x4e, I2C_CLIENT_END };
 #define FAN_TO_REG(val)		((val) <= 82 ? 0xFFFC : \
 				 (5400000 / (val)) & 0xFFFC)
 #define TEMP8_FROM_REG(reg)	((reg) * 1000)
-#define TEMP8_TO_REG(val)	((val) <= -128000 ? -128 : \
-				 (val) >= 127000 ? 127 : \
-				 (val) < 0 ? ((val) - 500) / 1000 : \
-				 ((val) + 500) / 1000)
-#define TEMP8U_TO_REG(val)	((val) <= 0 ? 0 : \
-				 (val) >= 255000 ? 255 : \
-				 ((val) + 500) / 1000)
+#define TEMP8_TO_REG(val)	DIV_ROUND_CLOSEST(clamp_val((val), -128000, \
+							    127000), 1000)
+#define TEMP8U_TO_REG(val)	DIV_ROUND_CLOSEST(clamp_val((val), 0, \
+							    255000), 1000)
 #define TEMP11_FROM_REG(reg)	((reg) / 32 * 125)
-#define TEMP11_TO_REG(val)	((val) <= -128000 ? 0x8000 : \
-				 (val) >= 127875 ? 0x7FE0 : \
-				 (val) < 0 ? ((val) - 62) / 125 * 32 : \
-				 ((val) + 62) / 125 * 32)
-#define TEMP11U_TO_REG(val)	((val) <= 0 ? 0 : \
-				 (val) >= 255875 ? 0xFFE0 : \
-				 ((val) + 62) / 125 * 32)
-#define HYST_TO_REG(val)	((val) <= 0 ? 0 : \
-				 (val) >= 127000 ? 127 : \
-				 ((val) + 500) / 1000)
+#define TEMP11_TO_REG(val)	(DIV_ROUND_CLOSEST(clamp_val((val), -128000, \
+							     127875), 125) * 32)
+#define TEMP11U_TO_REG(val)	(DIV_ROUND_CLOSEST(clamp_val((val), 0, \
+							     255875), 125) * 32)
+#define HYST_TO_REG(val)	DIV_ROUND_CLOSEST(clamp_val((val), 0, 127000), \
+						  1000)
 
 #define UPDATE_INTERVAL(max, rate) \
 			((1000 << (LM63_MAX_CONVRATE - (rate))) / (max))
@@ -155,9 +136,10 @@ enum chips { lm63, lm64, lm96163 };
  */
 
 struct lm63_data {
-	struct device *hwmon_dev;
+	struct i2c_client *client;
 	struct mutex update_lock;
-	char valid; /* zero until following fields are valid */
+	const struct attribute_group *groups[5];
+	bool valid; /* false until following fields are valid */
 	char lut_valid; /* zero until lut fields are valid */
 	unsigned long last_updated; /* in jiffies */
 	unsigned long lut_last_updated; /* in jiffies */
@@ -218,9 +200,9 @@ static inline int lut_temp_to_reg(struct lm63_data *data, long val)
  * Update the lookup table register cache.
  * client->update_lock must be held when calling this function.
  */
-static void lm63_update_lut(struct i2c_client *client)
+static void lm63_update_lut(struct lm63_data *data)
 {
-	struct lm63_data *data = i2c_get_clientdata(client);
+	struct i2c_client *client = data->client;
 	int i;
 
 	if (time_after(jiffies, data->lut_last_updated + 5 * HZ) ||
@@ -241,8 +223,8 @@ static void lm63_update_lut(struct i2c_client *client)
 
 static struct lm63_data *lm63_update_device(struct device *dev)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm63_data *data = i2c_get_clientdata(client);
+	struct lm63_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	unsigned long next_update;
 
 	mutex_lock(&data->update_lock);
@@ -307,10 +289,10 @@ static struct lm63_data *lm63_update_device(struct device *dev)
 			       LM63_REG_ALERT_STATUS) & 0x7F;
 
 		data->last_updated = jiffies;
-		data->valid = 1;
+		data->valid = true;
 	}
 
-	lm63_update_lut(client);
+	lm63_update_lut(data);
 
 	mutex_unlock(&data->update_lock);
 
@@ -321,18 +303,17 @@ static struct lm63_data *lm63_update_device(struct device *dev)
  * Trip points in the lookup table should be in ascending order for both
  * temperatures and PWM output values.
  */
-static int lm63_lut_looks_bad(struct i2c_client *client)
+static int lm63_lut_looks_bad(struct device *dev, struct lm63_data *data)
 {
-	struct lm63_data *data = i2c_get_clientdata(client);
 	int i;
 
 	mutex_lock(&data->update_lock);
-	lm63_update_lut(client);
+	lm63_update_lut(data);
 
 	for (i = 1; i < data->lut_size; i++) {
 		if (data->pwm1[1 + i - 1] > data->pwm1[1 + i]
 		 || data->temp8[3 + i - 1] > data->temp8[3 + i]) {
-			dev_warn(&client->dev,
+			dev_warn(dev,
 				 "Lookup table doesn't look sane (check entries %d and %d)\n",
 				 i, i + 1);
 			break;
@@ -358,8 +339,8 @@ static ssize_t show_fan(struct device *dev, struct device_attribute *devattr,
 static ssize_t set_fan(struct device *dev, struct device_attribute *dummy,
 		       const char *buf, size_t count)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm63_data *data = i2c_get_clientdata(client);
+	struct lm63_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	unsigned long val;
 	int err;
 
@@ -399,8 +380,8 @@ static ssize_t set_pwm1(struct device *dev, struct device_attribute *devattr,
 			const char *buf, size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm63_data *data = i2c_get_clientdata(client);
+	struct lm63_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	int nr = attr->index;
 	unsigned long val;
 	int err;
@@ -424,19 +405,19 @@ static ssize_t set_pwm1(struct device *dev, struct device_attribute *devattr,
 	return count;
 }
 
-static ssize_t show_pwm1_enable(struct device *dev,
+static ssize_t pwm1_enable_show(struct device *dev,
 				struct device_attribute *dummy, char *buf)
 {
 	struct lm63_data *data = lm63_update_device(dev);
 	return sprintf(buf, "%d\n", data->config_fan & 0x20 ? 1 : 2);
 }
 
-static ssize_t set_pwm1_enable(struct device *dev,
-			       struct device_attribute *dummy,
-			       const char *buf, size_t count)
+static ssize_t pwm1_enable_store(struct device *dev,
+				 struct device_attribute *dummy,
+				 const char *buf, size_t count)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm63_data *data = i2c_get_clientdata(client);
+	struct lm63_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	unsigned long val;
 	int err;
 
@@ -450,7 +431,7 @@ static ssize_t set_pwm1_enable(struct device *dev,
 	 * Only let the user switch to automatic mode if the lookup table
 	 * looks sane.
 	 */
-	if (val == 2 && lm63_lut_looks_bad(client))
+	if (val == 2 && lm63_lut_looks_bad(dev, data))
 		return -EPERM;
 
 	mutex_lock(&data->update_lock);
@@ -461,7 +442,7 @@ static ssize_t set_pwm1_enable(struct device *dev,
 	else
 		data->config_fan &= ~0x20;
 	i2c_smbus_write_byte_data(client, LM63_REG_CONFIG_FAN,
-	data->config_fan);
+				  data->config_fan);
 	mutex_unlock(&data->update_lock);
 	return count;
 }
@@ -505,8 +486,8 @@ static ssize_t set_temp8(struct device *dev, struct device_attribute *devattr,
 			 const char *buf, size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm63_data *data = i2c_get_clientdata(client);
+	struct lm63_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	int nr = attr->index;
 	long val;
 	int err;
@@ -579,8 +560,8 @@ static ssize_t set_temp11(struct device *dev, struct device_attribute *devattr,
 	};
 
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm63_data *data = i2c_get_clientdata(client);
+	struct lm63_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	long val;
 	int err;
 	int nr = attr->index;
@@ -607,7 +588,7 @@ static ssize_t set_temp11(struct device *dev, struct device_attribute *devattr,
  * Hysteresis register holds a relative value, while we want to present
  * an absolute to user-space
  */
-static ssize_t show_temp2_crit_hyst(struct device *dev,
+static ssize_t temp2_crit_hyst_show(struct device *dev,
 				    struct device_attribute *dummy, char *buf)
 {
 	struct lm63_data *data = lm63_update_device(dev);
@@ -631,12 +612,12 @@ static ssize_t show_lut_temp_hyst(struct device *dev,
  * And now the other way around, user-space provides an absolute
  * hysteresis value and we have to store a relative one
  */
-static ssize_t set_temp2_crit_hyst(struct device *dev,
-				   struct device_attribute *dummy,
-				   const char *buf, size_t count)
+static ssize_t temp2_crit_hyst_store(struct device *dev,
+				     struct device_attribute *dummy,
+				     const char *buf, size_t count)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm63_data *data = i2c_get_clientdata(client);
+	struct lm63_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	long val;
 	int err;
 	long hyst;
@@ -657,11 +638,11 @@ static ssize_t set_temp2_crit_hyst(struct device *dev,
  * Set conversion rate.
  * client->update_lock must be held when calling this function.
  */
-static void lm63_set_convrate(struct i2c_client *client, struct lm63_data *data,
-			      unsigned int interval)
+static void lm63_set_convrate(struct lm63_data *data, unsigned int interval)
 {
-	int i;
+	struct i2c_client *client = data->client;
 	unsigned int update_interval;
+	int i;
 
 	/* Shift calculations to avoid rounding errors */
 	interval <<= 6;
@@ -677,7 +658,7 @@ static void lm63_set_convrate(struct i2c_client *client, struct lm63_data *data,
 	data->update_interval = UPDATE_INTERVAL(data->max_convrate_hz, i);
 }
 
-static ssize_t show_update_interval(struct device *dev,
+static ssize_t update_interval_show(struct device *dev,
 				    struct device_attribute *attr, char *buf)
 {
 	struct lm63_data *data = dev_get_drvdata(dev);
@@ -685,12 +666,11 @@ static ssize_t show_update_interval(struct device *dev,
 	return sprintf(buf, "%u\n", data->update_interval);
 }
 
-static ssize_t set_update_interval(struct device *dev,
-				   struct device_attribute *attr,
-				   const char *buf, size_t count)
+static ssize_t update_interval_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm63_data *data = i2c_get_clientdata(client);
+	struct lm63_data *data = dev_get_drvdata(dev);
 	unsigned long val;
 	int err;
 
@@ -699,26 +679,26 @@ static ssize_t set_update_interval(struct device *dev,
 		return err;
 
 	mutex_lock(&data->update_lock);
-	lm63_set_convrate(client, data, clamp_val(val, 0, 100000));
+	lm63_set_convrate(data, clamp_val(val, 0, 100000));
 	mutex_unlock(&data->update_lock);
 
 	return count;
 }
 
-static ssize_t show_type(struct device *dev, struct device_attribute *attr,
-			 char *buf)
+static ssize_t temp2_type_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm63_data *data = i2c_get_clientdata(client);
+	struct lm63_data *data = dev_get_drvdata(dev);
 
 	return sprintf(buf, data->trutherm ? "1\n" : "2\n");
 }
 
-static ssize_t set_type(struct device *dev, struct device_attribute *attr,
-			const char *buf, size_t count)
+static ssize_t temp2_type_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm63_data *data = i2c_get_clientdata(client);
+	struct lm63_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	unsigned long val;
 	int ret;
 	u8 reg;
@@ -734,13 +714,13 @@ static ssize_t set_type(struct device *dev, struct device_attribute *attr,
 	reg = i2c_smbus_read_byte_data(client, LM96163_REG_TRUTHERM) & ~0x02;
 	i2c_smbus_write_byte_data(client, LM96163_REG_TRUTHERM,
 				  reg | (data->trutherm ? 0x02 : 0x00));
-	data->valid = 0;
+	data->valid = false;
 	mutex_unlock(&data->update_lock);
 
 	return count;
 }
 
-static ssize_t show_alarms(struct device *dev, struct device_attribute *dummy,
+static ssize_t alarms_show(struct device *dev, struct device_attribute *dummy,
 			   char *buf)
 {
 	struct lm63_data *data = lm63_update_device(dev);
@@ -762,8 +742,7 @@ static SENSOR_DEVICE_ATTR(fan1_min, S_IWUSR | S_IRUGO, show_fan,
 	set_fan, 1);
 
 static SENSOR_DEVICE_ATTR(pwm1, S_IWUSR | S_IRUGO, show_pwm1, set_pwm1, 0);
-static DEVICE_ATTR(pwm1_enable, S_IWUSR | S_IRUGO,
-	show_pwm1_enable, set_pwm1_enable);
+static DEVICE_ATTR_RW(pwm1_enable);
 static SENSOR_DEVICE_ATTR(pwm1_auto_point1_pwm, S_IWUSR | S_IRUGO,
 	show_pwm1, set_pwm1, 1);
 static SENSOR_DEVICE_ATTR(pwm1_auto_point1_temp, S_IWUSR | S_IRUGO,
@@ -850,10 +829,9 @@ static SENSOR_DEVICE_ATTR(temp2_offset, S_IWUSR | S_IRUGO, show_temp11,
 	set_temp11, 3);
 static SENSOR_DEVICE_ATTR(temp2_crit, S_IRUGO, show_remote_temp8,
 	set_temp8, 2);
-static DEVICE_ATTR(temp2_crit_hyst, S_IWUSR | S_IRUGO, show_temp2_crit_hyst,
-	set_temp2_crit_hyst);
+static DEVICE_ATTR_RW(temp2_crit_hyst);
 
-static DEVICE_ATTR(temp2_type, S_IWUSR | S_IRUGO, show_type, set_type);
+static DEVICE_ATTR_RW(temp2_type);
 
 /* Individual alarm files */
 static SENSOR_DEVICE_ATTR(fan1_min_alarm, S_IRUGO, show_alarm, NULL, 0);
@@ -863,10 +841,9 @@ static SENSOR_DEVICE_ATTR(temp2_min_alarm, S_IRUGO, show_alarm, NULL, 3);
 static SENSOR_DEVICE_ATTR(temp2_max_alarm, S_IRUGO, show_alarm, NULL, 4);
 static SENSOR_DEVICE_ATTR(temp1_max_alarm, S_IRUGO, show_alarm, NULL, 6);
 /* Raw alarm file for compatibility */
-static DEVICE_ATTR(alarms, S_IRUGO, show_alarms, NULL);
+static DEVICE_ATTR_RO(alarms);
 
-static DEVICE_ATTR(update_interval, S_IRUGO | S_IWUSR, show_update_interval,
-		   set_update_interval);
+static DEVICE_ATTR_RW(update_interval);
 
 static struct attribute *lm63_attributes[] = {
 	&sensor_dev_attr_pwm1.dev_attr.attr,
@@ -915,6 +892,15 @@ static struct attribute *lm63_attributes[] = {
 	NULL
 };
 
+static struct attribute *lm63_attributes_temp2_type[] = {
+	&dev_attr_temp2_type.attr,
+	NULL
+};
+
+static const struct attribute_group lm63_group_temp2_type = {
+	.attrs = lm63_attributes_temp2_type,
+};
+
 static struct attribute *lm63_attributes_extra_lut[] = {
 	&sensor_dev_attr_pwm1_auto_point9_pwm.dev_attr.attr,
 	&sensor_dev_attr_pwm1_auto_point9_temp.dev_attr.attr,
@@ -945,9 +931,8 @@ static const struct attribute_group lm63_group_extra_lut = {
 static umode_t lm63_attribute_mode(struct kobject *kobj,
 				   struct attribute *attr, int index)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm63_data *data = i2c_get_clientdata(client);
+	struct device *dev = kobj_to_dev(kobj);
+	struct lm63_data *data = dev_get_drvdata(dev);
 
 	if (attr == &sensor_dev_attr_temp2_crit.dev_attr.attr
 	    && (data->kind == lm64 ||
@@ -1011,11 +996,11 @@ static int lm63_detect(struct i2c_client *client,
 	}
 
 	if (chip_id == 0x41 && address == 0x4c)
-		strlcpy(info->type, "lm63", I2C_NAME_SIZE);
+		strscpy(info->type, "lm63", I2C_NAME_SIZE);
 	else if (chip_id == 0x51 && (address == 0x18 || address == 0x4e))
-		strlcpy(info->type, "lm64", I2C_NAME_SIZE);
+		strscpy(info->type, "lm64", I2C_NAME_SIZE);
 	else if (chip_id == 0x49 && address == 0x4c)
-		strlcpy(info->type, "lm96163", I2C_NAME_SIZE);
+		strscpy(info->type, "lm96163", I2C_NAME_SIZE);
 	else
 		return -ENODEV;
 
@@ -1026,9 +1011,10 @@ static int lm63_detect(struct i2c_client *client,
  * Ideally we shouldn't have to initialize anything, since the BIOS
  * should have taken care of everything
  */
-static void lm63_init_client(struct i2c_client *client)
+static void lm63_init_client(struct lm63_data *data)
 {
-	struct lm63_data *data = i2c_get_clientdata(client);
+	struct i2c_client *client = data->client;
+	struct device *dev = &client->dev;
 	u8 convrate;
 
 	data->config = i2c_smbus_read_byte_data(client, LM63_REG_CONFIG1);
@@ -1037,7 +1023,7 @@ static void lm63_init_client(struct i2c_client *client)
 
 	/* Start converting if needed */
 	if (data->config & 0x40) { /* standby */
-		dev_dbg(&client->dev, "Switching to operational mode\n");
+		dev_dbg(dev, "Switching to operational mode\n");
 		data->config &= 0xA7;
 		i2c_smbus_write_byte_data(client, LM63_REG_CONFIG1,
 					  data->config);
@@ -1090,90 +1076,57 @@ static void lm63_init_client(struct i2c_client *client)
 
 	/* Show some debug info about the LM63 configuration */
 	if (data->kind == lm63)
-		dev_dbg(&client->dev, "Alert/tach pin configured for %s\n",
+		dev_dbg(dev, "Alert/tach pin configured for %s\n",
 			(data->config & 0x04) ? "tachometer input" :
 			"alert output");
-	dev_dbg(&client->dev, "PWM clock %s kHz, output frequency %u Hz\n",
+	dev_dbg(dev, "PWM clock %s kHz, output frequency %u Hz\n",
 		(data->config_fan & 0x08) ? "1.4" : "360",
 		((data->config_fan & 0x08) ? 700 : 180000) / data->pwm1_freq);
-	dev_dbg(&client->dev, "PWM output active %s, %s mode\n",
+	dev_dbg(dev, "PWM output active %s, %s mode\n",
 		(data->config_fan & 0x10) ? "low" : "high",
 		(data->config_fan & 0x20) ? "manual" : "auto");
 }
 
-static int lm63_probe(struct i2c_client *client,
-		      const struct i2c_device_id *id)
-{
-	struct lm63_data *data;
-	int err;
+static const struct i2c_device_id lm63_id[];
 
-	data = devm_kzalloc(&client->dev, sizeof(struct lm63_data), GFP_KERNEL);
+static int lm63_probe(struct i2c_client *client)
+{
+	struct device *dev = &client->dev;
+	struct device *hwmon_dev;
+	struct lm63_data *data;
+	int groups = 0;
+
+	data = devm_kzalloc(dev, sizeof(struct lm63_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	i2c_set_clientdata(client, data);
-	data->valid = 0;
+	data->client = client;
 	mutex_init(&data->update_lock);
 
 	/* Set the device type */
-	data->kind = id->driver_data;
+	if (client->dev.of_node)
+		data->kind = (uintptr_t)of_device_get_match_data(&client->dev);
+	else
+		data->kind = i2c_match_id(lm63_id, client)->driver_data;
 	if (data->kind == lm64)
 		data->temp2_offset = 16000;
 
 	/* Initialize chip */
-	lm63_init_client(client);
+	lm63_init_client(data);
 
 	/* Register sysfs hooks */
-	err = sysfs_create_group(&client->dev.kobj, &lm63_group);
-	if (err)
-		return err;
-	if (data->config & 0x04) { /* tachometer enabled */
-		err = sysfs_create_group(&client->dev.kobj, &lm63_group_fan1);
-		if (err)
-			goto exit_remove_files;
-	}
+	data->groups[groups++] = &lm63_group;
+	if (data->config & 0x04)	/* tachometer enabled */
+		data->groups[groups++] = &lm63_group_fan1;
+
 	if (data->kind == lm96163) {
-		err = device_create_file(&client->dev, &dev_attr_temp2_type);
-		if (err)
-			goto exit_remove_files;
-
-		err = sysfs_create_group(&client->dev.kobj,
-					 &lm63_group_extra_lut);
-		if (err)
-			goto exit_remove_files;
+		data->groups[groups++] = &lm63_group_temp2_type;
+		data->groups[groups++] = &lm63_group_extra_lut;
 	}
 
-	data->hwmon_dev = hwmon_device_register(&client->dev);
-	if (IS_ERR(data->hwmon_dev)) {
-		err = PTR_ERR(data->hwmon_dev);
-		goto exit_remove_files;
-	}
-
-	return 0;
-
-exit_remove_files:
-	sysfs_remove_group(&client->dev.kobj, &lm63_group);
-	sysfs_remove_group(&client->dev.kobj, &lm63_group_fan1);
-	if (data->kind == lm96163) {
-		device_remove_file(&client->dev, &dev_attr_temp2_type);
-		sysfs_remove_group(&client->dev.kobj, &lm63_group_extra_lut);
-	}
-	return err;
-}
-
-static int lm63_remove(struct i2c_client *client)
-{
-	struct lm63_data *data = i2c_get_clientdata(client);
-
-	hwmon_device_unregister(data->hwmon_dev);
-	sysfs_remove_group(&client->dev.kobj, &lm63_group);
-	sysfs_remove_group(&client->dev.kobj, &lm63_group_fan1);
-	if (data->kind == lm96163) {
-		device_remove_file(&client->dev, &dev_attr_temp2_type);
-		sysfs_remove_group(&client->dev.kobj, &lm63_group_extra_lut);
-	}
-
-	return 0;
+	hwmon_dev = devm_hwmon_device_register_with_groups(dev, client->name,
+							   data, data->groups);
+	return PTR_ERR_OR_ZERO(hwmon_dev);
 }
 
 /*
@@ -1188,13 +1141,30 @@ static const struct i2c_device_id lm63_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, lm63_id);
 
+static const struct of_device_id __maybe_unused lm63_of_match[] = {
+	{
+		.compatible = "national,lm63",
+		.data = (void *)lm63
+	},
+	{
+		.compatible = "national,lm64",
+		.data = (void *)lm64
+	},
+	{
+		.compatible = "national,lm96163",
+		.data = (void *)lm96163
+	},
+	{ },
+};
+MODULE_DEVICE_TABLE(of, lm63_of_match);
+
 static struct i2c_driver lm63_driver = {
 	.class		= I2C_CLASS_HWMON,
 	.driver = {
 		.name	= "lm63",
+		.of_match_table = of_match_ptr(lm63_of_match),
 	},
 	.probe		= lm63_probe,
-	.remove		= lm63_remove,
 	.id_table	= lm63_id,
 	.detect		= lm63_detect,
 	.address_list	= normal_i2c,

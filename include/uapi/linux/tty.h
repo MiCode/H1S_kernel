@@ -1,11 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 #ifndef _UAPI_LINUX_TTY_H
 #define _UAPI_LINUX_TTY_H
 
 /*
  * 'tty.h' defines some structures used by tty_io.c and some defines.
  */
-
-#define NR_LDISCS		30
 
 /* line disciplines */
 #define N_TTY		0
@@ -34,5 +33,14 @@
 #define N_TI_WL		22	/* for TI's WL BT, FM, GPS combo chips */
 #define N_TRACESINK	23	/* Trace data routing for MIPI P1149.7 */
 #define N_TRACEROUTER	24	/* Trace data routing for MIPI P1149.7 */
+#define N_NCI		25	/* NFC NCI UART */
+#define N_SPEAKUP	26	/* Speakup communication with synths */
+#define N_NULL		27	/* Null ldisc used for error handling */
+#define N_MCTP		28	/* MCTP-over-serial */
+#define N_DEVELOPMENT	29	/* Manual out-of-tree testing */
+#define N_CAN327	30	/* ELM327 based OBD-II interfaces */
+
+/* Always the newest line discipline + 1 */
+#define NR_LDISCS	31
 
 #endif /* _UAPI_LINUX_TTY_H */

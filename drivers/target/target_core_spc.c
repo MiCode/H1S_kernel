@@ -1,30 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * SCSI Primary Commands (SPC) parsing and emulation.
  *
  * (c) Copyright 2002-2013 Datera, Inc.
  *
  * Nicholas A. Bellinger <nab@kernel.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <asm/unaligned.h>
 
-#include <scsi/scsi.h>
+#include <scsi/scsi_proto.h>
+#include <scsi/scsi_common.h>
 #include <scsi/scsi_tcq.h>
 
 #include <target/target_core_base.h>
@@ -37,10 +25,9 @@
 #include "target_core_ua.h"
 #include "target_core_xcopy.h"
 
-static void spc_fill_alua_data(struct se_port *port, unsigned char *buf)
+static void spc_fill_alua_data(struct se_lun *lun, unsigned char *buf)
 {
 	struct t10_alua_tg_pt_gp *tg_pt_gp;
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem;
 
 	/*
 	 * Set SCCS for MAINTENANCE_IN + REPORT_TARGET_PORT_GROUPS.
@@ -53,30 +40,47 @@ static void spc_fill_alua_data(struct se_port *port, unsigned char *buf)
 	 *
 	 * See spc4r17 section 6.4.2 Table 135
 	 */
-	if (!port)
-		return;
-	tg_pt_gp_mem = port->sep_alua_tg_pt_gp_mem;
-	if (!tg_pt_gp_mem)
-		return;
-
-	spin_lock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
-	tg_pt_gp = tg_pt_gp_mem->tg_pt_gp;
+	rcu_read_lock();
+	tg_pt_gp = rcu_dereference(lun->lun_tg_pt_gp);
 	if (tg_pt_gp)
 		buf[5] |= tg_pt_gp->tg_pt_gp_alua_access_type;
-	spin_unlock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
+	rcu_read_unlock();
+}
+
+static u16
+spc_find_scsi_transport_vd(int proto_id)
+{
+	switch (proto_id) {
+	case SCSI_PROTOCOL_FCP:
+		return SCSI_VERSION_DESCRIPTOR_FCP4;
+	case SCSI_PROTOCOL_ISCSI:
+		return SCSI_VERSION_DESCRIPTOR_ISCSI;
+	case SCSI_PROTOCOL_SAS:
+		return SCSI_VERSION_DESCRIPTOR_SAS3;
+	case SCSI_PROTOCOL_SBP:
+		return SCSI_VERSION_DESCRIPTOR_SBP3;
+	case SCSI_PROTOCOL_SRP:
+		return SCSI_VERSION_DESCRIPTOR_SRP;
+	default:
+		pr_warn("Cannot find VERSION DESCRIPTOR value for unknown SCSI"
+			" transport PROTOCOL IDENTIFIER %#x\n", proto_id);
+		return 0;
+	}
 }
 
 sense_reason_t
 spc_emulate_inquiry_std(struct se_cmd *cmd, unsigned char *buf)
 {
 	struct se_lun *lun = cmd->se_lun;
+	struct se_portal_group *tpg = lun->lun_tpg;
 	struct se_device *dev = cmd->se_dev;
+	struct se_session *sess = cmd->se_sess;
 
 	/* Set RMB (removable media) for tape devices */
 	if (dev->transport->get_device_type(dev) == TYPE_TAPE)
 		buf[1] = 0x80;
 
-	buf[2] = 0x05; /* SPC-3 */
+	buf[2] = 0x06; /* SPC-4 */
 
 	/*
 	 * NORMACA and HISUP = 0, RESPONSE DATA FORMAT = 2
@@ -93,7 +97,7 @@ spc_emulate_inquiry_std(struct se_cmd *cmd, unsigned char *buf)
 	/*
 	 * Enable SCCS and TPGS fields for Emulated ALUA
 	 */
-	spc_fill_alua_data(lun->lun_sep, buf);
+	spc_fill_alua_data(lun, buf);
 
 	/*
 	 * Set Third-Party Copy (3PC) bit to indicate support for EXTENDED_COPY
@@ -101,20 +105,48 @@ spc_emulate_inquiry_std(struct se_cmd *cmd, unsigned char *buf)
 	if (dev->dev_attrib.emulate_3pc)
 		buf[5] |= 0x8;
 	/*
-	 * Set Protection (PROTECT) bit when DIF has been enabled.
+	 * Set Protection (PROTECT) bit when DIF has been enabled on the
+	 * device, and the fabric supports VERIFY + PASS.  Also report
+	 * PROTECT=1 if sess_prot_type has been configured to allow T10-PI
+	 * to unprotected devices.
 	 */
-	if (dev->dev_attrib.pi_prot_type)
-		buf[5] |= 0x1;
+	if (sess->sup_prot_ops & (TARGET_PROT_DIN_PASS | TARGET_PROT_DOUT_PASS)) {
+		if (dev->dev_attrib.pi_prot_type || cmd->se_sess->sess_prot_type)
+			buf[5] |= 0x1;
+	}
+
+	/*
+	 * Set MULTIP bit to indicate presence of multiple SCSI target ports
+	 */
+	if (dev->export_count > 1)
+		buf[6] |= 0x10;
 
 	buf[7] = 0x2; /* CmdQue=1 */
 
-	memcpy(&buf[8], "LIO-ORG ", 8);
-	memset(&buf[16], 0x20, 16);
+	/*
+	 * ASCII data fields described as being left-aligned shall have any
+	 * unused bytes at the end of the field (i.e., highest offset) and the
+	 * unused bytes shall be filled with ASCII space characters (20h).
+	 */
+	memset(&buf[8], 0x20,
+	       INQUIRY_VENDOR_LEN + INQUIRY_MODEL_LEN + INQUIRY_REVISION_LEN);
+	memcpy(&buf[8], dev->t10_wwn.vendor,
+	       strnlen(dev->t10_wwn.vendor, INQUIRY_VENDOR_LEN));
 	memcpy(&buf[16], dev->t10_wwn.model,
-	       min_t(size_t, strlen(dev->t10_wwn.model), 16));
+	       strnlen(dev->t10_wwn.model, INQUIRY_MODEL_LEN));
 	memcpy(&buf[32], dev->t10_wwn.revision,
-	       min_t(size_t, strlen(dev->t10_wwn.revision), 4));
-	buf[4] = 31; /* Set additional length to 31 */
+	       strnlen(dev->t10_wwn.revision, INQUIRY_REVISION_LEN));
+
+	/*
+	 * Set the VERSION DESCRIPTOR fields
+	 */
+	put_unaligned_be16(SCSI_VERSION_DESCRIPTOR_SAM5, &buf[58]);
+	put_unaligned_be16(spc_find_scsi_transport_vd(tpg->proto_id), &buf[60]);
+	put_unaligned_be16(SCSI_VERSION_DESCRIPTOR_SPC4, &buf[62]);
+	if (cmd->se_dev->transport->get_device_type(dev) == TYPE_DISK)
+		put_unaligned_be16(SCSI_VERSION_DESCRIPTOR_SBC3, &buf[64]);
+
+	buf[4] = 91; /* Set additional length to 91 */
 
 	return 0;
 }
@@ -125,27 +157,37 @@ static sense_reason_t
 spc_emulate_evpd_80(struct se_cmd *cmd, unsigned char *buf)
 {
 	struct se_device *dev = cmd->se_dev;
-	u16 len = 0;
+	u16 len;
 
 	if (dev->dev_flags & DF_EMULATED_VPD_UNIT_SERIAL) {
-		u32 unit_serial_len;
-
-		unit_serial_len = strlen(dev->t10_wwn.unit_serial);
-		unit_serial_len++; /* For NULL Terminator */
-
-		len += sprintf(&buf[4], "%s", dev->t10_wwn.unit_serial);
+		len = sprintf(&buf[4], "%s", dev->t10_wwn.unit_serial);
 		len++; /* Extra Byte for NULL Terminator */
 		buf[3] = len;
 	}
 	return 0;
 }
 
-void spc_parse_naa_6h_vendor_specific(struct se_device *dev,
-				      unsigned char *buf)
+/*
+ * Generate NAA IEEE Registered Extended designator
+ */
+void spc_gen_naa_6h_vendor_specific(struct se_device *dev,
+				    unsigned char *buf)
 {
 	unsigned char *p = &dev->t10_wwn.unit_serial[0];
-	int cnt;
+	u32 company_id = dev->t10_wwn.company_id;
+	int cnt, off = 0;
 	bool next = true;
+
+	/*
+	 * Start NAA IEEE Registered Extended Identifier/Designator
+	 */
+	buf[off] = 0x6 << 4;
+
+	/* IEEE COMPANY_ID */
+	buf[off++] |= (company_id >> 20) & 0xf;
+	buf[off++] = (company_id >> 12) & 0xff;
+	buf[off++] = (company_id >> 4) & 0xff;
+	buf[off] = (company_id & 0xf) << 4;
 
 	/*
 	 * Generate up to 36 bits of VENDOR SPECIFIC IDENTIFIER starting on
@@ -155,7 +197,7 @@ void spc_parse_naa_6h_vendor_specific(struct se_device *dev,
 	 * NUMBER set via vpd_unit_serial in target_core_configfs.c to ensure
 	 * per device uniqeness.
 	 */
-	for (cnt = 0; *p && cnt < 13; p++) {
+	for (cnt = off + 13; *p && off < cnt; p++) {
 		int val = hex_to_bin(*p);
 
 		if (val < 0)
@@ -163,10 +205,10 @@ void spc_parse_naa_6h_vendor_specific(struct se_device *dev,
 
 		if (next) {
 			next = false;
-			buf[cnt++] |= val;
+			buf[off++] |= val;
 		} else {
 			next = true;
-			buf[cnt] = val << 4;
+			buf[off] = val << 4;
 		}
 	}
 }
@@ -180,14 +222,11 @@ spc_emulate_evpd_83(struct se_cmd *cmd, unsigned char *buf)
 {
 	struct se_device *dev = cmd->se_dev;
 	struct se_lun *lun = cmd->se_lun;
-	struct se_port *port = NULL;
 	struct se_portal_group *tpg = NULL;
 	struct t10_alua_lu_gp_member *lu_gp_mem;
 	struct t10_alua_tg_pt_gp *tg_pt_gp;
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem;
 	unsigned char *prod = &dev->t10_wwn.model[0];
-	u32 prod_len;
-	u32 unit_serial_len, off = 0;
+	u32 off = 0;
 	u16 len = 0, id_len;
 
 	off = 4;
@@ -216,24 +255,8 @@ spc_emulate_evpd_83(struct se_cmd *cmd, unsigned char *buf)
 	/* Identifier/Designator length */
 	buf[off++] = 0x10;
 
-	/*
-	 * Start NAA IEEE Registered Extended Identifier/Designator
-	 */
-	buf[off++] = (0x6 << 4);
-
-	/*
-	 * Use OpenFabrics IEEE Company ID: 00 14 05
-	 */
-	buf[off++] = 0x01;
-	buf[off++] = 0x40;
-	buf[off] = (0x5 << 4);
-
-	/*
-	 * Return ConfigFS Unit Serial Number information for
-	 * VENDOR_SPECIFIC_IDENTIFIER and
-	 * VENDOR_SPECIFIC_IDENTIFIER_EXTENTION
-	 */
-	spc_parse_naa_6h_vendor_specific(dev, &buf[off]);
+	/* NAA IEEE Registered Extended designator */
+	spc_gen_naa_6h_vendor_specific(dev, &buf[off]);
 
 	len = 20;
 	off = (len + 4);
@@ -243,22 +266,17 @@ check_t10_vend_desc:
 	 * T10 Vendor Identifier Page, see spc4r17 section 7.7.3.4
 	 */
 	id_len = 8; /* For Vendor field */
-	prod_len = 4; /* For VPD Header */
-	prod_len += 8; /* For Vendor field */
-	prod_len += strlen(prod);
-	prod_len++; /* For : */
 
-	if (dev->dev_flags & DF_EMULATED_VPD_UNIT_SERIAL) {
-		unit_serial_len = strlen(&dev->t10_wwn.unit_serial[0]);
-		unit_serial_len++; /* For NULL Terminator */
-
+	if (dev->dev_flags & DF_EMULATED_VPD_UNIT_SERIAL)
 		id_len += sprintf(&buf[off+12], "%s:%s", prod,
 				&dev->t10_wwn.unit_serial[0]);
-	}
 	buf[off] = 0x2; /* ASCII */
 	buf[off+1] = 0x1; /* T10 Vendor ID */
 	buf[off+2] = 0x0;
-	memcpy(&buf[off+4], "LIO-ORG", 8);
+	/* left align Vendor ID and pad with spaces */
+	memset(&buf[off+4], 0x20, INQUIRY_VENDOR_LEN);
+	memcpy(&buf[off+4], dev->t10_wwn.vendor,
+	       strnlen(dev->t10_wwn.vendor, INQUIRY_VENDOR_LEN));
 	/* Extra Byte for NULL Terminator */
 	id_len++;
 	/* Identifier Length */
@@ -266,18 +284,15 @@ check_t10_vend_desc:
 	/* Header size for Designation descriptor */
 	len += (id_len + 4);
 	off += (id_len + 4);
-	/*
-	 * struct se_port is only set for INQUIRY VPD=1 through $FABRIC_MOD
-	 */
-	port = lun->lun_sep;
-	if (port) {
+
+	if (1) {
 		struct t10_alua_lu_gp *lu_gp;
 		u32 padding, scsi_name_len, scsi_target_len;
 		u16 lu_gp_id = 0;
 		u16 tg_pt_gp_id = 0;
 		u16 tpgt;
 
-		tpg = port->sep_tpg;
+		tpg = lun->lun_tpg;
 		/*
 		 * Relative target port identifer, see spc4r17
 		 * section 7.7.3.7
@@ -285,8 +300,7 @@ check_t10_vend_desc:
 		 * Get the PROTOCOL IDENTIFIER as defined by spc4r17
 		 * section 7.5.1 Table 362
 		 */
-		buf[off] =
-			(tpg->se_tpg_tfo->get_fabric_proto_ident(tpg) << 4);
+		buf[off] = tpg->proto_id << 4;
 		buf[off++] |= 0x1; /* CODE SET == Binary */
 		buf[off] = 0x80; /* Set PIV=1 */
 		/* Set ASSOCIATION == target port: 01b */
@@ -298,8 +312,8 @@ check_t10_vend_desc:
 		/* Skip over Obsolete field in RTPI payload
 		 * in Table 472 */
 		off += 2;
-		buf[off++] = ((port->sep_rtpi >> 8) & 0xff);
-		buf[off++] = (port->sep_rtpi & 0xff);
+		put_unaligned_be16(lun->lun_tpg->tpg_rtpi, &buf[off]);
+		off += 2;
 		len += 8; /* Header size + Designation descriptor */
 		/*
 		 * Target port group identifier, see spc4r17
@@ -308,21 +322,16 @@ check_t10_vend_desc:
 		 * Get the PROTOCOL IDENTIFIER as defined by spc4r17
 		 * section 7.5.1 Table 362
 		 */
-		tg_pt_gp_mem = port->sep_alua_tg_pt_gp_mem;
-		if (!tg_pt_gp_mem)
-			goto check_lu_gp;
-
-		spin_lock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
-		tg_pt_gp = tg_pt_gp_mem->tg_pt_gp;
+		rcu_read_lock();
+		tg_pt_gp = rcu_dereference(lun->lun_tg_pt_gp);
 		if (!tg_pt_gp) {
-			spin_unlock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
+			rcu_read_unlock();
 			goto check_lu_gp;
 		}
 		tg_pt_gp_id = tg_pt_gp->tg_pt_gp_id;
-		spin_unlock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
+		rcu_read_unlock();
 
-		buf[off] =
-			(tpg->se_tpg_tfo->get_fabric_proto_ident(tpg) << 4);
+		buf[off] = tpg->proto_id << 4;
 		buf[off++] |= 0x1; /* CODE SET == Binary */
 		buf[off] = 0x80; /* Set PIV=1 */
 		/* Set ASSOCIATION == target port: 01b */
@@ -332,8 +341,8 @@ check_t10_vend_desc:
 		off++; /* Skip over Reserved */
 		buf[off++] = 4; /* DESIGNATOR LENGTH */
 		off += 2; /* Skip over Reserved Field */
-		buf[off++] = ((tg_pt_gp_id >> 8) & 0xff);
-		buf[off++] = (tg_pt_gp_id & 0xff);
+		put_unaligned_be16(tg_pt_gp_id, &buf[off]);
+		off += 2;
 		len += 8; /* Header size + Designation descriptor */
 		/*
 		 * Logical Unit Group identifier, see spc4r17
@@ -359,8 +368,8 @@ check_lu_gp:
 		off++; /* Skip over Reserved */
 		buf[off++] = 4; /* DESIGNATOR LENGTH */
 		off += 2; /* Skip over Reserved Field */
-		buf[off++] = ((lu_gp_id >> 8) & 0xff);
-		buf[off++] = (lu_gp_id & 0xff);
+		put_unaligned_be16(lu_gp_id, &buf[off]);
+		off += 2;
 		len += 8; /* Header size + Designation descriptor */
 		/*
 		 * SCSI name string designator, see spc4r17
@@ -370,8 +379,7 @@ check_lu_gp:
 		 * section 7.5.1 Table 362
 		 */
 check_scsi_name:
-		buf[off] =
-			(tpg->se_tpg_tfo->get_fabric_proto_ident(tpg) << 4);
+		buf[off] = tpg->proto_id << 4;
 		buf[off++] |= 0x3; /* CODE SET == UTF-8 */
 		buf[off] = 0x80; /* Set PIV=1 */
 		/* Set ASSOCIATION == target port: 01b */
@@ -411,8 +419,7 @@ check_scsi_name:
 		/*
 		 * Target device designator
 		 */
-		buf[off] =
-			(tpg->se_tpg_tfo->get_fabric_proto_ident(tpg) << 4);
+		buf[off] = tpg->proto_id << 4;
 		buf[off++] |= 0x3; /* CODE SET == UTF-8 */
 		buf[off] = 0x80; /* Set PIV=1 */
 		/* Set ASSOCIATION == target device: 10b */
@@ -440,8 +447,8 @@ check_scsi_name:
 		padding = ((-scsi_target_len) & 3);
 		if (padding)
 			scsi_target_len += padding;
-		if (scsi_name_len > 256)
-			scsi_name_len = 256;
+		if (scsi_target_len > 256)
+			scsi_target_len = 256;
 
 		buf[off-1] = scsi_target_len;
 		off += scsi_target_len;
@@ -449,46 +456,44 @@ check_scsi_name:
 		/* Header size + Designation descriptor */
 		len += (scsi_target_len + 4);
 	}
-	buf[2] = ((len >> 8) & 0xff);
-	buf[3] = (len & 0xff); /* Page Length for VPD 0x83 */
+	put_unaligned_be16(len, &buf[2]); /* Page Length for VPD 0x83 */
 	return 0;
 }
 EXPORT_SYMBOL(spc_emulate_evpd_83);
-
-static bool
-spc_check_dev_wce(struct se_device *dev)
-{
-	bool wce = false;
-
-	if (dev->transport->get_write_cache)
-		wce = dev->transport->get_write_cache(dev);
-	else if (dev->dev_attrib.emulate_write_cache > 0)
-		wce = true;
-
-	return wce;
-}
 
 /* Extended INQUIRY Data VPD Page */
 static sense_reason_t
 spc_emulate_evpd_86(struct se_cmd *cmd, unsigned char *buf)
 {
 	struct se_device *dev = cmd->se_dev;
+	struct se_session *sess = cmd->se_sess;
 
 	buf[3] = 0x3c;
 	/*
 	 * Set GRD_CHK + REF_CHK for TYPE1 protection, or GRD_CHK
 	 * only for TYPE3 protection.
 	 */
-	if (dev->dev_attrib.pi_prot_type == TARGET_DIF_TYPE1_PROT)
-		buf[4] = 0x5;
-	else if (dev->dev_attrib.pi_prot_type == TARGET_DIF_TYPE3_PROT)
-		buf[4] = 0x4;
+	if (sess->sup_prot_ops & (TARGET_PROT_DIN_PASS | TARGET_PROT_DOUT_PASS)) {
+		if (dev->dev_attrib.pi_prot_type == TARGET_DIF_TYPE1_PROT ||
+		    cmd->se_sess->sess_prot_type == TARGET_DIF_TYPE1_PROT)
+			buf[4] = 0x5;
+		else if (dev->dev_attrib.pi_prot_type == TARGET_DIF_TYPE3_PROT ||
+			 cmd->se_sess->sess_prot_type == TARGET_DIF_TYPE3_PROT)
+			buf[4] = 0x4;
+	}
+
+	/* logical unit supports type 1 and type 3 protection */
+	if ((dev->transport->get_device_type(dev) == TYPE_DISK) &&
+	    (sess->sup_prot_ops & (TARGET_PROT_DIN_PASS | TARGET_PROT_DOUT_PASS)) &&
+	    (dev->dev_attrib.pi_prot_type || cmd->se_sess->sess_prot_type)) {
+		buf[4] |= (0x3 << 3);
+	}
 
 	/* Set HEADSUP, ORDSUP, SIMPSUP */
 	buf[5] = 0x07;
 
 	/* If WriteCache emulation is enabled, set V_SUP */
-	if (spc_check_dev_wce(dev))
+	if (target_check_wce(dev))
 		buf[6] = 0x01;
 	/* If an LBA map is present set R_SUP */
 	spin_lock(&cmd->se_dev->t10_alua.lba_map_lock);
@@ -503,9 +508,9 @@ static sense_reason_t
 spc_emulate_evpd_b0(struct se_cmd *cmd, unsigned char *buf)
 {
 	struct se_device *dev = cmd->se_dev;
-	u32 max_sectors;
-	int have_tp = 0;
-	int opt, min;
+	u32 mtl = 0;
+	int have_tp = 0, opt, min;
+	u32 io_max_blocks;
 
 	/*
 	 * Following spc3r22 section 6.5.3 Block Limits VPD page, when
@@ -536,10 +541,18 @@ spc_emulate_evpd_b0(struct se_cmd *cmd, unsigned char *buf)
 
 	/*
 	 * Set MAXIMUM TRANSFER LENGTH
+	 *
+	 * XXX: Currently assumes single PAGE_SIZE per scatterlist for fabrics
+	 * enforcing maximum HW scatter-gather-list entry limit
 	 */
-	max_sectors = min(dev->dev_attrib.fabric_max_sectors,
-			  dev->dev_attrib.hw_max_sectors);
-	put_unaligned_be32(max_sectors, &buf[8]);
+	if (cmd->se_tfo->max_data_sg_nents) {
+		mtl = (cmd->se_tfo->max_data_sg_nents * PAGE_SIZE) /
+		       dev->dev_attrib.block_size;
+	}
+	io_max_blocks = mult_frac(dev->dev_attrib.hw_max_sectors,
+			dev->dev_attrib.hw_block_size,
+			dev->dev_attrib.block_size);
+	put_unaligned_be32(min_not_zero(mtl, io_max_blocks), &buf[8]);
 
 	/*
 	 * Set OPTIMAL TRANSFER LENGTH
@@ -648,7 +661,19 @@ spc_emulate_evpd_b2(struct se_cmd *cmd, unsigned char *buf)
 	 * support the use of the WRITE SAME (16) command to unmap LBAs.
 	 */
 	if (dev->dev_attrib.emulate_tpws != 0)
-		buf[5] |= 0x40;
+		buf[5] |= 0x40 | 0x20;
+
+	/*
+	 * The unmap_zeroes_data set means that the underlying device supports
+	 * REQ_OP_DISCARD and has the discard_zeroes_data bit set. This
+	 * satisfies the SBC requirements for LBPRZ, meaning that a subsequent
+	 * read will return zeroes after an UNMAP or WRITE SAME (16) to an LBA
+	 * See sbc4r36 6.6.4.
+	 */
+	if (((dev->dev_attrib.emulate_tpu != 0) ||
+	     (dev->dev_attrib.emulate_tpws != 0)) &&
+	     (dev->dev_attrib.unmap_zeroes_data != 0))
+		buf[5] |= 0x04;
 
 	return 0;
 }
@@ -662,7 +687,7 @@ spc_emulate_evpd_b3(struct se_cmd *cmd, unsigned char *buf)
 	buf[0] = dev->transport->get_device_type(dev);
 	buf[3] = 0x0c;
 	put_unaligned_be32(dev->t10_alua.lba_map_segment_size, &buf[8]);
-	put_unaligned_be32(dev->t10_alua.lba_map_segment_size, &buf[12]);
+	put_unaligned_be32(dev->t10_alua.lba_map_segment_multiplier, &buf[12]);
 
 	return 0;
 }
@@ -708,12 +733,12 @@ static sense_reason_t
 spc_emulate_inquiry(struct se_cmd *cmd)
 {
 	struct se_device *dev = cmd->se_dev;
-	struct se_portal_group *tpg = cmd->se_lun->lun_sep->sep_tpg;
 	unsigned char *rbuf;
 	unsigned char *cdb = cmd->t_task_cdb;
 	unsigned char *buf;
 	sense_reason_t ret;
 	int p;
+	int len = 0;
 
 	buf = kzalloc(SE_INQUIRY_BUF, GFP_KERNEL);
 	if (!buf) {
@@ -721,10 +746,7 @@ spc_emulate_inquiry(struct se_cmd *cmd)
 		return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 	}
 
-	if (dev == tpg->tpg_virt_lun0.lun_se_dev)
-		buf[0] = 0x3f; /* Not connected */
-	else
-		buf[0] = dev->transport->get_device_type(dev);
+	buf[0] = dev->transport->get_device_type(dev);
 
 	if (!(cdb[1] & 0x1)) {
 		if (cdb[2]) {
@@ -735,6 +757,7 @@ spc_emulate_inquiry(struct se_cmd *cmd)
 		}
 
 		ret = spc_emulate_inquiry_std(cmd, buf);
+		len = buf[4] + 5;
 		goto out;
 	}
 
@@ -742,11 +765,12 @@ spc_emulate_inquiry(struct se_cmd *cmd)
 		if (cdb[2] == evpd_handlers[p].page) {
 			buf[1] = cdb[2];
 			ret = evpd_handlers[p].emulate(cmd, buf);
+			len = get_unaligned_be16(&buf[2]) + 4;
 			goto out;
 		}
 	}
 
-	pr_err("Unknown VPD Code: 0x%02x\n", cdb[2]);
+	pr_debug("Unknown VPD Code: 0x%02x\n", cdb[2]);
 	ret = TCM_INVALID_CDB_FIELD;
 
 out:
@@ -758,11 +782,11 @@ out:
 	kfree(buf);
 
 	if (!ret)
-		target_complete_cmd(cmd, GOOD);
+		target_complete_cmd_with_length(cmd, SAM_STAT_GOOD, len);
 	return ret;
 }
 
-static int spc_modesense_rwrecovery(struct se_device *dev, u8 pc, u8 *p)
+static int spc_modesense_rwrecovery(struct se_cmd *cmd, u8 pc, u8 *p)
 {
 	p[0] = 0x01;
 	p[1] = 0x0a;
@@ -775,8 +799,11 @@ out:
 	return 12;
 }
 
-static int spc_modesense_control(struct se_device *dev, u8 pc, u8 *p)
+static int spc_modesense_control(struct se_cmd *cmd, u8 pc, u8 *p)
 {
+	struct se_device *dev = cmd->se_dev;
+	struct se_session *sess = cmd->se_sess;
+
 	p[0] = 0x0a;
 	p[1] = 0x0a;
 
@@ -784,7 +811,12 @@ static int spc_modesense_control(struct se_device *dev, u8 pc, u8 *p)
 	if (pc == 1)
 		goto out;
 
-	p[2] = 2;
+	/* GLTSD: No implicit save of log parameters */
+	p[2] = (1 << 1);
+	if (target_sense_desc_format(dev))
+		/* D_SENSE: Descriptor format sense data for 64bit sectors */
+		p[2] |= (1 << 2);
+
 	/*
 	 * From spc4r23, 7.4.7 Control mode page
 	 *
@@ -843,8 +875,17 @@ static int spc_modesense_control(struct se_device *dev, u8 pc, u8 *p)
 	 * for a BUSY, TASK SET FULL, or RESERVATION CONFLICT status regardless
 	 * to the number of commands completed with one of those status codes.
 	 */
-	p[4] = (dev->dev_attrib.emulate_ua_intlck_ctrl == 2) ? 0x30 :
-	       (dev->dev_attrib.emulate_ua_intlck_ctrl == 1) ? 0x20 : 0x00;
+	switch (dev->dev_attrib.emulate_ua_intlck_ctrl) {
+	case TARGET_UA_INTLCK_CTRL_ESTABLISH_UA:
+		p[4] = 0x30;
+		break;
+	case TARGET_UA_INTLCK_CTRL_NO_CLEAR:
+		p[4] = 0x20;
+		break;
+	default:	/* TARGET_UA_INTLCK_CTRL_CLEAR */
+		p[4] = 0x00;
+		break;
+	}
 	/*
 	 * From spc4r17, section 7.4.6 Control mode Page
 	 *
@@ -868,8 +909,10 @@ static int spc_modesense_control(struct se_device *dev, u8 pc, u8 *p)
 	 * type, shall not modify the contents of the LOGICAL BLOCK REFERENCE
 	 * TAG field.
 	 */
-	if (dev->dev_attrib.pi_prot_type)
-		p[5] |= 0x80;
+	if (sess->sup_prot_ops & (TARGET_PROT_DIN_PASS | TARGET_PROT_DOUT_PASS)) {
+		if (dev->dev_attrib.pi_prot_type || sess->sess_prot_type)
+			p[5] |= 0x80;
+	}
 
 	p[8] = 0xff;
 	p[9] = 0xff;
@@ -879,8 +922,10 @@ out:
 	return 12;
 }
 
-static int spc_modesense_caching(struct se_device *dev, u8 pc, u8 *p)
+static int spc_modesense_caching(struct se_cmd *cmd, u8 pc, u8 *p)
 {
+	struct se_device *dev = cmd->se_dev;
+
 	p[0] = 0x08;
 	p[1] = 0x12;
 
@@ -888,7 +933,7 @@ static int spc_modesense_caching(struct se_device *dev, u8 pc, u8 *p)
 	if (pc == 1)
 		goto out;
 
-	if (spc_check_dev_wce(dev))
+	if (target_check_wce(dev))
 		p[2] = 0x04; /* Write Cache Enable */
 	p[12] = 0x20; /* Disabled Read Ahead */
 
@@ -896,7 +941,7 @@ out:
 	return 20;
 }
 
-static int spc_modesense_informational_exceptions(struct se_device *dev, u8 pc, unsigned char *p)
+static int spc_modesense_informational_exceptions(struct se_cmd *cmd, u8 pc, unsigned char *p)
 {
 	p[0] = 0x1c;
 	p[1] = 0x0a;
@@ -912,7 +957,7 @@ out:
 static struct {
 	uint8_t		page;
 	uint8_t		subpage;
-	int		(*emulate)(struct se_device *, u8, unsigned char *);
+	int		(*emulate)(struct se_cmd *, u8, unsigned char *);
 } modesense_handlers[] = {
 	{ .page = 0x01, .subpage = 0x00, .emulate = spc_modesense_rwrecovery },
 	{ .page = 0x08, .subpage = 0x00, .emulate = spc_modesense_caching },
@@ -995,13 +1040,15 @@ static sense_reason_t spc_emulate_modesense(struct se_cmd *cmd)
 	length = ten ? 3 : 2;
 
 	/* DEVICE-SPECIFIC PARAMETER */
-	if ((cmd->se_lun->lun_access & TRANSPORT_LUNFLAGS_READ_ONLY) ||
-	    (cmd->se_deve &&
-	     (cmd->se_deve->lun_flags & TRANSPORT_LUNFLAGS_READ_ONLY)))
+	if (cmd->se_lun->lun_access_ro || target_lun_is_rdonly(cmd))
 		spc_modesense_write_protect(&buf[length], type);
 
-	if ((spc_check_dev_wce(dev)) &&
-	    (dev->dev_attrib.emulate_fua_write > 0))
+	/*
+	 * SBC only allows us to enable FUA and DPO together.  Fortunately
+	 * DPO is explicitly specified as a hint, so a noop is a perfectly
+	 * valid implementation.
+	 */
+	if (target_check_fua(dev))
 		spc_modesense_dpofua(&buf[length], type);
 
 	++length;
@@ -1050,7 +1097,7 @@ static sense_reason_t spc_emulate_modesense(struct se_cmd *cmd)
 			 * the only two possibilities).
 			 */
 			if ((modesense_handlers[i].subpage & ~subpage) == 0) {
-				ret = modesense_handlers[i].emulate(dev, pc, &buf[length]);
+				ret = modesense_handlers[i].emulate(cmd, pc, &buf[length]);
 				if (!ten && length + ret >= 255)
 					break;
 				length += ret;
@@ -1063,7 +1110,7 @@ static sense_reason_t spc_emulate_modesense(struct se_cmd *cmd)
 	for (i = 0; i < ARRAY_SIZE(modesense_handlers); ++i)
 		if (modesense_handlers[i].page == page &&
 		    modesense_handlers[i].subpage == subpage) {
-			length += modesense_handlers[i].emulate(dev, pc, &buf[length]);
+			length += modesense_handlers[i].emulate(cmd, pc, &buf[length]);
 			goto set_length;
 		}
 
@@ -1089,13 +1136,12 @@ set_length:
 		transport_kunmap_data_sg(cmd);
 	}
 
-	target_complete_cmd(cmd, GOOD);
+	target_complete_cmd_with_length(cmd, SAM_STAT_GOOD, length);
 	return 0;
 }
 
 static sense_reason_t spc_emulate_modeselect(struct se_cmd *cmd)
 {
-	struct se_device *dev = cmd->se_dev;
 	char *cdb = cmd->t_task_cdb;
 	bool ten = cdb[0] == MODE_SELECT_10;
 	int off = ten ? 8 : 4;
@@ -1104,11 +1150,11 @@ static sense_reason_t spc_emulate_modeselect(struct se_cmd *cmd)
 	unsigned char *buf;
 	unsigned char tbuf[SE_MODE_PAGE_BUF];
 	int length;
-	int ret = 0;
+	sense_reason_t ret = 0;
 	int i;
 
 	if (!cmd->data_length) {
-		target_complete_cmd(cmd, GOOD);
+		target_complete_cmd(cmd, SAM_STAT_GOOD);
 		return 0;
 	}
 
@@ -1131,7 +1177,7 @@ static sense_reason_t spc_emulate_modeselect(struct se_cmd *cmd)
 		if (modesense_handlers[i].page == page &&
 		    modesense_handlers[i].subpage == subpage) {
 			memset(tbuf, 0, SE_MODE_PAGE_BUF);
-			length = modesense_handlers[i].emulate(dev, 0, tbuf);
+			length = modesense_handlers[i].emulate(cmd, 0, tbuf);
 			goto check_contents;
 		}
 
@@ -1151,7 +1197,7 @@ out:
 	transport_kunmap_data_sg(cmd);
 
 	if (!ret)
-		target_complete_cmd(cmd, GOOD);
+		target_complete_cmd(cmd, SAM_STAT_GOOD);
 	return ret;
 }
 
@@ -1161,6 +1207,7 @@ static sense_reason_t spc_emulate_request_sense(struct se_cmd *cmd)
 	unsigned char *rbuf;
 	u8 ua_asc = 0, ua_ascq = 0;
 	unsigned char buf[SE_SENSE_BUF];
+	bool desc_format = target_sense_desc_format(cmd->se_dev);
 
 	memset(buf, 0, SE_SENSE_BUF);
 
@@ -1174,37 +1221,16 @@ static sense_reason_t spc_emulate_request_sense(struct se_cmd *cmd)
 	if (!rbuf)
 		return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 
-	if (!core_scsi3_ua_clear_for_request_sense(cmd, &ua_asc, &ua_ascq)) {
-		/*
-		 * CURRENT ERROR, UNIT ATTENTION
-		 */
-		buf[0] = 0x70;
-		buf[SPC_SENSE_KEY_OFFSET] = UNIT_ATTENTION;
-
-		/*
-		 * The Additional Sense Code (ASC) from the UNIT ATTENTION
-		 */
-		buf[SPC_ASC_KEY_OFFSET] = ua_asc;
-		buf[SPC_ASCQ_KEY_OFFSET] = ua_ascq;
-		buf[7] = 0x0A;
-	} else {
-		/*
-		 * CURRENT ERROR, NO SENSE
-		 */
-		buf[0] = 0x70;
-		buf[SPC_SENSE_KEY_OFFSET] = NO_SENSE;
-
-		/*
-		 * NO ADDITIONAL SENSE INFORMATION
-		 */
-		buf[SPC_ASC_KEY_OFFSET] = 0x00;
-		buf[7] = 0x0A;
-	}
+	if (!core_scsi3_ua_clear_for_request_sense(cmd, &ua_asc, &ua_ascq))
+		scsi_build_sense_buffer(desc_format, buf, UNIT_ATTENTION,
+					ua_asc, ua_ascq);
+	else
+		scsi_build_sense_buffer(desc_format, buf, NO_SENSE, 0x0, 0x0);
 
 	memcpy(rbuf, buf, min_t(u32, sizeof(buf), cmd->data_length));
 	transport_kunmap_data_sg(cmd);
 
-	target_complete_cmd(cmd, GOOD);
+	target_complete_cmd(cmd, SAM_STAT_GOOD);
 	return 0;
 }
 
@@ -1212,17 +1238,14 @@ sense_reason_t spc_emulate_report_luns(struct se_cmd *cmd)
 {
 	struct se_dev_entry *deve;
 	struct se_session *sess = cmd->se_sess;
+	struct se_node_acl *nacl;
+	struct scsi_lun slun;
 	unsigned char *buf;
-	u32 lun_count = 0, offset = 8, i;
-
-	if (cmd->data_length < 16) {
-		pr_warn("REPORT LUNS allocation length %u too small\n",
-			cmd->data_length);
-		return TCM_INVALID_CDB_FIELD;
-	}
+	u32 lun_count = 0, offset = 8;
+	__be32 len;
 
 	buf = transport_kmap_data_sg(cmd);
-	if (!buf)
+	if (cmd->data_length && !buf)
 		return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 
 	/*
@@ -1230,43 +1253,51 @@ sense_reason_t spc_emulate_report_luns(struct se_cmd *cmd)
 	 * coming via a target_core_mod PASSTHROUGH op, and not through
 	 * a $FABRIC_MOD.  In that case, report LUN=0 only.
 	 */
-	if (!sess) {
-		int_to_scsilun(0, (struct scsi_lun *)&buf[offset]);
-		lun_count = 1;
+	if (!sess)
 		goto done;
-	}
 
-	spin_lock_irq(&sess->se_node_acl->device_list_lock);
-	for (i = 0; i < TRANSPORT_MAX_LUNS_PER_TPG; i++) {
-		deve = sess->se_node_acl->device_list[i];
-		if (!(deve->lun_flags & TRANSPORT_LUNFLAGS_INITIATOR_ACCESS))
-			continue;
+	nacl = sess->se_node_acl;
+
+	rcu_read_lock();
+	hlist_for_each_entry_rcu(deve, &nacl->lun_entry_hlist, link) {
 		/*
 		 * We determine the correct LUN LIST LENGTH even once we
 		 * have reached the initial allocation length.
 		 * See SPC2-R20 7.19.
 		 */
 		lun_count++;
-		if ((offset + 8) > cmd->data_length)
+		if (offset >= cmd->data_length)
 			continue;
 
-		int_to_scsilun(deve->mapped_lun, (struct scsi_lun *)&buf[offset]);
+		int_to_scsilun(deve->mapped_lun, &slun);
+		memcpy(buf + offset, &slun,
+		       min(8u, cmd->data_length - offset));
 		offset += 8;
 	}
-	spin_unlock_irq(&sess->se_node_acl->device_list_lock);
+	rcu_read_unlock();
 
 	/*
 	 * See SPC3 r07, page 159.
 	 */
 done:
-	lun_count *= 8;
-	buf[0] = ((lun_count >> 24) & 0xff);
-	buf[1] = ((lun_count >> 16) & 0xff);
-	buf[2] = ((lun_count >> 8) & 0xff);
-	buf[3] = (lun_count & 0xff);
-	transport_kunmap_data_sg(cmd);
+	/*
+	 * If no LUNs are accessible, report virtual LUN 0.
+	 */
+	if (lun_count == 0) {
+		int_to_scsilun(0, &slun);
+		if (cmd->data_length > 8)
+			memcpy(buf + offset, &slun,
+			       min(8u, cmd->data_length - offset));
+		lun_count = 1;
+	}
 
-	target_complete_cmd(cmd, GOOD);
+	if (buf) {
+		len = cpu_to_be32(lun_count * 8);
+		memcpy(buf, &len, min_t(int, sizeof len, cmd->data_length));
+		transport_kunmap_data_sg(cmd);
+	}
+
+	target_complete_cmd_with_length(cmd, SAM_STAT_GOOD, 8 + lun_count * 8);
 	return 0;
 }
 EXPORT_SYMBOL(spc_emulate_report_luns);
@@ -1274,8 +1305,959 @@ EXPORT_SYMBOL(spc_emulate_report_luns);
 static sense_reason_t
 spc_emulate_testunitready(struct se_cmd *cmd)
 {
-	target_complete_cmd(cmd, GOOD);
+	target_complete_cmd(cmd, SAM_STAT_GOOD);
 	return 0;
+}
+
+static void set_dpofua_usage_bits(u8 *usage_bits, struct se_device *dev)
+{
+	if (!target_check_fua(dev))
+		usage_bits[1] &= ~0x18;
+	else
+		usage_bits[1] |= 0x18;
+}
+
+static void set_dpofua_usage_bits32(u8 *usage_bits, struct se_device *dev)
+{
+	if (!target_check_fua(dev))
+		usage_bits[10] &= ~0x18;
+	else
+		usage_bits[10] |= 0x18;
+}
+
+static struct target_opcode_descriptor tcm_opcode_read6 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = READ_6,
+	.cdb_size = 6,
+	.usage_bits = {READ_6, 0x1f, 0xff, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_read10 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = READ_10,
+	.cdb_size = 10,
+	.usage_bits = {READ_10, 0xf8, 0xff, 0xff,
+		       0xff, 0xff, SCSI_GROUP_NUMBER_MASK, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.update_usage_bits = set_dpofua_usage_bits,
+};
+
+static struct target_opcode_descriptor tcm_opcode_read12 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = READ_12,
+	.cdb_size = 12,
+	.usage_bits = {READ_12, 0xf8, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, SCSI_GROUP_NUMBER_MASK, SCSI_CONTROL_MASK},
+	.update_usage_bits = set_dpofua_usage_bits,
+};
+
+static struct target_opcode_descriptor tcm_opcode_read16 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = READ_16,
+	.cdb_size = 16,
+	.usage_bits = {READ_16, 0xf8, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, SCSI_GROUP_NUMBER_MASK, SCSI_CONTROL_MASK},
+	.update_usage_bits = set_dpofua_usage_bits,
+};
+
+static struct target_opcode_descriptor tcm_opcode_write6 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = WRITE_6,
+	.cdb_size = 6,
+	.usage_bits = {WRITE_6, 0x1f, 0xff, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_write10 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = WRITE_10,
+	.cdb_size = 10,
+	.usage_bits = {WRITE_10, 0xf8, 0xff, 0xff,
+		       0xff, 0xff, SCSI_GROUP_NUMBER_MASK, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.update_usage_bits = set_dpofua_usage_bits,
+};
+
+static struct target_opcode_descriptor tcm_opcode_write_verify10 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = WRITE_VERIFY,
+	.cdb_size = 10,
+	.usage_bits = {WRITE_VERIFY, 0xf0, 0xff, 0xff,
+		       0xff, 0xff, SCSI_GROUP_NUMBER_MASK, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.update_usage_bits = set_dpofua_usage_bits,
+};
+
+static struct target_opcode_descriptor tcm_opcode_write12 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = WRITE_12,
+	.cdb_size = 12,
+	.usage_bits = {WRITE_12, 0xf8, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, SCSI_GROUP_NUMBER_MASK, SCSI_CONTROL_MASK},
+	.update_usage_bits = set_dpofua_usage_bits,
+};
+
+static struct target_opcode_descriptor tcm_opcode_write16 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = WRITE_16,
+	.cdb_size = 16,
+	.usage_bits = {WRITE_16, 0xf8, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, SCSI_GROUP_NUMBER_MASK, SCSI_CONTROL_MASK},
+	.update_usage_bits = set_dpofua_usage_bits,
+};
+
+static struct target_opcode_descriptor tcm_opcode_write_verify16 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = WRITE_VERIFY_16,
+	.cdb_size = 16,
+	.usage_bits = {WRITE_VERIFY_16, 0xf0, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, SCSI_GROUP_NUMBER_MASK, SCSI_CONTROL_MASK},
+	.update_usage_bits = set_dpofua_usage_bits,
+};
+
+static bool tcm_is_ws_enabled(struct target_opcode_descriptor *descr,
+			      struct se_cmd *cmd)
+{
+	struct exec_cmd_ops *ops = cmd->protocol_data;
+	struct se_device *dev = cmd->se_dev;
+
+	return (dev->dev_attrib.emulate_tpws && !!ops->execute_unmap) ||
+	       !!ops->execute_write_same;
+}
+
+static struct target_opcode_descriptor tcm_opcode_write_same32 = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = VARIABLE_LENGTH_CMD,
+	.service_action = WRITE_SAME_32,
+	.cdb_size = 32,
+	.usage_bits = {VARIABLE_LENGTH_CMD, SCSI_CONTROL_MASK, 0x00, 0x00,
+		       0x00, 0x00, SCSI_GROUP_NUMBER_MASK, 0x18,
+		       0x00, WRITE_SAME_32, 0xe8, 0x00,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0x00, 0x00, 0x00, 0x00,
+		       0x00, 0x00, 0x00, 0x00,
+		       0xff, 0xff, 0xff, 0xff},
+	.enabled = tcm_is_ws_enabled,
+	.update_usage_bits = set_dpofua_usage_bits32,
+};
+
+static bool tcm_is_caw_enabled(struct target_opcode_descriptor *descr,
+			       struct se_cmd *cmd)
+{
+	struct se_device *dev = cmd->se_dev;
+
+	return dev->dev_attrib.emulate_caw;
+}
+
+static struct target_opcode_descriptor tcm_opcode_compare_write = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = COMPARE_AND_WRITE,
+	.cdb_size = 16,
+	.usage_bits = {COMPARE_AND_WRITE, 0x18, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, 0x00, 0x00,
+		       0x00, 0xff, SCSI_GROUP_NUMBER_MASK, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_caw_enabled,
+	.update_usage_bits = set_dpofua_usage_bits,
+};
+
+static struct target_opcode_descriptor tcm_opcode_read_capacity = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = READ_CAPACITY,
+	.cdb_size = 10,
+	.usage_bits = {READ_CAPACITY, 0x00, 0xff, 0xff,
+		       0xff, 0xff, 0x00, 0x00,
+		       0x01, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_read_capacity16 = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = SERVICE_ACTION_IN_16,
+	.service_action = SAI_READ_CAPACITY_16,
+	.cdb_size = 16,
+	.usage_bits = {SERVICE_ACTION_IN_16, SAI_READ_CAPACITY_16, 0x00, 0x00,
+		       0x00, 0x00, 0x00, 0x00,
+		       0x00, 0x00, 0xff, 0xff,
+		       0xff, 0xff, 0x00, SCSI_CONTROL_MASK},
+};
+
+static bool tcm_is_rep_ref_enabled(struct target_opcode_descriptor *descr,
+				   struct se_cmd *cmd)
+{
+	struct se_device *dev = cmd->se_dev;
+
+	spin_lock(&dev->t10_alua.lba_map_lock);
+	if (list_empty(&dev->t10_alua.lba_map_list)) {
+		spin_unlock(&dev->t10_alua.lba_map_lock);
+		return false;
+	}
+	spin_unlock(&dev->t10_alua.lba_map_lock);
+	return true;
+}
+
+static struct target_opcode_descriptor tcm_opcode_read_report_refferals = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = SERVICE_ACTION_IN_16,
+	.service_action = SAI_REPORT_REFERRALS,
+	.cdb_size = 16,
+	.usage_bits = {SERVICE_ACTION_IN_16, SAI_REPORT_REFERRALS, 0x00, 0x00,
+		       0x00, 0x00, 0x00, 0x00,
+		       0x00, 0x00, 0xff, 0xff,
+		       0xff, 0xff, 0x00, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_rep_ref_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_sync_cache = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = SYNCHRONIZE_CACHE,
+	.cdb_size = 10,
+	.usage_bits = {SYNCHRONIZE_CACHE, 0x02, 0xff, 0xff,
+		       0xff, 0xff, SCSI_GROUP_NUMBER_MASK, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_sync_cache16 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = SYNCHRONIZE_CACHE_16,
+	.cdb_size = 16,
+	.usage_bits = {SYNCHRONIZE_CACHE_16, 0x02, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, SCSI_GROUP_NUMBER_MASK, SCSI_CONTROL_MASK},
+};
+
+static bool tcm_is_unmap_enabled(struct target_opcode_descriptor *descr,
+				 struct se_cmd *cmd)
+{
+	struct exec_cmd_ops *ops = cmd->protocol_data;
+	struct se_device *dev = cmd->se_dev;
+
+	return ops->execute_unmap && dev->dev_attrib.emulate_tpu;
+}
+
+static struct target_opcode_descriptor tcm_opcode_unmap = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = UNMAP,
+	.cdb_size = 10,
+	.usage_bits = {UNMAP, 0x00, 0x00, 0x00,
+		       0x00, 0x00, SCSI_GROUP_NUMBER_MASK, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_unmap_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_write_same = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = WRITE_SAME,
+	.cdb_size = 10,
+	.usage_bits = {WRITE_SAME, 0xe8, 0xff, 0xff,
+		       0xff, 0xff, SCSI_GROUP_NUMBER_MASK, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_ws_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_write_same16 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = WRITE_SAME_16,
+	.cdb_size = 16,
+	.usage_bits = {WRITE_SAME_16, 0xe8, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, SCSI_GROUP_NUMBER_MASK, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_ws_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_verify = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = VERIFY,
+	.cdb_size = 10,
+	.usage_bits = {VERIFY, 0x00, 0xff, 0xff,
+		       0xff, 0xff, SCSI_GROUP_NUMBER_MASK, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_verify16 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = VERIFY_16,
+	.cdb_size = 16,
+	.usage_bits = {VERIFY_16, 0x00, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, SCSI_GROUP_NUMBER_MASK, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_start_stop = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = START_STOP,
+	.cdb_size = 6,
+	.usage_bits = {START_STOP, 0x01, 0x00, 0x00,
+		       0x01, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_mode_select = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = MODE_SELECT,
+	.cdb_size = 6,
+	.usage_bits = {MODE_SELECT, 0x10, 0x00, 0x00,
+		       0xff, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_mode_select10 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = MODE_SELECT_10,
+	.cdb_size = 10,
+	.usage_bits = {MODE_SELECT_10, 0x10, 0x00, 0x00,
+		       0x00, 0x00, 0x00, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_mode_sense = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = MODE_SENSE,
+	.cdb_size = 6,
+	.usage_bits = {MODE_SENSE, 0x08, 0xff, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_mode_sense10 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = MODE_SENSE_10,
+	.cdb_size = 10,
+	.usage_bits = {MODE_SENSE_10, 0x18, 0xff, 0xff,
+		       0x00, 0x00, 0x00, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_pri_read_keys = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = PERSISTENT_RESERVE_IN,
+	.service_action = PRI_READ_KEYS,
+	.cdb_size = 10,
+	.usage_bits = {PERSISTENT_RESERVE_IN, PRI_READ_KEYS, 0x00, 0x00,
+		       0x00, 0x00, 0x00, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_pri_read_resrv = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = PERSISTENT_RESERVE_IN,
+	.service_action = PRI_READ_RESERVATION,
+	.cdb_size = 10,
+	.usage_bits = {PERSISTENT_RESERVE_IN, PRI_READ_RESERVATION, 0x00, 0x00,
+		       0x00, 0x00, 0x00, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+};
+
+static bool tcm_is_pr_enabled(struct target_opcode_descriptor *descr,
+			      struct se_cmd *cmd)
+{
+	struct se_device *dev = cmd->se_dev;
+
+	if (!dev->dev_attrib.emulate_pr)
+		return false;
+
+	if (!(dev->transport_flags & TRANSPORT_FLAG_PASSTHROUGH_PGR))
+		return true;
+
+	switch (descr->opcode) {
+	case RESERVE:
+	case RESERVE_10:
+	case RELEASE:
+	case RELEASE_10:
+		/*
+		 * The pr_ops which are used by the backend modules don't
+		 * support these commands.
+		 */
+		return false;
+	case PERSISTENT_RESERVE_OUT:
+		switch (descr->service_action) {
+		case PRO_REGISTER_AND_MOVE:
+		case PRO_REPLACE_LOST_RESERVATION:
+			/*
+			 * The backend modules don't have access to ports and
+			 * I_T nexuses so they can't handle these type of
+			 * requests.
+			 */
+			return false;
+		}
+		break;
+	case PERSISTENT_RESERVE_IN:
+		if (descr->service_action == PRI_READ_FULL_STATUS)
+			return false;
+		break;
+	}
+
+	return true;
+}
+
+static struct target_opcode_descriptor tcm_opcode_pri_read_caps = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = PERSISTENT_RESERVE_IN,
+	.service_action = PRI_REPORT_CAPABILITIES,
+	.cdb_size = 10,
+	.usage_bits = {PERSISTENT_RESERVE_IN, PRI_REPORT_CAPABILITIES, 0x00, 0x00,
+		       0x00, 0x00, 0x00, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_pr_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_pri_read_full_status = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = PERSISTENT_RESERVE_IN,
+	.service_action = PRI_READ_FULL_STATUS,
+	.cdb_size = 10,
+	.usage_bits = {PERSISTENT_RESERVE_IN, PRI_READ_FULL_STATUS, 0x00, 0x00,
+		       0x00, 0x00, 0x00, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_pr_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_pro_register = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = PERSISTENT_RESERVE_OUT,
+	.service_action = PRO_REGISTER,
+	.cdb_size = 10,
+	.usage_bits = {PERSISTENT_RESERVE_OUT, PRO_REGISTER, 0xff, 0x00,
+		       0x00, 0xff, 0xff, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_pr_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_pro_reserve = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = PERSISTENT_RESERVE_OUT,
+	.service_action = PRO_RESERVE,
+	.cdb_size = 10,
+	.usage_bits = {PERSISTENT_RESERVE_OUT, PRO_RESERVE, 0xff, 0x00,
+		       0x00, 0xff, 0xff, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_pr_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_pro_release = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = PERSISTENT_RESERVE_OUT,
+	.service_action = PRO_RELEASE,
+	.cdb_size = 10,
+	.usage_bits = {PERSISTENT_RESERVE_OUT, PRO_RELEASE, 0xff, 0x00,
+		       0x00, 0xff, 0xff, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_pr_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_pro_clear = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = PERSISTENT_RESERVE_OUT,
+	.service_action = PRO_CLEAR,
+	.cdb_size = 10,
+	.usage_bits = {PERSISTENT_RESERVE_OUT, PRO_CLEAR, 0xff, 0x00,
+		       0x00, 0xff, 0xff, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_pr_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_pro_preempt = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = PERSISTENT_RESERVE_OUT,
+	.service_action = PRO_PREEMPT,
+	.cdb_size = 10,
+	.usage_bits = {PERSISTENT_RESERVE_OUT, PRO_PREEMPT, 0xff, 0x00,
+		       0x00, 0xff, 0xff, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_pr_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_pro_preempt_abort = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = PERSISTENT_RESERVE_OUT,
+	.service_action = PRO_PREEMPT_AND_ABORT,
+	.cdb_size = 10,
+	.usage_bits = {PERSISTENT_RESERVE_OUT, PRO_PREEMPT_AND_ABORT, 0xff, 0x00,
+		       0x00, 0xff, 0xff, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_pr_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_pro_reg_ign_exist = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = PERSISTENT_RESERVE_OUT,
+	.service_action = PRO_REGISTER_AND_IGNORE_EXISTING_KEY,
+	.cdb_size = 10,
+	.usage_bits = {
+		PERSISTENT_RESERVE_OUT, PRO_REGISTER_AND_IGNORE_EXISTING_KEY,
+		0xff, 0x00,
+		0x00, 0xff, 0xff, 0xff,
+		0xff, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_pr_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_pro_register_move = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = PERSISTENT_RESERVE_OUT,
+	.service_action = PRO_REGISTER_AND_MOVE,
+	.cdb_size = 10,
+	.usage_bits = {PERSISTENT_RESERVE_OUT, PRO_REGISTER_AND_MOVE, 0xff, 0x00,
+		       0x00, 0xff, 0xff, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_pr_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_release = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = RELEASE,
+	.cdb_size = 6,
+	.usage_bits = {RELEASE, 0x00, 0x00, 0x00,
+		       0x00, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_pr_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_release10 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = RELEASE_10,
+	.cdb_size = 10,
+	.usage_bits = {RELEASE_10, 0x00, 0x00, 0x00,
+		       0x00, 0x00, 0x00, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_pr_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_reserve = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = RESERVE,
+	.cdb_size = 6,
+	.usage_bits = {RESERVE, 0x00, 0x00, 0x00,
+		       0x00, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_pr_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_reserve10 = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = RESERVE_10,
+	.cdb_size = 10,
+	.usage_bits = {RESERVE_10, 0x00, 0x00, 0x00,
+		       0x00, 0x00, 0x00, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_pr_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_request_sense = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = REQUEST_SENSE,
+	.cdb_size = 6,
+	.usage_bits = {REQUEST_SENSE, 0x00, 0x00, 0x00,
+		       0xff, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_inquiry = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = INQUIRY,
+	.cdb_size = 6,
+	.usage_bits = {INQUIRY, 0x01, 0xff, 0xff,
+		       0xff, SCSI_CONTROL_MASK},
+};
+
+static bool tcm_is_3pc_enabled(struct target_opcode_descriptor *descr,
+			       struct se_cmd *cmd)
+{
+	struct se_device *dev = cmd->se_dev;
+
+	return dev->dev_attrib.emulate_3pc;
+}
+
+static struct target_opcode_descriptor tcm_opcode_extended_copy_lid1 = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = EXTENDED_COPY,
+	.cdb_size = 16,
+	.usage_bits = {EXTENDED_COPY, 0x00, 0x00, 0x00,
+		       0x00, 0x00, 0x00, 0x00,
+		       0x00, 0x00, 0xff, 0xff,
+		       0xff, 0xff, 0x00, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_3pc_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_rcv_copy_res_op_params = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = RECEIVE_COPY_RESULTS,
+	.service_action = RCR_SA_OPERATING_PARAMETERS,
+	.cdb_size = 16,
+	.usage_bits = {RECEIVE_COPY_RESULTS, RCR_SA_OPERATING_PARAMETERS,
+		       0x00, 0x00,
+		       0x00, 0x00, 0x00, 0x00,
+		       0x00, 0x00, 0xff, 0xff,
+		       0xff, 0xff, 0x00, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_3pc_enabled,
+};
+
+static struct target_opcode_descriptor tcm_opcode_report_luns = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = REPORT_LUNS,
+	.cdb_size = 12,
+	.usage_bits = {REPORT_LUNS, 0x00, 0xff, 0x00,
+		       0x00, 0x00, 0xff, 0xff,
+		       0xff, 0xff, 0x00, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_test_unit_ready = {
+	.support = SCSI_SUPPORT_FULL,
+	.opcode = TEST_UNIT_READY,
+	.cdb_size = 6,
+	.usage_bits = {TEST_UNIT_READY, 0x00, 0x00, 0x00,
+		       0x00, SCSI_CONTROL_MASK},
+};
+
+static struct target_opcode_descriptor tcm_opcode_report_target_pgs = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = MAINTENANCE_IN,
+	.service_action = MI_REPORT_TARGET_PGS,
+	.cdb_size = 12,
+	.usage_bits = {MAINTENANCE_IN, 0xE0 | MI_REPORT_TARGET_PGS, 0x00, 0x00,
+		       0x00, 0x00, 0xff, 0xff,
+		       0xff, 0xff, 0x00, SCSI_CONTROL_MASK},
+};
+
+static bool spc_rsoc_enabled(struct target_opcode_descriptor *descr,
+			     struct se_cmd *cmd)
+{
+	struct se_device *dev = cmd->se_dev;
+
+	return dev->dev_attrib.emulate_rsoc;
+}
+
+static struct target_opcode_descriptor tcm_opcode_report_supp_opcodes = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = MAINTENANCE_IN,
+	.service_action = MI_REPORT_SUPPORTED_OPERATION_CODES,
+	.cdb_size = 12,
+	.usage_bits = {MAINTENANCE_IN, MI_REPORT_SUPPORTED_OPERATION_CODES,
+		       0x87, 0xff,
+		       0xff, 0xff, 0xff, 0xff,
+		       0xff, 0xff, 0x00, SCSI_CONTROL_MASK},
+	.enabled = spc_rsoc_enabled,
+};
+
+static bool tcm_is_set_tpg_enabled(struct target_opcode_descriptor *descr,
+				   struct se_cmd *cmd)
+{
+	struct t10_alua_tg_pt_gp *l_tg_pt_gp;
+	struct se_lun *l_lun = cmd->se_lun;
+
+	rcu_read_lock();
+	l_tg_pt_gp = rcu_dereference(l_lun->lun_tg_pt_gp);
+	if (!l_tg_pt_gp) {
+		rcu_read_unlock();
+		return false;
+	}
+	if (!(l_tg_pt_gp->tg_pt_gp_alua_access_type & TPGS_EXPLICIT_ALUA)) {
+		rcu_read_unlock();
+		return false;
+	}
+	rcu_read_unlock();
+
+	return true;
+}
+
+static struct target_opcode_descriptor tcm_opcode_set_tpg = {
+	.support = SCSI_SUPPORT_FULL,
+	.serv_action_valid = 1,
+	.opcode = MAINTENANCE_OUT,
+	.service_action = MO_SET_TARGET_PGS,
+	.cdb_size = 12,
+	.usage_bits = {MAINTENANCE_OUT, MO_SET_TARGET_PGS, 0x00, 0x00,
+		       0x00, 0x00, 0xff, 0xff,
+		       0xff, 0xff, 0x00, SCSI_CONTROL_MASK},
+	.enabled = tcm_is_set_tpg_enabled,
+};
+
+static struct target_opcode_descriptor *tcm_supported_opcodes[] = {
+	&tcm_opcode_read6,
+	&tcm_opcode_read10,
+	&tcm_opcode_read12,
+	&tcm_opcode_read16,
+	&tcm_opcode_write6,
+	&tcm_opcode_write10,
+	&tcm_opcode_write_verify10,
+	&tcm_opcode_write12,
+	&tcm_opcode_write16,
+	&tcm_opcode_write_verify16,
+	&tcm_opcode_write_same32,
+	&tcm_opcode_compare_write,
+	&tcm_opcode_read_capacity,
+	&tcm_opcode_read_capacity16,
+	&tcm_opcode_read_report_refferals,
+	&tcm_opcode_sync_cache,
+	&tcm_opcode_sync_cache16,
+	&tcm_opcode_unmap,
+	&tcm_opcode_write_same,
+	&tcm_opcode_write_same16,
+	&tcm_opcode_verify,
+	&tcm_opcode_verify16,
+	&tcm_opcode_start_stop,
+	&tcm_opcode_mode_select,
+	&tcm_opcode_mode_select10,
+	&tcm_opcode_mode_sense,
+	&tcm_opcode_mode_sense10,
+	&tcm_opcode_pri_read_keys,
+	&tcm_opcode_pri_read_resrv,
+	&tcm_opcode_pri_read_caps,
+	&tcm_opcode_pri_read_full_status,
+	&tcm_opcode_pro_register,
+	&tcm_opcode_pro_reserve,
+	&tcm_opcode_pro_release,
+	&tcm_opcode_pro_clear,
+	&tcm_opcode_pro_preempt,
+	&tcm_opcode_pro_preempt_abort,
+	&tcm_opcode_pro_reg_ign_exist,
+	&tcm_opcode_pro_register_move,
+	&tcm_opcode_release,
+	&tcm_opcode_release10,
+	&tcm_opcode_reserve,
+	&tcm_opcode_reserve10,
+	&tcm_opcode_request_sense,
+	&tcm_opcode_inquiry,
+	&tcm_opcode_extended_copy_lid1,
+	&tcm_opcode_rcv_copy_res_op_params,
+	&tcm_opcode_report_luns,
+	&tcm_opcode_test_unit_ready,
+	&tcm_opcode_report_target_pgs,
+	&tcm_opcode_report_supp_opcodes,
+	&tcm_opcode_set_tpg,
+};
+
+static int
+spc_rsoc_encode_command_timeouts_descriptor(unsigned char *buf, u8 ctdp,
+				struct target_opcode_descriptor *descr)
+{
+	if (!ctdp)
+		return 0;
+
+	put_unaligned_be16(0xa, buf);
+	buf[3] = descr->specific_timeout;
+	put_unaligned_be32(descr->nominal_timeout, &buf[4]);
+	put_unaligned_be32(descr->recommended_timeout, &buf[8]);
+
+	return 12;
+}
+
+static int
+spc_rsoc_encode_command_descriptor(unsigned char *buf, u8 ctdp,
+				   struct target_opcode_descriptor *descr)
+{
+	int td_size = 0;
+
+	buf[0] = descr->opcode;
+
+	put_unaligned_be16(descr->service_action, &buf[2]);
+
+	buf[5] = (ctdp << 1) | descr->serv_action_valid;
+	put_unaligned_be16(descr->cdb_size, &buf[6]);
+
+	td_size = spc_rsoc_encode_command_timeouts_descriptor(&buf[8], ctdp,
+							      descr);
+
+	return 8 + td_size;
+}
+
+static int
+spc_rsoc_encode_one_command_descriptor(unsigned char *buf, u8 ctdp,
+				       struct target_opcode_descriptor *descr,
+				       struct se_device *dev)
+{
+	int td_size = 0;
+
+	if (!descr) {
+		buf[1] = (ctdp << 7) | SCSI_SUPPORT_NOT_SUPPORTED;
+		return 2;
+	}
+
+	buf[1] = (ctdp << 7) | SCSI_SUPPORT_FULL;
+	put_unaligned_be16(descr->cdb_size, &buf[2]);
+	memcpy(&buf[4], descr->usage_bits, descr->cdb_size);
+	if (descr->update_usage_bits)
+		descr->update_usage_bits(&buf[4], dev);
+
+	td_size = spc_rsoc_encode_command_timeouts_descriptor(
+			&buf[4 + descr->cdb_size], ctdp, descr);
+
+	return 4 + descr->cdb_size + td_size;
+}
+
+static sense_reason_t
+spc_rsoc_get_descr(struct se_cmd *cmd, struct target_opcode_descriptor **opcode)
+{
+	struct target_opcode_descriptor *descr;
+	struct se_session *sess = cmd->se_sess;
+	unsigned char *cdb = cmd->t_task_cdb;
+	u8 opts = cdb[2] & 0x3;
+	u8 requested_opcode;
+	u16 requested_sa;
+	int i;
+
+	requested_opcode = cdb[3];
+	requested_sa = ((u16)cdb[4]) << 8 | cdb[5];
+	*opcode = NULL;
+
+	if (opts > 3) {
+		pr_debug("TARGET_CORE[%s]: Invalid REPORT SUPPORTED OPERATION CODES"
+			" with unsupported REPORTING OPTIONS %#x for 0x%08llx from %s\n",
+			cmd->se_tfo->fabric_name, opts,
+			cmd->se_lun->unpacked_lun,
+			sess->se_node_acl->initiatorname);
+		return TCM_INVALID_CDB_FIELD;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(tcm_supported_opcodes); i++) {
+		descr = tcm_supported_opcodes[i];
+		if (descr->opcode != requested_opcode)
+			continue;
+
+		switch (opts) {
+		case 0x1:
+			/*
+			 * If the REQUESTED OPERATION CODE field specifies an
+			 * operation code for which the device server implements
+			 * service actions, then the device server shall
+			 * terminate the command with CHECK CONDITION status,
+			 * with the sense key set to ILLEGAL REQUEST, and the
+			 * additional sense code set to INVALID FIELD IN CDB
+			 */
+			if (descr->serv_action_valid)
+				return TCM_INVALID_CDB_FIELD;
+
+			if (!descr->enabled || descr->enabled(descr, cmd))
+				*opcode = descr;
+			break;
+		case 0x2:
+			/*
+			 * If the REQUESTED OPERATION CODE field specifies an
+			 * operation code for which the device server does not
+			 * implement service actions, then the device server
+			 * shall terminate the command with CHECK CONDITION
+			 * status, with the sense key set to ILLEGAL REQUEST,
+			 * and the additional sense code set to INVALID FIELD IN CDB.
+			 */
+			if (descr->serv_action_valid &&
+			    descr->service_action == requested_sa) {
+				if (!descr->enabled || descr->enabled(descr,
+								      cmd))
+					*opcode = descr;
+			} else if (!descr->serv_action_valid)
+				return TCM_INVALID_CDB_FIELD;
+			break;
+		case 0x3:
+			/*
+			 * The command support data for the operation code and
+			 * service action a specified in the REQUESTED OPERATION
+			 * CODE field and REQUESTED SERVICE ACTION field shall
+			 * be returned in the one_command parameter data format.
+			 */
+			if (descr->service_action == requested_sa)
+				if (!descr->enabled || descr->enabled(descr,
+								      cmd))
+					*opcode = descr;
+			break;
+		}
+	}
+
+	return 0;
+}
+
+static sense_reason_t
+spc_emulate_report_supp_op_codes(struct se_cmd *cmd)
+{
+	int descr_num = ARRAY_SIZE(tcm_supported_opcodes);
+	struct target_opcode_descriptor *descr = NULL;
+	unsigned char *cdb = cmd->t_task_cdb;
+	u8 rctd = (cdb[2] >> 7) & 0x1;
+	unsigned char *buf = NULL;
+	int response_length = 0;
+	u8 opts = cdb[2] & 0x3;
+	unsigned char *rbuf;
+	sense_reason_t ret = 0;
+	int i;
+
+	if (!cmd->se_dev->dev_attrib.emulate_rsoc)
+		return TCM_UNSUPPORTED_SCSI_OPCODE;
+
+	rbuf = transport_kmap_data_sg(cmd);
+	if (cmd->data_length && !rbuf) {
+		ret = TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
+		goto out;
+	}
+
+	if (opts == 0)
+		response_length = 4 + (8 + rctd * 12) * descr_num;
+	else {
+		ret = spc_rsoc_get_descr(cmd, &descr);
+		if (ret)
+			goto out;
+
+		if (descr)
+			response_length = 4 + descr->cdb_size + rctd * 12;
+		else
+			response_length = 2;
+	}
+
+	buf = kzalloc(response_length, GFP_KERNEL);
+	if (!buf) {
+		ret = TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
+		goto out;
+	}
+	response_length = 0;
+
+	if (opts == 0) {
+		response_length += 4;
+
+		for (i = 0; i < ARRAY_SIZE(tcm_supported_opcodes); i++) {
+			descr = tcm_supported_opcodes[i];
+			if (descr->enabled && !descr->enabled(descr, cmd))
+				continue;
+
+			response_length += spc_rsoc_encode_command_descriptor(
+					&buf[response_length], rctd, descr);
+		}
+		put_unaligned_be32(response_length - 3, buf);
+	} else {
+		response_length = spc_rsoc_encode_one_command_descriptor(
+				&buf[response_length], rctd, descr,
+				cmd->se_dev);
+	}
+
+	memcpy(rbuf, buf, min_t(u32, response_length, cmd->data_length));
+out:
+	kfree(buf);
+	transport_kunmap_data_sg(cmd);
+
+	if (!ret)
+		target_complete_cmd_with_length(cmd, SAM_STAT_GOOD, response_length);
+	return ret;
 }
 
 sense_reason_t
@@ -1285,12 +2267,30 @@ spc_parse_cdb(struct se_cmd *cmd, unsigned int *size)
 	unsigned char *cdb = cmd->t_task_cdb;
 
 	switch (cdb[0]) {
+	case RESERVE:
+	case RESERVE_10:
+	case RELEASE:
+	case RELEASE_10:
+		if (!dev->dev_attrib.emulate_pr)
+			return TCM_UNSUPPORTED_SCSI_OPCODE;
+
+		if (dev->transport_flags & TRANSPORT_FLAG_PASSTHROUGH_PGR)
+			return TCM_UNSUPPORTED_SCSI_OPCODE;
+		break;
+	case PERSISTENT_RESERVE_IN:
+	case PERSISTENT_RESERVE_OUT:
+		if (!dev->dev_attrib.emulate_pr)
+			return TCM_UNSUPPORTED_SCSI_OPCODE;
+		break;
+	}
+
+	switch (cdb[0]) {
 	case MODE_SELECT:
 		*size = cdb[4];
 		cmd->execute_cmd = spc_emulate_modeselect;
 		break;
 	case MODE_SELECT_10:
-		*size = (cdb[7] << 8) + cdb[8];
+		*size = get_unaligned_be16(&cdb[7]);
 		cmd->execute_cmd = spc_emulate_modeselect;
 		break;
 	case MODE_SENSE:
@@ -1298,25 +2298,25 @@ spc_parse_cdb(struct se_cmd *cmd, unsigned int *size)
 		cmd->execute_cmd = spc_emulate_modesense;
 		break;
 	case MODE_SENSE_10:
-		*size = (cdb[7] << 8) + cdb[8];
+		*size = get_unaligned_be16(&cdb[7]);
 		cmd->execute_cmd = spc_emulate_modesense;
 		break;
 	case LOG_SELECT:
 	case LOG_SENSE:
-		*size = (cdb[7] << 8) + cdb[8];
+		*size = get_unaligned_be16(&cdb[7]);
 		break;
 	case PERSISTENT_RESERVE_IN:
-		*size = (cdb[7] << 8) + cdb[8];
+		*size = get_unaligned_be16(&cdb[7]);
 		cmd->execute_cmd = target_scsi3_emulate_pr_in;
 		break;
 	case PERSISTENT_RESERVE_OUT:
-		*size = (cdb[7] << 8) + cdb[8];
+		*size = get_unaligned_be32(&cdb[5]);
 		cmd->execute_cmd = target_scsi3_emulate_pr_out;
 		break;
 	case RELEASE:
 	case RELEASE_10:
 		if (cdb[0] == RELEASE_10)
-			*size = (cdb[7] << 8) | cdb[8];
+			*size = get_unaligned_be16(&cdb[7]);
 		else
 			*size = cmd->data_length;
 
@@ -1329,7 +2329,7 @@ spc_parse_cdb(struct se_cmd *cmd, unsigned int *size)
 		 * Assume the passthrough or $FABRIC_MOD will tell us about it.
 		 */
 		if (cdb[0] == RESERVE_10)
-			*size = (cdb[7] << 8) | cdb[8];
+			*size = get_unaligned_be16(&cdb[7]);
 		else
 			*size = cmd->data_length;
 
@@ -1340,18 +2340,18 @@ spc_parse_cdb(struct se_cmd *cmd, unsigned int *size)
 		cmd->execute_cmd = spc_emulate_request_sense;
 		break;
 	case INQUIRY:
-		*size = (cdb[3] << 8) + cdb[4];
+		*size = get_unaligned_be16(&cdb[3]);
 
 		/*
 		 * Do implicit HEAD_OF_QUEUE processing for INQUIRY.
 		 * See spc4r17 section 5.3
 		 */
-		cmd->sam_task_attr = MSG_HEAD_TAG;
+		cmd->sam_task_attr = TCM_HEAD_TAG;
 		cmd->execute_cmd = spc_emulate_inquiry;
 		break;
 	case SECURITY_PROTOCOL_IN:
 	case SECURITY_PROTOCOL_OUT:
-		*size = (cdb[6] << 24) | (cdb[7] << 16) | (cdb[8] << 8) | cdb[9];
+		*size = get_unaligned_be32(&cdb[6]);
 		break;
 	case EXTENDED_COPY:
 		*size = get_unaligned_be32(&cdb[10]);
@@ -1363,24 +2363,23 @@ spc_parse_cdb(struct se_cmd *cmd, unsigned int *size)
 		break;
 	case READ_ATTRIBUTE:
 	case WRITE_ATTRIBUTE:
-		*size = (cdb[10] << 24) | (cdb[11] << 16) |
-		       (cdb[12] << 8) | cdb[13];
+		*size = get_unaligned_be32(&cdb[10]);
 		break;
 	case RECEIVE_DIAGNOSTIC:
 	case SEND_DIAGNOSTIC:
-		*size = (cdb[3] << 8) | cdb[4];
+		*size = get_unaligned_be16(&cdb[3]);
 		break;
 	case WRITE_BUFFER:
-		*size = (cdb[6] << 16) + (cdb[7] << 8) + cdb[8];
+		*size = get_unaligned_be24(&cdb[6]);
 		break;
 	case REPORT_LUNS:
 		cmd->execute_cmd = spc_emulate_report_luns;
-		*size = (cdb[6] << 24) | (cdb[7] << 16) | (cdb[8] << 8) | cdb[9];
+		*size = get_unaligned_be32(&cdb[6]);
 		/*
 		 * Do implicit HEAD_OF_QUEUE processing for REPORT_LUNS
 		 * See spc4r17 section 5.3
 		 */
-		cmd->sam_task_attr = MSG_HEAD_TAG;
+		cmd->sam_task_attr = TCM_HEAD_TAG;
 		break;
 	case TEST_UNIT_READY:
 		cmd->execute_cmd = spc_emulate_testunitready;
@@ -1396,6 +2395,10 @@ spc_parse_cdb(struct se_cmd *cmd, unsigned int *size)
 				cmd->execute_cmd =
 					target_emulate_report_target_port_groups;
 			}
+			if ((cdb[1] & 0x1f) ==
+			    MI_REPORT_SUPPORTED_OPERATION_CODES)
+				cmd->execute_cmd =
+					spc_emulate_report_supp_op_codes;
 			*size = get_unaligned_be32(&cdb[6]);
 		} else {
 			/*
@@ -1423,9 +2426,6 @@ spc_parse_cdb(struct se_cmd *cmd, unsigned int *size)
 		}
 		break;
 	default:
-		pr_warn("TARGET_CORE[%s]: Unsupported SCSI Opcode"
-			" 0x%02x, sending CHECK_CONDITION.\n",
-			cmd->se_tfo->get_fabric_name(), cdb[0]);
 		return TCM_UNSUPPORTED_SCSI_OPCODE;
 	}
 

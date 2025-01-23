@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
    lru_cache.c
 
@@ -7,19 +8,6 @@
    Copyright (C) 2003-2008, Philipp Reisner <philipp.reisner@linbit.com>.
    Copyright (C) 2003-2008, Lars Ellenberg <lars.ellenberg@linbit.com>.
 
-   drbd is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 2, or (at your option)
-   any later version.
-
-   drbd is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with drbd; see the file COPYING.  If not, write to
-   the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
 
  */
 
@@ -72,22 +60,12 @@ int lc_try_lock(struct lru_cache *lc)
 	} while (unlikely (val == LC_PARANOIA));
 	/* Spin until no-one is inside a PARANOIA_ENTRY()/RETURN() section. */
 	return 0 == val;
-#if 0
-	/* Alternative approach, spin in case someone enters or leaves a
-	 * PARANOIA_ENTRY()/RETURN() section. */
-	unsigned long old, new, val;
-	do {
-		old = lc->flags & LC_PARANOIA;
-		new = old | LC_LOCKED;
-		val = cmpxchg(&lc->flags, old, new);
-	} while (unlikely (val == (old ^ LC_PARANOIA)));
-	return old == val;
-#endif
 }
 
 /**
  * lc_create - prepares to track objects in an active set
  * @name: descriptive name only used in lc_seq_printf_stats and lc_seq_dump_details
+ * @cache: cache root pointer
  * @max_pending_changes: maximum changes to accumulate until a transaction is required
  * @e_count: number of elements allowed to be active simultaneously
  * @e_size: size of the tracked objects
@@ -119,7 +97,7 @@ struct lru_cache *lc_create(const char *name, struct kmem_cache *cache,
 	slot = kcalloc(e_count, sizeof(struct hlist_head), GFP_KERNEL);
 	if (!slot)
 		goto out_fail;
-	element = kzalloc(e_count * sizeof(struct lc_element *), GFP_KERNEL);
+	element = kcalloc(e_count, sizeof(struct lc_element *), GFP_KERNEL);
 	if (!element)
 		goto out_fail;
 
@@ -158,8 +136,8 @@ struct lru_cache *lc_create(const char *name, struct kmem_cache *cache,
 		return lc;
 
 	/* else: could not allocate all elements, give up */
-	for (i--; i; i--) {
-		void *p = element[i];
+	while (i) {
+		void *p = element[--i];
 		kmem_cache_free(cache, p - e_off);
 	}
 	kfree(lc);
@@ -169,7 +147,7 @@ out_fail:
 	return NULL;
 }
 
-void lc_free_by_index(struct lru_cache *lc, unsigned i)
+static void lc_free_by_index(struct lru_cache *lc, unsigned i)
 {
 	void *p = lc->lc_element[i];
 	WARN_ON(!p);
@@ -238,7 +216,7 @@ void lc_reset(struct lru_cache *lc)
  * @seq: the seq_file to print into
  * @lc: the lru cache to print statistics of
  */
-size_t lc_seq_printf_stats(struct seq_file *seq, struct lru_cache *lc)
+void lc_seq_printf_stats(struct seq_file *seq, struct lru_cache *lc)
 {
 	/* NOTE:
 	 * total calls to lc_get are
@@ -247,10 +225,9 @@ size_t lc_seq_printf_stats(struct seq_file *seq, struct lru_cache *lc)
 	 * progress) and "changed", when this in fact lead to an successful
 	 * update of the cache.
 	 */
-	return seq_printf(seq, "\t%s: used:%u/%u "
-		"hits:%lu misses:%lu starving:%lu locked:%lu changed:%lu\n",
-		lc->name, lc->used, lc->nr_elements,
-		lc->hits, lc->misses, lc->starving, lc->locked, lc->changed);
+	seq_printf(seq, "\t%s: used:%u/%u hits:%lu misses:%lu starving:%lu locked:%lu changed:%lu\n",
+		   lc->name, lc->used, lc->nr_elements,
+		   lc->hits, lc->misses, lc->starving, lc->locked, lc->changed);
 }
 
 static struct hlist_head *lc_hash_slot(struct lru_cache *lc, unsigned int enr)
@@ -376,7 +353,7 @@ static struct lc_element *__lc_get(struct lru_cache *lc, unsigned int enr, unsig
 	struct lc_element *e;
 
 	PARANOIA_ENTRY();
-	if (lc->flags & LC_STARVING) {
+	if (test_bit(__LC_STARVING, &lc->flags)) {
 		++lc->starving;
 		RETURN(NULL);
 	}
@@ -429,7 +406,7 @@ static struct lc_element *__lc_get(struct lru_cache *lc, unsigned int enr, unsig
 	 * the LRU element, we have to wait ...
 	 */
 	if (!lc_unused_element_available(lc)) {
-		__set_bit(__LC_STARVING, &lc->flags);
+		set_bit(__LC_STARVING, &lc->flags);
 		RETURN(NULL);
 	}
 
@@ -598,54 +575,13 @@ struct lc_element *lc_element_by_index(struct lru_cache *lc, unsigned i)
 }
 
 /**
- * lc_index_of
- * @lc: the lru cache to operate on
- * @e: the element to query for its index position in lc->element
- */
-unsigned int lc_index_of(struct lru_cache *lc, struct lc_element *e)
-{
-	PARANOIA_LC_ELEMENT(lc, e);
-	return e->lc_index;
-}
-
-/**
- * lc_set - associate index with label
- * @lc: the lru cache to operate on
- * @enr: the label to set
- * @index: the element index to associate label with.
- *
- * Used to initialize the active set to some previously recorded state.
- */
-void lc_set(struct lru_cache *lc, unsigned int enr, int index)
-{
-	struct lc_element *e;
-	struct list_head *lh;
-
-	if (index < 0 || index >= lc->nr_elements)
-		return;
-
-	e = lc_element_by_index(lc, index);
-	BUG_ON(e->lc_number != e->lc_new_number);
-	BUG_ON(e->refcnt != 0);
-
-	e->lc_number = e->lc_new_number = enr;
-	hlist_del_init(&e->colision);
-	if (enr == LC_FREE)
-		lh = &lc->free;
-	else {
-		hlist_add_head(&e->colision, lc_hash_slot(lc, enr));
-		lh = &lc->lru;
-	}
-	list_move(&e->list, lh);
-}
-
-/**
- * lc_dump - Dump a complete LRU cache to seq in textual form.
+ * lc_seq_dump_details - Dump a complete LRU cache to seq in textual form.
  * @lc: the lru cache to operate on
  * @seq: the &struct seq_file pointer to seq_printf into
- * @utext: user supplied "heading" or other info
+ * @utext: user supplied additional "heading" or other info
  * @detail: function pointer the user may provide to dump further details
- * of the object the lc_element is embedded in.
+ * of the object the lc_element is embedded in. May be NULL.
+ * Note: a leading space ' ' and trailing newline '\n' is implied.
  */
 void lc_seq_dump_details(struct seq_file *seq, struct lru_cache *lc, char *utext,
 	     void (*detail) (struct seq_file *, struct lc_element *))
@@ -654,23 +590,24 @@ void lc_seq_dump_details(struct seq_file *seq, struct lru_cache *lc, char *utext
 	struct lc_element *e;
 	int i;
 
-	seq_printf(seq, "\tnn: lc_number refcnt %s\n ", utext);
+	seq_printf(seq, "\tnn: lc_number (new nr) refcnt %s\n ", utext);
 	for (i = 0; i < nr_elements; i++) {
 		e = lc_element_by_index(lc, i);
-		if (e->lc_number == LC_FREE) {
-			seq_printf(seq, "\t%2d: FREE\n", i);
-		} else {
-			seq_printf(seq, "\t%2d: %4u %4u    ", i,
-				   e->lc_number, e->refcnt);
+		if (e->lc_number != e->lc_new_number)
+			seq_printf(seq, "\t%5d: %6d %8d %6d ",
+				i, e->lc_number, e->lc_new_number, e->refcnt);
+		else
+			seq_printf(seq, "\t%5d: %6d %-8s %6d ",
+				i, e->lc_number, "-\"-", e->refcnt);
+		if (detail)
 			detail(seq, e);
-		}
+		seq_putc(seq, '\n');
 	}
 }
 
 EXPORT_SYMBOL(lc_create);
 EXPORT_SYMBOL(lc_reset);
 EXPORT_SYMBOL(lc_destroy);
-EXPORT_SYMBOL(lc_set);
 EXPORT_SYMBOL(lc_del);
 EXPORT_SYMBOL(lc_try_get);
 EXPORT_SYMBOL(lc_find);
@@ -678,7 +615,6 @@ EXPORT_SYMBOL(lc_get);
 EXPORT_SYMBOL(lc_put);
 EXPORT_SYMBOL(lc_committed);
 EXPORT_SYMBOL(lc_element_by_index);
-EXPORT_SYMBOL(lc_index_of);
 EXPORT_SYMBOL(lc_seq_printf_stats);
 EXPORT_SYMBOL(lc_seq_dump_details);
 EXPORT_SYMBOL(lc_try_lock);

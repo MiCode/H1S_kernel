@@ -1,25 +1,22 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2010-2011 Samsung Electronics Co., Ltd.
  *		http://www.samsung.com
  *
  * Combiner irqchip for EXYNOS
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #include <linux/err.h>
 #include <linux/export.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/slab.h>
+#include <linux/syscore_ops.h>
 #include <linux/irqdomain.h>
+#include <linux/irqchip.h>
 #include <linux/irqchip/chained_irq.h>
+#include <linux/interrupt.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <asm/mach/irq.h>
-
-#include "irqchip.h"
 
 #define COMBINER_ENABLE_SET	0x0
 #define COMBINER_ENABLE_CLEAR	0x4
@@ -34,9 +31,14 @@ struct combiner_chip_data {
 	unsigned int irq_mask;
 	void __iomem *base;
 	unsigned int parent_irq;
+#ifdef CONFIG_PM
+	u32 pm_save;
+#endif
 };
 
+static struct combiner_chip_data *combiner_data;
 static struct irq_domain *combiner_irq_domain;
+static unsigned int max_nr = 20;
 
 static inline void __iomem *combiner_base(struct irq_data *data)
 {
@@ -50,27 +52,28 @@ static void combiner_mask_irq(struct irq_data *data)
 {
 	u32 mask = 1 << (data->hwirq % 32);
 
-	__raw_writel(mask, combiner_base(data) + COMBINER_ENABLE_CLEAR);
+	writel_relaxed(mask, combiner_base(data) + COMBINER_ENABLE_CLEAR);
 }
 
 static void combiner_unmask_irq(struct irq_data *data)
 {
 	u32 mask = 1 << (data->hwirq % 32);
 
-	__raw_writel(mask, combiner_base(data) + COMBINER_ENABLE_SET);
+	writel_relaxed(mask, combiner_base(data) + COMBINER_ENABLE_SET);
 }
 
-static void combiner_handle_cascade_irq(unsigned int irq, struct irq_desc *desc)
+static void combiner_handle_cascade_irq(struct irq_desc *desc)
 {
-	struct combiner_chip_data *chip_data = irq_get_handler_data(irq);
-	struct irq_chip *chip = irq_get_chip(irq);
-	unsigned int cascade_irq, combiner_irq;
+	struct combiner_chip_data *chip_data = irq_desc_get_handler_data(desc);
+	struct irq_chip *chip = irq_desc_get_chip(desc);
+	unsigned int combiner_irq;
 	unsigned long status;
+	int ret;
 
 	chained_irq_enter(chip, desc);
 
 	spin_lock(&irq_controller_lock);
-	status = __raw_readl(chip_data->base + COMBINER_INT_STATUS);
+	status = readl_relaxed(chip_data->base + COMBINER_INT_STATUS);
 	spin_unlock(&irq_controller_lock);
 	status &= chip_data->irq_mask;
 
@@ -78,12 +81,9 @@ static void combiner_handle_cascade_irq(unsigned int irq, struct irq_desc *desc)
 		goto out;
 
 	combiner_irq = chip_data->hwirq_offset + __ffs(status);
-	cascade_irq = irq_find_mapping(combiner_irq_domain, combiner_irq);
-
-	if (unlikely(!cascade_irq))
-		do_bad_IRQ(irq, desc);
-	else
-		generic_handle_irq(cascade_irq);
+	ret = generic_handle_domain_irq(combiner_irq_domain, combiner_irq);
+	if (unlikely(ret))
+		handle_bad_irq(desc);
 
  out:
 	chained_irq_exit(chip, desc);
@@ -116,9 +116,8 @@ static struct irq_chip combiner_chip = {
 static void __init combiner_cascade_irq(struct combiner_chip_data *combiner_data,
 					unsigned int irq)
 {
-	if (irq_set_handler_data(irq, combiner_data) != 0)
-		BUG();
-	irq_set_chained_handler(irq, combiner_handle_cascade_irq);
+	irq_set_chained_handler_and_data(irq, combiner_handle_cascade_irq,
+					 combiner_data);
 }
 
 static void __init combiner_init_one(struct combiner_chip_data *combiner_data,
@@ -131,7 +130,7 @@ static void __init combiner_init_one(struct combiner_chip_data *combiner_data,
 	combiner_data->parent_irq = irq;
 
 	/* Disable all interrupts */
-	__raw_writel(combiner_data->irq_mask, base + COMBINER_ENABLE_CLEAR);
+	writel_relaxed(combiner_data->irq_mask, base + COMBINER_ENABLE_CLEAR);
 }
 
 static int combiner_irq_domain_xlate(struct irq_domain *d,
@@ -140,7 +139,7 @@ static int combiner_irq_domain_xlate(struct irq_domain *d,
 				     unsigned long *out_hwirq,
 				     unsigned int *out_type)
 {
-	if (d->of_node != controller)
+	if (irq_domain_get_of_node(d) != controller)
 		return -EINVAL;
 
 	if (intsize < 2)
@@ -159,36 +158,32 @@ static int combiner_irq_domain_map(struct irq_domain *d, unsigned int irq,
 
 	irq_set_chip_and_handler(irq, &combiner_chip, handle_level_irq);
 	irq_set_chip_data(irq, &combiner_data[hw >> 3]);
-	set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
+	irq_set_probe(irq);
 
 	return 0;
 }
 
-static struct irq_domain_ops combiner_irq_domain_ops = {
+static const struct irq_domain_ops combiner_irq_domain_ops = {
 	.xlate	= combiner_irq_domain_xlate,
 	.map	= combiner_irq_domain_map,
 };
 
 static void __init combiner_init(void __iomem *combiner_base,
-				 struct device_node *np,
-				 unsigned int max_nr)
+				 struct device_node *np)
 {
 	int i, irq;
 	unsigned int nr_irq;
-	struct combiner_chip_data *combiner_data;
 
 	nr_irq = max_nr * IRQ_IN_COMBINER;
 
 	combiner_data = kcalloc(max_nr, sizeof (*combiner_data), GFP_KERNEL);
-	if (!combiner_data) {
-		pr_warning("%s: could not allocate combiner data\n", __func__);
+	if (!combiner_data)
 		return;
-	}
 
 	combiner_irq_domain = irq_domain_add_linear(np, nr_irq,
 				&combiner_irq_domain_ops, combiner_data);
 	if (WARN_ON(!combiner_irq_domain)) {
-		pr_warning("%s: irq domain init failed\n", __func__);
+		pr_warn("%s: irq domain init failed\n", __func__);
 		return;
 	}
 
@@ -201,11 +196,59 @@ static void __init combiner_init(void __iomem *combiner_base,
 	}
 }
 
+#ifdef CONFIG_PM
+
+/**
+ * combiner_suspend - save interrupt combiner state before suspend
+ *
+ * Save the interrupt enable set register for all combiner groups since
+ * the state is lost when the system enters into a sleep state.
+ *
+ */
+static int combiner_suspend(void)
+{
+	int i;
+
+	for (i = 0; i < max_nr; i++)
+		combiner_data[i].pm_save =
+			readl_relaxed(combiner_data[i].base + COMBINER_ENABLE_SET);
+
+	return 0;
+}
+
+/**
+ * combiner_resume - restore interrupt combiner state after resume
+ *
+ * Restore the interrupt enable set register for all combiner groups since
+ * the state is lost when the system enters into a sleep state on suspend.
+ *
+ */
+static void combiner_resume(void)
+{
+	int i;
+
+	for (i = 0; i < max_nr; i++) {
+		writel_relaxed(combiner_data[i].irq_mask,
+			     combiner_data[i].base + COMBINER_ENABLE_CLEAR);
+		writel_relaxed(combiner_data[i].pm_save,
+			     combiner_data[i].base + COMBINER_ENABLE_SET);
+	}
+}
+
+#else
+#define combiner_suspend	NULL
+#define combiner_resume		NULL
+#endif
+
+static struct syscore_ops combiner_syscore_ops = {
+	.suspend	= combiner_suspend,
+	.resume		= combiner_resume,
+};
+
 static int __init combiner_of_init(struct device_node *np,
 				   struct device_node *parent)
 {
 	void __iomem *combiner_base;
-	unsigned int max_nr = 20;
 
 	combiner_base = of_iomap(np, 0);
 	if (!combiner_base) {
@@ -219,7 +262,9 @@ static int __init combiner_of_init(struct device_node *np,
 			__func__, max_nr);
 	}
 
-	combiner_init(combiner_base, np, max_nr);
+	combiner_init(combiner_base, np);
+
+	register_syscore_ops(&combiner_syscore_ops);
 
 	return 0;
 }

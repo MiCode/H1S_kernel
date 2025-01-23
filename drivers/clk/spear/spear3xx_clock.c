@@ -1,19 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * SPEAr3xx machines clock framework source file
  *
  * Copyright (C) 2012 ST Microelectronics
- * Viresh Kumar <viresh.linux@gmail.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
+ * Viresh Kumar <vireshk@kernel.org>
  */
 
 #include <linux/clk.h>
 #include <linux/clkdev.h>
+#include <linux/clk/spear.h>
 #include <linux/err.h>
 #include <linux/io.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
 #include <linux/spinlock_types.h>
 #include "clk.h"
 
@@ -211,7 +209,7 @@ static inline void spear310_clk_init(void) { }
 /* array of all spear 320 clock lookups */
 #ifdef CONFIG_MACH_SPEAR320
 
-#define SPEAR320_CONTROL_REG		(soc_config_base + 0x0000)
+#define SPEAR320_CONTROL_REG		(soc_config_base + 0x0010)
 #define SPEAR320_EXT_CTRL_REG		(soc_config_base + 0x0018)
 
 	#define SPEAR320_UARTX_PCLK_MASK		0x1
@@ -245,12 +243,13 @@ static const char *smii0_parents[] = { "smii_125m_pad", "ras_pll2_clk",
 	"ras_syn0_gclk", };
 static const char *uartx_parents[] = { "ras_syn1_gclk", "ras_apb_clk", };
 
-static void __init spear320_clk_init(void __iomem *soc_config_base)
+static void __init spear320_clk_init(void __iomem *soc_config_base,
+				     struct clk *ras_apb_clk)
 {
 	struct clk *clk;
 
 	clk = clk_register_fixed_rate(NULL, "smii_125m_pad_clk", NULL,
-			CLK_IS_ROOT, 125000000);
+			0, 125000000);
 	clk_register_clkdev(clk, "smii_125m_pad", NULL);
 
 	clk = clk_register_fixed_factor(NULL, "clcd_clk", "ras_pll3_clk", 0,
@@ -342,6 +341,8 @@ static void __init spear320_clk_init(void __iomem *soc_config_base)
 			SPEAR320_CONTROL_REG, UART1_PCLK_SHIFT, UART1_PCLK_MASK,
 			0, &_lock);
 	clk_register_clkdev(clk, NULL, "a3000000.serial");
+	/* Enforce ras_apb_clk */
+	clk_set_parent(clk, ras_apb_clk);
 
 	clk = clk_register_mux(NULL, "uart2_clk", uartx_parents,
 			ARRAY_SIZE(uartx_parents),
@@ -349,6 +350,8 @@ static void __init spear320_clk_init(void __iomem *soc_config_base)
 			SPEAR320_EXT_CTRL_REG, SPEAR320_UART2_PCLK_SHIFT,
 			SPEAR320_UARTX_PCLK_MASK, 0, &_lock);
 	clk_register_clkdev(clk, NULL, "a4000000.serial");
+	/* Enforce ras_apb_clk */
+	clk_set_parent(clk, ras_apb_clk);
 
 	clk = clk_register_mux(NULL, "uart3_clk", uartx_parents,
 			ARRAY_SIZE(uartx_parents),
@@ -379,19 +382,17 @@ static void __init spear320_clk_init(void __iomem *soc_config_base)
 	clk_register_clkdev(clk, NULL, "60100000.serial");
 }
 #else
-static inline void spear320_clk_init(void __iomem *soc_config_base) { }
+static inline void spear320_clk_init(void __iomem *sb, struct clk *rc) { }
 #endif
 
 void __init spear3xx_clk_init(void __iomem *misc_base, void __iomem *soc_config_base)
 {
-	struct clk *clk, *clk1;
+	struct clk *clk, *clk1, *ras_apb_clk;
 
-	clk = clk_register_fixed_rate(NULL, "osc_32k_clk", NULL, CLK_IS_ROOT,
-			32000);
+	clk = clk_register_fixed_rate(NULL, "osc_32k_clk", NULL, 0, 32000);
 	clk_register_clkdev(clk, "osc_32k_clk", NULL);
 
-	clk = clk_register_fixed_rate(NULL, "osc_24m_clk", NULL, CLK_IS_ROOT,
-			24000000);
+	clk = clk_register_fixed_rate(NULL, "osc_24m_clk", NULL, 0, 24000000);
 	clk_register_clkdev(clk, "osc_24m_clk", NULL);
 
 	/* clock derived from 32 KHz osc clk */
@@ -613,6 +614,7 @@ void __init spear3xx_clk_init(void __iomem *misc_base, void __iomem *soc_config_
 	clk = clk_register_gate(NULL, "ras_apb_clk", "apb_clk", 0, RAS_CLK_ENB,
 			RAS_APB_CLK_ENB, 0, &_lock);
 	clk_register_clkdev(clk, "ras_apb_clk", NULL);
+	ras_apb_clk = clk;
 
 	clk = clk_register_gate(NULL, "ras_32k_clk", "osc_32k_clk", 0,
 			RAS_CLK_ENB, RAS_32K_CLK_ENB, 0, &_lock);
@@ -659,5 +661,5 @@ void __init spear3xx_clk_init(void __iomem *misc_base, void __iomem *soc_config_
 	else if (of_machine_is_compatible("st,spear310"))
 		spear310_clk_init();
 	else if (of_machine_is_compatible("st,spear320"))
-		spear320_clk_init(soc_config_base);
+		spear320_clk_init(soc_config_base, ras_apb_clk);
 }

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
 
     bt8xx GPIO abuser
@@ -28,25 +29,12 @@
     Copyright (C) 2005, 2006 Michael H. Schimek
     Sponsored by OPQ Systems AB
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/spinlock.h>
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 #include <linux/slab.h>
 
 /* Steal the hardware definitions from the bttv driver. */
@@ -80,7 +68,7 @@ MODULE_PARM_DESC(gpiobase, "The GPIO number base. -1 means dynamic, which is the
 
 static int bt8xxgpio_gpio_direction_input(struct gpio_chip *gpio, unsigned nr)
 {
-	struct bt8xxgpio *bg = container_of(gpio, struct bt8xxgpio, gpio);
+	struct bt8xxgpio *bg = gpiochip_get_data(gpio);
 	unsigned long flags;
 	u32 outen, data;
 
@@ -101,7 +89,7 @@ static int bt8xxgpio_gpio_direction_input(struct gpio_chip *gpio, unsigned nr)
 
 static int bt8xxgpio_gpio_get(struct gpio_chip *gpio, unsigned nr)
 {
-	struct bt8xxgpio *bg = container_of(gpio, struct bt8xxgpio, gpio);
+	struct bt8xxgpio *bg = gpiochip_get_data(gpio);
 	unsigned long flags;
 	u32 val;
 
@@ -115,7 +103,7 @@ static int bt8xxgpio_gpio_get(struct gpio_chip *gpio, unsigned nr)
 static int bt8xxgpio_gpio_direction_output(struct gpio_chip *gpio,
 					unsigned nr, int val)
 {
-	struct bt8xxgpio *bg = container_of(gpio, struct bt8xxgpio, gpio);
+	struct bt8xxgpio *bg = gpiochip_get_data(gpio);
 	unsigned long flags;
 	u32 outen, data;
 
@@ -140,7 +128,7 @@ static int bt8xxgpio_gpio_direction_output(struct gpio_chip *gpio,
 static void bt8xxgpio_gpio_set(struct gpio_chip *gpio,
 			    unsigned nr, int val)
 {
-	struct bt8xxgpio *bg = container_of(gpio, struct bt8xxgpio, gpio);
+	struct bt8xxgpio *bg = gpiochip_get_data(gpio);
 	unsigned long flags;
 	u32 data;
 
@@ -178,7 +166,7 @@ static int bt8xxgpio_probe(struct pci_dev *dev,
 	struct bt8xxgpio *bg;
 	int err;
 
-	bg = kzalloc(sizeof(*bg), GFP_KERNEL);
+	bg = devm_kzalloc(&dev->dev, sizeof(struct bt8xxgpio), GFP_KERNEL);
 	if (!bg)
 		return -ENOMEM;
 
@@ -187,13 +175,13 @@ static int bt8xxgpio_probe(struct pci_dev *dev,
 
 	err = pci_enable_device(dev);
 	if (err) {
-		printk(KERN_ERR "bt8xxgpio: Can't enable device.\n");
-		goto err_freebg;
+		dev_err(&dev->dev, "can't enable device.\n");
+		return err;
 	}
-	if (!request_mem_region(pci_resource_start(dev, 0),
+	if (!devm_request_mem_region(&dev->dev, pci_resource_start(dev, 0),
 				pci_resource_len(dev, 0),
 				"bt8xxgpio")) {
-		printk(KERN_WARNING "bt8xxgpio: Can't request iomem (0x%llx).\n",
+		dev_warn(&dev->dev, "can't request iomem (0x%llx).\n",
 		       (unsigned long long)pci_resource_start(dev, 0));
 		err = -EBUSY;
 		goto err_disable;
@@ -201,11 +189,11 @@ static int bt8xxgpio_probe(struct pci_dev *dev,
 	pci_set_master(dev);
 	pci_set_drvdata(dev, bg);
 
-	bg->mmio = ioremap(pci_resource_start(dev, 0), 0x1000);
+	bg->mmio = devm_ioremap(&dev->dev, pci_resource_start(dev, 0), 0x1000);
 	if (!bg->mmio) {
-		printk(KERN_ERR "bt8xxgpio: ioremap() failed\n");
+		dev_err(&dev->dev, "ioremap() failed\n");
 		err = -EIO;
-		goto err_release_mem;
+		goto err_disable;
 	}
 
 	/* Disable interrupts */
@@ -217,21 +205,16 @@ static int bt8xxgpio_probe(struct pci_dev *dev,
 	bgwrite(0, BT848_GPIO_OUT_EN);
 
 	bt8xxgpio_gpio_setup(bg);
-	err = gpiochip_add(&bg->gpio);
+	err = gpiochip_add_data(&bg->gpio, bg);
 	if (err) {
-		printk(KERN_ERR "bt8xxgpio: Failed to register GPIOs\n");
-		goto err_release_mem;
+		dev_err(&dev->dev, "failed to register GPIOs\n");
+		goto err_disable;
 	}
 
 	return 0;
 
-err_release_mem:
-	release_mem_region(pci_resource_start(dev, 0),
-			   pci_resource_len(dev, 0));
 err_disable:
 	pci_disable_device(dev);
-err_freebg:
-	kfree(bg);
 
 	return err;
 }
@@ -246,12 +229,7 @@ static void bt8xxgpio_remove(struct pci_dev *pdev)
 	bgwrite(~0x0, BT848_INT_STAT);
 	bgwrite(0x0, BT848_GPIO_OUT_EN);
 
-	iounmap(bg->mmio);
-	release_mem_region(pci_resource_start(pdev, 0),
-			   pci_resource_len(pdev, 0));
 	pci_disable_device(pdev);
-
-	kfree(bg);
 }
 
 #ifdef CONFIG_PM

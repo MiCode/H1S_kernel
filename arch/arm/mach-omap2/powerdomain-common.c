@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Common powerdomain framework functions
  *
@@ -5,10 +6,6 @@
  * Copyright (C) 2010 Nokia Corporation
  *
  * Derived from mach-omap2/powerdomain.c written by Paul Walmsley
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/errno.h>
@@ -17,7 +14,6 @@
 #include "pm.h"
 #include "cm.h"
 #include "cm-regbits-34xx.h"
-#include "cm-regbits-44xx.h"
 #include "prm-regbits-34xx.h"
 #include "prm-regbits-44xx.h"
 

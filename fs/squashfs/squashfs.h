@@ -1,22 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Squashfs - a compressed read only filesystem for Linux
  *
  * Copyright (c) 2002, 2003, 2004, 2005, 2006, 2007, 2008
  * Phillip Lougher <phillip@squashfs.org.uk>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2,
- * or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
  *
  * squashfs.h
  */
@@ -25,7 +12,7 @@
 
 #define ERROR(s, args...)	pr_err("SQUASHFS error: "s, ## args)
 
-#define WARNING(s, args...)	pr_warning("SQUASHFS: "s, ## args)
+#define WARNING(s, args...)	pr_warn("SQUASHFS: "s, ## args)
 
 /* block.c */
 extern int squashfs_read_data(struct super_block *, u64, int, u64 *,
@@ -51,11 +38,24 @@ extern const struct squashfs_decompressor *squashfs_lookup_decompressor(int);
 extern void *squashfs_decompressor_setup(struct super_block *, unsigned short);
 
 /* decompressor_xxx.c */
-extern void *squashfs_decompressor_create(struct squashfs_sb_info *, void *);
-extern void squashfs_decompressor_destroy(struct squashfs_sb_info *);
-extern int squashfs_decompress(struct squashfs_sb_info *, struct buffer_head **,
-	int, int, int, struct squashfs_page_actor *);
-extern int squashfs_max_decompressors(void);
+
+struct squashfs_decompressor_thread_ops {
+	void * (*create)(struct squashfs_sb_info *msblk, void *comp_opts);
+	void (*destroy)(struct squashfs_sb_info *msblk);
+	int (*decompress)(struct squashfs_sb_info *msblk, struct bio *bio,
+			  int offset, int length, struct squashfs_page_actor *output);
+	int (*max_decompressors)(void);
+};
+
+#ifdef CONFIG_SQUASHFS_DECOMP_SINGLE
+extern const struct squashfs_decompressor_thread_ops squashfs_decompressor_single;
+#endif
+#ifdef CONFIG_SQUASHFS_DECOMP_MULTI
+extern const struct squashfs_decompressor_thread_ops squashfs_decompressor_multi;
+#endif
+#ifdef CONFIG_SQUASHFS_DECOMP_MULTI_PERCPU
+extern const struct squashfs_decompressor_thread_ops squashfs_decompressor_percpu;
+#endif
 
 /* export.c */
 extern __le64 *squashfs_read_inode_lookup_table(struct super_block *, u64, u64,
@@ -67,11 +67,12 @@ extern __le64 *squashfs_read_fragment_index_table(struct super_block *,
 				u64, u64, unsigned int);
 
 /* file.c */
+void squashfs_fill_page(struct page *, struct squashfs_cache_entry *, int, int);
 void squashfs_copy_cache(struct page *, struct squashfs_cache_entry *, int,
 				int);
 
 /* file_xxx.c */
-extern int squashfs_readpage_block(struct page *, u64, int);
+extern int squashfs_readpage_block(struct page *, u64, int, int);
 
 /* id.c */
 extern int squashfs_get_id(struct super_block *, unsigned int, unsigned int *);

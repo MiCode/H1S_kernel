@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2001-2004 Aurelien Jarno <aurelien@aurel32.net>
  * Ported to Linux 2.6 by Aurelien Jarno <aurelien@aurel32.net> with
  * the help of Jean Delvare <jdelvare@suse.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -27,6 +14,7 @@
 #include <linux/mutex.h>
 #include <linux/err.h>
 #include <linux/hwmon.h>
+#include <linux/kstrtox.h>
 
 /* Insmod parameters */
 
@@ -103,16 +91,16 @@ show_in_channel(1);
 show_in_channel(2);
 show_in_channel(3);
 
-static ssize_t show_out0_ouput(struct device *dev,
-			       struct device_attribute *attr, char *buf)
+static ssize_t out0_output_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
 	struct pcf8591_data *data = i2c_get_clientdata(to_i2c_client(dev));
 	return sprintf(buf, "%d\n", data->aout * 10);
 }
 
-static ssize_t set_out0_output(struct device *dev,
-			       struct device_attribute *attr,
-			       const char *buf, size_t count)
+static ssize_t out0_output_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
 {
 	unsigned long val;
 	struct i2c_client *client = to_i2c_client(dev);
@@ -132,19 +120,18 @@ static ssize_t set_out0_output(struct device *dev,
 	return count;
 }
 
-static DEVICE_ATTR(out0_output, S_IWUSR | S_IRUGO,
-		   show_out0_ouput, set_out0_output);
+static DEVICE_ATTR_RW(out0_output);
 
-static ssize_t show_out0_enable(struct device *dev,
+static ssize_t out0_enable_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct pcf8591_data *data = i2c_get_clientdata(to_i2c_client(dev));
 	return sprintf(buf, "%u\n", !(!(data->control & PCF8591_CONTROL_AOEF)));
 }
 
-static ssize_t set_out0_enable(struct device *dev,
-			       struct device_attribute *attr,
-			       const char *buf, size_t count)
+static ssize_t out0_enable_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct pcf8591_data *data = i2c_get_clientdata(client);
@@ -165,8 +152,7 @@ static ssize_t set_out0_enable(struct device *dev,
 	return count;
 }
 
-static DEVICE_ATTR(out0_enable, S_IWUSR | S_IRUGO,
-		   show_out0_enable, set_out0_enable);
+static DEVICE_ATTR_RW(out0_enable);
 
 static struct attribute *pcf8591_attributes[] = {
 	&dev_attr_out0_enable.attr,
@@ -194,8 +180,7 @@ static const struct attribute_group pcf8591_attr_group_opt = {
  * Real code
  */
 
-static int pcf8591_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int pcf8591_probe(struct i2c_client *client)
 {
 	struct pcf8591_data *data;
 	int err;
@@ -244,14 +229,13 @@ exit_sysfs_remove:
 	return err;
 }
 
-static int pcf8591_remove(struct i2c_client *client)
+static void pcf8591_remove(struct i2c_client *client)
 {
 	struct pcf8591_data *data = i2c_get_clientdata(client);
 
 	hwmon_device_unregister(data->hwmon_dev);
 	sysfs_remove_group(&client->dev.kobj, &pcf8591_attr_group_opt);
 	sysfs_remove_group(&client->dev.kobj, &pcf8591_attr_group);
-	return 0;
 }
 
 /* Called when we have found a new PCF8591. */

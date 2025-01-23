@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Freescale MPC85xx/MPC86xx RapidIO support
  *
@@ -17,11 +18,6 @@
  *
  * Copyright 2005 MontaVista Software, Inc.
  * Matt Porter <mporter@kernel.crashing.org>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #ifndef __FSL_RIO_H
@@ -41,7 +37,7 @@
 #define DOORBELL_ROWAR_PCI	0x02000000 /* PCI window */
 #define DOORBELL_ROWAR_NREAD	0x00040000 /* NREAD */
 #define DOORBELL_ROWAR_MAINTRD	0x00070000  /* maintenance read */
-#define DOORBELL_ROWAR_RES	0x00002000 /* wrtpy: reserverd */
+#define DOORBELL_ROWAR_RES	0x00002000 /* wrtpy: reserved */
 #define DOORBELL_ROWAR_MAINTWD	0x00007000
 #define DOORBELL_ROWAR_SIZE	0x0000000b /* window size is 4k */
 
@@ -50,9 +46,12 @@
 #define RIO_S_DBELL_REGS_OFFSET	0x13400
 #define RIO_S_PW_REGS_OFFSET	0x134e0
 #define RIO_ATMU_REGS_DBELL_OFFSET	0x10C40
+#define RIO_INB_ATMU_REGS_PORT1_OFFSET 0x10d60
+#define RIO_INB_ATMU_REGS_PORT2_OFFSET 0x10f60
 
 #define MAX_MSG_UNIT_NUM	2
 #define MAX_PORT_NUM		4
+#define RIO_INB_ATMU_COUNT	4
 
 struct rio_atmu_regs {
 	 u32 rowtar;
@@ -61,6 +60,15 @@ struct rio_atmu_regs {
 	 u32 pad1;
 	 u32 rowar;
 	 u32 pad2[3];
+};
+
+struct rio_inb_atmu_regs {
+	u32 riwtar;
+	u32 pad1;
+	u32 riwbar;
+	u32 pad2;
+	u32 riwar;
+	u32 pad3[3];
 };
 
 struct rio_dbell_ring {
@@ -85,6 +93,7 @@ struct fsl_rio_dbell {
 };
 
 struct fsl_rio_pw {
+	struct rio_mport *mport[MAX_PORT_NUM];
 	struct device *dev;
 	struct rio_pw_regs __iomem *pw_regs;
 	struct rio_port_write_msg port_write_msg;
@@ -99,6 +108,7 @@ struct rio_priv {
 	void __iomem *regs_win;
 	struct rio_atmu_regs __iomem *atmu_regs;
 	struct rio_atmu_regs __iomem *maint_atmu_regs;
+	struct rio_inb_atmu_regs __iomem *inb_atmu_regs;
 	void __iomem *maint_win;
 	void *rmm_handle; /* RapidIO message manager(unit) Handle */
 };

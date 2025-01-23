@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2009-2010 Pengutronix
  * Uwe Kleine-Koenig <u.kleine-koenig@pengutronix.de>
  *
  * loosely based on an earlier driver that has
  * Copyright 2009 Pengutronix, Sascha Hauer <s.hauer@pengutronix.de>
- *
- * This program is free software; you can redistribute it and/or modify it under
- * the terms of the GNU General Public License version 2 as published by the
- * Free Software Foundation.
  */
 
 #include <linux/slab.h>
@@ -18,7 +15,6 @@
 #include <linux/mfd/mc13xxx.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
-#include <linux/of_gpio.h>
 #include <linux/err.h>
 #include <linux/spi/spi.h>
 
@@ -48,7 +44,7 @@ static const struct of_device_id mc13xxx_dt_ids[] = {
 };
 MODULE_DEVICE_TABLE(of, mc13xxx_dt_ids);
 
-static struct regmap_config mc13xxx_regmap_spi_config = {
+static const struct regmap_config mc13xxx_regmap_spi_config = {
 	.reg_bits = 7,
 	.pad_bits = 1,
 	.val_bits = 24,
@@ -57,7 +53,8 @@ static struct regmap_config mc13xxx_regmap_spi_config = {
 	.max_register = MC13XXX_NUMREGS,
 
 	.cache_type = REGCACHE_NONE,
-	.use_single_rw = 1,
+	.use_single_read = true,
+	.use_single_write = true,
 };
 
 static int mc13xxx_spi_read(void *context, const void *reg, size_t reg_size,
@@ -117,7 +114,7 @@ static int mc13xxx_spi_write(void *context, const void *data, size_t count)
  * result, the SS will negate before all of the data has been
  * transferred to/from the peripheral."
  * We workaround this by accessing the SPI controller with a
- * single transfert.
+ * single transfer.
  */
 
 static struct regmap_bus regmap_mc13xxx_bus = {
@@ -139,6 +136,11 @@ static int mc13xxx_spi_probe(struct spi_device *spi)
 	spi->mode = SPI_MODE_0 | SPI_CS_HIGH;
 
 	mc13xxx->irq = spi->irq;
+
+	spi->max_speed_hz = spi->max_speed_hz ? : 26000000;
+	ret = spi_setup(spi);
+	if (ret)
+		return ret;
 
 	mc13xxx->regmap = devm_regmap_init(&spi->dev, &regmap_mc13xxx_bus,
 					   &spi->dev,
@@ -163,16 +165,15 @@ static int mc13xxx_spi_probe(struct spi_device *spi)
 	return mc13xxx_common_init(&spi->dev);
 }
 
-static int mc13xxx_spi_remove(struct spi_device *spi)
+static void mc13xxx_spi_remove(struct spi_device *spi)
 {
-	return mc13xxx_common_exit(&spi->dev);
+	mc13xxx_common_exit(&spi->dev);
 }
 
 static struct spi_driver mc13xxx_spi_driver = {
 	.id_table = mc13xxx_device_id,
 	.driver = {
 		.name = "mc13xxx",
-		.owner = THIS_MODULE,
 		.of_match_table = mc13xxx_dt_ids,
 	},
 	.probe = mc13xxx_spi_probe,

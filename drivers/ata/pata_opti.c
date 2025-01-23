@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * pata_opti.c 	- ATI PATA for new ATA layer
  *			  (C) 2005 Red Hat Inc
@@ -26,7 +27,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <scsi/scsi_host.h>
@@ -69,7 +69,7 @@ static int opti_pre_reset(struct ata_link *link, unsigned long deadline)
 /**
  *	opti_write_reg		-	control register setup
  *	@ap: ATA port
- *	@value: value
+ *	@val: value
  *	@reg: control register number
  *
  *	The Opti uses magic 'trapdoor' register accesses to do configuration
@@ -148,7 +148,7 @@ static void opti_set_piomode(struct ata_port *ap, struct ata_device *adev)
 	opti_write_reg(ap, 0x85, CNTRL_REG);
 }
 
-static struct scsi_host_template opti_sht = {
+static const struct scsi_host_template opti_sht = {
 	ATA_PIO_SHT(DRV_NAME),
 };
 
@@ -185,7 +185,7 @@ static struct pci_driver opti_pci_driver = {
 	.id_table	= opti,
 	.probe 		= opti_init_one,
 	.remove		= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= ata_pci_device_resume,
 #endif

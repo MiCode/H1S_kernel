@@ -1,13 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *	Linux INET6 implementation
  *
  *	Authors:
  *	Pedro Roque		<roque@di.fc.ul.pt>
- *
- *	This program is free software; you can redistribute it and/or
- *      modify it under the terms of the GNU General Public License
- *      as published by the Free Software Foundation; either version
- *      2 of the License, or (at your option) any later version.
  */
 
 #ifndef _NET_IPV6_H
@@ -16,10 +12,16 @@
 #include <linux/ipv6.h>
 #include <linux/hardirq.h>
 #include <linux/jhash.h>
+#include <linux/refcount.h>
+#include <linux/jump_label_ratelimit.h>
 #include <net/if_inet6.h>
-#include <net/ndisc.h>
 #include <net/flow.h>
+#include <net/flow_dissector.h>
+#include <net/inet_dscp.h>
 #include <net/snmp.h>
+#include <net/netns/hash.h>
+
+struct ip_tunnel_info;
 
 #define SIN6_LEN_RFC2133	24
 
@@ -30,6 +32,7 @@
  */
 
 #define NEXTHDR_HOP		0	/* Hop-by-hop option header. */
+#define NEXTHDR_IPV4		4	/* IPv4 in IPv6 */
 #define NEXTHDR_TCP		6	/* TCP segment. */
 #define NEXTHDR_UDP		17	/* UDP message. */
 #define NEXTHDR_IPV6		41	/* IPv6 in IPv6 */
@@ -46,10 +49,48 @@
 
 #define NEXTHDR_MAX		255
 
-
-
 #define IPV6_DEFAULT_HOPLIMIT   64
 #define IPV6_DEFAULT_MCASTHOPS	1
+
+/* Limits on Hop-by-Hop and Destination options.
+ *
+ * Per RFC8200 there is no limit on the maximum number or lengths of options in
+ * Hop-by-Hop or Destination options other then the packet must fit in an MTU.
+ * We allow configurable limits in order to mitigate potential denial of
+ * service attacks.
+ *
+ * There are three limits that may be set:
+ *   - Limit the number of options in a Hop-by-Hop or Destination options
+ *     extension header
+ *   - Limit the byte length of a Hop-by-Hop or Destination options extension
+ *     header
+ *   - Disallow unknown options
+ *
+ * The limits are expressed in corresponding sysctls:
+ *
+ * ipv6.sysctl.max_dst_opts_cnt
+ * ipv6.sysctl.max_hbh_opts_cnt
+ * ipv6.sysctl.max_dst_opts_len
+ * ipv6.sysctl.max_hbh_opts_len
+ *
+ * max_*_opts_cnt is the number of TLVs that are allowed for Destination
+ * options or Hop-by-Hop options. If the number is less than zero then unknown
+ * TLVs are disallowed and the number of known options that are allowed is the
+ * absolute value. Setting the value to INT_MAX indicates no limit.
+ *
+ * max_*_opts_len is the length limit in bytes of a Destination or
+ * Hop-by-Hop options extension header. Setting the value to INT_MAX
+ * indicates no length limit.
+ *
+ * If a limit is exceeded when processing an extension header the packet is
+ * silently discarded.
+ */
+
+/* Default limits for Hop-by-Hop and Destination options */
+#define IP6_DEFAULT_MAX_DST_OPTS_CNT	 8
+#define IP6_DEFAULT_MAX_HBH_OPTS_CNT	 8
+#define IP6_DEFAULT_MAX_DST_OPTS_LEN	 INT_MAX /* No limit */
+#define IP6_DEFAULT_MAX_HBH_OPTS_LEN	 INT_MAX /* No limit */
 
 /*
  *	Addr type
@@ -64,8 +105,8 @@
 
 #define IPV6_ADDR_ANY		0x0000U
 
-#define IPV6_ADDR_UNICAST      	0x0001U	
-#define IPV6_ADDR_MULTICAST    	0x0002U	
+#define IPV6_ADDR_UNICAST	0x0001U
+#define IPV6_ADDR_MULTICAST	0x0002U
 
 #define IPV6_ADDR_LOOPBACK	0x0010U
 #define IPV6_ADDR_LINKLOCAL	0x0020U
@@ -110,29 +151,87 @@ struct frag_hdr {
 	__be32	identification;
 };
 
+/*
+ * Jumbo payload option, as described in RFC 2675 2.
+ */
+struct hop_jumbo_hdr {
+	u8	nexthdr;
+	u8	hdrlen;
+	u8	tlv_type;	/* IPV6_TLV_JUMBO, 0xC2 */
+	u8	tlv_len;	/* 4 */
+	__be32	jumbo_payload_len;
+};
+
 #define	IP6_MF		0x0001
 #define	IP6_OFFSET	0xFFF8
+
+struct ip6_fraglist_iter {
+	struct ipv6hdr	*tmp_hdr;
+	struct sk_buff	*frag;
+	int		offset;
+	unsigned int	hlen;
+	__be32		frag_id;
+	u8		nexthdr;
+};
+
+int ip6_fraglist_init(struct sk_buff *skb, unsigned int hlen, u8 *prevhdr,
+		      u8 nexthdr, __be32 frag_id,
+		      struct ip6_fraglist_iter *iter);
+void ip6_fraglist_prepare(struct sk_buff *skb, struct ip6_fraglist_iter *iter);
+
+static inline struct sk_buff *ip6_fraglist_next(struct ip6_fraglist_iter *iter)
+{
+	struct sk_buff *skb = iter->frag;
+
+	iter->frag = skb->next;
+	skb_mark_not_on_list(skb);
+
+	return skb;
+}
+
+struct ip6_frag_state {
+	u8		*prevhdr;
+	unsigned int	hlen;
+	unsigned int	mtu;
+	unsigned int	left;
+	int		offset;
+	int		ptr;
+	int		hroom;
+	int		troom;
+	__be32		frag_id;
+	u8		nexthdr;
+};
+
+void ip6_frag_init(struct sk_buff *skb, unsigned int hlen, unsigned int mtu,
+		   unsigned short needed_tailroom, int hdr_room, u8 *prevhdr,
+		   u8 nexthdr, __be32 frag_id, struct ip6_frag_state *state);
+struct sk_buff *ip6_frag_next(struct sk_buff *skb,
+			      struct ip6_frag_state *state);
+
+#define IP6_REPLY_MARK(net, mark) \
+	((net)->ipv6.sysctl.fwmark_reflect ? (mark) : 0)
 
 #include <net/sock.h>
 
 /* sysctls */
 extern int sysctl_mld_max_msf;
+extern int sysctl_mld_qrv;
 
-#define _DEVINC(net, statname, modifier, idev, field)			\
+#define _DEVINC(net, statname, mod, idev, field)			\
 ({									\
 	struct inet6_dev *_idev = (idev);				\
 	if (likely(_idev != NULL))					\
-		SNMP_INC_STATS##modifier((_idev)->stats.statname, (field)); \
-	SNMP_INC_STATS##modifier((net)->mib.statname##_statistics, (field));\
+		mod##SNMP_INC_STATS64((_idev)->stats.statname, (field));\
+	mod##SNMP_INC_STATS64((net)->mib.statname##_statistics, (field));\
 })
 
 /* per device counters are atomic_long_t */
-#define _DEVINCATOMIC(net, statname, modifier, idev, field)		\
+#define _DEVINCATOMIC(net, statname, mod, idev, field)			\
 ({									\
 	struct inet6_dev *_idev = (idev);				\
 	if (likely(_idev != NULL))					\
 		SNMP_INC_STATS_ATOMIC_LONG((_idev)->stats.statname##dev, (field)); \
-	SNMP_INC_STATS##modifier((net)->mib.statname##_statistics, (field));\
+	mod##SNMP_INC_STATS((net)->mib.statname##_statistics, (field));\
 })
 
 /* per device and per net counters are atomic_long_t */
@@ -144,46 +243,44 @@ extern int sysctl_mld_max_msf;
 	SNMP_INC_STATS_ATOMIC_LONG((net)->mib.statname##_statistics, (field));\
 })
 
-#define _DEVADD(net, statname, modifier, idev, field, val)		\
+#define _DEVADD(net, statname, mod, idev, field, val)			\
 ({									\
 	struct inet6_dev *_idev = (idev);				\
 	if (likely(_idev != NULL))					\
-		SNMP_ADD_STATS##modifier((_idev)->stats.statname, (field), (val)); \
-	SNMP_ADD_STATS##modifier((net)->mib.statname##_statistics, (field), (val));\
+		mod##SNMP_ADD_STATS((_idev)->stats.statname, (field), (val)); \
+	mod##SNMP_ADD_STATS((net)->mib.statname##_statistics, (field), (val));\
 })
 
-#define _DEVUPD(net, statname, modifier, idev, field, val)		\
+#define _DEVUPD(net, statname, mod, idev, field, val)			\
 ({									\
 	struct inet6_dev *_idev = (idev);				\
 	if (likely(_idev != NULL))					\
-		SNMP_UPD_PO_STATS##modifier((_idev)->stats.statname, field, (val)); \
-	SNMP_UPD_PO_STATS##modifier((net)->mib.statname##_statistics, field, (val));\
+		mod##SNMP_UPD_PO_STATS((_idev)->stats.statname, field, (val)); \
+	mod##SNMP_UPD_PO_STATS((net)->mib.statname##_statistics, field, (val));\
 })
 
 /* MIBs */
 
 #define IP6_INC_STATS(net, idev,field)		\
-		_DEVINC(net, ipv6, 64, idev, field)
-#define IP6_INC_STATS_BH(net, idev,field)	\
-		_DEVINC(net, ipv6, 64_BH, idev, field)
+		_DEVINC(net, ipv6, , idev, field)
+#define __IP6_INC_STATS(net, idev,field)	\
+		_DEVINC(net, ipv6, __, idev, field)
 #define IP6_ADD_STATS(net, idev,field,val)	\
-		_DEVADD(net, ipv6, 64, idev, field, val)
-#define IP6_ADD_STATS_BH(net, idev,field,val)	\
-		_DEVADD(net, ipv6, 64_BH, idev, field, val)
+		_DEVADD(net, ipv6, , idev, field, val)
+#define __IP6_ADD_STATS(net, idev,field,val)	\
+		_DEVADD(net, ipv6, __, idev, field, val)
 #define IP6_UPD_PO_STATS(net, idev,field,val)   \
-		_DEVUPD(net, ipv6, 64, idev, field, val)
-#define IP6_UPD_PO_STATS_BH(net, idev,field,val)   \
-		_DEVUPD(net, ipv6, 64_BH, idev, field, val)
+		_DEVUPD(net, ipv6, , idev, field, val)
+#define __IP6_UPD_PO_STATS(net, idev,field,val)   \
+		_DEVUPD(net, ipv6, __, idev, field, val)
 #define ICMP6_INC_STATS(net, idev, field)	\
 		_DEVINCATOMIC(net, icmpv6, , idev, field)
-#define ICMP6_INC_STATS_BH(net, idev, field)	\
-		_DEVINCATOMIC(net, icmpv6, _BH, idev, field)
+#define __ICMP6_INC_STATS(net, idev, field)	\
+		_DEVINCATOMIC(net, icmpv6, __, idev, field)
 
 #define ICMP6MSGOUT_INC_STATS(net, idev, field)		\
 	_DEVINC_ATOMIC_ATOMIC(net, icmpv6msg, idev, field +256)
-#define ICMP6MSGOUT_INC_STATS_BH(net, idev, field)	\
-	_DEVINC_ATOMIC_ATOMIC(net, icmpv6msg, idev, field +256)
-#define ICMP6MSGIN_INC_STATS_BH(net, idev, field)	\
+#define ICMP6MSGIN_INC_STATS(net, idev, field)	\
 	_DEVINC_ATOMIC_ATOMIC(net, icmpv6msg, idev, field)
 
 struct ip6_ra_chain {
@@ -202,6 +299,7 @@ extern rwlock_t ip6_ra_lock;
  */
 
 struct ipv6_txoptions {
+	refcount_t		refcnt;
 	/* Length of this structure */
 	int			tot_len;
 
@@ -214,8 +312,15 @@ struct ipv6_txoptions {
 	struct ipv6_opt_hdr	*dst0opt;
 	struct ipv6_rt_hdr	*srcrt;	/* Routing Header */
 	struct ipv6_opt_hdr	*dst1opt;
-
+	struct rcu_head		rcu;
 	/* Option buffer, as read by IPV6_PKTOPTIONS, starts here. */
+};
+
+/* flowlabel_reflect sysctl values */
+enum flowlabel_reflect {
+	FLOWLABEL_REFLECT_ESTABLISHED		= 1,
+	FLOWLABEL_REFLECT_TCP_RESET		= 2,
+	FLOWLABEL_REFLECT_ICMPV6_ECHO_REPLIES	= 4,
 };
 
 struct ip6_flowlabel {
@@ -236,8 +341,10 @@ struct ip6_flowlabel {
 	struct net		*fl_net;
 };
 
-#define IPV6_FLOWINFO_MASK	cpu_to_be32(0x0FFFFFFF)
-#define IPV6_FLOWLABEL_MASK	cpu_to_be32(0x000FFFFF)
+#define IPV6_FLOWINFO_MASK		cpu_to_be32(0x0FFFFFFF)
+#define IPV6_FLOWLABEL_MASK		cpu_to_be32(0x000FFFFF)
+#define IPV6_FLOWLABEL_STATELESS_FLAG	cpu_to_be32(0x00080000)
+
 #define IPV6_TCLASS_MASK (IPV6_FLOWINFO_MASK & ~IPV6_FLOWLABEL_MASK)
 #define IPV6_TCLASS_SHIFT	20
 
@@ -247,16 +354,81 @@ struct ipv6_fl_socklist {
 	struct rcu_head			rcu;
 };
 
-struct ip6_flowlabel *fl6_sock_lookup(struct sock *sk, __be32 label);
+struct ipcm6_cookie {
+	struct sockcm_cookie sockc;
+	__s16 hlimit;
+	__s16 tclass;
+	__u16 gso_size;
+	__s8  dontfrag;
+	struct ipv6_txoptions *opt;
+};
+
+static inline void ipcm6_init(struct ipcm6_cookie *ipc6)
+{
+	*ipc6 = (struct ipcm6_cookie) {
+		.hlimit = -1,
+		.tclass = -1,
+		.dontfrag = -1,
+	};
+}
+
+static inline void ipcm6_init_sk(struct ipcm6_cookie *ipc6,
+				 const struct ipv6_pinfo *np)
+{
+	*ipc6 = (struct ipcm6_cookie) {
+		.hlimit = -1,
+		.tclass = np->tclass,
+		.dontfrag = np->dontfrag,
+	};
+}
+
+static inline struct ipv6_txoptions *txopt_get(const struct ipv6_pinfo *np)
+{
+	struct ipv6_txoptions *opt;
+
+	rcu_read_lock();
+	opt = rcu_dereference(np->opt);
+	if (opt) {
+		if (!refcount_inc_not_zero(&opt->refcnt))
+			opt = NULL;
+		else
+			opt = rcu_pointer_handoff(opt);
+	}
+	rcu_read_unlock();
+	return opt;
+}
+
+static inline void txopt_put(struct ipv6_txoptions *opt)
+{
+	if (opt && refcount_dec_and_test(&opt->refcnt))
+		kfree_rcu(opt, rcu);
+}
+
+#if IS_ENABLED(CONFIG_IPV6)
+struct ip6_flowlabel *__fl6_sock_lookup(struct sock *sk, __be32 label);
+
+extern struct static_key_false_deferred ipv6_flowlabel_exclusive;
+static inline struct ip6_flowlabel *fl6_sock_lookup(struct sock *sk,
+						    __be32 label)
+{
+	if (static_branch_unlikely(&ipv6_flowlabel_exclusive.key) &&
+	    READ_ONCE(sock_net(sk)->ipv6.flowlabel_has_excl))
+		return __fl6_sock_lookup(sk, label) ? : ERR_PTR(-ENOENT);
+
+	return NULL;
+}
+#endif
+
 struct ipv6_txoptions *fl6_merge_options(struct ipv6_txoptions *opt_space,
 					 struct ip6_flowlabel *fl,
 					 struct ipv6_txoptions *fopt);
 void fl6_free_socklist(struct sock *sk);
-int ipv6_flowlabel_opt(struct sock *sk, char __user *optval, int optlen);
+int ipv6_flowlabel_opt(struct sock *sk, sockptr_t optval, int optlen);
 int ipv6_flowlabel_opt_get(struct sock *sk, struct in6_flowlabel_req *freq,
 			   int flags);
 int ip6_flowlabel_init(void);
 void ip6_flowlabel_cleanup(void);
+bool ip6_autoflowlabel(struct net *net, const struct ipv6_pinfo *np);
 
 static inline void fl6_sock_release(struct ip6_flowlabel *fl)
 {
@@ -264,10 +436,11 @@ static inline void fl6_sock_release(struct ip6_flowlabel *fl)
 		atomic_dec(&fl->users);
 }
 
-void icmpv6_notify(struct sk_buff *skb, u8 type, u8 code, __be32 info);
+enum skb_drop_reason icmpv6_notify(struct sk_buff *skb, u8 type,
+				   u8 code, __be32 info);
 
-int icmpv6_push_pending_frames(struct sock *sk, struct flowi6 *fl6,
-			       struct icmp6hdr *thdr, int len);
+void icmpv6_push_pending_frames(struct sock *sk, struct flowi6 *fl6,
+				struct icmp6hdr *thdr, int len);
 
 int ip6_ra_control(struct sock *sk, int sel);
 
@@ -278,12 +451,88 @@ struct ipv6_txoptions *ipv6_dup_options(struct sock *sk,
 struct ipv6_txoptions *ipv6_renew_options(struct sock *sk,
 					  struct ipv6_txoptions *opt,
 					  int newtype,
-					  struct ipv6_opt_hdr __user *newopt,
-					  int newoptlen);
-struct ipv6_txoptions *ipv6_fixup_options(struct ipv6_txoptions *opt_space,
-					  struct ipv6_txoptions *opt);
+					  struct ipv6_opt_hdr *newopt);
+struct ipv6_txoptions *__ipv6_fixup_options(struct ipv6_txoptions *opt_space,
+					    struct ipv6_txoptions *opt);
 
-bool ipv6_opt_accepted(const struct sock *sk, const struct sk_buff *skb);
+static inline struct ipv6_txoptions *
+ipv6_fixup_options(struct ipv6_txoptions *opt_space, struct ipv6_txoptions *opt)
+{
+	if (!opt)
+		return NULL;
+	return __ipv6_fixup_options(opt_space, opt);
+}
+
+bool ipv6_opt_accepted(const struct sock *sk, const struct sk_buff *skb,
+		       const struct inet6_skb_parm *opt);
+struct ipv6_txoptions *ipv6_update_options(struct sock *sk,
+					   struct ipv6_txoptions *opt);
+
+/* This helper is specialized for BIG TCP needs.
+ * It assumes the hop_jumbo_hdr will immediately follow the IPV6 header.
+ * It assumes headers are already in skb->head.
+ * Returns 0, or IPPROTO_TCP if a BIG TCP packet is there.
+ */
+static inline int ipv6_has_hopopt_jumbo(const struct sk_buff *skb)
+{
+	const struct hop_jumbo_hdr *jhdr;
+	const struct ipv6hdr *nhdr;
+
+	if (likely(skb->len <= GRO_LEGACY_MAX_SIZE))
+		return 0;
+
+	if (skb->protocol != htons(ETH_P_IPV6))
+		return 0;
+
+	if (skb_network_offset(skb) +
+	    sizeof(struct ipv6hdr) +
+	    sizeof(struct hop_jumbo_hdr) > skb_headlen(skb))
+		return 0;
+
+	nhdr = ipv6_hdr(skb);
+
+	if (nhdr->nexthdr != NEXTHDR_HOP)
+		return 0;
+
+	jhdr = (const struct hop_jumbo_hdr *) (nhdr + 1);
+	if (jhdr->tlv_type != IPV6_TLV_JUMBO || jhdr->hdrlen != 0 ||
+	    jhdr->nexthdr != IPPROTO_TCP)
+		return 0;
+	return jhdr->nexthdr;
+}
+
+/* Return 0 if HBH header is successfully removed
+ * Or if HBH removal is unnecessary (packet is not big TCP)
+ * Return error to indicate dropping the packet
+ */
+static inline int ipv6_hopopt_jumbo_remove(struct sk_buff *skb)
+{
+	const int hophdr_len = sizeof(struct hop_jumbo_hdr);
+	int nexthdr = ipv6_has_hopopt_jumbo(skb);
+	struct ipv6hdr *h6;
+
+	if (!nexthdr)
+		return 0;
+
+	if (skb_cow_head(skb, 0))
+		return -1;
+
+	/* Remove the HBH header.
+	 * Layout: [Ethernet header][IPv6 header][HBH][L4 Header]
+	 */
+	memmove(skb_mac_header(skb) + hophdr_len, skb_mac_header(skb),
+		skb_network_header(skb) - skb_mac_header(skb) +
+		sizeof(struct ipv6hdr));
+
+	__skb_pull(skb, hophdr_len);
+	skb->network_header += hophdr_len;
+	skb->mac_header += hophdr_len;
+
+	h6 = ipv6_hdr(skb);
+	h6->nexthdr = nexthdr;
+
+	return 0;
+}
 
 static inline bool ipv6_accept_ra(struct inet6_dev *idev)
 {
@@ -293,18 +542,6 @@ static inline bool ipv6_accept_ra(struct inet6_dev *idev)
 	return idev->cnf.forwarding ? idev->cnf.accept_ra == 2 :
 	    idev->cnf.accept_ra;
 }
-
-#if IS_ENABLED(CONFIG_IPV6)
-static inline int ip6_frag_nqueues(struct net *net)
-{
-	return net->ipv6.frags.nqueues;
-}
-
-static inline int ip6_frag_mem(struct net *net)
-{
-	return sum_frag_mem_limit(&net->ipv6.frags);
-}
-#endif
 
 #define IPV6_FRAG_HIGH_THRESH	(4 * 1024*1024)	/* 4194304 */
 #define IPV6_FRAG_LOW_THRESH	(3 * 1024*1024)	/* 3145728 */
@@ -367,7 +604,7 @@ ipv6_masked_addr_cmp(const struct in6_addr *a1, const struct in6_addr *m,
 #endif
 }
 
-static inline void ipv6_addr_prefix(struct in6_addr *pfx, 
+static inline void ipv6_addr_prefix(struct in6_addr *pfx,
 				    const struct in6_addr *addr,
 				    int plen)
 {
@@ -379,6 +616,21 @@ static inline void ipv6_addr_prefix(struct in6_addr *pfx,
 	memcpy(pfx->s6_addr, addr, o);
 	if (b != 0)
 		pfx->s6_addr[o] = addr->s6_addr[o] & (0xff00 >> b);
+}
+
+static inline void ipv6_addr_prefix_copy(struct in6_addr *addr,
+					 const struct in6_addr *pfx,
+					 int plen)
+{
+	/* caller must guarantee 0 <= plen <= 128 */
+	int o = plen >> 3,
+	    b = plen & 0x7;
+
+	memcpy(addr->s6_addr, pfx, o);
+	if (b != 0) {
+		addr->s6_addr[o] &= ~(0xff00 >> b);
+		addr->s6_addr[o] |= (pfx->s6_addr[o] & (0xff00 >> b));
+	}
 }
 
 static inline void __ipv6_addr_set_half(__be32 *addr,
@@ -401,7 +653,7 @@ static inline void __ipv6_addr_set_half(__be32 *addr,
 	addr[1] = wl;
 }
 
-static inline void ipv6_addr_set(struct in6_addr *addr, 
+static inline void ipv6_addr_set(struct in6_addr *addr,
 				     __be32 w1, __be32 w2,
 				     __be32 w3, __be32 w4)
 {
@@ -472,49 +724,6 @@ static inline bool ipv6_prefix_equal(const struct in6_addr *addr1,
 }
 #endif
 
-struct inet_frag_queue;
-
-enum ip6_defrag_users {
-	IP6_DEFRAG_LOCAL_DELIVER,
-	IP6_DEFRAG_CONNTRACK_IN,
-	__IP6_DEFRAG_CONNTRACK_IN	= IP6_DEFRAG_CONNTRACK_IN + USHRT_MAX,
-	IP6_DEFRAG_CONNTRACK_OUT,
-	__IP6_DEFRAG_CONNTRACK_OUT	= IP6_DEFRAG_CONNTRACK_OUT + USHRT_MAX,
-	IP6_DEFRAG_CONNTRACK_BRIDGE_IN,
-	__IP6_DEFRAG_CONNTRACK_BRIDGE_IN = IP6_DEFRAG_CONNTRACK_BRIDGE_IN + USHRT_MAX,
-};
-
-struct ip6_create_arg {
-	__be32 id;
-	u32 user;
-	const struct in6_addr *src;
-	const struct in6_addr *dst;
-	u8 ecn;
-};
-
-void ip6_frag_init(struct inet_frag_queue *q, void *a);
-bool ip6_frag_match(struct inet_frag_queue *q, void *a);
-
-/*
- *	Equivalent of ipv4 struct ip
- */
-struct frag_queue {
-	struct inet_frag_queue	q;
-
-	__be32			id;		/* fragment id		*/
-	u32			user;
-	struct in6_addr		saddr;
-	struct in6_addr		daddr;
-
-	int			iif;
-	unsigned int		csum;
-	__u16			nhoffset;
-	u8			ecn;
-};
-
-void ip6_expire_frag_queue(struct net *net, struct frag_queue *fq,
-			   struct inet_frags *frags);
-
 static inline bool ipv6_addr_any(const struct in6_addr *a)
 {
 #if defined(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS) && BITS_PER_LONG == 64
@@ -543,35 +752,62 @@ static inline u32 ipv6_addr_hash(const struct in6_addr *a)
 /* more secured version of ipv6_addr_hash() */
 static inline u32 __ipv6_addr_jhash(const struct in6_addr *a, const u32 initval)
 {
-	u32 v = (__force u32)a->s6_addr32[0] ^ (__force u32)a->s6_addr32[1];
-
-	return jhash_3words(v,
-			    (__force u32)a->s6_addr32[2],
-			    (__force u32)a->s6_addr32[3],
-			    initval);
+	return jhash2((__force const u32 *)a->s6_addr32,
+		      ARRAY_SIZE(a->s6_addr32), initval);
 }
 
 static inline bool ipv6_addr_loopback(const struct in6_addr *a)
 {
 #if defined(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS) && BITS_PER_LONG == 64
-	const unsigned long *ul = (const unsigned long *)a;
+	const __be64 *be = (const __be64 *)a;
 
-	return (ul[0] | (ul[1] ^ cpu_to_be64(1))) == 0UL;
+	return (be[0] | (be[1] ^ cpu_to_be64(1))) == 0UL;
 #else
 	return (a->s6_addr32[0] | a->s6_addr32[1] |
-		a->s6_addr32[2] | (a->s6_addr32[3] ^ htonl(1))) == 0;
+		a->s6_addr32[2] | (a->s6_addr32[3] ^ cpu_to_be32(1))) == 0;
 #endif
 }
 
+/*
+ * Note that we must __force cast these to unsigned long to make sparse happy,
+ * since all of the endian-annotated types are fixed size regardless of arch.
+ */
 static inline bool ipv6_addr_v4mapped(const struct in6_addr *a)
 {
 	return (
 #if defined(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS) && BITS_PER_LONG == 64
-		*(__be64 *)a |
+		*(unsigned long *)a |
 #else
-		(a->s6_addr32[0] | a->s6_addr32[1]) |
+		(__force unsigned long)(a->s6_addr32[0] | a->s6_addr32[1]) |
 #endif
-		(a->s6_addr32[2] ^ htonl(0x0000ffff))) == 0UL;
+		(__force unsigned long)(a->s6_addr32[2] ^
+					cpu_to_be32(0x0000ffff))) == 0UL;
+}
+
+static inline bool ipv6_addr_v4mapped_any(const struct in6_addr *a)
+{
+	return ipv6_addr_v4mapped(a) && ipv4_is_zeronet(a->s6_addr32[3]);
+}
+
+static inline bool ipv6_addr_v4mapped_loopback(const struct in6_addr *a)
+{
+	return ipv6_addr_v4mapped(a) && ipv4_is_loopback(a->s6_addr32[3]);
+}
+
+static inline u32 ipv6_portaddr_hash(const struct net *net,
+				     const struct in6_addr *addr6,
+				     unsigned int port)
+{
+	unsigned int hash, mix = net_hash_mix(net);
+
+	if (ipv6_addr_any(addr6))
+		hash = jhash_1word(0, mix);
+	else if (ipv6_addr_v4mapped(addr6))
+		hash = jhash_1word((__force u32)addr6->s6_addr32[3], mix);
+	else
+		hash = jhash2((__force u32 *)addr6->s6_addr32, 4, mix);
+
+	return hash ^ port;
 }
 
 /*
@@ -581,6 +817,11 @@ static inline bool ipv6_addr_v4mapped(const struct in6_addr *a)
 static inline bool ipv6_addr_orchid(const struct in6_addr *a)
 {
 	return (a->s6_addr32[0] & htonl(0xfffffff0)) == htonl(0x20010010);
+}
+
+static inline bool ipv6_addr_is_multicast(const struct in6_addr *addr)
+{
+	return (addr->s6_addr32[0] & htonl(0xFF000000)) == htonl(0xFF000000);
 }
 
 static inline void ipv6_addr_set_v4mapped(const __be32 addr,
@@ -610,7 +851,7 @@ static inline int __ipv6_addr_diff32(const void *token1, const void *token2, int
 	}
 
 	/*
-	 *	we should *never* get to this point since that 
+	 *	we should *never* get to this point since that
 	 *	would mean the addrs are equal
 	 *
 	 *	However, we do get to it 8) And exacly, when
@@ -660,9 +901,138 @@ static inline int ipv6_addr_diff(const struct in6_addr *a1, const struct in6_add
 	return __ipv6_addr_diff(a1, a2, sizeof(struct in6_addr));
 }
 
-void ipv6_select_ident(struct frag_hdr *fhdr, struct rt6_info *rt);
+__be32 ipv6_select_ident(struct net *net,
+			 const struct in6_addr *daddr,
+			 const struct in6_addr *saddr);
+__be32 ipv6_proxy_select_ident(struct net *net, struct sk_buff *skb);
 
 int ip6_dst_hoplimit(struct dst_entry *dst);
+
+static inline int ip6_sk_dst_hoplimit(struct ipv6_pinfo *np, struct flowi6 *fl6,
+				      struct dst_entry *dst)
+{
+	int hlimit;
+
+	if (ipv6_addr_is_multicast(&fl6->daddr))
+		hlimit = np->mcast_hops;
+	else
+		hlimit = np->hop_limit;
+	if (hlimit < 0)
+		hlimit = ip6_dst_hoplimit(dst);
+	return hlimit;
+}
+
+/* copy IPv6 saddr & daddr to flow_keys, possibly using 64bit load/store
+ * Equivalent to :	flow->v6addrs.src = iph->saddr;
+ *			flow->v6addrs.dst = iph->daddr;
+ */
+static inline void iph_to_flow_copy_v6addrs(struct flow_keys *flow,
+					    const struct ipv6hdr *iph)
+{
+	BUILD_BUG_ON(offsetof(typeof(flow->addrs), v6addrs.dst) !=
+		     offsetof(typeof(flow->addrs), v6addrs.src) +
+		     sizeof(flow->addrs.v6addrs.src));
+	memcpy(&flow->addrs.v6addrs, &iph->addrs, sizeof(flow->addrs.v6addrs));
+	flow->control.addr_type = FLOW_DISSECTOR_KEY_IPV6_ADDRS;
+}
+
+#if IS_ENABLED(CONFIG_IPV6)
+
+static inline bool ipv6_can_nonlocal_bind(struct net *net,
+					  struct inet_sock *inet)
+{
+	return net->ipv6.sysctl.ip_nonlocal_bind ||
+		test_bit(INET_FLAGS_FREEBIND, &inet->inet_flags) ||
+		test_bit(INET_FLAGS_TRANSPARENT, &inet->inet_flags);
+}
+
+/* Sysctl settings for net ipv6.auto_flowlabels */
+#define IP6_AUTO_FLOW_LABEL_OFF		0
+#define IP6_AUTO_FLOW_LABEL_OPTOUT	1
+#define IP6_AUTO_FLOW_LABEL_OPTIN	2
+#define IP6_AUTO_FLOW_LABEL_FORCED	3
+
+#define IP6_AUTO_FLOW_LABEL_MAX		IP6_AUTO_FLOW_LABEL_FORCED
+
+#define IP6_DEFAULT_AUTO_FLOW_LABELS	IP6_AUTO_FLOW_LABEL_OPTOUT
+
+static inline __be32 ip6_make_flowlabel(struct net *net, struct sk_buff *skb,
+					__be32 flowlabel, bool autolabel,
+					struct flowi6 *fl6)
+{
+	u32 hash;
+
+	/* @flowlabel may include more than a flow label, eg, the traffic class.
+	 * Here we want only the flow label value.
+	 */
+	flowlabel &= IPV6_FLOWLABEL_MASK;
+
+	if (flowlabel ||
+	    net->ipv6.sysctl.auto_flowlabels == IP6_AUTO_FLOW_LABEL_OFF ||
+	    (!autolabel &&
+	     net->ipv6.sysctl.auto_flowlabels != IP6_AUTO_FLOW_LABEL_FORCED))
+		return flowlabel;
+
+	hash = skb_get_hash_flowi6(skb, fl6);
+
+	/* Since this is being sent on the wire obfuscate hash a bit
+	 * to minimize possbility that any useful information to an
+	 * attacker is leaked. Only lower 20 bits are relevant.
+	 */
+	hash = rol32(hash, 16);
+
+	flowlabel = (__force __be32)hash & IPV6_FLOWLABEL_MASK;
+
+	if (net->ipv6.sysctl.flowlabel_state_ranges)
+		flowlabel |= IPV6_FLOWLABEL_STATELESS_FLAG;
+
+	return flowlabel;
+}
+
+static inline int ip6_default_np_autolabel(struct net *net)
+{
+	switch (net->ipv6.sysctl.auto_flowlabels) {
+	case IP6_AUTO_FLOW_LABEL_OFF:
+	case IP6_AUTO_FLOW_LABEL_OPTIN:
+	default:
+		return 0;
+	case IP6_AUTO_FLOW_LABEL_OPTOUT:
+	case IP6_AUTO_FLOW_LABEL_FORCED:
+		return 1;
+	}
+}
+#else
+static inline __be32 ip6_make_flowlabel(struct net *net, struct sk_buff *skb,
+					__be32 flowlabel, bool autolabel,
+					struct flowi6 *fl6)
+{
+	return flowlabel;
+}
+static inline int ip6_default_np_autolabel(struct net *net)
+{
+	return 0;
+}
+#endif
+
+#if IS_ENABLED(CONFIG_IPV6)
+static inline int ip6_multipath_hash_policy(const struct net *net)
+{
+	return net->ipv6.sysctl.multipath_hash_policy;
+}
+static inline u32 ip6_multipath_hash_fields(const struct net *net)
+{
+	return net->ipv6.sysctl.multipath_hash_fields;
+}
+#else
+static inline int ip6_multipath_hash_policy(const struct net *net)
+{
+	return 0;
+}
+static inline u32 ip6_multipath_hash_fields(const struct net *net)
+{
+	return 0;
+}
+#endif
 
 /*
  *	Header manipulation
@@ -687,6 +1057,22 @@ static inline u8 ip6_tclass(__be32 flowinfo)
 {
 	return ntohl(flowinfo & IPV6_TCLASS_MASK) >> IPV6_TCLASS_SHIFT;
 }
+
+static inline dscp_t ip6_dscp(__be32 flowinfo)
+{
+	return inet_dsfield_to_dscp(ip6_tclass(flowinfo));
+}
+
+static inline __be32 ip6_make_flowinfo(unsigned int tclass, __be32 flowlabel)
+{
+	return htonl(tclass << IPV6_TCLASS_SHIFT) | flowlabel;
+}
+
+static inline __be32 flowi6_get_flowlabel(const struct flowi6 *fl6)
+{
+	return fl6->flowlabel & IPV6_FLOWLABEL_MASK;
+}
+
 /*
  *	Prototypes exported by ipv6
  */
@@ -697,33 +1083,62 @@ static inline u8 ip6_tclass(__be32 flowinfo)
 
 int ipv6_rcv(struct sk_buff *skb, struct net_device *dev,
 	     struct packet_type *pt, struct net_device *orig_dev);
+void ipv6_list_rcv(struct list_head *head, struct packet_type *pt,
+		   struct net_device *orig_dev);
 
-int ip6_rcv_finish(struct sk_buff *skb);
+int ip6_rcv_finish(struct net *net, struct sock *sk, struct sk_buff *skb);
 
 /*
  *	upper-layer output functions
  */
-int ip6_xmit(struct sock *sk, struct sk_buff *skb, struct flowi6 *fl6,
-	     struct ipv6_txoptions *opt, int tclass);
+int ip6_xmit(const struct sock *sk, struct sk_buff *skb, struct flowi6 *fl6,
+	     __u32 mark, struct ipv6_txoptions *opt, int tclass, u32 priority);
 
 int ip6_find_1stfragopt(struct sk_buff *skb, u8 **nexthdr);
 
 int ip6_append_data(struct sock *sk,
 		    int getfrag(void *from, char *to, int offset, int len,
 				int odd, struct sk_buff *skb),
-		    void *from, int length, int transhdrlen, int hlimit,
-		    int tclass, struct ipv6_txoptions *opt, struct flowi6 *fl6,
-		    struct rt6_info *rt, unsigned int flags, int dontfrag);
+		    void *from, size_t length, int transhdrlen,
+		    struct ipcm6_cookie *ipc6, struct flowi6 *fl6,
+		    struct rt6_info *rt, unsigned int flags);
 
 int ip6_push_pending_frames(struct sock *sk);
 
 void ip6_flush_pending_frames(struct sock *sk);
 
-int ip6_dst_lookup(struct sock *sk, struct dst_entry **dst, struct flowi6 *fl6);
-struct dst_entry *ip6_dst_lookup_flow(struct sock *sk, struct flowi6 *fl6,
+int ip6_send_skb(struct sk_buff *skb);
+
+struct sk_buff *__ip6_make_skb(struct sock *sk, struct sk_buff_head *queue,
+			       struct inet_cork_full *cork,
+			       struct inet6_cork *v6_cork);
+struct sk_buff *ip6_make_skb(struct sock *sk,
+			     int getfrag(void *from, char *to, int offset,
+					 int len, int odd, struct sk_buff *skb),
+			     void *from, size_t length, int transhdrlen,
+			     struct ipcm6_cookie *ipc6,
+			     struct rt6_info *rt, unsigned int flags,
+			     struct inet_cork_full *cork);
+
+static inline struct sk_buff *ip6_finish_skb(struct sock *sk)
+{
+	return __ip6_make_skb(sk, &sk->sk_write_queue, &inet_sk(sk)->cork,
+			      &inet6_sk(sk)->cork);
+}
+
+int ip6_dst_lookup(struct net *net, struct sock *sk, struct dst_entry **dst,
+		   struct flowi6 *fl6);
+struct dst_entry *ip6_dst_lookup_flow(struct net *net, const struct sock *sk, struct flowi6 *fl6,
 				      const struct in6_addr *final_dst);
 struct dst_entry *ip6_sk_dst_lookup_flow(struct sock *sk, struct flowi6 *fl6,
-					 const struct in6_addr *final_dst);
+					 const struct in6_addr *final_dst,
+					 bool connected);
+struct dst_entry *ip6_dst_lookup_tunnel(struct sk_buff *skb,
+					struct net_device *dev,
+					struct net *net, struct socket *sock,
+					struct in6_addr *saddr,
+					const struct ip_tunnel_info *info,
+					u8 protocol, bool use_cache);
 struct dst_entry *ip6_blackhole_route(struct net *net,
 				      struct dst_entry *orig_dst);
 
@@ -731,20 +1146,23 @@ struct dst_entry *ip6_blackhole_route(struct net *net,
  *	skb processing functions
  */
 
-int ip6_output(struct sk_buff *skb);
+int ip6_output(struct net *net, struct sock *sk, struct sk_buff *skb);
 int ip6_forward(struct sk_buff *skb);
 int ip6_input(struct sk_buff *skb);
 int ip6_mc_input(struct sk_buff *skb);
+void ip6_protocol_deliver_rcu(struct net *net, struct sk_buff *skb, int nexthdr,
+			      bool have_final);
 
-int __ip6_local_out(struct sk_buff *skb);
-int ip6_local_out(struct sk_buff *skb);
+int __ip6_local_out(struct net *net, struct sock *sk, struct sk_buff *skb);
+int ip6_local_out(struct net *net, struct sock *sk, struct sk_buff *skb);
 
 /*
  *	Extension header (options) processing
  */
 
 void ipv6_push_nfrag_opts(struct sk_buff *skb, struct ipv6_txoptions *opt,
-			  u8 *proto, struct in6_addr **daddr_p);
+			  u8 *proto, struct in6_addr **daddr_p,
+			  struct in6_addr *saddr);
 void ipv6_push_frag_opts(struct sk_buff *skb, struct ipv6_txoptions *opt,
 			 u8 *proto);
 
@@ -763,7 +1181,7 @@ enum {
 int ipv6_find_hdr(const struct sk_buff *skb, unsigned int *offset, int target,
 		  unsigned short *fragoff, int *fragflg);
 
-int ipv6_find_tlv(struct sk_buff *skb, int offset, int type);
+int ipv6_find_tlv(const struct sk_buff *skb, int offset, int type);
 
 struct in6_addr *fl6_update_dst(struct flowi6 *fl6,
 				const struct ipv6_txoptions *opt,
@@ -772,19 +1190,24 @@ struct in6_addr *fl6_update_dst(struct flowi6 *fl6,
 /*
  *	socket options (ipv6_sockglue.c)
  */
+DECLARE_STATIC_KEY_FALSE(ip6_min_hopcount);
 
-int ipv6_setsockopt(struct sock *sk, int level, int optname,
-		    char __user *optval, unsigned int optlen);
+int do_ipv6_setsockopt(struct sock *sk, int level, int optname, sockptr_t optval,
+		       unsigned int optlen);
+int ipv6_setsockopt(struct sock *sk, int level, int optname, sockptr_t optval,
+		    unsigned int optlen);
+int do_ipv6_getsockopt(struct sock *sk, int level, int optname,
+		       sockptr_t optval, sockptr_t optlen);
 int ipv6_getsockopt(struct sock *sk, int level, int optname,
 		    char __user *optval, int __user *optlen);
-int compat_ipv6_setsockopt(struct sock *sk, int level, int optname,
-			   char __user *optval, unsigned int optlen);
-int compat_ipv6_getsockopt(struct sock *sk, int level, int optname,
-			   char __user *optval, int __user *optlen);
 
+int __ip6_datagram_connect(struct sock *sk, struct sockaddr *addr,
+			   int addr_len);
 int ip6_datagram_connect(struct sock *sk, struct sockaddr *addr, int addr_len);
 int ip6_datagram_connect_v6_only(struct sock *sk, struct sockaddr *addr,
 				 int addr_len);
+int ip6_datagram_dst_update(struct sock *sk, bool fix_sk_saddr);
+void ip6_datagram_release_cb(struct sock *sk);
 
 int ipv6_recv_error(struct sock *sk, struct msghdr *msg, int len,
 		    int *addr_len);
@@ -795,29 +1218,39 @@ void ipv6_icmp_error(struct sock *sk, struct sk_buff *skb, int err, __be16 port,
 void ipv6_local_error(struct sock *sk, int err, struct flowi6 *fl6, u32 info);
 void ipv6_local_rxpmtu(struct sock *sk, struct flowi6 *fl6, u32 mtu);
 
+void inet6_cleanup_sock(struct sock *sk);
+void inet6_sock_destruct(struct sock *sk);
 int inet6_release(struct socket *sock);
 int inet6_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len);
-int inet6_getname(struct socket *sock, struct sockaddr *uaddr, int *uaddr_len,
+int inet6_bind_sk(struct sock *sk, struct sockaddr *uaddr, int addr_len);
+int inet6_getname(struct socket *sock, struct sockaddr *uaddr,
 		  int peer);
 int inet6_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg);
+int inet6_compat_ioctl(struct socket *sock, unsigned int cmd,
+		unsigned long arg);
 
 int inet6_hash_connect(struct inet_timewait_death_row *death_row,
 			      struct sock *sk);
+int inet6_sendmsg(struct socket *sock, struct msghdr *msg, size_t size);
+int inet6_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
+		  int flags);
 
 /*
  * reassembly.c
  */
 extern const struct proto_ops inet6_stream_ops;
 extern const struct proto_ops inet6_dgram_ops;
+extern const struct proto_ops inet6_sockraw_ops;
 
 struct group_source_req;
 struct group_filter;
 
 int ip6_mc_source(int add, int omode, struct sock *sk,
 		  struct group_source_req *pgsr);
-int ip6_mc_msfilter(struct sock *sk, struct group_filter *gsf);
+int ip6_mc_msfilter(struct sock *sk, struct group_filter *gsf,
+		  struct sockaddr_storage *list);
 int ip6_mc_msfget(struct sock *sk, struct group_filter *gsf,
-		  struct group_filter __user *optval, int __user *optlen);
+		  sockptr_t optval, size_t ss_offset);
 
 #ifdef CONFIG_PROC_FS
 int ac6_proc_init(struct net *net);
@@ -843,12 +1276,110 @@ static inline int snmp6_unregister_dev(struct inet6_dev *idev) { return 0; }
 #endif
 
 #ifdef CONFIG_SYSCTL
-extern struct ctl_table ipv6_route_table_template[];
-
 struct ctl_table *ipv6_icmp_sysctl_init(struct net *net);
+size_t ipv6_icmp_sysctl_table_size(void);
 struct ctl_table *ipv6_route_sysctl_init(struct net *net);
+size_t ipv6_route_sysctl_table_size(struct net *net);
 int ipv6_sysctl_register(void);
 void ipv6_sysctl_unregister(void);
 #endif
+
+int ipv6_sock_mc_join(struct sock *sk, int ifindex,
+		      const struct in6_addr *addr);
+int ipv6_sock_mc_join_ssm(struct sock *sk, int ifindex,
+			  const struct in6_addr *addr, unsigned int mode);
+int ipv6_sock_mc_drop(struct sock *sk, int ifindex,
+		      const struct in6_addr *addr);
+
+static inline int ip6_sock_set_v6only(struct sock *sk)
+{
+	if (inet_sk(sk)->inet_num)
+		return -EINVAL;
+	lock_sock(sk);
+	sk->sk_ipv6only = true;
+	release_sock(sk);
+	return 0;
+}
+
+static inline void ip6_sock_set_recverr(struct sock *sk)
+{
+	lock_sock(sk);
+	inet6_sk(sk)->recverr = true;
+	release_sock(sk);
+}
+
+static inline int __ip6_sock_set_addr_preferences(struct sock *sk, int val)
+{
+	unsigned int pref = 0;
+	unsigned int prefmask = ~0;
+
+	/* check PUBLIC/TMP/PUBTMP_DEFAULT conflicts */
+	switch (val & (IPV6_PREFER_SRC_PUBLIC |
+		       IPV6_PREFER_SRC_TMP |
+		       IPV6_PREFER_SRC_PUBTMP_DEFAULT)) {
+	case IPV6_PREFER_SRC_PUBLIC:
+		pref |= IPV6_PREFER_SRC_PUBLIC;
+		prefmask &= ~(IPV6_PREFER_SRC_PUBLIC |
+			      IPV6_PREFER_SRC_TMP);
+		break;
+	case IPV6_PREFER_SRC_TMP:
+		pref |= IPV6_PREFER_SRC_TMP;
+		prefmask &= ~(IPV6_PREFER_SRC_PUBLIC |
+			      IPV6_PREFER_SRC_TMP);
+		break;
+	case IPV6_PREFER_SRC_PUBTMP_DEFAULT:
+		prefmask &= ~(IPV6_PREFER_SRC_PUBLIC |
+			      IPV6_PREFER_SRC_TMP);
+		break;
+	case 0:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	/* check HOME/COA conflicts */
+	switch (val & (IPV6_PREFER_SRC_HOME | IPV6_PREFER_SRC_COA)) {
+	case IPV6_PREFER_SRC_HOME:
+		prefmask &= ~IPV6_PREFER_SRC_COA;
+		break;
+	case IPV6_PREFER_SRC_COA:
+		pref |= IPV6_PREFER_SRC_COA;
+		break;
+	case 0:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	/* check CGA/NONCGA conflicts */
+	switch (val & (IPV6_PREFER_SRC_CGA|IPV6_PREFER_SRC_NONCGA)) {
+	case IPV6_PREFER_SRC_CGA:
+	case IPV6_PREFER_SRC_NONCGA:
+	case 0:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	inet6_sk(sk)->srcprefs = (inet6_sk(sk)->srcprefs & prefmask) | pref;
+	return 0;
+}
+
+static inline int ip6_sock_set_addr_preferences(struct sock *sk, int val)
+{
+	int ret;
+
+	lock_sock(sk);
+	ret = __ip6_sock_set_addr_preferences(sk, val);
+	release_sock(sk);
+	return ret;
+}
+
+static inline void ip6_sock_set_recvpktinfo(struct sock *sk)
+{
+	lock_sock(sk);
+	inet6_sk(sk)->rxopt.bits.rxinfo = true;
+	release_sock(sk);
+}
 
 #endif /* _NET_IPV6_H */

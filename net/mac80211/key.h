@@ -1,10 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright 2002-2004, Instant802 Networks, Inc.
  * Copyright 2005, Devicescape Software, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Copyright (C) 2019, 2022 Intel Corporation
  */
 
 #ifndef IEEE80211_KEY_H
@@ -14,14 +12,17 @@
 #include <linux/list.h>
 #include <linux/crypto.h>
 #include <linux/rcupdate.h>
+#include <crypto/arc4.h>
 #include <net/mac80211.h>
 
 #define NUM_DEFAULT_KEYS 4
 #define NUM_DEFAULT_MGMT_KEYS 2
-#define MAX_PN_LEN 16
+#define NUM_DEFAULT_BEACON_KEYS 2
+#define INVALID_PTK_KEYIDX 2 /* Keyidx always pointing to a NULL key for PTK */
 
 struct ieee80211_local;
 struct ieee80211_sub_if_data;
+struct ieee80211_link_data;
 struct sta_info;
 
 /**
@@ -43,11 +44,15 @@ enum ieee80211_internal_tkip_state {
 };
 
 struct tkip_ctx {
-	u32 iv32;	/* current iv32 */
-	u16 iv16;	/* current iv16 */
 	u16 p1k[5];	/* p1k cache */
 	u32 p1k_iv32;	/* iv32 for which p1k computed */
 	enum ieee80211_internal_tkip_state state;
+};
+
+struct tkip_ctx_rx {
+	struct tkip_ctx ctx;
+	u32 iv32;	/* current iv32 */
+	u16 iv16;	/* current iv16 */
 };
 
 struct ieee80211_key {
@@ -70,13 +75,12 @@ struct ieee80211_key {
 			struct tkip_ctx tx;
 
 			/* last received RSC */
-			struct tkip_ctx rx[IEEE80211_NUM_TIDS];
+			struct tkip_ctx_rx rx[IEEE80211_NUM_TIDS];
 
 			/* number of mic failures */
 			u32 mic_failures;
 		} tkip;
 		struct {
-			atomic64_t tx_pn;
 			/*
 			 * Last received packet number. The first
 			 * IEEE80211_NUM_TIDS counters are used with Data
@@ -88,20 +92,32 @@ struct ieee80211_key {
 			u32 replays; /* dot11RSNAStatsCCMPReplays */
 		} ccmp;
 		struct {
-			atomic64_t tx_pn;
 			u8 rx_pn[IEEE80211_CMAC_PN_LEN];
-			struct crypto_cipher *tfm;
+			struct crypto_shash *tfm;
 			u32 replays; /* dot11RSNAStatsCMACReplays */
 			u32 icverrors; /* dot11RSNAStatsCMACICVErrors */
 		} aes_cmac;
 		struct {
+			u8 rx_pn[IEEE80211_GMAC_PN_LEN];
+			struct crypto_aead *tfm;
+			u32 replays; /* dot11RSNAStatsCMACReplays */
+			u32 icverrors; /* dot11RSNAStatsCMACICVErrors */
+		} aes_gmac;
+		struct {
+			/* Last received packet number. The first
+			 * IEEE80211_NUM_TIDS counters are used with Data
+			 * frames and the last counter is used with Robust
+			 * Management frames.
+			 */
+			u8 rx_pn[IEEE80211_NUM_TIDS + 1][IEEE80211_GCMP_PN_LEN];
+			struct crypto_aead *tfm;
+			u32 replays; /* dot11RSNAStatsGCMPReplays */
+		} gcmp;
+		struct {
 			/* generic cipher scheme */
-			u8 rx_pn[IEEE80211_NUM_TIDS + 1][MAX_PN_LEN];
+			u8 rx_pn[IEEE80211_NUM_TIDS + 1][IEEE80211_MAX_PN_LEN];
 		} gen;
 	} u;
-
-	/* number of times this key has been used */
-	int tx_rx_count;
 
 #ifdef CONFIG_MAC80211_DEBUGFS
 	struct {
@@ -110,6 +126,8 @@ struct ieee80211_key {
 		int cnt;
 	} debugfs;
 #endif
+
+	unsigned int color;
 
 	/*
 	 * key config, must be last because it contains key
@@ -121,29 +139,40 @@ struct ieee80211_key {
 struct ieee80211_key *
 ieee80211_key_alloc(u32 cipher, int idx, size_t key_len,
 		    const u8 *key_data,
-		    size_t seq_len, const u8 *seq,
-		    const struct ieee80211_cipher_scheme *cs);
+		    size_t seq_len, const u8 *seq);
 /*
  * Insert a key into data structures (sdata, sta if necessary)
  * to make it used, free old key. On failure, also free the new key.
  */
 int ieee80211_key_link(struct ieee80211_key *key,
-		       struct ieee80211_sub_if_data *sdata,
+		       struct ieee80211_link_data *link,
 		       struct sta_info *sta);
+int ieee80211_set_tx_key(struct ieee80211_key *key);
 void ieee80211_key_free(struct ieee80211_key *key, bool delay_tailroom);
 void ieee80211_key_free_unused(struct ieee80211_key *key);
-void ieee80211_set_default_key(struct ieee80211_sub_if_data *sdata, int idx,
+void ieee80211_set_default_key(struct ieee80211_link_data *link, int idx,
 			       bool uni, bool multi);
-void ieee80211_set_default_mgmt_key(struct ieee80211_sub_if_data *sdata,
+void ieee80211_set_default_mgmt_key(struct ieee80211_link_data *link,
 				    int idx);
+void ieee80211_set_default_beacon_key(struct ieee80211_link_data *link,
+				      int idx);
+void ieee80211_remove_link_keys(struct ieee80211_link_data *link,
+				struct list_head *keys);
+void ieee80211_free_key_list(struct ieee80211_local *local,
+			     struct list_head *keys);
 void ieee80211_free_keys(struct ieee80211_sub_if_data *sdata,
 			 bool force_synchronize);
 void ieee80211_free_sta_keys(struct ieee80211_local *local,
 			     struct sta_info *sta);
-void ieee80211_enable_keys(struct ieee80211_sub_if_data *sdata);
+void ieee80211_reenable_keys(struct ieee80211_sub_if_data *sdata);
+int ieee80211_key_switch_links(struct ieee80211_sub_if_data *sdata,
+			       unsigned long del_links_mask,
+			       unsigned long add_links_mask);
 
 #define key_mtx_dereference(local, ref) \
 	rcu_dereference_protected(ref, lockdep_is_held(&((local)->key_mtx)))
+#define rcu_dereference_check_key_mtx(local, ref) \
+	rcu_dereference_check(ref, lockdep_is_held(&((local)->key_mtx)))
 
 void ieee80211_delayed_tailroom_dec(struct work_struct *wk);
 

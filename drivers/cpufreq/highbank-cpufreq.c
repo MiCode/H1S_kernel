@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2012 Calxeda, Inc.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  * This driver provides the clk notifier callbacks that are used when
- * the cpufreq-cpu0 driver changes to frequency to alert the highbank
+ * the cpufreq-dt driver changes to frequency to alert the highbank
  * EnergyCore Management Engine (ECME) about the need to change
  * voltage. The ECME interfaces with the actual voltage regulators.
  */
@@ -19,7 +16,7 @@
 #include <linux/cpu.h>
 #include <linux/err.h>
 #include <linux/of.h>
-#include <linux/mailbox.h>
+#include <linux/pl320-ipc.h>
 #include <linux/platform_device.h>
 
 #define HB_CPUFREQ_CHANGE_NOTE	0x80000001
@@ -58,9 +55,9 @@ static struct notifier_block hb_cpufreq_clk_nb = {
 	.notifier_call = hb_cpufreq_clk_notify,
 };
 
-static int hb_cpufreq_driver_init(void)
+static int __init hb_cpufreq_driver_init(void)
 {
-	struct platform_device_info devinfo = { .name = "cpufreq-cpu0", };
+	struct platform_device_info devinfo = { .name = "cpufreq-dt", };
 	struct device *cpu_dev;
 	struct clk *cpu_clk;
 	struct device_node *np;
@@ -95,7 +92,7 @@ static int hb_cpufreq_driver_init(void)
 		goto out_put_node;
 	}
 
-	/* Instantiate cpufreq-cpu0 */
+	/* Instantiate cpufreq-dt */
 	platform_device_register_full(&devinfo);
 
 out_put_node:
@@ -103,6 +100,13 @@ out_put_node:
 	return ret;
 }
 module_init(hb_cpufreq_driver_init);
+
+static const struct of_device_id __maybe_unused hb_cpufreq_of_match[] = {
+	{ .compatible = "calxeda,highbank" },
+	{ .compatible = "calxeda,ecx-2000" },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, hb_cpufreq_of_match);
 
 MODULE_AUTHOR("Mark Langsdorf <mark.langsdorf@calxeda.com>");
 MODULE_DESCRIPTION("Calxeda Highbank cpufreq driver");

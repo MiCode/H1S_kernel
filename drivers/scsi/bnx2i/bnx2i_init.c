@@ -1,15 +1,17 @@
-/* bnx2i.c: Broadcom NetXtreme II iSCSI driver.
+/* bnx2i.c: QLogic NetXtreme II iSCSI driver.
  *
  * Copyright (c) 2006 - 2013 Broadcom Corporation
  * Copyright (c) 2007, 2008 Red Hat, Inc.  All rights reserved.
  * Copyright (c) 2007, 2008 Mike Christie
+ * Copyright (c) 2014, QLogic Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation.
  *
  * Written by: Anil Veerabhadrappa (anilgv@broadcom.com)
- * Maintained by: Eddie Wai (eddie.wai@broadcom.com)
+ * Previously Maintained by: Eddie Wai (eddie.wai@broadcom.com)
+ * Maintained by: QLogic-Storage-Upstream@qlogic.com
  */
 
 #include "bnx2i.h"
@@ -18,18 +20,18 @@ static struct list_head adapter_list = LIST_HEAD_INIT(adapter_list);
 static u32 adapter_count;
 
 #define DRV_MODULE_NAME		"bnx2i"
-#define DRV_MODULE_VERSION	"2.7.6.2"
-#define DRV_MODULE_RELDATE	"Jun 06, 2013"
+#define DRV_MODULE_VERSION	"2.7.10.1"
+#define DRV_MODULE_RELDATE	"Jul 16, 2014"
 
 static char version[] =
-		"Broadcom NetXtreme II iSCSI Driver " DRV_MODULE_NAME \
+		"QLogic NetXtreme II iSCSI Driver " DRV_MODULE_NAME \
 		" v" DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")\n";
 
 
 MODULE_AUTHOR("Anil Veerabhadrappa <anilgv@broadcom.com> and "
 	      "Eddie Wai <eddie.wai@broadcom.com>");
 
-MODULE_DESCRIPTION("Broadcom NetXtreme II BCM5706/5708/5709/57710/57711/57712"
+MODULE_DESCRIPTION("QLogic NetXtreme II BCM5706/5708/5709/57710/57711/57712"
 		   "/57800/57810/57840 iSCSI Driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_MODULE_VERSION);
@@ -68,18 +70,10 @@ u64 iscsi_error_mask = 0x00;
 
 DEFINE_PER_CPU(struct bnx2i_percpu_s, bnx2i_percpu);
 
-static int bnx2i_cpu_callback(struct notifier_block *nfb,
-			      unsigned long action, void *hcpu);
-/* notification function for CPU hotplug events */
-static struct notifier_block bnx2i_cpu_notifier = {
-	.notifier_call = bnx2i_cpu_callback,
-};
-
-
 /**
  * bnx2i_identify_device - identifies NetXtreme II device type
  * @hba: 		Adapter structure pointer
- * @cnic:		Corresponding cnic device
+ * @dev:		Corresponding cnic device
  *
  * This function identifies the NX2 device type and sets appropriate
  *	queue mailbox register access method, 5709 requires driver to
@@ -389,7 +383,7 @@ int bnx2i_get_stats(void *handle)
 	if (!stats)
 		return -ENOMEM;
 
-	strlcpy(stats->version, DRV_MODULE_VERSION, sizeof(stats->version));
+	strscpy(stats->version, DRV_MODULE_VERSION, sizeof(stats->version));
 	memcpy(stats->mac_add1 + 2, hba->cnic->mac_addr, ETH_ALEN);
 
 	stats->max_frame_size = hba->netdev->mtu;
@@ -410,12 +404,11 @@ int bnx2i_get_stats(void *handle)
 
 
 /**
- * bnx2i_percpu_thread_create - Create a receive thread for an
- *				online CPU
+ * bnx2i_cpu_online - Create a receive thread for an online CPU
  *
  * @cpu:	cpu index for the online cpu
  */
-static void bnx2i_percpu_thread_create(unsigned int cpu)
+static int bnx2i_cpu_online(unsigned int cpu)
 {
 	struct bnx2i_percpu_s *p;
 	struct task_struct *thread;
@@ -425,16 +418,17 @@ static void bnx2i_percpu_thread_create(unsigned int cpu)
 	thread = kthread_create_on_node(bnx2i_percpu_io_thread, (void *)p,
 					cpu_to_node(cpu),
 					"bnx2i_thread/%d", cpu);
+	if (IS_ERR(thread))
+		return PTR_ERR(thread);
+
 	/* bind thread to the cpu */
-	if (likely(!IS_ERR(thread))) {
-		kthread_bind(thread, cpu);
-		p->iothread = thread;
-		wake_up_process(thread);
-	}
+	kthread_bind(thread, cpu);
+	p->iothread = thread;
+	wake_up_process(thread);
+	return 0;
 }
 
-
-static void bnx2i_percpu_thread_destroy(unsigned int cpu)
+static int bnx2i_cpu_offline(unsigned int cpu)
 {
 	struct bnx2i_percpu_s *p;
 	struct task_struct *thread;
@@ -457,43 +451,10 @@ static void bnx2i_percpu_thread_destroy(unsigned int cpu)
 	spin_unlock_bh(&p->p_work_lock);
 	if (thread)
 		kthread_stop(thread);
+	return 0;
 }
 
-
-/**
- * bnx2i_cpu_callback - Handler for CPU hotplug events
- *
- * @nfb:	The callback data block
- * @action:	The event triggering the callback
- * @hcpu:	The index of the CPU that the event is for
- *
- * This creates or destroys per-CPU data for iSCSI
- *
- * Returns NOTIFY_OK always.
- */
-static int bnx2i_cpu_callback(struct notifier_block *nfb,
-			      unsigned long action, void *hcpu)
-{
-	unsigned cpu = (unsigned long)hcpu;
-
-	switch (action) {
-	case CPU_ONLINE:
-	case CPU_ONLINE_FROZEN:
-		printk(KERN_INFO "bnx2i: CPU %x online: Create Rx thread\n",
-			cpu);
-		bnx2i_percpu_thread_create(cpu);
-		break;
-	case CPU_DEAD:
-	case CPU_DEAD_FROZEN:
-		printk(KERN_INFO "CPU %x offline: Remove Rx thread\n", cpu);
-		bnx2i_percpu_thread_destroy(cpu);
-		break;
-	default:
-		break;
-	}
-	return NOTIFY_OK;
-}
-
+static enum cpuhp_state bnx2i_online_state;
 
 /**
  * bnx2i_mod_init - module init entry point
@@ -512,8 +473,6 @@ static int __init bnx2i_mod_init(void)
 
 	if (sq_size && !is_power_of_2(sq_size))
 		sq_size = roundup_pow_of_two(sq_size);
-
-	mutex_init(&bnx2i_dev_lock);
 
 	bnx2i_scsi_xport_template =
 			iscsi_register_transport(&bnx2i_iscsi_transport);
@@ -537,14 +496,15 @@ static int __init bnx2i_mod_init(void)
 		p->iothread = NULL;
 	}
 
-	for_each_online_cpu(cpu)
-		bnx2i_percpu_thread_create(cpu);
-
-	/* Initialize per CPU interrupt thread */
-	register_hotcpu_notifier(&bnx2i_cpu_notifier);
-
+	err = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "scsi/bnx2i:online",
+				bnx2i_cpu_online, bnx2i_cpu_offline);
+	if (err < 0)
+		goto unreg_driver;
+	bnx2i_online_state = err;
 	return 0;
 
+unreg_driver:
+	cnic_unregister_driver(CNIC_ULP_ISCSI);
 unreg_xport:
 	iscsi_unregister_transport(&bnx2i_iscsi_transport);
 out:
@@ -563,7 +523,6 @@ out:
 static void __exit bnx2i_mod_exit(void)
 {
 	struct bnx2i_hba *hba;
-	unsigned cpu = 0;
 
 	mutex_lock(&bnx2i_dev_lock);
 	while (!list_empty(&adapter_list)) {
@@ -581,10 +540,7 @@ static void __exit bnx2i_mod_exit(void)
 	}
 	mutex_unlock(&bnx2i_dev_lock);
 
-	unregister_hotcpu_notifier(&bnx2i_cpu_notifier);
-
-	for_each_online_cpu(cpu)
-		bnx2i_percpu_thread_destroy(cpu);
+	cpuhp_remove_state(bnx2i_online_state);
 
 	iscsi_unregister_transport(&bnx2i_iscsi_transport);
 	cnic_unregister_driver(CNIC_ULP_ISCSI);

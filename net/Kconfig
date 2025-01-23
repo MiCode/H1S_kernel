@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Network configuration
 #
@@ -6,12 +7,13 @@ menuconfig NET
 	bool "Networking support"
 	select NLATTR
 	select GENERIC_NET_UTILS
-	---help---
+	select BPF
+	help
 	  Unless you really know what you are doing, you should say Y here.
 	  The reason is that some programs need kernel networking support even
 	  when running on a stand-alone machine that isn't connected to any
 	  other computer.
-	  
+
 	  If you are upgrading from an older kernel, you
 	  should consider updating your networking tools too because changes
 	  in the kernel and the tools often go hand in hand. The tools are
@@ -44,18 +46,56 @@ config COMPAT_NETLINK_MESSAGES
 	  Newly written code should NEVER need this option but do
 	  compat-independent messages instead!
 
+config NET_INGRESS
+	bool
+
+config NET_EGRESS
+	bool
+
+config NET_XGRESS
+	select NET_INGRESS
+	select NET_EGRESS
+	bool
+
+config NET_REDIRECT
+	bool
+
+config SKB_EXTENSIONS
+	bool
+
 menu "Networking options"
 
 source "net/packet/Kconfig"
 source "net/unix/Kconfig"
+source "net/tls/Kconfig"
 source "net/xfrm/Kconfig"
 source "net/iucv/Kconfig"
+source "net/smc/Kconfig"
+source "net/xdp/Kconfig"
+
+config NET_HANDSHAKE
+	bool
+	depends on SUNRPC || NVME_TARGET_TCP || NVME_TCP
+	default y
+
+config NET_HANDSHAKE_KUNIT_TEST
+	tristate "KUnit tests for the handshake upcall mechanism" if !KUNIT_ALL_TESTS
+	default KUNIT_ALL_TESTS
+	depends on KUNIT
+	help
+	  This builds the KUnit tests for the handshake upcall mechanism.
+
+	  KUnit tests run during boot and output the results to the debug
+	  log in TAP format (https://testanything.org/). Only useful for
+	  kernel devs running KUnit test harness and are not for inclusion
+	  into a production build.
+
+	  For more information on KUnit and unit tests in general, refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
 
 config INET
 	bool "TCP/IP networking"
-	select CRYPTO
-	select CRYPTO_AES
-	---help---
+	help
 	  These are the protocols used on the Internet and on most local
 	  Ethernets. It is highly recommended to say Y here (this will enlarge
 	  your kernel by about 400 KB), since some programs (e.g. the X window
@@ -71,7 +111,7 @@ config INET
 	  "Sysctl support" below, you can change various aspects of the
 	  behavior of the TCP/IP code by writing to the (virtual) files in
 	  /proc/sys/net/ipv4/*; the options are explained in the file
-	  <file:Documentation/networking/ip-sysctl.txt>.
+	  <file:Documentation/networking/ip-sysctl.rst>.
 
 	  Short answer: say Y.
 
@@ -79,6 +119,7 @@ if INET
 source "net/ipv4/Kconfig"
 source "net/ipv6/Kconfig"
 source "net/netlabel/Kconfig"
+source "net/mptcp/Kconfig"
 
 endif # if INET
 
@@ -89,18 +130,23 @@ config NETWORK_SECMARK
 	  to nfmark, but designated for security purposes.
 	  If you are unsure how to answer this question, answer N.
 
+config NET_PTP_CLASSIFY
+	def_bool n
+
 config NETWORK_PHY_TIMESTAMPING
 	bool "Timestamping in PHY devices"
+	select NET_PTP_CLASSIFY
 	help
-	  This allows timestamping of network packets by PHYs with
-	  hardware timestamping capabilities. This option adds some
-	  overhead in the transmit and receive paths.
+	  This allows timestamping of network packets by PHYs (or
+	  other MII bus snooping devices) with hardware timestamping
+	  capabilities. This option adds some overhead in the transmit
+	  and receive paths.
 
 	  If you are unsure how to answer this question, answer N.
 
 menuconfig NETFILTER
 	bool "Network packet filtering framework (Netfilter)"
-	---help---
+	help
 	  Netfilter is a framework for filtering and mangling network packets
 	  that pass through your Linux box.
 
@@ -153,13 +199,6 @@ menuconfig NETFILTER
 
 if NETFILTER
 
-config NETFILTER_DEBUG
-	bool "Network packet filtering debugging"
-	depends on NETFILTER
-	help
-	  You can say Y here if you want to get additional messages useful in
-	  debugging the netfilter code.
-
 config NETFILTER_ADVANCED
 	bool "Advanced netfilter configuration"
 	depends on NETFILTER
@@ -172,11 +211,13 @@ config NETFILTER_ADVANCED
 	  If unsure, say Y.
 
 config BRIDGE_NETFILTER
-	bool "Bridged IP/ARP packets filtering"
-	depends on BRIDGE && NETFILTER && INET
+	tristate "Bridged IP/ARP packets filtering"
+	depends on BRIDGE
+	depends on NETFILTER && INET
 	depends on NETFILTER_ADVANCED
-	default y
-	---help---
+	select NETFILTER_FAMILY_BRIDGE
+	select SKB_EXTENSIONS
+	help
 	  Enabling this option will let arptables resp. iptables see bridged
 	  ARP resp. IP traffic. If you want a bridging firewall, you probably
 	  want this option enabled.
@@ -188,10 +229,11 @@ config BRIDGE_NETFILTER
 source "net/netfilter/Kconfig"
 source "net/ipv4/netfilter/Kconfig"
 source "net/ipv6/netfilter/Kconfig"
-source "net/decnet/netfilter/Kconfig"
 source "net/bridge/netfilter/Kconfig"
 
 endif
+
+source "net/bpfilter/Kconfig"
 
 source "net/dccp/Kconfig"
 source "net/sctp/Kconfig"
@@ -203,13 +245,12 @@ source "net/802/Kconfig"
 source "net/bridge/Kconfig"
 source "net/dsa/Kconfig"
 source "net/8021q/Kconfig"
-source "net/decnet/Kconfig"
 source "net/llc/Kconfig"
-source "net/ipx/Kconfig"
 source "drivers/net/appletalk/Kconfig"
 source "net/x25/Kconfig"
 source "net/lapb/Kconfig"
 source "net/phonet/Kconfig"
+source "net/6lowpan/Kconfig"
 source "net/ieee802154/Kconfig"
 source "net/mac802154/Kconfig"
 source "net/sched/Kconfig"
@@ -220,64 +261,99 @@ source "net/openvswitch/Kconfig"
 source "net/vmw_vsock/Kconfig"
 source "net/netlink/Kconfig"
 source "net/mpls/Kconfig"
+source "net/nsh/Kconfig"
 source "net/hsr/Kconfig"
+source "net/switchdev/Kconfig"
+source "net/l3mdev/Kconfig"
+source "net/qrtr/Kconfig"
+source "net/qmsgq/Kconfig"
+source "net/ncsi/Kconfig"
+
+config PCPU_DEV_REFCNT
+	bool "Use percpu variables to maintain network device refcount"
+	depends on SMP
+	default y
+	help
+	  network device refcount are using per cpu variables if this option is set.
+	  This can be forced to N to detect underflows (with a performance drop).
+
+config MAX_SKB_FRAGS
+	int "Maximum number of fragments per skb_shared_info"
+	range 17 45
+	default 17
+	help
+	  Having more fragments per skb_shared_info can help GRO efficiency.
+	  This helps BIG TCP workloads, but might expose bugs in some
+	  legacy drivers.
+	  This also increases memory overhead of small packets,
+	  and in drivers using build_skb().
+	  If unsure, say 17.
 
 config RPS
-	boolean
+	bool
 	depends on SMP && SYSFS
 	default y
 
 config RFS_ACCEL
-	boolean
+	bool
 	depends on RPS
 	select CPU_RMAP
 	default y
 
+config SOCK_RX_QUEUE_MAPPING
+	bool
+
 config XPS
-	boolean
+	bool
 	depends on SMP
+	select SOCK_RX_QUEUE_MAPPING
 	default y
 
+config HWBM
+	bool
+
 config CGROUP_NET_PRIO
-	tristate "Network priority cgroup"
+	bool "Network priority cgroup"
 	depends on CGROUPS
-	---help---
+	select SOCK_CGROUP_DATA
+	help
 	  Cgroup subsystem for use in assigning processes to network priorities on
 	  a per-interface basis.
 
 config CGROUP_NET_CLASSID
-	boolean "Network classid cgroup"
+	bool "Network classid cgroup"
 	depends on CGROUPS
-	---help---
+	select SOCK_CGROUP_DATA
+	help
 	  Cgroup subsystem for use as general purpose socket classid marker that is
 	  being used in cls_cgroup and for netfilter matching.
 
 config NET_RX_BUSY_POLL
-	boolean
-	default y
+	bool
+	default y if !PREEMPT_RT || (PREEMPT_RT && !NETCONSOLE)
 
 config BQL
-	boolean
+	bool
 	depends on SYSFS
 	select DQL
 	default y
 
-config BPF_JIT
-	bool "enable BPF Just In Time compiler"
-	depends on HAVE_BPF_JIT
-	depends on MODULES
-	---help---
-	  Berkeley Packet Filter filtering capabilities are normally handled
-	  by an interpreter. This option allows kernel to generate a native
-	  code when filter is loaded in memory. This should speedup
-	  packet sniffing (libpcap/tcpdump). Note : Admin should enable
-	  this feature changing /proc/sys/net/core/bpf_jit_enable
+config BPF_STREAM_PARSER
+	bool "enable BPF STREAM_PARSER"
+	depends on INET
+	depends on BPF_SYSCALL
+	depends on CGROUP_BPF
+	select STREAM_PARSER
+	select NET_SOCK_MSG
+	help
+	  Enabling this allows a TCP stream parser to be used with
+	  BPF_MAP_TYPE_SOCKMAP.
 
 config NET_FLOW_LIMIT
-	boolean
+	bool
 	depends on RPS
 	default y
-	---help---
+	help
 	  The network stack has to drop packets when a receive processing CPU's
 	  backlog reaches netdev_max_backlog. If a few out of many active flows
 	  generate the vast majority of load, drop their traffic earlier to
@@ -290,45 +366,28 @@ menu "Network testing"
 config NET_PKTGEN
 	tristate "Packet Generator (USE WITH CAUTION)"
 	depends on INET && PROC_FS
-	---help---
+	help
 	  This module will inject preconfigured packets, at a configurable
 	  rate, out of a given interface.  It is used for network interface
 	  stress testing and performance analysis.  If you don't understand
 	  what was just said, you don't need it: say N.
 
 	  Documentation on how to use the packet generator can be found
-	  at <file:Documentation/networking/pktgen.txt>.
+	  at <file:Documentation/networking/pktgen.rst>.
 
 	  To compile this code as a module, choose M here: the
 	  module will be called pktgen.
 
-config NET_TCPPROBE
-	tristate "TCP connection probing"
-	depends on INET && PROC_FS && KPROBES
-	---help---
-	This module allows for capturing the changes to TCP connection
-	state in response to incoming packets. It is used for debugging
-	TCP congestion avoidance modules. If you don't understand
-	what was just said, you don't need it: say N.
-
-	Documentation on how to use TCP connection probing can be found
-	at:
-	
-	  http://www.linuxfoundation.org/collaborate/workgroups/networking/tcpprobe
-
-	To compile this code as a module, choose M here: the
-	module will be called tcp_probe.
-
 config NET_DROP_MONITOR
 	tristate "Network packet drop alerting service"
 	depends on INET && TRACEPOINTS
-	---help---
-	This feature provides an alerting service to userspace in the
-	event that packets are discarded in the network stack.  Alerts
-	are broadcast via netlink socket to any listening user space
-	process.  If you don't need network drop alerts, or if you are ok
-	just checking the various proc files and other utilities for
-	drop statistics, say N here.
+	help
+	  This feature provides an alerting service to userspace in the
+	  event that packets are discarded in the network stack.  Alerts
+	  are broadcast via netlink socket to any listening user space
+	  process.  If you don't need network drop alerts, or if you are ok
+	  just checking the various proc files and other utilities for
+	  drop statistics, say N here.
 
 endmenu
 
@@ -336,9 +395,11 @@ endmenu
 
 source "net/ax25/Kconfig"
 source "net/can/Kconfig"
-source "net/irda/Kconfig"
 source "net/bluetooth/Kconfig"
 source "net/rxrpc/Kconfig"
+source "net/kcm/Kconfig"
+source "net/strparser/Kconfig"
+source "net/mctp/Kconfig"
 
 config FIB_RULES
 	bool
@@ -355,17 +416,97 @@ source "net/mac80211/Kconfig"
 
 endif # WIRELESS
 
-source "net/wimax/Kconfig"
-
 source "net/rfkill/Kconfig"
 source "net/9p/Kconfig"
 source "net/caif/Kconfig"
 source "net/ceph/Kconfig"
 source "net/nfc/Kconfig"
+source "net/psample/Kconfig"
+source "net/ife/Kconfig"
 
+config LWTUNNEL
+	bool "Network light weight tunnels"
+	help
+	  This feature provides an infrastructure to support light weight
+	  tunnels like mpls. There is no netdevice associated with a light
+	  weight tunnel endpoint. Tunnel encapsulation parameters are stored
+	  with light weight tunnel state associated with fib routes.
+
+config LWTUNNEL_BPF
+	bool "Execute BPF program as route nexthop action"
+	depends on LWTUNNEL && INET
+	default y if LWTUNNEL=y
+	help
+	  Allows to run BPF programs as a nexthop action following a route
+	  lookup for incoming and outgoing packets.
+
+config DST_CACHE
+	bool
+	default n
+
+config GRO_CELLS
+	bool
+	default n
+
+config SOCK_VALIDATE_XMIT
+	bool
+
+config NET_SELFTESTS
+	def_tristate PHYLIB
+	depends on PHYLIB && INET
+
+config NET_SOCK_MSG
+	bool
+	default n
+	help
+	  The NET_SOCK_MSG provides a framework for plain sockets (e.g. TCP) or
+	  ULPs (upper layer modules, e.g. TLS) to process L7 application data
+	  with the help of BPF programs.
+
+config NET_DEVLINK
+	bool
+	default n
+
+config PAGE_POOL
+	bool
+
+config PAGE_POOL_STATS
+	default n
+	bool "Page pool stats"
+	depends on PAGE_POOL
+	help
+	  Enable page pool statistics to track page allocation and recycling
+	  in page pools. This option incurs additional CPU cost in allocation
+	  and recycle paths and additional memory cost to store the statistics.
+	  These statistics are only available if this option is enabled and if
+	  the driver using the page pool supports exporting this data.
+
+	  If unsure, say N.
+
+config FAILOVER
+	tristate "Generic failover module"
+	help
+	  The failover module provides a generic interface for paravirtual
+	  drivers to register a netdev and a set of ops with a failover
+	  instance. The ops are used as event handlers that get called to
+	  handle netdev register/unregister/link change/name change events
+	  on slave pci ethernet devices with the same mac address as the
+	  failover netdev. This enables paravirtual drivers to use a
+	  VF as an accelerated low latency datapath. It also allows live
+	  migration of VMs with direct attached VFs by failing over to the
+	  paravirtual datapath when the VF is unplugged.
+
+config ETHTOOL_NETLINK
+	bool "Netlink interface for ethtool"
+	default y
+	help
+	  An alternative userspace interface for ethtool based on generic
+	  netlink. It provides better extensibility and some new features,
+	  e.g. notification messages.
+
+config NETDEV_ADDR_LIST_TEST
+	tristate "Unit tests for device address list"
+	default KUNIT_ALL_TESTS
+	depends on KUNIT
 
 endif   # if NET
-
-# Used by archs to tell that they support BPF_JIT
-config HAVE_BPF_JIT
-	bool

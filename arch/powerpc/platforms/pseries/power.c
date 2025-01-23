@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Interface for power-management for ppc64 compliant platform
  *
@@ -6,25 +7,15 @@
  *  Feb 2007
  *
  *  Copyright (C) 2007 IBM Corporation.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; version 2 of the License.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/kobject.h>
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/init.h>
+#include <asm/machdep.h>
+
+#include "pseries.h"
 
 unsigned long rtas_poweron_auto; /* default and normal state is 0 */
 
@@ -60,7 +51,7 @@ static struct attribute *g[] = {
         NULL,
 };
 
-static struct attribute_group attr_group = {
+static const struct attribute_group attr_group = {
         .attrs = g,
 };
 
@@ -71,11 +62,11 @@ static int __init pm_init(void)
 		return -ENOMEM;
 	return sysfs_create_group(power_kobj, &attr_group);
 }
-core_initcall(pm_init);
+machine_core_initcall(pseries, pm_init);
 #else
 static int __init apo_pm_init(void)
 {
 	return (sysfs_create_file(power_kobj, &auto_poweron_attr.attr));
 }
-__initcall(apo_pm_init);
+machine_device_initcall(pseries, apo_pm_init);
 #endif

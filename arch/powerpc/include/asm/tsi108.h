@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * common routine and memory layout for Tundra TSI108(Grendel) host bridge
  * memory controller.
@@ -6,11 +7,6 @@
  *	   Alex Bounine (alexandreb@tundra.com)
  *
  * Copyright 2004-2006 Freescale Semiconductor, Inc.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 #ifndef __PPC_KERNEL_TSI108_H
@@ -77,17 +73,13 @@
  * nodes if your board uses the Broadcom PHYs
  */
 #define TSI108_PHY_MV88E	0	/* Marvel 88Exxxx PHY */
-#define TSI108_PHY_BCM54XX	1	/* Broardcom BCM54xx PHY */
+#define TSI108_PHY_BCM54XX	1	/* Broadcom BCM54xx PHY */
 
 /* Global variables */
 
 extern u32 tsi108_pci_cfg_base;
 /* Exported functions */
 
-extern int tsi108_bridge_init(struct pci_controller *hose, uint phys_csr_base);
-extern unsigned long tsi108_get_mem_size(void);
-extern unsigned long tsi108_get_cpu_clk(void);
-extern unsigned long tsi108_get_sdc_clk(void);
 extern int tsi108_direct_write_config(struct pci_bus *bus, unsigned int devfn,
 				      int offset, int len, u32 val);
 extern int tsi108_direct_read_config(struct pci_bus *bus, unsigned int devfn,

@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/kernel/ecard.c
  *
  *  Copyright 1995-2001 Russell King
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  *  Find all installed expansion cards, and handle interrupts from them.
  *
@@ -31,6 +28,7 @@
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/sched.h>
+#include <linux/sched/mm.h>
 #include <linux/interrupt.h>
 #include <linux/completion.h>
 #include <linux/reboot.h>
@@ -65,21 +63,25 @@ struct ecard_request {
 	struct completion *complete;
 };
 
-struct expcard_blacklist {
+struct expcard_quirklist {
 	unsigned short	 manufacturer;
 	unsigned short	 product;
 	const char	*type;
+	void (*init)(ecard_t *ec);
 };
 
 static ecard_t *cards;
 static ecard_t *slot_to_expcard[MAX_ECARDS];
 static unsigned int ectcr;
 
+static void atomwide_3p_quirk(ecard_t *ec);
+
 /* List of descriptions of cards which don't have an extended
  * identification, or chunk directories containing a description.
  */
-static struct expcard_blacklist __initdata blacklist[] = {
-	{ MANU_ACORN, PROD_ACORN_ETHER1, "Acorn Ether1" }
+static struct expcard_quirklist quirklist[] __initdata = {
+	{ MANU_ACORN, PROD_ACORN_ETHER1, "Acorn Ether1" },
+	{ MANU_ATOMWIDE, PROD_ATOMWIDE_3PSERIAL, NULL, atomwide_3p_quirk },
 };
 
 asmlinkage extern int
@@ -211,7 +213,7 @@ static DEFINE_MUTEX(ecard_mutex);
  */
 static void ecard_init_pgtables(struct mm_struct *mm)
 {
-	struct vm_area_struct vma;
+	struct vm_area_struct vma = TLB_FLUSH_VMA(mm, VM_EXEC);
 
 	/* We want to set up the page tables for the following mapping:
 	 *  Virtual	Physical
@@ -236,9 +238,6 @@ static void ecard_init_pgtables(struct mm_struct *mm)
 
 	memcpy(dst_pgd, src_pgd, sizeof(pgd_t) * (EASI_SIZE / PGDIR_SIZE));
 
-	vma.vm_flags = VM_EXEC;
-	vma.vm_mm = mm;
-
 	flush_tlb_range(&vma, IO_START, IO_START + IO_SIZE);
 	flush_tlb_range(&vma, EASI_START, EASI_START + EASI_SIZE);
 }
@@ -254,7 +253,7 @@ static int ecard_init_mm(void)
 	current->mm = mm;
 	current->active_mm = mm;
 	activate_mm(active_mm, mm);
-	mmdrop(active_mm);
+	mmdrop_lazy_tlb(active_mm);
 	ecard_init_pgtables(mm);
 	return 0;
 }
@@ -498,18 +497,21 @@ static void ecard_dump_irq_state(void)
 	printk("Expansion card IRQ state:\n");
 
 	for (ec = cards; ec; ec = ec->next) {
+		const char *claimed;
+
 		if (ec->slot_no == 8)
 			continue;
 
-		printk("  %d: %sclaimed, ",
-		       ec->slot_no, ec->claimed ? "" : "not ");
+		claimed = ec->claimed ? "" : "not ";
 
 		if (ec->ops && ec->ops->irqpending &&
 		    ec->ops != &ecard_default_ops)
-			printk("irq %spending\n",
+			printk("  %d: %sclaimed irq %spending\n",
+			       ec->slot_no, claimed,
 			       ec->ops->irqpending(ec) ? "" : "not ");
 		else
-			printk("irqaddr %p, mask = %02X, status = %02X\n",
+			printk("  %d: %sclaimed irqaddr %p, mask = %02X, status = %02X\n",
+			       ec->slot_no, claimed,
 			       ec->irqaddr, ec->irqmask, readb(ec->irqaddr));
 	}
 }
@@ -551,8 +553,7 @@ static void ecard_check_lockup(struct irq_desc *desc)
 	}
 }
 
-static void
-ecard_irq_handler(unsigned int irq, struct irq_desc *desc)
+static void ecard_irq_handler(struct irq_desc *desc)
 {
 	ecard_t *ec;
 	int called = 0;
@@ -657,25 +658,13 @@ static int ecard_devices_proc_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static int ecard_devices_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, ecard_devices_proc_show, NULL);
-}
-
-static const struct file_operations bus_ecard_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= ecard_devices_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
 static struct proc_dir_entry *proc_bus_ecard_dir = NULL;
 
 static void ecard_proc_init(void)
 {
 	proc_bus_ecard_dir = proc_mkdir("bus/ecard", NULL);
-	proc_create("devices", 0, proc_bus_ecard_dir, &bus_ecard_proc_fops);
+	proc_create_single("devices", 0, proc_bus_ecard_dir,
+			ecard_devices_proc_show);
 }
 
 #define ec_set_resource(ec,nr,st,sz)				\
@@ -761,19 +750,21 @@ static struct expansion_card *__init ecard_alloc_card(int type, int slot)
 	return ec;
 }
 
-static ssize_t ecard_show_irq(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t irq_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct expansion_card *ec = ECARD_DEV(dev);
 	return sprintf(buf, "%u\n", ec->irq);
 }
+static DEVICE_ATTR_RO(irq);
 
-static ssize_t ecard_show_dma(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t dma_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct expansion_card *ec = ECARD_DEV(dev);
 	return sprintf(buf, "%u\n", ec->dma);
 }
+static DEVICE_ATTR_RO(dma);
 
-static ssize_t ecard_show_resources(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t resource_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct expansion_card *ec = ECARD_DEV(dev);
 	char *str = buf;
@@ -787,35 +778,39 @@ static ssize_t ecard_show_resources(struct device *dev, struct device_attribute 
 
 	return str - buf;
 }
+static DEVICE_ATTR_RO(resource);
 
-static ssize_t ecard_show_vendor(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t vendor_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct expansion_card *ec = ECARD_DEV(dev);
 	return sprintf(buf, "%u\n", ec->cid.manufacturer);
 }
+static DEVICE_ATTR_RO(vendor);
 
-static ssize_t ecard_show_device(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t device_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct expansion_card *ec = ECARD_DEV(dev);
 	return sprintf(buf, "%u\n", ec->cid.product);
 }
+static DEVICE_ATTR_RO(device);
 
-static ssize_t ecard_show_type(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t type_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct expansion_card *ec = ECARD_DEV(dev);
 	return sprintf(buf, "%s\n", ec->easi ? "EASI" : "IOC");
 }
+static DEVICE_ATTR_RO(type);
 
-static struct device_attribute ecard_dev_attrs[] = {
-	__ATTR(device,   S_IRUGO, ecard_show_device,    NULL),
-	__ATTR(dma,      S_IRUGO, ecard_show_dma,       NULL),
-	__ATTR(irq,      S_IRUGO, ecard_show_irq,       NULL),
-	__ATTR(resource, S_IRUGO, ecard_show_resources, NULL),
-	__ATTR(type,     S_IRUGO, ecard_show_type,      NULL),
-	__ATTR(vendor,   S_IRUGO, ecard_show_vendor,    NULL),
-	__ATTR_NULL,
+static struct attribute *ecard_dev_attrs[] = {
+	&dev_attr_device.attr,
+	&dev_attr_dma.attr,
+	&dev_attr_irq.attr,
+	&dev_attr_resource.attr,
+	&dev_attr_type.attr,
+	&dev_attr_vendor.attr,
+	NULL,
 };
-
+ATTRIBUTE_GROUPS(ecard_dev);
 
 int ecard_request_resources(struct expansion_card *ec)
 {
@@ -877,6 +872,16 @@ void __iomem *ecardm_iomap(struct expansion_card *ec, unsigned int res,
 }
 EXPORT_SYMBOL(ecardm_iomap);
 
+static void atomwide_3p_quirk(ecard_t *ec)
+{
+	void __iomem *addr = __ecard_address(ec, ECARD_IOC, ECARD_SYNC);
+	unsigned int i;
+
+	/* Disable interrupts on each port */
+	for (i = 0x2000; i <= 0x2800; i += 0x0400)
+		writeb(0, addr + i + 4);	
+}
+
 /*
  * Probe for an expansion card.
  *
@@ -930,10 +935,13 @@ static int __init ecard_probe(int slot, unsigned irq, card_type_t type)
 		ec->fiqmask = 4;
 	}
 
-	for (i = 0; i < ARRAY_SIZE(blacklist); i++)
-		if (blacklist[i].manufacturer == ec->cid.manufacturer &&
-		    blacklist[i].product == ec->cid.product) {
-			ec->card_desc = blacklist[i].type;
+	for (i = 0; i < ARRAY_SIZE(quirklist); i++)
+		if (quirklist[i].manufacturer == ec->cid.manufacturer &&
+		    quirklist[i].product == ec->cid.product) {
+			if (quirklist[i].type)
+				ec->card_desc = quirklist[i].type;
+			if (quirklist[i].init)
+				quirklist[i].init(ec);
 			break;
 		}
 
@@ -946,7 +954,7 @@ static int __init ecard_probe(int slot, unsigned irq, card_type_t type)
 		irq_set_chip_and_handler(ec->irq, &ecard_chip,
 					 handle_level_irq);
 		irq_set_chip_data(ec->irq, ec);
-		set_irq_flags(ec->irq, IRQF_VALID);
+		irq_clear_status_flags(ec->irq, IRQ_NOREQUEST);
 	}
 
 #ifdef CONFIG_ARCH_RPC
@@ -1044,7 +1052,7 @@ static int ecard_drv_probe(struct device *dev)
 	return ret;
 }
 
-static int ecard_drv_remove(struct device *dev)
+static void ecard_drv_remove(struct device *dev)
 {
 	struct expansion_card *ec = ECARD_DEV(dev);
 	struct ecard_driver *drv = ECARD_DRV(dev->driver);
@@ -1059,8 +1067,6 @@ static int ecard_drv_remove(struct device *dev)
 	ec->ops = &ecard_default_ops;
 	barrier();
 	ec->irq_data = NULL;
-
-	return 0;
 }
 
 /*
@@ -1120,7 +1126,7 @@ static int ecard_match(struct device *_dev, struct device_driver *_drv)
 
 struct bus_type ecard_bus_type = {
 	.name		= "ecard",
-	.dev_attrs	= ecard_dev_attrs,
+	.dev_groups	= ecard_dev_groups,
 	.match		= ecard_match,
 	.probe		= ecard_drv_probe,
 	.remove		= ecard_drv_remove,

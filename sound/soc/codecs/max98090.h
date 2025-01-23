@@ -1,20 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * max98090.h -- MAX98090 ALSA SoC Audio driver
  *
  * Copyright 2011-2012 Maxim Integrated Products
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef _MAX98090_H
 #define _MAX98090_H
 
-#include <linux/version.h>
-
-/* One can override the Linux version here with an explicit version number */
-#define M98090_LINUX_VERSION LINUX_VERSION_CODE
+/*
+ * The default operating frequency for a DMIC attached to the codec.
+ * This can be overridden by a device tree property.
+ */
+#define MAX98090_DEFAULT_DMIC_FREQ		2500000
 
 /*
  * MAX98090 Register Definitions
@@ -1502,9 +1500,6 @@
 #define M98090_REVID_WIDTH		8
 #define M98090_REVID_NUM		(1<<M98090_REVID_WIDTH)
 
-#define M98090_BYTE1(w) ((w >> 8) & 0xff)
-#define M98090_BYTE0(w) (w & 0xff)
-
 /* Silicon revision number */
 #define M98090_REVA			0x40
 #define M98091_REVA			0x50
@@ -1521,29 +1516,34 @@ struct max98090_cdata {
 
 struct max98090_priv {
 	struct regmap *regmap;
-	struct snd_soc_codec *codec;
+	struct snd_soc_component *component;
 	enum max98090_type devtype;
-	void *control_data;
 	struct max98090_pdata *pdata;
+	struct clk *mclk;
 	unsigned int sysclk;
+	unsigned int pclk;
 	unsigned int bclk;
 	unsigned int lrclk;
+	u32 dmic_freq;
 	struct max98090_cdata dai[1];
-	int irq;
 	int jack_state;
 	struct delayed_work jack_work;
+	struct delayed_work pll_det_enable_work;
+	struct work_struct pll_det_disable_work;
 	struct snd_soc_jack *jack;
 	unsigned int dai_fmt;
 	int tdm_slots;
-	int tdm_width;
+	int tdm_lslot;
+	int tdm_rslot;
 	u8 lin_state;
 	unsigned int pa1en;
 	unsigned int pa2en;
-	unsigned int extmic_mux;
 	unsigned int sidetone;
+	bool master;
+	bool shdn_pending;
 };
 
-int max98090_mic_detect(struct snd_soc_codec *codec,
+int max98090_mic_detect(struct snd_soc_component *component,
 	struct snd_soc_jack *jack);
 
 #endif

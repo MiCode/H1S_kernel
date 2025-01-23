@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Mutexes: blocking mutual exclusion locks
  *
@@ -13,10 +14,25 @@
 #include <asm/current.h>
 #include <linux/list.h>
 #include <linux/spinlock_types.h>
-#include <linux/linkage.h>
 #include <linux/lockdep.h>
 #include <linux/atomic.h>
 #include <asm/processor.h>
+#include <linux/osq_lock.h>
+#include <linux/debug_locks.h>
+#include <linux/cleanup.h>
+#include <linux/android_vendor.h>
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+# define __DEP_MAP_MUTEX_INITIALIZER(lockname)			\
+		, .dep_map = {					\
+			.name = #lockname,			\
+			.wait_type_inner = LD_WAIT_SLEEP,	\
+		}
+#else
+# define __DEP_MAP_MUTEX_INITIALIZER(lockname)
+#endif
+
+#ifndef CONFIG_PREEMPT_RT
 
 /*
  * Simple, straightforward mutexes with strict semantics:
@@ -47,41 +63,36 @@
  *   locks and tasks (and only those tasks)
  */
 struct mutex {
-	/* 1: unlocked, 0: locked, negative: locked, possible waiters */
-	atomic_t		count;
-	spinlock_t		wait_lock;
-	struct list_head	wait_list;
-#if defined(CONFIG_DEBUG_MUTEXES) || defined(CONFIG_SMP)
-	struct task_struct	*owner;
-#endif
+	atomic_long_t		owner;
+	raw_spinlock_t		wait_lock;
 #ifdef CONFIG_MUTEX_SPIN_ON_OWNER
-	void			*spin_mlock;	/* Spinner MCS lock */
+	struct optimistic_spin_queue osq; /* Spinner MCS lock */
 #endif
+	struct list_head	wait_list;
 #ifdef CONFIG_DEBUG_MUTEXES
-	const char 		*name;
 	void			*magic;
 #endif
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lockdep_map	dep_map;
 #endif
-};
-
-/*
- * This is the control structure for tasks blocked on mutex,
- * which resides on the blocked task's kernel stack:
- */
-struct mutex_waiter {
-	struct list_head	list;
-	struct task_struct	*task;
-#ifdef CONFIG_DEBUG_MUTEXES
-	void			*magic;
-#endif
+	ANDROID_OEM_DATA_ARRAY(1, 2);
 };
 
 #ifdef CONFIG_DEBUG_MUTEXES
-# include <linux/mutex-debug.h>
+
+#define __DEBUG_MUTEX_INITIALIZER(lockname)				\
+	, .magic = &lockname
+
+extern void mutex_destroy(struct mutex *lock);
+
 #else
+
 # define __DEBUG_MUTEX_INITIALIZER(lockname)
+
+static inline void mutex_destroy(struct mutex *lock) {}
+
+#endif
+
 /**
  * mutex_init - initialize the mutex
  * @mutex: the mutex to be initialized
@@ -90,25 +101,16 @@ struct mutex_waiter {
  *
  * It is not allowed to initialize an already locked mutex.
  */
-# define mutex_init(mutex) \
-do {							\
-	static struct lock_class_key __key;		\
-							\
-	__mutex_init((mutex), #mutex, &__key);		\
+#define mutex_init(mutex)						\
+do {									\
+	static struct lock_class_key __key;				\
+									\
+	__mutex_init((mutex), #mutex, &__key);				\
 } while (0)
-static inline void mutex_destroy(struct mutex *lock) {}
-#endif
-
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-# define __DEP_MAP_MUTEX_INITIALIZER(lockname) \
-		, .dep_map = { .name = #lockname }
-#else
-# define __DEP_MAP_MUTEX_INITIALIZER(lockname)
-#endif
 
 #define __MUTEX_INITIALIZER(lockname) \
-		{ .count = ATOMIC_INIT(1) \
-		, .wait_lock = __SPIN_LOCK_UNLOCKED(lockname.wait_lock) \
+		{ .owner = ATOMIC_LONG_INIT(0) \
+		, .wait_lock = __RAW_SPIN_LOCK_UNLOCKED(lockname.wait_lock) \
 		, .wait_list = LIST_HEAD_INIT(lockname.wait_list) \
 		__DEBUG_MUTEX_INITIALIZER(lockname) \
 		__DEP_MAP_MUTEX_INITIALIZER(lockname) }
@@ -123,16 +125,57 @@ extern void __mutex_init(struct mutex *lock, const char *name,
  * mutex_is_locked - is the mutex locked
  * @lock: the mutex to be queried
  *
- * Returns 1 if the mutex is locked, 0 if unlocked.
+ * Returns true if the mutex is locked, false if unlocked.
  */
-static inline int mutex_is_locked(struct mutex *lock)
-{
-	return atomic_read(&lock->count) != 1;
+extern bool mutex_is_locked(struct mutex *lock);
+
+#else /* !CONFIG_PREEMPT_RT */
+/*
+ * Preempt-RT variant based on rtmutexes.
+ */
+#include <linux/rtmutex.h>
+
+struct mutex {
+	struct rt_mutex_base	rtmutex;
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	struct lockdep_map	dep_map;
+#endif
+};
+
+#define __MUTEX_INITIALIZER(mutexname)					\
+{									\
+	.rtmutex = __RT_MUTEX_BASE_INITIALIZER(mutexname.rtmutex)	\
+	__DEP_MAP_MUTEX_INITIALIZER(mutexname)				\
 }
+
+#define DEFINE_MUTEX(mutexname)						\
+	struct mutex mutexname = __MUTEX_INITIALIZER(mutexname)
+
+extern void __mutex_rt_init(struct mutex *lock, const char *name,
+			    struct lock_class_key *key);
+extern int mutex_trylock(struct mutex *lock);
+
+static inline void mutex_destroy(struct mutex *lock) { }
+
+#define mutex_is_locked(l)	rt_mutex_base_is_locked(&(l)->rtmutex)
+
+#define __mutex_init(mutex, name, key)			\
+do {							\
+	rt_mutex_base_init(&(mutex)->rtmutex);		\
+	__mutex_rt_init((mutex), name, key);		\
+} while (0)
+
+#define mutex_init(mutex)				\
+do {							\
+	static struct lock_class_key __key;		\
+							\
+	__mutex_init((mutex), #mutex, &__key);		\
+} while (0)
+#endif /* CONFIG_PREEMPT_RT */
 
 /*
  * See kernel/locking/mutex.c for detailed documentation of these APIs.
- * Also see Documentation/mutex-design.txt.
+ * Also see Documentation/locking/mutex-design.rst.
  */
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 extern void mutex_lock_nested(struct mutex *lock, unsigned int subclass);
@@ -142,10 +185,12 @@ extern int __must_check mutex_lock_interruptible_nested(struct mutex *lock,
 					unsigned int subclass);
 extern int __must_check mutex_lock_killable_nested(struct mutex *lock,
 					unsigned int subclass);
+extern void mutex_lock_io_nested(struct mutex *lock, unsigned int subclass);
 
 #define mutex_lock(lock) mutex_lock_nested(lock, 0)
 #define mutex_lock_interruptible(lock) mutex_lock_interruptible_nested(lock, 0)
 #define mutex_lock_killable(lock) mutex_lock_killable_nested(lock, 0)
+#define mutex_lock_io(lock) mutex_lock_io_nested(lock, 0)
 
 #define mutex_lock_nest_lock(lock, nest_lock)				\
 do {									\
@@ -157,11 +202,13 @@ do {									\
 extern void mutex_lock(struct mutex *lock);
 extern int __must_check mutex_lock_interruptible(struct mutex *lock);
 extern int __must_check mutex_lock_killable(struct mutex *lock);
+extern void mutex_lock_io(struct mutex *lock);
 
 # define mutex_lock_nested(lock, subclass) mutex_lock(lock)
 # define mutex_lock_interruptible_nested(lock, subclass) mutex_lock_interruptible(lock)
 # define mutex_lock_killable_nested(lock, subclass) mutex_lock_killable(lock)
 # define mutex_lock_nest_lock(lock, nest_lock) mutex_lock(lock)
+# define mutex_lock_io_nested(lock, subclass) mutex_lock_io(lock)
 #endif
 
 /*
@@ -175,8 +222,7 @@ extern void mutex_unlock(struct mutex *lock);
 
 extern int atomic_dec_and_mutex_lock(atomic_t *cnt, struct mutex *lock);
 
-#ifndef arch_mutex_cpu_relax
-# define arch_mutex_cpu_relax() cpu_relax()
-#endif
+DEFINE_GUARD(mutex, struct mutex *, mutex_lock(_T), mutex_unlock(_T))
+DEFINE_FREE(mutex, struct mutex *, if (_T) mutex_unlock(_T))
 
-#endif
+#endif /* __LINUX_MUTEX_H */

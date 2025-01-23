@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Support Infineon TLE62x0 driver chips
  *
  * Copyright (c) 2007 Simtec Electronics
  *	Ben Dooks, <ben@simtec.co.uk>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/device.h>
@@ -144,7 +141,7 @@ static ssize_t tle62x0_gpio_show(struct device *dev,
 	value = (st->gpio_state >> gpio_num) & 1;
 	mutex_unlock(&st->lock);
 
-	return snprintf(buf, PAGE_SIZE, "%d", value);
+	return sysfs_emit(buf, "%d", value);
 }
 
 static ssize_t tle62x0_gpio_store(struct device *dev,
@@ -253,10 +250,8 @@ static int tle62x0_probe(struct spi_device *spi)
 	}
 
 	st = kzalloc(sizeof(struct tle62x0_state), GFP_KERNEL);
-	if (st == NULL) {
-		dev_err(&spi->dev, "no memory for device state\n");
+	if (st == NULL)
 		return -ENOMEM;
-	}
 
 	st->us = spi;
 	st->nr_gpio = pdata->gpio_count;
@@ -293,7 +288,7 @@ static int tle62x0_probe(struct spi_device *spi)
 	return ret;
 }
 
-static int tle62x0_remove(struct spi_device *spi)
+static void tle62x0_remove(struct spi_device *spi)
 {
 	struct tle62x0_state *st = spi_get_drvdata(spi);
 	int ptr;
@@ -303,13 +298,11 @@ static int tle62x0_remove(struct spi_device *spi)
 
 	device_remove_file(&spi->dev, &dev_attr_status_show);
 	kfree(st);
-	return 0;
 }
 
 static struct spi_driver tle62x0_driver = {
 	.driver = {
 		.name	= "tle62x0",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= tle62x0_probe,
 	.remove		= tle62x0_remove,

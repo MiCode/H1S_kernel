@@ -1,20 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /******************************************************************************
 
     AudioScience HPI driver
-    Copyright (C) 1997-2011  AudioScience Inc. <support@audioscience.com>
+    Copyright (C) 1997-2014  AudioScience Inc. <support@audioscience.com>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of version 2 of the GNU General Public License as
-    published by the Free Software Foundation;
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 \file hpicmn.c
 
@@ -39,10 +28,12 @@ struct hpi_adapters_list {
 static struct hpi_adapters_list adapters;
 
 /**
-* Given an HPI Message that was sent out and a response that was received,
-* validate that the response has the correct fields filled in,
-* i.e ObjectType, Function etc
-**/
+ * hpi_validate_response - Given an HPI Message that was sent out and
+ * a response that was received, validate that the response has the
+ * correct fields filled in, i.e ObjectType, Function etc
+ * @phm: message
+ * @phr: response
+ */
 u16 hpi_validate_response(struct hpi_message *phm, struct hpi_response *phr)
 {
 	if (phr->type != HPI_TYPE_RESPONSE) {
@@ -117,10 +108,11 @@ void hpi_delete_adapter(struct hpi_adapter_obj *pao)
 }
 
 /**
-* FindAdapter returns a pointer to the struct hpi_adapter_obj with
-* index wAdapterIndex in an HPI_ADAPTERS_LIST structure.
-*
-*/
+ * hpi_find_adapter - FindAdapter returns a pointer to the struct
+ * hpi_adapter_obj with index wAdapterIndex in an HPI_ADAPTERS_LIST
+ * structure.
+ * @adapter_index: value in [0, HPI_MAX_ADAPTERS[
+ */
 struct hpi_adapter_obj *hpi_find_adapter(u16 adapter_index)
 {
 	struct hpi_adapter_obj *pao = NULL;
@@ -148,10 +140,9 @@ struct hpi_adapter_obj *hpi_find_adapter(u16 adapter_index)
 }
 
 /**
-*
-* wipe an HPI_ADAPTERS_LIST structure.
-*
-**/
+ * wipe_adapter_list - wipe an HPI_ADAPTERS_LIST structure.
+ *
+ */
 static void wipe_adapter_list(void)
 {
 	memset(&adapters, 0, sizeof(adapters));
@@ -206,6 +197,14 @@ static unsigned int control_cache_alloc_check(struct hpi_control_cache *pC)
 			struct hpi_control_cache_info *info =
 				(struct hpi_control_cache_info *)
 				&p_master_cache[byte_count];
+			u16 control_index = info->control_index;
+
+			if (control_index >= pC->control_count) {
+				HPI_DEBUG_LOG(INFO,
+					"adap %d control index %d out of range, cache not ready?\n",
+					pC->adap_idx, control_index);
+				return 0;
+			}
 
 			if (!info->size_in32bit_words) {
 				if (!i) {
@@ -225,10 +224,10 @@ static unsigned int control_cache_alloc_check(struct hpi_control_cache *pC)
 			}
 
 			if (info->control_type) {
-				pC->p_info[info->control_index] = info;
+				pC->p_info[control_index] = info;
 				cached++;
 			} else {	/* dummy cache entry */
-				pC->p_info[info->control_index] = NULL;
+				pC->p_info[control_index] = NULL;
 			}
 
 			byte_count += info->size_in32bit_words * 4;
@@ -309,35 +308,18 @@ static const struct pad_ofs_size pad_desc[] = {
 /** CheckControlCache checks the cache and fills the struct hpi_response
  * accordingly. It returns one if a cache hit occurred, zero otherwise.
  */
-short hpi_check_control_cache(struct hpi_control_cache *p_cache,
+short hpi_check_control_cache_single(struct hpi_control_cache_single *pC,
 	struct hpi_message *phm, struct hpi_response *phr)
 {
-	short found = 1;
-	struct hpi_control_cache_info *pI;
-	struct hpi_control_cache_single *pC;
 	size_t response_size;
-	if (!find_control(phm->obj_index, p_cache, &pI)) {
-		HPI_DEBUG_LOG(VERBOSE,
-			"HPICMN find_control() failed for adap %d\n",
-			phm->adapter_index);
-		return 0;
-	}
-
-	phr->error = 0;
-	phr->specific_error = 0;
-	phr->version = 0;
+	short found = 1;
 
 	/* set the default response size */
 	response_size =
 		sizeof(struct hpi_response_header) +
 		sizeof(struct hpi_control_res);
 
-	/* pC is the default cached control strucure. May be cast to
-	   something else in the following switch statement.
-	 */
-	pC = (struct hpi_control_cache_single *)pI;
-
-	switch (pI->control_type) {
+	switch (pC->u.i.control_type) {
 
 	case HPI_CONTROL_METER:
 		if (phm->u.c.attribute == HPI_METER_PEAK) {
@@ -467,7 +449,7 @@ short hpi_check_control_cache(struct hpi_control_cache *p_cache,
 		break;
 	case HPI_CONTROL_PAD:{
 			struct hpi_control_cache_pad *p_pad;
-			p_pad = (struct hpi_control_cache_pad *)pI;
+			p_pad = (struct hpi_control_cache_pad *)pC;
 
 			if (!(p_pad->field_valid_flags & (1 <<
 						HPI_CTL_ATTR_INDEX(phm->u.c.
@@ -531,7 +513,8 @@ short hpi_check_control_cache(struct hpi_control_cache *p_cache,
 
 	HPI_DEBUG_LOG(VERBOSE, "%s Adap %d, Ctl %d, Type %d, Attr %d\n",
 		found ? "Cached" : "Uncached", phm->adapter_index,
-		pI->control_index, pI->control_type, phm->u.c.attribute);
+		pC->u.i.control_index, pC->u.i.control_type,
+		phm->u.c.attribute);
 
 	if (found) {
 		phr->size = (u16)response_size;
@@ -543,34 +526,36 @@ short hpi_check_control_cache(struct hpi_control_cache *p_cache,
 	return found;
 }
 
+short hpi_check_control_cache(struct hpi_control_cache *p_cache,
+	struct hpi_message *phm, struct hpi_response *phr)
+{
+	struct hpi_control_cache_info *pI;
+
+	if (!find_control(phm->obj_index, p_cache, &pI)) {
+		HPI_DEBUG_LOG(VERBOSE,
+			"HPICMN find_control() failed for adap %d\n",
+			phm->adapter_index);
+		return 0;
+	}
+
+	phr->error = 0;
+	phr->specific_error = 0;
+	phr->version = 0;
+
+	return hpi_check_control_cache_single((struct hpi_control_cache_single
+			*)pI, phm, phr);
+}
+
 /** Updates the cache with Set values.
 
 Only update if no error.
 Volume and Level return the limited values in the response, so use these
 Multiplexer does so use sent values
 */
-void hpi_cmn_control_cache_sync_to_msg(struct hpi_control_cache *p_cache,
-	struct hpi_message *phm, struct hpi_response *phr)
+void hpi_cmn_control_cache_sync_to_msg_single(struct hpi_control_cache_single
+	*pC, struct hpi_message *phm, struct hpi_response *phr)
 {
-	struct hpi_control_cache_single *pC;
-	struct hpi_control_cache_info *pI;
-
-	if (phr->error)
-		return;
-
-	if (!find_control(phm->obj_index, p_cache, &pI)) {
-		HPI_DEBUG_LOG(VERBOSE,
-			"HPICMN find_control() failed for adap %d\n",
-			phm->adapter_index);
-		return;
-	}
-
-	/* pC is the default cached control strucure.
-	   May be cast to something else in the following switch statement.
-	 */
-	pC = (struct hpi_control_cache_single *)pI;
-
-	switch (pI->control_type) {
+	switch (pC->u.i.control_type) {
 	case HPI_CONTROL_VOLUME:
 		if (phm->u.c.attribute == HPI_VOLUME_GAIN) {
 			pC->u.vol.an_log[0] = phr->u.c.an_log_value[0];
@@ -625,6 +610,30 @@ void hpi_cmn_control_cache_sync_to_msg(struct hpi_control_cache *p_cache,
 	}
 }
 
+void hpi_cmn_control_cache_sync_to_msg(struct hpi_control_cache *p_cache,
+	struct hpi_message *phm, struct hpi_response *phr)
+{
+	struct hpi_control_cache_single *pC;
+	struct hpi_control_cache_info *pI;
+
+	if (phr->error)
+		return;
+
+	if (!find_control(phm->obj_index, p_cache, &pI)) {
+		HPI_DEBUG_LOG(VERBOSE,
+			"HPICMN find_control() failed for adap %d\n",
+			phm->adapter_index);
+		return;
+	}
+
+	/* pC is the default cached control strucure.
+	   May be cast to something else in the following switch statement.
+	 */
+	pC = (struct hpi_control_cache_single *)pI;
+
+	hpi_cmn_control_cache_sync_to_msg_single(pC, phm, phr);
+}
+
 /** Allocate control cache.
 
 \return Cache pointer, or NULL if allocation fails.
@@ -637,12 +646,13 @@ struct hpi_control_cache *hpi_alloc_control_cache(const u32 control_count,
 	if (!p_cache)
 		return NULL;
 
-	p_cache->p_info = kcalloc(control_count, sizeof(*p_cache->p_info),
-				  GFP_KERNEL);
+	p_cache->p_info =
+		kcalloc(control_count, sizeof(*p_cache->p_info), GFP_KERNEL);
 	if (!p_cache->p_info) {
 		kfree(p_cache);
 		return NULL;
 	}
+
 	p_cache->cache_size_in_bytes = size_in_bytes;
 	p_cache->control_count = control_count;
 	p_cache->p_cache = p_dsp_control_buffer;

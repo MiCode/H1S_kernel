@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef OXYGEN_H_INCLUDED
 #define OXYGEN_H_INCLUDED
 
@@ -35,7 +36,7 @@
 #define CAPTURE_1_FROM_SPDIF	0x0080
 #define CAPTURE_2_FROM_I2S_2	0x0100
 #define CAPTURE_2_FROM_AC97_1	0x0200
-     /* CAPTURE_3_FROM_I2S_3		not implemented */
+#define CAPTURE_3_FROM_I2S_3	0x0400
 #define MIDI_OUTPUT		0x0800
 #define MIDI_INPUT		0x1000
 #define AC97_CD_INPUT		0x2000
@@ -160,7 +161,6 @@ int oxygen_pci_probe(struct pci_dev *pci, int index, char *id,
 				      const struct pci_device_id *id
 				     )
 		    );
-void oxygen_pci_remove(struct pci_dev *pci);
 #ifdef CONFIG_PM_SLEEP
 extern const struct dev_pm_ops oxygen_pci_pm;
 #endif

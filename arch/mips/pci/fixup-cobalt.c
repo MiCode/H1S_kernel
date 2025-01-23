@@ -13,7 +13,6 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 
-#include <asm/pci.h>
 #include <asm/io.h>
 #include <asm/gt64120.h>
 
@@ -37,6 +36,21 @@
 #define VIA_COBALT_BRD_ID_REG  0x94
 #define VIA_COBALT_BRD_REG_to_ID(reg)	((unsigned char)(reg) >> 4)
 
+/*
+ * Default value of PCI Class Code on GT64111 is PCI_CLASS_MEMORY_OTHER (0x0580)
+ * instead of PCI_CLASS_BRIDGE_HOST (0x0600). Galileo explained this choice in
+ * document "GT-64111 System Controller for RC4640, RM523X and VR4300 CPUs",
+ * section "6.5.3 PCI Autoconfiguration at RESET":
+ *
+ *   Some PCs refuse to configure host bridges if they are found plugged into
+ *   a PCI slot (ask the BIOS vendors why...). The "Memory Controller" Class
+ *   Code does not cause a problem for these non-compliant BIOSes, so we used
+ *   this as the default in the GT-64111.
+ *
+ * So fix the incorrect default value of PCI Class Code. More details are on:
+ * https://lore.kernel.org/r/20211102154831.xtrlgrmrizl5eidl@pali/
+ * https://lore.kernel.org/r/20211102150201.GA11675@alpha.franken.de/
+ */
 static void qube_raq_galileo_early_fixup(struct pci_dev *dev)
 {
 	if (dev->devfn == PCI_DEVFN(0, 0) &&
@@ -148,7 +162,7 @@ static void qube_raq_via_board_id_fixup(struct pci_dev *dev)
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_82C586_0,
 	 qube_raq_via_board_id_fixup);
 
-static char irq_tab_qube1[] __initdata = {
+static char irq_tab_qube1[] = {
   [COBALT_PCICONF_CPU]	   = 0,
   [COBALT_PCICONF_ETH0]	   = QUBE1_ETH0_IRQ,
   [COBALT_PCICONF_RAQSCSI] = SCSI_IRQ,
@@ -157,7 +171,7 @@ static char irq_tab_qube1[] __initdata = {
   [COBALT_PCICONF_ETH1]	   = 0
 };
 
-static char irq_tab_cobalt[] __initdata = {
+static char irq_tab_cobalt[] = {
   [COBALT_PCICONF_CPU]	   = 0,
   [COBALT_PCICONF_ETH0]	   = ETH0_IRQ,
   [COBALT_PCICONF_RAQSCSI] = SCSI_IRQ,
@@ -166,7 +180,7 @@ static char irq_tab_cobalt[] __initdata = {
   [COBALT_PCICONF_ETH1]	   = ETH1_IRQ
 };
 
-static char irq_tab_raq2[] __initdata = {
+static char irq_tab_raq2[] = {
   [COBALT_PCICONF_CPU]	   = 0,
   [COBALT_PCICONF_ETH0]	   = ETH0_IRQ,
   [COBALT_PCICONF_RAQSCSI] = RAQ2_SCSI_IRQ,
@@ -175,7 +189,7 @@ static char irq_tab_raq2[] __initdata = {
   [COBALT_PCICONF_ETH1]	   = ETH1_IRQ
 };
 
-int __init pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
+int pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	if (cobalt_board_id <= COBALT_BRD_ID_QUBE1)
 		return irq_tab_qube1[slot];

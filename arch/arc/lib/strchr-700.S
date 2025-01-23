@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 /* ARC700 has a relatively long pipeline and branch prediction, so we want
@@ -11,9 +8,9 @@
    presence of the norm instruction makes it easier to operate on whole
    words branch-free.  */
 
-#include <asm/linkage.h>
+#include <linux/linkage.h>
 
-ARC_ENTRY strchr
+ENTRY_CFI(strchr)
 	extb_s	r1,r1
 	asl	r5,r1,8
 	bmsk	r2,r0,1
@@ -130,4 +127,4 @@ ARC_ENTRY strchr
 	j_s.d	[blink]
 	mov.mi	r0,0
 #endif /* ENDIAN */
-ARC_EXIT strchr
+END_CFI(strchr)

@@ -231,13 +231,13 @@ use_legacy_interrupts:
 
 static void esas2r_claim_interrupts(struct esas2r_adapter *a)
 {
-	unsigned long flags = IRQF_DISABLED;
+	unsigned long flags = 0;
 
 	if (a->intr_mode == INTR_MODE_LEGACY)
 		flags |= IRQF_SHARED;
 
 	esas2r_log(ESAS2R_LOG_INFO,
-		   "esas2r_claim_interrupts irq=%d (%p, %s, %x)",
+		   "esas2r_claim_interrupts irq=%d (%p, %s, %lx)",
 		   a->pcid->irq, a, a->name, flags);
 
 	if (request_irq(a->pcid->irq,
@@ -266,6 +266,7 @@ int esas2r_init_adapter(struct Scsi_Host *host, struct pci_dev *pcid,
 	int i;
 	void *next_uncached;
 	struct esas2r_request *first_request, *last_request;
+	bool dma64 = false;
 
 	if (index >= MAX_ADAPTERS) {
 		esas2r_log(ESAS2R_LOG_CRIT,
@@ -286,49 +287,27 @@ int esas2r_init_adapter(struct Scsi_Host *host, struct pci_dev *pcid,
 	a->pcid = pcid;
 	a->host = host;
 
-	if (sizeof(dma_addr_t) > 4) {
-		const uint64_t required_mask = dma_get_required_mask
-						       (&pcid->dev);
-		if (required_mask > DMA_BIT_MASK(32)
-		    && !pci_set_dma_mask(pcid, DMA_BIT_MASK(64))
-		    && !pci_set_consistent_dma_mask(pcid,
-						    DMA_BIT_MASK(64))) {
-			esas2r_log_dev(ESAS2R_LOG_INFO,
-				       &(a->pcid->dev),
-				       "64-bit PCI addressing enabled\n");
-		} else if (!pci_set_dma_mask(pcid, DMA_BIT_MASK(32))
-			   && !pci_set_consistent_dma_mask(pcid,
-							   DMA_BIT_MASK(32))) {
-			esas2r_log_dev(ESAS2R_LOG_INFO,
-				       &(a->pcid->dev),
-				       "32-bit PCI addressing enabled\n");
-		} else {
-			esas2r_log(ESAS2R_LOG_CRIT,
-				   "failed to set DMA mask");
-			esas2r_kill_adapter(index);
-			return 0;
-		}
-	} else {
-		if (!pci_set_dma_mask(pcid, DMA_BIT_MASK(32))
-		    && !pci_set_consistent_dma_mask(pcid,
-						    DMA_BIT_MASK(32))) {
-			esas2r_log_dev(ESAS2R_LOG_INFO,
-				       &(a->pcid->dev),
-				       "32-bit PCI addressing enabled\n");
-		} else {
-			esas2r_log(ESAS2R_LOG_CRIT,
-				   "failed to set DMA mask");
-			esas2r_kill_adapter(index);
-			return 0;
-		}
+	if (sizeof(dma_addr_t) > 4 &&
+	    dma_get_required_mask(&pcid->dev) > DMA_BIT_MASK(32) &&
+	    !dma_set_mask_and_coherent(&pcid->dev, DMA_BIT_MASK(64)))
+		dma64 = true;
+
+	if (!dma64 && dma_set_mask_and_coherent(&pcid->dev, DMA_BIT_MASK(32))) {
+		esas2r_log(ESAS2R_LOG_CRIT, "failed to set DMA mask");
+		esas2r_kill_adapter(index);
+		return 0;
 	}
+
+	esas2r_log_dev(ESAS2R_LOG_INFO, &pcid->dev,
+		       "%s-bit PCI addressing enabled\n", dma64 ? "64" : "32");
+
 	esas2r_adapters[index] = a;
 	sprintf(a->name, ESAS2R_DRVR_NAME "_%02d", index);
 	esas2r_debug("new adapter %p, name %s", a, a->name);
 	spin_lock_init(&a->request_lock);
 	spin_lock_init(&a->fw_event_lock);
-	sema_init(&a->fm_api_semaphore, 1);
-	sema_init(&a->fs_api_semaphore, 1);
+	mutex_init(&a->fm_api_mutex);
+	mutex_init(&a->fs_api_mutex);
 	sema_init(&a->nvram_semaphore, 1);
 
 	esas2r_fw_event_off(a);
@@ -433,10 +412,11 @@ int esas2r_init_adapter(struct Scsi_Host *host, struct pci_dev *pcid,
 	esas2r_disable_chip_interrupts(a);
 	esas2r_check_adapter(a);
 
-	if (!esas2r_init_adapter_hw(a, true))
+	if (!esas2r_init_adapter_hw(a, true)) {
 		esas2r_log(ESAS2R_LOG_CRIT, "failed to initialize hardware!");
-	else
+	} else {
 		esas2r_debug("esas2r_init_adapter ok");
+	}
 
 	esas2r_claim_interrupts(a);
 
@@ -661,74 +641,27 @@ void esas2r_kill_adapter(int i)
 	}
 }
 
-int esas2r_cleanup(struct Scsi_Host *host)
+static int __maybe_unused esas2r_suspend(struct device *dev)
 {
-	struct esas2r_adapter *a;
-	int index;
-
-	if (host == NULL) {
-		int i;
-
-		esas2r_debug("esas2r_cleanup everything");
-		for (i = 0; i < MAX_ADAPTERS; i++)
-			esas2r_kill_adapter(i);
-		return -1;
-	}
-
-	esas2r_debug("esas2r_cleanup called for host %p", host);
-	a = (struct esas2r_adapter *)host->hostdata;
-	index = a->index;
-	esas2r_kill_adapter(index);
-	return index;
-}
-
-int esas2r_suspend(struct pci_dev *pdev, pm_message_t state)
-{
-	struct Scsi_Host *host = pci_get_drvdata(pdev);
-	u32 device_state;
+	struct Scsi_Host *host = dev_get_drvdata(dev);
 	struct esas2r_adapter *a = (struct esas2r_adapter *)host->hostdata;
 
-	esas2r_log_dev(ESAS2R_LOG_INFO, &(pdev->dev), "suspending adapter()");
+	esas2r_log_dev(ESAS2R_LOG_INFO, dev, "suspending adapter()");
 	if (!a)
 		return -ENODEV;
 
 	esas2r_adapter_power_down(a, 1);
-	device_state = pci_choose_state(pdev, state);
-	esas2r_log_dev(ESAS2R_LOG_INFO, &(pdev->dev),
-		       "pci_save_state() called");
-	pci_save_state(pdev);
-	esas2r_log_dev(ESAS2R_LOG_INFO, &(pdev->dev),
-		       "pci_disable_device() called");
-	pci_disable_device(pdev);
-	esas2r_log_dev(ESAS2R_LOG_INFO, &(pdev->dev),
-		       "pci_set_power_state() called");
-	pci_set_power_state(pdev, device_state);
-	esas2r_log_dev(ESAS2R_LOG_INFO, &(pdev->dev), "esas2r_suspend(): 0");
+	esas2r_log_dev(ESAS2R_LOG_INFO, dev, "esas2r_suspend(): 0");
 	return 0;
 }
 
-int esas2r_resume(struct pci_dev *pdev)
+static int __maybe_unused esas2r_resume(struct device *dev)
 {
-	struct Scsi_Host *host = pci_get_drvdata(pdev);
+	struct Scsi_Host *host = dev_get_drvdata(dev);
 	struct esas2r_adapter *a = (struct esas2r_adapter *)host->hostdata;
-	int rez;
+	int rez = 0;
 
-	esas2r_log_dev(ESAS2R_LOG_INFO, &(pdev->dev), "resuming adapter()");
-	esas2r_log_dev(ESAS2R_LOG_INFO, &(pdev->dev),
-		       "pci_set_power_state(PCI_D0) "
-		       "called");
-	pci_set_power_state(pdev, PCI_D0);
-	esas2r_log_dev(ESAS2R_LOG_INFO, &(pdev->dev),
-		       "pci_enable_wake(PCI_D0, 0) "
-		       "called");
-	pci_enable_wake(pdev, PCI_D0, 0);
-	esas2r_log_dev(ESAS2R_LOG_INFO, &(pdev->dev),
-		       "pci_restore_state() called");
-	pci_restore_state(pdev);
-	esas2r_log_dev(ESAS2R_LOG_INFO, &(pdev->dev),
-		       "pci_enable_device() called");
-	rez = pci_enable_device(pdev);
-	pci_set_master(pdev);
+	esas2r_log_dev(ESAS2R_LOG_INFO, dev, "resuming adapter()");
 
 	if (!a) {
 		rez = -ENODEV;
@@ -772,10 +705,12 @@ int esas2r_resume(struct pci_dev *pdev)
 	}
 
 error_exit:
-	esas2r_log_dev(ESAS2R_LOG_CRIT, &(pdev->dev), "esas2r_resume(): %d",
+	esas2r_log_dev(ESAS2R_LOG_CRIT, dev, "esas2r_resume(): %d",
 		       rez);
 	return rez;
 }
+
+SIMPLE_DEV_PM_OPS(esas2r_pm_ops, esas2r_suspend, esas2r_resume);
 
 bool esas2r_set_degraded_mode(struct esas2r_adapter *a, char *error_str)
 {
@@ -804,24 +739,20 @@ u32 esas2r_get_uncached_size(struct esas2r_adapter *a)
 
 static void esas2r_init_pci_cfg_space(struct esas2r_adapter *a)
 {
-	int pcie_cap_reg;
-
-	pcie_cap_reg = pci_find_capability(a->pcid, PCI_CAP_ID_EXP);
-	if (pcie_cap_reg) {
+	if (pci_is_pcie(a->pcid)) {
 		u16 devcontrol;
 
-		pci_read_config_word(a->pcid, pcie_cap_reg + PCI_EXP_DEVCTL,
-				     &devcontrol);
+		pcie_capability_read_word(a->pcid, PCI_EXP_DEVCTL, &devcontrol);
 
-		if ((devcontrol & PCI_EXP_DEVCTL_READRQ) > 0x2000) {
+		if ((devcontrol & PCI_EXP_DEVCTL_READRQ) >
+		     PCI_EXP_DEVCTL_READRQ_512B) {
 			esas2r_log(ESAS2R_LOG_INFO,
 				   "max read request size > 512B");
 
 			devcontrol &= ~PCI_EXP_DEVCTL_READRQ;
-			devcontrol |= 0x2000;
-			pci_write_config_word(a->pcid,
-					      pcie_cap_reg + PCI_EXP_DEVCTL,
-					      devcontrol);
+			devcontrol |= PCI_EXP_DEVCTL_READRQ_512B;
+			pcie_capability_write_word(a->pcid, PCI_EXP_DEVCTL,
+						   devcontrol);
 		}
 	}
 }
@@ -853,7 +784,7 @@ bool esas2r_init_adapter_struct(struct esas2r_adapter *a,
 
 	/* allocate requests for asynchronous events */
 	a->first_ae_req =
-		kzalloc(num_ae_requests * sizeof(struct esas2r_request),
+		kcalloc(num_ae_requests, sizeof(struct esas2r_request),
 			GFP_KERNEL);
 
 	if (a->first_ae_req == NULL) {
@@ -863,8 +794,8 @@ bool esas2r_init_adapter_struct(struct esas2r_adapter *a,
 	}
 
 	/* allocate the S/G list memory descriptors */
-	a->sg_list_mds = kzalloc(
-		num_sg_lists * sizeof(struct esas2r_mem_desc), GFP_KERNEL);
+	a->sg_list_mds = kcalloc(num_sg_lists, sizeof(struct esas2r_mem_desc),
+				 GFP_KERNEL);
 
 	if (a->sg_list_mds == NULL) {
 		esas2r_log(ESAS2R_LOG_CRIT,
@@ -874,8 +805,9 @@ bool esas2r_init_adapter_struct(struct esas2r_adapter *a,
 
 	/* allocate the request table */
 	a->req_table =
-		kzalloc((num_requests + num_ae_requests +
-			 1) * sizeof(struct esas2r_request *), GFP_KERNEL);
+		kcalloc(num_requests + num_ae_requests + 1,
+			sizeof(struct esas2r_request *),
+			GFP_KERNEL);
 
 	if (a->req_table == NULL) {
 		esas2r_log(ESAS2R_LOG_CRIT,
@@ -962,10 +894,6 @@ bool esas2r_init_adapter_struct(struct esas2r_adapter *a,
 
 	/* initialize the allocated memory */
 	if (test_bit(AF_FIRST_INIT, &a->flags)) {
-		memset(a->req_table, 0,
-		       (num_requests + num_ae_requests +
-			1) * sizeof(struct esas2r_request *));
-
 		esas2r_targ_db_initialize(a);
 
 		/* prime parts of the inbound list */
@@ -1226,8 +1154,6 @@ static bool esas2r_format_init_msg(struct esas2r_adapter *a,
 	case ESAS2R_INIT_MSG_START:
 	case ESAS2R_INIT_MSG_REINIT:
 	{
-		struct timeval now;
-		do_gettimeofday(&now);
 		esas2r_hdebug("CFG init");
 		esas2r_build_cfg_req(a,
 				     rq,
@@ -1236,7 +1162,8 @@ static bool esas2r_format_init_msg(struct esas2r_adapter *a,
 				     NULL);
 		ci = (struct atto_vda_cfg_init *)&rq->vrq->cfg.data.init;
 		ci->sgl_page_size = cpu_to_le32(sgl_page_size);
-		ci->epoch_time = cpu_to_le32(now.tv_sec);
+		/* firmware interface overflows in y2106 */
+		ci->epoch_time = cpu_to_le32(ktime_get_real_seconds());
 		rq->flags |= RF_FAILURE_OK;
 		a->init_msg = ESAS2R_INIT_MSG_INIT;
 		break;
@@ -1286,6 +1213,7 @@ static bool esas2r_format_init_msg(struct esas2r_adapter *a,
 			a->init_msg = ESAS2R_INIT_MSG_GET_INIT;
 			break;
 		}
+		fallthrough;
 
 	case ESAS2R_INIT_MSG_GET_INIT:
 		if (msg == ESAS2R_INIT_MSG_GET_INIT) {
@@ -1299,7 +1227,7 @@ static bool esas2r_format_init_msg(struct esas2r_adapter *a,
 				esas2r_hdebug("FAILED");
 			}
 		}
-	/* fall through */
+		fallthrough;
 
 	default:
 		rq->req_stat = RS_SUCCESS;

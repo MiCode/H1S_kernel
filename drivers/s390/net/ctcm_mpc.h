@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright IBM Corp. 2007
  * Authors:	Peter Tiedemann (ptiedem@de.ibm.com)
@@ -227,7 +228,6 @@ static inline void ctcmpc_dump32(char *buf, int len)
 		ctcmpc_dumpit(buf, 32);
 }
 
-int ctcmpc_open(struct net_device *);
 void ctcm_ccw_check_rc(struct channel *, int, char *);
 void mpc_group_ready(unsigned long adev);
 void mpc_channel_action(struct channel *ch, int direction, int action);

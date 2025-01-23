@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * ISP1362 HCD (Host Controller Driver) for USB.
  *
@@ -147,7 +148,7 @@ static inline struct isp1362_ep_queue *get_ptd_queue(struct isp1362_hcd *isp1362
 	if (epq)
 		DBG(1, "%s: PTD $%04x is on %s queue\n", __func__, offset, epq->name);
 	else
-		pr_warning("%s: invalid PTD $%04x\n", __func__, offset);
+		pr_warn("%s: invalid PTD $%04x\n", __func__, offset);
 
 	return epq;
 }
@@ -157,8 +158,9 @@ static inline int get_ptd_offset(struct isp1362_ep_queue *epq, u8 index)
 	int offset;
 
 	if (index * epq->blk_size > epq->buf_size) {
-		pr_warning("%s: Bad %s index %d(%d)\n", __func__, epq->name, index,
-		     epq->buf_size / epq->blk_size);
+		pr_warn("%s: Bad %s index %d(%d)\n",
+			__func__, epq->name, index,
+			epq->buf_size / epq->blk_size);
 		return -EINVAL;
 	}
 	offset = epq->buf_start + index * epq->blk_size;
@@ -711,7 +713,7 @@ static inline void enable_istl_transfers(struct isp1362_hcd *isp1362_hcd, int fl
 static int submit_req(struct isp1362_hcd *isp1362_hcd, struct urb *urb,
 		      struct isp1362_ep *ep, struct isp1362_ep_queue *epq)
 {
-	int index = epq->free_ptd;
+	int index;
 
 	prepare_ptd(isp1362_hcd, urb, ep, epq, 0);
 	index = claim_ptd_buffers(epq, ep, ep->length);
@@ -902,8 +904,8 @@ static void start_iso_transfers(struct isp1362_hcd *isp1362_hcd)
 
 			ptd_offset = next_ptd(epq, ep);
 			if (ptd_offset < 0) {
-				pr_warning("%s: req %d No more %s PTD buffers available\n", __func__,
-				     ep->num_req, epq->name);
+				pr_warn("%s: req %d No more %s PTD buffers available\n",
+					__func__, ep->num_req, epq->name);
 				break;
 			}
 		}
@@ -973,8 +975,8 @@ static void finish_transfers(struct isp1362_hcd *isp1362_hcd, unsigned long done
 			break;
 	}
 	if (done_map)
-		pr_warning("%s: done_map not clear: %08lx:%08lx\n", __func__, done_map,
-		     epq->skip_map);
+		pr_warn("%s: done_map not clear: %08lx:%08lx\n",
+			__func__, done_map, epq->skip_map);
 	atomic_dec(&epq->finishing);
 }
 
@@ -1277,7 +1279,7 @@ static int isp1362_urb_enqueue(struct usb_hcd *hcd,
 		ep->udev = usb_get_dev(udev);
 		ep->hep = hep;
 		ep->epnum = epnum;
-		ep->maxpacket = usb_maxpacket(udev, urb->pipe, is_out);
+		ep->maxpacket = usb_maxpacket(udev, urb->pipe);
 		ep->ptd_offset = -EINVAL;
 		ep->ptd_index = -EINVAL;
 		usb_settoggle(udev, epnum, is_out, 0);
@@ -1297,8 +1299,8 @@ static int isp1362_urb_enqueue(struct usb_hcd *hcd,
 			ep->interval = urb->interval;
 			ep->branch = PERIODIC_SIZE;
 			ep->load = usb_calc_bus_time(udev->speed, !is_out,
-						     (type == PIPE_ISOCHRONOUS),
-						     usb_maxpacket(udev, pipe, is_out)) / 1000;
+						     type == PIPE_ISOCHRONOUS,
+						     usb_maxpacket(udev, pipe)) / 1000;
 			break;
 		}
 		hep->hcpriv = ep;
@@ -1433,7 +1435,7 @@ static int isp1362_urb_dequeue(struct usb_hcd *hcd, struct urb *urb, int status)
 		} else
 			DBG(1, "%s: urb %p active; wait4irq\n", __func__, urb);
 	} else {
-		pr_warning("%s: No EP in URB %p\n", __func__, urb);
+		pr_warn("%s: No EP in URB %p\n", __func__, urb);
 		retval = -EINVAL;
 	}
 done:
@@ -1538,13 +1540,17 @@ static void isp1362_hub_descriptor(struct isp1362_hcd *isp1362_hcd,
 
 	DBG(3, "%s: enter\n", __func__);
 
-	desc->bDescriptorType = 0x29;
+	desc->bDescriptorType = USB_DT_HUB;
 	desc->bDescLength = 9;
 	desc->bHubContrCurrent = 0;
 	desc->bNbrPorts = reg & 0x3;
 	/* Power switching, device type, overcurrent. */
-	desc->wHubCharacteristics = cpu_to_le16((reg >> 8) & 0x1f);
-	DBG(0, "%s: hubcharacteristics = %02x\n", __func__, cpu_to_le16((reg >> 8) & 0x1f));
+	desc->wHubCharacteristics = cpu_to_le16((reg >> 8) &
+						(HUB_CHAR_LPSM |
+						 HUB_CHAR_COMPOUND |
+						 HUB_CHAR_OCPM));
+	DBG(0, "%s: hubcharacteristics = %02x\n", __func__,
+			desc->wHubCharacteristics);
 	desc->bPwrOn2PwrGood = (reg >> 24) & 0xff;
 	/* ports removable, and legacy PortPwrCtrlMask */
 	desc->u.hs.DeviceRemovable[0] = desc->bNbrPorts == 1 ? 1 << 1 : 3 << 1;
@@ -1573,6 +1579,7 @@ static int isp1362_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 			spin_lock_irqsave(&isp1362_hcd->lock, flags);
 			isp1362_write_reg32(isp1362_hcd, HCRHSTATUS, RH_HS_OCIC);
 			spin_unlock_irqrestore(&isp1362_hcd->lock, flags);
+			break;
 		case C_HUB_LOCAL_POWER:
 			DBG(0, "C_HUB_LOCAL_POWER\n");
 			break;
@@ -1741,13 +1748,13 @@ static int isp1362_bus_suspend(struct usb_hcd *hcd)
 		isp1362_hcd->hc_control &= ~OHCI_CTRL_HCFS;
 		isp1362_hcd->hc_control |= OHCI_USB_RESET;
 		isp1362_write_reg32(isp1362_hcd, HCCONTROL, isp1362_hcd->hc_control);
-		/* FALL THROUGH */
+		fallthrough;
 	case OHCI_USB_RESET:
 		status = -EBUSY;
-		pr_warning("%s: needs reinit!\n", __func__);
+		pr_warn("%s: needs reinit!\n", __func__);
 		goto done;
 	case OHCI_USB_SUSPEND:
-		pr_warning("%s: already suspended?\n", __func__);
+		pr_warn("%s: already suspended?\n", __func__);
 		goto done;
 	}
 	DBG(0, "%s: suspend root hub\n", __func__);
@@ -1835,7 +1842,7 @@ static int isp1362_bus_resume(struct usb_hcd *hcd)
 	isp1362_hcd->hc_control = isp1362_read_reg32(isp1362_hcd, HCCONTROL);
 	pr_info("%s: HCCONTROL: %08x\n", __func__, isp1362_hcd->hc_control);
 	if (hcd->state == HC_STATE_RESUMING) {
-		pr_warning("%s: duplicate resume\n", __func__);
+		pr_warn("%s: duplicate resume\n", __func__);
 		status = 0;
 	} else
 		switch (isp1362_hcd->hc_control & OHCI_CTRL_HCFS) {
@@ -2152,30 +2159,18 @@ static int isp1362_show(struct seq_file *s, void *unused)
 
 	return 0;
 }
-
-static int isp1362_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, isp1362_show, inode);
-}
-
-static const struct file_operations debug_ops = {
-	.open = isp1362_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(isp1362);
 
 /* expect just one isp1362_hcd per system */
 static void create_debug_file(struct isp1362_hcd *isp1362_hcd)
 {
-	isp1362_hcd->debug_file = debugfs_create_file("isp1362", S_IRUGO,
-						      usb_debug_root,
-						      isp1362_hcd, &debug_ops);
+	debugfs_create_file("isp1362", S_IRUGO, usb_debug_root, isp1362_hcd,
+			    &isp1362_fops);
 }
 
 static void remove_debug_file(struct isp1362_hcd *isp1362_hcd)
 {
-	debugfs_remove(isp1362_hcd->debug_file);
+	debugfs_lookup_and_remove("isp1362", usb_debug_root);
 }
 
 /*-------------------------------------------------------------------------*/
@@ -2246,7 +2241,6 @@ static int isp1362_mem_config(struct usb_hcd *hcd)
 		return -ENOMEM;
 	}
 
-	total = istl_size + intl_size + atl_size;
 	spin_lock_irqsave(&isp1362_hcd->lock, flags);
 
 	for (i = 0; i < 2; i++) {
@@ -2470,8 +2464,8 @@ static int isp1362_chip_test(struct isp1362_hcd *isp1362_hcd)
 					    __func__, offset);
 					break;
 				}
-				pr_warning("%s: memory check with offset %02x ok after second read\n",
-				     __func__, offset);
+				pr_warn("%s: memory check with offset %02x ok after second read\n",
+					__func__, offset);
 			}
 		}
 		kfree(ref);
@@ -2586,7 +2580,7 @@ static int isp1362_hc_start(struct usb_hcd *hcd)
 
 /*-------------------------------------------------------------------------*/
 
-static struct hc_driver isp1362_hc_driver = {
+static const struct hc_driver isp1362_hc_driver = {
 	.description =		hcd_name,
 	.product_desc =		"ISP1362 Host Controller",
 	.hcd_priv_size =	sizeof(struct isp1362_hcd),
@@ -2612,51 +2606,28 @@ static struct hc_driver isp1362_hc_driver = {
 
 /*-------------------------------------------------------------------------*/
 
-static int isp1362_remove(struct platform_device *pdev)
+static void isp1362_remove(struct platform_device *pdev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(pdev);
 	struct isp1362_hcd *isp1362_hcd = hcd_to_isp1362_hcd(hcd);
-	struct resource *res;
 
 	remove_debug_file(isp1362_hcd);
 	DBG(0, "%s: Removing HCD\n", __func__);
 	usb_remove_hcd(hcd);
-
-	DBG(0, "%s: Unmapping data_reg @ %p\n", __func__,
-	    isp1362_hcd->data_reg);
-	iounmap(isp1362_hcd->data_reg);
-
-	DBG(0, "%s: Unmapping addr_reg @ %p\n", __func__,
-	    isp1362_hcd->addr_reg);
-	iounmap(isp1362_hcd->addr_reg);
-
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	DBG(0, "%s: release mem_region: %08lx\n", __func__, (long unsigned int)res->start);
-	if (res)
-		release_mem_region(res->start, resource_size(res));
-
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	DBG(0, "%s: release mem_region: %08lx\n", __func__, (long unsigned int)res->start);
-	if (res)
-		release_mem_region(res->start, resource_size(res));
-
 	DBG(0, "%s: put_hcd\n", __func__);
 	usb_put_hcd(hcd);
 	DBG(0, "%s: Done\n", __func__);
-
-	return 0;
 }
 
 static int isp1362_probe(struct platform_device *pdev)
 {
 	struct usb_hcd *hcd;
 	struct isp1362_hcd *isp1362_hcd;
-	struct resource *addr, *data;
+	struct resource *data, *irq_res;
 	void __iomem *addr_reg;
 	void __iomem *data_reg;
 	int irq;
 	int retval = 0;
-	struct resource *irq_res;
 	unsigned int irq_flags = 0;
 
 	if (usb_disabled())
@@ -2667,52 +2638,28 @@ static int isp1362_probe(struct platform_device *pdev)
 	 * specific platform_data.  we don't probe for IRQs, and do only
 	 * minimal sanity checking.
 	 */
-	if (pdev->num_resources < 3) {
-		retval = -ENODEV;
-		goto err1;
-	}
+	if (pdev->num_resources < 3)
+		return -ENODEV;
 
-	data = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	addr = platform_get_resource(pdev, IORESOURCE_MEM, 1);
 	irq_res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (!addr || !data || !irq_res) {
-		retval = -ENODEV;
-		goto err1;
-	}
+	if (!irq_res)
+		return -ENODEV;
+
 	irq = irq_res->start;
 
-	if (pdev->dev.dma_mask) {
-		DBG(1, "won't do DMA");
-		retval = -ENODEV;
-		goto err1;
-	}
+	addr_reg = devm_platform_ioremap_resource(pdev, 1);
+	if (IS_ERR(addr_reg))
+		return PTR_ERR(addr_reg);
 
-	if (!request_mem_region(addr->start, resource_size(addr), hcd_name)) {
-		retval = -EBUSY;
-		goto err1;
-	}
-	addr_reg = ioremap(addr->start, resource_size(addr));
-	if (addr_reg == NULL) {
-		retval = -ENOMEM;
-		goto err2;
-	}
-
-	if (!request_mem_region(data->start, resource_size(data), hcd_name)) {
-		retval = -EBUSY;
-		goto err3;
-	}
-	data_reg = ioremap(data->start, resource_size(data));
-	if (data_reg == NULL) {
-		retval = -ENOMEM;
-		goto err4;
-	}
+	data_reg = devm_platform_get_and_ioremap_resource(pdev, 0, &data);
+	if (IS_ERR(data_reg))
+		return PTR_ERR(data_reg);
 
 	/* allocate and initialize hcd */
 	hcd = usb_create_hcd(&isp1362_hc_driver, &pdev->dev, dev_name(&pdev->dev));
-	if (!hcd) {
-		retval = -ENOMEM;
-		goto err5;
-	}
+	if (!hcd)
+		return -ENOMEM;
+
 	hcd->rsrc_start = data->start;
 	isp1362_hcd = hcd_to_isp1362_hcd(hcd);
 	isp1362_hcd->data_reg = data_reg;
@@ -2729,7 +2676,7 @@ static int isp1362_probe(struct platform_device *pdev)
 	if (!isp1362_hcd->board->delay) {
 		dev_err(hcd->self.controller, "No platform delay function given\n");
 		retval = -ENODEV;
-		goto err6;
+		goto err;
 	}
 #endif
 
@@ -2744,32 +2691,17 @@ static int isp1362_probe(struct platform_device *pdev)
 
 	retval = usb_add_hcd(hcd, irq, irq_flags | IRQF_SHARED);
 	if (retval != 0)
-		goto err6;
+		goto err;
 	device_wakeup_enable(hcd->self.controller);
 
-	pr_info("%s, irq %d\n", hcd->product_desc, irq);
+	dev_info(&pdev->dev, "%s, irq %d\n", hcd->product_desc, irq);
 
 	create_debug_file(isp1362_hcd);
 
 	return 0;
 
- err6:
-	DBG(0, "%s: Freeing dev %p\n", __func__, isp1362_hcd);
+ err:
 	usb_put_hcd(hcd);
- err5:
-	DBG(0, "%s: Unmapping data_reg @ %p\n", __func__, data_reg);
-	iounmap(data_reg);
- err4:
-	DBG(0, "%s: Releasing mem region %08lx\n", __func__, (long unsigned int)data->start);
-	release_mem_region(data->start, resource_size(data));
- err3:
-	DBG(0, "%s: Unmapping addr_reg @ %p\n", __func__, addr_reg);
-	iounmap(addr_reg);
- err2:
-	DBG(0, "%s: Releasing mem region %08lx\n", __func__, (long unsigned int)addr->start);
-	release_mem_region(addr->start, resource_size(addr));
- err1:
-	pr_err("%s: init error, %d\n", __func__, retval);
 
 	return retval;
 }
@@ -2825,13 +2757,12 @@ static int isp1362_resume(struct platform_device *pdev)
 
 static struct platform_driver isp1362_driver = {
 	.probe = isp1362_probe,
-	.remove = isp1362_remove,
+	.remove_new = isp1362_remove,
 
 	.suspend = isp1362_suspend,
 	.resume = isp1362_resume,
 	.driver = {
 		.name = hcd_name,
-		.owner = THIS_MODULE,
 	},
 };
 

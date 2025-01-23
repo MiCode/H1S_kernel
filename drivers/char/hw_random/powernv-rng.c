@@ -1,19 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright 2013 Michael Ellerman, Guo Chao, IBM Corp.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
 #include <linux/random.h>
 #include <linux/hw_random.h>
+#include <asm/archrandom.h>
 
 static int powernv_rng_read(struct hwrng *rng, void *data, size_t max, bool wait)
 {
@@ -26,7 +24,7 @@ static int powernv_rng_read(struct hwrng *rng, void *data, size_t max, bool wait
 	buf = (unsigned long *)data;
 
 	for (i = 0; i < len; i++)
-		powernv_get_random_long(buf++);
+		pnv_get_random_long(buf++);
 
 	return len * sizeof(unsigned long);
 }
@@ -36,18 +34,11 @@ static struct hwrng powernv_hwrng = {
 	.read = powernv_rng_read,
 };
 
-static int powernv_rng_remove(struct platform_device *pdev)
-{
-	hwrng_unregister(&powernv_hwrng);
-
-	return 0;
-}
-
 static int powernv_rng_probe(struct platform_device *pdev)
 {
 	int rc;
 
-	rc = hwrng_register(&powernv_hwrng);
+	rc = devm_hwrng_register(&pdev->dev, &powernv_hwrng);
 	if (rc) {
 		/* We only register one device, ignore any others */
 		if (rc == -EEXIST)
@@ -61,7 +52,7 @@ static int powernv_rng_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static struct of_device_id powernv_rng_match[] = {
+static const struct of_device_id powernv_rng_match[] = {
 	{ .compatible	= "ibm,power-rng",},
 	{},
 };
@@ -73,7 +64,6 @@ static struct platform_driver powernv_rng_driver = {
 		.of_match_table = powernv_rng_match,
 	},
 	.probe	= powernv_rng_probe,
-	.remove = powernv_rng_remove,
 };
 module_platform_driver(powernv_rng_driver);
 

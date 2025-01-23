@@ -1,8 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * xtensa mmu stuff
  *
  * Extracted from init.c
  */
+#include <linux/memblock.h>
 #include <linux/percpu.h>
 #include <linux/init.h>
 #include <linux/string.h>
@@ -16,9 +18,54 @@
 #include <asm/initialize_mmu.h>
 #include <asm/io.h>
 
+DEFINE_PER_CPU(unsigned long, asid_cache) = ASID_USER_FIRST;
+
+#if defined(CONFIG_HIGHMEM)
+static void * __init init_pmd(unsigned long vaddr, unsigned long n_pages)
+{
+	pmd_t *pmd = pmd_off_k(vaddr);
+	pte_t *pte;
+	unsigned long i;
+
+	n_pages = ALIGN(n_pages, PTRS_PER_PTE);
+
+	pr_debug("%s: vaddr: 0x%08lx, n_pages: %ld\n",
+		 __func__, vaddr, n_pages);
+
+	pte = memblock_alloc_low(n_pages * sizeof(pte_t), PAGE_SIZE);
+	if (!pte)
+		panic("%s: Failed to allocate %lu bytes align=%lx\n",
+		      __func__, n_pages * sizeof(pte_t), PAGE_SIZE);
+
+	for (i = 0; i < n_pages; ++i)
+		pte_clear(NULL, 0, pte + i);
+
+	for (i = 0; i < n_pages; i += PTRS_PER_PTE, ++pmd) {
+		pte_t *cur_pte = pte + i;
+
+		BUG_ON(!pmd_none(*pmd));
+		set_pmd(pmd, __pmd(((unsigned long)cur_pte) & PAGE_MASK));
+		BUG_ON(cur_pte != pte_offset_kernel(pmd, 0));
+		pr_debug("%s: pmd: 0x%p, pte: 0x%p\n",
+			 __func__, pmd, cur_pte);
+	}
+	return pte;
+}
+
+static void __init fixedrange_init(void)
+{
+	BUILD_BUG_ON(FIXADDR_START < TLBTEMP_BASE_1 + TLBTEMP_SIZE);
+	init_pmd(FIXADDR_START, __end_of_fixed_addresses);
+}
+#endif
+
 void __init paging_init(void)
 {
-	memset(swapper_pg_dir, 0, PAGE_SIZE);
+#ifdef CONFIG_HIGHMEM
+	fixedrange_init();
+	pkmap_page_table = init_pmd(PKMAP_BASE, LAST_PKMAP);
+	kmap_init();
+#endif
 }
 
 /*
@@ -39,7 +86,24 @@ void init_mmu(void)
 	set_itlbcfg_register(0);
 	set_dtlbcfg_register(0);
 #endif
-#if XCHAL_HAVE_PTP_MMU && XCHAL_HAVE_SPANNING_WAY && CONFIG_OF
+	init_kio();
+	local_flush_tlb_all();
+
+	/* Set rasid register to a known value. */
+
+	set_rasid_register(ASID_INSERT(ASID_USER_FIRST));
+
+	/* Set PTEVADDR special register to the start of the page
+	 * table, which is in kernel mappable space (ie. not
+	 * statically mapped).  This register's value is undefined on
+	 * reset.
+	 */
+	set_ptevaddr_register(XCHAL_PAGE_TABLE_VADDR);
+}
+
+void init_kio(void)
+{
+#if XCHAL_HAVE_PTP_MMU && XCHAL_HAVE_SPANNING_WAY && defined(CONFIG_USE_OF)
 	/*
 	 * Update the IO area mapping in case xtensa_kio_paddr has changed
 	 */
@@ -52,17 +116,4 @@ void init_mmu(void)
 	write_itlb_entry(__pte(xtensa_kio_paddr + CA_BYPASS),
 			XCHAL_KIO_BYPASS_VADDR + 6);
 #endif
-
-	local_flush_tlb_all();
-
-	/* Set rasid register to a known value. */
-
-	set_rasid_register(ASID_INSERT(ASID_USER_FIRST));
-
-	/* Set PTEVADDR special register to the start of the page
-	 * table, which is in kernel mappable space (ie. not
-	 * statically mapped).  This register's value is undefined on
-	 * reset.
-	 */
-	set_ptevaddr_register(PGTABLE_START);
 }

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/sys_eb64p.c
  *
@@ -21,7 +22,6 @@
 #include <asm/irq.h>
 #include <asm/mmu_context.h>
 #include <asm/io.h>
-#include <asm/pgtable.h>
 #include <asm/core_apecs.h>
 #include <asm/core_lca.h>
 #include <asm/hwrpb.h>
@@ -122,7 +122,8 @@ eb64p_init_irq(void)
 	}
 
 	common_init_isa_dma();
-	setup_irq(16+5, &isa_cascade_irqaction);
+	if (request_irq(16 + 5, no_action, 0, "isa-cascade", NULL))
+		pr_err("Failed to register isa-cascade interrupt\n");
 }
 
 /*
@@ -167,10 +168,10 @@ eb64p_init_irq(void)
  * comes in on.  This makes interrupt processing much easier.
  */
 
-static int __init
+static int
 eb64p_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
-	static char irq_tab[5][5] __initdata = {
+	static char irq_tab[5][5] = {
 		/*INT  INTA  INTB  INTC   INTD */
 		{16+7, 16+7, 16+7, 16+7,  16+7},  /* IdSel 5,  slot ?, ?? */
 		{16+0, 16+0, 16+2, 16+4,  16+9},  /* IdSel 6,  slot ?, ?? */

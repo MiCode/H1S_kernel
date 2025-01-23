@@ -17,6 +17,9 @@
 #include <linux/completion.h>
 #include <linux/workqueue.h>
 #include <linux/debugfs.h>
+#include <linux/numa.h>
+
+#define EDAC_DEVICE_NAME_LEN	31
 
 struct device;
 
@@ -26,42 +29,8 @@ struct device;
 #define EDAC_OPSTATE_INT	2
 
 extern int edac_op_state;
-extern int edac_err_assert;
-extern atomic_t edac_handlers;
-extern struct bus_type edac_subsys;
 
-extern int edac_handler_set(void);
-extern void edac_atomic_assert_error(void);
-extern struct bus_type *edac_get_sysfs_subsys(void);
-extern void edac_put_sysfs_subsys(void);
-
-enum {
-	EDAC_REPORTING_ENABLED,
-	EDAC_REPORTING_DISABLED,
-	EDAC_REPORTING_FORCE
-};
-
-extern int edac_report_status;
-#ifdef CONFIG_EDAC
-static inline int get_edac_report_status(void)
-{
-	return edac_report_status;
-}
-
-static inline void set_edac_report_status(int new)
-{
-	edac_report_status = new;
-}
-#else
-static inline int get_edac_report_status(void)
-{
-	return EDAC_REPORTING_DISABLED;
-}
-
-static inline void set_edac_report_status(int new)
-{
-}
-#endif
+struct bus_type *edac_get_sysfs_subsys(void);
 
 static inline void opstate_init(void)
 {
@@ -130,12 +99,21 @@ enum dev_type {
  *				fatal (maybe it is on an unused memory area,
  *				or the memory controller could recover from
  *				it for example, by re-trying the operation).
+ * @HW_EVENT_ERR_DEFERRED:	Deferred Error - Indicates an uncorrectable
+ *				error whose handling is not urgent. This could
+ *				be due to hardware data poisoning where the
+ *				system can continue operation until the poisoned
+ *				data is consumed. Preemptive measures may also
+ *				be taken, e.g. offlining pages, etc.
  * @HW_EVENT_ERR_FATAL:		Fatal Error - Uncorrected error that could not
  *				be recovered.
+ * @HW_EVENT_ERR_INFO:		Informational - The CPER spec defines a forth
+ *				type of error: informational logs.
  */
 enum hw_event_mc_err_type {
 	HW_EVENT_ERR_CORRECTED,
 	HW_EVENT_ERR_UNCORRECTED,
+	HW_EVENT_ERR_DEFERRED,
 	HW_EVENT_ERR_FATAL,
 	HW_EVENT_ERR_INFO,
 };
@@ -147,6 +125,8 @@ static inline char *mc_event_error_type(const unsigned int err_type)
 		return "Corrected";
 	case HW_EVENT_ERR_UNCORRECTED:
 		return "Uncorrected";
+	case HW_EVENT_ERR_DEFERRED:
+		return "Deferred";
 	case HW_EVENT_ERR_FATAL:
 		return "Fatal";
 	default:
@@ -159,7 +139,7 @@ static inline char *mc_event_error_type(const unsigned int err_type)
  * enum mem_type - memory types. For a more detailed reference, please see
  *			http://en.wikipedia.org/wiki/DRAM
  *
- * @MEM_EMPTY		Empty csrow
+ * @MEM_EMPTY:		Empty csrow
  * @MEM_RESERVED:	Reserved csrow type
  * @MEM_UNKNOWN:	Unknown csrow type
  * @MEM_FPM:		FPM - Fast Page Mode, used on systems up to 1995.
@@ -179,8 +159,8 @@ static inline char *mc_event_error_type(const unsigned int err_type)
  *			part of the memory details to the memory controller.
  * @MEM_RMBS:		Rambus DRAM, used on a few Pentium III/IV controllers.
  * @MEM_DDR2:		DDR2 RAM, as described at JEDEC JESD79-2F.
- *			Those memories are labed as "PC2-" instead of "PC" to
- *			differenciate from DDR.
+ *			Those memories are labeled as "PC2-" instead of "PC" to
+ *			differentiate from DDR.
  * @MEM_FB_DDR2:	Fully-Buffered DDR2, as described at JEDEC Std No. 205
  *			and JESD206.
  *			Those memories are accessed per DIMM slot, and not by
@@ -194,6 +174,19 @@ static inline char *mc_event_error_type(const unsigned int err_type)
  * @MEM_DDR3:		DDR3 RAM
  * @MEM_RDDR3:		Registered DDR3 RAM
  *			This is a variant of the DDR3 memories.
+ * @MEM_LRDDR3:		Load-Reduced DDR3 memory.
+ * @MEM_LPDDR3:		Low-Power DDR3 memory.
+ * @MEM_DDR4:		Unbuffered DDR4 RAM
+ * @MEM_RDDR4:		Registered DDR4 RAM
+ *			This is a variant of the DDR4 memories.
+ * @MEM_LRDDR4:		Load-Reduced DDR4 memory.
+ * @MEM_LPDDR4:		Low-Power DDR4 memory.
+ * @MEM_DDR5:		Unbuffered DDR5 RAM
+ * @MEM_RDDR5:		Registered DDR5 RAM
+ * @MEM_LRDDR5:		Load-Reduced DDR5 memory.
+ * @MEM_NVDIMM:		Non-volatile RAM
+ * @MEM_WIO2:		Wide I/O 2.
+ * @MEM_HBM2:		High bandwidth Memory Gen 2.
  */
 enum mem_type {
 	MEM_EMPTY = 0,
@@ -213,6 +206,18 @@ enum mem_type {
 	MEM_XDR,
 	MEM_DDR3,
 	MEM_RDDR3,
+	MEM_LRDDR3,
+	MEM_LPDDR3,
+	MEM_DDR4,
+	MEM_RDDR4,
+	MEM_LRDDR4,
+	MEM_LPDDR4,
+	MEM_DDR5,
+	MEM_RDDR5,
+	MEM_LRDDR5,
+	MEM_NVDIMM,
+	MEM_WIO2,
+	MEM_HBM2,
 };
 
 #define MEM_FLAG_EMPTY		BIT(MEM_EMPTY)
@@ -226,15 +231,26 @@ enum mem_type {
 #define MEM_FLAG_DDR		BIT(MEM_DDR)
 #define MEM_FLAG_RDDR		BIT(MEM_RDDR)
 #define MEM_FLAG_RMBS		BIT(MEM_RMBS)
-#define MEM_FLAG_DDR2           BIT(MEM_DDR2)
-#define MEM_FLAG_FB_DDR2        BIT(MEM_FB_DDR2)
-#define MEM_FLAG_RDDR2          BIT(MEM_RDDR2)
-#define MEM_FLAG_XDR            BIT(MEM_XDR)
-#define MEM_FLAG_DDR3		 BIT(MEM_DDR3)
-#define MEM_FLAG_RDDR3		 BIT(MEM_RDDR3)
+#define MEM_FLAG_DDR2		BIT(MEM_DDR2)
+#define MEM_FLAG_FB_DDR2	BIT(MEM_FB_DDR2)
+#define MEM_FLAG_RDDR2		BIT(MEM_RDDR2)
+#define MEM_FLAG_XDR		BIT(MEM_XDR)
+#define MEM_FLAG_DDR3		BIT(MEM_DDR3)
+#define MEM_FLAG_RDDR3		BIT(MEM_RDDR3)
+#define MEM_FLAG_LPDDR3		BIT(MEM_LPDDR3)
+#define MEM_FLAG_DDR4		BIT(MEM_DDR4)
+#define MEM_FLAG_RDDR4		BIT(MEM_RDDR4)
+#define MEM_FLAG_LRDDR4		BIT(MEM_LRDDR4)
+#define MEM_FLAG_LPDDR4		BIT(MEM_LPDDR4)
+#define MEM_FLAG_DDR5		BIT(MEM_DDR5)
+#define MEM_FLAG_RDDR5		BIT(MEM_RDDR5)
+#define MEM_FLAG_LRDDR5		BIT(MEM_LRDDR5)
+#define MEM_FLAG_NVDIMM		BIT(MEM_NVDIMM)
+#define MEM_FLAG_WIO2		BIT(MEM_WIO2)
+#define MEM_FLAG_HBM2		BIT(MEM_HBM2)
 
 /**
- * enum edac-type - Error Detection and Correction capabilities and mode
+ * enum edac_type - Error Detection and Correction capabilities and mode
  * @EDAC_UNKNOWN:	Unknown if ECC is available
  * @EDAC_NONE:		Doesn't support ECC
  * @EDAC_RESERVED:	Reserved ECC type
@@ -271,7 +287,7 @@ enum edac_type {
 
 /**
  * enum scrub_type - scrubbing capabilities
- * @SCRUB_UNKNOWN		Unknown if scrubber is available
+ * @SCRUB_UNKNOWN:		Unknown if scrubber is available
  * @SCRUB_NONE:			No scrubber
  * @SCRUB_SW_PROG:		SW progressive (sequential) scrubbing
  * @SCRUB_SW_SRC:		Software scrub only errors
@@ -280,7 +296,7 @@ enum edac_type {
  * @SCRUB_HW_PROG:		HW progressive (sequential) scrubbing
  * @SCRUB_HW_SRC:		Hardware scrub only errors
  * @SCRUB_HW_PROG_SRC:		Progressive hardware scrub from an error
- * SCRUB_HW_TUNABLE:		Hardware scrub frequency is tunable
+ * @SCRUB_HW_TUNABLE:		Hardware scrub frequency is tunable
  */
 enum scrub_type {
 	SCRUB_UNKNOWN =	0,
@@ -313,116 +329,8 @@ enum scrub_type {
 #define OP_RUNNING_POLL_INTR	0x203
 #define OP_OFFLINE		0x300
 
-/*
- * Concepts used at the EDAC subsystem
- *
- * There are several things to be aware of that aren't at all obvious:
- *
- * SOCKETS, SOCKET SETS, BANKS, ROWS, CHIP-SELECT ROWS, CHANNELS, etc..
- *
- * These are some of the many terms that are thrown about that don't always
- * mean what people think they mean (Inconceivable!).  In the interest of
- * creating a common ground for discussion, terms and their definitions
- * will be established.
- *
- * Memory devices:	The individual DRAM chips on a memory stick.  These
- *			devices commonly output 4 and 8 bits each (x4, x8).
- *			Grouping several of these in parallel provides the
- *			number of bits that the memory controller expects:
- *			typically 72 bits, in order to provide 64 bits +
- *			8 bits of ECC data.
- *
- * Memory Stick:	A printed circuit board that aggregates multiple
- *			memory devices in parallel.  In general, this is the
- *			Field Replaceable Unit (FRU) which gets replaced, in
- *			the case of excessive errors. Most often it is also
- *			called DIMM (Dual Inline Memory Module).
- *
- * Memory Socket:	A physical connector on the motherboard that accepts
- *			a single memory stick. Also called as "slot" on several
- *			datasheets.
- *
- * Channel:		A memory controller channel, responsible to communicate
- *			with a group of DIMMs. Each channel has its own
- *			independent control (command) and data bus, and can
- *			be used independently or grouped with other channels.
- *
- * Branch:		It is typically the highest hierarchy on a
- *			Fully-Buffered DIMM memory controller.
- *			Typically, it contains two channels.
- *			Two channels at the same branch can be used in single
- *			mode or in lockstep mode.
- *			When lockstep is enabled, the cacheline is doubled,
- *			but it generally brings some performance penalty.
- *			Also, it is generally not possible to point to just one
- *			memory stick when an error occurs, as the error
- *			correction code is calculated using two DIMMs instead
- *			of one. Due to that, it is capable of correcting more
- *			errors than on single mode.
- *
- * Single-channel:	The data accessed by the memory controller is contained
- *			into one dimm only. E. g. if the data is 64 bits-wide,
- *			the data flows to the CPU using one 64 bits parallel
- *			access.
- *			Typically used with SDR, DDR, DDR2 and DDR3 memories.
- *			FB-DIMM and RAMBUS use a different concept for channel,
- *			so this concept doesn't apply there.
- *
- * Double-channel:	The data size accessed by the memory controller is
- *			interlaced into two dimms, accessed at the same time.
- *			E. g. if the DIMM is 64 bits-wide (72 bits with ECC),
- *			the data flows to the CPU using a 128 bits parallel
- *			access.
- *
- * Chip-select row:	This is the name of the DRAM signal used to select the
- *			DRAM ranks to be accessed. Common chip-select rows for
- *			single channel are 64 bits, for dual channel 128 bits.
- *			It may not be visible by the memory controller, as some
- *			DIMM types have a memory buffer that can hide direct
- *			access to it from the Memory Controller.
- *
- * Single-Ranked stick:	A Single-ranked stick has 1 chip-select row of memory.
- *			Motherboards commonly drive two chip-select pins to
- *			a memory stick. A single-ranked stick, will occupy
- *			only one of those rows. The other will be unused.
- *
- * Double-Ranked stick:	A double-ranked stick has two chip-select rows which
- *			access different sets of memory devices.  The two
- *			rows cannot be accessed concurrently.
- *
- * Double-sided stick:	DEPRECATED TERM, see Double-Ranked stick.
- *			A double-sided stick has two chip-select rows which
- *			access different sets of memory devices. The two
- *			rows cannot be accessed concurrently. "Double-sided"
- *			is irrespective of the memory devices being mounted
- *			on both sides of the memory stick.
- *
- * Socket set:		All of the memory sticks that are required for
- *			a single memory access or all of the memory sticks
- *			spanned by a chip-select row.  A single socket set
- *			has two chip-select rows and if double-sided sticks
- *			are used these will occupy those chip-select rows.
- *
- * Bank:		This term is avoided because it is unclear when
- *			needing to distinguish between chip-select rows and
- *			socket sets.
- *
- * Controller pages:
- *
- * Physical pages:
- *
- * Virtual pages:
- *
- *
- * STRUCTURE ORGANIZATION AND CHOICES
- *
- *
- *
- * PS - I enjoyed writing all that about as much as you enjoyed reading it.
- */
-
 /**
- * enum edac_mc_layer - memory controller hierarchy layer
+ * enum edac_mc_layer_type - memory controller hierarchy layer
  *
  * @EDAC_MC_LAYER_BRANCH:	memory layer is named "branch"
  * @EDAC_MC_LAYER_CHANNEL:	memory layer is named "channel"
@@ -445,7 +353,7 @@ enum edac_mc_layer_type {
 
 /**
  * struct edac_mc_layer - describes the memory controller hierarchy
- * @layer:		layer type
+ * @type:		layer type
  * @size:		number of components per layer. For example,
  *			if the channel layer has two channels, size = 2
  * @is_virt_csrow:	This layer is part of the "csrow" when old API
@@ -467,81 +375,16 @@ struct edac_mc_layer {
  */
 #define EDAC_MAX_LAYERS		3
 
-/**
- * EDAC_DIMM_OFF - Macro responsible to get a pointer offset inside a pointer array
- *		   for the element given by [layer0,layer1,layer2] position
- *
- * @layers:	a struct edac_mc_layer array, describing how many elements
- *		were allocated for each layer
- * @n_layers:	Number of layers at the @layers array
- * @layer0:	layer0 position
- * @layer1:	layer1 position. Unused if n_layers < 2
- * @layer2:	layer2 position. Unused if n_layers < 3
- *
- * For 1 layer, this macro returns &var[layer0] - &var
- * For 2 layers, this macro is similar to allocate a bi-dimensional array
- *		and to return "&var[layer0][layer1] - &var"
- * For 3 layers, this macro is similar to allocate a tri-dimensional array
- *		and to return "&var[layer0][layer1][layer2] - &var"
- *
- * A loop could be used here to make it more generic, but, as we only have
- * 3 layers, this is a little faster.
- * By design, layers can never be 0 or more than 3. If that ever happens,
- * a NULL is returned, causing an OOPS during the memory allocation routine,
- * with would point to the developer that he's doing something wrong.
- */
-#define EDAC_DIMM_OFF(layers, nlayers, layer0, layer1, layer2) ({		\
-	int __i;							\
-	if ((nlayers) == 1)						\
-		__i = layer0;						\
-	else if ((nlayers) == 2)					\
-		__i = (layer1) + ((layers[1]).size * (layer0));		\
-	else if ((nlayers) == 3)					\
-		__i = (layer2) + ((layers[2]).size * ((layer1) +	\
-			    ((layers[1]).size * (layer0))));		\
-	else								\
-		__i = -EINVAL;						\
-	__i;								\
-})
-
-/**
- * EDAC_DIMM_PTR - Macro responsible to get a pointer inside a pointer array
- *		   for the element given by [layer0,layer1,layer2] position
- *
- * @layers:	a struct edac_mc_layer array, describing how many elements
- *		were allocated for each layer
- * @var:	name of the var where we want to get the pointer
- *		(like mci->dimms)
- * @n_layers:	Number of layers at the @layers array
- * @layer0:	layer0 position
- * @layer1:	layer1 position. Unused if n_layers < 2
- * @layer2:	layer2 position. Unused if n_layers < 3
- *
- * For 1 layer, this macro returns &var[layer0]
- * For 2 layers, this macro is similar to allocate a bi-dimensional array
- *		and to return "&var[layer0][layer1]"
- * For 3 layers, this macro is similar to allocate a tri-dimensional array
- *		and to return "&var[layer0][layer1][layer2]"
- */
-#define EDAC_DIMM_PTR(layers, var, nlayers, layer0, layer1, layer2) ({	\
-	typeof(*var) __p;						\
-	int ___i = EDAC_DIMM_OFF(layers, nlayers, layer0, layer1, layer2);	\
-	if (___i < 0)							\
-		__p = NULL;						\
-	else								\
-		__p = (var)[___i];					\
-	__p;								\
-})
-
 struct dimm_info {
 	struct device dev;
 
 	char label[EDAC_MC_LABEL_LEN + 1];	/* DIMM label on motherboard */
 
 	/* Memory location data */
-	unsigned location[EDAC_MAX_LAYERS];
+	unsigned int location[EDAC_MAX_LAYERS];
 
 	struct mem_ctl_info *mci;	/* the parent */
+	unsigned int idx;		/* index within the parent dimm array */
 
 	u32 grain;		/* granularity of reported error in bytes */
 	enum dev_type dtype;	/* memory device type */
@@ -550,7 +393,12 @@ struct dimm_info {
 
 	u32 nr_pages;			/* number of pages on this dimm */
 
-	unsigned csrow, cschannel;	/* Points to the old API data */
+	unsigned int csrow, cschannel;	/* Points to the old API data */
+
+	u16 smbios_handle;              /* Handle for SMBIOS type 17 */
+
+	u32 ce_count;
+	u32 ue_count;
 };
 
 /**
@@ -607,9 +455,10 @@ struct errcount_attribute_data {
 };
 
 /**
- * edac_raw_error_desc - Raw error report structure
+ * struct edac_raw_error_desc - Raw error report structure
  * @grain:			minimum granularity for an error report, in bytes
  * @error_count:		number of errors of the same type
+ * @type:			severity of the error (CE/UE/Fatal)
  * @top_layer:			top layer of the error (layer[0])
  * @mid_layer:			middle layer of the error (layer[1])
  * @low_layer:			low layer of the error (layer[2])
@@ -621,20 +470,14 @@ struct errcount_attribute_data {
  * @location:			location of the error
  * @label:			label of the affected DIMM(s)
  * @other_detail:		other driver-specific detail about the error
- * @enable_per_layer_report:	if false, the error affects all layers
- *				(typically, a memory controller error)
  */
 struct edac_raw_error_desc {
-	/*
-	 * NOTE: everything before grain won't be cleaned by
-	 * edac_raw_error_desc_clean()
-	 */
 	char location[LOCATION_SIZE];
 	char label[(EDAC_MC_LABEL_LEN + 1 + sizeof(OTHER_LABEL)) * EDAC_MAX_LABELS];
 	long grain;
 
-	/* the vars below and grain will be cleaned on every new error report */
 	u16 error_count;
+	enum hw_event_mc_err_type type;
 	int top_layer;
 	int mid_layer;
 	int low_layer;
@@ -643,7 +486,6 @@ struct edac_raw_error_desc {
 	unsigned long syndrome;
 	const char *msg;
 	const char *other_detail;
-	bool enable_per_layer_report;
 };
 
 /* MEMORY controller information structure
@@ -694,7 +536,7 @@ struct mem_ctl_info {
 					   unsigned long page);
 	int mc_idx;
 	struct csrow_info **csrows;
-	unsigned nr_csrows, num_cschannel;
+	unsigned int nr_csrows, num_cschannel;
 
 	/*
 	 * Memory Controller hierarchy
@@ -705,14 +547,14 @@ struct mem_ctl_info {
 	 * of the recent drivers enumerate memories per DIMM, instead.
 	 * When the memory controller is per rank, csbased is true.
 	 */
-	unsigned n_layers;
+	unsigned int n_layers;
 	struct edac_mc_layer *layers;
 	bool csbased;
 
 	/*
 	 * DIMM info. Will eventually remove the entire csrows_info some day
 	 */
-	unsigned tot_dimms;
+	unsigned int tot_dimms;
 	struct dimm_info **dimms;
 
 	/*
@@ -722,7 +564,6 @@ struct mem_ctl_info {
 	 */
 	struct device *pdev;
 	const char *mod_name;
-	const char *mod_ver;
 	const char *ctl_name;
 	const char *dev_name;
 	void *pvt_info;
@@ -734,7 +575,6 @@ struct mem_ctl_info {
 	 */
 	u32 ce_noinfo_count, ue_noinfo_count;
 	u32 ue_mc, ce_mc;
-	u32 *ce_per_layer[EDAC_MAX_LAYERS], *ue_per_layer[EDAC_MAX_LAYERS];
 
 	struct completion complete;
 
@@ -762,17 +602,60 @@ struct mem_ctl_info {
 	/* the internal state of this controller instance */
 	int op_state;
 
-#ifdef CONFIG_EDAC_DEBUG
 	struct dentry *debugfs;
 	u8 fake_inject_layer[EDAC_MAX_LAYERS];
-	u32 fake_inject_ue;
+	bool fake_inject_ue;
 	u16 fake_inject_count;
-#endif
 };
 
-/*
- * Maximum number of memory controllers in the coherent fabric.
- */
-#define EDAC_MAX_MCS	16
+#define mci_for_each_dimm(mci, dimm)				\
+	for ((dimm) = (mci)->dimms[0];				\
+	     (dimm);						\
+	     (dimm) = (dimm)->idx + 1 < (mci)->tot_dimms	\
+		     ? (mci)->dimms[(dimm)->idx + 1]		\
+		     : NULL)
 
-#endif
+/**
+ * edac_get_dimm - Get DIMM info from a memory controller given by
+ *                 [layer0,layer1,layer2] position
+ *
+ * @mci:	MC descriptor struct mem_ctl_info
+ * @layer0:	layer0 position
+ * @layer1:	layer1 position. Unused if n_layers < 2
+ * @layer2:	layer2 position. Unused if n_layers < 3
+ *
+ * For 1 layer, this function returns "dimms[layer0]";
+ *
+ * For 2 layers, this function is similar to allocating a two-dimensional
+ * array and returning "dimms[layer0][layer1]";
+ *
+ * For 3 layers, this function is similar to allocating a tri-dimensional
+ * array and returning "dimms[layer0][layer1][layer2]";
+ */
+static inline struct dimm_info *edac_get_dimm(struct mem_ctl_info *mci,
+	int layer0, int layer1, int layer2)
+{
+	int index;
+
+	if (layer0 < 0
+	    || (mci->n_layers > 1 && layer1 < 0)
+	    || (mci->n_layers > 2 && layer2 < 0))
+		return NULL;
+
+	index = layer0;
+
+	if (mci->n_layers > 1)
+		index = index * mci->layers[1].size + layer1;
+
+	if (mci->n_layers > 2)
+		index = index * mci->layers[2].size + layer2;
+
+	if (index < 0 || index >= mci->tot_dimms)
+		return NULL;
+
+	if (WARN_ON_ONCE(mci->dimms[index]->idx != index))
+		return NULL;
+
+	return mci->dimms[index];
+}
+#endif /* _LINUX_EDAC_H_ */

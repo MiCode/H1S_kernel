@@ -1,21 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Header file for SCSI device handler infrastruture.
+ * Header file for SCSI device handler infrastructure.
  *
  * Modified version of patches posted by Mike Christie <michaelc@cs.wisc.edu>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  *
  * Copyright IBM Corporation, 2007
  *      Authors:
@@ -52,14 +39,32 @@ enum {
 	SCSI_DH_TIMED_OUT,
 	SCSI_DH_RES_TEMP_UNAVAIL,
 	SCSI_DH_DEV_OFFLINED,
+	SCSI_DH_NOMEM,
 	SCSI_DH_NOSYS,
 	SCSI_DH_DRIVER_MAX,
 };
-#if defined(CONFIG_SCSI_DH) || defined(CONFIG_SCSI_DH_MODULE)
+
+typedef void (*activate_complete)(void *, int);
+struct scsi_device_handler {
+	/* Used by the infrastructure */
+	struct list_head list; /* list of scsi_device_handlers */
+
+	/* Filled by the hardware handler */
+	struct module *module;
+	const char *name;
+	enum scsi_disposition (*check_sense)(struct scsi_device *,
+					     struct scsi_sense_hdr *);
+	int (*attach)(struct scsi_device *);
+	void (*detach)(struct scsi_device *);
+	int (*activate)(struct scsi_device *, activate_complete, void *);
+	blk_status_t (*prep_fn)(struct scsi_device *, struct request *);
+	int (*set_params)(struct scsi_device *, const char *);
+	void (*rescan)(struct scsi_device *);
+};
+
+#ifdef CONFIG_SCSI_DH
 extern int scsi_dh_activate(struct request_queue *, activate_complete, void *);
-extern int scsi_dh_handler_exist(const char *);
 extern int scsi_dh_attach(struct request_queue *, const char *);
-extern void scsi_dh_detach(struct request_queue *);
 extern const char *scsi_dh_attached_handler_name(struct request_queue *, gfp_t);
 extern int scsi_dh_set_params(struct request_queue *, const char *);
 #else
@@ -69,17 +74,9 @@ static inline int scsi_dh_activate(struct request_queue *req,
 	fn(data, 0);
 	return 0;
 }
-static inline int scsi_dh_handler_exist(const char *name)
-{
-	return 0;
-}
 static inline int scsi_dh_attach(struct request_queue *req, const char *name)
 {
 	return SCSI_DH_NOSYS;
-}
-static inline void scsi_dh_detach(struct request_queue *q)
-{
-	return;
 }
 static inline const char *scsi_dh_attached_handler_name(struct request_queue *q,
 							gfp_t gfp)

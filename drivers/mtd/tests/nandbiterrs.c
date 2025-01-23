@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright © 2012 NetCommWireless
  * Iwo Mergler <Iwo.Mergler@netcommwireless.com.au>
@@ -24,20 +25,6 @@
  *
  * Please note that neither of these tests will significantly 'use up' any
  * FLASH endurance. Only a maximum of two erase operations will be performed.
- *
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; see the file COPYING. If not, write to the Free Software
- * Foundation, 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
@@ -47,7 +34,7 @@
 #include <linux/moduleparam.h>
 #include <linux/mtd/mtd.h>
 #include <linux/err.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/slab.h>
 #include "mtd_test.h"
 
@@ -112,7 +99,7 @@ static int write_page(int log)
 static int rewrite_page(int log)
 {
 	int err = 0;
-	struct mtd_oob_ops ops;
+	struct mtd_oob_ops ops = { };
 
 	if (log)
 		pr_info("rewrite page\n");
@@ -151,7 +138,7 @@ static int read_page(int log)
 	memcpy(&oldstats, &mtd->ecc_stats, sizeof(oldstats));
 
 	err = mtd_read(mtd, offset, mtd->writesize, &read, rbuffer);
-	if (err == -EUCLEAN)
+	if (!err || err == -EUCLEAN)
 		err = mtd->ecc_stats.corrected - oldstats.corrected;
 
 	if (err < 0 || read != mtd->writesize) {
@@ -290,7 +277,7 @@ static int overwrite_test(void)
 
 	while (opno < max_overwrite) {
 
-		err = rewrite_page(0);
+		err = write_page(0);
 		if (err)
 			break;
 
@@ -319,6 +306,10 @@ static int overwrite_test(void)
 			pr_info("ECC failure, read data is incorrect despite read success\n");
 			break;
 		}
+
+		err = mtdtest_relax();
+		if (err)
+			break;
 
 		opno++;
 	}
@@ -364,7 +355,7 @@ static int __init mtd_nandbiterrs_init(void)
 
 	pr_info("Device uses %d subpages of %d bytes\n", subcount, subsize);
 
-	offset     = page_offset * mtd->writesize;
+	offset     = (loff_t)page_offset * mtd->writesize;
 	eraseblock = mtd_div_by_eb(offset, mtd);
 
 	pr_info("Using page=%u, offset=%llu, eraseblock=%u\n",

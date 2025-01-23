@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Cryptographic API.
  *
@@ -5,37 +6,32 @@
  *
  * Copyright IBM Corp. 2007
  * Author(s): Jan Glauber (jang@de.ibm.com)
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
- *
  */
 #include <crypto/internal/hash.h>
-#include <crypto/sha.h>
+#include <crypto/sha2.h>
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/cpufeature.h>
+#include <asm/cpacf.h>
 
 #include "sha.h"
-#include "crypt_s390.h"
 
 static int sha512_init(struct shash_desc *desc)
 {
 	struct s390_sha_ctx *ctx = shash_desc_ctx(desc);
 
-	*(__u64 *)&ctx->state[0] = 0x6a09e667f3bcc908ULL;
-	*(__u64 *)&ctx->state[2] = 0xbb67ae8584caa73bULL;
-	*(__u64 *)&ctx->state[4] = 0x3c6ef372fe94f82bULL;
-	*(__u64 *)&ctx->state[6] = 0xa54ff53a5f1d36f1ULL;
-	*(__u64 *)&ctx->state[8] = 0x510e527fade682d1ULL;
-	*(__u64 *)&ctx->state[10] = 0x9b05688c2b3e6c1fULL;
-	*(__u64 *)&ctx->state[12] = 0x1f83d9abfb41bd6bULL;
-	*(__u64 *)&ctx->state[14] = 0x5be0cd19137e2179ULL;
+	*(__u64 *)&ctx->state[0] = SHA512_H0;
+	*(__u64 *)&ctx->state[2] = SHA512_H1;
+	*(__u64 *)&ctx->state[4] = SHA512_H2;
+	*(__u64 *)&ctx->state[6] = SHA512_H3;
+	*(__u64 *)&ctx->state[8] = SHA512_H4;
+	*(__u64 *)&ctx->state[10] = SHA512_H5;
+	*(__u64 *)&ctx->state[12] = SHA512_H6;
+	*(__u64 *)&ctx->state[14] = SHA512_H7;
 	ctx->count = 0;
-	ctx->func = KIMD_SHA_512;
+	ctx->func = CPACF_KIMD_SHA_512;
 
 	return 0;
 }
@@ -63,7 +59,7 @@ static int sha512_import(struct shash_desc *desc, const void *in)
 
 	memcpy(sctx->state, ictx->state, sizeof(ictx->state));
 	memcpy(sctx->buf, ictx->buf, sizeof(ictx->buf));
-	sctx->func = KIMD_SHA_512;
+	sctx->func = CPACF_KIMD_SHA_512;
 	return 0;
 }
 
@@ -79,29 +75,28 @@ static struct shash_alg sha512_alg = {
 	.base		=	{
 		.cra_name	=	"sha512",
 		.cra_driver_name=	"sha512-s390",
-		.cra_priority	=	CRYPT_S390_PRIORITY,
-		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_priority	=	300,
 		.cra_blocksize	=	SHA512_BLOCK_SIZE,
 		.cra_module	=	THIS_MODULE,
 	}
 };
 
-MODULE_ALIAS("sha512");
+MODULE_ALIAS_CRYPTO("sha512");
 
 static int sha384_init(struct shash_desc *desc)
 {
 	struct s390_sha_ctx *ctx = shash_desc_ctx(desc);
 
-	*(__u64 *)&ctx->state[0] = 0xcbbb9d5dc1059ed8ULL;
-	*(__u64 *)&ctx->state[2] = 0x629a292a367cd507ULL;
-	*(__u64 *)&ctx->state[4] = 0x9159015a3070dd17ULL;
-	*(__u64 *)&ctx->state[6] = 0x152fecd8f70e5939ULL;
-	*(__u64 *)&ctx->state[8] = 0x67332667ffc00b31ULL;
-	*(__u64 *)&ctx->state[10] = 0x8eb44a8768581511ULL;
-	*(__u64 *)&ctx->state[12] = 0xdb0c2e0d64f98fa7ULL;
-	*(__u64 *)&ctx->state[14] = 0x47b5481dbefa4fa4ULL;
+	*(__u64 *)&ctx->state[0] = SHA384_H0;
+	*(__u64 *)&ctx->state[2] = SHA384_H1;
+	*(__u64 *)&ctx->state[4] = SHA384_H2;
+	*(__u64 *)&ctx->state[6] = SHA384_H3;
+	*(__u64 *)&ctx->state[8] = SHA384_H4;
+	*(__u64 *)&ctx->state[10] = SHA384_H5;
+	*(__u64 *)&ctx->state[12] = SHA384_H6;
+	*(__u64 *)&ctx->state[14] = SHA384_H7;
 	ctx->count = 0;
-	ctx->func = KIMD_SHA_512;
+	ctx->func = CPACF_KIMD_SHA_512;
 
 	return 0;
 }
@@ -118,22 +113,21 @@ static struct shash_alg sha384_alg = {
 	.base		=	{
 		.cra_name	=	"sha384",
 		.cra_driver_name=	"sha384-s390",
-		.cra_priority	=	CRYPT_S390_PRIORITY,
-		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_priority	=	300,
 		.cra_blocksize	=	SHA384_BLOCK_SIZE,
 		.cra_ctxsize	=	sizeof(struct s390_sha_ctx),
 		.cra_module	=	THIS_MODULE,
 	}
 };
 
-MODULE_ALIAS("sha384");
+MODULE_ALIAS_CRYPTO("sha384");
 
 static int __init init(void)
 {
 	int ret;
 
-	if (!crypt_s390_func_available(KIMD_SHA_512, CRYPT_S390_MSA))
-		return -EOPNOTSUPP;
+	if (!cpacf_query_func(CPACF_KIMD, CPACF_KIMD_SHA_512))
+		return -ENODEV;
 	if ((ret = crypto_register_shash(&sha512_alg)) < 0)
 		goto out;
 	if ((ret = crypto_register_shash(&sha384_alg)) < 0)
@@ -148,7 +142,7 @@ static void __exit fini(void)
 	crypto_unregister_shash(&sha384_alg);
 }
 
-module_init(init);
+module_cpu_feature_match(S390_CPU_FEATURE_MSA, init);
 module_exit(fini);
 
 MODULE_LICENSE("GPL");

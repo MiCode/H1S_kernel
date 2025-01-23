@@ -1,25 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *    Support for NXT2002 and NXT2004 - VSB/QAM
  *
  *    Copyright (C) 2005 Kirk Lapray <kirk.lapray@gmail.com>
- *    Copyright (C) 2006 Michael Krufky <mkrufky@m1k.net>
+ *    Copyright (C) 2006-2014 Michael Krufky <mkrufky@linuxtv.org>
  *    based on nxt2002 by Taylor Jacob <rtjacob@earthlink.net>
  *    and nxt2004 by Jean-Francois Thibert <jeanfrancois@sagetv.com>
- *
- *    This program is free software; you can redistribute it and/or modify
- *    it under the terms of the GNU General Public License as published by
- *    the Free Software Foundation; either version 2 of the License, or
- *    (at your option) any later version.
- *
- *    This program is distributed in the hope that it will be useful,
- *    but WITHOUT ANY WARRANTY; without even the implied warranty of
- *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU General Public License for more details.
- *
- *    You should have received a copy of the GNU General Public License
- *    along with this program; if not, write to the Free Software
- *    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
 */
 
 /*
@@ -31,8 +17,8 @@
  *   ATI HDTV Wonder (NXT2004)
  *
  * This driver needs external firmware. Please use the command
- * "<kerneldir>/Documentation/dvb/get_dvb_firmware nxt2002" or
- * "<kerneldir>/Documentation/dvb/get_dvb_firmware nxt2004" to
+ * "<kerneldir>/scripts/get_dvb_firmware nxt2002" or
+ * "<kerneldir>/scripts/get_dvb_firmware nxt2004" to
  * download/extract the appropriate firmware, and then copy it to
  * /usr/lib/hotplug/firmware/ or /lib/firmware/
  * (depending on configuration of firmware hotplug).
@@ -52,7 +38,7 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "nxt200x.h"
 
 struct nxt200x_state {
@@ -157,7 +143,7 @@ static int nxt200x_writereg_multibyte (struct nxt200x_state* state, u8 reg, u8* 
 	u8 attr, len2, buf;
 	dprintk("%s\n", __func__);
 
-	/* set mutli register register */
+	/* set multi register register */
 	nxt200x_writebytes(state, 0x35, &reg, 1);
 
 	/* send the actual data */
@@ -182,7 +168,6 @@ static int nxt200x_writereg_multibyte (struct nxt200x_state* state, u8 reg, u8* 
 			break;
 		default:
 			return -EINVAL;
-			break;
 	}
 
 	/* set multi register length */
@@ -204,7 +189,6 @@ static int nxt200x_writereg_multibyte (struct nxt200x_state* state, u8 reg, u8* 
 			break;
 		default:
 			return -EINVAL;
-			break;
 	}
 
 	pr_warn("Error writing multireg register 0x%02X\n", reg);
@@ -218,7 +202,7 @@ static int nxt200x_readreg_multibyte (struct nxt200x_state* state, u8 reg, u8* d
 	u8 buf, len2, attr;
 	dprintk("%s\n", __func__);
 
-	/* set mutli register register */
+	/* set multi register register */
 	nxt200x_writebytes(state, 0x35, &reg, 1);
 
 	switch (state->demod_chip) {
@@ -230,7 +214,6 @@ static int nxt200x_readreg_multibyte (struct nxt200x_state* state, u8 reg, u8* d
 			/* read the actual data */
 			nxt200x_readbytes(state, reg, data, len);
 			return 0;
-			break;
 		case NXT2004:
 			/* probably not right, but gives correct values */
 			attr = 0x02;
@@ -253,10 +236,8 @@ static int nxt200x_readreg_multibyte (struct nxt200x_state* state, u8 reg, u8* d
 				nxt200x_readbytes(state, 0x36 + i, &data[i], 1);
 			}
 			return 0;
-			break;
 		default:
 			return -EINVAL;
-			break;
 	}
 }
 
@@ -289,8 +270,7 @@ static void nxt200x_microcontroller_stop (struct nxt200x_state* state)
 		counter++;
 	}
 
-	pr_warn("Timeout waiting for nxt200x to stop. This is ok after "
-		"firmware upload.\n");
+	pr_warn("Timeout waiting for nxt200x to stop. This is ok after firmware upload.\n");
 	return;
 }
 
@@ -389,7 +369,6 @@ static int nxt200x_writetuner (struct nxt200x_state* state, u8* data)
 			break;
 		default:
 			return -EINVAL;
-			break;
 	}
 	return 0;
 }
@@ -570,7 +549,6 @@ static int nxt200x_setup_frontend_parameters(struct dvb_frontend *fe)
 			break;
 		default:
 			return -EINVAL;
-			break;
 	}
 
 	if (fe->ops.tuner_ops.calc_regs) {
@@ -595,7 +573,6 @@ static int nxt200x_setup_frontend_parameters(struct dvb_frontend *fe)
 			break;
 		default:
 			return -EINVAL;
-			break;
 	}
 	nxt200x_writebytes(state, 0x42, buf, 1);
 
@@ -609,7 +586,6 @@ static int nxt200x_setup_frontend_parameters(struct dvb_frontend *fe)
 			break;
 		default:
 			return -EINVAL;
-			break;
 	}
 	nxt200x_writebytes(state, 0x57, buf, 1);
 
@@ -625,7 +601,6 @@ static int nxt200x_setup_frontend_parameters(struct dvb_frontend *fe)
 			break;
 		default:
 			return -EINVAL;
-			break;
 	}
 
 	/* write sdmx input */
@@ -641,7 +616,6 @@ static int nxt200x_setup_frontend_parameters(struct dvb_frontend *fe)
 				break;
 		default:
 				return -EINVAL;
-				break;
 	}
 	buf[1] = 0x00;
 	switch (state->demod_chip) {
@@ -653,7 +627,6 @@ static int nxt200x_setup_frontend_parameters(struct dvb_frontend *fe)
 			break;
 		default:
 			return -EINVAL;
-			break;
 	}
 
 	/* write adc power lpf fc */
@@ -679,7 +652,6 @@ static int nxt200x_setup_frontend_parameters(struct dvb_frontend *fe)
 			break;
 		default:
 			return -EINVAL;
-			break;
 	}
 
 	/* write kg1 */
@@ -735,7 +707,6 @@ static int nxt200x_setup_frontend_parameters(struct dvb_frontend *fe)
 				break;
 		default:
 				return -EINVAL;
-				break;
 	}
 	nxt200x_writebytes(state, 0x30, buf, 1);
 
@@ -757,7 +728,6 @@ static int nxt200x_setup_frontend_parameters(struct dvb_frontend *fe)
 			break;
 		default:
 			return -EINVAL;
-			break;
 	}
 
 	/* write agc control reg */
@@ -781,7 +751,7 @@ static int nxt200x_setup_frontend_parameters(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int nxt200x_read_status(struct dvb_frontend* fe, fe_status_t* status)
+static int nxt200x_read_status(struct dvb_frontend *fe, enum fe_status *status)
 {
 	struct nxt200x_state* state = fe->demodulator_priv;
 	u8 lock;
@@ -893,8 +863,8 @@ static int nxt2002_init(struct dvb_frontend* fe)
 			       state->i2c->dev.parent);
 	pr_debug("%s: Waiting for firmware upload(2)...\n", __func__);
 	if (ret) {
-		pr_err("%s: No firmware uploaded (timeout or file not found?)"
-		       "\n", __func__);
+		pr_err("%s: No firmware uploaded (timeout or file not found?)\n",
+		       __func__);
 		return ret;
 	}
 
@@ -960,8 +930,8 @@ static int nxt2004_init(struct dvb_frontend* fe)
 			       state->i2c->dev.parent);
 	pr_debug("%s: Waiting for firmware upload(2)...\n", __func__);
 	if (ret) {
-		pr_err("%s: No firmware uploaded (timeout or file not found?)"
-		       "\n", __func__);
+		pr_err("%s: No firmware uploaded (timeout or file not found?)\n",
+		       __func__);
 		return ret;
 	}
 
@@ -1129,7 +1099,6 @@ static int nxt200x_init(struct dvb_frontend* fe)
 				break;
 			default:
 				return -EINVAL;
-				break;
 		}
 		state->initialised = 1;
 	}
@@ -1150,7 +1119,7 @@ static void nxt200x_release(struct dvb_frontend* fe)
 	kfree(state);
 }
 
-static struct dvb_frontend_ops nxt200x_ops;
+static const struct dvb_frontend_ops nxt200x_ops;
 
 struct dvb_frontend* nxt200x_attach(const struct nxt200x_config* config,
 				   struct i2c_adapter* i2c)
@@ -1213,13 +1182,13 @@ error:
 	return NULL;
 }
 
-static struct dvb_frontend_ops nxt200x_ops = {
+static const struct dvb_frontend_ops nxt200x_ops = {
 	.delsys = { SYS_ATSC, SYS_DVBC_ANNEX_B },
 	.info = {
 		.name = "Nextwave NXT200X VSB/QAM frontend",
-		.frequency_min =  54000000,
-		.frequency_max = 860000000,
-		.frequency_stepsize = 166666,	/* stepsize is just a guess */
+		.frequency_min_hz =  54 * MHz,
+		.frequency_max_hz = 860 * MHz,
+		.frequency_stepsize_hz = 166666,	/* stepsize is just a guess */
 		.caps = FE_CAN_FEC_1_2 | FE_CAN_FEC_2_3 | FE_CAN_FEC_3_4 |
 			FE_CAN_FEC_5_6 | FE_CAN_FEC_7_8 | FE_CAN_FEC_AUTO |
 			FE_CAN_8VSB | FE_CAN_QAM_64 | FE_CAN_QAM_256
@@ -1247,5 +1216,5 @@ MODULE_DESCRIPTION("NXT200X (ATSC 8VSB & ITU-T J.83 AnnexB 64/256 QAM) Demodulat
 MODULE_AUTHOR("Kirk Lapray, Michael Krufky, Jean-Francois Thibert, and Taylor Jacob");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(nxt200x_attach);
+EXPORT_SYMBOL_GPL(nxt200x_attach);
 

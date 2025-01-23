@@ -1,3 +1,17 @@
+/* 57xx_hsi_bnx2fc.h: QLogic Linux FCoE offload driver.
+ * Handles operations such as session offload/upload etc, and manages
+ * session resources such as connection id and qp resources.
+ *
+ * Copyright (c) 2008-2013 Broadcom Corporation
+ * Copyright (c) 2014-2016 QLogic Corporation
+ * Copyright (c) 2016-2017 Cavium Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation.
+ *
+ */
+
 #ifndef __57XX_FCOE_HSI_LINUX_LE__
 #define __57XX_FCOE_HSI_LINUX_LE__
 
@@ -799,7 +813,7 @@ struct fcoe_confqe {
 
 
 /*
- * FCoE conection data base
+ * FCoE connection data base
  */
 struct fcoe_conn_db {
 #if defined(__BIG_ENDIAN)

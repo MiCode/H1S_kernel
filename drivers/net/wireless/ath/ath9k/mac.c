@@ -311,14 +311,7 @@ int ath9k_hw_setuptxqueue(struct ath_hw *ah, enum ath9k_tx_queue type,
 		q = ATH9K_NUM_TX_QUEUES - 3;
 		break;
 	case ATH9K_TX_QUEUE_DATA:
-		for (q = 0; q < ATH9K_NUM_TX_QUEUES; q++)
-			if (ah->txq[q].tqi_type ==
-			    ATH9K_TX_QUEUE_INACTIVE)
-				break;
-		if (q == ATH9K_NUM_TX_QUEUES) {
-			ath_err(common, "No available TX queue\n");
-			return -1;
-		}
+		q = qinfo->tqi_subtype;
 		break;
 	default:
 		ath_err(common, "Invalid TX queue type: %u\n", type);
@@ -542,7 +535,8 @@ int ath9k_hw_rxprocdesc(struct ath_hw *ah, struct ath_desc *ds,
 
 	rs->rs_status = 0;
 	rs->rs_flags = 0;
-	rs->flag = 0;
+	rs->enc_flags = 0;
+	rs->bw = RATE_INFO_BW_20;
 
 	rs->rs_datalen = ads.ds_rxstatus1 & AR_DataLen;
 	rs->rs_tstamp = ads.AR_RcvTimestamp;
@@ -584,15 +578,15 @@ int ath9k_hw_rxprocdesc(struct ath_hw *ah, struct ath_desc *ds,
 	rs->rs_antenna = MS(ads.ds_rxstatus3, AR_RxAntenna);
 
 	/* directly mapped flags for ieee80211_rx_status */
-	rs->flag |=
-		(ads.ds_rxstatus3 & AR_GI) ? RX_FLAG_SHORT_GI : 0;
-	rs->flag |=
-		(ads.ds_rxstatus3 & AR_2040) ? RX_FLAG_40MHZ : 0;
+	rs->enc_flags |=
+		(ads.ds_rxstatus3 & AR_GI) ? RX_ENC_FLAG_SHORT_GI : 0;
+	rs->bw = (ads.ds_rxstatus3 & AR_2040) ? RATE_INFO_BW_40 :
+						RATE_INFO_BW_20;
 	if (AR_SREV_9280_20_OR_LATER(ah))
-		rs->flag |=
+		rs->enc_flags |=
 			(ads.ds_rxstatus3 & AR_STBC) ?
 				/* we can only Nss=1 STBC */
-				(1 << RX_FLAG_STBC_SHIFT) : 0;
+				(1 << RX_ENC_FLAG_STBC_SHIFT) : 0;
 
 	if (ads.ds_rxstatus8 & AR_PreDelimCRCErr)
 		rs->rs_flags |= ATH9K_RX_DELIM_CRC_PRE;
@@ -713,7 +707,7 @@ bool ath9k_hw_stopdmarecv(struct ath_hw *ah, bool *reset)
 
 	/* Wait for rx enable bit to go low */
 	for (i = AH_RX_STOP_DMA_TIMEOUT / AH_TIME_QUANTUM; i != 0; i--) {
-		if ((REG_READ(ah, AR_CR) & AR_CR_RXE) == 0)
+		if ((REG_READ(ah, AR_CR) & AR_CR_RXE(ah)) == 0)
 			break;
 
 		if (!AR_SREV_9300_20_OR_LATER(ah)) {
@@ -768,14 +762,14 @@ bool ath9k_hw_intrpend(struct ath_hw *ah)
 	if (AR_SREV_9100(ah))
 		return true;
 
-	host_isr = REG_READ(ah, AR_INTR_ASYNC_CAUSE);
+	host_isr = REG_READ(ah, AR_INTR_ASYNC_CAUSE(ah));
 
 	if (((host_isr & AR_INTR_MAC_IRQ) ||
 	     (host_isr & AR_INTR_ASYNC_MASK_MCI)) &&
 	    (host_isr != AR_INTR_SPURIOUS))
 		return true;
 
-	host_isr = REG_READ(ah, AR_INTR_SYNC_CAUSE);
+	host_isr = REG_READ(ah, AR_INTR_SYNC_CAUSE(ah));
 	if ((host_isr & AR_INTR_SYNC_DEFAULT)
 	    && (host_isr != AR_INTR_SPURIOUS))
 		return true;
@@ -792,11 +786,11 @@ void ath9k_hw_kill_interrupts(struct ath_hw *ah)
 	REG_WRITE(ah, AR_IER, AR_IER_DISABLE);
 	(void) REG_READ(ah, AR_IER);
 	if (!AR_SREV_9100(ah)) {
-		REG_WRITE(ah, AR_INTR_ASYNC_ENABLE, 0);
-		(void) REG_READ(ah, AR_INTR_ASYNC_ENABLE);
+		REG_WRITE(ah, AR_INTR_ASYNC_ENABLE(ah), 0);
+		(void) REG_READ(ah, AR_INTR_ASYNC_ENABLE(ah));
 
-		REG_WRITE(ah, AR_INTR_SYNC_ENABLE, 0);
-		(void) REG_READ(ah, AR_INTR_SYNC_ENABLE);
+		REG_WRITE(ah, AR_INTR_SYNC_ENABLE(ah), 0);
+		(void) REG_READ(ah, AR_INTR_SYNC_ENABLE(ah));
 	}
 }
 EXPORT_SYMBOL(ath9k_hw_kill_interrupts);
@@ -812,22 +806,14 @@ void ath9k_hw_disable_interrupts(struct ath_hw *ah)
 }
 EXPORT_SYMBOL(ath9k_hw_disable_interrupts);
 
-void ath9k_hw_enable_interrupts(struct ath_hw *ah)
+static void __ath9k_hw_enable_interrupts(struct ath_hw *ah)
 {
 	struct ath_common *common = ath9k_hw_common(ah);
 	u32 sync_default = AR_INTR_SYNC_DEFAULT;
 	u32 async_mask;
 
-	if (!(ah->imask & ATH9K_INT_GLOBAL))
-		return;
-
-	if (!atomic_inc_and_test(&ah->intr_ref_cnt)) {
-		ath_dbg(common, INTERRUPT, "Do not enable IER ref count %d\n",
-			atomic_read(&ah->intr_ref_cnt));
-		return;
-	}
-
-	if (AR_SREV_9340(ah) || AR_SREV_9550(ah))
+	if (AR_SREV_9340(ah) || AR_SREV_9550(ah) || AR_SREV_9531(ah) ||
+	    AR_SREV_9561(ah))
 		sync_default &= ~AR_INTR_SYNC_HOST1_FATAL;
 
 	async_mask = AR_INTR_MAC_IRQ;
@@ -838,14 +824,84 @@ void ath9k_hw_enable_interrupts(struct ath_hw *ah)
 	ath_dbg(common, INTERRUPT, "enable IER\n");
 	REG_WRITE(ah, AR_IER, AR_IER_ENABLE);
 	if (!AR_SREV_9100(ah)) {
-		REG_WRITE(ah, AR_INTR_ASYNC_ENABLE, async_mask);
-		REG_WRITE(ah, AR_INTR_ASYNC_MASK, async_mask);
+		REG_WRITE(ah, AR_INTR_ASYNC_ENABLE(ah), async_mask);
+		REG_WRITE(ah, AR_INTR_ASYNC_MASK(ah), async_mask);
 
-		REG_WRITE(ah, AR_INTR_SYNC_ENABLE, sync_default);
-		REG_WRITE(ah, AR_INTR_SYNC_MASK, sync_default);
+		REG_WRITE(ah, AR_INTR_SYNC_ENABLE(ah), sync_default);
+		REG_WRITE(ah, AR_INTR_SYNC_MASK(ah), sync_default);
 	}
 	ath_dbg(common, INTERRUPT, "AR_IMR 0x%x IER 0x%x\n",
 		REG_READ(ah, AR_IMR), REG_READ(ah, AR_IER));
+
+	if (ah->msi_enabled) {
+		u32 _msi_reg = 0;
+		u32 i = 0;
+		u32 msi_pend_addr_mask = AR_PCIE_MSI_HW_INT_PENDING_ADDR_MSI_64;
+
+		ath_dbg(ath9k_hw_common(ah), INTERRUPT,
+			"Enabling MSI, msi_mask=0x%X\n", ah->msi_mask);
+
+		REG_WRITE(ah, AR_INTR_PRIO_ASYNC_ENABLE(ah), ah->msi_mask);
+		REG_WRITE(ah, AR_INTR_PRIO_ASYNC_MASK(ah), ah->msi_mask);
+		ath_dbg(ath9k_hw_common(ah), INTERRUPT,
+			"AR_INTR_PRIO_ASYNC_ENABLE=0x%X, AR_INTR_PRIO_ASYNC_MASK=0x%X\n",
+			REG_READ(ah, AR_INTR_PRIO_ASYNC_ENABLE(ah)),
+			REG_READ(ah, AR_INTR_PRIO_ASYNC_MASK(ah)));
+
+		if (ah->msi_reg == 0)
+			ah->msi_reg = REG_READ(ah, AR_PCIE_MSI(ah));
+
+		ath_dbg(ath9k_hw_common(ah), INTERRUPT,
+			"AR_PCIE_MSI=0x%X, ah->msi_reg = 0x%X\n",
+			AR_PCIE_MSI(ah), ah->msi_reg);
+
+		i = 0;
+		do {
+			REG_WRITE(ah, AR_PCIE_MSI(ah),
+				  (ah->msi_reg | AR_PCIE_MSI_ENABLE)
+				  & msi_pend_addr_mask);
+			_msi_reg = REG_READ(ah, AR_PCIE_MSI(ah));
+			i++;
+		} while ((_msi_reg & AR_PCIE_MSI_ENABLE) == 0 && i < 200);
+
+		if (i >= 200)
+			ath_err(ath9k_hw_common(ah),
+				"%s: _msi_reg = 0x%X\n",
+				__func__, _msi_reg);
+	}
+}
+
+void ath9k_hw_resume_interrupts(struct ath_hw *ah)
+{
+	struct ath_common *common = ath9k_hw_common(ah);
+
+	if (!(ah->imask & ATH9K_INT_GLOBAL))
+		return;
+
+	if (atomic_read(&ah->intr_ref_cnt) != 0) {
+		ath_dbg(common, INTERRUPT, "Do not enable IER ref count %d\n",
+			atomic_read(&ah->intr_ref_cnt));
+		return;
+	}
+
+	__ath9k_hw_enable_interrupts(ah);
+}
+EXPORT_SYMBOL(ath9k_hw_resume_interrupts);
+
+void ath9k_hw_enable_interrupts(struct ath_hw *ah)
+{
+	struct ath_common *common = ath9k_hw_common(ah);
+
+	if (!(ah->imask & ATH9K_INT_GLOBAL))
+		return;
+
+	if (!atomic_inc_and_test(&ah->intr_ref_cnt)) {
+		ath_dbg(common, INTERRUPT, "Do not enable IER ref count %d\n",
+			atomic_read(&ah->intr_ref_cnt));
+		return;
+	}
+
+	__ath9k_hw_enable_interrupts(ah);
 }
 EXPORT_SYMBOL(ath9k_hw_enable_interrupts);
 
@@ -859,12 +915,21 @@ void ath9k_hw_set_interrupts(struct ath_hw *ah)
 	if (!(ints & ATH9K_INT_GLOBAL))
 		ath9k_hw_disable_interrupts(ah);
 
+	if (ah->msi_enabled) {
+		ath_dbg(common, INTERRUPT, "Clearing AR_INTR_PRIO_ASYNC_ENABLE\n");
+
+		REG_WRITE(ah, AR_INTR_PRIO_ASYNC_ENABLE(ah), 0);
+		REG_READ(ah, AR_INTR_PRIO_ASYNC_ENABLE(ah));
+	}
+
 	ath_dbg(common, INTERRUPT, "New interrupt mask 0x%x\n", ints);
 
 	mask = ints & ATH9K_INT_COMMON;
 	mask2 = 0;
 
+	ah->msi_mask = 0;
 	if (ints & ATH9K_INT_TX) {
+		ah->msi_mask |= AR_INTR_PRIO_TX;
 		if (ah->config.tx_intr_mitigation)
 			mask |= AR_IMR_TXMINTR | AR_IMR_TXINTM;
 		else {
@@ -879,6 +944,7 @@ void ath9k_hw_set_interrupts(struct ath_hw *ah)
 			mask |= AR_IMR_TXEOL;
 	}
 	if (ints & ATH9K_INT_RX) {
+		ah->msi_mask |= AR_INTR_PRIO_RXLP | AR_INTR_PRIO_RXHP;
 		if (AR_SREV_9300_20_OR_LATER(ah)) {
 			mask |= AR_IMR_RXERR | AR_IMR_RXOK_HP;
 			if (ah->config.rx_intr_mitigation) {
@@ -958,3 +1024,25 @@ void ath9k_hw_set_interrupts(struct ath_hw *ah)
 	return;
 }
 EXPORT_SYMBOL(ath9k_hw_set_interrupts);
+
+#define ATH9K_HW_MAX_DCU       10
+#define ATH9K_HW_SLICE_PER_DCU 16
+#define ATH9K_HW_BIT_IN_SLICE  16
+void ath9k_hw_set_tx_filter(struct ath_hw *ah, u8 destidx, bool set)
+{
+	int dcu_idx;
+	u32 filter;
+
+	for (dcu_idx = 0; dcu_idx < 10; dcu_idx++) {
+		filter = SM(set, AR_D_TXBLK_WRITE_COMMAND);
+		filter |= SM(dcu_idx, AR_D_TXBLK_WRITE_DCU);
+		filter |= SM((destidx / ATH9K_HW_SLICE_PER_DCU),
+			     AR_D_TXBLK_WRITE_SLICE);
+		filter |= BIT(destidx % ATH9K_HW_BIT_IN_SLICE);
+		ath_dbg(ath9k_hw_common(ah), PS,
+			"DCU%d staid %d set %d txfilter %08x\n",
+			dcu_idx, destidx, set, filter);
+		REG_WRITE(ah, AR_D_TXBLK_BASE, filter);
+	}
+}
+EXPORT_SYMBOL(ath9k_hw_set_tx_filter);

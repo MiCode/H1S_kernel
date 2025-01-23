@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2006-2007 Nokia Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; see the file COPYING. If not, write to the Free Software
- * Foundation, 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
- *
  * Test sub-page read and write on MTD device.
  * Author: Adrian Hunter <ext-adrian.hunter@nokia.com>
- *
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -57,7 +44,7 @@ static int write_eraseblock(int ebnum)
 {
 	size_t written;
 	int err = 0;
-	loff_t addr = ebnum * mtd->erasesize;
+	loff_t addr = (loff_t)ebnum * mtd->erasesize;
 
 	prandom_bytes_state(&rnd_state, writebuf, subpgsize);
 	err = mtd_write(mtd, addr, subpgsize, &written, writebuf);
@@ -92,17 +79,17 @@ static int write_eraseblock2(int ebnum)
 {
 	size_t written;
 	int err = 0, k;
-	loff_t addr = ebnum * mtd->erasesize;
+	loff_t addr = (loff_t)ebnum * mtd->erasesize;
 
 	for (k = 1; k < 33; ++k) {
-		if (addr + (subpgsize * k) > (ebnum + 1) * mtd->erasesize)
+		if (addr + (subpgsize * k) > (loff_t)(ebnum + 1) * mtd->erasesize)
 			break;
 		prandom_bytes_state(&rnd_state, writebuf, subpgsize * k);
 		err = mtd_write(mtd, addr, subpgsize * k, &written, writebuf);
 		if (unlikely(err || written != subpgsize * k)) {
 			pr_err("error: write failed at %#llx\n",
 			       (long long)addr);
-			if (written != subpgsize) {
+			if (written != subpgsize * k) {
 				pr_err("  write size: %#x\n",
 				       subpgsize * k);
 				pr_err("  written: %#08zx\n",
@@ -131,7 +118,7 @@ static int verify_eraseblock(int ebnum)
 {
 	size_t read;
 	int err = 0;
-	loff_t addr = ebnum * mtd->erasesize;
+	loff_t addr = (loff_t)ebnum * mtd->erasesize;
 
 	prandom_bytes_state(&rnd_state, writebuf, subpgsize);
 	clear_data(readbuf, subpgsize);
@@ -192,10 +179,10 @@ static int verify_eraseblock2(int ebnum)
 {
 	size_t read;
 	int err = 0, k;
-	loff_t addr = ebnum * mtd->erasesize;
+	loff_t addr = (loff_t)ebnum * mtd->erasesize;
 
 	for (k = 1; k < 33; ++k) {
-		if (addr + (subpgsize * k) > (ebnum + 1) * mtd->erasesize)
+		if (addr + (subpgsize * k) > (loff_t)(ebnum + 1) * mtd->erasesize)
 			break;
 		prandom_bytes_state(&rnd_state, writebuf, subpgsize * k);
 		clear_data(readbuf, subpgsize * k);
@@ -227,7 +214,7 @@ static int verify_eraseblock_ff(int ebnum)
 	uint32_t j;
 	size_t read;
 	int err = 0;
-	loff_t addr = ebnum * mtd->erasesize;
+	loff_t addr = (loff_t)ebnum * mtd->erasesize;
 
 	memset(writebuf, 0xff, subpgsize);
 	for (j = 0; j < mtd->erasesize / subpgsize; ++j) {
@@ -269,7 +256,10 @@ static int verify_all_eraseblocks_ff(void)
 			return err;
 		if (i % 256 == 0)
 			pr_info("verified up to eraseblock %u\n", i);
-		cond_resched();
+
+		err = mtdtest_relax();
+		if (err)
+			return err;
 	}
 	pr_info("verified %u eraseblocks\n", i);
 	return 0;
@@ -346,7 +336,10 @@ static int __init mtd_subpagetest_init(void)
 			goto out;
 		if (i % 256 == 0)
 			pr_info("written up to eraseblock %u\n", i);
-		cond_resched();
+
+		err = mtdtest_relax();
+		if (err)
+			goto out;
 	}
 	pr_info("written %u eraseblocks\n", i);
 
@@ -360,7 +353,10 @@ static int __init mtd_subpagetest_init(void)
 			goto out;
 		if (i % 256 == 0)
 			pr_info("verified up to eraseblock %u\n", i);
-		cond_resched();
+
+		err = mtdtest_relax();
+		if (err)
+			goto out;
 	}
 	pr_info("verified %u eraseblocks\n", i);
 
@@ -383,7 +379,10 @@ static int __init mtd_subpagetest_init(void)
 			goto out;
 		if (i % 256 == 0)
 			pr_info("written up to eraseblock %u\n", i);
-		cond_resched();
+
+		err = mtdtest_relax();
+		if (err)
+			goto out;
 	}
 	pr_info("written %u eraseblocks\n", i);
 
@@ -398,7 +397,10 @@ static int __init mtd_subpagetest_init(void)
 			goto out;
 		if (i % 256 == 0)
 			pr_info("verified up to eraseblock %u\n", i);
-		cond_resched();
+
+		err = mtdtest_relax();
+		if (err)
+			goto out;
 	}
 	pr_info("verified %u eraseblocks\n", i);
 

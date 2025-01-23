@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * This is <linux/capability.h>
  *
@@ -14,8 +15,6 @@
 #define _UAPI_LINUX_CAPABILITY_H
 
 #include <linux/types.h>
-
-struct task_struct;
 
 /* User-level do most of the mapping between kernel and user
    capabilities based on the version tag given by the kernel. The
@@ -42,11 +41,12 @@ typedef struct __user_cap_header_struct {
 	int pid;
 } __user *cap_user_header_t;
 
-typedef struct __user_cap_data_struct {
+struct __user_cap_data_struct {
         __u32 effective;
         __u32 permitted;
         __u32 inheritable;
-} __user *cap_user_data_t;
+};
+typedef struct __user_cap_data_struct __user *cap_user_data_t;
 
 
 #define VFS_CAP_REVISION_MASK	0xFF000000
@@ -62,9 +62,13 @@ typedef struct __user_cap_data_struct {
 #define VFS_CAP_U32_2           2
 #define XATTR_CAPS_SZ_2         (sizeof(__le32)*(1 + 2*VFS_CAP_U32_2))
 
-#define XATTR_CAPS_SZ           XATTR_CAPS_SZ_2
-#define VFS_CAP_U32             VFS_CAP_U32_2
-#define VFS_CAP_REVISION	VFS_CAP_REVISION_2
+#define VFS_CAP_REVISION_3	0x03000000
+#define VFS_CAP_U32_3           2
+#define XATTR_CAPS_SZ_3         (sizeof(__le32)*(2 + 2*VFS_CAP_U32_3))
+
+#define XATTR_CAPS_SZ           XATTR_CAPS_SZ_3
+#define VFS_CAP_U32             VFS_CAP_U32_3
+#define VFS_CAP_REVISION	VFS_CAP_REVISION_3
 
 struct vfs_cap_data {
 	__le32 magic_etc;            /* Little endian */
@@ -72,6 +76,18 @@ struct vfs_cap_data {
 		__le32 permitted;    /* Little endian */
 		__le32 inheritable;  /* Little endian */
 	} data[VFS_CAP_U32];
+};
+
+/*
+ * same as vfs_cap_data but with a rootid at the end
+ */
+struct vfs_ns_cap_data {
+	__le32 magic_etc;
+	struct {
+		__le32 permitted;    /* Little endian */
+		__le32 inheritable;  /* Little endian */
+	} data[VFS_CAP_U32];
+	__le32 rootid;
 };
 
 #ifndef __KERNEL__
@@ -207,7 +223,7 @@ struct vfs_cap_data {
 #define CAP_SYS_MODULE       16
 
 /* Allow ioperm/iopl access */
-/* Allow sending USB messages to any device via /proc/bus/usb */
+/* Allow sending USB messages to any device via /dev/bus/usb */
 
 #define CAP_SYS_RAWIO        17
 
@@ -228,7 +244,6 @@ struct vfs_cap_data {
 /* Allow examination and configuration of disk quotas */
 /* Allow setting the domainname */
 /* Allow setting the hostname */
-/* Allow calling bdflush() */
 /* Allow mount() and umount(), setting up new smb connection */
 /* Allow some autofs root ioctls */
 /* Allow nfsservctl */
@@ -259,6 +274,7 @@ struct vfs_cap_data {
    arbitrary SCSI commands */
 /* Allow setting encryption key on loopback filesystem */
 /* Allow setting zone reclaim policy */
+/* Allow everything under CAP_BPF and CAP_PERFMON for backward compatibility */
 
 #define CAP_SYS_ADMIN        21
 
@@ -272,6 +288,8 @@ struct vfs_cap_data {
    processes and setting the scheduling algorithm used by another
    process. */
 /* Allow setting cpu affinity on other processes */
+/* Allow setting realtime ioprio class */
+/* Allow setting ioprio class on other processes */
 
 #define CAP_SYS_NICE         23
 
@@ -286,6 +304,7 @@ struct vfs_cap_data {
 /* Allow more than 64hz interrupts from the real-time clock */
 /* Override max number of consoles on console allocation */
 /* Override max number of keymaps */
+/* Control memory reclaim behavior */
 
 #define CAP_SYS_RESOURCE     24
 
@@ -308,9 +327,16 @@ struct vfs_cap_data {
 
 #define CAP_LEASE            28
 
+/* Allow writing the audit log via unicast netlink socket */
+
 #define CAP_AUDIT_WRITE      29
 
+/* Allow configuration of audit via unicast netlink socket */
+
 #define CAP_AUDIT_CONTROL    30
+
+/* Set or remove capabilities on files.
+   Map uid=0 into a child user namespace. */
 
 #define CAP_SETFCAP	     31
 
@@ -343,7 +369,56 @@ struct vfs_cap_data {
 
 #define CAP_BLOCK_SUSPEND    36
 
-#define CAP_LAST_CAP         CAP_BLOCK_SUSPEND
+/* Allow reading the audit log via multicast netlink socket */
+
+#define CAP_AUDIT_READ		37
+
+/*
+ * Allow system performance and observability privileged operations
+ * using perf_events, i915_perf and other kernel subsystems
+ */
+
+#define CAP_PERFMON		38
+
+/*
+ * CAP_BPF allows the following BPF operations:
+ * - Creating all types of BPF maps
+ * - Advanced verifier features
+ *   - Indirect variable access
+ *   - Bounded loops
+ *   - BPF to BPF function calls
+ *   - Scalar precision tracking
+ *   - Larger complexity limits
+ *   - Dead code elimination
+ *   - And potentially other features
+ * - Loading BPF Type Format (BTF) data
+ * - Retrieve xlated and JITed code of BPF programs
+ * - Use bpf_spin_lock() helper
+ *
+ * CAP_PERFMON relaxes the verifier checks further:
+ * - BPF progs can use of pointer-to-integer conversions
+ * - speculation attack hardening measures are bypassed
+ * - bpf_probe_read to read arbitrary kernel memory is allowed
+ * - bpf_trace_printk to print kernel memory is allowed
+ *
+ * CAP_SYS_ADMIN is required to use bpf_probe_write_user.
+ *
+ * CAP_SYS_ADMIN is required to iterate system wide loaded
+ * programs, maps, links, BTFs and convert their IDs to file descriptors.
+ *
+ * CAP_PERFMON and CAP_BPF are required to load tracing programs.
+ * CAP_NET_ADMIN and CAP_BPF are required to load networking programs.
+ */
+#define CAP_BPF			39
+
+
+/* Allow checkpoint/restore related operations */
+/* Allow PID selection during clone3() */
+/* Allow writing to ns_last_pid */
+
+#define CAP_CHECKPOINT_RESTORE	40
+
+#define CAP_LAST_CAP         CAP_CHECKPOINT_RESTORE
 
 #define cap_valid(x) ((x) >= 0 && (x) <= CAP_LAST_CAP)
 
@@ -352,7 +427,7 @@ struct vfs_cap_data {
  */
 
 #define CAP_TO_INDEX(x)     ((x) >> 5)        /* 1 << 5 == bits in __u32 */
-#define CAP_TO_MASK(x)      (1 << ((x) & 31)) /* mask for indexed __u32 */
+#define CAP_TO_MASK(x)      (1U << ((x) & 31)) /* mask for indexed __u32 */
 
 
 #endif /* _UAPI_LINUX_CAPABILITY_H */

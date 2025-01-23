@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* bug in tracepoint.h, it should include this */
 #include <linux/module.h>
 
@@ -8,6 +9,7 @@
 #include "debug.h"
 #define CREATE_TRACE_POINTS
 #include "trace.h"
+#include "trace_msg.h"
 
 #ifdef CONFIG_MAC80211_MESSAGE_TRACING
 void __sdata_info(const char *fmt, ...)

@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Software WEP encryption implementation
  * Copyright 2002, Jouni Malinen <jkmaline@cc.hut.fi>
  * Copyright 2003, Instant802 Networks, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/netdevice.h>
@@ -25,33 +22,10 @@
 #include "wep.h"
 
 
-int ieee80211_wep_init(struct ieee80211_local *local)
+void ieee80211_wep_init(struct ieee80211_local *local)
 {
 	/* start WEP IV from a random value */
 	get_random_bytes(&local->wep_iv, IEEE80211_WEP_IV_LEN);
-
-	local->wep_tx_tfm = crypto_alloc_cipher("arc4", 0, CRYPTO_ALG_ASYNC);
-	if (IS_ERR(local->wep_tx_tfm)) {
-		local->wep_rx_tfm = ERR_PTR(-EINVAL);
-		return PTR_ERR(local->wep_tx_tfm);
-	}
-
-	local->wep_rx_tfm = crypto_alloc_cipher("arc4", 0, CRYPTO_ALG_ASYNC);
-	if (IS_ERR(local->wep_rx_tfm)) {
-		crypto_free_cipher(local->wep_tx_tfm);
-		local->wep_tx_tfm = ERR_PTR(-EINVAL);
-		return PTR_ERR(local->wep_rx_tfm);
-	}
-
-	return 0;
-}
-
-void ieee80211_wep_free(struct ieee80211_local *local)
-{
-	if (!IS_ERR(local->wep_tx_tfm))
-		crypto_free_cipher(local->wep_tx_tfm);
-	if (!IS_ERR(local->wep_rx_tfm))
-		crypto_free_cipher(local->wep_rx_tfm);
 }
 
 static inline bool ieee80211_wep_weak_iv(u32 iv, int keylen)
@@ -98,8 +72,7 @@ static u8 *ieee80211_wep_add_iv(struct ieee80211_local *local,
 
 	hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_PROTECTED);
 
-	if (WARN_ON(skb_tailroom(skb) < IEEE80211_WEP_ICV_LEN ||
-		    skb_headroom(skb) < IEEE80211_WEP_IV_LEN))
+	if (WARN_ON(skb_headroom(skb) < IEEE80211_WEP_IV_LEN))
 		return NULL;
 
 	hdrlen = ieee80211_hdrlen(hdr->frame_control);
@@ -111,8 +84,6 @@ static u8 *ieee80211_wep_add_iv(struct ieee80211_local *local,
 	    (info->control.hw_key->flags & IEEE80211_KEY_FLAG_PUT_IV_SPACE))
 		return newhdr + hdrlen;
 
-	skb_set_network_header(skb, skb_network_offset(skb) +
-				    IEEE80211_WEP_IV_LEN);
 	ieee80211_wep_get_iv(local, keylen, keyidx, newhdr + hdrlen);
 	return newhdr + hdrlen;
 }
@@ -134,21 +105,17 @@ static void ieee80211_wep_remove_iv(struct ieee80211_local *local,
 /* Perform WEP encryption using given key. data buffer must have tailroom
  * for 4-byte ICV. data_len must not include this ICV. Note: this function
  * does _not_ add IV. data = RC4(data | CRC32(data)) */
-int ieee80211_wep_encrypt_data(struct crypto_cipher *tfm, u8 *rc4key,
+int ieee80211_wep_encrypt_data(struct arc4_ctx *ctx, u8 *rc4key,
 			       size_t klen, u8 *data, size_t data_len)
 {
 	__le32 icv;
-	int i;
-
-	if (IS_ERR(tfm))
-		return -1;
 
 	icv = cpu_to_le32(~crc32_le(~0, data, data_len));
 	put_unaligned(icv, (__le32 *)(data + data_len));
 
-	crypto_cipher_setkey(tfm, rc4key, klen);
-	for (i = 0; i < data_len + IEEE80211_WEP_ICV_LEN; i++)
-		crypto_cipher_encrypt_one(tfm, data + i, data + i);
+	arc4_setkey(ctx, rc4key, klen);
+	arc4_crypt(ctx, data, data, data_len + IEEE80211_WEP_ICV_LEN);
+	memzero_explicit(ctx, sizeof(*ctx));
 
 	return 0;
 }
@@ -169,6 +136,9 @@ int ieee80211_wep_encrypt(struct ieee80211_local *local,
 	size_t len;
 	u8 rc4key[3 + WLAN_KEY_LEN_WEP104];
 
+	if (WARN_ON(skb_tailroom(skb) < IEEE80211_WEP_ICV_LEN))
+		return -1;
+
 	iv = ieee80211_wep_add_iv(local, skb, keylen, keyidx);
 	if (!iv)
 		return -1;
@@ -184,7 +154,7 @@ int ieee80211_wep_encrypt(struct ieee80211_local *local,
 	/* Add room for ICV */
 	skb_put(skb, IEEE80211_WEP_ICV_LEN);
 
-	return ieee80211_wep_encrypt_data(local->wep_tx_tfm, rc4key, keylen + 3,
+	return ieee80211_wep_encrypt_data(&local->wep_tx_ctx, rc4key, keylen + 3,
 					  iv + IEEE80211_WEP_IV_LEN, len);
 }
 
@@ -192,18 +162,14 @@ int ieee80211_wep_encrypt(struct ieee80211_local *local,
 /* Perform WEP decryption using given key. data buffer includes encrypted
  * payload, including 4-byte ICV, but _not_ IV. data_len must not include ICV.
  * Return 0 on success and -1 on ICV mismatch. */
-int ieee80211_wep_decrypt_data(struct crypto_cipher *tfm, u8 *rc4key,
+int ieee80211_wep_decrypt_data(struct arc4_ctx *ctx, u8 *rc4key,
 			       size_t klen, u8 *data, size_t data_len)
 {
 	__le32 crc;
-	int i;
 
-	if (IS_ERR(tfm))
-		return -1;
-
-	crypto_cipher_setkey(tfm, rc4key, klen);
-	for (i = 0; i < data_len + IEEE80211_WEP_ICV_LEN; i++)
-		crypto_cipher_decrypt_one(tfm, data + i, data + i);
+	arc4_setkey(ctx, rc4key, klen);
+	arc4_crypt(ctx, data, data, data_len + IEEE80211_WEP_ICV_LEN);
+	memzero_explicit(ctx, sizeof(*ctx));
 
 	crc = cpu_to_le32(~crc32_le(~0, data, data_len));
 	if (memcmp(&crc, data + data_len, IEEE80211_WEP_ICV_LEN) != 0)
@@ -256,7 +222,7 @@ static int ieee80211_wep_decrypt(struct ieee80211_local *local,
 	/* Copy rest of the WEP key (the secret part) */
 	memcpy(rc4key + 3, key->conf.key, key->conf.keylen);
 
-	if (ieee80211_wep_decrypt_data(local->wep_rx_tfm, rc4key, klen,
+	if (ieee80211_wep_decrypt_data(&local->wep_rx_ctx, rc4key, klen,
 				       skb->data + hdrlen +
 				       IEEE80211_WEP_IV_LEN, len))
 		ret = -1;
@@ -269,22 +235,6 @@ static int ieee80211_wep_decrypt(struct ieee80211_local *local,
 	skb_pull(skb, IEEE80211_WEP_IV_LEN);
 
 	return ret;
-}
-
-
-static bool ieee80211_wep_is_weak_iv(struct sk_buff *skb,
-				     struct ieee80211_key *key)
-{
-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
-	unsigned int hdrlen;
-	u8 *ivpos;
-	u32 iv;
-
-	hdrlen = ieee80211_hdrlen(hdr->frame_control);
-	ivpos = skb->data + hdrlen;
-	iv = (ivpos[0] << 16) | (ivpos[1] << 8) | ivpos[2];
-
-	return ieee80211_wep_weak_iv(iv, key->conf.keylen);
 }
 
 ieee80211_rx_result
@@ -301,19 +251,16 @@ ieee80211_crypto_wep_decrypt(struct ieee80211_rx_data *rx)
 	if (!(status->flag & RX_FLAG_DECRYPTED)) {
 		if (skb_linearize(rx->skb))
 			return RX_DROP_UNUSABLE;
-		if (rx->sta && ieee80211_wep_is_weak_iv(rx->skb, rx->key))
-			rx->sta->wep_weak_iv_count++;
 		if (ieee80211_wep_decrypt(rx->local, rx->skb, rx->key))
 			return RX_DROP_UNUSABLE;
 	} else if (!(status->flag & RX_FLAG_IV_STRIPPED)) {
 		if (!pskb_may_pull(rx->skb, ieee80211_hdrlen(fc) +
 					    IEEE80211_WEP_IV_LEN))
 			return RX_DROP_UNUSABLE;
-		if (rx->sta && ieee80211_wep_is_weak_iv(rx->skb, rx->key))
-			rx->sta->wep_weak_iv_count++;
 		ieee80211_wep_remove_iv(rx->local, rx->skb, rx->key);
 		/* remove ICV */
-		if (pskb_trim(rx->skb, rx->skb->len - IEEE80211_WEP_ICV_LEN))
+		if (!(status->flag & RX_FLAG_ICV_STRIPPED) &&
+		    pskb_trim(rx->skb, rx->skb->len - IEEE80211_WEP_ICV_LEN))
 			return RX_DROP_UNUSABLE;
 	}
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * fs/nfs/nfs4session.h
  *
@@ -9,7 +10,9 @@
 
 /* maximum number of slots to use */
 #define NFS4_DEF_SLOT_TABLE_SIZE (64U)
+#define NFS4_DEF_CB_SLOT_TABLE_SIZE (16U)
 #define NFS4_MAX_SLOT_TABLE (1024U)
+#define NFS4_MAX_SLOTID (NFS4_MAX_SLOT_TABLE - 1U)
 #define NFS4_NO_SLOT ((u32)-1)
 
 #if IS_ENABLED(CONFIG_NFS_V4)
@@ -21,7 +24,10 @@ struct nfs4_slot {
 	unsigned long		generation;
 	u32			slot_nr;
 	u32		 	seq_nr;
-	unsigned int		interrupted : 1;
+	u32		 	seq_nr_last_acked;
+	u32		 	seq_nr_highest_sent;
+	unsigned int		privileged : 1,
+				seq_done : 1;
 };
 
 /* Sessions */
@@ -29,13 +35,14 @@ enum nfs4_slot_tbl_state {
 	NFS4_SLOT_TBL_DRAINING,
 };
 
-#define SLOT_TABLE_SZ DIV_ROUND_UP(NFS4_MAX_SLOT_TABLE, 8*sizeof(long))
+#define SLOT_TABLE_SZ DIV_ROUND_UP(NFS4_MAX_SLOT_TABLE, BITS_PER_LONG)
 struct nfs4_slot_table {
 	struct nfs4_session *session;		/* Parent session */
 	struct nfs4_slot *slots;		/* seqid per slot */
 	unsigned long   used_slots[SLOT_TABLE_SZ]; /* used/unused bitmap */
 	spinlock_t	slot_tbl_lock;
 	struct rpc_wait_queue	slot_tbl_waitq;	/* allocators may wait here */
+	wait_queue_head_t	slot_waitq;	/* Completion wait on slot */
 	u32		max_slots;		/* # slots in table */
 	u32		max_slotid;		/* Max allowed slotid value */
 	u32		highest_used_slotid;	/* sent to server on each SEQ.
@@ -70,12 +77,18 @@ struct nfs4_session {
 
 enum nfs4_session_state {
 	NFS4_SESSION_INITING,
+	NFS4_SESSION_ESTABLISHED,
 };
 
 extern int nfs4_setup_slot_table(struct nfs4_slot_table *tbl,
 		unsigned int max_reqs, const char *queue);
-extern void nfs4_release_slot_table(struct nfs4_slot_table *tbl);
+extern void nfs4_shutdown_slot_table(struct nfs4_slot_table *tbl);
 extern struct nfs4_slot *nfs4_alloc_slot(struct nfs4_slot_table *tbl);
+extern struct nfs4_slot *nfs4_lookup_slot(struct nfs4_slot_table *tbl, u32 slotid);
+extern int nfs4_slot_wait_on_seqid(struct nfs4_slot_table *tbl,
+		u32 slotid, u32 seq_nr,
+		unsigned long timeout);
+extern bool nfs4_try_to_lock_slot(struct nfs4_slot_table *tbl, struct nfs4_slot *slot);
 extern void nfs4_free_slot(struct nfs4_slot_table *tbl, struct nfs4_slot *slot);
 extern void nfs4_slot_tbl_drain_complete(struct nfs4_slot_table *tbl);
 bool nfs41_wake_and_assign_slot(struct nfs4_slot_table *tbl,
@@ -85,6 +98,17 @@ void nfs41_wake_slot_table(struct nfs4_slot_table *tbl);
 static inline bool nfs4_slot_tbl_draining(struct nfs4_slot_table *tbl)
 {
 	return !!test_bit(NFS4_SLOT_TBL_DRAINING, &tbl->slot_tbl_state);
+}
+
+static inline bool nfs4_test_locked_slot(const struct nfs4_slot_table *tbl,
+		u32 slotid)
+{
+	return !!test_bit(slotid, tbl->used_slots);
+}
+
+static inline struct nfs4_session *nfs4_get_session(const struct nfs_client *clp)
+{
+	return clp->cl_session;
 }
 
 #if defined(CONFIG_NFS_V4_1)
@@ -118,6 +142,12 @@ static inline int nfs4_has_persistent_session(const struct nfs_client *clp)
 	return 0;
 }
 
+static inline void nfs4_copy_sessionid(struct nfs4_sessionid *dst,
+		const struct nfs4_sessionid *src)
+{
+	memcpy(dst->data, src->data, NFS4_MAX_SESSIONID_LEN);
+}
+
 #ifdef CONFIG_CRC32
 /*
  * nfs_session_id_hash - calculate the crc32 hash for the session id
@@ -147,6 +177,8 @@ static inline int nfs4_has_persistent_session(const struct nfs_client *clp)
 {
 	return 0;
 }
+
+#define nfs_session_id_hash(session) (0)
 
 #endif /* defined(CONFIG_NFS_V4_1) */
 #endif /* IS_ENABLED(CONFIG_NFS_V4) */

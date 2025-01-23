@@ -1,10 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) Sistina Software, Inc.  1997-2003 All rights reserved.
  * Copyright (C) 2004-2006 Red Hat, Inc.  All rights reserved.
- *
- * This copyrighted material is made available to anyone wishing to use,
- * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License version 2.
  */
 
 #include <linux/spinlock.h>
@@ -41,69 +38,43 @@ static int gfs2_drevalidate(struct dentry *dentry, unsigned int flags)
 	struct inode *inode;
 	struct gfs2_holder d_gh;
 	struct gfs2_inode *ip = NULL;
-	int error;
+	int error, valid = 0;
 	int had_lock = 0;
 
 	if (flags & LOOKUP_RCU)
 		return -ECHILD;
 
 	parent = dget_parent(dentry);
-	sdp = GFS2_SB(parent->d_inode);
-	dip = GFS2_I(parent->d_inode);
-	inode = dentry->d_inode;
+	sdp = GFS2_SB(d_inode(parent));
+	dip = GFS2_I(d_inode(parent));
+	inode = d_inode(dentry);
 
 	if (inode) {
 		if (is_bad_inode(inode))
-			goto invalid;
+			goto out;
 		ip = GFS2_I(inode);
 	}
 
-	if (sdp->sd_lockstruct.ls_ops->lm_mount == NULL)
-		goto valid;
+	if (sdp->sd_lockstruct.ls_ops->lm_mount == NULL) {
+		valid = 1;
+		goto out;
+	}
 
 	had_lock = (gfs2_glock_is_locked_by_me(dip->i_gl) != NULL);
 	if (!had_lock) {
 		error = gfs2_glock_nq_init(dip->i_gl, LM_ST_SHARED, 0, &d_gh);
 		if (error)
-			goto fail;
-	} 
-
-	error = gfs2_dir_check(parent->d_inode, &dentry->d_name, ip);
-	switch (error) {
-	case 0:
-		if (!inode)
-			goto invalid_gunlock;
-		break;
-	case -ENOENT:
-		if (!inode)
-			goto valid_gunlock;
-		goto invalid_gunlock;
-	default:
-		goto fail_gunlock;
+			goto out;
 	}
 
-valid_gunlock:
+	error = gfs2_dir_check(d_inode(parent), &dentry->d_name, ip);
+	valid = inode ? !error : (error == -ENOENT);
+
 	if (!had_lock)
 		gfs2_glock_dq_uninit(&d_gh);
-valid:
+out:
 	dput(parent);
-	return 1;
-
-invalid_gunlock:
-	if (!had_lock)
-		gfs2_glock_dq_uninit(&d_gh);
-invalid:
-	if (check_submounts_and_drop(dentry) != 0)
-		goto valid;
-
-	dput(parent);
-	return 0;
-
-fail_gunlock:
-	gfs2_glock_dq_uninit(&d_gh);
-fail:
-	dput(parent);
-	return 0;
+	return valid;
 }
 
 static int gfs2_dhash(const struct dentry *dentry, struct qstr *str)
@@ -116,11 +87,11 @@ static int gfs2_dentry_delete(const struct dentry *dentry)
 {
 	struct gfs2_inode *ginode;
 
-	if (!dentry->d_inode)
+	if (d_really_is_negative(dentry))
 		return 0;
 
-	ginode = GFS2_I(dentry->d_inode);
-	if (!ginode->i_iopen_gh.gh_gl)
+	ginode = GFS2_I(d_inode(dentry));
+	if (!gfs2_holder_initialized(&ginode->i_iopen_gh))
 		return 0;
 
 	if (test_bit(GLF_DEMOTE, &ginode->i_iopen_gh.gh_gl->gl_flags))

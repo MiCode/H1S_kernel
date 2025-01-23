@@ -1,23 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of wl1251
  *
  * Copyright (c) 1998-2007 Texas Instruments Incorporated
  * Copyright (C) 2008 Nokia Corporation
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include <linux/skbuff.h>
@@ -53,7 +39,7 @@ static void wl1251_rx_status(struct wl1251 *wl,
 
 	memset(status, 0, sizeof(struct ieee80211_rx_status));
 
-	status->band = IEEE80211_BAND_2GHZ;
+	status->band = NL80211_BAND_2GHZ;
 	status->mactime = desc->timestamp;
 
 	/*
@@ -141,7 +127,7 @@ static void wl1251_rx_status(struct wl1251 *wl,
 	}
 
 	if (desc->mod_pre & SHORT_PREAMBLE_BIT)
-		status->flag |= RX_FLAG_SHORTPRE;
+		status->enc_flags |= RX_ENC_FLAG_SHORTPRE;
 }
 
 static void wl1251_rx_body(struct wl1251 *wl,
@@ -180,7 +166,7 @@ static void wl1251_rx_body(struct wl1251 *wl,
 	wl1251_mem_read(wl, rx_packet_ring_addr, rx_buffer, length);
 
 	/* The actual length doesn't include the target's alignment */
-	skb->len = desc->length  - PLCP_HEADER_LENGTH;
+	skb_trim(skb, desc->length - PLCP_HEADER_LENGTH);
 
 	fc = (u16 *)skb->data;
 

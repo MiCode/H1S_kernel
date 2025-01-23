@@ -1,12 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Performance counter support for POWER7 processors.
  *
  * Copyright 2013 Runzhen Wang, IBM Corporation.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 EVENT(PM_IC_DEMAND_L2_BR_ALL,                 0x04898)
@@ -546,3 +542,13 @@ EVENT(PM_MRK_DATA_FROM_RL2L3_SHR,             0x1d04c)
 EVENT(PM_DTLB_MISS_16M,                       0x4c05e)
 EVENT(PM_LSU1_LMQ_LHR_MERGE,                  0x0d09a)
 EVENT(PM_IFU_FIN,                             0x40066)
+EVENT(PM_1THRD_CON_RUN_INSTR,                 0x30062)
+EVENT(PM_CMPLU_STALL_COUNT,                   0x4000B)
+EVENT(PM_MEM0_PB_RD_CL,                       0x30083)
+EVENT(PM_THRD_1_RUN_CYC,                      0x10060)
+EVENT(PM_THRD_2_CONC_RUN_INSTR,               0x40062)
+EVENT(PM_THRD_2_RUN_CYC,                      0x20060)
+EVENT(PM_THRD_3_CONC_RUN_INST,                0x10062)
+EVENT(PM_THRD_3_RUN_CYC,                      0x30060)
+EVENT(PM_THRD_4_CONC_RUN_INST,                0x20062)
+EVENT(PM_THRD_4_RUN_CYC,                      0x40060)

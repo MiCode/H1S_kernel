@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *   Copyright (C) International Business Machines Corp., 2000-2004
- *
- *   This program is free software;  you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY;  without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- *   the GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program;  if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 /*
@@ -594,7 +581,8 @@ int dtSearch(struct inode *ip, struct component_name * key, ino_t * data,
 	struct component_name ciKey;
 	struct super_block *sb = ip->i_sb;
 
-	ciKey.name = kmalloc((JFS_NAME_MAX + 1) * sizeof(wchar_t), GFP_NOFS);
+	ciKey.name = kmalloc_array(JFS_NAME_MAX + 1, sizeof(wchar_t),
+				   GFP_NOFS);
 	if (!ciKey.name) {
 		rc = -ENOMEM;
 		goto dtSearch_Exit2;
@@ -644,6 +632,11 @@ int dtSearch(struct inode *ip, struct component_name * key, ino_t * data,
 		 */
 		for (base = 0, lim = p->header.nextindex; lim; lim >>= 1) {
 			index = base + (lim >> 1);
+
+			if (stbl[index] < 0) {
+				rc = -EIO;
+				goto out;
+			}
 
 			if (p->header.flag & BT_LEAF) {
 				/* uppercase leaf name to compare */
@@ -957,7 +950,7 @@ static int dtSplitUp(tid_t tid,
 	smp = split->mp;
 	sp = DT_PAGE(ip, smp);
 
-	key.name = kmalloc((JFS_NAME_MAX + 2) * sizeof(wchar_t), GFP_NOFS);
+	key.name = kmalloc_array(JFS_NAME_MAX + 2, sizeof(wchar_t), GFP_NOFS);
 	if (!key.name) {
 		DT_PUTPAGE(smp);
 		rc = -ENOMEM;
@@ -1040,8 +1033,8 @@ static int dtSplitUp(tid_t tid,
 		pxdlist.maxnpxd = 1;
 		pxdlist.npxd = 0;
 		pxd = &pxdlist.pxd[0];
-		PXDaddress(pxd, nxaddr)
-		    PXDlength(pxd, xlen + n);
+		PXDaddress(pxd, nxaddr);
+		PXDlength(pxd, xlen + n);
 		split->pxdlist = &pxdlist;
 		if ((rc = dtExtendPage(tid, ip, split, btstack))) {
 			nxaddr = addressPXD(pxd);
@@ -1982,7 +1975,7 @@ static int dtSplitRoot(tid_t tid,
 		do {
 			f = &rp->slot[fsi];
 			fsi = f->next;
-		} while (fsi != -1);
+		} while (fsi >= 0);
 
 		f->next = n;
 	}
@@ -2435,304 +2428,6 @@ static int dtDeleteUp(tid_t tid, struct inode *ip,
 	return 0;
 }
 
-#ifdef _NOTYET
-/*
- * NAME:	dtRelocate()
- *
- * FUNCTION:	relocate dtpage (internal or leaf) of directory;
- *		This function is mainly used by defragfs utility.
- */
-int dtRelocate(tid_t tid, struct inode *ip, s64 lmxaddr, pxd_t * opxd,
-	       s64 nxaddr)
-{
-	int rc = 0;
-	struct metapage *mp, *pmp, *lmp, *rmp;
-	dtpage_t *p, *pp, *rp = 0, *lp= 0;
-	s64 bn;
-	int index;
-	struct btstack btstack;
-	pxd_t *pxd;
-	s64 oxaddr, nextbn, prevbn;
-	int xlen, xsize;
-	struct tlock *tlck;
-	struct dt_lock *dtlck;
-	struct pxd_lock *pxdlock;
-	s8 *stbl;
-	struct lv *lv;
-
-	oxaddr = addressPXD(opxd);
-	xlen = lengthPXD(opxd);
-
-	jfs_info("dtRelocate: lmxaddr:%Ld xaddr:%Ld:%Ld xlen:%d",
-		   (long long)lmxaddr, (long long)oxaddr, (long long)nxaddr,
-		   xlen);
-
-	/*
-	 *	1. get the internal parent dtpage covering
-	 *	router entry for the tartget page to be relocated;
-	 */
-	rc = dtSearchNode(ip, lmxaddr, opxd, &btstack);
-	if (rc)
-		return rc;
-
-	/* retrieve search result */
-	DT_GETSEARCH(ip, btstack.top, bn, pmp, pp, index);
-	jfs_info("dtRelocate: parent router entry validated.");
-
-	/*
-	 *	2. relocate the target dtpage
-	 */
-	/* read in the target page from src extent */
-	DT_GETPAGE(ip, oxaddr, mp, PSIZE, p, rc);
-	if (rc) {
-		/* release the pinned parent page */
-		DT_PUTPAGE(pmp);
-		return rc;
-	}
-
-	/*
-	 * read in sibling pages if any to update sibling pointers;
-	 */
-	rmp = NULL;
-	if (p->header.next) {
-		nextbn = le64_to_cpu(p->header.next);
-		DT_GETPAGE(ip, nextbn, rmp, PSIZE, rp, rc);
-		if (rc) {
-			DT_PUTPAGE(mp);
-			DT_PUTPAGE(pmp);
-			return (rc);
-		}
-	}
-
-	lmp = NULL;
-	if (p->header.prev) {
-		prevbn = le64_to_cpu(p->header.prev);
-		DT_GETPAGE(ip, prevbn, lmp, PSIZE, lp, rc);
-		if (rc) {
-			DT_PUTPAGE(mp);
-			DT_PUTPAGE(pmp);
-			if (rmp)
-				DT_PUTPAGE(rmp);
-			return (rc);
-		}
-	}
-
-	/* at this point, all xtpages to be updated are in memory */
-
-	/*
-	 * update sibling pointers of sibling dtpages if any;
-	 */
-	if (lmp) {
-		tlck = txLock(tid, ip, lmp, tlckDTREE | tlckRELINK);
-		dtlck = (struct dt_lock *) & tlck->lock;
-		/* linelock header */
-		ASSERT(dtlck->index == 0);
-		lv = & dtlck->lv[0];
-		lv->offset = 0;
-		lv->length = 1;
-		dtlck->index++;
-
-		lp->header.next = cpu_to_le64(nxaddr);
-		DT_PUTPAGE(lmp);
-	}
-
-	if (rmp) {
-		tlck = txLock(tid, ip, rmp, tlckDTREE | tlckRELINK);
-		dtlck = (struct dt_lock *) & tlck->lock;
-		/* linelock header */
-		ASSERT(dtlck->index == 0);
-		lv = & dtlck->lv[0];
-		lv->offset = 0;
-		lv->length = 1;
-		dtlck->index++;
-
-		rp->header.prev = cpu_to_le64(nxaddr);
-		DT_PUTPAGE(rmp);
-	}
-
-	/*
-	 * update the target dtpage to be relocated
-	 *
-	 * write LOG_REDOPAGE of LOG_NEW type for dst page
-	 * for the whole target page (logredo() will apply
-	 * after image and update bmap for allocation of the
-	 * dst extent), and update bmap for allocation of
-	 * the dst extent;
-	 */
-	tlck = txLock(tid, ip, mp, tlckDTREE | tlckNEW);
-	dtlck = (struct dt_lock *) & tlck->lock;
-	/* linelock header */
-	ASSERT(dtlck->index == 0);
-	lv = & dtlck->lv[0];
-
-	/* update the self address in the dtpage header */
-	pxd = &p->header.self;
-	PXDaddress(pxd, nxaddr);
-
-	/* the dst page is the same as the src page, i.e.,
-	 * linelock for afterimage of the whole page;
-	 */
-	lv->offset = 0;
-	lv->length = p->header.maxslot;
-	dtlck->index++;
-
-	/* update the buffer extent descriptor of the dtpage */
-	xsize = xlen << JFS_SBI(ip->i_sb)->l2bsize;
-
-	/* unpin the relocated page */
-	DT_PUTPAGE(mp);
-	jfs_info("dtRelocate: target dtpage relocated.");
-
-	/* the moved extent is dtpage, then a LOG_NOREDOPAGE log rec
-	 * needs to be written (in logredo(), the LOG_NOREDOPAGE log rec
-	 * will also force a bmap update ).
-	 */
-
-	/*
-	 *	3. acquire maplock for the source extent to be freed;
-	 */
-	/* for dtpage relocation, write a LOG_NOREDOPAGE record
-	 * for the source dtpage (logredo() will init NoRedoPage
-	 * filter and will also update bmap for free of the source
-	 * dtpage), and upadte bmap for free of the source dtpage;
-	 */
-	tlck = txMaplock(tid, ip, tlckDTREE | tlckFREE);
-	pxdlock = (struct pxd_lock *) & tlck->lock;
-	pxdlock->flag = mlckFREEPXD;
-	PXDaddress(&pxdlock->pxd, oxaddr);
-	PXDlength(&pxdlock->pxd, xlen);
-	pxdlock->index = 1;
-
-	/*
-	 *	4. update the parent router entry for relocation;
-	 *
-	 * acquire tlck for the parent entry covering the target dtpage;
-	 * write LOG_REDOPAGE to apply after image only;
-	 */
-	jfs_info("dtRelocate: update parent router entry.");
-	tlck = txLock(tid, ip, pmp, tlckDTREE | tlckENTRY);
-	dtlck = (struct dt_lock *) & tlck->lock;
-	lv = & dtlck->lv[dtlck->index];
-
-	/* update the PXD with the new address */
-	stbl = DT_GETSTBL(pp);
-	pxd = (pxd_t *) & pp->slot[stbl[index]];
-	PXDaddress(pxd, nxaddr);
-	lv->offset = stbl[index];
-	lv->length = 1;
-	dtlck->index++;
-
-	/* unpin the parent dtpage */
-	DT_PUTPAGE(pmp);
-
-	return rc;
-}
-
-/*
- * NAME:	dtSearchNode()
- *
- * FUNCTION:	Search for an dtpage containing a specified address
- *		This function is mainly used by defragfs utility.
- *
- * NOTE:	Search result on stack, the found page is pinned at exit.
- *		The result page must be an internal dtpage.
- *		lmxaddr give the address of the left most page of the
- *		dtree level, in which the required dtpage resides.
- */
-static int dtSearchNode(struct inode *ip, s64 lmxaddr, pxd_t * kpxd,
-			struct btstack * btstack)
-{
-	int rc = 0;
-	s64 bn;
-	struct metapage *mp;
-	dtpage_t *p;
-	int psize = 288;	/* initial in-line directory */
-	s8 *stbl;
-	int i;
-	pxd_t *pxd;
-	struct btframe *btsp;
-
-	BT_CLR(btstack);	/* reset stack */
-
-	/*
-	 *	descend tree to the level with specified leftmost page
-	 *
-	 *  by convention, root bn = 0.
-	 */
-	for (bn = 0;;) {
-		/* get/pin the page to search */
-		DT_GETPAGE(ip, bn, mp, psize, p, rc);
-		if (rc)
-			return rc;
-
-		/* does the xaddr of leftmost page of the levevl
-		 * matches levevl search key ?
-		 */
-		if (p->header.flag & BT_ROOT) {
-			if (lmxaddr == 0)
-				break;
-		} else if (addressPXD(&p->header.self) == lmxaddr)
-			break;
-
-		/*
-		 * descend down to leftmost child page
-		 */
-		if (p->header.flag & BT_LEAF) {
-			DT_PUTPAGE(mp);
-			return -ESTALE;
-		}
-
-		/* get the leftmost entry */
-		stbl = DT_GETSTBL(p);
-		pxd = (pxd_t *) & p->slot[stbl[0]];
-
-		/* get the child page block address */
-		bn = addressPXD(pxd);
-		psize = lengthPXD(pxd) << JFS_SBI(ip->i_sb)->l2bsize;
-		/* unpin the parent page */
-		DT_PUTPAGE(mp);
-	}
-
-	/*
-	 *	search each page at the current levevl
-	 */
-      loop:
-	stbl = DT_GETSTBL(p);
-	for (i = 0; i < p->header.nextindex; i++) {
-		pxd = (pxd_t *) & p->slot[stbl[i]];
-
-		/* found the specified router entry */
-		if (addressPXD(pxd) == addressPXD(kpxd) &&
-		    lengthPXD(pxd) == lengthPXD(kpxd)) {
-			btsp = btstack->top;
-			btsp->bn = bn;
-			btsp->index = i;
-			btsp->mp = mp;
-
-			return 0;
-		}
-	}
-
-	/* get the right sibling page if any */
-	if (p->header.next)
-		bn = le64_to_cpu(p->header.next);
-	else {
-		DT_PUTPAGE(mp);
-		return -ESTALE;
-	}
-
-	/* unpin current page */
-	DT_PUTPAGE(mp);
-
-	/* get the right sibling page */
-	DT_GETPAGE(ip, bn, mp, PSIZE, p, rc);
-	if (rc)
-		return rc;
-
-	goto loop;
-}
-#endif /* _NOTYET */
-
 /*
  *	dtRelink()
  *
@@ -2976,7 +2671,7 @@ struct jfs_dirent {
 	loff_t position;
 	int ino;
 	u16 name_len;
-	char name[0];
+	char name[];
 };
 
 /*
@@ -3072,8 +2767,7 @@ int jfs_readdir(struct file *file, struct dir_context *ctx)
 			}
 			if (dirtab_slot.flag == DIR_INDEX_FREE) {
 				if (loop_count++ > JFS_IP(ip)->next_index) {
-					jfs_err("jfs_readdir detected "
-						   "infinite loop!");
+					jfs_err("jfs_readdir detected infinite loop!");
 					ctx->pos = DIREND;
 					return 0;
 				}
@@ -3151,8 +2845,7 @@ int jfs_readdir(struct file *file, struct dir_context *ctx)
 				if (!dir_emit(ctx, "..", 2, PARENT(ip), DT_DIR))
 					return 0;
 			} else {
-				jfs_err("jfs_readdir called with "
-					"invalid offset!");
+				jfs_err("jfs_readdir called with invalid offset!");
 			}
 			dtoffset->pn = 1;
 			dtoffset->index = 0;
@@ -3165,8 +2858,8 @@ int jfs_readdir(struct file *file, struct dir_context *ctx)
 		}
 
 		if ((rc = dtReadNext(ip, &ctx->pos, &btstack))) {
-			jfs_err("jfs_readdir: unexpected rc = %d "
-				"from dtReadNext", rc);
+			jfs_err("jfs_readdir: unexpected rc = %d from dtReadNext",
+				rc);
 			ctx->pos = DIREND;
 			return 0;
 		}
@@ -3781,12 +3474,12 @@ static int ciGetLeafPrefixKey(dtpage_t * lp, int li, dtpage_t * rp,
 	struct component_name lkey;
 	struct component_name rkey;
 
-	lkey.name = kmalloc((JFS_NAME_MAX + 1) * sizeof(wchar_t),
+	lkey.name = kmalloc_array(JFS_NAME_MAX + 1, sizeof(wchar_t),
 					GFP_KERNEL);
 	if (lkey.name == NULL)
 		return -ENOMEM;
 
-	rkey.name = kmalloc((JFS_NAME_MAX + 1) * sizeof(wchar_t),
+	rkey.name = kmalloc_array(JFS_NAME_MAX + 1, sizeof(wchar_t),
 					GFP_KERNEL);
 	if (rkey.name == NULL) {
 		kfree(lkey.name);

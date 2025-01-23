@@ -1,11 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  arch/arm/include/asm/page.h
  *
  *  Copyright (C) 1995-2003 Russell King
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #ifndef _ASMARM_PAGE_H
 #define _ASMARM_PAGE_H
@@ -116,6 +113,28 @@ struct cpu_user_fns {
 			unsigned long vaddr, struct vm_area_struct *vma);
 };
 
+void fa_copy_user_highpage(struct page *to, struct page *from,
+	unsigned long vaddr, struct vm_area_struct *vma);
+void fa_clear_user_highpage(struct page *page, unsigned long vaddr);
+void feroceon_copy_user_highpage(struct page *to, struct page *from,
+	unsigned long vaddr, struct vm_area_struct *vma);
+void feroceon_clear_user_highpage(struct page *page, unsigned long vaddr);
+void v4_mc_copy_user_highpage(struct page *to, struct page *from,
+	unsigned long vaddr, struct vm_area_struct *vma);
+void v4_mc_clear_user_highpage(struct page *page, unsigned long vaddr);
+void v4wb_copy_user_highpage(struct page *to, struct page *from,
+	unsigned long vaddr, struct vm_area_struct *vma);
+void v4wb_clear_user_highpage(struct page *page, unsigned long vaddr);
+void v4wt_copy_user_highpage(struct page *to, struct page *from,
+	unsigned long vaddr, struct vm_area_struct *vma);
+void v4wt_clear_user_highpage(struct page *page, unsigned long vaddr);
+void xsc3_mc_copy_user_highpage(struct page *to, struct page *from,
+	unsigned long vaddr, struct vm_area_struct *vma);
+void xsc3_mc_clear_user_highpage(struct page *page, unsigned long vaddr);
+void xscale_mc_copy_user_highpage(struct page *to, struct page *from,
+	unsigned long vaddr, struct vm_area_struct *vma);
+void xscale_mc_clear_user_highpage(struct page *page, unsigned long vaddr);
+
 #ifdef MULTI_USER
 extern struct cpu_user_fns cpu_user;
 
@@ -150,6 +169,9 @@ extern void copy_page(void *to, const void *from);
 #include <asm/pgtable-3level-types.h>
 #else
 #include <asm/pgtable-2level-types.h>
+#ifdef CONFIG_VMAP_STACK
+#define ARCH_PAGE_TABLE_SYNC_MASK	PGTBL_PMD_MODIFIED
+#endif
 #endif
 
 #endif /* CONFIG_MMU */
@@ -158,16 +180,16 @@ typedef struct page *pgtable_t;
 
 #ifdef CONFIG_HAVE_ARCH_PFN_VALID
 extern int pfn_valid(unsigned long);
+#define pfn_valid pfn_valid
 #endif
-
-#include <asm/memory.h>
 
 #endif /* !__ASSEMBLY__ */
 
-#define VM_DATA_DEFAULT_FLAGS \
-	(((current->personality & READ_IMPLIES_EXEC) ? VM_EXEC : 0) | \
-	 VM_READ | VM_WRITE | VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC)
+#include <asm/memory.h>
+
+#define VM_DATA_DEFAULT_FLAGS	VM_DATA_FLAGS_TSK_EXEC
 
 #include <asm-generic/getorder.h>
+#include <asm-generic/memory_model.h>
 
 #endif

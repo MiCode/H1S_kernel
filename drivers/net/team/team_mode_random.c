@@ -1,11 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * drivers/net/team/team_mode_random.c - Random mode for team
  * Copyright (c) 2013 Jiri Pirko <jiri@resnulli.us>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -20,7 +16,7 @@ static bool rnd_transmit(struct team *team, struct sk_buff *skb)
 	struct team_port *port;
 	int port_index;
 
-	port_index = prandom_u32_max(team->en_port_count);
+	port_index = get_random_u32_below(team->en_port_count);
 	port = team_get_port_by_index_rcu(team, port_index);
 	if (unlikely(!port))
 		goto drop;
@@ -46,6 +42,7 @@ static const struct team_mode rnd_mode = {
 	.kind		= "random",
 	.owner		= THIS_MODULE,
 	.ops		= &rnd_mode_ops,
+	.lag_tx_type	= NETDEV_LAG_TX_TYPE_RANDOM,
 };
 
 static int __init rnd_init_module(void)
@@ -64,4 +61,4 @@ module_exit(rnd_cleanup_module);
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Jiri Pirko <jiri@resnulli.us>");
 MODULE_DESCRIPTION("Random mode for team");
-MODULE_ALIAS("team-mode-random");
+MODULE_ALIAS_TEAM_MODE("random");

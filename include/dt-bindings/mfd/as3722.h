@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * This header provides macros for ams AS3722 device bindings.
  *
@@ -13,7 +14,7 @@
 /* External control pins */
 #define AS3722_EXT_CONTROL_PIN_ENABLE1 1
 #define AS3722_EXT_CONTROL_PIN_ENABLE2 2
-#define AS3722_EXT_CONTROL_PIN_ENABLE2 3
+#define AS3722_EXT_CONTROL_PIN_ENABLE3 3
 
 /* Interrupt numbers for AS3722 */
 #define AS3722_IRQ_LID			0

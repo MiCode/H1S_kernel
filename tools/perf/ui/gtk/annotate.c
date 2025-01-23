@@ -1,9 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0
 #include "gtk.h"
+#include "util/sort.h"
 #include "util/debug.h"
 #include "util/annotate.h"
 #include "util/evsel.h"
+#include "util/map.h"
+#include "util/dso.h"
+#include "util/symbol.h"
 #include "ui/helpline.h"
-
+#include <inttypes.h>
+#include <signal.h>
 
 enum {
 	ANN_COL__PERCENT,
@@ -29,14 +35,14 @@ static int perf_gtk__get_percent(char *buf, size_t size, struct symbol *sym,
 
 	strcpy(buf, "");
 
-	if (dl->offset == (s64) -1)
+	if (dl->al.offset == (s64) -1)
 		return 0;
 
 	symhist = annotation__histogram(symbol__annotation(sym), evidx);
-	if (!symbol_conf.event_group && !symhist->addr[dl->offset])
+	if (!symbol_conf.event_group && !symhist->addr[dl->al.offset].nr_samples)
 		return 0;
 
-	percent = 100.0 * symhist->addr[dl->offset] / symhist->sum;
+	percent = 100.0 * symhist->addr[dl->al.offset].nr_samples / symhist->nr_samples;
 
 	markup = perf_gtk__get_percent_color(percent);
 	if (markup)
@@ -48,23 +54,23 @@ static int perf_gtk__get_percent(char *buf, size_t size, struct symbol *sym,
 	return ret;
 }
 
-static int perf_gtk__get_offset(char *buf, size_t size, struct symbol *sym,
-				struct map *map, struct disasm_line *dl)
+static int perf_gtk__get_offset(char *buf, size_t size, struct map_symbol *ms,
+				struct disasm_line *dl)
 {
-	u64 start = map__rip_2objdump(map, sym->start);
+	u64 start = map__rip_2objdump(ms->map, ms->sym->start);
 
 	strcpy(buf, "");
 
-	if (dl->offset == (s64) -1)
+	if (dl->al.offset == (s64) -1)
 		return 0;
 
-	return scnprintf(buf, size, "%"PRIx64, start + dl->offset);
+	return scnprintf(buf, size, "%"PRIx64, start + dl->al.offset);
 }
 
 static int perf_gtk__get_line(char *buf, size_t size, struct disasm_line *dl)
 {
 	int ret = 0;
-	char *line = g_markup_escape_text(dl->line, -1);
+	char *line = g_markup_escape_text(dl->al.line, -1);
 	const char *markup = "<span fgcolor='gray'>";
 
 	strcpy(buf, "");
@@ -72,7 +78,7 @@ static int perf_gtk__get_line(char *buf, size_t size, struct disasm_line *dl)
 	if (!line)
 		return 0;
 
-	if (dl->offset != (s64) -1)
+	if (dl->al.offset != (s64) -1)
 		markup = NULL;
 
 	if (markup)
@@ -85,10 +91,11 @@ static int perf_gtk__get_line(char *buf, size_t size, struct disasm_line *dl)
 	return ret;
 }
 
-static int perf_gtk__annotate_symbol(GtkWidget *window, struct symbol *sym,
-				struct map *map, struct perf_evsel *evsel,
+static int perf_gtk__annotate_symbol(GtkWidget *window, struct map_symbol *ms,
+				struct evsel *evsel,
 				struct hist_browser_timer *hbt __maybe_unused)
 {
+	struct symbol *sym = ms->sym;
 	struct disasm_line *pos, *n;
 	struct annotation *notes;
 	GType col_types[MAX_ANN_COLS];
@@ -117,28 +124,28 @@ static int perf_gtk__annotate_symbol(GtkWidget *window, struct symbol *sym,
 	gtk_tree_view_set_model(GTK_TREE_VIEW(view), GTK_TREE_MODEL(store));
 	g_object_unref(GTK_TREE_MODEL(store));
 
-	list_for_each_entry(pos, &notes->src->source, node) {
+	list_for_each_entry(pos, &notes->src->source, al.node) {
 		GtkTreeIter iter;
 		int ret = 0;
 
 		gtk_list_store_append(store, &iter);
 
-		if (perf_evsel__is_group_event(evsel)) {
-			for (i = 0; i < evsel->nr_members; i++) {
+		if (evsel__is_group_event(evsel)) {
+			for (i = 0; i < evsel->core.nr_members; i++) {
 				ret += perf_gtk__get_percent(s + ret,
 							     sizeof(s) - ret,
 							     sym, pos,
-							     evsel->idx + i);
+							     evsel->core.idx + i);
 				ret += scnprintf(s + ret, sizeof(s) - ret, " ");
 			}
 		} else {
 			ret = perf_gtk__get_percent(s, sizeof(s), sym, pos,
-						    evsel->idx);
+						    evsel->core.idx);
 		}
 
 		if (ret)
 			gtk_list_store_set(store, &iter, ANN_COL__PERCENT, s, -1);
-		if (perf_gtk__get_offset(s, sizeof(s), sym, map, pos))
+		if (perf_gtk__get_offset(s, sizeof(s), ms, pos))
 			gtk_list_store_set(store, &iter, ANN_COL__OFFSET, s, -1);
 		if (perf_gtk__get_line(s, sizeof(s), pos))
 			gtk_list_store_set(store, &iter, ANN_COL__LINE, s, -1);
@@ -146,30 +153,39 @@ static int perf_gtk__annotate_symbol(GtkWidget *window, struct symbol *sym,
 
 	gtk_container_add(GTK_CONTAINER(window), view);
 
-	list_for_each_entry_safe(pos, n, &notes->src->source, node) {
-		list_del(&pos->node);
+	list_for_each_entry_safe(pos, n, &notes->src->source, al.node) {
+		list_del_init(&pos->al.node);
 		disasm_line__free(pos);
 	}
 
 	return 0;
 }
 
-static int symbol__gtk_annotate(struct symbol *sym, struct map *map,
-				struct perf_evsel *evsel,
+static int symbol__gtk_annotate(struct map_symbol *ms, struct evsel *evsel,
+				struct annotation_options *options,
 				struct hist_browser_timer *hbt)
 {
+	struct dso *dso = map__dso(ms->map);
+	struct symbol *sym = ms->sym;
 	GtkWidget *window;
 	GtkWidget *notebook;
 	GtkWidget *scrolled_window;
 	GtkWidget *tab_label;
+	int err;
 
-	if (map->dso->annotate_warned)
+	if (dso->annotate_warned)
 		return -1;
 
-	if (symbol__annotate(sym, map, 0) < 0) {
-		ui__error("%s", ui_helpline__current);
+	err = symbol__annotate(ms, evsel, options, NULL);
+	if (err) {
+		char msg[BUFSIZ];
+		dso->annotate_warned = true;
+		symbol__strerror_disassemble(ms, err, msg, sizeof(msg));
+		ui__error("Couldn't annotate %s: %s\n", sym->name, msg);
 		return -1;
 	}
+
+	symbol__calc_percent(sym, evsel);
 
 	if (perf_gtk__is_active_context(pgctx)) {
 		window = pgctx->main_window;
@@ -222,15 +238,16 @@ static int symbol__gtk_annotate(struct symbol *sym, struct map *map,
 	gtk_notebook_append_page(GTK_NOTEBOOK(notebook), scrolled_window,
 				 tab_label);
 
-	perf_gtk__annotate_symbol(scrolled_window, sym, map, evsel, hbt);
+	perf_gtk__annotate_symbol(scrolled_window, ms, evsel, hbt);
 	return 0;
 }
 
 int hist_entry__gtk_annotate(struct hist_entry *he,
-			     struct perf_evsel *evsel,
+			     struct evsel *evsel,
+			     struct annotation_options *options,
 			     struct hist_browser_timer *hbt)
 {
-	return symbol__gtk_annotate(he->ms.sym, he->ms.map, evsel, hbt);
+	return symbol__gtk_annotate(&he->ms, evsel, options, hbt);
 }
 
 void perf_gtk__show_annotations(void)

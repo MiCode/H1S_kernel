@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/fs/lockd/clntlock.c
  *
@@ -13,8 +14,11 @@
 #include <linux/nfs_fs.h>
 #include <linux/sunrpc/addr.h>
 #include <linux/sunrpc/svc.h>
+#include <linux/sunrpc/svc_xprt.h>
 #include <linux/lockd/lockd.h>
 #include <linux/kthread.h>
+
+#include "trace.h"
 
 #define NLMDBG_FACILITY		NLMDBG_CLIENT
 
@@ -27,18 +31,6 @@ static int			reclaimer(void *ptr);
  * The following functions handle blocking and granting from the
  * client perspective.
  */
-
-/*
- * This is the representation of a blocked client lock.
- */
-struct nlm_wait {
-	struct list_head	b_list;		/* linked list */
-	wait_queue_head_t	b_wait;		/* where to wait on */
-	struct nlm_host *	b_host;
-	struct file_lock *	b_lock;		/* local file lock */
-	unsigned short		b_reclaim;	/* got to reclaim lock */
-	__be32			b_status;	/* grant callback status */
-};
 
 static LIST_HEAD(nlm_blocked);
 static DEFINE_SPINLOCK(nlm_blocked_lock);
@@ -56,19 +48,20 @@ struct nlm_host *nlmclnt_init(const struct nlmclnt_initdata *nlm_init)
 	u32 nlm_version = (nlm_init->nfs_version == 2) ? 1 : 4;
 	int status;
 
-	status = lockd_up(nlm_init->net);
+	status = lockd_up(nlm_init->net, nlm_init->cred);
 	if (status < 0)
 		return ERR_PTR(status);
 
 	host = nlmclnt_lookup_host(nlm_init->address, nlm_init->addrlen,
 				   nlm_init->protocol, nlm_version,
 				   nlm_init->hostname, nlm_init->noresvport,
-				   nlm_init->net);
+				   nlm_init->net, nlm_init->cred);
 	if (host == NULL)
 		goto out_nohost;
 	if (host->h_rpcclnt == NULL && nlm_bind_host(host) == NULL)
 		goto out_nobind;
 
+	host->h_nlmclnt_ops = nlm_init->nlmclnt_ops;
 	return host;
 out_nobind:
 	nlmclnt_release_host(host);
@@ -92,41 +85,48 @@ void nlmclnt_done(struct nlm_host *host)
 }
 EXPORT_SYMBOL_GPL(nlmclnt_done);
 
+void nlmclnt_prepare_block(struct nlm_wait *block, struct nlm_host *host, struct file_lock *fl)
+{
+	block->b_host = host;
+	block->b_lock = fl;
+	init_waitqueue_head(&block->b_wait);
+	block->b_status = nlm_lck_blocked;
+}
+
+struct rpc_clnt *nlmclnt_rpc_clnt(struct nlm_host *host)
+{
+	return host->h_rpcclnt;
+}
+EXPORT_SYMBOL_GPL(nlmclnt_rpc_clnt);
+
 /*
  * Queue up a lock for blocking so that the GRANTED request can see it
  */
-struct nlm_wait *nlmclnt_prepare_block(struct nlm_host *host, struct file_lock *fl)
+void nlmclnt_queue_block(struct nlm_wait *block)
 {
-	struct nlm_wait *block;
-
-	block = kmalloc(sizeof(*block), GFP_KERNEL);
-	if (block != NULL) {
-		block->b_host = host;
-		block->b_lock = fl;
-		init_waitqueue_head(&block->b_wait);
-		block->b_status = nlm_lck_blocked;
-
-		spin_lock(&nlm_blocked_lock);
-		list_add(&block->b_list, &nlm_blocked);
-		spin_unlock(&nlm_blocked_lock);
-	}
-	return block;
+	spin_lock(&nlm_blocked_lock);
+	list_add(&block->b_list, &nlm_blocked);
+	spin_unlock(&nlm_blocked_lock);
 }
 
-void nlmclnt_finish_block(struct nlm_wait *block)
+/*
+ * Dequeue the block and return its final status
+ */
+__be32 nlmclnt_dequeue_block(struct nlm_wait *block)
 {
-	if (block == NULL)
-		return;
+	__be32 status;
+
 	spin_lock(&nlm_blocked_lock);
 	list_del(&block->b_list);
+	status = block->b_status;
 	spin_unlock(&nlm_blocked_lock);
-	kfree(block);
+	return status;
 }
 
 /*
  * Block on a lock
  */
-int nlmclnt_block(struct nlm_wait *block, struct nlm_rqst *req, long timeout)
+int nlmclnt_wait(struct nlm_wait *block, struct nlm_rqst *req, long timeout)
 {
 	long ret;
 
@@ -152,7 +152,6 @@ int nlmclnt_block(struct nlm_wait *block, struct nlm_rqst *req, long timeout)
 	/* Reset the lock status after a server reboot so we resend */
 	if (block->b_status == nlm_lck_denied_grace_period)
 		block->b_status = nlm_lck_blocked;
-	req->a_res.status = block->b_status;
 	return 0;
 }
 
@@ -186,7 +185,7 @@ __be32 nlmclnt_grant(const struct sockaddr *addr, const struct nlm_lock *lock)
 			continue;
 		if (!rpc_cmp_addr(nlm_addr(block->b_host), addr))
 			continue;
-		if (nfs_compare_fh(NFS_FH(file_inode(fl_blocked->fl_file)) ,fh) != 0)
+		if (nfs_compare_fh(NFS_FH(file_inode(fl_blocked->fl_file)), fh) != 0)
 			continue;
 		/* Alright, we found a lock. Set the return status
 		 * and wake up the caller
@@ -196,6 +195,7 @@ __be32 nlmclnt_grant(const struct sockaddr *addr, const struct nlm_lock *lock)
 		res = nlm_granted;
 	}
 	spin_unlock(&nlm_blocked_lock);
+	trace_nlmclnt_grant(lock, addr, svc_addr_len(addr), res);
 	return res;
 }
 
@@ -234,17 +234,13 @@ reclaimer(void *ptr)
 	struct net *net = host->net;
 
 	req = kmalloc(sizeof(*req), GFP_KERNEL);
-	if (!req) {
-		printk(KERN_ERR "lockd: reclaimer unable to alloc memory."
-				" Locks for %s won't be reclaimed!\n",
-				host->h_name);
+	if (!req)
 		return 0;
-	}
 
 	allow_signal(SIGKILL);
 
 	down_write(&host->h_rwsem);
-	lockd_up(net);	/* note: this cannot fail as lockd is already running */
+	lockd_up(net, NULL);	/* note: this cannot fail as lockd is already running */
 
 	dprintk("lockd: reclaiming locks for host %s\n", host->h_name);
 

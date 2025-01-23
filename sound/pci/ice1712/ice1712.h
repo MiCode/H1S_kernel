@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef __SOUND_ICE1712_H
 #define __SOUND_ICE1712_H
 
@@ -5,21 +6,6 @@
  *   ALSA driver for ICEnsemble ICE1712 (Envy24)
  *
  *	Copyright (c) 2000 Jaroslav Kysela <perex@perex.cz>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <linux/io.h>
@@ -41,14 +27,17 @@
 #define ICEREG(ice, x) ((ice)->port + ICE1712_REG_##x)
 
 #define ICE1712_REG_CONTROL		0x00	/* byte */
-#define   ICE1712_RESET			0x80	/* reset whole chip */
-#define   ICE1712_SERR_LEVEL		0x04	/* SERR# level otherwise edge */
+#define   ICE1712_RESET			0x80	/* soft reset whole chip */
+#define   ICE1712_SERR_ASSERT_DS_DMA	0x40    /* disabled SERR# assertion for the DS DMA Ch-C irq otherwise enabled */
+#define   ICE1712_DOS_VOL		0x10    /* DOS WT/FM volume control */
+#define   ICE1712_SERR_LEVEL		0x08	/* SERR# level otherwise edge */
+#define   ICE1712_SERR_ASSERT_SB	0x02	/* disabled SERR# assertion for SB irq otherwise enabled */
 #define   ICE1712_NATIVE		0x01	/* native mode otherwise SB */
 #define ICE1712_REG_IRQMASK		0x01	/* byte */
-#define   ICE1712_IRQ_MPU1		0x80
-#define   ICE1712_IRQ_TIMER		0x40
-#define   ICE1712_IRQ_MPU2		0x20
-#define   ICE1712_IRQ_PROPCM		0x10
+#define   ICE1712_IRQ_MPU1		0x80	/* MIDI irq mask */
+#define   ICE1712_IRQ_TIMER		0x40	/* Timer mask */
+#define   ICE1712_IRQ_MPU2		0x20	/* Secondary MIDI irq mask */
+#define   ICE1712_IRQ_PROPCM		0x10	/* professional multi-track */
 #define   ICE1712_IRQ_FM		0x08	/* FM/MIDI - legacy */
 #define   ICE1712_IRQ_PBKDS		0x04	/* playback DS channels */
 #define   ICE1712_IRQ_CONCAP		0x02	/* consumer capture */
@@ -215,8 +204,9 @@
 
 
 /*
- *
+ * I2C EEPROM Address
  */
+#define ICE_I2C_EEPROM_ADDR		0xA0
 
 struct snd_ice1712;
 
@@ -326,7 +316,7 @@ struct snd_ice1712 {
 	struct snd_info_entry *proc_entry;
 
 	struct snd_ice1712_eeprom eeprom;
-	struct snd_ice1712_card_info *card_info;
+	const struct snd_ice1712_card_info *card_info;
 
 	unsigned int pro_volumes[20];
 	unsigned int omni:1;		/* Delta Omni I/O */
@@ -345,7 +335,7 @@ struct snd_ice1712 {
 
 	struct mutex open_mutex;
 	struct snd_pcm_substream *pcm_reserved[4];
-	struct snd_pcm_hw_constraint_list *hw_rates; /* card-specific rate constraints */
+	const struct snd_pcm_hw_constraint_list *hw_rates; /* card-specific rate constraints */
 
 	unsigned int akm_codecs;
 	struct snd_akm4xxx *akm;

@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  WM8505/WM8650 SD/MMC Host Controller
  *
  *  Copyright (C) 2010 Tony Prisk
  *  Copyright (C) 2008 WonderMedia Technologies, Inc.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation
  */
 
 #include <linux/init.h>
@@ -19,12 +16,11 @@
 #include <linux/io.h>
 #include <linux/irq.h>
 #include <linux/clk.h>
-#include <linux/gpio.h>
+#include <linux/interrupt.h>
 
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/of_device.h>
 
 #include <linux/mmc/host.h>
 #include <linux/mmc/mmc.h>
@@ -72,7 +68,6 @@
 #define BM_SPI_CS			0x20
 #define BM_SD_POWER			0x40
 #define BM_SOFT_RESET			0x80
-#define BM_ONEBIT_MASK			0xFD
 
 /* SDMMC_BLKLEN bit fields */
 #define BLKL_CRCERR_ABORT		0x0800
@@ -120,6 +115,8 @@
 #define STS2_DATARSP_BUSY		0x20
 #define STS2_DIS_FORCECLK		0x80
 
+/* SDMMC_EXTCTRL bit fields */
+#define EXT_EIGHTBIT			0x04
 
 /* MMC/SD DMA Controller Registers */
 #define SDDMA_GCR			0x100
@@ -672,7 +669,7 @@ static void wmt_mci_request(struct mmc_host *mmc, struct mmc_request *req)
 static void wmt_mci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 {
 	struct wmt_mci_priv *priv;
-	u32 reg_tmp;
+	u32 busmode, extctrl;
 
 	priv = mmc_priv(mmc);
 
@@ -687,28 +684,26 @@ static void wmt_mci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	if (ios->clock != 0)
 		clk_set_rate(priv->clk_sdmmc, ios->clock);
 
+	busmode = readb(priv->sdmmc_base + SDMMC_BUSMODE);
+	extctrl = readb(priv->sdmmc_base + SDMMC_EXTCTRL);
+
+	busmode &= ~(BM_EIGHTBIT_MODE | BM_FOURBIT_MODE);
+	extctrl &= ~EXT_EIGHTBIT;
+
 	switch (ios->bus_width) {
 	case MMC_BUS_WIDTH_8:
-		reg_tmp = readb(priv->sdmmc_base + SDMMC_EXTCTRL);
-		writeb(reg_tmp | 0x04, priv->sdmmc_base + SDMMC_EXTCTRL);
+		busmode |= BM_EIGHTBIT_MODE;
+		extctrl |= EXT_EIGHTBIT;
 		break;
 	case MMC_BUS_WIDTH_4:
-		reg_tmp = readb(priv->sdmmc_base + SDMMC_BUSMODE);
-		writeb(reg_tmp | BM_FOURBIT_MODE, priv->sdmmc_base +
-		       SDMMC_BUSMODE);
-
-		reg_tmp = readb(priv->sdmmc_base + SDMMC_EXTCTRL);
-		writeb(reg_tmp & 0xFB, priv->sdmmc_base + SDMMC_EXTCTRL);
+		busmode |= BM_FOURBIT_MODE;
 		break;
 	case MMC_BUS_WIDTH_1:
-		reg_tmp = readb(priv->sdmmc_base + SDMMC_BUSMODE);
-		writeb(reg_tmp & BM_ONEBIT_MASK, priv->sdmmc_base +
-		       SDMMC_BUSMODE);
-
-		reg_tmp = readb(priv->sdmmc_base + SDMMC_EXTCTRL);
-		writeb(reg_tmp & 0xFB, priv->sdmmc_base + SDMMC_EXTCTRL);
 		break;
 	}
+
+	writeb(busmode, priv->sdmmc_base + SDMMC_BUSMODE);
+	writeb(extctrl, priv->sdmmc_base + SDMMC_EXTCTRL);
 }
 
 static int wmt_mci_get_ro(struct mmc_host *mmc)
@@ -726,7 +721,7 @@ static int wmt_mci_get_cd(struct mmc_host *mmc)
 	return !(cd ^ priv->cd_inverted);
 }
 
-static struct mmc_host_ops wmt_mci_ops = {
+static const struct mmc_host_ops wmt_mci_ops = {
 	.request = wmt_mci_request,
 	.set_ios = wmt_mci_set_ios,
 	.get_ro = wmt_mci_get_ro,
@@ -745,7 +740,7 @@ static struct wmt_mci_caps wm8505_caps = {
 	.max_blk_size = 2048,
 };
 
-static struct of_device_id wmt_mci_dt_ids[] = {
+static const struct of_device_id wmt_mci_dt_ids[] = {
 	{ .compatible = "wm,wm8505-sdhc", .data = &wm8505_caps },
 	{ /* Sentinel */ },
 };
@@ -755,13 +750,12 @@ static int wmt_mci_probe(struct platform_device *pdev)
 	struct mmc_host *mmc;
 	struct wmt_mci_priv *priv;
 	struct device_node *np = pdev->dev.of_node;
-	const struct of_device_id *of_id =
-		of_match_device(wmt_mci_dt_ids, &pdev->dev);
-	const struct wmt_mci_caps *wmt_caps = of_id->data;
+	const struct wmt_mci_caps *wmt_caps;
 	int ret;
 	int regular_irq, dma_irq;
 
-	if (!of_id || !of_id->data) {
+	wmt_caps = of_device_get_match_data(&pdev->dev);
+	if (!wmt_caps) {
 		dev_err(&pdev->dev, "Controller capabilities data missing\n");
 		return -EFAULT;
 	}
@@ -807,10 +801,8 @@ static int wmt_mci_probe(struct platform_device *pdev)
 	priv->power_inverted = 0;
 	priv->cd_inverted = 0;
 
-	if (of_get_property(np, "sdon-inverted", NULL))
-		priv->power_inverted = 1;
-	if (of_get_property(np, "cd-inverted", NULL))
-		priv->cd_inverted = 1;
+	priv->power_inverted = of_property_read_bool(np, "sdon-inverted");
+	priv->cd_inverted = of_property_read_bool(np, "cd-inverted");
 
 	priv->sdmmc_base = of_iomap(np, 0);
 	if (!priv->sdmmc_base) {
@@ -828,7 +820,7 @@ static int wmt_mci_probe(struct platform_device *pdev)
 		goto fail3;
 	}
 
-	ret = request_irq(dma_irq, wmt_mci_dma_isr, 32, "sdmmc", priv);
+	ret = request_irq(dma_irq, wmt_mci_dma_isr, 0, "sdmmc", priv);
 	if (ret) {
 		dev_err(&pdev->dev, "Register DMA IRQ fail\n");
 		goto fail4;
@@ -838,7 +830,7 @@ static int wmt_mci_probe(struct platform_device *pdev)
 	priv->dma_desc_buffer = dma_alloc_coherent(&pdev->dev,
 						   mmc->max_blk_count * 16,
 						   &priv->dma_desc_device_addr,
-						   208);
+						   GFP_KERNEL);
 	if (!priv->dma_desc_buffer) {
 		dev_err(&pdev->dev, "DMA alloc fail\n");
 		ret = -EPERM;
@@ -851,19 +843,30 @@ static int wmt_mci_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->clk_sdmmc)) {
 		dev_err(&pdev->dev, "Error getting clock\n");
 		ret = PTR_ERR(priv->clk_sdmmc);
-		goto fail5;
+		goto fail5_and_a_half;
 	}
 
-	clk_prepare_enable(priv->clk_sdmmc);
+	ret = clk_prepare_enable(priv->clk_sdmmc);
+	if (ret)
+		goto fail6;
 
 	/* configure the controller to a known 'ready' state */
 	wmt_reset_hardware(mmc);
 
-	mmc_add_host(mmc);
+	ret = mmc_add_host(mmc);
+	if (ret)
+		goto fail7;
 
 	dev_info(&pdev->dev, "WMT SDHC Controller initialized\n");
 
 	return 0;
+fail7:
+	clk_disable_unprepare(priv->clk_sdmmc);
+fail6:
+	clk_put(priv->clk_sdmmc);
+fail5_and_a_half:
+	dma_free_coherent(&pdev->dev, mmc->max_blk_count * 16,
+			  priv->dma_desc_buffer, priv->dma_desc_device_addr);
 fail5:
 	free_irq(dma_irq, priv);
 fail4:
@@ -876,11 +879,10 @@ fail1:
 	return ret;
 }
 
-static int wmt_mci_remove(struct platform_device *pdev)
+static void wmt_mci_remove(struct platform_device *pdev)
 {
 	struct mmc_host *mmc;
 	struct wmt_mci_priv *priv;
-	struct resource *res;
 	u32 reg_tmp;
 
 	mmc = platform_get_drvdata(pdev);
@@ -908,22 +910,16 @@ static int wmt_mci_remove(struct platform_device *pdev)
 	clk_disable_unprepare(priv->clk_sdmmc);
 	clk_put(priv->clk_sdmmc);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	release_mem_region(res->start, resource_size(res));
-
 	mmc_free_host(mmc);
 
 	dev_info(&pdev->dev, "WMT MCI device removed\n");
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
 static int wmt_mci_suspend(struct device *dev)
 {
 	u32 reg_tmp;
-	struct platform_device *pdev = to_platform_device(dev);
-	struct mmc_host *mmc = platform_get_drvdata(pdev);
+	struct mmc_host *mmc = dev_get_drvdata(dev);
 	struct wmt_mci_priv *priv;
 
 	if (!mmc)
@@ -947,8 +943,7 @@ static int wmt_mci_suspend(struct device *dev)
 static int wmt_mci_resume(struct device *dev)
 {
 	u32 reg_tmp;
-	struct platform_device *pdev = to_platform_device(dev);
-	struct mmc_host *mmc = platform_get_drvdata(pdev);
+	struct mmc_host *mmc = dev_get_drvdata(dev);
 	struct wmt_mci_priv *priv;
 
 	if (mmc) {
@@ -987,10 +982,10 @@ static const struct dev_pm_ops wmt_mci_pm = {
 
 static struct platform_driver wmt_mci_driver = {
 	.probe = wmt_mci_probe,
-	.remove = wmt_mci_remove,
+	.remove_new = wmt_mci_remove,
 	.driver = {
 		.name = DRIVER_NAME,
-		.owner = THIS_MODULE,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.pm = wmt_mci_pm_ops,
 		.of_match_table = wmt_mci_dt_ids,
 	},

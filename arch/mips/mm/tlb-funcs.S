@@ -11,15 +11,18 @@
  * Copyright (C) 2012  MIPS Technologies, Inc.
  * Copyright (C) 2012  Ralf Baechle <ralf@linux-mips.org>
  */
+#include <linux/export.h>
 #include <asm/asm.h>
 #include <asm/regdef.h>
 
 #define FASTPATH_SIZE	128
 
 LEAF(tlbmiss_handler_setup_pgd)
-	.space		16 * 4
+1:	j	1b		/* Dummy, will be replaced. */
+	.space	64
 END(tlbmiss_handler_setup_pgd)
 EXPORT(tlbmiss_handler_setup_pgd_end)
+EXPORT_SYMBOL_GPL(tlbmiss_handler_setup_pgd)
 
 LEAF(handle_tlbm)
 	.space		FASTPATH_SIZE * 4

@@ -295,7 +295,6 @@ enum sci_controller_states {
 #define SCI_MAX_MSIX_INT (SCI_NUM_MSI_X_INT*SCI_MAX_CONTROLLERS)
 
 struct isci_pci_info {
-	struct msix_entry msix_entries[SCI_MAX_MSIX_INT];
 	struct isci_host *hosts[SCI_MAX_CONTROLLERS];
 	struct isci_orom *orom;
 };
@@ -307,13 +306,12 @@ static inline struct isci_pci_info *to_pci_info(struct pci_dev *pdev)
 
 static inline struct Scsi_Host *to_shost(struct isci_host *ihost)
 {
-	return ihost->sas_ha.core.shost;
+	return ihost->sas_ha.shost;
 }
 
 #define for_each_isci_host(id, ihost, pdev) \
-	for (id = 0, ihost = to_pci_info(pdev)->hosts[id]; \
-	     id < ARRAY_SIZE(to_pci_info(pdev)->hosts) && ihost; \
-	     ihost = to_pci_info(pdev)->hosts[++id])
+	for (id = 0; id < SCI_MAX_CONTROLLERS && \
+	     (ihost = to_pci_info(pdev)->hosts[id]); id++)
 
 static inline void wait_for_start(struct isci_host *ihost)
 {
@@ -491,7 +489,7 @@ enum sci_status sci_controller_start_io(
 	struct isci_remote_device *idev,
 	struct isci_request *ireq);
 
-enum sci_task_status sci_controller_start_task(
+enum sci_status sci_controller_start_task(
 	struct isci_host *ihost,
 	struct isci_remote_device *idev,
 	struct isci_request *ireq);

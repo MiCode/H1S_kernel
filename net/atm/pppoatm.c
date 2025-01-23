@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* net/atm/pppoatm.c - RFC2364 PPP over ATM/AAL5 */
 
 /* Copyright 1999-2000 by Mitchell Blank Jr */
@@ -6,10 +7,6 @@
 /* And help from Jens Axboe */
 
 /*
- *  This program is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public License
- *  as published by the Free Software Foundation; either version
- *  2 of the License, or (at your option) any later version.
  *
  * This driver provides the encapsulation and framing for sending
  * and receiving PPP frames in ATM AAL5 PDUs.
@@ -104,9 +101,11 @@ static inline struct pppoatm_vcc *chan_to_pvcc(const struct ppp_channel *chan)
  * doesn't want to be called in interrupt context, so we do it from
  * a tasklet
  */
-static void pppoatm_wakeup_sender(unsigned long arg)
+static void pppoatm_wakeup_sender(struct tasklet_struct *t)
 {
-	ppp_output_wakeup((struct ppp_channel *) arg);
+	struct pppoatm_vcc *pvcc = from_tasklet(pvcc, t, wakeup_tasklet);
+
+	ppp_output_wakeup(&pvcc->chan);
 }
 
 static void pppoatm_release_cb(struct atm_vcc *atmvcc)
@@ -219,9 +218,7 @@ static void pppoatm_push(struct atm_vcc *atmvcc, struct sk_buff *skb)
 			pvcc->chan.mtu += LLC_LEN;
 			break;
 		}
-		pr_debug("Couldn't autodetect yet (skb: %02X %02X %02X %02X %02X %02X)\n",
-			 skb->data[0], skb->data[1], skb->data[2],
-			 skb->data[3], skb->data[4], skb->data[5]);
+		pr_debug("Couldn't autodetect yet (skb: %6ph)\n", skb->data);
 		goto error;
 	case e_vc:
 		break;
@@ -244,7 +241,7 @@ static int pppoatm_may_send(struct pppoatm_vcc *pvcc, int size)
 	 * the packet count limit, so...
 	 */
 	if (atm_may_send(pvcc->atmvcc, size) &&
-	    atomic_inc_not_zero_hint(&pvcc->inflight, NONE_INFLIGHT))
+	    atomic_inc_not_zero(&pvcc->inflight))
 		return 1;
 
 	/*
@@ -252,7 +249,7 @@ static int pppoatm_may_send(struct pppoatm_vcc *pvcc, int size)
 	 * we need to ensure there's a memory barrier after it. The bit
 	 * *must* be set before we do the atomic_inc() on pvcc->inflight.
 	 * There's no smp_mb__after_set_bit(), so it's this or abuse
-	 * smp_mb__after_clear_bit().
+	 * smp_mb__after_atomic().
 	 */
 	test_and_set_bit(BLOCKED, &pvcc->blocked);
 
@@ -350,8 +347,7 @@ static int pppoatm_send(struct ppp_channel *chan, struct sk_buff *skb)
 		return 1;
 	}
 
-	atomic_add(skb->truesize, &sk_atm(ATM_SKB(skb)->vcc)->sk_wmem_alloc);
-	ATM_SKB(skb)->atm_options = ATM_SKB(skb)->vcc->atm_options;
+	atm_account_tx(vcc, skb);
 	pr_debug("atm_skb(%p)->vcc(%p)->dev(%p)\n",
 		 skb, ATM_SKB(skb)->vcc, ATM_SKB(skb)->vcc->dev);
 	ret = ATM_SKB(skb)->vcc->send(ATM_SKB(skb)->vcc, skb)
@@ -395,11 +391,7 @@ static int pppoatm_assign_vcc(struct atm_vcc *atmvcc, void __user *arg)
 	struct atm_backend_ppp be;
 	struct pppoatm_vcc *pvcc;
 	int err;
-	/*
-	 * Each PPPoATM instance has its own tasklet - this is just a
-	 * prototypical one used to initialize them
-	 */
-	static const DECLARE_TASKLET(tasklet_proto, pppoatm_wakeup_sender, 0);
+
 	if (copy_from_user(&be, arg, sizeof be))
 		return -EFAULT;
 	if (be.encaps != PPPOATM_ENCAPS_AUTODETECT &&
@@ -421,8 +413,7 @@ static int pppoatm_assign_vcc(struct atm_vcc *atmvcc, void __user *arg)
 	pvcc->chan.ops = &pppoatm_ops;
 	pvcc->chan.mtu = atmvcc->qos.txtp.max_sdu - PPP_HDRLEN -
 	    (be.encaps == e_vc ? 0 : LLC_LEN);
-	pvcc->wakeup_tasklet = tasklet_proto;
-	pvcc->wakeup_tasklet.data = (unsigned long) &pvcc->chan;
+	tasklet_setup(&pvcc->wakeup_tasklet, pppoatm_wakeup_sender);
 	err = ppp_register_channel(&pvcc->chan);
 	if (err != 0) {
 		kfree(pvcc);

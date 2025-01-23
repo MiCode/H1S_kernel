@@ -56,7 +56,8 @@ static int sr_write_reg(struct usbnet *dev, u8 reg, u8 value)
 				value, reg, NULL, 0);
 }
 
-static void sr_write_async(struct usbnet *dev, u8 reg, u16 length, void *data)
+static void sr_write_async(struct usbnet *dev, u8 reg, u16 length,
+			   const void *data)
 {
 	usbnet_write_cmd_async(dev, SR_WR_REGS, SR_REQ_WR_REG,
 			       0, reg, data, length);
@@ -77,7 +78,7 @@ static int wait_phy_eeprom_ready(struct usbnet *dev, int phy)
 		int ret;
 
 		udelay(1);
-		ret = sr_read_reg(dev, EPCR, &tmp);
+		ret = sr_read_reg(dev, SR_EPCR, &tmp);
 		if (ret < 0)
 			return ret;
 
@@ -98,15 +99,15 @@ static int sr_share_read_word(struct usbnet *dev, int phy, u8 reg,
 
 	mutex_lock(&dev->phy_mutex);
 
-	sr_write_reg(dev, EPAR, phy ? (reg | EPAR_PHY_ADR) : reg);
-	sr_write_reg(dev, EPCR, phy ? (EPCR_EPOS | EPCR_ERPRR) : EPCR_ERPRR);
+	sr_write_reg(dev, SR_EPAR, phy ? (reg | EPAR_PHY_ADR) : reg);
+	sr_write_reg(dev, SR_EPCR, phy ? (EPCR_EPOS | EPCR_ERPRR) : EPCR_ERPRR);
 
 	ret = wait_phy_eeprom_ready(dev, phy);
 	if (ret < 0)
 		goto out_unlock;
 
-	sr_write_reg(dev, EPCR, 0x0);
-	ret = sr_read(dev, EPDR, 2, value);
+	sr_write_reg(dev, SR_EPCR, 0x0);
+	ret = sr_read(dev, SR_EPDR, 2, value);
 
 	netdev_dbg(dev->net, "read shared %d 0x%02x returned 0x%04x, %d\n",
 		   phy, reg, *value, ret);
@@ -123,19 +124,19 @@ static int sr_share_write_word(struct usbnet *dev, int phy, u8 reg,
 
 	mutex_lock(&dev->phy_mutex);
 
-	ret = sr_write(dev, EPDR, 2, &value);
+	ret = sr_write(dev, SR_EPDR, 2, &value);
 	if (ret < 0)
 		goto out_unlock;
 
-	sr_write_reg(dev, EPAR, phy ? (reg | EPAR_PHY_ADR) : reg);
-	sr_write_reg(dev, EPCR, phy ? (EPCR_WEP | EPCR_EPOS | EPCR_ERPRW) :
+	sr_write_reg(dev, SR_EPAR, phy ? (reg | EPAR_PHY_ADR) : reg);
+	sr_write_reg(dev, SR_EPCR, phy ? (EPCR_WEP | EPCR_EPOS | EPCR_ERPRW) :
 		    (EPCR_WEP | EPCR_ERPRW));
 
 	ret = wait_phy_eeprom_ready(dev, phy);
 	if (ret < 0)
 		goto out_unlock;
 
-	sr_write_reg(dev, EPCR, 0x0);
+	sr_write_reg(dev, SR_EPCR, 0x0);
 
 out_unlock:
 	mutex_unlock(&dev->phy_mutex);
@@ -188,7 +189,7 @@ static int sr_mdio_read(struct net_device *netdev, int phy_id, int loc)
 	if (loc == MII_BMSR) {
 		u8 value;
 
-		sr_read_reg(dev, NSR, &value);
+		sr_read_reg(dev, SR_NSR, &value);
 		if (value & NSR_LINKST)
 			rc = 1;
 	}
@@ -228,7 +229,7 @@ static u32 sr9700_get_link(struct net_device *netdev)
 	int rc = 0;
 
 	/* Get the Link Status directly */
-	sr_read_reg(dev, NSR, &value);
+	sr_read_reg(dev, SR_NSR, &value);
 	if (value & NSR_LINKST)
 		rc = 1;
 
@@ -249,9 +250,9 @@ static const struct ethtool_ops sr9700_ethtool_ops = {
 	.set_msglevel	= usbnet_set_msglevel,
 	.get_eeprom_len	= sr9700_get_eeprom_len,
 	.get_eeprom	= sr9700_get_eeprom,
-	.get_settings	= usbnet_get_settings,
-	.set_settings	= usbnet_set_settings,
 	.nway_reset	= usbnet_nway_reset,
+	.get_link_ksettings	= usbnet_get_link_ksettings_mii,
+	.set_link_ksettings	= usbnet_set_link_ksettings_mii,
 };
 
 static void sr9700_set_multicast(struct net_device *netdev)
@@ -281,8 +282,8 @@ static void sr9700_set_multicast(struct net_device *netdev)
 		}
 	}
 
-	sr_write_async(dev, MAR, SR_MCAST_SIZE, hashes);
-	sr_write_reg_async(dev, RCR, rx_ctl);
+	sr_write_async(dev, SR_MAR, SR_MCAST_SIZE, hashes);
+	sr_write_reg_async(dev, SR_RCR, rx_ctl);
 }
 
 static int sr9700_set_mac_address(struct net_device *netdev, void *p)
@@ -296,8 +297,8 @@ static int sr9700_set_mac_address(struct net_device *netdev, void *p)
 		return -EINVAL;
 	}
 
-	memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
-	sr_write_async(dev, PAR, 6, netdev->dev_addr);
+	eth_hw_addr_set(netdev, addr->sa_data);
+	sr_write_async(dev, SR_PAR, 6, netdev->dev_addr);
 
 	return 0;
 }
@@ -308,8 +309,9 @@ static const struct net_device_ops sr9700_netdev_ops = {
 	.ndo_start_xmit		= usbnet_start_xmit,
 	.ndo_tx_timeout		= usbnet_tx_timeout,
 	.ndo_change_mtu		= usbnet_change_mtu,
+	.ndo_get_stats64	= dev_get_tstats64,
 	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_do_ioctl		= sr9700_ioctl,
+	.ndo_eth_ioctl		= sr9700_ioctl,
 	.ndo_set_rx_mode	= sr9700_set_multicast,
 	.ndo_set_mac_address	= sr9700_set_mac_address,
 };
@@ -318,6 +320,7 @@ static int sr9700_bind(struct usbnet *dev, struct usb_interface *intf)
 {
 	struct net_device *netdev;
 	struct mii_if_info *mii;
+	u8 addr[ETH_ALEN];
 	int ret;
 
 	ret = usbnet_get_endpoints(dev, intf);
@@ -340,7 +343,7 @@ static int sr9700_bind(struct usbnet *dev, struct usb_interface *intf)
 	mii->phy_id_mask = 0x1f;
 	mii->reg_num_mask = 0x1f;
 
-	sr_write_reg(dev, NCR, NCR_RST);
+	sr_write_reg(dev, SR_NCR, NCR_RST);
 	udelay(20);
 
 	/* read MAC
@@ -348,17 +351,18 @@ static int sr9700_bind(struct usbnet *dev, struct usb_interface *intf)
 	 * EEPROM automatically to PAR. In case there is no EEPROM externally,
 	 * a default MAC address is stored in PAR for making chip work properly.
 	 */
-	if (sr_read(dev, PAR, ETH_ALEN, netdev->dev_addr) < 0) {
+	if (sr_read(dev, SR_PAR, ETH_ALEN, addr) < 0) {
 		netdev_err(netdev, "Error reading MAC address\n");
 		ret = -ENODEV;
 		goto out;
 	}
+	eth_hw_addr_set(netdev, addr);
 
 	/* power up and reset phy */
-	sr_write_reg(dev, PRR, PRR_PHY_RST);
+	sr_write_reg(dev, SR_PRR, PRR_PHY_RST);
 	/* at least 10ms, here 20ms for safe */
-	mdelay(20);
-	sr_write_reg(dev, PRR, 0);
+	msleep(20);
+	sr_write_reg(dev, SR_PRR, 0);
 	/* at least 1ms, here 2ms for reading right register */
 	udelay(2 * 1000);
 
@@ -409,7 +413,7 @@ static int sr9700_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 		/* ignore the CRC length */
 		len = (skb->data[1] | (skb->data[2] << 8)) - 4;
 
-		if (len > ETH_FRAME_LEN)
+		if (len > ETH_FRAME_LEN || len > skb->len || len < 0)
 			return 0;
 
 		/* the last packet of current skb */
@@ -433,7 +437,7 @@ static int sr9700_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 		usbnet_skb_return(dev, sr_skb);
 
 		skb_pull(skb, len + SR_RX_OVERHEAD);
-	};
+	}
 
 	return 0;
 }
@@ -456,14 +460,9 @@ static struct sk_buff *sr9700_tx_fixup(struct usbnet *dev, struct sk_buff *skb,
 
 	len = skb->len;
 
-	if (skb_headroom(skb) < SR_TX_OVERHEAD) {
-		struct sk_buff *skb2;
-
-		skb2 = skb_copy_expand(skb, SR_TX_OVERHEAD, 0, flags);
+	if (skb_cow_head(skb, SR_TX_OVERHEAD)) {
 		dev_kfree_skb_any(skb);
-		skb = skb2;
-		if (!skb)
-			return NULL;
+		return NULL;
 	}
 
 	__skb_push(skb, SR_TX_OVERHEAD);

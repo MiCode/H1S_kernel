@@ -1,11 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * max98088.h -- MAX98088 ALSA SoC Audio driver
  *
  * Copyright 2010 Maxim Integrated Products
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef _MAX98088_H
@@ -16,7 +13,7 @@
  */
 #define M98088_REG_00_IRQ_STATUS            0x00
 #define M98088_REG_01_MIC_STATUS            0x01
-#define M98088_REG_02_JACK_STAUS            0x02
+#define M98088_REG_02_JACK_STATUS           0x02
 #define M98088_REG_03_BATTERY_VOLTAGE       0x03
 #define M98088_REG_0F_IRQ_ENABLE            0x0F
 #define M98088_REG_10_SYS_CLK               0x10

@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Copyright (C) 2013 Daniel Tang <tangrs@tangrs.id.au>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
  */
 
 #include <linux/input/matrix_keypad.h>
@@ -96,9 +93,15 @@ static irqreturn_t nspire_keypad_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int nspire_keypad_chip_init(struct nspire_keypad *keypad)
+static int nspire_keypad_open(struct input_dev *input)
 {
+	struct nspire_keypad *keypad = input_get_drvdata(input);
 	unsigned long val = 0, cycles_per_us, delay_cycles, row_delay_cycles;
+	int error;
+
+	error = clk_prepare_enable(keypad->clk);
+	if (error)
+		return error;
 
 	cycles_per_us = (clk_get_rate(keypad->clk) / 1000000);
 	if (cycles_per_us == 0)
@@ -124,36 +127,17 @@ static int nspire_keypad_chip_init(struct nspire_keypad *keypad)
 	keypad->int_mask = 1 << 1;
 	writel(keypad->int_mask, keypad->reg_base + KEYPAD_INTMSK);
 
-	/* Disable GPIO interrupts to prevent hanging on touchpad */
-	/* Possibly used to detect touchpad events */
-	writel(0, keypad->reg_base + KEYPAD_UNKNOWN_INT);
-	/* Acknowledge existing interrupts */
-	writel(~0, keypad->reg_base + KEYPAD_UNKNOWN_INT_STS);
-
-	return 0;
-}
-
-static int nspire_keypad_open(struct input_dev *input)
-{
-	struct nspire_keypad *keypad = input_get_drvdata(input);
-	int error;
-
-	error = clk_prepare_enable(keypad->clk);
-	if (error)
-		return error;
-
-	error = nspire_keypad_chip_init(keypad);
-	if (error) {
-		clk_disable_unprepare(keypad->clk);
-		return error;
-	}
-
 	return 0;
 }
 
 static void nspire_keypad_close(struct input_dev *input)
 {
 	struct nspire_keypad *keypad = input_get_drvdata(input);
+
+	/* Disable interrupts */
+	writel(0, keypad->reg_base + KEYPAD_INTMSK);
+	/* Acknowledge existing interrupts */
+	writel(~0, keypad->reg_base + KEYPAD_INT);
 
 	clk_disable_unprepare(keypad->clk);
 }
@@ -168,10 +152,8 @@ static int nspire_keypad_probe(struct platform_device *pdev)
 	int error;
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		dev_err(&pdev->dev, "failed to get keypad irq\n");
+	if (irq < 0)
 		return -EINVAL;
-	}
 
 	keypad = devm_kzalloc(&pdev->dev, sizeof(struct nspire_keypad),
 			      GFP_KERNEL);
@@ -204,8 +186,7 @@ static int nspire_keypad_probe(struct platform_device *pdev)
 		return PTR_ERR(keypad->clk);
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	keypad->reg_base = devm_ioremap_resource(&pdev->dev, res);
+	keypad->reg_base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(keypad->reg_base))
 		return PTR_ERR(keypad->reg_base);
 
@@ -214,6 +195,25 @@ static int nspire_keypad_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "failed to allocate input device\n");
 		return -ENOMEM;
 	}
+
+	error = clk_prepare_enable(keypad->clk);
+	if (error) {
+		dev_err(&pdev->dev, "failed to enable clock\n");
+		return error;
+	}
+
+	/* Disable interrupts */
+	writel(0, keypad->reg_base + KEYPAD_INTMSK);
+	/* Acknowledge existing interrupts */
+	writel(~0, keypad->reg_base + KEYPAD_INT);
+
+	/* Disable GPIO interrupts to prevent hanging on touchpad */
+	/* Possibly used to detect touchpad events */
+	writel(0, keypad->reg_base + KEYPAD_UNKNOWN_INT);
+	/* Acknowledge existing GPIO interrupts */
+	writel(~0, keypad->reg_base + KEYPAD_UNKNOWN_INT_STS);
+
+	clk_disable_unprepare(keypad->clk);
 
 	input_set_drvdata(input, keypad);
 
@@ -249,8 +249,6 @@ static int nspire_keypad_probe(struct platform_device *pdev)
 		return error;
 	}
 
-	platform_set_drvdata(pdev, keypad);
-
 	dev_dbg(&pdev->dev,
 		"TI-NSPIRE keypad at %pR (scan_interval=%uus, row_delay=%uus%s)\n",
 		res, keypad->row_delay, keypad->scan_interval,
@@ -268,7 +266,6 @@ MODULE_DEVICE_TABLE(of, nspire_keypad_dt_match);
 static struct platform_driver nspire_keypad_driver = {
 	.driver = {
 		.name = "nspire-keypad",
-		.owner = THIS_MODULE,
 		.of_match_table = nspire_keypad_dt_match,
 	},
 	.probe = nspire_keypad_probe,

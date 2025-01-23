@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- *  NSA Security-Enhanced Linux (SELinux) security module
+ *  Security-Enhanced Linux (SELinux) security module
  *
  *  This file contains the SELinux XFRM hook function implementations.
  *
@@ -12,10 +13,6 @@
  *
  *  Copyright (C) 2005 International Business Machines Corporation
  *  Copyright (C) 2006 Trusted Computer Solutions, Inc.
- *
- *	This program is free software; you can redistribute it and/or modify
- *	it under the terms of the GNU General Public License version 2,
- *	as published by the Free Software Foundation.
  */
 
 /*
@@ -35,9 +32,6 @@
 #include <linux/init.h>
 #include <linux/security.h>
 #include <linux/types.h>
-#include <linux/netfilter.h>
-#include <linux/netfilter_ipv4.h>
-#include <linux/netfilter_ipv6.h>
 #include <linux/slab.h>
 #include <linux/ip.h>
 #include <linux/tcp.h>
@@ -53,7 +47,7 @@
 #include "xfrm.h"
 
 /* Labeled XFRM instance counter */
-atomic_t selinux_xfrm_refcount = ATOMIC_INIT(0);
+atomic_t selinux_xfrm_refcount __read_mostly = ATOMIC_INIT(0);
 
 /*
  * Returns true if the context is an LSM/SELinux context.
@@ -78,10 +72,11 @@ static inline int selinux_authorizable_xfrm(struct xfrm_state *x)
  * xfrm_user_sec_ctx context.
  */
 static int selinux_xfrm_alloc_user(struct xfrm_sec_ctx **ctxp,
-				   struct xfrm_user_sec_ctx *uctx)
+				   struct xfrm_user_sec_ctx *uctx,
+				   gfp_t gfp)
 {
 	int rc;
-	const struct task_security_struct *tsec = current_security();
+	const struct task_security_struct *tsec = selinux_cred(current_cred());
 	struct xfrm_sec_ctx *ctx = NULL;
 	u32 str_len;
 
@@ -94,7 +89,7 @@ static int selinux_xfrm_alloc_user(struct xfrm_sec_ctx **ctxp,
 	if (str_len >= PAGE_SIZE)
 		return -ENOMEM;
 
-	ctx = kmalloc(sizeof(*ctx) + str_len + 1, GFP_KERNEL);
+	ctx = kmalloc(struct_size(ctx, ctx_str, str_len + 1), gfp);
 	if (!ctx)
 		return -ENOMEM;
 
@@ -103,7 +98,8 @@ static int selinux_xfrm_alloc_user(struct xfrm_sec_ctx **ctxp,
 	ctx->ctx_len = str_len;
 	memcpy(ctx->ctx_str, &uctx[1], str_len);
 	ctx->ctx_str[str_len] = '\0';
-	rc = security_context_to_sid(ctx->ctx_str, str_len, &ctx->ctx_sid);
+	rc = security_context_to_sid(ctx->ctx_str, str_len,
+				     &ctx->ctx_sid, gfp);
 	if (rc)
 		goto err;
 
@@ -138,7 +134,7 @@ static void selinux_xfrm_free(struct xfrm_sec_ctx *ctx)
  */
 static int selinux_xfrm_delete(struct xfrm_sec_ctx *ctx)
 {
-	const struct task_security_struct *tsec = current_security();
+	const struct task_security_struct *tsec = selinux_cred(current_cred());
 
 	if (!ctx)
 		return 0;
@@ -152,7 +148,7 @@ static int selinux_xfrm_delete(struct xfrm_sec_ctx *ctx)
  * LSM hook implementation that authorizes that a flow can use a xfrm policy
  * rule.
  */
-int selinux_xfrm_policy_lookup(struct xfrm_sec_ctx *ctx, u32 fl_secid, u8 dir)
+int selinux_xfrm_policy_lookup(struct xfrm_sec_ctx *ctx, u32 fl_secid)
 {
 	int rc;
 
@@ -176,9 +172,10 @@ int selinux_xfrm_policy_lookup(struct xfrm_sec_ctx *ctx, u32 fl_secid, u8 dir)
  */
 int selinux_xfrm_state_pol_flow_match(struct xfrm_state *x,
 				      struct xfrm_policy *xp,
-				      const struct flowi *fl)
+				      const struct flowi_common *flic)
 {
 	u32 state_sid;
+	u32 flic_sid;
 
 	if (!xp->security)
 		if (x->security)
@@ -197,16 +194,17 @@ int selinux_xfrm_state_pol_flow_match(struct xfrm_state *x,
 				return 0;
 
 	state_sid = x->security->ctx_sid;
+	flic_sid = flic->flowic_secid;
 
-	if (fl->flowi_secid != state_sid)
+	if (flic_sid != state_sid)
 		return 0;
 
 	/* We don't need a separate SA Vs. policy polmatch check since the SA
 	 * is now of the same label as the flow and a flow Vs. policy polmatch
 	 * check had already happened in selinux_xfrm_policy_lookup() above. */
-	return (avc_has_perm(fl->flowi_secid, state_sid,
-			    SECCLASS_ASSOCIATION, ASSOCIATION__SENDTO,
-			    NULL) ? 0 : 1);
+	return (avc_has_perm(flic_sid, state_sid,
+			     SECCLASS_ASSOCIATION, ASSOCIATION__SENDTO,
+			     NULL) ? 0 : 1);
 }
 
 static u32 selinux_xfrm_skb_sid_egress(struct sk_buff *skb)
@@ -227,7 +225,7 @@ static int selinux_xfrm_skb_sid_ingress(struct sk_buff *skb,
 					u32 *sid, int ckall)
 {
 	u32 sid_session = SECSID_NULL;
-	struct sec_path *sp = skb->sp;
+	struct sec_path *sp = skb_sec_path(skb);
 
 	if (sp) {
 		int i;
@@ -282,9 +280,10 @@ int selinux_xfrm_skb_sid(struct sk_buff *skb, u32 *sid)
  * LSM hook implementation that allocs and transfers uctx spec to xfrm_policy.
  */
 int selinux_xfrm_policy_alloc(struct xfrm_sec_ctx **ctxp,
-			      struct xfrm_user_sec_ctx *uctx)
+			      struct xfrm_user_sec_ctx *uctx,
+			      gfp_t gfp)
 {
-	return selinux_xfrm_alloc_user(ctxp, uctx);
+	return selinux_xfrm_alloc_user(ctxp, uctx, gfp);
 }
 
 /*
@@ -332,7 +331,7 @@ int selinux_xfrm_policy_delete(struct xfrm_sec_ctx *ctx)
 int selinux_xfrm_state_alloc(struct xfrm_state *x,
 			     struct xfrm_user_sec_ctx *uctx)
 {
-	return selinux_xfrm_alloc_user(&x->security, uctx);
+	return selinux_xfrm_alloc_user(&x->security, uctx, GFP_KERNEL);
 }
 
 /*
@@ -345,7 +344,7 @@ int selinux_xfrm_state_alloc_acquire(struct xfrm_state *x,
 	int rc;
 	struct xfrm_sec_ctx *ctx;
 	char *ctx_str = NULL;
-	int str_len;
+	u32 str_len;
 
 	if (!polsec)
 		return 0;
@@ -353,11 +352,12 @@ int selinux_xfrm_state_alloc_acquire(struct xfrm_state *x,
 	if (secid == 0)
 		return -EINVAL;
 
-	rc = security_sid_to_context(secid, &ctx_str, &str_len);
+	rc = security_sid_to_context(secid, &ctx_str,
+				     &str_len);
 	if (rc)
 		return rc;
 
-	ctx = kmalloc(sizeof(*ctx) + str_len, GFP_ATOMIC);
+	ctx = kmalloc(struct_size(ctx, ctx_str, str_len), GFP_ATOMIC);
 	if (!ctx) {
 		rc = -ENOMEM;
 		goto out;
@@ -403,7 +403,7 @@ int selinux_xfrm_sock_rcv_skb(u32 sk_sid, struct sk_buff *skb,
 			      struct common_audit_data *ad)
 {
 	int i;
-	struct sec_path *sp = skb->sp;
+	struct sec_path *sp = skb_sec_path(skb);
 	u32 peer_sid = SECINITSID_UNLABELED;
 
 	if (sp) {
@@ -453,7 +453,7 @@ int selinux_xfrm_postroute_last(u32 sk_sid, struct sk_buff *skb,
 	if (dst) {
 		struct dst_entry *iter;
 
-		for (iter = dst; iter != NULL; iter = iter->child) {
+		for (iter = dst; iter != NULL; iter = xfrm_dst_child(iter)) {
 			struct xfrm_state *x = iter->xfrm;
 
 			if (x && selinux_authorizable_xfrm(x))

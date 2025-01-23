@@ -1,8 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * local apic based NMI watchdog for various CPUs.
  *
  * This file also handles reservation of performance counters for coordination
- * with other users (like oprofile).
+ * with other users.
  *
  * Note that these events normally don't tick when the CPU idles. This means
  * the frequency varies with CPU load.
@@ -12,7 +13,7 @@
  */
 
 #include <linux/percpu.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/bitops.h>
 #include <linux/smp.h>
@@ -45,6 +46,7 @@ static inline unsigned int nmi_perfctr_msr_to_bit(unsigned int msr)
 {
 	/* returns the bit offset of the performance counter register */
 	switch (boot_cpu_data.x86_vendor) {
+	case X86_VENDOR_HYGON:
 	case X86_VENDOR_AMD:
 		if (msr >= MSR_F15H_PERF_CTR)
 			return (msr - MSR_F15H_PERF_CTR) >> 1;
@@ -61,6 +63,10 @@ static inline unsigned int nmi_perfctr_msr_to_bit(unsigned int msr)
 		case 15:
 			return msr - MSR_P4_BPU_PERFCTR0;
 		}
+		break;
+	case X86_VENDOR_ZHAOXIN:
+	case X86_VENDOR_CENTAUR:
+		return msr - MSR_ARCH_PERFMON_PERFCTR0;
 	}
 	return 0;
 }
@@ -73,6 +79,7 @@ static inline unsigned int nmi_evntsel_msr_to_bit(unsigned int msr)
 {
 	/* returns the bit offset of the event selection register */
 	switch (boot_cpu_data.x86_vendor) {
+	case X86_VENDOR_HYGON:
 	case X86_VENDOR_AMD:
 		if (msr >= MSR_F15H_PERF_CTL)
 			return (msr - MSR_F15H_PERF_CTL) >> 1;
@@ -89,19 +96,14 @@ static inline unsigned int nmi_evntsel_msr_to_bit(unsigned int msr)
 		case 15:
 			return msr - MSR_P4_BSU_ESCR0;
 		}
+		break;
+	case X86_VENDOR_ZHAOXIN:
+	case X86_VENDOR_CENTAUR:
+		return msr - MSR_ARCH_PERFMON_EVENTSEL0;
 	}
 	return 0;
 
 }
-
-/* checks for a bit availability (hack for oprofile) */
-int avail_to_resrv_perfctr_nmi_bit(unsigned int counter)
-{
-	BUG_ON(counter > NMI_MAX_COUNTER_BITS);
-
-	return !test_bit(counter, perfctr_nmi_owner);
-}
-EXPORT_SYMBOL(avail_to_resrv_perfctr_nmi_bit);
 
 int reserve_perfctr_nmi(unsigned int msr)
 {

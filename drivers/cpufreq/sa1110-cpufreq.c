@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/mach-sa1100/cpu-sa1110.c
  *
  *  Copyright (C) 2001 Russell King
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * Note: there are two erratas that apply to the SA1110 here:
  *  7 - SDRAM auto-power-up failure (rev A0)
@@ -159,7 +156,7 @@ sdram_calculate_timing(struct sdram_info *sd, u_int cpu_khz,
 	 * half speed or use delayed read latching (errata 13).
 	 */
 	if ((ns_to_cycles(sdram->tck, sd_khz) > 1) ||
-	    (CPU_REVISION < CPU_SA1110_B2 && sd_khz < 62000))
+	    (read_cpuid_revision() < ARM_CPU_REV_SA1110_B2 && sd_khz < 62000))
 		sd_khz /= 2;
 
 	sd->mdcnfg = MDCNFG & 0x007f007f;
@@ -306,13 +303,15 @@ static int sa1110_target(struct cpufreq_policy *policy, unsigned int ppcr)
 
 static int __init sa1110_cpu_init(struct cpufreq_policy *policy)
 {
-	return cpufreq_generic_init(policy, sa11x0_freq_table, CPUFREQ_ETERNAL);
+	cpufreq_generic_init(policy, sa11x0_freq_table, 0);
+	return 0;
 }
 
 /* sa1110_driver needs __refdata because it must remain after init registers
  * it with cpufreq_register_driver() */
 static struct cpufreq_driver sa1110_driver __refdata = {
-	.flags		= CPUFREQ_STICKY | CPUFREQ_NEED_INITIAL_FREQ_CHECK,
+	.flags		= CPUFREQ_NEED_INITIAL_FREQ_CHECK |
+			  CPUFREQ_NO_AUTO_DYNAMIC_SWITCHING,
 	.verify		= cpufreq_generic_frequency_table_verify,
 	.target_index	= sa1110_target,
 	.get		= sa11x0_getspeed,
@@ -345,14 +344,8 @@ static int __init sa1110_clk_init(void)
 	if (!name[0]) {
 		if (machine_is_assabet())
 			name = "TC59SM716-CL3";
-		if (machine_is_pt_system3())
-			name = "K4S641632D";
-		if (machine_is_h3100())
-			name = "KM416S4030CT";
-		if (machine_is_jornada720())
+		if (machine_is_jornada720() || machine_is_h3600())
 			name = "K4S281632B-1H";
-		if (machine_is_nanoengine())
-			name = "MT48LC8M16A2TG-75";
 	}
 
 	sdram = sa1110_find_sdram(name);

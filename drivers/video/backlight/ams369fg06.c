@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * ams369fg06 AMOLED LCD panel driver.
  *
@@ -5,17 +6,11 @@
  * Author: Jingoo Han  <jg1.han@samsung.com>
  *
  * Derived from drivers/video/s6e63m0.c
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
  */
 
 #include <linux/backlight.h>
 #include <linux/delay.h>
 #include <linux/fb.h>
-#include <linux/gpio.h>
 #include <linux/lcd.h>
 #include <linux/module.h>
 #include <linux/spi/spi.h>
@@ -325,10 +320,10 @@ static int ams369fg06_power_on(struct ams369fg06 *lcd)
 	if (!pd->reset) {
 		dev_err(lcd->dev, "reset is NULL.\n");
 		return -EINVAL;
-	} else {
-		pd->reset(lcd->ld);
-		msleep(pd->reset_delay);
 	}
+
+	pd->reset(lcd->ld);
+	msleep(pd->reset_delay);
 
 	ret = ams369fg06_ldi_init(lcd);
 	if (ret) {
@@ -410,11 +405,6 @@ static int ams369fg06_set_power(struct lcd_device *ld, int power)
 	return ams369fg06_power(lcd, power);
 }
 
-static int ams369fg06_get_brightness(struct backlight_device *bd)
-{
-	return bd->props.brightness;
-}
-
 static int ams369fg06_set_brightness(struct backlight_device *bd)
 {
 	int ret = 0;
@@ -443,7 +433,6 @@ static struct lcd_ops ams369fg06_lcd_ops = {
 };
 
 static const struct backlight_ops ams369fg06_backlight_ops = {
-	.get_brightness = ams369fg06_get_brightness,
 	.update_status = ams369fg06_set_brightness,
 };
 
@@ -517,12 +506,11 @@ static int ams369fg06_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int ams369fg06_remove(struct spi_device *spi)
+static void ams369fg06_remove(struct spi_device *spi)
 {
 	struct ams369fg06 *lcd = spi_get_drvdata(spi);
 
 	ams369fg06_power(lcd, FB_BLANK_POWERDOWN);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -562,7 +550,6 @@ static void ams369fg06_shutdown(struct spi_device *spi)
 static struct spi_driver ams369fg06_driver = {
 	.driver = {
 		.name	= "ams369fg06",
-		.owner	= THIS_MODULE,
 		.pm	= &ams369fg06_pm_ops,
 	},
 	.probe		= ams369fg06_probe,

@@ -1,12 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2000-2013 LSI Corporation.
+ * Copyright 2000-2020 Broadcom Inc. All rights reserved.
  *
  *
  *          Name:  mpi2_tool.h
  *         Title:  MPI diagnostic tool structures and definitions
  * Creation Date:  March 26, 2007
  *
- *   mpi2_tool.h Version:  02.00.10
+ *   mpi2_tool.h Version:  02.00.16
  *
  * Version History
  * ---------------
@@ -32,6 +33,14 @@
  *                     message.
  * 07-26-12  02.00.10  Modified MPI2_TOOLBOX_DIAGNOSTIC_CLI_REQUEST so that
  *                     it uses MPI Chain SGE as well as MPI Simple SGE.
+ * 08-19-13  02.00.11  Added MPI2_TOOLBOX_TEXT_DISPLAY_TOOL and related info.
+ * 01-08-14  02.00.12  Added MPI2_TOOLBOX_CLEAN_BIT26_PRODUCT_SPECIFIC.
+ * 11-18-14  02.00.13  Updated copyright information.
+ * 08-25-16  02.00.14  Added new values for the Flags field of Toolbox Clean
+ *                     Tool Request Message.
+ * 07-22-18  02.00.15  Added defines for new TOOLBOX_PCIE_LANE_MARGINING tool.
+ *                     Added option for DeviceInfo field in ISTWI tool.
+ * 12-17-18  02.00.16  Shorten some defines to be compatible with DOS.
  * --------------------------------------------------------------------------
  */
 
@@ -51,6 +60,8 @@
 #define MPI2_TOOLBOX_ISTWI_READ_WRITE_TOOL          (0x03)
 #define MPI2_TOOLBOX_BEACON_TOOL                    (0x05)
 #define MPI2_TOOLBOX_DIAGNOSTIC_CLI_TOOL            (0x06)
+#define MPI2_TOOLBOX_TEXT_DISPLAY_TOOL              (0x07)
+#define MPI26_TOOLBOX_BACKEND_PCIE_LANE_MARGIN      (0x08)
 
 /****************************************************************************
 * Toolbox reply
@@ -98,8 +109,19 @@ typedef struct _MPI2_TOOLBOX_CLEAN_REQUEST {
 #define MPI2_TOOLBOX_CLEAN_OTHER_PERSIST_PAGES      (0x20000000)
 #define MPI2_TOOLBOX_CLEAN_FW_CURRENT               (0x10000000)
 #define MPI2_TOOLBOX_CLEAN_FW_BACKUP                (0x08000000)
+#define MPI2_TOOLBOX_CLEAN_BIT26_PRODUCT_SPECIFIC   (0x04000000)
 #define MPI2_TOOLBOX_CLEAN_MEGARAID                 (0x02000000)
 #define MPI2_TOOLBOX_CLEAN_INITIALIZATION           (0x01000000)
+#define MPI2_TOOLBOX_CLEAN_SBR                      (0x00800000)
+#define MPI2_TOOLBOX_CLEAN_SBR_BACKUP               (0x00400000)
+#define MPI2_TOOLBOX_CLEAN_HIIM                     (0x00200000)
+#define MPI2_TOOLBOX_CLEAN_HIIA                     (0x00100000)
+#define MPI2_TOOLBOX_CLEAN_CTLR                     (0x00080000)
+#define MPI2_TOOLBOX_CLEAN_IMR_FIRMWARE             (0x00040000)
+#define MPI2_TOOLBOX_CLEAN_MR_NVDATA                (0x00020000)
+#define MPI2_TOOLBOX_CLEAN_RESERVED_5_16            (0x0001FFE0)
+#define MPI2_TOOLBOX_CLEAN_ALL_BUT_MPB              (0x00000010)
+#define MPI2_TOOLBOX_CLEAN_ENTIRE_FLASH             (0x00000008)
 #define MPI2_TOOLBOX_CLEAN_FLASH                    (0x00000004)
 #define MPI2_TOOLBOX_CLEAN_SEEPROM                  (0x00000002)
 #define MPI2_TOOLBOX_CLEAN_NVSRAM                   (0x00000001)
@@ -207,6 +229,13 @@ typedef struct _MPI2_TOOLBOX_ISTWI_READ_WRITE_REQUEST {
 /*values for the Flags field */
 #define MPI2_TOOL_ISTWI_FLAG_AUTO_RESERVE_RELEASE   (0x80)
 #define MPI2_TOOL_ISTWI_FLAG_PAGE_ADDR_MASK         (0x07)
+
+/*MPI26 TOOLBOX Request MsgFlags defines */
+#define MPI26_TOOL_ISTWI_MSGFLG_ADDR_MASK           (0x01)
+/*Request uses Man Page 43 device index addressing */
+#define MPI26_TOOL_ISTWI_MSGFLG_ADDR_INDEX          (0x00)
+/*Request uses Man Page 43 device info struct addressing */
+#define MPI26_TOOL_ISTWI_MSGFLG_ADDR_INFO           (0x01)
 
 /*Toolbox ISTWI Read Write Tool reply message */
 typedef struct _MPI2_TOOLBOX_ISTWI_REPLY {
@@ -330,6 +359,103 @@ typedef struct _MPI2_TOOLBOX_DIAGNOSTIC_CLI_REPLY {
 	*PTR_MPI2_TOOLBOX_DIAG_CLI_REPLY,
 	Mpi2ToolboxDiagnosticCliReply_t,
 	*pMpi2ToolboxDiagnosticCliReply_t;
+
+
+/****************************************************************************
+*  Toolbox Console Text Display Tool
+****************************************************************************/
+
+/* Toolbox Console Text Display Tool request message */
+typedef struct _MPI2_TOOLBOX_TEXT_DISPLAY_REQUEST {
+	U8			Tool;			/* 0x00 */
+	U8			Reserved1;		/* 0x01 */
+	U8			ChainOffset;		/* 0x02 */
+	U8			Function;		/* 0x03 */
+	U16			Reserved2;		/* 0x04 */
+	U8			Reserved3;		/* 0x06 */
+	U8			MsgFlags;		/* 0x07 */
+	U8			VP_ID;			/* 0x08 */
+	U8			VF_ID;			/* 0x09 */
+	U16			Reserved4;		/* 0x0A */
+	U8			Console;		/* 0x0C */
+	U8			Flags;			/* 0x0D */
+	U16			Reserved6;		/* 0x0E */
+	U8			TextToDisplay[4];	/* 0x10 */
+} MPI2_TOOLBOX_TEXT_DISPLAY_REQUEST,
+*PTR_MPI2_TOOLBOX_TEXT_DISPLAY_REQUEST,
+Mpi2ToolboxTextDisplayRequest_t,
+*pMpi2ToolboxTextDisplayRequest_t;
+
+/* defines for the Console field */
+#define MPI2_TOOLBOX_CONSOLE_TYPE_MASK          (0xF0)
+#define MPI2_TOOLBOX_CONSOLE_TYPE_DEFAULT       (0x00)
+#define MPI2_TOOLBOX_CONSOLE_TYPE_UART          (0x10)
+#define MPI2_TOOLBOX_CONSOLE_TYPE_ETHERNET      (0x20)
+
+#define MPI2_TOOLBOX_CONSOLE_NUMBER_MASK        (0x0F)
+
+/* defines for the Flags field */
+#define MPI2_TOOLBOX_CONSOLE_FLAG_TIMESTAMP     (0x01)
+
+
+/***************************************************************************
+ *  Toolbox Backend Lane Margining Tool
+ ***************************************************************************
+ */
+
+/*Toolbox Backend Lane Margining Tool request message */
+typedef struct _MPI26_TOOLBOX_LANE_MARGIN_REQUEST {
+	U8 Tool;			/*0x00 */
+	U8 Reserved1;			/*0x01 */
+	U8 ChainOffset;			/*0x02 */
+	U8 Function;			/*0x03 */
+	U16 Reserved2;			/*0x04 */
+	U8 Reserved3;			/*0x06 */
+	U8 MsgFlags;			/*0x07 */
+	U8 VP_ID;			/*0x08 */
+	U8 VF_ID;			/*0x09 */
+	U16 Reserved4;			/*0x0A */
+	U8 Command;			/*0x0C */
+	U8 SwitchPort;			/*0x0D */
+	U16 DevHandle;			/*0x0E */
+	U8 RegisterOffset;		/*0x10 */
+	U8 Reserved5;			/*0x11 */
+	U16 DataLength;			/*0x12 */
+	MPI25_SGE_IO_UNION SGL;		/*0x14 */
+} MPI26_TOOLBOX_LANE_MARGINING_REQUEST,
+	*PTR_MPI2_TOOLBOX_LANE_MARGINING_REQUEST,
+	Mpi26ToolboxLaneMarginingRequest_t,
+	*pMpi2ToolboxLaneMarginingRequest_t;
+
+/* defines for the Command field */
+#define MPI26_TOOL_MARGIN_COMMAND_ENTER_MARGIN_MODE        (0x01)
+#define MPI26_TOOL_MARGIN_COMMAND_READ_REGISTER_DATA       (0x02)
+#define MPI26_TOOL_MARGIN_COMMAND_WRITE_REGISTER_DATA      (0x03)
+#define MPI26_TOOL_MARGIN_COMMAND_EXIT_MARGIN_MODE         (0x04)
+
+
+/*Toolbox Backend Lane Margining Tool reply message */
+typedef struct _MPI26_TOOLBOX_LANE_MARGIN_REPLY {
+	U8 Tool;			/*0x00 */
+	U8 Reserved1;			/*0x01 */
+	U8 MsgLength;			/*0x02 */
+	U8 Function;			/*0x03 */
+	U16 Reserved2;			/*0x04 */
+	U8 Reserved3;			/*0x06 */
+	U8 MsgFlags;			/*0x07 */
+	U8 VP_ID;			/*0x08 */
+	U8 VF_ID;			/*0x09 */
+	U16 Reserved4;			/*0x0A */
+	U16 Reserved5;			/*0x0C */
+	U16 IOCStatus;			/*0x0E */
+	U32 IOCLogInfo;			/*0x10 */
+	U16 ReturnedDataLength;		/*0x14 */
+	U16 Reserved6;			/*0x16 */
+} MPI26_TOOLBOX_LANE_MARGINING_REPLY,
+	*PTR_MPI26_TOOLBOX_LANE_MARGINING_REPLY,
+	Mpi26ToolboxLaneMarginingReply_t,
+	*pMpi26ToolboxLaneMarginingReply_t;
+
 
 /*****************************************************************************
 *

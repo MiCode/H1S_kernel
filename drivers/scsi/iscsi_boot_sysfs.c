@@ -1,17 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Export the iSCSI boot info to userland via sysfs.
  *
  * Copyright (C) 2010 Red Hat, Inc.  All rights reserved.
  * Copyright (C) 2010 Mike Christie
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License v2.0 as published by
- * the Free Software Foundation
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -166,6 +158,7 @@ static struct attribute_group iscsi_boot_target_attr_group = {
 iscsi_boot_rd_attr(eth_index, index, ISCSI_BOOT_ETH_INDEX);
 iscsi_boot_rd_attr(eth_flags, flags, ISCSI_BOOT_ETH_FLAGS);
 iscsi_boot_rd_attr(eth_ip, ip-addr, ISCSI_BOOT_ETH_IP_ADDR);
+iscsi_boot_rd_attr(eth_prefix, prefix-len, ISCSI_BOOT_ETH_PREFIX_LEN);
 iscsi_boot_rd_attr(eth_subnet, subnet-mask, ISCSI_BOOT_ETH_SUBNET_MASK);
 iscsi_boot_rd_attr(eth_origin, origin, ISCSI_BOOT_ETH_ORIGIN);
 iscsi_boot_rd_attr(eth_gateway, gateway, ISCSI_BOOT_ETH_GATEWAY);
@@ -181,6 +174,7 @@ static struct attribute *ethernet_attrs[] = {
 	&iscsi_boot_attr_eth_index.attr,
 	&iscsi_boot_attr_eth_flags.attr,
 	&iscsi_boot_attr_eth_ip.attr,
+	&iscsi_boot_attr_eth_prefix.attr,
 	&iscsi_boot_attr_eth_subnet.attr,
 	&iscsi_boot_attr_eth_origin.attr,
 	&iscsi_boot_attr_eth_gateway.attr,
@@ -208,6 +202,9 @@ static umode_t iscsi_boot_eth_attr_is_visible(struct kobject *kobj,
 	else if (attr ==  &iscsi_boot_attr_eth_ip.attr)
 		return boot_kobj->is_visible(boot_kobj->data,
 					     ISCSI_BOOT_ETH_IP_ADDR);
+	else if (attr ==  &iscsi_boot_attr_eth_prefix.attr)
+		return boot_kobj->is_visible(boot_kobj->data,
+					     ISCSI_BOOT_ETH_PREFIX_LEN);
 	else if (attr ==  &iscsi_boot_attr_eth_subnet.attr)
 		return boot_kobj->is_visible(boot_kobj->data,
 					     ISCSI_BOOT_ETH_SUBNET_MASK);
@@ -301,6 +298,42 @@ static struct attribute_group iscsi_boot_initiator_attr_group = {
 	.is_visible = iscsi_boot_ini_attr_is_visible,
 };
 
+/* iBFT ACPI Table attributes */
+iscsi_boot_rd_attr(acpitbl_signature, signature, ISCSI_BOOT_ACPITBL_SIGNATURE);
+iscsi_boot_rd_attr(acpitbl_oem_id, oem_id, ISCSI_BOOT_ACPITBL_OEM_ID);
+iscsi_boot_rd_attr(acpitbl_oem_table_id, oem_table_id,
+		   ISCSI_BOOT_ACPITBL_OEM_TABLE_ID);
+
+static struct attribute *acpitbl_attrs[] = {
+	&iscsi_boot_attr_acpitbl_signature.attr,
+	&iscsi_boot_attr_acpitbl_oem_id.attr,
+	&iscsi_boot_attr_acpitbl_oem_table_id.attr,
+	NULL
+};
+
+static umode_t iscsi_boot_acpitbl_attr_is_visible(struct kobject *kobj,
+					     struct attribute *attr, int i)
+{
+	struct iscsi_boot_kobj *boot_kobj =
+			container_of(kobj, struct iscsi_boot_kobj, kobj);
+
+	if (attr ==  &iscsi_boot_attr_acpitbl_signature.attr)
+		return boot_kobj->is_visible(boot_kobj->data,
+					     ISCSI_BOOT_ACPITBL_SIGNATURE);
+	if (attr ==  &iscsi_boot_attr_acpitbl_oem_id.attr)
+		return boot_kobj->is_visible(boot_kobj->data,
+					     ISCSI_BOOT_ACPITBL_OEM_ID);
+	if (attr ==  &iscsi_boot_attr_acpitbl_oem_table_id.attr)
+		return boot_kobj->is_visible(boot_kobj->data,
+					     ISCSI_BOOT_ACPITBL_OEM_TABLE_ID);
+	return 0;
+}
+
+static struct attribute_group iscsi_boot_acpitbl_attr_group = {
+	.attrs = acpitbl_attrs,
+	.is_visible = iscsi_boot_acpitbl_attr_is_visible,
+};
+
 static struct iscsi_boot_kobj *
 iscsi_boot_create_kobj(struct iscsi_boot_kset *boot_kset,
 		       struct attribute_group *attr_group,
@@ -319,7 +352,7 @@ iscsi_boot_create_kobj(struct iscsi_boot_kset *boot_kset,
 	boot_kobj->kobj.kset = boot_kset->kset;
 	if (kobject_init_and_add(&boot_kobj->kobj, &iscsi_boot_ktype,
 				 NULL, name, index)) {
-		kfree(boot_kobj);
+		kobject_put(&boot_kobj->kobj);
 		return NULL;
 	}
 	boot_kobj->data = data;
@@ -431,6 +464,32 @@ iscsi_boot_create_ethernet(struct iscsi_boot_kset *boot_kset, int index,
 EXPORT_SYMBOL_GPL(iscsi_boot_create_ethernet);
 
 /**
+ * iscsi_boot_create_acpitbl() - create boot acpi table sysfs dir
+ * @boot_kset: boot kset
+ * @index: not used
+ * @data: driver specific data
+ * @show: attr show function
+ * @is_visible: attr visibility function
+ * @release: release function
+ *
+ * Note: The boot sysfs lib will free the data passed in for the caller
+ * when all refs to the acpitbl kobject have been released.
+ */
+struct iscsi_boot_kobj *
+iscsi_boot_create_acpitbl(struct iscsi_boot_kset *boot_kset, int index,
+			   void *data,
+			   ssize_t (*show)(void *data, int type, char *buf),
+			   umode_t (*is_visible)(void *data, int type),
+			   void (*release)(void *data))
+{
+	return iscsi_boot_create_kobj(boot_kset,
+				      &iscsi_boot_acpitbl_attr_group,
+				      "acpi_header", index, data, show,
+				      is_visible, release);
+}
+EXPORT_SYMBOL_GPL(iscsi_boot_create_acpitbl);
+
+/**
  * iscsi_boot_create_kset() - creates root sysfs tree
  * @set_name: name of root dir
  */
@@ -490,5 +549,6 @@ void iscsi_boot_destroy_kset(struct iscsi_boot_kset *boot_kset)
 		iscsi_boot_remove_kobj(boot_kobj);
 
 	kset_unregister(boot_kset->kset);
+	kfree(boot_kset);
 }
 EXPORT_SYMBOL_GPL(iscsi_boot_destroy_kset);

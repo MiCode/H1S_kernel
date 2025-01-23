@@ -1,10 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright 2013 Lucas Stach, Pengutronix <l.stach@pengutronix.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #ifndef __DT_BINDINGS_CLOCK_IMX5_H
@@ -198,6 +194,23 @@
 #define IMX5_CLK_OCRAM			186
 #define IMX5_CLK_SAHARA_IPG_GATE	187
 #define IMX5_CLK_SATA_REF		188
-#define IMX5_CLK_END			189
+#define IMX5_CLK_STEP_SEL		189
+#define IMX5_CLK_CPU_PODF_SEL		190
+#define IMX5_CLK_ARM			191
+#define IMX5_CLK_FIRI_PRED		192
+#define IMX5_CLK_FIRI_SEL		193
+#define IMX5_CLK_FIRI_PODF		194
+#define IMX5_CLK_FIRI_SERIAL_GATE	195
+#define IMX5_CLK_FIRI_IPG_GATE		196
+#define IMX5_CLK_CSI0_MCLK1_PRED	197
+#define IMX5_CLK_CSI0_MCLK1_SEL		198
+#define IMX5_CLK_CSI0_MCLK1_PODF	199
+#define IMX5_CLK_CSI0_MCLK1_GATE	200
+#define IMX5_CLK_IEEE1588_PRED		201
+#define IMX5_CLK_IEEE1588_SEL		202
+#define IMX5_CLK_IEEE1588_PODF		203
+#define IMX5_CLK_IEEE1588_GATE		204
+#define IMX5_CLK_SCC2_IPG_GATE		205
+#define IMX5_CLK_END			206
 
 #endif /* __DT_BINDINGS_CLOCK_IMX5_H */

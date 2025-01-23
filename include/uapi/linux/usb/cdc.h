@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * USB Communications Device Class (CDC) definitions
  *
@@ -6,8 +7,8 @@
  * firmware based USB peripherals.
  */
 
-#ifndef __LINUX_USB_CDC_H
-#define __LINUX_USB_CDC_H
+#ifndef __UAPI_LINUX_USB_CDC_H
+#define __UAPI_LINUX_USB_CDC_H
 
 #include <linux/types.h>
 
@@ -56,6 +57,7 @@
 #define USB_CDC_OBEX_TYPE		0x15
 #define USB_CDC_NCM_TYPE		0x1a
 #define USB_CDC_MBIM_TYPE		0x1b
+#define USB_CDC_MBIM_EXTENDED_TYPE	0x1c
 
 /* "Header Functional Descriptor" from CDC spec  5.2.3.1 */
 struct usb_cdc_header_desc {
@@ -169,7 +171,7 @@ struct usb_cdc_mdlm_detail_desc {
 
 	/* type is associated with mdlm_desc.bGUID */
 	__u8	bGuidDescriptorType;
-	__u8	bDetailData[0];
+	__u8	bDetailData[];
 } __attribute__ ((packed));
 
 /* "OBEX Control Model Functional Descriptor" */
@@ -203,6 +205,17 @@ struct usb_cdc_mbim_desc {
 	__u8    bMaxFilterSize;
 	__le16  wMaxSegmentSize;
 	__u8    bmNetworkCapabilities;
+} __attribute__ ((packed));
+
+/* "MBIM Extended Functional Descriptor" from CDC MBIM spec 1.0 errata-1 */
+struct usb_cdc_mbim_extended_desc {
+	__u8	bLength;
+	__u8	bDescriptorType;
+	__u8	bDescriptorSubType;
+
+	__le16	bcdMBIMExtendedVersion;
+	__u8	bMaxOutstandingCommandMessages;
+	__le16	wMTU;
 } __attribute__ ((packed));
 
 /*-------------------------------------------------------------------------*/
@@ -258,6 +271,10 @@ struct usb_cdc_line_coding {
 	__u8	bDataBits;
 } __attribute__ ((packed));
 
+/* Control Signal Bitmap Values from 6.2.14 SetControlLineState */
+#define USB_CDC_CTRL_DTR			(1 << 0)
+#define USB_CDC_CTRL_RTS			(1 << 1)
+
 /* table 62; bits in multicast filter */
 #define	USB_CDC_PACKET_TYPE_PROMISCUOUS		(1 << 0)
 #define	USB_CDC_PACKET_TYPE_ALL_MULTICAST	(1 << 1) /* no filter */
@@ -288,6 +305,15 @@ struct usb_cdc_notification {
 	__le16	wIndex;
 	__le16	wLength;
 } __attribute__ ((packed));
+
+/* UART State Bitmap Values from 6.3.5 SerialState */
+#define USB_CDC_SERIAL_STATE_DCD		(1 << 0)
+#define USB_CDC_SERIAL_STATE_DSR		(1 << 1)
+#define USB_CDC_SERIAL_STATE_BREAK		(1 << 2)
+#define USB_CDC_SERIAL_STATE_RING_SIGNAL	(1 << 3)
+#define USB_CDC_SERIAL_STATE_FRAMING		(1 << 4)
+#define USB_CDC_SERIAL_STATE_PARITY		(1 << 5)
+#define USB_CDC_SERIAL_STATE_OVERRUN		(1 << 6)
 
 struct usb_cdc_speed_change {
 	__le32	DLBitRRate;	/* contains the downlink bit rate (IN pipe) */
@@ -366,7 +392,7 @@ struct usb_cdc_ncm_ndp16 {
 	__le32	dwSignature;
 	__le16	wLength;
 	__le16	wNextNdpIndex;
-	struct	usb_cdc_ncm_dpe16 dpe16[0];
+	struct	usb_cdc_ncm_dpe16 dpe16[];
 } __attribute__ ((packed));
 
 /* 32-bit NCM Datagram Pointer Entry */
@@ -382,7 +408,7 @@ struct usb_cdc_ncm_ndp32 {
 	__le16	wReserved6;
 	__le32	dwNextNdpIndex;
 	__le32	dwReserved12;
-	struct	usb_cdc_ncm_dpe32 dpe32[0];
+	struct	usb_cdc_ncm_dpe32 dpe32[];
 } __attribute__ ((packed));
 
 /* CDC NCM subclass 3.2.1 and 3.2.2 */
@@ -432,4 +458,4 @@ struct usb_cdc_ncm_ndp_input_size {
 #define USB_CDC_NCM_CRC_NOT_APPENDED			0x00
 #define USB_CDC_NCM_CRC_APPENDED			0x01
 
-#endif /* __LINUX_USB_CDC_H */
+#endif /* __UAPI_LINUX_USB_CDC_H */

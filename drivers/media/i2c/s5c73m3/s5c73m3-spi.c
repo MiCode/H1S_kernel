@@ -1,18 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Samsung LSI S5C73M3 8M pixel camera driver
  *
  * Copyright (C) 2012, Samsung Electronics, Co., Ltd.
  * Sylwester Nawrocki <s.nawrocki@samsung.com>
  * Andrzej Hajda <a.hajda@samsung.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/sizes.h>
@@ -26,6 +18,12 @@
 #include "s5c73m3.h"
 
 #define S5C73M3_SPI_DRV_NAME "S5C73M3-SPI"
+
+static const struct of_device_id s5c73m3_spi_ids[] = {
+	{ .compatible = "samsung,s5c73m3" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, s5c73m3_spi_ids);
 
 enum spi_direction {
 	SPI_DIR_RX,
@@ -47,7 +45,7 @@ static int spi_xmit(struct spi_device *spi_dev, void *addr, const int len,
 		xfer.rx_buf = addr;
 
 	if (spi_dev == NULL) {
-		dev_err(&spi_dev->dev, "SPI device is uninitialized\n");
+		pr_err("SPI device is uninitialized\n");
 		return -ENODEV;
 	}
 
@@ -132,20 +130,13 @@ static int s5c73m3_spi_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int s5c73m3_spi_remove(struct spi_device *spi)
-{
-	return 0;
-}
-
 int s5c73m3_register_spi_driver(struct s5c73m3 *state)
 {
 	struct spi_driver *spidrv = &state->spidrv;
 
-	spidrv->remove = s5c73m3_spi_remove;
 	spidrv->probe = s5c73m3_spi_probe;
 	spidrv->driver.name = S5C73M3_SPI_DRV_NAME;
-	spidrv->driver.bus = &spi_bus_type;
-	spidrv->driver.owner = THIS_MODULE;
+	spidrv->driver.of_match_table = s5c73m3_spi_ids;
 
 	return spi_register_driver(spidrv);
 }

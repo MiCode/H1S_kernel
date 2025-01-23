@@ -28,7 +28,7 @@ static int(*get_fallback_sprom)(struct bcma_bus *dev, struct ssb_sprom *out);
  * callback handler which fills the SPROM data structure. The fallback is
  * used for PCI based BCMA devices, where no valid SPROM can be found
  * in the shadow registers and to provide the SPROM for SoCs where BCMA is
- * to controll the system bus.
+ * to control the system bus.
  *
  * This function is useful for weird architectures that have a half-assed
  * BCMA device hardwired to their PCI bus.
@@ -165,7 +165,7 @@ static int bcma_sprom_valid(struct bcma_bus *bus, const u16 *sprom,
 		return err;
 
 	revision = sprom[words - 1] & SSB_SPROM_REVISION_REV;
-	if (revision != 8 && revision != 9 && revision != 10) {
+	if (revision < 8 || revision > 11) {
 		pr_err("Unsupported SPROM revision: %d\n", revision);
 		return -ENOENT;
 	}
@@ -201,11 +201,28 @@ static int bcma_sprom_valid(struct bcma_bus *bus, const u16 *sprom,
 		SPEX(_field[7], _offset + 14, _mask, _shift);	\
 	} while (0)
 
+static s8 sprom_extract_antgain(const u16 *in, u16 offset, u16 mask, u16 shift)
+{
+	u16 v;
+	u8 gain;
+
+	v = in[SPOFF(offset)];
+	gain = (v & mask) >> shift;
+	if (gain == 0xFF) {
+		gain = 8; /* If unset use 2dBm */
+	} else {
+		/* Q5.2 Fractional part is stored in 0xC0 */
+		gain = ((gain & 0xC0) >> 6) | ((gain & 0x3F) << 2);
+	}
+
+	return (s8)gain;
+}
+
 static void bcma_sprom_extract_r8(struct bcma_bus *bus, const u16 *sprom)
 {
 	u16 v, o;
 	int i;
-	u16 pwr_info_offset[] = {
+	static const u16 pwr_info_offset[] = {
 		SSB_SROM8_PWR_INFO_CORE0, SSB_SROM8_PWR_INFO_CORE1,
 		SSB_SROM8_PWR_INFO_CORE2, SSB_SROM8_PWR_INFO_CORE3
 	};
@@ -264,7 +281,7 @@ static void bcma_sprom_extract_r8(struct bcma_bus *bus, const u16 *sprom)
 	SPEX(alpha2[0], SSB_SPROM8_CCODE, 0xff00, 8);
 	SPEX(alpha2[1], SSB_SPROM8_CCODE, 0x00ff, 0);
 
-	/* Extract cores power info info */
+	/* Extract core's power info */
 	for (i = 0; i < ARRAY_SIZE(pwr_info_offset); i++) {
 		o = pwr_info_offset[i];
 		SPEX(core_pwr_info[i].itssi_2g, o + SSB_SROM8_2G_MAXP_ITSSI,
@@ -381,14 +398,22 @@ static void bcma_sprom_extract_r8(struct bcma_bus *bus, const u16 *sprom)
 	SPEX32(ofdm5ghpo, SSB_SPROM8_OFDM5GHPO, ~0, 0);
 
 	/* Extract the antenna gain values. */
-	SPEX(antenna_gain.a0, SSB_SPROM8_AGAIN01,
-	     SSB_SPROM8_AGAIN0, SSB_SPROM8_AGAIN0_SHIFT);
-	SPEX(antenna_gain.a1, SSB_SPROM8_AGAIN01,
-	     SSB_SPROM8_AGAIN1, SSB_SPROM8_AGAIN1_SHIFT);
-	SPEX(antenna_gain.a2, SSB_SPROM8_AGAIN23,
-	     SSB_SPROM8_AGAIN2, SSB_SPROM8_AGAIN2_SHIFT);
-	SPEX(antenna_gain.a3, SSB_SPROM8_AGAIN23,
-	     SSB_SPROM8_AGAIN3, SSB_SPROM8_AGAIN3_SHIFT);
+	bus->sprom.antenna_gain.a0 = sprom_extract_antgain(sprom,
+							   SSB_SPROM8_AGAIN01,
+							   SSB_SPROM8_AGAIN0,
+							   SSB_SPROM8_AGAIN0_SHIFT);
+	bus->sprom.antenna_gain.a1 = sprom_extract_antgain(sprom,
+							   SSB_SPROM8_AGAIN01,
+							   SSB_SPROM8_AGAIN1,
+							   SSB_SPROM8_AGAIN1_SHIFT);
+	bus->sprom.antenna_gain.a2 = sprom_extract_antgain(sprom,
+							   SSB_SPROM8_AGAIN23,
+							   SSB_SPROM8_AGAIN2,
+							   SSB_SPROM8_AGAIN2_SHIFT);
+	bus->sprom.antenna_gain.a3 = sprom_extract_antgain(sprom,
+							   SSB_SPROM8_AGAIN23,
+							   SSB_SPROM8_AGAIN3,
+							   SSB_SPROM8_AGAIN3_SHIFT);
 
 	SPEX(leddc_on_time, SSB_SPROM8_LEDDC, SSB_SPROM8_LEDDC_ON,
 	     SSB_SPROM8_LEDDC_ON_SHIFT);
@@ -509,6 +534,8 @@ static bool bcma_sprom_onchip_available(struct bcma_bus *bus)
 		/* for these chips OTP is always available */
 		present = true;
 		break;
+	case BCMA_CHIP_ID_BCM43131:
+	case BCMA_CHIP_ID_BCM43217:
 	case BCMA_CHIP_ID_BCM43227:
 	case BCMA_CHIP_ID_BCM43228:
 	case BCMA_CHIP_ID_BCM43428:
@@ -551,8 +578,11 @@ int bcma_sprom_get(struct bcma_bus *bus)
 {
 	u16 offset = BCMA_CC_SPROM;
 	u16 *sprom;
-	size_t sprom_sizes[] = { SSB_SPROMSIZE_WORDS_R4,
-				 SSB_SPROMSIZE_WORDS_R10, };
+	static const size_t sprom_sizes[] = {
+		SSB_SPROMSIZE_WORDS_R4,
+		SSB_SPROMSIZE_WORDS_R10,
+		SSB_SPROMSIZE_WORDS_R11,
+	};
 	int i, err = 0;
 
 	if (!bus->drv_cc.core)

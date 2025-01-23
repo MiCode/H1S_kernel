@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2011 Red Hat, Inc.
  *
@@ -8,6 +9,17 @@
 #define DM_SPACE_MAP_METADATA_H
 
 #include "dm-transaction-manager.h"
+
+#define DM_SM_METADATA_BLOCK_SIZE (4096 >> SECTOR_SHIFT)
+
+/*
+ * The metadata device is currently limited in size.
+ *
+ * We have one block of index, which can hold 255 index entries.  Each
+ * index entry contains allocation info about ~16k metadata blocks.
+ */
+#define DM_SM_METADATA_MAX_BLOCKS (255 * ((1 << 14) - 64))
+#define DM_SM_METADATA_MAX_SECTORS (DM_SM_METADATA_MAX_BLOCKS * DM_SM_METADATA_BLOCK_SIZE)
 
 /*
  * Unfortunately we have to use two-phase construction due to the cycle

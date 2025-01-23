@@ -1,26 +1,21 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* Instantiate a public key crypto key from an X.509 Certificate
  *
  * Copyright (C) 2012 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public Licence
- * as published by the Free Software Foundation; either version
- * 2 of the Licence, or (at your option) any later version.
  */
 
 #define pr_fmt(fmt) "X.509: "fmt
+#include <crypto/hash.h>
+#include <crypto/sm2.h>
+#include <keys/asymmetric-parser.h>
+#include <keys/asymmetric-subtype.h>
+#include <keys/system_keyring.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
-#include <linux/err.h>
-#include <linux/mpi.h>
-#include <linux/asn1_decoder.h>
-#include <keys/asymmetric-subtype.h>
-#include <keys/asymmetric-parser.h>
-#include <crypto/hash.h>
+#include <linux/string.h>
 #include "asymmetric_keys.h"
-#include "public_key.h"
 #include "x509_parser.h"
 
 /*
@@ -29,87 +24,148 @@
  */
 int x509_get_sig_params(struct x509_certificate *cert)
 {
+	struct public_key_signature *sig = cert->sig;
 	struct crypto_shash *tfm;
 	struct shash_desc *desc;
-	size_t digest_size, desc_size;
-	void *digest;
+	size_t desc_size;
 	int ret;
 
 	pr_devel("==>%s()\n", __func__);
 
-	if (cert->sig.rsa.s)
-		return 0;
-
-	cert->sig.rsa.s = mpi_read_raw_data(cert->raw_sig, cert->raw_sig_size);
-	if (!cert->sig.rsa.s)
+	sig->s = kmemdup(cert->raw_sig, cert->raw_sig_size, GFP_KERNEL);
+	if (!sig->s)
 		return -ENOMEM;
-	cert->sig.nr_mpi = 1;
+
+	sig->s_size = cert->raw_sig_size;
 
 	/* Allocate the hashing algorithm we're going to need and find out how
 	 * big the hash operational data will be.
 	 */
-	tfm = crypto_alloc_shash(hash_algo_name[cert->sig.pkey_hash_algo], 0, 0);
-	if (IS_ERR(tfm))
-		return (PTR_ERR(tfm) == -ENOENT) ? -ENOPKG : PTR_ERR(tfm);
+	tfm = crypto_alloc_shash(sig->hash_algo, 0, 0);
+	if (IS_ERR(tfm)) {
+		if (PTR_ERR(tfm) == -ENOENT) {
+			cert->unsupported_sig = true;
+			return 0;
+		}
+		return PTR_ERR(tfm);
+	}
 
 	desc_size = crypto_shash_descsize(tfm) + sizeof(*desc);
-	digest_size = crypto_shash_digestsize(tfm);
+	sig->digest_size = crypto_shash_digestsize(tfm);
 
-	/* We allocate the hash operational data storage on the end of the
-	 * digest storage space.
-	 */
 	ret = -ENOMEM;
-	digest = kzalloc(digest_size + desc_size, GFP_KERNEL);
-	if (!digest)
+	sig->digest = kmalloc(sig->digest_size, GFP_KERNEL);
+	if (!sig->digest)
 		goto error;
 
-	cert->sig.digest = digest;
-	cert->sig.digest_size = digest_size;
+	desc = kzalloc(desc_size, GFP_KERNEL);
+	if (!desc)
+		goto error;
 
-	desc = digest + digest_size;
 	desc->tfm = tfm;
-	desc->flags = CRYPTO_TFM_REQ_MAY_SLEEP;
 
-	ret = crypto_shash_init(desc);
+	if (strcmp(cert->pub->pkey_algo, "sm2") == 0) {
+		ret = strcmp(sig->hash_algo, "sm3") != 0 ? -EINVAL :
+		      crypto_shash_init(desc) ?:
+		      sm2_compute_z_digest(desc, cert->pub->key,
+					   cert->pub->keylen, sig->digest) ?:
+		      crypto_shash_init(desc) ?:
+		      crypto_shash_update(desc, sig->digest,
+					  sig->digest_size) ?:
+		      crypto_shash_finup(desc, cert->tbs, cert->tbs_size,
+					 sig->digest);
+	} else {
+		ret = crypto_shash_digest(desc, cert->tbs, cert->tbs_size,
+					  sig->digest);
+	}
+
 	if (ret < 0)
-		goto error;
-	might_sleep();
-	ret = crypto_shash_finup(desc, cert->tbs, cert->tbs_size, digest);
+		goto error_2;
+
+	ret = is_hash_blacklisted(sig->digest, sig->digest_size,
+				  BLACKLIST_HASH_X509_TBS);
+	if (ret == -EKEYREJECTED) {
+		pr_err("Cert %*phN is blacklisted\n",
+		       sig->digest_size, sig->digest);
+		cert->blacklisted = true;
+		ret = 0;
+	}
+
+error_2:
+	kfree(desc);
 error:
 	crypto_free_shash(tfm);
 	pr_devel("<==%s() = %d\n", __func__, ret);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(x509_get_sig_params);
 
 /*
- * Check the signature on a certificate using the provided public key
+ * Check for self-signedness in an X.509 cert and if found, check the signature
+ * immediately if we can.
  */
-int x509_check_signature(const struct public_key *pub,
-			 struct x509_certificate *cert)
+int x509_check_for_self_signed(struct x509_certificate *cert)
 {
-	int ret;
+	int ret = 0;
 
 	pr_devel("==>%s()\n", __func__);
 
-	ret = x509_get_sig_params(cert);
-	if (ret < 0)
-		return ret;
+	if (cert->raw_subject_size != cert->raw_issuer_size ||
+	    memcmp(cert->raw_subject, cert->raw_issuer,
+		   cert->raw_issuer_size) != 0)
+		goto not_self_signed;
 
-	ret = public_key_verify_signature(pub, &cert->sig);
-	pr_debug("Cert Verification: %d\n", ret);
+	if (cert->sig->auth_ids[0] || cert->sig->auth_ids[1]) {
+		/* If the AKID is present it may have one or two parts.  If
+		 * both are supplied, both must match.
+		 */
+		bool a = asymmetric_key_id_same(cert->skid, cert->sig->auth_ids[1]);
+		bool b = asymmetric_key_id_same(cert->id, cert->sig->auth_ids[0]);
+
+		if (!a && !b)
+			goto not_self_signed;
+
+		ret = -EKEYREJECTED;
+		if (((a && !b) || (b && !a)) &&
+		    cert->sig->auth_ids[0] && cert->sig->auth_ids[1])
+			goto out;
+	}
+
+	if (cert->unsupported_sig) {
+		ret = 0;
+		goto out;
+	}
+
+	ret = public_key_verify_signature(cert->pub, cert->sig);
+	if (ret < 0) {
+		if (ret == -ENOPKG) {
+			cert->unsupported_sig = true;
+			ret = 0;
+		}
+		goto out;
+	}
+
+	pr_devel("Cert Self-signature verified");
+	cert->self_signed = true;
+
+out:
+	pr_devel("<==%s() = %d\n", __func__, ret);
 	return ret;
+
+not_self_signed:
+	pr_devel("<==%s() = 0 [not]\n", __func__);
+	return 0;
 }
-EXPORT_SYMBOL_GPL(x509_check_signature);
 
 /*
  * Attempt to parse a data blob for a key as an X509 certificate.
  */
 static int x509_key_preparse(struct key_preparsed_payload *prep)
 {
+	struct asymmetric_key_ids *kids;
 	struct x509_certificate *cert;
+	const char *q;
 	size_t srlen, sulen;
-	char *desc = NULL;
+	char *desc = NULL, *p;
 	int ret;
 
 	cert = x509_cert_parse(prep->data, prep->datalen);
@@ -118,75 +174,80 @@ static int x509_key_preparse(struct key_preparsed_payload *prep)
 
 	pr_devel("Cert Issuer: %s\n", cert->issuer);
 	pr_devel("Cert Subject: %s\n", cert->subject);
+	pr_devel("Cert Key Algo: %s\n", cert->pub->pkey_algo);
+	pr_devel("Cert Valid period: %lld-%lld\n", cert->valid_from, cert->valid_to);
 
-	if (cert->pub->pkey_algo >= PKEY_ALGO__LAST ||
-	    cert->sig.pkey_algo >= PKEY_ALGO__LAST ||
-	    cert->sig.pkey_hash_algo >= PKEY_HASH__LAST ||
-	    !pkey_algo[cert->pub->pkey_algo] ||
-	    !pkey_algo[cert->sig.pkey_algo] ||
-	    !hash_algo_name[cert->sig.pkey_hash_algo]) {
-		ret = -ENOPKG;
+	cert->pub->id_type = "X509";
+
+	if (cert->unsupported_sig) {
+		public_key_signature_free(cert->sig);
+		cert->sig = NULL;
+	} else {
+		pr_devel("Cert Signature: %s + %s\n",
+			 cert->sig->pkey_algo, cert->sig->hash_algo);
+	}
+
+	/* Don't permit addition of blacklisted keys */
+	ret = -EKEYREJECTED;
+	if (cert->blacklisted)
 		goto error_free_cert;
-	}
-
-	pr_devel("Cert Key Algo: %s\n", pkey_algo_name[cert->pub->pkey_algo]);
-	pr_devel("Cert Valid From: %04ld-%02d-%02d %02d:%02d:%02d\n",
-		 cert->valid_from.tm_year + 1900, cert->valid_from.tm_mon + 1,
-		 cert->valid_from.tm_mday, cert->valid_from.tm_hour,
-		 cert->valid_from.tm_min,  cert->valid_from.tm_sec);
-	pr_devel("Cert Valid To: %04ld-%02d-%02d %02d:%02d:%02d\n",
-		 cert->valid_to.tm_year + 1900, cert->valid_to.tm_mon + 1,
-		 cert->valid_to.tm_mday, cert->valid_to.tm_hour,
-		 cert->valid_to.tm_min,  cert->valid_to.tm_sec);
-	pr_devel("Cert Signature: %s + %s\n",
-		 pkey_algo_name[cert->sig.pkey_algo],
-		 hash_algo_name[cert->sig.pkey_hash_algo]);
-
-	if (!cert->fingerprint) {
-		pr_warn("Cert for '%s' must have a SubjKeyId extension\n",
-			cert->subject);
-		ret = -EKEYREJECTED;
-		goto error_free_cert;
-	}
-
-	cert->pub->algo = pkey_algo[cert->pub->pkey_algo];
-	cert->pub->id_type = PKEY_ID_X509;
-
-	/* Check the signature on the key if it appears to be self-signed */
-	if (!cert->authority ||
-	    strcmp(cert->fingerprint, cert->authority) == 0) {
-		ret = x509_check_signature(cert->pub, cert);
-		if (ret < 0)
-			goto error_free_cert;
-	}
 
 	/* Propose a description */
 	sulen = strlen(cert->subject);
-	srlen = strlen(cert->fingerprint);
+	if (cert->raw_skid) {
+		srlen = cert->raw_skid_size;
+		q = cert->raw_skid;
+	} else {
+		srlen = cert->raw_serial_size;
+		q = cert->raw_serial;
+	}
+
 	ret = -ENOMEM;
-	desc = kmalloc(sulen + 2 + srlen + 1, GFP_KERNEL);
+	desc = kmalloc(sulen + 2 + srlen * 2 + 1, GFP_KERNEL);
 	if (!desc)
 		goto error_free_cert;
-	memcpy(desc, cert->subject, sulen);
-	desc[sulen] = ':';
-	desc[sulen + 1] = ' ';
-	memcpy(desc + sulen + 2, cert->fingerprint, srlen);
-	desc[sulen + 2 + srlen] = 0;
+	p = memcpy(desc, cert->subject, sulen);
+	p += sulen;
+	*p++ = ':';
+	*p++ = ' ';
+	p = bin2hex(p, q, srlen);
+	*p = 0;
+
+	kids = kmalloc(sizeof(struct asymmetric_key_ids), GFP_KERNEL);
+	if (!kids)
+		goto error_free_desc;
+	kids->id[0] = cert->id;
+	kids->id[1] = cert->skid;
+	kids->id[2] = asymmetric_key_generate_id(cert->raw_subject,
+						 cert->raw_subject_size,
+						 "", 0);
+	if (IS_ERR(kids->id[2])) {
+		ret = PTR_ERR(kids->id[2]);
+		goto error_free_kids;
+	}
 
 	/* We're pinning the module by being linked against it */
 	__module_get(public_key_subtype.owner);
-	prep->type_data[0] = &public_key_subtype;
-	prep->type_data[1] = cert->fingerprint;
-	prep->payload = cert->pub;
+	prep->payload.data[asym_subtype] = &public_key_subtype;
+	prep->payload.data[asym_key_ids] = kids;
+	prep->payload.data[asym_crypto] = cert->pub;
+	prep->payload.data[asym_auth] = cert->sig;
 	prep->description = desc;
 	prep->quotalen = 100;
 
 	/* We've finished with the certificate */
 	cert->pub = NULL;
-	cert->fingerprint = NULL;
+	cert->id = NULL;
+	cert->skid = NULL;
+	cert->sig = NULL;
 	desc = NULL;
+	kids = NULL;
 	ret = 0;
 
+error_free_kids:
+	kfree(kids);
+error_free_desc:
+	kfree(desc);
 error_free_cert:
 	x509_free_certificate(cert);
 	return ret;
@@ -215,4 +276,5 @@ module_init(x509_key_init);
 module_exit(x509_key_exit);
 
 MODULE_DESCRIPTION("X.509 certificate parser");
+MODULE_AUTHOR("Red Hat, Inc.");
 MODULE_LICENSE("GPL");

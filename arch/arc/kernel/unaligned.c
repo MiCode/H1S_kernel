@@ -1,17 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2011-2012 Synopsys (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * vineetg : May 2011
  *  -Adapted (from .26 to .35)
  *  -original contribution by Tim.yao@amlogic.com
- *
  */
 
 #include <linux/types.h>
+#include <linux/perf_event.h>
 #include <linux/ptrace.h>
 #include <linux/uaccess.h>
 #include <asm/disasm.h>
@@ -33,7 +30,7 @@
 	"	.section .fixup,\"ax\"\n"		\
 	"	.align	4\n"				\
 	"3:	mov	%0, 1\n"			\
-	"	b	2b\n"				\
+	"	j	2b\n"				\
 	"	.previous\n"				\
 	"	.section __ex_table,\"a\"\n"		\
 	"	.align	4\n"				\
@@ -81,7 +78,7 @@
 		"	.section .fixup,\"ax\"\n"	\
 		"	.align	4\n"			\
 		"4:	mov	%0, 1\n"		\
-		"	b	3b\n"			\
+		"	j	3b\n"			\
 		"	.previous\n"			\
 		"	.section __ex_table,\"a\"\n"	\
 		"	.align	4\n"			\
@@ -112,7 +109,7 @@
 		"	.section .fixup,\"ax\"\n"	\
 		"	.align	4\n"			\
 		"6:	mov	%0, 1\n"		\
-		"	b	5b\n"			\
+		"	j	5b\n"			\
 		"	.previous\n"			\
 		"	.section __ex_table,\"a\"\n"	\
 		"	.align	4\n"			\
@@ -240,8 +237,9 @@ int misaligned_fixup(unsigned long address, struct pt_regs *regs,
 	if (state.fault)
 		goto fault;
 
+	/* clear any remnants of delay slot */
 	if (delay_mode(regs)) {
-		regs->ret = regs->bta;
+		regs->ret = regs->bta & ~1U;
 		regs->status32 &= ~STATUS_DE_MASK;
 	} else {
 		regs->ret += state.instr_len;
@@ -253,6 +251,7 @@ int misaligned_fixup(unsigned long address, struct pt_regs *regs,
 		}
 	}
 
+	perf_sw_event(PERF_COUNT_SW_ALIGNMENT_FAULTS, 1, regs, address);
 	return 0;
 
 fault:

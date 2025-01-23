@@ -1,17 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright 2011 IBM Corporation.
- *
- *  This program is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public License
- *  as published by the Free Software Foundation; either version
- *  2 of the License, or (at your option) any later version.
- *
  */
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/irq.h>
 #include <linux/smp.h>
 #include <linux/interrupt.h>
+#include <linux/irqdomain.h>
 #include <linux/cpu.h>
 #include <linux/of.h>
 
@@ -112,10 +108,10 @@ static unsigned int icp_hv_get_irq(void)
 	unsigned int irq;
 
 	if (vec == XICS_IRQ_SPURIOUS)
-		return NO_IRQ;
+		return 0;
 
 	irq = irq_find_mapping(xics_host, vec);
-	if (likely(irq != NO_IRQ)) {
+	if (likely(irq)) {
 		xics_push_cppr(vec);
 		return irq;
 	}
@@ -126,7 +122,7 @@ static unsigned int icp_hv_get_irq(void)
 	/* We might learn about it later, so EOI it */
 	icp_hv_set_xirr(xirr);
 
-	return NO_IRQ;
+	return 0;
 }
 
 static void icp_hv_set_cpu_priority(unsigned char cppr)
@@ -138,7 +134,7 @@ static void icp_hv_set_cpu_priority(unsigned char cppr)
 
 #ifdef CONFIG_SMP
 
-static void icp_hv_cause_ipi(int cpu, unsigned long data)
+static void icp_hv_cause_ipi(int cpu)
 {
 	icp_hv_set_qirr(cpu, IPI_PRIORITY);
 }
@@ -166,7 +162,7 @@ static const struct icp_ops icp_hv_ops = {
 #endif
 };
 
-int icp_hv_init(void)
+int __init icp_hv_init(void)
 {
 	struct device_node *np;
 
@@ -179,6 +175,7 @@ int icp_hv_init(void)
 
 	icp_ops = &icp_hv_ops;
 
+	of_node_put(np);
 	return 0;
 }
 

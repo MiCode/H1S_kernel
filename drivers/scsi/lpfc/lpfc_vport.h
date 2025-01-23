@@ -1,9 +1,11 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
+ * Copyright (C) 2017-2022 Broadcom. All Rights Reserved. The term *
+ * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.     *
  * Copyright (C) 2004-2006 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
- * www.emulex.com                                                  *
+ * www.broadcom.com                                                *
  * Portions Copyright (C) 2004-2005 Christoph Hellwig              *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
@@ -112,9 +114,5 @@ struct vport_cmd_tag {
 
 void lpfc_vport_set_state(struct lpfc_vport *vport,
 			  enum fc_vport_state new_state);
-
-void lpfc_vport_reset_stat_data(struct lpfc_vport *);
-void lpfc_alloc_bucket(struct lpfc_vport *);
-void lpfc_free_bucket(struct lpfc_vport *);
 
 #endif /* H_LPFC_VPORT */

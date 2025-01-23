@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef ASMARM_DMA_IOMMU_H
 #define ASMARM_DMA_IOMMU_H
 
@@ -5,17 +6,17 @@
 
 #include <linux/mm_types.h>
 #include <linux/scatterlist.h>
-#include <linux/dma-debug.h>
-#include <linux/kmemcheck.h>
 #include <linux/kref.h>
 
 struct dma_iommu_mapping {
 	/* iommu specific data */
 	struct iommu_domain	*domain;
 
-	void			*bitmap;
-	size_t			bits;
-	unsigned int		order;
+	unsigned long		**bitmaps;	/* array of bitmaps */
+	unsigned int		nr_bitmaps;	/* nr of elements in array */
+	unsigned int		extensions;
+	size_t			bitmap_size;	/* size of a single bitmap */
+	size_t			bits;		/* per bitmap */
 	dma_addr_t		base;
 
 	spinlock_t		lock;
@@ -23,8 +24,7 @@ struct dma_iommu_mapping {
 };
 
 struct dma_iommu_mapping *
-arm_iommu_create_mapping(struct bus_type *bus, dma_addr_t base, size_t size,
-			 int order);
+arm_iommu_create_mapping(const struct bus_type *bus, dma_addr_t base, u64 size);
 
 void arm_iommu_release_mapping(struct dma_iommu_mapping *mapping);
 

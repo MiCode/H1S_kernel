@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * DaVinci MDIO Module driver
  *
@@ -7,22 +8,6 @@
  *
  * Copyright (C) 2009 Texas Instruments.
  *
- * ---------------------------------------------------------------------------
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- * ---------------------------------------------------------------------------
  */
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -34,11 +19,14 @@
 #include <linux/clk.h>
 #include <linux/err.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/pm_runtime.h>
 #include <linux/davinci_emac.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/of_mdio.h>
 #include <linux/pinctrl/consumer.h>
+#include <linux/mdio-bitbang.h>
+#include <linux/sys_soc.h>
 
 /*
  * This timeout definition is a worst-case ultra defensive measure against
@@ -52,12 +40,26 @@
 
 #define DEF_OUT_FREQ		2200000		/* 2.2 MHz */
 
+struct davinci_mdio_of_param {
+	int autosuspend_delay_ms;
+	bool manual_mode;
+};
+
 struct davinci_mdio_regs {
 	u32	version;
 	u32	control;
 #define CONTROL_IDLE		BIT(31)
 #define CONTROL_ENABLE		BIT(30)
 #define CONTROL_MAX_DIV		(0xffff)
+#define CONTROL_CLKDIV		GENMASK(15, 0)
+
+#define MDIO_MAN_MDCLK_O	BIT(2)
+#define MDIO_MAN_OE		BIT(1)
+#define MDIO_MAN_PIN		BIT(0)
+#define MDIO_MANUALMODE		BIT(31)
+
+#define MDIO_PIN               0
+
 
 	u32	alive;
 	u32	link;
@@ -68,7 +70,9 @@ struct davinci_mdio_regs {
 	u32	userintmasked;
 	u32	userintmaskset;
 	u32	userintmaskclr;
-	u32	__reserved_1[20];
+	u32	manualif;
+	u32	poll;
+	u32	__reserved_1[18];
 
 	struct {
 		u32	access;
@@ -79,7 +83,7 @@ struct davinci_mdio_regs {
 #define USERACCESS_DATA		(0xffff)
 
 		u32	physel;
-	}	user[0];
+	}	user[];
 };
 
 static const struct mdio_platform_data default_pdata = {
@@ -88,16 +92,22 @@ static const struct mdio_platform_data default_pdata = {
 
 struct davinci_mdio_data {
 	struct mdio_platform_data pdata;
+	struct mdiobb_ctrl bb_ctrl;
 	struct davinci_mdio_regs __iomem *regs;
-	spinlock_t	lock;
 	struct clk	*clk;
 	struct device	*dev;
 	struct mii_bus	*bus;
-	bool		suspended;
+	bool            active_in_suspend;
 	unsigned long	access_time; /* jiffies */
+	/* Indicates that driver shouldn't modify phy_mask in case
+	 * if MDIO bus is registered from DT.
+	 */
+	bool		skip_scan;
+	u32		clk_div;
+	bool		manual_mode;
 };
 
-static void __davinci_mdio_reset(struct davinci_mdio_data *data)
+static void davinci_mdio_init_clk(struct davinci_mdio_data *data)
 {
 	u32 mdio_in, div, mdio_out_khz, access_time;
 
@@ -106,9 +116,7 @@ static void __davinci_mdio_reset(struct davinci_mdio_data *data)
 	if (div > CONTROL_MAX_DIV)
 		div = CONTROL_MAX_DIV;
 
-	/* set enable and clock divider */
-	__raw_writel(div | CONTROL_ENABLE, &data->regs->control);
-
+	data->clk_div = div;
 	/*
 	 * One mdio transaction consists of:
 	 *	32 bits of preamble
@@ -129,23 +137,189 @@ static void __davinci_mdio_reset(struct davinci_mdio_data *data)
 		data->access_time = 1;
 }
 
-static int davinci_mdio_reset(struct mii_bus *bus)
+static void davinci_mdio_enable(struct davinci_mdio_data *data)
 {
-	struct davinci_mdio_data *data = bus->priv;
-	u32 phy_mask, ver;
+	/* set enable and clock divider */
+	writel(data->clk_div | CONTROL_ENABLE, &data->regs->control);
+}
 
-	__davinci_mdio_reset(data);
+static void davinci_mdio_disable(struct davinci_mdio_data *data)
+{
+	u32 reg;
+
+	/* Disable MDIO state machine */
+	reg = readl(&data->regs->control);
+
+	reg &= ~CONTROL_CLKDIV;
+	reg |= data->clk_div;
+
+	reg &= ~CONTROL_ENABLE;
+	writel(reg, &data->regs->control);
+}
+
+static void davinci_mdio_enable_manual_mode(struct davinci_mdio_data *data)
+{
+	u32 reg;
+	/* set manual mode */
+	reg = readl(&data->regs->poll);
+	reg |= MDIO_MANUALMODE;
+	writel(reg, &data->regs->poll);
+}
+
+static void davinci_set_mdc(struct mdiobb_ctrl *ctrl, int level)
+{
+	struct davinci_mdio_data *data;
+	u32 reg;
+
+	data = container_of(ctrl, struct davinci_mdio_data, bb_ctrl);
+	reg = readl(&data->regs->manualif);
+
+	if (level)
+		reg |= MDIO_MAN_MDCLK_O;
+	else
+		reg &= ~MDIO_MAN_MDCLK_O;
+
+	writel(reg, &data->regs->manualif);
+}
+
+static void davinci_set_mdio_dir(struct mdiobb_ctrl *ctrl, int output)
+{
+	struct davinci_mdio_data *data;
+	u32 reg;
+
+	data = container_of(ctrl, struct davinci_mdio_data, bb_ctrl);
+	reg = readl(&data->regs->manualif);
+
+	if (output)
+		reg |= MDIO_MAN_OE;
+	else
+		reg &= ~MDIO_MAN_OE;
+
+	writel(reg, &data->regs->manualif);
+}
+
+static void  davinci_set_mdio_data(struct mdiobb_ctrl *ctrl, int value)
+{
+	struct davinci_mdio_data *data;
+	u32 reg;
+
+	data = container_of(ctrl, struct davinci_mdio_data, bb_ctrl);
+	reg = readl(&data->regs->manualif);
+
+	if (value)
+		reg |= MDIO_MAN_PIN;
+	else
+		reg &= ~MDIO_MAN_PIN;
+
+	writel(reg, &data->regs->manualif);
+}
+
+static int davinci_get_mdio_data(struct mdiobb_ctrl *ctrl)
+{
+	struct davinci_mdio_data *data;
+	unsigned long reg;
+
+	data = container_of(ctrl, struct davinci_mdio_data, bb_ctrl);
+	reg = readl(&data->regs->manualif);
+	return test_bit(MDIO_PIN, &reg);
+}
+
+static int davinci_mdiobb_read_c22(struct mii_bus *bus, int phy, int reg)
+{
+	int ret;
+
+	ret = pm_runtime_resume_and_get(bus->parent);
+	if (ret < 0)
+		return ret;
+
+	ret = mdiobb_read_c22(bus, phy, reg);
+
+	pm_runtime_mark_last_busy(bus->parent);
+	pm_runtime_put_autosuspend(bus->parent);
+
+	return ret;
+}
+
+static int davinci_mdiobb_write_c22(struct mii_bus *bus, int phy, int reg,
+				    u16 val)
+{
+	int ret;
+
+	ret = pm_runtime_resume_and_get(bus->parent);
+	if (ret < 0)
+		return ret;
+
+	ret = mdiobb_write_c22(bus, phy, reg, val);
+
+	pm_runtime_mark_last_busy(bus->parent);
+	pm_runtime_put_autosuspend(bus->parent);
+
+	return ret;
+}
+
+static int davinci_mdiobb_read_c45(struct mii_bus *bus, int phy, int devad,
+				   int reg)
+{
+	int ret;
+
+	ret = pm_runtime_resume_and_get(bus->parent);
+	if (ret < 0)
+		return ret;
+
+	ret = mdiobb_read_c45(bus, phy, devad, reg);
+
+	pm_runtime_mark_last_busy(bus->parent);
+	pm_runtime_put_autosuspend(bus->parent);
+
+	return ret;
+}
+
+static int davinci_mdiobb_write_c45(struct mii_bus *bus, int phy, int devad,
+				    int reg, u16 val)
+{
+	int ret;
+
+	ret = pm_runtime_resume_and_get(bus->parent);
+	if (ret < 0)
+		return ret;
+
+	ret = mdiobb_write_c45(bus, phy, devad, reg, val);
+
+	pm_runtime_mark_last_busy(bus->parent);
+	pm_runtime_put_autosuspend(bus->parent);
+
+	return ret;
+}
+
+static int davinci_mdio_common_reset(struct davinci_mdio_data *data)
+{
+	u32 phy_mask, ver;
+	int ret;
+
+	ret = pm_runtime_resume_and_get(data->dev);
+	if (ret < 0)
+		return ret;
+
+	if (data->manual_mode) {
+		davinci_mdio_disable(data);
+		davinci_mdio_enable_manual_mode(data);
+	}
 
 	/* wait for scan logic to settle */
 	msleep(PHY_MAX_ADDR * data->access_time);
 
 	/* dump hardware version info */
-	ver = __raw_readl(&data->regs->version);
-	dev_info(data->dev, "davinci mdio revision %d.%d\n",
-		 (ver >> 8) & 0xff, ver & 0xff);
+	ver = readl(&data->regs->version);
+	dev_info(data->dev,
+		 "davinci mdio revision %d.%d, bus freq %ld\n",
+		 (ver >> 8) & 0xff, ver & 0xff,
+		 data->pdata.bus_freq);
+
+	if (data->skip_scan)
+		goto done;
 
 	/* get phy mask from the alive register */
-	phy_mask = __raw_readl(&data->regs->alive);
+	phy_mask = readl(&data->regs->alive);
 	if (phy_mask) {
 		/* restrict mdio bus to live phys only */
 		dev_info(data->dev, "detected phy mask %x\n", ~phy_mask);
@@ -157,7 +331,28 @@ static int davinci_mdio_reset(struct mii_bus *bus)
 	}
 	data->bus->phy_mask = phy_mask;
 
+done:
+	pm_runtime_mark_last_busy(data->dev);
+	pm_runtime_put_autosuspend(data->dev);
+
 	return 0;
+}
+
+static int davinci_mdio_reset(struct mii_bus *bus)
+{
+	struct davinci_mdio_data *data = bus->priv;
+
+	return davinci_mdio_common_reset(data);
+}
+
+static int davinci_mdiobb_reset(struct mii_bus *bus)
+{
+	struct mdiobb_ctrl *ctrl = bus->priv;
+	struct davinci_mdio_data *data;
+
+	data = container_of(ctrl, struct davinci_mdio_data, bb_ctrl);
+
+	return davinci_mdio_common_reset(data);
 }
 
 /* wait until hardware is ready for another user access */
@@ -168,13 +363,15 @@ static inline int wait_for_user_access(struct davinci_mdio_data *data)
 	u32 reg;
 
 	while (time_after(timeout, jiffies)) {
-		reg = __raw_readl(&regs->user[0].access);
+		reg = readl(&regs->user[0].access);
 		if ((reg & USERACCESS_GO) == 0)
 			return 0;
 
-		reg = __raw_readl(&regs->control);
-		if ((reg & CONTROL_IDLE) == 0)
+		reg = readl(&regs->control);
+		if ((reg & CONTROL_IDLE) == 0) {
+			usleep_range(100, 200);
 			continue;
+		}
 
 		/*
 		 * An emac soft_reset may have clobbered the mdio controller's
@@ -182,11 +379,11 @@ static inline int wait_for_user_access(struct davinci_mdio_data *data)
 		 * operation
 		 */
 		dev_warn(data->dev, "resetting idled controller\n");
-		__davinci_mdio_reset(data);
+		davinci_mdio_enable(data);
 		return -EAGAIN;
 	}
 
-	reg = __raw_readl(&regs->user[0].access);
+	reg = readl(&regs->user[0].access);
 	if ((reg & USERACCESS_GO) == 0)
 		return 0;
 
@@ -198,14 +395,14 @@ static inline int wait_for_user_access(struct davinci_mdio_data *data)
 static inline int wait_for_idle(struct davinci_mdio_data *data)
 {
 	struct davinci_mdio_regs __iomem *regs = data->regs;
-	unsigned long timeout = jiffies + msecs_to_jiffies(MDIO_TIMEOUT);
+	u32 val, ret;
 
-	while (time_after(timeout, jiffies)) {
-		if (__raw_readl(&regs->control) & CONTROL_IDLE)
-			return 0;
-	}
-	dev_err(data->dev, "timed out waiting for idle\n");
-	return -ETIMEDOUT;
+	ret = readl_poll_timeout(&regs->control, val, val & CONTROL_IDLE,
+				 0, MDIO_TIMEOUT * 1000);
+	if (ret)
+		dev_err(data->dev, "timed out waiting for idle\n");
+
+	return ret;
 }
 
 static int davinci_mdio_read(struct mii_bus *bus, int phy_id, int phy_reg)
@@ -217,12 +414,9 @@ static int davinci_mdio_read(struct mii_bus *bus, int phy_id, int phy_reg)
 	if (phy_reg & ~PHY_REG_MASK || phy_id & ~PHY_ID_MASK)
 		return -EINVAL;
 
-	spin_lock(&data->lock);
-
-	if (data->suspended) {
-		spin_unlock(&data->lock);
-		return -ENODEV;
-	}
+	ret = pm_runtime_resume_and_get(data->dev);
+	if (ret < 0)
+		return ret;
 
 	reg = (USERACCESS_GO | USERACCESS_READ | (phy_reg << 21) |
 	       (phy_id << 16));
@@ -234,7 +428,7 @@ static int davinci_mdio_read(struct mii_bus *bus, int phy_id, int phy_reg)
 		if (ret < 0)
 			break;
 
-		__raw_writel(reg, &data->regs->user[0].access);
+		writel(reg, &data->regs->user[0].access);
 
 		ret = wait_for_user_access(data);
 		if (ret == -EAGAIN)
@@ -242,13 +436,13 @@ static int davinci_mdio_read(struct mii_bus *bus, int phy_id, int phy_reg)
 		if (ret < 0)
 			break;
 
-		reg = __raw_readl(&data->regs->user[0].access);
+		reg = readl(&data->regs->user[0].access);
 		ret = (reg & USERACCESS_ACK) ? (reg & USERACCESS_DATA) : -EIO;
 		break;
 	}
 
-	spin_unlock(&data->lock);
-
+	pm_runtime_mark_last_busy(data->dev);
+	pm_runtime_put_autosuspend(data->dev);
 	return ret;
 }
 
@@ -262,12 +456,9 @@ static int davinci_mdio_write(struct mii_bus *bus, int phy_id,
 	if (phy_reg & ~PHY_REG_MASK || phy_id & ~PHY_ID_MASK)
 		return -EINVAL;
 
-	spin_lock(&data->lock);
-
-	if (data->suspended) {
-		spin_unlock(&data->lock);
-		return -ENODEV;
-	}
+	ret = pm_runtime_resume_and_get(data->dev);
+	if (ret < 0)
+		return ret;
 
 	reg = (USERACCESS_GO | USERACCESS_WRITE | (phy_reg << 21) |
 		   (phy_id << 16) | (phy_data & USERACCESS_DATA));
@@ -279,7 +470,7 @@ static int davinci_mdio_write(struct mii_bus *bus, int phy_id,
 		if (ret < 0)
 			break;
 
-		__raw_writel(reg, &data->regs->user[0].access);
+		writel(reg, &data->regs->user[0].access);
 
 		ret = wait_for_user_access(data);
 		if (ret == -EAGAIN)
@@ -287,12 +478,12 @@ static int davinci_mdio_write(struct mii_bus *bus, int phy_id,
 		break;
 	}
 
-	spin_unlock(&data->lock);
+	pm_runtime_mark_last_busy(data->dev);
+	pm_runtime_put_autosuspend(data->dev);
 
-	return 0;
+	return ret;
 }
 
-#if IS_ENABLED(CONFIG_OF)
 static int davinci_mdio_probe_dt(struct mdio_platform_data *data,
 			 struct platform_device *pdev)
 {
@@ -303,14 +494,56 @@ static int davinci_mdio_probe_dt(struct mdio_platform_data *data,
 		return -EINVAL;
 
 	if (of_property_read_u32(node, "bus_freq", &prop)) {
-		pr_err("Missing bus_freq property in the DT.\n");
+		dev_err(&pdev->dev, "Missing bus_freq property in the DT.\n");
 		return -EINVAL;
 	}
 	data->bus_freq = prop;
 
 	return 0;
 }
+
+struct k3_mdio_soc_data {
+	bool manual_mode;
+};
+
+static const struct k3_mdio_soc_data am65_mdio_soc_data = {
+	.manual_mode = true,
+};
+
+static const struct soc_device_attribute k3_mdio_socinfo[] = {
+	{ .family = "AM62X", .revision = "SR1.0", .data = &am65_mdio_soc_data },
+	{ .family = "AM64X", .revision = "SR1.0", .data = &am65_mdio_soc_data },
+	{ .family = "AM64X", .revision = "SR2.0", .data = &am65_mdio_soc_data },
+	{ .family = "AM65X", .revision = "SR1.0", .data = &am65_mdio_soc_data },
+	{ .family = "AM65X", .revision = "SR2.0", .data = &am65_mdio_soc_data },
+	{ .family = "J7200", .revision = "SR1.0", .data = &am65_mdio_soc_data },
+	{ .family = "J7200", .revision = "SR2.0", .data = &am65_mdio_soc_data },
+	{ .family = "J721E", .revision = "SR1.0", .data = &am65_mdio_soc_data },
+	{ .family = "J721E", .revision = "SR2.0", .data = &am65_mdio_soc_data },
+	{ .family = "J721S2", .revision = "SR1.0", .data = &am65_mdio_soc_data},
+	{ /* sentinel */ },
+};
+
+#if IS_ENABLED(CONFIG_OF)
+static const struct davinci_mdio_of_param of_cpsw_mdio_data = {
+	.autosuspend_delay_ms = 100,
+};
+
+static const struct of_device_id davinci_mdio_of_mtable[] = {
+	{ .compatible = "ti,davinci_mdio", },
+	{ .compatible = "ti,cpsw-mdio", .data = &of_cpsw_mdio_data},
+	{ /* sentinel */ },
+};
+MODULE_DEVICE_TABLE(of, davinci_mdio_of_mtable);
 #endif
+
+static const struct mdiobb_ops davinci_mdiobb_ops = {
+	.owner = THIS_MODULE,
+	.set_mdc = davinci_set_mdc,
+	.set_mdio_dir = davinci_set_mdio_dir,
+	.set_mdio_data = davinci_set_mdio_data,
+	.get_mdio_data = davinci_get_mdio_data,
+};
 
 static int davinci_mdio_probe(struct platform_device *pdev)
 {
@@ -320,22 +553,50 @@ static int davinci_mdio_probe(struct platform_device *pdev)
 	struct resource *res;
 	struct phy_device *phy;
 	int ret, addr;
+	int autosuspend_delay_ms = -1;
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	data->bus = mdiobus_alloc();
-	if (!data->bus) {
-		dev_err(dev, "failed to alloc mii bus\n");
-		ret = -ENOMEM;
-		goto bail_out;
+	data->manual_mode = false;
+	data->bb_ctrl.ops = &davinci_mdiobb_ops;
+
+	if (IS_ENABLED(CONFIG_OF) && dev->of_node) {
+		const struct soc_device_attribute *soc_match_data;
+
+		soc_match_data = soc_device_match(k3_mdio_socinfo);
+		if (soc_match_data && soc_match_data->data) {
+			const struct k3_mdio_soc_data *socdata =
+						soc_match_data->data;
+
+			data->manual_mode = socdata->manual_mode;
+		}
 	}
 
-	if (dev->of_node) {
-		if (davinci_mdio_probe_dt(&data->pdata, pdev))
-			data->pdata = default_pdata;
+	if (data->manual_mode)
+		data->bus = alloc_mdio_bitbang(&data->bb_ctrl);
+	else
+		data->bus = devm_mdiobus_alloc(dev);
+
+	if (!data->bus) {
+		dev_err(dev, "failed to alloc mii bus\n");
+		return -ENOMEM;
+	}
+
+	if (IS_ENABLED(CONFIG_OF) && dev->of_node) {
+		const struct davinci_mdio_of_param *of_mdio_data;
+
+		ret = davinci_mdio_probe_dt(&data->pdata, pdev);
+		if (ret)
+			return ret;
 		snprintf(data->bus->id, MII_BUS_ID_SIZE, "%s", pdev->name);
+
+		of_mdio_data = of_device_get_match_data(&pdev->dev);
+		if (of_mdio_data) {
+			autosuspend_delay_ms =
+					of_mdio_data->autosuspend_delay_ms;
+		}
 	} else {
 		data->pdata = pdata ? (*pdata) : default_pdata;
 		snprintf(data->bus->id, MII_BUS_ID_SIZE, "%s-%x",
@@ -343,62 +604,63 @@ static int davinci_mdio_probe(struct platform_device *pdev)
 	}
 
 	data->bus->name		= dev_name(dev);
-	data->bus->read		= davinci_mdio_read,
-	data->bus->write	= davinci_mdio_write,
-	data->bus->reset	= davinci_mdio_reset,
+
+	if (data->manual_mode) {
+		data->bus->read		= davinci_mdiobb_read_c22;
+		data->bus->write	= davinci_mdiobb_write_c22;
+		data->bus->read_c45	= davinci_mdiobb_read_c45;
+		data->bus->write_c45	= davinci_mdiobb_write_c45;
+		data->bus->reset	= davinci_mdiobb_reset;
+
+		dev_info(dev, "Configuring MDIO in manual mode\n");
+	} else {
+		data->bus->read		= davinci_mdio_read;
+		data->bus->write	= davinci_mdio_write;
+		data->bus->reset	= davinci_mdio_reset;
+		data->bus->priv		= data;
+	}
 	data->bus->parent	= dev;
-	data->bus->priv		= data;
 
-	/* Select default pin state */
-	pinctrl_pm_select_default_state(&pdev->dev);
-
-	pm_runtime_enable(&pdev->dev);
-	pm_runtime_get_sync(&pdev->dev);
-	data->clk = clk_get(&pdev->dev, "fck");
+	data->clk = devm_clk_get(dev, "fck");
 	if (IS_ERR(data->clk)) {
 		dev_err(dev, "failed to get device clock\n");
-		ret = PTR_ERR(data->clk);
-		data->clk = NULL;
-		goto bail_out;
+		return PTR_ERR(data->clk);
 	}
 
 	dev_set_drvdata(dev, data);
 	data->dev = dev;
-	spin_lock_init(&data->lock);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		dev_err(dev, "could not find register map resource\n");
-		ret = -ENOENT;
-		goto bail_out;
-	}
+	if (!res)
+		return -EINVAL;
+	data->regs = devm_ioremap(dev, res->start, resource_size(res));
+	if (!data->regs)
+		return -ENOMEM;
 
-	res = devm_request_mem_region(dev, res->start, resource_size(res),
-					    dev_name(dev));
-	if (!res) {
-		dev_err(dev, "could not allocate register map resource\n");
-		ret = -ENXIO;
-		goto bail_out;
-	}
+	davinci_mdio_init_clk(data);
 
-	data->regs = devm_ioremap_nocache(dev, res->start, resource_size(res));
-	if (!data->regs) {
-		dev_err(dev, "could not map mdio registers\n");
-		ret = -ENOMEM;
-		goto bail_out;
-	}
+	pm_runtime_set_autosuspend_delay(&pdev->dev, autosuspend_delay_ms);
+	pm_runtime_use_autosuspend(&pdev->dev);
+	pm_runtime_enable(&pdev->dev);
 
-	/* register the mii bus */
-	ret = mdiobus_register(data->bus);
+	/* register the mii bus
+	 * Create PHYs from DT only in case if PHY child nodes are explicitly
+	 * defined to support backward compatibility with DTs which assume that
+	 * Davinci MDIO will always scan the bus for PHYs detection.
+	 */
+	if (dev->of_node && of_get_child_count(dev->of_node))
+		data->skip_scan = true;
+
+	ret = of_mdiobus_register(data->bus, dev->of_node);
 	if (ret)
 		goto bail_out;
 
 	/* scan and dump the bus */
 	for (addr = 0; addr < PHY_MAX_ADDR; addr++) {
-		phy = data->bus->phy_map[addr];
+		phy = mdiobus_get_phy(data->bus, addr);
 		if (phy) {
 			dev_info(dev, "phy[%d]: device %s, driver %s\n",
-				 phy->addr, dev_name(&phy->dev),
+				 phy->mdio.addr, phydev_name(phy),
 				 phy->drv ? phy->drv->name : "unknown");
 		}
 	}
@@ -406,16 +668,8 @@ static int davinci_mdio_probe(struct platform_device *pdev)
 	return 0;
 
 bail_out:
-	if (data->bus)
-		mdiobus_free(data->bus);
-
-	if (data->clk)
-		clk_put(data->clk);
-	pm_runtime_put_sync(&pdev->dev);
+	pm_runtime_dont_use_autosuspend(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	kfree(data);
-
 	return ret;
 }
 
@@ -425,35 +679,59 @@ static int davinci_mdio_remove(struct platform_device *pdev)
 
 	if (data->bus) {
 		mdiobus_unregister(data->bus);
-		mdiobus_free(data->bus);
+
+		if (data->manual_mode)
+			free_mdio_bitbang(data->bus);
 	}
 
-	if (data->clk)
-		clk_put(data->clk);
-	pm_runtime_put_sync(&pdev->dev);
+	pm_runtime_dont_use_autosuspend(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	kfree(data);
 
 	return 0;
 }
 
-static int davinci_mdio_suspend(struct device *dev)
+#ifdef CONFIG_PM
+static int davinci_mdio_runtime_suspend(struct device *dev)
 {
 	struct davinci_mdio_data *data = dev_get_drvdata(dev);
 	u32 ctrl;
 
-	spin_lock(&data->lock);
-
 	/* shutdown the scan state machine */
-	ctrl = __raw_readl(&data->regs->control);
+	ctrl = readl(&data->regs->control);
 	ctrl &= ~CONTROL_ENABLE;
-	__raw_writel(ctrl, &data->regs->control);
-	wait_for_idle(data);
+	writel(ctrl, &data->regs->control);
 
-	data->suspended = true;
-	spin_unlock(&data->lock);
-	pm_runtime_put_sync(data->dev);
+	if (!data->manual_mode)
+		wait_for_idle(data);
+
+	return 0;
+}
+
+static int davinci_mdio_runtime_resume(struct device *dev)
+{
+	struct davinci_mdio_data *data = dev_get_drvdata(dev);
+
+	if (data->manual_mode) {
+		davinci_mdio_disable(data);
+		davinci_mdio_enable_manual_mode(data);
+	} else {
+		davinci_mdio_enable(data);
+	}
+	return 0;
+}
+#endif
+
+#ifdef CONFIG_PM_SLEEP
+static int davinci_mdio_suspend(struct device *dev)
+{
+	struct davinci_mdio_data *data = dev_get_drvdata(dev);
+	int ret = 0;
+
+	data->active_in_suspend = !pm_runtime_status_suspended(dev);
+	if (data->active_in_suspend)
+		ret = pm_runtime_force_suspend(dev);
+	if (ret < 0)
+		return ret;
 
 	/* Select sleep pin state */
 	pinctrl_pm_select_sleep_state(dev);
@@ -468,35 +746,22 @@ static int davinci_mdio_resume(struct device *dev)
 	/* Select default pin state */
 	pinctrl_pm_select_default_state(dev);
 
-	pm_runtime_get_sync(data->dev);
-
-	spin_lock(&data->lock);
-	/* restart the scan state machine */
-	__davinci_mdio_reset(data);
-
-	data->suspended = false;
-	spin_unlock(&data->lock);
+	if (data->active_in_suspend)
+		pm_runtime_force_resume(dev);
 
 	return 0;
 }
+#endif
 
 static const struct dev_pm_ops davinci_mdio_pm_ops = {
-	.suspend_late	= davinci_mdio_suspend,
-	.resume_early	= davinci_mdio_resume,
+	SET_RUNTIME_PM_OPS(davinci_mdio_runtime_suspend,
+			   davinci_mdio_runtime_resume, NULL)
+	SET_LATE_SYSTEM_SLEEP_PM_OPS(davinci_mdio_suspend, davinci_mdio_resume)
 };
-
-#if IS_ENABLED(CONFIG_OF)
-static const struct of_device_id davinci_mdio_of_mtable[] = {
-	{ .compatible = "ti,davinci_mdio", },
-	{ /* sentinel */ },
-};
-MODULE_DEVICE_TABLE(of, davinci_mdio_of_mtable);
-#endif
 
 static struct platform_driver davinci_mdio_driver = {
 	.driver = {
 		.name	 = "davinci_mdio",
-		.owner	 = THIS_MODULE,
 		.pm	 = &davinci_mdio_pm_ops,
 		.of_match_table = of_match_ptr(davinci_mdio_of_mtable),
 	},

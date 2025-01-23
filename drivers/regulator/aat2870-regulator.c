@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/drivers/regulator/aat2870-regulator.c
  *
  * Copyright (c) 2011, NVIDIA Corporation.
  * Author: Jin Park <jinyoungp@nvidia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
  */
 
 #include <linux/kernel.h>
@@ -97,8 +84,9 @@ static int aat2870_ldo_is_enabled(struct regulator_dev *rdev)
 	return val & ri->enable_mask ? 1 : 0;
 }
 
-static struct regulator_ops aat2870_ldo_ops = {
+static const struct regulator_ops aat2870_ldo_ops = {
 	.list_voltage = regulator_list_voltage_table,
+	.map_voltage = regulator_map_voltage_ascend,
 	.set_voltage_sel = aat2870_ldo_set_voltage_sel,
 	.get_voltage_sel = aat2870_ldo_get_voltage_sel,
 	.enable = aat2870_ldo_enable,
@@ -190,7 +178,7 @@ static int aat2870_regulator_probe(struct platform_device *pdev)
 static struct platform_driver aat2870_regulator_driver = {
 	.driver = {
 		.name	= "aat2870-regulator",
-		.owner	= THIS_MODULE,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe	= aat2870_regulator_probe,
 };

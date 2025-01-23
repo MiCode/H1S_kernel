@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * This supports machine-specific differences in how the PXA2xx
  * USB Device Controller (UDC) is wired.
@@ -23,5 +24,11 @@ struct pxa2xx_udc_mach_info {
 	bool	gpio_pullup_inverted;
 	int	gpio_pullup;			/* high == pullup activated */
 };
+
+#ifdef CONFIG_PXA27x
+extern void pxa27x_clear_otgph(void);
+#else
+#define pxa27x_clear_otgph()	do {} while (0)
+#endif
 
 #endif

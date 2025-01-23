@@ -1,8 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __UM_FIXMAP_H
 #define __UM_FIXMAP_H
 
 #include <asm/processor.h>
-#include <asm/kmap_types.h>
 #include <asm/archparam.h>
 #include <asm/page.h>
 #include <linux/threads.h>
@@ -33,10 +33,6 @@
  * fix-mapped?
  */
 enum fixed_addresses {
-#ifdef CONFIG_HIGHMEM
-	FIX_KMAP_BEGIN,	/* reserved pte's for temporary kernel mappings */
-	FIX_KMAP_END = FIX_KMAP_BEGIN+(KM_TYPE_NR*NR_CPUS)-1,
-#endif
 	__end_of_fixed_addresses
 };
 

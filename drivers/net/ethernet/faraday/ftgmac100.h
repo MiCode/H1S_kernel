@@ -1,22 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Faraday FTGMAC100 Gigabit Ethernet
  *
  * (C) Copyright 2009-2011 Faraday Technology
  * Po-Yu Chuang <ratbert@faraday-tech.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #ifndef __FTGMAC100_H
@@ -86,6 +73,20 @@
 #define FTGMAC100_INT_PHYSTS_CHG	(1 << 9)
 #define FTGMAC100_INT_NO_HPTXBUF	(1 << 10)
 
+/* Interrupts we care about in NAPI mode */
+#define FTGMAC100_INT_BAD  (FTGMAC100_INT_RPKT_LOST | \
+			    FTGMAC100_INT_XPKT_LOST | \
+			    FTGMAC100_INT_AHB_ERR   | \
+			    FTGMAC100_INT_NO_RXBUF)
+
+/* Normal RX/TX interrupts, enabled when NAPI off */
+#define FTGMAC100_INT_RXTX (FTGMAC100_INT_XPKT_ETH  | \
+			    FTGMAC100_INT_RPKT_BUF)
+
+/* All the interrupts we care about */
+#define FTGMAC100_INT_ALL (FTGMAC100_INT_RPKT_BUF  |  \
+			   FTGMAC100_INT_BAD)
+
 /*
  * Interrupt timer control register
  */
@@ -134,6 +135,11 @@
 #define FTGMAC100_DMAFIFOS_TXDMA_REQ		(1 << 31)
 
 /*
+ * Feature Register
+ */
+#define FTGMAC100_REVR_NEW_MDIO_INTERFACE	BIT(31)
+
+/*
  * Receive buffer size register
  */
 #define FTGMAC100_RBSR_SIZE(x)		((x) & 0x3fff)
@@ -152,6 +158,7 @@
 #define FTGMAC100_MACCR_FULLDUP		(1 << 8)
 #define FTGMAC100_MACCR_GIGA_MODE	(1 << 9)
 #define FTGMAC100_MACCR_CRC_APD		(1 << 10)
+#define FTGMAC100_MACCR_PHY_LINK_LEVEL	(1 << 11)
 #define FTGMAC100_MACCR_RX_RUNT		(1 << 12)
 #define FTGMAC100_MACCR_JUMBO_LF	(1 << 13)
 #define FTGMAC100_MACCR_RX_ALL		(1 << 14)
@@ -161,6 +168,14 @@
 #define FTGMAC100_MACCR_DISCARD_CRCERR	(1 << 18)
 #define FTGMAC100_MACCR_FAST_MODE	(1 << 19)
 #define FTGMAC100_MACCR_SW_RST		(1 << 31)
+
+/*
+ * test mode control register
+ */
+#define FTGMAC100_TM_RQ_TX_VALID_DIS (1 << 28)
+#define FTGMAC100_TM_RQ_RR_IDLE_PREV (1 << 27)
+#define FTGMAC100_TM_DEFAULT                                                   \
+	(FTGMAC100_TM_RQ_TX_VALID_DIS | FTGMAC100_TM_RQ_RR_IDLE_PREV)
 
 /*
  * PHY control register
@@ -179,17 +194,23 @@
 #define FTGMAC100_PHYDATA_MIIRDATA(phydata)	(((phydata) >> 16) & 0xffff)
 
 /*
+ * Flow control register
+ */
+#define FTGMAC100_FCR_FC_EN		(1 << 0)
+#define FTGMAC100_FCR_FCTHR_EN		(1 << 2)
+#define FTGMAC100_FCR_PAUSE_TIME(x)	(((x) & 0xffff) << 16)
+
+/*
  * Transmit descriptor, aligned to 16 bytes
  */
 struct ftgmac100_txdes {
-	unsigned int	txdes0;
-	unsigned int	txdes1;
-	unsigned int	txdes2;	/* not used by HW */
-	unsigned int	txdes3;	/* TXBUF_BADR */
+	__le32	txdes0; /* Control & status bits */
+	__le32	txdes1; /* Irq, checksum and vlan control */
+	__le32	txdes2; /* Reserved */
+	__le32	txdes3; /* DMA buffer address */
 } __attribute__ ((aligned(16)));
 
 #define FTGMAC100_TXDES0_TXBUF_SIZE(x)	((x) & 0x3fff)
-#define FTGMAC100_TXDES0_EDOTR		(1 << 15)
 #define FTGMAC100_TXDES0_CRC_ERR	(1 << 19)
 #define FTGMAC100_TXDES0_LTS		(1 << 28)
 #define FTGMAC100_TXDES0_FTS		(1 << 29)
@@ -208,14 +229,13 @@ struct ftgmac100_txdes {
  * Receive descriptor, aligned to 16 bytes
  */
 struct ftgmac100_rxdes {
-	unsigned int	rxdes0;
-	unsigned int	rxdes1;
-	unsigned int	rxdes2;	/* not used by HW */
-	unsigned int	rxdes3;	/* RXBUF_BADR */
+	__le32	rxdes0; /* Control & status bits */
+	__le32	rxdes1;	/* Checksum and vlan status */
+	__le32	rxdes2; /* length/type on AST2500 */
+	__le32	rxdes3;	/* DMA buffer address */
 } __attribute__ ((aligned(16)));
 
 #define FTGMAC100_RXDES0_VDBC		0x3fff
-#define FTGMAC100_RXDES0_EDORR		(1 << 15)
 #define FTGMAC100_RXDES0_MULTICAST	(1 << 16)
 #define FTGMAC100_RXDES0_BROADCAST	(1 << 17)
 #define FTGMAC100_RXDES0_RX_ERR		(1 << 18)
@@ -229,6 +249,14 @@ struct ftgmac100_rxdes {
 #define FTGMAC100_RXDES0_LRS		(1 << 28)
 #define FTGMAC100_RXDES0_FRS		(1 << 29)
 #define FTGMAC100_RXDES0_RXPKT_RDY	(1 << 31)
+
+/* Errors we care about for dropping packets */
+#define RXDES0_ANY_ERROR		( \
+	FTGMAC100_RXDES0_RX_ERR		| \
+	FTGMAC100_RXDES0_CRC_ERR	| \
+	FTGMAC100_RXDES0_FTL		| \
+	FTGMAC100_RXDES0_RUNT		| \
+	FTGMAC100_RXDES0_RX_ODD_NB)
 
 #define FTGMAC100_RXDES1_VLANTAG_CI	0xffff
 #define FTGMAC100_RXDES1_PROT_MASK	(0x3 << 20)

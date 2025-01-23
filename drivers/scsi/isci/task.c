@@ -91,8 +91,7 @@ static void isci_task_refuse(struct isci_host *ihost, struct sas_task *task,
 
 	/* Normal notification (task_done) */
 	task->task_state_flags |= SAS_TASK_STATE_DONE;
-	task->task_state_flags &= ~(SAS_TASK_AT_INITIATOR |
-				    SAS_TASK_STATE_PENDING);
+	task->task_state_flags &= ~SAS_TASK_STATE_PENDING;
 	task->lldd_task = NULL;
 	spin_unlock_irqrestore(&task->task_state_lock, flags);
 
@@ -117,104 +116,96 @@ static inline int isci_device_io_ready(struct isci_remote_device *idev,
  *    functions. This function is called by libsas to send a task down to
  *    hardware.
  * @task: This parameter specifies the SAS task to send.
- * @num: This parameter specifies the number of tasks to queue.
  * @gfp_flags: This parameter specifies the context of this call.
  *
  * status, zero indicates success.
  */
-int isci_task_execute_task(struct sas_task *task, int num, gfp_t gfp_flags)
+int isci_task_execute_task(struct sas_task *task, gfp_t gfp_flags)
 {
 	struct isci_host *ihost = dev_to_ihost(task->dev);
 	struct isci_remote_device *idev;
 	unsigned long flags;
+	enum sci_status status = SCI_FAILURE;
 	bool io_ready;
 	u16 tag;
 
-	dev_dbg(&ihost->pdev->dev, "%s: num=%d\n", __func__, num);
+	spin_lock_irqsave(&ihost->scic_lock, flags);
+	idev = isci_lookup_device(task->dev);
+	io_ready = isci_device_io_ready(idev, task);
+	tag = isci_alloc_tag(ihost);
+	spin_unlock_irqrestore(&ihost->scic_lock, flags);
 
-	for_each_sas_task(num, task) {
-		enum sci_status status = SCI_FAILURE;
+	dev_dbg(&ihost->pdev->dev,
+		"task: %p, dev: %p idev: %p:%#lx cmd = %p\n",
+		task, task->dev, idev, idev ? idev->flags : 0,
+		task->uldd_task);
 
-		spin_lock_irqsave(&ihost->scic_lock, flags);
-		idev = isci_lookup_device(task->dev);
-		io_ready = isci_device_io_ready(idev, task);
-		tag = isci_alloc_tag(ihost);
-		spin_unlock_irqrestore(&ihost->scic_lock, flags);
+	if (!idev) {
+		isci_task_refuse(ihost, task, SAS_TASK_UNDELIVERED,
+				 SAS_DEVICE_UNKNOWN);
+	} else if (!io_ready || tag == SCI_CONTROLLER_INVALID_IO_TAG) {
+		/* Indicate QUEUE_FULL so that the scsi midlayer
+		 * retries.
+		  */
+		isci_task_refuse(ihost, task, SAS_TASK_COMPLETE,
+				 SAS_QUEUE_FULL);
+	} else {
+		/* There is a device and it's ready for I/O. */
+		spin_lock_irqsave(&task->task_state_lock, flags);
 
-		dev_dbg(&ihost->pdev->dev,
-			"task: %p, num: %d dev: %p idev: %p:%#lx cmd = %p\n",
-			task, num, task->dev, idev, idev ? idev->flags : 0,
-			task->uldd_task);
+		if (task->task_state_flags & SAS_TASK_STATE_ABORTED) {
+			/* The I/O was aborted. */
+			spin_unlock_irqrestore(&task->task_state_lock, flags);
 
-		if (!idev) {
-			isci_task_refuse(ihost, task, SAS_TASK_UNDELIVERED,
-					 SAS_DEVICE_UNKNOWN);
-		} else if (!io_ready || tag == SCI_CONTROLLER_INVALID_IO_TAG) {
-			/* Indicate QUEUE_FULL so that the scsi midlayer
-			 * retries.
-			  */
-			isci_task_refuse(ihost, task, SAS_TASK_COMPLETE,
-					 SAS_QUEUE_FULL);
+			isci_task_refuse(ihost, task,
+					 SAS_TASK_UNDELIVERED,
+					 SAS_SAM_STAT_TASK_ABORTED);
 		} else {
-			/* There is a device and it's ready for I/O. */
-			spin_lock_irqsave(&task->task_state_lock, flags);
+			struct isci_request *ireq;
 
-			if (task->task_state_flags & SAS_TASK_STATE_ABORTED) {
-				/* The I/O was aborted. */
-				spin_unlock_irqrestore(&task->task_state_lock,
-						       flags);
+			/* do common allocation and init of request object. */
+			ireq = isci_io_request_from_tag(ihost, task, tag);
+			spin_unlock_irqrestore(&task->task_state_lock, flags);
 
-				isci_task_refuse(ihost, task,
-						 SAS_TASK_UNDELIVERED,
-						 SAM_STAT_TASK_ABORTED);
-			} else {
-				task->task_state_flags |= SAS_TASK_AT_INITIATOR;
-				spin_unlock_irqrestore(&task->task_state_lock, flags);
+			/* build and send the request. */
+			/* do common allocation and init of request object. */
+			status = isci_request_execute(ihost, idev, task, ireq);
 
-				/* build and send the request. */
-				status = isci_request_execute(ihost, idev, task, tag);
-
-				if (status != SCI_SUCCESS) {
-
-					spin_lock_irqsave(&task->task_state_lock, flags);
-					/* Did not really start this command. */
-					task->task_state_flags &= ~SAS_TASK_AT_INITIATOR;
-					spin_unlock_irqrestore(&task->task_state_lock, flags);
-
-					if (test_bit(IDEV_GONE, &idev->flags)) {
-
-						/* Indicate that the device
-						 * is gone.
-						 */
-						isci_task_refuse(ihost, task,
-							SAS_TASK_UNDELIVERED,
-							SAS_DEVICE_UNKNOWN);
-					} else {
-						/* Indicate QUEUE_FULL so that
-						 * the scsi midlayer retries.
-						 * If the request failed for
-						 * remote device reasons, it
-						 * gets returned as
-						 * SAS_TASK_UNDELIVERED next
-						 * time through.
-						 */
-						isci_task_refuse(ihost, task,
-							SAS_TASK_COMPLETE,
-							SAS_QUEUE_FULL);
-					}
+			if (status != SCI_SUCCESS) {
+				if (test_bit(IDEV_GONE, &idev->flags)) {
+					/* Indicate that the device
+					 * is gone.
+					 */
+					isci_task_refuse(ihost, task,
+						SAS_TASK_UNDELIVERED,
+						SAS_DEVICE_UNKNOWN);
+				} else {
+					/* Indicate QUEUE_FULL so that
+					 * the scsi midlayer retries.
+					 * If the request failed for
+					 * remote device reasons, it
+					 * gets returned as
+					 * SAS_TASK_UNDELIVERED next
+					 * time through.
+					 */
+					isci_task_refuse(ihost, task,
+						SAS_TASK_COMPLETE,
+						SAS_QUEUE_FULL);
 				}
 			}
 		}
-		if (status != SCI_SUCCESS && tag != SCI_CONTROLLER_INVALID_IO_TAG) {
-			spin_lock_irqsave(&ihost->scic_lock, flags);
-			/* command never hit the device, so just free
-			 * the tci and skip the sequence increment
-			 */
-			isci_tci_free(ihost, ISCI_TAG_TCI(tag));
-			spin_unlock_irqrestore(&ihost->scic_lock, flags);
-		}
-		isci_put_device(idev);
 	}
+
+	if (status != SCI_SUCCESS && tag != SCI_CONTROLLER_INVALID_IO_TAG) {
+		spin_lock_irqsave(&ihost->scic_lock, flags);
+		/* command never hit the device, so just free
+		 * the tci and skip the sequence increment
+		 */
+		isci_tci_free(ihost, ISCI_TAG_TCI(tag));
+		spin_unlock_irqrestore(&ihost->scic_lock, flags);
+	}
+
+	isci_put_device(idev);
 	return 0;
 }
 
@@ -265,7 +256,7 @@ static int isci_task_execute_tmf(struct isci_host *ihost,
 				 struct isci_tmf *tmf, unsigned long timeout_ms)
 {
 	DECLARE_COMPLETION_ONSTACK(completion);
-	enum sci_task_status status = SCI_TASK_FAILURE;
+	enum sci_status status = SCI_FAILURE;
 	struct isci_request *ireq;
 	int ret = TMF_RESP_FUNC_FAILED;
 	unsigned long flags;
@@ -308,7 +299,7 @@ static int isci_task_execute_tmf(struct isci_host *ihost,
 	/* start the TMF io. */
 	status = sci_controller_start_task(ihost, idev, ireq);
 
-	if (status != SCI_TASK_SUCCESS) {
+	if (status != SCI_SUCCESS) {
 		dev_dbg(&ihost->pdev->dev,
 			 "%s: start_io failed - status = 0x%x, request = %p\n",
 			 __func__,
@@ -376,7 +367,7 @@ static void isci_task_build_abort_task_tmf(struct isci_tmf *tmf,
 	tmf->io_tag = old_request->io_tag;
 }
 
-/**
+/*
  * isci_task_send_lu_reset_sas() - This function is called by of the SAS Domain
  *    Template functions.
  * @lun: This parameter specifies the lun to be reset.
@@ -505,7 +496,6 @@ int isci_task_abort_task(struct sas_task *task)
 
 	/* If task is already done, the request isn't valid */
 	if (!(task->task_state_flags & SAS_TASK_STATE_DONE) &&
-	    (task->task_state_flags & SAS_TASK_AT_INITIATOR) &&
 	    old_request) {
 		idev = isci_get_device(task->dev->lldd_dev);
 		target_done_already = test_bit(IREQ_COMPLETE_IN_TARGET,
@@ -518,7 +508,7 @@ int isci_task_abort_task(struct sas_task *task)
 		 "%s: dev = %p (%s%s), task = %p, old_request == %p\n",
 		 __func__, idev,
 		 (dev_is_sata(task->dev) ? "STP/SATA"
-					 : ((dev_is_expander(task->dev))
+					 : ((dev_is_expander(task->dev->dev_type))
 						? "SMP"
 						: "SSP")),
 		 ((idev) ? ((test_bit(IDEV_GONE, &idev->flags))
@@ -539,8 +529,7 @@ int isci_task_abort_task(struct sas_task *task)
 		*/
 		spin_lock_irqsave(&task->task_state_lock, flags);
 		task->task_state_flags |= SAS_TASK_STATE_DONE;
-		task->task_state_flags &= ~(SAS_TASK_AT_INITIATOR |
-					    SAS_TASK_STATE_PENDING);
+		task->task_state_flags &= ~SAS_TASK_STATE_PENDING;
 		spin_unlock_irqrestore(&task->task_state_lock, flags);
 
 		ret = TMF_RESP_FUNC_COMPLETE;
@@ -588,14 +577,13 @@ int isci_task_abort_task(struct sas_task *task)
 			 test_bit(IDEV_GONE, &idev->flags));
 
 		spin_lock_irqsave(&task->task_state_lock, flags);
-		task->task_state_flags &= ~(SAS_TASK_AT_INITIATOR |
-					    SAS_TASK_STATE_PENDING);
+		task->task_state_flags &= ~SAS_TASK_STATE_PENDING;
 		task->task_state_flags |= SAS_TASK_STATE_DONE;
 		spin_unlock_irqrestore(&task->task_state_lock, flags);
 
 		ret = TMF_RESP_FUNC_COMPLETE;
 	} else {
-		/* Fill in the tmf stucture */
+		/* Fill in the tmf structure */
 		isci_task_build_abort_task_tmf(&tmf, isci_tmf_ssp_task_abort,
 					       old_request);
 
@@ -633,24 +621,6 @@ int isci_task_abort_task_set(
 
 
 /**
- * isci_task_clear_aca() - This function is one of the SAS Domain Template
- *    functions. This is one of the Task Management functoins called by libsas.
- * @d_device: This parameter specifies the domain device associated with this
- *    request.
- * @lun: This parameter specifies the lun	 associated with this request.
- *
- * status, zero indicates success.
- */
-int isci_task_clear_aca(
-	struct domain_device *d_device,
-	u8 *lun)
-{
-	return TMF_RESP_FUNC_FAILED;
-}
-
-
-
-/**
  * isci_task_clear_task_set() - This function is one of the SAS Domain Template
  *    functions. This is one of the Task Management functoins called by libsas.
  * @d_device: This parameter specifies the domain device associated with this
@@ -675,7 +645,6 @@ int isci_task_clear_task_set(
  *    returned, libsas turns this into a LUN reset; when FUNC_FAILED is
  *    returned, libsas will turn this into a target reset
  * @task: This parameter specifies the sas task being queried.
- * @lun: This parameter specifies the lun associated with this request.
  *
  * status, zero indicates success.
  */
@@ -717,8 +686,8 @@ isci_task_request_complete(struct isci_host *ihost,
 		tmf->status = completion_status;
 
 		if (tmf->proto == SAS_PROTOCOL_SSP) {
-			memcpy(&tmf->resp.resp_iu,
-			       &ireq->ssp.rsp,
+			memcpy(tmf->resp.rsp_buf,
+			       ireq->ssp.rsp_buf,
 			       SSP_RESP_IU_MAX_SIZE);
 		} else if (tmf->proto == SAS_PROTOCOL_SATA) {
 			memcpy(&tmf->resp.d2h_fis,
@@ -801,7 +770,7 @@ int isci_task_I_T_nexus_reset(struct domain_device *dev)
 		/* XXX: need to cleanup any ireqs targeting this
 		 * domain_device
 		 */
-		ret = TMF_RESP_FUNC_COMPLETE;
+		ret = -ENODEV;
 		goto out;
 	}
 

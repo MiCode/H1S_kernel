@@ -1,18 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * SPEAr thermal driver.
  *
  * Copyright (C) 2011-2012 ST Microelectronics
  * Author: Vincenzo Frascino <vincenzo.frascino@st.com>
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
  */
 
 #include <linux/clk.h>
@@ -38,9 +29,9 @@ struct spear_thermal_dev {
 };
 
 static inline int thermal_get_temp(struct thermal_zone_device *thermal,
-				unsigned long *temp)
+				int *temp)
 {
-	struct spear_thermal_dev *stdev = thermal->devdata;
+	struct spear_thermal_dev *stdev = thermal_zone_device_priv(thermal);
 
 	/*
 	 * Data are ready to be read after 628 usec from POWERDOWN signal
@@ -54,12 +45,10 @@ static struct thermal_zone_device_ops ops = {
 	.get_temp = thermal_get_temp,
 };
 
-#ifdef CONFIG_PM
-static int spear_thermal_suspend(struct device *dev)
+static int __maybe_unused spear_thermal_suspend(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct thermal_zone_device *spear_thermal = platform_get_drvdata(pdev);
-	struct spear_thermal_dev *stdev = spear_thermal->devdata;
+	struct thermal_zone_device *spear_thermal = dev_get_drvdata(dev);
+	struct spear_thermal_dev *stdev = thermal_zone_device_priv(spear_thermal);
 	unsigned int actual_mask = 0;
 
 	/* Disable SPEAr Thermal Sensor */
@@ -72,17 +61,16 @@ static int spear_thermal_suspend(struct device *dev)
 	return 0;
 }
 
-static int spear_thermal_resume(struct device *dev)
+static int __maybe_unused spear_thermal_resume(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct thermal_zone_device *spear_thermal = platform_get_drvdata(pdev);
-	struct spear_thermal_dev *stdev = spear_thermal->devdata;
+	struct thermal_zone_device *spear_thermal = dev_get_drvdata(dev);
+	struct spear_thermal_dev *stdev = thermal_zone_device_priv(spear_thermal);
 	unsigned int actual_mask = 0;
 	int ret = 0;
 
 	ret = clk_enable(stdev->clk);
 	if (ret) {
-		dev_err(&pdev->dev, "Can't enable clock\n");
+		dev_err(dev, "Can't enable clock\n");
 		return ret;
 	}
 
@@ -94,7 +82,6 @@ static int spear_thermal_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
 static SIMPLE_DEV_PM_OPS(spear_thermal_pm_ops, spear_thermal_suspend,
 		spear_thermal_resume);
@@ -104,7 +91,6 @@ static int spear_thermal_probe(struct platform_device *pdev)
 	struct thermal_zone_device *spear_thermal = NULL;
 	struct spear_thermal_dev *stdev;
 	struct device_node *np = pdev->dev.of_node;
-	struct resource *res;
 	int ret = 0, val;
 
 	if (!np || !of_property_read_u32(np, "st,thermal-flags", &val)) {
@@ -113,14 +99,11 @@ static int spear_thermal_probe(struct platform_device *pdev)
 	}
 
 	stdev = devm_kzalloc(&pdev->dev, sizeof(*stdev), GFP_KERNEL);
-	if (!stdev) {
-		dev_err(&pdev->dev, "kzalloc fail\n");
+	if (!stdev)
 		return -ENOMEM;
-	}
 
 	/* Enable thermal sensor */
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	stdev->thermal_base = devm_ioremap_resource(&pdev->dev, res);
+	stdev->thermal_base = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
 	if (IS_ERR(stdev->thermal_base))
 		return PTR_ERR(stdev->thermal_base);
 
@@ -139,21 +122,28 @@ static int spear_thermal_probe(struct platform_device *pdev)
 	stdev->flags = val;
 	writel_relaxed(stdev->flags, stdev->thermal_base);
 
-	spear_thermal = thermal_zone_device_register("spear_thermal", 0, 0,
-				stdev, &ops, NULL, 0, 0);
+	spear_thermal = thermal_tripless_zone_device_register("spear_thermal",
+							      stdev, &ops, NULL);
 	if (IS_ERR(spear_thermal)) {
 		dev_err(&pdev->dev, "thermal zone device is NULL\n");
 		ret = PTR_ERR(spear_thermal);
 		goto disable_clk;
 	}
+	ret = thermal_zone_device_enable(spear_thermal);
+	if (ret) {
+		dev_err(&pdev->dev, "Cannot enable thermal zone\n");
+		goto unregister_tzd;
+	}
 
 	platform_set_drvdata(pdev, spear_thermal);
 
-	dev_info(&spear_thermal->device, "Thermal Sensor Loaded at: 0x%p.\n",
+	dev_info(&pdev->dev, "Thermal Sensor Loaded at: 0x%p.\n",
 			stdev->thermal_base);
 
 	return 0;
 
+unregister_tzd:
+	thermal_zone_device_unregister(spear_thermal);
 disable_clk:
 	clk_disable(stdev->clk);
 
@@ -164,7 +154,7 @@ static int spear_thermal_exit(struct platform_device *pdev)
 {
 	unsigned int actual_mask = 0;
 	struct thermal_zone_device *spear_thermal = platform_get_drvdata(pdev);
-	struct spear_thermal_dev *stdev = spear_thermal->devdata;
+	struct spear_thermal_dev *stdev = thermal_zone_device_priv(spear_thermal);
 
 	thermal_zone_device_unregister(spear_thermal);
 
@@ -188,7 +178,6 @@ static struct platform_driver spear_thermal_driver = {
 	.remove = spear_thermal_exit,
 	.driver = {
 		.name = "spear_thermal",
-		.owner = THIS_MODULE,
 		.pm = &spear_thermal_pm_ops,
 		.of_match_table = spear_thermal_id_table,
 	},

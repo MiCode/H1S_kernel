@@ -1,45 +1,11 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: evxfevnt - External Interfaces, ACPI event disable/enable
  *
+ * Copyright (C) 2000 - 2023, Intel Corp.
+ *
  *****************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #define EXPORT_ACPI_INTERFACES
 
@@ -71,7 +37,7 @@ acpi_status acpi_enable(void)
 
 	/* ACPI tables must be present */
 
-	if (!acpi_tb_tables_loaded()) {
+	if (acpi_gbl_fadt_index == ACPI_INVALID_TABLE_INDEX) {
 		return_ACPI_STATUS(AE_NO_ACPI_TABLES);
 	}
 
@@ -180,6 +146,12 @@ acpi_status acpi_enable_event(u32 event, u32 flags)
 
 	ACPI_FUNCTION_TRACE(acpi_enable_event);
 
+	/* If Hardware Reduced flag is set, there are no fixed events */
+
+	if (acpi_gbl_reduced_hardware) {
+		return_ACPI_STATUS(AE_OK);
+	}
+
 	/* Decode the Fixed Event */
 
 	if (event > ACPI_EVENT_MAX) {
@@ -237,6 +209,12 @@ acpi_status acpi_disable_event(u32 event, u32 flags)
 
 	ACPI_FUNCTION_TRACE(acpi_disable_event);
 
+	/* If Hardware Reduced flag is set, there are no fixed events */
+
+	if (acpi_gbl_reduced_hardware) {
+		return_ACPI_STATUS(AE_OK);
+	}
+
 	/* Decode the Fixed Event */
 
 	if (event > ACPI_EVENT_MAX) {
@@ -290,6 +268,12 @@ acpi_status acpi_clear_event(u32 event)
 
 	ACPI_FUNCTION_TRACE(acpi_clear_event);
 
+	/* If Hardware Reduced flag is set, there are no fixed events */
+
+	if (acpi_gbl_reduced_hardware) {
+		return_ACPI_STATUS(AE_OK);
+	}
+
 	/* Decode the Fixed Event */
 
 	if (event > ACPI_EVENT_MAX) {
@@ -324,8 +308,9 @@ ACPI_EXPORT_SYMBOL(acpi_clear_event)
  ******************************************************************************/
 acpi_status acpi_get_event_status(u32 event, acpi_event_status * event_status)
 {
-	acpi_status status = AE_OK;
-	u32 value;
+	acpi_status status;
+	acpi_event_status local_event_status = 0;
+	u32 in_byte;
 
 	ACPI_FUNCTION_TRACE(acpi_get_event_status);
 
@@ -339,29 +324,41 @@ acpi_status acpi_get_event_status(u32 event, acpi_event_status * event_status)
 		return_ACPI_STATUS(AE_BAD_PARAMETER);
 	}
 
-	/* Get the status of the requested fixed event */
+	/* Fixed event currently can be dispatched? */
+
+	if (acpi_gbl_fixed_event_handlers[event].handler) {
+		local_event_status |= ACPI_EVENT_FLAG_HAS_HANDLER;
+	}
+
+	/* Fixed event currently enabled? */
 
 	status =
 	    acpi_read_bit_register(acpi_gbl_fixed_event_info[event].
-			      enable_register_id, &value);
-	if (ACPI_FAILURE(status))
+				   enable_register_id, &in_byte);
+	if (ACPI_FAILURE(status)) {
 		return_ACPI_STATUS(status);
+	}
 
-	*event_status = value;
+	if (in_byte) {
+		local_event_status |=
+		    (ACPI_EVENT_FLAG_ENABLED | ACPI_EVENT_FLAG_ENABLE_SET);
+	}
+
+	/* Fixed event currently active? */
 
 	status =
 	    acpi_read_bit_register(acpi_gbl_fixed_event_info[event].
-			      status_register_id, &value);
-	if (ACPI_FAILURE(status))
+				   status_register_id, &in_byte);
+	if (ACPI_FAILURE(status)) {
 		return_ACPI_STATUS(status);
+	}
 
-	if (value)
-		*event_status |= ACPI_EVENT_FLAG_SET;
+	if (in_byte) {
+		local_event_status |= ACPI_EVENT_FLAG_STATUS_SET;
+	}
 
-	if (acpi_gbl_fixed_event_handlers[event].handler)
-		*event_status |= ACPI_EVENT_FLAG_HANDLE;
-
-	return_ACPI_STATUS(status);
+	(*event_status) = local_event_status;
+	return_ACPI_STATUS(AE_OK);
 }
 
 ACPI_EXPORT_SYMBOL(acpi_get_event_status)

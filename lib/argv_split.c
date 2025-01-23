@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Helper function for splitting a string into an argv-like array.
  */
@@ -27,7 +28,7 @@ static int count_argc(const char *str)
 
 /**
  * argv_free - free an argv
- * @argv - the argument vector to be freed
+ * @argv: the argument vector to be freed
  *
  * Frees an argv and the strings it points to.
  */
@@ -45,7 +46,7 @@ EXPORT_SYMBOL(argv_free);
  * @str: the string to be split
  * @argcp: returned argument count
  *
- * Returns an array of pointers to strings which are split out from
+ * Returns: an array of pointers to strings which are split out from
  * @str.  This is performed by strictly splitting on white-space; no
  * quote processing is performed.  Multiple whitespace characters are
  * considered to be a single argument separator.  The returned array
@@ -68,7 +69,7 @@ char **argv_split(gfp_t gfp, const char *str, int *argcp)
 		return NULL;
 
 	argc = count_argc(argv_str);
-	argv = kmalloc(sizeof(*argv) * (argc + 2), gfp);
+	argv = kmalloc_array(argc + 2, sizeof(*argv), gfp);
 	if (!argv) {
 		kfree(argv_str);
 		return NULL;

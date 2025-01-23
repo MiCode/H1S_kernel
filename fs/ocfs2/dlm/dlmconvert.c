@@ -1,27 +1,10 @@
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
  * dlmconvert.c
  *
  * underlying calls for lock conversion
  *
  * Copyright (C) 2004 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
- *
  */
 
 
@@ -38,9 +21,9 @@
 #include <linux/spinlock.h>
 
 
-#include "cluster/heartbeat.h"
-#include "cluster/nodemanager.h"
-#include "cluster/tcp.h"
+#include "../cluster/heartbeat.h"
+#include "../cluster/nodemanager.h"
+#include "../cluster/tcp.h"
 
 #include "dlmapi.h"
 #include "dlmcommon.h"
@@ -48,7 +31,7 @@
 #include "dlmconvert.h"
 
 #define MLOG_MASK_PREFIX ML_DLM
-#include "cluster/masklog.h"
+#include "../cluster/masklog.h"
 
 /* NOTE: __dlmconvert_master is the only function in here that
  * needs a spinlock held on entry (res->spinlock) and it is the
@@ -212,6 +195,12 @@ grant:
 	if (lock->lksb->flags & DLM_LKSB_PUT_LVB)
 		memcpy(res->lvb, lock->lksb->lvb, DLM_LVB_LEN);
 
+	/*
+	 * Move the lock to the tail because it may be the only lock which has
+	 * an invalid lvb.
+	 */
+	list_move_tail(&lock->list, &res->granted);
+
 	status = DLM_NORMAL;
 	*call_ast = 1;
 	goto unlock_exit;
@@ -287,6 +276,19 @@ enum dlm_status dlmconvert_remote(struct dlm_ctxt *dlm,
 		status = DLM_DENIED;
 		goto bail;
 	}
+
+	if (lock->ml.type == type && lock->ml.convert_type == LKM_IVMODE) {
+		mlog(0, "last convert request returned DLM_RECOVERING, but "
+		     "owner has already queued and sent ast to me. res %.*s, "
+		     "(cookie=%u:%llu, type=%d, conv=%d)\n",
+		     res->lockname.len, res->lockname.name,
+		     dlm_get_lock_cookie_node(be64_to_cpu(lock->ml.cookie)),
+		     dlm_get_lock_cookie_seq(be64_to_cpu(lock->ml.cookie)),
+		     lock->ml.type, lock->ml.convert_type);
+		status = DLM_NORMAL;
+		goto bail;
+	}
+
 	res->state |= DLM_LOCK_RES_IN_PROGRESS;
 	/* move lock to local convert queue */
 	/* do not alter lock refcount.  switching lists. */
@@ -315,13 +317,22 @@ enum dlm_status dlmconvert_remote(struct dlm_ctxt *dlm,
 
 	spin_lock(&res->spinlock);
 	res->state &= ~DLM_LOCK_RES_IN_PROGRESS;
-	lock->convert_pending = 0;
-	/* if it failed, move it back to granted queue */
+	/* if it failed, move it back to granted queue.
+	 * if master returns DLM_NORMAL and then down before sending ast,
+	 * it may have already been moved to granted queue, reset to
+	 * DLM_RECOVERING and retry convert */
 	if (status != DLM_NORMAL) {
 		if (status != DLM_NOTQUEUED)
 			dlm_error(status);
 		dlm_revert_pending_convert(res, lock);
+	} else if (!lock->convert_pending) {
+		mlog(0, "%s: res %.*s, owner died and lock has been moved back "
+				"to granted list, retry convert.\n",
+				dlm->name, res->lockname.len, res->lockname.name);
+		status = DLM_RECOVERING;
 	}
+
+	lock->convert_pending = 0;
 bail:
 	spin_unlock(&res->spinlock);
 

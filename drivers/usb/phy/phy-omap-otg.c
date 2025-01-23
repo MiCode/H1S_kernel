@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * OMAP OTG controller driver
  *
@@ -6,15 +7,6 @@
  * Copyright (C) 2005-2006 Nokia Corporation
  * Copyright (C) 2004 Texas Instruments
  * Copyright (C) 2004 David Brownell
- *
- * This file is subject to the terms and conditions of the GNU General
- * Public License. See the file "COPYING" in the main directory of this
- * archive for more details.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 #include <linux/io.h>
@@ -30,8 +22,7 @@ struct otg_device {
 	void __iomem			*base;
 	bool				id;
 	bool				vbus;
-	struct extcon_specific_cable_nb	vbus_dev;
-	struct extcon_specific_cable_nb	id_dev;
+	struct extcon_dev		*extcon;
 	struct notifier_block		vbus_nb;
 	struct notifier_block		id_nb;
 };
@@ -104,8 +95,8 @@ static int omap_otg_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	extcon = extcon_get_extcon_dev(config->extcon);
-	if (!extcon)
-		return -EPROBE_DEFER;
+	if (IS_ERR(extcon))
+		return PTR_ERR(extcon);
 
 	otg_dev = devm_kzalloc(&pdev->dev, sizeof(*otg_dev), GFP_KERNEL);
 	if (!otg_dev)
@@ -115,23 +106,23 @@ static int omap_otg_probe(struct platform_device *pdev)
 	if (IS_ERR(otg_dev->base))
 		return PTR_ERR(otg_dev->base);
 
+	otg_dev->extcon = extcon;
 	otg_dev->id_nb.notifier_call = omap_otg_id_notifier;
 	otg_dev->vbus_nb.notifier_call = omap_otg_vbus_notifier;
 
-	ret = extcon_register_interest(&otg_dev->id_dev, config->extcon,
-				       "USB-HOST", &otg_dev->id_nb);
+	ret = devm_extcon_register_notifier(&pdev->dev, extcon,
+					EXTCON_USB_HOST, &otg_dev->id_nb);
 	if (ret)
 		return ret;
 
-	ret = extcon_register_interest(&otg_dev->vbus_dev, config->extcon,
-				       "USB", &otg_dev->vbus_nb);
+	ret = devm_extcon_register_notifier(&pdev->dev, extcon,
+					EXTCON_USB, &otg_dev->vbus_nb);
 	if (ret) {
-		extcon_unregister_interest(&otg_dev->id_dev);
 		return ret;
 	}
 
-	otg_dev->id = extcon_get_cable_state(extcon, "USB-HOST");
-	otg_dev->vbus = extcon_get_cable_state(extcon, "USB");
+	otg_dev->id = extcon_get_state(extcon, EXTCON_USB_HOST);
+	otg_dev->vbus = extcon_get_state(extcon, EXTCON_USB);
 	omap_otg_set_mode(otg_dev);
 
 	rev = readl(otg_dev->base);
@@ -141,24 +132,14 @@ static int omap_otg_probe(struct platform_device *pdev)
 		 (rev >> 4) & 0xf, rev & 0xf, config->extcon, otg_dev->id,
 		 otg_dev->vbus);
 
-	return 0;
-}
-
-static int omap_otg_remove(struct platform_device *pdev)
-{
-	struct otg_device *otg_dev = platform_get_drvdata(pdev);
-
-	extcon_unregister_interest(&otg_dev->id_dev);
-	extcon_unregister_interest(&otg_dev->vbus_dev);
+	platform_set_drvdata(pdev, otg_dev);
 
 	return 0;
 }
 
 static struct platform_driver omap_otg_driver = {
 	.probe		= omap_otg_probe,
-	.remove		= omap_otg_remove,
 	.driver		= {
-		.owner	= THIS_MODULE,
 		.name	= "omap_otg",
 	},
 };

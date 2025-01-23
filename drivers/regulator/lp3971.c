@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Regulator driver for National Semiconductors LP3971 PMIC chip
  *
@@ -5,11 +6,6 @@
  *  Author: Marek Szyprowski <m.szyprowski@samsung.com>
  *
  * Based on wm8350.c
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #include <linux/bug.h>
@@ -159,7 +155,7 @@ static int lp3971_ldo_set_voltage_sel(struct regulator_dev *dev,
 			selector << LDO_VOL_CONTR_SHIFT(ldo));
 }
 
-static struct regulator_ops lp3971_ldo_ops = {
+static const struct regulator_ops lp3971_ldo_ops = {
 	.list_voltage = regulator_list_voltage_table,
 	.map_voltage = regulator_map_voltage_ascend,
 	.is_enabled = lp3971_ldo_is_enabled,
@@ -233,7 +229,7 @@ static int lp3971_dcdc_set_voltage_sel(struct regulator_dev *dev,
 	       0 << BUCK_VOL_CHANGE_SHIFT(buck));
 }
 
-static struct regulator_ops lp3971_dcdc_ops = {
+static const struct regulator_ops lp3971_dcdc_ops = {
 	.list_voltage = regulator_list_voltage_table,
 	.map_voltage = regulator_map_voltage_ascend,
 	.is_enabled = lp3971_dcdc_is_enabled,
@@ -327,7 +323,7 @@ static int lp3971_i2c_read(struct i2c_client *i2c, char reg, int count,
 		return -EIO;
 	ret = i2c_smbus_read_byte_data(i2c, reg);
 	if (ret < 0)
-		return -EIO;
+		return ret;
 
 	*dest = ret;
 	return 0;
@@ -365,8 +361,8 @@ static int lp3971_set_bits(struct lp3971 *lp3971, u8 reg, u16 mask, u16 val)
 	mutex_lock(&lp3971->io_lock);
 
 	ret = lp3971_i2c_read(lp3971->i2c, reg, 1, &tmp);
-	tmp = (tmp & ~mask) | val;
 	if (ret == 0) {
+		tmp = (tmp & ~mask) | val;
 		ret = lp3971_i2c_write(lp3971->i2c, reg, 1, &tmp);
 		dev_dbg(lp3971->dev, "reg write 0x%02x -> 0x%02x\n", (int)reg,
 			(unsigned)val&0xff);
@@ -404,8 +400,7 @@ static int setup_regulators(struct lp3971 *lp3971,
 	return 0;
 }
 
-static int lp3971_i2c_probe(struct i2c_client *i2c,
-			    const struct i2c_device_id *id)
+static int lp3971_i2c_probe(struct i2c_client *i2c)
 {
 	struct lp3971 *lp3971;
 	struct lp3971_platform_data *pdata = dev_get_platdata(&i2c->dev);
@@ -452,9 +447,9 @@ MODULE_DEVICE_TABLE(i2c, lp3971_i2c_id);
 static struct i2c_driver lp3971_i2c_driver = {
 	.driver = {
 		.name = "LP3971",
-		.owner = THIS_MODULE,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
-	.probe    = lp3971_i2c_probe,
+	.probe = lp3971_i2c_probe,
 	.id_table = lp3971_i2c_id,
 };
 

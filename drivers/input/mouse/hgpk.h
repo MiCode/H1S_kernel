@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * OLPC HGPK (XO-1) touchpad PS/2 mouse driver
  */
@@ -46,21 +47,14 @@ struct hgpk_data {
 	int xsaw_secondary, ysaw_secondary; /* jumpiness detection */
 };
 
-#ifdef CONFIG_MOUSE_PS2_OLPC
-void hgpk_module_init(void);
 int hgpk_detect(struct psmouse *psmouse, bool set_properties);
 int hgpk_init(struct psmouse *psmouse);
+
+#ifdef CONFIG_MOUSE_PS2_OLPC
+void hgpk_module_init(void);
 #else
 static inline void hgpk_module_init(void)
 {
-}
-static inline int hgpk_detect(struct psmouse *psmouse, bool set_properties)
-{
-	return -ENODEV;
-}
-static inline int hgpk_init(struct psmouse *psmouse)
-{
-	return -ENODEV;
 }
 #endif
 

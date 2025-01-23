@@ -1,19 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2010-2011 Calxeda, Inc.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/kernel.h>
 #include <linux/circ_buf.h>
 #include <linux/interrupt.h>
@@ -47,9 +37,9 @@
 #define XGMAC_REMOTE_WAKE	0x00000700	/* Remote Wake-Up Frm Filter */
 #define XGMAC_PMT		0x00000704	/* PMT Control and Status */
 #define XGMAC_MMC_CTRL		0x00000800	/* XGMAC MMC Control */
-#define XGMAC_MMC_INTR_RX	0x00000804	/* Recieve Interrupt */
+#define XGMAC_MMC_INTR_RX	0x00000804	/* Receive Interrupt */
 #define XGMAC_MMC_INTR_TX	0x00000808	/* Transmit Interrupt */
-#define XGMAC_MMC_INTR_MASK_RX	0x0000080c	/* Recieve Interrupt Mask */
+#define XGMAC_MMC_INTR_MASK_RX	0x0000080c	/* Receive Interrupt Mask */
 #define XGMAC_MMC_INTR_MASK_TX	0x00000810	/* Transmit Interrupt Mask */
 
 /* Hardware TX Statistics Counters */
@@ -153,7 +143,7 @@
 #define XGMAC_FLOW_CTRL_PT_MASK	0xffff0000	/* Pause Time Mask */
 #define XGMAC_FLOW_CTRL_PT_SHIFT	16
 #define XGMAC_FLOW_CTRL_DZQP	0x00000080	/* Disable Zero-Quanta Phase */
-#define XGMAC_FLOW_CTRL_PLT	0x00000020	/* Pause Low Threshhold */
+#define XGMAC_FLOW_CTRL_PLT	0x00000020	/* Pause Low Threshold */
 #define XGMAC_FLOW_CTRL_PLT_MASK 0x00000030	/* PLT MASK */
 #define XGMAC_FLOW_CTRL_UP	0x00000008	/* Unicast Pause Frame Detect */
 #define XGMAC_FLOW_CTRL_RFE	0x00000004	/* Rx Flow Control Enable */
@@ -254,18 +244,18 @@
 /* XGMAC Operation Mode Register */
 #define XGMAC_OMR_TSF		0x00200000	/* TX FIFO Store and Forward */
 #define XGMAC_OMR_FTF		0x00100000	/* Flush Transmit FIFO */
-#define XGMAC_OMR_TTC		0x00020000	/* Transmit Threshhold Ctrl */
+#define XGMAC_OMR_TTC		0x00020000	/* Transmit Threshold Ctrl */
 #define XGMAC_OMR_TTC_MASK	0x00030000
-#define XGMAC_OMR_RFD		0x00006000	/* FC Deactivation Threshhold */
-#define XGMAC_OMR_RFD_MASK	0x00007000	/* FC Deact Threshhold MASK */
-#define XGMAC_OMR_RFA		0x00000600	/* FC Activation Threshhold */
-#define XGMAC_OMR_RFA_MASK	0x00000E00	/* FC Act Threshhold MASK */
+#define XGMAC_OMR_RFD		0x00006000	/* FC Deactivation Threshold */
+#define XGMAC_OMR_RFD_MASK	0x00007000	/* FC Deact Threshold MASK */
+#define XGMAC_OMR_RFA		0x00000600	/* FC Activation Threshold */
+#define XGMAC_OMR_RFA_MASK	0x00000E00	/* FC Act Threshold MASK */
 #define XGMAC_OMR_EFC		0x00000100	/* Enable Hardware FC */
 #define XGMAC_OMR_FEF		0x00000080	/* Forward Error Frames */
 #define XGMAC_OMR_DT		0x00000040	/* Drop TCP/IP csum Errors */
 #define XGMAC_OMR_RSF		0x00000020	/* RX FIFO Store and Forward */
-#define XGMAC_OMR_RTC_256	0x00000018	/* RX Threshhold Ctrl */
-#define XGMAC_OMR_RTC_MASK	0x00000018	/* RX Threshhold Ctrl MASK */
+#define XGMAC_OMR_RTC_256	0x00000018	/* RX Threshold Ctrl */
+#define XGMAC_OMR_RTC_MASK	0x00000018	/* RX Threshold Ctrl MASK */
 
 /* XGMAC HW Features Register */
 #define DMA_HW_FEAT_TXCOESEL	0x00010000	/* TX Checksum offload */
@@ -394,7 +384,7 @@ struct xgmac_priv {
 };
 
 /* XGMAC Configuration Settings */
-#define MAX_MTU			9000
+#define XGMAC_MAX_MTU		9000
 #define PAUSE_TIME		0x400
 
 #define DMA_RX_RING_SZ		256
@@ -617,7 +607,7 @@ static inline void xgmac_mac_disable(void __iomem *ioaddr)
 	writel(value, ioaddr + XGMAC_CONTROL);
 }
 
-static void xgmac_set_mac_addr(void __iomem *ioaddr, unsigned char *addr,
+static void xgmac_set_mac_addr(void __iomem *ioaddr, const unsigned char *addr,
 			       int num)
 {
 	u32 data;
@@ -721,7 +711,7 @@ static void xgmac_rx_refill(struct xgmac_priv *priv)
 }
 
 /**
- * init_xgmac_dma_desc_rings - init the RX/TX descriptor rings
+ * xgmac_dma_desc_rings_init - init the RX/TX descriptor rings
  * @dev: net device structure
  * Description:  this function initializes the DMA RX/TX descriptors
  * and allocates the socket buffers.
@@ -739,7 +729,7 @@ static int xgmac_dma_desc_rings_init(struct net_device *dev)
 
 	netdev_dbg(priv->dev, "mtu [%d] bfsize [%d]\n", dev->mtu, bfsize);
 
-	priv->rx_skbuff = kzalloc(sizeof(struct sk_buff *) * DMA_RX_RING_SZ,
+	priv->rx_skbuff = kcalloc(DMA_RX_RING_SZ, sizeof(struct sk_buff *),
 				  GFP_KERNEL);
 	if (!priv->rx_skbuff)
 		return -ENOMEM;
@@ -752,7 +742,7 @@ static int xgmac_dma_desc_rings_init(struct net_device *dev)
 	if (!priv->dma_rx)
 		goto err_dma_rx;
 
-	priv->tx_skbuff = kzalloc(sizeof(struct sk_buff *) * DMA_TX_RING_SZ,
+	priv->tx_skbuff = kcalloc(DMA_TX_RING_SZ, sizeof(struct sk_buff *),
 				  GFP_KERNEL);
 	if (!priv->tx_skbuff)
 		goto err_tx_skb;
@@ -869,7 +859,7 @@ static void xgmac_free_dma_desc_rings(struct xgmac_priv *priv)
 }
 
 /**
- * xgmac_tx:
+ * xgmac_tx_complete:
  * @priv: private driver structure
  * Description: it reclaims resources after transmission completes.
  */
@@ -897,7 +887,7 @@ static void xgmac_tx_complete(struct xgmac_priv *priv)
 		/* Check tx error on the last segment */
 		if (desc_get_tx_ls(p)) {
 			desc_get_tx_status(priv, p);
-			dev_kfree_skb(skb);
+			dev_consume_skb_any(skb);
 		}
 
 		priv->tx_skbuff[entry] = NULL;
@@ -1050,7 +1040,7 @@ static int xgmac_open(struct net_device *dev)
 }
 
 /**
- *  xgmac_release - close entry point of the driver
+ *  xgmac_stop - close entry point of the driver
  *  @dev : device pointer.
  *  Description:
  *  This is the stop entry point of the driver.
@@ -1105,7 +1095,7 @@ static netdev_tx_t xgmac_xmit(struct sk_buff *skb, struct net_device *dev)
 	len = skb_headlen(skb);
 	paddr = dma_map_single(priv->device, skb->data, len, DMA_TO_DEVICE);
 	if (dma_mapping_error(priv->device, paddr)) {
-		dev_kfree_skb(skb);
+		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
 	}
 	priv->tx_skbuff[entry] = skb;
@@ -1114,7 +1104,7 @@ static netdev_tx_t xgmac_xmit(struct sk_buff *skb, struct net_device *dev)
 	for (i = 0; i < nfrags; i++) {
 		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
 
-		len = frag->size;
+		len = skb_frag_size(frag);
 
 		paddr = skb_frag_dma_map(priv->device, frag, 0, len,
 					 DMA_TO_DEVICE);
@@ -1169,7 +1159,7 @@ dma_err:
 	desc = first;
 	dma_unmap_single(priv->device, desc_get_buf_addr(desc),
 			 desc_get_buf_len(desc), DMA_TO_DEVICE);
-	dev_kfree_skb(skb);
+	dev_kfree_skb_any(skb);
 	return NETDEV_TX_OK;
 }
 
@@ -1234,7 +1224,7 @@ static int xgmac_rx(struct xgmac_priv *priv, int limit)
  *  @budget : maximum number of packets that the current CPU can receive from
  *	      all interfaces.
  *  Description :
- *   This function implements the the reception process.
+ *   This function implements the reception process.
  *   Also it runs the TX completion thread
  */
 static int xgmac_poll(struct napi_struct *napi, int budget)
@@ -1247,7 +1237,7 @@ static int xgmac_poll(struct napi_struct *napi, int budget)
 	work_done = xgmac_rx(priv, budget);
 
 	if (work_done < budget) {
-		napi_complete(napi);
+		napi_complete_done(napi, work_done);
 		__raw_writel(DMA_INTR_DEFAULT_MASK, priv->base + XGMAC_DMA_INTR_ENA);
 	}
 	return work_done;
@@ -1256,12 +1246,14 @@ static int xgmac_poll(struct napi_struct *napi, int budget)
 /**
  *  xgmac_tx_timeout
  *  @dev : Pointer to net device structure
+ *  @txqueue: index of the hung transmit queue
+ *
  *  Description: this function is called when a packet transmission fails to
  *   complete within a reasonable tmrate. The driver will mark the error in the
  *   netdev structure and arrange for the device to be reset to a sane state
  *   in order to transmit a new packet.
  */
-static void xgmac_tx_timeout(struct net_device *dev)
+static void xgmac_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct xgmac_priv *priv = netdev_priv(dev);
 	schedule_work(&priv->tx_timeout_work);
@@ -1360,20 +1352,6 @@ out:
  */
 static int xgmac_change_mtu(struct net_device *dev, int new_mtu)
 {
-	struct xgmac_priv *priv = netdev_priv(dev);
-	int old_mtu;
-
-	if ((new_mtu < 46) || (new_mtu > MAX_MTU)) {
-		netdev_err(priv->dev, "invalid MTU, max MTU is: %d\n", MAX_MTU);
-		return -EINVAL;
-	}
-
-	old_mtu = dev->mtu;
-
-	/* return early if the buffer sizes will not change */
-	if (old_mtu == new_mtu)
-		return 0;
-
 	/* Stop everything, get ready to change the MTU */
 	if (!netif_running(dev))
 		return 0;
@@ -1460,9 +1438,9 @@ static void xgmac_poll_controller(struct net_device *dev)
 }
 #endif
 
-static struct rtnl_link_stats64 *
+static void
 xgmac_get_stats64(struct net_device *dev,
-		       struct rtnl_link_stats64 *storage)
+		  struct rtnl_link_stats64 *storage)
 {
 	struct xgmac_priv *priv = netdev_priv(dev);
 	void __iomem *base = priv->base;
@@ -1490,7 +1468,6 @@ xgmac_get_stats64(struct net_device *dev,
 
 	writel(0, base + XGMAC_MMC_CTRL);
 	spin_unlock_bh(&priv->stats_lock);
-	return storage;
 }
 
 static int xgmac_set_mac_address(struct net_device *dev, void *p)
@@ -1502,7 +1479,7 @@ static int xgmac_set_mac_address(struct net_device *dev, void *p)
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
+	eth_hw_addr_set(dev, addr->sa_data);
 
 	xgmac_set_mac_addr(ioaddr, dev->dev_addr, 0);
 
@@ -1544,15 +1521,14 @@ static const struct net_device_ops xgmac_netdev_ops = {
 	.ndo_set_features = xgmac_set_features,
 };
 
-static int xgmac_ethtool_getsettings(struct net_device *dev,
-					  struct ethtool_cmd *cmd)
+static int xgmac_ethtool_get_link_ksettings(struct net_device *dev,
+					    struct ethtool_link_ksettings *cmd)
 {
-	cmd->autoneg = 0;
-	cmd->duplex = DUPLEX_FULL;
-	ethtool_cmd_speed_set(cmd, 10000);
-	cmd->supported = 0;
-	cmd->advertising = 0;
-	cmd->transceiver = XCVR_INTERNAL;
+	cmd->base.autoneg = 0;
+	cmd->base.duplex = DUPLEX_FULL;
+	cmd->base.speed = 10000;
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.supported, 0);
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.advertising, 0);
 	return 0;
 }
 
@@ -1695,7 +1671,6 @@ static int xgmac_set_wol(struct net_device *dev,
 }
 
 static const struct ethtool_ops xgmac_ethtool_ops = {
-	.get_settings = xgmac_ethtool_getsettings,
 	.get_link = ethtool_op_get_link,
 	.get_pauseparam = xgmac_get_pauseparam,
 	.set_pauseparam = xgmac_set_pauseparam,
@@ -1704,6 +1679,7 @@ static const struct ethtool_ops xgmac_ethtool_ops = {
 	.get_wol = xgmac_get_wol,
 	.set_wol = xgmac_set_wol,
 	.get_sset_count = xgmac_get_sset_count,
+	.get_link_ksettings = xgmac_ethtool_get_link_ksettings,
 };
 
 /**
@@ -1717,6 +1693,7 @@ static int xgmac_probe(struct platform_device *pdev)
 	struct resource *res;
 	struct net_device *ndev = NULL;
 	struct xgmac_priv *priv = NULL;
+	u8 addr[ETH_ALEN];
 	u32 uid;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -1735,9 +1712,8 @@ static int xgmac_probe(struct platform_device *pdev)
 	SET_NETDEV_DEV(ndev, &pdev->dev);
 	priv = netdev_priv(ndev);
 	platform_set_drvdata(pdev, ndev);
-	ether_setup(ndev);
 	ndev->netdev_ops = &xgmac_netdev_ops;
-	SET_ETHTOOL_OPS(ndev, &xgmac_ethtool_ops);
+	ndev->ethtool_ops = &xgmac_ethtool_ops;
 	spin_lock_init(&priv->stats_lock);
 	INIT_WORK(&priv->tx_timeout_work, xgmac_tx_timeout_work);
 
@@ -1805,13 +1781,18 @@ static int xgmac_probe(struct platform_device *pdev)
 	ndev->features |= ndev->hw_features;
 	ndev->priv_flags |= IFF_UNICAST_FLT;
 
+	/* MTU range: 46 - 9000 */
+	ndev->min_mtu = ETH_ZLEN - ETH_HLEN;
+	ndev->max_mtu = XGMAC_MAX_MTU;
+
 	/* Get the MAC address */
-	xgmac_get_mac_addr(priv->base, ndev->dev_addr, 0);
+	xgmac_get_mac_addr(priv->base, addr, 0);
+	eth_hw_addr_set(ndev, addr);
 	if (!is_valid_ether_addr(ndev->dev_addr))
 		netdev_warn(ndev, "MAC address %pM not valid",
 			 ndev->dev_addr);
 
-	netif_napi_add(ndev, &priv->napi, xgmac_poll, 64);
+	netif_napi_add(ndev, &priv->napi, xgmac_poll);
 	ret = register_netdev(ndev);
 	if (ret)
 		goto err_reg;
@@ -1833,7 +1814,7 @@ err_alloc:
 }
 
 /**
- * xgmac_dvr_remove
+ * xgmac_remove
  * @pdev: platform device pointer
  * Description: this function resets the TX/RX processes, disables the MAC RX/TX
  * changes the link status, releases the DMA descriptor rings,
@@ -1878,7 +1859,7 @@ static void xgmac_pmt(void __iomem *ioaddr, unsigned long mode)
 
 static int xgmac_suspend(struct device *dev)
 {
-	struct net_device *ndev = platform_get_drvdata(to_platform_device(dev));
+	struct net_device *ndev = dev_get_drvdata(dev);
 	struct xgmac_priv *priv = netdev_priv(ndev);
 	u32 value;
 
@@ -1904,7 +1885,7 @@ static int xgmac_suspend(struct device *dev)
 
 static int xgmac_resume(struct device *dev)
 {
-	struct net_device *ndev = platform_get_drvdata(to_platform_device(dev));
+	struct net_device *ndev = dev_get_drvdata(dev);
 	struct xgmac_priv *priv = netdev_priv(ndev);
 	void __iomem *ioaddr = priv->base;
 
@@ -1937,10 +1918,10 @@ static struct platform_driver xgmac_driver = {
 	.driver = {
 		.name = "calxedaxgmac",
 		.of_match_table = xgmac_of_match,
+		.pm = &xgmac_pm_ops,
 	},
 	.probe = xgmac_probe,
 	.remove = xgmac_remove,
-	.driver.pm = &xgmac_pm_ops,
 };
 
 module_platform_driver(xgmac_driver);

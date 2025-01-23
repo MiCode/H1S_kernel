@@ -1,7 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 #ifndef _IPT_LOG_H
 #define _IPT_LOG_H
-
-#warning "Please update iptables, this file will be removed soon!"
 
 /* make sure not to change this without changing netfilter.h:NF_LOG_* (!) */
 #define IPT_LOG_TCPSEQ		0x01	/* Log TCP sequence numbers */

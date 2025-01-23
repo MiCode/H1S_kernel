@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * altera-ci.c
  *
@@ -5,26 +6,9 @@
  *
  * Copyright (C) 2010 NetUP Inc.
  * Copyright (C) 2010 Igor M. Liplianin <liplianin@netup.ru>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 #ifndef __ALTERA_CI_H
 #define __ALTERA_CI_H
-
-#include <linux/kconfig.h>
 
 #define ALT_DATA	0x000000ff
 #define ALT_TDI		0x00008000
@@ -43,7 +27,7 @@ struct altera_ci_config {
 	int (*fpga_rw) (void *dev, int ad_rg, int val, int rw);
 };
 
-#if IS_ENABLED(CONFIG_MEDIA_ALTERA_CI)
+#if IS_REACHABLE(CONFIG_MEDIA_ALTERA_CI)
 
 extern int altera_ci_init(struct altera_ci_config *config, int ci_nr);
 extern void altera_ci_release(void *dev, int ci_nr);
@@ -54,24 +38,24 @@ extern int altera_ci_tuner_reset(void *dev, int ci_nr);
 
 static inline int altera_ci_init(struct altera_ci_config *config, int ci_nr)
 {
-	printk(KERN_WARNING "%s: driver disabled by Kconfig\n", __func__);
+	pr_warn("%s: driver disabled by Kconfig\n", __func__);
 	return 0;
 }
 
 static inline void altera_ci_release(void *dev, int ci_nr)
 {
-	printk(KERN_WARNING "%s: driver disabled by Kconfig\n", __func__);
+	pr_warn("%s: driver disabled by Kconfig\n", __func__);
 }
 
 static inline int altera_ci_irq(void *dev)
 {
-	printk(KERN_WARNING "%s: driver disabled by Kconfig\n", __func__);
+	pr_warn("%s: driver disabled by Kconfig\n", __func__);
 	return 0;
 }
 
 static inline int altera_ci_tuner_reset(void *dev, int ci_nr)
 {
-	printk(KERN_WARNING "%s: driver disabled by Kconfig\n", __func__);
+	pr_warn("%s: driver disabled by Kconfig\n", __func__);
 	return 0;
 }
 
@@ -80,19 +64,19 @@ static inline int altera_ci_tuner_reset(void *dev, int ci_nr)
 static inline int altera_hw_filt_init(struct altera_ci_config *config,
 							int hw_filt_nr)
 {
-	printk(KERN_WARNING "%s: driver disabled by Kconfig\n", __func__);
+	pr_warn("%s: driver disabled by Kconfig\n", __func__);
 	return 0;
 }
 
 static inline void altera_hw_filt_release(void *dev, int filt_nr)
 {
-	printk(KERN_WARNING "%s: driver disabled by Kconfig\n", __func__);
+	pr_warn("%s: driver disabled by Kconfig\n", __func__);
 }
 
 static inline int altera_pid_feed_control(void *dev, int filt_nr,
 		struct dvb_demux_feed *dvbdmxfeed, int onoff)
 {
-	printk(KERN_WARNING "%s: driver disabled by Kconfig\n", __func__);
+	pr_warn("%s: driver disabled by Kconfig\n", __func__);
 	return 0;
 }
 

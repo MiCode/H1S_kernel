@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * vineetg: May 2011
  *  -We had half-optimised memset/memcpy, got better versions of those
@@ -16,8 +13,6 @@
 #define _ASM_ARC_STRING_H
 
 #include <linux/types.h>
-
-#ifdef __KERNEL__
 
 #define __HAVE_ARCH_MEMSET
 #define __HAVE_ARCH_MEMCPY
@@ -36,5 +31,4 @@ extern char *strcpy(char *dest, const char *src);
 extern int strcmp(const char *cs, const char *ct);
 extern __kernel_size_t strlen(const char *);
 
-#endif /* __KERNEL__ */
 #endif /* _ASM_ARC_STRING_H */

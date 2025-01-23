@@ -1,11 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2013 STMicroelectronics Limited
  * Author: Srinivas Kandagatla <srinivas.kandagatla@st.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 #include <linux/kernel.h>
 #include <linux/clk.h>
@@ -16,14 +12,15 @@
 #include <linux/reset.h>
 #include <media/rc-core.h>
 #include <linux/pinctrl/consumer.h>
+#include <linux/pm_wakeirq.h>
 
 struct st_rc_device {
 	struct device			*dev;
 	int				irq;
 	int				irq_wake;
 	struct clk			*sys_clock;
-	void				*base;	/* Register base address */
-	void				*rx_base;/* RX Register base address */
+	void __iomem			*base;	/* Register base address */
+	void __iomem			*rx_base;/* RX Register base address */
 	struct rc_dev			*rdev;
 	bool				overclocking;
 	int				sample_mult;
@@ -48,7 +45,7 @@ struct st_rc_device {
 #define IRB_RX_NOISE_SUPPR      0x5c	/* noise suppression  */
 #define IRB_RX_POLARITY_INV     0x68	/* polarity inverter  */
 
-/**
+/*
  * IRQ set: Enable full FIFO                 1  -> bit  3;
  *          Enable overrun IRQ               1  -> bit  2;
  *          Enable last symbol IRQ           1  -> bit  1:
@@ -66,12 +63,11 @@ struct st_rc_device {
 
 static void st_rc_send_lirc_timeout(struct rc_dev *rdev)
 {
-	DEFINE_IR_RAW_EVENT(ev);
-	ev.timeout = true;
+	struct ir_raw_event ev = { .timeout = true, .duration = rdev->timeout };
 	ir_raw_event_store(rdev, &ev);
 }
 
-/**
+/*
  * RX graphical example to better understand the difference between ST IR block
  * output and standard definition used by LIRC (and most of the world!)
  *
@@ -95,22 +91,27 @@ static void st_rc_send_lirc_timeout(struct rc_dev *rdev)
 
 static irqreturn_t st_rc_rx_interrupt(int irq, void *data)
 {
+	unsigned long timeout;
 	unsigned int symbol, mark = 0;
 	struct st_rc_device *dev = data;
 	int last_symbol = 0;
-	u32 status;
-	DEFINE_IR_RAW_EVENT(ev);
+	u32 status, int_status;
+	struct ir_raw_event ev = {};
 
 	if (dev->irq_wake)
 		pm_wakeup_event(dev->dev, 0);
 
-	status  = readl(dev->rx_base + IRB_RX_STATUS);
+	/* FIXME: is 10ms good enough ? */
+	timeout = jiffies +  msecs_to_jiffies(10);
+	do {
+		status  = readl(dev->rx_base + IRB_RX_STATUS);
+		if (!(status & (IRB_FIFO_NOT_EMPTY | IRB_OVERFLOW)))
+			break;
 
-	while (status & (IRB_FIFO_NOT_EMPTY | IRB_OVERFLOW)) {
-		u32 int_status = readl(dev->rx_base + IRB_RX_INT_STATUS);
+		int_status = readl(dev->rx_base + IRB_RX_INT_STATUS);
 		if (unlikely(int_status & IRB_RX_OVERRUN_INT)) {
 			/* discard the entire collection in case of errors!  */
-			ir_raw_event_reset(dev->rdev);
+			ir_raw_event_overflow(dev->rdev);
 			dev_info(dev->dev, "IR RX overrun\n");
 			writel(IRB_RX_OVERRUN_INT,
 					dev->rx_base + IRB_RX_INT_CLEAR);
@@ -133,12 +134,12 @@ static irqreturn_t st_rc_rx_interrupt(int irq, void *data)
 				mark /= dev->sample_div;
 			}
 
-			ev.duration = US_TO_NS(mark);
+			ev.duration = mark;
 			ev.pulse = true;
 			ir_raw_event_store(dev->rdev, &ev);
 
 			if (!last_symbol) {
-				ev.duration = US_TO_NS(symbol);
+				ev.duration = symbol;
 				ev.pulse = false;
 				ir_raw_event_store(dev->rdev, &ev);
 			} else  {
@@ -147,8 +148,7 @@ static irqreturn_t st_rc_rx_interrupt(int irq, void *data)
 
 		}
 		last_symbol = 0;
-		status  = readl(dev->rx_base + IRB_RX_STATUS);
-	}
+	} while (time_is_after_jiffies(timeout));
 
 	writel(IRB_RX_INTS, dev->rx_base + IRB_RX_INT_CLEAR);
 
@@ -157,17 +157,22 @@ static irqreturn_t st_rc_rx_interrupt(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static void st_rc_hardware_init(struct st_rc_device *dev)
+static int st_rc_hardware_init(struct st_rc_device *dev)
 {
+	int ret;
 	int baseclock, freqdiff;
 	unsigned int rx_max_symbol_per = MAX_SYMB_TIME;
 	unsigned int rx_sampling_freq_div;
 
 	/* Enable the IP */
-	if (dev->rstc)
-		reset_control_deassert(dev->rstc);
+	reset_control_deassert(dev->rstc);
 
-	clk_prepare_enable(dev->sys_clock);
+	ret = clk_prepare_enable(dev->sys_clock);
+	if (ret) {
+		dev_err(dev->dev, "Failed to prepare/enable system clock\n");
+		return ret;
+	}
+
 	baseclock = clk_get_rate(dev->sys_clock);
 
 	/* IRB input pins are inverted internally from high to low. */
@@ -185,14 +190,18 @@ static void st_rc_hardware_init(struct st_rc_device *dev)
 	}
 
 	writel(rx_max_symbol_per, dev->rx_base + IRB_MAX_SYM_PERIOD);
+
+	return 0;
 }
 
-static int st_rc_remove(struct platform_device *pdev)
+static void st_rc_remove(struct platform_device *pdev)
 {
 	struct st_rc_device *rc_dev = platform_get_drvdata(pdev);
+
+	dev_pm_clear_wake_irq(&pdev->dev);
+	device_init_wakeup(&pdev->dev, false);
 	clk_disable_unprepare(rc_dev->sys_clock);
 	rc_unregister_device(rc_dev->rdev);
-	return 0;
 }
 
 static int st_rc_open(struct rc_dev *rdev)
@@ -221,7 +230,6 @@ static int st_rc_probe(struct platform_device *pdev)
 	int ret = -EINVAL;
 	struct rc_dev *rdev;
 	struct device *dev = &pdev->dev;
-	struct resource *res;
 	struct st_rc_device *rc_dev;
 	struct device_node *np = pdev->dev.of_node;
 	const char *rx_mode;
@@ -231,7 +239,7 @@ static int st_rc_probe(struct platform_device *pdev)
 	if (!rc_dev)
 		return -ENOMEM;
 
-	rdev = rc_allocate_device();
+	rdev = rc_allocate_device(RC_DRIVER_IR_RAW);
 
 	if (!rdev)
 		return -ENOMEM;
@@ -264,9 +272,7 @@ static int st_rc_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-
-	rc_dev->base = devm_ioremap_resource(dev, res);
+	rc_dev->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(rc_dev->base)) {
 		ret = PTR_ERR(rc_dev->base);
 		goto err;
@@ -277,30 +283,28 @@ static int st_rc_probe(struct platform_device *pdev)
 	else
 		rc_dev->rx_base = rc_dev->base;
 
-
-	rc_dev->rstc = reset_control_get(dev, NULL);
-	if (IS_ERR(rc_dev->rstc))
-		rc_dev->rstc = NULL;
+	rc_dev->rstc = reset_control_get_optional_exclusive(dev, NULL);
+	if (IS_ERR(rc_dev->rstc)) {
+		ret = PTR_ERR(rc_dev->rstc);
+		goto err;
+	}
 
 	rc_dev->dev = dev;
 	platform_set_drvdata(pdev, rc_dev);
-	st_rc_hardware_init(rc_dev);
+	ret = st_rc_hardware_init(rc_dev);
+	if (ret)
+		goto err;
 
-	rdev->driver_type = RC_DRIVER_IR_RAW;
-	rdev->allowed_protos = RC_BIT_ALL;
+	rdev->allowed_protocols = RC_PROTO_BIT_ALL_IR_DECODER;
 	/* rx sampling rate is 10Mhz */
 	rdev->rx_resolution = 100;
-	rdev->timeout = US_TO_NS(MAX_SYMB_TIME);
+	rdev->timeout = MAX_SYMB_TIME;
 	rdev->priv = rc_dev;
 	rdev->open = st_rc_open;
 	rdev->close = st_rc_close;
 	rdev->driver_name = IR_ST_NAME;
-	rdev->map_name = RC_MAP_LIRC;
-	rdev->input_name = "ST Remote Control Receiver";
-
-	/* enable wake via this device */
-	device_set_wakeup_capable(dev, true);
-	device_set_wakeup_enable(dev, true);
+	rdev->map_name = RC_MAP_EMPTY;
+	rdev->device_name = "ST Remote Control Receiver";
 
 	ret = rc_register_device(rdev);
 	if (ret < 0)
@@ -308,13 +312,17 @@ static int st_rc_probe(struct platform_device *pdev)
 
 	rc_dev->rdev = rdev;
 	if (devm_request_irq(dev, rc_dev->irq, st_rc_rx_interrupt,
-			IRQF_NO_SUSPEND, IR_ST_NAME, rc_dev) < 0) {
+			     0, IR_ST_NAME, rc_dev) < 0) {
 		dev_err(dev, "IRQ %d register failed\n", rc_dev->irq);
 		ret = -EINVAL;
 		goto rcerr;
 	}
 
-	/**
+	/* enable wake via this device */
+	device_init_wakeup(dev, true);
+	dev_pm_set_wake_irq(dev, rc_dev->irq);
+
+	/*
 	 * for LIRC_MODE_MODE2 or LIRC_MODE_PULSE or LIRC_MODE_RAW
 	 * lircd expects a long space first before a signal train to sync.
 	 */
@@ -334,7 +342,7 @@ err:
 	return ret;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int st_rc_suspend(struct device *dev)
 {
 	struct st_rc_device *rc_dev = dev_get_drvdata(dev);
@@ -349,8 +357,7 @@ static int st_rc_suspend(struct device *dev)
 		writel(0x00, rc_dev->rx_base + IRB_RX_EN);
 		writel(0x00, rc_dev->rx_base + IRB_RX_INT_EN);
 		clk_disable_unprepare(rc_dev->sys_clock);
-		if (rc_dev->rstc)
-			reset_control_assert(rc_dev->rstc);
+		reset_control_assert(rc_dev->rstc);
 	}
 
 	return 0;
@@ -358,6 +365,7 @@ static int st_rc_suspend(struct device *dev)
 
 static int st_rc_resume(struct device *dev)
 {
+	int ret;
 	struct st_rc_device *rc_dev = dev_get_drvdata(dev);
 	struct rc_dev	*rdev = rc_dev->rdev;
 
@@ -366,7 +374,10 @@ static int st_rc_resume(struct device *dev)
 		rc_dev->irq_wake = 0;
 	} else {
 		pinctrl_pm_select_default_state(dev);
-		st_rc_hardware_init(rc_dev);
+		ret = st_rc_hardware_init(rc_dev);
+		if (ret)
+			return ret;
+
 		if (rdev->users) {
 			writel(IRB_RX_INTS, rc_dev->rx_base + IRB_RX_INT_EN);
 			writel(0x01, rc_dev->rx_base + IRB_RX_EN);
@@ -376,11 +387,12 @@ static int st_rc_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(st_rc_pm_ops, st_rc_suspend, st_rc_resume);
 #endif
 
+static SIMPLE_DEV_PM_OPS(st_rc_pm_ops, st_rc_suspend, st_rc_resume);
+
 #ifdef CONFIG_OF
-static struct of_device_id st_rc_match[] = {
+static const struct of_device_id st_rc_match[] = {
 	{ .compatible = "st,comms-irb", },
 	{},
 };
@@ -391,14 +403,11 @@ MODULE_DEVICE_TABLE(of, st_rc_match);
 static struct platform_driver st_rc_driver = {
 	.driver = {
 		.name = IR_ST_NAME,
-		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(st_rc_match),
-#ifdef CONFIG_PM
 		.pm     = &st_rc_pm_ops,
-#endif
 	},
 	.probe = st_rc_probe,
-	.remove = st_rc_remove,
+	.remove_new = st_rc_remove,
 };
 
 module_platform_driver(st_rc_driver);

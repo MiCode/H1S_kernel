@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * include/asm/processor.h
  *
@@ -7,20 +8,10 @@
 #ifndef __ASM_SPARC64_PROCESSOR_H
 #define __ASM_SPARC64_PROCESSOR_H
 
-/*
- * Sparc64 implementation of macro that returns current
- * instruction pointer ("program counter").
- */
-#define current_text_addr() ({ void *pc; __asm__("rd %%pc, %0" : "=r" (pc)); pc; })
-
 #include <asm/asi.h>
 #include <asm/pstate.h>
 #include <asm/ptrace.h>
 #include <asm/page.h>
-
-/* The sparc has no problems with write protection */
-#define wp_works_ok 1
-#define wp_works_ok__is_a_macro /* for versions in ksyms.c */
 
 /*
  * User lives in his very own context, and cannot reference us. Note
@@ -56,10 +47,6 @@
 
 #ifndef __ASSEMBLY__
 
-typedef struct {
-	unsigned char seg;
-} mm_segment_t;
-
 /* The Sparc processor specific thread struct. */
 /* XXX This should die, everything can go into thread_info now. */
 struct thread_struct {
@@ -93,9 +80,7 @@ struct thread_struct {
 #include <linux/types.h>
 #include <asm/fpumacro.h>
 
-/* Return saved PC of a blocked thread. */
 struct task_struct;
-extern unsigned long thread_saved_pc(struct task_struct *);
 
 /* On Uniprocessor, even in RMO processes see TSO semantics */
 #ifdef CONFIG_SMP
@@ -191,20 +176,24 @@ do { \
 	regs->tstate &= ~TSTATE_PEF;	\
 } while (0)
 
-/* Free all resources held by a thread. */
-#define release_thread(tsk)		do { } while (0)
-
-extern unsigned long get_wchan(struct task_struct *task);
+unsigned long __get_wchan(struct task_struct *task);
 
 #define task_pt_regs(tsk) (task_thread_info(tsk)->kregs)
 #define KSTK_EIP(tsk)  (task_pt_regs(tsk)->tpc)
 #define KSTK_ESP(tsk)  (task_pt_regs(tsk)->u_regs[UREG_FP])
 
 /* Please see the commentary in asm/backoff.h for a description of
- * what these instructions are doing and how they have been choosen.
+ * what these instructions are doing and how they have been chosen.
  * To make a long story short, we are trying to yield the current cpu
  * strand during busy loops.
  */
+#ifdef	BUILD_VDSO
+#define	cpu_relax()	asm volatile("\n99:\n\t"			\
+				     "rd	%%ccr, %%g0\n\t"	\
+				     "rd	%%ccr, %%g0\n\t"	\
+				     "rd	%%ccr, %%g0\n\t"	\
+				     ::: "memory")
+#else /* ! BUILD_VDSO */
 #define cpu_relax()	asm volatile("\n99:\n\t"			\
 				     "rd	%%ccr, %%g0\n\t"	\
 				     "rd	%%ccr, %%g0\n\t"	\
@@ -216,6 +205,7 @@ extern unsigned long get_wchan(struct task_struct *task);
 				     "nop\n\t"				\
 				     ".previous"			\
 				     ::: "memory")
+#endif
 
 /* Prefetch support.  This is tuned for UltraSPARC-III and later.
  * UltraSPARC-I will treat these as nops, and UltraSPARC-II has
@@ -223,7 +213,6 @@ extern unsigned long get_wchan(struct task_struct *task);
  */
 #define ARCH_HAS_PREFETCH
 #define ARCH_HAS_PREFETCHW
-#define ARCH_HAS_SPINLOCK_PREFETCH
 
 static inline void prefetch(const void *x)
 {
@@ -249,9 +238,9 @@ static inline void prefetchw(const void *x)
 			     : "r" (x));
 }
 
-#define spin_lock_prefetch(x)	prefetchw(x)
-
 #define HAVE_ARCH_PICK_MMAP_LAYOUT
+
+int do_mathemu(struct pt_regs *regs, struct fpustate *f, bool illegal_insn_trap);
 
 #endif /* !(__ASSEMBLY__) */
 

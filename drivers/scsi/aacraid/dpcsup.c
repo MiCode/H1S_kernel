@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	Adaptec AAC series RAID controller driver
  *	(c) Copyright 2001 Red Hat Inc.
@@ -6,28 +7,13 @@
  * Adaptec aacraid device driver for Linux.
  *
  * Copyright (c) 2000-2010 Adaptec, Inc.
- *               2010 PMC-Sierra, Inc. (aacraid@pmc-sierra.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; see the file COPYING.  If not, write to
- * the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
+ *               2010-2015 PMC-Sierra, Inc. (aacraid@pmc-sierra.com)
+ *		 2016-2017 Microsemi Corp. (aacraid@microsemi.com)
  *
  * Module Name:
  *  dpcsup.c
  *
  * Abstract: All DPC processing routines for the cyclone board occur here.
- *
- *
  */
 
 #include <linux/kernel.h>
@@ -37,7 +23,6 @@
 #include <linux/slab.h>
 #include <linux/completion.h>
 #include <linux/blkdev.h>
-#include <linux/semaphore.h>
 
 #include "aacraid.h"
 
@@ -64,7 +49,7 @@ unsigned int aac_response_normal(struct aac_queue * q)
 	/*
 	 *	Keep pulling response QEs off the response queue and waking
 	 *	up the waiters until there are no more QEs. We then return
-	 *	back to the system. If no response was requesed we just
+	 *	back to the system. If no response was requested we just
 	 *	deallocate the Fib here and continue.
 	 */
 	while(aac_consumer_get(dev, q, &entry))
@@ -84,7 +69,7 @@ unsigned int aac_response_normal(struct aac_queue * q)
 		 *	continue. The caller has already been notified that
 		 *	the fib timed out.
 		 */
-		dev->queues->queue[AdapNormCmdQueue].numpending--;
+		atomic_dec(&dev->queues->queue[AdapNormCmdQueue].numpending);
 
 		if (unlikely(fib->flags & FIB_CONTEXT_FLAG_TIMED_OUT)) {
 			spin_unlock_irqrestore(q->lock, flags);
@@ -114,22 +99,22 @@ unsigned int aac_response_normal(struct aac_queue * q)
 		}
 		if (hwfib->header.XferState & cpu_to_le32(NoResponseExpected | Async)) 
 		{
-	        	if (hwfib->header.XferState & cpu_to_le32(NoResponseExpected))
+			if (hwfib->header.XferState & cpu_to_le32(NoResponseExpected)) {
 				FIB_COUNTER_INCREMENT(aac_config.NoResponseRecved);
-			else 
+			} else {
 				FIB_COUNTER_INCREMENT(aac_config.AsyncRecved);
+			}
 			/*
 			 *	NOTE:  we cannot touch the fib after this
 			 *	    call, because it may have been deallocated.
 			 */
-			fib->flags &= FIB_CONTEXT_FLAG_FASTRESP;
 			fib->callback(fib->callback_data, fib);
 		} else {
 			unsigned long flagv;
 			spin_lock_irqsave(&fib->event_lock, flagv);
 			if (!fib->done) {
 				fib->done = 1;
-				up(&fib->event_wait);
+				complete(&fib->event_wait);
 			}
 			spin_unlock_irqrestore(&fib->event_lock, flagv);
 
@@ -245,14 +230,14 @@ static void aac_aif_callback(void *context, struct fib * fibptr)
 	struct fib *fibctx;
 	struct aac_dev *dev;
 	struct aac_aifcmd *cmd;
-	int status;
 
 	fibctx = (struct fib *)context;
 	BUG_ON(fibptr == NULL);
 	dev = fibptr->dev;
 
-	if (fibptr->hw_fib_va->header.XferState &
-	    cpu_to_le32(NoMoreAifDataAvailable)) {
+	if ((fibptr->hw_fib_va->header.XferState &
+	    cpu_to_le32(NoMoreAifDataAvailable)) ||
+		dev->sa_firmware) {
 		aac_fib_complete(fibptr);
 		aac_fib_free(fibptr);
 		return;
@@ -264,7 +249,7 @@ static void aac_aif_callback(void *context, struct fib * fibptr)
 	cmd = (struct aac_aifcmd *) fib_data(fibctx);
 	cmd->command = cpu_to_le32(AifReqEvent);
 
-	status = aac_fib_send(AifRequest,
+	aac_fib_send(AifRequest,
 		fibctx,
 		sizeof(struct hw_fib)-sizeof(struct aac_fibhdr),
 		FsaNormal,
@@ -273,7 +258,7 @@ static void aac_aif_callback(void *context, struct fib * fibptr)
 }
 
 
-/**
+/*
  *	aac_intr_normal	-	Handle command replies
  *	@dev: Device
  *	@index: completion reference
@@ -282,8 +267,8 @@ static void aac_aif_callback(void *context, struct fib * fibptr)
  *	know there is a response on our normal priority queue. We will pull off
  *	all QE there are and wake up all the waiters before exiting.
  */
-unsigned int aac_intr_normal(struct aac_dev *dev, u32 index,
-			int isAif, int isFastResponse, struct hw_fib *aif_fib)
+unsigned int aac_intr_normal(struct aac_dev *dev, u32 index, int isAif,
+	int isFastResponse, struct hw_fib *aif_fib)
 {
 	unsigned long mflags;
 	dprintk((KERN_INFO "aac_intr_normal(%p,%x)\n", dev, index));
@@ -305,12 +290,14 @@ unsigned int aac_intr_normal(struct aac_dev *dev, u32 index,
 			kfree (fib);
 			return 1;
 		}
-		if (aif_fib != NULL) {
+		if (dev->sa_firmware) {
+			fib->hbacmd_size = index;	/* store event type */
+		} else if (aif_fib != NULL) {
 			memcpy(hw_fib, aif_fib, sizeof(struct hw_fib));
 		} else {
-			memcpy(hw_fib,
-				(struct hw_fib *)(((uintptr_t)(dev->regs.sa)) +
-				index), sizeof(struct hw_fib));
+			memcpy(hw_fib, (struct hw_fib *)
+				(((uintptr_t)(dev->regs.sa)) + index),
+				sizeof(struct hw_fib));
 		}
 		INIT_LIST_HEAD(&fib->fiblink);
 		fib->type = FSAFS_NTC_FIB_CONTEXT;
@@ -344,7 +331,7 @@ unsigned int aac_intr_normal(struct aac_dev *dev, u32 index,
 			(fib_callback)aac_aif_callback, fibctx);
 	} else {
 		struct fib *fib = &dev->fibs[index];
-		struct hw_fib * hwfib = fib->hw_fib_va;
+		int start_callback = 0;
 
 		/*
 		 *	Remove this fib from the Outstanding I/O queue.
@@ -354,7 +341,7 @@ unsigned int aac_intr_normal(struct aac_dev *dev, u32 index,
 		 *	continue. The caller has already been notified that
 		 *	the fib timed out.
 		 */
-		dev->queues->queue[AdapNormCmdQueue].numpending--;
+		atomic_dec(&dev->queues->queue[AdapNormCmdQueue].numpending);
 
 		if (unlikely(fib->flags & FIB_CONTEXT_FLAG_TIMED_OUT)) {
 			aac_fib_complete(fib);
@@ -362,54 +349,103 @@ unsigned int aac_intr_normal(struct aac_dev *dev, u32 index,
 			return 0;
 		}
 
-		if (isFastResponse) {
-			/*
-			 *	Doctor the fib
-			 */
-			*(__le32 *)hwfib->data = cpu_to_le32(ST_OK);
-			hwfib->header.XferState |= cpu_to_le32(AdapterProcessed);
-			fib->flags |= FIB_CONTEXT_FLAG_FASTRESP;
-		}
-
 		FIB_COUNTER_INCREMENT(aac_config.FibRecved);
 
-		if (hwfib->header.Command == cpu_to_le16(NuFileSystem))
-		{
-			__le32 *pstatus = (__le32 *)hwfib->data;
-			if (*pstatus & cpu_to_le32(0xffff0000))
-				*pstatus = cpu_to_le32(ST_OK);
-		}
-		if (hwfib->header.XferState & cpu_to_le32(NoResponseExpected | Async)) 
-		{
-	        	if (hwfib->header.XferState & cpu_to_le32(NoResponseExpected))
-				FIB_COUNTER_INCREMENT(aac_config.NoResponseRecved);
-			else 
-				FIB_COUNTER_INCREMENT(aac_config.AsyncRecved);
-			/*
-			 *	NOTE:  we cannot touch the fib after this
-			 *	    call, because it may have been deallocated.
-			 */
-			fib->flags &= FIB_CONTEXT_FLAG_FASTRESP;
-			fib->callback(fib->callback_data, fib);
-		} else {
-			unsigned long flagv;
-	  		dprintk((KERN_INFO "event_wait up\n"));
-			spin_lock_irqsave(&fib->event_lock, flagv);
-			if (!fib->done) {
-				fib->done = 1;
-				up(&fib->event_wait);
-			}
-			spin_unlock_irqrestore(&fib->event_lock, flagv);
+		if (fib->flags & FIB_CONTEXT_FLAG_NATIVE_HBA) {
 
-			spin_lock_irqsave(&dev->manage_lock, mflags);
-			dev->management_fib_count--;
-			spin_unlock_irqrestore(&dev->manage_lock, mflags);
+			if (isFastResponse)
+				fib->flags |= FIB_CONTEXT_FLAG_FASTRESP;
 
-			FIB_COUNTER_INCREMENT(aac_config.NormalRecved);
-			if (fib->done == 2) {
+			if (fib->callback) {
+				start_callback = 1;
+			} else {
+				unsigned long flagv;
+				int completed = 0;
+
+				dprintk((KERN_INFO "event_wait up\n"));
 				spin_lock_irqsave(&fib->event_lock, flagv);
-				fib->done = 0;
+				if (fib->done == 2) {
+					fib->done = 1;
+					completed = 1;
+				} else {
+					fib->done = 1;
+					complete(&fib->event_wait);
+				}
 				spin_unlock_irqrestore(&fib->event_lock, flagv);
+
+				spin_lock_irqsave(&dev->manage_lock, mflags);
+				dev->management_fib_count--;
+				spin_unlock_irqrestore(&dev->manage_lock,
+					mflags);
+
+				FIB_COUNTER_INCREMENT(aac_config.NativeRecved);
+				if (completed)
+					aac_fib_complete(fib);
+			}
+		} else {
+			struct hw_fib *hwfib = fib->hw_fib_va;
+
+			if (isFastResponse) {
+				/* Doctor the fib */
+				*(__le32 *)hwfib->data = cpu_to_le32(ST_OK);
+				hwfib->header.XferState |=
+					cpu_to_le32(AdapterProcessed);
+				fib->flags |= FIB_CONTEXT_FLAG_FASTRESP;
+			}
+
+			if (hwfib->header.Command ==
+				cpu_to_le16(NuFileSystem)) {
+				__le32 *pstatus = (__le32 *)hwfib->data;
+
+				if (*pstatus & cpu_to_le32(0xffff0000))
+					*pstatus = cpu_to_le32(ST_OK);
+			}
+			if (hwfib->header.XferState &
+				cpu_to_le32(NoResponseExpected | Async)) {
+				if (hwfib->header.XferState & cpu_to_le32(
+					NoResponseExpected)) {
+					FIB_COUNTER_INCREMENT(
+						aac_config.NoResponseRecved);
+				} else {
+					FIB_COUNTER_INCREMENT(
+						aac_config.AsyncRecved);
+				}
+				start_callback = 1;
+			} else {
+				unsigned long flagv;
+				int completed = 0;
+
+				dprintk((KERN_INFO "event_wait up\n"));
+				spin_lock_irqsave(&fib->event_lock, flagv);
+				if (fib->done == 2) {
+					fib->done = 1;
+					completed = 1;
+				} else {
+					fib->done = 1;
+					complete(&fib->event_wait);
+				}
+				spin_unlock_irqrestore(&fib->event_lock, flagv);
+
+				spin_lock_irqsave(&dev->manage_lock, mflags);
+				dev->management_fib_count--;
+				spin_unlock_irqrestore(&dev->manage_lock,
+					mflags);
+
+				FIB_COUNTER_INCREMENT(aac_config.NormalRecved);
+				if (completed)
+					aac_fib_complete(fib);
+			}
+		}
+
+
+		if (start_callback) {
+			/*
+			 * NOTE:  we cannot touch the fib after this
+			 *  call, because it may have been deallocated.
+			 */
+			if (likely(fib->callback && fib->callback_data)) {
+				fib->callback(fib->callback_data, fib);
+			} else {
 				aac_fib_complete(fib);
 				aac_fib_free(fib);
 			}

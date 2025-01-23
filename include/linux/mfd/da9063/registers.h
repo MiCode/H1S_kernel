@@ -1,27 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * Registers definition for DA9063 modules
  *
  * Copyright 2012 Dialog Semiconductor Ltd.
  *
- * Author: Michal Hajduk <michal.hajduk@diasemi.com>
- *	   Krystian Garbaciak <krystian.garbaciak@diasemi.com>
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
+ * Author: Michal Hajduk, Dialog Semiconductor
+ * Author: Krystian Garbaciak, Dialog Semiconductor
  */
 
 #ifndef _DA9063_REG_H
 #define	_DA9063_REG_H
 
 #define DA9063_I2C_PAGE_SEL_SHIFT	1
-
 #define	DA9063_EVENT_REG_NUM		4
-#define	DA9210_EVENT_REG_NUM		2
-#define	DA9063_EXT_EVENT_REG_NUM	(DA9063_EVENT_REG_NUM + \
-						DA9210_EVENT_REG_NUM)
 
 /* Page selection I2C or SPI always in the begining of any page. */
 /* Page 0 : I2C access 0x000 - 0x0FF	SPI access 0x000 - 0x07F */
@@ -61,9 +52,9 @@
 #define	DA9063_REG_GPIO_10_11		0x1A
 #define	DA9063_REG_GPIO_12_13		0x1B
 #define	DA9063_REG_GPIO_14_15		0x1C
-#define	DA9063_REG_GPIO_MODE_0_7	0x1D
-#define	DA9063_REG_GPIO_MODE_8_15	0x1E
-#define	DA9063_REG_GPIO_SWITCH_CONT	0x1F
+#define	DA9063_REG_GPIO_MODE0_7		0x1D
+#define	DA9063_REG_GPIO_MODE8_15	0x1E
+#define	DA9063_REG_SWITCH_CONT		0x1F
 
 /* Regulator Control Registers */
 #define	DA9063_REG_BCORE2_CONT		0x20
@@ -83,7 +74,7 @@
 #define	DA9063_REG_LDO9_CONT		0x2E
 #define	DA9063_REG_LDO10_CONT		0x2F
 #define	DA9063_REG_LDO11_CONT		0x30
-#define	DA9063_REG_VIB			0x31
+#define	DA9063_REG_SUPPLIES		0x31
 #define	DA9063_REG_DVC_1		0x32
 #define	DA9063_REG_DVC_2		0x33
 
@@ -97,9 +88,9 @@
 #define	DA9063_REG_ADCIN1_RES		0x3A
 #define	DA9063_REG_ADCIN2_RES		0x3B
 #define	DA9063_REG_ADCIN3_RES		0x3C
-#define	DA9063_REG_MON1_RES		0x3D
-#define	DA9063_REG_MON2_RES		0x3E
-#define	DA9063_REG_MON3_RES		0x3F
+#define	DA9063_REG_MON_A8_RES		0x3D
+#define	DA9063_REG_MON_A9_RES		0x3E
+#define	DA9063_REG_MON_A10_RES		0x3F
 
 /* RTC Calendar and Alarm Registers */
 #define	DA9063_REG_COUNT_S		0x40
@@ -108,15 +99,27 @@
 #define	DA9063_REG_COUNT_D		0x43
 #define	DA9063_REG_COUNT_MO		0x44
 #define	DA9063_REG_COUNT_Y		0x45
-#define	DA9063_REG_ALARM_MI		0x46
-#define	DA9063_REG_ALARM_H		0x47
-#define	DA9063_REG_ALARM_D		0x48
-#define	DA9063_REG_ALARM_MO		0x49
-#define	DA9063_REG_ALARM_Y		0x4A
-#define	DA9063_REG_SECOND_A		0x4B
-#define	DA9063_REG_SECOND_B		0x4C
-#define	DA9063_REG_SECOND_C		0x4D
-#define	DA9063_REG_SECOND_D		0x4E
+
+#define	DA9063_AD_REG_ALARM_MI		0x46
+#define	DA9063_AD_REG_ALARM_H		0x47
+#define	DA9063_AD_REG_ALARM_D		0x48
+#define	DA9063_AD_REG_ALARM_MO		0x49
+#define	DA9063_AD_REG_ALARM_Y		0x4A
+#define	DA9063_AD_REG_SECOND_A		0x4B
+#define	DA9063_AD_REG_SECOND_B		0x4C
+#define	DA9063_AD_REG_SECOND_C		0x4D
+#define	DA9063_AD_REG_SECOND_D		0x4E
+
+#define	DA9063_BB_REG_ALARM_S		0x46
+#define	DA9063_BB_REG_ALARM_MI		0x47
+#define	DA9063_BB_REG_ALARM_H		0x48
+#define	DA9063_BB_REG_ALARM_D		0x49
+#define	DA9063_BB_REG_ALARM_MO		0x4A
+#define	DA9063_BB_REG_ALARM_Y		0x4B
+#define	DA9063_BB_REG_SECOND_A		0x4C
+#define	DA9063_BB_REG_SECOND_B		0x4D
+#define	DA9063_BB_REG_SECOND_C		0x4E
+#define	DA9063_BB_REG_SECOND_D		0x4F
 
 /* Sequencer Control Registers */
 #define	DA9063_REG_SEQ			0x81
@@ -207,9 +210,9 @@
 
 /* DA9063 Configuration registers */
 /* OTP */
-#define	DA9063_REG_OPT_COUNT		0x101
-#define	DA9063_REG_OPT_ADDR		0x102
-#define	DA9063_REG_OPT_DATA		0x103
+#define	DA9063_REG_OTP_CONT		0x101
+#define	DA9063_REG_OTP_ADDR		0x102
+#define	DA9063_REG_OTP_DATA		0x103
 
 /* Customer Trim and Configuration */
 #define	DA9063_REG_T_OFFSET		0x104
@@ -226,39 +229,73 @@
 #define	DA9063_REG_CONFIG_J		0x10F
 #define	DA9063_REG_CONFIG_K		0x110
 #define	DA9063_REG_CONFIG_L		0x111
-#define	DA9063_REG_MON_REG_1		0x112
-#define	DA9063_REG_MON_REG_2		0x113
-#define	DA9063_REG_MON_REG_3		0x114
-#define	DA9063_REG_MON_REG_4		0x115
-#define	DA9063_REG_MON_REG_5		0x116
-#define	DA9063_REG_MON_REG_6		0x117
-#define	DA9063_REG_TRIM_CLDR		0x118
 
+#define	DA9063_AD_REG_MON_REG_1		0x112
+#define	DA9063_AD_REG_MON_REG_2		0x113
+#define	DA9063_AD_REG_MON_REG_3		0x114
+#define	DA9063_AD_REG_MON_REG_4		0x115
+#define	DA9063_AD_REG_MON_REG_5		0x116
+#define	DA9063_AD_REG_MON_REG_6		0x117
+#define	DA9063_AD_REG_TRIM_CLDR		0x118
+
+#define	DA9063_AD_REG_GP_ID_0		0x119
+#define	DA9063_AD_REG_GP_ID_1		0x11A
+#define	DA9063_AD_REG_GP_ID_2		0x11B
+#define	DA9063_AD_REG_GP_ID_3		0x11C
+#define	DA9063_AD_REG_GP_ID_4		0x11D
+#define	DA9063_AD_REG_GP_ID_5		0x11E
+#define	DA9063_AD_REG_GP_ID_6		0x11F
+#define	DA9063_AD_REG_GP_ID_7		0x120
+#define	DA9063_AD_REG_GP_ID_8		0x121
+#define	DA9063_AD_REG_GP_ID_9		0x122
+#define	DA9063_AD_REG_GP_ID_10		0x123
+#define	DA9063_AD_REG_GP_ID_11		0x124
+#define	DA9063_AD_REG_GP_ID_12		0x125
+#define	DA9063_AD_REG_GP_ID_13		0x126
+#define	DA9063_AD_REG_GP_ID_14		0x127
+#define	DA9063_AD_REG_GP_ID_15		0x128
+#define	DA9063_AD_REG_GP_ID_16		0x129
+#define	DA9063_AD_REG_GP_ID_17		0x12A
+#define	DA9063_AD_REG_GP_ID_18		0x12B
+#define	DA9063_AD_REG_GP_ID_19		0x12C
+
+#define	DA9063_BB_REG_CONFIG_M		0x112
+#define	DA9063_BB_REG_CONFIG_N		0x113
+
+#define	DA9063_BB_REG_MON_REG_1		0x114
+#define	DA9063_BB_REG_MON_REG_2		0x115
+#define	DA9063_BB_REG_MON_REG_3		0x116
+#define	DA9063_BB_REG_MON_REG_4		0x117
+#define	DA9063_BB_REG_MON_REG_5		0x11E
+#define	DA9063_BB_REG_MON_REG_6		0x11F
+#define	DA9063_BB_REG_TRIM_CLDR		0x120
 /* General Purpose Registers */
-#define	DA9063_REG_GP_ID_0		0x119
-#define	DA9063_REG_GP_ID_1		0x11A
-#define	DA9063_REG_GP_ID_2		0x11B
-#define	DA9063_REG_GP_ID_3		0x11C
-#define	DA9063_REG_GP_ID_4		0x11D
-#define	DA9063_REG_GP_ID_5		0x11E
-#define	DA9063_REG_GP_ID_6		0x11F
-#define	DA9063_REG_GP_ID_7		0x120
-#define	DA9063_REG_GP_ID_8		0x121
-#define	DA9063_REG_GP_ID_9		0x122
-#define	DA9063_REG_GP_ID_10		0x123
-#define	DA9063_REG_GP_ID_11		0x124
-#define	DA9063_REG_GP_ID_12		0x125
-#define	DA9063_REG_GP_ID_13		0x126
-#define	DA9063_REG_GP_ID_14		0x127
-#define	DA9063_REG_GP_ID_15		0x128
-#define	DA9063_REG_GP_ID_16		0x129
-#define	DA9063_REG_GP_ID_17		0x12A
-#define	DA9063_REG_GP_ID_18		0x12B
-#define	DA9063_REG_GP_ID_19		0x12C
+#define	DA9063_BB_REG_GP_ID_0		0x121
+#define	DA9063_BB_REG_GP_ID_1		0x122
+#define	DA9063_BB_REG_GP_ID_2		0x123
+#define	DA9063_BB_REG_GP_ID_3		0x124
+#define	DA9063_BB_REG_GP_ID_4		0x125
+#define	DA9063_BB_REG_GP_ID_5		0x126
+#define	DA9063_BB_REG_GP_ID_6		0x127
+#define	DA9063_BB_REG_GP_ID_7		0x128
+#define	DA9063_BB_REG_GP_ID_8		0x129
+#define	DA9063_BB_REG_GP_ID_9		0x12A
+#define	DA9063_BB_REG_GP_ID_10		0x12B
+#define	DA9063_BB_REG_GP_ID_11		0x12C
+#define	DA9063_BB_REG_GP_ID_12		0x12D
+#define	DA9063_BB_REG_GP_ID_13		0x12E
+#define	DA9063_BB_REG_GP_ID_14		0x12F
+#define	DA9063_BB_REG_GP_ID_15		0x130
+#define	DA9063_BB_REG_GP_ID_16		0x131
+#define	DA9063_BB_REG_GP_ID_17		0x132
+#define	DA9063_BB_REG_GP_ID_18		0x133
+#define	DA9063_BB_REG_GP_ID_19		0x134
 
 /* Chip ID and variant */
-#define	DA9063_REG_CHIP_ID		0x181
-#define	DA9063_REG_CHIP_VARIANT		0x182
+#define	DA9063_REG_DEVICE_ID		0x181
+#define	DA9063_REG_VARIANT_ID		0x182
+#define	DA9063_REG_CUSTOMER_ID		0x183
+#define	DA9063_REG_CONFIG_ID		0x184
 
 /*
  * PMIC registers bits
@@ -405,8 +442,10 @@
 /* DA9063_REG_CONTROL_B (addr=0x0F) */
 #define	DA9063_CHG_SEL				0x01
 #define	DA9063_WATCHDOG_PD			0x02
+#define	DA9063_BB_RESET_BLINKING		0x04
 #define	DA9063_NRES_MODE			0x08
 #define	DA9063_NONKEY_LOCK			0x10
+#define	DA9063_BB_BUCK_SLOWSTART		0x80
 
 /* DA9063_REG_CONTROL_C (addr=0x10) */
 #define	DA9063_DEBOUNCING_MASK			0x07
@@ -466,6 +505,7 @@
 #define	DA9063_GPADC_PAUSE			0x02
 #define	DA9063_PMIF_DIS				0x04
 #define	DA9063_HS2WIRE_DIS			0x08
+#define	DA9063_BB_CLDR_PAUSE			0x10
 #define	DA9063_BBAT_DIS				0x20
 #define	DA9063_OUT_32K_PAUSE			0x40
 #define	DA9063_PMCONT_DIS			0x80
@@ -660,7 +700,7 @@
 #define		DA9063_GPIO15_TYPE_GPO		0x04
 #define	DA9063_GPIO15_NO_WAKEUP			0x80
 
-/* DA9063_REG_GPIO_MODE_0_7 (addr=0x1D) */
+/* DA9063_REG_GPIO_MODE0_7 (addr=0x1D) */
 #define	DA9063_GPIO0_MODE			0x01
 #define	DA9063_GPIO1_MODE			0x02
 #define	DA9063_GPIO2_MODE			0x04
@@ -670,7 +710,7 @@
 #define	DA9063_GPIO6_MODE			0x40
 #define	DA9063_GPIO7_MODE			0x80
 
-/* DA9063_REG_GPIO_MODE_8_15 (addr=0x1E) */
+/* DA9063_REG_GPIO_MODE8_15 (addr=0x1E) */
 #define	DA9063_GPIO8_MODE			0x01
 #define	DA9063_GPIO9_MODE			0x02
 #define	DA9063_GPIO10_MODE			0x04
@@ -702,12 +742,12 @@
 #define		DA9063_SWITCH_SR_5MV		0x10
 #define		DA9063_SWITCH_SR_10MV		0x20
 #define		DA9063_SWITCH_SR_50MV		0x30
-#define	DA9063_SWITCH_SR_DIS			0x40
+#define	DA9063_CORE_SW_INTERNAL			0x40
 #define	DA9063_CP_EN_MODE			0x80
 
 /* DA9063_REGL_Bxxxx_CONT common bits (addr=0x20-0x25) */
 #define	DA9063_BUCK_EN				0x01
-#define DA9063_BUCK_GPI_MASK			0x06
+#define	DA9063_BUCK_GPI_MASK			0x06
 #define		DA9063_BUCK_GPI_OFF		0x00
 #define		DA9063_BUCK_GPI_GPIO1		0x02
 #define		DA9063_BUCK_GPI_GPIO2		0x04
@@ -841,25 +881,27 @@
 #define DA9063_COUNT_YEAR_MASK			0x3F
 #define DA9063_MONITOR				0x40
 
-/* DA9063_REG_ALARM_MI (addr=0x46) */
+/* DA9063_REG_ALARM_S (addr=0x46) */
+#define DA9063_BB_ALARM_S_MASK			0x3F
 #define DA9063_ALARM_STATUS_ALARM		0x80
 #define DA9063_ALARM_STATUS_TICK		0x40
+/* DA9063_REG_ALARM_MI (addr=0x47) */
 #define DA9063_ALARM_MIN_MASK			0x3F
 
-/* DA9063_REG_ALARM_H (addr=0x47) */
+/* DA9063_REG_ALARM_H (addr=0x48) */
 #define DA9063_ALARM_HOUR_MASK			0x1F
 
-/* DA9063_REG_ALARM_D (addr=0x48) */
+/* DA9063_REG_ALARM_D (addr=0x49) */
 #define DA9063_ALARM_DAY_MASK			0x1F
 
-/* DA9063_REG_ALARM_MO (addr=0x49) */
+/* DA9063_REG_ALARM_MO (addr=0x4A) */
 #define DA9063_TICK_WAKE			0x20
 #define DA9063_TICK_TYPE			0x10
 #define		DA9063_TICK_TYPE_SEC		0x00
 #define		DA9063_TICK_TYPE_MIN		0x10
 #define DA9063_ALARM_MONTH_MASK			0x0F
 
-/* DA9063_REG_ALARM_Y (addr=0x4A) */
+/* DA9063_REG_ALARM_Y (addr=0x4B) */
 #define DA9063_TICK_ON				0x80
 #define DA9063_ALARM_ON				0x40
 #define DA9063_ALARM_YEAR_MASK			0x3F
@@ -889,9 +931,6 @@
 #define	DA9063_RTC_CLOCK			0x40
 #define	DA9063_OUT_32K_EN			0x80
 
-/* DA9063_REG_CHIP_VARIANT */
-#define	DA9063_CHIP_VARIANT_SHIFT		4
-
 /* DA9063_REG_BUCK_ILIM_A (addr=0x9A) */
 #define DA9063_BIO_ILIM_MASK			0x0F
 #define DA9063_BMEM_ILIM_MASK			0xF0
@@ -906,7 +945,7 @@
 
 /* DA9063_REG_Bxxxx_CFG common bits (addr=0x9D-0xA2) */
 #define DA9063_BUCK_FB_MASK			0x07
-#define DA9063_BUCK_PD_DIS_SHIFT		5
+#define DA9063_BUCK_PD_DIS_MASK		0x20
 #define DA9063_BUCK_MODE_MASK			0xC0
 #define		DA9063_BUCK_MODE_MANUAL		0x00
 #define		DA9063_BUCK_MODE_SLEEP		0x40
@@ -998,6 +1037,32 @@
 #define		DA9063_NONKEY_PIN_AUTODOWN	0x02
 #define		DA9063_NONKEY_PIN_AUTOFLPRT	0x03
 
+/* DA9063_REG_CONFIG_J (addr=0x10F) */
+#define DA9063_TWOWIRE_TO			0x40
+
+/* DA9063_REG_MON_REG_2 (addr=0x115) */
+#define DA9063_LDO1_MON_EN			0x01
+#define DA9063_LDO2_MON_EN			0x02
+#define DA9063_LDO3_MON_EN			0x04
+#define DA9063_LDO4_MON_EN			0x08
+#define DA9063_LDO5_MON_EN			0x10
+#define DA9063_LDO6_MON_EN			0x20
+#define DA9063_LDO7_MON_EN			0x40
+#define DA9063_LDO8_MON_EN			0x80
+
+/* DA9063_REG_MON_REG_3 (addr=0x116) */
+#define DA9063_LDO9_MON_EN			0x01
+#define DA9063_LDO10_MON_EN			0x02
+#define DA9063_LDO11_MON_EN			0x04
+
+/* DA9063_REG_MON_REG_4 (addr=0x117) */
+#define DA9063_BCORE1_MON_EN			0x04
+#define DA9063_BCORE2_MON_EN			0x08
+#define DA9063_BPRO_MON_EN			0x10
+#define DA9063_BIO_MON_EN			0x20
+#define DA9063_BMEM_MON_EN			0x40
+#define DA9063_BPERI_MON_EN			0x80
+
 /* DA9063_REG_MON_REG_5 (addr=0x116) */
 #define DA9063_MON_A8_IDX_MASK			0x07
 #define		DA9063_MON_A8_IDX_NONE		0x00
@@ -1024,5 +1089,11 @@
 #define		DA9063_MON_A10_IDX_LDO8		0x03
 #define		DA9063_MON_A10_IDX_LDO9		0x04
 #define		DA9063_MON_A10_IDX_LDO10	0x05
+
+/* DA9063_REG_VARIANT_ID (addr=0x182) */
+#define	DA9063_VARIANT_ID_VRC_SHIFT		0
+#define DA9063_VARIANT_ID_VRC_MASK		0x0F
+#define	DA9063_VARIANT_ID_MRC_SHIFT		4
+#define DA9063_VARIANT_ID_MRC_MASK		0xF0
 
 #endif /* _DA9063_REG_H */

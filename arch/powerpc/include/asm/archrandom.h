@@ -1,32 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_POWERPC_ARCHRANDOM_H
 #define _ASM_POWERPC_ARCHRANDOM_H
 
-#ifdef CONFIG_ARCH_RANDOM
-
-#include <asm/machdep.h>
-
-static inline int arch_get_random_long(unsigned long *v)
+static inline size_t __must_check arch_get_random_longs(unsigned long *v, size_t max_longs)
 {
-	if (ppc_md.get_random_long)
-		return ppc_md.get_random_long(v);
-
 	return 0;
 }
 
-static inline int arch_get_random_int(unsigned int *v)
-{
-	unsigned long val;
-	int rc;
+size_t __must_check arch_get_random_seed_longs(unsigned long *v, size_t max_longs);
 
-	rc = arch_get_random_long(&val);
-	if (rc)
-		*v = val;
-
-	return rc;
-}
-
-int powernv_get_random_long(unsigned long *v);
-
-#endif /* CONFIG_ARCH_RANDOM */
+#ifdef CONFIG_PPC_POWERNV
+int pnv_get_random_long(unsigned long *v);
+#endif
 
 #endif /* _ASM_POWERPC_ARCHRANDOM_H */

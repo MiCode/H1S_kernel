@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * security/tomoyo/common.h
  *
@@ -8,6 +9,8 @@
 
 #ifndef _SECURITY_TOMOYO_COMMON_H
 #define _SECURITY_TOMOYO_COMMON_H
+
+#define pr_fmt(fmt) fmt
 
 #include <linux/ctype.h>
 #include <linux/string.h>
@@ -28,6 +31,7 @@
 #include <linux/in.h>
 #include <linux/in6.h>
 #include <linux/un.h>
+#include <linux/lsm_hooks.h>
 #include <net/sock.h>
 #include <net/af_unix.h>
 #include <net/ip.h>
@@ -421,7 +425,7 @@ struct tomoyo_request_info {
 	struct tomoyo_obj_info *obj;
 	/*
 	 * For holding parameters specific to execve() request.
-	 * NULL if not dealing do_execve().
+	 * NULL if not dealing execve().
 	 */
 	struct tomoyo_execve *ee;
 	struct tomoyo_domain_info *domain;
@@ -680,11 +684,12 @@ struct tomoyo_domain_info {
 	const struct tomoyo_path_info *domainname;
 	/* Namespace for this domain. Never NULL. */
 	struct tomoyo_policy_namespace *ns;
+	/* Group numbers to use.   */
+	unsigned long group[TOMOYO_MAX_ACL_GROUPS / BITS_PER_LONG];
 	u8 profile;        /* Profile number to use. */
-	u8 group;          /* Group number to use.   */
 	bool is_deleted;   /* Delete flag.           */
 	bool flags[TOMOYO_MAX_DOMAIN_INFO_FLAGS];
-	atomic_t users; /* Number of referring credentials. */
+	atomic_t users; /* Number of referring tasks. */
 };
 
 /*
@@ -786,9 +791,9 @@ struct tomoyo_acl_param {
  * interfaces.
  */
 struct tomoyo_io_buffer {
-	void (*read) (struct tomoyo_io_buffer *);
-	int (*write) (struct tomoyo_io_buffer *);
-	unsigned int (*poll) (struct file *file, poll_table *wait);
+	void (*read)(struct tomoyo_io_buffer *head);
+	int (*write)(struct tomoyo_io_buffer *head);
+	__poll_t (*poll)(struct file *file, poll_table *wait);
 	/* Exclusive lock for this structure.   */
 	struct mutex io_sem;
 	char __user *read_user_buf;
@@ -905,10 +910,16 @@ struct tomoyo_policy_namespace {
 	struct list_head acl_group[TOMOYO_MAX_ACL_GROUPS];
 	/* List for connecting to tomoyo_namespace_list list. */
 	struct list_head namespace_list;
-	/* Profile version. Currently only 20110903 is defined. */
+	/* Profile version. Currently only 20150505 is defined. */
 	unsigned int profile_version;
 	/* Name of this namespace (e.g. "<kernel>", "</usr/sbin/httpd>" ). */
 	const char *name;
+};
+
+/* Structure for "struct task_struct"->security. */
+struct tomoyo_task {
+	struct tomoyo_domain_info *domain_info;
+	struct tomoyo_domain_info *old_domain_info;
 };
 
 /********** Function prototypes. **********/
@@ -943,12 +954,11 @@ bool tomoyo_str_starts(char **src, const char *find);
 char *tomoyo_encode(const char *str);
 char *tomoyo_encode2(const char *str, int str_len);
 char *tomoyo_init_log(struct tomoyo_request_info *r, int len, const char *fmt,
-		      va_list args);
+		      va_list args) __printf(3, 0);
 char *tomoyo_read_token(struct tomoyo_acl_param *param);
-char *tomoyo_realpath_from_path(struct path *path);
+char *tomoyo_realpath_from_path(const struct path *path);
 char *tomoyo_realpath_nofollow(const char *pathname);
 const char *tomoyo_get_exe(void);
-const char *tomoyo_yesno(const unsigned int value);
 const struct tomoyo_path_info *tomoyo_compare_name_union
 (const struct tomoyo_path_info *name, const struct tomoyo_name_union *ptr);
 const struct tomoyo_path_info *tomoyo_get_domainname
@@ -957,7 +967,7 @@ const struct tomoyo_path_info *tomoyo_get_name(const char *name);
 const struct tomoyo_path_info *tomoyo_path_matches_group
 (const struct tomoyo_path_info *pathname, const struct tomoyo_group *group);
 int tomoyo_check_open_permission(struct tomoyo_domain_info *domain,
-				 struct path *path, const int flag);
+				 const struct path *path, const int flag);
 void tomoyo_close_control(struct tomoyo_io_buffer *head);
 int tomoyo_env_perm(struct tomoyo_request_info *r, const char *env);
 int tomoyo_execute_permission(struct tomoyo_request_info *r,
@@ -968,20 +978,20 @@ int tomoyo_get_mode(const struct tomoyo_policy_namespace *ns, const u8 profile,
 int tomoyo_init_request_info(struct tomoyo_request_info *r,
 			     struct tomoyo_domain_info *domain,
 			     const u8 index);
-int tomoyo_mkdev_perm(const u8 operation, struct path *path,
+int tomoyo_mkdev_perm(const u8 operation, const struct path *path,
 		      const unsigned int mode, unsigned int dev);
-int tomoyo_mount_permission(const char *dev_name, struct path *path,
+int tomoyo_mount_permission(const char *dev_name, const struct path *path,
 			    const char *type, unsigned long flags,
 			    void *data_page);
 int tomoyo_open_control(const u8 type, struct file *file);
-int tomoyo_path2_perm(const u8 operation, struct path *path1,
-		      struct path *path2);
-int tomoyo_path_number_perm(const u8 operation, struct path *path,
+int tomoyo_path2_perm(const u8 operation, const struct path *path1,
+		      const struct path *path2);
+int tomoyo_path_number_perm(const u8 operation, const struct path *path,
 			    unsigned long number);
-int tomoyo_path_perm(const u8 operation, struct path *path,
+int tomoyo_path_perm(const u8 operation, const struct path *path,
 		     const char *target);
-unsigned int tomoyo_poll_control(struct file *file, poll_table *wait);
-unsigned int tomoyo_poll_log(struct file *file, poll_table *wait);
+__poll_t tomoyo_poll_control(struct file *file, poll_table *wait);
+__poll_t tomoyo_poll_log(struct file *file, poll_table *wait);
 int tomoyo_socket_bind_permission(struct socket *sock, struct sockaddr *addr,
 				  int addr_len);
 int tomoyo_socket_connect_permission(struct socket *sock,
@@ -1019,6 +1029,7 @@ ssize_t tomoyo_write_control(struct tomoyo_io_buffer *head,
 struct tomoyo_condition *tomoyo_get_condition(struct tomoyo_acl_param *param);
 struct tomoyo_domain_info *tomoyo_assign_domain(const char *domainname,
 						const bool transit);
+struct tomoyo_domain_info *tomoyo_domain(void);
 struct tomoyo_domain_info *tomoyo_find_domain(const char *domainname);
 struct tomoyo_group *tomoyo_get_group(struct tomoyo_acl_param *param,
 				      const u8 idx);
@@ -1026,17 +1037,15 @@ struct tomoyo_policy_namespace *tomoyo_assign_namespace
 (const char *domainname);
 struct tomoyo_profile *tomoyo_profile(const struct tomoyo_policy_namespace *ns,
 				      const u8 profile);
-unsigned int tomoyo_check_flags(const struct tomoyo_domain_info *domain,
-				const u8 index);
 u8 tomoyo_parse_ulong(unsigned long *result, char **str);
 void *tomoyo_commit_ok(void *data, const unsigned int size);
 void __init tomoyo_load_builtin_policy(void);
 void __init tomoyo_mm_init(void);
 void tomoyo_check_acl(struct tomoyo_request_info *r,
-		      bool (*check_entry) (struct tomoyo_request_info *,
-					   const struct tomoyo_acl_info *));
+		      bool (*check_entry)(struct tomoyo_request_info *,
+					  const struct tomoyo_acl_info *));
 void tomoyo_check_profile(void);
-void tomoyo_convert_time(time_t time, struct tomoyo_time *stamp);
+void tomoyo_convert_time(time64_t time, struct tomoyo_time *stamp);
 void tomoyo_del_condition(struct list_head *element);
 void tomoyo_fill_path_info(struct tomoyo_path_info *ptr);
 void tomoyo_get_attributes(struct tomoyo_obj_info *obj);
@@ -1056,11 +1065,12 @@ void tomoyo_warn_oom(const char *function);
 void tomoyo_write_log(struct tomoyo_request_info *r, const char *fmt, ...)
 	__printf(2, 3);
 void tomoyo_write_log2(struct tomoyo_request_info *r, int len, const char *fmt,
-		       va_list args);
+		       va_list args) __printf(3, 0);
 
 /********** External variable definitions. **********/
 
 extern bool tomoyo_policy_loaded;
+extern int tomoyo_enabled;
 extern const char * const tomoyo_condition_keyword
 [TOMOYO_MAX_CONDITION_KEYWORD];
 extern const char * const tomoyo_dif[TOMOYO_MAX_DOMAIN_INFO_FLAGS];
@@ -1084,6 +1094,7 @@ extern struct tomoyo_domain_info tomoyo_kernel_domain;
 extern struct tomoyo_policy_namespace tomoyo_kernel_namespace;
 extern unsigned int tomoyo_memory_quota[TOMOYO_MAX_MEMORY_STAT];
 extern unsigned int tomoyo_memory_used[TOMOYO_MAX_MEMORY_STAT];
+extern struct lsm_blob_sizes tomoyo_blob_sizes;
 
 /********** Inlined functions. **********/
 
@@ -1120,6 +1131,7 @@ static inline void tomoyo_read_unlock(int idx)
 static inline pid_t tomoyo_sys_getppid(void)
 {
 	pid_t pid;
+
 	rcu_read_lock();
 	pid = task_tgid_vnr(rcu_dereference(current->real_parent));
 	rcu_read_unlock();
@@ -1196,26 +1208,15 @@ static inline void tomoyo_put_group(struct tomoyo_group *group)
 }
 
 /**
- * tomoyo_domain - Get "struct tomoyo_domain_info" for current thread.
+ * tomoyo_task - Get "struct tomoyo_task" for specified thread.
  *
- * Returns pointer to "struct tomoyo_domain_info" for current thread.
+ * @task - Pointer to "struct task_struct".
+ *
+ * Returns pointer to "struct tomoyo_task" for specified thread.
  */
-static inline struct tomoyo_domain_info *tomoyo_domain(void)
+static inline struct tomoyo_task *tomoyo_task(struct task_struct *task)
 {
-	return current_cred()->security;
-}
-
-/**
- * tomoyo_real_domain - Get "struct tomoyo_domain_info" for specified thread.
- *
- * @task: Pointer to "struct task_struct".
- *
- * Returns pointer to "struct tomoyo_security" for specified thread.
- */
-static inline struct tomoyo_domain_info *tomoyo_real_domain(struct task_struct
-							    *task)
-{
-	return task_cred_xxx(task, security);
+	return task->security + tomoyo_blob_sizes.lbs_task;
 }
 
 /**
@@ -1272,50 +1273,6 @@ static inline struct tomoyo_policy_namespace *tomoyo_current_namespace(void)
 {
 	return tomoyo_domain()->ns;
 }
-
-#if defined(CONFIG_SLOB)
-
-/**
- * tomoyo_round2 - Round up to power of 2 for calculating memory usage.
- *
- * @size: Size to be rounded up.
- *
- * Returns @size.
- *
- * Since SLOB does not round up, this function simply returns @size.
- */
-static inline int tomoyo_round2(size_t size)
-{
-	return size;
-}
-
-#else
-
-/**
- * tomoyo_round2 - Round up to power of 2 for calculating memory usage.
- *
- * @size: Size to be rounded up.
- *
- * Returns rounded size.
- *
- * Strictly speaking, SLAB may be able to allocate (e.g.) 96 bytes instead of
- * (e.g.) 128 bytes.
- */
-static inline int tomoyo_round2(size_t size)
-{
-#if PAGE_SIZE == 4096
-	size_t bsize = 32;
-#else
-	size_t bsize = 64;
-#endif
-	if (!size)
-		return 0;
-	while (size > bsize)
-		bsize <<= 1;
-	return bsize;
-}
-
-#endif
 
 /**
  * list_for_each_cookie - iterate over a list with cookie.

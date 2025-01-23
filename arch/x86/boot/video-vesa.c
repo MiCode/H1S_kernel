@@ -1,11 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* -*- linux-c -*- ------------------------------------------------------- *
  *
  *   Copyright (C) 1991, 1992 Linus Torvalds
  *   Copyright 2007 rPath, Inc. - All Rights Reserved
  *   Copyright 2009 Intel Corporation; author H. Peter Anvin
- *
- *   This file is part of the Linux kernel, and is made available under
- *   the terms of the GNU General Public License version 2.
  *
  * ----------------------------------------------------------------------- */
 
@@ -16,6 +14,7 @@
 #include "boot.h"
 #include "video.h"
 #include "vesa.h"
+#include "string.h"
 
 /* VESA information */
 static struct vesa_general_info vginfo;
@@ -61,7 +60,7 @@ static int vesa_probe(void)
 		if (mode & ~0x1ff)
 			continue;
 
-		memset(&vminfo, 0, sizeof vminfo); /* Just in case... */
+		memset(&vminfo, 0, sizeof(vminfo)); /* Just in case... */
 
 		ireg.ax = 0x4f01;
 		ireg.cx = mode;
@@ -84,7 +83,7 @@ static int vesa_probe(void)
 			   (vminfo.memory_layout == 4 ||
 			    vminfo.memory_layout == 6) &&
 			   vminfo.memory_planes == 1) {
-#ifdef CONFIG_FB_BOOT_VESA_SUPPORT
+#ifdef CONFIG_BOOT_VESA_SUPPORT
 			/* Graphics mode, color, linear frame buffer
 			   supported.  Only register the mode if
 			   if framebuffer is configured, however,
@@ -108,7 +107,7 @@ static int vesa_set_mode(struct mode_info *mode)
 	int is_graphic;
 	u16 vesa_mode = mode->mode - VIDEO_FIRST_VESA;
 
-	memset(&vminfo, 0, sizeof vminfo); /* Just in case... */
+	memset(&vminfo, 0, sizeof(vminfo)); /* Just in case... */
 
 	initregs(&ireg);
 	ireg.ax = 0x4f01;
@@ -122,7 +121,7 @@ static int vesa_set_mode(struct mode_info *mode)
 	if ((vminfo.mode_attr & 0x15) == 0x05) {
 		/* It's a supported text mode */
 		is_graphic = 0;
-#ifdef CONFIG_FB_BOOT_VESA_SUPPORT
+#ifdef CONFIG_BOOT_VESA_SUPPORT
 	} else if ((vminfo.mode_attr & 0x99) == 0x99) {
 		/* It's a graphics mode with linear frame buffer */
 		is_graphic = 1;
@@ -240,7 +239,7 @@ void vesa_store_edid(void)
 	struct biosregs ireg, oreg;
 
 	/* Apparently used as a nonsense token... */
-	memset(&boot_params.edid_info, 0x13, sizeof boot_params.edid_info);
+	memset(&boot_params.edid_info, 0x13, sizeof(boot_params.edid_info));
 
 	if (vginfo.version < 0x0200)
 		return;		/* EDID requires VBE 2.0+ */

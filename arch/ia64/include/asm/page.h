@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_IA64_PAGE_H
 #define _ASM_IA64_PAGE_H
 /*
@@ -81,44 +82,18 @@ do {						\
 } while (0)
 
 
-#define __alloc_zeroed_user_highpage(movableflags, vma, vaddr)		\
+#define vma_alloc_zeroed_movable_folio(vma, vaddr)			\
 ({									\
-	struct page *page = alloc_page_vma(				\
-		GFP_HIGHUSER | __GFP_ZERO | movableflags, vma, vaddr);	\
-	if (page)							\
- 		flush_dcache_page(page);				\
-	page;								\
+	struct folio *folio = vma_alloc_folio(				\
+		GFP_HIGHUSER_MOVABLE | __GFP_ZERO, 0, vma, vaddr, false); \
+	if (folio)							\
+		flush_dcache_folio(folio);				\
+	folio;								\
 })
-
-#define __HAVE_ARCH_ALLOC_ZEROED_USER_HIGHPAGE
 
 #define virt_addr_valid(kaddr)	pfn_valid(__pa(kaddr) >> PAGE_SHIFT)
 
-#ifdef CONFIG_VIRTUAL_MEM_MAP
-extern int ia64_pfn_valid (unsigned long pfn);
-#else
-# define ia64_pfn_valid(pfn) 1
-#endif
-
-#ifdef CONFIG_VIRTUAL_MEM_MAP
-extern struct page *vmem_map;
-#ifdef CONFIG_DISCONTIGMEM
-# define page_to_pfn(page)	((unsigned long) (page - vmem_map))
-# define pfn_to_page(pfn)	(vmem_map + (pfn))
-#else
-# include <asm-generic/memory_model.h>
-#endif
-#else
-# include <asm-generic/memory_model.h>
-#endif
-
-#ifdef CONFIG_FLATMEM
-# define pfn_valid(pfn)		(((pfn) < max_mapnr) && ia64_pfn_valid(pfn))
-#elif defined(CONFIG_DISCONTIGMEM)
-extern unsigned long min_low_pfn;
-extern unsigned long max_low_pfn;
-# define pfn_valid(pfn)		(((pfn) >= min_low_pfn) && ((pfn) < max_low_pfn) && ia64_pfn_valid(pfn))
-#endif
+#include <asm-generic/memory_model.h>
 
 #define page_to_phys(page)	(page_to_pfn(page) << PAGE_SHIFT)
 #define virt_to_page(kaddr)	pfn_to_page(__pa(kaddr) >> PAGE_SHIFT)
@@ -173,7 +148,7 @@ get_order (unsigned long size)
    */
   typedef struct { unsigned long pte; } pte_t;
   typedef struct { unsigned long pmd; } pmd_t;
-#ifdef CONFIG_PGTABLE_4
+#if CONFIG_PGTABLE_LEVELS == 4
   typedef struct { unsigned long pud; } pud_t;
 #endif
   typedef struct { unsigned long pgd; } pgd_t;
@@ -182,7 +157,7 @@ get_order (unsigned long size)
 
 # define pte_val(x)	((x).pte)
 # define pmd_val(x)	((x).pmd)
-#ifdef CONFIG_PGTABLE_4
+#if CONFIG_PGTABLE_LEVELS == 4
 # define pud_val(x)	((x).pud)
 #endif
 # define pgd_val(x)	((x).pgd)
@@ -216,10 +191,7 @@ get_order (unsigned long size)
 
 #define PAGE_OFFSET			RGN_BASE(RGN_KERNEL)
 
-#define VM_DATA_DEFAULT_FLAGS		(VM_READ | VM_WRITE |					\
-					 VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC |		\
-					 (((current->personality & READ_IMPLIES_EXEC) != 0)	\
-					  ? VM_EXEC : 0))
+#define VM_DATA_DEFAULT_FLAGS	VM_DATA_FLAGS_TSK_EXEC
 
 #define GATE_ADDR		RGN_BASE(RGN_GATE)
 
@@ -230,5 +202,7 @@ get_order (unsigned long size)
 #define KERNEL_START		 (GATE_ADDR+__IA64_UL_CONST(0x100000000))
 #define PERCPU_ADDR		(-PERCPU_PAGE_SIZE)
 #define LOAD_OFFSET		(KERNEL_START - KERNEL_TR_PAGE_SIZE)
+
+#define __HAVE_ARCH_GATE_AREA	1
 
 #endif /* _ASM_IA64_PAGE_H */

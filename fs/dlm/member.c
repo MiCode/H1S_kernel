@@ -1,11 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /******************************************************************************
 *******************************************************************************
 **
 **  Copyright (C) 2005-2011 Red Hat, Inc.  All rights reserved.
 **
-**  This copyrighted material is made available to anyone wishing to use,
-**  modify, copy, or redistribute it subject to the terms and conditions
-**  of the GNU General Public License v.2.
 **
 *******************************************************************************
 ******************************************************************************/
@@ -17,11 +15,12 @@
 #include "recover.h"
 #include "rcom.h"
 #include "config.h"
+#include "midcomms.h"
 #include "lowcomms.h"
 
-int dlm_slots_version(struct dlm_header *h)
+int dlm_slots_version(const struct dlm_header *h)
 {
-	if ((h->h_version & 0x0000FFFF) < DLM_HEADER_SLOTS)
+	if ((le32_to_cpu(h->h_version) & 0x0000FFFF) < DLM_HEADER_SLOTS)
 		return 0;
 	return 1;
 }
@@ -60,17 +59,14 @@ void dlm_slots_copy_out(struct dlm_ls *ls, struct dlm_rcom *rc)
 
 #define SLOT_DEBUG_LINE 128
 
-static void log_debug_slots(struct dlm_ls *ls, uint32_t gen, int num_slots,
-			    struct rcom_slot *ro0, struct dlm_slot *array,
-			    int array_size)
+static void log_slots(struct dlm_ls *ls, uint32_t gen, int num_slots,
+		      struct rcom_slot *ro0, struct dlm_slot *array,
+		      int array_size)
 {
 	char line[SLOT_DEBUG_LINE];
 	int len = SLOT_DEBUG_LINE - 1;
 	int pos = 0;
 	int ret, i;
-
-	if (!dlm_config.ci_log_debug)
-		return;
 
 	memset(line, 0, sizeof(line));
 
@@ -95,7 +91,7 @@ static void log_debug_slots(struct dlm_ls *ls, uint32_t gen, int num_slots,
 		}
 	}
 
-	log_debug(ls, "generation %u slots %d%s", gen, num_slots, line);
+	log_rinfo(ls, "generation %u slots %d%s", gen, num_slots, line);
 }
 
 int dlm_slots_copy_in(struct dlm_ls *ls)
@@ -124,18 +120,13 @@ int dlm_slots_copy_in(struct dlm_ls *ls)
 
 	ro0 = (struct rcom_slot *)(rc->rc_buf + sizeof(struct rcom_config));
 
-	for (i = 0, ro = ro0; i < num_slots; i++, ro++) {
-		ro->ro_nodeid = le32_to_cpu(ro->ro_nodeid);
-		ro->ro_slot = le16_to_cpu(ro->ro_slot);
-	}
-
-	log_debug_slots(ls, gen, num_slots, ro0, NULL, 0);
+	log_slots(ls, gen, num_slots, ro0, NULL, 0);
 
 	list_for_each_entry(memb, &ls->ls_nodes, list) {
 		for (i = 0, ro = ro0; i < num_slots; i++, ro++) {
-			if (ro->ro_nodeid != memb->nodeid)
+			if (le32_to_cpu(ro->ro_nodeid) != memb->nodeid)
 				continue;
-			memb->slot = ro->ro_slot;
+			memb->slot = le16_to_cpu(ro->ro_slot);
 			memb->slot_prev = memb->slot;
 			break;
 		}
@@ -220,8 +211,7 @@ int dlm_slots_assign(struct dlm_ls *ls, int *num_slots, int *slots_size,
 	}
 
 	array_size = max + need;
-
-	array = kzalloc(array_size * sizeof(struct dlm_slot), GFP_NOFS);
+	array = kcalloc(array_size, sizeof(*array), GFP_NOFS);
 	if (!array)
 		return -ENOMEM;
 
@@ -274,9 +264,9 @@ int dlm_slots_assign(struct dlm_ls *ls, int *num_slots, int *slots_size,
 
 	gen++;
 
-	log_debug_slots(ls, gen, num, NULL, array, array_size);
+	log_slots(ls, gen, num, NULL, array, array_size);
 
-	max_slots = (dlm_config.ci_buffer_size - sizeof(struct dlm_rcom) -
+	max_slots = (DLM_MAX_APP_BUFSIZE - sizeof(struct dlm_rcom) -
 		     sizeof(struct rcom_config)) / sizeof(struct rcom_slot);
 
 	if (num > max_slots) {
@@ -317,24 +307,40 @@ static void add_ordered_member(struct dlm_ls *ls, struct dlm_member *new)
 	}
 }
 
+static int add_remote_member(int nodeid)
+{
+	int error;
+
+	if (nodeid == dlm_our_nodeid())
+		return 0;
+
+	error = dlm_lowcomms_connect_node(nodeid);
+	if (error < 0)
+		return error;
+
+	dlm_midcomms_add_member(nodeid);
+	return 0;
+}
+
 static int dlm_add_member(struct dlm_ls *ls, struct dlm_config_node *node)
 {
 	struct dlm_member *memb;
 	int error;
 
-	memb = kzalloc(sizeof(struct dlm_member), GFP_NOFS);
+	memb = kzalloc(sizeof(*memb), GFP_NOFS);
 	if (!memb)
 		return -ENOMEM;
 
-	error = dlm_lowcomms_connect_node(node->nodeid);
+	memb->nodeid = node->nodeid;
+	memb->weight = node->weight;
+	memb->comm_seq = node->comm_seq;
+
+	error = add_remote_member(node->nodeid);
 	if (error < 0) {
 		kfree(memb);
 		return error;
 	}
 
-	memb->nodeid = node->nodeid;
-	memb->weight = node->weight;
-	memb->comm_seq = node->comm_seq;
 	add_ordered_member(ls, memb);
 	ls->ls_num_nodes++;
 	return 0;
@@ -365,26 +371,37 @@ int dlm_is_removed(struct dlm_ls *ls, int nodeid)
 	return 0;
 }
 
-static void clear_memb_list(struct list_head *head)
+static void clear_memb_list(struct list_head *head,
+			    void (*after_del)(int nodeid))
 {
 	struct dlm_member *memb;
 
 	while (!list_empty(head)) {
 		memb = list_entry(head->next, struct dlm_member, list);
 		list_del(&memb->list);
+		if (after_del)
+			after_del(memb->nodeid);
 		kfree(memb);
 	}
 }
 
+static void remove_remote_member(int nodeid)
+{
+	if (nodeid == dlm_our_nodeid())
+		return;
+
+	dlm_midcomms_remove_member(nodeid);
+}
+
 void dlm_clear_members(struct dlm_ls *ls)
 {
-	clear_memb_list(&ls->ls_nodes);
+	clear_memb_list(&ls->ls_nodes, remove_remote_member);
 	ls->ls_num_nodes = 0;
 }
 
 void dlm_clear_members_gone(struct dlm_ls *ls)
 {
-	clear_memb_list(&ls->ls_nodes_gone);
+	clear_memb_list(&ls->ls_nodes_gone, NULL);
 }
 
 static void make_member_array(struct dlm_ls *ls)
@@ -408,8 +425,7 @@ static void make_member_array(struct dlm_ls *ls)
 	}
 
 	ls->ls_total_weight = total;
-
-	array = kmalloc(sizeof(int) * total, GFP_NOFS);
+	array = kmalloc_array(total, sizeof(*array), GFP_NOFS);
 	if (!array)
 		return;
 
@@ -433,21 +449,22 @@ static void make_member_array(struct dlm_ls *ls)
 
 /* send a status request to all members just to establish comms connections */
 
-static int ping_members(struct dlm_ls *ls)
+static int ping_members(struct dlm_ls *ls, uint64_t seq)
 {
 	struct dlm_member *memb;
 	int error = 0;
 
 	list_for_each_entry(memb, &ls->ls_nodes, list) {
-		error = dlm_recovery_stopped(ls);
-		if (error)
+		if (dlm_recovery_stopped(ls)) {
+			error = -EINTR;
 			break;
-		error = dlm_rcom_status(ls, memb->nodeid, 0);
+		}
+		error = dlm_rcom_status(ls, memb->nodeid, 0, seq);
 		if (error)
 			break;
 	}
 	if (error)
-		log_debug(ls, "ping_members aborted %d last nodeid %d",
+		log_rinfo(ls, "ping_members aborted %d last nodeid %d",
 			  error, ls->ls_recover_nodeid);
 	return error;
 }
@@ -495,8 +512,7 @@ void dlm_lsop_recover_done(struct dlm_ls *ls)
 		return;
 
 	num = ls->ls_num_nodes;
-
-	slots = kzalloc(num * sizeof(struct dlm_slot), GFP_KERNEL);
+	slots = kcalloc(num, sizeof(*slots), GFP_KERNEL);
 	if (!slots)
 		return;
 
@@ -536,10 +552,14 @@ int dlm_recover_members(struct dlm_ls *ls, struct dlm_recover *rv, int *neg_out)
 	int i, error, neg = 0, low = -1;
 
 	/* previously removed members that we've not finished removing need to
-	   count as a negative change so the "neg" recovery steps will happen */
+	 * count as a negative change so the "neg" recovery steps will happen
+	 *
+	 * This functionality must report all member changes to lsops or
+	 * midcomms layer and must never return before.
+	 */
 
 	list_for_each_entry(memb, &ls->ls_nodes_gone, list) {
-		log_debug(ls, "prev removed member %d", memb->nodeid);
+		log_rinfo(ls, "prev removed member %d", memb->nodeid);
 		neg++;
 	}
 
@@ -551,15 +571,16 @@ int dlm_recover_members(struct dlm_ls *ls, struct dlm_recover *rv, int *neg_out)
 			continue;
 
 		if (!node) {
-			log_debug(ls, "remove member %d", memb->nodeid);
+			log_rinfo(ls, "remove member %d", memb->nodeid);
 		} else {
 			/* removed and re-added */
-			log_debug(ls, "remove member %d comm_seq %u %u",
+			log_rinfo(ls, "remove member %d comm_seq %u %u",
 				  memb->nodeid, memb->comm_seq, node->comm_seq);
 		}
 
 		neg++;
 		list_move(&memb->list, &ls->ls_nodes_gone);
+		remove_remote_member(memb->nodeid);
 		ls->ls_num_nodes--;
 		dlm_lsop_recover_slot(ls, memb);
 	}
@@ -570,8 +591,11 @@ int dlm_recover_members(struct dlm_ls *ls, struct dlm_recover *rv, int *neg_out)
 		node = &rv->nodes[i];
 		if (dlm_is_member(ls, node->nodeid))
 			continue;
-		dlm_add_member(ls, node);
-		log_debug(ls, "add member %d", node->nodeid);
+		error = dlm_add_member(ls, node);
+		if (error)
+			return error;
+
+		log_rinfo(ls, "add member %d", node->nodeid);
 	}
 
 	list_for_each_entry(memb, &ls->ls_nodes, list) {
@@ -583,15 +607,8 @@ int dlm_recover_members(struct dlm_ls *ls, struct dlm_recover *rv, int *neg_out)
 	make_member_array(ls);
 	*neg_out = neg;
 
-	error = ping_members(ls);
-	if (!error || error == -EPROTO) {
-		/* new_lockspace() may be waiting to know if the config
-		   is good or bad */
-		ls->ls_members_result = error;
-		complete(&ls->ls_members_done);
-	}
-
-	log_debug(ls, "dlm_recover_members %d nodes", ls->ls_num_nodes);
+	error = ping_members(ls, rv->seq);
+	log_rinfo(ls, "dlm_recover_members %d nodes", ls->ls_num_nodes);
 	return error;
 }
 
@@ -670,23 +687,32 @@ int dlm_ls_stop(struct dlm_ls *ls)
 	if (!ls->ls_recover_begin)
 		ls->ls_recover_begin = jiffies;
 
-	dlm_lsop_recover_prep(ls);
+	/* call recover_prep ops only once and not multiple times
+	 * for each possible dlm_ls_stop() when recovery is already
+	 * stopped.
+	 *
+	 * If we successful was able to clear LSFL_RUNNING bit and
+	 * it was set we know it is the first dlm_ls_stop() call.
+	 */
+	if (new)
+		dlm_lsop_recover_prep(ls);
+
 	return 0;
 }
 
 int dlm_ls_start(struct dlm_ls *ls)
 {
-	struct dlm_recover *rv = NULL, *rv_old;
-	struct dlm_config_node *nodes;
+	struct dlm_recover *rv, *rv_old;
+	struct dlm_config_node *nodes = NULL;
 	int error, count;
 
-	rv = kzalloc(sizeof(struct dlm_recover), GFP_NOFS);
+	rv = kzalloc(sizeof(*rv), GFP_NOFS);
 	if (!rv)
 		return -ENOMEM;
 
 	error = dlm_config_nodes(ls->ls_name, &nodes, &count);
 	if (error < 0)
-		goto fail;
+		goto fail_rv;
 
 	spin_lock(&ls->ls_recover_lock);
 
@@ -718,8 +744,9 @@ int dlm_ls_start(struct dlm_ls *ls)
 	return 0;
 
  fail:
-	kfree(rv);
 	kfree(nodes);
+ fail_rv:
+	kfree(rv);
 	return error;
 }
 

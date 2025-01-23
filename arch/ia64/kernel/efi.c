@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Extensible Firmware Interface
  *
@@ -22,7 +23,7 @@
  *	Skip non-WB memory and ignore empty memory ranges.
  */
 #include <linux/module.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/crash_dump.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -33,22 +34,36 @@
 #include <linux/kexec.h>
 #include <linux/mm.h>
 
+#include <asm/efi.h>
 #include <asm/io.h>
 #include <asm/kregs.h>
 #include <asm/meminit.h>
-#include <asm/pgtable.h>
 #include <asm/processor.h>
 #include <asm/mca.h>
+#include <asm/sal.h>
 #include <asm/setup.h>
 #include <asm/tlbflush.h>
 
 #define EFI_DEBUG	0
 
+#define ESI_TABLE_GUID					\
+    EFI_GUID(0x43EA58DC, 0xCF28, 0x4b06, 0xB3,		\
+	     0x91, 0xB7, 0x50, 0x59, 0x34, 0x2B, 0xD4)
+
+static unsigned long mps_phys = EFI_INVALID_TABLE_ADDR;
 static __initdata unsigned long palo_phys;
 
-static __initdata efi_config_table_type_t arch_tables[] = {
-	{PROCESSOR_ABSTRACTION_LAYER_OVERWRITE_GUID, "PALO", &palo_phys},
-	{NULL_GUID, NULL, 0},
+unsigned long __initdata esi_phys = EFI_INVALID_TABLE_ADDR;
+unsigned long hcdp_phys = EFI_INVALID_TABLE_ADDR;
+unsigned long sal_systab_phys = EFI_INVALID_TABLE_ADDR;
+
+static const efi_config_table_type_t arch_tables[] __initconst = {
+	{ESI_TABLE_GUID,				&esi_phys,		"ESI"		},
+	{HCDP_TABLE_GUID,				&hcdp_phys,		"HCDP"		},
+	{MPS_TABLE_GUID,				&mps_phys,		"MPS"		},
+	{PROCESSOR_ABSTRACTION_LAYER_OVERWRITE_GUID,	&palo_phys,		"PALO"		},
+	{SAL_SYSTEM_TABLE_GUID,				&sal_systab_phys,	"SALsystab"	},
+	{},
 };
 
 extern efi_status_t efi_call_phys (void *, ...);
@@ -236,7 +251,7 @@ STUB_GET_NEXT_HIGH_MONO_COUNT(virt, id)
 STUB_RESET_SYSTEM(virt, id)
 
 void
-efi_gettimeofday (struct timespec *ts)
+efi_gettimeofday (struct timespec64 *ts)
 {
 	efi_time_t tm;
 
@@ -245,7 +260,7 @@ efi_gettimeofday (struct timespec *ts)
 		return;
 	}
 
-	ts->tv_sec = mktime(tm.year, tm.month, tm.day,
+	ts->tv_sec = mktime64(tm.year, tm.month, tm.day,
 			    tm.hour, tm.minute, tm.second);
 	ts->tv_nsec = tm.nanosecond;
 }
@@ -400,10 +415,10 @@ efi_get_pal_addr (void)
 		mask  = ~((1 << IA64_GRANULE_SHIFT) - 1);
 
 		printk(KERN_INFO "CPU %d: mapping PAL code "
-                       "[0x%lx-0x%lx) into [0x%lx-0x%lx)\n",
-                       smp_processor_id(), md->phys_addr,
-                       md->phys_addr + efi_md_size(md),
-                       vaddr & mask, (vaddr & mask) + IA64_GRANULE_SIZE);
+			"[0x%llx-0x%llx) into [0x%llx-0x%llx)\n",
+			smp_processor_id(), md->phys_addr,
+			md->phys_addr + efi_md_size(md),
+			vaddr & mask, (vaddr & mask) + IA64_GRANULE_SIZE);
 #endif
 		return __va(md->phys_addr);
 	}
@@ -464,18 +479,19 @@ efi_map_pal_code (void)
 		 GRANULEROUNDDOWN((unsigned long) pal_vaddr),
 		 pte_val(pfn_pte(__pa(pal_vaddr) >> PAGE_SHIFT, PAGE_KERNEL)),
 		 IA64_GRANULE_SHIFT);
-	paravirt_dv_serialize_data();
 	ia64_set_psr(psr);		/* restore psr */
 }
 
 void __init
 efi_init (void)
 {
+	const efi_system_table_t *efi_systab;
 	void *efi_map_start, *efi_map_end;
-	efi_char16_t *c16;
 	u64 efi_desc_size;
-	char *cp, vendor[100] = "unknown";
-	int i;
+	char *cp;
+
+	set_bit(EFI_BOOT, &efi.flags);
+	set_bit(EFI_64BIT, &efi.flags);
 
 	/*
 	 * It's too early to be able to use the standard kernel command line
@@ -502,42 +518,29 @@ efi_init (void)
 		printk(KERN_INFO "Ignoring memory above %lluMB\n",
 		       max_addr >> 20);
 
-	efi.systab = __va(ia64_boot_param->efi_systab);
+	efi_systab = __va(ia64_boot_param->efi_systab);
 
 	/*
 	 * Verify the EFI Table
 	 */
-	if (efi.systab == NULL)
+	if (efi_systab == NULL)
 		panic("Whoa! Can't find EFI system table.\n");
-	if (efi.systab->hdr.signature != EFI_SYSTEM_TABLE_SIGNATURE)
+	if (efi_systab_check_header(&efi_systab->hdr))
 		panic("Whoa! EFI system table signature incorrect\n");
-	if ((efi.systab->hdr.revision >> 16) == 0)
-		printk(KERN_WARNING "Warning: EFI system table version "
-		       "%d.%02d, expected 1.00 or greater\n",
-		       efi.systab->hdr.revision >> 16,
-		       efi.systab->hdr.revision & 0xffff);
 
-	/* Show what we know for posterity */
-	c16 = __va(efi.systab->fw_vendor);
-	if (c16) {
-		for (i = 0;i < (int) sizeof(vendor) - 1 && *c16; ++i)
-			vendor[i] = *c16++;
-		vendor[i] = '\0';
-	}
-
-	printk(KERN_INFO "EFI v%u.%.02u by %s:",
-	       efi.systab->hdr.revision >> 16,
-	       efi.systab->hdr.revision & 0xffff, vendor);
+	efi_systab_report_header(&efi_systab->hdr, efi_systab->fw_vendor);
 
 	palo_phys      = EFI_INVALID_TABLE_ADDR;
 
-	if (efi_config_init(arch_tables) != 0)
+	if (efi_config_parse_tables(__va(efi_systab->tables),
+				    efi_systab->nr_tables,
+				    arch_tables) != 0)
 		return;
 
 	if (palo_phys != EFI_INVALID_TABLE_ADDR)
 		handle_palo(palo_phys);
 
-	runtime = __va(efi.systab->runtime);
+	runtime = __va(efi_systab->runtime);
 	efi.get_time = phys_get_time;
 	efi.set_time = phys_set_time;
 	efi.get_wakeup_time = phys_get_wakeup_time;
@@ -557,12 +560,14 @@ efi_init (void)
 	{
 		efi_memory_desc_t *md;
 		void *p;
+		unsigned int i;
 
 		for (i = 0, p = efi_map_start; p < efi_map_end;
 		     ++i, p += efi_desc_size)
 		{
 			const char *unit;
 			unsigned long size;
+			char buf[64];
 
 			md = p;
 			size = md->num_pages << EFI_PAGE_SHIFT;
@@ -581,9 +586,10 @@ efi_init (void)
 				unit = "KB";
 			}
 
-			printk("mem%02d: type=%2u, attr=0x%016lx, "
-			       "range=[0x%016lx-0x%016lx) (%4lu%s)\n",
-			       i, md->type, md->attribute, md->phys_addr,
+			printk("mem%02d: %s "
+			       "range=[0x%016llx-0x%016llx) (%4lu%s)\n",
+			       i, efi_md_typeattr_format(buf, sizeof(buf), md),
+			       md->phys_addr,
 			       md->phys_addr + efi_md_size(md), size, unit);
 		}
 	}
@@ -656,6 +662,8 @@ efi_enter_virtual_mode (void)
 		       "virtual mode (status=%lu)\n", status);
 		return;
 	}
+
+	set_bit(EFI_RUNTIME_SERVICES, &efi.flags);
 
 	/*
 	 * Now that EFI is in virtual mode, we call the EFI functions more
@@ -751,14 +759,14 @@ efi_memmap_intersects (unsigned long phys_addr, unsigned long size)
 	return 0;
 }
 
-u32
+int
 efi_mem_type (unsigned long phys_addr)
 {
 	efi_memory_desc_t *md = efi_memory_descriptor(phys_addr);
 
 	if (md)
 		return md->type;
-	return 0;
+	return -EINVAL;
 }
 
 u64
@@ -835,7 +843,6 @@ kern_mem_attribute (unsigned long phys_addr, unsigned long size)
 	} while (md);
 	return 0;	/* never reached */
 }
-EXPORT_SYMBOL(kern_mem_attribute);
 
 int
 valid_phys_addr_range (phys_addr_t phys_addr, unsigned long size)
@@ -846,7 +853,7 @@ valid_phys_addr_range (phys_addr_t phys_addr, unsigned long size)
 	 * /dev/mem reads and writes use copy_to_user(), which implicitly
 	 * uses a granule-sized kernel identity mapping.  It's really
 	 * only safe to do this for regions in kern_memmap.  For more
-	 * details, see Documentation/ia64/aliasing.txt.
+	 * details, see Documentation/arch/ia64/aliasing.rst.
 	 */
 	attr = kern_mem_attribute(phys_addr, size);
 	if (attr & EFI_MEMORY_WB || attr & EFI_MEMORY_UC)
@@ -958,7 +965,7 @@ efi_uart_console_only(void)
 /*
  * Look for the first granule aligned memory descriptor memory
  * that is big enough to hold EFI memory map. Make sure this
- * descriptor is atleast granule sized so it does not get trimmed
+ * descriptor is at least granule sized so it does not get trimmed
  */
 struct kern_memdesc *
 find_memmap_space (void)
@@ -1170,7 +1177,7 @@ efi_initialize_iomem_resources(struct resource *code_resource,
 	efi_memory_desc_t *md;
 	u64 efi_desc_size;
 	char *name;
-	unsigned long flags;
+	unsigned long flags, desc;
 
 	efi_map_start = __va(ia64_boot_param->efi_memmap);
 	efi_map_end   = efi_map_start + ia64_boot_param->efi_memmap_size;
@@ -1185,6 +1192,8 @@ efi_initialize_iomem_resources(struct resource *code_resource,
 			continue;
 
 		flags = IORESOURCE_MEM | IORESOURCE_BUSY;
+		desc = IORES_DESC_NONE;
+
 		switch (md->type) {
 
 			case EFI_MEMORY_MAPPED_IO:
@@ -1199,19 +1208,27 @@ efi_initialize_iomem_resources(struct resource *code_resource,
 				if (md->attribute & EFI_MEMORY_WP) {
 					name = "System ROM";
 					flags |= IORESOURCE_READONLY;
-				} else if (md->attribute == EFI_MEMORY_UC)
+				} else if (md->attribute == EFI_MEMORY_UC) {
 					name = "Uncached RAM";
-				else
+				} else {
 					name = "System RAM";
+					flags |= IORESOURCE_SYSRAM;
+				}
 				break;
 
 			case EFI_ACPI_MEMORY_NVS:
 				name = "ACPI Non-volatile Storage";
+				desc = IORES_DESC_ACPI_NV_STORAGE;
 				break;
 
 			case EFI_UNUSABLE_MEMORY:
 				name = "reserved";
 				flags |= IORESOURCE_DISABLED;
+				break;
+
+			case EFI_PERSISTENT_MEMORY:
+				name = "Persistent Memory";
+				desc = IORES_DESC_PERSISTENT_MEMORY;
 				break;
 
 			case EFI_RESERVED_TYPE:
@@ -1234,6 +1251,7 @@ efi_initialize_iomem_resources(struct resource *code_resource,
 		res->start = md->phys_addr;
 		res->end = md->phys_addr + efi_md_size(md) - 1;
 		res->flags = flags;
+		res->desc = desc;
 
 		if (insert_resource(&iomem_resource, res) < 0)
 			kfree(res);
@@ -1331,3 +1349,12 @@ vmcore_find_descriptor_size (unsigned long address)
 	return ret;
 }
 #endif
+
+char *efi_systab_show_arch(char *str)
+{
+	if (mps_phys != EFI_INVALID_TABLE_ADDR)
+		str += sprintf(str, "MPS=0x%lx\n", mps_phys);
+	if (hcdp_phys != EFI_INVALID_TABLE_ADDR)
+		str += sprintf(str, "HCDP=0x%lx\n", hcdp_phys);
+	return str;
+}

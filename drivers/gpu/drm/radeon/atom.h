@@ -25,8 +25,8 @@
 #ifndef ATOM_H
 #define ATOM_H
 
+#include <linux/mutex.h>
 #include <linux/types.h>
-#include <drm/drmP.h>
 
 #define ATOM_BIOS_MAGIC		0xAA55
 #define ATOM_ATI_MAGIC_PTR	0x30
@@ -125,6 +125,7 @@ struct card_info {
 struct atom_context {
 	struct card_info *card;
 	struct mutex mutex;
+	struct mutex scratch_mutex;
 	void *bios;
 	uint32_t cmd_table, data_table;
 	uint16_t *iio;
@@ -145,6 +146,7 @@ extern int atom_debug;
 
 struct atom_context *atom_parse(struct card_info *, void *);
 int atom_execute_table(struct atom_context *, int, uint32_t *);
+int atom_execute_table_scratch_unlocked(struct atom_context *, int, uint32_t *);
 int atom_asic_init(struct atom_context *);
 void atom_destroy(struct atom_context *);
 bool atom_parse_data_header(struct atom_context *ctx, int index, uint16_t *size,
@@ -152,6 +154,13 @@ bool atom_parse_data_header(struct atom_context *ctx, int index, uint16_t *size,
 bool atom_parse_cmd_header(struct atom_context *ctx, int index,
 			   uint8_t *frev, uint8_t *crev);
 int atom_allocate_fb_scratch(struct atom_context *ctx);
+
+struct i2c_msg;
+struct i2c_adapter;
+int radeon_atom_hw_i2c_xfer(struct i2c_adapter *i2c_adap,
+			    struct i2c_msg *msgs, int num);
+u32 radeon_atom_hw_i2c_func(struct i2c_adapter *adap);
+
 #include "atom-types.h"
 #include "atombios.h"
 #include "ObjectID.h"

@@ -1,13 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_DEBUGREG_H
 #define _ASM_X86_DEBUGREG_H
 
-
 #include <linux/bug.h>
+#include <linux/percpu.h>
 #include <uapi/asm/debugreg.h>
 
 DECLARE_PER_CPU(unsigned long, cpu_dr7);
 
-#ifndef CONFIG_PARAVIRT
+#ifndef CONFIG_PARAVIRT_XXL
 /*
  * These special macros can be used to get or set a debugging register
  */
@@ -17,7 +18,7 @@ DECLARE_PER_CPU(unsigned long, cpu_dr7);
 	native_set_debugreg(register, value)
 #endif
 
-static inline unsigned long native_get_debugreg(int regno)
+static __always_inline unsigned long native_get_debugreg(int regno)
 {
 	unsigned long val = 0;	/* Damn you, gcc! */
 
@@ -38,7 +39,20 @@ static inline unsigned long native_get_debugreg(int regno)
 		asm("mov %%db6, %0" :"=r" (val));
 		break;
 	case 7:
-		asm("mov %%db7, %0" :"=r" (val));
+		/*
+		 * Apply __FORCE_ORDER to DR7 reads to forbid re-ordering them
+		 * with other code.
+		 *
+		 * This is needed because a DR7 access can cause a #VC exception
+		 * when running under SEV-ES. Taking a #VC exception is not a
+		 * safe thing to do just anywhere in the entry code and
+		 * re-ordering might place the access into an unsafe location.
+		 *
+		 * This happened in the NMI handler, where the DR7 read was
+		 * re-ordered to happen before the call to sev_es_ist_enter(),
+		 * causing stack recursion.
+		 */
+		asm volatile("mov %%db7, %0" : "=r" (val) : __FORCE_ORDER);
 		break;
 	default:
 		BUG();
@@ -46,7 +60,7 @@ static inline unsigned long native_get_debugreg(int regno)
 	return val;
 }
 
-static inline void native_set_debugreg(int regno, unsigned long value)
+static __always_inline void native_set_debugreg(int regno, unsigned long value)
 {
 	switch (regno) {
 	case 0:
@@ -65,7 +79,16 @@ static inline void native_set_debugreg(int regno, unsigned long value)
 		asm("mov %0, %%db6"	::"r" (value));
 		break;
 	case 7:
-		asm("mov %0, %%db7"	::"r" (value));
+		/*
+		 * Apply __FORCE_ORDER to DR7 writes to forbid re-ordering them
+		 * with other code.
+		 *
+		 * While is didn't happen with a DR7 write (see the DR7 read
+		 * comment above which explains where it happened), add the
+		 * __FORCE_ORDER here too to avoid similar problems in the
+		 * future.
+		 */
+		asm volatile("mov %0, %%db7"	::"r" (value), __FORCE_ORDER);
 		break;
 	default:
 		BUG();
@@ -84,35 +107,55 @@ static inline void hw_breakpoint_disable(void)
 	set_debugreg(0UL, 3);
 }
 
-static inline int hw_breakpoint_active(void)
+static __always_inline bool hw_breakpoint_active(void)
 {
 	return __this_cpu_read(cpu_dr7) & DR_GLOBAL_ENABLE_MASK;
 }
 
-extern void aout_dump_debugregs(struct user *dump);
-
 extern void hw_breakpoint_restore(void);
 
-#ifdef CONFIG_X86_64
-DECLARE_PER_CPU(int, debug_stack_usage);
-static inline void debug_stack_usage_inc(void)
+static __always_inline unsigned long local_db_save(void)
 {
-	__get_cpu_var(debug_stack_usage)++;
-}
-static inline void debug_stack_usage_dec(void)
-{
-	__get_cpu_var(debug_stack_usage)--;
-}
-int is_debug_stack(unsigned long addr);
-void debug_stack_set_zero(void);
-void debug_stack_reset(void);
-#else /* !X86_64 */
-static inline int is_debug_stack(unsigned long addr) { return 0; }
-static inline void debug_stack_set_zero(void) { }
-static inline void debug_stack_reset(void) { }
-static inline void debug_stack_usage_inc(void) { }
-static inline void debug_stack_usage_dec(void) { }
-#endif /* X86_64 */
+	unsigned long dr7;
 
+	if (static_cpu_has(X86_FEATURE_HYPERVISOR) && !hw_breakpoint_active())
+		return 0;
+
+	get_debugreg(dr7, 7);
+	dr7 &= ~0x400; /* architecturally set bit */
+	if (dr7)
+		set_debugreg(0, 7);
+	/*
+	 * Ensure the compiler doesn't lower the above statements into
+	 * the critical section; disabling breakpoints late would not
+	 * be good.
+	 */
+	barrier();
+
+	return dr7;
+}
+
+static __always_inline void local_db_restore(unsigned long dr7)
+{
+	/*
+	 * Ensure the compiler doesn't raise this statement into
+	 * the critical section; enabling breakpoints early would
+	 * not be good.
+	 */
+	barrier();
+	if (dr7)
+		set_debugreg(dr7, 7);
+}
+
+#ifdef CONFIG_CPU_SUP_AMD
+extern void amd_set_dr_addr_mask(unsigned long mask, unsigned int dr);
+extern unsigned long amd_get_dr_addr_mask(unsigned int dr);
+#else
+static inline void amd_set_dr_addr_mask(unsigned long mask, unsigned int dr) { }
+static inline unsigned long amd_get_dr_addr_mask(unsigned int dr)
+{
+	return 0;
+}
+#endif
 
 #endif /* _ASM_X86_DEBUGREG_H */

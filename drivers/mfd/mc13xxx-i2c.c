@@ -1,10 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2009-2010 Creative Product Design
  * Marc Reilly marc@cpdesign.com.au
- *
- * This program is free software; you can redistribute it and/or modify it under
- * the terms of the GNU General Public License version 2 as published by the
- * Free Software Foundation.
  */
 
 #include <linux/slab.h>
@@ -14,7 +11,6 @@
 #include <linux/mfd/mc13xxx.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
-#include <linux/of_gpio.h>
 #include <linux/i2c.h>
 #include <linux/err.h>
 
@@ -46,7 +42,7 @@ static const struct of_device_id mc13xxx_dt_ids[] = {
 };
 MODULE_DEVICE_TABLE(of, mc13xxx_dt_ids);
 
-static struct regmap_config mc13xxx_regmap_i2c_config = {
+static const struct regmap_config mc13xxx_regmap_i2c_config = {
 	.reg_bits = 8,
 	.val_bits = 24,
 
@@ -55,8 +51,7 @@ static struct regmap_config mc13xxx_regmap_i2c_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
-static int mc13xxx_i2c_probe(struct i2c_client *client,
-		const struct i2c_device_id *id)
+static int mc13xxx_i2c_probe(struct i2c_client *client)
 {
 	struct mc13xxx *mc13xxx;
 	int ret;
@@ -77,26 +72,19 @@ static int mc13xxx_i2c_probe(struct i2c_client *client,
 		return ret;
 	}
 
-	if (client->dev.of_node) {
-		const struct of_device_id *of_id =
-			of_match_device(mc13xxx_dt_ids, &client->dev);
-		mc13xxx->variant = of_id->data;
-	} else {
-		mc13xxx->variant = (void *)id->driver_data;
-	}
+	mc13xxx->variant = i2c_get_match_data(client);
 
 	return mc13xxx_common_init(&client->dev);
 }
 
-static int mc13xxx_i2c_remove(struct i2c_client *client)
+static void mc13xxx_i2c_remove(struct i2c_client *client)
 {
-	return mc13xxx_common_exit(&client->dev);
+	mc13xxx_common_exit(&client->dev);
 }
 
 static struct i2c_driver mc13xxx_i2c_driver = {
 	.id_table = mc13xxx_i2c_device_id,
 	.driver = {
-		.owner = THIS_MODULE,
 		.name = "mc13xxx",
 		.of_match_table = mc13xxx_dt_ids,
 	},

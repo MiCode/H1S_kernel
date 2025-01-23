@@ -33,7 +33,12 @@
 #ifndef MLX4_DRIVER_H
 #define MLX4_DRIVER_H
 
+#include <net/devlink.h>
+#include <linux/auxiliary_bus.h>
+#include <linux/notifier.h>
 #include <linux/mlx4/device.h>
+
+#define MLX4_ADEV_NAME "mlx4_core"
 
 struct mlx4_dev;
 
@@ -49,19 +54,24 @@ enum mlx4_dev_event {
 	MLX4_DEV_EVENT_SLAVE_SHUTDOWN,
 };
 
-struct mlx4_interface {
-	void *			(*add)	 (struct mlx4_dev *dev);
-	void			(*remove)(struct mlx4_dev *dev, void *context);
-	void			(*event) (struct mlx4_dev *dev, void *context,
-					  enum mlx4_dev_event event, unsigned long param);
-	void *			(*get_dev)(struct mlx4_dev *dev, void *context, u8 port);
-	struct list_head	list;
-	enum mlx4_protocol	protocol;
+enum {
+	MLX4_INTFF_BONDING	= 1 << 0
 };
 
-int mlx4_register_interface(struct mlx4_interface *intf);
-void mlx4_unregister_interface(struct mlx4_interface *intf);
+struct mlx4_adrv {
+	struct auxiliary_driver	adrv;
+	enum mlx4_protocol	protocol;
+	int			flags;
+};
 
-void *mlx4_get_protocol_dev(struct mlx4_dev *dev, enum mlx4_protocol proto, int port);
+int mlx4_register_auxiliary_driver(struct mlx4_adrv *madrv);
+void mlx4_unregister_auxiliary_driver(struct mlx4_adrv *madrv);
+
+int mlx4_register_event_notifier(struct mlx4_dev *dev,
+				 struct notifier_block *nb);
+int mlx4_unregister_event_notifier(struct mlx4_dev *dev,
+				   struct notifier_block *nb);
+
+struct devlink_port *mlx4_get_devlink_port(struct mlx4_dev *dev, int port);
 
 #endif /* MLX4_DRIVER_H */

@@ -11,7 +11,7 @@
 
 #include <irq.h>
 
-#ifdef CONFIG_IRQ_CPU
+#ifdef CONFIG_IRQ_MIPS_CPU
 #define TXX9_IRQ_BASE	(MIPS_CPU_IRQ_BASE + 8)
 #else
 #ifdef CONFIG_I8259
@@ -21,11 +21,7 @@
 #endif
 #endif
 
-#ifdef CONFIG_CPU_TX39XX
-#define TXx9_MAX_IR 16
-#else
 #define TXx9_MAX_IR 32
-#endif
 
 void txx9_irq_init(unsigned long baseaddr);
 int txx9_irq(void);

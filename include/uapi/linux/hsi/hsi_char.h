@@ -1,28 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Part of the HSI character device driver.
  *
  * Copyright (C) 2010 Nokia Corporation. All rights reserved.
  *
  * Contact: Andras Domokos <andras.domokos at nokia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
  */
-
 
 #ifndef __HSI_CHAR_H
 #define __HSI_CHAR_H
+
+#include <linux/types.h>
 
 #define HSI_CHAR_MAGIC		'k'
 #define HSC_IOW(num, dtype)	_IOW(HSI_CHAR_MAGIC, num, dtype)
@@ -48,16 +36,16 @@
 #define HSC_ARB_PRIO		1
 
 struct hsc_rx_config {
-	uint32_t mode;
-	uint32_t flow;
-	uint32_t channels;
+	__u32 mode;
+	__u32 flow;
+	__u32 channels;
 };
 
 struct hsc_tx_config {
-	uint32_t mode;
-	uint32_t channels;
-	uint32_t speed;
-	uint32_t arb_mode;
+	__u32 mode;
+	__u32 channels;
+	__u32 speed;
+	__u32 arb_mode;
 };
 
 #endif /* __HSI_CHAR_H */

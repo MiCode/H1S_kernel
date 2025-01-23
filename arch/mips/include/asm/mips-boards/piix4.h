@@ -1,20 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Carsten Langgaard, carstenl@mips.com
  * Copyright (C) 2000 MIPS Technologies, Inc.  All rights reserved.
  * Copyright (C) 2013 Imagination Technologies Ltd.
- *
- *  This program is free software; you can distribute it and/or modify it
- *  under the terms of the GNU General Public License (Version 2) as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope it will be useful, but WITHOUT
- *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- *  for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
  *
  * Register definitions for Intel PIIX4 South Bridge Device.
  */
@@ -49,5 +37,22 @@
 #define PIIX4_FUNC1_IDETIM_SECONDARY_LO		0x42
 #define PIIX4_FUNC1_IDETIM_SECONDARY_HI		0x43
 #define   PIIX4_FUNC1_IDETIM_SECONDARY_HI_IDE_DECODE_EN	(1 << 7)
+
+/* Power Management Configuration Space */
+#define PIIX4_FUNC3_PMBA			0x40
+#define PIIX4_FUNC3_PMREGMISC			0x80
+#define   PIIX4_FUNC3_PMREGMISC_EN			(1 << 0)
+
+/* Power Management IO Space */
+#define PIIX4_FUNC3IO_PMSTS			0x00
+#define   PIIX4_FUNC3IO_PMSTS_PWRBTN_STS		(1 << 8)
+#define PIIX4_FUNC3IO_PMCNTRL			0x04
+#define   PIIX4_FUNC3IO_PMCNTRL_SUS_EN			(1 << 13)
+#define   PIIX4_FUNC3IO_PMCNTRL_SUS_TYP			(0x7 << 10)
+#define   PIIX4_FUNC3IO_PMCNTRL_SUS_TYP_SOFF		(0x0 << 10)
+#define   PIIX4_FUNC3IO_PMCNTRL_SUS_TYP_STR		(0x1 << 10)
+
+/* Data for magic special PCI cycle */
+#define PIIX4_SUSPEND_MAGIC			0x00120002
 
 #endif /* __ASM_MIPS_BOARDS_PIIX4_H */

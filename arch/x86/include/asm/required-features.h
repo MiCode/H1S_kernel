@@ -35,11 +35,7 @@
 # define NEED_CMOV	0
 #endif
 
-#ifdef CONFIG_X86_USE_3DNOW
-# define NEED_3DNOW	(1<<(X86_FEATURE_3DNOW & 31))
-#else
 # define NEED_3DNOW	0
-#endif
 
 #if defined(CONFIG_X86_P6_NOP) || defined(CONFIG_X86_64)
 # define NEED_NOPL	(1<<(X86_FEATURE_NOPL & 31))
@@ -54,7 +50,7 @@
 #endif
 
 #ifdef CONFIG_X86_64
-#ifdef CONFIG_PARAVIRT
+#ifdef CONFIG_PARAVIRT_XXL
 /* Paravirtualized systems may not have PSE or PGE available */
 #define NEED_PSE	0
 #define NEED_PGE	0
@@ -92,5 +88,18 @@
 #define REQUIRED_MASK7	0
 #define REQUIRED_MASK8	0
 #define REQUIRED_MASK9	0
+#define REQUIRED_MASK10	0
+#define REQUIRED_MASK11	0
+#define REQUIRED_MASK12	0
+#define REQUIRED_MASK13	0
+#define REQUIRED_MASK14	0
+#define REQUIRED_MASK15	0
+#define REQUIRED_MASK16	0
+#define REQUIRED_MASK17	0
+#define REQUIRED_MASK18	0
+#define REQUIRED_MASK19	0
+#define REQUIRED_MASK20	0
+#define REQUIRED_MASK21	0
+#define REQUIRED_MASK_CHECK BUILD_BUG_ON_ZERO(NCAPINTS != 22)
 
 #endif /* _ASM_X86_REQUIRED_FEATURES_H */

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 menuconfig IP_SET
 	tristate "IP set support"
 	depends on INET && NETFILTER
@@ -29,7 +30,7 @@ config IP_SET_BITMAP_IP
 	depends on IP_SET
 	help
 	  This option adds the bitmap:ip set type support, by which one
-	  can store IPv4 addresses (or network addresse) from a range.
+	  can store IPv4 addresses (or network addresses) from a range.
 
 	  To compile it as a module, choose M here.  If unsure, say N.
 
@@ -61,6 +62,15 @@ config IP_SET_HASH_IP
 
 	  To compile it as a module, choose M here.  If unsure, say N.
 
+config IP_SET_HASH_IPMARK
+	tristate "hash:ip,mark set support"
+	depends on IP_SET
+	help
+	  This option adds the hash:ip,mark set type support, by which one
+	  can store IPv4/IPv6 address and mark pairs.
+
+	  To compile it as a module, choose M here.  If unsure, say N.
+
 config IP_SET_HASH_IPPORT
 	tristate "hash:ip,port set support"
 	depends on IP_SET
@@ -87,6 +97,24 @@ config IP_SET_HASH_IPPORTNET
 	  This option adds the hash:ip,port,net set type support, by which
 	  one can store IPv4/IPv6 address, protocol/port, and IPv4/IPv6
 	  network address/prefix triples in a set.
+
+	  To compile it as a module, choose M here.  If unsure, say N.
+
+config IP_SET_HASH_IPMAC
+	tristate "hash:ip,mac set support"
+	depends on IP_SET
+	help
+	  This option adds the hash:ip,mac set type support, by which
+	  one can store IPv4/IPv6 address and MAC (ethernet address) pairs in a set.
+
+	  To compile it as a module, choose M here.  If unsure, say N.
+
+config IP_SET_HASH_MAC
+	tristate "hash:mac set support"
+	depends on IP_SET
+	help
+	  This option adds the hash:mac set type support, by which
+	  one can store MAC (ethernet address) elements in a set.
 
 	  To compile it as a module, choose M here.  If unsure, say N.
 

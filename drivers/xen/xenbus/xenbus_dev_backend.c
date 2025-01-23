@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/slab.h>
@@ -5,7 +6,7 @@
 #include <linux/mm.h>
 #include <linux/fs.h>
 #include <linux/miscdevice.h>
-#include <linux/module.h>
+#include <linux/init.h>
 #include <linux/capability.h>
 
 #include <xen/xen.h>
@@ -16,9 +17,7 @@
 #include <xen/events.h>
 #include <asm/xen/hypervisor.h>
 
-#include "xenbus_comms.h"
-
-MODULE_LICENSE("GPL");
+#include "xenbus.h"
 
 static int xenbus_backend_open(struct inode *inode, struct file *filp)
 {
@@ -49,7 +48,7 @@ static long xenbus_alloc(domid_t domid)
 		goto out_err;
 
 	gnttab_grant_foreign_access_ref(GNTTAB_RESERVED_XENSTORE, domid,
-			virt_to_mfn(xen_store_interface), 0 /* writable */);
+			virt_to_gfn(xen_store_interface), 0 /* writable */);
 
 	arg.dom = DOMID_SELF;
 	arg.remote_dom = domid;
@@ -132,11 +131,4 @@ static int __init xenbus_backend_init(void)
 		pr_err("Could not register xenbus backend device\n");
 	return err;
 }
-
-static void __exit xenbus_backend_exit(void)
-{
-	misc_deregister(&xenbus_backend_dev);
-}
-
-module_init(xenbus_backend_init);
-module_exit(xenbus_backend_exit);
+device_initcall(xenbus_backend_init);

@@ -19,7 +19,7 @@
 struct kstatfs;
 struct kvec;
 
-#define JFFS2_INODE_INFO(i) (list_entry(i, struct jffs2_inode_info, vfs_inode))
+#define JFFS2_INODE_INFO(i) (container_of(i, struct jffs2_inode_info, vfs_inode))
 #define OFNI_EDONI_2SFFJ(f)  (&(f)->vfs_inode)
 #define JFFS2_SB_INFO(sb) (sb->s_fs_info)
 #define OFNI_BS_2SFFJ(c)  ((struct super_block *)c->os_priv)
@@ -31,12 +31,13 @@ struct kvec;
 #define JFFS2_F_I_GID(f) (i_gid_read(OFNI_EDONI_2SFFJ(f)))
 #define JFFS2_F_I_RDEV(f) (OFNI_EDONI_2SFFJ(f)->i_rdev)
 
-#define ITIME(sec) ((struct timespec){sec, 0})
-#define I_SEC(tv) ((tv).tv_sec)
-#define JFFS2_F_I_CTIME(f) (OFNI_EDONI_2SFFJ(f)->i_ctime.tv_sec)
-#define JFFS2_F_I_MTIME(f) (OFNI_EDONI_2SFFJ(f)->i_mtime.tv_sec)
-#define JFFS2_F_I_ATIME(f) (OFNI_EDONI_2SFFJ(f)->i_atime.tv_sec)
-
+#define JFFS2_CLAMP_TIME(t) ((uint32_t)clamp_t(time64_t, (t), 0, U32_MAX))
+#define ITIME(sec) ((struct timespec64){sec, 0})
+#define JFFS2_NOW() JFFS2_CLAMP_TIME(ktime_get_real_seconds())
+#define I_SEC(tv) JFFS2_CLAMP_TIME((tv).tv_sec)
+#define JFFS2_F_I_CTIME(f) I_SEC(inode_get_ctime(OFNI_EDONI_2SFFJ(f)))
+#define JFFS2_F_I_MTIME(f) I_SEC(OFNI_EDONI_2SFFJ(f)->i_mtime)
+#define JFFS2_F_I_ATIME(f) I_SEC(OFNI_EDONI_2SFFJ(f)->i_atime)
 #define sleep_on_spinunlock(wq, s)				\
 	do {							\
 		DECLARE_WAITQUEUE(__wait, current);		\
@@ -59,7 +60,7 @@ static inline void jffs2_init_inode_info(struct jffs2_inode_info *f)
 }
 
 
-#define jffs2_is_readonly(c) (OFNI_BS_2SFFJ(c)->s_flags & MS_RDONLY)
+#define jffs2_is_readonly(c) (OFNI_BS_2SFFJ(c)->s_flags & SB_RDONLY)
 
 #define SECTOR_ADDR(x) ( (((unsigned long)(x) / c->sector_size) * c->sector_size) )
 #ifndef CONFIG_JFFS2_FS_WRITEBUFFER
@@ -154,7 +155,7 @@ extern const struct file_operations jffs2_file_operations;
 extern const struct inode_operations jffs2_file_inode_operations;
 extern const struct address_space_operations jffs2_file_address_operations;
 int jffs2_fsync(struct file *, loff_t, loff_t, int);
-int jffs2_do_readpage_unlock (struct inode *inode, struct page *pg);
+int __jffs2_read_folio(struct file *file, struct folio *folio);
 
 /* ioctl.c */
 long jffs2_ioctl(struct file *, unsigned int, unsigned long);
@@ -163,7 +164,7 @@ long jffs2_ioctl(struct file *, unsigned int, unsigned long);
 extern const struct inode_operations jffs2_symlink_inode_operations;
 
 /* fs.c */
-int jffs2_setattr (struct dentry *, struct iattr *);
+int jffs2_setattr (struct mnt_idmap *, struct dentry *, struct iattr *);
 int jffs2_do_setattr (struct inode *, struct iattr *);
 struct inode *jffs2_iget(struct super_block *, unsigned long);
 void jffs2_evict_inode (struct inode *);
@@ -171,8 +172,8 @@ void jffs2_dirty_inode(struct inode *inode, int flags);
 struct inode *jffs2_new_inode (struct inode *dir_i, umode_t mode,
 			       struct jffs2_raw_inode *ri);
 int jffs2_statfs (struct dentry *, struct kstatfs *);
-int jffs2_do_remount_fs(struct super_block *, int *, char *);
-int jffs2_do_fill_super(struct super_block *sb, void *data, int silent);
+int jffs2_do_remount_fs(struct super_block *sb, struct fs_context *fc);
+int jffs2_do_fill_super(struct super_block *sb, struct fs_context *fc);
 void jffs2_gc_release_inode(struct jffs2_sb_info *c,
 			    struct jffs2_inode_info *f);
 struct jffs2_inode_info *jffs2_gc_fetch_inode(struct jffs2_sb_info *c,
@@ -182,9 +183,6 @@ unsigned char *jffs2_gc_fetch_page(struct jffs2_sb_info *c,
 				   struct jffs2_inode_info *f,
 				   unsigned long offset,
 				   unsigned long *priv);
-void jffs2_gc_release_page(struct jffs2_sb_info *c,
-			   unsigned char *pg,
-			   unsigned long *priv);
 void jffs2_flash_cleanup(struct jffs2_sb_info *c);
 
 

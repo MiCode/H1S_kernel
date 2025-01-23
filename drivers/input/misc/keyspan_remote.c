@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * keyspan_remote: USB driver for the Keyspan DMR
  *
  * Copyright (C) 2005 Zymeta Corporation - Michael Downey (downey@zymeta.com)
- *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License as
- *	published by the Free Software Foundation, version 2.
  *
  * This driver has been put together with the support of Innosys, Inc.
  * and Keyspan, Inc the manufacturers of the Keyspan USB DMR product.
@@ -16,11 +13,6 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/usb/input.h>
-
-#define DRIVER_VERSION	"v0.1"
-#define DRIVER_AUTHOR	"Michael Downey <downey@zymeta.com>"
-#define DRIVER_DESC	"Driver for the USB Keyspan remote control."
-#define DRIVER_LICENSE	"GPL"
 
 /* Parameters that can be passed to the driver. */
 static int debug;
@@ -85,7 +77,7 @@ static const unsigned short keyspan_key_table[] = {
 };
 
 /* table of devices that work with this driver */
-static struct usb_device_id keyspan_table[] = {
+static const struct usb_device_id keyspan_table[] = {
 	{ USB_DEVICE(USB_KEYSPAN_VENDOR_ID, USB_KEYSPAN_PRODUCT_UIA11) },
 	{ }					/* Terminating entry */
 };
@@ -344,7 +336,8 @@ static int keyspan_setup(struct usb_device* dev)
 	int retval = 0;
 
 	retval = usb_control_msg(dev, usb_sndctrlpipe(dev, 0),
-				 0x11, 0x40, 0x5601, 0x0, NULL, 0, 0);
+				 0x11, 0x40, 0x5601, 0x0, NULL, 0,
+				 USB_CTRL_SET_TIMEOUT);
 	if (retval) {
 		dev_dbg(&dev->dev, "%s - failed to set bit rate due to error: %d\n",
 			__func__, retval);
@@ -352,7 +345,8 @@ static int keyspan_setup(struct usb_device* dev)
 	}
 
 	retval = usb_control_msg(dev, usb_sndctrlpipe(dev, 0),
-				 0x44, 0x40, 0x0, 0x0, NULL, 0, 0);
+				 0x44, 0x40, 0x0, 0x0, NULL, 0,
+				 USB_CTRL_SET_TIMEOUT);
 	if (retval) {
 		dev_dbg(&dev->dev, "%s - failed to set resume sensitivity due to error: %d\n",
 			__func__, retval);
@@ -360,7 +354,8 @@ static int keyspan_setup(struct usb_device* dev)
 	}
 
 	retval = usb_control_msg(dev, usb_sndctrlpipe(dev, 0),
-				 0x22, 0x40, 0x0, 0x0, NULL, 0, 0);
+				 0x22, 0x40, 0x0, 0x0, NULL, 0,
+				 USB_CTRL_SET_TIMEOUT);
 	if (retval) {
 		dev_dbg(&dev->dev, "%s - failed to turn receive on due to error: %d\n",
 			__func__, retval);
@@ -392,7 +387,6 @@ static void keyspan_irq_recv(struct urb *urb)
 
 	default:
 		goto resubmit;
-		break;
 	}
 
 	if (debug)
@@ -472,7 +466,7 @@ static int keyspan_probe(struct usb_interface *interface, const struct usb_devic
 	remote->in_endpoint = endpoint;
 	remote->toggle = -1;	/* Set to -1 so we will always not match the toggle from the first remote message. */
 
-	remote->in_buffer = usb_alloc_coherent(udev, RECV_SIZE, GFP_ATOMIC, &remote->in_dma);
+	remote->in_buffer = usb_alloc_coherent(udev, RECV_SIZE, GFP_KERNEL, &remote->in_dma);
 	if (!remote->in_buffer) {
 		error = -ENOMEM;
 		goto fail1;
@@ -491,7 +485,7 @@ static int keyspan_probe(struct usb_interface *interface, const struct usb_devic
 	}
 
 	if (udev->manufacturer)
-		strlcpy(remote->name, udev->manufacturer, sizeof(remote->name));
+		strscpy(remote->name, udev->manufacturer, sizeof(remote->name));
 
 	if (udev->product) {
 		if (udev->manufacturer)
@@ -591,6 +585,6 @@ static struct usb_driver keyspan_driver =
 module_usb_driver(keyspan_driver);
 
 MODULE_DEVICE_TABLE(usb, keyspan_table);
-MODULE_AUTHOR(DRIVER_AUTHOR);
-MODULE_DESCRIPTION(DRIVER_DESC);
-MODULE_LICENSE(DRIVER_LICENSE);
+MODULE_AUTHOR("Michael Downey <downey@zymeta.com>");
+MODULE_DESCRIPTION("Driver for the USB Keyspan remote control.");
+MODULE_LICENSE("GPL");

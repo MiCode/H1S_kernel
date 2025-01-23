@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Driver for the HP iLO management processor.
  *
  * Copyright (C) 2008 Hewlett-Packard Development Company, L.P.
- *	David Altobelli <david.altobelli@hp.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ *	David Altobelli <david.altobelli@hpe.com>
  */
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -28,10 +25,19 @@
 #include <linux/slab.h>
 #include "hpilo.h"
 
-static struct class *ilo_class;
+static const struct class ilo_class = {
+	.name = "iLO",
+};
 static unsigned int ilo_major;
 static unsigned int max_ccb = 16;
 static char ilo_hwdev[MAX_ILO_DEV];
+static const struct pci_device_id ilo_blacklist[] = {
+	/* auxiliary iLO */
+	{PCI_DEVICE_SUB(PCI_VENDOR_ID_HP, 0x3307, PCI_VENDOR_ID_HP, 0x1979)},
+	/* CL */
+	{PCI_DEVICE_SUB(PCI_VENDOR_ID_HP, 0x3307, PCI_VENDOR_ID_HP_3PAR, 0x0289)},
+	{}
+};
 
 static inline int get_entry_id(int entry)
 {
@@ -203,7 +209,7 @@ static void ctrl_setup(struct ccb *ccb, int nr_desc, int l2desc_sz)
 static inline int fifo_sz(int nr_entry)
 {
 	/* size of a fifo is determined by the number of entries it contains */
-	return (nr_entry * sizeof(u64)) + FIFOHANDLESIZE;
+	return nr_entry * sizeof(u64) + FIFOHANDLESIZE;
 }
 
 static void fifo_setup(void *base_addr, int nr_entry)
@@ -252,7 +258,8 @@ static void ilo_ccb_close(struct pci_dev *pdev, struct ccb_data *data)
 	memset_io(device_ccb, 0, sizeof(struct ccb));
 
 	/* free resources used to back send/recv queues */
-	pci_free_consistent(pdev, data->dma_size, data->dma_va, data->dma_pa);
+	dma_free_coherent(&pdev->dev, data->dma_size, data->dma_va,
+			  data->dma_pa);
 }
 
 static int ilo_ccb_setup(struct ilo_hwinfo *hw, struct ccb_data *data, int slot)
@@ -268,15 +275,13 @@ static int ilo_ccb_setup(struct ilo_hwinfo *hw, struct ccb_data *data, int slot)
 			 2 * desc_mem_sz(NR_QENTRY) +
 			 ILO_START_ALIGN + ILO_CACHE_SZ;
 
-	data->dma_va = pci_alloc_consistent(hw->ilo_dev, data->dma_size,
-					    &data->dma_pa);
+	data->dma_va = dma_alloc_coherent(&hw->ilo_dev->dev, data->dma_size,
+					  &data->dma_pa, GFP_ATOMIC);
 	if (!data->dma_va)
 		return -ENOMEM;
 
 	dma_va = (char *)data->dma_va;
 	dma_pa = data->dma_pa;
-
-	memset(dma_va, 0, data->dma_size);
 
 	dma_va = (char *)roundup((unsigned long)dma_va, ILO_START_ALIGN);
 	dma_pa = roundup(dma_pa, ILO_START_ALIGN);
@@ -387,12 +392,6 @@ static inline int get_device_outbound(struct ilo_hwinfo *hw)
 static inline int is_db_reset(int db_out)
 {
 	return db_out & (1 << DB_RESET);
-}
-
-static inline int is_device_reset(struct ilo_hwinfo *hw)
-{
-	/* check for global reset condition */
-	return is_db_reset(get_device_outbound(hw));
 }
 
 static inline void clear_pending_db(struct ilo_hwinfo *hw, int clr)
@@ -514,7 +513,7 @@ static ssize_t ilo_write(struct file *fp, const char __user *buf,
 	return err ? -EFAULT : len;
 }
 
-static unsigned int ilo_poll(struct file *fp, poll_table *wait)
+static __poll_t ilo_poll(struct file *fp, poll_table *wait)
 {
 	struct ccb_data *data = fp->private_data;
 	struct ccb *driver_ccb = &data->driver_ccb;
@@ -522,9 +521,9 @@ static unsigned int ilo_poll(struct file *fp, poll_table *wait)
 	poll_wait(fp, &data->ccb_waitq, wait);
 
 	if (is_channel_reset(driver_ccb))
-		return POLLERR;
+		return EPOLLERR;
 	else if (ilo_pkt_recv(data->ilo_hw, driver_ccb))
-		return POLLIN | POLLRDNORM;
+		return EPOLLIN | EPOLLRDNORM;
 
 	return 0;
 }
@@ -688,7 +687,10 @@ static void ilo_unmap_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 
 static int ilo_map_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 {
-	int error = -ENOMEM;
+	int bar;
+	unsigned long off;
+	u8 pci_rev_id;
+	int rc;
 
 	/* map the memory mapped i/o registers */
 	hw->mmio_vaddr = pci_iomap(pdev, 1, 0);
@@ -698,7 +700,21 @@ static int ilo_map_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 	}
 
 	/* map the adapter shared memory region */
-	hw->ram_vaddr = pci_iomap(pdev, 2, max_ccb * ILOHW_CCB_SZ);
+	rc = pci_read_config_byte(pdev, PCI_REVISION_ID, &pci_rev_id);
+	if (rc != 0) {
+		dev_err(&pdev->dev, "Error reading PCI rev id: %d\n", rc);
+		goto out;
+	}
+
+	if (pci_rev_id >= PCI_REV_ID_NECHES) {
+		bar = 5;
+		/* Last 8k is reserved for CCBs */
+		off = pci_resource_len(pdev, bar) - 0x2000;
+	} else {
+		bar = 2;
+		off = 0;
+	}
+	hw->ram_vaddr = pci_iomap_range(pdev, bar, off, max_ccb * ILOHW_CCB_SZ);
 	if (hw->ram_vaddr == NULL) {
 		dev_err(&pdev->dev, "Error mapping shared mem\n");
 		goto mmio_free;
@@ -717,7 +733,7 @@ ram_free:
 mmio_free:
 	pci_iounmap(pdev, hw->mmio_vaddr);
 out:
-	return error;
+	return -ENOMEM;
 }
 
 static void ilo_remove(struct pci_dev *pdev)
@@ -732,7 +748,7 @@ static void ilo_remove(struct pci_dev *pdev)
 
 	minor = MINOR(ilo_hw->cdev.dev);
 	for (i = minor; i < minor + max_ccb; i++)
-		device_destroy(ilo_class, MKDEV(ilo_major, i));
+		device_destroy(&ilo_class, MKDEV(ilo_major, i));
 
 	cdev_del(&ilo_hw->cdev);
 	ilo_disable_interrupts(ilo_hw);
@@ -757,9 +773,10 @@ static int ilo_probe(struct pci_dev *pdev,
 	int devnum, minor, start, error = 0;
 	struct ilo_hwinfo *ilo_hw;
 
-	/* Ignore subsystem_device = 0x1979 (set by BIOS)  */
-	if (pdev->subsystem_device == 0x1979)
-		return 0;
+	if (pci_match_id(ilo_blacklist, pdev)) {
+		dev_dbg(&pdev->dev, "Not supported on this device\n");
+		return -ENODEV;
+	}
 
 	if (max_ccb > MAX_CCB)
 		max_ccb = MAX_CCB;
@@ -824,7 +841,7 @@ static int ilo_probe(struct pci_dev *pdev,
 
 	for (minor = 0 ; minor < max_ccb; minor++) {
 		struct device *dev;
-		dev = device_create(ilo_class, &pdev->dev,
+		dev = device_create(&ilo_class, &pdev->dev,
 				    MKDEV(ilo_major, minor), NULL,
 				    "hpilo!d%dccb%d", devnum, minor);
 		if (IS_ERR(dev))
@@ -848,7 +865,7 @@ out:
 	return error;
 }
 
-static struct pci_device_id ilo_devices[] = {
+static const struct pci_device_id ilo_devices[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_COMPAQ, 0xB204) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_HP, 0x3307) },
 	{ }
@@ -867,11 +884,9 @@ static int __init ilo_init(void)
 	int error;
 	dev_t dev;
 
-	ilo_class = class_create(THIS_MODULE, "iLO");
-	if (IS_ERR(ilo_class)) {
-		error = PTR_ERR(ilo_class);
+	error = class_register(&ilo_class);
+	if (error)
 		goto out;
-	}
 
 	error = alloc_chrdev_region(&dev, 0, MAX_OPEN, ILO_NAME);
 	if (error)
@@ -887,7 +902,7 @@ static int __init ilo_init(void)
 chr_remove:
 	unregister_chrdev_region(dev, MAX_OPEN);
 class_destroy:
-	class_destroy(ilo_class);
+	class_unregister(&ilo_class);
 out:
 	return error;
 }
@@ -896,17 +911,17 @@ static void __exit ilo_exit(void)
 {
 	pci_unregister_driver(&ilo_driver);
 	unregister_chrdev_region(MKDEV(ilo_major, 0), MAX_OPEN);
-	class_destroy(ilo_class);
+	class_unregister(&ilo_class);
 }
 
-MODULE_VERSION("1.4.1");
+MODULE_VERSION("1.5.0");
 MODULE_ALIAS(ILO_NAME);
 MODULE_DESCRIPTION(ILO_NAME);
-MODULE_AUTHOR("David Altobelli <david.altobelli@hp.com>");
+MODULE_AUTHOR("David Altobelli <david.altobelli@hpe.com>");
 MODULE_LICENSE("GPL v2");
 
 module_param(max_ccb, uint, 0444);
-MODULE_PARM_DESC(max_ccb, "Maximum number of HP iLO channels to attach (16)");
+MODULE_PARM_DESC(max_ccb, "Maximum number of HP iLO channels to attach (8-24)(default=16)");
 
 module_init(ilo_init);
 module_exit(ilo_exit);

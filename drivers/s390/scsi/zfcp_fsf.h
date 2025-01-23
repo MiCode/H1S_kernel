@@ -1,9 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * zfcp device driver
  *
  * Interface to the FSF support functions.
  *
- * Copyright IBM Corp. 2002, 2010
+ * Copyright IBM Corp. 2002, 2020
  */
 
 #ifndef FSF_H
@@ -77,7 +78,9 @@
 #define FSF_BLOCK_GUARD_CHECK_FAILURE		0x00000081
 #define FSF_APP_TAG_CHECK_FAILURE		0x00000082
 #define FSF_REF_TAG_CHECK_FAILURE		0x00000083
+#define FSF_SECURITY_ERROR			0x00000090
 #define FSF_ADAPTER_STATUS_AVAILABLE		0x000000AD
+#define FSF_FCP_RSP_AVAILABLE			0x000000AF
 #define FSF_UNKNOWN_COMMAND			0x000000E2
 #define FSF_UNKNOWN_OP_SUBTYPE                  0x000000E3
 #define FSF_INVALID_COMMAND_OPTION              0x000000E5
@@ -108,6 +111,14 @@
 #define FSF_PSQ_LINK_MODE_TABLE_CURRUPTED	0x00004000
 #define FSF_PSQ_LINK_NO_WWPN_ASSIGNMENT		0x00008000
 
+/* FSF status qualifier, security error */
+#define FSF_SQ_SECURITY_REQUIRED		0x00000001
+#define FSF_SQ_SECURITY_TIMEOUT			0x00000002
+#define FSF_SQ_SECURITY_KM_UNAVAILABLE		0x00000003
+#define FSF_SQ_SECURITY_RKM_UNAVAILABLE		0x00000004
+#define FSF_SQ_SECURITY_AUTH_FAILURE		0x00000005
+#define FSF_SQ_SECURITY_ENC_FAILURE		0x00000010
+
 /* payload size in status read buffer */
 #define FSF_STATUS_READ_PAYLOAD_SIZE		4032
 
@@ -123,6 +134,7 @@
 #define FSF_STATUS_READ_LINK_UP          	0x00000006
 #define FSF_STATUS_READ_NOTIFICATION_LOST	0x00000009
 #define FSF_STATUS_READ_FEATURE_UPDATE_ALERT	0x0000000C
+#define FSF_STATUS_READ_VERSION_CHANGE		0x0000000D
 
 /* status subtypes for link down */
 #define FSF_STATUS_READ_SUB_NO_PHYSICAL_LINK	0x00000000
@@ -131,6 +143,10 @@
 
 /* status subtypes for unsolicited status notification lost */
 #define FSF_STATUS_READ_SUB_INCOMING_ELS	0x00000001
+#define FSF_STATUS_READ_SUB_VERSION_CHANGE	0x00000100
+
+/* status subtypes for version change */
+#define FSF_STATUS_READ_SUB_LIC_CHANGE		0x00000001
 
 /* topologie that is detected by the adapter */
 #define FSF_TOPO_P2P				0x00000001
@@ -161,6 +177,9 @@
 #define FSF_FEATURE_ELS_CT_CHAINED_SBALS	0x00000020
 #define FSF_FEATURE_UPDATE_ALERT		0x00000100
 #define FSF_FEATURE_MEASUREMENT_DATA		0x00000200
+#define FSF_FEATURE_REQUEST_SFP_DATA		0x00000200
+#define FSF_FEATURE_REPORT_SFP_DATA		0x00000800
+#define FSF_FEATURE_FC_SECURITY			0x00001000
 #define FSF_FEATURE_DIF_PROT_TYPE1		0x00010000
 #define FSF_FEATURE_DIX_PROT_TCPIP		0x00020000
 
@@ -169,6 +188,11 @@
 
 /* option */
 #define FSF_OPEN_LUN_SUPPRESS_BOXING		0x00000001
+
+/* FC security algorithms */
+#define FSF_FC_SECURITY_AUTH			0x00000001
+#define FSF_FC_SECURITY_ENC_FCSP2		0x00000002
+#define FSF_FC_SECURITY_ENC_ERAS		0x00000004
 
 struct fsf_queue_designator {
 	u8  cssid;
@@ -207,6 +231,11 @@ struct fsf_link_down_info {
 	u8 vendor_specific_code;
 } __attribute__ ((packed));
 
+struct fsf_version_change {
+	u32 current_version;
+	u32 previous_version;
+} __packed;
+
 struct fsf_status_read_buffer {
 	u32 status_type;
 	u32 status_subtype;
@@ -223,6 +252,7 @@ struct fsf_status_read_buffer {
 		u32 word[FSF_STATUS_READ_PAYLOAD_SIZE/sizeof(u32)];
 		struct fsf_link_down_info link_down_info;
 		struct fsf_bit_error_payload bit_error;
+		struct fsf_version_change version_change;
 	} payload;
 } __attribute__ ((packed));
 
@@ -311,8 +341,14 @@ struct fsf_qtcb_bottom_io {
 	u32 data_block_length;
 	u32 prot_data_length;
 	u8  res2[4];
-	u8  fcp_cmnd[FSF_FCP_CMND_SIZE];
-	u8  fcp_rsp[FSF_FCP_RSP_SIZE];
+	union {
+		u8		byte[FSF_FCP_CMND_SIZE];
+		struct fcp_cmnd iu;
+	}   fcp_cmnd;
+	union {
+		u8			 byte[FSF_FCP_RSP_SIZE];
+		struct fcp_resp_with_ext iu;
+	}   fcp_rsp;
 	u8  res3[64];
 } __attribute__ ((packed));
 
@@ -328,7 +364,8 @@ struct fsf_qtcb_bottom_support {
 	u8  res3[3];
 	u8  timeout;
         u32 lun_access_info;
-        u8  res4[180];
+	u32 connection_info;
+	u8  res4[176];
 	u32 els1_length;
 	u32 els2_length;
 	u32 req_buf_length;
@@ -348,7 +385,7 @@ struct fsf_qtcb_bottom_config {
 	u32 adapter_features;
 	u32 connection_features;
 	u32 fc_topology;
-	u32 fc_link_speed;
+	u32 fc_link_speed;	/* one of ZFCP_FSF_PORTSPEED_* */
 	u32 adapter_type;
 	u8 res0;
 	u8 peer_d_id[3];
@@ -374,7 +411,7 @@ struct fsf_qtcb_bottom_port {
 	u32 class_of_service;	/* should be 0x00000006 for class 2 and 3 */
 	u8 supported_fc4_types[32]; /* should be 0x00000100 for scsi fcp */
 	u8 active_fc4_types[32];
-	u32 supported_speed;	/* 0x0001 for 1 GBit/s or 0x0002 for 2 GBit/s */
+	u32 supported_speed;	/* any combination of ZFCP_FSF_PORTSPEED_* */
 	u32 maximum_frame_size;	/* fixed value of 2112 */
 	u64 seconds_since_last_reset;
 	u64 tx_frames;
@@ -399,7 +436,25 @@ struct fsf_qtcb_bottom_port {
 	u8 cp_util;
 	u8 cb_util;
 	u8 a_util;
-	u8 res2[253];
+	u8 res2;
+	s16 temperature;
+	u16 vcc;
+	u16 tx_bias;
+	u16 tx_power;
+	u16 rx_power;
+	union {
+		u16 raw;
+		struct {
+			u16 fec_active		:1;
+			u16:7;
+			u16 connector_type	:2;
+			u16 sfp_invalid		:1;
+			u16 optical_port	:1;
+			u16 port_tx_type	:4;
+		};
+	} sfp_flags;
+	u32 fc_security_algorithms;
+	u8 res3[236];
 } __attribute__ ((packed));
 
 union fsf_qtcb_bottom {
@@ -430,12 +485,13 @@ struct zfcp_blk_drv_data {
 
 /**
  * struct zfcp_fsf_ct_els - zfcp data for ct or els request
- * @req: scatter-gather list for request
- * @resp: scatter-gather list for response
+ * @req: scatter-gather list for request, points to &zfcp_fc_req.sg_req or BSG
+ * @resp: scatter-gather list for response, points to &zfcp_fc_req.sg_rsp or BSG
  * @handler: handler function (called for response to the request)
  * @handler_data: data passed to handler function
  * @port: Optional pointer to port for zfcp internal ELS (only test link ADISC)
  * @status: used to pass error status to calling function
+ * @d_id: Destination ID of either open WKA port for CT or of D_ID for ELS
  */
 struct zfcp_fsf_ct_els {
 	struct scatterlist *req;
@@ -444,6 +500,7 @@ struct zfcp_fsf_ct_els {
 	void *handler_data;
 	struct zfcp_port *port;
 	int status;
+	u32 d_id;
 };
 
 #endif				/* FSF_H */

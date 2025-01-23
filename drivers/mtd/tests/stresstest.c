@@ -1,18 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2006-2008 Nokia Corporation
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; see the file COPYING. If not, write to the Free Software
- * Foundation, 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  *
  * Test random reads, writes and erases on MTD device.
  *
@@ -57,9 +45,8 @@ static int rand_eb(void)
 	unsigned int eb;
 
 again:
-	eb = prandom_u32();
 	/* Read or write up 2 eraseblocks at a time - hence 'ebcnt - 1' */
-	eb %= (ebcnt - 1);
+	eb = get_random_u32_below(ebcnt - 1);
 	if (bbt[eb])
 		goto again;
 	return eb;
@@ -67,20 +54,12 @@ again:
 
 static int rand_offs(void)
 {
-	unsigned int offs;
-
-	offs = prandom_u32();
-	offs %= bufsize;
-	return offs;
+	return get_random_u32_below(bufsize);
 }
 
 static int rand_len(int offs)
 {
-	unsigned int len;
-
-	len = prandom_u32();
-	len %= (bufsize - offs);
-	return len;
+	return get_random_u32_below(bufsize - offs);
 }
 
 static int do_read(void)
@@ -96,7 +75,7 @@ static int do_read(void)
 		if (offs + len > mtd->erasesize)
 			len = mtd->erasesize - offs;
 	}
-	addr = eb * mtd->erasesize + offs;
+	addr = (loff_t)eb * mtd->erasesize + offs;
 	return mtdtest_read(mtd, addr, len, readbuf);
 }
 
@@ -124,7 +103,7 @@ static int do_write(void)
 			offsets[eb + 1] = 0;
 		}
 	}
-	addr = eb * mtd->erasesize + offs;
+	addr = (loff_t)eb * mtd->erasesize + offs;
 	err = mtdtest_write(mtd, addr, len, writebuf);
 	if (unlikely(err))
 		return err;
@@ -139,7 +118,7 @@ static int do_write(void)
 
 static int do_operation(void)
 {
-	if (prandom_u32() & 1)
+	if (get_random_u32_below(2))
 		return do_read();
 	else
 		return do_write();
@@ -199,12 +178,12 @@ static int __init mtd_stresstest_init(void)
 	err = -ENOMEM;
 	readbuf = vmalloc(bufsize);
 	writebuf = vmalloc(bufsize);
-	offsets = kmalloc(ebcnt * sizeof(int), GFP_KERNEL);
+	offsets = kmalloc_array(ebcnt, sizeof(int), GFP_KERNEL);
 	if (!readbuf || !writebuf || !offsets)
 		goto out;
 	for (i = 0; i < ebcnt; i++)
 		offsets[i] = mtd->erasesize;
-	prandom_bytes(writebuf, bufsize);
+	get_random_bytes(writebuf, bufsize);
 
 	bbt = kzalloc(ebcnt, GFP_KERNEL);
 	if (!bbt)
@@ -221,7 +200,10 @@ static int __init mtd_stresstest_init(void)
 		err = do_operation();
 		if (err)
 			goto out;
-		cond_resched();
+
+		err = mtdtest_relax();
+		if (err)
+			goto out;
 	}
 	pr_info("finished, %d operations done\n", op);
 

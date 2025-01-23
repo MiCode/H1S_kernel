@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 1999 Niibe Yutaka
  * Copyright (C) 2003 - 2007 Paul Mundt
@@ -7,10 +8,11 @@
 #ifndef __ASM_SH_MMU_CONTEXT_H
 #define __ASM_SH_MMU_CONTEXT_H
 
-#ifdef __KERNEL__
 #include <cpu/mmu_context.h>
 #include <asm/tlbflush.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
+#include <linux/mm_types.h>
+
 #include <asm/io.h>
 #include <asm-generic/mm_hooks.h>
 
@@ -45,11 +47,7 @@
  */
 #define MMU_VPN_MASK	0xfffff000
 
-#if defined(CONFIG_SUPERH32)
 #include <asm/mmu_context_32.h>
-#else
-#include <asm/mmu_context_64.h>
-#endif
 
 /*
  * Get MMU context if needed.
@@ -71,14 +69,6 @@ static inline void get_mmu_context(struct mm_struct *mm, unsigned int cpu)
 		 */
 		local_flush_tlb_all();
 
-#ifdef CONFIG_SUPERH64
-		/*
-		 * The SH-5 cache uses the ASIDs, requiring both the I and D
-		 * cache to be flushed when the ASID is exhausted. Weak.
-		 */
-		flush_cache_all();
-#endif
-
 		/*
 		 * Fix version; Note that we avoid version #0
 		 * to distinguish NO_CONTEXT.
@@ -94,12 +84,13 @@ static inline void get_mmu_context(struct mm_struct *mm, unsigned int cpu)
  * Initialize the context related info for a new mm_struct
  * instance.
  */
+#define init_new_context init_new_context
 static inline int init_new_context(struct task_struct *tsk,
 				   struct mm_struct *mm)
 {
 	int i;
 
-	for (i = 0; i < num_online_cpus(); i++)
+	for_each_online_cpu(i)
 		cpu_context(i, mm) = NO_CONTEXT;
 
 	return 0;
@@ -130,9 +121,7 @@ static inline void switch_mm(struct mm_struct *prev,
 			activate_context(next, cpu);
 }
 
-#define activate_mm(prev, next)		switch_mm((prev),(next),NULL)
-#define deactivate_mm(tsk,mm)		do { } while (0)
-#define enter_lazy_tlb(mm,tsk)		do { } while (0)
+#include <asm-generic/mmu_context.h>
 
 #else
 
@@ -143,7 +132,7 @@ static inline void switch_mm(struct mm_struct *prev,
 #define set_TTB(pgd)			do { } while (0)
 #define get_TTB()			(0)
 
-#include <asm-generic/mmu_context.h>
+#include <asm-generic/nommu_context.h>
 
 #endif /* CONFIG_MMU */
 
@@ -186,5 +175,4 @@ static inline void disable_mmu(void)
 #define disable_mmu()	do { } while (0)
 #endif
 
-#endif /* __KERNEL__ */
 #endif /* __ASM_SH_MMU_CONTEXT_H */

@@ -1,45 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef LINUX_SSB_PRIVATE_H_
 #define LINUX_SSB_PRIVATE_H_
+
+#define PFX		"ssb: "
+#define pr_fmt(fmt)	PFX fmt
 
 #include <linux/ssb/ssb.h>
 #include <linux/types.h>
 #include <linux/bcm47xx_wdt.h>
-
-
-#define PFX	"ssb: "
-
-#ifdef CONFIG_SSB_SILENT
-# define ssb_printk(fmt, ...)					\
-	do { if (0) printk(fmt, ##__VA_ARGS__); } while (0)
-#else
-# define ssb_printk(fmt, ...)					\
-	printk(fmt, ##__VA_ARGS__)
-#endif /* CONFIG_SSB_SILENT */
-
-#define ssb_emerg(fmt, ...)	ssb_printk(KERN_EMERG PFX fmt, ##__VA_ARGS__)
-#define ssb_err(fmt, ...)	ssb_printk(KERN_ERR PFX fmt, ##__VA_ARGS__)
-#define ssb_warn(fmt, ...)	ssb_printk(KERN_WARNING PFX fmt, ##__VA_ARGS__)
-#define ssb_notice(fmt, ...)	ssb_printk(KERN_NOTICE PFX fmt, ##__VA_ARGS__)
-#define ssb_info(fmt, ...)	ssb_printk(KERN_INFO PFX fmt, ##__VA_ARGS__)
-#define ssb_cont(fmt, ...)	ssb_printk(KERN_CONT fmt, ##__VA_ARGS__)
-
-/* dprintk: Debugging printk; vanishes for non-debug compilation */
-#ifdef CONFIG_SSB_DEBUG
-# define ssb_dbg(fmt, ...)					\
-	ssb_printk(KERN_DEBUG PFX fmt, ##__VA_ARGS__)
-#else
-# define ssb_dbg(fmt, ...)					\
-	do { if (0) printk(KERN_DEBUG PFX fmt, ##__VA_ARGS__); } while (0)
-#endif
-
-#ifdef CONFIG_SSB_DEBUG
-# define SSB_WARN_ON(x)		WARN_ON(x)
-# define SSB_BUG_ON(x)		BUG_ON(x)
-#else
-static inline int __ssb_do_nothing(int x) { return x; }
-# define SSB_WARN_ON(x)		__ssb_do_nothing(unlikely(!!(x)))
-# define SSB_BUG_ON(x)		__ssb_do_nothing(unlikely(!!(x)))
-#endif
 
 
 /* pci.c */
@@ -85,8 +53,6 @@ static inline int ssb_pci_init(struct ssb_bus *bus)
 
 /* pcmcia.c */
 #ifdef CONFIG_SSB_PCMCIAHOST
-extern int ssb_pcmcia_switch_core(struct ssb_bus *bus,
-				  struct ssb_device *dev);
 extern int ssb_pcmcia_switch_coreidx(struct ssb_bus *bus,
 				     u8 coreidx);
 extern int ssb_pcmcia_switch_segment(struct ssb_bus *bus,
@@ -96,13 +62,10 @@ extern int ssb_pcmcia_get_invariants(struct ssb_bus *bus,
 extern int ssb_pcmcia_hardware_setup(struct ssb_bus *bus);
 extern void ssb_pcmcia_exit(struct ssb_bus *bus);
 extern int ssb_pcmcia_init(struct ssb_bus *bus);
+extern int ssb_host_pcmcia_init(void);
+extern void ssb_host_pcmcia_exit(void);
 extern const struct ssb_bus_ops ssb_pcmcia_ops;
 #else /* CONFIG_SSB_PCMCIAHOST */
-static inline int ssb_pcmcia_switch_core(struct ssb_bus *bus,
-					 struct ssb_device *dev)
-{
-	return 0;
-}
 static inline int ssb_pcmcia_switch_coreidx(struct ssb_bus *bus,
 					    u8 coreidx)
 {
@@ -124,6 +87,13 @@ static inline int ssb_pcmcia_init(struct ssb_bus *bus)
 {
 	return 0;
 }
+static inline int ssb_host_pcmcia_init(void)
+{
+	return 0;
+}
+static inline void ssb_host_pcmcia_exit(void)
+{
+}
 #endif /* CONFIG_SSB_PCMCIAHOST */
 
 /* sdio.c */
@@ -132,9 +102,7 @@ extern int ssb_sdio_get_invariants(struct ssb_bus *bus,
 				     struct ssb_init_invariants *iv);
 
 extern u32 ssb_sdio_scan_read32(struct ssb_bus *bus, u16 offset);
-extern int ssb_sdio_switch_core(struct ssb_bus *bus, struct ssb_device *dev);
 extern int ssb_sdio_scan_switch_coreidx(struct ssb_bus *bus, u8 coreidx);
-extern int ssb_sdio_hardware_setup(struct ssb_bus *bus);
 extern void ssb_sdio_exit(struct ssb_bus *bus);
 extern int ssb_sdio_init(struct ssb_bus *bus);
 
@@ -144,16 +112,7 @@ static inline u32 ssb_sdio_scan_read32(struct ssb_bus *bus, u16 offset)
 {
 	return 0;
 }
-static inline int ssb_sdio_switch_core(struct ssb_bus *bus,
-					 struct ssb_device *dev)
-{
-	return 0;
-}
 static inline int ssb_sdio_scan_switch_coreidx(struct ssb_bus *bus, u8 coreidx)
-{
-	return 0;
-}
-static inline int ssb_sdio_hardware_setup(struct ssb_bus *bus)
 {
 	return 0;
 }
@@ -166,6 +125,16 @@ static inline int ssb_sdio_init(struct ssb_bus *bus)
 }
 #endif /* CONFIG_SSB_SDIOHOST */
 
+/**************************************************
+ * host_soc.c
+ **************************************************/
+
+#ifdef CONFIG_SSB_HOST_SOC
+extern const struct ssb_bus_ops ssb_host_soc_ops;
+
+extern int ssb_host_soc_get_invariants(struct ssb_bus *bus,
+				       struct ssb_init_invariants *iv);
+#endif
 
 /* scan.c */
 extern const char *ssb_core_name(u16 coreid);

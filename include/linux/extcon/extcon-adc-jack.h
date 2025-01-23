@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * include/linux/extcon/extcon-adc-jack.h
  *
@@ -5,11 +6,6 @@
  *
  * Copyright (C) 2012 Samsung Electronics
  * MyungJoo Ham <myungjoo.ham@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #ifndef _EXTCON_ADC_JACK_H_
@@ -20,8 +16,8 @@
 
 /**
  * struct adc_jack_cond - condition to use an extcon state
- * @state:		the corresponding extcon state (if 0, this struct
  *			denotes the last adc_jack_cond element among the array)
+ * @id:			the unique id of each external connector
  * @min_adc:		min adc value for this condition
  * @max_adc:		max adc value for this condition
  *
@@ -33,7 +29,7 @@
  * because when no adc_jack_cond is met, state = 0 is automatically chosen.
  */
 struct adc_jack_cond {
-	u32 state;	/* extcon state value. 0 if invalid */
+	unsigned int id;
 	u32 min_adc;
 	u32 max_adc;
 };
@@ -44,7 +40,7 @@ struct adc_jack_cond {
  * @consumer_channel:	Unique name to identify the channel on the consumer
  *			side. This typically describes the channels used within
  *			the consumer. E.g. 'battery_voltage'
- * @cable_names:	array of cable names ending with null.
+ * @cable_names:	array of extcon id for supported cables.
  * @adc_contitions:	array of struct adc_jack_cond conditions ending
  *			with .state = 0 entry. This describes how to decode
  *			adc values into extcon state.
@@ -53,19 +49,20 @@ struct adc_jack_cond {
  *			milli-seconds after the interrupt occurs. You may
  *			describe such delays with @handling_delay_ms, which
  *			is rounded-off by jiffies.
+ * @wakeup_source:	flag to wake up the system for extcon events.
  */
 struct adc_jack_pdata {
 	const char *name;
 	const char *consumer_channel;
 
-	/* The last entry should be NULL */
-	const char **cable_names;
+	const unsigned int *cable_names;
 
 	/* The last entry's state should be 0 */
 	struct adc_jack_cond *adc_conditions;
 
 	unsigned long irq_flags;
 	unsigned long handling_delay_ms; /* in ms */
+	bool wakeup_source;
 };
 
 #endif /* _EXTCON_ADC_JACK_H */

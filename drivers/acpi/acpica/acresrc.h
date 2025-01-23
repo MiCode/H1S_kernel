@@ -1,45 +1,11 @@
+/* SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0 */
 /******************************************************************************
  *
  * Name: acresrc.h - Resource Manager function prototypes
  *
+ * Copyright (C) 2000 - 2023, Intel Corp.
+ *
  *****************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #ifndef __ACRESRC_H__
 #define __ACRESRC_H__
@@ -80,6 +46,7 @@ typedef enum {
 	ACPI_RSC_1BITFLAG,
 	ACPI_RSC_2BITFLAG,
 	ACPI_RSC_3BITFLAG,
+	ACPI_RSC_6BITFLAG,
 	ACPI_RSC_ADDRESS,
 	ACPI_RSC_BITMASK,
 	ACPI_RSC_BITMASK16,
@@ -124,7 +91,7 @@ typedef enum {
 typedef const struct acpi_rsdump_info {
 	u8 opcode;
 	u8 offset;
-	char *name;
+	const char *name;
 	const char **pointer;
 
 } acpi_rsdump_info;
@@ -136,6 +103,7 @@ typedef enum {
 	ACPI_RSD_1BITFLAG,
 	ACPI_RSD_2BITFLAG,
 	ACPI_RSD_3BITFLAG,
+	ACPI_RSD_6BITFLAG,
 	ACPI_RSD_ADDRESS,
 	ACPI_RSD_DWORDLIST,
 	ACPI_RSD_LITERAL,
@@ -148,7 +116,10 @@ typedef enum {
 	ACPI_RSD_UINT16,
 	ACPI_RSD_UINT32,
 	ACPI_RSD_UINT64,
-	ACPI_RSD_WORDLIST
+	ACPI_RSD_WORDLIST,
+	ACPI_RSD_LABEL,
+	ACPI_RSD_SOURCE_LABEL,
+
 } ACPI_RSDUMP_OPCODES;
 
 /* restore default alignment */
@@ -209,7 +180,7 @@ acpi_rs_get_prs_method_data(struct acpi_namespace_node *node,
 
 acpi_status
 acpi_rs_get_method_data(acpi_handle handle,
-			char *path, struct acpi_buffer *ret_buffer);
+			const char *path, struct acpi_buffer *ret_buffer);
 
 acpi_status
 acpi_rs_set_srs_method_data(struct acpi_namespace_node *node,
@@ -223,16 +194,16 @@ acpi_rs_get_aei_method_data(struct acpi_namespace_node *node,
  * rscalc
  */
 acpi_status
-acpi_rs_get_list_length(u8 * aml_buffer,
-			u32 aml_buffer_length, acpi_size * size_needed);
+acpi_rs_get_list_length(u8 *aml_buffer,
+			u32 aml_buffer_length, acpi_size *size_needed);
 
 acpi_status
 acpi_rs_get_aml_length(struct acpi_resource *resource_list,
-		       acpi_size resource_list_size, acpi_size * size_needed);
+		       acpi_size resource_list_size, acpi_size *size_needed);
 
 acpi_status
 acpi_rs_get_pci_routing_table_length(union acpi_operand_object *package_object,
-				     acpi_size * buffer_size_needed);
+				     acpi_size *buffer_size_needed);
 
 acpi_status
 acpi_rs_convert_aml_to_resources(u8 * aml,
@@ -299,11 +270,13 @@ acpi_rs_set_resource_length(acpi_rsdesc_size total_length,
 			    union aml_resource *aml);
 
 /*
- * rsdump
+ * rsdump - Debugger support
  */
+#ifdef ACPI_DEBUGGER
 void acpi_rs_dump_resource_list(struct acpi_resource *resource);
 
-void acpi_rs_dump_irq_list(u8 * route_table);
+void acpi_rs_dump_irq_list(u8 *route_table);
+#endif
 
 /*
  * Resource conversion tables
@@ -324,9 +297,16 @@ extern struct acpi_rsconvert_info acpi_rs_convert_address64[];
 extern struct acpi_rsconvert_info acpi_rs_convert_ext_address64[];
 extern struct acpi_rsconvert_info acpi_rs_convert_gpio[];
 extern struct acpi_rsconvert_info acpi_rs_convert_fixed_dma[];
+extern struct acpi_rsconvert_info acpi_rs_convert_csi2_serial_bus[];
 extern struct acpi_rsconvert_info acpi_rs_convert_i2c_serial_bus[];
 extern struct acpi_rsconvert_info acpi_rs_convert_spi_serial_bus[];
 extern struct acpi_rsconvert_info acpi_rs_convert_uart_serial_bus[];
+extern struct acpi_rsconvert_info acpi_rs_convert_pin_function[];
+extern struct acpi_rsconvert_info acpi_rs_convert_pin_config[];
+extern struct acpi_rsconvert_info acpi_rs_convert_pin_group[];
+extern struct acpi_rsconvert_info acpi_rs_convert_pin_group_function[];
+extern struct acpi_rsconvert_info acpi_rs_convert_pin_group_config[];
+extern struct acpi_rsconvert_info acpi_rs_convert_clock_input[];
 
 /* These resources require separate get/set tables */
 
@@ -370,12 +350,19 @@ extern struct acpi_rsdump_info acpi_rs_dump_ext_address64[];
 extern struct acpi_rsdump_info acpi_rs_dump_ext_irq[];
 extern struct acpi_rsdump_info acpi_rs_dump_generic_reg[];
 extern struct acpi_rsdump_info acpi_rs_dump_gpio[];
+extern struct acpi_rsdump_info acpi_rs_dump_pin_function[];
 extern struct acpi_rsdump_info acpi_rs_dump_fixed_dma[];
 extern struct acpi_rsdump_info acpi_rs_dump_common_serial_bus[];
+extern struct acpi_rsdump_info acpi_rs_dump_csi2_serial_bus[];
 extern struct acpi_rsdump_info acpi_rs_dump_i2c_serial_bus[];
 extern struct acpi_rsdump_info acpi_rs_dump_spi_serial_bus[];
 extern struct acpi_rsdump_info acpi_rs_dump_uart_serial_bus[];
 extern struct acpi_rsdump_info acpi_rs_dump_general_flags[];
+extern struct acpi_rsdump_info acpi_rs_dump_pin_config[];
+extern struct acpi_rsdump_info acpi_rs_dump_pin_group[];
+extern struct acpi_rsdump_info acpi_rs_dump_pin_group_function[];
+extern struct acpi_rsdump_info acpi_rs_dump_pin_group_config[];
+extern struct acpi_rsdump_info acpi_rs_dump_clock_input[];
 #endif
 
 #endif				/* __ACRESRC_H__ */

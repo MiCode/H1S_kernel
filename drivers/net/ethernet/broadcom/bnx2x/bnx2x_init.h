@@ -1,15 +1,17 @@
-/* bnx2x_init.h: Broadcom Everest network driver.
+/* bnx2x_init.h: Qlogic Everest network driver.
  *               Structures and macroes needed during the initialization.
  *
  * Copyright (c) 2007-2013 Broadcom Corporation
+ * Copyright (c) 2014 QLogic Corporation
+ All rights reserved
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation.
  *
- * Maintained by: Eilon Greenstein <eilong@broadcom.com>
+ * Maintained by: Ariel Elior <ariel.elior@qlogic.com>
  * Written by: Eliezer Tamir
- * Modified by: Vladislav Zolotarov <vladz@broadcom.com>
+ * Modified by: Vladislav Zolotarov
  */
 
 #ifndef BNX2X_INIT_H
@@ -278,7 +280,7 @@ static inline void bnx2x_dcb_config_qm(struct bnx2x *bp, enum cos_mode mode,
 }
 
 
-/* congestion managment port init api description
+/* congestion management port init api description
  * the api works as follows:
  * the driver should pass the cmng_init_input struct, the port_init function
  * will prepare the required internal ram structure which will be passed back
@@ -294,7 +296,6 @@ static inline void bnx2x_dcb_config_qm(struct bnx2x *bp, enum cos_mode mode,
  *    possible, the driver should only write the valid vnics into the internal
  *    ram according to the appropriate port mode.
  */
-#define BITS_TO_BYTES(x) ((x)/8)
 
 /* CMNG constants, as derived from system spec calculations */
 
@@ -447,7 +448,7 @@ static inline void bnx2x_init_fw_wrr(const struct cmng_init_input *input_data,
 				ccd[cos] =
 				    (u32)input_data->cos_min_rate[cos] * 100 *
 				    (T_FAIR_COEF / (8 * 100 * cosWeightSum));
-				 if (ccd[cos] < pdata->fair_vars.fair_threshold
+				if (ccd[cos] < pdata->fair_vars.fair_threshold
 						+ MIN_ABOVE_THRESH) {
 					ccd[cos] =
 					    pdata->fair_vars.fair_threshold +

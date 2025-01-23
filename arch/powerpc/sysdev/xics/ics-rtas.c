@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/irq.h>
@@ -9,7 +10,6 @@
 #include <linux/spinlock.h>
 #include <linux/msi.h>
 
-#include <asm/prom.h>
 #include <asm/smp.h>
 #include <asm/machdep.h>
 #include <asm/irq.h>
@@ -23,19 +23,6 @@ static int ibm_set_xive;
 static int ibm_int_on;
 static int ibm_int_off;
 
-static int ics_rtas_map(struct ics *ics, unsigned int virq);
-static void ics_rtas_mask_unknown(struct ics *ics, unsigned long vec);
-static long ics_rtas_get_server(struct ics *ics, unsigned long vec);
-static int ics_rtas_host_match(struct ics *ics, struct device_node *node);
-
-/* Only one global & state struct ics */
-static struct ics ics_rtas = {
-	.map		= ics_rtas_map,
-	.mask_unknown	= ics_rtas_mask_unknown,
-	.get_server	= ics_rtas_get_server,
-	.host_match	= ics_rtas_host_match,
-};
-
 static void ics_rtas_unmask_irq(struct irq_data *d)
 {
 	unsigned int hw_irq = (unsigned int)irqd_to_hwirq(d);
@@ -47,7 +34,7 @@ static void ics_rtas_unmask_irq(struct irq_data *d)
 	if (hw_irq == XICS_IPI || hw_irq == XICS_IRQ_SPURIOUS)
 		return;
 
-	server = xics_get_irq_server(d->irq, d->affinity, 0);
+	server = xics_get_irq_server(d->irq, irq_data_get_affinity_mask(d), 0);
 
 	call_status = rtas_call(ibm_set_xive, 3, 1, NULL, hw_irq, server,
 				DEFAULT_PRIORITY);
@@ -69,15 +56,6 @@ static void ics_rtas_unmask_irq(struct irq_data *d)
 
 static unsigned int ics_rtas_startup(struct irq_data *d)
 {
-#ifdef CONFIG_PCI_MSI
-	/*
-	 * The generic MSI code returns with the interrupt disabled on the
-	 * card, using the MSI mask bits. Firmware doesn't appear to unmask
-	 * at that level, so we do it here by hand.
-	 */
-	if (d->msi_desc)
-		unmask_msi_irq(d);
-#endif
 	/* unmask it */
 	ics_rtas_unmask_irq(d);
 	return 0;
@@ -140,13 +118,13 @@ static int ics_rtas_set_affinity(struct irq_data *d,
 
 	irq_server = xics_get_irq_server(d->irq, cpumask, 1);
 	if (irq_server == -1) {
-		char cpulist[128];
-		cpumask_scnprintf(cpulist, sizeof(cpulist), cpumask);
-		printk(KERN_WARNING
-			"%s: No online cpus in the mask %s for irq %d\n",
-			__func__, cpulist, d->irq);
+		pr_warn("%s: No online cpus in the mask %*pb for irq %d\n",
+			__func__, cpumask_pr_args(cpumask), d->irq);
 		return -1;
 	}
+
+	pr_debug("%s: irq %d [hw 0x%x] server: 0x%x\n", __func__, d->irq,
+		 hw_irq, irq_server);
 
 	status = rtas_call(ibm_set_xive, 3, 1, NULL,
 			   hw_irq, irq_server, xics_status[1]);
@@ -166,12 +144,13 @@ static struct irq_chip ics_rtas_irq_chip = {
 	.irq_mask = ics_rtas_mask_irq,
 	.irq_unmask = ics_rtas_unmask_irq,
 	.irq_eoi = NULL, /* Patched at init time */
-	.irq_set_affinity = ics_rtas_set_affinity
+	.irq_set_affinity = ics_rtas_set_affinity,
+	.irq_set_type = xics_set_irq_type,
+	.irq_retrigger = xics_retrigger,
 };
 
-static int ics_rtas_map(struct ics *ics, unsigned int virq)
+static int ics_rtas_check(struct ics *ics, unsigned int hw_irq)
 {
-	unsigned int hw_irq = (unsigned int)virq_to_hw(virq);
 	int status[2];
 	int rc;
 
@@ -182,9 +161,6 @@ static int ics_rtas_map(struct ics *ics, unsigned int virq)
 	rc = rtas_call(ibm_get_xive, 1, 3, status, hw_irq);
 	if (rc)
 		return -ENXIO;
-
-	irq_set_chip_and_handler(virq, &ics_rtas_irq_chip, handle_fasteoi_irq);
-	irq_set_chip_data(virq, &ics_rtas);
 
 	return 0;
 }
@@ -213,12 +189,21 @@ static int ics_rtas_host_match(struct ics *ics, struct device_node *node)
 	return !of_device_is_compatible(node, "chrp,iic");
 }
 
+/* Only one global & state struct ics */
+static struct ics ics_rtas = {
+	.check		= ics_rtas_check,
+	.mask_unknown	= ics_rtas_mask_unknown,
+	.get_server	= ics_rtas_get_server,
+	.host_match	= ics_rtas_host_match,
+	.chip = &ics_rtas_irq_chip,
+};
+
 __init int ics_rtas_init(void)
 {
-	ibm_get_xive = rtas_token("ibm,get-xive");
-	ibm_set_xive = rtas_token("ibm,set-xive");
-	ibm_int_on  = rtas_token("ibm,int-on");
-	ibm_int_off = rtas_token("ibm,int-off");
+	ibm_get_xive = rtas_function_token(RTAS_FN_IBM_GET_XIVE);
+	ibm_set_xive = rtas_function_token(RTAS_FN_IBM_SET_XIVE);
+	ibm_int_on  = rtas_function_token(RTAS_FN_IBM_INT_ON);
+	ibm_int_off = rtas_function_token(RTAS_FN_IBM_INT_OFF);
 
 	/* We enable the RTAS "ICS" if RTAS is present with the
 	 * appropriate tokens

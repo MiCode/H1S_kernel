@@ -1,16 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2013 Tomasz Figa <tomasz.figa at gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * Common Clock Framework support for all S3C64xx SoCs.
 */
 
-#include <linux/clk.h>
-#include <linux/clkdev.h>
+#include <linux/slab.h>
 #include <linux/clk-provider.h>
+#include <linux/clk/samsung.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 
@@ -56,10 +53,8 @@
 #define GATE_ON(_id, cname, pname, o, b) \
 		GATE(_id, cname, pname, o, b, CLK_IGNORE_UNUSED, 0)
 
-/* list of PLLs to be registered */
-enum s3c64xx_plls {
-	apll, mpll, epll,
-};
+static void __iomem *reg_base;
+static bool is_s3c6400;
 
 /*
  * List of controller registers to be saved and restored during
@@ -115,14 +110,14 @@ PNAME(audio2_p6410)	= { "mout_epll", "dout_mpll", "fin_pll", "iiscdclk2",
 
 /* Fixed rate clocks generated outside the SoC. */
 FIXED_RATE_CLOCKS(s3c64xx_fixed_rate_ext_clks) __initdata = {
-	FRATE(0, "fin_pll", NULL, CLK_IS_ROOT, 0),
-	FRATE(0, "xusbxti", NULL, CLK_IS_ROOT, 0),
+	FRATE(0, "fin_pll", NULL, 0, 0),
+	FRATE(0, "xusbxti", NULL, 0, 0),
 };
 
 /* Fixed rate clocks generated inside the SoC. */
 FIXED_RATE_CLOCKS(s3c64xx_fixed_rate_clks) __initdata = {
-	FRATE(CLK27M, "clk27m", NULL, CLK_IS_ROOT, 27000000),
-	FRATE(CLK48M, "clk48m", NULL, CLK_IS_ROOT, 48000000),
+	FRATE(CLK27M, "clk27m", NULL, 0, 27000000),
+	FRATE(CLK48M, "clk48m", NULL, 0, 48000000),
 };
 
 /* List of clock muxes present on all S3C64xx SoCs. */
@@ -303,12 +298,12 @@ GATE_CLOCKS(s3c6410_gate_clks) __initdata = {
 
 /* List of PLL clocks. */
 static struct samsung_pll_clock s3c64xx_pll_clks[] __initdata = {
-	[apll] = PLL(pll_6552, FOUT_APLL, "fout_apll", "fin_pll",
-						APLL_LOCK, APLL_CON, NULL),
-	[mpll] = PLL(pll_6552, FOUT_MPLL, "fout_mpll", "fin_pll",
-						MPLL_LOCK, MPLL_CON, NULL),
-	[epll] = PLL(pll_6553, FOUT_EPLL, "fout_epll", "fin_pll",
-						EPLL_LOCK, EPLL_CON0, NULL),
+	PLL(pll_6552, FOUT_APLL, "fout_apll", "fin_pll",
+					APLL_LOCK, APLL_CON, NULL),
+	PLL(pll_6552, FOUT_MPLL, "fout_mpll", "fin_pll",
+					MPLL_LOCK, MPLL_CON, NULL),
+	PLL(pll_6553, FOUT_EPLL, "fout_epll", "fin_pll",
+					EPLL_LOCK, EPLL_CON0, NULL),
 };
 
 /* Aliases for common s3c64xx clocks. */
@@ -356,8 +351,10 @@ static struct samsung_clock_alias s3c64xx_clock_aliases[] = {
 	ALIAS(SCLK_MMC2, "s3c-sdhci.2", "mmc_busclk.2"),
 	ALIAS(SCLK_MMC1, "s3c-sdhci.1", "mmc_busclk.2"),
 	ALIAS(SCLK_MMC0, "s3c-sdhci.0", "mmc_busclk.2"),
-	ALIAS(SCLK_SPI1, "s3c6410-spi.1", "spi-bus"),
-	ALIAS(SCLK_SPI0, "s3c6410-spi.0", "spi-bus"),
+	ALIAS(PCLK_SPI1, "s3c6410-spi.1", "spi_busclk0"),
+	ALIAS(SCLK_SPI1, "s3c6410-spi.1", "spi_busclk2"),
+	ALIAS(PCLK_SPI0, "s3c6410-spi.0", "spi_busclk0"),
+	ALIAS(SCLK_SPI0, "s3c6410-spi.0", "spi_busclk2"),
 	ALIAS(SCLK_AUDIO1, "samsung-pcm.1", "audio-bus"),
 	ALIAS(SCLK_AUDIO1, "samsung-i2s.1", "audio-bus"),
 	ALIAS(SCLK_AUDIO0, "samsung-pcm.0", "audio-bus"),
@@ -380,22 +377,27 @@ static struct samsung_clock_alias s3c6410_clock_aliases[] = {
 	ALIAS(MEM0_SROM, NULL, "srom"),
 };
 
-static void __init s3c64xx_clk_register_fixed_ext(unsigned long fin_pll_f,
-							unsigned long xusbxti_f)
+static void __init s3c64xx_clk_register_fixed_ext(
+				struct samsung_clk_provider *ctx,
+				unsigned long fin_pll_f,
+				unsigned long xusbxti_f)
 {
 	s3c64xx_fixed_rate_ext_clks[0].fixed_rate = fin_pll_f;
 	s3c64xx_fixed_rate_ext_clks[1].fixed_rate = xusbxti_f;
-	samsung_clk_register_fixed_rate(s3c64xx_fixed_rate_ext_clks,
+	samsung_clk_register_fixed_rate(ctx, s3c64xx_fixed_rate_ext_clks,
 				ARRAY_SIZE(s3c64xx_fixed_rate_ext_clks));
 }
 
 /* Register s3c64xx clocks. */
 void __init s3c64xx_clk_init(struct device_node *np, unsigned long xtal_f,
-			     unsigned long xusbxti_f, bool is_s3c6400,
-			     void __iomem *reg_base)
+			     unsigned long xusbxti_f, bool s3c6400,
+			     void __iomem *base)
 {
-	unsigned long *soc_regs = NULL;
-	unsigned long nr_soc_regs = 0;
+	struct samsung_clk_provider *ctx;
+	struct clk_hw **hws;
+
+	reg_base = base;
+	is_s3c6400 = s3c6400;
 
 	if (np) {
 		reg_base = of_iomap(np, 0);
@@ -403,61 +405,66 @@ void __init s3c64xx_clk_init(struct device_node *np, unsigned long xtal_f,
 			panic("%s: failed to map registers\n", __func__);
 	}
 
-	if (!is_s3c6400) {
-		soc_regs = s3c6410_clk_regs;
-		nr_soc_regs = ARRAY_SIZE(s3c6410_clk_regs);
-	}
-
-	samsung_clk_init(np, reg_base, NR_CLKS, s3c64xx_clk_regs,
-			ARRAY_SIZE(s3c64xx_clk_regs), soc_regs, nr_soc_regs);
+	ctx = samsung_clk_init(NULL, reg_base, NR_CLKS);
+	hws = ctx->clk_data.hws;
 
 	/* Register external clocks. */
 	if (!np)
-		s3c64xx_clk_register_fixed_ext(xtal_f, xusbxti_f);
+		s3c64xx_clk_register_fixed_ext(ctx, xtal_f, xusbxti_f);
 
 	/* Register PLLs. */
-	samsung_clk_register_pll(s3c64xx_pll_clks,
-				ARRAY_SIZE(s3c64xx_pll_clks), reg_base);
+	samsung_clk_register_pll(ctx, s3c64xx_pll_clks,
+				ARRAY_SIZE(s3c64xx_pll_clks));
 
 	/* Register common internal clocks. */
-	samsung_clk_register_fixed_rate(s3c64xx_fixed_rate_clks,
+	samsung_clk_register_fixed_rate(ctx, s3c64xx_fixed_rate_clks,
 					ARRAY_SIZE(s3c64xx_fixed_rate_clks));
-	samsung_clk_register_mux(s3c64xx_mux_clks,
+	samsung_clk_register_mux(ctx, s3c64xx_mux_clks,
 					ARRAY_SIZE(s3c64xx_mux_clks));
-	samsung_clk_register_div(s3c64xx_div_clks,
+	samsung_clk_register_div(ctx, s3c64xx_div_clks,
 					ARRAY_SIZE(s3c64xx_div_clks));
-	samsung_clk_register_gate(s3c64xx_gate_clks,
+	samsung_clk_register_gate(ctx, s3c64xx_gate_clks,
 					ARRAY_SIZE(s3c64xx_gate_clks));
 
 	/* Register SoC-specific clocks. */
 	if (is_s3c6400) {
-		samsung_clk_register_mux(s3c6400_mux_clks,
+		samsung_clk_register_mux(ctx, s3c6400_mux_clks,
 					ARRAY_SIZE(s3c6400_mux_clks));
-		samsung_clk_register_div(s3c6400_div_clks,
+		samsung_clk_register_div(ctx, s3c6400_div_clks,
 					ARRAY_SIZE(s3c6400_div_clks));
-		samsung_clk_register_gate(s3c6400_gate_clks,
+		samsung_clk_register_gate(ctx, s3c6400_gate_clks,
 					ARRAY_SIZE(s3c6400_gate_clks));
-		samsung_clk_register_alias(s3c6400_clock_aliases,
+		samsung_clk_register_alias(ctx, s3c6400_clock_aliases,
 					ARRAY_SIZE(s3c6400_clock_aliases));
 	} else {
-		samsung_clk_register_mux(s3c6410_mux_clks,
+		samsung_clk_register_mux(ctx, s3c6410_mux_clks,
 					ARRAY_SIZE(s3c6410_mux_clks));
-		samsung_clk_register_div(s3c6410_div_clks,
+		samsung_clk_register_div(ctx, s3c6410_div_clks,
 					ARRAY_SIZE(s3c6410_div_clks));
-		samsung_clk_register_gate(s3c6410_gate_clks,
+		samsung_clk_register_gate(ctx, s3c6410_gate_clks,
 					ARRAY_SIZE(s3c6410_gate_clks));
-		samsung_clk_register_alias(s3c6410_clock_aliases,
+		samsung_clk_register_alias(ctx, s3c6410_clock_aliases,
 					ARRAY_SIZE(s3c6410_clock_aliases));
 	}
 
-	samsung_clk_register_alias(s3c64xx_clock_aliases,
+	samsung_clk_register_alias(ctx, s3c64xx_clock_aliases,
 					ARRAY_SIZE(s3c64xx_clock_aliases));
+
+	samsung_clk_sleep_init(reg_base, s3c64xx_clk_regs,
+			       ARRAY_SIZE(s3c64xx_clk_regs));
+	if (!is_s3c6400)
+		samsung_clk_sleep_init(reg_base, s3c6410_clk_regs,
+				       ARRAY_SIZE(s3c6410_clk_regs));
+
+	samsung_clk_of_add_provider(np, ctx);
 
 	pr_info("%s clocks: apll = %lu, mpll = %lu\n"
 		"\tepll = %lu, arm_clk = %lu\n",
 		is_s3c6400 ? "S3C6400" : "S3C6410",
-		_get_rate("fout_apll"),	_get_rate("fout_mpll"),
-		_get_rate("fout_epll"), _get_rate("armclk"));
+		clk_hw_get_rate(hws[MOUT_APLL]),
+		clk_hw_get_rate(hws[MOUT_MPLL]),
+		clk_hw_get_rate(hws[MOUT_EPLL]),
+		clk_hw_get_rate(hws[ARMCLK]));
 }
 
 static void __init s3c6400_clk_init(struct device_node *np)

@@ -15,49 +15,20 @@ MODULE_AUTHOR("Sam Hopkins <sah@coraid.com>");
 MODULE_DESCRIPTION("AoE block/char driver for 2.6.2 and newer 2.6 kernels");
 MODULE_VERSION(VERSION);
 
-enum { TINIT, TRUN, TKILL };
+static struct timer_list timer;
+struct workqueue_struct *aoe_wq;
 
-static void
-discover_timer(ulong vp)
+static void discover_timer(struct timer_list *t)
 {
-	static struct timer_list t;
-	static volatile ulong die;
-	static spinlock_t lock;
-	ulong flags;
-	enum { DTIMERTICK = HZ * 60 }; /* one minute */
+	mod_timer(t, jiffies + HZ * 60); /* one minute */
 
-	switch (vp) {
-	case TINIT:
-		init_timer(&t);
-		spin_lock_init(&lock);
-		t.data = TRUN;
-		t.function = discover_timer;
-		die = 0;
-	case TRUN:
-		spin_lock_irqsave(&lock, flags);
-		if (!die) {
-			t.expires = jiffies + DTIMERTICK;
-			add_timer(&t);
-		}
-		spin_unlock_irqrestore(&lock, flags);
-
-		aoecmd_cfg(0xffff, 0xff);
-		return;
-	case TKILL:
-		spin_lock_irqsave(&lock, flags);
-		die = 1;
-		spin_unlock_irqrestore(&lock, flags);
-
-		del_timer_sync(&t);
-	default:
-		return;
-	}
+	aoecmd_cfg(0xffff, 0xff);
 }
 
-static void
+static void __exit
 aoe_exit(void)
 {
-	discover_timer(TKILL);
+	del_timer_sync(&timer);
 
 	aoenet_exit();
 	unregister_blkdev(AOE_MAJOR, DEVICE_NAME);
@@ -65,6 +36,7 @@ aoe_exit(void)
 	aoechr_exit();
 	aoedev_exit();
 	aoeblk_exit();		/* free cache after de-allocating bufs */
+	destroy_workqueue(aoe_wq);
 }
 
 static int __init
@@ -72,9 +44,13 @@ aoe_init(void)
 {
 	int ret;
 
+	aoe_wq = alloc_workqueue("aoe_wq", 0, 0);
+	if (!aoe_wq)
+		return -ENOMEM;
+
 	ret = aoedev_init();
 	if (ret)
-		return ret;
+		goto dev_fail;
 	ret = aoechr_init();
 	if (ret)
 		goto chr_fail;
@@ -93,7 +69,9 @@ aoe_init(void)
 		goto blkreg_fail;
 	}
 	printk(KERN_INFO "aoe: AoE v%s initialised.\n", VERSION);
-	discover_timer(TINIT);
+
+	timer_setup(&timer, discover_timer, 0);
+	discover_timer(&timer);
 	return 0;
  blkreg_fail:
 	aoecmd_exit();
@@ -105,6 +83,8 @@ aoe_init(void)
 	aoechr_exit();
  chr_fail:
 	aoedev_exit();
+ dev_fail:
+	destroy_workqueue(aoe_wq);
 
 	printk(KERN_INFO "aoe: initialisation failure.\n");
 	return ret;

@@ -1,6 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0
 #include "misc.h"
-
-#if CONFIG_EARLY_PRINTK || CONFIG_RANDOMIZE_BASE
 
 static unsigned long fs;
 static inline void set_fs(unsigned long seg)
@@ -13,11 +12,11 @@ static inline char rdfs8(addr_t addr)
 	return *((char *)(fs + addr));
 }
 #include "../cmdline.c"
-static unsigned long get_cmd_line_ptr(void)
+unsigned long get_cmd_line_ptr(void)
 {
-	unsigned long cmd_line_ptr = real_mode->hdr.cmd_line_ptr;
+	unsigned long cmd_line_ptr = boot_params->hdr.cmd_line_ptr;
 
-	cmd_line_ptr |= (u64)real_mode->ext_cmd_line_ptr << 32;
+	cmd_line_ptr |= (u64)boot_params->ext_cmd_line_ptr << 32;
 
 	return cmd_line_ptr;
 }
@@ -29,5 +28,3 @@ int cmdline_find_option_bool(const char *option)
 {
 	return __cmdline_find_option_bool(get_cmd_line_ptr(), option);
 }
-
-#endif

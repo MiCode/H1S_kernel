@@ -1,27 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Aic94xx SAS/SATA driver SAS definitions and hardware interface header file.
  *
  * Copyright (C) 2005 Adaptec, Inc.  All rights reserved.
  * Copyright (C) 2005 Luben Tuikov <luben_tuikov@adaptec.com>
- *
- * This file is licensed under GPLv2.
- *
- * This file is part of the aic94xx driver.
- *
- * The aic94xx driver is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; version 2 of the
- * License.
- *
- * The aic94xx driver is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with the aic94xx driver; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
  */
 
 #ifndef _AIC94XX_SAS_H_
@@ -327,46 +309,9 @@ struct scb_header {
 
 #define LUN_SIZE                8
 
-/* See SAS spec, task IU
- */
-struct ssp_task_iu {
-	u8     lun[LUN_SIZE];	  /* BE */
-	u16    _r_a;
-	u8     tmf;
-	u8     _r_b;
-	__be16 tag;		  /* BE */
-	u8     _r_c[14];
-} __attribute__ ((packed));
-
-/* See SAS spec, command IU
- */
-struct ssp_command_iu {
-	u8     lun[LUN_SIZE];
-	u8     _r_a;
-	u8     efb_prio_attr;	  /* enable first burst, task prio & attr */
-#define EFB_MASK        0x80
-#define TASK_PRIO_MASK	0x78
-#define TASK_ATTR_MASK  0x07
-
-	u8    _r_b;
-	u8     add_cdb_len;	  /* in dwords, since bit 0,1 are reserved */
-	union {
-		u8     cdb[16];
-		struct {
-			__le64 long_cdb_addr;	  /* bus address, LE */
-			__le32 long_cdb_size;	  /* LE */
-			u8     _r_c[3];
-			u8     eol_ds;		  /* eol:6,6, ds:5,4 */
-		} long_cdb;	  /* sequencer extension */
-	};
-} __attribute__ ((packed));
-
-struct xfer_rdy_iu {
-	__be32 requested_offset;  /* BE */
-	__be32 write_data_len;	  /* BE */
-	__be32 _r_a;
-} __attribute__ ((packed));
-
+#define EFB_MASK                0x80
+#define TASK_PRIO_MASK          0x78
+#define TASK_ATTR_MASK          0x07
 /* ---------- SCB tasks ---------- */
 
 /* This is both ssp_task and long_ssp_task
@@ -511,7 +456,7 @@ struct abort_task {
 	u8     proto_conn_rate;
 	__le32 _r_a;
 	struct ssp_frame_hdr ssp_frame;
-	struct ssp_task_iu ssp_task;
+	struct ssp_tmf_iu ssp_task;
 	__le16 sister_scb;
 	__le16 conn_handle;
 	u8     flags;	  /* ovrd_itnl_timer:3,3, suspend_data_trans:2,2 */
@@ -549,7 +494,7 @@ struct clear_nexus {
 	u8     _r_b[3];
 	u8     conn_mask;
 	u8     _r_c[19];
-	struct ssp_task_iu ssp_task; /* LUN and TAG */
+	struct ssp_tmf_iu ssp_task; /* LUN and TAG */
 	__le16 _r_d;
 	__le16 conn_handle;
 	__le64 _r_e;
@@ -562,7 +507,7 @@ struct initiate_ssp_tmf {
 	u8     proto_conn_rate;
 	__le32 _r_a;
 	struct ssp_frame_hdr ssp_frame;
-	struct ssp_task_iu ssp_task;
+	struct ssp_tmf_iu ssp_task;
 	__le16 sister_scb;
 	__le16 conn_handle;
 	u8     flags;	  /* itnl override and suspend data tx */

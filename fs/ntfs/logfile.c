@@ -1,22 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * logfile.c - NTFS kernel journal handling. Part of the Linux-NTFS project.
  *
  * Copyright (c) 2002-2007 Anton Altaparmakov
- *
- * This program/include file is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as published
- * by the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program/include file is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program (in the main directory of the Linux-NTFS
- * distribution in the file COPYING); if not, write to the Free Software
- * Foundation,Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #ifdef NTFS_RW
@@ -27,6 +13,7 @@
 #include <linux/buffer_head.h>
 #include <linux/bitops.h>
 #include <linux/log2.h>
+#include <linux/bio.h>
 
 #include "attrib.h"
 #include "aops.h"
@@ -381,7 +368,7 @@ static int ntfs_check_and_load_restart_page(struct inode *vi,
 	 * completely inside @rp, just copy it from there.  Otherwise map all
 	 * the required pages and copy the data from them.
 	 */
-	size = PAGE_CACHE_SIZE - (pos & ~PAGE_CACHE_MASK);
+	size = PAGE_SIZE - (pos & ~PAGE_MASK);
 	if (size >= le32_to_cpu(rp->system_page_size)) {
 		memcpy(trp, rp, le32_to_cpu(rp->system_page_size));
 	} else {
@@ -394,8 +381,8 @@ static int ntfs_check_and_load_restart_page(struct inode *vi,
 		/* Copy the remaining data one page at a time. */
 		have_read = size;
 		to_read = le32_to_cpu(rp->system_page_size) - size;
-		idx = (pos + size) >> PAGE_CACHE_SHIFT;
-		BUG_ON((pos + size) & ~PAGE_CACHE_MASK);
+		idx = (pos + size) >> PAGE_SHIFT;
+		BUG_ON((pos + size) & ~PAGE_MASK);
 		do {
 			page = ntfs_map_page(vi->i_mapping, idx);
 			if (IS_ERR(page)) {
@@ -406,7 +393,7 @@ static int ntfs_check_and_load_restart_page(struct inode *vi,
 					err = -EIO;
 				goto err_out;
 			}
-			size = min_t(int, to_read, PAGE_CACHE_SIZE);
+			size = min_t(int, to_read, PAGE_SIZE);
 			memcpy((u8*)trp + have_read, page_address(page), size);
 			ntfs_unmap_page(page);
 			have_read += size;
@@ -491,7 +478,7 @@ bool ntfs_check_logfile(struct inode *log_vi, RESTART_PAGE_HEADER **rp)
 	u8 *kaddr = NULL;
 	RESTART_PAGE_HEADER *rstr1_ph = NULL;
 	RESTART_PAGE_HEADER *rstr2_ph = NULL;
-	int log_page_size, log_page_mask, err;
+	int log_page_size, err;
 	bool logfile_is_empty = true;
 	u8 log_page_bits;
 
@@ -509,12 +496,11 @@ bool ntfs_check_logfile(struct inode *log_vi, RESTART_PAGE_HEADER **rp)
 	 * log page size if the page cache size is between the default log page
 	 * size and twice that.
 	 */
-	if (PAGE_CACHE_SIZE >= DefaultLogPageSize && PAGE_CACHE_SIZE <=
+	if (PAGE_SIZE >= DefaultLogPageSize && PAGE_SIZE <=
 			DefaultLogPageSize * 2)
 		log_page_size = DefaultLogPageSize;
 	else
-		log_page_size = PAGE_CACHE_SIZE;
-	log_page_mask = log_page_size - 1;
+		log_page_size = PAGE_SIZE;
 	/*
 	 * Use ntfs_ffs() instead of ffs() to enable the compiler to
 	 * optimize log_page_size and log_page_bits into constants.
@@ -539,7 +525,7 @@ bool ntfs_check_logfile(struct inode *log_vi, RESTART_PAGE_HEADER **rp)
 	 * to be empty.
 	 */
 	for (pos = 0; pos < size; pos <<= 1) {
-		pgoff_t idx = pos >> PAGE_CACHE_SHIFT;
+		pgoff_t idx = pos >> PAGE_SHIFT;
 		if (!page || page->index != idx) {
 			if (page)
 				ntfs_unmap_page(page);
@@ -550,7 +536,7 @@ bool ntfs_check_logfile(struct inode *log_vi, RESTART_PAGE_HEADER **rp)
 				goto err_out;
 			}
 		}
-		kaddr = (u8*)page_address(page) + (pos & ~PAGE_CACHE_MASK);
+		kaddr = (u8*)page_address(page) + (pos & ~PAGE_MASK);
 		/*
 		 * A non-empty block means the logfile is not empty while an
 		 * empty block after a non-empty block has been encountered
@@ -821,7 +807,7 @@ map_vcn:
 			 * completed ignore errors afterwards as we can assume
 			 * that if one buffer worked all of them will work.
 			 */
-			submit_bh(WRITE, bh);
+			submit_bh(REQ_OP_WRITE, bh);
 			if (should_wait) {
 				should_wait = false;
 				wait_on_buffer(bh);

@@ -11,7 +11,8 @@
 #ifndef _XTENSA_ASMMACRO_H
 #define _XTENSA_ASMMACRO_H
 
-#include <variant/core.h>
+#include <asm-generic/export.h>
+#include <asm/core.h>
 
 /*
  * Some little helpers for loops. Use zero-overhead-loops
@@ -35,9 +36,10 @@
  * __loop  as
  *	   restart loop. 'as' register must not have been modified!
  *
- * __endla ar, at, incr
+ * __endla ar, as, incr
  *	   ar	start address (modified)
- *	   as	scratch register used by macro
+ *	   as	scratch register used by __loops/__loopi macros or
+ *		end address used by __loopt macro
  *	   inc	increment
  */
 
@@ -97,7 +99,7 @@
 	.endm
 
 /*
- * loop from ar to ax
+ * loop from ar to as
  */
 
 	.macro	__loopt	ar, as, at, incr_log2
@@ -149,5 +151,190 @@
 		__endl	\ar \as
 	.endm
 
+/* Load or store instructions that may cause exceptions use the EX macro. */
+
+#define EX(handler)				\
+	.section __ex_table, "a";		\
+	.word	97f, handler;			\
+	.previous				\
+97:
+
+
+/*
+ * Extract unaligned word that is split between two registers w0 and w1
+ * into r regardless of machine endianness. SAR must be loaded with the
+ * starting bit of the word (see __ssa8).
+ */
+
+	.macro __src_b	r, w0, w1
+#ifdef __XTENSA_EB__
+		src	\r, \w0, \w1
+#else
+		src	\r, \w1, \w0
+#endif
+	.endm
+
+/*
+ * Load 2 lowest address bits of r into SAR for __src_b to extract unaligned
+ * word starting at r from two registers loaded from consecutive aligned
+ * addresses covering r regardless of machine endianness.
+ *
+ *      r   0   1   2   3
+ * LE SAR   0   8  16  24
+ * BE SAR  32  24  16   8
+ */
+
+	.macro __ssa8	r
+#ifdef __XTENSA_EB__
+		ssa8b	\r
+#else
+		ssa8l	\r
+#endif
+	.endm
+
+	.macro	do_nsau cnt, val, tmp, a
+#if XCHAL_HAVE_NSA
+	nsau	\cnt, \val
+#else
+	mov	\a, \val
+	movi	\cnt, 0
+	extui	\tmp, \a, 16, 16
+	bnez	\tmp, 0f
+	movi	\cnt, 16
+	slli	\a, \a, 16
+0:
+	extui	\tmp, \a, 24, 8
+	bnez	\tmp, 1f
+	addi	\cnt, \cnt, 8
+	slli	\a, \a, 8
+1:
+	movi	\tmp, __nsau_data
+	extui	\a, \a, 24, 8
+	add	\tmp, \tmp, \a
+	l8ui	\tmp, \tmp, 0
+	add	\cnt, \cnt, \tmp
+#endif /* !XCHAL_HAVE_NSA */
+	.endm
+
+	.macro	do_abs dst, src, tmp
+#if XCHAL_HAVE_ABS
+	abs	\dst, \src
+#else
+	neg	\tmp, \src
+	movgez	\tmp, \src, \src
+	mov	\dst, \tmp
+#endif
+	.endm
+
+#if defined(__XTENSA_WINDOWED_ABI__)
+
+/* Assembly instructions for windowed kernel ABI. */
+#define KABI_W
+/* Assembly instructions for call0 kernel ABI (will be ignored). */
+#define KABI_C0 #
+
+#define XTENSA_FRAME_SIZE_RESERVE	16
+#define XTENSA_SPILL_STACK_RESERVE	32
+
+#define abi_entry(frame_size) \
+	entry sp, (XTENSA_FRAME_SIZE_RESERVE + \
+		   (((frame_size) + XTENSA_STACK_ALIGNMENT - 1) & \
+		    -XTENSA_STACK_ALIGNMENT))
+#define abi_entry_default abi_entry(0)
+
+#define abi_ret(frame_size) retw
+#define abi_ret_default retw
+
+	/* direct call */
+#define abi_call call4
+	/* indirect call */
+#define abi_callx callx4
+	/* outgoing call argument registers */
+#define abi_arg0 a6
+#define abi_arg1 a7
+#define abi_arg2 a8
+#define abi_arg3 a9
+#define abi_arg4 a10
+#define abi_arg5 a11
+	/* return value */
+#define abi_rv a6
+	/* registers preserved across call */
+#define abi_saved0 a2
+#define abi_saved1 a3
+
+	/* none of the above */
+#define abi_tmp0 a4
+#define abi_tmp1 a5
+
+#elif defined(__XTENSA_CALL0_ABI__)
+
+/* Assembly instructions for windowed kernel ABI (will be ignored). */
+#define KABI_W #
+/* Assembly instructions for call0 kernel ABI. */
+#define KABI_C0
+
+#define XTENSA_SPILL_STACK_RESERVE	0
+
+#define abi_entry(frame_size) __abi_entry (frame_size)
+
+	.macro	__abi_entry frame_size
+	.ifgt \frame_size
+	addi sp, sp, -(((\frame_size) + XTENSA_STACK_ALIGNMENT - 1) & \
+		       -XTENSA_STACK_ALIGNMENT)
+	.endif
+	.endm
+
+#define abi_entry_default
+
+#define abi_ret(frame_size) __abi_ret (frame_size)
+
+	.macro	__abi_ret frame_size
+	.ifgt \frame_size
+	addi sp, sp, (((\frame_size) + XTENSA_STACK_ALIGNMENT - 1) & \
+		      -XTENSA_STACK_ALIGNMENT)
+	.endif
+	ret
+	.endm
+
+#define abi_ret_default ret
+
+	/* direct call */
+#define abi_call call0
+	/* indirect call */
+#define abi_callx callx0
+	/* outgoing call argument registers */
+#define abi_arg0 a2
+#define abi_arg1 a3
+#define abi_arg2 a4
+#define abi_arg3 a5
+#define abi_arg4 a6
+#define abi_arg5 a7
+	/* return value */
+#define abi_rv a2
+	/* registers preserved across call */
+#define abi_saved0 a12
+#define abi_saved1 a13
+
+	/* none of the above */
+#define abi_tmp0 a8
+#define abi_tmp1 a9
+
+#else
+#error Unsupported Xtensa ABI
+#endif
+
+#if defined(USER_SUPPORT_WINDOWED)
+/* Assembly instructions for windowed user ABI. */
+#define UABI_W
+/* Assembly instructions for call0 user ABI (will be ignored). */
+#define UABI_C0 #
+#else
+/* Assembly instructions for windowed user ABI (will be ignored). */
+#define UABI_W #
+/* Assembly instructions for call0 user ABI. */
+#define UABI_C0
+#endif
+
+#define __XTENSA_HANDLER	.section ".exception.text", "ax"
 
 #endif /* _XTENSA_ASMMACRO_H */

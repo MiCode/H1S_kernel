@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  fs/partitions/atari.h
  *  Moved by Russell King from:
@@ -10,6 +11,8 @@
  * partitions
  * by Guenther Kelleter (guenther@pool.informatik.rwth-aachen.de)
  */
+
+#include <linux/compiler.h>
 
 struct partition_info
 {
@@ -29,6 +32,5 @@ struct rootsector
   u32 bsl_st;			/* start of bad sector list */
   u32 bsl_cnt;			/* length of bad sector list */
   u16 checksum;			/* checksum for bootable disks */
-} __attribute__((__packed__));
+} __packed;
 
-int atari_partition(struct parsed_partitions *state);

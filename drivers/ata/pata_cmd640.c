@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * pata_cmd640.c 	- CMD640 PCI PATA for new ATA layer
  *			  (C) 2007 Red Hat Inc
@@ -15,7 +16,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/gfp.h>
@@ -61,7 +61,7 @@ static void cmd640_set_piomode(struct ata_port *ap, struct ata_device *adev)
 	struct ata_device *pair = ata_dev_pair(adev);
 
 	if (ata_timing_compute(adev, adev->pio_mode, &t, T, 0) < 0) {
-		printk(KERN_ERR DRV_NAME ": mode computation failed.\n");
+		ata_dev_err(adev, DRV_NAME ": mode computation failed.\n");
 		return;
 	}
 
@@ -172,14 +172,14 @@ static bool cmd640_sff_irq_check(struct ata_port *ap)
 	return irq_stat & irq_mask;
 }
 
-static struct scsi_host_template cmd640_sht = {
+static const struct scsi_host_template cmd640_sht = {
 	ATA_PIO_SHT(DRV_NAME),
 };
 
 static struct ata_port_operations cmd640_port_ops = {
 	.inherits	= &ata_sff_port_ops,
 	/* In theory xfer_noirq is not needed once we kill the prefetcher */
-	.sff_data_xfer	= ata_sff_data_xfer_noirq,
+	.sff_data_xfer	= ata_sff_data_xfer32,
 	.sff_irq_check	= cmd640_sff_irq_check,
 	.qc_issue	= cmd640_qc_issue,
 	.cable_detect	= ata_cable_40wire,
@@ -232,7 +232,7 @@ static int cmd640_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	return ata_pci_sff_init_one(pdev, ppi, &cmd640_sht, NULL, 0);
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int cmd640_reinit_one(struct pci_dev *pdev)
 {
 	struct ata_host *host = pci_get_drvdata(pdev);
@@ -257,7 +257,7 @@ static struct pci_driver cmd640_pci_driver = {
 	.id_table	= cmd640,
 	.probe 		= cmd640_init_one,
 	.remove		= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= cmd640_reinit_one,
 #endif

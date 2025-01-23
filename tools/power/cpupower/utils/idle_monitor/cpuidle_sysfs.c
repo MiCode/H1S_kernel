@@ -1,8 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  (C) 2010,2011       Thomas Renninger <trenn@suse.de>, Novell Inc
- *
- *  Licensed under the terms of the GNU GPL License version 2.
- *
  */
 
 #include <stdio.h>
@@ -10,8 +8,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <limits.h>
+#include <cpuidle.h>
 
-#include "helpers/sysfs.h"
 #include "helpers/helpers.h"
 #include "idle_monitor/cpupower-monitor.h"
 
@@ -21,7 +19,7 @@ struct cpuidle_monitor cpuidle_sysfs_monitor;
 
 static unsigned long long **previous_count;
 static unsigned long long **current_count;
-struct timespec start_time;
+static struct timespec start_time;
 static unsigned long long timediff;
 
 static int cpuidle_get_count_percent(unsigned int id, double *percent,
@@ -51,11 +49,11 @@ static int cpuidle_start(void)
 		for (state = 0; state < cpuidle_sysfs_monitor.hw_states_num;
 		     state++) {
 			previous_count[cpu][state] =
-				sysfs_get_idlestate_time(cpu, state);
+				cpuidle_state_time(cpu, state);
 			dprint("CPU %d - State: %d - Val: %llu\n",
 			       cpu, state, previous_count[cpu][state]);
 		}
-	};
+	}
 	return 0;
 }
 
@@ -70,11 +68,11 @@ static int cpuidle_stop(void)
 		for (state = 0; state < cpuidle_sysfs_monitor.hw_states_num;
 		     state++) {
 			current_count[cpu][state] =
-				sysfs_get_idlestate_time(cpu, state);
+				cpuidle_state_time(cpu, state);
 			dprint("CPU %d - State: %d - Val: %llu\n",
 			       cpu, state, previous_count[cpu][state]);
 		}
-	};
+	}
 	return 0;
 }
 
@@ -126,27 +124,45 @@ void fix_up_intel_idle_driver_name(char *tmp, int num)
 	}
 }
 
+#ifdef __powerpc__
+void map_power_idle_state_name(char *tmp)
+{
+	if (!strncmp(tmp, "stop0_lite", CSTATE_NAME_LEN))
+		strcpy(tmp, "stop0L");
+	else if (!strncmp(tmp, "stop1_lite", CSTATE_NAME_LEN))
+		strcpy(tmp, "stop1L");
+	else if (!strncmp(tmp, "stop2_lite", CSTATE_NAME_LEN))
+		strcpy(tmp, "stop2L");
+}
+#else
+void map_power_idle_state_name(char *tmp) { }
+#endif
+
 static struct cpuidle_monitor *cpuidle_register(void)
 {
 	int num;
 	char *tmp;
+	int this_cpu;
+
+	this_cpu = sched_getcpu();
 
 	/* Assume idle state count is the same for all CPUs */
-	cpuidle_sysfs_monitor.hw_states_num = sysfs_get_idlestate_count(0);
+	cpuidle_sysfs_monitor.hw_states_num = cpuidle_state_count(this_cpu);
 
 	if (cpuidle_sysfs_monitor.hw_states_num <= 0)
 		return NULL;
 
 	for (num = 0; num < cpuidle_sysfs_monitor.hw_states_num; num++) {
-		tmp = sysfs_get_idlestate_name(0, num);
+		tmp = cpuidle_state_name(this_cpu, num);
 		if (tmp == NULL)
 			continue;
 
+		map_power_idle_state_name(tmp);
 		fix_up_intel_idle_driver_name(tmp, num);
 		strncpy(cpuidle_cstates[num].name, tmp, CSTATE_NAME_LEN - 1);
 		free(tmp);
 
-		tmp = sysfs_get_idlestate_desc(0, num);
+		tmp = cpuidle_state_desc(this_cpu, num);
 		if (tmp == NULL)
 			continue;
 		strncpy(cpuidle_cstates[num].desc, tmp,	CSTATE_DESC_LEN - 1);
@@ -156,7 +172,7 @@ static struct cpuidle_monitor *cpuidle_register(void)
 		cpuidle_cstates[num].id = num;
 		cpuidle_cstates[num].get_count_percent =
 			cpuidle_get_count_percent;
-	};
+	}
 
 	/* Free this at program termination */
 	previous_count = malloc(sizeof(long long *) * cpu_count);
@@ -191,6 +207,6 @@ struct cpuidle_monitor cpuidle_sysfs_monitor = {
 	.stop			= cpuidle_stop,
 	.do_register		= cpuidle_register,
 	.unregister		= cpuidle_unregister,
-	.needs_root		= 0,
+	.flags.needs_root	= 0,
 	.overflow_s		= UINT_MAX,
 };

@@ -1,12 +1,8 @@
-/*
- * ALSA SoC driver for Migo-R
- *
- * Copyright (C) 2009-2010 Guennadi Liakhovetski <g.liakhovetski@gmx.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- */
+// SPDX-License-Identifier: GPL-2.0
+//
+// ALSA SoC driver for Migo-R
+//
+// Copyright (C) 2009-2010 Guennadi Liakhovetski <g.liakhovetski@gmx.de>
 
 #include <linux/clkdev.h>
 #include <linux/device.h>
@@ -49,8 +45,8 @@ static struct clk_lookup *siumckb_lookup;
 static int migor_hw_params(struct snd_pcm_substream *substream,
 			   struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 	int ret;
 	unsigned int rate = params_rate(params);
 
@@ -63,16 +59,6 @@ static int migor_hw_params(struct snd_pcm_substream *substream,
 	if (ret < 0)
 		return ret;
 
-	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_NB_IF |
-				  SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_CBS_CFS);
-	if (ret < 0)
-		return ret;
-
-	ret = snd_soc_dai_set_fmt(rtd->cpu_dai, SND_SOC_DAIFMT_NB_IF |
-				  SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_CBS_CFS);
-	if (ret < 0)
-		return ret;
-
 	codec_freq = rate * 512;
 	/*
 	 * This propagates the parent frequency change to children and
@@ -81,7 +67,7 @@ static int migor_hw_params(struct snd_pcm_substream *substream,
 	clk_set_rate(&siumckb_clk, codec_freq);
 	dev_dbg(codec_dai->dev, "%s: configure %luHz\n", __func__, codec_freq);
 
-	ret = snd_soc_dai_set_sysclk(rtd->cpu_dai, SIU_CLKB_EXT,
+	ret = snd_soc_dai_set_sysclk(asoc_rtd_to_cpu(rtd, 0), SIU_CLKB_EXT,
 				     codec_freq / 2, SND_SOC_CLOCK_IN);
 
 	if (!ret)
@@ -92,8 +78,8 @@ static int migor_hw_params(struct snd_pcm_substream *substream,
 
 static int migor_hw_free(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 
 	if (use_count) {
 		use_count--;
@@ -108,7 +94,7 @@ static int migor_hw_free(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-static struct snd_soc_ops migor_dai_ops = {
+static const struct snd_soc_ops migor_dai_ops = {
 	.hw_params = migor_hw_params,
 	.hw_free = migor_hw_free,
 };
@@ -136,29 +122,19 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{ "Mic Bias", NULL, "External Microphone" },
 };
 
-static int migor_dai_init(struct snd_soc_pcm_runtime *rtd)
-{
-	struct snd_soc_codec *codec = rtd->codec;
-	struct snd_soc_dapm_context *dapm = &codec->dapm;
-
-	snd_soc_dapm_new_controls(dapm, migor_dapm_widgets,
-				  ARRAY_SIZE(migor_dapm_widgets));
-
-	snd_soc_dapm_add_routes(dapm, audio_map, ARRAY_SIZE(audio_map));
-
-	return 0;
-}
-
 /* migor digital audio interface glue - connects codec <--> CPU */
+SND_SOC_DAILINK_DEFS(wm8978,
+	DAILINK_COMP_ARRAY(COMP_CPU("siu-pcm-audio")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("wm8978.0-001a", "wm8978-hifi")),
+	DAILINK_COMP_ARRAY(COMP_PLATFORM("siu-pcm-audio")));
+
 static struct snd_soc_dai_link migor_dai = {
 	.name = "wm8978",
 	.stream_name = "WM8978",
-	.cpu_dai_name = "siu-pcm-audio",
-	.codec_dai_name = "wm8978-hifi",
-	.platform_name = "siu-pcm-audio",
-	.codec_name = "wm8978.0-001a",
+	.dai_fmt = SND_SOC_DAIFMT_NB_IF | SND_SOC_DAIFMT_I2S |
+		   SND_SOC_DAIFMT_CBS_CFS,
 	.ops = &migor_dai_ops,
-	.init = migor_dai_init,
+	SND_SOC_DAILINK_REG(wm8978),
 };
 
 /* migor audio machine driver */
@@ -167,6 +143,11 @@ static struct snd_soc_card snd_soc_migor = {
 	.owner = THIS_MODULE,
 	.dai_link = &migor_dai,
 	.num_links = 1,
+
+	.dapm_widgets = migor_dapm_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(migor_dapm_widgets),
+	.dapm_routes = audio_map,
+	.num_dapm_routes = ARRAY_SIZE(audio_map),
 };
 
 static struct platform_device *migor_snd_device;
@@ -179,12 +160,11 @@ static int __init migor_init(void)
 	if (ret < 0)
 		return ret;
 
-	siumckb_lookup = clkdev_alloc(&siumckb_clk, "siumckb_clk", NULL);
+	siumckb_lookup = clkdev_create(&siumckb_clk, "siumckb_clk", NULL);
 	if (!siumckb_lookup) {
 		ret = -ENOMEM;
 		goto eclkdevalloc;
 	}
-	clkdev_add(siumckb_lookup);
 
 	/* Port number used on this machine: port B */
 	migor_snd_device = platform_device_alloc("soc-audio", 1);

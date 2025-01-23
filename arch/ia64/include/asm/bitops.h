@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_IA64_BITOPS_H
 #define _ASM_IA64_BITOPS_H
 
@@ -16,6 +17,7 @@
 #include <linux/compiler.h>
 #include <linux/types.h>
 #include <asm/intrinsics.h>
+#include <asm/barrier.h>
 
 /**
  * set_bit - Atomically set a bit in memory
@@ -51,7 +53,7 @@ set_bit (int nr, volatile void *addr)
 }
 
 /**
- * __set_bit - Set a bit in memory
+ * arch___set_bit - Set a bit in memory
  * @nr: the bit to set
  * @addr: the address to start counting from
  *
@@ -59,17 +61,11 @@ set_bit (int nr, volatile void *addr)
  * If it's called on the same region of memory simultaneously, the effect
  * may be that only one operation succeeds.
  */
-static __inline__ void
-__set_bit (int nr, volatile void *addr)
+static __always_inline void
+arch___set_bit(unsigned long nr, volatile unsigned long *addr)
 {
 	*((__u32 *) addr + (nr >> 5)) |= (1 << (nr & 31));
 }
-
-/*
- * clear_bit() has "acquire" semantics.
- */
-#define smp_mb__before_clear_bit()	smp_mb()
-#define smp_mb__after_clear_bit()	do { /* skip */; } while (0)
 
 /**
  * clear_bit - Clears a bit in memory
@@ -78,7 +74,7 @@ __set_bit (int nr, volatile void *addr)
  *
  * clear_bit() is atomic and may not be reordered.  However, it does
  * not contain a memory barrier, so if it is used for locking purposes,
- * you should call smp_mb__before_clear_bit() and/or smp_mb__after_clear_bit()
+ * you should call smp_mb__before_atomic() and/or smp_mb__after_atomic()
  * in order to ensure changes are visible on other processors.
  */
 static __inline__ void
@@ -139,7 +135,7 @@ __clear_bit_unlock(int nr, void *addr)
 }
 
 /**
- * __clear_bit - Clears a bit in memory (non-atomic version)
+ * arch___clear_bit - Clears a bit in memory (non-atomic version)
  * @nr: the bit to clear
  * @addr: the address to start counting from
  *
@@ -147,8 +143,8 @@ __clear_bit_unlock(int nr, void *addr)
  * If it's called on the same region of memory simultaneously, the effect
  * may be that only one operation succeeds.
  */
-static __inline__ void
-__clear_bit (int nr, volatile void *addr)
+static __always_inline void
+arch___clear_bit(unsigned long nr, volatile unsigned long *addr)
 {
 	*((__u32 *) addr + (nr >> 5)) &= ~(1 << (nr & 31));
 }
@@ -179,7 +175,7 @@ change_bit (int nr, volatile void *addr)
 }
 
 /**
- * __change_bit - Toggle a bit in memory
+ * arch___change_bit - Toggle a bit in memory
  * @nr: the bit to toggle
  * @addr: the address to start counting from
  *
@@ -187,8 +183,8 @@ change_bit (int nr, volatile void *addr)
  * If it's called on the same region of memory simultaneously, the effect
  * may be that only one operation succeeds.
  */
-static __inline__ void
-__change_bit (int nr, volatile void *addr)
+static __always_inline void
+arch___change_bit(unsigned long nr, volatile unsigned long *addr)
 {
 	*((__u32 *) addr + (nr >> 5)) ^= (1 << (nr & 31));
 }
@@ -228,7 +224,7 @@ test_and_set_bit (int nr, volatile void *addr)
 #define test_and_set_bit_lock test_and_set_bit
 
 /**
- * __test_and_set_bit - Set a bit and return its old value
+ * arch___test_and_set_bit - Set a bit and return its old value
  * @nr: Bit to set
  * @addr: Address to count from
  *
@@ -236,8 +232,8 @@ test_and_set_bit (int nr, volatile void *addr)
  * If two examples of this operation race, one can appear to succeed
  * but actually fail.  You must protect multiple accesses with a lock.
  */
-static __inline__ int
-__test_and_set_bit (int nr, volatile void *addr)
+static __always_inline bool
+arch___test_and_set_bit(unsigned long nr, volatile unsigned long *addr)
 {
 	__u32 *p = (__u32 *) addr + (nr >> 5);
 	__u32 m = 1 << (nr & 31);
@@ -273,7 +269,7 @@ test_and_clear_bit (int nr, volatile void *addr)
 }
 
 /**
- * __test_and_clear_bit - Clear a bit and return its old value
+ * arch___test_and_clear_bit - Clear a bit and return its old value
  * @nr: Bit to clear
  * @addr: Address to count from
  *
@@ -281,8 +277,8 @@ test_and_clear_bit (int nr, volatile void *addr)
  * If two examples of this operation race, one can appear to succeed
  * but actually fail.  You must protect multiple accesses with a lock.
  */
-static __inline__ int
-__test_and_clear_bit(int nr, volatile void * addr)
+static __always_inline bool
+arch___test_and_clear_bit(unsigned long nr, volatile unsigned long *addr)
 {
 	__u32 *p = (__u32 *) addr + (nr >> 5);
 	__u32 m = 1 << (nr & 31);
@@ -318,14 +314,14 @@ test_and_change_bit (int nr, volatile void *addr)
 }
 
 /**
- * __test_and_change_bit - Change a bit and return its old value
+ * arch___test_and_change_bit - Change a bit and return its old value
  * @nr: Bit to change
  * @addr: Address to count from
  *
  * This operation is non-atomic and can be reordered.
  */
-static __inline__ int
-__test_and_change_bit (int nr, void *addr)
+static __always_inline bool
+arch___test_and_change_bit(unsigned long nr, volatile unsigned long *addr)
 {
 	__u32 old, bit = (1 << (nr & 31));
 	__u32 *m = (__u32 *) addr + (nr >> 5);
@@ -335,11 +331,8 @@ __test_and_change_bit (int nr, void *addr)
 	return (old & bit) != 0;
 }
 
-static __inline__ int
-test_bit (int nr, const volatile void *addr)
-{
-	return 1 & (((const volatile __u32 *) addr)[nr >> 5] >> (nr & 31));
-}
+#define arch_test_bit generic_test_bit
+#define arch_test_bit_acquire generic_test_bit_acquire
 
 /**
  * ffz - find the first zero bit in a long word
@@ -392,8 +385,7 @@ ia64_fls (unsigned long x)
  * Find the last (most significant) bit set.  Returns 0 for x==0 and
  * bits are numbered from 1..32 (e.g., fls(9) == 4).
  */
-static inline int
-fls (int t)
+static inline int fls(unsigned int t)
 {
 	unsigned long x = t & 0xffffffffu;
 
@@ -446,9 +438,9 @@ static __inline__ unsigned long __arch_hweight64(unsigned long x)
 
 #endif /* __KERNEL__ */
 
-#include <asm-generic/bitops/find.h>
-
 #ifdef __KERNEL__
+
+#include <asm-generic/bitops/non-instrumented-non-atomic.h>
 
 #include <asm-generic/bitops/le.h>
 

@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *	Industrial Computer Source PCI-WDT500/501 driver
  *
  *	(c) Copyright 1996-1997 Alan Cox <alan@lxorguk.ukuu.org.uk>,
  *						All Rights Reserved.
- *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License
- *	as published by the Free Software Foundation; either version
- *	2 of the License, or (at your option) any later version.
  *
  *	Neither Alan Cox nor CymruNet Ltd. admit liability nor provide
  *	warranty for any of this software. This material is provided
@@ -49,7 +45,6 @@
 #include <linux/delay.h>
 #include <linux/notifier.h>
 #include <linux/reboot.h>
-#include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/pci.h>
 #include <linux/io.h>
@@ -333,7 +328,7 @@ static irqreturn_t wdtpci_interrupt(int irq, void *dev_id)
 		pr_crit("Would Reboot\n");
 #else
 		pr_crit("Initiating system reboot\n");
-		emergency_restart(NULL);
+		emergency_restart();
 #endif
 #else
 		pr_crit("Reset in 5ms\n");
@@ -431,7 +426,7 @@ static long wdtpci_ioctl(struct file *file, unsigned int cmd,
 		if (wdtpci_set_heartbeat(new_heartbeat))
 			return -EINVAL;
 		wdtpci_ping();
-		/* Fall */
+		fallthrough;
 	case WDIOC_GETTIMEOUT:
 		return put_user(heartbeat, p);
 	default:
@@ -462,7 +457,7 @@ static int wdtpci_open(struct inode *inode, struct file *file)
 	 *	Activate
 	 */
 	wdtpci_start();
-	return nonseekable_open(inode, file);
+	return stream_open(inode, file);
 }
 
 /**
@@ -525,7 +520,7 @@ static ssize_t wdtpci_temp_read(struct file *file, char __user *buf,
 
 static int wdtpci_temp_open(struct inode *inode, struct file *file)
 {
-	return nonseekable_open(inode, file);
+	return stream_open(inode, file);
 }
 
 /**
@@ -542,7 +537,7 @@ static int wdtpci_temp_release(struct inode *inode, struct file *file)
 }
 
 /**
- *	notify_sys:
+ *	wdtpci_notify_sys:
  *	@this: our notifier block
  *	@code: the event being reported
  *	@unused: unused
@@ -571,6 +566,7 @@ static const struct file_operations wdtpci_fops = {
 	.llseek		= no_llseek,
 	.write		= wdtpci_write,
 	.unlocked_ioctl	= wdtpci_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
 	.open		= wdtpci_open,
 	.release	= wdtpci_release,
 };

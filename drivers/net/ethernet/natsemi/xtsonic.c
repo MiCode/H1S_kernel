@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * xtsonic.c
  *
@@ -34,9 +35,9 @@
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
+#include <linux/pgtable.h>
 
 #include <asm/io.h>
-#include <asm/pgtable.h>
 #include <asm/dma.h>
 
 static char xtsonic_string[] = "xtsonic";
@@ -71,14 +72,6 @@ extern void xtboard_get_ether_addr(unsigned char *buf);
 
 #define SONIC_WRITE(reg,val) \
 	*((volatile unsigned int *)dev->base_addr+reg) = val
-
-
-/* Use 0 for production, 1 for verification, and >2 for debug */
-#ifdef SONIC_DEBUG
-static unsigned int sonic_debug = SONIC_DEBUG;
-#else
-static unsigned int sonic_debug = 1;
-#endif
 
 /*
  * We cannot use station (ethernet) address prefixes to detect the
@@ -124,18 +117,17 @@ static const struct net_device_ops xtsonic_netdev_ops = {
 	.ndo_set_rx_mode	= sonic_multicast_list,
 	.ndo_tx_timeout		= sonic_tx_timeout,
 	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address	= eth_mac_addr,
 };
 
-static int __init sonic_probe1(struct net_device *dev)
+static int sonic_probe1(struct net_device *dev)
 {
-	static unsigned version_printed = 0;
 	unsigned int silicon_revision;
 	struct sonic_local *lp = netdev_priv(dev);
 	unsigned int base_addr = dev->base_addr;
 	int i;
 	int err = 0;
+	unsigned char addr[ETH_ALEN];
 
 	if (!request_mem_region(base_addr, 0x100, xtsonic_string))
 		return -EBUSY;
@@ -146,22 +138,16 @@ static int __init sonic_probe1(struct net_device *dev)
 	 * the expected location.
 	 */
 	silicon_revision = SONIC_READ(SONIC_SR);
-	if (sonic_debug > 1)
-		printk("SONIC Silicon Revision = 0x%04x\n",silicon_revision);
-
 	i = 0;
 	while ((known_revisions[i] != 0xffff) &&
 			(known_revisions[i] != silicon_revision))
 		i++;
 
 	if (known_revisions[i] == 0xffff) {
-		printk("SONIC ethernet controller not found (0x%4x)\n",
-				silicon_revision);
+		pr_info("SONIC ethernet controller not found (0x%4x)\n",
+			silicon_revision);
 		return -ENODEV;
 	}
-
-	if (sonic_debug  &&  version_printed++ == 0)
-		printk(version);
 
 	/*
 	 * Put the sonic into software reset, then retrieve ethernet address.
@@ -178,51 +164,16 @@ static int __init sonic_probe1(struct net_device *dev)
 
 	for (i=0; i<3; i++) {
 		unsigned int val = SONIC_READ(SONIC_CAP0-i);
-		dev->dev_addr[i*2] = val;
-		dev->dev_addr[i*2+1] = val >> 8;
+		addr[i*2] = val;
+		addr[i*2+1] = val >> 8;
 	}
-
-	/* Initialize the device structure. */
+	eth_hw_addr_set(dev, addr);
 
 	lp->dma_bitmode = SONIC_BITMODE32;
 
-	/*
-	 *  Allocate local private descriptor areas in uncached space.
-	 *  The entire structure must be located within the same 64kb segment.
-	 *  A simple way to ensure this is to allocate twice the
-	 *  size of the structure -- given that the structure is
-	 *  much less than 64 kB, at least one of the halves of
-	 *  the allocated area will be contained entirely in 64 kB.
-	 *  We also allocate extra space for a pointer to allow freeing
-	 *  this structure later on (in xtsonic_cleanup_module()).
-	 */
-	lp->descriptors = dma_alloc_coherent(lp->device,
-					     SIZEOF_SONIC_DESC *
-					     SONIC_BUS_SCALE(lp->dma_bitmode),
-					     &lp->descriptors_laddr,
-					     GFP_KERNEL);
-	if (lp->descriptors == NULL) {
-		err = -ENOMEM;
+	err = sonic_alloc_descriptors(dev);
+	if (err)
 		goto out;
-	}
-
-	lp->cda = lp->descriptors;
-	lp->tda = lp->cda + (SIZEOF_SONIC_CDA
-			     * SONIC_BUS_SCALE(lp->dma_bitmode));
-	lp->rda = lp->tda + (SIZEOF_SONIC_TD * SONIC_NUM_TDS
-			     * SONIC_BUS_SCALE(lp->dma_bitmode));
-	lp->rra = lp->rda + (SIZEOF_SONIC_RD * SONIC_NUM_RDS
-			     * SONIC_BUS_SCALE(lp->dma_bitmode));
-
-	/* get the virtual dma address */
-
-	lp->cda_laddr = lp->descriptors_laddr;
-	lp->tda_laddr = lp->cda_laddr + (SIZEOF_SONIC_CDA
-				         * SONIC_BUS_SCALE(lp->dma_bitmode));
-	lp->rda_laddr = lp->tda_laddr + (SIZEOF_SONIC_TD * SONIC_NUM_TDS
-					 * SONIC_BUS_SCALE(lp->dma_bitmode));
-	lp->rra_laddr = lp->rda_laddr + (SIZEOF_SONIC_RD * SONIC_NUM_RDS
-					 * SONIC_BUS_SCALE(lp->dma_bitmode));
 
 	dev->netdev_ops		= &xtsonic_netdev_ops;
 	dev->watchdog_timeo	= TX_TIMEOUT;
@@ -266,22 +217,27 @@ int xtsonic_probe(struct platform_device *pdev)
 	lp->device = &pdev->dev;
 	platform_set_drvdata(pdev, dev);
 	SET_NETDEV_DEV(dev, &pdev->dev);
-	netdev_boot_setup_check(dev);
 
 	dev->base_addr = resmem->start;
 	dev->irq = resirq->start;
 
 	if ((err = sonic_probe1(dev)))
 		goto out;
-	if ((err = register_netdev(dev)))
-		goto out1;
 
-	printk("%s: SONIC ethernet @%08lx, MAC %pM, IRQ %d\n", dev->name,
-	       dev->base_addr, dev->dev_addr, dev->irq);
+	pr_info("SONIC ethernet @%08lx, MAC %pM, IRQ %d\n",
+		dev->base_addr, dev->dev_addr, dev->irq);
+
+	sonic_msg_init(dev);
+
+	if ((err = register_netdev(dev)))
+		goto undo_probe1;
 
 	return 0;
 
-out1:
+undo_probe1:
+	dma_free_coherent(lp->device,
+			  SIZEOF_SONIC_DESC * SONIC_BUS_SCALE(lp->dma_bitmode),
+			  lp->descriptors, lp->descriptors_laddr);
 	release_region(dev->base_addr, SONIC_MEM_SIZE);
 out:
 	free_netdev(dev);
@@ -290,8 +246,6 @@ out:
 }
 
 MODULE_DESCRIPTION("Xtensa XT2000 SONIC ethernet driver");
-module_param(sonic_debug, int, 0);
-MODULE_PARM_DESC(sonic_debug, "xtsonic debug level (1-4)");
 
 #include "sonic.c"
 

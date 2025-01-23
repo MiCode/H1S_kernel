@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _M68K_CHECKSUM_H
 #define _M68K_CHECKSUM_H
 
@@ -29,14 +30,14 @@ __wsum csum_partial(const void *buff, int len, __wsum sum);
  * better 64-bit) boundary
  */
 
-extern __wsum csum_partial_copy_from_user(const void __user *src,
+#define _HAVE_ARCH_COPY_AND_CSUM_FROM_USER
+#define _HAVE_ARCH_CSUM_AND_COPY
+extern __wsum csum_and_copy_from_user(const void __user *src,
 						void *dst,
-						int len, __wsum sum,
-						int *csum_err);
+						int len);
 
 extern __wsum csum_partial_copy_nocheck(const void *src,
-					      void *dst, int len,
-					      __wsum sum);
+					      void *dst, int len);
 
 /*
  *	This is a version of ip_fast_csum() optimized for IP headers,
@@ -117,7 +118,7 @@ static inline __sum16 ip_compute_csum(const void *buff, int len)
 #define _HAVE_ARCH_IPV6_CSUM
 static __inline__ __sum16
 csum_ipv6_magic(const struct in6_addr *saddr, const struct in6_addr *daddr,
-		__u32 len, unsigned short proto, __wsum sum)
+		__u32 len, __u8 proto, __wsum sum)
 {
 	register unsigned long tmp;
 	__asm__("addl %2@,%0\n\t"

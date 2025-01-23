@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #if !defined(_TRACE_KVM_BOOKE_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_KVM_BOOKE_H
 
@@ -5,8 +6,6 @@
 
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM kvm_booke
-#define TRACE_INCLUDE_PATH .
-#define TRACE_INCLUDE_FILE trace_booke
 
 #define kvm_trace_symbol_exit \
 	{0, "CRITICAL"}, \
@@ -68,21 +67,6 @@ TRACE_EVENT(kvm_exit,
 		__entry->dar,
 		__entry->last_inst
 		)
-);
-
-TRACE_EVENT(kvm_unmap_hva,
-	TP_PROTO(unsigned long hva),
-	TP_ARGS(hva),
-
-	TP_STRUCT__entry(
-		__field(	unsigned long,	hva		)
-	),
-
-	TP_fast_assign(
-		__entry->hva		= hva;
-	),
-
-	TP_printk("unmap hva 0x%lx\n", __entry->hva)
 );
 
 TRACE_EVENT(kvm_booke206_stlb_write,
@@ -151,6 +135,47 @@ TRACE_EVENT(kvm_booke206_ref_release,
 		__entry->pfn, __entry->flags)
 );
 
+#ifdef CONFIG_SPE_POSSIBLE
+#define kvm_trace_symbol_irqprio_spe \
+	{BOOKE_IRQPRIO_SPE_UNAVAIL, "SPE_UNAVAIL"}, \
+	{BOOKE_IRQPRIO_SPE_FP_DATA, "SPE_FP_DATA"}, \
+	{BOOKE_IRQPRIO_SPE_FP_ROUND, "SPE_FP_ROUND"},
+#else
+#define kvm_trace_symbol_irqprio_spe
+#endif
+
+#ifdef CONFIG_PPC_E500MC
+#define kvm_trace_symbol_irqprio_e500mc \
+	{BOOKE_IRQPRIO_ALTIVEC_UNAVAIL, "ALTIVEC_UNAVAIL"}, \
+	{BOOKE_IRQPRIO_ALTIVEC_ASSIST, "ALTIVEC_ASSIST"},
+#else
+#define kvm_trace_symbol_irqprio_e500mc
+#endif
+
+#define kvm_trace_symbol_irqprio \
+	kvm_trace_symbol_irqprio_spe \
+	kvm_trace_symbol_irqprio_e500mc \
+	{BOOKE_IRQPRIO_DATA_STORAGE, "DATA_STORAGE"}, \
+	{BOOKE_IRQPRIO_INST_STORAGE, "INST_STORAGE"}, \
+	{BOOKE_IRQPRIO_ALIGNMENT, "ALIGNMENT"}, \
+	{BOOKE_IRQPRIO_PROGRAM, "PROGRAM"}, \
+	{BOOKE_IRQPRIO_FP_UNAVAIL, "FP_UNAVAIL"}, \
+	{BOOKE_IRQPRIO_SYSCALL, "SYSCALL"}, \
+	{BOOKE_IRQPRIO_AP_UNAVAIL, "AP_UNAVAIL"}, \
+	{BOOKE_IRQPRIO_DTLB_MISS, "DTLB_MISS"}, \
+	{BOOKE_IRQPRIO_ITLB_MISS, "ITLB_MISS"}, \
+	{BOOKE_IRQPRIO_MACHINE_CHECK, "MACHINE_CHECK"}, \
+	{BOOKE_IRQPRIO_DEBUG, "DEBUG"}, \
+	{BOOKE_IRQPRIO_CRITICAL, "CRITICAL"}, \
+	{BOOKE_IRQPRIO_WATCHDOG, "WATCHDOG"}, \
+	{BOOKE_IRQPRIO_EXTERNAL, "EXTERNAL"}, \
+	{BOOKE_IRQPRIO_FIT, "FIT"}, \
+	{BOOKE_IRQPRIO_DECREMENTER, "DECREMENTER"}, \
+	{BOOKE_IRQPRIO_PERFORMANCE_MONITOR, "PERFORMANCE_MONITOR"}, \
+	{BOOKE_IRQPRIO_EXTERNAL_LEVEL, "EXTERNAL_LEVEL"}, \
+	{BOOKE_IRQPRIO_DBELL, "DBELL"}, \
+	{BOOKE_IRQPRIO_DBELL_CRIT, "DBELL_CRIT"} \
+
 TRACE_EVENT(kvm_booke_queue_irqprio,
 	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int priority),
 	TP_ARGS(vcpu, priority),
@@ -167,11 +192,20 @@ TRACE_EVENT(kvm_booke_queue_irqprio,
 		__entry->pending	= vcpu->arch.pending_exceptions;
 	),
 
-	TP_printk("vcpu=%x prio=%x pending=%lx",
-		__entry->cpu_nr, __entry->priority, __entry->pending)
+	TP_printk("vcpu=%x prio=%s pending=%lx",
+		__entry->cpu_nr,
+		__print_symbolic(__entry->priority, kvm_trace_symbol_irqprio),
+		__entry->pending)
 );
 
 #endif
 
 /* This part must be outside protection */
+
+#undef TRACE_INCLUDE_PATH
+#undef TRACE_INCLUDE_FILE
+
+#define TRACE_INCLUDE_PATH .
+#define TRACE_INCLUDE_FILE trace_booke
+
 #include <trace/define_trace.h>

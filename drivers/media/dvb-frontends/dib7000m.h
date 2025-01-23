@@ -1,7 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef DIB7000M_H
 #define DIB7000M_H
-
-#include <linux/kconfig.h>
 
 #include "dibx000_common.h"
 
@@ -40,7 +39,7 @@ struct dib7000m_config {
 
 #define DEFAULT_DIB7000M_I2C_ADDRESS 18
 
-#if IS_ENABLED(CONFIG_DVB_DIB7000M)
+#if IS_REACHABLE(CONFIG_DVB_DIB7000M)
 extern struct dvb_frontend *dib7000m_attach(struct i2c_adapter *i2c_adap,
 					    u8 i2c_addr,
 					    struct dib7000m_config *cfg);

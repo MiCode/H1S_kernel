@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * include/linux/fsl_devices.h
  *
@@ -7,11 +8,6 @@
  * Maintainer: Kumar Gala <galak@kernel.crashing.org>
  *
  * Copyright 2004,2012 Freescale Semiconductor, Inc
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #ifndef _FSL_DEVICE_H_
@@ -20,10 +16,6 @@
 #define FSL_UTMI_PHY_DLY	10	/*As per P1010RM, delay for UTMI
 				PHY CLK to become stable - 10ms*/
 #define FSL_USB_PHY_CLK_TIMEOUT	10000	/* uSec */
-#define FSL_USB_VER_OLD		0
-#define FSL_USB_VER_1_6		1
-#define FSL_USB_VER_2_2		2
-#define FSL_USB_VER_2_4		3
 
 #include <linux/types.h>
 
@@ -51,6 +43,15 @@
  *
  */
 
+enum fsl_usb2_controller_ver {
+	FSL_USB_VER_NONE = -1,
+	FSL_USB_VER_OLD = 0,
+	FSL_USB_VER_1_6 = 1,
+	FSL_USB_VER_2_2 = 2,
+	FSL_USB_VER_2_4 = 3,
+	FSL_USB_VER_2_5 = 4,
+};
+
 enum fsl_usb2_operating_modes {
 	FSL_USB2_MPH_HOST,
 	FSL_USB2_DR_HOST,
@@ -64,6 +65,7 @@ enum fsl_usb2_phy_modes {
 	FSL_USB2_PHY_UTMI,
 	FSL_USB2_PHY_UTMI_WIDE,
 	FSL_USB2_PHY_SERIAL,
+	FSL_USB2_PHY_UTMI_DUAL,
 };
 
 struct clk;
@@ -71,7 +73,7 @@ struct platform_device;
 
 struct fsl_usb2_platform_data {
 	/* board specific information */
-	int				controller_ver;
+	enum fsl_usb2_controller_ver	controller_ver;
 	enum fsl_usb2_operating_modes	operating_mode;
 	enum fsl_usb2_phy_modes		phy_mode;
 	unsigned int			port_enables;
@@ -92,6 +94,12 @@ struct fsl_usb2_platform_data {
 
 	unsigned	suspended:1;
 	unsigned	already_suspended:1;
+	unsigned	has_fsl_erratum_a007792:1;
+	unsigned	has_fsl_erratum_14:1;
+	unsigned	has_fsl_erratum_a005275:1;
+	unsigned	has_fsl_erratum_a005697:1;
+	unsigned        has_fsl_erratum_a006918:1;
+	unsigned	check_phy_clk_valid:1;
 
 	/* register save area for suspend/resume */
 	u32		pm_command;

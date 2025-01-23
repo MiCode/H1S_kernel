@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * pata_ninja32.c 	- Ninja32 PATA for new ATA layer
  *			  (C) 2007 Red Hat Inc
@@ -37,7 +38,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <scsi/scsi_host.h>
@@ -77,7 +77,7 @@ static void ninja32_dev_select(struct ata_port *ap, unsigned int device)
 	}
 }
 
-static struct scsi_host_template ninja32_sht = {
+static const struct scsi_host_template ninja32_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -123,10 +123,7 @@ static int ninja32_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 		return rc;
 
 	host->iomap = pcim_iomap_table(dev);
-	rc = pci_set_dma_mask(dev, ATA_DMA_MASK);
-	if (rc)
-		return rc;
-	rc = pci_set_consistent_dma_mask(dev, ATA_DMA_MASK);
+	rc = dma_set_mask_and_coherent(&dev->dev, ATA_DMA_MASK);
 	if (rc)
 		return rc;
 	pci_set_master(dev);
@@ -145,7 +142,7 @@ static int ninja32_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 	ap->ioaddr.altstatus_addr = base + 0x1E;
 	ap->ioaddr.bmdma_addr = base;
 	ata_sff_std_ports(&ap->ioaddr);
-	ap->pflags = ATA_PFLAG_PIO32 | ATA_PFLAG_PIO32CHANGE;
+	ap->pflags |= ATA_PFLAG_PIO32 | ATA_PFLAG_PIO32CHANGE;
 
 	ninja32_program(base);
 	/* FIXME: Should we disable them at remove ? */
@@ -153,8 +150,7 @@ static int ninja32_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 				 IRQF_SHARED, &ninja32_sht);
 }
 
-#ifdef CONFIG_PM
-
+#ifdef CONFIG_PM_SLEEP
 static int ninja32_reinit_one(struct pci_dev *pdev)
 {
 	struct ata_host *host = pci_get_drvdata(pdev);
@@ -184,7 +180,7 @@ static struct pci_driver ninja32_pci_driver = {
 	.id_table	= ninja32,
 	.probe 		= ninja32_init_one,
 	.remove		= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= ninja32_reinit_one,
 #endif

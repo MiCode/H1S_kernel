@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Clock framework definitions for SPEAr platform
  *
  * Copyright (C) 2012 ST Microelectronics
- * Viresh Kumar <viresh.linux@gmail.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
+ * Viresh Kumar <vireshk@kernel.org>
  */
 
 #ifndef __SPEAR_CLK_H
@@ -49,7 +46,7 @@ struct aux_rate_tbl {
 struct clk_aux {
 	struct			clk_hw hw;
 	void __iomem		*reg;
-	struct aux_clk_masks	*masks;
+	const struct aux_clk_masks *masks;
 	struct aux_rate_tbl	*rtbl;
 	u8			rtbl_cnt;
 	spinlock_t		*lock;
@@ -112,7 +109,7 @@ typedef unsigned long (*clk_calc_rate)(struct clk_hw *hw, unsigned long prate,
 /* clk register routines */
 struct clk *clk_register_aux(const char *aux_name, const char *gate_name,
 		const char *parent_name, unsigned long flags, void __iomem *reg,
-		struct aux_clk_masks *masks, struct aux_rate_tbl *rtbl,
+		const struct aux_clk_masks *masks, struct aux_rate_tbl *rtbl,
 		u8 rtbl_cnt, spinlock_t *lock, struct clk **gate_clk);
 struct clk *clk_register_frac(const char *name, const char *parent_name,
 		unsigned long flags, void __iomem *reg,

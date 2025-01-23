@@ -1,7 +1,5 @@
-/*
- * dump_psb. (c) 2004, Dave Jones, Red Hat Inc.
- * Licensed under the GPL v2.
- */
+// SPDX-License-Identifier: GPL-2.0-only
+// dump_psb. (c) 2004, Dave Jones, Red Hat Inc.
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -134,7 +132,7 @@ next_one:
 }
 
 static struct option info_opts[] = {
-	{.name = "numpst",	.has_arg=no_argument,	.flag=NULL, .val='n'},
+     {"numpst", no_argument, NULL, 'n'},
 };
 
 void print_help(void)

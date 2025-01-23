@@ -272,7 +272,7 @@ int unregister_nls(struct nls_table * nls)
 	return -EINVAL;
 }
 
-static struct nls_table *find_nls(char *charset)
+static struct nls_table *find_nls(const char *charset)
 {
 	struct nls_table *nls;
 	spin_lock(&nls_lock);
@@ -288,7 +288,7 @@ static struct nls_table *find_nls(char *charset)
 	return nls;
 }
 
-struct nls_table *load_nls(char *charset)
+struct nls_table *load_nls(const char *charset)
 {
 	return try_then_request_module(find_nls(charset), "nls_%s", charset);
 }
@@ -541,8 +541,8 @@ struct nls_table *load_nls_default(void)
 }
 
 EXPORT_SYMBOL(unregister_nls);
-EXPORT_SYMBOL(unload_nls);
-EXPORT_SYMBOL(load_nls);
-EXPORT_SYMBOL(load_nls_default);
+EXPORT_SYMBOL_NS(unload_nls, ANDROID_GKI_VFS_EXPORT_ONLY);
+EXPORT_SYMBOL_NS(load_nls, ANDROID_GKI_VFS_EXPORT_ONLY);
+EXPORT_SYMBOL_NS(load_nls_default, ANDROID_GKI_VFS_EXPORT_ONLY);
 
 MODULE_LICENSE("Dual BSD/GPL");

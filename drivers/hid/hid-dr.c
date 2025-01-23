@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Force feedback support for DragonRise Inc. game controllers
  *
@@ -12,19 +13,6 @@
  */
 
 /*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/input.h>
@@ -87,12 +75,18 @@ static int drff_init(struct hid_device *hid)
 {
 	struct drff_device *drff;
 	struct hid_report *report;
-	struct hid_input *hidinput = list_first_entry(&hid->inputs,
-						struct hid_input, list);
+	struct hid_input *hidinput;
 	struct list_head *report_list =
 			&hid->report_enum[HID_OUTPUT_REPORT].report_list;
-	struct input_dev *dev = hidinput->input;
+	struct input_dev *dev;
 	int error;
+
+	if (list_empty(&hid->inputs)) {
+		hid_err(hid, "no inputs found\n");
+		return -ENODEV;
+	}
+	hidinput = list_first_entry(&hid->inputs, struct hid_input, list);
+	dev = hidinput->input;
 
 	if (list_empty(report_list)) {
 		hid_err(hid, "no output reports found\n");
@@ -151,7 +145,7 @@ static inline int drff_init(struct hid_device *hid)
  * descriptor. In any case, it's a wonder it works on Windows.
  *
  *  Usage Page (Desktop),             ; Generic desktop controls (01h)
- *  Usage (Joystik),                  ; Joystik (04h, application collection)
+ *  Usage (Joystick),                 ; Joystick (04h, application collection)
  *  Collection (Application),
  *    Collection (Logical),
  *      Report Size (8),
@@ -207,7 +201,7 @@ static inline int drff_init(struct hid_device *hid)
 /* Fixed report descriptor for PID 0x011 joystick */
 static __u8 pid0011_rdesc_fixed[] = {
 	0x05, 0x01,         /*  Usage Page (Desktop),           */
-	0x09, 0x04,         /*  Usage (Joystik),                */
+	0x09, 0x04,         /*  Usage (Joystick),               */
 	0xA1, 0x01,         /*  Collection (Application),       */
 	0xA1, 0x02,         /*      Collection (Logical),       */
 	0x14,               /*          Logical Minimum (0),    */
@@ -246,6 +240,30 @@ static __u8 *dr_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 		break;
 	}
 	return rdesc;
+}
+
+#define map_abs(c)      hid_map_usage(hi, usage, bit, max, EV_ABS, (c))
+#define map_rel(c)      hid_map_usage(hi, usage, bit, max, EV_REL, (c))
+
+static int dr_input_mapping(struct hid_device *hdev, struct hid_input *hi,
+			    struct hid_field *field, struct hid_usage *usage,
+			    unsigned long **bit, int *max)
+{
+	switch (usage->hid) {
+	/*
+	 * revert to the old hid-input behavior where axes
+	 * can be randomly assigned when hid->usage is reused.
+	 */
+	case HID_GD_X: case HID_GD_Y: case HID_GD_Z:
+	case HID_GD_RX: case HID_GD_RY: case HID_GD_RZ:
+		if (field->flags & HID_MAIN_ITEM_RELATIVE)
+			map_rel(usage->hid & 0xf);
+		else
+			map_abs(usage->hid & 0xf);
+		return 1;
+	}
+
+	return 0;
 }
 
 static int dr_probe(struct hid_device *hdev, const struct hid_device_id *id)
@@ -294,6 +312,7 @@ static struct hid_driver dr_driver = {
 	.id_table = dr_devices,
 	.report_fixup = dr_report_fixup,
 	.probe = dr_probe,
+	.input_mapping = dr_input_mapping,
 };
 module_hid_driver(dr_driver);
 

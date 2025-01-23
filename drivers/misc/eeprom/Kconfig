@@ -1,8 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0-only
 menu "EEPROM support"
 
 config EEPROM_AT24
 	tristate "I2C EEPROMs / RAMs / ROMs from most vendors"
 	depends on I2C && SYSFS
+	select NVMEM
+	select NVMEM_SYSFS
+	select REGMAP
+	select REGMAP_I2C
 	help
 	  Enable this driver to get read/write support to most I2C EEPROMs
 	  and compatible devices like FRAMs, SRAMs, ROMs etc. After you
@@ -11,7 +16,7 @@ config EEPROM_AT24
 	  ones like at24c64, 24lc02 or fm24c04:
 
 	     24c00, 24c01, 24c02, spd (readonly 24c02), 24c04, 24c08,
-	     24c16, 24c32, 24c64, 24c128, 24c256, 24c512, 24c1024
+	     24c16, 24c32, 24c64, 24c128, 24c256, 24c512, 24c1024, 24c2048
 
 	  Unless you like data loss puzzles, always be sure that any chip
 	  you configure as a 24c32 (32 kbit) or larger is NOT really a
@@ -28,10 +33,13 @@ config EEPROM_AT24
 	  will be called at24.
 
 config EEPROM_AT25
-	tristate "SPI EEPROMs from most vendors"
+	tristate "SPI EEPROMs (FRAMs) from most vendors"
 	depends on SPI && SYSFS
+	select NVMEM
+	select NVMEM_SYSFS
 	help
-	  Enable this driver to get read/write support to most SPI EEPROMs,
+	  Enable this driver to get read/write support to most SPI EEPROMs
+	  and Cypress FRAMs,
 	  after you configure the board init code to know about each eeprom
 	  on your target board.
 
@@ -39,12 +47,15 @@ config EEPROM_AT25
 	  will be called at25.
 
 config EEPROM_LEGACY
-	tristate "Old I2C EEPROM reader"
+	tristate "Old I2C EEPROM reader (DEPRECATED)"
 	depends on I2C && SYSFS
 	help
 	  If you say yes here you get read-only access to the EEPROM data
 	  available on modern memory DIMMs and Sony Vaio laptops via I2C. Such
 	  EEPROMs could theoretically be available on other devices as well.
+
+	  This driver is deprecated and will be removed soon, please use the
+	  better at24 driver instead.
 
 	  This driver can also be built as a module.  If so, the module
 	  will be called eeprom.
@@ -74,6 +85,9 @@ config EEPROM_93CX6
 config EEPROM_93XX46
 	tristate "Microwire EEPROM 93XX46 support"
 	depends on SPI && SYSFS
+	select REGMAP
+	select NVMEM
+	select NVMEM_SYSFS
 	help
 	  Driver for the microwire EEPROM chipsets 93xx46x. The driver
 	  supports both read and write commands and also the command to
@@ -96,17 +110,25 @@ config EEPROM_DIGSY_MTC_CFG
 
 	  If unsure, say N.
 
-config EEPROM_SUNXI_SID
-	tristate "Allwinner sunxi security ID support"
-	depends on ARCH_SUNXI && SYSFS
+config EEPROM_IDT_89HPESX
+	tristate "IDT 89HPESx PCIe-swtiches EEPROM / CSR support"
+	depends on I2C && SYSFS
 	help
-	  This is a driver for the 'security ID' available on various Allwinner
-	  devices.
-
-	  Due to the potential risks involved with changing e-fuses,
-	  this driver is read-only.
+	  Enable this driver to get read/write access to EEPROM / CSRs
+	  over IDT PCIe-swtich i2c-slave interface.
 
 	  This driver can also be built as a module. If so, the module
-	  will be called sunxi_sid.
+	  will be called idt_89hpesx.
+
+config EEPROM_EE1004
+	tristate "SPD EEPROMs on DDR4 memory modules"
+	depends on I2C && SYSFS
+	help
+	  Enable this driver to get read support to SPD EEPROMs following
+	  the JEDEC EE1004 standard. These are typically found on DDR4
+	  SDRAM memory modules.
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called ee1004.
 
 endmenu

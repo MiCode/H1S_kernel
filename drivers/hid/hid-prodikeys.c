@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  HID driver for the Prodikeys PC-MIDI Keyboard
  *  providing midi & extra multimedia keys functionality
@@ -6,14 +7,9 @@
  *
  *  Controls for Octave Shift Up/Down, Channel, and
  *  Sustain Duration available via sysfs.
- *
  */
 
 /*
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -103,7 +99,7 @@ MODULE_PARM_DESC(enable, "Enable for the PC-MIDI virtual audio driver");
 static ssize_t show_channel(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
+	struct hid_device *hdev = to_hid_device(dev);
 	struct pk_device *pk = hid_get_drvdata(hdev);
 
 	dbg_hid("pcmidi sysfs read channel=%u\n", pk->pm->midi_channel);
@@ -116,7 +112,7 @@ static ssize_t show_channel(struct device *dev,
 static ssize_t store_channel(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
-	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
+	struct hid_device *hdev = to_hid_device(dev);
 	struct pk_device *pk = hid_get_drvdata(hdev);
 
 	unsigned channel = 0;
@@ -140,7 +136,7 @@ static struct device_attribute *sysfs_device_attr_channel = {
 static ssize_t show_sustain(struct device *dev,
  struct device_attribute *attr, char *buf)
 {
-	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
+	struct hid_device *hdev = to_hid_device(dev);
 	struct pk_device *pk = hid_get_drvdata(hdev);
 
 	dbg_hid("pcmidi sysfs read sustain=%u\n", pk->pm->midi_sustain);
@@ -153,7 +149,7 @@ static ssize_t show_sustain(struct device *dev,
 static ssize_t store_sustain(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
-	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
+	struct hid_device *hdev = to_hid_device(dev);
 	struct pk_device *pk = hid_get_drvdata(hdev);
 
 	unsigned sustain = 0;
@@ -179,7 +175,7 @@ static struct device_attribute *sysfs_device_attr_sustain = {
 static ssize_t show_octave(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
+	struct hid_device *hdev = to_hid_device(dev);
 	struct pk_device *pk = hid_get_drvdata(hdev);
 
 	dbg_hid("pcmidi sysfs read octave=%d\n", pk->pm->midi_octave);
@@ -192,7 +188,7 @@ static ssize_t show_octave(struct device *dev,
 static ssize_t store_octave(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
-	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
+	struct hid_device *hdev = to_hid_device(dev);
 	struct pk_device *pk = hid_get_drvdata(hdev);
 
 	int octave = 0;
@@ -239,9 +235,9 @@ drop_note:
 	return;
 }
 
-static void pcmidi_sustained_note_release(unsigned long data)
+static void pcmidi_sustained_note_release(struct timer_list *t)
 {
-	struct pcmidi_sustain *pms = (struct pcmidi_sustain *)data;
+	struct pcmidi_sustain *pms = from_timer(pms, t, timer);
 
 	pcmidi_send_note(pms->pm, pms->status, pms->note, pms->velocity);
 	pms->in_use = 0;
@@ -256,8 +252,7 @@ static void init_sustain_timers(struct pcmidi_snd *pm)
 		pms = &pm->sustained_notes[i];
 		pms->in_use = 0;
 		pms->pm = pm;
-		setup_timer(&pms->timer, pcmidi_sustained_note_release,
-			(unsigned long)pms);
+		timer_setup(&pms->timer, pcmidi_sustained_note_release, 0);
 	}
 }
 
@@ -395,11 +390,10 @@ static int pcmidi_handle_report4(struct pcmidi_snd *pm, u8 *data)
 
 	/* break keys */
 	for (bit_index = 0; bit_index < 24; bit_index++) {
-		key = pm->last_key[bit_index];
 		if (!((0x01 << bit_index) & bit_mask)) {
 			input_event(pm->input_ep82, EV_KEY,
 				pm->last_key[bit_index], 0);
-				pm->last_key[bit_index] = 0;
+			pm->last_key[bit_index] = 0;
 		}
 	}
 
@@ -428,7 +422,7 @@ static int pcmidi_handle_report4(struct pcmidi_snd *pm, u8 *data)
 					pm->midi_octave = 2;
 				dbg_hid("pcmidi mode: %d octave: %d\n",
 					pm->midi_mode, pm->midi_octave);
-			    continue;
+				continue;
 			} else
 				key = KEY_MESSENGER;
 			break;
@@ -522,7 +516,7 @@ static void pcmidi_setup_extra_keys(
 		MY PICTURES =>	KEY_WORDPROCESSOR
 		MY MUSIC=>	KEY_SPREADSHEET
 	*/
-	unsigned int keys[] = {
+	static const unsigned int keys[] = {
 		KEY_FN,
 		KEY_MESSENGER, KEY_CALENDAR,
 		KEY_ADDRESSBOOK, KEY_DOCUMENTS,
@@ -538,7 +532,7 @@ static void pcmidi_setup_extra_keys(
 		0
 	};
 
-	unsigned int *pkeys = &keys[0];
+	const unsigned int *pkeys = &keys[0];
 	unsigned short i;
 
 	if (pm->ifnum != 1)  /* only set up ONCE for interace 1 */
@@ -557,10 +551,14 @@ static void pcmidi_setup_extra_keys(
 
 static int pcmidi_set_operational(struct pcmidi_snd *pm)
 {
+	int rc;
+
 	if (pm->ifnum != 1)
 		return 0; /* only set up ONCE for interace 1 */
 
-	pcmidi_get_output_report(pm);
+	rc = pcmidi_get_output_report(pm);
+	if (rc < 0)
+		return rc;
 	pcmidi_submit_output_report(pm, 0xc1);
 	return 0;
 }
@@ -594,7 +592,7 @@ static void pcmidi_in_trigger(struct snd_rawmidi_substream *substream, int up)
 	pm->in_triggered = up;
 }
 
-static struct snd_rawmidi_ops pcmidi_in_ops = {
+static const struct snd_rawmidi_ops pcmidi_in_ops = {
 	.open = pcmidi_in_open,
 	.close = pcmidi_in_close,
 	.trigger = pcmidi_in_trigger
@@ -624,7 +622,8 @@ static int pcmidi_snd_initialise(struct pcmidi_snd *pm)
 
 	/* Setup sound card */
 
-	err = snd_card_create(index[dev], id[dev], THIS_MODULE, 0, &card);
+	err = snd_card_new(&pm->pk->hdev->dev, index[dev], id[dev],
+			   THIS_MODULE, 0, &card);
 	if (err < 0) {
 		pk_error("failed to create pc-midi sound card\n");
 		err = -ENOMEM;
@@ -660,8 +659,6 @@ static int pcmidi_snd_initialise(struct pcmidi_snd *pm)
 	snd_rawmidi_set_ops(rwmidi, SNDRV_RAWMIDI_STREAM_INPUT,
 		&pcmidi_in_ops);
 
-	snd_card_set_dev(card, &pm->pk->hdev->dev);
-
 	/* create sysfs variables */
 	err = device_create_file(&pm->pk->hdev->dev,
 				 sysfs_device_attr_channel);
@@ -690,14 +687,18 @@ static int pcmidi_snd_initialise(struct pcmidi_snd *pm)
 	spin_lock_init(&pm->rawmidi_in_lock);
 
 	init_sustain_timers(pm);
-	pcmidi_set_operational(pm);
+	err = pcmidi_set_operational(pm);
+	if (err < 0) {
+		pk_error("failed to find output report\n");
+		goto fail_register;
+	}
 
 	/* register it */
 	err = snd_card_register(card);
 	if (err < 0) {
 		pk_error("failed to register pc-midi sound card: error %d\n",
 			 err);
-			 goto fail_register;
+		goto fail_register;
 	}
 
 	dbg_hid("pcmidi_snd_initialise finished ok\n");
@@ -797,11 +798,17 @@ static int pk_raw_event(struct hid_device *hdev, struct hid_report *report,
 static int pk_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
 	int ret;
-	struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
-	unsigned short ifnum = intf->cur_altsetting->desc.bInterfaceNumber;
+	struct usb_interface *intf;
+	unsigned short ifnum;
 	unsigned long quirks = id->driver_data;
 	struct pk_device *pk;
 	struct pcmidi_snd *pm = NULL;
+
+	if (!hid_is_usb(hdev))
+		return -EINVAL;
+
+	intf = to_usb_interface(hdev->dev.parent);
+	ifnum = intf->cur_altsetting->desc.bInterfaceNumber;
 
 	pk = kzalloc(sizeof(*pk), GFP_KERNEL);
 	if (pk == NULL) {

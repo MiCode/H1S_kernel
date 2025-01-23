@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arcksyms.c - Exporting symbols not exportable from their own sources
  *
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #include <linux/module.h>
@@ -28,6 +24,7 @@ extern void __muldf3(void);
 extern void __divdf3(void);
 extern void __floatunsidf(void);
 extern void __floatunsisf(void);
+extern void __udivdi3(void);
 
 EXPORT_SYMBOL(__ashldi3);
 EXPORT_SYMBOL(__ashrdi3);
@@ -45,6 +42,7 @@ EXPORT_SYMBOL(__muldf3);
 EXPORT_SYMBOL(__divdf3);
 EXPORT_SYMBOL(__floatunsidf);
 EXPORT_SYMBOL(__floatunsisf);
+EXPORT_SYMBOL(__udivdi3);
 
 /* ARC optimised assembler routines */
 EXPORT_SYMBOL(memset);

@@ -24,7 +24,7 @@
 /* constants */
 #define TX_URB_COUNT            32
 #define RX_URB_COUNT            32
-#define ATH6KL_USB_RX_BUFFER_SIZE  1700
+#define ATH6KL_USB_RX_BUFFER_SIZE  4096
 
 /* tx/rx pipes for usb */
 enum ATH6KL_USB_PIPE_ID {
@@ -71,6 +71,7 @@ struct ath6kl_usb {
 	u8 *diag_cmd_buffer;
 	u8 *diag_resp_buffer;
 	struct ath6kl *ar;
+	struct workqueue_struct *wq;
 };
 
 /* usb urb object */
@@ -132,6 +133,10 @@ ath6kl_usb_alloc_urb_from_pipe(struct ath6kl_usb_pipe *pipe)
 	struct ath6kl_urb_context *urb_context = NULL;
 	unsigned long flags;
 
+	/* bail if this pipe is not initialized */
+	if (!pipe->ar_usb)
+		return NULL;
+
 	spin_lock_irqsave(&pipe->ar_usb->cs_lock, flags);
 	if (!list_empty(&pipe->urb_list_head)) {
 		urb_context =
@@ -149,6 +154,10 @@ static void ath6kl_usb_free_urb_to_pipe(struct ath6kl_usb_pipe *pipe,
 					struct ath6kl_urb_context *urb_context)
 {
 	unsigned long flags;
+
+	/* bail if this pipe is not initialized */
+	if (!pipe->ar_usb)
+		return;
 
 	spin_lock_irqsave(&pipe->ar_usb->cs_lock, flags);
 	pipe->urb_cnt++;
@@ -236,7 +245,6 @@ static void ath6kl_usb_free_pipe_resources(struct ath6kl_usb_pipe *pipe)
 			break;
 		kfree(urb_context);
 	}
-
 }
 
 static void ath6kl_usb_cleanup_pipe_resources(struct ath6kl_usb *ar_usb)
@@ -245,7 +253,6 @@ static void ath6kl_usb_cleanup_pipe_resources(struct ath6kl_usb *ar_usb)
 
 	for (i = 0; i < ATH6KL_USB_PIPE_MAX; i++)
 		ath6kl_usb_free_pipe_resources(&ar_usb->pipes[i]);
-
 }
 
 static u8 ath6kl_usb_get_logical_pipe_num(struct ath6kl_usb *ar_usb,
@@ -305,7 +312,7 @@ static int ath6kl_usb_setup_pipe_resources(struct ath6kl_usb *ar_usb)
 
 	ath6kl_dbg(ATH6KL_DBG_USB, "setting up USB Pipes using interface\n");
 
-	/* walk decriptors and setup pipes */
+	/* walk descriptors and setup pipes */
 	for (i = 0; i < iface_desc->desc.bNumEndpoints; ++i) {
 		endpoint = &iface_desc->endpoint[i].desc;
 
@@ -334,6 +341,11 @@ static int ath6kl_usb_setup_pipe_resources(struct ath6kl_usb *ar_usb)
 				   le16_to_cpu(endpoint->wMaxPacketSize),
 				   endpoint->bInterval);
 		}
+
+		/* Ignore broken descriptors. */
+		if (usb_endpoint_maxp(endpoint) == 0)
+			continue;
+
 		urbcount = 0;
 
 		pipe_num =
@@ -467,7 +479,7 @@ static void ath6kl_usb_flush_all(struct ath6kl_usb *ar_usb)
 	 * Flushing any pending I/O may schedule work this call will block
 	 * until all scheduled work runs to completion.
 	 */
-	flush_scheduled_work();
+	flush_workqueue(ar_usb->wq);
 }
 
 static void ath6kl_usb_start_recv_pipes(struct ath6kl_usb *ar_usb)
@@ -481,8 +493,8 @@ static void ath6kl_usb_start_recv_pipes(struct ath6kl_usb *ar_usb)
 	 *		ATH6KL_USB_RX_BUFFER_SIZE);
 	 */
 
-	ar_usb->pipes[ATH6KL_USB_PIPE_RX_DATA].urb_cnt_thresh =
-	    ar_usb->pipes[ATH6KL_USB_PIPE_RX_DATA].urb_alloc / 2;
+	ar_usb->pipes[ATH6KL_USB_PIPE_RX_DATA].urb_cnt_thresh = 1;
+
 	ath6kl_usb_post_recv_transfers(&ar_usb->pipes[ATH6KL_USB_PIPE_RX_DATA],
 				       ATH6KL_USB_RX_BUFFER_SIZE);
 }
@@ -533,7 +545,7 @@ static void ath6kl_usb_recv_complete(struct urb *urb)
 
 	/* note: queue implements a lock */
 	skb_queue_tail(&pipe->io_comp_queue, skb);
-	schedule_work(&pipe->io_complete_work);
+	queue_work(pipe->ar_usb->wq, &pipe->io_complete_work);
 
 cleanup_recv_urb:
 	ath6kl_usb_cleanup_recv_urb(urb_context);
@@ -568,7 +580,7 @@ static void ath6kl_usb_usb_transmit_complete(struct urb *urb)
 
 	/* note: queue implements a lock */
 	skb_queue_tail(&pipe->io_comp_queue, skb);
-	schedule_work(&pipe->io_complete_work);
+	queue_work(pipe->ar_usb->wq, &pipe->io_complete_work);
 }
 
 static void ath6kl_usb_io_comp_work(struct work_struct *work)
@@ -608,6 +620,7 @@ static void ath6kl_usb_destroy(struct ath6kl_usb *ar_usb)
 
 	kfree(ar_usb->diag_cmd_buffer);
 	kfree(ar_usb->diag_resp_buffer);
+	destroy_workqueue(ar_usb->wq);
 
 	kfree(ar_usb);
 }
@@ -620,9 +633,15 @@ static struct ath6kl_usb *ath6kl_usb_create(struct usb_interface *interface)
 	int status = 0;
 	int i;
 
+	/* ath6kl_usb_destroy() needs ar_usb != NULL && ar_usb->wq != NULL. */
 	ar_usb = kzalloc(sizeof(struct ath6kl_usb), GFP_KERNEL);
 	if (ar_usb == NULL)
-		goto fail_ath6kl_usb_create;
+		return NULL;
+	ar_usb->wq = alloc_workqueue("ath6kl_wq", 0, 0);
+	if (!ar_usb->wq) {
+		kfree(ar_usb);
+		return NULL;
+	}
 
 	usb_set_intfdata(interface, ar_usb);
 	spin_lock_init(&(ar_usb->cs_lock));
@@ -804,7 +823,8 @@ static int ath6kl_usb_map_service_pipe(struct ath6kl *ar, u16 svc_id,
 		break;
 	case WMI_DATA_VI_SVC:
 
-		if (ar->hw.flags & ATH6KL_HW_MAP_LP_ENDPOINT)
+		if (test_bit(ATH6KL_FW_CAPABILITY_MAP_LP_ENDPOINT,
+			     ar->fw_capabilities))
 			*ul_pipe = ATH6KL_USB_PIPE_TX_DATA_LP;
 		else
 			*ul_pipe = ATH6KL_USB_PIPE_TX_DATA_MP;
@@ -816,7 +836,8 @@ static int ath6kl_usb_map_service_pipe(struct ath6kl *ar, u16 svc_id,
 		break;
 	case WMI_DATA_VO_SVC:
 
-		if (ar->hw.flags & ATH6KL_HW_MAP_LP_ENDPOINT)
+		if (test_bit(ATH6KL_FW_CAPABILITY_MAP_LP_ENDPOINT,
+			     ar->fw_capabilities))
 			*ul_pipe = ATH6KL_USB_PIPE_TX_DATA_LP;
 		else
 			*ul_pipe = ATH6KL_USB_PIPE_TX_DATA_MP;
@@ -899,7 +920,7 @@ static int ath6kl_usb_submit_ctrl_in(struct ath6kl_usb *ar_usb,
 				 req,
 				 USB_DIR_IN | USB_TYPE_VENDOR |
 				 USB_RECIP_DEVICE, value, index, buf,
-				 size, 2 * HZ);
+				 size, 2000);
 
 	if (ret < 0) {
 		ath6kl_warn("Failed to read usb control message: %d\n", ret);
@@ -1193,24 +1214,18 @@ static int ath6kl_usb_pm_resume(struct usb_interface *interface)
 	return 0;
 }
 
-static int ath6kl_usb_pm_reset_resume(struct usb_interface *intf)
-{
-	if (usb_get_intfdata(intf))
-		ath6kl_usb_remove(intf);
-	return 0;
-}
-
 #else
 
 #define ath6kl_usb_pm_suspend NULL
 #define ath6kl_usb_pm_resume NULL
-#define ath6kl_usb_pm_reset_resume NULL
 
 #endif
 
 /* table of devices that work with this driver */
-static struct usb_device_id ath6kl_usb_ids[] = {
+static const struct usb_device_id ath6kl_usb_ids[] = {
+	{USB_DEVICE(0x0cf3, 0x9375)},
 	{USB_DEVICE(0x0cf3, 0x9374)},
+	{USB_DEVICE(0x04da, 0x390d)},
 	{ /* Terminating entry */ },
 };
 
@@ -1221,33 +1236,13 @@ static struct usb_driver ath6kl_usb_driver = {
 	.probe = ath6kl_usb_probe,
 	.suspend = ath6kl_usb_pm_suspend,
 	.resume = ath6kl_usb_pm_resume,
-	.reset_resume = ath6kl_usb_pm_reset_resume,
 	.disconnect = ath6kl_usb_remove,
 	.id_table = ath6kl_usb_ids,
 	.supports_autosuspend = true,
 	.disable_hub_initiated_lpm = 1,
 };
 
-static int ath6kl_usb_init(void)
-{
-	int ret;
-
-	ret = usb_register(&ath6kl_usb_driver);
-	if (ret) {
-		ath6kl_err("usb registration failed: %d\n", ret);
-		return ret;
-	}
-
-	return 0;
-}
-
-static void ath6kl_usb_exit(void)
-{
-	usb_deregister(&ath6kl_usb_driver);
-}
-
-module_init(ath6kl_usb_init);
-module_exit(ath6kl_usb_exit);
+module_usb_driver(ath6kl_usb_driver);
 
 MODULE_AUTHOR("Atheros Communications, Inc.");
 MODULE_DESCRIPTION("Driver support for Atheros AR600x USB devices");

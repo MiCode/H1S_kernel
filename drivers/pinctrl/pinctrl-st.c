@@ -1,27 +1,30 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2013 STMicroelectronics (R&D) Limited.
  * Authors:
  *	Srinivas Kandagatla <srinivas.kandagatla@st.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
-#include <linux/init.h>
-#include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/err.h>
+#include <linux/gpio/driver.h>
+#include <linux/init.h>
 #include <linux/io.h>
-#include <linux/of.h>
-#include <linux/of_gpio.h>
-#include <linux/of_address.h>
-#include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
+#include <linux/platform_device.h>
+#include <linux/regmap.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
+#include <linux/string_helpers.h>
+
+#include <linux/pinctrl/consumer.h>
+#include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
-#include <linux/pinctrl/pinconf.h>
-#include <linux/platform_device.h>
+
 #include "core.h"
 
 /* PIO Block registers */
@@ -56,7 +59,7 @@
 #define ST_GPIO_DIRECTION_OUT	0x2
 #define ST_GPIO_DIRECTION_IN	0x4
 
-/**
+/*
  *  Packed style retime configuration.
  *  There are two registers cfg0 and cfg1 in this style for each bank.
  *  Each field in this register is 8 bit corresponding to 8 pins in the bank.
@@ -70,7 +73,7 @@
 #define RT_P_CFG1_CLKNOTDATA_FIELD(reg)		REG_FIELD(reg, 16, 23)
 #define RT_P_CFG1_DOUBLE_EDGE_FIELD(reg)	REG_FIELD(reg, 24, 31)
 
-/**
+/*
  * Dedicated style retime Configuration register
  * each register is dedicated per pin.
  */
@@ -202,9 +205,8 @@
 #define gpio_range_to_bank(chip) \
 		container_of(chip, struct st_gpio_bank, range)
 
-#define gpio_chip_to_bank(chip) \
-		container_of(chip, struct st_gpio_bank, gpio_chip)
-
+#define pc_to_bank(pc) \
+		container_of(pc, struct st_gpio_bank, pc)
 
 enum st_retime_style {
 	st_retime_style_none,
@@ -237,13 +239,13 @@ struct st_pio_control {
 };
 
 struct st_pctl_data {
-	enum st_retime_style rt_style;
-	unsigned int	*input_delays;
-	int		ninput_delays;
-	unsigned int	*output_delays;
-	int		noutput_delays;
+	const enum st_retime_style	rt_style;
+	const unsigned int		*input_delays;
+	const int			ninput_delays;
+	const unsigned int		*output_delays;
+	const int			noutput_delays;
 	/* register offset information */
-	int alt, oe, pu, od, rt;
+	const int alt, oe, pu, od, rt;
 };
 
 struct st_pinconf {
@@ -266,11 +268,58 @@ struct st_pctl_group {
 	struct st_pinconf	*pin_conf;
 };
 
+/*
+ * Edge triggers are not supported at hardware level, it is supported by
+ * software by exploiting the level trigger support in hardware.
+ * Software uses a virtual register (EDGE_CONF) for edge trigger configuration
+ * of each gpio pin in a GPIO bank.
+ *
+ * Each bank has a 32 bit EDGE_CONF register which is divided in to 8 parts of
+ * 4-bits. Each 4-bit space is allocated for each pin in a gpio bank.
+ *
+ * bit allocation per pin is:
+ * Bits:  [0 - 3] | [4 - 7]  [8 - 11] ... ... ... ...  [ 28 - 31]
+ *       --------------------------------------------------------
+ *       |  pin-0  |  pin-2 | pin-3  | ... ... ... ... | pin -7 |
+ *       --------------------------------------------------------
+ *
+ *  A pin can have one of following the values in its edge configuration field.
+ *
+ *	-------   ----------------------------
+ *	[0-3]	- Description
+ *	-------   ----------------------------
+ *	0000	- No edge IRQ.
+ *	0001	- Falling edge IRQ.
+ *	0010	- Rising edge IRQ.
+ *	0011	- Rising and Falling edge IRQ.
+ *	-------   ----------------------------
+ */
+
+#define ST_IRQ_EDGE_CONF_BITS_PER_PIN	4
+#define ST_IRQ_EDGE_MASK		0xf
+#define ST_IRQ_EDGE_FALLING		BIT(0)
+#define ST_IRQ_EDGE_RISING		BIT(1)
+#define ST_IRQ_EDGE_BOTH		(BIT(0) | BIT(1))
+
+#define ST_IRQ_RISING_EDGE_CONF(pin) \
+	(ST_IRQ_EDGE_RISING << (pin * ST_IRQ_EDGE_CONF_BITS_PER_PIN))
+
+#define ST_IRQ_FALLING_EDGE_CONF(pin) \
+	(ST_IRQ_EDGE_FALLING << (pin * ST_IRQ_EDGE_CONF_BITS_PER_PIN))
+
+#define ST_IRQ_BOTH_EDGE_CONF(pin) \
+	(ST_IRQ_EDGE_BOTH << (pin * ST_IRQ_EDGE_CONF_BITS_PER_PIN))
+
+#define ST_IRQ_EDGE_CONF(conf, pin) \
+	(conf >> (pin * ST_IRQ_EDGE_CONF_BITS_PER_PIN) & ST_IRQ_EDGE_MASK)
+
 struct st_gpio_bank {
 	struct gpio_chip		gpio_chip;
 	struct pinctrl_gpio_range	range;
 	void __iomem			*base;
 	struct st_pio_control		pc;
+	unsigned long			irq_edge_conf;
+	spinlock_t                      lock;
 };
 
 struct st_pinctrl {
@@ -284,57 +333,45 @@ struct st_pinctrl {
 	int				ngroups;
 	struct regmap			*regmap;
 	const struct st_pctl_data	*data;
+	void __iomem			*irqmux_base;
 };
 
 /* SOC specific data */
-/* STiH415 data */
-static unsigned int stih415_input_delays[] = {0, 500, 1000, 1500};
-static unsigned int stih415_output_delays[] = {0, 1000, 2000, 3000};
 
-#define STIH415_PCTRL_COMMON_DATA				\
-	.rt_style	= st_retime_style_packed,		\
-	.input_delays	= stih415_input_delays,			\
-	.ninput_delays	= 4,					\
-	.output_delays = stih415_output_delays,			\
-	.noutput_delays = 4
+static const unsigned int stih407_delays[] = {0, 300, 500, 750, 1000, 1250,
+			1500, 1750, 2000, 2250, 2500, 2750, 3000, 3250 };
 
-static const struct st_pctl_data  stih415_sbc_data = {
-	STIH415_PCTRL_COMMON_DATA,
-	.alt = 0, .oe = 5, .pu = 7, .od = 9, .rt = 16,
-};
-
-static const struct st_pctl_data  stih415_front_data = {
-	STIH415_PCTRL_COMMON_DATA,
-	.alt = 0, .oe = 8, .pu = 10, .od = 12, .rt = 16,
-};
-
-static const struct st_pctl_data  stih415_rear_data = {
-	STIH415_PCTRL_COMMON_DATA,
-	.alt = 0, .oe = 6, .pu = 8, .od = 10, .rt = 38,
-};
-
-static const struct st_pctl_data  stih415_left_data = {
-	STIH415_PCTRL_COMMON_DATA,
-	.alt = 0, .oe = 3, .pu = 4, .od = 5, .rt = 6,
-};
-
-static const struct st_pctl_data  stih415_right_data = {
-	STIH415_PCTRL_COMMON_DATA,
-	.alt = 0, .oe = 5, .pu = 7, .od = 9, .rt = 11,
-};
-
-/* STiH416 data */
-static unsigned int stih416_delays[] = {0, 300, 500, 750, 1000, 1250, 1500,
-			1750, 2000, 2250, 2500, 2750, 3000, 3250 };
-
-static const struct st_pctl_data  stih416_data = {
-	.rt_style	= st_retime_style_dedicated,
-	.input_delays	= stih416_delays,
-	.ninput_delays	= 14,
-	.output_delays	= stih416_delays,
-	.noutput_delays = 14,
+static const struct st_pctl_data  stih407_data = {
+	.rt_style       = st_retime_style_dedicated,
+	.input_delays   = stih407_delays,
+	.ninput_delays  = ARRAY_SIZE(stih407_delays),
+	.output_delays  = stih407_delays,
+	.noutput_delays = ARRAY_SIZE(stih407_delays),
 	.alt = 0, .oe = 40, .pu = 50, .od = 60, .rt = 100,
 };
+
+static const struct st_pctl_data stih407_flashdata = {
+	.rt_style	= st_retime_style_none,
+	.input_delays	= stih407_delays,
+	.ninput_delays	= ARRAY_SIZE(stih407_delays),
+	.output_delays	= stih407_delays,
+	.noutput_delays = ARRAY_SIZE(stih407_delays),
+	.alt = 0,
+	.oe = -1, /* Not Available */
+	.pu = -1, /* Not Available */
+	.od = 60,
+	.rt = 100,
+};
+
+static struct st_pio_control *st_get_pio_control(
+			struct pinctrl_dev *pctldev, int pin)
+{
+	struct pinctrl_gpio_range *range =
+			 pinctrl_find_gpio_range_from_pin(pctldev, pin);
+	struct st_gpio_bank *bank = gpio_range_to_bank(range);
+
+	return &bank->pc;
+}
 
 /* Low level functions.. */
 static inline int st_gpio_bank(int gpio)
@@ -356,25 +393,29 @@ static void st_pinconf_set_config(struct st_pio_control *pc,
 	unsigned int oe_value, pu_value, od_value;
 	unsigned long mask = BIT(pin);
 
-	regmap_field_read(output_enable, &oe_value);
-	regmap_field_read(pull_up, &pu_value);
-	regmap_field_read(open_drain, &od_value);
+	if (output_enable) {
+		regmap_field_read(output_enable, &oe_value);
+		oe_value &= ~mask;
+		if (config & ST_PINCONF_OE)
+			oe_value |= mask;
+		regmap_field_write(output_enable, oe_value);
+	}
 
-	/* Clear old values */
-	oe_value &= ~mask;
-	pu_value &= ~mask;
-	od_value &= ~mask;
+	if (pull_up) {
+		regmap_field_read(pull_up, &pu_value);
+		pu_value &= ~mask;
+		if (config & ST_PINCONF_PU)
+			pu_value |= mask;
+		regmap_field_write(pull_up, pu_value);
+	}
 
-	if (config & ST_PINCONF_OE)
-		oe_value |= mask;
-	if (config & ST_PINCONF_PU)
-		pu_value |= mask;
-	if (config & ST_PINCONF_OD)
-		od_value |= mask;
-
-	regmap_field_write(output_enable, oe_value);
-	regmap_field_write(pull_up, pu_value);
-	regmap_field_write(open_drain, od_value);
+	if (open_drain) {
+		regmap_field_read(open_drain, &od_value);
+		od_value &= ~mask;
+		if (config & ST_PINCONF_OD)
+			od_value |= mask;
+		regmap_field_write(open_drain, od_value);
+	}
 }
 
 static void st_pctl_set_function(struct st_pio_control *pc,
@@ -385,16 +426,33 @@ static void st_pctl_set_function(struct st_pio_control *pc,
 	int pin = st_gpio_pin(pin_id);
 	int offset = pin * 4;
 
+	if (!alt)
+		return;
+
 	regmap_field_read(alt, &val);
 	val &= ~(0xf << offset);
 	val |= function << offset;
 	regmap_field_write(alt, val);
 }
 
+static unsigned int st_pctl_get_pin_function(struct st_pio_control *pc, int pin)
+{
+	struct regmap_field *alt = pc->alt;
+	unsigned int val;
+	int offset = pin * 4;
+
+	if (!alt)
+		return 0;
+
+	regmap_field_read(alt, &val);
+
+	return (val >> offset) & 0xf;
+}
+
 static unsigned long st_pinconf_delay_to_bit(unsigned int delay,
 	const struct st_pctl_data *data, unsigned long config)
 {
-	unsigned int *delay_times;
+	const unsigned int *delay_times;
 	int num_delay_times, i, closest_index = -1;
 	unsigned int closest_divergence = UINT_MAX;
 
@@ -427,7 +485,7 @@ static unsigned long st_pinconf_delay_to_bit(unsigned int delay,
 static unsigned long st_pinconf_bit_to_delay(unsigned int index,
 	const struct st_pctl_data *data, unsigned long output)
 {
-	unsigned int *delay_times;
+	const unsigned int *delay_times;
 	int num_delay_times;
 
 	if (output) {
@@ -487,7 +545,6 @@ static void st_pinconf_set_retime_packed(struct st_pinctrl *info,
 	st_regmap_field_bit_set_clear_pin(rt_p->delay_0, delay & 0x1, pin);
 	/* 2 bit delay, msb */
 	st_regmap_field_bit_set_clear_pin(rt_p->delay_1, delay & 0x2, pin);
-
 }
 
 static void st_pinconf_set_retime_dedicated(struct st_pinctrl *info,
@@ -522,17 +579,23 @@ static void st_pinconf_get_direction(struct st_pio_control *pc,
 {
 	unsigned int oe_value, pu_value, od_value;
 
-	regmap_field_read(pc->oe, &oe_value);
-	regmap_field_read(pc->pu, &pu_value);
-	regmap_field_read(pc->od, &od_value);
+	if (pc->oe) {
+		regmap_field_read(pc->oe, &oe_value);
+		if (oe_value & BIT(pin))
+			ST_PINCONF_PACK_OE(*config);
+	}
 
-	if (oe_value & BIT(pin))
-		ST_PINCONF_PACK_OE(*config);
-	if (pu_value & BIT(pin))
-		ST_PINCONF_PACK_PU(*config);
-	if (od_value & BIT(pin))
-		ST_PINCONF_PACK_OD(*config);
+	if (pc->pu) {
+		regmap_field_read(pc->pu, &pu_value);
+		if (pu_value & BIT(pin))
+			ST_PINCONF_PACK_PU(*config);
+	}
 
+	if (pc->od) {
+		regmap_field_read(pc->od, &od_value);
+		if (od_value & BIT(pin))
+			ST_PINCONF_PACK_OD(*config);
+	}
 }
 
 static int st_pinconf_get_retime_packed(struct st_pinctrl *info,
@@ -641,26 +704,16 @@ static void st_gpio_direction(struct st_gpio_bank *bank,
 	}
 }
 
-static int st_gpio_request(struct gpio_chip *chip, unsigned offset)
-{
-	return pinctrl_request_gpio(chip->base + offset);
-}
-
-static void st_gpio_free(struct gpio_chip *chip, unsigned offset)
-{
-	pinctrl_free_gpio(chip->base + offset);
-}
-
 static int st_gpio_get(struct gpio_chip *chip, unsigned offset)
 {
-	struct st_gpio_bank *bank = gpio_chip_to_bank(chip);
+	struct st_gpio_bank *bank = gpiochip_get_data(chip);
 
 	return !!(readl(bank->base + REG_PIO_PIN) & BIT(offset));
 }
 
 static void st_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 {
-	struct st_gpio_bank *bank = gpio_chip_to_bank(chip);
+	struct st_gpio_bank *bank = gpiochip_get_data(chip);
 	__st_gpio_set(bank, offset, value);
 }
 
@@ -674,7 +727,7 @@ static int st_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 static int st_gpio_direction_output(struct gpio_chip *chip,
 	unsigned offset, int value)
 {
-	struct st_gpio_bank *bank = gpio_chip_to_bank(chip);
+	struct st_gpio_bank *bank = gpiochip_get_data(chip);
 
 	__st_gpio_set(bank, offset, value);
 	pinctrl_gpio_direction_output(chip->base + offset);
@@ -682,19 +735,39 @@ static int st_gpio_direction_output(struct gpio_chip *chip,
 	return 0;
 }
 
-static int st_gpio_xlate(struct gpio_chip *gc,
-			const struct of_phandle_args *gpiospec, u32 *flags)
+static int st_gpio_get_direction(struct gpio_chip *chip, unsigned offset)
 {
-	if (WARN_ON(gc->of_gpio_n_cells < 1))
-		return -EINVAL;
+	struct st_gpio_bank *bank = gpiochip_get_data(chip);
+	struct st_pio_control pc = bank->pc;
+	unsigned long config;
+	unsigned int direction = 0;
+	unsigned int function;
+	unsigned int value;
+	int i = 0;
 
-	if (WARN_ON(gpiospec->args_count < gc->of_gpio_n_cells))
-		return -EINVAL;
+	/* Alternate function direction is handled by Pinctrl */
+	function = st_pctl_get_pin_function(&pc, offset);
+	if (function) {
+		st_pinconf_get_direction(&pc, offset, &config);
+		if (ST_PINCONF_UNPACK_OE(config))
+			return GPIO_LINE_DIRECTION_OUT;
 
-	if (gpiospec->args[0] > gc->ngpio)
-		return -EINVAL;
+		return GPIO_LINE_DIRECTION_IN;
+	}
 
-	return gpiospec->args[0];
+	/*
+	 * GPIO direction is handled differently
+	 * - See st_gpio_direction() above for an explanation
+	 */
+	for (i = 0; i <= 2; i++) {
+		value = readl(bank->base + REG_PIO_PC(i));
+		direction |= ((value >> offset) & 0x1) << i;
+	}
+
+	if (direction == ST_GPIO_DIRECTION_IN)
+		return GPIO_LINE_DIRECTION_IN;
+
+	return GPIO_LINE_DIRECTION_OUT;
 }
 
 /* Pinctrl Groups */
@@ -727,7 +800,7 @@ static int st_pctl_get_group_pins(struct pinctrl_dev *pctldev,
 	return 0;
 }
 
-static const inline struct st_pctl_group *st_pctl_find_group_by_name(
+static inline const struct st_pctl_group *st_pctl_find_group_by_name(
 	const struct st_pinctrl *info, const char *name)
 {
 	int i;
@@ -745,26 +818,25 @@ static int st_pctl_dt_node_to_map(struct pinctrl_dev *pctldev,
 {
 	struct st_pinctrl *info = pinctrl_dev_get_drvdata(pctldev);
 	const struct st_pctl_group *grp;
+	struct device *dev = info->dev;
 	struct pinctrl_map *new_map;
 	struct device_node *parent;
 	int map_num, i;
 
 	grp = st_pctl_find_group_by_name(info, np->name);
 	if (!grp) {
-		dev_err(info->dev, "unable to find group for node %s\n",
-			np->name);
+		dev_err(dev, "unable to find group for node %pOFn\n", np);
 		return -EINVAL;
 	}
 
 	map_num = grp->npins + 1;
-	new_map = devm_kzalloc(pctldev->dev,
-				sizeof(*new_map) * map_num, GFP_KERNEL);
+	new_map = devm_kcalloc(dev, map_num, sizeof(*new_map), GFP_KERNEL);
 	if (!new_map)
 		return -ENOMEM;
 
 	parent = of_get_parent(np);
 	if (!parent) {
-		devm_kfree(pctldev->dev, new_map);
+		devm_kfree(dev, new_map);
 		return -EINVAL;
 	}
 
@@ -784,7 +856,7 @@ static int st_pctl_dt_node_to_map(struct pinctrl_dev *pctldev,
 		new_map[i].data.configs.configs = &grp->pin_conf[i].config;
 		new_map[i].data.configs.num_configs = 1;
 	}
-	dev_info(pctldev->dev, "maps: function %s group %s num %d\n",
+	dev_info(dev, "maps: function %s group %s num %d\n",
 		(*map)->data.mux.function, grp->name, map_num);
 
 	return 0;
@@ -795,7 +867,7 @@ static void st_pctl_dt_free_map(struct pinctrl_dev *pctldev,
 {
 }
 
-static struct pinctrl_ops st_pctlops = {
+static const struct pinctrl_ops st_pctlops = {
 	.get_groups_count	= st_pctl_get_groups_count,
 	.get_group_pins		= st_pctl_get_group_pins,
 	.get_group_name		= st_pctl_get_group_name,
@@ -829,18 +901,8 @@ static int st_pmx_get_groups(struct pinctrl_dev *pctldev,
 	return 0;
 }
 
-static struct st_pio_control *st_get_pio_control(
-			struct pinctrl_dev *pctldev, int pin)
-{
-	struct pinctrl_gpio_range *range =
-			 pinctrl_find_gpio_range_from_pin(pctldev, pin);
-	struct st_gpio_bank *bank = gpio_range_to_bank(range);
-
-	return &bank->pc;
-}
-
-static int st_pmx_enable(struct pinctrl_dev *pctldev, unsigned fselector,
-		unsigned group)
+static int st_pmx_set_mux(struct pinctrl_dev *pctldev, unsigned fselector,
+			unsigned group)
 {
 	struct st_pinctrl *info = pinctrl_dev_get_drvdata(pctldev);
 	struct st_pinconf *conf = info->groups[group].pin_conf;
@@ -853,11 +915,6 @@ static int st_pmx_enable(struct pinctrl_dev *pctldev, unsigned fselector,
 	}
 
 	return 0;
-}
-
-static void st_pmx_disable(struct pinctrl_dev *pctldev, unsigned selector,
-		unsigned group)
-{
 }
 
 static int st_pmx_set_gpio_direction(struct pinctrl_dev *pctldev,
@@ -877,13 +934,13 @@ static int st_pmx_set_gpio_direction(struct pinctrl_dev *pctldev,
 	return 0;
 }
 
-static struct pinmux_ops st_pmxops = {
+static const struct pinmux_ops st_pmxops = {
 	.get_functions_count	= st_pmx_get_funcs_count,
 	.get_function_name	= st_pmx_get_fname,
 	.get_function_groups	= st_pmx_get_groups,
-	.enable			= st_pmx_enable,
-	.disable		= st_pmx_disable,
+	.set_mux		= st_pmx_set_mux,
 	.gpio_set_direction	= st_pmx_set_gpio_direction,
+	.strict			= true,
 };
 
 /* Pinconf  */
@@ -942,15 +999,32 @@ static int st_pinconf_get(struct pinctrl_dev *pctldev,
 static void st_pinconf_dbg_show(struct pinctrl_dev *pctldev,
 				   struct seq_file *s, unsigned pin_id)
 {
+	struct st_pio_control *pc;
 	unsigned long config;
-	st_pinconf_get(pctldev, pin_id, &config);
+	unsigned int function;
+	int offset = st_gpio_pin(pin_id);
+	char f[16];
+	int oe;
 
-	seq_printf(s, "[OE:%ld,PU:%ld,OD:%ld]\n"
+	mutex_unlock(&pctldev->mutex);
+	pc = st_get_pio_control(pctldev, pin_id);
+	st_pinconf_get(pctldev, pin_id, &config);
+	mutex_lock(&pctldev->mutex);
+
+	function = st_pctl_get_pin_function(pc, offset);
+	if (function)
+		snprintf(f, 10, "Alt Fn %u", function);
+	else
+		snprintf(f, 5, "GPIO");
+
+	oe = st_gpio_get_direction(&pc_to_bank(pc)->gpio_chip, offset);
+	seq_printf(s, "[OE:%d,PU:%ld,OD:%ld]\t%s\n"
 		"\t\t[retime:%ld,invclk:%ld,clknotdat:%ld,"
 		"de:%ld,rt-clk:%ld,rt-delay:%ld]",
-		ST_PINCONF_UNPACK_OE(config),
+		(oe == GPIO_LINE_DIRECTION_OUT),
 		ST_PINCONF_UNPACK_PU(config),
 		ST_PINCONF_UNPACK_OD(config),
+		f,
 		ST_PINCONF_UNPACK_RT(config),
 		ST_PINCONF_UNPACK_RT_INVERTCLK(config),
 		ST_PINCONF_UNPACK_RT_CLKNOTDATA(config),
@@ -959,7 +1033,7 @@ static void st_pinconf_dbg_show(struct pinctrl_dev *pctldev,
 		ST_PINCONF_UNPACK_RT_DELAY(config));
 }
 
-static struct pinconf_ops st_confops = {
+static const struct pinconf_ops st_confops = {
 	.pin_config_get		= st_pinconf_get,
 	.pin_config_set		= st_pinconf_set,
 	.pin_config_dbg_show	= st_pinconf_dbg_show,
@@ -1051,8 +1125,21 @@ static int st_pctl_dt_setup_retime(struct st_pinctrl *info,
 	return -EINVAL;
 }
 
-static int st_parse_syscfgs(struct st_pinctrl *info,
-		int bank, struct device_node *np)
+
+static struct regmap_field *st_pc_get_value(struct device *dev,
+					    struct regmap *regmap, int bank,
+					    int data, int lsb, int msb)
+{
+	struct reg_field reg = REG_FIELD((data + bank) * 4, lsb, msb);
+
+	if (data < 0)
+		return NULL;
+
+	return devm_regmap_field_alloc(dev, regmap, reg);
+}
+
+static void st_parse_syscfgs(struct st_pinctrl *info, int bank,
+			     struct device_node *np)
 {
 	const struct st_pctl_data *data = info->data;
 	/**
@@ -1062,29 +1149,46 @@ static int st_parse_syscfgs(struct st_pinctrl *info,
 	 */
 	int lsb = (bank%4) * ST_GPIO_PINS_PER_BANK;
 	int msb = lsb + ST_GPIO_PINS_PER_BANK - 1;
-	struct reg_field alt_reg = REG_FIELD((data->alt + bank) * 4, 0, 31);
-	struct reg_field oe_reg = REG_FIELD((data->oe + bank/4) * 4, lsb, msb);
-	struct reg_field pu_reg = REG_FIELD((data->pu + bank/4) * 4, lsb, msb);
-	struct reg_field od_reg = REG_FIELD((data->od + bank/4) * 4, lsb, msb);
 	struct st_pio_control *pc = &info->banks[bank].pc;
 	struct device *dev = info->dev;
 	struct regmap *regmap  = info->regmap;
 
-	pc->alt = devm_regmap_field_alloc(dev, regmap, alt_reg);
-	pc->oe = devm_regmap_field_alloc(dev, regmap, oe_reg);
-	pc->pu = devm_regmap_field_alloc(dev, regmap, pu_reg);
-	pc->od = devm_regmap_field_alloc(dev, regmap, od_reg);
-
-	if (IS_ERR(pc->alt) || IS_ERR(pc->oe) ||
-			IS_ERR(pc->pu) || IS_ERR(pc->od))
-		return -EINVAL;
+	pc->alt = st_pc_get_value(dev, regmap, bank, data->alt, 0, 31);
+	pc->oe = st_pc_get_value(dev, regmap, bank/4, data->oe, lsb, msb);
+	pc->pu = st_pc_get_value(dev, regmap, bank/4, data->pu, lsb, msb);
+	pc->od = st_pc_get_value(dev, regmap, bank/4, data->od, lsb, msb);
 
 	/* retime avaiable for all pins by default */
 	pc->rt_pin_mask = 0xff;
 	of_property_read_u32(np, "st,retime-pin-mask", &pc->rt_pin_mask);
 	st_pctl_dt_setup_retime(info, bank, pc);
 
-	return 0;
+	return;
+}
+
+static int st_pctl_dt_calculate_pin(struct st_pinctrl *info,
+				    phandle bank, unsigned int offset)
+{
+	struct device_node *np;
+	struct gpio_chip *chip;
+	int retval = -EINVAL;
+	int i;
+
+	np = of_find_node_by_phandle(bank);
+	if (!np)
+		return -EINVAL;
+
+	for (i = 0; i < info->nbanks; i++) {
+		chip = &info->banks[i].gpio_chip;
+		if (chip->fwnode == of_fwnode_handle(np)) {
+			if (offset < chip->ngpio)
+				retval = chip->base + offset;
+			break;
+		}
+	}
+
+	of_node_put(np);
+	return retval;
 }
 
 /*
@@ -1097,11 +1201,12 @@ static int st_pctl_dt_parse_groups(struct device_node *np,
 	/* bank pad direction val altfunction */
 	const __be32 *list;
 	struct property *pp;
+	struct device *dev = info->dev;
 	struct st_pinconf *conf;
-	phandle phandle;
 	struct device_node *pins;
-	u32 pin;
-	int i = 0, npins = 0, nr_props;
+	phandle bank;
+	unsigned int offset;
+	int i = 0, npins = 0, nr_props, ret = 0;
 
 	pins = of_get_child_by_name(np, "st,pins");
 	if (!pins)
@@ -1112,22 +1217,24 @@ static int st_pctl_dt_parse_groups(struct device_node *np,
 		if (!strcmp(pp->name, "name"))
 			continue;
 
-		if (pp  && (pp->length/sizeof(__be32)) >= OF_GPIO_ARGS_MIN) {
+		if (pp->length / sizeof(__be32) >= OF_GPIO_ARGS_MIN) {
 			npins++;
 		} else {
-			pr_warn("Invalid st,pins in %s node\n", np->name);
-			return -EINVAL;
+			pr_warn("Invalid st,pins in %pOFn node\n", np);
+			ret = -EINVAL;
+			goto out_put_node;
 		}
 	}
 
 	grp->npins = npins;
 	grp->name = np->name;
-	grp->pins = devm_kzalloc(info->dev, npins * sizeof(u32), GFP_KERNEL);
-	grp->pin_conf = devm_kzalloc(info->dev,
-					npins * sizeof(*conf), GFP_KERNEL);
+	grp->pins = devm_kcalloc(dev, npins, sizeof(*grp->pins), GFP_KERNEL);
+	grp->pin_conf = devm_kcalloc(dev, npins, sizeof(*grp->pin_conf), GFP_KERNEL);
 
-	if (!grp->pins || !grp->pin_conf)
-		return -ENOMEM;
+	if (!grp->pins || !grp->pin_conf) {
+		ret = -ENOMEM;
+		goto out_put_node;
+	}
 
 	/* <bank offset mux direction rt_type rt_delay rt_clk> */
 	for_each_property_of_node(pins, pp) {
@@ -1138,9 +1245,9 @@ static int st_pctl_dt_parse_groups(struct device_node *np,
 		conf = &grp->pin_conf[i];
 
 		/* bank & offset */
-		phandle = be32_to_cpup(list++);
-		pin = be32_to_cpup(list++);
-		conf->pin = of_get_named_gpio(pins, pp->name, 0);
+		bank = be32_to_cpup(list++);
+		offset = be32_to_cpup(list++);
+		conf->pin = st_pctl_dt_calculate_pin(info, bank, offset);
 		conf->name = pp->name;
 		grp->pins[i] = conf->pin;
 		/* mux */
@@ -1160,14 +1267,17 @@ static int st_pctl_dt_parse_groups(struct device_node *np,
 		}
 		i++;
 	}
+
+out_put_node:
 	of_node_put(pins);
 
-	return 0;
+	return ret;
 }
 
 static int st_pctl_parse_functions(struct device_node *np,
 			struct st_pinctrl *info, u32 index, int *grp_index)
 {
+	struct device *dev = info->dev;
 	struct device_node *child;
 	struct st_pmx_func *func;
 	struct st_pctl_group *grp;
@@ -1176,12 +1286,9 @@ static int st_pctl_parse_functions(struct device_node *np,
 	func = &info->functions[index];
 	func->name = np->name;
 	func->ngroups = of_get_child_count(np);
-	if (func->ngroups <= 0) {
-		dev_err(info->dev, "No groups defined\n");
-		return -EINVAL;
-	}
-	func->groups = devm_kzalloc(info->dev,
-			func->ngroups * sizeof(char *), GFP_KERNEL);
+	if (func->ngroups == 0)
+		return dev_err_probe(dev, -EINVAL, "No groups defined\n");
+	func->groups = devm_kcalloc(dev, func->ngroups, sizeof(*func->groups), GFP_KERNEL);
 	if (!func->groups)
 		return -ENOMEM;
 
@@ -1191,25 +1298,211 @@ static int st_pctl_parse_functions(struct device_node *np,
 		grp = &info->groups[*grp_index];
 		*grp_index += 1;
 		ret = st_pctl_dt_parse_groups(child, grp, info, i++);
-		if (ret)
+		if (ret) {
+			of_node_put(child);
 			return ret;
+		}
 	}
-	dev_info(info->dev, "Function[%d\t name:%s,\tgroups:%d]\n",
-				index, func->name, func->ngroups);
+	dev_info(dev, "Function[%d\t name:%s,\tgroups:%d]\n", index, func->name, func->ngroups);
 
 	return 0;
 }
 
-static struct gpio_chip st_gpio_template = {
-	.request		= st_gpio_request,
-	.free			= st_gpio_free,
+static void st_gpio_irq_mask(struct irq_data *d)
+{
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct st_gpio_bank *bank = gpiochip_get_data(gc);
+
+	writel(BIT(irqd_to_hwirq(d)), bank->base + REG_PIO_CLR_PMASK);
+	gpiochip_disable_irq(gc, irqd_to_hwirq(d));
+}
+
+static void st_gpio_irq_unmask(struct irq_data *d)
+{
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct st_gpio_bank *bank = gpiochip_get_data(gc);
+
+	gpiochip_enable_irq(gc, irqd_to_hwirq(d));
+	writel(BIT(irqd_to_hwirq(d)), bank->base + REG_PIO_SET_PMASK);
+}
+
+static int st_gpio_irq_request_resources(struct irq_data *d)
+{
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+
+	st_gpio_direction_input(gc, d->hwirq);
+
+	return gpiochip_reqres_irq(gc, d->hwirq);
+}
+
+static void st_gpio_irq_release_resources(struct irq_data *d)
+{
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+
+	gpiochip_relres_irq(gc, d->hwirq);
+}
+
+static int st_gpio_irq_set_type(struct irq_data *d, unsigned type)
+{
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct st_gpio_bank *bank = gpiochip_get_data(gc);
+	unsigned long flags;
+	int comp, pin = d->hwirq;
+	u32 val;
+	u32 pin_edge_conf = 0;
+
+	switch (type) {
+	case IRQ_TYPE_LEVEL_HIGH:
+		comp = 0;
+		break;
+	case IRQ_TYPE_EDGE_FALLING:
+		comp = 0;
+		pin_edge_conf = ST_IRQ_FALLING_EDGE_CONF(pin);
+		break;
+	case IRQ_TYPE_LEVEL_LOW:
+		comp = 1;
+		break;
+	case IRQ_TYPE_EDGE_RISING:
+		comp = 1;
+		pin_edge_conf = ST_IRQ_RISING_EDGE_CONF(pin);
+		break;
+	case IRQ_TYPE_EDGE_BOTH:
+		comp = st_gpio_get(&bank->gpio_chip, pin);
+		pin_edge_conf = ST_IRQ_BOTH_EDGE_CONF(pin);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	spin_lock_irqsave(&bank->lock, flags);
+	bank->irq_edge_conf &=  ~(ST_IRQ_EDGE_MASK << (
+				pin * ST_IRQ_EDGE_CONF_BITS_PER_PIN));
+	bank->irq_edge_conf |= pin_edge_conf;
+	spin_unlock_irqrestore(&bank->lock, flags);
+
+	val = readl(bank->base + REG_PIO_PCOMP);
+	val &= ~BIT(pin);
+	val |= (comp << pin);
+	writel(val, bank->base + REG_PIO_PCOMP);
+
+	return 0;
+}
+
+/*
+ * As edge triggers are not supported at hardware level, it is supported by
+ * software by exploiting the level trigger support in hardware.
+ *
+ * Steps for detection raising edge interrupt in software.
+ *
+ * Step 1: CONFIGURE pin to detect level LOW interrupts.
+ *
+ * Step 2: DETECT level LOW interrupt and in irqmux/gpio bank interrupt handler,
+ * if the value of pin is low, then CONFIGURE pin for level HIGH interrupt.
+ * IGNORE calling the actual interrupt handler for the pin at this stage.
+ *
+ * Step 3: DETECT level HIGH interrupt and in irqmux/gpio-bank interrupt handler
+ * if the value of pin is HIGH, CONFIGURE pin for level LOW interrupt and then
+ * DISPATCH the interrupt to the interrupt handler of the pin.
+ *
+ *		 step-1  ________     __________
+ *				|     | step - 3
+ *			        |     |
+ *			step -2 |_____|
+ *
+ * falling edge is also detected int the same way.
+ *
+ */
+static void __gpio_irq_handler(struct st_gpio_bank *bank)
+{
+	unsigned long port_in, port_mask, port_comp, active_irqs;
+	unsigned long bank_edge_mask, flags;
+	int n, val, ecfg;
+
+	spin_lock_irqsave(&bank->lock, flags);
+	bank_edge_mask = bank->irq_edge_conf;
+	spin_unlock_irqrestore(&bank->lock, flags);
+
+	for (;;) {
+		port_in = readl(bank->base + REG_PIO_PIN);
+		port_comp = readl(bank->base + REG_PIO_PCOMP);
+		port_mask = readl(bank->base + REG_PIO_PMASK);
+
+		active_irqs = (port_in ^ port_comp) & port_mask;
+
+		if (active_irqs == 0)
+			break;
+
+		for_each_set_bit(n, &active_irqs, BITS_PER_LONG) {
+			/* check if we are detecting fake edges ... */
+			ecfg = ST_IRQ_EDGE_CONF(bank_edge_mask, n);
+
+			if (ecfg) {
+				/* edge detection. */
+				val = st_gpio_get(&bank->gpio_chip, n);
+
+				writel(BIT(n),
+					val ? bank->base + REG_PIO_SET_PCOMP :
+					bank->base + REG_PIO_CLR_PCOMP);
+
+				if (ecfg != ST_IRQ_EDGE_BOTH &&
+					!((ecfg & ST_IRQ_EDGE_FALLING) ^ val))
+					continue;
+			}
+
+			generic_handle_domain_irq(bank->gpio_chip.irq.domain, n);
+		}
+	}
+}
+
+static void st_gpio_irq_handler(struct irq_desc *desc)
+{
+	/* interrupt dedicated per bank */
+	struct irq_chip *chip = irq_desc_get_chip(desc);
+	struct gpio_chip *gc = irq_desc_get_handler_data(desc);
+	struct st_gpio_bank *bank = gpiochip_get_data(gc);
+
+	chained_irq_enter(chip, desc);
+	__gpio_irq_handler(bank);
+	chained_irq_exit(chip, desc);
+}
+
+static void st_gpio_irqmux_handler(struct irq_desc *desc)
+{
+	struct irq_chip *chip = irq_desc_get_chip(desc);
+	struct st_pinctrl *info = irq_desc_get_handler_data(desc);
+	unsigned long status;
+	int n;
+
+	chained_irq_enter(chip, desc);
+
+	status = readl(info->irqmux_base);
+
+	for_each_set_bit(n, &status, info->nbanks)
+		__gpio_irq_handler(&info->banks[n]);
+
+	chained_irq_exit(chip, desc);
+}
+
+static const struct gpio_chip st_gpio_template = {
+	.request		= gpiochip_generic_request,
+	.free			= gpiochip_generic_free,
 	.get			= st_gpio_get,
 	.set			= st_gpio_set,
 	.direction_input	= st_gpio_direction_input,
 	.direction_output	= st_gpio_direction_output,
+	.get_direction		= st_gpio_get_direction,
 	.ngpio			= ST_GPIO_PINS_PER_BANK,
-	.of_gpio_n_cells	= 1,
-	.of_xlate		= st_gpio_xlate,
+};
+
+static const struct irq_chip st_gpio_irqchip = {
+	.name			= "GPIO",
+	.irq_request_resources	= st_gpio_irq_request_resources,
+	.irq_release_resources	= st_gpio_irq_release_resources,
+	.irq_disable		= st_gpio_irq_mask,
+	.irq_mask		= st_gpio_irq_mask,
+	.irq_unmask		= st_gpio_irq_unmask,
+	.irq_set_type		= st_gpio_irq_set_type,
+	.flags			= IRQCHIP_SKIP_SET_WAKE | IRQCHIP_IMMUTABLE,
 };
 
 static int st_gpiolib_register_bank(struct st_pinctrl *info,
@@ -1219,7 +1512,7 @@ static int st_gpiolib_register_bank(struct st_pinctrl *info,
 	struct pinctrl_gpio_range *range = &bank->range;
 	struct device *dev = info->dev;
 	int bank_num = of_alias_get_id(np, "gpio");
-	struct resource res;
+	struct resource res, irq_res;
 	int err;
 
 	if (of_address_to_resource(np, 0, &res))
@@ -1232,7 +1525,9 @@ static int st_gpiolib_register_bank(struct st_pinctrl *info,
 	bank->gpio_chip = st_gpio_template;
 	bank->gpio_chip.base = bank_num * ST_GPIO_PINS_PER_BANK;
 	bank->gpio_chip.ngpio = ST_GPIO_PINS_PER_BANK;
-	bank->gpio_chip.of_node = np;
+	bank->gpio_chip.fwnode = of_fwnode_handle(np);
+	bank->gpio_chip.parent = dev;
+	spin_lock_init(&bank->lock);
 
 	of_property_read_string(np, "st,bank-name", &range->name);
 	bank->gpio_chip.label = range->name;
@@ -1241,74 +1536,118 @@ static int st_gpiolib_register_bank(struct st_pinctrl *info,
 	range->pin_base = range->base = range->id * ST_GPIO_PINS_PER_BANK;
 	range->npins = bank->gpio_chip.ngpio;
 	range->gc = &bank->gpio_chip;
-	err  = gpiochip_add(&bank->gpio_chip);
-	if (err) {
-		dev_err(dev, "Failed to add gpiochip(%d)!\n", bank_num);
-		return err;
+
+	/**
+	 * GPIO bank can have one of the two possible types of
+	 * interrupt-wirings.
+	 *
+	 * First type is via irqmux, single interrupt is used by multiple
+	 * gpio banks. This reduces number of overall interrupts numbers
+	 * required. All these banks belong to a single pincontroller.
+	 *		  _________
+	 *		 |	   |----> [gpio-bank (n)    ]
+	 *		 |	   |----> [gpio-bank (n + 1)]
+	 *	[irqN]-- | irq-mux |----> [gpio-bank (n + 2)]
+	 *		 |	   |----> [gpio-bank (...  )]
+	 *		 |_________|----> [gpio-bank (n + 7)]
+	 *
+	 * Second type has a dedicated interrupt per each gpio bank.
+	 *
+	 *	[irqN]----> [gpio-bank (n)]
+	 */
+
+	if (of_irq_to_resource(np, 0, &irq_res) > 0) {
+		struct gpio_irq_chip *girq;
+		int gpio_irq = irq_res.start;
+
+		/* This is not a valid IRQ */
+		if (gpio_irq <= 0) {
+			dev_err(dev, "invalid IRQ for %pOF bank\n", np);
+			goto skip_irq;
+		}
+		/* We need to have a mux as well */
+		if (!info->irqmux_base) {
+			dev_err(dev, "no irqmux for %pOF bank\n", np);
+			goto skip_irq;
+		}
+
+		girq = &bank->gpio_chip.irq;
+		gpio_irq_chip_set_chip(girq, &st_gpio_irqchip);
+		girq->parent_handler = st_gpio_irq_handler;
+		girq->num_parents = 1;
+		girq->parents = devm_kcalloc(dev, 1, sizeof(*girq->parents),
+					     GFP_KERNEL);
+		if (!girq->parents)
+			return -ENOMEM;
+		girq->parents[0] = gpio_irq;
+		girq->default_type = IRQ_TYPE_NONE;
+		girq->handler = handle_simple_irq;
 	}
+
+skip_irq:
+	err  = gpiochip_add_data(&bank->gpio_chip, bank);
+	if (err)
+		return dev_err_probe(dev, err, "Failed to add gpiochip(%d)!\n", bank_num);
 	dev_info(dev, "%s bank added.\n", range->name);
 
 	return 0;
 }
 
-static struct of_device_id st_pctl_of_match[] = {
-	{ .compatible = "st,stih415-sbc-pinctrl", .data = &stih415_sbc_data },
-	{ .compatible = "st,stih415-rear-pinctrl", .data = &stih415_rear_data },
-	{ .compatible = "st,stih415-left-pinctrl", .data = &stih415_left_data },
-	{ .compatible = "st,stih415-right-pinctrl",
-		.data = &stih415_right_data },
-	{ .compatible = "st,stih415-front-pinctrl",
-		.data = &stih415_front_data },
-	{ .compatible = "st,stih416-sbc-pinctrl", .data = &stih416_data},
-	{ .compatible = "st,stih416-front-pinctrl", .data = &stih416_data},
-	{ .compatible = "st,stih416-rear-pinctrl", .data = &stih416_data},
-	{ .compatible = "st,stih416-fvdp-fe-pinctrl", .data = &stih416_data},
-	{ .compatible = "st,stih416-fvdp-lite-pinctrl", .data = &stih416_data},
+static const struct of_device_id st_pctl_of_match[] = {
+	{ .compatible = "st,stih407-sbc-pinctrl", .data = &stih407_data},
+	{ .compatible = "st,stih407-front-pinctrl", .data = &stih407_data},
+	{ .compatible = "st,stih407-rear-pinctrl", .data = &stih407_data},
+	{ .compatible = "st,stih407-flash-pinctrl", .data = &stih407_flashdata},
 	{ /* sentinel */ }
 };
 
 static int st_pctl_probe_dt(struct platform_device *pdev,
 	struct pinctrl_desc *pctl_desc, struct st_pinctrl *info)
 {
+	struct device *dev = &pdev->dev;
 	int ret = 0;
 	int i = 0, j = 0, k = 0, bank;
 	struct pinctrl_pin_desc *pdesc;
-	struct device_node *np = pdev->dev.of_node;
+	struct device_node *np = dev->of_node;
 	struct device_node *child;
 	int grp_index = 0;
+	int irq = 0;
 
 	st_pctl_dt_child_count(info, np);
-	if (!info->nbanks) {
-		dev_err(&pdev->dev, "you need atleast one gpio bank\n");
-		return -EINVAL;
-	}
+	if (!info->nbanks)
+		return dev_err_probe(dev, -EINVAL, "you need at least one gpio bank\n");
 
-	dev_info(&pdev->dev, "nbanks = %d\n", info->nbanks);
-	dev_info(&pdev->dev, "nfunctions = %d\n", info->nfunctions);
-	dev_info(&pdev->dev, "ngroups = %d\n", info->ngroups);
+	dev_info(dev, "nbanks = %d\n", info->nbanks);
+	dev_info(dev, "nfunctions = %d\n", info->nfunctions);
+	dev_info(dev, "ngroups = %d\n", info->ngroups);
 
-	info->functions = devm_kzalloc(&pdev->dev,
-		info->nfunctions * sizeof(*info->functions), GFP_KERNEL);
+	info->functions = devm_kcalloc(dev, info->nfunctions, sizeof(*info->functions), GFP_KERNEL);
 
-	info->groups = devm_kzalloc(&pdev->dev,
-			info->ngroups * sizeof(*info->groups) ,	GFP_KERNEL);
+	info->groups = devm_kcalloc(dev, info->ngroups, sizeof(*info->groups), GFP_KERNEL);
 
-	info->banks = devm_kzalloc(&pdev->dev,
-			info->nbanks * sizeof(*info->banks), GFP_KERNEL);
+	info->banks = devm_kcalloc(dev, info->nbanks, sizeof(*info->banks), GFP_KERNEL);
 
 	if (!info->functions || !info->groups || !info->banks)
 		return -ENOMEM;
 
 	info->regmap = syscon_regmap_lookup_by_phandle(np, "st,syscfg");
-	if (IS_ERR(info->regmap)) {
-		dev_err(info->dev, "No syscfg phandle specified\n");
-		return PTR_ERR(info->regmap);
-	}
+	if (IS_ERR(info->regmap))
+		return dev_err_probe(dev, PTR_ERR(info->regmap), "No syscfg phandle specified\n");
 	info->data = of_match_node(st_pctl_of_match, np)->data;
 
+	irq = platform_get_irq(pdev, 0);
+
+	if (irq > 0) {
+		info->irqmux_base = devm_platform_ioremap_resource_byname(pdev, "irqmux");
+		if (IS_ERR(info->irqmux_base))
+			return PTR_ERR(info->irqmux_base);
+
+		irq_set_chained_handler_and_data(irq, st_gpio_irqmux_handler,
+						 info);
+	}
+
 	pctl_desc->npins = info->nbanks * ST_GPIO_PINS_PER_BANK;
-	pdesc =	devm_kzalloc(&pdev->dev,
-			sizeof(*pdesc) * pctl_desc->npins, GFP_KERNEL);
+	pdesc =	devm_kcalloc(dev, pctl_desc->npins, sizeof(*pdesc), GFP_KERNEL);
 	if (!pdesc)
 		return -ENOMEM;
 
@@ -1318,16 +1657,26 @@ static int st_pctl_probe_dt(struct platform_device *pdev,
 	for_each_child_of_node(np, child) {
 		if (of_property_read_bool(child, "gpio-controller")) {
 			const char *bank_name = NULL;
+			char **pin_names;
+
 			ret = st_gpiolib_register_bank(info, bank, child);
-			if (ret)
+			if (ret) {
+				of_node_put(child);
 				return ret;
+			}
 
 			k = info->banks[bank].range.pin_base;
 			bank_name = info->banks[bank].range.name;
+
+			pin_names = devm_kasprintf_strarray(dev, bank_name, ST_GPIO_PINS_PER_BANK);
+			if (IS_ERR(pin_names)) {
+				of_node_put(child);
+				return PTR_ERR(pin_names);
+			}
+
 			for (j = 0; j < ST_GPIO_PINS_PER_BANK; j++, k++) {
 				pdesc->number = k;
-				pdesc->name = kasprintf(GFP_KERNEL, "%s[%d]",
-							bank_name, j);
+				pdesc->name = pin_names[j];
 				pdesc++;
 			}
 			st_parse_syscfgs(info, bank, child);
@@ -1336,7 +1685,8 @@ static int st_pctl_probe_dt(struct platform_device *pdev,
 			ret = st_pctl_parse_functions(child, info,
 							i++, &grp_index);
 			if (ret) {
-				dev_err(&pdev->dev, "No functions found.\n");
+				dev_err(dev, "No functions found.\n");
+				of_node_put(child);
 				return ret;
 			}
 		}
@@ -1347,24 +1697,25 @@ static int st_pctl_probe_dt(struct platform_device *pdev,
 
 static int st_pctl_probe(struct platform_device *pdev)
 {
+	struct device *dev = &pdev->dev;
 	struct st_pinctrl *info;
 	struct pinctrl_desc *pctl_desc;
 	int ret, i;
 
-	if (!pdev->dev.of_node) {
-		dev_err(&pdev->dev, "device node not found.\n");
+	if (!dev->of_node) {
+		dev_err(dev, "device node not found.\n");
 		return -EINVAL;
 	}
 
-	pctl_desc = devm_kzalloc(&pdev->dev, sizeof(*pctl_desc), GFP_KERNEL);
+	pctl_desc = devm_kzalloc(dev, sizeof(*pctl_desc), GFP_KERNEL);
 	if (!pctl_desc)
 		return -ENOMEM;
 
-	info = devm_kzalloc(&pdev->dev, sizeof(*info), GFP_KERNEL);
+	info = devm_kzalloc(dev, sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 
-	info->dev = &pdev->dev;
+	info->dev = dev;
 	platform_set_drvdata(pdev, info);
 	ret = st_pctl_probe_dt(pdev, pctl_desc, info);
 	if (ret)
@@ -1374,13 +1725,11 @@ static int st_pctl_probe(struct platform_device *pdev)
 	pctl_desc->pctlops	= &st_pctlops;
 	pctl_desc->pmxops	= &st_pmxops;
 	pctl_desc->confops	= &st_confops;
-	pctl_desc->name		= dev_name(&pdev->dev);
+	pctl_desc->name		= dev_name(dev);
 
-	info->pctl = pinctrl_register(pctl_desc, &pdev->dev, info);
-	if (!info->pctl) {
-		dev_err(&pdev->dev, "Failed pinctrl registration\n");
-		return -EINVAL;
-	}
+	info->pctl = devm_pinctrl_register(dev, pctl_desc, info);
+	if (IS_ERR(info->pctl))
+		return dev_err_probe(dev, PTR_ERR(info->pctl), "Failed pinctrl registration\n");
 
 	for (i = 0; i < info->nbanks; i++)
 		pinctrl_add_gpio_range(info->pctl, &info->banks[i].range);
@@ -1391,7 +1740,6 @@ static int st_pctl_probe(struct platform_device *pdev)
 static struct platform_driver st_pctl_driver = {
 	.driver = {
 		.name = "st-pinctrl",
-		.owner = THIS_MODULE,
 		.of_match_table = st_pctl_of_match,
 	},
 	.probe = st_pctl_probe,

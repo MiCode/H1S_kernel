@@ -1,7 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Access vector cache interface for object managers.
  *
- * Author : Stephen Smalley, <sds@epoch.ncsc.mil>
+ * Author : Stephen Smalley, <stephen.smalley.work@gmail.com>
  */
 #ifndef _SELINUX_AVC_H_
 #define _SELINUX_AVC_H_
@@ -18,12 +19,6 @@
 #include "flask.h"
 #include "av_permissions.h"
 #include "security.h"
-
-#ifdef CONFIG_SECURITY_SELINUX_DEVELOP
-extern int selinux_enforcing;
-#else
-#define selinux_enforcing 1
-#endif
 
 /*
  * An entry in the AVC.
@@ -57,7 +52,7 @@ struct selinux_audit_data {
 	u32 audited;
 	u32 denied;
 	int result;
-};
+} __randomize_layout;
 
 /*
  * AVC operations
@@ -102,9 +97,8 @@ static inline u32 avc_audit_required(u32 requested,
 }
 
 int slow_avc_audit(u32 ssid, u32 tsid, u16 tclass,
-		   u32 requested, u32 audited, u32 denied,
-		   struct common_audit_data *a,
-		   unsigned flags);
+		   u32 requested, u32 audited, u32 denied, int result,
+		   struct common_audit_data *a);
 
 /**
  * avc_audit - Audit the granting or denial of permissions.
@@ -115,7 +109,6 @@ int slow_avc_audit(u32 ssid, u32 tsid, u16 tclass,
  * @avd: access vector decisions
  * @result: result from avc_has_perm_noaudit
  * @a:  auxiliary audit data
- * @flags: VFS walk flags
  *
  * Audit the granting or denial of permissions in accordance
  * with the policy.  This function is typically called by
@@ -137,11 +130,12 @@ static inline int avc_audit(u32 ssid, u32 tsid,
 	if (likely(!audited))
 		return 0;
 	return slow_avc_audit(ssid, tsid, tclass,
-			      requested, audited, denied,
-			      a, 0);
+			      requested, audited, denied, result,
+			      a);
 }
 
 #define AVC_STRICT 1 /* Ignore permissive mode. */
+#define AVC_EXTENDED_PERMS 2	/* update extended permissions */
 int avc_has_perm_noaudit(u32 ssid, u32 tsid,
 			 u16 tclass, u32 requested,
 			 unsigned flags,
@@ -150,6 +144,10 @@ int avc_has_perm_noaudit(u32 ssid, u32 tsid,
 int avc_has_perm(u32 ssid, u32 tsid,
 		 u16 tclass, u32 requested,
 		 struct common_audit_data *auditdata);
+
+int avc_has_extended_perms(u32 ssid, u32 tsid, u16 tclass, u32 requested,
+			   u8 driver, u8 perm, struct common_audit_data *ad);
+
 
 u32 avc_policy_seqno(void);
 
@@ -161,15 +159,14 @@ u32 avc_policy_seqno(void);
 #define AVC_CALLBACK_AUDITALLOW_DISABLE	32
 #define AVC_CALLBACK_AUDITDENY_ENABLE	64
 #define AVC_CALLBACK_AUDITDENY_DISABLE	128
+#define AVC_CALLBACK_ADD_XPERMS		256
 
 int avc_add_callback(int (*callback)(u32 event), u32 events);
 
 /* Exported to selinuxfs */
 int avc_get_hash_stats(char *page);
-extern unsigned int avc_cache_threshold;
-
-/* Attempt to free avc node cache */
-void avc_disable(void);
+unsigned int avc_get_cache_threshold(void);
+void avc_set_cache_threshold(unsigned int cache_threshold);
 
 #ifdef CONFIG_SECURITY_SELINUX_AVC_STATS
 DECLARE_PER_CPU(struct avc_cache_stats, avc_cache_stats);

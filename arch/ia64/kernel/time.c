@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/arch/ia64/kernel/time.c
  *
@@ -16,23 +17,26 @@
 #include <linux/profile.h>
 #include <linux/sched.h>
 #include <linux/time.h>
+#include <linux/nmi.h>
 #include <linux/interrupt.h>
 #include <linux/efi.h>
 #include <linux/timex.h>
 #include <linux/timekeeper_internal.h>
 #include <linux/platform_device.h>
+#include <linux/sched/cputime.h>
 
-#include <asm/machvec.h>
+#include <asm/cputime.h>
 #include <asm/delay.h>
+#include <asm/efi.h>
 #include <asm/hw_irq.h>
-#include <asm/paravirt.h>
 #include <asm/ptrace.h>
 #include <asm/sal.h>
 #include <asm/sections.h>
 
 #include "fsyscall_gtod_data.h"
+#include "irq.h"
 
-static cycle_t itc_get_cycles(struct clocksource *cs);
+static u64 itc_get_cycles(struct clocksource *cs);
 
 struct fsyscall_gtod_data_t fsyscall_gtod_data;
 
@@ -47,33 +51,12 @@ EXPORT_SYMBOL(last_cli_ip);
 
 #endif
 
-#ifdef CONFIG_PARAVIRT
-/* We need to define a real function for sched_clock, to override the
-   weak default version */
-unsigned long long sched_clock(void)
-{
-        return paravirt_sched_clock();
-}
-#endif
-
-#ifdef CONFIG_PARAVIRT
-static void
-paravirt_clocksource_resume(struct clocksource *cs)
-{
-	if (pv_time_ops.clocksource_resume)
-		pv_time_ops.clocksource_resume();
-}
-#endif
-
 static struct clocksource clocksource_itc = {
 	.name           = "itc",
 	.rating         = 350,
 	.read           = itc_get_cycles,
 	.mask           = CLOCKSOURCE_MASK(64),
 	.flags          = CLOCK_SOURCE_IS_CONTINUOUS,
-#ifdef CONFIG_PARAVIRT
-	.resume		= paravirt_clocksource_resume,
-#endif
 };
 static struct clocksource *itc_clocksource;
 
@@ -81,18 +64,43 @@ static struct clocksource *itc_clocksource;
 
 #include <linux/kernel_stat.h>
 
-extern cputime_t cycle_to_cputime(u64 cyc);
+extern u64 cycle_to_nsec(u64 cyc);
 
-void vtime_account_user(struct task_struct *tsk)
+void vtime_flush(struct task_struct *tsk)
 {
-	cputime_t delta_utime;
 	struct thread_info *ti = task_thread_info(tsk);
+	u64 delta;
 
-	if (ti->ac_utime) {
-		delta_utime = cycle_to_cputime(ti->ac_utime);
-		account_user_time(tsk, delta_utime, delta_utime);
-		ti->ac_utime = 0;
+	if (ti->utime)
+		account_user_time(tsk, cycle_to_nsec(ti->utime));
+
+	if (ti->gtime)
+		account_guest_time(tsk, cycle_to_nsec(ti->gtime));
+
+	if (ti->idle_time)
+		account_idle_time(cycle_to_nsec(ti->idle_time));
+
+	if (ti->stime) {
+		delta = cycle_to_nsec(ti->stime);
+		account_system_index_time(tsk, delta, CPUTIME_SYSTEM);
 	}
+
+	if (ti->hardirq_time) {
+		delta = cycle_to_nsec(ti->hardirq_time);
+		account_system_index_time(tsk, delta, CPUTIME_IRQ);
+	}
+
+	if (ti->softirq_time) {
+		delta = cycle_to_nsec(ti->softirq_time);
+		account_system_index_time(tsk, delta, CPUTIME_SOFTIRQ);
+	}
+
+	ti->utime = 0;
+	ti->gtime = 0;
+	ti->idle_time = 0;
+	ti->stime = 0;
+	ti->hardirq_time = 0;
+	ti->softirq_time = 0;
 }
 
 /*
@@ -105,7 +113,7 @@ void arch_vtime_task_switch(struct task_struct *prev)
 	struct thread_info *pi = task_thread_info(prev);
 	struct thread_info *ni = task_thread_info(current);
 
-	pi->ac_stamp = ni->ac_stamp;
+	ni->ac_stamp = pi->ac_stamp;
 	ni->ac_stime = ni->ac_utime = 0;
 }
 
@@ -113,34 +121,51 @@ void arch_vtime_task_switch(struct task_struct *prev)
  * Account time for a transition between system, hard irq or soft irq state.
  * Note that this function is called with interrupts enabled.
  */
-static cputime_t vtime_delta(struct task_struct *tsk)
+static __u64 vtime_delta(struct task_struct *tsk)
 {
 	struct thread_info *ti = task_thread_info(tsk);
-	cputime_t delta_stime;
-	__u64 now;
+	__u64 now, delta_stime;
 
 	WARN_ON_ONCE(!irqs_disabled());
 
 	now = ia64_get_itc();
-
-	delta_stime = cycle_to_cputime(ti->ac_stime + (now - ti->ac_stamp));
-	ti->ac_stime = 0;
+	delta_stime = now - ti->ac_stamp;
 	ti->ac_stamp = now;
 
 	return delta_stime;
 }
 
-void vtime_account_system(struct task_struct *tsk)
+void vtime_account_kernel(struct task_struct *tsk)
 {
-	cputime_t delta = vtime_delta(tsk);
+	struct thread_info *ti = task_thread_info(tsk);
+	__u64 stime = vtime_delta(tsk);
 
-	account_system_time(tsk, 0, delta, delta);
+	if (tsk->flags & PF_VCPU)
+		ti->gtime += stime;
+	else
+		ti->stime += stime;
 }
-EXPORT_SYMBOL_GPL(vtime_account_system);
+EXPORT_SYMBOL_GPL(vtime_account_kernel);
 
 void vtime_account_idle(struct task_struct *tsk)
 {
-	account_idle_time(vtime_delta(tsk));
+	struct thread_info *ti = task_thread_info(tsk);
+
+	ti->idle_time += vtime_delta(tsk);
+}
+
+void vtime_account_softirq(struct task_struct *tsk)
+{
+	struct thread_info *ti = task_thread_info(tsk);
+
+	ti->softirq_time += vtime_delta(tsk);
+}
+
+void vtime_account_hardirq(struct task_struct *tsk)
+{
+	struct thread_info *ti = task_thread_info(tsk);
+
+	ti->hardirq_time += vtime_delta(tsk);
 }
 
 #endif /* CONFIG_VIRT_CPU_ACCOUNTING_NATIVE */
@@ -154,26 +179,16 @@ timer_interrupt (int irq, void *dev_id)
 		return IRQ_HANDLED;
 	}
 
-	platform_timer_interrupt(irq, dev_id);
-
 	new_itm = local_cpu_data->itm_next;
 
 	if (!time_after(ia64_get_itc(), new_itm))
 		printk(KERN_ERR "Oops: timer tick before it's due (itc=%lx,itm=%lx)\n",
 		       ia64_get_itc(), new_itm);
 
-	profile_tick(CPU_PROFILING);
-
-	if (paravirt_do_steal_accounting(&new_itm))
-		goto skip_process_time_accounting;
-
 	while (1) {
-		update_process_times(user_mode(get_irq_regs()));
-
 		new_itm += local_cpu_data->itm_delta;
 
-		if (smp_processor_id() == time_keeper_id)
-			xtime_update(1);
+		legacy_timer_tick(smp_processor_id() == time_keeper_id);
 
 		local_cpu_data->itm_next = new_itm;
 
@@ -186,8 +201,6 @@ timer_interrupt (int irq, void *dev_id)
 		local_irq_enable();
 		local_irq_disable();
 	}
-
-skip_process_time_accounting:
 
 	do {
 		/*
@@ -337,8 +350,6 @@ void ia64_init_itm(void)
 		 */
 		clocksource_itc.rating = 50;
 
-	paravirt_init_missing_ticks_accounting(smp_processor_id());
-
 	/* avoid softlock up message when cpu is unplug and plugged again. */
 	touch_softlockup_watchdog();
 
@@ -352,7 +363,7 @@ void ia64_init_itm(void)
 	}
 }
 
-static cycle_t itc_get_cycles(struct clocksource *cs)
+static u64 itc_get_cycles(struct clocksource *cs)
 {
 	unsigned long lcycle, now, ret;
 
@@ -377,29 +388,7 @@ static cycle_t itc_get_cycles(struct clocksource *cs)
 	return now;
 }
 
-
-static struct irqaction timer_irqaction = {
-	.handler =	timer_interrupt,
-	.flags =	IRQF_DISABLED | IRQF_IRQPOLL,
-	.name =		"timer"
-};
-
-static struct platform_device rtc_efi_dev = {
-	.name = "rtc-efi",
-	.id = -1,
-};
-
-static int __init rtc_init(void)
-{
-	if (platform_device_register(&rtc_efi_dev) < 0)
-		printk(KERN_ERR "unable to register rtc device...\n");
-
-	/* not necessarily an error */
-	return 0;
-}
-module_init(rtc_init);
-
-void read_persistent_clock(struct timespec *ts)
+void read_persistent_clock64(struct timespec64 *ts)
 {
 	efi_gettimeofday(ts);
 }
@@ -407,7 +396,8 @@ void read_persistent_clock(struct timespec *ts)
 void __init
 time_init (void)
 {
-	register_percpu_irq(IA64_TIMER_VECTOR, &timer_irqaction);
+	register_percpu_irq(IA64_TIMER_VECTOR, timer_interrupt, IRQF_IRQPOLL,
+			    "timer");
 	ia64_init_itm();
 }
 
@@ -440,30 +430,32 @@ void update_vsyscall_tz(void)
 {
 }
 
-void update_vsyscall_old(struct timespec *wall, struct timespec *wtm,
-			struct clocksource *c, u32 mult)
+void update_vsyscall(struct timekeeper *tk)
 {
 	write_seqcount_begin(&fsyscall_gtod_data.seq);
 
-        /* copy fsyscall clock data */
-        fsyscall_gtod_data.clk_mask = c->mask;
-        fsyscall_gtod_data.clk_mult = mult;
-        fsyscall_gtod_data.clk_shift = c->shift;
-        fsyscall_gtod_data.clk_fsys_mmio = c->archdata.fsys_mmio;
-        fsyscall_gtod_data.clk_cycle_last = c->cycle_last;
+	/* copy vsyscall data */
+	fsyscall_gtod_data.clk_mask = tk->tkr_mono.mask;
+	fsyscall_gtod_data.clk_mult = tk->tkr_mono.mult;
+	fsyscall_gtod_data.clk_shift = tk->tkr_mono.shift;
+	fsyscall_gtod_data.clk_fsys_mmio = tk->tkr_mono.clock->archdata.fsys_mmio;
+	fsyscall_gtod_data.clk_cycle_last = tk->tkr_mono.cycle_last;
 
-	/* copy kernel time structures */
-        fsyscall_gtod_data.wall_time.tv_sec = wall->tv_sec;
-        fsyscall_gtod_data.wall_time.tv_nsec = wall->tv_nsec;
-	fsyscall_gtod_data.monotonic_time.tv_sec = wtm->tv_sec
-							+ wall->tv_sec;
-	fsyscall_gtod_data.monotonic_time.tv_nsec = wtm->tv_nsec
-							+ wall->tv_nsec;
+	fsyscall_gtod_data.wall_time.sec = tk->xtime_sec;
+	fsyscall_gtod_data.wall_time.snsec = tk->tkr_mono.xtime_nsec;
+
+	fsyscall_gtod_data.monotonic_time.sec = tk->xtime_sec
+					      + tk->wall_to_monotonic.tv_sec;
+	fsyscall_gtod_data.monotonic_time.snsec = tk->tkr_mono.xtime_nsec
+						+ ((u64)tk->wall_to_monotonic.tv_nsec
+							<< tk->tkr_mono.shift);
 
 	/* normalize */
-	while (fsyscall_gtod_data.monotonic_time.tv_nsec >= NSEC_PER_SEC) {
-		fsyscall_gtod_data.monotonic_time.tv_nsec -= NSEC_PER_SEC;
-		fsyscall_gtod_data.monotonic_time.tv_sec++;
+	while (fsyscall_gtod_data.monotonic_time.snsec >=
+					(((u64)NSEC_PER_SEC) << tk->tkr_mono.shift)) {
+		fsyscall_gtod_data.monotonic_time.snsec -=
+					((u64)NSEC_PER_SEC) << tk->tkr_mono.shift;
+		fsyscall_gtod_data.monotonic_time.sec++;
 	}
 
 	write_seqcount_end(&fsyscall_gtod_data.seq);

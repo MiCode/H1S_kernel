@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  cb710/core.c
  *
  *  Copyright by Michał Mirosław, 2008-2009
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -16,7 +13,6 @@
 #include <linux/gfp.h>
 
 static DEFINE_IDA(cb710_ida);
-static DEFINE_SPINLOCK(cb710_ida_lock);
 
 void cb710_pci_update_config_reg(struct pci_dev *pdev,
 	int reg, uint32_t mask, uint32_t xor)
@@ -170,42 +166,28 @@ void cb710_set_irq_handler(struct cb710_slot *slot,
 }
 EXPORT_SYMBOL_GPL(cb710_set_irq_handler);
 
-#ifdef CONFIG_PM
-
-static int cb710_suspend(struct pci_dev *pdev, pm_message_t state)
+static int __maybe_unused cb710_suspend(struct device *dev_d)
 {
+	struct pci_dev *pdev = to_pci_dev(dev_d);
 	struct cb710_chip *chip = pci_get_drvdata(pdev);
 
 	devm_free_irq(&pdev->dev, pdev->irq, chip);
-	pci_save_state(pdev);
-	pci_disable_device(pdev);
-	if (state.event & PM_EVENT_SLEEP)
-		pci_set_power_state(pdev, PCI_D3hot);
 	return 0;
 }
 
-static int cb710_resume(struct pci_dev *pdev)
+static int __maybe_unused cb710_resume(struct device *dev_d)
 {
+	struct pci_dev *pdev = to_pci_dev(dev_d);
 	struct cb710_chip *chip = pci_get_drvdata(pdev);
-	int err;
-
-	pci_set_power_state(pdev, PCI_D0);
-	pci_restore_state(pdev);
-	err = pcim_enable_device(pdev);
-	if (err)
-		return err;
 
 	return devm_request_irq(&pdev->dev, pdev->irq,
 		cb710_irq_handler, IRQF_SHARED, KBUILD_MODNAME, chip);
 }
 
-#endif /* CONFIG_PM */
-
 static int cb710_probe(struct pci_dev *pdev,
 	const struct pci_device_id *ent)
 {
 	struct cb710_chip *chip;
-	unsigned long flags;
 	u32 val;
 	int err;
 	int n = 0;
@@ -232,8 +214,8 @@ static int cb710_probe(struct pci_dev *pdev,
 	if (val & CB710_SLOT_SM)
 		++n;
 
-	chip = devm_kzalloc(&pdev->dev,
-		sizeof(*chip) + n * sizeof(*chip->slot), GFP_KERNEL);
+	chip = devm_kzalloc(&pdev->dev, struct_size(chip, slot, n),
+			    GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 
@@ -256,18 +238,10 @@ static int cb710_probe(struct pci_dev *pdev,
 	if (err)
 		return err;
 
-	do {
-		if (!ida_pre_get(&cb710_ida, GFP_KERNEL))
-			return -ENOMEM;
-
-		spin_lock_irqsave(&cb710_ida_lock, flags);
-		err = ida_get_new(&cb710_ida, &chip->platform_id);
-		spin_unlock_irqrestore(&cb710_ida_lock, flags);
-
-		if (err && err != -EAGAIN)
-			return err;
-	} while (err);
-
+	err = ida_alloc(&cb710_ida, GFP_KERNEL);
+	if (err < 0)
+		return err;
+	chip->platform_id = err;
 
 	dev_info(&pdev->dev, "id %d, IO 0x%p, IRQ %d\n",
 		chip->platform_id, chip->iobase, pdev->irq);
@@ -308,7 +282,6 @@ unreg_mmc:
 static void cb710_remove_one(struct pci_dev *pdev)
 {
 	struct cb710_chip *chip = pci_get_drvdata(pdev);
-	unsigned long flags;
 
 	cb710_unregister_slot(chip, CB710_SLOT_SM);
 	cb710_unregister_slot(chip, CB710_SLOT_MS);
@@ -317,9 +290,7 @@ static void cb710_remove_one(struct pci_dev *pdev)
 	BUG_ON(atomic_read(&chip->slot_refs_count) != 0);
 #endif
 
-	spin_lock_irqsave(&cb710_ida_lock, flags);
-	ida_remove(&cb710_ida, chip->platform_id);
-	spin_unlock_irqrestore(&cb710_ida_lock, flags);
+	ida_free(&cb710_ida, chip->platform_id);
 }
 
 static const struct pci_device_id cb710_pci_tbl[] = {
@@ -328,15 +299,14 @@ static const struct pci_device_id cb710_pci_tbl[] = {
 	{ 0, }
 };
 
+static SIMPLE_DEV_PM_OPS(cb710_pm_ops, cb710_suspend, cb710_resume);
+
 static struct pci_driver cb710_driver = {
 	.name = KBUILD_MODNAME,
 	.id_table = cb710_pci_tbl,
 	.probe = cb710_probe,
 	.remove = cb710_remove_one,
-#ifdef CONFIG_PM
-	.suspend = cb710_suspend,
-	.resume = cb710_resume,
-#endif
+	.driver.pm = &cb710_pm_ops,
 };
 
 static int __init cb710_init_module(void)

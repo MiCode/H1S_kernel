@@ -1,18 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * udbg for zilog scc ports as found on Apple PowerMacs
  *
  * Copyright (C) 2001-2005 PPC 64 Team, IBM Corp
- *
- *      This program is free software; you can redistribute it and/or
- *      modify it under the terms of the GNU General Public License
- *      as published by the Free Software Foundation; either version
- *      2 of the License, or (at your option) any later version.
  */
 #include <linux/types.h>
+#include <linux/of.h>
 #include <asm/udbg.h>
 #include <asm/processor.h>
 #include <asm/io.h>
-#include <asm/prom.h>
 #include <asm/pmac_feature.h>
 
 extern u8 real_readb(volatile u8 __iomem  *addr);
@@ -66,14 +62,14 @@ static unsigned char scc_inittab[] = {
     3,  0xc1,		/* rx enable, 8 bits */
 };
 
-void udbg_scc_init(int force_scc)
+void __init udbg_scc_init(int force_scc)
 {
 	const u32 *reg;
 	unsigned long addr;
 	struct device_node *stdout = NULL, *escc = NULL, *macio = NULL;
 	struct device_node *ch, *ch_def = NULL, *ch_a = NULL;
 	const char *path;
-	int i, x;
+	int i;
 
 	escc = of_find_node_by_name(NULL, "escc");
 	if (escc == NULL)
@@ -84,11 +80,15 @@ void udbg_scc_init(int force_scc)
 	path = of_get_property(of_chosen, "linux,stdout-path", NULL);
 	if (path != NULL)
 		stdout = of_find_node_by_path(path);
-	for (ch = NULL; (ch = of_get_next_child(escc, ch)) != NULL;) {
-		if (ch == stdout)
+	for_each_child_of_node(escc, ch) {
+		if (ch == stdout) {
+			of_node_put(ch_def);
 			ch_def = of_node_get(ch);
-		if (strcmp(ch->name, "ch-a") == 0)
+		}
+		if (of_node_name_eq(ch, "ch-a")) {
+			of_node_put(ch_a);
 			ch_a = of_node_get(ch);
+		}
 	}
 	if (ch_def == NULL && !force_scc)
 		goto bail;
@@ -120,7 +120,7 @@ void udbg_scc_init(int force_scc)
 	mb();
 
 	for (i = 20000; i != 0; --i)
-		x = in_8(sccc);
+		in_8(sccc);
 	out_8(sccc, 0x09);		/* reset A or B side */
 	out_8(sccc, 0xc0);
 

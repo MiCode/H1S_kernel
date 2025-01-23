@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * stv0900_sw.c
  *
@@ -6,21 +7,6 @@
  * Copyright (C) ST Microelectronics.
  * Copyright (C) 2009 NetUP Inc.
  * Copyright (C) 2009 Igor M. Liplianin <liplianin@netup.ru>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include "stv0900.h"
@@ -1081,7 +1067,7 @@ static int stv0900_wait_for_lock(struct stv0900_internal *intp,
 	lock = stv0900_get_demod_lock(intp, demod, dmd_timeout);
 
 	if (lock)
-		lock = lock && stv0900_get_fec_lock(intp, demod, fec_timeout);
+		lock = stv0900_get_fec_lock(intp, demod, fec_timeout);
 
 	if (lock) {
 		lock = 0;
@@ -1259,14 +1245,14 @@ fe_stv0900_signal_type stv0900_get_signal_params(struct dvb_frontend *fe)
 		else
 			intp->freq[d] = stv0900_get_tuner_freq(fe);
 
-		if (ABS(offsetFreq) <= ((intp->srch_range[d] / 2000) + 500))
+		if (abs(offsetFreq) <= ((intp->srch_range[d] / 2000) + 500))
 			range = STV0900_RANGEOK;
-		else if (ABS(offsetFreq) <=
+		else if (abs(offsetFreq) <=
 				(stv0900_carrier_width(result->symbol_rate,
 						result->rolloff) / 2000))
 			range = STV0900_RANGEOK;
 
-	} else if (ABS(offsetFreq) <= ((intp->srch_range[d] / 2000) + 500))
+	} else if (abs(offsetFreq) <= ((intp->srch_range[d] / 2000) + 500))
 		range = STV0900_RANGEOK;
 
 	dprintk("%s: range %d\n", __func__, range);
@@ -1485,8 +1471,7 @@ static u32 stv0900_search_srate_coarse(struct dvb_frontend *fe)
 		current_step++;
 		direction *= -1;
 
-		dprintk("lock: I2C_DEMOD_MODE_FIELD =0. Search started."
-			" tuner freq=%d agc2=0x%x srate_coarse=%d tmg_cpt=%d\n",
+		dprintk("lock: I2C_DEMOD_MODE_FIELD =0. Search started. tuner freq=%d agc2=0x%x srate_coarse=%d tmg_cpt=%d\n",
 			tuner_freq, agc2_integr, coarse_srate, timingcpt);
 
 		if ((timingcpt >= 5) &&
@@ -1556,8 +1541,8 @@ static u32 stv0900_search_srate_fine(struct dvb_frontend *fe)
 	}
 
 	symbcomp = 13 * (coarse_srate / 10);
-		coarse_freq = (stv0900_read_reg(intp, CFR2) << 8)
-					| stv0900_read_reg(intp, CFR1);
+	coarse_freq = (stv0900_read_reg(intp, CFR2) << 8)
+		      | stv0900_read_reg(intp, CFR1);
 
 	if (symbcomp < intp->symbol_rate[demod])
 		coarse_srate = 0;
@@ -1733,9 +1718,10 @@ static void stv0900_set_search_standard(struct stv0900_internal *intp,
 		break;
 	case STV0900_SEARCH_DSS:
 		dprintk("Search Standard = DSS\n");
-	case STV0900_SEARCH_DVBS2:
 		break;
+	case STV0900_SEARCH_DVBS2:
 		dprintk("Search Standard = DVBS2\n");
+		break;
 	case STV0900_AUTO_SEARCH:
 	default:
 		dprintk("Search Standard = AUTO\n");
@@ -2008,7 +1994,7 @@ enum fe_stv0900_signal_type stv0900_algo(struct dvb_frontend *fe)
 			signal_type = STV0900_NODATA;
 			no_signal = stv0900_check_signal_presence(intp, demod);
 
-				intp->result[demod].locked = FALSE;
+			intp->result[demod].locked = FALSE;
 		}
 	}
 

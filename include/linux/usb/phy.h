@@ -1,5 +1,6 @@
-/* USB OTG (On The Go) defines */
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
+ * USB PHY defines
  *
  * These APIs may be used between USB controllers.  USB device drivers
  * (for either host or peripheral roles) don't use these calls; they
@@ -9,8 +10,11 @@
 #ifndef __LINUX_USB_PHY_H
 #define __LINUX_USB_PHY_H
 
+#include <linux/extcon.h>
 #include <linux/notifier.h>
 #include <linux/usb.h>
+#include <linux/android_kabi.h>
+#include <uapi/linux/usb/charger.h>
 
 enum usb_phy_interface {
 	USBPHY_INTERFACE_MODE_UNKNOWN,
@@ -63,12 +67,23 @@ enum usb_otg_state {
 struct usb_phy;
 struct usb_otg;
 
-/* for transceivers connected thru an ULPI interface, the user must
+/* for phys connected thru an ULPI interface, the user must
  * provide access ops
  */
 struct usb_phy_io_ops {
 	int (*read)(struct usb_phy *x, u32 reg);
 	int (*write)(struct usb_phy *x, u32 val, u32 reg);
+};
+
+struct usb_charger_current {
+	unsigned int sdp_min;
+	unsigned int sdp_max;
+	unsigned int dcp_min;
+	unsigned int dcp_max;
+	unsigned int cdp_min;
+	unsigned int cdp_max;
+	unsigned int aca_min;
+	unsigned int aca_max;
 };
 
 struct usb_phy {
@@ -77,7 +92,6 @@ struct usb_phy {
 	unsigned int		 flags;
 
 	enum usb_phy_type	type;
-	enum usb_otg_state	state;
 	enum usb_phy_events	last_event;
 
 	struct usb_otg		*otg;
@@ -86,6 +100,19 @@ struct usb_phy {
 	struct usb_phy_io_ops	*io_ops;
 	void __iomem		*io_priv;
 
+	/* to support extcon device */
+	struct extcon_dev	*edev;
+	struct extcon_dev	*id_edev;
+	struct notifier_block	vbus_nb;
+	struct notifier_block	id_nb;
+	struct notifier_block	type_nb;
+
+	/* Support USB charger */
+	enum usb_charger_type	chg_type;
+	enum usb_charger_state	chg_state;
+	struct usb_charger_current	chg_cur;
+	struct work_struct		chg_work;
+
 	/* for notification of usb_phy_events */
 	struct atomic_notifier_head	notifier;
 
@@ -93,10 +120,10 @@ struct usb_phy {
 	u16			port_status;
 	u16			port_change;
 
-	/* to support controllers that have multiple transceivers */
+	/* to support controllers that have multiple phys */
 	struct list_head	head;
 
-	/* initialize/shutdown the OTG controller */
+	/* initialize/shutdown the phy */
 	int	(*init)(struct usb_phy *x);
 	void	(*shutdown)(struct usb_phy *x);
 
@@ -107,31 +134,33 @@ struct usb_phy {
 	int	(*set_power)(struct usb_phy *x,
 				unsigned mA);
 
-	/* for non-OTG B devices: set transceiver into suspend mode */
+	/* Set phy into suspend mode */
 	int	(*set_suspend)(struct usb_phy *x,
 				int suspend);
+
+	/*
+	 * Set wakeup enable for PHY, in that case, the PHY can be
+	 * woken up from suspend status due to external events,
+	 * like vbus change, dp/dm change and id.
+	 */
+	int	(*set_wakeup)(struct usb_phy *x, bool enabled);
 
 	/* notify phy connect status change */
 	int	(*notify_connect)(struct usb_phy *x,
 			enum usb_device_speed speed);
 	int	(*notify_disconnect)(struct usb_phy *x,
 			enum usb_device_speed speed);
-};
 
-/**
- * struct usb_phy_bind - represent the binding for the phy
- * @dev_name: the device name of the device that will bind to the phy
- * @phy_dev_name: the device name of the phy
- * @index: used if a single controller uses multiple phys
- * @phy: reference to the phy
- * @list: to maintain a linked list of the binding information
- */
-struct usb_phy_bind {
-	const char	*dev_name;
-	const char	*phy_dev_name;
-	u8		index;
-	struct usb_phy	*phy;
-	struct list_head list;
+	/*
+	 * Charger detection method can be implemented if you need to
+	 * manually detect the charger type.
+	 */
+	enum usb_charger_type (*charger_detect)(struct usb_phy *x);
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 /* for board-specific init logic */
@@ -195,14 +224,19 @@ usb_phy_vbus_off(struct usb_phy *x)
 extern struct usb_phy *usb_get_phy(enum usb_phy_type type);
 extern struct usb_phy *devm_usb_get_phy(struct device *dev,
 	enum usb_phy_type type);
-extern struct usb_phy *usb_get_phy_dev(struct device *dev, u8 index);
-extern struct usb_phy *devm_usb_get_phy_dev(struct device *dev, u8 index);
 extern struct usb_phy *devm_usb_get_phy_by_phandle(struct device *dev,
 	const char *phandle, u8 index);
+extern struct usb_phy *devm_usb_get_phy_by_node(struct device *dev,
+	struct device_node *node, struct notifier_block *nb);
 extern void usb_put_phy(struct usb_phy *);
 extern void devm_usb_put_phy(struct device *dev, struct usb_phy *x);
-extern int usb_bind_phy(const char *dev_name, u8 index,
-				const char *phy_dev_name);
+extern void usb_phy_set_event(struct usb_phy *x, unsigned long event);
+extern void usb_phy_set_charger_current(struct usb_phy *usb_phy,
+					unsigned int mA);
+extern void usb_phy_get_charger_current(struct usb_phy *usb_phy,
+					unsigned int *min, unsigned int *max);
+extern void usb_phy_set_charger_state(struct usb_phy *usb_phy,
+				      enum usb_charger_state state);
 #else
 static inline struct usb_phy *usb_get_phy(enum usb_phy_type type)
 {
@@ -215,18 +249,14 @@ static inline struct usb_phy *devm_usb_get_phy(struct device *dev,
 	return ERR_PTR(-ENXIO);
 }
 
-static inline struct usb_phy *usb_get_phy_dev(struct device *dev, u8 index)
-{
-	return ERR_PTR(-ENXIO);
-}
-
-static inline struct usb_phy *devm_usb_get_phy_dev(struct device *dev, u8 index)
-{
-	return ERR_PTR(-ENXIO);
-}
-
 static inline struct usb_phy *devm_usb_get_phy_by_phandle(struct device *dev,
 	const char *phandle, u8 index)
+{
+	return ERR_PTR(-ENXIO);
+}
+
+static inline struct usb_phy *devm_usb_get_phy_by_node(struct device *dev,
+	struct device_node *node, struct notifier_block *nb)
 {
 	return ERR_PTR(-ENXIO);
 }
@@ -239,17 +269,36 @@ static inline void devm_usb_put_phy(struct device *dev, struct usb_phy *x)
 {
 }
 
-static inline int usb_bind_phy(const char *dev_name, u8 index,
-				const char *phy_dev_name)
+static inline void usb_phy_set_event(struct usb_phy *x, unsigned long event)
 {
-	return -EOPNOTSUPP;
+}
+
+static inline void usb_phy_set_charger_current(struct usb_phy *usb_phy,
+					       unsigned int mA)
+{
+}
+
+static inline void usb_phy_get_charger_current(struct usb_phy *usb_phy,
+					       unsigned int *min,
+					       unsigned int *max)
+{
+}
+
+static inline void usb_phy_set_charger_state(struct usb_phy *usb_phy,
+					     enum usb_charger_state state)
+{
 }
 #endif
 
 static inline int
 usb_phy_set_power(struct usb_phy *x, unsigned mA)
 {
-	if (x && x->set_power)
+	if (!x)
+		return 0;
+
+	usb_phy_set_charger_current(x, mA);
+
+	if (x->set_power)
 		return x->set_power(x, mA);
 	return 0;
 }
@@ -260,6 +309,15 @@ usb_phy_set_suspend(struct usb_phy *x, int suspend)
 {
 	if (x && x->set_suspend != NULL)
 		return x->set_suspend(x, suspend);
+	else
+		return 0;
+}
+
+static inline int
+usb_phy_set_wakeup(struct usb_phy *x, bool enabled)
+{
+	if (x && x->set_wakeup)
+		return x->set_wakeup(x, enabled);
 	else
 		return 0;
 }

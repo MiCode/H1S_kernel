@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * ATMEL I2C TPM AT97SC3204T
  *
@@ -13,19 +14,6 @@
  *
  * TGC status/locality/etc functions seen in the LPC implementation do not
  * seem to be present.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see http://www.gnu.org/licenses/>.
  */
 #include <linux/init.h>
 #include <linux/module.h>
@@ -46,13 +34,13 @@ struct priv_data {
 	/* This is the amount we read on the first try. 25 was chosen to fit a
 	 * fair number of read responses in the buffer so a 2nd retry can be
 	 * avoided in small message cases. */
-	u8 buffer[sizeof(struct tpm_output_header) + 25];
+	u8 buffer[sizeof(struct tpm_header) + 25];
 };
 
 static int i2c_atmel_send(struct tpm_chip *chip, u8 *buf, size_t len)
 {
-	struct priv_data *priv = chip->vendor.priv;
-	struct i2c_client *client = to_i2c_client(chip->dev);
+	struct priv_data *priv = dev_get_drvdata(&chip->dev);
+	struct i2c_client *client = to_i2c_client(chip->dev.parent);
 	s32 status;
 
 	priv->len = 0;
@@ -62,18 +50,25 @@ static int i2c_atmel_send(struct tpm_chip *chip, u8 *buf, size_t len)
 
 	status = i2c_master_send(client, buf, len);
 
-	dev_dbg(chip->dev,
+	dev_dbg(&chip->dev,
 		"%s(buf=%*ph len=%0zx) -> sts=%d\n", __func__,
 		(int)min_t(size_t, 64, len), buf, len, status);
-	return status;
+
+	if (status < 0)
+		return status;
+
+	/* The upper layer does not support incomplete sends. */
+	if (status != len)
+		return -E2BIG;
+
+	return 0;
 }
 
 static int i2c_atmel_recv(struct tpm_chip *chip, u8 *buf, size_t count)
 {
-	struct priv_data *priv = chip->vendor.priv;
-	struct i2c_client *client = to_i2c_client(chip->dev);
-	struct tpm_output_header *hdr =
-		(struct tpm_output_header *)priv->buffer;
+	struct priv_data *priv = dev_get_drvdata(&chip->dev);
+	struct i2c_client *client = to_i2c_client(chip->dev.parent);
+	struct tpm_header *hdr = (struct tpm_header *)priv->buffer;
 	u32 expected_len;
 	int rc;
 
@@ -88,7 +83,7 @@ static int i2c_atmel_recv(struct tpm_chip *chip, u8 *buf, size_t count)
 		return -ENOMEM;
 
 	if (priv->len >= expected_len) {
-		dev_dbg(chip->dev,
+		dev_dbg(&chip->dev,
 			"%s early(buf=%*ph count=%0zx) -> ret=%d\n", __func__,
 			(int)min_t(size_t, 64, expected_len), buf, count,
 			expected_len);
@@ -97,7 +92,7 @@ static int i2c_atmel_recv(struct tpm_chip *chip, u8 *buf, size_t count)
 	}
 
 	rc = i2c_master_recv(client, buf, expected_len);
-	dev_dbg(chip->dev,
+	dev_dbg(&chip->dev,
 		"%s reread(buf=%*ph count=%0zx) -> ret=%d\n", __func__,
 		(int)min_t(size_t, 64, expected_len), buf, count,
 		expected_len);
@@ -106,13 +101,13 @@ static int i2c_atmel_recv(struct tpm_chip *chip, u8 *buf, size_t count)
 
 static void i2c_atmel_cancel(struct tpm_chip *chip)
 {
-	dev_err(chip->dev, "TPM operation cancellation was requested, but is not supported");
+	dev_err(&chip->dev, "TPM operation cancellation was requested, but is not supported");
 }
 
 static u8 i2c_atmel_read_status(struct tpm_chip *chip)
 {
-	struct priv_data *priv = chip->vendor.priv;
-	struct i2c_client *client = to_i2c_client(chip->dev);
+	struct priv_data *priv = dev_get_drvdata(&chip->dev);
+	struct i2c_client *client = to_i2c_client(chip->dev.parent);
 	int rc;
 
 	/* The TPM fails the I2C read until it is ready, so we do the entire
@@ -125,7 +120,7 @@ static u8 i2c_atmel_read_status(struct tpm_chip *chip)
 	/* Once the TPM has completed the command the command remains readable
 	 * until another command is issued. */
 	rc = i2c_master_recv(client, priv->buffer, sizeof(priv->buffer));
-	dev_dbg(chip->dev,
+	dev_dbg(&chip->dev,
 		"%s: sts=%d", __func__, rc);
 	if (rc <= 0)
 		return 0;
@@ -141,6 +136,7 @@ static bool i2c_atmel_req_canceled(struct tpm_chip *chip, u8 status)
 }
 
 static const struct tpm_class_ops i2c_atmel = {
+	.flags = TPM_OPS_AUTO_STARTUP,
 	.status = i2c_atmel_read_status,
 	.recv = i2c_atmel_recv,
 	.send = i2c_atmel_send,
@@ -150,63 +146,43 @@ static const struct tpm_class_ops i2c_atmel = {
 	.req_canceled = i2c_atmel_req_canceled,
 };
 
-static int i2c_atmel_probe(struct i2c_client *client,
-			   const struct i2c_device_id *id)
+static int i2c_atmel_probe(struct i2c_client *client)
 {
-	int rc;
 	struct tpm_chip *chip;
 	struct device *dev = &client->dev;
+	struct priv_data *priv;
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
 		return -ENODEV;
 
-	chip = tpm_register_hardware(dev, &i2c_atmel);
-	if (!chip) {
-		dev_err(dev, "%s() error in tpm_register_hardware\n", __func__);
-		return -ENODEV;
-	}
+	chip = tpmm_chip_alloc(dev, &i2c_atmel);
+	if (IS_ERR(chip))
+		return PTR_ERR(chip);
 
-	chip->vendor.priv = devm_kzalloc(dev, sizeof(struct priv_data),
-					 GFP_KERNEL);
+	priv = devm_kzalloc(dev, sizeof(struct priv_data), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
 
 	/* Default timeouts */
-	chip->vendor.timeout_a = msecs_to_jiffies(TPM_I2C_SHORT_TIMEOUT);
-	chip->vendor.timeout_b = msecs_to_jiffies(TPM_I2C_LONG_TIMEOUT);
-	chip->vendor.timeout_c = msecs_to_jiffies(TPM_I2C_SHORT_TIMEOUT);
-	chip->vendor.timeout_d = msecs_to_jiffies(TPM_I2C_SHORT_TIMEOUT);
-	chip->vendor.irq = 0;
+	chip->timeout_a = msecs_to_jiffies(TPM_I2C_SHORT_TIMEOUT);
+	chip->timeout_b = msecs_to_jiffies(TPM_I2C_LONG_TIMEOUT);
+	chip->timeout_c = msecs_to_jiffies(TPM_I2C_SHORT_TIMEOUT);
+	chip->timeout_d = msecs_to_jiffies(TPM_I2C_SHORT_TIMEOUT);
+
+	dev_set_drvdata(&chip->dev, priv);
 
 	/* There is no known way to probe for this device, and all version
 	 * information seems to be read via TPM commands. Thus we rely on the
 	 * TPM startup process in the common code to detect the device. */
-	if (tpm_get_timeouts(chip)) {
-		rc = -ENODEV;
-		goto out_err;
-	}
 
-	if (tpm_do_selftest(chip)) {
-		rc = -ENODEV;
-		goto out_err;
-	}
-
-	return 0;
-
-out_err:
-	tpm_dev_vendor_release(chip);
-	tpm_remove_hardware(chip->dev);
-	return rc;
+	return tpm_chip_register(chip);
 }
 
-static int i2c_atmel_remove(struct i2c_client *client)
+static void i2c_atmel_remove(struct i2c_client *client)
 {
 	struct device *dev = &(client->dev);
 	struct tpm_chip *chip = dev_get_drvdata(dev);
-
-	if (chip)
-		tpm_dev_vendor_release(chip);
-	tpm_remove_hardware(dev);
-	kfree(chip);
-	return 0;
+	tpm_chip_unregister(chip);
 }
 
 static const struct i2c_device_id i2c_atmel_id[] = {
@@ -231,7 +207,6 @@ static struct i2c_driver i2c_atmel_driver = {
 	.remove = i2c_atmel_remove,
 	.driver = {
 		.name = I2C_DRIVER_NAME,
-		.owner = THIS_MODULE,
 		.pm = &i2c_atmel_pm_ops,
 		.of_match_table = of_match_ptr(i2c_atmel_of_match),
 	},

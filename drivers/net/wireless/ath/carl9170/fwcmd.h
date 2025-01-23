@@ -56,6 +56,7 @@ enum carl9170_cmd_oids {
 	CARL9170_CMD_RX_FILTER		= 0x07,
 	CARL9170_CMD_WOL		= 0x08,
 	CARL9170_CMD_TALLY		= 0x09,
+	CARL9170_CMD_WREGB		= 0x0a,
 
 	/* CAM */
 	CARL9170_CMD_EKEY		= 0x10,
@@ -117,10 +118,16 @@ struct carl9170_reg_list {
 } __packed;
 
 struct carl9170_write_reg {
-	struct {
+	DECLARE_FLEX_ARRAY(struct {
 		__le32		addr;
 		__le32		val;
-	} regs[0] __packed;
+	} __packed, regs);
+} __packed;
+
+struct carl9170_write_reg_byte {
+	__le32	addr;
+	__le32  count;
+	u8	val[];
 } __packed;
 
 #define	CARL9170FW_PHY_HT_ENABLE		0x4
@@ -226,13 +233,14 @@ struct carl9170_cmd {
 		struct carl9170_u32_list	echo;
 		struct carl9170_reg_list	rreg;
 		struct carl9170_write_reg	wreg;
+		struct carl9170_write_reg_byte	wregb;
 		struct carl9170_rf_init		rf_init;
 		struct carl9170_psm		psm;
 		struct carl9170_wol_cmd		wol;
 		struct carl9170_bcn_ctrl_cmd	bcn_ctrl;
 		struct carl9170_rx_filter_cmd	rx_filter;
 		u8 data[CARL9170_MAX_CMD_PAYLOAD_LEN];
-	} __packed;
+	} __packed __aligned(4);
 } __packed __aligned(4);
 
 #define	CARL9170_TX_STATUS_QUEUE	3
@@ -312,9 +320,9 @@ struct carl9170_rsp {
 		struct carl9170_u32_list	rreg_res;
 		struct carl9170_u32_list	echo;
 #ifdef __CARL9170FW__
-		struct carl9170_tx_status	tx_status[0];
+		DECLARE_FLEX_ARRAY(struct carl9170_tx_status, tx_status);
 #endif /* __CARL9170FW__ */
-		struct _carl9170_tx_status	_tx_status[0];
+		DECLARE_FLEX_ARRAY(struct _carl9170_tx_status, _tx_status);
 		struct carl9170_gpio		gpio;
 		struct carl9170_tsf_rsp		tsf;
 		struct carl9170_psm		psm;

@@ -10,11 +10,11 @@
  * Licensed under the GNU/GPL. See COPYING for details.
  */
 
+#include "ssb_private.h"
+
 #include <linux/pci.h>
 #include <linux/module.h>
 #include <linux/ssb/ssb.h>
-
-#include "ssb_private.h"
 
 
 static const struct pci_device_id b43_pci_bridge_tbl[] = {
@@ -38,6 +38,7 @@ static const struct pci_device_id b43_pci_bridge_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_BROADCOM, 0x432b) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_BROADCOM, 0x432c) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_BROADCOM, 0x4350) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_BROADCOM, 0x4351) },
 	{ 0, },
 };
 MODULE_DEVICE_TABLE(pci, b43_pci_bridge_tbl);

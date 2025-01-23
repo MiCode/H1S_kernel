@@ -1,12 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * MPC85xx cpu type detection
  *
  * Copyright 2011-2012 Freescale Semiconductor, Inc.
- *
- * This is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #ifndef __ASM_PPC_MPC85XX_H
@@ -61,6 +57,7 @@
 #define SVR_T4240	0x824000
 #define SVR_T4120	0x824001
 #define SVR_T4160	0x824100
+#define SVR_T4080	0x824102
 #define SVR_C291	0x850000
 #define SVR_C292	0x850020
 #define SVR_C293	0x850030
@@ -77,6 +74,8 @@
 #define SVR_T1020	0x852100
 #define SVR_T1021	0x852101
 #define SVR_T1022	0x852102
+#define SVR_T2080	0x853000
+#define SVR_T2081	0x853100
 
 #define SVR_8610	0x80A000
 #define SVR_8641	0x809000

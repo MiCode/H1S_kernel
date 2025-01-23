@@ -1,88 +1,26 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * APIC driver for "bigsmp" xAPIC machines with more than 8 virtual CPUs.
  *
  * Drives the local APIC in "clustered mode".
  */
-#include <linux/threads.h>
 #include <linux/cpumask.h>
-#include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/dmi.h>
 #include <linux/smp.h>
 
-#include <asm/apicdef.h>
-#include <asm/fixmap.h>
-#include <asm/mpspec.h>
 #include <asm/apic.h>
-#include <asm/ipi.h>
+#include <asm/io_apic.h>
+
+#include "local.h"
 
 static unsigned bigsmp_get_apic_id(unsigned long x)
 {
 	return (x >> 24) & 0xFF;
 }
 
-static int bigsmp_apic_id_registered(void)
+static bool bigsmp_check_apicid_used(physid_mask_t *map, int apicid)
 {
-	return 1;
-}
-
-static unsigned long bigsmp_check_apicid_used(physid_mask_t *map, int apicid)
-{
-	return 0;
-}
-
-static unsigned long bigsmp_check_apicid_present(int bit)
-{
-	return 1;
-}
-
-static int bigsmp_early_logical_apicid(int cpu)
-{
-	/* on bigsmp, logical apicid is the same as physical */
-	return early_per_cpu(x86_cpu_to_apicid, cpu);
-}
-
-static inline unsigned long calculate_ldr(int cpu)
-{
-	unsigned long val, id;
-
-	val = apic_read(APIC_LDR) & ~APIC_LDR_MASK;
-	id = per_cpu(x86_bios_cpu_apicid, cpu);
-	val |= SET_APIC_LOGICAL_ID(id);
-
-	return val;
-}
-
-/*
- * Set up the logical destination ID.
- *
- * Intel recommends to set DFR, LDR and TPR before enabling
- * an APIC.  See e.g. "AP-388 82489DX User's Manual" (Intel
- * document number 292116).  So here it goes...
- */
-static void bigsmp_init_apic_ldr(void)
-{
-	unsigned long val;
-	int cpu = smp_processor_id();
-
-	apic_write(APIC_DFR, APIC_DFR_FLAT);
-	val = calculate_ldr(cpu);
-	apic_write(APIC_LDR, val);
-}
-
-static void bigsmp_setup_apic_routing(void)
-{
-	printk(KERN_INFO
-		"Enabling APIC mode:  Physflat.  Using %d I/O APICs\n",
-		nr_ioapics);
-}
-
-static int bigsmp_cpu_present_to_apicid(int mps_cpu)
-{
-	if (mps_cpu < nr_cpu_ids)
-		return (int) per_cpu(x86_bios_cpu_apicid, mps_cpu);
-
-	return BAD_APICID;
+	return false;
 }
 
 static void bigsmp_ioapic_phys_id_map(physid_mask_t *phys_map, physid_mask_t *retmap)
@@ -91,19 +29,9 @@ static void bigsmp_ioapic_phys_id_map(physid_mask_t *phys_map, physid_mask_t *re
 	physids_promote(0xFFL, retmap);
 }
 
-static int bigsmp_check_phys_apicid_present(int phys_apicid)
-{
-	return 1;
-}
-
 static int bigsmp_phys_pkg_id(int cpuid_apic, int index_msb)
 {
 	return cpuid_apic >> index_msb;
-}
-
-static inline void bigsmp_send_IPI_mask(const struct cpumask *mask, int vector)
-{
-	default_send_IPI_mask_sequence_phys(mask, vector);
 }
 
 static void bigsmp_send_IPI_allbutself(int vector)
@@ -113,7 +41,7 @@ static void bigsmp_send_IPI_allbutself(int vector)
 
 static void bigsmp_send_IPI_all(int vector)
 {
-	bigsmp_send_IPI_mask(cpu_online_mask, vector);
+	default_send_IPI_mask_sequence_phys(cpu_online_mask, vector);
 }
 
 static int dmi_bigsmp; /* can be set by dmi scanners */
@@ -144,95 +72,55 @@ static const struct dmi_system_id bigsmp_dmi_table[] = {
 
 static int probe_bigsmp(void)
 {
-	if (def_to_bigsmp)
-		dmi_bigsmp = 1;
-	else
-		dmi_check_system(bigsmp_dmi_table);
-
-	return dmi_bigsmp;
+	return dmi_check_system(bigsmp_dmi_table);
 }
 
-static struct apic apic_bigsmp = {
+static struct apic apic_bigsmp __ro_after_init = {
 
 	.name				= "bigsmp",
 	.probe				= probe_bigsmp,
-	.acpi_madt_oem_check		= NULL,
-	.apic_id_valid			= default_apic_id_valid,
-	.apic_id_registered		= bigsmp_apic_id_registered,
 
-	.irq_delivery_mode		= dest_Fixed,
-	/* phys delivery to target CPU: */
-	.irq_dest_mode			= 0,
+	.delivery_mode			= APIC_DELIVERY_MODE_FIXED,
+	.dest_mode_logical		= false,
 
-	.target_cpus			= default_target_cpus,
 	.disable_esr			= 1,
-	.dest_logical			= 0,
+
 	.check_apicid_used		= bigsmp_check_apicid_used,
-	.check_apicid_present		= bigsmp_check_apicid_present,
-
-	.vector_allocation_domain	= default_vector_allocation_domain,
-	.init_apic_ldr			= bigsmp_init_apic_ldr,
-
 	.ioapic_phys_id_map		= bigsmp_ioapic_phys_id_map,
-	.setup_apic_routing		= bigsmp_setup_apic_routing,
-	.multi_timer_check		= NULL,
-	.cpu_present_to_apicid		= bigsmp_cpu_present_to_apicid,
-	.apicid_to_cpu_present		= physid_set_mask_of_physid,
-	.setup_portio_remap		= NULL,
-	.check_phys_apicid_present	= bigsmp_check_phys_apicid_present,
-	.enable_apic_mode		= NULL,
+	.cpu_present_to_apicid		= default_cpu_present_to_apicid,
 	.phys_pkg_id			= bigsmp_phys_pkg_id,
-	.mps_oem_check			= NULL,
 
+	.max_apic_id			= 0xFE,
 	.get_apic_id			= bigsmp_get_apic_id,
 	.set_apic_id			= NULL,
-	.apic_id_mask			= 0xFF << 24,
 
-	.cpu_mask_to_apicid_and		= default_cpu_mask_to_apicid_and,
+	.calc_dest_apicid		= apic_default_calc_apicid,
 
-	.send_IPI_mask			= bigsmp_send_IPI_mask,
+	.send_IPI			= default_send_IPI_single_phys,
+	.send_IPI_mask			= default_send_IPI_mask_sequence_phys,
 	.send_IPI_mask_allbutself	= NULL,
 	.send_IPI_allbutself		= bigsmp_send_IPI_allbutself,
 	.send_IPI_all			= bigsmp_send_IPI_all,
 	.send_IPI_self			= default_send_IPI_self,
 
-	.trampoline_phys_low		= DEFAULT_TRAMPOLINE_PHYS_LOW,
-	.trampoline_phys_high		= DEFAULT_TRAMPOLINE_PHYS_HIGH,
-
-	.wait_for_init_deassert		= default_wait_for_init_deassert,
-
-	.smp_callin_clear_local_apic	= NULL,
-	.inquire_remote_apic		= default_inquire_remote_apic,
-
 	.read				= native_apic_mem_read,
 	.write				= native_apic_mem_write,
-	.eoi_write			= native_apic_mem_write,
+	.eoi				= native_apic_mem_eoi,
 	.icr_read			= native_apic_icr_read,
 	.icr_write			= native_apic_icr_write,
-	.wait_icr_idle			= native_apic_wait_icr_idle,
-	.safe_wait_icr_idle		= native_safe_apic_wait_icr_idle,
-
-	.x86_32_early_logical_apicid	= bigsmp_early_logical_apicid,
+	.wait_icr_idle			= apic_mem_wait_icr_idle,
+	.safe_wait_icr_idle		= apic_mem_wait_icr_idle_timeout,
 };
 
-void __init generic_bigsmp_probe(void)
+bool __init apic_bigsmp_possible(bool cmdline_override)
 {
-	unsigned int cpu;
+	return apic == &apic_bigsmp || !cmdline_override;
+}
 
-	if (!probe_bigsmp())
-		return;
-
-	apic = &apic_bigsmp;
-
-	for_each_possible_cpu(cpu) {
-		if (early_per_cpu(x86_cpu_to_logical_apicid,
-				  cpu) == BAD_APICID)
-			continue;
-		early_per_cpu(x86_cpu_to_logical_apicid, cpu) =
-			bigsmp_early_logical_apicid(cpu);
-	}
-
-	pr_info("Overriding APIC driver with %s\n", apic_bigsmp.name);
+void __init apic_bigsmp_force(void)
+{
+	if (apic != &apic_bigsmp)
+		apic_install_driver(&apic_bigsmp);
 }
 
 apic_driver(apic_bigsmp);

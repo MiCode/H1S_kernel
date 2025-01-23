@@ -1,8 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * QLogic iSCSI HBA Driver
  * Copyright (c)  2003-2013 QLogic Corporation
- *
- * See LICENSE.qla4xxx for copyright and licensing details.
  */
 
 #ifndef __QL4_DEF_H
@@ -24,8 +23,8 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/mutex.h>
-#include <linux/aer.h>
 #include <linux/bsg-lib.h>
+#include <linux/vmalloc.h>
 
 #include <net/tcp.h>
 #include <scsi/scsi.h>
@@ -167,6 +166,8 @@
 #define DEV_DB_NON_PERSISTENT	0
 #define DEV_DB_PERSISTENT	1
 
+#define QL4_ISP_REG_DISCONNECT 0xffffffffU
+
 #define COPY_ISID(dst_isid, src_isid) {			\
 	int i, j;					\
 	for (i = 0, j = ISID_SIZE - 1; i < ISID_SIZE;)	\
@@ -194,7 +195,7 @@
 #define ADAPTER_INIT_TOV		30
 #define ADAPTER_RESET_TOV		180
 #define EXTEND_CMD_TOV			60
-#define WAIT_CMD_TOV			30
+#define WAIT_CMD_TOV			5
 #define EH_WAIT_CMD_TOV			120
 #define FIRMWARE_UP_TOV			60
 #define RESET_FIRMWARE_TOV		30
@@ -214,11 +215,21 @@
 #define IDC_COMP_TOV			5
 #define LINK_UP_COMP_TOV		30
 
-#define CMD_SP(Cmnd)			((Cmnd)->SCp.ptr)
+/*
+ * Note: the data structure below does not have a struct iscsi_cmd member since
+ * the qla4xxx driver does not use libiscsi for SCSI I/O.
+ */
+struct qla4xxx_cmd_priv {
+	struct srb *srb;
+};
+
+static inline struct qla4xxx_cmd_priv *qla4xxx_cmd_priv(struct scsi_cmnd *cmd)
+{
+	return scsi_cmd_priv(cmd);
+}
 
 /*
- * SCSI Request Block structure	 (srb)	that is placed
- * on cmd->SCp location of every I/O	 [We have 22 bytes available]
+ * SCSI Request Block structure (srb) that is associated with each scsi_cmnd.
  */
 struct srb {
 	struct list_head list;	/* (8)	 */
@@ -297,6 +308,8 @@ struct ddb_entry {
 
 	/* Driver Re-login  */
 	unsigned long flags;		  /* DDB Flags */
+#define DDB_CONN_CLOSE_FAILURE		0 /* 0x00000001 */
+
 	uint16_t default_relogin_timeout; /*  Max time to wait for
 					   *  relogin to complete */
 	atomic_t retry_relogin_timer;	  /* Min Time between relogins
@@ -362,13 +375,13 @@ struct qla4_work_evt {
 		struct {
 			enum iscsi_host_event_code code;
 			uint32_t data_size;
-			uint8_t data[0];
+			uint8_t data[];
 		} aen;
 		struct {
 			uint32_t status;
 			uint32_t pid;
 			uint32_t data_size;
-			uint8_t data[0];
+			uint8_t data[];
 		} ping;
 	} u;
 };
@@ -405,19 +418,7 @@ struct qla4_8xxx_legacy_intr_set {
 };
 
 /* MSI-X Support */
-
-#define QLA_MSIX_DEFAULT	0x00
-#define QLA_MSIX_RSP_Q		0x01
-
 #define QLA_MSIX_ENTRIES	2
-#define QLA_MIDX_DEFAULT	0
-#define QLA_MIDX_RSP_Q		1
-
-struct ql4_msix_entry {
-	int have_irq;
-	uint16_t msix_vector;
-	uint16_t msix_entry;
-};
 
 /*
  * ISP Operations
@@ -443,9 +444,9 @@ struct isp_operations {
 	void (*wr_reg_direct) (struct scsi_qla_host *, ulong, uint32_t);
 	int (*rd_reg_indirect) (struct scsi_qla_host *, uint32_t, uint32_t *);
 	int (*wr_reg_indirect) (struct scsi_qla_host *, uint32_t, uint32_t);
-	int (*idc_lock) (struct scsi_qla_host *);
+	int (*idc_lock) (struct scsi_qla_host *); /* Context: task, can sleep */
 	void (*idc_unlock) (struct scsi_qla_host *);
-	void (*rom_lock_recovery) (struct scsi_qla_host *);
+	void (*rom_lock_recovery) (struct scsi_qla_host *); /* Context: task, can sleep */
 	void (*queue_mailbox_command) (struct scsi_qla_host *, uint32_t *, int);
 	void (*process_mailbox_interrupt) (struct scsi_qla_host *, int);
 };
@@ -569,9 +570,6 @@ struct scsi_qla_host {
 #define AF_IRQ_ATTACHED			10 /* 0x00000400 */
 #define AF_DISABLE_ACB_COMPLETE		11 /* 0x00000800 */
 #define AF_HA_REMOVAL			12 /* 0x00001000 */
-#define AF_INTx_ENABLED			15 /* 0x00008000 */
-#define AF_MSI_ENABLED			16 /* 0x00010000 */
-#define AF_MSIX_ENABLED			17 /* 0x00020000 */
 #define AF_MBOX_COMMAND_NOPOLL		18 /* 0x00040000 */
 #define AF_FW_RECOVERY			19 /* 0x00080000 */
 #define AF_EEH_BUSY			20 /* 0x00100000 */
@@ -580,7 +578,6 @@ struct scsi_qla_host {
 #define AF_82XX_FW_DUMPED		24 /* 0x01000000 */
 #define AF_8XXX_RST_OWNER		25 /* 0x02000000 */
 #define AF_82XX_DUMP_READING		26 /* 0x04000000 */
-#define AF_83XX_NO_FW_DUMP		27 /* 0x08000000 */
 #define AF_83XX_IOCB_INTR_ON		28 /* 0x10000000 */
 #define AF_83XX_MBOX_INTR_ON		29 /* 0x20000000 */
 
@@ -595,11 +592,12 @@ struct scsi_qla_host {
 #define DPC_AEN				9 /* 0x00000200 */
 #define DPC_GET_DHCP_IP_ADDR		15 /* 0x00008000 */
 #define DPC_LINK_CHANGED		18 /* 0x00040000 */
-#define DPC_RESET_ACTIVE		20 /* 0x00040000 */
-#define DPC_HA_UNRECOVERABLE		21 /* 0x00080000 ISP-82xx only*/
-#define DPC_HA_NEED_QUIESCENT		22 /* 0x00100000 ISP-82xx only*/
-#define DPC_POST_IDC_ACK		23 /* 0x00200000 */
+#define DPC_RESET_ACTIVE		20 /* 0x00100000 */
+#define DPC_HA_UNRECOVERABLE		21 /* 0x00200000 ISP-82xx only*/
+#define DPC_HA_NEED_QUIESCENT		22 /* 0x00400000 ISP-82xx only*/
+#define DPC_POST_IDC_ACK		23 /* 0x00800000 */
 #define DPC_RESTORE_ACB			24 /* 0x01000000 */
+#define DPC_SYSFS_DDB_EXPORT		25 /* 0x02000000 */
 
 	struct Scsi_Host *host; /* pointer to host data */
 	uint32_t tot_ddbs;
@@ -759,8 +757,6 @@ struct scsi_qla_host {
 	struct isp_operations *isp_ops;
 	struct ql82xx_hw_data hw;
 
-	struct ql4_msix_entry msix_entries[QLA_MSIX_ENTRIES];
-
 	uint32_t nx_dev_init_timeout;
 	uint32_t nx_reset_timeout;
 	void *fw_dump;
@@ -768,6 +764,7 @@ struct scsi_qla_host {
 	uint32_t fw_dump_capture_mask;
 	void *fw_dump_tmplt_hdr;
 	uint32_t fw_dump_tmplt_size;
+	uint32_t fw_dump_skip_size;
 
 	struct completion mbx_intr_comp;
 
@@ -910,7 +907,8 @@ static inline int is_qla80XX(struct scsi_qla_host *ha)
 static inline int is_aer_supported(struct scsi_qla_host *ha)
 {
 	return ((ha->pdev->device == PCI_DEVICE_ID_QLOGIC_ISP8022) ||
-		(ha->pdev->device == PCI_DEVICE_ID_QLOGIC_ISP8324));
+		(ha->pdev->device == PCI_DEVICE_ID_QLOGIC_ISP8324) ||
+		(ha->pdev->device == PCI_DEVICE_ID_QLOGIC_ISP8042));
 }
 
 static inline int adapter_up(struct scsi_qla_host *ha)

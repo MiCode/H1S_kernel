@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 #ifndef _UAPI__LINUX_KEYBOARD_H
 #define _UAPI__LINUX_KEYBOARD_H
 
@@ -26,7 +27,6 @@
 #define MAX_NR_FUNC	256	/* max nr of strings assigned to keys */
 
 #define KT_LATIN	0	/* we depend on this being zero */
-#define KT_LETTER	11	/* symbol that can be acted upon by CapsLock */
 #define KT_FN		1
 #define KT_SPEC		2
 #define KT_PAD		3
@@ -37,6 +37,7 @@
 #define KT_META		8
 #define KT_ASCII	9
 #define KT_LOCK		10
+#define KT_LETTER	11	/* symbol that can be acted upon by CapsLock */
 #define KT_SLOCK	12
 #define KT_DEAD2	13
 #define KT_BRL		14
@@ -356,8 +357,29 @@
 #define K_DTILDE	K(KT_DEAD,3)
 #define K_DDIERE	K(KT_DEAD,4)
 #define K_DCEDIL	K(KT_DEAD,5)
+#define K_DMACRON	K(KT_DEAD,6)
+#define K_DBREVE	K(KT_DEAD,7)
+#define K_DABDOT	K(KT_DEAD,8)
+#define K_DABRING	K(KT_DEAD,9)
+#define K_DDBACUTE	K(KT_DEAD,10)
+#define K_DCARON	K(KT_DEAD,11)
+#define K_DOGONEK	K(KT_DEAD,12)
+#define K_DIOTA		K(KT_DEAD,13)
+#define K_DVOICED	K(KT_DEAD,14)
+#define K_DSEMVOICED	K(KT_DEAD,15)
+#define K_DBEDOT	K(KT_DEAD,16)
+#define K_DHOOK		K(KT_DEAD,17)
+#define K_DHORN		K(KT_DEAD,18)
+#define K_DSTROKE	K(KT_DEAD,19)
+#define K_DABCOMMA	K(KT_DEAD,20)
+#define K_DABREVCOMMA	K(KT_DEAD,21)
+#define K_DDBGRAVE	K(KT_DEAD,22)
+#define K_DINVBREVE	K(KT_DEAD,23)
+#define K_DBECOMMA	K(KT_DEAD,24)
+#define K_DCURRENCY	K(KT_DEAD,25)
+#define K_DGREEK	K(KT_DEAD,26)
 
-#define NR_DEAD		6
+#define NR_DEAD		27
 
 #define K_DOWN		K(KT_CUR,0)
 #define K_LEFT		K(KT_CUR,1)

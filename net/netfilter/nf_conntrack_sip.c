@@ -1,14 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* SIP extension for IP connection tracking.
  *
  * (C) 2005 by Christian Hentschel <chentschel@arnet.com.ar>
  * based on RR's ip_conntrack_ftp.c and other modules.
  * (C) 2007 United Security Providers
  * (C) 2007, 2008 Patrick McHardy <kaber@trash.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 #include <linux/ctype.h>
@@ -18,6 +17,8 @@
 #include <linux/udp.h>
 #include <linux/tcp.h>
 #include <linux/netfilter.h>
+#include <linux/netfilter_ipv4.h>
+#include <linux/netfilter_ipv6.h>
 
 #include <net/netfilter/nf_conntrack.h>
 #include <net/netfilter/nf_conntrack_core.h>
@@ -26,11 +27,13 @@
 #include <net/netfilter/nf_conntrack_zones.h>
 #include <linux/netfilter/nf_conntrack_sip.h>
 
+#define HELPER_NAME "sip"
+
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Christian Hentschel <chentschel@arnet.com.ar>");
 MODULE_DESCRIPTION("SIP connection tracking helper");
 MODULE_ALIAS("ip_conntrack_sip");
-MODULE_ALIAS_NFCT_HELPER("sip");
+MODULE_ALIAS_NFCT_HELPER(HELPER_NAME);
 
 #define MAX_PORTS	8
 static unsigned short ports[MAX_PORTS];
@@ -52,7 +55,12 @@ module_param(sip_direct_media, int, 0600);
 MODULE_PARM_DESC(sip_direct_media, "Expect Media streams between signalling "
 				   "endpoints only (default 1)");
 
-const struct nf_nat_sip_hooks *nf_nat_sip_hooks;
+static int sip_external_media __read_mostly = 0;
+module_param(sip_external_media, int, 0600);
+MODULE_PARM_DESC(sip_external_media, "Expect Media streams between external "
+				     "endpoints (default 0)");
+
+const struct nf_nat_sip_hooks __rcu *nf_nat_sip_hooks;
 EXPORT_SYMBOL_GPL(nf_nat_sip_hooks);
 
 static int string_len(const struct nf_conn *ct, const char *dptr,
@@ -81,9 +89,10 @@ static int digits_len(const struct nf_conn *ct, const char *dptr,
 static int iswordc(const char c)
 {
 	if (isalnum(c) || c == '!' || c == '"' || c == '%' ||
-	    (c >= '(' && c <= '/') || c == ':' || c == '<' || c == '>' ||
+	    (c >= '(' && c <= '+') || c == ':' || c == '<' || c == '>' ||
 	    c == '?' || (c >= '[' && c <= ']') || c == '_' || c == '`' ||
-	    c == '{' || c == '}' || c == '~')
+	    c == '{' || c == '}' || c == '~' || (c >= '-' && c <= '/') ||
+	    c == '\'')
 		return 1;
 	return 0;
 }
@@ -247,7 +256,7 @@ int ct_sip_parse_request(const struct nf_conn *ct,
 	for (; dptr < limit - strlen("sip:"); dptr++) {
 		if (*dptr == '\r' || *dptr == '\n')
 			return -1;
-		if (strnicmp(dptr, "sip:", strlen("sip:")) == 0) {
+		if (strncasecmp(dptr, "sip:", strlen("sip:")) == 0) {
 			dptr += strlen("sip:");
 			break;
 		}
@@ -327,13 +336,12 @@ static const char *sip_follow_continuation(const char *dptr, const char *limit)
 static const char *sip_skip_whitespace(const char *dptr, const char *limit)
 {
 	for (; dptr < limit; dptr++) {
-		if (*dptr == ' ')
+		if (*dptr == ' ' || *dptr == '\t')
 			continue;
 		if (*dptr != '\r' && *dptr != '\n')
 			break;
 		dptr = sip_follow_continuation(dptr, limit);
-		if (dptr == NULL)
-			return NULL;
+		break;
 	}
 	return dptr;
 }
@@ -350,7 +358,7 @@ static const char *ct_sip_header_search(const char *dptr, const char *limit,
 			continue;
 		}
 
-		if (strnicmp(dptr, needle, len) == 0)
+		if (strncasecmp(dptr, needle, len) == 0)
 			return dptr;
 	}
 	return NULL;
@@ -383,10 +391,10 @@ int ct_sip_get_header(const struct nf_conn *ct, const char *dptr,
 		/* Find header. Compact headers must be followed by a
 		 * non-alphabetic character to avoid mismatches. */
 		if (limit - dptr >= hdr->len &&
-		    strnicmp(dptr, hdr->name, hdr->len) == 0)
+		    strncasecmp(dptr, hdr->name, hdr->len) == 0)
 			dptr += hdr->len;
 		else if (hdr->cname && limit - dptr >= hdr->clen + 1 &&
-			 strnicmp(dptr, hdr->cname, hdr->clen) == 0 &&
+			 strncasecmp(dptr, hdr->cname, hdr->clen) == 0 &&
 			 !isalpha(*(dptr + hdr->clen)))
 			dptr += hdr->clen;
 		else
@@ -469,7 +477,7 @@ static int ct_sip_walk_headers(const struct nf_conn *ct, const char *dptr,
 				return ret;
 			if (ret == 0)
 				break;
-			dataoff += *matchoff;
+			dataoff = *matchoff;
 		}
 		*in_header = 0;
 	}
@@ -481,7 +489,7 @@ static int ct_sip_walk_headers(const struct nf_conn *ct, const char *dptr,
 			break;
 		if (ret == 0)
 			return ret;
-		dataoff += *matchoff;
+		dataoff = *matchoff;
 	}
 
 	if (in_header)
@@ -603,7 +611,7 @@ int ct_sip_parse_numerical_param(const struct nf_conn *ct, const char *dptr,
 	start += strlen(name);
 	*val = simple_strtoul(start, &end, 0);
 	if (start == end)
-		return 0;
+		return -1;
 	if (matchoff && matchlen) {
 		*matchoff = start - dptr;
 		*matchlen = end - start;
@@ -620,9 +628,9 @@ static int ct_sip_parse_transport(struct nf_conn *ct, const char *dptr,
 
 	if (ct_sip_parse_param(ct, dptr, dataoff, datalen, "transport=",
 			       &matchoff, &matchlen)) {
-		if (!strnicmp(dptr + matchoff, "TCP", strlen("TCP")))
+		if (!strncasecmp(dptr + matchoff, "TCP", strlen("TCP")))
 			*proto = IPPROTO_TCP;
-		else if (!strnicmp(dptr + matchoff, "UDP", strlen("UDP")))
+		else if (!strncasecmp(dptr + matchoff, "UDP", strlen("UDP")))
 			*proto = IPPROTO_UDP;
 		else
 			return 0;
@@ -743,10 +751,10 @@ int ct_sip_get_sdp_header(const struct nf_conn *ct, const char *dptr,
 
 		if (term != SDP_HDR_UNSPEC &&
 		    limit - dptr >= thdr->len &&
-		    strnicmp(dptr, thdr->name, thdr->len) == 0)
+		    strncasecmp(dptr, thdr->name, thdr->len) == 0)
 			break;
 		else if (limit - dptr >= hdr->len &&
-			 strnicmp(dptr, hdr->name, hdr->len) == 0)
+			 strncasecmp(dptr, hdr->name, hdr->len) == 0)
 			dptr += hdr->len;
 		else
 			continue;
@@ -800,22 +808,20 @@ static int refresh_signalling_expectation(struct nf_conn *ct,
 	struct hlist_node *next;
 	int found = 0;
 
-	spin_lock_bh(&nf_conntrack_lock);
+	spin_lock_bh(&nf_conntrack_expect_lock);
 	hlist_for_each_entry_safe(exp, next, &help->expectations, lnode) {
 		if (exp->class != SIP_EXPECT_SIGNALLING ||
 		    !nf_inet_addr_cmp(&exp->tuple.dst.u3, addr) ||
 		    exp->tuple.dst.protonum != proto ||
 		    exp->tuple.dst.u.udp.port != port)
 			continue;
-		if (!del_timer(&exp->timeout))
-			continue;
-		exp->flags &= ~NF_CT_EXPECT_INACTIVE;
-		exp->timeout.expires = jiffies + expires * HZ;
-		add_timer(&exp->timeout);
-		found = 1;
-		break;
+		if (mod_timer_pending(&exp->timeout, jiffies + expires * HZ)) {
+			exp->flags &= ~NF_CT_EXPECT_INACTIVE;
+			found = 1;
+			break;
+		}
 	}
-	spin_unlock_bh(&nf_conntrack_lock);
+	spin_unlock_bh(&nf_conntrack_expect_lock);
 	return found;
 }
 
@@ -825,18 +831,16 @@ static void flush_expectations(struct nf_conn *ct, bool media)
 	struct nf_conntrack_expect *exp;
 	struct hlist_node *next;
 
-	spin_lock_bh(&nf_conntrack_lock);
+	spin_lock_bh(&nf_conntrack_expect_lock);
 	hlist_for_each_entry_safe(exp, next, &help->expectations, lnode) {
 		if ((exp->class != SIP_EXPECT_SIGNALLING) ^ media)
 			continue;
-		if (!del_timer(&exp->timeout))
+		if (!nf_ct_remove_expect(exp))
 			continue;
-		nf_ct_unlink_expect(exp);
-		nf_ct_expect_put(exp);
 		if (!media)
 			break;
 	}
-	spin_unlock_bh(&nf_conntrack_lock);
+	spin_unlock_bh(&nf_conntrack_expect_lock);
 }
 
 static int set_expected_rtp_rtcp(struct sk_buff *skb, unsigned int protoff,
@@ -863,6 +867,36 @@ static int set_expected_rtp_rtcp(struct sk_buff *skb, unsigned int protoff,
 		if (!nf_inet_addr_cmp(daddr, &ct->tuplehash[dir].tuple.src.u3))
 			return NF_ACCEPT;
 		saddr = &ct->tuplehash[!dir].tuple.src.u3;
+	} else if (sip_external_media) {
+		struct net_device *dev = skb_dst(skb)->dev;
+		struct net *net = dev_net(dev);
+		struct flowi fl;
+		struct dst_entry *dst = NULL;
+
+		memset(&fl, 0, sizeof(fl));
+
+		switch (nf_ct_l3num(ct)) {
+			case NFPROTO_IPV4:
+				fl.u.ip4.daddr = daddr->ip;
+				nf_ip_route(net, &dst, &fl, false);
+				break;
+
+			case NFPROTO_IPV6:
+				fl.u.ip6.daddr = daddr->in6;
+				nf_ip6_route(net, &dst, &fl, false);
+				break;
+		}
+
+		/* Don't predict any conntracks when media endpoint is reachable
+		 * through the same interface as the signalling peer.
+		 */
+		if (dst) {
+			bool external_media = (dst->dev == dev);
+
+			dst_release(dst);
+			if (external_media)
+				return NF_ACCEPT;
+		}
 	}
 
 	/* We need to check whether the registration exists before attempting
@@ -886,7 +920,6 @@ static int set_expected_rtp_rtcp(struct sk_buff *skb, unsigned int protoff,
 	tuple.dst.u3		= *daddr;
 	tuple.dst.u.udp.port	= port;
 
-	rcu_read_lock();
 	do {
 		exp = __nf_ct_expect_find(net, nf_ct_zone(ct), &tuple);
 
@@ -894,7 +927,7 @@ static int set_expected_rtp_rtcp(struct sk_buff *skb, unsigned int protoff,
 		    nfct_help(exp->master)->helper != nfct_help(ct)->helper ||
 		    exp->class != class)
 			break;
-#ifdef CONFIG_NF_NAT_NEEDED
+#if IS_ENABLED(CONFIG_NF_NAT)
 		if (!direct_rtp &&
 		    (!nf_inet_addr_cmp(&exp->saved_addr, &exp->tuple.dst.u3) ||
 		     exp->saved_proto.udp.port != exp->tuple.dst.u.udp.port) &&
@@ -920,10 +953,8 @@ static int set_expected_rtp_rtcp(struct sk_buff *skb, unsigned int protoff,
 			goto err1;
 	}
 
-	if (skip_expect) {
-		rcu_read_unlock();
+	if (skip_expect)
 		return NF_ACCEPT;
-	}
 
 	rtp_exp = nf_ct_expect_alloc(ct);
 	if (rtp_exp == NULL)
@@ -943,18 +974,29 @@ static int set_expected_rtp_rtcp(struct sk_buff *skb, unsigned int protoff,
 				       datalen, rtp_exp, rtcp_exp,
 				       mediaoff, medialen, daddr);
 	else {
-		if (nf_ct_expect_related(rtp_exp) == 0) {
-			if (nf_ct_expect_related(rtcp_exp) != 0)
-				nf_ct_unexpect_related(rtp_exp);
-			else
+		/* -EALREADY handling works around end-points that send
+		 * SDP messages with identical port but different media type,
+		 * we pretend expectation was set up.
+		 * It also works in the case that SDP messages are sent with
+		 * identical expect tuples but for different master conntracks.
+		 */
+		int errp = nf_ct_expect_related(rtp_exp,
+						NF_CT_EXP_F_SKIP_MASTER);
+
+		if (errp == 0 || errp == -EALREADY) {
+			int errcp = nf_ct_expect_related(rtcp_exp,
+						NF_CT_EXP_F_SKIP_MASTER);
+
+			if (errcp == 0 || errcp == -EALREADY)
 				ret = NF_ACCEPT;
+			else if (errp == 0)
+				nf_ct_unexpect_related(rtp_exp);
 		}
 	}
 	nf_ct_expect_put(rtcp_exp);
 err2:
 	nf_ct_expect_put(rtp_exp);
 err1:
-	rcu_read_unlock();
 	return ret;
 }
 
@@ -1187,6 +1229,7 @@ static int process_register_request(struct sk_buff *skb, unsigned int protoff,
 	struct nf_conntrack_expect *exp;
 	union nf_inet_addr *saddr, daddr;
 	const struct nf_nat_sip_hooks *hooks;
+	struct nf_conntrack_helper *helper;
 	__be16 port;
 	u8 proto;
 	unsigned int expires = 0;
@@ -1247,10 +1290,14 @@ static int process_register_request(struct sk_buff *skb, unsigned int protoff,
 	if (sip_direct_signalling)
 		saddr = &ct->tuplehash[!dir].tuple.src.u3;
 
+	helper = rcu_dereference(nfct_help(ct)->helper);
+	if (!helper)
+		return NF_DROP;
+
 	nf_ct_expect_init(exp, SIP_EXPECT_SIGNALLING, nf_ct_l3num(ct),
 			  saddr, &daddr, proto, NULL, &port);
 	exp->timeout.expires = sip_timeout * HZ;
-	exp->helper = nfct_help(ct)->helper;
+	exp->helper = helper;
 	exp->flags = NF_CT_EXPECT_PERMANENT | NF_CT_EXPECT_INACTIVE;
 
 	hooks = rcu_dereference(nf_nat_sip_hooks);
@@ -1258,7 +1305,7 @@ static int process_register_request(struct sk_buff *skb, unsigned int protoff,
 		ret = hooks->expect(skb, protoff, dataoff, dptr, datalen,
 				    exp, matchoff, matchlen);
 	else {
-		if (nf_ct_expect_related(exp) != 0) {
+		if (nf_ct_expect_related(exp, 0) != 0) {
 			nf_ct_helper_log(skb, ct, "cannot add expectation");
 			ret = NF_DROP;
 		} else
@@ -1381,7 +1428,7 @@ static int process_sip_response(struct sk_buff *skb, unsigned int protoff,
 		return NF_DROP;
 	}
 	cseq = simple_strtoul(*dptr + matchoff, NULL, 10);
-	if (!cseq) {
+	if (!cseq && *(*dptr + matchoff) != '0') {
 		nf_ct_helper_log(skb, ct, "cannot get cseq");
 		return NF_DROP;
 	}
@@ -1394,7 +1441,7 @@ static int process_sip_response(struct sk_buff *skb, unsigned int protoff,
 		if (handler->response == NULL)
 			continue;
 		if (*datalen < matchend + handler->len ||
-		    strnicmp(*dptr + matchend, handler->method, handler->len))
+		    strncasecmp(*dptr + matchend, handler->method, handler->len))
 			continue;
 		return handler->response(skb, protoff, dataoff, dptr, datalen,
 					 cseq, code);
@@ -1434,8 +1481,11 @@ static int process_sip_request(struct sk_buff *skb, unsigned int protoff,
 		handler = &sip_handlers[i];
 		if (handler->request == NULL)
 			continue;
-		if (*datalen < handler->len ||
-		    strnicmp(*dptr, handler->method, handler->len))
+		if (*datalen < handler->len + 2 ||
+		    strncasecmp(*dptr, handler->method, handler->len))
+			continue;
+		if ((*dptr)[handler->len] != ' ' ||
+		    !isalpha((*dptr)[handler->len+1]))
 			continue;
 
 		if (ct_sip_get_header(ct, *dptr, 0, *datalen, SIP_HDR_CSEQ,
@@ -1444,7 +1494,7 @@ static int process_sip_request(struct sk_buff *skb, unsigned int protoff,
 			return NF_DROP;
 		}
 		cseq = simple_strtoul(*dptr + matchoff, NULL, 10);
-		if (!cseq) {
+		if (!cseq && *(*dptr + matchoff) != '0') {
 			nf_ct_helper_log(skb, ct, "cannot get cseq");
 			return NF_DROP;
 		}
@@ -1462,7 +1512,7 @@ static int process_sip_msg(struct sk_buff *skb, struct nf_conn *ct,
 	const struct nf_nat_sip_hooks *hooks;
 	int ret;
 
-	if (strnicmp(*dptr, "SIP/2.0 ", strlen("SIP/2.0 ")) != 0)
+	if (strncasecmp(*dptr, "SIP/2.0 ", strlen("SIP/2.0 ")) != 0)
 		ret = process_sip_request(skb, protoff, dataoff, dptr, datalen);
 	else
 		ret = process_sip_response(skb, protoff, dataoff, dptr, datalen);
@@ -1587,7 +1637,7 @@ static int sip_help_udp(struct sk_buff *skb, unsigned int protoff,
 	return process_sip_msg(skb, ct, protoff, dataoff, &dptr, &datalen);
 }
 
-static struct nf_conntrack_helper sip[MAX_PORTS][4] __read_mostly;
+static struct nf_conntrack_helper sip[MAX_PORTS * 4] __read_mostly;
 
 static const struct nf_conntrack_expect_policy sip_exp_policy[SIP_EXPECT_MAX + 1] = {
 	[SIP_EXPECT_SIGNALLING] = {
@@ -1612,66 +1662,43 @@ static const struct nf_conntrack_expect_policy sip_exp_policy[SIP_EXPECT_MAX + 1
 	},
 };
 
-static void nf_conntrack_sip_fini(void)
+static void __exit nf_conntrack_sip_fini(void)
 {
-	int i, j;
-
-	for (i = 0; i < ports_c; i++) {
-		for (j = 0; j < ARRAY_SIZE(sip[i]); j++) {
-			if (sip[i][j].me == NULL)
-				continue;
-			nf_conntrack_helper_unregister(&sip[i][j]);
-		}
-	}
+	nf_conntrack_helpers_unregister(sip, ports_c * 4);
 }
 
 static int __init nf_conntrack_sip_init(void)
 {
-	int i, j, ret;
+	int i, ret;
+
+	NF_CT_HELPER_BUILD_BUG_ON(sizeof(struct nf_ct_sip_master));
 
 	if (ports_c == 0)
 		ports[ports_c++] = SIP_PORT;
 
 	for (i = 0; i < ports_c; i++) {
-		memset(&sip[i], 0, sizeof(sip[i]));
+		nf_ct_helper_init(&sip[4 * i], AF_INET, IPPROTO_UDP,
+				  HELPER_NAME, SIP_PORT, ports[i], i,
+				  sip_exp_policy, SIP_EXPECT_MAX, sip_help_udp,
+				  NULL, THIS_MODULE);
+		nf_ct_helper_init(&sip[4 * i + 1], AF_INET, IPPROTO_TCP,
+				  HELPER_NAME, SIP_PORT, ports[i], i,
+				  sip_exp_policy, SIP_EXPECT_MAX, sip_help_tcp,
+				  NULL, THIS_MODULE);
+		nf_ct_helper_init(&sip[4 * i + 2], AF_INET6, IPPROTO_UDP,
+				  HELPER_NAME, SIP_PORT, ports[i], i,
+				  sip_exp_policy, SIP_EXPECT_MAX, sip_help_udp,
+				  NULL, THIS_MODULE);
+		nf_ct_helper_init(&sip[4 * i + 3], AF_INET6, IPPROTO_TCP,
+				  HELPER_NAME, SIP_PORT, ports[i], i,
+				  sip_exp_policy, SIP_EXPECT_MAX, sip_help_tcp,
+				  NULL, THIS_MODULE);
+	}
 
-		sip[i][0].tuple.src.l3num = AF_INET;
-		sip[i][0].tuple.dst.protonum = IPPROTO_UDP;
-		sip[i][0].help = sip_help_udp;
-		sip[i][1].tuple.src.l3num = AF_INET;
-		sip[i][1].tuple.dst.protonum = IPPROTO_TCP;
-		sip[i][1].help = sip_help_tcp;
-
-		sip[i][2].tuple.src.l3num = AF_INET6;
-		sip[i][2].tuple.dst.protonum = IPPROTO_UDP;
-		sip[i][2].help = sip_help_udp;
-		sip[i][3].tuple.src.l3num = AF_INET6;
-		sip[i][3].tuple.dst.protonum = IPPROTO_TCP;
-		sip[i][3].help = sip_help_tcp;
-
-		for (j = 0; j < ARRAY_SIZE(sip[i]); j++) {
-			sip[i][j].data_len = sizeof(struct nf_ct_sip_master);
-			sip[i][j].tuple.src.u.udp.port = htons(ports[i]);
-			sip[i][j].expect_policy = sip_exp_policy;
-			sip[i][j].expect_class_max = SIP_EXPECT_MAX;
-			sip[i][j].me = THIS_MODULE;
-
-			if (ports[i] == SIP_PORT)
-				sprintf(sip[i][j].name, "sip");
-			else
-				sprintf(sip[i][j].name, "sip-%u", i);
-
-			pr_debug("port #%u: %u\n", i, ports[i]);
-
-			ret = nf_conntrack_helper_register(&sip[i][j]);
-			if (ret) {
-				printk(KERN_ERR "nf_ct_sip: failed to register"
-				       " helper for pf: %u port: %u\n",
-				       sip[i][j].tuple.src.l3num, ports[i]);
-				nf_conntrack_sip_fini();
-				return ret;
-			}
-		}
+	ret = nf_conntrack_helpers_register(sip, ports_c * 4);
+	if (ret < 0) {
+		pr_err("failed to register helpers\n");
+		return ret;
 	}
 	return 0;
 }

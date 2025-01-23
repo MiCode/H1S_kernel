@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/sys_nautilus.c
  *
@@ -31,7 +32,7 @@
 #include <linux/pci.h>
 #include <linux/init.h>
 #include <linux/reboot.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/bitops.h>
 
 #include <asm/ptrace.h>
@@ -39,8 +40,6 @@
 #include <asm/irq.h>
 #include <asm/mmu_context.h>
 #include <asm/io.h>
-#include <asm/pci.h>
-#include <asm/pgtable.h>
 #include <asm/core_irongate.h>
 #include <asm/hwrpb.h>
 #include <asm/tlbflush.h>
@@ -63,7 +62,7 @@ nautilus_init_irq(void)
 	common_init_isa_dma();
 }
 
-static int __init
+static int
 nautilus_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	/* Preserve the IRQ set up by the console.  */
@@ -187,72 +186,87 @@ nautilus_machine_check(unsigned long vector, unsigned long la_ptr)
 
 extern void pcibios_claim_one_bus(struct pci_bus *);
 
-static struct resource irongate_io = {
-	.name	= "Irongate PCI IO",
-	.flags	= IORESOURCE_IO,
-};
 static struct resource irongate_mem = {
 	.name	= "Irongate PCI MEM",
 	.flags	= IORESOURCE_MEM,
+};
+static struct resource busn_resource = {
+	.name	= "PCI busn",
+	.start	= 0,
+	.end	= 255,
+	.flags	= IORESOURCE_BUS,
 };
 
 void __init
 nautilus_init_pci(void)
 {
 	struct pci_controller *hose = hose_head;
+	struct pci_host_bridge *bridge;
 	struct pci_bus *bus;
-	struct pci_dev *irongate;
 	unsigned long bus_align, bus_size, pci_mem;
 	unsigned long memtop = max_low_pfn << PAGE_SHIFT;
 
-	/* Scan our single hose.  */
-	bus = pci_scan_bus(0, alpha_mv.pci_ops, hose);
-	hose->bus = bus;
-	pcibios_claim_one_bus(bus);
+	bridge = pci_alloc_host_bridge(0);
+	if (!bridge)
+		return;
 
-	irongate = pci_get_bus_and_slot(0, 0);
-	bus->self = irongate;
-	bus->resource[0] = &irongate_io;
-	bus->resource[1] = &irongate_mem;
+	/* Use default IO. */
+	pci_add_resource(&bridge->windows, &ioport_resource);
+	/* Irongate PCI memory aperture, calculate required size before
+	   setting it up. */
+	pci_add_resource(&bridge->windows, &irongate_mem);
+
+	pci_add_resource(&bridge->windows, &busn_resource);
+	bridge->dev.parent = NULL;
+	bridge->sysdata = hose;
+	bridge->busnr = 0;
+	bridge->ops = alpha_mv.pci_ops;
+	bridge->swizzle_irq = alpha_mv.pci_swizzle;
+	bridge->map_irq = alpha_mv.pci_map_irq;
+	bridge->size_windows = 1;
+
+	/* Scan our single hose.  */
+	if (pci_scan_root_bus_bridge(bridge)) {
+		pci_free_host_bridge(bridge);
+		return;
+	}
+	bus = hose->bus = bridge->bus;
+	pcibios_claim_one_bus(bus);
 
 	pci_bus_size_bridges(bus);
 
-	/* IO port range. */
-	bus->resource[0]->start = 0;
-	bus->resource[0]->end = 0xffff;
-
-	/* Set up PCI memory range - limit is hardwired to 0xffffffff,
-	   base must be at aligned to 16Mb. */
-	bus_align = bus->resource[1]->start;
-	bus_size = bus->resource[1]->end + 1 - bus_align;
+	/* Now we've got the size and alignment of PCI memory resources
+	   stored in irongate_mem. Set up the PCI memory range: limit is
+	   hardwired to 0xffffffff, base must be aligned to 16Mb. */
+	bus_align = irongate_mem.start;
+	bus_size = irongate_mem.end + 1 - bus_align;
 	if (bus_align < 0x1000000UL)
 		bus_align = 0x1000000UL;
 
 	pci_mem = (0x100000000UL - bus_size) & -bus_align;
+	irongate_mem.start = pci_mem;
+	irongate_mem.end = 0xffffffffUL;
 
-	bus->resource[1]->start = pci_mem;
-	bus->resource[1]->end = 0xffffffffUL;
-	if (request_resource(&iomem_resource, bus->resource[1]) < 0)
+	/* Register our newly calculated PCI memory window in the resource
+	   tree. */
+	if (request_resource(&iomem_resource, &irongate_mem) < 0)
 		printk(KERN_ERR "Failed to request MEM on hose 0\n");
+
+	printk(KERN_INFO "Irongate pci_mem %pR\n", &irongate_mem);
 
 	if (pci_mem < memtop)
 		memtop = pci_mem;
 	if (memtop > alpha_mv.min_mem_address) {
 		free_reserved_area(__va(alpha_mv.min_mem_address),
 				   __va(memtop), -1, NULL);
-		printk("nautilus_init_pci: %ldk freed\n",
+		printk(KERN_INFO "nautilus_init_pci: %ldk freed\n",
 			(memtop - alpha_mv.min_mem_address) >> 10);
 	}
-
 	if ((IRONGATE0->dev_vendor >> 16) > 0x7006)	/* Albacore? */
 		IRONGATE0->pci_mem = pci_mem;
 
 	pci_bus_assign_resources(bus);
-
-	/* pci_common_swizzle() relies on bus->self being NULL
-	   for the root bus, so just clear it. */
-	bus->self = NULL;
-	pci_fixup_irqs(alpha_mv.pci_swizzle, alpha_mv.pci_map_irq);
+	pci_bus_add_devices(bus);
 }
 
 /*

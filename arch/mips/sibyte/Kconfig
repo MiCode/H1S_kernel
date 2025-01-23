@@ -1,41 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
 config SIBYTE_SB1250
 	bool
 	select CEVT_SB1250
 	select CSRC_SB1250
-	select HW_HAS_PCI
-	select IRQ_CPU
+	select HAVE_PCI
+	select IRQ_MIPS_CPU
 	select SIBYTE_ENABLE_LDT_IF_PCI
 	select SIBYTE_HAS_ZBUS_PROFILING
 	select SIBYTE_SB1xxx_SOC
 	select SYS_SUPPORTS_SMP
 
-config SIBYTE_BCM1120
-	bool
-	select CEVT_SB1250
-	select CSRC_SB1250
-	select IRQ_CPU
-	select SIBYTE_BCM112X
-	select SIBYTE_HAS_ZBUS_PROFILING
-	select SIBYTE_SB1xxx_SOC
-
 config SIBYTE_BCM1125
 	bool
 	select CEVT_SB1250
 	select CSRC_SB1250
-	select HW_HAS_PCI
-	select IRQ_CPU
+	select HAVE_PCI
+	select IRQ_MIPS_CPU
 	select SIBYTE_BCM112X
-	select SIBYTE_HAS_ZBUS_PROFILING
-	select SIBYTE_SB1xxx_SOC
-
-config SIBYTE_BCM1125H
-	bool
-	select CEVT_SB1250
-	select CSRC_SB1250
-	select HW_HAS_PCI
-	select IRQ_CPU
-	select SIBYTE_BCM112X
-	select SIBYTE_ENABLE_LDT_IF_PCI
 	select SIBYTE_HAS_ZBUS_PROFILING
 	select SIBYTE_SB1xxx_SOC
 
@@ -43,7 +24,7 @@ config SIBYTE_BCM112X
 	bool
 	select CEVT_SB1250
 	select CSRC_SB1250
-	select IRQ_CPU
+	select IRQ_MIPS_CPU
 	select SIBYTE_SB1xxx_SOC
 	select SIBYTE_HAS_ZBUS_PROFILING
 
@@ -51,26 +32,15 @@ config SIBYTE_BCM1x80
 	bool
 	select CEVT_BCM1480
 	select CSRC_BCM1480
-	select HW_HAS_PCI
-	select IRQ_CPU
+	select HAVE_PCI
+	select IRQ_MIPS_CPU
 	select SIBYTE_HAS_ZBUS_PROFILING
 	select SIBYTE_SB1xxx_SOC
-	select SYS_SUPPORTS_SMP
-
-config SIBYTE_BCM1x55
-	bool
-	select CEVT_BCM1480
-	select CSRC_BCM1480
-	select HW_HAS_PCI
-	select IRQ_CPU
-	select SIBYTE_SB1xxx_SOC
-	select SIBYTE_HAS_ZBUS_PROFILING
 	select SYS_SUPPORTS_SMP
 
 config SIBYTE_SB1xxx_SOC
 	bool
-	select DMA_COHERENT
-	select IRQ_CPU
+	select IRQ_MIPS_CPU
 	select SWAP_IO_SPACE
 	select SYS_SUPPORTS_32BIT_KERNEL
 	select SYS_SUPPORTS_64BIT_KERNEL
@@ -80,11 +50,6 @@ config SIBYTE_SB1xxx_SOC
 choice
 	prompt "SiByte SOC Stepping"
 	depends on SIBYTE_SB1xxx_SOC
-
-config CPU_SB1_PASS_1
-	bool "1250 Pass1"
-	depends on SIBYTE_SB1250
-	select CPU_HAS_PREFETCH
 
 config CPU_SB1_PASS_2_1250
 	bool "1250 An"
@@ -148,7 +113,7 @@ config SIBYTE_CFE_CONSOLE
 config SIBYTE_BUS_WATCHER
 	bool "Support for Bus Watcher statistics"
 	depends on SIBYTE_SB1xxx_SOC && \
-		(SIBYTE_BCM112X || SIBYTE_SB1250)
+		(SIBYTE_BCM112X || SIBYTE_SB1250 || SIBYTE_BCM1x80)
 	help
 	  Handle and keep statistics on the bus error interrupts (COR_ECC,
 	  BAD_ECC, IO_BUS).

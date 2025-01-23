@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /* This file is derived from the GAS 2.1.4 assembler control file.
    The GAS product is under the GNU General Public License, version 2 or later.
    As such, this file is also under that license.
@@ -9,6 +10,9 @@
    set is documented here because I received the full set. If you wish
    more information about COFF, then O'Reilly has a very excellent book.
 */
+
+#ifndef _UAPI_LINUX_COFF_H
+#define _UAPI_LINUX_COFF_H
 
 #define  E_SYMNMLEN  8   /* Number of characters in a symbol name         */
 #define  E_FILNMLEN 14   /* Number of characters in a file name           */
@@ -349,3 +353,5 @@ struct COFF_reloc {
 
 /* For new sections we haven't heard of before */
 #define COFF_DEF_SECTION_ALIGNMENT       4
+
+#endif /* _UAPI_LINUX_COFF_H */

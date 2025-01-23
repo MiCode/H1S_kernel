@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* DVB USB compliant linux driver for Conexant USB reference design.
  *
  * The Conexant reference design I saw on their website was only for analogue
@@ -11,21 +12,21 @@
  * design, so it can be reused for the "analogue-only" device (if it will
  * appear at all).
  *
- * TODO: Use the cx25840-driver for the analogue part
  *
- * Copyright (C) 2005 Patrick Boettcher (patrick.boettcher@desy.de)
+ * Copyright (C) 2005 Patrick Boettcher (patrick.boettcher@posteo.de)
  * Copyright (C) 2006 Michael Krufky (mkrufky@linuxtv.org)
  * Copyright (C) 2006, 2007 Chris Pascoe (c.pascoe@itee.uq.edu.au)
+ * Copyright (C) 2011, 2017 Maciej S. Szmigiero (mail@maciej.szmigiero.name)
  *
- *   This program is free software; you can redistribute it and/or modify it
- *   under the terms of the GNU General Public License as published by the Free
- *   Software Foundation, version 2.
- *
- * see Documentation/dvb/README.dvb-usb for more information
+ * see Documentation/driver-api/media/drivers/dvb-usb.rst for more information
  */
 #include <media/tuner.h>
-#include <linux/vmalloc.h>
+#include <linux/delay.h>
+#include <linux/device.h>
+#include <linux/kernel.h>
 #include <linux/slab.h>
+#include <linux/string.h>
+#include <linux/vmalloc.h>
 
 #include "cxusb.h"
 
@@ -34,7 +35,7 @@
 #include "mt352.h"
 #include "mt352_priv.h"
 #include "zl10353.h"
-#include "tuner-xc2028.h"
+#include "xc2028.h"
 #include "tuner-simple.h"
 #include "mxl5005s.h"
 #include "max2165.h"
@@ -42,40 +43,68 @@
 #include "dib0070.h"
 #include "lgs8gxx.h"
 #include "atbm8830.h"
-
-/* Max transfer size done by I2C transfer functions */
-#define MAX_XFER_SIZE  64
+#include "si2168.h"
+#include "si2157.h"
 
 /* debug */
-static int dvb_usb_cxusb_debug;
+int dvb_usb_cxusb_debug;
 module_param_named(debug, dvb_usb_cxusb_debug, int, 0644);
-MODULE_PARM_DESC(debug, "set debugging level (1=rc (or-able))." DVB_USB_DEBUG_STATUS);
+MODULE_PARM_DESC(debug, "set debugging level (see cxusb.h)."
+		 DVB_USB_DEBUG_STATUS);
 
 DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
 
-#define deb_info(args...)   dprintk(dvb_usb_cxusb_debug, 0x03, args)
-#define deb_i2c(args...)    dprintk(dvb_usb_cxusb_debug, 0x02, args)
+enum cxusb_table_index {
+	MEDION_MD95700,
+	DVICO_BLUEBIRD_LG064F_COLD,
+	DVICO_BLUEBIRD_LG064F_WARM,
+	DVICO_BLUEBIRD_DUAL_1_COLD,
+	DVICO_BLUEBIRD_DUAL_1_WARM,
+	DVICO_BLUEBIRD_LGZ201_COLD,
+	DVICO_BLUEBIRD_LGZ201_WARM,
+	DVICO_BLUEBIRD_TH7579_COLD,
+	DVICO_BLUEBIRD_TH7579_WARM,
+	DIGITALNOW_BLUEBIRD_DUAL_1_COLD,
+	DIGITALNOW_BLUEBIRD_DUAL_1_WARM,
+	DVICO_BLUEBIRD_DUAL_2_COLD,
+	DVICO_BLUEBIRD_DUAL_2_WARM,
+	DVICO_BLUEBIRD_DUAL_4,
+	DVICO_BLUEBIRD_DVB_T_NANO_2,
+	DVICO_BLUEBIRD_DVB_T_NANO_2_NFW_WARM,
+	AVERMEDIA_VOLAR_A868R,
+	DVICO_BLUEBIRD_DUAL_4_REV_2,
+	CONEXANT_D680_DMB,
+	MYGICA_D689,
+	NR__cxusb_table_index
+};
 
-static int cxusb_ctrl_msg(struct dvb_usb_device *d,
-			  u8 cmd, u8 *wbuf, int wlen, u8 *rbuf, int rlen)
+static struct usb_device_id cxusb_table[];
+
+int cxusb_ctrl_msg(struct dvb_usb_device *d,
+		   u8 cmd, const u8 *wbuf, int wlen, u8 *rbuf, int rlen)
 {
-	int wo = (rbuf == NULL || rlen == 0); /* write-only */
-	u8 sndbuf[MAX_XFER_SIZE];
+	struct cxusb_state *st = d->priv;
+	int ret;
 
-	if (1 + wlen > sizeof(sndbuf)) {
-		warn("i2c wr: len=%d is too big!\n",
-		     wlen);
+	if (1 + wlen > MAX_XFER_SIZE) {
+		warn("i2c wr: len=%d is too big!\n", wlen);
 		return -EOPNOTSUPP;
 	}
 
-	memset(sndbuf, 0, 1+wlen);
+	if (rlen > MAX_XFER_SIZE) {
+		warn("i2c rd: len=%d is too big!\n", rlen);
+		return -EOPNOTSUPP;
+	}
 
-	sndbuf[0] = cmd;
-	memcpy(&sndbuf[1], wbuf, wlen);
-	if (wo)
-		return dvb_usb_generic_write(d, sndbuf, 1+wlen);
-	else
-		return dvb_usb_generic_rw(d, sndbuf, 1+wlen, rbuf, rlen, 0);
+	mutex_lock(&d->data_mutex);
+	st->data[0] = cmd;
+	memcpy(&st->data[1], wbuf, wlen);
+	ret = dvb_usb_generic_rw(d, st->data, 1 + wlen, st->data, rlen, 0);
+	if (!ret && rbuf && rlen)
+		memcpy(rbuf, st->data, rlen);
+
+	mutex_unlock(&d->data_mutex);
+	return ret;
 }
 
 /* GPIO */
@@ -84,7 +113,8 @@ static void cxusb_gpio_tuner(struct dvb_usb_device *d, int onoff)
 	struct cxusb_state *st = d->priv;
 	u8 o[2], i;
 
-	if (st->gpio_write_state[GPIO_TUNER] == onoff)
+	if (st->gpio_write_state[GPIO_TUNER] == onoff &&
+	    !st->gpio_write_refresh[GPIO_TUNER])
 		return;
 
 	o[0] = GPIO_TUNER;
@@ -92,13 +122,14 @@ static void cxusb_gpio_tuner(struct dvb_usb_device *d, int onoff)
 	cxusb_ctrl_msg(d, CMD_GPIO_WRITE, o, 2, &i, 1);
 
 	if (i != 0x01)
-		deb_info("gpio_write failed.\n");
+		dev_info(&d->udev->dev, "gpio_write failed.\n");
 
 	st->gpio_write_state[GPIO_TUNER] = onoff;
+	st->gpio_write_refresh[GPIO_TUNER] = false;
 }
 
 static int cxusb_bluebird_gpio_rw(struct dvb_usb_device *d, u8 changemask,
-				 u8 newval)
+				  u8 newval)
 {
 	u8 o[2], gpio_state;
 	int rc;
@@ -108,7 +139,7 @@ static int cxusb_bluebird_gpio_rw(struct dvb_usb_device *d, u8 changemask,
 
 	rc = cxusb_ctrl_msg(d, CMD_BLUEBIRD_GPIO_RW, o, 2, &gpio_state, 1);
 	if (rc < 0 || (gpio_state & changemask) != (newval & changemask))
-		deb_info("bluebird_gpio_write failed.\n");
+		dev_info(&d->udev->dev, "bluebird_gpio_write failed.\n");
 
 	return rc < 0 ? rc : gpio_state;
 }
@@ -126,7 +157,7 @@ static void cxusb_nano2_led(struct dvb_usb_device *d, int onoff)
 }
 
 static int cxusb_d680_dmb_gpio_tuner(struct dvb_usb_device *d,
-		u8 addr, int onoff)
+				     u8 addr, int onoff)
 {
 	u8  o[2] = {addr, onoff};
 	u8  i;
@@ -136,12 +167,12 @@ static int cxusb_d680_dmb_gpio_tuner(struct dvb_usb_device *d,
 
 	if (rc < 0)
 		return rc;
+
 	if (i == 0x01)
 		return 0;
-	else {
-		deb_info("gpio_write failed.\n");
-		return -EIO;
-	}
+
+	dev_info(&d->udev->dev, "gpio_write failed.\n");
+	return -EIO;
 }
 
 /* I2C */
@@ -156,8 +187,7 @@ static int cxusb_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
 		return -EAGAIN;
 
 	for (i = 0; i < num; i++) {
-
-		if (d->udev->descriptor.idVendor == USB_VID_MEDION)
+		if (le16_to_cpu(d->udev->descriptor.idVendor) == USB_VID_MEDION)
 			switch (msg[i].addr) {
 			case 0x63:
 				cxusb_gpio_tuner(d, 0);
@@ -182,13 +212,13 @@ static int cxusb_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
 			obuf[2] = msg[i].addr;
 			if (cxusb_ctrl_msg(d, CMD_I2C_READ,
 					   obuf, 3,
-					   ibuf, 1+msg[i].len) < 0) {
+					   ibuf, 1 + msg[i].len) < 0) {
 				warn("i2c read failed");
 				break;
 			}
 			memcpy(msg[i].buf, &ibuf[1], msg[i].len);
-		} else if (i+1 < num && (msg[i+1].flags & I2C_M_RD) &&
-			   msg[i].addr == msg[i+1].addr) {
+		} else if (i + 1 < num && (msg[i + 1].flags & I2C_M_RD) &&
+			   msg[i].addr == msg[i + 1].addr) {
 			/* write to then read from same address */
 			u8 obuf[MAX_XFER_SIZE], ibuf[MAX_XFER_SIZE];
 
@@ -205,19 +235,19 @@ static int cxusb_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
 				goto unlock;
 			}
 			obuf[0] = msg[i].len;
-			obuf[1] = msg[i+1].len;
+			obuf[1] = msg[i + 1].len;
 			obuf[2] = msg[i].addr;
 			memcpy(&obuf[3], msg[i].buf, msg[i].len);
 
 			if (cxusb_ctrl_msg(d, CMD_I2C_READ,
-					   obuf, 3+msg[i].len,
-					   ibuf, 1+msg[i+1].len) < 0)
+					   obuf, 3 + msg[i].len,
+					   ibuf, 1 + msg[i + 1].len) < 0)
 				break;
 
 			if (ibuf[0] != 0x08)
-				deb_i2c("i2c read may have failed\n");
+				dev_info(&d->udev->dev, "i2c read may have failed\n");
 
-			memcpy(msg[i+1].buf, &ibuf[1], msg[i+1].len);
+			memcpy(msg[i + 1].buf, &ibuf[1], msg[i + 1].len);
 
 			i++;
 		} else {
@@ -235,10 +265,10 @@ static int cxusb_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
 			memcpy(&obuf[2], msg[i].buf, msg[i].len);
 
 			if (cxusb_ctrl_msg(d, CMD_I2C_WRITE, obuf,
-					   2+msg[i].len, &ibuf,1) < 0)
+					   2 + msg[i].len, &ibuf, 1) < 0)
 				break;
 			if (ibuf != 0x08)
-				deb_i2c("i2c write may have failed\n");
+				dev_info(&d->udev->dev, "i2c write may have failed\n");
 		}
 	}
 
@@ -254,7 +284,7 @@ unlock:
 
 static u32 cxusb_i2c_func(struct i2c_adapter *adapter)
 {
-	return I2C_FUNC_I2C;
+	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL;
 }
 
 static struct i2c_algorithm cxusb_i2c_algo = {
@@ -262,31 +292,70 @@ static struct i2c_algorithm cxusb_i2c_algo = {
 	.functionality = cxusb_i2c_func,
 };
 
-static int cxusb_power_ctrl(struct dvb_usb_device *d, int onoff)
+static int _cxusb_power_ctrl(struct dvb_usb_device *d, int onoff)
 {
 	u8 b = 0;
+
+	dev_info(&d->udev->dev, "setting power %s\n", onoff ? "ON" : "OFF");
+
 	if (onoff)
 		return cxusb_ctrl_msg(d, CMD_POWER_ON, &b, 1, NULL, 0);
 	else
 		return cxusb_ctrl_msg(d, CMD_POWER_OFF, &b, 1, NULL, 0);
 }
 
+static int cxusb_power_ctrl(struct dvb_usb_device *d, int onoff)
+{
+	bool is_medion = d->props.devices[0].warm_ids[0] == &cxusb_table[MEDION_MD95700];
+	int ret;
+
+	if (is_medion && !onoff) {
+		struct cxusb_medion_dev *cxdev = d->priv;
+
+		mutex_lock(&cxdev->open_lock);
+
+		if (cxdev->open_type == CXUSB_OPEN_ANALOG) {
+			dev_info(&d->udev->dev, "preventing DVB core from setting power OFF while we are in analog mode\n");
+			ret = -EBUSY;
+			goto ret_unlock;
+		}
+	}
+
+	ret = _cxusb_power_ctrl(d, onoff);
+
+ret_unlock:
+	if (is_medion && !onoff) {
+		struct cxusb_medion_dev *cxdev = d->priv;
+
+		mutex_unlock(&cxdev->open_lock);
+	}
+
+	return ret;
+}
+
 static int cxusb_aver_power_ctrl(struct dvb_usb_device *d, int onoff)
 {
 	int ret;
+
 	if (!onoff)
 		return cxusb_ctrl_msg(d, CMD_POWER_OFF, NULL, 0, NULL, 0);
 	if (d->state == DVB_USB_STATE_INIT &&
 	    usb_set_interface(d->udev, 0, 0) < 0)
 		err("set interface failed");
-	do {} while (!(ret = cxusb_ctrl_msg(d, CMD_POWER_ON, NULL, 0, NULL, 0)) &&
-		   !(ret = cxusb_ctrl_msg(d, 0x15, NULL, 0, NULL, 0)) &&
-		   !(ret = cxusb_ctrl_msg(d, 0x17, NULL, 0, NULL, 0)) && 0);
+	do {
+		/* Nothing */
+	} while (!(ret = cxusb_ctrl_msg(d, CMD_POWER_ON, NULL, 0, NULL, 0)) &&
+		 !(ret = cxusb_ctrl_msg(d, 0x15, NULL, 0, NULL, 0)) &&
+		 !(ret = cxusb_ctrl_msg(d, 0x17, NULL, 0, NULL, 0)) && 0);
+
 	if (!ret) {
-		/* FIXME: We don't know why, but we need to configure the
-		 * lgdt3303 with the register settings below on resume */
+		/*
+		 * FIXME: We don't know why, but we need to configure the
+		 * lgdt3303 with the register settings below on resume
+		 */
 		int i;
-		u8 buf, bufs[] = {
+		u8 buf;
+		static const u8 bufs[] = {
 			0x0e, 0x2, 0x00, 0x7f,
 			0x0e, 0x2, 0x02, 0xfe,
 			0x0e, 0x2, 0x02, 0x01,
@@ -299,9 +368,9 @@ static int cxusb_aver_power_ctrl(struct dvb_usb_device *d, int onoff)
 			0x0e, 0x2, 0x47, 0x88,
 		};
 		msleep(20);
-		for (i = 0; i < sizeof(bufs)/sizeof(u8); i += 4/sizeof(u8)) {
+		for (i = 0; i < ARRAY_SIZE(bufs); i += 4 / sizeof(u8)) {
 			ret = cxusb_ctrl_msg(d, CMD_I2C_WRITE,
-					     bufs+i, 4, &buf, 1);
+					     bufs + i, 4, &buf, 1);
 			if (ret)
 				break;
 			if (buf != 0x8)
@@ -314,6 +383,7 @@ static int cxusb_aver_power_ctrl(struct dvb_usb_device *d, int onoff)
 static int cxusb_bluebird_power_ctrl(struct dvb_usb_device *d, int onoff)
 {
 	u8 b = 0;
+
 	if (onoff)
 		return cxusb_ctrl_msg(d, CMD_POWER_ON, &b, 1, NULL, 0);
 	else
@@ -335,6 +405,7 @@ static int cxusb_d680_dmb_power_ctrl(struct dvb_usb_device *d, int onoff)
 {
 	int ret;
 	u8  b;
+
 	ret = cxusb_power_ctrl(d, onoff);
 	if (!onoff)
 		return ret;
@@ -347,11 +418,26 @@ static int cxusb_d680_dmb_power_ctrl(struct dvb_usb_device *d, int onoff)
 
 static int cxusb_streaming_ctrl(struct dvb_usb_adapter *adap, int onoff)
 {
+	struct dvb_usb_device *dvbdev = adap->dev;
+	bool is_medion = dvbdev->props.devices[0].warm_ids[0] ==
+		&cxusb_table[MEDION_MD95700];
 	u8 buf[2] = { 0x03, 0x00 };
+
+	if (is_medion && onoff) {
+		int ret;
+
+		ret = cxusb_medion_get(dvbdev, CXUSB_OPEN_DIGITAL);
+		if (ret != 0)
+			return ret;
+	}
+
 	if (onoff)
-		cxusb_ctrl_msg(adap->dev, CMD_STREAMING_ON, buf, 2, NULL, 0);
+		cxusb_ctrl_msg(dvbdev, CMD_STREAMING_ON, buf, 2, NULL, 0);
 	else
-		cxusb_ctrl_msg(adap->dev, CMD_STREAMING_OFF, NULL, 0, NULL, 0);
+		cxusb_ctrl_msg(dvbdev, CMD_STREAMING_OFF, NULL, 0, NULL, 0);
+
+	if (is_medion && !onoff)
+		cxusb_medion_put(dvbdev);
 
 	return 0;
 }
@@ -380,8 +466,8 @@ static void cxusb_d680_dmb_drain_message(struct dvb_usb_device *d)
 		return;
 	while (1) {
 		if (usb_bulk_msg(d->udev,
-			usb_rcvbulkpipe(d->udev, ep),
-			junk, junk_len, &rd_count, timeout) < 0)
+				 usb_rcvbulkpipe(d->udev, ep),
+				 junk, junk_len, &rd_count, timeout) < 0)
 			break;
 		if (!rd_count)
 			break;
@@ -403,8 +489,8 @@ static void cxusb_d680_dmb_drain_video(struct dvb_usb_device *d)
 		return;
 	while (1) {
 		if (usb_bulk_msg(d->udev,
-			usb_rcvbulkpipe(d->udev, p->endpoint),
-			junk, junk_len, &rd_count, timeout) < 0)
+				 usb_rcvbulkpipe(d->udev, p->endpoint),
+				 junk, junk_len, &rd_count, timeout) < 0)
 			break;
 		if (!rd_count)
 			break;
@@ -412,231 +498,74 @@ static void cxusb_d680_dmb_drain_video(struct dvb_usb_device *d)
 	kfree(junk);
 }
 
-static int cxusb_d680_dmb_streaming_ctrl(
-		struct dvb_usb_adapter *adap, int onoff)
+static int cxusb_d680_dmb_streaming_ctrl(struct dvb_usb_adapter *adap,
+					 int onoff)
 {
 	if (onoff) {
 		u8 buf[2] = { 0x03, 0x00 };
+
 		cxusb_d680_dmb_drain_video(adap->dev);
 		return cxusb_ctrl_msg(adap->dev, CMD_STREAMING_ON,
-			buf, sizeof(buf), NULL, 0);
+				      buf, sizeof(buf), NULL, 0);
 	} else {
 		int ret = cxusb_ctrl_msg(adap->dev,
-			CMD_STREAMING_OFF, NULL, 0, NULL, 0);
+					 CMD_STREAMING_OFF, NULL, 0, NULL, 0);
 		return ret;
 	}
 }
 
-static int cxusb_rc_query(struct dvb_usb_device *d, u32 *event, int *state)
+static int cxusb_rc_query(struct dvb_usb_device *d)
 {
-	struct rc_map_table *keymap = d->props.rc.legacy.rc_map_table;
 	u8 ircode[4];
-	int i;
 
-	cxusb_ctrl_msg(d, CMD_GET_IR_CODE, NULL, 0, ircode, 4);
+	if (cxusb_ctrl_msg(d, CMD_GET_IR_CODE, NULL, 0, ircode, 4) < 0)
+		return 0;
 
-	*event = 0;
-	*state = REMOTE_NO_KEY_PRESSED;
-
-	for (i = 0; i < d->props.rc.legacy.rc_map_size; i++) {
-		if (rc5_custom(&keymap[i]) == ircode[2] &&
-		    rc5_data(&keymap[i]) == ircode[3]) {
-			*event = keymap[i].keycode;
-			*state = REMOTE_KEY_PRESSED;
-
-			return 0;
-		}
-	}
-
+	if (ircode[2] || ircode[3])
+		rc_keydown(d->rc_dev, RC_PROTO_NEC,
+			   RC_SCANCODE_NEC(~ircode[2] & 0xff, ircode[3]), 0);
 	return 0;
 }
 
-static int cxusb_bluebird2_rc_query(struct dvb_usb_device *d, u32 *event,
-				    int *state)
+static int cxusb_bluebird2_rc_query(struct dvb_usb_device *d)
 {
-	struct rc_map_table *keymap = d->props.rc.legacy.rc_map_table;
 	u8 ircode[4];
-	int i;
-	struct i2c_msg msg = { .addr = 0x6b, .flags = I2C_M_RD,
-			       .buf = ircode, .len = 4 };
-
-	*event = 0;
-	*state = REMOTE_NO_KEY_PRESSED;
+	struct i2c_msg msg = {
+		.addr = 0x6b,
+		.flags = I2C_M_RD,
+		.buf = ircode,
+		.len = 4
+	};
 
 	if (cxusb_i2c_xfer(&d->i2c_adap, &msg, 1) != 1)
 		return 0;
 
-	for (i = 0; i < d->props.rc.legacy.rc_map_size; i++) {
-		if (rc5_custom(&keymap[i]) == ircode[1] &&
-		    rc5_data(&keymap[i]) == ircode[2]) {
-			*event = keymap[i].keycode;
-			*state = REMOTE_KEY_PRESSED;
-
-			return 0;
-		}
-	}
-
+	if (ircode[1] || ircode[2])
+		rc_keydown(d->rc_dev, RC_PROTO_NEC,
+			   RC_SCANCODE_NEC(~ircode[1] & 0xff, ircode[2]), 0);
 	return 0;
 }
 
-static int cxusb_d680_dmb_rc_query(struct dvb_usb_device *d, u32 *event,
-		int *state)
+static int cxusb_d680_dmb_rc_query(struct dvb_usb_device *d)
 {
-	struct rc_map_table *keymap = d->props.rc.legacy.rc_map_table;
 	u8 ircode[2];
-	int i;
-
-	*event = 0;
-	*state = REMOTE_NO_KEY_PRESSED;
 
 	if (cxusb_ctrl_msg(d, 0x10, NULL, 0, ircode, 2) < 0)
 		return 0;
 
-	for (i = 0; i < d->props.rc.legacy.rc_map_size; i++) {
-		if (rc5_custom(&keymap[i]) == ircode[0] &&
-		    rc5_data(&keymap[i]) == ircode[1]) {
-			*event = keymap[i].keycode;
-			*state = REMOTE_KEY_PRESSED;
-
-			return 0;
-		}
-	}
-
+	if (ircode[0] || ircode[1])
+		rc_keydown(d->rc_dev, RC_PROTO_UNKNOWN,
+			   RC_SCANCODE_RC5(ircode[0], ircode[1]), 0);
 	return 0;
 }
 
-static struct rc_map_table rc_map_dvico_mce_table[] = {
-	{ 0xfe02, KEY_TV },
-	{ 0xfe0e, KEY_MP3 },
-	{ 0xfe1a, KEY_DVD },
-	{ 0xfe1e, KEY_FAVORITES },
-	{ 0xfe16, KEY_SETUP },
-	{ 0xfe46, KEY_POWER2 },
-	{ 0xfe0a, KEY_EPG },
-	{ 0xfe49, KEY_BACK },
-	{ 0xfe4d, KEY_MENU },
-	{ 0xfe51, KEY_UP },
-	{ 0xfe5b, KEY_LEFT },
-	{ 0xfe5f, KEY_RIGHT },
-	{ 0xfe53, KEY_DOWN },
-	{ 0xfe5e, KEY_OK },
-	{ 0xfe59, KEY_INFO },
-	{ 0xfe55, KEY_TAB },
-	{ 0xfe0f, KEY_PREVIOUSSONG },/* Replay */
-	{ 0xfe12, KEY_NEXTSONG },	/* Skip */
-	{ 0xfe42, KEY_ENTER	 },	/* Windows/Start */
-	{ 0xfe15, KEY_VOLUMEUP },
-	{ 0xfe05, KEY_VOLUMEDOWN },
-	{ 0xfe11, KEY_CHANNELUP },
-	{ 0xfe09, KEY_CHANNELDOWN },
-	{ 0xfe52, KEY_CAMERA },
-	{ 0xfe5a, KEY_TUNER },	/* Live */
-	{ 0xfe19, KEY_OPEN },
-	{ 0xfe0b, KEY_1 },
-	{ 0xfe17, KEY_2 },
-	{ 0xfe1b, KEY_3 },
-	{ 0xfe07, KEY_4 },
-	{ 0xfe50, KEY_5 },
-	{ 0xfe54, KEY_6 },
-	{ 0xfe48, KEY_7 },
-	{ 0xfe4c, KEY_8 },
-	{ 0xfe58, KEY_9 },
-	{ 0xfe13, KEY_ANGLE },	/* Aspect */
-	{ 0xfe03, KEY_0 },
-	{ 0xfe1f, KEY_ZOOM },
-	{ 0xfe43, KEY_REWIND },
-	{ 0xfe47, KEY_PLAYPAUSE },
-	{ 0xfe4f, KEY_FASTFORWARD },
-	{ 0xfe57, KEY_MUTE },
-	{ 0xfe0d, KEY_STOP },
-	{ 0xfe01, KEY_RECORD },
-	{ 0xfe4e, KEY_POWER },
-};
-
-static struct rc_map_table rc_map_dvico_portable_table[] = {
-	{ 0xfc02, KEY_SETUP },       /* Profile */
-	{ 0xfc43, KEY_POWER2 },
-	{ 0xfc06, KEY_EPG },
-	{ 0xfc5a, KEY_BACK },
-	{ 0xfc05, KEY_MENU },
-	{ 0xfc47, KEY_INFO },
-	{ 0xfc01, KEY_TAB },
-	{ 0xfc42, KEY_PREVIOUSSONG },/* Replay */
-	{ 0xfc49, KEY_VOLUMEUP },
-	{ 0xfc09, KEY_VOLUMEDOWN },
-	{ 0xfc54, KEY_CHANNELUP },
-	{ 0xfc0b, KEY_CHANNELDOWN },
-	{ 0xfc16, KEY_CAMERA },
-	{ 0xfc40, KEY_TUNER },	/* ATV/DTV */
-	{ 0xfc45, KEY_OPEN },
-	{ 0xfc19, KEY_1 },
-	{ 0xfc18, KEY_2 },
-	{ 0xfc1b, KEY_3 },
-	{ 0xfc1a, KEY_4 },
-	{ 0xfc58, KEY_5 },
-	{ 0xfc59, KEY_6 },
-	{ 0xfc15, KEY_7 },
-	{ 0xfc14, KEY_8 },
-	{ 0xfc17, KEY_9 },
-	{ 0xfc44, KEY_ANGLE },	/* Aspect */
-	{ 0xfc55, KEY_0 },
-	{ 0xfc07, KEY_ZOOM },
-	{ 0xfc0a, KEY_REWIND },
-	{ 0xfc08, KEY_PLAYPAUSE },
-	{ 0xfc4b, KEY_FASTFORWARD },
-	{ 0xfc5b, KEY_MUTE },
-	{ 0xfc04, KEY_STOP },
-	{ 0xfc56, KEY_RECORD },
-	{ 0xfc57, KEY_POWER },
-	{ 0xfc41, KEY_UNKNOWN },    /* INPUT */
-	{ 0xfc00, KEY_UNKNOWN },    /* HD */
-};
-
-static struct rc_map_table rc_map_d680_dmb_table[] = {
-	{ 0x0038, KEY_UNKNOWN },	/* TV/AV */
-	{ 0x080c, KEY_ZOOM },
-	{ 0x0800, KEY_0 },
-	{ 0x0001, KEY_1 },
-	{ 0x0802, KEY_2 },
-	{ 0x0003, KEY_3 },
-	{ 0x0804, KEY_4 },
-	{ 0x0005, KEY_5 },
-	{ 0x0806, KEY_6 },
-	{ 0x0007, KEY_7 },
-	{ 0x0808, KEY_8 },
-	{ 0x0009, KEY_9 },
-	{ 0x000a, KEY_MUTE },
-	{ 0x0829, KEY_BACK },
-	{ 0x0012, KEY_CHANNELUP },
-	{ 0x0813, KEY_CHANNELDOWN },
-	{ 0x002b, KEY_VOLUMEUP },
-	{ 0x082c, KEY_VOLUMEDOWN },
-	{ 0x0020, KEY_UP },
-	{ 0x0821, KEY_DOWN },
-	{ 0x0011, KEY_LEFT },
-	{ 0x0810, KEY_RIGHT },
-	{ 0x000d, KEY_OK },
-	{ 0x081f, KEY_RECORD },
-	{ 0x0017, KEY_PLAYPAUSE },
-	{ 0x0816, KEY_PLAYPAUSE },
-	{ 0x000b, KEY_STOP },
-	{ 0x0827, KEY_FASTFORWARD },
-	{ 0x0026, KEY_REWIND },
-	{ 0x081e, KEY_UNKNOWN },    /* Time Shift */
-	{ 0x000e, KEY_UNKNOWN },    /* Snapshot */
-	{ 0x082d, KEY_UNKNOWN },    /* Mouse Cursor */
-	{ 0x000f, KEY_UNKNOWN },    /* Minimize/Maximize */
-	{ 0x0814, KEY_UNKNOWN },    /* Shuffle */
-	{ 0x0025, KEY_POWER },
-};
-
-static int cxusb_dee1601_demod_init(struct dvb_frontend* fe)
+static int cxusb_dee1601_demod_init(struct dvb_frontend *fe)
 {
-	static u8 clock_config []  = { CLOCK_CTL,  0x38, 0x28 };
-	static u8 reset []         = { RESET,      0x80 };
-	static u8 adc_ctl_1_cfg [] = { ADC_CTL_1,  0x40 };
-	static u8 agc_cfg []       = { AGC_TARGET, 0x28, 0x20 };
-	static u8 gpp_ctl_cfg []   = { GPP_CTL,    0x33 };
+	static u8 clock_config[]   = { CLOCK_CTL,  0x38, 0x28 };
+	static u8 reset[]          = { RESET,      0x80 };
+	static u8 adc_ctl_1_cfg[]  = { ADC_CTL_1,  0x40 };
+	static u8 agc_cfg[]        = { AGC_TARGET, 0x28, 0x20 };
+	static u8 gpp_ctl_cfg[]    = { GPP_CTL,    0x33 };
 	static u8 capt_range_cfg[] = { CAPT_RANGE, 0x32 };
 
 	mt352_write(fe, clock_config,   sizeof(clock_config));
@@ -651,13 +580,14 @@ static int cxusb_dee1601_demod_init(struct dvb_frontend* fe)
 	return 0;
 }
 
-static int cxusb_mt352_demod_init(struct dvb_frontend* fe)
-{	/* used in both lgz201 and th7579 */
-	static u8 clock_config []  = { CLOCK_CTL,  0x38, 0x29 };
-	static u8 reset []         = { RESET,      0x80 };
-	static u8 adc_ctl_1_cfg [] = { ADC_CTL_1,  0x40 };
-	static u8 agc_cfg []       = { AGC_TARGET, 0x24, 0x20 };
-	static u8 gpp_ctl_cfg []   = { GPP_CTL,    0x33 };
+static int cxusb_mt352_demod_init(struct dvb_frontend *fe)
+{
+	/* used in both lgz201 and th7579 */
+	static u8 clock_config[]   = { CLOCK_CTL,  0x38, 0x29 };
+	static u8 reset[]          = { RESET,      0x80 };
+	static u8 adc_ctl_1_cfg[]  = { ADC_CTL_1,  0x40 };
+	static u8 agc_cfg[]        = { AGC_TARGET, 0x24, 0x20 };
+	static u8 gpp_ctl_cfg[]    = { GPP_CTL,    0x33 };
 	static u8 capt_range_cfg[] = { CAPT_RANGE, 0x32 };
 
 	mt352_write(fe, clock_config,   sizeof(clock_config));
@@ -677,12 +607,10 @@ static struct cx22702_config cxusb_cx22702_config = {
 };
 
 static struct lgdt330x_config cxusb_lgdt3303_config = {
-	.demod_address = 0x0e,
 	.demod_chip    = LGDT3303,
 };
 
 static struct lgdt330x_config cxusb_aver_lgdt3303_config = {
-	.demod_address       = 0x0e,
 	.demod_chip          = LGDT3303,
 	.clock_polarity_flip = 2,
 };
@@ -769,9 +697,21 @@ static struct max2165_config mygica_d689_max2165_cfg = {
 /* Callbacks for DVB USB */
 static int cxusb_fmd1216me_tuner_attach(struct dvb_usb_adapter *adap)
 {
+	struct dvb_usb_device *dvbdev = adap->dev;
+	bool is_medion = dvbdev->props.devices[0].warm_ids[0] ==
+		&cxusb_table[MEDION_MD95700];
+
 	dvb_attach(simple_tuner_attach, adap->fe_adap[0].fe,
-		   &adap->dev->i2c_adap, 0x61,
+		   &dvbdev->i2c_adap, 0x61,
 		   TUNER_PHILIPS_FMD1216ME_MK3);
+
+	if (is_medion && adap->fe_adap[0].fe)
+		/*
+		 * make sure that DVB core won't put to sleep (reset, really)
+		 * tuner when we might be open in analog mode
+		 */
+		adap->fe_adap[0].fe->ops.tuner_ops.sleep = NULL;
+
 	return 0;
 }
 
@@ -784,7 +724,8 @@ static int cxusb_dee1601_tuner_attach(struct dvb_usb_adapter *adap)
 
 static int cxusb_lgz201_tuner_attach(struct dvb_usb_adapter *adap)
 {
-	dvb_attach(dvb_pll_attach, adap->fe_adap[0].fe, 0x61, NULL, DVB_PLL_LG_Z201);
+	dvb_attach(dvb_pll_attach, adap->fe_adap[0].fe, 0x61,
+		   NULL, DVB_PLL_LG_Z201);
 	return 0;
 }
 
@@ -810,14 +751,16 @@ static int dvico_bluebird_xc2028_callback(void *ptr, int component,
 
 	switch (command) {
 	case XC2028_TUNER_RESET:
-		deb_info("%s: XC2028_TUNER_RESET %d\n", __func__, arg);
+		dev_info(&d->udev->dev, "XC2028_TUNER_RESET %d\n", arg);
 		cxusb_bluebird_gpio_pulse(d, 0x01, 1);
 		break;
 	case XC2028_RESET_CLK:
-		deb_info("%s: XC2028_RESET_CLK %d\n", __func__, arg);
+		dev_info(&d->udev->dev, "XC2028_RESET_CLK %d\n", arg);
+		break;
+	case XC2028_I2C_FLUSH:
 		break;
 	default:
-		deb_info("%s: unknown command %d, arg %d\n", __func__,
+		dev_info(&d->udev->dev, "unknown command %d, arg %d\n",
 			 command, arg);
 		return -EINVAL;
 	}
@@ -842,7 +785,7 @@ static int cxusb_dvico_xc3028_tuner_attach(struct dvb_usb_adapter *adap)
 	adap->fe_adap[0].fe->callback = dvico_bluebird_xc2028_callback;
 
 	fe = dvb_attach(xc2028_attach, adap->fe_adap[0].fe, &cfg);
-	if (fe == NULL || fe->ops.tuner_ops.set_config == NULL)
+	if (!fe || !fe->ops.tuner_ops.set_config)
 		return -EIO;
 
 	fe->ops.tuner_ops.set_config(fe, &ctl);
@@ -860,33 +803,120 @@ static int cxusb_mxl5003s_tuner_attach(struct dvb_usb_adapter *adap)
 static int cxusb_d680_dmb_tuner_attach(struct dvb_usb_adapter *adap)
 {
 	struct dvb_frontend *fe;
+
 	fe = dvb_attach(mxl5005s_attach, adap->fe_adap[0].fe,
 			&adap->dev->i2c_adap, &d680_dmb_tuner);
-	return (fe == NULL) ? -EIO : 0;
+	return (!fe) ? -EIO : 0;
 }
 
 static int cxusb_mygica_d689_tuner_attach(struct dvb_usb_adapter *adap)
 {
 	struct dvb_frontend *fe;
+
 	fe = dvb_attach(max2165_attach, adap->fe_adap[0].fe,
 			&adap->dev->i2c_adap, &mygica_d689_max2165_cfg);
-	return (fe == NULL) ? -EIO : 0;
+	return (!fe) ? -EIO : 0;
+}
+
+static int cxusb_medion_fe_ts_bus_ctrl(struct dvb_frontend *fe, int acquire)
+{
+	struct dvb_usb_adapter *adap = fe->dvb->priv;
+	struct dvb_usb_device *dvbdev = adap->dev;
+
+	if (acquire)
+		return cxusb_medion_get(dvbdev, CXUSB_OPEN_DIGITAL);
+
+	cxusb_medion_put(dvbdev);
+
+	return 0;
+}
+
+static int cxusb_medion_set_mode(struct dvb_usb_device *dvbdev, bool digital)
+{
+	struct cxusb_state *st = dvbdev->priv;
+	int ret;
+	u8 b;
+	unsigned int i;
+
+	/*
+	 * switching mode while doing an I2C transaction often causes
+	 * the device to crash
+	 */
+	mutex_lock(&dvbdev->i2c_mutex);
+
+	if (digital) {
+		ret = usb_set_interface(dvbdev->udev, 0, 6);
+		if (ret != 0) {
+			dev_err(&dvbdev->udev->dev,
+				"digital interface selection failed (%d)\n",
+				ret);
+			goto ret_unlock;
+		}
+	} else {
+		ret = usb_set_interface(dvbdev->udev, 0, 1);
+		if (ret != 0) {
+			dev_err(&dvbdev->udev->dev,
+				"analog interface selection failed (%d)\n",
+				ret);
+			goto ret_unlock;
+		}
+	}
+
+	/* pipes need to be cleared after setting interface */
+	ret = usb_clear_halt(dvbdev->udev, usb_rcvbulkpipe(dvbdev->udev, 1));
+	if (ret != 0)
+		dev_warn(&dvbdev->udev->dev,
+			 "clear halt on IN pipe failed (%d)\n",
+			 ret);
+
+	ret = usb_clear_halt(dvbdev->udev, usb_sndbulkpipe(dvbdev->udev, 1));
+	if (ret != 0)
+		dev_warn(&dvbdev->udev->dev,
+			 "clear halt on OUT pipe failed (%d)\n",
+			 ret);
+
+	ret = cxusb_ctrl_msg(dvbdev, digital ? CMD_DIGITAL : CMD_ANALOG,
+			     NULL, 0, &b, 1);
+	if (ret != 0) {
+		dev_err(&dvbdev->udev->dev, "mode switch failed (%d)\n",
+			ret);
+		goto ret_unlock;
+	}
+
+	/* mode switch seems to reset GPIO states */
+	for (i = 0; i < ARRAY_SIZE(st->gpio_write_refresh); i++)
+		st->gpio_write_refresh[i] = true;
+
+ret_unlock:
+	mutex_unlock(&dvbdev->i2c_mutex);
+
+	return ret;
 }
 
 static int cxusb_cx22702_frontend_attach(struct dvb_usb_adapter *adap)
 {
-	u8 b;
-	if (usb_set_interface(adap->dev->udev, 0, 6) < 0)
-		err("set interface failed");
+	struct dvb_usb_device *dvbdev = adap->dev;
+	bool is_medion = dvbdev->props.devices[0].warm_ids[0] ==
+		&cxusb_table[MEDION_MD95700];
 
-	cxusb_ctrl_msg(adap->dev, CMD_DIGITAL, NULL, 0, &b, 1);
+	if (is_medion) {
+		int ret;
+
+		ret = cxusb_medion_set_mode(dvbdev, true);
+		if (ret)
+			return ret;
+	}
 
 	adap->fe_adap[0].fe = dvb_attach(cx22702_attach, &cxusb_cx22702_config,
-					 &adap->dev->i2c_adap);
-	if ((adap->fe_adap[0].fe) != NULL)
-		return 0;
+					 &dvbdev->i2c_adap);
+	if (!adap->fe_adap[0].fe)
+		return -EIO;
 
-	return -EIO;
+	if (is_medion)
+		adap->fe_adap[0].fe->ops.ts_bus_ctrl =
+			cxusb_medion_fe_ts_bus_ctrl;
+
+	return 0;
 }
 
 static int cxusb_lgdt3303_frontend_attach(struct dvb_usb_adapter *adap)
@@ -898,8 +928,9 @@ static int cxusb_lgdt3303_frontend_attach(struct dvb_usb_adapter *adap)
 
 	adap->fe_adap[0].fe = dvb_attach(lgdt330x_attach,
 					 &cxusb_lgdt3303_config,
+					 0x0e,
 					 &adap->dev->i2c_adap);
-	if ((adap->fe_adap[0].fe) != NULL)
+	if (adap->fe_adap[0].fe)
 		return 0;
 
 	return -EIO;
@@ -907,9 +938,11 @@ static int cxusb_lgdt3303_frontend_attach(struct dvb_usb_adapter *adap)
 
 static int cxusb_aver_lgdt3303_frontend_attach(struct dvb_usb_adapter *adap)
 {
-	adap->fe_adap[0].fe = dvb_attach(lgdt330x_attach, &cxusb_aver_lgdt3303_config,
-			      &adap->dev->i2c_adap);
-	if (adap->fe_adap[0].fe != NULL)
+	adap->fe_adap[0].fe = dvb_attach(lgdt330x_attach,
+					 &cxusb_aver_lgdt3303_config,
+					 0x0e,
+					 &adap->dev->i2c_adap);
+	if (adap->fe_adap[0].fe)
 		return 0;
 
 	return -EIO;
@@ -925,7 +958,7 @@ static int cxusb_mt352_frontend_attach(struct dvb_usb_adapter *adap)
 
 	adap->fe_adap[0].fe = dvb_attach(mt352_attach, &cxusb_mt352_config,
 					 &adap->dev->i2c_adap);
-	if ((adap->fe_adap[0].fe) != NULL)
+	if (adap->fe_adap[0].fe)
 		return 0;
 
 	return -EIO;
@@ -940,13 +973,13 @@ static int cxusb_dee1601_frontend_attach(struct dvb_usb_adapter *adap)
 
 	adap->fe_adap[0].fe = dvb_attach(mt352_attach, &cxusb_dee1601_config,
 					 &adap->dev->i2c_adap);
-	if ((adap->fe_adap[0].fe) != NULL)
+	if (adap->fe_adap[0].fe)
 		return 0;
 
 	adap->fe_adap[0].fe = dvb_attach(zl10353_attach,
 					 &cxusb_zl10353_dee1601_config,
 					 &adap->dev->i2c_adap);
-	if ((adap->fe_adap[0].fe) != NULL)
+	if (adap->fe_adap[0].fe)
 		return 0;
 
 	return -EIO;
@@ -956,8 +989,12 @@ static int cxusb_dualdig4_frontend_attach(struct dvb_usb_adapter *adap)
 {
 	u8 ircode[4];
 	int i;
-	struct i2c_msg msg = { .addr = 0x6b, .flags = I2C_M_RD,
-			       .buf = ircode, .len = 4 };
+	struct i2c_msg msg = {
+		.addr = 0x6b,
+		.flags = I2C_M_RD,
+		.buf = ircode,
+		.len = 4
+	};
 
 	if (usb_set_interface(adap->dev->udev, 0, 1) < 0)
 		err("set interface failed");
@@ -973,11 +1010,11 @@ static int cxusb_dualdig4_frontend_attach(struct dvb_usb_adapter *adap)
 		dvb_attach(zl10353_attach,
 			   &cxusb_zl10353_xc3028_config_no_i2c_gate,
 			   &adap->dev->i2c_adap);
-	if ((adap->fe_adap[0].fe) == NULL)
+	if (!adap->fe_adap[0].fe)
 		return -EIO;
 
 	/* try to determine if there is no IR decoder on the I2C bus */
-	for (i = 0; adap->dev->props.rc.legacy.rc_map_table != NULL && i < 5; i++) {
+	for (i = 0; adap->dev->props.rc.core.rc_codes && i < 5; i++) {
 		msleep(20);
 		if (cxusb_i2c_xfer(&adap->dev->i2c_adap, &msg, 1) != 1)
 			goto no_IR;
@@ -985,7 +1022,7 @@ static int cxusb_dualdig4_frontend_attach(struct dvb_usb_adapter *adap)
 			continue;
 		if (ircode[2] + ircode[3] != 0xff) {
 no_IR:
-			adap->dev->props.rc.legacy.rc_map_table = NULL;
+			adap->dev->props.rc.core.rc_codes = NULL;
 			info("No IR receiver detected on this device.");
 			break;
 		}
@@ -1070,8 +1107,15 @@ static struct dib7000p_config cxusb_dualdig4_rev2_config = {
 	.hostbus_diversity = 1,
 };
 
+struct dib0700_adapter_state {
+	int (*set_param_save)(struct dvb_frontend *fe);
+	struct dib7000p_ops dib7000p_ops;
+};
+
 static int cxusb_dualdig4_rev2_frontend_attach(struct dvb_usb_adapter *adap)
 {
+	struct dib0700_adapter_state *state = adap->priv;
+
 	if (usb_set_interface(adap->dev->udev, 0, 1) < 0)
 		err("set interface failed");
 
@@ -1079,15 +1123,19 @@ static int cxusb_dualdig4_rev2_frontend_attach(struct dvb_usb_adapter *adap)
 
 	cxusb_bluebird_gpio_pulse(adap->dev, 0x02, 1);
 
-	if (dib7000p_i2c_enumeration(&adap->dev->i2c_adap, 1, 18,
-				     &cxusb_dualdig4_rev2_config) < 0) {
-		printk(KERN_WARNING "Unable to enumerate dib7000p\n");
+	if (!dvb_attach(dib7000p_attach, &state->dib7000p_ops))
+		return -ENODEV;
+
+	if (state->dib7000p_ops.i2c_enumeration(&adap->dev->i2c_adap, 1, 18,
+						&cxusb_dualdig4_rev2_config) < 0) {
+		pr_warn("Unable to enumerate dib7000p\n");
 		return -ENODEV;
 	}
 
-	adap->fe_adap[0].fe = dvb_attach(dib7000p_attach, &adap->dev->i2c_adap, 0x80,
-			      &cxusb_dualdig4_rev2_config);
-	if (adap->fe_adap[0].fe == NULL)
+	adap->fe_adap[0].fe = state->dib7000p_ops.init(&adap->dev->i2c_adap,
+						       0x80,
+						       &cxusb_dualdig4_rev2_config);
+	if (!adap->fe_adap[0].fe)
 		return -EIO;
 
 	return 0;
@@ -1095,7 +1143,10 @@ static int cxusb_dualdig4_rev2_frontend_attach(struct dvb_usb_adapter *adap)
 
 static int dib7070_tuner_reset(struct dvb_frontend *fe, int onoff)
 {
-	return dib7000p_set_gpio(fe, 8, 0, !onoff);
+	struct dvb_usb_adapter *adap = fe->dvb->priv;
+	struct dib0700_adapter_state *state = adap->priv;
+
+	return state->dib7000p_ops.set_gpio(fe, 8, 0, !onoff);
 }
 
 static int dib7070_tuner_sleep(struct dvb_frontend *fe, int onoff)
@@ -1110,10 +1161,6 @@ static struct dib0070_config dib7070p_dib0070_config = {
 	.clock_khz = 12000,
 };
 
-struct dib0700_adapter_state {
-	int (*set_param_save) (struct dvb_frontend *);
-};
-
 static int dib7070_set_param_override(struct dvb_frontend *fe)
 {
 	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
@@ -1121,14 +1168,19 @@ static int dib7070_set_param_override(struct dvb_frontend *fe)
 	struct dib0700_adapter_state *state = adap->priv;
 
 	u16 offset;
-	u8 band = BAND_OF_FREQUENCY(p->frequency/1000);
+	u8 band = BAND_OF_FREQUENCY(p->frequency / 1000);
+
 	switch (band) {
-	case BAND_VHF: offset = 950; break;
+	case BAND_VHF:
+		offset = 950;
+		break;
 	default:
-	case BAND_UHF: offset = 550; break;
+	case BAND_UHF:
+		offset = 550;
+		break;
 	}
 
-	dib7000p_set_wbd_ref(fe, offset + dib0070_wbd_offset(fe));
+	state->dib7000p_ops.set_wbd_ref(fe, offset + dib0070_wbd_offset(fe));
 
 	return state->set_param_save(fe);
 }
@@ -1136,12 +1188,18 @@ static int dib7070_set_param_override(struct dvb_frontend *fe)
 static int cxusb_dualdig4_rev2_tuner_attach(struct dvb_usb_adapter *adap)
 {
 	struct dib0700_adapter_state *st = adap->priv;
-	struct i2c_adapter *tun_i2c =
-		dib7000p_get_i2c_master(adap->fe_adap[0].fe,
+	struct i2c_adapter *tun_i2c;
+
+	/*
+	 * No need to call dvb7000p_attach here, as it was called
+	 * already, as frontend_attach method is called first, and
+	 * tuner_attach is only called on success.
+	 */
+	tun_i2c = st->dib7000p_ops.get_i2c_master(adap->fe_adap[0].fe,
 					DIBX000_I2C_INTERFACE_TUNER, 1);
 
 	if (dvb_attach(dib0070_attach, adap->fe_adap[0].fe, tun_i2c,
-	    &dib7070p_dib0070_config) == NULL)
+		       &dib7070p_dib0070_config) == NULL)
 		return -ENODEV;
 
 	st->set_param_save = adap->fe_adap[0].fe->ops.tuner_ops.set_params;
@@ -1164,13 +1222,13 @@ static int cxusb_nano2_frontend_attach(struct dvb_usb_adapter *adap)
 	adap->fe_adap[0].fe = dvb_attach(zl10353_attach,
 					 &cxusb_zl10353_xc3028_config,
 					 &adap->dev->i2c_adap);
-	if ((adap->fe_adap[0].fe) != NULL)
+	if (adap->fe_adap[0].fe)
 		return 0;
 
 	adap->fe_adap[0].fe = dvb_attach(mt352_attach,
 					 &cxusb_mt352_xc3028_config,
 					 &adap->dev->i2c_adap);
-	if ((adap->fe_adap[0].fe) != NULL)
+	if (adap->fe_adap[0].fe)
 		return 0;
 
 	return -EIO;
@@ -1201,11 +1259,14 @@ static int cxusb_d680_dmb_frontend_attach(struct dvb_usb_adapter *adap)
 
 	/* Unblock all USB pipes */
 	usb_clear_halt(d->udev,
-		usb_sndbulkpipe(d->udev, d->props.generic_bulk_ctrl_endpoint));
+		       usb_sndbulkpipe(d->udev,
+				       d->props.generic_bulk_ctrl_endpoint));
 	usb_clear_halt(d->udev,
-		usb_rcvbulkpipe(d->udev, d->props.generic_bulk_ctrl_endpoint));
+		       usb_rcvbulkpipe(d->udev,
+				       d->props.generic_bulk_ctrl_endpoint));
 	usb_clear_halt(d->udev,
-		usb_rcvbulkpipe(d->udev, d->props.adapter[0].fe[0].stream.endpoint));
+		       usb_rcvbulkpipe(d->udev,
+				       d->props.adapter[0].fe[0].stream.endpoint));
 
 	/* Drain USB pipes to avoid hang after reboot */
 	for (n = 0;  n < 5;  n++) {
@@ -1227,8 +1288,9 @@ static int cxusb_d680_dmb_frontend_attach(struct dvb_usb_adapter *adap)
 	msleep(100);
 
 	/* Attach frontend */
-	adap->fe_adap[0].fe = dvb_attach(lgs8gxx_attach, &d680_lgs8gl5_cfg, &d->i2c_adap);
-	if (adap->fe_adap[0].fe == NULL)
+	adap->fe_adap[0].fe = dvb_attach(lgs8gxx_attach,
+					 &d680_lgs8gl5_cfg, &d->i2c_adap);
+	if (!adap->fe_adap[0].fe)
 		return -EIO;
 
 	return 0;
@@ -1258,12 +1320,14 @@ static int cxusb_mygica_d689_frontend_attach(struct dvb_usb_adapter *adap)
 
 	/* Unblock all USB pipes */
 	usb_clear_halt(d->udev,
-		usb_sndbulkpipe(d->udev, d->props.generic_bulk_ctrl_endpoint));
+		       usb_sndbulkpipe(d->udev,
+				       d->props.generic_bulk_ctrl_endpoint));
 	usb_clear_halt(d->udev,
-		usb_rcvbulkpipe(d->udev, d->props.generic_bulk_ctrl_endpoint));
+		       usb_rcvbulkpipe(d->udev,
+				       d->props.generic_bulk_ctrl_endpoint));
 	usb_clear_halt(d->udev,
-		usb_rcvbulkpipe(d->udev, d->props.adapter[0].fe[0].stream.endpoint));
-
+		       usb_rcvbulkpipe(d->udev,
+				       d->props.adapter[0].fe[0].stream.endpoint));
 
 	/* Reset the tuner */
 	if (cxusb_d680_dmb_gpio_tuner(d, 0x07, 0) < 0) {
@@ -1278,9 +1342,10 @@ static int cxusb_mygica_d689_frontend_attach(struct dvb_usb_adapter *adap)
 	msleep(100);
 
 	/* Attach frontend */
-	adap->fe_adap[0].fe = dvb_attach(atbm8830_attach, &mygica_d689_atbm8830_cfg,
-		&d->i2c_adap);
-	if (adap->fe_adap[0].fe == NULL)
+	adap->fe_adap[0].fe = dvb_attach(atbm8830_attach,
+					 &mygica_d689_atbm8830_cfg,
+					 &d->i2c_adap);
+	if (!adap->fe_adap[0].fe)
 		return -EIO;
 
 	return 0;
@@ -1293,8 +1358,8 @@ static int cxusb_mygica_d689_frontend_attach(struct dvb_usb_adapter *adap)
  * not, and forget a match if it turns out we selected the wrong device.
  */
 static int bluebird_fx2_identify_state(struct usb_device *udev,
-				       struct dvb_usb_device_properties *props,
-				       struct dvb_usb_device_description **desc,
+				       const struct dvb_usb_device_properties *props,
+				       const struct dvb_usb_device_description **desc,
 				       int *cold)
 {
 	int wascold = *cold;
@@ -1354,6 +1419,104 @@ static int bluebird_patch_dvico_firmware_download(struct usb_device *udev,
 	return -EINVAL;
 }
 
+int cxusb_medion_get(struct dvb_usb_device *dvbdev,
+		     enum cxusb_open_type open_type)
+{
+	struct cxusb_medion_dev *cxdev = dvbdev->priv;
+	int ret = 0;
+
+	mutex_lock(&cxdev->open_lock);
+
+	if (WARN_ON((cxdev->open_type == CXUSB_OPEN_INIT ||
+		     cxdev->open_type == CXUSB_OPEN_NONE) &&
+		    cxdev->open_ctr != 0)) {
+		ret = -EINVAL;
+		goto ret_unlock;
+	}
+
+	if (cxdev->open_type == CXUSB_OPEN_INIT) {
+		ret = -EAGAIN;
+		goto ret_unlock;
+	}
+
+	if (cxdev->open_ctr == 0) {
+		if (cxdev->open_type != open_type) {
+			dev_info(&dvbdev->udev->dev, "will acquire and switch to %s\n",
+				 open_type == CXUSB_OPEN_ANALOG ?
+				 "analog" : "digital");
+
+			if (open_type == CXUSB_OPEN_ANALOG) {
+				ret = _cxusb_power_ctrl(dvbdev, 1);
+				if (ret != 0)
+					dev_warn(&dvbdev->udev->dev,
+						 "powerup for analog switch failed (%d)\n",
+						 ret);
+
+				ret = cxusb_medion_set_mode(dvbdev, false);
+				if (ret != 0)
+					goto ret_unlock;
+
+				ret = cxusb_medion_analog_init(dvbdev);
+				if (ret != 0)
+					goto ret_unlock;
+			} else { /* digital */
+				ret = _cxusb_power_ctrl(dvbdev, 1);
+				if (ret != 0)
+					dev_warn(&dvbdev->udev->dev,
+						 "powerup for digital switch failed (%d)\n",
+						 ret);
+
+				ret = cxusb_medion_set_mode(dvbdev, true);
+				if (ret != 0)
+					goto ret_unlock;
+			}
+
+			cxdev->open_type = open_type;
+		} else {
+			dev_info(&dvbdev->udev->dev, "reacquired idle %s\n",
+				 open_type == CXUSB_OPEN_ANALOG ?
+				 "analog" : "digital");
+		}
+
+		cxdev->open_ctr = 1;
+	} else if (cxdev->open_type == open_type) {
+		cxdev->open_ctr++;
+		dev_info(&dvbdev->udev->dev, "acquired %s\n",
+			 open_type == CXUSB_OPEN_ANALOG ? "analog" : "digital");
+	} else {
+		ret = -EBUSY;
+	}
+
+ret_unlock:
+	mutex_unlock(&cxdev->open_lock);
+
+	return ret;
+}
+
+void cxusb_medion_put(struct dvb_usb_device *dvbdev)
+{
+	struct cxusb_medion_dev *cxdev = dvbdev->priv;
+
+	mutex_lock(&cxdev->open_lock);
+
+	if (cxdev->open_type == CXUSB_OPEN_INIT) {
+		WARN_ON(cxdev->open_ctr != 0);
+		cxdev->open_type = CXUSB_OPEN_NONE;
+		goto unlock;
+	}
+
+	if (!WARN_ON(cxdev->open_ctr < 1)) {
+		cxdev->open_ctr--;
+
+		dev_info(&dvbdev->udev->dev, "release %s\n",
+			 cxdev->open_type == CXUSB_OPEN_ANALOG ?
+			 "analog" : "digital");
+	}
+
+unlock:
+	mutex_unlock(&cxdev->open_lock);
+}
+
 /* DVB USB Driver stuff */
 static struct dvb_usb_device_properties cxusb_medion_properties;
 static struct dvb_usb_device_properties cxusb_bluebird_lgh064f_properties;
@@ -1368,72 +1531,201 @@ static struct dvb_usb_device_properties cxusb_aver_a868r_properties;
 static struct dvb_usb_device_properties cxusb_d680_dmb_properties;
 static struct dvb_usb_device_properties cxusb_mygica_d689_properties;
 
+static int cxusb_medion_priv_init(struct dvb_usb_device *dvbdev)
+{
+	struct cxusb_medion_dev *cxdev = dvbdev->priv;
+
+	cxdev->dvbdev = dvbdev;
+	cxdev->open_type = CXUSB_OPEN_INIT;
+	mutex_init(&cxdev->open_lock);
+
+	return 0;
+}
+
+static void cxusb_medion_priv_destroy(struct dvb_usb_device *dvbdev)
+{
+	struct cxusb_medion_dev *cxdev = dvbdev->priv;
+
+	mutex_destroy(&cxdev->open_lock);
+}
+
+static bool cxusb_medion_check_altsetting(struct usb_host_interface *as)
+{
+	unsigned int ctr;
+
+	for (ctr = 0; ctr < as->desc.bNumEndpoints; ctr++) {
+		if ((as->endpoint[ctr].desc.bEndpointAddress &
+		     USB_ENDPOINT_NUMBER_MASK) != 2)
+			continue;
+
+		if (as->endpoint[ctr].desc.bEndpointAddress & USB_DIR_IN &&
+		    ((as->endpoint[ctr].desc.bmAttributes &
+		      USB_ENDPOINT_XFERTYPE_MASK) == USB_ENDPOINT_XFER_ISOC))
+			return true;
+
+		break;
+	}
+
+	return false;
+}
+
+static bool cxusb_medion_check_intf(struct usb_interface *intf)
+{
+	unsigned int ctr;
+
+	if (intf->num_altsetting < 2) {
+		dev_err(intf->usb_dev, "no alternate interface");
+
+		return false;
+	}
+
+	for (ctr = 0; ctr < intf->num_altsetting; ctr++) {
+		if (intf->altsetting[ctr].desc.bAlternateSetting != 1)
+			continue;
+
+		if (cxusb_medion_check_altsetting(&intf->altsetting[ctr]))
+			return true;
+
+		break;
+	}
+
+	dev_err(intf->usb_dev, "no iso interface");
+
+	return false;
+}
+
 static int cxusb_probe(struct usb_interface *intf,
 		       const struct usb_device_id *id)
 {
-	if (0 == dvb_usb_device_init(intf, &cxusb_medion_properties,
-				     THIS_MODULE, NULL, adapter_nr) ||
-	    0 == dvb_usb_device_init(intf, &cxusb_bluebird_lgh064f_properties,
-				     THIS_MODULE, NULL, adapter_nr) ||
-	    0 == dvb_usb_device_init(intf, &cxusb_bluebird_dee1601_properties,
-				     THIS_MODULE, NULL, adapter_nr) ||
-	    0 == dvb_usb_device_init(intf, &cxusb_bluebird_lgz201_properties,
-				     THIS_MODULE, NULL, adapter_nr) ||
-	    0 == dvb_usb_device_init(intf, &cxusb_bluebird_dtt7579_properties,
-				     THIS_MODULE, NULL, adapter_nr) ||
-	    0 == dvb_usb_device_init(intf, &cxusb_bluebird_dualdig4_properties,
-				     THIS_MODULE, NULL, adapter_nr) ||
-	    0 == dvb_usb_device_init(intf, &cxusb_bluebird_nano2_properties,
-				     THIS_MODULE, NULL, adapter_nr) ||
-	    0 == dvb_usb_device_init(intf,
-				&cxusb_bluebird_nano2_needsfirmware_properties,
-				     THIS_MODULE, NULL, adapter_nr) ||
-	    0 == dvb_usb_device_init(intf, &cxusb_aver_a868r_properties,
-				     THIS_MODULE, NULL, adapter_nr) ||
-	    0 == dvb_usb_device_init(intf,
-				     &cxusb_bluebird_dualdig4_rev2_properties,
-				     THIS_MODULE, NULL, adapter_nr) ||
-	    0 == dvb_usb_device_init(intf, &cxusb_d680_dmb_properties,
-				     THIS_MODULE, NULL, adapter_nr) ||
-	    0 == dvb_usb_device_init(intf, &cxusb_mygica_d689_properties,
-				     THIS_MODULE, NULL, adapter_nr) ||
-	    0)
+	struct dvb_usb_device *dvbdev;
+	int ret;
+
+	/* Medion 95700 */
+	if (!dvb_usb_device_init(intf, &cxusb_medion_properties,
+				 THIS_MODULE, &dvbdev, adapter_nr)) {
+		if (!cxusb_medion_check_intf(intf)) {
+			ret = -ENODEV;
+			goto ret_uninit;
+		}
+
+		_cxusb_power_ctrl(dvbdev, 1);
+		ret = cxusb_medion_set_mode(dvbdev, false);
+		if (ret)
+			goto ret_uninit;
+
+		ret = cxusb_medion_register_analog(dvbdev);
+
+		cxusb_medion_set_mode(dvbdev, true);
+		_cxusb_power_ctrl(dvbdev, 0);
+
+		if (ret != 0)
+			goto ret_uninit;
+
+		/* release device from INIT mode to normal operation */
+		cxusb_medion_put(dvbdev);
+
+		return 0;
+	} else if (!dvb_usb_device_init(intf,
+					&cxusb_bluebird_lgh064f_properties,
+					THIS_MODULE, NULL, adapter_nr) ||
+		   !dvb_usb_device_init(intf,
+					&cxusb_bluebird_dee1601_properties,
+					THIS_MODULE, NULL, adapter_nr) ||
+		   !dvb_usb_device_init(intf,
+					&cxusb_bluebird_lgz201_properties,
+					THIS_MODULE, NULL, adapter_nr) ||
+		   !dvb_usb_device_init(intf,
+					&cxusb_bluebird_dtt7579_properties,
+					THIS_MODULE, NULL, adapter_nr) ||
+		   !dvb_usb_device_init(intf,
+					&cxusb_bluebird_dualdig4_properties,
+					THIS_MODULE, NULL, adapter_nr) ||
+		   !dvb_usb_device_init(intf,
+					&cxusb_bluebird_nano2_properties,
+					THIS_MODULE, NULL, adapter_nr) ||
+		   !dvb_usb_device_init(intf,
+					&cxusb_bluebird_nano2_needsfirmware_properties,
+					THIS_MODULE, NULL, adapter_nr) ||
+		   !dvb_usb_device_init(intf, &cxusb_aver_a868r_properties,
+					THIS_MODULE, NULL, adapter_nr) ||
+		   !dvb_usb_device_init(intf,
+					&cxusb_bluebird_dualdig4_rev2_properties,
+					THIS_MODULE, NULL, adapter_nr) ||
+		   !dvb_usb_device_init(intf, &cxusb_d680_dmb_properties,
+					THIS_MODULE, NULL, adapter_nr) ||
+		   !dvb_usb_device_init(intf, &cxusb_mygica_d689_properties,
+					THIS_MODULE, NULL, adapter_nr) ||
+		   0)
 		return 0;
 
 	return -EINVAL;
+
+ret_uninit:
+	dvb_usb_device_exit(intf);
+
+	return ret;
 }
 
-static struct usb_device_id cxusb_table [] = {
-	{ USB_DEVICE(USB_VID_MEDION, USB_PID_MEDION_MD95700) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_LG064F_COLD) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_LG064F_WARM) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_1_COLD) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_1_WARM) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_LGZ201_COLD) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_LGZ201_WARM) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_TH7579_COLD) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_TH7579_WARM) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DIGITALNOW_BLUEBIRD_DUAL_1_COLD) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DIGITALNOW_BLUEBIRD_DUAL_1_WARM) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_2_COLD) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_2_WARM) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_4) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DVB_T_NANO_2) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DVB_T_NANO_2_NFW_WARM) },
-	{ USB_DEVICE(USB_VID_AVERMEDIA, USB_PID_AVERMEDIA_VOLAR_A868R) },
-	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_4_REV_2) },
-	{ USB_DEVICE(USB_VID_CONEXANT, USB_PID_CONEXANT_D680_DMB) },
-	{ USB_DEVICE(USB_VID_CONEXANT, USB_PID_MYGICA_D689) },
-	{}		/* Terminating entry */
+static void cxusb_disconnect(struct usb_interface *intf)
+{
+	struct dvb_usb_device *d = usb_get_intfdata(intf);
+	struct cxusb_state *st = d->priv;
+	struct i2c_client *client;
+
+	if (d->props.devices[0].warm_ids[0] == &cxusb_table[MEDION_MD95700])
+		cxusb_medion_unregister_analog(d);
+
+	/* remove I2C client for tuner */
+	client = st->i2c_client_tuner;
+	if (client) {
+		module_put(client->dev.driver->owner);
+		i2c_unregister_device(client);
+	}
+
+	/* remove I2C client for demodulator */
+	client = st->i2c_client_demod;
+	if (client) {
+		module_put(client->dev.driver->owner);
+		i2c_unregister_device(client);
+	}
+
+	dvb_usb_device_exit(intf);
+}
+
+static struct usb_device_id cxusb_table[] = {
+	DVB_USB_DEV(MEDION, MEDION_MD95700),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_LG064F_COLD),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_LG064F_WARM),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DUAL_1_COLD),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DUAL_1_WARM),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_LGZ201_COLD),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_LGZ201_WARM),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_TH7579_COLD),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_TH7579_WARM),
+	DVB_USB_DEV(DVICO, DIGITALNOW_BLUEBIRD_DUAL_1_COLD),
+	DVB_USB_DEV(DVICO, DIGITALNOW_BLUEBIRD_DUAL_1_WARM),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DUAL_2_COLD),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DUAL_2_WARM),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DUAL_4),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DVB_T_NANO_2),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DVB_T_NANO_2_NFW_WARM),
+	DVB_USB_DEV(AVERMEDIA, AVERMEDIA_VOLAR_A868R),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DUAL_4_REV_2),
+	DVB_USB_DEV(CONEXANT, CONEXANT_D680_DMB),
+	DVB_USB_DEV(CONEXANT, MYGICA_D689),
+	{ }
 };
-MODULE_DEVICE_TABLE (usb, cxusb_table);
+
+MODULE_DEVICE_TABLE(usb, cxusb_table);
 
 static struct dvb_usb_device_properties cxusb_medion_properties = {
 	.caps = DVB_USB_IS_AN_I2C_ADAPTER,
 
 	.usb_ctrl = CYPRESS_FX2,
 
-	.size_of_priv     = sizeof(struct cxusb_state),
+	.size_of_priv     = sizeof(struct cxusb_medion_dev),
+	.priv_init        = cxusb_medion_priv_init,
+	.priv_destroy     = cxusb_medion_priv_destroy,
 
 	.num_adapters = 1,
 	.adapter = {
@@ -1454,7 +1746,7 @@ static struct dvb_usb_device_properties cxusb_medion_properties = {
 					}
 				}
 			},
-		}},
+		} },
 		},
 	},
 	.power_ctrl       = cxusb_power_ctrl,
@@ -1465,9 +1757,10 @@ static struct dvb_usb_device_properties cxusb_medion_properties = {
 
 	.num_device_descs = 1,
 	.devices = {
-		{   "Medion MD95700 (MDUSBTV-HYBRID)",
+		{
+			"Medion MD95700 (MDUSBTV-HYBRID)",
 			{ NULL },
-			{ &cxusb_table[0], NULL },
+			{ &cxusb_table[MEDION_MD95700], NULL },
 		},
 	}
 };
@@ -1478,8 +1771,10 @@ static struct dvb_usb_device_properties cxusb_bluebird_lgh064f_properties = {
 	.usb_ctrl          = DEVICE_SPECIFIC,
 	.firmware          = "dvb-usb-bluebird-01.fw",
 	.download_firmware = bluebird_patch_dvico_firmware_download,
-	/* use usb alt setting 0 for EP4 transfer (dvb-t),
-	   use usb alt setting 7 for EP2 transfer (atsc) */
+	/*
+	 * use usb alt setting 0 for EP4 transfer (dvb-t),
+	 * use usb alt setting 7 for EP2 transfer (atsc)
+	 */
 
 	.size_of_priv     = sizeof(struct cxusb_state),
 
@@ -1503,7 +1798,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_lgh064f_properties = {
 					}
 				}
 			},
-		}},
+		} },
 		},
 	},
 
@@ -1511,11 +1806,12 @@ static struct dvb_usb_device_properties cxusb_bluebird_lgh064f_properties = {
 
 	.i2c_algo         = &cxusb_i2c_algo,
 
-	.rc.legacy = {
-		.rc_interval      = 100,
-		.rc_map_table     = rc_map_dvico_portable_table,
-		.rc_map_size      = ARRAY_SIZE(rc_map_dvico_portable_table),
-		.rc_query         = cxusb_rc_query,
+	.rc.core = {
+		.rc_interval	= 100,
+		.rc_codes	= RC_MAP_DVICO_PORTABLE,
+		.module_name	= KBUILD_MODNAME,
+		.rc_query	= cxusb_rc_query,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.generic_bulk_ctrl_endpoint = 0x01,
@@ -1523,8 +1819,8 @@ static struct dvb_usb_device_properties cxusb_bluebird_lgh064f_properties = {
 	.num_device_descs = 1,
 	.devices = {
 		{   "DViCO FusionHDTV5 USB Gold",
-			{ &cxusb_table[1], NULL },
-			{ &cxusb_table[2], NULL },
+			{ &cxusb_table[DVICO_BLUEBIRD_LG064F_COLD], NULL },
+			{ &cxusb_table[DVICO_BLUEBIRD_LG064F_WARM], NULL },
 		},
 	}
 };
@@ -1535,8 +1831,10 @@ static struct dvb_usb_device_properties cxusb_bluebird_dee1601_properties = {
 	.usb_ctrl          = DEVICE_SPECIFIC,
 	.firmware          = "dvb-usb-bluebird-01.fw",
 	.download_firmware = bluebird_patch_dvico_firmware_download,
-	/* use usb alt setting 0 for EP4 transfer (dvb-t),
-	   use usb alt setting 7 for EP2 transfer (atsc) */
+	/*
+	 * use usb alt setting 0 for EP4 transfer (dvb-t),
+	 * use usb alt setting 7 for EP2 transfer (atsc)
+	 */
 
 	.size_of_priv     = sizeof(struct cxusb_state),
 
@@ -1559,7 +1857,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_dee1601_properties = {
 					}
 				}
 			},
-		}},
+		} },
 		},
 	},
 
@@ -1567,11 +1865,12 @@ static struct dvb_usb_device_properties cxusb_bluebird_dee1601_properties = {
 
 	.i2c_algo         = &cxusb_i2c_algo,
 
-	.rc.legacy = {
-		.rc_interval      = 150,
-		.rc_map_table     = rc_map_dvico_mce_table,
-		.rc_map_size      = ARRAY_SIZE(rc_map_dvico_mce_table),
-		.rc_query         = cxusb_rc_query,
+	.rc.core = {
+		.rc_interval	= 100,
+		.rc_codes	= RC_MAP_DVICO_MCE,
+		.module_name	= KBUILD_MODNAME,
+		.rc_query	= cxusb_rc_query,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.generic_bulk_ctrl_endpoint = 0x01,
@@ -1579,16 +1878,16 @@ static struct dvb_usb_device_properties cxusb_bluebird_dee1601_properties = {
 	.num_device_descs = 3,
 	.devices = {
 		{   "DViCO FusionHDTV DVB-T Dual USB",
-			{ &cxusb_table[3], NULL },
-			{ &cxusb_table[4], NULL },
+			{ &cxusb_table[DVICO_BLUEBIRD_DUAL_1_COLD], NULL },
+			{ &cxusb_table[DVICO_BLUEBIRD_DUAL_1_WARM], NULL },
 		},
 		{   "DigitalNow DVB-T Dual USB",
-			{ &cxusb_table[9],  NULL },
-			{ &cxusb_table[10], NULL },
+			{ &cxusb_table[DIGITALNOW_BLUEBIRD_DUAL_1_COLD], NULL },
+			{ &cxusb_table[DIGITALNOW_BLUEBIRD_DUAL_1_WARM], NULL },
 		},
 		{   "DViCO FusionHDTV DVB-T Dual Digital 2",
-			{ &cxusb_table[11], NULL },
-			{ &cxusb_table[12], NULL },
+			{ &cxusb_table[DVICO_BLUEBIRD_DUAL_2_COLD], NULL },
+			{ &cxusb_table[DVICO_BLUEBIRD_DUAL_2_WARM], NULL },
 		},
 	}
 };
@@ -1599,12 +1898,14 @@ static struct dvb_usb_device_properties cxusb_bluebird_lgz201_properties = {
 	.usb_ctrl          = DEVICE_SPECIFIC,
 	.firmware          = "dvb-usb-bluebird-01.fw",
 	.download_firmware = bluebird_patch_dvico_firmware_download,
-	/* use usb alt setting 0 for EP4 transfer (dvb-t),
-	   use usb alt setting 7 for EP2 transfer (atsc) */
+	/*
+	 * use usb alt setting 0 for EP4 transfer (dvb-t),
+	 * use usb alt setting 7 for EP2 transfer (atsc)
+	 */
 
 	.size_of_priv     = sizeof(struct cxusb_state),
 
-	.num_adapters = 2,
+	.num_adapters = 1,
 	.adapter = {
 		{
 		.num_frontends = 1,
@@ -1624,26 +1925,27 @@ static struct dvb_usb_device_properties cxusb_bluebird_lgz201_properties = {
 					}
 				}
 			},
-		}},
+		} },
 		},
 	},
 	.power_ctrl       = cxusb_bluebird_power_ctrl,
 
 	.i2c_algo         = &cxusb_i2c_algo,
 
-	.rc.legacy = {
-		.rc_interval      = 100,
-		.rc_map_table     = rc_map_dvico_portable_table,
-		.rc_map_size      = ARRAY_SIZE(rc_map_dvico_portable_table),
-		.rc_query         = cxusb_rc_query,
+	.rc.core = {
+		.rc_interval	= 100,
+		.rc_codes	= RC_MAP_DVICO_PORTABLE,
+		.module_name	= KBUILD_MODNAME,
+		.rc_query	= cxusb_rc_query,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.generic_bulk_ctrl_endpoint = 0x01,
 	.num_device_descs = 1,
 	.devices = {
 		{   "DViCO FusionHDTV DVB-T USB (LGZ201)",
-			{ &cxusb_table[5], NULL },
-			{ &cxusb_table[6], NULL },
+			{ &cxusb_table[DVICO_BLUEBIRD_LGZ201_COLD], NULL },
+			{ &cxusb_table[DVICO_BLUEBIRD_LGZ201_WARM], NULL },
 		},
 	}
 };
@@ -1654,8 +1956,11 @@ static struct dvb_usb_device_properties cxusb_bluebird_dtt7579_properties = {
 	.usb_ctrl          = DEVICE_SPECIFIC,
 	.firmware          = "dvb-usb-bluebird-01.fw",
 	.download_firmware = bluebird_patch_dvico_firmware_download,
-	/* use usb alt setting 0 for EP4 transfer (dvb-t),
-	   use usb alt setting 7 for EP2 transfer (atsc) */
+
+	/*
+	 * use usb alt setting 0 for EP4 transfer (dvb-t),
+	 * use usb alt setting 7 for EP2 transfer (atsc)
+	 */
 
 	.size_of_priv     = sizeof(struct cxusb_state),
 
@@ -1679,18 +1984,19 @@ static struct dvb_usb_device_properties cxusb_bluebird_dtt7579_properties = {
 					}
 				}
 			},
-		}},
+		} },
 		},
 	},
 	.power_ctrl       = cxusb_bluebird_power_ctrl,
 
 	.i2c_algo         = &cxusb_i2c_algo,
 
-	.rc.legacy = {
-		.rc_interval      = 100,
-		.rc_map_table     = rc_map_dvico_portable_table,
-		.rc_map_size      = ARRAY_SIZE(rc_map_dvico_portable_table),
-		.rc_query         = cxusb_rc_query,
+	.rc.core = {
+		.rc_interval	= 100,
+		.rc_codes	= RC_MAP_DVICO_PORTABLE,
+		.module_name	= KBUILD_MODNAME,
+		.rc_query	= cxusb_rc_query,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.generic_bulk_ctrl_endpoint = 0x01,
@@ -1698,8 +2004,8 @@ static struct dvb_usb_device_properties cxusb_bluebird_dtt7579_properties = {
 	.num_device_descs = 1,
 	.devices = {
 		{   "DViCO FusionHDTV DVB-T USB (TH7579)",
-			{ &cxusb_table[7], NULL },
-			{ &cxusb_table[8], NULL },
+			{ &cxusb_table[DVICO_BLUEBIRD_TH7579_COLD], NULL },
+			{ &cxusb_table[DVICO_BLUEBIRD_TH7579_WARM], NULL },
 		},
 	}
 };
@@ -1730,7 +2036,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_dualdig4_properties = {
 					}
 				}
 			},
-		}},
+		} },
 		},
 	},
 
@@ -1740,18 +2046,19 @@ static struct dvb_usb_device_properties cxusb_bluebird_dualdig4_properties = {
 
 	.generic_bulk_ctrl_endpoint = 0x01,
 
-	.rc.legacy = {
-		.rc_interval      = 100,
-		.rc_map_table     = rc_map_dvico_mce_table,
-		.rc_map_size      = ARRAY_SIZE(rc_map_dvico_mce_table),
-		.rc_query         = cxusb_bluebird2_rc_query,
+	.rc.core = {
+		.rc_interval	= 100,
+		.rc_codes	= RC_MAP_DVICO_MCE,
+		.module_name	= KBUILD_MODNAME,
+		.rc_query	= cxusb_bluebird2_rc_query,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.num_device_descs = 1,
 	.devices = {
 		{   "DViCO FusionHDTV DVB-T Dual Digital 4",
 			{ NULL },
-			{ &cxusb_table[13], NULL },
+			{ &cxusb_table[DVICO_BLUEBIRD_DUAL_4], NULL },
 		},
 	}
 };
@@ -1783,7 +2090,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_nano2_properties = {
 					}
 				}
 			},
-		}},
+		} },
 		},
 	},
 
@@ -1793,23 +2100,25 @@ static struct dvb_usb_device_properties cxusb_bluebird_nano2_properties = {
 
 	.generic_bulk_ctrl_endpoint = 0x01,
 
-	.rc.legacy = {
-		.rc_interval      = 100,
-		.rc_map_table     = rc_map_dvico_portable_table,
-		.rc_map_size      = ARRAY_SIZE(rc_map_dvico_portable_table),
-		.rc_query         = cxusb_bluebird2_rc_query,
+	.rc.core = {
+		.rc_interval	= 100,
+		.rc_codes	= RC_MAP_DVICO_PORTABLE,
+		.module_name	= KBUILD_MODNAME,
+		.rc_query       = cxusb_bluebird2_rc_query,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.num_device_descs = 1,
 	.devices = {
 		{   "DViCO FusionHDTV DVB-T NANO2",
 			{ NULL },
-			{ &cxusb_table[14], NULL },
+			{ &cxusb_table[DVICO_BLUEBIRD_DVB_T_NANO_2], NULL },
 		},
 	}
 };
 
-static struct dvb_usb_device_properties cxusb_bluebird_nano2_needsfirmware_properties = {
+static struct dvb_usb_device_properties
+cxusb_bluebird_nano2_needsfirmware_properties = {
 	.caps = DVB_USB_IS_AN_I2C_ADAPTER,
 
 	.usb_ctrl          = DEVICE_SPECIFIC,
@@ -1838,7 +2147,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_nano2_needsfirmware_prope
 					}
 				}
 			},
-		}},
+		} },
 		},
 	},
 
@@ -1848,18 +2157,20 @@ static struct dvb_usb_device_properties cxusb_bluebird_nano2_needsfirmware_prope
 
 	.generic_bulk_ctrl_endpoint = 0x01,
 
-	.rc.legacy = {
-		.rc_interval      = 100,
-		.rc_map_table     = rc_map_dvico_portable_table,
-		.rc_map_size      = ARRAY_SIZE(rc_map_dvico_portable_table),
-		.rc_query         = cxusb_rc_query,
+	.rc.core = {
+		.rc_interval	= 100,
+		.rc_codes	= RC_MAP_DVICO_PORTABLE,
+		.module_name	= KBUILD_MODNAME,
+		.rc_query	= cxusb_rc_query,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.num_device_descs = 1,
-	.devices = {
-		{   "DViCO FusionHDTV DVB-T NANO2 w/o firmware",
-			{ &cxusb_table[14], NULL },
-			{ &cxusb_table[15], NULL },
+	.devices = { {
+			"DViCO FusionHDTV DVB-T NANO2 w/o firmware",
+			{ &cxusb_table[DVICO_BLUEBIRD_DVB_T_NANO_2], NULL },
+			{ &cxusb_table[DVICO_BLUEBIRD_DVB_T_NANO_2_NFW_WARM],
+			  NULL },
 		},
 	}
 };
@@ -1890,7 +2201,7 @@ static struct dvb_usb_device_properties cxusb_aver_a868r_properties = {
 					}
 				}
 			},
-		}},
+		} },
 		},
 	},
 	.power_ctrl       = cxusb_aver_power_ctrl,
@@ -1903,7 +2214,7 @@ static struct dvb_usb_device_properties cxusb_aver_a868r_properties = {
 	.devices = {
 		{   "AVerMedia AVerTVHD Volar (A868R)",
 			{ NULL },
-			{ &cxusb_table[16], NULL },
+			{ &cxusb_table[AVERMEDIA_VOLAR_A868R], NULL },
 		},
 	}
 };
@@ -1936,7 +2247,7 @@ struct dvb_usb_device_properties cxusb_bluebird_dualdig4_rev2_properties = {
 					}
 				}
 			},
-		}},
+		} },
 		},
 	},
 
@@ -1946,18 +2257,19 @@ struct dvb_usb_device_properties cxusb_bluebird_dualdig4_rev2_properties = {
 
 	.generic_bulk_ctrl_endpoint = 0x01,
 
-	.rc.legacy = {
-		.rc_interval      = 100,
-		.rc_map_table     = rc_map_dvico_mce_table,
-		.rc_map_size      = ARRAY_SIZE(rc_map_dvico_mce_table),
-		.rc_query         = cxusb_rc_query,
+	.rc.core = {
+		.rc_interval	= 100,
+		.rc_codes	= RC_MAP_DVICO_MCE,
+		.module_name	= KBUILD_MODNAME,
+		.rc_query	= cxusb_rc_query,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.num_device_descs = 1,
 	.devices = {
 		{   "DViCO FusionHDTV DVB-T Dual Digital 4 (rev 2)",
 			{ NULL },
-			{ &cxusb_table[17], NULL },
+			{ &cxusb_table[DVICO_BLUEBIRD_DUAL_4_REV_2], NULL },
 		},
 	}
 };
@@ -1989,7 +2301,7 @@ static struct dvb_usb_device_properties cxusb_d680_dmb_properties = {
 					}
 				}
 			},
-		}},
+		} },
 		},
 	},
 
@@ -1999,11 +2311,12 @@ static struct dvb_usb_device_properties cxusb_d680_dmb_properties = {
 
 	.generic_bulk_ctrl_endpoint = 0x01,
 
-	.rc.legacy = {
-		.rc_interval      = 100,
-		.rc_map_table     = rc_map_d680_dmb_table,
-		.rc_map_size      = ARRAY_SIZE(rc_map_d680_dmb_table),
-		.rc_query         = cxusb_d680_dmb_rc_query,
+	.rc.core = {
+		.rc_interval	= 100,
+		.rc_codes	= RC_MAP_TOTAL_MEDIA_IN_HAND_02,
+		.module_name	= KBUILD_MODNAME,
+		.rc_query       = cxusb_d680_dmb_rc_query,
+		.allowed_protos = RC_PROTO_BIT_UNKNOWN,
 	},
 
 	.num_device_descs = 1,
@@ -2011,7 +2324,7 @@ static struct dvb_usb_device_properties cxusb_d680_dmb_properties = {
 		{
 			"Conexant DMB-TH Stick",
 			{ NULL },
-			{ &cxusb_table[18], NULL },
+			{ &cxusb_table[CONEXANT_D680_DMB], NULL },
 		},
 	}
 };
@@ -2043,7 +2356,7 @@ static struct dvb_usb_device_properties cxusb_mygica_d689_properties = {
 					}
 				}
 			},
-		}},
+		} },
 		},
 	},
 
@@ -2053,11 +2366,12 @@ static struct dvb_usb_device_properties cxusb_mygica_d689_properties = {
 
 	.generic_bulk_ctrl_endpoint = 0x01,
 
-	.rc.legacy = {
-		.rc_interval      = 100,
-		.rc_map_table     = rc_map_d680_dmb_table,
-		.rc_map_size      = ARRAY_SIZE(rc_map_d680_dmb_table),
-		.rc_query         = cxusb_d680_dmb_rc_query,
+	.rc.core = {
+		.rc_interval	= 100,
+		.rc_codes	= RC_MAP_D680_DMB,
+		.module_name	= KBUILD_MODNAME,
+		.rc_query       = cxusb_d680_dmb_rc_query,
+		.allowed_protos = RC_PROTO_BIT_UNKNOWN,
 	},
 
 	.num_device_descs = 1,
@@ -2065,7 +2379,7 @@ static struct dvb_usb_device_properties cxusb_mygica_d689_properties = {
 		{
 			"Mygica D689 DMB-TH",
 			{ NULL },
-			{ &cxusb_table[19], NULL },
+			{ &cxusb_table[MYGICA_D689], NULL },
 		},
 	}
 };
@@ -2073,15 +2387,15 @@ static struct dvb_usb_device_properties cxusb_mygica_d689_properties = {
 static struct usb_driver cxusb_driver = {
 	.name		= "dvb_usb_cxusb",
 	.probe		= cxusb_probe,
-	.disconnect     = dvb_usb_device_exit,
+	.disconnect     = cxusb_disconnect,
 	.id_table	= cxusb_table,
 };
 
 module_usb_driver(cxusb_driver);
 
-MODULE_AUTHOR("Patrick Boettcher <patrick.boettcher@desy.de>");
+MODULE_AUTHOR("Patrick Boettcher <patrick.boettcher@posteo.de>");
 MODULE_AUTHOR("Michael Krufky <mkrufky@linuxtv.org>");
 MODULE_AUTHOR("Chris Pascoe <c.pascoe@itee.uq.edu.au>");
+MODULE_AUTHOR("Maciej S. Szmigiero <mail@maciej.szmigiero.name>");
 MODULE_DESCRIPTION("Driver for Conexant USB2.0 hybrid reference design");
-MODULE_VERSION("1.0-alpha");
 MODULE_LICENSE("GPL");

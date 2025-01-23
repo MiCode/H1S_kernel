@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 OR MIT */
 /**************************************************************************
  *
  * Copyright (c) 2006-2009 VMware, Inc., Palo Alto, CA., USA
@@ -26,57 +27,15 @@
  **************************************************************************/
 
 #include <drm/ttm/ttm_execbuf_util.h>
-#include <drm/ttm/ttm_bo_driver.h>
-#include <drm/ttm/ttm_placement.h>
-#include <linux/wait.h>
-#include <linux/sched.h>
-#include <linux/module.h>
+#include <drm/ttm/ttm_bo.h>
 
-static void ttm_eu_backoff_reservation_locked(struct list_head *list)
+static void ttm_eu_backoff_reservation_reverse(struct list_head *list,
+					      struct ttm_validate_buffer *entry)
 {
-	struct ttm_validate_buffer *entry;
-
-	list_for_each_entry(entry, list, head) {
-		struct ttm_buffer_object *bo = entry->bo;
-		if (!entry->reserved)
-			continue;
-
-		entry->reserved = false;
-		if (entry->removed) {
-			ttm_bo_add_to_lru(bo);
-			entry->removed = false;
-		}
-		ww_mutex_unlock(&bo->resv->lock);
-	}
-}
-
-static void ttm_eu_del_from_lru_locked(struct list_head *list)
-{
-	struct ttm_validate_buffer *entry;
-
-	list_for_each_entry(entry, list, head) {
-		struct ttm_buffer_object *bo = entry->bo;
-		if (!entry->reserved)
-			continue;
-
-		if (!entry->removed) {
-			entry->put_count = ttm_bo_del_from_lru(bo);
-			entry->removed = true;
-		}
-	}
-}
-
-static void ttm_eu_list_ref_sub(struct list_head *list)
-{
-	struct ttm_validate_buffer *entry;
-
-	list_for_each_entry(entry, list, head) {
+	list_for_each_entry_continue_reverse(entry, list, head) {
 		struct ttm_buffer_object *bo = entry->bo;
 
-		if (entry->put_count) {
-			ttm_bo_list_ref_sub(bo, entry->put_count, true);
-			entry->put_count = 0;
-		}
+		dma_resv_unlock(bo->base.resv);
 	}
 }
 
@@ -84,18 +43,19 @@ void ttm_eu_backoff_reservation(struct ww_acquire_ctx *ticket,
 				struct list_head *list)
 {
 	struct ttm_validate_buffer *entry;
-	struct ttm_bo_global *glob;
 
 	if (list_empty(list))
 		return;
 
-	entry = list_first_entry(list, struct ttm_validate_buffer, head);
-	glob = entry->bo->glob;
-	spin_lock(&glob->lru_lock);
-	ttm_eu_backoff_reservation_locked(list);
+	list_for_each_entry(entry, list, head) {
+		struct ttm_buffer_object *bo = entry->bo;
+
+		ttm_bo_move_to_lru_tail_unlocked(bo);
+		dma_resv_unlock(bo->base.resv);
+	}
+
 	if (ticket)
 		ww_acquire_fini(ticket);
-	spin_unlock(&glob->lru_lock);
 }
 EXPORT_SYMBOL(ttm_eu_backoff_reservation);
 
@@ -112,129 +72,90 @@ EXPORT_SYMBOL(ttm_eu_backoff_reservation);
  */
 
 int ttm_eu_reserve_buffers(struct ww_acquire_ctx *ticket,
-			   struct list_head *list)
+			   struct list_head *list, bool intr,
+			   struct list_head *dups)
 {
-	struct ttm_bo_global *glob;
 	struct ttm_validate_buffer *entry;
 	int ret;
 
 	if (list_empty(list))
 		return 0;
 
-	list_for_each_entry(entry, list, head) {
-		entry->reserved = false;
-		entry->put_count = 0;
-		entry->removed = false;
-	}
-
-	entry = list_first_entry(list, struct ttm_validate_buffer, head);
-	glob = entry->bo->glob;
-
 	if (ticket)
 		ww_acquire_init(ticket, &reservation_ww_class);
-retry:
+
 	list_for_each_entry(entry, list, head) {
 		struct ttm_buffer_object *bo = entry->bo;
+		unsigned int num_fences;
 
-		/* already slowpath reserved? */
-		if (entry->reserved)
+		ret = ttm_bo_reserve(bo, intr, (ticket == NULL), ticket);
+		if (ret == -EALREADY && dups) {
+			struct ttm_validate_buffer *safe = entry;
+			entry = list_prev_entry(entry, head);
+			list_del(&safe->head);
+			list_add(&safe->head, dups);
 			continue;
+		}
 
-		ret = ttm_bo_reserve_nolru(bo, true, (ticket == NULL), true,
-					   ticket);
+		num_fences = max(entry->num_shared, 1u);
+		if (!ret) {
+			ret = dma_resv_reserve_fences(bo->base.resv,
+						      num_fences);
+			if (!ret)
+				continue;
+		}
+
+		/* uh oh, we lost out, drop every reservation and try
+		 * to only reserve this buffer, then start over if
+		 * this succeeds.
+		 */
+		ttm_eu_backoff_reservation_reverse(list, entry);
 
 		if (ret == -EDEADLK) {
-			/* uh oh, we lost out, drop every reservation and try
-			 * to only reserve this buffer, then start over if
-			 * this succeeds.
-			 */
-			BUG_ON(ticket == NULL);
-			spin_lock(&glob->lru_lock);
-			ttm_eu_backoff_reservation_locked(list);
-			spin_unlock(&glob->lru_lock);
-			ttm_eu_list_ref_sub(list);
-			ret = ww_mutex_lock_slow_interruptible(&bo->resv->lock,
-							       ticket);
-			if (unlikely(ret != 0)) {
-				if (ret == -EINTR)
-					ret = -ERESTARTSYS;
-				goto err_fini;
-			}
-
-			entry->reserved = true;
-			if (unlikely(atomic_read(&bo->cpu_writers) > 0)) {
-				ret = -EBUSY;
-				goto err;
-			}
-			goto retry;
-		} else if (ret)
-			goto err;
-
-		entry->reserved = true;
-		if (unlikely(atomic_read(&bo->cpu_writers) > 0)) {
-			ret = -EBUSY;
-			goto err;
+			ret = ttm_bo_reserve_slowpath(bo, intr, ticket);
 		}
+
+		if (!ret)
+			ret = dma_resv_reserve_fences(bo->base.resv,
+						      num_fences);
+
+		if (unlikely(ret != 0)) {
+			if (ticket) {
+				ww_acquire_done(ticket);
+				ww_acquire_fini(ticket);
+			}
+			return ret;
+		}
+
+		/* move this item to the front of the list,
+		 * forces correct iteration of the loop without keeping track
+		 */
+		list_del(&entry->head);
+		list_add(&entry->head, list);
 	}
 
-	if (ticket)
-		ww_acquire_done(ticket);
-	spin_lock(&glob->lru_lock);
-	ttm_eu_del_from_lru_locked(list);
-	spin_unlock(&glob->lru_lock);
-	ttm_eu_list_ref_sub(list);
 	return 0;
-
-err:
-	spin_lock(&glob->lru_lock);
-	ttm_eu_backoff_reservation_locked(list);
-	spin_unlock(&glob->lru_lock);
-	ttm_eu_list_ref_sub(list);
-err_fini:
-	if (ticket) {
-		ww_acquire_done(ticket);
-		ww_acquire_fini(ticket);
-	}
-	return ret;
 }
 EXPORT_SYMBOL(ttm_eu_reserve_buffers);
 
 void ttm_eu_fence_buffer_objects(struct ww_acquire_ctx *ticket,
-				 struct list_head *list, void *sync_obj)
+				 struct list_head *list,
+				 struct dma_fence *fence)
 {
 	struct ttm_validate_buffer *entry;
-	struct ttm_buffer_object *bo;
-	struct ttm_bo_global *glob;
-	struct ttm_bo_device *bdev;
-	struct ttm_bo_driver *driver;
 
 	if (list_empty(list))
 		return;
 
-	bo = list_first_entry(list, struct ttm_validate_buffer, head)->bo;
-	bdev = bo->bdev;
-	driver = bdev->driver;
-	glob = bo->glob;
-
-	spin_lock(&glob->lru_lock);
-	spin_lock(&bdev->fence_lock);
-
 	list_for_each_entry(entry, list, head) {
-		bo = entry->bo;
-		entry->old_sync_obj = bo->sync_obj;
-		bo->sync_obj = driver->sync_obj_ref(sync_obj);
-		ttm_bo_add_to_lru(bo);
-		ww_mutex_unlock(&bo->resv->lock);
-		entry->reserved = false;
+		struct ttm_buffer_object *bo = entry->bo;
+
+		dma_resv_add_fence(bo->base.resv, fence, entry->num_shared ?
+				   DMA_RESV_USAGE_READ : DMA_RESV_USAGE_WRITE);
+		ttm_bo_move_to_lru_tail_unlocked(bo);
+		dma_resv_unlock(bo->base.resv);
 	}
-	spin_unlock(&bdev->fence_lock);
-	spin_unlock(&glob->lru_lock);
 	if (ticket)
 		ww_acquire_fini(ticket);
-
-	list_for_each_entry(entry, list, head) {
-		if (entry->old_sync_obj)
-			driver->sync_obj_unref(&entry->old_sync_obj);
-	}
 }
 EXPORT_SYMBOL(ttm_eu_fence_buffer_objects);

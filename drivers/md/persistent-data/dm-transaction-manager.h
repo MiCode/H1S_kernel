@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2011 Red Hat, Inc.
  *
@@ -38,18 +39,17 @@ struct dm_transaction_manager *dm_tm_create_non_blocking_clone(struct dm_transac
 /*
  * We use a 2-phase commit here.
  *
- * i) In the first phase the block manager is told to start flushing, and
- * the changes to the space map are written to disk.  You should interrogate
- * your particular space map to get detail of its root node etc. to be
- * included in your superblock.
+ * i) Make all changes for the transaction *except* for the superblock.
+ * Then call dm_tm_pre_commit() to flush them to disk.
  *
- * ii) @root will be committed last.  You shouldn't use more than the
- * first 512 bytes of @root if you wish the transaction to survive a power
- * failure.  You *must* have a write lock held on @root for both stage (i)
- * and (ii).  The commit will drop the write lock.
+ * ii) Lock your superblock.  Update.  Then call dm_tm_commit() which will
+ * unlock the superblock and flush it.  No other blocks should be updated
+ * during this period.  Care should be taken to never unlock a partially
+ * updated superblock; perform any operations that could fail *before* you
+ * take the superblock lock.
  */
 int dm_tm_pre_commit(struct dm_transaction_manager *tm);
-int dm_tm_commit(struct dm_transaction_manager *tm, struct dm_block *root);
+int dm_tm_commit(struct dm_transaction_manager *tm, struct dm_block *superblock);
 
 /*
  * These methods are the only way to get hold of a writeable block.
@@ -95,19 +95,42 @@ int dm_tm_read_lock(struct dm_transaction_manager *tm, dm_block_t b,
 		    struct dm_block_validator *v,
 		    struct dm_block **result);
 
-int dm_tm_unlock(struct dm_transaction_manager *tm, struct dm_block *b);
+void dm_tm_unlock(struct dm_transaction_manager *tm, struct dm_block *b);
 
 /*
  * Functions for altering the reference count of a block directly.
  */
 void dm_tm_inc(struct dm_transaction_manager *tm, dm_block_t b);
-
+void dm_tm_inc_range(struct dm_transaction_manager *tm, dm_block_t b, dm_block_t e);
 void dm_tm_dec(struct dm_transaction_manager *tm, dm_block_t b);
+void dm_tm_dec_range(struct dm_transaction_manager *tm, dm_block_t b, dm_block_t e);
 
-int dm_tm_ref(struct dm_transaction_manager *tm, dm_block_t b,
-	      uint32_t *result);
+/*
+ * Builds up runs of adjacent blocks, and then calls the given fn
+ * (typically dm_tm_inc/dec).  Very useful when you have to perform
+ * the same tm operation on all values in a btree leaf.
+ */
+typedef void (*dm_tm_run_fn)(struct dm_transaction_manager *, dm_block_t, dm_block_t);
+void dm_tm_with_runs(struct dm_transaction_manager *tm,
+		     const __le64 *value_le, unsigned int count, dm_tm_run_fn fn);
+
+int dm_tm_ref(struct dm_transaction_manager *tm, dm_block_t b, uint32_t *result);
+
+/*
+ * Finds out if a given block is shared (ie. has a reference count higher
+ * than one).
+ */
+int dm_tm_block_is_shared(struct dm_transaction_manager *tm, dm_block_t b,
+			  int *result);
 
 struct dm_block_manager *dm_tm_get_bm(struct dm_transaction_manager *tm);
+
+/*
+ * If you're using a non-blocking clone the tm will build up a list of
+ * requested blocks that weren't in core.  This call will request those
+ * blocks to be prefetched.
+ */
+void dm_tm_issue_prefetches(struct dm_transaction_manager *tm);
 
 /*
  * A little utility that ties the knot by producing a transaction manager

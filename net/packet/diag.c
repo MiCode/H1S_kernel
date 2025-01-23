@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/module.h>
 #include <linux/sock_diag.h>
 #include <linux/net.h>
@@ -17,18 +18,18 @@ static int pdiag_put_info(const struct packet_sock *po, struct sk_buff *nlskb)
 	pinfo.pdi_version = po->tp_version;
 	pinfo.pdi_reserve = po->tp_reserve;
 	pinfo.pdi_copy_thresh = po->copy_thresh;
-	pinfo.pdi_tstamp = po->tp_tstamp;
+	pinfo.pdi_tstamp = READ_ONCE(po->tp_tstamp);
 
 	pinfo.pdi_flags = 0;
-	if (po->running)
+	if (packet_sock_flag(po, PACKET_SOCK_RUNNING))
 		pinfo.pdi_flags |= PDI_RUNNING;
-	if (po->auxdata)
+	if (packet_sock_flag(po, PACKET_SOCK_AUXDATA))
 		pinfo.pdi_flags |= PDI_AUXDATA;
-	if (po->origdev)
+	if (packet_sock_flag(po, PACKET_SOCK_ORIGDEV))
 		pinfo.pdi_flags |= PDI_ORIGDEV;
-	if (po->has_vnet_hdr)
+	if (READ_ONCE(po->vnet_hdr_sz))
 		pinfo.pdi_flags |= PDI_VNETHDR;
-	if (po->tp_loss)
+	if (packet_sock_flag(po, PACKET_SOCK_TP_LOSS))
 		pinfo.pdi_flags |= PDI_LOSS;
 
 	return nla_put(nlskb, PACKET_DIAG_INFO, sizeof(pinfo), &pinfo);
@@ -39,7 +40,7 @@ static int pdiag_put_mclist(const struct packet_sock *po, struct sk_buff *nlskb)
 	struct nlattr *mca;
 	struct packet_mclist *ml;
 
-	mca = nla_nest_start(nlskb, PACKET_DIAG_MCLIST);
+	mca = nla_nest_start_noflag(nlskb, PACKET_DIAG_MCLIST);
 	if (!mca)
 		return -EMSGSIZE;
 
@@ -73,8 +74,7 @@ static int pdiag_put_ring(struct packet_ring_buffer *ring, int ver, int nl_type,
 {
 	struct packet_diag_ring pdr;
 
-	if (!ring->pg_vec || ((ver > TPACKET_V2) &&
-				(nl_type == PACKET_DIAG_TX_RING)))
+	if (!ring->pg_vec)
 		return 0;
 
 	pdr.pdr_block_size = ring->pg_vec_pages << PAGE_SHIFT;
@@ -128,6 +128,7 @@ static int pdiag_put_fanout(struct packet_sock *po, struct sk_buff *nlskb)
 
 static int sk_diag_fill(struct sock *sk, struct sk_buff *skb,
 			struct packet_diag_req *req,
+			bool may_report_filterinfo,
 			struct user_namespace *user_ns,
 			u32 portid, u32 seq, u32 flags, int sk_ino)
 {
@@ -142,7 +143,7 @@ static int sk_diag_fill(struct sock *sk, struct sk_buff *skb,
 	rp = nlmsg_data(nlh);
 	rp->pdiag_family = AF_PACKET;
 	rp->pdiag_type = sk->sk_type;
-	rp->pdiag_num = ntohs(po->num);
+	rp->pdiag_num = ntohs(READ_ONCE(po->num));
 	rp->pdiag_ino = sk_ino;
 	sock_diag_save_cookie(sk, rp->pdiag_cookie);
 
@@ -172,10 +173,12 @@ static int sk_diag_fill(struct sock *sk, struct sk_buff *skb,
 		goto out_nlmsg_trim;
 
 	if ((req->pdiag_show & PACKET_SHOW_FILTER) &&
-	    sock_diag_put_filterinfo(user_ns, sk, skb, PACKET_DIAG_FILTER))
+	    sock_diag_put_filterinfo(may_report_filterinfo, sk, skb,
+				     PACKET_DIAG_FILTER))
 		goto out_nlmsg_trim;
 
-	return nlmsg_end(skb, nlh);
+	nlmsg_end(skb, nlh);
+	return 0;
 
 out_nlmsg_trim:
 	nlmsg_cancel(skb, nlh);
@@ -188,9 +191,11 @@ static int packet_diag_dump(struct sk_buff *skb, struct netlink_callback *cb)
 	struct packet_diag_req *req;
 	struct net *net;
 	struct sock *sk;
+	bool may_report_filterinfo;
 
 	net = sock_net(skb->sk);
 	req = nlmsg_data(cb->nlh);
+	may_report_filterinfo = netlink_net_capable(cb->skb, CAP_NET_ADMIN);
 
 	mutex_lock(&net->packet.sklist_lock);
 	sk_for_each(sk, &net->packet.sklist) {
@@ -200,6 +205,7 @@ static int packet_diag_dump(struct sk_buff *skb, struct netlink_callback *cb)
 			goto next;
 
 		if (sk_diag_fill(sk, skb, req,
+				 may_report_filterinfo,
 				 sk_user_ns(NETLINK_CB(cb->skb).sk),
 				 NETLINK_CB(cb->skb).portid,
 				 cb->nlh->nlmsg_seq, NLM_F_MULTI,

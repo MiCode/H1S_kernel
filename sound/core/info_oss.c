@@ -1,22 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Information interface for ALSA driver
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <linux/slab.h>
@@ -29,15 +14,12 @@
 #include <linux/utsname.h>
 #include <linux/mutex.h>
 
-#if defined(CONFIG_SND_OSSEMUL) && defined(CONFIG_PROC_FS)
-
 /*
  *  OSS compatible part
  */
 
 static DEFINE_MUTEX(strings);
 static char *snd_sndstat_strings[SNDRV_CARDS][SNDRV_OSS_INFO_DEV_COUNT];
-static struct snd_info_entry *snd_sndstat_proc_entry;
 
 int snd_oss_info_register(int dev, int num, char *string)
 {
@@ -49,10 +31,9 @@ int snd_oss_info_register(int dev, int num, char *string)
 		return -ENXIO;
 	mutex_lock(&strings);
 	if (string == NULL) {
-		if ((x = snd_sndstat_strings[num][dev]) != NULL) {
-			kfree(x);
-			x = NULL;
-		}
+		x = snd_sndstat_strings[num][dev];
+		kfree(x);
+		x = NULL;
 	} else {
 		x = kstrdup(string, GFP_KERNEL);
 		if (x == NULL) {
@@ -64,7 +45,6 @@ int snd_oss_info_register(int dev, int num, char *string)
 	mutex_unlock(&strings);
 	return 0;
 }
-
 EXPORT_SYMBOL(snd_oss_info_register);
 
 static int snd_sndstat_show_strings(struct snd_info_buffer *buf, char *id, int dev)
@@ -112,27 +92,15 @@ static void snd_sndstat_proc_read(struct snd_info_entry *entry,
 	snd_sndstat_show_strings(buffer, "Mixers", SNDRV_OSS_INFO_DEV_MIXERS);
 }
 
-int snd_info_minor_register(void)
+int __init snd_info_minor_register(void)
 {
 	struct snd_info_entry *entry;
 
 	memset(snd_sndstat_strings, 0, sizeof(snd_sndstat_strings));
-	if ((entry = snd_info_create_module_entry(THIS_MODULE, "sndstat", snd_oss_root)) != NULL) {
-		entry->c.text.read = snd_sndstat_proc_read;
-		if (snd_info_register(entry) < 0) {
-			snd_info_free_entry(entry);
-			entry = NULL;
-		}
-	}
-	snd_sndstat_proc_entry = entry;
-	return 0;
+	entry = snd_info_create_module_entry(THIS_MODULE, "sndstat",
+					     snd_oss_root);
+	if (!entry)
+		return -ENOMEM;
+	entry->c.text.read = snd_sndstat_proc_read;
+	return snd_info_register(entry); /* freed in error path */
 }
-
-int snd_info_minor_unregister(void)
-{
-	snd_info_free_entry(snd_sndstat_proc_entry);
-	snd_sndstat_proc_entry = NULL;
-	return 0;
-}
-
-#endif /* CONFIG_SND_OSSEMUL */

@@ -1,9 +1,6 @@
-/**
+// SPDX-License-Identifier: GPL-2.0-only
+/*
  * Copyright (C) 2008, Creative Technology Ltd. All Rights Reserved.
- *
- * This source file is released under GPL v2 license (no other versions).
- * See the COPYING file included in the main directory of this source
- * distribution for the license terms and conditions.
  *
  * @File	cthw20k1.c
  *
@@ -12,7 +9,6 @@
  *
  * @Author	Liu Chun
  * @Date 	Jun 24 2008
- *
  */
 
 #include <linux/types.h>
@@ -26,12 +22,6 @@
 #include <linux/delay.h>
 #include "cthw20k1.h"
 #include "ct20k1reg.h"
-
-#if BITS_PER_LONG == 32
-#define CT_XFI_DMA_MASK		DMA_BIT_MASK(32) /* 32 bit PTE */
-#else
-#define CT_XFI_DMA_MASK		DMA_BIT_MASK(64) /* 64 bit PTE */
-#endif
 
 struct hw20k1 {
 	struct hw hw;
@@ -178,7 +168,7 @@ static int src_get_rsc_ctrl_blk(void **rblk)
 
 static int src_put_rsc_ctrl_blk(void *blk)
 {
-	kfree((struct src_rsc_ctrl_blk *)blk);
+	kfree(blk);
 
 	return 0;
 }
@@ -504,7 +494,7 @@ static int src_mgr_get_ctrl_blk(void **rblk)
 
 static int src_mgr_put_ctrl_blk(void *blk)
 {
-	kfree((struct src_mgr_ctrl_blk *)blk);
+	kfree(blk);
 
 	return 0;
 }
@@ -525,7 +515,7 @@ static int srcimp_mgr_get_ctrl_blk(void **rblk)
 
 static int srcimp_mgr_put_ctrl_blk(void *blk)
 {
-	kfree((struct srcimp_mgr_ctrl_blk *)blk);
+	kfree(blk);
 
 	return 0;
 }
@@ -712,7 +702,7 @@ static int amixer_rsc_get_ctrl_blk(void **rblk)
 
 static int amixer_rsc_put_ctrl_blk(void *blk)
 {
-	kfree((struct amixer_rsc_ctrl_blk *)blk);
+	kfree(blk);
 
 	return 0;
 }
@@ -919,7 +909,7 @@ static int dai_get_ctrl_blk(void **rblk)
 
 static int dai_put_ctrl_blk(void *blk)
 {
-	kfree((struct dai_ctrl_blk *)blk);
+	kfree(blk);
 
 	return 0;
 }
@@ -968,7 +958,7 @@ static int dao_get_ctrl_blk(void **rblk)
 
 static int dao_put_ctrl_blk(void *blk)
 {
-	kfree((struct dao_ctrl_blk *)blk);
+	kfree(blk);
 
 	return 0;
 }
@@ -1166,7 +1156,7 @@ static int daio_mgr_get_ctrl_blk(struct hw *hw, void **rblk)
 
 static int daio_mgr_put_ctrl_blk(void *blk)
 {
-	kfree((struct daio_mgr_ctrl_blk *)blk);
+	kfree(blk);
 
 	return 0;
 }
@@ -1268,7 +1258,8 @@ static int hw_trn_init(struct hw *hw, const struct trn_conf *info)
 
 	/* Set up device page table */
 	if ((~0UL) == info->vm_pgt_phys) {
-		printk(KERN_ERR "Wrong device page table page address!\n");
+		dev_err(hw->card->dev,
+			"Wrong device page table page address!\n");
 		return -1;
 	}
 
@@ -1324,10 +1315,10 @@ static int hw_pll_init(struct hw *hw, unsigned int rsr)
 			break;
 
 		hw_write_20kx(hw, PLLCTL, pllctl);
-		mdelay(40);
+		msleep(40);
 	}
 	if (i >= 3) {
-		printk(KERN_ALERT "PLL initialization failed!!!\n");
+		dev_alert(hw->card->dev, "PLL initialization failed!!!\n");
 		return -EBUSY;
 	}
 
@@ -1351,7 +1342,7 @@ static int hw_auto_init(struct hw *hw)
 			break;
 	}
 	if (!get_field(gctl, GCTL_AID)) {
-		printk(KERN_ALERT "Card Auto-init failed!!!\n");
+		dev_alert(hw->card->dev, "Card Auto-init failed!!!\n");
 		return -EBUSY;
 	}
 
@@ -1412,7 +1403,7 @@ static int hw_reset_dac(struct hw *hw)
 	/* To be effective, need to reset the DAC twice. */
 	for (i = 0; i < 2;  i++) {
 		/* set gpio */
-		mdelay(100);
+		msleep(100);
 		gpioorg = (u16)hw_read_20kx(hw, GPIO);
 		gpioorg &= 0xfffd;
 		hw_write_20kx(hw, GPIO, gpioorg);
@@ -1802,7 +1793,7 @@ static int uaa_to_xfi(struct pci_dev *pci)
 	unsigned int is_uaa;
 	unsigned int data[4] = {0};
 	unsigned int io_base;
-	void *mem_base;
+	void __iomem *mem_base;
 	int i;
 	const u32 CTLX = CTLBITS('C', 'T', 'L', 'X');
 	const u32 CTL_ = CTLBITS('C', 'T', 'L', '-');
@@ -1903,20 +1894,15 @@ static int hw_card_start(struct hw *hw)
 {
 	int err;
 	struct pci_dev *pci = hw->pci;
+	const unsigned int dma_bits = BITS_PER_LONG;
 
 	err = pci_enable_device(pci);
 	if (err < 0)
 		return err;
 
 	/* Set DMA transfer mask */
-	if (pci_set_dma_mask(pci, CT_XFI_DMA_MASK) < 0 ||
-	    pci_set_consistent_dma_mask(pci, CT_XFI_DMA_MASK) < 0) {
-		printk(KERN_ERR "architecture does not support PCI "
-				"busmaster DMA with mask 0x%llx\n",
-		       CT_XFI_DMA_MASK);
-		err = -ENXIO;
-		goto error1;
-	}
+	if (dma_set_mask_and_coherent(&pci->dev, DMA_BIT_MASK(dma_bits)))
+		dma_set_mask_and_coherent(&pci->dev, DMA_BIT_MASK(32));
 
 	if (!hw->io_base) {
 		err = pci_request_regions(pci, "XFi");
@@ -1930,7 +1916,7 @@ static int hw_card_start(struct hw *hw)
 
 	}
 
-	/* Switch to X-Fi mode from UAA mode if neeeded */
+	/* Switch to X-Fi mode from UAA mode if needed */
 	if (hw->model == CTUAA) {
 		err = uaa_to_xfi(pci);
 		if (err)
@@ -1942,10 +1928,12 @@ static int hw_card_start(struct hw *hw)
 		err = request_irq(pci->irq, ct_20k1_interrupt, IRQF_SHARED,
 				  KBUILD_MODNAME, hw);
 		if (err < 0) {
-			printk(KERN_ERR "XFi: Cannot get irq %d\n", pci->irq);
+			dev_err(hw->card->dev,
+				"XFi: Cannot get irq %d\n", pci->irq);
 			goto error2;
 		}
 		hw->irq = pci->irq;
+		hw->card->sync_irq = hw->irq;
 	}
 
 	pci_set_master(pci);
@@ -1971,9 +1959,6 @@ static int hw_card_stop(struct hw *hw)
 	data = hw_read_20kx(hw, PLLCTL);
 	hw_write_20kx(hw, PLLCTL, (data & (~(0x0F<<12))));
 
-	/* TODO: Disable interrupt and so on... */
-	if (hw->irq >= 0)
-		synchronize_irq(hw->irq);
 	return 0;
 }
 
@@ -1983,11 +1968,8 @@ static int hw_card_shutdown(struct hw *hw)
 		free_irq(hw->irq, hw);
 
 	hw->irq	= -1;
-
-	if (hw->mem_base)
-		iounmap((void *)hw->mem_base);
-
-	hw->mem_base = (unsigned long)NULL;
+	iounmap(hw->mem_base);
+	hw->mem_base = NULL;
 
 	if (hw->io_base)
 		pci_release_regions(hw->pci);
@@ -2038,7 +2020,7 @@ static int hw_card_init(struct hw *hw, struct card_conf *info)
 	hw_write_20kx(hw, GIE, 0);
 	/* Reset all SRC pending interrupts */
 	hw_write_20kx(hw, SRCIP, 0);
-	mdelay(30);
+	msleep(30);
 
 	/* Detect the card ID and configure GPIO accordingly. */
 	switch (hw->model) {
@@ -2097,20 +2079,11 @@ static int hw_suspend(struct hw *hw)
 		pci_write_config_dword(pci, UAA_CFG_SPACE_FLAG, 0x0);
 	}
 
-	pci_disable_device(pci);
-	pci_save_state(pci);
-	pci_set_power_state(pci, PCI_D3hot);
-
 	return 0;
 }
 
 static int hw_resume(struct hw *hw, struct card_conf *info)
 {
-	struct pci_dev *pci = hw->pci;
-
-	pci_set_power_state(pci, PCI_D0);
-	pci_restore_state(pci);
-
 	/* Re-initialize card hardware. */
 	return hw_card_init(hw, info);
 }
@@ -2171,7 +2144,7 @@ static void hw_write_pci(struct hw *hw, u32 reg, u32 data)
 		&container_of(hw, struct hw20k1, hw)->reg_pci_lock, flags);
 }
 
-static struct hw ct20k1_preset = {
+static const struct hw ct20k1_preset = {
 	.irq = -1,
 
 	.card_init = hw_card_init,

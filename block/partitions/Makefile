@@ -1,9 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for the linux kernel.
 #
 
-obj-$(CONFIG_BLOCK) := check.o
-
+obj-$(CONFIG_BLOCK) += core.o
 obj-$(CONFIG_ACORN_PARTITION) += acorn.o
 obj-$(CONFIG_AMIGA_PARTITION) += amiga.o
 obj-$(CONFIG_ATARI_PARTITION) += atari.o

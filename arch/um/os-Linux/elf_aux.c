@@ -1,7 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  arch/um/kernel/elf_aux.c
  *
- *  Scan the Elf auxiliary vector provided by the host to extract
+ *  Scan the ELF auxiliary vector provided by the host to extract
  *  information about vsyscall-page, etc.
  *
  *  Copyright (C) 2004 Fujitsu Siemens Computers GmbH

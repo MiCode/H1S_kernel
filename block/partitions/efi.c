@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /************************************************************
  * EFI GUID Partition Table handling
  *
@@ -6,21 +7,6 @@
  *
  * efi.[ch] by Matt Domsch <Matt_Domsch@dell.com>
  *   Copyright 2000,2001,2002,2004 Dell Inc.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  *
  * TODO:
  *
@@ -121,7 +107,7 @@ __setup("gpt", force_gpt_fn);
 /**
  * efi_crc32() - EFI version of crc32 function
  * @buf: buffer to calculate crc32 of
- * @len - length of buf
+ * @len: length of buf
  *
  * Description: Returns EFI-style CRC32 value for @buf
  * 
@@ -138,19 +124,17 @@ efi_crc32(const void *buf, unsigned long len)
 
 /**
  * last_lba(): return number of last logical block of device
- * @bdev: block device
+ * @disk: block device
  * 
  * Description: Returns last LBA value on success, 0 on error.
  * This is stored (by sd and ide-geometry) in
  *  the part[0] entry for this disk, and is the number of
  *  physical sectors available on the disk.
  */
-static u64 last_lba(struct block_device *bdev)
+static u64 last_lba(struct gendisk *disk)
 {
-	if (!bdev || !bdev->bd_inode)
-		return 0;
-	return div_u64(bdev->bd_inode->i_size,
-		       bdev_logical_block_size(bdev)) - 1ULL;
+	return div_u64(bdev_nr_bytes(disk->part0),
+		       queue_logical_block_size(disk->queue)) - 1ULL;
 }
 
 static inline int pmbr_part_valid(gpt_mbr_record *part)
@@ -240,22 +224,22 @@ done:
 
 /**
  * read_lba(): Read bytes from disk, starting at given LBA
- * @state
- * @lba
- * @buffer
- * @size_t
+ * @state: disk parsed partitions
+ * @lba: the Logical Block Address of the partition table
+ * @buffer: destination buffer
+ * @count: bytes to read
  *
- * Description: Reads @count bytes from @state->bdev into @buffer.
+ * Description: Reads @count bytes from @state->disk into @buffer.
  * Returns number of bytes read on success, 0 on error.
  */
 static size_t read_lba(struct parsed_partitions *state,
 		       u64 lba, u8 *buffer, size_t count)
 {
 	size_t totalreadcount = 0;
-	struct block_device *bdev = state->bdev;
-	sector_t n = lba * (bdev_logical_block_size(bdev) / 512);
+	sector_t n = lba *
+		(queue_logical_block_size(state->disk->queue) / 512);
 
-	if (!buffer || lba > last_lba(bdev))
+	if (!buffer || lba > last_lba(state->disk))
                 return 0;
 
 	while (count) {
@@ -277,8 +261,8 @@ static size_t read_lba(struct parsed_partitions *state,
 
 /**
  * alloc_read_gpt_entries(): reads partition entries from disk
- * @state
- * @gpt - GPT header
+ * @state: disk parsed partitions
+ * @gpt: GPT header
  * 
  * Description: Returns ptes on success,  NULL on error.
  * Allocates space for PTEs based on information found in @gpt.
@@ -293,7 +277,7 @@ static gpt_entry *alloc_read_gpt_entries(struct parsed_partitions *state,
 	if (!gpt)
 		return NULL;
 
-	count = le32_to_cpu(gpt->num_partition_entries) *
+	count = (size_t)le32_to_cpu(gpt->num_partition_entries) *
                 le32_to_cpu(gpt->sizeof_partition_entry);
 	if (!count)
 		return NULL;
@@ -312,18 +296,18 @@ static gpt_entry *alloc_read_gpt_entries(struct parsed_partitions *state,
 
 /**
  * alloc_read_gpt_header(): Allocates GPT header, reads into it from disk
- * @state
- * @lba is the Logical Block Address of the partition table
+ * @state: disk parsed partitions
+ * @lba: the Logical Block Address of the partition table
  * 
  * Description: returns GPT header on success, NULL on error.   Allocates
- * and fills a GPT header starting at @ from @state->bdev.
+ * and fills a GPT header starting at @ from @state->disk.
  * Note: remember to free gpt when finished with it.
  */
 static gpt_header *alloc_read_gpt_header(struct parsed_partitions *state,
 					 u64 lba)
 {
 	gpt_header *gpt;
-	unsigned ssz = bdev_logical_block_size(state->bdev);
+	unsigned ssz = queue_logical_block_size(state->disk->queue);
 
 	gpt = kmalloc(ssz, GFP_KERNEL);
 	if (!gpt)
@@ -340,10 +324,10 @@ static gpt_header *alloc_read_gpt_header(struct parsed_partitions *state,
 
 /**
  * is_gpt_valid() - tests one GPT header and PTEs for validity
- * @state
- * @lba is the logical block address of the GPT header to test
- * @gpt is a GPT header ptr, filled on return.
- * @ptes is a PTEs ptr, filled on return.
+ * @state: disk parsed partitions
+ * @lba: logical block address of the GPT header to test
+ * @gpt: GPT header ptr, filled on return.
+ * @ptes: PTEs ptr, filled on return.
  *
  * Description: returns 1 if valid,  0 on error.
  * If valid, returns pointers to newly allocated GPT header and PTEs.
@@ -352,7 +336,7 @@ static int is_gpt_valid(struct parsed_partitions *state, u64 lba,
 			gpt_header **gpt, gpt_entry **ptes)
 {
 	u32 crc, origcrc;
-	u64 lastlba;
+	u64 lastlba, pt_size;
 
 	if (!ptes)
 		return 0;
@@ -370,10 +354,10 @@ static int is_gpt_valid(struct parsed_partitions *state, u64 lba,
 
 	/* Check the GUID Partition Table header size is too big */
 	if (le32_to_cpu((*gpt)->header_size) >
-			bdev_logical_block_size(state->bdev)) {
+			queue_logical_block_size(state->disk->queue)) {
 		pr_debug("GUID Partition Table Header size is too large: %u > %u\n",
 			le32_to_cpu((*gpt)->header_size),
-			bdev_logical_block_size(state->bdev));
+			queue_logical_block_size(state->disk->queue));
 		goto fail;
 	}
 
@@ -409,7 +393,7 @@ static int is_gpt_valid(struct parsed_partitions *state, u64 lba,
 	/* Check the first_usable_lba and last_usable_lba are
 	 * within the disk.
 	 */
-	lastlba = last_lba(state->bdev);
+	lastlba = last_lba(state->disk);
 	if (le64_to_cpu((*gpt)->first_usable_lba) > lastlba) {
 		pr_debug("GPT: first_usable_lba incorrect: %lld > %lld\n",
 			 (unsigned long long)le64_to_cpu((*gpt)->first_usable_lba),
@@ -430,7 +414,16 @@ static int is_gpt_valid(struct parsed_partitions *state, u64 lba,
 	}
 	/* Check that sizeof_partition_entry has the correct value */
 	if (le32_to_cpu((*gpt)->sizeof_partition_entry) != sizeof(gpt_entry)) {
-		pr_debug("GUID Partitition Entry Size check failed.\n");
+		pr_debug("GUID Partition Entry Size check failed.\n");
+		goto fail;
+	}
+
+	/* Sanity check partition table size */
+	pt_size = (u64)le32_to_cpu((*gpt)->num_partition_entries) *
+		le32_to_cpu((*gpt)->sizeof_partition_entry);
+	if (pt_size > KMALLOC_MAX_SIZE) {
+		pr_debug("GUID Partition Table is too large: %llu > %lu bytes\n",
+			 (unsigned long long)pt_size, KMALLOC_MAX_SIZE);
 		goto fail;
 	}
 
@@ -438,12 +431,10 @@ static int is_gpt_valid(struct parsed_partitions *state, u64 lba,
 		goto fail;
 
 	/* Check the GUID Partition Entry Array CRC */
-	crc = efi_crc32((const unsigned char *) (*ptes),
-			le32_to_cpu((*gpt)->num_partition_entries) *
-			le32_to_cpu((*gpt)->sizeof_partition_entry));
+	crc = efi_crc32((const unsigned char *) (*ptes), pt_size);
 
 	if (crc != le32_to_cpu((*gpt)->partition_entry_array_crc32)) {
-		pr_debug("GUID Partitition Entry Array CRC check failed.\n");
+		pr_debug("GUID Partition Entry Array CRC check failed.\n");
 		goto fail_ptes;
 	}
 
@@ -461,8 +452,8 @@ static int is_gpt_valid(struct parsed_partitions *state, u64 lba,
 
 /**
  * is_pte_valid() - tests one PTE for validity
- * @pte is the pte to check
- * @lastlba is last lba of the disk
+ * @pte:pte to check
+ * @lastlba: last lba of the disk
  *
  * Description: returns 1 if valid,  0 on error.
  */
@@ -478,9 +469,10 @@ is_pte_valid(const gpt_entry *pte, const u64 lastlba)
 
 /**
  * compare_gpts() - Search disk for valid GPT headers and PTEs
- * @pgpt is the primary GPT header
- * @agpt is the alternate GPT header
- * @lastlba is the last LBA number
+ * @pgpt: primary GPT header
+ * @agpt: alternate GPT header
+ * @lastlba: last LBA number
+ *
  * Description: Returns nothing.  Sanity checks pgpt and agpt fields
  * and prints warnings on discrepancies.
  * 
@@ -572,9 +564,10 @@ compare_gpts(gpt_header *pgpt, gpt_header *agpt, u64 lastlba)
 
 /**
  * find_valid_gpt() - Search disk for valid GPT headers and PTEs
- * @state
- * @gpt is a GPT header ptr, filled on return.
- * @ptes is a PTEs ptr, filled on return.
+ * @state: disk parsed partitions
+ * @gpt: GPT header ptr, filled on return.
+ * @ptes: PTEs ptr, filled on return.
+ *
  * Description: Returns 1 if valid, 0 on error.
  * If valid, returns pointers to newly allocated GPT header and PTEs.
  * Validity depends on PMBR being valid (or being overridden by the
@@ -592,13 +585,15 @@ static int find_valid_gpt(struct parsed_partitions *state, gpt_header **gpt,
 	gpt_header *pgpt = NULL, *agpt = NULL;
 	gpt_entry *pptes = NULL, *aptes = NULL;
 	legacy_mbr *legacymbr;
-	sector_t total_sectors = i_size_read(state->bdev->bd_inode) >> 9;
+	struct gendisk *disk = state->disk;
+	const struct block_device_operations *fops = disk->fops;
+	sector_t total_sectors = get_capacity(state->disk);
 	u64 lastlba;
 
 	if (!ptes)
 		return 0;
 
-	lastlba = last_lba(state->bdev);
+	lastlba = last_lba(state->disk);
         if (!force_gpt) {
 		/* This will be added to the EFI Spec. per Intel after v1.02. */
 		legacymbr = kzalloc(sizeof(*legacymbr), GFP_KERNEL);
@@ -625,6 +620,16 @@ static int find_valid_gpt(struct parsed_partitions *state, gpt_header **gpt,
 					 &agpt, &aptes);
         if (!good_agpt && force_gpt)
                 good_agpt = is_gpt_valid(state, lastlba, &agpt, &aptes);
+
+	if (!good_agpt && force_gpt && fops->alternative_gpt_sector) {
+		sector_t agpt_sector;
+		int err;
+
+		err = fops->alternative_gpt_sector(disk, &agpt_sector);
+		if (!err)
+			good_agpt = is_gpt_valid(state, agpt_sector,
+						 &agpt, &aptes);
+	}
 
         /* The obviously unsuccessful case */
         if (!good_pgpt && !good_agpt)
@@ -662,8 +667,33 @@ static int find_valid_gpt(struct parsed_partitions *state, gpt_header **gpt,
 }
 
 /**
- * efi_partition(struct parsed_partitions *state)
- * @state
+ * utf16_le_to_7bit(): Naively converts a UTF-16LE string to 7-bit ASCII characters
+ * @in: input UTF-16LE string
+ * @size: size of the input string
+ * @out: output string ptr, should be capable to store @size+1 characters
+ *
+ * Description: Converts @size UTF16-LE symbols from @in string to 7-bit
+ * ASCII characters and stores them to @out. Adds trailing zero to @out array.
+ */
+static void utf16_le_to_7bit(const __le16 *in, unsigned int size, u8 *out)
+{
+	unsigned int i = 0;
+
+	out[size] = 0;
+
+	while (i < size) {
+		u8 c = le16_to_cpu(in[i]) & 0xff;
+
+		if (c && !isprint(c))
+			c = '!';
+		out[i] = c;
+		i++;
+	}
+}
+
+/**
+ * efi_partition - scan for GPT partitions
+ * @state: disk parsed partitions
  *
  * Description: called from check.c, if the disk contains GPT
  * partitions, sets up partition entries in the kernel.
@@ -685,7 +715,7 @@ int efi_partition(struct parsed_partitions *state)
 	gpt_header *gpt = NULL;
 	gpt_entry *ptes = NULL;
 	u32 i;
-	unsigned ssz = bdev_logical_block_size(state->bdev) / 512;
+	unsigned ssz = queue_logical_block_size(state->disk->queue) / 512;
 
 	if (!find_valid_gpt(state, &gpt, &ptes) || !gpt || !ptes) {
 		kfree(gpt);
@@ -697,13 +727,12 @@ int efi_partition(struct parsed_partitions *state)
 
 	for (i = 0; i < le32_to_cpu(gpt->num_partition_entries) && i < state->limit-1; i++) {
 		struct partition_meta_info *info;
-		unsigned label_count = 0;
 		unsigned label_max;
 		u64 start = le64_to_cpu(ptes[i].starting_lba);
 		u64 size = le64_to_cpu(ptes[i].ending_lba) -
 			   le64_to_cpu(ptes[i].starting_lba) + 1ULL;
 
-		if (!is_pte_valid(&ptes[i], last_lba(state->bdev)))
+		if (!is_pte_valid(&ptes[i], last_lba(state->disk)))
 			continue;
 
 		put_partition(state, i+1, start * ssz, size * ssz);
@@ -713,19 +742,12 @@ int efi_partition(struct parsed_partitions *state)
 			state->parts[i + 1].flags = ADDPART_FLAG_RAID;
 
 		info = &state->parts[i + 1].info;
-		efi_guid_unparse(&ptes[i].unique_partition_guid, info->uuid);
+		efi_guid_to_str(&ptes[i].unique_partition_guid, info->uuid);
 
 		/* Naively convert UTF16-LE to 7 bits. */
 		label_max = min(ARRAY_SIZE(info->volname) - 1,
 				ARRAY_SIZE(ptes[i].partition_name));
-		info->volname[label_max] = 0;
-		while (label_count < label_max) {
-			u8 c = ptes[i].partition_name[label_count] & 0xff;
-			if (c && !isprint(c))
-				c = '!';
-			info->volname[label_count] = c;
-			label_count++;
-		}
+		utf16_le_to_7bit(ptes[i].partition_name, label_max, info->volname);
 		state->parts[i + 1].has_info = true;
 	}
 	kfree(ptes);

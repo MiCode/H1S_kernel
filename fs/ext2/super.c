@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/fs/ext2/super.c
  *
@@ -31,14 +32,14 @@
 #include <linux/mount.h>
 #include <linux/log2.h>
 #include <linux/quotaops.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
+#include <linux/dax.h>
+#include <linux/iversion.h>
 #include "ext2.h"
 #include "xattr.h"
 #include "acl.h"
-#include "xip.h"
 
-static void ext2_sync_super(struct super_block *sb,
-			    struct ext2_super_block *es, int wait);
+static void ext2_write_super(struct super_block *sb);
 static int ext2_remount (struct super_block * sb, int * flags, char * data);
 static int ext2_statfs (struct dentry * dentry, struct kstatfs * buf);
 static int ext2_sync_fs(struct super_block *sb, int wait);
@@ -53,7 +54,7 @@ void ext2_error(struct super_block *sb, const char *function,
 	struct ext2_sb_info *sbi = EXT2_SB(sb);
 	struct ext2_super_block *es = sbi->s_es;
 
-	if (!(sb->s_flags & MS_RDONLY)) {
+	if (!sb_rdonly(sb)) {
 		spin_lock(&sbi->s_lock);
 		sbi->s_mount_state |= EXT2_ERROR_FS;
 		es->s_state |= cpu_to_le16(EXT2_ERROR_FS);
@@ -73,10 +74,10 @@ void ext2_error(struct super_block *sb, const char *function,
 
 	if (test_opt(sb, ERRORS_PANIC))
 		panic("EXT2-fs: panic from previous error\n");
-	if (test_opt(sb, ERRORS_RO)) {
+	if (!sb_rdonly(sb) && test_opt(sb, ERRORS_RO)) {
 		ext2_msg(sb, KERN_CRIT,
 			     "error: remounting filesystem read-only");
-		sb->s_flags |= MS_RDONLY;
+		sb->s_flags |= SB_RDONLY;
 	}
 }
 
@@ -124,16 +125,34 @@ void ext2_update_dynamic_rev(struct super_block *sb)
 	 */
 }
 
+#ifdef CONFIG_QUOTA
+static int ext2_quota_off(struct super_block *sb, int type);
+
+static void ext2_quota_off_umount(struct super_block *sb)
+{
+	int type;
+
+	for (type = 0; type < MAXQUOTAS; type++)
+		ext2_quota_off(sb, type);
+}
+#else
+static inline void ext2_quota_off_umount(struct super_block *sb)
+{
+}
+#endif
+
 static void ext2_put_super (struct super_block * sb)
 {
 	int db_count;
 	int i;
 	struct ext2_sb_info *sbi = EXT2_SB(sb);
 
-	dquot_disable(sb, -1, DQUOT_USAGE_ENABLED | DQUOT_LIMITS_ENABLED);
+	ext2_quota_off_umount(sb);
 
-	ext2_xattr_put_super(sb);
-	if (!(sb->s_flags & MS_RDONLY)) {
+	ext2_xattr_destroy_cache(sbi->s_ea_block_cache);
+	sbi->s_ea_block_cache = NULL;
+
+	if (!sb_rdonly(sb)) {
 		struct ext2_super_block *es = sbi->s_es;
 
 		spin_lock(&sbi->s_lock);
@@ -143,9 +162,8 @@ static void ext2_put_super (struct super_block * sb)
 	}
 	db_count = sbi->s_gdb_count;
 	for (i = 0; i < db_count; i++)
-		if (sbi->s_group_desc[i])
-			brelse (sbi->s_group_desc[i]);
-	kfree(sbi->s_group_desc);
+		brelse(sbi->s_group_desc[i]);
+	kvfree(sbi->s_group_desc);
 	kfree(sbi->s_debts);
 	percpu_counter_destroy(&sbi->s_freeblocks_counter);
 	percpu_counter_destroy(&sbi->s_freeinodes_counter);
@@ -153,6 +171,7 @@ static void ext2_put_super (struct super_block * sb)
 	brelse (sbi->s_sbh);
 	sb->s_fs_info = NULL;
 	kfree(sbi->s_blockgroup_lock);
+	fs_put_dax(sbi->s_daxdev, NULL);
 	kfree(sbi);
 }
 
@@ -161,23 +180,21 @@ static struct kmem_cache * ext2_inode_cachep;
 static struct inode *ext2_alloc_inode(struct super_block *sb)
 {
 	struct ext2_inode_info *ei;
-	ei = (struct ext2_inode_info *)kmem_cache_alloc(ext2_inode_cachep, GFP_KERNEL);
+	ei = alloc_inode_sb(sb, ext2_inode_cachep, GFP_KERNEL);
 	if (!ei)
 		return NULL;
 	ei->i_block_alloc_info = NULL;
-	ei->vfs_inode.i_version = 1;
+	inode_set_iversion(&ei->vfs_inode, 1);
+#ifdef CONFIG_QUOTA
+	memset(&ei->i_dquot, 0, sizeof(ei->i_dquot));
+#endif
+
 	return &ei->vfs_inode;
 }
 
-static void ext2_i_callback(struct rcu_head *head)
+static void ext2_free_in_core_inode(struct inode *inode)
 {
-	struct inode *inode = container_of(head, struct inode, i_rcu);
 	kmem_cache_free(ext2_inode_cachep, EXT2_I(inode));
-}
-
-static void ext2_destroy_inode(struct inode *inode)
-{
-	call_rcu(&inode->i_rcu, ext2_i_callback);
 }
 
 static void init_once(void *foo)
@@ -192,13 +209,15 @@ static void init_once(void *foo)
 	inode_init_once(&ei->vfs_inode);
 }
 
-static int init_inodecache(void)
+static int __init init_inodecache(void)
 {
-	ext2_inode_cachep = kmem_cache_create("ext2_inode_cache",
-					     sizeof(struct ext2_inode_info),
-					     0, (SLAB_RECLAIM_ACCOUNT|
-						SLAB_MEM_SPREAD),
-					     init_once);
+	ext2_inode_cachep = kmem_cache_create_usercopy("ext2_inode_cache",
+				sizeof(struct ext2_inode_info), 0,
+				(SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD|
+					SLAB_ACCOUNT),
+				offsetof(struct ext2_inode_info, i_data),
+				sizeof_field(struct ext2_inode_info, i_data),
+				init_once);
 	if (ext2_inode_cachep == NULL)
 		return -ENOMEM;
 	return 0;
@@ -277,21 +296,17 @@ static int ext2_show_options(struct seq_file *seq, struct dentry *root)
 		seq_puts(seq, ",noacl");
 #endif
 
-	if (test_opt(sb, NOBH))
-		seq_puts(seq, ",nobh");
-
-#if defined(CONFIG_QUOTA)
-	if (sbi->s_mount_opt & EXT2_MOUNT_USRQUOTA)
+	if (test_opt(sb, USRQUOTA))
 		seq_puts(seq, ",usrquota");
 
-	if (sbi->s_mount_opt & EXT2_MOUNT_GRPQUOTA)
+	if (test_opt(sb, GRPQUOTA))
 		seq_puts(seq, ",grpquota");
-#endif
 
-#if defined(CONFIG_EXT2_FS_XIP)
-	if (sbi->s_mount_opt & EXT2_MOUNT_XIP)
+	if (test_opt(sb, XIP))
 		seq_puts(seq, ",xip");
-#endif
+
+	if (test_opt(sb, DAX))
+		seq_puts(seq, ",dax");
 
 	if (!test_opt(sb, RESERVATION))
 		seq_puts(seq, ",noreservation");
@@ -303,11 +318,28 @@ static int ext2_show_options(struct seq_file *seq, struct dentry *root)
 #ifdef CONFIG_QUOTA
 static ssize_t ext2_quota_read(struct super_block *sb, int type, char *data, size_t len, loff_t off);
 static ssize_t ext2_quota_write(struct super_block *sb, int type, const char *data, size_t len, loff_t off);
+static int ext2_quota_on(struct super_block *sb, int type, int format_id,
+			 const struct path *path);
+static struct dquot __rcu **ext2_get_dquots(struct inode *inode)
+{
+	return EXT2_I(inode)->i_dquot;
+}
+
+static const struct quotactl_ops ext2_quotactl_ops = {
+	.quota_on	= ext2_quota_on,
+	.quota_off	= ext2_quota_off,
+	.quota_sync	= dquot_quota_sync,
+	.get_state	= dquot_get_state,
+	.set_info	= dquot_set_dqinfo,
+	.get_dqblk	= dquot_get_dqblk,
+	.set_dqblk	= dquot_set_dqblk,
+	.get_nextdqblk	= dquot_get_next_dqblk,
+};
 #endif
 
 static const struct super_operations ext2_sops = {
 	.alloc_inode	= ext2_alloc_inode,
-	.destroy_inode	= ext2_destroy_inode,
+	.free_inode	= ext2_free_in_core_inode,
 	.write_inode	= ext2_write_inode,
 	.evict_inode	= ext2_evict_inode,
 	.put_super	= ext2_put_super,
@@ -320,6 +352,7 @@ static const struct super_operations ext2_sops = {
 #ifdef CONFIG_QUOTA
 	.quota_read	= ext2_quota_read,
 	.quota_write	= ext2_quota_write,
+	.get_dquots	= ext2_get_dquots,
 #endif
 };
 
@@ -392,9 +425,9 @@ static unsigned long get_sb_block(void **data)
 enum {
 	Opt_bsd_df, Opt_minix_df, Opt_grpid, Opt_nogrpid,
 	Opt_resgid, Opt_resuid, Opt_sb, Opt_err_cont, Opt_err_panic,
-	Opt_err_ro, Opt_nouid32, Opt_nocheck, Opt_debug,
+	Opt_err_ro, Opt_nouid32, Opt_debug,
 	Opt_oldalloc, Opt_orlov, Opt_nobh, Opt_user_xattr, Opt_nouser_xattr,
-	Opt_acl, Opt_noacl, Opt_xip, Opt_ignore, Opt_err, Opt_quota,
+	Opt_acl, Opt_noacl, Opt_xip, Opt_dax, Opt_ignore, Opt_err, Opt_quota,
 	Opt_usrquota, Opt_grpquota, Opt_reservation, Opt_noreservation
 };
 
@@ -412,8 +445,6 @@ static const match_table_t tokens = {
 	{Opt_err_panic, "errors=panic"},
 	{Opt_err_ro, "errors=remount-ro"},
 	{Opt_nouid32, "nouid32"},
-	{Opt_nocheck, "check=none"},
-	{Opt_nocheck, "nocheck"},
 	{Opt_debug, "debug"},
 	{Opt_oldalloc, "oldalloc"},
 	{Opt_orlov, "orlov"},
@@ -423,6 +454,7 @@ static const match_table_t tokens = {
 	{Opt_acl, "acl"},
 	{Opt_noacl, "noacl"},
 	{Opt_xip, "xip"},
+	{Opt_dax, "dax"},
 	{Opt_grpquota, "grpquota"},
 	{Opt_ignore, "noquota"},
 	{Opt_quota, "quota"},
@@ -432,10 +464,10 @@ static const match_table_t tokens = {
 	{Opt_err, NULL}
 };
 
-static int parse_options(char *options, struct super_block *sb)
+static int parse_options(char *options, struct super_block *sb,
+			 struct ext2_mount_options *opts)
 {
 	char *p;
-	struct ext2_sb_info *sbi = EXT2_SB(sb);
 	substring_t args[MAX_OPT_ARGS];
 	int option;
 	kuid_t uid;
@@ -452,16 +484,16 @@ static int parse_options(char *options, struct super_block *sb)
 		token = match_token(p, tokens, args);
 		switch (token) {
 		case Opt_bsd_df:
-			clear_opt (sbi->s_mount_opt, MINIX_DF);
+			clear_opt (opts->s_mount_opt, MINIX_DF);
 			break;
 		case Opt_minix_df:
-			set_opt (sbi->s_mount_opt, MINIX_DF);
+			set_opt (opts->s_mount_opt, MINIX_DF);
 			break;
 		case Opt_grpid:
-			set_opt (sbi->s_mount_opt, GRPID);
+			set_opt (opts->s_mount_opt, GRPID);
 			break;
 		case Opt_nogrpid:
-			clear_opt (sbi->s_mount_opt, GRPID);
+			clear_opt (opts->s_mount_opt, GRPID);
 			break;
 		case Opt_resuid:
 			if (match_int(&args[0], &option))
@@ -472,7 +504,7 @@ static int parse_options(char *options, struct super_block *sb)
 				return 0;
 
 			}
-			sbi->s_resuid = uid;
+			opts->s_resuid = uid;
 			break;
 		case Opt_resgid:
 			if (match_int(&args[0], &option))
@@ -482,51 +514,49 @@ static int parse_options(char *options, struct super_block *sb)
 				ext2_msg(sb, KERN_ERR, "Invalid gid value %d", option);
 				return 0;
 			}
-			sbi->s_resgid = gid;
+			opts->s_resgid = gid;
 			break;
 		case Opt_sb:
 			/* handled by get_sb_block() instead of here */
 			/* *sb_block = match_int(&args[0]); */
 			break;
 		case Opt_err_panic:
-			clear_opt (sbi->s_mount_opt, ERRORS_CONT);
-			clear_opt (sbi->s_mount_opt, ERRORS_RO);
-			set_opt (sbi->s_mount_opt, ERRORS_PANIC);
+			clear_opt (opts->s_mount_opt, ERRORS_CONT);
+			clear_opt (opts->s_mount_opt, ERRORS_RO);
+			set_opt (opts->s_mount_opt, ERRORS_PANIC);
 			break;
 		case Opt_err_ro:
-			clear_opt (sbi->s_mount_opt, ERRORS_CONT);
-			clear_opt (sbi->s_mount_opt, ERRORS_PANIC);
-			set_opt (sbi->s_mount_opt, ERRORS_RO);
+			clear_opt (opts->s_mount_opt, ERRORS_CONT);
+			clear_opt (opts->s_mount_opt, ERRORS_PANIC);
+			set_opt (opts->s_mount_opt, ERRORS_RO);
 			break;
 		case Opt_err_cont:
-			clear_opt (sbi->s_mount_opt, ERRORS_RO);
-			clear_opt (sbi->s_mount_opt, ERRORS_PANIC);
-			set_opt (sbi->s_mount_opt, ERRORS_CONT);
+			clear_opt (opts->s_mount_opt, ERRORS_RO);
+			clear_opt (opts->s_mount_opt, ERRORS_PANIC);
+			set_opt (opts->s_mount_opt, ERRORS_CONT);
 			break;
 		case Opt_nouid32:
-			set_opt (sbi->s_mount_opt, NO_UID32);
-			break;
-		case Opt_nocheck:
-			clear_opt (sbi->s_mount_opt, CHECK);
+			set_opt (opts->s_mount_opt, NO_UID32);
 			break;
 		case Opt_debug:
-			set_opt (sbi->s_mount_opt, DEBUG);
+			set_opt (opts->s_mount_opt, DEBUG);
 			break;
 		case Opt_oldalloc:
-			set_opt (sbi->s_mount_opt, OLDALLOC);
+			set_opt (opts->s_mount_opt, OLDALLOC);
 			break;
 		case Opt_orlov:
-			clear_opt (sbi->s_mount_opt, OLDALLOC);
+			clear_opt (opts->s_mount_opt, OLDALLOC);
 			break;
 		case Opt_nobh:
-			set_opt (sbi->s_mount_opt, NOBH);
+			ext2_msg(sb, KERN_INFO,
+				"nobh option not supported");
 			break;
 #ifdef CONFIG_EXT2_FS_XATTR
 		case Opt_user_xattr:
-			set_opt (sbi->s_mount_opt, XATTR_USER);
+			set_opt (opts->s_mount_opt, XATTR_USER);
 			break;
 		case Opt_nouser_xattr:
-			clear_opt (sbi->s_mount_opt, XATTR_USER);
+			clear_opt (opts->s_mount_opt, XATTR_USER);
 			break;
 #else
 		case Opt_user_xattr:
@@ -537,10 +567,10 @@ static int parse_options(char *options, struct super_block *sb)
 #endif
 #ifdef CONFIG_EXT2_FS_POSIX_ACL
 		case Opt_acl:
-			set_opt(sbi->s_mount_opt, POSIX_ACL);
+			set_opt(opts->s_mount_opt, POSIX_ACL);
 			break;
 		case Opt_noacl:
-			clear_opt(sbi->s_mount_opt, POSIX_ACL);
+			clear_opt(opts->s_mount_opt, POSIX_ACL);
 			break;
 #else
 		case Opt_acl:
@@ -550,21 +580,27 @@ static int parse_options(char *options, struct super_block *sb)
 			break;
 #endif
 		case Opt_xip:
-#ifdef CONFIG_EXT2_FS_XIP
-			set_opt (sbi->s_mount_opt, XIP);
+			ext2_msg(sb, KERN_INFO, "use dax instead of xip");
+			set_opt(opts->s_mount_opt, XIP);
+			fallthrough;
+		case Opt_dax:
+#ifdef CONFIG_FS_DAX
+			ext2_msg(sb, KERN_WARNING,
+		"DAX enabled. Warning: EXPERIMENTAL, use at your own risk");
+			set_opt(opts->s_mount_opt, DAX);
 #else
-			ext2_msg(sb, KERN_INFO, "xip option not supported");
+			ext2_msg(sb, KERN_INFO, "dax option not supported");
 #endif
 			break;
 
 #if defined(CONFIG_QUOTA)
 		case Opt_quota:
 		case Opt_usrquota:
-			set_opt(sbi->s_mount_opt, USRQUOTA);
+			set_opt(opts->s_mount_opt, USRQUOTA);
 			break;
 
 		case Opt_grpquota:
-			set_opt(sbi->s_mount_opt, GRPQUOTA);
+			set_opt(opts->s_mount_opt, GRPQUOTA);
 			break;
 #else
 		case Opt_quota:
@@ -576,11 +612,11 @@ static int parse_options(char *options, struct super_block *sb)
 #endif
 
 		case Opt_reservation:
-			set_opt(sbi->s_mount_opt, RESERVATION);
+			set_opt(opts->s_mount_opt, RESERVATION);
 			ext2_msg(sb, KERN_INFO, "reservations ON");
 			break;
 		case Opt_noreservation:
-			clear_opt(sbi->s_mount_opt, RESERVATION);
+			clear_opt(opts->s_mount_opt, RESERVATION);
 			ext2_msg(sb, KERN_INFO, "reservations OFF");
 			break;
 		case Opt_ignore:
@@ -603,7 +639,7 @@ static int ext2_setup_super (struct super_block * sb,
 		ext2_msg(sb, KERN_ERR,
 			"error: revision level too high, "
 			"forcing read-only mode");
-		res = MS_RDONLY;
+		res = SB_RDONLY;
 	}
 	if (read_only)
 		return res;
@@ -623,7 +659,8 @@ static int ext2_setup_super (struct super_block * sb,
 			"running e2fsck is recommended");
 	else if (le32_to_cpu(es->s_checkinterval) &&
 		(le32_to_cpu(es->s_lastcheck) +
-			le32_to_cpu(es->s_checkinterval) <= get_seconds()))
+			le32_to_cpu(es->s_checkinterval) <=
+			ktime_get_real_seconds()))
 		ext2_msg(sb, KERN_WARNING,
 			"warning: checktime reached, "
 			"running e2fsck is recommended");
@@ -631,10 +668,9 @@ static int ext2_setup_super (struct super_block * sb,
 		es->s_max_mnt_count = cpu_to_le16(EXT2_DFL_MAX_MNT_COUNT);
 	le16_add_cpu(&es->s_mnt_count, 1);
 	if (test_opt (sb, DEBUG))
-		ext2_msg(sb, KERN_INFO, "%s, %s, bs=%lu, fs=%lu, gc=%lu, "
+		ext2_msg(sb, KERN_INFO, "%s, %s, bs=%lu, gc=%lu, "
 			"bpg=%lu, ipg=%lu, mo=%04lx]",
 			EXT2FS_VERSION, EXT2FS_DATE, sb->s_blocksize,
-			sbi->s_frag_size,
 			sbi->s_groups_count,
 			EXT2_BLOCKS_PER_GROUP(sb),
 			EXT2_INODES_PER_GROUP(sb),
@@ -652,13 +688,7 @@ static int ext2_check_descriptors(struct super_block *sb)
 	for (i = 0; i < sbi->s_groups_count; i++) {
 		struct ext2_group_desc *gdp = ext2_get_group_desc(sb, i, NULL);
 		ext2_fsblk_t first_block = ext2_group_first_block_no(sb, i);
-		ext2_fsblk_t last_block;
-
-		if (i == sbi->s_groups_count - 1)
-			last_block = le32_to_cpu(sbi->s_es->s_blocks_count) - 1;
-		else
-			last_block = first_block +
-				(EXT2_BLOCKS_PER_GROUP(sb) - 1);
+		ext2_fsblk_t last_block = ext2_group_last_block_no(sb, i);
 
 		if (le32_to_cpu(gdp->bg_block_bitmap) < first_block ||
 		    le32_to_cpu(gdp->bg_block_bitmap) > last_block)
@@ -701,7 +731,8 @@ static loff_t ext2_max_size(int bits)
 {
 	loff_t res = EXT2_NDIR_BLOCKS;
 	int meta_blocks;
-	loff_t upper_limit;
+	unsigned int upper_limit;
+	unsigned int ppb = 1 << (bits-2);
 
 	/* This is calculated to be the largest file size for a
 	 * dense, file such that the total number of
@@ -715,24 +746,38 @@ static loff_t ext2_max_size(int bits)
 	/* total blocks in file system block size */
 	upper_limit >>= (bits - 9);
 
-
-	/* indirect blocks */
-	meta_blocks = 1;
-	/* double indirect blocks */
-	meta_blocks += 1 + (1LL << (bits-2));
-	/* tripple indirect blocks */
-	meta_blocks += 1 + (1LL << (bits-2)) + (1LL << (2*(bits-2)));
-
-	upper_limit -= meta_blocks;
-	upper_limit <<= bits;
-
+	/* Compute how many blocks we can address by block tree */
 	res += 1LL << (bits-2);
 	res += 1LL << (2*(bits-2));
 	res += 1LL << (3*(bits-2));
-	res <<= bits;
-	if (res > upper_limit)
-		res = upper_limit;
+	/* Compute how many metadata blocks are needed */
+	meta_blocks = 1;
+	meta_blocks += 1 + ppb;
+	meta_blocks += 1 + ppb + ppb * ppb;
+	/* Does block tree limit file size? */
+	if (res + meta_blocks <= upper_limit)
+		goto check_lfs;
 
+	res = upper_limit;
+	/* How many metadata blocks are needed for addressing upper_limit? */
+	upper_limit -= EXT2_NDIR_BLOCKS;
+	/* indirect blocks */
+	meta_blocks = 1;
+	upper_limit -= ppb;
+	/* double indirect blocks */
+	if (upper_limit < ppb * ppb) {
+		meta_blocks += 1 + DIV_ROUND_UP(upper_limit, ppb);
+		res -= meta_blocks;
+		goto check_lfs;
+	}
+	meta_blocks += 1 + ppb;
+	upper_limit -= ppb * ppb;
+	/* tripple indirect blocks for the rest */
+	meta_blocks += 1 + DIV_ROUND_UP(upper_limit, ppb) +
+		DIV_ROUND_UP(upper_limit, ppb*ppb);
+	res -= meta_blocks;
+check_lfs:
+	res <<= bits;
 	if (res > MAX_LFS_FILESIZE)
 		res = MAX_LFS_FILESIZE;
 
@@ -745,7 +790,6 @@ static unsigned long descriptor_loc(struct super_block *sb,
 {
 	struct ext2_sb_info *sbi = EXT2_SB(sb);
 	unsigned long bg, first_meta_bg;
-	int has_super = 0;
 	
 	first_meta_bg = le32_to_cpu(sbi->s_es->s_first_meta_bg);
 
@@ -753,10 +797,8 @@ static unsigned long descriptor_loc(struct super_block *sb,
 	    nr < first_meta_bg)
 		return (logic_sb_block + nr + 1);
 	bg = sbi->s_desc_per_block * nr;
-	if (ext2_bg_has_super(sb, bg))
-		has_super = 1;
 
-	return ext2_group_first_block_no(sb, bg) + has_super;
+	return ext2_group_first_block_no(sb, bg) + ext2_bg_has_super(sb, bg);
 }
 
 static int ext2_fill_super(struct super_block *sb, void *data, int silent)
@@ -770,28 +812,31 @@ static int ext2_fill_super(struct super_block *sb, void *data, int silent)
 	unsigned long logic_sb_block;
 	unsigned long offset = 0;
 	unsigned long def_mount_opts;
-	long ret = -EINVAL;
+	long ret = -ENOMEM;
 	int blocksize = BLOCK_SIZE;
 	int db_count;
 	int i, j;
 	__le32 features;
 	int err;
+	struct ext2_mount_options opts;
 
-	err = -ENOMEM;
 	sbi = kzalloc(sizeof(*sbi), GFP_KERNEL);
 	if (!sbi)
-		goto failed;
+		return -ENOMEM;
 
 	sbi->s_blockgroup_lock =
 		kzalloc(sizeof(struct blockgroup_lock), GFP_KERNEL);
 	if (!sbi->s_blockgroup_lock) {
 		kfree(sbi);
-		goto failed;
+		return -ENOMEM;
 	}
 	sb->s_fs_info = sbi;
 	sbi->s_sb_block = sb_block;
+	sbi->s_daxdev = fs_dax_get_by_bdev(sb->s_bdev, &sbi->s_dax_part_off,
+					   NULL, NULL);
 
 	spin_lock_init(&sbi->s_lock);
+	ret = -EINVAL;
 
 	/*
 	 * See what the current blocksize for the device is, and
@@ -832,44 +877,46 @@ static int ext2_fill_super(struct super_block *sb, void *data, int silent)
 	if (sb->s_magic != EXT2_SUPER_MAGIC)
 		goto cantfind_ext2;
 
+	opts.s_mount_opt = 0;
 	/* Set defaults before we parse the mount options */
 	def_mount_opts = le32_to_cpu(es->s_default_mount_opts);
 	if (def_mount_opts & EXT2_DEFM_DEBUG)
-		set_opt(sbi->s_mount_opt, DEBUG);
+		set_opt(opts.s_mount_opt, DEBUG);
 	if (def_mount_opts & EXT2_DEFM_BSDGROUPS)
-		set_opt(sbi->s_mount_opt, GRPID);
+		set_opt(opts.s_mount_opt, GRPID);
 	if (def_mount_opts & EXT2_DEFM_UID16)
-		set_opt(sbi->s_mount_opt, NO_UID32);
+		set_opt(opts.s_mount_opt, NO_UID32);
 #ifdef CONFIG_EXT2_FS_XATTR
 	if (def_mount_opts & EXT2_DEFM_XATTR_USER)
-		set_opt(sbi->s_mount_opt, XATTR_USER);
+		set_opt(opts.s_mount_opt, XATTR_USER);
 #endif
 #ifdef CONFIG_EXT2_FS_POSIX_ACL
 	if (def_mount_opts & EXT2_DEFM_ACL)
-		set_opt(sbi->s_mount_opt, POSIX_ACL);
+		set_opt(opts.s_mount_opt, POSIX_ACL);
 #endif
 	
 	if (le16_to_cpu(sbi->s_es->s_errors) == EXT2_ERRORS_PANIC)
-		set_opt(sbi->s_mount_opt, ERRORS_PANIC);
+		set_opt(opts.s_mount_opt, ERRORS_PANIC);
 	else if (le16_to_cpu(sbi->s_es->s_errors) == EXT2_ERRORS_CONTINUE)
-		set_opt(sbi->s_mount_opt, ERRORS_CONT);
+		set_opt(opts.s_mount_opt, ERRORS_CONT);
 	else
-		set_opt(sbi->s_mount_opt, ERRORS_RO);
+		set_opt(opts.s_mount_opt, ERRORS_RO);
 
-	sbi->s_resuid = make_kuid(&init_user_ns, le16_to_cpu(es->s_def_resuid));
-	sbi->s_resgid = make_kgid(&init_user_ns, le16_to_cpu(es->s_def_resgid));
+	opts.s_resuid = make_kuid(&init_user_ns, le16_to_cpu(es->s_def_resuid));
+	opts.s_resgid = make_kgid(&init_user_ns, le16_to_cpu(es->s_def_resgid));
 	
-	set_opt(sbi->s_mount_opt, RESERVATION);
+	set_opt(opts.s_mount_opt, RESERVATION);
 
-	if (!parse_options((char *) data, sb))
+	if (!parse_options((char *) data, sb, &opts))
 		goto failed_mount;
 
-	sb->s_flags = (sb->s_flags & ~MS_POSIXACL) |
-		((EXT2_SB(sb)->s_mount_opt & EXT2_MOUNT_POSIX_ACL) ?
-		 MS_POSIXACL : 0);
+	sbi->s_mount_opt = opts.s_mount_opt;
+	sbi->s_resuid = opts.s_resuid;
+	sbi->s_resgid = opts.s_resgid;
 
-	ext2_xip_verify_sb(sb); /* see if bdev supports xip, unset
-				    EXT2_MOUNT_XIP if not */
+	sb->s_flags = (sb->s_flags & ~SB_POSIXACL) |
+		(test_opt(sb, POSIX_ACL) ? SB_POSIXACL : 0);
+	sb->s_iflags |= SB_I_CGROUPWB;
 
 	if (le32_to_cpu(es->s_rev_level) == EXT2_GOOD_OLD_REV &&
 	    (EXT2_HAS_COMPAT_FEATURE(sb, ~0U) ||
@@ -890,21 +937,31 @@ static int ext2_fill_super(struct super_block *sb, void *data, int silent)
 			le32_to_cpu(features));
 		goto failed_mount;
 	}
-	if (!(sb->s_flags & MS_RDONLY) &&
-	    (features = EXT2_HAS_RO_COMPAT_FEATURE(sb, ~EXT2_FEATURE_RO_COMPAT_SUPP))){
+	if (!sb_rdonly(sb) && (features = EXT2_HAS_RO_COMPAT_FEATURE(sb, ~EXT2_FEATURE_RO_COMPAT_SUPP))){
 		ext2_msg(sb, KERN_ERR, "error: couldn't mount RDWR because of "
 		       "unsupported optional features (%x)",
 		       le32_to_cpu(features));
 		goto failed_mount;
 	}
 
+	if (le32_to_cpu(es->s_log_block_size) >
+	    (EXT2_MAX_BLOCK_LOG_SIZE - BLOCK_SIZE_BITS)) {
+		ext2_msg(sb, KERN_ERR,
+			 "Invalid log block size: %u",
+			 le32_to_cpu(es->s_log_block_size));
+		goto failed_mount;
+	}
 	blocksize = BLOCK_SIZE << le32_to_cpu(sbi->s_es->s_log_block_size);
 
-	if (ext2_use_xip(sb) && blocksize != PAGE_SIZE) {
-		if (!silent)
+	if (test_opt(sb, DAX)) {
+		if (!sbi->s_daxdev) {
 			ext2_msg(sb, KERN_ERR,
-				"error: unsupported blocksize for xip");
-		goto failed_mount;
+				"DAX unsupported by block device. Turning off DAX.");
+			clear_opt(sbi->s_mount_opt, DAX);
+		} else if (blocksize != PAGE_SIZE) {
+			ext2_msg(sb, KERN_ERR, "unsupported blocksize for DAX\n");
+			clear_opt(sbi->s_mount_opt, DAX);
+		}
 	}
 
 	/* If the blocksize doesn't match, re-read the thing.. */
@@ -935,6 +992,8 @@ static int ext2_fill_super(struct super_block *sb, void *data, int silent)
 
 	sb->s_maxbytes = ext2_max_size(sb->s_blocksize_bits);
 	sb->s_max_links = EXT2_LINK_MAX;
+	sb->s_time_min = S32_MIN;
+	sb->s_time_max = S32_MAX;
 
 	if (le32_to_cpu(es->s_rev_level) == EXT2_GOOD_OLD_REV) {
 		sbi->s_inode_size = EXT2_GOOD_OLD_INODE_SIZE;
@@ -952,18 +1011,9 @@ static int ext2_fill_super(struct super_block *sb, void *data, int silent)
 		}
 	}
 
-	sbi->s_frag_size = EXT2_MIN_FRAG_SIZE <<
-				   le32_to_cpu(es->s_log_frag_size);
-	if (sbi->s_frag_size == 0)
-		goto cantfind_ext2;
-	sbi->s_frags_per_block = sb->s_blocksize / sbi->s_frag_size;
-
 	sbi->s_blocks_per_group = le32_to_cpu(es->s_blocks_per_group);
-	sbi->s_frags_per_group = le32_to_cpu(es->s_frags_per_group);
 	sbi->s_inodes_per_group = le32_to_cpu(es->s_inodes_per_group);
 
-	if (EXT2_INODE_SIZE(sb) == 0)
-		goto cantfind_ext2;
 	sbi->s_inodes_per_block = sb->s_blocksize / EXT2_INODE_SIZE(sb);
 	if (sbi->s_inodes_per_block == 0 || sbi->s_inodes_per_group == 0)
 		goto cantfind_ext2;
@@ -987,11 +1037,10 @@ static int ext2_fill_super(struct super_block *sb, void *data, int silent)
 		goto failed_mount;
 	}
 
-	if (sb->s_blocksize != sbi->s_frag_size) {
+	if (es->s_log_frag_size != es->s_log_block_size) {
 		ext2_msg(sb, KERN_ERR,
-			"error: fragsize %lu != blocksize %lu"
-			"(not supported yet)",
-			sbi->s_frag_size, sb->s_blocksize);
+			"error: fragsize log %u != blocksize log %u",
+			le32_to_cpu(es->s_log_frag_size), sb->s_blocksize_bits);
 		goto failed_mount;
 	}
 
@@ -1001,34 +1050,52 @@ static int ext2_fill_super(struct super_block *sb, void *data, int silent)
 			sbi->s_blocks_per_group);
 		goto failed_mount;
 	}
-	if (sbi->s_frags_per_group > sb->s_blocksize * 8) {
+	/* At least inode table, bitmaps, and sb have to fit in one group */
+	if (sbi->s_blocks_per_group <= sbi->s_itb_per_group + 3) {
 		ext2_msg(sb, KERN_ERR,
-			"error: #fragments per group too big: %lu",
-			sbi->s_frags_per_group);
+			"error: #blocks per group smaller than metadata size: %lu <= %lu",
+			sbi->s_blocks_per_group, sbi->s_inodes_per_group + 3);
 		goto failed_mount;
 	}
-	if (sbi->s_inodes_per_group > sb->s_blocksize * 8) {
+	if (sbi->s_inodes_per_group < sbi->s_inodes_per_block ||
+	    sbi->s_inodes_per_group > sb->s_blocksize * 8) {
 		ext2_msg(sb, KERN_ERR,
-			"error: #inodes per group too big: %lu",
+			"error: invalid #inodes per group: %lu",
 			sbi->s_inodes_per_group);
 		goto failed_mount;
 	}
+	if (sb_bdev_nr_blocks(sb) < le32_to_cpu(es->s_blocks_count)) {
+		ext2_msg(sb, KERN_ERR,
+			 "bad geometry: block count %u exceeds size of device (%u blocks)",
+			 le32_to_cpu(es->s_blocks_count),
+			 (unsigned)sb_bdev_nr_blocks(sb));
+		goto failed_mount;
+	}
 
-	if (EXT2_BLOCKS_PER_GROUP(sb) == 0)
-		goto cantfind_ext2;
- 	sbi->s_groups_count = ((le32_to_cpu(es->s_blocks_count) -
- 				le32_to_cpu(es->s_first_data_block) - 1)
- 					/ EXT2_BLOCKS_PER_GROUP(sb)) + 1;
+	sbi->s_groups_count = ((le32_to_cpu(es->s_blocks_count) -
+				le32_to_cpu(es->s_first_data_block) - 1)
+					/ EXT2_BLOCKS_PER_GROUP(sb)) + 1;
+	if ((u64)sbi->s_groups_count * sbi->s_inodes_per_group !=
+	    le32_to_cpu(es->s_inodes_count)) {
+		ext2_msg(sb, KERN_ERR, "error: invalid #inodes: %u vs computed %llu",
+			 le32_to_cpu(es->s_inodes_count),
+			 (u64)sbi->s_groups_count * sbi->s_inodes_per_group);
+		goto failed_mount;
+	}
 	db_count = (sbi->s_groups_count + EXT2_DESC_PER_BLOCK(sb) - 1) /
 		   EXT2_DESC_PER_BLOCK(sb);
-	sbi->s_group_desc = kmalloc (db_count * sizeof (struct buffer_head *), GFP_KERNEL);
+	sbi->s_group_desc = kvmalloc_array(db_count,
+					   sizeof(struct buffer_head *),
+					   GFP_KERNEL);
 	if (sbi->s_group_desc == NULL) {
+		ret = -ENOMEM;
 		ext2_msg(sb, KERN_ERR, "error: not enough memory");
 		goto failed_mount;
 	}
 	bgl_lock_init(sbi->s_blockgroup_lock);
 	sbi->s_debts = kcalloc(sbi->s_groups_count, sizeof(*sbi->s_debts), GFP_KERNEL);
 	if (!sbi->s_debts) {
+		ret = -ENOMEM;
 		ext2_msg(sb, KERN_ERR, "error: not enough memory");
 		goto failed_mount_group_desc;
 	}
@@ -1051,7 +1118,7 @@ static int ext2_fill_super(struct super_block *sb, void *data, int silent)
 	get_random_bytes(&sbi->s_next_generation, sizeof(u32));
 	spin_lock_init(&sbi->s_next_gen_lock);
 
-	/* per fileystem reservation list head & lock */
+	/* per filesystem reservation list head & lock */
 	spin_lock_init(&sbi->s_rsv_window_lock);
 	sbi->s_rsv_window_root = RB_ROOT;
 	/*
@@ -1067,19 +1134,29 @@ static int ext2_fill_super(struct super_block *sb, void *data, int silent)
 	ext2_rsv_window_add(sb, &sbi->s_rsv_window_head);
 
 	err = percpu_counter_init(&sbi->s_freeblocks_counter,
-				ext2_count_free_blocks(sb));
+				ext2_count_free_blocks(sb), GFP_KERNEL);
 	if (!err) {
 		err = percpu_counter_init(&sbi->s_freeinodes_counter,
-				ext2_count_free_inodes(sb));
+				ext2_count_free_inodes(sb), GFP_KERNEL);
 	}
 	if (!err) {
 		err = percpu_counter_init(&sbi->s_dirs_counter,
-				ext2_count_dirs(sb));
+				ext2_count_dirs(sb), GFP_KERNEL);
 	}
 	if (err) {
+		ret = err;
 		ext2_msg(sb, KERN_ERR, "error: insufficient memory");
 		goto failed_mount3;
 	}
+
+#ifdef CONFIG_EXT2_FS_XATTR
+	sbi->s_ea_block_cache = ext2_xattr_create_cache();
+	if (!sbi->s_ea_block_cache) {
+		ret = -ENOMEM;
+		ext2_msg(sb, KERN_ERR, "Failed to create ea_block_cache");
+		goto failed_mount3;
+	}
+#endif
 	/*
 	 * set up enough so that it can read an inode
 	 */
@@ -1089,7 +1166,8 @@ static int ext2_fill_super(struct super_block *sb, void *data, int silent)
 
 #ifdef CONFIG_QUOTA
 	sb->dq_op = &dquot_operations;
-	sb->s_qcop = &dquot_quotactl_ops;
+	sb->s_qcop = &ext2_quotactl_ops;
+	sb->s_quota_types = QTYPE_MASK_USR | QTYPE_MASK_GRP;
 #endif
 
 	root = ext2_iget(sb, EXT2_ROOT_INO);
@@ -1112,8 +1190,8 @@ static int ext2_fill_super(struct super_block *sb, void *data, int silent)
 	if (EXT2_HAS_COMPAT_FEATURE(sb, EXT3_FEATURE_COMPAT_HAS_JOURNAL))
 		ext2_msg(sb, KERN_WARNING,
 			"warning: mounting ext3 filesystem as ext2");
-	if (ext2_setup_super (sb, es, sb->s_flags & MS_RDONLY))
-		sb->s_flags |= MS_RDONLY;
+	if (ext2_setup_super (sb, es, sb_rdonly(sb)))
+		sb->s_flags |= SB_RDONLY;
 	ext2_write_super(sb);
 	return 0;
 
@@ -1124,6 +1202,7 @@ cantfind_ext2:
 			sb->s_id);
 	goto failed_mount;
 failed_mount3:
+	ext2_xattr_destroy_cache(sbi->s_ea_block_cache);
 	percpu_counter_destroy(&sbi->s_freeblocks_counter);
 	percpu_counter_destroy(&sbi->s_freeinodes_counter);
 	percpu_counter_destroy(&sbi->s_dirs_counter);
@@ -1131,15 +1210,15 @@ failed_mount2:
 	for (i = 0; i < db_count; i++)
 		brelse(sbi->s_group_desc[i]);
 failed_mount_group_desc:
-	kfree(sbi->s_group_desc);
+	kvfree(sbi->s_group_desc);
 	kfree(sbi->s_debts);
 failed_mount:
 	brelse(bh);
 failed_sbi:
+	fs_put_dax(sbi->s_daxdev, NULL);
 	sb->s_fs_info = NULL;
 	kfree(sbi->s_blockgroup_lock);
 	kfree(sbi);
-failed:
 	return ret;
 }
 
@@ -1157,20 +1236,20 @@ static void ext2_clear_super_error(struct super_block *sb)
 		 * write and hope for the best.
 		 */
 		ext2_msg(sb, KERN_ERR,
-		       "previous I/O error to superblock detected\n");
+		       "previous I/O error to superblock detected");
 		clear_buffer_write_io_error(sbh);
 		set_buffer_uptodate(sbh);
 	}
 }
 
-static void ext2_sync_super(struct super_block *sb, struct ext2_super_block *es,
-			    int wait)
+void ext2_sync_super(struct super_block *sb, struct ext2_super_block *es,
+		     int wait)
 {
 	ext2_clear_super_error(sb);
 	spin_lock(&EXT2_SB(sb)->s_lock);
 	es->s_free_blocks_count = cpu_to_le32(ext2_count_free_blocks(sb));
 	es->s_free_inodes_count = cpu_to_le32(ext2_count_free_inodes(sb));
-	es->s_wtime = cpu_to_le32(get_seconds());
+	es->s_wtime = cpu_to_le32(ktime_get_real_seconds());
 	/* unlock before we do IO */
 	spin_unlock(&EXT2_SB(sb)->s_lock);
 	mark_buffer_dirty(EXT2_SB(sb)->s_sbh);
@@ -1239,9 +1318,9 @@ static int ext2_unfreeze(struct super_block *sb)
 	return 0;
 }
 
-void ext2_write_super(struct super_block *sb)
+static void ext2_write_super(struct super_block *sb)
 {
-	if (!(sb->s_flags & MS_RDONLY))
+	if (!sb_rdonly(sb))
 		ext2_sync_fs(sb, 1);
 }
 
@@ -1249,83 +1328,57 @@ static int ext2_remount (struct super_block * sb, int * flags, char * data)
 {
 	struct ext2_sb_info * sbi = EXT2_SB(sb);
 	struct ext2_super_block * es;
-	unsigned long old_mount_opt = sbi->s_mount_opt;
-	struct ext2_mount_options old_opts;
-	unsigned long old_sb_flags;
+	struct ext2_mount_options new_opts;
 	int err;
 
+	sync_filesystem(sb);
+
 	spin_lock(&sbi->s_lock);
+	new_opts.s_mount_opt = sbi->s_mount_opt;
+	new_opts.s_resuid = sbi->s_resuid;
+	new_opts.s_resgid = sbi->s_resgid;
+	spin_unlock(&sbi->s_lock);
 
-	/* Store the old options */
-	old_sb_flags = sb->s_flags;
-	old_opts.s_mount_opt = sbi->s_mount_opt;
-	old_opts.s_resuid = sbi->s_resuid;
-	old_opts.s_resgid = sbi->s_resgid;
+	if (!parse_options(data, sb, &new_opts))
+		return -EINVAL;
 
-	/*
-	 * Allow the "check" option to be passed as a remount option.
-	 */
-	if (!parse_options(data, sb)) {
-		err = -EINVAL;
-		goto restore_opts;
-	}
-
-	sb->s_flags = (sb->s_flags & ~MS_POSIXACL) |
-		((sbi->s_mount_opt & EXT2_MOUNT_POSIX_ACL) ? MS_POSIXACL : 0);
-
-	ext2_xip_verify_sb(sb); /* see if bdev supports xip, unset
-				    EXT2_MOUNT_XIP if not */
-
-	if ((ext2_use_xip(sb)) && (sb->s_blocksize != PAGE_SIZE)) {
-		ext2_msg(sb, KERN_WARNING,
-			"warning: unsupported blocksize for xip");
-		err = -EINVAL;
-		goto restore_opts;
-	}
-
+	spin_lock(&sbi->s_lock);
 	es = sbi->s_es;
-	if ((sbi->s_mount_opt ^ old_mount_opt) & EXT2_MOUNT_XIP) {
+	if ((sbi->s_mount_opt ^ new_opts.s_mount_opt) & EXT2_MOUNT_DAX) {
 		ext2_msg(sb, KERN_WARNING, "warning: refusing change of "
-			 "xip flag with busy inodes while remounting");
-		sbi->s_mount_opt &= ~EXT2_MOUNT_XIP;
-		sbi->s_mount_opt |= old_mount_opt & EXT2_MOUNT_XIP;
+			 "dax flag with busy inodes while remounting");
+		new_opts.s_mount_opt ^= EXT2_MOUNT_DAX;
 	}
-	if ((*flags & MS_RDONLY) == (sb->s_flags & MS_RDONLY)) {
-		spin_unlock(&sbi->s_lock);
-		return 0;
-	}
-	if (*flags & MS_RDONLY) {
+	if ((bool)(*flags & SB_RDONLY) == sb_rdonly(sb))
+		goto out_set;
+	if (*flags & SB_RDONLY) {
 		if (le16_to_cpu(es->s_state) & EXT2_VALID_FS ||
-		    !(sbi->s_mount_state & EXT2_VALID_FS)) {
-			spin_unlock(&sbi->s_lock);
-			return 0;
-		}
+		    !(sbi->s_mount_state & EXT2_VALID_FS))
+			goto out_set;
 
 		/*
 		 * OK, we are remounting a valid rw partition rdonly, so set
 		 * the rdonly flag and then mark the partition as valid again.
 		 */
 		es->s_state = cpu_to_le16(sbi->s_mount_state);
-		es->s_mtime = cpu_to_le32(get_seconds());
+		es->s_mtime = cpu_to_le32(ktime_get_real_seconds());
 		spin_unlock(&sbi->s_lock);
 
 		err = dquot_suspend(sb, -1);
-		if (err < 0) {
-			spin_lock(&sbi->s_lock);
-			goto restore_opts;
-		}
+		if (err < 0)
+			return err;
 
 		ext2_sync_super(sb, es, 1);
 	} else {
 		__le32 ret = EXT2_HAS_RO_COMPAT_FEATURE(sb,
 					       ~EXT2_FEATURE_RO_COMPAT_SUPP);
 		if (ret) {
+			spin_unlock(&sbi->s_lock);
 			ext2_msg(sb, KERN_WARNING,
 				"warning: couldn't remount RDWR because of "
 				"unsupported optional features (%x).",
 				le32_to_cpu(ret));
-			err = -EROFS;
-			goto restore_opts;
+			return -EROFS;
 		}
 		/*
 		 * Mounting a RDONLY partition read-write, so reread and
@@ -1334,7 +1387,7 @@ static int ext2_remount (struct super_block * sb, int * flags, char * data)
 		 */
 		sbi->s_mount_state = le16_to_cpu(es->s_state);
 		if (!ext2_setup_super (sb, es, 0))
-			sb->s_flags &= ~MS_RDONLY;
+			sb->s_flags &= ~SB_RDONLY;
 		spin_unlock(&sbi->s_lock);
 
 		ext2_write_super(sb);
@@ -1342,14 +1395,16 @@ static int ext2_remount (struct super_block * sb, int * flags, char * data)
 		dquot_resume(sb, -1);
 	}
 
-	return 0;
-restore_opts:
-	sbi->s_mount_opt = old_opts.s_mount_opt;
-	sbi->s_resuid = old_opts.s_resuid;
-	sbi->s_resgid = old_opts.s_resgid;
-	sb->s_flags = old_sb_flags;
+	spin_lock(&sbi->s_lock);
+out_set:
+	sbi->s_mount_opt = new_opts.s_mount_opt;
+	sbi->s_resuid = new_opts.s_resuid;
+	sbi->s_resgid = new_opts.s_resgid;
+	sb->s_flags = (sb->s_flags & ~SB_POSIXACL) |
+		(test_opt(sb, POSIX_ACL) ? SB_POSIXACL : 0);
 	spin_unlock(&sbi->s_lock);
-	return err;
+
+	return 0;
 }
 
 static int ext2_statfs (struct dentry * dentry, struct kstatfs * buf)
@@ -1357,7 +1412,6 @@ static int ext2_statfs (struct dentry * dentry, struct kstatfs * buf)
 	struct super_block *sb = dentry->d_sb;
 	struct ext2_sb_info *sbi = EXT2_SB(sb);
 	struct ext2_super_block *es = sbi->s_es;
-	u64 fsid;
 
 	spin_lock(&sbi->s_lock);
 
@@ -1411,10 +1465,7 @@ static int ext2_statfs (struct dentry * dentry, struct kstatfs * buf)
 	buf->f_ffree = ext2_count_free_inodes(sb);
 	es->s_free_inodes_count = cpu_to_le32(buf->f_ffree);
 	buf->f_namelen = EXT2_NAME_LEN;
-	fsid = le64_to_cpup((void *)es->s_uuid) ^
-	       le64_to_cpup((void *)es->s_uuid + sizeof(u64));
-	buf->f_fsid.val[0] = fsid & 0xFFFFFFFFUL;
-	buf->f_fsid.val[1] = (fsid >> 32) & 0xFFFFFFFFUL;
+	buf->f_fsid = uuid_to_fsid(es->s_uuid);
 	spin_unlock(&sbi->s_lock);
 	return 0;
 }
@@ -1450,8 +1501,7 @@ static ssize_t ext2_quota_read(struct super_block *sb, int type, char *data,
 		len = i_size-off;
 	toread = len;
 	while (toread > 0) {
-		tocopy = sb->s_blocksize - offset < toread ?
-				sb->s_blocksize - offset : toread;
+		tocopy = min_t(size_t, sb->s_blocksize - offset, toread);
 
 		tmp_bh.b_state = 0;
 		tmp_bh.b_size = sb->s_blocksize;
@@ -1489,8 +1539,7 @@ static ssize_t ext2_quota_write(struct super_block *sb, int type,
 	struct buffer_head *bh;
 
 	while (towrite > 0) {
-		tocopy = sb->s_blocksize - offset < towrite ?
-				sb->s_blocksize - offset : towrite;
+		tocopy = min_t(size_t, sb->s_blocksize - offset, towrite);
 
 		tmp_bh.b_state = 0;
 		tmp_bh.b_size = sb->s_blocksize;
@@ -1522,10 +1571,55 @@ out:
 		return err;
 	if (inode->i_size < off+len-towrite)
 		i_size_write(inode, off+len-towrite);
-	inode->i_version++;
-	inode->i_mtime = inode->i_ctime = CURRENT_TIME;
+	inode_inc_iversion(inode);
+	inode->i_mtime = inode_set_ctime_current(inode);
 	mark_inode_dirty(inode);
 	return len - towrite;
+}
+
+static int ext2_quota_on(struct super_block *sb, int type, int format_id,
+			 const struct path *path)
+{
+	int err;
+	struct inode *inode;
+
+	err = dquot_quota_on(sb, type, format_id, path);
+	if (err)
+		return err;
+
+	inode = d_inode(path->dentry);
+	inode_lock(inode);
+	EXT2_I(inode)->i_flags |= EXT2_NOATIME_FL | EXT2_IMMUTABLE_FL;
+	inode_set_flags(inode, S_NOATIME | S_IMMUTABLE,
+			S_NOATIME | S_IMMUTABLE);
+	inode_unlock(inode);
+	mark_inode_dirty(inode);
+
+	return 0;
+}
+
+static int ext2_quota_off(struct super_block *sb, int type)
+{
+	struct inode *inode = sb_dqopt(sb)->files[type];
+	int err;
+
+	if (!inode || !igrab(inode))
+		goto out;
+
+	err = dquot_quota_off(sb, type);
+	if (err)
+		goto out_put;
+
+	inode_lock(inode);
+	EXT2_I(inode)->i_flags &= ~(EXT2_NOATIME_FL | EXT2_IMMUTABLE_FL);
+	inode_set_flags(inode, 0, S_NOATIME | S_IMMUTABLE);
+	inode_unlock(inode);
+	mark_inode_dirty(inode);
+out_put:
+	iput(inode);
+	return err;
+out:
+	return dquot_quota_off(sb, type);
 }
 
 #endif
@@ -1541,20 +1635,17 @@ MODULE_ALIAS_FS("ext2");
 
 static int __init init_ext2_fs(void)
 {
-	int err = init_ext2_xattr();
-	if (err)
-		return err;
+	int err;
+
 	err = init_inodecache();
 	if (err)
-		goto out1;
-        err = register_filesystem(&ext2_fs_type);
+		return err;
+	err = register_filesystem(&ext2_fs_type);
 	if (err)
 		goto out;
 	return 0;
 out:
 	destroy_inodecache();
-out1:
-	exit_ext2_xattr();
 	return err;
 }
 
@@ -1562,11 +1653,11 @@ static void __exit exit_ext2_fs(void)
 {
 	unregister_filesystem(&ext2_fs_type);
 	destroy_inodecache();
-	exit_ext2_xattr();
 }
 
 MODULE_AUTHOR("Remy Card and others");
 MODULE_DESCRIPTION("Second Extended Filesystem");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(ANDROID_GKI_VFS_EXPORT_ONLY);
 module_init(init_ext2_fs)
 module_exit(exit_ext2_fs)

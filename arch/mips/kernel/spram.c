@@ -1,10 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * MIPS SPRAM support
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  *
  * Copyright (C) 2007, 2008 MIPS Technologies, Inc.
  */
@@ -197,23 +193,27 @@ static void probe_spram(char *type,
 }
 void spram_config(void)
 {
-	struct cpuinfo_mips *c = &current_cpu_data;
 	unsigned int config0;
 
-	switch (c->cputype) {
+	switch (current_cpu_type()) {
 	case CPU_24K:
 	case CPU_34K:
 	case CPU_74K:
 	case CPU_1004K:
+	case CPU_1074K:
 	case CPU_INTERAPTIV:
 	case CPU_PROAPTIV:
+	case CPU_P5600:
+	case CPU_QEMU_GENERIC:
+	case CPU_I6400:
+	case CPU_P6600:
 		config0 = read_c0_config();
 		/* FIXME: addresses are Malta specific */
-		if (config0 & (1<<24)) {
+		if (config0 & MIPS_CONF_ISP) {
 			probe_spram("ISPRAM", 0x1c000000,
 				    &ispram_load_tag, &ispram_store_tag);
 		}
-		if (config0 & (1<<23))
+		if (config0 & MIPS_CONF_DSP)
 			probe_spram("DSPRAM", 0x1c100000,
 				    &dspram_load_tag, &dspram_store_tag);
 	}

@@ -1,16 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * linux/arch/arm/mach-omap1/devices.c
  *
  * OMAP1 platform device setup/initialization
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/dma-mapping.h>
-#include <linux/gpio.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -18,40 +13,20 @@
 #include <linux/spi/spi.h>
 
 #include <linux/platform_data/omap-wd-timer.h>
+#include <linux/soc/ti/omap1-io.h>
 
 #include <asm/mach/map.h>
 
-#include <mach/tc.h>
-#include <mach/mux.h>
+#include "tc.h"
+#include "mux.h"
 
-#include <mach/omap7xx.h>
-#include <mach/camera.h>
-#include <mach/hardware.h>
-
+#include "hardware.h"
 #include "common.h"
 #include "clock.h"
 #include "mmc.h"
 #include "sram.h"
 
-#if defined(CONFIG_SND_SOC) || defined(CONFIG_SND_SOC_MODULE)
-
-static struct platform_device omap_pcm = {
-	.name	= "omap-pcm-audio",
-	.id	= -1,
-};
-
-static void omap_init_audio(void)
-{
-	platform_device_register(&omap_pcm);
-}
-
-#else
-static inline void omap_init_audio(void) {}
-#endif
-
-/*-------------------------------------------------------------------------*/
-
-#if defined(CONFIG_RTC_DRV_OMAP) || defined(CONFIG_RTC_DRV_OMAP_MODULE)
+#if IS_ENABLED(CONFIG_RTC_DRV_OMAP)
 
 #define	OMAP_RTC_BASE		0xfffb4800
 
@@ -86,32 +61,24 @@ static void omap_init_rtc(void)
 static inline void omap_init_rtc(void) {}
 #endif
 
-static inline void omap_init_mbox(void) { }
-
 /*-------------------------------------------------------------------------*/
 
-#if defined(CONFIG_MMC_OMAP) || defined(CONFIG_MMC_OMAP_MODULE)
+#if IS_ENABLED(CONFIG_MMC_OMAP)
 
 static inline void omap1_mmc_mux(struct omap_mmc_platform_data *mmc_controller,
 			int controller_nr)
 {
 	if (controller_nr == 0) {
-		if (cpu_is_omap7xx()) {
-			omap_cfg_reg(MMC_7XX_CMD);
-			omap_cfg_reg(MMC_7XX_CLK);
-			omap_cfg_reg(MMC_7XX_DAT0);
-		} else {
-			omap_cfg_reg(MMC_CMD);
-			omap_cfg_reg(MMC_CLK);
-			omap_cfg_reg(MMC_DAT0);
-		}
+		omap_cfg_reg(MMC_CMD);
+		omap_cfg_reg(MMC_CLK);
+		omap_cfg_reg(MMC_DAT0);
 
 		if (cpu_is_omap1710()) {
 			omap_cfg_reg(M15_1710_MMC_CLKI);
 			omap_cfg_reg(P19_1710_MMC_CMDDIR);
 			omap_cfg_reg(P20_1710_MMC_DATDIR0);
 		}
-		if (mmc_controller->slots[0].wires == 4 && !cpu_is_omap7xx()) {
+		if (mmc_controller->slots[0].wires == 4) {
 			omap_cfg_reg(MMC_DAT1);
 			/* NOTE: DAT2 can be on W10 (here) or M15 */
 			if (!mmc_controller->slots[0].nomux)
@@ -177,8 +144,6 @@ static int __init omap_mmc_add(const char *name, int id, unsigned long base,
 	res[3].name = "tx";
 	res[3].flags = IORESOURCE_DMA;
 
-	if (cpu_is_omap7xx())
-		data->slots[0].features = MMC_OMAP7XX;
 	if (cpu_is_omap15xx())
 		data->slots[0].features = MMC_OMAP15XX;
 	if (cpu_is_omap16xx())
@@ -247,82 +212,6 @@ void __init omap1_init_mmc(struct omap_mmc_platform_data **mmc_data,
 
 /*-------------------------------------------------------------------------*/
 
-/* OMAP7xx SPI support */
-#if defined(CONFIG_SPI_OMAP_100K) || defined(CONFIG_SPI_OMAP_100K_MODULE)
-
-struct platform_device omap_spi1 = {
-	.name           = "omap1_spi100k",
-	.id             = 1,
-};
-
-struct platform_device omap_spi2 = {
-	.name           = "omap1_spi100k",
-	.id             = 2,
-};
-
-static void omap_init_spi100k(void)
-{
-	omap_spi1.dev.platform_data = ioremap(OMAP7XX_SPI1_BASE, 0x7ff);
-	if (omap_spi1.dev.platform_data)
-		platform_device_register(&omap_spi1);
-
-	omap_spi2.dev.platform_data = ioremap(OMAP7XX_SPI2_BASE, 0x7ff);
-	if (omap_spi2.dev.platform_data)
-		platform_device_register(&omap_spi2);
-}
-
-#else
-static inline void omap_init_spi100k(void)
-{
-}
-#endif
-
-
-#define OMAP1_CAMERA_BASE	0xfffb6800
-#define OMAP1_CAMERA_IOSIZE	0x1c
-
-static struct resource omap1_camera_resources[] = {
-	[0] = {
-		.start	= OMAP1_CAMERA_BASE,
-		.end	= OMAP1_CAMERA_BASE + OMAP1_CAMERA_IOSIZE - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= INT_CAMERA,
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static u64 omap1_camera_dma_mask = DMA_BIT_MASK(32);
-
-static struct platform_device omap1_camera_device = {
-	.name		= "omap1-camera",
-	.id		= 0, /* This is used to put cameras on this interface */
-	.dev		= {
-		.dma_mask		= &omap1_camera_dma_mask,
-		.coherent_dma_mask	= DMA_BIT_MASK(32),
-	},
-	.num_resources	= ARRAY_SIZE(omap1_camera_resources),
-	.resource	= omap1_camera_resources,
-};
-
-void __init omap1_camera_init(void *info)
-{
-	struct platform_device *dev = &omap1_camera_device;
-	int ret;
-
-	dev->dev.platform_data = info;
-
-	ret = platform_device_register(dev);
-	if (ret)
-		dev_err(&dev->dev, "unable to register device: %d\n", ret);
-}
-
-
-/*-------------------------------------------------------------------------*/
-
-static inline void omap_init_sti(void) {}
-
 /* Numbering for the SPI-capable controllers when used for SPI:
  * spi		= 1
  * uwire	= 2
@@ -330,7 +219,7 @@ static inline void omap_init_sti(void) {}
  * mcbsp1..3	= 5..7
  */
 
-#if defined(CONFIG_SPI_OMAP_UWIRE) || defined(CONFIG_SPI_OMAP_UWIRE_MODULE)
+#if IS_ENABLED(CONFIG_SPI_OMAP_UWIRE)
 
 #define	OMAP_UWIRE_BASE		0xfffb3000
 
@@ -418,18 +307,14 @@ static int __init omap1_init_devices(void)
 	if (!cpu_class_is_omap1())
 		return -ENODEV;
 
-	omap_sram_init();
+	omap1_sram_init();
 	omap1_clk_late_init();
 
 	/* please keep these calls, and their implementations above,
 	 * in alphabetical order so they're easier to sort through.
 	 */
 
-	omap_init_audio();
-	omap_init_mbox();
 	omap_init_rtc();
-	omap_init_spi100k();
-	omap_init_sti();
 	omap_init_uwire();
 	omap1_init_rng();
 
@@ -437,7 +322,7 @@ static int __init omap1_init_devices(void)
 }
 arch_initcall(omap1_init_devices);
 
-#if defined(CONFIG_OMAP_WATCHDOG) || defined(CONFIG_OMAP_WATCHDOG_MODULE)
+#if IS_ENABLED(CONFIG_OMAP_WATCHDOG)
 
 static struct resource wdt_resources[] = {
 	{

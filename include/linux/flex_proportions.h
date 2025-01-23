@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Floating proportions with flexible aging period
  *
@@ -10,6 +11,7 @@
 #include <linux/percpu_counter.h>
 #include <linux/spinlock.h>
 #include <linux/seqlock.h>
+#include <linux/gfp.h>
 
 /*
  * When maximum proportion of some event type is specified, this is the
@@ -32,7 +34,7 @@ struct fprop_global {
 	seqcount_t sequence;
 };
 
-int fprop_global_init(struct fprop_global *p);
+int fprop_global_init(struct fprop_global *p, gfp_t gfp);
 void fprop_global_destroy(struct fprop_global *p);
 bool fprop_new_period(struct fprop_global *p, int periods);
 
@@ -79,11 +81,12 @@ struct fprop_local_percpu {
 	raw_spinlock_t lock;	/* Protect period and numerator */
 };
 
-int fprop_local_init_percpu(struct fprop_local_percpu *pl);
+int fprop_local_init_percpu(struct fprop_local_percpu *pl, gfp_t gfp);
 void fprop_local_destroy_percpu(struct fprop_local_percpu *pl);
-void __fprop_inc_percpu(struct fprop_global *p, struct fprop_local_percpu *pl);
-void __fprop_inc_percpu_max(struct fprop_global *p, struct fprop_local_percpu *pl,
-			    int max_frac);
+void __fprop_add_percpu(struct fprop_global *p, struct fprop_local_percpu *pl,
+		long nr);
+void __fprop_add_percpu_max(struct fprop_global *p,
+		struct fprop_local_percpu *pl, int max_frac, long nr);
 void fprop_fraction_percpu(struct fprop_global *p,
 	struct fprop_local_percpu *pl, unsigned long *numerator,
 	unsigned long *denominator);
@@ -94,7 +97,7 @@ void fprop_inc_percpu(struct fprop_global *p, struct fprop_local_percpu *pl)
 	unsigned long flags;
 
 	local_irq_save(flags);
-	__fprop_inc_percpu(p, pl);
+	__fprop_add_percpu(p, pl, 1);
 	local_irq_restore(flags);
 }
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for the SGS-Thomson M48T35 Timekeeper RAM chip
  *
@@ -7,11 +8,6 @@
  * Copyright (C) 2008 Thomas Bogendoerfer
  *
  * Based on code written by Paul Gortmaker.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
  */
 
 #include <linux/module.h>
@@ -22,10 +18,18 @@
 #include <linux/io.h>
 #include <linux/err.h>
 
-#define DRV_VERSION		"1.0"
-
 struct m48t35_rtc {
 	u8	pad[0x7ff8];    /* starts at 0x7ff8 */
+#ifdef CONFIG_SGI_IP27
+	u8	hour;
+	u8	min;
+	u8	sec;
+	u8	control;
+	u8	year;
+	u8	month;
+	u8	date;
+	u8	day;
+#else
 	u8	control;
 	u8	sec;
 	u8	min;
@@ -34,6 +38,7 @@ struct m48t35_rtc {
 	u8	date;
 	u8	month;
 	u8	year;
+#endif
 };
 
 #define M48T35_RTC_SET		0x80
@@ -86,7 +91,7 @@ static int m48t35_read_time(struct device *dev, struct rtc_time *tm)
 		tm->tm_year += 100;
 
 	tm->tm_mon--;
-	return rtc_valid_tm(tm);
+	return 0;
 }
 
 static int m48t35_set_time(struct device *dev, struct rtc_time *tm)
@@ -155,15 +160,10 @@ static int m48t35_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	priv->size = resource_size(res);
-	/*
-	 * kludge: remove the #ifndef after ioc3 resource
-	 * conflicts are resolved
-	 */
-#ifndef CONFIG_SGI_IP27
 	if (!devm_request_mem_region(&pdev->dev, res->start, priv->size,
 				     pdev->name))
 		return -EBUSY;
-#endif
+
 	priv->baseaddr = res->start;
 	priv->reg = devm_ioremap(&pdev->dev, priv->baseaddr, priv->size);
 	if (!priv->reg)
@@ -181,7 +181,6 @@ static int m48t35_probe(struct platform_device *pdev)
 static struct platform_driver m48t35_platform_driver = {
 	.driver		= {
 		.name	= "rtc-m48t35",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= m48t35_probe,
 };
@@ -191,5 +190,4 @@ module_platform_driver(m48t35_platform_driver);
 MODULE_AUTHOR("Thomas Bogendoerfer <tsbogend@alpha.franken.de>");
 MODULE_DESCRIPTION("M48T35 RTC driver");
 MODULE_LICENSE("GPL");
-MODULE_VERSION(DRV_VERSION);
 MODULE_ALIAS("platform:rtc-m48t35");

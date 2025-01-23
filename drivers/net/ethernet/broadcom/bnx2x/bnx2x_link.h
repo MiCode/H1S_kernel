@@ -1,13 +1,15 @@
 /* Copyright 2008-2013 Broadcom Corporation
+ * Copyright (c) 2014 QLogic Corporation
+ * All rights reserved
  *
- * Unless you and Broadcom execute a separate written software license
+ * Unless you and QLogic execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
  * under the terms of the GNU General Public License version 2, available
- * at http://www.gnu.org/licenses/old-licenses/gpl-2.0.html (the "GPL").
+ * at http://www.gnu.org/licenses/gpl-2.0.html (the "GPL").
  *
  * Notwithstanding the above, under no circumstances may you combine this
- * software in any way with any other Broadcom software provided under a
- * license other than the GPL, without Broadcom's express prior written
+ * software in any way with any other Qlogic software provided under a
+ * license other than the GPL, without Qlogic's express prior written
  * consent.
  *
  * Written by Yaniv Rosner
@@ -60,6 +62,7 @@
 #define SFP_EEPROM_DIAG_TYPE_ADDR		0x5c
 #define SFP_EEPROM_DIAG_TYPE_SIZE		1
 #define SFP_EEPROM_DIAG_ADDR_CHANGE_REQ		(1<<2)
+#define SFP_EEPROM_DDM_IMPLEMENTED		(1<<6)
 #define SFP_EEPROM_SFF_8472_COMP_ADDR		0x5e
 #define SFP_EEPROM_SFF_8472_COMP_SIZE		1
 
@@ -124,15 +127,15 @@ struct link_vars;
 struct link_params;
 struct bnx2x_phy;
 
-typedef u8 (*config_init_t)(struct bnx2x_phy *phy, struct link_params *params,
-			    struct link_vars *vars);
+typedef void (*config_init_t)(struct bnx2x_phy *phy, struct link_params *params,
+			      struct link_vars *vars);
 typedef u8 (*read_status_t)(struct bnx2x_phy *phy, struct link_params *params,
 			    struct link_vars *vars);
 typedef void (*link_reset_t)(struct bnx2x_phy *phy,
 			     struct link_params *params);
 typedef void (*config_loopback_t)(struct bnx2x_phy *phy,
 				  struct link_params *params);
-typedef u8 (*format_fw_ver_t)(u32 raw, u8 *str, u16 *len);
+typedef int (*format_fw_ver_t)(u32 raw, u8 *str, u16 *len);
 typedef void (*hw_reset_t)(struct bnx2x_phy *phy, struct link_params *params);
 typedef void (*set_link_led_t)(struct bnx2x_phy *phy,
 			       struct link_params *params, u8 mode);
@@ -323,6 +326,9 @@ struct link_params {
 #define LINK_FLAGS_INT_DISABLED		(1<<0)
 #define PHY_INITIALIZED		(1<<1)
 	u32 lfa_base;
+
+	/* The same definitions as the shmem2 parameter */
+	u32 link_attr_sync;
 };
 
 /* Output parameters */
@@ -364,8 +370,6 @@ struct link_vars {
 	u8 rx_tx_asic_rst;
 	u8 turn_to_run_wc_rt;
 	u16 rsrv2;
-	/* The same definitions as the shmem2 parameter */
-	u32 link_attr_sync;
 };
 
 /***********************************************************/

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/arch/alpha/kernel/signal.c
  *
@@ -6,7 +7,8 @@
  *  1997-11-02  Modified for POSIX.1b signals by Richard Henderson
  */
 
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/task_stack.h>
 #include <linux/kernel.h>
 #include <linux/signal.h>
 #include <linux/errno.h>
@@ -20,9 +22,9 @@
 #include <linux/binfmts.h>
 #include <linux/bitops.h>
 #include <linux/syscalls.h>
-#include <linux/tracehook.h>
+#include <linux/resume_user_mode.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/sigcontext.h>
 #include <asm/ucontext.h>
 
@@ -63,7 +65,7 @@ SYSCALL_DEFINE3(osf_sigaction, int, sig,
 
 	if (act) {
 		old_sigset_t mask;
-		if (!access_ok(VERIFY_READ, act, sizeof(*act)) ||
+		if (!access_ok(act, sizeof(*act)) ||
 		    __get_user(new_ka.sa.sa_handler, &act->sa_handler) ||
 		    __get_user(new_ka.sa.sa_flags, &act->sa_flags) ||
 		    __get_user(mask, &act->sa_mask))
@@ -75,7 +77,7 @@ SYSCALL_DEFINE3(osf_sigaction, int, sig,
 	ret = do_sigaction(sig, act ? &new_ka : NULL, oact ? &old_ka : NULL);
 
 	if (!ret && oact) {
-		if (!access_ok(VERIFY_WRITE, oact, sizeof(*oact)) ||
+		if (!access_ok(oact, sizeof(*oact)) ||
 		    __put_user(old_ka.sa.sa_handler, &oact->sa_handler) ||
 		    __put_user(old_ka.sa.sa_flags, &oact->sa_flags) ||
 		    __put_user(old_ka.sa.sa_mask.sig[0], &oact->sa_mask))
@@ -148,9 +150,10 @@ restore_sigcontext(struct sigcontext __user *sc, struct pt_regs *regs)
 {
 	unsigned long usp;
 	struct switch_stack *sw = (struct switch_stack *)regs - 1;
-	long i, err = __get_user(regs->pc, &sc->sc_pc);
+	long err = __get_user(regs->pc, &sc->sc_pc);
 
-	current_thread_info()->restart_block.fn = do_no_restart_syscall;
+	current->restart_block.fn = do_no_restart_syscall;
+	current_thread_info()->status |= TS_SAVED_FP | TS_RESTORE_FP;
 
 	sw->r26 = (unsigned long) ret_from_sys_call;
 
@@ -187,9 +190,9 @@ restore_sigcontext(struct sigcontext __user *sc, struct pt_regs *regs)
 	err |= __get_user(usp, sc->sc_regs+30);
 	wrusp(usp);
 
-	for (i = 0; i < 31; i++)
-		err |= __get_user(sw->fp[i], sc->sc_fpregs+i);
-	err |= __get_user(sw->fp[31], &sc->sc_fpcr);
+	err |= __copy_from_user(current_thread_info()->fp,
+				sc->sc_fpregs, 31 * 8);
+	err |= __get_user(current_thread_info()->fp[31], &sc->sc_fpcr);
 
 	return err;
 }
@@ -205,7 +208,7 @@ do_sigreturn(struct sigcontext __user *sc)
 	sigset_t set;
 
 	/* Verify that it's a good sigcontext before using it */
-	if (!access_ok(VERIFY_READ, sc, sizeof(*sc)))
+	if (!access_ok(sc, sizeof(*sc)))
 		goto give_sigsegv;
 	if (__get_user(set.sig[0], &sc->sc_mask))
 		goto give_sigsegv;
@@ -217,19 +220,13 @@ do_sigreturn(struct sigcontext __user *sc)
 
 	/* Send SIGTRAP if we're single-stepping: */
 	if (ptrace_cancel_bpt (current)) {
-		siginfo_t info;
-
-		info.si_signo = SIGTRAP;
-		info.si_errno = 0;
-		info.si_code = TRAP_BRKPT;
-		info.si_addr = (void __user *) regs->pc;
-		info.si_trapno = 0;
-		send_sig_info(SIGTRAP, &info, current);
+		send_sig_fault(SIGTRAP, TRAP_BRKPT, (void __user *) regs->pc,
+			       current);
 	}
 	return;
 
 give_sigsegv:
-	force_sig(SIGSEGV, current);
+	force_sig(SIGSEGV);
 }
 
 asmlinkage void
@@ -239,7 +236,7 @@ do_rt_sigreturn(struct rt_sigframe __user *frame)
 	sigset_t set;
 
 	/* Verify that it's a good ucontext_t before using it */
-	if (!access_ok(VERIFY_READ, &frame->uc, sizeof(frame->uc)))
+	if (!access_ok(&frame->uc, sizeof(frame->uc)))
 		goto give_sigsegv;
 	if (__copy_from_user(&set, &frame->uc.uc_sigmask, sizeof(set)))
 		goto give_sigsegv;
@@ -251,19 +248,13 @@ do_rt_sigreturn(struct rt_sigframe __user *frame)
 
 	/* Send SIGTRAP if we're single-stepping: */
 	if (ptrace_cancel_bpt (current)) {
-		siginfo_t info;
-
-		info.si_signo = SIGTRAP;
-		info.si_errno = 0;
-		info.si_code = TRAP_BRKPT;
-		info.si_addr = (void __user *) regs->pc;
-		info.si_trapno = 0;
-		send_sig_info(SIGTRAP, &info, current);
+		send_sig_fault(SIGTRAP, TRAP_BRKPT, (void __user *) regs->pc,
+			       current);
 	}
 	return;
 
 give_sigsegv:
-	force_sig(SIGSEGV, current);
+	force_sig(SIGSEGV);
 }
 
 
@@ -282,7 +273,7 @@ setup_sigcontext(struct sigcontext __user *sc, struct pt_regs *regs,
 		 unsigned long mask, unsigned long sp)
 {
 	struct switch_stack *sw = (struct switch_stack *)regs - 1;
-	long i, err = 0;
+	long err = 0;
 
 	err |= __put_user(on_sig_stack((unsigned long)sc), &sc->sc_onstack);
 	err |= __put_user(mask, &sc->sc_mask);
@@ -322,10 +313,10 @@ setup_sigcontext(struct sigcontext __user *sc, struct pt_regs *regs,
 	err |= __put_user(sp, sc->sc_regs+30);
 	err |= __put_user(0, sc->sc_regs+31);
 
-	for (i = 0; i < 31; i++)
-		err |= __put_user(sw->fp[i], sc->sc_fpregs+i);
+	err |= __copy_to_user(sc->sc_fpregs,
+			      current_thread_info()->fp, 31 * 8);
 	err |= __put_user(0, sc->sc_fpregs+31);
-	err |= __put_user(sw->fp[31], &sc->sc_fpcr);
+	err |= __put_user(current_thread_info()->fp[31], &sc->sc_fpcr);
 
 	err |= __put_user(regs->trap_a0, &sc->sc_traparg_a0);
 	err |= __put_user(regs->trap_a1, &sc->sc_traparg_a1);
@@ -342,7 +333,7 @@ setup_frame(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs)
 
 	oldsp = rdusp();
 	frame = get_sigframe(ksig, oldsp, sizeof(*frame));
-	if (!access_ok(VERIFY_WRITE, frame, sizeof(*frame)))
+	if (!access_ok(frame, sizeof(*frame)))
 		return -EFAULT;
 
 	err |= setup_sigcontext(&frame->sc, regs, set->sig[0], oldsp);
@@ -387,7 +378,7 @@ setup_rt_frame(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs)
 
 	oldsp = rdusp();
 	frame = get_sigframe(ksig, oldsp, sizeof(*frame));
-	if (!access_ok(VERIFY_WRITE, frame, sizeof(*frame)))
+	if (!access_ok(frame, sizeof(*frame)))
 		return -EFAULT;
 
 	err |= copy_siginfo_to_user(&frame->info, &ksig->info);
@@ -463,7 +454,7 @@ syscall_restart(unsigned long r0, unsigned long r19,
 			regs->r0 = EINTR;
 			break;
 		}
-		/* fallthrough */
+		fallthrough;
 	case ERESTARTNOINTR:
 		regs->r0 = r0;	/* reset v0 and a3 and replay syscall */
 		regs->r19 = r19;
@@ -537,15 +528,17 @@ do_work_pending(struct pt_regs *regs, unsigned long thread_flags,
 			schedule();
 		} else {
 			local_irq_enable();
-			if (thread_flags & _TIF_SIGPENDING) {
+			if (thread_flags & (_TIF_SIGPENDING|_TIF_NOTIFY_SIGNAL)) {
+				preempt_disable();
+				save_fpu();
+				preempt_enable();
 				do_signal(regs, r0, r19);
 				r0 = 0;
 			} else {
-				clear_thread_flag(TIF_NOTIFY_RESUME);
-				tracehook_notify_resume(regs);
+				resume_user_mode_work(regs);
 			}
 		}
 		local_irq_disable();
-		thread_flags = current_thread_info()->flags;
+		thread_flags = read_thread_flags();
 	} while (thread_flags & _TIF_WORK_MASK);
 }

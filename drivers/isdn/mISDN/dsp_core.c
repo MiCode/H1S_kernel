@@ -4,8 +4,6 @@
  *		Karsten Keil (keil@isdn4linux.de)
  *
  *		This file is (c) under GNU PUBLIC LICENSE
- *		For changes and modifications please read
- *		../../../Documentation/isdn/mISDN.cert
  *
  * Thanks to    Karsten Keil (great drivers)
  *              Cologne Chip (great chips)
@@ -115,7 +113,7 @@
  *
  * The CMX has special functions for conferences with one, two and more
  * members. It will allow different types of data flow. Receive and transmit
- * data to/form upper layer may be swithed on/off individually without losing
+ * data to/form upper layer may be switched on/off individually without losing
  * features of CMX, Tones and DTMF.
  *
  * Echo Cancellation: Sometimes we like to cancel echo from the interface.
@@ -178,9 +176,9 @@ MODULE_LICENSE("GPL");
 
 /*int spinnest = 0;*/
 
-spinlock_t dsp_lock; /* global dsp lock */
-struct list_head dsp_ilist;
-struct list_head conf_ilist;
+DEFINE_SPINLOCK(dsp_lock); /* global dsp lock */
+LIST_HEAD(dsp_ilist);
+LIST_HEAD(conf_ilist);
 int dsp_debug;
 int dsp_options;
 int dsp_poll, dsp_tics;
@@ -460,7 +458,7 @@ dsp_control_req(struct dsp *dsp, struct mISDNhead *hh, struct sk_buff *skb)
 		}
 		if (dsp_debug & DEBUG_DSP_CORE)
 			printk(KERN_DEBUG "%s: enable mixing of "
-			       "tx-data with conf mebers\n", __func__);
+			       "tx-data with conf members\n", __func__);
 		dsp->tx_mix = 1;
 		dsp_cmx_hardware(dsp->conf, dsp);
 		dsp_rx_off(dsp);
@@ -474,7 +472,7 @@ dsp_control_req(struct dsp *dsp, struct mISDNhead *hh, struct sk_buff *skb)
 		}
 		if (dsp_debug & DEBUG_DSP_CORE)
 			printk(KERN_DEBUG "%s: disable mixing of "
-			       "tx-data with conf mebers\n", __func__);
+			       "tx-data with conf members\n", __func__);
 		dsp->tx_mix = 0;
 		dsp_cmx_hardware(dsp->conf, dsp);
 		dsp_rx_off(dsp);
@@ -955,7 +953,6 @@ dsp_ctrl(struct mISDNchannel *ch, u_int cmd, void *arg)
 {
 	struct dsp		*dsp = container_of(ch, struct dsp, ch);
 	u_long		flags;
-	int		err = 0;
 
 	if (debug & DEBUG_DSP_CTRL)
 		printk(KERN_DEBUG "%s:(%x)\n", __func__, cmd);
@@ -1000,7 +997,7 @@ dsp_ctrl(struct mISDNchannel *ch, u_int cmd, void *arg)
 		module_put(THIS_MODULE);
 		break;
 	}
-	return err;
+	return 0;
 }
 
 static void
@@ -1092,9 +1089,7 @@ dspcreate(struct channel_req *crq)
 	ndsp->pcm_bank_tx = -1;
 	ndsp->hfc_conf = -1; /* current conference number */
 	/* set tone timer */
-	ndsp->tone.tl.function = (void *)dsp_tone_timeout;
-	ndsp->tone.tl.data = (long) ndsp;
-	init_timer(&ndsp->tone.tl);
+	timer_setup(&ndsp->tone.tl, dsp_tone_timeout, 0);
 
 	if (dtmfthreshold < 20 || dtmfthreshold > 500)
 		dtmfthreshold = 200;
@@ -1174,10 +1169,6 @@ static int __init dsp_init(void)
 	printk(KERN_INFO "mISDN_dsp: DSP clocks every %d samples. This equals "
 	       "%d jiffies.\n", dsp_poll, dsp_tics);
 
-	spin_lock_init(&dsp_lock);
-	INIT_LIST_HEAD(&dsp_ilist);
-	INIT_LIST_HEAD(&conf_ilist);
-
 	/* init conversion tables */
 	dsp_audio_generate_law_tables();
 	dsp_silence = (dsp_options & DSP_OPT_ULAW) ? 0xff : 0x2a;
@@ -1204,9 +1195,7 @@ static int __init dsp_init(void)
 	}
 
 	/* set sample timer */
-	dsp_spl_tl.function = (void *)dsp_cmx_send;
-	dsp_spl_tl.data = 0;
-	init_timer(&dsp_spl_tl);
+	timer_setup(&dsp_spl_tl, dsp_cmx_send, 0);
 	dsp_spl_tl.expires = jiffies + dsp_tics;
 	dsp_spl_jiffies = dsp_spl_tl.expires;
 	add_timer(&dsp_spl_tl);

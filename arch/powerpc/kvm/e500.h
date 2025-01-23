@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2008-2011 Freescale Semiconductor, Inc. All rights reserved.
  *
@@ -10,18 +11,15 @@
  * This file is based on arch/powerpc/kvm/44x_tlb.h and
  * arch/powerpc/include/asm/kvm_44x.h by Hollis Blanchard <hollisb@us.ibm.com>,
  * Copyright IBM Corp. 2007-2008
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, version 2, as
- * published by the Free Software Foundation.
  */
 
 #ifndef KVM_E500_H
 #define KVM_E500_H
 
 #include <linux/kvm_host.h>
-#include <asm/mmu-book3e.h>
+#include <asm/nohash/mmu-e500.h>
 #include <asm/tlb.h>
+#include <asm/cputhreads.h>
 
 enum vcpu_ftr {
 	VCPU_FTR_MMU_V2
@@ -40,7 +38,7 @@ enum vcpu_ftr {
 #define E500_TLB_MAS2_ATTR	(0x7f)
 
 struct tlbe_ref {
-	pfn_t pfn;		/* valid only for TLB0, except briefly */
+	kvm_pfn_t pfn;		/* valid only for TLB0, except briefly */
 	unsigned int flags;	/* E500_TLB_* */
 };
 
@@ -289,6 +287,25 @@ void kvmppc_e500_tlbil_all(struct kvmppc_vcpu_e500 *vcpu_e500);
 #define kvmppc_e500_get_tlb_stid(vcpu, gtlbe)       get_tlb_tid(gtlbe)
 #define get_tlbmiss_tid(vcpu)           get_cur_pid(vcpu)
 #define get_tlb_sts(gtlbe)              (gtlbe->mas1 & MAS1_TS)
+
+/*
+ * These functions should be called with preemption disabled
+ * and the returned value is valid only in that context
+ */
+static inline int get_thread_specific_lpid(int vm_lpid)
+{
+	int vcpu_lpid = vm_lpid;
+
+	if (threads_per_core == 2)
+		vcpu_lpid |= smp_processor_id() & 1;
+
+	return vcpu_lpid;
+}
+
+static inline int get_lpid(struct kvm_vcpu *vcpu)
+{
+	return get_thread_specific_lpid(vcpu->kvm->arch.lpid);
+}
 #else
 unsigned int kvmppc_e500_get_tlb_stid(struct kvm_vcpu *vcpu,
 				      struct kvm_book3e_206_tlb_entry *gtlbe);

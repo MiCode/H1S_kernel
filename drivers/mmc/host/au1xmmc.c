@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/drivers/mmc/host/au1xmmc.c - AU1XX0 MMC driver
  *
@@ -16,9 +17,6 @@
  *     All Rights Reserved.
  *
 
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 /* Why don't we use the SD controllers' carddetect feature?
@@ -32,6 +30,7 @@
  * (the low to high transition will not occur).
  */
 
+#include <linux/clk.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -39,6 +38,7 @@
 #include <linux/interrupt.h>
 #include <linux/dma-mapping.h>
 #include <linux/scatterlist.h>
+#include <linux/highmem.h>
 #include <linux/leds.h>
 #include <linux/mmc/host.h>
 #include <linux/slab.h>
@@ -90,7 +90,7 @@ struct au1xmmc_host {
 	struct mmc_request *mrq;
 
 	u32 flags;
-	u32 iobase;
+	void __iomem *iobase;
 	u32 clock;
 	u32 bus_width;
 	u32 power_mode;
@@ -118,6 +118,7 @@ struct au1xmmc_host {
 	struct au1xmmc_platform_data *platdata;
 	struct platform_device *pdev;
 	struct resource *ioarea;
+	struct clk *clk;
 };
 
 /* Status flags used by the host structure */
@@ -162,32 +163,33 @@ static inline int has_dbdma(void)
 
 static inline void IRQ_ON(struct au1xmmc_host *host, u32 mask)
 {
-	u32 val = au_readl(HOST_CONFIG(host));
+	u32 val = __raw_readl(HOST_CONFIG(host));
 	val |= mask;
-	au_writel(val, HOST_CONFIG(host));
-	au_sync();
+	__raw_writel(val, HOST_CONFIG(host));
+	wmb(); /* drain writebuffer */
 }
 
 static inline void FLUSH_FIFO(struct au1xmmc_host *host)
 {
-	u32 val = au_readl(HOST_CONFIG2(host));
+	u32 val = __raw_readl(HOST_CONFIG2(host));
 
-	au_writel(val | SD_CONFIG2_FF, HOST_CONFIG2(host));
-	au_sync_delay(1);
+	__raw_writel(val | SD_CONFIG2_FF, HOST_CONFIG2(host));
+	wmb(); /* drain writebuffer */
+	mdelay(1);
 
 	/* SEND_STOP will turn off clock control - this re-enables it */
 	val &= ~SD_CONFIG2_DF;
 
-	au_writel(val, HOST_CONFIG2(host));
-	au_sync();
+	__raw_writel(val, HOST_CONFIG2(host));
+	wmb(); /* drain writebuffer */
 }
 
 static inline void IRQ_OFF(struct au1xmmc_host *host, u32 mask)
 {
-	u32 val = au_readl(HOST_CONFIG(host));
+	u32 val = __raw_readl(HOST_CONFIG(host));
 	val &= ~mask;
-	au_writel(val, HOST_CONFIG(host));
-	au_sync();
+	__raw_writel(val, HOST_CONFIG(host));
+	wmb(); /* drain writebuffer */
 }
 
 static inline void SEND_STOP(struct au1xmmc_host *host)
@@ -197,12 +199,13 @@ static inline void SEND_STOP(struct au1xmmc_host *host)
 	WARN_ON(host->status != HOST_S_DATA);
 	host->status = HOST_S_STOP;
 
-	config2 = au_readl(HOST_CONFIG2(host));
-	au_writel(config2 | SD_CONFIG2_DF, HOST_CONFIG2(host));
-	au_sync();
+	config2 = __raw_readl(HOST_CONFIG2(host));
+	__raw_writel(config2 | SD_CONFIG2_DF, HOST_CONFIG2(host));
+	wmb(); /* drain writebuffer */
 
 	/* Send the stop command */
-	au_writel(STOP_CMD, HOST_CMD(host));
+	__raw_writel(STOP_CMD, HOST_CMD(host));
+	wmb(); /* drain writebuffer */
 }
 
 static void au1xmmc_set_power(struct au1xmmc_host *host, int state)
@@ -250,13 +253,13 @@ static void au1xmmc_finish_request(struct au1xmmc_host *host)
 	mmc_request_done(host->mmc, mrq);
 }
 
-static void au1xmmc_tasklet_finish(unsigned long param)
+static void au1xmmc_tasklet_finish(struct tasklet_struct *t)
 {
-	struct au1xmmc_host *host = (struct au1xmmc_host *) param;
+	struct au1xmmc_host *host = from_tasklet(host, t, finish_task);
 	au1xmmc_finish_request(host);
 }
 
-static int au1xmmc_send_command(struct au1xmmc_host *host, int wait,
+static int au1xmmc_send_command(struct au1xmmc_host *host,
 				struct mmc_command *cmd, struct mmc_data *data)
 {
 	u32 mmccmd = (cmd->opcode << SD_CMD_CI_SHIFT);
@@ -296,31 +299,15 @@ static int au1xmmc_send_command(struct au1xmmc_host *host, int wait,
 		}
 	}
 
-	au_writel(cmd->arg, HOST_CMDARG(host));
-	au_sync();
+	__raw_writel(cmd->arg, HOST_CMDARG(host));
+	wmb(); /* drain writebuffer */
 
-	if (wait)
-		IRQ_OFF(host, SD_CONFIG_CR);
-
-	au_writel((mmccmd | SD_CMD_GO), HOST_CMD(host));
-	au_sync();
+	__raw_writel((mmccmd | SD_CMD_GO), HOST_CMD(host));
+	wmb(); /* drain writebuffer */
 
 	/* Wait for the command to go on the line */
-	while (au_readl(HOST_CMD(host)) & SD_CMD_GO)
+	while (__raw_readl(HOST_CMD(host)) & SD_CMD_GO)
 		/* nop */;
-
-	/* Wait for the command to come back */
-	if (wait) {
-		u32 status = au_readl(HOST_STATUS(host));
-
-		while (!(status & SD_STATUS_CR))
-			status = au_readl(HOST_STATUS(host));
-
-		/* Clear the CR status */
-		au_writel(SD_STATUS_CR, HOST_STATUS(host));
-
-		IRQ_ON(host, SD_CONFIG_CR);
-	}
 
 	return 0;
 }
@@ -339,11 +326,11 @@ static void au1xmmc_data_complete(struct au1xmmc_host *host, u32 status)
 	data = mrq->cmd->data;
 
 	if (status == 0)
-		status = au_readl(HOST_STATUS(host));
+		status = __raw_readl(HOST_STATUS(host));
 
 	/* The transaction is really over when the SD_STATUS_DB bit is clear */
 	while ((host->flags & HOST_F_XMIT) && (status & SD_STATUS_DB))
-		status = au_readl(HOST_STATUS(host));
+		status = __raw_readl(HOST_STATUS(host));
 
 	data->error = 0;
 	dma_unmap_sg(mmc_dev(host->mmc), data->sg, data->sg_len, host->dma.dir);
@@ -357,7 +344,7 @@ static void au1xmmc_data_complete(struct au1xmmc_host *host, u32 status)
 		data->error = -EILSEQ;
 
 	/* Clear the CRC bits */
-	au_writel(SD_STATUS_WC | SD_STATUS_RC, HOST_STATUS(host));
+	__raw_writel(SD_STATUS_WC | SD_STATUS_RC, HOST_STATUS(host));
 
 	data->bytes_xfered = 0;
 
@@ -376,11 +363,11 @@ static void au1xmmc_data_complete(struct au1xmmc_host *host, u32 status)
 	au1xmmc_finish_request(host);
 }
 
-static void au1xmmc_tasklet_data(unsigned long param)
+static void au1xmmc_tasklet_data(struct tasklet_struct *t)
 {
-	struct au1xmmc_host *host = (struct au1xmmc_host *)param;
+	struct au1xmmc_host *host = from_tasklet(host, t, data_task);
 
-	u32 status = au_readl(HOST_STATUS(host));
+	u32 status = __raw_readl(HOST_STATUS(host));
 	au1xmmc_data_complete(host, status);
 }
 
@@ -401,7 +388,7 @@ static void au1xmmc_send_pio(struct au1xmmc_host *host)
 
 	/* This is the pointer to the data buffer */
 	sg = &data->sg[host->pio.index];
-	sg_ptr = sg_virt(sg) + host->pio.offset;
+	sg_ptr = kmap_local_page(sg_page(sg)) + sg->offset + host->pio.offset;
 
 	/* This is the space left inside the buffer */
 	sg_len = data->sg[host->pio.index].length - host->pio.offset;
@@ -412,16 +399,17 @@ static void au1xmmc_send_pio(struct au1xmmc_host *host)
 		max = AU1XMMC_MAX_TRANSFER;
 
 	for (count = 0; count < max; count++) {
-		status = au_readl(HOST_STATUS(host));
+		status = __raw_readl(HOST_STATUS(host));
 
 		if (!(status & SD_STATUS_TH))
 			break;
 
-		val = *sg_ptr++;
+		val = sg_ptr[count];
 
-		au_writel((unsigned long)val, HOST_TXPORT(host));
-		au_sync();
+		__raw_writel((unsigned long)val, HOST_TXPORT(host));
+		wmb(); /* drain writebuffer */
 	}
+	kunmap_local(sg_ptr);
 
 	host->pio.len -= count;
 	host->pio.offset += count;
@@ -458,7 +446,7 @@ static void au1xmmc_receive_pio(struct au1xmmc_host *host)
 
 	if (host->pio.index < host->dma.len) {
 		sg = &data->sg[host->pio.index];
-		sg_ptr = sg_virt(sg) + host->pio.offset;
+		sg_ptr = kmap_local_page(sg_page(sg)) + sg->offset + host->pio.offset;
 
 		/* This is the space left inside the buffer */
 		sg_len = sg_dma_len(&data->sg[host->pio.index]) - host->pio.offset;
@@ -472,7 +460,7 @@ static void au1xmmc_receive_pio(struct au1xmmc_host *host)
 		max = AU1XMMC_MAX_TRANSFER;
 
 	for (count = 0; count < max; count++) {
-		status = au_readl(HOST_STATUS(host));
+		status = __raw_readl(HOST_STATUS(host));
 
 		if (!(status & SD_STATUS_NE))
 			break;
@@ -494,11 +482,13 @@ static void au1xmmc_receive_pio(struct au1xmmc_host *host)
 			break;
 		}
 
-		val = au_readl(HOST_RXPORT(host));
+		val = __raw_readl(HOST_RXPORT(host));
 
 		if (sg_ptr)
-			*sg_ptr++ = (unsigned char)(val & 0xFF);
+			sg_ptr[count] = (unsigned char)(val & 0xFF);
 	}
+	if (sg_ptr)
+		kunmap_local(sg_ptr);
 
 	host->pio.len -= count;
 	host->pio.offset += count;
@@ -537,10 +527,10 @@ static void au1xmmc_cmd_complete(struct au1xmmc_host *host, u32 status)
 
 	if (cmd->flags & MMC_RSP_PRESENT) {
 		if (cmd->flags & MMC_RSP_136) {
-			r[0] = au_readl(host->iobase + SD_RESP3);
-			r[1] = au_readl(host->iobase + SD_RESP2);
-			r[2] = au_readl(host->iobase + SD_RESP1);
-			r[3] = au_readl(host->iobase + SD_RESP0);
+			r[0] = __raw_readl(host->iobase + SD_RESP3);
+			r[1] = __raw_readl(host->iobase + SD_RESP2);
+			r[2] = __raw_readl(host->iobase + SD_RESP1);
+			r[3] = __raw_readl(host->iobase + SD_RESP0);
 
 			/* The CRC is omitted from the response, so really
 			 * we only got 120 bytes, but the engine expects
@@ -559,7 +549,7 @@ static void au1xmmc_cmd_complete(struct au1xmmc_host *host, u32 status)
 			 * that means that the OSR data starts at bit 31,
 			 * so we can just read RESP0 and return that.
 			 */
-			cmd->resp[0] = au_readl(host->iobase + SD_RESP0);
+			cmd->resp[0] = __raw_readl(host->iobase + SD_RESP0);
 		}
 	}
 
@@ -586,7 +576,7 @@ static void au1xmmc_cmd_complete(struct au1xmmc_host *host, u32 status)
 			u32 mask = SD_STATUS_DB | SD_STATUS_NE;
 
 			while((status & mask) != mask)
-				status = au_readl(HOST_STATUS(host));
+				status = __raw_readl(HOST_STATUS(host));
 		}
 
 		au1xxx_dbdma_start(channel);
@@ -595,24 +585,17 @@ static void au1xmmc_cmd_complete(struct au1xmmc_host *host, u32 status)
 
 static void au1xmmc_set_clock(struct au1xmmc_host *host, int rate)
 {
-	unsigned int pbus = get_au1x00_speed();
-	unsigned int divisor;
+	unsigned int pbus = clk_get_rate(host->clk);
+	unsigned int divisor = ((pbus / rate) / 2) - 1;
 	u32 config;
 
-	/* From databook:
-	 * divisor = ((((cpuclock / sbus_divisor) / 2) / mmcclock) / 2) - 1
-	 */
-	pbus /= ((au_readl(SYS_POWERCTRL) & 0x3) + 2);
-	pbus /= 2;
-	divisor = ((pbus / rate) / 2) - 1;
-
-	config = au_readl(HOST_CONFIG(host));
+	config = __raw_readl(HOST_CONFIG(host));
 
 	config &= ~(SD_CONFIG_DIV);
 	config |= (divisor & SD_CONFIG_DIV) | SD_CONFIG_DE;
 
-	au_writel(config, HOST_CONFIG(host));
-	au_sync();
+	__raw_writel(config, HOST_CONFIG(host));
+	wmb(); /* drain writebuffer */
 }
 
 static int au1xmmc_prepare_data(struct au1xmmc_host *host,
@@ -636,7 +619,7 @@ static int au1xmmc_prepare_data(struct au1xmmc_host *host,
 	if (host->dma.len == 0)
 		return -ETIMEDOUT;
 
-	au_writel(data->blksz - 1, HOST_BLKSIZE(host));
+	__raw_writel(data->blksz - 1, HOST_BLKSIZE(host));
 
 	if (host->flags & (HOST_F_DMA | HOST_F_DBDMA)) {
 		int i;
@@ -712,7 +695,7 @@ static void au1xmmc_request(struct mmc_host* mmc, struct mmc_request* mrq)
 	}
 
 	if (!ret)
-		ret = au1xmmc_send_command(host, 0, mrq->cmd, mrq->data);
+		ret = au1xmmc_send_command(host, mrq->cmd, mrq->data);
 
 	if (ret) {
 		mrq->cmd->error = ret;
@@ -723,31 +706,34 @@ static void au1xmmc_request(struct mmc_host* mmc, struct mmc_request* mrq)
 static void au1xmmc_reset_controller(struct au1xmmc_host *host)
 {
 	/* Apply the clock */
-	au_writel(SD_ENABLE_CE, HOST_ENABLE(host));
-        au_sync_delay(1);
+	__raw_writel(SD_ENABLE_CE, HOST_ENABLE(host));
+	wmb(); /* drain writebuffer */
+	mdelay(1);
 
-	au_writel(SD_ENABLE_R | SD_ENABLE_CE, HOST_ENABLE(host));
-	au_sync_delay(5);
+	__raw_writel(SD_ENABLE_R | SD_ENABLE_CE, HOST_ENABLE(host));
+	wmb(); /* drain writebuffer */
+	mdelay(5);
 
-	au_writel(~0, HOST_STATUS(host));
-	au_sync();
+	__raw_writel(~0, HOST_STATUS(host));
+	wmb(); /* drain writebuffer */
 
-	au_writel(0, HOST_BLKSIZE(host));
-	au_writel(0x001fffff, HOST_TIMEOUT(host));
-	au_sync();
+	__raw_writel(0, HOST_BLKSIZE(host));
+	__raw_writel(0x001fffff, HOST_TIMEOUT(host));
+	wmb(); /* drain writebuffer */
 
-	au_writel(SD_CONFIG2_EN, HOST_CONFIG2(host));
-        au_sync();
+	__raw_writel(SD_CONFIG2_EN, HOST_CONFIG2(host));
+	wmb(); /* drain writebuffer */
 
-	au_writel(SD_CONFIG2_EN | SD_CONFIG2_FF, HOST_CONFIG2(host));
-	au_sync_delay(1);
+	__raw_writel(SD_CONFIG2_EN | SD_CONFIG2_FF, HOST_CONFIG2(host));
+	wmb(); /* drain writebuffer */
+	mdelay(1);
 
-	au_writel(SD_CONFIG2_EN, HOST_CONFIG2(host));
-	au_sync();
+	__raw_writel(SD_CONFIG2_EN, HOST_CONFIG2(host));
+	wmb(); /* drain writebuffer */
 
 	/* Configure interrupts */
-	au_writel(AU1XMMC_INTERRUPTS, HOST_CONFIG(host));
-	au_sync();
+	__raw_writel(AU1XMMC_INTERRUPTS, HOST_CONFIG(host));
+	wmb(); /* drain writebuffer */
 }
 
 
@@ -767,7 +753,7 @@ static void au1xmmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		host->clock = ios->clock;
 	}
 
-	config2 = au_readl(HOST_CONFIG2(host));
+	config2 = __raw_readl(HOST_CONFIG2(host));
 	switch (ios->bus_width) {
 	case MMC_BUS_WIDTH_8:
 		config2 |= SD_CONFIG2_BB;
@@ -780,8 +766,8 @@ static void au1xmmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		config2 &= ~(SD_CONFIG2_WB | SD_CONFIG2_BB);
 		break;
 	}
-	au_writel(config2, HOST_CONFIG2(host));
-	au_sync();
+	__raw_writel(config2, HOST_CONFIG2(host));
+	wmb(); /* drain writebuffer */
 }
 
 #define STATUS_TIMEOUT (SD_STATUS_RAT | SD_STATUS_DT)
@@ -793,7 +779,7 @@ static irqreturn_t au1xmmc_irq(int irq, void *dev_id)
 	struct au1xmmc_host *host = dev_id;
 	u32 status;
 
-	status = au_readl(HOST_STATUS(host));
+	status = __raw_readl(HOST_STATUS(host));
 
 	if (!(status & SD_STATUS_I))
 		return IRQ_NONE;	/* not ours */
@@ -839,8 +825,8 @@ static irqreturn_t au1xmmc_irq(int irq, void *dev_id)
 				status);
 	}
 
-	au_writel(status, HOST_STATUS(host));
-	au_sync();
+	__raw_writel(status, HOST_STATUS(host));
+	wmb(); /* drain writebuffer */
 
 	return IRQ_HANDLED;
 }
@@ -976,18 +962,17 @@ static int au1xmmc_probe(struct platform_device *pdev)
 		goto out1;
 	}
 
-	host->iobase = (unsigned long)ioremap(r->start, 0x3c);
+	host->iobase = ioremap(r->start, 0x3c);
 	if (!host->iobase) {
 		dev_err(&pdev->dev, "cannot remap mmio\n");
 		goto out2;
 	}
 
-	r = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (!r) {
-		dev_err(&pdev->dev, "no IRQ defined\n");
+	host->irq = platform_get_irq(pdev, 0);
+	if (host->irq < 0) {
+		ret = host->irq;
 		goto out3;
 	}
-	host->irq = r->start;
 
 	mmc->ops = &au1xmmc_ops;
 
@@ -1025,6 +1010,19 @@ static int au1xmmc_probe(struct platform_device *pdev)
 		goto out3;
 	}
 
+	host->clk = clk_get(&pdev->dev, ALCHEMY_PERIPH_CLK);
+	if (IS_ERR(host->clk)) {
+		dev_err(&pdev->dev, "cannot find clock\n");
+		ret = PTR_ERR(host->clk);
+		goto out_irq;
+	}
+
+	ret = clk_prepare_enable(host->clk);
+	if (ret) {
+		dev_err(&pdev->dev, "cannot enable clock\n");
+		goto out_clk;
+	}
+
 	host->status = HOST_S_IDLE;
 
 	/* board-specific carddetect setup, if any */
@@ -1041,11 +1039,9 @@ static int au1xmmc_probe(struct platform_device *pdev)
 	if (host->platdata)
 		mmc->caps &= ~(host->platdata->mask_host_caps);
 
-	tasklet_init(&host->data_task, au1xmmc_tasklet_data,
-			(unsigned long)host);
+	tasklet_setup(&host->data_task, au1xmmc_tasklet_data);
 
-	tasklet_init(&host->finish_task, au1xmmc_tasklet_finish,
-			(unsigned long)host);
+	tasklet_setup(&host->finish_task, au1xmmc_tasklet_finish);
 
 	if (has_dbdma()) {
 		ret = au1xmmc_dbdma_init(host);
@@ -1075,7 +1071,7 @@ static int au1xmmc_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, host);
 
-	pr_info(DRIVER_NAME ": MMC Controller %d set up at %8.8X"
+	pr_info(DRIVER_NAME ": MMC Controller %d set up at %p"
 		" (mode=%s)\n", pdev->id, host->iobase,
 		host->flags & HOST_F_DMA ? "dma" : "pio");
 
@@ -1087,10 +1083,10 @@ out6:
 		led_classdev_unregister(host->platdata->led);
 out5:
 #endif
-	au_writel(0, HOST_ENABLE(host));
-	au_writel(0, HOST_CONFIG(host));
-	au_writel(0, HOST_CONFIG2(host));
-	au_sync();
+	__raw_writel(0, HOST_ENABLE(host));
+	__raw_writel(0, HOST_CONFIG(host));
+	__raw_writel(0, HOST_CONFIG2(host));
+	wmb(); /* drain writebuffer */
 
 	if (host->flags & HOST_F_DBDMA)
 		au1xmmc_dbdma_shutdown(host);
@@ -1102,6 +1098,10 @@ out5:
 	    !(mmc->caps & MMC_CAP_NEEDS_POLL))
 		host->platdata->cd_setup(mmc, 0);
 
+	clk_disable_unprepare(host->clk);
+out_clk:
+	clk_put(host->clk);
+out_irq:
 	free_irq(host->irq, host);
 out3:
 	iounmap((void *)host->iobase);
@@ -1114,7 +1114,7 @@ out0:
 	return ret;
 }
 
-static int au1xmmc_remove(struct platform_device *pdev)
+static void au1xmmc_remove(struct platform_device *pdev)
 {
 	struct au1xmmc_host *host = platform_get_drvdata(pdev);
 
@@ -1130,10 +1130,10 @@ static int au1xmmc_remove(struct platform_device *pdev)
 		    !(host->mmc->caps & MMC_CAP_NEEDS_POLL))
 			host->platdata->cd_setup(host->mmc, 0);
 
-		au_writel(0, HOST_ENABLE(host));
-		au_writel(0, HOST_CONFIG(host));
-		au_writel(0, HOST_CONFIG2(host));
-		au_sync();
+		__raw_writel(0, HOST_ENABLE(host));
+		__raw_writel(0, HOST_CONFIG(host));
+		__raw_writel(0, HOST_CONFIG2(host));
+		wmb(); /* drain writebuffer */
 
 		tasklet_kill(&host->data_task);
 		tasklet_kill(&host->finish_task);
@@ -1143,6 +1143,9 @@ static int au1xmmc_remove(struct platform_device *pdev)
 
 		au1xmmc_set_power(host, 0);
 
+		clk_disable_unprepare(host->clk);
+		clk_put(host->clk);
+
 		free_irq(host->irq, host);
 		iounmap((void *)host->iobase);
 		release_resource(host->ioarea);
@@ -1150,7 +1153,6 @@ static int au1xmmc_remove(struct platform_device *pdev)
 
 		mmc_free_host(host->mmc);
 	}
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -1158,11 +1160,11 @@ static int au1xmmc_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	struct au1xmmc_host *host = platform_get_drvdata(pdev);
 
-	au_writel(0, HOST_CONFIG2(host));
-	au_writel(0, HOST_CONFIG(host));
-	au_writel(0xffffffff, HOST_STATUS(host));
-	au_writel(0, HOST_ENABLE(host));
-	au_sync();
+	__raw_writel(0, HOST_CONFIG2(host));
+	__raw_writel(0, HOST_CONFIG(host));
+	__raw_writel(0xffffffff, HOST_STATUS(host));
+	__raw_writel(0, HOST_ENABLE(host));
+	wmb(); /* drain writebuffer */
 
 	return 0;
 }
@@ -1182,12 +1184,12 @@ static int au1xmmc_resume(struct platform_device *pdev)
 
 static struct platform_driver au1xmmc_driver = {
 	.probe         = au1xmmc_probe,
-	.remove        = au1xmmc_remove,
+	.remove_new    = au1xmmc_remove,
 	.suspend       = au1xmmc_suspend,
 	.resume        = au1xmmc_resume,
 	.driver        = {
 		.name  = DRIVER_NAME,
-		.owner = THIS_MODULE,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 };
 

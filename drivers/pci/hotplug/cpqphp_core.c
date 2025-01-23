@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Compaq Hot Plug Controller Driver
  *
@@ -6,21 +7,6 @@
  * Copyright (C) 2001 IBM Corp.
  *
  * All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or (at
- * your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
- * NON INFRINGEMENT.  See the GNU General Public License for more
- * details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * Send feedback to <greg@kroah.com>
  *
@@ -40,7 +26,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "cpqphp.h"
 #include "cpqphp_nvram.h"
@@ -94,7 +80,7 @@ static inline int is_slot66mhz(struct slot *slot)
  *
  * Returns pointer to the head of the SMBIOS tables (or %NULL).
  */
-static void __iomem * detect_SMBIOS_pointer(void __iomem *begin, void __iomem *end)
+static void __iomem *detect_SMBIOS_pointer(void __iomem *begin, void __iomem *end)
 {
 	void __iomem *fp;
 	void __iomem *endp;
@@ -131,11 +117,10 @@ static void __iomem * detect_SMBIOS_pointer(void __iomem *begin, void __iomem *e
  *
  * For unexpected switch opens
  */
-static int init_SERR(struct controller * ctrl)
+static int init_SERR(struct controller *ctrl)
 {
 	u32 tempdword;
 	u32 number_of_slots;
-	u8 physical_slot;
 
 	if (!ctrl)
 		return 1;
@@ -145,7 +130,6 @@ static int init_SERR(struct controller * ctrl)
 	number_of_slots = readb(ctrl->hpc_reg + SLOT_MASK) & 0x0F;
 	/* Loop through slots */
 	while (number_of_slots) {
-		physical_slot = tempdword;
 		writeb(0, ctrl->hpc_reg + SLOT_SERR);
 		tempdword++;
 		number_of_slots--;
@@ -189,7 +173,6 @@ static void pci_print_IRQ_route(void)
 		dbg("%d %d %d %d\n", tbus, tdevice >> 3, tdevice & 0x7, tslot);
 
 	}
-	return;
 }
 
 
@@ -280,18 +263,7 @@ static void __iomem *get_SMBIOS_entry(void __iomem *smbios_start,
 	return previous;
 }
 
-static void release_slot(struct hotplug_slot *hotplug_slot)
-{
-	struct slot *slot = hotplug_slot->private;
-
-	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
-
-	kfree(slot->hotplug_slot->info);
-	kfree(slot->hotplug_slot);
-	kfree(slot);
-}
-
-static int ctrl_slot_cleanup (struct controller * ctrl)
+static int ctrl_slot_cleanup(struct controller *ctrl)
 {
 	struct slot *old_slot, *next_slot;
 
@@ -299,9 +271,9 @@ static int ctrl_slot_cleanup (struct controller * ctrl)
 	ctrl->slot = NULL;
 
 	while (old_slot) {
-		/* memory will be freed by the release_slot callback */
 		next_slot = old_slot->next;
-		pci_hp_deregister (old_slot->hotplug_slot);
+		pci_hp_deregister(&old_slot->hotplug_slot);
+		kfree(old_slot);
 		old_slot = next_slot;
 	}
 
@@ -324,9 +296,10 @@ static int ctrl_slot_cleanup (struct controller * ctrl)
  *
  * Won't work for more than one PCI-PCI bridge in a slot.
  *
- * @bus_num - bus number of PCI device
- * @dev_num - device number of PCI device
- * @slot - Pointer to u8 where slot number will	be returned
+ * @bus: pointer to the PCI bus structure
+ * @bus_num: bus number of PCI device
+ * @dev_num: device number of PCI device
+ * @slot: Pointer to u8 where slot number will	be returned
  *
  * Output:	SUCCESS or FAILURE
  */
@@ -413,9 +386,9 @@ cpqhp_set_attention_status(struct controller *ctrl, struct pci_func *func,
 	mutex_lock(&ctrl->crit_sect);
 
 	if (status == 1)
-		amber_LED_on (ctrl, hp_slot);
+		amber_LED_on(ctrl, hp_slot);
 	else if (status == 0)
-		amber_LED_off (ctrl, hp_slot);
+		amber_LED_off(ctrl, hp_slot);
 	else {
 		/* Done with exclusive hardware access */
 		mutex_unlock(&ctrl->crit_sect);
@@ -425,7 +398,7 @@ cpqhp_set_attention_status(struct controller *ctrl, struct pci_func *func,
 	set_SOGO(ctrl);
 
 	/* Wait for SOBS to be unset */
-	wait_for_ctrl_irq (ctrl);
+	wait_for_ctrl_irq(ctrl);
 
 	/* Done with exclusive hardware access */
 	mutex_unlock(&ctrl->crit_sect);
@@ -439,10 +412,10 @@ cpqhp_set_attention_status(struct controller *ctrl, struct pci_func *func,
  * @hotplug_slot: slot to change LED on
  * @status: LED control flag
  */
-static int set_attention_status (struct hotplug_slot *hotplug_slot, u8 status)
+static int set_attention_status(struct hotplug_slot *hotplug_slot, u8 status)
 {
 	struct pci_func *slot_func;
-	struct slot *slot = hotplug_slot->private;
+	struct slot *slot = to_slot(hotplug_slot);
 	struct controller *ctrl = slot->ctrl;
 	u8 bus;
 	u8 devfn;
@@ -469,7 +442,7 @@ static int set_attention_status (struct hotplug_slot *hotplug_slot, u8 status)
 static int process_SI(struct hotplug_slot *hotplug_slot)
 {
 	struct pci_func *slot_func;
-	struct slot *slot = hotplug_slot->private;
+	struct slot *slot = to_slot(hotplug_slot);
 	struct controller *ctrl = slot->ctrl;
 	u8 bus;
 	u8 devfn;
@@ -501,7 +474,7 @@ static int process_SI(struct hotplug_slot *hotplug_slot)
 static int process_SS(struct hotplug_slot *hotplug_slot)
 {
 	struct pci_func *slot_func;
-	struct slot *slot = hotplug_slot->private;
+	struct slot *slot = to_slot(hotplug_slot);
 	struct controller *ctrl = slot->ctrl;
 	u8 bus;
 	u8 devfn;
@@ -528,7 +501,7 @@ static int process_SS(struct hotplug_slot *hotplug_slot)
 
 static int hardware_test(struct hotplug_slot *hotplug_slot, u32 value)
 {
-	struct slot *slot = hotplug_slot->private;
+	struct slot *slot = to_slot(hotplug_slot);
 	struct controller *ctrl = slot->ctrl;
 
 	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
@@ -539,7 +512,7 @@ static int hardware_test(struct hotplug_slot *hotplug_slot, u32 value)
 
 static int get_power_status(struct hotplug_slot *hotplug_slot, u8 *value)
 {
-	struct slot *slot = hotplug_slot->private;
+	struct slot *slot = to_slot(hotplug_slot);
 	struct controller *ctrl = slot->ctrl;
 
 	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
@@ -550,7 +523,7 @@ static int get_power_status(struct hotplug_slot *hotplug_slot, u8 *value)
 
 static int get_attention_status(struct hotplug_slot *hotplug_slot, u8 *value)
 {
-	struct slot *slot = hotplug_slot->private;
+	struct slot *slot = to_slot(hotplug_slot);
 	struct controller *ctrl = slot->ctrl;
 
 	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
@@ -561,7 +534,7 @@ static int get_attention_status(struct hotplug_slot *hotplug_slot, u8 *value)
 
 static int get_latch_status(struct hotplug_slot *hotplug_slot, u8 *value)
 {
-	struct slot *slot = hotplug_slot->private;
+	struct slot *slot = to_slot(hotplug_slot);
 	struct controller *ctrl = slot->ctrl;
 
 	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
@@ -573,7 +546,7 @@ static int get_latch_status(struct hotplug_slot *hotplug_slot, u8 *value)
 
 static int get_adapter_status(struct hotplug_slot *hotplug_slot, u8 *value)
 {
-	struct slot *slot = hotplug_slot->private;
+	struct slot *slot = to_slot(hotplug_slot);
 	struct controller *ctrl = slot->ctrl;
 
 	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
@@ -583,7 +556,7 @@ static int get_adapter_status(struct hotplug_slot *hotplug_slot, u8 *value)
 	return 0;
 }
 
-static struct hotplug_slot_ops cpqphp_hotplug_slot_ops = {
+static const struct hotplug_slot_ops cpqphp_hotplug_slot_ops = {
 	.set_attention_status =	set_attention_status,
 	.enable_slot =		process_SI,
 	.disable_slot =		process_SS,
@@ -601,8 +574,6 @@ static int ctrl_slot_setup(struct controller *ctrl,
 			void __iomem *smbios_table)
 {
 	struct slot *slot;
-	struct hotplug_slot *hotplug_slot;
-	struct hotplug_slot_info *hotplug_slot_info;
 	struct pci_bus *bus = ctrl->pci_bus;
 	u8 number_of_slots;
 	u8 slot_device;
@@ -610,7 +581,7 @@ static int ctrl_slot_setup(struct controller *ctrl,
 	u8 ctrl_slot;
 	u32 tempdword;
 	char name[SLOT_NAME_SIZE];
-	void __iomem *slot_entry= NULL;
+	void __iomem *slot_entry = NULL;
 	int result;
 
 	dbg("%s\n", __func__);
@@ -627,22 +598,6 @@ static int ctrl_slot_setup(struct controller *ctrl,
 			result = -ENOMEM;
 			goto error;
 		}
-
-		slot->hotplug_slot = kzalloc(sizeof(*(slot->hotplug_slot)),
-						GFP_KERNEL);
-		if (!slot->hotplug_slot) {
-			result = -ENOMEM;
-			goto error_slot;
-		}
-		hotplug_slot = slot->hotplug_slot;
-
-		hotplug_slot->info = kzalloc(sizeof(*(hotplug_slot->info)),
-							GFP_KERNEL);
-		if (!hotplug_slot->info) {
-			result = -ENOMEM;
-			goto error_hpslot;
-		}
-		hotplug_slot_info = hotplug_slot->info;
 
 		slot->ctrl = ctrl;
 		slot->bus = ctrl->bus;
@@ -661,9 +616,8 @@ static int ctrl_slot_setup(struct controller *ctrl,
 
 		slot->p_sm_slot = slot_entry;
 
-		init_timer(&slot->task_event);
+		timer_setup(&slot->task_event, cpqhp_pushbutton_thread, 0);
 		slot->task_event.expires = jiffies + 5 * HZ;
-		slot->task_event.function = cpqhp_pushbutton_thread;
 
 		/*FIXME: these capabilities aren't used but if they are
 		 *	 they need to be correctly implemented
@@ -693,31 +647,20 @@ static int ctrl_slot_setup(struct controller *ctrl,
 			((read_slot_enable(ctrl) << 2) >> ctrl_slot) & 0x04;
 
 		/* register this slot with the hotplug pci core */
-		hotplug_slot->release = &release_slot;
-		hotplug_slot->private = slot;
 		snprintf(name, SLOT_NAME_SIZE, "%u", slot->number);
-		hotplug_slot->ops = &cpqphp_hotplug_slot_ops;
+		slot->hotplug_slot.ops = &cpqphp_hotplug_slot_ops;
 
-		hotplug_slot_info->power_status = get_slot_enabled(ctrl, slot);
-		hotplug_slot_info->attention_status =
-			cpq_get_attention_status(ctrl, slot);
-		hotplug_slot_info->latch_status =
-			cpq_get_latch_status(ctrl, slot);
-		hotplug_slot_info->adapter_status =
-			get_presence_status(ctrl, slot);
-
-		dbg("registering bus %d, dev %d, number %d, "
-				"ctrl->slot_device_offset %d, slot %d\n",
+		dbg("registering bus %d, dev %d, number %d, ctrl->slot_device_offset %d, slot %d\n",
 				slot->bus, slot->device,
 				slot->number, ctrl->slot_device_offset,
 				slot_number);
-		result = pci_hp_register(hotplug_slot,
+		result = pci_hp_register(&slot->hotplug_slot,
 					 ctrl->pci_dev->bus,
 					 slot->device,
 					 name);
 		if (result) {
 			err("pci_hp_register failed with error %d\n", result);
-			goto error_info;
+			goto error_slot;
 		}
 
 		slot->next = ctrl->slot;
@@ -729,10 +672,6 @@ static int ctrl_slot_setup(struct controller *ctrl,
 	}
 
 	return 0;
-error_info:
-	kfree(hotplug_slot_info);
-error_hpslot:
-	kfree(hotplug_slot);
 error_slot:
 	kfree(slot);
 error:
@@ -756,7 +695,7 @@ static int one_time_init(void)
 	if (cpqhp_debug)
 		pci_print_IRQ_route();
 
-	dbg("Initialize + Start the notification mechanism \n");
+	dbg("Initialize + Start the notification mechanism\n");
 
 	retval = cpqhp_event_start_thread();
 	if (retval)
@@ -773,7 +712,7 @@ static int one_time_init(void)
 	/* Map rom address */
 	cpqhp_rom_start = ioremap(ROM_PHY_ADDR, ROM_PHY_LEN);
 	if (!cpqhp_rom_start) {
-		err ("Could not ioremap memory region for ROM\n");
+		err("Could not ioremap memory region for ROM\n");
 		retval = -EIO;
 		goto error;
 	}
@@ -787,7 +726,7 @@ static int one_time_init(void)
 	smbios_table = detect_SMBIOS_pointer(cpqhp_rom_start,
 					cpqhp_rom_start + ROM_PHY_LEN);
 	if (!smbios_table) {
-		err ("Could not find the SMBIOS pointer in memory\n");
+		err("Could not find the SMBIOS pointer in memory\n");
 		retval = -EIO;
 		goto error_rom_start;
 	}
@@ -795,7 +734,7 @@ static int one_time_init(void)
 	smbios_start = ioremap(readl(smbios_table + ST_ADDRESS),
 					readw(smbios_table + ST_LENGTH));
 	if (!smbios_start) {
-		err ("Could not ioremap memory region taken from SMBIOS values\n");
+		err("Could not ioremap memory region taken from SMBIOS values\n");
 		retval = -EIO;
 		goto error_smbios_start;
 	}
@@ -837,8 +776,7 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	bus = pdev->subordinate;
 	if (!bus) {
-		dev_notice(&pdev->dev, "the device is not a bridge, "
-				"skipping\n");
+		pci_notice(pdev, "the device is not a bridge, skipping\n");
 		rc = -ENODEV;
 		goto err_disable_device;
 	}
@@ -869,7 +807,8 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	 */
 	if ((pdev->revision <= 2) && (vendor_id != PCI_VENDOR_ID_INTEL)) {
 		err(msg_HPC_not_supported);
-		return -ENODEV;
+		rc = -ENODEV;
+		goto err_disable_device;
 	}
 
 	/* TODO: This code can be made to support non-Compaq or Intel
@@ -885,7 +824,6 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	ctrl = kzalloc(sizeof(struct controller), GFP_KERNEL);
 	if (!ctrl) {
-		err("%s : out of memory\n", __func__);
 		rc = -ENOMEM;
 		goto err_disable_device;
 	}
@@ -920,12 +858,12 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 				bus->max_bus_speed = PCI_SPEED_100MHz_PCIX;
 				break;
 			}
-			if (bus_cap & 20) {
+			if (bus_cap & 0x20) {
 				dbg("bus max supports 66MHz PCI-X\n");
 				bus->max_bus_speed = PCI_SPEED_66MHz_PCIX;
 				break;
 			}
-			if (bus_cap & 10) {
+			if (bus_cap & 0x10) {
 				dbg("bus max supports 66MHz PCI\n");
 				bus->max_bus_speed = PCI_SPEED_66MHz;
 				break;
@@ -1098,9 +1036,8 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	/* initialize our threads if they haven't already been started up */
 	rc = one_time_init();
-	if (rc) {
+	if (rc)
 		goto err_free_bus;
-	}
 
 	dbg("pdev = %p\n", pdev);
 	dbg("pci resource start %llx\n", (unsigned long long)pci_resource_start(pdev, 0));
@@ -1184,7 +1121,7 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	 * Finish setting up the hot plug ctrl device
 	 */
 	ctrl->slot_device_offset = readb(ctrl->hpc_reg + SLOT_MASK) >> 4;
-	dbg("NumSlots %d \n", ctrl->slot_device_offset);
+	dbg("NumSlots %d\n", ctrl->slot_device_offset);
 
 	ctrl->next_event = 0;
 
@@ -1201,7 +1138,7 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	writel(0xFFFFFFFFL, ctrl->hpc_reg + INT_MASK);
 
 	/* set up the interrupt */
-	dbg("HPC interrupt = %d \n", ctrl->interrupt);
+	dbg("HPC interrupt = %d\n", ctrl->interrupt);
 	if (request_irq(ctrl->interrupt, cpqhp_ctrl_intr,
 			IRQF_SHARED, MY_NAME, ctrl)) {
 		err("Can't get irq %d for the hotplug pci controller\n",
@@ -1317,14 +1254,14 @@ static void __exit unload_cpqphpd(void)
 	struct pci_resource *res;
 	struct pci_resource *tres;
 
-	rc = compaq_nvram_store(cpqhp_rom_start);
+	compaq_nvram_store(cpqhp_rom_start);
 
 	ctrl = cpqhp_ctrl_list;
 
 	while (ctrl) {
 		if (ctrl->hpc_reg) {
 			u16 misc;
-			rc = read_slot_enable (ctrl);
+			rc = read_slot_enable(ctrl);
 
 			writeb(0, ctrl->hpc_reg + SLOT_SERR);
 			writel(0xFFFFFFC0L | ~rc, ctrl->hpc_reg + INT_MASK);
@@ -1364,7 +1301,7 @@ static void __exit unload_cpqphpd(void)
 			kfree(tres);
 		}
 
-		kfree (ctrl->pci_bus);
+		kfree(ctrl->pci_bus);
 
 		tctrl = ctrl;
 		ctrl = ctrl->next;
@@ -1419,7 +1356,7 @@ static void __exit unload_cpqphpd(void)
 		iounmap(smbios_start);
 }
 
-static struct pci_device_id hpcd_pci_tbl[] = {
+static const struct pci_device_id hpcd_pci_tbl[] = {
 	{
 	/* handle any PCI Hotplug controller */
 	.class =        ((PCI_CLASS_SYSTEM_PCI_HOTPLUG << 8) | 0x00),
@@ -1449,7 +1386,7 @@ static int __init cpqhpc_init(void)
 
 	cpqhp_debug = debug;
 
-	info (DRIVER_DESC " version: " DRIVER_VERSION "\n");
+	info(DRIVER_DESC " version: " DRIVER_VERSION "\n");
 	cpqhp_initialize_debugfs();
 	result = pci_register_driver(&cpqhpc_driver);
 	dbg("pci_register_driver = %d\n", result);

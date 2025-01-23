@@ -112,6 +112,7 @@ enum wmi_cmd_id {
 	WMI_TX_STATS_CMDID,
 	WMI_RX_STATS_CMDID,
 	WMI_BITRATE_MASK_CMDID,
+	WMI_REG_RMW_CMDID,
 };
 
 enum wmi_event_id {
@@ -125,11 +126,18 @@ enum wmi_event_id {
 };
 
 #define MAX_CMD_NUMBER 62
+#define MAX_RMW_CMD_NUMBER 15
 
 struct register_write {
 	__be32 reg;
 	__be32 val;
 };
+
+struct register_rmw {
+	__be32 reg;
+	__be32 set;
+	__be32 clr;
+} __packed;
 
 struct ath9k_htc_tx_event {
 	int count;
@@ -143,7 +151,7 @@ struct wmi {
 	enum htc_endpoint_id ctrl_epid;
 	struct mutex op_mutex;
 	struct completion cmd_wait;
-	enum wmi_cmd_id last_cmd_id;
+	u16 last_seq_id;
 	struct sk_buff_head wmi_event_queue;
 	struct tasklet_struct wmi_event_tasklet;
 	u16 tx_seq_id;
@@ -156,23 +164,32 @@ struct wmi {
 
 	spinlock_t wmi_lock;
 
+	/* multi write section */
 	atomic_t mwrite_cnt;
 	struct register_write multi_write[MAX_CMD_NUMBER];
 	u32 multi_write_idx;
 	struct mutex multi_write_mutex;
+
+	/* multi rmw section */
+	atomic_t m_rmw_cnt;
+	struct register_rmw multi_rmw[MAX_RMW_CMD_NUMBER];
+	u32 multi_rmw_idx;
+	struct mutex multi_rmw_mutex;
+
 };
 
 struct wmi *ath9k_init_wmi(struct ath9k_htc_priv *priv);
-void ath9k_deinit_wmi(struct ath9k_htc_priv *priv);
 int ath9k_wmi_connect(struct htc_target *htc, struct wmi *wmi,
 		      enum htc_endpoint_id *wmi_ctrl_epid);
 int ath9k_wmi_cmd(struct wmi *wmi, enum wmi_cmd_id cmd_id,
 		  u8 *cmd_buf, u32 cmd_len,
 		  u8 *rsp_buf, u32 rsp_len,
 		  u32 timeout);
-void ath9k_wmi_event_tasklet(unsigned long data);
+void ath9k_wmi_event_tasklet(struct tasklet_struct *t);
 void ath9k_fatal_work(struct work_struct *work);
 void ath9k_wmi_event_drain(struct ath9k_htc_priv *priv);
+void ath9k_stop_wmi(struct ath9k_htc_priv *priv);
+void ath9k_destroy_wmi(struct ath9k_htc_priv *priv);
 
 #define WMI_CMD(_wmi_cmd)						\
 	do {								\

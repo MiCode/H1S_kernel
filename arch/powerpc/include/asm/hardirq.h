@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_POWERPC_HARDIRQ_H
 #define _ASM_POWERPC_HARDIRQ_H
 
@@ -7,10 +8,15 @@
 typedef struct {
 	unsigned int __softirq_pending;
 	unsigned int timer_irqs_event;
+	unsigned int broadcast_irqs_event;
 	unsigned int timer_irqs_others;
 	unsigned int pmu_irqs;
 	unsigned int mce_exceptions;
 	unsigned int spurious_irqs;
+	unsigned int sreset_irqs;
+#ifdef CONFIG_PPC_WATCHDOG
+	unsigned int soft_nmi_irqs;
+#endif
 #ifdef CONFIG_PPC_DOORBELL
 	unsigned int doorbell_irqs;
 #endif
@@ -19,8 +25,7 @@ typedef struct {
 DECLARE_PER_CPU_SHARED_ALIGNED(irq_cpustat_t, irq_stat);
 
 #define __ARCH_IRQ_STAT
-
-#define local_softirq_pending()	__get_cpu_var(irq_stat).__softirq_pending
+#define __ARCH_IRQ_EXIT_IRQS_DISABLED
 
 static inline void ack_bad_irq(unsigned int irq)
 {

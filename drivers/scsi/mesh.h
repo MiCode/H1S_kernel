@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * mesh.h: definitions for the driver for the MESH SCSI bus adaptor
  * (Macintosh Enhanced SCSI Hardware) found on Power Macintosh computers.
@@ -6,6 +7,17 @@
  */
 #ifndef _MESH_H
 #define _MESH_H
+
+struct mesh_cmd_priv {
+	int this_residual;
+	int message;
+	int status;
+};
+
+static inline struct mesh_cmd_priv *mesh_priv(struct scsi_cmnd *cmd)
+{
+	return scsi_cmd_priv(cmd);
+}
 
 /*
  * Registers in the MESH controller.

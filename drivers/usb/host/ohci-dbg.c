@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-1.0+
 /*
  * OHCI HCD (Host Controller Driver) for USB.
  *
@@ -236,7 +237,7 @@ ohci_dump_roothub (
 	}
 }
 
-static void ohci_dump (struct ohci_hcd *controller, int verbose)
+static void ohci_dump(struct ohci_hcd *controller)
 {
 	ohci_dbg (controller, "OHCI controller state\n");
 
@@ -464,15 +465,16 @@ show_list (struct ohci_hcd *ohci, char *buf, size_t count, struct ed *ed)
 static ssize_t fill_async_buffer(struct debug_buffer *buf)
 {
 	struct ohci_hcd		*ohci;
-	size_t			temp;
+	size_t			temp, size;
 	unsigned long		flags;
 
 	ohci = buf->ohci;
+	size = PAGE_SIZE;
 
 	/* display control and bulk lists together, for simplicity */
 	spin_lock_irqsave (&ohci->lock, flags);
-	temp = show_list(ohci, buf->page, buf->count, ohci->ed_controltail);
-	temp += show_list(ohci, buf->page + temp, buf->count - temp,
+	temp = show_list(ohci, buf->page, size, ohci->ed_controltail);
+	temp += show_list(ohci, buf->page + temp, size - temp,
 			  ohci->ed_bulktail);
 	spin_unlock_irqrestore (&ohci->lock, flags);
 
@@ -490,7 +492,8 @@ static ssize_t fill_periodic_buffer(struct debug_buffer *buf)
 	char			*next;
 	unsigned		i;
 
-	if (!(seen = kmalloc (DBG_SCHED_LIMIT * sizeof *seen, GFP_ATOMIC)))
+	seen = kmalloc_array(DBG_SCHED_LIMIT, sizeof(*seen), GFP_ATOMIC);
+	if (!seen)
 		return 0;
 	seen_count = 0;
 
@@ -505,7 +508,8 @@ static ssize_t fill_periodic_buffer(struct debug_buffer *buf)
 	/* dump a snapshot of the periodic schedule (and load) */
 	spin_lock_irqsave (&ohci->lock, flags);
 	for (i = 0; i < NUM_INTS; i++) {
-		if (!(ed = ohci->periodic [i]))
+		ed = ohci->periodic[i];
+		if (!ed)
 			continue;
 
 		temp = scnprintf (next, size, "%2d [%3d]:", i, ohci->load [i]);
@@ -676,7 +680,7 @@ static struct debug_buffer *alloc_buffer(struct ohci_hcd *ohci,
 
 static int fill_buffer(struct debug_buffer *buf)
 {
-	int ret = 0;
+	int ret;
 
 	if (!buf->page)
 		buf->page = (char *)get_zeroed_page(GFP_KERNEL);
@@ -701,7 +705,7 @@ static ssize_t debug_output(struct file *file, char __user *user_buf,
 			size_t len, loff_t *offset)
 {
 	struct debug_buffer *buf = file->private_data;
-	int ret = 0;
+	int ret;
 
 	mutex_lock(&buf->mutex);
 	if (buf->count == 0) {
@@ -758,50 +762,23 @@ static int debug_registers_open(struct inode *inode, struct file *file)
 static inline void create_debug_files (struct ohci_hcd *ohci)
 {
 	struct usb_bus *bus = &ohci_to_hcd(ohci)->self;
+	struct dentry *root;
 
-	ohci->debug_dir = debugfs_create_dir(bus->bus_name, ohci_debug_root);
-	if (!ohci->debug_dir)
-		goto dir_error;
+	root = debugfs_create_dir(bus->bus_name, ohci_debug_root);
+	ohci->debug_dir = root;
 
-	ohci->debug_async = debugfs_create_file("async", S_IRUGO,
-						ohci->debug_dir, ohci,
-						&debug_async_fops);
-	if (!ohci->debug_async)
-		goto async_error;
-
-	ohci->debug_periodic = debugfs_create_file("periodic", S_IRUGO,
-						   ohci->debug_dir, ohci,
-						   &debug_periodic_fops);
-	if (!ohci->debug_periodic)
-		goto periodic_error;
-
-	ohci->debug_registers = debugfs_create_file("registers", S_IRUGO,
-						    ohci->debug_dir, ohci,
-						    &debug_registers_fops);
-	if (!ohci->debug_registers)
-		goto registers_error;
+	debugfs_create_file("async", S_IRUGO, root, ohci, &debug_async_fops);
+	debugfs_create_file("periodic", S_IRUGO, root, ohci,
+			    &debug_periodic_fops);
+	debugfs_create_file("registers", S_IRUGO, root, ohci,
+			    &debug_registers_fops);
 
 	ohci_dbg (ohci, "created debug files\n");
-	return;
-
-registers_error:
-	debugfs_remove(ohci->debug_periodic);
-periodic_error:
-	debugfs_remove(ohci->debug_async);
-async_error:
-	debugfs_remove(ohci->debug_dir);
-dir_error:
-	ohci->debug_periodic = NULL;
-	ohci->debug_async = NULL;
-	ohci->debug_dir = NULL;
 }
 
 static inline void remove_debug_files (struct ohci_hcd *ohci)
 {
-	debugfs_remove(ohci->debug_registers);
-	debugfs_remove(ohci->debug_periodic);
-	debugfs_remove(ohci->debug_async);
-	debugfs_remove(ohci->debug_dir);
+	debugfs_remove_recursive(ohci->debug_dir);
 }
 
 /*-------------------------------------------------------------------------*/

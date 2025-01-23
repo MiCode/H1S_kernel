@@ -1,10 +1,17 @@
-#include <asm-generic/vmlinux.lds.h>
+/* SPDX-License-Identifier: GPL-2.0 */
+#include <asm/vmlinux.lds.h>
 #include <asm/page.h>
 
 OUTPUT_FORMAT(ELF_FORMAT)
 OUTPUT_ARCH(ELF_ARCH)
 ENTRY(_start)
 jiffies = jiffies_64;
+
+VERSION {
+  {
+    local: *;
+  };
+}
 
 SECTIONS
 {
@@ -18,10 +25,10 @@ SECTIONS
   __binary_start = START;
 
   . = START + SIZEOF_HEADERS;
+  . = ALIGN(PAGE_SIZE);
 
   _text = .;
   INIT_TEXT_SECTION(0)
-  . = ALIGN(PAGE_SIZE);
 
   .text      :
   {
@@ -29,6 +36,8 @@ SECTIONS
     TEXT_TEXT
     SCHED_TEXT
     LOCK_TEXT
+    IRQENTRY_TEXT
+    SOFTIRQENTRY_TEXT
     *(.fixup)
     /* .gnu.warning sections are handled specially by elf32.em.  */
     *(.gnu.warning)
@@ -85,6 +94,7 @@ SECTIONS
   }
 
   .got           : { *(.got.plt) *(.got) }
+  .eh_frame       : { KEEP (*(.eh_frame)) }
   .dynamic       : { *(.dynamic) }
   .tdata	  : { *(.tdata .tdata.* .gnu.linkonce.td.*) }
   .tbss		  : { *(.tbss .tbss.* .gnu.linkonce.tb.*) *(.tcommon) }
@@ -104,8 +114,8 @@ SECTIONS
   PROVIDE (end = .);
 
   STABS_DEBUG
-
   DWARF_DEBUG
+  ELF_DETAILS
 
   DISCARDS
 }

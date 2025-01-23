@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /*
    md_p.h : physical layout of Linux RAID devices
           Copyright (C) 1996-98 Ingo Molnar, Gadi Oxman
@@ -78,11 +79,27 @@
 #define MD_DISK_ACTIVE		1 /* disk is running or spare disk */
 #define MD_DISK_SYNC		2 /* disk is in sync with the raid set */
 #define MD_DISK_REMOVED		3 /* disk is in sync with the raid set */
+#define MD_DISK_CLUSTER_ADD     4 /* Initiate a disk add across the cluster
+				   * For clustered enviroments only.
+				   */
+#define MD_DISK_CANDIDATE	5 /* disk is added as spare (local) until confirmed
+				   * For clustered enviroments only.
+				   */
+#define MD_DISK_FAILFAST	10 /* Send REQ_FAILFAST if there are multiple
+				    * devices available - and don't try to
+				    * correct read errors.
+				    */
 
 #define	MD_DISK_WRITEMOSTLY	9 /* disk is "write-mostly" is RAID1 config.
 				   * read requests will only be sent here in
 				   * dire need
 				   */
+#define MD_DISK_JOURNAL		18 /* disk is used as the write journal in RAID-5/6 */
+
+#define MD_DISK_ROLE_SPARE	0xffff
+#define MD_DISK_ROLE_FAULTY	0xfffe
+#define MD_DISK_ROLE_JOURNAL	0xfffd
+#define MD_DISK_ROLE_MAX	0xff00 /* max value of regular disk role */
 
 typedef struct mdp_device_descriptor_s {
 	__u32 number;		/* 0 Device number in the entire set	      */
@@ -101,11 +118,12 @@ typedef struct mdp_device_descriptor_s {
 #define MD_SB_CLEAN		0
 #define MD_SB_ERRORS		1
 
+#define	MD_SB_CLUSTERED		5 /* MD is clustered */
 #define	MD_SB_BITMAP_PRESENT	8 /* bitmap may be present nearby */
 
 /*
  * Notes:
- * - if an array is being reshaped (restriped) in order to change the
+ * - if an array is being reshaped (restriped) in order to change
  *   the number of active devices in the array, 'raid_disks' will be
  *   the larger of the old and new numbers.  'delta_disks' will
  *   be the "new - old".  So if +ve, raid_disks is the new value, and
@@ -225,10 +243,18 @@ struct mdp_superblock_1 {
 
 	__le32	chunksize;	/* in 512byte sectors */
 	__le32	raid_disks;
-	__le32	bitmap_offset;	/* sectors after start of superblock that bitmap starts
-				 * NOTE: signed, so bitmap can be before superblock
-				 * only meaningful of feature_map[0] is set.
-				 */
+	union {
+		__le32	bitmap_offset;	/* sectors after start of superblock that bitmap starts
+					 * NOTE: signed, so bitmap can be before superblock
+					 * only meaningful of feature_map[0] is set.
+					 */
+
+		/* only meaningful when feature_map[MD_FEATURE_PPL] is set */
+		struct {
+			__le16 offset; /* sectors from start of superblock that ppl starts (signed) */
+			__le16 size; /* ppl size in sectors */
+		} ppl;
+	};
 
 	/* These are only valid with feature bit '4' */
 	__le32	new_level;	/* new level we are reshaping to		*/
@@ -245,12 +271,16 @@ struct mdp_superblock_1 {
 	__le64	data_offset;	/* sector start of data, often 0 */
 	__le64	data_size;	/* sectors in this device that can be used for data */
 	__le64	super_offset;	/* sector start of this superblock */
-	__le64	recovery_offset;/* sectors before this offset (from data_offset) have been recovered */
+	union {
+		__le64	recovery_offset;/* sectors before this offset (from data_offset) have been recovered */
+		__le64	journal_tail;/* journal tail of journal device (from data_offset) */
+	};
 	__le32	dev_number;	/* permanent identifier of this  device - not role in raid */
 	__le32	cnt_corrected_read; /* number of read errors that were corrected by re-writing */
 	__u8	device_uuid[16]; /* user-space setable, ignored by kernel */
-	__u8	devflags;	/* per-device flags.  Only one defined...*/
+	__u8	devflags;	/* per-device flags.  Only two defined...*/
 #define	WriteMostly1	1	/* mask for writemostly flag in above */
+#define	FailFast1	2	/* Should avoid retries and fixups and just fail */
 	/* Bad block log.  If there are any bad blocks the feature flag is set.
 	 * If offset and size are non-zero, that space is reserved and available
 	 */
@@ -273,7 +303,7 @@ struct mdp_superblock_1 {
 	 * into the 'roles' value.  If a device is spare or faulty, then it doesn't
 	 * have a meaningful role.
 	 */
-	__le16	dev_roles[0];	/* role in array, or 0xffff for a spare, or 0xfffe for faulty */
+	__le16	dev_roles[];	/* role in array, or 0xffff for a spare, or 0xfffe for faulty */
 };
 
 /* feature_map bits */
@@ -295,6 +325,11 @@ struct mdp_superblock_1 {
 #define	MD_FEATURE_RECOVERY_BITMAP	128 /* recovery that is happening
 					     * is guided by bitmap.
 					     */
+#define	MD_FEATURE_CLUSTERED		256 /* clustered MD */
+#define	MD_FEATURE_JOURNAL		512 /* support write cache */
+#define	MD_FEATURE_PPL			1024 /* support PPL */
+#define	MD_FEATURE_MULTIPLE_PPLS	2048 /* support for multiple PPLs */
+#define	MD_FEATURE_RAID0_LAYOUT		4096 /* layout is meaningful for RAID0 */
 #define	MD_FEATURE_ALL			(MD_FEATURE_BITMAP_OFFSET	\
 					|MD_FEATURE_RECOVERY_OFFSET	\
 					|MD_FEATURE_RESHAPE_ACTIVE	\
@@ -303,6 +338,96 @@ struct mdp_superblock_1 {
 					|MD_FEATURE_RESHAPE_BACKWARDS	\
 					|MD_FEATURE_NEW_OFFSET		\
 					|MD_FEATURE_RECOVERY_BITMAP	\
+					|MD_FEATURE_CLUSTERED		\
+					|MD_FEATURE_JOURNAL		\
+					|MD_FEATURE_PPL			\
+					|MD_FEATURE_MULTIPLE_PPLS	\
+					|MD_FEATURE_RAID0_LAYOUT	\
 					)
+
+struct r5l_payload_header {
+	__le16 type;
+	__le16 flags;
+} __attribute__ ((__packed__));
+
+enum r5l_payload_type {
+	R5LOG_PAYLOAD_DATA = 0,
+	R5LOG_PAYLOAD_PARITY = 1,
+	R5LOG_PAYLOAD_FLUSH = 2,
+};
+
+struct r5l_payload_data_parity {
+	struct r5l_payload_header header;
+	__le32 size;		/* sector. data/parity size. each 4k
+				 * has a checksum */
+	__le64 location;	/* sector. For data, it's raid sector. For
+				 * parity, it's stripe sector */
+	__le32 checksum[];
+} __attribute__ ((__packed__));
+
+enum r5l_payload_data_parity_flag {
+	R5LOG_PAYLOAD_FLAG_DISCARD = 1, /* payload is discard */
+	/*
+	 * RESHAPED/RESHAPING is only set when there is reshape activity. Note,
+	 * both data/parity of a stripe should have the same flag set
+	 *
+	 * RESHAPED: reshape is running, and this stripe finished reshape
+	 * RESHAPING: reshape is running, and this stripe isn't reshaped
+	 */
+	R5LOG_PAYLOAD_FLAG_RESHAPED = 2,
+	R5LOG_PAYLOAD_FLAG_RESHAPING = 3,
+};
+
+struct r5l_payload_flush {
+	struct r5l_payload_header header;
+	__le32 size; /* flush_stripes size, bytes */
+	__le64 flush_stripes[];
+} __attribute__ ((__packed__));
+
+enum r5l_payload_flush_flag {
+	R5LOG_PAYLOAD_FLAG_FLUSH_STRIPE = 1, /* data represents whole stripe */
+};
+
+struct r5l_meta_block {
+	__le32 magic;
+	__le32 checksum;
+	__u8 version;
+	__u8 __zero_pading_1;
+	__le16 __zero_pading_2;
+	__le32 meta_size; /* whole size of the block */
+
+	__le64 seq;
+	__le64 position; /* sector, start from rdev->data_offset, current position */
+	struct r5l_payload_header payloads[];
+} __attribute__ ((__packed__));
+
+#define R5LOG_VERSION 0x1
+#define R5LOG_MAGIC 0x6433c509
+
+struct ppl_header_entry {
+	__le64 data_sector;	/* raid sector of the new data */
+	__le32 pp_size;		/* length of partial parity */
+	__le32 data_size;	/* length of data */
+	__le32 parity_disk;	/* member disk containing parity */
+	__le32 checksum;	/* checksum of partial parity data for this
+				 * entry (~crc32c) */
+} __attribute__ ((__packed__));
+
+#define PPL_HEADER_SIZE 4096
+#define PPL_HDR_RESERVED 512
+#define PPL_HDR_ENTRY_SPACE \
+	(PPL_HEADER_SIZE - PPL_HDR_RESERVED - 4 * sizeof(__le32) - sizeof(__le64))
+#define PPL_HDR_MAX_ENTRIES \
+	(PPL_HDR_ENTRY_SPACE / sizeof(struct ppl_header_entry))
+
+struct ppl_header {
+	__u8 reserved[PPL_HDR_RESERVED];/* reserved space, fill with 0xff */
+	__le32 signature;		/* signature (family number of volume) */
+	__le32 padding;			/* zero pad */
+	__le64 generation;		/* generation number of the header */
+	__le32 entries_count;		/* number of entries in entry array */
+	__le32 checksum;		/* checksum of the header (~crc32c) */
+	struct ppl_header_entry entries[PPL_HDR_MAX_ENTRIES];
+} __attribute__ ((__packed__));
 
 #endif

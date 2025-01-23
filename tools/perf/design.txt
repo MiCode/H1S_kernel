@@ -18,7 +18,7 @@ underlying hardware counters.
 Performance counters are accessed via special file descriptors.
 There's one file descriptor per virtual counter used.
 
-The special file descriptor is opened via the perf_event_open()
+The special file descriptor is opened via the sys_perf_event_open()
 system call:
 
    int sys_perf_event_open(struct perf_event_attr *hw_event_uptr,
@@ -82,7 +82,7 @@ machine-specific.
 If 'raw_type' is 0, then the 'type' field says what kind of counter
 this is, with the following encoding:
 
-enum perf_event_types {
+enum perf_type_id {
 	PERF_TYPE_HARDWARE		= 0,
 	PERF_TYPE_SOFTWARE		= 1,
 	PERF_TYPE_TRACEPOINT		= 2,
@@ -95,7 +95,7 @@ specified by 'event_id':
  * Generalized performance counter event types, used by the hw_event.event_id
  * parameter of the sys_perf_event_open() syscall:
  */
-enum hw_event_ids {
+enum perf_hw_id {
 	/*
 	 * Common hardware events, generalized by the kernel:
 	 */
@@ -106,6 +106,9 @@ enum hw_event_ids {
 	PERF_COUNT_HW_BRANCH_INSTRUCTIONS	= 4,
 	PERF_COUNT_HW_BRANCH_MISSES		= 5,
 	PERF_COUNT_HW_BUS_CYCLES		= 6,
+	PERF_COUNT_HW_STALLED_CYCLES_FRONTEND	= 7,
+	PERF_COUNT_HW_STALLED_CYCLES_BACKEND	= 8,
+	PERF_COUNT_HW_REF_CPU_CYCLES		= 9,
 };
 
 These are standardized types of events that work relatively uniformly
@@ -129,7 +132,7 @@ software events, selected by 'event_id':
  * physical and sw events of the kernel (and allow the profiling of them as
  * well):
  */
-enum sw_event_ids {
+enum perf_sw_ids {
 	PERF_COUNT_SW_CPU_CLOCK		= 0,
 	PERF_COUNT_SW_TASK_CLOCK	= 1,
 	PERF_COUNT_SW_PAGE_FAULTS	= 2,
@@ -222,6 +225,10 @@ The 'exclude_user', 'exclude_kernel' and 'exclude_hv' bits provide a
 way to request that counting of events be restricted to times when the
 CPU is in user, kernel and/or hypervisor mode.
 
+Furthermore the 'exclude_host' and 'exclude_guest' bits provide a way
+to request counting of events restricted to guest and host contexts when
+using Linux as the hypervisor.
+
 The 'mmap' and 'munmap' bits allow recording of PROT_EXEC mmap/munmap
 operations, these can be used to relate userspace IP addresses to actual
 code, even after the mapping (or even the whole process) is gone,
@@ -230,7 +237,7 @@ these events are recorded in the ring-buffer (see below).
 The 'comm' bit allows tracking of process comm data on process creation.
 This too is recorded in the ring-buffer (see below).
 
-The 'pid' parameter to the perf_event_open() system call allows the
+The 'pid' parameter to the sys_perf_event_open() system call allows the
 counter to be specific to a task:
 
  pid == 0: if the pid parameter is zero, the counter is attached to the
@@ -254,13 +261,14 @@ gets schedule to. Per task counters can be created by any user, for
 their own tasks.
 
 A 'pid == -1' and 'cpu == x' counter is a per CPU counter that counts
-all events on CPU-x. Per CPU counters need CAP_SYS_ADMIN privilege.
+all events on CPU-x. Per CPU counters need CAP_PERFMON or CAP_SYS_ADMIN
+privilege.
 
 The 'flags' parameter is currently unused and must be zero.
 
 The 'group_fd' parameter allows counter "groups" to be set up.  A
 counter group has one counter which is the group "leader".  The leader
-is created first, with group_fd = -1 in the perf_event_open call
+is created first, with group_fd = -1 in the sys_perf_event_open call
 that creates it.  The rest of the group members are created
 subsequently, with group_fd giving the fd of the group leader.
 (A single counter on its own is created with group_fd = -1 and is
@@ -454,7 +462,6 @@ So to start with, in order to add HAVE_PERF_EVENTS to your Kconfig, you
 will need at least this:
 	- asm/perf_event.h - a basic stub will suffice at first
 	- support for atomic64 types (and associated helper functions)
-	- set_perf_event_pending() implemented
 
 If your architecture does have hardware capabilities, you can override the
 weak stub hw_perf_event_init() to register hardware counters.

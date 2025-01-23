@@ -1,7 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _NET_RAWV6_H
 #define _NET_RAWV6_H
 
 #include <net/protocol.h>
+#include <net/raw.h>
+
+extern struct raw_hashinfo raw_v6_hashinfo;
+bool raw_v6_match(struct net *net, const struct sock *sk, unsigned short num,
+		  const struct in6_addr *loc_addr,
+		  const struct in6_addr *rmt_addr, int dif, int sdif);
+
+int raw_abort(struct sock *sk, int err);
 
 void raw6_icmp_error(struct sk_buff *, int nexthdr,
 		u8 type, u8 code, int inner_offset, __be32);

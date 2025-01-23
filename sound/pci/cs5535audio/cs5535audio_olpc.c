@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * OLPC XO-1 additional sound features
  *
  * Copyright © 2006  Jaya Kumar <jayakumar.lkml@gmail.com>
  * Copyright © 2007-2008  Andres Salomon <dilinger@debian.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 #include <sound/core.h>
 #include <sound/info.h>
@@ -36,7 +32,8 @@ void olpc_analog_input(struct snd_ac97 *ac97, int on)
 	err = snd_ac97_update_bits(ac97, AC97_AD_TEST2,
 			1 << AC97_AD_HPFD_SHIFT, on << AC97_AD_HPFD_SHIFT);
 	if (err < 0) {
-		snd_printk(KERN_ERR "setting High Pass Filter - %d\n", err);
+		dev_err(ac97->bus->card->dev,
+			"setting High Pass Filter - %d\n", err);
 		return;
 	}
 
@@ -58,7 +55,7 @@ void olpc_mic_bias(struct snd_ac97 *ac97, int on)
 	err = snd_ac97_update_bits(ac97, AC97_AD_MISC,
 			1 << AC97_AD_VREFD_SHIFT, on << AC97_AD_VREFD_SHIFT);
 	if (err < 0)
-		snd_printk(KERN_ERR "setting MIC Bias - %d\n", err);
+		dev_err(ac97->bus->card->dev, "setting MIC Bias - %d\n", err);
 }
 
 static int olpc_dc_info(struct snd_kcontrol *kctl,
@@ -114,7 +111,7 @@ static int olpc_mic_put(struct snd_kcontrol *kctl, struct snd_ctl_elem_value *v)
 	return 1;
 }
 
-static struct snd_kcontrol_new olpc_cs5535audio_ctls[] = {
+static const struct snd_kcontrol_new olpc_cs5535audio_ctls[] = {
 {
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name = "DC Mode Enable",
@@ -153,7 +150,7 @@ int olpc_quirks(struct snd_card *card, struct snd_ac97 *ac97)
 		return 0;
 
 	if (gpio_request(OLPC_GPIO_MIC_AC, DRV_NAME)) {
-		printk(KERN_ERR DRV_NAME ": unable to allocate MIC GPIO\n");
+		dev_err(card->dev, "unable to allocate MIC GPIO\n");
 		return -EIO;
 	}
 	gpio_direction_output(OLPC_GPIO_MIC_AC, 0);
@@ -161,23 +158,21 @@ int olpc_quirks(struct snd_card *card, struct snd_ac97 *ac97)
 	/* drop the original AD1888 HPF control */
 	memset(&elem, 0, sizeof(elem));
 	elem.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
-	strlcpy(elem.name, "High Pass Filter Enable", sizeof(elem.name));
+	strscpy(elem.name, "High Pass Filter Enable", sizeof(elem.name));
 	snd_ctl_remove_id(card, &elem);
 
 	/* drop the original V_REFOUT control */
 	memset(&elem, 0, sizeof(elem));
 	elem.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
-	strlcpy(elem.name, "V_REFOUT Enable", sizeof(elem.name));
+	strscpy(elem.name, "V_REFOUT Enable", sizeof(elem.name));
 	snd_ctl_remove_id(card, &elem);
 
 	/* add the OLPC-specific controls */
 	for (i = 0; i < ARRAY_SIZE(olpc_cs5535audio_ctls); i++) {
 		err = snd_ctl_add(card, snd_ctl_new1(&olpc_cs5535audio_ctls[i],
 				ac97->private_data));
-		if (err < 0) {
-			gpio_free(OLPC_GPIO_MIC_AC);
+		if (err < 0)
 			return err;
-		}
 	}
 
 	/* turn off the mic by default */
@@ -187,5 +182,6 @@ int olpc_quirks(struct snd_card *card, struct snd_ac97 *ac97)
 
 void olpc_quirks_cleanup(void)
 {
-	gpio_free(OLPC_GPIO_MIC_AC);
+	if (machine_is_olpc())
+		gpio_free(OLPC_GPIO_MIC_AC);
 }

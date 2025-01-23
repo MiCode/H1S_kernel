@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 #ifndef __SPARC_STAT_H
 #define __SPARC_STAT_H
 
@@ -6,19 +7,19 @@
 #if defined(__sparc__) && defined(__arch64__)
 /* 64 bit sparc */
 struct stat {
-	unsigned   st_dev;
-	ino_t   st_ino;
-	mode_t  st_mode;
+	unsigned int st_dev;
+	__kernel_ino_t st_ino;
+	__kernel_mode_t st_mode;
 	short   st_nlink;
-	uid_t   st_uid;
-	gid_t   st_gid;
-	unsigned   st_rdev;
-	off_t   st_size;
-	time_t  st_atime;
-	time_t  st_mtime;
-	time_t  st_ctime;
-	off_t   st_blksize;
-	off_t   st_blocks;
+	__kernel_uid32_t st_uid;
+	__kernel_gid32_t st_gid;
+	unsigned int st_rdev;
+	long    st_size;
+	long    st_atime;
+	long    st_mtime;
+	long    st_ctime;
+	long    st_blksize;
+	long    st_blocks;
 	unsigned long  __unused4[2];
 };
 
@@ -50,21 +51,21 @@ struct stat64 {
 /* 32 bit sparc */
 struct stat {
 	unsigned short	st_dev;
-	ino_t		st_ino;
-	mode_t		st_mode;
+	__kernel_ino_t	st_ino;
+	__kernel_mode_t	st_mode;
 	short		st_nlink;
 	unsigned short	st_uid;
 	unsigned short	st_gid;
 	unsigned short	st_rdev;
-	off_t		st_size;
-	time_t		st_atime;
+	long		st_size;
+	long		st_atime;
 	unsigned long	st_atime_nsec;
-	time_t		st_mtime;
+	long		st_mtime;
 	unsigned long	st_mtime_nsec;
-	time_t		st_ctime;
+	long		st_ctime;
 	unsigned long	st_ctime_nsec;
-	off_t		st_blksize;
-	off_t		st_blocks;
+	long		st_blksize;
+	long		st_blocks;
 	unsigned long	__unused4[2];
 };
 

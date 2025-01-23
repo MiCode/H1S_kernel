@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Generic MMIO clocksource support
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #include <linux/clocksource.h>
 #include <linux/errno.h>
@@ -20,24 +17,25 @@ static inline struct clocksource_mmio *to_mmio_clksrc(struct clocksource *c)
 	return container_of(c, struct clocksource_mmio, clksrc);
 }
 
-cycle_t clocksource_mmio_readl_up(struct clocksource *c)
+u64 clocksource_mmio_readl_up(struct clocksource *c)
 {
-	return readl_relaxed(to_mmio_clksrc(c)->reg);
+	return (u64)readl_relaxed(to_mmio_clksrc(c)->reg);
+}
+EXPORT_SYMBOL_GPL(clocksource_mmio_readl_up);
+
+u64 clocksource_mmio_readl_down(struct clocksource *c)
+{
+	return ~(u64)readl_relaxed(to_mmio_clksrc(c)->reg) & c->mask;
 }
 
-cycle_t clocksource_mmio_readl_down(struct clocksource *c)
+u64 clocksource_mmio_readw_up(struct clocksource *c)
 {
-	return ~readl_relaxed(to_mmio_clksrc(c)->reg);
+	return (u64)readw_relaxed(to_mmio_clksrc(c)->reg);
 }
 
-cycle_t clocksource_mmio_readw_up(struct clocksource *c)
+u64 clocksource_mmio_readw_down(struct clocksource *c)
 {
-	return readw_relaxed(to_mmio_clksrc(c)->reg);
-}
-
-cycle_t clocksource_mmio_readw_down(struct clocksource *c)
-{
-	return ~(unsigned)readw_relaxed(to_mmio_clksrc(c)->reg);
+	return ~(u64)readw_relaxed(to_mmio_clksrc(c)->reg) & c->mask;
 }
 
 /**
@@ -49,13 +47,13 @@ cycle_t clocksource_mmio_readw_down(struct clocksource *c)
  * @bits:	Number of valid bits
  * @read:	One of clocksource_mmio_read*() above
  */
-int __init clocksource_mmio_init(void __iomem *base, const char *name,
+int clocksource_mmio_init(void __iomem *base, const char *name,
 	unsigned long hz, int rating, unsigned bits,
-	cycle_t (*read)(struct clocksource *))
+	u64 (*read)(struct clocksource *))
 {
 	struct clocksource_mmio *cs;
 
-	if (bits > 32 || bits < 16)
+	if (bits > 64 || bits < 16)
 		return -EINVAL;
 
 	cs = kzalloc(sizeof(struct clocksource_mmio), GFP_KERNEL);
@@ -71,3 +69,4 @@ int __init clocksource_mmio_init(void __iomem *base, const char *name,
 
 	return clocksource_register_hz(&cs->clksrc, hz);
 }
+EXPORT_SYMBOL_GPL(clocksource_mmio_init);

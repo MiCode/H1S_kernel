@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_IO_TRAPPED_H
 #define __ASM_SH_IO_TRAPPED_H
 
@@ -36,7 +37,7 @@ __ioremap_trapped(unsigned long offset, unsigned long size)
 #define __ioremap_trapped(offset, size) NULL
 #endif
 
-#ifdef CONFIG_HAS_IOPORT
+#ifdef CONFIG_HAS_IOPORT_MAP
 extern struct list_head trapped_io;
 
 static inline void __iomem *

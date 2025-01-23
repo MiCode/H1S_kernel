@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* pci_psycho.c: PSYCHO/U2P specific PCI controller support.
  *
  * Copyright (C) 1997, 1998, 1999, 2007 David S. Miller (davem@davemloft.net)
@@ -12,7 +13,9 @@
 #include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 
 #include <asm/iommu.h>
 #include <asm/irq.h>
@@ -604,7 +607,6 @@ static const struct of_device_id psycho_match[] = {
 static struct platform_driver psycho_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = psycho_match,
 	},
 	.probe		= psycho_probe,

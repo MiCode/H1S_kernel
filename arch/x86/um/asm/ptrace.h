@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __UM_X86_PTRACE_H
 #define __UM_X86_PTRACE_H
 
@@ -47,8 +48,6 @@ struct user_desc;
 
 #ifdef CONFIG_X86_32
 
-#define HOST_AUDIT_ARCH AUDIT_ARCH_I386
-
 extern int ptrace_get_thread_area(struct task_struct *child, int idx,
                                   struct user_desc __user *user_desc);
 
@@ -56,8 +55,6 @@ extern int ptrace_set_thread_area(struct task_struct *child, int idx,
                                   struct user_desc __user *user_desc);
 
 #else
-
-#define HOST_AUDIT_ARCH AUDIT_ARCH_X86_64
 
 #define PT_REGS_R8(r) UPT_R8(&(r)->regs)
 #define PT_REGS_R9(r) UPT_R9(&(r)->regs)
@@ -82,7 +79,7 @@ static inline int ptrace_set_thread_area(struct task_struct *child, int idx,
         return -ENOSYS;
 }
 
-extern long arch_prctl(struct task_struct *task, int code,
+extern long arch_prctl(struct task_struct *task, int option,
 		       unsigned long __user *addr);
 
 #endif

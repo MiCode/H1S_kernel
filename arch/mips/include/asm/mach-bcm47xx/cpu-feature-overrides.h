@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_MACH_BCM47XX_CPU_FEATURE_OVERRIDES_H
 #define __ASM_MACH_BCM47XX_CPU_FEATURE_OVERRIDES_H
 
@@ -5,7 +6,6 @@
 #define cpu_has_4kex			1
 #define cpu_has_3k_cache		0
 #define cpu_has_4k_cache		1
-#define cpu_has_tx39_cache		0
 #define cpu_has_fpu			0
 #define cpu_has_32fpr			0
 #define cpu_has_counter			1

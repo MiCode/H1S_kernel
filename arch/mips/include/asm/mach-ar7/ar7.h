@@ -1,20 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Copyright (C) 2006,2007 Felix Fietkau <nbd@openwrt.org>
  * Copyright (C) 2006,2007 Eugene Konev <ejka@openwrt.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #ifndef __AR7_H__
@@ -117,8 +104,6 @@ struct plat_dsl_data {
 	int reset_bit_sar;
 };
 
-extern int ar7_cpu_clock, ar7_bus_clock, ar7_dsp_clock;
-
 static inline int ar7_is_titan(void)
 {
 	return (readl((void *)KSEG1ADDR(AR7_REGS_GPIO + 0x24)) & 0xffff) ==
@@ -143,10 +128,6 @@ static inline u8 ar7_chip_rev(void)
 	return (readl((void *)KSEG1ADDR(AR7_REGS_GPIO + (ar7_is_titan() ? 0x24 :
 		0x14))) >> 16) & 0xff;
 }
-
-struct clk {
-	unsigned int	rate;
-};
 
 static inline int ar7_has_high_cpmac(void)
 {
@@ -202,5 +183,9 @@ static inline void ar7_device_off(u32 bit)
 
 int __init ar7_gpio_init(void);
 void __init ar7_init_clocks(void);
+
+/* Board specific GPIO functions */
+int ar7_gpio_enable(unsigned gpio);
+int ar7_gpio_disable(unsigned gpio);
 
 #endif /* __AR7_H__ */

@@ -1,29 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* sched.c - SPU scheduler.
  *
  * Copyright (C) IBM 2005
  * Author: Mark Nutter <mnutter@us.ibm.com>
  *
  * 2006-03-31	NUMA domains added.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #undef DEBUG
 
 #include <linux/errno.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/loadavg.h>
 #include <linux/sched/rt.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -83,9 +71,8 @@ static struct timer_list spuloadavg_timer;
 #define MIN_SPU_TIMESLICE	max(5 * HZ / (1000 * SPUSCHED_TICK), 1)
 #define DEF_SPU_TIMESLICE	(100 * HZ / (1000 * SPUSCHED_TICK))
 
-#define MAX_USER_PRIO		(MAX_PRIO - MAX_RT_PRIO)
 #define SCALE_PRIO(x, prio) \
-	max(x * (MAX_PRIO - prio) / (MAX_USER_PRIO / 2), MIN_SPU_TIMESLICE)
+	max(x * (MAX_PRIO - prio) / (NICE_WIDTH / 2), MIN_SPU_TIMESLICE)
 
 /*
  * scale user-nice values [ -20 ... 0 ... 19 ] to time slice values:
@@ -141,7 +128,7 @@ void __spu_update_sched_info(struct spu_context *ctx)
 	 * runqueue. The context will be rescheduled on the proper node
 	 * if it is timesliced or preempted.
 	 */
-	cpumask_copy(&ctx->cpus_allowed, tsk_cpus_allowed(current));
+	cpumask_copy(&ctx->cpus_allowed, current->cpus_ptr);
 
 	/* Save the current cpu id for spu interrupt routing. */
 	ctx->last_ran = raw_smp_processor_id();
@@ -194,9 +181,6 @@ void do_notify_spus_active(void)
 
 	/*
 	 * Wake up the active spu_contexts.
-	 *
-	 * When the awakened processes see their "notify_active" flag is set,
-	 * they will call spu_switch_notify().
 	 */
 	for_each_online_node(node) {
 		struct spu *spu;
@@ -252,7 +236,6 @@ static void spu_bind_context(struct spu *spu, struct spu_context *ctx)
 	spu_switch_log_notify(spu, ctx, SWITCH_LOG_START, 0);
 	spu_restore(&ctx->csa, spu);
 	spu->timestamp = jiffies;
-	spu_switch_notify(spu, ctx);
 	ctx->state = SPU_STATE_RUNNABLE;
 
 	spuctx_switch_state(ctx, SPU_UTIL_USER);
@@ -357,8 +340,7 @@ static struct spu *aff_ref_location(struct spu_context *ctx, int mem_aff,
 static void aff_set_ref_point_location(struct spu_gang *gang)
 {
 	int mem_aff, gs, lowest_offset;
-	struct spu_context *ctx;
-	struct spu *tmp;
+	struct spu_context *tmp, *ctx;
 
 	mem_aff = gang->aff_ref_ctx->flags & SPU_CREATE_AFFINITY_MEM;
 	lowest_offset = 0;
@@ -453,7 +435,6 @@ static void spu_unbind_context(struct spu *spu, struct spu_context *ctx)
 		 */
 		atomic_dec_if_positive(&ctx->gang->aff_sched_count);
 
-	spu_switch_notify(spu, NULL);
 	spu_unmap_mappings(ctx);
 	spu_save(&ctx->csa, spu);
 	spu_switch_log_notify(spu, ctx, SWITCH_LOG_STOP, 0);
@@ -623,7 +604,7 @@ static struct spu *spu_get_idle(struct spu_context *ctx)
 
 /**
  * find_victim - find a lower priority context to preempt
- * @ctx:	canidate context for running
+ * @ctx:	candidate context for running
  *
  * Returns the freed physical spu to run the new context on.
  */
@@ -987,18 +968,18 @@ static void spu_calc_load(void)
 	unsigned long active_tasks; /* fixed-point */
 
 	active_tasks = count_active_contexts() * FIXED_1;
-	CALC_LOAD(spu_avenrun[0], EXP_1, active_tasks);
-	CALC_LOAD(spu_avenrun[1], EXP_5, active_tasks);
-	CALC_LOAD(spu_avenrun[2], EXP_15, active_tasks);
+	spu_avenrun[0] = calc_load(spu_avenrun[0], EXP_1, active_tasks);
+	spu_avenrun[1] = calc_load(spu_avenrun[1], EXP_5, active_tasks);
+	spu_avenrun[2] = calc_load(spu_avenrun[2], EXP_15, active_tasks);
 }
 
-static void spusched_wake(unsigned long data)
+static void spusched_wake(struct timer_list *unused)
 {
 	mod_timer(&spusched_timer, jiffies + SPUSCHED_TICK);
 	wake_up_process(spusched_task);
 }
 
-static void spuloadavg_wake(unsigned long data)
+static void spuloadavg_wake(struct timer_list *unused)
 {
 	mod_timer(&spuloadavg_timer, jiffies + LOAD_FREQ);
 	spu_calc_load();
@@ -1040,13 +1021,11 @@ void spuctx_switch_state(struct spu_context *ctx,
 {
 	unsigned long long curtime;
 	signed long long delta;
-	struct timespec ts;
 	struct spu *spu;
 	enum spu_utilization_state old_state;
 	int node;
 
-	ktime_get_ts(&ts);
-	curtime = timespec_to_ns(&ts);
+	curtime = ktime_get_ns();
 	delta = curtime - ctx->stats.tstamp;
 
 	WARN_ON(!mutex_is_locked(&ctx->state_mutex));
@@ -1073,9 +1052,7 @@ void spuctx_switch_state(struct spu_context *ctx,
 	}
 }
 
-#define LOAD_INT(x) ((x) >> FSHIFT)
-#define LOAD_FRAC(x) LOAD_INT(((x) & (FIXED_1-1)) * 100)
-
+#ifdef CONFIG_PROC_FS
 static int show_spu_loadavg(struct seq_file *s, void *private)
 {
 	int a, b, c;
@@ -1095,21 +1072,10 @@ static int show_spu_loadavg(struct seq_file *s, void *private)
 		LOAD_INT(c), LOAD_FRAC(c),
 		count_active_contexts(),
 		atomic_read(&nr_spu_contexts),
-		task_active_pid_ns(current)->last_pid);
+		idr_get_cursor(&task_active_pid_ns(current)->idr) - 1);
 	return 0;
 }
-
-static int spu_loadavg_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, show_spu_loadavg, NULL);
-}
-
-static const struct file_operations spu_loadavg_fops = {
-	.open		= spu_loadavg_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
+#endif
 
 int __init spu_sched_init(void)
 {
@@ -1126,8 +1092,8 @@ int __init spu_sched_init(void)
 	}
 	spin_lock_init(&spu_prio->runq_lock);
 
-	setup_timer(&spusched_timer, spusched_wake, 0);
-	setup_timer(&spuloadavg_timer, spuloadavg_wake, 0);
+	timer_setup(&spusched_timer, spusched_wake, 0);
+	timer_setup(&spuloadavg_timer, spuloadavg_wake, 0);
 
 	spusched_task = kthread_run(spusched_thread, NULL, "spusched");
 	if (IS_ERR(spusched_task)) {
@@ -1137,7 +1103,7 @@ int __init spu_sched_init(void)
 
 	mod_timer(&spuloadavg_timer, 0);
 
-	entry = proc_create("spu_loadavg", 0, NULL, &spu_loadavg_fops);
+	entry = proc_create_single("spu_loadavg", 0, NULL, show_spu_loadavg);
 	if (!entry)
 		goto out_stop_kthread;
 

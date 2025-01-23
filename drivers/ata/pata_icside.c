@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
@@ -201,14 +202,19 @@ static void pata_icside_set_dmamode(struct ata_port *ap, struct ata_device *adev
 	 * Choose the IOMD cycle timing which ensure that the interface
 	 * satisfies the measured active, recovery and cycle times.
 	 */
-	if (t.active <= 50 && t.recover <= 375 && t.cycle <= 425)
-		iomd_type = 'D', cycle = 187;
-	else if (t.active <= 125 && t.recover <= 375 && t.cycle <= 500)
-		iomd_type = 'C', cycle = 250;
-	else if (t.active <= 200 && t.recover <= 550 && t.cycle <= 750)
-		iomd_type = 'B', cycle = 437;
-	else
-		iomd_type = 'A', cycle = 562;
+	if (t.active <= 50 && t.recover <= 375 && t.cycle <= 425) {
+		iomd_type = 'D';
+		cycle = 187;
+	} else if (t.active <= 125 && t.recover <= 375 && t.cycle <= 500) {
+		iomd_type = 'C';
+		cycle = 250;
+	} else if (t.active <= 200 && t.recover <= 550 && t.cycle <= 750) {
+		iomd_type = 'B';
+		cycle = 437;
+	} else {
+		iomd_type = 'A';
+		cycle = 562;
+	}
 
 	ata_dev_info(adev, "timings: act %dns rec %dns cyc %dns (%c)\n",
 		     t.active, t.recover, t.cycle, iomd_type);
@@ -292,9 +298,9 @@ static int icside_dma_init(struct pata_icside_info *info)
 }
 
 
-static struct scsi_host_template pata_icside_sht = {
+static const struct scsi_host_template pata_icside_sht = {
 	ATA_BASE_SHT(DRV_NAME),
-	.sg_tablesize		= SCSI_MAX_SG_CHAIN_SEGMENTS,
+	.sg_tablesize		= SG_MAX_SEGMENTS,
 	.dma_boundary		= IOMD_DMA_BOUNDARY,
 };
 
@@ -324,7 +330,7 @@ static struct ata_port_operations pata_icside_port_ops = {
 	.inherits		= &ata_bmdma_port_ops,
 	/* no need to build any PRD tables for DMA */
 	.qc_prep		= ata_noop_qc_prep,
-	.sff_data_xfer		= ata_sff_data_xfer_noirq,
+	.sff_data_xfer		= ata_sff_data_xfer32,
 	.bmdma_setup		= pata_icside_bmdma_setup,
 	.bmdma_start		= pata_icside_bmdma_start,
 	.bmdma_stop		= pata_icside_bmdma_stop,

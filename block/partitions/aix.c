@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  fs/partitions/aix.c
  *
@@ -5,7 +6,6 @@
  */
 
 #include "check.h"
-#include "aix.h"
 
 struct lvm_rec {
 	char lvm_id[4]; /* "_LVM" */
@@ -67,29 +67,13 @@ struct pvd {
 #define LVM_MAXLVS 256
 
 /**
- * last_lba(): return number of last logical block of device
- * @bdev: block device
- *
- * Description: Returns last LBA value on success, 0 on error.
- * This is stored (by sd and ide-geometry) in
- *  the part[0] entry for this disk, and is the number of
- *  physical sectors available on the disk.
- */
-static u64 last_lba(struct block_device *bdev)
-{
-	if (!bdev || !bdev->bd_inode)
-		return 0;
-	return (bdev->bd_inode->i_size >> 9) - 1ULL;
-}
-
-/**
  * read_lba(): Read bytes from disk, starting at given LBA
  * @state
  * @lba
  * @buffer
  * @count
  *
- * Description:  Reads @count bytes from @state->bdev into @buffer.
+ * Description:  Reads @count bytes from @state->disk into @buffer.
  * Returns number of bytes read on success, 0 on error.
  */
 static size_t read_lba(struct parsed_partitions *state, u64 lba, u8 *buffer,
@@ -97,7 +81,7 @@ static size_t read_lba(struct parsed_partitions *state, u64 lba, u8 *buffer,
 {
 	size_t totalreadcount = 0;
 
-	if (!buffer || lba + count / 512 > last_lba(state->bdev))
+	if (!buffer || lba + count / 512 > get_capacity(state->disk) - 1ULL)
 		return 0;
 
 	while (count) {
@@ -177,7 +161,7 @@ int aix_partition(struct parsed_partitions *state)
 	u32 vgda_sector = 0;
 	u32 vgda_len = 0;
 	int numlvs = 0;
-	struct pvd *pvd;
+	struct pvd *pvd = NULL;
 	struct lv_info {
 		unsigned short pps_per_lv;
 		unsigned short pps_found;
@@ -215,7 +199,7 @@ int aix_partition(struct parsed_partitions *state)
 		numlvs = be16_to_cpu(p->numlvs);
 		put_dev_sector(sect);
 	}
-	lvip = kzalloc(sizeof(struct lv_info) * state->limit, GFP_KERNEL);
+	lvip = kcalloc(state->limit, sizeof(struct lv_info), GFP_KERNEL);
 	if (!lvip)
 		return 0;
 	if (numlvs && (d = read_part_sector(state, vgda_sector + 1, &sect))) {
@@ -231,10 +215,11 @@ int aix_partition(struct parsed_partitions *state)
 				if (lvip[i].pps_per_lv)
 					foundlvs += 1;
 			}
+			/* pvd loops depend on n[].name and lvip[].pps_per_lv */
+			pvd = alloc_pvd(state, vgda_sector + 17);
 		}
 		put_dev_sector(sect);
 	}
-	pvd = alloc_pvd(state, vgda_sector + 17);
 	if (pvd) {
 		int numpps = be16_to_cpu(pvd->pp_count);
 		int psn_part1 = be32_to_cpu(pvd->psn_part1);
@@ -253,7 +238,7 @@ int aix_partition(struct parsed_partitions *state)
 				continue;
 			}
 			lv_ix = be16_to_cpu(p->lv_ix) - 1;
-			if (lv_ix > state->limit) {
+			if (lv_ix >= state->limit) {
 				cur_lv_ix = -1;
 				continue;
 			}
@@ -281,10 +266,14 @@ int aix_partition(struct parsed_partitions *state)
 				next_lp_ix += 1;
 		}
 		for (i = 0; i < state->limit; i += 1)
-			if (lvip[i].pps_found && !lvip[i].lv_is_contiguous)
+			if (lvip[i].pps_found && !lvip[i].lv_is_contiguous) {
+				char tmp[sizeof(n[i].name) + 1]; // null char
+
+				snprintf(tmp, sizeof(tmp), "%s", n[i].name);
 				pr_warn("partition %s (%u pp's found) is "
 					"not contiguous\n",
-					n[i].name, lvip[i].pps_found);
+					tmp, lvip[i].pps_found);
+			}
 		kfree(pvd);
 	}
 	kfree(n);

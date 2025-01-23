@@ -1,8 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0
 config VT6655
    tristate "VIA Technologies VT6655 support"
-   depends on PCI && WLAN && m
-   select WIRELESS_EXT
-   select WEXT_PRIV
-   ---help---
-   This is a vendor-written driver for VIA VT6655.
-
+   depends on PCI && HAS_IOPORT && MAC80211 && m
+   help
+     This is a vendor-written driver for VIA VT6655.

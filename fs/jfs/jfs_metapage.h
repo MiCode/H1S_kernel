@@ -1,20 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *   Copyright (C) International Business Machines Corp., 2000-2002
  *   Portions Copyright (C) Christoph Hellwig, 2001-2002
- *
- *   This program is free software;  you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY;  without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- *   the GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program;  if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 #ifndef	_H_JFS_METAPAGE
 #define _H_JFS_METAPAGE
@@ -38,6 +25,7 @@ struct metapage {
 
 	/* implementation */
 	struct page *page;
+	struct super_block *sb;
 	unsigned int logical_size;
 
 	/* Journal management */
@@ -48,7 +36,6 @@ struct metapage {
 
 /* metapage flag */
 #define META_locked	0
-#define META_free	1
 #define META_dirty	2
 #define META_sync	3
 #define META_discard	4
@@ -107,7 +94,7 @@ static inline void metapage_nohomeok(struct metapage *mp)
 	lock_page(page);
 	if (!mp->nohomeok++) {
 		mark_metapage_dirty(mp);
-		page_cache_get(page);
+		get_page(page);
 		wait_on_page_writeback(page);
 	}
 	unlock_page(page);
@@ -129,7 +116,7 @@ static inline void metapage_wait_for_io(struct metapage *mp)
 static inline void _metapage_homeok(struct metapage *mp)
 {
 	if (!--mp->nohomeok)
-		page_cache_release(mp->page);
+		put_page(mp->page);
 }
 
 static inline void metapage_homeok(struct metapage *mp)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
 #include <linux/syscalls.h>
 #include <linux/fdtable.h>
@@ -11,6 +12,10 @@
 #include <linux/bug.h>
 #include <linux/err.h>
 #include <linux/kcmp.h>
+#include <linux/capability.h>
+#include <linux/list.h>
+#include <linux/eventpoll.h>
+#include <linux/file.h>
 
 #include <asm/unistd.h>
 
@@ -44,54 +49,88 @@ static long kptr_obfuscate(long v, int type)
  */
 static int kcmp_ptr(void *v1, void *v2, enum kcmp_type type)
 {
-	long ret;
+	long t1, t2;
 
-	ret = kptr_obfuscate((long)v1, type) - kptr_obfuscate((long)v2, type);
+	t1 = kptr_obfuscate((long)v1, type);
+	t2 = kptr_obfuscate((long)v2, type);
 
-	return (ret < 0) | ((ret > 0) << 1);
+	return (t1 < t2) | ((t1 > t2) << 1);
 }
 
 /* The caller must have pinned the task */
 static struct file *
 get_file_raw_ptr(struct task_struct *task, unsigned int idx)
 {
-	struct file *file = NULL;
+	struct file *file;
 
-	task_lock(task);
 	rcu_read_lock();
-
-	if (task->files)
-		file = fcheck_files(task->files, idx);
-
+	file = task_lookup_fd_rcu(task, idx);
 	rcu_read_unlock();
-	task_unlock(task);
 
 	return file;
 }
 
-static void kcmp_unlock(struct mutex *m1, struct mutex *m2)
+static void kcmp_unlock(struct rw_semaphore *l1, struct rw_semaphore *l2)
 {
-	if (likely(m2 != m1))
-		mutex_unlock(m2);
-	mutex_unlock(m1);
+	if (likely(l2 != l1))
+		up_read(l2);
+	up_read(l1);
 }
 
-static int kcmp_lock(struct mutex *m1, struct mutex *m2)
+static int kcmp_lock(struct rw_semaphore *l1, struct rw_semaphore *l2)
 {
 	int err;
 
-	if (m2 > m1)
-		swap(m1, m2);
+	if (l2 > l1)
+		swap(l1, l2);
 
-	err = mutex_lock_killable(m1);
-	if (!err && likely(m1 != m2)) {
-		err = mutex_lock_killable_nested(m2, SINGLE_DEPTH_NESTING);
+	err = down_read_killable(l1);
+	if (!err && likely(l1 != l2)) {
+		err = down_read_killable_nested(l2, SINGLE_DEPTH_NESTING);
 		if (err)
-			mutex_unlock(m1);
+			up_read(l1);
 	}
 
 	return err;
 }
+
+#ifdef CONFIG_EPOLL
+static int kcmp_epoll_target(struct task_struct *task1,
+			     struct task_struct *task2,
+			     unsigned long idx1,
+			     struct kcmp_epoll_slot __user *uslot)
+{
+	struct file *filp, *filp_epoll, *filp_tgt;
+	struct kcmp_epoll_slot slot;
+
+	if (copy_from_user(&slot, uslot, sizeof(slot)))
+		return -EFAULT;
+
+	filp = get_file_raw_ptr(task1, idx1);
+	if (!filp)
+		return -EBADF;
+
+	filp_epoll = fget_task(task2, slot.efd);
+	if (!filp_epoll)
+		return -EBADF;
+
+	filp_tgt = get_epoll_tfile_raw_ptr(filp_epoll, slot.tfd, slot.toff);
+	fput(filp_epoll);
+
+	if (IS_ERR(filp_tgt))
+		return PTR_ERR(filp_tgt);
+
+	return kcmp_ptr(filp, filp_tgt, KCMP_FILE);
+}
+#else
+static int kcmp_epoll_target(struct task_struct *task1,
+			     struct task_struct *task2,
+			     unsigned long idx1,
+			     struct kcmp_epoll_slot __user *uslot)
+{
+	return -EOPNOTSUPP;
+}
+#endif
 
 SYSCALL_DEFINE5(kcmp, pid_t, pid1, pid_t, pid2, int, type,
 		unsigned long, idx1, unsigned long, idx2)
@@ -117,12 +156,12 @@ SYSCALL_DEFINE5(kcmp, pid_t, pid1, pid_t, pid2, int, type,
 	/*
 	 * One should have enough rights to inspect task details.
 	 */
-	ret = kcmp_lock(&task1->signal->cred_guard_mutex,
-			&task2->signal->cred_guard_mutex);
+	ret = kcmp_lock(&task1->signal->exec_update_lock,
+			&task2->signal->exec_update_lock);
 	if (ret)
 		goto err;
-	if (!ptrace_may_access(task1, PTRACE_MODE_READ) ||
-	    !ptrace_may_access(task2, PTRACE_MODE_READ)) {
+	if (!ptrace_may_access(task1, PTRACE_MODE_READ_REALCREDS) ||
+	    !ptrace_may_access(task2, PTRACE_MODE_READ_REALCREDS)) {
 		ret = -EPERM;
 		goto err_unlock;
 	}
@@ -164,14 +203,17 @@ SYSCALL_DEFINE5(kcmp, pid_t, pid1, pid_t, pid2, int, type,
 		ret = -EOPNOTSUPP;
 #endif
 		break;
+	case KCMP_EPOLL_TFD:
+		ret = kcmp_epoll_target(task1, task2, idx1, (void *)idx2);
+		break;
 	default:
 		ret = -EINVAL;
 		break;
 	}
 
 err_unlock:
-	kcmp_unlock(&task1->signal->cred_guard_mutex,
-		    &task2->signal->cred_guard_mutex);
+	kcmp_unlock(&task1->signal->exec_update_lock,
+		    &task2->signal->exec_update_lock);
 err:
 	put_task_struct(task1);
 	put_task_struct(task2);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Linux/SPARC PROM Configuration Driver
  * Copyright (C) 1996 Thomas K. Dyas (tdyas@noc.rutgers.edu)
@@ -14,20 +15,6 @@
  * sanity's sake.
  */
 
-/* This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of the
- * License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. 
- */
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -40,7 +27,7 @@
 #include <linux/fs.h>
 #include <asm/oplib.h>
 #include <asm/prom.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/openpromio.h>
 #ifdef CONFIG_PCI
 #include <linux/pci.h>
@@ -251,8 +238,9 @@ static int oprompci2node(void __user *argp, struct device_node *dp, struct openp
 		struct pci_dev *pdev;
 		struct device_node *dp;
 
-		pdev = pci_get_bus_and_slot (((int *) op->oprom_array)[0],
-				      ((int *) op->oprom_array)[1]);
+		pdev = pci_get_domain_bus_and_slot(0,
+						((int *) op->oprom_array)[0],
+						((int *) op->oprom_array)[1]);
 
 		dp = pci_device_to_OF_node(pdev);
 		data->current_node = dp;
@@ -383,27 +371,12 @@ static struct device_node *get_node(phandle n, DATA *data)
 }
 
 /* Copy in a whole string from userspace into kernelspace. */
-static int copyin_string(char __user *user, size_t len, char **ptr)
+static char * copyin_string(char __user *user, size_t len)
 {
-	char *tmp;
-
 	if ((ssize_t)len < 0 || (ssize_t)(len + 1) < 0)
-		return -EINVAL;
+		return ERR_PTR(-EINVAL);
 
-	tmp = kmalloc(len + 1, GFP_KERNEL);
-	if (!tmp)
-		return -ENOMEM;
-
-	if (copy_from_user(tmp, user, len)) {
-		kfree(tmp);
-		return -EFAULT;
-	}
-
-	tmp[len] = '\0';
-
-	*ptr = tmp;
-
-	return 0;
+	return memdup_user_nul(user, len);
 }
 
 /*
@@ -422,9 +395,9 @@ static int opiocget(void __user *argp, DATA *data)
 
 	dp = get_node(op.op_nodeid, data);
 
-	err = copyin_string(op.op_name, op.op_namelen, &str);
-	if (err)
-		return err;
+	str = copyin_string(op.op_name, op.op_namelen);
+	if (IS_ERR(str))
+		return PTR_ERR(str);
 
 	pval = of_get_property(dp, str, &len);
 	err = 0;
@@ -447,7 +420,7 @@ static int opiocnextprop(void __user *argp, DATA *data)
 	struct device_node *dp;
 	struct property *prop;
 	char *str;
-	int err, len;
+	int len;
 
 	if (copy_from_user(&op, argp, sizeof(op)))
 		return -EFAULT;
@@ -456,9 +429,9 @@ static int opiocnextprop(void __user *argp, DATA *data)
 	if (!dp)
 		return -EINVAL;
 
-	err = copyin_string(op.op_name, op.op_namelen, &str);
-	if (err)
-		return err;
+	str = copyin_string(op.op_name, op.op_namelen);
+	if (IS_ERR(str))
+		return PTR_ERR(str);
 
 	if (str[0] == '\0') {
 		prop = dp->properties;
@@ -501,14 +474,14 @@ static int opiocset(void __user *argp, DATA *data)
 	if (!dp)
 		return -EINVAL;
 
-	err = copyin_string(op.op_name, op.op_namelen, &str);
-	if (err)
-		return err;
+	str = copyin_string(op.op_name, op.op_namelen);
+	if (IS_ERR(str))
+		return PTR_ERR(str);
 
-	err = copyin_string(op.op_buf, op.op_buflen, &tmp);
-	if (err) {
+	tmp = copyin_string(op.op_buf, op.op_buflen);
+	if (IS_ERR(tmp)) {
 		kfree(str);
-		return err;
+		return PTR_ERR(tmp);
 	}
 
 	err = of_set_property(dp, str, tmp, op.op_buflen);
@@ -729,22 +702,13 @@ static struct miscdevice openprom_dev = {
 
 static int __init openprom_init(void)
 {
-	struct device_node *dp;
 	int err;
 
 	err = misc_register(&openprom_dev);
 	if (err)
 		return err;
 
-	dp = of_find_node_by_path("/");
-	dp = dp->child;
-	while (dp) {
-		if (!strcmp(dp->name, "options"))
-			break;
-		dp = dp->sibling;
-	}
-	options_node = dp;
-
+	options_node = of_get_child_by_name(of_find_node_by_path("/"), "options");
 	if (!options_node) {
 		misc_deregister(&openprom_dev);
 		return -EIO;

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _PPC_BOOT_PLANETCORE_H_
 #define _PPC_BOOT_PLANETCORE_H_
 
@@ -42,8 +43,5 @@ void planetcore_set_mac_addrs(const char *table);
  * linux,planetcore-label property in each serial node.
  */
 void planetcore_set_stdout_path(const char *table);
-
-/* Sets the current-speed property in the serial node. */
-void planetcore_set_serial_speed(const char *table);
 
 #endif

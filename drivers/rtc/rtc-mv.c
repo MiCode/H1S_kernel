@@ -1,15 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Driver for the RTC in Marvell SoCs.
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/rtc.h>
 #include <linux/bcd.h>
+#include <linux/bitops.h>
 #include <linux/io.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
@@ -24,7 +22,7 @@
 #define RTC_MINUTES_OFFS	8
 #define RTC_HOURS_OFFS		16
 #define RTC_WDAY_OFFS		24
-#define RTC_HOURS_12H_MODE		(1 << 22) /* 12 hours mode */
+#define RTC_HOURS_12H_MODE	BIT(22) /* 12 hour mode */
 
 #define RTC_DATE_REG_OFFS	4
 #define RTC_MDAY_OFFS		0
@@ -33,7 +31,7 @@
 
 #define RTC_ALARM_TIME_REG_OFFS	8
 #define RTC_ALARM_DATE_REG_OFFS	0xc
-#define RTC_ALARM_VALID		(1 << 7)
+#define RTC_ALARM_VALID		BIT(7)
 
 #define RTC_ALARM_INTERRUPT_MASK_REG_OFFS	0x10
 #define RTC_ALARM_INTERRUPT_CASUE_REG_OFFS	0x14
@@ -59,7 +57,7 @@ static int mv_rtc_set_time(struct device *dev, struct rtc_time *tm)
 
 	rtc_reg = (bin2bcd(tm->tm_mday) << RTC_MDAY_OFFS) |
 		(bin2bcd(tm->tm_mon + 1) << RTC_MONTH_OFFS) |
-		(bin2bcd(tm->tm_year % 100) << RTC_YEAR_OFFS);
+		(bin2bcd(tm->tm_year - 100) << RTC_YEAR_OFFS);
 	writel(rtc_reg, ioaddr + RTC_DATE_REG_OFFS);
 
 	return 0;
@@ -77,7 +75,7 @@ static int mv_rtc_read_time(struct device *dev, struct rtc_time *tm)
 
 	second = rtc_time & 0x7f;
 	minute = (rtc_time >> RTC_MINUTES_OFFS) & 0x7f;
-	hour = (rtc_time >> RTC_HOURS_OFFS) & 0x3f; /* assume 24 hours mode */
+	hour = (rtc_time >> RTC_HOURS_OFFS) & 0x3f; /* assume 24 hour mode */
 	wday = (rtc_time >> RTC_WDAY_OFFS) & 0x7;
 
 	day = rtc_date & 0x3f;
@@ -93,7 +91,7 @@ static int mv_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	/* hw counts from year 2000, but tm_year is relative to 1900 */
 	tm->tm_year = bcd2bin(year) + 100;
 
-	return rtc_valid_tm(tm);
+	return 0;
 }
 
 static int mv_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alm)
@@ -108,7 +106,7 @@ static int mv_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alm)
 
 	second = rtc_time & 0x7f;
 	minute = (rtc_time >> RTC_MINUTES_OFFS) & 0x7f;
-	hour = (rtc_time >> RTC_HOURS_OFFS) & 0x3f; /* assume 24 hours mode */
+	hour = (rtc_time >> RTC_HOURS_OFFS) & 0x3f; /* assume 24 hour mode */
 	wday = (rtc_time >> RTC_WDAY_OFFS) & 0x7;
 
 	day = rtc_date & 0x3f;
@@ -124,13 +122,9 @@ static int mv_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	/* hw counts from year 2000, but tm_year is relative to 1900 */
 	alm->time.tm_year = bcd2bin(year) + 100;
 
-	if (rtc_valid_tm(&alm->time) < 0) {
-		dev_err(dev, "retrieved alarm date/time is not valid.\n");
-		rtc_time_to_tm(0, &alm->time);
-	}
-
 	alm->enabled = !!readl(ioaddr + RTC_ALARM_INTERRUPT_MASK_REG_OFFS);
-	return 0;
+
+	return rtc_valid_tm(&alm->time);
 }
 
 static int mv_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
@@ -162,7 +156,7 @@ static int mv_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 			<< RTC_MONTH_OFFS;
 
 	if (alm->time.tm_year >= 0)
-		rtc_reg |= (RTC_ALARM_VALID | bin2bcd(alm->time.tm_year % 100))
+		rtc_reg |= (RTC_ALARM_VALID | bin2bcd(alm->time.tm_year - 100))
 			<< RTC_YEAR_OFFS;
 
 	writel(rtc_reg, ioaddr + RTC_ALARM_DATE_REG_OFFS);
@@ -175,8 +169,7 @@ static int mv_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 
 static int mv_rtc_alarm_irq_enable(struct device *dev, unsigned int enabled)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
+	struct rtc_plat_data *pdata = dev_get_drvdata(dev);
 	void __iomem *ioaddr = pdata->ioaddr;
 
 	if (pdata->irq < 0)
@@ -207,11 +200,6 @@ static irqreturn_t mv_rtc_interrupt(int irq, void *data)
 static const struct rtc_class_ops mv_rtc_ops = {
 	.read_time	= mv_rtc_read_time,
 	.set_time	= mv_rtc_set_time,
-};
-
-static const struct rtc_class_ops mv_rtc_alarm_ops = {
-	.read_time	= mv_rtc_read_time,
-	.set_time	= mv_rtc_set_time,
 	.read_alarm	= mv_rtc_read_alarm,
 	.set_alarm	= mv_rtc_set_alarm,
 	.alarm_irq_enable = mv_rtc_alarm_irq_enable,
@@ -219,7 +207,6 @@ static const struct rtc_class_ops mv_rtc_alarm_ops = {
 
 static int __init mv_rtc_probe(struct platform_device *pdev)
 {
-	struct resource *res;
 	struct rtc_plat_data *pdata;
 	u32 rtc_time;
 	int ret = 0;
@@ -228,8 +215,7 @@ static int __init mv_rtc_probe(struct platform_device *pdev)
 	if (!pdata)
 		return -ENOMEM;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	pdata->ioaddr = devm_ioremap_resource(&pdev->dev, res);
+	pdata->ioaddr = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(pdata->ioaddr))
 		return PTR_ERR(pdata->ioaddr);
 
@@ -238,10 +224,10 @@ static int __init mv_rtc_probe(struct platform_device *pdev)
 	if (!IS_ERR(pdata->clk))
 		clk_prepare_enable(pdata->clk);
 
-	/* make sure the 24 hours mode is enabled */
+	/* make sure the 24 hour mode is enabled */
 	rtc_time = readl(pdata->ioaddr + RTC_TIME_REG_OFFS);
 	if (rtc_time & RTC_HOURS_12H_MODE) {
-		dev_err(&pdev->dev, "24 Hours mode not supported.\n");
+		dev_err(&pdev->dev, "12 Hour mode is enabled but not supported.\n");
 		ret = -EINVAL;
 		goto out;
 	}
@@ -261,15 +247,7 @@ static int __init mv_rtc_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, pdata);
 
-	if (pdata->irq >= 0) {
-		device_init_wakeup(&pdev->dev, 1);
-		pdata->rtc = devm_rtc_device_register(&pdev->dev, pdev->name,
-						 &mv_rtc_alarm_ops,
-						 THIS_MODULE);
-	} else {
-		pdata->rtc = devm_rtc_device_register(&pdev->dev, pdev->name,
-						 &mv_rtc_ops, THIS_MODULE);
-	}
+	pdata->rtc = devm_rtc_allocate_device(&pdev->dev);
 	if (IS_ERR(pdata->rtc)) {
 		ret = PTR_ERR(pdata->rtc);
 		goto out;
@@ -285,7 +263,18 @@ static int __init mv_rtc_probe(struct platform_device *pdev)
 		}
 	}
 
-	return 0;
+	if (pdata->irq >= 0)
+		device_init_wakeup(&pdev->dev, 1);
+	else
+		clear_bit(RTC_FEATURE_ALARM, pdata->rtc->features);
+
+	pdata->rtc->ops = &mv_rtc_ops;
+	pdata->rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
+	pdata->rtc->range_max = RTC_TIMESTAMP_END_2099;
+
+	ret = devm_rtc_register_device(pdata->rtc);
+	if (!ret)
+		return 0;
 out:
 	if (!IS_ERR(pdata->clk))
 		clk_disable_unprepare(pdata->clk);
@@ -307,17 +296,17 @@ static int __exit mv_rtc_remove(struct platform_device *pdev)
 }
 
 #ifdef CONFIG_OF
-static struct of_device_id rtc_mv_of_match_table[] = {
+static const struct of_device_id rtc_mv_of_match_table[] = {
 	{ .compatible = "marvell,orion-rtc", },
 	{}
 };
+MODULE_DEVICE_TABLE(of, rtc_mv_of_match_table);
 #endif
 
 static struct platform_driver mv_rtc_driver = {
 	.remove		= __exit_p(mv_rtc_remove),
 	.driver		= {
 		.name	= "rtc-mv",
-		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(rtc_mv_of_match_table),
 	},
 };

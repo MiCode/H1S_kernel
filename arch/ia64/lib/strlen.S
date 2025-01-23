@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *
  * Optimized version of the standard strlen() function
@@ -16,6 +17,7 @@
  * 09/24/99 S.Eranian add speculation recovery code
  */
 
+#include <linux/export.h>
 #include <asm/asmmacro.h>
 
 //
@@ -190,3 +192,4 @@ GLOBAL_ENTRY(strlen)
 	mov ar.pfs=saved_pfs	// because of ar.ec, restore no matter what
 	br.ret.sptk.many rp	// end of successful recovery code
 END(strlen)
+EXPORT_SYMBOL(strlen)

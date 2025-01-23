@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/core_marvel.c
  *
@@ -17,14 +18,12 @@
 #include <linux/mc146818rtc.h>
 #include <linux/rtc.h>
 #include <linux/module.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 
 #include <asm/ptrace.h>
 #include <asm/smp.h>
 #include <asm/gct.h>
-#include <asm/pgalloc.h>
 #include <asm/tlbflush.h>
-#include <asm/rtc.h>
 #include <asm/vga.h>
 
 #include "proto.h"
@@ -82,7 +81,10 @@ mk_resource_name(int pe, int port, char *str)
 	char *name;
 	
 	sprintf(tmp, "PCI %s PE %d PORT %d", str, pe, port);
-	name = alloc_bootmem(strlen(tmp) + 1);
+	name = memblock_alloc(strlen(tmp) + 1, SMP_CACHE_BYTES);
+	if (!name)
+		panic("%s: Failed to allocate %zu bytes\n", __func__,
+		      strlen(tmp) + 1);
 	strcpy(name, tmp);
 
 	return name;
@@ -117,9 +119,12 @@ alloc_io7(unsigned int pe)
 		return NULL;
 	}
 
-	io7 = alloc_bootmem(sizeof(*io7));
+	io7 = memblock_alloc(sizeof(*io7), SMP_CACHE_BYTES);
+	if (!io7)
+		panic("%s: Failed to allocate %zu bytes\n", __func__,
+		      sizeof(*io7));
 	io7->pe = pe;
-	spin_lock_init(&io7->irq_lock);
+	raw_spin_lock_init(&io7->irq_lock);
 
 	for (h = 0; h < 4; h++) {
 		io7->ports[h].io7 = io7;
@@ -282,8 +287,7 @@ io7_init_hose(struct io7 *io7, int port)
 	/*
 	 * Set up window 0 for scatter-gather 8MB at 8MB.
 	 */
-	hose->sg_isa = iommu_arena_new_node(marvel_cpuid_to_nid(io7->pe),
-					    hose, 0x00800000, 0x00800000, 0);
+	hose->sg_isa = iommu_arena_new_node(0, hose, 0x00800000, 0x00800000, 0);
 	hose->sg_isa->align_entry = 8;	/* cache line boundary */
 	csrs->POx_WBASE[0].csr = 
 		hose->sg_isa->dma_base | wbase_m_ena | wbase_m_sg;
@@ -300,8 +304,7 @@ io7_init_hose(struct io7 *io7, int port)
 	/*
 	 * Set up window 2 for scatter-gather (up-to) 1GB at 3GB.
 	 */
-	hose->sg_pci = iommu_arena_new_node(marvel_cpuid_to_nid(io7->pe),
-					    hose, 0xc0000000, 0x40000000, 0);
+	hose->sg_pci = iommu_arena_new_node(0, hose, 0xc0000000, 0x40000000, 0);
 	hose->sg_pci->align_entry = 8;	/* cache line boundary */
 	csrs->POx_WBASE[2].csr = 
 		hose->sg_pci->dma_base | wbase_m_ena | wbase_m_sg;
@@ -352,7 +355,7 @@ marvel_init_io7(struct io7 *io7)
 	}
 }
 
-void
+void __init
 marvel_io7_present(gct6_node *node)
 {
 	int pe;
@@ -370,6 +373,7 @@ marvel_io7_present(gct6_node *node)
 static void __init
 marvel_find_console_vga_hose(void)
 {
+#ifdef CONFIG_VGA_HOSE
 	u64 *pu64 = (u64 *)((u64)hwrpb + hwrpb->ctbt_offset);
 
 	if (pu64[7] == 3) {	/* TERM_TYPE == graphics */
@@ -403,9 +407,10 @@ marvel_find_console_vga_hose(void)
 			pci_vga_hose = hose;
 		}
 	}
+#endif
 }
 
-gct6_search_struct gct_wanted_node_list[] = {
+gct6_search_struct gct_wanted_node_list[] __initdata = {
 	{ GCT_TYPE_HOSE, GCT_SUBTYPE_IO_PORT_MODULE, marvel_io7_present },
 	{ 0, 0, NULL }
 };
@@ -798,8 +803,8 @@ void __iomem *marvel_ioportmap (unsigned long addr)
 	return (void __iomem *)addr;
 }
 
-unsigned int
-marvel_ioread8(void __iomem *xaddr)
+u8
+marvel_ioread8(const void __iomem *xaddr)
 {
 	unsigned long addr = (unsigned long) xaddr;
 	if (__marvel_is_port_kbd(addr))
@@ -836,53 +841,8 @@ EXPORT_SYMBOL(marvel_ioportmap);
 EXPORT_SYMBOL(marvel_ioread8);
 EXPORT_SYMBOL(marvel_iowrite8);
 #endif
-
+
 /*
- * NUMA Support
- */
-/**********
- * FIXME - for now each cpu is a node by itself 
- *              -- no real support for striped mode 
- **********
- */
-int
-marvel_pa_to_nid(unsigned long pa)
-{
-	int cpuid;
-
-	if ((pa >> 43) & 1) 	/* I/O */ 
-		cpuid = (~(pa >> 35) & 0xff);
-	else			/* mem */
-		cpuid = ((pa >> 34) & 0x3) | ((pa >> (37 - 2)) & (0x1f << 2));
-
-	return marvel_cpuid_to_nid(cpuid);
-}
-
-int
-marvel_cpuid_to_nid(int cpuid)
-{
-	return cpuid;
-}
-
-unsigned long
-marvel_node_mem_start(int nid)
-{
-	unsigned long pa;
-
-	pa = (nid & 0x3) | ((nid & (0x1f << 2)) << 1);
-	pa <<= 34;
-
-	return pa;
-}
-
-unsigned long
-marvel_node_mem_size(int nid)
-{
-	return 16UL * 1024 * 1024 * 1024; /* 16GB */
-}
-
-
-/* 
  * AGP GART Support.
  */
 #include <linux/agp_backend.h>

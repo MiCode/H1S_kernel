@@ -1,21 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *
- *
  *  Copyright (C) 2007 Michael Krufky <mkrufky@linuxtv.org>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
 #ifndef _PVRUSB2_FX2_CMD_H_
@@ -42,6 +28,10 @@
 
 #define FX2CMD_FWPOST1          0x52u
 
+/* These 2 only exist on Model 160xxx */
+#define FX2CMD_HCW_DEMOD_RESET_PIN 0xd4u
+#define FX2CMD_HCW_MAKO_SLEEP_PIN  0xd5u
+
 #define FX2CMD_POWER_OFF        0xdcu
 #define FX2CMD_POWER_ON         0xdeu
 
@@ -60,13 +50,3 @@
 #define FX2CMD_ONAIR_DTV_POWER_OFF     0xa3u
 
 #endif /* _PVRUSB2_FX2_CMD_H_ */
-
-/*
-  Stuff for Emacs to see, in order to encourage consistent editing style:
-  *** Local Variables: ***
-  *** mode: c ***
-  *** fill-column: 75 ***
-  *** tab-width: 8 ***
-  *** c-basic-offset: 8 ***
-  *** End: ***
-  */

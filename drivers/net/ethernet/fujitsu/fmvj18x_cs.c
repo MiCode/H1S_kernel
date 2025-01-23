@@ -54,7 +54,7 @@
 #include <pcmcia/ciscode.h>
 #include <pcmcia/ds.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 
 /*====================================================================*/
@@ -93,29 +93,29 @@ static irqreturn_t fjn_interrupt(int irq, void *dev_id);
 static void fjn_rx(struct net_device *dev);
 static void fjn_reset(struct net_device *dev);
 static void set_rx_mode(struct net_device *dev);
-static void fjn_tx_timeout(struct net_device *dev);
+static void fjn_tx_timeout(struct net_device *dev, unsigned int txqueue);
 static const struct ethtool_ops netdev_ethtool_ops;
 
 /*
     card type
  */
-typedef enum { MBH10302, MBH10304, TDK, CONTEC, LA501, UNGERMANN, 
+enum cardtype { MBH10302, MBH10304, TDK, CONTEC, LA501, UNGERMANN,
 	       XXX10304, NEC, KME
-} cardtype_t;
+};
 
 /*
     driver specific data structure
 */
-typedef struct local_info_t {
+struct local_info {
 	struct pcmcia_device	*p_dev;
     long open_time;
     uint tx_started:1;
     uint tx_queue;
     u_short tx_queue_len;
-    cardtype_t cardtype;
+    enum cardtype cardtype;
     u_short sent;
     u_char __iomem *base;
-} local_info_t;
+};
 
 #define MC_FILTERBREAK 64
 
@@ -225,20 +225,19 @@ static const struct net_device_ops fjn_netdev_ops = {
 	.ndo_tx_timeout 	= fjn_tx_timeout,
 	.ndo_set_config 	= fjn_config,
 	.ndo_set_rx_mode	= set_rx_mode,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address 	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 };
 
 static int fmvj18x_probe(struct pcmcia_device *link)
 {
-    local_info_t *lp;
+    struct local_info *lp;
     struct net_device *dev;
 
     dev_dbg(&link->dev, "fmvj18x_attach()\n");
 
     /* Make up a FMVJ18x specific data structure */
-    dev = alloc_etherdev(sizeof(local_info_t));
+    dev = alloc_etherdev(sizeof(struct local_info));
     if (!dev)
 	return -ENOMEM;
     lp = netdev_priv(dev);
@@ -256,7 +255,7 @@ static int fmvj18x_probe(struct pcmcia_device *link)
     dev->netdev_ops = &fjn_netdev_ops;
     dev->watchdog_timeo = TX_TIMEOUT;
 
-    SET_ETHTOOL_OPS(dev, &netdev_ethtool_ops);
+    dev->ethtool_ops = &netdev_ethtool_ops;
 
     return fmvj18x_config(link);
 } /* fmvj18x_attach */
@@ -327,14 +326,15 @@ static int fmvj18x_ioprobe(struct pcmcia_device *p_dev, void *priv_data)
 static int fmvj18x_config(struct pcmcia_device *link)
 {
     struct net_device *dev = link->priv;
-    local_info_t *lp = netdev_priv(dev);
+    struct local_info *lp = netdev_priv(dev);
     int i, ret;
     unsigned int ioaddr;
-    cardtype_t cardtype;
+    enum cardtype cardtype;
     char *card_name = "unknown";
     u8 *buf;
     size_t len;
     u_char buggybuf[32];
+    u8 addr[ETH_ALEN];
 
     dev_dbg(&link->dev, "fmvj18x_config\n");
 
@@ -469,8 +469,7 @@ static int fmvj18x_config(struct pcmcia_device *link)
 		    goto failed;
 	    }
 	    /* Read MACID from CIS */
-	    for (i = 5; i < 11; i++)
-		    dev->dev_addr[i] = buf[i];
+	    eth_hw_addr_set(dev, &buf[5]);
 	    kfree(buf);
 	} else {
 	    if (pcmcia_get_mac_from_cis(link, dev))
@@ -491,7 +490,8 @@ static int fmvj18x_config(struct pcmcia_device *link)
     case UNGERMANN:
 	/* Read MACID from register */
 	for (i = 0; i < 6; i++) 
-	    dev->dev_addr[i] = inb(ioaddr + UNGERMANN_MAC_ID + i);
+	    addr[i] = inb(ioaddr + UNGERMANN_MAC_ID + i);
+	eth_hw_addr_set(dev, addr);
 	card_name = "Access/CARD";
 	break;
     case XXX10304:
@@ -500,16 +500,15 @@ static int fmvj18x_config(struct pcmcia_device *link)
 	    pr_notice("unable to read hardware net address\n");
 	    goto failed;
 	}
-	for (i = 0 ; i < 6; i++) {
-	    dev->dev_addr[i] = buggybuf[i];
-	}
+	eth_hw_addr_set(dev, buggybuf);
 	card_name = "FMV-J182";
 	break;
     case MBH10302:
     default:
 	/* Read MACID from register */
 	for (i = 0; i < 6; i++) 
-	    dev->dev_addr[i] = inb(ioaddr + MAC_ID + i);
+	    addr[i] = inb(ioaddr + MAC_ID + i);
+	eth_hw_addr_set(dev, addr);
 	card_name = "FMV-J181";
 	break;
     }
@@ -548,6 +547,11 @@ static int fmvj18x_get_hwinfo(struct pcmcia_device *link, u_char *node_id)
 	return -1;
 
     base = ioremap(link->resource[2]->start, resource_size(link->resource[2]));
+    if (!base) {
+	pcmcia_release_window(link, link->resource[2]);
+	return -1;
+    }
+
     pcmcia_map_mem_page(link, link->resource[2], 0);
 
     /*
@@ -584,7 +588,7 @@ static int fmvj18x_setup_mfc(struct pcmcia_device *link)
     int i;
     struct net_device *dev = link->priv;
     unsigned int ioaddr;
-    local_info_t *lp = netdev_priv(dev);
+    struct local_info *lp = netdev_priv(dev);
 
     /* Allocate a small memory window */
     link->resource[3]->flags = WIN_DATA_WIDTH_8|WIN_MEMORY_TYPE_AM|WIN_ENABLE;
@@ -626,7 +630,7 @@ static void fmvj18x_release(struct pcmcia_device *link)
 {
 
     struct net_device *dev = link->priv;
-    local_info_t *lp = netdev_priv(dev);
+    struct local_info *lp = netdev_priv(dev);
     u_char __iomem *tmp;
 
     dev_dbg(&link->dev, "fmvj18x_release\n");
@@ -711,7 +715,7 @@ module_pcmcia_driver(fmvj18x_cs_driver);
 static irqreturn_t fjn_interrupt(int dummy, void *dev_id)
 {
     struct net_device *dev = dev_id;
-    local_info_t *lp = netdev_priv(dev);
+    struct local_info *lp = netdev_priv(dev);
     unsigned int ioaddr;
     unsigned short tx_stat, rx_stat;
 
@@ -746,7 +750,7 @@ static irqreturn_t fjn_interrupt(int dummy, void *dev_id)
 	    lp->sent = lp->tx_queue ;
 	    lp->tx_queue = 0;
 	    lp->tx_queue_len = 0;
-	    dev->trans_start = jiffies;
+	    netif_trans_update(dev);
 	} else {
 	    lp->tx_started = 0;
 	}
@@ -770,9 +774,9 @@ static irqreturn_t fjn_interrupt(int dummy, void *dev_id)
 
 /*====================================================================*/
 
-static void fjn_tx_timeout(struct net_device *dev)
+static void fjn_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
-    struct local_info_t *lp = netdev_priv(dev);
+    struct local_info *lp = netdev_priv(dev);
     unsigned int ioaddr = dev->base_addr;
 
     netdev_notice(dev, "transmit timed out with status %04x, %s?\n",
@@ -802,15 +806,15 @@ static void fjn_tx_timeout(struct net_device *dev)
 static netdev_tx_t fjn_start_xmit(struct sk_buff *skb,
 					struct net_device *dev)
 {
-    struct local_info_t *lp = netdev_priv(dev);
+    struct local_info *lp = netdev_priv(dev);
     unsigned int ioaddr = dev->base_addr;
     short length = skb->len;
     
     if (length < ETH_ZLEN)
     {
-    	if (skb_padto(skb, ETH_ZLEN))
-    		return NETDEV_TX_OK;
-    	length = ETH_ZLEN;
+	if (skb_padto(skb, ETH_ZLEN))
+		return NETDEV_TX_OK;
+	length = ETH_ZLEN;
     }
 
     netif_stop_queue(dev);
@@ -874,7 +878,7 @@ static netdev_tx_t fjn_start_xmit(struct sk_buff *skb,
 
 static void fjn_reset(struct net_device *dev)
 {
-    struct local_info_t *lp = netdev_priv(dev);
+    struct local_info *lp = netdev_priv(dev);
     unsigned int ioaddr = dev->base_addr;
     int i;
 
@@ -1042,8 +1046,8 @@ static void fjn_rx(struct net_device *dev)
 static void netdev_get_drvinfo(struct net_device *dev,
 			       struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
 	snprintf(info->bus_info, sizeof(info->bus_info),
 		"PCMCIA 0x%lx", dev->base_addr);
 }
@@ -1058,7 +1062,7 @@ static int fjn_config(struct net_device *dev, struct ifmap *map){
 
 static int fjn_open(struct net_device *dev)
 {
-    struct local_info_t *lp = netdev_priv(dev);
+    struct local_info *lp = netdev_priv(dev);
     struct pcmcia_device *link = lp->p_dev;
 
     pr_debug("fjn_open('%s').\n", dev->name);
@@ -1083,7 +1087,7 @@ static int fjn_open(struct net_device *dev)
 
 static int fjn_close(struct net_device *dev)
 {
-    struct local_info_t *lp = netdev_priv(dev);
+    struct local_info *lp = netdev_priv(dev);
     struct pcmcia_device *link = lp->p_dev;
     unsigned int ioaddr = dev->base_addr;
 

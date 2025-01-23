@@ -1,8 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef S390_DEVICE_H
 #define S390_DEVICE_H
 
 #include <asm/ccwdev.h>
 #include <linux/atomic.h>
+#include <linux/timer.h>
 #include <linux/wait.h>
 #include <linux/notifier.h>
 #include <linux/kernel_stat.h>
@@ -13,7 +15,6 @@
  */
 enum dev_state {
 	DEV_STATE_NOT_OPER,
-	DEV_STATE_SENSE_PGID,
 	DEV_STATE_SENSE_ID,
 	DEV_STATE_OFFLINE,
 	DEV_STATE_VERIFY,
@@ -95,7 +96,6 @@ int ccw_device_online(struct ccw_device *);
 int ccw_device_offline(struct ccw_device *);
 void ccw_device_update_sense_data(struct ccw_device *);
 int ccw_device_test_sense_data(struct ccw_device *);
-void ccw_device_schedule_sch_unregister(struct ccw_device *);
 int ccw_purge_blacklisted(void);
 void ccw_device_sched_todo(struct ccw_device *cdev, enum cdev_todo todo);
 struct ccw_device *get_ccwdev_by_dev_id(struct ccw_dev_id *dev_id);
@@ -125,11 +125,6 @@ void ccw_device_verify_done(struct ccw_device *, int);
 void ccw_device_disband_start(struct ccw_device *);
 void ccw_device_disband_done(struct ccw_device *, int);
 
-void ccw_device_stlck_start(struct ccw_device *, void *, void *, void *);
-void ccw_device_stlck_done(struct ccw_device *, void *, int);
-
-int ccw_device_call_handler(struct ccw_device *);
-
 int ccw_device_stlck(struct ccw_device *);
 
 /* Helper function for machine check handling. */
@@ -139,12 +134,14 @@ int ccw_device_notify(struct ccw_device *, int);
 void ccw_device_set_disconnected(struct ccw_device *cdev);
 void ccw_device_set_notoper(struct ccw_device *cdev);
 
+void ccw_device_timeout(struct timer_list *t);
 void ccw_device_set_timeout(struct ccw_device *, int);
+void ccw_device_schedule_recovery(void);
 
 /* Channel measurement facility related */
 void retry_set_schib(struct ccw_device *cdev);
 void cmf_retry_copy_block(struct ccw_device *);
 int cmf_reenable(struct ccw_device *);
-int ccw_set_cmf(struct ccw_device *cdev, int enable);
+void cmf_reactivate(void);
 extern struct device_attribute dev_attr_cmb_enable;
 #endif

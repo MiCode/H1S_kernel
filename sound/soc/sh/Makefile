@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 ## DMA engines
 snd-soc-dma-sh7760-objs	:= dma-sh7760.o
 obj-$(CONFIG_SND_SOC_PCM_SH7760)	+= snd-soc-dma-sh7760.o
@@ -21,3 +22,7 @@ snd-soc-migor-objs		:= migor.o
 
 obj-$(CONFIG_SND_SH7760_AC97)	+= snd-soc-sh7760-ac97.o
 obj-$(CONFIG_SND_SIU_MIGOR)	+= snd-soc-migor.o
+
+# RZ/G2L
+snd-soc-rz-ssi-objs		:= rz-ssi.o
+obj-$(CONFIG_SND_SOC_RZ)	+= snd-soc-rz-ssi.o

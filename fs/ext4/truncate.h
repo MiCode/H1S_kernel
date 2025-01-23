@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/fs/ext4/truncate.h
  *
@@ -10,8 +11,16 @@
  */
 static inline void ext4_truncate_failed_write(struct inode *inode)
 {
-	truncate_inode_pages(inode->i_mapping, inode->i_size);
+	struct address_space *mapping = inode->i_mapping;
+
+	/*
+	 * We don't need to call ext4_break_layouts() because the blocks we
+	 * are truncating were never visible to userspace.
+	 */
+	filemap_invalidate_lock(mapping);
+	truncate_inode_pages(mapping, inode->i_size);
 	ext4_truncate(inode);
+	filemap_invalidate_unlock(mapping);
 }
 
 /*

@@ -1,9 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
+#include <asm/ptrace.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "sfp-util.h"
 #include <math-emu/soft-fp.h>
@@ -52,6 +54,7 @@ extern void alpha_write_fp_reg_s (unsigned long reg, unsigned long val);
 #ifdef MODULE
 
 MODULE_DESCRIPTION("FP Software completion module");
+MODULE_LICENSE("GPL v2");
 
 extern long (*alpha_fp_emul_imprecise)(struct pt_regs *, unsigned long);
 extern long (*alpha_fp_emul) (unsigned long pc);
@@ -62,7 +65,7 @@ static long (*save_emul) (unsigned long pc);
 long do_alpha_fp_emul_imprecise(struct pt_regs *, unsigned long);
 long do_alpha_fp_emul(unsigned long);
 
-int init_module(void)
+static int alpha_fp_emul_init_module(void)
 {
 	save_emul_imprecise = alpha_fp_emul_imprecise;
 	save_emul = alpha_fp_emul;
@@ -70,12 +73,14 @@ int init_module(void)
 	alpha_fp_emul = do_alpha_fp_emul;
 	return 0;
 }
+module_init(alpha_fp_emul_init_module);
 
-void cleanup_module(void)
+static void alpha_fp_emul_cleanup_module(void)
 {
 	alpha_fp_emul_imprecise = save_emul_imprecise;
 	alpha_fp_emul = save_emul;
 }
+module_exit(alpha_fp_emul_cleanup_module);
 
 #undef  alpha_fp_emul_imprecise
 #define alpha_fp_emul_imprecise		do_alpha_fp_emul_imprecise

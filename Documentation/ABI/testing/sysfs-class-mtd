@@ -39,7 +39,7 @@ KernelVersion:	2.6.29
 Contact:	linux-mtd@lists.infradead.org
 Description:
 		Major and minor numbers of the character device corresponding
-		to the read-only variant of thie MTD device (in
+		to the read-only variant of the MTD device (in
 		<major>:<minor> format).  In this case <minor> will be odd.
 
 What:		/sys/class/mtd/mtdX/erasesize
@@ -184,3 +184,59 @@ Description:
 
 		It will always be a non-negative integer.  In the case of
 		devices lacking any ECC capability, it is 0.
+
+What:		/sys/class/mtd/mtdX/ecc_failures
+Date:		June 2014
+KernelVersion:	3.17
+Contact:	linux-mtd@lists.infradead.org
+Description:
+		The number of failures reported by this device's ECC. Typically,
+		these failures are associated with failed read operations.
+
+		It will always be a non-negative integer.  In the case of
+		devices lacking any ECC capability, it is 0.
+
+What:		/sys/class/mtd/mtdX/corrected_bits
+Date:		June 2014
+KernelVersion:	3.17
+Contact:	linux-mtd@lists.infradead.org
+Description:
+		The number of bits that have been corrected by means of the
+		device's ECC.
+
+		It will always be a non-negative integer.  In the case of
+		devices lacking any ECC capability, it is 0.
+
+What:		/sys/class/mtd/mtdX/bad_blocks
+Date:		June 2014
+KernelVersion:	3.17
+Contact:	linux-mtd@lists.infradead.org
+Description:
+		The number of blocks marked as bad, if any, in this partition.
+
+What:		/sys/class/mtd/mtdX/bbt_blocks
+Date:		June 2014
+KernelVersion:	3.17
+Contact:	linux-mtd@lists.infradead.org
+Description:
+		The number of blocks that are marked as reserved, if any, in
+		this partition. These are typically used to store the in-flash
+		bad block table (BBT).
+
+What:		/sys/class/mtd/mtdX/offset
+Date:		March 2015
+KernelVersion:	4.1
+Contact:	linux-mtd@lists.infradead.org
+Description:
+		For a partition, the offset of that partition from the start
+		of the parent (another partition or a flash device) in bytes.
+		This attribute is absent on flash devices, so it can be used
+		to distinguish them from partitions.
+
+What:		/sys/class/mtd/mtdX/oobavail
+Date:		April 2018
+KernelVersion:	4.16
+Contact:	linux-mtd@lists.infradead.org
+Description:
+		Number of bytes available for a client to place data into
+		the out of band area.

@@ -1,23 +1,10 @@
-/**
+// SPDX-License-Identifier: GPL-2.0-only
+/*
  * eCryptfs: Linux filesystem encryption layer
  *
  * Copyright (C) 2004-2008 International Business Machines Corp.
  *   Author(s): Michael A. Halcrow <mhalcrow@us.ibm.com>
- *		Tyler Hicks <tyhicks@ou.edu>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version
- * 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
- * 02111-1307, USA.
+ *		Tyler Hicks <code@tyhicks.com>
  */
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -27,10 +14,10 @@
 
 static LIST_HEAD(ecryptfs_msg_ctx_free_list);
 static LIST_HEAD(ecryptfs_msg_ctx_alloc_list);
-static struct mutex ecryptfs_msg_ctx_lists_mux;
+static DEFINE_MUTEX(ecryptfs_msg_ctx_lists_mux);
 
 static struct hlist_head *ecryptfs_daemon_hash;
-struct mutex ecryptfs_daemon_hash_mux;
+DEFINE_MUTEX(ecryptfs_daemon_hash_mux);
 static int ecryptfs_hash_bits;
 #define ecryptfs_current_euid_hash(uid) \
 	hash_long((unsigned long)from_kuid(&init_user_ns, current_euid()), ecryptfs_hash_bits)
@@ -147,8 +134,6 @@ ecryptfs_spawn_daemon(struct ecryptfs_daemon **daemon, struct file *file)
 	(*daemon) = kzalloc(sizeof(**daemon), GFP_KERNEL);
 	if (!(*daemon)) {
 		rc = -ENOMEM;
-		printk(KERN_ERR "%s: Failed to allocate [%zd] bytes of "
-		       "GFP_KERNEL memory\n", __func__, sizeof(**daemon));
 		goto out;
 	}
 	(*daemon)->file = file;
@@ -162,7 +147,7 @@ out:
 	return rc;
 }
 
-/**
+/*
  * ecryptfs_exorcise_daemon - Destroy the daemon struct
  *
  * Must be called ceremoniously while in possession of
@@ -190,13 +175,14 @@ int ecryptfs_exorcise_daemon(struct ecryptfs_daemon *daemon)
 	}
 	hlist_del(&daemon->euid_chain);
 	mutex_unlock(&daemon->mux);
-	kzfree(daemon);
+	kfree_sensitive(daemon);
 out:
 	return rc;
 }
 
 /**
- * ecryptfs_process_reponse
+ * ecryptfs_process_response
+ * @daemon: eCryptfs daemon object
  * @msg: The ecryptfs message received; the caller should sanity check
  *       msg->data_len and free the memory
  * @seq: The sequence number of the message; must match the sequence
@@ -250,8 +236,6 @@ int ecryptfs_process_response(struct ecryptfs_daemon *daemon,
 	msg_ctx->msg = kmemdup(msg, msg_size, GFP_KERNEL);
 	if (!msg_ctx->msg) {
 		rc = -ENOMEM;
-		printk(KERN_ERR "%s: Failed to allocate [%zd] bytes of "
-		       "GFP_KERNEL memory\n", __func__, msg_size);
 		goto unlock;
 	}
 	msg_ctx->state = ECRYPTFS_MSG_CTX_STATE_DONE;
@@ -267,6 +251,7 @@ out:
  * ecryptfs_send_message_locked
  * @data: The data to send
  * @data_len: The length of data
+ * @msg_type: Type of message
  * @msg_ctx: The message context allocated for the send
  *
  * Must be called with ecryptfs_daemon_hash_mux held.
@@ -376,7 +361,6 @@ int __init ecryptfs_init_messaging(void)
 		       "too large, defaulting to [%d] users\n", __func__,
 		       ecryptfs_number_of_users);
 	}
-	mutex_init(&ecryptfs_daemon_hash_mux);
 	mutex_lock(&ecryptfs_daemon_hash_mux);
 	ecryptfs_hash_bits = 1;
 	while (ecryptfs_number_of_users >> ecryptfs_hash_bits)
@@ -386,7 +370,6 @@ int __init ecryptfs_init_messaging(void)
 				       GFP_KERNEL);
 	if (!ecryptfs_daemon_hash) {
 		rc = -ENOMEM;
-		printk(KERN_ERR "%s: Failed to allocate memory\n", __func__);
 		mutex_unlock(&ecryptfs_daemon_hash_mux);
 		goto out;
 	}
@@ -397,11 +380,10 @@ int __init ecryptfs_init_messaging(void)
 					* ecryptfs_message_buf_len),
 				       GFP_KERNEL);
 	if (!ecryptfs_msg_ctx_arr) {
+		kfree(ecryptfs_daemon_hash);
 		rc = -ENOMEM;
-		printk(KERN_ERR "%s: Failed to allocate memory\n", __func__);
 		goto out;
 	}
-	mutex_init(&ecryptfs_msg_ctx_lists_mux);
 	mutex_lock(&ecryptfs_msg_ctx_lists_mux);
 	ecryptfs_msg_counter = 0;
 	for (i = 0; i < ecryptfs_message_buf_len; i++) {
@@ -434,8 +416,7 @@ void ecryptfs_release_messaging(void)
 		mutex_lock(&ecryptfs_msg_ctx_lists_mux);
 		for (i = 0; i < ecryptfs_message_buf_len; i++) {
 			mutex_lock(&ecryptfs_msg_ctx_arr[i].mux);
-			if (ecryptfs_msg_ctx_arr[i].msg)
-				kfree(ecryptfs_msg_ctx_arr[i].msg);
+			kfree(ecryptfs_msg_ctx_arr[i].msg);
 			mutex_unlock(&ecryptfs_msg_ctx_arr[i].mux);
 		}
 		kfree(ecryptfs_msg_ctx_arr);
@@ -443,15 +424,16 @@ void ecryptfs_release_messaging(void)
 	}
 	if (ecryptfs_daemon_hash) {
 		struct ecryptfs_daemon *daemon;
+		struct hlist_node *n;
 		int i;
 
 		mutex_lock(&ecryptfs_daemon_hash_mux);
 		for (i = 0; i < (1 << ecryptfs_hash_bits); i++) {
 			int rc;
 
-			hlist_for_each_entry(daemon,
-					     &ecryptfs_daemon_hash[i],
-					     euid_chain) {
+			hlist_for_each_entry_safe(daemon, n,
+						  &ecryptfs_daemon_hash[i],
+						  euid_chain) {
 				rc = ecryptfs_exorcise_daemon(daemon);
 				if (rc)
 					printk(KERN_ERR "%s: Error whilst "

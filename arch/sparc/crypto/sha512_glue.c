@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* Glue code for SHA512 hashing optimized for sparc64 crypto opcodes.
  *
  * This is based largely upon crypto/sha512_generic.c
@@ -13,9 +14,9 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mm.h>
-#include <linux/cryptohash.h>
 #include <linux/types.h>
-#include <crypto/sha.h>
+#include <crypto/sha2.h>
+#include <crypto/sha512_base.h>
 
 #include <asm/pstate.h>
 #include <asm/elf.h>
@@ -24,38 +25,6 @@
 
 asmlinkage void sha512_sparc64_transform(u64 *digest, const char *data,
 					 unsigned int rounds);
-
-static int sha512_sparc64_init(struct shash_desc *desc)
-{
-	struct sha512_state *sctx = shash_desc_ctx(desc);
-	sctx->state[0] = SHA512_H0;
-	sctx->state[1] = SHA512_H1;
-	sctx->state[2] = SHA512_H2;
-	sctx->state[3] = SHA512_H3;
-	sctx->state[4] = SHA512_H4;
-	sctx->state[5] = SHA512_H5;
-	sctx->state[6] = SHA512_H6;
-	sctx->state[7] = SHA512_H7;
-	sctx->count[0] = sctx->count[1] = 0;
-
-	return 0;
-}
-
-static int sha384_sparc64_init(struct shash_desc *desc)
-{
-	struct sha512_state *sctx = shash_desc_ctx(desc);
-	sctx->state[0] = SHA384_H0;
-	sctx->state[1] = SHA384_H1;
-	sctx->state[2] = SHA384_H2;
-	sctx->state[3] = SHA384_H3;
-	sctx->state[4] = SHA384_H4;
-	sctx->state[5] = SHA384_H5;
-	sctx->state[6] = SHA384_H6;
-	sctx->state[7] = SHA384_H7;
-	sctx->count[0] = sctx->count[1] = 0;
-
-	return 0;
-}
 
 static void __sha512_sparc64_update(struct sha512_state *sctx, const u8 *data,
 				    unsigned int len, unsigned int partial)
@@ -139,14 +108,14 @@ static int sha384_sparc64_final(struct shash_desc *desc, u8 *hash)
 	sha512_sparc64_final(desc, D);
 
 	memcpy(hash, D, 48);
-	memset(D, 0, 64);
+	memzero_explicit(D, 64);
 
 	return 0;
 }
 
 static struct shash_alg sha512 = {
 	.digestsize	=	SHA512_DIGEST_SIZE,
-	.init		=	sha512_sparc64_init,
+	.init		=	sha512_base_init,
 	.update		=	sha512_sparc64_update,
 	.final		=	sha512_sparc64_final,
 	.descsize	=	sizeof(struct sha512_state),
@@ -154,7 +123,6 @@ static struct shash_alg sha512 = {
 		.cra_name	=	"sha512",
 		.cra_driver_name=	"sha512-sparc64",
 		.cra_priority	=	SPARC_CR_OPCODE_PRIORITY,
-		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize	=	SHA512_BLOCK_SIZE,
 		.cra_module	=	THIS_MODULE,
 	}
@@ -162,7 +130,7 @@ static struct shash_alg sha512 = {
 
 static struct shash_alg sha384 = {
 	.digestsize	=	SHA384_DIGEST_SIZE,
-	.init		=	sha384_sparc64_init,
+	.init		=	sha384_base_init,
 	.update		=	sha512_sparc64_update,
 	.final		=	sha384_sparc64_final,
 	.descsize	=	sizeof(struct sha512_state),
@@ -170,7 +138,6 @@ static struct shash_alg sha384 = {
 		.cra_name	=	"sha384",
 		.cra_driver_name=	"sha384-sparc64",
 		.cra_priority	=	SPARC_CR_OPCODE_PRIORITY,
-		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize	=	SHA384_BLOCK_SIZE,
 		.cra_module	=	THIS_MODULE,
 	}
@@ -222,7 +189,7 @@ module_exit(sha512_sparc64_mod_fini);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("SHA-384 and SHA-512 Secure Hash Algorithm, sparc64 sha512 opcode accelerated");
 
-MODULE_ALIAS("sha384");
-MODULE_ALIAS("sha512");
+MODULE_ALIAS_CRYPTO("sha384");
+MODULE_ALIAS_CRYPTO("sha512");
 
 #include "crop_devid.c"

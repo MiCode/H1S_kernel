@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * xor.c : Multiple Devices driver for Linux
  *
@@ -5,15 +6,6 @@
  * Ingo Molnar, Matti Aarnio, Jakub Jelinek, Richard Henderson.
  *
  * Dispatch optimized RAID-5 checksumming functions.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * You should have received a copy of the GNU General Public License
- * (for example /usr/src/linux/COPYING); if not, write to the Free
- * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #define BH_TRACE 0
@@ -23,6 +15,10 @@
 #include <linux/jiffies.h>
 #include <linux/preempt.h>
 #include <asm/xor.h>
+
+#ifndef XOR_SELECT_TEMPLATE
+#define XOR_SELECT_TEMPLATE(x) (x)
+#endif
 
 /* The xor routines to use.  */
 static struct xor_block_template *active_template;
@@ -58,49 +54,65 @@ EXPORT_SYMBOL(xor_blocks);
 /* Set of all registered templates.  */
 static struct xor_block_template *__initdata template_list;
 
-#define BENCH_SIZE (PAGE_SIZE)
+#ifndef MODULE
+static void __init do_xor_register(struct xor_block_template *tmpl)
+{
+	tmpl->next = template_list;
+	template_list = tmpl;
+}
+
+static int __init register_xor_blocks(void)
+{
+	active_template = XOR_SELECT_TEMPLATE(NULL);
+
+	if (!active_template) {
+#define xor_speed	do_xor_register
+		// register all the templates and pick the first as the default
+		XOR_TRY_TEMPLATES;
+#undef xor_speed
+		active_template = template_list;
+	}
+	return 0;
+}
+#endif
+
+#define BENCH_SIZE	4096
+#define REPS		800U
 
 static void __init
 do_xor_speed(struct xor_block_template *tmpl, void *b1, void *b2)
 {
 	int speed;
-	unsigned long now, j;
-	int i, count, max;
+	int i, j;
+	ktime_t min, start, diff;
 
 	tmpl->next = template_list;
 	template_list = tmpl;
 
 	preempt_disable();
 
-	/*
-	 * Count the number of XORs done during a whole jiffy, and use
-	 * this to calculate the speed of checksumming.  We use a 2-page
-	 * allocation to have guaranteed color L1-cache layout.
-	 */
-	max = 0;
-	for (i = 0; i < 5; i++) {
-		j = jiffies;
-		count = 0;
-		while ((now = jiffies) == j)
-			cpu_relax();
-		while (time_before(jiffies, now + 1)) {
-			mb(); /* prevent loop optimzation */
+	min = (ktime_t)S64_MAX;
+	for (i = 0; i < 3; i++) {
+		start = ktime_get();
+		for (j = 0; j < REPS; j++) {
+			mb(); /* prevent loop optimization */
 			tmpl->do_2(BENCH_SIZE, b1, b2);
 			mb();
-			count++;
-			mb();
 		}
-		if (count > max)
-			max = count;
+		diff = ktime_sub(ktime_get(), start);
+		if (diff < min)
+			min = diff;
 	}
 
 	preempt_enable();
 
-	speed = max * (HZ * BENCH_SIZE / 1024);
+	// bytes/ns == GB/s, multiply by 1000 to get MB/s [not MiB/s]
+	if (!min)
+		min = 1;
+	speed = (1000 * REPS * BENCH_SIZE) / (unsigned int)ktime_to_ns(min);
 	tmpl->speed = speed;
 
-	printk(KERN_INFO "   %-10s: %5d.%03d MB/sec\n", tmpl->name,
-	       speed / 1000, speed % 1000);
+	pr_info("   %-16s: %5d MB/sec\n", tmpl->name, speed);
 }
 
 static int __init
@@ -109,12 +121,16 @@ calibrate_xor_blocks(void)
 	void *b1, *b2;
 	struct xor_block_template *f, *fastest;
 
-	/*
-	 * Note: Since the memory is not actually used for _anything_ but to
-	 * test the XOR speed, we don't really want kmemcheck to warn about
-	 * reading uninitialized bytes here.
-	 */
-	b1 = (void *) __get_free_pages(GFP_KERNEL | __GFP_NOTRACK, 2);
+	fastest = XOR_SELECT_TEMPLATE(NULL);
+
+	if (fastest) {
+		printk(KERN_INFO "xor: automatically using best "
+				 "checksumming function   %-10s\n",
+		       fastest->name);
+		goto out;
+	}
+
+	b1 = (void *) __get_free_pages(GFP_KERNEL, 2);
 	if (!b1) {
 		printk(KERN_WARNING "xor: Yikes!  No memory available.\n");
 		return -ENOMEM;
@@ -126,36 +142,23 @@ calibrate_xor_blocks(void)
 	 * all the possible functions, just test the best one
 	 */
 
-	fastest = NULL;
-
-#ifdef XOR_SELECT_TEMPLATE
-		fastest = XOR_SELECT_TEMPLATE(fastest);
-#endif
-
 #define xor_speed(templ)	do_xor_speed((templ), b1, b2)
 
-	if (fastest) {
-		printk(KERN_INFO "xor: automatically using best "
-				 "checksumming function:\n");
-		xor_speed(fastest);
-		goto out;
-	} else {
-		printk(KERN_INFO "xor: measuring software checksum speed\n");
-		XOR_TRY_TEMPLATES;
-		fastest = template_list;
-		for (f = fastest; f; f = f->next)
-			if (f->speed > fastest->speed)
-				fastest = f;
-	}
+	printk(KERN_INFO "xor: measuring software checksum speed\n");
+	template_list = NULL;
+	XOR_TRY_TEMPLATES;
+	fastest = template_list;
+	for (f = fastest; f; f = f->next)
+		if (f->speed > fastest->speed)
+			fastest = f;
 
-	printk(KERN_INFO "xor: using function: %s (%d.%03d MB/sec)\n",
-	       fastest->name, fastest->speed / 1000, fastest->speed % 1000);
+	pr_info("xor: using function: %s (%d MB/sec)\n",
+	       fastest->name, fastest->speed);
 
 #undef xor_speed
 
- out:
 	free_pages((unsigned long)b1, 2);
-
+out:
 	active_template = fastest;
 	return 0;
 }
@@ -164,6 +167,10 @@ static __exit void xor_exit(void) { }
 
 MODULE_LICENSE("GPL");
 
+#ifndef MODULE
 /* when built-in xor.o must initialize before drivers/md/md.o */
-core_initcall(calibrate_xor_blocks);
+core_initcall(register_xor_blocks);
+#endif
+
+module_init(calibrate_xor_blocks);
 module_exit(xor_exit);

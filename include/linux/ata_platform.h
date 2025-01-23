@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __LINUX_ATA_PLATFORM_H
 #define __LINUX_ATA_PLATFORM_H
 
@@ -8,19 +9,18 @@ struct pata_platform_info {
 	 * spacing used by ata_std_ports().
 	 */
 	unsigned int ioport_shift;
-	/* 
-	 * Indicate platform specific irq types and initial
-	 * IRQ flags when call request_irq()
-	 */
-	unsigned int irq_flags;
 };
+
+struct scsi_host_template;
 
 extern int __pata_platform_probe(struct device *dev,
 				 struct resource *io_res,
 				 struct resource *ctl_res,
 				 struct resource *irq_res,
 				 unsigned int ioport_shift,
-				 int __pio_mask);
+				 int __pio_mask,
+				 const struct scsi_host_template *sht,
+				 bool use16bit);
 
 /*
  * Marvell SATA private data

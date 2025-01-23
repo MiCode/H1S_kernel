@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Raw serio device providing access to a raw byte stream from underlying
  * serio port. Closely emulates behavior of pre-2.6 /dev/psaux device
  *
  * Copyright (c) 2004 Dmitry Torokhov
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  */
 
 #include <linux/kref.h>
@@ -162,7 +159,7 @@ static ssize_t serio_raw_read(struct file *file, char __user *buffer,
 {
 	struct serio_raw_client *client = file->private_data;
 	struct serio_raw *serio_raw = client->serio_raw;
-	char uninitialized_var(c);
+	char c;
 	ssize_t read = 0;
 	int error;
 
@@ -239,17 +236,17 @@ out:
 	return retval;
 }
 
-static unsigned int serio_raw_poll(struct file *file, poll_table *wait)
+static __poll_t serio_raw_poll(struct file *file, poll_table *wait)
 {
 	struct serio_raw_client *client = file->private_data;
 	struct serio_raw *serio_raw = client->serio_raw;
-	unsigned int mask;
+	__poll_t mask;
 
 	poll_wait(file, &serio_raw->wait, wait);
 
-	mask = serio_raw->dead ? POLLHUP | POLLERR : POLLOUT | POLLWRNORM;
+	mask = serio_raw->dead ? EPOLLHUP | EPOLLERR : EPOLLOUT | EPOLLWRNORM;
 	if (serio_raw->head != serio_raw->tail)
-		mask |= POLLIN | POLLRDNORM;
+		mask |= EPOLLIN | EPOLLRDNORM;
 
 	return mask;
 }
@@ -292,7 +289,7 @@ static irqreturn_t serio_raw_interrupt(struct serio *serio, unsigned char data,
 
 static int serio_raw_connect(struct serio *serio, struct serio_driver *drv)
 {
-	static atomic_t serio_raw_no = ATOMIC_INIT(0);
+	static atomic_t serio_raw_no = ATOMIC_INIT(-1);
 	struct serio_raw *serio_raw;
 	int err;
 
@@ -303,7 +300,7 @@ static int serio_raw_connect(struct serio *serio, struct serio_driver *drv)
 	}
 
 	snprintf(serio_raw->name, sizeof(serio_raw->name),
-		 "serio_raw%ld", (long)atomic_inc_return(&serio_raw_no) - 1);
+		 "serio_raw%ld", (long)atomic_inc_return(&serio_raw_no));
 	kref_init(&serio_raw->kref);
 	INIT_LIST_HEAD(&serio_raw->client_list);
 	init_waitqueue_head(&serio_raw->wait);
@@ -410,7 +407,7 @@ static void serio_raw_disconnect(struct serio *serio)
 	serio_set_drvdata(serio, NULL);
 }
 
-static struct serio_device_id serio_raw_serio_ids[] = {
+static const struct serio_device_id serio_raw_serio_ids[] = {
 	{
 		.type	= SERIO_8042,
 		.proto	= SERIO_ANY,

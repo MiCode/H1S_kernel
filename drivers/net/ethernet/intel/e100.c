@@ -1,30 +1,5 @@
-/*******************************************************************************
-
-  Intel PRO/100 Linux driver
-  Copyright(c) 1999 - 2006 Intel Corporation.
-
-  This program is free software; you can redistribute it and/or modify it
-  under the terms and conditions of the GNU General Public License,
-  version 2, as published by the Free Software Foundation.
-
-  This program is distributed in the hope it will be useful, but WITHOUT
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
-  more details.
-
-  You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc.,
-  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
-
-  The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
-
-  Contact Information:
-  Linux NICS <linux.nics@intel.com>
-  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
-  Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
-
-*******************************************************************************/
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright(c) 1999 - 2006 Intel Corporation. */
 
 /*
  *	e100.c: Intel(R) PRO/100 ethernet driver
@@ -175,8 +150,6 @@
 
 
 #define DRV_NAME		"e100"
-#define DRV_EXT			"-NAPI"
-#define DRV_VERSION		"3.5.24-k2"DRV_EXT
 #define DRV_DESCRIPTION		"Intel(R) PRO/100 Network Driver"
 #define DRV_COPYRIGHT		"Copyright(c) 1999-2006 Intel Corporation"
 
@@ -189,8 +162,7 @@
 
 MODULE_DESCRIPTION(DRV_DESCRIPTION);
 MODULE_AUTHOR(DRV_COPYRIGHT);
-MODULE_LICENSE("GPL");
-MODULE_VERSION(DRV_VERSION);
+MODULE_LICENSE("GPL v2");
 MODULE_FIRMWARE(FIRMWARE_D101M);
 MODULE_FIRMWARE(FIRMWARE_D101S);
 MODULE_FIRMWARE(FIRMWARE_D102E);
@@ -208,7 +180,7 @@ MODULE_PARM_DESC(use_io, "Force use of i/o access mode");
 #define INTEL_8255X_ETHERNET_DEVICE(device_id, ich) {\
 	PCI_VENDOR_ID_INTEL, device_id, PCI_ANY_ID, PCI_ANY_ID, \
 	PCI_CLASS_NETWORK_ETHERNET << 8, 0xFFFF00, ich }
-static DEFINE_PCI_DEVICE_TABLE(e100_id_table) = {
+static const struct pci_device_id e100_id_table[] = {
 	INTEL_8255X_ETHERNET_DEVICE(0x1029, 0),
 	INTEL_8255X_ETHERNET_DEVICE(0x1030, 0),
 	INTEL_8255X_ETHERNET_DEVICE(0x1031, 3),
@@ -412,9 +384,9 @@ enum cb_status {
 	cb_ok       = 0x2000,
 };
 
-/**
+/*
  * cb_command - Command Block flags
- * @cb_tx_nc:  0: controler does CRC (normal),  1: CRC from skb memory
+ * @cb_tx_nc:  0: controller does CRC (normal),  1: CRC from skb memory
  */
 enum cb_command {
 	cb_nop    = 0x0000,
@@ -607,7 +579,7 @@ struct nic {
 	struct mem *mem;
 	dma_addr_t dma_addr;
 
-	struct pci_pool *cbs_pool;
+	struct dma_pool *cbs_pool;
 	dma_addr_t cbs_dma_addr;
 	u8 adaptive_ifs;
 	u8 tx_threshold;
@@ -874,7 +846,7 @@ static int e100_exec_cb(struct nic *nic, struct sk_buff *skb,
 {
 	struct cb *cb;
 	unsigned long flags;
-	int err = 0;
+	int err;
 
 	spin_lock_irqsave(&nic->cb_lock, flags);
 
@@ -899,7 +871,7 @@ static int e100_exec_cb(struct nic *nic, struct sk_buff *skb,
 	/* Order is important otherwise we'll be in a race with h/w:
 	 * set S-bit in current first, then clear S-bit in previous. */
 	cb->command |= cpu_to_le16(cb_s);
-	wmb();
+	dma_wmb();
 	cb->prev->command &= cpu_to_le16(~cb_s);
 
 	while (nic->cb_to_send != nic->cb_to_use) {
@@ -1370,8 +1342,8 @@ static inline int e100_load_ucode_wait(struct nic *nic)
 
 	fw = e100_request_firmware(nic);
 	/* If it's NULL, then no ucode is required */
-	if (!fw || IS_ERR(fw))
-		return PTR_ERR(fw);
+	if (IS_ERR_OR_NULL(fw))
+		return PTR_ERR_OR_ZERO(fw);
 
 	if ((err = e100_exec_cb(nic, (void *)fw, e100_setup_ucode)))
 		netif_err(nic, probe, nic->netdev,
@@ -1423,7 +1395,7 @@ static int e100_phy_check_without_mii(struct nic *nic)
 	u8 phy_type;
 	int without_mii;
 
-	phy_type = (nic->eeprom[eeprom_phy_iface] >> 8) & 0x0f;
+	phy_type = (le16_to_cpu(nic->eeprom[eeprom_phy_iface]) >> 8) & 0x0f;
 
 	switch (phy_type) {
 	case NoSuchPhy: /* Non-MII PHY; UNTESTED! */
@@ -1458,7 +1430,6 @@ static int e100_phy_check_without_mii(struct nic *nic)
 #define MII_NSC_CONG		MII_RESV1
 #define NSC_CONG_ENABLE		0x0100
 #define NSC_CONG_TXREADY	0x0400
-#define ADVERTISE_FC_SUPPORTED	0x0400
 static int e100_phy_init(struct nic *nic)
 {
 	struct net_device *netdev = nic->netdev;
@@ -1543,7 +1514,7 @@ static int e100_phy_init(struct nic *nic)
 		mdio_write(netdev, nic->mii.phy_id, MII_BMCR, bmcr);
 	} else if ((nic->mac >= mac_82550_D102) || ((nic->flags & ich) &&
 	   (mdio_read(netdev, nic->mii.phy_id, MII_TPISTATUS) & 0x8000) &&
-		!(nic->eeprom[eeprom_cnfg_mdix] & eeprom_mdix_enabled))) {
+	   (le16_to_cpu(nic->eeprom[eeprom_cnfg_mdix]) & eeprom_mdix_enabled))) {
 		/* enable/disable MDI/MDI-X auto-switching. */
 		mdio_write(netdev, nic->mii.phy_id, MII_NCONFIG,
 				nic->mii.force_media ? 0 : NCONFIG_AUTO_SWITCH);
@@ -1559,7 +1530,7 @@ static int e100_hw_init(struct nic *nic)
 	e100_hw_reset(nic);
 
 	netif_err(nic, hw, nic->netdev, "e100_hw_init\n");
-	if (!in_interrupt() && (err = e100_self_test(nic)))
+	if ((err = e100_self_test(nic)))
 		return err;
 
 	if ((err = e100_phy_init(nic)))
@@ -1710,9 +1681,9 @@ static void e100_adjust_adaptive_ifs(struct nic *nic, int speed, int duplex)
 	}
 }
 
-static void e100_watchdog(unsigned long data)
+static void e100_watchdog(struct timer_list *t)
 {
-	struct nic *nic = (struct nic *)data;
+	struct nic *nic = from_timer(nic, t, watchdog);
 	struct ethtool_cmd cmd = { .cmd = ETHTOOL_GSET };
 	u32 speed;
 
@@ -1767,10 +1738,10 @@ static int e100_xmit_prepare(struct nic *nic, struct cb *cb,
 	dma_addr_t dma_addr;
 	cb->command = nic->tx_command;
 
-	dma_addr = pci_map_single(nic->pdev,
-				  skb->data, skb->len, PCI_DMA_TODEVICE);
+	dma_addr = dma_map_single(&nic->pdev->dev, skb->data, skb->len,
+				  DMA_TO_DEVICE);
 	/* If we can't map the skb, have the upper layer try later */
-	if (pci_dma_mapping_error(nic->pdev, dma_addr))
+	if (dma_mapping_error(&nic->pdev->dev, dma_addr))
 		return -ENOMEM;
 
 	/*
@@ -1778,9 +1749,9 @@ static int e100_xmit_prepare(struct nic *nic, struct cb *cb,
 	 * testing, ie sending frames with bad CRC.
 	 */
 	if (unlikely(skb->no_fcs))
-		cb->command |= __constant_cpu_to_le16(cb_tx_nc);
+		cb->command |= cpu_to_le16(cb_tx_nc);
 	else
-		cb->command &= ~__constant_cpu_to_le16(cb_tx_nc);
+		cb->command &= ~cpu_to_le16(cb_tx_nc);
 
 	/* interrupt every 16 packets regardless of delay */
 	if ((nic->cbs_avail & ~15) == nic->cbs_avail)
@@ -1843,7 +1814,7 @@ static int e100_tx_clean(struct nic *nic)
 	for (cb = nic->cb_to_clean;
 	    cb->status & cpu_to_le16(cb_complete);
 	    cb = nic->cb_to_clean = cb->next) {
-		rmb(); /* read skb after status */
+		dma_rmb(); /* read skb after status */
 		netif_printk(nic, tx_done, KERN_DEBUG, nic->netdev,
 			     "cb[%d]->status = 0x%04X\n",
 			     (int)(((void*)cb - (void*)nic->cbs)/sizeof(struct cb)),
@@ -1853,10 +1824,10 @@ static int e100_tx_clean(struct nic *nic)
 			dev->stats.tx_packets++;
 			dev->stats.tx_bytes += cb->skb->len;
 
-			pci_unmap_single(nic->pdev,
-				le32_to_cpu(cb->u.tcb.tbd.buf_addr),
-				le16_to_cpu(cb->u.tcb.tbd.size),
-				PCI_DMA_TODEVICE);
+			dma_unmap_single(&nic->pdev->dev,
+					 le32_to_cpu(cb->u.tcb.tbd.buf_addr),
+					 le16_to_cpu(cb->u.tcb.tbd.size),
+					 DMA_TO_DEVICE);
 			dev_kfree_skb_any(cb->skb);
 			cb->skb = NULL;
 			tx_cleaned = 1;
@@ -1880,16 +1851,16 @@ static void e100_clean_cbs(struct nic *nic)
 		while (nic->cbs_avail != nic->params.cbs.count) {
 			struct cb *cb = nic->cb_to_clean;
 			if (cb->skb) {
-				pci_unmap_single(nic->pdev,
-					le32_to_cpu(cb->u.tcb.tbd.buf_addr),
-					le16_to_cpu(cb->u.tcb.tbd.size),
-					PCI_DMA_TODEVICE);
+				dma_unmap_single(&nic->pdev->dev,
+						 le32_to_cpu(cb->u.tcb.tbd.buf_addr),
+						 le16_to_cpu(cb->u.tcb.tbd.size),
+						 DMA_TO_DEVICE);
 				dev_kfree_skb(cb->skb);
 			}
 			nic->cb_to_clean = nic->cb_to_clean->next;
 			nic->cbs_avail++;
 		}
-		pci_pool_free(nic->cbs_pool, nic->cbs, nic->cbs_dma_addr);
+		dma_pool_free(nic->cbs_pool, nic->cbs, nic->cbs_dma_addr);
 		nic->cbs = NULL;
 		nic->cbs_avail = 0;
 	}
@@ -1907,11 +1878,10 @@ static int e100_alloc_cbs(struct nic *nic)
 	nic->cb_to_use = nic->cb_to_send = nic->cb_to_clean = NULL;
 	nic->cbs_avail = 0;
 
-	nic->cbs = pci_pool_alloc(nic->cbs_pool, GFP_KERNEL,
-				  &nic->cbs_dma_addr);
+	nic->cbs = dma_pool_zalloc(nic->cbs_pool, GFP_KERNEL,
+				   &nic->cbs_dma_addr);
 	if (!nic->cbs)
 		return -ENOMEM;
-	memset(nic->cbs, 0, count * sizeof(struct cb));
 
 	for (cb = nic->cbs, i = 0; i < count; cb++, i++) {
 		cb->next = (i + 1 < count) ? cb + 1 : nic->cbs;
@@ -1951,10 +1921,10 @@ static int e100_rx_alloc_skb(struct nic *nic, struct rx *rx)
 
 	/* Init, and map the RFD. */
 	skb_copy_to_linear_data(rx->skb, &nic->blank_rfd, sizeof(struct rfd));
-	rx->dma_addr = pci_map_single(nic->pdev, rx->skb->data,
-		RFD_BUF_LEN, PCI_DMA_BIDIRECTIONAL);
+	rx->dma_addr = dma_map_single(&nic->pdev->dev, rx->skb->data,
+				      RFD_BUF_LEN, DMA_BIDIRECTIONAL);
 
-	if (pci_dma_mapping_error(nic->pdev, rx->dma_addr)) {
+	if (dma_mapping_error(&nic->pdev->dev, rx->dma_addr)) {
 		dev_kfree_skb_any(rx->skb);
 		rx->skb = NULL;
 		rx->dma_addr = 0;
@@ -1967,8 +1937,10 @@ static int e100_rx_alloc_skb(struct nic *nic, struct rx *rx)
 	if (rx->prev->skb) {
 		struct rfd *prev_rfd = (struct rfd *)rx->prev->skb->data;
 		put_unaligned_le32(rx->dma_addr, &prev_rfd->link);
-		pci_dma_sync_single_for_device(nic->pdev, rx->prev->dma_addr,
-			sizeof(struct rfd), PCI_DMA_BIDIRECTIONAL);
+		dma_sync_single_for_device(&nic->pdev->dev,
+					   rx->prev->dma_addr,
+					   sizeof(struct rfd),
+					   DMA_BIDIRECTIONAL);
 	}
 
 	return 0;
@@ -1987,13 +1959,13 @@ static int e100_rx_indicate(struct nic *nic, struct rx *rx,
 		return -EAGAIN;
 
 	/* Need to sync before taking a peek at cb_complete bit */
-	pci_dma_sync_single_for_cpu(nic->pdev, rx->dma_addr,
-		sizeof(struct rfd), PCI_DMA_BIDIRECTIONAL);
+	dma_sync_single_for_cpu(&nic->pdev->dev, rx->dma_addr,
+				sizeof(struct rfd), DMA_BIDIRECTIONAL);
 	rfd_status = le16_to_cpu(rfd->status);
 
 	netif_printk(nic, rx_status, KERN_DEBUG, nic->netdev,
 		     "status=0x%04X\n", rfd_status);
-	rmb(); /* read size after status bit */
+	dma_rmb(); /* read size after status bit */
 
 	/* If data isn't ready, nothing to indicate */
 	if (unlikely(!(rfd_status & cb_complete))) {
@@ -2007,9 +1979,9 @@ static int e100_rx_indicate(struct nic *nic, struct rx *rx,
 
 			if (ioread8(&nic->csr->scb.status) & rus_no_res)
 				nic->ru_running = RU_SUSPENDED;
-		pci_dma_sync_single_for_device(nic->pdev, rx->dma_addr,
-					       sizeof(struct rfd),
-					       PCI_DMA_FROMDEVICE);
+		dma_sync_single_for_device(&nic->pdev->dev, rx->dma_addr,
+					   sizeof(struct rfd),
+					   DMA_FROM_DEVICE);
 		return -ENODATA;
 	}
 
@@ -2021,8 +1993,8 @@ static int e100_rx_indicate(struct nic *nic, struct rx *rx,
 		actual_size = RFD_BUF_LEN - sizeof(struct rfd);
 
 	/* Get data */
-	pci_unmap_single(nic->pdev, rx->dma_addr,
-		RFD_BUF_LEN, PCI_DMA_BIDIRECTIONAL);
+	dma_unmap_single(&nic->pdev->dev, rx->dma_addr, RFD_BUF_LEN,
+			 DMA_BIDIRECTIONAL);
 
 	/* If this buffer has the el bit, but we think the receiver
 	 * is still running, check to see if it really stopped while
@@ -2123,22 +2095,25 @@ static void e100_rx_clean(struct nic *nic, unsigned int *work_done,
 			(struct rfd *)new_before_last_rx->skb->data;
 		new_before_last_rfd->size = 0;
 		new_before_last_rfd->command |= cpu_to_le16(cb_el);
-		pci_dma_sync_single_for_device(nic->pdev,
-			new_before_last_rx->dma_addr, sizeof(struct rfd),
-			PCI_DMA_BIDIRECTIONAL);
+		dma_sync_single_for_device(&nic->pdev->dev,
+					   new_before_last_rx->dma_addr,
+					   sizeof(struct rfd),
+					   DMA_BIDIRECTIONAL);
 
 		/* Now that we have a new stopping point, we can clear the old
 		 * stopping point.  We must sync twice to get the proper
 		 * ordering on the hardware side of things. */
 		old_before_last_rfd->command &= ~cpu_to_le16(cb_el);
-		pci_dma_sync_single_for_device(nic->pdev,
-			old_before_last_rx->dma_addr, sizeof(struct rfd),
-			PCI_DMA_BIDIRECTIONAL);
+		dma_sync_single_for_device(&nic->pdev->dev,
+					   old_before_last_rx->dma_addr,
+					   sizeof(struct rfd),
+					   DMA_BIDIRECTIONAL);
 		old_before_last_rfd->size = cpu_to_le16(VLAN_ETH_FRAME_LEN
 							+ ETH_FCS_LEN);
-		pci_dma_sync_single_for_device(nic->pdev,
-			old_before_last_rx->dma_addr, sizeof(struct rfd),
-			PCI_DMA_BIDIRECTIONAL);
+		dma_sync_single_for_device(&nic->pdev->dev,
+					   old_before_last_rx->dma_addr,
+					   sizeof(struct rfd),
+					   DMA_BIDIRECTIONAL);
 	}
 
 	if (restart_required) {
@@ -2160,8 +2135,9 @@ static void e100_rx_clean_list(struct nic *nic)
 	if (nic->rxs) {
 		for (rx = nic->rxs, i = 0; i < count; rx++, i++) {
 			if (rx->skb) {
-				pci_unmap_single(nic->pdev, rx->dma_addr,
-					RFD_BUF_LEN, PCI_DMA_BIDIRECTIONAL);
+				dma_unmap_single(&nic->pdev->dev,
+						 rx->dma_addr, RFD_BUF_LEN,
+						 DMA_BIDIRECTIONAL);
 				dev_kfree_skb(rx->skb);
 			}
 		}
@@ -2181,7 +2157,7 @@ static int e100_rx_alloc_list(struct nic *nic)
 	nic->rx_to_use = nic->rx_to_clean = NULL;
 	nic->ru_running = RU_UNINITIALIZED;
 
-	if (!(nic->rxs = kcalloc(count, sizeof(struct rx), GFP_ATOMIC)))
+	if (!(nic->rxs = kcalloc(count, sizeof(struct rx), GFP_KERNEL)))
 		return -ENOMEM;
 
 	for (rx = nic->rxs, i = 0; i < count; rx++, i++) {
@@ -2203,8 +2179,8 @@ static int e100_rx_alloc_list(struct nic *nic)
 	before_last = (struct rfd *)rx->skb->data;
 	before_last->command |= cpu_to_le16(cb_el);
 	before_last->size = 0;
-	pci_dma_sync_single_for_device(nic->pdev, rx->dma_addr,
-		sizeof(struct rfd), PCI_DMA_BIDIRECTIONAL);
+	dma_sync_single_for_device(&nic->pdev->dev, rx->dma_addr,
+				   sizeof(struct rfd), DMA_BIDIRECTIONAL);
 
 	nic->rx_to_use = nic->rx_to_clean = nic->rxs;
 	nic->ru_running = RU_SUSPENDED;
@@ -2248,11 +2224,13 @@ static int e100_poll(struct napi_struct *napi, int budget)
 	e100_rx_clean(nic, &work_done, budget);
 	e100_tx_clean(nic);
 
-	/* If budget not fully consumed, exit the polling mode */
-	if (work_done < budget) {
-		napi_complete(napi);
+	/* If budget fully consumed, continue polling */
+	if (work_done == budget)
+		return budget;
+
+	/* only re-enable interrupt if stack agrees polling is really done */
+	if (likely(napi_complete_done(napi, work_done)))
 		e100_enable_irq(nic);
-	}
 
 	return work_done;
 }
@@ -2277,17 +2255,9 @@ static int e100_set_mac_address(struct net_device *netdev, void *p)
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
+	eth_hw_addr_set(netdev, addr->sa_data);
 	e100_exec_cb(nic, NULL, e100_setup_iaaddr);
 
-	return 0;
-}
-
-static int e100_change_mtu(struct net_device *netdev, int new_mtu)
-{
-	if (new_mtu < ETH_ZLEN || new_mtu > ETH_DATA_LEN)
-		return -EINVAL;
-	netdev->mtu = new_mtu;
 	return 0;
 }
 
@@ -2295,9 +2265,9 @@ static int e100_asf(struct nic *nic)
 {
 	/* ASF can be enabled from eeprom */
 	return (nic->pdev->device >= 0x1050) && (nic->pdev->device <= 0x1057) &&
-	   (nic->eeprom[eeprom_config_asf] & eeprom_asf) &&
-	   !(nic->eeprom[eeprom_config_asf] & eeprom_gcl) &&
-	   ((nic->eeprom[eeprom_smbus_addr] & 0xFF) != 0xFE);
+	   (le16_to_cpu(nic->eeprom[eeprom_config_asf]) & eeprom_asf) &&
+	   !(le16_to_cpu(nic->eeprom[eeprom_config_asf]) & eeprom_gcl) &&
+	   ((le16_to_cpu(nic->eeprom[eeprom_smbus_addr]) & 0xFF) != 0xFE);
 }
 
 static int e100_up(struct nic *nic)
@@ -2345,7 +2315,7 @@ static void e100_down(struct nic *nic)
 	e100_rx_clean_list(nic);
 }
 
-static void e100_tx_timeout(struct net_device *netdev)
+static void e100_tx_timeout(struct net_device *netdev, unsigned int txqueue)
 {
 	struct nic *nic = netdev_priv(netdev);
 
@@ -2409,8 +2379,8 @@ static int e100_loopback_test(struct nic *nic, enum loopback loopback_mode)
 
 	msleep(10);
 
-	pci_dma_sync_single_for_cpu(nic->pdev, nic->rx_to_clean->dma_addr,
-			RFD_BUF_LEN, PCI_DMA_BIDIRECTIONAL);
+	dma_sync_single_for_cpu(&nic->pdev->dev, nic->rx_to_clean->dma_addr,
+				RFD_BUF_LEN, DMA_BIDIRECTIONAL);
 
 	if (memcmp(nic->rx_to_clean->skb->data + sizeof(struct rfd),
 	   skb->data, ETH_DATA_LEN))
@@ -2431,19 +2401,24 @@ err_clean_rx:
 #define E100_82552_LED_ON       0x000F /* LEDTX and LED_RX both on */
 #define E100_82552_LED_OFF      0x000A /* LEDTX and LED_RX both off */
 
-static int e100_get_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+static int e100_get_link_ksettings(struct net_device *netdev,
+				   struct ethtool_link_ksettings *cmd)
 {
 	struct nic *nic = netdev_priv(netdev);
-	return mii_ethtool_gset(&nic->mii, cmd);
+
+	mii_ethtool_get_link_ksettings(&nic->mii, cmd);
+
+	return 0;
 }
 
-static int e100_set_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+static int e100_set_link_ksettings(struct net_device *netdev,
+				   const struct ethtool_link_ksettings *cmd)
 {
 	struct nic *nic = netdev_priv(netdev);
 	int err;
 
 	mdio_write(netdev, nic->mii.phy_id, MII_BMCR, BMCR_RESET);
-	err = mii_ethtool_sset(&nic->mii, cmd);
+	err = mii_ethtool_set_link_ksettings(&nic->mii, cmd);
 	e100_exec_cb(nic, NULL, e100_configure);
 
 	return err;
@@ -2453,17 +2428,20 @@ static void e100_get_drvinfo(struct net_device *netdev,
 	struct ethtool_drvinfo *info)
 {
 	struct nic *nic = netdev_priv(netdev);
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, pci_name(nic->pdev),
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->bus_info, pci_name(nic->pdev),
 		sizeof(info->bus_info));
 }
 
-#define E100_PHY_REGS 0x1C
+#define E100_PHY_REGS 0x1D
 static int e100_get_regs_len(struct net_device *netdev)
 {
 	struct nic *nic = netdev_priv(netdev);
-	return 1 + E100_PHY_REGS + sizeof(nic->mem->dump_buf);
+
+	/* We know the number of registers, and the size of the dump buffer.
+	 * Calculate the total size in bytes.
+	 */
+	return (1 + E100_PHY_REGS) * sizeof(u32) + sizeof(nic->mem->dump_buf);
 }
 
 static void e100_get_regs(struct net_device *netdev,
@@ -2477,14 +2455,18 @@ static void e100_get_regs(struct net_device *netdev,
 	buff[0] = ioread8(&nic->csr->scb.cmd_hi) << 24 |
 		ioread8(&nic->csr->scb.cmd_lo) << 16 |
 		ioread16(&nic->csr->scb.status);
-	for (i = E100_PHY_REGS; i >= 0; i--)
-		buff[1 + E100_PHY_REGS - i] =
-			mdio_read(netdev, nic->mii.phy_id, i);
+	for (i = 0; i < E100_PHY_REGS; i++)
+		/* Note that we read the registers in reverse order. This
+		 * ordering is the ABI apparently used by ethtool and other
+		 * applications.
+		 */
+		buff[1 + i] = mdio_read(netdev, nic->mii.phy_id,
+					E100_PHY_REGS - 1 - i);
 	memset(nic->mem->dump_buf, 0, sizeof(nic->mem->dump_buf));
 	e100_exec_cb(nic, NULL, e100_dump);
 	msleep(10);
-	memcpy(&buff[2 + E100_PHY_REGS], nic->mem->dump_buf,
-		sizeof(nic->mem->dump_buf));
+	memcpy(&buff[1 + E100_PHY_REGS], nic->mem->dump_buf,
+	       sizeof(nic->mem->dump_buf));
 }
 
 static void e100_get_wol(struct net_device *netdev, struct ethtool_wolinfo *wol)
@@ -2571,7 +2553,9 @@ static int e100_set_eeprom(struct net_device *netdev,
 }
 
 static void e100_get_ringparam(struct net_device *netdev,
-	struct ethtool_ringparam *ring)
+			       struct ethtool_ringparam *ring,
+			       struct kernel_ethtool_ringparam *kernel_ring,
+			       struct netlink_ext_ack *extack)
 {
 	struct nic *nic = netdev_priv(netdev);
 	struct param_range *rfds = &nic->params.rfds;
@@ -2584,7 +2568,9 @@ static void e100_get_ringparam(struct net_device *netdev,
 }
 
 static int e100_set_ringparam(struct net_device *netdev,
-	struct ethtool_ringparam *ring)
+			      struct ethtool_ringparam *ring,
+			      struct kernel_ethtool_ringparam *kernel_ring,
+			      struct netlink_ext_ack *extack)
 {
 	struct nic *nic = netdev_priv(netdev);
 	struct param_range *rfds = &nic->params.rfds;
@@ -2621,7 +2607,7 @@ static void e100_diag_test(struct net_device *netdev,
 {
 	struct ethtool_cmd cmd;
 	struct nic *nic = netdev_priv(netdev);
-	int i, err;
+	int i;
 
 	memset(data, 0, E100_TEST_LEN * sizeof(u64));
 	data[0] = !mii_link_ok(&nic->mii);
@@ -2629,7 +2615,7 @@ static void e100_diag_test(struct net_device *netdev,
 	if (test->flags & ETH_TEST_FL_OFFLINE) {
 
 		/* save speed, duplex & autoneg settings */
-		err = mii_ethtool_gset(&nic->mii, &cmd);
+		mii_ethtool_gset(&nic->mii, &cmd);
 
 		if (netif_running(netdev))
 			e100_down(nic);
@@ -2638,7 +2624,7 @@ static void e100_diag_test(struct net_device *netdev,
 		data[4] = e100_loopback_test(nic, lb_phy);
 
 		/* restore speed, duplex & autoneg settings */
-		err = mii_ethtool_sset(&nic->mii, &cmd);
+		mii_ethtool_sset(&nic->mii, &cmd);
 
 		if (netif_running(netdev))
 			e100_up(nic);
@@ -2737,17 +2723,15 @@ static void e100_get_strings(struct net_device *netdev, u32 stringset, u8 *data)
 {
 	switch (stringset) {
 	case ETH_SS_TEST:
-		memcpy(data, *e100_gstrings_test, sizeof(e100_gstrings_test));
+		memcpy(data, e100_gstrings_test, sizeof(e100_gstrings_test));
 		break;
 	case ETH_SS_STATS:
-		memcpy(data, *e100_gstrings_stats, sizeof(e100_gstrings_stats));
+		memcpy(data, e100_gstrings_stats, sizeof(e100_gstrings_stats));
 		break;
 	}
 }
 
 static const struct ethtool_ops e100_ethtool_ops = {
-	.get_settings		= e100_get_settings,
-	.set_settings		= e100_set_settings,
 	.get_drvinfo		= e100_get_drvinfo,
 	.get_regs_len		= e100_get_regs_len,
 	.get_regs		= e100_get_regs,
@@ -2768,6 +2752,8 @@ static const struct ethtool_ops e100_ethtool_ops = {
 	.get_ethtool_stats	= e100_get_ethtool_stats,
 	.get_sset_count		= e100_get_sset_count,
 	.get_ts_info		= ethtool_op_get_ts_info,
+	.get_link_ksettings	= e100_get_link_ksettings,
+	.set_link_ksettings	= e100_set_link_ksettings,
 };
 
 static int e100_do_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
@@ -2779,16 +2765,16 @@ static int e100_do_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 
 static int e100_alloc(struct nic *nic)
 {
-	nic->mem = pci_alloc_consistent(nic->pdev, sizeof(struct mem),
-		&nic->dma_addr);
+	nic->mem = dma_alloc_coherent(&nic->pdev->dev, sizeof(struct mem),
+				      &nic->dma_addr, GFP_KERNEL);
 	return nic->mem ? 0 : -ENOMEM;
 }
 
 static void e100_free(struct nic *nic)
 {
 	if (nic->mem) {
-		pci_free_consistent(nic->pdev, sizeof(struct mem),
-			nic->mem, nic->dma_addr);
+		dma_free_coherent(&nic->pdev->dev, sizeof(struct mem),
+				  nic->mem, nic->dma_addr);
 		nic->mem = NULL;
 	}
 }
@@ -2821,7 +2807,7 @@ static int e100_set_features(struct net_device *netdev,
 
 	netdev->features = features;
 	e100_exec_cb(nic, NULL, e100_configure);
-	return 0;
+	return 1;
 }
 
 static const struct net_device_ops e100_netdev_ops = {
@@ -2831,8 +2817,7 @@ static const struct net_device_ops e100_netdev_ops = {
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_rx_mode	= e100_set_multicast_list,
 	.ndo_set_mac_address	= e100_set_mac_address,
-	.ndo_change_mtu		= e100_change_mtu,
-	.ndo_do_ioctl		= e100_do_ioctl,
+	.ndo_eth_ioctl		= e100_do_ioctl,
 	.ndo_tx_timeout		= e100_tx_timeout,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= e100_netpoll,
@@ -2854,12 +2839,12 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	netdev->hw_features |= NETIF_F_RXALL;
 
 	netdev->netdev_ops = &e100_netdev_ops;
-	SET_ETHTOOL_OPS(netdev, &e100_ethtool_ops);
+	netdev->ethtool_ops = &e100_ethtool_ops;
 	netdev->watchdog_timeo = E100_WATCHDOG_PERIOD;
 	strncpy(netdev->name, pci_name(pdev), sizeof(netdev->name) - 1);
 
 	nic = netdev_priv(netdev);
-	netif_napi_add(netdev, &nic->napi, e100_poll, E100_NAPI_WEIGHT);
+	netif_napi_add_weight(netdev, &nic->napi, e100_poll, E100_NAPI_WEIGHT);
 	nic->netdev = netdev;
 	nic->pdev = pdev;
 	nic->msg_enable = (1 << debug) - 1;
@@ -2882,7 +2867,7 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_out_disable_pdev;
 	}
 
-	if ((err = pci_set_dma_mask(pdev, DMA_BIT_MASK(32)))) {
+	if ((err = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32)))) {
 		netif_err(nic, probe, nic->netdev, "No usable DMA configuration, aborting\n");
 		goto err_out_free_res;
 	}
@@ -2922,9 +2907,7 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	pci_set_master(pdev);
 
-	init_timer(&nic->watchdog);
-	nic->watchdog.function = e100_watchdog;
-	nic->watchdog.data = (unsigned long)nic;
+	timer_setup(&nic->watchdog, e100_watchdog, 0);
 
 	INIT_WORK(&nic->tx_timeout_task, e100_tx_timeout_task);
 
@@ -2938,7 +2921,7 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	e100_phy_init(nic);
 
-	memcpy(netdev->dev_addr, nic->eeprom, ETH_ALEN);
+	eth_hw_addr_set(netdev, (u8 *)nic->eeprom);
 	if (!is_valid_ether_addr(netdev->dev_addr)) {
 		if (!eeprom_bad_csum_allow) {
 			netif_err(nic, probe, nic->netdev, "Invalid MAC address from EEPROM, aborting\n");
@@ -2951,7 +2934,7 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	/* Wol magic packet can be enabled from eeprom */
 	if ((nic->mac >= mac_82558_D101_A4) &&
-	   (nic->eeprom[eeprom_id] & eeprom_id_wol)) {
+	   (le16_to_cpu(nic->eeprom[eeprom_id]) & eeprom_id_wol)) {
 		nic->flags |= wol_magic;
 		device_set_wakeup_enable(&pdev->dev, true);
 	}
@@ -2964,11 +2947,16 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		netif_err(nic, probe, nic->netdev, "Cannot register net device, aborting\n");
 		goto err_out_free;
 	}
-	nic->cbs_pool = pci_pool_create(netdev->name,
-			   nic->pdev,
+	nic->cbs_pool = dma_pool_create(netdev->name,
+			   &nic->pdev->dev,
 			   nic->params.cbs.max * sizeof(struct cb),
 			   sizeof(u32),
 			   0);
+	if (!nic->cbs_pool) {
+		netif_err(nic, probe, nic->netdev, "Cannot create DMA pool, aborting\n");
+		err = -ENOMEM;
+		goto err_out_pool;
+	}
 	netif_info(nic, probe, nic->netdev,
 		   "addr 0x%llx, irq %d, MAC addr %pM\n",
 		   (unsigned long long)pci_resource_start(pdev, use_io ? 1 : 0),
@@ -2976,6 +2964,8 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	return 0;
 
+err_out_pool:
+	unregister_netdev(netdev);
 err_out_free:
 	e100_free(nic);
 err_out_iounmap:
@@ -2998,7 +2988,7 @@ static void e100_remove(struct pci_dev *pdev)
 		unregister_netdev(netdev);
 		e100_free(nic);
 		pci_iounmap(pdev, nic->csr);
-		pci_pool_destroy(nic->cbs_pool);
+		dma_pool_destroy(nic->cbs_pool);
 		free_netdev(netdev);
 		pci_release_regions(pdev);
 		pci_disable_device(pdev);
@@ -3013,11 +3003,10 @@ static void __e100_shutdown(struct pci_dev *pdev, bool *enable_wake)
 	struct net_device *netdev = pci_get_drvdata(pdev);
 	struct nic *nic = netdev_priv(netdev);
 
-	if (netif_running(netdev))
-		e100_down(nic);
 	netif_device_detach(netdev);
 
-	pci_save_state(pdev);
+	if (netif_running(netdev))
+		e100_down(nic);
 
 	if ((nic->flags & wol_magic) | e100_asf(nic)) {
 		/* enable reverse auto-negotiation */
@@ -3048,23 +3037,27 @@ static int __e100_power_off(struct pci_dev *pdev, bool wake)
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int e100_suspend(struct pci_dev *pdev, pm_message_t state)
+static int __maybe_unused e100_suspend(struct device *dev_d)
 {
 	bool wake;
-	__e100_shutdown(pdev, &wake);
-	return __e100_power_off(pdev, wake);
+
+	__e100_shutdown(to_pci_dev(dev_d), &wake);
+
+	return 0;
 }
 
-static int e100_resume(struct pci_dev *pdev)
+static int __maybe_unused e100_resume(struct device *dev_d)
 {
-	struct net_device *netdev = pci_get_drvdata(pdev);
+	struct net_device *netdev = dev_get_drvdata(dev_d);
 	struct nic *nic = netdev_priv(netdev);
+	int err;
 
-	pci_set_power_state(pdev, PCI_D0);
-	pci_restore_state(pdev);
-	/* ack any pending wake events, disable PME */
-	pci_enable_wake(pdev, PCI_D0, 0);
+	err = pci_enable_device(to_pci_dev(dev_d));
+	if (err) {
+		netdev_err(netdev, "Resume cannot enable PCI device, aborting\n");
+		return err;
+	}
+	pci_set_master(to_pci_dev(dev_d));
 
 	/* disable reverse auto-negotiation */
 	if (nic->phy == phy_82552_v) {
@@ -3076,13 +3069,13 @@ static int e100_resume(struct pci_dev *pdev)
 		           smartspeed & ~(E100_82552_REV_ANEG));
 	}
 
-	netif_device_attach(netdev);
 	if (netif_running(netdev))
 		e100_up(nic);
 
+	netif_device_attach(netdev);
+
 	return 0;
 }
-#endif /* CONFIG_PM */
 
 static void e100_shutdown(struct pci_dev *pdev)
 {
@@ -3170,16 +3163,17 @@ static const struct pci_error_handlers e100_err_handler = {
 	.resume = e100_io_resume,
 };
 
+static SIMPLE_DEV_PM_OPS(e100_pm_ops, e100_suspend, e100_resume);
+
 static struct pci_driver e100_driver = {
 	.name =         DRV_NAME,
 	.id_table =     e100_id_table,
 	.probe =        e100_probe,
 	.remove =       e100_remove,
-#ifdef CONFIG_PM
+
 	/* Power Management hooks */
-	.suspend =      e100_suspend,
-	.resume =       e100_resume,
-#endif
+	.driver.pm =	&e100_pm_ops,
+
 	.shutdown =     e100_shutdown,
 	.err_handler = &e100_err_handler,
 };
@@ -3187,7 +3181,7 @@ static struct pci_driver e100_driver = {
 static int __init e100_init_module(void)
 {
 	if (((1 << debug) - 1) & NETIF_MSG_DRV) {
-		pr_info("%s, %s\n", DRV_DESCRIPTION, DRV_VERSION);
+		pr_info("%s\n", DRV_DESCRIPTION);
 		pr_info("%s\n", DRV_COPYRIGHT);
 	}
 	return pci_register_driver(&e100_driver);

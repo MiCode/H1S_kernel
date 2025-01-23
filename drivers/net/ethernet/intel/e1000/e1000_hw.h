@@ -1,30 +1,5 @@
-/*******************************************************************************
-
-  Intel PRO/1000 Linux driver
-  Copyright(c) 1999 - 2006 Intel Corporation.
-
-  This program is free software; you can redistribute it and/or modify it
-  under the terms and conditions of the GNU General Public License,
-  version 2, as published by the Free Software Foundation.
-
-  This program is distributed in the hope it will be useful, but WITHOUT
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
-  more details.
-
-  You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc.,
-  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
-
-  The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
-
-  Contact Information:
-  Linux NICS <linux.nics@intel.com>
-  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
-  Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
-
-*******************************************************************************/
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright(c) 1999 - 2006 Intel Corporation. */
 
 /* e1000_hw.h
  * Structures, enums, and macros for the MAC
@@ -368,7 +343,6 @@ struct e1000_host_mng_dhcp_cookie {
 };
 #endif
 
-bool e1000_check_mng_mode(struct e1000_hw *hw);
 s32 e1000_read_eeprom(struct e1000_hw *hw, u16 reg, u16 words, u16 * data);
 s32 e1000_validate_eeprom_checksum(struct e1000_hw *hw);
 s32 e1000_update_eeprom_checksum(struct e1000_hw *hw);
@@ -377,7 +351,6 @@ s32 e1000_read_mac_addr(struct e1000_hw *hw);
 
 /* Filters (multicast, vlan, receive) */
 u32 e1000_hash_mc_addr(struct e1000_hw *hw, u8 * mc_addr);
-void e1000_mta_set(struct e1000_hw *hw, u32 hash_value);
 void e1000_rar_set(struct e1000_hw *hw, u8 * mc_addr, u32 rar_index);
 void e1000_write_vfta(struct e1000_hw *hw, u32 offset, u32 value);
 
@@ -386,15 +359,12 @@ s32 e1000_setup_led(struct e1000_hw *hw);
 s32 e1000_cleanup_led(struct e1000_hw *hw);
 s32 e1000_led_on(struct e1000_hw *hw);
 s32 e1000_led_off(struct e1000_hw *hw);
-s32 e1000_blink_led_start(struct e1000_hw *hw);
 
 /* Adaptive IFS Functions */
 
 /* Everything else */
 void e1000_reset_adaptive(struct e1000_hw *hw);
 void e1000_update_adaptive(struct e1000_hw *hw);
-void e1000_tbi_adjust_stats(struct e1000_hw *hw, struct e1000_hw_stats *stats,
-			    u32 frame_len, u8 * mac_addr);
 void e1000_get_bus_info(struct e1000_hw *hw);
 void e1000_pci_set_mwi(struct e1000_hw *hw);
 void e1000_pci_clear_mwi(struct e1000_hw *hw);

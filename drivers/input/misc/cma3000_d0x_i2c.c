@@ -1,20 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Implements I2C interface for VTI CMA300_D0x Accelerometer driver
  *
  * Copyright (C) 2010 Texas Instruments
  * Author: Hemanth V <hemanthv@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/module.h>
@@ -55,8 +44,7 @@ static const struct cma3000_bus_ops cma3000_i2c_bops = {
 	.write		= cma3000_i2c_set,
 };
 
-static int cma3000_i2c_probe(struct i2c_client *client,
-					const struct i2c_device_id *id)
+static int cma3000_i2c_probe(struct i2c_client *client)
 {
 	struct cma3000_accl_data *data;
 
@@ -69,16 +57,13 @@ static int cma3000_i2c_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int cma3000_i2c_remove(struct i2c_client *client)
+static void cma3000_i2c_remove(struct i2c_client *client)
 {
 	struct cma3000_accl_data *data = i2c_get_clientdata(client);
 
 	cma3000_exit(data);
-
-	return 0;
 }
 
-#ifdef CONFIG_PM
 static int cma3000_i2c_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
@@ -103,7 +88,6 @@ static const struct dev_pm_ops cma3000_i2c_pm_ops = {
 	.suspend	= cma3000_i2c_suspend,
 	.resume		= cma3000_i2c_resume,
 };
-#endif
 
 static const struct i2c_device_id cma3000_i2c_id[] = {
 	{ "cma3000_d01", 0 },
@@ -118,10 +102,7 @@ static struct i2c_driver cma3000_i2c_driver = {
 	.id_table	= cma3000_i2c_id,
 	.driver = {
 		.name	= "cma3000_i2c_accl",
-		.owner	= THIS_MODULE,
-#ifdef CONFIG_PM
-		.pm	= &cma3000_i2c_pm_ops,
-#endif
+		.pm	= pm_sleep_ptr(&cma3000_i2c_pm_ops),
 	},
 };
 

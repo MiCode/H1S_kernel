@@ -1,11 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2013 QLogic Corporation
- *
- * See LICENSE.qla2xxx for copyright and licensing details.
+ * Copyright (c)  2003-2014 QLogic Corporation
  */
 #ifndef __QLA_MR_H
 #define __QLA_MR_H
+
+#include "qla_dsd.h"
 
 /*
  * The PCI VendorID and DeviceID for our board.
@@ -22,13 +23,16 @@ struct cmd_type_7_fx00 {
 	uint8_t entry_status;		/* Entry Status. */
 
 	uint32_t handle;		/* System handle. */
-	uint32_t handle_hi;
+	uint8_t reserved_0;
+	uint8_t port_path_ctrl;
+	uint16_t reserved_1;
 
 	__le16 tgt_idx;		/* Target Idx. */
 	uint16_t timeout;		/* Command timeout. */
 
 	__le16 dseg_count;		/* Data segment count. */
-	uint16_t scsi_rsp_dsd_len;
+	uint8_t	scsi_rsp_dsd_len;
+	uint8_t reserved_2;
 
 	struct scsi_lun lun;		/* LUN (LE). */
 
@@ -43,33 +47,8 @@ struct cmd_type_7_fx00 {
 	uint8_t fcp_cdb[MAX_CMDSZ];	/* SCSI command words. */
 	__le32 byte_count;		/* Total byte count. */
 
-	uint32_t dseg_0_address[2];	/* Data segment 0 address. */
-	uint32_t dseg_0_len;		/* Data segment 0 length. */
+	struct dsd64 dsd;
 };
-
-/*
- * ISP queue - marker entry structure definition.
- */
-struct mrk_entry_fx00 {
-	uint8_t entry_type;		/* Entry type. */
-	uint8_t entry_count;		/* Entry count. */
-	uint8_t handle_count;		/* Handle count. */
-	uint8_t entry_status;		/* Entry Status. */
-
-	uint32_t handle;		/* System handle. */
-	uint32_t handle_hi;		/* System handle. */
-
-	uint16_t tgt_id;		/* Target ID. */
-
-	uint8_t modifier;		/* Modifier (7-0). */
-	uint8_t reserved_1;
-
-	uint8_t reserved_2[5];
-
-	uint8_t lun[8];			/* FCP LUN (BE). */
-	uint8_t reserved_3[36];
-};
-
 
 #define	STATUS_TYPE_FX00	0x01		/* Status entry. */
 struct sts_entry_fx00 {
@@ -79,7 +58,7 @@ struct sts_entry_fx00 {
 	uint8_t entry_status;		/* Entry Status. */
 
 	uint32_t handle;		/* System handle. */
-	uint32_t handle_hi;		/* System handle. */
+	uint32_t reserved_3;		/* System handle. */
 
 	__le16 comp_status;		/* Completion status. */
 	uint16_t reserved_0;		/* OX_ID used by the firmware. */
@@ -102,7 +81,7 @@ struct sts_entry_fx00 {
 
 struct multi_sts_entry_fx00 {
 	uint8_t entry_type;		/* Entry type. */
-	uint8_t sys_define;		/* System defined. */
+	uint8_t entry_count;		/* Entry count. */
 	uint8_t handle_count;
 	uint8_t entry_status;
 
@@ -116,17 +95,15 @@ struct tsk_mgmt_entry_fx00 {
 	uint8_t sys_define;
 	uint8_t entry_status;		/* Entry Status. */
 
-	__le32 handle;		/* System handle. */
+	uint32_t handle;		/* System handle. */
 
-	uint32_t handle_hi;		/* System handle. */
+	uint32_t reserved_0;
 
 	__le16 tgt_id;		/* Target Idx. */
 
 	uint16_t reserved_1;
-
-	uint16_t delay;			/* Activity delay in seconds. */
-
-	__le16 timeout;		/* Command timeout. */
+	uint16_t reserved_3;
+	uint16_t reserved_4;
 
 	struct scsi_lun lun;		/* LUN (LE). */
 
@@ -143,14 +120,14 @@ struct abort_iocb_entry_fx00 {
 	uint8_t sys_define;		/* System defined. */
 	uint8_t entry_status;		/* Entry Status. */
 
-	__le32 handle;		/* System handle. */
-	__le32 handle_hi;		/* System handle. */
+	uint32_t handle;		/* System handle. */
+	__le32 reserved_0;
 
 	__le16 tgt_id_sts;		/* Completion status. */
 	__le16 options;
 
-	__le32 abort_handle;		/* System handle. */
-	__le32 abort_handle_hi;	/* System handle. */
+	uint32_t abort_handle;		/* System handle. */
+	__le32 reserved_2;
 
 	__le16 req_que_no;
 	uint8_t reserved_1[38];
@@ -171,8 +148,7 @@ struct ioctl_iocb_entry_fx00 {
 
 	__le32 dataword_r;		/* Data word returned */
 	uint32_t adapid;		/* Adapter ID */
-	uint32_t adapid_hi;		/* Adapter ID high */
-	uint32_t reserved_1;
+	uint32_t dataword_r_extra;
 
 	__le32 seq_no;
 	uint8_t reserved_2[20];
@@ -189,7 +165,7 @@ struct fxdisc_entry_fx00 {
 	uint8_t sys_define;		/* System Defined. */
 	uint8_t entry_status;		/* Entry Status. */
 
-	__le32 handle;		/* System handle. */
+	uint32_t handle;		/* System handle. */
 	__le32 reserved_0;		/* System handle. */
 
 	__le16 func_num;
@@ -200,10 +176,12 @@ struct fxdisc_entry_fx00 {
 	uint8_t flags;
 	uint8_t reserved_1;
 
-	__le32 dseg_rq_address[2];	/* Data segment 0 address. */
-	__le32 dseg_rq_len;		/* Data segment 0 length. */
-	__le32 dseg_rsp_address[2];	/* Data segment 1 address. */
-	__le32 dseg_rsp_len;		/* Data segment 1 length. */
+	/*
+	 * Use array size 1 below to prevent that Coverity complains about
+	 * the append_dsd64() calls for the two arrays below.
+	 */
+	struct dsd64 dseg_rq[1];
+	struct dsd64 dseg_rsp[1];
 
 	__le32 dataword;
 	__le32 adapid;
@@ -360,11 +338,7 @@ struct config_info_data {
 
 #define QLAFX00_INTR_MB_CMPLT		0x1
 #define QLAFX00_INTR_RSP_CMPLT		0x2
-#define QLAFX00_INTR_MB_RSP_CMPLT	0x3
 #define QLAFX00_INTR_ASYNC_CMPLT	0x4
-#define QLAFX00_INTR_MB_ASYNC_CMPLT	0x5
-#define QLAFX00_INTR_RSP_ASYNC_CMPLT	0x6
-#define QLAFX00_INTR_ALL_CMPLT		0x7
 
 #define QLAFX00_MBA_SYSTEM_ERR		0x8002
 #define QLAFX00_MBA_TEMP_OVER		0x8005
@@ -379,6 +353,7 @@ struct config_info_data {
 #define SOC_FABRIC_RST_CONTROL_REG       0x0020840
 #define SOC_FABRIC_CONTROL_REG           0x0020200
 #define SOC_FABRIC_CONFIG_REG            0x0020204
+#define SOC_PWR_MANAGEMENT_PWR_DOWN_REG  0x001820C
 
 #define SOC_INTERRUPT_SOURCE_I_CONTROL_REG     0x0020B00
 #define SOC_CORE_TIMER_REG                     0x0021850
@@ -387,47 +362,47 @@ struct config_info_data {
 #define CONTINUE_A64_TYPE_FX00	0x03	/* Continuation entry. */
 
 #define QLAFX00_SET_HST_INTR(ha, value) \
-	WRT_REG_DWORD((ha)->cregbase + QLAFX00_HST_TO_HBA_REG, \
+	wrt_reg_dword((ha)->cregbase + QLAFX00_HST_TO_HBA_REG, \
 	value)
 
 #define QLAFX00_CLR_HST_INTR(ha, value) \
-	WRT_REG_DWORD((ha)->cregbase + QLAFX00_HBA_TO_HOST_REG, \
+	wrt_reg_dword((ha)->cregbase + QLAFX00_HBA_TO_HOST_REG, \
 	~value)
 
 #define QLAFX00_RD_INTR_REG(ha) \
-	RD_REG_DWORD((ha)->cregbase + QLAFX00_HBA_TO_HOST_REG)
+	rd_reg_dword((ha)->cregbase + QLAFX00_HBA_TO_HOST_REG)
 
 #define QLAFX00_CLR_INTR_REG(ha, value) \
-	WRT_REG_DWORD((ha)->cregbase + QLAFX00_HBA_TO_HOST_REG, \
+	wrt_reg_dword((ha)->cregbase + QLAFX00_HBA_TO_HOST_REG, \
 	~value)
 
 #define QLAFX00_SET_HBA_SOC_REG(ha, off, val)\
-	WRT_REG_DWORD((ha)->cregbase + off, val)
+	wrt_reg_dword((ha)->cregbase + off, val)
 
 #define QLAFX00_GET_HBA_SOC_REG(ha, off)\
-	RD_REG_DWORD((ha)->cregbase + off)
+	rd_reg_dword((ha)->cregbase + off)
 
 #define QLAFX00_HBA_RST_REG(ha, val)\
-	WRT_REG_DWORD((ha)->cregbase + QLAFX00_HST_RST_REG, val)
+	wrt_reg_dword((ha)->cregbase + QLAFX00_HST_RST_REG, val)
 
 #define QLAFX00_RD_ICNTRL_REG(ha) \
-	RD_REG_DWORD((ha)->cregbase + QLAFX00_HBA_ICNTRL_REG)
+	rd_reg_dword((ha)->cregbase + QLAFX00_HBA_ICNTRL_REG)
 
 #define QLAFX00_ENABLE_ICNTRL_REG(ha) \
-	WRT_REG_DWORD((ha)->cregbase + QLAFX00_HBA_ICNTRL_REG, \
+	wrt_reg_dword((ha)->cregbase + QLAFX00_HBA_ICNTRL_REG, \
 	(QLAFX00_GET_HBA_SOC_REG(ha, QLAFX00_HBA_ICNTRL_REG) | \
 	 QLAFX00_ICR_ENB_MASK))
 
 #define QLAFX00_DISABLE_ICNTRL_REG(ha) \
-	WRT_REG_DWORD((ha)->cregbase + QLAFX00_HBA_ICNTRL_REG, \
+	wrt_reg_dword((ha)->cregbase + QLAFX00_HBA_ICNTRL_REG, \
 	(QLAFX00_GET_HBA_SOC_REG(ha, QLAFX00_HBA_ICNTRL_REG) & \
 	 QLAFX00_ICR_DIS_MASK))
 
 #define QLAFX00_RD_REG(ha, off) \
-	RD_REG_DWORD((ha)->cregbase + off)
+	rd_reg_dword((ha)->cregbase + off)
 
 #define QLAFX00_WR_REG(ha, off, val) \
-	WRT_REG_DWORD((ha)->cregbase + off, val)
+	wrt_reg_dword((ha)->cregbase + off, val)
 
 struct qla_mt_iocb_rqst_fx00 {
 	__le32 reserved_0;
@@ -547,5 +522,8 @@ struct mr_data_fx00 {
 
 /* Max conncurrent IOs that can be queued */
 #define QLAFX00_MAX_CANQUEUE		1024
+
+/* IOCTL IOCB abort success */
+#define QLAFX00_IOCTL_ICOB_ABORT_SUCCESS	0x68
 
 #endif

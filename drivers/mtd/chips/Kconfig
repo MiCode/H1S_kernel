@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 menu "RAM/ROM/Flash chip drivers"
 	depends on MTD!=n
 
@@ -10,12 +11,13 @@ config MTD_CFI
 	  AMD and other flash manufactures that provides a universal method
 	  for probing the capabilities of flash devices. If you wish to
 	  support any device that is CFI-compliant, you need to enable this
-	  option. Visit <http://www.amd.com/products/nvd/overview/cfi.html>
+	  option. Visit <https://www.amd.com/products/nvd/overview/cfi.html>
 	  for more information on CFI.
 
 config MTD_JEDECPROBE
 	tristate "Detect non-CFI AMD/JEDEC-compatible flash chips"
 	select MTD_GEN_PROBE
+	select MTD_CFI_UTIL
 	help
 	  This option enables JEDEC-style probing of flash chips which are not
 	  compatible with the Common Flash Interface, but will use the common
@@ -43,7 +45,7 @@ choice
 	prompt "Flash cmd/query data swapping"
 	depends on MTD_CFI_ADV_OPTIONS
 	default MTD_CFI_NOSWAP
-	---help---
+	help
 	  This option defines the way in which the CPU attempts to arrange
 	  data bits when writing the 'magic' commands to the chips. Saying
 	  'NO', which is the default when CONFIG_MTD_CFI_ADV_OPTIONS isn't
@@ -53,12 +55,14 @@ choice
 	  LITTLE_ENDIAN_BYTE, if the bytes are reversed.
 
 config MTD_CFI_NOSWAP
+	depends on !ARCH_IXP4XX || CPU_BIG_ENDIAN
 	bool "NO"
 
 config MTD_CFI_BE_BYTE_SWAP
 	bool "BIG_ENDIAN_BYTE"
 
 config MTD_CFI_LE_BYTE_SWAP
+	depends on !ARCH_IXP4XX
 	bool "LITTLE_ENDIAN_BYTE"
 
 endchoice
@@ -66,6 +70,10 @@ endchoice
 config MTD_CFI_GEOMETRY
 	bool "Specific CFI Flash geometry selection"
 	depends on MTD_CFI_ADV_OPTIONS
+	select MTD_MAP_BANK_WIDTH_1 if  !(MTD_MAP_BANK_WIDTH_2 || \
+		 MTD_MAP_BANK_WIDTH_4  || MTD_MAP_BANK_WIDTH_8 || \
+		 MTD_MAP_BANK_WIDTH_16 || MTD_MAP_BANK_WIDTH_32)
+	select MTD_CFI_I1 if !(MTD_CFI_I2 || MTD_CFI_I4 || MTD_CFI_I8)
 	help
 	  This option does not affect the code directly, but will enable
 	  some other configuration options which would allow you to reduce
@@ -110,6 +118,7 @@ config MTD_MAP_BANK_WIDTH_16
 
 config MTD_MAP_BANK_WIDTH_32
 	bool "Support 256-bit buswidth" if MTD_CFI_GEOMETRY
+	select MTD_COMPLEX_MAPPINGS if HAS_IOMEM
 	default n
 	help
 	  If you wish to support CFI devices on a physical bus which is
@@ -169,33 +178,33 @@ config MTD_OTP
 	  in the programming of OTP bits will waste them.
 
 config MTD_CFI_INTELEXT
-	tristate "Support for Intel/Sharp flash chips"
+	tristate "Support for CFI command set 0001 (Intel/Sharp chips)"
 	depends on MTD_GEN_PROBE
 	select MTD_CFI_UTIL
 	help
 	  The Common Flash Interface defines a number of different command
 	  sets which a CFI-compliant chip may claim to implement. This code
-	  provides support for one of those command sets, used on Intel
-	  StrataFlash and other parts.
+	  provides support for command set 0001, used on Intel StrataFlash
+	  and other parts.
 
 config MTD_CFI_AMDSTD
-	tristate "Support for AMD/Fujitsu/Spansion flash chips"
+	tristate "Support for CFI command set 0002 (AMD/Fujitsu/Spansion chips)"
 	depends on MTD_GEN_PROBE
 	select MTD_CFI_UTIL
 	help
 	  The Common Flash Interface defines a number of different command
 	  sets which a CFI-compliant chip may claim to implement. This code
-	  provides support for one of those command sets, used on chips
-	  including the AMD Am29LV320.
+	  provides support for command set 0002, used on chips including
+	  the AMD Am29LV320.
 
 config MTD_CFI_STAA
-	tristate "Support for ST (Advanced Architecture) flash chips"
+	tristate "Support for CFI command set 0020 (ST (Advanced Architecture) chips)"
 	depends on MTD_GEN_PROBE
 	select MTD_CFI_UTIL
 	help
 	  The Common Flash Interface defines a number of different command
 	  sets which a CFI-compliant chip may claim to implement. This code
-	  provides support for one of those command sets.
+	  provides support for command set 0020.
 
 config MTD_CFI_UTIL
 	tristate

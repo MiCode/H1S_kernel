@@ -7,18 +7,37 @@ Description:
 		subsystem.
 
 What:		/sys/power/state
-Date:		August 2006
+Date:		November 2016
 Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
 Description:
-		The /sys/power/state file controls the system power state.
-		Reading from this file returns what states are supported,
-		which is hard-coded to 'standby' (Power-On Suspend), 'mem'
-		(Suspend-to-RAM), and 'disk' (Suspend-to-Disk).
+		The /sys/power/state file controls system sleep states.
+		Reading from this file returns the available sleep state
+		labels, which may be "mem" (suspend), "standby" (power-on
+		suspend), "freeze" (suspend-to-idle) and "disk" (hibernation).
 
-		Writing to this file one of these strings causes the system to
-		transition into that state. Please see the file
-		Documentation/power/states.txt for a description of each of
-		these states.
+		Writing one of the above strings to this file causes the system
+		to transition into the corresponding state, if available.
+
+		See Documentation/admin-guide/pm/sleep-states.rst for more
+		information.
+
+What:		/sys/power/mem_sleep
+Date:		November 2016
+Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Description:
+		The /sys/power/mem_sleep file controls the operating mode of
+		system suspend.  Reading from it returns the available modes
+		as "s2idle" (always present), "shallow" and "deep" (present if
+		supported).  The mode that will be used on subsequent attempts
+		to suspend the system (by writing "mem" to the /sys/power/state
+		file described above) is enclosed in square brackets.
+
+		Writing one of the above strings to this file causes the mode
+		represented by it to be used on subsequent attempts to suspend
+		the system.
+
+		See Documentation/admin-guide/pm/sleep-states.rst for more
+		information.
 
 What:		/sys/power/disk
 Date:		September 2006
@@ -28,14 +47,18 @@ Description:
 		suspend-to-disk mechanism.  Reading from this file returns
 		the name of the method by which the system will be put to
 		sleep on the next suspend.  There are four methods supported:
+
 		'firmware' - means that the memory image will be saved to disk
 		by some firmware, in which case we also assume that the
 		firmware will handle the system suspend.
+
 		'platform' - the memory image will be saved by the kernel and
 		the system will be put to sleep by the platform driver (e.g.
 		ACPI or other PM registers).
+
 		'shutdown' - the memory image will be saved by the kernel and
 		the system will be powered off.
+
 		'reboot' - the memory image will be saved by the kernel and
 		the system will be rebooted.
 
@@ -55,12 +78,12 @@ Description:
 		The suspend-to-disk method may be chosen by writing to this
 		file one of the accepted strings:
 
-		'firmware'
-		'platform'
-		'shutdown'
-		'reboot'
-		'testproc'
-		'test'
+		- 'firmware'
+		- 'platform'
+		- 'shutdown'
+		- 'reboot'
+		- 'testproc'
+		- 'test'
 
 		It will only change to 'firmware' or 'platform' if the system
 		supports that.
@@ -80,7 +103,7 @@ Description:
 		this file, the suspend image will be as small as possible.
 
 		Reading from this file will display the current image size
-		limit, which is set to 500 MB by default.
+		limit, which is set to around 2/5 of available RAM by default.
 
 What:		/sys/power/pm_trace
 Date:		August 2006
@@ -95,9 +118,9 @@ Description:
 		string representing a nonzero integer into it.
 
 		To use this debugging feature you should attempt to suspend
-		the machine, then reboot it and run
+		the machine, then reboot it and run::
 
-		dmesg -s 1000000 | grep 'hash matches'
+		  dmesg -s 1000000 | grep 'hash matches'
 
 		If you do not get any matches (or they appear to be false
 		positives), it is possible that the last PM event point
@@ -110,7 +133,7 @@ Description:
 
 What;		/sys/power/pm_trace_dev_match
 Date:		October 2010
-Contact:	James Hogan <james@albanarts.com>
+Contact:	James Hogan <jhogan@kernel.org>
 Description:
 		The /sys/power/pm_trace_dev_match file contains the name of the
 		device associated with the last PM event point saved in the RTC
@@ -129,7 +152,7 @@ Description:
 		case further investigation is required to determine which
 		device is causing the problem.  Note that genuine RTC clock
 		values (such as when pm_trace has not been used), can still
-		match a device and output it's name here.
+		match a device and output its name here.
 
 What:		/sys/power/pm_async
 Date:		January 2009
@@ -225,6 +248,7 @@ Description:
 		wakeup sources created with the help of /sys/power/wake_lock.
 		When a string is written to /sys/power/wake_unlock, it will be
 		assumed to represent the name of a wakeup source to deactivate.
+
 		If a wakeup source object of that name exists and is active at
 		the moment, it will be deactivated.
 
@@ -244,3 +268,189 @@ Description:
 		Writing a "1" enables this printing while writing a "0"
 		disables it.  The default value is "0".  Reading from this file
 		will display the current value.
+
+What:		/sys/power/pm_wakeup_irq
+Date:		April 2015
+Contact:	Alexandra Yates <alexandra.yates@linux.intel.org>
+Description:
+		The /sys/power/pm_wakeup_irq file reports to user space the IRQ
+		number of the first wakeup interrupt (that is, the first
+		interrupt from an IRQ line armed for system wakeup) seen by the
+		kernel during the most recent system suspend/resume cycle.
+
+		This output is useful for system wakeup diagnostics of spurious
+		wakeup interrupts.
+
+What:		/sys/power/pm_debug_messages
+Date:		July 2017
+Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Description:
+		The /sys/power/pm_debug_messages file controls the printing
+		of debug messages from the system suspend/hiberbation
+		infrastructure to the kernel log.
+
+		Writing a "1" to this file enables the debug messages and
+		writing a "0" (default) to it disables them.  Reads from
+		this file return the current value.
+
+What:		/sys/power/resume_offset
+Date:		April 2018
+Contact:	Mario Limonciello <mario.limonciello@outlook.com>
+Description:
+		This file is used for telling the kernel an offset into a disk
+		to use when hibernating the system such as with a swap file.
+
+		Reads from this file will display the current offset
+		the kernel will be using on the next hibernation
+		attempt.
+
+		Using this sysfs file will override any values that were
+		set using the kernel command line for disk offset.
+
+What:		/sys/power/suspend_stats
+Date:		July 2019
+Contact:	Kalesh Singh <kaleshsingh96@gmail.com>
+Description:
+		The /sys/power/suspend_stats directory contains suspend related
+		statistics.
+
+What:		/sys/power/suspend_stats/success
+Date:		July 2019
+Contact:	Kalesh Singh <kaleshsingh96@gmail.com>
+Description:
+		The /sys/power/suspend_stats/success file contains the number
+		of times entering system sleep state succeeded.
+
+What:		/sys/power/suspend_stats/fail
+Date:		July 2019
+Contact:	Kalesh Singh <kaleshsingh96@gmail.com>
+Description:
+		The /sys/power/suspend_stats/fail file contains the number
+		of times entering system sleep state failed.
+
+What:		/sys/power/suspend_stats/failed_freeze
+Date:		July 2019
+Contact:	Kalesh Singh <kaleshsingh96@gmail.com>
+Description:
+		The /sys/power/suspend_stats/failed_freeze file contains the
+		number of times freezing processes failed.
+
+What:		/sys/power/suspend_stats/failed_prepare
+Date:		July 2019
+Contact:	Kalesh Singh <kaleshsingh96@gmail.com>
+Description:
+		The /sys/power/suspend_stats/failed_prepare file contains the
+		number of times preparing all non-sysdev devices for
+		a system PM transition failed.
+
+What:		/sys/power/suspend_stats/failed_resume
+Date:		July 2019
+Contact:	Kalesh Singh <kaleshsingh96@gmail.com>
+Description:
+		The /sys/power/suspend_stats/failed_resume file contains the
+		number of times executing "resume" callbacks of
+		non-sysdev devices failed.
+
+What:		/sys/power/suspend_stats/failed_resume_early
+Date:		July 2019
+Contact:	Kalesh Singh <kaleshsingh96@gmail.com>
+Description:
+		The /sys/power/suspend_stats/failed_resume_early file contains
+		the number of times executing "early resume" callbacks
+		of devices failed.
+
+What:		/sys/power/suspend_stats/failed_resume_noirq
+Date:		July 2019
+Contact:	Kalesh Singh <kaleshsingh96@gmail.com>
+Description:
+		The /sys/power/suspend_stats/failed_resume_noirq file contains
+		the number of times executing "noirq resume" callbacks
+		of devices failed.
+
+What:		/sys/power/suspend_stats/failed_suspend
+Date:		July 2019
+Contact:	Kalesh Singh <kaleshsingh96@gmail.com>
+Description:
+		The /sys/power/suspend_stats/failed_suspend file contains
+		the number of times executing "suspend" callbacks
+		of all non-sysdev devices failed.
+
+What:		/sys/power/suspend_stats/failed_suspend_late
+Date:		July 2019
+Contact:	Kalesh Singh <kaleshsingh96@gmail.com>
+Description:
+		The /sys/power/suspend_stats/failed_suspend_late file contains
+		the number of times executing "late suspend" callbacks
+		of all devices failed.
+
+What:		/sys/power/suspend_stats/failed_suspend_noirq
+Date:		July 2019
+Contact:	Kalesh Singh <kaleshsingh96@gmail.com>
+Description:
+		The /sys/power/suspend_stats/failed_suspend_noirq file contains
+		the number of times executing "noirq suspend" callbacks
+		of all devices failed.
+
+What:		/sys/power/suspend_stats/last_failed_dev
+Date:		July 2019
+Contact:	Kalesh Singh <kaleshsingh96@gmail.com>
+Description:
+		The /sys/power/suspend_stats/last_failed_dev file contains
+		the last device for which a suspend/resume callback failed.
+
+What:		/sys/power/suspend_stats/last_failed_errno
+Date:		July 2019
+Contact:	Kalesh Singh <kaleshsingh96@gmail.com>
+Description:
+		The /sys/power/suspend_stats/last_failed_errno file contains
+		the errno of the last failed attempt at entering
+		system sleep state.
+
+What:		/sys/power/suspend_stats/last_failed_step
+Date:		July 2019
+Contact:	Kalesh Singh <kaleshsingh96@gmail.com>
+Description:
+		The /sys/power/suspend_stats/last_failed_step file contains
+		the last failed step in the suspend/resume path.
+
+What:		/sys/power/suspend_stats/last_hw_sleep
+Date:		June 2023
+Contact:	Mario Limonciello <mario.limonciello@amd.com>
+Description:
+		The /sys/power/suspend_stats/last_hw_sleep file
+		contains the duration of time spent in a hardware sleep
+		state in the most recent system suspend-resume cycle.
+		This number is measured in microseconds.
+
+What:		/sys/power/suspend_stats/total_hw_sleep
+Date:		June 2023
+Contact:	Mario Limonciello <mario.limonciello@amd.com>
+Description:
+		The /sys/power/suspend_stats/total_hw_sleep file
+		contains the aggregate of time spent in a hardware sleep
+		state since the kernel was booted. This number
+		is measured in microseconds.
+
+What:		/sys/power/suspend_stats/max_hw_sleep
+Date:		June 2023
+Contact:	Mario Limonciello <mario.limonciello@amd.com>
+Description:
+		The /sys/power/suspend_stats/max_hw_sleep file
+		contains the maximum amount of time that the hardware can
+		report for time spent in a hardware sleep state. When sleep
+		cycles are longer than this time, the values for
+		'total_hw_sleep' and 'last_hw_sleep' may not be accurate.
+		This number is measured in microseconds.
+
+What:		/sys/power/sync_on_suspend
+Date:		October 2019
+Contact:	Jonas Meurer <jonas@freesources.org>
+Description:
+		This file controls whether or not the kernel will sync()
+		filesystems during system suspend (after freezing user space
+		and before suspending devices).
+
+		Writing a "1" to this file enables the sync() and writing a "0"
+		disables it.  Reads from the file return the current value.
+		The default is "1" if the build-time "SUSPEND_SKIP_SYNC" config
+		flag is unset, or "0" otherwise.

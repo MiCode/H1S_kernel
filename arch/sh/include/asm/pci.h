@@ -1,7 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_PCI_H
 #define __ASM_SH_PCI_H
-
-#ifdef __KERNEL__
 
 /* Can be used to override the logic in pci_scan_bus for skipping
    already-configured bus numbers - to be used for buggy BIOSes
@@ -63,27 +62,12 @@ extern int pci_is_66mhz_capable(struct pci_channel *hose,
 
 extern unsigned long PCIBIOS_MIN_IO, PCIBIOS_MIN_MEM;
 
-struct pci_dev;
-
 #define HAVE_PCI_MMAP
-extern int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
-	enum pci_mmap_state mmap_state, int write_combine);
-extern void pcibios_set_master(struct pci_dev *dev);
-
-static inline void pcibios_penalize_isa_irq(int irq, int active)
-{
-	/* We don't do dynamic PCI IRQ allocation */
-}
+#define ARCH_GENERIC_PCI_MMAP_RESOURCE
 
 /* Dynamic DMA mapping stuff.
  * SuperH has everything mapped statically like x86.
  */
-
-/* The PCI address space does equal the physical memory
- * address space.  The networking and block device layers use
- * this boolean for bounce buffer decisions.
- */
-#define PCI_DMA_BUS_IS_PHYS	(dma_ops->is_phys)
 
 #ifdef CONFIG_PCI
 /*
@@ -91,24 +75,6 @@ static inline void pcibios_penalize_isa_irq(int irq, int active)
  * direct memory write.
  */
 #define PCI_DISABLE_MWI
-
-static inline void pci_dma_burst_advice(struct pci_dev *pdev,
-					enum pci_dma_burst_strategy *strat,
-					unsigned long *strategy_parameter)
-{
-	unsigned long cacheline_size;
-	u8 byte;
-
-	pci_read_config_byte(pdev, PCI_CACHE_LINE_SIZE, &byte);
-
-	if (byte == 0)
-		cacheline_size = L1_CACHE_BYTES;
-	else
-		cacheline_size = byte << 2;
-
-	*strat = PCI_DMA_BURST_MULTIPLE;
-	*strategy_parameter = cacheline_size;
-}
 #endif
 
 /* Board-specific fixup routines. */
@@ -122,15 +88,4 @@ static inline int pci_proc_domain(struct pci_bus *bus)
 	return hose->need_domain_info;
 }
 
-/* Chances are this interrupt is wired PC-style ...  */
-static inline int pci_get_legacy_ide_irq(struct pci_dev *dev, int channel)
-{
-	return channel ? 15 : 14;
-}
-
-/* generic DMA-mapping stuff */
-#include <asm-generic/pci-dma-compat.h>
-
-#endif /* __KERNEL__ */
 #endif /* __ASM_SH_PCI_H */
-

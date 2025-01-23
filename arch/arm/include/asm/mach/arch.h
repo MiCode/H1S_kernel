@@ -1,11 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  arch/arm/include/asm/mach/arch.h
  *
  *  Copyright (C) 2000 Russell King
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/types.h>
@@ -14,7 +11,6 @@
 #include <linux/reboot.h>
 
 struct tag;
-struct meminfo;
 struct pt_regs;
 struct smp_operations;
 #ifdef CONFIG_SMP
@@ -45,11 +41,14 @@ struct machine_desc {
 	unsigned char		reserve_lp1 :1;	/* never has lp1	*/
 	unsigned char		reserve_lp2 :1;	/* never has lp2	*/
 	enum reboot_mode	reboot_mode;	/* default restart mode	*/
-	struct smp_operations	*smp;		/* SMP operations	*/
+	unsigned		l2c_aux_val;	/* L2 cache aux value	*/
+	unsigned		l2c_aux_mask;	/* L2 cache aux mask	*/
+	void			(*l2c_write_sec)(unsigned long, unsigned);
+	const struct smp_operations	*smp;	/* SMP operations	*/
 	bool			(*smp_init)(void);
-	void			(*fixup)(struct tag *, char **,
-					 struct meminfo *);
-	void			(*init_meminfo)(void);
+	void			(*fixup)(struct tag *, char **);
+	void			(*dt_fixup)(void);
+	long long		(*pv_fixup)(void);
 	void			(*reserve)(void);/* reserve mem blocks	*/
 	void			(*map_io)(void);/* IO mapping function	*/
 	void			(*init_early)(void);
@@ -57,9 +56,6 @@ struct machine_desc {
 	void			(*init_time)(void);
 	void			(*init_machine)(void);
 	void			(*init_late)(void);
-#ifdef CONFIG_MULTI_IRQ_HANDLER
-	void			(*handle_irq)(struct pt_regs *);
-#endif
 	void			(*restart)(enum reboot_mode, const char *);
 };
 
@@ -82,7 +78,7 @@ extern const struct machine_desc __arch_info_begin[], __arch_info_end[];
 #define MACHINE_START(_type,_name)			\
 static const struct machine_desc __mach_desc_##_type	\
  __used							\
- __attribute__((__section__(".arch.info.init"))) = {	\
+ __section(".arch.info.init") = {			\
 	.nr		= MACH_TYPE_##_type,		\
 	.name		= _name,
 
@@ -92,7 +88,7 @@ static const struct machine_desc __mach_desc_##_type	\
 #define DT_MACHINE_START(_name, _namestr)		\
 static const struct machine_desc __mach_desc_##_name	\
  __used							\
- __attribute__((__section__(".arch.info.init"))) = {	\
+ __section(".arch.info.init") = {			\
 	.nr		= ~0,				\
 	.name		= _namestr,
 

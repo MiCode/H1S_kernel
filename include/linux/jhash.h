@@ -5,7 +5,7 @@
  *
  * Copyright (C) 2006. Bob Jenkins (bob_jenkins@burtleburtle.net)
  *
- * http://burtleburtle.net/bob/hash/
+ * https://burtleburtle.net/bob/hash/
  *
  * These are the credits from Bob's sources:
  *
@@ -17,7 +17,7 @@
  * if SELF_TEST is defined.  You can use this free for any purpose.  It's in
  * the public domain.  It has no warranty.
  *
- * Copyright (C) 2009-2010 Jozsef Kadlecsik (kadlec@blackhole.kfki.hu)
+ * Copyright (C) 2009-2010 Jozsef Kadlecsik (kadlec@netfilter.org)
  *
  * I've modified Bob's hash to be useful in the Linux kernel, and
  * any bugs present are my fault.
@@ -85,21 +85,21 @@ static inline u32 jhash(const void *key, u32 length, u32 initval)
 		k += 12;
 	}
 	/* Last block: affect all 32 bits of (c) */
-	/* All the case statements fall through */
 	switch (length) {
-	case 12: c += (u32)k[11]<<24;
-	case 11: c += (u32)k[10]<<16;
-	case 10: c += (u32)k[9]<<8;
-	case 9:  c += k[8];
-	case 8:  b += (u32)k[7]<<24;
-	case 7:  b += (u32)k[6]<<16;
-	case 6:  b += (u32)k[5]<<8;
-	case 5:  b += k[4];
-	case 4:  a += (u32)k[3]<<24;
-	case 3:  a += (u32)k[2]<<16;
-	case 2:  a += (u32)k[1]<<8;
+	case 12: c += (u32)k[11]<<24;	fallthrough;
+	case 11: c += (u32)k[10]<<16;	fallthrough;
+	case 10: c += (u32)k[9]<<8;	fallthrough;
+	case 9:  c += k[8];		fallthrough;
+	case 8:  b += (u32)k[7]<<24;	fallthrough;
+	case 7:  b += (u32)k[6]<<16;	fallthrough;
+	case 6:  b += (u32)k[5]<<8;	fallthrough;
+	case 5:  b += k[4];		fallthrough;
+	case 4:  a += (u32)k[3]<<24;	fallthrough;
+	case 3:  a += (u32)k[2]<<16;	fallthrough;
+	case 2:  a += (u32)k[1]<<8;	fallthrough;
 	case 1:  a += k[0];
 		 __jhash_final(a, b, c);
+		 break;
 	case 0: /* Nothing left to add */
 		break;
 	}
@@ -131,12 +131,13 @@ static inline u32 jhash2(const u32 *k, u32 length, u32 initval)
 		k += 3;
 	}
 
-	/* Handle the last 3 u32's: all the case statements fall through */
+	/* Handle the last 3 u32's */
 	switch (length) {
-	case 3: c += k[2];
-	case 2: b += k[1];
+	case 3: c += k[2];	fallthrough;
+	case 2: b += k[1];	fallthrough;
 	case 1: a += k[0];
 		__jhash_final(a, b, c);
+		break;
 	case 0:	/* Nothing left to add */
 		break;
 	}
@@ -145,11 +146,11 @@ static inline u32 jhash2(const u32 *k, u32 length, u32 initval)
 }
 
 
-/* jhash_3words - hash exactly 3, 2 or 1 word(s) */
-static inline u32 jhash_3words(u32 a, u32 b, u32 c, u32 initval)
+/* __jhash_nwords - hash exactly 3, 2 or 1 word(s) */
+static inline u32 __jhash_nwords(u32 a, u32 b, u32 c, u32 initval)
 {
-	a += JHASH_INITVAL;
-	b += JHASH_INITVAL;
+	a += initval;
+	b += initval;
 	c += initval;
 
 	__jhash_final(a, b, c);
@@ -157,14 +158,19 @@ static inline u32 jhash_3words(u32 a, u32 b, u32 c, u32 initval)
 	return c;
 }
 
+static inline u32 jhash_3words(u32 a, u32 b, u32 c, u32 initval)
+{
+	return __jhash_nwords(a, b, c, initval + JHASH_INITVAL + (3 << 2));
+}
+
 static inline u32 jhash_2words(u32 a, u32 b, u32 initval)
 {
-	return jhash_3words(a, b, 0, initval);
+	return __jhash_nwords(a, b, 0, initval + JHASH_INITVAL + (2 << 2));
 }
 
 static inline u32 jhash_1word(u32 a, u32 initval)
 {
-	return jhash_3words(a, 0, 0, initval);
+	return __jhash_nwords(a, 0, 0, initval + JHASH_INITVAL + (1 << 2));
 }
 
 #endif /* _LINUX_JHASH_H */

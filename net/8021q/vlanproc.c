@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /******************************************************************************
  * vlanproc.c	VLAN Module. /proc filesystem interface.
  *
@@ -9,10 +10,6 @@
  *
  * Copyright:	(c) 1998 Ben Greear
  *
- *		This program is free software; you can redistribute it and/or
- *		modify it under the terms of the GNU General Public License
- *		as published by the Free Software Foundation; either version
- *		2 of the License, or (at your option) any later version.
  * ============================================================================
  * Jan 20, 1998        Ben Greear     Initial Version
  *****************************************************************************/
@@ -73,37 +70,6 @@ static const struct seq_operations vlan_seq_ops = {
 	.show = vlan_seq_show,
 };
 
-static int vlan_seq_open(struct inode *inode, struct file *file)
-{
-	return seq_open_net(inode, file, &vlan_seq_ops,
-			sizeof(struct seq_net_private));
-}
-
-static const struct file_operations vlan_fops = {
-	.owner	 = THIS_MODULE,
-	.open    = vlan_seq_open,
-	.read    = seq_read,
-	.llseek  = seq_lseek,
-	.release = seq_release_net,
-};
-
-/*
- *	/proc/net/vlan/<device> file and inode operations
- */
-
-static int vlandev_seq_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, vlandev_seq_show, PDE_DATA(inode));
-}
-
-static const struct file_operations vlandev_fops = {
-	.owner = THIS_MODULE,
-	.open    = vlandev_seq_open,
-	.read    = seq_read,
-	.llseek  = seq_lseek,
-	.release = single_release,
-};
-
 /*
  * Proc filesystem directory entries.
  */
@@ -150,8 +116,9 @@ int __net_init vlan_proc_init(struct net *net)
 	if (!vn->proc_vlan_dir)
 		goto err;
 
-	vn->proc_vlan_conf = proc_create(name_conf, S_IFREG|S_IRUSR|S_IWUSR,
-				     vn->proc_vlan_dir, &vlan_fops);
+	vn->proc_vlan_conf = proc_create_net(name_conf, S_IFREG | 0600,
+			vn->proc_vlan_dir, &vlan_seq_ops,
+			sizeof(struct seq_net_private));
 	if (!vn->proc_vlan_conf)
 		goto err;
 	return 0;
@@ -171,9 +138,10 @@ int vlan_proc_add_dev(struct net_device *vlandev)
 	struct vlan_dev_priv *vlan = vlan_dev_priv(vlandev);
 	struct vlan_net *vn = net_generic(dev_net(vlandev), vlan_net_id);
 
-	vlan->dent =
-		proc_create_data(vlandev->name, S_IFREG|S_IRUSR|S_IWUSR,
-				 vn->proc_vlan_dir, &vlandev_fops, vlandev);
+	if (!strcmp(vlandev->name, name_conf))
+		return -EINVAL;
+	vlan->dent = proc_create_single_data(vlandev->name, S_IFREG | 0600,
+			vn->proc_vlan_dir, vlandev_seq_show, vlandev);
 	if (!vlan->dent)
 		return -ENOBUFS;
 	return 0;
@@ -182,12 +150,11 @@ int vlan_proc_add_dev(struct net_device *vlandev)
 /*
  *	Delete directory entry for VLAN device.
  */
-int vlan_proc_rem_dev(struct net_device *vlandev)
+void vlan_proc_rem_dev(struct net_device *vlandev)
 {
 	/** NOTE:  This will consume the memory pointed to by dent, it seems. */
 	proc_remove(vlan_dev_priv(vlandev)->dent);
 	vlan_dev_priv(vlandev)->dent = NULL;
-	return 0;
 }
 
 /****** Proc filesystem entry points ****************************************/
@@ -285,7 +252,7 @@ static int vlandev_seq_show(struct seq_file *seq, void *offset)
 
 	stats = dev_get_stats(vlandev, &temp);
 	seq_printf(seq,
-		   "%s  VID: %d	 REORDER_HDR: %i  dev->priv_flags: %hx\n",
+		   "%s  VID: %d	 REORDER_HDR: %i  dev->priv_flags: %llx\n",
 		   vlandev->name, vlan->vlan_id,
 		   (int)(vlan->flags & 1), vlandev->priv_flags);
 
@@ -313,7 +280,7 @@ static int vlandev_seq_show(struct seq_file *seq, void *offset)
 		const struct vlan_priority_tci_mapping *mp
 			= vlan->egress_priority_map[i];
 		while (mp) {
-			seq_printf(seq, "%u:%hu ",
+			seq_printf(seq, "%u:%d ",
 				   mp->priority, ((mp->vlan_qos >> 13) & 0x7));
 			mp = mp->next;
 		}

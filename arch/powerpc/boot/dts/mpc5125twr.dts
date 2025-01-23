@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * STx/Freescale ADS5125 MPC5125 silicon
  *
@@ -5,11 +6,6 @@
  *
  * Reworked by Matteo Facchinetti (engineering@sirius-es.it)
  * Copyright (C) 2013 Sirius Electronic Systems
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <dt-bindings/clock/mpc512x-clock.h>
@@ -108,7 +104,7 @@
 			clock-names = "osc";
 		};
 
-		pmc@1000{  // Power Management Controller
+		pmc@1000 {  // Power Management Controller
 			compatible = "fsl,mpc5121-pmc";
 			reg = <0x1000 0x100>;
 			interrupts = <83 0x2>;
@@ -246,6 +242,14 @@
 			status = "disabled";
 		};
 
+		sclpc@10100 {
+			compatible = "fsl,mpc512x-lpbfifo";
+			reg = <0x10100 0x50>;
+			interrupts = <7 0x8>;
+			dmas = <&dma0 26>;
+			dma-names = "rx-tx";
+		};
+
 		// 5125 PSCs are not 52xx or 5121 PSC compatible
 		// PSC1 uart0 aka ttyPSC0
 		serial@11100 {
@@ -279,10 +283,11 @@
 			clock-names = "ipg";
 		};
 
-		dma@14000 {
+		dma0: dma@14000 {
 			compatible = "fsl,mpc5121-dma"; // BSP name: "mpc512x-dma2"
 			reg = <0x14000 0x1800>;
 			interrupts = <65 0x8>;
+			#dma-cells = <1>;
 		};
 	};
 };

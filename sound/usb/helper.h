@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __USBAUDIO_HELPER_H
 #define __USBAUDIO_HELPER_H
 
@@ -13,24 +14,27 @@ int snd_usb_ctl_msg(struct usb_device *dev, unsigned int pipe,
 unsigned char snd_usb_parse_datainterval(struct snd_usb_audio *chip,
 					 struct usb_host_interface *alts);
 
+struct usb_host_interface *
+snd_usb_get_host_interface(struct snd_usb_audio *chip, int ifnum, int altsetting);
+
 /*
  * retrieve usb_interface descriptor from the host interface
  * (conditional for compatibility with the older API)
  */
-#ifndef get_iface_desc
 #define get_iface_desc(iface)	(&(iface)->desc)
 #define get_endpoint(alt,ep)	(&(alt)->endpoint[ep].desc)
 #define get_ep_desc(ep)		(&(ep)->desc)
 #define get_cfg_desc(cfg)	(&(cfg)->desc)
-#endif
 
-#ifndef snd_usb_get_speed
 #define snd_usb_get_speed(dev) ((dev)->speed)
-#endif
 
 static inline int snd_usb_ctrl_intf(struct snd_usb_audio *chip)
 {
 	return get_iface_desc(chip->ctrl_intf)->bInterfaceNumber;
 }
+
+/* in validate.c */
+bool snd_usb_validate_audio_desc(void *p, int protocol);
+bool snd_usb_validate_midi_desc(void *p);
 
 #endif /* __USBAUDIO_HELPER_H */

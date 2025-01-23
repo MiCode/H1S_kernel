@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *      Driver for the MTX-1 Watchdog.
  *
@@ -6,16 +7,6 @@
  *                              http://www.4g-systems.biz
  *
  *	(C) Copyright 2007 OpenWrt.org, Florian Fainelli <florian@openwrt.org>
- *
- *      This program is free software; you can redistribute it and/or
- *      modify it under the terms of the GNU General Public License
- *      as published by the Free Software Foundation; either version
- *      2 of the License, or (at your option) any later version.
- *
- *      Neither Michael Stickel nor 4G Systems admit liability nor provide
- *      warranty for any of this software. This material is provided
- *      "AS-IS" and at no charge.
- *
  *      (c) Copyright 2005    4G Systems <info@4g-systems.biz>
  *
  *      Release 0.01.
@@ -40,7 +31,6 @@
 #include <linux/errno.h>
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
-#include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/timer.h>
 #include <linux/completion.h>
@@ -49,9 +39,7 @@
 #include <linux/platform_device.h>
 #include <linux/io.h>
 #include <linux/uaccess.h>
-#include <linux/gpio.h>
-
-#include <asm/mach-au1x00/au1000.h>
+#include <linux/gpio/consumer.h>
 
 #define MTX1_WDT_INTERVAL	(5 * HZ)
 
@@ -65,11 +53,11 @@ static struct {
 	int queue;
 	int default_ticks;
 	unsigned long inuse;
-	unsigned gpio;
+	struct gpio_desc *gpiod;
 	unsigned int gstate;
 } mtx1_wdt_device;
 
-static void mtx1_wdt_trigger(unsigned long unused)
+static void mtx1_wdt_trigger(struct timer_list *unused)
 {
 	spin_lock(&mtx1_wdt_device.lock);
 	if (mtx1_wdt_device.running)
@@ -77,7 +65,7 @@ static void mtx1_wdt_trigger(unsigned long unused)
 
 	/* toggle wdt gpio */
 	mtx1_wdt_device.gstate = !mtx1_wdt_device.gstate;
-	gpio_set_value(mtx1_wdt_device.gpio, mtx1_wdt_device.gstate);
+	gpiod_set_value(mtx1_wdt_device.gpiod, mtx1_wdt_device.gstate);
 
 	if (mtx1_wdt_device.queue && ticks)
 		mod_timer(&mtx1_wdt_device.timer, jiffies + MTX1_WDT_INTERVAL);
@@ -100,7 +88,7 @@ static void mtx1_wdt_start(void)
 	if (!mtx1_wdt_device.queue) {
 		mtx1_wdt_device.queue = 1;
 		mtx1_wdt_device.gstate = 1;
-		gpio_set_value(mtx1_wdt_device.gpio, 1);
+		gpiod_set_value(mtx1_wdt_device.gpiod, 1);
 		mod_timer(&mtx1_wdt_device.timer, jiffies + MTX1_WDT_INTERVAL);
 	}
 	mtx1_wdt_device.running++;
@@ -115,7 +103,7 @@ static int mtx1_wdt_stop(void)
 	if (mtx1_wdt_device.queue) {
 		mtx1_wdt_device.queue = 0;
 		mtx1_wdt_device.gstate = 0;
-		gpio_set_value(mtx1_wdt_device.gpio, 0);
+		gpiod_set_value(mtx1_wdt_device.gpiod, 0);
 	}
 	ticks = mtx1_wdt_device.default_ticks;
 	spin_unlock_irqrestore(&mtx1_wdt_device.lock, flags);
@@ -128,7 +116,7 @@ static int mtx1_wdt_open(struct inode *inode, struct file *file)
 {
 	if (test_and_set_bit(0, &mtx1_wdt_device.inuse))
 		return -EBUSY;
-	return nonseekable_open(inode, file);
+	return stream_open(inode, file);
 }
 
 
@@ -191,6 +179,7 @@ static const struct file_operations mtx1_wdt_fops = {
 	.owner		= THIS_MODULE,
 	.llseek		= no_llseek,
 	.unlocked_ioctl	= mtx1_wdt_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
 	.open		= mtx1_wdt_open,
 	.write		= mtx1_wdt_write,
 	.release	= mtx1_wdt_release,
@@ -208,19 +197,18 @@ static int mtx1_wdt_probe(struct platform_device *pdev)
 {
 	int ret;
 
-	mtx1_wdt_device.gpio = pdev->resource[0].start;
-	ret = devm_gpio_request_one(&pdev->dev, mtx1_wdt_device.gpio,
-				GPIOF_OUT_INIT_HIGH, "mtx1-wdt");
-	if (ret < 0) {
+	mtx1_wdt_device.gpiod = devm_gpiod_get(&pdev->dev,
+					       NULL, GPIOD_OUT_HIGH);
+	if (IS_ERR(mtx1_wdt_device.gpiod)) {
 		dev_err(&pdev->dev, "failed to request gpio");
-		return ret;
+		return PTR_ERR(mtx1_wdt_device.gpiod);
 	}
 
 	spin_lock_init(&mtx1_wdt_device.lock);
 	init_completion(&mtx1_wdt_device.stop);
 	mtx1_wdt_device.queue = 0;
 	clear_bit(0, &mtx1_wdt_device.inuse);
-	setup_timer(&mtx1_wdt_device.timer, mtx1_wdt_trigger, 0L);
+	timer_setup(&mtx1_wdt_device.timer, mtx1_wdt_trigger, 0);
 	mtx1_wdt_device.default_ticks = ticks;
 
 	ret = misc_register(&mtx1_wdt_misc);
@@ -233,7 +221,7 @@ static int mtx1_wdt_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int mtx1_wdt_remove(struct platform_device *pdev)
+static void mtx1_wdt_remove(struct platform_device *pdev)
 {
 	/* FIXME: do we need to lock this test ? */
 	if (mtx1_wdt_device.queue) {
@@ -242,12 +230,11 @@ static int mtx1_wdt_remove(struct platform_device *pdev)
 	}
 
 	misc_deregister(&mtx1_wdt_misc);
-	return 0;
 }
 
 static struct platform_driver mtx1_wdt_driver = {
 	.probe = mtx1_wdt_probe,
-	.remove = mtx1_wdt_remove,
+	.remove_new = mtx1_wdt_remove,
 	.driver.name = "mtx1-wdt",
 	.driver.owner = THIS_MODULE,
 };

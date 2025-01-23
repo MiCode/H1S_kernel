@@ -1,13 +1,7 @@
-/*  s5m8767.h
- *
+/* SPDX-License-Identifier: GPL-2.0+ */
+/*
  * Copyright (c) 2011 Samsung Electronics Co., Ltd
  *              http://www.samsung.com
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #ifndef __LINUX_MFD_S5M8767_H
@@ -183,8 +177,15 @@ enum s5m8767_regulators {
 	S5M8767_REG_MAX,
 };
 
+/* LDO_EN/BUCK_EN field in registers */
 #define S5M8767_ENCTRL_SHIFT		6
 #define S5M8767_ENCTRL_MASK		(0x3 << S5M8767_ENCTRL_SHIFT)
+
+/*
+ * LDO_EN/BUCK_EN register value for controlling this Buck or LDO
+ * by GPIO (PWREN, BUCKEN).
+ */
+#define S5M8767_ENCTRL_USE_GPIO		0x1
 
 /*
  * Values for BUCK_RAMP field in DVS_RAMP register, matching raw values

@@ -1,40 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
 /*
  * Copyright (c) 2004 Mellanox Technologies Ltd.  All rights reserved.
  * Copyright (c) 2004 Infinicon Corporation.  All rights reserved.
  * Copyright (c) 2004 Intel Corporation.  All rights reserved.
  * Copyright (c) 2004 Topspin Corporation.  All rights reserved.
  * Copyright (c) 2004 Voltaire Corporation.  All rights reserved.
- *
- * This software is available to you under a choice of one of two
- * licenses.  You may choose to be licensed under the terms of the GNU
- * General Public License (GPL) Version 2, available from the file
- * COPYING in the main directory of this source tree, or the
- * OpenIB.org BSD license below:
- *
- *     Redistribution and use in source and binary forms, with or
- *     without modification, are permitted provided that the following
- *     conditions are met:
- *
- *      - Redistributions of source code must retain the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer.
- *
- *      - Redistributions in binary form must reproduce the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer in the documentation and/or other materials
- *        provided with the distribution.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
  */
 
-#if !defined(IB_SMI_H)
+#ifndef IB_SMI_H
 #define IB_SMI_H
 
 #include <rdma/ib_mad.h>
@@ -61,7 +34,7 @@ struct ib_smp {
 	u8	data[IB_SMP_DATA_SIZE];
 	u8	initial_path[IB_SMP_MAX_PATH_HOPS];
 	u8	return_path[IB_SMP_MAX_PATH_HOPS];
-} __attribute__ ((packed));
+} __packed;
 
 #define IB_SMP_DIRECTION			cpu_to_be16(0x8000)
 
@@ -119,10 +92,67 @@ struct ib_port_info {
 	u8 link_roundtrip_latency[3];
 };
 
+struct ib_node_info {
+	u8 base_version;
+	u8 class_version;
+	u8 node_type;
+	u8 num_ports;
+	__be64 sys_guid;
+	__be64 node_guid;
+	__be64 port_guid;
+	__be16 partition_cap;
+	__be16 device_id;
+	__be32 revision;
+	u8 local_port_num;
+	u8 vendor_id[3];
+} __packed;
+
+struct ib_vl_weight_elem {
+	u8      vl;     /* IB: VL is low 4 bits, upper 4 bits reserved */
+                        /* OPA: VL is low 5 bits, upper 3 bits reserved */
+	u8      weight;
+};
+
 static inline u8
 ib_get_smp_direction(struct ib_smp *smp)
 {
 	return ((smp->status & IB_SMP_DIRECTION) == IB_SMP_DIRECTION);
 }
 
+/*
+ * SM Trap/Notice numbers
+ */
+#define IB_NOTICE_TRAP_LLI_THRESH	cpu_to_be16(129)
+#define IB_NOTICE_TRAP_EBO_THRESH	cpu_to_be16(130)
+#define IB_NOTICE_TRAP_FLOW_UPDATE	cpu_to_be16(131)
+#define IB_NOTICE_TRAP_CAP_MASK_CHG	cpu_to_be16(144)
+#define IB_NOTICE_TRAP_SYS_GUID_CHG	cpu_to_be16(145)
+#define IB_NOTICE_TRAP_BAD_MKEY		cpu_to_be16(256)
+#define IB_NOTICE_TRAP_BAD_PKEY		cpu_to_be16(257)
+#define IB_NOTICE_TRAP_BAD_QKEY		cpu_to_be16(258)
+
+/*
+ * Other local changes flags (trap 144).
+ */
+#define IB_NOTICE_TRAP_LSE_CHG		0x04	/* Link Speed Enable changed */
+#define IB_NOTICE_TRAP_LWE_CHG		0x02	/* Link Width Enable changed */
+#define IB_NOTICE_TRAP_NODE_DESC_CHG	0x01
+
+/*
+ * M_Key volation flags in dr_trunc_hop (trap 256).
+ */
+#define IB_NOTICE_TRAP_DR_NOTICE	0x80
+#define IB_NOTICE_TRAP_DR_TRUNC		0x40
+
+/**
+ * ib_init_query_mad - Initialize query MAD.
+ * @mad: MAD to initialize.
+ */
+static inline void ib_init_query_mad(struct ib_smp *mad)
+{
+	mad->base_version = IB_MGMT_BASE_VERSION;
+	mad->mgmt_class = IB_MGMT_CLASS_SUBN_LID_ROUTED;
+	mad->class_version = 1;
+	mad->method = IB_MGMT_METHOD_GET;
+}
 #endif /* IB_SMI_H */

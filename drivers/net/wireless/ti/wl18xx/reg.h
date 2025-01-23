@@ -1,22 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * This file is part of wlcore
  *
  * Copyright (C) 2011 Texas Instruments Inc.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #ifndef __REG_H__
@@ -109,6 +95,7 @@
 
 #define WL18XX_WELP_ARM_COMMAND		(WL18XX_REGISTERS_BASE + 0x7100)
 #define WL18XX_ENABLE			(WL18XX_REGISTERS_BASE + 0x01543C)
+#define TOP_FN0_CCCR_REG_32		(WL18XX_TOP_OCP_BASE + 0x64)
 
 /* PRCM registers */
 #define PLATFORM_DETECTION		0xA0E3E0

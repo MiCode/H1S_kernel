@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * wm9713.c  --  Codec touch driver for Wolfson WM9713 AC97 Codec.
  *
@@ -6,12 +7,6 @@
  * Parts Copyright : Ian Molton <spyro@f2s.com>
  *                   Andrew Zabolotny <zap@homelink.ru>
  *                   Russell King <rmk@arm.linux.org.uk>
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #include <linux/module.h>
@@ -41,7 +36,7 @@
  */
 static int rpu = 8;
 module_param(rpu, int, 0);
-MODULE_PARM_DESC(rpu, "Set internal pull up resitor for pen detect.");
+MODULE_PARM_DESC(rpu, "Set internal pull up resistor for pen detect.");
 
 /*
  * Set current used for pressure measurement.

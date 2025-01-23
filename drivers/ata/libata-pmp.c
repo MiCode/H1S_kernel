@@ -1,10 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * libata-pmp.c - libata port multiplier support
  *
  * Copyright (c) 2007  SUSE Linux Products GmbH
  * Copyright (c) 2007  Tejun Heo <teheo@suse.de>
- *
- * This file is released under the GPLv2.
  */
 
 #include <linux/kernel.h>
@@ -63,7 +62,7 @@ static unsigned int sata_pmp_read(struct ata_link *link, int reg, u32 *r_val)
  *	sata_pmp_write - write PMP register
  *	@link: link to write PMP register for
  *	@reg: register to write
- *	@r_val: value to write
+ *	@val: value to write
  *
  *	Write PMP register.
  *
@@ -340,7 +339,7 @@ static int sata_pmp_init_links (struct ata_port *ap, int nr_ports)
 	int i, err;
 
 	if (!pmp_link) {
-		pmp_link = kzalloc(sizeof(pmp_link[0]) * SATA_PMP_MAX_PORTS,
+		pmp_link = kcalloc(SATA_PMP_MAX_PORTS, sizeof(pmp_link[0]),
 				   GFP_NOIO);
 		if (!pmp_link)
 			return -ENOMEM;
@@ -447,8 +446,11 @@ static void sata_pmp_quirks(struct ata_port *ap)
 		 * otherwise.  Don't try hard to recover it.
 		 */
 		ap->pmp_link[ap->nr_pmp_links - 1].flags |= ATA_LFLAG_NO_RETRY;
-	} else if (vendor == 0x197b && devid == 0x2352) {
-		/* chip found in Thermaltake BlackX Duet, jmicron JMB350? */
+	} else if (vendor == 0x197b && (devid == 0x2352 || devid == 0x0325)) {
+		/*
+		 * 0x2352: found in Thermaltake BlackX Duet, jmicron JMB350?
+		 * 0x0325: jmicron JMB394.
+		 */
 		ata_for_each_link(link, ap, EDGE) {
 			/* SRST breaks detection and disks get misclassified
 			 * LPM disabled to avoid potential problems
@@ -456,6 +458,13 @@ static void sata_pmp_quirks(struct ata_port *ap)
 			link->flags |= ATA_LFLAG_NO_LPM |
 				       ATA_LFLAG_NO_SRST |
 				       ATA_LFLAG_ASSUME_ATA;
+		}
+	} else if (vendor == 0x11ab && devid == 0x4140) {
+		/* Marvell 4140 quirks */
+		ata_for_each_link(link, ap, EDGE) {
+			/* port 4 is for SEMB device and it doesn't like SRST */
+			if (link->pmp == 4)
+				link->flags |= ATA_LFLAG_DISABLED;
 		}
 	}
 }
@@ -643,8 +652,6 @@ static int sata_pmp_revalidate(struct ata_device *dev, unsigned int new_class)
 	u32 *gscr = (void *)ap->sector_buf;
 	int rc;
 
-	DPRINTK("ENTER\n");
-
 	ata_eh_about_to_do(link, NULL, ATA_EH_REVALIDATE);
 
 	if (!ata_dev_enabled(dev)) {
@@ -677,12 +684,10 @@ static int sata_pmp_revalidate(struct ata_device *dev, unsigned int new_class)
 
 	ata_eh_done(link, NULL, ATA_EH_REVALIDATE);
 
-	DPRINTK("EXIT, rc=0\n");
 	return 0;
 
  fail:
 	ata_dev_err(dev, "PMP revalidation failed (errno=%d)\n", rc);
-	DPRINTK("EXIT, rc=%d\n", rc);
 	return rc;
 }
 
@@ -750,10 +755,9 @@ static int sata_pmp_eh_recover_pmp(struct ata_port *ap,
 	int detach = 0, rc = 0;
 	int reval_failed = 0;
 
-	DPRINTK("ENTER\n");
-
 	if (dev->flags & ATA_DFLAG_DETACH) {
 		detach = 1;
+		rc = -ENODEV;
 		goto fail;
 	}
 
@@ -818,7 +822,6 @@ static int sata_pmp_eh_recover_pmp(struct ata_port *ap,
 	/* okay, PMP resurrected */
 	ehc->i.flags = 0;
 
-	DPRINTK("EXIT, rc=0\n");
 	return 0;
 
  fail:
@@ -828,7 +831,6 @@ static int sata_pmp_eh_recover_pmp(struct ata_port *ap,
 	else
 		ata_dev_disable(dev);
 
-	DPRINTK("EXIT, rc=%d\n", rc);
 	return rc;
 }
 

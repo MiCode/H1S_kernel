@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *   pata_pcmcia.c - PCMCIA PATA controller driver.
  *   Copyright 2005-2006 Red Hat Inc, all rights reserved.
  *   PCMCIA ident update Copyright 2006 Marcin Juszkiewicz
  *						<openembedded@hrw.one.pl>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2, or (at your option)
- *  any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; see the file COPYING.  If not, write to
- *  the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  *   Heavily based upon ide-cs.c
  *   The initial developer of the original code is David A. Hinds
@@ -26,7 +13,6 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
@@ -91,7 +77,7 @@ static int pcmcia_set_mode_8bit(struct ata_link *link,
 
 /**
  *	ata_data_xfer_8bit	 -	Transfer data by 8bit PIO
- *	@dev: device to target
+ *	@qc: queued command
  *	@buf: data buffer
  *	@buflen: buffer length
  *	@rw: read/write
@@ -102,10 +88,10 @@ static int pcmcia_set_mode_8bit(struct ata_link *link,
  *	Inherited from caller.
  */
 
-static unsigned int ata_data_xfer_8bit(struct ata_device *dev,
+static unsigned int ata_data_xfer_8bit(struct ata_queued_cmd *qc,
 				unsigned char *buf, unsigned int buflen, int rw)
 {
-	struct ata_port *ap = dev->link->ap;
+	struct ata_port *ap = qc->dev->link->ap;
 
 	if (rw == READ)
 		ioread8_rep(ap->ioaddr.data_addr, buf, buflen);
@@ -146,13 +132,13 @@ static void pcmcia_8bit_drain_fifo(struct ata_queued_cmd *qc)
 
 }
 
-static struct scsi_host_template pcmcia_sht = {
+static const struct scsi_host_template pcmcia_sht = {
 	ATA_PIO_SHT(DRV_NAME),
 };
 
 static struct ata_port_operations pcmcia_port_ops = {
 	.inherits	= &ata_sff_port_ops,
-	.sff_data_xfer	= ata_sff_data_xfer_noirq,
+	.sff_data_xfer	= ata_sff_data_xfer32,
 	.cable_detect	= ata_cable_40wire,
 	.set_mode	= pcmcia_set_mode,
 };
@@ -323,6 +309,7 @@ static const struct pcmcia_device_id pcmcia_devices[] = {
 	PCMCIA_DEVICE_MANF_CARD(0x0098, 0x0000),	/* Toshiba */
 	PCMCIA_DEVICE_MANF_CARD(0x00a4, 0x002d),
 	PCMCIA_DEVICE_MANF_CARD(0x00ce, 0x0000),	/* Samsung */
+	PCMCIA_DEVICE_MANF_CARD(0x00f1, 0x0101),	/* SanDisk High (>8G) CFA */
 	PCMCIA_DEVICE_MANF_CARD(0x0319, 0x0000),	/* Hitachi */
 	PCMCIA_DEVICE_MANF_CARD(0x2080, 0x0001),
 	PCMCIA_DEVICE_MANF_CARD(0x4e01, 0x0100),	/* Viking CFA */

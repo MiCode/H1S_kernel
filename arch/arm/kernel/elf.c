@@ -1,8 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/export.h>
 #include <linux/sched.h>
 #include <linux/personality.h>
 #include <linux/binfmts.h>
 #include <linux/elf.h>
+#include <linux/elf-fdpic.h>
 #include <asm/system_info.h>
 
 int elf_check_arch(const struct elf32_hdr *x)
@@ -76,16 +78,56 @@ void elf_set_personality(const struct elf32_hdr *x)
 EXPORT_SYMBOL(elf_set_personality);
 
 /*
- * Set READ_IMPLIES_EXEC if:
- *  - the binary requires an executable stack
- *  - we're running on a CPU which doesn't support NX.
+ * An executable for which elf_read_implies_exec() returns TRUE will
+ * have the READ_IMPLIES_EXEC personality flag set automatically.
+ *
+ * The decision process for determining the results are:
+ *
+ *                 CPU: | lacks NX*  | has NX     |
+ * ELF:                 |            |            |
+ * ---------------------|------------|------------|
+ * missing PT_GNU_STACK | exec-all   | exec-all   |
+ * PT_GNU_STACK == RWX  | exec-all   | exec-stack |
+ * PT_GNU_STACK == RW   | exec-all   | exec-none  |
+ *
+ *  exec-all  : all PROT_READ user mappings are executable, except when
+ *              backed by files on a noexec-filesystem.
+ *  exec-none : only PROT_EXEC user mappings are executable.
+ *  exec-stack: only the stack and PROT_EXEC user mappings are executable.
+ *
+ *  *this column has no architectural effect: NX markings are ignored by
+ *   hardware, but may have behavioral effects when "wants X" collides with
+ *   "cannot be X" constraints in memory permission flags, as in
+ *   https://lkml.kernel.org/r/20190418055759.GA3155@mellanox.com
+ *
  */
-int arm_elf_read_implies_exec(const struct elf32_hdr *x, int executable_stack)
+int arm_elf_read_implies_exec(int executable_stack)
 {
-	if (executable_stack != EXSTACK_DISABLE_X)
+	if (executable_stack == EXSTACK_DEFAULT)
 		return 1;
 	if (cpu_architecture() < CPU_ARCH_ARMv6)
 		return 1;
 	return 0;
 }
 EXPORT_SYMBOL(arm_elf_read_implies_exec);
+
+#if defined(CONFIG_MMU) && defined(CONFIG_BINFMT_ELF_FDPIC)
+
+void elf_fdpic_arch_lay_out_mm(struct elf_fdpic_params *exec_params,
+			       struct elf_fdpic_params *interp_params,
+			       unsigned long *start_stack,
+			       unsigned long *start_brk)
+{
+	elf_set_personality(&exec_params->hdr);
+
+	exec_params->load_addr = 0x8000;
+	interp_params->load_addr = ELF_ET_DYN_BASE;
+	*start_stack = TASK_SIZE - SZ_16M;
+
+	if ((exec_params->flags & ELF_FDPIC_FLAG_ARRANGEMENT) == ELF_FDPIC_FLAG_INDEPENDENT) {
+		exec_params->flags &= ~ELF_FDPIC_FLAG_ARRANGEMENT;
+		exec_params->flags |= ELF_FDPIC_FLAG_CONSTDISP;
+	}
+}
+
+#endif

@@ -1,16 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Copyright 2008 Michael Ellerman, IBM Corporation.
- *
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 #include <asm/feature-fixups.h>
 #include <asm/ppc_asm.h>
 #include <asm/synch.h>
+#include <asm/asm-compat.h>
+#include <asm/ppc-opcode.h>
 
 	.text
 
@@ -167,16 +164,52 @@ globl(ftr_fixup_test6_expected)
 	blt	2b
 	b	3f
 	b	1b
-2:	or	1,1,1
+3:	or	1,1,1
 	or	2,2,2
-3:	or	3,3,3
+	or	3,3,3
 
+globl(ftr_fixup_test7)
+	or	1,1,1
+BEGIN_FTR_SECTION
+	or	2,2,2
+	or	2,2,2
+	or	2,2,2
+	or	2,2,2
+	or	2,2,2
+	or	2,2,2
+	or	2,2,2
+FTR_SECTION_ELSE
+2:	b	3f
+3:	or	5,5,5
+	beq	3b
+	b	1f
+	or	6,6,6
+	b	2b
+	bdnz	3b
+1:
+ALT_FTR_SECTION_END(0, 1)
+	or	1,1,1
+	or	1,1,1
+
+globl(end_ftr_fixup_test7)
+	nop
+
+globl(ftr_fixup_test7_expected)
+	or	1,1,1
+2:	b	3f
+3:	or	5,5,5
+	beq	3b
+	b	1f
+	or	6,6,6
+	b	2b
+	bdnz	3b
+1:	or	1,1,1
 
 #if 0
 /* Test that if we have a larger else case the assembler spots it and
  * reports an error. #if 0'ed so as not to break the build normally.
  */
-ftr_fixup_test7:
+ftr_fixup_test_too_big:
 	or	1,1,1
 BEGIN_FTR_SECTION
 	or	2,2,2
@@ -759,3 +792,71 @@ globl(lwsync_fixup_test_expected_SYNC)
 1:	or	1,1,1
 	sync
 
+globl(ftr_fixup_prefix1)
+	or	1,1,1
+	.long OP_PREFIX << 26
+	.long 0x0000000
+	or	2,2,2
+globl(end_ftr_fixup_prefix1)
+
+globl(ftr_fixup_prefix1_orig)
+	or	1,1,1
+	.long OP_PREFIX << 26
+	.long 0x0000000
+	or	2,2,2
+
+globl(ftr_fixup_prefix1_expected)
+	or	1,1,1
+	nop
+	nop
+	or	2,2,2
+
+globl(ftr_fixup_prefix2)
+	or	1,1,1
+	.long OP_PREFIX << 26
+	.long 0x0000000
+	or	2,2,2
+globl(end_ftr_fixup_prefix2)
+
+globl(ftr_fixup_prefix2_orig)
+	or	1,1,1
+	.long OP_PREFIX << 26
+	.long 0x0000000
+	or	2,2,2
+
+globl(ftr_fixup_prefix2_alt)
+	.long OP_PREFIX << 26
+	.long 0x0000001
+
+globl(ftr_fixup_prefix2_expected)
+	or	1,1,1
+	.long OP_PREFIX << 26
+	.long 0x0000001
+	or	2,2,2
+
+globl(ftr_fixup_prefix3)
+	or	1,1,1
+	.long OP_PREFIX << 26
+	.long 0x0000000
+	or	2,2,2
+	or	3,3,3
+globl(end_ftr_fixup_prefix3)
+
+globl(ftr_fixup_prefix3_orig)
+	or	1,1,1
+	.long OP_PREFIX << 26
+	.long 0x0000000
+	or	2,2,2
+	or	3,3,3
+
+globl(ftr_fixup_prefix3_alt)
+	.long OP_PREFIX << 26
+	.long 0x0000001
+	nop
+
+globl(ftr_fixup_prefix3_expected)
+	or	1,1,1
+	.long OP_PREFIX << 26
+	.long 0x0000001
+	nop
+	or	3,3,3

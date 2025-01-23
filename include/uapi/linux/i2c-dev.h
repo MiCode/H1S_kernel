@@ -1,24 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /*
-    i2c-dev.h - i2c-bus driver, char device interface
-
-    Copyright (C) 1995-97 Simon G. Vogl
-    Copyright (C) 1998-99 Frodo Looijaard <frodol@dds.nl>
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-    MA 02110-1301 USA.
-*/
+ * i2c-dev.h - I2C bus char device interface
+ *
+ * Copyright (C) 1995-97 Simon G. Vogl
+ * Copyright (C) 1998-99 Frodo Looijaard <frodol@dds.nl>
+ */
 
 #ifndef _UAPI_LINUX_I2C_DEV_H
 #define _UAPI_LINUX_I2C_DEV_H
@@ -66,7 +52,9 @@ struct i2c_rdwr_ioctl_data {
 	__u32 nmsgs;			/* number of i2c_msgs */
 };
 
-#define  I2C_RDRW_IOCTL_MAX_MSGS	42
+#define  I2C_RDWR_IOCTL_MAX_MSGS	42
+/* Originally defined with a typo, keep it for compatibility */
+#define  I2C_RDRW_IOCTL_MAX_MSGS	I2C_RDWR_IOCTL_MAX_MSGS
 
 
 #endif /* _UAPI_LINUX_I2C_DEV_H */

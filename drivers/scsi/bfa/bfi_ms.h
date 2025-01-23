@@ -1,18 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2005-2010 Brocade Communications Systems, Inc.
+ * Copyright (c) 2005-2014 Brocade Communications Systems, Inc.
+ * Copyright (c) 2014- QLogic Corporation.
  * All rights reserved
- * www.brocade.com
+ * www.qlogic.com
  *
- * Linux driver for Brocade Fibre Channel Host Bus Adapter.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License (GPL) Version 2 as
- * published by the Free Software Foundation
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
+ * Linux driver for QLogic BR-series Fibre Channel Host Bus Adapter.
  */
 
 #ifndef __BFI_MS_H__
@@ -679,7 +672,7 @@ struct bfi_ioim_req_s {
 
 	/*
 	 * SG elements array within the IO request must be double word
-	 * aligned. This aligment is required to optimize SGM setup for the IO.
+	 * aligned. This alignment is required to optimize SGM setup for the IO.
 	 */
 	struct bfi_sge_s	sges[BFI_SGE_INLINE_MAX];
 	u8	io_timeout;

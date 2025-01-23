@@ -1,20 +1,27 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # For a description of the syntax of this configuration file,
-# see Documentation/kbuild/kconfig-language.txt.
+# see Documentation/kbuild/kconfig-language.rst.
 #
 # Parport configuration.
 #
 
+config ARCH_MIGHT_HAVE_PC_PARPORT
+	bool
+	help
+	  Select this config option from the architecture Kconfig if
+	  the architecture might have PC parallel port hardware.
+
 menuconfig PARPORT
 	tristate "Parallel port support"
 	depends on HAS_IOMEM
-	---help---
+	help
 	  If you want to use devices connected to your machine's parallel port
 	  (the connector at the computer with 25 holes), e.g. printer, ZIP
 	  drive, PLIP link (Parallel Line Internet Protocol is mainly used to
 	  create a mini network by connecting the parallel ports of two local
 	  machines) etc., then you need to say Y here; please read
-	  <file:Documentation/parport.txt> and
+	  <file:Documentation/admin-guide/parport.rst> and
 	  <file:drivers/parport/BUGS-parport>.
 
 	  For extensive information about drivers for many devices attaching
@@ -27,21 +34,16 @@ menuconfig PARPORT
 	  the module will be called parport.
 	  If you have more than one parallel port and want to specify which
 	  port and IRQ to be used by this driver at module load time, take a
-	  look at <file:Documentation/parport.txt>.
+	  look at <file:Documentation/admin-guide/parport.rst>.
 
 	  If unsure, say Y.
-
-config ARCH_MIGHT_HAVE_PC_PARPORT
-	bool
-	help
-	  Select this config option from the architecture Kconfig if
-	  the architecture might have PC parallel port hardware.
 
 if PARPORT
 
 config PARPORT_PC
 	tristate "PC-style hardware"
-	depends on ARCH_MIGHT_HAVE_PC_PARPORT
+	depends on ARCH_MIGHT_HAVE_PC_PARPORT || PCI
+	depends on HAS_IOPORT
 	help
 	  You should say Y here if you have a PC-style parallel port. All
 	  IBM PC compatible computers and some Alphas have PC-style
@@ -71,12 +73,12 @@ config PARPORT_PC_FIFO
 	  As well as actually having a FIFO, or DMA capability, the kernel
 	  will need to know which IRQ the parallel port has.  By default,
 	  parallel port interrupts will not be used, and so neither will the
-	  FIFO.  See <file:Documentation/parport.txt> to find out how to
+	  FIFO.  See <file:Documentation/admin-guide/parport.rst> to find out how to
 	  specify which IRQ/DMA to use.
 
 config PARPORT_PC_SUPERIO
 	bool "SuperIO chipset support"
-	depends on PARPORT_PC && !PARISC
+	depends on ARCH_MIGHT_HAVE_PC_PARPORT && PARPORT_PC && !PARISC
 	help
 	  Saying Y here enables some probes for Super-IO chipsets in order to
 	  find out things like base addresses, IRQ lines and DMA channels.  It
@@ -138,17 +140,6 @@ config PARPORT_SUNBPP
 	  This driver provides support for the bidirectional parallel port
 	  found on many Sun machines. Note that many of the newer Ultras
 	  actually have pc style hardware instead.
-
-config PARPORT_AX88796
-	tristate "AX88796 Parallel Port"
-	select PARPORT_NOT_PC
-	help
-	  Say Y here if you need support for the parallel port hardware on
-	  the AX88796 network controller chip. This code is also available
-	  as a module (say M), called parport_ax88796.
-
-	  The driver is not dependent on the AX88796 network driver, and
-	  should not interfere with the networking functions of the chip.
 
 config PARPORT_1284
 	bool "IEEE 1284 transfer modes"

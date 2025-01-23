@@ -1,6 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef GENL_MAGIC_FUNC_H
 #define GENL_MAGIC_FUNC_H
 
+#include <linux/args.h>
+#include <linux/build_bug.h>
 #include <linux/genl_magic_struct.h>
 
 /*
@@ -21,7 +24,7 @@
 #define GENL_struct(tag_name, tag_number, s_name, s_fields)		\
 	[tag_name] = { .type = NLA_NESTED },
 
-static struct nla_policy CONCAT_(GENL_MAGIC_FAMILY, _tla_nl_policy)[] = {
+static struct nla_policy CONCATENATE(GENL_MAGIC_FAMILY, _tla_nl_policy)[] = {
 #include GENL_MAGIC_INCLUDE_FILE
 };
 
@@ -131,17 +134,6 @@ static void dprint_array(const char *dir, int nla_type,
  * use one static buffer for parsing of nested attributes */
 static struct nlattr *nested_attr_tb[128];
 
-#ifndef BUILD_BUG_ON
-/* Force a compilation error if condition is true */
-#define BUILD_BUG_ON(condition) ((void)BUILD_BUG_ON_ZERO(condition))
-/* Force a compilation error if condition is true, but also produce a
-   result (of value 0 and type size_t), so the expression can be used
-   e.g. in a structure initializer (or where-ever else comma expressions
-   aren't permitted). */
-#define BUILD_BUG_ON_ZERO(e) (sizeof(struct { int:-!!(e); }))
-#define BUILD_BUG_ON_NULL(e) ((void *)sizeof(struct { int:-!!(e); }))
-#endif
-
 #undef GENL_struct
 #define GENL_struct(tag_name, tag_number, s_name, s_fields)		\
 /* *_from_attrs functions are static, but potentially unused */		\
@@ -178,12 +170,12 @@ static int s_name ## _from_attrs_for_change(struct s_name *s,		\
 #define __assign(attr_nr, attr_flag, name, nla_type, type, assignment...)	\
 		nla = ntb[attr_nr];						\
 		if (nla) {						\
-			if (exclude_invariants && ((attr_flag) & DRBD_F_INVARIANT)) {		\
+			if (exclude_invariants && !!((attr_flag) & DRBD_F_INVARIANT)) {		\
 				pr_info("<< must not change invariant attr: %s\n", #name);	\
 				return -EEXIST;				\
 			}						\
 			assignment;					\
-		} else if (exclude_invariants && ((attr_flag) & DRBD_F_INVARIANT)) {		\
+		} else if (exclude_invariants && !!((attr_flag) & DRBD_F_INVARIANT)) {		\
 			/* attribute missing from payload, */		\
 			/* which was expected */			\
 		} else if ((attr_flag) & DRBD_F_REQUIRED) {		\
@@ -218,7 +210,7 @@ static int s_name ## _from_attrs_for_change(struct s_name *s,		\
  * Magic: define op number to op name mapping				{{{1
  *									{{{2
  */
-const char *CONCAT_(GENL_MAGIC_FAMILY, _genl_cmd_to_str)(__u8 cmd)
+static const char *CONCATENATE(GENL_MAGIC_FAMILY, _genl_cmd_to_str)(__u8 cmd)
 {
 	switch (cmd) {
 #undef GENL_op
@@ -242,10 +234,9 @@ const char *CONCAT_(GENL_MAGIC_FAMILY, _genl_cmd_to_str)(__u8 cmd)
 {								\
 	handler							\
 	.cmd = op_name,						\
-	.policy	= CONCAT_(GENL_MAGIC_FAMILY, _tla_nl_policy),	\
 },
 
-#define ZZZ_genl_ops		CONCAT_(GENL_MAGIC_FAMILY, _genl_ops)
+#define ZZZ_genl_ops		CONCATENATE(GENL_MAGIC_FAMILY, _genl_ops)
 static struct genl_ops ZZZ_genl_ops[] __read_mostly = {
 #include GENL_MAGIC_INCLUDE_FILE
 };
@@ -258,41 +249,32 @@ static struct genl_ops ZZZ_genl_ops[] __read_mostly = {
  * and provide register/unregister functions.
  *									{{{2
  */
-#define ZZZ_genl_family		CONCAT_(GENL_MAGIC_FAMILY, _genl_family)
-static struct genl_family ZZZ_genl_family __read_mostly = {
-	.id = GENL_ID_GENERATE,
-	.name = __stringify(GENL_MAGIC_FAMILY),
-	.version = GENL_MAGIC_VERSION,
-#ifdef GENL_MAGIC_FAMILY_HDRSZ
-	.hdrsize = NLA_ALIGN(GENL_MAGIC_FAMILY_HDRSZ),
-#endif
-	.maxattr = ARRAY_SIZE(drbd_tla_nl_policy)-1,
-};
-
+#define ZZZ_genl_family		CONCATENATE(GENL_MAGIC_FAMILY, _genl_family)
+static struct genl_family ZZZ_genl_family;
 /*
  * Magic: define multicast groups
  * Magic: define multicast group registration helper
  */
-#define ZZZ_genl_mcgrps		CONCAT_(GENL_MAGIC_FAMILY, _genl_mcgrps)
+#define ZZZ_genl_mcgrps		CONCATENATE(GENL_MAGIC_FAMILY, _genl_mcgrps)
 static const struct genl_multicast_group ZZZ_genl_mcgrps[] = {
 #undef GENL_mc_group
 #define GENL_mc_group(group) { .name = #group, },
 #include GENL_MAGIC_INCLUDE_FILE
 };
 
-enum CONCAT_(GENL_MAGIC_FAMILY, group_ids) {
+enum CONCATENATE(GENL_MAGIC_FAMILY, group_ids) {
 #undef GENL_mc_group
-#define GENL_mc_group(group) CONCAT_(GENL_MAGIC_FAMILY, _group_ ## group),
+#define GENL_mc_group(group) CONCATENATE(GENL_MAGIC_FAMILY, _group_ ## group),
 #include GENL_MAGIC_INCLUDE_FILE
 };
 
 #undef GENL_mc_group
 #define GENL_mc_group(group)						\
-static int CONCAT_(GENL_MAGIC_FAMILY, _genl_multicast_ ## group)(	\
+static int CONCATENATE(GENL_MAGIC_FAMILY, _genl_multicast_ ## group)(	\
 	struct sk_buff *skb, gfp_t flags)				\
 {									\
 	unsigned int group_id =						\
-		CONCAT_(GENL_MAGIC_FAMILY, _group_ ## group);		\
+		CONCATENATE(GENL_MAGIC_FAMILY, _group_ ## group);		\
 	return genlmsg_multicast(&ZZZ_genl_family, skb, 0,		\
 				 group_id, flags);			\
 }
@@ -302,14 +284,28 @@ static int CONCAT_(GENL_MAGIC_FAMILY, _genl_multicast_ ## group)(	\
 #undef GENL_mc_group
 #define GENL_mc_group(group)
 
-int CONCAT_(GENL_MAGIC_FAMILY, _genl_register)(void)
+static struct genl_family ZZZ_genl_family __ro_after_init = {
+	.name = __stringify(GENL_MAGIC_FAMILY),
+	.version = GENL_MAGIC_VERSION,
+#ifdef GENL_MAGIC_FAMILY_HDRSZ
+	.hdrsize = NLA_ALIGN(GENL_MAGIC_FAMILY_HDRSZ),
+#endif
+	.maxattr = ARRAY_SIZE(CONCATENATE(GENL_MAGIC_FAMILY, _tla_nl_policy))-1,
+	.policy	= CONCATENATE(GENL_MAGIC_FAMILY, _tla_nl_policy),
+	.ops = ZZZ_genl_ops,
+	.n_ops = ARRAY_SIZE(ZZZ_genl_ops),
+	.mcgrps = ZZZ_genl_mcgrps,
+	.resv_start_op = 42, /* drbd is currently the only user */
+	.n_mcgrps = ARRAY_SIZE(ZZZ_genl_mcgrps),
+	.module = THIS_MODULE,
+};
+
+int CONCATENATE(GENL_MAGIC_FAMILY, _genl_register)(void)
 {
-	return genl_register_family_with_ops_groups(&ZZZ_genl_family,	\
-						    ZZZ_genl_ops,	\
-						    ZZZ_genl_mcgrps);
+	return genl_register_family(&ZZZ_genl_family);
 }
 
-void CONCAT_(GENL_MAGIC_FAMILY, _genl_unregister)(void)
+void CONCATENATE(GENL_MAGIC_FAMILY, _genl_unregister)(void)
 {
 	genl_unregister_family(&ZZZ_genl_family);
 }
@@ -410,4 +406,3 @@ s_fields								\
 
 /* }}}1 */
 #endif /* GENL_MAGIC_FUNC_H */
-/* vim: set foldmethod=marker foldlevel=1 nofoldenable : */

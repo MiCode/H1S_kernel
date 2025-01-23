@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*  linux/arch/sparc/kernel/process.c
  *
  *  Copyright (C) 1995, 2008 David S. Miller (davem@davemloft.net)
@@ -7,12 +8,13 @@
 /*
  * This file handles the architecture-dependent parts of process handling..
  */
-
-#include <stdarg.h>
-
+#include <linux/elfcore.h>
 #include <linux/errno.h>
 #include <linux/module.h>
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
+#include <linux/sched/task.h>
+#include <linux/sched/task_stack.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/stddef.h>
@@ -23,13 +25,12 @@
 #include <linux/delay.h>
 #include <linux/pm.h>
 #include <linux/slab.h>
+#include <linux/cpu.h>
 
 #include <asm/auxio.h>
 #include <asm/oplib.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/page.h>
-#include <asm/pgalloc.h>
-#include <asm/pgtable.h>
 #include <asm/delay.h>
 #include <asm/processor.h>
 #include <asm/psr.h>
@@ -37,6 +38,8 @@
 #include <asm/prom.h>
 #include <asm/unistd.h>
 #include <asm/setup.h>
+
+#include "kernel.h"
 
 /* 
  * Power management idle function 
@@ -68,7 +71,6 @@ void arch_cpu_idle(void)
 {
 	if (sparc_idle)
 		(*sparc_idle)();
-	local_irq_enable();
 }
 
 /* XXX cli/sti -> local_irq_xxx here, check this works once SMP is fixed. */
@@ -102,8 +104,12 @@ void machine_restart(char * cmd)
 void machine_power_off(void)
 {
 	if (auxio_power_register &&
-	    (strcmp(of_console_device->type, "serial") || scons_pwroff))
-		*auxio_power_register |= AUXIO_POWER_OFF;
+	    (!of_node_is_type(of_console_device, "serial") || scons_pwroff)) {
+		u8 power_register = sbus_readb(auxio_power_register);
+		power_register |= AUXIO_POWER_OFF;
+		sbus_writeb(power_register, auxio_power_register);
+	}
+
 	machine_halt();
 }
 
@@ -133,10 +139,10 @@ void show_regs(struct pt_regs *r)
 }
 
 /*
- * The show_stack is an external API which we do not use ourselves.
+ * The show_stack() is external API which we do not use ourselves.
  * The oops is printed in die_if_kernel.
  */
-void show_stack(struct task_struct *tsk, unsigned long *_ksp)
+void show_stack(struct task_struct *tsk, unsigned long *_ksp, const char *loglvl)
 {
 	unsigned long pc, fp;
 	unsigned long task_base;
@@ -158,39 +164,31 @@ void show_stack(struct task_struct *tsk, unsigned long *_ksp)
 			break;
 		rw = (struct reg_window32 *) fp;
 		pc = rw->ins[7];
-		printk("[%08lx : ", pc);
-		printk("%pS ] ", (void *) pc);
+		printk("%s[%08lx : ", loglvl, pc);
+		printk("%s%pS ] ", loglvl, (void *) pc);
 		fp = rw->ins[6];
 	} while (++count < 16);
-	printk("\n");
-}
-
-/*
- * Note: sparc64 has a pretty intricated thread_saved_pc, check it out.
- */
-unsigned long thread_saved_pc(struct task_struct *tsk)
-{
-	return task_thread_info(tsk)->kpc;
+	printk("%s\n", loglvl);
 }
 
 /*
  * Free current thread data structures etc..
  */
-void exit_thread(void)
+void exit_thread(struct task_struct *tsk)
 {
 #ifndef CONFIG_SMP
-	if(last_task_used_math == current) {
+	if (last_task_used_math == tsk) {
 #else
-	if (test_thread_flag(TIF_USEDFPU)) {
+	if (test_tsk_thread_flag(tsk, TIF_USEDFPU)) {
 #endif
 		/* Keep process from leaving FPU in a bogon state. */
 		put_psr(get_psr() | PSR_EF);
-		fpsave(&current->thread.float_regs[0], &current->thread.fsr,
-		       &current->thread.fpqueue[0], &current->thread.fpqdepth);
+		fpsave(&tsk->thread.float_regs[0], &tsk->thread.fsr,
+		       &tsk->thread.fpqueue[0], &tsk->thread.fpqdepth);
 #ifndef CONFIG_SMP
 		last_task_used_math = NULL;
 #else
-		clear_thread_flag(TIF_USEDFPU);
+		clear_ti_thread_flag(task_thread_info(tsk), TIF_USEDFPU);
 #endif
 	}
 }
@@ -213,16 +211,6 @@ void flush_thread(void)
 #else
 		clear_thread_flag(TIF_USEDFPU);
 #endif
-	}
-
-	/* This task is no longer a kernel thread. */
-	if (current->thread.flags & SPARC_FLAG_KTHREAD) {
-		current->thread.flags &= ~SPARC_FLAG_KTHREAD;
-
-		/* We must fixup kregs as well. */
-		/* XXX This was not fixed for ti for a while, worked. Unused? */
-		current->thread.kregs = (struct pt_regs *)
-		    (task_stack_page(current) + (THREAD_SIZE - TRACEREG_SZ));
 	}
 }
 
@@ -254,33 +242,6 @@ clone_stackframe(struct sparc_stackf __user *dst,
 	return sp;
 }
 
-asmlinkage int sparc_do_fork(unsigned long clone_flags,
-                             unsigned long stack_start,
-                             struct pt_regs *regs,
-                             unsigned long stack_size)
-{
-	unsigned long parent_tid_ptr, child_tid_ptr;
-	unsigned long orig_i1 = regs->u_regs[UREG_I1];
-	long ret;
-
-	parent_tid_ptr = regs->u_regs[UREG_I2];
-	child_tid_ptr = regs->u_regs[UREG_I4];
-
-	ret = do_fork(clone_flags, stack_start, stack_size,
-		      (int __user *) parent_tid_ptr,
-		      (int __user *) child_tid_ptr);
-
-	/* If we get an error and potentially restart the system
-	 * call, we're screwed because copy_thread() clobbered
-	 * the parent's %o1.  So detect that case and restore it
-	 * here.
-	 */
-	if ((unsigned long)ret >= -ERESTART_RESTARTBLOCK)
-		regs->u_regs[UREG_I1] = orig_i1;
-
-	return ret;
-}
-
 /* Copy a Sparc thread.  The fork() return value conventions
  * under SunOS are nothing short of bletcherous:
  * Parent -->  %o0 == childs  pid, %o1 == 0
@@ -297,9 +258,11 @@ asmlinkage int sparc_do_fork(unsigned long clone_flags,
 extern void ret_from_fork(void);
 extern void ret_from_kernel_thread(void);
 
-int copy_thread(unsigned long clone_flags, unsigned long sp,
-		unsigned long arg, struct task_struct *p)
+int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 {
+	unsigned long clone_flags = args->flags;
+	unsigned long sp = args->stack;
+	unsigned long tls = args->tls;
 	struct thread_info *ti = task_thread_info(p);
 	struct pt_regs *childregs, *regs = current_pt_regs();
 	char *new_stack;
@@ -325,24 +288,22 @@ int copy_thread(unsigned long clone_flags, unsigned long sp,
 	childregs = (struct pt_regs *) (new_stack + STACKFRAME_SZ);
 
 	/*
-	 * A new process must start with interrupts closed in 2.5,
-	 * because this is how Mingo's scheduler works (see schedule_tail
-	 * and finish_arch_switch). If we do not do it, a timer interrupt hits
-	 * before we unlock, attempts to re-take the rq->lock, and then we die.
-	 * Thus, kpsr|=PSR_PIL.
+	 * A new process must start with interrupts disabled, see schedule_tail()
+	 * and finish_task_switch(). (If we do not do it and if a timer interrupt
+	 * hits before we unlock and attempts to take the rq->lock, we deadlock.)
+	 *
+	 * Thus, kpsr |= PSR_PIL.
 	 */
 	ti->ksp = (unsigned long) new_stack;
 	p->thread.kregs = childregs;
 
-	if (unlikely(p->flags & PF_KTHREAD)) {
+	if (unlikely(args->fn)) {
 		extern int nwindows;
 		unsigned long psr;
 		memset(new_stack, 0, STACKFRAME_SZ + TRACEREG_SZ);
-		p->thread.flags |= SPARC_FLAG_KTHREAD;
-		p->thread.current_ds = KERNEL_DS;
 		ti->kpc = (((unsigned long) ret_from_kernel_thread) - 0x8);
-		childregs->u_regs[UREG_G1] = sp; /* function */
-		childregs->u_regs[UREG_G2] = arg;
+		childregs->u_regs[UREG_G1] = (unsigned long) args->fn;
+		childregs->u_regs[UREG_G2] = (unsigned long) args->fn_arg;
 		psr = childregs->psr = get_psr();
 		ti->kpsr = psr | PSR_PIL;
 		ti->kwim = 1 << (((psr & PSR_CWP) + 1) % nwindows);
@@ -350,8 +311,6 @@ int copy_thread(unsigned long clone_flags, unsigned long sp,
 	}
 	memcpy(new_stack, (char *)regs - STACKFRAME_SZ, STACKFRAME_SZ + TRACEREG_SZ);
 	childregs->u_regs[UREG_FP] = sp;
-	p->thread.flags &= ~SPARC_FLAG_KTHREAD;
-	p->thread.current_ds = USER_DS;
 	ti->kpc = (((unsigned long) ret_from_fork) - 0x8);
 	ti->kpsr = current->thread.fork_kpsr | PSR_PIL;
 	ti->kwim = current->thread.fork_kwim;
@@ -400,71 +359,18 @@ int copy_thread(unsigned long clone_flags, unsigned long sp,
 	regs->u_regs[UREG_I1] = 0;
 
 	if (clone_flags & CLONE_SETTLS)
-		childregs->u_regs[UREG_G7] = regs->u_regs[UREG_I3];
+		childregs->u_regs[UREG_G7] = tls;
 
 	return 0;
 }
 
-/*
- * fill in the fpu structure for a core dump.
- */
-int dump_fpu (struct pt_regs * regs, elf_fpregset_t * fpregs)
-{
-	if (used_math()) {
-		memset(fpregs, 0, sizeof(*fpregs));
-		fpregs->pr_q_entrysize = 8;
-		return 1;
-	}
-#ifdef CONFIG_SMP
-	if (test_thread_flag(TIF_USEDFPU)) {
-		put_psr(get_psr() | PSR_EF);
-		fpsave(&current->thread.float_regs[0], &current->thread.fsr,
-		       &current->thread.fpqueue[0], &current->thread.fpqdepth);
-		if (regs != NULL) {
-			regs->psr &= ~(PSR_EF);
-			clear_thread_flag(TIF_USEDFPU);
-		}
-	}
-#else
-	if (current == last_task_used_math) {
-		put_psr(get_psr() | PSR_EF);
-		fpsave(&current->thread.float_regs[0], &current->thread.fsr,
-		       &current->thread.fpqueue[0], &current->thread.fpqdepth);
-		if (regs != NULL) {
-			regs->psr &= ~(PSR_EF);
-			last_task_used_math = NULL;
-		}
-	}
-#endif
-	memcpy(&fpregs->pr_fr.pr_regs[0],
-	       &current->thread.float_regs[0],
-	       (sizeof(unsigned long) * 32));
-	fpregs->pr_fsr = current->thread.fsr;
-	fpregs->pr_qcnt = current->thread.fpqdepth;
-	fpregs->pr_q_entrysize = 8;
-	fpregs->pr_en = 1;
-	if(fpregs->pr_qcnt != 0) {
-		memcpy(&fpregs->pr_q[0],
-		       &current->thread.fpqueue[0],
-		       sizeof(struct fpq) * fpregs->pr_qcnt);
-	}
-	/* Zero out the rest. */
-	memset(&fpregs->pr_q[fpregs->pr_qcnt], 0,
-	       sizeof(struct fpq) * (32 - fpregs->pr_qcnt));
-	return 1;
-}
-
-unsigned long get_wchan(struct task_struct *task)
+unsigned long __get_wchan(struct task_struct *task)
 {
 	unsigned long pc, fp, bias = 0;
 	unsigned long task_base = (unsigned long) task;
         unsigned long ret = 0;
 	struct reg_window32 *rw;
 	int count = 0;
-
-	if (!task || task == current ||
-            task->state == TASK_RUNNING)
-		goto out;
 
 	fp = task_thread_info(task)->ksp + bias;
 	do {

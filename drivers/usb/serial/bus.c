@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * USB Serial Converter Bus specific functions
  *
  * Copyright (C) 2002 Greg Kroah-Hartman (greg@kroah.com)
- *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License version
- *	2 as published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -19,106 +16,91 @@
 static int usb_serial_device_match(struct device *dev,
 						struct device_driver *drv)
 {
-	struct usb_serial_driver *driver;
-	const struct usb_serial_port *port;
+	const struct usb_serial_port *port = to_usb_serial_port(dev);
+	struct usb_serial_driver *driver = to_usb_serial_driver(drv);
 
 	/*
 	 * drivers are already assigned to ports in serial_probe so it's
 	 * a simple check here.
 	 */
-	port = to_usb_serial_port(dev);
-	if (!port)
-		return 0;
-
-	driver = to_usb_serial_driver(drv);
-
 	if (driver == port->serial->type)
 		return 1;
 
 	return 0;
 }
 
-static ssize_t port_number_show(struct device *dev,
-				struct device_attribute *attr, char *buf)
-{
-	struct usb_serial_port *port = to_usb_serial_port(dev);
-
-	return sprintf(buf, "%d\n", port->port_number);
-}
-static DEVICE_ATTR_RO(port_number);
-
 static int usb_serial_device_probe(struct device *dev)
 {
+	struct usb_serial_port *port = to_usb_serial_port(dev);
 	struct usb_serial_driver *driver;
-	struct usb_serial_port *port;
+	struct device *tty_dev;
 	int retval = 0;
 	int minor;
-
-	port = to_usb_serial_port(dev);
-	if (!port) {
-		retval = -ENODEV;
-		goto exit;
-	}
 
 	/* make sure suspend/resume doesn't race against port_probe */
 	retval = usb_autopm_get_interface(port->serial->interface);
 	if (retval)
-		goto exit;
+		return retval;
 
 	driver = port->serial->type;
 	if (driver->port_probe) {
 		retval = driver->port_probe(port);
 		if (retval)
-			goto exit_with_autopm;
-	}
-
-	retval = device_create_file(dev, &dev_attr_port_number);
-	if (retval) {
-		if (driver->port_remove)
-			retval = driver->port_remove(port);
-		goto exit_with_autopm;
+			goto err_autopm_put;
 	}
 
 	minor = port->minor;
-	tty_register_device(usb_serial_tty_driver, minor, dev);
+	tty_dev = tty_port_register_device(&port->port, usb_serial_tty_driver,
+					   minor, dev);
+	if (IS_ERR(tty_dev)) {
+		retval = PTR_ERR(tty_dev);
+		goto err_port_remove;
+	}
+
+	usb_autopm_put_interface(port->serial->interface);
+
 	dev_info(&port->serial->dev->dev,
 		 "%s converter now attached to ttyUSB%d\n",
 		 driver->description, minor);
 
-exit_with_autopm:
+	return 0;
+
+err_port_remove:
+	if (driver->port_remove)
+		driver->port_remove(port);
+err_autopm_put:
 	usb_autopm_put_interface(port->serial->interface);
-exit:
+
 	return retval;
 }
 
-static int usb_serial_device_remove(struct device *dev)
+static void usb_serial_device_remove(struct device *dev)
 {
+	struct usb_serial_port *port = to_usb_serial_port(dev);
 	struct usb_serial_driver *driver;
-	struct usb_serial_port *port;
-	int retval = 0;
 	int minor;
+	int autopm_err;
 
-	port = to_usb_serial_port(dev);
-	if (!port)
-		return -ENODEV;
-
-	/* make sure suspend/resume doesn't race against port_remove */
-	usb_autopm_get_interface(port->serial->interface);
+	/*
+	 * Make sure suspend/resume doesn't race against port_remove.
+	 *
+	 * Note that no further runtime PM callbacks will be made if
+	 * autopm_get fails.
+	 */
+	autopm_err = usb_autopm_get_interface(port->serial->interface);
 
 	minor = port->minor;
 	tty_unregister_device(usb_serial_tty_driver, minor);
 
-	device_remove_file(&port->dev, &dev_attr_port_number);
-
 	driver = port->serial->type;
 	if (driver->port_remove)
-		retval = driver->port_remove(port);
+		driver->port_remove(port);
 
 	dev_info(dev, "%s converter now disconnected from ttyUSB%d\n",
 		 driver->description, minor);
 
-	usb_autopm_put_interface(port->serial->interface);
-	return retval;
+	if (!autopm_err)
+		usb_autopm_put_interface(port->serial->interface);
 }
 
 static ssize_t new_id_store(struct device_driver *driver,
@@ -162,7 +144,7 @@ static void free_dynids(struct usb_serial_driver *drv)
 	spin_unlock(&drv->dynids.lock);
 }
 
-struct bus_type usb_serial_bus_type = {
+const struct bus_type usb_serial_bus_type = {
 	.name =		"usb-serial",
 	.match =	usb_serial_device_match,
 	.probe =	usb_serial_device_probe,

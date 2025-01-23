@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
@@ -7,7 +8,7 @@
 #include "helpers/helpers.h"
 
 static const char *cpu_vendor_table[X86_VENDOR_MAX] = {
-	"Unknown", "GenuineIntel", "AuthenticAMD",
+	"Unknown", "GenuineIntel", "AuthenticAMD", "HygonGenuine",
 };
 
 #if defined(__i386__) || defined(__x86_64__)
@@ -42,7 +43,7 @@ cpuid_func(edx);
  *
  * TBD: Should there be a cpuid alternative for this if /proc is not mounted?
  */
-int get_cpu_info(unsigned int cpu, struct cpupower_cpu_info *cpu_info)
+int get_cpu_info(struct cpupower_cpu_info *cpu_info)
 {
 	FILE *fp;
 	char value[64];
@@ -70,7 +71,7 @@ int get_cpu_info(unsigned int cpu, struct cpupower_cpu_info *cpu_info)
 		if (!strncmp(value, "processor\t: ", 12))
 			sscanf(value, "processor\t: %u", &proc);
 
-		if (proc != cpu)
+		if (proc != (unsigned int)base_cpu)
 			continue;
 
 		/* Get CPU vendor */
@@ -108,6 +109,7 @@ out:
 	fclose(fp);
 	/* Get some useful CPU capabilities from cpuid */
 	if (cpu_info->vendor != X86_VENDOR_AMD &&
+	    cpu_info->vendor != X86_VENDOR_HYGON &&
 	    cpu_info->vendor != X86_VENDOR_INTEL)
 		return ret;
 
@@ -123,11 +125,43 @@ out:
 	if (cpuid_level >= 6 && (cpuid_ecx(6) & 0x1))
 		cpu_info->caps |= CPUPOWER_CAP_APERF;
 
-	/* AMD Boost state enable/disable register */
-	if (cpu_info->vendor == X86_VENDOR_AMD) {
-		if (ext_cpuid_level >= 0x80000007 &&
-		    (cpuid_edx(0x80000007) & (1 << 9)))
-			cpu_info->caps |= CPUPOWER_CAP_AMD_CBP;
+	/* AMD or Hygon Boost state enable/disable register */
+	if (cpu_info->vendor == X86_VENDOR_AMD ||
+	    cpu_info->vendor == X86_VENDOR_HYGON) {
+		if (ext_cpuid_level >= 0x80000007) {
+			if (cpuid_edx(0x80000007) & (1 << 9)) {
+				cpu_info->caps |= CPUPOWER_CAP_AMD_CPB;
+
+				if (cpu_info->family >= 0x17)
+					cpu_info->caps |= CPUPOWER_CAP_AMD_CPB_MSR;
+			}
+
+			if ((cpuid_edx(0x80000007) & (1 << 7)) &&
+			    cpu_info->family != 0x14) {
+				/* HW pstate was not implemented in family 0x14 */
+				cpu_info->caps |= CPUPOWER_CAP_AMD_HW_PSTATE;
+
+				if (cpu_info->family >= 0x17)
+					cpu_info->caps |= CPUPOWER_CAP_AMD_PSTATEDEF;
+			}
+		}
+
+		if (ext_cpuid_level >= 0x80000008 &&
+		    cpuid_ebx(0x80000008) & (1 << 4))
+			cpu_info->caps |= CPUPOWER_CAP_AMD_RDPRU;
+
+		if (cpupower_amd_pstate_enabled()) {
+			cpu_info->caps |= CPUPOWER_CAP_AMD_PSTATE;
+
+			/*
+			 * If AMD P-State is enabled, the firmware will treat
+			 * AMD P-State function as high priority.
+			 */
+			cpu_info->caps &= ~CPUPOWER_CAP_AMD_CPB;
+			cpu_info->caps &= ~CPUPOWER_CAP_AMD_CPB_MSR;
+			cpu_info->caps &= ~CPUPOWER_CAP_AMD_HW_PSTATE;
+			cpu_info->caps &= ~CPUPOWER_CAP_AMD_PSTATEDEF;
+		}
 	}
 
 	if (cpu_info->vendor == X86_VENDOR_INTEL) {
@@ -156,6 +190,7 @@ out:
 					 */
 			case 0x2C:	/* Westmere EP - Gulftown */
 				cpu_info->caps |= CPUPOWER_CAP_HAS_TURBO_RATIO;
+				break;
 			case 0x2A:	/* SNB */
 			case 0x2D:	/* SNB Xeon */
 			case 0x3A:	/* IVB */

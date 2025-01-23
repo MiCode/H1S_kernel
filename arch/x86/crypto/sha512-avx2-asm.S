@@ -49,8 +49,8 @@
 # This code schedules 1 blocks at a time, with 4 lanes per block
 ########################################################################
 
-#ifdef CONFIG_AS_AVX2
 #include <linux/linkage.h>
+#include <linux/cfi_types.h>
 
 .text
 
@@ -69,19 +69,20 @@ XFER  = YTMP0
 
 BYTE_FLIP_MASK  = %ymm9
 
-# 1st arg
-INP         = %rdi
+# 1st arg is %rdi, which is saved to the stack and accessed later via %r12
+CTX1        = %rdi
+CTX2        = %r12
 # 2nd arg
-CTX         = %rsi
+INP         = %rsi
 # 3rd arg
 NUM_BLKS    = %rdx
 
 c           = %rcx
 d           = %r8
 e           = %rdx
-y3          = %rdi
+y3          = %rsi
 
-TBL   = %rbp
+TBL   = %rdi # clobbers CTX1
 
 a     = %rax
 b     = %rbx
@@ -91,28 +92,24 @@ g     = %r10
 h     = %r11
 old_h = %r11
 
-T1    = %r12
+T1    = %r12 # clobbers CTX2
 y0    = %r13
 y1    = %r14
 y2    = %r15
-
-y4    = %r12
 
 # Local variables (stack frame)
 XFER_SIZE = 4*8
 SRND_SIZE = 1*8
 INP_SIZE = 1*8
 INPEND_SIZE = 1*8
-RSPSAVE_SIZE = 1*8
-GPRSAVE_SIZE = 6*8
+CTX_SIZE = 1*8
 
 frame_XFER = 0
 frame_SRND = frame_XFER + XFER_SIZE
 frame_INP = frame_SRND + SRND_SIZE
 frame_INPEND = frame_INP + INP_SIZE
-frame_RSPSAVE = frame_INPEND + INPEND_SIZE
-frame_GPRSAVE = frame_RSPSAVE + RSPSAVE_SIZE
-frame_size = frame_GPRSAVE + GPRSAVE_SIZE
+frame_CTX = frame_INPEND + INPEND_SIZE
+frame_size = frame_CTX + CTX_SIZE
 
 ## assume buffers not aligned
 #define	VMOVDQ vmovdqu
@@ -562,45 +559,48 @@ frame_size = frame_GPRSAVE + GPRSAVE_SIZE
 .endm
 
 ########################################################################
-# void sha512_transform_rorx(const void* M, void* D, uint64_t L)#
-# Purpose: Updates the SHA512 digest stored at D with the message stored in M.
-# The size of the message pointed to by M must be an integer multiple of SHA512
-#   message blocks.
-# L is the message length in SHA512 blocks
+# void sha512_transform_rorx(sha512_state *state, const u8 *data, int blocks)
+# Purpose: Updates the SHA512 digest stored at "state" with the message
+# stored in "data".
+# The size of the message pointed to by "data" must be an integer multiple
+# of SHA512 message blocks.
+# "blocks" is the message length in SHA512 blocks
 ########################################################################
-ENTRY(sha512_transform_rorx)
+SYM_TYPED_FUNC_START(sha512_transform_rorx)
+	# Save GPRs
+	push	%rbx
+	push	%r12
+	push	%r13
+	push	%r14
+	push	%r15
+
 	# Allocate Stack Space
-	mov	%rsp, %rax
+	push	%rbp
+	mov	%rsp, %rbp
 	sub	$frame_size, %rsp
 	and	$~(0x20 - 1), %rsp
-	mov	%rax, frame_RSPSAVE(%rsp)
-
-	# Save GPRs
-	mov	%rbp, frame_GPRSAVE(%rsp)
-	mov	%rbx, 8*1+frame_GPRSAVE(%rsp)
-	mov	%r12, 8*2+frame_GPRSAVE(%rsp)
-	mov	%r13, 8*3+frame_GPRSAVE(%rsp)
-	mov	%r14, 8*4+frame_GPRSAVE(%rsp)
-	mov	%r15, 8*5+frame_GPRSAVE(%rsp)
 
 	shl	$7, NUM_BLKS	# convert to bytes
-	jz	done_hash
+	jz	.Ldone_hash
 	add	INP, NUM_BLKS	# pointer to end of data
 	mov	NUM_BLKS, frame_INPEND(%rsp)
 
 	## load initial digest
-	mov	8*0(CTX),a
-	mov	8*1(CTX),b
-	mov	8*2(CTX),c
-	mov	8*3(CTX),d
-	mov	8*4(CTX),e
-	mov	8*5(CTX),f
-	mov	8*6(CTX),g
-	mov	8*7(CTX),h
+	mov	8*0(CTX1), a
+	mov	8*1(CTX1), b
+	mov	8*2(CTX1), c
+	mov	8*3(CTX1), d
+	mov	8*4(CTX1), e
+	mov	8*5(CTX1), f
+	mov	8*6(CTX1), g
+	mov	8*7(CTX1), h
+
+	# save %rdi (CTX) before it gets clobbered
+	mov	%rdi, frame_CTX(%rsp)
 
 	vmovdqa	PSHUFFLE_BYTE_FLIP_MASK(%rip), BYTE_FLIP_MASK
 
-loop0:
+.Lloop0:
 	lea	K512(%rip), TBL
 
 	## byte swap first 16 dwords
@@ -615,7 +615,7 @@ loop0:
 	movq	$4, frame_SRND(%rsp)
 
 .align 16
-loop1:
+.Lloop1:
 	vpaddq	(TBL), Y_0, XFER
 	vmovdqa XFER, frame_XFER(%rsp)
 	FOUR_ROUNDS_AND_SCHED
@@ -634,10 +634,10 @@ loop1:
 	FOUR_ROUNDS_AND_SCHED
 
 	subq	$1, frame_SRND(%rsp)
-	jne	loop1
+	jne	.Lloop1
 
 	movq	$2, frame_SRND(%rsp)
-loop2:
+.Lloop2:
 	vpaddq	(TBL), Y_0, XFER
 	vmovdqa XFER, frame_XFER(%rsp)
 	DO_4ROUNDS
@@ -650,42 +650,47 @@ loop2:
 	vmovdqa	Y_3, Y_1
 
 	subq	$1, frame_SRND(%rsp)
-	jne	loop2
+	jne	.Lloop2
 
-	addm	8*0(CTX),a
-	addm	8*1(CTX),b
-	addm	8*2(CTX),c
-	addm	8*3(CTX),d
-	addm	8*4(CTX),e
-	addm	8*5(CTX),f
-	addm	8*6(CTX),g
-	addm	8*7(CTX),h
+	mov	frame_CTX(%rsp), CTX2
+	addm	8*0(CTX2), a
+	addm	8*1(CTX2), b
+	addm	8*2(CTX2), c
+	addm	8*3(CTX2), d
+	addm	8*4(CTX2), e
+	addm	8*5(CTX2), f
+	addm	8*6(CTX2), g
+	addm	8*7(CTX2), h
 
 	mov	frame_INP(%rsp), INP
 	add	$128, INP
 	cmp	frame_INPEND(%rsp), INP
-	jne	loop0
+	jne	.Lloop0
 
-done_hash:
-
-# Restore GPRs
-	mov	frame_GPRSAVE(%rsp)     ,%rbp
-	mov	8*1+frame_GPRSAVE(%rsp) ,%rbx
-	mov	8*2+frame_GPRSAVE(%rsp) ,%r12
-	mov	8*3+frame_GPRSAVE(%rsp) ,%r13
-	mov	8*4+frame_GPRSAVE(%rsp) ,%r14
-	mov	8*5+frame_GPRSAVE(%rsp) ,%r15
+.Ldone_hash:
 
 	# Restore Stack Pointer
-	mov	frame_RSPSAVE(%rsp), %rsp
-	ret
-ENDPROC(sha512_transform_rorx)
+	mov	%rbp, %rsp
+	pop	%rbp
+
+	# Restore GPRs
+	pop	%r15
+	pop	%r14
+	pop	%r13
+	pop	%r12
+	pop	%rbx
+
+	RET
+SYM_FUNC_END(sha512_transform_rorx)
 
 ########################################################################
 ### Binary Data
 
-.data
 
+# Mergeable 640-byte rodata section. This allows linker to merge the table
+# with other, exactly the same 640-byte fragment of another rodata section
+# (if such section exists).
+.section	.rodata.cst640.K512, "aM", @progbits, 640
 .align 64
 # K[t] used in SHA512 hashing
 K512:
@@ -730,14 +735,15 @@ K512:
 	.quad	0x4cc5d4becb3e42b6,0x597f299cfc657e2a
 	.quad	0x5fcb6fab3ad6faec,0x6c44198c4a475817
 
+.section	.rodata.cst32.PSHUFFLE_BYTE_FLIP_MASK, "aM", @progbits, 32
 .align 32
-
 # Mask for byte-swapping a couple of qwords in an XMM register using (v)pshufb.
 PSHUFFLE_BYTE_FLIP_MASK:
 	.octa 0x08090a0b0c0d0e0f0001020304050607
 	.octa 0x18191a1b1c1d1e1f1011121314151617
 
+.section	.rodata.cst32.MASK_YMM_LO, "aM", @progbits, 32
+.align 32
 MASK_YMM_LO:
 	.octa 0x00000000000000000000000000000000
 	.octa 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-#endif

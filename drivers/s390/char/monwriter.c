@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Character device driver for writing z/VM *MONITOR service records.
  *
@@ -19,11 +20,10 @@
 #include <linux/ctype.h>
 #include <linux/poll.h>
 #include <linux/mutex.h>
-#include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
+#include <linux/io.h>
 #include <asm/ebcdic.h>
-#include <asm/io.h>
 #include <asm/appldata.h>
 #include <asm/monwriter.h>
 
@@ -39,10 +39,7 @@ struct mon_buf {
 	char *data;
 };
 
-static LIST_HEAD(mon_priv_list);
-
 struct mon_private {
-	struct list_head priv_list;
 	struct list_head list;
 	struct monwrite_hdr hdr;
 	size_t hdr_to_read;
@@ -57,22 +54,31 @@ struct mon_private {
 
 static int monwrite_diag(struct monwrite_hdr *myhdr, char *buffer, int fcn)
 {
-	struct appldata_product_id id;
+	struct appldata_parameter_list *parm_list;
+	struct appldata_product_id *id;
 	int rc;
 
-	strncpy(id.prod_nr, "LNXAPPL", 7);
-	id.prod_fn = myhdr->applid;
-	id.record_nr = myhdr->record_num;
-	id.version_nr = myhdr->version;
-	id.release_nr = myhdr->release;
-	id.mod_lvl = myhdr->mod_level;
-	rc = appldata_asm(&id, fcn, (void *) buffer, myhdr->datalen);
+	id = kmalloc(sizeof(*id), GFP_KERNEL);
+	parm_list = kmalloc(sizeof(*parm_list), GFP_KERNEL);
+	rc = -ENOMEM;
+	if (!id || !parm_list)
+		goto out;
+	memcpy(id->prod_nr, "LNXAPPL", 7);
+	id->prod_fn = myhdr->applid;
+	id->record_nr = myhdr->record_num;
+	id->version_nr = myhdr->version;
+	id->release_nr = myhdr->release;
+	id->mod_lvl = myhdr->mod_level;
+	rc = appldata_asm(parm_list, id, fcn,
+			  (void *) buffer, myhdr->datalen);
 	if (rc <= 0)
-		return rc;
+		goto out;
 	pr_err("Writing monitor data failed with rc=%i\n", rc);
-	if (rc == 5)
-		return -EPERM;
-	return -EINVAL;
+	rc = (rc == 5) ? -EPERM : -EINVAL;
+out:
+	kfree(id);
+	kfree(parm_list);
+	return rc;
 }
 
 static struct mon_buf *monwrite_find_hdr(struct mon_private *monpriv,
@@ -189,7 +195,6 @@ static int monwrite_open(struct inode *inode, struct file *filp)
 	monpriv->hdr_to_read = sizeof(monpriv->hdr);
 	mutex_init(&monpriv->thread_mutex);
 	filp->private_data = monpriv;
-	list_add_tail(&monpriv->priv_list, &mon_priv_list);
 	return nonseekable_open(inode, filp);
 }
 
@@ -207,7 +212,6 @@ static int monwrite_close(struct inode *inode, struct file *filp)
 		kfree(entry->data);
 		kfree(entry);
 	}
-	list_del(&monpriv->priv_list);
 	kfree(monpriv);
 	return 0;
 }
@@ -284,106 +288,23 @@ static struct miscdevice mon_dev = {
 };
 
 /*
- * suspend/resume
- */
-
-static int monwriter_freeze(struct device *dev)
-{
-	struct mon_private *monpriv;
-	struct mon_buf *monbuf;
-
-	list_for_each_entry(monpriv, &mon_priv_list, priv_list) {
-		list_for_each_entry(monbuf, &monpriv->list, list) {
-			if (monbuf->hdr.mon_function != MONWRITE_GEN_EVENT)
-				monwrite_diag(&monbuf->hdr, monbuf->data,
-					      APPLDATA_STOP_REC);
-		}
-	}
-	return 0;
-}
-
-static int monwriter_restore(struct device *dev)
-{
-	struct mon_private *monpriv;
-	struct mon_buf *monbuf;
-
-	list_for_each_entry(monpriv, &mon_priv_list, priv_list) {
-		list_for_each_entry(monbuf, &monpriv->list, list) {
-			if (monbuf->hdr.mon_function == MONWRITE_START_INTERVAL)
-				monwrite_diag(&monbuf->hdr, monbuf->data,
-					      APPLDATA_START_INTERVAL_REC);
-			if (monbuf->hdr.mon_function == MONWRITE_START_CONFIG)
-				monwrite_diag(&monbuf->hdr, monbuf->data,
-					      APPLDATA_START_CONFIG_REC);
-		}
-	}
-	return 0;
-}
-
-static int monwriter_thaw(struct device *dev)
-{
-	return monwriter_restore(dev);
-}
-
-static const struct dev_pm_ops monwriter_pm_ops = {
-	.freeze		= monwriter_freeze,
-	.thaw		= monwriter_thaw,
-	.restore	= monwriter_restore,
-};
-
-static struct platform_driver monwriter_pdrv = {
-	.driver = {
-		.name	= "monwriter",
-		.owner	= THIS_MODULE,
-		.pm	= &monwriter_pm_ops,
-	},
-};
-
-static struct platform_device *monwriter_pdev;
-
-/*
  * module init/exit
  */
 
 static int __init mon_init(void)
 {
-	int rc;
-
 	if (!MACHINE_IS_VM)
 		return -ENODEV;
-
-	rc = platform_driver_register(&monwriter_pdrv);
-	if (rc)
-		return rc;
-
-	monwriter_pdev = platform_device_register_simple("monwriter", -1, NULL,
-							0);
-	if (IS_ERR(monwriter_pdev)) {
-		rc = PTR_ERR(monwriter_pdev);
-		goto out_driver;
-	}
-
 	/*
 	 * misc_register() has to be the last action in module_init(), because
 	 * file operations will be available right after this.
 	 */
-	rc = misc_register(&mon_dev);
-	if (rc)
-		goto out_device;
-	return 0;
-
-out_device:
-	platform_device_unregister(monwriter_pdev);
-out_driver:
-	platform_driver_unregister(&monwriter_pdrv);
-	return rc;
+	return misc_register(&mon_dev);
 }
 
 static void __exit mon_exit(void)
 {
 	misc_deregister(&mon_dev);
-	platform_device_unregister(monwriter_pdev);
-	platform_driver_unregister(&monwriter_pdrv);
 }
 
 module_init(mon_init);

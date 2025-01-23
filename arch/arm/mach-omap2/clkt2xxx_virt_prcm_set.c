@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMAP2xxx DVFS virtual clock functions
  *
@@ -10,10 +11,6 @@
  *
  * Based on earlier work by Tuukka Tikkanen, Tony Lindgren,
  * Gordon McNutt and RidgeRun, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * XXX Some of this code should be replaceable by the upcoming OPP layer
  * code.  However, some notion of "rate set" is probably still necessary
@@ -42,6 +39,8 @@
 #include "sdrc.h"
 #include "sram.h"
 
+static u16 cpu_mask;
+
 const struct prcm_config *curr_prcm_set;
 const struct prcm_config *rate_table;
 
@@ -58,7 +57,7 @@ static unsigned long sys_ck_rate;
  *
  * Set virt_prcm_set's rate to the mpu_speed field of the current PRCM set.
  */
-unsigned long omap2_table_mpu_recalc(struct clk_hw *clk,
+static unsigned long omap2_table_mpu_recalc(struct clk_hw *clk,
 				     unsigned long parent_rate)
 {
 	return curr_prcm_set->mpu_speed;
@@ -71,7 +70,7 @@ unsigned long omap2_table_mpu_recalc(struct clk_hw *clk,
  * Some might argue L3-DDR, others ARM, others IVA. This code is simple and
  * just uses the ARM rates.
  */
-long omap2_round_to_table_rate(struct clk_hw *hw, unsigned long rate,
+static long omap2_round_to_table_rate(struct clk_hw *hw, unsigned long rate,
 			       unsigned long *parent_rate)
 {
 	const struct prcm_config *ptr;
@@ -95,8 +94,8 @@ long omap2_round_to_table_rate(struct clk_hw *hw, unsigned long rate,
 }
 
 /* Sets basic clocks based on the specified rate */
-int omap2_select_table_rate(struct clk_hw *hw, unsigned long rate,
-			    unsigned long parent_rate)
+static int omap2_select_table_rate(struct clk_hw *hw, unsigned long rate,
+				   unsigned long parent_rate)
 {
 	u32 cur_rate, done_rate, bypass = 0;
 	const struct prcm_config *prcm;
@@ -170,7 +169,7 @@ int omap2_select_table_rate(struct clk_hw *hw, unsigned long rate,
  * global to point to the active rate set when found; otherwise, sets
  * it to NULL.  No return value;
  */
-void omap2xxx_clkt_vps_check_bootloader_rates(void)
+static void omap2xxx_clkt_vps_check_bootloader_rates(void)
 {
 	const struct prcm_config *prcm = NULL;
 	unsigned long rate;
@@ -196,7 +195,7 @@ void omap2xxx_clkt_vps_check_bootloader_rates(void)
  * sys_ck rate, but before the virt_prcm_set clock rate is
  * recalculated.  No return value.
  */
-void omap2xxx_clkt_vps_late_init(void)
+static void omap2xxx_clkt_vps_late_init(void)
 {
 	struct clk *c;
 
@@ -208,3 +207,51 @@ void omap2xxx_clkt_vps_late_init(void)
 		clk_put(c);
 	}
 }
+
+#ifdef CONFIG_OF
+#include <linux/clk-provider.h>
+#include <linux/clkdev.h>
+
+static const struct clk_ops virt_prcm_set_ops = {
+	.recalc_rate	= &omap2_table_mpu_recalc,
+	.set_rate	= &omap2_select_table_rate,
+	.round_rate	= &omap2_round_to_table_rate,
+};
+
+/**
+ * omap2xxx_clkt_vps_init - initialize virt_prcm_set clock
+ *
+ * Does a manual init for the virtual prcm DVFS clock for OMAP2. This
+ * function is called only from omap2 DT clock init, as the virtual
+ * node is not modelled in the DT clock data.
+ */
+void omap2xxx_clkt_vps_init(void)
+{
+	struct clk_init_data init = { NULL };
+	struct clk_hw_omap *hw = NULL;
+	struct clk *clk;
+	const char *parent_name = "mpu_ck";
+
+	omap2xxx_clkt_vps_late_init();
+	omap2xxx_clkt_vps_check_bootloader_rates();
+
+	hw = kzalloc(sizeof(*hw), GFP_KERNEL);
+	if (!hw)
+		return;
+	init.name = "virt_prcm_set";
+	init.ops = &virt_prcm_set_ops;
+	init.parent_names = &parent_name;
+	init.num_parents = 1;
+
+	hw->hw.init = &init;
+
+	clk = clk_register(NULL, &hw->hw);
+	if (IS_ERR(clk)) {
+		printk(KERN_ERR "Failed to register clock\n");
+		kfree(hw);
+		return;
+	}
+
+	clkdev_create(clk, "cpufreq_ck", NULL);
+}
+#endif

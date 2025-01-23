@@ -1,15 +1,17 @@
-/* bnx2x_init_ops.h: Broadcom Everest network driver.
+/* bnx2x_init_ops.h: Qlogic Everest network driver.
  *               Static functions needed during the initialization.
  *               This file is "included" in bnx2x_main.c.
  *
  * Copyright (c) 2007-2013 Broadcom Corporation
+ * Copyright (c) 2014 QLogic Corporation
+ All rights reserved
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation.
  *
- * Maintained by: Eilon Greenstein <eilong@broadcom.com>
- * Written by: Vladislav Zolotarov <vladz@broadcom.com>
+ * Maintained by: Ariel Elior <ariel.elior@qlogic.com>
+ * Written by: Vladislav Zolotarov
  */
 
 #ifndef BNX2X_INIT_OPS_H
@@ -633,10 +635,12 @@ static int bnx2x_ilt_client_mem_op(struct bnx2x *bp, int cli_num,
 {
 	int i, rc;
 	struct bnx2x_ilt *ilt = BP_ILT(bp);
-	struct ilt_client_info *ilt_cli = &ilt->clients[cli_num];
+	struct ilt_client_info *ilt_cli;
 
 	if (!ilt || !ilt->lines)
 		return -1;
+
+	ilt_cli = &ilt->clients[cli_num];
 
 	if (ilt_cli->flags & (ILT_CLIENT_SKIP_INIT | ILT_CLIENT_SKIP_MEM))
 		return 0;

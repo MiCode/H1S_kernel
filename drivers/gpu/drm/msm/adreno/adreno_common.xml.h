@@ -8,16 +8,23 @@ http://github.com/freedreno/envytools/
 git clone https://github.com/freedreno/envytools.git
 
 The rules-ng-ng source files this header was generated from are:
-- /home/robclark/src/freedreno/envytools/rnndb/adreno.xml               (    364 bytes, from 2013-11-30 14:47:15)
-- /home/robclark/src/freedreno/envytools/rnndb/freedreno_copyright.xml  (   1453 bytes, from 2013-03-31 16:51:27)
-- /home/robclark/src/freedreno/envytools/rnndb/adreno/a2xx.xml          (  32814 bytes, from 2013-11-30 15:07:33)
-- /home/robclark/src/freedreno/envytools/rnndb/adreno/adreno_common.xml (   8900 bytes, from 2013-10-22 23:57:49)
-- /home/robclark/src/freedreno/envytools/rnndb/adreno/adreno_pm4.xml    (  10574 bytes, from 2013-11-13 05:44:45)
-- /home/robclark/src/freedreno/envytools/rnndb/adreno/a3xx.xml          (  53644 bytes, from 2013-11-30 15:07:33)
-- /home/robclark/src/freedreno/envytools/rnndb/adreno/a4xx.xml          (   8344 bytes, from 2013-11-30 14:49:47)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno.xml                     (    594 bytes, from 2023-03-10 18:32:52)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/freedreno_copyright.xml        (   1572 bytes, from 2022-07-23 20:21:46)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a2xx.xml                (  91929 bytes, from 2023-02-28 23:52:27)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/adreno_common.xml       (  15434 bytes, from 2023-03-10 18:32:53)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/adreno_pm4.xml          (  74995 bytes, from 2023-03-20 18:06:23)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a3xx.xml                (  84231 bytes, from 2022-08-02 16:38:43)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a4xx.xml                ( 113474 bytes, from 2022-08-02 16:38:43)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a5xx.xml                ( 149590 bytes, from 2023-02-14 19:37:12)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a6xx.xml                ( 198949 bytes, from 2023-03-20 18:06:23)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a6xx_gmu.xml            (  11404 bytes, from 2023-03-10 18:32:53)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/ocmem.xml               (   1773 bytes, from 2022-08-02 16:38:43)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/adreno_control_regs.xml (   9055 bytes, from 2023-03-10 18:32:52)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/adreno_pipe_regs.xml    (   2976 bytes, from 2023-03-10 18:32:52)
 
-Copyright (C) 2013 by the following authors:
+Copyright (C) 2013-2023 by the following authors:
 - Rob Clark <robdclark@gmail.com> (robclark)
+- Ilia Mirkin <imirkin@alum.mit.edu> (imirkin)
 
 Permission is hereby granted, free of charge, to any person obtaining
 a copy of this software and associated documentation files (the
@@ -40,6 +47,15 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
+
+enum chip {
+	A2XX = 2,
+	A3XX = 3,
+	A4XX = 4,
+	A5XX = 5,
+	A6XX = 6,
+	A7XX = 7,
+};
 
 enum adreno_pa_su_sc_draw {
 	PC_DRAW_POINTS = 0,
@@ -85,15 +101,10 @@ enum adreno_rb_blend_factor {
 	FACTOR_CONSTANT_ALPHA = 14,
 	FACTOR_ONE_MINUS_CONSTANT_ALPHA = 15,
 	FACTOR_SRC_ALPHA_SATURATE = 16,
-};
-
-enum adreno_rb_blend_opcode {
-	BLEND_DST_PLUS_SRC = 0,
-	BLEND_SRC_MINUS_DST = 1,
-	BLEND_MIN_DST_SRC = 2,
-	BLEND_MAX_DST_SRC = 3,
-	BLEND_DST_MINUS_SRC = 4,
-	BLEND_DST_PLUS_SRC_BIAS = 5,
+	FACTOR_SRC1_COLOR = 20,
+	FACTOR_ONE_MINUS_SRC1_COLOR = 21,
+	FACTOR_SRC1_ALPHA = 22,
+	FACTOR_ONE_MINUS_SRC1_ALPHA = 23,
 };
 
 enum adreno_rb_surface_endian {
@@ -114,6 +125,101 @@ enum adreno_rb_dither_mode {
 enum adreno_rb_depth_format {
 	DEPTHX_16 = 0,
 	DEPTHX_24_8 = 1,
+	DEPTHX_32 = 2,
+};
+
+enum adreno_rb_copy_control_mode {
+	RB_COPY_RESOLVE = 1,
+	RB_COPY_CLEAR = 2,
+	RB_COPY_DEPTH_STENCIL = 5,
+};
+
+enum a3xx_rop_code {
+	ROP_CLEAR = 0,
+	ROP_NOR = 1,
+	ROP_AND_INVERTED = 2,
+	ROP_COPY_INVERTED = 3,
+	ROP_AND_REVERSE = 4,
+	ROP_INVERT = 5,
+	ROP_NAND = 7,
+	ROP_AND = 8,
+	ROP_EQUIV = 9,
+	ROP_NOOP = 10,
+	ROP_OR_INVERTED = 11,
+	ROP_OR_REVERSE = 13,
+	ROP_OR = 14,
+	ROP_SET = 15,
+};
+
+enum a3xx_render_mode {
+	RB_RENDERING_PASS = 0,
+	RB_TILING_PASS = 1,
+	RB_RESOLVE_PASS = 2,
+	RB_COMPUTE_PASS = 3,
+};
+
+enum a3xx_msaa_samples {
+	MSAA_ONE = 0,
+	MSAA_TWO = 1,
+	MSAA_FOUR = 2,
+	MSAA_EIGHT = 3,
+};
+
+enum a3xx_threadmode {
+	MULTI = 0,
+	SINGLE = 1,
+};
+
+enum a3xx_instrbuffermode {
+	CACHE = 0,
+	BUFFER = 1,
+};
+
+enum a3xx_threadsize {
+	TWO_QUADS = 0,
+	FOUR_QUADS = 1,
+};
+
+enum a3xx_color_swap {
+	WZYX = 0,
+	WXYZ = 1,
+	ZYXW = 2,
+	XYZW = 3,
+};
+
+enum a3xx_rb_blend_opcode {
+	BLEND_DST_PLUS_SRC = 0,
+	BLEND_SRC_MINUS_DST = 1,
+	BLEND_DST_MINUS_SRC = 2,
+	BLEND_MIN_DST_SRC = 3,
+	BLEND_MAX_DST_SRC = 4,
+};
+
+enum a4xx_tess_spacing {
+	EQUAL_SPACING = 0,
+	ODD_SPACING = 2,
+	EVEN_SPACING = 3,
+};
+
+enum a5xx_address_mode {
+	ADDR_32B = 0,
+	ADDR_64B = 1,
+};
+
+enum a5xx_line_mode {
+	BRESENHAM = 0,
+	RECTANGULAR = 1,
+};
+
+enum a6xx_tex_prefetch_cmd {
+	TEX_PREFETCH_UNK0 = 0,
+	TEX_PREFETCH_SAM = 1,
+	TEX_PREFETCH_GATHER4R = 2,
+	TEX_PREFETCH_GATHER4G = 3,
+	TEX_PREFETCH_GATHER4B = 4,
+	TEX_PREFETCH_GATHER4A = 5,
+	TEX_PREFETCH_UNK6 = 6,
+	TEX_PREFETCH_UNK7 = 7,
 };
 
 #define REG_AXXX_CP_RB_BASE					0x000001c0
@@ -258,12 +364,23 @@ static inline uint32_t AXXX_SCRATCH_UMSK_SWAP(uint32_t val)
 #define REG_AXXX_CP_STATE_DEBUG_DATA				0x000001ed
 
 #define REG_AXXX_CP_INT_CNTL					0x000001f2
+#define AXXX_CP_INT_CNTL_SW_INT_MASK				0x00080000
+#define AXXX_CP_INT_CNTL_T0_PACKET_IN_IB_MASK			0x00800000
+#define AXXX_CP_INT_CNTL_OPCODE_ERROR_MASK			0x01000000
+#define AXXX_CP_INT_CNTL_PROTECTED_MODE_ERROR_MASK		0x02000000
+#define AXXX_CP_INT_CNTL_RESERVED_BIT_ERROR_MASK		0x04000000
+#define AXXX_CP_INT_CNTL_IB_ERROR_MASK				0x08000000
+#define AXXX_CP_INT_CNTL_IB2_INT_MASK				0x20000000
+#define AXXX_CP_INT_CNTL_IB1_INT_MASK				0x40000000
+#define AXXX_CP_INT_CNTL_RB_INT_MASK				0x80000000
 
 #define REG_AXXX_CP_INT_STATUS					0x000001f3
 
 #define REG_AXXX_CP_INT_ACK					0x000001f4
 
 #define REG_AXXX_CP_ME_CNTL					0x000001f6
+#define AXXX_CP_ME_CNTL_BUSY					0x20000000
+#define AXXX_CP_ME_CNTL_HALT					0x10000000
 
 #define REG_AXXX_CP_ME_STATUS					0x000001f7
 
@@ -354,6 +471,175 @@ static inline uint32_t AXXX_CP_CSQ_IB2_STAT_WPTR(uint32_t val)
 #define REG_AXXX_CP_IB2_BUFSZ					0x0000045b
 
 #define REG_AXXX_CP_STAT					0x0000047f
+#define AXXX_CP_STAT_CP_BUSY__MASK				0x80000000
+#define AXXX_CP_STAT_CP_BUSY__SHIFT				31
+static inline uint32_t AXXX_CP_STAT_CP_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_CP_BUSY__SHIFT) & AXXX_CP_STAT_CP_BUSY__MASK;
+}
+#define AXXX_CP_STAT_VS_EVENT_FIFO_BUSY__MASK			0x40000000
+#define AXXX_CP_STAT_VS_EVENT_FIFO_BUSY__SHIFT			30
+static inline uint32_t AXXX_CP_STAT_VS_EVENT_FIFO_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_VS_EVENT_FIFO_BUSY__SHIFT) & AXXX_CP_STAT_VS_EVENT_FIFO_BUSY__MASK;
+}
+#define AXXX_CP_STAT_PS_EVENT_FIFO_BUSY__MASK			0x20000000
+#define AXXX_CP_STAT_PS_EVENT_FIFO_BUSY__SHIFT			29
+static inline uint32_t AXXX_CP_STAT_PS_EVENT_FIFO_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_PS_EVENT_FIFO_BUSY__SHIFT) & AXXX_CP_STAT_PS_EVENT_FIFO_BUSY__MASK;
+}
+#define AXXX_CP_STAT_CF_EVENT_FIFO_BUSY__MASK			0x10000000
+#define AXXX_CP_STAT_CF_EVENT_FIFO_BUSY__SHIFT			28
+static inline uint32_t AXXX_CP_STAT_CF_EVENT_FIFO_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_CF_EVENT_FIFO_BUSY__SHIFT) & AXXX_CP_STAT_CF_EVENT_FIFO_BUSY__MASK;
+}
+#define AXXX_CP_STAT_RB_EVENT_FIFO_BUSY__MASK			0x08000000
+#define AXXX_CP_STAT_RB_EVENT_FIFO_BUSY__SHIFT			27
+static inline uint32_t AXXX_CP_STAT_RB_EVENT_FIFO_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_RB_EVENT_FIFO_BUSY__SHIFT) & AXXX_CP_STAT_RB_EVENT_FIFO_BUSY__MASK;
+}
+#define AXXX_CP_STAT_ME_BUSY__MASK				0x04000000
+#define AXXX_CP_STAT_ME_BUSY__SHIFT				26
+static inline uint32_t AXXX_CP_STAT_ME_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_ME_BUSY__SHIFT) & AXXX_CP_STAT_ME_BUSY__MASK;
+}
+#define AXXX_CP_STAT_MIU_WR_C_BUSY__MASK			0x02000000
+#define AXXX_CP_STAT_MIU_WR_C_BUSY__SHIFT			25
+static inline uint32_t AXXX_CP_STAT_MIU_WR_C_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_MIU_WR_C_BUSY__SHIFT) & AXXX_CP_STAT_MIU_WR_C_BUSY__MASK;
+}
+#define AXXX_CP_STAT_CP_3D_BUSY__MASK				0x00800000
+#define AXXX_CP_STAT_CP_3D_BUSY__SHIFT				23
+static inline uint32_t AXXX_CP_STAT_CP_3D_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_CP_3D_BUSY__SHIFT) & AXXX_CP_STAT_CP_3D_BUSY__MASK;
+}
+#define AXXX_CP_STAT_CP_NRT_BUSY__MASK				0x00400000
+#define AXXX_CP_STAT_CP_NRT_BUSY__SHIFT				22
+static inline uint32_t AXXX_CP_STAT_CP_NRT_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_CP_NRT_BUSY__SHIFT) & AXXX_CP_STAT_CP_NRT_BUSY__MASK;
+}
+#define AXXX_CP_STAT_RBIU_SCRATCH_BUSY__MASK			0x00200000
+#define AXXX_CP_STAT_RBIU_SCRATCH_BUSY__SHIFT			21
+static inline uint32_t AXXX_CP_STAT_RBIU_SCRATCH_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_RBIU_SCRATCH_BUSY__SHIFT) & AXXX_CP_STAT_RBIU_SCRATCH_BUSY__MASK;
+}
+#define AXXX_CP_STAT_RCIU_ME_BUSY__MASK				0x00100000
+#define AXXX_CP_STAT_RCIU_ME_BUSY__SHIFT			20
+static inline uint32_t AXXX_CP_STAT_RCIU_ME_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_RCIU_ME_BUSY__SHIFT) & AXXX_CP_STAT_RCIU_ME_BUSY__MASK;
+}
+#define AXXX_CP_STAT_RCIU_PFP_BUSY__MASK			0x00080000
+#define AXXX_CP_STAT_RCIU_PFP_BUSY__SHIFT			19
+static inline uint32_t AXXX_CP_STAT_RCIU_PFP_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_RCIU_PFP_BUSY__SHIFT) & AXXX_CP_STAT_RCIU_PFP_BUSY__MASK;
+}
+#define AXXX_CP_STAT_MEQ_RING_BUSY__MASK			0x00040000
+#define AXXX_CP_STAT_MEQ_RING_BUSY__SHIFT			18
+static inline uint32_t AXXX_CP_STAT_MEQ_RING_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_MEQ_RING_BUSY__SHIFT) & AXXX_CP_STAT_MEQ_RING_BUSY__MASK;
+}
+#define AXXX_CP_STAT_PFP_BUSY__MASK				0x00020000
+#define AXXX_CP_STAT_PFP_BUSY__SHIFT				17
+static inline uint32_t AXXX_CP_STAT_PFP_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_PFP_BUSY__SHIFT) & AXXX_CP_STAT_PFP_BUSY__MASK;
+}
+#define AXXX_CP_STAT_ST_QUEUE_BUSY__MASK			0x00010000
+#define AXXX_CP_STAT_ST_QUEUE_BUSY__SHIFT			16
+static inline uint32_t AXXX_CP_STAT_ST_QUEUE_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_ST_QUEUE_BUSY__SHIFT) & AXXX_CP_STAT_ST_QUEUE_BUSY__MASK;
+}
+#define AXXX_CP_STAT_INDIRECT2_QUEUE_BUSY__MASK			0x00002000
+#define AXXX_CP_STAT_INDIRECT2_QUEUE_BUSY__SHIFT		13
+static inline uint32_t AXXX_CP_STAT_INDIRECT2_QUEUE_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_INDIRECT2_QUEUE_BUSY__SHIFT) & AXXX_CP_STAT_INDIRECT2_QUEUE_BUSY__MASK;
+}
+#define AXXX_CP_STAT_INDIRECTS_QUEUE_BUSY__MASK			0x00001000
+#define AXXX_CP_STAT_INDIRECTS_QUEUE_BUSY__SHIFT		12
+static inline uint32_t AXXX_CP_STAT_INDIRECTS_QUEUE_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_INDIRECTS_QUEUE_BUSY__SHIFT) & AXXX_CP_STAT_INDIRECTS_QUEUE_BUSY__MASK;
+}
+#define AXXX_CP_STAT_RING_QUEUE_BUSY__MASK			0x00000800
+#define AXXX_CP_STAT_RING_QUEUE_BUSY__SHIFT			11
+static inline uint32_t AXXX_CP_STAT_RING_QUEUE_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_RING_QUEUE_BUSY__SHIFT) & AXXX_CP_STAT_RING_QUEUE_BUSY__MASK;
+}
+#define AXXX_CP_STAT_CSF_BUSY__MASK				0x00000400
+#define AXXX_CP_STAT_CSF_BUSY__SHIFT				10
+static inline uint32_t AXXX_CP_STAT_CSF_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_CSF_BUSY__SHIFT) & AXXX_CP_STAT_CSF_BUSY__MASK;
+}
+#define AXXX_CP_STAT_CSF_ST_BUSY__MASK				0x00000200
+#define AXXX_CP_STAT_CSF_ST_BUSY__SHIFT				9
+static inline uint32_t AXXX_CP_STAT_CSF_ST_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_CSF_ST_BUSY__SHIFT) & AXXX_CP_STAT_CSF_ST_BUSY__MASK;
+}
+#define AXXX_CP_STAT_EVENT_BUSY__MASK				0x00000100
+#define AXXX_CP_STAT_EVENT_BUSY__SHIFT				8
+static inline uint32_t AXXX_CP_STAT_EVENT_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_EVENT_BUSY__SHIFT) & AXXX_CP_STAT_EVENT_BUSY__MASK;
+}
+#define AXXX_CP_STAT_CSF_INDIRECT2_BUSY__MASK			0x00000080
+#define AXXX_CP_STAT_CSF_INDIRECT2_BUSY__SHIFT			7
+static inline uint32_t AXXX_CP_STAT_CSF_INDIRECT2_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_CSF_INDIRECT2_BUSY__SHIFT) & AXXX_CP_STAT_CSF_INDIRECT2_BUSY__MASK;
+}
+#define AXXX_CP_STAT_CSF_INDIRECTS_BUSY__MASK			0x00000040
+#define AXXX_CP_STAT_CSF_INDIRECTS_BUSY__SHIFT			6
+static inline uint32_t AXXX_CP_STAT_CSF_INDIRECTS_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_CSF_INDIRECTS_BUSY__SHIFT) & AXXX_CP_STAT_CSF_INDIRECTS_BUSY__MASK;
+}
+#define AXXX_CP_STAT_CSF_RING_BUSY__MASK			0x00000020
+#define AXXX_CP_STAT_CSF_RING_BUSY__SHIFT			5
+static inline uint32_t AXXX_CP_STAT_CSF_RING_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_CSF_RING_BUSY__SHIFT) & AXXX_CP_STAT_CSF_RING_BUSY__MASK;
+}
+#define AXXX_CP_STAT_RCIU_BUSY__MASK				0x00000010
+#define AXXX_CP_STAT_RCIU_BUSY__SHIFT				4
+static inline uint32_t AXXX_CP_STAT_RCIU_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_RCIU_BUSY__SHIFT) & AXXX_CP_STAT_RCIU_BUSY__MASK;
+}
+#define AXXX_CP_STAT_RBIU_BUSY__MASK				0x00000008
+#define AXXX_CP_STAT_RBIU_BUSY__SHIFT				3
+static inline uint32_t AXXX_CP_STAT_RBIU_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_RBIU_BUSY__SHIFT) & AXXX_CP_STAT_RBIU_BUSY__MASK;
+}
+#define AXXX_CP_STAT_MIU_RD_RETURN_BUSY__MASK			0x00000004
+#define AXXX_CP_STAT_MIU_RD_RETURN_BUSY__SHIFT			2
+static inline uint32_t AXXX_CP_STAT_MIU_RD_RETURN_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_MIU_RD_RETURN_BUSY__SHIFT) & AXXX_CP_STAT_MIU_RD_RETURN_BUSY__MASK;
+}
+#define AXXX_CP_STAT_MIU_RD_REQ_BUSY__MASK			0x00000002
+#define AXXX_CP_STAT_MIU_RD_REQ_BUSY__SHIFT			1
+static inline uint32_t AXXX_CP_STAT_MIU_RD_REQ_BUSY(uint32_t val)
+{
+	return ((val) << AXXX_CP_STAT_MIU_RD_REQ_BUSY__SHIFT) & AXXX_CP_STAT_MIU_RD_REQ_BUSY__MASK;
+}
+#define AXXX_CP_STAT_MIU_WR_BUSY				0x00000001
 
 #define REG_AXXX_CP_SCRATCH_REG0				0x00000578
 

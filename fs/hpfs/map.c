@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/hpfs/map.c
  *
@@ -65,12 +66,13 @@ unsigned char *hpfs_load_code_page(struct super_block *s, secno cps)
 	struct code_page_directory *cp = hpfs_map_sector(s, cps, &bh, 0);
 	if (!cp) return NULL;
 	if (le32_to_cpu(cp->magic) != CP_DIR_MAGIC) {
-		printk("HPFS: Code page directory magic doesn't match (magic = %08x)\n", le32_to_cpu(cp->magic));
+		pr_err("Code page directory magic doesn't match (magic = %08x)\n",
+			le32_to_cpu(cp->magic));
 		brelse(bh);
 		return NULL;
 	}
 	if (!le32_to_cpu(cp->n_code_pages)) {
-		printk("HPFS: n_code_pages == 0\n");
+		pr_err("n_code_pages == 0\n");
 		brelse(bh);
 		return NULL;
 	}
@@ -79,19 +81,19 @@ unsigned char *hpfs_load_code_page(struct super_block *s, secno cps)
 	brelse(bh);
 
 	if (cpi >= 3) {
-		printk("HPFS: Code page index out of array\n");
+		pr_err("Code page index out of array\n");
 		return NULL;
 	}
 	
 	if (!(cpd = hpfs_map_sector(s, cpds, &bh, 0))) return NULL;
 	if (le16_to_cpu(cpd->offs[cpi]) > 0x178) {
-		printk("HPFS: Code page index out of sector\n");
+		pr_err("Code page index out of sector\n");
 		brelse(bh);
 		return NULL;
 	}
 	ptr = (unsigned char *)cpd + le16_to_cpu(cpd->offs[cpi]) + 6;
 	if (!(cp_table = kmalloc(256, GFP_KERNEL))) {
-		printk("HPFS: out of memory for code page table\n");
+		pr_err("out of memory for code page table\n");
 		brelse(bh);
 		return NULL;
 	}
@@ -113,8 +115,8 @@ __le32 *hpfs_load_bitmap_directory(struct super_block *s, secno bmp)
 	int n = (hpfs_sb(s)->sb_fs_size + 0x200000 - 1) >> 21;
 	int i;
 	__le32 *b;
-	if (!(b = kmalloc(n * 512, GFP_KERNEL))) {
-		printk("HPFS: can't allocate memory for bitmap directory\n");
+	if (!(b = kmalloc_array(n, 512, GFP_KERNEL))) {
+		pr_err("can't allocate memory for bitmap directory\n");
 		return NULL;
 	}	
 	for (i=0;i<n;i++) {
@@ -127,6 +129,32 @@ __le32 *hpfs_load_bitmap_directory(struct super_block *s, secno bmp)
 		brelse(bh);
 	}
 	return b;
+}
+
+void hpfs_load_hotfix_map(struct super_block *s, struct hpfs_spare_block *spareblock)
+{
+	struct quad_buffer_head qbh;
+	__le32 *directory;
+	u32 n_hotfixes, n_used_hotfixes;
+	unsigned i;
+
+	n_hotfixes = le32_to_cpu(spareblock->n_spares);
+	n_used_hotfixes = le32_to_cpu(spareblock->n_spares_used);
+
+	if (n_hotfixes > 256 || n_used_hotfixes > n_hotfixes) {
+		hpfs_error(s, "invalid number of hotfixes: %u, used: %u", n_hotfixes, n_used_hotfixes);
+		return;
+	}
+	if (!(directory = hpfs_map_4sectors(s, le32_to_cpu(spareblock->hotfix_map), &qbh, 0))) {
+		hpfs_error(s, "can't load hotfix map");
+		return;
+	}
+	for (i = 0; i < n_used_hotfixes; i++) {
+		hpfs_sb(s)->hotfix_from[i] = le32_to_cpu(directory[i]);
+		hpfs_sb(s)->hotfix_to[i] = le32_to_cpu(directory[n_hotfixes + i]);
+	}
+	hpfs_sb(s)->n_hotfixes = n_used_hotfixes;
+	hpfs_brelse4(&qbh);
 }
 
 /*
@@ -260,7 +288,7 @@ struct dnode *hpfs_map_dnode(struct super_block *s, unsigned secno,
 					goto bail;
 				}
 				if (((31 + de->namelen + de->down*4 + 3) & ~3) != le16_to_cpu(de->length)) {
-					if (((31 + de->namelen + de->down*4 + 3) & ~3) < le16_to_cpu(de->length) && s->s_flags & MS_RDONLY) goto ok;
+					if (((31 + de->namelen + de->down*4 + 3) & ~3) < le16_to_cpu(de->length) && s->s_flags & SB_RDONLY) goto ok;
 					hpfs_error(s, "namelen does not match dirent size in dnode %08x, dirent %03x, last %03x", secno, p, pp);
 					goto bail;
 				}
@@ -281,7 +309,9 @@ struct dnode *hpfs_map_dnode(struct super_block *s, unsigned secno,
 				hpfs_error(s, "dnode %08x does not end with \\377 entry", secno);
 				goto bail;
 			}
-			if (b == 3) printk("HPFS: warning: unbalanced dnode tree, dnode %08x; see hpfs.txt 4 more info\n", secno);
+			if (b == 3)
+				pr_err("unbalanced dnode tree, dnode %08x; see hpfs.txt 4 more info\n",
+					secno);
 		}
 	return dnode;
 	bail:

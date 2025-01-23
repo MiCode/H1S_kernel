@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SCSI_DISK_H
 #define _SCSI_DISK_H
 
@@ -44,6 +45,8 @@ enum {
 };
 
 enum {
+	SD_DEF_XFER_BLOCKS = 0xffff,
+	SD_MAX_XFER_BLOCKS = 0xffffffff,
 	SD_MAX_WS10_BLOCKS = 0xffff,
 	SD_MAX_WS16_BLOCKS = 0x7fffff,
 };
@@ -57,13 +60,63 @@ enum {
 	SD_LBP_DISABLE,		/* Discard disabled due to failed cmd */
 };
 
+enum {
+	SD_ZERO_WRITE = 0,	/* Use WRITE(10/16) command */
+	SD_ZERO_WS,		/* Use WRITE SAME(10/16) command */
+	SD_ZERO_WS16_UNMAP,	/* Use WRITE SAME(16) with UNMAP */
+	SD_ZERO_WS10_UNMAP,	/* Use WRITE SAME(10) with UNMAP */
+};
+
+/**
+ * struct zoned_disk_info - Specific properties of a ZBC SCSI device.
+ * @nr_zones: number of zones.
+ * @zone_blocks: number of logical blocks per zone.
+ *
+ * This data structure holds the ZBC SCSI device properties that are retrieved
+ * twice: a first time before the gendisk capacity is known and a second time
+ * after the gendisk capacity is known.
+ */
+struct zoned_disk_info {
+	u32		nr_zones;
+	u32		zone_blocks;
+};
+
 struct scsi_disk {
-	struct scsi_driver *driver;	/* always &sd_template */
 	struct scsi_device *device;
-	struct device	dev;
+
+	/*
+	 * disk_dev is used to show attributes in /sys/class/scsi_disk/,
+	 * but otherwise not really needed.  Do not use for refcounting.
+	 */
+	struct device	disk_dev;
 	struct gendisk	*disk;
+	struct opal_dev *opal_dev;
+#ifdef CONFIG_BLK_DEV_ZONED
+	/* Updated during revalidation before the gendisk capacity is known. */
+	struct zoned_disk_info	early_zone_info;
+	/* Updated during revalidation after the gendisk capacity is known. */
+	struct zoned_disk_info	zone_info;
+	u32		zones_optimal_open;
+	u32		zones_optimal_nonseq;
+	u32		zones_max_open;
+	/*
+	 * Either zero or a power of two. If not zero it means that the offset
+	 * between zone starting LBAs is constant.
+	 */
+	u32		zone_starting_lba_gran;
+	u32		*zones_wp_offset;
+	spinlock_t	zones_wp_offset_lock;
+	u32		*rev_wp_offset;
+	struct mutex	rev_mutex;
+	struct work_struct zone_wp_offset_work;
+	char		*zone_wp_update_buf;
+#endif
 	atomic_t	openers;
-	sector_t	capacity;	/* size in 512-byte sectors */
+	sector_t	capacity;	/* size in logical blocks */
+	int		max_retries;
+	u32		min_xfer_blocks;
+	u32		max_xfer_blocks;
+	u32		opt_xfer_blocks;
 	u32		max_ws_blocks;
 	u32		max_unmap_blocks;
 	u32		unmap_granularity;
@@ -76,6 +129,9 @@ struct scsi_disk {
 	u8		write_prot;
 	u8		protection_type;/* Data Integrity Field */
 	u8		provisioning_mode;
+	u8		zeroing_mode;
+	u8		nr_actuators;		/* Number of actuators */
+	bool		suspended;	/* Disk is suspended (stopped) */
 	unsigned	ATO : 1;	/* state of disk ATO bit */
 	unsigned	cache_override : 1; /* temp override of WCE,RCD */
 	unsigned	WCE : 1;	/* state of disk WCE bit */
@@ -90,19 +146,33 @@ struct scsi_disk {
 	unsigned	lbpvpd : 1;
 	unsigned	ws10 : 1;
 	unsigned	ws16 : 1;
+	unsigned	rc_basis: 2;
+	unsigned	zoned: 2;
+	unsigned	urswrz : 1;
+	unsigned	security : 1;
+	unsigned	ignore_medium_access_errors : 1;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
-#define to_scsi_disk(obj) container_of(obj,struct scsi_disk,dev)
+#define to_scsi_disk(obj) container_of(obj, struct scsi_disk, disk_dev)
 
 static inline struct scsi_disk *scsi_disk(struct gendisk *disk)
 {
-	return container_of(disk->private_data, struct scsi_disk, driver);
+	return disk->private_data;
 }
 
 #define sd_printk(prefix, sdsk, fmt, a...)				\
         (sdsk)->disk ?							\
-	sdev_printk(prefix, (sdsk)->device, "[%s] " fmt,		\
-		    (sdsk)->disk->disk_name, ##a) :			\
-	sdev_printk(prefix, (sdsk)->device, fmt, ##a)
+	      sdev_prefix_printk(prefix, (sdsk)->device,		\
+				 (sdsk)->disk->disk_name, fmt, ##a) :	\
+	      sdev_printk(prefix, (sdsk)->device, fmt, ##a)
+
+#define sd_first_printk(prefix, sdsk, fmt, a...)			\
+	do {								\
+		if ((sdsk)->first_scan)					\
+			sd_printk(prefix, sdsk, fmt, ##a);		\
+	} while (0)
 
 static inline int scsi_medium_access_command(struct scsi_cmnd *scmd)
 {
@@ -136,55 +206,97 @@ static inline int scsi_medium_access_command(struct scsi_cmnd *scmd)
 	return 0;
 }
 
-/*
- * A DIF-capable target device can be formatted with different
- * protection schemes.  Currently 0 through 3 are defined:
- *
- * Type 0 is regular (unprotected) I/O
- *
- * Type 1 defines the contents of the guard and reference tags
- *
- * Type 2 defines the contents of the guard and reference tags and
- * uses 32-byte commands to seed the latter
- *
- * Type 3 defines the contents of the guard tag only
- */
+static inline sector_t logical_to_sectors(struct scsi_device *sdev, sector_t blocks)
+{
+	return blocks << (ilog2(sdev->sector_size) - 9);
+}
 
-enum sd_dif_target_protection_types {
-	SD_DIF_TYPE0_PROTECTION = 0x0,
-	SD_DIF_TYPE1_PROTECTION = 0x1,
-	SD_DIF_TYPE2_PROTECTION = 0x2,
-	SD_DIF_TYPE3_PROTECTION = 0x3,
-};
+static inline unsigned int logical_to_bytes(struct scsi_device *sdev, sector_t blocks)
+{
+	return blocks * sdev->sector_size;
+}
 
-/*
- * Data Integrity Field tuple.
- */
-struct sd_dif_tuple {
-       __be16 guard_tag;	/* Checksum */
-       __be16 app_tag;		/* Opaque storage */
-       __be32 ref_tag;		/* Target LBA or indirect LBA */
-};
+static inline sector_t bytes_to_logical(struct scsi_device *sdev, unsigned int bytes)
+{
+	return bytes >> ilog2(sdev->sector_size);
+}
+
+static inline sector_t sectors_to_logical(struct scsi_device *sdev, sector_t sector)
+{
+	return sector >> (ilog2(sdev->sector_size) - 9);
+}
 
 #ifdef CONFIG_BLK_DEV_INTEGRITY
 
 extern void sd_dif_config_host(struct scsi_disk *);
-extern void sd_dif_prepare(struct request *rq, sector_t, unsigned int);
-extern void sd_dif_complete(struct scsi_cmnd *, unsigned int);
 
 #else /* CONFIG_BLK_DEV_INTEGRITY */
 
 static inline void sd_dif_config_host(struct scsi_disk *disk)
 {
 }
-static inline int sd_dif_prepare(struct request *rq, sector_t s, unsigned int a)
+
+#endif /* CONFIG_BLK_DEV_INTEGRITY */
+
+static inline int sd_is_zoned(struct scsi_disk *sdkp)
+{
+	return sdkp->zoned == 1 || sdkp->device->type == TYPE_ZBC;
+}
+
+#ifdef CONFIG_BLK_DEV_ZONED
+
+void sd_zbc_free_zone_info(struct scsi_disk *sdkp);
+int sd_zbc_read_zones(struct scsi_disk *sdkp, u8 buf[SD_BUF_SIZE]);
+int sd_zbc_revalidate_zones(struct scsi_disk *sdkp);
+blk_status_t sd_zbc_setup_zone_mgmt_cmnd(struct scsi_cmnd *cmd,
+					 unsigned char op, bool all);
+unsigned int sd_zbc_complete(struct scsi_cmnd *cmd, unsigned int good_bytes,
+			     struct scsi_sense_hdr *sshdr);
+int sd_zbc_report_zones(struct gendisk *disk, sector_t sector,
+		unsigned int nr_zones, report_zones_cb cb, void *data);
+
+blk_status_t sd_zbc_prepare_zone_append(struct scsi_cmnd *cmd, sector_t *lba,
+				        unsigned int nr_blocks);
+
+#else /* CONFIG_BLK_DEV_ZONED */
+
+static inline void sd_zbc_free_zone_info(struct scsi_disk *sdkp) {}
+
+static inline int sd_zbc_read_zones(struct scsi_disk *sdkp, u8 buf[SD_BUF_SIZE])
 {
 	return 0;
 }
-static inline void sd_dif_complete(struct scsi_cmnd *cmd, unsigned int a)
+
+static inline int sd_zbc_revalidate_zones(struct scsi_disk *sdkp)
 {
+	return 0;
 }
 
-#endif /* CONFIG_BLK_DEV_INTEGRITY */
+static inline blk_status_t sd_zbc_setup_zone_mgmt_cmnd(struct scsi_cmnd *cmd,
+						       unsigned char op,
+						       bool all)
+{
+	return BLK_STS_TARGET;
+}
+
+static inline unsigned int sd_zbc_complete(struct scsi_cmnd *cmd,
+			unsigned int good_bytes, struct scsi_sense_hdr *sshdr)
+{
+	return good_bytes;
+}
+
+static inline blk_status_t sd_zbc_prepare_zone_append(struct scsi_cmnd *cmd,
+						      sector_t *lba,
+						      unsigned int nr_blocks)
+{
+	return BLK_STS_TARGET;
+}
+
+#define sd_zbc_report_zones NULL
+
+#endif /* CONFIG_BLK_DEV_ZONED */
+
+void sd_print_sense_hdr(struct scsi_disk *sdkp, struct scsi_sense_hdr *sshdr);
+void sd_print_result(const struct scsi_disk *sdkp, const char *msg, int result);
 
 #endif /* _SCSI_DISK_H */

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SPARC64_HVTRAP_H
 #define _SPARC64_HVTRAP_H
 
@@ -19,7 +20,7 @@ struct hvtramp_descr {
 	struct hvtramp_mapping	maps[1];
 };
 
-extern void hv_cpu_startup(unsigned long hvdescr_pa);
+void hv_cpu_startup(unsigned long hvdescr_pa);
 
 #endif
 

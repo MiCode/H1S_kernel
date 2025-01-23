@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
  /*
     saa6752hs - i2c-driver for the saa6752hs by Philips
 
@@ -7,19 +8,6 @@
 
     Copyright (C) 2008 Hans Verkuil <hverkuil@xs4all.nl>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License vs published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mvss Ave, Cambridge, MA 02139, USA.
   */
 
 #include <linux/module.h>
@@ -72,8 +60,8 @@ struct saa6752hs_mpeg_params {
 	/* video */
 	enum v4l2_mpeg_video_aspect	vi_aspect;
 	enum v4l2_mpeg_video_bitrate_mode vi_bitrate_mode;
-	__u32 				vi_bitrate;
-	__u32 				vi_bitrate_peak;
+	__u32				vi_bitrate;
+	__u32				vi_bitrate_peak;
 };
 
 static const struct v4l2_format v4l2_format_table[] =
@@ -98,8 +86,8 @@ struct saa6752hs_state {
 		struct v4l2_ctrl *video_bitrate;
 		struct v4l2_ctrl *video_bitrate_peak;
 	};
-	u32 			      revision;
-	int 			      has_ac3;
+	u32			      revision;
+	int			      has_ac3;
 	struct saa6752hs_mpeg_params  params;
 	enum saa6752hs_videoformat    video_format;
 	v4l2_std_id                   standard;
@@ -554,25 +542,38 @@ static int saa6752hs_init(struct v4l2_subdev *sd, u32 leading_null_bytes)
 	return 0;
 }
 
-static int saa6752hs_g_mbus_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *f)
+static int saa6752hs_get_fmt(struct v4l2_subdev *sd,
+		struct v4l2_subdev_state *sd_state,
+		struct v4l2_subdev_format *format)
 {
+	struct v4l2_mbus_framefmt *f = &format->format;
 	struct saa6752hs_state *h = to_state(sd);
+
+	if (format->pad)
+		return -EINVAL;
 
 	if (h->video_format == SAA6752HS_VF_UNKNOWN)
 		h->video_format = SAA6752HS_VF_D1;
 	f->width = v4l2_format_table[h->video_format].fmt.pix.width;
 	f->height = v4l2_format_table[h->video_format].fmt.pix.height;
-	f->code = V4L2_MBUS_FMT_FIXED;
+	f->code = MEDIA_BUS_FMT_FIXED;
 	f->field = V4L2_FIELD_INTERLACED;
 	f->colorspace = V4L2_COLORSPACE_SMPTE170M;
 	return 0;
 }
 
-static int saa6752hs_try_mbus_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *f)
+static int saa6752hs_set_fmt(struct v4l2_subdev *sd,
+		struct v4l2_subdev_state *sd_state,
+		struct v4l2_subdev_format *format)
 {
+	struct v4l2_mbus_framefmt *f = &format->format;
+	struct saa6752hs_state *h = to_state(sd);
 	int dist_352, dist_480, dist_720;
 
-	f->code = V4L2_MBUS_FMT_FIXED;
+	if (format->pad)
+		return -EINVAL;
+
+	f->code = MEDIA_BUS_FMT_FIXED;
 
 	dist_352 = abs(f->width - 352);
 	dist_480 = abs(f->width - 480);
@@ -592,15 +593,11 @@ static int saa6752hs_try_mbus_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_frame
 	}
 	f->field = V4L2_FIELD_INTERLACED;
 	f->colorspace = V4L2_COLORSPACE_SMPTE170M;
-	return 0;
-}
 
-static int saa6752hs_s_mbus_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *f)
-{
-	struct saa6752hs_state *h = to_state(sd);
-
-	if (f->code != V4L2_MBUS_FMT_FIXED)
-		return -EINVAL;
+	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
+		sd_state->pads->try_fmt = *f;
+		return 0;
+	}
 
 	/*
 	  FIXME: translate and round width/height into EMPRESS
@@ -614,7 +611,9 @@ static int saa6752hs_s_mbus_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefm
 	  D1     | 720x576 | 720x480
 	*/
 
-	saa6752hs_try_mbus_fmt(sd, f);
+	if (f->code != MEDIA_BUS_FMT_FIXED)
+		return -EINVAL;
+
 	if (f->width == 720)
 		h->video_format = SAA6752HS_VF_D1;
 	else if (f->width == 480)
@@ -643,24 +642,26 @@ static const struct v4l2_ctrl_ops saa6752hs_ctrl_ops = {
 
 static const struct v4l2_subdev_core_ops saa6752hs_core_ops = {
 	.init = saa6752hs_init,
-	.s_std = saa6752hs_s_std,
 };
 
 static const struct v4l2_subdev_video_ops saa6752hs_video_ops = {
-	.s_mbus_fmt = saa6752hs_s_mbus_fmt,
-	.try_mbus_fmt = saa6752hs_try_mbus_fmt,
-	.g_mbus_fmt = saa6752hs_g_mbus_fmt,
+	.s_std = saa6752hs_s_std,
+};
+
+static const struct v4l2_subdev_pad_ops saa6752hs_pad_ops = {
+	.get_fmt = saa6752hs_get_fmt,
+	.set_fmt = saa6752hs_set_fmt,
 };
 
 static const struct v4l2_subdev_ops saa6752hs_ops = {
 	.core = &saa6752hs_core_ops,
 	.video = &saa6752hs_video_ops,
+	.pad = &saa6752hs_pad_ops,
 };
 
-static int saa6752hs_probe(struct i2c_client *client,
-		const struct i2c_device_id *id)
+static int saa6752hs_probe(struct i2c_client *client)
 {
-	struct saa6752hs_state *h = kzalloc(sizeof(*h), GFP_KERNEL);
+	struct saa6752hs_state *h;
 	struct v4l2_subdev *sd;
 	struct v4l2_ctrl_handler *hdl;
 	u8 addr = 0x13;
@@ -668,6 +669,8 @@ static int saa6752hs_probe(struct i2c_client *client,
 
 	v4l_info(client, "chip found @ 0x%x (%s)\n",
 			client->addr << 1, client->adapter->name);
+
+	h = devm_kzalloc(&client->dev, sizeof(*h), GFP_KERNEL);
 	if (h == NULL)
 		return -ENOMEM;
 	sd = &h->sd;
@@ -752,7 +755,6 @@ static int saa6752hs_probe(struct i2c_client *client,
 		int err = hdl->error;
 
 		v4l2_ctrl_handler_free(hdl);
-		kfree(h);
 		return err;
 	}
 	v4l2_ctrl_cluster(3, &h->video_bitrate_mode);
@@ -761,14 +763,12 @@ static int saa6752hs_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int saa6752hs_remove(struct i2c_client *client)
+static void saa6752hs_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&to_state(sd)->hdl);
-	kfree(to_state(sd));
-	return 0;
 }
 
 static const struct i2c_device_id saa6752hs_id[] = {
@@ -779,7 +779,6 @@ MODULE_DEVICE_TABLE(i2c, saa6752hs_id);
 
 static struct i2c_driver saa6752hs_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "saa6752hs",
 	},
 	.probe		= saa6752hs_probe,

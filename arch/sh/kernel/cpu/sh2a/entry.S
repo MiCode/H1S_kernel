@@ -1,14 +1,11 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0
+ *
  * arch/sh/kernel/cpu/sh2a/entry.S
  *
  * The SH-2A exception entry
  *
  * Copyright (C) 2008 Yoshinori Sato
  * Based on arch/sh/kernel/cpu/sh2/entry.S
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 
 #include <linux/linkage.h>
@@ -109,9 +106,9 @@ ENTRY(exception_handler)
 	mov	#64,r8
 	cmp/hs	r8,r9
 	bt	interrupt_entry	! vec >= 64 is interrupt
-	mov	#32,r8
+	mov	#31,r8
 	cmp/hs	r8,r9
-	bt	trap_entry	! 64 > vec >= 32  is trap
+	bt	trap_entry	! 64 > vec >= 31  is trap
 
 	mov.l	4f,r8
 	mov	r9,r4
@@ -143,9 +140,9 @@ interrupt_entry:
 
 trap_entry:
 	mov	#0x30,r8
-	cmp/ge	r8,r9		! vector 0x20-0x2f is systemcall
+	cmp/ge	r8,r9		! vector 0x1f-0x2f is systemcall
 	bt	1f
-	add	#-0x10,r9	! convert SH2 to SH3/4 ABI
+	mov     #0x1f,r9	! convert to unified SH2/3/4 trap number
 1:	
 	shll2	r9			! TRA
 	bra	system_call	! jump common systemcall entry

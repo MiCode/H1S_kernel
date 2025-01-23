@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *    pata_radisys.c - Intel PATA/SATA controllers
  *
@@ -15,7 +16,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -172,8 +172,8 @@ static unsigned int radisys_qc_issue(struct ata_queued_cmd *qc)
 
 	if (adev != ap->private_data) {
 		/* UDMA timing is not shared */
-		if (adev->dma_mode < XFER_UDMA_0) {
-			if (adev->dma_mode)
+		if (adev->dma_mode < XFER_UDMA_0 || !ata_dma_enabled(adev)) {
+			if (ata_dma_enabled(adev))
 				radisys_set_dmamode(ap, adev);
 			else if (adev->pio_mode)
 				radisys_set_piomode(ap, adev);
@@ -183,7 +183,7 @@ static unsigned int radisys_qc_issue(struct ata_queued_cmd *qc)
 }
 
 
-static struct scsi_host_template radisys_sht = {
+static const struct scsi_host_template radisys_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -238,7 +238,7 @@ static struct pci_driver radisys_pci_driver = {
 	.id_table		= radisys_pci_tbl,
 	.probe			= radisys_init_one,
 	.remove			= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= ata_pci_device_suspend,
 	.resume			= ata_pci_device_resume,
 #endif

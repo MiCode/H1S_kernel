@@ -1,20 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /******************************************************************************
 
     AudioScience HPI driver
-    Copyright (C) 1997-2011  AudioScience Inc. <support@audioscience.com>
+    Copyright (C) 1997-2014  AudioScience Inc. <support@audioscience.com>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of version 2 of the GNU General Public License as
-    published by the Free Software Foundation;
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
  Hardware Programming Interface (HPI) Utility functions.
 
@@ -23,6 +12,7 @@
 
 #include "hpi_internal.h"
 #include "hpimsginit.h"
+#include <linux/nospec.h>
 
 /* The actual message size for each object type */
 static u16 msg_size[HPI_OBJ_MAXINDEX + 1] = HPI_MESSAGE_SIZE_BY_OBJECT;
@@ -37,11 +27,17 @@ static u16 gwSSX2_bypass;
 static void hpi_init_message(struct hpi_message *phm, u16 object,
 	u16 function)
 {
-	memset(phm, 0, sizeof(*phm));
-	if ((object > 0) && (object <= HPI_OBJ_MAXINDEX))
-		phm->size = msg_size[object];
-	else
-		phm->size = sizeof(*phm);
+	u16 size;
+
+	if ((object > 0) && (object <= HPI_OBJ_MAXINDEX)) {
+		object = array_index_nospec(object, HPI_OBJ_MAXINDEX + 1);
+		size = msg_size[object];
+	} else {
+		size = sizeof(*phm);
+	}
+
+	memset(phm, 0, size);
+	phm->size = size;
 
 	if (gwSSX2_bypass)
 		phm->type = HPI_TYPE_SSX2BYPASS_MESSAGE;
@@ -60,12 +56,18 @@ static void hpi_init_message(struct hpi_message *phm, u16 object,
 void hpi_init_response(struct hpi_response *phr, u16 object, u16 function,
 	u16 error)
 {
+	u16 size;
+
+	if ((object > 0) && (object <= HPI_OBJ_MAXINDEX)) {
+		object = array_index_nospec(object, HPI_OBJ_MAXINDEX + 1);
+		size = res_size[object];
+	} else {
+		size = sizeof(*phr);
+	}
+
 	memset(phr, 0, sizeof(*phr));
+	phr->size = size;
 	phr->type = HPI_TYPE_RESPONSE;
-	if ((object > 0) && (object <= HPI_OBJ_MAXINDEX))
-		phr->size = res_size[object];
-	else
-		phr->size = sizeof(*phr);
 	phr->object = object;
 	phr->function = function;
 	phr->error = error;
@@ -86,7 +88,7 @@ void hpi_init_message_response(struct hpi_message *phm,
 static void hpi_init_messageV1(struct hpi_message_header *phm, u16 size,
 	u16 object, u16 function)
 {
-	memset(phm, 0, sizeof(*phm));
+	memset(phm, 0, size);
 	if ((object > 0) && (object <= HPI_OBJ_MAXINDEX)) {
 		phm->size = size;
 		phm->type = HPI_TYPE_REQUEST;
@@ -100,7 +102,9 @@ static void hpi_init_messageV1(struct hpi_message_header *phm, u16 size,
 void hpi_init_responseV1(struct hpi_response_header *phr, u16 size,
 	u16 object, u16 function)
 {
-	memset(phr, 0, sizeof(*phr));
+	(void)object;
+	(void)function;
+	memset(phr, 0, size);
 	phr->size = size;
 	phr->version = 1;
 	phr->type = HPI_TYPE_RESPONSE;

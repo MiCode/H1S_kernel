@@ -1,22 +1,6 @@
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/*
  * Copyright (C) 2005 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
 #ifndef O2CLUSTER_TCP_INTERNAL_H
@@ -107,12 +91,12 @@ struct o2net_node {
 	struct list_head		nn_status_list;
 
 	/* connects are attempted from when heartbeat comes up until either hb
-	 * goes down, the node is unconfigured, no connect attempts succeed
-	 * before O2NET_CONN_IDLE_DELAY, or a connect succeeds.  connect_work
-	 * is queued from set_nn_state both from hb up and from itself if a
-	 * connect attempt fails and so can be self-arming.  shutdown is
-	 * careful to first mark the nn such that no connects will be attempted
-	 * before canceling delayed connect work and flushing the queue. */
+	 * goes down, the node is unconfigured, or a connect succeeds.
+	 * connect_work is queued from set_nn_state both from hb up and from
+	 * itself if a connect attempt fails and so can be self-arming.
+	 * shutdown is careful to first mark the nn such that no connects will
+	 * be attempted before canceling delayed connect work and flushing the
+	 * queue. */
 	struct delayed_work		nn_connect_work;
 	unsigned long			nn_last_connect_attempt;
 
@@ -165,7 +149,7 @@ struct o2net_sock_container {
 
 	/* original handlers for the sockets */
 	void			(*sc_state_change)(struct sock *sk);
-	void			(*sc_data_ready)(struct sock *sk, int bytes);
+	void			(*sc_data_ready)(struct sock *sk);
 
 	u32			sc_msg_key;
 	u16			sc_msg_type;
@@ -196,7 +180,7 @@ struct o2net_msg_handler {
 	u32			nh_msg_type;
 	u32			nh_key;
 	o2net_msg_handler_func	*nh_func;
-	o2net_msg_handler_func	*nh_func_data;
+	void			*nh_func_data;
 	o2net_post_msg_handler_func
 				*nh_post_func;
 	struct kref		nh_kref;

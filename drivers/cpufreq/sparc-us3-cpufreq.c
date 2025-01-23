@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* us3_cpufreq.c: UltraSPARC-III cpu frequency support
  *
  * Copyright (C) 2003 David S. Miller (davem@redhat.com)
@@ -18,8 +19,6 @@
 #include <asm/head.h>
 #include <asm/timer.h>
 
-static struct cpufreq_driver *cpufreq_us3_driver;
-
 struct us3_freq_percpu_info {
 	struct cpufreq_frequency_table table[4];
 };
@@ -35,22 +34,28 @@ static struct us3_freq_percpu_info *us3_freq_table;
 #define SAFARI_CFG_DIV_32	0x0000000080000000UL
 #define SAFARI_CFG_DIV_MASK	0x00000000C0000000UL
 
-static unsigned long read_safari_cfg(void)
+static void read_safari_cfg(void *arg)
 {
-	unsigned long ret;
+	unsigned long ret, *val = arg;
 
 	__asm__ __volatile__("ldxa	[%%g0] %1, %0"
 			     : "=&r" (ret)
 			     : "i" (ASI_SAFARI_CONFIG));
-	return ret;
+	*val = ret;
 }
 
-static void write_safari_cfg(unsigned long val)
+static void update_safari_cfg(void *arg)
 {
+	unsigned long reg, *new_bits = arg;
+
+	read_safari_cfg(&reg);
+	reg &= ~SAFARI_CFG_DIV_MASK;
+	reg |= *new_bits;
+
 	__asm__ __volatile__("stxa	%0, [%%g0] %1\n\t"
 			     "membar	#Sync"
 			     : /* no outputs */
-			     : "r" (val), "i" (ASI_SAFARI_CONFIG)
+			     : "r" (reg), "i" (ASI_SAFARI_CONFIG)
 			     : "memory");
 }
 
@@ -78,29 +83,17 @@ static unsigned long get_current_freq(unsigned int cpu, unsigned long safari_cfg
 
 static unsigned int us3_freq_get(unsigned int cpu)
 {
-	cpumask_t cpus_allowed;
 	unsigned long reg;
-	unsigned int ret;
 
-	cpumask_copy(&cpus_allowed, tsk_cpus_allowed(current));
-	set_cpus_allowed_ptr(current, cpumask_of(cpu));
-
-	reg = read_safari_cfg();
-	ret = get_current_freq(cpu, reg);
-
-	set_cpus_allowed_ptr(current, &cpus_allowed);
-
-	return ret;
+	if (smp_call_function_single(cpu, read_safari_cfg, &reg, 1))
+		return 0;
+	return get_current_freq(cpu, reg);
 }
 
 static int us3_freq_target(struct cpufreq_policy *policy, unsigned int index)
 {
 	unsigned int cpu = policy->cpu;
-	unsigned long new_bits, new_freq, reg;
-	cpumask_t cpus_allowed;
-
-	cpumask_copy(&cpus_allowed, tsk_cpus_allowed(current));
-	set_cpus_allowed_ptr(current, cpumask_of(cpu));
+	unsigned long new_bits, new_freq;
 
 	new_freq = sparc64_get_clock_tick(cpu) / 1000;
 	switch (index) {
@@ -121,18 +114,10 @@ static int us3_freq_target(struct cpufreq_policy *policy, unsigned int index)
 		BUG();
 	}
 
-	reg = read_safari_cfg();
-
-	reg &= ~SAFARI_CFG_DIV_MASK;
-	reg |= new_bits;
-	write_safari_cfg(reg);
-
-	set_cpus_allowed_ptr(current, &cpus_allowed);
-
-	return 0;
+	return smp_call_function_single(cpu, update_safari_cfg, &new_bits, 1);
 }
 
-static int __init us3_freq_cpu_init(struct cpufreq_policy *policy)
+static int us3_freq_cpu_init(struct cpufreq_policy *policy)
 {
 	unsigned int cpu = policy->cpu;
 	unsigned long clock_tick = sparc64_get_clock_tick(cpu) / 1000;
@@ -150,19 +135,25 @@ static int __init us3_freq_cpu_init(struct cpufreq_policy *policy)
 
 	policy->cpuinfo.transition_latency = 0;
 	policy->cur = clock_tick;
+	policy->freq_table = table;
 
-	return cpufreq_table_validate_and_show(policy, table);
+	return 0;
 }
 
 static int us3_freq_cpu_exit(struct cpufreq_policy *policy)
 {
-	if (cpufreq_us3_driver) {
-		cpufreq_frequency_table_put_attr(policy->cpu);
-		us3_freq_target(policy, 0);
-	}
-
+	us3_freq_target(policy, 0);
 	return 0;
 }
+
+static struct cpufreq_driver cpufreq_us3_driver = {
+	.name = "UltraSPARC-III",
+	.init = us3_freq_cpu_init,
+	.verify = cpufreq_generic_frequency_table_verify,
+	.target_index = us3_freq_target,
+	.get = us3_freq_get,
+	.exit = us3_freq_cpu_exit,
+};
 
 static int __init us3_freq_init(void)
 {
@@ -181,39 +172,15 @@ static int __init us3_freq_init(void)
 	     impl == CHEETAH_PLUS_IMPL ||
 	     impl == JAGUAR_IMPL ||
 	     impl == PANTHER_IMPL)) {
-		struct cpufreq_driver *driver;
-
-		ret = -ENOMEM;
-		driver = kzalloc(sizeof(*driver), GFP_KERNEL);
-		if (!driver)
-			goto err_out;
-
-		us3_freq_table = kzalloc((NR_CPUS * sizeof(*us3_freq_table)),
-			GFP_KERNEL);
+		us3_freq_table = kzalloc(NR_CPUS * sizeof(*us3_freq_table),
+					 GFP_KERNEL);
 		if (!us3_freq_table)
-			goto err_out;
+			return -ENOMEM;
 
-		driver->init = us3_freq_cpu_init;
-		driver->verify = cpufreq_generic_frequency_table_verify;
-		driver->target_index = us3_freq_target;
-		driver->get = us3_freq_get;
-		driver->exit = us3_freq_cpu_exit;
-		strcpy(driver->name, "UltraSPARC-III");
-
-		cpufreq_us3_driver = driver;
-		ret = cpufreq_register_driver(driver);
+		ret = cpufreq_register_driver(&cpufreq_us3_driver);
 		if (ret)
-			goto err_out;
+			kfree(us3_freq_table);
 
-		return 0;
-
-err_out:
-		if (driver) {
-			kfree(driver);
-			cpufreq_us3_driver = NULL;
-		}
-		kfree(us3_freq_table);
-		us3_freq_table = NULL;
 		return ret;
 	}
 
@@ -222,13 +189,8 @@ err_out:
 
 static void __exit us3_freq_exit(void)
 {
-	if (cpufreq_us3_driver) {
-		cpufreq_unregister_driver(cpufreq_us3_driver);
-		kfree(cpufreq_us3_driver);
-		cpufreq_us3_driver = NULL;
-		kfree(us3_freq_table);
-		us3_freq_table = NULL;
-	}
+	cpufreq_unregister_driver(&cpufreq_us3_driver);
+	kfree(us3_freq_table);
 }
 
 MODULE_AUTHOR("David S. Miller <davem@redhat.com>");

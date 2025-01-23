@@ -1,45 +1,11 @@
+/* SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0 */
 /******************************************************************************
  *
  * Name: acpredef - Information table for ACPI predefined methods and objects
  *
+ * Copyright (C) 2000 - 2023, Intel Corp.
+ *
  *****************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #ifndef __ACPREDEF_H__
 #define __ACPREDEF_H__
@@ -48,7 +14,7 @@
  *
  * Return Package types
  *
- * 1) PTYPE1 packages do not contain sub-packages.
+ * 1) PTYPE1 packages do not contain subpackages.
  *
  * ACPI_PTYPE1_FIXED: Fixed-length length, 1 or 2 object types:
  *      object type
@@ -63,8 +29,8 @@
  *      (Used for _PRW)
  *
  *
- * 2) PTYPE2 packages contain a Variable-length number of sub-packages. Each
- *    of the different types describe the contents of each of the sub-packages.
+ * 2) PTYPE2 packages contain a Variable-length number of subpackages. Each
+ *    of the different types describe the contents of each of the subpackages.
  *
  * ACPI_PTYPE2: Each subpackage contains 1 or 2 object types. Zero-length
  *      parent package is allowed:
@@ -105,6 +71,16 @@
  *      count = 0 (optional)
  *      (Used for _DLM)
  *
+ * ACPI_PTYPE2_VAR_VAR: Variable number of subpackages, each of either a
+ *      constant or variable length. The subpackages are preceded by a
+ *      constant number of objects.
+ *      (Used for _LPI, _RDI)
+ *
+ * ACPI_PTYPE2_UUID_PAIR: Each subpackage is preceded by a UUID Buffer. The UUID
+ *      defines the format of the package. Zero-length parent package is
+ *      allowed.
+ *      (Used for _DSD)
+ *
  *****************************************************************************/
 
 enum acpi_return_package_types {
@@ -117,12 +93,15 @@ enum acpi_return_package_types {
 	ACPI_PTYPE2_FIXED = 7,
 	ACPI_PTYPE2_MIN = 8,
 	ACPI_PTYPE2_REV_FIXED = 9,
-	ACPI_PTYPE2_FIX_VAR = 10
+	ACPI_PTYPE2_FIX_VAR = 10,
+	ACPI_PTYPE2_VAR_VAR = 11,
+	ACPI_PTYPE2_UUID_PAIR = 12,
+	ACPI_PTYPE_CUSTOM = 13
 };
 
 /* Support macros for users of the predefined info table */
 
-#define METHOD_PREDEF_ARGS_MAX          4
+#define METHOD_PREDEF_ARGS_MAX          5
 #define METHOD_ARG_BIT_WIDTH            3
 #define METHOD_ARG_MASK                 0x0007
 #define ARG_COUNT_IS_MINIMUM            0x8000
@@ -138,6 +117,7 @@ enum acpi_return_package_types {
 #define METHOD_2ARGS(a1,a2)             (2 | (a1 << 3) | (a2 << 6))
 #define METHOD_3ARGS(a1,a2,a3)          (3 | (a1 << 3) | (a2 << 6) | (a3 << 9))
 #define METHOD_4ARGS(a1,a2,a3,a4)       (4 | (a1 << 3) | (a2 << 6) | (a3 << 9) | (a4 << 12))
+#define METHOD_5ARGS(a1,a2,a3,a4,a5)    (5 | (a1 << 3) | (a2 << 6) | (a3 << 9) | (a4 << 12) | (a5 << 15))
 
 #define METHOD_RETURNS(type)            (type)
 #define METHOD_NO_RETURN_VALUE          0
@@ -166,7 +146,7 @@ enum acpi_return_package_types {
  * These are the names that can actually be evaluated via acpi_evaluate_object.
  * Not present in this table are the following:
  *
- *      1) Predefined/Reserved names that are never evaluated via
+ *      1) Predefined/Reserved names that are not usually evaluated via
  *         acpi_evaluate_object:
  *              _Lxx and _Exx GPE methods
  *              _Qxx EC methods
@@ -328,7 +308,7 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 
 	{{"_BIX", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Fixed-length (16 Int),(4 Str) */
-	PACKAGE_INFO(ACPI_PTYPE1_FIXED, ACPI_RTYPE_INTEGER, 16,
+	PACKAGE_INFO(ACPI_PTYPE_CUSTOM, ACPI_RTYPE_INTEGER, 16,
 		     ACPI_RTYPE_STRING, 4, 0),
 
 	{{"_BLT",
@@ -348,12 +328,26 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 	{{"_BMS", METHOD_1ARGS(ACPI_TYPE_INTEGER),
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
 
+	{{"_BPC", METHOD_0ARGS,
+	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Fixed-length (4 Int) */
+	PACKAGE_INFO(ACPI_PTYPE1_FIXED, ACPI_RTYPE_INTEGER, 4, 0, 0, 0),
+
+	{{"_BPS", METHOD_0ARGS,
+	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Fixed-length (5 Int) */
+	PACKAGE_INFO(ACPI_PTYPE1_FIXED, ACPI_RTYPE_INTEGER, 5, 0, 0, 0),
+
+	{{"_BPT", METHOD_1ARGS(ACPI_TYPE_PACKAGE),
+	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
+
 	{{"_BQC", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
 
 	{{"_BST", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Fixed-length (4 Int) */
 	PACKAGE_INFO(ACPI_PTYPE1_FIXED, ACPI_RTYPE_INTEGER, 4, 0, 0, 0),
+
+	{{"_BTH", METHOD_1ARGS(ACPI_TYPE_INTEGER),	/* ACPI 6.0 */
+	  METHOD_NO_RETURN_VALUE}},
 
 	{{"_BTM", METHOD_1ARGS(ACPI_TYPE_INTEGER),
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
@@ -363,6 +357,13 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 
 	{{"_CBA", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},	/* See PCI firmware spec 3.0 */
+
+	{{"_CBR", METHOD_0ARGS,
+	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Fixed-length (3 Int) */
+	PACKAGE_INFO(ACPI_PTYPE1_FIXED, ACPI_RTYPE_INTEGER, 3, 0, 0, 0),
+
+	{{"_CCA", METHOD_0ARGS,
+	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},	/* ACPI 5.1 */
 
 	{{"_CDM", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
@@ -380,6 +381,9 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Variable-length (Ints/Bufs) */
 	PACKAGE_INFO(ACPI_PTYPE1_VAR, ACPI_RTYPE_INTEGER | ACPI_RTYPE_BUFFER, 0,
 		     0, 0, 0),
+
+	{{"_CR3", METHOD_0ARGS,	/* ACPI 6.0 */
+	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
 
 	{{"_CRS", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_BUFFER)}},
@@ -435,6 +439,14 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 
 	{{"_DOS", METHOD_1ARGS(ACPI_TYPE_INTEGER),
 	  METHOD_NO_RETURN_VALUE}},
+
+	{{"_DSC", METHOD_0ARGS,
+	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
+
+	{{"_DSD", METHOD_0ARGS,	/* ACPI 6.0 */
+	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Variable-length (Pkgs) each: 1 Buf, 1 Pkg */
+	PACKAGE_INFO(ACPI_PTYPE2_UUID_PAIR, ACPI_RTYPE_BUFFER, 1,
+		     ACPI_RTYPE_PACKAGE, 1, 0),
 
 	{{"_DSM",
 	  METHOD_4ARGS(ACPI_TYPE_BUFFER, ACPI_TYPE_INTEGER, ACPI_TYPE_INTEGER,
@@ -497,6 +509,9 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Fixed-length (4 Int) */
 	PACKAGE_INFO(ACPI_PTYPE1_FIXED, ACPI_RTYPE_INTEGER, 4, 0, 0, 0),
 
+	{{"_FIT", METHOD_0ARGS,
+	  METHOD_RETURNS(ACPI_RTYPE_BUFFER)}},	/* ACPI 6.0 */
+
 	{{"_FIX", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Variable-length (Ints) */
 	PACKAGE_INFO(ACPI_PTYPE1_VAR, ACPI_RTYPE_INTEGER, 0, 0, 0, 0),
@@ -551,6 +566,9 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 	{{"_HID", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER | ACPI_RTYPE_STRING)}},
 
+	{{"_HMA", METHOD_0ARGS,
+	  METHOD_RETURNS(ACPI_RTYPE_BUFFER)}},
+
 	{{"_HOT", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
 
@@ -560,7 +578,7 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 
 	/*
 	 * For _HPX, a single package is returned, containing a variable-length number
-	 * of sub-packages. Each sub-package contains a PCI record setting.
+	 * of subpackages. Each subpackage contains a PCI record setting.
 	 * There are several different type of record settings, of different
 	 * lengths, but all elements of all settings are Integers.
 	 */
@@ -586,6 +604,29 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 	{{"_LID", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
 
+	{{"_LPD", METHOD_0ARGS,
+	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Variable-length (1 Int(rev), n Pkg (2 Int) */
+	PACKAGE_INFO(ACPI_PTYPE2_REV_FIXED, ACPI_RTYPE_INTEGER, 2, 0, 0, 0),
+
+	{{"_LPI", METHOD_0ARGS,	/* ACPI 6.0 */
+	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Variable-length (3 Int, n Pkg (10 Int/Buf) */
+	PACKAGE_INFO(ACPI_PTYPE2_VAR_VAR, ACPI_RTYPE_INTEGER, 3,
+		     ACPI_RTYPE_INTEGER | ACPI_RTYPE_BUFFER | ACPI_RTYPE_STRING,
+		     10, 0),
+
+	{{"_LSI", METHOD_0ARGS,
+	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},
+	PACKAGE_INFO(ACPI_PTYPE1_FIXED, ACPI_RTYPE_INTEGER, 3, 0, 0, 0),
+
+	{{"_LSR", METHOD_2ARGS(ACPI_TYPE_INTEGER, ACPI_TYPE_INTEGER),
+	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},
+	PACKAGE_INFO(ACPI_PTYPE1_FIXED, ACPI_RTYPE_INTEGER, 1,
+		     ACPI_RTYPE_BUFFER, 1, 0),
+
+	{{"_LSW",
+	  METHOD_3ARGS(ACPI_TYPE_INTEGER, ACPI_TYPE_INTEGER, ACPI_TYPE_BUFFER),
+	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
+
 	{{"_MAT", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_BUFFER)}},
 
@@ -605,6 +646,24 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 	  METHOD_4ARGS(ACPI_TYPE_INTEGER, ACPI_TYPE_INTEGER, ACPI_TYPE_INTEGER,
 		       ACPI_TYPE_INTEGER),
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
+
+	{{"_MTL", METHOD_0ARGS,	/* ACPI 6.0 */
+	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
+
+	{{"_NBS", METHOD_0ARGS,	/* ACPI 6.3 */
+	  METHOD_RETURNS(ACPI_RTYPE_BUFFER)}},
+
+	{{"_NCH", METHOD_0ARGS,	/* ACPI 6.3 */
+	  METHOD_RETURNS(ACPI_RTYPE_BUFFER)}},
+
+	{{"_NIC", METHOD_0ARGS,	/* ACPI 6.3 */
+	  METHOD_RETURNS(ACPI_RTYPE_BUFFER)}},
+
+	{{"_NIG", METHOD_0ARGS, /* ACPI 6.3 */
+	  METHOD_RETURNS(ACPI_RTYPE_BUFFER)}},
+
+	{{"_NIH", METHOD_1ARGS(ACPI_TYPE_BUFFER), /* ACPI 6.3 */
+	  METHOD_RETURNS(ACPI_RTYPE_BUFFER)}},
 
 	{{"_NTT", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
@@ -698,6 +757,10 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Variable-length (Refs) */
 	PACKAGE_INFO(ACPI_PTYPE1_VAR, ACPI_RTYPE_REFERENCE, 0, 0, 0, 0),
 
+	{{"_PRR", METHOD_0ARGS,	/* ACPI 6.0 */
+	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Fixed-length (1 Ref) */
+	PACKAGE_INFO(ACPI_PTYPE1_FIXED, ACPI_RTYPE_REFERENCE, 1, 0, 0, 0),
+
 	{{"_PRS", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_BUFFER)}},
 
@@ -778,6 +841,11 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 	{{"_PXM", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
 
+	{{"_RDI", METHOD_0ARGS,	/* ACPI 6.0 */
+	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Variable-length (1 Int, n Pkg (m Ref)) */
+	PACKAGE_INFO(ACPI_PTYPE2_VAR_VAR, ACPI_RTYPE_INTEGER, 1,
+		     ACPI_RTYPE_REFERENCE, 0, 0),
+
 	{{"_REG", METHOD_2ARGS(ACPI_TYPE_INTEGER, ACPI_TYPE_INTEGER),
 	  METHOD_NO_RETURN_VALUE}},
 
@@ -789,6 +857,9 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 
 	{{"_ROM", METHOD_2ARGS(ACPI_TYPE_INTEGER, ACPI_TYPE_INTEGER),
 	  METHOD_RETURNS(ACPI_RTYPE_BUFFER)}},
+
+	{{"_RST", METHOD_0ARGS,	/* ACPI 6.0 */
+	  METHOD_NO_RETURN_VALUE}},
 
 	{{"_RTV", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
@@ -850,8 +921,38 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 	{{"_S4W", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
 
+	{{"_SBA", METHOD_0ARGS,
+	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Fixed-length (4 Int) */
+	PACKAGE_INFO(ACPI_PTYPE1_FIXED, ACPI_RTYPE_INTEGER, 4, 0, 0, 0),
+
+	{{"_SBI", METHOD_0ARGS,
+	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Fixed-length (1 Int, 1 Buf) */
+	PACKAGE_INFO(ACPI_PTYPE1_FIXED, ACPI_RTYPE_INTEGER, 1,
+		     ACPI_RTYPE_BUFFER, 1, 0),
+
+	{{"_SBR",
+	  METHOD_3ARGS(ACPI_TYPE_INTEGER, ACPI_TYPE_INTEGER,
+			ACPI_TYPE_INTEGER),
+	   METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Fixed-length (2 Int) */
+	PACKAGE_INFO(ACPI_PTYPE1_FIXED, ACPI_RTYPE_INTEGER, 2,
+		     ACPI_RTYPE_BUFFER | ACPI_RTYPE_INTEGER, 1, 0),
+
 	{{"_SBS", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
+
+	{{"_SBT",
+	  METHOD_4ARGS(ACPI_TYPE_INTEGER, ACPI_TYPE_INTEGER, ACPI_TYPE_INTEGER,
+			ACPI_TYPE_ANY),
+	   METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Fixed-length (2 Int, 1 Buf | Int) */
+	PACKAGE_INFO(ACPI_PTYPE1_FIXED, ACPI_RTYPE_INTEGER, 2,
+		     ACPI_RTYPE_BUFFER | ACPI_RTYPE_INTEGER, 1, 0),
+
+	{{"_SBW",
+	  METHOD_5ARGS(ACPI_TYPE_INTEGER, ACPI_TYPE_INTEGER, ACPI_TYPE_INTEGER,
+			ACPI_TYPE_INTEGER, ACPI_TYPE_ANY),
+	   METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},
+	PACKAGE_INFO(ACPI_PTYPE1_FIXED, ACPI_RTYPE_BUFFER | ACPI_RTYPE_INTEGER,
+		     1, 0, 0, 0),
 
 	{{"_SCP", METHOD_1ARGS(ACPI_TYPE_INTEGER) | ARG_COUNT_IS_MINIMUM,
 	  METHOD_NO_RETURN_VALUE}},	/* Acpi 1.0 allowed 1 integer arg. Acpi 3.0 expanded to 3 args. Allow both. */
@@ -917,6 +1018,9 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 	{{"_TDL", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
 
+	{{"_TFP", METHOD_0ARGS,	/* ACPI 6.0 */
+	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
+
 	{{"_TIP", METHOD_1ARGS(ACPI_TYPE_INTEGER),
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
 
@@ -940,6 +1044,9 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 	{{"_TSD", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_PACKAGE)}},	/* Variable-length (Pkgs) each 5 Int with count */
 	PACKAGE_INFO(ACPI_PTYPE2_COUNT, ACPI_RTYPE_INTEGER, 5, 0, 0, 0),
+
+	{{"_TSN", METHOD_0ARGS,	/* ACPI 6.0 */
+	  METHOD_RETURNS(ACPI_RTYPE_REFERENCE)}},
 
 	{{"_TSP", METHOD_0ARGS,
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},
@@ -995,6 +1102,12 @@ const union acpi_predefined_info acpi_gbl_predefined_methods[] = {
 	{{"_WED", METHOD_1ARGS(ACPI_TYPE_INTEGER),
 	  METHOD_RETURNS(ACPI_RTYPE_INTEGER | ACPI_RTYPE_STRING |
 			 ACPI_RTYPE_BUFFER)}},
+
+	{{"_WPC", METHOD_0ARGS,
+	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},	/* ACPI 6.1 */
+
+	{{"_WPP", METHOD_0ARGS,
+	  METHOD_RETURNS(ACPI_RTYPE_INTEGER)}},	/* ACPI 6.1 */
 
 	PACKAGE_INFO(0, 0, 0, 0, 0, 0)	/* Table terminator */
 };
@@ -1068,7 +1181,7 @@ const union acpi_predefined_info acpi_gbl_resource_names[] = {
 	PACKAGE_INFO(0, 0, 0, 0, 0, 0)	/* Table terminator */
 };
 
-static const union acpi_predefined_info acpi_gbl_scope_names[] = {
+const union acpi_predefined_info acpi_gbl_scope_names[] = {
 	{{"_GPE", 0, 0}},
 	{{"_PR_", 0, 0}},
 	{{"_SB_", 0, 0}},

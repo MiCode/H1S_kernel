@@ -10,21 +10,17 @@
 #define _XTENSA_TIMEX_H
 
 #include <asm/processor.h>
-#include <linux/stringify.h>
-
-#define _INTLEVEL(x)	XCHAL_INT ## x ## _LEVEL
-#define INTLEVEL(x)	_INTLEVEL(x)
 
 #if XCHAL_NUM_TIMERS > 0 && \
-	INTLEVEL(XCHAL_TIMER0_INTERRUPT) <= XCHAL_EXCM_LEVEL
+	XTENSA_INT_LEVEL(XCHAL_TIMER0_INTERRUPT) <= XCHAL_EXCM_LEVEL
 # define LINUX_TIMER     0
 # define LINUX_TIMER_INT XCHAL_TIMER0_INTERRUPT
 #elif XCHAL_NUM_TIMERS > 1 && \
-	INTLEVEL(XCHAL_TIMER1_INTERRUPT) <= XCHAL_EXCM_LEVEL
+	XTENSA_INT_LEVEL(XCHAL_TIMER1_INTERRUPT) <= XCHAL_EXCM_LEVEL
 # define LINUX_TIMER     1
 # define LINUX_TIMER_INT XCHAL_TIMER1_INTERRUPT
 #elif XCHAL_NUM_TIMERS > 2 && \
-	INTLEVEL(XCHAL_TIMER2_INTERRUPT) <= XCHAL_EXCM_LEVEL
+	XTENSA_INT_LEVEL(XCHAL_TIMER2_INTERRUPT) <= XCHAL_EXCM_LEVEL
 # define LINUX_TIMER     2
 # define LINUX_TIMER_INT XCHAL_TIMER2_INTERRUPT
 #else
@@ -33,43 +29,32 @@
 
 extern unsigned long ccount_freq;
 
-typedef unsigned long long cycles_t;
-
-#define get_cycles()	(0)
-
 void local_timer_setup(unsigned cpu);
 
 /*
  * Register access.
  */
 
-#define WSR_CCOUNT(r)	  asm volatile ("wsr %0, ccount" :: "a" (r))
-#define RSR_CCOUNT(r)	  asm volatile ("rsr %0, ccount" : "=a" (r))
-#define WSR_CCOMPARE(x,r) asm volatile ("wsr %0,"__stringify(SREG_CCOMPARE)"+"__stringify(x) :: "a"(r))
-#define RSR_CCOMPARE(x,r) asm volatile ("rsr %0,"__stringify(SREG_CCOMPARE)"+"__stringify(x) : "=a"(r))
-
 static inline unsigned long get_ccount (void)
 {
-	unsigned long ccount;
-	RSR_CCOUNT(ccount);
-	return ccount;
+	return xtensa_get_sr(ccount);
 }
 
 static inline void set_ccount (unsigned long ccount)
 {
-	WSR_CCOUNT(ccount);
+	xtensa_set_sr(ccount, ccount);
 }
 
 static inline unsigned long get_linux_timer (void)
 {
-	unsigned ccompare;
-	RSR_CCOMPARE(LINUX_TIMER, ccompare);
-	return ccompare;
+	return xtensa_get_sr(SREG_CCOMPARE + LINUX_TIMER);
 }
 
 static inline void set_linux_timer (unsigned long ccompare)
 {
-	WSR_CCOMPARE(LINUX_TIMER, ccompare);
+	xtensa_set_sr(ccompare, SREG_CCOMPARE + LINUX_TIMER);
 }
+
+#include <asm-generic/timex.h>
 
 #endif	/* _XTENSA_TIMEX_H */

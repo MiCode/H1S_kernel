@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * mpl3115.c - Support for Freescale MPL3115A2 pressure/temperature sensor
  *
  * Copyright (c) 2013 Peter Meerwald <pmeerw@pmeerw.net>
- *
- * This file is subject to the terms and conditions of version 2 of
- * the GNU General Public License.  See the file COPYING in the main
- * directory of this archive for more details.
  *
  * (7-bit I2C slave address 0x60)
  *
@@ -77,46 +74,60 @@ static int mpl3115_read_raw(struct iio_dev *indio_dev,
 			    int *val, int *val2, long mask)
 {
 	struct mpl3115_data *data = iio_priv(indio_dev);
-	s32 tmp = 0;
 	int ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		if (iio_buffer_enabled(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
 
 		switch (chan->type) {
-		case IIO_PRESSURE: /* in 0.25 pascal / LSB */
+		case IIO_PRESSURE: { /* in 0.25 pascal / LSB */
+			__be32 tmp = 0;
+
 			mutex_lock(&data->lock);
 			ret = mpl3115_request(data);
 			if (ret < 0) {
 				mutex_unlock(&data->lock);
-				return ret;
+				break;
 			}
 			ret = i2c_smbus_read_i2c_block_data(data->client,
 				MPL3115_OUT_PRESS, 3, (u8 *) &tmp);
 			mutex_unlock(&data->lock);
 			if (ret < 0)
-				return ret;
-			*val = sign_extend32(be32_to_cpu(tmp) >> 12, 23);
-			return IIO_VAL_INT;
-		case IIO_TEMP: /* in 0.0625 celsius / LSB */
+				break;
+			*val = be32_to_cpu(tmp) >> chan->scan_type.shift;
+			ret = IIO_VAL_INT;
+			break;
+		}
+		case IIO_TEMP: { /* in 0.0625 celsius / LSB */
+			__be16 tmp;
+
 			mutex_lock(&data->lock);
 			ret = mpl3115_request(data);
 			if (ret < 0) {
 				mutex_unlock(&data->lock);
-				return ret;
+				break;
 			}
 			ret = i2c_smbus_read_i2c_block_data(data->client,
 				MPL3115_OUT_TEMP, 2, (u8 *) &tmp);
 			mutex_unlock(&data->lock);
 			if (ret < 0)
-				return ret;
-			*val = sign_extend32(be32_to_cpu(tmp) >> 20, 15);
-			return IIO_VAL_INT;
-		default:
-			return -EINVAL;
+				break;
+			*val = sign_extend32(be16_to_cpu(tmp) >> chan->scan_type.shift,
+					     chan->scan_type.realbits - 1);
+			ret = IIO_VAL_INT;
+			break;
 		}
+		default:
+			ret = -EINVAL;
+			break;
+		}
+
+		iio_device_release_direct_mode(indio_dev);
+		return ret;
+
 	case IIO_CHAN_INFO_SCALE:
 		switch (chan->type) {
 		case IIO_PRESSURE:
@@ -139,7 +150,14 @@ static irqreturn_t mpl3115_trigger_handler(int irq, void *p)
 	struct iio_poll_func *pf = p;
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct mpl3115_data *data = iio_priv(indio_dev);
-	u8 buffer[16]; /* 32-bit channel + 16-bit channel + padding + ts */
+	/*
+	 * 32-bit channel + 16-bit channel + padding + ts
+	 * Note that it is possible for only one of the first 2
+	 * channels to be enabled. If that happens, the first element
+	 * of the buffer may be either 16 or 32-bits.  As such we cannot
+	 * use a simple structure definition to express this data layout.
+	 */
+	u8 buffer[16] __aligned(8);
 	int ret, pos = 0;
 
 	mutex_lock(&data->lock);
@@ -171,7 +189,7 @@ static irqreturn_t mpl3115_trigger_handler(int irq, void *p)
 	mutex_unlock(&data->lock);
 
 	iio_push_to_buffers_with_timestamp(indio_dev, buffer,
-		iio_get_time_ns());
+		iio_get_time_ns(indio_dev));
 
 done:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -182,10 +200,10 @@ static const struct iio_chan_spec mpl3115_channels[] = {
 	{
 		.type = IIO_PRESSURE,
 		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
-			BIT(IIO_CHAN_INFO_SCALE),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.scan_index = 0,
 		.scan_type = {
-			.sign = 's',
+			.sign = 'u',
 			.realbits = 20,
 			.storagebits = 32,
 			.shift = 12,
@@ -195,7 +213,7 @@ static const struct iio_chan_spec mpl3115_channels[] = {
 	{
 		.type = IIO_TEMP,
 		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
-			BIT(IIO_CHAN_INFO_SCALE),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.scan_index = 1,
 		.scan_type = {
 			.sign = 's',
@@ -210,12 +228,11 @@ static const struct iio_chan_spec mpl3115_channels[] = {
 
 static const struct iio_info mpl3115_info = {
 	.read_raw = &mpl3115_read_raw,
-	.driver_module = THIS_MODULE,
 };
 
-static int mpl3115_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int mpl3115_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct mpl3115_data *data;
 	struct iio_dev *indio_dev;
 	int ret;
@@ -237,7 +254,6 @@ static int mpl3115_probe(struct i2c_client *client,
 	i2c_set_clientdata(client, indio_dev);
 	indio_dev->info = &mpl3115_info;
 	indio_dev->name = id->name;
-	indio_dev->dev.parent = &client->dev;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = mpl3115_channels;
 	indio_dev->num_channels = ARRAY_SIZE(mpl3115_channels);
@@ -274,18 +290,15 @@ static int mpl3115_standby(struct mpl3115_data *data)
 		data->ctrl_reg1 & ~MPL3115_CTRL_ACTIVE);
 }
 
-static int mpl3115_remove(struct i2c_client *client)
+static void mpl3115_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 
 	iio_device_unregister(indio_dev);
 	iio_triggered_buffer_cleanup(indio_dev);
 	mpl3115_standby(iio_priv(indio_dev));
-
-	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int mpl3115_suspend(struct device *dev)
 {
 	return mpl3115_standby(iio_priv(i2c_get_clientdata(
@@ -301,11 +314,8 @@ static int mpl3115_resume(struct device *dev)
 		data->ctrl_reg1);
 }
 
-static SIMPLE_DEV_PM_OPS(mpl3115_pm_ops, mpl3115_suspend, mpl3115_resume);
-#define MPL3115_PM_OPS (&mpl3115_pm_ops)
-#else
-#define MPL3115_PM_OPS NULL
-#endif
+static DEFINE_SIMPLE_DEV_PM_OPS(mpl3115_pm_ops, mpl3115_suspend,
+				mpl3115_resume);
 
 static const struct i2c_device_id mpl3115_id[] = {
 	{ "mpl3115", 0 },
@@ -313,10 +323,17 @@ static const struct i2c_device_id mpl3115_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, mpl3115_id);
 
+static const struct of_device_id mpl3115_of_match[] = {
+	{ .compatible = "fsl,mpl3115" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, mpl3115_of_match);
+
 static struct i2c_driver mpl3115_driver = {
 	.driver = {
 		.name	= "mpl3115",
-		.pm	= MPL3115_PM_OPS,
+		.of_match_table = mpl3115_of_match,
+		.pm	= pm_sleep_ptr(&mpl3115_pm_ops),
 	},
 	.probe = mpl3115_probe,
 	.remove = mpl3115_remove,

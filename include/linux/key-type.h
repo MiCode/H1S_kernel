@@ -1,12 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Definitions for key type implementations
  *
  * Copyright (C) 2007 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public Licence
- * as published by the Free Software Foundation; either version
- * 2 of the Licence, or (at your option) any later version.
  */
 
 #ifndef _LINUX_KEY_TYPE_H
@@ -14,17 +10,12 @@
 
 #include <linux/key.h>
 #include <linux/errno.h>
+#include <linux/android_kabi.h>
 
 #ifdef CONFIG_KEYS
 
-/*
- * key under-construction record
- * - passed to the request_key actor if supplied
- */
-struct key_construction {
-	struct key	*key;	/* key being constructed */
-	struct key	*authkey;/* authorisation for key being constructed */
-};
+struct kernel_pkey_query;
+struct kernel_pkey_params;
 
 /*
  * Pre-parsed payload, used by key add, update and instantiate.
@@ -39,17 +30,34 @@ struct key_construction {
  * clear the contents.
  */
 struct key_preparsed_payload {
+	const char	*orig_description; /* Actual or proposed description (maybe NULL) */
 	char		*description;	/* Proposed key description (or NULL) */
-	void		*type_data[2];	/* Private key-type data */
-	void		*payload;	/* Proposed payload */
+	union key_payload payload;	/* Proposed payload */
 	const void	*data;		/* Raw data */
 	size_t		datalen;	/* Raw datalen */
 	size_t		quotalen;	/* Quota length for proposed payload */
-	bool		trusted;	/* True if key is trusted */
-};
+	time64_t	expiry;		/* Expiry time of key */
+} __randomize_layout;
 
-typedef int (*request_key_actor_t)(struct key_construction *key,
-				   const char *op, void *aux);
+typedef int (*request_key_actor_t)(struct key *auth_key, void *aux);
+
+/*
+ * Preparsed matching criterion.
+ */
+struct key_match_data {
+	/* Comparison function, defaults to exact description match, but can be
+	 * overridden by type->match_preparse().  Should return true if a match
+	 * is found and false if not.
+	 */
+	bool (*cmp)(const struct key *key,
+		    const struct key_match_data *match_data);
+
+	const void	*raw_data;	/* Raw match data */
+	void		*preparsed;	/* For ->match_preparse() to stash stuff */
+	unsigned	lookup_type;	/* Type of lookup for this search. */
+#define KEYRING_SEARCH_LOOKUP_DIRECT	0x0000	/* Direct lookup by description. */
+#define KEYRING_SEARCH_LOOKUP_ITERATE	0x0001	/* Iterative search. */
+};
 
 /*
  * kernel managed key type definition
@@ -64,10 +72,9 @@ struct key_type {
 	 */
 	size_t def_datalen;
 
-	/* Default key search algorithm. */
-	unsigned def_lookup_type;
-#define KEYRING_SEARCH_LOOKUP_DIRECT	0x0000	/* Direct lookup by description. */
-#define KEYRING_SEARCH_LOOKUP_ITERATE	0x0001	/* Iterative search. */
+	unsigned int flags;
+#define KEY_TYPE_NET_DOMAIN	0x00000001 /* Keys of this type have a net namespace domain */
+#define KEY_TYPE_INSTANT_REAP	0x00000002 /* Keys of this type don't have a delay after expiring */
 
 	/* vet a description */
 	int (*vet_description)(const char *description);
@@ -95,8 +102,15 @@ struct key_type {
 	 */
 	int (*update)(struct key *key, struct key_preparsed_payload *prep);
 
-	/* match a key against a description */
-	int (*match)(const struct key *key, const void *desc);
+	/* Preparse the data supplied to ->match() (optional).  The
+	 * data to be preparsed can be found in match_data->raw_data.
+	 * The lookup type can also be set by this function.
+	 */
+	int (*match_preparse)(struct key_match_data *match_data);
+
+	/* Free preparsed match data (optional).  This should be supplied it
+	 * ->match_preparse() is supplied. */
+	void (*match_free)(struct key_match_data *match_data);
 
 	/* clear some of the data from a key on revokation (optional)
 	 * - the key's semaphore will be write-locked by the caller
@@ -116,7 +130,7 @@ struct key_type {
 	 *   much is copied into the buffer
 	 * - shouldn't do the copy if the buffer is NULL
 	 */
-	long (*read)(const struct key *key, char __user *buffer, size_t buflen);
+	long (*read)(const struct key *key, char *buffer, size_t buflen);
 
 	/* handle request_key() for this type instead of invoking
 	 * /sbin/request-key (optional)
@@ -128,10 +142,29 @@ struct key_type {
 	 */
 	request_key_actor_t request_key;
 
+	/* Look up a keyring access restriction (optional)
+	 *
+	 * - NULL is a valid return value (meaning the requested restriction
+	 *   is known but will never block addition of a key)
+	 * - should return -EINVAL if the restriction is unknown
+	 */
+	struct key_restriction *(*lookup_restriction)(const char *params);
+
+	/* Asymmetric key accessor functions. */
+	int (*asym_query)(const struct kernel_pkey_params *params,
+			  struct kernel_pkey_query *info);
+	int (*asym_eds_op)(struct kernel_pkey_params *params,
+			   const void *in, void *out);
+	int (*asym_verify_signature)(struct kernel_pkey_params *params,
+				     const void *in, const void *in2);
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+
 	/* internal fields */
 	struct list_head	link;		/* link in types list */
 	struct lock_class_key	lock_class;	/* key->sem lock class */
-};
+} __randomize_layout;
 
 extern struct key_type key_type_keyring;
 
@@ -143,21 +176,23 @@ extern int key_instantiate_and_link(struct key *key,
 				    const void *data,
 				    size_t datalen,
 				    struct key *keyring,
-				    struct key *instkey);
+				    struct key *authkey);
 extern int key_reject_and_link(struct key *key,
 			       unsigned timeout,
 			       unsigned error,
 			       struct key *keyring,
-			       struct key *instkey);
-extern void complete_request_key(struct key_construction *cons, int error);
+			       struct key *authkey);
+extern void complete_request_key(struct key *authkey, int error);
 
 static inline int key_negate_and_link(struct key *key,
 				      unsigned timeout,
 				      struct key *keyring,
-				      struct key *instkey)
+				      struct key *authkey)
 {
-	return key_reject_and_link(key, timeout, ENOKEY, keyring, instkey);
+	return key_reject_and_link(key, timeout, ENOKEY, keyring, authkey);
 }
+
+extern int generic_key_instantiate(struct key *key, struct key_preparsed_payload *prep);
 
 #endif /* CONFIG_KEYS */
 #endif /* _LINUX_KEY_TYPE_H */

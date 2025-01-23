@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* cpudata.h: Per-cpu parameters.
  *
  * Copyright (C) 2004 Keith M Wesolowski (wesolows@foobazco.org)
@@ -26,6 +27,6 @@ typedef struct {
 
 DECLARE_PER_CPU(cpuinfo_sparc, __cpu_data);
 #define cpu_data(__cpu) per_cpu(__cpu_data, (__cpu))
-#define local_cpu_data() __get_cpu_var(__cpu_data)
+#define local_cpu_data() (*this_cpu_ptr(&__cpu_data))
 
 #endif /* _SPARC_CPUDATA_H */

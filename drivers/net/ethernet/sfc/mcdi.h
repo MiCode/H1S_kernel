@@ -1,10 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /****************************************************************************
  * Driver for Solarflare network controllers and boards
  * Copyright 2008-2013 Solarflare Communications Inc.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation, incorporated herein by reference.
  */
 
 #ifndef EFX_MCDI_H
@@ -17,6 +14,8 @@
  * @MCDI_STATE_RUNNING_SYNC: There is a synchronous MCDI request pending.
  *	Only the thread that moved into this state is allowed to move out of it.
  * @MCDI_STATE_RUNNING_ASYNC: There is an asynchronous MCDI request pending.
+ * @MCDI_STATE_PROXY_WAIT: An MCDI request has completed with a response that
+ *	indicates we must wait for a proxy try again message.
  * @MCDI_STATE_COMPLETED: An MCDI request has completed, but the owning thread
  *	has not yet consumed the result. For all other threads, equivalent to
  *	%MCDI_STATE_RUNNING.
@@ -25,12 +24,20 @@ enum efx_mcdi_state {
 	MCDI_STATE_QUIESCENT,
 	MCDI_STATE_RUNNING_SYNC,
 	MCDI_STATE_RUNNING_ASYNC,
+	MCDI_STATE_PROXY_WAIT,
 	MCDI_STATE_COMPLETED,
 };
 
+/**
+ * enum efx_mcdi_mode - MCDI transaction mode
+ * @MCDI_MODE_POLL: poll for MCDI completion, until timeout
+ * @MCDI_MODE_EVENTS: wait for an mcdi_event.  On timeout, poll once
+ * @MCDI_MODE_FAIL: we think MCDI is dead, so fail-fast all calls
+ */
 enum efx_mcdi_mode {
 	MCDI_MODE_POLL,
 	MCDI_MODE_EVENTS,
+	MCDI_MODE_FAIL,
 };
 
 /**
@@ -51,6 +58,11 @@ enum efx_mcdi_mode {
  *	enabled
  * @async_list: Queue of asynchronous requests
  * @async_timer: Timer for asynchronous request timeout
+ * @logging_buffer: buffer that may be used to build MCDI tracing messages
+ * @logging_enabled: whether to trace MCDI
+ * @proxy_rx_handle: Most recently received proxy authorisation handle
+ * @proxy_rx_status: Status of most recent proxy authorisation
+ * @proxy_rx_wq: Wait queue for updates to proxy_rx_handle
  */
 struct efx_mcdi_iface {
 	struct efx_nic *efx;
@@ -62,11 +74,19 @@ struct efx_mcdi_iface {
 	unsigned int credits;
 	unsigned int seqno;
 	int resprc;
+	int resprc_raw;
 	size_t resp_hdr_len;
 	size_t resp_data_len;
 	spinlock_t async_lock;
 	struct list_head async_list;
 	struct timer_list async_timer;
+#ifdef CONFIG_SFC_MCDI_LOGGING
+	char *logging_buffer;
+	bool logging_enabled;
+#endif
+	unsigned int proxy_rx_handle;
+	int proxy_rx_status;
+	wait_queue_head_t proxy_rx_wq;
 };
 
 struct efx_mcdi_mon {
@@ -104,15 +124,22 @@ struct efx_mcdi_data {
 	u32 fn_flags;
 };
 
+static inline struct efx_mcdi_iface *efx_mcdi(struct efx_nic *efx)
+{
+	EFX_WARN_ON_PARANOID(!efx->mcdi);
+	return &efx->mcdi->iface;
+}
+
 #ifdef CONFIG_SFC_MCDI_MON
 static inline struct efx_mcdi_mon *efx_mcdi_mon(struct efx_nic *efx)
 {
-	EFX_BUG_ON_PARANOID(!efx->mcdi);
+	EFX_WARN_ON_PARANOID(!efx->mcdi);
 	return &efx->mcdi->hwmon;
 }
 #endif
 
 int efx_mcdi_init(struct efx_nic *efx);
+void efx_mcdi_detach(struct efx_nic *efx);
 void efx_mcdi_fini(struct efx_nic *efx);
 
 int efx_mcdi_rpc(struct efx_nic *efx, unsigned cmd, const efx_dword_t *inbuf,
@@ -163,26 +190,87 @@ void efx_mcdi_sensor_event(struct efx_nic *efx, efx_qword_t *ev);
  * 32-bit-aligned.  Also, on Siena we must copy to the MC shared
  * memory strictly 32 bits at a time, so add any necessary padding.
  */
-#define MCDI_DECLARE_BUF(_name, _len)					\
+#define MCDI_TX_BUF_LEN(_len) DIV_ROUND_UP((_len), 4)
+#define _MCDI_DECLARE_BUF(_name, _len)					\
 	efx_dword_t _name[DIV_ROUND_UP(_len, 4)]
-#define MCDI_DECLARE_BUF_OUT_OR_ERR(_name, _len)			\
-	MCDI_DECLARE_BUF(_name, max_t(size_t, _len, 8))
+#define MCDI_DECLARE_BUF(_name, _len)					\
+	_MCDI_DECLARE_BUF(_name, _len) = {{{0}}}
+#define MCDI_DECLARE_BUF_ERR(_name)					\
+	MCDI_DECLARE_BUF(_name, 8)
 #define _MCDI_PTR(_buf, _offset)					\
 	((u8 *)(_buf) + (_offset))
 #define MCDI_PTR(_buf, _field)						\
 	_MCDI_PTR(_buf, MC_CMD_ ## _field ## _OFST)
+/* Use MCDI_STRUCT_ functions to access members of MCDI structuredefs.
+ * _buf should point to the start of the structure, typically obtained with
+ * MCDI_DECLARE_STRUCT_PTR(structure) = _MCDI_DWORD(mcdi_buf, FIELD_WHICH_IS_STRUCT);
+ */
+#define MCDI_STRUCT_PTR(_buf, _field)					\
+	_MCDI_PTR(_buf, _field ## _OFST)
 #define _MCDI_CHECK_ALIGN(_ofst, _align)				\
 	((_ofst) + BUILD_BUG_ON_ZERO((_ofst) & (_align - 1)))
 #define _MCDI_DWORD(_buf, _field)					\
 	((_buf) + (_MCDI_CHECK_ALIGN(MC_CMD_ ## _field ## _OFST, 4) >> 2))
+#define _MCDI_STRUCT_DWORD(_buf, _field)				\
+	((_buf) + (_MCDI_CHECK_ALIGN(_field ## _OFST, 4) >> 2))
 
+#define MCDI_STRUCT_SET_BYTE(_buf, _field, _value) do {			\
+	BUILD_BUG_ON(_field ## _LEN != 1);				\
+	*(u8 *)MCDI_STRUCT_PTR(_buf, _field) = _value;			\
+	} while (0)
+#define MCDI_STRUCT_POPULATE_BYTE_1(_buf, _field, _name, _value) do {	\
+	efx_dword_t _temp;						\
+	EFX_POPULATE_DWORD_1(_temp, _name, _value);			\
+	MCDI_STRUCT_SET_BYTE(_buf, _field,				\
+			     EFX_DWORD_FIELD(_temp, EFX_BYTE_0));	\
+	} while (0)
+#define MCDI_BYTE(_buf, _field)						\
+	((void)BUILD_BUG_ON_ZERO(MC_CMD_ ## _field ## _LEN != 1),	\
+	 *MCDI_PTR(_buf, _field))
+#define MCDI_STRUCT_BYTE(_buf, _field)					\
+	((void)BUILD_BUG_ON_ZERO(_field ## _LEN != 1),			\
+	 *MCDI_STRUCT_PTR(_buf, _field))
+#define MCDI_SET_WORD(_buf, _field, _value) do {			\
+	BUILD_BUG_ON(MC_CMD_ ## _field ## _LEN != 2);			\
+	BUILD_BUG_ON(MC_CMD_ ## _field ## _OFST & 1);			\
+	*(__force __le16 *)MCDI_PTR(_buf, _field) = cpu_to_le16(_value);\
+	} while (0)
+#define MCDI_STRUCT_SET_WORD(_buf, _field, _value) do {			\
+	BUILD_BUG_ON(_field ## _LEN != 2);				\
+	BUILD_BUG_ON(_field ## _OFST & 1);				\
+	*(__force __le16 *)MCDI_STRUCT_PTR(_buf, _field) = cpu_to_le16(_value);\
+	} while (0)
 #define MCDI_WORD(_buf, _field)						\
 	((u16)BUILD_BUG_ON_ZERO(MC_CMD_ ## _field ## _LEN != 2) +	\
 	 le16_to_cpu(*(__force const __le16 *)MCDI_PTR(_buf, _field)))
+#define MCDI_STRUCT_WORD(_buf, _field)                                  \
+	((void)BUILD_BUG_ON_ZERO(_field ## _LEN != 2),  \
+	le16_to_cpu(*(__force const __le16 *)MCDI_STRUCT_PTR(_buf, _field)))
+/* Write a 16-bit field defined in the protocol as being big-endian. */
+#define MCDI_SET_WORD_BE(_buf, _field, _value) do {			\
+	BUILD_BUG_ON(MC_CMD_ ## _field ## _LEN != 2);			\
+	BUILD_BUG_ON(MC_CMD_ ## _field ## _OFST & 1);			\
+	*(__force __be16 *)MCDI_PTR(_buf, _field) = (_value);		\
+	} while (0)
+#define MCDI_STRUCT_SET_WORD_BE(_buf, _field, _value) do {		\
+	BUILD_BUG_ON(_field ## _LEN != 2);				\
+	BUILD_BUG_ON(_field ## _OFST & 1);				\
+	*(__force __be16 *)MCDI_STRUCT_PTR(_buf, _field) = (_value);	\
+	} while (0)
 #define MCDI_SET_DWORD(_buf, _field, _value)				\
 	EFX_POPULATE_DWORD_1(*_MCDI_DWORD(_buf, _field), EFX_DWORD_0, _value)
+#define MCDI_STRUCT_SET_DWORD(_buf, _field, _value)			\
+	EFX_POPULATE_DWORD_1(*_MCDI_STRUCT_DWORD(_buf, _field), EFX_DWORD_0, _value)
 #define MCDI_DWORD(_buf, _field)					\
 	EFX_DWORD_FIELD(*_MCDI_DWORD(_buf, _field), EFX_DWORD_0)
+#define MCDI_STRUCT_DWORD(_buf, _field)                                 \
+	EFX_DWORD_FIELD(*_MCDI_STRUCT_DWORD(_buf, _field), EFX_DWORD_0)
+/* Write a 32-bit field defined in the protocol as being big-endian. */
+#define MCDI_STRUCT_SET_DWORD_BE(_buf, _field, _value) do {		\
+	BUILD_BUG_ON(_field ## _LEN != 4);				\
+	BUILD_BUG_ON(_field ## _OFST & 3);				\
+	*(__force __be32 *)MCDI_STRUCT_PTR(_buf, _field) = (_value);	\
+	} while (0)
 #define MCDI_POPULATE_DWORD_1(_buf, _field, _name1, _value1)		\
 	EFX_POPULATE_DWORD_1(*_MCDI_DWORD(_buf, _field),		\
 			     MC_CMD_ ## _name1, _value1)
@@ -294,6 +382,17 @@ void efx_mcdi_sensor_event(struct efx_nic *efx, efx_qword_t *ev);
 #define MCDI_EVENT_FIELD(_ev, _field)			\
 	EFX_QWORD_FIELD(_ev, MCDI_EVENT_ ## _field)
 
+#define MCDI_CAPABILITY(field)						\
+	MC_CMD_GET_CAPABILITIES_V8_OUT_ ## field ## _LBN
+
+#define MCDI_CAPABILITY_OFST(field) \
+	MC_CMD_GET_CAPABILITIES_V8_OUT_ ## field ## _OFST
+
+#define efx_has_cap(efx, field) \
+	efx->type->check_caps(efx, \
+			      MCDI_CAPABILITY(field), \
+			      MCDI_CAPABILITY_OFST(field))
+
 void efx_mcdi_print_fwver(struct efx_nic *efx, char *buf, size_t len);
 int efx_mcdi_get_board_cfg(struct efx_nic *efx, u8 *mac_address,
 			   u16 *fw_subtype_list, u32 *capabilities);
@@ -302,30 +401,30 @@ int efx_mcdi_nvram_types(struct efx_nic *efx, u32 *nvram_types_out);
 int efx_mcdi_nvram_info(struct efx_nic *efx, unsigned int type,
 			size_t *size_out, size_t *erase_size_out,
 			bool *protected_out);
+int efx_new_mcdi_nvram_test_all(struct efx_nic *efx);
+int efx_mcdi_nvram_metadata(struct efx_nic *efx, unsigned int type,
+			    u32 *subtype, u16 version[4], char *desc,
+			    size_t descsize);
 int efx_mcdi_nvram_test_all(struct efx_nic *efx);
 int efx_mcdi_handle_assertion(struct efx_nic *efx);
-void efx_mcdi_set_id_led(struct efx_nic *efx, enum efx_led_mode mode);
+int efx_mcdi_set_id_led(struct efx_nic *efx, enum efx_led_mode mode);
 int efx_mcdi_wol_filter_set_magic(struct efx_nic *efx, const u8 *mac,
 				  int *id_out);
 int efx_mcdi_wol_filter_get_magic(struct efx_nic *efx, int *id_out);
 int efx_mcdi_wol_filter_remove(struct efx_nic *efx, int id);
 int efx_mcdi_wol_filter_reset(struct efx_nic *efx);
 int efx_mcdi_flush_rxqs(struct efx_nic *efx);
-int efx_mcdi_port_probe(struct efx_nic *efx);
-void efx_mcdi_port_remove(struct efx_nic *efx);
-int efx_mcdi_port_reconfigure(struct efx_nic *efx);
-int efx_mcdi_port_get_number(struct efx_nic *efx);
-u32 efx_mcdi_phy_get_caps(struct efx_nic *efx);
 void efx_mcdi_process_link_change(struct efx_nic *efx, efx_qword_t *ev);
-int efx_mcdi_set_mac(struct efx_nic *efx);
-#define EFX_MC_STATS_GENERATION_INVALID ((__force __le64)(-1))
 void efx_mcdi_mac_start_stats(struct efx_nic *efx);
 void efx_mcdi_mac_stop_stats(struct efx_nic *efx);
 void efx_mcdi_mac_pull_stats(struct efx_nic *efx);
-bool efx_mcdi_mac_check_fault(struct efx_nic *efx);
 enum reset_type efx_mcdi_map_reset_reason(enum reset_type reason);
 int efx_mcdi_reset(struct efx_nic *efx, enum reset_type method);
-int efx_mcdi_set_workaround(struct efx_nic *efx, u32 type, bool enabled);
+int efx_mcdi_set_workaround(struct efx_nic *efx, u32 type, bool enabled,
+			    unsigned int *flags);
+int efx_mcdi_get_workarounds(struct efx_nic *efx, unsigned int *impl_out,
+			     unsigned int *enabled_out);
+int efx_mcdi_get_privilege_mask(struct efx_nic *efx, u32 *mask);
 
 #ifdef CONFIG_SFC_MCDI_MON
 int efx_mcdi_mon_probe(struct efx_nic *efx);

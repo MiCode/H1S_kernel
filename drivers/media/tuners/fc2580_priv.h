@@ -1,27 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * FCI FC2580 silicon tuner driver
  *
  * Copyright (C) 2012 Antti Palosaari <crope@iki.fi>
- *
- *    This program is free software; you can redistribute it and/or modify
- *    it under the terms of the GNU General Public License as published by
- *    the Free Software Foundation; either version 2 of the License, or
- *    (at your option) any later version.
- *
- *    This program is distributed in the hope that it will be useful,
- *    but WITHOUT ANY WARRANTY; without even the implied warranty of
- *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU General Public License for more details.
- *
- *    You should have received a copy of the GNU General Public License along
- *    with this program; if not, write to the Free Software Foundation, Inc.,
- *    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #ifndef FC2580_PRIV_H
 #define FC2580_PRIV_H
 
 #include "fc2580.h"
+#include <media/v4l2-ctrls.h>
+#include <media/v4l2-subdev.h>
+#include <linux/regmap.h>
+#include <linux/math64.h>
 
 struct fc2580_reg_val {
 	u8 reg;
@@ -49,7 +40,7 @@ static const struct fc2580_reg_val fc2580_init_reg_vals[] = {
 
 struct fc2580_pll {
 	u32 freq;
-	u8 div;
+	u8 div_out;
 	u8 band;
 };
 
@@ -62,16 +53,15 @@ static const struct fc2580_pll fc2580_pll_lut[] = {
 
 struct fc2580_if_filter {
 	u32 freq;
-	u16 mul;
 	u8 r36_val;
 	u8 r39_val;
 };
 
 static const struct fc2580_if_filter fc2580_if_filter_lut[] = {
-	{   6000000, 4400, 0x18, 0x00},
-	{   7000000, 3910, 0x18, 0x80},
-	{   8000000, 3300, 0x18, 0x80},
-	{0xffffffff, 3300, 0x18, 0x80},
+	{   6000000, 0x18, 0x00},
+	{   7000000, 0x18, 0x80},
+	{   8000000, 0x18, 0x80},
+	{0xffffffff, 0x18, 0x80},
 };
 
 struct fc2580_freq_regs {
@@ -109,15 +99,15 @@ static const struct fc2580_freq_regs fc2580_freq_regs_lut[] = {
 		0x50, 0x0f, 0x07, 0x00, 0x15, 0x03, 0x05, 0x10, 0x12, 0x08,
 		0x0a, 0x78, 0x32, 0x54},
 	{ 538000000,
-		0xf0, 0x77, 0x53, 0x60, 0xff, 0xff, 0xff, 0x09, 0xff, 0x8c,
+		0xf0, 0x77, 0x53, 0x60, 0xff, 0xff, 0x9f, 0x09, 0xff, 0x8c,
 		0x50, 0x13, 0x07, 0x06, 0x15, 0x06, 0x08, 0x10, 0x12, 0x0b,
 		0x0c, 0x78, 0x32, 0x14},
 	{ 794000000,
-		0xf0, 0x77, 0x53, 0x60, 0xff, 0xff, 0xff, 0x09, 0xff, 0x8c,
+		0xf0, 0x77, 0x53, 0x60, 0xff, 0xff, 0x9f, 0x09, 0xff, 0x8c,
 		0x50, 0x15, 0x03, 0x03, 0x15, 0x03, 0x05, 0x0c, 0x0e, 0x0b,
 		0x0c, 0x78, 0x32, 0x14},
 	{1000000000,
-		0xf0, 0x77, 0x53, 0x60, 0xff, 0xff, 0xff, 0x09, 0xff, 0x8c,
+		0xf0, 0x77, 0x53, 0x60, 0xff, 0xff, 0x8f, 0x09, 0xff, 0x8c,
 		0x50, 0x15, 0x07, 0x06, 0x15, 0x07, 0x09, 0x10, 0x12, 0x0b,
 		0x0c, 0x78, 0x32, 0x14},
 	{0xffffffff,
@@ -126,9 +116,19 @@ static const struct fc2580_freq_regs fc2580_freq_regs_lut[] = {
 		0x0a, 0xa0, 0x50, 0x14},
 };
 
-struct fc2580_priv {
-	const struct fc2580_config *cfg;
-	struct i2c_adapter *i2c;
+struct fc2580_dev {
+	u32 clk;
+	struct i2c_client *client;
+	struct regmap *regmap;
+	struct v4l2_subdev subdev;
+	bool active;
+	unsigned int f_frequency;
+	unsigned int f_bandwidth;
+
+	/* Controls */
+	struct v4l2_ctrl_handler hdl;
+	struct v4l2_ctrl *bandwidth_auto;
+	struct v4l2_ctrl *bandwidth;
 };
 
 #endif

@@ -1,27 +1,10 @@
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
  * dlmast.c
  *
  * AST and BAST functionality for local and remote nodes
  *
  * Copyright (C) 2004 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
- *
  */
 
 
@@ -38,15 +21,15 @@
 #include <linux/spinlock.h>
 
 
-#include "cluster/heartbeat.h"
-#include "cluster/nodemanager.h"
-#include "cluster/tcp.h"
+#include "../cluster/heartbeat.h"
+#include "../cluster/nodemanager.h"
+#include "../cluster/tcp.h"
 
 #include "dlmapi.h"
 #include "dlmcommon.h"
 
 #define MLOG_MASK_PREFIX ML_DLM
-#include "cluster/masklog.h"
+#include "../cluster/masklog.h"
 
 static void dlm_update_lvb(struct dlm_ctxt *dlm, struct dlm_lock_resource *res,
 			   struct dlm_lock *lock);
@@ -180,16 +163,6 @@ void __dlm_queue_bast(struct dlm_ctxt *dlm, struct dlm_lock *lock)
 	spin_unlock(&lock->spinlock);
 }
 
-void dlm_queue_bast(struct dlm_ctxt *dlm, struct dlm_lock *lock)
-{
-	BUG_ON(!dlm);
-	BUG_ON(!lock);
-
-	spin_lock(&dlm->ast_lock);
-	__dlm_queue_bast(dlm, lock);
-	spin_unlock(&dlm->ast_lock);
-}
-
 static void dlm_update_lvb(struct dlm_ctxt *dlm, struct dlm_lock_resource *res,
 			   struct dlm_lock *lock)
 {
@@ -224,14 +197,12 @@ void dlm_do_local_ast(struct dlm_ctxt *dlm, struct dlm_lock_resource *res,
 		      struct dlm_lock *lock)
 {
 	dlm_astlockfunc_t *fn;
-	struct dlm_lockstatus *lksb;
 
 	mlog(0, "%s: res %.*s, lock %u:%llu, Local AST\n", dlm->name,
 	     res->lockname.len, res->lockname.name,
 	     dlm_get_lock_cookie_node(be64_to_cpu(lock->ml.cookie)),
 	     dlm_get_lock_cookie_seq(be64_to_cpu(lock->ml.cookie)));
 
-	lksb = lock->lksb;
 	fn = lock->ast;
 	BUG_ON(lock->ml.node != dlm->node_num);
 
@@ -385,8 +356,12 @@ int dlm_proxy_ast_handler(struct o2net_msg *msg, u32 len, void *data,
 		head = &res->granted;
 
 	list_for_each_entry(lock, head, list) {
-		if (lock->ml.cookie == cookie)
+		/* if lock is found but unlock is pending ignore the bast */
+		if (lock->ml.cookie == cookie) {
+			if (lock->unlock_pending)
+				break;
 			goto do_ast;
+		}
 	}
 
 	mlog(0, "Got %sast for unknown lock! cookie=%u:%llu, name=%.*s, "

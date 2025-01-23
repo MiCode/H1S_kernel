@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/plat-spear/time.c
  *
  * Copyright (C) 2010 ST Microelectronics
- * Shiraz Hashim<shiraz.hashim@st.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
+ * Shiraz Hashim<shiraz.linux.kernel@gmail.com>
  */
 
 #include <linux/clk.h>
@@ -66,12 +63,10 @@
 static __iomem void *gpt_base;
 static struct clk *gpt_clk;
 
-static void clockevent_set_mode(enum clock_event_mode mode,
-				struct clock_event_device *clk_event_dev);
 static int clockevent_next_event(unsigned long evt,
 				 struct clock_event_device *clk_event_dev);
 
-static void spear_clocksource_init(void)
+static void __init spear_clocksource_init(void)
 {
 	u32 tick_rate;
 	u16 val;
@@ -95,53 +90,66 @@ static void spear_clocksource_init(void)
 		200, 16, clocksource_mmio_readw_up);
 }
 
-static struct clock_event_device clkevt = {
-	.name = "tmr0",
-	.features = CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT,
-	.set_mode = clockevent_set_mode,
-	.set_next_event = clockevent_next_event,
-	.shift = 0,	/* to be computed */
-};
+static inline void spear_timer_shutdown(struct clock_event_device *evt)
+{
+	u16 val = readw(gpt_base + CR(CLKEVT));
 
-static void clockevent_set_mode(enum clock_event_mode mode,
-				struct clock_event_device *clk_event_dev)
+	/* stop the timer */
+	val &= ~CTRL_ENABLE;
+	writew(val, gpt_base + CR(CLKEVT));
+}
+
+static int spear_shutdown(struct clock_event_device *evt)
+{
+	spear_timer_shutdown(evt);
+
+	return 0;
+}
+
+static int spear_set_oneshot(struct clock_event_device *evt)
+{
+	u16 val;
+
+	/* stop the timer */
+	spear_timer_shutdown(evt);
+
+	val = readw(gpt_base + CR(CLKEVT));
+	val |= CTRL_ONE_SHOT;
+	writew(val, gpt_base + CR(CLKEVT));
+
+	return 0;
+}
+
+static int spear_set_periodic(struct clock_event_device *evt)
 {
 	u32 period;
 	u16 val;
 
 	/* stop the timer */
+	spear_timer_shutdown(evt);
+
+	period = clk_get_rate(gpt_clk) / HZ;
+	period >>= CTRL_PRESCALER16;
+	writew(period, gpt_base + LOAD(CLKEVT));
+
 	val = readw(gpt_base + CR(CLKEVT));
-	val &= ~CTRL_ENABLE;
+	val &= ~CTRL_ONE_SHOT;
+	val |= CTRL_ENABLE | CTRL_INT_ENABLE;
 	writew(val, gpt_base + CR(CLKEVT));
 
-	switch (mode) {
-	case CLOCK_EVT_MODE_PERIODIC:
-		period = clk_get_rate(gpt_clk) / HZ;
-		period >>= CTRL_PRESCALER16;
-		writew(period, gpt_base + LOAD(CLKEVT));
-
-		val = readw(gpt_base + CR(CLKEVT));
-		val &= ~CTRL_ONE_SHOT;
-		val |= CTRL_ENABLE | CTRL_INT_ENABLE;
-		writew(val, gpt_base + CR(CLKEVT));
-
-		break;
-	case CLOCK_EVT_MODE_ONESHOT:
-		val = readw(gpt_base + CR(CLKEVT));
-		val |= CTRL_ONE_SHOT;
-		writew(val, gpt_base + CR(CLKEVT));
-
-		break;
-	case CLOCK_EVT_MODE_UNUSED:
-	case CLOCK_EVT_MODE_SHUTDOWN:
-	case CLOCK_EVT_MODE_RESUME:
-
-		break;
-	default:
-		pr_err("Invalid mode requested\n");
-		break;
-	}
+	return 0;
 }
+
+static struct clock_event_device clkevt = {
+	.name = "tmr0",
+	.features = CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT,
+	.set_state_shutdown = spear_shutdown,
+	.set_state_periodic = spear_set_periodic,
+	.set_state_oneshot = spear_set_oneshot,
+	.tick_resume = spear_shutdown,
+	.set_next_event = clockevent_next_event,
+	.shift = 0,	/* to be computed */
+};
 
 static int clockevent_next_event(unsigned long cycles,
 				 struct clock_event_device *clk_event_dev)
@@ -170,12 +178,6 @@ static irqreturn_t spear_timer_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static struct irqaction spear_timer_irq = {
-	.name = "timer",
-	.flags = IRQF_DISABLED | IRQF_TIMER,
-	.handler = spear_timer_interrupt
-};
-
 static void __init spear_clockevent_init(int irq)
 {
 	u32 tick_rate;
@@ -190,10 +192,11 @@ static void __init spear_clockevent_init(int irq)
 
 	clockevents_config_and_register(&clkevt, tick_rate, 3, 0xfff0);
 
-	setup_irq(irq, &spear_timer_irq);
+	if (request_irq(irq, spear_timer_interrupt, IRQF_TIMER, "timer", NULL))
+		pr_err("Failed to request irq %d (timer)\n", irq);
 }
 
-const static struct of_device_id timer_of_match[] __initconst = {
+static const struct of_device_id timer_of_match[] __initconst = {
 	{ .compatible = "st,spear-timer", },
 	{ },
 };
@@ -212,17 +215,17 @@ void __init spear_setup_of_timer(void)
 	irq = irq_of_parse_and_map(np, 0);
 	if (!irq) {
 		pr_err("%s: No irq passed for timer via DT\n", __func__);
-		return;
+		goto err_put_np;
 	}
 
 	gpt_base = of_iomap(np, 0);
 	if (!gpt_base) {
 		pr_err("%s: of iomap failed\n", __func__);
-		return;
+		goto err_put_np;
 	}
 
 	gpt_clk = clk_get_sys("gpt0", NULL);
-	if (!gpt_clk) {
+	if (IS_ERR(gpt_clk)) {
 		pr_err("%s:couldn't get clk for gpt\n", __func__);
 		goto err_iomap;
 	}
@@ -233,6 +236,8 @@ void __init spear_setup_of_timer(void)
 		goto err_prepare_enable_clk;
 	}
 
+	of_node_put(np);
+
 	spear_clockevent_init(irq);
 	spear_clocksource_init();
 
@@ -242,4 +247,6 @@ err_prepare_enable_clk:
 	clk_put(gpt_clk);
 err_iomap:
 	iounmap(gpt_base);
+err_put_np:
+	of_node_put(np);
 }

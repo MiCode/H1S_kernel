@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Cryptographic API.
  *
@@ -7,42 +8,35 @@
  * Author: Dmitry Kasatkin <dmitry.kasatkin@nokia.com>
  * Copyright (c) 2011 Texas Instruments Incorporated
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
- *
  * Some ideas are from old omap-sha1-md5.c driver.
  */
 
 #define pr_fmt(fmt) "%s: " fmt, __func__
 
+#include <crypto/engine.h>
+#include <crypto/hmac.h>
+#include <crypto/internal/hash.h>
+#include <crypto/scatterwalk.h>
+#include <crypto/sha1.h>
+#include <crypto/sha2.h>
 #include <linux/err.h>
 #include <linux/device.h>
-#include <linux/module.h>
-#include <linux/init.h>
-#include <linux/errno.h>
-#include <linux/interrupt.h>
-#include <linux/kernel.h>
-#include <linux/irq.h>
-#include <linux/io.h>
-#include <linux/platform_device.h>
-#include <linux/scatterlist.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmaengine.h>
-#include <linux/omap-dma.h>
-#include <linux/pm_runtime.h>
+#include <linux/init.h>
+#include <linux/interrupt.h>
+#include <linux/io.h>
+#include <linux/irq.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/delay.h>
-#include <linux/crypto.h>
-#include <linux/cryptohash.h>
-#include <crypto/scatterwalk.h>
-#include <crypto/algapi.h>
-#include <crypto/sha.h>
-#include <crypto/hash.h>
-#include <crypto/internal/hash.h>
+#include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
+#include <linux/scatterlist.h>
+#include <linux/slab.h>
+#include <linux/string.h>
 
 #define MD5_DIGEST_SIZE			16
 
@@ -101,19 +95,22 @@
 
 #define DEFAULT_TIMEOUT_INTERVAL	HZ
 
+#define DEFAULT_AUTOSUSPEND_DELAY	1000
+
 /* mostly device flags */
-#define FLAGS_BUSY		0
 #define FLAGS_FINAL		1
 #define FLAGS_DMA_ACTIVE	2
 #define FLAGS_OUTPUT_READY	3
-#define FLAGS_INIT		4
 #define FLAGS_CPU		5
 #define FLAGS_DMA_READY		6
 #define FLAGS_AUTO_XOR		7
 #define FLAGS_BE32_SHA1		8
+#define FLAGS_SGS_COPIED	9
+#define FLAGS_SGS_ALLOCED	10
+#define FLAGS_HUGE		11
+
 /* context flags */
 #define FLAGS_FINUP		16
-#define FLAGS_SG		17
 
 #define FLAGS_MODE_SHIFT	18
 #define FLAGS_MODE_MASK		(SHA_REG_MODE_ALGO_MASK	<< FLAGS_MODE_SHIFT)
@@ -133,28 +130,31 @@
 #define OMAP_ALIGN_MASK		(sizeof(u32)-1)
 #define OMAP_ALIGNED		__attribute__((aligned(sizeof(u32))))
 
-#define BUFLEN			PAGE_SIZE
+#define BUFLEN			SHA512_BLOCK_SIZE
+#define OMAP_SHA_DMA_THRESHOLD	256
+
+#define OMAP_SHA_MAX_DMA_LEN	(1024 * 2048)
 
 struct omap_sham_dev;
 
 struct omap_sham_reqctx {
 	struct omap_sham_dev	*dd;
 	unsigned long		flags;
-	unsigned long		op;
+	u8			op;
 
 	u8			digest[SHA512_DIGEST_SIZE] OMAP_ALIGNED;
 	size_t			digcnt;
 	size_t			bufcnt;
 	size_t			buflen;
-	dma_addr_t		dma_addr;
 
 	/* walk state */
 	struct scatterlist	*sg;
-	struct scatterlist	sgl;
-	unsigned int		offset;	/* offset in current sg */
+	struct scatterlist	sgl[2];
+	int			offset;	/* offset in current sg */
+	int			sg_len;
 	unsigned int		total;	/* total request */
 
-	u8			buffer[0] OMAP_ALIGNED;
+	u8			buffer[] OMAP_ALIGNED;
 };
 
 struct omap_sham_hmac_ctx {
@@ -164,20 +164,18 @@ struct omap_sham_hmac_ctx {
 };
 
 struct omap_sham_ctx {
-	struct omap_sham_dev	*dd;
-
 	unsigned long		flags;
 
 	/* fallback stuff */
 	struct crypto_shash	*fallback;
 
-	struct omap_sham_hmac_ctx base[0];
+	struct omap_sham_hmac_ctx base[];
 };
 
-#define OMAP_SHAM_QUEUE_LENGTH	1
+#define OMAP_SHAM_QUEUE_LENGTH	10
 
 struct omap_sham_algs_info {
-	struct ahash_alg	*algs_list;
+	struct ahash_engine_alg	*algs_list;
 	unsigned int		size;
 	unsigned int		registered;
 };
@@ -217,16 +215,17 @@ struct omap_sham_dev {
 	struct device		*dev;
 	void __iomem		*io_base;
 	int			irq;
-	spinlock_t		lock;
 	int			err;
-	unsigned int		dma;
 	struct dma_chan		*dma_lch;
 	struct tasklet_struct	done_task;
 	u8			polling_mode;
+	u8			xmit_buf[BUFLEN] OMAP_ALIGNED;
 
 	unsigned long		flags;
+	int			fallback_sz;
 	struct crypto_queue	queue;
 	struct ahash_request	*req;
+	struct crypto_engine	*engine;
 
 	const struct omap_sham_pdata	*pdata;
 };
@@ -241,6 +240,9 @@ static struct omap_sham_drv sham = {
 	.dev_list = LIST_HEAD_INIT(sham.dev_list),
 	.lock = __SPIN_LOCK_UNLOCKED(sham.lock),
 };
+
+static int omap_sham_enqueue(struct ahash_request *req, unsigned int op);
+static void omap_sham_finish_req(struct ahash_request *req, int err);
 
 static inline u32 omap_sham_read(struct omap_sham_dev *dd, u32 offset)
 {
@@ -354,22 +356,10 @@ static void omap_sham_copy_ready_hash(struct ahash_request *req)
 
 	if (big_endian)
 		for (i = 0; i < d; i++)
-			hash[i] = be32_to_cpu(in[i]);
+			hash[i] = be32_to_cpup((__be32 *)in + i);
 	else
 		for (i = 0; i < d; i++)
-			hash[i] = le32_to_cpu(in[i]);
-}
-
-static int omap_sham_hw_init(struct omap_sham_dev *dd)
-{
-	pm_runtime_get_sync(dd->dev);
-
-	if (!test_bit(FLAGS_INIT, &dd->flags)) {
-		set_bit(FLAGS_INIT, &dd->flags);
-		dd->err = 0;
-	}
-
-	return 0;
+			hash[i] = le32_to_cpup((__le32 *)in + i);
 }
 
 static void omap_sham_write_ctrl_omap2(struct omap_sham_dev *dd, size_t length,
@@ -447,6 +437,9 @@ static void omap_sham_write_ctrl_omap4(struct omap_sham_dev *dd, size_t length,
 	struct omap_sham_reqctx *ctx = ahash_request_ctx(dd->req);
 	u32 val, mask;
 
+	if (likely(ctx->digcnt))
+		omap_sham_write(dd, SHA_REG_DIGCNT(dd), ctx->digcnt);
+
 	/*
 	 * Setting ALGO_CONST only for the first iteration and
 	 * CLOSE_HASH only for the last one. Note that flags mode bits
@@ -504,14 +497,16 @@ static int omap_sham_poll_irq_omap4(struct omap_sham_dev *dd)
 			      SHA_REG_IRQSTATUS_INPUT_RDY);
 }
 
-static int omap_sham_xmit_cpu(struct omap_sham_dev *dd, const u8 *buf,
-			      size_t length, int final)
+static int omap_sham_xmit_cpu(struct omap_sham_dev *dd, size_t length,
+			      int final)
 {
 	struct omap_sham_reqctx *ctx = ahash_request_ctx(dd->req);
 	int count, len32, bs32, offset = 0;
-	const u32 *buffer = (const u32 *)buf;
+	const u32 *buffer;
+	int mlen;
+	struct sg_mapping_iter mi;
 
-	dev_dbg(dd->dev, "xmit_cpu: digcnt: %d, length: %d, final: %d\n",
+	dev_dbg(dd->dev, "xmit_cpu: digcnt: %zd, length: %zd, final: %d\n",
 						ctx->digcnt, length, final);
 
 	dd->pdata->write_ctrl(dd, length, final, 0);
@@ -519,6 +514,7 @@ static int omap_sham_xmit_cpu(struct omap_sham_dev *dd, const u8 *buf,
 
 	/* should be non-zero before next lines to disable clocks later */
 	ctx->digcnt += length;
+	ctx->total -= length;
 
 	if (final)
 		set_bit(FLAGS_FINAL, &dd->flags); /* catch last interrupt */
@@ -528,15 +524,34 @@ static int omap_sham_xmit_cpu(struct omap_sham_dev *dd, const u8 *buf,
 	len32 = DIV_ROUND_UP(length, sizeof(u32));
 	bs32 = get_block_size(ctx) / sizeof(u32);
 
+	sg_miter_start(&mi, ctx->sg, ctx->sg_len,
+		       SG_MITER_FROM_SG | SG_MITER_ATOMIC);
+
+	mlen = 0;
+
 	while (len32) {
 		if (dd->pdata->poll_irq(dd))
 			return -ETIMEDOUT;
 
-		for (count = 0; count < min(len32, bs32); count++, offset++)
+		for (count = 0; count < min(len32, bs32); count++, offset++) {
+			if (!mlen) {
+				sg_miter_next(&mi);
+				mlen = mi.length;
+				if (!mlen) {
+					pr_err("sg miter failure.\n");
+					return -EINVAL;
+				}
+				offset = 0;
+				buffer = mi.addr;
+			}
 			omap_sham_write(dd, SHA_REG_DIN(dd, count),
 					buffer[offset]);
+			mlen -= 4;
+		}
 		len32 -= min(len32, bs32);
 	}
+
+	sg_miter_stop(&mi);
 
 	return -EINPROGRESS;
 }
@@ -549,22 +564,27 @@ static void omap_sham_dma_callback(void *param)
 	tasklet_schedule(&dd->done_task);
 }
 
-static int omap_sham_xmit_dma(struct omap_sham_dev *dd, dma_addr_t dma_addr,
-			      size_t length, int final, int is_sg)
+static int omap_sham_xmit_dma(struct omap_sham_dev *dd, size_t length,
+			      int final)
 {
 	struct omap_sham_reqctx *ctx = ahash_request_ctx(dd->req);
 	struct dma_async_tx_descriptor *tx;
 	struct dma_slave_config cfg;
-	int len32, ret, dma_min = get_block_size(ctx);
+	int ret;
 
-	dev_dbg(dd->dev, "xmit_dma: digcnt: %d, length: %d, final: %d\n",
+	dev_dbg(dd->dev, "xmit_dma: digcnt: %zd, length: %zd, final: %d\n",
 						ctx->digcnt, length, final);
+
+	if (!dma_map_sg(dd->dev, ctx->sg, ctx->sg_len, DMA_TO_DEVICE)) {
+		dev_err(dd->dev, "dma_map_sg error\n");
+		return -EINVAL;
+	}
 
 	memset(&cfg, 0, sizeof(cfg));
 
 	cfg.dst_addr = dd->phys_base + SHA_REG_DIN(dd, 0);
 	cfg.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
-	cfg.dst_maxburst = dma_min / DMA_SLAVE_BUSWIDTH_4_BYTES;
+	cfg.dst_maxburst = get_block_size(ctx) / DMA_SLAVE_BUSWIDTH_4_BYTES;
 
 	ret = dmaengine_slave_config(dd->dma_lch, &cfg);
 	if (ret) {
@@ -572,30 +592,12 @@ static int omap_sham_xmit_dma(struct omap_sham_dev *dd, dma_addr_t dma_addr,
 		return ret;
 	}
 
-	len32 = DIV_ROUND_UP(length, dma_min) * dma_min;
-
-	if (is_sg) {
-		/*
-		 * The SG entry passed in may not have the 'length' member
-		 * set correctly so use a local SG entry (sgl) with the
-		 * proper value for 'length' instead.  If this is not done,
-		 * the dmaengine may try to DMA the incorrect amount of data.
-		 */
-		sg_init_table(&ctx->sgl, 1);
-		ctx->sgl.page_link = ctx->sg->page_link;
-		ctx->sgl.offset = ctx->sg->offset;
-		sg_dma_len(&ctx->sgl) = len32;
-		sg_dma_address(&ctx->sgl) = sg_dma_address(ctx->sg);
-
-		tx = dmaengine_prep_slave_sg(dd->dma_lch, &ctx->sgl, 1,
-			DMA_MEM_TO_DEV, DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
-	} else {
-		tx = dmaengine_prep_slave_single(dd->dma_lch, dma_addr, len32,
-			DMA_MEM_TO_DEV, DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
-	}
+	tx = dmaengine_prep_slave_sg(dd->dma_lch, ctx->sg, ctx->sg_len,
+				     DMA_MEM_TO_DEV,
+				     DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 
 	if (!tx) {
-		dev_err(dd->dev, "prep_slave_sg/single() failed\n");
+		dev_err(dd->dev, "prep_slave_sg failed\n");
 		return -EINVAL;
 	}
 
@@ -605,6 +607,7 @@ static int omap_sham_xmit_dma(struct omap_sham_dev *dd, dma_addr_t dma_addr,
 	dd->pdata->write_ctrl(dd, length, final, 1);
 
 	ctx->digcnt += length;
+	ctx->total -= length;
 
 	if (final)
 		set_bit(FLAGS_FINAL, &dd->flags); /* catch last interrupt */
@@ -619,181 +622,288 @@ static int omap_sham_xmit_dma(struct omap_sham_dev *dd, dma_addr_t dma_addr,
 	return -EINPROGRESS;
 }
 
-static size_t omap_sham_append_buffer(struct omap_sham_reqctx *ctx,
-				const u8 *data, size_t length)
+static int omap_sham_copy_sg_lists(struct omap_sham_reqctx *ctx,
+				   struct scatterlist *sg, int bs, int new_len)
 {
-	size_t count = min(length, ctx->buflen - ctx->bufcnt);
+	int n = sg_nents(sg);
+	struct scatterlist *tmp;
+	int offset = ctx->offset;
 
-	count = min(count, ctx->total);
-	if (count <= 0)
-		return 0;
-	memcpy(ctx->buffer + ctx->bufcnt, data, count);
-	ctx->bufcnt += count;
+	ctx->total = new_len;
 
-	return count;
+	if (ctx->bufcnt)
+		n++;
+
+	ctx->sg = kmalloc_array(n, sizeof(*sg), GFP_KERNEL);
+	if (!ctx->sg)
+		return -ENOMEM;
+
+	sg_init_table(ctx->sg, n);
+
+	tmp = ctx->sg;
+
+	ctx->sg_len = 0;
+
+	if (ctx->bufcnt) {
+		sg_set_buf(tmp, ctx->dd->xmit_buf, ctx->bufcnt);
+		tmp = sg_next(tmp);
+		ctx->sg_len++;
+		new_len -= ctx->bufcnt;
+	}
+
+	while (sg && new_len) {
+		int len = sg->length - offset;
+
+		if (len <= 0) {
+			offset -= sg->length;
+			sg = sg_next(sg);
+			continue;
+		}
+
+		if (new_len < len)
+			len = new_len;
+
+		if (len > 0) {
+			new_len -= len;
+			sg_set_page(tmp, sg_page(sg), len, sg->offset + offset);
+			offset = 0;
+			ctx->offset = 0;
+			ctx->sg_len++;
+			if (new_len <= 0)
+				break;
+			tmp = sg_next(tmp);
+		}
+
+		sg = sg_next(sg);
+	}
+
+	if (tmp)
+		sg_mark_end(tmp);
+
+	set_bit(FLAGS_SGS_ALLOCED, &ctx->dd->flags);
+
+	ctx->offset += new_len - ctx->bufcnt;
+	ctx->bufcnt = 0;
+
+	return 0;
 }
 
-static size_t omap_sham_append_sg(struct omap_sham_reqctx *ctx)
+static int omap_sham_copy_sgs(struct omap_sham_reqctx *ctx,
+			      struct scatterlist *sg, int bs,
+			      unsigned int new_len)
 {
-	size_t count;
+	int pages;
+	void *buf;
 
-	while (ctx->sg) {
-		count = omap_sham_append_buffer(ctx,
-				sg_virt(ctx->sg) + ctx->offset,
-				ctx->sg->length - ctx->offset);
-		if (!count)
+	pages = get_order(new_len);
+
+	buf = (void *)__get_free_pages(GFP_ATOMIC, pages);
+	if (!buf) {
+		pr_err("Couldn't allocate pages for unaligned cases.\n");
+		return -ENOMEM;
+	}
+
+	if (ctx->bufcnt)
+		memcpy(buf, ctx->dd->xmit_buf, ctx->bufcnt);
+
+	scatterwalk_map_and_copy(buf + ctx->bufcnt, sg, ctx->offset,
+				 min(new_len, ctx->total) - ctx->bufcnt, 0);
+	sg_init_table(ctx->sgl, 1);
+	sg_set_buf(ctx->sgl, buf, new_len);
+	ctx->sg = ctx->sgl;
+	set_bit(FLAGS_SGS_COPIED, &ctx->dd->flags);
+	ctx->sg_len = 1;
+	ctx->offset += new_len - ctx->bufcnt;
+	ctx->bufcnt = 0;
+	ctx->total = new_len;
+
+	return 0;
+}
+
+static int omap_sham_align_sgs(struct scatterlist *sg,
+			       int nbytes, int bs, bool final,
+			       struct omap_sham_reqctx *rctx)
+{
+	int n = 0;
+	bool aligned = true;
+	bool list_ok = true;
+	struct scatterlist *sg_tmp = sg;
+	int new_len;
+	int offset = rctx->offset;
+	int bufcnt = rctx->bufcnt;
+
+	if (!sg || !sg->length || !nbytes) {
+		if (bufcnt) {
+			bufcnt = DIV_ROUND_UP(bufcnt, bs) * bs;
+			sg_init_table(rctx->sgl, 1);
+			sg_set_buf(rctx->sgl, rctx->dd->xmit_buf, bufcnt);
+			rctx->sg = rctx->sgl;
+			rctx->sg_len = 1;
+		}
+
+		return 0;
+	}
+
+	new_len = nbytes;
+
+	if (offset)
+		list_ok = false;
+
+	if (final)
+		new_len = DIV_ROUND_UP(new_len, bs) * bs;
+	else
+		new_len = (new_len - 1) / bs * bs;
+
+	if (!new_len)
+		return 0;
+
+	if (nbytes != new_len)
+		list_ok = false;
+
+	while (nbytes > 0 && sg_tmp) {
+		n++;
+
+		if (bufcnt) {
+			if (!IS_ALIGNED(bufcnt, bs)) {
+				aligned = false;
+				break;
+			}
+			nbytes -= bufcnt;
+			bufcnt = 0;
+			if (!nbytes)
+				list_ok = false;
+
+			continue;
+		}
+
+#ifdef CONFIG_ZONE_DMA
+		if (page_zonenum(sg_page(sg_tmp)) != ZONE_DMA) {
+			aligned = false;
 			break;
-		ctx->offset += count;
-		ctx->total -= count;
-		if (ctx->offset == ctx->sg->length) {
-			ctx->sg = sg_next(ctx->sg);
-			if (ctx->sg)
-				ctx->offset = 0;
-			else
-				ctx->total = 0;
 		}
+#endif
+
+		if (offset < sg_tmp->length) {
+			if (!IS_ALIGNED(offset + sg_tmp->offset, 4)) {
+				aligned = false;
+				break;
+			}
+
+			if (!IS_ALIGNED(sg_tmp->length - offset, bs)) {
+				aligned = false;
+				break;
+			}
+		}
+
+		if (offset) {
+			offset -= sg_tmp->length;
+			if (offset < 0) {
+				nbytes += offset;
+				offset = 0;
+			}
+		} else {
+			nbytes -= sg_tmp->length;
+		}
+
+		sg_tmp = sg_next(sg_tmp);
+
+		if (nbytes < 0) {
+			list_ok = false;
+			break;
+		}
+	}
+
+	if (new_len > OMAP_SHA_MAX_DMA_LEN) {
+		new_len = OMAP_SHA_MAX_DMA_LEN;
+		aligned = false;
+	}
+
+	if (!aligned)
+		return omap_sham_copy_sgs(rctx, sg, bs, new_len);
+	else if (!list_ok)
+		return omap_sham_copy_sg_lists(rctx, sg, bs, new_len);
+
+	rctx->total = new_len;
+	rctx->offset += new_len;
+	rctx->sg_len = n;
+	if (rctx->bufcnt) {
+		sg_init_table(rctx->sgl, 2);
+		sg_set_buf(rctx->sgl, rctx->dd->xmit_buf, rctx->bufcnt);
+		sg_chain(rctx->sgl, 2, sg);
+		rctx->sg = rctx->sgl;
+	} else {
+		rctx->sg = sg;
 	}
 
 	return 0;
 }
 
-static int omap_sham_xmit_dma_map(struct omap_sham_dev *dd,
-					struct omap_sham_reqctx *ctx,
-					size_t length, int final)
+static int omap_sham_prepare_request(struct crypto_engine *engine, void *areq)
 {
+	struct ahash_request *req = container_of(areq, struct ahash_request,
+						 base);
+	struct omap_sham_reqctx *rctx = ahash_request_ctx(req);
+	int bs;
 	int ret;
+	unsigned int nbytes;
+	bool final = rctx->flags & BIT(FLAGS_FINUP);
+	bool update = rctx->op == OP_UPDATE;
+	int hash_later;
 
-	ctx->dma_addr = dma_map_single(dd->dev, ctx->buffer, ctx->buflen,
-				       DMA_TO_DEVICE);
-	if (dma_mapping_error(dd->dev, ctx->dma_addr)) {
-		dev_err(dd->dev, "dma %u bytes error\n", ctx->buflen);
-		return -EINVAL;
-	}
+	bs = get_block_size(rctx);
 
-	ctx->flags &= ~BIT(FLAGS_SG);
+	nbytes = rctx->bufcnt;
 
-	ret = omap_sham_xmit_dma(dd, ctx->dma_addr, length, final, 0);
-	if (ret != -EINPROGRESS)
-		dma_unmap_single(dd->dev, ctx->dma_addr, ctx->buflen,
-				 DMA_TO_DEVICE);
+	if (update)
+		nbytes += req->nbytes - rctx->offset;
 
-	return ret;
-}
+	dev_dbg(rctx->dd->dev,
+		"%s: nbytes=%d, bs=%d, total=%d, offset=%d, bufcnt=%zd\n",
+		__func__, nbytes, bs, rctx->total, rctx->offset,
+		rctx->bufcnt);
 
-static int omap_sham_update_dma_slow(struct omap_sham_dev *dd)
-{
-	struct omap_sham_reqctx *ctx = ahash_request_ctx(dd->req);
-	unsigned int final;
-	size_t count;
-
-	omap_sham_append_sg(ctx);
-
-	final = (ctx->flags & BIT(FLAGS_FINUP)) && !ctx->total;
-
-	dev_dbg(dd->dev, "slow: bufcnt: %u, digcnt: %d, final: %d\n",
-					 ctx->bufcnt, ctx->digcnt, final);
-
-	if (final || (ctx->bufcnt == ctx->buflen && ctx->total)) {
-		count = ctx->bufcnt;
-		ctx->bufcnt = 0;
-		return omap_sham_xmit_dma_map(dd, ctx, count, final);
-	}
-
-	return 0;
-}
-
-/* Start address alignment */
-#define SG_AA(sg)	(IS_ALIGNED(sg->offset, sizeof(u32)))
-/* SHA1 block size alignment */
-#define SG_SA(sg, bs)	(IS_ALIGNED(sg->length, bs))
-
-static int omap_sham_update_dma_start(struct omap_sham_dev *dd)
-{
-	struct omap_sham_reqctx *ctx = ahash_request_ctx(dd->req);
-	unsigned int length, final, tail;
-	struct scatterlist *sg;
-	int ret, bs;
-
-	if (!ctx->total)
+	if (!nbytes)
 		return 0;
 
-	if (ctx->bufcnt || ctx->offset)
-		return omap_sham_update_dma_slow(dd);
+	rctx->total = nbytes;
 
-	/*
-	 * Don't use the sg interface when the transfer size is less
-	 * than the number of elements in a DMA frame.  Otherwise,
-	 * the dmaengine infrastructure will calculate that it needs
-	 * to transfer 0 frames which ultimately fails.
-	 */
-	if (ctx->total < get_block_size(ctx))
-		return omap_sham_update_dma_slow(dd);
+	if (update && req->nbytes && (!IS_ALIGNED(rctx->bufcnt, bs))) {
+		int len = bs - rctx->bufcnt % bs;
 
-	dev_dbg(dd->dev, "fast: digcnt: %d, bufcnt: %u, total: %u\n",
-			ctx->digcnt, ctx->bufcnt, ctx->total);
-
-	sg = ctx->sg;
-	bs = get_block_size(ctx);
-
-	if (!SG_AA(sg))
-		return omap_sham_update_dma_slow(dd);
-
-	if (!sg_is_last(sg) && !SG_SA(sg, bs))
-		/* size is not BLOCK_SIZE aligned */
-		return omap_sham_update_dma_slow(dd);
-
-	length = min(ctx->total, sg->length);
-
-	if (sg_is_last(sg)) {
-		if (!(ctx->flags & BIT(FLAGS_FINUP))) {
-			/* not last sg must be BLOCK_SIZE aligned */
-			tail = length & (bs - 1);
-			/* without finup() we need one block to close hash */
-			if (!tail)
-				tail = bs;
-			length -= tail;
-		}
+		if (len > req->nbytes)
+			len = req->nbytes;
+		scatterwalk_map_and_copy(rctx->buffer + rctx->bufcnt, req->src,
+					 0, len, 0);
+		rctx->bufcnt += len;
+		rctx->offset = len;
 	}
 
-	if (!dma_map_sg(dd->dev, ctx->sg, 1, DMA_TO_DEVICE)) {
-		dev_err(dd->dev, "dma_map_sg  error\n");
-		return -EINVAL;
+	if (rctx->bufcnt)
+		memcpy(rctx->dd->xmit_buf, rctx->buffer, rctx->bufcnt);
+
+	ret = omap_sham_align_sgs(req->src, nbytes, bs, final, rctx);
+	if (ret)
+		return ret;
+
+	hash_later = nbytes - rctx->total;
+	if (hash_later < 0)
+		hash_later = 0;
+
+	if (hash_later && hash_later <= rctx->buflen) {
+		scatterwalk_map_and_copy(rctx->buffer,
+					 req->src,
+					 req->nbytes - hash_later,
+					 hash_later, 0);
+
+		rctx->bufcnt = hash_later;
+	} else {
+		rctx->bufcnt = 0;
 	}
 
-	ctx->flags |= BIT(FLAGS_SG);
+	if (hash_later > rctx->buflen)
+		set_bit(FLAGS_HUGE, &rctx->dd->flags);
 
-	ctx->total -= length;
-	ctx->offset = length; /* offset where to start slow */
-
-	final = (ctx->flags & BIT(FLAGS_FINUP)) && !ctx->total;
-
-	ret = omap_sham_xmit_dma(dd, sg_dma_address(ctx->sg), length, final, 1);
-	if (ret != -EINPROGRESS)
-		dma_unmap_sg(dd->dev, ctx->sg, 1, DMA_TO_DEVICE);
-
-	return ret;
-}
-
-static int omap_sham_update_cpu(struct omap_sham_dev *dd)
-{
-	struct omap_sham_reqctx *ctx = ahash_request_ctx(dd->req);
-	int bufcnt, final;
-
-	if (!ctx->total)
-		return 0;
-
-	omap_sham_append_sg(ctx);
-
-	final = (ctx->flags & BIT(FLAGS_FINUP)) && !ctx->total;
-
-	dev_dbg(dd->dev, "cpu: bufcnt: %u, digcnt: %d, final: %d\n",
-		ctx->bufcnt, ctx->digcnt, final);
-
-	if (final || (ctx->bufcnt == ctx->buflen && ctx->total)) {
-		bufcnt = ctx->bufcnt;
-		ctx->bufcnt = 0;
-		return omap_sham_xmit_cpu(dd, ctx->buffer, bufcnt, final);
-	}
+	rctx->total = min(nbytes, rctx->total);
 
 	return 0;
 }
@@ -802,21 +912,27 @@ static int omap_sham_update_dma_stop(struct omap_sham_dev *dd)
 {
 	struct omap_sham_reqctx *ctx = ahash_request_ctx(dd->req);
 
-	dmaengine_terminate_all(dd->dma_lch);
+	dma_unmap_sg(dd->dev, ctx->sg, ctx->sg_len, DMA_TO_DEVICE);
 
-	if (ctx->flags & BIT(FLAGS_SG)) {
-		dma_unmap_sg(dd->dev, ctx->sg, 1, DMA_TO_DEVICE);
-		if (ctx->sg->length == ctx->offset) {
-			ctx->sg = sg_next(ctx->sg);
-			if (ctx->sg)
-				ctx->offset = 0;
-		}
-	} else {
-		dma_unmap_single(dd->dev, ctx->dma_addr, ctx->buflen,
-				 DMA_TO_DEVICE);
-	}
+	clear_bit(FLAGS_DMA_ACTIVE, &dd->flags);
 
 	return 0;
+}
+
+static struct omap_sham_dev *omap_sham_find_dev(struct omap_sham_reqctx *ctx)
+{
+	struct omap_sham_dev *dd;
+
+	if (ctx->dd)
+		return ctx->dd;
+
+	spin_lock_bh(&sham.lock);
+	dd = list_first_entry(&sham.dev_list, struct omap_sham_dev, list);
+	list_move_tail(&dd->list, &sham.dev_list);
+	ctx->dd = dd;
+	spin_unlock_bh(&sham.lock);
+
+	return dd;
 }
 
 static int omap_sham_init(struct ahash_request *req)
@@ -824,22 +940,14 @@ static int omap_sham_init(struct ahash_request *req)
 	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
 	struct omap_sham_ctx *tctx = crypto_ahash_ctx(tfm);
 	struct omap_sham_reqctx *ctx = ahash_request_ctx(req);
-	struct omap_sham_dev *dd = NULL, *tmp;
+	struct omap_sham_dev *dd;
 	int bs = 0;
 
-	spin_lock_bh(&sham.lock);
-	if (!tctx->dd) {
-		list_for_each_entry(tmp, &sham.dev_list, list) {
-			dd = tmp;
-			break;
-		}
-		tctx->dd = dd;
-	} else {
-		dd = tctx->dd;
-	}
-	spin_unlock_bh(&sham.lock);
+	ctx->dd = NULL;
 
-	ctx->dd = dd;
+	dd = omap_sham_find_dev(ctx);
+	if (!dd)
+		return -ENODEV;
 
 	ctx->flags = 0;
 
@@ -875,6 +983,8 @@ static int omap_sham_init(struct ahash_request *req)
 
 	ctx->bufcnt = 0;
 	ctx->digcnt = 0;
+	ctx->total = 0;
+	ctx->offset = 0;
 	ctx->buflen = BUFLEN;
 
 	if (tctx->flags & BIT(FLAGS_HMAC)) {
@@ -897,17 +1007,23 @@ static int omap_sham_update_req(struct omap_sham_dev *dd)
 	struct ahash_request *req = dd->req;
 	struct omap_sham_reqctx *ctx = ahash_request_ctx(req);
 	int err;
+	bool final = (ctx->flags & BIT(FLAGS_FINUP)) &&
+		!(dd->flags & BIT(FLAGS_HUGE));
 
-	dev_dbg(dd->dev, "update_req: total: %u, digcnt: %d, finup: %d\n",
-		 ctx->total, ctx->digcnt, (ctx->flags & BIT(FLAGS_FINUP)) != 0);
+	dev_dbg(dd->dev, "update_req: total: %u, digcnt: %zd, final: %d",
+		ctx->total, ctx->digcnt, final);
+
+	if (ctx->total < get_block_size(ctx) ||
+	    ctx->total < dd->fallback_sz)
+		ctx->flags |= BIT(FLAGS_CPU);
 
 	if (ctx->flags & BIT(FLAGS_CPU))
-		err = omap_sham_update_cpu(dd);
+		err = omap_sham_xmit_cpu(dd, ctx->total, final);
 	else
-		err = omap_sham_update_dma_start(dd);
+		err = omap_sham_xmit_dma(dd, ctx->total, final);
 
 	/* wait for dma completion before can take more data */
-	dev_dbg(dd->dev, "update: err: %d, digcnt: %d\n", err, ctx->digcnt);
+	dev_dbg(dd->dev, "update: err: %d, digcnt: %zd\n", err, ctx->digcnt);
 
 	return err;
 }
@@ -918,7 +1034,10 @@ static int omap_sham_final_req(struct omap_sham_dev *dd)
 	struct omap_sham_reqctx *ctx = ahash_request_ctx(req);
 	int err = 0, use_dma = 1;
 
-	if ((ctx->bufcnt <= get_block_size(ctx)) || dd->polling_mode)
+	if (dd->flags & BIT(FLAGS_HUGE))
+		return 0;
+
+	if ((ctx->total <= get_block_size(ctx)) || dd->polling_mode)
 		/*
 		 * faster to handle last block with cpu or
 		 * use cpu when dma is not present.
@@ -926,9 +1045,9 @@ static int omap_sham_final_req(struct omap_sham_dev *dd)
 		use_dma = 0;
 
 	if (use_dma)
-		err = omap_sham_xmit_dma_map(dd, ctx, ctx->bufcnt, 1);
+		err = omap_sham_xmit_dma(dd, ctx->total, 1);
 	else
-		err = omap_sham_xmit_cpu(dd, ctx->buffer, ctx->bufcnt, 1);
+		err = omap_sham_xmit_cpu(dd, ctx->total, 1);
 
 	ctx->bufcnt = 0;
 
@@ -937,23 +1056,59 @@ static int omap_sham_final_req(struct omap_sham_dev *dd)
 	return err;
 }
 
+static int omap_sham_hash_one_req(struct crypto_engine *engine, void *areq)
+{
+	struct ahash_request *req = container_of(areq, struct ahash_request,
+						 base);
+	struct omap_sham_reqctx *ctx = ahash_request_ctx(req);
+	struct omap_sham_dev *dd = ctx->dd;
+	int err;
+	bool final = (ctx->flags & BIT(FLAGS_FINUP)) &&
+			!(dd->flags & BIT(FLAGS_HUGE));
+
+	dev_dbg(dd->dev, "hash-one: op: %u, total: %u, digcnt: %zd, final: %d",
+		ctx->op, ctx->total, ctx->digcnt, final);
+
+	err = omap_sham_prepare_request(engine, areq);
+	if (err)
+		return err;
+
+	err = pm_runtime_resume_and_get(dd->dev);
+	if (err < 0) {
+		dev_err(dd->dev, "failed to get sync: %d\n", err);
+		return err;
+	}
+
+	dd->err = 0;
+	dd->req = req;
+
+	if (ctx->digcnt)
+		dd->pdata->copy_hash(req, 0);
+
+	if (ctx->op == OP_UPDATE)
+		err = omap_sham_update_req(dd);
+	else if (ctx->op == OP_FINAL)
+		err = omap_sham_final_req(dd);
+
+	if (err != -EINPROGRESS)
+		omap_sham_finish_req(req, err);
+
+	return 0;
+}
+
 static int omap_sham_finish_hmac(struct ahash_request *req)
 {
 	struct omap_sham_ctx *tctx = crypto_tfm_ctx(req->base.tfm);
 	struct omap_sham_hmac_ctx *bctx = tctx->base;
 	int bs = crypto_shash_blocksize(bctx->shash);
 	int ds = crypto_shash_digestsize(bctx->shash);
-	struct {
-		struct shash_desc shash;
-		char ctx[crypto_shash_descsize(bctx->shash)];
-	} desc;
+	SHASH_DESC_ON_STACK(shash, bctx->shash);
 
-	desc.shash.tfm = bctx->shash;
-	desc.shash.flags = 0; /* not CRYPTO_TFM_REQ_MAY_SLEEP */
+	shash->tfm = bctx->shash;
 
-	return crypto_shash_init(&desc.shash) ?:
-	       crypto_shash_update(&desc.shash, bctx->opad, bs) ?:
-	       crypto_shash_finup(&desc.shash, req->result, ds, req->result);
+	return crypto_shash_init(shash) ?:
+	       crypto_shash_update(shash, bctx->opad, bs) ?:
+	       crypto_shash_finup(shash, req->result, ds, req->result);
 }
 
 static int omap_sham_finish(struct ahash_request *req)
@@ -969,7 +1124,7 @@ static int omap_sham_finish(struct ahash_request *req)
 			err = omap_sham_finish_hmac(req);
 	}
 
-	dev_dbg(dd->dev, "digcnt: %d, bufcnt: %d\n", ctx->digcnt, ctx->bufcnt);
+	dev_dbg(dd->dev, "digcnt: %zd, bufcnt: %zd\n", ctx->digcnt, ctx->bufcnt);
 
 	return err;
 }
@@ -979,8 +1134,29 @@ static void omap_sham_finish_req(struct ahash_request *req, int err)
 	struct omap_sham_reqctx *ctx = ahash_request_ctx(req);
 	struct omap_sham_dev *dd = ctx->dd;
 
-	if (!err) {
+	if (test_bit(FLAGS_SGS_COPIED, &dd->flags))
+		free_pages((unsigned long)sg_virt(ctx->sg),
+			   get_order(ctx->sg->length));
+
+	if (test_bit(FLAGS_SGS_ALLOCED, &dd->flags))
+		kfree(ctx->sg);
+
+	ctx->sg = NULL;
+
+	dd->flags &= ~(BIT(FLAGS_SGS_ALLOCED) | BIT(FLAGS_SGS_COPIED) |
+		       BIT(FLAGS_CPU) | BIT(FLAGS_DMA_READY) |
+		       BIT(FLAGS_OUTPUT_READY));
+
+	if (!err)
 		dd->pdata->copy_hash(req, 1);
+
+	if (dd->flags & BIT(FLAGS_HUGE)) {
+		/* Re-enqueue the request */
+		omap_sham_enqueue(req, ctx->op);
+		return;
+	}
+
+	if (!err) {
 		if (test_bit(FLAGS_FINAL, &dd->flags))
 			err = omap_sham_finish(req);
 	} else {
@@ -988,83 +1164,27 @@ static void omap_sham_finish_req(struct ahash_request *req, int err)
 	}
 
 	/* atomic operation is not needed here */
-	dd->flags &= ~(BIT(FLAGS_BUSY) | BIT(FLAGS_FINAL) | BIT(FLAGS_CPU) |
+	dd->flags &= ~(BIT(FLAGS_FINAL) | BIT(FLAGS_CPU) |
 			BIT(FLAGS_DMA_READY) | BIT(FLAGS_OUTPUT_READY));
 
-	pm_runtime_put(dd->dev);
+	pm_runtime_mark_last_busy(dd->dev);
+	pm_runtime_put_autosuspend(dd->dev);
 
-	if (req->base.complete)
-		req->base.complete(&req->base, err);
+	ctx->offset = 0;
 
-	/* handle new request */
-	tasklet_schedule(&dd->done_task);
+	crypto_finalize_hash_request(dd->engine, req, err);
 }
 
 static int omap_sham_handle_queue(struct omap_sham_dev *dd,
 				  struct ahash_request *req)
 {
-	struct crypto_async_request *async_req, *backlog;
-	struct omap_sham_reqctx *ctx;
-	unsigned long flags;
-	int err = 0, ret = 0;
-
-	spin_lock_irqsave(&dd->lock, flags);
-	if (req)
-		ret = ahash_enqueue_request(&dd->queue, req);
-	if (test_bit(FLAGS_BUSY, &dd->flags)) {
-		spin_unlock_irqrestore(&dd->lock, flags);
-		return ret;
-	}
-	backlog = crypto_get_backlog(&dd->queue);
-	async_req = crypto_dequeue_request(&dd->queue);
-	if (async_req)
-		set_bit(FLAGS_BUSY, &dd->flags);
-	spin_unlock_irqrestore(&dd->lock, flags);
-
-	if (!async_req)
-		return ret;
-
-	if (backlog)
-		backlog->complete(backlog, -EINPROGRESS);
-
-	req = ahash_request_cast(async_req);
-	dd->req = req;
-	ctx = ahash_request_ctx(req);
-
-	dev_dbg(dd->dev, "handling new req, op: %lu, nbytes: %d\n",
-						ctx->op, req->nbytes);
-
-	err = omap_sham_hw_init(dd);
-	if (err)
-		goto err1;
-
-	if (ctx->digcnt)
-		/* request has changed - restore hash */
-		dd->pdata->copy_hash(req, 0);
-
-	if (ctx->op == OP_UPDATE) {
-		err = omap_sham_update_req(dd);
-		if (err != -EINPROGRESS && (ctx->flags & BIT(FLAGS_FINUP)))
-			/* no final() after finup() */
-			err = omap_sham_final_req(dd);
-	} else if (ctx->op == OP_FINAL) {
-		err = omap_sham_final_req(dd);
-	}
-err1:
-	if (err != -EINPROGRESS)
-		/* done_task will not finish it, so do it here */
-		omap_sham_finish_req(req, err);
-
-	dev_dbg(dd->dev, "exit, err: %d\n", err);
-
-	return ret;
+	return crypto_transfer_hash_request_to_engine(dd->engine, req);
 }
 
 static int omap_sham_enqueue(struct ahash_request *req, unsigned int op)
 {
 	struct omap_sham_reqctx *ctx = ahash_request_ctx(req);
-	struct omap_sham_ctx *tctx = crypto_tfm_ctx(req->base.tfm);
-	struct omap_sham_dev *dd = tctx->dd;
+	struct omap_sham_dev *dd = ctx->dd;
 
 	ctx->op = op;
 
@@ -1074,35 +1194,15 @@ static int omap_sham_enqueue(struct ahash_request *req, unsigned int op)
 static int omap_sham_update(struct ahash_request *req)
 {
 	struct omap_sham_reqctx *ctx = ahash_request_ctx(req);
-	struct omap_sham_dev *dd = ctx->dd;
-	int bs = get_block_size(ctx);
+	struct omap_sham_dev *dd = omap_sham_find_dev(ctx);
 
 	if (!req->nbytes)
 		return 0;
 
-	ctx->total = req->nbytes;
-	ctx->sg = req->src;
-	ctx->offset = 0;
-
-	if (ctx->flags & BIT(FLAGS_FINUP)) {
-		if ((ctx->digcnt + ctx->bufcnt + ctx->total) < 9) {
-			/*
-			* OMAP HW accel works only with buffers >= 9
-			* will switch to bypass in final()
-			* final has the same request and data
-			*/
-			omap_sham_append_sg(ctx);
-			return 0;
-		} else if ((ctx->bufcnt + ctx->total <= bs) ||
-			   dd->polling_mode) {
-			/*
-			 * faster to use CPU for short transfers or
-			 * use cpu when dma is not present.
-			 */
-			ctx->flags |= BIT(FLAGS_CPU);
-		}
-	} else if (ctx->bufcnt + ctx->total < ctx->buflen) {
-		omap_sham_append_sg(ctx);
+	if (ctx->bufcnt + req->nbytes <= ctx->buflen) {
+		scatterwalk_map_and_copy(ctx->buffer + ctx->bufcnt, req->src,
+					 0, req->nbytes, 0);
+		ctx->bufcnt += req->nbytes;
 		return 0;
 	}
 
@@ -1112,27 +1212,23 @@ static int omap_sham_update(struct ahash_request *req)
 	return omap_sham_enqueue(req, OP_UPDATE);
 }
 
-static int omap_sham_shash_digest(struct crypto_shash *shash, u32 flags,
-				  const u8 *data, unsigned int len, u8 *out)
-{
-	struct {
-		struct shash_desc shash;
-		char ctx[crypto_shash_descsize(shash)];
-	} desc;
-
-	desc.shash.tfm = shash;
-	desc.shash.flags = flags & CRYPTO_TFM_REQ_MAY_SLEEP;
-
-	return crypto_shash_digest(&desc.shash, data, len, out);
-}
-
 static int omap_sham_final_shash(struct ahash_request *req)
 {
 	struct omap_sham_ctx *tctx = crypto_tfm_ctx(req->base.tfm);
 	struct omap_sham_reqctx *ctx = ahash_request_ctx(req);
+	int offset = 0;
 
-	return omap_sham_shash_digest(tctx->fallback, req->base.flags,
-				      ctx->buffer, ctx->bufcnt, req->result);
+	/*
+	 * If we are running HMAC on limited hardware support, skip
+	 * the ipad in the beginning of the buffer if we are going for
+	 * software fallback algorithm.
+	 */
+	if (test_bit(FLAGS_HMAC, &ctx->flags) &&
+	    !test_bit(FLAGS_AUTO_XOR, &ctx->dd->flags))
+		offset = get_block_size(ctx);
+
+	return crypto_shash_tfm_digest(tctx->fallback, ctx->buffer + offset,
+				       ctx->bufcnt - offset, req->result);
 }
 
 static int omap_sham_final(struct ahash_request *req)
@@ -1144,9 +1240,14 @@ static int omap_sham_final(struct ahash_request *req)
 	if (ctx->flags & BIT(FLAGS_ERROR))
 		return 0; /* uncompleted hash is not needed */
 
-	/* OMAP HW accel works only with buffers >= 9 */
-	/* HMAC is always >= 9 because ipad == block size */
-	if ((ctx->digcnt + ctx->bufcnt) < 9)
+	/*
+	 * OMAP HW accel works only with buffers >= 9.
+	 * HMAC is always >= 9 because ipad == block size.
+	 * If buffersize is less than fallback_sz, we use fallback
+	 * SW encoding, as using DMA + HW in this case doesn't provide
+	 * any benefit.
+	 */
+	if (!ctx->digcnt && ctx->bufcnt < ctx->dd->fallback_sz)
 		return omap_sham_final_shash(req);
 	else if (ctx->bufcnt)
 		return omap_sham_enqueue(req, OP_FINAL);
@@ -1186,29 +1287,15 @@ static int omap_sham_setkey(struct crypto_ahash *tfm, const u8 *key,
 	struct omap_sham_hmac_ctx *bctx = tctx->base;
 	int bs = crypto_shash_blocksize(bctx->shash);
 	int ds = crypto_shash_digestsize(bctx->shash);
-	struct omap_sham_dev *dd = NULL, *tmp;
 	int err, i;
-
-	spin_lock_bh(&sham.lock);
-	if (!tctx->dd) {
-		list_for_each_entry(tmp, &sham.dev_list, list) {
-			dd = tmp;
-			break;
-		}
-		tctx->dd = dd;
-	} else {
-		dd = tctx->dd;
-	}
-	spin_unlock_bh(&sham.lock);
 
 	err = crypto_shash_setkey(tctx->fallback, key, keylen);
 	if (err)
 		return err;
 
 	if (keylen > bs) {
-		err = omap_sham_shash_digest(bctx->shash,
-				crypto_shash_get_flags(bctx->shash),
-				key, keylen, bctx->ipad);
+		err = crypto_shash_tfm_digest(bctx->shash, key, keylen,
+					      bctx->ipad);
 		if (err)
 			return err;
 		keylen = ds;
@@ -1218,12 +1305,12 @@ static int omap_sham_setkey(struct crypto_ahash *tfm, const u8 *key,
 
 	memset(bctx->ipad + keylen, 0, bs - keylen);
 
-	if (!test_bit(FLAGS_AUTO_XOR, &dd->flags)) {
+	if (!test_bit(FLAGS_AUTO_XOR, &sham.flags)) {
 		memcpy(bctx->opad, bctx->ipad, bs);
 
 		for (i = 0; i < bs; i++) {
-			bctx->ipad[i] ^= 0x36;
-			bctx->opad[i] ^= 0x5c;
+			bctx->ipad[i] ^= HMAC_IPAD_VALUE;
+			bctx->opad[i] ^= HMAC_OPAD_VALUE;
 		}
 	}
 
@@ -1312,43 +1399,38 @@ static void omap_sham_cra_exit(struct crypto_tfm *tfm)
 	}
 }
 
-static struct ahash_alg algs_sha1_md5[] = {
+static int omap_sham_export(struct ahash_request *req, void *out)
 {
-	.init		= omap_sham_init,
-	.update		= omap_sham_update,
-	.final		= omap_sham_final,
-	.finup		= omap_sham_finup,
-	.digest		= omap_sham_digest,
-	.halg.digestsize	= SHA1_DIGEST_SIZE,
-	.halg.base	= {
+	struct omap_sham_reqctx *rctx = ahash_request_ctx(req);
+
+	memcpy(out, rctx, sizeof(*rctx) + rctx->bufcnt);
+
+	return 0;
+}
+
+static int omap_sham_import(struct ahash_request *req, const void *in)
+{
+	struct omap_sham_reqctx *rctx = ahash_request_ctx(req);
+	const struct omap_sham_reqctx *ctx_in = in;
+
+	memcpy(rctx, in, sizeof(*rctx) + ctx_in->bufcnt);
+
+	return 0;
+}
+
+static struct ahash_engine_alg algs_sha1_md5[] = {
+{
+	.base.init		= omap_sham_init,
+	.base.update		= omap_sham_update,
+	.base.final		= omap_sham_final,
+	.base.finup		= omap_sham_finup,
+	.base.digest		= omap_sham_digest,
+	.base.halg.digestsize	= SHA1_DIGEST_SIZE,
+	.base.halg.base	= {
 		.cra_name		= "sha1",
 		.cra_driver_name	= "omap-sha1",
-		.cra_priority		= 100,
-		.cra_flags		= CRYPTO_ALG_TYPE_AHASH |
-						CRYPTO_ALG_KERN_DRIVER_ONLY |
-						CRYPTO_ALG_ASYNC |
-						CRYPTO_ALG_NEED_FALLBACK,
-		.cra_blocksize		= SHA1_BLOCK_SIZE,
-		.cra_ctxsize		= sizeof(struct omap_sham_ctx),
-		.cra_alignmask		= 0,
-		.cra_module		= THIS_MODULE,
-		.cra_init		= omap_sham_cra_init,
-		.cra_exit		= omap_sham_cra_exit,
-	}
-},
-{
-	.init		= omap_sham_init,
-	.update		= omap_sham_update,
-	.final		= omap_sham_final,
-	.finup		= omap_sham_finup,
-	.digest		= omap_sham_digest,
-	.halg.digestsize	= MD5_DIGEST_SIZE,
-	.halg.base	= {
-		.cra_name		= "md5",
-		.cra_driver_name	= "omap-md5",
-		.cra_priority		= 100,
-		.cra_flags		= CRYPTO_ALG_TYPE_AHASH |
-						CRYPTO_ALG_KERN_DRIVER_ONLY |
+		.cra_priority		= 400,
+		.cra_flags		= CRYPTO_ALG_KERN_DRIVER_ONLY |
 						CRYPTO_ALG_ASYNC |
 						CRYPTO_ALG_NEED_FALLBACK,
 		.cra_blocksize		= SHA1_BLOCK_SIZE,
@@ -1357,22 +1439,45 @@ static struct ahash_alg algs_sha1_md5[] = {
 		.cra_module		= THIS_MODULE,
 		.cra_init		= omap_sham_cra_init,
 		.cra_exit		= omap_sham_cra_exit,
-	}
+	},
+	.op.do_one_request = omap_sham_hash_one_req,
 },
 {
-	.init		= omap_sham_init,
-	.update		= omap_sham_update,
-	.final		= omap_sham_final,
-	.finup		= omap_sham_finup,
-	.digest		= omap_sham_digest,
-	.setkey		= omap_sham_setkey,
-	.halg.digestsize	= SHA1_DIGEST_SIZE,
-	.halg.base	= {
+	.base.init		= omap_sham_init,
+	.base.update		= omap_sham_update,
+	.base.final		= omap_sham_final,
+	.base.finup		= omap_sham_finup,
+	.base.digest		= omap_sham_digest,
+	.base.halg.digestsize	= MD5_DIGEST_SIZE,
+	.base.halg.base	= {
+		.cra_name		= "md5",
+		.cra_driver_name	= "omap-md5",
+		.cra_priority		= 400,
+		.cra_flags		= CRYPTO_ALG_KERN_DRIVER_ONLY |
+						CRYPTO_ALG_ASYNC |
+						CRYPTO_ALG_NEED_FALLBACK,
+		.cra_blocksize		= SHA1_BLOCK_SIZE,
+		.cra_ctxsize		= sizeof(struct omap_sham_ctx),
+		.cra_alignmask		= OMAP_ALIGN_MASK,
+		.cra_module		= THIS_MODULE,
+		.cra_init		= omap_sham_cra_init,
+		.cra_exit		= omap_sham_cra_exit,
+	},
+	.op.do_one_request = omap_sham_hash_one_req,
+},
+{
+	.base.init		= omap_sham_init,
+	.base.update		= omap_sham_update,
+	.base.final		= omap_sham_final,
+	.base.finup		= omap_sham_finup,
+	.base.digest		= omap_sham_digest,
+	.base.setkey		= omap_sham_setkey,
+	.base.halg.digestsize	= SHA1_DIGEST_SIZE,
+	.base.halg.base	= {
 		.cra_name		= "hmac(sha1)",
 		.cra_driver_name	= "omap-hmac-sha1",
-		.cra_priority		= 100,
-		.cra_flags		= CRYPTO_ALG_TYPE_AHASH |
-						CRYPTO_ALG_KERN_DRIVER_ONLY |
+		.cra_priority		= 400,
+		.cra_flags		= CRYPTO_ALG_KERN_DRIVER_ONLY |
 						CRYPTO_ALG_ASYNC |
 						CRYPTO_ALG_NEED_FALLBACK,
 		.cra_blocksize		= SHA1_BLOCK_SIZE,
@@ -1382,22 +1487,22 @@ static struct ahash_alg algs_sha1_md5[] = {
 		.cra_module		= THIS_MODULE,
 		.cra_init		= omap_sham_cra_sha1_init,
 		.cra_exit		= omap_sham_cra_exit,
-	}
+	},
+	.op.do_one_request = omap_sham_hash_one_req,
 },
 {
-	.init		= omap_sham_init,
-	.update		= omap_sham_update,
-	.final		= omap_sham_final,
-	.finup		= omap_sham_finup,
-	.digest		= omap_sham_digest,
-	.setkey		= omap_sham_setkey,
-	.halg.digestsize	= MD5_DIGEST_SIZE,
-	.halg.base	= {
+	.base.init		= omap_sham_init,
+	.base.update		= omap_sham_update,
+	.base.final		= omap_sham_final,
+	.base.finup		= omap_sham_finup,
+	.base.digest		= omap_sham_digest,
+	.base.setkey		= omap_sham_setkey,
+	.base.halg.digestsize	= MD5_DIGEST_SIZE,
+	.base.halg.base	= {
 		.cra_name		= "hmac(md5)",
 		.cra_driver_name	= "omap-hmac-md5",
-		.cra_priority		= 100,
-		.cra_flags		= CRYPTO_ALG_TYPE_AHASH |
-						CRYPTO_ALG_KERN_DRIVER_ONLY |
+		.cra_priority		= 400,
+		.cra_flags		= CRYPTO_ALG_KERN_DRIVER_ONLY |
 						CRYPTO_ALG_ASYNC |
 						CRYPTO_ALG_NEED_FALLBACK,
 		.cra_blocksize		= SHA1_BLOCK_SIZE,
@@ -1407,69 +1512,72 @@ static struct ahash_alg algs_sha1_md5[] = {
 		.cra_module		= THIS_MODULE,
 		.cra_init		= omap_sham_cra_md5_init,
 		.cra_exit		= omap_sham_cra_exit,
-	}
+	},
+	.op.do_one_request = omap_sham_hash_one_req,
 }
 };
 
 /* OMAP4 has some algs in addition to what OMAP2 has */
-static struct ahash_alg algs_sha224_sha256[] = {
+static struct ahash_engine_alg algs_sha224_sha256[] = {
 {
-	.init		= omap_sham_init,
-	.update		= omap_sham_update,
-	.final		= omap_sham_final,
-	.finup		= omap_sham_finup,
-	.digest		= omap_sham_digest,
-	.halg.digestsize	= SHA224_DIGEST_SIZE,
-	.halg.base	= {
+	.base.init		= omap_sham_init,
+	.base.update		= omap_sham_update,
+	.base.final		= omap_sham_final,
+	.base.finup		= omap_sham_finup,
+	.base.digest		= omap_sham_digest,
+	.base.halg.digestsize	= SHA224_DIGEST_SIZE,
+	.base.halg.base	= {
 		.cra_name		= "sha224",
 		.cra_driver_name	= "omap-sha224",
-		.cra_priority		= 100,
-		.cra_flags		= CRYPTO_ALG_TYPE_AHASH |
+		.cra_priority		= 400,
+		.cra_flags		= CRYPTO_ALG_KERN_DRIVER_ONLY |
 						CRYPTO_ALG_ASYNC |
 						CRYPTO_ALG_NEED_FALLBACK,
 		.cra_blocksize		= SHA224_BLOCK_SIZE,
 		.cra_ctxsize		= sizeof(struct omap_sham_ctx),
-		.cra_alignmask		= 0,
+		.cra_alignmask		= OMAP_ALIGN_MASK,
 		.cra_module		= THIS_MODULE,
 		.cra_init		= omap_sham_cra_init,
 		.cra_exit		= omap_sham_cra_exit,
-	}
+	},
+	.op.do_one_request = omap_sham_hash_one_req,
 },
 {
-	.init		= omap_sham_init,
-	.update		= omap_sham_update,
-	.final		= omap_sham_final,
-	.finup		= omap_sham_finup,
-	.digest		= omap_sham_digest,
-	.halg.digestsize	= SHA256_DIGEST_SIZE,
-	.halg.base	= {
+	.base.init		= omap_sham_init,
+	.base.update		= omap_sham_update,
+	.base.final		= omap_sham_final,
+	.base.finup		= omap_sham_finup,
+	.base.digest		= omap_sham_digest,
+	.base.halg.digestsize	= SHA256_DIGEST_SIZE,
+	.base.halg.base	= {
 		.cra_name		= "sha256",
 		.cra_driver_name	= "omap-sha256",
-		.cra_priority		= 100,
-		.cra_flags		= CRYPTO_ALG_TYPE_AHASH |
+		.cra_priority		= 400,
+		.cra_flags		= CRYPTO_ALG_KERN_DRIVER_ONLY |
 						CRYPTO_ALG_ASYNC |
 						CRYPTO_ALG_NEED_FALLBACK,
 		.cra_blocksize		= SHA256_BLOCK_SIZE,
 		.cra_ctxsize		= sizeof(struct omap_sham_ctx),
-		.cra_alignmask		= 0,
+		.cra_alignmask		= OMAP_ALIGN_MASK,
 		.cra_module		= THIS_MODULE,
 		.cra_init		= omap_sham_cra_init,
 		.cra_exit		= omap_sham_cra_exit,
-	}
+	},
+	.op.do_one_request = omap_sham_hash_one_req,
 },
 {
-	.init		= omap_sham_init,
-	.update		= omap_sham_update,
-	.final		= omap_sham_final,
-	.finup		= omap_sham_finup,
-	.digest		= omap_sham_digest,
-	.setkey		= omap_sham_setkey,
-	.halg.digestsize	= SHA224_DIGEST_SIZE,
-	.halg.base	= {
+	.base.init		= omap_sham_init,
+	.base.update		= omap_sham_update,
+	.base.final		= omap_sham_final,
+	.base.finup		= omap_sham_finup,
+	.base.digest		= omap_sham_digest,
+	.base.setkey		= omap_sham_setkey,
+	.base.halg.digestsize	= SHA224_DIGEST_SIZE,
+	.base.halg.base	= {
 		.cra_name		= "hmac(sha224)",
 		.cra_driver_name	= "omap-hmac-sha224",
-		.cra_priority		= 100,
-		.cra_flags		= CRYPTO_ALG_TYPE_AHASH |
+		.cra_priority		= 400,
+		.cra_flags		= CRYPTO_ALG_KERN_DRIVER_ONLY |
 						CRYPTO_ALG_ASYNC |
 						CRYPTO_ALG_NEED_FALLBACK,
 		.cra_blocksize		= SHA224_BLOCK_SIZE,
@@ -1479,21 +1587,22 @@ static struct ahash_alg algs_sha224_sha256[] = {
 		.cra_module		= THIS_MODULE,
 		.cra_init		= omap_sham_cra_sha224_init,
 		.cra_exit		= omap_sham_cra_exit,
-	}
+	},
+	.op.do_one_request = omap_sham_hash_one_req,
 },
 {
-	.init		= omap_sham_init,
-	.update		= omap_sham_update,
-	.final		= omap_sham_final,
-	.finup		= omap_sham_finup,
-	.digest		= omap_sham_digest,
-	.setkey		= omap_sham_setkey,
-	.halg.digestsize	= SHA256_DIGEST_SIZE,
-	.halg.base	= {
+	.base.init		= omap_sham_init,
+	.base.update		= omap_sham_update,
+	.base.final		= omap_sham_final,
+	.base.finup		= omap_sham_finup,
+	.base.digest		= omap_sham_digest,
+	.base.setkey		= omap_sham_setkey,
+	.base.halg.digestsize	= SHA256_DIGEST_SIZE,
+	.base.halg.base	= {
 		.cra_name		= "hmac(sha256)",
 		.cra_driver_name	= "omap-hmac-sha256",
-		.cra_priority		= 100,
-		.cra_flags		= CRYPTO_ALG_TYPE_AHASH |
+		.cra_priority		= 400,
+		.cra_flags		= CRYPTO_ALG_KERN_DRIVER_ONLY |
 						CRYPTO_ALG_ASYNC |
 						CRYPTO_ALG_NEED_FALLBACK,
 		.cra_blocksize		= SHA256_BLOCK_SIZE,
@@ -1503,68 +1612,71 @@ static struct ahash_alg algs_sha224_sha256[] = {
 		.cra_module		= THIS_MODULE,
 		.cra_init		= omap_sham_cra_sha256_init,
 		.cra_exit		= omap_sham_cra_exit,
-	}
+	},
+	.op.do_one_request = omap_sham_hash_one_req,
 },
 };
 
-static struct ahash_alg algs_sha384_sha512[] = {
+static struct ahash_engine_alg algs_sha384_sha512[] = {
 {
-	.init		= omap_sham_init,
-	.update		= omap_sham_update,
-	.final		= omap_sham_final,
-	.finup		= omap_sham_finup,
-	.digest		= omap_sham_digest,
-	.halg.digestsize	= SHA384_DIGEST_SIZE,
-	.halg.base	= {
+	.base.init		= omap_sham_init,
+	.base.update		= omap_sham_update,
+	.base.final		= omap_sham_final,
+	.base.finup		= omap_sham_finup,
+	.base.digest		= omap_sham_digest,
+	.base.halg.digestsize	= SHA384_DIGEST_SIZE,
+	.base.halg.base	= {
 		.cra_name		= "sha384",
 		.cra_driver_name	= "omap-sha384",
-		.cra_priority		= 100,
-		.cra_flags		= CRYPTO_ALG_TYPE_AHASH |
+		.cra_priority		= 400,
+		.cra_flags		= CRYPTO_ALG_KERN_DRIVER_ONLY |
 						CRYPTO_ALG_ASYNC |
 						CRYPTO_ALG_NEED_FALLBACK,
 		.cra_blocksize		= SHA384_BLOCK_SIZE,
 		.cra_ctxsize		= sizeof(struct omap_sham_ctx),
-		.cra_alignmask		= 0,
+		.cra_alignmask		= OMAP_ALIGN_MASK,
 		.cra_module		= THIS_MODULE,
 		.cra_init		= omap_sham_cra_init,
 		.cra_exit		= omap_sham_cra_exit,
-	}
+	},
+	.op.do_one_request = omap_sham_hash_one_req,
 },
 {
-	.init		= omap_sham_init,
-	.update		= omap_sham_update,
-	.final		= omap_sham_final,
-	.finup		= omap_sham_finup,
-	.digest		= omap_sham_digest,
-	.halg.digestsize	= SHA512_DIGEST_SIZE,
-	.halg.base	= {
+	.base.init		= omap_sham_init,
+	.base.update		= omap_sham_update,
+	.base.final		= omap_sham_final,
+	.base.finup		= omap_sham_finup,
+	.base.digest		= omap_sham_digest,
+	.base.halg.digestsize	= SHA512_DIGEST_SIZE,
+	.base.halg.base	= {
 		.cra_name		= "sha512",
 		.cra_driver_name	= "omap-sha512",
-		.cra_priority		= 100,
-		.cra_flags		= CRYPTO_ALG_TYPE_AHASH |
+		.cra_priority		= 400,
+		.cra_flags		= CRYPTO_ALG_KERN_DRIVER_ONLY |
 						CRYPTO_ALG_ASYNC |
 						CRYPTO_ALG_NEED_FALLBACK,
 		.cra_blocksize		= SHA512_BLOCK_SIZE,
 		.cra_ctxsize		= sizeof(struct omap_sham_ctx),
-		.cra_alignmask		= 0,
+		.cra_alignmask		= OMAP_ALIGN_MASK,
 		.cra_module		= THIS_MODULE,
 		.cra_init		= omap_sham_cra_init,
 		.cra_exit		= omap_sham_cra_exit,
-	}
+	},
+	.op.do_one_request = omap_sham_hash_one_req,
 },
 {
-	.init		= omap_sham_init,
-	.update		= omap_sham_update,
-	.final		= omap_sham_final,
-	.finup		= omap_sham_finup,
-	.digest		= omap_sham_digest,
-	.setkey		= omap_sham_setkey,
-	.halg.digestsize	= SHA384_DIGEST_SIZE,
-	.halg.base	= {
+	.base.init		= omap_sham_init,
+	.base.update		= omap_sham_update,
+	.base.final		= omap_sham_final,
+	.base.finup		= omap_sham_finup,
+	.base.digest		= omap_sham_digest,
+	.base.setkey		= omap_sham_setkey,
+	.base.halg.digestsize	= SHA384_DIGEST_SIZE,
+	.base.halg.base	= {
 		.cra_name		= "hmac(sha384)",
 		.cra_driver_name	= "omap-hmac-sha384",
-		.cra_priority		= 100,
-		.cra_flags		= CRYPTO_ALG_TYPE_AHASH |
+		.cra_priority		= 400,
+		.cra_flags		= CRYPTO_ALG_KERN_DRIVER_ONLY |
 						CRYPTO_ALG_ASYNC |
 						CRYPTO_ALG_NEED_FALLBACK,
 		.cra_blocksize		= SHA384_BLOCK_SIZE,
@@ -1574,21 +1686,22 @@ static struct ahash_alg algs_sha384_sha512[] = {
 		.cra_module		= THIS_MODULE,
 		.cra_init		= omap_sham_cra_sha384_init,
 		.cra_exit		= omap_sham_cra_exit,
-	}
+	},
+	.op.do_one_request = omap_sham_hash_one_req,
 },
 {
-	.init		= omap_sham_init,
-	.update		= omap_sham_update,
-	.final		= omap_sham_final,
-	.finup		= omap_sham_finup,
-	.digest		= omap_sham_digest,
-	.setkey		= omap_sham_setkey,
-	.halg.digestsize	= SHA512_DIGEST_SIZE,
-	.halg.base	= {
+	.base.init		= omap_sham_init,
+	.base.update		= omap_sham_update,
+	.base.final		= omap_sham_final,
+	.base.finup		= omap_sham_finup,
+	.base.digest		= omap_sham_digest,
+	.base.setkey		= omap_sham_setkey,
+	.base.halg.digestsize	= SHA512_DIGEST_SIZE,
+	.base.halg.base	= {
 		.cra_name		= "hmac(sha512)",
 		.cra_driver_name	= "omap-hmac-sha512",
-		.cra_priority		= 100,
-		.cra_flags		= CRYPTO_ALG_TYPE_AHASH |
+		.cra_priority		= 400,
+		.cra_flags		= CRYPTO_ALG_KERN_DRIVER_ONLY |
 						CRYPTO_ALG_ASYNC |
 						CRYPTO_ALG_NEED_FALLBACK,
 		.cra_blocksize		= SHA512_BLOCK_SIZE,
@@ -1598,7 +1711,8 @@ static struct ahash_alg algs_sha384_sha512[] = {
 		.cra_module		= THIS_MODULE,
 		.cra_init		= omap_sham_cra_sha512_init,
 		.cra_exit		= omap_sham_cra_exit,
-	}
+	},
+	.op.do_one_request = omap_sham_hash_one_req,
 },
 };
 
@@ -1607,20 +1721,13 @@ static void omap_sham_done_task(unsigned long data)
 	struct omap_sham_dev *dd = (struct omap_sham_dev *)data;
 	int err = 0;
 
-	if (!test_bit(FLAGS_BUSY, &dd->flags)) {
-		omap_sham_handle_queue(dd, NULL);
-		return;
-	}
+	dev_dbg(dd->dev, "%s: flags=%lx\n", __func__, dd->flags);
 
 	if (test_bit(FLAGS_CPU, &dd->flags)) {
-		if (test_and_clear_bit(FLAGS_OUTPUT_READY, &dd->flags)) {
-			/* hash or semi-hash ready */
-			err = omap_sham_update_cpu(dd);
-			if (err != -EINPROGRESS)
-				goto finish;
-		}
+		if (test_and_clear_bit(FLAGS_OUTPUT_READY, &dd->flags))
+			goto finish;
 	} else if (test_bit(FLAGS_DMA_READY, &dd->flags)) {
-		if (test_and_clear_bit(FLAGS_DMA_ACTIVE, &dd->flags)) {
+		if (test_bit(FLAGS_DMA_ACTIVE, &dd->flags)) {
 			omap_sham_update_dma_stop(dd);
 			if (dd->err) {
 				err = dd->err;
@@ -1630,9 +1737,7 @@ static void omap_sham_done_task(unsigned long data)
 		if (test_and_clear_bit(FLAGS_OUTPUT_READY, &dd->flags)) {
 			/* hash or semi-hash ready */
 			clear_bit(FLAGS_DMA_READY, &dd->flags);
-			err = omap_sham_update_dma_start(dd);
-			if (err != -EINPROGRESS)
-				goto finish;
+			goto finish;
 		}
 	}
 
@@ -1646,12 +1751,8 @@ finish:
 
 static irqreturn_t omap_sham_irq_common(struct omap_sham_dev *dd)
 {
-	if (!test_bit(FLAGS_BUSY, &dd->flags)) {
-		dev_warn(dd->dev, "Interrupt when no active requests.\n");
-	} else {
-		set_bit(FLAGS_OUTPUT_READY, &dd->flags);
-		tasklet_schedule(&dd->done_task);
-	}
+	set_bit(FLAGS_OUTPUT_READY, &dd->flags);
+	tasklet_schedule(&dd->done_task);
 
 	return IRQ_HANDLED;
 }
@@ -1792,6 +1893,10 @@ static const struct of_device_id omap_sham_of_match[] = {
 		.data		= &omap_sham_pdata_omap2,
 	},
 	{
+		.compatible	= "ti,omap3-sham",
+		.data		= &omap_sham_pdata_omap2,
+	},
+	{
 		.compatible	= "ti,omap4-sham",
 		.data		= &omap_sham_pdata_omap4,
 	},
@@ -1807,11 +1912,10 @@ static int omap_sham_get_res_of(struct omap_sham_dev *dd,
 		struct device *dev, struct resource *res)
 {
 	struct device_node *node = dev->of_node;
-	const struct of_device_id *match;
 	int err = 0;
 
-	match = of_match_device(of_match_ptr(omap_sham_of_match), dev);
-	if (!match) {
+	dd->pdata = of_device_get_match_data(dev);
+	if (!dd->pdata) {
 		dev_err(dev, "no compatible OF match\n");
 		err = -EINVAL;
 		goto err;
@@ -1830,9 +1934,6 @@ static int omap_sham_get_res_of(struct omap_sham_dev *dd,
 		err = -EINVAL;
 		goto err;
 	}
-
-	dd->dma = -1; /* Dummy value that's unused */
-	dd->pdata = match->data;
 
 err:
 	return err;
@@ -1868,19 +1969,9 @@ static int omap_sham_get_res_pdev(struct omap_sham_dev *dd,
 	/* Get the IRQ */
 	dd->irq = platform_get_irq(pdev, 0);
 	if (dd->irq < 0) {
-		dev_err(dev, "no IRQ resource info\n");
 		err = dd->irq;
 		goto err;
 	}
-
-	/* Get the DMA */
-	r = platform_get_resource(pdev, IORESOURCE_DMA, 0);
-	if (!r) {
-		dev_err(dev, "no DMA resource info\n");
-		err = -ENODEV;
-		goto err;
-	}
-	dd->dma = r->start;
 
 	/* Only OMAP2/3 can be non-DT */
 	dd->pdata = &omap_sham_pdata_omap2;
@@ -1888,6 +1979,82 @@ static int omap_sham_get_res_pdev(struct omap_sham_dev *dd,
 err:
 	return err;
 }
+
+static ssize_t fallback_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	struct omap_sham_dev *dd = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%d\n", dd->fallback_sz);
+}
+
+static ssize_t fallback_store(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t size)
+{
+	struct omap_sham_dev *dd = dev_get_drvdata(dev);
+	ssize_t status;
+	long value;
+
+	status = kstrtol(buf, 0, &value);
+	if (status)
+		return status;
+
+	/* HW accelerator only works with buffers > 9 */
+	if (value < 9) {
+		dev_err(dev, "minimum fallback size 9\n");
+		return -EINVAL;
+	}
+
+	dd->fallback_sz = value;
+
+	return size;
+}
+
+static ssize_t queue_len_show(struct device *dev, struct device_attribute *attr,
+			      char *buf)
+{
+	struct omap_sham_dev *dd = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%d\n", dd->queue.max_qlen);
+}
+
+static ssize_t queue_len_store(struct device *dev,
+			       struct device_attribute *attr, const char *buf,
+			       size_t size)
+{
+	struct omap_sham_dev *dd = dev_get_drvdata(dev);
+	ssize_t status;
+	long value;
+
+	status = kstrtol(buf, 0, &value);
+	if (status)
+		return status;
+
+	if (value < 1)
+		return -EINVAL;
+
+	/*
+	 * Changing the queue size in fly is safe, if size becomes smaller
+	 * than current size, it will just not accept new entries until
+	 * it has shrank enough.
+	 */
+	dd->queue.max_qlen = value;
+
+	return size;
+}
+
+static DEVICE_ATTR_RW(queue_len);
+static DEVICE_ATTR_RW(fallback);
+
+static struct attribute *omap_sham_attrs[] = {
+	&dev_attr_queue_len.attr,
+	&dev_attr_fallback.attr,
+	NULL,
+};
+
+static const struct attribute_group omap_sham_attr_group = {
+	.attrs = omap_sham_attrs,
+};
 
 static int omap_sham_probe(struct platform_device *pdev)
 {
@@ -1908,7 +2075,6 @@ static int omap_sham_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, dd);
 
 	INIT_LIST_HEAD(&dd->list);
-	spin_lock_init(&dd->lock);
 	tasklet_init(&dd->done_task, omap_sham_done_task, (unsigned long)dd);
 	crypto_init_queue(&dd->queue, OMAP_SHAM_QUEUE_LENGTH);
 
@@ -1935,17 +2101,32 @@ static int omap_sham_probe(struct platform_device *pdev)
 	dma_cap_zero(mask);
 	dma_cap_set(DMA_SLAVE, mask);
 
-	dd->dma_lch = dma_request_slave_channel_compat(mask, omap_dma_filter_fn,
-						       &dd->dma, dev, "rx");
-	if (!dd->dma_lch) {
+	dd->dma_lch = dma_request_chan(dev, "rx");
+	if (IS_ERR(dd->dma_lch)) {
+		err = PTR_ERR(dd->dma_lch);
+		if (err == -EPROBE_DEFER)
+			goto data_err;
+
 		dd->polling_mode = 1;
 		dev_dbg(dev, "using polling mode instead of dma\n");
 	}
 
 	dd->flags |= dd->pdata->flags;
+	sham.flags |= dd->pdata->flags;
+
+	pm_runtime_use_autosuspend(dev);
+	pm_runtime_set_autosuspend_delay(dev, DEFAULT_AUTOSUSPEND_DELAY);
+
+	dd->fallback_sz = OMAP_SHA_DMA_THRESHOLD;
 
 	pm_runtime_enable(dev);
-	pm_runtime_get_sync(dev);
+
+	err = pm_runtime_resume_and_get(dev);
+	if (err < 0) {
+		dev_err(dev, "failed to get sync: %d\n", err);
+		goto err_pm;
+	}
+
 	rev = omap_sham_read(dd, SHA_REG_REV(dd));
 	pm_runtime_put_sync(&pdev->dev);
 
@@ -1953,14 +2134,35 @@ static int omap_sham_probe(struct platform_device *pdev)
 		(rev & dd->pdata->major_mask) >> dd->pdata->major_shift,
 		(rev & dd->pdata->minor_mask) >> dd->pdata->minor_shift);
 
-	spin_lock(&sham.lock);
+	spin_lock_bh(&sham.lock);
 	list_add_tail(&dd->list, &sham.dev_list);
-	spin_unlock(&sham.lock);
+	spin_unlock_bh(&sham.lock);
+
+	dd->engine = crypto_engine_alloc_init(dev, 1);
+	if (!dd->engine) {
+		err = -ENOMEM;
+		goto err_engine;
+	}
+
+	err = crypto_engine_start(dd->engine);
+	if (err)
+		goto err_engine_start;
 
 	for (i = 0; i < dd->pdata->algs_info_size; i++) {
+		if (dd->pdata->algs_info[i].registered)
+			break;
+
 		for (j = 0; j < dd->pdata->algs_info[i].size; j++) {
-			err = crypto_register_ahash(
-					&dd->pdata->algs_info[i].algs_list[j]);
+			struct ahash_engine_alg *ealg;
+			struct ahash_alg *alg;
+
+			ealg = &dd->pdata->algs_info[i].algs_list[j];
+			alg = &ealg->base;
+			alg->export = omap_sham_export;
+			alg->import = omap_sham_import;
+			alg->halg.statesize = sizeof(struct omap_sham_reqctx) +
+					      BUFLEN;
+			err = crypto_engine_register_ahash(ealg);
 			if (err)
 				goto err_algs;
 
@@ -1968,15 +2170,29 @@ static int omap_sham_probe(struct platform_device *pdev)
 		}
 	}
 
+	err = sysfs_create_group(&dev->kobj, &omap_sham_attr_group);
+	if (err) {
+		dev_err(dev, "could not create sysfs device attrs\n");
+		goto err_algs;
+	}
+
 	return 0;
 
 err_algs:
 	for (i = dd->pdata->algs_info_size - 1; i >= 0; i--)
 		for (j = dd->pdata->algs_info[i].registered - 1; j >= 0; j--)
-			crypto_unregister_ahash(
+			crypto_engine_unregister_ahash(
 					&dd->pdata->algs_info[i].algs_list[j]);
+err_engine_start:
+	crypto_engine_exit(dd->engine);
+err_engine:
+	spin_lock_bh(&sham.lock);
+	list_del(&dd->list);
+	spin_unlock_bh(&sham.lock);
+err_pm:
+	pm_runtime_dont_use_autosuspend(dev);
 	pm_runtime_disable(dev);
-	if (dd->dma_lch)
+	if (!dd->polling_mode)
 		dma_release_channel(dd->dma_lch);
 data_err:
 	dev_err(dev, "initialization failed.\n");
@@ -1986,53 +2202,37 @@ data_err:
 
 static int omap_sham_remove(struct platform_device *pdev)
 {
-	static struct omap_sham_dev *dd;
+	struct omap_sham_dev *dd;
 	int i, j;
 
 	dd = platform_get_drvdata(pdev);
-	if (!dd)
-		return -ENODEV;
-	spin_lock(&sham.lock);
+
+	spin_lock_bh(&sham.lock);
 	list_del(&dd->list);
-	spin_unlock(&sham.lock);
+	spin_unlock_bh(&sham.lock);
 	for (i = dd->pdata->algs_info_size - 1; i >= 0; i--)
-		for (j = dd->pdata->algs_info[i].registered - 1; j >= 0; j--)
-			crypto_unregister_ahash(
+		for (j = dd->pdata->algs_info[i].registered - 1; j >= 0; j--) {
+			crypto_engine_unregister_ahash(
 					&dd->pdata->algs_info[i].algs_list[j]);
+			dd->pdata->algs_info[i].registered--;
+		}
 	tasklet_kill(&dd->done_task);
+	pm_runtime_dont_use_autosuspend(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
 
-	if (dd->dma_lch)
+	if (!dd->polling_mode)
 		dma_release_channel(dd->dma_lch);
 
+	sysfs_remove_group(&dd->dev->kobj, &omap_sham_attr_group);
+
 	return 0;
 }
-
-#ifdef CONFIG_PM_SLEEP
-static int omap_sham_suspend(struct device *dev)
-{
-	pm_runtime_put_sync(dev);
-	return 0;
-}
-
-static int omap_sham_resume(struct device *dev)
-{
-	pm_runtime_get_sync(dev);
-	return 0;
-}
-#endif
-
-static const struct dev_pm_ops omap_sham_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(omap_sham_suspend, omap_sham_resume)
-};
 
 static struct platform_driver omap_sham_driver = {
 	.probe	= omap_sham_probe,
 	.remove	= omap_sham_remove,
 	.driver	= {
 		.name	= "omap-sham",
-		.owner	= THIS_MODULE,
-		.pm	= &omap_sham_pm_ops,
 		.of_match_table	= omap_sham_of_match,
 	},
 };

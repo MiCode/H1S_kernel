@@ -1,7 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) ST-Ericsson SA 2010
- *
- * License Terms: GNU General Public License v2
  *
  * Author: Bengt Jonsson <bengt.g.jonsson@stericsson.com> for ST-Ericsson
  *
@@ -35,11 +34,5 @@ enum db8500_regulator_id {
 	DB8500_REGULATOR_SWITCH_ESRAM34RET,
 	DB8500_NUM_REGULATORS
 };
-
-/*
- * Exported interface for CPUIdle only. This function is called with all
- * interrupts turned off.
- */
-int power_state_active_is_enabled(void);
 
 #endif

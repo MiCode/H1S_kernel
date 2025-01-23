@@ -1,29 +1,5 @@
-/*******************************************************************************
-
-  Intel 10 Gigabit PCI Express Linux driver
-  Copyright(c) 1999 - 2013 Intel Corporation.
-
-  This program is free software; you can redistribute it and/or modify it
-  under the terms and conditions of the GNU General Public License,
-  version 2, as published by the Free Software Foundation.
-
-  This program is distributed in the hope it will be useful, but WITHOUT
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
-  more details.
-
-  You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc.,
-  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
-
-  The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
-
-  Contact Information:
-  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
-  Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
-
-*******************************************************************************/
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright(c) 1999 - 2018 Intel Corporation. */
 
 #ifndef _IXGBE_FCOE_H
 #define _IXGBE_FCOE_H
@@ -45,6 +21,7 @@
 #define IXGBE_FCBUFF_MAX	65536	/* 64KB max */
 #define IXGBE_FCBUFF_MIN	4096	/* 4KB min */
 #define IXGBE_FCOE_DDP_MAX	512	/* 9 bits xid */
+#define IXGBE_FCOE_DDP_MAX_X550	2048	/* 11 bits xid */
 
 /* Default traffic class to use for FCoE */
 #define IXGBE_FCOE_DEFTC	3
@@ -76,13 +53,11 @@ struct ixgbe_fcoe {
 	struct ixgbe_fcoe_ddp_pool __percpu *ddp_pool;
 	atomic_t refcnt;
 	spinlock_t lock;
-	struct ixgbe_fcoe_ddp ddp[IXGBE_FCOE_DDP_MAX];
+	struct ixgbe_fcoe_ddp ddp[IXGBE_FCOE_DDP_MAX_X550];
 	void *extra_ddp_buffer;
 	dma_addr_t extra_ddp_buffer_dma;
 	unsigned long mode;
-#ifdef CONFIG_IXGBE_DCB
 	u8 up;
-#endif
 };
 
 #endif /* _IXGBE_FCOE_H */

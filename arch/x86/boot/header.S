@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *	header.S
  *
@@ -14,11 +15,9 @@
  * hex while segment addresses are written as segment:offset.
  *
  */
-
+#include <linux/pe.h>
 #include <asm/segment.h>
-#include <generated/utsrelease.h>
 #include <asm/boot.h>
-#include <asm/e820.h>
 #include <asm/page_types.h>
 #include <asm/setup.h>
 #include <asm/bootparam.h>
@@ -37,114 +36,56 @@ SYSSEG		= 0x1000		/* historical load address >> 4 */
 #define ROOT_RDONLY 1
 #endif
 
+	.set	salign, 0x1000
+	.set	falign, 0x200
+
 	.code16
 	.section ".bstext", "ax"
-
-	.global bootsect_start
-bootsect_start:
 #ifdef CONFIG_EFI_STUB
 	# "MZ", MS-DOS header
-	.byte 0x4d
-	.byte 0x5a
-#endif
-
-	# Normalize the start address
-	ljmp	$BOOTSEG, $start2
-
-start2:
-	movw	%cs, %ax
-	movw	%ax, %ds
-	movw	%ax, %es
-	movw	%ax, %ss
-	xorw	%sp, %sp
-	sti
-	cld
-
-	movw	$bugger_off_msg, %si
-
-msg_loop:
-	lodsb
-	andb	%al, %al
-	jz	bs_die
-	movb	$0xe, %ah
-	movw	$7, %bx
-	int	$0x10
-	jmp	msg_loop
-
-bs_die:
-	# Allow the user to press a key, then reboot
-	xorw	%ax, %ax
-	int	$0x16
-	int	$0x19
-
-	# int 0x19 should never return.  In case it does anyway,
-	# invoke the BIOS reset code...
-	ljmp	$0xf000,$0xfff0
-
-#ifdef CONFIG_EFI_STUB
-	.org	0x3c
+	.word	MZ_MAGIC
+	.org	0x38
 	#
 	# Offset to the PE header.
 	#
+	.long	LINUX_PE_MAGIC
 	.long	pe_header
-#endif /* CONFIG_EFI_STUB */
-
-	.section ".bsdata", "a"
-bugger_off_msg:
-	.ascii	"Direct floppy boot is not supported. "
-	.ascii	"Use a boot loader program instead.\r\n"
-	.ascii	"\n"
-	.ascii	"Remove disk and press any key to reboot ...\r\n"
-	.byte	0
-
-#ifdef CONFIG_EFI_STUB
 pe_header:
-	.ascii	"PE"
-	.word 	0
+	.long	PE_MAGIC
 
 coff_header:
 #ifdef CONFIG_X86_32
-	.word	0x14c				# i386
+	.set	image_file_add_flags, IMAGE_FILE_32BIT_MACHINE
+	.set	pe_opt_magic, PE_OPT_MAGIC_PE32
+	.word	IMAGE_FILE_MACHINE_I386
 #else
-	.word	0x8664				# x86-64
+	.set	image_file_add_flags, 0
+	.set	pe_opt_magic, PE_OPT_MAGIC_PE32PLUS
+	.word	IMAGE_FILE_MACHINE_AMD64
 #endif
-	.word	3				# nr_sections
+	.word	section_count			# nr_sections
 	.long	0 				# TimeDateStamp
 	.long	0				# PointerToSymbolTable
 	.long	1				# NumberOfSymbols
 	.word	section_table - optional_header	# SizeOfOptionalHeader
-#ifdef CONFIG_X86_32
-	.word	0x306				# Characteristics.
-						# IMAGE_FILE_32BIT_MACHINE |
-						# IMAGE_FILE_DEBUG_STRIPPED |
-						# IMAGE_FILE_EXECUTABLE_IMAGE |
-						# IMAGE_FILE_LINE_NUMS_STRIPPED
-#else
-	.word	0x206				# Characteristics
-						# IMAGE_FILE_DEBUG_STRIPPED |
-						# IMAGE_FILE_EXECUTABLE_IMAGE |
-						# IMAGE_FILE_LINE_NUMS_STRIPPED
-#endif
+	.word	IMAGE_FILE_EXECUTABLE_IMAGE	| \
+		image_file_add_flags		| \
+		IMAGE_FILE_DEBUG_STRIPPED	| \
+		IMAGE_FILE_LINE_NUMS_STRIPPED	# Characteristics
 
 optional_header:
-#ifdef CONFIG_X86_32
-	.word	0x10b				# PE32 format
-#else
-	.word	0x20b 				# PE32+ format
-#endif
+	.word	pe_opt_magic
 	.byte	0x02				# MajorLinkerVersion
 	.byte	0x14				# MinorLinkerVersion
 
-	# Filled in by build.c
-	.long	0				# SizeOfCode
+	.long	ZO__data			# SizeOfCode
 
-	.long	0				# SizeOfInitializedData
+	.long	ZO__end - ZO__data		# SizeOfInitializedData
 	.long	0				# SizeOfUninitializedData
 
-	# Filled in by build.c
-	.long	0x0000				# AddressOfEntryPoint
+	.long	setup_size + ZO_efi_pe_entry	# AddressOfEntryPoint
 
-	.long	0x0200				# BaseOfCode
+	.long	setup_size			# BaseOfCode
 #ifdef CONFIG_X86_32
 	.long	0				# data
 #endif
@@ -155,25 +96,26 @@ extra_header_fields:
 #else
 	.quad	0				# ImageBase
 #endif
-	.long	0x20				# SectionAlignment
-	.long	0x20				# FileAlignment
+	.long	salign				# SectionAlignment
+	.long	falign				# FileAlignment
 	.word	0				# MajorOperatingSystemVersion
 	.word	0				# MinorOperatingSystemVersion
-	.word	0				# MajorImageVersion
-	.word	0				# MinorImageVersion
+	.word	LINUX_EFISTUB_MAJOR_VERSION	# MajorImageVersion
+	.word	LINUX_EFISTUB_MINOR_VERSION	# MinorImageVersion
 	.word	0				# MajorSubsystemVersion
 	.word	0				# MinorSubsystemVersion
 	.long	0				# Win32VersionValue
 
-	#
-	# The size of the bzImage is written in tools/build.c
-	#
-	.long	0				# SizeOfImage
+	.long	setup_size + ZO__end		# SizeOfImage
 
-	.long	0x200				# SizeOfHeaders
+	.long	salign				# SizeOfHeaders
 	.long	0				# CheckSum
-	.word	0xa				# Subsystem (EFI application)
+	.word	IMAGE_SUBSYSTEM_EFI_APPLICATION	# Subsystem (EFI application)
+#ifdef CONFIG_EFI_DXE_MEM_ATTRIBUTES
+	.word	IMAGE_DLL_CHARACTERISTICS_NX_COMPAT	# DllCharacteristics
+#else
 	.word	0				# DllCharacteristics
+#endif
 #ifdef CONFIG_X86_32
 	.long	0				# SizeOfStackReserve
 	.long	0				# SizeOfStackCommit
@@ -186,7 +128,7 @@ extra_header_fields:
 	.quad	0				# SizeOfHeapCommit
 #endif
 	.long	0				# LoaderFlags
-	.long	0x6				# NumberOfRvaAndSizes
+	.long	(section_table - .) / 8		# NumberOfRvaAndSizes
 
 	.quad	0				# ExportTable
 	.quad	0				# ImportTable
@@ -197,59 +139,79 @@ extra_header_fields:
 
 	# Section table
 section_table:
-	#
-	# The offset & size fields are filled in by build.c.
-	#
 	.ascii	".setup"
 	.byte	0
 	.byte	0
-	.long	0
-	.long	0x0				# startup_{32,64}
-	.long	0				# Size of initialized data
-						# on disk
-	.long	0x0				# startup_{32,64}
-	.long	0				# PointerToRelocations
-	.long	0				# PointerToLineNumbers
-	.word	0				# NumberOfRelocations
-	.word	0				# NumberOfLineNumbers
-	.long	0x60500020			# Characteristics (section flags)
+	.long	pecompat_fstart - salign 	# VirtualSize
+	.long	salign				# VirtualAddress
+	.long	pecompat_fstart - salign	# SizeOfRawData
+	.long	salign				# PointerToRawData
 
-	#
-	# The EFI application loader requires a relocation section
-	# because EFI applications must be relocatable. The .reloc
-	# offset & size fields are filled in by build.c.
-	#
-	.ascii	".reloc"
-	.byte	0
-	.byte	0
-	.long	0
-	.long	0
-	.long	0				# SizeOfRawData
-	.long	0				# PointerToRawData
-	.long	0				# PointerToRelocations
-	.long	0				# PointerToLineNumbers
-	.word	0				# NumberOfRelocations
-	.word	0				# NumberOfLineNumbers
-	.long	0x42100040			# Characteristics (section flags)
+	.long	0, 0, 0
+	.long	IMAGE_SCN_CNT_INITIALIZED_DATA	| \
+		IMAGE_SCN_MEM_READ		| \
+		IMAGE_SCN_MEM_DISCARDABLE	# Characteristics
 
-	#
-	# The offset & size fields are filled in by build.c.
-	#
+#ifdef CONFIG_EFI_MIXED
+	.asciz	".compat"
+
+	.long	pecompat_fsize			# VirtualSize
+	.long	pecompat_fstart			# VirtualAddress
+	.long	pecompat_fsize			# SizeOfRawData
+	.long	pecompat_fstart			# PointerToRawData
+
+	.long	0, 0, 0
+	.long	IMAGE_SCN_CNT_INITIALIZED_DATA	| \
+		IMAGE_SCN_MEM_READ		| \
+		IMAGE_SCN_MEM_DISCARDABLE	# Characteristics
+
+	/*
+	 * Put the IA-32 machine type and the associated entry point address in
+	 * the .compat section, so loaders can figure out which other execution
+	 * modes this image supports.
+	 */
+	.pushsection ".pecompat", "a", @progbits
+	.balign	salign
+	.globl	pecompat_fstart
+pecompat_fstart:
+	.byte	0x1				# Version
+	.byte	8				# Size
+	.word	IMAGE_FILE_MACHINE_I386		# PE machine type
+	.long	setup_size + ZO_efi32_pe_entry	# Entrypoint
+	.byte	0x0				# Sentinel
+	.popsection
+#else
+	.set	pecompat_fstart, setup_size
+#endif
 	.ascii	".text"
 	.byte	0
 	.byte	0
 	.byte	0
-	.long	0
-	.long	0x0				# startup_{32,64}
-	.long	0				# Size of initialized data
+	.long	ZO__data
+	.long	setup_size
+	.long	ZO__data			# Size of initialized data
 						# on disk
-	.long	0x0				# startup_{32,64}
+	.long	setup_size
 	.long	0				# PointerToRelocations
 	.long	0				# PointerToLineNumbers
 	.word	0				# NumberOfRelocations
 	.word	0				# NumberOfLineNumbers
-	.long	0x60500020			# Characteristics (section flags)
+	.long	IMAGE_SCN_CNT_CODE		| \
+		IMAGE_SCN_MEM_READ		| \
+		IMAGE_SCN_MEM_EXECUTE		# Characteristics
 
+	.ascii	".data\0\0\0"
+	.long	ZO__end - ZO__data		# VirtualSize
+	.long	setup_size + ZO__data		# VirtualAddress
+	.long	ZO__edata - ZO__data		# SizeOfRawData
+	.long	setup_size + ZO__data		# PointerToRawData
+
+	.long	0, 0, 0
+	.long	IMAGE_SCN_CNT_INITIALIZED_DATA	| \
+		IMAGE_SCN_MEM_READ		| \
+		IMAGE_SCN_MEM_WRITE		# Characteristics
+
+	.set	section_count, (. - section_table) / 40
 #endif /* CONFIG_EFI_STUB */
 
 	# Kernel attributes; used by setup.  This is part 1 of the
@@ -261,12 +223,12 @@ sentinel:	.byte 0xff, 0xff        /* Used to detect broken loaders */
 
 	.globl	hdr
 hdr:
-setup_sects:	.byte 0			/* Filled in by build.c */
+		.byte setup_sects - 1
 root_flags:	.word ROOT_RDONLY
-syssize:	.long 0			/* Filled in by build.c */
+syssize:	.long ZO__edata / 16
 ram_size:	.word 0			/* Obsolete */
 vid_mode:	.word SVGA_MODE
-root_dev:	.word 0			/* Filled in by build.c */
+root_dev:	.word 0			/* Default to major/minor 0/0 */
 boot_flag:	.word 0xAA55
 
 	# offset 512, entry point
@@ -283,7 +245,7 @@ _start:
 	# Part 2 of the header, from the old setup.S
 
 		.ascii	"HdrS"		# header signature
-		.word	0x020c		# header version number (>= 0x0105)
+		.word	0x020f		# header version number (>= 0x0105)
 					# or else old loadlin-1.5 will fail)
 		.globl realmode_swtch
 realmode_swtch:	.word	0, 0		# default_switch, SETUPSEG
@@ -296,7 +258,7 @@ start_sys_seg:	.word	SYSSEG		# obsolete and meaningless, but just
 
 type_of_loader:	.byte	0		# 0 means ancient bootloader, newer
 					# bootloaders know to change this.
-					# See Documentation/x86/boot.txt for
+					# See Documentation/arch/x86/boot.rst for
 					# assigned ids
 
 # flags, unused bits must be zero (RFU) bit within loadflags
@@ -350,7 +312,7 @@ cmd_line_ptr:	.long	0		# (Header version 0x0202 or later)
 					# can be located anywhere in
 					# low memory 0x10000 or higher.
 
-ramdisk_max:	.long 0x7fffffff
+initrd_addr_max: .long 0x7fffffff
 					# (Header version 0x0203 or later)
 					# The highest safe address for
 					# the contents of an initrd
@@ -382,23 +344,37 @@ xloadflags:
 # define XLF1 0
 #endif
 
-#ifdef CONFIG_EFI_STUB
-# ifdef CONFIG_X86_64
-#  define XLF23 XLF_EFI_HANDOVER_64		/* 64-bit EFI handover ok */
+#ifdef CONFIG_EFI_HANDOVER_PROTOCOL
+# ifdef CONFIG_EFI_MIXED
+#  define XLF23 (XLF_EFI_HANDOVER_32|XLF_EFI_HANDOVER_64)
 # else
-#  define XLF23 XLF_EFI_HANDOVER_32		/* 32-bit EFI handover ok */
+#  ifdef CONFIG_X86_64
+#   define XLF23 XLF_EFI_HANDOVER_64		/* 64-bit EFI handover ok */
+#  else
+#   define XLF23 XLF_EFI_HANDOVER_32		/* 32-bit EFI handover ok */
+#  endif
 # endif
 #else
 # define XLF23 0
 #endif
 
-#if defined(CONFIG_X86_64) && defined(CONFIG_EFI) && defined(CONFIG_KEXEC)
+#if defined(CONFIG_X86_64) && defined(CONFIG_EFI) && defined(CONFIG_KEXEC_CORE)
 # define XLF4 XLF_EFI_KEXEC
 #else
 # define XLF4 0
 #endif
 
-			.word XLF0 | XLF1 | XLF23 | XLF4
+#ifdef CONFIG_X86_64
+#ifdef CONFIG_X86_5LEVEL
+#define XLF56 (XLF_5LEVEL|XLF_5LEVEL_ENABLED)
+#else
+#define XLF56 XLF_5LEVEL
+#endif
+#else
+#define XLF56 0
+#endif
+
+			.word XLF0 | XLF1 | XLF23 | XLF4 | XLF56
 
 cmdline_size:   .long   COMMAND_LINE_SIZE-1     #length of the command line,
                                                 #added with boot protocol
@@ -418,21 +394,147 @@ setup_data:		.quad 0			# 64-bit physical pointer to
 
 pref_address:		.quad LOAD_PHYSICAL_ADDR	# preferred load addr
 
-#define ZO_INIT_SIZE	(ZO__end - ZO_startup_32 + ZO_z_extract_offset)
+#
+# Getting to provably safe in-place decompression is hard. Worst case
+# behaviours need to be analyzed. Here let's take the decompression of
+# a gzip-compressed kernel as example, to illustrate it:
+#
+# The file layout of gzip compressed kernel is:
+#
+#    magic[2]
+#    method[1]
+#    flags[1]
+#    timestamp[4]
+#    extraflags[1]
+#    os[1]
+#    compressed data blocks[N]
+#    crc[4] orig_len[4]
+#
+# ... resulting in +18 bytes overhead of uncompressed data.
+#
+# (For more information, please refer to RFC 1951 and RFC 1952.)
+#
+# Files divided into blocks
+# 1 bit (last block flag)
+# 2 bits (block type)
+#
+# 1 block occurs every 32K -1 bytes or when there 50% compression
+# has been achieved. The smallest block type encoding is always used.
+#
+# stored:
+#    32 bits length in bytes.
+#
+# fixed:
+#    magic fixed tree.
+#    symbols.
+#
+# dynamic:
+#    dynamic tree encoding.
+#    symbols.
+#
+#
+# The buffer for decompression in place is the length of the uncompressed
+# data, plus a small amount extra to keep the algorithm safe. The
+# compressed data is placed at the end of the buffer.  The output pointer
+# is placed at the start of the buffer and the input pointer is placed
+# where the compressed data starts. Problems will occur when the output
+# pointer overruns the input pointer.
+#
+# The output pointer can only overrun the input pointer if the input
+# pointer is moving faster than the output pointer.  A condition only
+# triggered by data whose compressed form is larger than the uncompressed
+# form.
+#
+# The worst case at the block level is a growth of the compressed data
+# of 5 bytes per 32767 bytes.
+#
+# The worst case internal to a compressed block is very hard to figure.
+# The worst case can at least be bounded by having one bit that represents
+# 32764 bytes and then all of the rest of the bytes representing the very
+# very last byte.
+#
+# All of which is enough to compute an amount of extra data that is required
+# to be safe.  To avoid problems at the block level allocating 5 extra bytes
+# per 32767 bytes of data is sufficient.  To avoid problems internal to a
+# block adding an extra 32767 bytes (the worst case uncompressed block size)
+# is sufficient, to ensure that in the worst case the decompressed data for
+# block will stop the byte before the compressed data for a block begins.
+# To avoid problems with the compressed data's meta information an extra 18
+# bytes are needed.  Leading to the formula:
+#
+# extra_bytes = (uncompressed_size >> 12) + 32768 + 18
+#
+# Adding 8 bytes per 32K is a bit excessive but much easier to calculate.
+# Adding 32768 instead of 32767 just makes for round numbers.
+#
+# Above analysis is for decompressing gzip compressed kernel only. Up to
+# now 6 different decompressor are supported all together. And among them
+# xz stores data in chunks and has maximum chunk of 64K. Hence safety
+# margin should be updated to cover all decompressors so that we don't
+# need to deal with each of them separately. Please check
+# the description in lib/decompressor_xxx.c for specific information.
+#
+# extra_bytes = (uncompressed_size >> 12) + 65536 + 128
+#
+# LZ4 is even worse: data that cannot be further compressed grows by 0.4%,
+# or one byte per 256 bytes. OTOH, we can safely get rid of the +128 as
+# the size-dependent part now grows so fast.
+#
+# extra_bytes = (uncompressed_size >> 8) + 65536
+#
+# ZSTD compressed data grows by at most 3 bytes per 128K, and only has a 22
+# byte fixed overhead but has a maximum block size of 128K, so it needs a
+# larger margin.
+#
+# extra_bytes = (uncompressed_size >> 8) + 131072
+
+#define ZO_z_extra_bytes	((ZO_z_output_len >> 8) + 131072)
+#if ZO_z_output_len > ZO_z_input_len
+# define ZO_z_extract_offset	(ZO_z_output_len + ZO_z_extra_bytes - \
+				 ZO_z_input_len)
+#else
+# define ZO_z_extract_offset	ZO_z_extra_bytes
+#endif
+
+/*
+ * The extract_offset has to be bigger than ZO head section. Otherwise when
+ * the head code is running to move ZO to the end of the buffer, it will
+ * overwrite the head code itself.
+ */
+#if (ZO__ehead - ZO_startup_32) > ZO_z_extract_offset
+# define ZO_z_min_extract_offset ((ZO__ehead - ZO_startup_32 + 4095) & ~4095)
+#else
+# define ZO_z_min_extract_offset ((ZO_z_extract_offset + 4095) & ~4095)
+#endif
+
+#define ZO_INIT_SIZE	(ZO__end - ZO_startup_32 + ZO_z_min_extract_offset)
+
 #define VO_INIT_SIZE	(VO__end - VO__text)
 #if ZO_INIT_SIZE > VO_INIT_SIZE
-#define INIT_SIZE ZO_INIT_SIZE
+# define INIT_SIZE ZO_INIT_SIZE
 #else
-#define INIT_SIZE VO_INIT_SIZE
+# define INIT_SIZE VO_INIT_SIZE
 #endif
+
+	.macro		__handover_offset
+#ifndef CONFIG_EFI_HANDOVER_PROTOCOL
+	.long		0
+#elif !defined(CONFIG_X86_64)
+	.long		ZO_efi32_stub_entry
+#else
+	/* Yes, this is really how we defined it :( */
+	.long		ZO_efi64_stub_entry - 0x200
+#ifdef CONFIG_EFI_MIXED
+	.if		ZO_efi32_stub_entry != ZO_efi64_stub_entry - 0x200
+	.error		"32-bit and 64-bit EFI entry points do not match"
+	.endif
+#endif
+#endif
+	.endm
+
 init_size:		.long INIT_SIZE		# kernel initialization size
-handover_offset:
-#ifdef CONFIG_EFI_STUB
-  			.long 0x30		# offset to the handover
-						# protocol entry point
-#else
-			.long 0
-#endif
+handover_offset:	__handover_offset
+kernel_info_offset:	.long ZO_kernel_info
 
 # End of setup header #####################################################
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Driver for Xceive XC4000 "QAM/8VSB single chip tuner"
  *
@@ -6,20 +7,6 @@
  *  Copyright (c) 2009 Devin Heitmueller <dheitmueller@kernellabs.com>
  *  Copyright (c) 2009 Davide Ferri <d.ferri@zero11.it>
  *  Copyright (c) 2010 Istvan Varga <istvan_v@mailbox.hu>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
@@ -31,11 +18,11 @@
 #include <linux/mutex.h>
 #include <asm/unaligned.h>
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 
 #include "xc4000.h"
 #include "tuner-i2c.h"
-#include "tuner-xc2028-types.h"
+#include "xc2028-types.h"
 
 static int debug;
 module_param(debug, int, 0644);
@@ -43,14 +30,11 @@ MODULE_PARM_DESC(debug, "Debugging level (0 to 2, default: 0 (off)).");
 
 static int no_poweroff;
 module_param(no_poweroff, int, 0644);
-MODULE_PARM_DESC(no_poweroff, "Power management (1: disabled, 2: enabled, "
-	"0 (default): use device-specific default mode).");
+MODULE_PARM_DESC(no_poweroff, "Power management (1: disabled, 2: enabled, 0 (default): use device-specific default mode).");
 
 static int audio_std;
 module_param(audio_std, int, 0644);
-MODULE_PARM_DESC(audio_std, "Audio standard. XC4000 audio decoder explicitly "
-	"needs to know what audio standard is needed for some video standards "
-	"with audio A2 or NICAM. The valid settings are a sum of:\n"
+MODULE_PARM_DESC(audio_std, "Audio standard. XC4000 audio decoder explicitly needs to know what audio standard is needed for some video standards with audio A2 or NICAM. The valid settings are a sum of:\n"
 	" 1: use NICAM/B or A2/B instead of NICAM/A or A2/A\n"
 	" 2: use A2 instead of NICAM or BTSC\n"
 	" 4: use SECAM/K3 instead of K1\n"
@@ -60,8 +44,7 @@ MODULE_PARM_DESC(audio_std, "Audio standard. XC4000 audio decoder explicitly "
 
 static char firmware_name[30];
 module_param_string(firmware_name, firmware_name, sizeof(firmware_name), 0);
-MODULE_PARM_DESC(firmware_name, "Firmware file name. Allows overriding the "
-	"default firmware name.");
+MODULE_PARM_DESC(firmware_name, "Firmware file name. Allows overriding the default firmware name.");
 
 static DEFINE_MUTEX(xc4000_list_mutex);
 static LIST_HEAD(hybrid_tuner_instance_list);
@@ -93,7 +76,7 @@ struct xc4000_priv {
 	struct firmware_description *firm;
 	int	firm_size;
 	u32	if_khz;
-	u32	freq_hz;
+	u32	freq_hz, freq_offset;
 	u32	bandwidth;
 	u8	video_standard;
 	u8	rf_mode;
@@ -116,6 +99,7 @@ struct xc4000_priv {
 #define XC4000_AUDIO_STD_MONO		32
 
 #define XC4000_DEFAULT_FIRMWARE "dvb-fe-xc4000-1.4.fw"
+#define XC4000_DEFAULT_FIRMWARE_NEW "dvb-fe-xc4000-1.4.1.fw"
 
 /* Misc Defines */
 #define MAX_TV_STANDARD			24
@@ -289,8 +273,7 @@ static int xc4000_tuner_reset(struct dvb_frontend *fe)
 			return -EREMOTEIO;
 		}
 	} else {
-		printk(KERN_ERR "xc4000: no tuner reset callback function, "
-				"fatal\n");
+		printk(KERN_ERR "xc4000: no tuner reset callback function, fatal\n");
 		return -EINVAL;
 	}
 	return 0;
@@ -299,15 +282,13 @@ static int xc4000_tuner_reset(struct dvb_frontend *fe)
 static int xc_write_reg(struct xc4000_priv *priv, u16 regAddr, u16 i2cData)
 {
 	u8 buf[4];
-	int result;
 
 	buf[0] = (regAddr >> 8) & 0xFF;
 	buf[1] = regAddr & 0xFF;
 	buf[2] = (i2cData >> 8) & 0xFF;
 	buf[3] = i2cData & 0xFF;
-	result = xc_send_i2c_data(priv, buf, 4);
 
-	return result;
+	return xc_send_i2c_data(priv, buf, 4);
 }
 
 static int xc_load_i2c_sequence(struct dvb_frontend *fe, const u8 *i2c_sequence)
@@ -406,8 +387,8 @@ static int xc_set_rf_frequency(struct xc4000_priv *priv, u32 freq_hz)
 
 	dprintk(1, "%s(%u)\n", __func__, freq_hz);
 
-	if ((freq_hz > xc4000_tuner_ops.info.frequency_max) ||
-	    (freq_hz < xc4000_tuner_ops.info.frequency_min))
+	if ((freq_hz > xc4000_tuner_ops.info.frequency_max_hz) ||
+	    (freq_hz < xc4000_tuner_ops.info.frequency_min_hz))
 		return -EINVAL;
 
 	freq_code = (u16)(freq_hz / 15625);
@@ -568,67 +549,67 @@ static int xc4000_readreg(struct xc4000_priv *priv, u16 reg, u16 *val)
 #define dump_firm_type(t)	dump_firm_type_and_int_freq(t, 0)
 static void dump_firm_type_and_int_freq(unsigned int type, u16 int_freq)
 {
-	 if (type & BASE)
+	if (type & BASE)
 		printk(KERN_CONT "BASE ");
-	 if (type & INIT1)
+	if (type & INIT1)
 		printk(KERN_CONT "INIT1 ");
-	 if (type & F8MHZ)
+	if (type & F8MHZ)
 		printk(KERN_CONT "F8MHZ ");
-	 if (type & MTS)
+	if (type & MTS)
 		printk(KERN_CONT "MTS ");
-	 if (type & D2620)
+	if (type & D2620)
 		printk(KERN_CONT "D2620 ");
-	 if (type & D2633)
+	if (type & D2633)
 		printk(KERN_CONT "D2633 ");
-	 if (type & DTV6)
+	if (type & DTV6)
 		printk(KERN_CONT "DTV6 ");
-	 if (type & QAM)
+	if (type & QAM)
 		printk(KERN_CONT "QAM ");
-	 if (type & DTV7)
+	if (type & DTV7)
 		printk(KERN_CONT "DTV7 ");
-	 if (type & DTV78)
+	if (type & DTV78)
 		printk(KERN_CONT "DTV78 ");
-	 if (type & DTV8)
+	if (type & DTV8)
 		printk(KERN_CONT "DTV8 ");
-	 if (type & FM)
+	if (type & FM)
 		printk(KERN_CONT "FM ");
-	 if (type & INPUT1)
+	if (type & INPUT1)
 		printk(KERN_CONT "INPUT1 ");
-	 if (type & LCD)
+	if (type & LCD)
 		printk(KERN_CONT "LCD ");
-	 if (type & NOGD)
+	if (type & NOGD)
 		printk(KERN_CONT "NOGD ");
-	 if (type & MONO)
+	if (type & MONO)
 		printk(KERN_CONT "MONO ");
-	 if (type & ATSC)
+	if (type & ATSC)
 		printk(KERN_CONT "ATSC ");
-	 if (type & IF)
+	if (type & IF)
 		printk(KERN_CONT "IF ");
-	 if (type & LG60)
+	if (type & LG60)
 		printk(KERN_CONT "LG60 ");
-	 if (type & ATI638)
+	if (type & ATI638)
 		printk(KERN_CONT "ATI638 ");
-	 if (type & OREN538)
+	if (type & OREN538)
 		printk(KERN_CONT "OREN538 ");
-	 if (type & OREN36)
+	if (type & OREN36)
 		printk(KERN_CONT "OREN36 ");
-	 if (type & TOYOTA388)
+	if (type & TOYOTA388)
 		printk(KERN_CONT "TOYOTA388 ");
-	 if (type & TOYOTA794)
+	if (type & TOYOTA794)
 		printk(KERN_CONT "TOYOTA794 ");
-	 if (type & DIBCOM52)
+	if (type & DIBCOM52)
 		printk(KERN_CONT "DIBCOM52 ");
-	 if (type & ZARLINK456)
+	if (type & ZARLINK456)
 		printk(KERN_CONT "ZARLINK456 ");
-	 if (type & CHINA)
+	if (type & CHINA)
 		printk(KERN_CONT "CHINA ");
-	 if (type & F6MHZ)
+	if (type & F6MHZ)
 		printk(KERN_CONT "F6MHZ ");
-	 if (type & INPUT2)
+	if (type & INPUT2)
 		printk(KERN_CONT "INPUT2 ");
-	 if (type & SCODE)
+	if (type & SCODE)
 		printk(KERN_CONT "SCODE ");
-	 if (type & HAS_IF)
+	if (type & HAS_IF)
 		printk(KERN_CONT "HAS_IF_%d ", int_freq);
 }
 
@@ -678,8 +659,7 @@ static int seek_firmware(struct dvb_frontend *fe, unsigned int type,
 
 	if (best_nr_diffs > 0U) {
 		printk(KERN_WARNING
-		       "Selecting best matching firmware (%u bits differ) for "
-		       "type=(%x), id %016llx:\n",
+		       "Selecting best matching firmware (%u bits differ) for type=(%x), id %016llx:\n",
 		       best_nr_diffs, type, (unsigned long long)*id);
 		i = best_i;
 	}
@@ -730,13 +710,25 @@ static int xc4000_fwupload(struct dvb_frontend *fe)
 	char		      name[33];
 	const char	      *fname;
 
-	if (firmware_name[0] != '\0')
+	if (firmware_name[0] != '\0') {
 		fname = firmware_name;
-	else
-		fname = XC4000_DEFAULT_FIRMWARE;
 
-	dprintk(1, "Reading firmware %s\n", fname);
-	rc = request_firmware(&fw, fname, priv->i2c_props.adap->dev.parent);
+		dprintk(1, "Reading custom firmware %s\n", fname);
+		rc = request_firmware(&fw, fname,
+				      priv->i2c_props.adap->dev.parent);
+	} else {
+		fname = XC4000_DEFAULT_FIRMWARE_NEW;
+		dprintk(1, "Trying to read firmware %s\n", fname);
+		rc = request_firmware(&fw, fname,
+				      priv->i2c_props.adap->dev.parent);
+		if (rc == -ENOENT) {
+			fname = XC4000_DEFAULT_FIRMWARE;
+			dprintk(1, "Trying to read firmware %s\n", fname);
+			rc = request_firmware(&fw, fname,
+					      priv->i2c_props.adap->dev.parent);
+		}
+	}
+
 	if (rc < 0) {
 		if (rc == -ENOENT)
 			printk(KERN_ERR "Error: firmware %s not found.\n", fname);
@@ -746,6 +738,8 @@ static int xc4000_fwupload(struct dvb_frontend *fe)
 
 		return rc;
 	}
+	dprintk(1, "Loading Firmware: %s\n", fname);
+
 	p = fw->data;
 	endp = p + fw->size;
 
@@ -785,8 +779,7 @@ static int xc4000_fwupload(struct dvb_frontend *fe)
 
 		n++;
 		if (n >= n_array) {
-			printk(KERN_ERR "More firmware images in file than "
-			       "were expected!\n");
+			printk(KERN_ERR "More firmware images in file than were expected!\n");
 			goto corrupt;
 		}
 
@@ -811,13 +804,13 @@ static int xc4000_fwupload(struct dvb_frontend *fe)
 		p += sizeof(size);
 
 		if (!size || size > endp - p) {
-			printk(KERN_ERR "Firmware type (%x), id %llx is corrupted (size=%d, expected %d)\n",
+			printk(KERN_ERR "Firmware type (%x), id %llx is corrupted (size=%zd, expected %d)\n",
 			       type, (unsigned long long)id,
-			       (unsigned)(endp - p), size);
+			       endp - p, size);
 			goto corrupt;
 		}
 
-		priv->firm[n].ptr = kzalloc(size, GFP_KERNEL);
+		priv->firm[n].ptr = kmemdup(p, size, GFP_KERNEL);
 		if (priv->firm[n].ptr == NULL) {
 			printk(KERN_ERR "Not enough memory to load firmware file.\n");
 			rc = -ENOMEM;
@@ -831,7 +824,6 @@ static int xc4000_fwupload(struct dvb_frontend *fe)
 			       type, (unsigned long long)id, size);
 		}
 
-		memcpy(priv->firm[n].ptr, p, size);
 		priv->firm[n].type = type;
 		priv->firm[n].id   = id;
 		priv->firm[n].size = size;
@@ -1032,7 +1024,10 @@ skip_std_specific:
 		dprintk(1, "load scode failed %d\n", rc);
 
 check_device:
-	rc = xc4000_readreg(priv, XREG_PRODUCT_ID, &hwmodel);
+	if (xc4000_readreg(priv, XREG_PRODUCT_ID, &hwmodel) < 0) {
+		printk(KERN_ERR "Unable to read tuner registers.\n");
+		goto fail;
+	}
 
 	if (xc_get_version(priv, &hw_major, &hw_minor, &fw_major,
 			   &fw_minor) != 0) {
@@ -1040,8 +1035,7 @@ check_device:
 		goto fail;
 	}
 
-	dprintk(1, "Device is Xceive %d version %d.%d, "
-		"firmware version %d.%d\n",
+	dprintk(1, "Device is Xceive %d version %d.%d, firmware version %d.%d\n",
 		hwmodel, hw_major, hw_minor, fw_major, fw_minor);
 
 	/* Check firmware version against what we downloaded. */
@@ -1061,8 +1055,7 @@ check_device:
 	} else if (priv->hwmodel == 0 || priv->hwmodel != hwmodel ||
 		   priv->hwvers != ((hw_major << 8) | hw_minor)) {
 		printk(KERN_WARNING
-		       "Read invalid device hardware information - tuner "
-		       "hung?\n");
+		       "Read invalid device hardware information - tuner hung?\n");
 		goto fail;
 	}
 
@@ -1157,14 +1150,14 @@ static int xc4000_set_params(struct dvb_frontend *fe)
 	case SYS_ATSC:
 		dprintk(1, "%s() VSB modulation\n", __func__);
 		priv->rf_mode = XC_RF_MODE_AIR;
-		priv->freq_hz = c->frequency - 1750000;
+		priv->freq_offset = 1750000;
 		priv->video_standard = XC4000_DTV6;
 		type = DTV6;
 		break;
 	case SYS_DVBC_ANNEX_B:
 		dprintk(1, "%s() QAM modulation\n", __func__);
 		priv->rf_mode = XC_RF_MODE_CABLE;
-		priv->freq_hz = c->frequency - 1750000;
+		priv->freq_offset = 1750000;
 		priv->video_standard = XC4000_DTV6;
 		type = DTV6;
 		break;
@@ -1173,23 +1166,23 @@ static int xc4000_set_params(struct dvb_frontend *fe)
 		dprintk(1, "%s() OFDM\n", __func__);
 		if (bw == 0) {
 			if (c->frequency < 400000000) {
-				priv->freq_hz = c->frequency - 2250000;
+				priv->freq_offset = 2250000;
 			} else {
-				priv->freq_hz = c->frequency - 2750000;
+				priv->freq_offset = 2750000;
 			}
 			priv->video_standard = XC4000_DTV7_8;
 			type = DTV78;
 		} else if (bw <= 6000000) {
 			priv->video_standard = XC4000_DTV6;
-			priv->freq_hz = c->frequency - 1750000;
+			priv->freq_offset = 1750000;
 			type = DTV6;
 		} else if (bw <= 7000000) {
 			priv->video_standard = XC4000_DTV7;
-			priv->freq_hz = c->frequency - 2250000;
+			priv->freq_offset = 2250000;
 			type = DTV7;
 		} else {
 			priv->video_standard = XC4000_DTV8;
-			priv->freq_hz = c->frequency - 2750000;
+			priv->freq_offset = 2750000;
 			type = DTV8;
 		}
 		priv->rf_mode = XC_RF_MODE_AIR;
@@ -1199,6 +1192,8 @@ static int xc4000_set_params(struct dvb_frontend *fe)
 		ret = -EINVAL;
 		goto fail;
 	}
+
+	priv->freq_hz = c->frequency - priv->freq_offset;
 
 	dprintk(1, "%s() frequency=%d (compensated)\n",
 		__func__, priv->freq_hz);
@@ -1464,8 +1459,8 @@ static int xc4000_get_signal(struct dvb_frontend *fe, u16 *strength)
 	if (rc < 0)
 		goto ret;
 
-	/* Informations from real testing of DVB-T and radio part,
-	   coeficient for one dB is 0xff.
+	/* Information from real testing of DVB-T and radio part,
+	   coefficient for one dB is 0xff.
 	 */
 	tuner_dbg("Signal strength: -%ddB (%05d)\n", value >> 8, value);
 
@@ -1491,7 +1486,7 @@ static int xc4000_get_signal(struct dvb_frontend *fe, u16 *strength)
 	if (value >= 0x2000) {
 		value = 0;
 	} else {
-		value = ~value << 3;
+		value = (~value << 3) & 0xffff;
 	}
 
 	goto ret;
@@ -1520,10 +1515,10 @@ static int xc4000_get_frequency(struct dvb_frontend *fe, u32 *freq)
 {
 	struct xc4000_priv *priv = fe->tuner_priv;
 
-	*freq = priv->freq_hz;
+	mutex_lock(&priv->lock);
+	*freq = priv->freq_hz + priv->freq_offset;
 
 	if (debug) {
-		mutex_lock(&priv->lock);
 		if ((priv->cur_fw.type
 		     & (BASE | FM | DTV6 | DTV7 | DTV78 | DTV8)) == BASE) {
 			u16	snr = 0;
@@ -1534,8 +1529,8 @@ static int xc4000_get_frequency(struct dvb_frontend *fe, u32 *freq)
 				return 0;
 			}
 		}
-		mutex_unlock(&priv->lock);
 	}
+	mutex_unlock(&priv->lock);
 
 	dprintk(1, "%s()\n", __func__);
 
@@ -1610,7 +1605,7 @@ static int xc4000_init(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int xc4000_release(struct dvb_frontend *fe)
+static void xc4000_release(struct dvb_frontend *fe)
 {
 	struct xc4000_priv *priv = fe->tuner_priv;
 
@@ -1624,16 +1619,14 @@ static int xc4000_release(struct dvb_frontend *fe)
 	mutex_unlock(&xc4000_list_mutex);
 
 	fe->tuner_priv = NULL;
-
-	return 0;
 }
 
 static const struct dvb_tuner_ops xc4000_tuner_ops = {
 	.info = {
-		.name           = "Xceive XC4000",
-		.frequency_min  =    1000000,
-		.frequency_max  = 1023000000,
-		.frequency_step =      50000,
+		.name              = "Xceive XC4000",
+		.frequency_min_hz  =    1 * MHz,
+		.frequency_max_hz  = 1023 * MHz,
+		.frequency_step_hz =   50 * kHz,
 	},
 
 	.release	   = xc4000_release,
@@ -1668,7 +1661,6 @@ struct dvb_frontend *xc4000_attach(struct dvb_frontend *fe,
 	switch (instance) {
 	case 0:
 		goto fail;
-		break;
 	case 1:
 		/* new tuner instance */
 		priv->bandwidth = 6000000;
@@ -1750,8 +1742,10 @@ fail2:
 	xc4000_release(fe);
 	return NULL;
 }
-EXPORT_SYMBOL(xc4000_attach);
+EXPORT_SYMBOL_GPL(xc4000_attach);
 
 MODULE_AUTHOR("Steven Toth, Davide Ferri");
 MODULE_DESCRIPTION("Xceive xc4000 silicon tuner driver");
 MODULE_LICENSE("GPL");
+MODULE_FIRMWARE(XC4000_DEFAULT_FIRMWARE_NEW);
+MODULE_FIRMWARE(XC4000_DEFAULT_FIRMWARE);

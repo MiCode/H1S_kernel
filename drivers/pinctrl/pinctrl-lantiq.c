@@ -1,20 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/drivers/pinctrl/pinctrl-lantiq.c
  *  based on linux/drivers/pinctrl/pinctrl-pxa3xx.c
  *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  publishhed by the Free Software Foundation.
- *
- *  Copyright (C) 2012 John Crispin <blogic@openwrt.org>
+ *  Copyright (C) 2012 John Crispin <john@phrozen.org>
  */
 
-#include <linux/module.h>
 #include <linux/device.h>
 #include <linux/io.h>
-#include <linux/platform_device.h>
-#include <linux/slab.h>
+#include <linux/module.h>
 #include <linux/of.h>
+#include <linux/platform_device.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
 
 #include "pinctrl-lantiq.h"
 
@@ -80,14 +78,14 @@ static void ltq_pinctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
 	int ret, i;
 
 	if (!pins && !groups) {
-		dev_err(pctldev->dev, "%s defines neither pins nor groups\n",
-			np->name);
+		dev_err(pctldev->dev, "%pOFn defines neither pins nor groups\n",
+			np);
 		return;
 	}
 
 	if (pins && groups) {
-		dev_err(pctldev->dev, "%s defines both pins and groups\n",
-			np->name);
+		dev_err(pctldev->dev, "%pOFn defines both pins and groups\n",
+			np);
 		return;
 	}
 
@@ -158,7 +156,8 @@ static int ltq_pinctrl_dt_node_to_map(struct pinctrl_dev *pctldev,
 
 	for_each_child_of_node(np_config, np)
 		max_maps += ltq_pinctrl_dt_subnode_size(np);
-	*map = kzalloc(max_maps * sizeof(struct pinctrl_map) * 2, GFP_KERNEL);
+	*map = kzalloc(array3_size(max_maps, sizeof(struct pinctrl_map), 2),
+		       GFP_KERNEL);
 	if (!*map)
 		return -ENOMEM;
 	tmp = *map;
@@ -223,7 +222,7 @@ static int match_mux(const struct ltq_mfp_pin *mfp, unsigned mux)
 	return i;
 }
 
-/* dont assume .mfp is linearly mapped. find the mfp with the correct .pin */
+/* don't assume .mfp is linearly mapped. find the mfp with the correct .pin */
 static int match_mfp(const struct ltq_pinmux_info *info, int pin)
 {
 	int i;
@@ -257,9 +256,9 @@ static int match_group_mux(const struct ltq_pin_group *grp,
 	return ret;
 }
 
-static int ltq_pmx_enable(struct pinctrl_dev *pctrldev,
-				unsigned func,
-				unsigned group)
+static int ltq_pmx_set(struct pinctrl_dev *pctrldev,
+		       unsigned func,
+		       unsigned group)
 {
 	struct ltq_pinmux_info *info = pinctrl_dev_get_drvdata(pctrldev);
 	const struct ltq_pin_group *pin_grp = &info->grps[group];
@@ -316,7 +315,7 @@ static const struct pinmux_ops ltq_pmx_ops = {
 	.get_functions_count	= ltq_pmx_func_count,
 	.get_function_name	= ltq_pmx_func_name,
 	.get_function_groups	= ltq_pmx_get_groups,
-	.enable			= ltq_pmx_enable,
+	.set_mux		= ltq_pmx_set,
 	.gpio_request_enable	= ltq_pmx_gpio_request_enable,
 };
 
@@ -336,10 +335,10 @@ int ltq_pinctrl_register(struct platform_device *pdev,
 	desc->pmxops = &ltq_pmx_ops;
 	info->dev = &pdev->dev;
 
-	info->pctrl = pinctrl_register(desc, &pdev->dev, info);
-	if (!info->pctrl) {
+	info->pctrl = devm_pinctrl_register(&pdev->dev, desc, info);
+	if (IS_ERR(info->pctrl)) {
 		dev_err(&pdev->dev, "failed to register LTQ pinmux driver\n");
-		return -EINVAL;
+		return PTR_ERR(info->pctrl);
 	}
 	platform_set_drvdata(pdev, info);
 	return 0;

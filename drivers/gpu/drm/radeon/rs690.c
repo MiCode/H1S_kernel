@@ -25,10 +25,13 @@
  *          Alex Deucher
  *          Jerome Glisse
  */
-#include <drm/drmP.h>
+
+#include <linux/pci.h>
+
+#include "atom.h"
 #include "radeon.h"
 #include "radeon_asic.h"
-#include "atom.h"
+#include "radeon_audio.h"
 #include "rs690d.h"
 
 int rs690_mc_wait_for_idle(struct radeon_device *rdev)
@@ -51,8 +54,7 @@ static void rs690_gpu_init(struct radeon_device *rdev)
 	/* FIXME: is this correct ? */
 	r420_pipes_init(rdev);
 	if (rs690_mc_wait_for_idle(rdev)) {
-		printk(KERN_WARNING "Failed to wait MC idle while "
-		       "programming pipes. Bad things might happen.\n");
+		pr_warn("Failed to wait MC idle while programming pipes. Bad things might happen.\n");
 	}
 }
 
@@ -185,7 +187,7 @@ static void rs690_mc_init(struct radeon_device *rdev)
 		/* FastFB shall be used with UMA memory. Here it is simply disabled when sideport 
 		 * memory is present.
 		 */
-		if (rdev->mc.igp_sideport_enabled == false && radeon_fastfb == 1) {
+		if (!rdev->mc.igp_sideport_enabled && radeon_fastfb == 1) {
 			DRM_INFO("Direct mapping: aper base at 0x%llx, replaced by direct mapping base 0x%llx.\n", 
 					(unsigned long long)rdev->mc.aper_base, k8_addr);
 			rdev->mc.aper_base = (resource_size_t)k8_addr;
@@ -205,6 +207,9 @@ void rs690_line_buffer_adjust(struct radeon_device *rdev,
 			      struct drm_display_mode *mode2)
 {
 	u32 tmp;
+
+	/* Guess line buffer size to be 8192 pixels */
+	u32 lb_size = 8192;
 
 	/*
 	 * Line Buffer Setup
@@ -242,6 +247,13 @@ void rs690_line_buffer_adjust(struct radeon_device *rdev,
 		tmp |= V_006520_DC_LB_MEMORY_SPLIT_D1_1Q_D2_3Q;
 	}
 	WREG32(R_006520_DC_LB_MEMORY_SPLIT, tmp);
+
+	/* Save number of lines the linebuffer leads before the scanout */
+	if (mode1)
+		rdev->mode_info.crtcs[0]->lb_vblank_lead_lines = DIV_ROUND_UP(lb_size, mode1->crtc_hdisplay);
+
+	if (mode2)
+		rdev->mode_info.crtcs[1]->lb_vblank_lead_lines = DIV_ROUND_UP(lb_size, mode2->crtc_hdisplay);
 }
 
 struct rs690_watermark {
@@ -579,6 +591,9 @@ void rs690_bandwidth_update(struct radeon_device *rdev)
 	u32 d1mode_priority_a_cnt, d1mode_priority_b_cnt;
 	u32 d2mode_priority_a_cnt, d2mode_priority_b_cnt;
 
+	if (!rdev->mode_info.mode_config_initialized)
+		return;
+
 	radeon_update_display_priority(rdev);
 
 	if (rdev->mode_info.crtcs[0]->base.enabled)
@@ -726,7 +741,7 @@ static int rs690_startup(struct radeon_device *rdev)
 		return r;
 	}
 
-	r = r600_audio_init(rdev);
+	r = radeon_audio_init(rdev);
 	if (r) {
 		dev_err(rdev->dev, "failed initializing audio\n");
 		return r;
@@ -756,8 +771,6 @@ int rs690_resume(struct radeon_device *rdev)
 	/* Initialize surface registers */
 	radeon_surface_init(rdev);
 
-	radeon_pm_resume(rdev);
-
 	rdev->accel_working = true;
 	r = rs690_startup(rdev);
 	if (r) {
@@ -769,7 +782,7 @@ int rs690_resume(struct radeon_device *rdev)
 int rs690_suspend(struct radeon_device *rdev)
 {
 	radeon_pm_suspend(rdev);
-	r600_audio_fini(rdev);
+	radeon_audio_fini(rdev);
 	r100_cp_disable(rdev);
 	radeon_wb_disable(rdev);
 	rs600_irq_disable(rdev);
@@ -780,7 +793,7 @@ int rs690_suspend(struct radeon_device *rdev)
 void rs690_fini(struct radeon_device *rdev)
 {
 	radeon_pm_fini(rdev);
-	r600_audio_fini(rdev);
+	radeon_audio_fini(rdev);
 	r100_cp_fini(rdev);
 	radeon_wb_fini(rdev);
 	radeon_ib_pool_fini(rdev);
@@ -837,9 +850,7 @@ int rs690_init(struct radeon_device *rdev)
 	rs690_mc_init(rdev);
 	rv515_debugfs(rdev);
 	/* Fence driver */
-	r = radeon_fence_driver_init(rdev);
-	if (r)
-		return r;
+	radeon_fence_driver_init(rdev);
 	/* Memory manager */
 	r = radeon_bo_init(rdev);
 	if (r)

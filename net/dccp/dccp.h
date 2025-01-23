@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef _DCCP_H
 #define _DCCP_H
 /*
@@ -6,10 +7,6 @@
  *  An implementation of the DCCP protocol
  *  Copyright (c) 2005 Arnaldo Carvalho de Melo <acme@conectiva.com.br>
  *  Copyright (c) 2005-6 Ian McDonald <ian.mcdonald@jandi.co.nz>
- *
- *	This program is free software; you can redistribute it and/or modify it
- *	under the terms of the GNU General Public License version 2 as
- *	published by the Free Software Foundation.
  */
 
 #include <linux/dccp.h>
@@ -22,8 +19,8 @@
 /*
  * 	DCCP - specific warning and debugging macros.
  */
-#define DCCP_WARN(fmt, a...) LIMIT_NETDEBUG(KERN_WARNING "%s: " fmt,       \
-							__func__, ##a)
+#define DCCP_WARN(fmt, ...)						\
+	net_warn_ratelimited("%s: " fmt, __func__, ##__VA_ARGS__)
 #define DCCP_CRIT(fmt, a...) printk(KERN_CRIT fmt " at %s:%d/%s()\n", ##a, \
 					 __FILE__, __LINE__, __func__)
 #define DCCP_BUG(a...)       do { DCCP_CRIT("BUG: " a); dump_stack(); } while(0)
@@ -44,14 +41,14 @@ extern bool dccp_debug;
 #define dccp_pr_debug_cat(format, a...)   DCCP_PRINTK(dccp_debug, format, ##a)
 #define dccp_debug(fmt, a...)		  dccp_pr_debug_cat(KERN_DEBUG fmt, ##a)
 #else
-#define dccp_pr_debug(format, a...)
-#define dccp_pr_debug_cat(format, a...)
-#define dccp_debug(format, a...)
+#define dccp_pr_debug(format, a...)	  do {} while (0)
+#define dccp_pr_debug_cat(format, a...)	  do {} while (0)
+#define dccp_debug(format, a...)	  do {} while (0)
 #endif
 
 extern struct inet_hashinfo dccp_hashinfo;
 
-extern struct percpu_counter dccp_orphan_count;
+DECLARE_PER_CPU(unsigned int, dccp_orphan_count);
 
 void dccp_time_wait(struct sock *sk, int state, int timeo);
 
@@ -111,11 +108,6 @@ extern int  sysctl_dccp_sync_ratelimit;
 #define ADD48(a, b)	 (((a) + (b)) & UINT48_MAX)
 #define SUB48(a, b)	 ADD48((a), COMPLEMENT48(b))
 
-static inline void dccp_set_seqno(u64 *seqno, u64 value)
-{
-	*seqno = value & UINT48_MAX;
-}
-
 static inline void dccp_inc_seqno(u64 *seqno)
 {
 	*seqno = ADD48(*seqno, 1);
@@ -142,11 +134,6 @@ static inline int before48(const u64 seq1, const u64 seq2)
 static inline int between48(const u64 seq1, const u64 seq2, const u64 seq3)
 {
 	return (seq3 << 16) - (seq2 << 16) >= (seq1 << 16) - (seq2 << 16);
-}
-
-static inline u64 max48(const u64 seq1, const u64 seq2)
-{
-	return after48(seq1, seq2) ? seq1 : seq2;
 }
 
 /**
@@ -198,9 +185,9 @@ struct dccp_mib {
 };
 
 DECLARE_SNMP_STAT(struct dccp_mib, dccp_statistics);
-#define DCCP_INC_STATS(field)	    SNMP_INC_STATS(dccp_statistics, field)
-#define DCCP_INC_STATS_BH(field)    SNMP_INC_STATS_BH(dccp_statistics, field)
-#define DCCP_DEC_STATS(field)	    SNMP_DEC_STATS(dccp_statistics, field)
+#define DCCP_INC_STATS(field)	SNMP_INC_STATS(dccp_statistics, field)
+#define __DCCP_INC_STATS(field)	__SNMP_INC_STATS(dccp_statistics, field)
+#define DCCP_DEC_STATS(field)	SNMP_DEC_STATS(dccp_statistics, field)
 
 /*
  * 	Checksumming routines
@@ -229,7 +216,7 @@ void dccp_v4_send_check(struct sock *sk, struct sk_buff *skb);
 int dccp_retransmit_skb(struct sock *sk);
 
 void dccp_send_ack(struct sock *sk);
-void dccp_reqsk_send_ack(struct sock *sk, struct sk_buff *skb,
+void dccp_reqsk_send_ack(const struct sock *sk, struct sk_buff *skb,
 			 struct request_sock *rsk);
 
 void dccp_send_sync(struct sock *sk, const u64 seq,
@@ -270,18 +257,19 @@ int dccp_reqsk_init(struct request_sock *rq, struct dccp_sock const *dp,
 
 int dccp_v4_conn_request(struct sock *sk, struct sk_buff *skb);
 
-struct sock *dccp_create_openreq_child(struct sock *sk,
+struct sock *dccp_create_openreq_child(const struct sock *sk,
 				       const struct request_sock *req,
 				       const struct sk_buff *skb);
 
 int dccp_v4_do_rcv(struct sock *sk, struct sk_buff *skb);
 
-struct sock *dccp_v4_request_recv_sock(struct sock *sk, struct sk_buff *skb,
+struct sock *dccp_v4_request_recv_sock(const struct sock *sk, struct sk_buff *skb,
 				       struct request_sock *req,
-				       struct dst_entry *dst);
+				       struct dst_entry *dst,
+				       struct request_sock *req_unhash,
+				       bool *own_req);
 struct sock *dccp_check_req(struct sock *sk, struct sk_buff *skb,
-			    struct request_sock *req,
-			    struct request_sock **prev);
+			    struct request_sock *req);
 
 int dccp_child_process(struct sock *parent, struct sock *child,
 		       struct sk_buff *skb);
@@ -290,11 +278,12 @@ int dccp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 int dccp_rcv_established(struct sock *sk, struct sk_buff *skb,
 			 const struct dccp_hdr *dh, const unsigned int len);
 
+void dccp_destruct_common(struct sock *sk);
 int dccp_init_sock(struct sock *sk, const __u8 ctl_sock_initialized);
 void dccp_destroy_sock(struct sock *sk);
 
 void dccp_close(struct sock *sk, long timeout);
-struct sk_buff *dccp_make_response(struct sock *sk, struct dst_entry *dst,
+struct sk_buff *dccp_make_response(const struct sock *sk, struct dst_entry *dst,
 				   struct request_sock *req);
 
 int dccp_connect(struct sock *sk);
@@ -302,24 +291,17 @@ int dccp_disconnect(struct sock *sk, int flags);
 int dccp_getsockopt(struct sock *sk, int level, int optname,
 		    char __user *optval, int __user *optlen);
 int dccp_setsockopt(struct sock *sk, int level, int optname,
-		    char __user *optval, unsigned int optlen);
-#ifdef CONFIG_COMPAT
-int compat_dccp_getsockopt(struct sock *sk, int level, int optname,
-			   char __user *optval, int __user *optlen);
-int compat_dccp_setsockopt(struct sock *sk, int level, int optname,
-			   char __user *optval, unsigned int optlen);
-#endif
-int dccp_ioctl(struct sock *sk, int cmd, unsigned long arg);
-int dccp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
-		 size_t size);
-int dccp_recvmsg(struct kiocb *iocb, struct sock *sk,
-		 struct msghdr *msg, size_t len, int nonblock, int flags,
+		    sockptr_t optval, unsigned int optlen);
+int dccp_ioctl(struct sock *sk, int cmd, int *karg);
+int dccp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size);
+int dccp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags,
 		 int *addr_len);
 void dccp_shutdown(struct sock *sk, int how);
 int inet_dccp_listen(struct socket *sock, int backlog);
-unsigned int dccp_poll(struct file *file, struct socket *sock,
+__poll_t dccp_poll(struct file *file, struct socket *sock,
 		       poll_table *wait);
 int dccp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len);
+void dccp_req_err(struct sock *sk, u64 seq);
 
 struct sk_buff *dccp_ctl_make_reset(struct sock *sk, struct sk_buff *skb);
 int dccp_send_reset(struct sock *sk, enum dccp_reset_codes code);
@@ -327,13 +309,13 @@ void dccp_send_close(struct sock *sk, const int active);
 int dccp_invalid_packet(struct sk_buff *skb);
 u32 dccp_sample_rtt(struct sock *sk, long delta);
 
-static inline int dccp_bad_service_code(const struct sock *sk,
+static inline bool dccp_bad_service_code(const struct sock *sk,
 					const __be32 service)
 {
 	const struct dccp_sock *dp = dccp_sk(sk);
 
 	if (dp->dccps_service == service)
-		return 0;
+		return false;
 	return !dccp_list_has_service(dp->dccps_service_list, service);
 }
 

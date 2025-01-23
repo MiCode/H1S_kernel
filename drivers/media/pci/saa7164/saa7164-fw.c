@@ -1,22 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Driver for the NXP SAA7164 PCIe bridge
  *
- *  Copyright (c) 2010 Steven Toth <stoth@kernellabs.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *  Copyright (c) 2010-2015 Steven Toth <stoth@kernellabs.com>
  */
 
 #include <linux/firmware.h>
@@ -72,7 +58,7 @@ static int saa7164_dl_wait_clr(struct saa7164_dev *dev, u32 reg)
 /* TODO: move dlflags into dev-> and change to write/readl/b */
 /* TODO: Excessive levels of debug */
 static int saa7164_downloadimage(struct saa7164_dev *dev, u8 *src, u32 srcsize,
-				 u32 dlflags, u8 *dst, u32 dstsize)
+				 u32 dlflags, u8 __iomem *dst, u32 dstsize)
 {
 	u32 reg, timeout, offset;
 	u8 *srcbuf = NULL;
@@ -136,7 +122,7 @@ static int saa7164_downloadimage(struct saa7164_dev *dev, u8 *src, u32 srcsize,
 		srcsize -= dstsize, offset += dstsize) {
 
 		dprintk(DBGLVL_FW, "%s() memcpy %d\n", __func__, dstsize);
-		memcpy(dst, srcbuf + offset, dstsize);
+		memcpy_toio(dst, srcbuf + offset, dstsize);
 
 		/* Flag the data as ready */
 		saa7164_writel(drflag, 1);
@@ -154,7 +140,7 @@ static int saa7164_downloadimage(struct saa7164_dev *dev, u8 *src, u32 srcsize,
 
 	dprintk(DBGLVL_FW, "%s() memcpy(l) %d\n", __func__, dstsize);
 	/* Write last block to the device */
-	memcpy(dst, srcbuf+offset, srcsize);
+	memcpy_toio(dst, srcbuf+offset, srcsize);
 
 	/* Flag the data as ready */
 	saa7164_writel(drflag, 1);
@@ -285,7 +271,6 @@ int saa7164_downloadfirmware(struct saa7164_dev *dev)
 			dprintk(DBGLVL_FW, "%s() Loader 1 has loaded.\n",
 				__func__);
 			first_timeout = SAA_DEVICE_TIMEOUT;
-			second_timeout = 60 * SAA_DEVICE_TIMEOUT;
 			second_timeout = 100;
 
 			err_flags = saa7164_readl(SAA_SECONDSTAGEERROR_FLAGS);
@@ -309,7 +294,7 @@ int saa7164_downloadfirmware(struct saa7164_dev *dev)
 					break;
 				}
 				if (err_flags & SAA_DEVICE_NO_IMAGE) {
-					printk(KERN_ERR "%s() no first image\n",
+					printk(KERN_ERR "%s() no second image\n",
 						__func__);
 					break;
 				}
@@ -413,7 +398,7 @@ int saa7164_downloadfirmware(struct saa7164_dev *dev)
 		(version & 0x0000001f),
 		(version & 0xffff0000) >> 16);
 
-	/* Load the firmwware from the disk if required */
+	/* Load the firmware from the disk if required */
 	if (version == 0) {
 
 		printk(KERN_INFO "%s() Waiting for firmware upload (%s)\n",
@@ -421,16 +406,17 @@ int saa7164_downloadfirmware(struct saa7164_dev *dev)
 
 		ret = request_firmware(&fw, fwname, &dev->pci->dev);
 		if (ret) {
-			printk(KERN_ERR "%s() Upload failed. "
-				"(file not found?)\n", __func__);
+			printk(KERN_ERR "%s() Upload failed. (file not found?)\n",
+			       __func__);
 			return -ENOMEM;
 		}
 
-		printk(KERN_INFO "%s() firmware read %Zu bytes.\n",
+		printk(KERN_INFO "%s() firmware read %zu bytes.\n",
 			__func__, fw->size);
 
 		if (fw->size != fwlength) {
-			printk(KERN_ERR "xc5000: firmware incorrect size\n");
+			printk(KERN_ERR "saa7164: firmware incorrect size %zu != %u\n",
+				fw->size, fwlength);
 			ret = -ENOMEM;
 			goto out;
 		}
@@ -478,15 +464,13 @@ int saa7164_downloadfirmware(struct saa7164_dev *dev)
 				0x03) && (saa7164_readl(SAA_DATAREADY_FLAG_ACK)
 				== 0x00) && (version == 0x00)) {
 
-				dprintk(DBGLVL_FW, "BootLoader version in  "
-					"rom %d.%d.%d.%d\n",
+				dprintk(DBGLVL_FW, "BootLoader version in  rom %d.%d.%d.%d\n",
 					(bootloaderversion & 0x0000fc00) >> 10,
 					(bootloaderversion & 0x000003e0) >> 5,
 					(bootloaderversion & 0x0000001f),
 					(bootloaderversion & 0xffff0000) >> 16
 					);
-				dprintk(DBGLVL_FW, "BootLoader version "
-					"in file %d.%d.%d.%d\n",
+				dprintk(DBGLVL_FW, "BootLoader version in file %d.%d.%d.%d\n",
 					(boothdr->version & 0x0000fc00) >> 10,
 					(boothdr->version & 0x000003e0) >> 5,
 					(boothdr->version & 0x0000001f),

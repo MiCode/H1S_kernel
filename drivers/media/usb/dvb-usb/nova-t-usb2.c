@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* DVB USB framework compliant Linux driver for the Hauppauge WinTV-NOVA-T usb2
  * DVB-T receiver.
  *
- * Copyright (C) 2004-5 Patrick Boettcher (patrick.boettcher@desy.de)
+ * Copyright (C) 2004-5 Patrick Boettcher (patrick.boettcher@posteo.de)
  *
- *	This program is free software; you can redistribute it and/or modify it
- *	under the terms of the GNU General Public License as published by the Free
- *	Software Foundation, version 2.
- *
- * see Documentation/dvb/README.dvb-usb for more information
+ * see Documentation/driver-api/media/drivers/dvb-usb.rst for more information
  */
 #include "dibusb.h"
 
@@ -74,22 +71,31 @@ static struct rc_map_table rc_map_haupp_table[] = {
  */
 static int nova_t_rc_query(struct dvb_usb_device *d, u32 *event, int *state)
 {
-	u8 key[5],cmd[2] = { DIBUSB_REQ_POLL_REMOTE, 0x35 }, data,toggle,custom;
+	u8 *buf, data, toggle, custom;
 	u16 raw;
-	int i;
+	int i, ret;
 	struct dibusb_device_state *st = d->priv;
 
-	dvb_usb_generic_rw(d,cmd,2,key,5,0);
+	buf = kmalloc(5, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	buf[0] = DIBUSB_REQ_POLL_REMOTE;
+	buf[1] = 0x35;
+	ret = dvb_usb_generic_rw(d, buf, 2, buf, 5, 0);
+	if (ret < 0)
+		goto ret;
 
 	*state = REMOTE_NO_KEY_PRESSED;
-	switch (key[0]) {
+	switch (buf[0]) {
 		case DIBUSB_RC_HAUPPAUGE_KEY_PRESSED:
-			raw = ((key[1] << 8) | key[2]) >> 3;
+			raw = ((buf[1] << 8) | buf[2]) >> 3;
 			toggle = !!(raw & 0x800);
 			data = raw & 0x3f;
 			custom = (raw >> 6) & 0x1f;
 
-			deb_rc("raw key code 0x%02x, 0x%02x, 0x%02x to c: %02x d: %02x toggle: %d\n",key[1],key[2],key[3],custom,data,toggle);
+			deb_rc("raw key code 0x%02x, 0x%02x, 0x%02x to c: %02x d: %02x toggle: %d\n",
+			       buf[1], buf[2], buf[3], custom, data, toggle);
 
 			for (i = 0; i < ARRAY_SIZE(rc_map_haupp_table); i++) {
 				if (rc5_data(&rc_map_haupp_table[i]) == data &&
@@ -117,12 +123,14 @@ static int nova_t_rc_query(struct dvb_usb_device *d, u32 *event, int *state)
 			break;
 	}
 
-	return 0;
+ret:
+	kfree(buf);
+	return ret;
 }
 
 static int nova_t_read_mac_address (struct dvb_usb_device *d, u8 mac[6])
 {
-	int i;
+	int i, ret;
 	u8 b;
 
 	mac[0] = 0x00;
@@ -131,7 +139,9 @@ static int nova_t_read_mac_address (struct dvb_usb_device *d, u8 mac[6])
 
 	/* this is a complete guess, but works for my box */
 	for (i = 136; i < 139; i++) {
-		dibusb_read_eeprom_byte(d,i, &b);
+		ret = dibusb_read_eeprom_byte(d, i, &b);
+		if (ret)
+			return ret;
 
 		mac[5 - (i - 136)] = b;
 	}
@@ -150,11 +160,17 @@ static int nova_t_probe(struct usb_interface *intf,
 }
 
 /* do not change the order of the ID table */
-static struct usb_device_id nova_t_table [] = {
-/* 00 */	{ USB_DEVICE(USB_VID_HAUPPAUGE,     USB_PID_WINTV_NOVA_T_USB2_COLD) },
-/* 01 */	{ USB_DEVICE(USB_VID_HAUPPAUGE,     USB_PID_WINTV_NOVA_T_USB2_WARM) },
-			{ }		/* Terminating entry */
+enum {
+	HAUPPAUGE_WINTV_NOVA_T_USB2_COLD,
+	HAUPPAUGE_WINTV_NOVA_T_USB2_WARM,
 };
+
+static struct usb_device_id nova_t_table[] = {
+	DVB_USB_DEV(HAUPPAUGE, HAUPPAUGE_WINTV_NOVA_T_USB2_COLD),
+	DVB_USB_DEV(HAUPPAUGE, HAUPPAUGE_WINTV_NOVA_T_USB2_WARM),
+	{ }
+};
+
 MODULE_DEVICE_TABLE(usb, nova_t_table);
 
 static struct dvb_usb_device_properties nova_t_properties = {
@@ -211,8 +227,8 @@ static struct dvb_usb_device_properties nova_t_properties = {
 	.num_device_descs = 1,
 	.devices = {
 		{   "Hauppauge WinTV-NOVA-T usb2",
-			{ &nova_t_table[0], NULL },
-			{ &nova_t_table[1], NULL },
+			{ &nova_t_table[HAUPPAUGE_WINTV_NOVA_T_USB2_COLD], NULL },
+			{ &nova_t_table[HAUPPAUGE_WINTV_NOVA_T_USB2_WARM], NULL },
 		},
 		{ NULL },
 	}
@@ -227,7 +243,7 @@ static struct usb_driver nova_t_driver = {
 
 module_usb_driver(nova_t_driver);
 
-MODULE_AUTHOR("Patrick Boettcher <patrick.boettcher@desy.de>");
+MODULE_AUTHOR("Patrick Boettcher <patrick.boettcher@posteo.de>");
 MODULE_DESCRIPTION("Hauppauge WinTV-NOVA-T usb2");
 MODULE_VERSION("1.0");
 MODULE_LICENSE("GPL");

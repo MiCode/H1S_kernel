@@ -1,33 +1,9 @@
-/*******************************************************************************
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright(c) 2007 - 2018 Intel Corporation. */
 
-  Intel(R) Gigabit Ethernet Linux driver
-  Copyright(c) 2007-2013 Intel Corporation.
-
-  This program is free software; you can redistribute it and/or modify it
-  under the terms and conditions of the GNU General Public License,
-  version 2, as published by the Free Software Foundation.
-
-  This program is distributed in the hope it will be useful, but WITHOUT
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
-  more details.
-
-  You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc.,
-  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
-
-  The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
-
-  Contact Information:
-  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
-  Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
-
-*******************************************************************************/
-
-#include <linux/if_ether.h>
+#include <linux/bitfield.h>
 #include <linux/delay.h>
-
+#include <linux/if_ether.h>
 #include "e1000_mac.h"
 #include "e1000_nvm.h"
 
@@ -77,7 +53,7 @@ static void igb_shift_out_eec_bits(struct e1000_hw *hw, u16 data, u16 count)
 	u32 eecd = rd32(E1000_EECD);
 	u32 mask;
 
-	mask = 0x01 << (count - 1);
+	mask = 1u << (count - 1);
 	if (nvm->type == e1000_nvm_eeprom_spi)
 		eecd |= E1000_EECD_DO;
 
@@ -481,6 +457,7 @@ s32 igb_write_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
 		/* Loop to allow for up to whole page write of eeprom */
 		while (widx < words) {
 			u16 word_out = data[widx];
+
 			word_out = (word_out >> 8) | (word_out << 8);
 			igb_shift_out_eec_bits(hw, word_out, 16);
 			widx++;
@@ -731,10 +708,10 @@ void igb_get_fw_version(struct e1000_hw *hw, struct e1000_fw_version *fw_vers)
 		 */
 		if ((etrack_test &  NVM_MAJOR_MASK) != NVM_ETRACK_VALID) {
 			hw->nvm.ops.read(hw, NVM_VERSION, 1, &fw_version);
-			fw_vers->eep_major = (fw_version & NVM_MAJOR_MASK)
-					      >> NVM_MAJOR_SHIFT;
-			fw_vers->eep_minor = (fw_version & NVM_MINOR_MASK)
-					      >> NVM_MINOR_SHIFT;
+			fw_vers->eep_major = FIELD_GET(NVM_MAJOR_MASK,
+						       fw_version);
+			fw_vers->eep_minor = FIELD_GET(NVM_MINOR_MASK,
+						       fw_version);
 			fw_vers->eep_build = (fw_version & NVM_IMAGE_ID_MASK);
 			goto etrack_id;
 		}
@@ -744,7 +721,7 @@ void igb_get_fw_version(struct e1000_hw *hw, struct e1000_fw_version *fw_vers)
 			igb_read_invm_version(hw, fw_vers);
 			return;
 		}
-		/* fall through */
+		fallthrough;
 	case e1000_i350:
 		/* find combo image version */
 		hw->nvm.ops.read(hw, NVM_COMB_VER_PTR, 1, &comb_offset);
@@ -776,15 +753,13 @@ void igb_get_fw_version(struct e1000_hw *hw, struct e1000_fw_version *fw_vers)
 		return;
 	}
 	hw->nvm.ops.read(hw, NVM_VERSION, 1, &fw_version);
-	fw_vers->eep_major = (fw_version & NVM_MAJOR_MASK)
-			      >> NVM_MAJOR_SHIFT;
+	fw_vers->eep_major = FIELD_GET(NVM_MAJOR_MASK, fw_version);
 
 	/* check for old style version format in newer images*/
 	if ((fw_version & NVM_NEW_DEC_MASK) == 0x0) {
 		eeprom_verl = (fw_version & NVM_COMB_VER_MASK);
 	} else {
-		eeprom_verl = (fw_version & NVM_MINOR_MASK)
-				>> NVM_MINOR_SHIFT;
+		eeprom_verl = FIELD_GET(NVM_MINOR_MASK, fw_version);
 	}
 	/* Convert minor value to hex before assigning to output struct
 	 * Val to be converted will not be higher than 99, per tool output
@@ -802,5 +777,4 @@ etrack_id:
 		fw_vers->etrack_id = (eeprom_verh << NVM_ETRACK_SHIFT)
 			| eeprom_verl;
 	}
-	return;
 }

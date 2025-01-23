@@ -1,21 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
     bt848.h - Bt848 register offsets
 
     Copyright (C) 1996,97,98 Ralph Metzler (rjkm@thp.uni-koeln.de)
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
 #ifndef _BT848_H_
@@ -243,7 +231,15 @@
 
 #define BT848_INT_ETBF         (1<<23)
 
+#define BT848_RISC_VIDEO 1
+#define BT848_RISC_TOP 2
+#define BT848_RISC_VBI 4
+
 #define BT848_INT_RISCS   (0xf<<28)
+#define BT848_INT_RISCS_VIDEO   (BT848_RISC_VIDEO << 28)
+#define BT848_INT_RISCS_TOP   (BT848_RISC_TOP << 28)
+#define BT848_INT_RISCS_VBI   (BT848_RISC_VBI << 28)
+
 #define BT848_INT_RISC_EN (1<<27)
 #define BT848_INT_RACK    (1<<25)
 #define BT848_INT_FIELD   (1<<24)

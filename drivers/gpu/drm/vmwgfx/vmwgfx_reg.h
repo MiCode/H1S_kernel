@@ -1,7 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 OR MIT */
 /**************************************************************************
  *
- * Copyright © 2009 VMware, Inc., Palo Alto, CA., USA
- * All Rights Reserved.
+ * Copyright 2009-2014 VMware, Inc., Palo Alto, CA., USA
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
@@ -34,24 +34,18 @@
 
 #include <linux/types.h>
 
-#define VMWGFX_INDEX_PORT     0x0
-#define VMWGFX_VALUE_PORT     0x1
-#define VMWGFX_IRQSTATUS_PORT 0x8
-
 struct svga_guest_mem_descriptor {
-	__le32 ppn;
-	__le32 num_pages;
+	u32 ppn;
+	u32 num_pages;
 };
 
 struct svga_fifo_cmd_fence {
-	__le32 fence;
+	u32 fence;
 };
 
 #define SVGA_SYNC_GENERIC         1
 #define SVGA_SYNC_FIFOFULL        2
 
-#include "svga_types.h"
-
-#include "svga3d_reg.h"
+#include "device_include/svga3d_reg.h"
 
 #endif

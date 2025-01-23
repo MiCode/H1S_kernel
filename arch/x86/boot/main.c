@@ -1,21 +1,23 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* -*- linux-c -*- ------------------------------------------------------- *
  *
  *   Copyright (C) 1991, 1992 Linus Torvalds
  *   Copyright 2007 rPath, Inc. - All Rights Reserved
  *   Copyright 2009 Intel Corporation; author H. Peter Anvin
  *
- *   This file is part of the Linux kernel, and is made available under
- *   the terms of the GNU General Public License version 2.
- *
  * ----------------------------------------------------------------------- */
 
 /*
  * Main module for the real-mode kernel code
  */
+#include <linux/build_bug.h>
 
 #include "boot.h"
+#include "string.h"
 
 struct boot_params boot_params __attribute__((aligned(16)));
+
+struct port_io_ops pio_ops;
 
 char *HEAP = _end;
 char *heap_end = _end;		/* Default end of heap = no heap */
@@ -33,10 +35,10 @@ static void copy_boot_params(void)
 		u16 cl_offset;
 	};
 	const struct old_cmdline * const oldcmd =
-		(const struct old_cmdline *)OLD_CL_ADDRESS;
+		absolute_pointer(OLD_CL_ADDRESS);
 
-	BUILD_BUG_ON(sizeof boot_params != 4096);
-	memcpy(&boot_params.hdr, &hdr, sizeof hdr);
+	BUILD_BUG_ON(sizeof(boot_params) != 4096);
+	memcpy(&boot_params.hdr, &hdr, sizeof(hdr));
 
 	if (!boot_params.hdr.cmd_line_ptr &&
 	    oldcmd->cl_magic == OLD_CL_MAGIC) {
@@ -133,6 +135,8 @@ static void init_heap(void)
 
 void main(void)
 {
+	init_default_io_ops();
+
 	/* First, copy the boot header into the "zeropage" */
 	copy_boot_params();
 
@@ -159,9 +163,6 @@ void main(void)
 
 	/* Set keyboard repeat rate (why?) and query the lock flags */
 	keyboard_init();
-
-	/* Query MCA information */
-	query_mca();
 
 	/* Query Intel SpeedStep (IST) information */
 	query_ist();

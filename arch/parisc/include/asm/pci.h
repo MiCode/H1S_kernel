@@ -1,7 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_PARISC_PCI_H
 #define __ASM_PARISC_PCI_H
 
-#include <asm/scatterlist.h>
+#include <linux/scatterlist.h>
 
 
 
@@ -55,7 +56,7 @@ struct pci_hba_data {
 	#define DINO_MAX_LMMIO_RESOURCES	3
 
 	unsigned long   lmmio_space_offset;  /* CPU view - PCI view */
-	void *          iommu;          /* IOMMU this device is under */
+	struct ioc	*iommu;		/* IOMMU this device is under */
 	/* REVISIT - spinlock to protect resources? */
 
 	#define HBA_NAME_SIZE 16
@@ -64,8 +65,6 @@ struct pci_hba_data {
 	char elmmio_name[HBA_NAME_SIZE];
 	char gmmio_name[HBA_NAME_SIZE];
 };
-
-#define HBA_DATA(d)		((struct pci_hba_data *) (d))
 
 /* 
 ** We support 2^16 I/O ports per HBA.  These are set up in the form
@@ -85,36 +84,6 @@ struct pci_hba_data {
 #else	/* !CONFIG_64BIT */
 #define PCI_F_EXTEND		0UL
 #endif /* !CONFIG_64BIT */
-
-/*
-** KLUGE: linux/pci.h include asm/pci.h BEFORE declaring struct pci_bus
-** (This eliminates some of the warnings).
-*/
-struct pci_bus;
-struct pci_dev;
-
-/*
- * If the PCI device's view of memory is the same as the CPU's view of memory,
- * PCI_DMA_BUS_IS_PHYS is true.  The networking and block device layers use
- * this boolean for bounce buffer decisions.
- */
-#ifdef CONFIG_PA20
-/* All PA-2.0 machines have an IOMMU. */
-#define PCI_DMA_BUS_IS_PHYS	0
-#define parisc_has_iommu()	do { } while (0)
-#else
-
-#if defined(CONFIG_IOMMU_CCIO) || defined(CONFIG_IOMMU_SBA)
-extern int parisc_bus_is_phys; 	/* in arch/parisc/kernel/setup.c */
-#define PCI_DMA_BUS_IS_PHYS	parisc_bus_is_phys
-#define parisc_has_iommu()	do { parisc_bus_is_phys = 0; } while (0)
-#else
-#define PCI_DMA_BUS_IS_PHYS	1
-#define parisc_has_iommu()	do { } while (0)
-#endif
-
-#endif	/* !CONFIG_PA20 */
-
 
 /*
 ** Most PCI devices (eg Tulip, NCR720) also export the same registers
@@ -161,12 +130,12 @@ extern struct pci_bios_ops *pci_bios;
 
 #ifdef CONFIG_PCI
 extern void pcibios_register_hba(struct pci_hba_data *);
-extern void pcibios_set_master(struct pci_dev *);
 #else
 static inline void pcibios_register_hba(struct pci_hba_data *x)
 {
 }
 #endif
+extern void pcibios_init_bridge(struct pci_dev *);
 
 /*
  * pcibios_assign_all_busses() is used in drivers/pci/pci.c:pci_do_scan_bus()
@@ -193,41 +162,7 @@ static inline void pcibios_register_hba(struct pci_hba_data *x)
 #define PCIBIOS_MIN_IO          0x10
 #define PCIBIOS_MIN_MEM         0x1000 /* NBPG - but pci/setup-res.c dies */
 
-/* export the pci_ DMA API in terms of the dma_ one */
-#include <asm-generic/pci-dma-compat.h>
-
-#ifdef CONFIG_PCI
-static inline void pci_dma_burst_advice(struct pci_dev *pdev,
-					enum pci_dma_burst_strategy *strat,
-					unsigned long *strategy_parameter)
-{
-	unsigned long cacheline_size;
-	u8 byte;
-
-	pci_read_config_byte(pdev, PCI_CACHE_LINE_SIZE, &byte);
-	if (byte == 0)
-		cacheline_size = 1024;
-	else
-		cacheline_size = (int) byte * 4;
-
-	*strat = PCI_DMA_BURST_MULTIPLE;
-	*strategy_parameter = cacheline_size;
-}
-#endif
-
-static inline void pcibios_penalize_isa_irq(int irq, int active)
-{
-	/* We don't need to penalize isa irq's */
-}
-
-static inline int pci_get_legacy_ide_irq(struct pci_dev *dev, int channel)
-{
-	return channel ? 15 : 14;
-}
-
 #define HAVE_PCI_MMAP
-
-extern int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
-	enum pci_mmap_state mmap_state, int write_combine);
+#define ARCH_GENERIC_PCI_MMAP_RESOURCE
 
 #endif /* __ASM_PARISC_PCI_H */

@@ -1,25 +1,11 @@
-/**
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
  * eCryptfs: Linux filesystem encryption layer
  *
  * Copyright (C) 1997-2003 Erez Zadok
  * Copyright (C) 2001-2003 Stony Brook University
  * Copyright (C) 2004-2006 International Business Machines Corp.
  *   Author(s): Michael A. Halcrow <mahalcro@us.ibm.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of the
- * License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
- * 02111-1307, USA.
  */
 
 #include <linux/dcache.h>
@@ -45,20 +31,20 @@
 static int ecryptfs_d_revalidate(struct dentry *dentry, unsigned int flags)
 {
 	struct dentry *lower_dentry = ecryptfs_dentry_to_lower(dentry);
-	int rc;
-
-	if (!(lower_dentry->d_flags & DCACHE_OP_REVALIDATE))
-		return 1;
+	int rc = 1;
 
 	if (flags & LOOKUP_RCU)
 		return -ECHILD;
 
-	rc = lower_dentry->d_op->d_revalidate(lower_dentry, flags);
-	if (dentry->d_inode) {
-		struct inode *lower_inode =
-			ecryptfs_inode_to_lower(dentry->d_inode);
+	if (lower_dentry->d_flags & DCACHE_OP_REVALIDATE)
+		rc = lower_dentry->d_op->d_revalidate(lower_dentry, flags);
 
-		fsstack_copy_attr_all(dentry->d_inode, lower_inode);
+	if (d_really_is_positive(dentry)) {
+		struct inode *inode = d_inode(dentry);
+
+		fsstack_copy_attr_all(inode, ecryptfs_inode_to_lower(inode));
+		if (!inode->i_nlink)
+			return 0;
 	}
 	return rc;
 }

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Author(s)......: Holger Smolinski <Holger.Smolinski@de.ibm.com>
  *		    Horst Hummel <Horst.Hummel@de.ibm.com>
@@ -12,6 +13,7 @@
 /*****************************************************************************
  * SECTION: CCW Definitions
  ****************************************************************************/
+#define DASD_ECKD_CCW_NOP		 0x03
 #define DASD_ECKD_CCW_WRITE		 0x05
 #define DASD_ECKD_CCW_READ		 0x06
 #define DASD_ECKD_CCW_WRITE_HOME_ADDRESS 0x09
@@ -29,12 +31,14 @@
 #define DASD_ECKD_CCW_SNID		 0x34
 #define DASD_ECKD_CCW_RSSD		 0x3e
 #define DASD_ECKD_CCW_LOCATE_RECORD	 0x47
+#define DASD_ECKD_CCW_LOCATE_RECORD_EXT	 0x4b
 #define DASD_ECKD_CCW_SNSS		 0x54
 #define DASD_ECKD_CCW_DEFINE_EXTENT	 0x63
 #define DASD_ECKD_CCW_WRITE_MT		 0x85
 #define DASD_ECKD_CCW_READ_MT		 0x86
 #define DASD_ECKD_CCW_WRITE_KD_MT	 0x8d
 #define DASD_ECKD_CCW_READ_KD_MT	 0x8e
+#define DASD_ECKD_CCW_READ_COUNT_MT	 0x92
 #define DASD_ECKD_CCW_RELEASE		 0x94
 #define DASD_ECKD_CCW_WRITE_FULL_TRACK	 0x95
 #define DASD_ECKD_CCW_READ_CKD_MT	 0x9e
@@ -47,15 +51,73 @@
 #define DASD_ECKD_CCW_PFX_READ		 0xEA
 #define DASD_ECKD_CCW_RSCK		 0xF9
 #define DASD_ECKD_CCW_RCD		 0xFA
+#define DASD_ECKD_CCW_DSO		 0xF7
+
+/* Define Subsystem Function / Orders */
+#define DSO_ORDER_RAS			 0x81
+
+/*
+ * Perform Subsystem Function / Orders
+ */
+#define PSF_ORDER_PRSSD			 0x18
+#define PSF_ORDER_CUIR_RESPONSE		 0x1A
+#define PSF_ORDER_SSC			 0x1D
 
 /*
  * Perform Subsystem Function / Sub-Orders
  */
-#define PSF_ORDER_PRSSD 0x18
-#define PSF_ORDER_SSC	0x1D
+#define PSF_SUBORDER_QHA		 0x1C /* Query Host Access */
+#define PSF_SUBORDER_PPRCEQ		 0x50 /* PPRC Extended Query */
+#define PSF_SUBORDER_VSQ		 0x52 /* Volume Storage Query */
+#define PSF_SUBORDER_LCQ		 0x53 /* Logical Configuration Query */
 
 /*
- * Size that is reportet for large volumes in the old 16-bit no_cyl field
+ * PPRC Extended Query Scopes
+ */
+#define PPRCEQ_SCOPE_4			 0x04 /* Scope 4 for PPRC Extended Query */
+
+/*
+ * CUIR response condition codes
+ */
+#define PSF_CUIR_INVALID		 0x00
+#define PSF_CUIR_COMPLETED		 0x01
+#define PSF_CUIR_NOT_SUPPORTED		 0x02
+#define PSF_CUIR_ERROR_IN_REQ		 0x03
+#define PSF_CUIR_DENIED			 0x04
+#define PSF_CUIR_LAST_PATH		 0x05
+#define PSF_CUIR_DEVICE_ONLINE		 0x06
+#define PSF_CUIR_VARY_FAILURE		 0x07
+#define PSF_CUIR_SOFTWARE_FAILURE	 0x08
+#define PSF_CUIR_NOT_RECOGNIZED		 0x09
+
+/*
+ * CUIR codes
+ */
+#define CUIR_QUIESCE			 0x01
+#define CUIR_RESUME			 0x02
+
+/*
+ * Out-of-space (OOS) Codes
+ */
+#define REPO_WARN			 0x01
+#define REPO_EXHAUST			 0x02
+#define POOL_WARN			 0x03
+#define POOL_EXHAUST			 0x04
+#define REPO_RELIEVE			 0x05
+#define POOL_RELIEVE			 0x06
+
+/*
+ * attention message definitions
+ */
+#define ATTENTION_LENGTH_CUIR		 0x0e
+#define ATTENTION_FORMAT_CUIR		 0x01
+#define ATTENTION_LENGTH_OOS		 0x10
+#define ATTENTION_FORMAT_OOS		 0x06
+
+#define DASD_ECKD_PG_GROUPED		 0x10
+
+/*
+ * Size that is reported for large volumes in the old 16-bit no_cyl field
  */
 #define LV_COMPAT_CYL 0xFFFE
 
@@ -63,6 +125,14 @@
 #define FCX_MAX_DATA_FACTOR 65536
 #define DASD_ECKD_RCD_DATA_SIZE 256
 
+#define DASD_ECKD_PATH_THRHLD		 256
+#define DASD_ECKD_PATH_INTERVAL		 300
+
+/*
+ * Maximum number of blocks to be chained
+ */
+#define DASD_ECKD_MAX_BLOCKS		 190
+#define DASD_ECKD_MAX_BLOCKS_RAW	 256
 
 /*****************************************************************************
  * SECTION: Type Definitions
@@ -81,33 +151,10 @@ struct ch_t {
 	__u16 head;
 } __attribute__ ((packed));
 
-struct chs_t {
-	__u16 cyl;
-	__u16 head;
-	__u32 sector;
-} __attribute__ ((packed));
-
 struct chr_t {
 	__u16 cyl;
 	__u16 head;
 	__u8 record;
-} __attribute__ ((packed));
-
-struct geom_t {
-	__u16 cyl;
-	__u16 head;
-	__u32 sector;
-} __attribute__ ((packed));
-
-struct eckd_home {
-	__u8 skip_control[14];
-	__u16 cell_number;
-	__u8 physical_addr[3];
-	__u8 flag;
-	struct ch_t track_addr;
-	__u8 reserved;
-	__u8 key_length;
-	__u8 reserved2[2];
 } __attribute__ ((packed));
 
 struct DE_eckd_data {
@@ -131,7 +178,7 @@ struct DE_eckd_data {
 	__u8 ga_extended;	/* Global Attributes Extended	*/
 	struct ch_t beg_ext;
 	struct ch_t end_ext;
-	unsigned long long ep_sys_time; /* Ext Parameter - System Time Stamp */
+	unsigned long ep_sys_time; /* Ext Parameter - System Time Stamp */
 	__u8 ep_format;        /* Extended Parameter format byte       */
 	__u8 ep_prio;          /* Extended Parameter priority I/O byte */
 	__u8 ep_reserved1;     /* Extended Parameter Reserved	       */
@@ -180,7 +227,7 @@ struct LRE_eckd_data {
 	__u8 imbedded_count;
 	__u8 extended_operation;
 	__u16 extended_parameter_length;
-	__u8 extended_parameter[0];
+	__u8 extended_parameter[];
 } __attribute__ ((packed));
 
 /* Prefix data for format 0x00 and 0x01 */
@@ -221,7 +268,7 @@ struct dasd_eckd_characteristics {
 		unsigned char reserved3:8;
 		unsigned char defect_wr:1;
 		unsigned char XRC_supported:1;
-		unsigned char reserved4:1;
+		unsigned char PPRC_enabled:1;
 		unsigned char striping:1;
 		unsigned char reserved5:4;
 		unsigned char cfw:1;
@@ -292,8 +339,10 @@ struct dasd_ned {
 	__u8 dev_type[6];
 	__u8 dev_model[3];
 	__u8 HDA_manufacturer[3];
-	__u8 HDA_location[2];
-	__u8 HDA_seqno[12];
+	struct {
+		__u8 HDA_location[2];
+		__u8 HDA_seqno[12];
+	} serial;
 	__u8 ID;
 	__u8 unit_addr;
 } __attribute__ ((packed));
@@ -328,7 +377,8 @@ struct dasd_gneq {
 		__u8 identifier:2;
 		__u8 reserved:6;
 	} __attribute__ ((packed)) flags;
-	__u8 reserved[5];
+	__u8 record_selector;
+	__u8 reserved[4];
 	struct {
 		__u8 value:2;
 		__u8 number:6;
@@ -342,6 +392,143 @@ struct dasd_rssd_features {
 	char feature[256];
 } __attribute__((packed));
 
+struct dasd_rssd_messages {
+	__u16 length;
+	__u8 format;
+	__u8 code;
+	__u32 message_id;
+	__u8 flags;
+	char messages[4087];
+} __packed;
+
+/*
+ * Read Subsystem Data - Volume Storage Query
+ */
+struct dasd_rssd_vsq {
+	struct {
+		__u8 tse:1;
+		__u8 space_not_available:1;
+		__u8 ese:1;
+		__u8 unused:5;
+	} __packed vol_info;
+	__u8 unused1;
+	__u16 extent_pool_id;
+	__u8 warn_cap_limit;
+	__u8 warn_cap_guaranteed;
+	__u16 unused2;
+	__u32 limit_capacity;
+	__u32 guaranteed_capacity;
+	__u32 space_allocated;
+	__u32 space_configured;
+	__u32 logical_capacity;
+} __packed;
+
+/*
+ * Extent Pool Summary
+ */
+struct dasd_ext_pool_sum {
+	__u16 pool_id;
+	__u8 repo_warn_thrshld;
+	__u8 warn_thrshld;
+	struct {
+		__u8 type:1;			/* 0 - CKD / 1 - FB */
+		__u8 track_space_efficient:1;
+		__u8 extent_space_efficient:1;
+		__u8 standard_volume:1;
+		__u8 extent_size_valid:1;
+		__u8 capacity_at_warnlevel:1;
+		__u8 pool_oos:1;
+		__u8 unused0:1;
+		__u8 unused1;
+	} __packed flags;
+	struct {
+		__u8 reserved0:1;
+		__u8 size_1G:1;
+		__u8 reserved1:5;
+		__u8 size_16M:1;
+	} __packed extent_size;
+	__u8 unused;
+} __packed;
+
+/*
+ * Read Subsystem Data-Response - Logical Configuration Query - Header
+ */
+struct dasd_rssd_lcq {
+	__u16 data_length;		/* Length of data returned */
+	__u16 pool_count;		/* Count of extent pools returned - Max: 448 */
+	struct {
+		__u8 pool_info_valid:1;	/* Detailed Information valid */
+		__u8 pool_id_volume:1;
+		__u8 pool_id_cec:1;
+		__u8 unused0:5;
+		__u8 unused1;
+	} __packed header_flags;
+	char sfi_type[6];		/* Storage Facility Image Type (EBCDIC) */
+	char sfi_model[3];		/* Storage Facility Image Model (EBCDIC) */
+	__u8 sfi_seq_num[10];		/* Storage Facility Image Sequence Number */
+	__u8 reserved[7];
+	struct dasd_ext_pool_sum ext_pool_sum[448];
+} __packed;
+
+struct dasd_oos_message {
+	__u16 length;
+	__u8 format;
+	__u8 code;
+	__u8 percentage_empty;
+	__u8 reserved;
+	__u16 ext_pool_id;
+	__u16 token;
+	__u8 unused[6];
+} __packed;
+
+struct dasd_cuir_message {
+	__u16 length;
+	__u8 format;
+	__u8 code;
+	__u32 message_id;
+	__u8 flags;
+	__u8 neq_map[3];
+	__u8 ned_map;
+	__u8 record_selector;
+} __packed;
+
+struct dasd_psf_cuir_response {
+	__u8 order;
+	__u8 flags;
+	__u8 cc;
+	__u8 chpid;
+	__u16 device_nr;
+	__u16 reserved;
+	__u32 message_id;
+	__u64 system_id;
+	__u8 cssid;
+	__u8 ssid;
+} __packed;
+
+struct dasd_ckd_path_group_entry {
+	__u8 status_flags;
+	__u8 pgid[11];
+	__u8 sysplex_name[8];
+	__u32 timestamp;
+	__u32 cylinder;
+	__u8 reserved[4];
+} __packed;
+
+struct dasd_ckd_host_information {
+	__u8 access_flags;
+	__u8 entry_size;
+	__u16 entry_count;
+	__u8 entry[16390];
+} __packed;
+
+struct dasd_psf_query_host_access {
+	__u8 access_flag;
+	__u8 version;
+	__u16 CKD_length;
+	__u16 SCSI_length;
+	__u8 unused[10];
+	__u8 host_access_information[16394];
+} __packed;
 
 /*
  * Perform Subsystem Function - Prepare for Read Subsystem Data
@@ -349,7 +536,10 @@ struct dasd_rssd_features {
 struct dasd_psf_prssd_data {
 	unsigned char order;
 	unsigned char flags;
-	unsigned char reserved[4];
+	unsigned char reserved1;
+	unsigned char reserved2;
+	unsigned char lss;
+	unsigned char volume;
 	unsigned char suborder;
 	unsigned char varies[5];
 } __attribute__ ((packed));
@@ -364,6 +554,42 @@ struct dasd_psf_ssc_data {
 	unsigned char suborder;
 	unsigned char reserved[59];
 } __attribute__((packed));
+
+/* Maximum number of extents for a single Release Allocated Space command */
+#define DASD_ECKD_RAS_EXTS_MAX		110U
+
+struct dasd_dso_ras_ext_range {
+	struct ch_t beg_ext;
+	struct ch_t end_ext;
+} __packed;
+
+/*
+ * Define Subsystem Operation - Release Allocated Space
+ */
+struct dasd_dso_ras_data {
+	__u8 order;
+	struct {
+		__u8 message:1;		/* Must be zero */
+		__u8 reserved1:2;
+		__u8 vol_type:1;	/* 0 - CKD/FBA, 1 - FB */
+		__u8 reserved2:4;
+	} __packed flags;
+	/* Operation Flags to specify scope */
+	struct {
+		__u8 reserved1:2;
+		/* Release Space by Extent */
+		__u8 by_extent:1;	/* 0 - entire volume, 1 - specified extents */
+		__u8 guarantee_init:1;
+		__u8 force_release:1;	/* Internal - will be ignored */
+		__u16 reserved2:11;
+	} __packed op_flags;
+	__u8 lss;
+	__u8 dev_addr;
+	__u32 reserved1;
+	__u8 reserved2[10];
+	__u16 nr_exts;			/* Defines number of ext_scope - max 110 */
+	__u16 reserved3;
+} __packed;
 
 
 /*
@@ -433,30 +659,43 @@ struct alias_pav_group {
 	struct dasd_device *next;
 };
 
-struct dasd_eckd_private {
-	struct dasd_eckd_characteristics rdc_data;
-	u8 *conf_data;
-	int conf_len;
+struct dasd_conf_data {
+	struct dasd_ned neds[5];
+	u8 reserved[64];
+	struct dasd_gneq gneq;
+} __packed;
+
+struct dasd_conf {
+	u8 *data;
+	int len;
 	/* pointers to specific parts in the conf_data */
 	struct dasd_ned *ned;
 	struct dasd_sneq *sneq;
 	struct vd_sneq *vdsneq;
 	struct dasd_gneq *gneq;
+};
+
+struct dasd_eckd_private {
+	struct dasd_eckd_characteristics rdc_data;
+	struct dasd_conf conf;
 
 	struct eckd_count count_area[5];
 	int init_cqr_status;
 	int uses_cdl;
 	struct attrib_data_t attrib;	/* e.g. cache operations */
 	struct dasd_rssd_features features;
+	struct dasd_rssd_vsq vsq;
+	struct dasd_ext_pool_sum eps;
 	u32 real_cyl;
 
-	/* alias managemnet */
+	/* alias management */
 	struct dasd_uid uid;
 	struct alias_pav_group *pavgroup;
 	struct alias_lcu *lcu;
 	int count;
 
 	u32 fcx_max_data;
+	char suc_reason;
 };
 
 
@@ -466,9 +705,7 @@ void dasd_alias_disconnect_device_from_lcu(struct dasd_device *);
 int dasd_alias_add_device(struct dasd_device *);
 int dasd_alias_remove_device(struct dasd_device *);
 struct dasd_device *dasd_alias_get_start_dev(struct dasd_device *);
-void dasd_alias_handle_summary_unit_check(struct dasd_device *, struct irb *);
+void dasd_alias_handle_summary_unit_check(struct work_struct *);
 void dasd_eckd_reset_ccw_to_base_io(struct dasd_ccw_req *);
-void dasd_alias_lcu_setup_complete(struct dasd_device *);
-void dasd_alias_wait_for_lcu_setup(struct dasd_device *);
 int dasd_alias_update_add_device(struct dasd_device *);
 #endif				/* DASD_ECKD_H */

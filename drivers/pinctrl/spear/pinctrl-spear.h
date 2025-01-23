@@ -2,7 +2,7 @@
  * Driver header file for the ST Microelectronics SPEAr pinmux
  *
  * Copyright (C) 2012 ST Microelectronics
- * Viresh Kumar <viresh.linux@gmail.com>
+ * Viresh Kumar <vireshk@kernel.org>
  *
  * This file is licensed under the terms of the GNU General Public
  * License version 2. This program is licensed "as is" without any
@@ -12,9 +12,10 @@
 #ifndef __PINMUX_SPEAR_H__
 #define __PINMUX_SPEAR_H__
 
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 #include <linux/io.h>
 #include <linux/pinctrl/pinctrl.h>
+#include <linux/regmap.h>
 #include <linux/types.h>
 
 struct platform_device;
@@ -172,24 +173,27 @@ struct spear_pinctrl_machdata {
  * @dev: pointer to struct dev of platform_device registered
  * @pctl: pointer to struct pinctrl_dev
  * @machdata: pointer to SoC or machine specific structure
- * @vbase: virtual base address of pinmux controller
+ * @regmap: regmap of pinmux controller
  */
 struct spear_pmx {
 	struct device *dev;
 	struct pinctrl_dev *pctl;
 	struct spear_pinctrl_machdata *machdata;
-	void __iomem *vbase;
+	struct regmap *regmap;
 };
 
 /* exported routines */
 static inline u32 pmx_readl(struct spear_pmx *pmx, u32 reg)
 {
-	return readl_relaxed(pmx->vbase + reg);
+	u32 val;
+
+	regmap_read(pmx->regmap, reg, &val);
+	return val;
 }
 
 static inline void pmx_writel(struct spear_pmx *pmx, u32 val, u32 reg)
 {
-	writel_relaxed(val, pmx->vbase + reg);
+	regmap_write(pmx->regmap, reg, val);
 }
 
 void pmx_init_addr(struct spear_pinctrl_machdata *machdata, u16 reg);
@@ -197,7 +201,6 @@ void pmx_init_gpio_pingroup_addr(struct spear_gpio_pingroup *gpio_pingroup,
 				 unsigned count, u16 reg);
 int spear_pinctrl_probe(struct platform_device *pdev,
 			struct spear_pinctrl_machdata *machdata);
-int spear_pinctrl_remove(struct platform_device *pdev);
 
 #define SPEAR_PIN_0_TO_101		\
 	PINCTRL_PIN(0, "PLGPIO0"),	\

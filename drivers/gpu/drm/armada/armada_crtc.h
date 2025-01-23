@@ -1,12 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2012 Russell King
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #ifndef ARMADA_CRTC_H
 #define ARMADA_CRTC_H
+
+#include <drm/drm_crtc.h>
 
 struct armada_gem_object;
 
@@ -31,10 +30,13 @@ struct armada_regs {
 #define armada_reg_queue_end(_r, _i)		\
 	armada_reg_queue_mod(_r, _i, 0, 0, ~0)
 
-struct armada_frame_work;
+struct armada_crtc;
+struct armada_variant;
 
 struct armada_crtc {
 	struct drm_crtc		crtc;
+	const struct armada_variant *variant;
+	void			*variant_data;
 	unsigned		num;
 	void __iomem		*base;
 	struct clk		*clk;
@@ -45,10 +47,6 @@ struct armada_crtc {
 	} v[2];
 	bool			interlaced;
 	bool			cursor_update;
-	uint8_t			csc_yuv_mode;
-	uint8_t			csc_rgb_mode;
-
-	struct drm_plane	*plane;
 
 	struct armada_gem_object	*cursor_obj;
 	int			cursor_x;
@@ -58,26 +56,41 @@ struct armada_crtc {
 	uint32_t		cursor_w;
 	uint32_t		cursor_h;
 
-	int			dpms;
 	uint32_t		cfg_dumb_ctrl;
-	uint32_t		dumb_ctrl;
 	uint32_t		spu_iopad_ctrl;
-
-	wait_queue_head_t	frame_wait;
-	struct armada_frame_work *frame_work;
 
 	spinlock_t		irq_lock;
 	uint32_t		irq_ena;
-	struct list_head	vbl_list;
+
+	bool			update_pending;
+	struct drm_pending_vblank_event *event;
+	struct armada_regs	atomic_regs[32];
+	struct armada_regs	*regs;
+	unsigned int		regs_idx;
 };
 #define drm_to_armada_crtc(c) container_of(c, struct armada_crtc, crtc)
 
-int armada_drm_crtc_create(struct drm_device *, unsigned, struct resource *);
-void armada_drm_crtc_gamma_set(struct drm_crtc *, u16, u16, u16, int);
-void armada_drm_crtc_gamma_get(struct drm_crtc *, u16 *, u16 *, u16 *, int);
-void armada_drm_crtc_irq(struct armada_crtc *, u32);
-void armada_drm_crtc_disable_irq(struct armada_crtc *, u32);
-void armada_drm_crtc_enable_irq(struct armada_crtc *, u32);
 void armada_drm_crtc_update_regs(struct armada_crtc *, struct armada_regs *);
+
+struct armada_clocking_params {
+	unsigned long permillage_min;
+	unsigned long permillage_max;
+	u32 settable;
+	u32 div_max;
+};
+
+struct armada_clk_result {
+	unsigned long desired_clk_hz;
+	struct clk *clk;
+	u32 div;
+};
+
+int armada_crtc_select_clock(struct armada_crtc *dcrtc,
+			     struct armada_clk_result *res,
+			     const struct armada_clocking_params *params,
+			     struct clk *clks[], size_t num_clks,
+			     unsigned long desired_khz);
+
+extern struct platform_driver armada_lcd_platform_driver;
 
 #endif

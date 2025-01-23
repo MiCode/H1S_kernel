@@ -20,118 +20,123 @@
 #include <linux/sched.h>
 #include "internal.h"
 
-#if 0
-unsigned afs_vnode_update_timeout = 10;
-#endif  /*  0  */
-
-#define afs_breakring_space(server) \
-	CIRC_SPACE((server)->cb_break_head, (server)->cb_break_tail,	\
-		   ARRAY_SIZE((server)->cb_break))
-
-//static void afs_callback_updater(struct work_struct *);
-
-static struct workqueue_struct *afs_callback_update_worker;
-
 /*
- * allow the fileserver to request callback state (re-)initialisation
+ * Handle invalidation of an mmap'd file.  We invalidate all the PTEs referring
+ * to the pages in this file's pagecache, forcing the kernel to go through
+ * ->fault() or ->page_mkwrite() - at which point we can handle invalidation
+ * more fully.
  */
-void afs_init_callback_state(struct afs_server *server)
+void afs_invalidate_mmap_work(struct work_struct *work)
 {
+	struct afs_vnode *vnode = container_of(work, struct afs_vnode, cb_work);
+
+	unmap_mapping_pages(vnode->netfs.inode.i_mapping, 0, 0, false);
+}
+
+void afs_server_init_callback_work(struct work_struct *work)
+{
+	struct afs_server *server = container_of(work, struct afs_server, initcb_work);
 	struct afs_vnode *vnode;
+	struct afs_cell *cell = server->cell;
 
-	_enter("{%p}", server);
+	down_read(&cell->fs_open_mmaps_lock);
 
-	spin_lock(&server->cb_lock);
-
-	/* kill all the promises on record from this server */
-	while (!RB_EMPTY_ROOT(&server->cb_promises)) {
-		vnode = rb_entry(server->cb_promises.rb_node,
-				 struct afs_vnode, cb_promise);
-		_debug("UNPROMISE { vid=%x:%u uq=%u}",
-		       vnode->fid.vid, vnode->fid.vnode, vnode->fid.unique);
-		rb_erase(&vnode->cb_promise, &server->cb_promises);
-		vnode->cb_promised = false;
+	list_for_each_entry(vnode, &cell->fs_open_mmaps, cb_mmap_link) {
+		if (vnode->cb_server == server) {
+			clear_bit(AFS_VNODE_CB_PROMISED, &vnode->flags);
+			queue_work(system_unbound_wq, &vnode->cb_work);
+		}
 	}
 
-	spin_unlock(&server->cb_lock);
-	_leave("");
+	up_read(&cell->fs_open_mmaps_lock);
 }
 
 /*
- * handle the data invalidation side of a callback being broken
+ * Allow the fileserver to request callback state (re-)initialisation.
+ * Unfortunately, UUIDs are not guaranteed unique.
  */
-void afs_broken_callback_work(struct work_struct *work)
+void afs_init_callback_state(struct afs_server *server)
 {
-	struct afs_vnode *vnode =
-		container_of(work, struct afs_vnode, cb_broken_work);
+	rcu_read_lock();
+	do {
+		server->cb_s_break++;
+		atomic_inc(&server->cell->fs_s_break);
+		if (!list_empty(&server->cell->fs_open_mmaps))
+			queue_work(system_unbound_wq, &server->initcb_work);
 
-	_enter("");
-
-	if (test_bit(AFS_VNODE_DELETED, &vnode->flags))
-		return;
-
-	/* we're only interested in dealing with a broken callback on *this*
-	 * vnode and only if no-one else has dealt with it yet */
-	if (!mutex_trylock(&vnode->validate_lock))
-		return; /* someone else is dealing with it */
-
-	if (test_bit(AFS_VNODE_CB_BROKEN, &vnode->flags)) {
-		if (S_ISDIR(vnode->vfs_inode.i_mode))
-			afs_clear_permits(vnode);
-
-		if (afs_vnode_fetch_status(vnode, NULL, NULL) < 0)
-			goto out;
-
-		if (test_bit(AFS_VNODE_DELETED, &vnode->flags))
-			goto out;
-
-		/* if the vnode's data version number changed then its contents
-		 * are different */
-		if (test_and_clear_bit(AFS_VNODE_ZAP_DATA, &vnode->flags))
-			afs_zap_data(vnode);
-	}
-
-out:
-	mutex_unlock(&vnode->validate_lock);
-
-	/* avoid the potential race whereby the mutex_trylock() in this
-	 * function happens again between the clear_bit() and the
-	 * mutex_unlock() */
-	if (test_bit(AFS_VNODE_CB_BROKEN, &vnode->flags)) {
-		_debug("requeue");
-		queue_work(afs_callback_update_worker, &vnode->cb_broken_work);
-	}
-	_leave("");
+	} while ((server = rcu_dereference(server->uuid_next)));
+	rcu_read_unlock();
 }
 
 /*
  * actually break a callback
  */
-static void afs_break_callback(struct afs_server *server,
-			       struct afs_vnode *vnode)
+void __afs_break_callback(struct afs_vnode *vnode, enum afs_cb_break_reason reason)
 {
 	_enter("");
 
-	set_bit(AFS_VNODE_CB_BROKEN, &vnode->flags);
+	clear_bit(AFS_VNODE_NEW_CONTENT, &vnode->flags);
+	if (test_and_clear_bit(AFS_VNODE_CB_PROMISED, &vnode->flags)) {
+		vnode->cb_break++;
+		vnode->cb_v_break = vnode->volume->cb_v_break;
+		afs_clear_permits(vnode);
 
-	if (vnode->cb_promised) {
-		spin_lock(&vnode->lock);
-
-		_debug("break callback");
-
-		spin_lock(&server->cb_lock);
-		if (vnode->cb_promised) {
-			rb_erase(&vnode->cb_promise, &server->cb_promises);
-			vnode->cb_promised = false;
-		}
-		spin_unlock(&server->cb_lock);
-
-		queue_work(afs_callback_update_worker, &vnode->cb_broken_work);
-		if (list_empty(&vnode->granted_locks) &&
-		    !list_empty(&vnode->pending_locks))
+		if (vnode->lock_state == AFS_VNODE_LOCK_WAITING_FOR_CB)
 			afs_lock_may_be_available(vnode);
-		spin_unlock(&vnode->lock);
+
+		if (reason != afs_cb_break_for_deleted &&
+		    vnode->status.type == AFS_FTYPE_FILE &&
+		    atomic_read(&vnode->cb_nr_mmap))
+			queue_work(system_unbound_wq, &vnode->cb_work);
+
+		trace_afs_cb_break(&vnode->fid, vnode->cb_break, reason, true);
+	} else {
+		trace_afs_cb_break(&vnode->fid, vnode->cb_break, reason, false);
 	}
+}
+
+void afs_break_callback(struct afs_vnode *vnode, enum afs_cb_break_reason reason)
+{
+	write_seqlock(&vnode->cb_lock);
+	__afs_break_callback(vnode, reason);
+	write_sequnlock(&vnode->cb_lock);
+}
+
+/*
+ * Look up a volume by volume ID under RCU conditions.
+ */
+static struct afs_volume *afs_lookup_volume_rcu(struct afs_cell *cell,
+						afs_volid_t vid)
+{
+	struct afs_volume *volume = NULL;
+	struct rb_node *p;
+	int seq = 1;
+
+	do {
+		/* Unfortunately, rbtree walking doesn't give reliable results
+		 * under just the RCU read lock, so we have to check for
+		 * changes.
+		 */
+		seq++; /* 2 on the 1st/lockless path, otherwise odd */
+		read_seqbegin_or_lock(&cell->volume_lock, &seq);
+
+		p = rcu_dereference_raw(cell->volumes.rb_node);
+		while (p) {
+			volume = rb_entry(p, struct afs_volume, cell_node);
+
+			if (volume->vid < vid)
+				p = rcu_dereference_raw(p->rb_left);
+			else if (volume->vid > vid)
+				p = rcu_dereference_raw(p->rb_right);
+			else
+				break;
+			volume = NULL;
+		}
+
+	} while (need_seqretry(&cell->volume_lock, seq));
+
+	done_seqretry(&cell->volume_lock, seq);
+	return volume;
 }
 
 /*
@@ -140,336 +145,85 @@ static void afs_break_callback(struct afs_server *server,
  *   - the backing file is changed
  *   - a lock is released
  */
-static void afs_break_one_callback(struct afs_server *server,
+static void afs_break_one_callback(struct afs_volume *volume,
 				   struct afs_fid *fid)
 {
+	struct super_block *sb;
 	struct afs_vnode *vnode;
-	struct rb_node *p;
+	struct inode *inode;
 
-	_debug("find");
-	spin_lock(&server->fs_lock);
-	p = server->fs_vnodes.rb_node;
-	while (p) {
-		vnode = rb_entry(p, struct afs_vnode, server_rb);
-		if (fid->vid < vnode->fid.vid)
-			p = p->rb_left;
-		else if (fid->vid > vnode->fid.vid)
-			p = p->rb_right;
-		else if (fid->vnode < vnode->fid.vnode)
-			p = p->rb_left;
-		else if (fid->vnode > vnode->fid.vnode)
-			p = p->rb_right;
-		else if (fid->unique < vnode->fid.unique)
-			p = p->rb_left;
-		else if (fid->unique > vnode->fid.unique)
-			p = p->rb_right;
-		else
-			goto found;
+	if (fid->vnode == 0 && fid->unique == 0) {
+		/* The callback break applies to an entire volume. */
+		write_lock(&volume->cb_v_break_lock);
+		volume->cb_v_break++;
+		trace_afs_cb_break(fid, volume->cb_v_break,
+				   afs_cb_break_for_volume_callback, false);
+		write_unlock(&volume->cb_v_break_lock);
+		return;
 	}
 
-	/* not found so we just ignore it (it may have moved to another
-	 * server) */
-not_available:
-	_debug("not avail");
-	spin_unlock(&server->fs_lock);
-	_leave("");
-	return;
+	/* See if we can find a matching inode - even an I_NEW inode needs to
+	 * be marked as it can have its callback broken before we finish
+	 * setting up the local inode.
+	 */
+	sb = rcu_dereference(volume->sb);
+	if (!sb)
+		return;
 
-found:
-	_debug("found");
-	ASSERTCMP(server, ==, vnode->server);
+	inode = find_inode_rcu(sb, fid->vnode, afs_ilookup5_test_by_fid, fid);
+	if (inode) {
+		vnode = AFS_FS_I(inode);
+		afs_break_callback(vnode, afs_cb_break_for_callback);
+	} else {
+		trace_afs_cb_miss(fid, afs_cb_break_for_callback);
+	}
+}
 
-	if (!igrab(AFS_VNODE_TO_I(vnode)))
-		goto not_available;
-	spin_unlock(&server->fs_lock);
+static void afs_break_some_callbacks(struct afs_server *server,
+				     struct afs_callback_break *cbb,
+				     size_t *_count)
+{
+	struct afs_callback_break *residue = cbb;
+	struct afs_volume *volume;
+	afs_volid_t vid = cbb->fid.vid;
+	size_t i;
 
-	afs_break_callback(server, vnode);
-	iput(&vnode->vfs_inode);
-	_leave("");
+	volume = afs_lookup_volume_rcu(server->cell, vid);
+
+	/* TODO: Find all matching volumes if we couldn't match the server and
+	 * break them anyway.
+	 */
+
+	for (i = *_count; i > 0; cbb++, i--) {
+		if (cbb->fid.vid == vid) {
+			_debug("- Fid { vl=%08llx n=%llu u=%u }",
+			       cbb->fid.vid,
+			       cbb->fid.vnode,
+			       cbb->fid.unique);
+			--*_count;
+			if (volume)
+				afs_break_one_callback(volume, &cbb->fid);
+		} else {
+			*residue++ = *cbb;
+		}
+	}
 }
 
 /*
  * allow the fileserver to break callback promises
  */
 void afs_break_callbacks(struct afs_server *server, size_t count,
-			 struct afs_callback callbacks[])
+			 struct afs_callback_break *callbacks)
 {
 	_enter("%p,%zu,", server, count);
 
 	ASSERT(server != NULL);
-	ASSERTCMP(count, <=, AFSCBMAX);
 
-	for (; count > 0; callbacks++, count--) {
-		_debug("- Fid { vl=%08x n=%u u=%u }  CB { v=%u x=%u t=%u }",
-		       callbacks->fid.vid,
-		       callbacks->fid.vnode,
-		       callbacks->fid.unique,
-		       callbacks->version,
-		       callbacks->expiry,
-		       callbacks->type
-		       );
-		afs_break_one_callback(server, &callbacks->fid);
-	}
+	rcu_read_lock();
 
-	_leave("");
+	while (count > 0)
+		afs_break_some_callbacks(server, callbacks, &count);
+
+	rcu_read_unlock();
 	return;
-}
-
-/*
- * record the callback for breaking
- * - the caller must hold server->cb_lock
- */
-static void afs_do_give_up_callback(struct afs_server *server,
-				    struct afs_vnode *vnode)
-{
-	struct afs_callback *cb;
-
-	_enter("%p,%p", server, vnode);
-
-	cb = &server->cb_break[server->cb_break_head];
-	cb->fid		= vnode->fid;
-	cb->version	= vnode->cb_version;
-	cb->expiry	= vnode->cb_expiry;
-	cb->type	= vnode->cb_type;
-	smp_wmb();
-	server->cb_break_head =
-		(server->cb_break_head + 1) &
-		(ARRAY_SIZE(server->cb_break) - 1);
-
-	/* defer the breaking of callbacks to try and collect as many as
-	 * possible to ship in one operation */
-	switch (atomic_inc_return(&server->cb_break_n)) {
-	case 1 ... AFSCBMAX - 1:
-		queue_delayed_work(afs_callback_update_worker,
-				   &server->cb_break_work, HZ * 2);
-		break;
-	case AFSCBMAX:
-		afs_flush_callback_breaks(server);
-		break;
-	default:
-		break;
-	}
-
-	ASSERT(server->cb_promises.rb_node != NULL);
-	rb_erase(&vnode->cb_promise, &server->cb_promises);
-	vnode->cb_promised = false;
-	_leave("");
-}
-
-/*
- * discard the callback on a deleted item
- */
-void afs_discard_callback_on_delete(struct afs_vnode *vnode)
-{
-	struct afs_server *server = vnode->server;
-
-	_enter("%d", vnode->cb_promised);
-
-	if (!vnode->cb_promised) {
-		_leave(" [not promised]");
-		return;
-	}
-
-	ASSERT(server != NULL);
-
-	spin_lock(&server->cb_lock);
-	if (vnode->cb_promised) {
-		ASSERT(server->cb_promises.rb_node != NULL);
-		rb_erase(&vnode->cb_promise, &server->cb_promises);
-		vnode->cb_promised = false;
-	}
-	spin_unlock(&server->cb_lock);
-	_leave("");
-}
-
-/*
- * give up the callback registered for a vnode on the file server when the
- * inode is being cleared
- */
-void afs_give_up_callback(struct afs_vnode *vnode)
-{
-	struct afs_server *server = vnode->server;
-
-	DECLARE_WAITQUEUE(myself, current);
-
-	_enter("%d", vnode->cb_promised);
-
-	_debug("GIVE UP INODE %p", &vnode->vfs_inode);
-
-	if (!vnode->cb_promised) {
-		_leave(" [not promised]");
-		return;
-	}
-
-	ASSERT(server != NULL);
-
-	spin_lock(&server->cb_lock);
-	if (vnode->cb_promised && afs_breakring_space(server) == 0) {
-		add_wait_queue(&server->cb_break_waitq, &myself);
-		for (;;) {
-			set_current_state(TASK_UNINTERRUPTIBLE);
-			if (!vnode->cb_promised ||
-			    afs_breakring_space(server) != 0)
-				break;
-			spin_unlock(&server->cb_lock);
-			schedule();
-			spin_lock(&server->cb_lock);
-		}
-		remove_wait_queue(&server->cb_break_waitq, &myself);
-		__set_current_state(TASK_RUNNING);
-	}
-
-	/* of course, it's always possible for the server to break this vnode's
-	 * callback first... */
-	if (vnode->cb_promised)
-		afs_do_give_up_callback(server, vnode);
-
-	spin_unlock(&server->cb_lock);
-	_leave("");
-}
-
-/*
- * dispatch a deferred give up callbacks operation
- */
-void afs_dispatch_give_up_callbacks(struct work_struct *work)
-{
-	struct afs_server *server =
-		container_of(work, struct afs_server, cb_break_work.work);
-
-	_enter("");
-
-	/* tell the fileserver to discard the callback promises it has
-	 * - in the event of ENOMEM or some other error, we just forget that we
-	 *   had callbacks entirely, and the server will call us later to break
-	 *   them
-	 */
-	afs_fs_give_up_callbacks(server, &afs_async_call);
-}
-
-/*
- * flush the outstanding callback breaks on a server
- */
-void afs_flush_callback_breaks(struct afs_server *server)
-{
-	mod_delayed_work(afs_callback_update_worker, &server->cb_break_work, 0);
-}
-
-#if 0
-/*
- * update a bunch of callbacks
- */
-static void afs_callback_updater(struct work_struct *work)
-{
-	struct afs_server *server;
-	struct afs_vnode *vnode, *xvnode;
-	time_t now;
-	long timeout;
-	int ret;
-
-	server = container_of(work, struct afs_server, updater);
-
-	_enter("");
-
-	now = get_seconds();
-
-	/* find the first vnode to update */
-	spin_lock(&server->cb_lock);
-	for (;;) {
-		if (RB_EMPTY_ROOT(&server->cb_promises)) {
-			spin_unlock(&server->cb_lock);
-			_leave(" [nothing]");
-			return;
-		}
-
-		vnode = rb_entry(rb_first(&server->cb_promises),
-				 struct afs_vnode, cb_promise);
-		if (atomic_read(&vnode->usage) > 0)
-			break;
-		rb_erase(&vnode->cb_promise, &server->cb_promises);
-		vnode->cb_promised = false;
-	}
-
-	timeout = vnode->update_at - now;
-	if (timeout > 0) {
-		queue_delayed_work(afs_vnode_update_worker,
-				   &afs_vnode_update, timeout * HZ);
-		spin_unlock(&server->cb_lock);
-		_leave(" [nothing]");
-		return;
-	}
-
-	list_del_init(&vnode->update);
-	atomic_inc(&vnode->usage);
-	spin_unlock(&server->cb_lock);
-
-	/* we can now perform the update */
-	_debug("update %s", vnode->vldb.name);
-	vnode->state = AFS_VL_UPDATING;
-	vnode->upd_rej_cnt = 0;
-	vnode->upd_busy_cnt = 0;
-
-	ret = afs_vnode_update_record(vl, &vldb);
-	switch (ret) {
-	case 0:
-		afs_vnode_apply_update(vl, &vldb);
-		vnode->state = AFS_VL_UPDATING;
-		break;
-	case -ENOMEDIUM:
-		vnode->state = AFS_VL_VOLUME_DELETED;
-		break;
-	default:
-		vnode->state = AFS_VL_UNCERTAIN;
-		break;
-	}
-
-	/* and then reschedule */
-	_debug("reschedule");
-	vnode->update_at = get_seconds() + afs_vnode_update_timeout;
-
-	spin_lock(&server->cb_lock);
-
-	if (!list_empty(&server->cb_promises)) {
-		/* next update in 10 minutes, but wait at least 1 second more
-		 * than the newest record already queued so that we don't spam
-		 * the VL server suddenly with lots of requests
-		 */
-		xvnode = list_entry(server->cb_promises.prev,
-				    struct afs_vnode, update);
-		if (vnode->update_at <= xvnode->update_at)
-			vnode->update_at = xvnode->update_at + 1;
-		xvnode = list_entry(server->cb_promises.next,
-				    struct afs_vnode, update);
-		timeout = xvnode->update_at - now;
-		if (timeout < 0)
-			timeout = 0;
-	} else {
-		timeout = afs_vnode_update_timeout;
-	}
-
-	list_add_tail(&vnode->update, &server->cb_promises);
-
-	_debug("timeout %ld", timeout);
-	queue_delayed_work(afs_vnode_update_worker,
-			   &afs_vnode_update, timeout * HZ);
-	spin_unlock(&server->cb_lock);
-	afs_put_vnode(vl);
-}
-#endif
-
-/*
- * initialise the callback update process
- */
-int __init afs_callback_update_init(void)
-{
-	afs_callback_update_worker =
-		create_singlethread_workqueue("kafs_callbackd");
-	return afs_callback_update_worker ? 0 : -ENOMEM;
-}
-
-/*
- * shut down the callback update process
- */
-void afs_callback_update_kill(void)
-{
-	destroy_workqueue(afs_callback_update_worker);
 }

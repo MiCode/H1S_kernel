@@ -21,9 +21,7 @@
  * SOFTWARE.
  */
 
-#include <drm/drmP.h>
-
-#include "nouveau_drm.h"
+#include "nouveau_drv.h"
 #include "nouveau_reg.h"
 #include "hw.h"
 
@@ -55,8 +53,8 @@ struct nv_sim_state {
 static void
 nv04_calc_arb(struct nv_fifo_info *fifo, struct nv_sim_state *arb)
 {
-	int pagemiss, cas, width, bpp;
-	int nvclks, mclks, pclks, crtpagemiss;
+	int pagemiss, cas, bpp;
+	int nvclks, mclks, crtpagemiss;
 	int found, mclk_extra, mclk_loop, cbs, m1, p1;
 	int mclk_freq, pclk_freq, nvclk_freq;
 	int us_m, us_n, us_p, crtc_drain_rate;
@@ -67,11 +65,9 @@ nv04_calc_arb(struct nv_fifo_info *fifo, struct nv_sim_state *arb)
 	nvclk_freq = arb->nvclk_khz;
 	pagemiss = arb->mem_page_miss;
 	cas = arb->mem_latency;
-	width = arb->memory_width >> 6;
 	bpp = arb->bpp;
 	cbs = 128;
 
-	pclks = 2;
 	nvclks = 10;
 	mclks = 13 + cas;
 	mclk_extra = 3;
@@ -198,36 +194,39 @@ nv04_update_arb(struct drm_device *dev, int VClk, int bpp,
 		int *burst, int *lwm)
 {
 	struct nouveau_drm *drm = nouveau_drm(dev);
-	struct nouveau_device *device = nouveau_dev(dev);
+	struct nvif_object *device = &nouveau_drm(dev)->client.device.object;
 	struct nv_fifo_info fifo_data;
 	struct nv_sim_state sim_data;
 	int MClk = nouveau_hw_get_clock(dev, PLL_MEMORY);
 	int NVClk = nouveau_hw_get_clock(dev, PLL_CORE);
-	uint32_t cfg1 = nv_rd32(device, NV04_PFB_CFG1);
+	uint32_t cfg1 = nvif_rd32(device, NV04_PFB_CFG1);
+	struct pci_dev *pdev = to_pci_dev(dev->dev);
 
 	sim_data.pclk_khz = VClk;
 	sim_data.mclk_khz = MClk;
 	sim_data.nvclk_khz = NVClk;
 	sim_data.bpp = bpp;
 	sim_data.two_heads = nv_two_heads(dev);
-	if ((dev->pdev->device & 0xffff) == 0x01a0 /*CHIPSET_NFORCE*/ ||
-	    (dev->pdev->device & 0xffff) == 0x01f0 /*CHIPSET_NFORCE2*/) {
+	if ((pdev->device & 0xffff) == 0x01a0 /*CHIPSET_NFORCE*/ ||
+	    (pdev->device & 0xffff) == 0x01f0 /*CHIPSET_NFORCE2*/) {
 		uint32_t type;
+		int domain = pci_domain_nr(pdev->bus);
 
-		pci_read_config_dword(pci_get_bus_and_slot(0, 1), 0x7c, &type);
+		pci_read_config_dword(pci_get_domain_bus_and_slot(domain, 0, 1),
+				      0x7c, &type);
 
 		sim_data.memory_type = (type >> 12) & 1;
 		sim_data.memory_width = 64;
 		sim_data.mem_latency = 3;
 		sim_data.mem_page_miss = 10;
 	} else {
-		sim_data.memory_type = nv_rd32(device, NV04_PFB_CFG0) & 0x1;
-		sim_data.memory_width = (nv_rd32(device, NV_PEXTDEV_BOOT_0) & 0x10) ? 128 : 64;
+		sim_data.memory_type = nvif_rd32(device, NV04_PFB_CFG0) & 0x1;
+		sim_data.memory_width = (nvif_rd32(device, NV_PEXTDEV_BOOT_0) & 0x10) ? 128 : 64;
 		sim_data.mem_latency = cfg1 & 0xf;
 		sim_data.mem_page_miss = ((cfg1 >> 4) & 0xf) + ((cfg1 >> 31) & 0x1);
 	}
 
-	if (nv_device(drm->device)->card_type == NV_04)
+	if (drm->client.device.info.family == NV_DEVICE_INFO_V0_TNT)
 		nv04_calc_arb(&fifo_data, &sim_data);
 	else
 		nv10_calc_arb(&fifo_data, &sim_data);
@@ -253,11 +252,12 @@ void
 nouveau_calc_arb(struct drm_device *dev, int vclk, int bpp, int *burst, int *lwm)
 {
 	struct nouveau_drm *drm = nouveau_drm(dev);
+	struct pci_dev *pdev = to_pci_dev(dev->dev);
 
-	if (nv_device(drm->device)->card_type < NV_20)
+	if (drm->client.device.info.family < NV_DEVICE_INFO_V0_KELVIN)
 		nv04_update_arb(dev, vclk, bpp, burst, lwm);
-	else if ((dev->pdev->device & 0xfff0) == 0x0240 /*CHIPSET_C51*/ ||
-		 (dev->pdev->device & 0xfff0) == 0x03d0 /*CHIPSET_C512*/) {
+	else if ((pdev->device & 0xfff0) == 0x0240 /*CHIPSET_C51*/ ||
+		 (pdev->device & 0xfff0) == 0x03d0 /*CHIPSET_C512*/) {
 		*burst = 128;
 		*lwm = 0x0480;
 	} else

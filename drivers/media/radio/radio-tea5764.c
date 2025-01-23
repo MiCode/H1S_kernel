@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * driver/media/radio/radio-tea5764.c
  *
@@ -8,20 +9,6 @@
  * Based in radio-tea5761.c Copyright (C) 2005 Nokia Corporation
  *
  *  Copyright (c) 2008 Fabio Belavenuto <belavenuto@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  *
  * History:
  * 2008-12-06   Fabio Belavenuto <belavenuto@gmail.com>
@@ -124,11 +111,11 @@ struct tea5764_regs {
 
 struct tea5764_write_regs {
 	u8 intreg;				/* INTMSK */
-	u16 frqset;				/* FRQSETMSB & FRQSETLSB */
-	u16 tnctrl;				/* TNCTRL1 & TNCTRL2 */
-	u16 testreg;				/* TESTBITS & TESTMODE */
-	u16 rdsctrl;				/* RDSCTRL1 & RDSCTRL2 */
-	u16 rdsbbl;				/* PAUSEDET & RDSBBL */
+	__be16 frqset;				/* FRQSETMSB & FRQSETLSB */
+	__be16 tnctrl;				/* TNCTRL1 & TNCTRL2 */
+	__be16 testreg;				/* TESTBITS & TESTMODE */
+	__be16 rdsctrl;				/* RDSCTRL1 & RDSCTRL2 */
+	__be16 rdsbbl;				/* PAUSEDET & RDSBBL */
 } __attribute__ ((packed));
 
 #ifdef CONFIG_RADIO_TEA5764_XTAL
@@ -165,7 +152,7 @@ static int tea5764_i2c_read(struct tea5764_device *radio)
 	if (i2c_transfer(radio->i2c_client->adapter, msgs, 1) != 1)
 		return -EIO;
 	for (i = 0; i < sizeof(struct tea5764_regs) / sizeof(u16); i++)
-		p[i] = __be16_to_cpu(p[i]);
+		p[i] = __be16_to_cpu((__force __be16)p[i]);
 
 	return 0;
 }
@@ -291,12 +278,10 @@ static int vidioc_querycap(struct file *file, void  *priv,
 	struct tea5764_device *radio = video_drvdata(file);
 	struct video_device *dev = &radio->vdev;
 
-	strlcpy(v->driver, dev->dev.driver->name, sizeof(v->driver));
-	strlcpy(v->card, dev->name, sizeof(v->card));
+	strscpy(v->driver, dev->dev.driver->name, sizeof(v->driver));
+	strscpy(v->card, dev->name, sizeof(v->card));
 	snprintf(v->bus_info, sizeof(v->bus_info),
 		 "I2C:%s", dev_name(&dev->dev));
-	v->device_caps = V4L2_CAP_TUNER | V4L2_CAP_RADIO;
-	v->capabilities = v->device_caps | V4L2_CAP_DEVICE_CAPS;
 	return 0;
 }
 
@@ -309,7 +294,7 @@ static int vidioc_g_tuner(struct file *file, void *priv,
 	if (v->index > 0)
 		return -EINVAL;
 
-	strlcpy(v->name, "FM", sizeof(v->name));
+	strscpy(v->name, "FM", sizeof(v->name));
 	v->type = V4L2_TUNER_RADIO;
 	tea5764_i2c_read(radio);
 	v->rangelow   = FREQ_MIN * FREQ_MUL;
@@ -418,16 +403,15 @@ static const struct v4l2_ioctl_ops tea5764_ioctl_ops = {
 };
 
 /* V4L2 interface */
-static struct video_device tea5764_radio_template = {
+static const struct video_device tea5764_radio_template = {
 	.name		= "TEA5764 FM-Radio",
 	.fops           = &tea5764_fops,
-	.ioctl_ops 	= &tea5764_ioctl_ops,
+	.ioctl_ops	= &tea5764_ioctl_ops,
 	.release	= video_device_release_empty,
 };
 
 /* I2C probe: check if the device exists and register with v4l if it is */
-static int tea5764_i2c_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static int tea5764_i2c_probe(struct i2c_client *client)
 {
 	struct tea5764_device *radio;
 	struct v4l2_device *v4l2_dev;
@@ -478,7 +462,7 @@ static int tea5764_i2c_probe(struct i2c_client *client,
 	video_set_drvdata(&radio->vdev, radio);
 	radio->vdev.lock = &radio->mutex;
 	radio->vdev.v4l2_dev = v4l2_dev;
-	set_bit(V4L2_FL_USE_FH_PRIO, &radio->vdev.flags);
+	radio->vdev.device_caps = V4L2_CAP_TUNER | V4L2_CAP_RADIO;
 
 	/* initialize and power off the chip */
 	tea5764_i2c_read(radio);
@@ -502,7 +486,7 @@ errfr:
 	return ret;
 }
 
-static int tea5764_i2c_remove(struct i2c_client *client)
+static void tea5764_i2c_remove(struct i2c_client *client)
 {
 	struct tea5764_device *radio = i2c_get_clientdata(client);
 
@@ -514,7 +498,6 @@ static int tea5764_i2c_remove(struct i2c_client *client)
 		v4l2_device_unregister(&radio->v4l2_dev);
 		kfree(radio);
 	}
-	return 0;
 }
 
 /* I2C subsystem interface */
@@ -527,7 +510,6 @@ MODULE_DEVICE_TABLE(i2c, tea5764_id);
 static struct i2c_driver tea5764_i2c_driver = {
 	.driver = {
 		.name = "radio-tea5764",
-		.owner = THIS_MODULE,
 	},
 	.probe = tea5764_i2c_probe,
 	.remove = tea5764_i2c_remove,

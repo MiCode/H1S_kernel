@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/sys_cabriolet.c
  *
@@ -22,7 +23,6 @@
 #include <asm/irq.h>
 #include <asm/mmu_context.h>
 #include <asm/io.h>
-#include <asm/pgtable.h>
 #include <asm/core_apecs.h>
 #include <asm/core_cia.h>
 #include <asm/core_lca.h>
@@ -111,7 +111,8 @@ common_init_irq(void (*srm_dev_int)(unsigned long v))
 	}
 
 	common_init_isa_dma();
-	setup_irq(16+4, &isa_cascade_irqaction);
+	if (request_irq(16 + 4, no_action, 0, "isa-cascade", NULL))
+		pr_err("Failed to register isa-cascade interrupt\n");
 }
 
 #ifndef CONFIG_ALPHA_PC164
@@ -173,10 +174,10 @@ pc164_init_irq(void)
  * because it is the Saturn IO (SIO) PCI/ISA Bridge Chip.
  */
 
-static inline int __init
+static inline int
 eb66p_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
-	static char irq_tab[5][5] __initdata = {
+	static char irq_tab[5][5] = {
 		/*INT  INTA  INTB  INTC   INTD */
 		{16+0, 16+0, 16+5,  16+9, 16+13},  /* IdSel 6,  slot 0, J25 */
 		{16+1, 16+1, 16+6, 16+10, 16+14},  /* IdSel 7,  slot 1, J26 */
@@ -203,10 +204,10 @@ eb66p_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
  * because it is the Saturn IO (SIO) PCI/ISA Bridge Chip.
  */
 
-static inline int __init
+static inline int
 cabriolet_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
-	static char irq_tab[5][5] __initdata = {
+	static char irq_tab[5][5] = {
 		/*INT   INTA  INTB  INTC   INTD */
 		{ 16+2, 16+2, 16+7, 16+11, 16+15}, /* IdSel 5,  slot 2, J21 */
 		{ 16+0, 16+0, 16+5,  16+9, 16+13}, /* IdSel 6,  slot 0, J19 */
@@ -287,10 +288,10 @@ cia_cab_init_pci(void)
  * 
  */
 
-static inline int __init
+static inline int
 alphapc164_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
-	static char irq_tab[7][5] __initdata = {
+	static char irq_tab[7][5] = {
 		/*INT   INTA  INTB   INTC   INTD */
 		{ 16+2, 16+2, 16+9,  16+13, 16+17}, /* IdSel  5, slot 2, J20 */
 		{ 16+0, 16+0, 16+7,  16+11, 16+15}, /* IdSel  6, slot 0, J29 */

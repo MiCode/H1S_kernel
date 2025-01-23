@@ -1,17 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Export the iSCSI boot info to userland via sysfs.
  *
  * Copyright (C) 2010 Red Hat, Inc.  All rights reserved.
  * Copyright (C) 2010 Mike Christie
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License v2.0 as published by
- * the Free Software Foundation
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 #ifndef _ISCSI_BOOT_SYSFS_
 #define _ISCSI_BOOT_SYSFS_
@@ -23,6 +15,7 @@ enum iscsi_boot_eth_properties_enum {
 	ISCSI_BOOT_ETH_INDEX,
 	ISCSI_BOOT_ETH_FLAGS,
 	ISCSI_BOOT_ETH_IP_ADDR,
+	ISCSI_BOOT_ETH_PREFIX_LEN,
 	ISCSI_BOOT_ETH_SUBNET_MASK,
 	ISCSI_BOOT_ETH_ORIGIN,
 	ISCSI_BOOT_ETH_GATEWAY,
@@ -61,6 +54,12 @@ enum iscsi_boot_initiator_properties_enum {
 	ISCSI_BOOT_INI_SEC_RADIUS_SERVER,
 	ISCSI_BOOT_INI_INITIATOR_NAME,
 	ISCSI_BOOT_INI_END_MARKER,
+};
+
+enum iscsi_boot_acpitbl_properties_enum {
+	ISCSI_BOOT_ACPITBL_SIGNATURE,
+	ISCSI_BOOT_ACPITBL_OEM_ID,
+	ISCSI_BOOT_ACPITBL_OEM_TABLE_ID,
 };
 
 struct attribute_group;
@@ -125,6 +124,13 @@ iscsi_boot_create_target(struct iscsi_boot_kset *boot_kset, int index,
 			 ssize_t (*show) (void *data, int type, char *buf),
 			 umode_t (*is_visible) (void *data, int type),
 			 void (*release) (void *data));
+
+struct iscsi_boot_kobj *
+iscsi_boot_create_acpitbl(struct iscsi_boot_kset *boot_kset, int index,
+			  void *data,
+			  ssize_t (*show)(void *data, int type, char *buf),
+			  umode_t (*is_visible)(void *data, int type),
+			  void (*release)(void *data));
 
 struct iscsi_boot_kset *iscsi_boot_create_kset(const char *set_name);
 struct iscsi_boot_kset *iscsi_boot_create_host_kset(unsigned int hostno);

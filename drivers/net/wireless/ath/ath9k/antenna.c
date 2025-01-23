@@ -643,7 +643,7 @@ static void ath_ant_try_scan(struct ath_ant_comb *antcomb,
 				conf->main_lna_conf = ATH_ANT_DIV_COMB_LNA1;
 				conf->alt_lna_conf = ATH_ANT_DIV_COMB_LNA1_PLUS_LNA2;
 			} else if (antcomb->rssi_sub >
-				   antcomb->rssi_lna1) {
+				   antcomb->rssi_lna2) {
 				/* set to A-B */
 				conf->main_lna_conf = ATH_ANT_DIV_COMB_LNA1;
 				conf->alt_lna_conf = ATH_ANT_DIV_COMB_LNA1_MINUS_LNA2;
@@ -755,11 +755,11 @@ void ath_ant_comb_scan(struct ath_softc *sc, struct ath_rx_status *rs)
 	}
 
 	if (main_ant_conf == rx_ant_conf) {
-		ANT_STAT_INC(ANT_MAIN, recv_cnt);
-		ANT_LNA_INC(ANT_MAIN, rx_ant_conf);
+		ANT_STAT_INC(sc, ANT_MAIN, recv_cnt);
+		ANT_LNA_INC(sc, ANT_MAIN, rx_ant_conf);
 	} else {
-		ANT_STAT_INC(ANT_ALT, recv_cnt);
-		ANT_LNA_INC(ANT_ALT, rx_ant_conf);
+		ANT_STAT_INC(sc, ANT_ALT, recv_cnt);
+		ANT_LNA_INC(sc, ANT_ALT, rx_ant_conf);
 	}
 
 	/* Short scan check */

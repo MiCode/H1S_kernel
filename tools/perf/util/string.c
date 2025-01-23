@@ -1,7 +1,20 @@
-#include "util.h"
-#include "linux/string.h"
+// SPDX-License-Identifier: GPL-2.0
+#include "string2.h"
+#include <linux/kernel.h>
+#include <linux/string.h>
+#include <stdlib.h>
 
-#define K 1024LL
+#include <linux/ctype.h>
+
+const char *graph_dotted_line =
+	"---------------------------------------------------------------------"
+	"---------------------------------------------------------------------"
+	"---------------------------------------------------------------------";
+const char *dots =
+	"....................................................................."
+	"....................................................................."
+	".....................................................................";
+
 /*
  * perf_atoll()
  * Parse (\d+)(b|B|kb|KB|mb|MB|gb|GB|tb|TB) (e.g. "256MB")
@@ -9,179 +22,50 @@
  */
 s64 perf_atoll(const char *str)
 {
-	unsigned int i;
-	s64 length = -1, unit = 1;
+	s64 length;
+	char *p;
+	char c;
 
 	if (!isdigit(str[0]))
 		goto out_err;
 
-	for (i = 1; i < strlen(str); i++) {
-		switch (str[i]) {
-		case 'B':
-		case 'b':
-			break;
-		case 'K':
-			if (str[i + 1] != 'B')
+	length = strtoll(str, &p, 10);
+	switch (c = *p++) {
+		case 'b': case 'B':
+			if (*p)
 				goto out_err;
-			else
-				goto kilo;
-		case 'k':
-			if (str[i + 1] != 'b')
-				goto out_err;
-kilo:
-			unit = K;
-			break;
-		case 'M':
-			if (str[i + 1] != 'B')
-				goto out_err;
-			else
-				goto mega;
-		case 'm':
-			if (str[i + 1] != 'b')
-				goto out_err;
-mega:
-			unit = K * K;
-			break;
-		case 'G':
-			if (str[i + 1] != 'B')
-				goto out_err;
-			else
-				goto giga;
-		case 'g':
-			if (str[i + 1] != 'b')
-				goto out_err;
-giga:
-			unit = K * K * K;
-			break;
-		case 'T':
-			if (str[i + 1] != 'B')
-				goto out_err;
-			else
-				goto tera;
-		case 't':
-			if (str[i + 1] != 'b')
-				goto out_err;
-tera:
-			unit = K * K * K * K;
-			break;
-		case '\0':	/* only specified figures */
-			unit = 1;
-			break;
-		default:
-			if (!isdigit(str[i]))
-				goto out_err;
-			break;
-		}
-	}
 
-	length = atoll(str) * unit;
-	goto out;
+			fallthrough;
+		case '\0':
+			return length;
+		default:
+			goto out_err;
+		/* two-letter suffices */
+		case 'k': case 'K':
+			length <<= 10;
+			break;
+		case 'm': case 'M':
+			length <<= 20;
+			break;
+		case 'g': case 'G':
+			length <<= 30;
+			break;
+		case 't': case 'T':
+			length <<= 40;
+			break;
+	}
+	/* we want the cases to match */
+	if (islower(c)) {
+		if (strcmp(p, "b") != 0)
+			goto out_err;
+	} else {
+		if (strcmp(p, "B") != 0)
+			goto out_err;
+	}
+	return length;
 
 out_err:
-	length = -1;
-out:
-	return length;
-}
-
-/*
- * Helper function for splitting a string into an argv-like array.
- * originally copied from lib/argv_split.c
- */
-static const char *skip_sep(const char *cp)
-{
-	while (*cp && isspace(*cp))
-		cp++;
-
-	return cp;
-}
-
-static const char *skip_arg(const char *cp)
-{
-	while (*cp && !isspace(*cp))
-		cp++;
-
-	return cp;
-}
-
-static int count_argc(const char *str)
-{
-	int count = 0;
-
-	while (*str) {
-		str = skip_sep(str);
-		if (*str) {
-			count++;
-			str = skip_arg(str);
-		}
-	}
-
-	return count;
-}
-
-/**
- * argv_free - free an argv
- * @argv - the argument vector to be freed
- *
- * Frees an argv and the strings it points to.
- */
-void argv_free(char **argv)
-{
-	char **p;
-	for (p = argv; *p; p++)
-		zfree(p);
-
-	free(argv);
-}
-
-/**
- * argv_split - split a string at whitespace, returning an argv
- * @str: the string to be split
- * @argcp: returned argument count
- *
- * Returns an array of pointers to strings which are split out from
- * @str.  This is performed by strictly splitting on white-space; no
- * quote processing is performed.  Multiple whitespace characters are
- * considered to be a single argument separator.  The returned array
- * is always NULL-terminated.  Returns NULL on memory allocation
- * failure.
- */
-char **argv_split(const char *str, int *argcp)
-{
-	int argc = count_argc(str);
-	char **argv = zalloc(sizeof(*argv) * (argc+1));
-	char **argvp;
-
-	if (argv == NULL)
-		goto out;
-
-	if (argcp)
-		*argcp = argc;
-
-	argvp = argv;
-
-	while (*str) {
-		str = skip_sep(str);
-
-		if (*str) {
-			const char *p = str;
-			char *t;
-
-			str = skip_arg(str);
-
-			t = strndup(p, str-p);
-			if (t == NULL)
-				goto fail;
-			*argvp++ = t;
-		}
-	}
-	*argvp = NULL;
-
-out:
-	return argv;
-
-fail:
-	argv_free(argv);
-	return NULL;
+	return -1;
 }
 
 /* Character class matching */
@@ -223,7 +107,8 @@ error:
 }
 
 /* Glob/lazy pattern matching */
-static bool __match_glob(const char *str, const char *pat, bool ignore_space)
+static bool __match_glob(const char *str, const char *pat, bool ignore_space,
+			bool case_ins)
 {
 	while (*str && *pat && *pat != '*') {
 		if (ignore_space) {
@@ -249,8 +134,13 @@ static bool __match_glob(const char *str, const char *pat, bool ignore_space)
 				return false;
 		else if (*pat == '\\') /* Escaped char match as normal char */
 			pat++;
-		if (*str++ != *pat++)
+		if (case_ins) {
+			if (tolower(*str) != tolower(*pat))
+				return false;
+		} else if (*str != *pat)
 			return false;
+		str++;
+		pat++;
 	}
 	/* Check wild card */
 	if (*pat == '*') {
@@ -259,7 +149,7 @@ static bool __match_glob(const char *str, const char *pat, bool ignore_space)
 		if (!*pat)	/* Tail wild card matches all */
 			return true;
 		while (*str)
-			if (__match_glob(str++, pat, ignore_space))
+			if (__match_glob(str++, pat, ignore_space, case_ins))
 				return true;
 	}
 	return !*str && !*pat;
@@ -279,7 +169,12 @@ static bool __match_glob(const char *str, const char *pat, bool ignore_space)
  */
 bool strglobmatch(const char *str, const char *pat)
 {
-	return __match_glob(str, pat, false);
+	return __match_glob(str, pat, false, false);
+}
+
+bool strglobmatch_nocase(const char *str, const char *pat)
+{
+	return __match_glob(str, pat, false, true);
 }
 
 /**
@@ -292,7 +187,7 @@ bool strglobmatch(const char *str, const char *pat)
  */
 bool strlazymatch(const char *str, const char *pat)
 {
-	return __match_glob(str, pat, true);
+	return __match_glob(str, pat, true, false);
 }
 
 /**
@@ -313,101 +208,96 @@ int strtailcmp(const char *s1, const char *s2)
 	return 0;
 }
 
-/**
- * strxfrchar - Locate and replace character in @s
- * @s:    The string to be searched/changed.
- * @from: Source character to be replaced.
- * @to:   Destination character.
- *
- * Return pointer to the changed string.
- */
-char *strxfrchar(char *s, char from, char to)
+char *asprintf_expr_inout_ints(const char *var, bool in, size_t nints, int *ints)
 {
-	char *p = s;
+	/*
+	 * FIXME: replace this with an expression using log10() when we
+	 * find a suitable implementation, maybe the one in the dvb drivers...
+	 *
+	 * "%s == %d || " = log10(MAXINT) * 2 + 8 chars for the operators
+	 */
+	size_t size = nints * 28 + 1; /* \0 */
+	size_t i, printed = 0;
+	char *expr = malloc(size);
 
-	while ((p = strchr(p, from)) != NULL)
-		*p++ = to;
+	if (expr) {
+		const char *or_and = "||", *eq_neq = "==";
+		char *e = expr;
 
-	return s;
-}
+		if (!in) {
+			or_and = "&&";
+			eq_neq = "!=";
+		}
 
-/**
- * ltrim - Removes leading whitespace from @s.
- * @s: The string to be stripped.
- *
- * Return pointer to the first non-whitespace character in @s.
- */
-char *ltrim(char *s)
-{
-	int len = strlen(s);
+		for (i = 0; i < nints; ++i) {
+			if (printed == size)
+				goto out_err_overflow;
 
-	while (len && isspace(*s)) {
-		len--;
-		s++;
+			if (i > 0)
+				printed += scnprintf(e + printed, size - printed, " %s ", or_and);
+			printed += scnprintf(e + printed, size - printed,
+					     "%s %s %d", var, eq_neq, ints[i]);
+		}
 	}
 
-	return s;
+	return expr;
+
+out_err_overflow:
+	free(expr);
+	return NULL;
 }
 
-/**
- * rtrim - Removes trailing whitespace from @s.
- * @s: The string to be stripped.
- *
- * Note that the first trailing whitespace is replaced with a %NUL-terminator
- * in the given string @s. Returns @s.
- */
-char *rtrim(char *s)
+/* Like strpbrk(), but not break if it is right after a backslash (escaped) */
+char *strpbrk_esc(char *str, const char *stopset)
 {
-	size_t size = strlen(s);
-	char *end;
+	char *ptr;
 
-	if (!size)
-		return s;
+	do {
+		ptr = strpbrk(str, stopset);
+		if (ptr == str ||
+		    (ptr == str + 1 && *(ptr - 1) != '\\'))
+			break;
+		str = ptr + 1;
+	} while (ptr && *(ptr - 1) == '\\' && *(ptr - 2) != '\\');
 
-	end = s + size - 1;
-	while (end >= s && isspace(*end))
-		end--;
-	*(end + 1) = '\0';
-
-	return s;
+	return ptr;
 }
 
-/**
- * memdup - duplicate region of memory
- * @src: memory region to duplicate
- * @len: memory region length
- */
-void *memdup(const void *src, size_t len)
+/* Like strdup, but do not copy a single backslash */
+char *strdup_esc(const char *str)
 {
-	void *p;
+	char *s, *d, *p, *ret = strdup(str);
 
-	p = malloc(len);
-	if (p)
-		memcpy(p, src, len);
+	if (!ret)
+		return NULL;
 
-	return p;
+	d = strchr(ret, '\\');
+	if (!d)
+		return ret;
+
+	s = d + 1;
+	do {
+		if (*s == '\0') {
+			*d = '\0';
+			break;
+		}
+		p = strchr(s + 1, '\\');
+		if (p) {
+			memmove(d, s, p - s);
+			d += p - s;
+			s = p + 1;
+		} else
+			memmove(d, s, strlen(s) + 1);
+	} while (p);
+
+	return ret;
 }
 
-/**
- * str_append - reallocate string and append another
- * @s: pointer to string pointer
- * @len: pointer to len (initialized)
- * @a: string to append.
- */
-int str_append(char **s, int *len, const char *a)
+unsigned int hex(char c)
 {
-	int olen = *s ? strlen(*s) : 0;
-	int nlen = olen + strlen(a) + 1;
-	if (*len < nlen) {
-		*len = *len * 2;
-		if (*len < nlen)
-			*len = nlen;
-		*s = realloc(*s, *len);
-		if (!*s)
-			return -ENOMEM;
-		if (olen == 0)
-			**s = 0;
-	}
-	strcat(*s, a);
-	return 0;
+	if (c >= '0' && c <= '9')
+		return c - '0';
+	if (c >= 'a' && c <= 'f')
+		return c - 'a' + 10;
+	return c - 'A' + 10;
 }

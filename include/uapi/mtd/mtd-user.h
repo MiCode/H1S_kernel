@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /*
  * Copyright © 1999-2010 David Woodhouse <dwmw2@infradead.org>
  *
@@ -19,8 +20,6 @@
 
 #ifndef __MTD_USER_H__
 #define __MTD_USER_H__
-
-#include <stdint.h>
 
 /* This file is blessed for inclusion by userspace */
 #include <mtd/mtd-abi.h>

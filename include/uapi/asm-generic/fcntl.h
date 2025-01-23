@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 #ifndef _ASM_GENERIC_FCNTL_H
 #define _ASM_GENERIC_FCNTL_H
 
@@ -5,7 +6,7 @@
 
 /*
  * FMODE_EXEC is 0x20
- * FMODE_NONOTIFY is 0x1000000
+ * FMODE_NONOTIFY is 0x4000000
  * These cannot be used by userspace O_* until internal and external open
  * flags are split.
  * -Eric Paris
@@ -90,7 +91,6 @@
 
 /* a horrid kludge trying to make sure that this will fail on old kernels */
 #define O_TMPFILE (__O_TMPFILE | O_DIRECTORY)
-#define O_TMPFILE_MASK (__O_TMPFILE | O_DIRECTORY | O_CREAT)      
 
 #ifndef O_NDELAY
 #define O_NDELAY	O_NONBLOCK
@@ -115,13 +115,13 @@
 #define F_GETSIG	11	/* for sockets. */
 #endif
 
-#ifndef CONFIG_64BIT
+#if __BITS_PER_LONG == 32 || defined(__KERNEL__)
 #ifndef F_GETLK64
 #define F_GETLK64	12	/*  using 'struct flock64' */
 #define F_SETLK64	13
 #define F_SETLKW64	14
 #endif
-#endif
+#endif /* __BITS_PER_LONG == 32 || defined(__KERNEL__) */
 
 #ifndef F_SETOWN_EX
 #define F_SETOWN_EX	15
@@ -131,6 +131,22 @@
 #ifndef F_GETOWNER_UIDS
 #define F_GETOWNER_UIDS	17
 #endif
+
+/*
+ * Open File Description Locks
+ *
+ * Usually record locks held by a process are released on *any* close and are
+ * not inherited across a fork().
+ *
+ * These cmd values will set locks that conflict with process-associated
+ * record  locks, but are "owned" by the open file description, not the
+ * process. This means that they are inherited across fork() like BSD (flock)
+ * locks, and they are only released automatically when the last reference to
+ * the the open file against which they were acquired is put.
+ */
+#define F_OFD_GETLK	36
+#define F_OFD_SETLK	37
+#define F_OFD_SETLKW	38
 
 #define F_OWNER_TID	0
 #define F_OWNER_PID	1
@@ -164,6 +180,10 @@ struct f_owner_ex {
 				   blocking */
 #define LOCK_UN		8	/* remove lock */
 
+/*
+ * LOCK_MAND support has been removed from the kernel. We leave the symbols
+ * here to not break legacy builds, but these should not be used in new code.
+ */
 #define LOCK_MAND	32	/* This is a mandatory flock ... */
 #define LOCK_READ	64	/* which allows concurrent read operations */
 #define LOCK_WRITE	128	/* which allows concurrent write operations */
@@ -172,26 +192,19 @@ struct f_owner_ex {
 #define F_LINUX_SPECIFIC_BASE	1024
 
 #ifndef HAVE_ARCH_STRUCT_FLOCK
-#ifndef __ARCH_FLOCK_PAD
-#define __ARCH_FLOCK_PAD
-#endif
-
 struct flock {
 	short	l_type;
 	short	l_whence;
 	__kernel_off_t	l_start;
 	__kernel_off_t	l_len;
 	__kernel_pid_t	l_pid;
+#ifdef	__ARCH_FLOCK_EXTRA_SYSID
+	__ARCH_FLOCK_EXTRA_SYSID
+#endif
+#ifdef	__ARCH_FLOCK_PAD
 	__ARCH_FLOCK_PAD
+#endif
 };
-#endif
-
-#ifndef CONFIG_64BIT
-
-#ifndef HAVE_ARCH_STRUCT_FLOCK64
-#ifndef __ARCH_FLOCK64_PAD
-#define __ARCH_FLOCK64_PAD
-#endif
 
 struct flock64 {
 	short  l_type;
@@ -199,9 +212,10 @@ struct flock64 {
 	__kernel_loff_t l_start;
 	__kernel_loff_t l_len;
 	__kernel_pid_t  l_pid;
+#ifdef	__ARCH_FLOCK64_PAD
 	__ARCH_FLOCK64_PAD
-};
 #endif
-#endif /* !CONFIG_64BIT */
+};
+#endif /* HAVE_ARCH_STRUCT_FLOCK */
 
 #endif /* _ASM_GENERIC_FCNTL_H */

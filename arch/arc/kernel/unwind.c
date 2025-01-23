@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
  * Copyright (C) 2002-2006 Novell, Inc.
  *	Jan Beulich <jbeulich@novell.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * A simple API for unwinding kernel stacks.  This is used for
  * debugging and error reporting purposes.  The kernel doesn't need
@@ -15,7 +12,7 @@
 
 #include <linux/sched.h>
 #include <linux/module.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/sort.h>
 #include <linux/slab.h>
 #include <linux/stop_machine.h>
@@ -45,10 +42,10 @@ do {						\
 
 #define EXTRA_INFO(f) { \
 		BUILD_BUG_ON_ZERO(offsetof(struct unwind_frame_info, f) \
-				% FIELD_SIZEOF(struct unwind_frame_info, f)) \
+				% sizeof_field(struct unwind_frame_info, f)) \
 				+ offsetof(struct unwind_frame_info, f) \
-				/ FIELD_SIZEOF(struct unwind_frame_info, f), \
-				FIELD_SIZEOF(struct unwind_frame_info, f) \
+				/ sizeof_field(struct unwind_frame_info, f), \
+				sizeof_field(struct unwind_frame_info, f) \
 	}
 #define PTREGS_INFO(f) EXTRA_INFO(regs.f)
 
@@ -111,6 +108,8 @@ UNW_REGISTER_INFO};
 #define DW_EH_PE_indirect 0x80
 #define DW_EH_PE_omit     0xff
 
+#define CIE_ID	0
+
 typedef unsigned long uleb128_t;
 typedef signed long sleb128_t;
 
@@ -170,6 +169,17 @@ static struct unwind_table *find_table(unsigned long pc)
 
 static unsigned long read_pointer(const u8 **pLoc,
 				  const void *end, signed ptrType);
+static void init_unwind_hdr(struct unwind_table *table,
+			    void *(*alloc) (unsigned long));
+
+/*
+ * wrappers for header alloc (vs. calling one vs. other at call site)
+ * to elide section mismatches warnings
+ */
+static void *__init unw_hdr_alloc_early(unsigned long sz)
+{
+	return memblock_alloc_from(sz, sizeof(unsigned int), MAX_DMA_ADDRESS);
+}
 
 static void init_unwind_table(struct unwind_table *table, const char *name,
 			      const void *core_start, unsigned long core_size,
@@ -177,25 +187,26 @@ static void init_unwind_table(struct unwind_table *table, const char *name,
 			      const void *table_start, unsigned long table_size,
 			      const u8 *header_start, unsigned long header_size)
 {
-	const u8 *ptr = header_start + 4;
-	const u8 *end = header_start + header_size;
-
 	table->core.pc = (unsigned long)core_start;
 	table->core.range = core_size;
 	table->init.pc = (unsigned long)init_start;
 	table->init.range = init_size;
 	table->address = table_start;
 	table->size = table_size;
-
-	/* See if the linker provided table looks valid. */
-	if (header_size <= 4
-	    || header_start[0] != 1
-	    || (void *)read_pointer(&ptr, end, header_start[1]) != table_start
-	    || header_start[2] == DW_EH_PE_omit
-	    || read_pointer(&ptr, end, header_start[2]) <= 0
-	    || header_start[3] == DW_EH_PE_omit)
-		header_start = NULL;
-
+	/* To avoid the pointer addition with NULL pointer.*/
+	if (header_start != NULL) {
+		const u8 *ptr = header_start + 4;
+		const u8 *end = header_start + header_size;
+		/* See if the linker provided table looks valid. */
+		if (header_size <= 4
+		|| header_start[0] != 1
+		|| (void *)read_pointer(&ptr, end, header_start[1])
+				!= table_start
+		|| header_start[2] == DW_EH_PE_omit
+		|| read_pointer(&ptr, end, header_start[2]) <= 0
+		|| header_start[3] == DW_EH_PE_omit)
+			header_start = NULL;
+	}
 	table->hdrsz = header_size;
 	smp_wmb();
 	table->header = header_start;
@@ -209,10 +220,13 @@ void __init arc_unwind_init(void)
 			  __start_unwind, __end_unwind - __start_unwind,
 			  NULL, 0);
 	  /*__start_unwind_hdr, __end_unwind_hdr - __start_unwind_hdr);*/
+
+	init_unwind_hdr(&root_table, unw_hdr_alloc_early);
 }
 
 static const u32 bad_cie, not_fde;
 static const u32 *cie_for_fde(const u32 *fde, const struct unwind_table *);
+static const u32 *__cie_for_fde(const u32 *fde);
 static signed fde_pointer_type(const u32 *cie);
 
 struct eh_frame_hdr_table_entry {
@@ -231,22 +245,17 @@ static void swap_eh_frame_hdr_table_entries(void *p1, void *p2, int size)
 {
 	struct eh_frame_hdr_table_entry *e1 = p1;
 	struct eh_frame_hdr_table_entry *e2 = p2;
-	unsigned long v;
 
-	v = e1->start;
-	e1->start = e2->start;
-	e2->start = v;
-	v = e1->fde;
-	e1->fde = e2->fde;
-	e2->fde = v;
+	swap(e1->start, e2->start);
+	swap(e1->fde, e2->fde);
 }
 
-static void __init setup_unwind_table(struct unwind_table *table,
-				      void *(*alloc) (unsigned long))
+static void init_unwind_hdr(struct unwind_table *table,
+			    void *(*alloc) (unsigned long))
 {
 	const u8 *ptr;
 	unsigned long tableSize = table->size, hdrSize;
-	unsigned n;
+	unsigned int n;
 	const u32 *fde;
 	struct {
 		u8 version;
@@ -277,10 +286,10 @@ static void __init setup_unwind_table(struct unwind_table *table,
 		if (cie == &not_fde)
 			continue;
 		if (cie == NULL || cie == &bad_cie)
-			return;
+			goto ret_err;
 		ptrType = fde_pointer_type(cie);
 		if (ptrType < 0)
-			return;
+			goto ret_err;
 
 		ptr = (const u8 *)(fde + 2);
 		if (!read_pointer(&ptr, (const u8 *)(fde + 1) + *fde,
@@ -296,13 +305,15 @@ static void __init setup_unwind_table(struct unwind_table *table,
 	}
 
 	if (tableSize || !n)
-		return;
+		goto ret_err;
 
 	hdrSize = 4 + sizeof(unsigned long) + sizeof(unsigned int)
 	    + 2 * n * sizeof(unsigned long);
+
 	header = alloc(hdrSize);
 	if (!header)
-		return;
+		goto ret_err;
+
 	header->version = 1;
 	header->eh_frame_ptr_enc = DW_EH_PE_abs | DW_EH_PE_native;
 	header->fde_count_enc = DW_EH_PE_abs | DW_EH_PE_data4;
@@ -317,10 +328,9 @@ static void __init setup_unwind_table(struct unwind_table *table,
 	for (fde = table->address, tableSize = table->size, n = 0;
 	     tableSize;
 	     tableSize -= sizeof(*fde) + *fde, fde += 1 + *fde / sizeof(*fde)) {
-		/* const u32 *cie = fde + 1 - fde[1] / sizeof(*fde); */
-		const u32 *cie = (const u32 *)(fde[1]);
+		const u32 *cie = __cie_for_fde(fde);
 
-		if (fde[1] == 0xffffffff)
+		if (fde[1] == CIE_ID)
 			continue;	/* this is a CIE */
 		ptr = (const u8 *)(fde + 2);
 		header->table[n].start = read_pointer(&ptr,
@@ -340,21 +350,17 @@ static void __init setup_unwind_table(struct unwind_table *table,
 	table->hdrsz = hdrSize;
 	smp_wmb();
 	table->header = (const void *)header;
-}
+	return;
 
-static void *__init balloc(unsigned long sz)
-{
-	return __alloc_bootmem_nopanic(sz,
-				       sizeof(unsigned int),
-				       __pa(MAX_DMA_ADDRESS));
-}
-
-void __init arc_unwind_setup(void)
-{
-	setup_unwind_table(&root_table, balloc);
+ret_err:
+	panic("Attention !!! Dwarf FDE parsing errors\n");
 }
 
 #ifdef CONFIG_MODULES
+static void *unw_hdr_alloc(unsigned long sz)
+{
+	return kmalloc(sz, GFP_KERNEL);
+}
 
 static struct unwind_table *last_table;
 
@@ -363,6 +369,8 @@ void *unwind_add_table(struct module *module, const void *table_start,
 		       unsigned long table_size)
 {
 	struct unwind_table *table;
+	struct module_memory *core_text;
+	struct module_memory *init_text;
 
 	if (table_size <= 0)
 		return NULL;
@@ -371,11 +379,13 @@ void *unwind_add_table(struct module *module, const void *table_start,
 	if (!table)
 		return NULL;
 
-	init_unwind_table(table, module->name,
-			  module->module_core, module->core_size,
-			  module->module_init, module->init_size,
-			  table_start, table_size,
-			  NULL, 0);
+	core_text = &module->mem[MOD_TEXT];
+	init_text = &module->mem[MOD_INIT_TEXT];
+
+	init_unwind_table(table, module->name, core_text->base, core_text->size,
+			  init_text->base, init_text->size, table_start, table_size, NULL, 0);
+
+	init_unwind_hdr(table, unw_hdr_alloc);
 
 #ifdef UNWIND_DEBUG
 	unw_debug("Table added for [%s] %lx %lx\n",
@@ -439,6 +449,7 @@ void unwind_remove_table(void *handle, int init_only)
 	info.init_only = init_only;
 
 	unlink_table(&info); /* XXX: SMP */
+	kfree(table->header);
 	kfree(table);
 }
 
@@ -448,7 +459,7 @@ static uleb128_t get_uleb128(const u8 **pcur, const u8 *end)
 {
 	const u8 *cur = *pcur;
 	uleb128_t value;
-	unsigned shift;
+	unsigned int shift;
 
 	for (shift = 0, value = 0; cur < end; shift += 7) {
 		if (shift + 7 > 8 * sizeof(value)
@@ -469,7 +480,7 @@ static sleb128_t get_sleb128(const u8 **pcur, const u8 *end)
 {
 	const u8 *cur = *pcur;
 	sleb128_t value;
-	unsigned shift;
+	unsigned int shift;
 
 	for (shift = 0, value = 0; cur < end; shift += 7) {
 		if (shift + 7 > 8 * sizeof(value)
@@ -488,6 +499,15 @@ static sleb128_t get_sleb128(const u8 **pcur, const u8 *end)
 	return value;
 }
 
+static const u32 *__cie_for_fde(const u32 *fde)
+{
+	const u32 *cie;
+
+	cie = fde + 1 - fde[1] / sizeof(*fde);
+
+	return cie;
+}
+
 static const u32 *cie_for_fde(const u32 *fde, const struct unwind_table *table)
 {
 	const u32 *cie;
@@ -495,19 +515,18 @@ static const u32 *cie_for_fde(const u32 *fde, const struct unwind_table *table)
 	if (!*fde || (*fde & (sizeof(*fde) - 1)))
 		return &bad_cie;
 
-	if (fde[1] == 0xffffffff)
+	if (fde[1] == CIE_ID)
 		return &not_fde;	/* this is a CIE */
 
 	if ((fde[1] & (sizeof(*fde) - 1)))
 /* || fde[1] > (unsigned long)(fde + 1) - (unsigned long)table->address) */
 		return NULL;	/* this is not a valid FDE */
 
-	/* cie = fde + 1 - fde[1] / sizeof(*fde); */
-	cie = (u32 *) fde[1];
+	cie = __cie_for_fde(fde);
 
 	if (*cie <= sizeof(*cie) + 4 || *cie >= fde[1] - sizeof(*fde)
 	    || (*cie & (sizeof(*cie) - 1))
-	    || (cie[1] != 0xffffffff))
+	    || (cie[1] != CIE_ID))
 		return NULL;	/* this is not a (valid) CIE */
 	return cie;
 }
@@ -551,6 +570,7 @@ static unsigned long read_pointer(const u8 **pLoc, const void *end,
 #else
 		BUILD_BUG_ON(sizeof(u32) != sizeof(value));
 #endif
+		fallthrough;
 	case DW_EH_PE_native:
 		if (end < (const void *)(ptr.pul + 1))
 			return 0;
@@ -586,10 +606,7 @@ static unsigned long read_pointer(const u8 **pLoc, const void *end,
 static signed fde_pointer_type(const u32 *cie)
 {
 	const u8 *ptr = (const u8 *)(cie + 2);
-	unsigned version = *ptr;
-
-	if (version != 1)
-		return -1;	/* unsupported */
+	unsigned int version = *ptr;
 
 	if (*++ptr) {
 		const char *aug;
@@ -808,7 +825,7 @@ static int processCFI(const u8 *start, const u8 *end, unsigned long targetLoc,
 			case DW_CFA_def_cfa:
 				state->cfa.reg = get_uleb128(&ptr.p8, end);
 				unw_debug("cfa_def_cfa: r%lu ", state->cfa.reg);
-				/*nobreak*/
+				fallthrough;
 			case DW_CFA_def_cfa_offset:
 				state->cfa.offs = get_uleb128(&ptr.p8, end);
 				unw_debug("cfa_def_cfa_offset: 0x%lx ",
@@ -816,13 +833,13 @@ static int processCFI(const u8 *start, const u8 *end, unsigned long targetLoc,
 				break;
 			case DW_CFA_def_cfa_sf:
 				state->cfa.reg = get_uleb128(&ptr.p8, end);
-				/*nobreak */
+				fallthrough;
 			case DW_CFA_def_cfa_offset_sf:
 				state->cfa.offs = get_sleb128(&ptr.p8, end)
 				    * state->dataAlign;
 				break;
 			case DW_CFA_def_cfa_register:
-				unw_debug("cfa_def_cfa_regsiter: ");
+				unw_debug("cfa_def_cfa_register: ");
 				state->cfa.reg = get_uleb128(&ptr.p8, end);
 				break;
 				/*todo case DW_CFA_def_cfa_expression: */
@@ -841,7 +858,7 @@ static int processCFI(const u8 *start, const u8 *end, unsigned long targetLoc,
 				break;
 			case DW_CFA_GNU_window_save:
 			default:
-				unw_debug("UNKNOW OPCODE 0x%x\n", opcode);
+				unw_debug("UNKNOWN OPCODE 0x%x\n", opcode);
 				result = 0;
 				break;
 			}
@@ -884,7 +901,7 @@ int arc_unwind(struct unwind_frame_info *frame)
 	const u8 *ptr = NULL, *end = NULL;
 	unsigned long pc = UNW_PC(frame) - frame->call_frame;
 	unsigned long startLoc = 0, endLoc = 0, cfa;
-	unsigned i;
+	unsigned int i;
 	signed ptrType = -1;
 	uleb128_t retAddrReg = 0;
 	const struct unwind_table *table;
@@ -986,42 +1003,13 @@ int arc_unwind(struct unwind_frame_info *frame)
 							    (const u8 *)(fde +
 									 1) +
 							    *fde, ptrType);
-				if (pc >= endLoc)
+				if (pc >= endLoc) {
 					fde = NULL;
-			} else
-				fde = NULL;
-		}
-		if (fde == NULL) {
-			for (fde = table->address, tableSize = table->size;
-			     cie = NULL, tableSize > sizeof(*fde)
-			     && tableSize - sizeof(*fde) >= *fde;
-			     tableSize -= sizeof(*fde) + *fde,
-			     fde += 1 + *fde / sizeof(*fde)) {
-				cie = cie_for_fde(fde, table);
-				if (cie == &bad_cie) {
 					cie = NULL;
-					break;
 				}
-				if (cie == NULL
-				    || cie == &not_fde
-				    || (ptrType = fde_pointer_type(cie)) < 0)
-					continue;
-				ptr = (const u8 *)(fde + 2);
-				startLoc = read_pointer(&ptr,
-							(const u8 *)(fde + 1) +
-							*fde, ptrType);
-				if (!startLoc)
-					continue;
-				if (!(ptrType & DW_EH_PE_indirect))
-					ptrType &=
-					    DW_EH_PE_FORM | DW_EH_PE_signed;
-				endLoc =
-				    startLoc + read_pointer(&ptr,
-							    (const u8 *)(fde +
-									 1) +
-							    *fde, ptrType);
-				if (pc >= startLoc && pc < endLoc)
-					break;
+			} else {
+				fde = NULL;
+				cie = NULL;
 			}
 		}
 	}
@@ -1031,9 +1019,7 @@ int arc_unwind(struct unwind_frame_info *frame)
 		ptr = (const u8 *)(cie + 2);
 		end = (const u8 *)(cie + 1) + *cie;
 		frame->call_frame = 1;
-		if ((state.version = *ptr) != 1)
-			cie = NULL;	/* unsupported version */
-		else if (*++ptr) {
+		if (*++ptr) {
 			/* check if augmentation size is first (thus present) */
 			if (*ptr == 'z') {
 				while (++ptr < end && *ptr) {
@@ -1059,9 +1045,9 @@ int arc_unwind(struct unwind_frame_info *frame)
 		++ptr;
 	}
 	if (cie != NULL) {
-		/* get code aligment factor */
+		/* get code alignment factor */
 		state.codeAlign = get_uleb128(&ptr, end);
-		/* get data aligment factor */
+		/* get data alignment factor */
 		state.dataAlign = get_sleb128(&ptr, end);
 		if (state.codeAlign == 0 || state.dataAlign == 0 || ptr >= end)
 			cie = NULL;
@@ -1190,11 +1176,9 @@ int arc_unwind(struct unwind_frame_info *frame)
 #endif
 
 	/* update frame */
-#ifndef CONFIG_AS_CFI_SIGNAL_FRAME
 	if (frame->call_frame
 	    && !UNW_DEFAULT_RA(state.regs[retAddrReg], state.dataAlign))
 		frame->call_frame = 0;
-#endif
 	cfa = FRAME_REG(state.cfa.reg, unsigned long) + state.cfa.offs;
 	startLoc = min_t(unsigned long, UNW_SP(frame), cfa);
 	endLoc = max_t(unsigned long, UNW_SP(frame), cfa);

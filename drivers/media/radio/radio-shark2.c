@@ -19,10 +19,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/init.h>
@@ -137,7 +133,7 @@ static int shark_read_reg(struct radio_tea5777 *tea, u32 *reg_ret)
 	return 0;
 }
 
-static struct radio_tea5777_ops shark_tea_ops = {
+static const struct radio_tea5777_ops shark_tea_ops = {
 	.write_reg = shark_write_reg,
 	.read_reg  = shark_read_reg,
 };
@@ -286,6 +282,16 @@ static int usb_shark_probe(struct usb_interface *intf,
 {
 	struct shark_device *shark;
 	int retval = -ENOMEM;
+	static const u8 ep_addresses[] = {
+		SHARK_IN_EP | USB_DIR_IN,
+		SHARK_OUT_EP | USB_DIR_OUT,
+		0};
+
+	/* Are the expected endpoints present? */
+	if (!usb_check_int_endpoints(intf, ep_addresses)) {
+		dev_err(&intf->dev, "Invalid radioSHARK2 device\n");
+		return -EINVAL;
+	}
 
 	shark = kzalloc(sizeof(struct shark_device), GFP_KERNEL);
 	if (!shark)
@@ -314,7 +320,7 @@ static int usb_shark_probe(struct usb_interface *intf,
 	shark->tea.ops = &shark_tea_ops;
 	shark->tea.has_am = true;
 	shark->tea.write_before_read = true;
-	strlcpy(shark->tea.card, "Griffin radioSHARK2",
+	strscpy(shark->tea.card, "Griffin radioSHARK2",
 		sizeof(shark->tea.card));
 	usb_make_path(shark->usbdev, shark->tea.bus_info,
 		sizeof(shark->tea.bus_info));
@@ -362,7 +368,7 @@ static int usb_shark_resume(struct usb_interface *intf)
 #endif
 
 /* Specify the bcdDevice value, as the radioSHARK and radioSHARK2 share ids */
-static struct usb_device_id usb_shark_device_table[] = {
+static const struct usb_device_id usb_shark_device_table[] = {
 	{ .match_flags = USB_DEVICE_ID_MATCH_DEVICE_AND_VERSION |
 			 USB_DEVICE_ID_MATCH_INT_CLASS,
 	  .idVendor     = 0x077d,

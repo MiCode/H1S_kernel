@@ -1,5 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_XEN_EVENTS_H
 #define _ASM_X86_XEN_EVENTS_H
+
+#include <xen/xen.h>
 
 enum ipi_vector {
 	XEN_RESCHEDULE_VECTOR,
@@ -20,4 +23,16 @@ static inline int xen_irqs_disabled(struct pt_regs *regs)
 /* No need for a barrier -- XCHG is a barrier on x86. */
 #define xchg_xen_ulong(ptr, val) xchg((ptr), (val))
 
+extern bool xen_have_vector_callback;
+
+/*
+ * Events delivered via platform PCI interrupts are always
+ * routed to vcpu 0 and hence cannot be rebound.
+ */
+static inline bool xen_support_evtchn_rebind(void)
+{
+	return (!xen_hvm_domain() || xen_have_vector_callback);
+}
+
+extern bool xen_percpu_upcall;
 #endif /* _ASM_X86_XEN_EVENTS_H */

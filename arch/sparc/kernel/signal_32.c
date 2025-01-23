@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*  linux/arch/sparc/kernel/signal.c
  *
  *  Copyright (C) 1991, 1992  Linus Torvalds
@@ -18,16 +19,15 @@
 #include <linux/smp.h>
 #include <linux/binfmts.h>	/* do_coredum */
 #include <linux/bitops.h>
-#include <linux/tracehook.h>
+#include <linux/resume_user_mode.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/ptrace.h>
-#include <asm/pgalloc.h>
-#include <asm/pgtable.h>
 #include <asm/cacheflush.h>	/* flush_sig_insns */
 #include <asm/switch_to.h>
 
 #include "sigutil.h"
+#include "kernel.h"
 
 extern void fpsave(unsigned long *fpregs, unsigned long *fsr,
 		   void *fpqueue, unsigned long *fpqdepth);
@@ -59,27 +59,42 @@ struct rt_signal_frame {
 #define SF_ALIGNEDSZ  (((sizeof(struct signal_frame) + 7) & (~7)))
 #define RT_ALIGNEDSZ  (((sizeof(struct rt_signal_frame) + 7) & (~7)))
 
+/* Checks if the fp is valid.  We always build signal frames which are
+ * 16-byte aligned, therefore we can always enforce that the restore
+ * frame has that property as well.
+ */
+static inline bool invalid_frame_pointer(void __user *fp, int fplen)
+{
+	if ((((unsigned long) fp) & 15) || !access_ok(fp, fplen))
+		return true;
+
+	return false;
+}
+
 asmlinkage void do_sigreturn(struct pt_regs *regs)
 {
+	unsigned long up_psr, pc, npc, ufp;
 	struct signal_frame __user *sf;
-	unsigned long up_psr, pc, npc;
 	sigset_t set;
 	__siginfo_fpu_t __user *fpu_save;
 	__siginfo_rwin_t __user *rwin_save;
 	int err;
 
 	/* Always make any pending restarted system calls return -EINTR */
-	current_thread_info()->restart_block.fn = do_no_restart_syscall;
+	current->restart_block.fn = do_no_restart_syscall;
 
 	synchronize_user_stack();
 
 	sf = (struct signal_frame __user *) regs->u_regs[UREG_FP];
 
 	/* 1. Make sure we are not getting garbage from the user */
-	if (!access_ok(VERIFY_READ, sf, sizeof(*sf)))
+	if (invalid_frame_pointer(sf, sizeof(*sf)))
 		goto segv_and_exit;
 
-	if (((unsigned long) sf) & 3)
+	if (get_user(ufp, &sf->info.si_regs.u_regs[UREG_FP]))
+		goto segv_and_exit;
+
+	if (ufp & 0x7)
 		goto segv_and_exit;
 
 	err = __get_user(pc,  &sf->info.si_regs.pc);
@@ -120,13 +135,13 @@ asmlinkage void do_sigreturn(struct pt_regs *regs)
 	return;
 
 segv_and_exit:
-	force_sig(SIGSEGV, current);
+	force_sig(SIGSEGV);
 }
 
 asmlinkage void do_rt_sigreturn(struct pt_regs *regs)
 {
 	struct rt_signal_frame __user *sf;
-	unsigned int psr, pc, npc;
+	unsigned int psr, pc, npc, ufp;
 	__siginfo_fpu_t __user *fpu_save;
 	__siginfo_rwin_t __user *rwin_save;
 	sigset_t set;
@@ -134,8 +149,13 @@ asmlinkage void do_rt_sigreturn(struct pt_regs *regs)
 
 	synchronize_user_stack();
 	sf = (struct rt_signal_frame __user *) regs->u_regs[UREG_FP];
-	if (!access_ok(VERIFY_READ, sf, sizeof(*sf)) ||
-	    (((unsigned long) sf) & 0x03))
+	if (invalid_frame_pointer(sf, sizeof(*sf)))
+		goto segv;
+
+	if (get_user(ufp, &sf->regs.u_regs[UREG_FP]))
+		goto segv;
+
+	if (ufp & 0x7)
 		goto segv;
 
 	err = __get_user(pc, &sf->regs.pc);
@@ -174,16 +194,7 @@ asmlinkage void do_rt_sigreturn(struct pt_regs *regs)
 	set_current_blocked(&set);
 	return;
 segv:
-	force_sig(SIGSEGV, current);
-}
-
-/* Checks if the fp is valid */
-static inline int invalid_frame_pointer(void __user *fp, int fplen)
-{
-	if ((((unsigned long) fp) & 7) || !__access_ok((unsigned long)fp, fplen))
-		return 1;
-
-	return 0;
+	force_sig(SIGSEGV);
 }
 
 static inline void __user *get_sigframe(struct ksignal *ksig, struct pt_regs *regs, unsigned long framesize)
@@ -233,7 +244,7 @@ static int setup_frame(struct ksignal *ksig, struct pt_regs *regs,
 		get_sigframe(ksig, regs, sigframe_size);
 
 	if (invalid_frame_pointer(sf, sigframe_size)) {
-		do_exit(SIGILL);
+		force_exit_sig(SIGILL);
 		return -EINVAL;
 	}
 
@@ -325,7 +336,7 @@ static int setup_rt_frame(struct ksignal *ksig, struct pt_regs *regs,
 	sf = (struct rt_signal_frame __user *)
 		get_sigframe(ksig, regs, sigframe_size);
 	if (invalid_frame_pointer(sf, sigframe_size)) {
-		do_exit(SIGILL);
+		force_exit_sig(SIGILL);
 		return -EINVAL;
 	}
 
@@ -341,7 +352,7 @@ static int setup_rt_frame(struct ksignal *ksig, struct pt_regs *regs,
 	err |= __put_user(0, &sf->extra_size);
 
 	if (psr & PSR_EF) {
-		__siginfo_fpu_t *fp = tail;
+		__siginfo_fpu_t __user *fp = tail;
 		tail += sizeof(*fp);
 		err |= save_fpu_state(regs, fp);
 		err |= __put_user(fp, &sf->fpu_save);
@@ -349,7 +360,7 @@ static int setup_rt_frame(struct ksignal *ksig, struct pt_regs *regs,
 		err |= __put_user(0, &sf->fpu_save);
 	}
 	if (wsaved) {
-		__siginfo_rwin_t *rwp = tail;
+		__siginfo_rwin_t __user *rwp = tail;
 		tail += sizeof(*rwp);
 		err |= save_rwin_state(wsaved, rwp);
 		err |= __put_user(rwp, &sf->rwin_save);
@@ -389,8 +400,8 @@ static int setup_rt_frame(struct ksignal *ksig, struct pt_regs *regs,
 	else {
 		regs->u_regs[UREG_I7] = (unsigned long)(&(sf->insns[0]) - 2);
 
-		/* mov __NR_sigreturn, %g1 */
-		err |= __put_user(0x821020d8, &sf->insns[0]);
+		/* mov __NR_rt_sigreturn, %g1 */
+		err |= __put_user(0x82102065, &sf->insns[0]);
 
 		/* t 0x10 */
 		err |= __put_user(0x91d02010, &sf->insns[1]);
@@ -429,7 +440,7 @@ static inline void syscall_restart(unsigned long orig_i0, struct pt_regs *regs,
 	case ERESTARTSYS:
 		if (!(sa->sa_flags & SA_RESTART))
 			goto no_system_call_restart;
-		/* fallthrough */
+		fallthrough;
 	case ERESTARTNOINTR:
 		regs->u_regs[UREG_I0] = orig_i0;
 		regs->pc -= 4;
@@ -495,6 +506,7 @@ static void do_signal(struct pt_regs *regs, unsigned long orig_i0)
 				regs->pc -= 4;
 				regs->npc -= 4;
 				pt_regs_clear_syscall(regs);
+				fallthrough;
 			case ERESTART_RESTARTBLOCK:
 				regs->u_regs[UREG_G1] = __NR_restart_syscall;
 				regs->pc -= 4;
@@ -509,17 +521,15 @@ static void do_signal(struct pt_regs *regs, unsigned long orig_i0)
 void do_notify_resume(struct pt_regs *regs, unsigned long orig_i0,
 		      unsigned long thread_info_flags)
 {
-	if (thread_info_flags & _TIF_SIGPENDING)
+	if (thread_info_flags & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
 		do_signal(regs, orig_i0);
-	if (thread_info_flags & _TIF_NOTIFY_RESUME) {
-		clear_thread_flag(TIF_NOTIFY_RESUME);
-		tracehook_notify_resume(regs);
-	}
+	if (thread_info_flags & _TIF_NOTIFY_RESUME)
+		resume_user_mode_work(regs);
 }
 
-asmlinkage int
-do_sys_sigstack(struct sigstack __user *ssptr, struct sigstack __user *ossptr,
-		unsigned long sp)
+asmlinkage int do_sys_sigstack(struct sigstack __user *ssptr,
+                               struct sigstack __user *ossptr,
+                               unsigned long sp)
 {
 	int ret = -EFAULT;
 

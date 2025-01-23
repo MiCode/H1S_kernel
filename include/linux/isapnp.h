@@ -1,22 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *  ISA Plug & Play support
  *  Copyright (c) by Jaroslav Kysela <perex@suse.cz>
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  */
 
 #ifndef LINUX_ISAPNP_H
@@ -56,10 +41,6 @@
 #define ISAPNP_DEVICE_ID(_va, _vb, _vc, _function) \
 		{ .vendor = ISAPNP_VENDOR(_va, _vb, _vc), .function = ISAPNP_FUNCTION(_function) }
 
-/* export used IDs outside module */
-#define ISAPNP_CARD_TABLE(name) \
-		MODULE_GENERIC_TABLE(isapnp_card, name)
-
 struct isapnp_card_id {
 	unsigned long driver_data;	/* data private to the driver */
 	unsigned short card_vendor, card_device;
@@ -94,9 +75,6 @@ static inline int isapnp_proc_done(void) { return 0; }
 #endif
 
 /* compat */
-struct pnp_card *pnp_find_card(unsigned short vendor,
-			       unsigned short device,
-			       struct pnp_card *from);
 struct pnp_dev *pnp_find_dev(struct pnp_card *card,
 			     unsigned short vendor,
 			     unsigned short function,
@@ -111,9 +89,6 @@ static inline int isapnp_cfg_end(void) { return -ENODEV; }
 static inline unsigned char isapnp_read_byte(unsigned char idx) { return 0xff; }
 static inline void isapnp_write_byte(unsigned char idx, unsigned char val) { ; }
 
-static inline struct pnp_card *pnp_find_card(unsigned short vendor,
-					     unsigned short device,
-					     struct pnp_card *from) { return NULL; }
 static inline struct pnp_dev *pnp_find_dev(struct pnp_card *card,
 					   unsigned short vendor,
 					   unsigned short function,

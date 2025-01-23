@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /*
  * Copyright 2011-2013 Autronica Fire and Security AS
  *
@@ -16,7 +17,7 @@
 /* Generic Netlink HSR family definition
  */
 
-/* attributes */
+/* attributes for HSR or PRP node */
 enum {
 	HSR_A_UNSPEC,
 	HSR_A_NODE_ADDR,

@@ -1,12 +1,9 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0
+ *
  * SH7786 PCI-Express controller definitions.
  *
  * Copyright (C) 2008, 2009 Renesas Technology Corp.
  * All rights reserved.
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #ifndef __PCI_SH7786_H
 #define __PCI_SH7786_H
@@ -144,9 +141,6 @@
 
 /*	PCIERMSGIER	*/
 #define	SH4A_PCIERMSGIER	(0x004040)	/* R/W - 0x0000 0000 32 */
-
-/*	PCIEPHYCTLR	*/
-#define SH4A_PCIEPHYCTLR	(0x010000)	/* R/W - 0x0000 0000 32 */
 
 /*	PCIEPHYADRR	*/
 #define	SH4A_PCIEPHYADRR	(0x010004)	/* R/W - 0x0000 0000 32 */

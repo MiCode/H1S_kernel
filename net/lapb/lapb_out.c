@@ -1,13 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	LAPB release 002
  *
  *	This code REQUIRES 2.1.15 or higher/ NET3.038
- *
- *	This module:
- *		This module is free software; you can redistribute it and/or
- *		modify it under the terms of the GNU General Public License
- *		as published by the Free Software Foundation; either version
- *		2 of the License, or (at your option) any later version.
  *
  *	History
  *	LAPB 001	Jonathan Naylor	Started Coding
@@ -29,7 +24,7 @@
 #include <linux/skbuff.h>
 #include <linux/slab.h>
 #include <net/sock.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/fcntl.h>
 #include <linux/mm.h>
 #include <linux/interrupt.h>
@@ -87,7 +82,8 @@ void lapb_kick(struct lapb_cb *lapb)
 		skb = skb_dequeue(&lapb->write_queue);
 
 		do {
-			if ((skbn = skb_clone(skb, GFP_ATOMIC)) == NULL) {
+			skbn = skb_copy(skb, GFP_ATOMIC);
+			if (!skbn) {
 				skb_queue_head(&lapb->write_queue, skb);
 				break;
 			}
@@ -148,9 +144,7 @@ void lapb_transmit_buffer(struct lapb_cb *lapb, struct sk_buff *skb, int type)
 		}
 	}
 
-	lapb_dbg(2, "(%p) S%d TX %02X %02X %02X\n",
-		 lapb->dev, lapb->state,
-		 skb->data[0], skb->data[1], skb->data[2]);
+	lapb_dbg(2, "(%p) S%d TX %3ph\n", lapb->dev, lapb->state, skb->data);
 
 	if (!lapb_data_transmit(lapb, skb))
 		kfree_skb(skb);

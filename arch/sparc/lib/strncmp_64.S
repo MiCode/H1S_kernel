@@ -1,9 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Sparc64 optimized strncmp code.
  *
  * Copyright (C) 1997 Jakub Jelinek (jj@sunsite.mff.cuni.cz)
  */
 
+#include <linux/export.h>
 #include <linux/linkage.h>
 #include <asm/asi.h>
 
@@ -28,3 +30,4 @@ ENTRY(strncmp)
 	retl
 	 clr	%o0
 ENDPROC(strncmp)
+EXPORT_SYMBOL(strncmp)

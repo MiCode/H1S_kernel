@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  linux/include/linux/hfsplus_raw.h
  *
@@ -144,6 +145,7 @@ struct hfsplus_vh {
 #define HFSPLUS_VOL_NODEID_REUSED	(1 << 12)
 #define HFSPLUS_VOL_JOURNALED		(1 << 13)
 #define HFSPLUS_VOL_SOFTLOCK		(1 << 15)
+#define HFSPLUS_VOL_UNUSED_NODE_FIX	(1 << 31)
 
 /* HFS+ BTree node descriptor */
 struct hfs_bnode_desc {
@@ -258,10 +260,12 @@ struct hfsplus_cat_folder {
 	__be32 access_date;
 	__be32 backup_date;
 	struct hfsplus_perm permissions;
-	struct DInfo user_info;
-	struct DXInfo finder_info;
+	struct_group_attr(info, __packed,
+		struct DInfo user_info;
+		struct DXInfo finder_info;
+	);
 	__be32 text_encoding;
-	u32 reserved;
+	__be32 subfolders;	/* Subfolder count in HFSX. Reserved in HFS+. */
 } __packed;
 
 /* HFS file info (stolen from hfs.h) */
@@ -292,8 +296,10 @@ struct hfsplus_cat_file {
 	__be32 access_date;
 	__be32 backup_date;
 	struct hfsplus_perm permissions;
-	struct FInfo user_info;
-	struct FXInfo finder_info;
+	struct_group_attr(info, __packed,
+		struct FInfo user_info;
+		struct FXInfo finder_info;
+	);
 	__be32 text_encoding;
 	u32 reserved2;
 
@@ -301,11 +307,13 @@ struct hfsplus_cat_file {
 	struct hfsplus_fork_raw rsrc_fork;
 } __packed;
 
-/* File attribute bits */
+/* File and folder flag bits */
 #define HFSPLUS_FILE_LOCKED		0x0001
 #define HFSPLUS_FILE_THREAD_EXISTS	0x0002
 #define HFSPLUS_XATTR_EXISTS		0x0004
 #define HFSPLUS_ACL_EXISTS		0x0008
+#define HFSPLUS_HAS_FOLDER_COUNT	0x0010	/* Folder has subfolder count
+						 * (HFSX only) */
 
 /* HFS+ catalog thread (part of a cat_entry) */
 struct hfsplus_cat_thread {

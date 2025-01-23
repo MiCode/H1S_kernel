@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * w83791d.c - Part of lm_sensors, Linux kernel modules for hardware
  *	       monitoring
  *
  * Copyright (C) 2006-2007 Charles Spirakis <bezaur@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 /*
@@ -249,19 +236,16 @@ static u8 fan_to_reg(long rpm, int div)
  * the bottom 7 bits will always be zero
  */
 #define TEMP23_FROM_REG(val)	((val) / 128 * 500)
-#define TEMP23_TO_REG(val)	((val) <= -128000 ? 0x8000 : \
-				 (val) >= 127500 ? 0x7F80 : \
-				 (val) < 0 ? ((val) - 250) / 500 * 128 : \
-				 ((val) + 250) / 500 * 128)
+#define TEMP23_TO_REG(val)	(DIV_ROUND_CLOSEST(clamp_val((val), -128000, \
+						   127500), 500) * 128)
 
 /* for thermal cruise target temp, 7-bits, LSB = 1 degree Celsius */
-#define TARGET_TEMP_TO_REG(val)		((val) < 0 ? 0 : \
-					(val) >= 127000 ? 127 : \
-					((val) + 500) / 1000)
+#define TARGET_TEMP_TO_REG(val)	DIV_ROUND_CLOSEST(clamp_val((val), 0, 127000), \
+						  1000)
 
 /* for thermal cruise temp tolerance, 4-bits, LSB = 1 degree Celsius */
-#define TOL_TEMP_TO_REG(val)		((val) >= 15000 ? 15 : \
-					((val) + 500) / 1000)
+#define TOL_TEMP_TO_REG(val)	DIV_ROUND_CLOSEST(clamp_val((val), 0, 15000), \
+						  1000)
 
 #define BEEP_MASK_TO_REG(val)		((val) & 0xffffff)
 #define BEEP_MASK_FROM_REG(val)		((val) & 0xffffff)
@@ -286,11 +270,8 @@ struct w83791d_data {
 	struct device *hwmon_dev;
 	struct mutex update_lock;
 
-	char valid;			/* !=0 if following fields are valid */
+	bool valid;			/* true if following fields are valid */
 	unsigned long last_updated;	/* In jiffies */
-
-	/* array of 2 pointers to subclients */
-	struct i2c_client *lm75[2];
 
 	/* volts */
 	u8 in[NUMBER_OF_VIN];		/* Register value */
@@ -331,11 +312,10 @@ struct w83791d_data {
 	u8 vrm;			/* hwmon-vid */
 };
 
-static int w83791d_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id);
+static int w83791d_probe(struct i2c_client *client);
 static int w83791d_detect(struct i2c_client *client,
 			  struct i2c_board_info *info);
-static int w83791d_remove(struct i2c_client *client);
+static void w83791d_remove(struct i2c_client *client);
 
 static int w83791d_read(struct i2c_client *client, u8 reg);
 static int w83791d_write(struct i2c_client *client, u8 reg, u8 value);
@@ -1044,14 +1024,14 @@ static struct sensor_device_attribute sda_temp_alarm[] = {
 };
 
 /* get realtime status of all sensors items: voltage, temp, fan */
-static ssize_t show_alarms_reg(struct device *dev,
-				struct device_attribute *attr, char *buf)
+static ssize_t alarms_show(struct device *dev, struct device_attribute *attr,
+			   char *buf)
 {
 	struct w83791d_data *data = w83791d_update_device(dev);
 	return sprintf(buf, "%u\n", data->alarms);
 }
 
-static DEVICE_ATTR(alarms, S_IRUGO, show_alarms_reg, NULL);
+static DEVICE_ATTR_RO(alarms);
 
 /* Beep control */
 
@@ -1150,25 +1130,24 @@ static struct sensor_device_attribute sda_beep_ctrl[] = {
 };
 
 /* cpu voltage regulation information */
-static ssize_t show_vid_reg(struct device *dev,
-				struct device_attribute *attr, char *buf)
+static ssize_t cpu0_vid_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
 {
 	struct w83791d_data *data = w83791d_update_device(dev);
 	return sprintf(buf, "%d\n", vid_from_reg(data->vid, data->vrm));
 }
 
-static DEVICE_ATTR(cpu0_vid, S_IRUGO, show_vid_reg, NULL);
+static DEVICE_ATTR_RO(cpu0_vid);
 
-static ssize_t show_vrm_reg(struct device *dev,
-				struct device_attribute *attr, char *buf)
+static ssize_t vrm_show(struct device *dev, struct device_attribute *attr,
+			char *buf)
 {
 	struct w83791d_data *data = dev_get_drvdata(dev);
 	return sprintf(buf, "%d\n", data->vrm);
 }
 
-static ssize_t store_vrm_reg(struct device *dev,
-				struct device_attribute *attr,
-				const char *buf, size_t count)
+static ssize_t vrm_store(struct device *dev, struct device_attribute *attr,
+			 const char *buf, size_t count)
 {
 	struct w83791d_data *data = dev_get_drvdata(dev);
 	unsigned long val;
@@ -1184,11 +1163,14 @@ static ssize_t store_vrm_reg(struct device *dev,
 	if (err)
 		return err;
 
+	if (val > 255)
+		return -EINVAL;
+
 	data->vrm = val;
 	return count;
 }
 
-static DEVICE_ATTR(vrm, S_IRUGO | S_IWUSR, show_vrm_reg, store_vrm_reg);
+static DEVICE_ATTR_RW(vrm);
 
 #define IN_UNIT_ATTRS(X) \
 	&sda_in_input[X].dev_attr.attr,	\
@@ -1272,9 +1254,8 @@ static const struct attribute_group w83791d_group_fanpwm45 = {
 static int w83791d_detect_subclients(struct i2c_client *client)
 {
 	struct i2c_adapter *adapter = client->adapter;
-	struct w83791d_data *data = i2c_get_clientdata(client);
 	int address = client->addr;
-	int i, id, err;
+	int i, id;
 	u8 val;
 
 	id = i2c_adapter_id(adapter);
@@ -1286,8 +1267,7 @@ static int w83791d_detect_subclients(struct i2c_client *client)
 					"invalid subclient "
 					"address %d; must be 0x48-0x4f\n",
 					force_subclients[i]);
-				err = -ENODEV;
-				goto error_sc_0;
+				return -ENODEV;
 			}
 		}
 		w83791d_write(client, W83791D_REG_I2C_SUBADDR,
@@ -1296,31 +1276,20 @@ static int w83791d_detect_subclients(struct i2c_client *client)
 	}
 
 	val = w83791d_read(client, W83791D_REG_I2C_SUBADDR);
-	if (!(val & 0x08))
-		data->lm75[0] = i2c_new_dummy(adapter, 0x48 + (val & 0x7));
-	if (!(val & 0x80)) {
-		if ((data->lm75[0] != NULL) &&
-				((val & 0x7) == ((val >> 4) & 0x7))) {
-			dev_err(&client->dev,
-				"duplicate addresses 0x%x, "
-				"use force_subclient\n",
-				data->lm75[0]->addr);
-			err = -ENODEV;
-			goto error_sc_1;
-		}
-		data->lm75[1] = i2c_new_dummy(adapter,
-					      0x48 + ((val >> 4) & 0x7));
+
+	if (!(val & 0x88) && (val & 0x7) == ((val >> 4) & 0x7)) {
+		dev_err(&client->dev,
+			"duplicate addresses 0x%x, use force_subclient\n", 0x48 + (val & 0x7));
+		return -ENODEV;
 	}
 
+	if (!(val & 0x08))
+		devm_i2c_new_dummy_device(&client->dev, adapter, 0x48 + (val & 0x7));
+
+	if (!(val & 0x80))
+		devm_i2c_new_dummy_device(&client->dev, adapter, 0x48 + ((val >> 4) & 0x7));
+
 	return 0;
-
-/* Undo inits in case of errors */
-
-error_sc_1:
-	if (data->lm75[0] != NULL)
-		i2c_unregister_device(data->lm75[0]);
-error_sc_0:
-	return err;
 }
 
 
@@ -1364,13 +1333,12 @@ static int w83791d_detect(struct i2c_client *client,
 	if (val1 != 0x71 || val2 != 0x5c)
 		return -ENODEV;
 
-	strlcpy(info->type, "w83791d", I2C_NAME_SIZE);
+	strscpy(info->type, "w83791d", I2C_NAME_SIZE);
 
 	return 0;
 }
 
-static int w83791d_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int w83791d_probe(struct i2c_client *client)
 {
 	struct w83791d_data *data;
 	struct device *dev = &client->dev;
@@ -1409,7 +1377,7 @@ static int w83791d_probe(struct i2c_client *client,
 	/* Register sysfs hooks */
 	err = sysfs_create_group(&client->dev.kobj, &w83791d_group);
 	if (err)
-		goto error3;
+		return err;
 
 	/* Check if pins of fan/pwm 4-5 are in use as GPIO */
 	has_fanpwm45 = w83791d_read(client, W83791D_REG_GPIO) & 0x10;
@@ -1434,27 +1402,15 @@ error5:
 		sysfs_remove_group(&client->dev.kobj, &w83791d_group_fanpwm45);
 error4:
 	sysfs_remove_group(&client->dev.kobj, &w83791d_group);
-error3:
-	if (data->lm75[0] != NULL)
-		i2c_unregister_device(data->lm75[0]);
-	if (data->lm75[1] != NULL)
-		i2c_unregister_device(data->lm75[1]);
 	return err;
 }
 
-static int w83791d_remove(struct i2c_client *client)
+static void w83791d_remove(struct i2c_client *client)
 {
 	struct w83791d_data *data = i2c_get_clientdata(client);
 
 	hwmon_device_unregister(data->hwmon_dev);
 	sysfs_remove_group(&client->dev.kobj, &w83791d_group);
-
-	if (data->lm75[0] != NULL)
-		i2c_unregister_device(data->lm75[0]);
-	if (data->lm75[1] != NULL)
-		i2c_unregister_device(data->lm75[1]);
-
-	return 0;
 }
 
 static void w83791d_init_client(struct i2c_client *client)
@@ -1638,7 +1594,7 @@ static struct w83791d_data *w83791d_update_device(struct device *dev)
 				<< 4;
 
 		data->last_updated = jiffies;
-		data->valid = 1;
+		data->valid = true;
 	}
 
 	mutex_unlock(&data->update_lock);

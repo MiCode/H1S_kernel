@@ -1,26 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *    Filename: cfag12864b.c
  *     Version: 0.1.0
  * Description: cfag12864b LCD driver
- *     License: GPLv2
  *     Depends: ks0108
  *
- *      Author: Copyright (C) Miguel Ojeda Sandonis
+ *      Author: Copyright (C) Miguel Ojeda <ojeda@kernel.org>
  *        Date: 2006-10-31
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
 #include <linux/init.h>
@@ -47,7 +33,7 @@
  */
 
 static unsigned int cfag12864b_rate = CONFIG_CFAG12864B_RATE;
-module_param(cfag12864b_rate, uint, S_IRUGO);
+module_param(cfag12864b_rate, uint, 0444);
 MODULE_PARM_DESC(cfag12864b_rate,
 	"Refresh rate (hertz)");
 
@@ -347,8 +333,8 @@ static int __init cfag12864b_init(void)
 		goto none;
 	}
 
-	cfag12864b_cache = kmalloc(sizeof(unsigned char) *
-		CFAG12864B_SIZE, GFP_KERNEL);
+	cfag12864b_cache = kmalloc(CFAG12864B_SIZE,
+				   GFP_KERNEL);
 	if (cfag12864b_cache == NULL) {
 		printk(KERN_ERR CFAG12864B_NAME ": ERROR: "
 			"can't alloc cache buffer (%i bytes)\n",
@@ -390,5 +376,5 @@ module_init(cfag12864b_init);
 module_exit(cfag12864b_exit);
 
 MODULE_LICENSE("GPL v2");
-MODULE_AUTHOR("Miguel Ojeda Sandonis <miguel.ojeda.sandonis@gmail.com>");
+MODULE_AUTHOR("Miguel Ojeda <ojeda@kernel.org>");
 MODULE_DESCRIPTION("cfag12864b LCD driver");

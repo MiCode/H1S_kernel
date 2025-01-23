@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _M68K_DIV64_H
 #define _M68K_DIV64_H
 
@@ -29,6 +30,9 @@
 	(n) = __n.n64;						\
 	__rem;							\
 })
+
+/* defining this stops the unused helper function from being built */
+#define __div64_32 __div64_32
 
 #endif /* CONFIG_CPU_HAS_NO_MULDIV64 */
 

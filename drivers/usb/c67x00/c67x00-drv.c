@@ -1,24 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * c67x00-drv.c: Cypress C67X00 USB Common infrastructure
  *
  * Copyright (C) 2006-2008 Barco N.V.
  *    Derived from the Cypress cy7c67200/300 ezusb linux driver and
  *    based on multiple host controller drivers inside the linux kernel.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
- * MA  02110-1301  USA.
  */
 
 /*
@@ -191,7 +177,7 @@ static int c67x00_drv_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int c67x00_drv_remove(struct platform_device *pdev)
+static void c67x00_drv_remove(struct platform_device *pdev)
 {
 	struct c67x00_device *c67x00 = platform_get_drvdata(pdev);
 	struct resource *res;
@@ -203,25 +189,20 @@ static int c67x00_drv_remove(struct platform_device *pdev)
 	c67x00_ll_release(c67x00);
 
 	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (res)
-		free_irq(res->start, c67x00);
+	free_irq(res->start, c67x00);
 
 	iounmap(c67x00->hpi.base);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (res)
-		release_mem_region(res->start, resource_size(res));
+	release_mem_region(res->start, resource_size(res));
 
 	kfree(c67x00);
-
-	return 0;
 }
 
 static struct platform_driver c67x00_driver = {
 	.probe	= c67x00_drv_probe,
-	.remove	= c67x00_drv_remove,
+	.remove_new = c67x00_drv_remove,
 	.driver	= {
-		.owner = THIS_MODULE,
 		.name = "c67x00",
 	},
 };

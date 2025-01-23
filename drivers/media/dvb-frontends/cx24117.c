@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
     Conexant cx24117/cx24132 - Dual DVBS/S2 Satellite demod/tuner driver
 
@@ -9,19 +10,6 @@
 		TBS6980 - Dual DVBS/S2 PCIe card
 		TBS6981 - Dual DVBS/S2 PCIe card
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
 #include <linux/slab.h>
@@ -32,7 +20,7 @@
 #include <linux/firmware.h>
 
 #include "tuner-i2c.h"
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "cx24117.h"
 
 
@@ -171,13 +159,13 @@ static DEFINE_MUTEX(cx24117_list_mutex);
 struct cx24117_tuning {
 	u32 frequency;
 	u32 symbol_rate;
-	fe_spectral_inversion_t inversion;
-	fe_code_rate_t fec;
+	enum fe_spectral_inversion inversion;
+	enum fe_code_rate fec;
 
-	fe_delivery_system_t delsys;
-	fe_modulation_t modulation;
-	fe_pilot_t pilot;
-	fe_rolloff_t rolloff;
+	enum fe_delivery_system delsys;
+	enum fe_modulation modulation;
+	enum fe_pilot pilot;
+	enum fe_rolloff rolloff;
 
 	/* Demod values */
 	u8 fec_val;
@@ -220,9 +208,9 @@ struct cx24117_state {
 /* modfec (modulation and FEC) lookup table */
 /* Check cx24116.c for a detailed description of each field */
 static struct cx24117_modfec {
-	fe_delivery_system_t delivery_system;
-	fe_modulation_t modulation;
-	fe_code_rate_t fec;
+	enum fe_delivery_system delivery_system;
+	enum fe_modulation modulation;
+	enum fe_code_rate fec;
 	u8 mask;	/* In DVBS mode this is used to autodetect */
 	u8 val;		/* Passed to the firmware to indicate mode selection */
 } cx24117_modfec_modes[] = {
@@ -362,7 +350,7 @@ static int cx24117_readregN(struct cx24117_state *state,
 }
 
 static int cx24117_set_inversion(struct cx24117_state *state,
-	fe_spectral_inversion_t inversion)
+	enum fe_spectral_inversion inversion)
 {
 	dev_dbg(&state->priv->i2c->dev, "%s(%d) demod%d\n",
 		__func__, inversion, state->demod);
@@ -387,7 +375,7 @@ static int cx24117_set_inversion(struct cx24117_state *state,
 }
 
 static int cx24117_lookup_fecmod(struct cx24117_state *state,
-	fe_delivery_system_t d, fe_modulation_t m, fe_code_rate_t f)
+	enum fe_delivery_system d, enum fe_modulation m, enum fe_code_rate f)
 {
 	int i, ret = -EINVAL;
 
@@ -408,7 +396,9 @@ static int cx24117_lookup_fecmod(struct cx24117_state *state,
 }
 
 static int cx24117_set_fec(struct cx24117_state *state,
-	fe_delivery_system_t delsys, fe_modulation_t mod, fe_code_rate_t fec)
+			   enum fe_delivery_system delsys,
+			   enum fe_modulation mod,
+			   enum fe_code_rate fec)
 {
 	int ret;
 
@@ -459,7 +449,7 @@ static int cx24117_firmware_ondemand(struct dvb_frontend *fe)
 	if (state->priv->skip_fw_load)
 		return 0;
 
-	/* check if firmware if already running */
+	/* check if firmware is already running */
 	if (cx24117_readreg(state, 0xeb) != 0xa) {
 		/* Load firmware */
 		/* request the firmware, this will block until loaded */
@@ -472,8 +462,8 @@ static int cx24117_firmware_ondemand(struct dvb_frontend *fe)
 			"%s: Waiting for firmware upload(2)...\n", __func__);
 		if (ret) {
 			dev_err(&state->priv->i2c->dev,
-				"%s: No firmware uploaded "
-				"(timeout or file not found?)\n", __func__);
+				"%s: No firmware uploaded (timeout or file not found?)\n",
+__func__);
 			return ret;
 		}
 
@@ -629,8 +619,10 @@ static int cx24117_load_firmware(struct dvb_frontend *fe,
 
 	/* send fw */
 	ret = i2c_transfer(state->priv->i2c, &msg, 1);
-	if (ret < 0)
+	if (ret < 0) {
+		kfree(buf);
 		return ret;
+	}
 
 	kfree(buf);
 
@@ -737,7 +729,7 @@ error:
 	return ret;
 }
 
-static int cx24117_read_status(struct dvb_frontend *fe, fe_status_t *status)
+static int cx24117_read_status(struct dvb_frontend *fe, enum fe_status *status)
 {
 	struct cx24117_state *state = fe->demodulator_priv;
 	int lock;
@@ -843,7 +835,7 @@ static int cx24117_read_snr(struct dvb_frontend *fe, u16 *snr)
 static int cx24117_read_ucblocks(struct dvb_frontend *fe, u32 *ucblocks)
 {
 	struct cx24117_state *state = fe->demodulator_priv;
-	fe_delivery_system_t delsys = fe->dtv_property_cache.delivery_system;
+	enum fe_delivery_system delsys = fe->dtv_property_cache.delivery_system;
 	int ret;
 	u8 buf[2];
 	u8 reg = (state->demod == 0) ?
@@ -904,7 +896,7 @@ static int cx24117_wait_for_lnb(struct dvb_frontend *fe)
 }
 
 static int cx24117_set_voltage(struct dvb_frontend *fe,
-	fe_sec_voltage_t voltage)
+			       enum fe_sec_voltage voltage)
 {
 	struct cx24117_state *state = fe->demodulator_priv;
 	struct cx24117_cmd cmd;
@@ -956,7 +948,7 @@ static int cx24117_set_voltage(struct dvb_frontend *fe,
 }
 
 static int cx24117_set_tone(struct dvb_frontend *fe,
-	fe_sec_tone_mode_t tone)
+			    enum fe_sec_tone_mode tone)
 {
 	struct cx24117_state *state = fe->demodulator_priv;
 	struct cx24117_cmd cmd;
@@ -1043,7 +1035,7 @@ static int cx24117_send_diseqc_msg(struct dvb_frontend *fe,
 	dev_dbg(&state->priv->i2c->dev, ")\n");
 
 	/* Validate length */
-	if (d->msg_len > 15)
+	if (d->msg_len > sizeof(d->msg))
 		return -EINVAL;
 
 	/* DiSEqC message */
@@ -1112,7 +1104,7 @@ static int cx24117_send_diseqc_msg(struct dvb_frontend *fe,
 
 /* Send DiSEqC burst */
 static int cx24117_diseqc_send_burst(struct dvb_frontend *fe,
-	fe_sec_mini_cmd_t burst)
+	enum fe_sec_mini_cmd burst)
 {
 	struct cx24117_state *state = fe->demodulator_priv;
 
@@ -1162,7 +1154,7 @@ static void cx24117_release(struct dvb_frontend *fe)
 	kfree(state);
 }
 
-static struct dvb_frontend_ops cx24117_ops;
+static const struct dvb_frontend_ops cx24117_ops;
 
 struct dvb_frontend *cx24117_attach(const struct cx24117_config *config,
 	struct i2c_adapter *i2c)
@@ -1176,11 +1168,10 @@ struct dvb_frontend *cx24117_attach(const struct cx24117_config *config,
 
 	switch (demod) {
 	case 0:
-		dev_err(&state->priv->i2c->dev,
+		dev_err(&i2c->dev,
 			"%s: Error attaching frontend %d\n",
 			KBUILD_MODNAME, demod);
 		goto error1;
-		break;
 	case 1:
 		/* new priv instance */
 		priv->i2c = i2c;
@@ -1200,12 +1191,6 @@ struct dvb_frontend *cx24117_attach(const struct cx24117_config *config,
 	state->demod = demod - 1;
 	state->priv = priv;
 
-	/* test i2c bus for ack */
-	if (demod == 0) {
-		if (cx24117_readreg(state, 0x00) < 0)
-			goto error3;
-	}
-
 	dev_info(&state->priv->i2c->dev,
 		"%s: Attaching frontend %d\n",
 		KBUILD_MODNAME, state->demod);
@@ -1216,8 +1201,6 @@ struct dvb_frontend *cx24117_attach(const struct cx24117_config *config,
 	state->frontend.demodulator_priv = state;
 	return &state->frontend;
 
-error3:
-	kfree(state);
 error2:
 	cx24117_release_priv(priv);
 error1:
@@ -1314,7 +1297,7 @@ static int cx24117_set_frontend(struct dvb_frontend *fe)
 	struct cx24117_state *state = fe->demodulator_priv;
 	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
 	struct cx24117_cmd cmd;
-	fe_status_t tunerstat;
+	enum fe_status tunerstat;
 	int i, status, ret, retune = 1;
 	u8 reg_clkdiv, reg_ratediv;
 
@@ -1545,7 +1528,7 @@ static int cx24117_set_frontend(struct dvb_frontend *fe)
 }
 
 static int cx24117_tune(struct dvb_frontend *fe, bool re_tune,
-	unsigned int mode_flags, unsigned int *delay, fe_status_t *status)
+	unsigned int mode_flags, unsigned int *delay, enum fe_status *status)
 {
 	struct cx24117_state *state = fe->demodulator_priv;
 
@@ -1561,15 +1544,15 @@ static int cx24117_tune(struct dvb_frontend *fe, bool re_tune,
 	return cx24117_read_status(fe, status);
 }
 
-static int cx24117_get_algo(struct dvb_frontend *fe)
+static enum dvbfe_algo cx24117_get_algo(struct dvb_frontend *fe)
 {
 	return DVBFE_ALGO_HW;
 }
 
-static int cx24117_get_frontend(struct dvb_frontend *fe)
+static int cx24117_get_frontend(struct dvb_frontend *fe,
+				struct dtv_frontend_properties *c)
 {
 	struct cx24117_state *state = fe->demodulator_priv;
-	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
 	struct cx24117_cmd cmd;
 	u8 reg, st, inv;
 	int ret, idx;
@@ -1624,14 +1607,14 @@ static int cx24117_get_frontend(struct dvb_frontend *fe)
 	return 0;
 }
 
-static struct dvb_frontend_ops cx24117_ops = {
+static const struct dvb_frontend_ops cx24117_ops = {
 	.delsys = { SYS_DVBS, SYS_DVBS2 },
 	.info = {
 		.name = "Conexant CX24117/CX24132",
-		.frequency_min = 950000,
-		.frequency_max = 2150000,
-		.frequency_stepsize = 1011, /* kHz for QPSK frontends */
-		.frequency_tolerance = 5000,
+		.frequency_min_hz =  950 * MHz,
+		.frequency_max_hz = 2150 * MHz,
+		.frequency_stepsize_hz = 1011 * kHz,
+		.frequency_tolerance_hz = 5 * MHz,
 		.symbol_rate_min = 1000000,
 		.symbol_rate_max = 45000000,
 		.caps = FE_CAN_INVERSION_AUTO |

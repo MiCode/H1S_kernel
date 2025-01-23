@@ -1,23 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *  Main header file for the ALSA sequencer
  *  Copyright (c) 1998-1999 by Frank van de Pol <fvdpol@coil.demon.nl>
  *            (c) 1998-1999 by Jaroslav Kysela <perex@perex.cz>
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 #ifndef __SOUND_ASEQUENCER_H
 #define __SOUND_ASEQUENCER_H
@@ -79,6 +64,10 @@
 #define snd_seq_ev_timemode_type(ev)	((ev)->flags & SNDRV_SEQ_TIME_MODE_MASK)
 #define snd_seq_ev_is_abstime(ev)	(snd_seq_ev_timemode_type(ev) == SNDRV_SEQ_TIME_MODE_ABS)
 #define snd_seq_ev_is_reltime(ev)	(snd_seq_ev_timemode_type(ev) == SNDRV_SEQ_TIME_MODE_REL)
+
+/* check whether the given event is a UMP event */
+#define snd_seq_ev_is_ump(ev) \
+	(IS_ENABLED(CONFIG_SND_SEQ_UMP) && ((ev)->flags & SNDRV_SEQ_EVENT_UMP))
 
 /* queue sync port */
 #define snd_seq_queue_sync_port(q)	((q) + 16)

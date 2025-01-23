@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_ARM_CP15_H
 #define __ASM_ARM_CP15_H
 
@@ -42,24 +43,25 @@
 #ifndef __ASSEMBLY__
 
 #if __LINUX_ARM_ARCH__ >= 4
-#define vectors_high()	(cr_alignment & CR_V)
+#define vectors_high()	(get_cr() & CR_V)
 #else
 #define vectors_high()	(0)
 #endif
 
 #ifdef CONFIG_CPU_CP15
 
-extern unsigned long cr_no_alignment;	/* defined in entry-armv.S */
+#include <asm/vdso/cp15.h>
+
 extern unsigned long cr_alignment;	/* defined in entry-armv.S */
 
-static inline unsigned int get_cr(void)
+static inline unsigned long get_cr(void)
 {
-	unsigned int val;
+	unsigned long val;
 	asm("mrc p15, 0, %0, c1, c0, 0	@ get CR" : "=r" (val) : : "cc");
 	return val;
 }
 
-static inline void set_cr(unsigned int val)
+static inline void set_cr(unsigned long val)
 {
 	asm volatile("mcr p15, 0, %0, c1, c0, 0	@ set CR"
 	  : : "r" (val) : "cc");
@@ -79,10 +81,6 @@ static inline void set_auxcr(unsigned int val)
 	  : : "r" (val));
 	isb();
 }
-
-#ifndef CONFIG_SMP
-extern void adjust_cr(unsigned long mask, unsigned long set);
-#endif
 
 #define CPACC_FULL(n)		(3 << (n * 2))
 #define CPACC_SVC(n)		(1 << (n * 2))
@@ -106,12 +104,16 @@ static inline void set_copro_access(unsigned int val)
 #else /* ifdef CONFIG_CPU_CP15 */
 
 /*
- * cr_alignment and cr_no_alignment are tightly coupled to cp15 (at least in the
- * minds of the developers). Yielding 0 for machines without a cp15 (and making
- * it read-only) is fine for most cases and saves quite some #ifdeffery.
+ * cr_alignment is tightly coupled to cp15 (at least in the minds of the
+ * developers). Yielding 0 for machines without a cp15 (and making it
+ * read-only) is fine for most cases and saves quite some #ifdeffery.
  */
-#define cr_no_alignment	UL(0)
 #define cr_alignment	UL(0)
+
+static inline unsigned long get_cr(void)
+{
+	return 0;
+}
 
 #endif /* ifdef CONFIG_CPU_CP15 / else */
 

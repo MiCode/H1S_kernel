@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * hfcmulti.c  low level driver for hfc-4s/hfc-8s/hfc-e1 based cards
  *
@@ -9,21 +10,6 @@
  * Copyright 1999  by Werner Cornelius (werner@isdn-development.de)
  * Copyright 2008  by Karsten Keil (kkeil@suse.de)
  * Copyright 2008  by Andreas Eversberg (jolly@eversberg.eu)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  *
  * Thanks to Cologne Chip AG for this great controller!
  */
@@ -187,13 +173,13 @@
 #define	MAX_FRAGS	(32 * MAX_CARDS)
 
 static LIST_HEAD(HFClist);
-static spinlock_t HFClock; /* global hfc list lock */
+static DEFINE_SPINLOCK(HFClock); /* global hfc list lock */
 
 static void ph_state_change(struct dchannel *);
 
 static struct hfc_multi *syncmaster;
 static int plxsd_master; /* if we have a master card (yet) */
-static spinlock_t plx_lock; /* may not acquire other lock inside */
+static DEFINE_SPINLOCK(plx_lock); /* may not acquire other lock inside */
 
 #define	TYP_E1		1
 #define	TYP_4S		4
@@ -564,19 +550,19 @@ disable_hwirq(struct hfc_multi *hc)
 #define	MAX_TDM_CHAN 32
 
 
-inline void
+static inline void
 enablepcibridge(struct hfc_multi *c)
 {
 	HFC_outb(c, R_BRG_PCM_CFG, (0x0 << 6) | 0x3); /* was _io before */
 }
 
-inline void
+static inline void
 disablepcibridge(struct hfc_multi *c)
 {
 	HFC_outb(c, R_BRG_PCM_CFG, (0x0 << 6) | 0x2); /* was _io before */
 }
 
-inline unsigned char
+static inline unsigned char
 readpcibridge(struct hfc_multi *hc, unsigned char address)
 {
 	unsigned short cipv;
@@ -604,7 +590,7 @@ readpcibridge(struct hfc_multi *hc, unsigned char address)
 	return data;
 }
 
-inline void
+static inline void
 writepcibridge(struct hfc_multi *hc, unsigned char address, unsigned char data)
 {
 	unsigned short cipv;
@@ -634,14 +620,14 @@ writepcibridge(struct hfc_multi *hc, unsigned char address, unsigned char data)
 	outl(datav, hc->pci_iobase);
 }
 
-inline void
+static inline void
 cpld_set_reg(struct hfc_multi *hc, unsigned char reg)
 {
 	/* Do data pin read low byte */
 	HFC_outb(hc, R_GPIO_OUT1, reg);
 }
 
-inline void
+static inline void
 cpld_write_reg(struct hfc_multi *hc, unsigned char reg, unsigned char val)
 {
 	cpld_set_reg(hc, reg);
@@ -653,45 +639,14 @@ cpld_write_reg(struct hfc_multi *hc, unsigned char reg, unsigned char val)
 	return;
 }
 
-inline unsigned char
-cpld_read_reg(struct hfc_multi *hc, unsigned char reg)
-{
-	unsigned char bytein;
-
-	cpld_set_reg(hc, reg);
-
-	/* Do data pin read low byte */
-	HFC_outb(hc, R_GPIO_OUT1, reg);
-
-	enablepcibridge(hc);
-	bytein = readpcibridge(hc, 1);
-	disablepcibridge(hc);
-
-	return bytein;
-}
-
-inline void
+static inline void
 vpm_write_address(struct hfc_multi *hc, unsigned short addr)
 {
 	cpld_write_reg(hc, 0, 0xff & addr);
 	cpld_write_reg(hc, 1, 0x01 & (addr >> 8));
 }
 
-inline unsigned short
-vpm_read_address(struct hfc_multi *c)
-{
-	unsigned short addr;
-	unsigned short highbit;
-
-	addr = cpld_read_reg(c, 0);
-	highbit = cpld_read_reg(c, 1);
-
-	addr = addr | (highbit << 8);
-
-	return addr & 0x1ff;
-}
-
-inline unsigned char
+static inline unsigned char
 vpm_in(struct hfc_multi *c, int which, unsigned short addr)
 {
 	unsigned char res;
@@ -712,7 +667,7 @@ vpm_in(struct hfc_multi *c, int which, unsigned short addr)
 	return res;
 }
 
-inline void
+static inline void
 vpm_out(struct hfc_multi *c, int which, unsigned short addr,
 	unsigned char data)
 {
@@ -1024,7 +979,7 @@ hfcmulti_resync(struct hfc_multi *locked, struct hfc_multi *newmaster, int rm)
 }
 
 /* This must be called AND hc must be locked irqsave!!! */
-inline void
+static inline void
 plxsd_checksync(struct hfc_multi *hc, int rm)
 {
 	if (hc->syncronized) {
@@ -1926,7 +1881,7 @@ hfcmulti_dtmf(struct hfc_multi *hc)
 			hh = mISDN_HEAD_P(skb);
 			hh->prim = PH_CONTROL_IND;
 			hh->id = DTMF_HFC_COEF;
-			memcpy(skb_put(skb, 512), hc->chan[ch].coeff, 512);
+			skb_put_data(skb, hc->chan[ch].coeff, 512);
 			recv_Bchannel_skb(bch, skb);
 		}
 	}
@@ -2262,8 +2217,8 @@ next_frame:
 	if (bch) {
 		maxlen = bchannel_get_rxbuf(bch, Zsize);
 		if (maxlen < 0) {
-			pr_warning("card%d.B%d: No bufferspace for %d bytes\n",
-				   hc->id + 1, bch->nr, Zsize);
+			pr_warn("card%d.B%d: No bufferspace for %d bytes\n",
+				hc->id + 1, bch->nr, Zsize);
 			return;
 		}
 		sp = &bch->rx_skb;
@@ -2274,8 +2229,8 @@ next_frame:
 		if (*sp == NULL) {
 			*sp = mI_alloc_skb(maxlen, GFP_ATOMIC);
 			if (*sp == NULL) {
-				pr_warning("card%d: No mem for dch rx_skb\n",
-					   hc->id + 1);
+				pr_warn("card%d: No mem for dch rx_skb\n",
+					hc->id + 1);
 				return;
 			}
 		}
@@ -2332,8 +2287,7 @@ next_frame:
 				skb = *sp;
 				*sp = mI_alloc_skb(skb->len, GFP_ATOMIC);
 				if (*sp) {
-					memcpy(skb_put(*sp, skb->len),
-					       skb->data, skb->len);
+					skb_put_data(*sp, skb->data, skb->len);
 					skb_trim(skb, 0);
 				} else {
 					printk(KERN_DEBUG "%s: No mem\n",
@@ -2763,8 +2717,6 @@ hfcmulti_interrupt(int intno, void *dev_id)
 		if (hc->ctype != HFC_TYPE_E1)
 			ph_state_irq(hc, r_irq_statech);
 	}
-	if (status & V_EXT_IRQSTA)
-		; /* external IRQ */
 	if (status & V_LOST_STA) {
 		/* LOST IRQ */
 		HFC_outb(hc, R_INC_RES_FIFO, V_RES_LOST); /* clear irq! */
@@ -2856,7 +2808,7 @@ irq_notforus:
  */
 
 static void
-hfcmulti_dbusy_timer(struct hfc_multi *hc)
+hfcmulti_dbusy_timer(struct timer_list *t)
 {
 }
 
@@ -3234,6 +3186,7 @@ static int
 hfcm_l1callback(struct dchannel *dch, u_int cmd)
 {
 	struct hfc_multi	*hc = dch->hw;
+	struct sk_buff_head	free_queue;
 	u_long	flags;
 
 	switch (cmd) {
@@ -3262,6 +3215,7 @@ hfcm_l1callback(struct dchannel *dch, u_int cmd)
 		l1_event(dch->l1, HW_POWERUP_IND);
 		break;
 	case HW_DEACT_REQ:
+		__skb_queue_head_init(&free_queue);
 		/* start deactivation */
 		spin_lock_irqsave(&hc->lock, flags);
 		if (hc->ctype == HFC_TYPE_E1) {
@@ -3281,20 +3235,21 @@ hfcm_l1callback(struct dchannel *dch, u_int cmd)
 				plxsd_checksync(hc, 0);
 			}
 		}
-		skb_queue_purge(&dch->squeue);
+		skb_queue_splice_init(&dch->squeue, &free_queue);
 		if (dch->tx_skb) {
-			dev_kfree_skb(dch->tx_skb);
+			__skb_queue_tail(&free_queue, dch->tx_skb);
 			dch->tx_skb = NULL;
 		}
 		dch->tx_idx = 0;
 		if (dch->rx_skb) {
-			dev_kfree_skb(dch->rx_skb);
+			__skb_queue_tail(&free_queue, dch->rx_skb);
 			dch->rx_skb = NULL;
 		}
 		test_and_clear_bit(FLG_TX_BUSY, &dch->Flags);
 		if (test_and_clear_bit(FLG_BUSY_TIMER, &dch->Flags))
 			del_timer(&dch->timer);
 		spin_unlock_irqrestore(&hc->lock, flags);
+		__skb_queue_purge(&free_queue);
 		break;
 	case HW_POWERUP_REQ:
 		spin_lock_irqsave(&hc->lock, flags);
@@ -3401,6 +3356,9 @@ handle_dmsg(struct mISDNchannel *ch, struct sk_buff *skb)
 	case PH_DEACTIVATE_REQ:
 		test_and_clear_bit(FLG_L2_ACTIVATED, &dch->Flags);
 		if (dch->dev.D.protocol != ISDN_P_TE_S0) {
+			struct sk_buff_head free_queue;
+
+			__skb_queue_head_init(&free_queue);
 			spin_lock_irqsave(&hc->lock, flags);
 			if (debug & DEBUG_HFCMULTI_MSG)
 				printk(KERN_DEBUG
@@ -3422,14 +3380,14 @@ handle_dmsg(struct mISDNchannel *ch, struct sk_buff *skb)
 				/* deactivate */
 				dch->state = 1;
 			}
-			skb_queue_purge(&dch->squeue);
+			skb_queue_splice_init(&dch->squeue, &free_queue);
 			if (dch->tx_skb) {
-				dev_kfree_skb(dch->tx_skb);
+				__skb_queue_tail(&free_queue, dch->tx_skb);
 				dch->tx_skb = NULL;
 			}
 			dch->tx_idx = 0;
 			if (dch->rx_skb) {
-				dev_kfree_skb(dch->rx_skb);
+				__skb_queue_tail(&free_queue, dch->rx_skb);
 				dch->rx_skb = NULL;
 			}
 			test_and_clear_bit(FLG_TX_BUSY, &dch->Flags);
@@ -3441,6 +3399,7 @@ handle_dmsg(struct mISDNchannel *ch, struct sk_buff *skb)
 #endif
 			ret = 0;
 			spin_unlock_irqrestore(&hc->lock, flags);
+			__skb_queue_purge(&free_queue);
 		} else
 			ret = l1_event(dch->l1, hh->prim);
 		break;
@@ -3878,9 +3837,7 @@ hfcmulti_initmode(struct dchannel *dch)
 		if (hc->dnum[pt]) {
 			mode_hfcmulti(hc, dch->slot, dch->dev.D.protocol,
 				      -1, 0, -1, 0);
-			dch->timer.function = (void *) hfcmulti_dbusy_timer;
-			dch->timer.data = (long) dch;
-			init_timer(&dch->timer);
+			timer_setup(&dch->timer, hfcmulti_dbusy_timer, 0);
 		}
 		for (i = 1; i <= 31; i++) {
 			if (!((1 << i) & hc->bmask[pt])) /* skip unused chan */
@@ -3986,9 +3943,7 @@ hfcmulti_initmode(struct dchannel *dch)
 		hc->chan[i].slot_rx = -1;
 		hc->chan[i].conf = -1;
 		mode_hfcmulti(hc, i, dch->dev.D.protocol, -1, 0, -1, 0);
-		dch->timer.function = (void *) hfcmulti_dbusy_timer;
-		dch->timer.data = (long) dch;
-		init_timer(&dch->timer);
+		timer_setup(&dch->timer, hfcmulti_dbusy_timer, 0);
 		hc->chan[i - 2].slot_tx = -1;
 		hc->chan[i - 2].slot_rx = -1;
 		hc->chan[i - 2].conf = -1;
@@ -4370,7 +4325,8 @@ setup_pci(struct hfc_multi *hc, struct pci_dev *pdev,
 	if (m->clock2)
 		test_and_set_bit(HFC_CHIP_CLOCK2, &hc->chip);
 
-	if (ent->device == 0xB410) {
+	if (ent->vendor == PCI_VENDOR_ID_DIGIUM &&
+	    ent->device == PCI_DEVICE_ID_DIGIUM_HFC4S) {
 		test_and_set_bit(HFC_CHIP_B410P, &hc->chip);
 		test_and_set_bit(HFC_CHIP_PCM_MASTER, &hc->chip);
 		test_and_clear_bit(HFC_CHIP_PCM_SLAVE, &hc->chip);
@@ -5351,7 +5307,7 @@ static const struct hm_map hfcm_map[] = {
 
 #undef H
 #define H(x)	((unsigned long)&hfcm_map[x])
-static struct pci_device_id hfmultipci_ids[] = {
+static const struct pci_device_id hfmultipci_ids[] = {
 
 	/* Cards with HFC-4S Chip */
 	{ PCI_VENDOR_ID_CCD, PCI_DEVICE_ID_CCD_HFC4S, PCI_VENDOR_ID_CCD,
@@ -5499,9 +5455,6 @@ HFCmulti_init(void)
 #ifdef IRQ_DEBUG
 	printk(KERN_DEBUG "%s: IRQ_DEBUG IS ENABLED!\n", __func__);
 #endif
-
-	spin_lock_init(&HFClock);
-	spin_lock_init(&plx_lock);
 
 	if (debug & DEBUG_HFCMULTI_INIT)
 		printk(KERN_DEBUG "%s: init entered\n", __func__);

@@ -1,25 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU Library General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
  
 #ifndef __SOUND_AU88X0_H
 #define __SOUND_AU88X0_H
 
-#ifdef __KERNEL__
 #include <linux/pci.h>
-#include <asm/io.h>
+#include <linux/io.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/rawmidi.h>
@@ -27,7 +14,6 @@
 #include <sound/hwdep.h>
 #include <sound/ac97_codec.h>
 #include <sound/tlv.h>
-#endif
 
 #ifndef CHIP_AU8820
 #include "au88x0_eq.h"
@@ -155,7 +141,7 @@ struct snd_vortex {
 #ifndef CHIP_AU8810
 	stream_t dma_wt[NR_WT];
 	wt_voice_t wt_voice[NR_WT];	/* WT register cache. */
-	char mixwt[(NR_WT / NR_WTPB) * 6];	/* WT mixin objects */
+	s8 mixwt[(NR_WT / NR_WTPB) * 6];	/* WT mixin objects */
 #endif
 
 	/* Global resources */
@@ -243,14 +229,14 @@ static int vortex_core_init(vortex_t * card);
 static int vortex_core_shutdown(vortex_t * card);
 static void vortex_enable_int(vortex_t * card);
 static irqreturn_t vortex_interrupt(int irq, void *dev_id);
-static int vortex_alsafmt_aspfmt(int alsafmt);
+static int vortex_alsafmt_aspfmt(snd_pcm_format_t alsafmt, vortex_t *v);
 
 /* Connection  stuff. */
 static void vortex_connect_default(vortex_t * vortex, int en);
 static int vortex_adb_allocroute(vortex_t * vortex, int dma, int nr_ch,
 				 int dir, int type, int subdev);
-static char vortex_adb_checkinout(vortex_t * vortex, int resmap[], int out,
-				  int restype);
+static int vortex_adb_checkinout(vortex_t * vortex, int resmap[], int out,
+				 int restype);
 #ifndef CHIP_AU8810
 static int vortex_wt_allocroute(vortex_t * vortex, int dma, int nr_ch);
 static void vortex_wt_connect(vortex_t * vortex, int en);
@@ -278,7 +264,7 @@ static void vortex_mix_setvolumebyte(vortex_t * vortex, unsigned char mix,
 static void vortex_Vort3D_enable(vortex_t * v);
 static void vortex_Vort3D_disable(vortex_t * v);
 static void vortex_Vort3D_connect(vortex_t * vortex, int en);
-static void vortex_Vort3D_InitializeSource(a3dsrc_t * a, int en);
+static void vortex_Vort3D_InitializeSource(a3dsrc_t *a, int en, vortex_t *v);
 #endif
 
 /* Driver stuff. */

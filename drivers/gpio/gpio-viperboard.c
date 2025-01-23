@@ -1,15 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *  Nano River Technologies viperboard GPIO lib driver
  *
  *  (C) 2012 by Lemonage GmbH
  *  Author: Lars Poeschel <poeschel@lemonage.de>
  *  All rights reserved.
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the	License, or (at your
- *  option) any later version.
- *
  */
 
 #include <linux/kernel.h>
@@ -19,9 +14,8 @@
 #include <linux/types.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
-
 #include <linux/usb.h>
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 
 #include <linux/mfd/viperboard.h>
 
@@ -85,17 +79,16 @@ MODULE_PARM_DESC(gpioa_freq,
 /* ----- begin of gipo a chip -------------------------------------------- */
 
 static int vprbrd_gpioa_get(struct gpio_chip *chip,
-		unsigned offset)
+		unsigned int offset)
 {
 	int ret, answer, error = 0;
-	struct vprbrd_gpio *gpio =
-			container_of(chip, struct vprbrd_gpio, gpioa);
+	struct vprbrd_gpio *gpio = gpiochip_get_data(chip);
 	struct vprbrd *vb = gpio->vb;
 	struct vprbrd_gpioa_msg *gamsg = (struct vprbrd_gpioa_msg *)vb->buf;
 
 	/* if io is set to output, just return the saved value */
 	if (gpio->gpioa_out & (1 << offset))
-		return gpio->gpioa_val & (1 << offset);
+		return !!(gpio->gpioa_val & (1 << offset));
 
 	mutex_lock(&vb->lock);
 
@@ -136,11 +129,10 @@ static int vprbrd_gpioa_get(struct gpio_chip *chip,
 }
 
 static void vprbrd_gpioa_set(struct gpio_chip *chip,
-		unsigned offset, int value)
+		unsigned int offset, int value)
 {
 	int ret;
-	struct vprbrd_gpio *gpio =
-			container_of(chip, struct vprbrd_gpio, gpioa);
+	struct vprbrd_gpio *gpio = gpiochip_get_data(chip);
 	struct vprbrd *vb = gpio->vb;
 	struct vprbrd_gpioa_msg *gamsg = (struct vprbrd_gpioa_msg *)vb->buf;
 
@@ -173,16 +165,15 @@ static void vprbrd_gpioa_set(struct gpio_chip *chip,
 		mutex_unlock(&vb->lock);
 
 		if (ret != sizeof(struct vprbrd_gpioa_msg))
-			dev_err(chip->dev, "usb error setting pin value\n");
+			dev_err(chip->parent, "usb error setting pin value\n");
 	}
 }
 
 static int vprbrd_gpioa_direction_input(struct gpio_chip *chip,
-			unsigned offset)
+			unsigned int offset)
 {
 	int ret;
-	struct vprbrd_gpio *gpio =
-			container_of(chip, struct vprbrd_gpio, gpioa);
+	struct vprbrd_gpio *gpio = gpiochip_get_data(chip);
 	struct vprbrd *vb = gpio->vb;
 	struct vprbrd_gpioa_msg *gamsg = (struct vprbrd_gpioa_msg *)vb->buf;
 
@@ -216,11 +207,10 @@ static int vprbrd_gpioa_direction_input(struct gpio_chip *chip,
 }
 
 static int vprbrd_gpioa_direction_output(struct gpio_chip *chip,
-			unsigned offset, int value)
+			unsigned int offset, int value)
 {
 	int ret;
-	struct vprbrd_gpio *gpio =
-			container_of(chip, struct vprbrd_gpio, gpioa);
+	struct vprbrd_gpio *gpio = gpiochip_get_data(chip);
 	struct vprbrd *vb = gpio->vb;
 	struct vprbrd_gpioa_msg *gamsg = (struct vprbrd_gpioa_msg *)vb->buf;
 
@@ -261,8 +251,8 @@ static int vprbrd_gpioa_direction_output(struct gpio_chip *chip,
 
 /* ----- begin of gipo b chip -------------------------------------------- */
 
-static int vprbrd_gpiob_setdir(struct vprbrd *vb, unsigned offset,
-	unsigned dir)
+static int vprbrd_gpiob_setdir(struct vprbrd *vb, unsigned int offset,
+	unsigned int dir)
 {
 	struct vprbrd_gpiob_msg *gbmsg = (struct vprbrd_gpiob_msg *)vb->buf;
 	int ret;
@@ -283,12 +273,11 @@ static int vprbrd_gpiob_setdir(struct vprbrd *vb, unsigned offset,
 }
 
 static int vprbrd_gpiob_get(struct gpio_chip *chip,
-		unsigned offset)
+		unsigned int offset)
 {
 	int ret;
 	u16 val;
-	struct vprbrd_gpio *gpio =
-			container_of(chip, struct vprbrd_gpio, gpiob);
+	struct vprbrd_gpio *gpio = gpiochip_get_data(chip);
 	struct vprbrd *vb = gpio->vb;
 	struct vprbrd_gpiob_msg *gbmsg = (struct vprbrd_gpiob_msg *)vb->buf;
 
@@ -316,11 +305,10 @@ static int vprbrd_gpiob_get(struct gpio_chip *chip,
 }
 
 static void vprbrd_gpiob_set(struct gpio_chip *chip,
-		unsigned offset, int value)
+		unsigned int offset, int value)
 {
 	int ret;
-	struct vprbrd_gpio *gpio =
-			container_of(chip, struct vprbrd_gpio, gpiob);
+	struct vprbrd_gpio *gpio = gpiochip_get_data(chip);
 	struct vprbrd *vb = gpio->vb;
 	struct vprbrd_gpiob_msg *gbmsg = (struct vprbrd_gpiob_msg *)vb->buf;
 
@@ -345,16 +333,15 @@ static void vprbrd_gpiob_set(struct gpio_chip *chip,
 		mutex_unlock(&vb->lock);
 
 		if (ret != sizeof(struct vprbrd_gpiob_msg))
-			dev_err(chip->dev, "usb error setting pin value\n");
+			dev_err(chip->parent, "usb error setting pin value\n");
 	}
 }
 
 static int vprbrd_gpiob_direction_input(struct gpio_chip *chip,
-			unsigned offset)
+			unsigned int offset)
 {
 	int ret;
-	struct vprbrd_gpio *gpio =
-			container_of(chip, struct vprbrd_gpio, gpiob);
+	struct vprbrd_gpio *gpio = gpiochip_get_data(chip);
 	struct vprbrd *vb = gpio->vb;
 
 	gpio->gpiob_out &= ~(1 << offset);
@@ -366,17 +353,16 @@ static int vprbrd_gpiob_direction_input(struct gpio_chip *chip,
 	mutex_unlock(&vb->lock);
 
 	if (ret)
-		dev_err(chip->dev, "usb error setting pin to input\n");
+		dev_err(chip->parent, "usb error setting pin to input\n");
 
 	return ret;
 }
 
 static int vprbrd_gpiob_direction_output(struct gpio_chip *chip,
-			unsigned offset, int value)
+			unsigned int offset, int value)
 {
 	int ret;
-	struct vprbrd_gpio *gpio =
-			container_of(chip, struct vprbrd_gpio, gpiob);
+	struct vprbrd_gpio *gpio = gpiochip_get_data(chip);
 	struct vprbrd *vb = gpio->vb;
 
 	gpio->gpiob_out |= (1 << offset);
@@ -385,7 +371,7 @@ static int vprbrd_gpiob_direction_output(struct gpio_chip *chip,
 
 	ret = vprbrd_gpiob_setdir(vb, offset, 1);
 	if (ret)
-		dev_err(chip->dev, "usb error setting pin to output\n");
+		dev_err(chip->parent, "usb error setting pin to output\n");
 
 	mutex_unlock(&vb->lock);
 
@@ -409,7 +395,7 @@ static int vprbrd_gpio_probe(struct platform_device *pdev)
 	vb_gpio->vb = vb;
 	/* registering gpio a */
 	vb_gpio->gpioa.label = "viperboard gpio a";
-	vb_gpio->gpioa.dev = &pdev->dev;
+	vb_gpio->gpioa.parent = &pdev->dev;
 	vb_gpio->gpioa.owner = THIS_MODULE;
 	vb_gpio->gpioa.base = -1;
 	vb_gpio->gpioa.ngpio = 16;
@@ -418,15 +404,14 @@ static int vprbrd_gpio_probe(struct platform_device *pdev)
 	vb_gpio->gpioa.get = vprbrd_gpioa_get;
 	vb_gpio->gpioa.direction_input = vprbrd_gpioa_direction_input;
 	vb_gpio->gpioa.direction_output = vprbrd_gpioa_direction_output;
-	ret = gpiochip_add(&vb_gpio->gpioa);
-	if (ret < 0) {
-		dev_err(vb_gpio->gpioa.dev, "could not add gpio a");
-		goto err_gpioa;
-	}
+
+	ret = devm_gpiochip_add_data(&pdev->dev, &vb_gpio->gpioa, vb_gpio);
+	if (ret < 0)
+		return ret;
 
 	/* registering gpio b */
 	vb_gpio->gpiob.label = "viperboard gpio b";
-	vb_gpio->gpiob.dev = &pdev->dev;
+	vb_gpio->gpiob.parent = &pdev->dev;
 	vb_gpio->gpiob.owner = THIS_MODULE;
 	vb_gpio->gpiob.base = -1;
 	vb_gpio->gpiob.ngpio = 16;
@@ -435,41 +420,13 @@ static int vprbrd_gpio_probe(struct platform_device *pdev)
 	vb_gpio->gpiob.get = vprbrd_gpiob_get;
 	vb_gpio->gpiob.direction_input = vprbrd_gpiob_direction_input;
 	vb_gpio->gpiob.direction_output = vprbrd_gpiob_direction_output;
-	ret = gpiochip_add(&vb_gpio->gpiob);
-	if (ret < 0) {
-		dev_err(vb_gpio->gpiob.dev, "could not add gpio b");
-		goto err_gpiob;
-	}
 
-	platform_set_drvdata(pdev, vb_gpio);
-
-	return ret;
-
-err_gpiob:
-	if (gpiochip_remove(&vb_gpio->gpioa))
-		dev_err(&pdev->dev, "%s gpiochip_remove failed\n", __func__);
-
-err_gpioa:
-	return ret;
-}
-
-static int vprbrd_gpio_remove(struct platform_device *pdev)
-{
-	struct vprbrd_gpio *vb_gpio = platform_get_drvdata(pdev);
-	int ret;
-
-	ret = gpiochip_remove(&vb_gpio->gpiob);
-	if (ret == 0)
-		ret = gpiochip_remove(&vb_gpio->gpioa);
-
-	return ret;
+	return devm_gpiochip_add_data(&pdev->dev, &vb_gpio->gpiob, vb_gpio);
 }
 
 static struct platform_driver vprbrd_gpio_driver = {
 	.driver.name	= "viperboard-gpio",
-	.driver.owner	= THIS_MODULE,
 	.probe		= vprbrd_gpio_probe,
-	.remove		= vprbrd_gpio_remove,
 };
 
 static int __init vprbrd_gpio_init(void)

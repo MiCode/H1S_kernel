@@ -2,7 +2,7 @@
  *  arch/powerpc/kernel/mpic.c
  *
  *  Driver for interrupt controllers following the OpenPIC standard, the
- *  common implementation beeing IBM's MPIC. This driver also can deal
+ *  common implementation being IBM's MPIC. This driver also can deal
  *  with various broken implementations of this HW.
  *
  *  Copyright (C) 2004 Benjamin Herrenschmidt, IBM Corp.
@@ -24,17 +24,18 @@
 #include <linux/irq.h>
 #include <linux/smp.h>
 #include <linux/interrupt.h>
-#include <linux/bootmem.h>
 #include <linux/spinlock.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/syscore_ops.h>
 #include <linux/ratelimit.h>
+#include <linux/pgtable.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 
 #include <asm/ptrace.h>
 #include <asm/signal.h>
 #include <asm/io.h>
-#include <asm/pgtable.h>
 #include <asm/irq.h>
 #include <asm/machdep.h>
 #include <asm/mpic.h>
@@ -545,7 +546,7 @@ static void __init mpic_scan_ht_pics(struct mpic *mpic)
 	printk(KERN_INFO "mpic: Setting up HT PICs workarounds for U3/U4\n");
 
 	/* Allocate fixups array */
-	mpic->fixups = kzalloc(128 * sizeof(*mpic->fixups), GFP_KERNEL);
+	mpic->fixups = kcalloc(128, sizeof(*mpic->fixups), GFP_KERNEL);
 	BUG_ON(mpic->fixups == NULL);
 
 	/* Init spinlock */
@@ -603,7 +604,7 @@ static void __init mpic_scan_ht_pics(struct mpic *mpic)
 /* Find an mpic associated with a given linux interrupt */
 static struct mpic *mpic_find(unsigned int irq)
 {
-	if (irq < NUM_ISA_INTERRUPTS)
+	if (irq < NR_IRQS_LEGACY)
 		return NULL;
 
 	return irq_get_chip_data(irq);
@@ -627,7 +628,7 @@ static inline u32 mpic_physmask(u32 cpumask)
 	int i;
 	u32 mask = 0;
 
-	for (i = 0; i < min(32, NR_CPUS); ++i, cpumask >>= 1)
+	for (i = 0; i < min(32, NR_CPUS) && cpu_possible(i); ++i, cpumask >>= 1)
 		mask |= (cpumask & 1) << get_hard_smp_processor_id(i);
 	return mask;
 }
@@ -656,7 +657,6 @@ static inline struct mpic * mpic_from_irq_data(struct irq_data *d)
 static inline void mpic_eoi(struct mpic *mpic)
 {
 	mpic_cpu_write(MPIC_INFO(CPU_EOI), 0);
-	(void)mpic_cpu_read(MPIC_INFO(CPU_WHOAMI));
 }
 
 /*
@@ -886,25 +886,25 @@ int mpic_set_irq_type(struct irq_data *d, unsigned int flow_type)
 
 	/* Default: read HW settings */
 	if (flow_type == IRQ_TYPE_DEFAULT) {
-		switch(vold & (MPIC_INFO(VECPRI_POLARITY_MASK) |
-			       MPIC_INFO(VECPRI_SENSE_MASK))) {
-			case MPIC_INFO(VECPRI_SENSE_EDGE) |
-			     MPIC_INFO(VECPRI_POLARITY_POSITIVE):
-				flow_type = IRQ_TYPE_EDGE_RISING;
-				break;
-			case MPIC_INFO(VECPRI_SENSE_EDGE) |
-			     MPIC_INFO(VECPRI_POLARITY_NEGATIVE):
-				flow_type = IRQ_TYPE_EDGE_FALLING;
-				break;
-			case MPIC_INFO(VECPRI_SENSE_LEVEL) |
-			     MPIC_INFO(VECPRI_POLARITY_POSITIVE):
-				flow_type = IRQ_TYPE_LEVEL_HIGH;
-				break;
-			case MPIC_INFO(VECPRI_SENSE_LEVEL) |
-			     MPIC_INFO(VECPRI_POLARITY_NEGATIVE):
-				flow_type = IRQ_TYPE_LEVEL_LOW;
-				break;
-		}
+		int vold_ps;
+
+		vold_ps = vold & (MPIC_INFO(VECPRI_POLARITY_MASK) |
+				  MPIC_INFO(VECPRI_SENSE_MASK));
+
+		if (vold_ps == (MPIC_INFO(VECPRI_SENSE_EDGE) |
+				MPIC_INFO(VECPRI_POLARITY_POSITIVE)))
+			flow_type = IRQ_TYPE_EDGE_RISING;
+		else if	(vold_ps == (MPIC_INFO(VECPRI_SENSE_EDGE) |
+				     MPIC_INFO(VECPRI_POLARITY_NEGATIVE)))
+			flow_type = IRQ_TYPE_EDGE_FALLING;
+		else if (vold_ps == (MPIC_INFO(VECPRI_SENSE_LEVEL) |
+				     MPIC_INFO(VECPRI_POLARITY_POSITIVE)))
+			flow_type = IRQ_TYPE_LEVEL_HIGH;
+		else if (vold_ps == (MPIC_INFO(VECPRI_SENSE_LEVEL) |
+				     MPIC_INFO(VECPRI_POLARITY_NEGATIVE)))
+			flow_type = IRQ_TYPE_LEVEL_LOW;
+		else
+			WARN_ONCE(1, "mpic: unknown IRQ type %d\n", vold);
 	}
 
 	/* Apply to irq desc */
@@ -926,22 +926,6 @@ int mpic_set_irq_type(struct irq_data *d, unsigned int flow_type)
 	return IRQ_SET_MASK_OK_NOCOPY;
 }
 
-static int mpic_irq_set_wake(struct irq_data *d, unsigned int on)
-{
-	struct irq_desc *desc = container_of(d, struct irq_desc, irq_data);
-	struct mpic *mpic = mpic_from_irq_data(d);
-
-	if (!(mpic->flags & MPIC_FSL))
-		return -ENXIO;
-
-	if (on)
-		desc->action->flags |= IRQF_NO_SUSPEND;
-	else
-		desc->action->flags &= ~IRQF_NO_SUSPEND;
-
-	return 0;
-}
-
 void mpic_set_vector(unsigned int virq, unsigned int vector)
 {
 	struct mpic *mpic = mpic_from_irq(virq);
@@ -960,7 +944,7 @@ void mpic_set_vector(unsigned int virq, unsigned int vector)
 	mpic_irq_write(src, MPIC_INFO(IRQ_VECTOR_PRI), vecpri);
 }
 
-void mpic_set_destination(unsigned int virq, unsigned int cpuid)
+static void mpic_set_destination(unsigned int virq, unsigned int cpuid)
 {
 	struct mpic *mpic = mpic_from_irq(virq);
 	unsigned int src = virq_to_hw(virq);
@@ -979,11 +963,10 @@ static struct irq_chip mpic_irq_chip = {
 	.irq_unmask	= mpic_unmask_irq,
 	.irq_eoi	= mpic_end_irq,
 	.irq_set_type	= mpic_set_irq_type,
-	.irq_set_wake	= mpic_irq_set_wake,
 };
 
 #ifdef CONFIG_SMP
-static struct irq_chip mpic_ipi_chip = {
+static const struct irq_chip mpic_ipi_chip = {
 	.irq_mask	= mpic_mask_ipi,
 	.irq_unmask	= mpic_unmask_ipi,
 	.irq_eoi	= mpic_end_ipi,
@@ -994,11 +977,10 @@ static struct irq_chip mpic_tm_chip = {
 	.irq_mask	= mpic_mask_tm,
 	.irq_unmask	= mpic_unmask_tm,
 	.irq_eoi	= mpic_end_irq,
-	.irq_set_wake	= mpic_irq_set_wake,
 };
 
 #ifdef CONFIG_MPIC_U3_HT_IRQS
-static struct irq_chip mpic_irq_ht_chip = {
+static const struct irq_chip mpic_irq_ht_chip = {
 	.irq_startup	= mpic_startup_ht_irq,
 	.irq_shutdown	= mpic_shutdown_ht_irq,
 	.irq_mask	= mpic_mask_irq,
@@ -1009,10 +991,12 @@ static struct irq_chip mpic_irq_ht_chip = {
 #endif /* CONFIG_MPIC_U3_HT_IRQS */
 
 
-static int mpic_host_match(struct irq_domain *h, struct device_node *node)
+static int mpic_host_match(struct irq_domain *h, struct device_node *node,
+			   enum irq_domain_bus_token bus_token)
 {
 	/* Exact match, unless mpic node is NULL */
-	return h->of_node == NULL || h->of_node == node;
+	struct device_node *of_node = irq_domain_get_of_node(h);
+	return of_node == NULL || of_node == node;
 }
 
 static int mpic_host_map(struct irq_domain *h, unsigned int virq,
@@ -1026,9 +1010,8 @@ static int mpic_host_map(struct irq_domain *h, unsigned int virq,
 	if (hw == mpic->spurious_vec)
 		return -EINVAL;
 	if (mpic->protected && test_bit(hw, mpic->protected)) {
-		pr_warning("mpic: Mapping of source 0x%x failed, "
-			   "source protected by firmware !\n",\
-			   (unsigned int)hw);
+		pr_warn("mpic: Mapping of source 0x%x failed, source protected by firmware !\n",
+			(unsigned int)hw);
 		return -EPERM;
 	}
 
@@ -1058,9 +1041,8 @@ static int mpic_host_map(struct irq_domain *h, unsigned int virq,
 		return 0;
 
 	if (hw >= mpic->num_sources) {
-		pr_warning("mpic: Mapping of source 0x%x failed, "
-			   "source out of range !\n",\
-			   (unsigned int)hw);
+		pr_warn("mpic: Mapping of source 0x%x failed, source out of range !\n",
+			(unsigned int)hw);
 		return -EINVAL;
 	}
 
@@ -1182,7 +1164,7 @@ static int mpic_host_xlate(struct irq_domain *h, struct device_node *ct,
 }
 
 /* IRQ handler for a secondary MPIC cascaded from another IRQ controller */
-static void mpic_cascade(unsigned int irq, struct irq_desc *desc)
+static void mpic_cascade(struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 	struct mpic *mpic = irq_desc_get_handler_data(desc);
@@ -1197,7 +1179,7 @@ static void mpic_cascade(unsigned int irq, struct irq_desc *desc)
 	chip->irq_eoi(&desc->irq_data);
 }
 
-static struct irq_domain_ops mpic_host_ops = {
+static const struct irq_domain_ops mpic_host_ops = {
 	.match = mpic_host_match,
 	.map = mpic_host_map,
 	.xlate = mpic_host_xlate,
@@ -1267,7 +1249,7 @@ struct mpic * __init mpic_alloc(struct device_node *node,
 	/* Pick the physical address from the device tree if unspecified */
 	if (!phys_addr) {
 		/* Check if it is DCR-based */
-		if (of_get_property(node, "dcr-reg", NULL)) {
+		if (of_property_read_bool(node, "dcr-reg")) {
 			flags |= MPIC_USES_DCR;
 		} else {
 			struct resource r;
@@ -1278,14 +1260,17 @@ struct mpic * __init mpic_alloc(struct device_node *node,
 	}
 
 	/* Read extra device-tree properties into the flags variable */
-	if (of_get_property(node, "big-endian", NULL))
+	if (of_property_read_bool(node, "big-endian"))
 		flags |= MPIC_BIG_ENDIAN;
-	if (of_get_property(node, "pic-no-reset", NULL))
+	if (of_property_read_bool(node, "pic-no-reset"))
 		flags |= MPIC_NO_RESET;
-	if (of_get_property(node, "single-cpu-affinity", NULL))
+	if (of_property_read_bool(node, "single-cpu-affinity"))
 		flags |= MPIC_SINGLE_DEST_CPU;
-	if (of_device_is_compatible(node, "fsl,mpic"))
+	if (of_device_is_compatible(node, "fsl,mpic")) {
 		flags |= MPIC_FSL | MPIC_LARGE_VECTORS;
+		mpic_irq_chip.flags |= IRQCHIP_SKIP_SET_WAKE;
+		mpic_tm_chip.flags |= IRQCHIP_SKIP_SET_WAKE;
+	}
 
 	mpic = kzalloc(sizeof(struct mpic), GFP_KERNEL);
 	if (mpic == NULL)
@@ -1340,8 +1325,7 @@ struct mpic * __init mpic_alloc(struct device_node *node,
 	psrc = of_get_property(mpic->node, "protected-sources", &psize);
 	if (psrc) {
 		/* Allocate a bitmap with one bit per interrupt */
-		unsigned int mapsize = BITS_TO_LONGS(intvec_top + 1);
-		mpic->protected = kzalloc(mapsize*sizeof(long), GFP_KERNEL);
+		mpic->protected = bitmap_zalloc(intvec_top + 1, GFP_KERNEL);
 		BUG_ON(mpic->protected == NULL);
 		for (i = 0; i < psize/sizeof(u32); i++) {
 			if (psrc[i] > intvec_top)
@@ -1397,12 +1381,12 @@ struct mpic * __init mpic_alloc(struct device_node *node,
 		 * global vector number space, as in case of ipis
 		 * and timer interrupts.
 		 *
-		 * Available vector space = intvec_top - 12, where 12
+		 * Available vector space = intvec_top - 13, where 13
 		 * is the number of vectors which have been consumed by
-		 * ipis and timer interrupts.
+		 * ipis, timer interrupts and spurious.
 		 */
 		if (fsl_version >= 0x401) {
-			ret = mpic_setup_error_int(mpic, intvec_top - 12);
+			ret = mpic_setup_error_int(mpic, intvec_top - 13);
 			if (ret)
 				return NULL;
 		}
@@ -1422,10 +1406,8 @@ struct mpic * __init mpic_alloc(struct device_node *node,
 	 * with device trees generated by older versions of QEMU.
 	 * fsl_version will be zero if MPIC_FSL is not set.
 	 */
-	if (fsl_version < 0x400 && (flags & MPIC_ENABLE_COREINT)) {
-		WARN_ON(ppc_md.get_irq != mpic_get_coreint_irq);
+	if (fsl_version < 0x400 && (flags & MPIC_ENABLE_COREINT))
 		ppc_md.get_irq = mpic_get_irq;
-	}
 
 	/* Reset */
 
@@ -1588,10 +1570,6 @@ void __init mpic_init(struct mpic *mpic)
 			num_timers = 8;
 	}
 
-	/* FSL mpic error interrupt intialization */
-	if (mpic->flags & MPIC_FSL_HAS_EIMR)
-		mpic_err_int_init(mpic, MPIC_FSL_ERR_INT);
-
 	/* Initialize timers to our reserved vectors and mask them for now */
 	for (i = 0; i < num_timers; i++) {
 		unsigned int offset = mpic_tm_offset(mpic, i);
@@ -1660,46 +1638,26 @@ void __init mpic_init(struct mpic *mpic)
 
 #ifdef CONFIG_PM
 	/* allocate memory to save mpic state */
-	mpic->save_data = kmalloc(mpic->num_sources * sizeof(*mpic->save_data),
-				  GFP_KERNEL);
+	mpic->save_data = kmalloc_array(mpic->num_sources,
+				        sizeof(*mpic->save_data),
+				        GFP_KERNEL);
 	BUG_ON(mpic->save_data == NULL);
 #endif
 
 	/* Check if this MPIC is chained from a parent interrupt controller */
 	if (mpic->flags & MPIC_SECONDARY) {
 		int virq = irq_of_parse_and_map(mpic->node, 0);
-		if (virq != NO_IRQ) {
-			printk(KERN_INFO "%s: hooking up to IRQ %d\n",
-					mpic->node->full_name, virq);
+		if (virq) {
+			printk(KERN_INFO "%pOF: hooking up to IRQ %d\n",
+					mpic->node, virq);
 			irq_set_handler_data(virq, mpic);
 			irq_set_chained_handler(virq, &mpic_cascade);
 		}
 	}
-}
 
-void __init mpic_set_clk_ratio(struct mpic *mpic, u32 clock_ratio)
-{
-	u32 v;
-
-	v = mpic_read(mpic->gregs, MPIC_GREG_GLOBAL_CONF_1);
-	v &= ~MPIC_GREG_GLOBAL_CONF_1_CLK_RATIO_MASK;
-	v |= MPIC_GREG_GLOBAL_CONF_1_CLK_RATIO(clock_ratio);
-	mpic_write(mpic->gregs, MPIC_GREG_GLOBAL_CONF_1, v);
-}
-
-void __init mpic_set_serial_int(struct mpic *mpic, int enable)
-{
-	unsigned long flags;
-	u32 v;
-
-	raw_spin_lock_irqsave(&mpic_lock, flags);
-	v = mpic_read(mpic->gregs, MPIC_GREG_GLOBAL_CONF_1);
-	if (enable)
-		v |= MPIC_GREG_GLOBAL_CONF_1_SIE;
-	else
-		v &= ~MPIC_GREG_GLOBAL_CONF_1_SIE;
-	mpic_write(mpic->gregs, MPIC_GREG_GLOBAL_CONF_1, v);
-	raw_spin_unlock_irqrestore(&mpic_lock, flags);
+	/* FSL mpic error interrupt initialization */
+	if (mpic->flags & MPIC_FSL_HAS_EIMR)
+		mpic_err_int_init(mpic, MPIC_FSL_ERR_INT);
 }
 
 void mpic_irq_set_priority(unsigned int irq, unsigned int pri)
@@ -1818,13 +1776,13 @@ static unsigned int _mpic_get_one_irq(struct mpic *mpic, int reg)
 	if (unlikely(src == mpic->spurious_vec)) {
 		if (mpic->flags & MPIC_SPV_EOI)
 			mpic_eoi(mpic);
-		return NO_IRQ;
+		return 0;
 	}
 	if (unlikely(mpic->protected && test_bit(src, mpic->protected))) {
 		printk_ratelimited(KERN_WARNING "%s: Got protected source %d !\n",
 				   mpic->name, (int)src);
 		mpic_eoi(mpic);
-		return NO_IRQ;
+		return 0;
 	}
 
 	return irq_linear_revmap(mpic->irqhost, src);
@@ -1857,17 +1815,17 @@ unsigned int mpic_get_coreint_irq(void)
 	if (unlikely(src == mpic->spurious_vec)) {
 		if (mpic->flags & MPIC_SPV_EOI)
 			mpic_eoi(mpic);
-		return NO_IRQ;
+		return 0;
 	}
 	if (unlikely(mpic->protected && test_bit(src, mpic->protected))) {
 		printk_ratelimited(KERN_WARNING "%s: Got protected source %d !\n",
 				   mpic->name, (int)src);
-		return NO_IRQ;
+		return 0;
 	}
 
 	return irq_linear_revmap(mpic->irqhost, src);
 #else
-	return NO_IRQ;
+	return 0;
 #endif
 }
 
@@ -1881,7 +1839,7 @@ unsigned int mpic_get_mcirq(void)
 }
 
 #ifdef CONFIG_SMP
-void mpic_request_ipis(void)
+void __init mpic_request_ipis(void)
 {
 	struct mpic *mpic = mpic_primary;
 	int i;
@@ -1892,7 +1850,7 @@ void mpic_request_ipis(void)
 	for (i = 0; i < 4; i++) {
 		unsigned int vipi = irq_create_mapping(mpic->irqhost,
 						       mpic->ipi_vecs[0] + i);
-		if (vipi == NO_IRQ) {
+		if (!vipi) {
 			printk(KERN_ERR "Failed to map %s\n", smp_ipi_name[i]);
 			continue;
 		}
@@ -1924,20 +1882,18 @@ void smp_mpic_message_pass(int cpu, int msg)
 		       msg * MPIC_INFO(CPU_IPI_DISPATCH_STRIDE), physmask);
 }
 
-int __init smp_mpic_probe(void)
+void __init smp_mpic_probe(void)
 {
 	int nr_cpus;
 
 	DBG("smp_mpic_probe()...\n");
 
-	nr_cpus = cpumask_weight(cpu_possible_mask);
+	nr_cpus = num_possible_cpus();
 
 	DBG("nr_cpus: %d\n", nr_cpus);
 
 	if (nr_cpus > 1)
 		mpic_request_ipis();
-
-	return nr_cpus;
 }
 
 void smp_mpic_setup_cpu(int cpu)
@@ -2046,8 +2002,15 @@ static struct syscore_ops mpic_syscore_ops = {
 
 static int mpic_init_sys(void)
 {
+	int rc;
+
 	register_syscore_ops(&mpic_syscore_ops);
-	subsys_system_register(&mpic_subsys, NULL);
+	rc = subsys_system_register(&mpic_subsys, NULL);
+	if (rc) {
+		unregister_syscore_ops(&mpic_syscore_ops);
+		pr_err("mpic: Failed to register subsystem!\n");
+		return rc;
+	}
 
 	return 0;
 }

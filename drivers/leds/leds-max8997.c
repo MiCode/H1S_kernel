@@ -1,19 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * leds-max8997.c - LED class driver for MAX8997 LEDs.
  *
  * Copyright (C) 2011 Samsung Electronics
  * Donggeun Kim <dg77.kim@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #include <linux/module.h>
 #include <linux/err.h>
 #include <linux/slab.h>
-#include <linux/workqueue.h>
 #include <linux/leds.h>
 #include <linux/mfd/max8997.h>
 #include <linux/mfd/max8997-private.h>
@@ -165,8 +160,8 @@ static void max8997_led_brightness_set(struct led_classdev *led_cdev,
 	}
 }
 
-static ssize_t max8997_led_show_mode(struct device *dev,
-				struct device_attribute *attr, char *buf)
+static ssize_t mode_show(struct device *dev,
+			 struct device_attribute *attr, char *buf)
 {
 	struct led_classdev *led_cdev = dev_get_drvdata(dev);
 	struct max8997_led *led =
@@ -198,9 +193,9 @@ static ssize_t max8997_led_show_mode(struct device *dev,
 	return ret;
 }
 
-static ssize_t max8997_led_store_mode(struct device *dev,
-				struct device_attribute *attr,
-				const char *buf, size_t size)
+static ssize_t mode_store(struct device *dev,
+			  struct device_attribute *attr,
+			  const char *buf, size_t size)
 {
 	struct led_classdev *led_cdev = dev_get_drvdata(dev);
 	struct max8997_led *led =
@@ -227,7 +222,13 @@ static ssize_t max8997_led_store_mode(struct device *dev,
 	return size;
 }
 
-static DEVICE_ATTR(mode, 0644, max8997_led_show_mode, max8997_led_store_mode);
+static DEVICE_ATTR_RW(mode);
+
+static struct attribute *max8997_attrs[] = {
+	&dev_attr_mode.attr,
+	NULL
+};
+ATTRIBUTE_GROUPS(max8997);
 
 static int max8997_led_probe(struct platform_device *pdev)
 {
@@ -236,11 +237,6 @@ static int max8997_led_probe(struct platform_device *pdev)
 	struct max8997_led *led;
 	char name[20];
 	int ret = 0;
-
-	if (pdata == NULL) {
-		dev_err(&pdev->dev, "no platform data\n");
-		return -ENODEV;
-	}
 
 	led = devm_kzalloc(&pdev->dev, sizeof(*led), GFP_KERNEL);
 	if (led == NULL)
@@ -253,16 +249,17 @@ static int max8997_led_probe(struct platform_device *pdev)
 	led->cdev.brightness_set = max8997_led_brightness_set;
 	led->cdev.flags |= LED_CORE_SUSPENDRESUME;
 	led->cdev.brightness = 0;
+	led->cdev.groups = max8997_groups;
 	led->iodev = iodev;
 
 	/* initialize mode and brightness according to platform_data */
-	if (pdata->led_pdata) {
+	if (pdata && pdata->led_pdata) {
 		u8 mode = 0, brightness = 0;
 
 		mode = pdata->led_pdata->mode[led->id];
 		brightness = pdata->led_pdata->brightness[led->id];
 
-		max8997_led_set_mode(led, pdata->led_pdata->mode[led->id]);
+		max8997_led_set_mode(led, mode);
 
 		if (brightness > led->cdev.max_brightness)
 			brightness = led->cdev.max_brightness;
@@ -275,29 +272,9 @@ static int max8997_led_probe(struct platform_device *pdev)
 
 	mutex_init(&led->mutex);
 
-	platform_set_drvdata(pdev, led);
-
-	ret = led_classdev_register(&pdev->dev, &led->cdev);
+	ret = devm_led_classdev_register(&pdev->dev, &led->cdev);
 	if (ret < 0)
 		return ret;
-
-	ret = device_create_file(led->cdev.dev, &dev_attr_mode);
-	if (ret != 0) {
-		dev_err(&pdev->dev,
-			"failed to create file: %d\n", ret);
-		led_classdev_unregister(&led->cdev);
-		return ret;
-	}
-
-	return 0;
-}
-
-static int max8997_led_remove(struct platform_device *pdev)
-{
-	struct max8997_led *led = platform_get_drvdata(pdev);
-
-	device_remove_file(led->cdev.dev, &dev_attr_mode);
-	led_classdev_unregister(&led->cdev);
 
 	return 0;
 }
@@ -305,10 +282,8 @@ static int max8997_led_remove(struct platform_device *pdev)
 static struct platform_driver max8997_led_driver = {
 	.driver = {
 		.name  = "max8997-led",
-		.owner = THIS_MODULE,
 	},
 	.probe  = max8997_led_probe,
-	.remove = max8997_led_remove,
 };
 
 module_platform_driver(max8997_led_driver);

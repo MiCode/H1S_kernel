@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *	linux/arch/alpha/kernel/machvec_impl.h
  *
@@ -5,8 +6,6 @@
  *
  * This file has goodies to help simplify instantiation of machine vectors.
  */
-
-#include <asm/pgalloc.h>
 
 /* Whee.  These systems don't have an HAE:
        IRONGATE, MARVEL, POLARIS, TSUNAMI, TITAN, WILDFIRE
@@ -79,9 +78,11 @@
 	.mv_ioread8 =		CAT(low,_ioread8),			\
 	.mv_ioread16 =		CAT(low,_ioread16),			\
 	.mv_ioread32 =		CAT(low,_ioread32),			\
+	.mv_ioread64 =		CAT(low,_ioread64),			\
 	.mv_iowrite8 =		CAT(low,_iowrite8),			\
 	.mv_iowrite16 =		CAT(low,_iowrite16),			\
 	.mv_iowrite32 =		CAT(low,_iowrite32),			\
+	.mv_iowrite64 =		CAT(low,_iowrite64),			\
 	.mv_readb =		CAT(low,_readb),			\
 	.mv_readw =		CAT(low,_readw),			\
 	.mv_readl =		CAT(low,_readl),			\
@@ -137,16 +138,18 @@
 #define __initmv __initdata
 #define ALIAS_MV(x)
 #else
-#define __initmv __initdata_refok
+#define __initmv __refdata
 
 /* GCC actually has a syntax for defining aliases, but is under some
    delusion that you shouldn't be able to declare it extern somewhere
    else beforehand.  Fine.  We'll do it ourselves.  */
 #if 0
 #define ALIAS_MV(system) \
-  struct alpha_machine_vector alpha_mv __attribute__((alias(#system "_mv")));
+  struct alpha_machine_vector alpha_mv __attribute__((alias(#system "_mv"))); \
+  EXPORT_SYMBOL(alpha_mv);
 #else
 #define ALIAS_MV(system) \
-  asm(".global alpha_mv\nalpha_mv = " #system "_mv");
+  asm(".global alpha_mv\nalpha_mv = " #system "_mv"); \
+  EXPORT_SYMBOL(alpha_mv);
 #endif
 #endif /* GENERIC */

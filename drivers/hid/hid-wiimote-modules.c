@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Device Modules for Nintendo Wii / Wii U HID Driver
  * Copyright (c) 2011-2013 David Herrmann <dh.herrmann@gmail.com>
  */
 
 /*
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
  */
 
 /*
@@ -203,8 +200,7 @@ static int wiimod_battery_get_property(struct power_supply *psy,
 				       enum power_supply_property psp,
 				       union power_supply_propval *val)
 {
-	struct wiimote_data *wdata = container_of(psy, struct wiimote_data,
-						  battery);
+	struct wiimote_data *wdata = power_supply_get_drvdata(psy);
 	int ret = 0, state;
 	unsigned long flags;
 
@@ -238,42 +234,46 @@ static int wiimod_battery_get_property(struct power_supply *psy,
 static int wiimod_battery_probe(const struct wiimod_ops *ops,
 				struct wiimote_data *wdata)
 {
+	struct power_supply_config psy_cfg = { .drv_data = wdata, };
 	int ret;
 
-	wdata->battery.properties = wiimod_battery_props;
-	wdata->battery.num_properties = ARRAY_SIZE(wiimod_battery_props);
-	wdata->battery.get_property = wiimod_battery_get_property;
-	wdata->battery.type = POWER_SUPPLY_TYPE_BATTERY;
-	wdata->battery.use_for_apm = 0;
-	wdata->battery.name = kasprintf(GFP_KERNEL, "wiimote_battery_%s",
-					wdata->hdev->uniq);
-	if (!wdata->battery.name)
+	wdata->battery_desc.properties = wiimod_battery_props;
+	wdata->battery_desc.num_properties = ARRAY_SIZE(wiimod_battery_props);
+	wdata->battery_desc.get_property = wiimod_battery_get_property;
+	wdata->battery_desc.type = POWER_SUPPLY_TYPE_BATTERY;
+	wdata->battery_desc.use_for_apm = 0;
+	wdata->battery_desc.name = kasprintf(GFP_KERNEL, "wiimote_battery_%s",
+					     wdata->hdev->uniq);
+	if (!wdata->battery_desc.name)
 		return -ENOMEM;
 
-	ret = power_supply_register(&wdata->hdev->dev, &wdata->battery);
-	if (ret) {
+	wdata->battery = power_supply_register(&wdata->hdev->dev,
+					       &wdata->battery_desc,
+					       &psy_cfg);
+	if (IS_ERR(wdata->battery)) {
 		hid_err(wdata->hdev, "cannot register battery device\n");
+		ret = PTR_ERR(wdata->battery);
 		goto err_free;
 	}
 
-	power_supply_powers(&wdata->battery, &wdata->hdev->dev);
+	power_supply_powers(wdata->battery, &wdata->hdev->dev);
 	return 0;
 
 err_free:
-	kfree(wdata->battery.name);
-	wdata->battery.name = NULL;
+	kfree(wdata->battery_desc.name);
+	wdata->battery_desc.name = NULL;
 	return ret;
 }
 
 static void wiimod_battery_remove(const struct wiimod_ops *ops,
 				  struct wiimote_data *wdata)
 {
-	if (!wdata->battery.name)
+	if (!wdata->battery_desc.name)
 		return;
 
-	power_supply_unregister(&wdata->battery);
-	kfree(wdata->battery.name);
-	wdata->battery.name = NULL;
+	power_supply_unregister(wdata->battery);
+	kfree(wdata->battery_desc.name);
+	wdata->battery_desc.name = NULL;
 }
 
 static const struct wiimod_ops wiimod_battery = {
@@ -293,13 +293,11 @@ static const struct wiimod_ops wiimod_battery = {
 
 static enum led_brightness wiimod_led_get(struct led_classdev *led_dev)
 {
-	struct wiimote_data *wdata;
 	struct device *dev = led_dev->dev->parent;
+	struct wiimote_data *wdata = dev_to_wii(dev);
 	int i;
 	unsigned long flags;
 	bool value = false;
-
-	wdata = hid_get_drvdata(container_of(dev, struct hid_device, dev));
 
 	for (i = 0; i < 4; ++i) {
 		if (wdata->leds[i] == led_dev) {
@@ -316,13 +314,11 @@ static enum led_brightness wiimod_led_get(struct led_classdev *led_dev)
 static void wiimod_led_set(struct led_classdev *led_dev,
 			   enum led_brightness value)
 {
-	struct wiimote_data *wdata;
 	struct device *dev = led_dev->dev->parent;
+	struct wiimote_data *wdata = dev_to_wii(dev);
 	int i;
 	unsigned long flags;
 	__u8 state, flag;
-
-	wdata = hid_get_drvdata(container_of(dev, struct hid_device, dev));
 
 	for (i = 0; i < 4; ++i) {
 		if (wdata->leds[i] == led_dev) {
@@ -1092,12 +1088,28 @@ static void wiimod_classic_in_ext(struct wiimote_data *wdata, const __u8 *ext)
 	 * is the same as before.
 	 */
 
+	static const s8 digital_to_analog[3] = {0x20, 0, -0x20};
+
 	if (wdata->state.flags & WIIPROTO_FLAG_MP_ACTIVE) {
-		lx = ext[0] & 0x3e;
-		ly = ext[1] & 0x3e;
+		if (wiimote_dpad_as_analog) {
+			lx = digital_to_analog[1 - !(ext[4] & 0x80)
+				+ !(ext[1] & 0x01)];
+			ly = digital_to_analog[1 - !(ext[4] & 0x40)
+				+ !(ext[0] & 0x01)];
+		} else {
+			lx = (ext[0] & 0x3e) - 0x20;
+			ly = (ext[1] & 0x3e) - 0x20;
+		}
 	} else {
-		lx = ext[0] & 0x3f;
-		ly = ext[1] & 0x3f;
+		if (wiimote_dpad_as_analog) {
+			lx = digital_to_analog[1 - !(ext[4] & 0x80)
+				+ !(ext[5] & 0x02)];
+			ly = digital_to_analog[1 - !(ext[4] & 0x40)
+				+ !(ext[5] & 0x01)];
+		} else {
+			lx = (ext[0] & 0x3f) - 0x20;
+			ly = (ext[1] & 0x3f) - 0x20;
+		}
 	}
 
 	rx = (ext[0] >> 3) & 0x18;
@@ -1114,19 +1126,13 @@ static void wiimod_classic_in_ext(struct wiimote_data *wdata, const __u8 *ext)
 	rt <<= 1;
 	lt <<= 1;
 
-	input_report_abs(wdata->extension.input, ABS_HAT1X, lx - 0x20);
-	input_report_abs(wdata->extension.input, ABS_HAT1Y, ly - 0x20);
+	input_report_abs(wdata->extension.input, ABS_HAT1X, lx);
+	input_report_abs(wdata->extension.input, ABS_HAT1Y, ly);
 	input_report_abs(wdata->extension.input, ABS_HAT2X, rx - 0x20);
 	input_report_abs(wdata->extension.input, ABS_HAT2Y, ry - 0x20);
 	input_report_abs(wdata->extension.input, ABS_HAT3X, rt);
 	input_report_abs(wdata->extension.input, ABS_HAT3Y, lt);
 
-	input_report_key(wdata->extension.input,
-			 wiimod_classic_map[WIIMOD_CLASSIC_KEY_RIGHT],
-			 !(ext[4] & 0x80));
-	input_report_key(wdata->extension.input,
-			 wiimod_classic_map[WIIMOD_CLASSIC_KEY_DOWN],
-			 !(ext[4] & 0x40));
 	input_report_key(wdata->extension.input,
 			 wiimod_classic_map[WIIMOD_CLASSIC_KEY_LT],
 			 !(ext[4] & 0x20));
@@ -1161,20 +1167,29 @@ static void wiimod_classic_in_ext(struct wiimote_data *wdata, const __u8 *ext)
 			 wiimod_classic_map[WIIMOD_CLASSIC_KEY_ZR],
 			 !(ext[5] & 0x04));
 
-	if (wdata->state.flags & WIIPROTO_FLAG_MP_ACTIVE) {
+	if (!wiimote_dpad_as_analog) {
 		input_report_key(wdata->extension.input,
-			 wiimod_classic_map[WIIMOD_CLASSIC_KEY_LEFT],
-			 !(ext[1] & 0x01));
+				 wiimod_classic_map[WIIMOD_CLASSIC_KEY_RIGHT],
+				 !(ext[4] & 0x80));
 		input_report_key(wdata->extension.input,
-			 wiimod_classic_map[WIIMOD_CLASSIC_KEY_UP],
-			 !(ext[0] & 0x01));
-	} else {
-		input_report_key(wdata->extension.input,
-			 wiimod_classic_map[WIIMOD_CLASSIC_KEY_LEFT],
-			 !(ext[5] & 0x02));
-		input_report_key(wdata->extension.input,
-			 wiimod_classic_map[WIIMOD_CLASSIC_KEY_UP],
-			 !(ext[5] & 0x01));
+				 wiimod_classic_map[WIIMOD_CLASSIC_KEY_DOWN],
+				 !(ext[4] & 0x40));
+
+		if (wdata->state.flags & WIIPROTO_FLAG_MP_ACTIVE) {
+			input_report_key(wdata->extension.input,
+				 wiimod_classic_map[WIIMOD_CLASSIC_KEY_LEFT],
+				 !(ext[1] & 0x01));
+			input_report_key(wdata->extension.input,
+				 wiimod_classic_map[WIIMOD_CLASSIC_KEY_UP],
+				 !(ext[0] & 0x01));
+		} else {
+			input_report_key(wdata->extension.input,
+				 wiimod_classic_map[WIIMOD_CLASSIC_KEY_LEFT],
+				 !(ext[5] & 0x02));
+			input_report_key(wdata->extension.input,
+				 wiimod_classic_map[WIIMOD_CLASSIC_KEY_UP],
+				 !(ext[5] & 0x01));
+		}
 	}
 
 	input_sync(wdata->extension.input);
@@ -1951,6 +1966,668 @@ static const struct wiimod_ops wiimod_pro = {
 };
 
 /*
+ * Drums
+ * Guitar-Hero, Rock-Band and other games came bundled with drums which can
+ * be plugged as extension to a Wiimote. Drum-reports are still not entirely
+ * figured out, but the most important information is known.
+ * We create a separate device for drums and report all information via this
+ * input device.
+ */
+
+static inline void wiimod_drums_report_pressure(struct wiimote_data *wdata,
+						__u8 none, __u8 which,
+						__u8 pressure, __u8 onoff,
+						__u8 *store, __u16 code,
+						__u8 which_code)
+{
+	static const __u8 default_pressure = 3;
+
+	if (!none && which == which_code) {
+		*store = pressure;
+		input_report_abs(wdata->extension.input, code, *store);
+	} else if (onoff != !!*store) {
+		*store = onoff ? default_pressure : 0;
+		input_report_abs(wdata->extension.input, code, *store);
+	}
+}
+
+static void wiimod_drums_in_ext(struct wiimote_data *wdata, const __u8 *ext)
+{
+	__u8 pressure, which, none, hhp, sx, sy;
+	__u8 o, r, y, g, b, bass, bm, bp;
+
+	/*   Byte |  8  |  7  |  6  |  5  |  4  |  3  |  2  |  1  |
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 *    1   |  0  |  0  |              SX <5:0>             |
+	 *    2   |  0  |  0  |              SY <5:0>             |
+	 *   -----+-----+-----+-----------------------------+-----+
+	 *    3   | HPP | NON |         WHICH <5:1>         |  ?  |
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 *    4   |   SOFT <7:5>    |  0  |  1  |  1  |  0  |  ?  |
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 *    5   |  ?  |  1  |  1  | B-  |  1  | B+  |  1  |  ?  |
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 *    6   |  O  |  R  |  Y  |  G  |  B  | BSS |  1  |  1  |
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 * All buttons are 0 if pressed
+	 *
+	 * With Motion+ enabled, the following bits will get invalid:
+	 *   Byte |  8  |  7  |  6  |  5  |  4  |  3  |  2  |  1  |
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 *    1   |  0  |  0  |              SX <5:1>       |XXXXX|
+	 *    2   |  0  |  0  |              SY <5:1>       |XXXXX|
+	 *   -----+-----+-----+-----------------------------+-----+
+	 *    3   | HPP | NON |         WHICH <5:1>         |  ?  |
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 *    4   |   SOFT <7:5>    |  0  |  1  |  1  |  0  |  ?  |
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 *    5   |  ?  |  1  |  1  | B-  |  1  | B+  |  1  |XXXXX|
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 *    6   |  O  |  R  |  Y  |  G  |  B  | BSS |XXXXX|XXXXX|
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 */
+
+	pressure = 7 - (ext[3] >> 5);
+	which = (ext[2] >> 1) & 0x1f;
+	none = !!(ext[2] & 0x40);
+	hhp = !(ext[2] & 0x80);
+	sx = ext[0] & 0x3f;
+	sy = ext[1] & 0x3f;
+	o = !(ext[5] & 0x80);
+	r = !(ext[5] & 0x40);
+	y = !(ext[5] & 0x20);
+	g = !(ext[5] & 0x10);
+	b = !(ext[5] & 0x08);
+	bass = !(ext[5] & 0x04);
+	bm = !(ext[4] & 0x10);
+	bp = !(ext[4] & 0x04);
+
+	if (wdata->state.flags & WIIPROTO_FLAG_MP_ACTIVE) {
+		sx &= 0x3e;
+		sy &= 0x3e;
+	}
+
+	wiimod_drums_report_pressure(wdata, none, which, pressure,
+				     o, &wdata->state.pressure_drums[0],
+				     ABS_HAT2Y, 0x0e);
+	wiimod_drums_report_pressure(wdata, none, which, pressure,
+				     r, &wdata->state.pressure_drums[1],
+				     ABS_HAT0X, 0x19);
+	wiimod_drums_report_pressure(wdata, none, which, pressure,
+				     y, &wdata->state.pressure_drums[2],
+				     ABS_HAT2X, 0x11);
+	wiimod_drums_report_pressure(wdata, none, which, pressure,
+				     g, &wdata->state.pressure_drums[3],
+				     ABS_HAT1X, 0x12);
+	wiimod_drums_report_pressure(wdata, none, which, pressure,
+				     b, &wdata->state.pressure_drums[4],
+				     ABS_HAT0Y, 0x0f);
+
+	/* Bass shares pressure with hi-hat (set via hhp) */
+	wiimod_drums_report_pressure(wdata, none, hhp ? 0xff : which, pressure,
+				     bass, &wdata->state.pressure_drums[5],
+				     ABS_HAT3X, 0x1b);
+	/* Hi-hat has no on/off values, just pressure. Force to off/0. */
+	wiimod_drums_report_pressure(wdata, none, hhp ? which : 0xff, pressure,
+				     0, &wdata->state.pressure_drums[6],
+				     ABS_HAT3Y, 0x0e);
+
+	input_report_abs(wdata->extension.input, ABS_X, sx - 0x20);
+	input_report_abs(wdata->extension.input, ABS_Y, sy - 0x20);
+
+	input_report_key(wdata->extension.input, BTN_START, bp);
+	input_report_key(wdata->extension.input, BTN_SELECT, bm);
+
+	input_sync(wdata->extension.input);
+}
+
+static int wiimod_drums_open(struct input_dev *dev)
+{
+	struct wiimote_data *wdata = input_get_drvdata(dev);
+	unsigned long flags;
+
+	spin_lock_irqsave(&wdata->state.lock, flags);
+	wdata->state.flags |= WIIPROTO_FLAG_EXT_USED;
+	wiiproto_req_drm(wdata, WIIPROTO_REQ_NULL);
+	spin_unlock_irqrestore(&wdata->state.lock, flags);
+
+	return 0;
+}
+
+static void wiimod_drums_close(struct input_dev *dev)
+{
+	struct wiimote_data *wdata = input_get_drvdata(dev);
+	unsigned long flags;
+
+	spin_lock_irqsave(&wdata->state.lock, flags);
+	wdata->state.flags &= ~WIIPROTO_FLAG_EXT_USED;
+	wiiproto_req_drm(wdata, WIIPROTO_REQ_NULL);
+	spin_unlock_irqrestore(&wdata->state.lock, flags);
+}
+
+static int wiimod_drums_probe(const struct wiimod_ops *ops,
+			      struct wiimote_data *wdata)
+{
+	int ret;
+
+	wdata->extension.input = input_allocate_device();
+	if (!wdata->extension.input)
+		return -ENOMEM;
+
+	input_set_drvdata(wdata->extension.input, wdata);
+	wdata->extension.input->open = wiimod_drums_open;
+	wdata->extension.input->close = wiimod_drums_close;
+	wdata->extension.input->dev.parent = &wdata->hdev->dev;
+	wdata->extension.input->id.bustype = wdata->hdev->bus;
+	wdata->extension.input->id.vendor = wdata->hdev->vendor;
+	wdata->extension.input->id.product = wdata->hdev->product;
+	wdata->extension.input->id.version = wdata->hdev->version;
+	wdata->extension.input->name = WIIMOTE_NAME " Drums";
+
+	set_bit(EV_KEY, wdata->extension.input->evbit);
+	set_bit(BTN_START, wdata->extension.input->keybit);
+	set_bit(BTN_SELECT, wdata->extension.input->keybit);
+
+	set_bit(EV_ABS, wdata->extension.input->evbit);
+	set_bit(ABS_X, wdata->extension.input->absbit);
+	set_bit(ABS_Y, wdata->extension.input->absbit);
+	set_bit(ABS_HAT0X, wdata->extension.input->absbit);
+	set_bit(ABS_HAT0Y, wdata->extension.input->absbit);
+	set_bit(ABS_HAT1X, wdata->extension.input->absbit);
+	set_bit(ABS_HAT2X, wdata->extension.input->absbit);
+	set_bit(ABS_HAT2Y, wdata->extension.input->absbit);
+	set_bit(ABS_HAT3X, wdata->extension.input->absbit);
+	set_bit(ABS_HAT3Y, wdata->extension.input->absbit);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_X, -32, 31, 1, 1);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_Y, -32, 31, 1, 1);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_HAT0X, 0, 7, 0, 0);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_HAT0Y, 0, 7, 0, 0);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_HAT1X, 0, 7, 0, 0);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_HAT2X, 0, 7, 0, 0);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_HAT2Y, 0, 7, 0, 0);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_HAT3X, 0, 7, 0, 0);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_HAT3Y, 0, 7, 0, 0);
+
+	ret = input_register_device(wdata->extension.input);
+	if (ret)
+		goto err_free;
+
+	return 0;
+
+err_free:
+	input_free_device(wdata->extension.input);
+	wdata->extension.input = NULL;
+	return ret;
+}
+
+static void wiimod_drums_remove(const struct wiimod_ops *ops,
+				struct wiimote_data *wdata)
+{
+	if (!wdata->extension.input)
+		return;
+
+	input_unregister_device(wdata->extension.input);
+	wdata->extension.input = NULL;
+}
+
+static const struct wiimod_ops wiimod_drums = {
+	.flags = 0,
+	.arg = 0,
+	.probe = wiimod_drums_probe,
+	.remove = wiimod_drums_remove,
+	.in_ext = wiimod_drums_in_ext,
+};
+
+/*
+ * Guitar
+ * Guitar-Hero, Rock-Band and other games came bundled with guitars which can
+ * be plugged as extension to a Wiimote.
+ * We create a separate device for guitars and report all information via this
+ * input device.
+ */
+
+enum wiimod_guitar_keys {
+	WIIMOD_GUITAR_KEY_G,
+	WIIMOD_GUITAR_KEY_R,
+	WIIMOD_GUITAR_KEY_Y,
+	WIIMOD_GUITAR_KEY_B,
+	WIIMOD_GUITAR_KEY_O,
+	WIIMOD_GUITAR_KEY_UP,
+	WIIMOD_GUITAR_KEY_DOWN,
+	WIIMOD_GUITAR_KEY_PLUS,
+	WIIMOD_GUITAR_KEY_MINUS,
+	WIIMOD_GUITAR_KEY_NUM,
+};
+
+static const __u16 wiimod_guitar_map[] = {
+	BTN_1,			/* WIIMOD_GUITAR_KEY_G */
+	BTN_2,			/* WIIMOD_GUITAR_KEY_R */
+	BTN_3,			/* WIIMOD_GUITAR_KEY_Y */
+	BTN_4,			/* WIIMOD_GUITAR_KEY_B */
+	BTN_5,			/* WIIMOD_GUITAR_KEY_O */
+	BTN_DPAD_UP,		/* WIIMOD_GUITAR_KEY_UP */
+	BTN_DPAD_DOWN,		/* WIIMOD_GUITAR_KEY_DOWN */
+	BTN_START,		/* WIIMOD_GUITAR_KEY_PLUS */
+	BTN_SELECT,		/* WIIMOD_GUITAR_KEY_MINUS */
+};
+
+static void wiimod_guitar_in_ext(struct wiimote_data *wdata, const __u8 *ext)
+{
+	__u8 sx, sy, tb, wb, bd, bm, bp, bo, br, bb, bg, by, bu;
+
+	/*   Byte |  8  |  7  |  6  |  5  |  4  |  3  |  2  |  1  |
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 *    1   |  0  |  0  |              SX <5:0>             |
+	 *    2   |  0  |  0  |              SY <5:0>             |
+	 *   -----+-----+-----+-----+-----------------------------+
+	 *    3   |  0  |  0  |  0  |      TB <4:0>               |
+	 *   -----+-----+-----+-----+-----------------------------+
+	 *    4   |  0  |  0  |  0  |      WB <4:0>               |
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 *    5   |  1  | BD  |  1  | B-  |  1  | B+  |  1  |  1  |
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 *    6   | BO  | BR  | BB  | BG  | BY  |  1  |  1  | BU  |
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 * All buttons are 0 if pressed
+	 *
+	 * With Motion+ enabled, it will look like this:
+	 *   Byte |  8  |  7  |  6  |  5  |  4  |  3  |  2  |  1  |
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 *    1   |  0  |  0  |              SX <5:1>       | BU  |
+	 *    2   |  0  |  0  |              SY <5:1>       |  1  |
+	 *   -----+-----+-----+-----+-----------------------+-----+
+	 *    3   |  0  |  0  |  0  |      TB <4:0>               |
+	 *   -----+-----+-----+-----+-----------------------------+
+	 *    4   |  0  |  0  |  0  |      WB <4:0>               |
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 *    5   |  1  | BD  |  1  | B-  |  1  | B+  |  1  |XXXXX|
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 *    6   | BO  | BR  | BB  | BG  | BY  |  1  |XXXXX|XXXXX|
+	 *   -----+-----+-----+-----+-----+-----+-----+-----+-----+
+	 */
+
+	sx = ext[0] & 0x3f;
+	sy = ext[1] & 0x3f;
+	tb = ext[2] & 0x1f;
+	wb = ext[3] & 0x1f;
+	bd = !(ext[4] & 0x40);
+	bm = !(ext[4] & 0x10);
+	bp = !(ext[4] & 0x04);
+	bo = !(ext[5] & 0x80);
+	br = !(ext[5] & 0x40);
+	bb = !(ext[5] & 0x20);
+	bg = !(ext[5] & 0x10);
+	by = !(ext[5] & 0x08);
+	bu = !(ext[5] & 0x01);
+
+	if (wdata->state.flags & WIIPROTO_FLAG_MP_ACTIVE) {
+		bu = !(ext[0] & 0x01);
+		sx &= 0x3e;
+		sy &= 0x3e;
+	}
+
+	input_report_abs(wdata->extension.input, ABS_X, sx - 0x20);
+	input_report_abs(wdata->extension.input, ABS_Y, sy - 0x20);
+	input_report_abs(wdata->extension.input, ABS_HAT0X, tb);
+	input_report_abs(wdata->extension.input, ABS_HAT1X, wb - 0x10);
+
+	input_report_key(wdata->extension.input,
+			 wiimod_guitar_map[WIIMOD_GUITAR_KEY_G],
+			 bg);
+	input_report_key(wdata->extension.input,
+			 wiimod_guitar_map[WIIMOD_GUITAR_KEY_R],
+			 br);
+	input_report_key(wdata->extension.input,
+			 wiimod_guitar_map[WIIMOD_GUITAR_KEY_Y],
+			 by);
+	input_report_key(wdata->extension.input,
+			 wiimod_guitar_map[WIIMOD_GUITAR_KEY_B],
+			 bb);
+	input_report_key(wdata->extension.input,
+			 wiimod_guitar_map[WIIMOD_GUITAR_KEY_O],
+			 bo);
+	input_report_key(wdata->extension.input,
+			 wiimod_guitar_map[WIIMOD_GUITAR_KEY_UP],
+			 bu);
+	input_report_key(wdata->extension.input,
+			 wiimod_guitar_map[WIIMOD_GUITAR_KEY_DOWN],
+			 bd);
+	input_report_key(wdata->extension.input,
+			 wiimod_guitar_map[WIIMOD_GUITAR_KEY_PLUS],
+			 bp);
+	input_report_key(wdata->extension.input,
+			 wiimod_guitar_map[WIIMOD_GUITAR_KEY_MINUS],
+			 bm);
+
+	input_sync(wdata->extension.input);
+}
+
+static int wiimod_guitar_open(struct input_dev *dev)
+{
+	struct wiimote_data *wdata = input_get_drvdata(dev);
+	unsigned long flags;
+
+	spin_lock_irqsave(&wdata->state.lock, flags);
+	wdata->state.flags |= WIIPROTO_FLAG_EXT_USED;
+	wiiproto_req_drm(wdata, WIIPROTO_REQ_NULL);
+	spin_unlock_irqrestore(&wdata->state.lock, flags);
+
+	return 0;
+}
+
+static void wiimod_guitar_close(struct input_dev *dev)
+{
+	struct wiimote_data *wdata = input_get_drvdata(dev);
+	unsigned long flags;
+
+	spin_lock_irqsave(&wdata->state.lock, flags);
+	wdata->state.flags &= ~WIIPROTO_FLAG_EXT_USED;
+	wiiproto_req_drm(wdata, WIIPROTO_REQ_NULL);
+	spin_unlock_irqrestore(&wdata->state.lock, flags);
+}
+
+static int wiimod_guitar_probe(const struct wiimod_ops *ops,
+			       struct wiimote_data *wdata)
+{
+	int ret, i;
+
+	wdata->extension.input = input_allocate_device();
+	if (!wdata->extension.input)
+		return -ENOMEM;
+
+	input_set_drvdata(wdata->extension.input, wdata);
+	wdata->extension.input->open = wiimod_guitar_open;
+	wdata->extension.input->close = wiimod_guitar_close;
+	wdata->extension.input->dev.parent = &wdata->hdev->dev;
+	wdata->extension.input->id.bustype = wdata->hdev->bus;
+	wdata->extension.input->id.vendor = wdata->hdev->vendor;
+	wdata->extension.input->id.product = wdata->hdev->product;
+	wdata->extension.input->id.version = wdata->hdev->version;
+	wdata->extension.input->name = WIIMOTE_NAME " Guitar";
+
+	set_bit(EV_KEY, wdata->extension.input->evbit);
+	for (i = 0; i < WIIMOD_GUITAR_KEY_NUM; ++i)
+		set_bit(wiimod_guitar_map[i],
+			wdata->extension.input->keybit);
+
+	set_bit(EV_ABS, wdata->extension.input->evbit);
+	set_bit(ABS_X, wdata->extension.input->absbit);
+	set_bit(ABS_Y, wdata->extension.input->absbit);
+	set_bit(ABS_HAT0X, wdata->extension.input->absbit);
+	set_bit(ABS_HAT1X, wdata->extension.input->absbit);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_X, -32, 31, 1, 1);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_Y, -32, 31, 1, 1);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_HAT0X, 0, 0x1f, 1, 1);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_HAT1X, 0, 0x0f, 1, 1);
+
+	ret = input_register_device(wdata->extension.input);
+	if (ret)
+		goto err_free;
+
+	return 0;
+
+err_free:
+	input_free_device(wdata->extension.input);
+	wdata->extension.input = NULL;
+	return ret;
+}
+
+static void wiimod_guitar_remove(const struct wiimod_ops *ops,
+				 struct wiimote_data *wdata)
+{
+	if (!wdata->extension.input)
+		return;
+
+	input_unregister_device(wdata->extension.input);
+	wdata->extension.input = NULL;
+}
+
+static const struct wiimod_ops wiimod_guitar = {
+	.flags = 0,
+	.arg = 0,
+	.probe = wiimod_guitar_probe,
+	.remove = wiimod_guitar_remove,
+	.in_ext = wiimod_guitar_in_ext,
+};
+
+/* 
+ * Turntable
+ * DJ Hero came with a Turntable Controller that was plugged in
+ * as an extension.
+ * We create a separate device for turntables and report all information via this
+ * input device.
+*/
+
+enum wiimod_turntable_keys {
+	WIIMOD_TURNTABLE_KEY_G_RIGHT,
+	WIIMOD_TURNTABLE_KEY_R_RIGHT,
+	WIIMOD_TURNTABLE_KEY_B_RIGHT,
+	WIIMOD_TURNTABLE_KEY_G_LEFT,
+	WIIMOD_TURNTABLE_KEY_R_LEFT,
+	WIIMOD_TURNTABLE_KEY_B_LEFT,
+	WIIMOD_TURNTABLE_KEY_EUPHORIA,
+	WIIMOD_TURNTABLE_KEY_PLUS,
+	WIIMOD_TURNTABLE_KEY_MINUS,
+	WIIMOD_TURNTABLE_KEY_NUM
+};
+
+static const __u16 wiimod_turntable_map[] = {
+	BTN_1,			/* WIIMOD_TURNTABLE_KEY_G_RIGHT */
+	BTN_2,			/* WIIMOD_TURNTABLE_KEY_R_RIGHT */
+	BTN_3,			/* WIIMOD_TURNTABLE_KEY_B_RIGHT */
+	BTN_4,			/* WIIMOD_TURNTABLE_KEY_G_LEFT */
+	BTN_5,			/* WIIMOD_TURNTABLE_KEY_R_LEFT */
+	BTN_6,			/* WIIMOD_TURNTABLE_KEY_B_LEFT */
+	BTN_7,			/* WIIMOD_TURNTABLE_KEY_EUPHORIA */
+	BTN_START,		/* WIIMOD_TURNTABLE_KEY_PLUS */
+	BTN_SELECT,		/* WIIMOD_TURNTABLE_KEY_MINUS */
+};
+
+static void wiimod_turntable_in_ext(struct wiimote_data *wdata, const __u8 *ext)
+{
+	__u8 be, cs, sx, sy, ed, rtt, rbg, rbr, rbb, ltt, lbg, lbr, lbb, bp, bm;
+	/* 
+	 * Byte |  7   |  6  |  5  |  4  |  3  |  2   |  1   |  0     |
+	 *------+------+-----+-----+-----+-----+------+------+--------+
+	 *   0  | RTT<4:3>   | 		      	  SX <5:0> 			      |
+	 *   1  | RTT<2:1>   |				  SY <5:0>			      |
+	 *------+------+-----+-----+-----+-----+------+------+--------+
+	 *   2  |RTT<0>|  ED<4:3>  |          CS<3:0>        | RTT<5> |
+	 *------+------+-----+-----+-----+-----+------+------+--------+
+	 *   3  |     ED<2:0> 	   | 			 LTT<4:0>			  |
+	 *------+------+-----+-----+-----+-----+------+------+--------+
+	 *   4  |  0   |  0  | LBR |  B- |  0  |  B+  |  RBR | LTT<5> |
+	 *------+------+-----+-----+-----+-----+------+------+--------+
+	 *   5  | LBB  |  0  | RBG |  BE | LBG | RBB  | 0    | 0      |
+	 *------+------+-----+-----+-----+-----+------+------+--------+
+	 * All pressed buttons are 0
+	 *
+	 * With Motion+ enabled, it will look like this:
+	 * Byte |  8   |  7  |  6  |  5  |  4  |  3   |  2   |  1     |
+	 *------+------+-----+-----+-----+-----+------+------+--------+
+	 *   1  | RTT<4:3>   | 		      	  SX <5:1> 		 |	  0   |
+	 *   2  | RTT<2:1>   |				  SY <5:1>		 |	  0   |
+	 *------+------+-----+-----+-----+-----+------+------+--------+
+	 *   3  |RTT<0>|  ED<4:3>  |          CS<3:0>        | RTT<5> |
+	 *------+------+-----+-----+-----+-----+------+------+--------+
+	 *   4  |     ED<2:0> 	   | 			 LTT<4:0>			  |
+	 *------+------+-----+-----+-----+-----+------+------+--------+
+	 *   5  |  0   |  0  | LBR |  B- |  0  |  B+  | RBR  |  XXXX  |
+	 *------+------+-----+-----+-----+-----+------+------+--------+
+	 *   6  | LBB  |  0  | RBG |  BE | LBG | RBB  | XXXX |  XXXX  |
+	 *------+------+-----+-----+-----+-----+------+------+--------+
+	 */
+	
+	be = !(ext[5] & 0x10); 
+	cs = ((ext[2] & 0x1e));
+	sx = ext[0] & 0x3f;
+	sy = ext[1] & 0x3f;
+	ed = (ext[3] & 0xe0) >> 5;
+	rtt = ((ext[2] & 0x01) << 5 | (ext[0] & 0xc0) >> 3 | (ext[1] & 0xc0) >> 5 | ( ext[2] & 0x80 ) >> 7);
+	ltt = ((ext[4] & 0x01) << 5 | (ext[3] & 0x1f));
+	rbg = !(ext[5] & 0x20);
+	rbr = !(ext[4] & 0x02);
+	rbb = !(ext[5] & 0x04);
+	lbg = !(ext[5] & 0x08);
+	lbb = !(ext[5] & 0x80);
+	lbr = !(ext[4] & 0x20);
+	bm =  !(ext[4] & 0x10);
+	bp =  !(ext[4] & 0x04);
+
+	if (wdata->state.flags & WIIPROTO_FLAG_MP_ACTIVE) {
+		ltt = (ext[4] & 0x01) << 5;
+		sx &= 0x3e;
+		sy &= 0x3e;
+	}
+
+	input_report_abs(wdata->extension.input, ABS_X, sx);
+	input_report_abs(wdata->extension.input, ABS_Y, sy);
+	input_report_abs(wdata->extension.input, ABS_HAT0X, rtt);
+	input_report_abs(wdata->extension.input, ABS_HAT1X, ltt);
+	input_report_abs(wdata->extension.input, ABS_HAT2X, cs);
+	input_report_abs(wdata->extension.input, ABS_HAT3X, ed);
+	input_report_key(wdata->extension.input, 
+					wiimod_turntable_map[WIIMOD_TURNTABLE_KEY_G_RIGHT], 
+					rbg);
+	input_report_key(wdata->extension.input,
+					wiimod_turntable_map[WIIMOD_TURNTABLE_KEY_R_RIGHT],
+					rbr);
+	input_report_key(wdata->extension.input, 
+					wiimod_turntable_map[WIIMOD_TURNTABLE_KEY_B_RIGHT], 
+					rbb);
+	input_report_key(wdata->extension.input, 
+					wiimod_turntable_map[WIIMOD_TURNTABLE_KEY_G_LEFT], 
+					lbg);
+	input_report_key(wdata->extension.input, 
+					wiimod_turntable_map[WIIMOD_TURNTABLE_KEY_R_LEFT], 
+					lbr);
+	input_report_key(wdata->extension.input, 
+					wiimod_turntable_map[WIIMOD_TURNTABLE_KEY_B_LEFT], 
+					lbb);
+	input_report_key(wdata->extension.input, 
+					wiimod_turntable_map[WIIMOD_TURNTABLE_KEY_EUPHORIA], 
+					be);
+	input_report_key(wdata->extension.input, 
+					wiimod_turntable_map[WIIMOD_TURNTABLE_KEY_PLUS], 
+					bp);
+	input_report_key(wdata->extension.input, 
+					wiimod_turntable_map[WIIMOD_TURNTABLE_KEY_MINUS], 
+					bm);
+
+	input_sync(wdata->extension.input);
+}
+
+static int wiimod_turntable_open(struct input_dev *dev)
+{
+	struct wiimote_data *wdata = input_get_drvdata(dev);
+	unsigned long flags;
+
+	spin_lock_irqsave(&wdata->state.lock, flags);
+	wdata->state.flags |= WIIPROTO_FLAG_EXT_USED;
+	wiiproto_req_drm(wdata, WIIPROTO_REQ_NULL);
+	spin_unlock_irqrestore(&wdata->state.lock, flags);
+
+	return 0;
+}
+
+static void wiimod_turntable_close(struct input_dev *dev)
+{
+	struct wiimote_data *wdata = input_get_drvdata(dev);
+	unsigned long flags;
+
+	spin_lock_irqsave(&wdata->state.lock, flags);
+	wdata->state.flags &= ~WIIPROTO_FLAG_EXT_USED;
+	wiiproto_req_drm(wdata, WIIPROTO_REQ_NULL);
+	spin_unlock_irqrestore(&wdata->state.lock, flags);
+}
+
+static int wiimod_turntable_probe(const struct wiimod_ops *ops,
+			       struct wiimote_data *wdata)
+{
+ 	int ret, i;
+
+	wdata->extension.input = input_allocate_device();
+	if (!wdata->extension.input)
+		return -ENOMEM;
+
+	input_set_drvdata(wdata->extension.input, wdata);
+	wdata->extension.input->open = wiimod_turntable_open;
+	wdata->extension.input->close = wiimod_turntable_close;
+	wdata->extension.input->dev.parent = &wdata->hdev->dev;
+	wdata->extension.input->id.bustype = wdata->hdev->bus;
+	wdata->extension.input->id.vendor = wdata->hdev->vendor;
+	wdata->extension.input->id.product = wdata->hdev->product;
+	wdata->extension.input->id.version = wdata->hdev->version;
+	wdata->extension.input->name = WIIMOTE_NAME " Turntable";
+
+	set_bit(EV_KEY, wdata->extension.input->evbit);
+	for (i = 0; i < WIIMOD_TURNTABLE_KEY_NUM; ++i)
+		set_bit(wiimod_turntable_map[i],
+			wdata->extension.input->keybit);
+
+	set_bit(EV_ABS, wdata->extension.input->evbit);
+	set_bit(ABS_X, wdata->extension.input->absbit);
+	set_bit(ABS_Y, wdata->extension.input->absbit);
+	set_bit(ABS_HAT0X, wdata->extension.input->absbit);
+	set_bit(ABS_HAT1X, wdata->extension.input->absbit);
+	set_bit(ABS_HAT2X, wdata->extension.input->absbit);
+	set_bit(ABS_HAT3X, wdata->extension.input->absbit);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_X, 0, 63, 1, 0);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_Y, 63, 0, 1, 0);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_HAT0X, -8, 8, 0, 0);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_HAT1X, -8, 8, 0, 0);
+	input_set_abs_params(wdata->extension.input,
+			     ABS_HAT2X, 0, 31, 1, 1);	
+	input_set_abs_params(wdata->extension.input,
+			     ABS_HAT3X, 0, 7, 0, 0);	 
+	ret = input_register_device(wdata->extension.input);
+	if (ret)
+		goto err_free;
+
+	return 0;
+
+err_free:
+	input_free_device(wdata->extension.input);
+	wdata->extension.input = NULL;
+	return ret;
+}
+
+static void wiimod_turntable_remove(const struct wiimod_ops *ops,
+				 struct wiimote_data *wdata)
+{
+	if (!wdata->extension.input)
+		return;
+
+	input_unregister_device(wdata->extension.input);
+	wdata->extension.input = NULL;
+}
+
+static const struct wiimod_ops wiimod_turntable = {
+	.flags = 0,
+	.arg = 0,
+	.probe = wiimod_turntable_probe,
+	.remove = wiimod_turntable_remove,
+	.in_ext = wiimod_turntable_in_ext,
+};
+
+/*
  * Builtin Motion Plus
  * This module simply sets the WIIPROTO_FLAG_BUILTIN_MP protocol flag which
  * disables polling for Motion-Plus. This should be set only for devices which
@@ -2050,9 +2727,11 @@ static void wiimod_mp_in_mp(struct wiimote_data *wdata, const __u8 *ext)
 	 *   -----+------------------------------+-----+-----+
 	 * The single bits Yaw, Roll, Pitch in the lower right corner specify
 	 * whether the wiimote is rotating fast (0) or slow (1). Speed for slow
-	 * roation is 440 deg/s and for fast rotation 2000 deg/s. To get a
-	 * linear scale we multiply by 2000/440 = ~4.5454 which is 18 for fast
-	 * and 9 for slow.
+	 * roation is 8192/440 units / deg/s and for fast rotation 8192/2000
+	 * units / deg/s. To get a linear scale for fast rotation we multiply
+	 * by 2000/440 = ~4.5454 and scale both fast and slow by 9 to match the
+	 * previous scale reported by this driver.
+	 * This leaves a linear scale with 8192*9/440 (~167.564) units / deg/s.
 	 * If the wiimote is not rotating the sensor reports 2^13 = 8192.
 	 * Ext specifies whether an extension is connected to the motionp.
 	 * which is parsed by wiimote-core.
@@ -2071,15 +2750,15 @@ static void wiimod_mp_in_mp(struct wiimote_data *wdata, const __u8 *ext)
 	z -= 8192;
 
 	if (!(ext[3] & 0x02))
-		x *= 18;
+		x = (x * 2000 * 9) / 440;
 	else
 		x *= 9;
 	if (!(ext[4] & 0x02))
-		y *= 18;
+		y = (y * 2000 * 9) / 440;
 	else
 		y *= 9;
 	if (!(ext[3] & 0x01))
-		z *= 18;
+		z = (z * 2000 * 9) / 440;
 	else
 		z *= 9;
 
@@ -2200,4 +2879,7 @@ const struct wiimod_ops *wiimod_ext_table[WIIMOTE_EXT_NUM] = {
 	[WIIMOTE_EXT_CLASSIC_CONTROLLER] = &wiimod_classic,
 	[WIIMOTE_EXT_BALANCE_BOARD] = &wiimod_bboard,
 	[WIIMOTE_EXT_PRO_CONTROLLER] = &wiimod_pro,
+	[WIIMOTE_EXT_DRUMS] = &wiimod_drums,
+	[WIIMOTE_EXT_GUITAR] = &wiimod_guitar,
+	[WIIMOTE_EXT_TURNTABLE] = &wiimod_turntable,
 };

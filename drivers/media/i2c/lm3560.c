@@ -1,26 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * drivers/media/i2c/lm3560.c
- * General device driver for TI lm3560, FLASH LED Driver
+ * General device driver for TI lm3559, lm3560, FLASH LED Driver
  *
  * Copyright (C) 2013 Texas Instruments
  *
  * Contact: Daniel Jeong <gshark.jeong@gmail.com>
  *			Ldd-Mlp <ldd-mlp@list.ti.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include <linux/delay.h>
@@ -30,7 +16,7 @@
 #include <linux/mutex.h>
 #include <linux/regmap.h>
 #include <linux/videodev2.h>
-#include <media/lm3560.h>
+#include <media/i2c/lm3560.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 
@@ -42,7 +28,7 @@
 #define REG_FLAG		0xd0
 #define REG_CONFIG1		0xe0
 
-/* Fault Mask */
+/* fault mask */
 #define FAULT_TIMEOUT	(1<<0)
 #define FAULT_OVERTEMP	(1<<1)
 #define FAULT_SHORT_CIRCUIT	(1<<2)
@@ -53,13 +39,15 @@ enum led_enable {
 	MODE_FLASH = 0x3,
 };
 
-/* struct lm3560_flash
+/**
+ * struct lm3560_flash
  *
+ * @dev: pointer to &struct device
  * @pdata: platform data
  * @regmap: reg. map for i2c
  * @lock: muxtex for serial access.
  * @led_mode: V4L2 LED mode
- * @ctrls_led: V4L2 contols
+ * @ctrls_led: V4L2 controls
  * @subdev_led: V4L2 subdev
  */
 struct lm3560_flash {
@@ -98,21 +86,21 @@ static int lm3560_mode_ctrl(struct lm3560_flash *flash)
 	return rval;
 }
 
-/* led1/2  enable/disable */
+/* led1/2 enable/disable */
 static int lm3560_enable_ctrl(struct lm3560_flash *flash,
 			      enum lm3560_led_id led_no, bool on)
 {
 	int rval;
 
 	if (led_no == LM3560_LED0) {
-		if (on == true)
+		if (on)
 			rval = regmap_update_bits(flash->regmap,
 						  REG_ENABLE, 0x08, 0x08);
 		else
 			rval = regmap_update_bits(flash->regmap,
 						  REG_ENABLE, 0x08, 0x00);
 	} else {
-		if (on == true)
+		if (on)
 			rval = regmap_update_bits(flash->regmap,
 						  REG_ENABLE, 0x10, 0x10);
 		else
@@ -168,7 +156,7 @@ static int lm3560_flash_brt_ctrl(struct lm3560_flash *flash,
 	return rval;
 }
 
-/* V4L2 controls  */
+/* v4l2 controls  */
 static int lm3560_get_ctrl(struct v4l2_ctrl *ctrl, enum lm3560_led_id led_no)
 {
 	struct lm3560_flash *flash = to_lm3560_flash(ctrl, led_no);
@@ -297,6 +285,7 @@ static int lm3560_init_controls(struct lm3560_flash *flash,
 	const struct v4l2_ctrl_ops *ops = &lm3560_led_ctrl_ops[led_no];
 
 	v4l2_ctrl_handler_init(hdl, 8);
+
 	/* flash mode */
 	v4l2_ctrl_new_std_menu(hdl, ops, V4L2_CID_FLASH_LED_MODE,
 			       V4L2_FLASH_LED_MODE_TORCH, ~0x7,
@@ -309,6 +298,7 @@ static int lm3560_init_controls(struct lm3560_flash *flash,
 
 	/* flash strobe */
 	v4l2_ctrl_new_std(hdl, ops, V4L2_CID_FLASH_STROBE, 0, 0, 0, 0);
+
 	/* flash strobe stop */
 	v4l2_ctrl_new_std(hdl, ops, V4L2_CID_FLASH_STROBE_STOP, 0, 0, 0, 0);
 
@@ -364,14 +354,15 @@ static int lm3560_subdev_init(struct lm3560_flash *flash,
 
 	v4l2_i2c_subdev_init(&flash->subdev_led[led_no], client, &lm3560_ops);
 	flash->subdev_led[led_no].flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
-	strcpy(flash->subdev_led[led_no].name, led_name);
+	strscpy(flash->subdev_led[led_no].name, led_name,
+		sizeof(flash->subdev_led[led_no].name));
 	rval = lm3560_init_controls(flash, led_no);
 	if (rval)
 		goto err_out;
-	rval = media_entity_init(&flash->subdev_led[led_no].entity, 0, NULL, 0);
+	rval = media_entity_pads_init(&flash->subdev_led[led_no].entity, 0, NULL);
 	if (rval < 0)
 		goto err_out;
-	flash->subdev_led[led_no].entity.type = MEDIA_ENT_T_V4L2_SUBDEV_FLASH;
+	flash->subdev_led[led_no].entity.function = MEDIA_ENT_F_FLASH;
 
 	return rval;
 
@@ -395,13 +386,12 @@ static int lm3560_init_device(struct lm3560_flash *flash)
 	rval = lm3560_mode_ctrl(flash);
 	if (rval < 0)
 		return rval;
-	/* Reset faults */
+	/* reset faults */
 	rval = regmap_read(flash->regmap, REG_FLAG, &reg_val);
 	return rval;
 }
 
-static int lm3560_probe(struct i2c_client *client,
-			const struct i2c_device_id *devid)
+static int lm3560_probe(struct i2c_client *client)
 {
 	struct lm3560_flash *flash;
 	struct lm3560_platform_data *pdata = dev_get_platdata(&client->dev);
@@ -419,8 +409,7 @@ static int lm3560_probe(struct i2c_client *client,
 
 	/* if there is no platform data, use chip default value */
 	if (pdata == NULL) {
-		pdata =
-		    kzalloc(sizeof(struct lm3560_platform_data), GFP_KERNEL);
+		pdata = devm_kzalloc(&client->dev, sizeof(*pdata), GFP_KERNEL);
 		if (pdata == NULL)
 			return -ENODEV;
 		pdata->peak = LM3560_PEAK_3600mA;
@@ -453,7 +442,7 @@ static int lm3560_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int lm3560_remove(struct i2c_client *client)
+static void lm3560_remove(struct i2c_client *client)
 {
 	struct lm3560_flash *flash = i2c_get_clientdata(client);
 	unsigned int i;
@@ -463,11 +452,10 @@ static int lm3560_remove(struct i2c_client *client)
 		v4l2_ctrl_handler_free(&flash->ctrls_led[i]);
 		media_entity_cleanup(&flash->subdev_led[i].entity);
 	}
-
-	return 0;
 }
 
 static const struct i2c_device_id lm3560_id_table[] = {
+	{LM3559_NAME, 0},
 	{LM3560_NAME, 0},
 	{}
 };

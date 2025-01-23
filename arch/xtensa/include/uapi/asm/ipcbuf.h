@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * include/asm-xtensa/ipcbuf.h
  *
@@ -10,6 +11,8 @@
 
 #ifndef _XTENSA_IPCBUF_H
 #define _XTENSA_IPCBUF_H
+
+#include <linux/posix_types.h>
 
 /*
  * Pad space is left for:

@@ -1,10 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright 2012 Creative Product Design
  * Marc Reilly <marc@cpdesign.com.au>
- *
- * This program is free software; you can redistribute it and/or modify it under
- * the terms of the GNU General Public License version 2 as published by the
- * Free Software Foundation.
  */
 #ifndef __DRIVERS_MFD_MC13XXX_H
 #define __DRIVERS_MFD_MC13XXX_H
@@ -13,7 +10,9 @@
 #include <linux/regmap.h>
 #include <linux/mfd/mc13xxx.h>
 
-#define MC13XXX_NUMREGS 0x3f
+#define MC13XXX_NUMREGS		0x3f
+#define MC13XXX_IRQ_REG_CNT	2
+#define MC13XXX_IRQ_PER_REG	24
 
 struct mc13xxx;
 
@@ -33,17 +32,18 @@ struct mc13xxx {
 	struct device *dev;
 	const struct mc13xxx_variant *variant;
 
+	struct regmap_irq irqs[MC13XXX_IRQ_PER_REG * MC13XXX_IRQ_REG_CNT];
+	struct regmap_irq_chip irq_chip;
+	struct regmap_irq_chip_data *irq_data;
+
 	struct mutex lock;
 	int irq;
 	int flags;
-
-	irq_handler_t irqhandler[MC13XXX_NUM_IRQ];
-	void *irqdata[MC13XXX_NUM_IRQ];
 
 	int adcflags;
 };
 
 int mc13xxx_common_init(struct device *dev);
-int mc13xxx_common_exit(struct device *dev);
+void mc13xxx_common_exit(struct device *dev);
 
 #endif /* __DRIVERS_MFD_MC13XXX_H */

@@ -1,13 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * OMAP2xxx Power/Reset Management (PRM) register definitions
  *
  * Copyright (C) 2007-2009, 2011-2012 Texas Instruments, Inc.
  * Copyright (C) 2008-2010 Nokia Corporation
  * Paul Walmsley
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * The PRM hardware modules on the OMAP2/3 are quite similar to each
  * other.  The PRM on OMAP4 has a new register layout, and is handled
@@ -27,7 +24,7 @@
 
 /*
  * OMAP2-specific global PRM registers
- * Use __raw_{read,write}l() with these registers.
+ * Use {read,write}l_relaxed() with these registers.
  *
  * With a few exceptions, these are the register names beginning with
  * PRCM_* on 24xx.  (The exceptions are the IRQSTATUS and IRQENABLE
@@ -124,9 +121,7 @@
 extern int omap2xxx_clkdm_sleep(struct clockdomain *clkdm);
 extern int omap2xxx_clkdm_wakeup(struct clockdomain *clkdm);
 
-extern void omap2xxx_prm_dpll_reset(void);
-
-extern int __init omap2xxx_prm_init(void);
+int __init omap2xxx_prm_init(const struct omap_prcm_init_data *data);
 
 #endif
 

@@ -1,14 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Copyright (c) 2013
  *  Minchan Kim <minchan@kernel.org>
- *
- *  This work is licensed under the terms of the GNU GPL, version 2. See
- *  the COPYING file in the top-level directory.
  */
 #include <linux/types.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
-#include <linux/buffer_head.h>
+#include <linux/bio.h>
 #include <linux/sched.h>
 #include <linux/wait.h>
 #include <linux/cpumask.h>
@@ -31,11 +29,10 @@
 #define MAX_DECOMPRESSOR	(num_online_cpus() * 2)
 
 
-int squashfs_max_decompressors(void)
+static int squashfs_max_decompressors(void)
 {
 	return MAX_DECOMPRESSOR;
 }
-
 
 struct squashfs_stream {
 	void			*comp_opts;
@@ -61,7 +58,7 @@ static void put_decomp_stream(struct decomp_stream *decomp_strm,
 	wake_up(&stream->wait);
 }
 
-void *squashfs_decompressor_create(struct squashfs_sb_info *msblk,
+static void *squashfs_decompressor_create(struct squashfs_sb_info *msblk,
 				void *comp_opts)
 {
 	struct squashfs_stream *stream;
@@ -105,7 +102,7 @@ out:
 }
 
 
-void squashfs_decompressor_destroy(struct squashfs_sb_info *msblk)
+static void squashfs_decompressor_destroy(struct squashfs_sb_info *msblk)
 {
 	struct squashfs_stream *stream = msblk->stream;
 	if (stream) {
@@ -147,7 +144,7 @@ static struct decomp_stream *get_decomp_stream(struct squashfs_sb_info *msblk,
 		 * If there is no available decomp and already full,
 		 * let's wait for releasing decomp from other users.
 		 */
-		if (stream->avail_decomp >= MAX_DECOMPRESSOR)
+		if (stream->avail_decomp >= msblk->max_thread_num)
 			goto wait;
 
 		/* Let's allocate new decomp */
@@ -163,7 +160,7 @@ static struct decomp_stream *get_decomp_stream(struct squashfs_sb_info *msblk,
 		}
 
 		stream->avail_decomp++;
-		WARN_ON(stream->avail_decomp > MAX_DECOMPRESSOR);
+		WARN_ON(stream->avail_decomp > msblk->max_thread_num);
 
 		mutex_unlock(&stream->mutex);
 		break;
@@ -182,17 +179,25 @@ wait:
 }
 
 
-int squashfs_decompress(struct squashfs_sb_info *msblk, struct buffer_head **bh,
-	int b, int offset, int length, struct squashfs_page_actor *output)
+static int squashfs_decompress(struct squashfs_sb_info *msblk, struct bio *bio,
+			int offset, int length,
+			struct squashfs_page_actor *output)
 {
 	int res;
 	struct squashfs_stream *stream = msblk->stream;
 	struct decomp_stream *decomp_stream = get_decomp_stream(msblk, stream);
 	res = msblk->decompressor->decompress(msblk, decomp_stream->stream,
-		bh, b, offset, length, output);
+		bio, offset, length, output);
 	put_decomp_stream(decomp_stream, stream);
 	if (res < 0)
 		ERROR("%s decompression failed, data probably corrupt\n",
 			msblk->decompressor->name);
 	return res;
 }
+
+const struct squashfs_decompressor_thread_ops squashfs_decompressor_multi = {
+	.create = squashfs_decompressor_create,
+	.destroy = squashfs_decompressor_destroy,
+	.decompress = squashfs_decompress,
+	.max_decompressors = squashfs_max_decompressors,
+};

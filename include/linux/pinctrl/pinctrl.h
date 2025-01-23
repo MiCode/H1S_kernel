@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Interface the pinctrl subsystem
  *
@@ -6,26 +7,44 @@
  * This interface is used in the core to keep track of pins.
  *
  * Author: Linus Walleij <linus.walleij@linaro.org>
- *
- * License terms: GNU General Public License (GPL) version 2
  */
 #ifndef __LINUX_PINCTRL_PINCTRL_H
 #define __LINUX_PINCTRL_PINCTRL_H
 
-#ifdef CONFIG_PINCTRL
-
-#include <linux/radix-tree.h>
-#include <linux/list.h>
-#include <linux/seq_file.h>
-#include <linux/pinctrl/pinctrl-state.h>
+#include <linux/types.h>
 
 struct device;
+struct device_node;
+struct gpio_chip;
+struct module;
+struct seq_file;
+
+struct pin_config_item;
+struct pinconf_generic_params;
+struct pinconf_ops;
 struct pinctrl_dev;
 struct pinctrl_map;
 struct pinmux_ops;
-struct pinconf_ops;
-struct gpio_chip;
-struct device_node;
+
+/**
+ * struct pingroup - provides information on pingroup
+ * @name: a name for pingroup
+ * @pins: an array of pins in the pingroup
+ * @npins: number of pins in the pingroup
+ */
+struct pingroup {
+	const char *name;
+	const unsigned int *pins;
+	size_t npins;
+};
+
+/* Convenience macro to define a single named or anonymous pingroup */
+#define PINCTRL_PINGROUP(_name, _pins, _npins)	\
+(struct pingroup) {				\
+	.name = _name,				\
+	.pins = _pins,				\
+	.npins = _npins,			\
+}
 
 /**
  * struct pinctrl_pin_desc - boards/machines provide information on their
@@ -52,8 +71,8 @@ struct pinctrl_pin_desc {
  * @id: an ID number for the chip in this range
  * @base: base offset of the GPIO range
  * @pin_base: base pin number of the GPIO range if pins == NULL
- * @pins: enumeration of pins in GPIO range or NULL
  * @npins: number of pins in the GPIO range, including the base number
+ * @pins: enumeration of pins in GPIO range or NULL
  * @gc: an optional pointer to a gpio_chip
  */
 struct pinctrl_gpio_range {
@@ -62,8 +81,8 @@ struct pinctrl_gpio_range {
 	unsigned int id;
 	unsigned int base;
 	unsigned int pin_base;
-	unsigned const *pins;
 	unsigned int npins;
+	unsigned const *pins;
 	struct gpio_chip *gc;
 };
 
@@ -117,22 +136,59 @@ struct pinctrl_ops {
  * @confops: pin config operations vtable, if you support pin configuration in
  *	your driver
  * @owner: module providing the pin controller, used for refcounting
+ * @num_custom_params: Number of driver-specific custom parameters to be parsed
+ *	from the hardware description
+ * @custom_params: List of driver_specific custom parameters to be parsed from
+ *	the hardware description
+ * @custom_conf_items: Information how to print @params in debugfs, must be
+ *	the same size as the @custom_params, i.e. @num_custom_params
+ * @link_consumers: If true create a device link between pinctrl and its
+ *	consumers (i.e. the devices requesting pin control states). This is
+ *	sometimes necessary to ascertain the right suspend/resume order for
+ *	example.
  */
 struct pinctrl_desc {
 	const char *name;
-	struct pinctrl_pin_desc const *pins;
+	const struct pinctrl_pin_desc *pins;
 	unsigned int npins;
 	const struct pinctrl_ops *pctlops;
 	const struct pinmux_ops *pmxops;
 	const struct pinconf_ops *confops;
 	struct module *owner;
+#ifdef CONFIG_GENERIC_PINCONF
+	unsigned int num_custom_params;
+	const struct pinconf_generic_params *custom_params;
+	const struct pin_config_item *custom_conf_items;
+#endif
+	bool link_consumers;
 };
 
 /* External interface to pin controller */
+
+extern int pinctrl_register_and_init(struct pinctrl_desc *pctldesc,
+				     struct device *dev, void *driver_data,
+				     struct pinctrl_dev **pctldev);
+extern int pinctrl_enable(struct pinctrl_dev *pctldev);
+
+/* Please use pinctrl_register_and_init() and pinctrl_enable() instead */
 extern struct pinctrl_dev *pinctrl_register(struct pinctrl_desc *pctldesc,
 				struct device *dev, void *driver_data);
+
 extern void pinctrl_unregister(struct pinctrl_dev *pctldev);
-extern bool pin_is_valid(struct pinctrl_dev *pctldev, int pin);
+
+extern int devm_pinctrl_register_and_init(struct device *dev,
+				struct pinctrl_desc *pctldesc,
+				void *driver_data,
+				struct pinctrl_dev **pctldev);
+
+/* Please use devm_pinctrl_register_and_init() instead */
+extern struct pinctrl_dev *devm_pinctrl_register(struct device *dev,
+				struct pinctrl_desc *pctldesc,
+				void *driver_data);
+
+extern void devm_pinctrl_unregister(struct device *dev,
+				struct pinctrl_dev *pctldev);
+
 extern void pinctrl_add_gpio_range(struct pinctrl_dev *pctldev,
 				struct pinctrl_gpio_range *range);
 extern void pinctrl_add_gpio_ranges(struct pinctrl_dev *pctldev,
@@ -150,7 +206,27 @@ extern int pinctrl_get_group_pins(struct pinctrl_dev *pctldev,
 				const char *pin_group, const unsigned **pins,
 				unsigned *num_pins);
 
-#ifdef CONFIG_OF
+/**
+ * struct pinfunction - Description about a function
+ * @name: Name of the function
+ * @groups: An array of groups for this function
+ * @ngroups: Number of groups in @groups
+ */
+struct pinfunction {
+	const char *name;
+	const char * const *groups;
+	size_t ngroups;
+};
+
+/* Convenience macro to define a single named pinfunction */
+#define PINCTRL_PINFUNCTION(_name, _groups, _ngroups)	\
+(struct pinfunction) {					\
+		.name = (_name),			\
+		.groups = (_groups),			\
+		.ngroups = (_ngroups),			\
+	}
+
+#if IS_ENABLED(CONFIG_OF) && IS_ENABLED(CONFIG_PINCTRL)
 extern struct pinctrl_dev *of_pinctrl_get(struct device_node *np);
 #else
 static inline
@@ -163,16 +239,5 @@ struct pinctrl_dev *of_pinctrl_get(struct device_node *np)
 extern const char *pinctrl_dev_get_name(struct pinctrl_dev *pctldev);
 extern const char *pinctrl_dev_get_devname(struct pinctrl_dev *pctldev);
 extern void *pinctrl_dev_get_drvdata(struct pinctrl_dev *pctldev);
-#else
-
-struct pinctrl_dev;
-
-/* Sufficiently stupid default functions when pinctrl is not in use */
-static inline bool pin_is_valid(struct pinctrl_dev *pctldev, int pin)
-{
-	return pin >= 0;
-}
-
-#endif /* !CONFIG_PINCTRL */
 
 #endif /* __LINUX_PINCTRL_PINCTRL_H */

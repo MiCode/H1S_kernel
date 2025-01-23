@@ -1,12 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * <linux/usb/audio.h> -- USB Audio definitions.
  *
  * Copyright (C) 2006 Thumtronics Pty Ltd.
  * Developed for Thumtronics by Grey Innovation
  * Ben Williamson <ben.williamson@greyinnovation.com>
- *
- * This software is distributed under the terms of the GNU General Public
- * License ("GPL") version 2, as published by the Free Software Foundation.
  *
  * This file holds USB constants and structures defined
  * by the USB Device Class Definition for Audio Devices.

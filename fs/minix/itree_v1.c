@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/buffer_head.h>
 #include <linux/slab.h>
 #include "minix.h"
@@ -24,17 +25,16 @@ static inline block_t *i_data(struct inode *inode)
 static int block_to_path(struct inode * inode, long block, int offsets[DEPTH])
 {
 	int n = 0;
-	char b[BDEVNAME_SIZE];
 
 	if (block < 0) {
-		printk("MINIX-fs: block_to_path: block %ld < 0 on dev %s\n",
-			block, bdevname(inode->i_sb->s_bdev, b));
-	} else if (block >= (minix_sb(inode->i_sb)->s_max_size/BLOCK_SIZE)) {
-		if (printk_ratelimit())
-			printk("MINIX-fs: block_to_path: "
-			       "block %ld too big on dev %s\n",
-				block, bdevname(inode->i_sb->s_bdev, b));
-	} else if (block < 7) {
+		printk("MINIX-fs: block_to_path: block %ld < 0 on dev %pg\n",
+			block, inode->i_sb->s_bdev);
+		return 0;
+	}
+	if ((u64)block * BLOCK_SIZE >= inode->i_sb->s_maxbytes)
+		return 0;
+
+	if (block < 7) {
 		offsets[n++] = block;
 	} else if ((block -= 7) < 512) {
 		offsets[n++] = 7;

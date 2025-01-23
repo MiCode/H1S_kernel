@@ -1,14 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/mach-spear13xx/platsmp.c
  *
  * based upon linux/arch/arm/mach-realview/platsmp.c
  *
  * Copyright (C) 2012 ST Microelectronics Ltd.
- * Shiraz Hashim <shiraz.hashim@st.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Shiraz Hashim <shiraz.linux.kernel@gmail.com>
  */
 
 #include <linux/delay.h>
@@ -17,8 +14,25 @@
 #include <linux/smp.h>
 #include <asm/cacheflush.h>
 #include <asm/smp_scu.h>
-#include <mach/spear.h>
+#include "spear.h"
 #include "generic.h"
+
+/* XXX spear_pen_release is cargo culted code - DO NOT COPY XXX */
+volatile int spear_pen_release = -1;
+
+/*
+ * XXX CARGO CULTED CODE - DO NOT COPY XXX
+ *
+ * Write spear_pen_release in a way that is guaranteed to be visible to
+ * all observers, irrespective of whether they're taking part in coherency
+ * or not.  This is necessary for the hotplug code to work reliably.
+ */
+static void spear_write_pen_release(int val)
+{
+	spear_pen_release = val;
+	smp_wmb();
+	sync_cache_w(&spear_pen_release);
+}
 
 static DEFINE_SPINLOCK(boot_lock);
 
@@ -30,8 +44,7 @@ static void spear13xx_secondary_init(unsigned int cpu)
 	 * let the primary processor know we're out of the
 	 * pen, then head off into the C entry point
 	 */
-	pen_release = -1;
-	smp_wmb();
+	spear_write_pen_release(-1);
 
 	/*
 	 * Synchronise with the boot thread.
@@ -53,19 +66,17 @@ static int spear13xx_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	/*
 	 * The secondary processor is waiting to be released from
 	 * the holding pen - release it, then wait for it to flag
-	 * that it has been released by resetting pen_release.
+	 * that it has been released by resetting spear_pen_release.
 	 *
-	 * Note that "pen_release" is the hardware CPU ID, whereas
+	 * Note that "spear_pen_release" is the hardware CPU ID, whereas
 	 * "cpu" is Linux's internal ID.
 	 */
-	pen_release = cpu;
-	flush_cache_all();
-	outer_flush_all();
+	spear_write_pen_release(cpu);
 
 	timeout = jiffies + (1 * HZ);
 	while (time_before(jiffies, timeout)) {
 		smp_rmb();
-		if (pen_release == -1)
+		if (spear_pen_release == -1)
 			break;
 
 		udelay(10);
@@ -77,7 +88,7 @@ static int spear13xx_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	 */
 	spin_unlock(&boot_lock);
 
-	return pen_release != -1 ? -ENOSYS : 0;
+	return spear_pen_release != -1 ? -ENOSYS : 0;
 }
 
 /*
@@ -108,10 +119,10 @@ static void __init spear13xx_smp_prepare_cpus(unsigned int max_cpus)
 	 * (presently it is in SRAM). The BootMonitor waits until it receives a
 	 * soft interrupt, and then the secondary CPU branches to this address.
 	 */
-	__raw_writel(virt_to_phys(spear13xx_secondary_startup), SYS_LOCATION);
+	__raw_writel(__pa_symbol(spear13xx_secondary_startup), SYS_LOCATION);
 }
 
-struct smp_operations spear13xx_smp_ops __initdata = {
+const struct smp_operations spear13xx_smp_ops __initconst = {
        .smp_init_cpus		= spear13xx_smp_init_cpus,
        .smp_prepare_cpus	= spear13xx_smp_prepare_cpus,
        .smp_secondary_init	= spear13xx_secondary_init,

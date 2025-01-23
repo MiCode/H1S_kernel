@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * APEI Generic Hardware Error Source support
  *
@@ -14,30 +15,17 @@
  *
  * Copyright 2010,2011 Intel Corp.
  *   Author: Huang Ying <ying.huang@intel.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version
- * 2 as published by the Free Software Foundation;
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#include <linux/arm_sdei.h>
 #include <linux/kernel.h>
-#include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/init.h>
 #include <linux/acpi.h>
 #include <linux/io.h>
 #include <linux/interrupt.h>
 #include <linux/timer.h>
 #include <linux/cper.h>
-#include <linux/kdebug.h>
 #include <linux/platform_device.h>
 #include <linux/mutex.h>
 #include <linux/ratelimit.h>
@@ -46,12 +34,20 @@
 #include <linux/llist.h>
 #include <linux/genalloc.h>
 #include <linux/pci.h>
+#include <linux/pfn.h>
 #include <linux/aer.h>
+#include <linux/nmi.h>
+#include <linux/sched/clock.h>
+#include <linux/uuid.h>
+#include <linux/ras.h>
+#include <linux/task_work.h>
 
+#include <acpi/actbl1.h>
 #include <acpi/ghes.h>
-#include <asm/mce.h>
+#include <acpi/apei.h>
+#include <asm/fixmap.h>
 #include <asm/tlbflush.h>
-#include <asm/nmi.h>
+#include <ras/ras_event.h>
 
 #include "apei-internal.h"
 
@@ -74,184 +70,196 @@
 #define GHES_ESTATUS_CACHE_LEN(estatus_len)			\
 	(sizeof(struct ghes_estatus_cache) + (estatus_len))
 #define GHES_ESTATUS_FROM_CACHE(estatus_cache)			\
-	((struct acpi_generic_status *)				\
+	((struct acpi_hest_generic_status *)				\
 	 ((struct ghes_estatus_cache *)(estatus_cache) + 1))
 
 #define GHES_ESTATUS_NODE_LEN(estatus_len)			\
 	(sizeof(struct ghes_estatus_node) + (estatus_len))
 #define GHES_ESTATUS_FROM_NODE(estatus_node)			\
-	((struct acpi_generic_status *)				\
+	((struct acpi_hest_generic_status *)				\
 	 ((struct ghes_estatus_node *)(estatus_node) + 1))
 
+#define GHES_VENDOR_ENTRY_LEN(gdata_len)                               \
+	(sizeof(struct ghes_vendor_record_entry) + (gdata_len))
+#define GHES_GDATA_FROM_VENDOR_ENTRY(vendor_entry)                     \
+	((struct acpi_hest_generic_data *)                              \
+	((struct ghes_vendor_record_entry *)(vendor_entry) + 1))
+
+/*
+ *  NMI-like notifications vary by architecture, before the compiler can prune
+ *  unused static functions it needs a value for these enums.
+ */
+#ifndef CONFIG_ARM_SDE_INTERFACE
+#define FIX_APEI_GHES_SDEI_NORMAL	__end_of_fixed_addresses
+#define FIX_APEI_GHES_SDEI_CRITICAL	__end_of_fixed_addresses
+#endif
+
+static ATOMIC_NOTIFIER_HEAD(ghes_report_chain);
+
+static inline bool is_hest_type_generic_v2(struct ghes *ghes)
+{
+	return ghes->generic->header.type == ACPI_HEST_TYPE_GENERIC_ERROR_V2;
+}
+
+/*
+ * A platform may describe one error source for the handling of synchronous
+ * errors (e.g. MCE or SEA), or for handling asynchronous errors (e.g. SCI
+ * or External Interrupt). On x86, the HEST notifications are always
+ * asynchronous, so only SEA on ARM is delivered as a synchronous
+ * notification.
+ */
+static inline bool is_hest_sync_notify(struct ghes *ghes)
+{
+	u8 notify_type = ghes->generic->notify.type;
+
+	return notify_type == ACPI_HEST_NOTIFY_SEA;
+}
+
+/*
+ * This driver isn't really modular, however for the time being,
+ * continuing to use module_param is the easiest way to remain
+ * compatible with existing boot arg use cases.
+ */
 bool ghes_disable;
 module_param_named(disable, ghes_disable, bool, 0);
 
-static int ghes_panic_timeout	__read_mostly = 30;
+/*
+ * "ghes.edac_force_enable" forcibly enables ghes_edac and skips the platform
+ * check.
+ */
+static bool ghes_edac_force_enable;
+module_param_named(edac_force_enable, ghes_edac_force_enable, bool, 0);
 
 /*
- * All error sources notified with SCI shares one notifier function,
- * so they need to be linked and checked one by one.  This is applied
- * to NMI too.
+ * All error sources notified with HED (Hardware Error Device) share a
+ * single notifier callback, so they need to be linked and checked one
+ * by one. This holds true for NMI too.
  *
  * RCU is used for these lists, so ghes_list_mutex is only used for
  * list changing, not for traversing.
  */
-static LIST_HEAD(ghes_sci);
-static LIST_HEAD(ghes_nmi);
+static LIST_HEAD(ghes_hed);
 static DEFINE_MUTEX(ghes_list_mutex);
 
 /*
- * NMI may be triggered on any CPU, so ghes_nmi_lock is used for
- * mutual exclusion.
+ * A list of GHES devices which are given to the corresponding EDAC driver
+ * ghes_edac for further use.
  */
-static DEFINE_RAW_SPINLOCK(ghes_nmi_lock);
+static LIST_HEAD(ghes_devs);
+static DEFINE_MUTEX(ghes_devs_mutex);
 
 /*
  * Because the memory area used to transfer hardware error information
  * from BIOS to Linux can be determined only in NMI, IRQ or timer
  * handler, but general ioremap can not be used in atomic context, so
- * a special version of atomic ioremap is implemented for that.
+ * the fixmap is used instead.
+ *
+ * This spinlock is used to prevent the fixmap entry from being used
+ * simultaneously.
  */
+static DEFINE_SPINLOCK(ghes_notify_lock_irq);
 
-/*
- * Two virtual pages are used, one for NMI context, the other for
- * IRQ/PROCESS context
- */
-#define GHES_IOREMAP_PAGES		2
-#define GHES_IOREMAP_NMI_PAGE(base)	(base)
-#define GHES_IOREMAP_IRQ_PAGE(base)	((base) + PAGE_SIZE)
+struct ghes_vendor_record_entry {
+	struct work_struct work;
+	int error_severity;
+	char vendor_record[];
+};
 
-/* virtual memory area for atomic ioremap */
-static struct vm_struct *ghes_ioremap_area;
-/*
- * These 2 spinlock is used to prevent atomic ioremap virtual memory
- * area from being mapped simultaneously.
- */
-static DEFINE_RAW_SPINLOCK(ghes_ioremap_lock_nmi);
-static DEFINE_SPINLOCK(ghes_ioremap_lock_irq);
-
-/*
- * printk is not safe in NMI context.  So in NMI handler, we allocate
- * required memory from lock-less memory allocator
- * (ghes_estatus_pool), save estatus into it, put them into lock-less
- * list (ghes_estatus_llist), then delay printk into IRQ context via
- * irq_work (ghes_proc_irq_work).  ghes_estatus_size_request record
- * required pool size by all NMI error source.
- */
 static struct gen_pool *ghes_estatus_pool;
-static unsigned long ghes_estatus_pool_size_request;
-static struct llist_head ghes_estatus_llist;
-static struct irq_work ghes_proc_irq_work;
 
-struct ghes_estatus_cache *ghes_estatus_caches[GHES_ESTATUS_CACHES_SIZE];
+static struct ghes_estatus_cache __rcu *ghes_estatus_caches[GHES_ESTATUS_CACHES_SIZE];
 static atomic_t ghes_estatus_cache_alloced;
 
-static int ghes_ioremap_init(void)
-{
-	ghes_ioremap_area = __get_vm_area(PAGE_SIZE * GHES_IOREMAP_PAGES,
-		VM_IOREMAP, VMALLOC_START, VMALLOC_END);
-	if (!ghes_ioremap_area) {
-		pr_err(GHES_PFX "Failed to allocate virtual memory area for atomic ioremap.\n");
-		return -ENOMEM;
-	}
+static int ghes_panic_timeout __read_mostly = 30;
 
-	return 0;
+static void __iomem *ghes_map(u64 pfn, enum fixed_addresses fixmap_idx)
+{
+	phys_addr_t paddr;
+	pgprot_t prot;
+
+	paddr = PFN_PHYS(pfn);
+	prot = arch_apei_get_mem_attribute(paddr);
+	__set_fixmap(fixmap_idx, paddr, prot);
+
+	return (void __iomem *) __fix_to_virt(fixmap_idx);
 }
 
-static void ghes_ioremap_exit(void)
+static void ghes_unmap(void __iomem *vaddr, enum fixed_addresses fixmap_idx)
 {
-	free_vm_area(ghes_ioremap_area);
+	int _idx = virt_to_fix((unsigned long)vaddr);
+
+	WARN_ON_ONCE(fixmap_idx != _idx);
+	clear_fixmap(fixmap_idx);
 }
 
-static void __iomem *ghes_ioremap_pfn_nmi(u64 pfn)
+int ghes_estatus_pool_init(unsigned int num_ghes)
 {
-	unsigned long vaddr;
+	unsigned long addr, len;
+	int rc;
 
-	vaddr = (unsigned long)GHES_IOREMAP_NMI_PAGE(ghes_ioremap_area->addr);
-	ioremap_page_range(vaddr, vaddr + PAGE_SIZE,
-			   pfn << PAGE_SHIFT, PAGE_KERNEL);
-
-	return (void __iomem *)vaddr;
-}
-
-static void __iomem *ghes_ioremap_pfn_irq(u64 pfn)
-{
-	unsigned long vaddr;
-
-	vaddr = (unsigned long)GHES_IOREMAP_IRQ_PAGE(ghes_ioremap_area->addr);
-	ioremap_page_range(vaddr, vaddr + PAGE_SIZE,
-			   pfn << PAGE_SHIFT, PAGE_KERNEL);
-
-	return (void __iomem *)vaddr;
-}
-
-static void ghes_iounmap_nmi(void __iomem *vaddr_ptr)
-{
-	unsigned long vaddr = (unsigned long __force)vaddr_ptr;
-	void *base = ghes_ioremap_area->addr;
-
-	BUG_ON(vaddr != (unsigned long)GHES_IOREMAP_NMI_PAGE(base));
-	unmap_kernel_range_noflush(vaddr, PAGE_SIZE);
-	__flush_tlb_one(vaddr);
-}
-
-static void ghes_iounmap_irq(void __iomem *vaddr_ptr)
-{
-	unsigned long vaddr = (unsigned long __force)vaddr_ptr;
-	void *base = ghes_ioremap_area->addr;
-
-	BUG_ON(vaddr != (unsigned long)GHES_IOREMAP_IRQ_PAGE(base));
-	unmap_kernel_range_noflush(vaddr, PAGE_SIZE);
-	__flush_tlb_one(vaddr);
-}
-
-static int ghes_estatus_pool_init(void)
-{
 	ghes_estatus_pool = gen_pool_create(GHES_ESTATUS_POOL_MIN_ALLOC_ORDER, -1);
 	if (!ghes_estatus_pool)
 		return -ENOMEM;
+
+	len = GHES_ESTATUS_CACHE_AVG_SIZE * GHES_ESTATUS_CACHE_ALLOCED_MAX;
+	len += (num_ghes * GHES_ESOURCE_PREALLOC_MAX_SIZE);
+
+	addr = (unsigned long)vmalloc(PAGE_ALIGN(len));
+	if (!addr)
+		goto err_pool_alloc;
+
+	rc = gen_pool_add(ghes_estatus_pool, addr, PAGE_ALIGN(len), -1);
+	if (rc)
+		goto err_pool_add;
+
 	return 0;
-}
 
-static void ghes_estatus_pool_free_chunk_page(struct gen_pool *pool,
-					      struct gen_pool_chunk *chunk,
-					      void *data)
-{
-	free_page(chunk->start_addr);
-}
+err_pool_add:
+	vfree((void *)addr);
 
-static void ghes_estatus_pool_exit(void)
-{
-	gen_pool_for_each_chunk(ghes_estatus_pool,
-				ghes_estatus_pool_free_chunk_page, NULL);
+err_pool_alloc:
 	gen_pool_destroy(ghes_estatus_pool);
+
+	return -ENOMEM;
 }
 
-static int ghes_estatus_pool_expand(unsigned long len)
+/**
+ * ghes_estatus_pool_region_free - free previously allocated memory
+ *				   from the ghes_estatus_pool.
+ * @addr: address of memory to free.
+ * @size: size of memory to free.
+ *
+ * Returns none.
+ */
+void ghes_estatus_pool_region_free(unsigned long addr, u32 size)
 {
-	unsigned long i, pages, size, addr;
-	int ret;
+	gen_pool_free(ghes_estatus_pool, addr, size);
+}
+EXPORT_SYMBOL_GPL(ghes_estatus_pool_region_free);
 
-	ghes_estatus_pool_size_request += PAGE_ALIGN(len);
-	size = gen_pool_size(ghes_estatus_pool);
-	if (size >= ghes_estatus_pool_size_request)
-		return 0;
-	pages = (ghes_estatus_pool_size_request - size) / PAGE_SIZE;
-	for (i = 0; i < pages; i++) {
-		addr = __get_free_page(GFP_KERNEL);
-		if (!addr)
-			return -ENOMEM;
-		ret = gen_pool_add(ghes_estatus_pool, addr, PAGE_SIZE, -1);
-		if (ret)
-			return ret;
-	}
-
-	return 0;
+static int map_gen_v2(struct ghes *ghes)
+{
+	return apei_map_generic_address(&ghes->generic_v2->read_ack_register);
 }
 
-static void ghes_estatus_pool_shrink(unsigned long len)
+static void unmap_gen_v2(struct ghes *ghes)
 {
-	ghes_estatus_pool_size_request -= PAGE_ALIGN(len);
+	apei_unmap_generic_address(&ghes->generic_v2->read_ack_register);
+}
+
+static void ghes_ack_error(struct acpi_hest_generic_v2 *gv2)
+{
+	int rc;
+	u64 val = 0;
+
+	rc = apei_read(&val, &gv2->read_ack_register);
+	if (rc)
+		return;
+
+	val &= gv2->read_ack_preserve << gv2->read_ack_register.bit_offset;
+	val |= gv2->read_ack_write    << gv2->read_ack_register.bit_offset;
+
+	apei_write(val, &gv2->read_ack_register);
 }
 
 static struct ghes *ghes_new(struct acpi_hest_generic *generic)
@@ -263,28 +271,38 @@ static struct ghes *ghes_new(struct acpi_hest_generic *generic)
 	ghes = kzalloc(sizeof(*ghes), GFP_KERNEL);
 	if (!ghes)
 		return ERR_PTR(-ENOMEM);
+
 	ghes->generic = generic;
+	if (is_hest_type_generic_v2(ghes)) {
+		rc = map_gen_v2(ghes);
+		if (rc)
+			goto err_free;
+	}
+
 	rc = apei_map_generic_address(&generic->error_status_address);
 	if (rc)
-		goto err_free;
+		goto err_unmap_read_ack_addr;
 	error_block_length = generic->error_block_length;
 	if (error_block_length > GHES_ESTATUS_MAX_SIZE) {
-		pr_warning(FW_WARN GHES_PFX
-			   "Error status block length is too long: %u for "
-			   "generic hardware error source: %d.\n",
-			   error_block_length, generic->header.source_id);
+		pr_warn(FW_WARN GHES_PFX
+			"Error status block length is too long: %u for "
+			"generic hardware error source: %d.\n",
+			error_block_length, generic->header.source_id);
 		error_block_length = GHES_ESTATUS_MAX_SIZE;
 	}
 	ghes->estatus = kmalloc(error_block_length, GFP_KERNEL);
 	if (!ghes->estatus) {
 		rc = -ENOMEM;
-		goto err_unmap;
+		goto err_unmap_status_addr;
 	}
 
 	return ghes;
 
-err_unmap:
+err_unmap_status_addr:
 	apei_unmap_generic_address(&generic->error_status_address);
+err_unmap_read_ack_addr:
+	if (is_hest_type_generic_v2(ghes))
+		unmap_gen_v2(ghes);
 err_free:
 	kfree(ghes);
 	return ERR_PTR(rc);
@@ -294,6 +312,8 @@ static void ghes_fini(struct ghes *ghes)
 {
 	kfree(ghes->estatus);
 	apei_unmap_generic_address(&ghes->generic->error_status_address);
+	if (is_hest_type_generic_v2(ghes))
+		unmap_gen_v2(ghes);
 }
 
 static inline int ghes_severity(int severity)
@@ -314,23 +334,16 @@ static inline int ghes_severity(int severity)
 }
 
 static void ghes_copy_tofrom_phys(void *buffer, u64 paddr, u32 len,
-				  int from_phys)
+				  int from_phys,
+				  enum fixed_addresses fixmap_idx)
 {
 	void __iomem *vaddr;
-	unsigned long flags = 0;
-	int in_nmi = in_nmi();
 	u64 offset;
 	u32 trunk;
 
 	while (len > 0) {
 		offset = paddr - (paddr & PAGE_MASK);
-		if (in_nmi) {
-			raw_spin_lock(&ghes_ioremap_lock_nmi);
-			vaddr = ghes_ioremap_pfn_nmi(paddr >> PAGE_SHIFT);
-		} else {
-			spin_lock_irqsave(&ghes_ioremap_lock_irq, flags);
-			vaddr = ghes_ioremap_pfn_irq(paddr >> PAGE_SHIFT);
-		}
+		vaddr = ghes_map(PHYS_PFN(paddr), fixmap_idx);
 		trunk = PAGE_SIZE - offset;
 		trunk = min(trunk, len);
 		if (from_phys)
@@ -340,165 +353,376 @@ static void ghes_copy_tofrom_phys(void *buffer, u64 paddr, u32 len,
 		len -= trunk;
 		paddr += trunk;
 		buffer += trunk;
-		if (in_nmi) {
-			ghes_iounmap_nmi(vaddr);
-			raw_spin_unlock(&ghes_ioremap_lock_nmi);
-		} else {
-			ghes_iounmap_irq(vaddr);
-			spin_unlock_irqrestore(&ghes_ioremap_lock_irq, flags);
-		}
+		ghes_unmap(vaddr, fixmap_idx);
 	}
 }
 
-static int ghes_read_estatus(struct ghes *ghes, int silent)
+/* Check the top-level record header has an appropriate size. */
+static int __ghes_check_estatus(struct ghes *ghes,
+				struct acpi_hest_generic_status *estatus)
+{
+	u32 len = cper_estatus_len(estatus);
+
+	if (len < sizeof(*estatus)) {
+		pr_warn_ratelimited(FW_WARN GHES_PFX "Truncated error status block!\n");
+		return -EIO;
+	}
+
+	if (len > ghes->generic->error_block_length) {
+		pr_warn_ratelimited(FW_WARN GHES_PFX "Invalid error status block length!\n");
+		return -EIO;
+	}
+
+	if (cper_estatus_check_header(estatus)) {
+		pr_warn_ratelimited(FW_WARN GHES_PFX "Invalid CPER header!\n");
+		return -EIO;
+	}
+
+	return 0;
+}
+
+/* Read the CPER block, returning its address, and header in estatus. */
+static int __ghes_peek_estatus(struct ghes *ghes,
+			       struct acpi_hest_generic_status *estatus,
+			       u64 *buf_paddr, enum fixed_addresses fixmap_idx)
 {
 	struct acpi_hest_generic *g = ghes->generic;
-	u64 buf_paddr;
-	u32 len;
 	int rc;
 
-	rc = apei_read(&buf_paddr, &g->error_status_address);
+	rc = apei_read(buf_paddr, &g->error_status_address);
 	if (rc) {
-		if (!silent && printk_ratelimit())
-			pr_warning(FW_WARN GHES_PFX
+		*buf_paddr = 0;
+		pr_warn_ratelimited(FW_WARN GHES_PFX
 "Failed to read error status block address for hardware error source: %d.\n",
 				   g->header.source_id);
 		return -EIO;
 	}
+	if (!*buf_paddr)
+		return -ENOENT;
+
+	ghes_copy_tofrom_phys(estatus, *buf_paddr, sizeof(*estatus), 1,
+			      fixmap_idx);
+	if (!estatus->block_status) {
+		*buf_paddr = 0;
+		return -ENOENT;
+	}
+
+	return 0;
+}
+
+static int __ghes_read_estatus(struct acpi_hest_generic_status *estatus,
+			       u64 buf_paddr, enum fixed_addresses fixmap_idx,
+			       size_t buf_len)
+{
+	ghes_copy_tofrom_phys(estatus, buf_paddr, buf_len, 1, fixmap_idx);
+	if (cper_estatus_check(estatus)) {
+		pr_warn_ratelimited(FW_WARN GHES_PFX
+				    "Failed to read error status block!\n");
+		return -EIO;
+	}
+
+	return 0;
+}
+
+static int ghes_read_estatus(struct ghes *ghes,
+			     struct acpi_hest_generic_status *estatus,
+			     u64 *buf_paddr, enum fixed_addresses fixmap_idx)
+{
+	int rc;
+
+	rc = __ghes_peek_estatus(ghes, estatus, buf_paddr, fixmap_idx);
+	if (rc)
+		return rc;
+
+	rc = __ghes_check_estatus(ghes, estatus);
+	if (rc)
+		return rc;
+
+	return __ghes_read_estatus(estatus, *buf_paddr, fixmap_idx,
+				   cper_estatus_len(estatus));
+}
+
+static void ghes_clear_estatus(struct ghes *ghes,
+			       struct acpi_hest_generic_status *estatus,
+			       u64 buf_paddr, enum fixed_addresses fixmap_idx)
+{
+	estatus->block_status = 0;
+
 	if (!buf_paddr)
-		return -ENOENT;
-
-	ghes_copy_tofrom_phys(ghes->estatus, buf_paddr,
-			      sizeof(*ghes->estatus), 1);
-	if (!ghes->estatus->block_status)
-		return -ENOENT;
-
-	ghes->buffer_paddr = buf_paddr;
-	ghes->flags |= GHES_TO_CLEAR;
-
-	rc = -EIO;
-	len = cper_estatus_len(ghes->estatus);
-	if (len < sizeof(*ghes->estatus))
-		goto err_read_block;
-	if (len > ghes->generic->error_block_length)
-		goto err_read_block;
-	if (cper_estatus_check_header(ghes->estatus))
-		goto err_read_block;
-	ghes_copy_tofrom_phys(ghes->estatus + 1,
-			      buf_paddr + sizeof(*ghes->estatus),
-			      len - sizeof(*ghes->estatus), 1);
-	if (cper_estatus_check(ghes->estatus))
-		goto err_read_block;
-	rc = 0;
-
-err_read_block:
-	if (rc && !silent && printk_ratelimit())
-		pr_warning(FW_WARN GHES_PFX
-			   "Failed to read error status block!\n");
-	return rc;
-}
-
-static void ghes_clear_estatus(struct ghes *ghes)
-{
-	ghes->estatus->block_status = 0;
-	if (!(ghes->flags & GHES_TO_CLEAR))
 		return;
-	ghes_copy_tofrom_phys(ghes->estatus, ghes->buffer_paddr,
-			      sizeof(ghes->estatus->block_status), 0);
-	ghes->flags &= ~GHES_TO_CLEAR;
+
+	ghes_copy_tofrom_phys(estatus, buf_paddr,
+			      sizeof(estatus->block_status), 0,
+			      fixmap_idx);
+
+	/*
+	 * GHESv2 type HEST entries introduce support for error acknowledgment,
+	 * so only acknowledge the error if this support is present.
+	 */
+	if (is_hest_type_generic_v2(ghes))
+		ghes_ack_error(ghes->generic_v2);
 }
 
-static void ghes_handle_memory_failure(struct acpi_generic_data *gdata, int sev)
+/*
+ * Called as task_work before returning to user-space.
+ * Ensure any queued work has been done before we return to the context that
+ * triggered the notification.
+ */
+static void ghes_kick_task_work(struct callback_head *head)
 {
-#ifdef CONFIG_ACPI_APEI_MEMORY_FAILURE
+	struct acpi_hest_generic_status *estatus;
+	struct ghes_estatus_node *estatus_node;
+	u32 node_len;
+
+	estatus_node = container_of(head, struct ghes_estatus_node, task_work);
+	if (IS_ENABLED(CONFIG_ACPI_APEI_MEMORY_FAILURE))
+		memory_failure_queue_kick(estatus_node->task_work_cpu);
+
+	estatus = GHES_ESTATUS_FROM_NODE(estatus_node);
+	node_len = GHES_ESTATUS_NODE_LEN(cper_estatus_len(estatus));
+	gen_pool_free(ghes_estatus_pool, (unsigned long)estatus_node, node_len);
+}
+
+static bool ghes_do_memory_failure(u64 physical_addr, int flags)
+{
 	unsigned long pfn;
-	int flags = -1;
-	int sec_sev = ghes_severity(gdata->error_severity);
-	struct cper_sec_mem_err *mem_err;
-	mem_err = (struct cper_sec_mem_err *)(gdata + 1);
 
-	if (!(mem_err->validation_bits & CPER_MEM_VALID_PA))
-		return;
+	if (!IS_ENABLED(CONFIG_ACPI_APEI_MEMORY_FAILURE))
+		return false;
 
-	pfn = mem_err->physical_addr >> PAGE_SHIFT;
-	if (!pfn_valid(pfn)) {
+	pfn = PHYS_PFN(physical_addr);
+	if (!pfn_valid(pfn) && !arch_is_platform_page(physical_addr)) {
 		pr_warn_ratelimited(FW_WARN GHES_PFX
 		"Invalid address in generic error data: %#llx\n",
-		mem_err->physical_addr);
-		return;
+		physical_addr);
+		return false;
 	}
+
+	memory_failure_queue(pfn, flags);
+	return true;
+}
+
+static bool ghes_handle_memory_failure(struct acpi_hest_generic_data *gdata,
+				       int sev, bool sync)
+{
+	int flags = -1;
+	int sec_sev = ghes_severity(gdata->error_severity);
+	struct cper_sec_mem_err *mem_err = acpi_hest_get_payload(gdata);
+
+	if (!(mem_err->validation_bits & CPER_MEM_VALID_PA))
+		return false;
 
 	/* iff following two events can be handled properly by now */
 	if (sec_sev == GHES_SEV_CORRECTED &&
 	    (gdata->flags & CPER_SEC_ERROR_THRESHOLD_EXCEEDED))
 		flags = MF_SOFT_OFFLINE;
 	if (sev == GHES_SEV_RECOVERABLE && sec_sev == GHES_SEV_RECOVERABLE)
-		flags = 0;
+		flags = sync ? MF_ACTION_REQUIRED : 0;
 
 	if (flags != -1)
-		memory_failure_queue(pfn, 0, flags);
+		return ghes_do_memory_failure(mem_err->physical_addr, flags);
+
+	return false;
+}
+
+static bool ghes_handle_arm_hw_error(struct acpi_hest_generic_data *gdata,
+				       int sev, bool sync)
+{
+	struct cper_sec_proc_arm *err = acpi_hest_get_payload(gdata);
+	int flags = sync ? MF_ACTION_REQUIRED : 0;
+	bool queued = false;
+	int sec_sev, i;
+	char *p;
+
+	log_arm_hw_error(err);
+
+	sec_sev = ghes_severity(gdata->error_severity);
+	if (sev != GHES_SEV_RECOVERABLE || sec_sev != GHES_SEV_RECOVERABLE)
+		return false;
+
+	p = (char *)(err + 1);
+	for (i = 0; i < err->err_info_num; i++) {
+		struct cper_arm_err_info *err_info = (struct cper_arm_err_info *)p;
+		bool is_cache = (err_info->type == CPER_ARM_CACHE_ERROR);
+		bool has_pa = (err_info->validation_bits & CPER_ARM_INFO_VALID_PHYSICAL_ADDR);
+		const char *error_type = "unknown error";
+
+		/*
+		 * The field (err_info->error_info & BIT(26)) is fixed to set to
+		 * 1 in some old firmware of HiSilicon Kunpeng920. We assume that
+		 * firmware won't mix corrected errors in an uncorrected section,
+		 * and don't filter out 'corrected' error here.
+		 */
+		if (is_cache && has_pa) {
+			queued = ghes_do_memory_failure(err_info->physical_fault_addr, flags);
+			p += err_info->length;
+			continue;
+		}
+
+		if (err_info->type < ARRAY_SIZE(cper_proc_error_type_strs))
+			error_type = cper_proc_error_type_strs[err_info->type];
+
+		pr_warn_ratelimited(FW_WARN GHES_PFX
+				    "Unhandled processor error type: %s\n",
+				    error_type);
+		p += err_info->length;
+	}
+
+	return queued;
+}
+
+/*
+ * PCIe AER errors need to be sent to the AER driver for reporting and
+ * recovery. The GHES severities map to the following AER severities and
+ * require the following handling:
+ *
+ * GHES_SEV_CORRECTABLE -> AER_CORRECTABLE
+ *     These need to be reported by the AER driver but no recovery is
+ *     necessary.
+ * GHES_SEV_RECOVERABLE -> AER_NONFATAL
+ * GHES_SEV_RECOVERABLE && CPER_SEC_RESET -> AER_FATAL
+ *     These both need to be reported and recovered from by the AER driver.
+ * GHES_SEV_PANIC does not make it to this handling since the kernel must
+ *     panic.
+ */
+static void ghes_handle_aer(struct acpi_hest_generic_data *gdata)
+{
+#ifdef CONFIG_ACPI_APEI_PCIEAER
+	struct cper_sec_pcie *pcie_err = acpi_hest_get_payload(gdata);
+
+	if (pcie_err->validation_bits & CPER_PCIE_VALID_DEVICE_ID &&
+	    pcie_err->validation_bits & CPER_PCIE_VALID_AER_INFO) {
+		unsigned int devfn;
+		int aer_severity;
+		u8 *aer_info;
+
+		devfn = PCI_DEVFN(pcie_err->device_id.device,
+				  pcie_err->device_id.function);
+		aer_severity = cper_severity_to_aer(gdata->error_severity);
+
+		/*
+		 * If firmware reset the component to contain
+		 * the error, we must reinitialize it before
+		 * use, so treat it as a fatal AER error.
+		 */
+		if (gdata->flags & CPER_SEC_RESET)
+			aer_severity = AER_FATAL;
+
+		aer_info = (void *)gen_pool_alloc(ghes_estatus_pool,
+						  sizeof(struct aer_capability_regs));
+		if (!aer_info)
+			return;
+		memcpy(aer_info, pcie_err->aer_info, sizeof(struct aer_capability_regs));
+
+		aer_recover_queue(pcie_err->device_id.segment,
+				  pcie_err->device_id.bus,
+				  devfn, aer_severity,
+				  (struct aer_capability_regs *)
+				  aer_info);
+	}
 #endif
 }
 
-static void ghes_do_proc(struct ghes *ghes,
-			 const struct acpi_generic_status *estatus)
+static BLOCKING_NOTIFIER_HEAD(vendor_record_notify_list);
+
+int ghes_register_vendor_record_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&vendor_record_notify_list, nb);
+}
+EXPORT_SYMBOL_GPL(ghes_register_vendor_record_notifier);
+
+void ghes_unregister_vendor_record_notifier(struct notifier_block *nb)
+{
+	blocking_notifier_chain_unregister(&vendor_record_notify_list, nb);
+}
+EXPORT_SYMBOL_GPL(ghes_unregister_vendor_record_notifier);
+
+static void ghes_vendor_record_work_func(struct work_struct *work)
+{
+	struct ghes_vendor_record_entry *entry;
+	struct acpi_hest_generic_data *gdata;
+	u32 len;
+
+	entry = container_of(work, struct ghes_vendor_record_entry, work);
+	gdata = GHES_GDATA_FROM_VENDOR_ENTRY(entry);
+
+	blocking_notifier_call_chain(&vendor_record_notify_list,
+				     entry->error_severity, gdata);
+
+	len = GHES_VENDOR_ENTRY_LEN(acpi_hest_get_record_size(gdata));
+	gen_pool_free(ghes_estatus_pool, (unsigned long)entry, len);
+}
+
+static void ghes_defer_non_standard_event(struct acpi_hest_generic_data *gdata,
+					  int sev)
+{
+	struct acpi_hest_generic_data *copied_gdata;
+	struct ghes_vendor_record_entry *entry;
+	u32 len;
+
+	len = GHES_VENDOR_ENTRY_LEN(acpi_hest_get_record_size(gdata));
+	entry = (void *)gen_pool_alloc(ghes_estatus_pool, len);
+	if (!entry)
+		return;
+
+	copied_gdata = GHES_GDATA_FROM_VENDOR_ENTRY(entry);
+	memcpy(copied_gdata, gdata, acpi_hest_get_record_size(gdata));
+	entry->error_severity = sev;
+
+	INIT_WORK(&entry->work, ghes_vendor_record_work_func);
+	schedule_work(&entry->work);
+}
+
+static bool ghes_do_proc(struct ghes *ghes,
+			 const struct acpi_hest_generic_status *estatus)
 {
 	int sev, sec_sev;
-	struct acpi_generic_data *gdata;
+	struct acpi_hest_generic_data *gdata;
+	guid_t *sec_type;
+	const guid_t *fru_id = &guid_null;
+	char *fru_text = "";
+	bool queued = false;
+	bool sync = is_hest_sync_notify(ghes);
 
 	sev = ghes_severity(estatus->error_severity);
 	apei_estatus_for_each_section(estatus, gdata) {
+		sec_type = (guid_t *)gdata->section_type;
 		sec_sev = ghes_severity(gdata->error_severity);
-		if (!uuid_le_cmp(*(uuid_le *)gdata->section_type,
-				 CPER_SEC_PLATFORM_MEM)) {
-			struct cper_sec_mem_err *mem_err;
-			mem_err = (struct cper_sec_mem_err *)(gdata+1);
-			ghes_edac_report_mem_error(ghes, sev, mem_err);
+		if (gdata->validation_bits & CPER_SEC_VALID_FRU_ID)
+			fru_id = (guid_t *)gdata->fru_id;
 
-#ifdef CONFIG_X86_MCE
-			apei_mce_report_mem_error(sev, mem_err);
-#endif
-			ghes_handle_memory_failure(gdata, sev);
+		if (gdata->validation_bits & CPER_SEC_VALID_FRU_TEXT)
+			fru_text = gdata->fru_text;
+
+		if (guid_equal(sec_type, &CPER_SEC_PLATFORM_MEM)) {
+			struct cper_sec_mem_err *mem_err = acpi_hest_get_payload(gdata);
+
+			atomic_notifier_call_chain(&ghes_report_chain, sev, mem_err);
+
+			arch_apei_report_mem_error(sev, mem_err);
+			queued = ghes_handle_memory_failure(gdata, sev, sync);
 		}
-#ifdef CONFIG_ACPI_APEI_PCIEAER
-		else if (!uuid_le_cmp(*(uuid_le *)gdata->section_type,
-				      CPER_SEC_PCIE)) {
-			struct cper_sec_pcie *pcie_err;
-			pcie_err = (struct cper_sec_pcie *)(gdata+1);
-			if (sev == GHES_SEV_RECOVERABLE &&
-			    sec_sev == GHES_SEV_RECOVERABLE &&
-			    pcie_err->validation_bits & CPER_PCIE_VALID_DEVICE_ID &&
-			    pcie_err->validation_bits & CPER_PCIE_VALID_AER_INFO) {
-				unsigned int devfn;
-				int aer_severity;
-
-				devfn = PCI_DEVFN(pcie_err->device_id.device,
-						  pcie_err->device_id.function);
-				aer_severity = cper_severity_to_aer(sev);
-
-				/*
-				 * If firmware reset the component to contain
-				 * the error, we must reinitialize it before
-				 * use, so treat it as a fatal AER error.
-				 */
-				if (gdata->flags & CPER_SEC_RESET)
-					aer_severity = AER_FATAL;
-
-				aer_recover_queue(pcie_err->device_id.segment,
-						  pcie_err->device_id.bus,
-						  devfn, aer_severity,
-						  (struct aer_capability_regs *)
-						  pcie_err->aer_info);
-			}
-
+		else if (guid_equal(sec_type, &CPER_SEC_PCIE)) {
+			ghes_handle_aer(gdata);
 		}
-#endif
+		else if (guid_equal(sec_type, &CPER_SEC_PROC_ARM)) {
+			queued = ghes_handle_arm_hw_error(gdata, sev, sync);
+		} else {
+			void *err = acpi_hest_get_payload(gdata);
+
+			ghes_defer_non_standard_event(gdata, sev);
+			log_non_standard_event(sec_type, fru_id, fru_text,
+					       sec_sev, err,
+					       gdata->error_data_length);
+		}
 	}
+
+	return queued;
 }
 
 static void __ghes_print_estatus(const char *pfx,
 				 const struct acpi_hest_generic *generic,
-				 const struct acpi_generic_status *estatus)
+				 const struct acpi_hest_generic_status *estatus)
 {
 	static atomic_t seqno;
 	unsigned int curr_seqno;
@@ -520,7 +744,7 @@ static void __ghes_print_estatus(const char *pfx,
 
 static int ghes_print_estatus(const char *pfx,
 			      const struct acpi_hest_generic *generic,
-			      const struct acpi_generic_status *estatus)
+			      const struct acpi_hest_generic_status *estatus)
 {
 	/* Not more than 2 messages every 5 seconds */
 	static DEFINE_RATELIMIT_STATE(ratelimit_corrected, 5*HZ, 2);
@@ -542,13 +766,13 @@ static int ghes_print_estatus(const char *pfx,
  * GHES error status reporting throttle, to report more kinds of
  * errors, instead of just most frequently occurred errors.
  */
-static int ghes_estatus_cached(struct acpi_generic_status *estatus)
+static int ghes_estatus_cached(struct acpi_hest_generic_status *estatus)
 {
 	u32 len;
 	int i, cached = 0;
 	unsigned long long now;
 	struct ghes_estatus_cache *cache;
-	struct acpi_generic_status *cache_estatus;
+	struct acpi_hest_generic_status *cache_estatus;
 
 	len = cper_estatus_len(estatus);
 	rcu_read_lock();
@@ -573,12 +797,12 @@ static int ghes_estatus_cached(struct acpi_generic_status *estatus)
 
 static struct ghes_estatus_cache *ghes_estatus_cache_alloc(
 	struct acpi_hest_generic *generic,
-	struct acpi_generic_status *estatus)
+	struct acpi_hest_generic_status *estatus)
 {
 	int alloced;
 	u32 len, cache_len;
 	struct ghes_estatus_cache *cache;
-	struct acpi_generic_status *cache_estatus;
+	struct acpi_hest_generic_status *cache_estatus;
 
 	alloced = atomic_add_return(1, &ghes_estatus_cache_alloced);
 	if (alloced > GHES_ESTATUS_CACHE_ALLOCED_MAX) {
@@ -601,48 +825,42 @@ static struct ghes_estatus_cache *ghes_estatus_cache_alloc(
 	return cache;
 }
 
-static void ghes_estatus_cache_free(struct ghes_estatus_cache *cache)
+static void ghes_estatus_cache_rcu_free(struct rcu_head *head)
 {
+	struct ghes_estatus_cache *cache;
 	u32 len;
 
+	cache = container_of(head, struct ghes_estatus_cache, rcu);
 	len = cper_estatus_len(GHES_ESTATUS_FROM_CACHE(cache));
 	len = GHES_ESTATUS_CACHE_LEN(len);
 	gen_pool_free(ghes_estatus_pool, (unsigned long)cache, len);
 	atomic_dec(&ghes_estatus_cache_alloced);
 }
 
-static void ghes_estatus_cache_rcu_free(struct rcu_head *head)
+static void
+ghes_estatus_cache_add(struct acpi_hest_generic *generic,
+		       struct acpi_hest_generic_status *estatus)
 {
-	struct ghes_estatus_cache *cache;
-
-	cache = container_of(head, struct ghes_estatus_cache, rcu);
-	ghes_estatus_cache_free(cache);
-}
-
-static void ghes_estatus_cache_add(
-	struct acpi_hest_generic *generic,
-	struct acpi_generic_status *estatus)
-{
-	int i, slot = -1, count;
 	unsigned long long now, duration, period, max_period = 0;
-	struct ghes_estatus_cache *cache, *slot_cache = NULL, *new_cache;
+	struct ghes_estatus_cache *cache, *new_cache;
+	struct ghes_estatus_cache __rcu *victim;
+	int i, slot = -1, count;
 
 	new_cache = ghes_estatus_cache_alloc(generic, estatus);
-	if (new_cache == NULL)
+	if (!new_cache)
 		return;
+
 	rcu_read_lock();
 	now = sched_clock();
 	for (i = 0; i < GHES_ESTATUS_CACHES_SIZE; i++) {
 		cache = rcu_dereference(ghes_estatus_caches[i]);
 		if (cache == NULL) {
 			slot = i;
-			slot_cache = NULL;
 			break;
 		}
 		duration = now - cache->time_in;
 		if (duration >= GHES_ESTATUS_IN_CACHE_MAX_NSEC) {
 			slot = i;
-			slot_cache = cache;
 			break;
 		}
 		count = atomic_read(&cache->count);
@@ -651,35 +869,69 @@ static void ghes_estatus_cache_add(
 		if (period > max_period) {
 			max_period = period;
 			slot = i;
-			slot_cache = cache;
 		}
 	}
-	/* new_cache must be put into array after its contents are written */
-	smp_wmb();
-	if (slot != -1 && cmpxchg(ghes_estatus_caches + slot,
-				  slot_cache, new_cache) == slot_cache) {
-		if (slot_cache)
-			call_rcu(&slot_cache->rcu, ghes_estatus_cache_rcu_free);
-	} else
-		ghes_estatus_cache_free(new_cache);
 	rcu_read_unlock();
+
+	if (slot != -1) {
+		/*
+		 * Use release semantics to ensure that ghes_estatus_cached()
+		 * running on another CPU will see the updated cache fields if
+		 * it can see the new value of the pointer.
+		 */
+		victim = xchg_release(&ghes_estatus_caches[slot],
+				      RCU_INITIALIZER(new_cache));
+
+		/*
+		 * At this point, victim may point to a cached item different
+		 * from the one based on which we selected the slot. Instead of
+		 * going to the loop again to pick another slot, let's just
+		 * drop the other item anyway: this may cause a false cache
+		 * miss later on, but that won't cause any problems.
+		 */
+		if (victim)
+			call_rcu(&unrcu_pointer(victim)->rcu,
+				 ghes_estatus_cache_rcu_free);
+	}
+}
+
+static void __ghes_panic(struct ghes *ghes,
+			 struct acpi_hest_generic_status *estatus,
+			 u64 buf_paddr, enum fixed_addresses fixmap_idx)
+{
+	__ghes_print_estatus(KERN_EMERG, ghes->generic, estatus);
+
+	ghes_clear_estatus(ghes, estatus, buf_paddr, fixmap_idx);
+
+	/* reboot to log the error! */
+	if (!panic_timeout)
+		panic_timeout = ghes_panic_timeout;
+	panic("Fatal hardware error!");
 }
 
 static int ghes_proc(struct ghes *ghes)
 {
+	struct acpi_hest_generic_status *estatus = ghes->estatus;
+	u64 buf_paddr;
 	int rc;
 
-	rc = ghes_read_estatus(ghes, 0);
+	rc = ghes_read_estatus(ghes, estatus, &buf_paddr, FIX_APEI_GHES_IRQ);
 	if (rc)
 		goto out;
-	if (!ghes_estatus_cached(ghes->estatus)) {
-		if (ghes_print_estatus(NULL, ghes->generic, ghes->estatus))
-			ghes_estatus_cache_add(ghes->generic, ghes->estatus);
+
+	if (ghes_severity(estatus->error_severity) >= GHES_SEV_PANIC)
+		__ghes_panic(ghes, estatus, buf_paddr, FIX_APEI_GHES_IRQ);
+
+	if (!ghes_estatus_cached(estatus)) {
+		if (ghes_print_estatus(NULL, ghes->generic, estatus))
+			ghes_estatus_cache_add(ghes->generic, estatus);
 	}
-	ghes_do_proc(ghes, ghes->estatus);
+	ghes_do_proc(ghes, estatus);
+
 out:
-	ghes_clear_estatus(ghes);
-	return 0;
+	ghes_clear_estatus(ghes, estatus, buf_paddr, FIX_APEI_GHES_IRQ);
+
+	return rc;
 }
 
 static void ghes_add_timer(struct ghes *ghes)
@@ -688,8 +940,8 @@ static void ghes_add_timer(struct ghes *ghes)
 	unsigned long expire;
 
 	if (!g->notify.poll_interval) {
-		pr_warning(FW_WARN GHES_PFX "Poll interval is 0 for generic hardware error source: %d, disabled.\n",
-			   g->header.source_id);
+		pr_warn(FW_WARN GHES_PFX "Poll interval is 0 for generic hardware error source: %d, disabled.\n",
+			g->header.source_id);
 		return;
 	}
 	expire = jiffies + msecs_to_jiffies(g->notify.poll_interval);
@@ -697,11 +949,14 @@ static void ghes_add_timer(struct ghes *ghes)
 	add_timer(&ghes->timer);
 }
 
-static void ghes_poll_func(unsigned long data)
+static void ghes_poll_func(struct timer_list *t)
 {
-	struct ghes *ghes = (void *)data;
+	struct ghes *ghes = from_timer(ghes, t, timer);
+	unsigned long flags;
 
+	spin_lock_irqsave(&ghes_notify_lock_irq, flags);
 	ghes_proc(ghes);
+	spin_unlock_irqrestore(&ghes_notify_lock_irq, flags);
 	if (!(ghes->flags & GHES_EXITING))
 		ghes_add_timer(ghes);
 }
@@ -709,59 +964,71 @@ static void ghes_poll_func(unsigned long data)
 static irqreturn_t ghes_irq_func(int irq, void *data)
 {
 	struct ghes *ghes = data;
+	unsigned long flags;
 	int rc;
 
+	spin_lock_irqsave(&ghes_notify_lock_irq, flags);
 	rc = ghes_proc(ghes);
+	spin_unlock_irqrestore(&ghes_notify_lock_irq, flags);
 	if (rc)
 		return IRQ_NONE;
 
 	return IRQ_HANDLED;
 }
 
-static int ghes_notify_sci(struct notifier_block *this,
-				  unsigned long event, void *data)
+static int ghes_notify_hed(struct notifier_block *this, unsigned long event,
+			   void *data)
 {
 	struct ghes *ghes;
+	unsigned long flags;
 	int ret = NOTIFY_DONE;
 
+	spin_lock_irqsave(&ghes_notify_lock_irq, flags);
 	rcu_read_lock();
-	list_for_each_entry_rcu(ghes, &ghes_sci, list) {
+	list_for_each_entry_rcu(ghes, &ghes_hed, list) {
 		if (!ghes_proc(ghes))
 			ret = NOTIFY_OK;
 	}
 	rcu_read_unlock();
+	spin_unlock_irqrestore(&ghes_notify_lock_irq, flags);
 
 	return ret;
 }
 
-static struct llist_node *llist_nodes_reverse(struct llist_node *llnode)
-{
-	struct llist_node *next, *tail = NULL;
+static struct notifier_block ghes_notifier_hed = {
+	.notifier_call = ghes_notify_hed,
+};
 
-	while (llnode) {
-		next = llnode->next;
-		llnode->next = tail;
-		tail = llnode;
-		llnode = next;
-	}
-
-	return tail;
-}
+/*
+ * Handlers for CPER records may not be NMI safe. For example,
+ * memory_failure_queue() takes spinlocks and calls schedule_work_on().
+ * In any NMI-like handler, memory from ghes_estatus_pool is used to save
+ * estatus, and added to the ghes_estatus_llist. irq_work_queue() causes
+ * ghes_proc_in_irq() to run in IRQ context where each estatus in
+ * ghes_estatus_llist is processed.
+ *
+ * Memory from the ghes_estatus_pool is also used with the ghes_estatus_cache
+ * to suppress frequent messages.
+ */
+static struct llist_head ghes_estatus_llist;
+static struct irq_work ghes_proc_irq_work;
 
 static void ghes_proc_in_irq(struct irq_work *irq_work)
 {
 	struct llist_node *llnode, *next;
 	struct ghes_estatus_node *estatus_node;
 	struct acpi_hest_generic *generic;
-	struct acpi_generic_status *estatus;
+	struct acpi_hest_generic_status *estatus;
+	bool task_work_pending;
 	u32 len, node_len;
+	int ret;
 
 	llnode = llist_del_all(&ghes_estatus_llist);
 	/*
 	 * Because the time order of estatus in list is reversed,
 	 * revert it back to proper order.
 	 */
-	llnode = llist_nodes_reverse(llnode);
+	llnode = llist_reverse_order(llnode);
 	while (llnode) {
 		next = llnode->next;
 		estatus_node = llist_entry(llnode, struct ghes_estatus_node,
@@ -769,14 +1036,26 @@ static void ghes_proc_in_irq(struct irq_work *irq_work)
 		estatus = GHES_ESTATUS_FROM_NODE(estatus_node);
 		len = cper_estatus_len(estatus);
 		node_len = GHES_ESTATUS_NODE_LEN(len);
-		ghes_do_proc(estatus_node->ghes, estatus);
+		task_work_pending = ghes_do_proc(estatus_node->ghes, estatus);
 		if (!ghes_estatus_cached(estatus)) {
 			generic = estatus_node->generic;
 			if (ghes_print_estatus(NULL, generic, estatus))
 				ghes_estatus_cache_add(generic, estatus);
 		}
-		gen_pool_free(ghes_estatus_pool, (unsigned long)estatus_node,
-			      node_len);
+
+		if (task_work_pending && current->mm) {
+			estatus_node->task_work.func = ghes_kick_task_work;
+			estatus_node->task_work_cpu = smp_processor_id();
+			ret = task_work_add(current, &estatus_node->task_work,
+					    TWA_RESUME);
+			if (ret)
+				estatus_node->task_work.func = NULL;
+		}
+
+		if (!estatus_node->task_work.func)
+			gen_pool_free(ghes_estatus_pool,
+				      (unsigned long)estatus_node, node_len);
+
 		llnode = next;
 	}
 }
@@ -786,121 +1065,266 @@ static void ghes_print_queued_estatus(void)
 	struct llist_node *llnode;
 	struct ghes_estatus_node *estatus_node;
 	struct acpi_hest_generic *generic;
-	struct acpi_generic_status *estatus;
-	u32 len, node_len;
+	struct acpi_hest_generic_status *estatus;
 
 	llnode = llist_del_all(&ghes_estatus_llist);
 	/*
 	 * Because the time order of estatus in list is reversed,
 	 * revert it back to proper order.
 	 */
-	llnode = llist_nodes_reverse(llnode);
+	llnode = llist_reverse_order(llnode);
 	while (llnode) {
 		estatus_node = llist_entry(llnode, struct ghes_estatus_node,
 					   llnode);
 		estatus = GHES_ESTATUS_FROM_NODE(estatus_node);
-		len = cper_estatus_len(estatus);
-		node_len = GHES_ESTATUS_NODE_LEN(len);
 		generic = estatus_node->generic;
 		ghes_print_estatus(NULL, generic, estatus);
 		llnode = llnode->next;
 	}
 }
 
-static int ghes_notify_nmi(unsigned int cmd, struct pt_regs *regs)
+static int ghes_in_nmi_queue_one_entry(struct ghes *ghes,
+				       enum fixed_addresses fixmap_idx)
 {
-	struct ghes *ghes, *ghes_global = NULL;
-	int sev, sev_global = -1;
-	int ret = NMI_DONE;
+	struct acpi_hest_generic_status *estatus, tmp_header;
+	struct ghes_estatus_node *estatus_node;
+	u32 len, node_len;
+	u64 buf_paddr;
+	int sev, rc;
 
-	raw_spin_lock(&ghes_nmi_lock);
-	list_for_each_entry_rcu(ghes, &ghes_nmi, list) {
-		if (ghes_read_estatus(ghes, 1)) {
-			ghes_clear_estatus(ghes);
-			continue;
-		}
-		sev = ghes_severity(ghes->estatus->error_severity);
-		if (sev > sev_global) {
-			sev_global = sev;
-			ghes_global = ghes;
-		}
-		ret = NMI_HANDLED;
+	if (!IS_ENABLED(CONFIG_ARCH_HAVE_NMI_SAFE_CMPXCHG))
+		return -EOPNOTSUPP;
+
+	rc = __ghes_peek_estatus(ghes, &tmp_header, &buf_paddr, fixmap_idx);
+	if (rc) {
+		ghes_clear_estatus(ghes, &tmp_header, buf_paddr, fixmap_idx);
+		return rc;
 	}
 
-	if (ret == NMI_DONE)
-		goto out;
+	rc = __ghes_check_estatus(ghes, &tmp_header);
+	if (rc) {
+		ghes_clear_estatus(ghes, &tmp_header, buf_paddr, fixmap_idx);
+		return rc;
+	}
 
-	if (sev_global >= GHES_SEV_PANIC) {
-		oops_begin();
+	len = cper_estatus_len(&tmp_header);
+	node_len = GHES_ESTATUS_NODE_LEN(len);
+	estatus_node = (void *)gen_pool_alloc(ghes_estatus_pool, node_len);
+	if (!estatus_node)
+		return -ENOMEM;
+
+	estatus_node->ghes = ghes;
+	estatus_node->generic = ghes->generic;
+	estatus_node->task_work.func = NULL;
+	estatus = GHES_ESTATUS_FROM_NODE(estatus_node);
+
+	if (__ghes_read_estatus(estatus, buf_paddr, fixmap_idx, len)) {
+		ghes_clear_estatus(ghes, estatus, buf_paddr, fixmap_idx);
+		rc = -ENOENT;
+		goto no_work;
+	}
+
+	sev = ghes_severity(estatus->error_severity);
+	if (sev >= GHES_SEV_PANIC) {
 		ghes_print_queued_estatus();
-		__ghes_print_estatus(KERN_EMERG, ghes_global->generic,
-				     ghes_global->estatus);
-		/* reboot to log the error! */
-		if (panic_timeout == 0)
-			panic_timeout = ghes_panic_timeout;
-		panic("Fatal hardware error!");
+		__ghes_panic(ghes, estatus, buf_paddr, fixmap_idx);
 	}
 
-	list_for_each_entry_rcu(ghes, &ghes_nmi, list) {
-#ifdef CONFIG_ARCH_HAVE_NMI_SAFE_CMPXCHG
-		u32 len, node_len;
-		struct ghes_estatus_node *estatus_node;
-		struct acpi_generic_status *estatus;
-#endif
-		if (!(ghes->flags & GHES_TO_CLEAR))
-			continue;
-#ifdef CONFIG_ARCH_HAVE_NMI_SAFE_CMPXCHG
-		if (ghes_estatus_cached(ghes->estatus))
-			goto next;
-		/* Save estatus for further processing in IRQ context */
-		len = cper_estatus_len(ghes->estatus);
-		node_len = GHES_ESTATUS_NODE_LEN(len);
-		estatus_node = (void *)gen_pool_alloc(ghes_estatus_pool,
-						      node_len);
-		if (estatus_node) {
-			estatus_node->ghes = ghes;
-			estatus_node->generic = ghes->generic;
-			estatus = GHES_ESTATUS_FROM_NODE(estatus_node);
-			memcpy(estatus, ghes->estatus, len);
-			llist_add(&estatus_node->llnode, &ghes_estatus_llist);
-		}
-next:
-#endif
-		ghes_clear_estatus(ghes);
-	}
-#ifdef CONFIG_ARCH_HAVE_NMI_SAFE_CMPXCHG
-	irq_work_queue(&ghes_proc_irq_work);
-#endif
+	ghes_clear_estatus(ghes, &tmp_header, buf_paddr, fixmap_idx);
 
-out:
-	raw_spin_unlock(&ghes_nmi_lock);
+	/* This error has been reported before, don't process it again. */
+	if (ghes_estatus_cached(estatus))
+		goto no_work;
+
+	llist_add(&estatus_node->llnode, &ghes_estatus_llist);
+
+	return rc;
+
+no_work:
+	gen_pool_free(ghes_estatus_pool, (unsigned long)estatus_node,
+		      node_len);
+
+	return rc;
+}
+
+static int ghes_in_nmi_spool_from_list(struct list_head *rcu_list,
+				       enum fixed_addresses fixmap_idx)
+{
+	int ret = -ENOENT;
+	struct ghes *ghes;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(ghes, rcu_list, list) {
+		if (!ghes_in_nmi_queue_one_entry(ghes, fixmap_idx))
+			ret = 0;
+	}
+	rcu_read_unlock();
+
+	if (IS_ENABLED(CONFIG_ARCH_HAVE_NMI_SAFE_CMPXCHG) && !ret)
+		irq_work_queue(&ghes_proc_irq_work);
+
 	return ret;
 }
 
-static struct notifier_block ghes_notifier_sci = {
-	.notifier_call = ghes_notify_sci,
-};
+#ifdef CONFIG_ACPI_APEI_SEA
+static LIST_HEAD(ghes_sea);
 
-static unsigned long ghes_esource_prealloc_size(
-	const struct acpi_hest_generic *generic)
+/*
+ * Return 0 only if one of the SEA error sources successfully reported an error
+ * record sent from the firmware.
+ */
+int ghes_notify_sea(void)
 {
-	unsigned long block_length, prealloc_records, prealloc_size;
+	static DEFINE_RAW_SPINLOCK(ghes_notify_lock_sea);
+	int rv;
 
-	block_length = min_t(unsigned long, generic->error_block_length,
-			     GHES_ESTATUS_MAX_SIZE);
-	prealloc_records = max_t(unsigned long,
-				 generic->records_to_preallocate, 1);
-	prealloc_size = min_t(unsigned long, block_length * prealloc_records,
-			      GHES_ESOURCE_PREALLOC_MAX_SIZE);
+	raw_spin_lock(&ghes_notify_lock_sea);
+	rv = ghes_in_nmi_spool_from_list(&ghes_sea, FIX_APEI_GHES_SEA);
+	raw_spin_unlock(&ghes_notify_lock_sea);
 
-	return prealloc_size;
+	return rv;
+}
+
+static void ghes_sea_add(struct ghes *ghes)
+{
+	mutex_lock(&ghes_list_mutex);
+	list_add_rcu(&ghes->list, &ghes_sea);
+	mutex_unlock(&ghes_list_mutex);
+}
+
+static void ghes_sea_remove(struct ghes *ghes)
+{
+	mutex_lock(&ghes_list_mutex);
+	list_del_rcu(&ghes->list);
+	mutex_unlock(&ghes_list_mutex);
+	synchronize_rcu();
+}
+#else /* CONFIG_ACPI_APEI_SEA */
+static inline void ghes_sea_add(struct ghes *ghes) { }
+static inline void ghes_sea_remove(struct ghes *ghes) { }
+#endif /* CONFIG_ACPI_APEI_SEA */
+
+#ifdef CONFIG_HAVE_ACPI_APEI_NMI
+/*
+ * NMI may be triggered on any CPU, so ghes_in_nmi is used for
+ * having only one concurrent reader.
+ */
+static atomic_t ghes_in_nmi = ATOMIC_INIT(0);
+
+static LIST_HEAD(ghes_nmi);
+
+static int ghes_notify_nmi(unsigned int cmd, struct pt_regs *regs)
+{
+	static DEFINE_RAW_SPINLOCK(ghes_notify_lock_nmi);
+	int ret = NMI_DONE;
+
+	if (!atomic_add_unless(&ghes_in_nmi, 1, 1))
+		return ret;
+
+	raw_spin_lock(&ghes_notify_lock_nmi);
+	if (!ghes_in_nmi_spool_from_list(&ghes_nmi, FIX_APEI_GHES_NMI))
+		ret = NMI_HANDLED;
+	raw_spin_unlock(&ghes_notify_lock_nmi);
+
+	atomic_dec(&ghes_in_nmi);
+	return ret;
+}
+
+static void ghes_nmi_add(struct ghes *ghes)
+{
+	mutex_lock(&ghes_list_mutex);
+	if (list_empty(&ghes_nmi))
+		register_nmi_handler(NMI_LOCAL, ghes_notify_nmi, 0, "ghes");
+	list_add_rcu(&ghes->list, &ghes_nmi);
+	mutex_unlock(&ghes_list_mutex);
+}
+
+static void ghes_nmi_remove(struct ghes *ghes)
+{
+	mutex_lock(&ghes_list_mutex);
+	list_del_rcu(&ghes->list);
+	if (list_empty(&ghes_nmi))
+		unregister_nmi_handler(NMI_LOCAL, "ghes");
+	mutex_unlock(&ghes_list_mutex);
+	/*
+	 * To synchronize with NMI handler, ghes can only be
+	 * freed after NMI handler finishes.
+	 */
+	synchronize_rcu();
+}
+#else /* CONFIG_HAVE_ACPI_APEI_NMI */
+static inline void ghes_nmi_add(struct ghes *ghes) { }
+static inline void ghes_nmi_remove(struct ghes *ghes) { }
+#endif /* CONFIG_HAVE_ACPI_APEI_NMI */
+
+static void ghes_nmi_init_cxt(void)
+{
+	init_irq_work(&ghes_proc_irq_work, ghes_proc_in_irq);
+}
+
+static int __ghes_sdei_callback(struct ghes *ghes,
+				enum fixed_addresses fixmap_idx)
+{
+	if (!ghes_in_nmi_queue_one_entry(ghes, fixmap_idx)) {
+		irq_work_queue(&ghes_proc_irq_work);
+
+		return 0;
+	}
+
+	return -ENOENT;
+}
+
+static int ghes_sdei_normal_callback(u32 event_num, struct pt_regs *regs,
+				      void *arg)
+{
+	static DEFINE_RAW_SPINLOCK(ghes_notify_lock_sdei_normal);
+	struct ghes *ghes = arg;
+	int err;
+
+	raw_spin_lock(&ghes_notify_lock_sdei_normal);
+	err = __ghes_sdei_callback(ghes, FIX_APEI_GHES_SDEI_NORMAL);
+	raw_spin_unlock(&ghes_notify_lock_sdei_normal);
+
+	return err;
+}
+
+static int ghes_sdei_critical_callback(u32 event_num, struct pt_regs *regs,
+				       void *arg)
+{
+	static DEFINE_RAW_SPINLOCK(ghes_notify_lock_sdei_critical);
+	struct ghes *ghes = arg;
+	int err;
+
+	raw_spin_lock(&ghes_notify_lock_sdei_critical);
+	err = __ghes_sdei_callback(ghes, FIX_APEI_GHES_SDEI_CRITICAL);
+	raw_spin_unlock(&ghes_notify_lock_sdei_critical);
+
+	return err;
+}
+
+static int apei_sdei_register_ghes(struct ghes *ghes)
+{
+	if (!IS_ENABLED(CONFIG_ARM_SDE_INTERFACE))
+		return -EOPNOTSUPP;
+
+	return sdei_register_ghes(ghes, ghes_sdei_normal_callback,
+				 ghes_sdei_critical_callback);
+}
+
+static int apei_sdei_unregister_ghes(struct ghes *ghes)
+{
+	if (!IS_ENABLED(CONFIG_ARM_SDE_INTERFACE))
+		return -EOPNOTSUPP;
+
+	return sdei_unregister_ghes(ghes);
 }
 
 static int ghes_probe(struct platform_device *ghes_dev)
 {
 	struct acpi_hest_generic *generic;
 	struct ghes *ghes = NULL;
-	unsigned long len;
+	unsigned long flags;
+
 	int rc = -EINVAL;
 
 	generic = *(struct acpi_hest_generic **)ghes_dev->dev.platform_data;
@@ -911,24 +1335,47 @@ static int ghes_probe(struct platform_device *ghes_dev)
 	case ACPI_HEST_NOTIFY_POLLED:
 	case ACPI_HEST_NOTIFY_EXTERNAL:
 	case ACPI_HEST_NOTIFY_SCI:
+	case ACPI_HEST_NOTIFY_GSIV:
+	case ACPI_HEST_NOTIFY_GPIO:
+		break;
+
+	case ACPI_HEST_NOTIFY_SEA:
+		if (!IS_ENABLED(CONFIG_ACPI_APEI_SEA)) {
+			pr_warn(GHES_PFX "Generic hardware error source: %d notified via SEA is not supported\n",
+				generic->header.source_id);
+			rc = -ENOTSUPP;
+			goto err;
+		}
+		break;
 	case ACPI_HEST_NOTIFY_NMI:
+		if (!IS_ENABLED(CONFIG_HAVE_ACPI_APEI_NMI)) {
+			pr_warn(GHES_PFX "Generic hardware error source: %d notified via NMI interrupt is not supported!\n",
+				generic->header.source_id);
+			goto err;
+		}
+		break;
+	case ACPI_HEST_NOTIFY_SOFTWARE_DELEGATED:
+		if (!IS_ENABLED(CONFIG_ARM_SDE_INTERFACE)) {
+			pr_warn(GHES_PFX "Generic hardware error source: %d notified via SDE Interface is not supported!\n",
+				generic->header.source_id);
+			goto err;
+		}
 		break;
 	case ACPI_HEST_NOTIFY_LOCAL:
-		pr_warning(GHES_PFX "Generic hardware error source: %d notified via local interrupt is not supported!\n",
-			   generic->header.source_id);
+		pr_warn(GHES_PFX "Generic hardware error source: %d notified via local interrupt is not supported!\n",
+			generic->header.source_id);
 		goto err;
 	default:
-		pr_warning(FW_WARN GHES_PFX "Unknown notification type: %u for generic hardware error source: %d\n",
-			   generic->notify.type, generic->header.source_id);
+		pr_warn(FW_WARN GHES_PFX "Unknown notification type: %u for generic hardware error source: %d\n",
+			generic->notify.type, generic->header.source_id);
 		goto err;
 	}
 
 	rc = -EIO;
 	if (generic->error_block_length <
-	    sizeof(struct acpi_generic_status)) {
-		pr_warning(FW_BUG GHES_PFX "Invalid error block length: %u for generic hardware error source: %d\n",
-			   generic->error_block_length,
-			   generic->header.source_id);
+	    sizeof(struct acpi_hest_generic_status)) {
+		pr_warn(FW_BUG GHES_PFX "Invalid error block length: %u for generic hardware error source: %d\n",
+			generic->error_block_length, generic->header.source_id);
 		goto err;
 	}
 	ghes = ghes_new(generic);
@@ -938,15 +1385,9 @@ static int ghes_probe(struct platform_device *ghes_dev)
 		goto err;
 	}
 
-	rc = ghes_edac_register(ghes, &ghes_dev->dev);
-	if (rc < 0)
-		goto err;
-
 	switch (generic->notify.type) {
 	case ACPI_HEST_NOTIFY_POLLED:
-		ghes->timer.function = ghes_poll_func;
-		ghes->timer.data = (unsigned long)ghes;
-		init_timer_deferrable(&ghes->timer);
+		timer_setup(&ghes->timer, ghes_poll_func, 0);
 		ghes_add_timer(ghes);
 		break;
 	case ACPI_HEST_NOTIFY_EXTERNAL:
@@ -955,40 +1396,57 @@ static int ghes_probe(struct platform_device *ghes_dev)
 		if (rc) {
 			pr_err(GHES_PFX "Failed to map GSI to IRQ for generic hardware error source: %d\n",
 			       generic->header.source_id);
-			goto err_edac_unreg;
+			goto err;
 		}
-		rc = request_irq(ghes->irq, ghes_irq_func, 0, "GHES IRQ", ghes);
+		rc = request_irq(ghes->irq, ghes_irq_func, IRQF_SHARED,
+				 "GHES IRQ", ghes);
 		if (rc) {
 			pr_err(GHES_PFX "Failed to register IRQ for generic hardware error source: %d\n",
 			       generic->header.source_id);
-			goto err_edac_unreg;
+			goto err;
 		}
 		break;
+
 	case ACPI_HEST_NOTIFY_SCI:
+	case ACPI_HEST_NOTIFY_GSIV:
+	case ACPI_HEST_NOTIFY_GPIO:
 		mutex_lock(&ghes_list_mutex);
-		if (list_empty(&ghes_sci))
-			register_acpi_hed_notifier(&ghes_notifier_sci);
-		list_add_rcu(&ghes->list, &ghes_sci);
+		if (list_empty(&ghes_hed))
+			register_acpi_hed_notifier(&ghes_notifier_hed);
+		list_add_rcu(&ghes->list, &ghes_hed);
 		mutex_unlock(&ghes_list_mutex);
 		break;
+
+	case ACPI_HEST_NOTIFY_SEA:
+		ghes_sea_add(ghes);
+		break;
 	case ACPI_HEST_NOTIFY_NMI:
-		len = ghes_esource_prealloc_size(generic);
-		ghes_estatus_pool_expand(len);
-		mutex_lock(&ghes_list_mutex);
-		if (list_empty(&ghes_nmi))
-			register_nmi_handler(NMI_LOCAL, ghes_notify_nmi, 0,
-						"ghes");
-		list_add_rcu(&ghes->list, &ghes_nmi);
-		mutex_unlock(&ghes_list_mutex);
+		ghes_nmi_add(ghes);
+		break;
+	case ACPI_HEST_NOTIFY_SOFTWARE_DELEGATED:
+		rc = apei_sdei_register_ghes(ghes);
+		if (rc)
+			goto err;
 		break;
 	default:
 		BUG();
 	}
+
 	platform_set_drvdata(ghes_dev, ghes);
 
+	ghes->dev = &ghes_dev->dev;
+
+	mutex_lock(&ghes_devs_mutex);
+	list_add_tail(&ghes->elist, &ghes_devs);
+	mutex_unlock(&ghes_devs_mutex);
+
+	/* Handle any pending errors right away */
+	spin_lock_irqsave(&ghes_notify_lock_irq, flags);
+	ghes_proc(ghes);
+	spin_unlock_irqrestore(&ghes_notify_lock_irq, flags);
+
 	return 0;
-err_edac_unreg:
-	ghes_edac_unregister(ghes);
+
 err:
 	if (ghes) {
 		ghes_fini(ghes);
@@ -999,9 +1457,9 @@ err:
 
 static int ghes_remove(struct platform_device *ghes_dev)
 {
+	int rc;
 	struct ghes *ghes;
 	struct acpi_hest_generic *generic;
-	unsigned long len;
 
 	ghes = platform_get_drvdata(ghes_dev);
 	generic = ghes->generic;
@@ -1009,31 +1467,33 @@ static int ghes_remove(struct platform_device *ghes_dev)
 	ghes->flags |= GHES_EXITING;
 	switch (generic->notify.type) {
 	case ACPI_HEST_NOTIFY_POLLED:
-		del_timer_sync(&ghes->timer);
+		timer_shutdown_sync(&ghes->timer);
 		break;
 	case ACPI_HEST_NOTIFY_EXTERNAL:
 		free_irq(ghes->irq, ghes);
 		break;
+
 	case ACPI_HEST_NOTIFY_SCI:
+	case ACPI_HEST_NOTIFY_GSIV:
+	case ACPI_HEST_NOTIFY_GPIO:
 		mutex_lock(&ghes_list_mutex);
 		list_del_rcu(&ghes->list);
-		if (list_empty(&ghes_sci))
-			unregister_acpi_hed_notifier(&ghes_notifier_sci);
+		if (list_empty(&ghes_hed))
+			unregister_acpi_hed_notifier(&ghes_notifier_hed);
 		mutex_unlock(&ghes_list_mutex);
+		synchronize_rcu();
+		break;
+
+	case ACPI_HEST_NOTIFY_SEA:
+		ghes_sea_remove(ghes);
 		break;
 	case ACPI_HEST_NOTIFY_NMI:
-		mutex_lock(&ghes_list_mutex);
-		list_del_rcu(&ghes->list);
-		if (list_empty(&ghes_nmi))
-			unregister_nmi_handler(NMI_LOCAL, "ghes");
-		mutex_unlock(&ghes_list_mutex);
-		/*
-		 * To synchronize with NMI handler, ghes can only be
-		 * freed after NMI handler finishes.
-		 */
-		synchronize_rcu();
-		len = ghes_esource_prealloc_size(generic);
-		ghes_estatus_pool_shrink(len);
+		ghes_nmi_remove(ghes);
+		break;
+	case ACPI_HEST_NOTIFY_SOFTWARE_DELEGATED:
+		rc = apei_sdei_unregister_ghes(ghes);
+		if (rc)
+			return rc;
 		break;
 	default:
 		BUG();
@@ -1042,11 +1502,11 @@ static int ghes_remove(struct platform_device *ghes_dev)
 
 	ghes_fini(ghes);
 
-	ghes_edac_unregister(ghes);
+	mutex_lock(&ghes_devs_mutex);
+	list_del(&ghes->elist);
+	mutex_unlock(&ghes_devs_mutex);
 
 	kfree(ghes);
-
-	platform_set_drvdata(ghes_dev, NULL);
 
 	return 0;
 }
@@ -1054,47 +1514,40 @@ static int ghes_remove(struct platform_device *ghes_dev)
 static struct platform_driver ghes_platform_driver = {
 	.driver		= {
 		.name	= "GHES",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= ghes_probe,
 	.remove		= ghes_remove,
 };
 
-static int __init ghes_init(void)
+void __init acpi_ghes_init(void)
 {
 	int rc;
 
-	if (acpi_disabled)
-		return -ENODEV;
+	sdei_init();
 
-	if (hest_disable) {
+	if (acpi_disabled)
+		return;
+
+	switch (hest_disable) {
+	case HEST_NOT_FOUND:
+		return;
+	case HEST_DISABLED:
 		pr_info(GHES_PFX "HEST is not enabled!\n");
-		return -EINVAL;
+		return;
+	default:
+		break;
 	}
 
 	if (ghes_disable) {
 		pr_info(GHES_PFX "GHES is not enabled!\n");
-		return -EINVAL;
+		return;
 	}
 
-	init_irq_work(&ghes_proc_irq_work, ghes_proc_in_irq);
-
-	rc = ghes_ioremap_init();
-	if (rc)
-		goto err;
-
-	rc = ghes_estatus_pool_init();
-	if (rc)
-		goto err_ioremap_exit;
-
-	rc = ghes_estatus_pool_expand(GHES_ESTATUS_CACHE_AVG_SIZE *
-				      GHES_ESTATUS_CACHE_ALLOCED_MAX);
-	if (rc)
-		goto err_pool_exit;
+	ghes_nmi_init_cxt();
 
 	rc = platform_driver_register(&ghes_platform_driver);
 	if (rc)
-		goto err_pool_exit;
+		return;
 
 	rc = apei_osc_setup();
 	if (rc == 0 && osc_sb_apei_support_acked)
@@ -1105,27 +1558,44 @@ static int __init ghes_init(void)
 		pr_info(GHES_PFX "APEI firmware first mode is enabled by APEI bit.\n");
 	else
 		pr_info(GHES_PFX "Failed to enable APEI firmware first mode.\n");
-
-	return 0;
-err_pool_exit:
-	ghes_estatus_pool_exit();
-err_ioremap_exit:
-	ghes_ioremap_exit();
-err:
-	return rc;
 }
 
-static void __exit ghes_exit(void)
+/*
+ * Known x86 systems that prefer GHES error reporting:
+ */
+static struct acpi_platform_list plat_list[] = {
+	{"HPE   ", "Server  ", 0, ACPI_SIG_FADT, all_versions},
+	{ } /* End */
+};
+
+struct list_head *ghes_get_devices(void)
 {
-	platform_driver_unregister(&ghes_platform_driver);
-	ghes_estatus_pool_exit();
-	ghes_ioremap_exit();
+	int idx = -1;
+
+	if (IS_ENABLED(CONFIG_X86)) {
+		idx = acpi_match_platform_list(plat_list);
+		if (idx < 0) {
+			if (!ghes_edac_force_enable)
+				return NULL;
+
+			pr_warn_once("Force-loading ghes_edac on an unsupported platform. You're on your own!\n");
+		}
+	} else if (list_empty(&ghes_devs)) {
+		return NULL;
+	}
+
+	return &ghes_devs;
 }
+EXPORT_SYMBOL_GPL(ghes_get_devices);
 
-module_init(ghes_init);
-module_exit(ghes_exit);
+void ghes_register_report_chain(struct notifier_block *nb)
+{
+	atomic_notifier_chain_register(&ghes_report_chain, nb);
+}
+EXPORT_SYMBOL_GPL(ghes_register_report_chain);
 
-MODULE_AUTHOR("Huang Ying");
-MODULE_DESCRIPTION("APEI Generic Hardware Error Source support");
-MODULE_LICENSE("GPL");
-MODULE_ALIAS("platform:GHES");
+void ghes_unregister_report_chain(struct notifier_block *nb)
+{
+	atomic_notifier_chain_unregister(&ghes_report_chain, nb);
+}
+EXPORT_SYMBOL_GPL(ghes_unregister_report_chain);

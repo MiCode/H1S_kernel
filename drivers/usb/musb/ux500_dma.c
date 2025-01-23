@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * drivers/usb/musb/ux500_dma.c
  *
@@ -9,19 +10,6 @@
  *	Mian Yousaf Kaukab <mian.yousaf.kaukab@stericsson.com>
  *	Praveena Nadahally <praveen.nadahally@stericsson.com>
  *	Rajaram Regupathy <ragupathy.rajaram@stericsson.com>
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/device.h>
@@ -91,12 +79,12 @@ static bool ux500_configure_channel(struct dma_channel *channel,
 	struct scatterlist sg;
 	struct dma_slave_config slave_conf;
 	enum dma_slave_buswidth addr_width;
-	dma_addr_t usb_fifo_addr = (MUSB_FIFO_OFFSET(hw_ep->epnum) +
-					ux500_channel->controller->phy_base);
 	struct musb *musb = ux500_channel->controller->private_data;
+	dma_addr_t usb_fifo_addr = (musb->io.fifo_offset(hw_ep->epnum) +
+					ux500_channel->controller->phy_base);
 
 	dev_dbg(musb->controller,
-		"packet_sz=%d, mode=%d, dma_addr=0x%llu, len=%d is_tx=%d\n",
+		"packet_sz=%d, mode=%d, dma_addr=0x%llx, len=%d is_tx=%d\n",
 		packet_sz, mode, (unsigned long long) dma_addr,
 		len, ux500_channel->is_tx);
 
@@ -121,8 +109,7 @@ static bool ux500_configure_channel(struct dma_channel *channel,
 	slave_conf.dst_maxburst = 16;
 	slave_conf.device_fc = false;
 
-	dma_chan->device->device_control(dma_chan, DMA_SLAVE_CONFIG,
-					     (unsigned long) &slave_conf);
+	dmaengine_slave_config(dma_chan, &slave_conf);
 
 	dma_desc = dmaengine_prep_slave_sg(dma_chan, &sg, 1, direction,
 					     DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
@@ -208,9 +195,6 @@ static int ux500_dma_channel_program(struct dma_channel *channel,
 	BUG_ON(channel->status == MUSB_DMA_STATUS_UNKNOWN ||
 		channel->status == MUSB_DMA_STATUS_BUSY);
 
-	if (!ux500_dma_is_compatible(channel, packet_sz, (void *)dma_addr, len))
-		return false;
-
 	channel->status = MUSB_DMA_STATUS_BUSY;
 	channel->actual_len = 0;
 	ret = ux500_configure_channel(channel, packet_sz, mode, dma_addr, len);
@@ -246,9 +230,7 @@ static int ux500_dma_channel_abort(struct dma_channel *channel)
 			musb_writew(epio, MUSB_RXCSR, csr);
 		}
 
-		ux500_channel->dma_chan->device->
-				device_control(ux500_channel->dma_chan,
-					DMA_TERMINATE_ALL, 0);
+		dmaengine_terminate_all(ux500_channel->dma_chan);
 		channel->status = MUSB_DMA_STATUS_FREE;
 	}
 	return 0;
@@ -328,9 +310,9 @@ static int ux500_dma_controller_start(struct ux500_dma_controller *controller)
 			dma_channel->max_len = SZ_16M;
 
 			ux500_channel->dma_chan =
-				dma_request_slave_channel(dev, chan_names[ch_num]);
+				dma_request_chan(dev, chan_names[ch_num]);
 
-			if (!ux500_channel->dma_chan)
+			if (IS_ERR(ux500_channel->dma_chan))
 				ux500_channel->dma_chan =
 					dma_request_channel(mask,
 							    data ?
@@ -362,7 +344,7 @@ static int ux500_dma_controller_start(struct ux500_dma_controller *controller)
 	return 0;
 }
 
-void dma_controller_destroy(struct dma_controller *c)
+void ux500_dma_controller_destroy(struct dma_controller *c)
 {
 	struct ux500_dma_controller *controller = container_of(c,
 			struct ux500_dma_controller, controller);
@@ -370,9 +352,10 @@ void dma_controller_destroy(struct dma_controller *c)
 	ux500_dma_controller_stop(controller);
 	kfree(controller);
 }
+EXPORT_SYMBOL_GPL(ux500_dma_controller_destroy);
 
-struct dma_controller *dma_controller_create(struct musb *musb,
-					void __iomem *base)
+struct dma_controller *
+ux500_dma_controller_create(struct musb *musb, void __iomem *base)
 {
 	struct ux500_dma_controller *controller;
 	struct platform_device *pdev = to_platform_device(musb->controller);
@@ -410,3 +393,4 @@ plat_get_fail:
 kzalloc_fail:
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(ux500_dma_controller_create);

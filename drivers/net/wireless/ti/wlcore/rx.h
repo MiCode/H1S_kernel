@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * This file is part of wl1271
  *
@@ -5,21 +6,6 @@
  * Copyright (C) 2008-2009 Nokia Corporation
  *
  * Contact: Luciano Coelho <luciano.coelho@nokia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #ifndef __RX_H__
@@ -29,6 +15,9 @@
 
 #define WL1271_RX_MAX_RSSI -30
 #define WL1271_RX_MIN_RSSI -95
+
+#define RSSI_LEVEL_BITMASK	0x7F
+#define ANT_DIVERSITY_BITMASK	BIT(7)
 
 #define SHORT_PREAMBLE_BIT   BIT(0)
 #define OFDM_RATE_BIT        BIT(6)
@@ -142,8 +131,8 @@ struct wl1271_rx_descriptor {
 	u8  reserved;
 } __packed;
 
-int wlcore_rx(struct wl1271 *wl, struct wl_fw_status_1 *status);
-u8 wl1271_rate_to_idx(int rate, enum ieee80211_band band);
+int wlcore_rx(struct wl1271 *wl, struct wl_fw_status *status);
+u8 wl1271_rate_to_idx(int rate, enum nl80211_band band);
 int wl1271_rx_filter_enable(struct wl1271 *wl,
 			    int index, bool enable,
 			    struct wl12xx_rx_filter *filter);

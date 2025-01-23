@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * DS1286 Real Time Clock interface for Linux
  *
@@ -5,22 +6,15 @@
  * Copyright (C) 2008 Thomas Bogendoerfer
  *
  * Based on code written by Paul Gortmaker.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
  */
 
 #include <linux/module.h>
 #include <linux/rtc.h>
 #include <linux/platform_device.h>
 #include <linux/bcd.h>
-#include <linux/ds1286.h>
+#include <linux/rtc/ds1286.h>
 #include <linux/io.h>
 #include <linux/slab.h>
-
-#define DRV_VERSION		"1.0"
 
 struct ds1286_priv {
 	struct rtc_device *rtc;
@@ -213,7 +207,7 @@ static int ds1286_read_time(struct device *dev, struct rtc_time *tm)
 
 	tm->tm_mon--;
 
-	return rtc_valid_tm(tm);
+	return 0;
 }
 
 static int ds1286_set_time(struct device *dev, struct rtc_time *tm)
@@ -329,17 +323,13 @@ static const struct rtc_class_ops ds1286_ops = {
 static int ds1286_probe(struct platform_device *pdev)
 {
 	struct rtc_device *rtc;
-	struct resource *res;
 	struct ds1286_priv *priv;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res)
-		return -ENODEV;
 	priv = devm_kzalloc(&pdev->dev, sizeof(struct ds1286_priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
-	priv->rtcregs = devm_ioremap_resource(&pdev->dev, res);
+	priv->rtcregs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(priv->rtcregs))
 		return PTR_ERR(priv->rtcregs);
 
@@ -356,7 +346,6 @@ static int ds1286_probe(struct platform_device *pdev)
 static struct platform_driver ds1286_platform_driver = {
 	.driver		= {
 		.name	= "rtc-ds1286",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= ds1286_probe,
 };
@@ -366,5 +355,4 @@ module_platform_driver(ds1286_platform_driver);
 MODULE_AUTHOR("Thomas Bogendoerfer <tsbogend@alpha.franken.de>");
 MODULE_DESCRIPTION("DS1286 RTC driver");
 MODULE_LICENSE("GPL");
-MODULE_VERSION(DRV_VERSION);
 MODULE_ALIAS("platform:rtc-ds1286");

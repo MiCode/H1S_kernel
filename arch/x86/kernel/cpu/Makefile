@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for x86-compatible CPU details, features and quirks
 #
@@ -8,51 +9,57 @@ CFLAGS_REMOVE_common.o = -pg
 CFLAGS_REMOVE_perf_event.o = -pg
 endif
 
-# Make sure load_percpu_segment has no stackprotector
-nostackp := $(call cc-option, -fno-stack-protector)
-CFLAGS_common.o		:= $(nostackp)
+# If these files are instrumented, boot hangs during the first second.
+KCOV_INSTRUMENT_common.o := n
+KCOV_INSTRUMENT_perf_event.o := n
+KMSAN_SANITIZE_common.o := n
 
-obj-y			:= intel_cacheinfo.o scattered.o topology.o
-obj-y			+= proc.o capflags.o powerflags.o common.o
+# As above, instrumenting secondary CPU boot code causes boot hangs.
+KCSAN_SANITIZE_common.o := n
+
+obj-y			:= cacheinfo.o scattered.o topology.o
+obj-y			+= common.o
 obj-y			+= rdrand.o
 obj-y			+= match.o
+obj-y			+= bugs.o
+obj-y			+= aperfmperf.o
+obj-y			+= cpuid-deps.o
+obj-y			+= umwait.o
 
-obj-$(CONFIG_X86_32)	+= bugs.o
-obj-$(CONFIG_X86_64)	+= bugs_64.o
+obj-$(CONFIG_PROC_FS)	+= proc.o
+obj-y += capflags.o powerflags.o
 
-obj-$(CONFIG_CPU_SUP_INTEL)		+= intel.o
+obj-$(CONFIG_IA32_FEAT_CTL) += feat_ctl.o
+ifdef CONFIG_CPU_SUP_INTEL
+obj-y			+= intel.o intel_pconfig.o tsx.o
+obj-$(CONFIG_PM)	+= intel_epb.o
+endif
 obj-$(CONFIG_CPU_SUP_AMD)		+= amd.o
+obj-$(CONFIG_CPU_SUP_HYGON)		+= hygon.o
 obj-$(CONFIG_CPU_SUP_CYRIX_32)		+= cyrix.o
 obj-$(CONFIG_CPU_SUP_CENTAUR)		+= centaur.o
 obj-$(CONFIG_CPU_SUP_TRANSMETA_32)	+= transmeta.o
 obj-$(CONFIG_CPU_SUP_UMC_32)		+= umc.o
+obj-$(CONFIG_CPU_SUP_ZHAOXIN)		+= zhaoxin.o
+obj-$(CONFIG_CPU_SUP_VORTEX_32)		+= vortex.o
 
-obj-$(CONFIG_PERF_EVENTS)		+= perf_event.o
-
-ifdef CONFIG_PERF_EVENTS
-obj-$(CONFIG_CPU_SUP_AMD)		+= perf_event_amd.o perf_event_amd_uncore.o
-ifdef CONFIG_AMD_IOMMU
-obj-$(CONFIG_CPU_SUP_AMD)		+= perf_event_amd_iommu.o
-endif
-obj-$(CONFIG_CPU_SUP_INTEL)		+= perf_event_p6.o perf_event_knc.o perf_event_p4.o
-obj-$(CONFIG_CPU_SUP_INTEL)		+= perf_event_intel_lbr.o perf_event_intel_ds.o perf_event_intel.o
-obj-$(CONFIG_CPU_SUP_INTEL)		+= perf_event_intel_uncore.o perf_event_intel_rapl.o
-endif
-
-
-obj-$(CONFIG_X86_MCE)			+= mcheck/
+obj-$(CONFIG_X86_MCE)			+= mce/
 obj-$(CONFIG_MTRR)			+= mtrr/
 obj-$(CONFIG_MICROCODE)			+= microcode/
+obj-$(CONFIG_X86_CPU_RESCTRL)		+= resctrl/
+obj-$(CONFIG_X86_SGX)			+= sgx/
 
-obj-$(CONFIG_X86_LOCAL_APIC)		+= perfctr-watchdog.o perf_event_amd_ibs.o
+obj-$(CONFIG_X86_LOCAL_APIC)		+= perfctr-watchdog.o
 
 obj-$(CONFIG_HYPERVISOR_GUEST)		+= vmware.o hypervisor.o mshyperv.o
+obj-$(CONFIG_ACRN_GUEST)		+= acrn.o
 
 quiet_cmd_mkcapflags = MKCAP   $@
-      cmd_mkcapflags = $(CONFIG_SHELL) $(srctree)/$(src)/mkcapflags.sh $< $@
+      cmd_mkcapflags = $(CONFIG_SHELL) $(srctree)/$(src)/mkcapflags.sh $@ $^
 
-cpufeature = $(src)/../../include/asm/cpufeature.h
+cpufeature = $(src)/../../include/asm/cpufeatures.h
+vmxfeature = $(src)/../../include/asm/vmxfeatures.h
 
-targets += capflags.c
-$(obj)/capflags.c: $(cpufeature) $(src)/mkcapflags.sh FORCE
+$(obj)/capflags.c: $(cpufeature) $(vmxfeature) $(src)/mkcapflags.sh FORCE
 	$(call if_changed,mkcapflags)
+targets += capflags.c

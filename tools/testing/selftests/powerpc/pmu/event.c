@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2013, Michael Ellerman, IBM Corp.
- * Licensed under GPLv2.
  */
 
 #define _GNU_SOURCE
@@ -8,6 +8,7 @@
 #include <sys/syscall.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include <sys/ioctl.h>
 
 #include "event.h"
@@ -20,7 +21,8 @@ int perf_event_open(struct perf_event_attr *attr, pid_t pid, int cpu,
 			   group_fd, flags);
 }
 
-void event_init_opts(struct event *e, u64 config, int type, char *name)
+static void  __event_init_opts(struct event *e, u64 config,
+			       int type, char *name, bool sampling)
 {
 	memset(e, 0, sizeof(*e));
 
@@ -32,6 +34,16 @@ void event_init_opts(struct event *e, u64 config, int type, char *name)
 	/* This has to match the structure layout in the header */
 	e->attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | \
 				  PERF_FORMAT_TOTAL_TIME_RUNNING;
+	if (sampling) {
+		e->attr.sample_period = 1000;
+		e->attr.sample_type = PERF_SAMPLE_REGS_INTR;
+		e->attr.disabled = 1;
+	}
+}
+
+void event_init_opts(struct event *e, u64 config, int type, char *name)
+{
+	__event_init_opts(e, config, type, name, false);
 }
 
 void event_init_named(struct event *e, u64 config, char *name)
@@ -39,7 +51,18 @@ void event_init_named(struct event *e, u64 config, char *name)
 	event_init_opts(e, config, PERF_TYPE_RAW, name);
 }
 
+void event_init(struct event *e, u64 config)
+{
+	event_init_opts(e, config, PERF_TYPE_RAW, "event");
+}
+
+void event_init_sampling(struct event *e, u64 config)
+{
+	__event_init_opts(e, config, PERF_TYPE_RAW, "event", true);
+}
+
 #define PERF_CURRENT_PID	0
+#define PERF_NO_PID		-1
 #define PERF_NO_CPU		-1
 #define PERF_NO_GROUP		-1
 
@@ -59,6 +82,16 @@ int event_open_with_group(struct event *e, int group_fd)
 	return event_open_with_options(e, PERF_CURRENT_PID, PERF_NO_CPU, group_fd);
 }
 
+int event_open_with_pid(struct event *e, pid_t pid)
+{
+	return event_open_with_options(e, pid, PERF_NO_CPU, PERF_NO_GROUP);
+}
+
+int event_open_with_cpu(struct event *e, int cpu)
+{
+	return event_open_with_options(e, PERF_NO_PID, cpu, PERF_NO_GROUP);
+}
+
 int event_open(struct event *e)
 {
 	return event_open_with_options(e, PERF_CURRENT_PID, PERF_NO_CPU, PERF_NO_GROUP);
@@ -67,6 +100,16 @@ int event_open(struct event *e)
 void event_close(struct event *e)
 {
 	close(e->fd);
+}
+
+int event_enable(struct event *e)
+{
+	return ioctl(e->fd, PERF_EVENT_IOC_ENABLE);
+}
+
+int event_disable(struct event *e)
+{
+	return ioctl(e->fd, PERF_EVENT_IOC_DISABLE);
 }
 
 int event_reset(struct event *e)

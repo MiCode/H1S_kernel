@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMAP2xxx CM module functions
  *
@@ -5,10 +6,6 @@
  * Copyright (C) 2008-2010, 2012 Texas Instruments, Inc.
  * Paul Walmsley
  * Rajendra Nayak <rnayak@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -18,9 +15,6 @@
 #include <linux/err.h>
 #include <linux/io.h>
 
-#include "soc.h"
-#include "iomap.h"
-#include "common.h"
 #include "prm2xxx.h"
 #include "cm.h"
 #include "cm2xxx.h"
@@ -56,7 +50,7 @@ static void _write_clktrctrl(u8 c, s16 module, u32 mask)
 	omap2_cm_write_mod_reg(v, module, OMAP2_CM_CLKSTCTRL);
 }
 
-bool omap2xxx_cm_is_clkdm_in_hwsup(s16 module, u32 mask)
+static bool omap2xxx_cm_is_clkdm_in_hwsup(s16 module, u32 mask)
 {
 	u32 v;
 
@@ -67,12 +61,12 @@ bool omap2xxx_cm_is_clkdm_in_hwsup(s16 module, u32 mask)
 	return (v == OMAP24XX_CLKSTCTRL_ENABLE_AUTO) ? 1 : 0;
 }
 
-void omap2xxx_cm_clkdm_enable_hwsup(s16 module, u32 mask)
+static void omap2xxx_cm_clkdm_enable_hwsup(s16 module, u32 mask)
 {
 	_write_clktrctrl(OMAP24XX_CLKSTCTRL_ENABLE_AUTO, module, mask);
 }
 
-void omap2xxx_cm_clkdm_disable_hwsup(s16 module, u32 mask)
+static void omap2xxx_cm_clkdm_disable_hwsup(s16 module, u32 mask)
 {
 	_write_clktrctrl(OMAP24XX_CLKSTCTRL_DISABLE_AUTO, module, mask);
 }
@@ -101,103 +95,6 @@ void omap2xxx_cm_set_dpll_auto_low_power_stop(void)
 	_omap2xxx_set_dpll_autoidle(DPLL_AUTOIDLE_DISABLE);
 }
 
-/*
- * APLL control
- */
-
-static void _omap2xxx_set_apll_autoidle(u8 m, u32 mask)
-{
-	u32 v;
-
-	v = omap2_cm_read_mod_reg(PLL_MOD, CM_AUTOIDLE);
-	v &= ~mask;
-	v |= m << __ffs(mask);
-	omap2_cm_write_mod_reg(v, PLL_MOD, CM_AUTOIDLE);
-}
-
-void omap2xxx_cm_set_apll54_disable_autoidle(void)
-{
-	_omap2xxx_set_apll_autoidle(OMAP2XXX_APLL_AUTOIDLE_LOW_POWER_STOP,
-				    OMAP24XX_AUTO_54M_MASK);
-}
-
-void omap2xxx_cm_set_apll54_auto_low_power_stop(void)
-{
-	_omap2xxx_set_apll_autoidle(OMAP2XXX_APLL_AUTOIDLE_DISABLE,
-				    OMAP24XX_AUTO_54M_MASK);
-}
-
-void omap2xxx_cm_set_apll96_disable_autoidle(void)
-{
-	_omap2xxx_set_apll_autoidle(OMAP2XXX_APLL_AUTOIDLE_LOW_POWER_STOP,
-				    OMAP24XX_AUTO_96M_MASK);
-}
-
-void omap2xxx_cm_set_apll96_auto_low_power_stop(void)
-{
-	_omap2xxx_set_apll_autoidle(OMAP2XXX_APLL_AUTOIDLE_DISABLE,
-				    OMAP24XX_AUTO_96M_MASK);
-}
-
-/* Enable an APLL if off */
-static int _omap2xxx_apll_enable(u8 enable_bit, u8 status_bit)
-{
-	u32 v, m;
-
-	m = EN_APLL_LOCKED << enable_bit;
-
-	v = omap2_cm_read_mod_reg(PLL_MOD, CM_CLKEN);
-	if (v & m)
-		return 0;   /* apll already enabled */
-
-	v |= m;
-	omap2_cm_write_mod_reg(v, PLL_MOD, CM_CLKEN);
-
-	omap2xxx_cm_wait_module_ready(PLL_MOD, 1, status_bit);
-
-	/*
-	 * REVISIT: Should we return an error code if
-	 * omap2xxx_cm_wait_module_ready() fails?
-	 */
-	return 0;
-}
-
-/* Stop APLL */
-static void _omap2xxx_apll_disable(u8 enable_bit)
-{
-	u32 v;
-
-	v = omap2_cm_read_mod_reg(PLL_MOD, CM_CLKEN);
-	v &= ~(EN_APLL_LOCKED << enable_bit);
-	omap2_cm_write_mod_reg(v, PLL_MOD, CM_CLKEN);
-}
-
-/* Enable an APLL if off */
-int omap2xxx_cm_apll54_enable(void)
-{
-	return _omap2xxx_apll_enable(OMAP24XX_EN_54M_PLL_SHIFT,
-				     OMAP24XX_ST_54M_APLL_SHIFT);
-}
-
-/* Enable an APLL if off */
-int omap2xxx_cm_apll96_enable(void)
-{
-	return _omap2xxx_apll_enable(OMAP24XX_EN_96M_PLL_SHIFT,
-				     OMAP24XX_ST_96M_APLL_SHIFT);
-}
-
-/* Stop APLL */
-void omap2xxx_cm_apll54_disable(void)
-{
-	_omap2xxx_apll_disable(OMAP24XX_EN_54M_PLL_SHIFT);
-}
-
-/* Stop APLL */
-void omap2xxx_cm_apll96_disable(void)
-{
-	_omap2xxx_apll_disable(OMAP24XX_EN_96M_PLL_SHIFT);
-}
-
 /**
  * omap2xxx_cm_split_idlest_reg - split CM_IDLEST reg addr into its components
  * @idlest_reg: CM_IDLEST* virtual address
@@ -207,17 +104,15 @@ void omap2xxx_cm_apll96_disable(void)
  * XXX This function is only needed until absolute register addresses are
  * removed from the OMAP struct clk records.
  */
-int omap2xxx_cm_split_idlest_reg(void __iomem *idlest_reg, s16 *prcm_inst,
-				 u8 *idlest_reg_id)
+static int omap2xxx_cm_split_idlest_reg(struct clk_omap_reg *idlest_reg,
+					s16 *prcm_inst,
+					u8 *idlest_reg_id)
 {
 	unsigned long offs;
 	u8 idlest_offs;
 	int i;
 
-	if (idlest_reg < cm_base || idlest_reg > (cm_base + 0x0fff))
-		return -EINVAL;
-
-	idlest_offs = (unsigned long)idlest_reg & 0xff;
+	idlest_offs = idlest_reg->offset & 0xff;
 	for (i = 0; i < ARRAY_SIZE(omap2xxx_cm_idlest_offs); i++) {
 		if (idlest_offs == omap2xxx_cm_idlest_offs[i]) {
 			*idlest_reg_id = i + 1;
@@ -228,7 +123,7 @@ int omap2xxx_cm_split_idlest_reg(void __iomem *idlest_reg, s16 *prcm_inst,
 	if (i == ARRAY_SIZE(omap2xxx_cm_idlest_offs))
 		return -EINVAL;
 
-	offs = idlest_reg - cm_base;
+	offs = idlest_reg->offset;
 	offs &= 0xff00;
 	*prcm_inst = offs;
 
@@ -241,6 +136,7 @@ int omap2xxx_cm_split_idlest_reg(void __iomem *idlest_reg, s16 *prcm_inst,
 
 /**
  * omap2xxx_cm_wait_module_ready - wait for a module to leave idle or standby
+ * @part: PRCM partition, ignored for OMAP2
  * @prcm_mod: PRCM module offset
  * @idlest_id: CM_IDLESTx register ID (i.e., x = 1, 2, 3)
  * @idlest_shift: shift of the bit in the CM_IDLEST* register to check
@@ -249,7 +145,8 @@ int omap2xxx_cm_split_idlest_reg(void __iomem *idlest_reg, s16 *prcm_inst,
  * (@prcm_mod, @idlest_id, @idlest_shift) is clocked.  Return 0 upon
  * success or -EBUSY if the module doesn't enable in time.
  */
-int omap2xxx_cm_wait_module_ready(s16 prcm_mod, u8 idlest_id, u8 idlest_shift)
+static int omap2xxx_cm_wait_module_ready(u8 part, s16 prcm_mod, u16 idlest_id,
+					 u8 idlest_shift)
 {
 	int ena = 0, i = 0;
 	u8 cm_idlest_reg;
@@ -370,16 +267,6 @@ u32 omap2xxx_cm_get_core_pll_config(void)
 	return omap2_cm_read_mod_reg(PLL_MOD, CM_CLKSEL2);
 }
 
-u32 omap2xxx_cm_get_pll_config(void)
-{
-	return omap2_cm_read_mod_reg(PLL_MOD, CM_CLKSEL1);
-}
-
-u32 omap2xxx_cm_get_pll_status(void)
-{
-	return omap2_cm_read_mod_reg(PLL_MOD, CM_CLKEN);
-}
-
 void omap2xxx_cm_set_mod_dividers(u32 mpu, u32 dsp, u32 gfx, u32 core, u32 mdm)
 {
 	u32 tmp;
@@ -390,7 +277,7 @@ void omap2xxx_cm_set_mod_dividers(u32 mpu, u32 dsp, u32 gfx, u32 core, u32 mdm)
 	tmp = omap2_cm_read_mod_reg(CORE_MOD, CM_CLKSEL1) &
 		OMAP24XX_CLKSEL_DSS2_MASK;
 	omap2_cm_write_mod_reg(core | tmp, CORE_MOD, CM_CLKSEL1);
-	if (cpu_is_omap2430())
+	if (mdm)
 		omap2_cm_write_mod_reg(mdm, OMAP2430_MDM_MOD, CM_CLKSEL);
 }
 
@@ -398,26 +285,18 @@ void omap2xxx_cm_set_mod_dividers(u32 mpu, u32 dsp, u32 gfx, u32 core, u32 mdm)
  *
  */
 
-static struct cm_ll_data omap2xxx_cm_ll_data = {
+static const struct cm_ll_data omap2xxx_cm_ll_data = {
 	.split_idlest_reg	= &omap2xxx_cm_split_idlest_reg,
 	.wait_module_ready	= &omap2xxx_cm_wait_module_ready,
 };
 
-int __init omap2xxx_cm_init(void)
+int __init omap2xxx_cm_init(const struct omap_prcm_init_data *data)
 {
-	if (!cpu_is_omap24xx())
-		return 0;
-
 	return cm_register(&omap2xxx_cm_ll_data);
 }
 
 static void __exit omap2xxx_cm_exit(void)
 {
-	if (!cpu_is_omap24xx())
-		return;
-
-	/* Should never happen */
-	WARN(cm_unregister(&omap2xxx_cm_ll_data),
-	     "%s: cm_ll_data function pointer mismatch\n", __func__);
+	cm_unregister(&omap2xxx_cm_ll_data);
 }
 __exitcall(omap2xxx_cm_exit);

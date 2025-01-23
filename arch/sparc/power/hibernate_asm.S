@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * hibernate_asm.S:  Hibernaton support specific for sparc64.
  *
@@ -54,8 +55,8 @@ ENTRY(swsusp_arch_resume)
 	 nop
 
 	/* Write PAGE_OFFSET to %g7 */
-	sethi	%uhi(PAGE_OFFSET), %g7
-	sllx	%g7, 32, %g7
+	sethi	%hi(PAGE_OFFSET), %g7
+	ldx	[%g7 + %lo(PAGE_OFFSET)], %g7
 
 	setuw	(PAGE_SIZE-8), %g3
 

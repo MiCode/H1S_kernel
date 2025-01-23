@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	Network event notifiers
  *
  *	Authors:
  *      Tom Tucker             <tom@opengridcomputing.com>
  *      Steve Wise             <swise@opengridcomputing.com>
- *
- *	This program is free software; you can redistribute it and/or
- *      modify it under the terms of the GNU General Public License
- *      as published by the Free Software Foundation; either version
- *      2 of the License, or (at your option) any later version.
  *
  *	Fixes:
  */
@@ -31,15 +27,12 @@ static ATOMIC_NOTIFIER_HEAD(netevent_notif_chain);
  */
 int register_netevent_notifier(struct notifier_block *nb)
 {
-	int err;
-
-	err = atomic_notifier_chain_register(&netevent_notif_chain, nb);
-	return err;
+	return atomic_notifier_chain_register(&netevent_notif_chain, nb);
 }
 EXPORT_SYMBOL_GPL(register_netevent_notifier);
 
 /**
- *	netevent_unregister_notifier - unregister a netevent notifier block
+ *	unregister_netevent_notifier - unregister a netevent notifier block
  *	@nb: notifier
  *
  *	Unregister a notifier previously registered by

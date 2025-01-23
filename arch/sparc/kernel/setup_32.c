@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/arch/sparc/kernel/setup.c
  *
@@ -33,12 +34,12 @@
 #include <linux/kdebug.h>
 #include <linux/export.h>
 #include <linux/start_kernel.h>
+#include <uapi/linux/mount.h>
 
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/oplib.h>
 #include <asm/page.h>
-#include <asm/pgtable.h>
 #include <asm/traps.h>
 #include <asm/vaddrs.h>
 #include <asm/mbus.h>
@@ -68,8 +69,6 @@ struct screen_info screen_info = {
  * prints out pretty messages and returns.
  */
 
-extern unsigned long trapbase;
-
 /* Pretty sick eh? */
 static void prom_sync_me(void)
 {
@@ -84,10 +83,10 @@ static void prom_sync_me(void)
 			     "nop\n\t" : : "r" (&trapbase));
 
 	prom_printf("PROM SYNC COMMAND...\n");
-	show_free_areas(0);
+	show_mem();
 	if (!is_idle_task(current)) {
 		local_irq_enable();
-		sys_sync();
+		ksys_sync();
 		local_irq_disable();
 	}
 	prom_printf("Returning to prom\n");
@@ -109,7 +108,7 @@ unsigned long cmdline_memory_size __initdata = 0;
 unsigned char boot_cpu_id = 0xff; /* 0xff will make it into DATA section... */
 
 static void
-prom_console_write(struct console *con, const char *s, unsigned n)
+prom_console_write(struct console *con, const char *s, unsigned int n)
 {
 	prom_write(s, n);
 }
@@ -150,7 +149,7 @@ static void __init boot_flags_init(char *commands)
 {
 	while (*commands) {
 		/* Move to the start of the next "argument". */
-		while (*commands && *commands == ' ')
+		while (*commands == ' ')
 			commands++;
 
 		/* Process any command switches, otherwise skip it. */
@@ -267,7 +266,6 @@ static __init void leon_patch(void)
 }
 
 struct tt_entry *sparc_ttable;
-struct pt_regs fake_swapper_regs;
 
 /* Called from head_32.S - before we have setup anything
  * in the kernel. Be very careful with what you do here.
@@ -300,42 +298,37 @@ void __init setup_arch(char **cmdline_p)
 	int i;
 	unsigned long highest_paddr;
 
-	sparc_ttable = (struct tt_entry *) &trapbase;
+	sparc_ttable = &trapbase;
 
 	/* Initialize PROM console and command line. */
 	*cmdline_p = prom_getbootargs();
-	strlcpy(boot_command_line, *cmdline_p, COMMAND_LINE_SIZE);
+	strscpy(boot_command_line, *cmdline_p, COMMAND_LINE_SIZE);
 	parse_early_param();
 
 	boot_flags_init(*cmdline_p);
 
 	register_console(&prom_early_console);
 
-	printk("ARCH: ");
 	switch(sparc_cpu_model) {
 	case sun4m:
-		printk("SUN4M\n");
+		pr_info("ARCH: SUN4M\n");
 		break;
 	case sun4d:
-		printk("SUN4D\n");
+		pr_info("ARCH: SUN4D\n");
 		break;
 	case sun4e:
-		printk("SUN4E\n");
+		pr_info("ARCH: SUN4E\n");
 		break;
 	case sun4u:
-		printk("SUN4U\n");
+		pr_info("ARCH: SUN4U\n");
 		break;
 	case sparc_leon:
-		printk("LEON\n");
+		pr_info("ARCH: LEON\n");
 		break;
 	default:
-		printk("UNKNOWN!\n");
+		pr_info("ARCH: UNKNOWN!\n");
 		break;
 	}
-
-#ifdef CONFIG_DUMMY_CONSOLE
-	conswitchp = &dummy_con;
-#endif
 
 	idprom_init();
 	load_mmu();
@@ -359,19 +352,15 @@ void __init setup_arch(char **cmdline_p)
 	ROOT_DEV = old_decode_dev(root_dev);
 #ifdef CONFIG_BLK_DEV_RAM
 	rd_image_start = ram_flags & RAMDISK_IMAGE_START_MASK;
-	rd_prompt = ((ram_flags & RAMDISK_PROMPT_FLAG) != 0);
-	rd_doload = ((ram_flags & RAMDISK_LOAD_FLAG) != 0);	
 #endif
 
 	prom_setsync(prom_sync_me);
 
-	if((boot_flags&BOOTME_DEBUG) && (linux_dbvec!=0) && 
+	if((boot_flags & BOOTME_DEBUG) && (linux_dbvec != NULL) &&
 	   ((*(short *)linux_dbvec) != -1)) {
 		printk("Booted under KADB. Syncing trap table.\n");
 		(*(linux_dbvec->teach_debugger))();
 	}
-
-	init_task.thread.kregs = &fake_swapper_regs;
 
 	/* Run-time patch instructions to match the cpu model */
 	per_cpu_patch();
@@ -423,3 +412,10 @@ static int __init topology_init(void)
 }
 
 subsys_initcall(topology_init);
+
+#if defined(CONFIG_SPARC32) && !defined(CONFIG_SMP)
+void __init arch_cpu_finalize_init(void)
+{
+	cpu_data(0).udelay_val = loops_per_jiffy;
+}
+#endif

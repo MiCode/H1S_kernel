@@ -1,8 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * QLogic iSCSI HBA Driver
  * Copyright (c)  2003-2013 QLogic Corporation
- *
- * See LICENSE.qla4xxx for copyright and licensing details.
  */
 #ifndef __QLA_NX_H
 #define __QLA_NX_H
@@ -599,23 +598,6 @@ enum qla_regs {
 	QLA8XXX_CRB_TEMP_STATE,
 };
 
-static const uint32_t qla4_82xx_reg_tbl[] = {
-	QLA82XX_PEG_HALT_STATUS1,
-	QLA82XX_PEG_HALT_STATUS2,
-	QLA82XX_PEG_ALIVE_COUNTER,
-	QLA82XX_CRB_DRV_ACTIVE,
-	QLA82XX_CRB_DEV_STATE,
-	QLA82XX_CRB_DRV_STATE,
-	QLA82XX_CRB_DRV_SCRATCH,
-	QLA82XX_CRB_DEV_PART_INFO,
-	QLA82XX_CRB_DRV_IDC_VERSION,
-	QLA82XX_FW_VERSION_MAJOR,
-	QLA82XX_FW_VERSION_MINOR,
-	QLA82XX_FW_VERSION_SUB,
-	CRB_CMDPEG_STATE,
-	CRB_TEMP_STATE,
-};
-
 /* Every driver should use these Device State */
 #define QLA8XXX_DEV_COLD		1
 #define QLA8XXX_DEV_INITIALIZING	2
@@ -858,6 +840,9 @@ struct crb_addr_pair {
 #define QLA83XX_POLLRD	35
 #define QLA83XX_RDMUX2	36
 #define QLA83XX_POLLRDMWR  37
+#define QLA8044_RDDFE	38
+#define QLA8044_RDMDIO	39
+#define QLA8044_POLLWR	40
 #define QLA8XXX_RDROM	71
 #define QLA8XXX_RDMEM	72
 #define QLA8XXX_CNTRL	98
@@ -1019,11 +1004,4 @@ struct qla8xxx_minidump_entry_queue {
 #define MD_MIU_TEST_AGT_WRDATA_ULO		0x410000B0
 #define MD_MIU_TEST_AGT_WRDATA_UHI		0x410000B4
 
-#define MD_MIU_TEST_AGT_RDDATA_LO		0x410000A8
-#define MD_MIU_TEST_AGT_RDDATA_HI		0x410000AC
-#define MD_MIU_TEST_AGT_RDDATA_ULO		0x410000B8
-#define MD_MIU_TEST_AGT_RDDATA_UHI		0x410000BC
-
-static const int MD_MIU_TEST_AGT_RDDATA[] = { 0x410000A8,
-				0x410000AC, 0x410000B8, 0x410000BC };
 #endif

@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Performance event support for the System z CPU-measurement Sampling Facility
  *
- * Copyright IBM Corp. 2013
+ * Copyright IBM Corp. 2013, 2018
  * Author(s): Hendrik Brueckner <brueckner@linux.vnet.ibm.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License (version 2 only)
- * as published by the Free Software Foundation.
  */
 #define KMSG_COMPONENT	"cpum_sf"
 #define pr_fmt(fmt)	KMSG_COMPONENT ": " fmt
@@ -15,6 +12,7 @@
 #include <linux/kernel_stat.h>
 #include <linux/perf_event.h>
 #include <linux/percpu.h>
+#include <linux/pid.h>
 #include <linux/notifier.h>
 #include <linux/export.h>
 #include <linux/slab.h>
@@ -24,6 +22,7 @@
 #include <asm/irq.h>
 #include <asm/debug.h>
 #include <asm/timex.h>
+#include <linux/io.h>
 
 /* Minimum number of sample-data-block-tables:
  * At least one table is required for the sampling buffer structure.
@@ -44,7 +43,7 @@
 #define CPUM_SF_SDBT_TL_OFFSET	(CPUM_SF_SDB_PER_TABLE * 8)
 static inline int require_table_link(const void *sdbt)
 {
-	return ((unsigned long) sdbt & ~PAGE_MASK) == CPUM_SF_SDBT_TL_OFFSET;
+	return ((unsigned long)sdbt & ~PAGE_MASK) == CPUM_SF_SDBT_TL_OFFSET;
 }
 
 /* Minimum and maximum sampling buffer sizes:
@@ -77,6 +76,15 @@ struct sf_buffer {
 	unsigned long	 *tail;	    /* last sample-data-block-table */
 };
 
+struct aux_buffer {
+	struct sf_buffer sfb;
+	unsigned long head;	   /* index of SDB of buffer head */
+	unsigned long alert_mark;  /* index of SDB of alert request position */
+	unsigned long empty_mark;  /* mark of SDB not marked full */
+	unsigned long *sdb_index;  /* SDB address for fast lookup */
+	unsigned long *sdbt_index; /* SDBT address for fast lookup */
+};
+
 struct cpu_hw_sf {
 	/* CPU-measurement sampling information block */
 	struct hws_qsi_info_block qsi;
@@ -85,11 +93,63 @@ struct cpu_hw_sf {
 	struct sf_buffer sfb;	    /* Sampling buffer */
 	unsigned int flags;	    /* Status flags */
 	struct perf_event *event;   /* Scheduled perf event */
+	struct perf_output_handle handle; /* AUX buffer output handle */
 };
 static DEFINE_PER_CPU(struct cpu_hw_sf, cpu_hw_sf);
 
 /* Debug feature */
 static debug_info_t *sfdbg;
+
+/* Sampling control helper functions */
+static inline unsigned long freq_to_sample_rate(struct hws_qsi_info_block *qsi,
+						unsigned long freq)
+{
+	return (USEC_PER_SEC / freq) * qsi->cpu_speed;
+}
+
+static inline unsigned long sample_rate_to_freq(struct hws_qsi_info_block *qsi,
+						unsigned long rate)
+{
+	return USEC_PER_SEC * qsi->cpu_speed / rate;
+}
+
+/* Return TOD timestamp contained in an trailer entry */
+static inline unsigned long long trailer_timestamp(struct hws_trailer_entry *te)
+{
+	/* TOD in STCKE format */
+	if (te->header.t)
+		return *((unsigned long long *)&te->timestamp[1]);
+
+	/* TOD in STCK format */
+	return *((unsigned long long *)&te->timestamp[0]);
+}
+
+/* Return pointer to trailer entry of an sample data block */
+static inline struct hws_trailer_entry *trailer_entry_ptr(unsigned long v)
+{
+	void *ret;
+
+	ret = (void *)v;
+	ret += PAGE_SIZE;
+	ret -= sizeof(struct hws_trailer_entry);
+
+	return ret;
+}
+
+/*
+ * Return true if the entry in the sample data block table (sdbt)
+ * is a link to the next sdbt
+ */
+static inline int is_link_entry(unsigned long *s)
+{
+	return *s & 0x1UL ? 1 : 0;
+}
+
+/* Return pointer to the linked sdbt */
+static inline unsigned long *get_next_sdbt(unsigned long *s)
+{
+	return phys_to_virt(*s & ~0x1UL);
+}
 
 /*
  * sf_disable() - Switch off sampling facility
@@ -132,7 +192,7 @@ static void free_sampling_buffer(struct sf_buffer *sfb)
 		if (is_link_entry(curr)) {
 			curr = get_next_sdbt(curr);
 			if (sdbt)
-				free_page((unsigned long) sdbt);
+				free_page((unsigned long)sdbt);
 
 			/* If the origin is reached, sampling buffer is freed */
 			if (curr == sfb->sdbt)
@@ -142,30 +202,31 @@ static void free_sampling_buffer(struct sf_buffer *sfb)
 		} else {
 			/* Process SDB pointer */
 			if (*curr) {
-				free_page(*curr);
+				free_page((unsigned long)phys_to_virt(*curr));
 				curr++;
 			}
 		}
 	}
 
-	debug_sprintf_event(sfdbg, 5,
-			    "free_sampling_buffer: freed sdbt=%p\n", sfb->sdbt);
+	debug_sprintf_event(sfdbg, 5, "%s: freed sdbt %#lx\n", __func__,
+			    (unsigned long)sfb->sdbt);
 	memset(sfb, 0, sizeof(*sfb));
 }
 
 static int alloc_sample_data_block(unsigned long *sdbt, gfp_t gfp_flags)
 {
-	unsigned long sdb, *trailer;
+	struct hws_trailer_entry *te;
+	unsigned long sdb;
 
 	/* Allocate and initialize sample-data-block */
 	sdb = get_zeroed_page(gfp_flags);
 	if (!sdb)
 		return -ENOMEM;
-	trailer = trailer_entry_ptr(sdb);
-	*trailer = SDB_TE_ALERT_REQ_MASK;
+	te = trailer_entry_ptr(sdb);
+	te->header.a = 1;
 
 	/* Link SDB into the sample-data-block-table */
-	*sdbt = sdb;
+	*sdbt = virt_to_phys((void *)sdb);
 
 	return 0;
 }
@@ -185,7 +246,7 @@ static int realloc_sampling_buffer(struct sf_buffer *sfb,
 				   unsigned long num_sdb, gfp_t gfp_flags)
 {
 	int i, rc;
-	unsigned long *new, *tail;
+	unsigned long *new, *tail, *tail_prev = NULL;
 
 	if (!sfb->sdbt || !sfb->tail)
 		return -EINVAL;
@@ -204,10 +265,11 @@ static int realloc_sampling_buffer(struct sf_buffer *sfb,
 	 * the sampling buffer origin.
 	 */
 	if (sfb->sdbt != get_next_sdbt(tail)) {
-		debug_sprintf_event(sfdbg, 3, "realloc_sampling_buffer: "
-				    "sampling buffer is not linked: origin=%p"
-				    "tail=%p\n",
-				    (void *) sfb->sdbt, (void *) tail);
+		debug_sprintf_event(sfdbg, 3, "%s: "
+				    "sampling buffer is not linked: origin %#lx"
+				    " tail %#lx\n", __func__,
+				    (unsigned long)sfb->sdbt,
+				    (unsigned long)tail);
 		return -EINVAL;
 	}
 
@@ -216,14 +278,15 @@ static int realloc_sampling_buffer(struct sf_buffer *sfb,
 	for (i = 0; i < num_sdb; i++) {
 		/* Allocate a new SDB-table if it is full. */
 		if (require_table_link(tail)) {
-			new = (unsigned long *) get_zeroed_page(gfp_flags);
+			new = (unsigned long *)get_zeroed_page(gfp_flags);
 			if (!new) {
 				rc = -ENOMEM;
 				break;
 			}
 			sfb->num_sdbt++;
 			/* Link current page to tail of chain */
-			*tail = (unsigned long)(void *) new + 1;
+			*tail = virt_to_phys((void *)new) + 1;
+			tail_prev = tail;
 			tail = new;
 		}
 
@@ -233,18 +296,30 @@ static int realloc_sampling_buffer(struct sf_buffer *sfb,
 		 * issue, a new realloc call (if required) might succeed.
 		 */
 		rc = alloc_sample_data_block(tail, gfp_flags);
-		if (rc)
+		if (rc) {
+			/* Undo last SDBT. An SDBT with no SDB at its first
+			 * entry but with an SDBT entry instead can not be
+			 * handled by the interrupt handler code.
+			 * Avoid this situation.
+			 */
+			if (tail_prev) {
+				sfb->num_sdbt--;
+				free_page((unsigned long)new);
+				tail = tail_prev;
+			}
 			break;
+		}
 		sfb->num_sdb++;
 		tail++;
+		tail_prev = new = NULL;	/* Allocated at least one SBD */
 	}
 
 	/* Link sampling buffer to its origin */
-	*tail = (unsigned long) sfb->sdbt + 1;
+	*tail = virt_to_phys(sfb->sdbt) + 1;
 	sfb->tail = tail;
 
-	debug_sprintf_event(sfdbg, 4, "realloc_sampling_buffer: new buffer"
-			    " settings: sdbt=%lu sdb=%lu\n",
+	debug_sprintf_event(sfdbg, 4, "%s: new buffer"
+			    " settings: sdbt %lu sdb %lu\n", __func__,
 			    sfb->num_sdbt, sfb->num_sdb);
 	return rc;
 }
@@ -268,7 +343,7 @@ static int alloc_sampling_buffer(struct sf_buffer *sfb, unsigned long num_sdb)
 		return -EINVAL;
 
 	/* Allocate the sample-data-block-table origin */
-	sfb->sdbt = (unsigned long *) get_zeroed_page(GFP_KERNEL);
+	sfb->sdbt = (unsigned long *)get_zeroed_page(GFP_KERNEL);
 	if (!sfb->sdbt)
 		return -ENOMEM;
 	sfb->num_sdb = 0;
@@ -278,18 +353,19 @@ static int alloc_sampling_buffer(struct sf_buffer *sfb, unsigned long num_sdb)
 	 * realloc_sampling_buffer() invocation.
 	 */
 	sfb->tail = sfb->sdbt;
-	*sfb->tail = (unsigned long)(void *) sfb->sdbt + 1;
+	*sfb->tail = virt_to_phys((void *)sfb->sdbt) + 1;
 
 	/* Allocate requested number of sample-data-blocks */
 	rc = realloc_sampling_buffer(sfb, num_sdb, GFP_KERNEL);
 	if (rc) {
 		free_sampling_buffer(sfb);
-		debug_sprintf_event(sfdbg, 4, "alloc_sampling_buffer: "
-			"realloc_sampling_buffer failed with rc=%i\n", rc);
+		debug_sprintf_event(sfdbg, 4, "%s: "
+			"realloc_sampling_buffer failed with rc %i\n",
+			__func__, rc);
 	} else
 		debug_sprintf_event(sfdbg, 4,
-			"alloc_sampling_buffer: tear=%p dear=%p\n",
-			sfb->sdbt, (void *) *sfb->sdbt);
+			"%s: tear %#lx dear %#lx\n", __func__,
+			(unsigned long)sfb->sdbt, (unsigned long)*sfb->sdbt);
 	return rc;
 }
 
@@ -341,22 +417,6 @@ static void sfb_init_allocs(unsigned long num, struct hw_perf_event *hwc)
 	sfb_account_allocs(num, hwc);
 }
 
-static size_t event_sample_size(struct hw_perf_event *hwc)
-{
-	struct sf_raw_sample *sfr = (struct sf_raw_sample *) RAWSAMPLE_REG(hwc);
-	size_t sample_size;
-
-	/* The sample size depends on the sampling function: The basic-sampling
-	 * function must be always enabled, diagnostic-sampling function is
-	 * optional.
-	 */
-	sample_size = sfr->bsdes;
-	if (SAMPL_DIAG_MODE(hwc))
-		sample_size += sfr->dsdes;
-
-	return sample_size;
-}
-
 static void deallocate_buffers(struct cpu_hw_sf *cpuhw)
 {
 	if (cpuhw->sfb.sdbt)
@@ -365,67 +425,41 @@ static void deallocate_buffers(struct cpu_hw_sf *cpuhw)
 
 static int allocate_buffers(struct cpu_hw_sf *cpuhw, struct hw_perf_event *hwc)
 {
-	unsigned long n_sdb, freq, factor;
-	size_t sfr_size, sample_size;
-	struct sf_raw_sample *sfr;
-
-	/* Allocate raw sample buffer
-	 *
-	 *    The raw sample buffer is used to temporarily store sampling data
-	 *    entries for perf raw sample processing.  The buffer size mainly
-	 *    depends on the size of diagnostic-sampling data entries which is
-	 *    machine-specific.  The exact size calculation includes:
-	 *	1. The first 4 bytes of diagnostic-sampling data entries are
-	 *	   already reflected in the sf_raw_sample structure.  Subtract
-	 *	   these bytes.
-	 *	2. The perf raw sample data must be 8-byte aligned (u64) and
-	 *	   perf's internal data size must be considered too.  So add
-	 *	   an additional u32 for correct alignment and subtract before
-	 *	   allocating the buffer.
-	 *	3. Store the raw sample buffer pointer in the perf event
-	 *	   hardware structure.
-	 */
-	sfr_size = ALIGN((sizeof(*sfr) - sizeof(sfr->diag) + cpuhw->qsi.dsdes) +
-			 sizeof(u32), sizeof(u64));
-	sfr_size -= sizeof(u32);
-	sfr = kzalloc(sfr_size, GFP_KERNEL);
-	if (!sfr)
-		return -ENOMEM;
-	sfr->size = sfr_size;
-	sfr->bsdes = cpuhw->qsi.bsdes;
-	sfr->dsdes = cpuhw->qsi.dsdes;
-	RAWSAMPLE_REG(hwc) = (unsigned long) sfr;
+	unsigned long n_sdb, freq;
+	size_t sample_size;
 
 	/* Calculate sampling buffers using 4K pages
 	 *
-	 *    1. Determine the sample data size which depends on the used
-	 *	 sampling functions, for example, basic-sampling or
-	 *	 basic-sampling with diagnostic-sampling.
+	 *    1. The sampling size is 32 bytes for basic sampling. This size
+	 *	 is the same for all machine types. Diagnostic
+	 *	 sampling uses auxlilary data buffer setup which provides the
+	 *	 memory for SDBs using linux common code auxiliary trace
+	 *	 setup.
 	 *
-	 *    2. Use the sampling frequency as input.  The sampling buffer is
-	 *	 designed for almost one second.  This can be adjusted through
-	 *	 the "factor" variable.
-	 *	 In any case, alloc_sampling_buffer() sets the Alert Request
+	 *    2. Function alloc_sampling_buffer() sets the Alert Request
 	 *	 Control indicator to trigger a measurement-alert to harvest
-	 *	 sample-data-blocks (sdb).
+	 *	 sample-data-blocks (SDB). This is done per SDB. This
+	 *	 measurement alert interrupt fires quick enough to handle
+	 *	 one SDB, on very high frequency and work loads there might
+	 *	 be 2 to 3 SBDs available for sample processing.
+	 *	 Currently there is no need for setup alert request on every
+	 *	 n-th page. This is counterproductive as one IRQ triggers
+	 *	 a very high number of samples to be processed at one IRQ.
 	 *
-	 *    3. Compute the number of sample-data-blocks and ensure a minimum
-	 *	 of CPUM_SF_MIN_SDB.  Also ensure the upper limit does not
-	 *	 exceed a "calculated" maximum.  The symbolic maximum is
-	 *	 designed for basic-sampling only and needs to be increased if
-	 *	 diagnostic-sampling is active.
-	 *	 See also the remarks for these symbolic constants.
+	 *    3. Use the sampling frequency as input.
+	 *	 Compute the number of SDBs and ensure a minimum
+	 *	 of CPUM_SF_MIN_SDB.  Depending on frequency add some more
+	 *	 SDBs to handle a higher sampling rate.
+	 *	 Use a minimum of CPUM_SF_MIN_SDB and allow for 100 samples
+	 *	 (one SDB) for every 10000 HZ frequency increment.
 	 *
 	 *    4. Compute the number of sample-data-block-tables (SDBT) and
 	 *	 ensure a minimum of CPUM_SF_MIN_SDBT (one table can manage up
 	 *	 to 511 SDBs).
 	 */
-	sample_size = event_sample_size(hwc);
+	sample_size = sizeof(struct hws_basic_entry);
 	freq = sample_rate_to_freq(&cpuhw->qsi, SAMPL_RATE(hwc));
-	factor = 1;
-	n_sdb = DIV_ROUND_UP(freq, factor * ((PAGE_SIZE-64) / sample_size));
-	if (n_sdb < CPUM_SF_MIN_SDB)
-		n_sdb = CPUM_SF_MIN_SDB;
+	n_sdb = CPUM_SF_MIN_SDB + DIV_ROUND_UP(freq, 10000);
 
 	/* If there is already a sampling buffer allocated, it is very likely
 	 * that the sampling facility is enabled too.  If the event to be
@@ -440,8 +474,8 @@ static int allocate_buffers(struct cpu_hw_sf *cpuhw, struct hw_perf_event *hwc)
 		return 0;
 
 	debug_sprintf_event(sfdbg, 3,
-			    "allocate_buffers: rate=%lu f=%lu sdb=%lu/%lu"
-			    " sample_size=%lu cpuhw=%p\n",
+			    "%s: rate %lu f %lu sdb %lu/%lu"
+			    " sample_size %lu cpuhw %p\n", __func__,
 			    SAMPL_RATE(hwc), freq, n_sdb, sfb_max_limit(hwc),
 			    sample_size, cpuhw);
 
@@ -501,8 +535,8 @@ static void sfb_account_overflows(struct cpu_hw_sf *cpuhw,
 	if (num)
 		sfb_account_allocs(num, hwc);
 
-	debug_sprintf_event(sfdbg, 5, "sfb: overflow: overflow=%llu ratio=%lu"
-			    " num=%lu\n", OVERFLOW_REG(hwc), ratio, num);
+	debug_sprintf_event(sfdbg, 5, "%s: overflow %llu ratio %lu num %lu\n",
+			    __func__, OVERFLOW_REG(hwc), ratio, num);
 	OVERFLOW_REG(hwc) = 0;
 }
 
@@ -540,16 +574,15 @@ static void extend_sampling_buffer(struct sf_buffer *sfb,
 	 */
 	rc = realloc_sampling_buffer(sfb, num, GFP_ATOMIC);
 	if (rc)
-		debug_sprintf_event(sfdbg, 5, "sfb: extend: realloc "
-				    "failed with rc=%i\n", rc);
+		debug_sprintf_event(sfdbg, 5, "%s: realloc failed with rc %i\n",
+				    __func__, rc);
 
 	if (sfb_has_pending_allocs(sfb, hwc))
-		debug_sprintf_event(sfdbg, 5, "sfb: extend: "
-				    "req=%lu alloc=%lu remaining=%lu\n",
-				    num, sfb->num_sdb - num_old,
+		debug_sprintf_event(sfdbg, 5, "%s: "
+				    "req %lu alloc %lu remaining %lu\n",
+				    __func__, num, sfb->num_sdb - num_old,
 				    sfb_pending_allocs(sfb, hwc));
 }
-
 
 /* Number of perf events counting hardware events */
 static atomic_t num_events;
@@ -561,11 +594,10 @@ static DEFINE_MUTEX(pmc_reserve_mutex);
 #define PMC_FAILURE   2
 static void setup_pmc_cpu(void *flags)
 {
-	int err;
-	struct cpu_hw_sf *cpusf = &__get_cpu_var(cpu_hw_sf);
+	struct cpu_hw_sf *cpusf = this_cpu_ptr(&cpu_hw_sf);
+	int err = 0;
 
-	err = 0;
-	switch (*((int *) flags)) {
+	switch (*((int *)flags)) {
 	case PMC_INIT:
 		memset(cpusf, 0, sizeof(*cpusf));
 		err = qsi(&cpusf->qsi);
@@ -573,26 +605,18 @@ static void setup_pmc_cpu(void *flags)
 			break;
 		cpusf->flags |= PMU_F_RESERVED;
 		err = sf_disable();
-		if (err)
-			pr_err("Switching off the sampling facility failed "
-			       "with rc=%i\n", err);
-		debug_sprintf_event(sfdbg, 5,
-				    "setup_pmc_cpu: initialized: cpuhw=%p\n", cpusf);
 		break;
 	case PMC_RELEASE:
 		cpusf->flags &= ~PMU_F_RESERVED;
 		err = sf_disable();
-		if (err) {
-			pr_err("Switching off the sampling facility failed "
-			       "with rc=%i\n", err);
-		} else
+		if (!err)
 			deallocate_buffers(cpusf);
-		debug_sprintf_event(sfdbg, 5,
-				    "setup_pmc_cpu: released: cpuhw=%p\n", cpusf);
 		break;
 	}
-	if (err)
-		*((int *) flags) |= PMC_FAILURE;
+	if (err) {
+		*((int *)flags) |= PMC_FAILURE;
+		pr_err("Switching off the sampling facility failed with rc %i\n", err);
+	}
 }
 
 static void release_pmc_hardware(void)
@@ -601,17 +625,12 @@ static void release_pmc_hardware(void)
 
 	irq_subclass_unregister(IRQ_SUBCLASS_MEASUREMENT_ALERT);
 	on_each_cpu(setup_pmc_cpu, &flags, 1);
-	perf_release_sampling();
 }
 
 static int reserve_pmc_hardware(void)
 {
 	int flags = PMC_INIT;
-	int err;
 
-	err = perf_reserve_sampling();
-	if (err)
-		return err;
 	on_each_cpu(setup_pmc_cpu, &flags, 1);
 	if (flags & PMC_FAILURE) {
 		release_pmc_hardware();
@@ -624,10 +643,6 @@ static int reserve_pmc_hardware(void)
 
 static void hw_perf_event_destroy(struct perf_event *event)
 {
-	/* Free raw sample buffer */
-	if (RAWSAMPLE_REG(&event->hw))
-		kfree((void *) RAWSAMPLE_REG(&event->hw));
-
 	/* Release PMC if this is the last perf event */
 	if (!atomic_add_unless(&num_events, -1, 1)) {
 		mutex_lock(&pmc_reserve_mutex);
@@ -644,25 +659,149 @@ static void hw_init_period(struct hw_perf_event *hwc, u64 period)
 	local64_set(&hwc->period_left, hwc->sample_period);
 }
 
-static void hw_reset_registers(struct hw_perf_event *hwc,
-			       unsigned long *sdbt_origin)
-{
-	struct sf_raw_sample *sfr;
-
-	/* (Re)set to first sample-data-block-table */
-	TEAR_REG(hwc) = (unsigned long) sdbt_origin;
-
-	/* (Re)set raw sampling buffer register */
-	sfr = (struct sf_raw_sample *) RAWSAMPLE_REG(hwc);
-	memset(&sfr->basic, 0, sizeof(sfr->basic));
-	memset(&sfr->diag, 0, sfr->dsdes);
-}
-
 static unsigned long hw_limit_rate(const struct hws_qsi_info_block *si,
 				   unsigned long rate)
 {
 	return clamp_t(unsigned long, rate,
 		       si->min_sampl_rate, si->max_sampl_rate);
+}
+
+static u32 cpumsf_pid_type(struct perf_event *event,
+			   u32 pid, enum pid_type type)
+{
+	struct task_struct *tsk;
+
+	/* Idle process */
+	if (!pid)
+		goto out;
+
+	tsk = find_task_by_pid_ns(pid, &init_pid_ns);
+	pid = -1;
+	if (tsk) {
+		/*
+		 * Only top level events contain the pid namespace in which
+		 * they are created.
+		 */
+		if (event->parent)
+			event = event->parent;
+		pid = __task_pid_nr_ns(tsk, type, event->ns);
+		/*
+		 * See also 1d953111b648
+		 * "perf/core: Don't report zero PIDs for exiting tasks".
+		 */
+		if (!pid && !pid_alive(tsk))
+			pid = -1;
+	}
+out:
+	return pid;
+}
+
+static void cpumsf_output_event_pid(struct perf_event *event,
+				    struct perf_sample_data *data,
+				    struct pt_regs *regs)
+{
+	u32 pid;
+	struct perf_event_header header;
+	struct perf_output_handle handle;
+
+	/*
+	 * Obtain the PID from the basic-sampling data entry and
+	 * correct the data->tid_entry.pid value.
+	 */
+	pid = data->tid_entry.pid;
+
+	/* Protect callchain buffers, tasks */
+	rcu_read_lock();
+
+	perf_prepare_sample(data, event, regs);
+	perf_prepare_header(&header, data, event, regs);
+	if (perf_output_begin(&handle, data, event, header.size))
+		goto out;
+
+	/* Update the process ID (see also kernel/events/core.c) */
+	data->tid_entry.pid = cpumsf_pid_type(event, pid, PIDTYPE_TGID);
+	data->tid_entry.tid = cpumsf_pid_type(event, pid, PIDTYPE_PID);
+
+	perf_output_sample(&handle, &header, data, event);
+	perf_output_end(&handle);
+out:
+	rcu_read_unlock();
+}
+
+static unsigned long getrate(bool freq, unsigned long sample,
+			     struct hws_qsi_info_block *si)
+{
+	unsigned long rate;
+
+	if (freq) {
+		rate = freq_to_sample_rate(si, sample);
+		rate = hw_limit_rate(si, rate);
+	} else {
+		/* The min/max sampling rates specifies the valid range
+		 * of sample periods.  If the specified sample period is
+		 * out of range, limit the period to the range boundary.
+		 */
+		rate = hw_limit_rate(si, sample);
+
+		/* The perf core maintains a maximum sample rate that is
+		 * configurable through the sysctl interface.  Ensure the
+		 * sampling rate does not exceed this value.  This also helps
+		 * to avoid throttling when pushing samples with
+		 * perf_event_overflow().
+		 */
+		if (sample_rate_to_freq(si, rate) >
+		    sysctl_perf_event_sample_rate) {
+			debug_sprintf_event(sfdbg, 1, "%s: "
+					    "Sampling rate exceeds maximum "
+					    "perf sample rate\n", __func__);
+			rate = 0;
+		}
+	}
+	return rate;
+}
+
+/* The sampling information (si) contains information about the
+ * min/max sampling intervals and the CPU speed.  So calculate the
+ * correct sampling interval and avoid the whole period adjust
+ * feedback loop.
+ *
+ * Since the CPU Measurement sampling facility can not handle frequency
+ * calculate the sampling interval when frequency is specified using
+ * this formula:
+ *	interval := cpu_speed * 1000000 / sample_freq
+ *
+ * Returns errno on bad input and zero on success with parameter interval
+ * set to the correct sampling rate.
+ *
+ * Note: This function turns off freq bit to avoid calling function
+ * perf_adjust_period(). This causes frequency adjustment in the common
+ * code part which causes tremendous variations in the counter values.
+ */
+static int __hw_perf_event_init_rate(struct perf_event *event,
+				     struct hws_qsi_info_block *si)
+{
+	struct perf_event_attr *attr = &event->attr;
+	struct hw_perf_event *hwc = &event->hw;
+	unsigned long rate;
+
+	if (attr->freq) {
+		if (!attr->sample_freq)
+			return -EINVAL;
+		rate = getrate(attr->freq, attr->sample_freq, si);
+		attr->freq = 0;		/* Don't call  perf_adjust_period() */
+		SAMPL_FLAGS(hwc) |= PERF_CPUM_SF_FREQ_MODE;
+	} else {
+		rate = getrate(attr->freq, attr->sample_period, si);
+		if (!rate)
+			return -EINVAL;
+	}
+	attr->sample_period = rate;
+	SAMPL_RATE(hwc) = rate;
+	hw_init_period(hwc, SAMPL_RATE(hwc));
+	debug_sprintf_event(sfdbg, 4, "%s: cpu %d period %#llx freq %d,%#lx\n",
+			    __func__, event->cpu, event->attr.sample_period,
+			    event->attr.freq, SAMPLE_FREQ_MODE(hwc));
+	return 0;
 }
 
 static int __hw_perf_event_init(struct perf_event *event)
@@ -671,7 +810,6 @@ static int __hw_perf_event_init(struct perf_event *event)
 	struct hws_qsi_info_block si;
 	struct perf_event_attr *attr = &event->attr;
 	struct hw_perf_event *hwc = &event->hw;
-	unsigned long rate;
 	int cpu, err;
 
 	/* Reserve CPU-measurement sampling facility */
@@ -719,6 +857,12 @@ static int __hw_perf_event_init(struct perf_event *event)
 		goto out;
 	}
 
+	if (si.ribm & CPU_MF_SF_RIBM_NOTAV) {
+		pr_warn("CPU Measurement Facility sampling is temporarily not available\n");
+		err = -EBUSY;
+		goto out;
+	}
+
 	/* Always enable basic sampling */
 	SAMPL_FLAGS(hwc) = PERF_CPUM_SF_BASIC_MODE;
 
@@ -733,47 +877,17 @@ static int __hw_perf_event_init(struct perf_event *event)
 		SAMPL_FLAGS(hwc) |= PERF_CPUM_SF_DIAG_MODE;
 	}
 
-	/* Check and set other sampling flags */
-	if (attr->config1 & PERF_CPUM_SF_FULL_BLOCKS)
-		SAMPL_FLAGS(hwc) |= PERF_CPUM_SF_FULL_BLOCKS;
-
-	/* The sampling information (si) contains information about the
-	 * min/max sampling intervals and the CPU speed.  So calculate the
-	 * correct sampling interval and avoid the whole period adjust
-	 * feedback loop.
-	 */
-	rate = 0;
-	if (attr->freq) {
-		rate = freq_to_sample_rate(&si, attr->sample_freq);
-		rate = hw_limit_rate(&si, rate);
-		attr->freq = 0;
-		attr->sample_period = rate;
-	} else {
-		/* The min/max sampling rates specifies the valid range
-		 * of sample periods.  If the specified sample period is
-		 * out of range, limit the period to the range boundary.
-		 */
-		rate = hw_limit_rate(&si, hwc->sample_period);
-
-		/* The perf core maintains a maximum sample rate that is
-		 * configurable through the sysctl interface.  Ensure the
-		 * sampling rate does not exceed this value.  This also helps
-		 * to avoid throttling when pushing samples with
-		 * perf_event_overflow().
-		 */
-		if (sample_rate_to_freq(&si, rate) >
-		      sysctl_perf_event_sample_rate) {
-			err = -EINVAL;
-			debug_sprintf_event(sfdbg, 1, "Sampling rate exceeds maximum perf sample rate\n");
-			goto out;
-		}
-	}
-	SAMPL_RATE(hwc) = rate;
-	hw_init_period(hwc, SAMPL_RATE(hwc));
+	err =  __hw_perf_event_init_rate(event, &si);
+	if (err)
+		goto out;
 
 	/* Initialize sample data overflow accounting */
 	hwc->extra_reg.reg = REG_OVERFLOW;
 	OVERFLOW_REG(hwc) = 0;
+
+	/* Use AUX buffer. No need to allocate it by ourself */
+	if (attr->config == PERF_EVENT_CPUM_SF_DIAG)
+		return 0;
 
 	/* Allocate the per-CPU sampling buffer using the CPU information
 	 * from the event.  If the event is not pinned to a particular
@@ -794,8 +908,24 @@ static int __hw_perf_event_init(struct perf_event *event)
 				break;
 		}
 	}
+
+	/* If PID/TID sampling is active, replace the default overflow
+	 * handler to extract and resolve the PIDs from the basic-sampling
+	 * data entries.
+	 */
+	if (event->attr.sample_type & PERF_SAMPLE_TID)
+		if (is_default_overflow_handler(event))
+			event->overflow_handler = cpumsf_output_event_pid;
 out:
 	return err;
+}
+
+static bool is_callchain_event(struct perf_event *event)
+{
+	u64 sample_type = event->attr.sample_type;
+
+	return sample_type & (PERF_SAMPLE_CALLCHAIN | PERF_SAMPLE_REGS_USER |
+			      PERF_SAMPLE_STACK_USER);
 }
 
 static int cpumsf_pmu_event_init(struct perf_event *event)
@@ -803,7 +933,8 @@ static int cpumsf_pmu_event_init(struct perf_event *event)
 	int err;
 
 	/* No support for taken branch sampling */
-	if (has_branch_stack(event))
+	/* No support for callchain, stacks and registers */
+	if (has_branch_stack(event) || is_callchain_event(event))
 		return -EOPNOTSUPP;
 
 	switch (event->attr.type) {
@@ -827,11 +958,6 @@ static int cpumsf_pmu_event_init(struct perf_event *event)
 		return -ENOENT;
 	}
 
-	/* Check online status of the CPU to which the event is pinned */
-	if (event->cpu >= nr_cpumask_bits ||
-	    (event->cpu >= 0 && !cpu_online(event->cpu)))
-		return -ENODEV;
-
 	/* Force reset of idle/hv excludes regardless of what the
 	 * user requested.
 	 */
@@ -849,7 +975,7 @@ static int cpumsf_pmu_event_init(struct perf_event *event)
 
 static void cpumsf_pmu_enable(struct pmu *pmu)
 {
-	struct cpu_hw_sf *cpuhw = &__get_cpu_var(cpu_hw_sf);
+	struct cpu_hw_sf *cpuhw = this_cpu_ptr(&cpu_hw_sf);
 	struct hw_perf_event *hwc;
 	int err;
 
@@ -872,10 +998,16 @@ static void cpumsf_pmu_enable(struct pmu *pmu)
 	 */
 	if (cpuhw->event) {
 		hwc = &cpuhw->event->hw;
-		/* Account number of overflow-designated buffer extents */
-		sfb_account_overflows(cpuhw, hwc);
-		if (sfb_has_pending_allocs(&cpuhw->sfb, hwc))
+		if (!(SAMPL_DIAG_MODE(hwc))) {
+			/*
+			 * Account number of overflow-designated
+			 * buffer extents
+			 */
+			sfb_account_overflows(cpuhw, hwc);
 			extend_sampling_buffer(&cpuhw->sfb, hwc);
+		}
+		/* Rate may be adjusted with ioctl() */
+		cpuhw->lsctl.interval = SAMPL_RATE(&cpuhw->event->hw);
 	}
 
 	/* (Re)enable the PMU and sampling facility */
@@ -885,20 +1017,23 @@ static void cpumsf_pmu_enable(struct pmu *pmu)
 	err = lsctl(&cpuhw->lsctl);
 	if (err) {
 		cpuhw->flags &= ~PMU_F_ENABLED;
-		pr_err("Loading sampling controls failed: op=%i err=%i\n",
-			1, err);
+		pr_err("Loading sampling controls failed: op 1 err %i\n", err);
 		return;
 	}
 
-	debug_sprintf_event(sfdbg, 6, "pmu_enable: es=%i cs=%i ed=%i cd=%i "
-			    "tear=%p dear=%p\n", cpuhw->lsctl.es, cpuhw->lsctl.cs,
-			    cpuhw->lsctl.ed, cpuhw->lsctl.cd,
-			    (void *) cpuhw->lsctl.tear, (void *) cpuhw->lsctl.dear);
+	/* Load current program parameter */
+	lpp(&S390_lowcore.lpp);
+
+	debug_sprintf_event(sfdbg, 6, "%s: es %i cs %i ed %i cd %i "
+			    "interval %#lx tear %#lx dear %#lx\n", __func__,
+			    cpuhw->lsctl.es, cpuhw->lsctl.cs, cpuhw->lsctl.ed,
+			    cpuhw->lsctl.cd, cpuhw->lsctl.interval,
+			    cpuhw->lsctl.tear, cpuhw->lsctl.dear);
 }
 
 static void cpumsf_pmu_disable(struct pmu *pmu)
 {
-	struct cpu_hw_sf *cpuhw = &__get_cpu_var(cpu_hw_sf);
+	struct cpu_hw_sf *cpuhw = this_cpu_ptr(&cpu_hw_sf);
 	struct hws_lsctl_request_block inactive;
 	struct hws_qsi_info_block si;
 	int err;
@@ -916,13 +1051,13 @@ static void cpumsf_pmu_disable(struct pmu *pmu)
 
 	err = lsctl(&inactive);
 	if (err) {
-		pr_err("Loading sampling controls failed: op=%i err=%i\n",
-			2, err);
+		pr_err("Loading sampling controls failed: op 2 err %i\n", err);
 		return;
 	}
 
 	/* Save state of TEAR and DEAR register contents */
-	if (!qsi(&si)) {
+	err = qsi(&si);
+	if (!err) {
 		/* TEAR/DEAR values are valid only if the sampling facility is
 		 * enabled.  Note that cpumsf_pmu_disable() might be called even
 		 * for a disabled sampling facility because cpumsf_pmu_enable()
@@ -933,8 +1068,8 @@ static void cpumsf_pmu_disable(struct pmu *pmu)
 			cpuhw->lsctl.dear = si.dear;
 		}
 	} else
-		debug_sprintf_event(sfdbg, 3, "cpumsf_pmu_disable: "
-				    "qsi() failed with err=%i\n", err);
+		debug_sprintf_event(sfdbg, 3, "%s: qsi() failed with err %i\n",
+				    __func__, err);
 
 	cpuhw->flags &= ~PMU_F_ENABLED;
 }
@@ -973,19 +1108,16 @@ static int perf_exclude_event(struct perf_event *event, struct pt_regs *regs,
  *
  * Return non-zero if an event overflow occurred.
  */
-static int perf_push_sample(struct perf_event *event, struct sf_raw_sample *sfr)
+static int perf_push_sample(struct perf_event *event,
+			    struct hws_basic_entry *basic)
 {
 	int overflow;
 	struct pt_regs regs;
 	struct perf_sf_sde_regs *sde_regs;
 	struct perf_sample_data data;
-	struct perf_raw_record raw;
 
 	/* Setup perf sample */
 	perf_sample_data_init(&data, 0, event->hw.last_period);
-	raw.size = sfr->size;
-	raw.data = sfr;
-	data.raw = &raw;
 
 	/* Setup pt_regs to look like an CPU-measurement external interrupt
 	 * using the Program Request Alert code.  The regs.int_parm_long
@@ -997,37 +1129,41 @@ static int perf_push_sample(struct perf_event *event, struct sf_raw_sample *sfr)
 	regs.int_parm = CPU_MF_INT_SF_PRA;
 	sde_regs = (struct perf_sf_sde_regs *) &regs.int_parm_long;
 
-	regs.psw.addr = sfr->basic.ia;
-	if (sfr->basic.T)
-		regs.psw.mask |= PSW_MASK_DAT;
-	if (sfr->basic.W)
-		regs.psw.mask |= PSW_MASK_WAIT;
-	if (sfr->basic.P)
-		regs.psw.mask |= PSW_MASK_PSTATE;
-	switch (sfr->basic.AS) {
-	case 0x0:
-		regs.psw.mask |= PSW_ASC_PRIMARY;
+	psw_bits(regs.psw).ia	= basic->ia;
+	psw_bits(regs.psw).dat	= basic->T;
+	psw_bits(regs.psw).wait = basic->W;
+	psw_bits(regs.psw).pstate = basic->P;
+	psw_bits(regs.psw).as	= basic->AS;
+
+	/*
+	 * Use the hardware provided configuration level to decide if the
+	 * sample belongs to a guest or host. If that is not available,
+	 * fall back to the following heuristics:
+	 * A non-zero guest program parameter always indicates a guest
+	 * sample. Some early samples or samples from guests without
+	 * lpp usage would be misaccounted to the host. We use the asn
+	 * value as an addon heuristic to detect most of these guest samples.
+	 * If the value differs from 0xffff (the host value), we assume to
+	 * be a KVM guest.
+	 */
+	switch (basic->CL) {
+	case 1: /* logical partition */
+		sde_regs->in_guest = 0;
 		break;
-	case 0x1:
-		regs.psw.mask |= PSW_ASC_ACCREG;
+	case 2: /* virtual machine */
+		sde_regs->in_guest = 1;
 		break;
-	case 0x2:
-		regs.psw.mask |= PSW_ASC_SECONDARY;
-		break;
-	case 0x3:
-		regs.psw.mask |= PSW_ASC_HOME;
+	default: /* old machine, use heuristics */
+		if (basic->gpp || basic->prim_asn != 0xffff)
+			sde_regs->in_guest = 1;
 		break;
 	}
 
-	/* The host-program-parameter (hpp) contains the sie control
-	 * block that is set by sie64a() in entry64.S.	Check if hpp
-	 * refers to a valid control block and set sde_regs flags
-	 * accordingly.  This would allow to use hpp values for other
-	 * purposes too.
-	 * For now, simply use a non-zero value as guest indicator.
+	/*
+	 * Store the PID value from the sample-data-entry to be
+	 * processed and resolved by cpumsf_output_event_pid().
 	 */
-	if (sfr->basic.hpp)
-		sde_regs->in_guest = 1;
+	data.tid_entry.pid = basic->hpp & LPP_PID_MASK;
 
 	overflow = 0;
 	if (perf_exclude_event(event, &regs, sde_regs))
@@ -1044,77 +1180,6 @@ out:
 static void perf_event_count_update(struct perf_event *event, u64 count)
 {
 	local64_add(count, &event->count);
-}
-
-static int sample_format_is_valid(struct hws_combined_entry *sample,
-				   unsigned int flags)
-{
-	if (likely(flags & PERF_CPUM_SF_BASIC_MODE))
-		/* Only basic-sampling data entries with data-entry-format
-		 * version of 0x0001 can be processed.
-		 */
-		if (sample->basic.def != 0x0001)
-			return 0;
-	if (flags & PERF_CPUM_SF_DIAG_MODE)
-		/* The data-entry-format number of diagnostic-sampling data
-		 * entries can vary.  Because diagnostic data is just passed
-		 * through, do only a sanity check on the DEF.
-		 */
-		if (sample->diag.def < 0x8001)
-			return 0;
-	return 1;
-}
-
-static int sample_is_consistent(struct hws_combined_entry *sample,
-				unsigned long flags)
-{
-	/* This check applies only to basic-sampling data entries of potentially
-	 * combined-sampling data entries.  Invalid entries cannot be processed
-	 * by the PMU and, thus, do not deliver an associated
-	 * diagnostic-sampling data entry.
-	 */
-	if (unlikely(!(flags & PERF_CPUM_SF_BASIC_MODE)))
-		return 0;
-	/*
-	 * Samples are skipped, if they are invalid or for which the
-	 * instruction address is not predictable, i.e., the wait-state bit is
-	 * set.
-	 */
-	if (sample->basic.I || sample->basic.W)
-		return 0;
-	return 1;
-}
-
-static void reset_sample_slot(struct hws_combined_entry *sample,
-			      unsigned long flags)
-{
-	if (likely(flags & PERF_CPUM_SF_BASIC_MODE))
-		sample->basic.def = 0;
-	if (flags & PERF_CPUM_SF_DIAG_MODE)
-		sample->diag.def = 0;
-}
-
-static void sfr_store_sample(struct sf_raw_sample *sfr,
-			     struct hws_combined_entry *sample)
-{
-	if (likely(sfr->format & PERF_CPUM_SF_BASIC_MODE))
-		sfr->basic = sample->basic;
-	if (sfr->format & PERF_CPUM_SF_DIAG_MODE)
-		memcpy(&sfr->diag, &sample->diag, sfr->dsdes);
-}
-
-static void debug_sample_entry(struct hws_combined_entry *sample,
-			       struct hws_trailer_entry *te,
-			       unsigned long flags)
-{
-	debug_sprintf_event(sfdbg, 4, "hw_collect_samples: Found unknown "
-			    "sampling data entry: te->f=%i basic.def=%04x (%p)"
-			    " diag.def=%04x (%p)\n", te->f,
-			    sample->basic.def, &sample->basic,
-			    (flags & PERF_CPUM_SF_DIAG_MODE)
-					? sample->diag.def : 0xFFFF,
-			    (flags & PERF_CPUM_SF_DIAG_MODE)
-					?  &sample->diag : NULL);
 }
 
 /* hw_collect_samples() - Walk through a sample-data-block and collect samples
@@ -1140,44 +1205,41 @@ static void debug_sample_entry(struct hws_combined_entry *sample,
 static void hw_collect_samples(struct perf_event *event, unsigned long *sdbt,
 			       unsigned long long *overflow)
 {
-	unsigned long flags = SAMPL_FLAGS(&event->hw);
-	struct hws_combined_entry *sample;
 	struct hws_trailer_entry *te;
-	struct sf_raw_sample *sfr;
-	size_t sample_size;
+	struct hws_basic_entry *sample;
 
-	/* Prepare and initialize raw sample data */
-	sfr = (struct sf_raw_sample *) RAWSAMPLE_REG(&event->hw);
-	sfr->format = flags & PERF_CPUM_SF_MODE_MASK;
-
-	sample_size = event_sample_size(&event->hw);
-	te = (struct hws_trailer_entry *) trailer_entry_ptr(*sdbt);
-	sample = (struct hws_combined_entry *) *sdbt;
-	while ((unsigned long *) sample < (unsigned long *) te) {
+	te = trailer_entry_ptr((unsigned long)sdbt);
+	sample = (struct hws_basic_entry *)sdbt;
+	while ((unsigned long *)sample < (unsigned long *)te) {
 		/* Check for an empty sample */
-		if (!sample->basic.def)
+		if (!sample->def || sample->LS)
 			break;
 
 		/* Update perf event period */
 		perf_event_count_update(event, SAMPL_RATE(&event->hw));
 
-		/* Check sampling data entry */
-		if (sample_format_is_valid(sample, flags)) {
+		/* Check whether sample is valid */
+		if (sample->def == 0x0001) {
 			/* If an event overflow occurred, the PMU is stopped to
 			 * throttle event delivery.  Remaining sample data is
 			 * discarded.
 			 */
 			if (!*overflow) {
-				if (sample_is_consistent(sample, flags)) {
+				/* Check whether sample is consistent */
+				if (sample->I == 0 && sample->W == 0) {
 					/* Deliver sample data to perf */
-					sfr_store_sample(sfr, sample);
-					*overflow = perf_push_sample(event, sfr);
+					*overflow = perf_push_sample(event,
+								     sample);
 				}
 			} else
 				/* Count discarded samples */
 				*overflow += 1;
 		} else {
-			debug_sample_entry(sample, te, flags);
+			debug_sprintf_event(sfdbg, 4,
+					    "%s: Found unknown"
+					    " sampling data entry: te->f %i"
+					    " basic.def %#4x (%p)\n", __func__,
+					    te->header.f, sample->def, sample);
 			/* Sample slot is not yet written or other record.
 			 *
 			 * This condition can occur if the buffer was reused
@@ -1188,13 +1250,13 @@ static void hw_collect_samples(struct perf_event *event, unsigned long *sdbt,
 			 * that are not full.  Stop processing if the first
 			 * invalid format was detected.
 			 */
-			if (!te->f)
+			if (!te->header.f)
 				break;
 		}
 
 		/* Reset sample slot and advance to next sample */
-		reset_sample_slot(sample, flags);
-		sample += sample_size;
+		sample->def = 0;
+		sample++;
 	}
 }
 
@@ -1206,64 +1268,71 @@ static void hw_collect_samples(struct perf_event *event, unsigned long *sdbt,
  * The sampling buffer position are retrieved and saved in the TEAR_REG
  * register of the specified perf event.
  *
- * Only full sample-data-blocks are processed.	Specify the flash_all flag
- * to also walk through partially filled sample-data-blocks.  It is ignored
- * if PERF_CPUM_SF_FULL_BLOCKS is set.	The PERF_CPUM_SF_FULL_BLOCKS flag
- * enforces the processing of full sample-data-blocks only (trailer entries
- * with the block-full-indicator bit set).
+ * Only full sample-data-blocks are processed.	Specify the flush_all flag
+ * to also walk through partially filled sample-data-blocks.
  */
 static void hw_perf_event_update(struct perf_event *event, int flush_all)
 {
+	unsigned long long event_overflow, sampl_overflow, num_sdb;
+	union hws_trailer_header old, prev, new;
 	struct hw_perf_event *hwc = &event->hw;
 	struct hws_trailer_entry *te;
-	unsigned long *sdbt;
-	unsigned long long event_overflow, sampl_overflow, num_sdb, te_flags;
+	unsigned long *sdbt, sdb;
 	int done;
 
-	if (flush_all && SDB_FULL_BLOCKS(hwc))
-		flush_all = 0;
+	/*
+	 * AUX buffer is used when in diagnostic sampling mode.
+	 * No perf events/samples are created.
+	 */
+	if (SAMPL_DIAG_MODE(&event->hw))
+		return;
 
-	sdbt = (unsigned long *) TEAR_REG(hwc);
+	sdbt = (unsigned long *)TEAR_REG(hwc);
 	done = event_overflow = sampl_overflow = num_sdb = 0;
 	while (!done) {
 		/* Get the trailer entry of the sample-data-block */
-		te = (struct hws_trailer_entry *) trailer_entry_ptr(*sdbt);
+		sdb = (unsigned long)phys_to_virt(*sdbt);
+		te = trailer_entry_ptr(sdb);
 
 		/* Leave loop if no more work to do (block full indicator) */
-		if (!te->f) {
+		if (!te->header.f) {
 			done = 1;
 			if (!flush_all)
 				break;
 		}
 
 		/* Check the sample overflow count */
-		if (te->overflow)
+		if (te->header.overflow)
 			/* Account sample overflows and, if a particular limit
 			 * is reached, extend the sampling buffer.
 			 * For details, see sfb_account_overflows().
 			 */
-			sampl_overflow += te->overflow;
+			sampl_overflow += te->header.overflow;
 
 		/* Timestamps are valid for full sample-data-blocks only */
-		debug_sprintf_event(sfdbg, 6, "hw_perf_event_update: sdbt=%p "
-				    "overflow=%llu timestamp=0x%llx\n",
-				    sdbt, te->overflow,
-				    (te->f) ? trailer_timestamp(te) : 0ULL);
+		debug_sprintf_event(sfdbg, 6, "%s: sdbt %#lx/%#lx "
+				    "overflow %llu timestamp %#llx\n",
+				    __func__, sdb, (unsigned long)sdbt,
+				    te->header.overflow,
+				    (te->header.f) ? trailer_timestamp(te) : 0ULL);
 
 		/* Collect all samples from a single sample-data-block and
 		 * flag if an (perf) event overflow happened.  If so, the PMU
 		 * is stopped and remaining samples will be discarded.
 		 */
-		hw_collect_samples(event, sdbt, &event_overflow);
+		hw_collect_samples(event, (unsigned long *)sdb, &event_overflow);
 		num_sdb++;
 
 		/* Reset trailer (using compare-double-and-swap) */
+		prev.val = READ_ONCE_ALIGNED_128(te->header.val);
 		do {
-			te_flags = te->flags & ~SDB_TE_BUFFER_FULL_MASK;
-			te_flags |= SDB_TE_ALERT_REQ_MASK;
-		} while (!cmpxchg_double(&te->flags, &te->overflow,
-					 te->flags, te->overflow,
-					 te_flags, 0ULL));
+			old.val = prev.val;
+			new.val = prev.val;
+			new.f = 0;
+			new.a = 1;
+			new.overflow = 0;
+			prev.val = cmpxchg128(&te->header.val, old.val, new.val);
+		} while (prev.val != old.val);
 
 		/* Advance to next sample-data-block */
 		sdbt++;
@@ -1278,22 +1347,503 @@ static void hw_perf_event_update(struct perf_event *event, int flush_all)
 		 */
 		if (flush_all && done)
 			break;
-
-		/* If an event overflow happened, discard samples by
-		 * processing any remaining sample-data-blocks.
-		 */
-		if (event_overflow)
-			flush_all = 1;
 	}
 
 	/* Account sample overflows in the event hardware structure */
 	if (sampl_overflow)
 		OVERFLOW_REG(hwc) = DIV_ROUND_UP(OVERFLOW_REG(hwc) +
 						 sampl_overflow, 1 + num_sdb);
+
+	/* Perf_event_overflow() and perf_event_account_interrupt() limit
+	 * the interrupt rate to an upper limit. Roughly 1000 samples per
+	 * task tick.
+	 * Hitting this limit results in a large number
+	 * of throttled REF_REPORT_THROTTLE entries and the samples
+	 * are dropped.
+	 * Slightly increase the interval to avoid hitting this limit.
+	 */
+	if (event_overflow) {
+		SAMPL_RATE(hwc) += DIV_ROUND_UP(SAMPL_RATE(hwc), 10);
+		debug_sprintf_event(sfdbg, 1, "%s: rate adjustment %ld\n",
+				    __func__,
+				    DIV_ROUND_UP(SAMPL_RATE(hwc), 10));
+	}
+
 	if (sampl_overflow || event_overflow)
-		debug_sprintf_event(sfdbg, 4, "hw_perf_event_update: "
-				    "overflow stats: sample=%llu event=%llu\n",
-				    sampl_overflow, event_overflow);
+		debug_sprintf_event(sfdbg, 4, "%s: "
+				    "overflows: sample %llu event %llu"
+				    " total %llu num_sdb %llu\n",
+				    __func__, sampl_overflow, event_overflow,
+				    OVERFLOW_REG(hwc), num_sdb);
+}
+
+static inline unsigned long aux_sdb_index(struct aux_buffer *aux,
+					  unsigned long i)
+{
+	return i % aux->sfb.num_sdb;
+}
+
+static inline unsigned long aux_sdb_num(unsigned long start, unsigned long end)
+{
+	return end >= start ? end - start + 1 : 0;
+}
+
+static inline unsigned long aux_sdb_num_alert(struct aux_buffer *aux)
+{
+	return aux_sdb_num(aux->head, aux->alert_mark);
+}
+
+static inline unsigned long aux_sdb_num_empty(struct aux_buffer *aux)
+{
+	return aux_sdb_num(aux->head, aux->empty_mark);
+}
+
+/*
+ * Get trailer entry by index of SDB.
+ */
+static struct hws_trailer_entry *aux_sdb_trailer(struct aux_buffer *aux,
+						 unsigned long index)
+{
+	unsigned long sdb;
+
+	index = aux_sdb_index(aux, index);
+	sdb = aux->sdb_index[index];
+	return trailer_entry_ptr(sdb);
+}
+
+/*
+ * Finish sampling on the cpu. Called by cpumsf_pmu_del() with pmu
+ * disabled. Collect the full SDBs in AUX buffer which have not reached
+ * the point of alert indicator. And ignore the SDBs which are not
+ * full.
+ *
+ * 1. Scan SDBs to see how much data is there and consume them.
+ * 2. Remove alert indicator in the buffer.
+ */
+static void aux_output_end(struct perf_output_handle *handle)
+{
+	unsigned long i, range_scan, idx;
+	struct aux_buffer *aux;
+	struct hws_trailer_entry *te;
+
+	aux = perf_get_aux(handle);
+	if (!aux)
+		return;
+
+	range_scan = aux_sdb_num_alert(aux);
+	for (i = 0, idx = aux->head; i < range_scan; i++, idx++) {
+		te = aux_sdb_trailer(aux, idx);
+		if (!te->header.f)
+			break;
+	}
+	/* i is num of SDBs which are full */
+	perf_aux_output_end(handle, i << PAGE_SHIFT);
+
+	/* Remove alert indicators in the buffer */
+	te = aux_sdb_trailer(aux, aux->alert_mark);
+	te->header.a = 0;
+
+	debug_sprintf_event(sfdbg, 6, "%s: SDBs %ld range %ld head %ld\n",
+			    __func__, i, range_scan, aux->head);
+}
+
+/*
+ * Start sampling on the CPU. Called by cpumsf_pmu_add() when an event
+ * is first added to the CPU or rescheduled again to the CPU. It is called
+ * with pmu disabled.
+ *
+ * 1. Reset the trailer of SDBs to get ready for new data.
+ * 2. Tell the hardware where to put the data by reset the SDBs buffer
+ *    head(tear/dear).
+ */
+static int aux_output_begin(struct perf_output_handle *handle,
+			    struct aux_buffer *aux,
+			    struct cpu_hw_sf *cpuhw)
+{
+	unsigned long range, i, range_scan, idx, head, base, offset;
+	struct hws_trailer_entry *te;
+
+	if (WARN_ON_ONCE(handle->head & ~PAGE_MASK))
+		return -EINVAL;
+
+	aux->head = handle->head >> PAGE_SHIFT;
+	range = (handle->size + 1) >> PAGE_SHIFT;
+	if (range <= 1)
+		return -ENOMEM;
+
+	/*
+	 * SDBs between aux->head and aux->empty_mark are already ready
+	 * for new data. range_scan is num of SDBs not within them.
+	 */
+	debug_sprintf_event(sfdbg, 6,
+			    "%s: range %ld head %ld alert %ld empty %ld\n",
+			    __func__, range, aux->head, aux->alert_mark,
+			    aux->empty_mark);
+	if (range > aux_sdb_num_empty(aux)) {
+		range_scan = range - aux_sdb_num_empty(aux);
+		idx = aux->empty_mark + 1;
+		for (i = 0; i < range_scan; i++, idx++) {
+			te = aux_sdb_trailer(aux, idx);
+			te->header.f = 0;
+			te->header.a = 0;
+			te->header.overflow = 0;
+		}
+		/* Save the position of empty SDBs */
+		aux->empty_mark = aux->head + range - 1;
+	}
+
+	/* Set alert indicator */
+	aux->alert_mark = aux->head + range/2 - 1;
+	te = aux_sdb_trailer(aux, aux->alert_mark);
+	te->header.a = 1;
+
+	/* Reset hardware buffer head */
+	head = aux_sdb_index(aux, aux->head);
+	base = aux->sdbt_index[head / CPUM_SF_SDB_PER_TABLE];
+	offset = head % CPUM_SF_SDB_PER_TABLE;
+	cpuhw->lsctl.tear = virt_to_phys((void *)base) + offset * sizeof(unsigned long);
+	cpuhw->lsctl.dear = virt_to_phys((void *)aux->sdb_index[head]);
+
+	debug_sprintf_event(sfdbg, 6, "%s: head %ld alert %ld empty %ld "
+			    "index %ld tear %#lx dear %#lx\n", __func__,
+			    aux->head, aux->alert_mark, aux->empty_mark,
+			    head / CPUM_SF_SDB_PER_TABLE,
+			    cpuhw->lsctl.tear, cpuhw->lsctl.dear);
+
+	return 0;
+}
+
+/*
+ * Set alert indicator on SDB at index @alert_index while sampler is running.
+ *
+ * Return true if successfully.
+ * Return false if full indicator is already set by hardware sampler.
+ */
+static bool aux_set_alert(struct aux_buffer *aux, unsigned long alert_index,
+			  unsigned long long *overflow)
+{
+	union hws_trailer_header old, prev, new;
+	struct hws_trailer_entry *te;
+
+	te = aux_sdb_trailer(aux, alert_index);
+	prev.val = READ_ONCE_ALIGNED_128(te->header.val);
+	do {
+		old.val = prev.val;
+		new.val = prev.val;
+		*overflow = old.overflow;
+		if (old.f) {
+			/*
+			 * SDB is already set by hardware.
+			 * Abort and try to set somewhere
+			 * behind.
+			 */
+			return false;
+		}
+		new.a = 1;
+		new.overflow = 0;
+		prev.val = cmpxchg128(&te->header.val, old.val, new.val);
+	} while (prev.val != old.val);
+	return true;
+}
+
+/*
+ * aux_reset_buffer() - Scan and setup SDBs for new samples
+ * @aux:	The AUX buffer to set
+ * @range:	The range of SDBs to scan started from aux->head
+ * @overflow:	Set to overflow count
+ *
+ * Set alert indicator on the SDB at index of aux->alert_mark. If this SDB is
+ * marked as empty, check if it is already set full by the hardware sampler.
+ * If yes, that means new data is already there before we can set an alert
+ * indicator. Caller should try to set alert indicator to some position behind.
+ *
+ * Scan the SDBs in AUX buffer from behind aux->empty_mark. They are used
+ * previously and have already been consumed by user space. Reset these SDBs
+ * (clear full indicator and alert indicator) for new data.
+ * If aux->alert_mark fall in this area, just set it. Overflow count is
+ * recorded while scanning.
+ *
+ * SDBs between aux->head and aux->empty_mark are already reset at last time.
+ * and ready for new samples. So scanning on this area could be skipped.
+ *
+ * Return true if alert indicator is set successfully and false if not.
+ */
+static bool aux_reset_buffer(struct aux_buffer *aux, unsigned long range,
+			     unsigned long long *overflow)
+{
+	unsigned long i, range_scan, idx, idx_old;
+	union hws_trailer_header old, prev, new;
+	unsigned long long orig_overflow;
+	struct hws_trailer_entry *te;
+
+	debug_sprintf_event(sfdbg, 6, "%s: range %ld head %ld alert %ld "
+			    "empty %ld\n", __func__, range, aux->head,
+			    aux->alert_mark, aux->empty_mark);
+	if (range <= aux_sdb_num_empty(aux))
+		/*
+		 * No need to scan. All SDBs in range are marked as empty.
+		 * Just set alert indicator. Should check race with hardware
+		 * sampler.
+		 */
+		return aux_set_alert(aux, aux->alert_mark, overflow);
+
+	if (aux->alert_mark <= aux->empty_mark)
+		/*
+		 * Set alert indicator on empty SDB. Should check race
+		 * with hardware sampler.
+		 */
+		if (!aux_set_alert(aux, aux->alert_mark, overflow))
+			return false;
+
+	/*
+	 * Scan the SDBs to clear full and alert indicator used previously.
+	 * Start scanning from one SDB behind empty_mark. If the new alert
+	 * indicator fall into this range, set it.
+	 */
+	range_scan = range - aux_sdb_num_empty(aux);
+	idx_old = idx = aux->empty_mark + 1;
+	for (i = 0; i < range_scan; i++, idx++) {
+		te = aux_sdb_trailer(aux, idx);
+		prev.val = READ_ONCE_ALIGNED_128(te->header.val);
+		do {
+			old.val = prev.val;
+			new.val = prev.val;
+			orig_overflow = old.overflow;
+			new.f = 0;
+			new.overflow = 0;
+			if (idx == aux->alert_mark)
+				new.a = 1;
+			else
+				new.a = 0;
+			prev.val = cmpxchg128(&te->header.val, old.val, new.val);
+		} while (prev.val != old.val);
+		*overflow += orig_overflow;
+	}
+
+	/* Update empty_mark to new position */
+	aux->empty_mark = aux->head + range - 1;
+
+	debug_sprintf_event(sfdbg, 6, "%s: range_scan %ld idx %ld..%ld "
+			    "empty %ld\n", __func__, range_scan, idx_old,
+			    idx - 1, aux->empty_mark);
+	return true;
+}
+
+/*
+ * Measurement alert handler for diagnostic mode sampling.
+ */
+static void hw_collect_aux(struct cpu_hw_sf *cpuhw)
+{
+	struct aux_buffer *aux;
+	int done = 0;
+	unsigned long range = 0, size;
+	unsigned long long overflow = 0;
+	struct perf_output_handle *handle = &cpuhw->handle;
+	unsigned long num_sdb;
+
+	aux = perf_get_aux(handle);
+	if (WARN_ON_ONCE(!aux))
+		return;
+
+	/* Inform user space new data arrived */
+	size = aux_sdb_num_alert(aux) << PAGE_SHIFT;
+	debug_sprintf_event(sfdbg, 6, "%s: #alert %ld\n", __func__,
+			    size >> PAGE_SHIFT);
+	perf_aux_output_end(handle, size);
+
+	num_sdb = aux->sfb.num_sdb;
+	while (!done) {
+		/* Get an output handle */
+		aux = perf_aux_output_begin(handle, cpuhw->event);
+		if (handle->size == 0) {
+			pr_err("The AUX buffer with %lu pages for the "
+			       "diagnostic-sampling mode is full\n",
+				num_sdb);
+			break;
+		}
+		if (WARN_ON_ONCE(!aux))
+			return;
+
+		/* Update head and alert_mark to new position */
+		aux->head = handle->head >> PAGE_SHIFT;
+		range = (handle->size + 1) >> PAGE_SHIFT;
+		if (range == 1)
+			aux->alert_mark = aux->head;
+		else
+			aux->alert_mark = aux->head + range/2 - 1;
+
+		if (aux_reset_buffer(aux, range, &overflow)) {
+			if (!overflow) {
+				done = 1;
+				break;
+			}
+			size = range << PAGE_SHIFT;
+			perf_aux_output_end(&cpuhw->handle, size);
+			pr_err("Sample data caused the AUX buffer with %lu "
+			       "pages to overflow\n", aux->sfb.num_sdb);
+			debug_sprintf_event(sfdbg, 1, "%s: head %ld range %ld "
+					    "overflow %lld\n", __func__,
+					    aux->head, range, overflow);
+		} else {
+			size = aux_sdb_num_alert(aux) << PAGE_SHIFT;
+			perf_aux_output_end(&cpuhw->handle, size);
+			debug_sprintf_event(sfdbg, 6, "%s: head %ld alert %ld "
+					    "already full, try another\n",
+					    __func__,
+					    aux->head, aux->alert_mark);
+		}
+	}
+
+	if (done)
+		debug_sprintf_event(sfdbg, 6, "%s: head %ld alert %ld "
+				    "empty %ld\n", __func__, aux->head,
+				    aux->alert_mark, aux->empty_mark);
+}
+
+/*
+ * Callback when freeing AUX buffers.
+ */
+static void aux_buffer_free(void *data)
+{
+	struct aux_buffer *aux = data;
+	unsigned long i, num_sdbt;
+
+	if (!aux)
+		return;
+
+	/* Free SDBT. SDB is freed by the caller */
+	num_sdbt = aux->sfb.num_sdbt;
+	for (i = 0; i < num_sdbt; i++)
+		free_page(aux->sdbt_index[i]);
+
+	kfree(aux->sdbt_index);
+	kfree(aux->sdb_index);
+	kfree(aux);
+
+	debug_sprintf_event(sfdbg, 4, "%s: SDBTs %lu\n", __func__, num_sdbt);
+}
+
+static void aux_sdb_init(unsigned long sdb)
+{
+	struct hws_trailer_entry *te;
+
+	te = trailer_entry_ptr(sdb);
+
+	/* Save clock base */
+	te->clock_base = 1;
+	te->progusage2 = tod_clock_base.tod;
+}
+
+/*
+ * aux_buffer_setup() - Setup AUX buffer for diagnostic mode sampling
+ * @event:	Event the buffer is setup for, event->cpu == -1 means current
+ * @pages:	Array of pointers to buffer pages passed from perf core
+ * @nr_pages:	Total pages
+ * @snapshot:	Flag for snapshot mode
+ *
+ * This is the callback when setup an event using AUX buffer. Perf tool can
+ * trigger this by an additional mmap() call on the event. Unlike the buffer
+ * for basic samples, AUX buffer belongs to the event. It is scheduled with
+ * the task among online cpus when it is a per-thread event.
+ *
+ * Return the private AUX buffer structure if success or NULL if fails.
+ */
+static void *aux_buffer_setup(struct perf_event *event, void **pages,
+			      int nr_pages, bool snapshot)
+{
+	struct sf_buffer *sfb;
+	struct aux_buffer *aux;
+	unsigned long *new, *tail;
+	int i, n_sdbt;
+
+	if (!nr_pages || !pages)
+		return NULL;
+
+	if (nr_pages > CPUM_SF_MAX_SDB * CPUM_SF_SDB_DIAG_FACTOR) {
+		pr_err("AUX buffer size (%i pages) is larger than the "
+		       "maximum sampling buffer limit\n",
+		       nr_pages);
+		return NULL;
+	} else if (nr_pages < CPUM_SF_MIN_SDB * CPUM_SF_SDB_DIAG_FACTOR) {
+		pr_err("AUX buffer size (%i pages) is less than the "
+		       "minimum sampling buffer limit\n",
+		       nr_pages);
+		return NULL;
+	}
+
+	/* Allocate aux_buffer struct for the event */
+	aux = kzalloc(sizeof(struct aux_buffer), GFP_KERNEL);
+	if (!aux)
+		goto no_aux;
+	sfb = &aux->sfb;
+
+	/* Allocate sdbt_index for fast reference */
+	n_sdbt = DIV_ROUND_UP(nr_pages, CPUM_SF_SDB_PER_TABLE);
+	aux->sdbt_index = kmalloc_array(n_sdbt, sizeof(void *), GFP_KERNEL);
+	if (!aux->sdbt_index)
+		goto no_sdbt_index;
+
+	/* Allocate sdb_index for fast reference */
+	aux->sdb_index = kmalloc_array(nr_pages, sizeof(void *), GFP_KERNEL);
+	if (!aux->sdb_index)
+		goto no_sdb_index;
+
+	/* Allocate the first SDBT */
+	sfb->num_sdbt = 0;
+	sfb->sdbt = (unsigned long *)get_zeroed_page(GFP_KERNEL);
+	if (!sfb->sdbt)
+		goto no_sdbt;
+	aux->sdbt_index[sfb->num_sdbt++] = (unsigned long)sfb->sdbt;
+	tail = sfb->tail = sfb->sdbt;
+
+	/*
+	 * Link the provided pages of AUX buffer to SDBT.
+	 * Allocate SDBT if needed.
+	 */
+	for (i = 0; i < nr_pages; i++, tail++) {
+		if (require_table_link(tail)) {
+			new = (unsigned long *)get_zeroed_page(GFP_KERNEL);
+			if (!new)
+				goto no_sdbt;
+			aux->sdbt_index[sfb->num_sdbt++] = (unsigned long)new;
+			/* Link current page to tail of chain */
+			*tail = virt_to_phys(new) + 1;
+			tail = new;
+		}
+		/* Tail is the entry in a SDBT */
+		*tail = virt_to_phys(pages[i]);
+		aux->sdb_index[i] = (unsigned long)pages[i];
+		aux_sdb_init((unsigned long)pages[i]);
+	}
+	sfb->num_sdb = nr_pages;
+
+	/* Link the last entry in the SDBT to the first SDBT */
+	*tail = virt_to_phys(sfb->sdbt) + 1;
+	sfb->tail = tail;
+
+	/*
+	 * Initial all SDBs are zeroed. Mark it as empty.
+	 * So there is no need to clear the full indicator
+	 * when this event is first added.
+	 */
+	aux->empty_mark = sfb->num_sdb - 1;
+
+	debug_sprintf_event(sfdbg, 4, "%s: SDBTs %lu SDBs %lu\n", __func__,
+			    sfb->num_sdbt, sfb->num_sdb);
+
+	return aux;
+
+no_sdbt:
+	/* SDBs (AUX buffer pages) are freed by caller */
+	for (i = 0; i < sfb->num_sdbt; i++)
+		free_page(aux->sdbt_index[i]);
+	kfree(aux->sdb_index);
+no_sdb_index:
+	kfree(aux->sdbt_index);
+no_sdbt_index:
+	kfree(aux);
+no_aux:
+	return NULL;
 }
 
 static void cpumsf_pmu_read(struct perf_event *event)
@@ -1301,12 +1851,50 @@ static void cpumsf_pmu_read(struct perf_event *event)
 	/* Nothing to do ... updates are interrupt-driven */
 }
 
+/* Check if the new sampling period/frequency is appropriate.
+ *
+ * Return non-zero on error and zero on passed checks.
+ */
+static int cpumsf_pmu_check_period(struct perf_event *event, u64 value)
+{
+	struct hws_qsi_info_block si;
+	unsigned long rate;
+	bool do_freq;
+
+	memset(&si, 0, sizeof(si));
+	if (event->cpu == -1) {
+		if (qsi(&si))
+			return -ENODEV;
+	} else {
+		/* Event is pinned to a particular CPU, retrieve the per-CPU
+		 * sampling structure for accessing the CPU-specific QSI.
+		 */
+		struct cpu_hw_sf *cpuhw = &per_cpu(cpu_hw_sf, event->cpu);
+
+		si = cpuhw->qsi;
+	}
+
+	do_freq = !!SAMPLE_FREQ_MODE(&event->hw);
+	rate = getrate(do_freq, value, &si);
+	if (!rate)
+		return -EINVAL;
+
+	event->attr.sample_period = rate;
+	SAMPL_RATE(&event->hw) = rate;
+	hw_init_period(&event->hw, SAMPL_RATE(&event->hw));
+	debug_sprintf_event(sfdbg, 4, "%s:"
+			    " cpu %d value %#llx period %#llx freq %d\n",
+			    __func__, event->cpu, value,
+			    event->attr.sample_period, do_freq);
+	return 0;
+}
+
 /* Activate sampling control.
  * Next call of pmu_enable() starts sampling.
  */
 static void cpumsf_pmu_start(struct perf_event *event, int flags)
 {
-	struct cpu_hw_sf *cpuhw = &__get_cpu_var(cpu_hw_sf);
+	struct cpu_hw_sf *cpuhw = this_cpu_ptr(&cpu_hw_sf);
 
 	if (WARN_ON_ONCE(!(event->hw.state & PERF_HES_STOPPED)))
 		return;
@@ -1327,7 +1915,7 @@ static void cpumsf_pmu_start(struct perf_event *event, int flags)
  */
 static void cpumsf_pmu_stop(struct perf_event *event, int flags)
 {
-	struct cpu_hw_sf *cpuhw = &__get_cpu_var(cpu_hw_sf);
+	struct cpu_hw_sf *cpuhw = this_cpu_ptr(&cpu_hw_sf);
 
 	if (event->hw.state & PERF_HES_STOPPED)
 		return;
@@ -1346,13 +1934,14 @@ static void cpumsf_pmu_stop(struct perf_event *event, int flags)
 
 static int cpumsf_pmu_add(struct perf_event *event, int flags)
 {
-	struct cpu_hw_sf *cpuhw = &__get_cpu_var(cpu_hw_sf);
+	struct cpu_hw_sf *cpuhw = this_cpu_ptr(&cpu_hw_sf);
+	struct aux_buffer *aux;
 	int err;
 
 	if (cpuhw->flags & PMU_F_IN_USE)
 		return -EAGAIN;
 
-	if (!cpuhw->sfb.sdbt)
+	if (!SAMPL_DIAG_MODE(&event->hw) && !cpuhw->sfb.sdbt)
 		return -EINVAL;
 
 	err = 0;
@@ -1367,10 +1956,12 @@ static int cpumsf_pmu_add(struct perf_event *event, int flags)
 	 */
 	cpuhw->lsctl.s = 0;
 	cpuhw->lsctl.h = 1;
-	cpuhw->lsctl.tear = (unsigned long) cpuhw->sfb.sdbt;
-	cpuhw->lsctl.dear = *(unsigned long *) cpuhw->sfb.sdbt;
 	cpuhw->lsctl.interval = SAMPL_RATE(&event->hw);
-	hw_reset_registers(&event->hw, cpuhw->sfb.sdbt);
+	if (!SAMPL_DIAG_MODE(&event->hw)) {
+		cpuhw->lsctl.tear = virt_to_phys(cpuhw->sfb.sdbt);
+		cpuhw->lsctl.dear = *(unsigned long *)cpuhw->sfb.sdbt;
+		TEAR_REG(&event->hw) = (unsigned long)cpuhw->sfb.sdbt;
+	}
 
 	/* Ensure sampling functions are in the disabled state.  If disabled,
 	 * switch on sampling enable control. */
@@ -1378,12 +1969,20 @@ static int cpumsf_pmu_add(struct perf_event *event, int flags)
 		err = -EAGAIN;
 		goto out;
 	}
-	cpuhw->lsctl.es = 1;
-	if (SAMPL_DIAG_MODE(&event->hw))
+	if (SAMPL_DIAG_MODE(&event->hw)) {
+		aux = perf_aux_output_begin(&cpuhw->handle, event);
+		if (!aux) {
+			err = -EINVAL;
+			goto out;
+		}
+		err = aux_output_begin(&cpuhw->handle, aux, cpuhw);
+		if (err)
+			goto out;
 		cpuhw->lsctl.ed = 1;
+	}
+	cpuhw->lsctl.es = 1;
 
 	/* Set in_use flag and store event */
-	event->hw.idx = 0;	  /* only one sampling event per CPU supported */
 	cpuhw->event = event;
 	cpuhw->flags |= PMU_F_IN_USE;
 
@@ -1397,7 +1996,7 @@ out:
 
 static void cpumsf_pmu_del(struct perf_event *event, int flags)
 {
-	struct cpu_hw_sf *cpuhw = &__get_cpu_var(cpu_hw_sf);
+	struct cpu_hw_sf *cpuhw = this_cpu_ptr(&cpu_hw_sf);
 
 	perf_pmu_disable(event->pmu);
 	cpumsf_pmu_stop(event, PERF_EF_UPDATE);
@@ -1407,22 +2006,39 @@ static void cpumsf_pmu_del(struct perf_event *event, int flags)
 	cpuhw->flags &= ~PMU_F_IN_USE;
 	cpuhw->event = NULL;
 
+	if (SAMPL_DIAG_MODE(&event->hw))
+		aux_output_end(&cpuhw->handle);
 	perf_event_update_userpage(event);
 	perf_pmu_enable(event->pmu);
-}
-
-static int cpumsf_pmu_event_idx(struct perf_event *event)
-{
-	return event->hw.idx;
 }
 
 CPUMF_EVENT_ATTR(SF, SF_CYCLES_BASIC, PERF_EVENT_CPUM_SF);
 CPUMF_EVENT_ATTR(SF, SF_CYCLES_BASIC_DIAG, PERF_EVENT_CPUM_SF_DIAG);
 
-static struct attribute *cpumsf_pmu_events_attr[] = {
-	CPUMF_EVENT_PTR(SF, SF_CYCLES_BASIC),
-	CPUMF_EVENT_PTR(SF, SF_CYCLES_BASIC_DIAG),
-	NULL,
+/* Attribute list for CPU_SF.
+ *
+ * The availablitiy depends on the CPU_MF sampling facility authorization
+ * for basic + diagnositic samples. This is determined at initialization
+ * time by the sampling facility device driver.
+ * If the authorization for basic samples is turned off, it should be
+ * also turned off for diagnostic sampling.
+ *
+ * During initialization of the device driver, check the authorization
+ * level for diagnostic sampling and installs the attribute
+ * file for diagnostic sampling if necessary.
+ *
+ * For now install a placeholder to reference all possible attributes:
+ * SF_CYCLES_BASIC and SF_CYCLES_BASIC_DIAG.
+ * Add another entry for the final NULL pointer.
+ */
+enum {
+	SF_CYCLES_BASIC_ATTR_IDX = 0,
+	SF_CYCLES_BASIC_DIAG_ATTR_IDX,
+	SF_CYCLES_ATTR_MAX
+};
+
+static struct attribute *cpumsf_pmu_events_attr[SF_CYCLES_ATTR_MAX + 1] = {
+	[SF_CYCLES_BASIC_ATTR_IDX] = CPUMF_EVENT_PTR(SF, SF_CYCLES_BASIC)
 };
 
 PMU_FORMAT_ATTR(event, "config:0-63");
@@ -1436,10 +2052,12 @@ static struct attribute_group cpumsf_pmu_events_group = {
 	.name = "events",
 	.attrs = cpumsf_pmu_events_attr,
 };
+
 static struct attribute_group cpumsf_pmu_format_group = {
 	.name = "format",
 	.attrs = cpumsf_pmu_format_attr,
 };
+
 static const struct attribute_group *cpumsf_pmu_attr_groups[] = {
 	&cpumsf_pmu_events_group,
 	&cpumsf_pmu_format_group,
@@ -1458,8 +2076,12 @@ static struct pmu cpumf_sampling = {
 	.stop	      = cpumsf_pmu_stop,
 	.read	      = cpumsf_pmu_read,
 
-	.event_idx    = cpumsf_pmu_event_idx,
 	.attr_groups  = cpumsf_pmu_attr_groups,
+
+	.setup_aux    = aux_buffer_setup,
+	.free_aux     = aux_buffer_free,
+
+	.check_period = cpumsf_pmu_check_period,
 };
 
 static void cpumf_measurement_alert(struct ext_code ext_code,
@@ -1470,7 +2092,7 @@ static void cpumf_measurement_alert(struct ext_code ext_code,
 	if (!(alert & CPU_MF_INT_SF_MASK))
 		return;
 	inc_irq_stat(IRQEXT_CMS);
-	cpuhw = &__get_cpu_var(cpu_hw_sf);
+	cpuhw = this_cpu_ptr(&cpu_hw_sf);
 
 	/* Measurement alerts are shared and might happen when the PMU
 	 * is not reserved.  Ignore these alerts in this case. */
@@ -1483,14 +2105,18 @@ static void cpumf_measurement_alert(struct ext_code ext_code,
 	/* Program alert request */
 	if (alert & CPU_MF_INT_SF_PRA) {
 		if (cpuhw->flags & PMU_F_IN_USE)
-			hw_perf_event_update(cpuhw->event, 0);
+			if (SAMPL_DIAG_MODE(&cpuhw->event->hw))
+				hw_collect_aux(cpuhw);
+			else
+				hw_perf_event_update(cpuhw->event, 0);
 		else
 			WARN_ON_ONCE(!(cpuhw->flags & PMU_F_IN_USE));
 	}
 
 	/* Report measurement alerts only for non-PRA codes */
 	if (alert != CPU_MF_INT_SF_PRA)
-		debug_sprintf_event(sfdbg, 6, "measurement alert: 0x%x\n", alert);
+		debug_sprintf_event(sfdbg, 6, "%s: alert %#x\n", __func__,
+				    alert);
 
 	/* Sampling authorization change request */
 	if (alert & CPU_MF_INT_SF_SACA)
@@ -1512,33 +2138,28 @@ static void cpumf_measurement_alert(struct ext_code ext_code,
 	}
 }
 
-static int cpumf_pmu_notifier(struct notifier_block *self,
-			      unsigned long action, void *hcpu)
+static int cpusf_pmu_setup(unsigned int cpu, int flags)
 {
-	unsigned int cpu = (long) hcpu;
-	int flags;
-
 	/* Ignore the notification if no events are scheduled on the PMU.
 	 * This might be racy...
 	 */
 	if (!atomic_read(&num_events))
-		return NOTIFY_OK;
+		return 0;
 
-	switch (action & ~CPU_TASKS_FROZEN) {
-	case CPU_ONLINE:
-	case CPU_ONLINE_FROZEN:
-		flags = PMC_INIT;
-		smp_call_function_single(cpu, setup_pmc_cpu, &flags, 1);
-		break;
-	case CPU_DOWN_PREPARE:
-		flags = PMC_RELEASE;
-		smp_call_function_single(cpu, setup_pmc_cpu, &flags, 1);
-		break;
-	default:
-		break;
-	}
+	local_irq_disable();
+	setup_pmc_cpu(&flags);
+	local_irq_enable();
+	return 0;
+}
 
-	return NOTIFY_OK;
+static int s390_pmu_sf_online_cpu(unsigned int cpu)
+{
+	return cpusf_pmu_setup(cpu, PMC_INIT);
+}
+
+static int s390_pmu_sf_offline_cpu(unsigned int cpu)
+{
+	return cpusf_pmu_setup(cpu, PMC_RELEASE);
 }
 
 static int param_get_sfb_size(char *buffer, const struct kernel_param *kp)
@@ -1573,13 +2194,13 @@ static int param_set_sfb_size(const char *val, const struct kernel_param *kp)
 
 	sfb_set_limits(min, max);
 	pr_info("The sampling buffer limits have changed to: "
-		"min=%lu max=%lu (diag=x%lu)\n",
+		"min %lu max %lu (diag %lu)\n",
 		CPUM_SF_MIN_SDB, CPUM_SF_MAX_SDB, CPUM_SF_SDB_DIAG_FACTOR);
 	return 0;
 }
 
 #define param_check_sfb_size(name, p) __param_check(name, p, void)
-static struct kernel_param_ops param_ops_sfb_size = {
+static const struct kernel_param_ops param_ops_sfb_size = {
 	.set = param_set_sfb_size,
 	.get = param_get_sfb_size,
 };
@@ -1591,7 +2212,7 @@ static struct kernel_param_ops param_ops_sfb_size = {
 static void __init pr_cpumsf_err(unsigned int reason)
 {
 	pr_err("Sampling facility support for perf is not available: "
-	       "reason=%04x\n", reason);
+	       "reason %#x\n", reason);
 }
 
 static int __init init_cpum_sampling_pmu(void)
@@ -1608,34 +2229,52 @@ static int __init init_cpum_sampling_pmu(void)
 		return -ENODEV;
 	}
 
+	if (!si.as && !si.ad)
+		return -ENODEV;
+
 	if (si.bsdes != sizeof(struct hws_basic_entry)) {
 		pr_cpumsf_err(RS_INIT_FAILURE_BSDES);
 		return -EINVAL;
 	}
 
-	if (si.ad)
+	if (si.ad) {
 		sfb_set_limits(CPUM_SF_MIN_SDB, CPUM_SF_MAX_SDB);
+		/* Sampling of diagnostic data authorized,
+		 * install event into attribute list of PMU device.
+		 */
+		cpumsf_pmu_events_attr[SF_CYCLES_BASIC_DIAG_ATTR_IDX] =
+			CPUMF_EVENT_PTR(SF, SF_CYCLES_BASIC_DIAG);
+	}
 
 	sfdbg = debug_register(KMSG_COMPONENT, 2, 1, 80);
-	if (!sfdbg)
+	if (!sfdbg) {
 		pr_err("Registering for s390dbf failed\n");
+		return -ENOMEM;
+	}
 	debug_register_view(sfdbg, &debug_sprintf_view);
 
-	err = register_external_interrupt(0x1407, cpumf_measurement_alert);
+	err = register_external_irq(EXT_IRQ_MEASURE_ALERT,
+				    cpumf_measurement_alert);
 	if (err) {
 		pr_cpumsf_err(RS_INIT_FAILURE_ALRT);
+		debug_unregister(sfdbg);
 		goto out;
 	}
 
 	err = perf_pmu_register(&cpumf_sampling, "cpum_sf", PERF_TYPE_RAW);
 	if (err) {
 		pr_cpumsf_err(RS_INIT_FAILURE_PERF);
-		unregister_external_interrupt(0x1407, cpumf_measurement_alert);
+		unregister_external_irq(EXT_IRQ_MEASURE_ALERT,
+					cpumf_measurement_alert);
+		debug_unregister(sfdbg);
 		goto out;
 	}
-	perf_cpu_notifier(cpumf_pmu_notifier);
+
+	cpuhp_setup_state(CPUHP_AP_PERF_S390_SF_ONLINE, "perf/s390/sf:online",
+			  s390_pmu_sf_online_cpu, s390_pmu_sf_offline_cpu);
 out:
 	return err;
 }
+
 arch_initcall(init_cpum_sampling_pmu);
-core_param(cpum_sfb_size, CPUM_SF_MAX_SDB, sfb_size, 0640);
+core_param(cpum_sfb_size, CPUM_SF_MAX_SDB, sfb_size, 0644);

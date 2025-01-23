@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/net/sunrpc/sunrpc_syms.c
  *
@@ -22,9 +23,11 @@
 #include <linux/sunrpc/rpc_pipe_fs.h>
 #include <linux/sunrpc/xprtsock.h>
 
+#include "sunrpc.h"
+#include "sysfs.h"
 #include "netns.h"
 
-int sunrpc_net_id;
+unsigned int sunrpc_net_id;
 EXPORT_SYMBOL_GPL(sunrpc_net_id);
 
 static __net_init int sunrpc_init_net(struct net *net)
@@ -65,10 +68,13 @@ err_proc:
 
 static __net_exit void sunrpc_exit_net(struct net *net)
 {
+	struct sunrpc_net *sn = net_generic(net, sunrpc_net_id);
+
 	rpc_pipefs_exit_net(net);
 	unix_gid_cache_destroy(net);
 	ip_map_cache_destroy(net);
 	rpc_proc_exit(net);
+	WARN_ON_ONCE(!list_empty(&sn->all_clients));
 }
 
 static struct pernet_operations sunrpc_net_ops = {
@@ -97,13 +103,21 @@ init_sunrpc(void)
 	err = register_rpc_pipefs();
 	if (err)
 		goto out4;
-#ifdef RPC_DEBUG
+
+	err = rpc_sysfs_init();
+	if (err)
+		goto out5;
+
+	sunrpc_debugfs_init();
+#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
 	rpc_register_sysctl();
 #endif
 	svc_init_xprt_sock();	/* svc sock transport */
 	init_socket_xprt();	/* clnt sock transport */
 	return 0;
 
+out5:
+	unregister_rpc_pipefs();
 out4:
 	unregister_pernet_subsys(&sunrpc_net_ops);
 out3:
@@ -117,17 +131,24 @@ out:
 static void __exit
 cleanup_sunrpc(void)
 {
+	rpc_sysfs_exit();
+	rpc_cleanup_clids();
+	xprt_cleanup_ids();
+	xprt_multipath_cleanup_ids();
 	rpcauth_remove_module();
 	cleanup_socket_xprt();
 	svc_cleanup_xprt_sock();
+	sunrpc_debugfs_exit();
 	unregister_rpc_pipefs();
 	rpc_destroy_mempool();
 	unregister_pernet_subsys(&sunrpc_net_ops);
-#ifdef RPC_DEBUG
+	auth_domain_cleanup();
+#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
 	rpc_unregister_sysctl();
 #endif
 	rcu_barrier(); /* Wait for completion of call_rcu()'s */
 }
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 fs_initcall(init_sunrpc); /* Ensure we're initialised before nfs */
 module_exit(cleanup_sunrpc);

@@ -1,11 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Sample kset and ktype implementation
  *
  * Copyright (C) 2004-2007 Greg Kroah-Hartman <greg@kroah.com>
  * Copyright (C) 2007 Novell Inc.
- *
- * Released under the GPL version 2 only.
- *
  */
 #include <linux/kobject.h>
 #include <linux/string.h>
@@ -114,18 +112,24 @@ static void foo_release(struct kobject *kobj)
 static ssize_t foo_show(struct foo_obj *foo_obj, struct foo_attribute *attr,
 			char *buf)
 {
-	return sprintf(buf, "%d\n", foo_obj->foo);
+	return sysfs_emit(buf, "%d\n", foo_obj->foo);
 }
 
 static ssize_t foo_store(struct foo_obj *foo_obj, struct foo_attribute *attr,
 			 const char *buf, size_t count)
 {
-	sscanf(buf, "%du", &foo_obj->foo);
+	int ret;
+
+	ret = kstrtoint(buf, 10, &foo_obj->foo);
+	if (ret < 0)
+		return ret;
+
 	return count;
 }
 
+/* Sysfs attributes cannot be world-writable. */
 static struct foo_attribute foo_attribute =
-	__ATTR(foo, 0666, foo_show, foo_store);
+	__ATTR(foo, 0664, foo_show, foo_store);
 
 /*
  * More complex function where we determine which variable is being accessed by
@@ -140,15 +144,18 @@ static ssize_t b_show(struct foo_obj *foo_obj, struct foo_attribute *attr,
 		var = foo_obj->baz;
 	else
 		var = foo_obj->bar;
-	return sprintf(buf, "%d\n", var);
+	return sysfs_emit(buf, "%d\n", var);
 }
 
 static ssize_t b_store(struct foo_obj *foo_obj, struct foo_attribute *attr,
 		       const char *buf, size_t count)
 {
-	int var;
+	int var, ret;
 
-	sscanf(buf, "%du", &var);
+	ret = kstrtoint(buf, 10, &var);
+	if (ret < 0)
+		return ret;
+
 	if (strcmp(attr->attr.name, "baz") == 0)
 		foo_obj->baz = var;
 	else
@@ -157,9 +164,9 @@ static ssize_t b_store(struct foo_obj *foo_obj, struct foo_attribute *attr,
 }
 
 static struct foo_attribute baz_attribute =
-	__ATTR(baz, 0666, b_show, b_store);
+	__ATTR(baz, 0664, b_show, b_store);
 static struct foo_attribute bar_attribute =
-	__ATTR(bar, 0666, b_show, b_store);
+	__ATTR(bar, 0664, b_show, b_store);
 
 /*
  * Create a group of attributes so that we can create and destroy them all
@@ -171,16 +178,17 @@ static struct attribute *foo_default_attrs[] = {
 	&bar_attribute.attr,
 	NULL,	/* need to NULL terminate the list of attributes */
 };
+ATTRIBUTE_GROUPS(foo_default);
 
 /*
  * Our own ktype for our kobjects.  Here we specify our sysfs ops, the
  * release function, and the set of default attributes we want created
  * whenever a kobject of this type is registered with the kernel.
  */
-static struct kobj_type foo_ktype = {
+static const struct kobj_type foo_ktype = {
 	.sysfs_ops = &foo_sysfs_ops,
 	.release = foo_release,
-	.default_attrs = foo_default_attrs,
+	.default_groups = foo_default_groups,
 };
 
 static struct kset *example_kset;
@@ -276,5 +284,5 @@ static void __exit example_exit(void)
 
 module_init(example_init);
 module_exit(example_exit);
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Greg Kroah-Hartman <greg@kroah.com>");

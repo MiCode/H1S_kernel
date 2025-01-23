@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	IDE tuning and bus mastering support for the CS5510/CS5520
  *	chipsets
@@ -18,23 +19,12 @@
  *
  *	(c) Copyright Red Hat Inc 2002
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2, or (at your option) any
- * later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
  * Documentation:
  *	Not publicly available.
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <scsi/scsi_host.h>
@@ -62,6 +52,7 @@ static const struct pio_clocks cs5520_pio_clocks[]={
  *	cs5520_set_timings	-	program PIO timings
  *	@ap: ATA port
  *	@adev: ATA device
+ *	@pio: PIO ID
  *
  *	Program the PIO mode timings for the controller according to the pio
  *	clocking table.
@@ -103,9 +94,10 @@ static void cs5520_set_piomode(struct ata_port *ap, struct ata_device *adev)
 	cs5520_set_timings(ap, adev, adev->pio_mode);
 }
 
-static struct scsi_host_template cs5520_sht = {
-	ATA_BMDMA_SHT(DRV_NAME),
+static const struct scsi_host_template cs5520_sht = {
+	ATA_BASE_SHT(DRV_NAME),
 	.sg_tablesize		= LIBATA_DUMB_MAX_PRD,
+	.dma_boundary		= ATA_DMA_BOUNDARY,
 };
 
 static struct ata_port_operations cs5520_port_ops = {
@@ -161,16 +153,12 @@ static int cs5520_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	/* Perform set up for DMA */
 	if (pci_enable_device_io(pdev)) {
-		printk(KERN_ERR DRV_NAME ": unable to configure BAR2.\n");
+		dev_err(&pdev->dev, "unable to configure BAR2.\n");
 		return -ENODEV;
 	}
 
-	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
-		printk(KERN_ERR DRV_NAME ": unable to configure DMA mask.\n");
-		return -ENODEV;
-	}
-	if (pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32))) {
-		printk(KERN_ERR DRV_NAME ": unable to configure consistent DMA mask.\n");
+	if (dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32))) {
+		dev_err(&pdev->dev, "unable to configure DMA mask.\n");
 		return -ENODEV;
 	}
 
@@ -230,7 +218,7 @@ static int cs5520_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	return ata_host_register(host, &cs5520_sht);
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 /**
  *	cs5520_reinit_one	-	device resume
  *	@pdev: PCI device
@@ -260,6 +248,7 @@ static int cs5520_reinit_one(struct pci_dev *pdev)
 /**
  *	cs5520_pci_device_suspend	-	device suspend
  *	@pdev: PCI device
+ *	@mesg: PM event message
  *
  *	We have to cut and waste bits from the standard method because
  *	the 5520 is a bit odd and not just a pure ATA device. As a result
@@ -270,16 +259,13 @@ static int cs5520_reinit_one(struct pci_dev *pdev)
 static int cs5520_pci_device_suspend(struct pci_dev *pdev, pm_message_t mesg)
 {
 	struct ata_host *host = pci_get_drvdata(pdev);
-	int rc = 0;
 
-	rc = ata_host_suspend(host, mesg);
-	if (rc)
-		return rc;
+	ata_host_suspend(host, mesg);
 
 	pci_save_state(pdev);
 	return 0;
 }
-#endif /* CONFIG_PM */
+#endif /* CONFIG_PM_SLEEP */
 
 /* For now keep DMA off. We can set it for all but A rev CS5510 once the
    core ATA code can handle it */
@@ -296,7 +282,7 @@ static struct pci_driver cs5520_pci_driver = {
 	.id_table	= pata_cs5520,
 	.probe 		= cs5520_init_one,
 	.remove		= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= cs5520_pci_device_suspend,
 	.resume		= cs5520_reinit_one,
 #endif

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_INETDEVICE_H
 #define _LINUX_INETDEVICE_H
 
@@ -11,6 +12,7 @@
 #include <linux/timer.h>
 #include <linux/sysctl.h>
 #include <linux/rtnetlink.h>
+#include <linux/refcount.h>
 
 struct ipv4_devconf {
 	void	*sysctl;
@@ -22,9 +24,11 @@ struct ipv4_devconf {
 
 struct in_device {
 	struct net_device	*dev;
-	atomic_t		refcnt;
+	netdevice_tracker	dev_tracker;
+
+	refcount_t		refcnt;
 	int			dead;
-	struct in_ifaddr	*ifa_list;	/* IP ifaddr chain		*/
+	struct in_ifaddr	__rcu *ifa_list;/* IP ifaddr chain		*/
 
 	struct ip_mc_list __rcu	*mc_list;	/* IP multicast filter chain    */
 	struct ip_mc_list __rcu	* __rcu *mc_hash;
@@ -35,9 +39,11 @@ struct in_device {
 	unsigned long		mr_v1_seen;
 	unsigned long		mr_v2_seen;
 	unsigned long		mr_maxdelay;
-	unsigned char		mr_qrv;
+	unsigned long		mr_qi;		/* Query Interval */
+	unsigned long		mr_qri;		/* Query Response Interval */
+	unsigned char		mr_qrv;		/* Query Robustness Variable */
 	unsigned char		mr_gq_running;
-	unsigned char		mr_ifc_count;
+	u32			mr_ifc_count;
 	struct timer_list	mr_gq_timer;	/* general query timer */
 	struct timer_list	mr_ifc_timer;	/* interface change timer */
 
@@ -91,6 +97,7 @@ static inline void ipv4_devconf_setall(struct in_device *in_dev)
 
 #define IN_DEV_FORWARD(in_dev)		IN_DEV_CONF_GET((in_dev), FORWARDING)
 #define IN_DEV_MFORWARD(in_dev)		IN_DEV_ANDCONF((in_dev), MC_FORWARDING)
+#define IN_DEV_BFORWARD(in_dev)		IN_DEV_ANDCONF((in_dev), BC_FORWARDING)
 #define IN_DEV_RPFILTER(in_dev)		IN_DEV_MAXCONF((in_dev), RP_FILTER)
 #define IN_DEV_SRC_VMARK(in_dev)    	IN_DEV_ORCONF((in_dev), SRC_VMARK)
 #define IN_DEV_SOURCE_ROUTE(in_dev)	IN_DEV_ANDCONF((in_dev), \
@@ -100,7 +107,7 @@ static inline void ipv4_devconf_setall(struct in_device *in_dev)
 
 #define IN_DEV_LOG_MARTIANS(in_dev)	IN_DEV_ORCONF((in_dev), LOG_MARTIANS)
 #define IN_DEV_PROXY_ARP(in_dev)	IN_DEV_ORCONF((in_dev), PROXY_ARP)
-#define IN_DEV_PROXY_ARP_PVLAN(in_dev)	IN_DEV_CONF_GET(in_dev, PROXY_ARP_PVLAN)
+#define IN_DEV_PROXY_ARP_PVLAN(in_dev)	IN_DEV_ORCONF((in_dev), PROXY_ARP_PVLAN)
 #define IN_DEV_SHARED_MEDIA(in_dev)	IN_DEV_ORCONF((in_dev), SHARED_MEDIA)
 #define IN_DEV_TX_REDIRECTS(in_dev)	IN_DEV_ORCONF((in_dev), SEND_REDIRECTS)
 #define IN_DEV_SEC_REDIRECTS(in_dev)	IN_DEV_ORCONF((in_dev), \
@@ -120,23 +127,30 @@ static inline void ipv4_devconf_setall(struct in_device *in_dev)
 	 || (!IN_DEV_FORWARD(in_dev) && \
 	  IN_DEV_ORCONF((in_dev), ACCEPT_REDIRECTS)))
 
+#define IN_DEV_IGNORE_ROUTES_WITH_LINKDOWN(in_dev) \
+	IN_DEV_ORCONF((in_dev), IGNORE_ROUTES_WITH_LINKDOWN)
+
 #define IN_DEV_ARPFILTER(in_dev)	IN_DEV_ORCONF((in_dev), ARPFILTER)
-#define IN_DEV_ARP_ACCEPT(in_dev)	IN_DEV_ORCONF((in_dev), ARP_ACCEPT)
+#define IN_DEV_ARP_ACCEPT(in_dev)	IN_DEV_MAXCONF((in_dev), ARP_ACCEPT)
 #define IN_DEV_ARP_ANNOUNCE(in_dev)	IN_DEV_MAXCONF((in_dev), ARP_ANNOUNCE)
 #define IN_DEV_ARP_IGNORE(in_dev)	IN_DEV_MAXCONF((in_dev), ARP_IGNORE)
 #define IN_DEV_ARP_NOTIFY(in_dev)	IN_DEV_MAXCONF((in_dev), ARP_NOTIFY)
+#define IN_DEV_ARP_EVICT_NOCARRIER(in_dev) IN_DEV_ANDCONF((in_dev), \
+							  ARP_EVICT_NOCARRIER)
 
 struct in_ifaddr {
 	struct hlist_node	hash;
-	struct in_ifaddr	*ifa_next;
+	struct in_ifaddr	__rcu *ifa_next;
 	struct in_device	*ifa_dev;
 	struct rcu_head		rcu_head;
 	__be32			ifa_local;
 	__be32			ifa_address;
 	__be32			ifa_mask;
+	__u32			ifa_rt_priority;
 	__be32			ifa_broadcast;
 	unsigned char		ifa_scope;
 	unsigned char		ifa_prefixlen;
+	unsigned char		ifa_proto;
 	__u32			ifa_flags;
 	char			ifa_label[IFNAMSIZ];
 
@@ -147,11 +161,19 @@ struct in_ifaddr {
 	unsigned long		ifa_tstamp; /* updated timestamp */
 };
 
+struct in_validator_info {
+	__be32			ivi_addr;
+	struct in_device	*ivi_dev;
+	struct netlink_ext_ack	*extack;
+};
+
 int register_inetaddr_notifier(struct notifier_block *nb);
 int unregister_inetaddr_notifier(struct notifier_block *nb);
+int register_inetaddr_validator_notifier(struct notifier_block *nb);
+int unregister_inetaddr_validator_notifier(struct notifier_block *nb);
 
-void inet_netconf_notify_devconf(struct net *net, int type, int ifindex,
-				 struct ipv4_devconf *devconf);
+void inet_netconf_notify_devconf(struct net *net, int event, int type,
+				 int ifindex, struct ipv4_devconf *devconf);
 
 struct net_device *__ip_dev_find(struct net *net, __be32 addr, bool devref);
 static inline struct net_device *ip_dev_find(struct net *net, __be32 addr)
@@ -160,7 +182,16 @@ static inline struct net_device *ip_dev_find(struct net *net, __be32 addr)
 }
 
 int inet_addr_onlink(struct in_device *in_dev, __be32 a, __be32 b);
-int devinet_ioctl(struct net *net, unsigned int cmd, void __user *);
+int devinet_ioctl(struct net *net, unsigned int cmd, struct ifreq *);
+#ifdef CONFIG_INET
+int inet_gifconf(struct net_device *dev, char __user *buf, int len, int size);
+#else
+static inline int inet_gifconf(struct net_device *dev, char __user *buf,
+			       int len, int size)
+{
+	return 0;
+}
+#endif
 void devinet_init(void);
 struct in_device *inetdev_by_index(struct net *, int);
 __be32 inet_select_addr(const struct net_device *dev, __be32 dst, int scope);
@@ -168,7 +199,8 @@ __be32 inet_confirm_addr(struct net *net, struct in_device *in_dev, __be32 dst,
 			 __be32 local, int scope);
 struct in_ifaddr *inet_ifa_byprefix(struct in_device *in_dev, __be32 prefix,
 				    __be32 mask);
-static __inline__ int inet_ifa_match(__be32 addr, struct in_ifaddr *ifa)
+struct in_ifaddr *inet_lookup_ifaddr_rcu(struct net *net, __be32 addr);
+static inline bool inet_ifa_match(__be32 addr, const struct in_ifaddr *ifa)
 {
 	return !((addr^ifa->ifa_address)&ifa->ifa_mask);
 }
@@ -177,25 +209,24 @@ static __inline__ int inet_ifa_match(__be32 addr, struct in_ifaddr *ifa)
  *	Check if a mask is acceptable.
  */
  
-static __inline__ int bad_mask(__be32 mask, __be32 addr)
+static __inline__ bool bad_mask(__be32 mask, __be32 addr)
 {
 	__u32 hmask;
 	if (addr & (mask = ~mask))
-		return 1;
+		return true;
 	hmask = ntohl(mask);
 	if (hmask & (hmask+1))
-		return 1;
-	return 0;
+		return true;
+	return false;
 }
 
-#define for_primary_ifa(in_dev)	{ struct in_ifaddr *ifa; \
-  for (ifa = (in_dev)->ifa_list; ifa && !(ifa->ifa_flags&IFA_F_SECONDARY); ifa = ifa->ifa_next)
+#define in_dev_for_each_ifa_rtnl(ifa, in_dev)			\
+	for (ifa = rtnl_dereference((in_dev)->ifa_list); ifa;	\
+	     ifa = rtnl_dereference(ifa->ifa_next))
 
-#define for_ifa(in_dev)	{ struct in_ifaddr *ifa; \
-  for (ifa = (in_dev)->ifa_list; ifa; ifa = ifa->ifa_next)
-
-
-#define endfor_ifa(in_dev) }
+#define in_dev_for_each_ifa_rcu(ifa, in_dev)			\
+	for (ifa = rcu_dereference((in_dev)->ifa_list); ifa;	\
+	     ifa = rcu_dereference(ifa->ifa_next))
 
 static inline struct in_device *__in_dev_get_rcu(const struct net_device *dev)
 {
@@ -209,7 +240,7 @@ static inline struct in_device *in_dev_get(const struct net_device *dev)
 	rcu_read_lock();
 	in_dev = __in_dev_get_rcu(dev);
 	if (in_dev)
-		atomic_inc(&in_dev->refcnt);
+		refcount_inc(&in_dev->refcnt);
 	rcu_read_unlock();
 	return in_dev;
 }
@@ -217,6 +248,20 @@ static inline struct in_device *in_dev_get(const struct net_device *dev)
 static inline struct in_device *__in_dev_get_rtnl(const struct net_device *dev)
 {
 	return rtnl_dereference(dev->ip_ptr);
+}
+
+/* called with rcu_read_lock or rtnl held */
+static inline bool ip_ignore_linkdown(const struct net_device *dev)
+{
+	struct in_device *in_dev;
+	bool rc = false;
+
+	in_dev = rcu_dereference_rtnl(dev->ip_ptr);
+	if (in_dev &&
+	    IN_DEV_IGNORE_ROUTES_WITH_LINKDOWN(in_dev))
+		rc = true;
+
+	return rc;
 }
 
 static inline struct neigh_parms *__in_dev_arp_parms_get_rcu(const struct net_device *dev)
@@ -230,19 +275,19 @@ void in_dev_finish_destroy(struct in_device *idev);
 
 static inline void in_dev_put(struct in_device *idev)
 {
-	if (atomic_dec_and_test(&idev->refcnt))
+	if (refcount_dec_and_test(&idev->refcnt))
 		in_dev_finish_destroy(idev);
 }
 
-#define __in_dev_put(idev)  atomic_dec(&(idev)->refcnt)
-#define in_dev_hold(idev)   atomic_inc(&(idev)->refcnt)
+#define __in_dev_put(idev)  refcount_dec(&(idev)->refcnt)
+#define in_dev_hold(idev)   refcount_inc(&(idev)->refcnt)
 
 #endif /* __KERNEL__ */
 
 static __inline__ __be32 inet_make_mask(int logmask)
 {
 	if (logmask)
-		return htonl(~((1<<(32-logmask))-1));
+		return htonl(~((1U<<(32-logmask))-1));
 	return 0;
 }
 

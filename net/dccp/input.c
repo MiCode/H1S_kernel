@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  net/dccp/input.c
  *
  *  An implementation of the DCCP protocol
  *  Arnaldo Carvalho de Melo <acme@conectiva.com.br>
- *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License
- *	as published by the Free Software Foundation; either version
- *	2 of the License, or (at your option) any later version.
  */
 
 #include <linux/dccp.h>
@@ -28,7 +24,7 @@ static void dccp_enqueue_skb(struct sock *sk, struct sk_buff *skb)
 	__skb_pull(skb, dccp_hdr(skb)->dccph_doff * 4);
 	__skb_queue_tail(&sk->sk_receive_queue, skb);
 	skb_set_owner_r(skb, sk);
-	sk->sk_data_ready(sk, 0);
+	sk->sk_data_ready(sk);
 }
 
 static void dccp_fin(struct sock *sk, struct sk_buff *skb)
@@ -68,7 +64,7 @@ static int dccp_rcv_close(struct sock *sk, struct sk_buff *skb)
 		 */
 		if (dccp_sk(sk)->dccps_role != DCCP_ROLE_CLIENT)
 			break;
-		/* fall through */
+		fallthrough;
 	case DCCP_REQUESTING:
 	case DCCP_ACTIVE_CLOSEREQ:
 		dccp_send_reset(sk, DCCP_RESET_CODE_CLOSED);
@@ -80,7 +76,7 @@ static int dccp_rcv_close(struct sock *sk, struct sk_buff *skb)
 		queued = 1;
 		dccp_fin(sk, skb);
 		dccp_set_state(sk, DCCP_PASSIVE_CLOSE);
-		/* fall through */
+		fallthrough;
 	case DCCP_PASSIVE_CLOSE:
 		/*
 		 * Retransmitted Close: we have already enqueued the first one.
@@ -117,7 +113,7 @@ static int dccp_rcv_closereq(struct sock *sk, struct sk_buff *skb)
 		queued = 1;
 		dccp_fin(sk, skb);
 		dccp_set_state(sk, DCCP_PASSIVE_CLOSEREQ);
-		/* fall through */
+		fallthrough;
 	case DCCP_PASSIVE_CLOSEREQ:
 		sk_wake_async(sk, SOCK_WAKE_WAITD, POLL_HUP);
 	}
@@ -126,7 +122,7 @@ static int dccp_rcv_closereq(struct sock *sk, struct sk_buff *skb)
 
 static u16 dccp_reset_code_convert(const u8 code)
 {
-	const u16 error_code[] = {
+	static const u16 error_code[] = {
 	[DCCP_RESET_CODE_CLOSED]	     = 0,	/* normal termination */
 	[DCCP_RESET_CODE_UNSPECIFIED]	     = 0,	/* nothing known */
 	[DCCP_RESET_CODE_ABORTED]	     = ECONNRESET,
@@ -359,7 +355,7 @@ send_sync:
 		goto discard;
 	}
 
-	DCCP_INC_STATS_BH(DCCP_MIB_INERRS);
+	DCCP_INC_STATS(DCCP_MIB_INERRS);
 discard:
 	__kfree_skb(skb);
 	return 0;
@@ -480,7 +476,7 @@ static int dccp_rcv_request_sent_state_process(struct sock *sk,
 			sk_wake_async(sk, SOCK_WAKE_IO, POLL_OUT);
 		}
 
-		if (sk->sk_write_pending || icsk->icsk_ack.pingpong ||
+		if (sk->sk_write_pending || inet_csk_in_pingpong_mode(sk) ||
 		    icsk->icsk_accept_queue.rskq_defer_accept) {
 			/* Save one ACK. Data will be ready after
 			 * several ticks, if write_pending is set.
@@ -534,10 +530,11 @@ static int dccp_rcv_respond_partopen_state_process(struct sock *sk,
 	case DCCP_PKT_DATA:
 		if (sk->sk_state == DCCP_RESPOND)
 			break;
+		fallthrough;
 	case DCCP_PKT_DATAACK:
 	case DCCP_PKT_ACK:
 		/*
-		 * FIXME: we should be reseting the PARTOPEN (DELACK) timer
+		 * FIXME: we should be resetting the PARTOPEN (DELACK) timer
 		 * here but only if we haven't used the DELACK timer for
 		 * something else, like sending a delayed ack for a TIMESTAMP
 		 * echo, etc, for now were not clearing it, sending an extra
@@ -577,6 +574,7 @@ int dccp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 	struct dccp_sock *dp = dccp_sk(sk);
 	struct dccp_skb_cb *dcb = DCCP_SKB_CB(skb);
 	const int old_state = sk->sk_state;
+	bool acceptable;
 	int queued = 0;
 
 	/*
@@ -603,10 +601,18 @@ int dccp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 	 */
 	if (sk->sk_state == DCCP_LISTEN) {
 		if (dh->dccph_type == DCCP_PKT_REQUEST) {
-			if (inet_csk(sk)->icsk_af_ops->conn_request(sk,
-								    skb) < 0)
+			/* It is possible that we process SYN packets from backlog,
+			 * so we need to make sure to disable BH and RCU right there.
+			 */
+			rcu_read_lock();
+			local_bh_disable();
+			acceptable = inet_csk(sk)->icsk_af_ops->conn_request(sk, skb) >= 0;
+			local_bh_enable();
+			rcu_read_unlock();
+			if (!acceptable)
 				return 1;
-			goto discard;
+			consume_skb(skb);
+			return 0;
 		}
 		if (dh->dccph_type == DCCP_PKT_RESET)
 			goto discard;
@@ -678,7 +684,7 @@ int dccp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 		/* Step 8: if using Ack Vectors, mark packet acknowledgeable */
 		dccp_handle_ackvec_processing(sk, skb);
 		dccp_deliver_input_to_ccids(sk, skb);
-		/* fall through */
+		fallthrough;
 	case DCCP_RESPOND:
 		queued = dccp_rcv_respond_partopen_state_process(sk, skb,
 								 dh, len);
@@ -709,6 +715,7 @@ EXPORT_SYMBOL_GPL(dccp_rcv_state_process);
 
 /**
  *  dccp_sample_rtt  -  Validate and finalise computation of RTT sample
+ *  @sk:	socket structure
  *  @delta:	number of microseconds between packet and acknowledgment
  *
  *  The routine is kept generic to work in different contexts. It should be

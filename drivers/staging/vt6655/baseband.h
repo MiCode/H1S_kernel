@@ -1,23 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * Copyright (c) 1996, 2003 VIA Networking Technologies, Inc.
  * All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
- *
- * File: baseband.h
  *
  * Purpose: Implement functions to access baseband
  *
@@ -30,20 +14,16 @@
 #ifndef __BASEBAND_H__
 #define __BASEBAND_H__
 
-#include "ttype.h"
-#include "tether.h"
 #include "device.h"
 
-/*---------------------  Export Definitions -------------------------*/
-
-//
-// Registers in the BASEBAND
-//
+/*
+ * Registers in the BASEBAND
+ */
 #define BB_MAX_CONTEXT_SIZE 256
 
-//
-// Baseband RF pair definition in eeprom (Bits 6..0)
-//
+/*
+ * Baseband RF pair definition in eeprom (Bits 6..0)
+ */
 
 #define PREAMBLE_LONG   0
 #define PREAMBLE_SHORT  1
@@ -64,76 +44,29 @@
 #define TOP_RATE_2M         0x00200000
 #define TOP_RATE_1M         0x00100000
 
-/*---------------------  Export Types  ------------------------------*/
+unsigned int bb_get_frame_time(unsigned char preamble_type,
+			       unsigned char by_pkt_type,
+			       unsigned int cb_frame_length,
+			       unsigned short w_rate);
 
-/*---------------------  Export Macros ------------------------------*/
+void vnt_get_phy_field(struct vnt_private *priv, u32 frame_length,
+		       u16 tx_rate, u8 pkt_type, struct vnt_phy_field *phy);
 
-#define BBvClearFOE(dwIoBase)				\
-	BBbWriteEmbedded(dwIoBase, 0xB1, 0)
+bool bb_read_embedded(struct vnt_private *priv, unsigned char by_bb_addr,
+		      unsigned char *pby_data);
+bool bb_write_embedded(struct vnt_private *priv, unsigned char by_bb_addr,
+		       unsigned char by_data);
 
-#define BBvSetFOE(dwIoBase)				\
-	BBbWriteEmbedded(dwIoBase, 0xB1, 0x0C)
+void bb_set_short_slot_time(struct vnt_private *priv);
+void bb_set_vga_gain_offset(struct vnt_private *priv, unsigned char by_data);
 
-/*---------------------  Export Classes  ----------------------------*/
+/* VT3253 Baseband */
+bool bb_vt3253_init(struct vnt_private *priv);
+void bb_software_reset(struct vnt_private *priv);
+void bb_set_tx_antenna_mode(struct vnt_private *priv,
+			    unsigned char by_antenna_mode);
+void bb_set_rx_antenna_mode(struct vnt_private *priv,
+			    unsigned char by_antenna_mode);
+void bb_set_deep_sleep(struct vnt_private *priv, unsigned char by_local_id);
 
-/*---------------------  Export Variables  --------------------------*/
-
-/*---------------------  Export Functions  --------------------------*/
-
-unsigned int
-BBuGetFrameTime(
-	unsigned char byPreambleType,
-	unsigned char byPktType,
-	unsigned int cbFrameLength,
-	unsigned short wRate
-);
-
-void
-BBvCalculateParameter(
-	PSDevice pDevice,
-	unsigned int cbFrameLength,
-	unsigned short wRate,
-	unsigned char byPacketType,
-	unsigned short *pwPhyLen,
-	unsigned char *pbyPhySrv,
-	unsigned char *pbyPhySgn
-);
-
-bool BBbReadEmbedded(unsigned long dwIoBase, unsigned char byBBAddr, unsigned char *pbyData);
-bool BBbWriteEmbedded(unsigned long dwIoBase, unsigned char byBBAddr, unsigned char byData);
-
-void BBvReadAllRegs(unsigned long dwIoBase, unsigned char *pbyBBRegs);
-void BBvLoopbackOn(PSDevice pDevice);
-void BBvLoopbackOff(PSDevice pDevice);
-void BBvSetShortSlotTime(PSDevice pDevice);
-bool BBbIsRegBitsOn(unsigned long dwIoBase, unsigned char byBBAddr, unsigned char byTestBits);
-bool BBbIsRegBitsOff(unsigned long dwIoBase, unsigned char byBBAddr, unsigned char byTestBits);
-void BBvSetVGAGainOffset(PSDevice pDevice, unsigned char byData);
-
-// VT3253 Baseband
-bool BBbVT3253Init(PSDevice pDevice);
-void BBvSoftwareReset(unsigned long dwIoBase);
-void BBvPowerSaveModeON(unsigned long dwIoBase);
-void BBvPowerSaveModeOFF(unsigned long dwIoBase);
-void BBvSetTxAntennaMode(unsigned long dwIoBase, unsigned char byAntennaMode);
-void BBvSetRxAntennaMode(unsigned long dwIoBase, unsigned char byAntennaMode);
-void BBvSetDeepSleep(unsigned long dwIoBase, unsigned char byLocalID);
-void BBvExitDeepSleep(unsigned long dwIoBase, unsigned char byLocalID);
-
-// timer for antenna diversity
-
-void
-TimerSQ3CallBack(
-	void *hDeviceContext
-);
-
-void
-TimerState1CallBack(
-	void *hDeviceContext
-);
-
-void BBvAntennaDiversity(PSDevice pDevice, unsigned char byRxRate, unsigned char bySQ3);
-void
-BBvClearAntDivSQ3Value(PSDevice pDevice);
-
-#endif // __BASEBAND_H__
+#endif /* __BASEBAND_H__ */

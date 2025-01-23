@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Architecture specific sysfs attributes in /sys/kernel
  *
@@ -5,8 +6,6 @@
  *      Huang Ying <ying.huang@intel.com>
  * Copyright (C) 2013, 2013 Red Hat, Inc.
  *      Dave Young <dyoung@redhat.com>
- *
- * This file is released under the GPLv2
  */
 
 #include <linux/kobject.h>
@@ -16,8 +15,8 @@
 #include <linux/stat.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
+#include <linux/io.h>
 
-#include <asm/io.h>
 #include <asm/setup.h>
 
 static ssize_t version_show(struct kobject *kobj,
@@ -55,7 +54,7 @@ static struct bin_attribute *boot_params_data_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group boot_params_attr_group = {
+static const struct attribute_group boot_params_attr_group = {
 	.attrs = boot_params_version_attrs,
 	.bin_attrs = boot_params_data_attrs,
 };
@@ -79,12 +78,12 @@ static int get_setup_data_paddr(int nr, u64 *paddr)
 			*paddr = pa_data;
 			return 0;
 		}
-		data = ioremap_cache(pa_data, sizeof(*data));
+		data = memremap(pa_data, sizeof(*data), MEMREMAP_WB);
 		if (!data)
 			return -ENOMEM;
 
 		pa_data = data->next;
-		iounmap(data);
+		memunmap(data);
 		i++;
 	}
 	return -EINVAL;
@@ -92,22 +91,42 @@ static int get_setup_data_paddr(int nr, u64 *paddr)
 
 static int __init get_setup_data_size(int nr, size_t *size)
 {
-	int i = 0;
+	u64 pa_data = boot_params.hdr.setup_data, pa_next;
+	struct setup_indirect *indirect;
 	struct setup_data *data;
-	u64 pa_data = boot_params.hdr.setup_data;
+	int i = 0;
+	u32 len;
 
 	while (pa_data) {
-		data = ioremap_cache(pa_data, sizeof(*data));
+		data = memremap(pa_data, sizeof(*data), MEMREMAP_WB);
 		if (!data)
 			return -ENOMEM;
+		pa_next = data->next;
+
 		if (nr == i) {
-			*size = data->len;
-			iounmap(data);
+			if (data->type == SETUP_INDIRECT) {
+				len = sizeof(*data) + data->len;
+				memunmap(data);
+				data = memremap(pa_data, len, MEMREMAP_WB);
+				if (!data)
+					return -ENOMEM;
+
+				indirect = (struct setup_indirect *)data->data;
+
+				if (indirect->type != SETUP_INDIRECT)
+					*size = indirect->len;
+				else
+					*size = data->len;
+			} else {
+				*size = data->len;
+			}
+
+			memunmap(data);
 			return 0;
 		}
 
-		pa_data = data->next;
-		iounmap(data);
+		pa_data = pa_next;
+		memunmap(data);
 		i++;
 	}
 	return -EINVAL;
@@ -116,9 +135,11 @@ static int __init get_setup_data_size(int nr, size_t *size)
 static ssize_t type_show(struct kobject *kobj,
 			 struct kobj_attribute *attr, char *buf)
 {
+	struct setup_indirect *indirect;
+	struct setup_data *data;
 	int nr, ret;
 	u64 paddr;
-	struct setup_data *data;
+	u32 len;
 
 	ret = kobj_to_setup_data_nr(kobj, &nr);
 	if (ret)
@@ -127,12 +148,25 @@ static ssize_t type_show(struct kobject *kobj,
 	ret = get_setup_data_paddr(nr, &paddr);
 	if (ret)
 		return ret;
-	data = ioremap_cache(paddr, sizeof(*data));
+	data = memremap(paddr, sizeof(*data), MEMREMAP_WB);
 	if (!data)
 		return -ENOMEM;
 
-	ret = sprintf(buf, "0x%x\n", data->type);
-	iounmap(data);
+	if (data->type == SETUP_INDIRECT) {
+		len = sizeof(*data) + data->len;
+		memunmap(data);
+		data = memremap(paddr, len, MEMREMAP_WB);
+		if (!data)
+			return -ENOMEM;
+
+		indirect = (struct setup_indirect *)data->data;
+
+		ret = sprintf(buf, "0x%x\n", indirect->type);
+	} else {
+		ret = sprintf(buf, "0x%x\n", data->type);
+	}
+
+	memunmap(data);
 	return ret;
 }
 
@@ -142,9 +176,10 @@ static ssize_t setup_data_data_read(struct file *fp,
 				    char *buf,
 				    loff_t off, size_t count)
 {
-	int nr, ret = 0;
-	u64 paddr;
+	struct setup_indirect *indirect;
 	struct setup_data *data;
+	int nr, ret = 0;
+	u64 paddr, len;
 	void *p;
 
 	ret = kobj_to_setup_data_nr(kobj, &nr);
@@ -154,37 +189,63 @@ static ssize_t setup_data_data_read(struct file *fp,
 	ret = get_setup_data_paddr(nr, &paddr);
 	if (ret)
 		return ret;
-	data = ioremap_cache(paddr, sizeof(*data));
+	data = memremap(paddr, sizeof(*data), MEMREMAP_WB);
 	if (!data)
 		return -ENOMEM;
 
-	if (off > data->len) {
+	if (data->type == SETUP_INDIRECT) {
+		len = sizeof(*data) + data->len;
+		memunmap(data);
+		data = memremap(paddr, len, MEMREMAP_WB);
+		if (!data)
+			return -ENOMEM;
+
+		indirect = (struct setup_indirect *)data->data;
+
+		if (indirect->type != SETUP_INDIRECT) {
+			paddr = indirect->addr;
+			len = indirect->len;
+		} else {
+			/*
+			 * Even though this is technically undefined, return
+			 * the data as though it is a normal setup_data struct.
+			 * This will at least allow it to be inspected.
+			 */
+			paddr += sizeof(*data);
+			len = data->len;
+		}
+	} else {
+		paddr += sizeof(*data);
+		len = data->len;
+	}
+
+	if (off > len) {
 		ret = -EINVAL;
 		goto out;
 	}
 
-	if (count > data->len - off)
-		count = data->len - off;
+	if (count > len - off)
+		count = len - off;
 
 	if (!count)
 		goto out;
 
 	ret = count;
-	p = ioremap_cache(paddr + sizeof(*data), data->len);
+	p = memremap(paddr, len, MEMREMAP_WB);
 	if (!p) {
 		ret = -ENOMEM;
 		goto out;
 	}
 	memcpy(buf, p + off, count);
-	iounmap(p);
+	memunmap(p);
 out:
-	iounmap(data);
+	memunmap(data);
 	return ret;
 }
 
 static struct kobj_attribute type_attr = __ATTR_RO(type);
 
-static struct bin_attribute data_attr = {
+static struct bin_attribute data_attr __ro_after_init = {
 	.attr = {
 		.name = "data",
 		.mode = S_IRUGO,
@@ -202,7 +263,7 @@ static struct bin_attribute *setup_data_data_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group setup_data_attr_group = {
+static const struct attribute_group setup_data_attr_group = {
 	.attrs = setup_data_type_attrs,
 	.bin_attrs = setup_data_data_attrs,
 };
@@ -250,13 +311,13 @@ static int __init get_setup_data_total_num(u64 pa_data, int *nr)
 	*nr = 0;
 	while (pa_data) {
 		*nr += 1;
-		data = ioremap_cache(pa_data, sizeof(*data));
+		data = memremap(pa_data, sizeof(*data), MEMREMAP_WB);
 		if (!data) {
 			ret = -ENOMEM;
 			goto out;
 		}
 		pa_data = data->next;
-		iounmap(data);
+		memunmap(data);
 	}
 
 out:
@@ -283,7 +344,7 @@ static int __init create_setup_data_nodes(struct kobject *parent)
 	if (ret)
 		goto out_setup_data_kobj;
 
-	kobjp = kmalloc(sizeof(*kobjp) * nr, GFP_KERNEL);
+	kobjp = kmalloc_array(nr, sizeof(*kobjp), GFP_KERNEL);
 	if (!kobjp) {
 		ret = -ENOMEM;
 		goto out_setup_data_kobj;
@@ -299,7 +360,7 @@ static int __init create_setup_data_nodes(struct kobject *parent)
 	return 0;
 
 out_clean_nodes:
-	for (j = i - 1; j > 0; j--)
+	for (j = i - 1; j >= 0; j--)
 		cleanup_setup_data_node(*(kobjp + j));
 	kfree(kobjp);
 out_setup_data_kobj:

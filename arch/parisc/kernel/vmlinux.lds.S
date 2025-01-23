@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*    Kernel link layout for various "sections"
  *
  *    Copyright (C) 1999-2003 Matthew Wilcox <willy at parisc-linux.org>
@@ -17,6 +18,9 @@
 				*(.data..vm0.pgd) \
 				*(.data..vm0.pte)
 
+#define CC_USING_PATCHABLE_FUNCTION_ENTRY
+#define RO_EXCEPTION_TABLE_ALIGN	8
+
 #include <asm-generic/vmlinux.lds.h>
 
 /* needed for the processor specific cache alignment size */	
@@ -34,6 +38,15 @@ OUTPUT_FORMAT("elf64-hppa-linux")
 OUTPUT_ARCH(hppa:hppa2.0w)
 #endif
 
+#define EXIT_TEXT_SECTIONS()	.exit.text : { EXIT_TEXT }
+#if !defined(CONFIG_64BIT) || defined(CONFIG_MLONGCALLS)
+#define MLONGCALL_KEEP(x)
+#define MLONGCALL_DISCARD(x)	x
+#else
+#define MLONGCALL_KEEP(x)	x
+#define MLONGCALL_DISCARD(x)
+#endif
+
 ENTRY(parisc_kernel_start)
 #ifndef CONFIG_64BIT
 jiffies = jiffies_64 + 4;
@@ -46,41 +59,48 @@ SECTIONS
 
 	__init_begin = .;
 	HEAD_TEXT_SECTION
-	INIT_TEXT_SECTION(8)
+	MLONGCALL_DISCARD(INIT_TEXT_SECTION(8))
 
 	. = ALIGN(PAGE_SIZE);
 	INIT_DATA_SECTION(PAGE_SIZE)
-	/* we have to discard exit text and such at runtime, not link time */
-	.exit.text :
-	{
-		EXIT_TEXT
-	}
+	MLONGCALL_DISCARD(EXIT_TEXT_SECTIONS())
 	.exit.data :
 	{
 		EXIT_DATA
 	}
 	PERCPU_SECTION(8)
-	. = ALIGN(PAGE_SIZE);
+	. = ALIGN(4);
+	.altinstructions : {
+		__alt_instructions = .;
+		*(.altinstructions)
+		__alt_instructions_end = .;
+	}
+	. = ALIGN(HUGEPAGE_SIZE);
 	__init_end = .;
 	/* freed after init ends here */
 
 	_text = .;		/* Text and read-only data */
 	_stext = .;
+	MLONGCALL_KEEP(INIT_TEXT_SECTION(8))
 	.text ALIGN(PAGE_SIZE) : {
 		TEXT_TEXT
-		SCHED_TEXT
 		LOCK_TEXT
+		SCHED_TEXT
 		KPROBES_TEXT
 		IRQENTRY_TEXT
+		SOFTIRQENTRY_TEXT
 		*(.text.do_softirq)
 		*(.text.sys_exit)
 		*(.text.do_sigaltstack)
 		*(.text.do_fork)
+		*(.text.div)
+		*($$*)			/* millicode routines */
 		*(.text.*)
 		*(.fixup)
 		*(.lock.text)		/* out-of-line lock text */
 		*(.gnu.warning)
 	}
+	MLONGCALL_KEEP(EXIT_TEXT_SECTIONS())
 	. = ALIGN(PAGE_SIZE);
 	_etext = .;
 	/* End of text section */
@@ -88,13 +108,16 @@ SECTIONS
 	/* Start of data section */
 	_sdata = .;
 
-	RO_DATA_SECTION(8)
-
+	/* Architecturally we need to keep __gp below 0x1000000 and thus
+	 * in front of RO_DATA() which stores lots of tracepoint
+	 * and ftrace symbols. */
 #ifdef CONFIG_64BIT
 	. = ALIGN(16);
 	/* Linkage tables */
 	.opd : {
+		__start_opd = .;
 		*(.opd)
+		__end_opd = .;
 	} PROVIDE (__gp = .);
 	.plt : {
 		*(.plt)
@@ -104,7 +127,10 @@ SECTIONS
 	}
 #endif
 
+	RO_DATA(8)
+
 	/* unwind info */
+	. = ALIGN(4);
 	.PARISC.unwind : {
 		__start___unwind = .;
 		*(.PARISC.unwind)
@@ -116,14 +142,11 @@ SECTIONS
 	 * that we can properly leave these
 	 * as writable
 	 */
-	. = ALIGN(PAGE_SIZE);
+	. = ALIGN(HUGEPAGE_SIZE);
 	data_start = .;
 
-	EXCEPTION_TABLE(8)
-	NOTES
-
 	/* Data */
-	RW_DATA_SECTION(L1_CACHE_BYTES, PAGE_SIZE, PAGE_SIZE)
+	RW_DATA(L1_CACHE_BYTES, PAGE_SIZE, PAGE_SIZE)
 
 	/* PA-RISC locks requires 16-byte alignment */
 	. = ALIGN(16);
@@ -132,14 +155,17 @@ SECTIONS
 	}
 
 	/* End of data section */
+	. = ALIGN(PAGE_SIZE);
 	_edata = .;
 
 	/* BSS */
-	BSS_SECTION(PAGE_SIZE, PAGE_SIZE, 8)
+	BSS_SECTION(PAGE_SIZE, PAGE_SIZE, PAGE_SIZE)
 
+	. = ALIGN(HUGEPAGE_SIZE);
 	_end = . ;
 
 	STABS_DEBUG
+	ELF_DETAILS
 	.note 0 : { *(.note) }
 
 	/* Sections to be discarded */

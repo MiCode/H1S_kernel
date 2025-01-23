@@ -1,7 +1,7 @@
 /*
  * net/tipc/net.c: TIPC network routing code
  *
- * Copyright (c) 1995-2006, Ericsson AB
+ * Copyright (c) 1995-2006, 2014, Ericsson AB
  * Copyright (c) 2005, 2010-2011, Wind River Systems
  * All rights reserved.
  *
@@ -38,46 +38,44 @@
 #include "net.h"
 #include "name_distr.h"
 #include "subscr.h"
-#include "port.h"
+#include "socket.h"
 #include "node.h"
-#include "config.h"
+#include "bcast.h"
+#include "link.h"
+#include "netlink.h"
+#include "monitor.h"
 
 /*
  * The TIPC locking policy is designed to ensure a very fine locking
  * granularity, permitting complete parallel access to individual
- * port and node/link instances. The code consists of three major
+ * port and node/link instances. The code consists of four major
  * locking domains, each protected with their own disjunct set of locks.
  *
- * 1: The routing hierarchy.
- *    Comprises the structures 'zone', 'cluster', 'node', 'link'
- *    and 'bearer'. The whole hierarchy is protected by a big
- *    read/write lock, tipc_net_lock, to enssure that nothing is added
- *    or removed while code is accessing any of these structures.
- *    This layer must not be called from the two others while they
- *    hold any of their own locks.
- *    Neither must it itself do any upcalls to the other two before
- *    it has released tipc_net_lock and other protective locks.
+ * 1: The bearer level.
+ *    RTNL lock is used to serialize the process of configuring bearer
+ *    on update side, and RCU lock is applied on read side to make
+ *    bearer instance valid on both paths of message transmission and
+ *    reception.
  *
- *   Within the tipc_net_lock domain there are two sub-domains;'node' and
- *   'bearer', where local write operations are permitted,
- *   provided that those are protected by individual spin_locks
- *   per instance. Code holding tipc_net_lock(read) and a node spin_lock
- *   is permitted to poke around in both the node itself and its
- *   subordinate links. I.e, it can update link counters and queues,
- *   change link state, send protocol messages, and alter the
- *   "active_links" array in the node; but it can _not_ remove a link
- *   or a node from the overall structure.
- *   Correspondingly, individual bearers may change status within a
- *   tipc_net_lock(read), protected by an individual spin_lock ber bearer
- *   instance, but it needs tipc_net_lock(write) to remove/add any bearers.
+ * 2: The node and link level.
+ *    All node instances are saved into two tipc_node_list and node_htable
+ *    lists. The two lists are protected by node_list_lock on write side,
+ *    and they are guarded with RCU lock on read side. Especially node
+ *    instance is destroyed only when TIPC module is removed, and we can
+ *    confirm that there has no any user who is accessing the node at the
+ *    moment. Therefore, Except for iterating the two lists within RCU
+ *    protection, it's no needed to hold RCU that we access node instance
+ *    in other places.
  *
+ *    In addition, all members in node structure including link instances
+ *    are protected by node spin lock.
  *
- *  2: The transport level of the protocol.
- *     This consists of the structures port, (and its user level
- *     representations, such as user_port and tipc_sock), reference and
- *     tipc_user (port.c, reg.c, socket.c).
+ * 3: The transport level of the protocol.
+ *    This consists of the structures port, (and its user level
+ *    representations, such as user_port and tipc_sock), reference and
+ *    tipc_user (port.c, reg.c, socket.c).
  *
- *     This layer has four different locks:
+ *    This layer has four different locks:
  *     - The tipc_port spin_lock. This is protecting each port instance
  *       from parallel data access and removal. Since we can not place
  *       this lock in the port itself, it has been placed in the
@@ -92,11 +90,11 @@
  *     - A spin lock to protect the registry of kernel/driver users (reg.c)
  *     - A global spin_lock (tipc_port_lock), which only task is to ensure
  *       consistency where more than one port is involved in an operation,
- *       i.e., whe a port is part of a linked list of ports.
+ *       i.e., when a port is part of a linked list of ports.
  *       There are two such lists; 'port_list', which is used for management,
  *       and 'wait_list', which is used to queue ports during congestion.
  *
- *  3: The name table (name_table.c, name_distr.c, subscription.c)
+ *  4: The name table (name_table.c, name_distr.c, subscription.c)
  *     - There is one big read/write-lock (tipc_nametbl_lock) protecting the
  *       overall name table structure. Nothing must be added/removed to
  *       this structure without holding write access to it.
@@ -108,98 +106,240 @@
  *     - A local spin_lock protecting the queue of subscriber events.
 */
 
-DEFINE_RWLOCK(tipc_net_lock);
+static void tipc_net_finalize(struct net *net, u32 addr);
 
-static void net_route_named_msg(struct sk_buff *buf)
+int tipc_net_init(struct net *net, u8 *node_id, u32 addr)
 {
-	struct tipc_msg *msg = buf_msg(buf);
-	u32 dnode;
-	u32 dport;
-
-	if (!msg_named(msg)) {
-		kfree_skb(buf);
-		return;
+	if (tipc_own_id(net)) {
+		pr_info("Cannot configure node identity twice\n");
+		return -1;
 	}
-
-	dnode = addr_domain(msg_lookup_scope(msg));
-	dport = tipc_nametbl_translate(msg_nametype(msg), msg_nameinst(msg), &dnode);
-	if (dport) {
-		msg_set_destnode(msg, dnode);
-		msg_set_destport(msg, dport);
-		tipc_net_route_msg(buf);
-		return;
-	}
-	tipc_reject_msg(buf, TIPC_ERR_NO_NAME);
-}
-
-void tipc_net_route_msg(struct sk_buff *buf)
-{
-	struct tipc_msg *msg;
-	u32 dnode;
-
-	if (!buf)
-		return;
-	msg = buf_msg(buf);
-
-	/* Handle message for this node */
-	dnode = msg_short(msg) ? tipc_own_addr : msg_destnode(msg);
-	if (tipc_in_scope(dnode, tipc_own_addr)) {
-		if (msg_isdata(msg)) {
-			if (msg_mcast(msg))
-				tipc_port_recv_mcast(buf, NULL);
-			else if (msg_destport(msg))
-				tipc_port_recv_msg(buf);
-			else
-				net_route_named_msg(buf);
-			return;
-		}
-		switch (msg_user(msg)) {
-		case NAME_DISTRIBUTOR:
-			tipc_named_recv(buf);
-			break;
-		case CONN_MANAGER:
-			tipc_port_recv_proto_msg(buf);
-			break;
-		default:
-			kfree_skb(buf);
-		}
-		return;
-	}
-
-	/* Handle message for another node */
-	skb_trim(buf, msg_size(msg));
-	tipc_link_send(buf, dnode, msg_link_selector(msg));
-}
-
-void tipc_net_start(u32 addr)
-{
-	char addr_string[16];
-
-	write_lock_bh(&tipc_net_lock);
-	tipc_own_addr = addr;
-	tipc_named_reinit();
-	tipc_port_reinit();
-	tipc_bclink_init();
-	write_unlock_bh(&tipc_net_lock);
-
-	tipc_cfg_reinit();
-
 	pr_info("Started in network mode\n");
-	pr_info("Own node address %s, network identity %u\n",
-		tipc_addr_string_fill(addr_string, tipc_own_addr), tipc_net_id);
+
+	if (node_id)
+		tipc_set_node_id(net, node_id);
+	if (addr)
+		tipc_net_finalize(net, addr);
+	return 0;
 }
 
-void tipc_net_stop(void)
+static void tipc_net_finalize(struct net *net, u32 addr)
 {
-	struct tipc_node *node, *t_node;
+	struct tipc_net *tn = tipc_net(net);
+	struct tipc_socket_addr sk = {0, addr};
+	struct tipc_uaddr ua;
 
-	if (!tipc_own_addr)
+	tipc_uaddr(&ua, TIPC_SERVICE_RANGE, TIPC_CLUSTER_SCOPE,
+		   TIPC_NODE_STATE, addr, addr);
+
+	if (cmpxchg(&tn->node_addr, 0, addr))
 		return;
-	write_lock_bh(&tipc_net_lock);
-	tipc_bearer_stop();
-	tipc_bclink_stop();
-	list_for_each_entry_safe(node, t_node, &tipc_node_list, list)
-		tipc_node_delete(node);
-	write_unlock_bh(&tipc_net_lock);
+	tipc_set_node_addr(net, addr);
+	tipc_named_reinit(net);
+	tipc_sk_reinit(net);
+	tipc_mon_reinit_self(net);
+	tipc_nametbl_publish(net, &ua, &sk, addr);
+}
+
+void tipc_net_finalize_work(struct work_struct *work)
+{
+	struct tipc_net *tn = container_of(work, struct tipc_net, work);
+
+	tipc_net_finalize(tipc_link_net(tn->bcl), tn->trial_addr);
+}
+
+void tipc_net_stop(struct net *net)
+{
+	if (!tipc_own_id(net))
+		return;
+
+	rtnl_lock();
+	tipc_bearer_stop(net);
+	tipc_node_stop(net);
+	rtnl_unlock();
+
 	pr_info("Left network mode\n");
+}
+
+static int __tipc_nl_add_net(struct net *net, struct tipc_nl_msg *msg)
+{
+	struct tipc_net *tn = net_generic(net, tipc_net_id);
+	u64 *w0 = (u64 *)&tn->node_id[0];
+	u64 *w1 = (u64 *)&tn->node_id[8];
+	struct nlattr *attrs;
+	void *hdr;
+
+	hdr = genlmsg_put(msg->skb, msg->portid, msg->seq, &tipc_genl_family,
+			  NLM_F_MULTI, TIPC_NL_NET_GET);
+	if (!hdr)
+		return -EMSGSIZE;
+
+	attrs = nla_nest_start_noflag(msg->skb, TIPC_NLA_NET);
+	if (!attrs)
+		goto msg_full;
+
+	if (nla_put_u32(msg->skb, TIPC_NLA_NET_ID, tn->net_id))
+		goto attr_msg_full;
+	if (nla_put_u64_64bit(msg->skb, TIPC_NLA_NET_NODEID, *w0, 0))
+		goto attr_msg_full;
+	if (nla_put_u64_64bit(msg->skb, TIPC_NLA_NET_NODEID_W1, *w1, 0))
+		goto attr_msg_full;
+	nla_nest_end(msg->skb, attrs);
+	genlmsg_end(msg->skb, hdr);
+
+	return 0;
+
+attr_msg_full:
+	nla_nest_cancel(msg->skb, attrs);
+msg_full:
+	genlmsg_cancel(msg->skb, hdr);
+
+	return -EMSGSIZE;
+}
+
+int tipc_nl_net_dump(struct sk_buff *skb, struct netlink_callback *cb)
+{
+	struct net *net = sock_net(skb->sk);
+	int err;
+	int done = cb->args[0];
+	struct tipc_nl_msg msg;
+
+	if (done)
+		return 0;
+
+	msg.skb = skb;
+	msg.portid = NETLINK_CB(cb->skb).portid;
+	msg.seq = cb->nlh->nlmsg_seq;
+
+	err = __tipc_nl_add_net(net, &msg);
+	if (err)
+		goto out;
+
+	done = 1;
+out:
+	cb->args[0] = done;
+
+	return skb->len;
+}
+
+int __tipc_nl_net_set(struct sk_buff *skb, struct genl_info *info)
+{
+	struct nlattr *attrs[TIPC_NLA_NET_MAX + 1];
+	struct net *net = sock_net(skb->sk);
+	struct tipc_net *tn = tipc_net(net);
+	int err;
+
+	if (!info->attrs[TIPC_NLA_NET])
+		return -EINVAL;
+
+	err = nla_parse_nested_deprecated(attrs, TIPC_NLA_NET_MAX,
+					  info->attrs[TIPC_NLA_NET],
+					  tipc_nl_net_policy, info->extack);
+
+	if (err)
+		return err;
+
+	/* Can't change net id once TIPC has joined a network */
+	if (tipc_own_addr(net))
+		return -EPERM;
+
+	if (attrs[TIPC_NLA_NET_ID]) {
+		u32 val;
+
+		val = nla_get_u32(attrs[TIPC_NLA_NET_ID]);
+		if (val < 1 || val > 9999)
+			return -EINVAL;
+
+		tn->net_id = val;
+	}
+
+	if (attrs[TIPC_NLA_NET_ADDR]) {
+		u32 addr;
+
+		addr = nla_get_u32(attrs[TIPC_NLA_NET_ADDR]);
+		if (!addr)
+			return -EINVAL;
+		tn->legacy_addr_format = true;
+		tipc_net_init(net, NULL, addr);
+	}
+
+	if (attrs[TIPC_NLA_NET_NODEID]) {
+		u8 node_id[NODE_ID_LEN];
+		u64 *w0 = (u64 *)&node_id[0];
+		u64 *w1 = (u64 *)&node_id[8];
+
+		if (!attrs[TIPC_NLA_NET_NODEID_W1])
+			return -EINVAL;
+		*w0 = nla_get_u64(attrs[TIPC_NLA_NET_NODEID]);
+		*w1 = nla_get_u64(attrs[TIPC_NLA_NET_NODEID_W1]);
+		tipc_net_init(net, node_id, 0);
+	}
+	return 0;
+}
+
+int tipc_nl_net_set(struct sk_buff *skb, struct genl_info *info)
+{
+	int err;
+
+	rtnl_lock();
+	err = __tipc_nl_net_set(skb, info);
+	rtnl_unlock();
+
+	return err;
+}
+
+static int __tipc_nl_addr_legacy_get(struct net *net, struct tipc_nl_msg *msg)
+{
+	struct tipc_net *tn = tipc_net(net);
+	struct nlattr *attrs;
+	void *hdr;
+
+	hdr = genlmsg_put(msg->skb, msg->portid, msg->seq, &tipc_genl_family,
+			  0, TIPC_NL_ADDR_LEGACY_GET);
+	if (!hdr)
+		return -EMSGSIZE;
+
+	attrs = nla_nest_start(msg->skb, TIPC_NLA_NET);
+	if (!attrs)
+		goto msg_full;
+
+	if (tn->legacy_addr_format)
+		if (nla_put_flag(msg->skb, TIPC_NLA_NET_ADDR_LEGACY))
+			goto attr_msg_full;
+
+	nla_nest_end(msg->skb, attrs);
+	genlmsg_end(msg->skb, hdr);
+
+	return 0;
+
+attr_msg_full:
+	nla_nest_cancel(msg->skb, attrs);
+msg_full:
+	genlmsg_cancel(msg->skb, hdr);
+
+	return -EMSGSIZE;
+}
+
+int tipc_nl_net_addr_legacy_get(struct sk_buff *skb, struct genl_info *info)
+{
+	struct net *net = sock_net(skb->sk);
+	struct tipc_nl_msg msg;
+	struct sk_buff *rep;
+	int err;
+
+	rep = nlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
+	if (!rep)
+		return -ENOMEM;
+
+	msg.skb = rep;
+	msg.portid = info->snd_portid;
+	msg.seq = info->snd_seq;
+
+	err = __tipc_nl_addr_legacy_get(net, &msg);
+	if (err) {
+		nlmsg_free(msg.skb);
+		return err;
+	}
+
+	return genlmsg_reply(msg.skb, info);
 }

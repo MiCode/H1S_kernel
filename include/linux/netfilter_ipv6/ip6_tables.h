@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * 25-Jul-1998 Major changes to allow for ip chain table
  *
@@ -16,38 +17,22 @@
 
 #include <linux/if.h>
 #include <linux/in6.h>
+#include <linux/init.h>
 #include <linux/ipv6.h>
 #include <linux/skbuff.h>
-
-#include <linux/init.h>
 #include <uapi/linux/netfilter_ipv6/ip6_tables.h>
 
-extern void ip6t_init(void) __init;
-
 extern void *ip6t_alloc_initial_table(const struct xt_table *);
-extern struct xt_table *ip6t_register_table(struct net *net,
-					    const struct xt_table *table,
-					    const struct ip6t_replace *repl);
-extern void ip6t_unregister_table(struct net *net, struct xt_table *table);
-extern unsigned int ip6t_do_table(struct sk_buff *skb,
-				  unsigned int hook,
-				  const struct net_device *in,
-				  const struct net_device *out,
-				  struct xt_table *table);
 
-/* Check for an extension */
-static inline int
-ip6t_ext_hdr(u8 nexthdr)
-{	return (nexthdr == IPPROTO_HOPOPTS) ||
-	       (nexthdr == IPPROTO_ROUTING) ||
-	       (nexthdr == IPPROTO_FRAGMENT) ||
-	       (nexthdr == IPPROTO_ESP) ||
-	       (nexthdr == IPPROTO_AH) ||
-	       (nexthdr == IPPROTO_NONE) ||
-	       (nexthdr == IPPROTO_DSTOPTS);
-}
+int ip6t_register_table(struct net *net, const struct xt_table *table,
+			const struct ip6t_replace *repl,
+			const struct nf_hook_ops *ops);
+void ip6t_unregister_table_pre_exit(struct net *net, const char *name);
+void ip6t_unregister_table_exit(struct net *net, const char *name);
+extern unsigned int ip6t_do_table(void *priv, struct sk_buff *skb,
+				  const struct nf_hook_state *state);
 
-#ifdef CONFIG_COMPAT
+#ifdef CONFIG_NETFILTER_XTABLES_COMPAT
 #include <net/compat.h>
 
 struct compat_ip6t_entry {
@@ -57,7 +42,7 @@ struct compat_ip6t_entry {
 	__u16 next_offset;
 	compat_uint_t comefrom;
 	struct compat_xt_counters counters;
-	unsigned char elems[0];
+	unsigned char elems[];
 };
 
 static inline struct xt_entry_target *

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2010,2012 Freescale Semiconductor, Inc. All rights reserved.
  *
@@ -6,10 +7,6 @@
  * Description:
  * This file is derived from arch/powerpc/kvm/e500.c,
  * by Yu Liu <yu.liu@freescale.com>.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, version 2, as
- * published by the Free Software Foundation.
  */
 
 #include <linux/kvm_host.h>
@@ -21,9 +18,9 @@
 
 #include <asm/reg.h>
 #include <asm/cputable.h>
-#include <asm/tlbflush.h>
 #include <asm/kvm_ppc.h>
 #include <asm/dbell.h>
+#include <asm/ppc-opcode.h>
 
 #include "booke.h"
 #include "e500.h"
@@ -48,10 +45,11 @@ void kvmppc_set_pending_interrupt(struct kvm_vcpu *vcpu, enum int_class type)
 		return;
 	}
 
-
-	tag = PPC_DBELL_LPID(vcpu->kvm->arch.lpid) | vcpu->vcpu_id;
+	preempt_disable();
+	tag = PPC_DBELL_LPID(get_lpid(vcpu)) | vcpu->vcpu_id;
 	mb();
 	ppc_msgsnd(dbell_type, 0, tag);
+	preempt_enable();
 }
 
 /* gtlbe must not be mapped by more than one host tlb entry */
@@ -60,12 +58,11 @@ void kvmppc_e500_tlbil_one(struct kvmppc_vcpu_e500 *vcpu_e500,
 {
 	unsigned int tid, ts;
 	gva_t eaddr;
-	u32 val, lpid;
+	u32 val;
 	unsigned long flags;
 
 	ts = get_tlb_ts(gtlbe);
 	tid = get_tlb_tid(gtlbe);
-	lpid = vcpu_e500->vcpu.kvm->arch.lpid;
 
 	/* We search the host TLB to invalidate its shadow TLB entry */
 	val = (tid << 16) | ts;
@@ -74,7 +71,7 @@ void kvmppc_e500_tlbil_one(struct kvmppc_vcpu_e500 *vcpu_e500,
 	local_irq_save(flags);
 
 	mtspr(SPRN_MAS6, val);
-	mtspr(SPRN_MAS5, MAS5_SGS | lpid);
+	mtspr(SPRN_MAS5, MAS5_SGS | get_lpid(&vcpu_e500->vcpu));
 
 	asm volatile("tlbsx 0, %[eaddr]\n" : : [eaddr] "r" (eaddr));
 	val = mfspr(SPRN_MAS1);
@@ -95,8 +92,12 @@ void kvmppc_e500_tlbil_all(struct kvmppc_vcpu_e500 *vcpu_e500)
 	unsigned long flags;
 
 	local_irq_save(flags);
-	mtspr(SPRN_MAS5, MAS5_SGS | vcpu_e500->vcpu.kvm->arch.lpid);
-	asm volatile("tlbilxlpid");
+	mtspr(SPRN_MAS5, MAS5_SGS | get_lpid(&vcpu_e500->vcpu));
+	/*
+	 * clang-17 and older could not assemble tlbilxlpid.
+	 * https://github.com/ClangBuiltLinux/linux/issues/1891
+	 */
+	asm volatile (PPC_TLBILX_LPID);
 	mtspr(SPRN_MAS5, 0);
 	local_irq_restore(flags);
 }
@@ -110,7 +111,8 @@ void kvmppc_mmu_msr_notify(struct kvm_vcpu *vcpu, u32 old_msr)
 {
 }
 
-static DEFINE_PER_CPU(struct kvm_vcpu *, last_vcpu_on_cpu);
+/* We use two lpids per VM */
+static DEFINE_PER_CPU(struct kvm_vcpu *[KVMPPC_NR_LPIDS], last_vcpu_of_lpid);
 
 static void kvmppc_core_vcpu_load_e500mc(struct kvm_vcpu *vcpu, int cpu)
 {
@@ -118,10 +120,12 @@ static void kvmppc_core_vcpu_load_e500mc(struct kvm_vcpu *vcpu, int cpu)
 
 	kvmppc_booke_vcpu_load(vcpu, cpu);
 
-	mtspr(SPRN_LPID, vcpu->kvm->arch.lpid);
+	mtspr(SPRN_LPID, get_lpid(vcpu));
 	mtspr(SPRN_EPCR, vcpu->arch.shadow_epcr);
 	mtspr(SPRN_GPIR, vcpu->vcpu_id);
 	mtspr(SPRN_MSRP, vcpu->arch.shadow_msrp);
+	vcpu->arch.eplc = EPC_EGS | (get_lpid(vcpu) << EPC_ELPID_SHIFT);
+	vcpu->arch.epsc = vcpu->arch.eplc;
 	mtspr(SPRN_EPLC, vcpu->arch.eplc);
 	mtspr(SPRN_EPSC, vcpu->arch.epsc);
 
@@ -141,12 +145,10 @@ static void kvmppc_core_vcpu_load_e500mc(struct kvm_vcpu *vcpu, int cpu)
 	mtspr(SPRN_GESR, vcpu->arch.shared->esr);
 
 	if (vcpu->arch.oldpir != mfspr(SPRN_PIR) ||
-	    __get_cpu_var(last_vcpu_on_cpu) != vcpu) {
+	    __this_cpu_read(last_vcpu_of_lpid[get_lpid(vcpu)]) != vcpu) {
 		kvmppc_e500_tlbil_all(vcpu_e500);
-		__get_cpu_var(last_vcpu_on_cpu) = vcpu;
+		__this_cpu_write(last_vcpu_of_lpid[get_lpid(vcpu)], vcpu);
 	}
-
-	kvmppc_load_guest_fp(vcpu);
 }
 
 static void kvmppc_core_vcpu_put_e500mc(struct kvm_vcpu *vcpu)
@@ -171,7 +173,7 @@ static void kvmppc_core_vcpu_put_e500mc(struct kvm_vcpu *vcpu)
 	kvmppc_booke_vcpu_put(vcpu);
 }
 
-int kvmppc_core_check_processor_compat(void)
+static int kvmppc_e500mc_check_processor_compat(void)
 {
 	int r;
 
@@ -179,6 +181,16 @@ int kvmppc_core_check_processor_compat(void)
 		r = 0;
 	else if (strcmp(cur_cpu_spec->cpu_name, "e5500") == 0)
 		r = 0;
+#ifdef CONFIG_ALTIVEC
+	/*
+	 * Since guests have the privilege to enable AltiVec, we need AltiVec
+	 * support in the host to save/restore their context.
+	 * Don't use CPU_FTR_ALTIVEC to identify cores with AltiVec unit
+	 * because it's cleared in the absence of CONFIG_ALTIVEC!
+	 */
+	else if (strcmp(cur_cpu_spec->cpu_name, "e6500") == 0)
+		r = 0;
+#endif
 	else
 		r = -ENOTSUPP;
 
@@ -194,9 +206,7 @@ int kvmppc_core_vcpu_setup(struct kvm_vcpu *vcpu)
 #ifdef CONFIG_64BIT
 	vcpu->arch.shadow_epcr |= SPRN_EPCR_ICM;
 #endif
-	vcpu->arch.shadow_msrp = MSRP_UCLEP | MSRP_DEP | MSRP_PMMP;
-	vcpu->arch.eplc = EPC_EGS | (vcpu->kvm->arch.lpid << EPC_ELPID_SHIFT);
-	vcpu->arch.epsc = vcpu->arch.eplc;
+	vcpu->arch.shadow_msrp = MSRP_UCLEP | MSRP_PMMP;
 
 	vcpu->arch.pvr = mfspr(SPRN_PVR);
 	vcpu_e500->svr = mfspr(SPRN_SVR);
@@ -267,57 +277,61 @@ static int kvmppc_core_set_sregs_e500mc(struct kvm_vcpu *vcpu,
 static int kvmppc_get_one_reg_e500mc(struct kvm_vcpu *vcpu, u64 id,
 			      union kvmppc_one_reg *val)
 {
-	int r = kvmppc_get_one_reg_e500_tlb(vcpu, id, val);
+	int r = 0;
+
+	switch (id) {
+	case KVM_REG_PPC_SPRG9:
+		*val = get_reg_val(id, vcpu->arch.sprg9);
+		break;
+	default:
+		r = kvmppc_get_one_reg_e500_tlb(vcpu, id, val);
+	}
+
 	return r;
 }
 
 static int kvmppc_set_one_reg_e500mc(struct kvm_vcpu *vcpu, u64 id,
 			      union kvmppc_one_reg *val)
 {
-	int r = kvmppc_set_one_reg_e500_tlb(vcpu, id, val);
+	int r = 0;
+
+	switch (id) {
+	case KVM_REG_PPC_SPRG9:
+		vcpu->arch.sprg9 = set_reg_val(id, *val);
+		break;
+	default:
+		r = kvmppc_set_one_reg_e500_tlb(vcpu, id, val);
+	}
+
 	return r;
 }
 
-static struct kvm_vcpu *kvmppc_core_vcpu_create_e500mc(struct kvm *kvm,
-						       unsigned int id)
+static int kvmppc_core_vcpu_create_e500mc(struct kvm_vcpu *vcpu)
 {
 	struct kvmppc_vcpu_e500 *vcpu_e500;
-	struct kvm_vcpu *vcpu;
 	int err;
 
-	vcpu_e500 = kmem_cache_zalloc(kvm_vcpu_cache, GFP_KERNEL);
-	if (!vcpu_e500) {
-		err = -ENOMEM;
-		goto out;
-	}
-	vcpu = &vcpu_e500->vcpu;
+	BUILD_BUG_ON(offsetof(struct kvmppc_vcpu_e500, vcpu) != 0);
+	vcpu_e500 = to_e500(vcpu);
 
-	/* Invalid PIR value -- this LPID dosn't have valid state on any cpu */
+	/* Invalid PIR value -- this LPID doesn't have valid state on any cpu */
 	vcpu->arch.oldpir = 0xffffffff;
-
-	err = kvm_vcpu_init(vcpu, kvm, id);
-	if (err)
-		goto free_vcpu;
 
 	err = kvmppc_e500_tlb_init(vcpu_e500);
 	if (err)
-		goto uninit_vcpu;
+		return err;
 
 	vcpu->arch.shared = (void *)__get_free_page(GFP_KERNEL | __GFP_ZERO);
-	if (!vcpu->arch.shared)
+	if (!vcpu->arch.shared) {
+		err = -ENOMEM;
 		goto uninit_tlb;
+	}
 
-	return vcpu;
+	return 0;
 
 uninit_tlb:
 	kvmppc_e500_tlb_uninit(vcpu_e500);
-uninit_vcpu:
-	kvm_vcpu_uninit(vcpu);
-
-free_vcpu:
-	kmem_cache_free(kvm_vcpu_cache, vcpu_e500);
-out:
-	return ERR_PTR(err);
+	return err;
 }
 
 static void kvmppc_core_vcpu_free_e500mc(struct kvm_vcpu *vcpu)
@@ -326,8 +340,6 @@ static void kvmppc_core_vcpu_free_e500mc(struct kvm_vcpu *vcpu)
 
 	free_page((unsigned long)vcpu->arch.shared);
 	kvmppc_e500_tlb_uninit(vcpu_e500);
-	kvm_vcpu_uninit(vcpu);
-	kmem_cache_free(kvm_vcpu_cache, vcpu_e500);
 }
 
 static int kvmppc_core_init_vm_e500mc(struct kvm *kvm)
@@ -338,13 +350,26 @@ static int kvmppc_core_init_vm_e500mc(struct kvm *kvm)
 	if (lpid < 0)
 		return lpid;
 
+	/*
+	 * Use two lpids per VM on cores with two threads like e6500. Use
+	 * even numbers to speedup vcpu lpid computation with consecutive lpids
+	 * per VM. vm1 will use lpids 2 and 3, vm2 lpids 4 and 5, and so on.
+	 */
+	if (threads_per_core == 2)
+		lpid <<= 1;
+
 	kvm->arch.lpid = lpid;
 	return 0;
 }
 
 static void kvmppc_core_destroy_vm_e500mc(struct kvm *kvm)
 {
-	kvmppc_free_lpid(kvm->arch.lpid);
+	int lpid = kvm->arch.lpid;
+
+	if (threads_per_core == 2)
+		lpid >>= 1;
+
+	kvmppc_free_lpid(lpid);
 }
 
 static struct kvmppc_ops kvm_ops_e500mc = {
@@ -356,26 +381,35 @@ static struct kvmppc_ops kvm_ops_e500mc = {
 	.vcpu_put    = kvmppc_core_vcpu_put_e500mc,
 	.vcpu_create = kvmppc_core_vcpu_create_e500mc,
 	.vcpu_free   = kvmppc_core_vcpu_free_e500mc,
-	.mmu_destroy  = kvmppc_mmu_destroy_e500,
 	.init_vm = kvmppc_core_init_vm_e500mc,
 	.destroy_vm = kvmppc_core_destroy_vm_e500mc,
 	.emulate_op = kvmppc_core_emulate_op_e500,
 	.emulate_mtspr = kvmppc_core_emulate_mtspr_e500,
 	.emulate_mfspr = kvmppc_core_emulate_mfspr_e500,
+	.create_vcpu_debugfs = kvmppc_create_vcpu_debugfs_e500,
 };
 
 static int __init kvmppc_e500mc_init(void)
 {
 	int r;
 
+	r = kvmppc_e500mc_check_processor_compat();
+	if (r)
+		goto err_out;
+
 	r = kvmppc_booke_init();
 	if (r)
 		goto err_out;
 
-	kvmppc_init_lpid(64);
-	kvmppc_claim_lpid(0); /* host */
+	/*
+	 * Use two lpids per VM on dual threaded processors like e6500
+	 * to workarround the lack of tlb write conditional instruction.
+	 * Expose half the number of available hardware lpids to the lpid
+	 * allocator.
+	 */
+	kvmppc_init_lpid(KVMPPC_NR_LPIDS/threads_per_core);
 
-	r = kvm_init(NULL, sizeof(struct kvmppc_vcpu_e500), 0, THIS_MODULE);
+	r = kvm_init(sizeof(struct kvmppc_vcpu_e500), 0, THIS_MODULE);
 	if (r)
 		goto err_out;
 	kvm_ops_e500mc.owner = THIS_MODULE;

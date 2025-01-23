@@ -1,20 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Copyright (ST) 2012 Rajeev Kumar (rajeev-dlh.kumar@st.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
+ * Copyright (ST) 2012 Rajeev Kumar (rajeevkumar.linux@gmail.com)
  */
 
 #ifndef __SOUND_DESIGNWARE_I2S_H
@@ -35,18 +21,30 @@ struct i2s_clk_config_data {
 	u32 sample_rate;
 };
 
+struct dw_i2s_dev;
+
 struct i2s_platform_data {
 	#define DWC_I2S_PLAY	(1 << 0)
 	#define DWC_I2S_RECORD	(1 << 1)
+	#define DW_I2S_SLAVE	(1 << 2)
+	#define DW_I2S_MASTER	(1 << 3)
 	unsigned int cap;
 	int channel;
 	u32 snd_fmts;
 	u32 snd_rates;
 
+	#define DW_I2S_QUIRK_COMP_REG_OFFSET	(1 << 0)
+	#define DW_I2S_QUIRK_COMP_PARAM1	(1 << 1)
+	#define DW_I2S_QUIRK_16BIT_IDX_OVERRIDE (1 << 2)
+	unsigned int quirks;
+	unsigned int i2s_reg_comp1;
+	unsigned int i2s_reg_comp2;
+
 	void *play_dma_data;
 	void *capture_dma_data;
 	bool (*filter)(struct dma_chan *chan, void *slave);
 	int (*i2s_clk_cfg)(struct i2s_clk_config_data *config);
+	int (*i2s_pd_init)(struct dw_i2s_dev *dev);
 };
 
 struct i2s_dma_data {

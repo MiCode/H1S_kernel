@@ -1,17 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- *
- * Copyright (C) 2011 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2011 Texas Instruments Incorporated - https://www.ti.com/
  * Author: Rob Clark <rob@ti.com>
  *         Andy Gross <andy.gross@ti.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 #ifndef OMAP_DMM_TILER_H
 #define OMAP_DMM_TILER_H
@@ -89,31 +80,32 @@ int tiler_map_show(struct seq_file *s, void *arg);
 
 /* pin/unpin */
 int tiler_pin(struct tiler_block *block, struct page **pages,
-		uint32_t npages, uint32_t roll, bool wait);
+		u32 npages, u32 roll, bool wait);
 int tiler_unpin(struct tiler_block *block);
 
 /* reserve/release */
-struct tiler_block *tiler_reserve_2d(enum tiler_fmt fmt, uint16_t w, uint16_t h,
-				uint16_t align);
+struct tiler_block *tiler_reserve_2d(enum tiler_fmt fmt, u16 w, u16 h,
+				u16 align);
 struct tiler_block *tiler_reserve_1d(size_t size);
 int tiler_release(struct tiler_block *block);
 
 /* utilities */
 dma_addr_t tiler_ssptr(struct tiler_block *block);
-dma_addr_t tiler_tsptr(struct tiler_block *block, uint32_t orient,
-		uint32_t x, uint32_t y);
-uint32_t tiler_stride(enum tiler_fmt fmt, uint32_t orient);
-size_t tiler_size(enum tiler_fmt fmt, uint16_t w, uint16_t h);
-size_t tiler_vsize(enum tiler_fmt fmt, uint16_t w, uint16_t h);
-void tiler_align(enum tiler_fmt fmt, uint16_t *w, uint16_t *h);
+dma_addr_t tiler_tsptr(struct tiler_block *block, u32 orient,
+		u32 x, u32 y);
+u32 tiler_stride(enum tiler_fmt fmt, u32 orient);
+size_t tiler_size(enum tiler_fmt fmt, u16 w, u16 h);
+size_t tiler_vsize(enum tiler_fmt fmt, u16 w, u16 h);
+void tiler_align(enum tiler_fmt fmt, u16 *w, u16 *h);
+u32 tiler_get_cpu_cache_flags(void);
 bool dmm_is_available(void);
 
 extern struct platform_driver omap_dmm_driver;
 
 /* GEM bo flags -> tiler fmt */
-static inline enum tiler_fmt gem2fmt(uint32_t flags)
+static inline enum tiler_fmt gem2fmt(u32 flags)
 {
-	switch (flags & OMAP_BO_TILED) {
+	switch (flags & OMAP_BO_TILED_MASK) {
 	case OMAP_BO_TILED_8:
 		return TILFMT_8BIT;
 	case OMAP_BO_TILED_16:

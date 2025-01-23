@@ -17,6 +17,7 @@
 #include <linux/kernel.h>
 #include <linux/signal.h>
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
 #include <linux/kallsyms.h>
 
 #include <asm/exceptions.h>
@@ -43,10 +44,10 @@ void die(const char *str, struct pt_regs *fp, long err)
 	pr_warn("Oops: %s, sig: %ld\n", str, err);
 	show_regs(fp);
 	spin_unlock_irq(&die_lock);
-	/* do_exit() should take care of panic'ing from an interrupt
+	/* make_task_dead() should take care of panic'ing from an interrupt
 	 * context so we don't handle it here
 	 */
-	do_exit(err);
+	make_task_dead(err);
 }
 
 /* for user application debugging */
@@ -59,24 +60,16 @@ asmlinkage void sw_exception(struct pt_regs *regs)
 
 void _exception(int signr, struct pt_regs *regs, int code, unsigned long addr)
 {
-	siginfo_t info;
-
 	if (kernel_mode(regs))
 		die("Exception in kernel mode", regs, signr);
 
-	info.si_signo = signr;
-	info.si_errno = 0;
-	info.si_code = code;
-	info.si_addr = (void __user *) addr;
-	force_sig_info(signr, &info, current);
+	force_sig_fault(signr, code, (void __user *)addr);
 }
 
 asmlinkage void full_exception(struct pt_regs *regs, unsigned int type,
 							int fsr, int addr)
 {
-#ifdef CONFIG_MMU
 	addr = regs->pc;
-#endif
 
 #if 0
 	pr_warn("Exception %02x in %s mode, FSR=%08x PC=%08x ESR=%08x\n",
@@ -137,13 +130,10 @@ asmlinkage void full_exception(struct pt_regs *regs, unsigned int type,
 			fsr = FPE_FLTRES;
 		_exception(SIGFPE, regs, fsr, addr);
 		break;
-
-#ifdef CONFIG_MMU
 	case MICROBLAZE_PRIVILEGED_EXCEPTION:
 		pr_debug("Privileged exception\n");
 		_exception(SIGILL, regs, ILL_PRVOPC, addr);
 		break;
-#endif
 	default:
 	/* FIXME what to do in unexpected exception */
 		pr_warn("Unexpected exception %02x PC=%08x in %s mode\n",

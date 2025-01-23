@@ -22,65 +22,65 @@
  * Authors: Dave Airlie
  */
 
-#include <drm/drmP.h>
+#include <linux/dma-buf.h>
+#include <drm/ttm/ttm_tt.h>
 
-#include "nouveau_drm.h"
+#include "nouveau_drv.h"
 #include "nouveau_gem.h"
 
 struct sg_table *nouveau_gem_prime_get_sg_table(struct drm_gem_object *obj)
 {
 	struct nouveau_bo *nvbo = nouveau_gem_object(obj);
-	int npages = nvbo->bo.num_pages;
 
-	return drm_prime_pages_to_sg(nvbo->bo.ttm->pages, npages);
-}
-
-void *nouveau_gem_prime_vmap(struct drm_gem_object *obj)
-{
-	struct nouveau_bo *nvbo = nouveau_gem_object(obj);
-	int ret;
-
-	ret = ttm_bo_kmap(&nvbo->bo, 0, nvbo->bo.num_pages,
-			  &nvbo->dma_buf_vmap);
-	if (ret)
-		return ERR_PTR(ret);
-
-	return nvbo->dma_buf_vmap.virtual;
-}
-
-void nouveau_gem_prime_vunmap(struct drm_gem_object *obj, void *vaddr)
-{
-	struct nouveau_bo *nvbo = nouveau_gem_object(obj);
-
-	ttm_bo_kunmap(&nvbo->dma_buf_vmap);
+	return drm_prime_pages_to_sg(obj->dev, nvbo->bo.ttm->pages,
+				     nvbo->bo.ttm->num_pages);
 }
 
 struct drm_gem_object *nouveau_gem_prime_import_sg_table(struct drm_device *dev,
-							 size_t size,
+							 struct dma_buf_attachment *attach,
 							 struct sg_table *sg)
 {
+	struct nouveau_drm *drm = nouveau_drm(dev);
+	struct drm_gem_object *obj;
 	struct nouveau_bo *nvbo;
-	u32 flags = 0;
+	struct dma_resv *robj = attach->dmabuf->resv;
+	u64 size = attach->dmabuf->size;
+	int align = 0;
 	int ret;
 
-	flags = TTM_PL_FLAG_TT;
-
-	ret = nouveau_bo_new(dev, size, 0, flags, 0, 0,
-			     sg, &nvbo);
-	if (ret)
-		return ERR_PTR(ret);
+	dma_resv_lock(robj, NULL);
+	nvbo = nouveau_bo_alloc(&drm->client, &size, &align,
+				NOUVEAU_GEM_DOMAIN_GART, 0, 0, true);
+	if (IS_ERR(nvbo)) {
+		obj = ERR_CAST(nvbo);
+		goto unlock;
+	}
 
 	nvbo->valid_domains = NOUVEAU_GEM_DOMAIN_GART;
 
+	nvbo->bo.base.funcs = &nouveau_gem_object_funcs;
+
 	/* Initialize the embedded gem-object. We return a single gem-reference
 	 * to the caller, instead of a normal nouveau_bo ttm reference. */
-	ret = drm_gem_object_init(dev, &nvbo->gem, nvbo->bo.mem.size);
+	ret = drm_gem_object_init(dev, &nvbo->bo.base, size);
 	if (ret) {
 		nouveau_bo_ref(NULL, &nvbo);
-		return ERR_PTR(-ENOMEM);
+		obj = ERR_PTR(-ENOMEM);
+		goto unlock;
 	}
 
-	return &nvbo->gem;
+	ret = nouveau_bo_init(nvbo, size, align, NOUVEAU_GEM_DOMAIN_GART,
+			      sg, robj);
+	if (ret) {
+		obj = ERR_PTR(ret);
+		goto unlock;
+	}
+
+	obj = &nvbo->bo.base;
+
+unlock:
+	dma_resv_unlock(robj);
+	return obj;
 }
 
 int nouveau_gem_prime_pin(struct drm_gem_object *obj)
@@ -89,7 +89,7 @@ int nouveau_gem_prime_pin(struct drm_gem_object *obj)
 	int ret;
 
 	/* pin buffer into GTT */
-	ret = nouveau_bo_pin(nvbo, TTM_PL_FLAG_TT);
+	ret = nouveau_bo_pin(nvbo, NOUVEAU_GEM_DOMAIN_GART, false);
 	if (ret)
 		return -EINVAL;
 
@@ -101,4 +101,15 @@ void nouveau_gem_prime_unpin(struct drm_gem_object *obj)
 	struct nouveau_bo *nvbo = nouveau_gem_object(obj);
 
 	nouveau_bo_unpin(nvbo);
+}
+
+struct dma_buf *nouveau_gem_prime_export(struct drm_gem_object *gobj,
+					 int flags)
+{
+	struct nouveau_bo *nvbo = nouveau_gem_object(gobj);
+
+	if (nvbo->no_share)
+		return ERR_PTR(-EPERM);
+
+	return drm_gem_prime_export(gobj, flags);
 }

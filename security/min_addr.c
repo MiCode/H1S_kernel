@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/init.h>
 #include <linux/mm.h>
 #include <linux/security.h>
@@ -29,7 +30,7 @@ static void update_mmap_min_addr(void)
  * calls update_mmap_min_addr() so non MAP_FIXED hints get rounded properly
  */
 int mmap_min_addr_handler(struct ctl_table *table, int write,
-			  void __user *buffer, size_t *lenp, loff_t *ppos)
+			  void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int ret;
 

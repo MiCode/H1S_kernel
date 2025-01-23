@@ -1,24 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * This file is part of wl1271
  *
  * Copyright (C) 2009-2010 Nokia Corporation
  *
  * Contact: Luciano Coelho <luciano.coelho@nokia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #ifndef __SCAN_H__
@@ -37,7 +23,7 @@ void wl1271_scan_complete_work(struct work_struct *work);
 int wl1271_scan_sched_scan_config(struct wl1271 *wl,
 				     struct wl12xx_vif *wlvif,
 				     struct cfg80211_sched_scan_request *req,
-				     struct ieee80211_sched_scan_ies *ies);
+				     struct ieee80211_scan_ies *ies);
 int wl1271_scan_sched_scan_start(struct wl1271 *wl, struct wl12xx_vif *wlvif);
 void wlcore_scan_sched_scan_results(struct wl1271 *wl);
 
@@ -83,6 +69,12 @@ struct wl1271_cmd_trigger_scan_to {
 #define MAX_CHANNELS_5GHZ	42
 
 #define SCAN_MAX_CYCLE_INTERVALS 16
+
+/* The FW intervals can take up to 16 entries.
+ * The 1st entry isn't used (scan is immediate). The last
+ * entry should be used for the long_interval
+ */
+#define SCAN_MAX_SHORT_INTERVALS (SCAN_MAX_CYCLE_INTERVALS - 2)
 #define SCAN_MAX_BANDS 3
 
 enum {

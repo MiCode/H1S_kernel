@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* DVB USB framework compliant Linux driver for the Opera1 DVB-S Card
 *
 * Copyright (C) 2006 Mario Hlawitschka (dh1pa@amsat.org)
 * Copyright (C) 2006 Marco Gittler (g.marco@freenet.de)
 *
-*	This program is free software; you can redistribute it and/or modify it
-*	under the terms of the GNU General Public License as published by the Free
-*	Software Foundation, version 2.
-*
-* see Documentation/dvb/README.dvb-usb for more information
+* see Documentation/driver-api/media/drivers/dvb-usb.rst for more information
 */
 
 #define DVB_USB_LOG_PREFIX "opera"
@@ -167,15 +164,15 @@ static struct i2c_algorithm opera1_i2c_algo = {
 	.functionality = opera1_i2c_func,
 };
 
-static int opera1_set_voltage(struct dvb_frontend *fe, fe_sec_voltage_t voltage)
+static int opera1_set_voltage(struct dvb_frontend *fe,
+			      enum fe_sec_voltage voltage)
 {
 	static u8 command_13v[1]={0x00};
 	static u8 command_18v[1]={0x01};
 	struct i2c_msg msg[] = {
 		{.addr = ADDR_B600_VOLTAGE_13V,.flags = 0,.buf = command_13v,.len = 1},
 	};
-	struct dvb_usb_adapter *udev_adap =
-	    (struct dvb_usb_adapter *)(fe->dvb->priv);
+	struct dvb_usb_adapter *udev_adap = fe->dvb->priv;
 	if (voltage == SEC_VOLTAGE_18) {
 		msg[0].addr = ADDR_B601_VOLTAGE_18V;
 		msg[0].buf = command_18v;
@@ -427,19 +424,29 @@ static int opera1_rc_query(struct dvb_usb_device *dev, u32 * event, int *state)
 	return 0;
 }
 
+enum {
+	CYPRESS_OPERA1_COLD,
+	OPERA1_WARM,
+};
+
 static struct usb_device_id opera1_table[] = {
-	{USB_DEVICE(USB_VID_CYPRESS, USB_PID_OPERA1_COLD)},
-	{USB_DEVICE(USB_VID_OPERA1, USB_PID_OPERA1_WARM)},
-	{}
+	DVB_USB_DEV(CYPRESS, CYPRESS_OPERA1_COLD),
+	DVB_USB_DEV(OPERA1, OPERA1_WARM),
+	{ }
 };
 
 MODULE_DEVICE_TABLE(usb, opera1_table);
 
 static int opera1_read_mac_address(struct dvb_usb_device *d, u8 mac[6])
 {
+	int ret;
 	u8 command[] = { READ_MAC_ADDR };
-	opera1_xilinx_rw(d->udev, 0xb1, 0xa0, command, 1, OPERA_WRITE_MSG);
-	opera1_xilinx_rw(d->udev, 0xb1, 0xa1, mac, 6, OPERA_READ_MSG);
+	ret = opera1_xilinx_rw(d->udev, 0xb1, 0xa0, command, 1, OPERA_WRITE_MSG);
+	if (ret)
+		return ret;
+	ret = opera1_xilinx_rw(d->udev, 0xb1, 0xa1, mac, 6, OPERA_READ_MSG);
+	if (ret)
+		return ret;
 	return 0;
 }
 static int opera1_xilinx_load_firmware(struct usb_device *dev,
@@ -452,8 +459,7 @@ static int opera1_xilinx_load_firmware(struct usb_device *dev,
 	info("start downloading fpga firmware %s",filename);
 
 	if ((ret = request_firmware(&fw, filename, &dev->dev)) != 0) {
-		err("did not find the firmware file. (%s) "
-			"Please see linux/Documentation/dvb/ for more details on firmware-problems.",
+		err("did not find the firmware file '%s'. You can use <kernel_dir>/scripts/get_dvb_firmware to get the firmware",
 			filename);
 		return ret;
 	} else {
@@ -543,8 +549,8 @@ static struct dvb_usb_device_properties opera1_properties = {
 	.num_device_descs = 1,
 	.devices = {
 		{"Opera1 DVB-S USB2.0",
-			{&opera1_table[0], NULL},
-			{&opera1_table[1], NULL},
+			{&opera1_table[CYPRESS_OPERA1_COLD], NULL},
+			{&opera1_table[OPERA1_WARM], NULL},
 		},
 	}
 };
@@ -554,8 +560,8 @@ static int opera1_probe(struct usb_interface *intf,
 {
 	struct usb_device *udev = interface_to_usbdev(intf);
 
-	if (udev->descriptor.idProduct == USB_PID_OPERA1_WARM &&
-		udev->descriptor.idVendor == USB_VID_OPERA1 &&
+	if (le16_to_cpu(udev->descriptor.idProduct) == USB_PID_OPERA1_WARM &&
+	    le16_to_cpu(udev->descriptor.idVendor) == USB_VID_OPERA1 &&
 		opera1_xilinx_load_firmware(udev, "dvb-usb-opera1-fpga-01.fw") != 0
 	    ) {
 		return -EINVAL;

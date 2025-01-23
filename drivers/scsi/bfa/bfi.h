@@ -1,18 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2005-2010 Brocade Communications Systems, Inc.
+ * Copyright (c) 2005-2014 Brocade Communications Systems, Inc.
+ * Copyright (c) 2014- QLogic Corporation.
  * All rights reserved
- * www.brocade.com
+ * www.qlogic.com
  *
- * Linux driver for Brocade Fibre Channel Host Bus Adapter.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License (GPL) Version 2 as
- * published by the Free Software Foundation
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
+ * Linux driver for QLogic BR-series Fibre Channel Host Bus Adapter.
  */
 
 #ifndef __BFI_H__
@@ -355,7 +348,7 @@ struct bfi_ioc_image_hdr_s {
 	u8	port0_mode;	/* device mode for port 0	*/
 	u8	port1_mode;	/* device mode for port 1	*/
 	u32	exec;		/* exec vector			*/
-	u32	bootenv;	/* fimware boot env		*/
+	u32	bootenv;	/* firmware boot env		*/
 	u32	rsvd_b[2];
 	struct bfi_ioc_fwver_s	fwver;
 	u32	md5sum[BFI_IOC_MD5SUM_SZ];

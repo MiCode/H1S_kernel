@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /******************************************************************************
  * This file contains error recovery level zero functions used by
  * the iSCSI Target driver.
@@ -6,24 +7,16 @@
  *
  * Author: Nicholas A. Bellinger <nab@linux-iscsi.org>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  ******************************************************************************/
+
+#include <linux/sched/signal.h>
 
 #include <scsi/iscsi_proto.h>
 #include <target/target_core_base.h>
 #include <target/target_core_fabric.h>
 
-#include "iscsi_target_core.h"
+#include <target/iscsi/iscsi_target_core.h>
 #include "iscsi_target_seq_pdu_list.h"
-#include "iscsi_target_tq.h"
 #include "iscsi_target_erl0.h"
 #include "iscsi_target_erl1.h"
 #include "iscsi_target_erl2.h"
@@ -31,24 +24,22 @@
 #include "iscsi_target.h"
 
 /*
- *	Used to set values in struct iscsi_cmd that iscsit_dataout_check_sequence()
+ *	Used to set values in struct iscsit_cmd that iscsit_dataout_check_sequence()
  *	checks against to determine a PDU's Offset+Length is within the current
  *	DataOUT Sequence.  Used for DataSequenceInOrder=Yes only.
  */
 void iscsit_set_dataout_sequence_values(
-	struct iscsi_cmd *cmd)
+	struct iscsit_cmd *cmd)
 {
-	struct iscsi_conn *conn = cmd->conn;
+	struct iscsit_conn *conn = cmd->conn;
 	/*
 	 * Still set seq_start_offset and seq_end_offset for Unsolicited
 	 * DataOUT, even if DataSequenceInOrder=No.
 	 */
 	if (cmd->unsolicited_data) {
 		cmd->seq_start_offset = cmd->write_data_done;
-		cmd->seq_end_offset = (cmd->write_data_done +
-			((cmd->se_cmd.data_length >
-			  conn->sess->sess_ops->FirstBurstLength) ?
-			 conn->sess->sess_ops->FirstBurstLength : cmd->se_cmd.data_length));
+		cmd->seq_end_offset = min(cmd->se_cmd.data_length,
+					conn->sess->sess_ops->FirstBurstLength);
 		return;
 	}
 
@@ -72,10 +63,10 @@ void iscsit_set_dataout_sequence_values(
 }
 
 static int iscsit_dataout_within_command_recovery_check(
-	struct iscsi_cmd *cmd,
+	struct iscsit_cmd *cmd,
 	unsigned char *buf)
 {
-	struct iscsi_conn *conn = cmd->conn;
+	struct iscsit_conn *conn = cmd->conn;
 	struct iscsi_data *hdr = (struct iscsi_data *) buf;
 	u32 payload_length = ntoh24(hdr->dlength);
 
@@ -138,11 +129,11 @@ dump:
 }
 
 static int iscsit_dataout_check_unsolicited_sequence(
-	struct iscsi_cmd *cmd,
+	struct iscsit_cmd *cmd,
 	unsigned char *buf)
 {
 	u32 first_burst_len;
-	struct iscsi_conn *conn = cmd->conn;
+	struct iscsit_conn *conn = cmd->conn;
 	struct iscsi_data *hdr = (struct iscsi_data *) buf;
 	u32 payload_length = ntoh24(hdr->dlength);
 
@@ -213,11 +204,11 @@ out:
 }
 
 static int iscsit_dataout_check_sequence(
-	struct iscsi_cmd *cmd,
+	struct iscsit_cmd *cmd,
 	unsigned char *buf)
 {
 	u32 next_burst_len;
-	struct iscsi_conn *conn = cmd->conn;
+	struct iscsit_conn *conn = cmd->conn;
 	struct iscsi_seq *seq = NULL;
 	struct iscsi_data *hdr = (struct iscsi_data *) buf;
 	u32 payload_length = ntoh24(hdr->dlength);
@@ -342,12 +333,11 @@ out:
 }
 
 static int iscsit_dataout_check_datasn(
-	struct iscsi_cmd *cmd,
+	struct iscsit_cmd *cmd,
 	unsigned char *buf)
 {
-	int dump = 0, recovery = 0;
 	u32 data_sn = 0;
-	struct iscsi_conn *conn = cmd->conn;
+	struct iscsit_conn *conn = cmd->conn;
 	struct iscsi_data *hdr = (struct iscsi_data *) buf;
 	u32 payload_length = ntoh24(hdr->dlength);
 
@@ -370,13 +360,11 @@ static int iscsit_dataout_check_datasn(
 		pr_err("Command ITT: 0x%08x, received DataSN: 0x%08x"
 			" higher than expected 0x%08x.\n", cmd->init_task_tag,
 				be32_to_cpu(hdr->datasn), data_sn);
-		recovery = 1;
 		goto recover;
 	} else if (be32_to_cpu(hdr->datasn) < data_sn) {
 		pr_err("Command ITT: 0x%08x, received DataSN: 0x%08x"
 			" lower than expected 0x%08x, discarding payload.\n",
 			cmd->init_task_tag, be32_to_cpu(hdr->datasn), data_sn);
-		dump = 1;
 		goto dump;
 	}
 
@@ -392,22 +380,21 @@ dump:
 	if (iscsit_dump_data_payload(conn, payload_length, 1) < 0)
 		return DATAOUT_CANNOT_RECOVER;
 
-	return (recovery || dump) ? DATAOUT_WITHIN_COMMAND_RECOVERY :
-				DATAOUT_NORMAL;
+	return DATAOUT_WITHIN_COMMAND_RECOVERY;
 }
 
 static int iscsit_dataout_pre_datapduinorder_yes(
-	struct iscsi_cmd *cmd,
+	struct iscsit_cmd *cmd,
 	unsigned char *buf)
 {
 	int dump = 0, recovery = 0;
-	struct iscsi_conn *conn = cmd->conn;
+	struct iscsit_conn *conn = cmd->conn;
 	struct iscsi_data *hdr = (struct iscsi_data *) buf;
 	u32 payload_length = ntoh24(hdr->dlength);
 
 	/*
 	 * For DataSequenceInOrder=Yes: If the offset is greater than the global
-	 * DataPDUInOrder=Yes offset counter in struct iscsi_cmd a protcol error has
+	 * DataPDUInOrder=Yes offset counter in struct iscsit_cmd a protcol error has
 	 * occurred and fail the connection.
 	 *
 	 * For DataSequenceInOrder=No: If the offset is greater than the per
@@ -459,7 +446,7 @@ dump:
 }
 
 static int iscsit_dataout_pre_datapduinorder_no(
-	struct iscsi_cmd *cmd,
+	struct iscsit_cmd *cmd,
 	unsigned char *buf)
 {
 	struct iscsi_pdu *pdu;
@@ -490,7 +477,7 @@ static int iscsit_dataout_pre_datapduinorder_no(
 	return DATAOUT_NORMAL;
 }
 
-static int iscsit_dataout_update_r2t(struct iscsi_cmd *cmd, u32 offset, u32 length)
+static int iscsit_dataout_update_r2t(struct iscsit_cmd *cmd, u32 offset, u32 length)
 {
 	struct iscsi_r2t *r2t;
 
@@ -510,7 +497,7 @@ static int iscsit_dataout_update_r2t(struct iscsi_cmd *cmd, u32 offset, u32 leng
 }
 
 static int iscsit_dataout_update_datapduinorder_no(
-	struct iscsi_cmd *cmd,
+	struct iscsit_cmd *cmd,
 	u32 data_sn,
 	int f_bit)
 {
@@ -543,11 +530,11 @@ static int iscsit_dataout_update_datapduinorder_no(
 }
 
 static int iscsit_dataout_post_crc_passed(
-	struct iscsi_cmd *cmd,
+	struct iscsit_cmd *cmd,
 	unsigned char *buf)
 {
 	int ret, send_r2t = 0;
-	struct iscsi_conn *conn = cmd->conn;
+	struct iscsit_conn *conn = cmd->conn;
 	struct iscsi_seq *seq = NULL;
 	struct iscsi_data *hdr = (struct iscsi_data *) buf;
 	u32 payload_length = ntoh24(hdr->dlength);
@@ -654,10 +641,10 @@ static int iscsit_dataout_post_crc_passed(
 }
 
 static int iscsit_dataout_post_crc_failed(
-	struct iscsi_cmd *cmd,
+	struct iscsit_cmd *cmd,
 	unsigned char *buf)
 {
-	struct iscsi_conn *conn = cmd->conn;
+	struct iscsit_conn *conn = cmd->conn;
 	struct iscsi_pdu *pdu;
 	struct iscsi_data *hdr = (struct iscsi_data *) buf;
 	u32 payload_length = ntoh24(hdr->dlength);
@@ -692,11 +679,11 @@ recover:
  *	and CRC computed.
  */
 int iscsit_check_pre_dataout(
-	struct iscsi_cmd *cmd,
+	struct iscsit_cmd *cmd,
 	unsigned char *buf)
 {
 	int ret;
-	struct iscsi_conn *conn = cmd->conn;
+	struct iscsit_conn *conn = cmd->conn;
 
 	ret = iscsit_dataout_within_command_recovery_check(cmd, buf);
 	if ((ret == DATAOUT_WITHIN_COMMAND_RECOVERY) ||
@@ -730,11 +717,11 @@ int iscsit_check_pre_dataout(
  *	and CRC computed.
  */
 int iscsit_check_post_dataout(
-	struct iscsi_cmd *cmd,
+	struct iscsit_cmd *cmd,
 	unsigned char *buf,
 	u8 data_crc_failed)
 {
-	struct iscsi_conn *conn = cmd->conn;
+	struct iscsit_conn *conn = cmd->conn;
 
 	cmd->dataout_timeout_retries = 0;
 
@@ -754,9 +741,9 @@ int iscsit_check_post_dataout(
 	}
 }
 
-static void iscsit_handle_time2retain_timeout(unsigned long data)
+void iscsit_handle_time2retain_timeout(struct timer_list *t)
 {
-	struct iscsi_session *sess = (struct iscsi_session *) data;
+	struct iscsit_session *sess = from_timer(sess, t, time2retain_timer);
 	struct iscsi_portal_group *tpg = sess->tpg;
 	struct se_portal_group *se_tpg = &tpg->tpg_se_tpg;
 
@@ -775,26 +762,13 @@ static void iscsit_handle_time2retain_timeout(unsigned long data)
 
 	pr_err("Time2Retain timer expired for SID: %u, cleaning up"
 			" iSCSI session.\n", sess->sid);
-	{
-	struct iscsi_tiqn *tiqn = tpg->tpg_tiqn;
 
-	if (tiqn) {
-		spin_lock(&tiqn->sess_err_stats.lock);
-		strcpy(tiqn->sess_err_stats.last_sess_fail_rem_name,
-			(void *)sess->sess_ops->InitiatorName);
-		tiqn->sess_err_stats.last_sess_failure_type =
-				ISCSI_SESS_ERR_CXN_TIMEOUT;
-		tiqn->sess_err_stats.cxn_timeout_errors++;
-		atomic_long_inc(&sess->conn_timeout_errors);
-		spin_unlock(&tiqn->sess_err_stats.lock);
-	}
-	}
-
+	iscsit_fill_cxn_timeout_err_stats(sess);
 	spin_unlock_bh(&se_tpg->session_lock);
-	target_put_session(sess->se_sess);
+	iscsit_close_session(sess, false);
 }
 
-void iscsit_start_time2retain_handler(struct iscsi_session *sess)
+void iscsit_start_time2retain_handler(struct iscsit_session *sess)
 {
 	int tpg_active;
 	/*
@@ -814,23 +788,18 @@ void iscsit_start_time2retain_handler(struct iscsi_session *sess)
 	pr_debug("Starting Time2Retain timer for %u seconds on"
 		" SID: %u\n", sess->sess_ops->DefaultTime2Retain, sess->sid);
 
-	init_timer(&sess->time2retain_timer);
-	sess->time2retain_timer.expires =
-		(get_jiffies_64() + sess->sess_ops->DefaultTime2Retain * HZ);
-	sess->time2retain_timer.data = (unsigned long)sess;
-	sess->time2retain_timer.function = iscsit_handle_time2retain_timeout;
 	sess->time2retain_timer_flags &= ~ISCSI_TF_STOP;
 	sess->time2retain_timer_flags |= ISCSI_TF_RUNNING;
-	add_timer(&sess->time2retain_timer);
+	mod_timer(&sess->time2retain_timer,
+		  jiffies + sess->sess_ops->DefaultTime2Retain * HZ);
 }
 
-/*
- *	Called with spin_lock_bh(&struct se_portal_group->session_lock) held
- */
-int iscsit_stop_time2retain_timer(struct iscsi_session *sess)
+int iscsit_stop_time2retain_timer(struct iscsit_session *sess)
 {
 	struct iscsi_portal_group *tpg = sess->tpg;
 	struct se_portal_group *se_tpg = &tpg->tpg_se_tpg;
+
+	lockdep_assert_held(&se_tpg->session_lock);
 
 	if (sess->time2retain_timer_flags & ISCSI_TF_EXPIRED)
 		return -1;
@@ -850,7 +819,7 @@ int iscsit_stop_time2retain_timer(struct iscsi_session *sess)
 	return 0;
 }
 
-void iscsit_connection_reinstatement_rcfr(struct iscsi_conn *conn)
+void iscsit_connection_reinstatement_rcfr(struct iscsit_conn *conn)
 {
 	spin_lock_bh(&conn->state_lock);
 	if (atomic_read(&conn->connection_exit)) {
@@ -864,14 +833,17 @@ void iscsit_connection_reinstatement_rcfr(struct iscsi_conn *conn)
 	}
 	spin_unlock_bh(&conn->state_lock);
 
-	iscsi_thread_set_force_reinstatement(conn);
+	if (conn->tx_thread && conn->tx_thread_active)
+		send_sig(SIGINT, conn->tx_thread, 1);
+	if (conn->rx_thread && conn->rx_thread_active)
+		send_sig(SIGINT, conn->rx_thread, 1);
 
 sleep:
 	wait_for_completion(&conn->conn_wait_rcfr_comp);
 	complete(&conn->conn_post_wait_comp);
 }
 
-void iscsit_cause_connection_reinstatement(struct iscsi_conn *conn, int sleep)
+void iscsit_cause_connection_reinstatement(struct iscsit_conn *conn, int sleep)
 {
 	spin_lock_bh(&conn->state_lock);
 	if (atomic_read(&conn->connection_exit)) {
@@ -889,10 +861,10 @@ void iscsit_cause_connection_reinstatement(struct iscsi_conn *conn, int sleep)
 		return;
 	}
 
-	if (iscsi_thread_set_force_reinstatement(conn) < 0) {
-		spin_unlock_bh(&conn->state_lock);
-		return;
-	}
+	if (conn->tx_thread && conn->tx_thread_active)
+		send_sig(SIGINT, conn->tx_thread, 1);
+	if (conn->rx_thread && conn->rx_thread_active)
+		send_sig(SIGINT, conn->rx_thread, 1);
 
 	atomic_set(&conn->connection_reinstatement, 1);
 	if (!sleep) {
@@ -908,7 +880,7 @@ void iscsit_cause_connection_reinstatement(struct iscsi_conn *conn, int sleep)
 }
 EXPORT_SYMBOL(iscsit_cause_connection_reinstatement);
 
-void iscsit_fall_back_to_erl0(struct iscsi_session *sess)
+void iscsit_fall_back_to_erl0(struct iscsit_session *sess)
 {
 	pr_debug("Falling back to ErrorRecoveryLevel=0 for SID:"
 			" %u\n", sess->sid);
@@ -916,9 +888,9 @@ void iscsit_fall_back_to_erl0(struct iscsi_session *sess)
 	atomic_set(&sess->session_fall_back_to_erl0, 1);
 }
 
-static void iscsit_handle_connection_cleanup(struct iscsi_conn *conn)
+static void iscsit_handle_connection_cleanup(struct iscsit_conn *conn)
 {
-	struct iscsi_session *sess = conn->sess;
+	struct iscsit_session *sess = conn->sess;
 
 	if ((sess->sess_ops->ErrorRecoveryLevel == 2) &&
 	    !atomic_read(&sess->session_reinstatement) &&
@@ -932,8 +904,10 @@ static void iscsit_handle_connection_cleanup(struct iscsi_conn *conn)
 	}
 }
 
-void iscsit_take_action_for_connection_exit(struct iscsi_conn *conn)
+void iscsit_take_action_for_connection_exit(struct iscsit_conn *conn, bool *conn_freed)
 {
+	*conn_freed = false;
+
 	spin_lock_bh(&conn->state_lock);
 	if (atomic_read(&conn->connection_exit)) {
 		spin_unlock_bh(&conn->state_lock);
@@ -944,6 +918,7 @@ void iscsit_take_action_for_connection_exit(struct iscsi_conn *conn)
 	if (conn->conn_state == TARG_CONN_STATE_IN_LOGOUT) {
 		spin_unlock_bh(&conn->state_lock);
 		iscsit_close_connection(conn);
+		*conn_freed = true;
 		return;
 	}
 
@@ -957,57 +932,5 @@ void iscsit_take_action_for_connection_exit(struct iscsi_conn *conn)
 	spin_unlock_bh(&conn->state_lock);
 
 	iscsit_handle_connection_cleanup(conn);
-}
-
-/*
- *	This is the simple function that makes the magic of
- *	sync and steering happen in the follow paradoxical order:
- *
- *	0) Receive conn->of_marker (bytes left until next OFMarker)
- *	   bytes into an offload buffer.  When we pass the exact number
- *	   of bytes in conn->of_marker, iscsit_dump_data_payload() and hence
- *	   rx_data() will automatically receive the identical u32 marker
- *	   values and store it in conn->of_marker_offset;
- *	1) Now conn->of_marker_offset will contain the offset to the start
- *	   of the next iSCSI PDU.  Dump these remaining bytes into another
- *	   offload buffer.
- *	2) We are done!
- *	   Next byte in the TCP stream will contain the next iSCSI PDU!
- *	   Cool Huh?!
- */
-int iscsit_recover_from_unknown_opcode(struct iscsi_conn *conn)
-{
-	/*
-	 * Make sure the remaining bytes to next maker is a sane value.
-	 */
-	if (conn->of_marker > (conn->conn_ops->OFMarkInt * 4)) {
-		pr_err("Remaining bytes to OFMarker: %u exceeds"
-			" OFMarkInt bytes: %u.\n", conn->of_marker,
-				conn->conn_ops->OFMarkInt * 4);
-		return -1;
-	}
-
-	pr_debug("Advancing %u bytes in TCP stream to get to the"
-			" next OFMarker.\n", conn->of_marker);
-
-	if (iscsit_dump_data_payload(conn, conn->of_marker, 0) < 0)
-		return -1;
-
-	/*
-	 * Make sure the offset marker we retrived is a valid value.
-	 */
-	if (conn->of_marker_offset > (ISCSI_HDR_LEN + (ISCSI_CRC_LEN * 2) +
-	    conn->conn_ops->MaxRecvDataSegmentLength)) {
-		pr_err("OfMarker offset value: %u exceeds limit.\n",
-			conn->of_marker_offset);
-		return -1;
-	}
-
-	pr_debug("Discarding %u bytes of TCP stream to get to the"
-			" next iSCSI Opcode.\n", conn->of_marker_offset);
-
-	if (iscsit_dump_data_payload(conn, conn->of_marker_offset, 0) < 0)
-		return -1;
-
-	return 0;
+	*conn_freed = true;
 }

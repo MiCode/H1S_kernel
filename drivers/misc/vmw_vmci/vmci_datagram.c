@@ -1,16 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * VMware VMCI Driver
  *
  * Copyright (C) 2012 VMware, Inc. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation version 2 and no later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * for more details.
  */
 
 #include <linux/vmw_vmci_defs.h>
@@ -242,7 +234,8 @@ static int dg_dispatch_as_host(u32 context_id, struct vmci_datagram *dg)
 
 			dg_info->in_dg_host_queue = true;
 			dg_info->entry = dst_entry;
-			memcpy(&dg_info->msg, dg, dg_size);
+			dg_info->msg = *dg;
+			memcpy(&dg_info->msg_payload, dg + 1, dg->payload_size);
 
 			INIT_WORK(&dg_info->work, dg_delayed_dispatch);
 			schedule_work(&dg_info->work);
@@ -276,11 +269,10 @@ static int dg_dispatch_as_host(u32 context_id, struct vmci_datagram *dg)
 		}
 
 		/* We make a copy to enqueue. */
-		new_dg = kmalloc(dg_size, GFP_KERNEL);
+		new_dg = kmemdup(dg, dg_size, GFP_KERNEL);
 		if (new_dg == NULL)
 			return VMCI_ERROR_NO_MEM;
 
-		memcpy(new_dg, dg, dg_size);
 		retval = vmci_ctx_enqueue_datagram(dg->dst.context, new_dg);
 		if (retval < VMCI_SUCCESS) {
 			kfree(new_dg);
@@ -328,7 +320,8 @@ int vmci_datagram_dispatch(u32 context_id,
 
 	BUILD_BUG_ON(sizeof(struct vmci_datagram) != 24);
 
-	if (VMCI_DG_SIZE(dg) > VMCI_MAX_DG_SIZE) {
+	if (dg->payload_size > VMCI_MAX_DG_SIZE ||
+	    VMCI_DG_SIZE(dg) > VMCI_MAX_DG_SIZE) {
 		pr_devel("Payload (size=%llu bytes) too big to send\n",
 			 (unsigned long long)dg->payload_size);
 		return VMCI_ERROR_INVALID_ARGS;
@@ -385,7 +378,8 @@ int vmci_datagram_invoke_guest_handler(struct vmci_datagram *dg)
 
 		dg_info->in_dg_host_queue = false;
 		dg_info->entry = dst_entry;
-		memcpy(&dg_info->msg, dg, VMCI_DG_SIZE(dg));
+		dg_info->msg = *dg;
+		memcpy(&dg_info->msg_payload, dg + 1, dg->payload_size);
 
 		INIT_WORK(&dg_info->work, dg_delayed_dispatch);
 		schedule_work(&dg_info->work);

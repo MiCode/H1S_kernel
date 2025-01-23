@@ -180,7 +180,7 @@ switch (val) {						\
 
 #define HP_SDC_CMD_SET_IM	0x40    /* 010xxxxx == set irq mask */
 
-/* The documents provided do not explicitly state that all registers betweem 
+/* The documents provided do not explicitly state that all registers between
  * 0x01 and 0x1f inclusive can be read by sending their register index as a 
  * command, but this is implied and appears to be the case.
  */
@@ -281,7 +281,7 @@ typedef struct {
 	hp_sdc_transaction *tq[HP_SDC_QUEUE_LEN]; /* All pending read/writes */
 
 	int		rcurr, rqty;	/* Current read transact in process */
-	struct timeval	rtv;		/* Time when current read started */
+	ktime_t		rtime;		/* Time when current read started */
 	int		wcurr;		/* Current write transact in process */
 
 	int		dev_err;	/* carries status from registration */

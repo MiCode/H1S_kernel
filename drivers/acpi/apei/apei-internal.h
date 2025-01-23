@@ -1,12 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * apei-internal.h - ACPI Platform Error Interface internal
- * definations.
+ * definitions.
  */
 
 #ifndef APEI_INTERNAL_H
 #define APEI_INTERNAL_H
 
-#include <linux/cper.h>
 #include <linux/acpi.h>
 
 struct apei_exec_context;
@@ -120,12 +120,7 @@ int apei_exec_collect_resources(struct apei_exec_context *ctx,
 struct dentry;
 struct dentry *apei_get_debugfs_dir(void);
 
-#define apei_estatus_for_each_section(estatus, section)			\
-	for (section = (struct acpi_generic_data *)(estatus + 1);	\
-	     (void *)section - (void *)estatus < estatus->data_length;	\
-	     section = (void *)(section+1) + section->error_data_length)
-
-static inline u32 cper_estatus_len(struct acpi_generic_status *estatus)
+static inline u32 cper_estatus_len(struct acpi_hest_generic_status *estatus)
 {
 	if (estatus->raw_data_length)
 		return estatus->raw_data_offset + \
@@ -133,11 +128,6 @@ static inline u32 cper_estatus_len(struct acpi_generic_status *estatus)
 	else
 		return sizeof(*estatus) + estatus->data_length;
 }
-
-void cper_estatus_print(const char *pfx,
-			const struct acpi_generic_status *estatus);
-int cper_estatus_check_header(const struct acpi_generic_status *estatus);
-int cper_estatus_check(const struct acpi_generic_status *estatus);
 
 int apei_osc_setup(void);
 #endif

@@ -1,81 +1,86 @@
-#include <linux/module.h>
-#include <linux/sort.h>
-#include <asm/uaccess.h>
+// SPDX-License-Identifier: GPL-2.0
 
-/*
- * Search one exception table for an entry corresponding to the
- * given instruction address, and return the address of the entry,
- * or NULL if none is found.
- * We use a binary search, and thus we assume that the table is
- * already sorted.
- */
-const struct exception_table_entry *
-search_extable(const struct exception_table_entry *first,
-	       const struct exception_table_entry *last,
-	       unsigned long value)
+#include <linux/bitfield.h>
+#include <linux/extable.h>
+#include <linux/string.h>
+#include <linux/errno.h>
+#include <linux/panic.h>
+#include <asm/asm-extable.h>
+#include <asm/extable.h>
+
+const struct exception_table_entry *s390_search_extables(unsigned long addr)
 {
-	const struct exception_table_entry *mid;
-	unsigned long addr;
+	const struct exception_table_entry *fixup;
+	size_t num;
 
-	while (first <= last) {
-		mid = ((last - first) >> 1) + first;
-		addr = extable_insn(mid);
-		if (addr < value)
-			first = mid + 1;
-		else if (addr > value)
-			last = mid - 1;
-		else
-			return mid;
+	fixup = search_exception_tables(addr);
+	if (fixup)
+		return fixup;
+	num = __stop_amode31_ex_table - __start_amode31_ex_table;
+	return search_extable(__start_amode31_ex_table, num, addr);
+}
+
+static bool ex_handler_fixup(const struct exception_table_entry *ex, struct pt_regs *regs)
+{
+	regs->psw.addr = extable_fixup(ex);
+	return true;
+}
+
+static bool ex_handler_ua_store(const struct exception_table_entry *ex, struct pt_regs *regs)
+{
+	unsigned int reg_err = FIELD_GET(EX_DATA_REG_ERR, ex->data);
+
+	regs->gprs[reg_err] = -EFAULT;
+	regs->psw.addr = extable_fixup(ex);
+	return true;
+}
+
+static bool ex_handler_ua_load_mem(const struct exception_table_entry *ex, struct pt_regs *regs)
+{
+	unsigned int reg_addr = FIELD_GET(EX_DATA_REG_ADDR, ex->data);
+	unsigned int reg_err = FIELD_GET(EX_DATA_REG_ERR, ex->data);
+	size_t len = FIELD_GET(EX_DATA_LEN, ex->data);
+
+	regs->gprs[reg_err] = -EFAULT;
+	memset((void *)regs->gprs[reg_addr], 0, len);
+	regs->psw.addr = extable_fixup(ex);
+	return true;
+}
+
+static bool ex_handler_ua_load_reg(const struct exception_table_entry *ex,
+				   bool pair, struct pt_regs *regs)
+{
+	unsigned int reg_zero = FIELD_GET(EX_DATA_REG_ADDR, ex->data);
+	unsigned int reg_err = FIELD_GET(EX_DATA_REG_ERR, ex->data);
+
+	regs->gprs[reg_err] = -EFAULT;
+	regs->gprs[reg_zero] = 0;
+	if (pair)
+		regs->gprs[reg_zero + 1] = 0;
+	regs->psw.addr = extable_fixup(ex);
+	return true;
+}
+
+bool fixup_exception(struct pt_regs *regs)
+{
+	const struct exception_table_entry *ex;
+
+	ex = s390_search_extables(instruction_pointer(regs));
+	if (!ex)
+		return false;
+	switch (ex->type) {
+	case EX_TYPE_FIXUP:
+		return ex_handler_fixup(ex, regs);
+	case EX_TYPE_BPF:
+		return ex_handler_bpf(ex, regs);
+	case EX_TYPE_UA_STORE:
+		return ex_handler_ua_store(ex, regs);
+	case EX_TYPE_UA_LOAD_MEM:
+		return ex_handler_ua_load_mem(ex, regs);
+	case EX_TYPE_UA_LOAD_REG:
+		return ex_handler_ua_load_reg(ex, false, regs);
+	case EX_TYPE_UA_LOAD_REGPAIR:
+		return ex_handler_ua_load_reg(ex, true, regs);
 	}
-	return NULL;
+	panic("invalid exception table entry");
 }
-
-/*
- * The exception table needs to be sorted so that the binary
- * search that we use to find entries in it works properly.
- * This is used both for the kernel exception table and for
- * the exception tables of modules that get loaded.
- *
- */
-static int cmp_ex(const void *a, const void *b)
-{
-	const struct exception_table_entry *x = a, *y = b;
-
-	/* This compare is only valid after normalization. */
-	return x->insn - y->insn;
-}
-
-void sort_extable(struct exception_table_entry *start,
-		  struct exception_table_entry *finish)
-{
-	struct exception_table_entry *p;
-	int i;
-
-	/* Normalize entries to being relative to the start of the section */
-	for (p = start, i = 0; p < finish; p++, i += 8)
-		p->insn += i;
-	sort(start, finish - start, sizeof(*start), cmp_ex, NULL);
-	/* Denormalize all entries */
-	for (p = start, i = 0; p < finish; p++, i += 8)
-		p->insn -= i;
-}
-
-#ifdef CONFIG_MODULES
-/*
- * If the exception table is sorted, any referring to the module init
- * will be at the beginning or the end.
- */
-void trim_init_extable(struct module *m)
-{
-	/* Trim the beginning */
-	while (m->num_exentries &&
-	       within_module_init(extable_insn(&m->extable[0]), m)) {
-		m->extable++;
-		m->num_exentries--;
-	}
-	/* Trim the end */
-	while (m->num_exentries &&
-	       within_module_init(extable_insn(&m->extable[m->num_exentries-1]), m))
-		m->num_exentries--;
-}
-#endif /* CONFIG_MODULES */

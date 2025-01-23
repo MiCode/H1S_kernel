@@ -1,19 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Tegra host1x Syncpoints
  *
  * Copyright (c) 2010-2013, NVIDIA Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef __HOST1X_SYNCPT_H
@@ -22,8 +11,10 @@
 #include <linux/atomic.h>
 #include <linux/host1x.h>
 #include <linux/kernel.h>
+#include <linux/kref.h>
 #include <linux/sched.h>
 
+#include "fence.h"
 #include "intr.h"
 
 struct host1x;
@@ -37,18 +28,26 @@ struct host1x_syncpt_base {
 };
 
 struct host1x_syncpt {
-	int id;
+	struct kref ref;
+
+	unsigned int id;
 	atomic_t min_val;
 	atomic_t max_val;
 	u32 base_val;
 	const char *name;
 	bool client_managed;
 	struct host1x *host;
-	struct device *dev;
 	struct host1x_syncpt_base *base;
 
 	/* interrupt data */
-	struct host1x_syncpt_intr intr;
+	struct host1x_fence_list fences;
+
+	/*
+	 * If a submission incrementing this syncpoint fails, lock it so that
+	 * further submission cannot be made until application has handled the
+	 * failure.
+	 */
+	bool locked;
 };
 
 /* Initialize sync point array  */
@@ -58,13 +57,13 @@ int host1x_syncpt_init(struct host1x *host);
 void host1x_syncpt_deinit(struct host1x *host);
 
 /* Return number of sync point supported. */
-int host1x_syncpt_nb_pts(struct host1x *host);
+unsigned int host1x_syncpt_nb_pts(struct host1x *host);
 
 /* Return number of wait bases supported. */
-int host1x_syncpt_nb_bases(struct host1x *host);
+unsigned int host1x_syncpt_nb_bases(struct host1x *host);
 
 /* Return number of mlocks supported. */
-int host1x_syncpt_nb_mlocks(struct host1x *host);
+unsigned int host1x_syncpt_nb_mlocks(struct host1x *host);
 
 /*
  * Check sync point sanity. If max is larger than min, there have too many
@@ -124,7 +123,9 @@ static inline int host1x_syncpt_is_valid(struct host1x_syncpt *sp)
 	return sp->id < host1x_syncpt_nb_pts(sp->host);
 }
 
-/* Patch a wait by replacing it with a wait for syncpt 0 value 0 */
-int host1x_syncpt_patch_wait(struct host1x_syncpt *sp, void *patch_addr);
+static inline void host1x_syncpt_set_locked(struct host1x_syncpt *sp)
+{
+	sp->locked = true;
+}
 
 #endif

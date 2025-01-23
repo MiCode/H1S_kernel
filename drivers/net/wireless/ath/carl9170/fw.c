@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Atheros CARL9170 driver
  *
  * firmware parser
  *
  * Copyright 2009, 2010, Christian Lamparter <chunkeey@googlemail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; see the file COPYING.  If not, see
- * http://www.gnu.org/licenses/.
  */
 
 #include <linux/kernel.h>
@@ -118,7 +105,7 @@ static void carl9170_fw_info(struct ar9170 *ar)
 			 CARL9170FW_GET_MONTH(fw_date),
 			 CARL9170FW_GET_DAY(fw_date));
 
-		strlcpy(ar->hw->wiphy->fw_version, motd_desc->release,
+		strscpy(ar->hw->wiphy->fw_version, motd_desc->release,
 			sizeof(ar->hw->wiphy->fw_version));
 	}
 }
@@ -286,7 +273,7 @@ static int carl9170_fw(struct ar9170 *ar, const __u8 *data, size_t len)
 	}
 
 	if (SUPP(CARL9170FW_PSM) && SUPP(CARL9170FW_FIXED_5GHZ_PSM))
-		ar->hw->flags |= IEEE80211_HW_SUPPORTS_PS;
+		ieee80211_hw_set(ar->hw, SUPPORTS_PS);
 
 	if (!SUPP(CARL9170FW_USB_INIT_FIRMWARE)) {
 		dev_err(&ar->udev->dev, "firmware does not provide "
@@ -310,8 +297,7 @@ static int carl9170_fw(struct ar9170 *ar, const __u8 *data, size_t len)
 	if (SUPP(CARL9170FW_RX_FILTER)) {
 		ar->fw.rx_filter = true;
 		ar->rx_filter_caps = FIF_FCSFAIL | FIF_PLCPFAIL |
-			FIF_CONTROL | FIF_PSPOLL | FIF_OTHER_BSS |
-			FIF_PROMISC_IN_BSS;
+			FIF_CONTROL | FIF_PSPOLL | FIF_OTHER_BSS;
 	}
 
 	if (SUPP(CARL9170FW_HW_COUNTERS))
@@ -352,9 +338,7 @@ static int carl9170_fw(struct ar9170 *ar, const __u8 *data, size_t len)
 		ar->hw->wiphy->interface_modes |= BIT(NL80211_IFTYPE_ADHOC);
 
 		if (SUPP(CARL9170FW_WLANTX_CAB)) {
-			if_comb_types |=
-				BIT(NL80211_IFTYPE_AP) |
-				BIT(NL80211_IFTYPE_P2P_GO);
+			if_comb_types |= BIT(NL80211_IFTYPE_AP);
 
 #ifdef CONFIG_MAC80211_MESH
 			if_comb_types |=

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 # Makefile for the Sparc boot stuff.
 #
 # Copyright (C) 1995 David S. Miller (davem@caip.rutgers.edu)
@@ -6,7 +7,7 @@
 ROOT_IMG	:= /usr/src/root.img
 ELFTOAOUT	:= elftoaout
 
-hostprogs-y	:= piggyback
+hostprogs	:= piggyback
 targets		:= tftpboot.img image zImage vmlinux.aout
 clean-files	:= System.map
 
@@ -21,7 +22,7 @@ ifeq ($(CONFIG_SPARC64),y)
 
 # Actual linking
 
-$(obj)/zImage: $(obj)/image
+$(obj)/zImage: $(obj)/image FORCE
 	$(call if_changed,gzip)
 	@echo '  kernel: $@ is ready'
 
@@ -30,7 +31,7 @@ $(obj)/vmlinux.aout: vmlinux FORCE
 	@echo '  kernel: $@ is ready'
 else
 
-$(obj)/zImage: $(obj)/image
+$(obj)/zImage: $(obj)/image FORCE
 	$(call if_changed,strip)
 	@echo '  kernel: $@ is ready'
 
@@ -43,7 +44,7 @@ OBJCOPYFLAGS_image.bin := -S -O binary -R .note -R .comment
 $(obj)/image.bin: $(obj)/image FORCE
 	$(call if_changed,objcopy)
 
-$(obj)/image.gz: $(obj)/image.bin
+$(obj)/image.gz: $(obj)/image.bin FORCE
 	$(call if_changed,gzip)
 
 UIMAGE_LOADADDR = $(CONFIG_UBOOT_LOAD_ADDR)
@@ -55,7 +56,7 @@ quiet_cmd_uimage.o = UIMAGE.O $@
                      -r -b binary $@ -o $@.o
 
 targets += uImage
-$(obj)/uImage: $(obj)/image.gz
+$(obj)/uImage: $(obj)/image.gz FORCE
 	$(call if_changed,uimage)
 	$(call if_changed,uimage.o)
 	@echo '  Image $@ is ready'

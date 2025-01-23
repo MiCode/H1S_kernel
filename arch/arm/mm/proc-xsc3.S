@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * linux/arch/arm/mm/proc-xsc3.S
  *
@@ -6,10 +7,6 @@
  *
  * Copyright 2004 (C) Intel Corp.
  * Copyright 2005 (C) MontaVista Software, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * MMU functions for the Intel XScale3 Core (XSC3).  The XSC3 core is
  * an extension to Intel's original XScale core that adds the following
@@ -26,9 +23,9 @@
 
 #include <linux/linkage.h>
 #include <linux/init.h>
+#include <linux/pgtable.h>
 #include <asm/assembler.h>
 #include <asm/hwcap.h>
-#include <asm/pgtable.h>
 #include <asm/pgtable-hwdef.h>
 #include <asm/page.h>
 #include <asm/ptrace.h>
@@ -83,7 +80,7 @@
  * Nothing too exciting at the moment
  */
 ENTRY(cpu_xsc3_proc_init)
-	mov	pc, lr
+	ret	lr
 
 /*
  * cpu_xsc3_proc_fin()
@@ -93,7 +90,7 @@ ENTRY(cpu_xsc3_proc_fin)
 	bic	r0, r0, #0x1800			@ ...IZ...........
 	bic	r0, r0, #0x0006			@ .............CA.
 	mcr	p15, 0, r0, c1, c0, 0		@ disable caches
-	mov	pc, lr
+	ret	lr
 
 /*
  * cpu_xsc3_reset(loc)
@@ -119,7 +116,7 @@ ENTRY(cpu_xsc3_reset)
 	@ CAUTION: MMU turned off from this point.  We count on the pipeline
 	@ already containing those two last instructions to survive.
 	mcr	p15, 0, ip, c8, c7, 0		@ invalidate I and D TLBs
-	mov	pc, r0
+	ret	r0
 ENDPROC(cpu_xsc3_reset)
 	.popsection
 
@@ -138,7 +135,7 @@ ENDPROC(cpu_xsc3_reset)
 ENTRY(cpu_xsc3_do_idle)
 	mov	r0, #1
 	mcr	p14, 0, r0, c7, c0, 0		@ go to idle
-	mov	pc, lr
+	ret	lr
 
 /* ================================= CACHE ================================ */
 
@@ -150,7 +147,7 @@ ENTRY(cpu_xsc3_do_idle)
 ENTRY(xsc3_flush_icache_all)
 	mov	r0, #0
 	mcr	p15, 0, r0, c7, c5, 0		@ invalidate I cache
-	mov	pc, lr
+	ret	lr
 ENDPROC(xsc3_flush_icache_all)
 
 /*
@@ -176,7 +173,7 @@ __flush_whole_cache:
 	mcrne	p15, 0, ip, c7, c5, 0		@ invalidate L1 I cache and BTB
 	mcrne	p15, 0, ip, c7, c10, 4		@ data write barrier
 	mcrne	p15, 0, ip, c7, c5, 4		@ prefetch flush
-	mov	pc, lr
+	ret	lr
 
 /*
  *	flush_user_cache_range(start, end, vm_flags)
@@ -205,7 +202,7 @@ ENTRY(xsc3_flush_user_cache_range)
 	mcrne	p15, 0, ip, c7, c5, 6		@ invalidate BTB
 	mcrne	p15, 0, ip, c7, c10, 4		@ data write barrier
 	mcrne	p15, 0, ip, c7, c5, 4		@ prefetch flush
-	mov	pc, lr
+	ret	lr
 
 /*
  *	coherent_kern_range(start, end)
@@ -232,7 +229,7 @@ ENTRY(xsc3_coherent_user_range)
 	mcr	p15, 0, r0, c7, c5, 0		@ invalidate L1 I cache and BTB
 	mcr	p15, 0, r0, c7, c10, 4		@ data write barrier
 	mcr	p15, 0, r0, c7, c5, 4		@ prefetch flush
-	mov	pc, lr
+	ret	lr
 
 /*
  *	flush_kern_dcache_area(void *addr, size_t size)
@@ -253,7 +250,7 @@ ENTRY(xsc3_flush_kern_dcache_area)
 	mcr	p15, 0, r0, c7, c5, 0		@ invalidate L1 I cache and BTB
 	mcr	p15, 0, r0, c7, c10, 4		@ data write barrier
 	mcr	p15, 0, r0, c7, c5, 4		@ prefetch flush
-	mov	pc, lr
+	ret	lr
 
 /*
  *	dma_inv_range(start, end)
@@ -277,7 +274,7 @@ xsc3_dma_inv_range:
 	cmp	r0, r1
 	blo	1b
 	mcr	p15, 0, r0, c7, c10, 4		@ data write barrier
-	mov	pc, lr
+	ret	lr
 
 /*
  *	dma_clean_range(start, end)
@@ -294,7 +291,7 @@ xsc3_dma_clean_range:
 	cmp	r0, r1
 	blo	1b
 	mcr	p15, 0, r0, c7, c10, 4		@ data write barrier
-	mov	pc, lr
+	ret	lr
 
 /*
  *	dma_flush_range(start, end)
@@ -311,7 +308,7 @@ ENTRY(xsc3_dma_flush_range)
 	cmp	r0, r1
 	blo	1b
 	mcr	p15, 0, r0, c7, c10, 4		@ data write barrier
-	mov	pc, lr
+	ret	lr
 
 /*
  *	dma_map_area(start, size, dir)
@@ -334,7 +331,7 @@ ENDPROC(xsc3_dma_map_area)
  *	- dir	- DMA direction
  */
 ENTRY(xsc3_dma_unmap_area)
-	mov	pc, lr
+	ret	lr
 ENDPROC(xsc3_dma_unmap_area)
 
 	.globl	xsc3_flush_kern_cache_louis
@@ -348,7 +345,7 @@ ENTRY(cpu_xsc3_dcache_clean_area)
 	add	r0, r0, #CACHELINESIZE
 	subs	r1, r1, #CACHELINESIZE
 	bhi	1b
-	mov	pc, lr
+	ret	lr
 
 /* =============================== PageTable ============================== */
 
@@ -406,7 +403,7 @@ ENTRY(cpu_xsc3_set_pte_ext)
 	orr	r2, r2, ip
 
 	xscale_set_pte_ext_epilogue
-	mov	pc, lr
+	ret	lr
 
 	.ltorg
 	.align
@@ -478,7 +475,7 @@ __xsc3_setup:
 	bic	r0, r0, r5			@ ..V. ..R. .... ..A.
 	orr	r0, r0, r6			@ ..VI Z..S .... .C.M (mmu)
 						@ ...I Z..S .... .... (uc)
-	mov	pc, lr
+	ret	lr
 
 	.size	__xsc3_setup, . - __xsc3_setup
 
@@ -499,7 +496,7 @@ xsc3_crval:
 
 	.align
 
-	.section ".proc.info.init", #alloc, #execinstr
+	.section ".proc.info.init", "a"
 
 .macro xsc3_proc_info name:req, cpu_val:req, cpu_mask:req
 	.type	__\name\()_proc_info,#object
@@ -514,7 +511,7 @@ __\name\()_proc_info:
 	.long	PMD_TYPE_SECT | \
 		PMD_SECT_AP_WRITE | \
 		PMD_SECT_AP_READ
-	b	__xsc3_setup
+	initfn	__xsc3_setup, __\name\()_proc_info
 	.long	cpu_arch_name
 	.long	cpu_elf_name
 	.long	HWCAP_SWP|HWCAP_HALF|HWCAP_THUMB|HWCAP_FAST_MULT|HWCAP_EDSP

@@ -1,24 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Copyright (C) 2003 - 2009 NetXen, Inc.
  * Copyright (C) 2009 - QLogic Corporation.
  * All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
- *
- * The full GNU General Public License is included in this distribution
- * in the file called "COPYING".
- *
  */
 
 #ifndef _NETXEN_NIC_H_
@@ -354,7 +338,7 @@ struct cmd_desc_type0 {
 
 } __attribute__ ((aligned(64)));
 
-/* Note: sizeof(rcv_desc) should always be a mutliple of 2 */
+/* Note: sizeof(rcv_desc) should always be a multiple of 2 */
 struct rcv_desc {
 	__le16 reference_handle;
 	__le16 reserved;
@@ -499,7 +483,7 @@ struct uni_data_desc{
 #define NETXEN_IMAGE_START	0x43000	/* compressed image */
 #define NETXEN_SECONDARY_START	0x200000	/* backup images */
 #define NETXEN_PXE_START	0x3E0000	/* PXE boot rom */
-#define NETXEN_USER_START	0x3E8000	/* Firmare info */
+#define NETXEN_USER_START	0x3E8000	/* Firmware info */
 #define NETXEN_FIXED_START	0x3F0000	/* backup of crbinit */
 #define NETXEN_USER_START_OLD	NETXEN_PXE_START /* very old flash */
 
@@ -870,7 +854,7 @@ typedef struct {
 	   The following is packed:
 	   - N cardrsp_rds_rings
 	   - N cardrs_sds_rings */
-	char data[0];
+	char data[];
 } nx_cardrsp_rx_ctx_t;
 
 #define SIZEOF_HOSTRQ_RX(HOSTRQ_RX, rds_rings, sds_rings)	\
@@ -1205,9 +1189,6 @@ typedef struct {
 #define NX_FORCE_FW_RESET               0xdeaddead
 
 
-/* Fw dump levels */
-static const u32 FW_DUMP_LEVELS[] = { 0x3, 0x7, 0xf, 0x1f, 0x3f, 0x7f, 0xff };
-
 /* Flash read/write address */
 #define NX_FW_DUMP_REG1         0x00130060
 #define NX_FW_DUMP_REG2         0x001e0000
@@ -1332,7 +1313,7 @@ struct netxen_minidump_template_hdr {
 	u32 driver_info_word4;
 	u32 saved_state_array[NX_DUMP_STATE_ARRAY_LEN];
 	u32 capture_size_array[NX_DUMP_CAP_SIZE_ARRAY_LEN];
-	u32 rsvd[0];
+	u32 rsvd[];
 };
 
 /* Common Entry Header:  Common to All Entry Types */
@@ -1882,7 +1863,6 @@ static inline u32 netxen_tx_avail(struct nx_host_tx_ring *tx_ring)
 int netxen_get_flash_mac_addr(struct netxen_adapter *adapter, u64 *mac);
 int netxen_p3_get_mac_addr(struct netxen_adapter *adapter, u64 *mac);
 void netxen_change_ringparam(struct netxen_adapter *adapter);
-int netxen_rom_fast_read(struct netxen_adapter *adapter, int addr, int *valp);
 
 extern const struct ethtool_ops netxen_nic_ethtool_ops;
 

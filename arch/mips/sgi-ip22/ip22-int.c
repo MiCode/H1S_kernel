@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * ip22-int.c: Routines for generic manipulation of the INT[23] ASIC
  *	       found on INDY and Indigo2 workstations.
@@ -119,9 +120,14 @@ static void indy_local0_irqdispatch(void)
 	} else
 		irq = lc0msk_to_irqnr[mask];
 
-	/* if irq == 0, then the interrupt has already been cleared */
+	/*
+	 * workaround for INT2 bug; if irq == 0, INT2 has seen a fifo full
+	 * irq, but failed to latch it into status register
+	 */
 	if (irq)
 		do_IRQ(irq);
+	else
+		do_IRQ(SGINT_LOCAL0 + 0);
 }
 
 static void indy_local1_irqdispatch(void)
@@ -148,41 +154,12 @@ static void __irq_entry indy_buserror_irq(void)
 	int irq = SGI_BUSERR_IRQ;
 
 	irq_enter();
-	kstat_incr_irqs_this_cpu(irq, irq_to_desc(irq));
+	kstat_incr_irq_this_cpu(irq);
 	ip22_be_interrupt(irq);
 	irq_exit();
 }
 
-static struct irqaction local0_cascade = {
-	.handler	= no_action,
-	.flags		= IRQF_NO_THREAD,
-	.name		= "local0 cascade",
-};
-
-static struct irqaction local1_cascade = {
-	.handler	= no_action,
-	.flags		= IRQF_NO_THREAD,
-	.name		= "local1 cascade",
-};
-
-static struct irqaction buserr = {
-	.handler	= no_action,
-	.flags		= IRQF_NO_THREAD,
-	.name		= "Bus Error",
-};
-
-static struct irqaction map0_cascade = {
-	.handler	= no_action,
-	.flags		= IRQF_NO_THREAD,
-	.name		= "mapable0 cascade",
-};
-
 #ifdef USE_LIO3_IRQ
-static struct irqaction map1_cascade = {
-	.handler	= no_action,
-	.flags		= IRQF_NO_THREAD,
-	.name		= "mapable1 cascade",
-};
 #define SGI_INTERRUPTS	SGINT_END
 #else
 #define SGI_INTERRUPTS	SGINT_LOCAL3
@@ -316,14 +293,24 @@ void __init arch_init_irq(void)
 	}
 
 	/* vector handler. this register the IRQ as non-sharable */
-	setup_irq(SGI_LOCAL_0_IRQ, &local0_cascade);
-	setup_irq(SGI_LOCAL_1_IRQ, &local1_cascade);
-	setup_irq(SGI_BUSERR_IRQ, &buserr);
+	if (request_irq(SGI_LOCAL_0_IRQ, no_action, IRQF_NO_THREAD,
+			"local0 cascade", NULL))
+		pr_err("Failed to register local0 cascade interrupt\n");
+	if (request_irq(SGI_LOCAL_1_IRQ, no_action, IRQF_NO_THREAD,
+			"local1 cascade", NULL))
+		pr_err("Failed to register local1 cascade interrupt\n");
+	if (request_irq(SGI_BUSERR_IRQ, no_action, IRQF_NO_THREAD,
+			"Bus Error", NULL))
+		pr_err("Failed to register Bus Error interrupt\n");
 
 	/* cascade in cascade. i love Indy ;-) */
-	setup_irq(SGI_MAP_0_IRQ, &map0_cascade);
+	if (request_irq(SGI_MAP_0_IRQ, no_action, IRQF_NO_THREAD,
+			"mapable0 cascade", NULL))
+		pr_err("Failed to register mapable0 cascade interrupt\n");
 #ifdef USE_LIO3_IRQ
-	setup_irq(SGI_MAP_1_IRQ, &map1_cascade);
+	if (request_irq(SGI_MAP_1_IRQ, no_action, IRQF_NO_THREAD,
+			"mapable1 cascade", NULL))
+		pr_err("Failed to register mapable1 cascade interrupt\n");
 #endif
 
 #ifdef CONFIG_EISA

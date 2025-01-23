@@ -1,19 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Link Layer Control manager public interface
  *
  * Copyright (C) 2012  Intel Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef __NFC_LLC_H_
@@ -36,10 +25,6 @@ struct nfc_llc *nfc_llc_allocate(const char *name, struct nfc_hci_dev *hdev,
 				 rcv_to_hci_t rcv_to_hci, int tx_headroom,
 				 int tx_tailroom, llc_failure_t llc_failure);
 void nfc_llc_free(struct nfc_llc *llc);
-
-void nfc_llc_get_rx_head_tail_room(struct nfc_llc *llc, int *rx_headroom,
-				   int *rx_tailroom);
-
 
 int nfc_llc_start(struct nfc_llc *llc);
 int nfc_llc_stop(struct nfc_llc *llc);

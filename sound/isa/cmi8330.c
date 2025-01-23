@@ -1,22 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Driver for C-Media's CMI8330 and CMI8329 soundcards.
  *  Copyright (c) by George Talusan <gstalusan@uwaterloo.ca>
  *    http://www.undergrad.math.uwaterloo.ca/~gstalusa
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 /*
@@ -65,7 +51,6 @@
 MODULE_AUTHOR("George Talusan <gstalusan@uwaterloo.ca>");
 MODULE_DESCRIPTION("C-Media CMI8330/CMI8329");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("{{C-Media,CMI8330,isapnp:{CMI0001,@@@0001,@X@0001}}}");
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;
@@ -95,27 +80,27 @@ module_param_array(isapnp, bool, NULL, 0444);
 MODULE_PARM_DESC(isapnp, "PnP detection for specified soundcard.");
 #endif
 
-module_param_array(sbport, long, NULL, 0444);
+module_param_hw_array(sbport, long, ioport, NULL, 0444);
 MODULE_PARM_DESC(sbport, "Port # for CMI8330/CMI8329 SB driver.");
-module_param_array(sbirq, int, NULL, 0444);
+module_param_hw_array(sbirq, int, irq, NULL, 0444);
 MODULE_PARM_DESC(sbirq, "IRQ # for CMI8330/CMI8329 SB driver.");
-module_param_array(sbdma8, int, NULL, 0444);
+module_param_hw_array(sbdma8, int, dma, NULL, 0444);
 MODULE_PARM_DESC(sbdma8, "DMA8 for CMI8330/CMI8329 SB driver.");
-module_param_array(sbdma16, int, NULL, 0444);
+module_param_hw_array(sbdma16, int, dma, NULL, 0444);
 MODULE_PARM_DESC(sbdma16, "DMA16 for CMI8330/CMI8329 SB driver.");
 
-module_param_array(wssport, long, NULL, 0444);
+module_param_hw_array(wssport, long, ioport, NULL, 0444);
 MODULE_PARM_DESC(wssport, "Port # for CMI8330/CMI8329 WSS driver.");
-module_param_array(wssirq, int, NULL, 0444);
+module_param_hw_array(wssirq, int, irq, NULL, 0444);
 MODULE_PARM_DESC(wssirq, "IRQ # for CMI8330/CMI8329 WSS driver.");
-module_param_array(wssdma, int, NULL, 0444);
+module_param_hw_array(wssdma, int, dma, NULL, 0444);
 MODULE_PARM_DESC(wssdma, "DMA for CMI8330/CMI8329 WSS driver.");
 
-module_param_array(fmport, long, NULL, 0444);
+module_param_hw_array(fmport, long, ioport, NULL, 0444);
 MODULE_PARM_DESC(fmport, "FM port # for CMI8330/CMI8329 driver.");
-module_param_array(mpuport, long, NULL, 0444);
+module_param_hw_array(mpuport, long, ioport, NULL, 0444);
 MODULE_PARM_DESC(mpuport, "MPU-401 port # for CMI8330/CMI8329 driver.");
-module_param_array(mpuirq, int, NULL, 0444);
+module_param_hw_array(mpuirq, int, irq, NULL, 0444);
 MODULE_PARM_DESC(mpuirq, "IRQ # for CMI8330/CMI8329 MPU-401 port.");
 #ifdef CONFIG_PNP
 static int isa_registered;
@@ -134,7 +119,7 @@ static int pnp_registered;
 #define CMI8330_LINGAIN   25
 #define CMI8330_CDINGAIN  26
 
-static unsigned char snd_cmi8330_image[((CMI8330_CDINGAIN)-16) + 1] =
+static const unsigned char snd_cmi8330_image[((CMI8330_CDINGAIN)-16) + 1] =
 {
 	0x40,			/* 16 - recording mux (SB-mixer-enabled) */
 #ifdef ENABLE_SB_MIXER
@@ -182,7 +167,7 @@ struct snd_cmi8330 {
 
 #ifdef CONFIG_PNP
 
-static struct pnp_card_device_id snd_cmi8330_pnpids[] = {
+static const struct pnp_card_device_id snd_cmi8330_pnpids[] = {
 	{ .id = "CMI0001", .devs = { { "@X@0001" }, { "@@@0001" }, { "@H@0001" }, { "A@@0001" } } },
 	{ .id = "CMI0001", .devs = { { "@@@0001" }, { "@X@0001" }, { "@H@0001" } } },
 	{ .id = "" }
@@ -193,7 +178,7 @@ MODULE_DEVICE_TABLE(pnp_card, snd_cmi8330_pnpids);
 #endif
 
 
-static struct snd_kcontrol_new snd_cmi8330_controls[] = {
+static const struct snd_kcontrol_new snd_cmi8330_controls[] = {
 WSS_DOUBLE("Master Playback Volume", 0,
 		CMI8330_MASTVOL, CMI8330_MASTVOL, 4, 0, 15, 0),
 WSS_SINGLE("Loud Playback Switch", 0,
@@ -249,7 +234,7 @@ WSS_SINGLE(SNDRV_CTL_NAME_IEC958("Input ", PLAYBACK, SWITCH), 0,
 };
 
 #ifdef ENABLE_SB_MIXER
-static struct sbmix_elem cmi8330_sb_mixers[] = {
+static const struct sbmix_elem cmi8330_sb_mixers[] = {
 SB_DOUBLE("SB Master Playback Volume", SB_DSP4_MASTER_DEV, (SB_DSP4_MASTER_DEV + 1), 3, 3, 31),
 SB_DOUBLE("Tone Control - Bass", SB_DSP4_BASS_DEV, (SB_DSP4_BASS_DEV + 1), 4, 4, 15),
 SB_DOUBLE("Tone Control - Treble", SB_DSP4_TREBLE_DEV, (SB_DSP4_TREBLE_DEV + 1), 4, 4, 15),
@@ -267,7 +252,7 @@ SB_DOUBLE("SB Playback Volume", SB_DSP4_OGAIN_DEV, (SB_DSP4_OGAIN_DEV + 1), 6, 6
 SB_SINGLE("SB Mic Auto Gain", SB_DSP4_MIC_AGC, 0, 1),
 };
 
-static unsigned char cmi8330_sb_init_values[][2] = {
+static const unsigned char cmi8330_sb_init_values[][2] = {
 	{ SB_DSP4_MASTER_DEV + 0, 0 },
 	{ SB_DSP4_MASTER_DEV + 1, 0 },
 	{ SB_DSP4_PCM_DEV + 0, 0 },
@@ -299,7 +284,8 @@ static int cmi8330_add_sb_mixers(struct snd_sb *chip)
 	}
 
 	for (idx = 0; idx < ARRAY_SIZE(cmi8330_sb_mixers); idx++) {
-		if ((err = snd_sbmixer_add_ctl_elem(chip, &cmi8330_sb_mixers[idx])) < 0)
+		err = snd_sbmixer_add_ctl_elem(chip, &cmi8330_sb_mixers[idx]);
+		if (err < 0)
 			return err;
 	}
 	return 0;
@@ -322,7 +308,8 @@ static int snd_cmi8330_mixer(struct snd_card *card, struct snd_cmi8330 *acard)
 	}
 
 #ifdef ENABLE_SB_MIXER
-	if ((err = cmi8330_add_sb_mixers(acard->sb)) < 0)
+	err = cmi8330_add_sb_mixers(acard->sb);
+	if (err < 0)
 		return err;
 #endif
 	return 0;
@@ -442,12 +429,13 @@ static int snd_cmi8330_pcm(struct snd_card *card, struct snd_cmi8330 *chip)
 	struct snd_pcm *pcm;
 	const struct snd_pcm_ops *ops;
 	int err;
-	static snd_pcm_open_callback_t cmi_open_callbacks[2] = {
+	static const snd_pcm_open_callback_t cmi_open_callbacks[2] = {
 		snd_cmi8330_playback_open,
 		snd_cmi8330_capture_open
 	};
 
-	if ((err = snd_pcm_new(card, (chip->type == CMI8329) ? "CMI8329" : "CMI8330", 0, 1, 1, &pcm)) < 0)
+	err = snd_pcm_new(card, (chip->type == CMI8329) ? "CMI8329" : "CMI8330", 0, 1, 1, &pcm);
+	if (err < 0)
 		return err;
 	strcpy(pcm->name, (chip->type == CMI8329) ? "CMI8329" : "CMI8330");
 	pcm->private_data = chip;
@@ -469,9 +457,8 @@ static int snd_cmi8330_pcm(struct snd_card *card, struct snd_cmi8330 *chip)
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &chip->streams[SNDRV_PCM_STREAM_PLAYBACK].ops);
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &chip->streams[SNDRV_PCM_STREAM_CAPTURE].ops);
 
-	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV,
-					      snd_dma_isa_data(),
-					      64*1024, 128*1024);
+	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV,
+				       card->dev, 64*1024, 128*1024);
 	chip->pcm = pcm;
 
 	return 0;
@@ -484,7 +471,6 @@ static int snd_cmi8330_suspend(struct snd_card *card)
 	struct snd_cmi8330 *acard = card->private_data;
 
 	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
-	snd_pcm_suspend_all(acard->pcm);
 	acard->wss->suspend(acard->wss);
 	snd_sbmixer_suspend(acard->sb);
 	return 0;
@@ -514,14 +500,15 @@ static int snd_cmi8330_resume(struct snd_card *card)
 
 #define PFX	"cmi8330: "
 
-static int snd_cmi8330_card_new(int dev, struct snd_card **cardp)
+static int snd_cmi8330_card_new(struct device *pdev, int dev,
+				struct snd_card **cardp)
 {
 	struct snd_card *card;
 	struct snd_cmi8330 *acard;
 	int err;
 
-	err = snd_card_create(index[dev], id[dev], THIS_MODULE,
-			      sizeof(struct snd_cmi8330), &card);
+	err = snd_devm_card_new(pdev, index[dev], id[dev], THIS_MODULE,
+				sizeof(struct snd_cmi8330), &card);
 	if (err < 0) {
 		snd_printk(KERN_ERR PFX "could not get a new card\n");
 		return err;
@@ -552,18 +539,19 @@ static int snd_cmi8330_probe(struct snd_card *card, int dev)
 		return -ENODEV;
 	}
 
-	if ((err = snd_sbdsp_create(card, sbport[dev],
-				    sbirq[dev],
-				    snd_sb16dsp_interrupt,
-				    sbdma8[dev],
-				    sbdma16[dev],
-				    SB_HW_AUTO, &acard->sb)) < 0) {
+	err = snd_sbdsp_create(card, sbport[dev],
+			       sbirq[dev],
+			       snd_sb16dsp_interrupt,
+			       sbdma8[dev],
+			       sbdma16[dev],
+			       SB_HW_AUTO, &acard->sb);
+	if (err < 0) {
 		snd_printk(KERN_ERR PFX "SB16 device busy??\n");
 		return err;
 	}
 	if (acard->sb->hardware != SB_HW_16) {
 		snd_printk(KERN_ERR PFX "SB16 not found during probe\n");
-		return err;
+		return -ENODEV;
 	}
 
 	snd_wss_out(acard->wss, CS4231_MISC_INFO, 0x40); /* switch on MODE2 */
@@ -571,12 +559,14 @@ static int snd_cmi8330_probe(struct snd_card *card, int dev)
 		snd_wss_out(acard->wss, i,
 			    snd_cmi8330_image[i - CMI8330_RMUX3D]);
 
-	if ((err = snd_cmi8330_mixer(card, acard)) < 0) {
+	err = snd_cmi8330_mixer(card, acard);
+	if (err < 0) {
 		snd_printk(KERN_ERR PFX "failed to create mixers\n");
 		return err;
 	}
 
-	if ((err = snd_cmi8330_pcm(card, acard)) < 0) {
+	err = snd_cmi8330_pcm(card, acard);
+	if (err < 0) {
 		snd_printk(KERN_ERR PFX "failed to create pcms\n");
 		return err;
 	}
@@ -635,22 +625,13 @@ static int snd_cmi8330_isa_probe(struct device *pdev,
 	struct snd_card *card;
 	int err;
 
-	err = snd_cmi8330_card_new(dev, &card);
+	err = snd_cmi8330_card_new(pdev, dev, &card);
 	if (err < 0)
 		return err;
-	snd_card_set_dev(card, pdev);
-	if ((err = snd_cmi8330_probe(card, dev)) < 0) {
-		snd_card_free(card);
+	err = snd_cmi8330_probe(card, dev);
+	if (err < 0)
 		return err;
-	}
 	dev_set_drvdata(pdev, card);
-	return 0;
-}
-
-static int snd_cmi8330_isa_remove(struct device *devptr,
-				  unsigned int dev)
-{
-	snd_card_free(dev_get_drvdata(devptr));
 	return 0;
 }
 
@@ -672,7 +653,6 @@ static int snd_cmi8330_isa_resume(struct device *dev, unsigned int n)
 static struct isa_driver snd_cmi8330_driver = {
 	.match		= snd_cmi8330_isa_match,
 	.probe		= snd_cmi8330_isa_probe,
-	.remove		= snd_cmi8330_isa_remove,
 #ifdef CONFIG_PM
 	.suspend	= snd_cmi8330_isa_suspend,
 	.resume		= snd_cmi8330_isa_resume,
@@ -698,28 +678,20 @@ static int snd_cmi8330_pnp_detect(struct pnp_card_link *pcard,
 	if (dev >= SNDRV_CARDS)
 		return -ENODEV;
 			       
-	res = snd_cmi8330_card_new(dev, &card);
+	res = snd_cmi8330_card_new(&pcard->card->dev, dev, &card);
 	if (res < 0)
 		return res;
-	if ((res = snd_cmi8330_pnp(dev, card->private_data, pcard, pid)) < 0) {
+	res = snd_cmi8330_pnp(dev, card->private_data, pcard, pid);
+	if (res < 0) {
 		snd_printk(KERN_ERR PFX "PnP detection failed\n");
-		snd_card_free(card);
 		return res;
 	}
-	snd_card_set_dev(card, &pcard->card->dev);
-	if ((res = snd_cmi8330_probe(card, dev)) < 0) {
-		snd_card_free(card);
+	res = snd_cmi8330_probe(card, dev);
+	if (res < 0)
 		return res;
-	}
 	pnp_set_card_drvdata(pcard, card);
 	dev++;
 	return 0;
-}
-
-static void snd_cmi8330_pnp_remove(struct pnp_card_link *pcard)
-{
-	snd_card_free(pnp_get_card_drvdata(pcard));
-	pnp_set_card_drvdata(pcard, NULL);
 }
 
 #ifdef CONFIG_PM
@@ -739,7 +711,6 @@ static struct pnp_card_driver cmi8330_pnpc_driver = {
 	.name = "cmi8330",
 	.id_table = snd_cmi8330_pnpids,
 	.probe = snd_cmi8330_pnp_detect,
-	.remove = snd_cmi8330_pnp_remove,
 #ifdef CONFIG_PM
 	.suspend	= snd_cmi8330_pnp_suspend,
 	.resume		= snd_cmi8330_pnp_resume,

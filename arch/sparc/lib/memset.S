@@ -1,12 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* linux/arch/sparc/lib/memset.S: Sparc optimized memset, bzero and clear_user code
  * Copyright (C) 1991,1996 Free Software Foundation
  * Copyright (C) 1996,1997 Jakub Jelinek (jj@sunsite.mff.cuni.cz)
  * Copyright (C) 1996 David S. Miller (davem@caip.rutgers.edu)
  *
- * Returns 0, if ok, and number of bytes not yet set if exception
- * occurs and we were called as clear_user.
+ * Calls to memset returns initial %o0. Calls to bzero returns 0, if ok, and
+ * number of bytes not yet set if exception occurs and we were called as
+ * clear_user.
  */
 
+#include <linux/export.h>
 #include <asm/ptrace.h>
 
 /* Work around cpp -rob */
@@ -16,7 +19,7 @@
 98: 	x,y;					\
 	.section .fixup,ALLOC,EXECINSTR;	\
 	.align	4;				\
-99:	ba 30f;					\
+99:	retl;					\
 	 a, b, %o0;				\
 	.section __ex_table,ALLOC;		\
 	.align	4;				\
@@ -24,35 +27,44 @@
 	.text;					\
 	.align	4
 
-#define EXT(start,end,handler) 			\
+#define STORE(source, base, offset, n)		\
+98: 	std source, [base + offset + n];	\
+	.section .fixup,ALLOC,EXECINSTR;	\
+	.align	4;				\
+99:	ba 30f;					\
+	 sub %o3, n - offset, %o3;		\
 	.section __ex_table,ALLOC;		\
 	.align	4;				\
-	.word	start, 0, end, handler;		\
+	.word	98b, 99b;			\
 	.text;					\
-	.align	4
+	.align	4;
+
+#define STORE_LAST(source, base, offset, n)	\
+	EX(std source, [base - offset - n],	\
+	   add %o1, offset + n);
 
 /* Please don't change these macros, unless you change the logic
  * in the .fixup section below as well.
  * Store 64 bytes at (BASE + OFFSET) using value SOURCE. */
-#define ZERO_BIG_BLOCK(base, offset, source)    \
-	std	source, [base + offset + 0x00]; \
-	std	source, [base + offset + 0x08]; \
-	std	source, [base + offset + 0x10]; \
-	std	source, [base + offset + 0x18]; \
-	std	source, [base + offset + 0x20]; \
-	std	source, [base + offset + 0x28]; \
-	std	source, [base + offset + 0x30]; \
-	std	source, [base + offset + 0x38];
+#define ZERO_BIG_BLOCK(base, offset, source)	\
+	STORE(source, base, offset, 0x00);	\
+	STORE(source, base, offset, 0x08);	\
+	STORE(source, base, offset, 0x10);	\
+	STORE(source, base, offset, 0x18);	\
+	STORE(source, base, offset, 0x20);	\
+	STORE(source, base, offset, 0x28);	\
+	STORE(source, base, offset, 0x30);	\
+	STORE(source, base, offset, 0x38);
 
 #define ZERO_LAST_BLOCKS(base, offset, source)	\
-	std	source, [base - offset - 0x38]; \
-	std	source, [base - offset - 0x30]; \
-	std	source, [base - offset - 0x28]; \
-	std	source, [base - offset - 0x20]; \
-	std	source, [base - offset - 0x18]; \
-	std	source, [base - offset - 0x10]; \
-	std	source, [base - offset - 0x08]; \
-	std	source, [base - offset - 0x00];
+	STORE_LAST(source, base, offset, 0x38);	\
+	STORE_LAST(source, base, offset, 0x30); \
+	STORE_LAST(source, base, offset, 0x28);	\
+	STORE_LAST(source, base, offset, 0x20);	\
+	STORE_LAST(source, base, offset, 0x18);	\
+	STORE_LAST(source, base, offset, 0x10);	\
+	STORE_LAST(source, base, offset, 0x08);	\
+	STORE_LAST(source, base, offset, 0x00);
 
 	.text
 	.align 4
@@ -61,10 +73,13 @@
 __bzero_begin:
 
 	.globl	__bzero
+	.type	__bzero,#function
 	.globl	memset
-	.globl	__memset_start, __memset_end
-__memset_start:
+	EXPORT_SYMBOL(__bzero)
+	EXPORT_SYMBOL(memset)
 memset:
+	mov	%o0, %g1
+	mov	1, %g4
 	and	%o1, 0xff, %g3
 	sll	%g3, 8, %g2
 	or	%g3, %g2, %g3
@@ -89,6 +104,7 @@ memset:
 	 sub	%o0, %o2, %o0
 
 __bzero:
+	clr	%g4
 	mov	%g0, %g3
 1:
 	cmp	%o1, 7
@@ -113,8 +129,6 @@ __bzero:
 	ZERO_BIG_BLOCK(%o0, 0x00, %g2)
 	subcc	%o3, 128, %o3
 	ZERO_BIG_BLOCK(%o0, 0x40, %g2)
-11:
-	EXT(10b, 11b, 20f)
 	bne	10b
 	 add	%o0, 128, %o0
 
@@ -129,7 +143,6 @@ __bzero:
 	jmp	%o4
 	 add	%o0, %o2, %o0
 
-12:
 	ZERO_LAST_BLOCKS(%o0, 0x48, %g2)
 	ZERO_LAST_BLOCKS(%o0, 0x08, %g2)
 13:
@@ -151,8 +164,8 @@ __bzero:
 	bne,a	8f
 	 EX(stb	%g3, [%o0], and %o1, 1)
 8:
-	retl
-	 clr	%o0
+	b	0f
+	 nop
 7:
 	be	13b
 	 orcc	%o1, 0, %g0
@@ -164,39 +177,21 @@ __bzero:
 	bne	8b
 	 EX(stb	%g3, [%o0 - 1], add %o1, 1)
 0:
+	andcc	%g4, 1, %g0
+	be	5f
+	 nop
+	retl
+	 mov	%g1, %o0
+5:
 	retl
 	 clr	%o0
-__memset_end:
 
 	.section .fixup,#alloc,#execinstr
 	.align	4
-20:
-	cmp	%g2, 8
-	bleu	1f
-	 and	%o1, 0x7f, %o1
-	sub	%g2, 9, %g2
-	add	%o3, 64, %o3
-1:
-	sll	%g2, 3, %g2
-	add	%o3, %o1, %o0
-	b 30f
-	 sub	%o0, %g2, %o0
-21:
-	mov	8, %o0
-	and	%o1, 7, %o1
-	sub	%o0, %g2, %o0
-	sll	%o0, 3, %o0
-	b 30f
-	 add	%o0, %o1, %o0
 30:
-/* %o4 is faulting address, %o5 is %pc where fault occurred */
-	save	%sp, -104, %sp
-	mov	%i5, %o0
-	mov	%i7, %o1
-	call	lookup_fault
-	 mov	%i4, %o2
-	ret
-	 restore
+	and	%o1, 0x7f, %o1
+	retl
+	 add	%o3, %o1, %o0
 
 	.globl __bzero_end
 __bzero_end:

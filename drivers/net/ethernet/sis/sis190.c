@@ -330,7 +330,7 @@ static const struct {
 	{ "SiS 191 PCI Gigabit Ethernet adapter" },
 };
 
-static DEFINE_PCI_DEVICE_TABLE(sis190_pci_tbl) = {
+static const struct pci_device_id sis190_pci_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_SI, 0x0190), 0, 0, 0 },
 	{ PCI_DEVICE(PCI_VENDOR_ID_SI, 0x0191), 0, 0, 1 },
 	{ 0, },
@@ -494,9 +494,9 @@ static struct sk_buff *sis190_alloc_rx_skb(struct sis190_private *tp,
 	skb = netdev_alloc_skb(tp->dev, rx_buf_sz);
 	if (unlikely(!skb))
 		goto skb_alloc_failed;
-	mapping = pci_map_single(tp->pci_dev, skb->data, tp->rx_buf_sz,
-			PCI_DMA_FROMDEVICE);
-	if (pci_dma_mapping_error(tp->pci_dev, mapping))
+	mapping = dma_map_single(&tp->pci_dev->dev, skb->data, tp->rx_buf_sz,
+				 DMA_FROM_DEVICE);
+	if (dma_mapping_error(&tp->pci_dev->dev, mapping))
 		goto out;
 	sis190_map_to_asic(desc, mapping, rx_buf_sz);
 
@@ -542,8 +542,8 @@ static bool sis190_try_rx_copy(struct sis190_private *tp,
 	if (!skb)
 		goto out;
 
-	pci_dma_sync_single_for_cpu(tp->pci_dev, addr, tp->rx_buf_sz,
-				PCI_DMA_FROMDEVICE);
+	dma_sync_single_for_cpu(&tp->pci_dev->dev, addr, tp->rx_buf_sz,
+				DMA_FROM_DEVICE);
 	skb_copy_to_linear_data(skb, sk_buff[0]->data, pkt_size);
 	*sk_buff = skb;
 	done = true;
@@ -612,12 +612,14 @@ static int sis190_rx_interrupt(struct net_device *dev,
 
 
 			if (sis190_try_rx_copy(tp, &skb, pkt_size, addr)) {
-				pci_dma_sync_single_for_device(pdev, addr,
-					tp->rx_buf_sz, PCI_DMA_FROMDEVICE);
+				dma_sync_single_for_device(&pdev->dev, addr,
+							   tp->rx_buf_sz,
+							   DMA_FROM_DEVICE);
 				sis190_give_to_asic(desc, tp->rx_buf_sz);
 			} else {
-				pci_unmap_single(pdev, addr, tp->rx_buf_sz,
-						 PCI_DMA_FROMDEVICE);
+				dma_unmap_single(&pdev->dev, addr,
+						 tp->rx_buf_sz,
+						 DMA_FROM_DEVICE);
 				tp->Rx_skbuff[entry] = NULL;
 				sis190_make_unusable_by_asic(desc);
 			}
@@ -654,7 +656,8 @@ static void sis190_unmap_tx_skb(struct pci_dev *pdev, struct sk_buff *skb,
 
 	len = skb->len < ETH_ZLEN ? ETH_ZLEN : skb->len;
 
-	pci_unmap_single(pdev, le32_to_cpu(desc->addr), len, PCI_DMA_TODEVICE);
+	dma_unmap_single(&pdev->dev, le32_to_cpu(desc->addr), len,
+			 DMA_TO_DEVICE);
 
 	memset(desc, 0x00, sizeof(*desc));
 }
@@ -714,7 +717,7 @@ static void sis190_tx_interrupt(struct net_device *dev,
 
 		sis190_unmap_tx_skb(tp->pci_dev, skb, txd);
 		tp->Tx_skbuff[entry] = NULL;
-		dev_kfree_skb_irq(skb);
+		dev_consume_skb_irq(skb);
 	}
 
 	if (tp->dirty_tx != dirty_tx) {
@@ -785,8 +788,8 @@ static void sis190_free_rx_skb(struct sis190_private *tp,
 {
 	struct pci_dev *pdev = tp->pci_dev;
 
-	pci_unmap_single(pdev, le32_to_cpu(desc->addr), tp->rx_buf_sz,
-			 PCI_DMA_FROMDEVICE);
+	dma_unmap_single(&pdev->dev, le32_to_cpu(desc->addr), tp->rx_buf_sz,
+			 DMA_FROM_DEVICE);
 	dev_kfree_skb(*sk_buff);
 	*sk_buff = NULL;
 	sis190_make_unusable_by_asic(desc);
@@ -1018,10 +1021,10 @@ out_unlock:
 	rtnl_unlock();
 }
 
-static void sis190_phy_timer(unsigned long __opaque)
+static void sis190_phy_timer(struct timer_list *t)
 {
-	struct net_device *dev = (struct net_device *)__opaque;
-	struct sis190_private *tp = netdev_priv(dev);
+	struct sis190_private *tp = from_timer(tp, t, timer);
+	struct net_device *dev = tp->dev;
 
 	if (likely(netif_running(dev)))
 		schedule_work(&tp->phy_task);
@@ -1039,10 +1042,8 @@ static inline void sis190_request_timer(struct net_device *dev)
 	struct sis190_private *tp = netdev_priv(dev);
 	struct timer_list *timer = &tp->timer;
 
-	init_timer(timer);
+	timer_setup(timer, sis190_phy_timer, 0);
 	timer->expires = jiffies + SIS190_PHY_TIMEOUT;
-	timer->data = (unsigned long)dev;
-	timer->function = sis190_phy_timer;
 	add_timer(timer);
 }
 
@@ -1069,13 +1070,15 @@ static int sis190_open(struct net_device *dev)
 
 	/*
 	 * Rx and Tx descriptors need 256 bytes alignment.
-	 * pci_alloc_consistent() guarantees a stronger alignment.
+	 * dma_alloc_coherent() guarantees a stronger alignment.
 	 */
-	tp->TxDescRing = pci_alloc_consistent(pdev, TX_RING_BYTES, &tp->tx_dma);
+	tp->TxDescRing = dma_alloc_coherent(&pdev->dev, TX_RING_BYTES,
+					    &tp->tx_dma, GFP_KERNEL);
 	if (!tp->TxDescRing)
 		goto out;
 
-	tp->RxDescRing = pci_alloc_consistent(pdev, RX_RING_BYTES, &tp->rx_dma);
+	tp->RxDescRing = dma_alloc_coherent(&pdev->dev, RX_RING_BYTES,
+					    &tp->rx_dma, GFP_KERNEL);
 	if (!tp->RxDescRing)
 		goto err_free_tx_0;
 
@@ -1097,9 +1100,11 @@ err_release_timer_2:
 	sis190_delete_timer(dev);
 	sis190_rx_clear(tp);
 err_free_rx_1:
-	pci_free_consistent(pdev, RX_RING_BYTES, tp->RxDescRing, tp->rx_dma);
+	dma_free_coherent(&pdev->dev, RX_RING_BYTES, tp->RxDescRing,
+			  tp->rx_dma);
 err_free_tx_0:
-	pci_free_consistent(pdev, TX_RING_BYTES, tp->TxDescRing, tp->tx_dma);
+	dma_free_coherent(&pdev->dev, TX_RING_BYTES, tp->TxDescRing,
+			  tp->tx_dma);
 	goto out;
 }
 
@@ -1144,7 +1149,7 @@ static void sis190_down(struct net_device *dev)
 		if (!poll_locked)
 			poll_locked++;
 
-		synchronize_sched();
+		synchronize_rcu();
 
 	} while (SIS_R32(IntrMask));
 
@@ -1161,8 +1166,10 @@ static int sis190_close(struct net_device *dev)
 
 	free_irq(pdev->irq, dev);
 
-	pci_free_consistent(pdev, TX_RING_BYTES, tp->TxDescRing, tp->tx_dma);
-	pci_free_consistent(pdev, RX_RING_BYTES, tp->RxDescRing, tp->rx_dma);
+	dma_free_coherent(&pdev->dev, TX_RING_BYTES, tp->TxDescRing,
+			  tp->tx_dma);
+	dma_free_coherent(&pdev->dev, RX_RING_BYTES, tp->RxDescRing,
+			  tp->rx_dma);
 
 	tp->TxDescRing = NULL;
 	tp->RxDescRing = NULL;
@@ -1199,8 +1206,9 @@ static netdev_tx_t sis190_start_xmit(struct sk_buff *skb,
 		return NETDEV_TX_BUSY;
 	}
 
-	mapping = pci_map_single(tp->pci_dev, skb->data, len, PCI_DMA_TODEVICE);
-	if (pci_dma_mapping_error(tp->pci_dev, mapping)) {
+	mapping = dma_map_single(&tp->pci_dev->dev, skb->data, len,
+				 DMA_TO_DEVICE);
+	if (dma_mapping_error(&tp->pci_dev->dev, mapping)) {
 		netif_err(tp, tx_err, dev,
 				"PCI mapping failed, dropping packet");
 		return NETDEV_TX_BUSY;
@@ -1500,7 +1508,7 @@ static struct net_device *sis190_init_board(struct pci_dev *pdev)
 		goto err_pci_disable_2;
 	}
 
-	rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+	rc = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
 	if (rc < 0) {
 		if (netif_msg_probe(tp))
 			pr_err("%s: DMA configuration failed\n",
@@ -1540,7 +1548,7 @@ err_out_0:
 	goto out;
 }
 
-static void sis190_tx_timeout(struct net_device *dev)
+static void sis190_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct sis190_private *tp = netdev_priv(dev);
 	void __iomem *ioaddr = tp->mmio_addr;
@@ -1578,6 +1586,7 @@ static int sis190_get_mac_addr_from_eeprom(struct pci_dev *pdev,
 {
 	struct sis190_private *tp = netdev_priv(dev);
 	void __iomem *ioaddr = tp->mmio_addr;
+	__le16 addr[ETH_ALEN / 2];
 	u16 sig;
 	int i;
 
@@ -1598,8 +1607,9 @@ static int sis190_get_mac_addr_from_eeprom(struct pci_dev *pdev,
 	for (i = 0; i < ETH_ALEN / 2; i++) {
 		u16 w = sis190_read_eeprom(ioaddr, EEPROMMACAddr + i);
 
-		((__le16 *)dev->dev_addr)[i] = cpu_to_le16(w);
+		addr[i] = cpu_to_le16(w);
 	}
+	eth_hw_addr_set(dev, (u8 *)addr);
 
 	sis190_set_rgmii(tp, sis190_read_eeprom(ioaddr, EEPROMInfo));
 
@@ -1621,6 +1631,7 @@ static int sis190_get_mac_addr_from_apc(struct pci_dev *pdev,
 	static const u16 ids[] = { 0x0965, 0x0966, 0x0968 };
 	struct sis190_private *tp = netdev_priv(dev);
 	struct pci_dev *isa_bridge;
+	u8 addr[ETH_ALEN];
 	u8 reg, tmp8;
 	unsigned int i;
 
@@ -1649,8 +1660,9 @@ static int sis190_get_mac_addr_from_apc(struct pci_dev *pdev,
 
         for (i = 0; i < ETH_ALEN; i++) {
                 outb(0x9 + i, 0x78);
-                dev->dev_addr[i] = inb(0x79);
+                addr[i] = inb(0x79);
         }
+	eth_hw_addr_set(dev, addr);
 
 	outb(0x12, 0x78);
 	reg = inb(0x79);
@@ -1734,18 +1746,22 @@ static void sis190_set_speed_auto(struct net_device *dev)
 		   BMCR_ANENABLE | BMCR_ANRESTART | BMCR_RESET);
 }
 
-static int sis190_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int sis190_get_link_ksettings(struct net_device *dev,
+				     struct ethtool_link_ksettings *cmd)
 {
 	struct sis190_private *tp = netdev_priv(dev);
 
-	return mii_ethtool_gset(&tp->mii_if, cmd);
+	mii_ethtool_get_link_ksettings(&tp->mii_if, cmd);
+
+	return 0;
 }
 
-static int sis190_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int sis190_set_link_ksettings(struct net_device *dev,
+				     const struct ethtool_link_ksettings *cmd)
 {
 	struct sis190_private *tp = netdev_priv(dev);
 
-	return mii_ethtool_sset(&tp->mii_if, cmd);
+	return mii_ethtool_set_link_ksettings(&tp->mii_if, cmd);
 }
 
 static void sis190_get_drvinfo(struct net_device *dev,
@@ -1753,9 +1769,9 @@ static void sis190_get_drvinfo(struct net_device *dev,
 {
 	struct sis190_private *tp = netdev_priv(dev);
 
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, pci_name(tp->pci_dev),
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, pci_name(tp->pci_dev),
 		sizeof(info->bus_info));
 }
 
@@ -1797,8 +1813,6 @@ static void sis190_set_msglevel(struct net_device *dev, u32 value)
 }
 
 static const struct ethtool_ops sis190_ethtool_ops = {
-	.get_settings	= sis190_get_settings,
-	.set_settings	= sis190_set_settings,
 	.get_drvinfo	= sis190_get_drvinfo,
 	.get_regs_len	= sis190_get_regs_len,
 	.get_regs	= sis190_get_regs,
@@ -1806,6 +1820,8 @@ static const struct ethtool_ops sis190_ethtool_ops = {
 	.get_msglevel	= sis190_get_msglevel,
 	.set_msglevel	= sis190_set_msglevel,
 	.nway_reset	= sis190_nway_reset,
+	.get_link_ksettings = sis190_get_link_ksettings,
+	.set_link_ksettings = sis190_set_link_ksettings,
 };
 
 static int sis190_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
@@ -1829,11 +1845,10 @@ static int sis190_mac_addr(struct net_device  *dev, void *p)
 static const struct net_device_ops sis190_netdev_ops = {
 	.ndo_open		= sis190_open,
 	.ndo_stop		= sis190_close,
-	.ndo_do_ioctl		= sis190_ioctl,
+	.ndo_eth_ioctl		= sis190_ioctl,
 	.ndo_start_xmit		= sis190_start_xmit,
 	.ndo_tx_timeout		= sis190_tx_timeout,
 	.ndo_set_rx_mode	= sis190_set_rx_mode,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address	= sis190_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 #ifdef CONFIG_NET_POLL_CONTROLLER
@@ -1877,7 +1892,7 @@ static int sis190_init_one(struct pci_dev *pdev,
 
 	dev->netdev_ops = &sis190_netdev_ops;
 
-	SET_ETHTOOL_OPS(dev, &sis190_ethtool_ops);
+	dev->ethtool_ops = &sis190_ethtool_ops;
 	dev->watchdog_timeo = SIS190_TX_TIMEOUT;
 
 	spin_lock_init(&tp->lock);

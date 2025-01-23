@@ -1,8 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * A policy database (policydb) specifies the
  * configuration data for the security policy.
  *
- * Author : Stephen Smalley, <sds@epoch.ncsc.mil>
+ * Author : Stephen Smalley, <stephen.smalley.work@gmail.com>
  */
 
 /*
@@ -16,15 +17,10 @@
  *
  * Copyright (C) 2004-2005 Trusted Computer Solutions, Inc.
  * Copyright (C) 2003 - 2004 Tresys Technology, LLC
- *	This program is free software; you can redistribute it and/or modify
- *	it under the terms of the GNU General Public License as published by
- *	the Free Software Foundation, version 2.
  */
 
 #ifndef _SS_POLICYDB_H_
 #define _SS_POLICYDB_H_
-
-#include <linux/flex_array.h>
 
 #include "symtab.h"
 #include "avtab.h"
@@ -73,6 +69,7 @@ struct class_datum {
 #define DEFAULT_TARGET_LOW     4
 #define DEFAULT_TARGET_HIGH    5
 #define DEFAULT_TARGET_LOW_HIGH        6
+#define DEFAULT_GLBLUB		7
 	char default_range;
 };
 
@@ -84,23 +81,26 @@ struct role_datum {
 	struct ebitmap types;		/* set of authorized types for role */
 };
 
-struct role_trans {
+struct role_trans_key {
 	u32 role;		/* current role */
 	u32 type;		/* program executable type, or new object type */
 	u32 tclass;		/* process class, or new object class */
-	u32 new_role;		/* new role */
-	struct role_trans *next;
 };
 
-struct filename_trans {
-	u32 stype;		/* current process */
+struct role_trans_datum {
+	u32 new_role;		/* new role */
+};
+
+struct filename_trans_key {
 	u32 ttype;		/* parent dir context */
 	u16 tclass;		/* class of new object */
 	const char *name;	/* last path component */
 };
 
 struct filename_trans_datum {
-	u32 otype;		/* expected of new object */
+	struct ebitmap stypes;	/* bitmap of source types for this otype */
+	u32 otype;		/* resulting type of new object */
+	struct filename_trans_datum *next;	/* record for next otype*/
 };
 
 struct role_allow {
@@ -187,6 +187,15 @@ struct ocontext {
 			u32 addr[4];
 			u32 mask[4];
 		} node6;        /* IPv6 node information */
+		struct {
+			u64 subnet_prefix;
+			u16 low_pkey;
+			u16 high_pkey;
+		} ibpkey;
+		struct {
+			char *dev_name;
+			u8 port;
+		} ibendport;
 	} u;
 	union {
 		u32 sclass;  /* security class for genfs */
@@ -215,18 +224,22 @@ struct genfs {
 #define SYM_NUM     8
 
 /* object context array indices */
-#define OCON_ISID  0	/* initial SIDs */
-#define OCON_FS    1	/* unlabeled file systems */
-#define OCON_PORT  2	/* TCP and UDP port numbers */
-#define OCON_NETIF 3	/* network interfaces */
-#define OCON_NODE  4	/* nodes */
-#define OCON_FSUSE 5	/* fs_use */
-#define OCON_NODE6 6	/* IPv6 nodes */
-#define OCON_NUM   7
+#define OCON_ISID	0 /* initial SIDs */
+#define OCON_FS		1 /* unlabeled file systems (deprecated) */
+#define OCON_PORT	2 /* TCP and UDP port numbers */
+#define OCON_NETIF	3 /* network interfaces */
+#define OCON_NODE	4 /* nodes */
+#define OCON_FSUSE	5 /* fs_use */
+#define OCON_NODE6	6 /* IPv6 nodes */
+#define OCON_IBPKEY	7 /* Infiniband PKeys */
+#define OCON_IBENDPORT	8 /* Infiniband end ports */
+#define OCON_NUM	9
 
 /* The policy database */
 struct policydb {
 	int mls_enabled;
+	int android_netlink_route;
+	int android_netlink_getneigh;
 
 	/* symbol tables */
 	struct symtab symtab[SYM_NUM];
@@ -240,32 +253,35 @@ struct policydb {
 #define p_cats symtab[SYM_CATS]
 
 	/* symbol names indexed by (value - 1) */
-	struct flex_array *sym_val_to_name[SYM_NUM];
+	char		**sym_val_to_name[SYM_NUM];
 
 	/* class, role, and user attributes indexed by (value - 1) */
 	struct class_datum **class_val_to_struct;
 	struct role_datum **role_val_to_struct;
 	struct user_datum **user_val_to_struct;
-	struct flex_array *type_val_to_struct_array;
+	struct type_datum **type_val_to_struct;
 
 	/* type enforcement access vectors and transitions */
 	struct avtab te_avtab;
 
 	/* role transitions */
-	struct role_trans *role_tr;
+	struct hashtab role_tr;
 
 	/* file transitions with the last path component */
 	/* quickly exclude lookups when parent ttype has no rules */
 	struct ebitmap filename_trans_ttypes;
 	/* actual set of filename_trans rules */
-	struct hashtab *filename_trans;
+	struct hashtab filename_trans;
+	/* only used if policyvers < POLICYDB_VERSION_COMP_FTRANS */
+	u32 compat_filename_trans_count;
 
 	/* bools indexed by (value - 1) */
 	struct cond_bool_datum **bool_val_to_struct;
 	/* type enforcement conditional access vectors and transitions */
 	struct avtab te_cond_avtab;
-	/* linked list indexing te_cond_avtab by conditional */
+	/* array indexing te_cond_avtab by conditional */
 	struct cond_node *cond_list;
+	u32 cond_list_len;
 
 	/* role allows */
 	struct role_allow *role_allow;
@@ -280,10 +296,10 @@ struct policydb {
 	struct genfs *genfs;
 
 	/* range transitions table (range_trans_key -> mls_range) */
-	struct hashtab *range_tr;
+	struct hashtab range_tr;
 
 	/* type -> attribute reverse mapping */
-	struct flex_array *type_attr_map_array;
+	struct ebitmap *type_attr_map_array;
 
 	struct ebitmap policycaps;
 
@@ -299,7 +315,7 @@ struct policydb {
 
 	u16 process_class;
 	u32 process_trans_perms;
-};
+} __randomize_layout;
 
 extern void policydb_destroy(struct policydb *p);
 extern int policydb_load_isids(struct policydb *p, struct sidtab *s);
@@ -310,9 +326,18 @@ extern int policydb_role_isvalid(struct policydb *p, unsigned int role);
 extern int policydb_read(struct policydb *p, void *fp);
 extern int policydb_write(struct policydb *p, void *fp);
 
-#define PERM_SYMTAB_SIZE 32
+extern struct filename_trans_datum *policydb_filenametr_search(
+	struct policydb *p, struct filename_trans_key *key);
+
+extern struct mls_range *policydb_rangetr_search(
+	struct policydb *p, struct range_trans *key);
+
+extern struct role_trans_datum *policydb_roletr_search(
+	struct policydb *p, struct role_trans_key *key);
 
 #define POLICYDB_CONFIG_MLS    1
+#define POLICYDB_CONFIG_ANDROID_NETLINK_ROUTE    (1 << 31)
+#define POLICYDB_CONFIG_ANDROID_NETLINK_GETNEIGH (1 << 30)
 
 /* the config flags related to unknown classes/perms are bits 2 and 3 */
 #define REJECT_UNKNOWN	0x00000002
@@ -345,10 +370,15 @@ static inline int next_entry(void *buf, struct policy_file *fp, size_t bytes)
 	return 0;
 }
 
-static inline int put_entry(const void *buf, size_t bytes, int num, struct policy_file *fp)
+static inline int put_entry(const void *buf, size_t bytes, size_t num, struct policy_file *fp)
 {
-	size_t len = bytes * num;
+	size_t len;
 
+	if (unlikely(check_mul_overflow(bytes, num, &len)))
+		return -EINVAL;
+
+	if (len > fp->len)
+		return -EINVAL;
 	memcpy(fp->data, buf, len);
 	fp->data += len;
 	fp->len -= len;
@@ -358,9 +388,7 @@ static inline int put_entry(const void *buf, size_t bytes, int num, struct polic
 
 static inline char *sym_name(struct policydb *p, unsigned int sym_num, unsigned int element_nr)
 {
-	struct flex_array *fa = p->sym_val_to_name[sym_num];
-
-	return flex_array_get_ptr(fa, element_nr);
+	return p->sym_val_to_name[sym_num][element_nr];
 }
 
 extern u16 string_to_security_class(struct policydb *p, const char *name);

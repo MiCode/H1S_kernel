@@ -1,22 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
 	Frontend-driver for TwinHan DST Frontend
 
 	Copyright (C) 2003 Jamie Honan
 	Copyright (C) 2004, 2005 Manu Abraham (manu@kromtek.com)
 
-	This program is free software; you can redistribute it and/or modify
-	it under the terms of the GNU General Public License as published by
-	the Free Software Foundation; either version 2 of the License, or
-	(at your option) any later version.
-
-	This program is distributed in the hope that it will be useful,
-	but WITHOUT ANY WARRANTY; without even the implied warranty of
-	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-	GNU General Public License for more details.
-
-	You should have received a copy of the GNU General Public License
-	along with this program; if not, write to the Free Software
-	Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
 #ifndef DST_COMMON_H
@@ -113,11 +101,11 @@ struct dst_state {
 	u8 dst_type;
 	u32 type_flags;
 	u32 frequency;		/* intermediate frequency in kHz for QPSK */
-	fe_spectral_inversion_t inversion;
+	enum fe_spectral_inversion inversion;
 	u32 symbol_rate;	/* symbol rate in Symbols per second */
-	fe_code_rate_t fec;
-	fe_sec_voltage_t voltage;
-	fe_sec_tone_mode_t tone;
+	enum fe_code_rate fec;
+	enum fe_sec_voltage voltage;
+	enum fe_sec_tone_mode tone;
 	u32 decode_freq;
 	u8 decode_lock;
 	u16 decode_strength;
@@ -127,8 +115,8 @@ struct dst_state {
 	u32 bandwidth;
 	u32 dst_hw_cap;
 	u8 dst_fw_version;
-	fe_sec_mini_cmd_t minicmd;
-	fe_modulation_t modulation;
+	enum fe_sec_mini_cmd minicmd;
+	enum fe_modulation modulation;
 	u8 messages[256];
 	u8 mac_address[8];
 	u8 fw_version[8];
@@ -138,7 +126,7 @@ struct dst_state {
 	u32 tuner_type;
 	char *tuner_name;
 	struct mutex dst_mutex;
-	u8 fw_name[8];
+	char fw_name[8];
 	struct dvb_device *dst_ca;
 };
 

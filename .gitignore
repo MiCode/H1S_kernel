@@ -1,50 +1,81 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # NOTE! Don't add files that are generated in specific
 # subdirectories here. Add them in the ".gitignore" file
 # in that subdirectory instead.
 #
-# NOTE! Please use 'git ls-files -i --exclude-standard'
+# NOTE! Please use 'git ls-files -i -c --exclude-per-directory=.gitignore'
 # command after changing this file, to see if there are
 # any tracked files which get ignored after the change.
 #
-# Normal rules
+# Normal rules (sorted alphabetically)
 #
 .*
+*.a
+*.asn1.[ch]
+*.bin
+*.bz2
+*.c.[012]*.*
+*.dt.yaml
+*.dtb
+*.dtbo
+*.dtb.S
+*.dtbo.S
+*.dwo
+*.elf
+*.gcno
+*.gz
+*.i
+*.ko
+*.lex.c
+*.ll
+*.lst
+*.lz4
+*.lzma
+*.lzo
+*.mod
+*.mod.c
 *.o
 *.o.*
-*.a
+*.patch
+*.rmeta
+*.rpm
+*.rsi
 *.s
-*.ko
 *.so
 *.so.dbg
-*.mod.c
-*.i
-*.lst
+*.su
 *.symtypes
-*.order
-modules.builtin
-*.elf
-*.bin
-*.gz
-*.bz2
-*.lzma
+*.symversions
+*.tab.[ch]
+*.tar
 *.xz
-*.lz4
-*.lzo
-*.patch
-*.gcno
+*.zst
+Module.symvers
+modules.order
 
 #
 # Top-level generic files
 #
-/tags
-/TAGS
 /linux
+/modules-only.symvers
 /vmlinux
+/vmlinux.32
+/vmlinux.map
+/vmlinux.symvers
+/vmlinux-gdb.py
 /vmlinuz
 /System.map
 /Module.markers
-/Module.symvers
+/modules.builtin
+/modules.builtin.modinfo
+/modules.nsdeps
+
+#
+# RPM spec file (make rpm-pkg)
+#
+/kernel.spec
+/rpmbuild/
 
 #
 # Debian directory (make deb-pkg)
@@ -52,17 +83,33 @@ modules.builtin
 /debian/
 
 #
-# git files that we don't want to ignore even it they are dot-files
+# Snap directory (make snap-pkg)
 #
+/snap/
+
+#
+# tar directory (make tar*-pkg)
+#
+/tar-install/
+
+#
+# We don't want to ignore the following even if they are dot-files
+#
+!.clang-format
+!.cocciconfig
+!.get_maintainer.ignore
+!.gitattributes
 !.gitignore
+!.kunitconfig
 !.mailmap
+!.rustfmt.toml
 
 #
 # Generated include files
 #
-include/config
-include/generated
-arch/*/include/generated
+/include/config/
+/include/generated/
+/arch/*/include/generated/
 
 # stgit generated dirs
 patches-*
@@ -70,6 +117,10 @@ patches-*
 # quilt's files
 patches
 series
+
+# ctags files
+tags
+TAGS
 
 # cscope files
 cscope.*
@@ -81,6 +132,9 @@ GRTAGS
 GSYMS
 GTAGS
 
+# id-utils files
+ID
+
 *.orig
 *~
 \#*#
@@ -89,6 +143,40 @@ GTAGS
 # Leavings from module signing
 #
 extra_certificates
+signing_key.pem
 signing_key.priv
 signing_key.x509
 x509.genkey
+
+# Kconfig presets
+/all.config
+/alldef.config
+/allmod.config
+/allno.config
+/allrandom.config
+/allyes.config
+
+# Kconfig savedefconfig output
+/defconfig
+
+# Kdevelop4
+*.kdev4
+
+# Clang's compilation database file
+/compile_commands.json
+
+# generated defconfigs
+arch/*/configs/vendor/*_defconfig
+
+# vendor device tree directories
+arch/*/boot/dts/vendor
+
+# Documentation toolchain
+sphinx_*/
+
+# Rust analyzer configuration
+/rust-project.json
+
+
+# Xiaomi Add
+drivers/misc/hwid/

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/arch/xtensa/kernel/irq.c
  *
@@ -25,26 +26,19 @@
 #include <linux/of.h>
 
 #include <asm/mxregs.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/platform.h>
+#include <asm/traps.h>
 
-atomic_t irq_err_count;
+DECLARE_PER_CPU(unsigned long, nmi_count);
 
 asmlinkage void do_IRQ(int hwirq, struct pt_regs *regs)
 {
-	int irq = irq_find_mapping(NULL, hwirq);
-
-	if (hwirq >= NR_IRQS) {
-		printk(KERN_EMERG "%s: cannot handle IRQ %d\n",
-				__func__, hwirq);
-	}
-
 #ifdef CONFIG_DEBUG_STACKOVERFLOW
 	/* Debugging check for stack overflow: is there less than 1KB free? */
 	{
-		unsigned long sp;
+		unsigned long sp = current_stack_pointer;
 
-		__asm__ __volatile__ ("mov %0, a1\n" : "=a" (sp));
 		sp &= THREAD_SIZE - 1;
 
 		if (unlikely(sp < (sizeof(thread_info) + 1024)))
@@ -52,16 +46,21 @@ asmlinkage void do_IRQ(int hwirq, struct pt_regs *regs)
 			       sp - sizeof(struct thread_info));
 	}
 #endif
-	generic_handle_irq(irq);
+	generic_handle_domain_irq(NULL, hwirq);
 }
 
 int arch_show_interrupts(struct seq_file *p, int prec)
 {
+	unsigned cpu __maybe_unused;
 #ifdef CONFIG_SMP
 	show_ipi_list(p, prec);
 #endif
-	seq_printf(p, "%*s: ", prec, "ERR");
-	seq_printf(p, "%10u\n", atomic_read(&irq_err_count));
+#if XTENSA_FAKE_NMI
+	seq_printf(p, "%*s:", prec, "NMI");
+	for_each_online_cpu(cpu)
+		seq_printf(p, " %10lu", per_cpu(nmi_count, cpu));
+	seq_puts(p, "   Non-maskable interrupts\n");
+#endif
 	return 0;
 }
 
@@ -106,6 +105,12 @@ int xtensa_irq_map(struct irq_domain *d, unsigned int irq,
 		irq_set_chip_and_handler_name(irq, irq_chip,
 				handle_percpu_irq, "timer");
 		irq_clear_status_flags(irq, IRQ_LEVEL);
+#ifdef XCHAL_INTTYPE_MASK_PROFILING
+	} else if (mask & XCHAL_INTTYPE_MASK_PROFILING) {
+		irq_set_chip_and_handler_name(irq, irq_chip,
+				handle_percpu_irq, "profiling");
+		irq_set_status_flags(irq, IRQ_LEVEL);
+#endif
 	} else {/* XCHAL_INTTYPE_MASK_WRITE_ERROR */
 		/* XCHAL_INTTYPE_MASK_NMI */
 		irq_set_chip_and_handler_name(irq, irq_chip,
@@ -138,7 +143,7 @@ unsigned xtensa_get_ext_irq_no(unsigned irq)
 
 void __init init_IRQ(void)
 {
-#ifdef CONFIG_OF
+#ifdef CONFIG_USE_OF
 	irqchip_init();
 #else
 #ifdef CONFIG_HAVE_SMP
@@ -151,22 +156,9 @@ void __init init_IRQ(void)
 #ifdef CONFIG_SMP
 	ipi_init();
 #endif
-	variant_init_irq();
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
-static void route_irq(struct irq_data *data, unsigned int irq, unsigned int cpu)
-{
-	struct irq_desc *desc = irq_to_desc(irq);
-	struct irq_chip *chip = irq_data_get_irq_chip(data);
-	unsigned long flags;
-
-	raw_spin_lock_irqsave(&desc->lock, flags);
-	if (chip->irq_set_affinity)
-		chip->irq_set_affinity(data, cpumask_of(cpu), false);
-	raw_spin_unlock_irqrestore(&desc->lock, flags);
-}
-
 /*
  * The CPU has been marked offline.  Migrate IRQs off this CPU.  If
  * the affinity settings do not allow other CPUs, force them onto any
@@ -175,30 +167,29 @@ static void route_irq(struct irq_data *data, unsigned int irq, unsigned int cpu)
 void migrate_irqs(void)
 {
 	unsigned int i, cpu = smp_processor_id();
-	struct irq_desc *desc;
 
-	for_each_irq_desc(i, desc) {
-		struct irq_data *data = irq_desc_get_irq_data(desc);
+	for_each_active_irq(i) {
+		struct irq_data *data = irq_get_irq_data(i);
+		const struct cpumask *mask;
 		unsigned int newcpu;
 
 		if (irqd_is_per_cpu(data))
 			continue;
 
-		if (!cpumask_test_cpu(cpu, data->affinity))
+		mask = irq_data_get_affinity_mask(data);
+		if (!cpumask_test_cpu(cpu, mask))
 			continue;
 
-		newcpu = cpumask_any_and(data->affinity, cpu_online_mask);
+		newcpu = cpumask_any_and(mask, cpu_online_mask);
 
 		if (newcpu >= nr_cpu_ids) {
 			pr_info_ratelimited("IRQ%u no longer affine to CPU%u\n",
 					    i, cpu);
 
-			cpumask_setall(data->affinity);
-			newcpu = cpumask_any_and(data->affinity,
-						 cpu_online_mask);
+			irq_set_affinity(i, cpu_all_mask);
+		} else {
+			irq_set_affinity(i, mask);
 		}
-
-		route_irq(data, i, newcpu);
 	}
 }
 #endif /* CONFIG_HOTPLUG_CPU */

@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Samsung Laptop driver
  *
  * Copyright (C) 2009,2011 Greg Kroah-Hartman (gregkh@suse.de)
  * Copyright (C) 2009,2011 Novell Inc.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -27,6 +23,7 @@
 #include <linux/debugfs.h>
 #include <linux/ctype.h>
 #include <linux/efi.h>
+#include <linux/suspend.h>
 #include <acpi/video.h>
 
 /*
@@ -123,6 +120,10 @@ struct sabi_commands {
 	u16 get_wireless_status;
 	u16 set_wireless_status;
 
+	/* 0x80 is off, 0x81 is on */
+	u16 get_lid_handling;
+	u16 set_lid_handling;
+
 	/* 0x81 to read, (0x82 | level << 8) to set, 0xaabb to enable */
 	u16 kbd_backlight;
 
@@ -151,7 +152,7 @@ struct sabi_config {
 
 static const struct sabi_config sabi_configs[] = {
 	{
-		/* I don't know if it is really 2, but it it is
+		/* I don't know if it is really 2, but it is
 		 * less than 3 anyway */
 		.sabi_version = 2,
 
@@ -192,6 +193,9 @@ static const struct sabi_config sabi_configs[] = {
 
 			.get_wireless_status = 0xFFFF,
 			.set_wireless_status = 0xFFFF,
+
+			.get_lid_handling = 0xFFFF,
+			.set_lid_handling = 0xFFFF,
 
 			.kbd_backlight = 0xFFFF,
 
@@ -252,6 +256,9 @@ static const struct sabi_config sabi_configs[] = {
 
 			.get_wireless_status = 0x69,
 			.set_wireless_status = 0x6a,
+
+			.get_lid_handling = 0x6d,
+			.set_lid_handling = 0x6e,
 
 			.kbd_backlight = 0x78,
 
@@ -340,6 +347,8 @@ struct samsung_laptop {
 	struct samsung_laptop_debug debug;
 	struct samsung_quirks *quirks;
 
+	struct notifier_block pm_nb;
+
 	bool handle_backlight;
 	bool has_stepping_quirk;
 
@@ -347,13 +356,20 @@ struct samsung_laptop {
 };
 
 struct samsung_quirks {
-	bool broken_acpi_video;
+	bool four_kbd_backlight_levels;
+	bool enable_kbd_backlight;
+	bool lid_handling;
 };
 
 static struct samsung_quirks samsung_unknown = {};
 
-static struct samsung_quirks samsung_broken_acpi_video = {
-	.broken_acpi_video = true,
+static struct samsung_quirks samsung_np740u3e = {
+	.four_kbd_backlight_levels = true,
+	.enable_kbd_backlight = true,
+};
+
+static struct samsung_quirks samsung_lid_handling = {
+	.lid_handling = true,
 };
 
 static bool force;
@@ -362,7 +378,7 @@ MODULE_PARM_DESC(force,
 		"Disable the DMI check and forces the driver to be loaded");
 
 static bool debug;
-module_param(debug, bool, S_IRUGO | S_IWUSR);
+module_param(debug, bool, 0644);
 MODULE_PARM_DESC(debug, "Debug enabled or not");
 
 static int sabi_command(struct samsung_laptop *samsung, u16 command,
@@ -561,7 +577,7 @@ static int seclinux_rfkill_set(void *data, bool blocked)
 				 !blocked);
 }
 
-static struct rfkill_ops seclinux_rfkill_ops = {
+static const struct rfkill_ops seclinux_rfkill_ops = {
 	.set_block = seclinux_rfkill_set,
 };
 
@@ -621,7 +637,7 @@ static void swsmi_rfkill_query(struct rfkill *rfkill, void *priv)
 	rfkill_set_sw_state(rfkill, !ret);
 }
 
-static struct rfkill_ops swsmi_rfkill_ops = {
+static const struct rfkill_ops swsmi_rfkill_ops = {
 	.set_block = swsmi_rfkill_set,
 	.query = swsmi_rfkill_query,
 };
@@ -679,7 +695,7 @@ static ssize_t set_performance_level(struct device *dev,
 	return count;
 }
 
-static DEVICE_ATTR(performance_level, S_IWUSR | S_IRUGO,
+static DEVICE_ATTR(performance_level, 0644,
 		   get_performance_level, set_performance_level);
 
 static int read_battery_life_extender(struct samsung_laptop *samsung)
@@ -738,7 +754,7 @@ static ssize_t set_battery_life_extender(struct device *dev,
 	struct samsung_laptop *samsung = dev_get_drvdata(dev);
 	int ret, value;
 
-	if (!count || sscanf(buf, "%i", &value) != 1)
+	if (!count || kstrtoint(buf, 0, &value) != 0)
 		return -EINVAL;
 
 	ret = write_battery_life_extender(samsung, !!value);
@@ -748,7 +764,7 @@ static ssize_t set_battery_life_extender(struct device *dev,
 	return count;
 }
 
-static DEVICE_ATTR(battery_life_extender, S_IWUSR | S_IRUGO,
+static DEVICE_ATTR(battery_life_extender, 0644,
 		   get_battery_life_extender, set_battery_life_extender);
 
 static int read_usb_charge(struct samsung_laptop *samsung)
@@ -807,7 +823,7 @@ static ssize_t set_usb_charge(struct device *dev,
 	struct samsung_laptop *samsung = dev_get_drvdata(dev);
 	int ret, value;
 
-	if (!count || sscanf(buf, "%i", &value) != 1)
+	if (!count || kstrtoint(buf, 0, &value) != 0)
 		return -EINVAL;
 
 	ret = write_usb_charge(samsung, !!value);
@@ -817,13 +833,79 @@ static ssize_t set_usb_charge(struct device *dev,
 	return count;
 }
 
-static DEVICE_ATTR(usb_charge, S_IWUSR | S_IRUGO,
+static DEVICE_ATTR(usb_charge, 0644,
 		   get_usb_charge, set_usb_charge);
+
+static int read_lid_handling(struct samsung_laptop *samsung)
+{
+	const struct sabi_commands *commands = &samsung->config->commands;
+	struct sabi_data data;
+	int retval;
+
+	if (commands->get_lid_handling == 0xFFFF)
+		return -ENODEV;
+
+	memset(&data, 0, sizeof(data));
+	retval = sabi_command(samsung, commands->get_lid_handling,
+			      &data, &data);
+
+	if (retval)
+		return retval;
+
+	return data.data[0] & 0x1;
+}
+
+static int write_lid_handling(struct samsung_laptop *samsung,
+			      int enabled)
+{
+	const struct sabi_commands *commands = &samsung->config->commands;
+	struct sabi_data data;
+
+	memset(&data, 0, sizeof(data));
+	data.data[0] = 0x80 | enabled;
+	return sabi_command(samsung, commands->set_lid_handling,
+			    &data, NULL);
+}
+
+static ssize_t get_lid_handling(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct samsung_laptop *samsung = dev_get_drvdata(dev);
+	int ret;
+
+	ret = read_lid_handling(samsung);
+	if (ret < 0)
+		return ret;
+
+	return sprintf(buf, "%d\n", ret);
+}
+
+static ssize_t set_lid_handling(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct samsung_laptop *samsung = dev_get_drvdata(dev);
+	int ret, value;
+
+	if (!count || kstrtoint(buf, 0, &value) != 0)
+		return -EINVAL;
+
+	ret = write_lid_handling(samsung, !!value);
+	if (ret < 0)
+		return ret;
+
+	return count;
+}
+
+static DEVICE_ATTR(lid_handling, 0644,
+		   get_lid_handling, set_lid_handling);
 
 static struct attribute *platform_attributes[] = {
 	&dev_attr_performance_level.attr,
 	&dev_attr_battery_life_extender.attr,
 	&dev_attr_usb_charge.attr,
+	&dev_attr_lid_handling.attr,
 	NULL
 };
 
@@ -946,6 +1028,22 @@ static int __init samsung_rfkill_init(struct samsung_laptop *samsung)
 	return 0;
 }
 
+static void samsung_lid_handling_exit(struct samsung_laptop *samsung)
+{
+	if (samsung->quirks->lid_handling)
+		write_lid_handling(samsung, 0);
+}
+
+static int __init samsung_lid_handling_init(struct samsung_laptop *samsung)
+{
+	int retval = 0;
+
+	if (samsung->quirks->lid_handling)
+		retval = write_lid_handling(samsung, 1);
+
+	return retval;
+}
+
 static int kbd_backlight_enable(struct samsung_laptop *samsung)
 {
 	const struct sabi_commands *commands = &samsung->config->commands;
@@ -1013,8 +1111,6 @@ static void kbd_led_set(struct led_classdev *led_cdev,
 
 	if (value > samsung->kbd_led.max_brightness)
 		value = samsung->kbd_led.max_brightness;
-	else if (value < 0)
-		value = 0;
 
 	samsung->kbd_led_wk = value;
 	queue_work(samsung->led_workqueue, &samsung->kbd_led_work);
@@ -1030,8 +1126,7 @@ static enum led_brightness kbd_led_get(struct led_classdev *led_cdev)
 
 static void samsung_leds_exit(struct samsung_laptop *samsung)
 {
-	if (!IS_ERR_OR_NULL(samsung->kbd_led.dev))
-		led_classdev_unregister(&samsung->kbd_led);
+	led_classdev_unregister(&samsung->kbd_led);
 	if (samsung->led_workqueue)
 		destroy_workqueue(samsung->led_workqueue);
 }
@@ -1051,6 +1146,8 @@ static int __init samsung_leds_init(struct samsung_laptop *samsung)
 		samsung->kbd_led.brightness_set = kbd_led_set;
 		samsung->kbd_led.brightness_get = kbd_led_get;
 		samsung->kbd_led.max_brightness = 8;
+		if (samsung->quirks->four_kbd_backlight_levels)
+			samsung->kbd_led.max_brightness = 4;
 
 		ret = led_classdev_register(&samsung->platform_device->dev,
 					   &samsung->kbd_led);
@@ -1099,11 +1196,10 @@ static int __init samsung_backlight_init(struct samsung_laptop *samsung)
 }
 
 static umode_t samsung_sysfs_is_visible(struct kobject *kobj,
-				       struct attribute *attr, int idx)
+					struct attribute *attr, int idx)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
-	struct platform_device *pdev = to_platform_device(dev);
-	struct samsung_laptop *samsung = platform_get_drvdata(pdev);
+	struct device *dev = kobj_to_dev(kobj);
+	struct samsung_laptop *samsung = dev_get_drvdata(dev);
 	bool ok = true;
 
 	if (attr == &dev_attr_performance_level.attr)
@@ -1112,11 +1208,13 @@ static umode_t samsung_sysfs_is_visible(struct kobject *kobj,
 		ok = !!(read_battery_life_extender(samsung) >= 0);
 	if (attr == &dev_attr_usb_charge.attr)
 		ok = !!(read_usb_charge(samsung) >= 0);
+	if (attr == &dev_attr_lid_handling.attr)
+		ok = !!(read_lid_handling(samsung) >= 0);
 
 	return ok ? attr->mode : 0;
 }
 
-static struct attribute_group platform_attribute_group = {
+static const struct attribute_group platform_attribute_group = {
 	.is_visible = samsung_sysfs_is_visible,
 	.attrs = platform_attributes
 };
@@ -1136,7 +1234,7 @@ static int __init samsung_sysfs_init(struct samsung_laptop *samsung)
 
 }
 
-static int show_call(struct seq_file *m, void *data)
+static int samsung_laptop_call_show(struct seq_file *m, void *data)
 {
 	struct samsung_laptop *samsung = m->private;
 	struct sabi_data *sdata = &samsung->debug.data;
@@ -1158,34 +1256,19 @@ static int show_call(struct seq_file *m, void *data)
 		   sdata->d0, sdata->d1, sdata->d2, sdata->d3);
 	return 0;
 }
-
-static int samsung_debugfs_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, show_call, inode->i_private);
-}
-
-static const struct file_operations samsung_laptop_call_io_ops = {
-	.owner = THIS_MODULE,
-	.open = samsung_debugfs_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(samsung_laptop_call);
 
 static void samsung_debugfs_exit(struct samsung_laptop *samsung)
 {
 	debugfs_remove_recursive(samsung->debug.root);
 }
 
-static int samsung_debugfs_init(struct samsung_laptop *samsung)
+static void samsung_debugfs_init(struct samsung_laptop *samsung)
 {
-	struct dentry *dent;
+	struct dentry *root;
 
-	samsung->debug.root = debugfs_create_dir("samsung-laptop", NULL);
-	if (!samsung->debug.root) {
-		pr_err("failed to create debugfs directory");
-		goto error_debugfs;
-	}
+	root = debugfs_create_dir("samsung-laptop", NULL);
+	samsung->debug.root = root;
 
 	samsung->debug.f0000_wrapper.data = samsung->f0000_segment;
 	samsung->debug.f0000_wrapper.size = 0xffff;
@@ -1196,60 +1279,17 @@ static int samsung_debugfs_init(struct samsung_laptop *samsung)
 	samsung->debug.sdiag_wrapper.data = samsung->sdiag;
 	samsung->debug.sdiag_wrapper.size = strlen(samsung->sdiag);
 
-	dent = debugfs_create_u16("command", S_IRUGO | S_IWUSR,
-				  samsung->debug.root, &samsung->debug.command);
-	if (!dent)
-		goto error_debugfs;
-
-	dent = debugfs_create_u32("d0", S_IRUGO | S_IWUSR, samsung->debug.root,
-				  &samsung->debug.data.d0);
-	if (!dent)
-		goto error_debugfs;
-
-	dent = debugfs_create_u32("d1", S_IRUGO | S_IWUSR, samsung->debug.root,
-				  &samsung->debug.data.d1);
-	if (!dent)
-		goto error_debugfs;
-
-	dent = debugfs_create_u16("d2", S_IRUGO | S_IWUSR, samsung->debug.root,
-				  &samsung->debug.data.d2);
-	if (!dent)
-		goto error_debugfs;
-
-	dent = debugfs_create_u8("d3", S_IRUGO | S_IWUSR, samsung->debug.root,
-				 &samsung->debug.data.d3);
-	if (!dent)
-		goto error_debugfs;
-
-	dent = debugfs_create_blob("data", S_IRUGO | S_IWUSR,
-				   samsung->debug.root,
-				   &samsung->debug.data_wrapper);
-	if (!dent)
-		goto error_debugfs;
-
-	dent = debugfs_create_blob("f0000_segment", S_IRUSR | S_IWUSR,
-				   samsung->debug.root,
-				   &samsung->debug.f0000_wrapper);
-	if (!dent)
-		goto error_debugfs;
-
-	dent = debugfs_create_file("call", S_IFREG | S_IRUGO,
-				   samsung->debug.root, samsung,
-				   &samsung_laptop_call_io_ops);
-	if (!dent)
-		goto error_debugfs;
-
-	dent = debugfs_create_blob("sdiag", S_IRUGO | S_IWUSR,
-				   samsung->debug.root,
-				   &samsung->debug.sdiag_wrapper);
-	if (!dent)
-		goto error_debugfs;
-
-	return 0;
-
-error_debugfs:
-	samsung_debugfs_exit(samsung);
-	return -ENOMEM;
+	debugfs_create_u16("command", 0644, root, &samsung->debug.command);
+	debugfs_create_u32("d0", 0644, root, &samsung->debug.data.d0);
+	debugfs_create_u32("d1", 0644, root, &samsung->debug.data.d1);
+	debugfs_create_u16("d2", 0644, root, &samsung->debug.data.d2);
+	debugfs_create_u8("d3", 0644, root, &samsung->debug.data.d3);
+	debugfs_create_blob("data", 0444, root, &samsung->debug.data_wrapper);
+	debugfs_create_blob("f0000_segment", 0400, root,
+			    &samsung->debug.f0000_wrapper);
+	debugfs_create_file("call", 0444, root, samsung,
+			    &samsung_laptop_call_fops);
+	debugfs_create_blob("sdiag", 0444, root, &samsung->debug.sdiag_wrapper);
 }
 
 static void samsung_sabi_exit(struct samsung_laptop *samsung)
@@ -1330,11 +1370,11 @@ static int __init samsung_sabi_init(struct samsung_laptop *samsung)
 	const struct sabi_config *config = NULL;
 	const struct sabi_commands *commands;
 	unsigned int ifaceP;
+	int loca = 0xffff;
 	int ret = 0;
 	int i;
-	int loca;
 
-	samsung->f0000_segment = ioremap_nocache(0xf0000, 0xffff);
+	samsung->f0000_segment = ioremap(0xf0000, 0xffff);
 	if (!samsung->f0000_segment) {
 		if (debug || force)
 			pr_err("Can't map the segment at 0xf0000\n");
@@ -1345,7 +1385,7 @@ static int __init samsung_sabi_init(struct samsung_laptop *samsung)
 	samsung_sabi_diag(samsung);
 
 	/* Try to find one of the signatures in memory to find the header */
-	for (i = 0; sabi_configs[i].test_string != 0; ++i) {
+	for (i = 0; sabi_configs[i].test_string != NULL; ++i) {
 		samsung->config = &sabi_configs[i];
 		loca = find_signature(samsung->f0000_segment,
 				      samsung->config->test_string);
@@ -1374,7 +1414,7 @@ static int __init samsung_sabi_init(struct samsung_laptop *samsung)
 	if (debug)
 		samsung_sabi_infos(samsung, loca, ifaceP);
 
-	samsung->sabi_iface = ioremap_nocache(ifaceP, 16);
+	samsung->sabi_iface = ioremap(ifaceP, 16);
 	if (!samsung->sabi_iface) {
 		pr_err("Can't remap %x\n", ifaceP);
 		ret = -EINVAL;
@@ -1414,11 +1454,27 @@ static void samsung_platform_exit(struct samsung_laptop *samsung)
 	}
 }
 
+static int samsung_pm_notification(struct notifier_block *nb,
+				   unsigned long val, void *ptr)
+{
+	struct samsung_laptop *samsung;
+
+	samsung = container_of(nb, struct samsung_laptop, pm_nb);
+	if (val == PM_POST_HIBERNATION &&
+	    samsung->quirks->enable_kbd_backlight)
+		kbd_backlight_enable(samsung);
+
+	if (val == PM_POST_HIBERNATION && samsung->quirks->lid_handling)
+		write_lid_handling(samsung, 1);
+
+	return 0;
+}
+
 static int __init samsung_platform_init(struct samsung_laptop *samsung)
 {
 	struct platform_device *pdev;
 
-	pdev = platform_device_register_simple("samsung", -1, NULL, 0);
+	pdev = platform_device_register_simple("samsung", PLATFORM_DEVID_NONE, NULL, 0);
 	if (IS_ERR(pdev))
 		return PTR_ERR(pdev);
 
@@ -1435,7 +1491,7 @@ static int __init samsung_dmi_matched(const struct dmi_system_id *d)
 	return 0;
 }
 
-static struct dmi_system_id __initdata samsung_dmi_table[] = {
+static const struct dmi_system_id samsung_dmi_table[] __initconst = {
 	{
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR,
@@ -1476,63 +1532,21 @@ static struct dmi_system_id __initdata samsung_dmi_table[] = {
 	/* Specific DMI ids for laptop with quirks */
 	{
 	 .callback = samsung_dmi_matched,
-	 .ident = "N150P",
+	 .ident = "730U3E/740U3E",
 	 .matches = {
 		DMI_MATCH(DMI_SYS_VENDOR, "SAMSUNG ELECTRONICS CO., LTD."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "N150P"),
-		DMI_MATCH(DMI_BOARD_NAME, "N150P"),
+		DMI_MATCH(DMI_PRODUCT_NAME, "730U3E/740U3E"),
 		},
-	 .driver_data = &samsung_broken_acpi_video,
+	 .driver_data = &samsung_np740u3e,
 	},
 	{
 	 .callback = samsung_dmi_matched,
-	 .ident = "N145P/N250P/N260P",
+	 .ident = "300V3Z/300V4Z/300V5Z",
 	 .matches = {
 		DMI_MATCH(DMI_SYS_VENDOR, "SAMSUNG ELECTRONICS CO., LTD."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "N145P/N250P/N260P"),
-		DMI_MATCH(DMI_BOARD_NAME, "N145P/N250P/N260P"),
+		DMI_MATCH(DMI_PRODUCT_NAME, "300V3Z/300V4Z/300V5Z"),
 		},
-	 .driver_data = &samsung_broken_acpi_video,
-	},
-	{
-	 .callback = samsung_dmi_matched,
-	 .ident = "N150/N210/N220",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "SAMSUNG ELECTRONICS CO., LTD."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "N150/N210/N220"),
-		DMI_MATCH(DMI_BOARD_NAME, "N150/N210/N220"),
-		},
-	 .driver_data = &samsung_broken_acpi_video,
-	},
-	{
-	 .callback = samsung_dmi_matched,
-	 .ident = "NF110/NF210/NF310",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "SAMSUNG ELECTRONICS CO., LTD."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "NF110/NF210/NF310"),
-		DMI_MATCH(DMI_BOARD_NAME, "NF110/NF210/NF310"),
-		},
-	 .driver_data = &samsung_broken_acpi_video,
-	},
-	{
-	 .callback = samsung_dmi_matched,
-	 .ident = "X360",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "SAMSUNG ELECTRONICS CO., LTD."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "X360"),
-		DMI_MATCH(DMI_BOARD_NAME, "X360"),
-		},
-	 .driver_data = &samsung_broken_acpi_video,
-	},
-	{
-	 .callback = samsung_dmi_matched,
-	 .ident = "N250P",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "SAMSUNG ELECTRONICS CO., LTD."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "N250P"),
-		DMI_MATCH(DMI_BOARD_NAME, "N250P"),
-		},
-	 .driver_data = &samsung_broken_acpi_video,
+	 .driver_data = &samsung_lid_handling,
 	},
 	{ },
 };
@@ -1560,19 +1574,8 @@ static int __init samsung_init(void)
 	samsung->handle_backlight = true;
 	samsung->quirks = quirks;
 
-
-#ifdef CONFIG_ACPI
-	if (samsung->quirks->broken_acpi_video)
-		acpi_video_dmi_promote_vendor();
-
-	/* Don't handle backlight here if the acpi video already handle it */
-	if (acpi_video_backlight_support()) {
+	if (acpi_video_get_backlight_type() != acpi_backlight_vendor)
 		samsung->handle_backlight = false;
-	} else if (samsung->quirks->broken_acpi_video) {
-		pr_info("Disabling ACPI video driver\n");
-		acpi_video_unregister();
-	}
-#endif
 
 	ret = samsung_platform_init(samsung);
 	if (ret)
@@ -1581,12 +1584,6 @@ static int __init samsung_init(void)
 	ret = samsung_sabi_init(samsung);
 	if (ret)
 		goto error_sabi;
-
-#ifdef CONFIG_ACPI
-	/* Only log that if we are really on a sabi platform */
-	if (acpi_video_backlight_support())
-		pr_info("Backlight controlled by ACPI video driver\n");
-#endif
 
 	ret = samsung_sysfs_init(samsung);
 	if (ret)
@@ -1604,14 +1601,19 @@ static int __init samsung_init(void)
 	if (ret)
 		goto error_leds;
 
-	ret = samsung_debugfs_init(samsung);
+	ret = samsung_lid_handling_init(samsung);
 	if (ret)
-		goto error_debugfs;
+		goto error_lid_handling;
+
+	samsung_debugfs_init(samsung);
+
+	samsung->pm_nb.notifier_call = samsung_pm_notification;
+	register_pm_notifier(&samsung->pm_nb);
 
 	samsung_platform_device = samsung->platform_device;
 	return ret;
 
-error_debugfs:
+error_lid_handling:
 	samsung_leds_exit(samsung);
 error_leds:
 	samsung_rfkill_exit(samsung);
@@ -1633,8 +1635,10 @@ static void __exit samsung_exit(void)
 	struct samsung_laptop *samsung;
 
 	samsung = platform_get_drvdata(samsung_platform_device);
+	unregister_pm_notifier(&samsung->pm_nb);
 
 	samsung_debugfs_exit(samsung);
+	samsung_lid_handling_exit(samsung);
 	samsung_leds_exit(samsung);
 	samsung_rfkill_exit(samsung);
 	samsung_backlight_exit(samsung);

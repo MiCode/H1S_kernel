@@ -1,14 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/mach-spear3xx/spear300.c
  *
  * SPEAr300 machine source file
  *
  * Copyright (C) 2009-2012 ST Microelectronics
- * Viresh Kumar <viresh.linux@gmail.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
+ * Viresh Kumar <vireshk@kernel.org>
  */
 
 #define pr_fmt(fmt) "SPEAr300: " fmt
@@ -17,7 +14,7 @@
 #include <linux/of_platform.h>
 #include <asm/mach/arch.h>
 #include "generic.h"
-#include <mach/spear.h>
+#include "spear.h"
 
 /* DMAC platform data's slave info */
 struct pl08x_channel_data spear300_dma_info[] = {
@@ -194,8 +191,7 @@ static void __init spear300_dt_init(void)
 	pl080_plat_data.slave_channels = spear300_dma_info;
 	pl080_plat_data.num_slave_channels = ARRAY_SIZE(spear300_dma_info);
 
-	of_platform_populate(NULL, of_default_bus_match_table,
-			spear300_auxdata_lookup, NULL);
+	of_platform_default_populate(NULL, spear300_auxdata_lookup, NULL);
 }
 
 static const char * const spear300_dt_board_compat[] = {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Generic ULPI USB transceiver support
  *
@@ -7,20 +8,6 @@
  *
  *   Sascha Hauer <s.hauer@pengutronix.de>
  *   Freescale Semiconductors
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/kernel.h>
@@ -47,6 +34,9 @@ struct ulpi_info {
 static struct ulpi_info ulpi_ids[] = {
 	ULPI_INFO(ULPI_ID(0x04cc, 0x1504), "NXP ISP1504"),
 	ULPI_INFO(ULPI_ID(0x0424, 0x0006), "SMSC USB331x"),
+	ULPI_INFO(ULPI_ID(0x0424, 0x0007), "SMSC USB3320"),
+	ULPI_INFO(ULPI_ID(0x0424, 0x0009), "SMSC USB334x"),
+	ULPI_INFO(ULPI_ID(0x0451, 0x1507), "TI TUSB1210"),
 };
 
 static int ulpi_set_otg_flags(struct usb_phy *phy)
@@ -208,7 +198,7 @@ static int ulpi_init(struct usb_phy *phy)
 
 static int ulpi_set_host(struct usb_otg *otg, struct usb_bus *host)
 {
-	struct usb_phy *phy = otg->phy;
+	struct usb_phy *phy = otg->usb_phy;
 	unsigned int flags = usb_phy_io_read(phy, ULPI_IFC_CTRL);
 
 	if (!host) {
@@ -234,7 +224,7 @@ static int ulpi_set_host(struct usb_otg *otg, struct usb_bus *host)
 
 static int ulpi_set_vbus(struct usb_otg *otg, bool on)
 {
-	struct usb_phy *phy = otg->phy;
+	struct usb_phy *phy = otg->usb_phy;
 	unsigned int flags = usb_phy_io_read(phy, ULPI_OTG_CTRL);
 
 	flags &= ~(ULPI_OTG_CTRL_DRVVBUS | ULPI_OTG_CTRL_DRVVBUS_EXT);
@@ -248,6 +238,21 @@ static int ulpi_set_vbus(struct usb_otg *otg, bool on)
 	}
 
 	return usb_phy_io_write(phy, flags, ULPI_OTG_CTRL);
+}
+
+static void otg_ulpi_init(struct usb_phy *phy, struct usb_otg *otg,
+			  struct usb_phy_io_ops *ops,
+			  unsigned int flags)
+{
+	phy->label	= "ULPI";
+	phy->flags	= flags;
+	phy->io_ops	= ops;
+	phy->otg	= otg;
+	phy->init	= ulpi_init;
+
+	otg->usb_phy	= phy;
+	otg->set_host	= ulpi_set_host;
+	otg->set_vbus	= ulpi_set_vbus;
 }
 
 struct usb_phy *
@@ -267,17 +272,32 @@ otg_ulpi_create(struct usb_phy_io_ops *ops,
 		return NULL;
 	}
 
-	phy->label	= "ULPI";
-	phy->flags	= flags;
-	phy->io_ops	= ops;
-	phy->otg	= otg;
-	phy->init	= ulpi_init;
-
-	otg->phy	= phy;
-	otg->set_host	= ulpi_set_host;
-	otg->set_vbus	= ulpi_set_vbus;
+	otg_ulpi_init(phy, otg, ops, flags);
 
 	return phy;
 }
 EXPORT_SYMBOL_GPL(otg_ulpi_create);
 
+struct usb_phy *
+devm_otg_ulpi_create(struct device *dev,
+		     struct usb_phy_io_ops *ops,
+		     unsigned int flags)
+{
+	struct usb_phy *phy;
+	struct usb_otg *otg;
+
+	phy = devm_kzalloc(dev, sizeof(*phy), GFP_KERNEL);
+	if (!phy)
+		return NULL;
+
+	otg = devm_kzalloc(dev, sizeof(*otg), GFP_KERNEL);
+	if (!otg) {
+		devm_kfree(dev, phy);
+		return NULL;
+	}
+
+	otg_ulpi_init(phy, otg, ops, flags);
+
+	return phy;
+}
+EXPORT_SYMBOL_GPL(devm_otg_ulpi_create);

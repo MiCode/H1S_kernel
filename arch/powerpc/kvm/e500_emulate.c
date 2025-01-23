@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2008-2011 Freescale Semiconductor, Inc. All rights reserved.
  *
@@ -6,21 +7,20 @@
  * Description:
  * This file is derived from arch/powerpc/kvm/44x_emulate.c,
  * by Hollis Blanchard <hollisb@us.ibm.com>.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, version 2, as
- * published by the Free Software Foundation.
  */
 
 #include <asm/kvm_ppc.h>
 #include <asm/disassemble.h>
 #include <asm/dbell.h>
+#include <asm/reg_booke.h>
 
 #include "booke.h"
 #include "e500.h"
 
+#define XOP_DCBTLS  166
 #define XOP_MSGSND  206
 #define XOP_MSGCLR  238
+#define XOP_MFTMR   366
 #define XOP_TLBIVAX 786
 #define XOP_TLBSX   914
 #define XOP_TLBRE   946
@@ -50,7 +50,7 @@ static int dbell2prio(ulong param)
 
 static int kvmppc_e500_emul_msgclr(struct kvm_vcpu *vcpu, int rb)
 {
-	ulong param = vcpu->arch.gpr[rb];
+	ulong param = vcpu->arch.regs.gpr[rb];
 	int prio = dbell2prio(param);
 
 	if (prio < 0)
@@ -62,10 +62,10 @@ static int kvmppc_e500_emul_msgclr(struct kvm_vcpu *vcpu, int rb)
 
 static int kvmppc_e500_emul_msgsnd(struct kvm_vcpu *vcpu, int rb)
 {
-	ulong param = vcpu->arch.gpr[rb];
+	ulong param = vcpu->arch.regs.gpr[rb];
 	int prio = dbell2prio(rb);
 	int pir = param & PPC_DBELL_PIR_MASK;
-	int i;
+	unsigned long i;
 	struct kvm_vcpu *cvcpu;
 
 	if (prio < 0)
@@ -83,16 +83,16 @@ static int kvmppc_e500_emul_msgsnd(struct kvm_vcpu *vcpu, int rb)
 }
 #endif
 
-static int kvmppc_e500_emul_ehpriv(struct kvm_run *run, struct kvm_vcpu *vcpu,
+static int kvmppc_e500_emul_ehpriv(struct kvm_vcpu *vcpu,
 				   unsigned int inst, int *advance)
 {
 	int emulated = EMULATE_DONE;
 
 	switch (get_oc(inst)) {
 	case EHPRIV_OC_DEBUG:
-		run->exit_reason = KVM_EXIT_DEBUG;
-		run->debug.arch.address = vcpu->arch.pc;
-		run->debug.arch.status = 0;
+		vcpu->run->exit_reason = KVM_EXIT_DEBUG;
+		vcpu->run->debug.arch.address = vcpu->arch.regs.nip;
+		vcpu->run->debug.arch.status = 0;
 		kvmppc_account_exit(vcpu, DEBUG_EXITS);
 		emulated = EMULATE_EXIT_USER;
 		*advance = 0;
@@ -103,7 +103,29 @@ static int kvmppc_e500_emul_ehpriv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	return emulated;
 }
 
-int kvmppc_core_emulate_op_e500(struct kvm_run *run, struct kvm_vcpu *vcpu,
+static int kvmppc_e500_emul_dcbtls(struct kvm_vcpu *vcpu)
+{
+	struct kvmppc_vcpu_e500 *vcpu_e500 = to_e500(vcpu);
+
+	/* Always fail to lock the cache */
+	vcpu_e500->l1csr0 |= L1CSR0_CUL;
+	return EMULATE_DONE;
+}
+
+static int kvmppc_e500_emul_mftmr(struct kvm_vcpu *vcpu, unsigned int inst,
+				  int rt)
+{
+	/* Expose one thread per vcpu */
+	if (get_tmrn(inst) == TMRN_TMCFG0) {
+		kvmppc_set_gpr(vcpu, rt,
+			       1 | (1 << TMRN_TMCFG0_NATHRD_SHIFT));
+		return EMULATE_DONE;
+	}
+
+	return EMULATE_FAIL;
+}
+
+int kvmppc_core_emulate_op_e500(struct kvm_vcpu *vcpu,
 				unsigned int inst, int *advance)
 {
 	int emulated = EMULATE_DONE;
@@ -115,6 +137,10 @@ int kvmppc_core_emulate_op_e500(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	switch (get_op(inst)) {
 	case 31:
 		switch (get_xop(inst)) {
+
+		case XOP_DCBTLS:
+			emulated = kvmppc_e500_emul_dcbtls(vcpu);
+			break;
 
 #ifdef CONFIG_KVM_E500MC
 		case XOP_MSGSND:
@@ -151,9 +177,12 @@ int kvmppc_core_emulate_op_e500(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			emulated = kvmppc_e500_emul_tlbivax(vcpu, ea);
 			break;
 
+		case XOP_MFTMR:
+			emulated = kvmppc_e500_emul_mftmr(vcpu, inst, rt);
+			break;
+
 		case XOP_EHPRIV:
-			emulated = kvmppc_e500_emul_ehpriv(run, vcpu, inst,
-							   advance);
+			emulated = kvmppc_e500_emul_ehpriv(vcpu, inst, advance);
 			break;
 
 		default:
@@ -167,7 +196,7 @@ int kvmppc_core_emulate_op_e500(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	}
 
 	if (emulated == EMULATE_FAIL)
-		emulated = kvmppc_booke_emulate_op(run, vcpu, inst, advance);
+		emulated = kvmppc_booke_emulate_op(vcpu, inst, advance);
 
 	return emulated;
 }
@@ -222,6 +251,7 @@ int kvmppc_core_emulate_mtspr_e500(struct kvm_vcpu *vcpu, int sprn, ulong spr_va
 		break;
 	case SPRN_L1CSR1:
 		vcpu_e500->l1csr1 = spr_val;
+		vcpu_e500->l1csr1 &= ~(L1CSR1_ICFI | L1CSR1_ICLFR);
 		break;
 	case SPRN_HID0:
 		vcpu_e500->hid0 = spr_val;
@@ -235,7 +265,23 @@ int kvmppc_core_emulate_mtspr_e500(struct kvm_vcpu *vcpu, int sprn, ulong spr_va
 				spr_val);
 		break;
 
+	case SPRN_PWRMGTCR0:
+		/*
+		 * Guest relies on host power management configurations
+		 * Treat the request as a general store
+		 */
+		vcpu->arch.pwrmgtcr0 = spr_val;
+		break;
+
+	case SPRN_BUCSR:
+		/*
+		 * If we are here, it means that we have already flushed the
+		 * branch predictor, so just return to guest.
+		 */
+		break;
+
 	/* extra exceptions */
+#ifdef CONFIG_SPE_POSSIBLE
 	case SPRN_IVOR32:
 		vcpu->arch.ivor[BOOKE_IRQPRIO_SPE_UNAVAIL] = spr_val;
 		break;
@@ -245,6 +291,15 @@ int kvmppc_core_emulate_mtspr_e500(struct kvm_vcpu *vcpu, int sprn, ulong spr_va
 	case SPRN_IVOR34:
 		vcpu->arch.ivor[BOOKE_IRQPRIO_SPE_FP_ROUND] = spr_val;
 		break;
+#endif
+#ifdef CONFIG_ALTIVEC
+	case SPRN_IVOR32:
+		vcpu->arch.ivor[BOOKE_IRQPRIO_ALTIVEC_UNAVAIL] = spr_val;
+		break;
+	case SPRN_IVOR33:
+		vcpu->arch.ivor[BOOKE_IRQPRIO_ALTIVEC_ASSIST] = spr_val;
+		break;
+#endif
 	case SPRN_IVOR35:
 		vcpu->arch.ivor[BOOKE_IRQPRIO_PERFORMANCE_MONITOR] = spr_val;
 		break;
@@ -353,7 +408,12 @@ int kvmppc_core_emulate_mfspr_e500(struct kvm_vcpu *vcpu, int sprn, ulong *spr_v
 		*spr_val = vcpu->arch.eptcfg;
 		break;
 
+	case SPRN_PWRMGTCR0:
+		*spr_val = vcpu->arch.pwrmgtcr0;
+		break;
+
 	/* extra exceptions */
+#ifdef CONFIG_SPE_POSSIBLE
 	case SPRN_IVOR32:
 		*spr_val = vcpu->arch.ivor[BOOKE_IRQPRIO_SPE_UNAVAIL];
 		break;
@@ -363,6 +423,15 @@ int kvmppc_core_emulate_mfspr_e500(struct kvm_vcpu *vcpu, int sprn, ulong *spr_v
 	case SPRN_IVOR34:
 		*spr_val = vcpu->arch.ivor[BOOKE_IRQPRIO_SPE_FP_ROUND];
 		break;
+#endif
+#ifdef CONFIG_ALTIVEC
+	case SPRN_IVOR32:
+		*spr_val = vcpu->arch.ivor[BOOKE_IRQPRIO_ALTIVEC_UNAVAIL];
+		break;
+	case SPRN_IVOR33:
+		*spr_val = vcpu->arch.ivor[BOOKE_IRQPRIO_ALTIVEC_ASSIST];
+		break;
+#endif
 	case SPRN_IVOR35:
 		*spr_val = vcpu->arch.ivor[BOOKE_IRQPRIO_PERFORMANCE_MONITOR];
 		break;

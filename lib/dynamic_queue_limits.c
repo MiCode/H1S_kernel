@@ -1,14 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Dynamic byte queue limits.  See include/linux/dynamic_queue_limits.h
  *
  * Copyright (c) 2011, Tom Herbert <therbert@google.com>
  */
-#include <linux/module.h>
 #include <linux/types.h>
-#include <linux/ctype.h>
 #include <linux/kernel.h>
 #include <linux/jiffies.h>
 #include <linux/dynamic_queue_limits.h>
+#include <linux/compiler.h>
+#include <linux/export.h>
 
 #define POSDIFF(A, B) ((int)((A) - (B)) > 0 ? (A) - (B) : 0)
 #define AFTER_EQ(A, B) ((int)((A) - (B)) >= 0)
@@ -20,7 +21,7 @@ void dql_completed(struct dql *dql, unsigned int count)
 	unsigned int ovlimit, completed, num_queued;
 	bool all_prev_completed;
 
-	num_queued = ACCESS_ONCE(dql->num_queued);
+	num_queued = READ_ONCE(dql->num_queued);
 
 	/* Can't complete more than what's in queue */
 	BUG_ON(count > num_queued - dql->num_completed);
@@ -59,8 +60,8 @@ void dql_completed(struct dql *dql, unsigned int count)
 		 * A decrease is only considered if the queue has been busy in
 		 * the whole interval (the check above).
 		 *
-		 * If there is slack, the amount of execess data queued above
-		 * the the amount needed to prevent starvation, the queue limit
+		 * If there is slack, the amount of excess data queued above
+		 * the amount needed to prevent starvation, the queue limit
 		 * can be decreased.  To avoid hysteresis we consider the
 		 * minimum amount of slack found over several iterations of the
 		 * completion routine.
@@ -127,12 +128,11 @@ void dql_reset(struct dql *dql)
 }
 EXPORT_SYMBOL(dql_reset);
 
-int dql_init(struct dql *dql, unsigned hold_time)
+void dql_init(struct dql *dql, unsigned int hold_time)
 {
 	dql->max_limit = DQL_MAX_LIMIT;
 	dql->min_limit = 0;
 	dql->slack_hold_time = hold_time;
 	dql_reset(dql);
-	return 0;
 }
 EXPORT_SYMBOL(dql_init);

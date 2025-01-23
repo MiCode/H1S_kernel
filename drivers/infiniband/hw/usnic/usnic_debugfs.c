@@ -1,9 +1,24 @@
 /*
  * Copyright (c) 2013, Cisco Systems, Inc. All rights reserved.
  *
- * This program is free software; you may redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * BSD license below:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      - Redistributions of source code must retain the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer.
+ *
+ *      - Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials
+ *        provided with the distribution.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
  * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
@@ -17,7 +32,6 @@
  */
 
 #include <linux/debugfs.h>
-#include <linux/module.h>
 
 #include "usnic.h"
 #include "usnic_log.h"
@@ -98,42 +112,21 @@ static const struct file_operations flowinfo_ops = {
 void usnic_debugfs_init(void)
 {
 	debugfs_root = debugfs_create_dir(DRV_NAME, NULL);
-	if (IS_ERR(debugfs_root)) {
-		usnic_err("Failed to create debugfs root dir, check if debugfs is enabled in kernel configuration\n");
-		goto out_clear_root;
-	}
 
 	flows_dentry = debugfs_create_dir("flows", debugfs_root);
-	if (IS_ERR_OR_NULL(flows_dentry)) {
-		usnic_err("Failed to create debugfs flow dir with err %ld\n",
-				PTR_ERR(flows_dentry));
-		goto out_free_root;
-	}
 
 	debugfs_create_file("build-info", S_IRUGO, debugfs_root,
 				NULL, &usnic_debugfs_buildinfo_ops);
-	return;
-
-out_free_root:
-	debugfs_remove_recursive(debugfs_root);
-out_clear_root:
-	debugfs_root = NULL;
 }
 
 void usnic_debugfs_exit(void)
 {
-	if (!debugfs_root)
-		return;
-
 	debugfs_remove_recursive(debugfs_root);
 	debugfs_root = NULL;
 }
 
 void usnic_debugfs_flow_add(struct usnic_ib_qp_grp_flow *qp_flow)
 {
-	if (IS_ERR_OR_NULL(flows_dentry))
-		return;
-
 	scnprintf(qp_flow->dentry_name, sizeof(qp_flow->dentry_name),
 			"%u", qp_flow->flow->flow_id);
 	qp_flow->dbgfs_dentry = debugfs_create_file(qp_flow->dentry_name,
@@ -141,14 +134,9 @@ void usnic_debugfs_flow_add(struct usnic_ib_qp_grp_flow *qp_flow)
 							flows_dentry,
 							qp_flow,
 							&flowinfo_ops);
-	if (IS_ERR_OR_NULL(qp_flow->dbgfs_dentry)) {
-		usnic_err("Failed to create dbg fs entry for flow %u\n",
-				qp_flow->flow->flow_id);
-	}
 }
 
 void usnic_debugfs_flow_remove(struct usnic_ib_qp_grp_flow *qp_flow)
 {
-	if (!IS_ERR_OR_NULL(qp_flow->dbgfs_dentry))
-		debugfs_remove(qp_flow->dbgfs_dentry);
+	debugfs_remove(qp_flow->dbgfs_dentry);
 }

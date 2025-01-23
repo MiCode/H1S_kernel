@@ -149,10 +149,8 @@ def raw_syscalls__sys_enter(event_name, context, common_cpu,
 		print "id=%d, args=%s\n" % \
 		(id, args),
 
-def trace_unhandled(event_name, context, common_cpu, common_secs, common_nsecs,
-		common_pid, common_comm):
-		print_header(event_name, common_cpu, common_secs, common_nsecs,
-		common_pid, common_comm)
+def trace_unhandled(event_name, context, event_fields_dict):
+		print ' '.join(['%s=%s'%(k,str(v))for k,v in sorted(event_fields_dict.items())])
 
 def print_header(event_name, cpu, secs, nsecs, pid, comm):
 	print "%-20s %5u %05u.%09u %8u %-20s " % \
@@ -169,7 +167,7 @@ below).
 
 Following those are the 'event handler' functions generated one for
 every event in the 'perf record' output.  The handler functions take
-the form subsystem__event_name, and contain named parameters, one for
+the form subsystem\__event_name, and contain named parameters, one for
 each field in the event; in this case, there's only one event,
 raw_syscalls__sys_enter().  (see the EVENT HANDLERS section below for
 more info on event handlers).
@@ -263,7 +261,7 @@ and having the counts we've tallied as values.
 
 The print_syscall_totals() function iterates over the entries in the
 dictionary and displays a line for each entry containing the syscall
-name (the dictonary keys contain the syscall ids, which are passed to
+name (the dictionary keys contain the syscall ids, which are passed to
 the Util function syscall_name(), which translates the raw syscall
 numbers to the corresponding syscall name strings).  The output is
 displayed after all the events in the trace have been processed, by
@@ -321,7 +319,7 @@ So those are the essential steps in writing and running a script.  The
 process can be generalized to any tracepoint or set of tracepoints
 you're interested in - basically find the tracepoint(s) you're
 interested in by looking at the list of available events shown by
-'perf list' and/or look in /sys/kernel/debug/tracing events for
+'perf list' and/or look in /sys/kernel/tracing/events/ for
 detailed event and field info, record the corresponding trace data
 using 'perf record', passing it the list of interesting events,
 generate a skeleton script using 'perf script -g python' and modify the
@@ -334,7 +332,7 @@ right place, you can have your script listed alongside the other
 scripts listed by the 'perf script -l' command e.g.:
 
 ----
-root@tropicana:~# perf script -l
+# perf script -l
 List of available trace scripts:
   wakeup-latency                       system-wide min/max/avg wakeup latency
   rw-by-file <comm>                    r/w activity for a program, by file
@@ -383,8 +381,6 @@ source tree:
 
 ----
 # ls -al kernel-source/tools/perf/scripts/python
-
-root@tropicana:/home/trz/src/tip# ls -al tools/perf/scripts/python
 total 32
 drwxr-xr-x 4 trz trz 4096 2010-01-26 22:30 .
 drwxr-xr-x 4 trz trz 4096 2010-01-26 22:29 ..
@@ -399,7 +395,7 @@ otherwise your script won't show up at run-time), 'perf script -l'
 should show a new entry for your script:
 
 ----
-root@tropicana:~# perf script -l
+# perf script -l
 List of available trace scripts:
   wakeup-latency                       system-wide min/max/avg wakeup latency
   rw-by-file <comm>                    r/w activity for a program, by file
@@ -437,7 +433,7 @@ EVENT HANDLERS
 When perf script is invoked using a trace script, a user-defined
 'handler function' is called for each event in the trace.  If there's
 no handler function defined for a given event type, the event is
-ignored (or passed to a 'trace_handled' function, see below) and the
+ignored (or passed to a 'trace_unhandled' function, see below) and the
 next event is processed.
 
 Most of the event's field values are passed as arguments to the
@@ -452,8 +448,8 @@ all sched_wakeup events in the system:
 Traces meant to be processed using a script should be recorded with
 the above option: -a to enable system-wide collection.
 
-The format file for the sched_wakep event defines the following fields
-(see /sys/kernel/debug/tracing/events/sched/sched_wakeup/format):
+The format file for the sched_wakeup event defines the following fields
+(see /sys/kernel/tracing/events/sched/sched_wakeup/format):
 
 ----
  format:
@@ -532,7 +528,7 @@ can implement a set of optional functions:
 gives scripts a chance to do setup tasks:
 
 ----
-def trace_begin:
+def trace_begin():
     pass
 ----
 
@@ -541,7 +537,7 @@ def trace_begin:
  as display results:
 
 ----
-def trace_end:
+def trace_end():
     pass
 ----
 
@@ -550,8 +546,28 @@ def trace_end:
  of common arguments are passed into it:
 
 ----
-def trace_unhandled(event_name, context, common_cpu, common_secs,
-        common_nsecs, common_pid, common_comm):
+def trace_unhandled(event_name, context, event_fields_dict):
+    pass
+----
+
+*process_event*, if defined, is called for any non-tracepoint event
+
+----
+def process_event(param_dict):
+    pass
+----
+
+*context_switch*, if defined, is called for any context switch
+
+----
+def context_switch(ts, cpu, pid, tid, np_pid, np_tid, machine_pid, out, out_preempt, *x):
+    pass
+----
+
+*auxtrace_error*, if defined, is called for any AUX area tracing error
+
+----
+def auxtrace_error(typ, code, cpu, pid, tid, ip, ts, msg, cpumode, *x):
     pass
 ----
 
@@ -576,8 +592,8 @@ strings for flag and symbolic fields.  These correspond to the strings
 and values parsed from the 'print fmt' fields of the event format
 files:
 
-  flag_str(event_name, field_name, field_value) - returns the string represention corresponding to field_value for the flag field field_name of event event_name
-  symbol_str(event_name, field_name, field_value) - returns the string represention corresponding to field_value for the symbolic field field_name of event event_name
+  flag_str(event_name, field_name, field_value) - returns the string representation corresponding to field_value for the flag field field_name of event event_name
+  symbol_str(event_name, field_name, field_value) - returns the string representation corresponding to field_value for the symbolic field field_name of event event_name
 
 The *autodict* function returns a special kind of Python
 dictionary that implements Perl's 'autovivifying' hashes in Python
@@ -597,12 +613,18 @@ common, but need to be made accessible to user scripts nonetheless.
 perf_trace_context defines a set of functions that can be used to
 access this data in the context of the current event.  Each of these
 functions expects a context variable, which is the same as the
-context variable passed into every event handler as the second
-argument.
+context variable passed into every tracepoint event handler as the second
+argument. For non-tracepoint events, the context variable is also present
+as perf_trace_context.perf_script_context .
 
  common_pc(context) - returns common_preempt count for the current event
  common_flags(context) - returns common_flags for the current event
  common_lock_depth(context) - returns common_lock_depth for the current event
+ perf_sample_insn(context) - returns the machine code instruction
+ perf_set_itrace_options(context, itrace_options) - set --itrace options if they have not been set already
+ perf_sample_srcline(context) - returns source_file_name, line_number
+ perf_sample_srccode(context) - returns source_file_name, line_number, source_line
+
 
 Util.py Module
 ~~~~~~~~~~~~~~
@@ -614,6 +636,43 @@ Various utility functions for use with perf script:
   nsecs_nsecs(nsecs) - returns nsecs remainder given nsecs
   nsecs_str(nsecs) - returns printable string in the form secs.nsecs
   avg(total, n) - returns average given a sum and a total number of values
+
+SUPPORTED FIELDS
+----------------
+
+Currently supported fields:
+
+ev_name, comm, pid, tid, cpu, ip, time, period, phys_addr, addr,
+symbol, symoff, dso, time_enabled, time_running, values, callchain,
+brstack, brstacksym, datasrc, datasrc_decode, iregs, uregs,
+weight, transaction, raw_buf, attr, cpumode.
+
+Fields that may also be present:
+
+ flags - sample flags
+ flags_disp - sample flags display
+ insn_cnt - instruction count for determining instructions-per-cycle (IPC)
+ cyc_cnt - cycle count for determining IPC
+ addr_correlates_sym - addr can correlate to a symbol
+ addr_dso - addr dso
+ addr_symbol - addr symbol
+ addr_symoff - addr symbol offset
+
+Some fields have sub items:
+
+brstack:
+    from, to, from_dsoname, to_dsoname, mispred,
+    predicted, in_tx, abort, cycles.
+
+brstacksym:
+    items: from, to, pred, in_tx, abort (converted string)
+
+For example,
+We can use this code to print brstack "from", "to", "cycles".
+
+if 'brstack' in dict:
+	for entry in dict['brstack']:
+		print "from %s, to %s, cycles %s" % (entry["from"], entry["to"], entry["cycles"])
 
 SEE ALSO
 --------

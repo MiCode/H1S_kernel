@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* bbc_envctrl.c: UltraSPARC-III environment control driver.
  *
  * Copyright (C) 2001, 2008 David S. Miller (davem@davemloft.net)
@@ -8,8 +9,8 @@
 #include <linux/kmod.h>
 #include <linux/reboot.h>
 #include <linux/of.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <linux/of_device.h>
 #include <asm/oplib.h>
 
 #include "bbc_i2c.h"
@@ -160,8 +161,7 @@ static void do_envctrl_shutdown(struct bbc_cpu_temperature *tp)
 	printk(KERN_CRIT "kenvctrld: Shutting down the system now.\n");
 
 	shutting_down = 1;
-	if (orderly_poweroff(true) < 0)
-		printk(KERN_CRIT "envctrl: shutdown execution failed\n");
+	orderly_poweroff(true);
 }
 
 #define WARN_INTERVAL	(30 * HZ)
@@ -452,6 +452,9 @@ static void attach_one_temp(struct bbc_i2c_bus *bp, struct platform_device *op,
 	if (!tp)
 		return;
 
+	INIT_LIST_HEAD(&tp->bp_list);
+	INIT_LIST_HEAD(&tp->glob_list);
+
 	tp->client = bbc_i2c_attach(bp, op);
 	if (!tp->client) {
 		kfree(tp);
@@ -496,6 +499,9 @@ static void attach_one_fan(struct bbc_i2c_bus *bp, struct platform_device *op,
 	fp = kzalloc(sizeof(*fp), GFP_KERNEL);
 	if (!fp)
 		return;
+
+	INIT_LIST_HEAD(&fp->bp_list);
+	INIT_LIST_HEAD(&fp->glob_list);
 
 	fp->client = bbc_i2c_attach(bp, op);
 	if (!fp->client) {
@@ -565,9 +571,9 @@ int bbc_envctrl_init(struct bbc_i2c_bus *bp)
 	int devidx = 0;
 
 	while ((op = bbc_i2c_getdev(bp, devidx++)) != NULL) {
-		if (!strcmp(op->dev.of_node->name, "temperature"))
+		if (of_node_name_eq(op->dev.of_node, "temperature"))
 			attach_one_temp(bp, op, temp_index++);
-		if (!strcmp(op->dev.of_node->name, "fan-control"))
+		if (of_node_name_eq(op->dev.of_node, "fan-control"))
 			attach_one_fan(bp, op, fan_index++);
 	}
 	if (temp_index != 0 && fan_index != 0) {

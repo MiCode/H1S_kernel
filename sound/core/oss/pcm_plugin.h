@@ -1,25 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef __PCM_PLUGIN_H
 #define __PCM_PLUGIN_H
 
 /*
  *  Digital Audio (Plugin interface) abstract layer
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #ifdef CONFIG_SND_PCM_OSS_PLUGINS
@@ -79,7 +64,7 @@ struct snd_pcm_plugin {
 	char *buf;
 	snd_pcm_uframes_t buf_frames;
 	struct snd_pcm_plugin_channel *buf_channels;
-	char extra_data[0];
+	char extra_data[];
 };
 
 int snd_pcm_plugin_build(struct snd_pcm_substream *handle,
@@ -126,7 +111,7 @@ int snd_pcm_plug_format_plugins(struct snd_pcm_substream *substream,
 				struct snd_pcm_hw_params *slave_params);
 
 snd_pcm_format_t snd_pcm_plug_slave_format(snd_pcm_format_t format,
-					   struct snd_mask *format_mask);
+					   const struct snd_mask *format_mask);
 
 int snd_pcm_plugin_append(struct snd_pcm_plugin *plugin);
 
@@ -156,25 +141,23 @@ int snd_pcm_area_copy(const struct snd_pcm_channel_area *src_channel,
 
 void *snd_pcm_plug_buf_alloc(struct snd_pcm_substream *plug, snd_pcm_uframes_t size);
 void snd_pcm_plug_buf_unlock(struct snd_pcm_substream *plug, void *ptr);
+#else
+
+static inline snd_pcm_sframes_t snd_pcm_plug_client_size(struct snd_pcm_substream *handle, snd_pcm_uframes_t drv_size) { return drv_size; }
+static inline snd_pcm_sframes_t snd_pcm_plug_slave_size(struct snd_pcm_substream *handle, snd_pcm_uframes_t clt_size) { return clt_size; }
+static inline int snd_pcm_plug_slave_format(int format, const struct snd_mask *format_mask) { return format; }
+
+#endif
+
 snd_pcm_sframes_t snd_pcm_oss_write3(struct snd_pcm_substream *substream,
 				     const char *ptr, snd_pcm_uframes_t size,
 				     int in_kernel);
 snd_pcm_sframes_t snd_pcm_oss_read3(struct snd_pcm_substream *substream,
 				    char *ptr, snd_pcm_uframes_t size, int in_kernel);
 snd_pcm_sframes_t snd_pcm_oss_writev3(struct snd_pcm_substream *substream,
-				      void **bufs, snd_pcm_uframes_t frames,
-				      int in_kernel);
+				      void **bufs, snd_pcm_uframes_t frames);
 snd_pcm_sframes_t snd_pcm_oss_readv3(struct snd_pcm_substream *substream,
-				     void **bufs, snd_pcm_uframes_t frames,
-				     int in_kernel);
-
-#else
-
-static inline snd_pcm_sframes_t snd_pcm_plug_client_size(struct snd_pcm_substream *handle, snd_pcm_uframes_t drv_size) { return drv_size; }
-static inline snd_pcm_sframes_t snd_pcm_plug_slave_size(struct snd_pcm_substream *handle, snd_pcm_uframes_t clt_size) { return clt_size; }
-static inline int snd_pcm_plug_slave_format(int format, struct snd_mask *format_mask) { return format; }
-
-#endif
+				     void **bufs, snd_pcm_uframes_t frames);
 
 #ifdef PLUGIN_DEBUG
 #define pdprintf(fmt, args...) printk(KERN_DEBUG "plugin: " fmt, ##args)

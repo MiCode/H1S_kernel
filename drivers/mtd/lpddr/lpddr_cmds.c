@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * LPDDR flash memory device operations. This module provides read, write,
  * erase, lock/unlock support for LPDDR flash memories
@@ -5,20 +6,6 @@
  * (C) 2008 Vasiliy Leonenko <vasiliy.leonenko@gmail.com>
  * Many thanks to Roman Borisov for initial enabling
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  * TODO:
  * Implement VPP management
  * Implement XIP support
@@ -55,10 +42,8 @@ struct mtd_info *lpddr_cmdset(struct map_info *map)
 	int i, j;
 
 	mtd = kzalloc(sizeof(*mtd), GFP_KERNEL);
-	if (!mtd) {
-		printk(KERN_ERR "Failed to allocate memory for MTD device\n");
+	if (!mtd)
 		return NULL;
-	}
 	mtd->priv = map;
 	mtd->type = MTD_NORFLASH;
 
@@ -80,10 +65,9 @@ struct mtd_info *lpddr_cmdset(struct map_info *map)
 	mtd->erasesize = 1 << lpddr->qinfo->UniformBlockSizeShift;
 	mtd->writesize = 1 << lpddr->qinfo->BufSizeShift;
 
-	shared = kmalloc(sizeof(struct flchip_shared) * lpddr->numchips,
+	shared = kmalloc_array(lpddr->numchips, sizeof(struct flchip_shared),
 						GFP_KERNEL);
 	if (!shared) {
-		kfree(lpddr);
 		kfree(mtd);
 		return NULL;
 	}
@@ -109,6 +93,34 @@ struct mtd_info *lpddr_cmdset(struct map_info *map)
 	return mtd;
 }
 EXPORT_SYMBOL(lpddr_cmdset);
+
+static void print_drs_error(unsigned int dsr)
+{
+	int prog_status = (dsr & DSR_RPS) >> 8;
+
+	if (!(dsr & DSR_AVAILABLE))
+		pr_notice("DSR.15: (0) Device not Available\n");
+	if ((prog_status & 0x03) == 0x03)
+		pr_notice("DSR.9,8: (11) Attempt to program invalid half with 41h command\n");
+	else if (prog_status & 0x02)
+		pr_notice("DSR.9,8: (10) Object Mode Program attempt in region with Control Mode data\n");
+	else if (prog_status &  0x01)
+		pr_notice("DSR.9,8: (01) Program attempt in region with Object Mode data\n");
+	if (!(dsr & DSR_READY_STATUS))
+		pr_notice("DSR.7: (0) Device is Busy\n");
+	if (dsr & DSR_ESS)
+		pr_notice("DSR.6: (1) Erase Suspended\n");
+	if (dsr & DSR_ERASE_STATUS)
+		pr_notice("DSR.5: (1) Erase/Blank check error\n");
+	if (dsr & DSR_PROGRAM_STATUS)
+		pr_notice("DSR.4: (1) Program Error\n");
+	if (dsr & DSR_VPPS)
+		pr_notice("DSR.3: (1) Vpp low detect, operation aborted\n");
+	if (dsr & DSR_PSS)
+		pr_notice("DSR.2: (1) Program suspended\n");
+	if (dsr & DSR_DPS)
+		pr_notice("DSR.1: (1) Aborted Erase/Program attempt on locked block\n");
+}
 
 static int wait_for_ready(struct map_info *map, struct flchip *chip,
 		unsigned int chip_op_time)
@@ -320,7 +332,7 @@ static int chip_ready(struct map_info *map, struct flchip *chip, int mode)
 		/* Only if there's no operation suspended... */
 		if (mode == FL_READY && chip->oldstate == FL_READY)
 			return 0;
-
+		fallthrough;
 	default:
 sleep:
 		set_current_state(TASK_UNINTERRUPTIBLE);
@@ -394,7 +406,7 @@ static int do_write_buffer(struct map_info *map, struct flchip *chip,
 {
 	struct lpddr_private *lpddr = map->fldrv_priv;
 	map_word datum;
-	int ret, wbufsize, word_gap, words;
+	int ret, wbufsize, word_gap;
 	const struct kvec *vec;
 	unsigned long vec_seek;
 	unsigned long prog_buf_ofs;
@@ -409,10 +421,7 @@ static int do_write_buffer(struct map_info *map, struct flchip *chip,
 	}
 	/* Figure out the number of words to write */
 	word_gap = (-adr & (map_bankwidth(map)-1));
-	words = (len - word_gap + map_bankwidth(map) - 1) / map_bankwidth(map);
-	if (!word_gap) {
-		words--;
-	} else {
+	if (word_gap) {
 		word_gap = map_bankwidth(map) - word_gap;
 		adr -= word_gap;
 		datum = map_word_ff(map);
@@ -695,8 +704,6 @@ static int lpddr_erase(struct mtd_info *mtd, struct erase_info *instr)
 		ofs += size;
 		len -= size;
 	}
-	instr->state = MTD_ERASE_DONE;
-	mtd_erase_callback(instr);
 
 	return 0;
 }

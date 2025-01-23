@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_SOCKET_H
 #define _LINUX_SOCKET_H
 
@@ -9,8 +10,12 @@
 #include <linux/compiler.h>		/* __user			*/
 #include <uapi/linux/socket.h>
 
+struct file;
 struct pid;
 struct cred;
+struct socket;
+struct sock;
+struct sk_buff;
 
 #define __sockaddr_check_size(size)	\
 	BUILD_BUG_ON(((size) > sizeof(struct __kernel_sockaddr_storage)))
@@ -25,10 +30,13 @@ typedef __kernel_sa_family_t	sa_family_t;
 /*
  *	1003.1g requires sa_family_t and that sa_data is char.
  */
- 
+
 struct sockaddr {
 	sa_family_t	sa_family;	/* address family, AF_xxx	*/
-	char		sa_data[14];	/* 14 bytes of protocol address	*/
+	union {
+		char sa_data_min[14];		/* Minimum 14 bytes of protocol address	*/
+		DECLARE_FLEX_ARRAY(char, sa_data);
+	};
 };
 
 struct linger {
@@ -43,26 +51,53 @@ struct linger {
  *	system, not 4.3. Thus msg_accrights(len) are now missing. They
  *	belong in an obscure libc emulation or the bin.
  */
- 
+
 struct msghdr {
 	void		*msg_name;	/* ptr to socket address structure */
 	int		msg_namelen;	/* size of socket address structure */
-	struct iovec	*msg_iov;	/* scatter/gather array */
-	__kernel_size_t	msg_iovlen;	/* # elements in msg_iov */
-	void		*msg_control;	/* ancillary data */
-	__kernel_size_t	msg_controllen;	/* ancillary data buffer length */
+
+	int		msg_inq;	/* output, data left in socket */
+
+	struct iov_iter	msg_iter;	/* data */
+
+	/*
+	 * Ancillary data. msg_control_user is the user buffer used for the
+	 * recv* side when msg_control_is_user is set, msg_control is the kernel
+	 * buffer used for all other cases.
+	 */
+	union {
+		void		*msg_control;
+		void __user	*msg_control_user;
+	};
+	bool		msg_control_is_user : 1;
+	bool		msg_get_inq : 1;/* return INQ after receive */
 	unsigned int	msg_flags;	/* flags on received message */
+	__kernel_size_t	msg_controllen;	/* ancillary data buffer length */
+	struct kiocb	*msg_iocb;	/* ptr to iocb for async requests */
+	struct ubuf_info *msg_ubuf;
+	int (*sg_from_iter)(struct sock *sk, struct sk_buff *skb,
+			    struct iov_iter *from, size_t length);
+};
+
+struct user_msghdr {
+	void		__user *msg_name;	/* ptr to socket address structure */
+	int		msg_namelen;		/* size of socket address structure */
+	struct iovec	__user *msg_iov;	/* scatter/gather array */
+	__kernel_size_t	msg_iovlen;		/* # elements in msg_iov */
+	void		__user *msg_control;	/* ancillary data */
+	__kernel_size_t	msg_controllen;		/* ancillary data buffer length */
+	unsigned int	msg_flags;		/* flags on received message */
 };
 
 /* For recvmmsg/sendmmsg */
 struct mmsghdr {
-	struct msghdr   msg_hdr;
+	struct user_msghdr  msg_hdr;
 	unsigned int        msg_len;
 };
 
 /*
  *	POSIX 1003.1g - ancillary data object information
- *	Ancillary data consits of a sequence of pairs of
+ *	Ancillary data consists of a sequence of pairs of
  *	(cmsghdr, cmsg_data[])
  */
 
@@ -82,9 +117,12 @@ struct cmsghdr {
 
 #define CMSG_ALIGN(len) ( ((len)+sizeof(long)-1) & ~(sizeof(long)-1) )
 
-#define CMSG_DATA(cmsg)	((void *)((char *)(cmsg) + CMSG_ALIGN(sizeof(struct cmsghdr))))
-#define CMSG_SPACE(len) (CMSG_ALIGN(sizeof(struct cmsghdr)) + CMSG_ALIGN(len))
-#define CMSG_LEN(len) (CMSG_ALIGN(sizeof(struct cmsghdr)) + (len))
+#define CMSG_DATA(cmsg) \
+	((void *)(cmsg) + sizeof(struct cmsghdr))
+#define CMSG_USER_DATA(cmsg) \
+	((void __user *)(cmsg) + sizeof(struct cmsghdr))
+#define CMSG_SPACE(len) (sizeof(struct cmsghdr) + CMSG_ALIGN(len))
+#define CMSG_LEN(len) (sizeof(struct cmsghdr) + (len))
 
 #define __CMSG_FIRSTHDR(ctl,len) ((len) >= sizeof(struct cmsghdr) ? \
 				  (struct cmsghdr *)(ctl) : \
@@ -94,6 +132,10 @@ struct cmsghdr {
 			     (cmsg)->cmsg_len <= (unsigned long) \
 			     ((mhdr)->msg_controllen - \
 			      ((char *)(cmsg) - (char *)(mhdr)->msg_control)))
+#define for_each_cmsghdr(cmsg, msg) \
+	for (cmsg = CMSG_FIRSTHDR(msg); \
+	     cmsg; \
+	     cmsg = CMSG_NXTHDR(msg, cmsg))
 
 /*
  *	Get the next cmsg header
@@ -107,7 +149,7 @@ struct cmsghdr {
  *	inside range, given by msg->msg_controllen before using
  *	ancillary object DATA.				--ANK (980731)
  */
- 
+
 static inline struct cmsghdr * __cmsg_nxthdr(void *__ctl, __kernel_size_t __size,
 					       struct cmsghdr *__cmsg)
 {
@@ -125,11 +167,17 @@ static inline struct cmsghdr * cmsg_nxthdr (struct msghdr *__msg, struct cmsghdr
 	return __cmsg_nxthdr(__msg->msg_control, __msg->msg_controllen, __cmsg);
 }
 
+static inline size_t msg_data_left(struct msghdr *msg)
+{
+	return iov_iter_count(&msg->msg_iter);
+}
+
 /* "Socket"-level control message types: */
 
 #define	SCM_RIGHTS	0x01		/* rw: access rights (array of int) */
 #define SCM_CREDENTIALS 0x02		/* rw: struct ucred		*/
 #define SCM_SECURITY	0x03		/* rw: security label		*/
+#define SCM_PIDFD	0x04		/* ro: pidfd (int)		*/
 
 struct ucred {
 	__u32	pid;
@@ -168,6 +216,7 @@ struct ucred {
 #define AF_WANPIPE	25	/* Wanpipe API Sockets */
 #define AF_LLC		26	/* Linux LLC			*/
 #define AF_IB		27	/* Native InfiniBand address	*/
+#define AF_MPLS		28	/* MPLS */
 #define AF_CAN		29	/* Controller Area Network      */
 #define AF_TIPC		30	/* TIPC sockets			*/
 #define AF_BLUETOOTH	31	/* Bluetooth sockets 		*/
@@ -180,7 +229,18 @@ struct ucred {
 #define AF_ALG		38	/* Algorithm sockets		*/
 #define AF_NFC		39	/* NFC sockets			*/
 #define AF_VSOCK	40	/* vSockets			*/
-#define AF_MAX		41	/* For now.. */
+#define AF_KCM		41	/* Kernel Connection Multiplexor*/
+#define AF_QIPCRTR	42	/* Qualcomm IPC Router          */
+#define AF_SMC		43	/* smc sockets: reserve number for
+				 * PF_SMC protocol family that
+				 * reuses AF_INET address family
+				 */
+#define AF_XDP		44	/* XDP sockets			*/
+#define AF_MCTP		45	/* Management component
+				 * transport protocol
+				 */
+
+#define AF_MAX		46	/* For now.. */
 
 /* Protocol families, same as address families. */
 #define PF_UNSPEC	AF_UNSPEC
@@ -213,6 +273,7 @@ struct ucred {
 #define PF_WANPIPE	AF_WANPIPE
 #define PF_LLC		AF_LLC
 #define PF_IB		AF_IB
+#define PF_MPLS		AF_MPLS
 #define PF_CAN		AF_CAN
 #define PF_TIPC		AF_TIPC
 #define PF_BLUETOOTH	AF_BLUETOOTH
@@ -225,15 +286,20 @@ struct ucred {
 #define PF_ALG		AF_ALG
 #define PF_NFC		AF_NFC
 #define PF_VSOCK	AF_VSOCK
+#define PF_KCM		AF_KCM
+#define PF_QIPCRTR	AF_QIPCRTR
+#define PF_SMC		AF_SMC
+#define PF_XDP		AF_XDP
+#define PF_MCTP		AF_MCTP
 #define PF_MAX		AF_MAX
 
 /* Maximum queue length specifiable by listen.  */
-#define SOMAXCONN	128
+#define SOMAXCONN	4096
 
-/* Flags we can use with send/ and recv. 
+/* Flags we can use with send/ and recv.
    Added those for 1003.1g not all are supported yet
  */
- 
+
 #define MSG_OOB		1
 #define MSG_PEEK	2
 #define MSG_DONTROUTE	4
@@ -252,11 +318,18 @@ struct ucred {
 #define MSG_NOSIGNAL	0x4000	/* Do not generate SIGPIPE */
 #define MSG_MORE	0x8000	/* Sender will send more */
 #define MSG_WAITFORONE	0x10000	/* recvmmsg(): block until 1+ packets avail */
-#define MSG_SENDPAGE_NOTLAST 0x20000 /* sendpage() internal : not the last page */
+#define MSG_SENDPAGE_NOPOLICY 0x10000 /* sendpage() internal : do no apply policy */
+#define MSG_BATCH	0x40000 /* sendmmsg(): more messages coming */
 #define MSG_EOF         MSG_FIN
+#define MSG_NO_SHARED_FRAGS 0x80000 /* sendpage() internal : page frags are not shared */
+#define MSG_SENDPAGE_DECRYPTED	0x100000 /* sendpage() internal : page may carry
+					  * plain text and require encryption
+					  */
 
+#define MSG_ZEROCOPY	0x4000000	/* Use user data in kernel path */
+#define MSG_SPLICE_PAGES 0x8000000	/* Splice the pages from the iterator in sendmsg() */
 #define MSG_FASTOPEN	0x20000000	/* Send data in TCP SYN */
-#define MSG_CMSG_CLOEXEC 0x40000000	/* Set close_on_exit for file
+#define MSG_CMSG_CLOEXEC 0x40000000	/* Set close_on_exec for file
 					   descriptor received through
 					   SCM_RIGHTS */
 #if defined(CONFIG_COMPAT)
@@ -265,6 +338,9 @@ struct ucred {
 #define MSG_CMSG_COMPAT	0		/* We never have 32 bit fixups */
 #endif
 
+/* Flags to be cleared on entry by sendmsg and sendmmsg syscalls */
+#define MSG_INTERNAL_SENDMSG_FLAGS \
+	(MSG_SPLICE_PAGES | MSG_SENDPAGE_NOPOLICY | MSG_SENDPAGE_DECRYPTED)
 
 /* Setsockoptions(2) level. Thanks to BSD these must match IPPROTO_xxx */
 #define SOL_IP		0
@@ -301,32 +377,88 @@ struct ucred {
 #define SOL_CAIF	278
 #define SOL_ALG		279
 #define SOL_NFC		280
+#define SOL_KCM		281
+#define SOL_TLS		282
+#define SOL_XDP		283
+#define SOL_MPTCP	284
+#define SOL_MCTP	285
+#define SOL_SMC		286
+#define SOL_VSOCK	287
 
 /* IPX options */
 #define IPX_TYPE	1
 
-extern int memcpy_fromiovecend(unsigned char *kdata, const struct iovec *iov,
-			       int offset, int len);
-extern int csum_partial_copy_fromiovecend(unsigned char *kdata, 
-					  struct iovec *iov, 
-					  int offset, 
-					  unsigned int len, __wsum *csump);
-extern unsigned long iov_pages(const struct iovec *iov, int offset,
-			       unsigned long nr_segs);
-
-extern int verify_iovec(struct msghdr *m, struct iovec *iov, struct sockaddr_storage *address, int mode);
-extern int memcpy_toiovecend(const struct iovec *v, unsigned char *kdata,
-			     int offset, int len);
 extern int move_addr_to_kernel(void __user *uaddr, int ulen, struct sockaddr_storage *kaddr);
 extern int put_cmsg(struct msghdr*, int level, int type, int len, void *data);
 
-struct timespec;
+struct timespec64;
+struct __kernel_timespec;
+struct old_timespec32;
 
-/* The __sys_...msg variants allow MSG_CMSG_COMPAT */
-extern long __sys_recvmsg(int fd, struct msghdr __user *msg, unsigned flags);
-extern long __sys_sendmsg(int fd, struct msghdr __user *msg, unsigned flags);
-extern int __sys_recvmmsg(int fd, struct mmsghdr __user *mmsg, unsigned int vlen,
-			  unsigned int flags, struct timespec *timeout);
+struct scm_timestamping_internal {
+	struct timespec64 ts[3];
+};
+
+extern void put_cmsg_scm_timestamping64(struct msghdr *msg, struct scm_timestamping_internal *tss);
+extern void put_cmsg_scm_timestamping(struct msghdr *msg, struct scm_timestamping_internal *tss);
+
+/* The __sys_...msg variants allow MSG_CMSG_COMPAT iff
+ * forbid_cmsg_compat==false
+ */
+extern long __sys_recvmsg(int fd, struct user_msghdr __user *msg,
+			  unsigned int flags, bool forbid_cmsg_compat);
+extern long __sys_sendmsg(int fd, struct user_msghdr __user *msg,
+			  unsigned int flags, bool forbid_cmsg_compat);
+extern int __sys_recvmmsg(int fd, struct mmsghdr __user *mmsg,
+			  unsigned int vlen, unsigned int flags,
+			  struct __kernel_timespec __user *timeout,
+			  struct old_timespec32 __user *timeout32);
 extern int __sys_sendmmsg(int fd, struct mmsghdr __user *mmsg,
-			  unsigned int vlen, unsigned int flags);
+			  unsigned int vlen, unsigned int flags,
+			  bool forbid_cmsg_compat);
+extern long __sys_sendmsg_sock(struct socket *sock, struct msghdr *msg,
+			       unsigned int flags);
+extern long __sys_recvmsg_sock(struct socket *sock, struct msghdr *msg,
+			       struct user_msghdr __user *umsg,
+			       struct sockaddr __user *uaddr,
+			       unsigned int flags);
+extern int sendmsg_copy_msghdr(struct msghdr *msg,
+			       struct user_msghdr __user *umsg, unsigned flags,
+			       struct iovec **iov);
+extern int recvmsg_copy_msghdr(struct msghdr *msg,
+			       struct user_msghdr __user *umsg, unsigned flags,
+			       struct sockaddr __user **uaddr,
+			       struct iovec **iov);
+extern int __copy_msghdr(struct msghdr *kmsg,
+			 struct user_msghdr *umsg,
+			 struct sockaddr __user **save_addr);
+
+/* helpers which do the actual work for syscalls */
+extern int __sys_recvfrom(int fd, void __user *ubuf, size_t size,
+			  unsigned int flags, struct sockaddr __user *addr,
+			  int __user *addr_len);
+extern int __sys_sendto(int fd, void __user *buff, size_t len,
+			unsigned int flags, struct sockaddr __user *addr,
+			int addr_len);
+extern struct file *do_accept(struct file *file, unsigned file_flags,
+			      struct sockaddr __user *upeer_sockaddr,
+			      int __user *upeer_addrlen, int flags);
+extern int __sys_accept4(int fd, struct sockaddr __user *upeer_sockaddr,
+			 int __user *upeer_addrlen, int flags);
+extern int __sys_socket(int family, int type, int protocol);
+extern struct file *__sys_socket_file(int family, int type, int protocol);
+extern int __sys_bind(int fd, struct sockaddr __user *umyaddr, int addrlen);
+extern int __sys_connect_file(struct file *file, struct sockaddr_storage *addr,
+			      int addrlen, int file_flags);
+extern int __sys_connect(int fd, struct sockaddr __user *uservaddr,
+			 int addrlen);
+extern int __sys_listen(int fd, int backlog);
+extern int __sys_getsockname(int fd, struct sockaddr __user *usockaddr,
+			     int __user *usockaddr_len);
+extern int __sys_getpeername(int fd, struct sockaddr __user *usockaddr,
+			     int __user *usockaddr_len);
+extern int __sys_socketpair(int family, int type, int protocol,
+			    int __user *usockvec);
+extern int __sys_shutdown_sock(struct socket *sock, int how);
+extern int __sys_shutdown(int fd, int how);
 #endif /* _LINUX_SOCKET_H */

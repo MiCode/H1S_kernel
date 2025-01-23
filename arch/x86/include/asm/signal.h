@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_SIGNAL_H
 #define _ASM_X86_SIGNAL_H
 
@@ -23,18 +24,18 @@ typedef struct {
 	unsigned long sig[_NSIG_WORDS];
 } sigset_t;
 
-#ifndef CONFIG_COMPAT
-typedef sigset_t compat_sigset_t;
-#endif
+/* non-uapi in-kernel SA_FLAGS for those indicates ABI for a signal frame */
+#define SA_IA32_ABI	0x02000000u
+#define SA_X32_ABI	0x01000000u
 
 #endif /* __ASSEMBLY__ */
 #include <uapi/asm/signal.h>
 #ifndef __ASSEMBLY__
-extern void do_notify_resume(struct pt_regs *, void *, __u32);
 
 #define __ARCH_HAS_SA_RESTORER
 
-#include <asm/sigcontext.h>
+#include <asm/asm.h>
+#include <uapi/asm/sigcontext.h>
 
 #ifdef __i386__
 
@@ -81,9 +82,9 @@ static inline int __const_sigismember(sigset_t *set, int _sig)
 
 static inline int __gen_sigismember(sigset_t *set, int _sig)
 {
-	int ret;
-	asm("btl %2,%1\n\tsbbl %0,%0"
-	    : "=r"(ret) : "m"(*set), "Ir"(_sig-1) : "cc");
+	bool ret;
+	asm("btl %2,%1" CC_SET(c)
+	    : CC_OUT(c) (ret) : "m"(*set), "Ir"(_sig-1));
 	return ret;
 }
 
@@ -91,12 +92,6 @@ static inline int __gen_sigismember(sigset_t *set, int _sig)
 	(__builtin_constant_p(sig)		\
 	 ? __const_sigismember((set), (sig))	\
 	 : __gen_sigismember((set), (sig)))
-
-static inline int sigfindinword(unsigned long word)
-{
-	asm("bsfl %1,%0" : "=r"(word) : "rm"(word) : "cc");
-	return word;
-}
 
 struct pt_regs;
 

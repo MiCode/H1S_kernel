@@ -1,41 +1,36 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Kernel Probes Jump Optimization (Optprobes)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  *
  * Copyright (C) IBM Corporation, 2002, 2004
  * Copyright (C) Hitachi Ltd., 2012
  */
 #include <linux/kprobes.h>
+#include <linux/perf_event.h>
 #include <linux/ptrace.h>
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/hardirq.h>
 #include <linux/preempt.h>
-#include <linux/module.h>
+#include <linux/extable.h>
 #include <linux/kdebug.h>
 #include <linux/kallsyms.h>
+#include <linux/kgdb.h>
 #include <linux/ftrace.h>
+#include <linux/objtool.h>
+#include <linux/pgtable.h>
+#include <linux/static_call.h>
 
+#include <asm/text-patching.h>
 #include <asm/cacheflush.h>
 #include <asm/desc.h>
-#include <asm/pgtable.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/alternative.h>
 #include <asm/insn.h>
 #include <asm/debugreg.h>
+#include <asm/set_memory.h>
+#include <asm/sections.h>
+#include <asm/nospec-branch.h>
 
 #include "common.h"
 
@@ -46,13 +41,13 @@ unsigned long __recover_optprobed_insn(kprobe_opcode_t *buf, unsigned long addr)
 	long offs;
 	int i;
 
-	for (i = 0; i < RELATIVEJUMP_SIZE; i++) {
+	for (i = 0; i < JMP32_INSN_SIZE; i++) {
 		kp = get_kprobe((void *)addr - i);
 		/* This function only handles jump-optimized kprobe */
 		if (kp && kprobe_optimized(kp)) {
 			op = container_of(kp, struct optimized_kprobe, kp);
-			/* If op->list is not empty, op is under optimizing */
-			if (list_empty(&op->list))
+			/* If op is optimized or under unoptimizing */
+			if (list_empty(&op->list) || optprobe_queued_unopt(op))
 				goto found;
 		}
 	}
@@ -64,20 +59,38 @@ found:
 	 * overwritten by jump destination address. In this case, original
 	 * bytes must be recovered from op->optinsn.copied_insn buffer.
 	 */
-	memcpy(buf, (void *)addr, MAX_INSN_SIZE * sizeof(kprobe_opcode_t));
+	if (copy_from_kernel_nofault(buf, (void *)addr,
+		MAX_INSN_SIZE * sizeof(kprobe_opcode_t)))
+		return 0UL;
+
 	if (addr == (unsigned long)kp->addr) {
 		buf[0] = kp->opcode;
-		memcpy(buf + 1, op->optinsn.copied_insn, RELATIVE_ADDR_SIZE);
+		memcpy(buf + 1, op->optinsn.copied_insn, DISP32_SIZE);
 	} else {
 		offs = addr - (unsigned long)kp->addr - 1;
-		memcpy(buf, op->optinsn.copied_insn + offs, RELATIVE_ADDR_SIZE - offs);
+		memcpy(buf, op->optinsn.copied_insn + offs, DISP32_SIZE - offs);
 	}
 
 	return (unsigned long)buf;
 }
 
+static void synthesize_clac(kprobe_opcode_t *addr)
+{
+	/*
+	 * Can't be static_cpu_has() due to how objtool treats this feature bit.
+	 * This isn't a fast path anyway.
+	 */
+	if (!boot_cpu_has(X86_FEATURE_SMAP))
+		return;
+
+	/* Replace the NOP3 with CLAC */
+	addr[0] = 0x0f;
+	addr[1] = 0x01;
+	addr[2] = 0xca;
+}
+
 /* Insert a move instruction which sets a pointer to eax/rdi (1st arg). */
-static void __kprobes synthesize_set_arg1(kprobe_opcode_t *addr, unsigned long val)
+static void synthesize_set_arg1(kprobe_opcode_t *addr, unsigned long val)
 {
 #ifdef CONFIG_X86_64
 	*addr++ = 0x48;
@@ -89,12 +102,18 @@ static void __kprobes synthesize_set_arg1(kprobe_opcode_t *addr, unsigned long v
 }
 
 asm (
+			".pushsection .rodata\n"
+			"optprobe_template_func:\n"
 			".global optprobe_template_entry\n"
 			"optprobe_template_entry:\n"
 #ifdef CONFIG_X86_64
-			/* We don't bother saving the ss register */
+			"       pushq $" __stringify(__KERNEL_DS) "\n"
+			/* Save the 'sp - 8', this will be fixed later. */
 			"	pushq %rsp\n"
 			"	pushfq\n"
+			".global optprobe_template_clac\n"
+			"optprobe_template_clac:\n"
+			ASM_NOP3
 			SAVE_REGS_STRING
 			"	movq %rsp, %rsi\n"
 			".global optprobe_template_val\n"
@@ -104,15 +123,22 @@ asm (
 			".global optprobe_template_call\n"
 			"optprobe_template_call:\n"
 			ASM_NOP5
-			/* Move flags to rsp */
-			"	movq 144(%rsp), %rdx\n"
-			"	movq %rdx, 152(%rsp)\n"
+			/* Copy 'regs->flags' into 'regs->ss'. */
+			"	movq 18*8(%rsp), %rdx\n"
+			"	movq %rdx, 20*8(%rsp)\n"
 			RESTORE_REGS_STRING
-			/* Skip flags entry */
-			"	addq $8, %rsp\n"
+			/* Skip 'regs->flags' and 'regs->sp'. */
+			"	addq $16, %rsp\n"
+			/* And pop flags register from 'regs->ss'. */
 			"	popfq\n"
 #else /* CONFIG_X86_32 */
-			"	pushf\n"
+			"	pushl %ss\n"
+			/* Save the 'sp - 4', this will be fixed later. */
+			"	pushl %esp\n"
+			"	pushfl\n"
+			".global optprobe_template_clac\n"
+			"optprobe_template_clac:\n"
+			ASM_NOP3
 			SAVE_REGS_STRING
 			"	movl %esp, %edx\n"
 			".global optprobe_template_val\n"
@@ -121,44 +147,52 @@ asm (
 			".global optprobe_template_call\n"
 			"optprobe_template_call:\n"
 			ASM_NOP5
+			/* Copy 'regs->flags' into 'regs->ss'. */
+			"	movl 14*4(%esp), %edx\n"
+			"	movl %edx, 16*4(%esp)\n"
 			RESTORE_REGS_STRING
-			"	addl $4, %esp\n"	/* skip cs */
-			"	popf\n"
+			/* Skip 'regs->flags' and 'regs->sp'. */
+			"	addl $8, %esp\n"
+			/* And pop flags register from 'regs->ss'. */
+			"	popfl\n"
 #endif
 			".global optprobe_template_end\n"
-			"optprobe_template_end:\n");
+			"optprobe_template_end:\n"
+			".popsection\n");
 
+void optprobe_template_func(void);
+STACK_FRAME_NON_STANDARD(optprobe_template_func);
+
+#define TMPL_CLAC_IDX \
+	((long)optprobe_template_clac - (long)optprobe_template_entry)
 #define TMPL_MOVE_IDX \
-	((long)&optprobe_template_val - (long)&optprobe_template_entry)
+	((long)optprobe_template_val - (long)optprobe_template_entry)
 #define TMPL_CALL_IDX \
-	((long)&optprobe_template_call - (long)&optprobe_template_entry)
+	((long)optprobe_template_call - (long)optprobe_template_entry)
 #define TMPL_END_IDX \
-	((long)&optprobe_template_end - (long)&optprobe_template_entry)
-
-#define INT3_SIZE sizeof(kprobe_opcode_t)
+	((long)optprobe_template_end - (long)optprobe_template_entry)
 
 /* Optimized kprobe call back function: called from optinsn */
-static void __kprobes optimized_callback(struct optimized_kprobe *op, struct pt_regs *regs)
+static void
+optimized_callback(struct optimized_kprobe *op, struct pt_regs *regs)
 {
-	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
-	unsigned long flags;
-
 	/* This is possible if op is under delayed unoptimizing */
 	if (kprobe_disabled(&op->kp))
 		return;
 
-	local_irq_save(flags);
+	preempt_disable();
 	if (kprobe_running()) {
 		kprobes_inc_nmissed_count(&op->kp);
 	} else {
+		struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
+		/* Adjust stack pointer */
+		regs->sp += sizeof(long);
 		/* Save skipped registers */
-#ifdef CONFIG_X86_64
 		regs->cs = __KERNEL_CS;
-#else
-		regs->cs = __KERNEL_CS | get_kernel_rpl();
+#ifdef CONFIG_X86_32
 		regs->gs = 0;
 #endif
-		regs->ip = (unsigned long)op->kp.addr + INT3_SIZE;
+		regs->ip = (unsigned long)op->kp.addr + INT3_INSN_SIZE;
 		regs->orig_ax = ~0UL;
 
 		__this_cpu_write(current_kprobe, &op->kp);
@@ -166,30 +200,33 @@ static void __kprobes optimized_callback(struct optimized_kprobe *op, struct pt_
 		opt_pre_handler(&op->kp, regs);
 		__this_cpu_write(current_kprobe, NULL);
 	}
-	local_irq_restore(flags);
+	preempt_enable();
 }
+NOKPROBE_SYMBOL(optimized_callback);
 
-static int __kprobes copy_optimized_instructions(u8 *dest, u8 *src)
+static int copy_optimized_instructions(u8 *dest, u8 *src, u8 *real)
 {
+	struct insn insn;
 	int len = 0, ret;
 
-	while (len < RELATIVEJUMP_SIZE) {
-		ret = __copy_instruction(dest + len, src + len);
-		if (!ret || !can_boost(dest + len))
+	while (len < JMP32_INSN_SIZE) {
+		ret = __copy_instruction(dest + len, src + len, real + len, &insn);
+		if (!ret || !can_boost(&insn, src + len))
 			return -EINVAL;
 		len += ret;
 	}
 	/* Check whether the address range is reserved */
 	if (ftrace_text_reserved(src, src + len - 1) ||
 	    alternatives_text_reserved(src, src + len - 1) ||
-	    jump_label_text_reserved(src, src + len - 1))
+	    jump_label_text_reserved(src, src + len - 1) ||
+	    static_call_text_reserved(src, src + len - 1))
 		return -EBUSY;
 
 	return len;
 }
 
 /* Check whether insn is indirect jump */
-static int __kprobes insn_is_indirect_jump(struct insn *insn)
+static int insn_is_indirect_jump(struct insn *insn)
 {
 	return ((insn->opcode.bytes[0] == 0xff &&
 		(X86_MODRM_REG(insn->modrm.value) & 6) == 4) || /* Jump */
@@ -224,7 +261,7 @@ static int insn_jump_into_range(struct insn *insn, unsigned long start, int len)
 }
 
 /* Decode whole function to ensure any instructions don't jump into target */
-static int __kprobes can_optimize(unsigned long paddr)
+static int can_optimize(unsigned long paddr)
 {
 	unsigned long addr, size = 0, offset = 0;
 	struct insn insn;
@@ -236,37 +273,63 @@ static int __kprobes can_optimize(unsigned long paddr)
 
 	/*
 	 * Do not optimize in the entry code due to the unstable
-	 * stack handling.
+	 * stack handling and registers setup.
 	 */
-	if ((paddr >= (unsigned long)__entry_text_start) &&
-	    (paddr <  (unsigned long)__entry_text_end))
+	if (((paddr >= (unsigned long)__entry_text_start) &&
+	     (paddr <  (unsigned long)__entry_text_end)))
 		return 0;
 
 	/* Check there is enough space for a relative jump. */
-	if (size - offset < RELATIVEJUMP_SIZE)
+	if (size - offset < JMP32_INSN_SIZE)
 		return 0;
 
 	/* Decode instructions */
 	addr = paddr - offset;
 	while (addr < paddr - offset + size) { /* Decode until function end */
+		unsigned long recovered_insn;
+		int ret;
+
 		if (search_exception_tables(addr))
 			/*
 			 * Since some fixup code will jumps into this function,
 			 * we can't optimize kprobe in this function.
 			 */
 			return 0;
-		kernel_insn_init(&insn, (void *)recover_probed_instruction(buf, addr));
-		insn_get_length(&insn);
-		/* Another subsystem puts a breakpoint */
-		if (insn.opcode.bytes[0] == BREAKPOINT_INSTRUCTION)
+		recovered_insn = recover_probed_instruction(buf, addr);
+		if (!recovered_insn)
 			return 0;
+
+		ret = insn_decode_kernel(&insn, (void *)recovered_insn);
+		if (ret < 0)
+			return 0;
+#ifdef CONFIG_KGDB
+		/*
+		 * If there is a dynamically installed kgdb sw breakpoint,
+		 * this function should not be probed.
+		 */
+		if (insn.opcode.bytes[0] == INT3_INSN_OPCODE &&
+		    kgdb_has_hit_break(addr))
+			return 0;
+#endif
 		/* Recover address */
 		insn.kaddr = (void *)addr;
 		insn.next_byte = (void *)(addr + insn.length);
-		/* Check any instructions don't jump into target */
-		if (insn_is_indirect_jump(&insn) ||
-		    insn_jump_into_range(&insn, paddr + INT3_SIZE,
-					 RELATIVE_ADDR_SIZE))
+		/*
+		 * Check any instructions don't jump into target, indirectly or
+		 * directly.
+		 *
+		 * The indirect case is present to handle a code with jump
+		 * tables. When the kernel uses retpolines, the check should in
+		 * theory additionally look for jumps to indirect thunks.
+		 * However, the kernel built with retpolines or IBT has jump
+		 * tables disabled so the check can be skipped altogether.
+		 */
+		if (!IS_ENABLED(CONFIG_RETPOLINE) &&
+		    !IS_ENABLED(CONFIG_X86_KERNEL_IBT) &&
+		    insn_is_indirect_jump(&insn))
+			return 0;
+		if (insn_jump_into_range(&insn, paddr + INT3_INSN_SIZE,
+					 DISP32_SIZE))
 			return 0;
 		addr += insn.length;
 	}
@@ -275,14 +338,14 @@ static int __kprobes can_optimize(unsigned long paddr)
 }
 
 /* Check optimized_kprobe can actually be optimized. */
-int __kprobes arch_check_optimized_kprobe(struct optimized_kprobe *op)
+int arch_check_optimized_kprobe(struct optimized_kprobe *op)
 {
 	int i;
 	struct kprobe *p;
 
 	for (i = 1; i < op->optinsn.size; i++) {
 		p = get_kprobe(op->kp.addr + i);
-		if (p && !kprobe_disabled(p))
+		if (p && !kprobe_disarmed(p))
 			return -EEXIST;
 	}
 
@@ -290,25 +353,32 @@ int __kprobes arch_check_optimized_kprobe(struct optimized_kprobe *op)
 }
 
 /* Check the addr is within the optimized instructions. */
-int __kprobes
-arch_within_optimized_kprobe(struct optimized_kprobe *op, unsigned long addr)
+int arch_within_optimized_kprobe(struct optimized_kprobe *op,
+				 kprobe_opcode_t *addr)
 {
-	return ((unsigned long)op->kp.addr <= addr &&
-		(unsigned long)op->kp.addr + op->optinsn.size > addr);
+	return (op->kp.addr <= addr &&
+		op->kp.addr + op->optinsn.size > addr);
 }
 
 /* Free optimized instruction slot */
-static __kprobes
+static
 void __arch_remove_optimized_kprobe(struct optimized_kprobe *op, int dirty)
 {
-	if (op->optinsn.insn) {
-		free_optinsn_slot(op->optinsn.insn, dirty);
+	u8 *slot = op->optinsn.insn;
+	if (slot) {
+		int len = TMPL_END_IDX + op->optinsn.size + JMP32_INSN_SIZE;
+
+		/* Record the perf event before freeing the slot */
+		if (dirty)
+			perf_event_text_poke(slot, slot, len, NULL, 0);
+
+		free_optinsn_slot(slot, dirty);
 		op->optinsn.insn = NULL;
 		op->optinsn.size = 0;
 	}
 }
 
-void __kprobes arch_remove_optimized_kprobe(struct optimized_kprobe *op)
+void arch_remove_optimized_kprobe(struct optimized_kprobe *op)
 {
 	__arch_remove_optimized_kprobe(op, 1);
 }
@@ -318,95 +388,138 @@ void __kprobes arch_remove_optimized_kprobe(struct optimized_kprobe *op)
  * Target instructions MUST be relocatable (checked inside)
  * This is called when new aggr(opt)probe is allocated or reused.
  */
-int __kprobes arch_prepare_optimized_kprobe(struct optimized_kprobe *op)
+int arch_prepare_optimized_kprobe(struct optimized_kprobe *op,
+				  struct kprobe *__unused)
 {
-	u8 *buf;
-	int ret;
+	u8 *buf = NULL, *slot;
+	int ret, len;
 	long rel;
 
 	if (!can_optimize((unsigned long)op->kp.addr))
 		return -EILSEQ;
 
-	op->optinsn.insn = get_optinsn_slot();
-	if (!op->optinsn.insn)
+	buf = kzalloc(MAX_OPTINSN_SIZE, GFP_KERNEL);
+	if (!buf)
 		return -ENOMEM;
+
+	op->optinsn.insn = slot = get_optinsn_slot();
+	if (!slot) {
+		ret = -ENOMEM;
+		goto out;
+	}
 
 	/*
 	 * Verify if the address gap is in 2GB range, because this uses
 	 * a relative jump.
 	 */
-	rel = (long)op->optinsn.insn - (long)op->kp.addr + RELATIVEJUMP_SIZE;
-	if (abs(rel) > 0x7fffffff)
-		return -ERANGE;
-
-	buf = (u8 *)op->optinsn.insn;
-
-	/* Copy instructions into the out-of-line buffer */
-	ret = copy_optimized_instructions(buf + TMPL_END_IDX, op->kp.addr);
-	if (ret < 0) {
-		__arch_remove_optimized_kprobe(op, 0);
-		return ret;
+	rel = (long)slot - (long)op->kp.addr + JMP32_INSN_SIZE;
+	if (abs(rel) > 0x7fffffff) {
+		ret = -ERANGE;
+		goto err;
 	}
-	op->optinsn.size = ret;
 
 	/* Copy arch-dep-instance from template */
-	memcpy(buf, &optprobe_template_entry, TMPL_END_IDX);
+	memcpy(buf, optprobe_template_entry, TMPL_END_IDX);
+
+	/* Copy instructions into the out-of-line buffer */
+	ret = copy_optimized_instructions(buf + TMPL_END_IDX, op->kp.addr,
+					  slot + TMPL_END_IDX);
+	if (ret < 0)
+		goto err;
+	op->optinsn.size = ret;
+	len = TMPL_END_IDX + op->optinsn.size;
+
+	synthesize_clac(buf + TMPL_CLAC_IDX);
 
 	/* Set probe information */
 	synthesize_set_arg1(buf + TMPL_MOVE_IDX, (unsigned long)op);
 
 	/* Set probe function call */
-	synthesize_relcall(buf + TMPL_CALL_IDX, optimized_callback);
+	synthesize_relcall(buf + TMPL_CALL_IDX,
+			   slot + TMPL_CALL_IDX, optimized_callback);
 
 	/* Set returning jmp instruction at the tail of out-of-line buffer */
-	synthesize_reljump(buf + TMPL_END_IDX + op->optinsn.size,
+	synthesize_reljump(buf + len, slot + len,
 			   (u8 *)op->kp.addr + op->optinsn.size);
+	len += JMP32_INSN_SIZE;
 
-	flush_icache_range((unsigned long) buf,
-			   (unsigned long) buf + TMPL_END_IDX +
-			   op->optinsn.size + RELATIVEJUMP_SIZE);
-	return 0;
+	/*
+	 * Note	len = TMPL_END_IDX + op->optinsn.size + JMP32_INSN_SIZE is also
+	 * used in __arch_remove_optimized_kprobe().
+	 */
+
+	/* We have to use text_poke() for instruction buffer because it is RO */
+	perf_event_text_poke(slot, NULL, 0, buf, len);
+	text_poke(slot, buf, len);
+
+	ret = 0;
+out:
+	kfree(buf);
+	return ret;
+
+err:
+	__arch_remove_optimized_kprobe(op, 0);
+	goto out;
 }
 
 /*
- * Replace breakpoints (int3) with relative jumps.
+ * Replace breakpoints (INT3) with relative jumps (JMP.d32).
  * Caller must call with locking kprobe_mutex and text_mutex.
+ *
+ * The caller will have installed a regular kprobe and after that issued
+ * syncrhonize_rcu_tasks(), this ensures that the instruction(s) that live in
+ * the 4 bytes after the INT3 are unused and can now be overwritten.
  */
-void __kprobes arch_optimize_kprobes(struct list_head *oplist)
+void arch_optimize_kprobes(struct list_head *oplist)
 {
 	struct optimized_kprobe *op, *tmp;
-	u8 insn_buf[RELATIVEJUMP_SIZE];
+	u8 insn_buff[JMP32_INSN_SIZE];
 
 	list_for_each_entry_safe(op, tmp, oplist, list) {
 		s32 rel = (s32)((long)op->optinsn.insn -
-			((long)op->kp.addr + RELATIVEJUMP_SIZE));
+			((long)op->kp.addr + JMP32_INSN_SIZE));
 
 		WARN_ON(kprobe_disabled(&op->kp));
 
 		/* Backup instructions which will be replaced by jump address */
-		memcpy(op->optinsn.copied_insn, op->kp.addr + INT3_SIZE,
-		       RELATIVE_ADDR_SIZE);
+		memcpy(op->optinsn.copied_insn, op->kp.addr + INT3_INSN_SIZE,
+		       DISP32_SIZE);
 
-		insn_buf[0] = RELATIVEJUMP_OPCODE;
-		*(s32 *)(&insn_buf[1]) = rel;
+		insn_buff[0] = JMP32_INSN_OPCODE;
+		*(s32 *)(&insn_buff[1]) = rel;
 
-		text_poke_bp(op->kp.addr, insn_buf, RELATIVEJUMP_SIZE,
-			     op->optinsn.insn);
+		text_poke_bp(op->kp.addr, insn_buff, JMP32_INSN_SIZE, NULL);
 
 		list_del_init(&op->list);
 	}
 }
 
-/* Replace a relative jump with a breakpoint (int3).  */
-void __kprobes arch_unoptimize_kprobe(struct optimized_kprobe *op)
+/*
+ * Replace a relative jump (JMP.d32) with a breakpoint (INT3).
+ *
+ * After that, we can restore the 4 bytes after the INT3 to undo what
+ * arch_optimize_kprobes() scribbled. This is safe since those bytes will be
+ * unused once the INT3 lands.
+ */
+void arch_unoptimize_kprobe(struct optimized_kprobe *op)
 {
-	u8 insn_buf[RELATIVEJUMP_SIZE];
+	u8 new[JMP32_INSN_SIZE] = { INT3_INSN_OPCODE, };
+	u8 old[JMP32_INSN_SIZE];
+	u8 *addr = op->kp.addr;
 
-	/* Set int3 to first byte for kprobes */
-	insn_buf[0] = BREAKPOINT_INSTRUCTION;
-	memcpy(insn_buf + 1, op->optinsn.copied_insn, RELATIVE_ADDR_SIZE);
-	text_poke_bp(op->kp.addr, insn_buf, RELATIVEJUMP_SIZE,
-		     op->optinsn.insn);
+	memcpy(old, op->kp.addr, JMP32_INSN_SIZE);
+	memcpy(new + INT3_INSN_SIZE,
+	       op->optinsn.copied_insn,
+	       JMP32_INSN_SIZE - INT3_INSN_SIZE);
+
+	text_poke(addr, new, INT3_INSN_SIZE);
+	text_poke_sync();
+	text_poke(addr + INT3_INSN_SIZE,
+		  new + INT3_INSN_SIZE,
+		  JMP32_INSN_SIZE - INT3_INSN_SIZE);
+	text_poke_sync();
+
+	perf_event_text_poke(op->kp.addr, old, JMP32_INSN_SIZE, new, JMP32_INSN_SIZE);
 }
 
 /*
@@ -424,8 +537,7 @@ extern void arch_unoptimize_kprobes(struct list_head *oplist,
 	}
 }
 
-int  __kprobes
-setup_detour_execution(struct kprobe *p, struct pt_regs *regs, int reenter)
+int setup_detour_execution(struct kprobe *p, struct pt_regs *regs, int reenter)
 {
 	struct optimized_kprobe *op;
 
@@ -436,8 +548,8 @@ setup_detour_execution(struct kprobe *p, struct pt_regs *regs, int reenter)
 		regs->ip = (unsigned long)op->optinsn.insn + TMPL_END_IDX;
 		if (!reenter)
 			reset_current_kprobe();
-		preempt_enable_no_resched();
 		return 1;
 	}
 	return 0;
 }
+NOKPROBE_SYMBOL(setup_detour_execution);

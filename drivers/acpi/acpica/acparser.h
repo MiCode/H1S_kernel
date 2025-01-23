@@ -1,45 +1,11 @@
+/* SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0 */
 /******************************************************************************
  *
  * Module Name: acparser.h - AML Parser subcomponent prototypes and defines
  *
+ * Copyright (C) 2000 - 2023, Intel Corp.
+ *
  *****************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #ifndef __ACPARSER_H__
 #define __ACPARSER_H__
@@ -70,10 +36,15 @@
  *
  *****************************************************************************/
 
+extern const u8 acpi_gbl_short_op_index[];
+extern const u8 acpi_gbl_long_op_index[];
+
 /*
  * psxface - Parser external interfaces
  */
 acpi_status acpi_ps_execute_method(struct acpi_evaluate_info *info);
+
+acpi_status acpi_ps_execute_table(struct acpi_evaluate_info *info);
 
 /*
  * psargs - Parse AML opcode arguments
@@ -89,7 +60,13 @@ acpi_ps_get_next_simple_arg(struct acpi_parse_state *parser_state,
 acpi_status
 acpi_ps_get_next_namepath(struct acpi_walk_state *walk_state,
 			  struct acpi_parse_state *parser_state,
-			  union acpi_parse_object *arg, u8 method_call);
+			  union acpi_parse_object *arg,
+			  u8 possible_method_call);
+
+/* Values for u8 above */
+
+#define ACPI_NOT_METHOD_CALL            FALSE
+#define ACPI_POSSIBLE_METHOD_CALL       TRUE
 
 acpi_status
 acpi_ps_get_next_arg(struct acpi_walk_state *walk_state,
@@ -130,7 +107,7 @@ acpi_ps_complete_final_op(struct acpi_walk_state *walk_state,
  */
 const struct acpi_opcode_info *acpi_ps_get_opcode_info(u16 opcode);
 
-char *acpi_ps_get_opcode_name(u16 opcode);
+const char *acpi_ps_get_opcode_name(u16 opcode);
 
 u8 acpi_ps_get_argument_count(u32 op_type);
 
@@ -191,10 +168,8 @@ union acpi_parse_object *acpi_ps_find(union acpi_parse_object *scope,
 
 union acpi_parse_object *acpi_ps_get_arg(union acpi_parse_object *op, u32 argn);
 
-#ifdef	ACPI_FUTURE_USAGE
 union acpi_parse_object *acpi_ps_get_depth_next(union acpi_parse_object *origin,
 						union acpi_parse_object *op);
-#endif				/* ACPI_FUTURE_USAGE */
 
 /*
  * pswalk - parse tree walk routines
@@ -222,19 +197,17 @@ void acpi_ps_delete_parse_tree(union acpi_parse_object *root);
 /*
  * psutils - parser utilities
  */
-union acpi_parse_object *acpi_ps_create_scope_op(void);
+union acpi_parse_object *acpi_ps_create_scope_op(u8 *aml);
 
 void acpi_ps_init_op(union acpi_parse_object *op, u16 opcode);
 
-union acpi_parse_object *acpi_ps_alloc_op(u16 opcode);
+union acpi_parse_object *acpi_ps_alloc_op(u16 opcode, u8 *aml);
 
 void acpi_ps_free_op(union acpi_parse_object *op);
 
 u8 acpi_ps_is_leading_char(u32 c);
 
-#ifdef	ACPI_FUTURE_USAGE
 u32 acpi_ps_get_name(union acpi_parse_object *op);
-#endif				/* ACPI_FUTURE_USAGE */
 
 void acpi_ps_set_name(union acpi_parse_object *op, u32 name);
 

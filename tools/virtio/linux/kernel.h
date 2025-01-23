@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef KERNEL_H
 #define KERNEL_H
 #include <stdbool.h>
@@ -8,7 +9,12 @@
 #include <assert.h>
 #include <stdarg.h>
 
+#include <linux/compiler.h>
+#include "../../../include/linux/container_of.h"
+#include <linux/log2.h>
 #include <linux/types.h>
+#include <linux/overflow.h>
+#include <linux/list.h>
 #include <linux/printk.h>
 #include <linux/bug.h>
 #include <errno.h>
@@ -19,9 +25,15 @@
 
 #define PAGE_SIZE getpagesize()
 #define PAGE_MASK (~(PAGE_SIZE-1))
+#define PAGE_ALIGN(x) ((x + PAGE_SIZE - 1) & PAGE_MASK)
+
+/* generic data direction definitions */
+#define READ                    0
+#define WRITE                   1
 
 typedef unsigned long long dma_addr_t;
 typedef size_t __kernel_size_t;
+typedef unsigned int __wsum;
 
 struct page {
 	unsigned long long dummy;
@@ -38,13 +50,6 @@ struct page {
 
 #define __printf(a,b) __attribute__((format(printf,a,b)))
 
-typedef enum {
-	GFP_KERNEL,
-	GFP_ATOMIC,
-	__GFP_HIGHMEM,
-	__GFP_HIGH
-} gfp_t;
-
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
 
 extern void *__kmalloc_fake, *__kfree_ignore_start, *__kfree_ignore_end;
@@ -54,12 +59,34 @@ static inline void *kmalloc(size_t s, gfp_t gfp)
 		return __kmalloc_fake;
 	return malloc(s);
 }
+static inline void *kmalloc_array(unsigned n, size_t s, gfp_t gfp)
+{
+	return kmalloc(n * s, gfp);
+}
+
+static inline void *kzalloc(size_t s, gfp_t gfp)
+{
+	void *p = kmalloc(s, gfp);
+
+	memset(p, 0, s);
+	return p;
+}
+
+static inline void *alloc_pages_exact(size_t s, gfp_t gfp)
+{
+	return kmalloc(s, gfp);
+}
 
 static inline void kfree(void *p)
 {
 	if (p >= __kfree_ignore_start && p < __kfree_ignore_end)
 		return;
 	free(p);
+}
+
+static inline void free_pages_exact(void *p, size_t s)
+{
+	kfree(p);
 }
 
 static inline void *krealloc(void *p, size_t s, gfp_t gfp)
@@ -81,18 +108,22 @@ static inline void free_page(unsigned long addr)
 	free((void *)addr);
 }
 
-#define container_of(ptr, type, member) ({			\
-	const typeof( ((type *)0)->member ) *__mptr = (ptr);	\
-	(type *)( (char *)__mptr - offsetof(type,member) );})
-
-#define uninitialized_var(x) x = x
-
 # ifndef likely
 #  define likely(x)	(__builtin_expect(!!(x), 1))
 # endif
 # ifndef unlikely
 #  define unlikely(x)	(__builtin_expect(!!(x), 0))
 # endif
+
+static inline void *krealloc_array(void *p, size_t new_n, size_t new_size, gfp_t gfp)
+{
+	size_t bytes;
+
+	if (unlikely(check_mul_overflow(new_n, new_size, &bytes)))
+		return NULL;
+
+	return krealloc(p, bytes, gfp);
+}
 
 #define pr_err(format, ...) fprintf (stderr, format, ## __VA_ARGS__)
 #ifdef DEBUG
@@ -102,6 +133,7 @@ static inline void free_page(unsigned long addr)
 #endif
 #define dev_err(dev, format, ...) fprintf (stderr, format, ## __VA_ARGS__)
 #define dev_warn(dev, format, ...) fprintf (stderr, format, ## __VA_ARGS__)
+#define dev_warn_once(dev, format, ...) fprintf (stderr, format, ## __VA_ARGS__)
 
 #define min(x, y) ({				\
 	typeof(x) _min1 = (x);			\

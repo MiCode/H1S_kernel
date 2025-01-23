@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Au1000/Au1500/Au1100 I2S controller driver for ASoC
  *
@@ -118,9 +119,9 @@ static int au1xi2s_set_fmt(struct snd_soc_dai *cpu_dai, unsigned int fmt)
 		goto out;
 	}
 
-	/* I2S controller only supports master */
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:	/* CODEC slave */
+	/* I2S controller only supports provider */
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_BP_FP:	/* CODEC consumer */
 		break;
 	default:
 		goto out;
@@ -209,7 +210,7 @@ static const struct snd_soc_dai_ops au1xi2s_dai_ops = {
 };
 
 static struct snd_soc_dai_driver au1xi2s_dai_driver = {
-	.symmetric_rates	= 1,
+	.symmetric_rate		= 1,
 	.playback = {
 		.rates		= AU1XI2SC_RATES,
 		.formats	= AU1XI2SC_FMTS,
@@ -226,7 +227,8 @@ static struct snd_soc_dai_driver au1xi2s_dai_driver = {
 };
 
 static const struct snd_soc_component_driver au1xi2s_component = {
-	.name		= "au1xi2s",
+	.name			= "au1xi2s",
+	.legacy_dai_naming	= 1,
 };
 
 static int au1xi2s_drvprobe(struct platform_device *pdev)
@@ -247,7 +249,7 @@ static int au1xi2s_drvprobe(struct platform_device *pdev)
 				     pdev->name))
 		return -EBUSY;
 
-	ctx->mmio = devm_ioremap_nocache(&pdev->dev, iores->start,
+	ctx->mmio = devm_ioremap(&pdev->dev, iores->start,
 					 resource_size(iores));
 	if (!ctx->mmio)
 		return -EBUSY;
@@ -268,15 +270,13 @@ static int au1xi2s_drvprobe(struct platform_device *pdev)
 					  &au1xi2s_dai_driver, 1);
 }
 
-static int au1xi2s_drvremove(struct platform_device *pdev)
+static void au1xi2s_drvremove(struct platform_device *pdev)
 {
 	struct au1xpsc_audio_data *ctx = platform_get_drvdata(pdev);
 
 	snd_soc_unregister_component(&pdev->dev);
 
 	WR(ctx, I2S_ENABLE, EN_D);	/* clock off, disable */
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -310,11 +310,10 @@ static const struct dev_pm_ops au1xi2sc_pmops = {
 static struct platform_driver au1xi2s_driver = {
 	.driver	= {
 		.name	= "alchemy-i2sc",
-		.owner	= THIS_MODULE,
 		.pm	= AU1XI2SC_PMOPS,
 	},
 	.probe		= au1xi2s_drvprobe,
-	.remove		= au1xi2s_drvremove,
+	.remove_new	= au1xi2s_drvremove,
 };
 
 module_platform_driver(au1xi2s_driver);

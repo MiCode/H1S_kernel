@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Originally done by Vince Weaver <vincent.weaver@maine.edu> for
  * perf_event_tests (git://github.com/deater/perf_event_tests)
@@ -23,12 +24,13 @@
 
 #include "tests.h"
 #include "debug.h"
-#include "perf.h"
+#include "event.h"
+#include "../perf-sys.h"
+#include "cloexec.h"
 
 static int overflows;
 
-__attribute__ ((noinline))
-static int test_function(void)
+static noinline int test_function(void)
 {
 	return time(NULL);
 }
@@ -57,12 +59,17 @@ static long long bp_count(int fd)
 #define EXECUTIONS 10000
 #define THRESHOLD  100
 
-int test__bp_signal_overflow(void)
+static int test__bp_signal_overflow(struct test_suite *test __maybe_unused, int subtest __maybe_unused)
 {
 	struct perf_event_attr pe;
 	struct sigaction sa;
 	long long count;
 	int fd, i, fails = 0;
+
+	if (!BP_SIGNAL_IS_SUPPORTED) {
+		pr_debug("Test not supported on this architecture");
+		return TEST_SKIP;
+	}
 
 	/* setup SIGIO signal handler */
 	memset(&sa, 0, sizeof(struct sigaction));
@@ -91,7 +98,8 @@ int test__bp_signal_overflow(void)
 	pe.exclude_kernel = 1;
 	pe.exclude_hv = 1;
 
-	fd = sys_perf_event_open(&pe, 0, -1, -1, 0);
+	fd = sys_perf_event_open(&pe, 0, -1, -1,
+				 perf_event_open_cloexec_flag());
 	if (fd < 0) {
 		pr_debug("failed opening event %llx\n", pe.config);
 		return TEST_FAIL;
@@ -130,3 +138,5 @@ int test__bp_signal_overflow(void)
 
 	return fails ? TEST_FAIL : TEST_OK;
 }
+
+DEFINE_SUITE("Breakpoint overflow sampling", bp_signal_overflow);

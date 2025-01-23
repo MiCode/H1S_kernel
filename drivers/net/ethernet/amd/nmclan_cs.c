@@ -114,8 +114,6 @@ Log: nmclan_cs.c,v
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define DRV_NAME	"nmclan_cs"
-#define DRV_VERSION	"0.16"
-
 
 /* ----------------------------------------------------------------------------
 Conditional Compilation Options
@@ -151,7 +149,7 @@ Include Files
 #include <pcmcia/cistpl.h>
 #include <pcmcia/ds.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 
 /* ----------------------------------------------------------------------------
@@ -359,7 +357,6 @@ typedef struct _mace_statistics {
 
 typedef struct _mace_private {
 	struct pcmcia_device	*p_dev;
-    struct net_device_stats linux_stats; /* Linux statistics counters */
     mace_statistics mace_stats; /* MACE chip statistics counters */
 
     /* restore_multicast_list() state variables */
@@ -368,7 +365,7 @@ typedef struct _mace_private {
 
     char tx_free_frames; /* Number of free transmit frame buffers */
     char tx_irq_disabled; /* MACE TX interrupt disabled */
-    
+
     spinlock_t bank_lock; /* Must be held if you step off bank 0 */
 } mace_private;
 
@@ -408,7 +405,7 @@ static int mace_open(struct net_device *dev);
 static int mace_close(struct net_device *dev);
 static netdev_tx_t mace_start_xmit(struct sk_buff *skb,
 					 struct net_device *dev);
-static void mace_tx_timeout(struct net_device *dev);
+static void mace_tx_timeout(struct net_device *dev, unsigned int txqueue);
 static irqreturn_t mace_interrupt(int irq, void *dev_id);
 static struct net_device_stats *mace_get_stats(struct net_device *dev);
 static int mace_rx(struct net_device *dev, unsigned char RxCnt);
@@ -427,7 +424,6 @@ static const struct net_device_ops mace_netdev_ops = {
 	.ndo_set_config		= mace_config,
 	.ndo_get_stats		= mace_get_stats,
 	.ndo_set_rx_mode	= set_multicast_list,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address 	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 };
@@ -446,7 +442,7 @@ static int nmclan_probe(struct pcmcia_device *link)
     lp = netdev_priv(dev);
     lp->p_dev = link;
     link->priv = dev;
-    
+
     spin_lock_init(&lp->bank_lock);
     link->resource[0]->end = 32;
     link->resource[0]->flags |= IO_DATA_PATH_WIDTH_AUTO;
@@ -457,7 +453,7 @@ static int nmclan_probe(struct pcmcia_device *link)
     lp->tx_free_frames=AM2150_MAX_TX_FRAMES;
 
     dev->netdev_ops = &mace_netdev_ops;
-    SET_ETHTOOL_OPS(dev, &netdev_ethtool_ops);
+    dev->ethtool_ops = &netdev_ethtool_ops;
     dev->watchdog_timeo = TX_TIMEOUT;
 
     return nmclan_config(link);
@@ -489,10 +485,10 @@ static int mace_read(mace_private *lp, unsigned int ioaddr, int reg)
   unsigned long flags;
 
   switch (reg >> 4) {
-    case 0: /* register 0-15 */
+  case 0: /* register 0-15 */
       data = inb(ioaddr + AM2150_MACE_BASE + reg);
       break;
-    case 1: /* register 16-31 */
+  case 1: /* register 16-31 */
       spin_lock_irqsave(&lp->bank_lock, flags);
       MACEBANK(1);
       data = inb(ioaddr + AM2150_MACE_BASE + (reg & 0x0F));
@@ -516,10 +512,10 @@ static void mace_write(mace_private *lp, unsigned int ioaddr, int reg,
   unsigned long flags;
 
   switch (reg >> 4) {
-    case 0: /* register 0-15 */
+  case 0: /* register 0-15 */
       outb(data & 0xFF, ioaddr + AM2150_MACE_BASE + reg);
       break;
-    case 1: /* register 16-31 */
+  case 1: /* register 16-31 */
       spin_lock_irqsave(&lp->bank_lock, flags);
       MACEBANK(1);
       outb(data & 0xFF, ioaddr + AM2150_MACE_BASE + (reg & 0x0F));
@@ -533,7 +529,8 @@ static void mace_write(mace_private *lp, unsigned int ioaddr, int reg,
 mace_init
 	Resets the MACE chip.
 ---------------------------------------------------------------------------- */
-static int mace_init(mace_private *lp, unsigned int ioaddr, char *enet_addr)
+static int mace_init(mace_private *lp, unsigned int ioaddr,
+		     const char *enet_addr)
 {
   int i;
   int ct = 0;
@@ -545,7 +542,7 @@ static int mace_init(mace_private *lp, unsigned int ioaddr, char *enet_addr)
     if(++ct > 500)
     {
 	pr_err("reset failed, card removed?\n");
-    	return -1;
+	return -1;
     }
     udelay(1);
   }
@@ -570,13 +567,13 @@ static int mace_init(mace_private *lp, unsigned int ioaddr, char *enet_addr)
    * Or just set ASEL in PHYCC below!
    */
   switch (if_port) {
-    case 1:
+  case 1:
       mace_write(lp, ioaddr, MACE_PLSCC, 0x02);
       break;
-    case 2:
+  case 2:
       mace_write(lp, ioaddr, MACE_PLSCC, 0x00);
       break;
-    default:
+  default:
       mace_write(lp, ioaddr, MACE_PHYCC, /* ASEL */ 4);
       /* ASEL Auto Select.  When set, the PORTSEL[1-0] bits are overridden,
 	 and the MACE device will automatically select the operating media
@@ -589,11 +586,11 @@ static int mace_init(mace_private *lp, unsigned int ioaddr, char *enet_addr)
   ct = 0;
   while (mace_read(lp, ioaddr, MACE_IAC) & MACE_IAC_ADDRCHG)
   {
-  	if(++ ct > 500)
-  	{
+	if(++ ct > 500)
+	{
 		pr_err("ADDRCHG timeout, card removed?\n");
-  		return -1;
-  	}
+		return -1;
+	}
   }
   /* Set PADR register */
   for (i = 0; i < ETH_ALEN; i++)
@@ -621,7 +618,7 @@ static int nmclan_config(struct pcmcia_device *link)
   ret = pcmcia_request_io(link);
   if (ret)
 	  goto failed;
-  ret = pcmcia_request_exclusive_irq(link, mace_interrupt);
+  ret = pcmcia_request_irq(link, mace_interrupt);
   if (ret)
 	  goto failed;
   ret = pcmcia_enable_device(link);
@@ -639,7 +636,7 @@ static int nmclan_config(struct pcmcia_device *link)
 	  kfree(buf);
 	  goto failed;
   }
-  memcpy(dev->dev_addr, buf, ETH_ALEN);
+  eth_hw_addr_set(dev, buf);
   kfree(buf);
 
   /* Verify configuration by reading the MACE ID. */
@@ -654,12 +651,12 @@ static int nmclan_config(struct pcmcia_device *link)
     } else {
       pr_notice("mace id not found: %x %x should be 0x40 0x?9\n",
 		sig[0], sig[1]);
-      return -ENODEV;
+      goto failed;
     }
   }
 
   if(mace_init(lp, ioaddr, dev->dev_addr) == -1)
-  	goto failed;
+	goto failed;
 
   /* The if_port symbol can be set when the module is loaded */
   if (if_port <= 2)
@@ -818,8 +815,7 @@ static int mace_close(struct net_device *dev)
 static void netdev_get_drvinfo(struct net_device *dev,
 			       struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
 	snprintf(info->bus_info, sizeof(info->bus_info),
 		"PCMCIA 0x%lx", dev->base_addr);
 }
@@ -839,7 +835,7 @@ mace_start_xmit
 	failed, put skb back into a list."
 ---------------------------------------------------------------------------- */
 
-static void mace_tx_timeout(struct net_device *dev)
+static void mace_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
   mace_private *lp = netdev_priv(dev);
   struct pcmcia_device *link = lp->p_dev;
@@ -851,7 +847,7 @@ static void mace_tx_timeout(struct net_device *dev)
 #else /* #if RESET_ON_TIMEOUT */
   pr_cont("NOT resetting card\n");
 #endif /* #if RESET_ON_TIMEOUT */
-  dev->trans_start = jiffies; /* prevent tx timeout */
+  netif_trans_update(dev); /* prevent tx timeout */
   netif_wake_queue(dev);
 }
 
@@ -880,7 +876,7 @@ static netdev_tx_t mace_start_xmit(struct sk_buff *skb,
        service a transmit interrupt while we are in here.
     */
 
-    lp->linux_stats.tx_bytes += skb->len;
+    dev->stats.tx_bytes += skb->len;
     lp->tx_free_frames--;
 
     /* WARNING: Write the _exact_ number of bytes written in the header! */
@@ -922,7 +918,7 @@ static irqreturn_t mace_interrupt(int irq, void *dev_id)
   int status;
   int IntrCnt = MACE_MAX_IR_ITERATIONS;
 
-  if (dev == NULL) {
+  if (!dev) {
     pr_debug("mace_interrupt(): irq 0x%X for unknown device.\n",
 	  irq);
     return IRQ_NONE;
@@ -952,6 +948,8 @@ static irqreturn_t mace_interrupt(int irq, void *dev_id)
   do {
     /* WARNING: MACE_IR is a READ/CLEAR port! */
     status = inb(ioaddr + AM2150_MACE_BASE + MACE_IR);
+    if (!(status & ~MACE_IMR_DEFAULT) && IntrCnt == MACE_MAX_IR_ITERATIONS)
+      return IRQ_NONE;
 
     pr_debug("mace_interrupt: irq 0x%X status 0x%X.\n", irq, status);
 
@@ -966,7 +964,7 @@ static irqreturn_t mace_interrupt(int irq, void *dev_id)
 
       fifofc = inb(ioaddr + AM2150_MACE_BASE + MACE_FIFOFC);
       if ((fifofc & MACE_FIFOFC_XMTFC)==0) {
-	lp->linux_stats.tx_errors++;
+	dev->stats.tx_errors++;
 	outb(0xFF, ioaddr + AM2150_XMT_SKIP);
       }
 
@@ -1015,7 +1013,7 @@ static irqreturn_t mace_interrupt(int irq, void *dev_id)
 
       } /* if (xmtfs & MACE_XMTFS_XMTSV) */
 
-      lp->linux_stats.tx_packets++;
+      dev->stats.tx_packets++;
       lp->tx_free_frames++;
       netif_wake_queue(dev);
     } /* if (status & MACE_IR_XMTINT) */
@@ -1076,7 +1074,7 @@ static int mace_rx(struct net_device *dev, unsigned char RxCnt)
 	  " 0x%X.\n", dev->name, rx_framecnt, rx_status);
 
     if (rx_status & MACE_RCVFS_RCVSTS) { /* Error, update stats. */
-      lp->linux_stats.rx_errors++;
+      dev->stats.rx_errors++;
       if (rx_status & MACE_RCVFS_OFLO) {
         lp->mace_stats.oflo++;
       }
@@ -1104,23 +1102,23 @@ static int mace_rx(struct net_device *dev, unsigned char RxCnt)
 
       skb = netdev_alloc_skb(dev, pkt_len + 2);
 
-      if (skb != NULL) {
+      if (skb) {
 	skb_reserve(skb, 2);
 	insw(ioaddr + AM2150_RCV, skb_put(skb, pkt_len), pkt_len>>1);
 	if (pkt_len & 1)
 	    *(skb_tail_pointer(skb) - 1) = inb(ioaddr + AM2150_RCV);
 	skb->protocol = eth_type_trans(skb, dev);
-	
+
 	netif_rx(skb); /* Send the packet to the upper (protocol) layers. */
 
-	lp->linux_stats.rx_packets++;
-	lp->linux_stats.rx_bytes += pkt_len;
+	dev->stats.rx_packets++;
+	dev->stats.rx_bytes += pkt_len;
 	outb(0xFF, ioaddr + AM2150_RCV_NEXT); /* skip to next frame */
 	continue;
       } else {
 	pr_debug("%s: couldn't allocate a sk_buff of size"
 	      " %d.\n", dev->name, pkt_len);
-	lp->linux_stats.rx_dropped++;
+	dev->stats.rx_dropped++;
       }
     }
     outb(0xFF, ioaddr + AM2150_RCV_NEXT); /* skip to next frame */
@@ -1230,13 +1228,13 @@ static void update_stats(unsigned int ioaddr, struct net_device *dev)
   lp->mace_stats.rntpc += mace_read(lp, ioaddr, MACE_RNTPC);
   lp->mace_stats.mpc += mace_read(lp, ioaddr, MACE_MPC);
   /* At this point, mace_stats is fully updated for this call.
-     We may now update the linux_stats. */
+     We may now update the netdev stats. */
 
-  /* The MACE has no equivalent for linux_stats field which are commented
+  /* The MACE has no equivalent for netdev stats field which are commented
      out. */
 
-  /* lp->linux_stats.multicast; */
-  lp->linux_stats.collisions = 
+  /* dev->stats.multicast; */
+  dev->stats.collisions =
     lp->mace_stats.rcvcco * 256 + lp->mace_stats.rcvcc;
     /* Collision: The MACE may retry sending a packet 15 times
        before giving up.  The retry count is in XMTRC.
@@ -1244,22 +1242,22 @@ static void update_stats(unsigned int ioaddr, struct net_device *dev)
        If so, why doesn't the RCVCC record these collisions? */
 
   /* detailed rx_errors: */
-  lp->linux_stats.rx_length_errors = 
+  dev->stats.rx_length_errors =
     lp->mace_stats.rntpco * 256 + lp->mace_stats.rntpc;
-  /* lp->linux_stats.rx_over_errors */
-  lp->linux_stats.rx_crc_errors = lp->mace_stats.fcs;
-  lp->linux_stats.rx_frame_errors = lp->mace_stats.fram;
-  lp->linux_stats.rx_fifo_errors = lp->mace_stats.oflo;
-  lp->linux_stats.rx_missed_errors = 
+  /* dev->stats.rx_over_errors */
+  dev->stats.rx_crc_errors = lp->mace_stats.fcs;
+  dev->stats.rx_frame_errors = lp->mace_stats.fram;
+  dev->stats.rx_fifo_errors = lp->mace_stats.oflo;
+  dev->stats.rx_missed_errors =
     lp->mace_stats.mpco * 256 + lp->mace_stats.mpc;
 
   /* detailed tx_errors */
-  lp->linux_stats.tx_aborted_errors = lp->mace_stats.rtry;
-  lp->linux_stats.tx_carrier_errors = lp->mace_stats.lcar;
+  dev->stats.tx_aborted_errors = lp->mace_stats.rtry;
+  dev->stats.tx_carrier_errors = lp->mace_stats.lcar;
     /* LCAR usually results from bad cabling. */
-  lp->linux_stats.tx_fifo_errors = lp->mace_stats.uflo;
-  lp->linux_stats.tx_heartbeat_errors = lp->mace_stats.cerr;
-  /* lp->linux_stats.tx_window_errors; */
+  dev->stats.tx_fifo_errors = lp->mace_stats.uflo;
+  dev->stats.tx_heartbeat_errors = lp->mace_stats.cerr;
+  /* dev->stats.tx_window_errors; */
 } /* update_stats */
 
 /* ----------------------------------------------------------------------------
@@ -1273,10 +1271,10 @@ static struct net_device_stats *mace_get_stats(struct net_device *dev)
   update_stats(dev->base_addr, dev);
 
   pr_debug("%s: updating the statistics.\n", dev->name);
-  pr_linux_stats(&lp->linux_stats);
+  pr_linux_stats(&dev->stats);
   pr_mace_stats(&lp->mace_stats);
 
-  return &lp->linux_stats;
+  return &dev->stats;
 } /* net_device_stats */
 
 /* ----------------------------------------------------------------------------

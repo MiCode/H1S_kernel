@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_IRQ_H
 #define _ASM_X86_IRQ_H
 /*
@@ -10,41 +11,40 @@
 #include <asm/apicdef.h>
 #include <asm/irq_vectors.h>
 
+/*
+ * The irq entry code is in the noinstr section and the start/end of
+ * __irqentry_text is emitted via labels. Make the build fail if
+ * something moves a C function into the __irq_entry section.
+ */
+#define __irq_entry __invalid_section
+
 static inline int irq_canonicalize(int irq)
 {
 	return ((irq == 2) ? 9 : irq);
 }
 
-#ifdef CONFIG_X86_32
-extern void irq_ctx_init(int cpu);
-#else
-# define irq_ctx_init(cpu) do { } while (0)
-#endif
+extern int irq_init_percpu_irqstack(unsigned int cpu);
 
-#define __ARCH_HAS_DO_SOFTIRQ
+struct irq_desc;
 
-#ifdef CONFIG_HOTPLUG_CPU
-#include <linux/cpumask.h>
-extern int check_irq_vectors_for_cpu_disable(void);
 extern void fixup_irqs(void);
-extern void irq_force_complete_move(int);
+
+#ifdef CONFIG_HAVE_KVM
+extern void kvm_set_posted_intr_wakeup_handler(void (*handler)(void));
 #endif
 
 extern void (*x86_platform_ipi_callback)(void);
 extern void native_init_IRQ(void);
-extern bool handle_irq(unsigned irq, struct pt_regs *regs);
 
-extern __visible unsigned int do_IRQ(struct pt_regs *regs);
-
-/* Interrupt vector management */
-extern DECLARE_BITMAP(used_vectors, NR_VECTORS);
-extern int vector_used_by_percpu_irq(unsigned int vector);
+extern void __handle_irq(struct irq_desc *desc, struct pt_regs *regs);
 
 extern void init_ISA_irqs(void);
 
 #ifdef CONFIG_X86_LOCAL_APIC
-void arch_trigger_all_cpu_backtrace(void);
-#define arch_trigger_all_cpu_backtrace arch_trigger_all_cpu_backtrace
+void arch_trigger_cpumask_backtrace(const struct cpumask *mask,
+				    int exclude_cpu);
+
+#define arch_trigger_cpumask_backtrace arch_trigger_cpumask_backtrace
 #endif
 
 #endif /* _ASM_X86_IRQ_H */

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * i2c-au1550.c: SMBus (i2c) adapter for Alchemy PSC interface
  * Copyright (C) 2004 Embedded Edge, LLC <dan@embeddededge.com>
@@ -11,20 +12,6 @@
  * This is just a skeleton adapter to use with the Au1550 PSC
  * algorithm.  It was developed for the Pb1550, but will work with
  * any Au1550 board that has a similar PSC configuration.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 
 #include <linux/delay.h>
@@ -52,7 +39,6 @@ struct i2c_au1550_data {
 	void __iomem *psc_base;
 	int	xfer_timeout;
 	struct i2c_adapter adap;
-	struct resource *ioarea;
 };
 
 static inline void WR(struct i2c_au1550_data *a, int r, unsigned long v)
@@ -288,10 +274,10 @@ static void i2c_au1550_setup(struct i2c_au1550_data *priv)
 	/* Set the protocol timer values.  See Table 71 in the
 	 * Au1550 Data Book for standard timing values.
 	 */
-	WR(priv, PSC_SMBTMR, PSC_SMBTMR_SET_TH(0) | PSC_SMBTMR_SET_PS(15) | \
-		PSC_SMBTMR_SET_PU(15) | PSC_SMBTMR_SET_SH(15) | \
-		PSC_SMBTMR_SET_SU(15) | PSC_SMBTMR_SET_CL(15) | \
-		PSC_SMBTMR_SET_CH(15));
+	WR(priv, PSC_SMBTMR, PSC_SMBTMR_SET_TH(0) | PSC_SMBTMR_SET_PS(20) | \
+		PSC_SMBTMR_SET_PU(20) | PSC_SMBTMR_SET_SH(20) | \
+		PSC_SMBTMR_SET_SU(20) | PSC_SMBTMR_SET_CL(20) | \
+		PSC_SMBTMR_SET_CH(20));
 
 	cfg |= PSC_SMBCFG_DE_ENABLE;
 	WR(priv, PSC_SMBCFG, cfg);
@@ -316,75 +302,46 @@ static int
 i2c_au1550_probe(struct platform_device *pdev)
 {
 	struct i2c_au1550_data *priv;
-	struct resource *r;
 	int ret;
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!r) {
-		ret = -ENODEV;
-		goto out;
-	}
+	priv = devm_kzalloc(&pdev->dev, sizeof(struct i2c_au1550_data),
+			    GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
 
-	priv = kzalloc(sizeof(struct i2c_au1550_data), GFP_KERNEL);
-	if (!priv) {
-		ret = -ENOMEM;
-		goto out;
-	}
+	priv->psc_base = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
+	if (IS_ERR(priv->psc_base))
+		return PTR_ERR(priv->psc_base);
 
-	priv->ioarea = request_mem_region(r->start, resource_size(r),
-					  pdev->name);
-	if (!priv->ioarea) {
-		ret = -EBUSY;
-		goto out_mem;
-	}
-
-	priv->psc_base = ioremap(r->start, resource_size(r));
-	if (!priv->psc_base) {
-		ret = -EIO;
-		goto out_map;
-	}
 	priv->xfer_timeout = 200;
 
 	priv->adap.nr = pdev->id;
 	priv->adap.algo = &au1550_algo;
 	priv->adap.algo_data = priv;
 	priv->adap.dev.parent = &pdev->dev;
-	strlcpy(priv->adap.name, "Au1xxx PSC I2C", sizeof(priv->adap.name));
+	strscpy(priv->adap.name, "Au1xxx PSC I2C", sizeof(priv->adap.name));
 
 	/* Now, set up the PSC for SMBus PIO mode. */
 	i2c_au1550_setup(priv);
 
 	ret = i2c_add_numbered_adapter(&priv->adap);
-	if (ret == 0) {
-		platform_set_drvdata(pdev, priv);
-		return 0;
+	if (ret) {
+		i2c_au1550_disable(priv);
+		return ret;
 	}
 
-	i2c_au1550_disable(priv);
-	iounmap(priv->psc_base);
-out_map:
-	release_resource(priv->ioarea);
-	kfree(priv->ioarea);
-out_mem:
-	kfree(priv);
-out:
-	return ret;
+	platform_set_drvdata(pdev, priv);
+	return 0;
 }
 
-static int i2c_au1550_remove(struct platform_device *pdev)
+static void i2c_au1550_remove(struct platform_device *pdev)
 {
 	struct i2c_au1550_data *priv = platform_get_drvdata(pdev);
 
 	i2c_del_adapter(&priv->adap);
 	i2c_au1550_disable(priv);
-	iounmap(priv->psc_base);
-	release_resource(priv->ioarea);
-	kfree(priv->ioarea);
-	kfree(priv);
-	return 0;
 }
 
-#ifdef CONFIG_PM
 static int i2c_au1550_suspend(struct device *dev)
 {
 	struct i2c_au1550_data *priv = dev_get_drvdata(dev);
@@ -403,25 +360,16 @@ static int i2c_au1550_resume(struct device *dev)
 	return 0;
 }
 
-static const struct dev_pm_ops i2c_au1550_pmops = {
-	.suspend	= i2c_au1550_suspend,
-	.resume		= i2c_au1550_resume,
-};
-
-#define AU1XPSC_SMBUS_PMOPS (&i2c_au1550_pmops)
-
-#else
-#define AU1XPSC_SMBUS_PMOPS NULL
-#endif
+static DEFINE_SIMPLE_DEV_PM_OPS(i2c_au1550_pmops,
+				i2c_au1550_suspend, i2c_au1550_resume);
 
 static struct platform_driver au1xpsc_smbus_driver = {
 	.driver = {
 		.name	= "au1xpsc_smbus",
-		.owner	= THIS_MODULE,
-		.pm	= AU1XPSC_SMBUS_PMOPS,
+		.pm	= pm_sleep_ptr(&i2c_au1550_pmops),
 	},
 	.probe		= i2c_au1550_probe,
-	.remove		= i2c_au1550_remove,
+	.remove_new	= i2c_au1550_remove,
 };
 
 module_platform_driver(au1xpsc_smbus_driver);

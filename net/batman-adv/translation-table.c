@@ -1,37 +1,68 @@
-/* Copyright (C) 2007-2014 B.A.T.M.A.N. contributors:
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) B.A.T.M.A.N. contributors:
  *
  * Marek Lindner, Simon Wunderlich, Antonio Quartulli
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of version 2 of the GNU General Public
- * License as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "main.h"
 #include "translation-table.h"
-#include "soft-interface.h"
-#include "hard-interface.h"
-#include "send.h"
-#include "hash.h"
-#include "originator.h"
-#include "routing.h"
-#include "bridge_loop_avoidance.h"
+#include "main.h"
 
+#include <linux/atomic.h>
+#include <linux/bitops.h>
+#include <linux/build_bug.h>
+#include <linux/byteorder/generic.h>
+#include <linux/cache.h>
+#include <linux/compiler.h>
+#include <linux/container_of.h>
 #include <linux/crc32c.h>
+#include <linux/errno.h>
+#include <linux/etherdevice.h>
+#include <linux/gfp.h>
+#include <linux/if_ether.h>
+#include <linux/init.h>
+#include <linux/jhash.h>
+#include <linux/jiffies.h>
+#include <linux/kref.h>
+#include <linux/list.h>
+#include <linux/lockdep.h>
+#include <linux/net.h>
+#include <linux/netdevice.h>
+#include <linux/netlink.h>
+#include <linux/rculist.h>
+#include <linux/rcupdate.h>
+#include <linux/skbuff.h>
+#include <linux/slab.h>
+#include <linux/spinlock.h>
+#include <linux/stddef.h>
+#include <linux/string.h>
+#include <linux/workqueue.h>
+#include <net/genetlink.h>
+#include <net/netlink.h>
+#include <net/sock.h>
+#include <uapi/linux/batadv_packet.h>
+#include <uapi/linux/batman_adv.h>
+
+#include "bridge_loop_avoidance.h"
+#include "hard-interface.h"
+#include "hash.h"
+#include "log.h"
+#include "netlink.h"
+#include "originator.h"
+#include "soft-interface.h"
+#include "tvlv.h"
+
+static struct kmem_cache *batadv_tl_cache __read_mostly;
+static struct kmem_cache *batadv_tg_cache __read_mostly;
+static struct kmem_cache *batadv_tt_orig_cache __read_mostly;
+static struct kmem_cache *batadv_tt_change_cache __read_mostly;
+static struct kmem_cache *batadv_tt_req_cache __read_mostly;
+static struct kmem_cache *batadv_tt_roam_cache __read_mostly;
 
 /* hash class keys */
 static struct lock_class_key batadv_tt_local_hash_lock_class_key;
 static struct lock_class_key batadv_tt_global_hash_lock_class_key;
 
-static void batadv_send_roam_adv(struct batadv_priv *bat_priv, uint8_t *client,
+static void batadv_send_roam_adv(struct batadv_priv *bat_priv, u8 *client,
 				 unsigned short vid,
 				 struct batadv_orig_node *orig_node);
 static void batadv_tt_purge(struct work_struct *work);
@@ -43,60 +74,66 @@ static void batadv_tt_global_del(struct batadv_priv *bat_priv,
 				 unsigned short vid, const char *message,
 				 bool roaming);
 
-/* returns 1 if they are the same mac addr */
-static int batadv_compare_tt(const struct hlist_node *node, const void *data2)
+/**
+ * batadv_compare_tt() - check if two TT entries are the same
+ * @node: the list element pointer of the first TT entry
+ * @data2: pointer to the tt_common_entry of the second TT entry
+ *
+ * Compare the MAC address and the VLAN ID of the two TT entries and check if
+ * they are the same TT client.
+ * Return: true if the two TT clients are the same, false otherwise
+ */
+static bool batadv_compare_tt(const struct hlist_node *node, const void *data2)
 {
 	const void *data1 = container_of(node, struct batadv_tt_common_entry,
 					 hash_entry);
+	const struct batadv_tt_common_entry *tt1 = data1;
+	const struct batadv_tt_common_entry *tt2 = data2;
 
-	return batadv_compare_eth(data1, data2);
+	return (tt1->vid == tt2->vid) && batadv_compare_eth(data1, data2);
 }
 
 /**
- * batadv_choose_tt - return the index of the tt entry in the hash table
+ * batadv_choose_tt() - return the index of the tt entry in the hash table
  * @data: pointer to the tt_common_entry object to map
  * @size: the size of the hash table
  *
- * Returns the hash index where the object represented by 'data' should be
+ * Return: the hash index where the object represented by 'data' should be
  * stored at.
  */
-static inline uint32_t batadv_choose_tt(const void *data, uint32_t size)
+static inline u32 batadv_choose_tt(const void *data, u32 size)
 {
-	struct batadv_tt_common_entry *tt;
-	uint32_t hash = 0;
+	const struct batadv_tt_common_entry *tt;
+	u32 hash = 0;
 
-	tt = (struct batadv_tt_common_entry *)data;
-	hash = batadv_hash_bytes(hash, &tt->addr, ETH_ALEN);
-	hash = batadv_hash_bytes(hash, &tt->vid, sizeof(tt->vid));
-
-	hash += (hash << 3);
-	hash ^= (hash >> 11);
-	hash += (hash << 15);
+	tt = data;
+	hash = jhash(&tt->addr, ETH_ALEN, hash);
+	hash = jhash(&tt->vid, sizeof(tt->vid), hash);
 
 	return hash % size;
 }
 
 /**
- * batadv_tt_hash_find - look for a client in the given hash table
+ * batadv_tt_hash_find() - look for a client in the given hash table
  * @hash: the hash table to search
  * @addr: the mac address of the client to look for
  * @vid: VLAN identifier
  *
- * Returns a pointer to the tt_common struct belonging to the searched client if
+ * Return: a pointer to the tt_common struct belonging to the searched client if
  * found, NULL otherwise.
  */
 static struct batadv_tt_common_entry *
-batadv_tt_hash_find(struct batadv_hashtable *hash, const uint8_t *addr,
+batadv_tt_hash_find(struct batadv_hashtable *hash, const u8 *addr,
 		    unsigned short vid)
 {
 	struct hlist_head *head;
 	struct batadv_tt_common_entry to_search, *tt, *tt_tmp = NULL;
-	uint32_t index;
+	u32 index;
 
 	if (!hash)
 		return NULL;
 
-	memcpy(to_search.addr, addr, ETH_ALEN);
+	ether_addr_copy(to_search.addr, addr);
 	to_search.vid = vid;
 
 	index = batadv_choose_tt(&to_search, hash->size);
@@ -110,7 +147,7 @@ batadv_tt_hash_find(struct batadv_hashtable *hash, const uint8_t *addr,
 		if (tt->vid != vid)
 			continue;
 
-		if (!atomic_inc_not_zero(&tt->refcount))
+		if (!kref_get_unless_zero(&tt->refcount))
 			continue;
 
 		tt_tmp = tt;
@@ -122,16 +159,16 @@ batadv_tt_hash_find(struct batadv_hashtable *hash, const uint8_t *addr,
 }
 
 /**
- * batadv_tt_local_hash_find - search the local table for a given client
+ * batadv_tt_local_hash_find() - search the local table for a given client
  * @bat_priv: the bat priv with all the soft interface information
  * @addr: the mac address of the client to look for
  * @vid: VLAN identifier
  *
- * Returns a pointer to the corresponding tt_local_entry struct if the client is
+ * Return: a pointer to the corresponding tt_local_entry struct if the client is
  * found, NULL otherwise.
  */
 static struct batadv_tt_local_entry *
-batadv_tt_local_hash_find(struct batadv_priv *bat_priv, const uint8_t *addr,
+batadv_tt_local_hash_find(struct batadv_priv *bat_priv, const u8 *addr,
 			  unsigned short vid)
 {
 	struct batadv_tt_common_entry *tt_common_entry;
@@ -147,16 +184,16 @@ batadv_tt_local_hash_find(struct batadv_priv *bat_priv, const uint8_t *addr,
 }
 
 /**
- * batadv_tt_global_hash_find - search the global table for a given client
+ * batadv_tt_global_hash_find() - search the global table for a given client
  * @bat_priv: the bat priv with all the soft interface information
  * @addr: the mac address of the client to look for
  * @vid: VLAN identifier
  *
- * Returns a pointer to the corresponding tt_global_entry struct if the client
+ * Return: a pointer to the corresponding tt_global_entry struct if the client
  * is found, NULL otherwise.
  */
-static struct batadv_tt_global_entry *
-batadv_tt_global_hash_find(struct batadv_priv *bat_priv, const uint8_t *addr,
+struct batadv_tt_global_entry *
+batadv_tt_global_hash_find(struct batadv_priv *bat_priv, const u8 *addr,
 			   unsigned short vid)
 {
 	struct batadv_tt_common_entry *tt_common_entry;
@@ -171,44 +208,111 @@ batadv_tt_global_hash_find(struct batadv_priv *bat_priv, const uint8_t *addr,
 	return tt_global_entry;
 }
 
-static void
-batadv_tt_local_entry_free_ref(struct batadv_tt_local_entry *tt_local_entry)
+/**
+ * batadv_tt_local_entry_free_rcu() - free the tt_local_entry
+ * @rcu: rcu pointer of the tt_local_entry
+ */
+static void batadv_tt_local_entry_free_rcu(struct rcu_head *rcu)
 {
-	if (atomic_dec_and_test(&tt_local_entry->common.refcount))
-		kfree_rcu(tt_local_entry, common.rcu);
+	struct batadv_tt_local_entry *tt_local_entry;
+
+	tt_local_entry = container_of(rcu, struct batadv_tt_local_entry,
+				      common.rcu);
+
+	kmem_cache_free(batadv_tl_cache, tt_local_entry);
 }
 
 /**
- * batadv_tt_global_entry_free_ref - decrement the refcounter for a
- *  tt_global_entry and possibly free it
- * @tt_global_entry: the object to free
+ * batadv_tt_local_entry_release() - release tt_local_entry from lists and queue
+ *  for free after rcu grace period
+ * @ref: kref pointer of the nc_node
+ */
+static void batadv_tt_local_entry_release(struct kref *ref)
+{
+	struct batadv_tt_local_entry *tt_local_entry;
+
+	tt_local_entry = container_of(ref, struct batadv_tt_local_entry,
+				      common.refcount);
+
+	batadv_softif_vlan_put(tt_local_entry->vlan);
+
+	call_rcu(&tt_local_entry->common.rcu, batadv_tt_local_entry_free_rcu);
+}
+
+/**
+ * batadv_tt_local_entry_put() - decrement the tt_local_entry refcounter and
+ *  possibly release it
+ * @tt_local_entry: tt_local_entry to be free'd
  */
 static void
-batadv_tt_global_entry_free_ref(struct batadv_tt_global_entry *tt_global_entry)
+batadv_tt_local_entry_put(struct batadv_tt_local_entry *tt_local_entry)
 {
-	if (atomic_dec_and_test(&tt_global_entry->common.refcount)) {
-		batadv_tt_global_del_orig_list(tt_global_entry);
-		kfree_rcu(tt_global_entry, common.rcu);
-	}
-}
+	if (!tt_local_entry)
+		return;
 
-static void batadv_tt_orig_list_entry_free_rcu(struct rcu_head *rcu)
-{
-	struct batadv_tt_orig_list_entry *orig_entry;
-
-	orig_entry = container_of(rcu, struct batadv_tt_orig_list_entry, rcu);
-
-	/* We are in an rcu callback here, therefore we cannot use
-	 * batadv_orig_node_free_ref() and its call_rcu():
-	 * An rcu_barrier() wouldn't wait for that to finish
-	 */
-	batadv_orig_node_free_ref_now(orig_entry->orig_node);
-	kfree(orig_entry);
+	kref_put(&tt_local_entry->common.refcount,
+		 batadv_tt_local_entry_release);
 }
 
 /**
- * batadv_tt_local_size_mod - change the size by v of the local table identified
- *  by vid
+ * batadv_tt_global_entry_free_rcu() - free the tt_global_entry
+ * @rcu: rcu pointer of the tt_global_entry
+ */
+static void batadv_tt_global_entry_free_rcu(struct rcu_head *rcu)
+{
+	struct batadv_tt_global_entry *tt_global_entry;
+
+	tt_global_entry = container_of(rcu, struct batadv_tt_global_entry,
+				       common.rcu);
+
+	kmem_cache_free(batadv_tg_cache, tt_global_entry);
+}
+
+/**
+ * batadv_tt_global_entry_release() - release tt_global_entry from lists and
+ *  queue for free after rcu grace period
+ * @ref: kref pointer of the nc_node
+ */
+void batadv_tt_global_entry_release(struct kref *ref)
+{
+	struct batadv_tt_global_entry *tt_global_entry;
+
+	tt_global_entry = container_of(ref, struct batadv_tt_global_entry,
+				       common.refcount);
+
+	batadv_tt_global_del_orig_list(tt_global_entry);
+
+	call_rcu(&tt_global_entry->common.rcu, batadv_tt_global_entry_free_rcu);
+}
+
+/**
+ * batadv_tt_global_hash_count() - count the number of orig entries
+ * @bat_priv: the bat priv with all the soft interface information
+ * @addr: the mac address of the client to count entries for
+ * @vid: VLAN identifier
+ *
+ * Return: the number of originators advertising the given address/data
+ * (excluding our self).
+ */
+int batadv_tt_global_hash_count(struct batadv_priv *bat_priv,
+				const u8 *addr, unsigned short vid)
+{
+	struct batadv_tt_global_entry *tt_global_entry;
+	int count;
+
+	tt_global_entry = batadv_tt_global_hash_find(bat_priv, addr, vid);
+	if (!tt_global_entry)
+		return 0;
+
+	count = atomic_read(&tt_global_entry->orig_list_count);
+	batadv_tt_global_entry_put(tt_global_entry);
+
+	return count;
+}
+
+/**
+ * batadv_tt_local_size_mod() - change the size by v of the local table
+ *  identified by vid
  * @bat_priv: the bat priv with all the soft interface information
  * @vid: the VLAN identifier of the sub-table to change
  * @v: the amount to sum to the local table size
@@ -224,12 +328,12 @@ static void batadv_tt_local_size_mod(struct batadv_priv *bat_priv,
 
 	atomic_add(v, &vlan->tt.num_entries);
 
-	batadv_softif_vlan_free_ref(vlan);
+	batadv_softif_vlan_put(vlan);
 }
 
 /**
- * batadv_tt_local_size_inc - increase by one the local table size for the given
- *  vid
+ * batadv_tt_local_size_inc() - increase by one the local table size for the
+ *  given vid
  * @bat_priv: the bat priv with all the soft interface information
  * @vid: the VLAN identifier
  */
@@ -240,8 +344,8 @@ static void batadv_tt_local_size_inc(struct batadv_priv *bat_priv,
 }
 
 /**
- * batadv_tt_local_size_dec - decrease by one the local table size for the given
- *  vid
+ * batadv_tt_local_size_dec() - decrease by one the local table size for the
+ *  given vid
  * @bat_priv: the bat priv with all the soft interface information
  * @vid: the VLAN identifier
  */
@@ -252,9 +356,9 @@ static void batadv_tt_local_size_dec(struct batadv_priv *bat_priv,
 }
 
 /**
- * batadv_tt_global_size_mod - change the size by v of the local table
- *  identified by vid
- * @bat_priv: the bat priv with all the soft interface information
+ * batadv_tt_global_size_mod() - change the size by v of the global table
+ *  for orig_node identified by vid
+ * @orig_node: the originator for which the table has to be modified
  * @vid: the VLAN identifier
  * @v: the amount to sum to the global table size
  */
@@ -269,16 +373,18 @@ static void batadv_tt_global_size_mod(struct batadv_orig_node *orig_node,
 
 	if (atomic_add_return(v, &vlan->tt.num_entries) == 0) {
 		spin_lock_bh(&orig_node->vlan_list_lock);
-		list_del_rcu(&vlan->list);
+		if (!hlist_unhashed(&vlan->list)) {
+			hlist_del_init_rcu(&vlan->list);
+			batadv_orig_node_vlan_put(vlan);
+		}
 		spin_unlock_bh(&orig_node->vlan_list_lock);
-		batadv_orig_node_vlan_free_ref(vlan);
 	}
 
-	batadv_orig_node_vlan_free_ref(vlan);
+	batadv_orig_node_vlan_put(vlan);
 }
 
 /**
- * batadv_tt_global_size_inc - increase by one the global table size for the
+ * batadv_tt_global_size_inc() - increase by one the global table size for the
  *  given vid
  * @orig_node: the originator which global table size has to be decreased
  * @vid: the vlan identifier
@@ -290,7 +396,7 @@ static void batadv_tt_global_size_inc(struct batadv_orig_node *orig_node,
 }
 
 /**
- * batadv_tt_global_size_dec - decrease by one the global table size for the
+ * batadv_tt_global_size_dec() - decrease by one the global table size for the
  *  given vid
  * @orig_node: the originator which global table size has to be decreased
  * @vid: the vlan identifier
@@ -301,39 +407,73 @@ static void batadv_tt_global_size_dec(struct batadv_orig_node *orig_node,
 	batadv_tt_global_size_mod(orig_node, vid, -1);
 }
 
-static void
-batadv_tt_orig_list_entry_free_ref(struct batadv_tt_orig_list_entry *orig_entry)
+/**
+ * batadv_tt_orig_list_entry_free_rcu() - free the orig_entry
+ * @rcu: rcu pointer of the orig_entry
+ */
+static void batadv_tt_orig_list_entry_free_rcu(struct rcu_head *rcu)
 {
-	if (!atomic_dec_and_test(&orig_entry->refcount))
-		return;
+	struct batadv_tt_orig_list_entry *orig_entry;
 
+	orig_entry = container_of(rcu, struct batadv_tt_orig_list_entry, rcu);
+
+	kmem_cache_free(batadv_tt_orig_cache, orig_entry);
+}
+
+/**
+ * batadv_tt_orig_list_entry_release() - release tt orig entry from lists and
+ *  queue for free after rcu grace period
+ * @ref: kref pointer of the tt orig entry
+ */
+static void batadv_tt_orig_list_entry_release(struct kref *ref)
+{
+	struct batadv_tt_orig_list_entry *orig_entry;
+
+	orig_entry = container_of(ref, struct batadv_tt_orig_list_entry,
+				  refcount);
+
+	batadv_orig_node_put(orig_entry->orig_node);
 	call_rcu(&orig_entry->rcu, batadv_tt_orig_list_entry_free_rcu);
 }
 
 /**
- * batadv_tt_local_event - store a local TT event (ADD/DEL)
+ * batadv_tt_orig_list_entry_put() - decrement the tt orig entry refcounter and
+ *  possibly release it
+ * @orig_entry: tt orig entry to be free'd
+ */
+static void
+batadv_tt_orig_list_entry_put(struct batadv_tt_orig_list_entry *orig_entry)
+{
+	if (!orig_entry)
+		return;
+
+	kref_put(&orig_entry->refcount, batadv_tt_orig_list_entry_release);
+}
+
+/**
+ * batadv_tt_local_event() - store a local TT event (ADD/DEL)
  * @bat_priv: the bat priv with all the soft interface information
  * @tt_local_entry: the TT entry involved in the event
  * @event_flags: flags to store in the event structure
  */
 static void batadv_tt_local_event(struct batadv_priv *bat_priv,
 				  struct batadv_tt_local_entry *tt_local_entry,
-				  uint8_t event_flags)
+				  u8 event_flags)
 {
 	struct batadv_tt_change_node *tt_change_node, *entry, *safe;
 	struct batadv_tt_common_entry *common = &tt_local_entry->common;
-	uint8_t flags = common->flags | event_flags;
+	u8 flags = common->flags | event_flags;
 	bool event_removed = false;
 	bool del_op_requested, del_op_entry;
 
-	tt_change_node = kmalloc(sizeof(*tt_change_node), GFP_ATOMIC);
+	tt_change_node = kmem_cache_alloc(batadv_tt_change_cache, GFP_ATOMIC);
 	if (!tt_change_node)
 		return;
 
 	tt_change_node->change.flags = flags;
 	memset(tt_change_node->change.reserved, 0,
 	       sizeof(tt_change_node->change.reserved));
-	memcpy(tt_change_node->change.addr, common->addr, ETH_ALEN);
+	ether_addr_copy(tt_change_node->change.addr, common->addr);
 	tt_change_node->change.vid = htons(common->vid);
 
 	del_op_requested = flags & BATADV_TT_CLIENT_DEL;
@@ -367,8 +507,8 @@ static void batadv_tt_local_event(struct batadv_priv *bat_priv,
 		continue;
 del:
 		list_del(&entry->list);
-		kfree(entry);
-		kfree(tt_change_node);
+		kmem_cache_free(batadv_tt_change_cache, entry);
+		kmem_cache_free(batadv_tt_change_cache, tt_change_node);
 		event_removed = true;
 		goto unlock;
 	}
@@ -386,10 +526,10 @@ unlock:
 }
 
 /**
- * batadv_tt_len - compute length in bytes of given number of tt changes
+ * batadv_tt_len() - compute length in bytes of given number of tt changes
  * @changes_num: number of tt changes
  *
- * Returns computed length in bytes.
+ * Return: computed length in bytes.
  */
 static int batadv_tt_len(int changes_num)
 {
@@ -397,26 +537,27 @@ static int batadv_tt_len(int changes_num)
 }
 
 /**
- * batadv_tt_entries - compute the number of entries fitting in tt_len bytes
+ * batadv_tt_entries() - compute the number of entries fitting in tt_len bytes
  * @tt_len: available space
  *
- * Returns the number of entries.
+ * Return: the number of entries.
  */
-static uint16_t batadv_tt_entries(uint16_t tt_len)
+static u16 batadv_tt_entries(u16 tt_len)
 {
 	return tt_len / batadv_tt_len(1);
 }
 
 /**
- * batadv_tt_local_table_transmit_size - calculates the local translation table
- *  size when transmitted over the air
+ * batadv_tt_local_table_transmit_size() - calculates the local translation
+ *  table size when transmitted over the air
  * @bat_priv: the bat priv with all the soft interface information
  *
- * Returns local translation table size in bytes.
+ * Return: local translation table size in bytes.
  */
 static int batadv_tt_local_table_transmit_size(struct batadv_priv *bat_priv)
 {
-	uint16_t num_vlan = 0, tt_local_entries = 0;
+	u16 num_vlan = 0;
+	u16 tt_local_entries = 0;
 	struct batadv_softif_vlan *vlan;
 	int hdr_size;
 
@@ -456,18 +597,30 @@ static void batadv_tt_global_free(struct batadv_priv *bat_priv,
 				  struct batadv_tt_global_entry *tt_global,
 				  const char *message)
 {
+	struct batadv_tt_global_entry *tt_removed_entry;
+	struct hlist_node *tt_removed_node;
+
 	batadv_dbg(BATADV_DBG_TT, bat_priv,
 		   "Deleting global tt entry %pM (vid: %d): %s\n",
 		   tt_global->common.addr,
-		   BATADV_PRINT_VID(tt_global->common.vid), message);
+		   batadv_print_vid(tt_global->common.vid), message);
 
-	batadv_hash_remove(bat_priv->tt.global_hash, batadv_compare_tt,
-			   batadv_choose_tt, &tt_global->common);
-	batadv_tt_global_entry_free_ref(tt_global);
+	tt_removed_node = batadv_hash_remove(bat_priv->tt.global_hash,
+					     batadv_compare_tt,
+					     batadv_choose_tt,
+					     &tt_global->common);
+	if (!tt_removed_node)
+		return;
+
+	/* drop reference of remove hash entry */
+	tt_removed_entry = hlist_entry(tt_removed_node,
+				       struct batadv_tt_global_entry,
+				       common.hash_entry);
+	batadv_tt_global_entry_put(tt_removed_entry);
 }
 
 /**
- * batadv_tt_local_add - add a new client to the local table or update an
+ * batadv_tt_local_add() - add a new client to the local table or update an
  *  existing client
  * @soft_iface: netdev struct of the mesh interface
  * @addr: the mac address of the client to add
@@ -477,34 +630,43 @@ static void batadv_tt_global_free(struct batadv_priv *bat_priv,
  * @mark: the value contained in the skb->mark field of the received packet (if
  *  any)
  *
- * Returns true if the client was successfully added, false otherwise.
+ * Return: true if the client was successfully added, false otherwise.
  */
-bool batadv_tt_local_add(struct net_device *soft_iface, const uint8_t *addr,
-			 unsigned short vid, int ifindex, uint32_t mark)
+bool batadv_tt_local_add(struct net_device *soft_iface, const u8 *addr,
+			 unsigned short vid, int ifindex, u32 mark)
 {
 	struct batadv_priv *bat_priv = netdev_priv(soft_iface);
 	struct batadv_tt_local_entry *tt_local;
-	struct batadv_tt_global_entry *tt_global;
+	struct batadv_tt_global_entry *tt_global = NULL;
+	struct net *net = dev_net(soft_iface);
+	struct batadv_softif_vlan *vlan;
 	struct net_device *in_dev = NULL;
+	struct batadv_hard_iface *in_hardif = NULL;
 	struct hlist_head *head;
 	struct batadv_tt_orig_list_entry *orig_entry;
 	int hash_added, table_size, packet_size_max;
-	bool ret = false, roamed_back = false;
-	uint8_t remote_flags;
-	uint32_t match_mark;
+	bool ret = false;
+	bool roamed_back = false;
+	u8 remote_flags;
+	u32 match_mark;
 
 	if (ifindex != BATADV_NULL_IFINDEX)
-		in_dev = dev_get_by_index(&init_net, ifindex);
+		in_dev = dev_get_by_index(net, ifindex);
+
+	if (in_dev)
+		in_hardif = batadv_hardif_get_by_netdev(in_dev);
 
 	tt_local = batadv_tt_local_hash_find(bat_priv, addr, vid);
-	tt_global = batadv_tt_global_hash_find(bat_priv, addr, vid);
+
+	if (!is_multicast_ether_addr(addr))
+		tt_global = batadv_tt_global_hash_find(bat_priv, addr, vid);
 
 	if (tt_local) {
 		tt_local->last_seen = jiffies;
 		if (tt_local->common.flags & BATADV_TT_CLIENT_PENDING) {
 			batadv_dbg(BATADV_DBG_TT, bat_priv,
 				   "Re-adding pending client %pM (vid: %d)\n",
-				   addr, BATADV_PRINT_VID(vid));
+				   addr, batadv_print_vid(vid));
 			/* whatever the reason why the PENDING flag was set,
 			 * this is a client which was enqueued to be removed in
 			 * this orig_interval. Since it popped up again, the
@@ -517,7 +679,7 @@ bool batadv_tt_local_add(struct net_device *soft_iface, const uint8_t *addr,
 		if (tt_local->common.flags & BATADV_TT_CLIENT_ROAM) {
 			batadv_dbg(BATADV_DBG_TT, bat_priv,
 				   "Roaming client %pM (vid: %d) came back to its original location\n",
-				   addr, BATADV_PRINT_VID(vid));
+				   addr, batadv_print_vid(vid));
 			/* the ROAM flag is set because this client roamed away
 			 * and the node got a roaming_advertisement message. Now
 			 * that the client popped up again at its original
@@ -540,39 +702,55 @@ bool batadv_tt_local_add(struct net_device *soft_iface, const uint8_t *addr,
 		goto out;
 	}
 
-	tt_local = kmalloc(sizeof(*tt_local), GFP_ATOMIC);
+	tt_local = kmem_cache_alloc(batadv_tl_cache, GFP_ATOMIC);
 	if (!tt_local)
 		goto out;
 
+	/* increase the refcounter of the related vlan */
+	vlan = batadv_softif_vlan_get(bat_priv, vid);
+	if (!vlan) {
+		net_ratelimited_function(batadv_info, soft_iface,
+					 "adding TT local entry %pM to non-existent VLAN %d\n",
+					 addr, batadv_print_vid(vid));
+		kmem_cache_free(batadv_tl_cache, tt_local);
+		tt_local = NULL;
+		goto out;
+	}
+
 	batadv_dbg(BATADV_DBG_TT, bat_priv,
 		   "Creating new local tt entry: %pM (vid: %d, ttvn: %d)\n",
-		   addr, BATADV_PRINT_VID(vid),
-		   (uint8_t)atomic_read(&bat_priv->tt.vn));
+		   addr, batadv_print_vid(vid),
+		   (u8)atomic_read(&bat_priv->tt.vn));
 
-	memcpy(tt_local->common.addr, addr, ETH_ALEN);
+	ether_addr_copy(tt_local->common.addr, addr);
 	/* The local entry has to be marked as NEW to avoid to send it in
 	 * a full table response going out before the next ttvn increment
 	 * (consistency check)
 	 */
 	tt_local->common.flags = BATADV_TT_CLIENT_NEW;
 	tt_local->common.vid = vid;
-	if (batadv_is_wifi_netdev(in_dev))
+	if (batadv_is_wifi_hardif(in_hardif))
 		tt_local->common.flags |= BATADV_TT_CLIENT_WIFI;
-	atomic_set(&tt_local->common.refcount, 2);
+	kref_init(&tt_local->common.refcount);
 	tt_local->last_seen = jiffies;
 	tt_local->common.added_at = tt_local->last_seen;
+	tt_local->vlan = vlan;
 
-	/* the batman interface mac address should never be purged */
-	if (batadv_compare_eth(addr, soft_iface->dev_addr))
+	/* the batman interface mac and multicast addresses should never be
+	 * purged
+	 */
+	if (batadv_compare_eth(addr, soft_iface->dev_addr) ||
+	    is_multicast_ether_addr(addr))
 		tt_local->common.flags |= BATADV_TT_CLIENT_NOPURGE;
 
+	kref_get(&tt_local->common.refcount);
 	hash_added = batadv_hash_add(bat_priv->tt.local_hash, batadv_compare_tt,
 				     batadv_choose_tt, &tt_local->common,
 				     &tt_local->common.hash_entry);
 
 	if (unlikely(hash_added != 0)) {
 		/* remove the reference for the hash */
-		batadv_tt_local_entry_free_ref(tt_local);
+		batadv_tt_local_entry_put(tt_local);
 		goto out;
 	}
 
@@ -596,7 +774,6 @@ check_roaming:
 		if (roamed_back) {
 			batadv_tt_global_free(bat_priv, tt_global,
 					      "Roaming canceled");
-			tt_global = NULL;
 		} else {
 			/* The global entry has to be marked as ROAMING and
 			 * has to be kept for consistency purpose
@@ -611,7 +788,7 @@ check_roaming:
 	 */
 	remote_flags = tt_local->common.flags & BATADV_TT_REMOTE_MASK;
 
-	if (batadv_is_wifi_netdev(in_dev))
+	if (batadv_is_wifi_hardif(in_hardif))
 		tt_local->common.flags |= BATADV_TT_CLIENT_WIFI;
 	else
 		tt_local->common.flags &= ~BATADV_TT_CLIENT_WIFI;
@@ -635,17 +812,15 @@ check_roaming:
 
 	ret = true;
 out:
-	if (in_dev)
-		dev_put(in_dev);
-	if (tt_local)
-		batadv_tt_local_entry_free_ref(tt_local);
-	if (tt_global)
-		batadv_tt_global_entry_free_ref(tt_global);
+	batadv_hardif_put(in_hardif);
+	dev_put(in_dev);
+	batadv_tt_local_entry_put(tt_local);
+	batadv_tt_global_entry_put(tt_global);
 	return ret;
 }
 
 /**
- * batadv_tt_prepare_tvlv_global_data - prepare the TVLV TT header to send
+ * batadv_tt_prepare_tvlv_global_data() - prepare the TVLV TT header to send
  *  within a TT Response directed to another node
  * @orig_node: originator for which the TT data has to be prepared
  * @tt_data: uninitialised pointer to the address of the TVLV buffer
@@ -655,26 +830,28 @@ out:
  *  function reserves the amount of space needed to send the entire global TT
  *  table. In case of success the value is updated with the real amount of
  *  reserved bytes
-
  * Allocate the needed amount of memory for the entire TT TVLV and write its
- * header made up by one tvlv_tt_data object and a series of tvlv_tt_vlan_data
+ * header made up of one tvlv_tt_data object and a series of tvlv_tt_vlan_data
  * objects, one per active VLAN served by the originator node.
  *
- * Return the size of the allocated buffer or 0 in case of failure.
+ * Return: the size of the allocated buffer or 0 in case of failure.
  */
-static uint16_t
+static u16
 batadv_tt_prepare_tvlv_global_data(struct batadv_orig_node *orig_node,
 				   struct batadv_tvlv_tt_data **tt_data,
 				   struct batadv_tvlv_tt_change **tt_change,
-				   int32_t *tt_len)
+				   s32 *tt_len)
 {
-	uint16_t num_vlan = 0, num_entries = 0, change_offset, tvlv_len;
+	u16 num_vlan = 0;
+	u16 num_entries = 0;
+	u16 change_offset;
+	u16 tvlv_len;
 	struct batadv_tvlv_tt_vlan_data *tt_vlan;
 	struct batadv_orig_node_vlan *vlan;
-	uint8_t *tt_change_ptr;
+	u8 *tt_change_ptr;
 
-	rcu_read_lock();
-	list_for_each_entry_rcu(vlan, &orig_node->vlan_list, list) {
+	spin_lock_bh(&orig_node->vlan_list_lock);
+	hlist_for_each_entry(vlan, &orig_node->vlan_list, list) {
 		num_vlan++;
 		num_entries += atomic_read(&vlan->tt.num_entries);
 	}
@@ -700,24 +877,25 @@ batadv_tt_prepare_tvlv_global_data(struct batadv_orig_node *orig_node,
 	(*tt_data)->num_vlan = htons(num_vlan);
 
 	tt_vlan = (struct batadv_tvlv_tt_vlan_data *)(*tt_data + 1);
-	list_for_each_entry_rcu(vlan, &orig_node->vlan_list, list) {
+	hlist_for_each_entry(vlan, &orig_node->vlan_list, list) {
 		tt_vlan->vid = htons(vlan->vid);
 		tt_vlan->crc = htonl(vlan->tt.crc);
+		tt_vlan->reserved = 0;
 
 		tt_vlan++;
 	}
 
-	tt_change_ptr = (uint8_t *)*tt_data + change_offset;
+	tt_change_ptr = (u8 *)*tt_data + change_offset;
 	*tt_change = (struct batadv_tvlv_tt_change *)tt_change_ptr;
 
 out:
-	rcu_read_unlock();
+	spin_unlock_bh(&orig_node->vlan_list_lock);
 	return tvlv_len;
 }
 
 /**
- * batadv_tt_prepare_tvlv_local_data - allocate and prepare the TT TVLV for this
- *  node
+ * batadv_tt_prepare_tvlv_local_data() - allocate and prepare the TT TVLV for
+ *  this node
  * @bat_priv: the bat priv with all the soft interface information
  * @tt_data: uninitialised pointer to the address of the TVLV buffer
  * @tt_change: uninitialised pointer to the address of the area where the TT
@@ -731,24 +909,31 @@ out:
  * header made up by one tvlv_tt_data object and a series of tvlv_tt_vlan_data
  * objects, one per active VLAN.
  *
- * Return the size of the allocated buffer or 0 in case of failure.
+ * Return: the size of the allocated buffer or 0 in case of failure.
  */
-static uint16_t
+static u16
 batadv_tt_prepare_tvlv_local_data(struct batadv_priv *bat_priv,
 				  struct batadv_tvlv_tt_data **tt_data,
 				  struct batadv_tvlv_tt_change **tt_change,
-				  int32_t *tt_len)
+				  s32 *tt_len)
 {
 	struct batadv_tvlv_tt_vlan_data *tt_vlan;
 	struct batadv_softif_vlan *vlan;
-	uint16_t num_vlan = 0, num_entries = 0, tvlv_len;
-	uint8_t *tt_change_ptr;
+	u16 num_vlan = 0;
+	u16 vlan_entries = 0;
+	u16 total_entries = 0;
+	u16 tvlv_len;
+	u8 *tt_change_ptr;
 	int change_offset;
 
-	rcu_read_lock();
-	hlist_for_each_entry_rcu(vlan, &bat_priv->softif_vlan_list, list) {
+	spin_lock_bh(&bat_priv->softif_vlan_list_lock);
+	hlist_for_each_entry(vlan, &bat_priv->softif_vlan_list, list) {
+		vlan_entries = atomic_read(&vlan->tt.num_entries);
+		if (vlan_entries < 1)
+			continue;
+
 		num_vlan++;
-		num_entries += atomic_read(&vlan->tt.num_entries);
+		total_entries += vlan_entries;
 	}
 
 	change_offset = sizeof(**tt_data);
@@ -756,7 +941,7 @@ batadv_tt_prepare_tvlv_local_data(struct batadv_priv *bat_priv,
 
 	/* if tt_len is negative, allocate the space needed by the full table */
 	if (*tt_len < 0)
-		*tt_len = batadv_tt_len(num_entries);
+		*tt_len = batadv_tt_len(total_entries);
 
 	tvlv_len = *tt_len;
 	tvlv_len += change_offset;
@@ -772,24 +957,29 @@ batadv_tt_prepare_tvlv_local_data(struct batadv_priv *bat_priv,
 	(*tt_data)->num_vlan = htons(num_vlan);
 
 	tt_vlan = (struct batadv_tvlv_tt_vlan_data *)(*tt_data + 1);
-	hlist_for_each_entry_rcu(vlan, &bat_priv->softif_vlan_list, list) {
+	hlist_for_each_entry(vlan, &bat_priv->softif_vlan_list, list) {
+		vlan_entries = atomic_read(&vlan->tt.num_entries);
+		if (vlan_entries < 1)
+			continue;
+
 		tt_vlan->vid = htons(vlan->vid);
 		tt_vlan->crc = htonl(vlan->tt.crc);
+		tt_vlan->reserved = 0;
 
 		tt_vlan++;
 	}
 
-	tt_change_ptr = (uint8_t *)*tt_data + change_offset;
+	tt_change_ptr = (u8 *)*tt_data + change_offset;
 	*tt_change = (struct batadv_tvlv_tt_change *)tt_change_ptr;
 
 out:
-	rcu_read_unlock();
+	spin_unlock_bh(&bat_priv->softif_vlan_list_lock);
 	return tvlv_len;
 }
 
 /**
- * batadv_tt_tvlv_container_update - update the translation table tvlv container
- *  after local tt changes have been committed
+ * batadv_tt_tvlv_container_update() - update the translation table tvlv
+ *  container after local tt changes have been committed
  * @bat_priv: the bat priv with all the soft interface information
  */
 static void batadv_tt_tvlv_container_update(struct batadv_priv *bat_priv)
@@ -798,8 +988,9 @@ static void batadv_tt_tvlv_container_update(struct batadv_priv *bat_priv)
 	struct batadv_tvlv_tt_data *tt_data;
 	struct batadv_tvlv_tt_change *tt_change;
 	int tt_diff_len, tt_change_len = 0;
-	int tt_diff_entries_num = 0, tt_diff_entries_count = 0;
-	uint16_t tvlv_len;
+	int tt_diff_entries_num = 0;
+	int tt_diff_entries_count = 0;
+	u16 tvlv_len;
 
 	tt_diff_entries_num = atomic_read(&bat_priv->tt.local_changes);
 	tt_diff_len = batadv_tt_len(tt_diff_entries_num);
@@ -832,7 +1023,7 @@ static void batadv_tt_tvlv_container_update(struct batadv_priv *bat_priv)
 			tt_diff_entries_count++;
 		}
 		list_del(&entry->list);
-		kfree(entry);
+		kmem_cache_free(batadv_tt_change_cache, entry);
 	}
 	spin_unlock_bh(&bat_priv->tt.changes_list_lock);
 
@@ -862,91 +1053,171 @@ container_register:
 	kfree(tt_data);
 }
 
-int batadv_tt_local_seq_print_text(struct seq_file *seq, void *offset)
+/**
+ * batadv_tt_local_dump_entry() - Dump one TT local entry into a message
+ * @msg :Netlink message to dump into
+ * @portid: Port making netlink request
+ * @cb: Control block containing additional options
+ * @bat_priv: The bat priv with all the soft interface information
+ * @common: tt local & tt global common data
+ *
+ * Return: Error code, or 0 on success
+ */
+static int
+batadv_tt_local_dump_entry(struct sk_buff *msg, u32 portid,
+			   struct netlink_callback *cb,
+			   struct batadv_priv *bat_priv,
+			   struct batadv_tt_common_entry *common)
 {
-	struct net_device *net_dev = (struct net_device *)seq->private;
-	struct batadv_priv *bat_priv = netdev_priv(net_dev);
-	struct batadv_hashtable *hash = bat_priv->tt.local_hash;
-	struct batadv_tt_common_entry *tt_common_entry;
-	struct batadv_tt_local_entry *tt_local;
-	struct batadv_hard_iface *primary_if;
+	void *hdr;
 	struct batadv_softif_vlan *vlan;
-	struct hlist_head *head;
-	unsigned short vid;
-	uint32_t i;
-	int last_seen_secs;
-	int last_seen_msecs;
-	unsigned long last_seen_jiffies;
-	bool no_purge;
-	uint16_t np_flag = BATADV_TT_CLIENT_NOPURGE;
+	struct batadv_tt_local_entry *local;
+	unsigned int last_seen_msecs;
+	u32 crc;
 
-	primary_if = batadv_seq_print_text_primary_if_get(seq);
-	if (!primary_if)
-		goto out;
+	local = container_of(common, struct batadv_tt_local_entry, common);
+	last_seen_msecs = jiffies_to_msecs(jiffies - local->last_seen);
 
-	seq_printf(seq,
-		   "Locally retrieved addresses (from %s) announced via TT (TTVN: %u):\n",
-		   net_dev->name, (uint8_t)atomic_read(&bat_priv->tt.vn));
-	seq_printf(seq, "       %-13s  %s %-8s %-9s (%-10s)\n", "Client", "VID",
-		   "Flags", "Last seen", "CRC");
+	vlan = batadv_softif_vlan_get(bat_priv, common->vid);
+	if (!vlan)
+		return 0;
 
-	for (i = 0; i < hash->size; i++) {
-		head = &hash->table[i];
+	crc = vlan->tt.crc;
 
-		rcu_read_lock();
-		hlist_for_each_entry_rcu(tt_common_entry,
-					 head, hash_entry) {
-			tt_local = container_of(tt_common_entry,
-						struct batadv_tt_local_entry,
-						common);
-			vid = tt_common_entry->vid;
-			last_seen_jiffies = jiffies - tt_local->last_seen;
-			last_seen_msecs = jiffies_to_msecs(last_seen_jiffies);
-			last_seen_secs = last_seen_msecs / 1000;
-			last_seen_msecs = last_seen_msecs % 1000;
+	batadv_softif_vlan_put(vlan);
 
-			no_purge = tt_common_entry->flags & np_flag;
+	hdr = genlmsg_put(msg, portid, cb->nlh->nlmsg_seq,
+			  &batadv_netlink_family,  NLM_F_MULTI,
+			  BATADV_CMD_GET_TRANSTABLE_LOCAL);
+	if (!hdr)
+		return -ENOBUFS;
 
-			vlan = batadv_softif_vlan_get(bat_priv, vid);
-			if (!vlan) {
-				seq_printf(seq, "Cannot retrieve VLAN %d\n",
-					   BATADV_PRINT_VID(vid));
-				continue;
-			}
+	genl_dump_check_consistent(cb, hdr);
 
-			seq_printf(seq,
-				   " * %pM %4i [%c%c%c%c%c%c] %3u.%03u   (%#.8x)\n",
-				   tt_common_entry->addr,
-				   BATADV_PRINT_VID(tt_common_entry->vid),
-				   (tt_common_entry->flags &
-				    BATADV_TT_CLIENT_ROAM ? 'R' : '.'),
-				   no_purge ? 'P' : '.',
-				   (tt_common_entry->flags &
-				    BATADV_TT_CLIENT_NEW ? 'N' : '.'),
-				   (tt_common_entry->flags &
-				    BATADV_TT_CLIENT_PENDING ? 'X' : '.'),
-				   (tt_common_entry->flags &
-				    BATADV_TT_CLIENT_WIFI ? 'W' : '.'),
-				   (tt_common_entry->flags &
-				    BATADV_TT_CLIENT_ISOLA ? 'I' : '.'),
-				   no_purge ? 0 : last_seen_secs,
-				   no_purge ? 0 : last_seen_msecs,
-				   vlan->tt.crc);
+	if (nla_put(msg, BATADV_ATTR_TT_ADDRESS, ETH_ALEN, common->addr) ||
+	    nla_put_u32(msg, BATADV_ATTR_TT_CRC32, crc) ||
+	    nla_put_u16(msg, BATADV_ATTR_TT_VID, common->vid) ||
+	    nla_put_u32(msg, BATADV_ATTR_TT_FLAGS, common->flags))
+		goto nla_put_failure;
 
-			batadv_softif_vlan_free_ref(vlan);
-		}
-		rcu_read_unlock();
-	}
-out:
-	if (primary_if)
-		batadv_hardif_free_ref(primary_if);
+	if (!(common->flags & BATADV_TT_CLIENT_NOPURGE) &&
+	    nla_put_u32(msg, BATADV_ATTR_LAST_SEEN_MSECS, last_seen_msecs))
+		goto nla_put_failure;
+
+	genlmsg_end(msg, hdr);
 	return 0;
+
+ nla_put_failure:
+	genlmsg_cancel(msg, hdr);
+	return -EMSGSIZE;
+}
+
+/**
+ * batadv_tt_local_dump_bucket() - Dump one TT local bucket into a message
+ * @msg: Netlink message to dump into
+ * @portid: Port making netlink request
+ * @cb: Control block containing additional options
+ * @bat_priv: The bat priv with all the soft interface information
+ * @hash: hash to dump
+ * @bucket: bucket index to dump
+ * @idx_s: Number of entries to skip
+ *
+ * Return: Error code, or 0 on success
+ */
+static int
+batadv_tt_local_dump_bucket(struct sk_buff *msg, u32 portid,
+			    struct netlink_callback *cb,
+			    struct batadv_priv *bat_priv,
+			    struct batadv_hashtable *hash, unsigned int bucket,
+			    int *idx_s)
+{
+	struct batadv_tt_common_entry *common;
+	int idx = 0;
+
+	spin_lock_bh(&hash->list_locks[bucket]);
+	cb->seq = atomic_read(&hash->generation) << 1 | 1;
+
+	hlist_for_each_entry(common, &hash->table[bucket], hash_entry) {
+		if (idx++ < *idx_s)
+			continue;
+
+		if (batadv_tt_local_dump_entry(msg, portid, cb, bat_priv,
+					       common)) {
+			spin_unlock_bh(&hash->list_locks[bucket]);
+			*idx_s = idx - 1;
+			return -EMSGSIZE;
+		}
+	}
+	spin_unlock_bh(&hash->list_locks[bucket]);
+
+	*idx_s = 0;
+	return 0;
+}
+
+/**
+ * batadv_tt_local_dump() - Dump TT local entries into a message
+ * @msg: Netlink message to dump into
+ * @cb: Parameters from query
+ *
+ * Return: Error code, or 0 on success
+ */
+int batadv_tt_local_dump(struct sk_buff *msg, struct netlink_callback *cb)
+{
+	struct net *net = sock_net(cb->skb->sk);
+	struct net_device *soft_iface;
+	struct batadv_priv *bat_priv;
+	struct batadv_hard_iface *primary_if = NULL;
+	struct batadv_hashtable *hash;
+	int ret;
+	int ifindex;
+	int bucket = cb->args[0];
+	int idx = cb->args[1];
+	int portid = NETLINK_CB(cb->skb).portid;
+
+	ifindex = batadv_netlink_get_ifindex(cb->nlh, BATADV_ATTR_MESH_IFINDEX);
+	if (!ifindex)
+		return -EINVAL;
+
+	soft_iface = dev_get_by_index(net, ifindex);
+	if (!soft_iface || !batadv_softif_is_valid(soft_iface)) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	bat_priv = netdev_priv(soft_iface);
+
+	primary_if = batadv_primary_if_get_selected(bat_priv);
+	if (!primary_if || primary_if->if_status != BATADV_IF_ACTIVE) {
+		ret = -ENOENT;
+		goto out;
+	}
+
+	hash = bat_priv->tt.local_hash;
+
+	while (bucket < hash->size) {
+		if (batadv_tt_local_dump_bucket(msg, portid, cb, bat_priv,
+						hash, bucket, &idx))
+			break;
+
+		bucket++;
+	}
+
+	ret = msg->len;
+
+ out:
+	batadv_hardif_put(primary_if);
+	dev_put(soft_iface);
+
+	cb->args[0] = bucket;
+	cb->args[1] = idx;
+
+	return ret;
 }
 
 static void
 batadv_tt_local_set_pending(struct batadv_priv *bat_priv,
 			    struct batadv_tt_local_entry *tt_local_entry,
-			    uint16_t flags, const char *message)
+			    u16 flags, const char *message)
 {
 	batadv_tt_local_event(bat_priv, tt_local_entry, flags);
 
@@ -959,25 +1230,27 @@ batadv_tt_local_set_pending(struct batadv_priv *bat_priv,
 	batadv_dbg(BATADV_DBG_TT, bat_priv,
 		   "Local tt entry (%pM, vid: %d) pending to be removed: %s\n",
 		   tt_local_entry->common.addr,
-		   BATADV_PRINT_VID(tt_local_entry->common.vid), message);
+		   batadv_print_vid(tt_local_entry->common.vid), message);
 }
 
 /**
- * batadv_tt_local_remove - logically remove an entry from the local table
+ * batadv_tt_local_remove() - logically remove an entry from the local table
  * @bat_priv: the bat priv with all the soft interface information
  * @addr: the MAC address of the client to remove
  * @vid: VLAN identifier
  * @message: message to append to the log on deletion
  * @roaming: true if the deletion is due to a roaming event
  *
- * Returns the flags assigned to the local entry before being deleted
+ * Return: the flags assigned to the local entry before being deleted
  */
-uint16_t batadv_tt_local_remove(struct batadv_priv *bat_priv,
-				const uint8_t *addr, unsigned short vid,
-				const char *message, bool roaming)
+u16 batadv_tt_local_remove(struct batadv_priv *bat_priv, const u8 *addr,
+			   unsigned short vid, const char *message,
+			   bool roaming)
 {
+	struct batadv_tt_local_entry *tt_removed_entry;
 	struct batadv_tt_local_entry *tt_local_entry;
-	uint16_t flags, curr_flags = BATADV_NO_FLAGS;
+	u16 flags, curr_flags = BATADV_NO_FLAGS;
+	struct hlist_node *tt_removed_node;
 
 	tt_local_entry = batadv_tt_local_hash_find(bat_priv, addr, vid);
 	if (!tt_local_entry)
@@ -1005,18 +1278,28 @@ uint16_t batadv_tt_local_remove(struct batadv_priv *bat_priv,
 	 * immediately purge it
 	 */
 	batadv_tt_local_event(bat_priv, tt_local_entry, BATADV_TT_CLIENT_DEL);
-	hlist_del_rcu(&tt_local_entry->common.hash_entry);
-	batadv_tt_local_entry_free_ref(tt_local_entry);
+
+	tt_removed_node = batadv_hash_remove(bat_priv->tt.local_hash,
+					     batadv_compare_tt,
+					     batadv_choose_tt,
+					     &tt_local_entry->common);
+	if (!tt_removed_node)
+		goto out;
+
+	/* drop reference of remove hash entry */
+	tt_removed_entry = hlist_entry(tt_removed_node,
+				       struct batadv_tt_local_entry,
+				       common.hash_entry);
+	batadv_tt_local_entry_put(tt_removed_entry);
 
 out:
-	if (tt_local_entry)
-		batadv_tt_local_entry_free_ref(tt_local_entry);
+	batadv_tt_local_entry_put(tt_local_entry);
 
 	return curr_flags;
 }
 
 /**
- * batadv_tt_local_purge_list - purge inactive tt local entries
+ * batadv_tt_local_purge_list() - purge inactive tt local entries
  * @bat_priv: the bat priv with all the soft interface information
  * @head: pointer to the list containing the local tt entries
  * @timeout: parameter deciding whether a given tt local entry is considered
@@ -1051,7 +1334,7 @@ static void batadv_tt_local_purge_list(struct batadv_priv *bat_priv,
 }
 
 /**
- * batadv_tt_local_purge - purge inactive tt local entries
+ * batadv_tt_local_purge() - purge inactive tt local entries
  * @bat_priv: the bat priv with all the soft interface information
  * @timeout: parameter deciding whether a given tt local entry is considered
  *  inactive or not
@@ -1062,7 +1345,7 @@ static void batadv_tt_local_purge(struct batadv_priv *bat_priv,
 	struct batadv_hashtable *hash = bat_priv->tt.local_hash;
 	struct hlist_head *head;
 	spinlock_t *list_lock; /* protects write access to the hash lists */
-	uint32_t i;
+	u32 i;
 
 	for (i = 0; i < hash->size; i++) {
 		head = &hash->table[i];
@@ -1082,7 +1365,7 @@ static void batadv_tt_local_table_free(struct batadv_priv *bat_priv)
 	struct batadv_tt_local_entry *tt_local;
 	struct hlist_node *node_tmp;
 	struct hlist_head *head;
-	uint32_t i;
+	u32 i;
 
 	if (!bat_priv->tt.local_hash)
 		return;
@@ -1100,7 +1383,8 @@ static void batadv_tt_local_table_free(struct batadv_priv *bat_priv)
 			tt_local = container_of(tt_common_entry,
 						struct batadv_tt_local_entry,
 						common);
-			batadv_tt_local_entry_free_ref(tt_local);
+
+			batadv_tt_local_entry_put(tt_local);
 		}
 		spin_unlock_bh(list_lock);
 	}
@@ -1135,17 +1419,23 @@ static void batadv_tt_changes_list_free(struct batadv_priv *bat_priv)
 	list_for_each_entry_safe(entry, safe, &bat_priv->tt.changes_list,
 				 list) {
 		list_del(&entry->list);
-		kfree(entry);
+		kmem_cache_free(batadv_tt_change_cache, entry);
 	}
 
 	atomic_set(&bat_priv->tt.local_changes, 0);
 	spin_unlock_bh(&bat_priv->tt.changes_list_lock);
 }
 
-/* retrieves the orig_tt_list_entry belonging to orig_node from the
+/**
+ * batadv_tt_global_orig_entry_find() - find a TT orig_list_entry
+ * @entry: the TT global entry where the orig_list_entry has to be
+ *  extracted from
+ * @orig_node: the originator for which the orig_list_entry has to be found
+ *
+ * retrieve the orig_tt_list_entry belonging to orig_node from the
  * batadv_tt_global_entry list
  *
- * returns it with an increased refcounter, NULL if not found
+ * Return: it with an increased refcounter, NULL if not found
  */
 static struct batadv_tt_orig_list_entry *
 batadv_tt_global_orig_entry_find(const struct batadv_tt_global_entry *entry,
@@ -1159,7 +1449,7 @@ batadv_tt_global_orig_entry_find(const struct batadv_tt_global_entry *entry,
 	hlist_for_each_entry_rcu(tmp_orig_entry, head, list) {
 		if (tmp_orig_entry->orig_node != orig_node)
 			continue;
-		if (!atomic_inc_not_zero(&tmp_orig_entry->refcount))
+		if (!kref_get_unless_zero(&tmp_orig_entry->refcount))
 			continue;
 
 		orig_entry = tmp_orig_entry;
@@ -1170,12 +1460,22 @@ batadv_tt_global_orig_entry_find(const struct batadv_tt_global_entry *entry,
 	return orig_entry;
 }
 
-/* find out if an orig_node is already in the list of a tt_global_entry.
- * returns true if found, false otherwise
+/**
+ * batadv_tt_global_entry_has_orig() - check if a TT global entry is also
+ *  handled by a given originator
+ * @entry: the TT global entry to check
+ * @orig_node: the originator to search in the list
+ * @flags: a pointer to store TT flags for the given @entry received
+ *  from @orig_node
+ *
+ * find out if an orig_node is already in the list of a tt_global_entry.
+ *
+ * Return: true if found, false otherwise
  */
 static bool
 batadv_tt_global_entry_has_orig(const struct batadv_tt_global_entry *entry,
-				const struct batadv_orig_node *orig_node)
+				const struct batadv_orig_node *orig_node,
+				u8 *flags)
 {
 	struct batadv_tt_orig_list_entry *orig_entry;
 	bool found = false;
@@ -1183,17 +1483,55 @@ batadv_tt_global_entry_has_orig(const struct batadv_tt_global_entry *entry,
 	orig_entry = batadv_tt_global_orig_entry_find(entry, orig_node);
 	if (orig_entry) {
 		found = true;
-		batadv_tt_orig_list_entry_free_ref(orig_entry);
+
+		if (flags)
+			*flags = orig_entry->flags;
+
+		batadv_tt_orig_list_entry_put(orig_entry);
 	}
 
 	return found;
 }
 
+/**
+ * batadv_tt_global_sync_flags() - update TT sync flags
+ * @tt_global: the TT global entry to update sync flags in
+ *
+ * Updates the sync flag bits in the tt_global flag attribute with a logical
+ * OR of all sync flags from any of its TT orig entries.
+ */
 static void
-batadv_tt_global_orig_entry_add(struct batadv_tt_global_entry *tt_global,
-				struct batadv_orig_node *orig_node, int ttvn)
+batadv_tt_global_sync_flags(struct batadv_tt_global_entry *tt_global)
 {
 	struct batadv_tt_orig_list_entry *orig_entry;
+	const struct hlist_head *head;
+	u16 flags = BATADV_NO_FLAGS;
+
+	rcu_read_lock();
+	head = &tt_global->orig_list;
+	hlist_for_each_entry_rcu(orig_entry, head, list)
+		flags |= orig_entry->flags;
+	rcu_read_unlock();
+
+	flags |= tt_global->common.flags & (~BATADV_TT_SYNC_MASK);
+	tt_global->common.flags = flags;
+}
+
+/**
+ * batadv_tt_global_orig_entry_add() - add or update a TT orig entry
+ * @tt_global: the TT global entry to add an orig entry in
+ * @orig_node: the originator to add an orig entry for
+ * @ttvn: translation table version number of this changeset
+ * @flags: TT sync flags
+ */
+static void
+batadv_tt_global_orig_entry_add(struct batadv_tt_global_entry *tt_global,
+				struct batadv_orig_node *orig_node, int ttvn,
+				u8 flags)
+{
+	struct batadv_tt_orig_list_entry *orig_entry;
+
+	spin_lock_bh(&tt_global->list_lock);
 
 	orig_entry = batadv_tt_global_orig_entry_find(tt_global, orig_node);
 	if (orig_entry) {
@@ -1201,31 +1539,37 @@ batadv_tt_global_orig_entry_add(struct batadv_tt_global_entry *tt_global,
 		 * was added during a "temporary client detection"
 		 */
 		orig_entry->ttvn = ttvn;
-		goto out;
+		orig_entry->flags = flags;
+		goto sync_flags;
 	}
 
-	orig_entry = kzalloc(sizeof(*orig_entry), GFP_ATOMIC);
+	orig_entry = kmem_cache_zalloc(batadv_tt_orig_cache, GFP_ATOMIC);
 	if (!orig_entry)
 		goto out;
 
 	INIT_HLIST_NODE(&orig_entry->list);
-	atomic_inc(&orig_node->refcount);
+	kref_get(&orig_node->refcount);
 	batadv_tt_global_size_inc(orig_node, tt_global->common.vid);
 	orig_entry->orig_node = orig_node;
 	orig_entry->ttvn = ttvn;
-	atomic_set(&orig_entry->refcount, 2);
+	orig_entry->flags = flags;
+	kref_init(&orig_entry->refcount);
 
-	spin_lock_bh(&tt_global->list_lock);
+	kref_get(&orig_entry->refcount);
 	hlist_add_head_rcu(&orig_entry->list,
 			   &tt_global->orig_list);
-	spin_unlock_bh(&tt_global->list_lock);
+	atomic_inc(&tt_global->orig_list_count);
+
+sync_flags:
+	batadv_tt_global_sync_flags(tt_global);
 out:
-	if (orig_entry)
-		batadv_tt_orig_list_entry_free_ref(orig_entry);
+	batadv_tt_orig_list_entry_put(orig_entry);
+
+	spin_unlock_bh(&tt_global->list_lock);
 }
 
 /**
- * batadv_tt_global_add - add a new TT global entry or update an existing one
+ * batadv_tt_global_add() - add a new TT global entry or update an existing one
  * @bat_priv: the bat priv with all the soft interface information
  * @orig_node: the originator announcing the client
  * @tt_addr: the mac address of the non-mesh client
@@ -1239,22 +1583,21 @@ out:
  * the function argument.
  * If a TT local entry exists for this non-mesh client remove it.
  *
- * The caller must hold orig_node refcount.
+ * The caller must hold the orig_node refcount.
  *
- * Return true if the new entry has been added, false otherwise
+ * Return: true if the new entry has been added, false otherwise
  */
 static bool batadv_tt_global_add(struct batadv_priv *bat_priv,
 				 struct batadv_orig_node *orig_node,
 				 const unsigned char *tt_addr,
-				 unsigned short vid, uint16_t flags,
-				 uint8_t ttvn)
+				 unsigned short vid, u16 flags, u8 ttvn)
 {
 	struct batadv_tt_global_entry *tt_global_entry;
 	struct batadv_tt_local_entry *tt_local_entry;
 	bool ret = false;
 	int hash_added;
 	struct batadv_tt_common_entry *common;
-	uint16_t local_flags;
+	u16 local_flags;
 
 	/* ignore global entries from backbone nodes */
 	if (batadv_bla_is_backbone_gw_orig(bat_priv, orig_node->orig, vid))
@@ -1272,15 +1615,18 @@ static bool batadv_tt_global_add(struct batadv_priv *bat_priv,
 		goto out;
 
 	if (!tt_global_entry) {
-		tt_global_entry = kzalloc(sizeof(*tt_global_entry), GFP_ATOMIC);
+		tt_global_entry = kmem_cache_zalloc(batadv_tg_cache,
+						    GFP_ATOMIC);
 		if (!tt_global_entry)
 			goto out;
 
 		common = &tt_global_entry->common;
-		memcpy(common->addr, tt_addr, ETH_ALEN);
+		ether_addr_copy(common->addr, tt_addr);
 		common->vid = vid;
 
-		common->flags = flags;
+		if (!is_multicast_ether_addr(common->addr))
+			common->flags = flags & (~BATADV_TT_SYNC_MASK);
+
 		tt_global_entry->roam_at = 0;
 		/* node must store current time in case of roaming. This is
 		 * needed to purge this entry out on timeout (if nobody claims
@@ -1288,12 +1634,14 @@ static bool batadv_tt_global_add(struct batadv_priv *bat_priv,
 		 */
 		if (flags & BATADV_TT_CLIENT_ROAM)
 			tt_global_entry->roam_at = jiffies;
-		atomic_set(&common->refcount, 2);
+		kref_init(&common->refcount);
 		common->added_at = jiffies;
 
 		INIT_HLIST_HEAD(&tt_global_entry->orig_list);
+		atomic_set(&tt_global_entry->orig_list_count, 0);
 		spin_lock_init(&tt_global_entry->list_lock);
 
+		kref_get(&common->refcount);
 		hash_added = batadv_hash_add(bat_priv->tt.global_hash,
 					     batadv_compare_tt,
 					     batadv_choose_tt, common,
@@ -1301,7 +1649,7 @@ static bool batadv_tt_global_add(struct batadv_priv *bat_priv,
 
 		if (unlikely(hash_added != 0)) {
 			/* remove the reference for the hash */
-			batadv_tt_global_entry_free_ref(tt_global_entry);
+			batadv_tt_global_entry_put(tt_global_entry);
 			goto out_remove;
 		}
 	} else {
@@ -1320,22 +1668,29 @@ static bool batadv_tt_global_add(struct batadv_priv *bat_priv,
 			if (!(common->flags & BATADV_TT_CLIENT_TEMP))
 				goto out;
 			if (batadv_tt_global_entry_has_orig(tt_global_entry,
-							    orig_node))
+							    orig_node, NULL))
 				goto out_remove;
 			batadv_tt_global_del_orig_list(tt_global_entry);
 			goto add_orig_entry;
 		}
 
 		/* if the client was temporary added before receiving the first
-		 * OGM announcing it, we have to clear the TEMP flag
+		 * OGM announcing it, we have to clear the TEMP flag. Also,
+		 * remove the previous temporary orig node and re-add it
+		 * if required. If the orig entry changed, the new one which
+		 * is a non-temporary entry is preferred.
 		 */
-		common->flags &= ~BATADV_TT_CLIENT_TEMP;
+		if (common->flags & BATADV_TT_CLIENT_TEMP) {
+			batadv_tt_global_del_orig_list(tt_global_entry);
+			common->flags &= ~BATADV_TT_CLIENT_TEMP;
+		}
 
 		/* the change can carry possible "attribute" flags like the
-		 * TT_CLIENT_WIFI, therefore they have to be copied in the
+		 * TT_CLIENT_TEMP, therefore they have to be copied in the
 		 * client entry
 		 */
-		tt_global_entry->common.flags |= flags;
+		if (!is_multicast_ether_addr(common->addr))
+			common->flags |= flags & (~BATADV_TT_SYNC_MASK);
 
 		/* If there is the BATADV_TT_CLIENT_ROAM flag set, there is only
 		 * one originator left in the list and we previously received a
@@ -1352,15 +1707,21 @@ static bool batadv_tt_global_add(struct batadv_priv *bat_priv,
 	}
 add_orig_entry:
 	/* add the new orig_entry (if needed) or update it */
-	batadv_tt_global_orig_entry_add(tt_global_entry, orig_node, ttvn);
+	batadv_tt_global_orig_entry_add(tt_global_entry, orig_node, ttvn,
+					flags & BATADV_TT_SYNC_MASK);
 
 	batadv_dbg(BATADV_DBG_TT, bat_priv,
 		   "Creating new global tt entry: %pM (vid: %d, via %pM)\n",
-		   common->addr, BATADV_PRINT_VID(common->vid),
+		   common->addr, batadv_print_vid(common->vid),
 		   orig_node->orig);
 	ret = true;
 
 out_remove:
+	/* Do not remove multicast addresses from the local hash on
+	 * global additions
+	 */
+	if (is_multicast_ether_addr(tt_addr))
+		goto out;
 
 	/* remove address from local hash if present */
 	local_flags = batadv_tt_local_remove(bat_priv, tt_addr, vid,
@@ -1375,27 +1736,25 @@ out_remove:
 		tt_global_entry->common.flags &= ~BATADV_TT_CLIENT_ROAM;
 
 out:
-	if (tt_global_entry)
-		batadv_tt_global_entry_free_ref(tt_global_entry);
-	if (tt_local_entry)
-		batadv_tt_local_entry_free_ref(tt_local_entry);
+	batadv_tt_global_entry_put(tt_global_entry);
+	batadv_tt_local_entry_put(tt_local_entry);
 	return ret;
 }
 
 /**
- * batadv_transtable_best_orig - Get best originator list entry from tt entry
+ * batadv_transtable_best_orig() - Get best originator list entry from tt entry
  * @bat_priv: the bat priv with all the soft interface information
  * @tt_global_entry: global translation table entry to be analyzed
  *
- * This functon assumes the caller holds rcu_read_lock().
- * Returns best originator list entry or NULL on errors.
+ * This function assumes the caller holds rcu_read_lock().
+ * Return: best originator list entry or NULL on errors.
  */
 static struct batadv_tt_orig_list_entry *
 batadv_transtable_best_orig(struct batadv_priv *bat_priv,
 			    struct batadv_tt_global_entry *tt_global_entry)
 {
 	struct batadv_neigh_node *router, *best_router = NULL;
-	struct batadv_algo_ops *bao = bat_priv->bat_algo_ops;
+	struct batadv_algo_ops *bao = bat_priv->algo_ops;
 	struct hlist_head *head;
 	struct batadv_tt_orig_list_entry *orig_entry, *best_entry = NULL;
 
@@ -1407,149 +1766,260 @@ batadv_transtable_best_orig(struct batadv_priv *bat_priv,
 			continue;
 
 		if (best_router &&
-		    bao->bat_neigh_cmp(router, BATADV_IF_DEFAULT,
-				       best_router, BATADV_IF_DEFAULT) <= 0) {
-			batadv_neigh_node_free_ref(router);
+		    bao->neigh.cmp(router, BATADV_IF_DEFAULT, best_router,
+				   BATADV_IF_DEFAULT) <= 0) {
+			batadv_neigh_node_put(router);
 			continue;
 		}
 
 		/* release the refcount for the "old" best */
-		if (best_router)
-			batadv_neigh_node_free_ref(best_router);
+		batadv_neigh_node_put(best_router);
 
 		best_entry = orig_entry;
 		best_router = router;
 	}
 
-	if (best_router)
-		batadv_neigh_node_free_ref(best_router);
+	batadv_neigh_node_put(best_router);
 
 	return best_entry;
 }
 
 /**
- * batadv_tt_global_print_entry - print all orig nodes who announce the address
- *  for this global entry
- * @bat_priv: the bat priv with all the soft interface information
- * @tt_global_entry: global translation table entry to be printed
- * @seq: debugfs table seq_file struct
+ * batadv_tt_global_dump_subentry() - Dump all TT local entries into a message
+ * @msg: Netlink message to dump into
+ * @portid: Port making netlink request
+ * @seq: Sequence number of netlink message
+ * @common: tt local & tt global common data
+ * @orig: Originator node announcing a non-mesh client
+ * @best: Is the best originator for the TT entry
  *
- * This functon assumes the caller holds rcu_read_lock().
+ * Return: Error code, or 0 on success
  */
-static void
-batadv_tt_global_print_entry(struct batadv_priv *bat_priv,
-			     struct batadv_tt_global_entry *tt_global_entry,
-			     struct seq_file *seq)
+static int
+batadv_tt_global_dump_subentry(struct sk_buff *msg, u32 portid, u32 seq,
+			       struct batadv_tt_common_entry *common,
+			       struct batadv_tt_orig_list_entry *orig,
+			       bool best)
 {
-	struct batadv_tt_orig_list_entry *orig_entry, *best_entry;
-	struct batadv_tt_common_entry *tt_common_entry;
+	u16 flags = (common->flags & (~BATADV_TT_SYNC_MASK)) | orig->flags;
+	void *hdr;
 	struct batadv_orig_node_vlan *vlan;
-	struct hlist_head *head;
-	uint8_t last_ttvn;
-	uint16_t flags;
+	u8 last_ttvn;
+	u32 crc;
 
-	tt_common_entry = &tt_global_entry->common;
-	flags = tt_common_entry->flags;
+	vlan = batadv_orig_node_vlan_get(orig->orig_node,
+					 common->vid);
+	if (!vlan)
+		return 0;
 
-	best_entry = batadv_transtable_best_orig(bat_priv, tt_global_entry);
-	if (best_entry) {
-		vlan = batadv_orig_node_vlan_get(best_entry->orig_node,
-						 tt_common_entry->vid);
-		if (!vlan) {
-			seq_printf(seq,
-				   " * Cannot retrieve VLAN %d for originator %pM\n",
-				   BATADV_PRINT_VID(tt_common_entry->vid),
-				   best_entry->orig_node->orig);
-			goto print_list;
-		}
+	crc = vlan->tt.crc;
 
-		last_ttvn = atomic_read(&best_entry->orig_node->last_ttvn);
-		seq_printf(seq,
-			   " %c %pM %4i   (%3u) via %pM     (%3u)   (%#.8x) [%c%c%c%c]\n",
-			   '*', tt_global_entry->common.addr,
-			   BATADV_PRINT_VID(tt_global_entry->common.vid),
-			   best_entry->ttvn, best_entry->orig_node->orig,
-			   last_ttvn, vlan->tt.crc,
-			   (flags & BATADV_TT_CLIENT_ROAM ? 'R' : '.'),
-			   (flags & BATADV_TT_CLIENT_WIFI ? 'W' : '.'),
-			   (flags & BATADV_TT_CLIENT_ISOLA ? 'I' : '.'),
-			   (flags & BATADV_TT_CLIENT_TEMP ? 'T' : '.'));
+	batadv_orig_node_vlan_put(vlan);
 
-		batadv_orig_node_vlan_free_ref(vlan);
-	}
+	hdr = genlmsg_put(msg, portid, seq, &batadv_netlink_family,
+			  NLM_F_MULTI,
+			  BATADV_CMD_GET_TRANSTABLE_GLOBAL);
+	if (!hdr)
+		return -ENOBUFS;
 
-print_list:
-	head = &tt_global_entry->orig_list;
+	last_ttvn = atomic_read(&orig->orig_node->last_ttvn);
 
-	hlist_for_each_entry_rcu(orig_entry, head, list) {
-		if (best_entry == orig_entry)
-			continue;
+	if (nla_put(msg, BATADV_ATTR_TT_ADDRESS, ETH_ALEN, common->addr) ||
+	    nla_put(msg, BATADV_ATTR_ORIG_ADDRESS, ETH_ALEN,
+		    orig->orig_node->orig) ||
+	    nla_put_u8(msg, BATADV_ATTR_TT_TTVN, orig->ttvn) ||
+	    nla_put_u8(msg, BATADV_ATTR_TT_LAST_TTVN, last_ttvn) ||
+	    nla_put_u32(msg, BATADV_ATTR_TT_CRC32, crc) ||
+	    nla_put_u16(msg, BATADV_ATTR_TT_VID, common->vid) ||
+	    nla_put_u32(msg, BATADV_ATTR_TT_FLAGS, flags))
+		goto nla_put_failure;
 
-		vlan = batadv_orig_node_vlan_get(orig_entry->orig_node,
-						 tt_common_entry->vid);
-		if (!vlan) {
-			seq_printf(seq,
-				   " + Cannot retrieve VLAN %d for originator %pM\n",
-				   BATADV_PRINT_VID(tt_common_entry->vid),
-				   orig_entry->orig_node->orig);
-			continue;
-		}
+	if (best && nla_put_flag(msg, BATADV_ATTR_FLAG_BEST))
+		goto nla_put_failure;
 
-		last_ttvn = atomic_read(&orig_entry->orig_node->last_ttvn);
-		seq_printf(seq,
-			   " %c %pM %4d   (%3u) via %pM     (%3u)   (%#.8x) [%c%c%c%c]\n",
-			   '+', tt_global_entry->common.addr,
-			   BATADV_PRINT_VID(tt_global_entry->common.vid),
-			   orig_entry->ttvn, orig_entry->orig_node->orig,
-			   last_ttvn, vlan->tt.crc,
-			   (flags & BATADV_TT_CLIENT_ROAM ? 'R' : '.'),
-			   (flags & BATADV_TT_CLIENT_WIFI ? 'W' : '.'),
-			   (flags & BATADV_TT_CLIENT_ISOLA ? 'I' : '.'),
-			   (flags & BATADV_TT_CLIENT_TEMP ? 'T' : '.'));
+	genlmsg_end(msg, hdr);
+	return 0;
 
-		batadv_orig_node_vlan_free_ref(vlan);
-	}
+ nla_put_failure:
+	genlmsg_cancel(msg, hdr);
+	return -EMSGSIZE;
 }
 
-int batadv_tt_global_seq_print_text(struct seq_file *seq, void *offset)
+/**
+ * batadv_tt_global_dump_entry() - Dump one TT global entry into a message
+ * @msg: Netlink message to dump into
+ * @portid: Port making netlink request
+ * @seq: Sequence number of netlink message
+ * @bat_priv: The bat priv with all the soft interface information
+ * @common: tt local & tt global common data
+ * @sub_s: Number of entries to skip
+ *
+ * This function assumes the caller holds rcu_read_lock().
+ *
+ * Return: Error code, or 0 on success
+ */
+static int
+batadv_tt_global_dump_entry(struct sk_buff *msg, u32 portid, u32 seq,
+			    struct batadv_priv *bat_priv,
+			    struct batadv_tt_common_entry *common, int *sub_s)
 {
-	struct net_device *net_dev = (struct net_device *)seq->private;
-	struct batadv_priv *bat_priv = netdev_priv(net_dev);
-	struct batadv_hashtable *hash = bat_priv->tt.global_hash;
-	struct batadv_tt_common_entry *tt_common_entry;
-	struct batadv_tt_global_entry *tt_global;
-	struct batadv_hard_iface *primary_if;
+	struct batadv_tt_orig_list_entry *orig_entry, *best_entry;
+	struct batadv_tt_global_entry *global;
 	struct hlist_head *head;
-	uint32_t i;
+	int sub = 0;
+	bool best;
 
-	primary_if = batadv_seq_print_text_primary_if_get(seq);
-	if (!primary_if)
-		goto out;
+	global = container_of(common, struct batadv_tt_global_entry, common);
+	best_entry = batadv_transtable_best_orig(bat_priv, global);
+	head = &global->orig_list;
 
-	seq_printf(seq,
-		   "Globally announced TT entries received via the mesh %s\n",
-		   net_dev->name);
-	seq_printf(seq, "       %-13s  %s  %s       %-15s %s (%-10s) %s\n",
-		   "Client", "VID", "(TTVN)", "Originator", "(Curr TTVN)",
-		   "CRC", "Flags");
+	hlist_for_each_entry_rcu(orig_entry, head, list) {
+		if (sub++ < *sub_s)
+			continue;
 
-	for (i = 0; i < hash->size; i++) {
-		head = &hash->table[i];
+		best = (orig_entry == best_entry);
 
-		rcu_read_lock();
-		hlist_for_each_entry_rcu(tt_common_entry,
-					 head, hash_entry) {
-			tt_global = container_of(tt_common_entry,
-						 struct batadv_tt_global_entry,
-						 common);
-			batadv_tt_global_print_entry(bat_priv, tt_global, seq);
+		if (batadv_tt_global_dump_subentry(msg, portid, seq, common,
+						   orig_entry, best)) {
+			*sub_s = sub - 1;
+			return -EMSGSIZE;
 		}
-		rcu_read_unlock();
 	}
-out:
-	if (primary_if)
-		batadv_hardif_free_ref(primary_if);
+
+	*sub_s = 0;
 	return 0;
+}
+
+/**
+ * batadv_tt_global_dump_bucket() - Dump one TT local bucket into a message
+ * @msg: Netlink message to dump into
+ * @portid: Port making netlink request
+ * @seq: Sequence number of netlink message
+ * @bat_priv: The bat priv with all the soft interface information
+ * @head: Pointer to the list containing the global tt entries
+ * @idx_s: Number of entries to skip
+ * @sub: Number of entries to skip
+ *
+ * Return: Error code, or 0 on success
+ */
+static int
+batadv_tt_global_dump_bucket(struct sk_buff *msg, u32 portid, u32 seq,
+			     struct batadv_priv *bat_priv,
+			     struct hlist_head *head, int *idx_s, int *sub)
+{
+	struct batadv_tt_common_entry *common;
+	int idx = 0;
+
+	rcu_read_lock();
+	hlist_for_each_entry_rcu(common, head, hash_entry) {
+		if (idx++ < *idx_s)
+			continue;
+
+		if (batadv_tt_global_dump_entry(msg, portid, seq, bat_priv,
+						common, sub)) {
+			rcu_read_unlock();
+			*idx_s = idx - 1;
+			return -EMSGSIZE;
+		}
+	}
+	rcu_read_unlock();
+
+	*idx_s = 0;
+	*sub = 0;
+	return 0;
+}
+
+/**
+ * batadv_tt_global_dump() -  Dump TT global entries into a message
+ * @msg: Netlink message to dump into
+ * @cb: Parameters from query
+ *
+ * Return: Error code, or length of message on success
+ */
+int batadv_tt_global_dump(struct sk_buff *msg, struct netlink_callback *cb)
+{
+	struct net *net = sock_net(cb->skb->sk);
+	struct net_device *soft_iface;
+	struct batadv_priv *bat_priv;
+	struct batadv_hard_iface *primary_if = NULL;
+	struct batadv_hashtable *hash;
+	struct hlist_head *head;
+	int ret;
+	int ifindex;
+	int bucket = cb->args[0];
+	int idx = cb->args[1];
+	int sub = cb->args[2];
+	int portid = NETLINK_CB(cb->skb).portid;
+
+	ifindex = batadv_netlink_get_ifindex(cb->nlh, BATADV_ATTR_MESH_IFINDEX);
+	if (!ifindex)
+		return -EINVAL;
+
+	soft_iface = dev_get_by_index(net, ifindex);
+	if (!soft_iface || !batadv_softif_is_valid(soft_iface)) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	bat_priv = netdev_priv(soft_iface);
+
+	primary_if = batadv_primary_if_get_selected(bat_priv);
+	if (!primary_if || primary_if->if_status != BATADV_IF_ACTIVE) {
+		ret = -ENOENT;
+		goto out;
+	}
+
+	hash = bat_priv->tt.global_hash;
+
+	while (bucket < hash->size) {
+		head = &hash->table[bucket];
+
+		if (batadv_tt_global_dump_bucket(msg, portid,
+						 cb->nlh->nlmsg_seq, bat_priv,
+						 head, &idx, &sub))
+			break;
+
+		bucket++;
+	}
+
+	ret = msg->len;
+
+ out:
+	batadv_hardif_put(primary_if);
+	dev_put(soft_iface);
+
+	cb->args[0] = bucket;
+	cb->args[1] = idx;
+	cb->args[2] = sub;
+
+	return ret;
+}
+
+/**
+ * _batadv_tt_global_del_orig_entry() - remove and free an orig_entry
+ * @tt_global_entry: the global entry to remove the orig_entry from
+ * @orig_entry: the orig entry to remove and free
+ *
+ * Remove an orig_entry from its list in the given tt_global_entry and
+ * free this orig_entry afterwards.
+ *
+ * Caller must hold tt_global_entry->list_lock and ensure orig_entry->list is
+ * part of a list.
+ */
+static void
+_batadv_tt_global_del_orig_entry(struct batadv_tt_global_entry *tt_global_entry,
+				 struct batadv_tt_orig_list_entry *orig_entry)
+{
+	lockdep_assert_held(&tt_global_entry->list_lock);
+
+	batadv_tt_global_size_dec(orig_entry->orig_node,
+				  tt_global_entry->common.vid);
+	atomic_dec(&tt_global_entry->orig_list_count);
+	/* requires holding tt_global_entry->list_lock and orig_entry->list
+	 * being part of a list
+	 */
+	hlist_del_rcu(&orig_entry->list);
+	batadv_tt_orig_list_entry_put(orig_entry);
 }
 
 /* deletes the orig list of a tt_global_entry */
@@ -1562,20 +2032,26 @@ batadv_tt_global_del_orig_list(struct batadv_tt_global_entry *tt_global_entry)
 
 	spin_lock_bh(&tt_global_entry->list_lock);
 	head = &tt_global_entry->orig_list;
-	hlist_for_each_entry_safe(orig_entry, safe, head, list) {
-		hlist_del_rcu(&orig_entry->list);
-		batadv_tt_global_size_dec(orig_entry->orig_node,
-					  tt_global_entry->common.vid);
-		batadv_tt_orig_list_entry_free_ref(orig_entry);
-	}
+	hlist_for_each_entry_safe(orig_entry, safe, head, list)
+		_batadv_tt_global_del_orig_entry(tt_global_entry, orig_entry);
 	spin_unlock_bh(&tt_global_entry->list_lock);
 }
 
+/**
+ * batadv_tt_global_del_orig_node() - remove orig_node from a global tt entry
+ * @bat_priv: the bat priv with all the soft interface information
+ * @tt_global_entry: the global entry to remove the orig_node from
+ * @orig_node: the originator announcing the client
+ * @message: message to append to the log on deletion
+ *
+ * Remove the given orig_node and its according orig_entry from the given
+ * global tt entry.
+ */
 static void
-batadv_tt_global_del_orig_entry(struct batadv_priv *bat_priv,
-				struct batadv_tt_global_entry *tt_global_entry,
-				struct batadv_orig_node *orig_node,
-				const char *message)
+batadv_tt_global_del_orig_node(struct batadv_priv *bat_priv,
+			       struct batadv_tt_global_entry *tt_global_entry,
+			       struct batadv_orig_node *orig_node,
+			       const char *message)
 {
 	struct hlist_head *head;
 	struct hlist_node *safe;
@@ -1591,11 +2067,9 @@ batadv_tt_global_del_orig_entry(struct batadv_priv *bat_priv,
 				   "Deleting %pM from global tt entry %pM (vid: %d): %s\n",
 				   orig_node->orig,
 				   tt_global_entry->common.addr,
-				   BATADV_PRINT_VID(vid), message);
-			hlist_del_rcu(&orig_entry->list);
-			batadv_tt_global_size_dec(orig_node,
-						  tt_global_entry->common.vid);
-			batadv_tt_orig_list_entry_free_ref(orig_entry);
+				   batadv_print_vid(vid), message);
+			_batadv_tt_global_del_orig_entry(tt_global_entry,
+							 orig_entry);
 		}
 	}
 	spin_unlock_bh(&tt_global_entry->list_lock);
@@ -1633,16 +2107,17 @@ batadv_tt_global_del_roaming(struct batadv_priv *bat_priv,
 		/* its the last one, mark for roaming. */
 		tt_global_entry->common.flags |= BATADV_TT_CLIENT_ROAM;
 		tt_global_entry->roam_at = jiffies;
-	} else
+	} else {
 		/* there is another entry, we can simply delete this
 		 * one and can still use the other one.
 		 */
-		batadv_tt_global_del_orig_entry(bat_priv, tt_global_entry,
-						orig_node, message);
+		batadv_tt_global_del_orig_node(bat_priv, tt_global_entry,
+					       orig_node, message);
+	}
 }
 
 /**
- * batadv_tt_global_del - remove a client from the global table
+ * batadv_tt_global_del() - remove a client from the global table
  * @bat_priv: the bat priv with all the soft interface information
  * @orig_node: an originator serving this client
  * @addr: the mac address of the client
@@ -1664,8 +2139,8 @@ static void batadv_tt_global_del(struct batadv_priv *bat_priv,
 		goto out;
 
 	if (!roaming) {
-		batadv_tt_global_del_orig_entry(bat_priv, tt_global_entry,
-						orig_node, message);
+		batadv_tt_global_del_orig_node(bat_priv, tt_global_entry,
+					       orig_node, message);
 
 		if (hlist_empty(&tt_global_entry->orig_list))
 			batadv_tt_global_free(bat_priv, tt_global_entry,
@@ -1694,22 +2169,20 @@ static void batadv_tt_global_del(struct batadv_priv *bat_priv,
 		/* local entry exists, case 2: client roamed to us. */
 		batadv_tt_global_del_orig_list(tt_global_entry);
 		batadv_tt_global_free(bat_priv, tt_global_entry, message);
-	} else
+	} else {
 		/* no local entry exists, case 1: check for roaming */
 		batadv_tt_global_del_roaming(bat_priv, tt_global_entry,
 					     orig_node, message);
-
+	}
 
 out:
-	if (tt_global_entry)
-		batadv_tt_global_entry_free_ref(tt_global_entry);
-	if (local_entry)
-		batadv_tt_local_entry_free_ref(local_entry);
+	batadv_tt_global_entry_put(tt_global_entry);
+	batadv_tt_local_entry_put(local_entry);
 }
 
 /**
- * batadv_tt_global_del_orig - remove all the TT global entries belonging to the
- *  given originator matching the provided vid
+ * batadv_tt_global_del_orig() - remove all the TT global entries belonging to
+ *  the given originator matching the provided vid
  * @bat_priv: the bat priv with all the soft interface information
  * @orig_node: the originator owning the entries to remove
  * @match_vid: the VLAN identifier to match. If negative all the entries will be
@@ -1718,12 +2191,12 @@ out:
  */
 void batadv_tt_global_del_orig(struct batadv_priv *bat_priv,
 			       struct batadv_orig_node *orig_node,
-			       int32_t match_vid,
+			       s32 match_vid,
 			       const char *message)
 {
 	struct batadv_tt_global_entry *tt_global;
 	struct batadv_tt_common_entry *tt_common_entry;
-	uint32_t i;
+	u32 i;
 	struct batadv_hashtable *hash = bat_priv->tt.global_hash;
 	struct hlist_node *safe;
 	struct hlist_head *head;
@@ -1748,22 +2221,22 @@ void batadv_tt_global_del_orig(struct batadv_priv *bat_priv,
 						 struct batadv_tt_global_entry,
 						 common);
 
-			batadv_tt_global_del_orig_entry(bat_priv, tt_global,
-							orig_node, message);
+			batadv_tt_global_del_orig_node(bat_priv, tt_global,
+						       orig_node, message);
 
 			if (hlist_empty(&tt_global->orig_list)) {
 				vid = tt_global->common.vid;
 				batadv_dbg(BATADV_DBG_TT, bat_priv,
 					   "Deleting global tt entry %pM (vid: %d): %s\n",
 					   tt_global->common.addr,
-					   BATADV_PRINT_VID(vid), message);
+					   batadv_print_vid(vid), message);
 				hlist_del_rcu(&tt_common_entry->hash_entry);
-				batadv_tt_global_entry_free_ref(tt_global);
+				batadv_tt_global_entry_put(tt_global);
 			}
 		}
 		spin_unlock_bh(list_lock);
 	}
-	orig_node->tt_initialised = false;
+	clear_bit(BATADV_ORIG_CAPA_HAS_TT, &orig_node->capa_initialized);
 }
 
 static bool batadv_tt_global_to_purge(struct batadv_tt_global_entry *tt_global,
@@ -1794,7 +2267,7 @@ static void batadv_tt_global_purge(struct batadv_priv *bat_priv)
 	struct hlist_head *head;
 	struct hlist_node *node_tmp;
 	spinlock_t *list_lock; /* protects write access to the hash lists */
-	uint32_t i;
+	u32 i;
 	char *msg = NULL;
 	struct batadv_tt_common_entry *tt_common;
 	struct batadv_tt_global_entry *tt_global;
@@ -1816,12 +2289,12 @@ static void batadv_tt_global_purge(struct batadv_priv *bat_priv)
 			batadv_dbg(BATADV_DBG_TT, bat_priv,
 				   "Deleting global tt entry %pM (vid: %d): %s\n",
 				   tt_global->common.addr,
-				   BATADV_PRINT_VID(tt_global->common.vid),
+				   batadv_print_vid(tt_global->common.vid),
 				   msg);
 
 			hlist_del_rcu(&tt_common->hash_entry);
 
-			batadv_tt_global_entry_free_ref(tt_global);
+			batadv_tt_global_entry_put(tt_global);
 		}
 		spin_unlock_bh(list_lock);
 	}
@@ -1835,7 +2308,7 @@ static void batadv_tt_global_table_free(struct batadv_priv *bat_priv)
 	struct batadv_tt_global_entry *tt_global;
 	struct hlist_node *node_tmp;
 	struct hlist_head *head;
-	uint32_t i;
+	u32 i;
 
 	if (!bat_priv->tt.global_hash)
 		return;
@@ -1853,7 +2326,7 @@ static void batadv_tt_global_table_free(struct batadv_priv *bat_priv)
 			tt_global = container_of(tt_common_entry,
 						 struct batadv_tt_global_entry,
 						 common);
-			batadv_tt_global_entry_free_ref(tt_global);
+			batadv_tt_global_entry_put(tt_global);
 		}
 		spin_unlock_bh(list_lock);
 	}
@@ -1867,28 +2340,26 @@ static bool
 _batadv_is_ap_isolated(struct batadv_tt_local_entry *tt_local_entry,
 		       struct batadv_tt_global_entry *tt_global_entry)
 {
-	bool ret = false;
-
 	if (tt_local_entry->common.flags & BATADV_TT_CLIENT_WIFI &&
 	    tt_global_entry->common.flags & BATADV_TT_CLIENT_WIFI)
-		ret = true;
+		return true;
 
 	/* check if the two clients are marked as isolated */
 	if (tt_local_entry->common.flags & BATADV_TT_CLIENT_ISOLA &&
 	    tt_global_entry->common.flags & BATADV_TT_CLIENT_ISOLA)
-		ret = true;
+		return true;
 
-	return ret;
+	return false;
 }
 
 /**
- * batadv_transtable_search - get the mesh destination for a given client
+ * batadv_transtable_search() - get the mesh destination for a given client
  * @bat_priv: the bat priv with all the soft interface information
  * @src: mac address of the source client
  * @addr: mac address of the destination client
  * @vid: VLAN identifier
  *
- * Returns a pointer to the originator that was selected as destination in the
+ * Return: a pointer to the originator that was selected as destination in the
  * mesh for contacting the client 'addr', NULL otherwise.
  * In case of multiple originators serving the same client, the function returns
  * the best one (best in terms of metric towards the destination node).
@@ -1896,8 +2367,8 @@ _batadv_is_ap_isolated(struct batadv_tt_local_entry *tt_local_entry,
  * If the two clients are AP isolated the function returns NULL.
  */
 struct batadv_orig_node *batadv_transtable_search(struct batadv_priv *bat_priv,
-						  const uint8_t *src,
-						  const uint8_t *addr,
+						  const u8 *src,
+						  const u8 *addr,
 						  unsigned short vid)
 {
 	struct batadv_tt_local_entry *tt_local_entry = NULL;
@@ -1928,21 +2399,19 @@ struct batadv_orig_node *batadv_transtable_search(struct batadv_priv *bat_priv,
 	/* found anything? */
 	if (best_entry)
 		orig_node = best_entry->orig_node;
-	if (orig_node && !atomic_inc_not_zero(&orig_node->refcount))
+	if (orig_node && !kref_get_unless_zero(&orig_node->refcount))
 		orig_node = NULL;
 	rcu_read_unlock();
 
 out:
-	if (tt_global_entry)
-		batadv_tt_global_entry_free_ref(tt_global_entry);
-	if (tt_local_entry)
-		batadv_tt_local_entry_free_ref(tt_local_entry);
+	batadv_tt_global_entry_put(tt_global_entry);
+	batadv_tt_local_entry_put(tt_local_entry);
 
 	return orig_node;
 }
 
 /**
- * batadv_tt_global_crc - calculates the checksum of the local table belonging
+ * batadv_tt_global_crc() - calculates the checksum of the local table belonging
  *  to the given orig_node
  * @bat_priv: the bat priv with all the soft interface information
  * @orig_node: originator for which the CRC should be computed
@@ -1963,18 +2432,20 @@ out:
  * because the XOR operation can combine them all while trying to reduce the
  * noise as much as possible.
  *
- * Returns the checksum of the global table of a given originator.
+ * Return: the checksum of the global table of a given originator.
  */
-static uint32_t batadv_tt_global_crc(struct batadv_priv *bat_priv,
-				     struct batadv_orig_node *orig_node,
-				     unsigned short vid)
+static u32 batadv_tt_global_crc(struct batadv_priv *bat_priv,
+				struct batadv_orig_node *orig_node,
+				unsigned short vid)
 {
 	struct batadv_hashtable *hash = bat_priv->tt.global_hash;
+	struct batadv_tt_orig_list_entry *tt_orig;
 	struct batadv_tt_common_entry *tt_common;
 	struct batadv_tt_global_entry *tt_global;
 	struct hlist_head *head;
-	uint32_t i, crc_tmp, crc = 0;
-	uint8_t flags;
+	u32 i, crc_tmp, crc = 0;
+	u8 flags;
+	__be16 tmp_vid;
 
 	for (i = 0; i < hash->size; i++) {
 		head = &hash->table[i];
@@ -2007,20 +2478,26 @@ static uint32_t batadv_tt_global_crc(struct batadv_priv *bat_priv,
 			/* find out if this global entry is announced by this
 			 * originator
 			 */
-			if (!batadv_tt_global_entry_has_orig(tt_global,
-							     orig_node))
+			tt_orig = batadv_tt_global_orig_entry_find(tt_global,
+								   orig_node);
+			if (!tt_orig)
 				continue;
 
-			crc_tmp = crc32c(0, &tt_common->vid,
-					 sizeof(tt_common->vid));
+			/* use network order to read the VID: this ensures that
+			 * every node reads the bytes in the same order.
+			 */
+			tmp_vid = htons(tt_common->vid);
+			crc_tmp = crc32c(0, &tmp_vid, sizeof(tmp_vid));
 
 			/* compute the CRC on flags that have to be kept in sync
 			 * among nodes
 			 */
-			flags = tt_common->flags & BATADV_TT_SYNC_MASK;
+			flags = tt_orig->flags;
 			crc_tmp = crc32c(crc_tmp, &flags, sizeof(flags));
 
 			crc ^= crc32c(crc_tmp, tt_common->addr, ETH_ALEN);
+
+			batadv_tt_orig_list_entry_put(tt_orig);
 		}
 		rcu_read_unlock();
 	}
@@ -2029,23 +2506,24 @@ static uint32_t batadv_tt_global_crc(struct batadv_priv *bat_priv,
 }
 
 /**
- * batadv_tt_local_crc - calculates the checksum of the local table
+ * batadv_tt_local_crc() - calculates the checksum of the local table
  * @bat_priv: the bat priv with all the soft interface information
  * @vid: VLAN identifier for which the CRC32 has to be computed
  *
  * For details about the computation, please refer to the documentation for
  * batadv_tt_global_crc().
  *
- * Returns the checksum of the local table
+ * Return: the checksum of the local table
  */
-static uint32_t batadv_tt_local_crc(struct batadv_priv *bat_priv,
-				    unsigned short vid)
+static u32 batadv_tt_local_crc(struct batadv_priv *bat_priv,
+			       unsigned short vid)
 {
 	struct batadv_hashtable *hash = bat_priv->tt.local_hash;
 	struct batadv_tt_common_entry *tt_common;
 	struct hlist_head *head;
-	uint32_t i, crc_tmp, crc = 0;
-	uint8_t flags;
+	u32 i, crc_tmp, crc = 0;
+	u8 flags;
+	__be16 tmp_vid;
 
 	for (i = 0; i < hash->size; i++) {
 		head = &hash->table[i];
@@ -2064,8 +2542,11 @@ static uint32_t batadv_tt_local_crc(struct batadv_priv *bat_priv,
 			if (tt_common->flags & BATADV_TT_CLIENT_NEW)
 				continue;
 
-			crc_tmp = crc32c(0, &tt_common->vid,
-					 sizeof(tt_common->vid));
+			/* use network order to read the VID: this ensures that
+			 * every node reads the bytes in the same order.
+			 */
+			tmp_vid = htons(tt_common->vid);
+			crc_tmp = crc32c(0, &tmp_vid, sizeof(tmp_vid));
 
 			/* compute the CRC on flags that have to be kept in sync
 			 * among nodes
@@ -2081,15 +2562,42 @@ static uint32_t batadv_tt_local_crc(struct batadv_priv *bat_priv,
 	return crc;
 }
 
+/**
+ * batadv_tt_req_node_release() - free tt_req node entry
+ * @ref: kref pointer of the tt req_node entry
+ */
+static void batadv_tt_req_node_release(struct kref *ref)
+{
+	struct batadv_tt_req_node *tt_req_node;
+
+	tt_req_node = container_of(ref, struct batadv_tt_req_node, refcount);
+
+	kmem_cache_free(batadv_tt_req_cache, tt_req_node);
+}
+
+/**
+ * batadv_tt_req_node_put() - decrement the tt_req_node refcounter and
+ *  possibly release it
+ * @tt_req_node: tt_req_node to be free'd
+ */
+static void batadv_tt_req_node_put(struct batadv_tt_req_node *tt_req_node)
+{
+	if (!tt_req_node)
+		return;
+
+	kref_put(&tt_req_node->refcount, batadv_tt_req_node_release);
+}
+
 static void batadv_tt_req_list_free(struct batadv_priv *bat_priv)
 {
-	struct batadv_tt_req_node *node, *safe;
+	struct batadv_tt_req_node *node;
+	struct hlist_node *safe;
 
 	spin_lock_bh(&bat_priv->tt.req_list_lock);
 
-	list_for_each_entry_safe(node, safe, &bat_priv->tt.req_list, list) {
-		list_del(&node->list);
-		kfree(node);
+	hlist_for_each_entry_safe(node, safe, &bat_priv->tt.req_list, list) {
+		hlist_del_init(&node->list);
+		batadv_tt_req_node_put(node);
 	}
 
 	spin_unlock_bh(&bat_priv->tt.req_list_lock);
@@ -2098,7 +2606,7 @@ static void batadv_tt_req_list_free(struct batadv_priv *bat_priv)
 static void batadv_tt_save_orig_buffer(struct batadv_priv *bat_priv,
 				       struct batadv_orig_node *orig_node,
 				       const void *tt_buff,
-				       uint16_t tt_buff_len)
+				       u16 tt_buff_len)
 {
 	/* Replace the old buffer only if I received something in the
 	 * last OGM (the OGM could carry no changes)
@@ -2118,67 +2626,98 @@ static void batadv_tt_save_orig_buffer(struct batadv_priv *bat_priv,
 
 static void batadv_tt_req_purge(struct batadv_priv *bat_priv)
 {
-	struct batadv_tt_req_node *node, *safe;
+	struct batadv_tt_req_node *node;
+	struct hlist_node *safe;
 
 	spin_lock_bh(&bat_priv->tt.req_list_lock);
-	list_for_each_entry_safe(node, safe, &bat_priv->tt.req_list, list) {
+	hlist_for_each_entry_safe(node, safe, &bat_priv->tt.req_list, list) {
 		if (batadv_has_timed_out(node->issued_at,
 					 BATADV_TT_REQUEST_TIMEOUT)) {
-			list_del(&node->list);
-			kfree(node);
+			hlist_del_init(&node->list);
+			batadv_tt_req_node_put(node);
 		}
 	}
 	spin_unlock_bh(&bat_priv->tt.req_list_lock);
 }
 
-/* returns the pointer to the new tt_req_node struct if no request
- * has already been issued for this orig_node, NULL otherwise
+/**
+ * batadv_tt_req_node_new() - search and possibly create a tt_req_node object
+ * @bat_priv: the bat priv with all the soft interface information
+ * @orig_node: orig node this request is being issued for
+ *
+ * Return: the pointer to the new tt_req_node struct if no request
+ * has already been issued for this orig_node, NULL otherwise.
  */
 static struct batadv_tt_req_node *
-batadv_new_tt_req_node(struct batadv_priv *bat_priv,
+batadv_tt_req_node_new(struct batadv_priv *bat_priv,
 		       struct batadv_orig_node *orig_node)
 {
 	struct batadv_tt_req_node *tt_req_node_tmp, *tt_req_node = NULL;
 
 	spin_lock_bh(&bat_priv->tt.req_list_lock);
-	list_for_each_entry(tt_req_node_tmp, &bat_priv->tt.req_list, list) {
+	hlist_for_each_entry(tt_req_node_tmp, &bat_priv->tt.req_list, list) {
 		if (batadv_compare_eth(tt_req_node_tmp, orig_node) &&
 		    !batadv_has_timed_out(tt_req_node_tmp->issued_at,
 					  BATADV_TT_REQUEST_TIMEOUT))
 			goto unlock;
 	}
 
-	tt_req_node = kmalloc(sizeof(*tt_req_node), GFP_ATOMIC);
+	tt_req_node = kmem_cache_alloc(batadv_tt_req_cache, GFP_ATOMIC);
 	if (!tt_req_node)
 		goto unlock;
 
-	memcpy(tt_req_node->addr, orig_node->orig, ETH_ALEN);
+	kref_init(&tt_req_node->refcount);
+	ether_addr_copy(tt_req_node->addr, orig_node->orig);
 	tt_req_node->issued_at = jiffies;
 
-	list_add(&tt_req_node->list, &bat_priv->tt.req_list);
+	kref_get(&tt_req_node->refcount);
+	hlist_add_head(&tt_req_node->list, &bat_priv->tt.req_list);
 unlock:
 	spin_unlock_bh(&bat_priv->tt.req_list_lock);
 	return tt_req_node;
 }
 
 /**
- * batadv_tt_local_valid - verify that given tt entry is a valid one
+ * batadv_tt_local_valid() - verify local tt entry and get flags
  * @entry_ptr: to be checked local tt entry
  * @data_ptr: not used but definition required to satisfy the callback prototype
+ * @flags: a pointer to store TT flags for this client to
  *
- * Returns 1 if the entry is a valid, 0 otherwise.
+ * Checks the validity of the given local TT entry. If it is, then the provided
+ * flags pointer is updated.
+ *
+ * Return: true if the entry is a valid, false otherwise.
  */
-static int batadv_tt_local_valid(const void *entry_ptr, const void *data_ptr)
+static bool batadv_tt_local_valid(const void *entry_ptr,
+				  const void *data_ptr,
+				  u8 *flags)
 {
 	const struct batadv_tt_common_entry *tt_common_entry = entry_ptr;
 
 	if (tt_common_entry->flags & BATADV_TT_CLIENT_NEW)
-		return 0;
-	return 1;
+		return false;
+
+	if (flags)
+		*flags = tt_common_entry->flags;
+
+	return true;
 }
 
-static int batadv_tt_global_valid(const void *entry_ptr,
-				  const void *data_ptr)
+/**
+ * batadv_tt_global_valid() - verify global tt entry and get flags
+ * @entry_ptr: to be checked global tt entry
+ * @data_ptr: an orig_node object (may be NULL)
+ * @flags: a pointer to store TT flags for this client to
+ *
+ * Checks the validity of the given global TT entry. If it is, then the provided
+ * flags pointer is updated either with the common (summed) TT flags if data_ptr
+ * is NULL or the specific, per originator TT flags otherwise.
+ *
+ * Return: true if the entry is a valid, false otherwise.
+ */
+static bool batadv_tt_global_valid(const void *entry_ptr,
+				   const void *data_ptr,
+				   u8 *flags)
 {
 	const struct batadv_tt_common_entry *tt_common_entry = entry_ptr;
 	const struct batadv_tt_global_entry *tt_global_entry;
@@ -2186,39 +2725,50 @@ static int batadv_tt_global_valid(const void *entry_ptr,
 
 	if (tt_common_entry->flags & BATADV_TT_CLIENT_ROAM ||
 	    tt_common_entry->flags & BATADV_TT_CLIENT_TEMP)
-		return 0;
+		return false;
 
 	tt_global_entry = container_of(tt_common_entry,
 				       struct batadv_tt_global_entry,
 				       common);
 
-	return batadv_tt_global_entry_has_orig(tt_global_entry, orig_node);
+	return batadv_tt_global_entry_has_orig(tt_global_entry, orig_node,
+					       flags);
 }
 
 /**
- * batadv_tt_tvlv_generate - fill the tvlv buff with the tt entries from the
+ * batadv_tt_tvlv_generate() - fill the tvlv buff with the tt entries from the
  *  specified tt hash
  * @bat_priv: the bat priv with all the soft interface information
  * @hash: hash table containing the tt entries
  * @tt_len: expected tvlv tt data buffer length in number of bytes
  * @tvlv_buff: pointer to the buffer to fill with the TT data
- * @valid_cb: function to filter tt change entries
+ * @valid_cb: function to filter tt change entries and to return TT flags
  * @cb_data: data passed to the filter function as argument
+ *
+ * Fills the tvlv buff with the tt entries from the specified hash. If valid_cb
+ * is not provided then this becomes a no-op.
  */
 static void batadv_tt_tvlv_generate(struct batadv_priv *bat_priv,
 				    struct batadv_hashtable *hash,
-				    void *tvlv_buff, uint16_t tt_len,
-				    int (*valid_cb)(const void *, const void *),
+				    void *tvlv_buff, u16 tt_len,
+				    bool (*valid_cb)(const void *,
+						     const void *,
+						     u8 *flags),
 				    void *cb_data)
 {
 	struct batadv_tt_common_entry *tt_common_entry;
 	struct batadv_tvlv_tt_change *tt_change;
 	struct hlist_head *head;
-	uint16_t tt_tot, tt_num_entries = 0;
-	uint32_t i;
+	u16 tt_tot, tt_num_entries = 0;
+	u8 flags;
+	bool ret;
+	u32 i;
 
 	tt_tot = batadv_tt_entries(tt_len);
-	tt_change = (struct batadv_tvlv_tt_change *)tvlv_buff;
+	tt_change = tvlv_buff;
+
+	if (!valid_cb)
+		return;
 
 	rcu_read_lock();
 	for (i = 0; i < hash->size; i++) {
@@ -2229,12 +2779,12 @@ static void batadv_tt_tvlv_generate(struct batadv_priv *bat_priv,
 			if (tt_tot == tt_num_entries)
 				break;
 
-			if ((valid_cb) && (!valid_cb(tt_common_entry, cb_data)))
+			ret = valid_cb(tt_common_entry, cb_data, &flags);
+			if (!ret)
 				continue;
 
-			memcpy(tt_change->addr, tt_common_entry->addr,
-			       ETH_ALEN);
-			tt_change->flags = tt_common_entry->flags;
+			ether_addr_copy(tt_change->addr, tt_common_entry->addr);
+			tt_change->flags = flags;
 			tt_change->vid = htons(tt_common_entry->vid);
 			memset(tt_change->reserved, 0,
 			       sizeof(tt_change->reserved));
@@ -2247,22 +2797,22 @@ static void batadv_tt_tvlv_generate(struct batadv_priv *bat_priv,
 }
 
 /**
- * batadv_tt_global_check_crc - check if all the CRCs are correct
+ * batadv_tt_global_check_crc() - check if all the CRCs are correct
  * @orig_node: originator for which the CRCs have to be checked
  * @tt_vlan: pointer to the first tvlv VLAN entry
  * @num_vlan: number of tvlv VLAN entries
- * @create: if true, create VLAN objects if not found
  *
- * Return true if all the received CRCs match the locally stored ones, false
+ * Return: true if all the received CRCs match the locally stored ones, false
  * otherwise
  */
 static bool batadv_tt_global_check_crc(struct batadv_orig_node *orig_node,
 				       struct batadv_tvlv_tt_vlan_data *tt_vlan,
-				       uint16_t num_vlan)
+				       u16 num_vlan)
 {
 	struct batadv_tvlv_tt_vlan_data *tt_vlan_tmp;
 	struct batadv_orig_node_vlan *vlan;
-	int i;
+	int i, orig_num_vlan;
+	u32 crc;
 
 	/* check if each received CRC matches the locally stored one */
 	for (i = 0; i < num_vlan; i++) {
@@ -2281,15 +2831,30 @@ static bool batadv_tt_global_check_crc(struct batadv_orig_node *orig_node,
 		if (!vlan)
 			return false;
 
-		if (vlan->tt.crc != ntohl(tt_vlan_tmp->crc))
+		crc = vlan->tt.crc;
+		batadv_orig_node_vlan_put(vlan);
+
+		if (crc != ntohl(tt_vlan_tmp->crc))
 			return false;
 	}
+
+	/* check if any excess VLANs exist locally for the originator
+	 * which are not mentioned in the TVLV from the originator.
+	 */
+	rcu_read_lock();
+	orig_num_vlan = 0;
+	hlist_for_each_entry_rcu(vlan, &orig_node->vlan_list, list)
+		orig_num_vlan++;
+	rcu_read_unlock();
+
+	if (orig_num_vlan > num_vlan)
+		return false;
 
 	return true;
 }
 
 /**
- * batadv_tt_local_update_crc - update all the local CRCs
+ * batadv_tt_local_update_crc() - update all the local CRCs
  * @bat_priv: the bat priv with all the soft interface information
  */
 static void batadv_tt_local_update_crc(struct batadv_priv *bat_priv)
@@ -2305,7 +2870,7 @@ static void batadv_tt_local_update_crc(struct batadv_priv *bat_priv)
 }
 
 /**
- * batadv_tt_global_update_crc - update all the global CRCs for this orig_node
+ * batadv_tt_global_update_crc() - update all the global CRCs for this orig_node
  * @bat_priv: the bat priv with all the soft interface information
  * @orig_node: the orig_node for which the CRCs have to be updated
  */
@@ -2313,11 +2878,11 @@ static void batadv_tt_global_update_crc(struct batadv_priv *bat_priv,
 					struct batadv_orig_node *orig_node)
 {
 	struct batadv_orig_node_vlan *vlan;
-	uint32_t crc;
+	u32 crc;
 
 	/* recompute the global CRC for each VLAN */
 	rcu_read_lock();
-	list_for_each_entry_rcu(vlan, &orig_node->vlan_list, list) {
+	hlist_for_each_entry_rcu(vlan, &orig_node->vlan_list, list) {
 		/* if orig_node is a backbone node for this VLAN, don't compute
 		 * the CRC as we ignore all the global entries over it
 		 */
@@ -2332,7 +2897,7 @@ static void batadv_tt_global_update_crc(struct batadv_priv *bat_priv,
 }
 
 /**
- * batadv_send_tt_request - send a TT Request message to a given node
+ * batadv_send_tt_request() - send a TT Request message to a given node
  * @bat_priv: the bat priv with all the soft interface information
  * @dst_orig_node: the destination of the message
  * @ttvn: the version number that the source of the message is looking for
@@ -2340,12 +2905,14 @@ static void batadv_tt_global_update_crc(struct batadv_priv *bat_priv,
  * @num_vlan: number of tvlv VLAN entries
  * @full_table: ask for the entire translation table if true, while only for the
  *  last TT diff otherwise
+ *
+ * Return: true if the TT Request was sent, false otherwise
  */
-static int batadv_send_tt_request(struct batadv_priv *bat_priv,
-				  struct batadv_orig_node *dst_orig_node,
-				  uint8_t ttvn,
-				  struct batadv_tvlv_tt_vlan_data *tt_vlan,
-				  uint16_t num_vlan, bool full_table)
+static bool batadv_send_tt_request(struct batadv_priv *bat_priv,
+				   struct batadv_orig_node *dst_orig_node,
+				   u8 ttvn,
+				   struct batadv_tvlv_tt_vlan_data *tt_vlan,
+				   u16 num_vlan, bool full_table)
 {
 	struct batadv_tvlv_tt_data *tvlv_tt_data = NULL;
 	struct batadv_tt_req_node *tt_req_node = NULL;
@@ -2361,7 +2928,7 @@ static int batadv_send_tt_request(struct batadv_priv *bat_priv,
 	/* The new tt_req will be issued only if I'm not waiting for a
 	 * reply from the same orig_node yet
 	 */
-	tt_req_node = batadv_new_tt_req_node(bat_priv, dst_orig_node);
+	tt_req_node = batadv_tt_req_node_new(bat_priv, dst_orig_node);
 	if (!tt_req_node)
 		goto out;
 
@@ -2399,31 +2966,36 @@ static int batadv_send_tt_request(struct batadv_priv *bat_priv,
 	ret = true;
 
 out:
-	if (primary_if)
-		batadv_hardif_free_ref(primary_if);
+	batadv_hardif_put(primary_if);
+
 	if (ret && tt_req_node) {
 		spin_lock_bh(&bat_priv->tt.req_list_lock);
-		list_del(&tt_req_node->list);
+		if (!hlist_unhashed(&tt_req_node->list)) {
+			hlist_del_init(&tt_req_node->list);
+			batadv_tt_req_node_put(tt_req_node);
+		}
 		spin_unlock_bh(&bat_priv->tt.req_list_lock);
-		kfree(tt_req_node);
 	}
+
+	batadv_tt_req_node_put(tt_req_node);
+
 	kfree(tvlv_tt_data);
 	return ret;
 }
 
 /**
- * batadv_send_other_tt_response - send reply to tt request concerning another
+ * batadv_send_other_tt_response() - send reply to tt request concerning another
  *  node's translation table
  * @bat_priv: the bat priv with all the soft interface information
  * @tt_data: tt data containing the tt request information
  * @req_src: mac address of tt request sender
  * @req_dst: mac address of tt request recipient
  *
- * Returns true if tt request reply was sent, false otherwise.
+ * Return: true if tt request reply was sent, false otherwise.
  */
 static bool batadv_send_other_tt_response(struct batadv_priv *bat_priv,
 					  struct batadv_tvlv_tt_data *tt_data,
-					  uint8_t *req_src, uint8_t *req_dst)
+					  u8 *req_src, u8 *req_dst)
 {
 	struct batadv_orig_node *req_dst_orig_node;
 	struct batadv_orig_node *res_dst_orig_node = NULL;
@@ -2431,14 +3003,14 @@ static bool batadv_send_other_tt_response(struct batadv_priv *bat_priv,
 	struct batadv_tvlv_tt_data *tvlv_tt_data = NULL;
 	struct batadv_tvlv_tt_vlan_data *tt_vlan;
 	bool ret = false, full_table;
-	uint8_t orig_ttvn, req_ttvn;
-	uint16_t tvlv_len;
-	int32_t tt_len;
+	u8 orig_ttvn, req_ttvn;
+	u16 tvlv_len;
+	s32 tt_len;
 
 	batadv_dbg(BATADV_DBG_TT, bat_priv,
 		   "Received TT_REQUEST from %pM for ttvn: %u (%pM) [%c]\n",
 		   req_src, tt_data->ttvn, req_dst,
-		   (tt_data->flags & BATADV_TT_FULL_TABLE ? 'F' : '.'));
+		   ((tt_data->flags & BATADV_TT_FULL_TABLE) ? 'F' : '.'));
 
 	/* Let's get the orig node of the REAL destination */
 	req_dst_orig_node = batadv_orig_hash_find(bat_priv, req_dst);
@@ -2449,7 +3021,7 @@ static bool batadv_send_other_tt_response(struct batadv_priv *bat_priv,
 	if (!res_dst_orig_node)
 		goto out;
 
-	orig_ttvn = (uint8_t)atomic_read(&req_dst_orig_node->last_ttvn);
+	orig_ttvn = (u8)atomic_read(&req_dst_orig_node->last_ttvn);
 	req_ttvn = tt_data->ttvn;
 
 	tt_vlan = (struct batadv_tvlv_tt_vlan_data *)(tt_data + 1);
@@ -2536,44 +3108,42 @@ unlock:
 	spin_unlock_bh(&req_dst_orig_node->tt_buff_lock);
 
 out:
-	if (res_dst_orig_node)
-		batadv_orig_node_free_ref(res_dst_orig_node);
-	if (req_dst_orig_node)
-		batadv_orig_node_free_ref(req_dst_orig_node);
+	batadv_orig_node_put(res_dst_orig_node);
+	batadv_orig_node_put(req_dst_orig_node);
 	kfree(tvlv_tt_data);
 	return ret;
 }
 
 /**
- * batadv_send_my_tt_response - send reply to tt request concerning this node's
- *  translation table
+ * batadv_send_my_tt_response() - send reply to tt request concerning this
+ *  node's translation table
  * @bat_priv: the bat priv with all the soft interface information
  * @tt_data: tt data containing the tt request information
  * @req_src: mac address of tt request sender
  *
- * Returns true if tt request reply was sent, false otherwise.
+ * Return: true if tt request reply was sent, false otherwise.
  */
 static bool batadv_send_my_tt_response(struct batadv_priv *bat_priv,
 				       struct batadv_tvlv_tt_data *tt_data,
-				       uint8_t *req_src)
+				       u8 *req_src)
 {
 	struct batadv_tvlv_tt_data *tvlv_tt_data = NULL;
 	struct batadv_hard_iface *primary_if = NULL;
 	struct batadv_tvlv_tt_change *tt_change;
 	struct batadv_orig_node *orig_node;
-	uint8_t my_ttvn, req_ttvn;
-	uint16_t tvlv_len;
+	u8 my_ttvn, req_ttvn;
+	u16 tvlv_len;
 	bool full_table;
-	int32_t tt_len;
+	s32 tt_len;
 
 	batadv_dbg(BATADV_DBG_TT, bat_priv,
 		   "Received TT_REQUEST from %pM for ttvn: %u (me) [%c]\n",
 		   req_src, tt_data->ttvn,
-		   (tt_data->flags & BATADV_TT_FULL_TABLE ? 'F' : '.'));
+		   ((tt_data->flags & BATADV_TT_FULL_TABLE) ? 'F' : '.'));
 
 	spin_lock_bh(&bat_priv->tt.commit_lock);
 
-	my_ttvn = (uint8_t)atomic_read(&bat_priv->tt.vn);
+	my_ttvn = (u8)atomic_read(&bat_priv->tt.vn);
 	req_ttvn = tt_data->ttvn;
 
 	orig_node = batadv_orig_hash_find(bat_priv, req_src);
@@ -2604,7 +3174,7 @@ static bool batadv_send_my_tt_response(struct batadv_priv *bat_priv,
 							     &tvlv_tt_data,
 							     &tt_change,
 							     &tt_len);
-		if (!tt_len)
+		if (!tt_len || !tvlv_len)
 			goto unlock;
 
 		/* Copy the last orig_node's OGM buffer */
@@ -2612,7 +3182,7 @@ static bool batadv_send_my_tt_response(struct batadv_priv *bat_priv,
 		       bat_priv->tt.last_changeset_len);
 		spin_unlock_bh(&bat_priv->tt.last_changeset_lock);
 	} else {
-		req_ttvn = (uint8_t)atomic_read(&bat_priv->tt.vn);
+		req_ttvn = (u8)atomic_read(&bat_priv->tt.vn);
 
 		/* allocate the tvlv, put the tt_data and all the tt_vlan_data
 		 * in the initial part
@@ -2622,7 +3192,7 @@ static bool batadv_send_my_tt_response(struct batadv_priv *bat_priv,
 							     &tvlv_tt_data,
 							     &tt_change,
 							     &tt_len);
-		if (!tt_len)
+		if (!tt_len || !tvlv_len)
 			goto out;
 
 		/* fill the rest of the tvlv with the real TT entries */
@@ -2653,39 +3223,36 @@ unlock:
 	spin_unlock_bh(&bat_priv->tt.last_changeset_lock);
 out:
 	spin_unlock_bh(&bat_priv->tt.commit_lock);
-	if (orig_node)
-		batadv_orig_node_free_ref(orig_node);
-	if (primary_if)
-		batadv_hardif_free_ref(primary_if);
+	batadv_orig_node_put(orig_node);
+	batadv_hardif_put(primary_if);
 	kfree(tvlv_tt_data);
 	/* The packet was for this host, so it doesn't need to be re-routed */
 	return true;
 }
 
 /**
- * batadv_send_tt_response - send reply to tt request
+ * batadv_send_tt_response() - send reply to tt request
  * @bat_priv: the bat priv with all the soft interface information
  * @tt_data: tt data containing the tt request information
  * @req_src: mac address of tt request sender
  * @req_dst: mac address of tt request recipient
  *
- * Returns true if tt request reply was sent, false otherwise.
+ * Return: true if tt request reply was sent, false otherwise.
  */
 static bool batadv_send_tt_response(struct batadv_priv *bat_priv,
 				    struct batadv_tvlv_tt_data *tt_data,
-				    uint8_t *req_src, uint8_t *req_dst)
+				    u8 *req_src, u8 *req_dst)
 {
 	if (batadv_is_my_mac(bat_priv, req_dst))
 		return batadv_send_my_tt_response(bat_priv, tt_data, req_src);
-	else
-		return batadv_send_other_tt_response(bat_priv, tt_data,
-						     req_src, req_dst);
+	return batadv_send_other_tt_response(bat_priv, tt_data, req_src,
+					     req_dst);
 }
 
 static void _batadv_tt_update_changes(struct batadv_priv *bat_priv,
 				      struct batadv_orig_node *orig_node,
 				      struct batadv_tvlv_tt_change *tt_change,
-				      uint16_t tt_num_changes, uint8_t ttvn)
+				      u16 tt_num_changes, u8 ttvn)
 {
 	int i;
 	int roams;
@@ -2712,13 +3279,13 @@ static void _batadv_tt_update_changes(struct batadv_priv *bat_priv,
 				return;
 		}
 	}
-	orig_node->tt_initialised = true;
+	set_bit(BATADV_ORIG_CAPA_HAS_TT, &orig_node->capa_initialized);
 }
 
 static void batadv_tt_fill_gtable(struct batadv_priv *bat_priv,
 				  struct batadv_tvlv_tt_change *tt_change,
-				  uint8_t ttvn, uint8_t *resp_src,
-				  uint16_t num_entries)
+				  u8 ttvn, u8 *resp_src,
+				  u16 num_entries)
 {
 	struct batadv_orig_node *orig_node;
 
@@ -2742,13 +3309,12 @@ static void batadv_tt_fill_gtable(struct batadv_priv *bat_priv,
 	atomic_set(&orig_node->last_ttvn, ttvn);
 
 out:
-	if (orig_node)
-		batadv_orig_node_free_ref(orig_node);
+	batadv_orig_node_put(orig_node);
 }
 
 static void batadv_tt_update_changes(struct batadv_priv *bat_priv,
 				     struct batadv_orig_node *orig_node,
-				     uint16_t tt_num_changes, uint8_t ttvn,
+				     u16 tt_num_changes, u8 ttvn,
 				     struct batadv_tvlv_tt_change *tt_change)
 {
 	_batadv_tt_update_changes(bat_priv, orig_node, tt_change,
@@ -2760,14 +3326,14 @@ static void batadv_tt_update_changes(struct batadv_priv *bat_priv,
 }
 
 /**
- * batadv_is_my_client - check if a client is served by the local node
+ * batadv_is_my_client() - check if a client is served by the local node
  * @bat_priv: the bat priv with all the soft interface information
- * @addr: the mac adress of the client to check
+ * @addr: the mac address of the client to check
  * @vid: VLAN identifier
  *
- * Returns true if the client is served by this node, false otherwise.
+ * Return: true if the client is served by this node, false otherwise.
  */
-bool batadv_is_my_client(struct batadv_priv *bat_priv, const uint8_t *addr,
+bool batadv_is_my_client(struct batadv_priv *bat_priv, const u8 *addr,
 			 unsigned short vid)
 {
 	struct batadv_tt_local_entry *tt_local_entry;
@@ -2784,13 +3350,12 @@ bool batadv_is_my_client(struct batadv_priv *bat_priv, const uint8_t *addr,
 		goto out;
 	ret = true;
 out:
-	if (tt_local_entry)
-		batadv_tt_local_entry_free_ref(tt_local_entry);
+	batadv_tt_local_entry_put(tt_local_entry);
 	return ret;
 }
 
 /**
- * batadv_handle_tt_response - process incoming tt reply
+ * batadv_handle_tt_response() - process incoming tt reply
  * @bat_priv: the bat priv with all the soft interface information
  * @tt_data: tt data containing the tt request information
  * @resp_src: mac address of tt reply sender
@@ -2798,18 +3363,19 @@ out:
  */
 static void batadv_handle_tt_response(struct batadv_priv *bat_priv,
 				      struct batadv_tvlv_tt_data *tt_data,
-				      uint8_t *resp_src, uint16_t num_entries)
+				      u8 *resp_src, u16 num_entries)
 {
-	struct batadv_tt_req_node *node, *safe;
+	struct batadv_tt_req_node *node;
+	struct hlist_node *safe;
 	struct batadv_orig_node *orig_node = NULL;
 	struct batadv_tvlv_tt_change *tt_change;
-	uint8_t *tvlv_ptr = (uint8_t *)tt_data;
-	uint16_t change_offset;
+	u8 *tvlv_ptr = (u8 *)tt_data;
+	u16 change_offset;
 
 	batadv_dbg(BATADV_DBG_TT, bat_priv,
 		   "Received TT_RESPONSE from %pM for ttvn %d t_size: %d [%c]\n",
 		   resp_src, tt_data->ttvn, num_entries,
-		   (tt_data->flags & BATADV_TT_FULL_TABLE ? 'F' : '.'));
+		   ((tt_data->flags & BATADV_TT_FULL_TABLE) ? 'F' : '.'));
 
 	orig_node = batadv_orig_hash_find(bat_priv, resp_src);
 	if (!orig_node)
@@ -2838,17 +3404,16 @@ static void batadv_handle_tt_response(struct batadv_priv *bat_priv,
 
 	/* Delete the tt_req_node from pending tt_requests list */
 	spin_lock_bh(&bat_priv->tt.req_list_lock);
-	list_for_each_entry_safe(node, safe, &bat_priv->tt.req_list, list) {
+	hlist_for_each_entry_safe(node, safe, &bat_priv->tt.req_list, list) {
 		if (!batadv_compare_eth(node->addr, resp_src))
 			continue;
-		list_del(&node->list);
-		kfree(node);
+		hlist_del_init(&node->list);
+		batadv_tt_req_node_put(node);
 	}
 
 	spin_unlock_bh(&bat_priv->tt.req_list_lock);
 out:
-	if (orig_node)
-		batadv_orig_node_free_ref(orig_node);
+	batadv_orig_node_put(orig_node);
 }
 
 static void batadv_tt_roam_list_free(struct batadv_priv *bat_priv)
@@ -2859,7 +3424,7 @@ static void batadv_tt_roam_list_free(struct batadv_priv *bat_priv)
 
 	list_for_each_entry_safe(node, safe, &bat_priv->tt.roam_list, list) {
 		list_del(&node->list);
-		kfree(node);
+		kmem_cache_free(batadv_tt_roam_cache, node);
 	}
 
 	spin_unlock_bh(&bat_priv->tt.roam_list_lock);
@@ -2876,19 +3441,23 @@ static void batadv_tt_roam_purge(struct batadv_priv *bat_priv)
 			continue;
 
 		list_del(&node->list);
-		kfree(node);
+		kmem_cache_free(batadv_tt_roam_cache, node);
 	}
 	spin_unlock_bh(&bat_priv->tt.roam_list_lock);
 }
 
-/* This function checks whether the client already reached the
+/**
+ * batadv_tt_check_roam_count() - check if a client has roamed too frequently
+ * @bat_priv: the bat priv with all the soft interface information
+ * @client: mac address of the roaming client
+ *
+ * This function checks whether the client already reached the
  * maximum number of possible roaming phases. In this case the ROAMING_ADV
  * will not be sent.
  *
- * returns true if the ROAMING_ADV can be sent, false otherwise
+ * Return: true if the ROAMING_ADV can be sent, false otherwise
  */
-static bool batadv_tt_check_roam_count(struct batadv_priv *bat_priv,
-				       uint8_t *client)
+static bool batadv_tt_check_roam_count(struct batadv_priv *bat_priv, u8 *client)
 {
 	struct batadv_tt_roam_node *tt_roam_node;
 	bool ret = false;
@@ -2913,14 +3482,15 @@ static bool batadv_tt_check_roam_count(struct batadv_priv *bat_priv,
 	}
 
 	if (!ret) {
-		tt_roam_node = kmalloc(sizeof(*tt_roam_node), GFP_ATOMIC);
+		tt_roam_node = kmem_cache_alloc(batadv_tt_roam_cache,
+						GFP_ATOMIC);
 		if (!tt_roam_node)
 			goto unlock;
 
 		tt_roam_node->first_time = jiffies;
 		atomic_set(&tt_roam_node->counter,
 			   BATADV_ROAMING_MAX_COUNT - 1);
-		memcpy(tt_roam_node->addr, client, ETH_ALEN);
+		ether_addr_copy(tt_roam_node->addr, client);
 
 		list_add(&tt_roam_node->list, &bat_priv->tt.roam_list);
 		ret = true;
@@ -2932,7 +3502,7 @@ unlock:
 }
 
 /**
- * batadv_send_roam_adv - send a roaming advertisement message
+ * batadv_send_roam_adv() - send a roaming advertisement message
  * @bat_priv: the bat priv with all the soft interface information
  * @client: mac address of the roaming client
  * @vid: VLAN identifier
@@ -2943,7 +3513,7 @@ unlock:
  * for this particular roamed client has to be forwarded to the sender of the
  * roaming message.
  */
-static void batadv_send_roam_adv(struct batadv_priv *bat_priv, uint8_t *client,
+static void batadv_send_roam_adv(struct batadv_priv *bat_priv, u8 *client,
 				 unsigned short vid,
 				 struct batadv_orig_node *orig_node)
 {
@@ -2962,7 +3532,7 @@ static void batadv_send_roam_adv(struct batadv_priv *bat_priv, uint8_t *client,
 
 	batadv_dbg(BATADV_DBG_TT, bat_priv,
 		   "Sending ROAMING_ADV to %pM (client %pM, vid: %d)\n",
-		   orig_node->orig, client, BATADV_PRINT_VID(vid));
+		   orig_node->orig, client, batadv_print_vid(vid));
 
 	batadv_inc_counter(bat_priv, BATADV_CNT_TT_ROAM_ADV_TX);
 
@@ -2974,8 +3544,7 @@ static void batadv_send_roam_adv(struct batadv_priv *bat_priv, uint8_t *client,
 				 &tvlv_roam, sizeof(tvlv_roam));
 
 out:
-	if (primary_if)
-		batadv_hardif_free_ref(primary_if);
+	batadv_hardif_put(primary_if);
 }
 
 static void batadv_tt_purge(struct work_struct *work)
@@ -2984,7 +3553,7 @@ static void batadv_tt_purge(struct work_struct *work)
 	struct batadv_priv_tt *priv_tt;
 	struct batadv_priv *bat_priv;
 
-	delayed_work = container_of(work, struct delayed_work, work);
+	delayed_work = to_delayed_work(work);
 	priv_tt = container_of(delayed_work, struct batadv_priv_tt, work);
 	bat_priv = container_of(priv_tt, struct batadv_priv, tt);
 
@@ -2997,8 +3566,14 @@ static void batadv_tt_purge(struct work_struct *work)
 			   msecs_to_jiffies(BATADV_TT_WORK_PERIOD));
 }
 
+/**
+ * batadv_tt_free() - Free translation table of soft interface
+ * @bat_priv: the bat priv with all the soft interface information
+ */
 void batadv_tt_free(struct batadv_priv *bat_priv)
 {
+	batadv_tvlv_handler_unregister(bat_priv, BATADV_TVLV_ROAM, 1);
+
 	batadv_tvlv_container_unregister(bat_priv, BATADV_TVLV_TT, 1);
 	batadv_tvlv_handler_unregister(bat_priv, BATADV_TVLV_TT, 1);
 
@@ -3014,21 +3589,20 @@ void batadv_tt_free(struct batadv_priv *bat_priv)
 }
 
 /**
- * batadv_tt_local_set_flags - set or unset the specified flags on the local
+ * batadv_tt_local_set_flags() - set or unset the specified flags on the local
  *  table and possibly count them in the TT size
  * @bat_priv: the bat priv with all the soft interface information
  * @flags: the flag to switch
  * @enable: whether to set or unset the flag
  * @count: whether to increase the TT size by the number of changed entries
  */
-static void batadv_tt_local_set_flags(struct batadv_priv *bat_priv,
-				      uint16_t flags, bool enable, bool count)
+static void batadv_tt_local_set_flags(struct batadv_priv *bat_priv, u16 flags,
+				      bool enable, bool count)
 {
 	struct batadv_hashtable *hash = bat_priv->tt.local_hash;
 	struct batadv_tt_common_entry *tt_common_entry;
-	uint16_t changed_num = 0;
 	struct hlist_head *head;
-	uint32_t i;
+	u32 i;
 
 	if (!hash)
 		return;
@@ -3048,7 +3622,6 @@ static void batadv_tt_local_set_flags(struct batadv_priv *bat_priv,
 					continue;
 				tt_common_entry->flags &= ~flags;
 			}
-			changed_num++;
 
 			if (!count)
 				continue;
@@ -3069,7 +3642,7 @@ static void batadv_tt_local_purge_pending_clients(struct batadv_priv *bat_priv)
 	struct hlist_node *node_tmp;
 	struct hlist_head *head;
 	spinlock_t *list_lock; /* protects write access to the hash lists */
-	uint32_t i;
+	u32 i;
 
 	if (!hash)
 		return;
@@ -3087,21 +3660,22 @@ static void batadv_tt_local_purge_pending_clients(struct batadv_priv *bat_priv)
 			batadv_dbg(BATADV_DBG_TT, bat_priv,
 				   "Deleting local tt entry (%pM, vid: %d): pending\n",
 				   tt_common->addr,
-				   BATADV_PRINT_VID(tt_common->vid));
+				   batadv_print_vid(tt_common->vid));
 
 			batadv_tt_local_size_dec(bat_priv, tt_common->vid);
 			hlist_del_rcu(&tt_common->hash_entry);
 			tt_local = container_of(tt_common,
 						struct batadv_tt_local_entry,
 						common);
-			batadv_tt_local_entry_free_ref(tt_local);
+
+			batadv_tt_local_entry_put(tt_local);
 		}
 		spin_unlock_bh(list_lock);
 	}
 }
 
 /**
- * batadv_tt_local_commit_changes_nolock - commit all pending local tt changes
+ * batadv_tt_local_commit_changes_nolock() - commit all pending local tt changes
  *  which have been queued in the time since the last commit
  * @bat_priv: the bat priv with all the soft interface information
  *
@@ -3109,6 +3683,8 @@ static void batadv_tt_local_purge_pending_clients(struct batadv_priv *bat_priv)
  */
 static void batadv_tt_local_commit_changes_nolock(struct batadv_priv *bat_priv)
 {
+	lockdep_assert_held(&bat_priv->tt.commit_lock);
+
 	if (atomic_read(&bat_priv->tt.local_changes) < 1) {
 		if (!batadv_atomic_dec_not_zero(&bat_priv->tt.ogm_append_cnt))
 			batadv_tt_tvlv_container_update(bat_priv);
@@ -3124,7 +3700,7 @@ static void batadv_tt_local_commit_changes_nolock(struct batadv_priv *bat_priv)
 	atomic_inc(&bat_priv->tt.vn);
 	batadv_dbg(BATADV_DBG_TT, bat_priv,
 		   "Local changes committed, updating to ttvn %u\n",
-		   (uint8_t)atomic_read(&bat_priv->tt.vn));
+		   (u8)atomic_read(&bat_priv->tt.vn));
 
 	/* reset the sending counter */
 	atomic_set(&bat_priv->tt.ogm_append_cnt, BATADV_TT_OGM_APPEND_MAX);
@@ -3132,7 +3708,7 @@ static void batadv_tt_local_commit_changes_nolock(struct batadv_priv *bat_priv)
 }
 
 /**
- * batadv_tt_local_commit_changes - commit all pending local tt changes which
+ * batadv_tt_local_commit_changes() - commit all pending local tt changes which
  *  have been queued in the time since the last commit
  * @bat_priv: the bat priv with all the soft interface information
  */
@@ -3143,69 +3719,79 @@ void batadv_tt_local_commit_changes(struct batadv_priv *bat_priv)
 	spin_unlock_bh(&bat_priv->tt.commit_lock);
 }
 
-bool batadv_is_ap_isolated(struct batadv_priv *bat_priv, uint8_t *src,
-			   uint8_t *dst, unsigned short vid)
+/**
+ * batadv_is_ap_isolated() - Check if packet from upper layer should be dropped
+ * @bat_priv: the bat priv with all the soft interface information
+ * @src: source mac address of packet
+ * @dst: destination mac address of packet
+ * @vid: vlan id of packet
+ *
+ * Return: true when src+dst(+vid) pair should be isolated, false otherwise
+ */
+bool batadv_is_ap_isolated(struct batadv_priv *bat_priv, u8 *src, u8 *dst,
+			   unsigned short vid)
 {
-	struct batadv_tt_local_entry *tt_local_entry = NULL;
-	struct batadv_tt_global_entry *tt_global_entry = NULL;
+	struct batadv_tt_local_entry *tt_local_entry;
+	struct batadv_tt_global_entry *tt_global_entry;
 	struct batadv_softif_vlan *vlan;
 	bool ret = false;
 
 	vlan = batadv_softif_vlan_get(bat_priv, vid);
-	if (!vlan || !atomic_read(&vlan->ap_isolation))
-		goto out;
+	if (!vlan)
+		return false;
+
+	if (!atomic_read(&vlan->ap_isolation))
+		goto vlan_put;
 
 	tt_local_entry = batadv_tt_local_hash_find(bat_priv, dst, vid);
 	if (!tt_local_entry)
-		goto out;
+		goto vlan_put;
 
 	tt_global_entry = batadv_tt_global_hash_find(bat_priv, src, vid);
 	if (!tt_global_entry)
-		goto out;
+		goto local_entry_put;
 
-	if (!_batadv_is_ap_isolated(tt_local_entry, tt_global_entry))
-		goto out;
+	if (_batadv_is_ap_isolated(tt_local_entry, tt_global_entry))
+		ret = true;
 
-	ret = true;
-
-out:
-	if (vlan)
-		batadv_softif_vlan_free_ref(vlan);
-	if (tt_global_entry)
-		batadv_tt_global_entry_free_ref(tt_global_entry);
-	if (tt_local_entry)
-		batadv_tt_local_entry_free_ref(tt_local_entry);
+	batadv_tt_global_entry_put(tt_global_entry);
+local_entry_put:
+	batadv_tt_local_entry_put(tt_local_entry);
+vlan_put:
+	batadv_softif_vlan_put(vlan);
 	return ret;
 }
 
 /**
- * batadv_tt_update_orig - update global translation table with new tt
+ * batadv_tt_update_orig() - update global translation table with new tt
  *  information received via ogms
  * @bat_priv: the bat priv with all the soft interface information
- * @orig: the orig_node of the ogm
- * @tt_vlan: pointer to the first tvlv VLAN entry
+ * @orig_node: the orig_node of the ogm
+ * @tt_buff: pointer to the first tvlv VLAN entry
  * @tt_num_vlan: number of tvlv VLAN entries
  * @tt_change: pointer to the first entry in the TT buffer
  * @tt_num_changes: number of tt changes inside the tt buffer
  * @ttvn: translation table version number of this changeset
- * @tt_crc: crc32 checksum of orig node's translation table
  */
 static void batadv_tt_update_orig(struct batadv_priv *bat_priv,
 				  struct batadv_orig_node *orig_node,
-				  const void *tt_buff, uint16_t tt_num_vlan,
+				  const void *tt_buff, u16 tt_num_vlan,
 				  struct batadv_tvlv_tt_change *tt_change,
-				  uint16_t tt_num_changes, uint8_t ttvn)
+				  u16 tt_num_changes, u8 ttvn)
 {
-	uint8_t orig_ttvn = (uint8_t)atomic_read(&orig_node->last_ttvn);
+	u8 orig_ttvn = (u8)atomic_read(&orig_node->last_ttvn);
 	struct batadv_tvlv_tt_vlan_data *tt_vlan;
 	bool full_table = true;
+	bool has_tt_init;
 
 	tt_vlan = (struct batadv_tvlv_tt_vlan_data *)tt_buff;
+	has_tt_init = test_bit(BATADV_ORIG_CAPA_HAS_TT,
+			       &orig_node->capa_initialized);
+
 	/* orig table not initialised AND first diff is in the OGM OR the ttvn
 	 * increased by one -> we can apply the attached changes
 	 */
-	if ((!orig_node->tt_initialised && ttvn == 1) ||
-	    ttvn - orig_ttvn == 1) {
+	if ((!has_tt_init && ttvn == 1) || ttvn - orig_ttvn == 1) {
 		/* the OGM could not contain the changes due to their size or
 		 * because they have already been sent BATADV_TT_OGM_APPEND_MAX
 		 * times.
@@ -3218,7 +3804,6 @@ static void batadv_tt_update_orig(struct batadv_priv *bat_priv,
 
 		spin_lock_bh(&orig_node->tt_lock);
 
-		tt_change = (struct batadv_tvlv_tt_change *)tt_buff;
 		batadv_tt_update_changes(bat_priv, orig_node, tt_num_changes,
 					 ttvn, tt_change);
 
@@ -3246,7 +3831,7 @@ static void batadv_tt_update_orig(struct batadv_priv *bat_priv,
 		/* if we missed more than one change or our tables are not
 		 * in sync anymore -> request fresh tt data
 		 */
-		if (!orig_node->tt_initialised || ttvn != orig_ttvn ||
+		if (!has_tt_init || ttvn != orig_ttvn ||
 		    !batadv_tt_global_check_crc(orig_node, tt_vlan,
 						tt_num_vlan)) {
 request_table:
@@ -3263,17 +3848,17 @@ request_table:
 }
 
 /**
- * batadv_tt_global_client_is_roaming - check if a client is marked as roaming
+ * batadv_tt_global_client_is_roaming() - check if a client is marked as roaming
  * @bat_priv: the bat priv with all the soft interface information
  * @addr: the mac address of the client to check
  * @vid: VLAN identifier
  *
- * Returns true if we know that the client has moved from its old originator
+ * Return: true if we know that the client has moved from its old originator
  * to another one. This entry is still kept for consistency purposes and will be
  * deleted later by a DEL or because of timeout
  */
 bool batadv_tt_global_client_is_roaming(struct batadv_priv *bat_priv,
-					uint8_t *addr, unsigned short vid)
+					u8 *addr, unsigned short vid)
 {
 	struct batadv_tt_global_entry *tt_global_entry;
 	bool ret = false;
@@ -3283,23 +3868,23 @@ bool batadv_tt_global_client_is_roaming(struct batadv_priv *bat_priv,
 		goto out;
 
 	ret = tt_global_entry->common.flags & BATADV_TT_CLIENT_ROAM;
-	batadv_tt_global_entry_free_ref(tt_global_entry);
+	batadv_tt_global_entry_put(tt_global_entry);
 out:
 	return ret;
 }
 
 /**
- * batadv_tt_local_client_is_roaming - tells whether the client is roaming
+ * batadv_tt_local_client_is_roaming() - tells whether the client is roaming
  * @bat_priv: the bat priv with all the soft interface information
  * @addr: the mac address of the local client to query
  * @vid: VLAN identifier
  *
- * Returns true if the local client is known to be roaming (it is not served by
+ * Return: true if the local client is known to be roaming (it is not served by
  * this node anymore) or not. If yes, the client is still present in the table
  * to keep the latter consistent with the node TTVN
  */
 bool batadv_tt_local_client_is_roaming(struct batadv_priv *bat_priv,
-				       uint8_t *addr, unsigned short vid)
+				       u8 *addr, unsigned short vid)
 {
 	struct batadv_tt_local_entry *tt_local_entry;
 	bool ret = false;
@@ -3309,33 +3894,45 @@ bool batadv_tt_local_client_is_roaming(struct batadv_priv *bat_priv,
 		goto out;
 
 	ret = tt_local_entry->common.flags & BATADV_TT_CLIENT_ROAM;
-	batadv_tt_local_entry_free_ref(tt_local_entry);
-out:
-	return ret;
-}
-
-bool batadv_tt_add_temporary_global_entry(struct batadv_priv *bat_priv,
-					  struct batadv_orig_node *orig_node,
-					  const unsigned char *addr,
-					  unsigned short vid)
-{
-	bool ret = false;
-
-	if (!batadv_tt_global_add(bat_priv, orig_node, addr, vid,
-				  BATADV_TT_CLIENT_TEMP,
-				  atomic_read(&orig_node->last_ttvn)))
-		goto out;
-
-	batadv_dbg(BATADV_DBG_TT, bat_priv,
-		   "Added temporary global client (addr: %pM, vid: %d, orig: %pM)\n",
-		   addr, BATADV_PRINT_VID(vid), orig_node->orig);
-	ret = true;
+	batadv_tt_local_entry_put(tt_local_entry);
 out:
 	return ret;
 }
 
 /**
- * batadv_tt_local_resize_to_mtu - resize the local translation table fit the
+ * batadv_tt_add_temporary_global_entry() - Add temporary entry to global TT
+ * @bat_priv: the bat priv with all the soft interface information
+ * @orig_node: orig node which the temporary entry should be associated with
+ * @addr: mac address of the client
+ * @vid: VLAN id of the new temporary global translation table
+ *
+ * Return: true when temporary tt entry could be added, false otherwise
+ */
+bool batadv_tt_add_temporary_global_entry(struct batadv_priv *bat_priv,
+					  struct batadv_orig_node *orig_node,
+					  const unsigned char *addr,
+					  unsigned short vid)
+{
+	/* ignore loop detect macs, they are not supposed to be in the tt local
+	 * data as well.
+	 */
+	if (batadv_bla_is_loopdetect_mac(addr))
+		return false;
+
+	if (!batadv_tt_global_add(bat_priv, orig_node, addr, vid,
+				  BATADV_TT_CLIENT_TEMP,
+				  atomic_read(&orig_node->last_ttvn)))
+		return false;
+
+	batadv_dbg(BATADV_DBG_TT, bat_priv,
+		   "Added temporary global client (addr: %pM, vid: %d, orig: %pM)\n",
+		   addr, batadv_print_vid(vid), orig_node->orig);
+
+	return true;
+}
+
+/**
+ * batadv_tt_local_resize_to_mtu() - resize the local translation table fit the
  *  maximum packet size that can be transported through the mesh
  * @soft_iface: netdev struct of the mesh interface
  *
@@ -3351,7 +3948,7 @@ void batadv_tt_local_resize_to_mtu(struct net_device *soft_iface)
 
 	spin_lock_bh(&bat_priv->tt.commit_lock);
 
-	while (true) {
+	while (timeout) {
 		table_size = batadv_tt_local_table_transmit_size(bat_priv);
 		if (packet_size_max >= table_size)
 			break;
@@ -3376,7 +3973,7 @@ void batadv_tt_local_resize_to_mtu(struct net_device *soft_iface)
 }
 
 /**
- * batadv_tt_tvlv_ogm_handler_v1 - process incoming tt tvlv container
+ * batadv_tt_tvlv_ogm_handler_v1() - process incoming tt tvlv container
  * @bat_priv: the bat priv with all the soft interface information
  * @orig: the orig_node of the ogm
  * @flags: flags indicating the tvlv state (see batadv_tvlv_handler_flags)
@@ -3385,18 +3982,18 @@ void batadv_tt_local_resize_to_mtu(struct net_device *soft_iface)
  */
 static void batadv_tt_tvlv_ogm_handler_v1(struct batadv_priv *bat_priv,
 					  struct batadv_orig_node *orig,
-					  uint8_t flags, void *tvlv_value,
-					  uint16_t tvlv_value_len)
+					  u8 flags, void *tvlv_value,
+					  u16 tvlv_value_len)
 {
 	struct batadv_tvlv_tt_vlan_data *tt_vlan;
 	struct batadv_tvlv_tt_change *tt_change;
 	struct batadv_tvlv_tt_data *tt_data;
-	uint16_t num_entries, num_vlan;
+	u16 num_entries, num_vlan;
 
 	if (tvlv_value_len < sizeof(*tt_data))
 		return;
 
-	tt_data = (struct batadv_tvlv_tt_data *)tvlv_value;
+	tt_data = tvlv_value;
 	tvlv_value_len -= sizeof(*tt_data);
 
 	num_vlan = ntohs(tt_data->num_vlan);
@@ -3415,7 +4012,7 @@ static void batadv_tt_tvlv_ogm_handler_v1(struct batadv_priv *bat_priv,
 }
 
 /**
- * batadv_tt_tvlv_unicast_handler_v1 - process incoming (unicast) tt tvlv
+ * batadv_tt_tvlv_unicast_handler_v1() - process incoming (unicast) tt tvlv
  *  container
  * @bat_priv: the bat priv with all the soft interface information
  * @src: mac address of tt tvlv sender
@@ -3423,23 +4020,23 @@ static void batadv_tt_tvlv_ogm_handler_v1(struct batadv_priv *bat_priv,
  * @tvlv_value: tvlv buffer containing the tt data
  * @tvlv_value_len: tvlv buffer length
  *
- * Returns NET_RX_DROP if the tt tvlv is to be re-routed, NET_RX_SUCCESS
+ * Return: NET_RX_DROP if the tt tvlv is to be re-routed, NET_RX_SUCCESS
  * otherwise.
  */
 static int batadv_tt_tvlv_unicast_handler_v1(struct batadv_priv *bat_priv,
-					     uint8_t *src, uint8_t *dst,
+					     u8 *src, u8 *dst,
 					     void *tvlv_value,
-					     uint16_t tvlv_value_len)
+					     u16 tvlv_value_len)
 {
 	struct batadv_tvlv_tt_data *tt_data;
-	uint16_t tt_vlan_len, tt_num_entries;
+	u16 tt_vlan_len, tt_num_entries;
 	char tt_flag;
 	bool ret;
 
 	if (tvlv_value_len < sizeof(*tt_data))
 		return NET_RX_SUCCESS;
 
-	tt_data = (struct batadv_tvlv_tt_data *)tvlv_value;
+	tt_data = tvlv_value;
 	tvlv_value_len -= sizeof(*tt_data);
 
 	tt_vlan_len = sizeof(struct batadv_tvlv_tt_vlan_data);
@@ -3497,20 +4094,21 @@ static int batadv_tt_tvlv_unicast_handler_v1(struct batadv_priv *bat_priv,
 }
 
 /**
- * batadv_roam_tvlv_unicast_handler_v1 - process incoming tt roam tvlv container
+ * batadv_roam_tvlv_unicast_handler_v1() - process incoming tt roam tvlv
+ *  container
  * @bat_priv: the bat priv with all the soft interface information
  * @src: mac address of tt tvlv sender
  * @dst: mac address of tt tvlv recipient
  * @tvlv_value: tvlv buffer containing the tt data
  * @tvlv_value_len: tvlv buffer length
  *
- * Returns NET_RX_DROP if the tt roam tvlv is to be re-routed, NET_RX_SUCCESS
+ * Return: NET_RX_DROP if the tt roam tvlv is to be re-routed, NET_RX_SUCCESS
  * otherwise.
  */
 static int batadv_roam_tvlv_unicast_handler_v1(struct batadv_priv *bat_priv,
-					       uint8_t *src, uint8_t *dst,
+					       u8 *src, u8 *dst,
 					       void *tvlv_value,
-					       uint16_t tvlv_value_len)
+					       u16 tvlv_value_len)
 {
 	struct batadv_tvlv_roam_adv *roaming_adv;
 	struct batadv_orig_node *orig_node = NULL;
@@ -3530,7 +4128,7 @@ static int batadv_roam_tvlv_unicast_handler_v1(struct batadv_priv *bat_priv,
 		goto out;
 
 	batadv_inc_counter(bat_priv, BATADV_CNT_TT_ROAM_ADV_RX);
-	roaming_adv = (struct batadv_tvlv_roam_adv *)tvlv_value;
+	roaming_adv = tvlv_value;
 
 	batadv_dbg(BATADV_DBG_TT, bat_priv,
 		   "Received ROAMING_ADV from %pM (client %pM)\n",
@@ -3541,16 +4139,15 @@ static int batadv_roam_tvlv_unicast_handler_v1(struct batadv_priv *bat_priv,
 			     atomic_read(&orig_node->last_ttvn) + 1);
 
 out:
-	if (orig_node)
-		batadv_orig_node_free_ref(orig_node);
+	batadv_orig_node_put(orig_node);
 	return NET_RX_SUCCESS;
 }
 
 /**
- * batadv_tt_init - initialise the translation table internals
+ * batadv_tt_init() - initialise the translation table internals
  * @bat_priv: the bat priv with all the soft interface information
  *
- * Return 0 on success or negative error number in case of failure.
+ * Return: 0 on success or negative error number in case of failure.
  */
 int batadv_tt_init(struct batadv_priv *bat_priv)
 {
@@ -3564,15 +4161,17 @@ int batadv_tt_init(struct batadv_priv *bat_priv)
 		return ret;
 
 	ret = batadv_tt_global_init(bat_priv);
-	if (ret < 0)
+	if (ret < 0) {
+		batadv_tt_local_table_free(bat_priv);
 		return ret;
+	}
 
 	batadv_tvlv_handler_register(bat_priv, batadv_tt_tvlv_ogm_handler_v1,
-				     batadv_tt_tvlv_unicast_handler_v1,
+				     batadv_tt_tvlv_unicast_handler_v1, NULL,
 				     BATADV_TVLV_TT, 1, BATADV_NO_FLAGS);
 
 	batadv_tvlv_handler_register(bat_priv, NULL,
-				     batadv_roam_tvlv_unicast_handler_v1,
+				     batadv_roam_tvlv_unicast_handler_v1, NULL,
 				     BATADV_TVLV_ROAM, 1, BATADV_NO_FLAGS);
 
 	INIT_DELAYED_WORK(&bat_priv->tt.work, batadv_tt_purge);
@@ -3583,16 +4182,16 @@ int batadv_tt_init(struct batadv_priv *bat_priv)
 }
 
 /**
- * batadv_tt_global_is_isolated - check if a client is marked as isolated
+ * batadv_tt_global_is_isolated() - check if a client is marked as isolated
  * @bat_priv: the bat priv with all the soft interface information
  * @addr: the mac address of the client
  * @vid: the identifier of the VLAN where this client is connected
  *
- * Returns true if the client is marked with the TT_CLIENT_ISOLA flag, false
+ * Return: true if the client is marked with the TT_CLIENT_ISOLA flag, false
  * otherwise
  */
 bool batadv_tt_global_is_isolated(struct batadv_priv *bat_priv,
-				  const uint8_t *addr, unsigned short vid)
+				  const u8 *addr, unsigned short vid)
 {
 	struct batadv_tt_global_entry *tt;
 	bool ret;
@@ -3603,7 +4202,89 @@ bool batadv_tt_global_is_isolated(struct batadv_priv *bat_priv,
 
 	ret = tt->common.flags & BATADV_TT_CLIENT_ISOLA;
 
-	batadv_tt_global_entry_free_ref(tt);
+	batadv_tt_global_entry_put(tt);
 
 	return ret;
+}
+
+/**
+ * batadv_tt_cache_init() - Initialize tt memory object cache
+ *
+ * Return: 0 on success or negative error number in case of failure.
+ */
+int __init batadv_tt_cache_init(void)
+{
+	size_t tl_size = sizeof(struct batadv_tt_local_entry);
+	size_t tg_size = sizeof(struct batadv_tt_global_entry);
+	size_t tt_orig_size = sizeof(struct batadv_tt_orig_list_entry);
+	size_t tt_change_size = sizeof(struct batadv_tt_change_node);
+	size_t tt_req_size = sizeof(struct batadv_tt_req_node);
+	size_t tt_roam_size = sizeof(struct batadv_tt_roam_node);
+
+	batadv_tl_cache = kmem_cache_create("batadv_tl_cache", tl_size, 0,
+					    SLAB_HWCACHE_ALIGN, NULL);
+	if (!batadv_tl_cache)
+		return -ENOMEM;
+
+	batadv_tg_cache = kmem_cache_create("batadv_tg_cache", tg_size, 0,
+					    SLAB_HWCACHE_ALIGN, NULL);
+	if (!batadv_tg_cache)
+		goto err_tt_tl_destroy;
+
+	batadv_tt_orig_cache = kmem_cache_create("batadv_tt_orig_cache",
+						 tt_orig_size, 0,
+						 SLAB_HWCACHE_ALIGN, NULL);
+	if (!batadv_tt_orig_cache)
+		goto err_tt_tg_destroy;
+
+	batadv_tt_change_cache = kmem_cache_create("batadv_tt_change_cache",
+						   tt_change_size, 0,
+						   SLAB_HWCACHE_ALIGN, NULL);
+	if (!batadv_tt_change_cache)
+		goto err_tt_orig_destroy;
+
+	batadv_tt_req_cache = kmem_cache_create("batadv_tt_req_cache",
+						tt_req_size, 0,
+						SLAB_HWCACHE_ALIGN, NULL);
+	if (!batadv_tt_req_cache)
+		goto err_tt_change_destroy;
+
+	batadv_tt_roam_cache = kmem_cache_create("batadv_tt_roam_cache",
+						 tt_roam_size, 0,
+						 SLAB_HWCACHE_ALIGN, NULL);
+	if (!batadv_tt_roam_cache)
+		goto err_tt_req_destroy;
+
+	return 0;
+
+err_tt_req_destroy:
+	kmem_cache_destroy(batadv_tt_req_cache);
+	batadv_tt_req_cache = NULL;
+err_tt_change_destroy:
+	kmem_cache_destroy(batadv_tt_change_cache);
+	batadv_tt_change_cache = NULL;
+err_tt_orig_destroy:
+	kmem_cache_destroy(batadv_tt_orig_cache);
+	batadv_tt_orig_cache = NULL;
+err_tt_tg_destroy:
+	kmem_cache_destroy(batadv_tg_cache);
+	batadv_tg_cache = NULL;
+err_tt_tl_destroy:
+	kmem_cache_destroy(batadv_tl_cache);
+	batadv_tl_cache = NULL;
+
+	return -ENOMEM;
+}
+
+/**
+ * batadv_tt_cache_destroy() - Destroy tt memory object cache
+ */
+void batadv_tt_cache_destroy(void)
+{
+	kmem_cache_destroy(batadv_tl_cache);
+	kmem_cache_destroy(batadv_tg_cache);
+	kmem_cache_destroy(batadv_tt_orig_cache);
+	kmem_cache_destroy(batadv_tt_change_cache);
+	kmem_cache_destroy(batadv_tt_req_cache);
+	kmem_cache_destroy(batadv_tt_roam_cache);
 }

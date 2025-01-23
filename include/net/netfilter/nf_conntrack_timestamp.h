@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _NF_CONNTRACK_TSTAMP_H
 #define _NF_CONNTRACK_TSTAMP_H
 
@@ -37,42 +38,10 @@ struct nf_conn_tstamp *nf_ct_tstamp_ext_add(struct nf_conn *ct, gfp_t gfp)
 #endif
 };
 
-static inline bool nf_ct_tstamp_enabled(struct net *net)
-{
-	return net->ct.sysctl_tstamp != 0;
-}
-
-static inline void nf_ct_set_tstamp(struct net *net, bool enable)
-{
-	net->ct.sysctl_tstamp = enable;
-}
-
 #ifdef CONFIG_NF_CONNTRACK_TIMESTAMP
-int nf_conntrack_tstamp_pernet_init(struct net *net);
-void nf_conntrack_tstamp_pernet_fini(struct net *net);
-
-int nf_conntrack_tstamp_init(void);
-void nf_conntrack_tstamp_fini(void);
+void nf_conntrack_tstamp_pernet_init(struct net *net);
 #else
-static inline int nf_conntrack_tstamp_pernet_init(struct net *net)
-{
-	return 0;
-}
-
-static inline void nf_conntrack_tstamp_pernet_fini(struct net *net)
-{
-	return;
-}
-
-static inline int nf_conntrack_tstamp_init(void)
-{
-	return 0;
-}
-
-static inline void nf_conntrack_tstamp_fini(void)
-{
-	return;
-}
+static inline void nf_conntrack_tstamp_pernet_init(struct net *net) {}
 #endif /* CONFIG_NF_CONNTRACK_TIMESTAMP */
 
 #endif /* _NF_CONNTRACK_TSTAMP_H */

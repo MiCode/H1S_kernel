@@ -1,11 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Device driver for the i2c thermostat found on the iBook G4, Albook G4
  *
  * Copyright (C) 2003, 2004 Colin Leroy, Rasmus Rohde, Benjamin Herrenschmidt
  *
  * Documentation from 115254175ADT7467_pra.pdf and 3686221171167ADT7460_b.pdf
- * http://www.onsemi.com/PowerSolutions/product.do?id=ADT7467
- * http://www.onsemi.com/PowerSolutions/product.do?id=ADT7460
+ * https://www.onsemi.com/PowerSolutions/product.do?id=ADT7467
+ * https://www.onsemi.com/PowerSolutions/product.do?id=ADT7460
  *
  */
 
@@ -24,9 +25,10 @@
 #include <linux/kthread.h>
 #include <linux/moduleparam.h>
 #include <linux/freezer.h>
+#include <linux/of.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
 
-#include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/io.h>
 #include <asm/sections.h>
@@ -230,7 +232,7 @@ static void update_fans_speed (struct thermostat *th)
 
 	/* we don't care about local sensor, so we start at sensor 1 */
 	for (i = 1; i < 3; i++) {
-		int started = 0;
+		bool started = false;
 		int fan_number = (th->type == ADT7460 && i == 2);
 		int var = th->temps[i] - th->limits[i];
 
@@ -243,7 +245,7 @@ static void update_fans_speed (struct thermostat *th)
 			if (abs(var - th->last_var[fan_number]) < 2)
 				continue;
 
-			started = 1;
+			started = true;
 			new_speed = fan_speed + ((var-1)*step);
 
 			if (new_speed < fan_speed)
@@ -464,9 +466,9 @@ static void thermostat_remove_files(struct thermostat *th)
 
 }
 
-static int probe_thermostat(struct i2c_client *client,
-			    const struct i2c_device_id *id)
+static int probe_thermostat(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct device_node *np = client->dev.of_node;
 	struct thermostat* th;
 	const __be32 *prop;
@@ -483,7 +485,7 @@ static int probe_thermostat(struct i2c_client *client,
 	if (vers != 1)
 		return -ENXIO;
 
-	if (of_get_property(np, "hwsensor-location", NULL)) {
+	if (of_property_present(np, "hwsensor-location")) {
 		for (i = 0; i < 3; i++) {
 			sensor_location[i] = of_get_property(np,
 					"hwsensor-location", NULL) + offset;
@@ -563,7 +565,7 @@ static int probe_thermostat(struct i2c_client *client,
 	return 0;
 }
 
-static int remove_thermostat(struct i2c_client *client)
+static void remove_thermostat(struct i2c_client *client)
 {
 	struct thermostat *th = i2c_get_clientdata(client);
 	int i;
@@ -585,8 +587,6 @@ static int remove_thermostat(struct i2c_client *client)
 	write_both_fan_speed(th, -1);
 
 	kfree(th);
-
-	return 0;
 }
 
 static const struct i2c_device_id therm_adt746x_id[] = {

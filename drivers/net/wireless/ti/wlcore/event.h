@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * This file is part of wl1271
  *
@@ -5,21 +6,6 @@
  * Copyright (C) 2008-2009 Nokia Corporation
  *
  * Contact: Luciano Coelho <luciano.coelho@nokia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #ifndef __EVENT_H__
@@ -64,6 +50,14 @@ enum {
 
 #define NUM_OF_RSSI_SNR_TRIGGERS 8
 
+struct fw_logger_information {
+	__le32 max_buff_size;
+	__le32 actual_buff_size;
+	__le32 num_trace_drop;
+	__le32 buff_read_ptr;
+	__le32 buff_write_ptr;
+} __packed;
+
 struct wl1271;
 
 int wl1271_event_unmask(struct wl1271 *wl);
@@ -84,4 +78,5 @@ void wlcore_event_max_tx_failure(struct wl1271 *wl, unsigned long sta_bitmap);
 void wlcore_event_inactive_sta(struct wl1271 *wl, unsigned long sta_bitmap);
 void wlcore_event_roc_complete(struct wl1271 *wl);
 void wlcore_event_rssi_trigger(struct wl1271 *wl, s8 *metric_arr);
+int  wlcore_event_fw_logger(struct wl1271 *wl);
 #endif

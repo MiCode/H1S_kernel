@@ -1,21 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * (C) Copyright David Gibson <dwg@au1.ibm.com>, IBM Corporation.  2005.
- *
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of the
- * License, or (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307
- *                                                                   USA
  */
 
 #include "dtc.h"
@@ -49,7 +34,7 @@ static struct version_info {
 
 struct emitter {
 	void (*cell)(void *, cell_t);
-	void (*string)(void *, char *, int);
+	void (*string)(void *, const char *, int);
 	void (*align)(void *, int);
 	void (*data)(void *, struct data);
 	void (*beginnode)(void *, struct label *labels);
@@ -64,7 +49,7 @@ static void bin_emit_cell(void *e, cell_t val)
 	*dtbuf = data_append_cell(*dtbuf, val);
 }
 
-static void bin_emit_string(void *e, char *str, int len)
+static void bin_emit_string(void *e, const char *str, int len)
 {
 	struct data *dtbuf = e;
 
@@ -139,27 +124,20 @@ static void asm_emit_cell(void *e, cell_t val)
 {
 	FILE *f = e;
 
-	fprintf(f, "\t.byte 0x%02x; .byte 0x%02x; .byte 0x%02x; .byte 0x%02x\n",
+	fprintf(f, "\t.byte\t0x%02x\n" "\t.byte\t0x%02x\n"
+		"\t.byte\t0x%02x\n" "\t.byte\t0x%02x\n",
 		(val >> 24) & 0xff, (val >> 16) & 0xff,
 		(val >> 8) & 0xff, val & 0xff);
 }
 
-static void asm_emit_string(void *e, char *str, int len)
+static void asm_emit_string(void *e, const char *str, int len)
 {
 	FILE *f = e;
-	char c = 0;
 
-	if (len != 0) {
-		/* XXX: ewww */
-		c = str[len];
-		str[len] = '\0';
-	}
-
-	fprintf(f, "\t.string\t\"%s\"\n", str);
-
-	if (len != 0) {
-		str[len] = c;
-	}
+	if (len != 0)
+		fprintf(f, "\t.asciz\t\"%.*s\"\n", len, str);
+	else
+		fprintf(f, "\t.asciz\t\"%s\"\n", str);
 }
 
 static void asm_emit_align(void *e, int a)
@@ -172,14 +150,14 @@ static void asm_emit_align(void *e, int a)
 static void asm_emit_data(void *e, struct data d)
 {
 	FILE *f = e;
-	int off = 0;
+	unsigned int off = 0;
 	struct marker *m = d.markers;
 
 	for_each_marker_of_type(m, LABEL)
 		emit_offset_label(f, m->ref, m->offset);
 
 	while ((d.len - off) >= sizeof(uint32_t)) {
-		asm_emit_cell(e, fdt32_to_cpu(*((uint32_t *)(d.val+off))));
+		asm_emit_cell(e, dtb_ld32(d.val + off));
 		off += sizeof(uint32_t);
 	}
 
@@ -242,7 +220,7 @@ static struct emitter asm_emitter = {
 
 static int stringtable_insert(struct data *d, const char *str)
 {
-	int i;
+	unsigned int i;
 
 	/* FIXME: do this more efficiently? */
 
@@ -261,7 +239,7 @@ static void flatten_tree(struct node *tree, struct emitter *emit,
 {
 	struct property *prop;
 	struct node *child;
-	int seen_name_prop = 0;
+	bool seen_name_prop = false;
 
 	if (tree->deleted)
 		return;
@@ -279,7 +257,7 @@ static void flatten_tree(struct node *tree, struct emitter *emit,
 		int nameoff;
 
 		if (streq(prop->name, "name"))
-			seen_name_prop = 1;
+			seen_name_prop = true;
 
 		nameoff = stringtable_insert(strbuf, prop->name);
 
@@ -318,17 +296,16 @@ static struct data flatten_reserve_list(struct reserve_info *reservelist,
 {
 	struct reserve_info *re;
 	struct data d = empty_data;
-	static struct fdt_reserve_entry null_re = {0,0};
-	int    j;
+	unsigned int j;
 
 	for (re = reservelist; re; re = re->next) {
-		d = data_append_re(d, &re->re);
+		d = data_append_re(d, re->address, re->size);
 	}
 	/*
 	 * Add additional reserved slots if the user asked for them.
 	 */
 	for (j = 0; j < reservenum; j++) {
-		d = data_append_re(d, &null_re);
+		d = data_append_re(d, 0, 0);
 	}
 
 	return d;
@@ -366,10 +343,10 @@ static void make_fdt_header(struct fdt_header *fdt,
 		fdt->size_dt_struct = cpu_to_fdt32(dtsize);
 }
 
-void dt_to_blob(FILE *f, struct boot_info *bi, int version)
+void dt_to_blob(FILE *f, struct dt_info *dti, int version)
 {
 	struct version_info *vi = NULL;
-	int i;
+	unsigned int i;
 	struct data blob       = empty_data;
 	struct data reservebuf = empty_data;
 	struct data dtbuf      = empty_data;
@@ -384,28 +361,35 @@ void dt_to_blob(FILE *f, struct boot_info *bi, int version)
 	if (!vi)
 		die("Unknown device tree blob version %d\n", version);
 
-	flatten_tree(bi->dt, &bin_emitter, &dtbuf, &strbuf, vi);
+	flatten_tree(dti->dt, &bin_emitter, &dtbuf, &strbuf, vi);
 	bin_emit_cell(&dtbuf, FDT_END);
 
-	reservebuf = flatten_reserve_list(bi->reservelist, vi);
+	reservebuf = flatten_reserve_list(dti->reservelist, vi);
 
 	/* Make header */
 	make_fdt_header(&fdt, vi, reservebuf.len, dtbuf.len, strbuf.len,
-			bi->boot_cpuid_phys);
+			dti->boot_cpuid_phys);
 
 	/*
 	 * If the user asked for more space than is used, adjust the totalsize.
 	 */
 	if (minsize > 0) {
 		padlen = minsize - fdt32_to_cpu(fdt.totalsize);
-		if ((padlen < 0) && (quiet < 1))
-			fprintf(stderr,
-				"Warning: blob size %d >= minimum size %d\n",
-				fdt32_to_cpu(fdt.totalsize), minsize);
+		if (padlen < 0) {
+			padlen = 0;
+			if (quiet < 1)
+				fprintf(stderr,
+					"Warning: blob size %"PRIu32" >= minimum size %d\n",
+					fdt32_to_cpu(fdt.totalsize), minsize);
+		}
 	}
 
 	if (padsize > 0)
 		padlen = padsize;
+
+	if (alignsize > 0)
+		padlen = ALIGN(fdt32_to_cpu(fdt.totalsize) + padlen, alignsize)
+			- fdt32_to_cpu(fdt.totalsize);
 
 	if (padlen > 0) {
 		int tsize = fdt32_to_cpu(fdt.totalsize);
@@ -455,15 +439,15 @@ static void dump_stringtable_asm(FILE *f, struct data strbuf)
 
 	while (p < (strbuf.val + strbuf.len)) {
 		len = strlen(p);
-		fprintf(f, "\t.string \"%s\"\n", p);
+		fprintf(f, "\t.asciz \"%s\"\n", p);
 		p += len+1;
 	}
 }
 
-void dt_to_asm(FILE *f, struct boot_info *bi, int version)
+void dt_to_asm(FILE *f, struct dt_info *dti, int version)
 {
 	struct version_info *vi = NULL;
-	int i;
+	unsigned int i;
 	struct data strbuf = empty_data;
 	struct reserve_info *re;
 	const char *symprefix = "dt";
@@ -500,7 +484,7 @@ void dt_to_asm(FILE *f, struct boot_info *bi, int version)
 
 	if (vi->flags & FTF_BOOTCPUID) {
 		fprintf(f, "\t/* boot_cpuid_phys */\n");
-		asm_emit_cell(f, bi->boot_cpuid_phys);
+		asm_emit_cell(f, dti->boot_cpuid_phys);
 	}
 
 	if (vi->flags & FTF_STRTABSIZE) {
@@ -527,21 +511,21 @@ void dt_to_asm(FILE *f, struct boot_info *bi, int version)
 	fprintf(f, "/* Memory reserve map from source file */\n");
 
 	/*
-	 * Use .long on high and low halfs of u64s to avoid .quad
+	 * Use .long on high and low halves of u64s to avoid .quad
 	 * as it appears .quad isn't available in some assemblers.
 	 */
-	for (re = bi->reservelist; re; re = re->next) {
+	for (re = dti->reservelist; re; re = re->next) {
 		struct label *l;
 
 		for_each_label(re->labels, l) {
 			fprintf(f, "\t.globl\t%s\n", l->label);
 			fprintf(f, "%s:\n", l->label);
 		}
-		ASM_EMIT_BELONG(f, "0x%08x", (unsigned int)(re->re.address >> 32));
+		ASM_EMIT_BELONG(f, "0x%08x", (unsigned int)(re->address >> 32));
 		ASM_EMIT_BELONG(f, "0x%08x",
-				(unsigned int)(re->re.address & 0xffffffff));
-		ASM_EMIT_BELONG(f, "0x%08x", (unsigned int)(re->re.size >> 32));
-		ASM_EMIT_BELONG(f, "0x%08x", (unsigned int)(re->re.size & 0xffffffff));
+				(unsigned int)(re->address & 0xffffffff));
+		ASM_EMIT_BELONG(f, "0x%08x", (unsigned int)(re->size >> 32));
+		ASM_EMIT_BELONG(f, "0x%08x", (unsigned int)(re->size & 0xffffffff));
 	}
 	for (i = 0; i < reservenum; i++) {
 		fprintf(f, "\t.long\t0, 0\n\t.long\t0, 0\n");
@@ -550,7 +534,7 @@ void dt_to_asm(FILE *f, struct boot_info *bi, int version)
 	fprintf(f, "\t.long\t0, 0\n\t.long\t0, 0\n");
 
 	emit_label(f, symprefix, "struct_start");
-	flatten_tree(bi->dt, &asm_emitter, f, &strbuf, vi);
+	flatten_tree(dti->dt, &asm_emitter, f, &strbuf, vi);
 
 	fprintf(f, "\t/* FDT_END */\n");
 	asm_emit_cell(f, FDT_END);
@@ -572,6 +556,8 @@ void dt_to_asm(FILE *f, struct boot_info *bi, int version)
 	if (padsize > 0) {
 		fprintf(f, "\t.space\t%d, 0\n", padsize);
 	}
+	if (alignsize > 0)
+		asm_emit_align(f, alignsize);
 	emit_label(f, symprefix, "blob_abs_end");
 
 	data_free(strbuf);
@@ -600,7 +586,7 @@ static void flat_read_chunk(struct inbuf *inb, void *p, int len)
 
 static uint32_t flat_read_word(struct inbuf *inb)
 {
-	uint32_t val;
+	fdt32_t val;
 
 	assert(((inb->ptr - inb->base) % sizeof(val)) == 0);
 
@@ -692,7 +678,7 @@ static struct property *flat_read_property(struct inbuf *dtbuf,
 
 	val = flat_read_data(dtbuf, proplen);
 
-	return build_property(name, val);
+	return build_property(name, val, NULL);
 }
 
 
@@ -709,13 +695,15 @@ static struct reserve_info *flat_read_mem_reserve(struct inbuf *inb)
 	 * First pass, count entries.
 	 */
 	while (1) {
+		uint64_t address, size;
+
 		flat_read_chunk(inb, &re, sizeof(re));
-		re.address  = fdt64_to_cpu(re.address);
-		re.size = fdt64_to_cpu(re.size);
-		if (re.size == 0)
+		address  = fdt64_to_cpu(re.address);
+		size = fdt64_to_cpu(re.size);
+		if (size == 0)
 			break;
 
-		new = build_reserve_entry(re.address, re.size);
+		new = build_reserve_entry(address, size);
 		reservelist = add_reserve_entry(reservelist, new);
 	}
 
@@ -729,7 +717,7 @@ static char *nodename_from_path(const char *ppath, const char *cpath)
 
 	plen = strlen(ppath);
 
-	if (!strneq(ppath, cpath, plen))
+	if (!strstarts(cpath, ppath))
 		die("Path \"%s\" is not valid as a child of \"%s\"\n",
 		    cpath, ppath);
 
@@ -748,7 +736,7 @@ static struct node *unflatten_tree(struct inbuf *dtbuf,
 	char *flatname;
 	uint32_t val;
 
-	node = build_node(NULL, NULL);
+	node = build_node(NULL, NULL, NULL);
 
 	flatname = flat_read_string(dtbuf);
 
@@ -797,13 +785,18 @@ static struct node *unflatten_tree(struct inbuf *dtbuf,
 		}
 	} while (val != FDT_END_NODE);
 
+	if (node->name != flatname) {
+		free(flatname);
+	}
+
 	return node;
 }
 
 
-struct boot_info *dt_from_blob(const char *fname)
+struct dt_info *dt_from_blob(const char *fname)
 {
 	FILE *f;
+	fdt32_t magic_buf, totalsize_buf;
 	uint32_t magic, totalsize, version, size_dt, boot_cpuid_phys;
 	uint32_t off_dt, off_str, off_mem_rsvmap;
 	int rc;
@@ -820,7 +813,7 @@ struct boot_info *dt_from_blob(const char *fname)
 
 	f = srcfile_relative_open(fname, NULL);
 
-	rc = fread(&magic, sizeof(magic), 1, f);
+	rc = fread(&magic_buf, sizeof(magic_buf), 1, f);
 	if (ferror(f))
 		die("Error reading DT blob magic number: %s\n",
 		    strerror(errno));
@@ -831,11 +824,11 @@ struct boot_info *dt_from_blob(const char *fname)
 			die("Mysterious short read reading magic number\n");
 	}
 
-	magic = fdt32_to_cpu(magic);
+	magic = fdt32_to_cpu(magic_buf);
 	if (magic != FDT_MAGIC)
 		die("Blob has incorrect magic number\n");
 
-	rc = fread(&totalsize, sizeof(totalsize), 1, f);
+	rc = fread(&totalsize_buf, sizeof(totalsize_buf), 1, f);
 	if (ferror(f))
 		die("Error reading DT blob size: %s\n", strerror(errno));
 	if (rc < 1) {
@@ -845,7 +838,7 @@ struct boot_info *dt_from_blob(const char *fname)
 			die("Mysterious short read reading blob size\n");
 	}
 
-	totalsize = fdt32_to_cpu(totalsize);
+	totalsize = fdt32_to_cpu(totalsize_buf);
 	if (totalsize < FDT_V1_SIZE)
 		die("DT blob size (%d) is too small\n", totalsize);
 
@@ -889,7 +882,7 @@ struct boot_info *dt_from_blob(const char *fname)
 
 	if (version >= 3) {
 		uint32_t size_str = fdt32_to_cpu(fdt->size_dt_strings);
-		if (off_str+size_str > totalsize)
+		if ((off_str+size_str < off_str) || (off_str+size_str > totalsize))
 			die("String table extends past total size\n");
 		inbuf_init(&strbuf, blob + off_str, blob + off_str + size_str);
 	} else {
@@ -898,7 +891,7 @@ struct boot_info *dt_from_blob(const char *fname)
 
 	if (version >= 17) {
 		size_dt = fdt32_to_cpu(fdt->size_dt_struct);
-		if (off_dt+size_dt > totalsize)
+		if ((off_dt+size_dt < off_dt) || (off_dt+size_dt > totalsize))
 			die("Structure block extends past total size\n");
 	}
 
@@ -929,5 +922,5 @@ struct boot_info *dt_from_blob(const char *fname)
 
 	fclose(f);
 
-	return build_boot_info(reservelist, tree, boot_cpuid_phys);
+	return build_dt_info(DTSF_V1, reservelist, tree, boot_cpuid_phys);
 }

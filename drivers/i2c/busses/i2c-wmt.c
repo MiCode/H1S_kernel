@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Wondermedia I2C Master Mode Driver
  *
@@ -5,11 +6,6 @@
  *
  *  Derived from GPLv2+ licensed source:
  *  - Copyright (C) 2008 WonderMedia Technologies, Inc.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2, or
- *  (at your option) any later version. as published by the Free Software
- *  Foundation
  */
 
 #include <linux/clk.h>
@@ -128,7 +124,8 @@ static int wmt_i2c_write(struct i2c_adapter *adap, struct i2c_msg *pmsg,
 {
 	struct wmt_i2c_dev *i2c_dev = i2c_get_adapdata(adap);
 	u16 val, tcr_val;
-	int ret, wait_result;
+	int ret;
+	unsigned long wait_result;
 	int xfer_len = 0;
 
 	if (!(pmsg->flags & I2C_M_NOSTART)) {
@@ -177,7 +174,7 @@ static int wmt_i2c_write(struct i2c_adapter *adap, struct i2c_msg *pmsg,
 
 	while (xfer_len < pmsg->len) {
 		wait_result = wait_for_completion_timeout(&i2c_dev->complete,
-							  500 * HZ / 1000);
+							msecs_to_jiffies(500));
 
 		if (wait_result == 0)
 			return -ETIMEDOUT;
@@ -218,7 +215,8 @@ static int wmt_i2c_read(struct i2c_adapter *adap, struct i2c_msg *pmsg,
 {
 	struct wmt_i2c_dev *i2c_dev = i2c_get_adapdata(adap);
 	u16 val, tcr_val;
-	int ret, wait_result;
+	int ret;
+	unsigned long wait_result;
 	u32 xfer_len = 0;
 
 	if (!(pmsg->flags & I2C_M_NOSTART)) {
@@ -266,7 +264,7 @@ static int wmt_i2c_read(struct i2c_adapter *adap, struct i2c_msg *pmsg,
 
 	while (xfer_len < pmsg->len) {
 		wait_result = wait_for_completion_timeout(&i2c_dev->complete,
-							  500 * HZ / 1000);
+							msecs_to_jiffies(500));
 
 		if (!wait_result)
 			return -ETIMEDOUT;
@@ -374,18 +372,14 @@ static int wmt_i2c_probe(struct platform_device *pdev)
 	struct device_node *np = pdev->dev.of_node;
 	struct wmt_i2c_dev *i2c_dev;
 	struct i2c_adapter *adap;
-	struct resource *res;
 	int err;
 	u32 clk_rate;
 
 	i2c_dev = devm_kzalloc(&pdev->dev, sizeof(*i2c_dev), GFP_KERNEL);
-	if (!i2c_dev) {
-		dev_err(&pdev->dev, "device memory allocation failed\n");
+	if (!i2c_dev)
 		return -ENOMEM;
-	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	i2c_dev->base = devm_ioremap_resource(&pdev->dev, res);
+	i2c_dev->base = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
 	if (IS_ERR(i2c_dev->base))
 		return PTR_ERR(i2c_dev->base);
 
@@ -403,7 +397,7 @@ static int wmt_i2c_probe(struct platform_device *pdev)
 
 	i2c_dev->mode = I2C_MODE_STANDARD;
 	err = of_property_read_u32(np, "clock-frequency", &clk_rate);
-	if ((!err) && (clk_rate == 400000))
+	if (!err && (clk_rate == I2C_MAX_FAST_MODE_FREQ))
 		i2c_dev->mode = I2C_MODE_FAST;
 
 	i2c_dev->dev = &pdev->dev;
@@ -417,7 +411,7 @@ static int wmt_i2c_probe(struct platform_device *pdev)
 
 	adap = &i2c_dev->adapter;
 	i2c_set_adapdata(adap, i2c_dev);
-	strlcpy(adap->name, "WMT I2C adapter", sizeof(adap->name));
+	strscpy(adap->name, "WMT I2C adapter", sizeof(adap->name));
 	adap->owner = THIS_MODULE;
 	adap->algo = &wmt_i2c_algo;
 	adap->dev.parent = &pdev->dev;
@@ -432,17 +426,15 @@ static int wmt_i2c_probe(struct platform_device *pdev)
 	}
 
 	err = i2c_add_adapter(adap);
-	if (err) {
-		dev_err(&pdev->dev, "failed to add adapter\n");
+	if (err)
 		return err;
-	}
 
 	platform_set_drvdata(pdev, i2c_dev);
 
 	return 0;
 }
 
-static int wmt_i2c_remove(struct platform_device *pdev)
+static void wmt_i2c_remove(struct platform_device *pdev)
 {
 	struct wmt_i2c_dev *i2c_dev = platform_get_drvdata(pdev);
 
@@ -450,21 +442,18 @@ static int wmt_i2c_remove(struct platform_device *pdev)
 	writew(0, i2c_dev->base + REG_IMR);
 	clk_disable_unprepare(i2c_dev->clk);
 	i2c_del_adapter(&i2c_dev->adapter);
-
-	return 0;
 }
 
-static struct of_device_id wmt_i2c_dt_ids[] = {
+static const struct of_device_id wmt_i2c_dt_ids[] = {
 	{ .compatible = "wm,wm8505-i2c" },
 	{ /* Sentinel */ },
 };
 
 static struct platform_driver wmt_i2c_driver = {
 	.probe		= wmt_i2c_probe,
-	.remove		= wmt_i2c_remove,
+	.remove_new	= wmt_i2c_remove,
 	.driver		= {
 		.name	= "wmt-i2c",
-		.owner	= THIS_MODULE,
 		.of_match_table = wmt_i2c_dt_ids,
 	},
 };

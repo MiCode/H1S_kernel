@@ -10,6 +10,8 @@
 
 #include <linux/init.h>
 #include <linux/sched.h>
+#include <linux/sched/hotplug.h>
+#include <linux/sched/task_stack.h>
 #include <linux/mm.h>
 #include <linux/delay.h>
 #include <linux/smp.h>
@@ -23,18 +25,19 @@
 #include <linux/linkage.h>
 #include <linux/bug.h>
 #include <linux/kernel.h>
+#include <linux/kexec.h>
+#include <linux/irq.h>
 
 #include <asm/time.h>
-#include <asm/pgtable.h>
 #include <asm/processor.h>
 #include <asm/bootinfo.h>
-#include <asm/pmon.h>
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
 #include <asm/mipsregs.h>
 #include <asm/bmips.h>
 #include <asm/traps.h>
 #include <asm/barrier.h>
+#include <asm/cpu-features.h>
 
 static int __maybe_unused max_cpus = 1;
 
@@ -42,8 +45,16 @@ static int __maybe_unused max_cpus = 1;
 int bmips_smp_enabled = 1;
 int bmips_cpu_offset;
 cpumask_t bmips_booted_mask;
+unsigned long bmips_tp1_irqs = IE_IRQ1;
+
+#define RESET_FROM_KSEG0		0x80080800
+#define RESET_FROM_KSEG1		0xa0080800
+
+static void bmips_set_reset_vec(int cpu, u32 val);
 
 #ifdef CONFIG_SMP
+
+#include <asm/smp.h>
 
 /* initial $sp, $gp - used by arch/mips/kernel/bmips_vec.S */
 unsigned long bmips_smp_boot_sp;
@@ -126,17 +137,24 @@ static void __init bmips_smp_setup(void)
 	if (!board_ebase_setup)
 		board_ebase_setup = &bmips_ebase_setup;
 
-	__cpu_number_map[boot_cpu] = 0;
-	__cpu_logical_map[0] = boot_cpu;
+	if (max_cpus > 1) {
+		__cpu_number_map[boot_cpu] = 0;
+		__cpu_logical_map[0] = boot_cpu;
 
-	for (i = 0; i < max_cpus; i++) {
-		if (i != boot_cpu) {
-			__cpu_number_map[i] = cpu;
-			__cpu_logical_map[cpu] = i;
-			cpu++;
+		for (i = 0; i < max_cpus; i++) {
+			if (i != boot_cpu) {
+				__cpu_number_map[i] = cpu;
+				__cpu_logical_map[cpu] = i;
+				cpu++;
+			}
+			set_cpu_possible(i, 1);
+			set_cpu_present(i, 1);
 		}
-		set_cpu_possible(i, 1);
-		set_cpu_present(i, 1);
+	} else {
+		__cpu_number_map[0] = boot_cpu;
+		__cpu_logical_map[0] = 0;
+		set_cpu_possible(0, 1);
+		set_cpu_present(0, 1);
 	}
 }
 
@@ -159,18 +177,18 @@ static void bmips_prepare_cpus(unsigned int max_cpus)
 		return;
 	}
 
-	if (request_irq(IPI0_IRQ, bmips_ipi_interrupt, IRQF_PERCPU,
-			"smp_ipi0", NULL))
+	if (request_irq(IPI0_IRQ, bmips_ipi_interrupt,
+			IRQF_PERCPU | IRQF_NO_SUSPEND, "smp_ipi0", NULL))
 		panic("Can't request IPI0 interrupt");
-	if (request_irq(IPI1_IRQ, bmips_ipi_interrupt, IRQF_PERCPU,
-			"smp_ipi1", NULL))
+	if (request_irq(IPI1_IRQ, bmips_ipi_interrupt,
+			IRQF_PERCPU | IRQF_NO_SUSPEND, "smp_ipi1", NULL))
 		panic("Can't request IPI1 interrupt");
 }
 
 /*
  * Tell the hardware to boot CPUx - runs on CPU0
  */
-static void bmips_boot_secondary(int cpu, struct task_struct *idle)
+static int bmips_boot_secondary(int cpu, struct task_struct *idle)
 {
 	bmips_smp_boot_sp = __KSTK_TOS(idle);
 	bmips_smp_boot_gp = (unsigned long)task_thread_info(idle);
@@ -194,6 +212,9 @@ static void bmips_boot_secondary(int cpu, struct task_struct *idle)
 	pr_info("SMP: Booting CPU%d...\n", cpu);
 
 	if (cpumask_test_cpu(cpu, &bmips_booted_mask)) {
+		/* kseg1 might not exist if this CPU enabled XKS01 */
+		bmips_set_reset_vec(cpu, RESET_FROM_KSEG0);
+
 		switch (current_cpu_type()) {
 		case CPU_BMIPS4350:
 		case CPU_BMIPS4380:
@@ -203,8 +224,9 @@ static void bmips_boot_secondary(int cpu, struct task_struct *idle)
 			bmips5000_send_ipi_single(cpu, 0);
 			break;
 		}
-	}
-	else {
+	} else {
+		bmips_set_reset_vec(cpu, RESET_FROM_KSEG1);
+
 		switch (current_cpu_type()) {
 		case CPU_BMIPS4350:
 		case CPU_BMIPS4380:
@@ -213,21 +235,13 @@ static void bmips_boot_secondary(int cpu, struct task_struct *idle)
 				set_c0_brcm_cmt_ctrl(0x01);
 			break;
 		case CPU_BMIPS5000:
-			if (cpu & 0x01)
-				write_c0_brcm_action(ACTION_BOOT_THREAD(cpu));
-			else {
-				/*
-				 * core N thread 0 was already booted; just
-				 * pulse the NMI line
-				 */
-				bmips_write_zscm_reg(0x210, 0xc0000000);
-				udelay(10);
-				bmips_write_zscm_reg(0x210, 0x00);
-			}
+			write_c0_brcm_action(ACTION_BOOT_THREAD(cpu));
 			break;
 		}
 		cpumask_set_cpu(cpu, &bmips_booted_mask);
 	}
+
+	return 0;
 }
 
 /*
@@ -235,32 +249,16 @@ static void bmips_boot_secondary(int cpu, struct task_struct *idle)
  */
 static void bmips_init_secondary(void)
 {
-	/* move NMI vector to kseg0, in case XKS01 is enabled */
-
-	void __iomem *cbr;
-	unsigned long old_vec;
-	unsigned long relo_vector;
-	int boot_cpu;
+	bmips_cpu_setup();
 
 	switch (current_cpu_type()) {
 	case CPU_BMIPS4350:
 	case CPU_BMIPS4380:
-		cbr = BMIPS_GET_CBR();
-
-		boot_cpu = !!(read_c0_brcm_cmt_local() & (1 << 31));
-		relo_vector = boot_cpu ? BMIPS_RELO_VECTOR_CONTROL_0 :
-				  BMIPS_RELO_VECTOR_CONTROL_1;
-
-		old_vec = __raw_readl(cbr + relo_vector);
-		__raw_writel(old_vec & ~0x20000000, cbr + relo_vector);
-
 		clear_c0_cause(smp_processor_id() ? C_SW1 : C_SW0);
 		break;
 	case CPU_BMIPS5000:
-		write_c0_brcm_bootvec(read_c0_brcm_bootvec() &
-			(smp_processor_id() & 0x01 ? ~0x20000000 : ~0x2000));
-
 		write_c0_brcm_action(ACTION_CLR_IPI(smp_processor_id(), 0));
+		cpu_set_core(&current_cpu_data, (read_c0_brcm_config() >> 25) & 3);
 		break;
 	}
 }
@@ -276,15 +274,8 @@ static void bmips_smp_finish(void)
 	write_c0_compare(read_c0_count() + mips_hpt_frequency / HZ);
 
 	irq_enable_hazard();
-	set_c0_status(IE_SW0 | IE_SW1 | IE_IRQ1 | IE_IRQ5 | ST0_IE);
+	set_c0_status(IE_SW0 | IE_SW1 | bmips_tp1_irqs | IE_IRQ5 | ST0_IE);
 	irq_enable_hazard();
-}
-
-/*
- * Runs on CPU0 after all CPUs have been booted
- */
-static void bmips_cpus_done(void)
-{
 }
 
 /*
@@ -309,7 +300,7 @@ static irqreturn_t bmips5000_ipi_interrupt(int irq, void *dev_id)
 	if (action == 0)
 		scheduler_ipi();
 	else
-		smp_call_function_interrupt();
+		generic_smp_call_function_interrupt();
 
 	return IRQ_HANDLED;
 }
@@ -353,7 +344,7 @@ static irqreturn_t bmips43xx_ipi_interrupt(int irq, void *dev_id)
 	int action, cpu = irq - IPI0_IRQ;
 
 	spin_lock_irqsave(&ipi_lock, flags);
-	action = __get_cpu_var(ipi_action_mask);
+	action = __this_cpu_read(ipi_action_mask);
 	per_cpu(ipi_action_mask, cpu) = 0;
 	clear_c0_cause(cpu ? C_SW1 : C_SW0);
 	spin_unlock_irqrestore(&ipi_lock, flags);
@@ -361,7 +352,7 @@ static irqreturn_t bmips43xx_ipi_interrupt(int irq, void *dev_id)
 	if (action & SMP_RESCHEDULE_YOURSELF)
 		scheduler_ipi();
 	if (action & SMP_CALL_FUNCTION)
-		smp_call_function_interrupt();
+		generic_smp_call_function_interrupt();
 
 	return IRQ_HANDLED;
 }
@@ -381,13 +372,12 @@ static int bmips_cpu_disable(void)
 {
 	unsigned int cpu = smp_processor_id();
 
-	if (cpu == 0)
-		return -EBUSY;
-
 	pr_info("SMP: CPU%d is offline\n", cpu);
 
 	set_cpu_online(cpu, false);
-	cpu_clear(cpu, cpu_callin_map);
+	calculate_cpu_foreign_map();
+	irq_migrate_all_off_this_cpu();
+	clear_c0_status(IE_IRQ5);
 
 	local_flush_tlb_all();
 	local_flush_icache_range(0, ~0);
@@ -402,6 +392,7 @@ static void bmips_cpu_die(unsigned int cpu)
 void __ref play_dead(void)
 {
 	idle_task_exit();
+	cpuhp_ap_report_dead();
 
 	/* flush data cache */
 	_dma_cache_wback_inv(0, ~0);
@@ -412,7 +403,8 @@ void __ref play_dead(void)
 	 * IRQ handlers; this clears ST0_IE and returns immediately.
 	 */
 	clear_c0_cause(CAUSEF_IV | C_SW0 | C_SW1);
-	change_c0_status(IE_IRQ5 | IE_IRQ1 | IE_SW0 | IE_SW1 | ST0_IE | ST0_BEV,
+	change_c0_status(
+		IE_IRQ5 | bmips_tp1_irqs | IE_SW0 | IE_SW1 | ST0_IE | ST0_BEV,
 		IE_SW0 | IE_SW1 | ST0_IE | ST0_BEV);
 	irq_disable_hazard();
 
@@ -424,37 +416,43 @@ void __ref play_dead(void)
 	"	wait\n"
 	"	j	bmips_secondary_reentry\n"
 	: : : "memory");
+
+	BUG();
 }
 
 #endif /* CONFIG_HOTPLUG_CPU */
 
-struct plat_smp_ops bmips43xx_smp_ops = {
+const struct plat_smp_ops bmips43xx_smp_ops = {
 	.smp_setup		= bmips_smp_setup,
 	.prepare_cpus		= bmips_prepare_cpus,
 	.boot_secondary		= bmips_boot_secondary,
 	.smp_finish		= bmips_smp_finish,
 	.init_secondary		= bmips_init_secondary,
-	.cpus_done		= bmips_cpus_done,
 	.send_ipi_single	= bmips43xx_send_ipi_single,
 	.send_ipi_mask		= bmips43xx_send_ipi_mask,
 #ifdef CONFIG_HOTPLUG_CPU
 	.cpu_disable		= bmips_cpu_disable,
 	.cpu_die		= bmips_cpu_die,
 #endif
+#ifdef CONFIG_KEXEC
+	.kexec_nonboot_cpu	= kexec_nonboot_cpu_jump,
+#endif
 };
 
-struct plat_smp_ops bmips5000_smp_ops = {
+const struct plat_smp_ops bmips5000_smp_ops = {
 	.smp_setup		= bmips_smp_setup,
 	.prepare_cpus		= bmips_prepare_cpus,
 	.boot_secondary		= bmips_boot_secondary,
 	.smp_finish		= bmips_smp_finish,
 	.init_secondary		= bmips_init_secondary,
-	.cpus_done		= bmips_cpus_done,
 	.send_ipi_single	= bmips5000_send_ipi_single,
 	.send_ipi_mask		= bmips5000_send_ipi_mask,
 #ifdef CONFIG_HOTPLUG_CPU
 	.cpu_disable		= bmips_cpu_disable,
 	.cpu_die		= bmips_cpu_die,
+#endif
+#ifdef CONFIG_KEXEC
+	.kexec_nonboot_cpu	= kexec_nonboot_cpu_jump,
 #endif
 };
 
@@ -469,23 +467,74 @@ struct plat_smp_ops bmips5000_smp_ops = {
 static void bmips_wr_vec(unsigned long dst, char *start, char *end)
 {
 	memcpy((void *)dst, start, end - start);
-	dma_cache_wback((unsigned long)start, end - start);
+	dma_cache_wback(dst, end - start);
 	local_flush_icache_range(dst, dst + (end - start));
 	instruction_hazard();
 }
 
 static inline void bmips_nmi_handler_setup(void)
 {
-	bmips_wr_vec(BMIPS_NMI_RESET_VEC, &bmips_reset_nmi_vec,
-		&bmips_reset_nmi_vec_end);
-	bmips_wr_vec(BMIPS_WARM_RESTART_VEC, &bmips_smp_int_vec,
-		&bmips_smp_int_vec_end);
+	bmips_wr_vec(BMIPS_NMI_RESET_VEC, bmips_reset_nmi_vec,
+		bmips_reset_nmi_vec_end);
+	bmips_wr_vec(BMIPS_WARM_RESTART_VEC, bmips_smp_int_vec,
+		bmips_smp_int_vec_end);
+}
+
+struct reset_vec_info {
+	int cpu;
+	u32 val;
+};
+
+static void bmips_set_reset_vec_remote(void *vinfo)
+{
+	struct reset_vec_info *info = vinfo;
+	int shift = info->cpu & 0x01 ? 16 : 0;
+	u32 mask = ~(0xffff << shift), val = info->val >> 16;
+
+	preempt_disable();
+	if (smp_processor_id() > 0) {
+		smp_call_function_single(0, &bmips_set_reset_vec_remote,
+					 info, 1);
+	} else {
+		if (info->cpu & 0x02) {
+			/* BMIPS5200 "should" use mask/shift, but it's buggy */
+			bmips_write_zscm_reg(0xa0, (val << 16) | val);
+			bmips_read_zscm_reg(0xa0);
+		} else {
+			write_c0_brcm_bootvec((read_c0_brcm_bootvec() & mask) |
+					      (val << shift));
+		}
+	}
+	preempt_enable();
+}
+
+static void bmips_set_reset_vec(int cpu, u32 val)
+{
+	struct reset_vec_info info;
+
+	if (current_cpu_type() == CPU_BMIPS5000) {
+		/* this needs to run from CPU0 (which is always online) */
+		info.cpu = cpu;
+		info.val = val;
+		bmips_set_reset_vec_remote(&info);
+	} else {
+		void __iomem *cbr = BMIPS_GET_CBR();
+
+		if (cpu == 0)
+			__raw_writel(val, cbr + BMIPS_RELO_VECTOR_CONTROL_0);
+		else {
+			if (current_cpu_type() != CPU_BMIPS4380)
+				return;
+			__raw_writel(val, cbr + BMIPS_RELO_VECTOR_CONTROL_1);
+		}
+	}
+	__sync();
+	back_to_back_c0_hazard();
 }
 
 void bmips_ebase_setup(void)
 {
 	unsigned long new_ebase = ebase;
-	void __iomem __maybe_unused *cbr;
 
 	BUG_ON(ebase != CKSEG0);
 
@@ -505,15 +554,14 @@ void bmips_ebase_setup(void)
 			&bmips_smp_int_vec, 0x80);
 		__sync();
 		return;
+	case CPU_BMIPS3300:
 	case CPU_BMIPS4380:
 		/*
 		 * 0x8000_0000: reset/NMI (initially in kseg1)
 		 * 0x8000_0400: normal vectors
 		 */
 		new_ebase = 0x80000400;
-		cbr = BMIPS_GET_CBR();
-		__raw_writel(0x80080800, cbr + BMIPS_RELO_VECTOR_CONTROL_0);
-		__raw_writel(0xa0080800, cbr + BMIPS_RELO_VECTOR_CONTROL_1);
+		bmips_set_reset_vec(0, RESET_FROM_KSEG0);
 		break;
 	case CPU_BMIPS5000:
 		/*
@@ -521,10 +569,8 @@ void bmips_ebase_setup(void)
 		 * 0x8000_1000: normal vectors
 		 */
 		new_ebase = 0x80001000;
-		write_c0_brcm_bootvec(0xa0088008);
+		bmips_set_reset_vec(0, RESET_FROM_KSEG0);
 		write_c0_ebase(new_ebase);
-		if (max_cpus > 2)
-			bmips_write_zscm_reg(0xa0, 0xa008a008);
 		break;
 	default:
 		return;
@@ -541,4 +587,91 @@ asmlinkage void __weak plat_wired_tlb_setup(void)
 	 * Kernel stacks and other important data might only be accessible
 	 * once the wired entries are present.
 	 */
+}
+
+void bmips_cpu_setup(void)
+{
+	void __iomem __maybe_unused *cbr = BMIPS_GET_CBR();
+	u32 __maybe_unused cfg;
+
+	switch (current_cpu_type()) {
+	case CPU_BMIPS3300:
+		/* Set BIU to async mode */
+		set_c0_brcm_bus_pll(BIT(22));
+		__sync();
+
+		/* put the BIU back in sync mode */
+		clear_c0_brcm_bus_pll(BIT(22));
+
+		/* clear BHTD to enable branch history table */
+		clear_c0_brcm_reset(BIT(16));
+
+		/* Flush and enable RAC */
+		cfg = __raw_readl(cbr + BMIPS_RAC_CONFIG);
+		__raw_writel(cfg | 0x100, cbr + BMIPS_RAC_CONFIG);
+		__raw_readl(cbr + BMIPS_RAC_CONFIG);
+
+		cfg = __raw_readl(cbr + BMIPS_RAC_CONFIG);
+		__raw_writel(cfg | 0xf, cbr + BMIPS_RAC_CONFIG);
+		__raw_readl(cbr + BMIPS_RAC_CONFIG);
+
+		cfg = __raw_readl(cbr + BMIPS_RAC_ADDRESS_RANGE);
+		__raw_writel(cfg | 0x0fff0000, cbr + BMIPS_RAC_ADDRESS_RANGE);
+		__raw_readl(cbr + BMIPS_RAC_ADDRESS_RANGE);
+		break;
+
+	case CPU_BMIPS4380:
+		/* CBG workaround for early BMIPS4380 CPUs */
+		switch (read_c0_prid()) {
+		case 0x2a040:
+		case 0x2a042:
+		case 0x2a044:
+		case 0x2a060:
+			cfg = __raw_readl(cbr + BMIPS_L2_CONFIG);
+			__raw_writel(cfg & ~0x07000000, cbr + BMIPS_L2_CONFIG);
+			__raw_readl(cbr + BMIPS_L2_CONFIG);
+		}
+
+		/* clear BHTD to enable branch history table */
+		clear_c0_brcm_config_0(BIT(21));
+
+		/* XI/ROTR enable */
+		set_c0_brcm_config_0(BIT(23));
+		set_c0_brcm_cmt_ctrl(BIT(15));
+		break;
+
+	case CPU_BMIPS5000:
+		/* enable RDHWR, BRDHWR */
+		set_c0_brcm_config(BIT(17) | BIT(21));
+
+		/* Disable JTB */
+		__asm__ __volatile__(
+		"	.set	noreorder\n"
+		"	li	$8, 0x5a455048\n"
+		"	.word	0x4088b00f\n"	/* mtc0	t0, $22, 15 */
+		"	.word	0x4008b008\n"	/* mfc0	t0, $22, 8 */
+		"	li	$9, 0x00008000\n"
+		"	or	$8, $8, $9\n"
+		"	.word	0x4088b008\n"	/* mtc0	t0, $22, 8 */
+		"	sync\n"
+		"	li	$8, 0x0\n"
+		"	.word	0x4088b00f\n"	/* mtc0	t0, $22, 15 */
+		"	.set	reorder\n"
+		: : : "$8", "$9");
+
+		/* XI enable */
+		set_c0_brcm_config(BIT(27));
+
+		/* enable MIPS32R2 ROR instruction for XI TLB handlers */
+		__asm__ __volatile__(
+		"	li	$8, 0x5a455048\n"
+		"	.word	0x4088b00f\n"	/* mtc0 $8, $22, 15 */
+		"	nop; nop; nop\n"
+		"	.word	0x4008b008\n"	/* mfc0 $8, $22, 8 */
+		"	lui	$9, 0x0100\n"
+		"	or	$8, $9\n"
+		"	.word	0x4088b008\n"	/* mtc0 $8, $22, 8 */
+		: : : "$8", "$9");
+		break;
+	}
 }

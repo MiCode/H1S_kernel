@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/arch/ia64/kernel/irq_ia64.c
  *
@@ -15,6 +16,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/pgtable.h>
 
 #include <linux/jiffies.h>
 #include <linux/errno.h>
@@ -36,13 +38,7 @@
 #include <asm/intrinsics.h>
 #include <asm/io.h>
 #include <asm/hw_irq.h>
-#include <asm/machvec.h>
-#include <asm/pgtable.h>
 #include <asm/tlbflush.h>
-
-#ifdef CONFIG_PERFMON
-# include <asm/perfmon.h>
-#endif
 
 #define IRQ_DEBUG	0
 
@@ -52,7 +48,6 @@
 #define IRQ_USED		(1)
 #define IRQ_RSVD		(2)
 
-/* These can be overridden in platform_irq_init */
 int ia64_first_device_vector = IA64_DEF_FIRST_DEVICE_VECTOR;
 int ia64_last_device_vector = IA64_DEF_LAST_DEVICE_VECTOR;
 
@@ -93,14 +88,6 @@ static int irq_status[NR_IRQS] = {
 	[0 ... NR_IRQS -1] = IRQ_UNUSED
 };
 
-int check_irq_used(int irq)
-{
-	if (irq_status[irq] == IRQ_USED)
-		return 1;
-
-	return -1;
-}
-
 static inline int find_unassigned_irq(void)
 {
 	int irq;
@@ -117,13 +104,13 @@ static inline int find_unassigned_vector(cpumask_t domain)
 	int pos, vector;
 
 	cpumask_and(&mask, &domain, cpu_online_mask);
-	if (cpus_empty(mask))
+	if (cpumask_empty(&mask))
 		return -EINVAL;
 
 	for (pos = 0; pos < IA64_NUM_DEVICE_VECTORS; pos++) {
 		vector = IA64_FIRST_DEVICE_VECTOR + pos;
-		cpus_and(mask, domain, vector_table[vector]);
-		if (!cpus_empty(mask))
+		cpumask_and(&mask, &domain, &vector_table[vector]);
+		if (!cpumask_empty(&mask))
 			continue;
 		return vector;
 	}
@@ -140,18 +127,18 @@ static int __bind_irq_vector(int irq, int vector, cpumask_t domain)
 	BUG_ON((unsigned)vector >= IA64_NUM_VECTORS);
 
 	cpumask_and(&mask, &domain, cpu_online_mask);
-	if (cpus_empty(mask))
+	if (cpumask_empty(&mask))
 		return -EINVAL;
-	if ((cfg->vector == vector) && cpus_equal(cfg->domain, domain))
+	if ((cfg->vector == vector) && cpumask_equal(&cfg->domain, &domain))
 		return 0;
 	if (cfg->vector != IRQ_VECTOR_UNASSIGNED)
 		return -EBUSY;
-	for_each_cpu_mask(cpu, mask)
+	for_each_cpu(cpu, &mask)
 		per_cpu(vector_irq, cpu)[vector] = irq;
 	cfg->vector = vector;
 	cfg->domain = domain;
 	irq_status[irq] = IRQ_USED;
-	cpus_or(vector_table[vector], vector_table[vector], domain);
+	cpumask_or(&vector_table[vector], &vector_table[vector], &domain);
 	return 0;
 }
 
@@ -169,7 +156,6 @@ int bind_irq_vector(int irq, int vector, cpumask_t domain)
 static void __clear_irq_vector(int irq)
 {
 	int vector, cpu;
-	cpumask_t mask;
 	cpumask_t domain;
 	struct irq_cfg *cfg = &irq_cfg[irq];
 
@@ -177,13 +163,12 @@ static void __clear_irq_vector(int irq)
 	BUG_ON(cfg->vector == IRQ_VECTOR_UNASSIGNED);
 	vector = cfg->vector;
 	domain = cfg->domain;
-	cpumask_and(&mask, &cfg->domain, cpu_online_mask);
-	for_each_cpu_mask(cpu, mask)
+	for_each_cpu_and(cpu, &cfg->domain, cpu_online_mask)
 		per_cpu(vector_irq, cpu)[vector] = -1;
 	cfg->vector = IRQ_VECTOR_UNASSIGNED;
 	cfg->domain = CPU_MASK_NONE;
 	irq_status[irq] = IRQ_UNUSED;
-	cpus_andnot(vector_table[vector], vector_table[vector], domain);
+	cpumask_andnot(&vector_table[vector], &vector_table[vector], &domain);
 }
 
 static void clear_irq_vector(int irq)
@@ -252,14 +237,14 @@ void __setup_vector_irq(int cpu)
 		per_cpu(vector_irq, cpu)[vector] = -1;
 	/* Mark the inuse vectors */
 	for (irq = 0; irq < NR_IRQS; ++irq) {
-		if (!cpu_isset(cpu, irq_cfg[irq].domain))
+		if (!cpumask_test_cpu(cpu, &irq_cfg[irq].domain))
 			continue;
 		vector = irq_to_vector(irq);
 		per_cpu(vector_irq, cpu)[vector] = irq;
 	}
 }
 
-#if defined(CONFIG_SMP) && (defined(CONFIG_IA64_GENERIC) || defined(CONFIG_IA64_DIG))
+#ifdef CONFIG_SMP
 
 static enum vector_domain_type {
 	VECTOR_DOMAIN_NONE,
@@ -269,7 +254,7 @@ static enum vector_domain_type {
 static cpumask_t vector_allocation_domain(int cpu)
 {
 	if (vector_domain_type == VECTOR_DOMAIN_PERCPU)
-		return cpumask_of_cpu(cpu);
+		return *cpumask_of(cpu);
 	return CPU_MASK_ALL;
 }
 
@@ -283,7 +268,7 @@ static int __irq_prepare_move(int irq, int cpu)
 		return -EBUSY;
 	if (cfg->vector == IRQ_VECTOR_UNASSIGNED || !cpu_online(cpu))
 		return -EINVAL;
-	if (cpu_isset(cpu, cfg->domain))
+	if (cpumask_test_cpu(cpu, &cfg->domain))
 		return 0;
 	domain = vector_allocation_domain(cpu);
 	vector = find_unassigned_vector(domain);
@@ -317,13 +302,13 @@ void irq_complete_move(unsigned irq)
 	if (likely(!cfg->move_in_progress))
 		return;
 
-	if (unlikely(cpu_isset(smp_processor_id(), cfg->old_domain)))
+	if (unlikely(cpumask_test_cpu(smp_processor_id(), &cfg->old_domain)))
 		return;
 
 	cpumask_and(&cleanup_mask, &cfg->old_domain, cpu_online_mask);
-	cfg->move_cleanup_count = cpus_weight(cleanup_mask);
-	for_each_cpu_mask(i, cleanup_mask)
-		platform_send_ipi(i, IA64_IRQ_MOVE_VECTOR, IA64_IPI_DM_INT, 0);
+	cfg->move_cleanup_count = cpumask_weight(&cleanup_mask);
+	for_each_cpu(i, &cleanup_mask)
+		ia64_send_ipi(i, IA64_IRQ_MOVE_VECTOR, IA64_IPI_DM_INT, 0);
 	cfg->move_in_progress = 0;
 }
 
@@ -338,7 +323,7 @@ static irqreturn_t smp_irq_move_cleanup_interrupt(int irq, void *dev_id)
 		int irq;
 		struct irq_desc *desc;
 		struct irq_cfg *cfg;
-		irq = __get_cpu_var(vector_irq)[vector];
+		irq = __this_cpu_read(vector_irq[vector]);
 		if (irq < 0)
 			continue;
 
@@ -348,12 +333,12 @@ static irqreturn_t smp_irq_move_cleanup_interrupt(int irq, void *dev_id)
 		if (!cfg->move_cleanup_count)
 			goto unlock;
 
-		if (!cpu_isset(me, cfg->old_domain))
+		if (!cpumask_test_cpu(me, &cfg->old_domain))
 			goto unlock;
 
 		spin_lock_irqsave(&vector_lock, flags);
-		__get_cpu_var(vector_irq)[vector] = -1;
-		cpu_clear(me, vector_table[vector]);
+		__this_cpu_write(vector_irq[vector], -1);
+		cpumask_clear_cpu(me, &vector_table[vector]);
 		spin_unlock_irqrestore(&vector_lock, flags);
 		cfg->move_cleanup_count--;
 	unlock:
@@ -361,12 +346,6 @@ static irqreturn_t smp_irq_move_cleanup_interrupt(int irq, void *dev_id)
 	}
 	return IRQ_HANDLED;
 }
-
-static struct irqaction irq_move_irqaction = {
-	.handler =	smp_irq_move_cleanup_interrupt,
-	.flags =	IRQF_DISABLED,
-	.name =		"irq_move"
-};
 
 static int __init parse_vector_domain(char *arg)
 {
@@ -391,8 +370,7 @@ void destroy_and_reserve_irq(unsigned int irq)
 {
 	unsigned long flags;
 
-	dynamic_irq_cleanup(irq);
-
+	irq_init_desc(irq);
 	spin_lock_irqsave(&vector_lock, flags);
 	__clear_irq_vector(irq);
 	irq_status[irq] = IRQ_RSVD;
@@ -425,13 +403,13 @@ int create_irq(void)
  out:
 	spin_unlock_irqrestore(&vector_lock, flags);
 	if (irq >= 0)
-		dynamic_irq_init(irq);
+		irq_init_desc(irq);
 	return irq;
 }
 
 void destroy_irq(unsigned int irq)
 {
-	dynamic_irq_cleanup(irq);
+	irq_init_desc(irq);
 	clear_irq_vector(irq);
 }
 
@@ -489,14 +467,13 @@ ia64_handle_irq (ia64_vector vector, struct pt_regs *regs)
 	ia64_srlz_d();
 	while (vector != IA64_SPURIOUS_INT_VECTOR) {
 		int irq = local_vector_to_irq(vector);
-		struct irq_desc *desc = irq_to_desc(irq);
 
 		if (unlikely(IS_LOCAL_TLB_FLUSH(vector))) {
 			smp_local_flush_tlb();
-			kstat_incr_irqs_this_cpu(irq, desc);
+			kstat_incr_irq_this_cpu(irq);
 		} else if (unlikely(IS_RESCHEDULE(vector))) {
 			scheduler_ipi();
-			kstat_incr_irqs_this_cpu(irq, desc);
+			kstat_incr_irq_this_cpu(irq);
 		} else {
 			ia64_setreg(_IA64_REG_CR_TPR, vector);
 			ia64_srlz_d();
@@ -549,13 +526,12 @@ void ia64_process_pending_intr(void)
 	  */
 	while (vector != IA64_SPURIOUS_INT_VECTOR) {
 		int irq = local_vector_to_irq(vector);
-		struct irq_desc *desc = irq_to_desc(irq);
 
 		if (unlikely(IS_LOCAL_TLB_FLUSH(vector))) {
 			smp_local_flush_tlb();
-			kstat_incr_irqs_this_cpu(irq, desc);
+			kstat_incr_irq_this_cpu(irq);
 		} else if (unlikely(IS_RESCHEDULE(vector))) {
-			kstat_incr_irqs_this_cpu(irq, desc);
+			kstat_incr_irq_this_cpu(irq);
 		} else {
 			struct pt_regs *old_regs = set_irq_regs(NULL);
 
@@ -598,33 +574,18 @@ void ia64_process_pending_intr(void)
 static irqreturn_t dummy_handler (int irq, void *dev_id)
 {
 	BUG();
+	return IRQ_NONE;
 }
-
-static struct irqaction ipi_irqaction = {
-	.handler =	handle_IPI,
-	.flags =	IRQF_DISABLED,
-	.name =		"IPI"
-};
 
 /*
  * KVM uses this interrupt to force a cpu out of guest mode
  */
-static struct irqaction resched_irqaction = {
-	.handler =	dummy_handler,
-	.flags =	IRQF_DISABLED,
-	.name =		"resched"
-};
-
-static struct irqaction tlb_irqaction = {
-	.handler =	dummy_handler,
-	.flags =	IRQF_DISABLED,
-	.name =		"tlb_flush"
-};
 
 #endif
 
 void
-ia64_native_register_percpu_irq (ia64_vector vec, struct irqaction *action)
+register_percpu_irq(ia64_vector vec, irq_handler_t handler, unsigned long flags,
+		    const char *name)
 {
 	unsigned int irq;
 
@@ -632,8 +593,9 @@ ia64_native_register_percpu_irq (ia64_vector vec, struct irqaction *action)
 	BUG_ON(bind_irq_vector(irq, vec, CPU_MASK_ALL));
 	irq_set_status_flags(irq, IRQ_PER_CPU);
 	irq_set_chip(irq, &irq_type_ia64_lsapic);
-	if (action)
-		setup_irq(irq, action);
+	if (handler)
+		if (request_irq(irq, handler, flags, name, NULL))
+			pr_err("Failed to request irq %u (%s)\n", irq, name);
 	irq_set_handler(irq, handle_percpu_irq);
 }
 
@@ -641,30 +603,26 @@ void __init
 ia64_native_register_ipi(void)
 {
 #ifdef CONFIG_SMP
-	register_percpu_irq(IA64_IPI_VECTOR, &ipi_irqaction);
-	register_percpu_irq(IA64_IPI_RESCHEDULE, &resched_irqaction);
-	register_percpu_irq(IA64_IPI_LOCAL_TLB_FLUSH, &tlb_irqaction);
+	register_percpu_irq(IA64_IPI_VECTOR, handle_IPI, 0, "IPI");
+	register_percpu_irq(IA64_IPI_RESCHEDULE, dummy_handler, 0, "resched");
+	register_percpu_irq(IA64_IPI_LOCAL_TLB_FLUSH, dummy_handler, 0,
+			    "tlb_flush");
 #endif
 }
 
 void __init
 init_IRQ (void)
 {
-#ifdef CONFIG_ACPI
 	acpi_boot_init();
-#endif
 	ia64_register_ipi();
-	register_percpu_irq(IA64_SPURIOUS_INT_VECTOR, NULL);
+	register_percpu_irq(IA64_SPURIOUS_INT_VECTOR, NULL, 0, NULL);
 #ifdef CONFIG_SMP
-#if defined(CONFIG_IA64_GENERIC) || defined(CONFIG_IA64_DIG)
-	if (vector_domain_type != VECTOR_DOMAIN_NONE)
-		register_percpu_irq(IA64_IRQ_MOVE_VECTOR, &irq_move_irqaction);
+	if (vector_domain_type != VECTOR_DOMAIN_NONE) {
+		register_percpu_irq(IA64_IRQ_MOVE_VECTOR,
+				    smp_irq_move_cleanup_interrupt, 0,
+				    "irq_move");
+	}
 #endif
-#endif
-#ifdef CONFIG_PERFMON
-	pfm_init_percpu();
-#endif
-	platform_irq_init();
 }
 
 void

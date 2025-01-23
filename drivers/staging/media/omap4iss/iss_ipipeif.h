@@ -1,14 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * TI OMAP4 ISS V4L2 Driver - ISP IPIPEIF module
  *
  * Copyright (C) 2012 Texas Instruments, Inc.
  *
  * Author: Sergio Aguirre <sergio.a.aguirre@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #ifndef OMAP4_ISS_IPIPEIF_H
@@ -22,8 +18,8 @@ enum ipipeif_input_entity {
 	IPIPEIF_INPUT_CSI2B
 };
 
-#define IPIPEIF_OUTPUT_MEMORY		(1 << 0)
-#define IPIPEIF_OUTPUT_VP		(1 << 1)
+#define IPIPEIF_OUTPUT_MEMORY			BIT(0)
+#define IPIPEIF_OUTPUT_VP			BIT(1)
 
 /* Sink and source IPIPEIF pads */
 #define IPIPEIF_PAD_SINK			0
@@ -78,15 +74,16 @@ struct iss_ipipeif_device {
 struct iss_device;
 
 int omap4iss_ipipeif_init(struct iss_device *iss);
+int omap4iss_ipipeif_create_links(struct iss_device *iss);
 void omap4iss_ipipeif_cleanup(struct iss_device *iss);
 int omap4iss_ipipeif_register_entities(struct iss_ipipeif_device *ipipeif,
-	struct v4l2_device *vdev);
+				       struct v4l2_device *vdev);
 void omap4iss_ipipeif_unregister_entities(struct iss_ipipeif_device *ipipeif);
 
 int omap4iss_ipipeif_busy(struct iss_ipipeif_device *ipipeif);
 void omap4iss_ipipeif_isr(struct iss_ipipeif_device *ipipeif, u32 events);
 void omap4iss_ipipeif_restore_context(struct iss_device *iss);
 void omap4iss_ipipeif_max_rate(struct iss_ipipeif_device *ipipeif,
-	unsigned int *max_rate);
+			       unsigned int *max_rate);
 
 #endif	/* OMAP4_ISS_IPIPEIF_H */

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Based on MPC8560 ADS and arch/ppc tqm85xx ports
  *
@@ -11,11 +12,6 @@
  * Based on original work by
  * 	Kumar Gala <kumar.gala@freescale.com>
  *      Copyright 2004 Freescale Semiconductor Inc.
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/stddef.h>
@@ -24,13 +20,12 @@
 #include <linux/kdev_t.h>
 #include <linux/delay.h>
 #include <linux/seq_file.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
 
 #include <asm/time.h>
 #include <asm/machdep.h>
 #include <asm/pci-bridge.h>
 #include <asm/mpic.h>
-#include <asm/prom.h>
 #include <mm/mmu_decl.h>
 #include <asm/udbg.h>
 
@@ -122,7 +117,7 @@ static const char * const board[] __initconst = {
  */
 static int __init tqm85xx_probe(void)
 {
-	return of_flat_dt_match(of_get_flat_dt_root(), board);
+	return of_device_compatible_match(of_root, board);
 }
 
 define_machine(tqm85xx) {
@@ -132,7 +127,5 @@ define_machine(tqm85xx) {
 	.init_IRQ		= tqm85xx_pic_init,
 	.show_cpuinfo		= tqm85xx_show_cpuinfo,
 	.get_irq		= mpic_get_irq,
-	.restart		= fsl_rstcr_restart,
-	.calibrate_decr		= generic_calibrate_decr,
 	.progress		= udbg_progress,
 };

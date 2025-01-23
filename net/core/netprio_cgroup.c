@@ -1,10 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * net/core/netprio_cgroup.c	Priority Control Group
- *
- *		This program is free software; you can redistribute it and/or
- *		modify it under the terms of the GNU General Public License
- *		as published by the Free Software Foundation; either version
- *		2 of the License, or (at your option) any later version.
  *
  * Authors:	Neil Horman <nhorman@tuxdriver.com>
  */
@@ -20,12 +16,20 @@
 #include <linux/cgroup.h>
 #include <linux/rcupdate.h>
 #include <linux/atomic.h>
+#include <linux/sched/task.h>
+
 #include <net/rtnetlink.h>
 #include <net/pkt_cls.h>
 #include <net/sock.h>
 #include <net/netprio_cgroup.h>
 
 #include <linux/fdtable.h>
+
+/*
+ * netprio allocates per-net_device priomap array which is indexed by
+ * css->id.  Limiting css ID to 16bits doesn't lose anything.
+ */
+#define NETPRIO_ID_MAX		USHRT_MAX
 
 #define PRIOMAP_MIN_SZ		128
 
@@ -89,7 +93,7 @@ static int extend_netdev_table(struct net_device *dev, u32 target_idx)
 static u32 netprio_prio(struct cgroup_subsys_state *css, struct net_device *dev)
 {
 	struct netprio_map *map = rcu_dereference_rtnl(dev->priomap);
-	int id = css->cgroup->id;
+	int id = css->id;
 
 	if (map && id < map->priomap_len)
 		return map->priomap[id];
@@ -109,7 +113,7 @@ static int netprio_set_prio(struct cgroup_subsys_state *css,
 			    struct net_device *dev, u32 prio)
 {
 	struct netprio_map *map;
-	int id = css->cgroup->id;
+	int id = css->id;
 	int ret;
 
 	/* avoid extending priomap for zero writes */
@@ -140,9 +144,12 @@ cgrp_css_alloc(struct cgroup_subsys_state *parent_css)
 
 static int cgrp_css_online(struct cgroup_subsys_state *css)
 {
-	struct cgroup_subsys_state *parent_css = css_parent(css);
+	struct cgroup_subsys_state *parent_css = css->parent;
 	struct net_device *dev;
 	int ret = 0;
+
+	if (css->id > NETPRIO_ID_MAX)
+		return -ENOSPC;
 
 	if (!parent_css)
 		return 0;
@@ -170,7 +177,7 @@ static void cgrp_css_free(struct cgroup_subsys_state *css)
 
 static u64 read_prioidx(struct cgroup_subsys_state *css, struct cftype *cft)
 {
-	return css->cgroup->id;
+	return css->id;
 }
 
 static int read_priomap(struct seq_file *sf, void *v)
@@ -185,15 +192,15 @@ static int read_priomap(struct seq_file *sf, void *v)
 	return 0;
 }
 
-static int write_priomap(struct cgroup_subsys_state *css, struct cftype *cft,
-			 const char *buffer)
+static ssize_t write_priomap(struct kernfs_open_file *of,
+			     char *buf, size_t nbytes, loff_t off)
 {
 	char devname[IFNAMSIZ + 1];
 	struct net_device *dev;
 	u32 prio;
 	int ret;
 
-	if (sscanf(buffer, "%"__stringify(IFNAMSIZ)"s %u", devname, &prio) != 2)
+	if (sscanf(buf, "%"__stringify(IFNAMSIZ)"s %u", devname, &prio) != 2)
 		return -EINVAL;
 
 	dev = dev_get_by_name(&init_net, devname);
@@ -202,29 +209,31 @@ static int write_priomap(struct cgroup_subsys_state *css, struct cftype *cft,
 
 	rtnl_lock();
 
-	ret = netprio_set_prio(css, dev, prio);
+	ret = netprio_set_prio(of_css(of), dev, prio);
 
 	rtnl_unlock();
 	dev_put(dev);
-	return ret;
+	return ret ?: nbytes;
 }
 
 static int update_netprio(const void *v, struct file *file, unsigned n)
 {
-	int err;
-	struct socket *sock = sock_from_file(file, &err);
+	struct socket *sock = sock_from_file(file);
+
 	if (sock)
-		sock->sk->sk_cgrp_prioidx = (u32)(unsigned long)v;
+		sock_cgroup_set_prioidx(&sock->sk->sk_cgrp_data,
+					(unsigned long)v);
 	return 0;
 }
 
-static void net_prio_attach(struct cgroup_subsys_state *css,
-			    struct cgroup_taskset *tset)
+static void net_prio_attach(struct cgroup_taskset *tset)
 {
 	struct task_struct *p;
-	void *v = (void *)(unsigned long)css->cgroup->id;
+	struct cgroup_subsys_state *css;
 
 	cgroup_taskset_for_each(p, css, tset) {
+		void *v = (void *)(unsigned long)css->id;
+
 		task_lock(p);
 		iterate_fd(p->files, 0, update_netprio, v);
 		task_unlock(p);
@@ -239,20 +248,17 @@ static struct cftype ss_files[] = {
 	{
 		.name = "ifpriomap",
 		.seq_show = read_priomap,
-		.write_string = write_priomap,
+		.write = write_priomap,
 	},
 	{ }	/* terminate */
 };
 
-struct cgroup_subsys net_prio_subsys = {
-	.name		= "net_prio",
+struct cgroup_subsys net_prio_cgrp_subsys = {
 	.css_alloc	= cgrp_css_alloc,
 	.css_online	= cgrp_css_online,
 	.css_free	= cgrp_css_free,
 	.attach		= net_prio_attach,
-	.subsys_id	= net_prio_subsys_id,
-	.base_cftypes	= ss_files,
-	.module		= THIS_MODULE,
+	.legacy_cftypes	= ss_files,
 };
 
 static int netprio_device_event(struct notifier_block *unused,
@@ -283,37 +289,7 @@ static struct notifier_block netprio_device_notifier = {
 
 static int __init init_cgroup_netprio(void)
 {
-	int ret;
-
-	ret = cgroup_load_subsys(&net_prio_subsys);
-	if (ret)
-		goto out;
-
 	register_netdevice_notifier(&netprio_device_notifier);
-
-out:
-	return ret;
+	return 0;
 }
-
-static void __exit exit_cgroup_netprio(void)
-{
-	struct netprio_map *old;
-	struct net_device *dev;
-
-	unregister_netdevice_notifier(&netprio_device_notifier);
-
-	cgroup_unload_subsys(&net_prio_subsys);
-
-	rtnl_lock();
-	for_each_netdev(&init_net, dev) {
-		old = rtnl_dereference(dev->priomap);
-		RCU_INIT_POINTER(dev->priomap, NULL);
-		if (old)
-			kfree_rcu(old, rcu);
-	}
-	rtnl_unlock();
-}
-
-module_init(init_cgroup_netprio);
-module_exit(exit_cgroup_netprio);
-MODULE_LICENSE("GPL v2");
+subsys_initcall(init_cgroup_netprio);

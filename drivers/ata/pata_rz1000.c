@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  RZ1000/1001 driver based upon
  *
@@ -14,7 +15,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <scsi/scsi_host.h>
@@ -50,7 +50,7 @@ static int rz1000_set_mode(struct ata_link *link, struct ata_device **unused)
 }
 
 
-static struct scsi_host_template rz1000_sht = {
+static const struct scsi_host_template rz1000_sht = {
 	ATA_PIO_SHT(DRV_NAME),
 };
 
@@ -69,7 +69,7 @@ static int rz1000_fifo_disable(struct pci_dev *pdev)
 	reg &= 0xDFFF;
 	if (pci_write_config_word(pdev, 0x40, reg) != 0)
 		return -1;
-	printk(KERN_INFO DRV_NAME ": disabled chipset readahead.\n");
+	dev_info(&pdev->dev, "disabled chipset readahead.\n");
 	return 0;
 }
 
@@ -97,12 +97,12 @@ static int rz1000_init_one (struct pci_dev *pdev, const struct pci_device_id *en
 	if (rz1000_fifo_disable(pdev) == 0)
 		return ata_pci_sff_init_one(pdev, ppi, &rz1000_sht, NULL, 0);
 
-	printk(KERN_ERR DRV_NAME ": failed to disable read-ahead on chipset..\n");
+	dev_err(&pdev->dev, "failed to disable read-ahead on chipset.\n");
 	/* Not safe to use so skip */
 	return -ENODEV;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int rz1000_reinit_one(struct pci_dev *pdev)
 {
 	struct ata_host *host = pci_get_drvdata(pdev);
@@ -134,7 +134,7 @@ static struct pci_driver rz1000_pci_driver = {
 	.id_table	= pata_rz1000,
 	.probe 		= rz1000_init_one,
 	.remove		= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= rz1000_reinit_one,
 #endif

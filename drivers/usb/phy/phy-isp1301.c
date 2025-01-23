@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * NXP ISP1301 USB transceiver driver
  *
  * Copyright (C) 2012 Roland Stigge
  *
  * Author: Roland Stigge <stigge@antcom.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -31,6 +28,13 @@ static const struct i2c_device_id isp1301_id[] = {
 	{ "isp1301", 0 },
 	{ }
 };
+MODULE_DEVICE_TABLE(i2c, isp1301_id);
+
+static const struct of_device_id isp1301_of_match[] = {
+	{.compatible = "nxp,isp1301" },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, isp1301_of_match);
 
 static struct i2c_client *isp1301_i2c_client;
 
@@ -88,8 +92,7 @@ static int isp1301_phy_set_vbus(struct usb_phy *phy, int on)
 	return 0;
 }
 
-static int isp1301_probe(struct i2c_client *client,
-			 const struct i2c_device_id *i2c_id)
+static int isp1301_probe(struct i2c_client *client)
 {
 	struct isp1301 *isp;
 	struct usb_phy *phy;
@@ -116,19 +119,18 @@ static int isp1301_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int isp1301_remove(struct i2c_client *client)
+static void isp1301_remove(struct i2c_client *client)
 {
 	struct isp1301 *isp = i2c_get_clientdata(client);
 
 	usb_remove_phy(&isp->phy);
 	isp1301_i2c_client = NULL;
-
-	return 0;
 }
 
 static struct i2c_driver isp1301_driver = {
 	.driver = {
 		.name = DRV_NAME,
+		.of_match_table = isp1301_of_match,
 	},
 	.probe = isp1301_probe,
 	.remove = isp1301_remove,
@@ -137,24 +139,17 @@ static struct i2c_driver isp1301_driver = {
 
 module_i2c_driver(isp1301_driver);
 
-static int match(struct device *dev, void *data)
-{
-	struct device_node *node = (struct device_node *)data;
-	return (dev->of_node == node) &&
-		(dev->driver == &isp1301_driver.driver);
-}
-
 struct i2c_client *isp1301_get_client(struct device_node *node)
 {
-	if (node) { /* reference of ISP1301 I2C node via DT */
-		struct device *dev = bus_find_device(&i2c_bus_type, NULL,
-						     node, match);
-		if (!dev)
-			return NULL;
-		return to_i2c_client(dev);
-	} else { /* non-DT: only one ISP1301 chip supported */
-		return isp1301_i2c_client;
-	}
+	struct i2c_client *client;
+
+	/* reference of ISP1301 I2C node via DT */
+	client = of_find_i2c_device_by_node(node);
+	if (client)
+		return client;
+
+	/* non-DT: only one ISP1301 chip supported */
+	return isp1301_i2c_client;
 }
 EXPORT_SYMBOL_GPL(isp1301_get_client);
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Linux driver the digital TV devices equipped with B2C2 FlexcopII(b)/III
  * flexcop-pci.c - covers the PCI part including DMA transfers
@@ -17,11 +18,11 @@ module_param(irq_chk_intv, int, 0644);
 MODULE_PARM_DESC(irq_chk_intv, "set the interval for IRQ streaming watchdog.");
 
 #ifdef CONFIG_DVB_B2C2_FLEXCOP_DEBUG
-#define dprintk(level,args...) \
-	do { if ((debug & level)) printk(args); } while (0)
+#define dprintk(level, args...) \
+	do { if ((debug & (level))) printk(args); } while (0)
 #define DEBSTATUS ""
 #else
-#define dprintk(level,args...)
+#define dprintk(level, args...) no_printk(args)
 #define DEBSTATUS " (debugging is not enabled)"
 #endif
 
@@ -39,7 +40,7 @@ MODULE_PARM_DESC(debug,
 
 #define DRIVER_VERSION "0.1"
 #define DRIVER_NAME "flexcop-pci"
-#define DRIVER_AUTHOR "Patrick Boettcher <patrick.boettcher@desy.de>"
+#define DRIVER_AUTHOR "Patrick Boettcher <patrick.boettcher@posteo.de>"
 
 struct flexcop_pci {
 	struct pci_dev *pdev;
@@ -157,7 +158,7 @@ static irqreturn_t flexcop_pci_isr(int irq, void *dev_id)
 	if (v.irq_20c.Data_receiver_error)
 		deb_chk("data receiver error\n");
 	if (v.irq_20c.Continuity_error_flag)
-		deb_chk("Contunuity error flag is set\n");
+		deb_chk("Continuity error flag is set\n");
 	if (v.irq_20c.LLC_SNAP_FLAG_set)
 		deb_chk("LLC_SNAP_FLAG_set is set\n");
 	if (v.irq_20c.Transport_Error)
@@ -184,9 +185,10 @@ static irqreturn_t flexcop_pci_isr(int irq, void *dev_id)
 		dma_addr_t cur_addr =
 			fc->read_ibi_reg(fc,dma1_008).dma_0x8.dma_cur_addr << 2;
 		u32 cur_pos = cur_addr - fc_pci->dma[0].dma_addr0;
+		if (cur_pos > fc_pci->dma[0].size * 2)
+			goto error;
 
-		deb_irq("%u irq: %08x cur_addr: %llx: cur_pos: %08x, "
-			"last_cur_pos: %08x ",
+		deb_irq("%u irq: %08x cur_addr: %llx: cur_pos: %08x, last_cur_pos: %08x ",
 				jiffies_to_usecs(jiffies - fc_pci->last_irq),
 				v.raw, (unsigned long long)cur_addr, cur_pos,
 				fc_pci->last_dma1_cur_pos);
@@ -220,11 +222,12 @@ static irqreturn_t flexcop_pci_isr(int irq, void *dev_id)
 		fc_pci->last_dma1_cur_pos = cur_pos;
 		fc_pci->count++;
 	} else {
-		deb_irq("isr for flexcop called, "
-			"apparently without reason (%08x)\n", v.raw);
+		deb_irq("isr for flexcop called, apparently without reason (%08x)\n",
+			v.raw);
 		ret = IRQ_NONE;
 	}
 
+error:
 	spin_unlock_irqrestore(&fc_pci->irq_lock, flags);
 	return ret;
 }
@@ -416,7 +419,7 @@ static void flexcop_pci_remove(struct pci_dev *pdev)
 	flexcop_device_kfree(fc_pci->fc_dev);
 }
 
-static struct pci_device_id flexcop_pci_tbl[] = {
+static const struct pci_device_id flexcop_pci_tbl[] = {
 	{ PCI_DEVICE(0x13d0, 0x2103) },
 	{ },
 };

@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+#
 #  merge_config.sh - Takes a list of config fragment values, and merges
 #  them one by one. Provides warnings on overridden values, and specified
 #  values that did not make it to the resulting .config file (due to missed
@@ -10,21 +12,13 @@
 #
 #  Copyright (c) 2009-2010 Wind River Systems, Inc.
 #  Copyright 2011 Linaro
-#
-#  This program is free software; you can redistribute it and/or modify
-#  it under the terms of the GNU General Public License version 2 as
-#  published by the Free Software Foundation.
-#
-#  This program is distributed in the hope that it will be useful,
-#  but WITHOUT ANY WARRANTY; without even the implied warranty of
-#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-#  See the GNU General Public License for more details.
+
+set -e
 
 clean_up() {
 	rm -f $TMP_FILE
-	exit
+	rm -f $MERGE_FILE
 }
-trap clean_up HUP INT TERM
 
 usage() {
 	echo "Usage: $0 [OPTIONS] [CONFIG [...]]"
@@ -32,13 +26,22 @@ usage() {
 	echo "  -m    only merge the fragments, do not execute the make command"
 	echo "  -n    use allnoconfig instead of alldefconfig"
 	echo "  -r    list redundant entries when merging fragments"
-	echo "  -O    dir to put generated output files"
+	echo "  -y    make builtin have precedence over modules"
+	echo "  -O    dir to put generated output files.  Consider setting \$KCONFIG_CONFIG instead."
+	echo "  -s    strict mode. Fail if the fragment redefines any value."
+	echo "  -Q    disable warning messages for overridden options."
+	echo
+	echo "Used prefix: '$CONFIG_PREFIX'. You can redefine it with \$CONFIG_ environment variable."
 }
 
-MAKE=true
+RUNMAKE=true
 ALLTARGET=alldefconfig
 WARNREDUN=false
+BUILTIN=false
 OUTPUT=.
+STRICT=false
+CONFIG_PREFIX=${CONFIG_-CONFIG_}
+WARNOVERRIDE=echo
 
 while true; do
 	case $1 in
@@ -48,7 +51,7 @@ while true; do
 		continue
 		;;
 	"-m")
-		MAKE=false
+		RUNMAKE=false
 		shift
 		continue
 		;;
@@ -58,6 +61,11 @@ while true; do
 		;;
 	"-r")
 		WARNREDUN=true
+		shift
+		continue
+		;;
+	"-y")
+		BUILTIN=true
 		shift
 		continue
 		;;
@@ -71,52 +79,107 @@ while true; do
 		shift 2
 		continue
 		;;
+	"-s")
+		STRICT=true
+		shift
+		continue
+		;;
+	"-Q")
+		WARNOVERRIDE=true
+		shift
+		continue
+		;;
 	*)
 		break
 		;;
 	esac
 done
 
+if [ "$#" -lt 1 ] ; then
+	usage
+	exit
+fi
+
+if [ -z "$KCONFIG_CONFIG" ]; then
+	if [ "$OUTPUT" != . ]; then
+		KCONFIG_CONFIG=$(readlink -m -- "$OUTPUT/.config")
+	else
+		KCONFIG_CONFIG=.config
+	fi
+fi
+
 INITFILE=$1
 shift;
 
+if [ ! -r "$INITFILE" ]; then
+	echo "The base file '$INITFILE' does not exist.  Exit." >&2
+	exit 1
+fi
+
 MERGE_LIST=$*
-SED_CONFIG_EXP="s/^\(# \)\{0,1\}\(CONFIG_[a-zA-Z0-9_]*\)[= ].*/\2/p"
+SED_CONFIG_EXP1="s/^\(${CONFIG_PREFIX}[a-zA-Z0-9_]*\)=.*/\1/p"
+SED_CONFIG_EXP2="s/^# \(${CONFIG_PREFIX}[a-zA-Z0-9_]*\) is not set$/\1/p"
+
 TMP_FILE=$(mktemp ./.tmp.config.XXXXXXXXXX)
+MERGE_FILE=$(mktemp ./.merge_tmp.config.XXXXXXXXXX)
 
 echo "Using $INITFILE as base"
+
+trap clean_up EXIT
+
 cat $INITFILE > $TMP_FILE
 
-# Merge files, printing warnings on overrided values
-for MERGE_FILE in $MERGE_LIST ; do
-	echo "Merging $MERGE_FILE"
-	CFG_LIST=$(sed -n "$SED_CONFIG_EXP" $MERGE_FILE)
+# Merge files, printing warnings on overridden values
+for ORIG_MERGE_FILE in $MERGE_LIST ; do
+	echo "Merging $ORIG_MERGE_FILE"
+	if [ ! -r "$ORIG_MERGE_FILE" ]; then
+		echo "The merge file '$ORIG_MERGE_FILE' does not exist.  Exit." >&2
+		exit 1
+	fi
+	cat $ORIG_MERGE_FILE > $MERGE_FILE
+	CFG_LIST=$(sed -n -e "$SED_CONFIG_EXP1" -e "$SED_CONFIG_EXP2" $MERGE_FILE)
 
 	for CFG in $CFG_LIST ; do
-		grep -q -w $CFG $TMP_FILE
-		if [ $? -eq 0 ] ; then
-			PREV_VAL=$(grep -w $CFG $TMP_FILE)
-			NEW_VAL=$(grep -w $CFG $MERGE_FILE)
-			if [ "x$PREV_VAL" != "x$NEW_VAL" ] ; then
-			echo Value of $CFG is redefined by fragment $MERGE_FILE:
-			echo Previous  value: $PREV_VAL
-			echo New value:       $NEW_VAL
-			echo
-			elif [ "$WARNREDUN" = "true" ]; then
-			echo Value of $CFG is redundant by fragment $MERGE_FILE:
+		grep -q -w $CFG $TMP_FILE || continue
+		PREV_VAL=$(grep -w $CFG $TMP_FILE)
+		NEW_VAL=$(grep -w $CFG $MERGE_FILE)
+		BUILTIN_FLAG=false
+		if [ "$BUILTIN" = "true" ] && [ "${NEW_VAL#CONFIG_*=}" = "m" ] && [ "${PREV_VAL#CONFIG_*=}" = "y" ]; then
+			${WARNOVERRIDE} Previous  value: $PREV_VAL
+			${WARNOVERRIDE} New value:       $NEW_VAL
+			${WARNOVERRIDE} -y passed, will not demote y to m
+			${WARNOVERRIDE}
+			BUILTIN_FLAG=true
+		elif [ "x$PREV_VAL" != "x$NEW_VAL" ] ; then
+			${WARNOVERRIDE} Value of $CFG is redefined by fragment $ORIG_MERGE_FILE:
+			${WARNOVERRIDE} Previous  value: $PREV_VAL
+			${WARNOVERRIDE} New value:       $NEW_VAL
+			${WARNOVERRIDE}
+			if [ "$STRICT" = "true" ]; then
+				STRICT_MODE_VIOLATED=true
 			fi
+		elif [ "$WARNREDUN" = "true" ]; then
+			${WARNOVERRIDE} Value of $CFG is redundant by fragment $ORIG_MERGE_FILE:
+		fi
+		if [ "$BUILTIN_FLAG" = "false" ]; then
 			sed -i "/$CFG[ =]/d" $TMP_FILE
+		else
+			sed -i "/$CFG[ =]/d" $MERGE_FILE
 		fi
 	done
 	cat $MERGE_FILE >> $TMP_FILE
 done
 
-if [ "$MAKE" = "false" ]; then
-	cp $TMP_FILE $OUTPUT/.config
+if [ "$STRICT_MODE_VIOLATED" = "true" ]; then
+	echo "The fragment redefined a value and strict mode had been passed."
+	exit 1
+fi
+
+if [ "$RUNMAKE" = "false" ]; then
+	cp -T -- "$TMP_FILE" "$KCONFIG_CONFIG"
 	echo "#"
-	echo "# merged configuration written to $OUTPUT/.config (needs make)"
+	echo "# merged configuration written to $KCONFIG_CONFIG (needs make)"
 	echo "#"
-	clean_up
 	exit
 fi
 
@@ -135,10 +198,10 @@ make KCONFIG_ALLCONFIG=$TMP_FILE $OUTPUT_ARG $ALLTARGET
 
 
 # Check all specified config values took (might have missed-dependency issues)
-for CFG in $(sed -n "$SED_CONFIG_EXP" $TMP_FILE); do
+for CFG in $(sed -n -e "$SED_CONFIG_EXP1" -e "$SED_CONFIG_EXP2" $TMP_FILE); do
 
 	REQUESTED_VAL=$(grep -w -e "$CFG" $TMP_FILE)
-	ACTUAL_VAL=$(grep -w -e "$CFG" $OUTPUT/.config)
+	ACTUAL_VAL=$(grep -w -e "$CFG" "$KCONFIG_CONFIG" || true)
 	if [ "x$REQUESTED_VAL" != "x$ACTUAL_VAL" ] ; then
 		echo "Value requested for $CFG not in final .config"
 		echo "Requested value:  $REQUESTED_VAL"
@@ -146,5 +209,3 @@ for CFG in $(sed -n "$SED_CONFIG_EXP" $TMP_FILE); do
 		echo ""
 	fi
 done
-
-clean_up

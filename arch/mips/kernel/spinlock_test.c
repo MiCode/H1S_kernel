@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/init.h>
 #include <linux/kthread.h>
 #include <linux/hrtimer.h>
@@ -5,7 +6,7 @@
 #include <linux/debugfs.h>
 #include <linux/export.h>
 #include <linux/spinlock.h>
-
+#include <asm/debug.h>
 
 static int ss_get(void *data, u64 *val)
 {
@@ -34,7 +35,7 @@ static int ss_get(void *data, u64 *val)
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(fops_ss, ss_get, NULL, "%llu\n");
+DEFINE_DEBUGFS_ATTRIBUTE(fops_ss, ss_get, NULL, "%llu\n");
 
 
 
@@ -113,29 +114,14 @@ static int multi_get(void *data, u64 *val)
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(fops_multi, multi_get, NULL, "%llu\n");
+DEFINE_DEBUGFS_ATTRIBUTE(fops_multi, multi_get, NULL, "%llu\n");
 
-
-extern struct dentry *mips_debugfs_dir;
 static int __init spinlock_test(void)
 {
-	struct dentry *d;
-
-	if (!mips_debugfs_dir)
-		return -ENODEV;
-
-	d = debugfs_create_file("spin_single", S_IRUGO,
-				mips_debugfs_dir, NULL,
-				&fops_ss);
-	if (!d)
-		return -ENOMEM;
-
-	d = debugfs_create_file("spin_multi", S_IRUGO,
-				mips_debugfs_dir, NULL,
-				&fops_multi);
-	if (!d)
-		return -ENOMEM;
-
+	debugfs_create_file_unsafe("spin_single", S_IRUGO, mips_debugfs_dir, NULL,
+			    &fops_ss);
+	debugfs_create_file_unsafe("spin_multi", S_IRUGO, mips_debugfs_dir, NULL,
+			    &fops_multi);
 	return 0;
 }
 device_initcall(spinlock_test);

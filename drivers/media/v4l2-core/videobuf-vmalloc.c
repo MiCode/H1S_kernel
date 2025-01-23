@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * helper functions for vmalloc video4linux capture buffers
  *
@@ -6,11 +7,7 @@
  * into PAGE_SIZE chunks).  They also assume the driver does not need
  * to touch the video data.
  *
- * (c) 2007 Mauro Carvalho Chehab, <mchehab@infradead.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2
+ * (c) 2007 Mauro Carvalho Chehab <mchehab@kernel.org>
  */
 
 #include <linux/init.h>
@@ -18,12 +15,12 @@
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
+#include <linux/pgtable.h>
 
 #include <linux/pci.h>
 #include <linux/vmalloc.h>
 #include <linux/pagemap.h>
 #include <asm/page.h>
-#include <asm/pgtable.h>
 
 #include <media/videobuf-vmalloc.h>
 
@@ -41,7 +38,7 @@ static int debug;
 module_param(debug, int, 0644);
 
 MODULE_DESCRIPTION("helper module to manage video4linux vmalloc buffers");
-MODULE_AUTHOR("Mauro Carvalho Chehab <mchehab@infradead.org>");
+MODULE_AUTHOR("Mauro Carvalho Chehab <mchehab@kernel.org>");
 MODULE_LICENSE("GPL");
 
 #define dprintk(level, fmt, arg...)					\
@@ -54,14 +51,11 @@ MODULE_LICENSE("GPL");
 static void videobuf_vm_open(struct vm_area_struct *vma)
 {
 	struct videobuf_mapping *map = vma->vm_private_data;
-	struct videobuf_queue *q = map->q;
 
 	dprintk(2, "vm_open %p [count=%u,vma=%08lx-%08lx]\n", map,
 		map->count, vma->vm_start, vma->vm_end);
 
-	videobuf_queue_lock(q);
 	map->count++;
-	videobuf_queue_unlock(q);
 }
 
 static void videobuf_vm_close(struct vm_area_struct *vma)
@@ -73,11 +67,12 @@ static void videobuf_vm_close(struct vm_area_struct *vma)
 	dprintk(2, "vm_close %p [count=%u,vma=%08lx-%08lx]\n", map,
 		map->count, vma->vm_start, vma->vm_end);
 
-	videobuf_queue_lock(q);
-	if (!--map->count) {
+	map->count--;
+	if (0 == map->count) {
 		struct videobuf_vmalloc_memory *mem;
 
 		dprintk(1, "munmap %p q=%p\n", map, q);
+		videobuf_queue_lock(q);
 
 		/* We need first to cancel streams, before unmapping */
 		if (q->streaming)
@@ -116,8 +111,8 @@ static void videobuf_vm_close(struct vm_area_struct *vma)
 
 		kfree(map);
 
+		videobuf_queue_unlock(q);
 	}
-	videobuf_queue_unlock(q);
 
 	return;
 }
@@ -173,7 +168,7 @@ static int __videobuf_iolock(struct videobuf_queue *q,
 
 		/* All handling should be done by __videobuf_mmap_mapper() */
 		if (!mem->vaddr) {
-			printk(KERN_ERR "memory is not alloced/mmapped.\n");
+			printk(KERN_ERR "memory is not allocated/mmapped.\n");
 			return -EINVAL;
 		}
 		break;
@@ -198,26 +193,6 @@ static int __videobuf_iolock(struct videobuf_queue *q,
 		}
 		dprintk(1, "vmalloc is at addr %p (%d pages)\n",
 			mem->vaddr, pages);
-
-#if 0
-		int rc;
-		/* Kernel userptr is used also by read() method. In this case,
-		   there's no need to remap, since data will be copied to user
-		 */
-		if (!vb->baddr)
-			return 0;
-
-		/* FIXME: to properly support USERPTR, remap should occur.
-		   The code below won't work, since mem->vma = NULL
-		 */
-		/* Try to remap memory */
-		rc = remap_vmalloc_range(mem->vma, (void *)vb->baddr, 0);
-		if (rc < 0) {
-			printk(KERN_ERR "mmap: remap failed with error %d", rc);
-			return -ENOMEM;
-		}
-#endif
-
 		break;
 	case V4L2_MEMORY_OVERLAY:
 	default:
@@ -272,7 +247,7 @@ static int __videobuf_mmap_mapper(struct videobuf_queue *q,
 	}
 
 	vma->vm_ops          = &videobuf_vm_ops;
-	vma->vm_flags       |= VM_DONTEXPAND | VM_DONTDUMP;
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
 	vma->vm_private_data = map;
 
 	dprintk(1, "mmap %p: q=%p %08lx-%08lx (%lx) pgoff %08lx buf %d\n",

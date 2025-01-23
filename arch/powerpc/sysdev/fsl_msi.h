@@ -1,14 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2007-2008 Freescale Semiconductor, Inc. All rights reserved.
  *
  * Author: Tony Li <tony.li@freescale.com>
  *	   Jason Jin <Jason.jin@freescale.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; version 2 of the
- * License.
- *
  */
 #ifndef _POWERPC_SYSDEV_FSL_MSI_H
 #define _POWERPC_SYSDEV_FSL_MSI_H
@@ -27,6 +22,10 @@
 #define FSL_PIC_IP_IPIC   0x00000002
 #define FSL_PIC_IP_VMPIC  0x00000003
 
+#define MSI_HW_ERRATA_ENDIAN 0x00000010
+
+struct fsl_msi_cascade_data;
+
 struct fsl_msi {
 	struct irq_domain *irqhost;
 
@@ -37,7 +36,7 @@ struct fsl_msi {
 	u32 srs_shift; /* Shift of the shared interrupt register select */
 	void __iomem *msi_regs;
 	u32 feature;
-	int msi_virqs[NR_MSI_REG_MAX];
+	struct fsl_msi_cascade_data *cascade_array[NR_MSI_REG_MAX];
 
 	struct msi_bitmap bitmap;
 

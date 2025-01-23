@@ -1,13 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Definitions for Compaq iPAQ H3100 and H3600 handheld computers
  *
  * (c) 2000 Compaq Computer Corporation. (Author: Jamey Hicks)
  * (c) 2009 Dmitry Artamonow <mad_soft@inbox.ru>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #ifndef _INCLUDE_H3XXX_H_
@@ -79,17 +75,6 @@
 #define H3600_EGPIO_LCD_5V_ON		(H3XXX_EGPIO_BASE + 14) /* enable 5V to LCD. active high. */
 #define H3600_EGPIO_LVDD_ON		(H3XXX_EGPIO_BASE + 15) /* enable 9V and -6.5V to LCD. */
 
-struct gpio_default_state {
-	int gpio;
-	int mode;
-	const char *name;
-};
-
-#define GPIO_MODE_IN	-1
-#define GPIO_MODE_OUT0	0
-#define GPIO_MODE_OUT1	1
-
-void h3xxx_init_gpio(struct gpio_default_state *s, size_t n);
 void __init h3xxx_map_io(void);
 void __init h3xxx_mach_init(void);
 

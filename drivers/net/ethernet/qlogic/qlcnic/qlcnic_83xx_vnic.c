@@ -1,8 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * QLogic qlcnic NIC Driver
  * Copyright (c) 2009-2013 QLogic Corporation
- *
- * See LICENSE.qlcnic for copyright and licensing details.
  */
 
 #include "qlcnic.h"
@@ -181,7 +180,7 @@ static int qlcnic_83xx_init_non_privileged_vnic(struct qlcnic_adapter *adapter)
 }
 
 /**
- * qlcnic_83xx_vnic_opmode
+ * qlcnic_83xx_config_vnic_opmode
  *
  * @adapter: adapter structure
  * Identify virtual NIC operational modes.
@@ -246,12 +245,13 @@ int qlcnic_83xx_check_vnic_state(struct qlcnic_adapter *adapter)
 	u32 state;
 
 	state = QLCRDX(ahw, QLC_83XX_VNIC_STATE);
-	while (state != QLCNIC_DEV_NPAR_OPER && idc->vnic_wait_limit--) {
+	while (state != QLCNIC_DEV_NPAR_OPER && idc->vnic_wait_limit) {
+		idc->vnic_wait_limit--;
 		msleep(1000);
 		state = QLCRDX(ahw, QLC_83XX_VNIC_STATE);
 	}
 
-	if (!idc->vnic_wait_limit) {
+	if (state != QLCNIC_DEV_NPAR_OPER) {
 		dev_err(&adapter->pdev->dev,
 			"vNIC mode not operational, state check timed out.\n");
 		return -EIO;

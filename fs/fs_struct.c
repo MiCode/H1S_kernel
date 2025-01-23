@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/export.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/task.h>
 #include <linux/fs.h>
 #include <linux/path.h>
 #include <linux/slab.h>
@@ -60,7 +62,7 @@ void chroot_fs_refs(const struct path *old_root, const struct path *new_root)
 	int count = 0;
 
 	read_lock(&tasklist_lock);
-	do_each_thread(g, p) {
+	for_each_process_thread(g, p) {
 		task_lock(p);
 		fs = p->fs;
 		if (fs) {
@@ -77,7 +79,7 @@ void chroot_fs_refs(const struct path *old_root, const struct path *new_root)
 			spin_unlock(&fs->lock);
 		}
 		task_unlock(p);
-	} while_each_thread(g, p);
+	}
 	read_unlock(&tasklist_lock);
 	while (count--)
 		path_put(old_root);
@@ -89,6 +91,7 @@ void free_fs_struct(struct fs_struct *fs)
 	path_put(&fs->pwd);
 	kmem_cache_free(fs_cachep, fs);
 }
+EXPORT_SYMBOL_NS_GPL(free_fs_struct, ANDROID_GKI_VFS_EXPORT_ONLY);
 
 void exit_fs(struct task_struct *tsk)
 {
@@ -115,7 +118,7 @@ struct fs_struct *copy_fs_struct(struct fs_struct *old)
 		fs->users = 1;
 		fs->in_exec = 0;
 		spin_lock_init(&fs->lock);
-		seqcount_init(&fs->seq);
+		seqcount_spinlock_init(&fs->seq, &fs->lock);
 		fs->umask = old->umask;
 
 		spin_lock(&old->lock);
@@ -127,6 +130,7 @@ struct fs_struct *copy_fs_struct(struct fs_struct *old)
 	}
 	return fs;
 }
+EXPORT_SYMBOL_NS_GPL(copy_fs_struct, ANDROID_GKI_VFS_EXPORT_ONLY);
 
 int unshare_fs_struct(void)
 {
@@ -161,6 +165,6 @@ EXPORT_SYMBOL(current_umask);
 struct fs_struct init_fs = {
 	.users		= 1,
 	.lock		= __SPIN_LOCK_UNLOCKED(init_fs.lock),
-	.seq		= SEQCNT_ZERO(init_fs.seq),
+	.seq		= SEQCNT_SPINLOCK_ZERO(init_fs.seq, &init_fs.lock),
 	.umask		= 0022,
 };

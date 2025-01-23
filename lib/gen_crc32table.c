@@ -1,4 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <stdio.h>
+#include "../include/linux/crc32poly.h"
 #include "../include/generated/autoconf.h"
 #include "crc32defs.h"
 #include <inttypes.h>
@@ -56,7 +58,7 @@ static void crc32init_le_generic(const uint32_t polynomial,
 
 static void crc32init_le(void)
 {
-	crc32init_le_generic(CRCPOLY_LE, crc32table_le);
+	crc32init_le_generic(CRC32_POLY_LE, crc32table_le);
 }
 
 static void crc32cinit_le(void)
@@ -75,7 +77,7 @@ static void crc32init_be(void)
 	crc32table_be[0][0] = 0;
 
 	for (i = 1; i < BE_TABLE_SIZE; i <<= 1) {
-		crc = (crc << 1) ^ ((crc & 0x80000000) ? CRCPOLY_BE : 0);
+		crc = (crc << 1) ^ ((crc & 0x80000000) ? CRC32_POLY_BE : 0);
 		for (j = 0; j < i; j++)
 			crc32table_be[0][i + j] = crc ^ crc32table_be[0][j];
 	}
@@ -109,7 +111,7 @@ int main(int argc, char** argv)
 
 	if (CRC_LE_BITS > 1) {
 		crc32init_le();
-		printf("static u32 __cacheline_aligned "
+		printf("static const u32 ____cacheline_aligned "
 		       "crc32table_le[%d][%d] = {",
 		       LE_TABLE_ROWS, LE_TABLE_SIZE);
 		output_table(crc32table_le, LE_TABLE_ROWS,
@@ -119,7 +121,7 @@ int main(int argc, char** argv)
 
 	if (CRC_BE_BITS > 1) {
 		crc32init_be();
-		printf("static u32 __cacheline_aligned "
+		printf("static const u32 ____cacheline_aligned "
 		       "crc32table_be[%d][%d] = {",
 		       BE_TABLE_ROWS, BE_TABLE_SIZE);
 		output_table(crc32table_be, LE_TABLE_ROWS,
@@ -128,7 +130,7 @@ int main(int argc, char** argv)
 	}
 	if (CRC_LE_BITS > 1) {
 		crc32cinit_le();
-		printf("static u32 __cacheline_aligned "
+		printf("static const u32 ____cacheline_aligned "
 		       "crc32ctable_le[%d][%d] = {",
 		       LE_TABLE_ROWS, LE_TABLE_SIZE);
 		output_table(crc32ctable_le, LE_TABLE_ROWS,

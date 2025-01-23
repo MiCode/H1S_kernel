@@ -1,22 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/kernel/cpu/sh4a/clock-sh7366.c
  *
  * SH7366 clock framework support
  *
  * Copyright (C) 2009 Magnus Damm
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -225,14 +213,14 @@ static struct clk_lookup lookups[] = {
 	CLKDEV_CON_ID("hudi0", &mstp_clks[MSTP019]),
 	CLKDEV_CON_ID("ubc0", &mstp_clks[MSTP017]),
 	CLKDEV_CON_ID("tmu_fck", &mstp_clks[MSTP015]),
-	CLKDEV_CON_ID("cmt_fck", &mstp_clks[MSTP014]),
+	CLKDEV_ICK_ID("fck", "sh-cmt-32.0", &mstp_clks[MSTP014]),
 	CLKDEV_CON_ID("rwdt0", &mstp_clks[MSTP013]),
 	CLKDEV_CON_ID("mfi0", &mstp_clks[MSTP011]),
 	CLKDEV_CON_ID("flctl0", &mstp_clks[MSTP010]),
 
-	CLKDEV_ICK_ID("sci_fck", "sh-sci.0", &mstp_clks[MSTP007]),
-	CLKDEV_ICK_ID("sci_fck", "sh-sci.1", &mstp_clks[MSTP006]),
-	CLKDEV_ICK_ID("sci_fck", "sh-sci.2", &mstp_clks[MSTP005]),
+	CLKDEV_ICK_ID("fck", "sh-sci.0", &mstp_clks[MSTP007]),
+	CLKDEV_ICK_ID("fck", "sh-sci.1", &mstp_clks[MSTP006]),
+	CLKDEV_ICK_ID("fck", "sh-sci.2", &mstp_clks[MSTP005]),
 
 	CLKDEV_CON_ID("msiof0", &mstp_clks[MSTP002]),
 	CLKDEV_CON_ID("sbr0", &mstp_clks[MSTP001]),

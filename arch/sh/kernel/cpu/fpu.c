@@ -1,8 +1,12 @@
-#include <linux/sched.h>
+// SPDX-License-Identifier: GPL-2.0
+#include <linux/sched/signal.h>
+#include <linux/sched/task.h>
+#include <linux/sched/task_stack.h>
 #include <linux/slab.h>
 #include <asm/processor.h>
 #include <asm/fpu.h>
 #include <asm/traps.h>
+#include <asm/ptrace.h>
 
 int init_fpu(struct task_struct *tsk)
 {
@@ -58,18 +62,20 @@ void fpu_state_restore(struct pt_regs *regs)
 	}
 
 	if (!tsk_used_math(tsk)) {
-		local_irq_enable();
+		int ret;
 		/*
 		 * does a slab alloc which can sleep
 		 */
-		if (init_fpu(tsk)) {
+		local_irq_enable();
+		ret = init_fpu(tsk);
+		local_irq_disable();
+		if (ret) {
 			/*
 			 * ran out of memory!
 			 */
-			do_group_exit(SIGKILL);
+			force_sig(SIGKILL);
 			return;
 		}
-		local_irq_disable();
 	}
 
 	grab_fpu(regs);

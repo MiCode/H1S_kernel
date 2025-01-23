@@ -1,9 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
 config REISERFS_FS
-	tristate "Reiserfs support"
+	tristate "Reiserfs support (deprecated)"
+	select BUFFER_HEAD
 	select CRC32
+	select LEGACY_DIRECT_IO
 	help
-	  Stores not just filenames but the files themselves in a balanced
-	  tree.  Uses journalling.
+	  Reiserfs is deprecated and scheduled to be removed from the kernel
+	  in 2025. If you are still using it, please migrate to another
+	  filesystem or tell us your usecase for reiserfs.
+
+	  Reiserfs stores not just filenames but the files themselves in a
+	  balanced tree.  Uses journalling.
 
 	  Balanced trees are more efficient than traditional file system
 	  architectural foundations.
@@ -57,8 +64,7 @@ config REISERFS_FS_XATTR
 	depends on REISERFS_FS
 	help
 	  Extended attributes are name:value pairs associated with inodes by
-	  the kernel or by users (see the attr(5) manual page, or visit
-	  <http://acl.bestbits.at/> for details).
+	  the kernel or by users (see the attr(5) manual page for details).
 
 	  If unsure, say N.
 
@@ -69,9 +75,6 @@ config REISERFS_FS_POSIX_ACL
 	help
 	  Posix Access Control Lists (ACLs) support permissions for users and
 	  groups beyond the owner/group/world scheme.
-
-	  To learn more about Access Control Lists, visit the Posix ACLs for
-	  Linux website <http://acl.bestbits.at/>.
 
 	  If you don't know what Access Control Lists are, say N
 

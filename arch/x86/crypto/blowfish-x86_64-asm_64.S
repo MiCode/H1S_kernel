@@ -1,23 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Blowfish Cipher Algorithm (x86_64)
  *
  * Copyright (C) 2011 Jussi Kivilinna <jussi.kivilinna@mbnet.fi>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307
- * USA
- *
  */
 
 #include <linux/linkage.h>
@@ -33,7 +18,7 @@
 #define s3	((16 + 2 + (3 * 256)) * 4)
 
 /* register macros */
-#define CTX %rdi
+#define CTX %r12
 #define RIO %rsi
 
 #define RX0 %rax
@@ -56,12 +41,12 @@
 #define RX2bh %ch
 #define RX3bh %dh
 
-#define RT0 %rbp
+#define RT0 %rdi
 #define RT1 %rsi
 #define RT2 %r8
 #define RT3 %r9
 
-#define RT0d %ebp
+#define RT0d %edi
 #define RT1d %esi
 #define RT2d %r8d
 #define RT3d %r9d
@@ -114,19 +99,15 @@
 	bswapq 			RX0; \
 	movq RX0, 		(RIO);
 
-#define xor_block() \
-	bswapq 			RX0; \
-	xorq RX0, 		(RIO);
-
-ENTRY(__blowfish_enc_blk)
+SYM_FUNC_START(blowfish_enc_blk)
 	/* input:
-	 *	%rdi: ctx, CTX
+	 *	%rdi: ctx
 	 *	%rsi: dst
 	 *	%rdx: src
-	 *	%rcx: bool, if true: xor output
 	 */
-	movq %rbp, %r11;
+	movq %r12, %r11;
 
+	movq %rdi, CTX;
 	movq %rsi, %r10;
 	movq %rdx, RIO;
 
@@ -142,27 +123,22 @@ ENTRY(__blowfish_enc_blk)
 	round_enc(14);
 	add_roundkey_enc(16);
 
-	movq %r11, %rbp;
-
+	movq %r11, %r12;
 	movq %r10, RIO;
-	test %cl, %cl;
-	jnz .L__enc_xor;
 
 	write_block();
-	ret;
-.L__enc_xor:
-	xor_block();
-	ret;
-ENDPROC(__blowfish_enc_blk)
+	RET;
+SYM_FUNC_END(blowfish_enc_blk)
 
-ENTRY(blowfish_dec_blk)
+SYM_FUNC_START(blowfish_dec_blk)
 	/* input:
-	 *	%rdi: ctx, CTX
+	 *	%rdi: ctx
 	 *	%rsi: dst
 	 *	%rdx: src
 	 */
-	movq %rbp, %r11;
+	movq %r12, %r11;
 
+	movq %rdi, CTX;
 	movq %rsi, %r10;
 	movq %rdx, RIO;
 
@@ -181,10 +157,10 @@ ENTRY(blowfish_dec_blk)
 	movq %r10, RIO;
 	write_block();
 
-	movq %r11, %rbp;
+	movq %r11, %r12;
 
-	ret;
-ENDPROC(blowfish_dec_blk)
+	RET;
+SYM_FUNC_END(blowfish_dec_blk)
 
 /**********************************************************************
   4-way blowfish, four blocks parallel
@@ -284,33 +260,32 @@ ENDPROC(blowfish_dec_blk)
 	movq RX3,		24(RIO);
 
 #define xor_block4() \
-	bswapq 			RX0; \
-	xorq RX0,		(RIO); \
+	movq (RIO),		RT0; \
+	bswapq			RT0; \
+	xorq RT0,		RX1; \
 	\
-	bswapq 			RX1; \
-	xorq RX1,		8(RIO); \
+	movq 8(RIO),		RT2; \
+	bswapq			RT2; \
+	xorq RT2,		RX2; \
 	\
-	bswapq 			RX2; \
-	xorq RX2,		16(RIO); \
-	\
-	bswapq 			RX3; \
-	xorq RX3,		24(RIO);
+	movq 16(RIO),		RT3; \
+	bswapq			RT3; \
+	xorq RT3,		RX3;
 
-ENTRY(__blowfish_enc_blk_4way)
+SYM_FUNC_START(blowfish_enc_blk_4way)
 	/* input:
-	 *	%rdi: ctx, CTX
+	 *	%rdi: ctx
 	 *	%rsi: dst
 	 *	%rdx: src
-	 *	%rcx: bool, if true: xor output
 	 */
-	pushq %rbp;
+	pushq %r12;
 	pushq %rbx;
-	pushq %rcx;
 
-	preload_roundkey_enc(0);
-
+	movq %rdi, CTX
 	movq %rsi, %r11;
 	movq %rdx, RIO;
+
+	preload_roundkey_enc(0);
 
 	read_block4();
 
@@ -324,39 +299,31 @@ ENTRY(__blowfish_enc_blk_4way)
 	round_enc4(14);
 	add_preloaded_roundkey4();
 
-	popq %rbp;
 	movq %r11, RIO;
-
-	test %bpl, %bpl;
-	jnz .L__enc_xor4;
-
 	write_block4();
 
 	popq %rbx;
-	popq %rbp;
-	ret;
+	popq %r12;
+	RET;
+SYM_FUNC_END(blowfish_enc_blk_4way)
 
-.L__enc_xor4:
-	xor_block4();
-
-	popq %rbx;
-	popq %rbp;
-	ret;
-ENDPROC(__blowfish_enc_blk_4way)
-
-ENTRY(blowfish_dec_blk_4way)
+SYM_FUNC_START(__blowfish_dec_blk_4way)
 	/* input:
-	 *	%rdi: ctx, CTX
+	 *	%rdi: ctx
 	 *	%rsi: dst
 	 *	%rdx: src
+	 *	%rcx: cbc (bool)
 	 */
-	pushq %rbp;
+	pushq %r12;
 	pushq %rbx;
-	preload_roundkey_dec(17);
+	pushq %rcx;
+	pushq %rdx;
 
+	movq %rdi, CTX;
 	movq %rsi, %r11;
 	movq %rdx, RIO;
 
+	preload_roundkey_dec(17);
 	read_block4();
 
 	round_dec4(17);
@@ -369,11 +336,19 @@ ENTRY(blowfish_dec_blk_4way)
 	round_dec4(3);
 	add_preloaded_roundkey4();
 
+	popq RIO;
+	popq %r12;
+	testq %r12, %r12;
+	jz .L_no_cbc_xor;
+
+	xor_block4();
+
+.L_no_cbc_xor:
 	movq %r11, RIO;
 	write_block4();
 
 	popq %rbx;
-	popq %rbp;
+	popq %r12;
 
-	ret;
-ENDPROC(blowfish_dec_blk_4way)
+	RET;
+SYM_FUNC_END(__blowfish_dec_blk_4way)

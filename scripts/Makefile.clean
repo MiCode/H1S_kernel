@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 # ==========================================================================
 # Cleaning up
 # ==========================================================================
@@ -7,31 +8,14 @@ src := $(obj)
 PHONY := __clean
 __clean:
 
-# Shorthand for $(Q)$(MAKE) scripts/Makefile.clean obj=dir
-# Usage:
-# $(Q)$(MAKE) $(clean)=dir
-clean := -f $(if $(KBUILD_SRC),$(srctree)/)scripts/Makefile.clean obj
-
-# The filename Kbuild has precedence over Makefile
-kbuild-dir := $(if $(filter /%,$(src)),$(src),$(srctree)/$(src))
-include $(if $(wildcard $(kbuild-dir)/Kbuild), $(kbuild-dir)/Kbuild, $(kbuild-dir)/Makefile)
+include $(srctree)/scripts/Kbuild.include
+include $(kbuild-file)
 
 # Figure out what we need to build from the various variables
 # ==========================================================================
 
-__subdir-y	:= $(patsubst %/,%,$(filter %/, $(obj-y)))
-subdir-y	+= $(__subdir-y)
-__subdir-m	:= $(patsubst %/,%,$(filter %/, $(obj-m)))
-subdir-m	+= $(__subdir-m)
-__subdir-n	:= $(patsubst %/,%,$(filter %/, $(obj-n)))
-subdir-n	+= $(__subdir-n)
-__subdir-	:= $(patsubst %/,%,$(filter %/, $(obj-)))
-subdir-		+= $(__subdir-)
-
-# Subdirectories we need to descend into
-
-subdir-ym	:= $(sort $(subdir-y) $(subdir-m))
-subdir-ymn      := $(sort $(subdir-ym) $(subdir-n) $(subdir-))
+subdir-ymn := $(sort $(subdir-y) $(subdir-m) $(subdir-) \
+		$(patsubst %/,%, $(filter %/, $(obj-y) $(obj-m) $(obj-))))
 
 # Add subdir path
 
@@ -40,44 +24,27 @@ subdir-ymn	:= $(addprefix $(obj)/,$(subdir-ymn))
 # build a list of files to remove, usually relative to the current
 # directory
 
-__clean-files	:= $(extra-y) $(always)                  \
-		   $(targets) $(clean-files)             \
-		   $(host-progs)                         \
-		   $(hostprogs-y) $(hostprogs-m) $(hostprogs-)
+__clean-files	:= \
+	$(clean-files) $(targets) $(hostprogs) $(userprogs) \
+	$(extra-y) $(extra-m) $(extra-) \
+	$(always-y) $(always-m) $(always-) \
+	$(hostprogs-always-y) $(hostprogs-always-m) $(hostprogs-always-) \
+	$(userprogs-always-y) $(userprogs-always-m) $(userprogs-always-)
 
 __clean-files   := $(filter-out $(no-clean-files), $(__clean-files))
 
-# as clean-files is given relative to the current directory, this adds
-# a $(obj) prefix, except for absolute paths
-
-__clean-files   := $(wildcard                                               \
-                   $(addprefix $(obj)/, $(filter-out /%, $(__clean-files))) \
-		   $(filter /%, $(__clean-files)))
-
-# as clean-dirs is given relative to the current directory, this adds
-# a $(obj) prefix, except for absolute paths
-
-__clean-dirs    := $(wildcard                                               \
-                   $(addprefix $(obj)/, $(filter-out /%, $(clean-dirs)))    \
-		   $(filter /%, $(clean-dirs)))
+__clean-files   := $(wildcard $(addprefix $(obj)/, $(__clean-files)))
 
 # ==========================================================================
 
-quiet_cmd_clean    = CLEAN   $(obj)
-      cmd_clean    = rm -f $(__clean-files)
-quiet_cmd_cleandir = CLEAN   $(__clean-dirs)
-      cmd_cleandir = rm -rf $(__clean-dirs)
-
+# To make this rule robust against "Argument list too long" error,
+# remove $(obj)/ prefix, and restore it by a shell command.
+quiet_cmd_clean = CLEAN   $(obj)
+      cmd_clean = printf '$(obj)/%s ' $(patsubst $(obj)/%,%,$(__clean-files)) | xargs rm -rf
 
 __clean: $(subdir-ymn)
 ifneq ($(strip $(__clean-files)),)
-	+$(call cmd,clean)
-endif
-ifneq ($(strip $(__clean-dirs)),)
-	+$(call cmd,cleandir)
-endif
-ifneq ($(strip $(clean-rule)),)
-	+$(clean-rule)
+	$(call cmd,clean)
 endif
 	@:
 
@@ -92,13 +59,5 @@ endif
 PHONY += $(subdir-ymn)
 $(subdir-ymn):
 	$(Q)$(MAKE) $(clean)=$@
-
-# If quiet is set, only print short version of command
-
-cmd = @$(if $($(quiet)cmd_$(1)),echo '  $($(quiet)cmd_$(1))' &&) $(cmd_$(1))
-
-
-# Declare the contents of the .PHONY variable as phony.  We keep that
-# information in a variable se we can use it in if_changed and friends.
 
 .PHONY: $(PHONY)

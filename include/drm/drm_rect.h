@@ -24,6 +24,8 @@
 #ifndef DRM_RECT_H
 #define DRM_RECT_H
 
+#include <linux/types.h>
+
 /**
  * DOC: rect utils
  *
@@ -37,10 +39,73 @@
  * @x2: horizontal ending coordinate (exclusive)
  * @y1: vertical starting coordinate (inclusive)
  * @y2: vertical ending coordinate (exclusive)
+ *
+ * Note that this must match the layout of struct drm_mode_rect or the damage
+ * helpers like drm_atomic_helper_damage_iter_init() break.
  */
 struct drm_rect {
 	int x1, y1, x2, y2;
 };
+
+/**
+ * DRM_RECT_INIT - initialize a rectangle from x/y/w/h
+ * @x: x coordinate
+ * @y: y coordinate
+ * @w: width
+ * @h: height
+ *
+ * RETURNS:
+ * A new rectangle of the specified size.
+ */
+#define DRM_RECT_INIT(x, y, w, h) ((struct drm_rect){ \
+		.x1 = (x), \
+		.y1 = (y), \
+		.x2 = (x) + (w), \
+		.y2 = (y) + (h) })
+
+/**
+ * DRM_RECT_FMT - printf string for &struct drm_rect
+ */
+#define DRM_RECT_FMT    "%dx%d%+d%+d"
+/**
+ * DRM_RECT_ARG - printf arguments for &struct drm_rect
+ * @r: rectangle struct
+ */
+#define DRM_RECT_ARG(r) drm_rect_width(r), drm_rect_height(r), (r)->x1, (r)->y1
+
+/**
+ * DRM_RECT_FP_FMT - printf string for &struct drm_rect in 16.16 fixed point
+ */
+#define DRM_RECT_FP_FMT "%d.%06ux%d.%06u%+d.%06u%+d.%06u"
+/**
+ * DRM_RECT_FP_ARG - printf arguments for &struct drm_rect in 16.16 fixed point
+ * @r: rectangle struct
+ *
+ * This is useful for e.g. printing plane source rectangles, which are in 16.16
+ * fixed point.
+ */
+#define DRM_RECT_FP_ARG(r) \
+		drm_rect_width(r) >> 16, ((drm_rect_width(r) & 0xffff) * 15625) >> 10, \
+		drm_rect_height(r) >> 16, ((drm_rect_height(r) & 0xffff) * 15625) >> 10, \
+		(r)->x1 >> 16, (((r)->x1 & 0xffff) * 15625) >> 10, \
+		(r)->y1 >> 16, (((r)->y1 & 0xffff) * 15625) >> 10
+
+/**
+ * drm_rect_init - initialize the rectangle from x/y/w/h
+ * @r: rectangle
+ * @x: x coordinate
+ * @y: y coordinate
+ * @width: width
+ * @height: height
+ */
+static inline void drm_rect_init(struct drm_rect *r, int x, int y,
+				 int width, int height)
+{
+	r->x1 = x;
+	r->y1 = y;
+	r->x2 = x + width;
+	r->y2 = y + height;
+}
 
 /**
  * drm_rect_adjust_size - adjust the size of the rectangle
@@ -77,6 +142,20 @@ static inline void drm_rect_translate(struct drm_rect *r, int dx, int dy)
 	r->y1 += dy;
 	r->x2 += dx;
 	r->y2 += dy;
+}
+
+/**
+ * drm_rect_translate_to - translate the rectangle to an absolute position
+ * @r: rectangle to be tranlated
+ * @x: horizontal position
+ * @y: vertical position
+ *
+ * Move rectangle @r to @x in the horizontal direction,
+ * and to @y in the vertical direction.
+ */
+static inline void drm_rect_translate_to(struct drm_rect *r, int x, int y)
+{
+	drm_rect_translate(r, x - r->x1, y - r->y1);
 }
 
 /**
@@ -120,7 +199,7 @@ static inline int drm_rect_height(const struct drm_rect *r)
 }
 
 /**
- * drm_rect_visible - determine if the the rectangle is visible
+ * drm_rect_visible - determine if the rectangle is visible
  * @r: rectangle whose visibility is returned
  *
  * RETURNS:
@@ -146,22 +225,35 @@ static inline bool drm_rect_equals(const struct drm_rect *r1,
 		r1->y1 == r2->y1 && r1->y2 == r2->y2;
 }
 
+/**
+ * drm_rect_fp_to_int - Convert a rect in 16.16 fixed point form to int form.
+ * @dst: rect to be stored the converted value
+ * @src: rect in 16.16 fixed point form
+ */
+static inline void drm_rect_fp_to_int(struct drm_rect *dst,
+				      const struct drm_rect *src)
+{
+	drm_rect_init(dst, src->x1 >> 16, src->y1 >> 16,
+		      drm_rect_width(src) >> 16,
+		      drm_rect_height(src) >> 16);
+}
+
 bool drm_rect_intersect(struct drm_rect *r, const struct drm_rect *clip);
 bool drm_rect_clip_scaled(struct drm_rect *src, struct drm_rect *dst,
-			  const struct drm_rect *clip,
-			  int hscale, int vscale);
+			  const struct drm_rect *clip);
 int drm_rect_calc_hscale(const struct drm_rect *src,
 			 const struct drm_rect *dst,
 			 int min_hscale, int max_hscale);
 int drm_rect_calc_vscale(const struct drm_rect *src,
 			 const struct drm_rect *dst,
 			 int min_vscale, int max_vscale);
-int drm_rect_calc_hscale_relaxed(struct drm_rect *src,
-				 struct drm_rect *dst,
-				 int min_hscale, int max_hscale);
-int drm_rect_calc_vscale_relaxed(struct drm_rect *src,
-				 struct drm_rect *dst,
-				 int min_vscale, int max_vscale);
-void drm_rect_debug_print(const struct drm_rect *r, bool fixed_point);
+void drm_rect_debug_print(const char *prefix,
+			  const struct drm_rect *r, bool fixed_point);
+void drm_rect_rotate(struct drm_rect *r,
+		     int width, int height,
+		     unsigned int rotation);
+void drm_rect_rotate_inv(struct drm_rect *r,
+			 int width, int height,
+			 unsigned int rotation);
 
 #endif

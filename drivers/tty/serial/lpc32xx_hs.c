@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * High Speed Serial Ports on NXP LPC32xx SoC
  *
@@ -6,16 +7,6 @@
  *
  * Copyright (C) 2010 NXP Semiconductors
  * Copyright (C) 2012 Roland Stigge
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -32,10 +23,9 @@
 #include <linux/nmi.h>
 #include <linux/io.h>
 #include <linux/irq.h>
-#include <linux/gpio.h>
 #include <linux/of.h>
-#include <mach/platform.h>
-#include <mach/hardware.h>
+#include <linux/sizes.h>
+#include <linux/soc/nxp/lpc32xx-misc.h>
 
 /*
  * High Speed UART register offsets
@@ -90,6 +80,8 @@
 #define LPC32XX_HSU_TX_TL8B			(0x2 << 0)
 #define LPC32XX_HSU_TX_TL16B			(0x3 << 0)
 
+#define LPC32XX_MAIN_OSC_FREQ			13000000
+
 #define MODNAME "lpc32xx_hsuart"
 
 struct lpc32xx_hsuart_port {
@@ -130,7 +122,7 @@ static void wait_for_xmit_ready(struct uart_port *port)
 	}
 }
 
-static void lpc32xx_hsuart_console_putchar(struct uart_port *port, int ch)
+static void lpc32xx_hsuart_console_putchar(struct uart_port *port, unsigned char ch)
 {
 	wait_for_xmit_ready(port);
 	writel((u32)ch, LPC32XX_HSUART_FIFO(port->membase));
@@ -178,6 +170,8 @@ static int __init lpc32xx_hsuart_console_setup(struct console *co,
 
 	if (options)
 		uart_parse_options(options, &baud, &parity, &bits, &flow);
+
+	lpc32xx_loopback_set(port->mapbase, 0); /* get out of loopback mode */
 
 	return uart_set_options(port, co, baud, parity, bits, flow);
 }
@@ -247,12 +241,11 @@ static unsigned int __serial_get_clock_div(unsigned long uartclk,
 
 static void __serial_uart_flush(struct uart_port *port)
 {
-	u32 tmp;
 	int cnt = 0;
 
 	while ((readl(LPC32XX_HSUART_LEVEL(port->membase)) > 0) &&
 	       (cnt++ < FIFO_READ_LIMIT))
-		tmp = readl(LPC32XX_HSUART_FIFO(port->membase));
+		readl(LPC32XX_HSUART_FIFO(port->membase));
 }
 
 static void __serial_lpc32xx_rx(struct uart_port *port)
@@ -280,46 +273,23 @@ static void __serial_lpc32xx_rx(struct uart_port *port)
 		tmp = readl(LPC32XX_HSUART_FIFO(port->membase));
 	}
 
-	spin_unlock(&port->lock);
 	tty_flip_buffer_push(tport);
-	spin_lock(&port->lock);
+}
+
+static bool serial_lpc32xx_tx_ready(struct uart_port *port)
+{
+	u32 level = readl(LPC32XX_HSUART_LEVEL(port->membase));
+
+	return LPC32XX_HSU_TX_LEV(level) < 64;
 }
 
 static void __serial_lpc32xx_tx(struct uart_port *port)
 {
-	struct circ_buf *xmit = &port->state->xmit;
-	unsigned int tmp;
+	u8 ch;
 
-	if (port->x_char) {
-		writel((u32)port->x_char, LPC32XX_HSUART_FIFO(port->membase));
-		port->icount.tx++;
-		port->x_char = 0;
-		return;
-	}
-
-	if (uart_circ_empty(xmit) || uart_tx_stopped(port))
-		goto exit_tx;
-
-	/* Transfer data */
-	while (LPC32XX_HSU_TX_LEV(readl(
-		LPC32XX_HSUART_LEVEL(port->membase))) < 64) {
-		writel((u32) xmit->buf[xmit->tail],
-		       LPC32XX_HSUART_FIFO(port->membase));
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		port->icount.tx++;
-		if (uart_circ_empty(xmit))
-			break;
-	}
-
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
-		uart_write_wakeup(port);
-
-exit_tx:
-	if (uart_circ_empty(xmit)) {
-		tmp = readl(LPC32XX_HSUART_CTRL(port->membase));
-		tmp &= ~LPC32XX_HSU_TX_INT_EN;
-		writel(tmp, LPC32XX_HSUART_CTRL(port->membase));
-	}
+	uart_port_tx(port, ch,
+		serial_lpc32xx_tx_ready(port),
+		writel(ch, LPC32XX_HSUART_FIFO(port->membase)));
 }
 
 static irqreturn_t serial_lpc32xx_interrupt(int irq, void *dev_id)
@@ -350,7 +320,7 @@ static irqreturn_t serial_lpc32xx_interrupt(int irq, void *dev_id)
 		       LPC32XX_HSUART_IIR(port->membase));
 		port->icount.overrun++;
 		tty_insert_flip_char(tport, 0, TTY_OVERRUN);
-		tty_schedule_flip(tport);
+		tty_flip_buffer_push(tport);
 	}
 
 	/* Data received? */
@@ -427,12 +397,6 @@ static void serial_lpc32xx_stop_rx(struct uart_port *port)
 		LPC32XX_HSU_FE_INT), LPC32XX_HSUART_IIR(port->membase));
 }
 
-/* port->lock held by caller.  */
-static void serial_lpc32xx_enable_ms(struct uart_port *port)
-{
-	/* Modem status is not supported */
-}
-
 /* port->lock is not held.  */
 static void serial_lpc32xx_break_ctl(struct uart_port *port,
 				     int break_state)
@@ -448,35 +412,6 @@ static void serial_lpc32xx_break_ctl(struct uart_port *port,
 		tmp &= ~LPC32XX_HSU_BREAK;
 	writel(tmp, LPC32XX_HSUART_CTRL(port->membase));
 	spin_unlock_irqrestore(&port->lock, flags);
-}
-
-/* LPC3250 Errata HSUART.1: Hang workaround via loopback mode on inactivity */
-static void lpc32xx_loopback_set(resource_size_t mapbase, int state)
-{
-	int bit;
-	u32 tmp;
-
-	switch (mapbase) {
-	case LPC32XX_HS_UART1_BASE:
-		bit = 0;
-		break;
-	case LPC32XX_HS_UART2_BASE:
-		bit = 1;
-		break;
-	case LPC32XX_HS_UART7_BASE:
-		bit = 6;
-		break;
-	default:
-		WARN(1, "lpc32xx_hs: Warning: Unknown port at %08x\n", mapbase);
-		return;
-	}
-
-	tmp = readl(LPC32XX_UARTCTL_CLOOP);
-	if (state)
-		tmp |= (1 << bit);
-	else
-		tmp &= ~(1 << bit);
-	writel(tmp, LPC32XX_UARTCTL_CLOOP);
 }
 
 /* port->lock is not held.  */
@@ -539,7 +474,7 @@ static void serial_lpc32xx_shutdown(struct uart_port *port)
 /* port->lock is not held.  */
 static void serial_lpc32xx_set_termios(struct uart_port *port,
 				       struct ktermios *termios,
-				       struct ktermios *old)
+				       const struct ktermios *old)
 {
 	unsigned long flags;
 	unsigned int baud, quot;
@@ -651,14 +586,13 @@ static int serial_lpc32xx_verify_port(struct uart_port *port,
 	return ret;
 }
 
-static struct uart_ops serial_lpc32xx_pops = {
+static const struct uart_ops serial_lpc32xx_pops = {
 	.tx_empty	= serial_lpc32xx_tx_empty,
 	.set_mctrl	= serial_lpc32xx_set_mctrl,
 	.get_mctrl	= serial_lpc32xx_get_mctrl,
 	.stop_tx	= serial_lpc32xx_stop_tx,
 	.start_tx	= serial_lpc32xx_start_tx,
 	.stop_rx	= serial_lpc32xx_stop_rx,
-	.enable_ms	= serial_lpc32xx_enable_ms,
 	.break_ctl	= serial_lpc32xx_break_ctl,
 	.startup	= serial_lpc32xx_startup,
 	.shutdown	= serial_lpc32xx_shutdown,
@@ -698,12 +632,10 @@ static int serial_hs_lpc32xx_probe(struct platform_device *pdev)
 	p->port.mapbase = res->start;
 	p->port.membase = NULL;
 
-	p->port.irq = platform_get_irq(pdev, 0);
-	if (p->port.irq < 0) {
-		dev_err(&pdev->dev, "Error getting irq for HS UART port %d\n",
-			uarts_registered);
-		return p->port.irq;
-	}
+	ret = platform_get_irq(pdev, 0);
+	if (ret < 0)
+		return ret;
+	p->port.irq = ret;
 
 	p->port.iotype = UPIO_MEM32;
 	p->port.uartclk = LPC32XX_MAIN_OSC_FREQ;
@@ -775,7 +707,6 @@ static struct platform_driver serial_hs_lpc32xx_driver = {
 	.resume		= serial_hs_lpc32xx_resume,
 	.driver		= {
 		.name	= MODNAME,
-		.owner	= THIS_MODULE,
 		.of_match_table	= serial_hs_lpc32xx_dt_ids,
 	},
 };

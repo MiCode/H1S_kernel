@@ -1,19 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2010 Realtek Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
  *
  * Modifications for inclusion into the Linux staging tree are
  * Copyright(c) 2010 Larry Finger. All rights reserved.
@@ -33,7 +21,6 @@
 #define NUM_STA 32
 #define NUM_ACL 64
 
-
 /* if mode ==0, then the sta is allowed once the addr is hit.
  * if mode ==1, then the sta is rejected once the addr is non-hit.
  */
@@ -48,7 +35,6 @@ struct wlan_acl_pool {
 };
 
 struct	stainfo_stats {
-
 	uint	rx_pkts;
 	uint	rx_bytes;
 	u64	tx_pkts;
@@ -131,11 +117,11 @@ static inline u32 wifi_mac_hash(u8 *mac)
 	return x;
 }
 
-u32 _r8712_init_sta_priv(struct sta_priv *pstapriv);
-u32 _r8712_free_sta_priv(struct sta_priv *pstapriv);
+int _r8712_init_sta_priv(struct sta_priv *pstapriv);
+void _r8712_free_sta_priv(struct sta_priv *pstapriv);
 struct sta_info *r8712_alloc_stainfo(struct sta_priv *pstapriv,
 				     u8 *hwaddr);
-void r8712_free_stainfo(struct _adapter *padapter , struct sta_info *psta);
+void r8712_free_stainfo(struct _adapter *padapter, struct sta_info *psta);
 void r8712_free_all_stainfo(struct _adapter *padapter);
 struct sta_info *r8712_get_stainfo(struct sta_priv *pstapriv, u8 *hwaddr);
 void r8712_init_bcmc_stainfo(struct _adapter *padapter);

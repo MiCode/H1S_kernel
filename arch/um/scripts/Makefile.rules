@@ -1,10 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0
 # ===========================================================================
 # arch/um: Generic definitions
 # ===========================================================================
 
 USER_SINGLE_OBJS := \
-	$(foreach f,$(patsubst %.o,%,$(obj-y) $(obj-m)),$($(f)-objs))
-USER_OBJS += $(filter %_user.o,$(obj-y) $(obj-m)  $(USER_SINGLE_OBJS))
+	$(foreach f,$(patsubst %.o,%,$(obj-y)),$($(f)-objs))
+USER_OBJS += $(filter %_user.o,$(obj-y) $(USER_SINGLE_OBJS))
 USER_OBJS := $(foreach file,$(USER_OBJS),$(obj)/$(file))
 
 $(USER_OBJS:.o=.%): \

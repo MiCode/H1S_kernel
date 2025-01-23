@@ -1,12 +1,12 @@
 /*
  * SMI (Serial Memory Controller) device driver for Serial NOR Flash on
  * SPEAr platform
- * The serial nor interface is largely based on drivers/mtd/m25p80.c,
- * however the SPI interface has been replaced by SMI.
+ * The serial nor interface is largely based on m25p80.c, however the SPI
+ * interface has been replaced by SMI.
  *
  * Copyright © 2010 STMicroelectronics.
  * Ashish Priyadarshi
- * Shiraz Hashim <shiraz.hashim@st.com>
+ * Shiraz Hashim <shiraz.linux.kernel@gmail.com>
  *
  * This file is licensed under the terms of the GNU General Public
  * License version 2. This program is licensed "as is" without any
@@ -518,7 +518,6 @@ static int spear_mtd_erase(struct mtd_info *mtd, struct erase_info *e_info)
 		/* preparing the command for flash */
 		ret = spear_smi_erase_sector(dev, bank, command, 4);
 		if (ret) {
-			e_info->state = MTD_ERASE_FAILED;
 			mutex_unlock(&flash->lock);
 			return ret;
 		}
@@ -527,8 +526,6 @@ static int spear_mtd_erase(struct mtd_info *mtd, struct erase_info *e_info)
 	}
 
 	mutex_unlock(&flash->lock);
-	e_info->state = MTD_ERASE_DONE;
-	mtd_erase_callback(e_info);
 
 	return 0;
 }
@@ -595,6 +592,26 @@ static int spear_mtd_read(struct mtd_info *mtd, loff_t from, size_t len,
 	return 0;
 }
 
+/*
+ * The purpose of this function is to ensure a memcpy_toio() with byte writes
+ * only. Its structure is inspired from the ARM implementation of _memcpy_toio()
+ * which also does single byte writes but cannot be used here as this is just an
+ * implementation detail and not part of the API. Not mentioning the comment
+ * stating that _memcpy_toio() should be optimized.
+ */
+static void spear_smi_memcpy_toio_b(volatile void __iomem *dest,
+				    const void *src, size_t len)
+{
+	const unsigned char *from = src;
+
+	while (len) {
+		len--;
+		writeb(*from, dest);
+		from++;
+		dest++;
+	}
+}
+
 static inline int spear_smi_cpy_toio(struct spear_smi *dev, u32 bank,
 		void __iomem *dest, const void *src, size_t len)
 {
@@ -617,7 +634,23 @@ static inline int spear_smi_cpy_toio(struct spear_smi *dev, u32 bank,
 	ctrlreg1 = readl(dev->io_base + SMI_CR1);
 	writel((ctrlreg1 | WB_MODE) & ~SW_MODE, dev->io_base + SMI_CR1);
 
-	memcpy_toio(dest, src, len);
+	/*
+	 * In Write Burst mode (WB_MODE), the specs states that writes must be:
+	 * - incremental
+	 * - of the same size
+	 * The ARM implementation of memcpy_toio() will optimize the number of
+	 * I/O by using as much 4-byte writes as possible, surrounded by
+	 * 2-byte/1-byte access if:
+	 * - the destination is not 4-byte aligned
+	 * - the length is not a multiple of 4-byte.
+	 * Avoid this alternance of write access size by using our own 'byte
+	 * access' helper if at least one of the two conditions above is true.
+	 */
+	if (IS_ALIGNED(len, sizeof(u32)) &&
+	    IS_ALIGNED((uintptr_t)dest, sizeof(u32)))
+		memcpy_toio(dest, src, len);
+	else
+		spear_smi_memcpy_toio_b(dest, src, len);
 
 	writel(ctrlreg1, dev->io_base + SMI_CR1);
 
@@ -760,7 +793,7 @@ static int spear_smi_probe_config_dt(struct platform_device *pdev,
 				     struct device_node *np)
 {
 	struct spear_smi_plat_data *pdata = dev_get_platdata(&pdev->dev);
-	struct device_node *pp = NULL;
+	struct device_node *pp;
 	const __be32 *addr;
 	u32 val;
 	int len;
@@ -775,12 +808,11 @@ static int spear_smi_probe_config_dt(struct platform_device *pdev,
 	pdata->board_flash_info = devm_kzalloc(&pdev->dev,
 					       sizeof(*pdata->board_flash_info),
 					       GFP_KERNEL);
+	if (!pdata->board_flash_info)
+		return -ENOMEM;
 
 	/* Fill structs for each subnode (flash device) */
-	while ((pp = of_get_next_child(np, pp))) {
-		struct spear_smi_flash_info *flash_info;
-
-		flash_info = &pdata->board_flash_info[i];
+	for_each_child_of_node(np, pp) {
 		pdata->np[i] = pp;
 
 		/* Read base-addr and size from DT */
@@ -788,8 +820,8 @@ static int spear_smi_probe_config_dt(struct platform_device *pdev,
 		pdata->board_flash_info->mem_base = be32_to_cpup(&addr[0]);
 		pdata->board_flash_info->size = be32_to_cpup(&addr[1]);
 
-		if (of_get_property(pp, "st,smi-fast-mode", NULL))
-			pdata->board_flash_info->fast_mode = 1;
+		pdata->board_flash_info->fast_mode =
+			of_property_read_bool(pp, "st,smi-fast-mode");
 
 		i++;
 	}
@@ -810,7 +842,6 @@ static int spear_smi_setup_banks(struct platform_device *pdev,
 				 u32 bank, struct device_node *np)
 {
 	struct spear_smi *dev = platform_get_drvdata(pdev);
-	struct mtd_part_parser_data ppdata = {};
 	struct spear_smi_flash_info *flash_info;
 	struct spear_smi_plat_data *pdata;
 	struct spear_snor_flash *flash;
@@ -854,6 +885,8 @@ static int spear_smi_setup_banks(struct platform_device *pdev,
 	else
 		flash->mtd.name = flash_devices[flash_index].name;
 
+	flash->mtd.dev.parent = &pdev->dev;
+	mtd_set_of_node(&flash->mtd, np);
 	flash->mtd.type = MTD_NORFLASH;
 	flash->mtd.writesize = 1;
 	flash->mtd.flags = MTD_CAP_NORFLASH;
@@ -880,10 +913,8 @@ static int spear_smi_setup_banks(struct platform_device *pdev,
 		count = flash_info->nr_partitions;
 	}
 #endif
-	ppdata.of_node = np;
 
-	ret = mtd_device_parse_register(&flash->mtd, NULL, &ppdata, parts,
-					count);
+	ret = mtd_device_register(&flash->mtd, parts, count);
 	if (ret) {
 		dev_err(&dev->pdev->dev, "Err MTD partition=%d\n", ret);
 		return ret;
@@ -906,14 +937,12 @@ static int spear_smi_probe(struct platform_device *pdev)
 	struct device_node *np = pdev->dev.of_node;
 	struct spear_smi_plat_data *pdata = NULL;
 	struct spear_smi *dev;
-	struct resource *smi_base;
 	int irq, ret = 0;
 	int i;
 
 	if (np) {
 		pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 		if (!pdata) {
-			pr_err("%s: ERROR: no memory", __func__);
 			ret = -ENOMEM;
 			goto err;
 		}
@@ -936,20 +965,16 @@ static int spear_smi_probe(struct platform_device *pdev)
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
 		ret = -ENODEV;
-		dev_err(&pdev->dev, "invalid smi irq\n");
 		goto err;
 	}
 
-	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_ATOMIC);
+	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev) {
 		ret = -ENOMEM;
-		dev_err(&pdev->dev, "mem alloc fail\n");
 		goto err;
 	}
 
-	smi_base = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-
-	dev->io_base = devm_ioremap_resource(&pdev->dev, smi_base);
+	dev->io_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(dev->io_base)) {
 		ret = PTR_ERR(dev->io_base);
 		goto err;
@@ -968,21 +993,17 @@ static int spear_smi_probe(struct platform_device *pdev)
 		dev->num_flashes = MAX_NUM_FLASH_CHIP;
 	}
 
-	dev->clk = devm_clk_get(&pdev->dev, NULL);
+	dev->clk = devm_clk_get_enabled(&pdev->dev, NULL);
 	if (IS_ERR(dev->clk)) {
 		ret = PTR_ERR(dev->clk);
 		goto err;
 	}
 
-	ret = clk_prepare_enable(dev->clk);
-	if (ret)
-		goto err;
-
 	ret = devm_request_irq(&pdev->dev, irq, spear_smi_int_handler, 0,
 			       pdev->name, dev);
 	if (ret) {
 		dev_err(&dev->pdev->dev, "SMI IRQ allocation failed\n");
-		goto err_irq;
+		goto err;
 	}
 
 	mutex_init(&dev->lock);
@@ -995,14 +1016,11 @@ static int spear_smi_probe(struct platform_device *pdev)
 		ret = spear_smi_setup_banks(pdev, i, pdata->np[i]);
 		if (ret) {
 			dev_err(&dev->pdev->dev, "bank setup failed\n");
-			goto err_irq;
+			goto err;
 		}
 	}
 
 	return 0;
-
-err_irq:
-	clk_disable_unprepare(dev->clk);
 err:
 	return ret;
 }
@@ -1017,13 +1035,9 @@ static int spear_smi_remove(struct platform_device *pdev)
 {
 	struct spear_smi *dev;
 	struct spear_snor_flash *flash;
-	int ret, i;
+	int i;
 
 	dev = platform_get_drvdata(pdev);
-	if (!dev) {
-		dev_err(&pdev->dev, "dev is null\n");
-		return -ENODEV;
-	}
 
 	/* clean up for all nor flash */
 	for (i = 0; i < dev->num_flashes; i++) {
@@ -1032,12 +1046,8 @@ static int spear_smi_remove(struct platform_device *pdev)
 			continue;
 
 		/* clean up mtd stuff */
-		ret = mtd_device_unregister(&flash->mtd);
-		if (ret)
-			dev_err(&pdev->dev, "error removing mtd\n");
+		WARN_ON(mtd_device_unregister(&flash->mtd));
 	}
-
-	clk_disable_unprepare(dev->clk);
 
 	return 0;
 }
@@ -1081,7 +1091,6 @@ static struct platform_driver spear_smi_driver = {
 	.driver = {
 		.name = "smi",
 		.bus = &platform_bus_type,
-		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(spear_smi_id_table),
 		.pm = &spear_smi_pm_ops,
 	},
@@ -1091,5 +1100,5 @@ static struct platform_driver spear_smi_driver = {
 module_platform_driver(spear_smi_driver);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Ashish Priyadarshi, Shiraz Hashim <shiraz.hashim@st.com>");
+MODULE_AUTHOR("Ashish Priyadarshi, Shiraz Hashim <shiraz.linux.kernel@gmail.com>");
 MODULE_DESCRIPTION("MTD SMI driver for serial nor flash chips");

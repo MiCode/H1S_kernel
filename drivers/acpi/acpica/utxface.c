@@ -1,45 +1,11 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: utxface - External interfaces, miscellaneous utility functions
  *
+ * Copyright (C) 2000 - 2023, Intel Corp.
+ *
  *****************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #define EXPORT_ACPI_INTERFACES
 
@@ -61,28 +27,11 @@ ACPI_MODULE_NAME("utxface")
  * DESCRIPTION: Shutdown the ACPICA subsystem and release all resources.
  *
  ******************************************************************************/
-acpi_status __init acpi_terminate(void)
+acpi_status ACPI_INIT_FUNCTION acpi_terminate(void)
 {
 	acpi_status status;
 
 	ACPI_FUNCTION_TRACE(acpi_terminate);
-
-	/* Just exit if subsystem is already shutdown */
-
-	if (acpi_gbl_shutdown) {
-		ACPI_ERROR((AE_INFO, "ACPI Subsystem is already terminated"));
-		return_ACPI_STATUS(AE_OK);
-	}
-
-	/* Subsystem appears active, go ahead and shut it down */
-
-	acpi_gbl_shutdown = TRUE;
-	acpi_gbl_startup_flags = 0;
-	ACPI_DEBUG_PRINT((ACPI_DB_INFO, "Shutting down ACPI Subsystem\n"));
-
-	/* Terminate the AML Debugger if present */
-
-	ACPI_DEBUGGER_EXEC(acpi_gbl_db_terminate_threads = TRUE);
 
 	/* Shutdown and free all resources */
 
@@ -91,13 +40,6 @@ acpi_status __init acpi_terminate(void)
 	/* Free the mutex objects */
 
 	acpi_ut_mutex_terminate();
-
-#ifdef ACPI_DEBUGGER
-
-	/* Shut down the debugger */
-
-	acpi_db_terminate();
-#endif
 
 	/* Now we can shutdown the OS-dependent layer */
 
@@ -151,7 +93,7 @@ ACPI_EXPORT_SYMBOL(acpi_subsystem_status)
  *              and the value of out_buffer is undefined.
  *
  ******************************************************************************/
-acpi_status acpi_get_system_info(struct acpi_buffer * out_buffer)
+acpi_status acpi_get_system_info(struct acpi_buffer *out_buffer)
 {
 	struct acpi_system_info *info_ptr;
 	acpi_status status;
@@ -178,7 +120,6 @@ acpi_status acpi_get_system_info(struct acpi_buffer * out_buffer)
 	 * Populate the return buffer
 	 */
 	info_ptr = (struct acpi_system_info *)out_buffer->pointer;
-
 	info_ptr->acpi_ca_version = ACPI_CA_VERSION;
 
 	/* System flags (ACPI capabilities) */
@@ -234,13 +175,12 @@ acpi_status acpi_get_statistics(struct acpi_statistics *stats)
 	stats->sci_count = acpi_sci_count;
 	stats->gpe_count = acpi_gpe_count;
 
-	ACPI_MEMCPY(stats->fixed_event_count, acpi_fixed_event_count,
-		    sizeof(acpi_fixed_event_count));
+	memcpy(stats->fixed_event_count, acpi_fixed_event_count,
+	       sizeof(acpi_fixed_event_count));
 
 	/* Other counters */
 
 	stats->method_count = acpi_method_count;
-
 	return_ACPI_STATUS(AE_OK);
 }
 
@@ -277,7 +217,7 @@ acpi_install_initialization_handler(acpi_init_handler handler, u32 function)
 }
 
 ACPI_EXPORT_SYMBOL(acpi_install_initialization_handler)
-#endif				/*  ACPI_FUTURE_USAGE  */
+#endif
 
 /*****************************************************************************
  *
@@ -322,7 +262,7 @@ acpi_status acpi_install_interface(acpi_string interface_name)
 
 	/* Parameter validation */
 
-	if (!interface_name || (ACPI_STRLEN(interface_name) == 0)) {
+	if (!interface_name || (strlen(interface_name) == 0)) {
 		return (AE_BAD_PARAMETER);
 	}
 
@@ -374,7 +314,7 @@ acpi_status acpi_remove_interface(acpi_string interface_name)
 
 	/* Parameter validation */
 
-	if (!interface_name || (ACPI_STRLEN(interface_name) == 0)) {
+	if (!interface_name || (strlen(interface_name) == 0)) {
 		return (AE_BAD_PARAMETER);
 	}
 
@@ -509,7 +449,7 @@ ACPI_EXPORT_SYMBOL(acpi_check_address_range)
  ******************************************************************************/
 acpi_status
 acpi_decode_pld_buffer(u8 *in_buffer,
-		       acpi_size length, struct acpi_pld_info ** return_buffer)
+		       acpi_size length, struct acpi_pld_info **return_buffer)
 {
 	struct acpi_pld_info *pld_info;
 	u32 *buffer = ACPI_CAST_PTR(u32, in_buffer);
@@ -517,7 +457,8 @@ acpi_decode_pld_buffer(u8 *in_buffer,
 
 	/* Parameter validation */
 
-	if (!in_buffer || !return_buffer || (length < 16)) {
+	if (!in_buffer || !return_buffer
+	    || (length < ACPI_PLD_REV1_BUFFER_SIZE)) {
 		return (AE_BAD_PARAMETER);
 	}
 
@@ -531,7 +472,9 @@ acpi_decode_pld_buffer(u8 *in_buffer,
 	ACPI_MOVE_32_TO_32(&dword, &buffer[0]);
 	pld_info->revision = ACPI_PLD_GET_REVISION(&dword);
 	pld_info->ignore_color = ACPI_PLD_GET_IGNORE_COLOR(&dword);
-	pld_info->color = ACPI_PLD_GET_COLOR(&dword);
+	pld_info->red = ACPI_PLD_GET_RED(&dword);
+	pld_info->green = ACPI_PLD_GET_GREEN(&dword);
+	pld_info->blue = ACPI_PLD_GET_BLUE(&dword);
 
 	/* Second 32-bit DWord */
 
@@ -565,7 +508,7 @@ acpi_decode_pld_buffer(u8 *in_buffer,
 	pld_info->rotation = ACPI_PLD_GET_ROTATION(&dword);
 	pld_info->order = ACPI_PLD_GET_ORDER(&dword);
 
-	if (length >= ACPI_PLD_BUFFER_SIZE) {
+	if (length >= ACPI_PLD_REV2_BUFFER_SIZE) {
 
 		/* Fifth 32-bit DWord (Revision 2 of _PLD) */
 

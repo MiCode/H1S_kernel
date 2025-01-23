@@ -18,22 +18,8 @@
 #include <asm/fpregdef.h>
 #include <asm/mipsregs.h>
 #include <asm/stackframe.h>
-#include <asm/war.h>
+#include <asm/sync.h>
 #include <asm/thread_info.h>
-
-#ifdef CONFIG_MIPS_MT_SMTC
-#define PANIC_PIC(msg)					\
-		.set	push;				\
-		.set	nomicromips;			\
-		.set	reorder;			\
-		PTR_LA	a0,8f;				\
-		.set	noat;				\
-		PTR_LA	AT, panic;			\
-		jr	AT;				\
-9:		b	9b;				\
-		.set	pop;				\
-		TEXT(msg)
-#endif
 
 	__INIT
 
@@ -46,9 +32,6 @@
 NESTED(except_vec3_generic, 0, sp)
 	.set	push
 	.set	noat
-#if R5432_CP0_INTERRUPT_WAR
-	mfc0	k0, CP0_INDEX
-#endif
 	mfc0	k1, CP0_CAUSE
 	andi	k1, k1, 0x7c
 #ifdef CONFIG_64BIT
@@ -67,7 +50,7 @@ NESTED(except_vec3_generic, 0, sp)
  */
 NESTED(except_vec3_r4000, 0, sp)
 	.set	push
-	.set	mips3
+	.set	arch=r4000
 	.set	noat
 	mfc0	k1, CP0_CAUSE
 	li	k0, 31<<2
@@ -139,12 +122,12 @@ LEAF(__r4k_wait)
 	nop
 	nop
 #endif
-	.set	mips3
+	.set	MIPS_ISA_ARCH_LEVEL_RAW
 	wait
 	/* end of rollback region (the region size must be power of two) */
 1:
 	jr	ra
-	nop
+	 nop
 	.set	pop
 	END(__r4k_wait)
 
@@ -156,15 +139,15 @@ LEAF(__r4k_wait)
 	PTR_LA	k1, __r4k_wait
 	ori	k0, 0x1f	/* 32 byte rollback region */
 	xori	k0, 0x1f
-	bne	k0, k1, 9f
+	bne	k0, k1, \handler
 	MTC0	k0, CP0_EPC
-9:
 	.set pop
 	.endm
 
 	.align	5
 BUILD_ROLLBACK_PROLOGUE handle_int
 NESTED(handle_int, PT_SIZE, sp)
+	.cfi_signal_frame
 #ifdef CONFIG_TRACE_IRQFLAGS
 	/*
 	 * Check to see if the interrupted code has just disabled
@@ -179,14 +162,14 @@ NESTED(handle_int, PT_SIZE, sp)
 	.set	push
 	.set	noat
 	mfc0	k0, CP0_STATUS
-#if defined(CONFIG_CPU_R3000) || defined(CONFIG_CPU_TX39XX)
+#if defined(CONFIG_CPU_R3000)
 	and	k0, ST0_IEP
 	bnez	k0, 1f
 
 	mfc0	k0, CP0_EPC
 	.set	noreorder
 	j	k0
-	rfe
+	 rfe
 #else
 	and	k0, ST0_IE
 	bnez	k0, 1f
@@ -196,15 +179,52 @@ NESTED(handle_int, PT_SIZE, sp)
 1:
 	.set pop
 #endif
-	SAVE_ALL
+	SAVE_ALL docfi=1
 	CLI
 	TRACE_IRQS_OFF
 
 	LONG_L	s0, TI_REGS($28)
 	LONG_S	sp, TI_REGS($28)
-	PTR_LA	ra, ret_from_irq
-	PTR_LA  v0, plat_irq_dispatch
-	jr	v0
+
+	/*
+	 * SAVE_ALL ensures we are using a valid kernel stack for the thread.
+	 * Check if we are already using the IRQ stack.
+	 */
+	move	s1, sp # Preserve the sp
+
+	/* Get IRQ stack for this CPU */
+	ASM_CPUID_MFC0	k0, ASM_SMP_CPUID_REG
+#if defined(CONFIG_32BIT) || defined(KBUILD_64BIT_SYM32)
+	lui	k1, %hi(irq_stack)
+#else
+	lui	k1, %highest(irq_stack)
+	daddiu	k1, %higher(irq_stack)
+	dsll	k1, 16
+	daddiu	k1, %hi(irq_stack)
+	dsll	k1, 16
+#endif
+	LONG_SRL	k0, SMP_CPUID_PTRSHIFT
+	LONG_ADDU	k1, k0
+	LONG_L	t0, %lo(irq_stack)(k1)
+
+	# Check if already on IRQ stack
+	PTR_LI	t1, ~(_THREAD_SIZE-1)
+	and	t1, t1, sp
+	beq	t0, t1, 2f
+
+	/* Switch to IRQ stack */
+	li	t1, _IRQ_STACK_START
+	PTR_ADD sp, t0, t1
+
+	/* Save task's sp on IRQ stack so that unwinding can follow it */
+	LONG_S	s1, 0(sp)
+2:
+	jal	plat_irq_dispatch
+
+	/* Restore sp */
+	move	sp, s1
+
+	j	ret_from_irq
 #ifdef CONFIG_CPU_MICROMIPS
 	nop
 #endif
@@ -247,19 +267,10 @@ NESTED(except_vec_ejtag_debug, 0, sp)
  */
 BUILD_ROLLBACK_PROLOGUE except_vec_vi
 NESTED(except_vec_vi, 0, sp)
-	SAVE_SOME
-	SAVE_AT
+	SAVE_SOME docfi=1
+	SAVE_AT docfi=1
 	.set	push
 	.set	noreorder
-#ifdef CONFIG_MIPS_MT_SMTC
-	/*
-	 * To keep from blindly blocking *all* interrupts
-	 * during service by SMTC kernel, we also want to
-	 * pass the IM value to be cleared.
-	 */
-FEXPORT(except_vec_vi_mori)
-	ori	a0, $0, 0
-#endif /* CONFIG_MIPS_MT_SMTC */
 	PTR_LA	v1, except_vec_vi_handler
 FEXPORT(except_vec_vi_lui)
 	lui	v0, 0		/* Patched */
@@ -277,44 +288,55 @@ EXPORT(except_vec_vi_end)
 NESTED(except_vec_vi_handler, 0, sp)
 	SAVE_TEMP
 	SAVE_STATIC
-#ifdef CONFIG_MIPS_MT_SMTC
-	/*
-	 * SMTC has an interesting problem that interrupts are level-triggered,
-	 * and the CLI macro will clear EXL, potentially causing a duplicate
-	 * interrupt service invocation. So we need to clear the associated
-	 * IM bit of Status prior to doing CLI, and restore it after the
-	 * service routine has been invoked - we must assume that the
-	 * service routine will have cleared the state, and any active
-	 * level represents a new or otherwised unserviced event...
-	 */
-	mfc0	t1, CP0_STATUS
-	and	t0, a0, t1
-#ifdef CONFIG_MIPS_MT_SMTC_IM_BACKSTOP
-	mfc0	t2, CP0_TCCONTEXT
-	or	t2, t0, t2
-	mtc0	t2, CP0_TCCONTEXT
-#endif /* CONFIG_MIPS_MT_SMTC_IM_BACKSTOP */
-	xor	t1, t1, t0
-	mtc0	t1, CP0_STATUS
-	_ehb
-#endif /* CONFIG_MIPS_MT_SMTC */
 	CLI
 #ifdef CONFIG_TRACE_IRQFLAGS
 	move	s0, v0
-#ifdef CONFIG_MIPS_MT_SMTC
-	move	s1, a0
-#endif
 	TRACE_IRQS_OFF
-#ifdef CONFIG_MIPS_MT_SMTC
-	move	a0, s1
-#endif
 	move	v0, s0
 #endif
 
 	LONG_L	s0, TI_REGS($28)
 	LONG_S	sp, TI_REGS($28)
-	PTR_LA	ra, ret_from_irq
-	jr	v0
+
+	/*
+	 * SAVE_ALL ensures we are using a valid kernel stack for the thread.
+	 * Check if we are already using the IRQ stack.
+	 */
+	move	s1, sp # Preserve the sp
+
+	/* Get IRQ stack for this CPU */
+	ASM_CPUID_MFC0	k0, ASM_SMP_CPUID_REG
+#if defined(CONFIG_32BIT) || defined(KBUILD_64BIT_SYM32)
+	lui	k1, %hi(irq_stack)
+#else
+	lui	k1, %highest(irq_stack)
+	daddiu	k1, %higher(irq_stack)
+	dsll	k1, 16
+	daddiu	k1, %hi(irq_stack)
+	dsll	k1, 16
+#endif
+	LONG_SRL	k0, SMP_CPUID_PTRSHIFT
+	LONG_ADDU	k1, k0
+	LONG_L	t0, %lo(irq_stack)(k1)
+
+	# Check if already on IRQ stack
+	PTR_LI	t1, ~(_THREAD_SIZE-1)
+	and	t1, t1, sp
+	beq	t0, t1, 2f
+
+	/* Switch to IRQ stack */
+	li	t1, _IRQ_STACK_START
+	PTR_ADD sp, t0, t1
+
+	/* Save task's sp on IRQ stack so that unwinding can follow it */
+	LONG_S	s1, 0(sp)
+2:
+	jalr	v0
+
+	/* Restore sp */
+	move	sp, s1
+
+	j	ret_from_irq
 	END(except_vec_vi_handler)
 
 /*
@@ -326,23 +348,64 @@ NESTED(ejtag_debug_handler, PT_SIZE, sp)
 	MTC0	k0, CP0_DESAVE
 	mfc0	k0, CP0_DEBUG
 
-	sll	k0, k0, 30	# Check for SDBBP.
-	bgez	k0, ejtag_return
+	andi	k0, k0, MIPS_DEBUG_DBP	# Check for SDBBP.
+	beqz	k0, ejtag_return
+
+#ifdef CONFIG_SMP
+1:	PTR_LA	k0, ejtag_debug_buffer_spinlock
+	__SYNC(full, loongson3_war)
+2:	ll	k0, 0(k0)
+	bnez	k0, 2b
+	PTR_LA	k0, ejtag_debug_buffer_spinlock
+	sc	k0, 0(k0)
+	beqz	k0, 1b
+# ifdef CONFIG_WEAK_REORDERING_BEYOND_LLSC
+	sync
+# endif
 
 	PTR_LA	k0, ejtag_debug_buffer
 	LONG_S	k1, 0(k0)
+
+	ASM_CPUID_MFC0 k1, ASM_SMP_CPUID_REG
+	PTR_SRL	k1, SMP_CPUID_PTRSHIFT
+	PTR_SLL	k1, LONGLOG
+	PTR_LA	k0, ejtag_debug_buffer_per_cpu
+	PTR_ADDU k0, k1
+
+	PTR_LA	k1, ejtag_debug_buffer
+	LONG_L	k1, 0(k1)
+	LONG_S	k1, 0(k0)
+
+	PTR_LA	k0, ejtag_debug_buffer_spinlock
+	sw	zero, 0(k0)
+#else
+	PTR_LA	k0, ejtag_debug_buffer
+	LONG_S	k1, 0(k0)
+#endif
+
 	SAVE_ALL
 	move	a0, sp
 	jal	ejtag_exception_handler
 	RESTORE_ALL
+
+#ifdef CONFIG_SMP
+	ASM_CPUID_MFC0 k1, ASM_SMP_CPUID_REG
+	PTR_SRL	k1, SMP_CPUID_PTRSHIFT
+	PTR_SLL	k1, LONGLOG
+	PTR_LA	k0, ejtag_debug_buffer_per_cpu
+	PTR_ADDU k0, k1
+	LONG_L	k1, 0(k0)
+#else
 	PTR_LA	k0, ejtag_debug_buffer
 	LONG_L	k1, 0(k0)
+#endif
 
 ejtag_return:
+	back_to_back_c0_hazard
 	MFC0	k0, CP0_DESAVE
 	.set	mips32
 	deret
-	.set pop
+	.set	pop
 	END(ejtag_debug_handler)
 
 /*
@@ -352,6 +415,12 @@ ejtag_return:
 	.data
 EXPORT(ejtag_debug_buffer)
 	.fill	LONGSIZE
+#ifdef CONFIG_SMP
+EXPORT(ejtag_debug_buffer_spinlock)
+	.fill	LONGSIZE
+EXPORT(ejtag_debug_buffer_per_cpu)
+	.fill	LONGSIZE * NR_CPUS
+#endif
 	.previous
 
 	__INIT
@@ -372,6 +441,7 @@ NESTED(except_vec_nmi, 0, sp)
 	__FINIT
 
 NESTED(nmi_handler, PT_SIZE, sp)
+	.cfi_signal_frame
 	.set	push
 	.set	noat
 	/*
@@ -379,10 +449,10 @@ NESTED(nmi_handler, PT_SIZE, sp)
 	 * Clear BEV - required for page fault exception handler to work
 	 */
 	mfc0	k0, CP0_STATUS
-	ori     k0, k0, ST0_EXL
+	ori	k0, k0, ST0_EXL
 	li	k1, ~(ST0_BEV | ST0_ERL)
-	and     k0, k0, k1
-	mtc0    k0, CP0_STATUS
+	and	k0, k0, k1
+	mtc0	k0, CP0_STATUS
 	_ehb
 	SAVE_ALL
 	move	a0, sp
@@ -405,16 +475,20 @@ NESTED(nmi_handler, PT_SIZE, sp)
 	.endm
 
 	.macro	__build_clear_fpe
+	CLI
+	TRACE_IRQS_OFF
 	.set	push
 	/* gas fails to assemble cfc1 for some archs (octeon).*/ \
 	.set	mips1
+	.set	hardfloat
 	cfc1	a1, fcr31
-	li	a2, ~(0x3f << 12)
-	and	a2, a1
-	ctc1	a2, fcr31
 	.set	pop
-	TRACE_IRQS_ON
-	STI
+	.endm
+
+	.macro	__build_clear_msa_fpe
+	CLI
+	TRACE_IRQS_OFF
+	_cfcmsa	a1, MSA_CSR
 	.endm
 
 	.macro	__build_clear_ade
@@ -423,26 +497,39 @@ NESTED(nmi_handler, PT_SIZE, sp)
 	KMODE
 	.endm
 
+	.macro __build_clear_gsexc
+	.set	push
+	/*
+	 * We need to specify a selector to access the CP0.Diag1 (GSCause)
+	 * register. All GSExc-equipped processors have MIPS32.
+	 */
+	.set	mips32
+	mfc0	a1, CP0_DIAGNOSTIC1
+	.set	pop
+	TRACE_IRQS_ON
+	STI
+	.endm
+
 	.macro	__BUILD_silent exception
 	.endm
 
-	/* Gas tries to parse the PRINT argument as a string containing
+	/* Gas tries to parse the ASM_PRINT argument as a string containing
 	   string escapes and emits bogus warnings if it believes to
 	   recognize an unknown escape code.  So make the arguments
 	   start with an n and gas will believe \n is ok ...  */
 	.macro	__BUILD_verbose nexception
 	LONG_L	a1, PT_EPC(sp)
 #ifdef CONFIG_32BIT
-	PRINT("Got \nexception at %08lx\012")
+	ASM_PRINT("Got \nexception at %08lx\012")
 #endif
 #ifdef CONFIG_64BIT
-	PRINT("Got \nexception at %016lx\012")
+	ASM_PRINT("Got \nexception at %016lx\012")
 #endif
 	.endm
 
 	.macro	__BUILD_count exception
 	LONG_L	t0,exception_count_\exception
-	LONG_ADDIU t0, 1
+	LONG_ADDIU	t0, 1
 	LONG_S	t0,exception_count_\exception
 	.comm	exception_count\exception, 8, 8
 	.endm
@@ -450,15 +537,16 @@ NESTED(nmi_handler, PT_SIZE, sp)
 	.macro	__BUILD_HANDLER exception handler clear verbose ext
 	.align	5
 	NESTED(handle_\exception, PT_SIZE, sp)
+	.cfi_signal_frame
 	.set	noat
 	SAVE_ALL
 	FEXPORT(handle_\exception\ext)
-	__BUILD_clear_\clear
+	__build_clear_\clear
 	.set	at
 	__BUILD_\verbose \exception
 	move	a0, sp
-	PTR_LA	ra, ret_from_exception
-	j	do_\handler
+	jal	do_\handler
+	j	ret_from_exception
 	END(handle_\exception)
 	.endm
 
@@ -475,8 +563,13 @@ NESTED(nmi_handler, PT_SIZE, sp)
 	BUILD_HANDLER cpu cpu sti silent		/* #11 */
 	BUILD_HANDLER ov ov sti silent			/* #12 */
 	BUILD_HANDLER tr tr sti silent			/* #13 */
+	BUILD_HANDLER msa_fpe msa_fpe msa_fpe silent	/* #14 */
+#ifdef CONFIG_MIPS_FP_SUPPORT
 	BUILD_HANDLER fpe fpe fpe silent		/* #15 */
+#endif
 	BUILD_HANDLER ftlb ftlb none silent		/* #16 */
+	BUILD_HANDLER gsexc gsexc gsexc silent		/* #16 */
+	BUILD_HANDLER msa msa sti silent		/* #21 */
 	BUILD_HANDLER mdmx mdmx sti silent		/* #22 */
 #ifdef	CONFIG_HARDWARE_WATCHPOINTS
 	/*
@@ -493,19 +586,16 @@ NESTED(nmi_handler, PT_SIZE, sp)
 	BUILD_HANDLER reserved reserved sti verbose	/* others */
 
 	.align	5
-	LEAF(handle_ri_rdhwr_vivt)
-#ifdef CONFIG_MIPS_MT_SMTC
-	PANIC_PIC("handle_ri_rdhwr_vivt called")
-#else
+	LEAF(handle_ri_rdhwr_tlbp)
 	.set	push
 	.set	noat
 	.set	noreorder
 	/* check if TLB contains a entry for EPC */
 	MFC0	k1, CP0_ENTRYHI
-	andi	k1, 0xff	/* ASID_MASK */
+	andi	k1, MIPS_ENTRYHI_ASID | MIPS_ENTRYHI_ASIDX
 	MFC0	k0, CP0_EPC
-	PTR_SRL k0, _PAGE_SHIFT + 1
-	PTR_SLL k0, _PAGE_SHIFT + 1
+	PTR_SRL	k0, _PAGE_SHIFT + 1
+	PTR_SLL	k0, _PAGE_SHIFT + 1
 	or	k1, k0
 	MTC0	k1, CP0_ENTRYHI
 	mtc0_tlbw_hazard
@@ -515,8 +605,7 @@ NESTED(nmi_handler, PT_SIZE, sp)
 	.set	pop
 	bltz	k1, handle_ri	/* slow path */
 	/* fall thru */
-#endif
-	END(handle_ri_rdhwr_vivt)
+	END(handle_ri_rdhwr_tlbp)
 
 	LEAF(handle_ri_rdhwr)
 	.set	push
@@ -526,27 +615,27 @@ NESTED(nmi_handler, PT_SIZE, sp)
 	/* microMIPS: 0x007d6b3c: rdhwr v1,$29 */
 	MFC0	k1, CP0_EPC
 #if defined(CONFIG_CPU_MICROMIPS) || defined(CONFIG_CPU_MIPS32_R2) || defined(CONFIG_CPU_MIPS64_R2)
-	and     k0, k1, 1
-	beqz    k0, 1f
-	xor     k1, k0
-	lhu     k0, (k1)
-	lhu     k1, 2(k1)
-	ins     k1, k0, 16, 16
-	lui     k0, 0x007d
-	b       docheck
-	ori     k0, 0x6b3c
+	and	k0, k1, 1
+	beqz	k0, 1f
+	 xor	k1, k0
+	lhu	k0, (k1)
+	lhu	k1, 2(k1)
+	ins	k1, k0, 16, 16
+	lui	k0, 0x007d
+	b	docheck
+	 ori	k0, 0x6b3c
 1:
-	lui     k0, 0x7c03
-	lw      k1, (k1)
-	ori     k0, 0xe83b
+	lui	k0, 0x7c03
+	lw	k1, (k1)
+	ori	k0, 0xe83b
 #else
-	andi    k0, k1, 1
-	bnez    k0, handle_ri
-	lui     k0, 0x7c03
-	lw      k1, (k1)
-	ori     k0, 0xe83b
+	andi	k0, k1, 1
+	bnez	k0, handle_ri
+	 lui	k0, 0x7c03
+	lw	k1, (k1)
+	ori	k0, 0xe83b
 #endif
-	.set    reorder
+	.set	reorder
 docheck:
 	bne	k0, k1, handle_ri	/* if not ours */
 
@@ -555,7 +644,7 @@ isrdhwr:
 	get_saved_sp	/* k1 := current_thread_info */
 	.set	noreorder
 	MFC0	k0, CP0_EPC
-#if defined(CONFIG_CPU_R3000) || defined(CONFIG_CPU_TX39XX)
+#if defined(CONFIG_CPU_R3000)
 	ori	k1, _THREAD_MASK
 	xori	k1, _THREAD_MASK
 	LONG_L	v1, TI_TP_VALUE(k1)
@@ -575,14 +664,15 @@ isrdhwr:
 	ori	k1, _THREAD_MASK
 	xori	k1, _THREAD_MASK
 	LONG_L	v1, TI_TP_VALUE(k1)
-	.set	mips3
+	.set	push
+	.set	arch=r4000
 	eret
-	.set	mips0
+	.set	pop
 #endif
 	.set	pop
 	END(handle_ri_rdhwr)
 
-#ifdef CONFIG_64BIT
+#ifdef CONFIG_CPU_R4X00_BUGS64
 /* A temporary overflow handler used by check_daddi(). */
 
 	__INIT

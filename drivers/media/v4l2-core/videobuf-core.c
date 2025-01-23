@@ -1,16 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * generic helper functions for handling video4linux capture buffers
  *
- * (c) 2007 Mauro Carvalho Chehab, <mchehab@infradead.org>
+ * (c) 2007 Mauro Carvalho Chehab, <mchehab@kernel.org>
  *
  * Highly based on video-buf written originally by:
  * (c) 2001,02 Gerd Knorr <kraxel@bytesex.org>
- * (c) 2006 Mauro Carvalho Chehab, <mchehab@infradead.org>
+ * (c) 2006 Mauro Carvalho Chehab, <mchehab@kernel.org>
  * (c) 2006 Ted Walther and John Sokol
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2
  */
 
 #include <linux/init.h>
@@ -22,6 +19,7 @@
 #include <linux/interrupt.h>
 
 #include <media/videobuf-core.h>
+#include <media/v4l2-common.h>
 
 #define MAGIC_BUFFER 0x20070728
 #define MAGIC_CHECK(is, should)						\
@@ -38,7 +36,7 @@ static int debug;
 module_param(debug, int, 0644);
 
 MODULE_DESCRIPTION("helper module to manage video4linux buffers");
-MODULE_AUTHOR("Mauro Carvalho Chehab <mchehab@infradead.org>");
+MODULE_AUTHOR("Mauro Carvalho Chehab <mchehab@kernel.org>");
 MODULE_LICENSE("GPL");
 
 #define dprintk(level, fmt, arg...)					\
@@ -51,6 +49,8 @@ MODULE_LICENSE("GPL");
 
 #define CALL(q, f, arg...)						\
 	((q->int_ops->f) ? q->int_ops->f(arg) : 0)
+#define CALLPTR(q, f, arg...)						\
+	((q->int_ops->f) ? q->int_ops->f(arg) : NULL)
 
 struct videobuf_buffer *videobuf_alloc_vb(struct videobuf_queue *q)
 {
@@ -73,7 +73,8 @@ struct videobuf_buffer *videobuf_alloc_vb(struct videobuf_queue *q)
 }
 EXPORT_SYMBOL_GPL(videobuf_alloc_vb);
 
-static int is_state_active_or_queued(struct videobuf_queue *q, struct videobuf_buffer *vb)
+static int state_neither_active_nor_queued(struct videobuf_queue *q,
+					   struct videobuf_buffer *vb)
 {
 	unsigned long flags;
 	bool rc;
@@ -93,7 +94,7 @@ int videobuf_waiton(struct videobuf_queue *q, struct videobuf_buffer *vb,
 	MAGIC_CHECK(vb->magic, MAGIC_BUFFER);
 
 	if (non_blocking) {
-		if (is_state_active_or_queued(q, vb))
+		if (state_neither_active_nor_queued(q, vb))
 			return 0;
 		return -EAGAIN;
 	}
@@ -105,9 +106,10 @@ int videobuf_waiton(struct videobuf_queue *q, struct videobuf_buffer *vb,
 	if (is_ext_locked)
 		mutex_unlock(q->ext_lock);
 	if (intr)
-		ret = wait_event_interruptible(vb->done, is_state_active_or_queued(q, vb));
+		ret = wait_event_interruptible(vb->done,
+					state_neither_active_nor_queued(q, vb));
 	else
-		wait_event(vb->done, is_state_active_or_queued(q, vb));
+		wait_event(vb->done, state_neither_active_nor_queued(q, vb));
 	/* Relock */
 	if (is_ext_locked)
 		mutex_lock(q->ext_lock);
@@ -210,7 +212,7 @@ int videobuf_queue_is_busy(struct videobuf_queue *q)
 			return 1;
 		}
 		if (q->bufs[i]->state == VIDEOBUF_ACTIVE) {
-			dprintk(1, "busy: buffer #%d avtive\n", i);
+			dprintk(1, "busy: buffer #%d active\n", i);
 			return 1;
 		}
 	}
@@ -218,7 +220,7 @@ int videobuf_queue_is_busy(struct videobuf_queue *q)
 }
 EXPORT_SYMBOL_GPL(videobuf_queue_is_busy);
 
-/**
+/*
  * __videobuf_free() - free all the buffers and their control structures
  *
  * This function can only be called if streaming/reading is off, i.e. no buffers
@@ -352,7 +354,7 @@ static void videobuf_status(struct videobuf_queue *q, struct v4l2_buffer *b,
 		break;
 	case VIDEOBUF_ERROR:
 		b->flags |= V4L2_BUF_FLAG_ERROR;
-		/* fall through */
+		fallthrough;
 	case VIDEOBUF_DONE:
 		b->flags |= V4L2_BUF_FLAG_DONE;
 		break;
@@ -363,7 +365,7 @@ static void videobuf_status(struct videobuf_queue *q, struct v4l2_buffer *b,
 	}
 
 	b->field     = vb->field;
-	b->timestamp = vb->ts;
+	v4l2_buffer_set_timestamp(b, vb->ts);
 	b->bytesused = vb->size;
 	b->sequence  = vb->field_count >> 1;
 }
@@ -441,11 +443,6 @@ int videobuf_reqbufs(struct videobuf_queue *q,
 	unsigned int size, count;
 	int retval;
 
-	if (req->count < 1) {
-		dprintk(1, "reqbufs: count invalid (%d)\n", req->count);
-		return -EINVAL;
-	}
-
 	if (req->memory != V4L2_MEMORY_MMAP     &&
 	    req->memory != V4L2_MEMORY_USERPTR  &&
 	    req->memory != V4L2_MEMORY_OVERLAY) {
@@ -468,6 +465,12 @@ int videobuf_reqbufs(struct videobuf_queue *q,
 	if (!list_empty(&q->stream)) {
 		dprintk(1, "reqbufs: stream running\n");
 		retval = -EBUSY;
+		goto done;
+	}
+
+	if (req->count == 0) {
+		dprintk(1, "reqbufs: count invalid (%d)\n", req->count);
+		retval = __videobuf_free(q);
 		goto done;
 	}
 
@@ -532,7 +535,7 @@ int videobuf_qbuf(struct videobuf_queue *q, struct v4l2_buffer *b)
 	MAGIC_CHECK(q->int_ops->magic, MAGIC_QTYPE_OPS);
 
 	if (b->memory == V4L2_MEMORY_MMAP)
-		down_read(&current->mm->mmap_sem);
+		mmap_read_lock(current->mm);
 
 	videobuf_queue_lock(q);
 	retval = -EBUSY;
@@ -567,16 +570,16 @@ int videobuf_qbuf(struct videobuf_queue *q, struct v4l2_buffer *b)
 	switch (b->memory) {
 	case V4L2_MEMORY_MMAP:
 		if (0 == buf->baddr) {
-			dprintk(1, "qbuf: mmap requested "
-				   "but buffer addr is zero!\n");
+			dprintk(1, "qbuf: mmap requested but buffer addr is zero!\n");
 			goto done;
 		}
 		if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT
 		    || q->type == V4L2_BUF_TYPE_VBI_OUTPUT
-		    || q->type == V4L2_BUF_TYPE_SLICED_VBI_OUTPUT) {
+		    || q->type == V4L2_BUF_TYPE_SLICED_VBI_OUTPUT
+		    || q->type == V4L2_BUF_TYPE_SDR_OUTPUT) {
 			buf->size = b->bytesused;
 			buf->field = b->field;
-			buf->ts = b->timestamp;
+			buf->ts = v4l2_buffer_get_timestamp(b);
 		}
 		break;
 	case V4L2_MEMORY_USERPTR:
@@ -619,7 +622,7 @@ done:
 	videobuf_queue_unlock(q);
 
 	if (b->memory == V4L2_MEMORY_MMAP)
-		up_read(&current->mm->mmap_sem);
+		mmap_read_unlock(current->mm);
 
 	return retval;
 }
@@ -830,7 +833,7 @@ static int __videobuf_copy_to_user(struct videobuf_queue *q,
 				   char __user *data, size_t count,
 				   int nonblocking)
 {
-	void *vaddr = CALL(q, vaddr, buf);
+	void *vaddr = CALLPTR(q, vaddr, buf);
 
 	/* copy to userspace */
 	if (count > buf->size - q->read_off)
@@ -847,7 +850,7 @@ static int __videobuf_copy_stream(struct videobuf_queue *q,
 				  char __user *data, size_t count, size_t pos,
 				  int vbihack, int nonblocking)
 {
-	unsigned int *fc = CALL(q, vaddr, buf);
+	unsigned int *fc = CALLPTR(q, vaddr, buf);
 
 	if (vbihack) {
 		/* dirty, undocumented hack -- pass the frame counter
@@ -1113,24 +1116,24 @@ done:
 }
 EXPORT_SYMBOL_GPL(videobuf_read_stream);
 
-unsigned int videobuf_poll_stream(struct file *file,
-				  struct videobuf_queue *q,
-				  poll_table *wait)
+__poll_t videobuf_poll_stream(struct file *file,
+			      struct videobuf_queue *q,
+			      poll_table *wait)
 {
-	unsigned long req_events = poll_requested_events(wait);
+	__poll_t req_events = poll_requested_events(wait);
 	struct videobuf_buffer *buf = NULL;
-	unsigned int rc = 0;
+	__poll_t rc = 0;
 
 	videobuf_queue_lock(q);
 	if (q->streaming) {
 		if (!list_empty(&q->stream))
 			buf = list_entry(q->stream.next,
 					 struct videobuf_buffer, stream);
-	} else if (req_events & (POLLIN | POLLRDNORM)) {
+	} else if (req_events & (EPOLLIN | EPOLLRDNORM)) {
 		if (!q->reading)
 			__videobuf_read_start(q);
 		if (!q->reading) {
-			rc = POLLERR;
+			rc = EPOLLERR;
 		} else if (NULL == q->read_buf) {
 			q->read_buf = list_entry(q->stream.next,
 						 struct videobuf_buffer,
@@ -1140,21 +1143,23 @@ unsigned int videobuf_poll_stream(struct file *file,
 		}
 		buf = q->read_buf;
 	}
-	if (!buf)
-		rc = POLLERR;
+	if (buf)
+		poll_wait(file, &buf->done, wait);
+	else
+		rc = EPOLLERR;
 
 	if (0 == rc) {
-		poll_wait(file, &buf->done, wait);
 		if (buf->state == VIDEOBUF_DONE ||
 		    buf->state == VIDEOBUF_ERROR) {
 			switch (q->type) {
 			case V4L2_BUF_TYPE_VIDEO_OUTPUT:
 			case V4L2_BUF_TYPE_VBI_OUTPUT:
 			case V4L2_BUF_TYPE_SLICED_VBI_OUTPUT:
-				rc = POLLOUT | POLLWRNORM;
+			case V4L2_BUF_TYPE_SDR_OUTPUT:
+				rc = EPOLLOUT | EPOLLWRNORM;
 				break;
 			default:
-				rc = POLLIN | POLLRDNORM;
+				rc = EPOLLIN | EPOLLRDNORM;
 				break;
 			}
 		}

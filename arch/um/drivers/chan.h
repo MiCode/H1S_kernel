@@ -1,6 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* 
  * Copyright (C) 2000, 2001 Jeff Dike (jdike@karaya.com)
- * Licensed under the GPL
  */
 
 #ifndef __CHAN_KERN_H__
@@ -36,7 +36,6 @@ extern int console_write_chan(struct chan *chan, const char *buf,
 			      int len);
 extern int console_open_chan(struct line *line, struct console *co);
 extern void deactivate_chan(struct chan *chan, int irq);
-extern void reactivate_chan(struct chan *chan, int irq);
 extern void chan_enable_winch(struct chan *chan, struct tty_port *port);
 extern int enable_chan(struct line *line);
 extern void close_chan(struct line *line);

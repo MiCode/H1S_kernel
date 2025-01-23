@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 menu "Board support"
 
 config SOLUTION_ENGINE
@@ -5,6 +6,29 @@ config SOLUTION_ENGINE
 
 config SH_ALPHA_BOARD
 	bool
+
+config SH_CUSTOM_CLK
+	def_bool y
+	depends on !SH_DEVICE_TREE
+	select HAVE_LEGACY_CLK
+
+config SH_DEVICE_TREE
+	bool
+	select OF
+	select OF_EARLY_FLATTREE
+	select TIMER_OF
+	select COMMON_CLK
+	select GENERIC_CALIBRATE_DELAY
+
+config SH_JCORE_SOC
+	bool "J-Core SoC"
+	select SH_DEVICE_TREE
+	select CLKSRC_JCORE_PIT
+	select JCORE_AIC
+	depends on CPU_J2
+	help
+	  Select this option to include drivers core components of the
+	  J-Core SoC, including interrupt controllers and timers.
 
 config SH_SOLUTION_ENGINE
 	bool "SolutionEngine"
@@ -55,7 +79,7 @@ config SH_7724_SOLUTION_ENGINE
 	bool "SolutionEngine7724"
 	select SOLUTION_ENGINE
 	depends on CPU_SUBTYPE_SH7724
-	select ARCH_REQUIRE_GPIOLIB
+	select GPIOLIB
 	select SND_SOC_AK4642 if SND_SIMPLE_CARD
 	select REGULATOR_FIXED_VOLTAGE if REGULATOR
 	help
@@ -74,7 +98,7 @@ config SH_7751_SOLUTION_ENGINE
 config SH_7780_SOLUTION_ENGINE
 	bool "SolutionEngine7780"
 	select SOLUTION_ENGINE
-	select SYS_SUPPORTS_PCI
+	select HAVE_PCI
 	depends on CPU_SUBTYPE_SH7780
 	help
 	  Select 7780 SolutionEngine if configuring for a Renesas SH7780
@@ -102,7 +126,7 @@ config SH_HP6XX
 
 config SH_DREAMCAST
 	bool "Dreamcast"
-	select SYS_SUPPORTS_PCI
+	select HAVE_PCI
 	depends on CPU_SUBTYPE_SH7091
 	help
 	  Select Dreamcast if configuring for a SEGA Dreamcast.
@@ -112,7 +136,7 @@ config SH_SH03
 	bool "Interface CTP/PCI-SH03"
 	depends on CPU_SUBTYPE_SH7751
 	select CPU_HAS_IPR_IRQ
-	select SYS_SUPPORTS_PCI
+	select HAVE_PCI
 	help
 	  CTP/PCI-SH03 is a CPU module computer that is produced
 	  by Interface Corporation.
@@ -122,7 +146,7 @@ config SH_SECUREEDGE5410
 	bool "SecureEdge5410"
 	depends on CPU_SUBTYPE_SH7751R
 	select CPU_HAS_IPR_IRQ
-	select SYS_SUPPORTS_PCI
+	select HAVE_PCI
 	help
 	  Select SecureEdge5410 if configuring for a SnapGear SH board.
 	  This includes both the OEM SecureEdge products as well as the
@@ -131,7 +155,7 @@ config SH_SECUREEDGE5410
 config SH_RTS7751R2D
 	bool "RTS7751R2D"
 	depends on CPU_SUBTYPE_SH7751R
-	select SYS_SUPPORTS_PCI
+	select HAVE_PCI
 	select IO_TRAPPED if MMU
 	help
 	  Select RTS7751R2D if configuring for a Renesas Technology
@@ -149,7 +173,7 @@ config SH_RSK
 config SH_SDK7780
 	bool "SDK7780R3"
 	depends on CPU_SUBTYPE_SH7780
-	select SYS_SUPPORTS_PCI
+	select HAVE_PCI
 	help
 	  Select SDK7780 if configuring for a Renesas SH7780 SDK7780R3
 	  evaluation board.
@@ -157,9 +181,8 @@ config SH_SDK7780
 config SH_SDK7786
 	bool "SDK7786"
 	depends on CPU_SUBTYPE_SH7786
-	select SYS_SUPPORTS_PCI
-	select NO_IOPORT if !PCI
-	select ARCH_WANT_OPTIONAL_GPIOLIB
+	select HAVE_PCI
+	select NO_IOPORT_MAP if !PCI
 	select HAVE_SRAM_POOL
 	select REGULATOR_FIXED_VOLTAGE if REGULATOR
 	help
@@ -169,19 +192,19 @@ config SH_SDK7786
 config SH_HIGHLANDER
 	bool "Highlander"
 	depends on CPU_SUBTYPE_SH7780 || CPU_SUBTYPE_SH7785
-	select SYS_SUPPORTS_PCI
+	select HAVE_PCI
 	select IO_TRAPPED if MMU
 
 config SH_SH7757LCR
 	bool "SH7757LCR"
 	depends on CPU_SUBTYPE_SH7757
-	select ARCH_REQUIRE_GPIOLIB
+	select GPIOLIB
 	select REGULATOR_FIXED_VOLTAGE if REGULATOR
 
 config SH_SH7785LCR
 	bool "SH7785LCR"
 	depends on CPU_SUBTYPE_SH7785
-	select SYS_SUPPORTS_PCI
+	select HAVE_PCI
 
 config SH_SH7785LCR_29BIT_PHYSMAPS
 	bool "SH7785LCR 29bit physmaps"
@@ -202,14 +225,14 @@ config SH_SH7785LCR_PT
 config SH_URQUELL
 	bool "Urquell"
 	depends on CPU_SUBTYPE_SH7786
-	select ARCH_REQUIRE_GPIOLIB
-	select SYS_SUPPORTS_PCI
-	select NO_IOPORT if !PCI
+	select GPIOLIB
+	select HAVE_PCI
+	select NO_IOPORT_MAP if !PCI
 
 config SH_MIGOR
 	bool "Migo-R"
 	depends on CPU_SUBTYPE_SH7722
-	select ARCH_REQUIRE_GPIOLIB
+	select GPIOLIB
 	select REGULATOR_FIXED_VOLTAGE if REGULATOR
 	help
 	  Select Migo-R if configuring for the SH7722 Migo-R platform
@@ -218,7 +241,7 @@ config SH_MIGOR
 config SH_AP325RXA
 	bool "AP-325RXA"
 	depends on CPU_SUBTYPE_SH7723
-	select ARCH_REQUIRE_GPIOLIB
+	select GPIOLIB
 	select REGULATOR_FIXED_VOLTAGE if REGULATOR
 	help
 	  Renesas "AP-325RXA" support.
@@ -227,7 +250,7 @@ config SH_AP325RXA
 config SH_KFR2R09
 	bool "KFR2R09"
 	depends on CPU_SUBTYPE_SH7724
-	select ARCH_REQUIRE_GPIOLIB
+	select GPIOLIB
 	select REGULATOR_FIXED_VOLTAGE if REGULATOR
 	help
 	  "Kit For R2R for 2009" support.
@@ -235,7 +258,7 @@ config SH_KFR2R09
 config SH_ECOVEC
 	bool "EcoVec"
 	depends on CPU_SUBTYPE_SH7724
-	select ARCH_REQUIRE_GPIOLIB
+	select GPIOLIB
 	select SND_SOC_DA7210 if SND_SIMPLE_CARD
 	select REGULATOR_FIXED_VOLTAGE if REGULATOR
 	help
@@ -276,7 +299,7 @@ config SH_SH4202_MICRODEV
 config SH_LANDISK
 	bool "LANDISK"
 	depends on CPU_SUBTYPE_SH7751R
-	select SYS_SUPPORTS_PCI
+	select HAVE_PCI
 	help
 	  I-O DATA DEVICE, INC. "LANDISK Series" support.
 
@@ -284,7 +307,7 @@ config SH_TITAN
 	bool "TITAN"
 	depends on CPU_SUBTYPE_SH7751R
 	select CPU_HAS_IPR_IRQ
-	select SYS_SUPPORTS_PCI
+	select HAVE_PCI
 	help
 	  Select Titan if you are configuring for a Nimble Microsystems
 	  NetEngine NP51R.
@@ -299,29 +322,23 @@ config SH_SHMIN
 config SH_LBOX_RE2
 	bool "L-BOX RE2"
 	depends on CPU_SUBTYPE_SH7751R
-	select SYS_SUPPORTS_PCI
+	select HAVE_PCI
 	help
 	  Select L-BOX RE2 if configuring for the NTT COMWARE L-BOX RE2.
 
 config SH_X3PROTO
 	bool "SH-X3 Prototype board"
 	depends on CPU_SUBTYPE_SHX3
-	select NO_IOPORT if !PCI
+	select NO_IOPORT_MAP if !PCI
 	select IRQ_DOMAIN
 
 config SH_MAGIC_PANEL_R2
 	bool "Magic Panel R2"
 	depends on CPU_SUBTYPE_SH7720
-	select ARCH_REQUIRE_GPIOLIB
+	select GPIOLIB
 	select REGULATOR_FIXED_VOLTAGE if REGULATOR
 	help
 	  Select Magic Panel R2 if configuring for Magic Panel R2.
-
-config SH_CAYMAN
-	bool "Hitachi Cayman"
-	depends on CPU_SUBTYPE_SH5_101 || CPU_SUBTYPE_SH5_103
-	select SYS_SUPPORTS_PCI
-	select ARCH_MIGHT_HAVE_PC_SERIO
 
 config SH_POLARIS
 	bool "SMSC Polaris"
@@ -333,7 +350,7 @@ config SH_POLARIS
 
 config SH_SH2007
 	bool "SH-2007 board"
-	select NO_IOPORT
+	select NO_IOPORT_MAP
 	select REGULATOR_FIXED_VOLTAGE if REGULATOR
 	depends on CPU_SUBTYPE_SH7780
 	help
@@ -341,7 +358,6 @@ config SH_SH2007
 	  intended for embedded applications.
 	  It has an Ethernet interface (SMC9118), direct connected
 	  Compact Flash socket, two serial ports and PC-104 bus.
-	  More information at <http://sh2000.sh-linux.org>.
 
 config SH_APSH4A3A
 	bool "AP-SH4A-3A"
@@ -354,7 +370,7 @@ config SH_APSH4A3A
 config SH_APSH4AD0A
 	bool "AP-SH4AD-0A"
 	select SH_ALPHA_BOARD
-	select SYS_SUPPORTS_PCI
+	select HAVE_PCI
 	select REGULATOR_FIXED_VOLTAGE if REGULATOR
 	depends on CPU_SUBTYPE_SH7786
 	help
@@ -371,7 +387,7 @@ if SH_MAGIC_PANEL_R2
 menu "Magic Panel R2 options"
 
 config SH_MAGIC_PANEL_R2_VERSION
-	int SH_MAGIC_PANEL_R2_VERSION
+	int "Magic Panel R2 Version"
 	default "3"
 	help
 	  Set the version of the Magic Panel R2

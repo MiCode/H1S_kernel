@@ -1,36 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *   Copyright (C) International Business Machines Corp., 2000-2002
  *   Portions Copyright (C) Christoph Hellwig, 2001-2002
- *
- *   This program is free software;  you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY;  without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- *   the GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program;  if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 #ifndef _H_JFS_UNICODE
 #define _H_JFS_UNICODE
 
 #include <linux/slab.h>
 #include <asm/byteorder.h>
+#include "../nls/nls_ucs2_data.h"
 #include "jfs_types.h"
 
-typedef struct {
-	wchar_t start;
-	wchar_t end;
-	signed char *table;
-} UNICASERANGE;
-
-extern signed char UniUpperTable[512];
-extern UNICASERANGE UniUpperRange[];
 extern int get_UCSname(struct component_name *, struct dentry *);
 extern int jfs_strfromUCS_le(char *, const __le16 *, int, struct nls_table *);
 
@@ -120,12 +100,12 @@ static inline wchar_t *UniStrncpy_from_le(wchar_t * ucs1, const __le16 * ucs2,
  */
 static inline wchar_t UniToupper(wchar_t uc)
 {
-	UNICASERANGE *rp;
+	const struct UniCaseRange *rp;
 
-	if (uc < sizeof(UniUpperTable)) {	/* Latin characters */
-		return uc + UniUpperTable[uc];	/* Use base tables */
+	if (uc < sizeof(NlsUniUpperTable)) {	/* Latin characters */
+		return uc + NlsUniUpperTable[uc];	/* Use base tables */
 	} else {
-		rp = UniUpperRange;	/* Use range tables */
+		rp = NlsUniUpperRange;	/* Use range tables */
 		while (rp->start) {
 			if (uc < rp->start)	/* Before start of range */
 				return uc;	/* Uppercase = input */

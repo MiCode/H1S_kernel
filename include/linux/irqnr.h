@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_IRQNR_H
 #define _LINUX_IRQNR_H
 
@@ -22,12 +23,6 @@ unsigned int irq_get_next_irq(unsigned int offset);
 		if (!desc)						\
 			;						\
 		else
-
-#ifdef CONFIG_SMP
-#define irq_node(irq)	(irq_get_irq_data(irq)->node)
-#else
-#define irq_node(irq)	0
-#endif
 
 # define for_each_active_irq(irq)			\
 	for (irq = irq_get_next_irq(0); irq < nr_irqs;	\

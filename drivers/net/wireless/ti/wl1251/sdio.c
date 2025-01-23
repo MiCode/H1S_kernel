@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * wl12xx SDIO routines
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
  *
  * Copyright (C) 2005 Texas Instruments Incorporated
  * Copyright (C) 2008 Google Inc
@@ -25,19 +12,12 @@
 #include <linux/mmc/sdio_func.h>
 #include <linux/mmc/sdio_ids.h>
 #include <linux/platform_device.h>
-#include <linux/wl12xx.h>
 #include <linux/irq.h>
 #include <linux/pm_runtime.h>
+#include <linux/of.h>
+#include <linux/of_irq.h>
 
 #include "wl1251.h"
-
-#ifndef SDIO_VENDOR_ID_TI
-#define SDIO_VENDOR_ID_TI		0x104c
-#endif
-
-#ifndef SDIO_DEVICE_ID_TI_WL1251
-#define SDIO_DEVICE_ID_TI_WL1251	0x9066
-#endif
 
 struct wl1251_sdio {
 	struct sdio_func *func;
@@ -61,7 +41,7 @@ static void wl1251_sdio_interrupt(struct sdio_func *func)
 }
 
 static const struct sdio_device_id wl1251_devices[] = {
-	{ SDIO_DEVICE(SDIO_VENDOR_ID_TI, SDIO_DEVICE_ID_TI_WL1251) },
+	{ SDIO_DEVICE(SDIO_VENDOR_ID_TI_WL1251, SDIO_DEVICE_ID_TI_WL1251) },
 	{}
 };
 MODULE_DEVICE_TABLE(sdio, wl1251_devices);
@@ -177,14 +157,6 @@ static int wl1251_sdio_set_power(struct wl1251 *wl, bool enable)
 	int ret;
 
 	if (enable) {
-		/*
-		 * Power is controlled by runtime PM, but we still call board
-		 * callback in case it wants to do any additional setup,
-		 * for example enabling clock buffer for the module.
-		 */
-		if (wl->set_power)
-			wl->set_power(true);
-
 		ret = pm_runtime_get_sync(&func->dev);
 		if (ret < 0) {
 			pm_runtime_put_sync(&func->dev);
@@ -202,9 +174,6 @@ static int wl1251_sdio_set_power(struct wl1251 *wl, bool enable)
 		ret = pm_runtime_put_sync(&func->dev);
 		if (ret < 0)
 			goto out;
-
-		if (wl->set_power)
-			wl->set_power(false);
 	}
 
 out:
@@ -227,7 +196,7 @@ static int wl1251_sdio_probe(struct sdio_func *func,
 	struct wl1251 *wl;
 	struct ieee80211_hw *hw;
 	struct wl1251_sdio *wl_sdio;
-	const struct wl12xx_platform_data *wl12xx_board_data;
+	struct device_node *np = func->dev.of_node;
 
 	hw = wl1251_alloc_hw();
 	if (IS_ERR(hw))
@@ -254,11 +223,13 @@ static int wl1251_sdio_probe(struct sdio_func *func,
 	wl->if_priv = wl_sdio;
 	wl->if_ops = &wl1251_sdio_ops;
 
-	wl12xx_board_data = wl12xx_get_platform_data();
-	if (!IS_ERR(wl12xx_board_data)) {
-		wl->set_power = wl12xx_board_data->set_power;
-		wl->irq = wl12xx_board_data->irq;
-		wl->use_eeprom = wl12xx_board_data->use_eeprom;
+	if (np) {
+		wl->use_eeprom = of_property_read_bool(np, "ti,wl1251-has-eeprom");
+		wl->irq = of_irq_get(np, 0);
+		if (wl->irq == -EPROBE_DEFER) {
+			ret = -EPROBE_DEFER;
+			goto disable;
+		}
 	}
 
 	if (wl->irq) {

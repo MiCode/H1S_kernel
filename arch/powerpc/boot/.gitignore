@@ -1,4 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
 addnote
+decompress_inflate.c
 empty.c
 hack-coff
 inffast.c
@@ -13,11 +15,13 @@ infutil.h
 kernel-vmlinux.strip.c
 kernel-vmlinux.strip.gz
 mktree
+otheros.bld
+otheros-too-big.bld
 uImage
 cuImage.*
 dtbImage.*
-*.dtb
 treeImage.*
+vmlinux.strip
 zImage
 zImage.initrd
 zImage.bin.*
@@ -26,6 +30,7 @@ zImage.coff
 zImage.epapr
 zImage.holly
 zImage.*lds
+zImage.maple
 zImage.miboot
 zImage.pmac
 zImage.pseries
@@ -41,4 +46,3 @@ fdt_sw.c
 fdt_wip.c
 libfdt.h
 libfdt_internal.h
-

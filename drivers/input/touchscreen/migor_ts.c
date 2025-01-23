@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Touch Screen driver for Renesas MIGO-R Platform
  *
  * Copyright (c) 2008 Magnus Damm
  * Copyright (c) 2007 Ujjwal Pande <ujjwal@kenati.com>,
  *  Kenati Technologies Pvt Ltd.
- *
- * This file is free software; you can redistribute it and/or
- * modify it under the terms of the GNU  General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
- *
- * This file is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -129,8 +116,7 @@ static void migor_ts_close(struct input_dev *dev)
 	enable_irq(priv->irq);
 }
 
-static int migor_ts_probe(struct i2c_client *client,
-			  const struct i2c_device_id *idp)
+static int migor_ts_probe(struct i2c_client *client)
 {
 	struct migor_ts_priv *priv;
 	struct input_dev *input;
@@ -189,7 +175,7 @@ static int migor_ts_probe(struct i2c_client *client,
 	return error;
 }
 
-static int migor_ts_remove(struct i2c_client *client)
+static void migor_ts_remove(struct i2c_client *client)
 {
 	struct migor_ts_priv *priv = i2c_get_clientdata(client);
 
@@ -198,8 +184,6 @@ static int migor_ts_remove(struct i2c_client *client)
 	kfree(priv);
 
 	dev_set_drvdata(&client->dev, NULL);
-
-	return 0;
 }
 
 static int migor_ts_suspend(struct device *dev)
@@ -224,18 +208,18 @@ static int migor_ts_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(migor_ts_pm, migor_ts_suspend, migor_ts_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(migor_ts_pm, migor_ts_suspend, migor_ts_resume);
 
 static const struct i2c_device_id migor_ts_id[] = {
 	{ "migor_ts", 0 },
 	{ }
 };
-MODULE_DEVICE_TABLE(i2c, migor_ts);
+MODULE_DEVICE_TABLE(i2c, migor_ts_id);
 
 static struct i2c_driver migor_ts_driver = {
 	.driver = {
 		.name = "migor_ts",
-		.pm = &migor_ts_pm,
+		.pm = pm_sleep_ptr(&migor_ts_pm),
 	},
 	.probe = migor_ts_probe,
 	.remove = migor_ts_remove,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * lib80211 -- common bits for IEEE802.11 drivers
  *
@@ -25,8 +26,6 @@
 
 #include <net/lib80211.h>
 
-#define DRV_NAME        "lib80211"
-
 #define DRV_DESCRIPTION	"common routines for IEEE802.11 drivers"
 
 MODULE_DESCRIPTION(DRV_DESCRIPTION);
@@ -44,39 +43,7 @@ static DEFINE_SPINLOCK(lib80211_crypto_lock);
 static void lib80211_crypt_deinit_entries(struct lib80211_crypt_info *info,
 					  int force);
 static void lib80211_crypt_quiescing(struct lib80211_crypt_info *info);
-static void lib80211_crypt_deinit_handler(unsigned long data);
-
-const char *print_ssid(char *buf, const char *ssid, u8 ssid_len)
-{
-	const char *s = ssid;
-	char *d = buf;
-
-	ssid_len = min_t(u8, ssid_len, IEEE80211_MAX_SSID_LEN);
-	while (ssid_len--) {
-		if (isprint(*s)) {
-			*d++ = *s++;
-			continue;
-		}
-
-		*d++ = '\\';
-		if (*s == '\0')
-			*d++ = '0';
-		else if (*s == '\n')
-			*d++ = 'n';
-		else if (*s == '\r')
-			*d++ = 'r';
-		else if (*s == '\t')
-			*d++ = 't';
-		else if (*s == '\\')
-			*d++ = '\\';
-		else
-			d += snprintf(d, 3, "%03o", *s);
-		s++;
-	}
-	*d = '\0';
-	return buf;
-}
-EXPORT_SYMBOL(print_ssid);
+static void lib80211_crypt_deinit_handler(struct timer_list *t);
 
 int lib80211_crypt_info_init(struct lib80211_crypt_info *info, char *name,
 				spinlock_t *lock)
@@ -87,8 +54,8 @@ int lib80211_crypt_info_init(struct lib80211_crypt_info *info, char *name,
 	info->lock = lock;
 
 	INIT_LIST_HEAD(&info->crypt_deinit_list);
-	setup_timer(&info->crypt_deinit_timer, lib80211_crypt_deinit_handler,
-			(unsigned long)info);
+	timer_setup(&info->crypt_deinit_timer, lib80211_crypt_deinit_handler,
+		    0);
 
 	return 0;
 }
@@ -148,9 +115,10 @@ static void lib80211_crypt_quiescing(struct lib80211_crypt_info *info)
 	spin_unlock_irqrestore(info->lock, flags);
 }
 
-static void lib80211_crypt_deinit_handler(unsigned long data)
+static void lib80211_crypt_deinit_handler(struct timer_list *t)
 {
-	struct lib80211_crypt_info *info = (struct lib80211_crypt_info *)data;
+	struct lib80211_crypt_info *info = from_timer(info, t,
+						      crypt_deinit_timer);
 	unsigned long flags;
 
 	lib80211_crypt_deinit_entries(info, 0);

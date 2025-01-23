@@ -27,8 +27,6 @@
 */
 
 #define DRV_NAME	"starfire"
-#define DRV_VERSION	"2.1"
-#define DRV_RELDATE	"July  6, 2008"
 
 #include <linux/interrupt.h>
 #include <linux/module.h>
@@ -45,7 +43,7 @@
 #include <linux/mm.h>
 #include <linux/firmware.h>
 #include <asm/processor.h>		/* Processor type for cache alignment. */
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 
 /*
@@ -66,7 +64,7 @@
  */
 #define ZEROCOPY
 
-#if defined(CONFIG_VLAN_8021Q) || defined(CONFIG_VLAN_8021Q_MODULE)
+#if IS_ENABLED(CONFIG_VLAN_8021Q)
 #define VLAN_SUPPORT
 #endif
 
@@ -165,15 +163,9 @@ static int rx_copybreak /* = 0 */;
 #define FIRMWARE_RX	"adaptec/starfire_rx.bin"
 #define FIRMWARE_TX	"adaptec/starfire_tx.bin"
 
-/* These identify the driver base version and may not be removed. */
-static const char version[] =
-KERN_INFO "starfire.c:v1.03 7/26/2000  Written by Donald Becker <becker@scyld.com>\n"
-" (unofficial 2.2/2.4 kernel port, version " DRV_VERSION ", " DRV_RELDATE ")\n";
-
 MODULE_AUTHOR("Donald Becker <becker@scyld.com>");
 MODULE_DESCRIPTION("Adaptec Starfire Ethernet driver");
 MODULE_LICENSE("GPL");
-MODULE_VERSION(DRV_VERSION);
 MODULE_FIRMWARE(FIRMWARE_RX);
 MODULE_FIRMWARE(FIRMWARE_TX);
 
@@ -285,7 +277,7 @@ enum chipset {
 	CH_6915 = 0,
 };
 
-static DEFINE_PCI_DEVICE_TABLE(starfire_pci_tbl) = {
+static const struct pci_device_id starfire_pci_tbl[] = {
 	{ PCI_VDEVICE(ADAPTEC, 0x6915), CH_6915 },
 	{ 0, }
 };
@@ -576,7 +568,7 @@ static int	mdio_read(struct net_device *dev, int phy_id, int location);
 static void	mdio_write(struct net_device *dev, int phy_id, int location, int value);
 static int	netdev_open(struct net_device *dev);
 static void	check_duplex(struct net_device *dev);
-static void	tx_timeout(struct net_device *dev);
+static void	tx_timeout(struct net_device *dev, unsigned int txqueue);
 static void	init_ring(struct net_device *dev);
 static netdev_tx_t start_tx(struct sk_buff *skb, struct net_device *dev);
 static irqreturn_t intr_handler(int irq, void *dev_instance);
@@ -633,8 +625,7 @@ static const struct net_device_ops netdev_ops = {
 	.ndo_tx_timeout		= tx_timeout,
 	.ndo_get_stats		= get_stats,
 	.ndo_set_rx_mode	= set_rx_mode,
-	.ndo_do_ioctl		= netdev_ioctl,
-	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_eth_ioctl		= netdev_ioctl,
 	.ndo_set_mac_address	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 #ifdef VLAN_SUPPORT
@@ -650,17 +641,11 @@ static int starfire_init_one(struct pci_dev *pdev,
 	struct netdev_private *np;
 	int i, irq, chip_idx = ent->driver_data;
 	struct net_device *dev;
+	u8 addr[ETH_ALEN];
 	long ioaddr;
 	void __iomem *base;
 	int drv_flags, io_size;
 	int boguscnt;
-
-/* when built into the kernel, we only print version if device is found */
-#ifndef MODULE
-	static int printed_version;
-	if (!printed_version++)
-		printk(version);
-#endif
 
 	if (pci_enable_device (pdev))
 		return -EIO;
@@ -712,7 +697,8 @@ static int starfire_init_one(struct pci_dev *pdev,
 
 	/* Serial EEPROM reads are hidden by the hardware. */
 	for (i = 0; i < 6; i++)
-		dev->dev_addr[i] = readb(base + EEPROMCtrl + 20 - i);
+		addr[i] = readb(base + EEPROMCtrl + 20 - i);
+	eth_hw_addr_set(dev, addr);
 
 #if ! defined(final_version) /* Dump the EEPROM contents during development. */
 	if (debug > 4)
@@ -784,9 +770,9 @@ static int starfire_init_one(struct pci_dev *pdev,
 
 	dev->netdev_ops = &netdev_ops;
 	dev->watchdog_timeo = TX_TIMEOUT;
-	SET_ETHTOOL_OPS(dev, &ethtool_ops);
+	dev->ethtool_ops = &ethtool_ops;
 
-	netif_napi_add(dev, &np->napi, netdev_poll, max_interrupt_work);
+	netif_napi_add_weight(dev, &np->napi, netdev_poll, max_interrupt_work);
 
 	if (mtu)
 		dev->mtu = mtu;
@@ -803,7 +789,7 @@ static int starfire_init_one(struct pci_dev *pdev,
 		int mii_status;
 		for (phy = 0; phy < 32 && phy_idx < PHY_CNT; phy++) {
 			mdio_write(dev, phy, MII_BMCR, BMCR_RESET);
-			mdelay(100);
+			msleep(100);
 			boguscnt = 1000;
 			while (--boguscnt > 0)
 				if ((mdio_read(dev, phy, MII_BMCR) & BMCR_RESET) == 0)
@@ -902,7 +888,9 @@ static int netdev_open(struct net_device *dev)
 		tx_ring_size = ((sizeof(starfire_tx_desc) * TX_RING_SIZE + QUEUE_ALIGN - 1) / QUEUE_ALIGN) * QUEUE_ALIGN;
 		rx_ring_size = sizeof(struct starfire_rx_desc) * RX_RING_SIZE;
 		np->queue_mem_size = tx_done_q_size + rx_done_q_size + tx_ring_size + rx_ring_size;
-		np->queue_mem = pci_alloc_consistent(np->pci_dev, np->queue_mem_size, &np->queue_mem_dma);
+		np->queue_mem = dma_alloc_coherent(&np->pci_dev->dev,
+						   np->queue_mem_size,
+						   &np->queue_mem_dma, GFP_ATOMIC);
 		if (np->queue_mem == NULL) {
 			free_irq(irq, dev);
 			return -ENOMEM;
@@ -969,7 +957,7 @@ static int netdev_open(struct net_device *dev)
 	writew(0, ioaddr + PerfFilterTable + 4);
 	writew(0, ioaddr + PerfFilterTable + 8);
 	for (i = 1; i < 16; i++) {
-		__be16 *eaddrs = (__be16 *)dev->dev_addr;
+		const __be16 *eaddrs = (const __be16 *)dev->dev_addr;
 		void __iomem *setup_frm = ioaddr + PerfFilterTable + i * 16;
 		writew(be16_to_cpu(eaddrs[2]), setup_frm); setup_frm += 4;
 		writew(be16_to_cpu(eaddrs[1]), setup_frm); setup_frm += 4;
@@ -1106,7 +1094,7 @@ static void check_duplex(struct net_device *dev)
 }
 
 
-static void tx_timeout(struct net_device *dev)
+static void tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct netdev_private *np = netdev_priv(dev);
 	void __iomem *ioaddr = np->base;
@@ -1129,7 +1117,7 @@ static void tx_timeout(struct net_device *dev)
 
 	/* Trigger an immediate transmit demand. */
 
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	netif_trans_update(dev); /* prevent tx timeout */
 	dev->stats.tx_errors++;
 	netif_wake_queue(dev);
 }
@@ -1152,7 +1140,15 @@ static void init_ring(struct net_device *dev)
 		np->rx_info[i].skb = skb;
 		if (skb == NULL)
 			break;
-		np->rx_info[i].mapping = pci_map_single(np->pci_dev, skb->data, np->rx_buf_sz, PCI_DMA_FROMDEVICE);
+		np->rx_info[i].mapping = dma_map_single(&np->pci_dev->dev,
+							skb->data,
+							np->rx_buf_sz,
+							DMA_FROM_DEVICE);
+		if (dma_mapping_error(&np->pci_dev->dev, np->rx_info[i].mapping)) {
+			dev_kfree_skb(skb);
+			np->rx_info[i].skb = NULL;
+			break;
+		}
 		/* Grrr, we cannot offset to correctly align the IP header. */
 		np->rx_ring[i].rxaddr = cpu_to_dma(np->rx_info[i].mapping | RxDescValid);
 	}
@@ -1183,8 +1179,9 @@ static netdev_tx_t start_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	struct netdev_private *np = netdev_priv(dev);
 	unsigned int entry;
+	unsigned int prev_tx;
 	u32 status;
-	int i;
+	int i, j;
 
 	/*
 	 * be cautious here, wrapping the queue has weird semantics
@@ -1202,6 +1199,7 @@ static netdev_tx_t start_tx(struct sk_buff *skb, struct net_device *dev)
 	}
 #endif /* ZEROCOPY && HAS_BROKEN_FIRMWARE */
 
+	prev_tx = np->cur_tx;
 	entry = np->cur_tx % TX_RING_SIZE;
 	for (i = 0; i < skb_num_frags(skb); i++) {
 		int wrap_ring = 0;
@@ -1225,15 +1223,21 @@ static netdev_tx_t start_tx(struct sk_buff *skb, struct net_device *dev)
 			status |= skb_first_frag_len(skb) | (skb_num_frags(skb) << 16);
 
 			np->tx_info[entry].mapping =
-				pci_map_single(np->pci_dev, skb->data, skb_first_frag_len(skb), PCI_DMA_TODEVICE);
+				dma_map_single(&np->pci_dev->dev, skb->data,
+					       skb_first_frag_len(skb),
+					       DMA_TO_DEVICE);
 		} else {
 			const skb_frag_t *this_frag = &skb_shinfo(skb)->frags[i - 1];
 			status |= skb_frag_size(this_frag);
 			np->tx_info[entry].mapping =
-				pci_map_single(np->pci_dev,
+				dma_map_single(&np->pci_dev->dev,
 					       skb_frag_address(this_frag),
 					       skb_frag_size(this_frag),
-					       PCI_DMA_TODEVICE);
+					       DMA_TO_DEVICE);
+		}
+		if (dma_mapping_error(&np->pci_dev->dev, np->tx_info[entry].mapping)) {
+			dev->stats.tx_dropped++;
+			goto err_out;
 		}
 
 		np->tx_ring[entry].addr = cpu_to_dma(np->tx_info[entry].mapping);
@@ -1269,8 +1273,28 @@ static netdev_tx_t start_tx(struct sk_buff *skb, struct net_device *dev)
 		netif_stop_queue(dev);
 
 	return NETDEV_TX_OK;
-}
 
+err_out:
+	entry = prev_tx % TX_RING_SIZE;
+	np->tx_info[entry].skb = NULL;
+	if (i > 0) {
+		dma_unmap_single(&np->pci_dev->dev,
+				 np->tx_info[entry].mapping,
+				 skb_first_frag_len(skb), DMA_TO_DEVICE);
+		np->tx_info[entry].mapping = 0;
+		entry = (entry + np->tx_info[entry].used_slots) % TX_RING_SIZE;
+		for (j = 1; j < i; j++) {
+			dma_unmap_single(&np->pci_dev->dev,
+					 np->tx_info[entry].mapping,
+					 skb_frag_size(&skb_shinfo(skb)->frags[j - 1]),
+					 DMA_TO_DEVICE);
+			entry++;
+		}
+	}
+	dev_kfree_skb_any(skb);
+	np->cur_tx = prev_tx;
+	return NETDEV_TX_OK;
+}
 
 /* The interrupt handler does all of the Rx thread work and cleans up
    after the Tx thread. */
@@ -1337,26 +1361,26 @@ static irqreturn_t intr_handler(int irq, void *dev_instance)
 				u16 entry = (tx_status & 0x7fff) / sizeof(starfire_tx_desc);
 				struct sk_buff *skb = np->tx_info[entry].skb;
 				np->tx_info[entry].skb = NULL;
-				pci_unmap_single(np->pci_dev,
+				dma_unmap_single(&np->pci_dev->dev,
 						 np->tx_info[entry].mapping,
 						 skb_first_frag_len(skb),
-						 PCI_DMA_TODEVICE);
+						 DMA_TO_DEVICE);
 				np->tx_info[entry].mapping = 0;
 				np->dirty_tx += np->tx_info[entry].used_slots;
 				entry = (entry + np->tx_info[entry].used_slots) % TX_RING_SIZE;
 				{
 					int i;
 					for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
-						pci_unmap_single(np->pci_dev,
+						dma_unmap_single(&np->pci_dev->dev,
 								 np->tx_info[entry].mapping,
 								 skb_frag_size(&skb_shinfo(skb)->frags[i]),
-								 PCI_DMA_TODEVICE);
+								 DMA_TO_DEVICE);
 						np->dirty_tx++;
 						entry++;
 					}
 				}
 
-				dev_kfree_skb_irq(skb);
+				dev_consume_skb_irq(skb);
 			}
 			np->tx_done_q[np->tx_done].status = 0;
 			np->tx_done = (np->tx_done + 1) % DONE_Q_SIZE;
@@ -1442,16 +1466,18 @@ static int __netdev_rx(struct net_device *dev, int *quota)
 		if (pkt_len < rx_copybreak &&
 		    (skb = netdev_alloc_skb(dev, pkt_len + 2)) != NULL) {
 			skb_reserve(skb, 2);	/* 16 byte align the IP header */
-			pci_dma_sync_single_for_cpu(np->pci_dev,
-						    np->rx_info[entry].mapping,
-						    pkt_len, PCI_DMA_FROMDEVICE);
+			dma_sync_single_for_cpu(&np->pci_dev->dev,
+						np->rx_info[entry].mapping,
+						pkt_len, DMA_FROM_DEVICE);
 			skb_copy_to_linear_data(skb, np->rx_info[entry].skb->data, pkt_len);
-			pci_dma_sync_single_for_device(np->pci_dev,
-						       np->rx_info[entry].mapping,
-						       pkt_len, PCI_DMA_FROMDEVICE);
+			dma_sync_single_for_device(&np->pci_dev->dev,
+						   np->rx_info[entry].mapping,
+						   pkt_len, DMA_FROM_DEVICE);
 			skb_put(skb, pkt_len);
 		} else {
-			pci_unmap_single(np->pci_dev, np->rx_info[entry].mapping, np->rx_buf_sz, PCI_DMA_FROMDEVICE);
+			dma_unmap_single(&np->pci_dev->dev,
+					 np->rx_info[entry].mapping,
+					 np->rx_buf_sz, DMA_FROM_DEVICE);
 			skb = np->rx_info[entry].skb;
 			skb_put(skb, pkt_len);
 			np->rx_info[entry].skb = NULL;
@@ -1569,7 +1595,13 @@ static void refill_rx_ring(struct net_device *dev)
 			if (skb == NULL)
 				break;	/* Better luck next round. */
 			np->rx_info[entry].mapping =
-				pci_map_single(np->pci_dev, skb->data, np->rx_buf_sz, PCI_DMA_FROMDEVICE);
+				dma_map_single(&np->pci_dev->dev, skb->data,
+					       np->rx_buf_sz, DMA_FROM_DEVICE);
+			if (dma_mapping_error(&np->pci_dev->dev, np->rx_info[entry].mapping)) {
+				dev_kfree_skb(skb);
+				np->rx_info[entry].skb = NULL;
+				break;
+			}
 			np->rx_ring[entry].rxaddr =
 				cpu_to_dma(np->rx_info[entry].mapping | RxDescValid);
 		}
@@ -1757,14 +1789,14 @@ static void set_rx_mode(struct net_device *dev)
 	} else if (netdev_mc_count(dev) <= 14) {
 		/* Use the 16 element perfect filter, skip first two entries. */
 		void __iomem *filter_addr = ioaddr + PerfFilterTable + 2 * 16;
-		__be16 *eaddrs;
+		const __be16 *eaddrs;
 		netdev_for_each_mc_addr(ha, dev) {
 			eaddrs = (__be16 *) ha->addr;
 			writew(be16_to_cpu(eaddrs[2]), filter_addr); filter_addr += 4;
 			writew(be16_to_cpu(eaddrs[1]), filter_addr); filter_addr += 4;
 			writew(be16_to_cpu(eaddrs[0]), filter_addr); filter_addr += 8;
 		}
-		eaddrs = (__be16 *)dev->dev_addr;
+		eaddrs = (const __be16 *)dev->dev_addr;
 		i = netdev_mc_count(dev) + 2;
 		while (i++ < 16) {
 			writew(be16_to_cpu(eaddrs[0]), filter_addr); filter_addr += 4;
@@ -1775,7 +1807,7 @@ static void set_rx_mode(struct net_device *dev)
 	} else {
 		/* Must use a multicast hash table. */
 		void __iomem *filter_addr;
-		__be16 *eaddrs;
+		const __be16 *eaddrs;
 		__le16 mc_filter[32] __attribute__ ((aligned(sizeof(long))));	/* Multicast hash filter */
 
 		memset(mc_filter, 0, sizeof(mc_filter));
@@ -1789,7 +1821,7 @@ static void set_rx_mode(struct net_device *dev)
 		}
 		/* Clear the perfect filter list, skip first two entries. */
 		filter_addr = ioaddr + PerfFilterTable + 2 * 16;
-		eaddrs = (__be16 *)dev->dev_addr;
+		eaddrs = (const __be16 *)dev->dev_addr;
 		for (i = 2; i < 16; i++) {
 			writew(be16_to_cpu(eaddrs[0]), filter_addr); filter_addr += 4;
 			writew(be16_to_cpu(eaddrs[1]), filter_addr); filter_addr += 4;
@@ -1812,26 +1844,27 @@ static int check_if_running(struct net_device *dev)
 static void get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
 {
 	struct netdev_private *np = netdev_priv(dev);
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, pci_name(np->pci_dev), sizeof(info->bus_info));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->bus_info, pci_name(np->pci_dev), sizeof(info->bus_info));
 }
 
-static int get_settings(struct net_device *dev, struct ethtool_cmd *ecmd)
+static int get_link_ksettings(struct net_device *dev,
+			      struct ethtool_link_ksettings *cmd)
 {
 	struct netdev_private *np = netdev_priv(dev);
 	spin_lock_irq(&np->lock);
-	mii_ethtool_gset(&np->mii_if, ecmd);
+	mii_ethtool_get_link_ksettings(&np->mii_if, cmd);
 	spin_unlock_irq(&np->lock);
 	return 0;
 }
 
-static int set_settings(struct net_device *dev, struct ethtool_cmd *ecmd)
+static int set_link_ksettings(struct net_device *dev,
+			      const struct ethtool_link_ksettings *cmd)
 {
 	struct netdev_private *np = netdev_priv(dev);
 	int res;
 	spin_lock_irq(&np->lock);
-	res = mii_ethtool_sset(&np->mii_if, ecmd);
+	res = mii_ethtool_set_link_ksettings(&np->mii_if, cmd);
 	spin_unlock_irq(&np->lock);
 	check_duplex(dev);
 	return res;
@@ -1862,12 +1895,12 @@ static void set_msglevel(struct net_device *dev, u32 val)
 static const struct ethtool_ops ethtool_ops = {
 	.begin = check_if_running,
 	.get_drvinfo = get_drvinfo,
-	.get_settings = get_settings,
-	.set_settings = set_settings,
 	.nway_reset = nway_reset,
 	.get_link = get_link,
 	.get_msglevel = get_msglevel,
 	.set_msglevel = set_msglevel,
+	.get_link_ksettings = get_link_ksettings,
+	.set_link_ksettings = set_link_ksettings,
 };
 
 static int netdev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
@@ -1937,7 +1970,9 @@ static int netdev_close(struct net_device *dev)
 	for (i = 0; i < RX_RING_SIZE; i++) {
 		np->rx_ring[i].rxaddr = cpu_to_dma(0xBADF00D0); /* An invalid address. */
 		if (np->rx_info[i].skb != NULL) {
-			pci_unmap_single(np->pci_dev, np->rx_info[i].mapping, np->rx_buf_sz, PCI_DMA_FROMDEVICE);
+			dma_unmap_single(&np->pci_dev->dev,
+					 np->rx_info[i].mapping,
+					 np->rx_buf_sz, DMA_FROM_DEVICE);
 			dev_kfree_skb(np->rx_info[i].skb);
 		}
 		np->rx_info[i].skb = NULL;
@@ -1947,9 +1982,8 @@ static int netdev_close(struct net_device *dev)
 		struct sk_buff *skb = np->tx_info[i].skb;
 		if (skb == NULL)
 			continue;
-		pci_unmap_single(np->pci_dev,
-				 np->tx_info[i].mapping,
-				 skb_first_frag_len(skb), PCI_DMA_TODEVICE);
+		dma_unmap_single(&np->pci_dev->dev, np->tx_info[i].mapping,
+				 skb_first_frag_len(skb), DMA_TO_DEVICE);
 		np->tx_info[i].mapping = 0;
 		dev_kfree_skb(skb);
 		np->tx_info[i].skb = NULL;
@@ -1958,28 +1992,21 @@ static int netdev_close(struct net_device *dev)
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int starfire_suspend(struct pci_dev *pdev, pm_message_t state)
+static int __maybe_unused starfire_suspend(struct device *dev_d)
 {
-	struct net_device *dev = pci_get_drvdata(pdev);
+	struct net_device *dev = dev_get_drvdata(dev_d);
 
 	if (netif_running(dev)) {
 		netif_device_detach(dev);
 		netdev_close(dev);
 	}
 
-	pci_save_state(pdev);
-	pci_set_power_state(pdev, pci_choose_state(pdev,state));
-
 	return 0;
 }
 
-static int starfire_resume(struct pci_dev *pdev)
+static int __maybe_unused starfire_resume(struct device *dev_d)
 {
-	struct net_device *dev = pci_get_drvdata(pdev);
-
-	pci_set_power_state(pdev, PCI_D0);
-	pci_restore_state(pdev);
+	struct net_device *dev = dev_get_drvdata(dev_d);
 
 	if (netif_running(dev)) {
 		netdev_open(dev);
@@ -1988,8 +2015,6 @@ static int starfire_resume(struct pci_dev *pdev)
 
 	return 0;
 }
-#endif /* CONFIG_PM */
-
 
 static void starfire_remove_one(struct pci_dev *pdev)
 {
@@ -2001,7 +2026,8 @@ static void starfire_remove_one(struct pci_dev *pdev)
 	unregister_netdev(dev);
 
 	if (np->queue_mem)
-		pci_free_consistent(pdev, np->queue_mem_size, np->queue_mem, np->queue_mem_dma);
+		dma_free_coherent(&pdev->dev, np->queue_mem_size,
+				  np->queue_mem, np->queue_mem_dma);
 
 
 	/* XXX: add wakeup code -- requires firmware for MagicPacket */
@@ -2014,15 +2040,13 @@ static void starfire_remove_one(struct pci_dev *pdev)
 	free_netdev(dev);			/* Will also free np!! */
 }
 
+static SIMPLE_DEV_PM_OPS(starfire_pm_ops, starfire_suspend, starfire_resume);
 
 static struct pci_driver starfire_driver = {
 	.name		= DRV_NAME,
 	.probe		= starfire_init_one,
 	.remove		= starfire_remove_one,
-#ifdef CONFIG_PM
-	.suspend	= starfire_suspend,
-	.resume		= starfire_resume,
-#endif /* CONFIG_PM */
+	.driver.pm	= &starfire_pm_ops,
 	.id_table	= starfire_pci_tbl,
 };
 
@@ -2031,8 +2055,6 @@ static int __init starfire_init (void)
 {
 /* when a module, this is printed whether or not devices are found in probe */
 #ifdef MODULE
-	printk(version);
-
 	printk(KERN_INFO DRV_NAME ": polling (NAPI) enabled\n");
 #endif
 
@@ -2050,11 +2072,3 @@ static void __exit starfire_cleanup (void)
 
 module_init(starfire_init);
 module_exit(starfire_cleanup);
-
-
-/*
- * Local variables:
- *  c-basic-offset: 8
- *  tab-width: 8
- * End:
- */

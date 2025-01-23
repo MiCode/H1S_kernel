@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: ((GPL-2.0-only WITH Linux-syscall-note) OR BSD-3-Clause) */
 /*
  * linux/can/error.h
  *
@@ -41,8 +42,8 @@
  * DAMAGE.
  */
 
-#ifndef CAN_ERROR_H
-#define CAN_ERROR_H
+#ifndef _UAPI_CAN_ERROR_H
+#define _UAPI_CAN_ERROR_H
 
 #define CAN_ERR_DLC 8 /* dlc for error message frames */
 
@@ -56,6 +57,8 @@
 #define CAN_ERR_BUSOFF       0x00000040U /* bus off */
 #define CAN_ERR_BUSERROR     0x00000080U /* bus error (may flood!) */
 #define CAN_ERR_RESTARTED    0x00000100U /* controller restarted */
+#define CAN_ERR_CNT          0x00000200U /* TX error counter / data[6] */
+					 /* RX error counter / data[7] */
 
 /* arbitration lost in bit ... / data[0] */
 #define CAN_ERR_LOSTARB_UNSPEC   0x00 /* unspecified */
@@ -71,6 +74,7 @@
 #define CAN_ERR_CRTL_TX_PASSIVE  0x20 /* reached error passive status TX */
 				      /* (at least one error counter exceeds */
 				      /* the protocol-defined level of 127)  */
+#define CAN_ERR_CRTL_ACTIVE      0x40 /* recovered to error active state */
 
 /* error in CAN protocol (type) / data[2] */
 #define CAN_ERR_PROT_UNSPEC      0x00 /* unspecified */
@@ -118,6 +122,22 @@
 #define CAN_ERR_TRX_CANL_SHORT_TO_GND  0x70 /* 0111 0000 */
 #define CAN_ERR_TRX_CANL_SHORT_TO_CANH 0x80 /* 1000 0000 */
 
-/* controller specific additional information / data[5..7] */
+/* data[5] is reserved (do not use) */
 
-#endif /* CAN_ERROR_H */
+/* TX error counter / data[6] */
+/* RX error counter / data[7] */
+
+/* CAN state thresholds
+ *
+ * Error counter	Error state
+ * -----------------------------------
+ * 0 -  95		Error-active
+ * 96 - 127		Error-warning
+ * 128 - 255		Error-passive
+ * 256 and greater	Bus-off
+ */
+#define CAN_ERROR_WARNING_THRESHOLD 96
+#define CAN_ERROR_PASSIVE_THRESHOLD 128
+#define CAN_BUS_OFF_THRESHOLD 256
+
+#endif /* _UAPI_CAN_ERROR_H */

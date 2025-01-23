@@ -1,12 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* -*- linux-c -*- ------------------------------------------------------- *
  *
  *   Copyright 2002 H. Peter Anvin - All Rights Reserved
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation, Inc., 53 Temple Place Ste 330,
- *   Boston MA 02111-1307, USA; either version 2 of the License, or
- *   (at your option) any later version; incorporated herein by reference.
  *
  * ----------------------------------------------------------------------- */
 
@@ -92,6 +87,7 @@ static void raid6_sse11_gen_syndrome(int disks, size_t bytes, void **ptrs)
 
 const struct raid6_calls raid6_sse1x1 = {
 	raid6_sse11_gen_syndrome,
+	NULL,			/* XOR not yet implemented */
 	raid6_have_sse1_or_mmxext,
 	"sse1x1",
 	1			/* Has cache hints */
@@ -154,6 +150,7 @@ static void raid6_sse12_gen_syndrome(int disks, size_t bytes, void **ptrs)
 
 const struct raid6_calls raid6_sse1x2 = {
 	raid6_sse12_gen_syndrome,
+	NULL,			/* XOR not yet implemented */
 	raid6_have_sse1_or_mmxext,
 	"sse1x2",
 	1			/* Has cache hints */

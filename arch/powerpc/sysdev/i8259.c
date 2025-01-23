@@ -1,20 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * i8259 interrupt controller driver.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 #undef DEBUG
 
 #include <linux/ioport.h>
 #include <linux/interrupt.h>
+#include <linux/irqdomain.h>
 #include <linux/kernel.h>
 #include <linux/delay.h>
 #include <asm/io.h>
 #include <asm/i8259.h>
-#include <asm/prom.h>
 
 static volatile void __iomem *pci_intack; /* RO, gives us the irq vector */
 
@@ -68,9 +64,9 @@ unsigned int i8259_irq(void)
 		if (!pci_intack)
 			outb(0x0B, 0x20);	/* ISR register */
 		if(~inb(0x20) & 0x80)
-			irq = NO_IRQ;
+			irq = 0;
 	} else if (irq == 0xff)
-		irq = NO_IRQ;
+		irq = 0;
 
 	if (lock)
 		raw_spin_unlock(&i8259_lock);
@@ -145,26 +141,28 @@ static struct resource pic1_iores = {
 	.name = "8259 (master)",
 	.start = 0x20,
 	.end = 0x21,
-	.flags = IORESOURCE_BUSY,
+	.flags = IORESOURCE_IO | IORESOURCE_BUSY,
 };
 
 static struct resource pic2_iores = {
 	.name = "8259 (slave)",
 	.start = 0xa0,
 	.end = 0xa1,
-	.flags = IORESOURCE_BUSY,
+	.flags = IORESOURCE_IO | IORESOURCE_BUSY,
 };
 
 static struct resource pic_edgectrl_iores = {
 	.name = "8259 edge control",
 	.start = 0x4d0,
 	.end = 0x4d1,
-	.flags = IORESOURCE_BUSY,
+	.flags = IORESOURCE_IO | IORESOURCE_BUSY,
 };
 
-static int i8259_host_match(struct irq_domain *h, struct device_node *node)
+static int i8259_host_match(struct irq_domain *h, struct device_node *node,
+			    enum irq_domain_bus_token bus_token)
 {
-	return h->of_node == NULL || h->of_node == node;
+	struct device_node *of_node = irq_domain_get_of_node(h);
+	return of_node == NULL || of_node == node;
 }
 
 static int i8259_host_map(struct irq_domain *h, unsigned int virq,
@@ -204,13 +202,13 @@ static int i8259_host_xlate(struct irq_domain *h, struct device_node *ct,
 	return 0;
 }
 
-static struct irq_domain_ops i8259_host_ops = {
+static const struct irq_domain_ops i8259_host_ops = {
 	.match = i8259_host_match,
 	.map = i8259_host_map,
 	.xlate = i8259_host_xlate,
 };
 
-struct irq_domain *i8259_get_host(void)
+struct irq_domain *__init i8259_get_host(void)
 {
 	return i8259_host;
 }
@@ -236,7 +234,7 @@ void i8259_init(struct device_node *node, unsigned long intack_addr)
 	/* init master interrupt controller */
 	outb(0x11, 0x20); /* Start init sequence */
 	outb(0x00, 0x21); /* Vector base */
-	outb(0x04, 0x21); /* edge tiggered, Cascade (slave) on IRQ2 */
+	outb(0x04, 0x21); /* edge triggered, Cascade (slave) on IRQ2 */
 	outb(0x01, 0x21); /* Select 8086 mode */
 
 	/* init slave interrupt controller */
@@ -262,7 +260,8 @@ void i8259_init(struct device_node *node, unsigned long intack_addr)
 	raw_spin_unlock_irqrestore(&i8259_lock, flags);
 
 	/* create a legacy host */
-	i8259_host = irq_domain_add_legacy_isa(node, &i8259_host_ops, NULL);
+	i8259_host = irq_domain_add_legacy(node, NR_IRQS_LEGACY, 0, 0,
+					   &i8259_host_ops, NULL);
 	if (i8259_host == NULL) {
 		printk(KERN_ERR "i8259: failed to allocate irq host !\n");
 		return;

@@ -1,108 +1,147 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * STMicroelectronics pressures driver
  *
  * Copyright 2013 STMicroelectronics Inc.
  *
  * Denis Ciocca <denis.ciocca@st.com>
- *
- * Licensed under the GPL-2.
  */
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/slab.h>
-#include <linux/errno.h>
-#include <linux/types.h>
 #include <linux/mutex.h>
-#include <linux/interrupt.h>
-#include <linux/i2c.h>
-#include <linux/gpio.h>
-#include <linux/irq.h>
-#include <linux/delay.h>
+#include <linux/sysfs.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/trigger.h>
-#include <linux/iio/buffer.h>
-#include <linux/regulator/consumer.h>
 #include <asm/unaligned.h>
 
 #include <linux/iio/common/st_sensors.h>
 #include "st_pressure.h"
 
+/*
+ * About determining pressure scaling factors
+ * ------------------------------------------
+ *
+ * Datasheets specify typical pressure sensitivity so that pressure is computed
+ * according to the following equation :
+ *     pressure[mBar] = raw / sensitivity
+ * where :
+ *     raw          the 24 bits long raw sampled pressure
+ *     sensitivity  a scaling factor specified by the datasheet in LSB/mBar
+ *
+ * IIO ABI expects pressure to be expressed as kPascal, hence pressure should be
+ * computed according to :
+ *     pressure[kPascal] = pressure[mBar] / 10
+ *                       = raw / (sensitivity * 10)                          (1)
+ *
+ * Finally, st_press_read_raw() returns pressure scaling factor as an
+ * IIO_VAL_INT_PLUS_NANO with a zero integral part and "gain" as decimal part.
+ * Therefore, from (1), "gain" becomes :
+ *     gain = 10^9 / (sensitivity * 10)
+ *          = 10^8 / sensitivity
+ *
+ * About determining temperature scaling factors and offsets
+ * ---------------------------------------------------------
+ *
+ * Datasheets specify typical temperature sensitivity and offset so that
+ * temperature is computed according to the following equation :
+ *     temp[Celsius] = offset[Celsius] + (raw / sensitivity)
+ * where :
+ *     raw          the 16 bits long raw sampled temperature
+ *     offset       a constant specified by the datasheet in degree Celsius
+ *                  (sometimes zero)
+ *     sensitivity  a scaling factor specified by the datasheet in LSB/Celsius
+ *
+ * IIO ABI expects temperature to be expressed as milli degree Celsius such as
+ * user space should compute temperature according to :
+ *     temp[mCelsius] = temp[Celsius] * 10^3
+ *                    = (offset[Celsius] + (raw / sensitivity)) * 10^3
+ *                    = ((offset[Celsius] * sensitivity) + raw) *
+ *                      (10^3 / sensitivity)                                 (2)
+ *
+ * IIO ABI expects user space to apply offset and scaling factors to raw samples
+ * according to :
+ *     temp[mCelsius] = (OFFSET + raw) * SCALE
+ * where :
+ *     OFFSET an arbitrary constant exposed by device
+ *     SCALE  an arbitrary scaling factor exposed by device
+ *
+ * Matching OFFSET and SCALE with members of (2) gives :
+ *     OFFSET = offset[Celsius] * sensitivity                                (3)
+ *     SCALE  = 10^3 / sensitivity                                           (4)
+ *
+ * st_press_read_raw() returns temperature scaling factor as an
+ * IIO_VAL_FRACTIONAL with a 10^3 numerator and "gain2" as denominator.
+ * Therefore, from (3), "gain2" becomes :
+ *     gain2 = sensitivity
+ *
+ * When declared within channel, i.e. for a non zero specified offset,
+ * st_press_read_raw() will return the latter as an IIO_VAL_FRACTIONAL such as :
+ *     numerator = OFFSET * 10^3
+ *     denominator = 10^3
+ * giving from (4):
+ *     numerator = offset[Celsius] * 10^3 * sensitivity
+ *               = offset[mCelsius] * gain2
+ */
+
+#define MCELSIUS_PER_CELSIUS			1000
+
+/* Default pressure sensitivity */
 #define ST_PRESS_LSB_PER_MBAR			4096UL
 #define ST_PRESS_KPASCAL_NANO_SCALE		(100000000UL / \
 						 ST_PRESS_LSB_PER_MBAR)
+
+/* Default temperature sensitivity */
 #define ST_PRESS_LSB_PER_CELSIUS		480UL
-#define ST_PRESS_CELSIUS_NANO_SCALE		(1000000000UL / \
-						 ST_PRESS_LSB_PER_CELSIUS)
-#define ST_PRESS_NUMBER_DATA_CHANNELS		1
+#define ST_PRESS_MILLI_CELSIUS_OFFSET		42500UL
 
 /* FULLSCALE */
+#define ST_PRESS_FS_AVL_1100MB			1100
 #define ST_PRESS_FS_AVL_1260MB			1260
 
-/* CUSTOM VALUES FOR LPS331AP SENSOR */
-#define ST_PRESS_LPS331AP_WAI_EXP		0xbb
-#define ST_PRESS_LPS331AP_ODR_ADDR		0x20
-#define ST_PRESS_LPS331AP_ODR_MASK		0x70
-#define ST_PRESS_LPS331AP_ODR_AVL_1HZ_VAL	0x01
-#define ST_PRESS_LPS331AP_ODR_AVL_7HZ_VAL	0x05
-#define ST_PRESS_LPS331AP_ODR_AVL_13HZ_VAL	0x06
-#define ST_PRESS_LPS331AP_ODR_AVL_25HZ_VAL	0x07
-#define ST_PRESS_LPS331AP_PW_ADDR		0x20
-#define ST_PRESS_LPS331AP_PW_MASK		0x80
-#define ST_PRESS_LPS331AP_FS_ADDR		0x23
-#define ST_PRESS_LPS331AP_FS_MASK		0x30
-#define ST_PRESS_LPS331AP_FS_AVL_1260_VAL	0x00
-#define ST_PRESS_LPS331AP_FS_AVL_1260_GAIN	ST_PRESS_KPASCAL_NANO_SCALE
-#define ST_PRESS_LPS331AP_FS_AVL_TEMP_GAIN	ST_PRESS_CELSIUS_NANO_SCALE
-#define ST_PRESS_LPS331AP_BDU_ADDR		0x20
-#define ST_PRESS_LPS331AP_BDU_MASK		0x04
-#define ST_PRESS_LPS331AP_DRDY_IRQ_ADDR		0x22
-#define ST_PRESS_LPS331AP_DRDY_IRQ_INT1_MASK	0x04
-#define ST_PRESS_LPS331AP_DRDY_IRQ_INT2_MASK	0x20
-#define ST_PRESS_LPS331AP_MULTIREAD_BIT		true
-#define ST_PRESS_LPS331AP_TEMP_OFFSET		42500
-#define ST_PRESS_LPS331AP_OUT_XL_ADDR		0x28
-#define ST_TEMP_LPS331AP_OUT_L_ADDR		0x2b
+#define ST_PRESS_1_OUT_XL_ADDR			0x28
+#define ST_TEMP_1_OUT_L_ADDR			0x2b
 
-/* CUSTOM VALUES FOR LPS001WP SENSOR */
-#define ST_PRESS_LPS001WP_WAI_EXP		0xba
-#define ST_PRESS_LPS001WP_ODR_ADDR		0x20
-#define ST_PRESS_LPS001WP_ODR_MASK		0x30
-#define ST_PRESS_LPS001WP_ODR_AVL_1HZ_VAL	0x01
-#define ST_PRESS_LPS001WP_ODR_AVL_7HZ_VAL	0x02
-#define ST_PRESS_LPS001WP_ODR_AVL_13HZ_VAL	0x03
-#define ST_PRESS_LPS001WP_PW_ADDR		0x20
-#define ST_PRESS_LPS001WP_PW_MASK		0x40
-#define ST_PRESS_LPS001WP_BDU_ADDR		0x20
-#define ST_PRESS_LPS001WP_BDU_MASK		0x04
-#define ST_PRESS_LPS001WP_MULTIREAD_BIT		true
+/* LPS001WP pressure resolution */
+#define ST_PRESS_LPS001WP_LSB_PER_MBAR		16UL
+/* LPS001WP temperature resolution */
+#define ST_PRESS_LPS001WP_LSB_PER_CELSIUS	64UL
+/* LPS001WP pressure gain */
+#define ST_PRESS_LPS001WP_FS_AVL_PRESS_GAIN \
+	(100000000UL / ST_PRESS_LPS001WP_LSB_PER_MBAR)
+/* LPS001WP pressure and temp L addresses */
 #define ST_PRESS_LPS001WP_OUT_L_ADDR		0x28
 #define ST_TEMP_LPS001WP_OUT_L_ADDR		0x2a
 
-static const struct iio_chan_spec st_press_lps331ap_channels[] = {
+/* LPS25H pressure and temp L addresses */
+#define ST_PRESS_LPS25H_OUT_XL_ADDR		0x28
+#define ST_TEMP_LPS25H_OUT_L_ADDR		0x2b
+
+/* LPS22HB temperature sensitivity */
+#define ST_PRESS_LPS22HB_LSB_PER_CELSIUS	100UL
+
+static const struct iio_chan_spec st_press_1_channels[] = {
 	{
 		.type = IIO_PRESSURE,
-		.channel2 = IIO_NO_MOD,
-		.address = ST_PRESS_LPS331AP_OUT_XL_ADDR,
-		.scan_index = ST_SENSORS_SCAN_X,
+		.address = ST_PRESS_1_OUT_XL_ADDR,
+		.scan_index = 0,
 		.scan_type = {
-			.sign = 'u',
+			.sign = 's',
 			.realbits = 24,
-			.storagebits = 24,
+			.storagebits = 32,
 			.endianness = IIO_LE,
 		},
 		.info_mask_separate =
 			BIT(IIO_CHAN_INFO_RAW) | BIT(IIO_CHAN_INFO_SCALE),
-		.modified = 0,
+		.info_mask_shared_by_all = BIT(IIO_CHAN_INFO_SAMP_FREQ),
 	},
 	{
 		.type = IIO_TEMP,
-		.channel2 = IIO_NO_MOD,
-		.address = ST_TEMP_LPS331AP_OUT_L_ADDR,
-		.scan_index = -1,
+		.address = ST_TEMP_1_OUT_L_ADDR,
+		.scan_index = 1,
 		.scan_type = {
-			.sign = 'u',
+			.sign = 's',
 			.realbits = 16,
 			.storagebits = 16,
 			.endianness = IIO_LE,
@@ -111,136 +150,503 @@ static const struct iio_chan_spec st_press_lps331ap_channels[] = {
 			BIT(IIO_CHAN_INFO_RAW) |
 			BIT(IIO_CHAN_INFO_SCALE) |
 			BIT(IIO_CHAN_INFO_OFFSET),
-		.modified = 0,
+		.info_mask_shared_by_all = BIT(IIO_CHAN_INFO_SAMP_FREQ),
 	},
-	IIO_CHAN_SOFT_TIMESTAMP(1)
+	IIO_CHAN_SOFT_TIMESTAMP(2)
 };
 
 static const struct iio_chan_spec st_press_lps001wp_channels[] = {
 	{
 		.type = IIO_PRESSURE,
-		.channel2 = IIO_NO_MOD,
 		.address = ST_PRESS_LPS001WP_OUT_L_ADDR,
-		.scan_index = ST_SENSORS_SCAN_X,
+		.scan_index = 0,
 		.scan_type = {
-			.sign = 'u',
-			.realbits = 16,
-			.storagebits = 16,
-			.endianness = IIO_LE,
-		},
-		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
-		.modified = 0,
-	},
-	{
-		.type = IIO_TEMP,
-		.channel2 = IIO_NO_MOD,
-		.address = ST_TEMP_LPS001WP_OUT_L_ADDR,
-		.scan_index = -1,
-		.scan_type = {
-			.sign = 'u',
+			.sign = 's',
 			.realbits = 16,
 			.storagebits = 16,
 			.endianness = IIO_LE,
 		},
 		.info_mask_separate =
 			BIT(IIO_CHAN_INFO_RAW) |
-			BIT(IIO_CHAN_INFO_OFFSET),
-		.modified = 0,
+			BIT(IIO_CHAN_INFO_SCALE),
 	},
-	IIO_CHAN_SOFT_TIMESTAMP(1)
+	{
+		.type = IIO_TEMP,
+		.address = ST_TEMP_LPS001WP_OUT_L_ADDR,
+		.scan_index = 1,
+		.scan_type = {
+			.sign = 's',
+			.realbits = 16,
+			.storagebits = 16,
+			.endianness = IIO_LE,
+		},
+		.info_mask_separate =
+			BIT(IIO_CHAN_INFO_RAW) |
+			BIT(IIO_CHAN_INFO_SCALE),
+	},
+	IIO_CHAN_SOFT_TIMESTAMP(2)
 };
 
-static const struct st_sensors st_press_sensors[] = {
+static const struct iio_chan_spec st_press_lps22hb_channels[] = {
 	{
-		.wai = ST_PRESS_LPS331AP_WAI_EXP,
+		.type = IIO_PRESSURE,
+		.address = ST_PRESS_1_OUT_XL_ADDR,
+		.scan_index = 0,
+		.scan_type = {
+			.sign = 's',
+			.realbits = 24,
+			.storagebits = 32,
+			.endianness = IIO_LE,
+		},
+		.info_mask_separate =
+			BIT(IIO_CHAN_INFO_RAW) |
+			BIT(IIO_CHAN_INFO_SCALE),
+		.info_mask_shared_by_all = BIT(IIO_CHAN_INFO_SAMP_FREQ),
+	},
+	{
+		.type = IIO_TEMP,
+		.address = ST_TEMP_1_OUT_L_ADDR,
+		.scan_index = 1,
+		.scan_type = {
+			.sign = 's',
+			.realbits = 16,
+			.storagebits = 16,
+			.endianness = IIO_LE,
+		},
+		.info_mask_separate =
+			BIT(IIO_CHAN_INFO_RAW) |
+			BIT(IIO_CHAN_INFO_SCALE),
+		.info_mask_shared_by_all = BIT(IIO_CHAN_INFO_SAMP_FREQ),
+	},
+	IIO_CHAN_SOFT_TIMESTAMP(2)
+};
+
+static const struct st_sensor_settings st_press_sensors_settings[] = {
+	{
+		/*
+		 * CUSTOM VALUES FOR LPS331AP SENSOR
+		 * See LPS331AP datasheet:
+		 * http://www2.st.com/resource/en/datasheet/lps331ap.pdf
+		 */
+		.wai = 0xbb,
+		.wai_addr = ST_SENSORS_DEFAULT_WAI_ADDRESS,
 		.sensors_supported = {
 			[0] = LPS331AP_PRESS_DEV_NAME,
 		},
-		.ch = (struct iio_chan_spec *)st_press_lps331ap_channels,
-		.num_ch = ARRAY_SIZE(st_press_lps331ap_channels),
+		.ch = (struct iio_chan_spec *)st_press_1_channels,
+		.num_ch = ARRAY_SIZE(st_press_1_channels),
 		.odr = {
-			.addr = ST_PRESS_LPS331AP_ODR_ADDR,
-			.mask = ST_PRESS_LPS331AP_ODR_MASK,
+			.addr = 0x20,
+			.mask = 0x70,
 			.odr_avl = {
-				{ 1, ST_PRESS_LPS331AP_ODR_AVL_1HZ_VAL, },
-				{ 7, ST_PRESS_LPS331AP_ODR_AVL_7HZ_VAL, },
-				{ 13, ST_PRESS_LPS331AP_ODR_AVL_13HZ_VAL, },
-				{ 25, ST_PRESS_LPS331AP_ODR_AVL_25HZ_VAL, },
+				{ .hz = 1, .value = 0x01 },
+				{ .hz = 7, .value = 0x05 },
+				{ .hz = 13, .value = 0x06 },
+				{ .hz = 25, .value = 0x07 },
 			},
 		},
 		.pw = {
-			.addr = ST_PRESS_LPS331AP_PW_ADDR,
-			.mask = ST_PRESS_LPS331AP_PW_MASK,
+			.addr = 0x20,
+			.mask = 0x80,
 			.value_on = ST_SENSORS_DEFAULT_POWER_ON_VALUE,
 			.value_off = ST_SENSORS_DEFAULT_POWER_OFF_VALUE,
 		},
 		.fs = {
-			.addr = ST_PRESS_LPS331AP_FS_ADDR,
-			.mask = ST_PRESS_LPS331AP_FS_MASK,
+			.addr = 0x23,
+			.mask = 0x30,
 			.fs_avl = {
+				/*
+				 * Pressure and temperature sensitivity values
+				 * as defined in table 3 of LPS331AP datasheet.
+				 */
 				[0] = {
 					.num = ST_PRESS_FS_AVL_1260MB,
-					.value = ST_PRESS_LPS331AP_FS_AVL_1260_VAL,
-					.gain = ST_PRESS_LPS331AP_FS_AVL_1260_GAIN,
-					.gain2 = ST_PRESS_LPS331AP_FS_AVL_TEMP_GAIN,
+					.gain = ST_PRESS_KPASCAL_NANO_SCALE,
+					.gain2 = ST_PRESS_LSB_PER_CELSIUS,
 				},
 			},
 		},
 		.bdu = {
-			.addr = ST_PRESS_LPS331AP_BDU_ADDR,
-			.mask = ST_PRESS_LPS331AP_BDU_MASK,
+			.addr = 0x20,
+			.mask = 0x04,
 		},
 		.drdy_irq = {
-			.addr = ST_PRESS_LPS331AP_DRDY_IRQ_ADDR,
-			.mask_int1 = ST_PRESS_LPS331AP_DRDY_IRQ_INT1_MASK,
-			.mask_int2 = ST_PRESS_LPS331AP_DRDY_IRQ_INT2_MASK,
+			.int1 = {
+				.addr = 0x22,
+				.mask = 0x04,
+				.addr_od = 0x22,
+				.mask_od = 0x40,
+			},
+			.int2 = {
+				.addr = 0x22,
+				.mask = 0x20,
+				.addr_od = 0x22,
+				.mask_od = 0x40,
+			},
+			.addr_ihl = 0x22,
+			.mask_ihl = 0x80,
+			.stat_drdy = {
+				.addr = ST_SENSORS_DEFAULT_STAT_ADDR,
+				.mask = 0x03,
+			},
 		},
-		.multi_read_bit = ST_PRESS_LPS331AP_MULTIREAD_BIT,
+		.sim = {
+			.addr = 0x20,
+			.value = BIT(0),
+		},
+		.multi_read_bit = true,
 		.bootime = 2,
 	},
 	{
-		.wai = ST_PRESS_LPS001WP_WAI_EXP,
+		/*
+		 * CUSTOM VALUES FOR LPS001WP SENSOR
+		 */
+		.wai = 0xba,
+		.wai_addr = ST_SENSORS_DEFAULT_WAI_ADDRESS,
 		.sensors_supported = {
 			[0] = LPS001WP_PRESS_DEV_NAME,
 		},
 		.ch = (struct iio_chan_spec *)st_press_lps001wp_channels,
 		.num_ch = ARRAY_SIZE(st_press_lps001wp_channels),
 		.odr = {
-			.addr = ST_PRESS_LPS001WP_ODR_ADDR,
-			.mask = ST_PRESS_LPS001WP_ODR_MASK,
+			.addr = 0x20,
+			.mask = 0x30,
 			.odr_avl = {
-				{ 1, ST_PRESS_LPS001WP_ODR_AVL_1HZ_VAL, },
-				{ 7, ST_PRESS_LPS001WP_ODR_AVL_7HZ_VAL, },
-				{ 13, ST_PRESS_LPS001WP_ODR_AVL_13HZ_VAL, },
+				{ .hz = 1, .value = 0x01 },
+				{ .hz = 7, .value = 0x02 },
+				{ .hz = 13, .value = 0x03 },
 			},
 		},
 		.pw = {
-			.addr = ST_PRESS_LPS001WP_PW_ADDR,
-			.mask = ST_PRESS_LPS001WP_PW_MASK,
+			.addr = 0x20,
+			.mask = 0x40,
 			.value_on = ST_SENSORS_DEFAULT_POWER_ON_VALUE,
 			.value_off = ST_SENSORS_DEFAULT_POWER_OFF_VALUE,
 		},
 		.fs = {
-			.addr = 0,
+			.fs_avl = {
+				/*
+				 * Pressure and temperature resolution values
+				 * as defined in table 3 of LPS001WP datasheet.
+				 */
+				[0] = {
+					.num = ST_PRESS_FS_AVL_1100MB,
+					.gain = ST_PRESS_LPS001WP_FS_AVL_PRESS_GAIN,
+					.gain2 = ST_PRESS_LPS001WP_LSB_PER_CELSIUS,
+				},
+			},
 		},
 		.bdu = {
-			.addr = ST_PRESS_LPS001WP_BDU_ADDR,
-			.mask = ST_PRESS_LPS001WP_BDU_MASK,
+			.addr = 0x20,
+			.mask = 0x04,
+		},
+		.sim = {
+			.addr = 0x20,
+			.value = BIT(0),
+		},
+		.multi_read_bit = true,
+		.bootime = 2,
+	},
+	{
+		/*
+		 * CUSTOM VALUES FOR LPS25H SENSOR
+		 * See LPS25H datasheet:
+		 * http://www2.st.com/resource/en/datasheet/lps25h.pdf
+		 */
+		.wai = 0xbd,
+		.wai_addr = ST_SENSORS_DEFAULT_WAI_ADDRESS,
+		.sensors_supported = {
+			[0] = LPS25H_PRESS_DEV_NAME,
+		},
+		.ch = (struct iio_chan_spec *)st_press_1_channels,
+		.num_ch = ARRAY_SIZE(st_press_1_channels),
+		.odr = {
+			.addr = 0x20,
+			.mask = 0x70,
+			.odr_avl = {
+				{ .hz = 1, .value = 0x01 },
+				{ .hz = 7, .value = 0x02 },
+				{ .hz = 13, .value = 0x03 },
+				{ .hz = 25, .value = 0x04 },
+			},
+		},
+		.pw = {
+			.addr = 0x20,
+			.mask = 0x80,
+			.value_on = ST_SENSORS_DEFAULT_POWER_ON_VALUE,
+			.value_off = ST_SENSORS_DEFAULT_POWER_OFF_VALUE,
+		},
+		.fs = {
+			.fs_avl = {
+				/*
+				 * Pressure and temperature sensitivity values
+				 * as defined in table 3 of LPS25H datasheet.
+				 */
+				[0] = {
+					.num = ST_PRESS_FS_AVL_1260MB,
+					.gain = ST_PRESS_KPASCAL_NANO_SCALE,
+					.gain2 = ST_PRESS_LSB_PER_CELSIUS,
+				},
+			},
+		},
+		.bdu = {
+			.addr = 0x20,
+			.mask = 0x04,
 		},
 		.drdy_irq = {
-			.addr = 0,
+			.int1 = {
+				.addr = 0x23,
+				.mask = 0x01,
+				.addr_od = 0x22,
+				.mask_od = 0x40,
+			},
+			.addr_ihl = 0x22,
+			.mask_ihl = 0x80,
+			.stat_drdy = {
+				.addr = ST_SENSORS_DEFAULT_STAT_ADDR,
+				.mask = 0x03,
+			},
 		},
-		.multi_read_bit = ST_PRESS_LPS001WP_MULTIREAD_BIT,
+		.sim = {
+			.addr = 0x20,
+			.value = BIT(0),
+		},
+		.multi_read_bit = true,
+		.bootime = 2,
+	},
+	{
+		/*
+		 * CUSTOM VALUES FOR LPS22HB SENSOR
+		 * See LPS22HB datasheet:
+		 * http://www2.st.com/resource/en/datasheet/lps22hb.pdf
+		 */
+		.wai = 0xb1,
+		.wai_addr = ST_SENSORS_DEFAULT_WAI_ADDRESS,
+		.sensors_supported = {
+			[0] = LPS22HB_PRESS_DEV_NAME,
+			[1] = LPS33HW_PRESS_DEV_NAME,
+			[2] = LPS35HW_PRESS_DEV_NAME,
+		},
+		.ch = (struct iio_chan_spec *)st_press_lps22hb_channels,
+		.num_ch = ARRAY_SIZE(st_press_lps22hb_channels),
+		.odr = {
+			.addr = 0x10,
+			.mask = 0x70,
+			.odr_avl = {
+				{ .hz = 1, .value = 0x01 },
+				{ .hz = 10, .value = 0x02 },
+				{ .hz = 25, .value = 0x03 },
+				{ .hz = 50, .value = 0x04 },
+				{ .hz = 75, .value = 0x05 },
+			},
+		},
+		.pw = {
+			.addr = 0x10,
+			.mask = 0x70,
+			.value_off = ST_SENSORS_DEFAULT_POWER_OFF_VALUE,
+		},
+		.fs = {
+			.fs_avl = {
+				/*
+				 * Pressure and temperature sensitivity values
+				 * as defined in table 3 of LPS22HB datasheet.
+				 */
+				[0] = {
+					.num = ST_PRESS_FS_AVL_1260MB,
+					.gain = ST_PRESS_KPASCAL_NANO_SCALE,
+					.gain2 = ST_PRESS_LPS22HB_LSB_PER_CELSIUS,
+				},
+			},
+		},
+		.bdu = {
+			.addr = 0x10,
+			.mask = 0x02,
+		},
+		.drdy_irq = {
+			.int1 = {
+				.addr = 0x12,
+				.mask = 0x04,
+				.addr_od = 0x12,
+				.mask_od = 0x40,
+			},
+			.addr_ihl = 0x12,
+			.mask_ihl = 0x80,
+			.stat_drdy = {
+				.addr = ST_SENSORS_DEFAULT_STAT_ADDR,
+				.mask = 0x03,
+			},
+		},
+		.sim = {
+			.addr = 0x10,
+			.value = BIT(0),
+		},
+		.multi_read_bit = false,
+		.bootime = 2,
+	},
+	{
+		/*
+		 * CUSTOM VALUES FOR LPS22HH SENSOR
+		 * See LPS22HH datasheet:
+		 * http://www2.st.com/resource/en/datasheet/lps22hh.pdf
+		 */
+		.wai = 0xb3,
+		.wai_addr = ST_SENSORS_DEFAULT_WAI_ADDRESS,
+		.sensors_supported = {
+			[0] = LPS22HH_PRESS_DEV_NAME,
+		},
+		.ch = (struct iio_chan_spec *)st_press_lps22hb_channels,
+		.num_ch = ARRAY_SIZE(st_press_lps22hb_channels),
+		.odr = {
+			.addr = 0x10,
+			.mask = 0x70,
+			.odr_avl = {
+				{ .hz = 1, .value = 0x01 },
+				{ .hz = 10, .value = 0x02 },
+				{ .hz = 25, .value = 0x03 },
+				{ .hz = 50, .value = 0x04 },
+				{ .hz = 75, .value = 0x05 },
+				{ .hz = 100, .value = 0x06 },
+				{ .hz = 200, .value = 0x07 },
+			},
+		},
+		.pw = {
+			.addr = 0x10,
+			.mask = 0x70,
+			.value_off = ST_SENSORS_DEFAULT_POWER_OFF_VALUE,
+		},
+		.fs = {
+			.fs_avl = {
+				/*
+				 * Pressure and temperature sensitivity values
+				 * as defined in table 3 of LPS22HH datasheet.
+				 */
+				[0] = {
+					.num = ST_PRESS_FS_AVL_1260MB,
+					.gain = ST_PRESS_KPASCAL_NANO_SCALE,
+					.gain2 = ST_PRESS_LPS22HB_LSB_PER_CELSIUS,
+				},
+			},
+		},
+		.bdu = {
+			.addr = 0x10,
+			.mask = BIT(1),
+		},
+		.drdy_irq = {
+			.int1 = {
+				.addr = 0x12,
+				.mask = BIT(2),
+				.addr_od = 0x11,
+				.mask_od = BIT(5),
+			},
+			.addr_ihl = 0x11,
+			.mask_ihl = BIT(6),
+			.stat_drdy = {
+				.addr = ST_SENSORS_DEFAULT_STAT_ADDR,
+				.mask = 0x03,
+			},
+		},
+		.sim = {
+			.addr = 0x10,
+			.value = BIT(0),
+		},
+		.multi_read_bit = false,
+		.bootime = 2,
+	},
+	{
+		/*
+		 * CUSTOM VALUES FOR LPS22DF SENSOR
+		 * See LPS22DF datasheet:
+		 * http://www.st.com/resource/en/datasheet/lps22df.pdf
+		 */
+		.wai = 0xb4,
+		.wai_addr = ST_SENSORS_DEFAULT_WAI_ADDRESS,
+		.sensors_supported = {
+			[0] = LPS22DF_PRESS_DEV_NAME,
+		},
+		.ch = (struct iio_chan_spec *)st_press_lps22hb_channels,
+		.num_ch = ARRAY_SIZE(st_press_lps22hb_channels),
+		.odr = {
+			.addr = 0x10,
+			.mask = 0x78,
+			.odr_avl = {
+				{ .hz = 1, .value = 0x01 },
+				{ .hz = 4, .value = 0x02 },
+				{ .hz = 10, .value = 0x03 },
+				{ .hz = 25, .value = 0x04 },
+				{ .hz = 50, .value = 0x05 },
+				{ .hz = 75, .value = 0x06 },
+				{ .hz = 100, .value = 0x07 },
+				{ .hz = 200, .value = 0x08 },
+			},
+		},
+		.pw = {
+			.addr = 0x10,
+			.mask = 0x78,
+			.value_off = ST_SENSORS_DEFAULT_POWER_OFF_VALUE,
+		},
+		.fs = {
+			.fs_avl = {
+				/*
+				 * Pressure and temperature sensitivity values
+				 * as defined in table 2 of LPS22DF datasheet.
+				 */
+				[0] = {
+					.num = ST_PRESS_FS_AVL_1260MB,
+					.gain = ST_PRESS_KPASCAL_NANO_SCALE,
+					.gain2 = ST_PRESS_LPS22HB_LSB_PER_CELSIUS,
+				},
+			},
+		},
+		.bdu = {
+			.addr = 0x11,
+			.mask = BIT(3),
+		},
+		.drdy_irq = {
+			.int1 = {
+				.addr = 0x13,
+				.mask = BIT(5),
+				.addr_od = 0x12,
+				.mask_od = BIT(1),
+			},
+			.addr_ihl = 0x12,
+			.mask_ihl = BIT(3),
+			.stat_drdy = {
+				.addr = ST_SENSORS_DEFAULT_STAT_ADDR,
+				.mask = 0x03,
+			},
+		},
+		.sim = {
+			.addr = 0x0E,
+			.value = BIT(5),
+		},
+		.multi_read_bit = false,
 		.bootime = 2,
 	},
 };
+
+static int st_press_write_raw(struct iio_dev *indio_dev,
+			      struct iio_chan_spec const *ch,
+			      int val,
+			      int val2,
+			      long mask)
+{
+	switch (mask) {
+	case IIO_CHAN_INFO_SAMP_FREQ:
+		if (val2)
+			return -EINVAL;
+
+		return st_sensors_set_odr(indio_dev, val);
+	default:
+		return -EINVAL;
+	}
+}
 
 static int st_press_read_raw(struct iio_dev *indio_dev,
 			struct iio_chan_spec const *ch, int *val,
 							int *val2, long mask)
 {
 	int err;
-	struct st_sensor_data *pdata = iio_priv(indio_dev);
+	struct st_sensor_data *press_data = iio_priv(indio_dev);
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
@@ -250,26 +656,26 @@ static int st_press_read_raw(struct iio_dev *indio_dev,
 
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SCALE:
-		*val = 0;
-
 		switch (ch->type) {
 		case IIO_PRESSURE:
-			*val2 = pdata->current_fullscale->gain;
-			break;
+			*val = 0;
+			*val2 = press_data->current_fullscale->gain;
+			return IIO_VAL_INT_PLUS_NANO;
 		case IIO_TEMP:
-			*val2 = pdata->current_fullscale->gain2;
-			break;
+			*val = MCELSIUS_PER_CELSIUS;
+			*val2 = press_data->current_fullscale->gain2;
+			return IIO_VAL_FRACTIONAL;
 		default:
 			err = -EINVAL;
 			goto read_error;
 		}
 
-		return IIO_VAL_INT_PLUS_NANO;
 	case IIO_CHAN_INFO_OFFSET:
 		switch (ch->type) {
 		case IIO_TEMP:
-			*val = 425;
-			*val2 = 10;
+			*val = ST_PRESS_MILLI_CELSIUS_OFFSET *
+			       press_data->current_fullscale->gain2;
+			*val2 = MCELSIUS_PER_CELSIUS;
 			break;
 		default:
 			err = -EINVAL;
@@ -277,6 +683,9 @@ static int st_press_read_raw(struct iio_dev *indio_dev,
 		}
 
 		return IIO_VAL_FRACTIONAL;
+	case IIO_CHAN_INFO_SAMP_FREQ:
+		*val = press_data->odr;
+		return IIO_VAL_INT;
 	default:
 		return -EINVAL;
 	}
@@ -285,12 +694,10 @@ read_error:
 	return err;
 }
 
-static ST_SENSOR_DEV_ATTR_SAMP_FREQ();
 static ST_SENSORS_DEV_ATTR_SAMP_FREQ_AVAIL();
 
 static struct attribute *st_press_attributes[] = {
 	&iio_dev_attr_sampling_frequency_available.dev_attr.attr,
-	&iio_dev_attr_sampling_frequency.dev_attr.attr,
 	NULL,
 };
 
@@ -299,90 +706,74 @@ static const struct attribute_group st_press_attribute_group = {
 };
 
 static const struct iio_info press_info = {
-	.driver_module = THIS_MODULE,
 	.attrs = &st_press_attribute_group,
 	.read_raw = &st_press_read_raw,
+	.write_raw = &st_press_write_raw,
+	.debugfs_reg_access = &st_sensors_debugfs_reg_access,
 };
 
 #ifdef CONFIG_IIO_TRIGGER
 static const struct iio_trigger_ops st_press_trigger_ops = {
-	.owner = THIS_MODULE,
 	.set_trigger_state = ST_PRESS_TRIGGER_SET_STATE,
+	.validate_device = st_sensors_validate_device,
 };
 #define ST_PRESS_TRIGGER_OPS (&st_press_trigger_ops)
 #else
 #define ST_PRESS_TRIGGER_OPS NULL
 #endif
 
-static void st_press_power_enable(struct iio_dev *indio_dev)
+/*
+ * st_press_get_settings() - get sensor settings from device name
+ * @name: device name buffer reference.
+ *
+ * Return: valid reference on success, NULL otherwise.
+ */
+const struct st_sensor_settings *st_press_get_settings(const char *name)
 {
-	struct st_sensor_data *pdata = iio_priv(indio_dev);
-	int err;
+	int index = st_sensors_get_settings_index(name,
+					st_press_sensors_settings,
+					ARRAY_SIZE(st_press_sensors_settings));
+	if (index < 0)
+		return NULL;
 
-	/* Regulators not mandatory, but if requested we should enable them. */
-	pdata->vdd = devm_regulator_get_optional(&indio_dev->dev, "vdd");
-	if (!IS_ERR(pdata->vdd)) {
-		err = regulator_enable(pdata->vdd);
-		if (err != 0)
-			dev_warn(&indio_dev->dev,
-				 "Failed to enable specified Vdd supply\n");
-	}
-
-	pdata->vdd_io = devm_regulator_get_optional(&indio_dev->dev, "vddio");
-	if (!IS_ERR(pdata->vdd_io)) {
-		err = regulator_enable(pdata->vdd_io);
-		if (err != 0)
-			dev_warn(&indio_dev->dev,
-				 "Failed to enable specified Vdd_IO supply\n");
-	}
+	return &st_press_sensors_settings[index];
 }
+EXPORT_SYMBOL_NS(st_press_get_settings, IIO_ST_SENSORS);
 
-static void st_press_power_disable(struct iio_dev *indio_dev)
+int st_press_common_probe(struct iio_dev *indio_dev)
 {
-	struct st_sensor_data *pdata = iio_priv(indio_dev);
-
-	if (!IS_ERR(pdata->vdd))
-		regulator_disable(pdata->vdd);
-
-	if (!IS_ERR(pdata->vdd_io))
-		regulator_disable(pdata->vdd_io);
-}
-
-int st_press_common_probe(struct iio_dev *indio_dev,
-				struct st_sensors_platform_data *plat_data)
-{
-	struct st_sensor_data *pdata = iio_priv(indio_dev);
-	int irq = pdata->get_irq_data_ready(indio_dev);
+	struct st_sensor_data *press_data = iio_priv(indio_dev);
+	struct device *parent = indio_dev->dev.parent;
+	struct st_sensors_platform_data *pdata = dev_get_platdata(parent);
 	int err;
 
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->info = &press_info;
 
-	st_press_power_enable(indio_dev);
-
-	err = st_sensors_check_device_support(indio_dev,
-					      ARRAY_SIZE(st_press_sensors),
-					      st_press_sensors);
+	err = st_sensors_verify_id(indio_dev);
 	if (err < 0)
 		return err;
 
-	pdata->num_data_channels = ST_PRESS_NUMBER_DATA_CHANNELS;
-	pdata->multiread_bit     = pdata->sensor->multi_read_bit;
-	indio_dev->channels      = pdata->sensor->ch;
-	indio_dev->num_channels  = pdata->sensor->num_ch;
+	/*
+	 * Skip timestamping channel while declaring available channels to
+	 * common st_sensor layer. Look at st_sensors_get_buffer_element() to
+	 * see how timestamps are explicitly pushed as last samples block
+	 * element.
+	 */
+	press_data->num_data_channels = press_data->sensor_settings->num_ch - 1;
+	indio_dev->channels = press_data->sensor_settings->ch;
+	indio_dev->num_channels = press_data->sensor_settings->num_ch;
 
-	if (pdata->sensor->fs.addr != 0)
-		pdata->current_fullscale = (struct st_sensor_fullscale_avl *)
-			&pdata->sensor->fs.fs_avl[0];
+	press_data->current_fullscale = &press_data->sensor_settings->fs.fs_avl[0];
 
-	pdata->odr = pdata->sensor->odr.odr_avl[0].hz;
+	press_data->odr = press_data->sensor_settings->odr.odr_avl[0].hz;
 
 	/* Some devices don't support a data ready pin. */
-	if (!plat_data && pdata->sensor->drdy_irq.addr)
-		plat_data =
-			(struct st_sensors_platform_data *)&default_press_pdata;
+	if (!pdata && (press_data->sensor_settings->drdy_irq.int1.addr ||
+		       press_data->sensor_settings->drdy_irq.int2.addr))
+		pdata =	(struct st_sensors_platform_data *)&default_press_pdata;
 
-	err = st_sensors_init_sensor(indio_dev, plat_data);
+	err = st_sensors_init_sensor(indio_dev, pdata);
 	if (err < 0)
 		return err;
 
@@ -390,43 +781,18 @@ int st_press_common_probe(struct iio_dev *indio_dev,
 	if (err < 0)
 		return err;
 
-	if (irq > 0) {
+	if (press_data->irq > 0) {
 		err = st_sensors_allocate_trigger(indio_dev,
 						  ST_PRESS_TRIGGER_OPS);
 		if (err < 0)
-			goto st_press_probe_trigger_error;
+			return err;
 	}
 
-	err = iio_device_register(indio_dev);
-	if (err)
-		goto st_press_device_register_error;
-
-	return err;
-
-st_press_device_register_error:
-	if (irq > 0)
-		st_sensors_deallocate_trigger(indio_dev);
-st_press_probe_trigger_error:
-	st_press_deallocate_ring(indio_dev);
-
-	return err;
+	return devm_iio_device_register(parent, indio_dev);
 }
-EXPORT_SYMBOL(st_press_common_probe);
-
-void st_press_common_remove(struct iio_dev *indio_dev)
-{
-	struct st_sensor_data *pdata = iio_priv(indio_dev);
-
-	st_press_power_disable(indio_dev);
-
-	iio_device_unregister(indio_dev);
-	if (pdata->get_irq_data_ready(indio_dev) > 0)
-		st_sensors_deallocate_trigger(indio_dev);
-
-	st_press_deallocate_ring(indio_dev);
-}
-EXPORT_SYMBOL(st_press_common_remove);
+EXPORT_SYMBOL_NS(st_press_common_probe, IIO_ST_SENSORS);
 
 MODULE_AUTHOR("Denis Ciocca <denis.ciocca@st.com>");
 MODULE_DESCRIPTION("STMicroelectronics pressures driver");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS(IIO_ST_SENSORS);

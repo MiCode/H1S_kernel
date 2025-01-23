@@ -1,11 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/arch/arm/mm/cache-v6.S
  *
  *  Copyright (C) 2001 Deep Blue Solutions Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  *  This is the "shell" of the ARMv6 processor support.
  */
@@ -21,6 +18,8 @@
 #define CACHE_LINE_SIZE		32
 #define D_CACHE_LINE_SIZE	32
 #define BTB_FLUSH_SIZE		8
+
+.arch armv6
 
 /*
  *	v6_flush_icache_all()
@@ -51,7 +50,7 @@ ENTRY(v6_flush_icache_all)
 #else
 	mcr	p15, 0, r0, c7, c5, 0		@ invalidate I-cache
 #endif
-	mov	pc, lr
+	ret	lr
 ENDPROC(v6_flush_icache_all)
 
 /*
@@ -73,7 +72,7 @@ ENTRY(v6_flush_kern_cache_all)
 #else
 	mcr	p15, 0, r0, c7, c15, 0		@ Cache clean+invalidate
 #endif
-	mov	pc, lr
+	ret	lr
 
 /*
  *	v6_flush_cache_all()
@@ -98,7 +97,7 @@ ENTRY(v6_flush_user_cache_all)
  *	- we have a VIPT cache.
  */
 ENTRY(v6_flush_user_cache_range)
-	mov	pc, lr
+	ret	lr
 
 /*
  *	v6_coherent_kern_range(start,end)
@@ -150,7 +149,7 @@ ENTRY(v6_coherent_user_range)
 #else
 	mcr	p15, 0, r0, c7, c5, 6		@ invalidate BTB
 #endif
-	mov	pc, lr
+	ret	lr
 
 /*
  * Fault handling for the cache operation above. If the virtual address in r0
@@ -158,7 +157,7 @@ ENTRY(v6_coherent_user_range)
  */
 9001:
 	mov	r0, #-EFAULT
-	mov	pc, lr
+	ret	lr
  UNWIND(.fnend		)
 ENDPROC(v6_coherent_user_range)
 ENDPROC(v6_coherent_kern_range)
@@ -188,7 +187,7 @@ ENTRY(v6_flush_kern_dcache_area)
 	mov	r0, #0
 	mcr	p15, 0, r0, c7, c10, 4
 #endif
-	mov	pc, lr
+	ret	lr
 
 
 /*
@@ -215,8 +214,8 @@ v6_dma_inv_range:
 #endif
 	tst	r1, #D_CACHE_LINE_SIZE - 1
 #ifdef CONFIG_DMA_CACHE_RWFO
-	ldrneb	r2, [r1, #-1]			@ read for ownership
-	strneb	r2, [r1, #-1]			@ write for ownership
+	ldrbne	r2, [r1, #-1]			@ read for ownership
+	strbne	r2, [r1, #-1]			@ write for ownership
 #endif
 	bic	r1, r1, #D_CACHE_LINE_SIZE - 1
 #ifdef HARVARD_CACHE
@@ -239,7 +238,7 @@ v6_dma_inv_range:
 	blo	1b
 	mov	r0, #0
 	mcr	p15, 0, r0, c7, c10, 4		@ drain write buffer
-	mov	pc, lr
+	ret	lr
 
 /*
  *	v6_dma_clean_range(start,end)
@@ -262,7 +261,7 @@ v6_dma_clean_range:
 	blo	1b
 	mov	r0, #0
 	mcr	p15, 0, r0, c7, c10, 4		@ drain write buffer
-	mov	pc, lr
+	ret	lr
 
 /*
  *	v6_dma_flush_range(start,end)
@@ -284,13 +283,13 @@ ENTRY(v6_dma_flush_range)
 	add	r0, r0, #D_CACHE_LINE_SIZE
 	cmp	r0, r1
 #ifdef CONFIG_DMA_CACHE_RWFO
-	ldrlob	r2, [r0]			@ read for ownership
-	strlob	r2, [r0]			@ write for ownership
+	ldrblo	r2, [r0]			@ read for ownership
+	strblo	r2, [r0]			@ write for ownership
 #endif
 	blo	1b
 	mov	r0, #0
 	mcr	p15, 0, r0, c7, c10, 4		@ drain write buffer
-	mov	pc, lr
+	ret	lr
 
 /*
  *	dma_map_area(start, size, dir)
@@ -323,7 +322,7 @@ ENTRY(v6_dma_unmap_area)
 	teq	r2, #DMA_TO_DEVICE
 	bne	v6_dma_inv_range
 #endif
-	mov	pc, lr
+	ret	lr
 ENDPROC(v6_dma_unmap_area)
 
 	.globl	v6_flush_kern_cache_louis

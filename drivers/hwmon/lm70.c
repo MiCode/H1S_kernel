@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * lm70.c
  *
@@ -8,20 +9,6 @@
  * interface. The complete datasheet is available at National's website
  * here:
  * http://www.national.com/pf/LM/LM70.html
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -35,9 +22,10 @@
 #include <linux/hwmon.h>
 #include <linux/mutex.h>
 #include <linux/mod_devicetable.h>
+#include <linux/of.h>
+#include <linux/property.h>
 #include <linux/spi/spi.h>
 #include <linux/slab.h>
-
 
 #define DRVNAME		"lm70"
 
@@ -45,22 +33,24 @@
 #define LM70_CHIP_TMP121	1	/* TI TMP121/TMP123 */
 #define LM70_CHIP_LM71		2	/* NS LM71 */
 #define LM70_CHIP_LM74		3	/* NS LM74 */
+#define LM70_CHIP_TMP122	4	/* TI TMP122/TMP124 */
+#define LM70_CHIP_TMP125	5	/* TI TMP125 */
 
 struct lm70 {
-	struct device *hwmon_dev;
+	struct spi_device *spi;
 	struct mutex lock;
 	unsigned int chip;
 };
 
 /* sysfs hook function */
-static ssize_t lm70_sense_temp(struct device *dev,
-		struct device_attribute *attr, char *buf)
+static ssize_t temp1_input_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct spi_device *spi = to_spi_device(dev);
+	struct lm70 *p_lm70 = dev_get_drvdata(dev);
+	struct spi_device *spi = p_lm70->spi;
 	int status, val = 0;
 	u8 rxbuf[2];
 	s16 raw = 0;
-	struct lm70 *p_lm70 = spi_get_drvdata(spi);
 
 	if (mutex_lock_interruptible(&p_lm70->lock))
 		return -ERESTARTSYS;
@@ -71,7 +61,8 @@ static ssize_t lm70_sense_temp(struct device *dev,
 	 */
 	status = spi_write_then_read(spi, NULL, 0, &rxbuf[0], 2);
 	if (status < 0) {
-		pr_warn("spi_write_then_read failed with status %d\n", status);
+		dev_warn(dev, "spi_write_then_read failed with status %d\n",
+			 status);
 		goto out;
 	}
 	raw = (rxbuf[0] << 8) + rxbuf[1];
@@ -90,13 +81,19 @@ static ssize_t lm70_sense_temp(struct device *dev,
 	 * Celsius.
 	 * So it's equivalent to multiplying by 0.25 * 1000 = 250.
 	 *
-	 * LM74 and TMP121/TMP123:
+	 * LM74 and TMP121/TMP122/TMP123/TMP124:
 	 * 13 bits of 2's complement data, discard LSB 3 bits,
 	 * resolution 0.0625 degrees celsius.
 	 *
 	 * LM71:
 	 * 14 bits of 2's complement data, discard LSB 2 bits,
 	 * resolution 0.0312 degrees celsius.
+	 *
+	 * TMP125:
+	 * MSB/D15 is a leading zero. D14 is the sign-bit. This is
+	 * followed by 9 temperature bits (D13..D5) in 2's complement
+	 * data format with a resolution of 0.25 degrees celsius per unit.
+	 * LSB 5 bits (D4..D0) share the same value as D5 and get discarded.
 	 */
 	switch (p_lm70->chip) {
 	case LM70_CHIP_LM70:
@@ -104,12 +101,17 @@ static ssize_t lm70_sense_temp(struct device *dev,
 		break;
 
 	case LM70_CHIP_TMP121:
+	case LM70_CHIP_TMP122:
 	case LM70_CHIP_LM74:
 		val = ((int)raw / 8) * 625 / 10;
 		break;
 
 	case LM70_CHIP_LM71:
 		val = ((int)raw / 4) * 3125 / 100;
+		break;
+
+	case LM70_CHIP_TMP125:
+		val = (sign_extend32(raw, 14) / 32) * 250;
 		break;
 	}
 
@@ -119,26 +121,62 @@ out:
 	return status;
 }
 
-static DEVICE_ATTR(temp1_input, S_IRUGO, lm70_sense_temp, NULL);
+static DEVICE_ATTR_RO(temp1_input);
 
-static ssize_t lm70_show_name(struct device *dev, struct device_attribute
-			      *devattr, char *buf)
-{
-	return sprintf(buf, "%s\n", to_spi_device(dev)->modalias);
-}
+static struct attribute *lm70_attrs[] = {
+	&dev_attr_temp1_input.attr,
+	NULL
+};
 
-static DEVICE_ATTR(name, S_IRUGO, lm70_show_name, NULL);
+ATTRIBUTE_GROUPS(lm70);
 
 /*----------------------------------------------------------------------*/
 
+#ifdef CONFIG_OF
+static const struct of_device_id lm70_of_ids[] = {
+	{
+		.compatible = "ti,lm70",
+		.data = (void *) LM70_CHIP_LM70,
+	},
+	{
+		.compatible = "ti,tmp121",
+		.data = (void *) LM70_CHIP_TMP121,
+	},
+	{
+		.compatible = "ti,tmp122",
+		.data = (void *) LM70_CHIP_TMP122,
+	},
+	{
+		.compatible = "ti,tmp125",
+		.data = (void *) LM70_CHIP_TMP125,
+	},
+	{
+		.compatible = "ti,lm71",
+		.data = (void *) LM70_CHIP_LM71,
+	},
+	{
+		.compatible = "ti,lm74",
+		.data = (void *) LM70_CHIP_LM74,
+	},
+	{},
+};
+MODULE_DEVICE_TABLE(of, lm70_of_ids);
+#endif
+
 static int lm70_probe(struct spi_device *spi)
 {
-	int chip = spi_get_device_id(spi)->driver_data;
+	struct device *hwmon_dev;
 	struct lm70 *p_lm70;
-	int status;
+	int chip;
+
+	if (dev_fwnode(&spi->dev))
+		chip = (int)(uintptr_t)device_get_match_data(&spi->dev);
+	else
+		chip = spi_get_device_id(spi)->driver_data;
+
 
 	/* signaling is SPI_MODE_0 */
-	if (spi->mode & (SPI_CPOL | SPI_CPHA))
+	if ((spi->mode & SPI_MODE_X_MASK) != SPI_MODE_0)
 		return -EINVAL;
 
 	/* NOTE:  we assume 8-bit words, and convert to 16 bits manually */
@@ -149,49 +187,19 @@ static int lm70_probe(struct spi_device *spi)
 
 	mutex_init(&p_lm70->lock);
 	p_lm70->chip = chip;
+	p_lm70->spi = spi;
 
-	spi_set_drvdata(spi, p_lm70);
-
-	status = device_create_file(&spi->dev, &dev_attr_temp1_input);
-	if (status)
-		goto out_dev_create_temp_file_failed;
-	status = device_create_file(&spi->dev, &dev_attr_name);
-	if (status)
-		goto out_dev_create_file_failed;
-
-	/* sysfs hook */
-	p_lm70->hwmon_dev = hwmon_device_register(&spi->dev);
-	if (IS_ERR(p_lm70->hwmon_dev)) {
-		dev_dbg(&spi->dev, "hwmon_device_register failed.\n");
-		status = PTR_ERR(p_lm70->hwmon_dev);
-		goto out_dev_reg_failed;
-	}
-
-	return 0;
-
-out_dev_reg_failed:
-	device_remove_file(&spi->dev, &dev_attr_name);
-out_dev_create_file_failed:
-	device_remove_file(&spi->dev, &dev_attr_temp1_input);
-out_dev_create_temp_file_failed:
-	return status;
+	hwmon_dev = devm_hwmon_device_register_with_groups(&spi->dev,
+							   spi->modalias,
+							   p_lm70, lm70_groups);
+	return PTR_ERR_OR_ZERO(hwmon_dev);
 }
-
-static int lm70_remove(struct spi_device *spi)
-{
-	struct lm70 *p_lm70 = spi_get_drvdata(spi);
-
-	hwmon_device_unregister(p_lm70->hwmon_dev);
-	device_remove_file(&spi->dev, &dev_attr_temp1_input);
-	device_remove_file(&spi->dev, &dev_attr_name);
-
-	return 0;
-}
-
 
 static const struct spi_device_id lm70_ids[] = {
 	{ "lm70",   LM70_CHIP_LM70 },
 	{ "tmp121", LM70_CHIP_TMP121 },
+	{ "tmp122", LM70_CHIP_TMP122 },
+	{ "tmp125", LM70_CHIP_TMP125 },
 	{ "lm71",   LM70_CHIP_LM71 },
 	{ "lm74",   LM70_CHIP_LM74 },
 	{ },
@@ -201,11 +209,10 @@ MODULE_DEVICE_TABLE(spi, lm70_ids);
 static struct spi_driver lm70_driver = {
 	.driver = {
 		.name	= "lm70",
-		.owner	= THIS_MODULE,
+		.of_match_table	= of_match_ptr(lm70_of_ids),
 	},
 	.id_table = lm70_ids,
 	.probe	= lm70_probe,
-	.remove	= lm70_remove,
 };
 
 module_spi_driver(lm70_driver);

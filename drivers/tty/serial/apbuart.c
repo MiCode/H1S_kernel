@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  Driver for GRLIB serial ports (APBUART)
  *
@@ -10,10 +11,6 @@
  *  Copyright (C) 2009 Kristoffer Glembo <kristoffer@gaisler.com>, Aeroflex Gaisler AB
  */
 
-#if defined(CONFIG_SERIAL_GRLIB_GAISLER_APBUART_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
-#define SUPPORT_SYSRQ
-#endif
-
 #include <linux/module.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
@@ -25,9 +22,6 @@
 #include <linux/kthread.h>
 #include <linux/device.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
-#include <linux/of_platform.h>
-#include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
 #include <linux/serial_core.h>
@@ -71,15 +65,11 @@ static void apbuart_stop_rx(struct uart_port *port)
 	UART_PUT_CTRL(port, cr);
 }
 
-static void apbuart_enable_ms(struct uart_port *port)
-{
-	/* No modem status change interrupts for APBUART */
-}
-
 static void apbuart_rx_chars(struct uart_port *port)
 {
-	unsigned int status, ch, rsr, flag;
+	unsigned int status, rsr;
 	unsigned int max_chars = port->fifosize;
+	u8 ch, flag;
 
 	status = UART_GET_STATUS(port);
 
@@ -125,43 +115,17 @@ static void apbuart_rx_chars(struct uart_port *port)
 		status = UART_GET_STATUS(port);
 	}
 
-	spin_unlock(&port->lock);
 	tty_flip_buffer_push(&port->state->port);
-	spin_lock(&port->lock);
 }
 
 static void apbuart_tx_chars(struct uart_port *port)
 {
-	struct circ_buf *xmit = &port->state->xmit;
-	int count;
+	u8 ch;
 
-	if (port->x_char) {
-		UART_PUT_CHAR(port, port->x_char);
-		port->icount.tx++;
-		port->x_char = 0;
-		return;
-	}
-
-	if (uart_circ_empty(xmit) || uart_tx_stopped(port)) {
-		apbuart_stop_tx(port);
-		return;
-	}
-
-	/* amba: fill FIFO */
-	count = port->fifosize >> 1;
-	do {
-		UART_PUT_CHAR(port, xmit->buf[xmit->tail]);
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		port->icount.tx++;
-		if (uart_circ_empty(xmit))
-			break;
-	} while (--count > 0);
-
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
-		uart_write_wakeup(port);
-
-	if (uart_circ_empty(xmit))
-		apbuart_stop_tx(port);
+	uart_port_tx_limited(port, ch, port->fifosize,
+		true,
+		UART_PUT_CHAR(port, ch),
+		({}));
 }
 
 static irqreturn_t apbuart_int(int irq, void *dev_id)
@@ -238,7 +202,7 @@ static void apbuart_shutdown(struct uart_port *port)
 }
 
 static void apbuart_set_termios(struct uart_port *port,
-				struct ktermios *termios, struct ktermios *old)
+				struct ktermios *termios, const struct ktermios *old)
 {
 	unsigned int cr;
 	unsigned long flags;
@@ -330,14 +294,13 @@ static int apbuart_verify_port(struct uart_port *port,
 	return ret;
 }
 
-static struct uart_ops grlib_apbuart_ops = {
+static const struct uart_ops grlib_apbuart_ops = {
 	.tx_empty = apbuart_tx_empty,
 	.set_mctrl = apbuart_set_mctrl,
 	.get_mctrl = apbuart_get_mctrl,
 	.stop_tx = apbuart_stop_tx,
 	.start_tx = apbuart_start_tx,
 	.stop_rx = apbuart_stop_rx,
-	.enable_ms = apbuart_enable_ms,
 	.break_ctl = apbuart_break_ctl,
 	.startup = apbuart_startup,
 	.shutdown = apbuart_shutdown,
@@ -424,7 +387,7 @@ static void apbuart_flush_fifo(struct uart_port *port)
 
 #ifdef CONFIG_SERIAL_GRLIB_GAISLER_APBUART_CONSOLE
 
-static void apbuart_console_putchar(struct uart_port *port, int ch)
+static void apbuart_console_putchar(struct uart_port *port, unsigned char ch)
 {
 	unsigned int status;
 	do {
@@ -578,7 +541,7 @@ static int apbuart_probe(struct platform_device *op)
 	return 0;
 }
 
-static struct of_device_id apbuart_match[] = {
+static const struct of_device_id apbuart_match[] = {
 	{
 	 .name = "GAISLER_APBUART",
 	 },
@@ -587,11 +550,11 @@ static struct of_device_id apbuart_match[] = {
 	 },
 	{},
 };
+MODULE_DEVICE_TABLE(of, apbuart_match);
 
 static struct platform_driver grlib_apbuart_of_driver = {
 	.probe = apbuart_probe,
 	.driver = {
-		.owner = THIS_MODULE,
 		.name = "grlib-apbuart",
 		.of_match_table = apbuart_match,
 	},
@@ -631,6 +594,7 @@ static int __init grlib_apbuart_configure(void)
 		port->irq = 0;
 		port->iotype = UPIO_MEM;
 		port->ops = &grlib_apbuart_ops;
+		port->has_sysrq = IS_ENABLED(CONFIG_SERIAL_GRLIB_GAISLER_APBUART_CONSOLE);
 		port->flags = UPF_BOOT_AUTOCONF;
 		port->line = line;
 		port->uartclk = *freq_hz;

@@ -1,13 +1,8 @@
-/*
- * Bells audio support
- *
- * Copyright 2012 Wolfson Microelectronics
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
- */
+// SPDX-License-Identifier: GPL-2.0+
+//
+// Bells audio support
+//
+// Copyright 2012 Wolfson Microelectronics
 
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
@@ -58,10 +53,15 @@ static int bells_set_bias_level(struct snd_soc_card *card,
 				struct snd_soc_dapm_context *dapm,
 				enum snd_soc_bias_level level)
 {
-	struct snd_soc_dai *codec_dai = card->rtd[DAI_DSP_CODEC].codec_dai;
-	struct snd_soc_codec *codec = codec_dai->codec;
+	struct snd_soc_pcm_runtime *rtd;
+	struct snd_soc_dai *codec_dai;
+	struct snd_soc_component *component;
 	struct bells_drvdata *bells = card->drvdata;
 	int ret;
+
+	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[DAI_DSP_CODEC]);
+	codec_dai = asoc_rtd_to_codec(rtd, 0);
+	component = codec_dai->component;
 
 	if (dapm->dev != codec_dai->dev)
 		return 0;
@@ -71,7 +71,7 @@ static int bells_set_bias_level(struct snd_soc_card *card,
 		if (dapm->bias_level != SND_SOC_BIAS_STANDBY)
 			break;
 
-		ret = snd_soc_codec_set_pll(codec, WM5102_FLL1,
+		ret = snd_soc_component_set_pll(component, WM5102_FLL1,
 					    ARIZONA_FLL_SRC_MCLK1,
 					    MCLK_RATE,
 					    bells->sysclk_rate);
@@ -79,7 +79,7 @@ static int bells_set_bias_level(struct snd_soc_card *card,
 			pr_err("Failed to start FLL: %d\n", ret);
 
 		if (bells->asyncclk_rate) {
-			ret = snd_soc_codec_set_pll(codec, WM5102_FLL2,
+			ret = snd_soc_component_set_pll(component, WM5102_FLL2,
 						    ARIZONA_FLL_SRC_AIF2BCLK,
 						    BCLK2_RATE,
 						    bells->asyncclk_rate);
@@ -99,24 +99,29 @@ static int bells_set_bias_level_post(struct snd_soc_card *card,
 				     struct snd_soc_dapm_context *dapm,
 				     enum snd_soc_bias_level level)
 {
-	struct snd_soc_dai *codec_dai = card->rtd[DAI_DSP_CODEC].codec_dai;
-	struct snd_soc_codec *codec = codec_dai->codec;
+	struct snd_soc_pcm_runtime *rtd;
+	struct snd_soc_dai *codec_dai;
+	struct snd_soc_component *component;
 	struct bells_drvdata *bells = card->drvdata;
 	int ret;
+
+	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[DAI_DSP_CODEC]);
+	codec_dai = asoc_rtd_to_codec(rtd, 0);
+	component = codec_dai->component;
 
 	if (dapm->dev != codec_dai->dev)
 		return 0;
 
 	switch (level) {
 	case SND_SOC_BIAS_STANDBY:
-		ret = snd_soc_codec_set_pll(codec, WM5102_FLL1, 0, 0, 0);
+		ret = snd_soc_component_set_pll(component, WM5102_FLL1, 0, 0, 0);
 		if (ret < 0) {
 			pr_err("Failed to stop FLL: %d\n", ret);
 			return ret;
 		}
 
 		if (bells->asyncclk_rate) {
-			ret = snd_soc_codec_set_pll(codec, WM5102_FLL2,
+			ret = snd_soc_component_set_pll(component, WM5102_FLL2,
 						    0, 0, 0);
 			if (ret < 0) {
 				pr_err("Failed to stop FLL: %d\n", ret);
@@ -137,24 +142,32 @@ static int bells_set_bias_level_post(struct snd_soc_card *card,
 static int bells_late_probe(struct snd_soc_card *card)
 {
 	struct bells_drvdata *bells = card->drvdata;
-	struct snd_soc_codec *wm0010 = card->rtd[DAI_AP_DSP].codec;
-	struct snd_soc_codec *codec = card->rtd[DAI_DSP_CODEC].codec;
-	struct snd_soc_dai *aif1_dai = card->rtd[DAI_DSP_CODEC].codec_dai;
+	struct snd_soc_pcm_runtime *rtd;
+	struct snd_soc_component *wm0010;
+	struct snd_soc_component *component;
+	struct snd_soc_dai *aif1_dai;
 	struct snd_soc_dai *aif2_dai;
 	struct snd_soc_dai *aif3_dai;
 	struct snd_soc_dai *wm9081_dai;
 	int ret;
 
-	ret = snd_soc_codec_set_sysclk(codec, ARIZONA_CLK_SYSCLK,
+	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[DAI_AP_DSP]);
+	wm0010 = asoc_rtd_to_codec(rtd, 0)->component;
+
+	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[DAI_DSP_CODEC]);
+	component = asoc_rtd_to_codec(rtd, 0)->component;
+	aif1_dai = asoc_rtd_to_codec(rtd, 0);
+
+	ret = snd_soc_component_set_sysclk(component, ARIZONA_CLK_SYSCLK,
 				       ARIZONA_CLK_SRC_FLL1,
 				       bells->sysclk_rate,
 				       SND_SOC_CLOCK_IN);
 	if (ret != 0) {
-		dev_err(codec->dev, "Failed to set SYSCLK: %d\n", ret);
+		dev_err(component->dev, "Failed to set SYSCLK: %d\n", ret);
 		return ret;
 	}
 
-	ret = snd_soc_codec_set_sysclk(wm0010, 0, 0, SYS_MCLK_RATE, 0);
+	ret = snd_soc_component_set_sysclk(wm0010, 0, 0, SYS_MCLK_RATE, 0);
 	if (ret != 0) {
 		dev_err(wm0010->dev, "Failed to set WM0010 clock: %d\n", ret);
 		return ret;
@@ -164,24 +177,25 @@ static int bells_late_probe(struct snd_soc_card *card)
 	if (ret != 0)
 		dev_err(aif1_dai->dev, "Failed to set AIF1 clock: %d\n", ret);
 
-	ret = snd_soc_codec_set_sysclk(codec, ARIZONA_CLK_OPCLK, 0,
+	ret = snd_soc_component_set_sysclk(component, ARIZONA_CLK_OPCLK, 0,
 				       SYS_MCLK_RATE, SND_SOC_CLOCK_OUT);
 	if (ret != 0)
-		dev_err(codec->dev, "Failed to set OPCLK: %d\n", ret);
+		dev_err(component->dev, "Failed to set OPCLK: %d\n", ret);
 
 	if (card->num_rtd == DAI_CODEC_CP)
 		return 0;
 
-	ret = snd_soc_codec_set_sysclk(codec, ARIZONA_CLK_ASYNCCLK,
+	ret = snd_soc_component_set_sysclk(component, ARIZONA_CLK_ASYNCCLK,
 				       ARIZONA_CLK_SRC_FLL2,
 				       bells->asyncclk_rate,
 				       SND_SOC_CLOCK_IN);
 	if (ret != 0) {
-		dev_err(codec->dev, "Failed to set ASYNCCLK: %d\n", ret);
+		dev_err(component->dev, "Failed to set ASYNCCLK: %d\n", ret);
 		return ret;
 	}
 
-	aif2_dai = card->rtd[DAI_CODEC_CP].cpu_dai;
+	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[DAI_CODEC_CP]);
+	aif2_dai = asoc_rtd_to_cpu(rtd, 0);
 
 	ret = snd_soc_dai_set_sysclk(aif2_dai, ARIZONA_CLK_ASYNCCLK, 0, 0);
 	if (ret != 0) {
@@ -192,8 +206,9 @@ static int bells_late_probe(struct snd_soc_card *card)
 	if (card->num_rtd == DAI_CODEC_SUB)
 		return 0;
 
-	aif3_dai = card->rtd[DAI_CODEC_SUB].cpu_dai;
-	wm9081_dai = card->rtd[DAI_CODEC_SUB].codec_dai;
+	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[DAI_CODEC_SUB]);
+	aif3_dai = asoc_rtd_to_cpu(rtd, 0);
+	wm9081_dai = asoc_rtd_to_codec(rtd, 0);
 
 	ret = snd_soc_dai_set_sysclk(aif3_dai, ARIZONA_CLK_SYSCLK, 0, 0);
 	if (ret != 0) {
@@ -201,7 +216,7 @@ static int bells_late_probe(struct snd_soc_card *card)
 		return ret;
 	}
 
-	ret = snd_soc_codec_set_sysclk(wm9081_dai->codec, WM9081_SYSCLK_MCLK,
+	ret = snd_soc_component_set_sysclk(wm9081_dai->component, WM9081_SYSCLK_MCLK,
 				       0, SYS_MCLK_RATE, 0);
 	if (ret != 0) {
 		dev_err(wm9081_dai->dev, "Failed to set MCLK: %d\n", ret);
@@ -227,134 +242,162 @@ static const struct snd_soc_pcm_stream sub_params = {
 	.channels_max = 2,
 };
 
+SND_SOC_DAILINK_DEFS(wm2200_cpu_dsp,
+	DAILINK_COMP_ARRAY(COMP_CPU("samsung-i2s.0")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("spi0.0", "wm0010-sdi1")),
+	DAILINK_COMP_ARRAY(COMP_PLATFORM("samsung-i2s.0")));
+
+SND_SOC_DAILINK_DEFS(wm2200_dsp_codec,
+	DAILINK_COMP_ARRAY(COMP_CPU("wm0010-sdi2")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("wm2200.1-003a", "wm2200")));
+
 static struct snd_soc_dai_link bells_dai_wm2200[] = {
 	{
 		.name = "CPU-DSP",
 		.stream_name = "CPU-DSP",
-		.cpu_dai_name = "samsung-i2s.0",
-		.codec_dai_name = "wm0010-sdi1",
-		.platform_name = "samsung-i2s.0",
-		.codec_name = "spi0.0",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
 				| SND_SOC_DAIFMT_CBM_CFM,
+		SND_SOC_DAILINK_REG(wm2200_cpu_dsp),
 	},
 	{
 		.name = "DSP-CODEC",
 		.stream_name = "DSP-CODEC",
-		.cpu_dai_name = "wm0010-sdi2",
-		.codec_dai_name = "wm2200",
-		.codec_name = "wm2200.1-003a",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
 				| SND_SOC_DAIFMT_CBM_CFM,
-		.params = &sub_params,
+		.c2c_params = &sub_params,
+		.num_c2c_params = 1,
 		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(wm2200_dsp_codec),
 	},
 };
+
+SND_SOC_DAILINK_DEFS(wm5102_cpu_dsp,
+	DAILINK_COMP_ARRAY(COMP_CPU("samsung-i2s.0")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("spi0.0", "wm0010-sdi1")),
+	DAILINK_COMP_ARRAY(COMP_PLATFORM("samsung-i2s.0")));
+
+SND_SOC_DAILINK_DEFS(wm5102_dsp_codec,
+	DAILINK_COMP_ARRAY(COMP_CPU("wm0010-sdi2")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("wm5102-codec", "wm5102-aif1")));
+
+SND_SOC_DAILINK_DEFS(wm5102_baseband,
+	DAILINK_COMP_ARRAY(COMP_CPU("wm5102-aif2")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("wm1250-ev1.1-0027", "wm1250-ev1")));
+
+SND_SOC_DAILINK_DEFS(wm5102_sub,
+	DAILINK_COMP_ARRAY(COMP_CPU("wm5102-aif3")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("wm9081.1-006c", "wm9081-hifi")));
 
 static struct snd_soc_dai_link bells_dai_wm5102[] = {
 	{
 		.name = "CPU-DSP",
 		.stream_name = "CPU-DSP",
-		.cpu_dai_name = "samsung-i2s.0",
-		.codec_dai_name = "wm0010-sdi1",
-		.platform_name = "samsung-i2s.0",
-		.codec_name = "spi0.0",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
 				| SND_SOC_DAIFMT_CBM_CFM,
+		SND_SOC_DAILINK_REG(wm5102_cpu_dsp),
 	},
 	{
 		.name = "DSP-CODEC",
 		.stream_name = "DSP-CODEC",
-		.cpu_dai_name = "wm0010-sdi2",
-		.codec_dai_name = "wm5102-aif1",
-		.codec_name = "wm5102-codec",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
 				| SND_SOC_DAIFMT_CBM_CFM,
-		.params = &sub_params,
+		.c2c_params = &sub_params,
+		.num_c2c_params = 1,
 		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(wm5102_dsp_codec),
 	},
 	{
 		.name = "Baseband",
 		.stream_name = "Baseband",
-		.cpu_dai_name = "wm5102-aif2",
-		.codec_dai_name = "wm1250-ev1",
-		.codec_name = "wm1250-ev1.1-0027",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
 				| SND_SOC_DAIFMT_CBM_CFM,
 		.ignore_suspend = 1,
-		.params = &baseband_params,
+		.c2c_params = &baseband_params,
+		.num_c2c_params = 1,
+		SND_SOC_DAILINK_REG(wm5102_baseband),
 	},
 	{
 		.name = "Sub",
 		.stream_name = "Sub",
-		.cpu_dai_name = "wm5102-aif3",
-		.codec_dai_name = "wm9081-hifi",
-		.codec_name = "wm9081.1-006c",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
 				| SND_SOC_DAIFMT_CBS_CFS,
 		.ignore_suspend = 1,
-		.params = &sub_params,
+		.c2c_params = &sub_params,
+		.num_c2c_params = 1,
+		SND_SOC_DAILINK_REG(wm5102_sub),
 	},
 };
+
+SND_SOC_DAILINK_DEFS(wm5110_cpu_dsp,
+	DAILINK_COMP_ARRAY(COMP_CPU("samsung-i2s.0")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("spi0.0", "wm0010-sdi1")),
+	DAILINK_COMP_ARRAY(COMP_PLATFORM("samsung-i2s.0")));
+
+SND_SOC_DAILINK_DEFS(wm5110_dsp_codec,
+	DAILINK_COMP_ARRAY(COMP_CPU("wm0010-sdi2")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("wm5110-codec", "wm5110-aif1")));
+
+SND_SOC_DAILINK_DEFS(wm5110_baseband,
+	DAILINK_COMP_ARRAY(COMP_CPU("wm5110-aif2")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("wm1250-ev1.1-0027", "wm1250-ev1")));
+
+
+SND_SOC_DAILINK_DEFS(wm5110_sub,
+	DAILINK_COMP_ARRAY(COMP_CPU("wm5110-aif3")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("wm9081.1-006c", "wm9081-hifi")));
 
 static struct snd_soc_dai_link bells_dai_wm5110[] = {
 	{
 		.name = "CPU-DSP",
 		.stream_name = "CPU-DSP",
-		.cpu_dai_name = "samsung-i2s.0",
-		.codec_dai_name = "wm0010-sdi1",
-		.platform_name = "samsung-i2s.0",
-		.codec_name = "spi0.0",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
 				| SND_SOC_DAIFMT_CBM_CFM,
+		SND_SOC_DAILINK_REG(wm5110_cpu_dsp),
 	},
 	{
 		.name = "DSP-CODEC",
 		.stream_name = "DSP-CODEC",
-		.cpu_dai_name = "wm0010-sdi2",
-		.codec_dai_name = "wm5110-aif1",
-		.codec_name = "wm5110-codec",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
 				| SND_SOC_DAIFMT_CBM_CFM,
-		.params = &sub_params,
+		.c2c_params = &sub_params,
+		.num_c2c_params = 1,
 		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(wm5110_dsp_codec),
 	},
 	{
 		.name = "Baseband",
 		.stream_name = "Baseband",
-		.cpu_dai_name = "wm5110-aif2",
-		.codec_dai_name = "wm1250-ev1",
-		.codec_name = "wm1250-ev1.1-0027",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
 				| SND_SOC_DAIFMT_CBM_CFM,
 		.ignore_suspend = 1,
-		.params = &baseband_params,
+		.c2c_params = &baseband_params,
+		.num_c2c_params = 1,
+		SND_SOC_DAILINK_REG(wm5110_baseband),
 	},
 	{
 		.name = "Sub",
 		.stream_name = "Sub",
-		.cpu_dai_name = "wm5110-aif3",
-		.codec_dai_name = "wm9081-hifi",
-		.codec_name = "wm9081.1-006c",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
 				| SND_SOC_DAIFMT_CBS_CFS,
 		.ignore_suspend = 1,
-		.params = &sub_params,
+		.c2c_params = &sub_params,
+		.num_c2c_params = 1,
+		SND_SOC_DAILINK_REG(wm5110_sub),
 	},
 };
 
 static struct snd_soc_codec_conf bells_codec_conf[] = {
 	{
-		.dev_name = "wm9081.1-006c",
+		.dlc = COMP_CODEC_CONF("wm9081.1-006c"),
 		.name_prefix = "Sub",
 	},
 };
 
-static struct snd_soc_dapm_widget bells_widgets[] = {
+static const struct snd_soc_dapm_widget bells_widgets[] = {
 	SND_SOC_DAPM_MIC("DMIC", NULL),
 };
 
-static struct snd_soc_dapm_route bells_routes[] = {
+static const struct snd_soc_dapm_route bells_routes[] = {
 	{ "Sub CLK_SYS", NULL, "OPCLK" },
 	{ "CLKIN", NULL, "OPCLK" },
 
@@ -426,39 +469,27 @@ static struct snd_soc_card bells_cards[] = {
 	},
 };
 
-
 static int bells_probe(struct platform_device *pdev)
 {
 	int ret;
 
 	bells_cards[pdev->id].dev = &pdev->dev;
 
-	ret = snd_soc_register_card(&bells_cards[pdev->id]);
-	if (ret) {
+	ret = devm_snd_soc_register_card(&pdev->dev, &bells_cards[pdev->id]);
+	if (ret)
 		dev_err(&pdev->dev,
 			"snd_soc_register_card(%s) failed: %d\n",
 			bells_cards[pdev->id].name, ret);
-		return ret;
-	}
 
-	return 0;
-}
-
-static int bells_remove(struct platform_device *pdev)
-{
-	snd_soc_unregister_card(&bells_cards[pdev->id]);
-
-	return 0;
+	return ret;
 }
 
 static struct platform_driver bells_driver = {
 	.driver = {
 		.name = "bells",
-		.owner = THIS_MODULE,
 		.pm = &snd_soc_pm_ops,
 	},
 	.probe = bells_probe,
-	.remove = bells_remove,
 };
 
 module_platform_driver(bells_driver);

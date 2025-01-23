@@ -7,7 +7,7 @@
  */
 
 #include <linux/init.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/smp.h>
 #include <asm/bootinfo.h>
 #include <asm/bmips.h>
@@ -17,7 +17,6 @@
 #include <bcm63xx_cpu.h>
 #include <bcm63xx_io.h>
 #include <bcm63xx_regs.h>
-#include <bcm63xx_gpio.h>
 
 void __init prom_init(void)
 {
@@ -53,9 +52,6 @@ void __init prom_init(void)
 	reg &= ~mask;
 	bcm_perf_writel(reg, PERF_CKCTL_REG);
 
-	/* register gpiochip */
-	bcm63xx_gpio_init();
-
 	/* do low level board init */
 	board_prom_init();
 
@@ -88,7 +84,7 @@ void __init prom_init(void)
 		 * Here we will start up CPU1 in the background and ask it to
 		 * reconfigure itself then go back to sleep.
 		 */
-		memcpy((void *)0xa0000200, &bmips_smp_movevec, 0x20);
+		memcpy((void *)0xa0000200, bmips_smp_movevec, 0x20);
 		__sync();
 		set_c0_cause(C_SW0);
 		cpumask_set_cpu(1, &bmips_booted_mask);
@@ -97,8 +93,4 @@ void __init prom_init(void)
 		 * FIXME: we really should have some sort of hazard barrier here
 		 */
 	}
-}
-
-void __init prom_free_prom_memory(void)
-{
 }

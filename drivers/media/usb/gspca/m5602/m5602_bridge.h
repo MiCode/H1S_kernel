@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * USB Driver for ALi m5602 based webcams
  *
@@ -9,11 +10,6 @@
  * Copyright (c) 2006 Willem Duinker
  * v4l2 interface modeled after the V4L2 driver
  * for SN9C10x PC Camera Controllers
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation, version 2.
- *
  */
 
 #ifndef M5602_BRIDGE_H_
@@ -114,21 +110,6 @@
 #define M5602_URB_MSG_TIMEOUT   5000
 
 /*****************************************************************************/
-
-/* A skeleton used for sending messages to the m5602 bridge */
-static const unsigned char bridge_urb_skeleton[] = {
-	0x13, 0x00, 0x81, 0x00
-};
-
-/* A skeleton used for sending messages to the sensor */
-static const unsigned char sensor_urb_skeleton[] = {
-	0x23, M5602_XB_GPIO_EN_H, 0x81, 0x06,
-	0x23, M5602_XB_MISC_CTRL, 0x81, 0x80,
-	0x13, M5602_XB_I2C_DEV_ADDR, 0x81, 0x00,
-	0x13, M5602_XB_I2C_REG_ADDR, 0x81, 0x00,
-	0x13, M5602_XB_I2C_DATA, 0x81, 0x00,
-	0x13, M5602_XB_I2C_CTRL, 0x81, 0x11
-};
 
 struct sd {
 	struct gspca_dev gspca_dev;

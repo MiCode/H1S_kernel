@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  arch/arm/include/asm/glue-df.h
  *
  *  Copyright (C) 1997-1999 Russell King
  *  Copyright (C) 2000-2002 Deep Blue Solutions Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #ifndef ASM_GLUE_DF_H
 #define ASM_GLUE_DF_H
@@ -30,14 +27,6 @@
  */
 #undef CPU_DABORT_HANDLER
 #undef MULTI_DABORT
-
-#if defined(CONFIG_CPU_ARM710)
-# ifdef CPU_DABORT_HANDLER
-#  define MULTI_DABORT 1
-# else
-#  define CPU_DABORT_HANDLER cpu_arm7_data_abort
-# endif
-#endif
 
 #ifdef CONFIG_CPU_ABRT_EV4
 # ifdef CPU_DABORT_HANDLER

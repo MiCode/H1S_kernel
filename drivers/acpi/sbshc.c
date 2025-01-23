@@ -1,12 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * SMBus driver for ACPI Embedded Controller (v0.1)
  *
  * Copyright (c) 2007 Alexey Starikovskiy
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation version 2.
  */
+
+#define pr_fmt(fmt) "ACPI: " fmt
 
 #include <linux/acpi.h>
 #include <linux/wait.h>
@@ -15,8 +14,6 @@
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include "sbshc.h"
-
-#define PREFIX "ACPI: "
 
 #define ACPI_SMB_HC_CLASS	"smbus_host_ctl"
 #define ACPI_SMB_HC_DEVICE_NAME	"ACPI SMBus HC"
@@ -29,10 +26,11 @@ struct acpi_smb_hc {
 	u8 query_bit;
 	smbus_alarm_callback callback;
 	void *context;
+	bool done;
 };
 
 static int acpi_smbus_hc_add(struct acpi_device *device);
-static int acpi_smbus_hc_remove(struct acpi_device *device);
+static void acpi_smbus_hc_remove(struct acpi_device *device);
 
 static const struct acpi_device_id sbs_device_ids[] = {
 	{"ACPI0001", 0},
@@ -97,27 +95,11 @@ static inline int smb_hc_write(struct acpi_smb_hc *hc, u8 address, u8 data)
 	return ec_write(hc->offset + address, data);
 }
 
-static inline int smb_check_done(struct acpi_smb_hc *hc)
-{
-	union acpi_smb_status status = {.raw = 0};
-	smb_hc_read(hc, ACPI_SMB_STATUS, &status.raw);
-	return status.fields.done && (status.fields.status == SMBUS_OK);
-}
-
 static int wait_transaction_complete(struct acpi_smb_hc *hc, int timeout)
 {
-	if (wait_event_timeout(hc->wait, smb_check_done(hc),
-			       msecs_to_jiffies(timeout)))
+	if (wait_event_timeout(hc->wait, hc->done, msecs_to_jiffies(timeout)))
 		return 0;
-	/*
-	 * After the timeout happens, OS will try to check the status of SMbus.
-	 * If the status is what OS expected, it will be regarded as the bogus
-	 * timeout.
-	 */
-	if (smb_check_done(hc))
-		return 0;
-	else
-		return -ETIME;
+	return -ETIME;
 }
 
 static int acpi_smbus_transaction(struct acpi_smb_hc *hc, u8 protocol,
@@ -127,11 +109,12 @@ static int acpi_smbus_transaction(struct acpi_smb_hc *hc, u8 protocol,
 	u8 temp, sz = 0;
 
 	if (!hc) {
-		printk(KERN_ERR PREFIX "host controller is not configured\n");
+		pr_err("host controller is not configured\n");
 		return ret;
 	}
 
 	mutex_lock(&hc->lock);
+	hc->done = false;
 	if (smb_hc_read(hc, ACPI_SMB_PROTOCOL, &temp))
 		goto end;
 	if (temp) {
@@ -193,7 +176,7 @@ int acpi_smbus_write(struct acpi_smb_hc *hc, u8 protocol, u8 address,
 EXPORT_SYMBOL_GPL(acpi_smbus_write);
 
 int acpi_smbus_register_callback(struct acpi_smb_hc *hc,
-			         smbus_alarm_callback callback, void *context)
+				 smbus_alarm_callback callback, void *context)
 {
 	mutex_lock(&hc->lock);
 	hc->callback = callback;
@@ -210,6 +193,7 @@ int acpi_smbus_unregister_callback(struct acpi_smb_hc *hc)
 	hc->callback = NULL;
 	hc->context = NULL;
 	mutex_unlock(&hc->lock);
+	acpi_os_wait_events_complete();
 	return 0;
 }
 
@@ -230,8 +214,10 @@ static int smbus_alarm(void *context)
 	if (smb_hc_read(hc, ACPI_SMB_STATUS, &status.raw))
 		return 0;
 	/* Check if it is only a completion notify */
-	if (status.fields.done)
+	if (status.fields.done && status.fields.status == SMBUS_OK) {
+		hc->done = true;
 		wake_up(&hc->wait);
+	}
 	if (!status.fields.alarm)
 		return 0;
 	mutex_lock(&hc->lock);
@@ -245,7 +231,6 @@ static int smbus_alarm(void *context)
 		case ACPI_SBS_BATTERY:
 			acpi_os_execute(OSL_NOTIFY_HANDLER,
 					acpi_smbus_callback, hc);
-		default:;
 	}
 	mutex_unlock(&hc->lock);
 	return 0;
@@ -268,7 +253,7 @@ static int acpi_smbus_hc_add(struct acpi_device *device)
 
 	status = acpi_evaluate_integer(device->handle, "_EC", NULL, &val);
 	if (ACPI_FAILURE(status)) {
-		printk(KERN_ERR PREFIX "error obtaining _EC.\n");
+		pr_err("error obtaining _EC.\n");
 		return -EIO;
 	}
 
@@ -281,32 +266,32 @@ static int acpi_smbus_hc_add(struct acpi_device *device)
 	mutex_init(&hc->lock);
 	init_waitqueue_head(&hc->wait);
 
-	hc->ec = acpi_driver_data(device->parent);
+	hc->ec = acpi_driver_data(acpi_dev_parent(device));
 	hc->offset = (val >> 8) & 0xff;
 	hc->query_bit = val & 0xff;
 	device->driver_data = hc;
 
 	acpi_ec_add_query_handler(hc->ec, hc->query_bit, NULL, smbus_alarm, hc);
-	printk(KERN_INFO PREFIX "SBS HC: EC = 0x%p, offset = 0x%0x, query_bit = 0x%0x\n",
-		hc->ec, hc->offset, hc->query_bit);
+	dev_info(&device->dev, "SBS HC: offset = 0x%0x, query_bit = 0x%0x\n",
+		 hc->offset, hc->query_bit);
 
 	return 0;
 }
 
 extern void acpi_ec_remove_query_handler(struct acpi_ec *ec, u8 query_bit);
 
-static int acpi_smbus_hc_remove(struct acpi_device *device)
+static void acpi_smbus_hc_remove(struct acpi_device *device)
 {
 	struct acpi_smb_hc *hc;
 
 	if (!device)
-		return -EINVAL;
+		return;
 
 	hc = acpi_driver_data(device);
 	acpi_ec_remove_query_handler(hc->ec, hc->query_bit);
+	acpi_os_wait_events_complete();
 	kfree(hc);
 	device->driver_data = NULL;
-	return 0;
 }
 
 module_acpi_driver(acpi_smb_hc_driver);

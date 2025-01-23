@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Request reply cache. This was heavily inspired by the
  * implementation in 4.3BSD/4.4BSD.
@@ -9,6 +10,7 @@
 #define NFSCACHE_H
 
 #include <linux/sunrpc/svc.h>
+#include "netns.h"
 
 /*
  * Representation of a reply cache entry.
@@ -17,20 +19,23 @@
  * typical sockaddr_storage. This is for space reasons, since sockaddr_storage
  * is much larger than a sockaddr_in6.
  */
-struct svc_cacherep {
-	struct hlist_node	c_hash;
-	struct list_head	c_lru;
+struct nfsd_cacherep {
+	struct {
+		/* Keep often-read xid, csum in the same cache line: */
+		__be32			k_xid;
+		__wsum			k_csum;
+		u32			k_proc;
+		u32			k_prot;
+		u32			k_vers;
+		unsigned int		k_len;
+		struct sockaddr_in6	k_addr;
+	} c_key;
 
+	struct rb_node		c_node;
+	struct list_head	c_lru;
 	unsigned char		c_state,	/* unused, inprog, done */
 				c_type,		/* status, buffer */
 				c_secure : 1;	/* req came from port < 1024 */
-	struct sockaddr_in6	c_addr;
-	__be32			c_xid;
-	u32			c_prot;
-	u32			c_proc;
-	u32			c_vers;
-	unsigned int		c_len;
-	__wsum			c_csum;
 	unsigned long		c_timestamp;
 	union {
 		struct kvec	u_vec;
@@ -67,21 +72,22 @@ enum {
 	RC_REPLBUFF,
 };
 
-/*
- * If requests are retransmitted within this interval, they're dropped.
- */
-#define RC_DELAY		(HZ/5)
-
 /* Cache entries expire after this time period */
 #define RC_EXPIRE		(120 * HZ)
 
 /* Checksum this amount of the request */
 #define RC_CSUMLEN		(256U)
 
-int	nfsd_reply_cache_init(void);
-void	nfsd_reply_cache_shutdown(void);
-int	nfsd_cache_lookup(struct svc_rqst *);
-void	nfsd_cache_update(struct svc_rqst *, int, __be32 *);
-int	nfsd_reply_cache_stats_open(struct inode *, struct file *);
+int	nfsd_drc_slab_create(void);
+void	nfsd_drc_slab_free(void);
+int	nfsd_net_reply_cache_init(struct nfsd_net *nn);
+void	nfsd_net_reply_cache_destroy(struct nfsd_net *nn);
+int	nfsd_reply_cache_init(struct nfsd_net *);
+void	nfsd_reply_cache_shutdown(struct nfsd_net *);
+int	nfsd_cache_lookup(struct svc_rqst *rqstp, unsigned int start,
+			  unsigned int len, struct nfsd_cacherep **cacherep);
+void	nfsd_cache_update(struct svc_rqst *rqstp, struct nfsd_cacherep *rp,
+			  int cachetype, __be32 *statp);
+int	nfsd_reply_cache_stats_show(struct seq_file *m, void *v);
 
 #endif /* NFSCACHE_H */

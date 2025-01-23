@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 #ifndef _ASM_POWERPC_SIGCONTEXT_H
 #define _ASM_POWERPC_SIGCONTEXT_H
 
@@ -21,14 +22,18 @@ struct sigcontext {
 #endif
 	unsigned long	handler;
 	unsigned long	oldmask;
-	struct pt_regs	__user *regs;
+#ifdef __KERNEL__
+	struct user_pt_regs __user *regs;
+#else
+	struct pt_regs	*regs;
+#endif
 #ifdef __powerpc64__
 	elf_gregset_t	gp_regs;
 	elf_fpregset_t	fp_regs;
 /*
  * To maintain compatibility with current implementations the sigcontext is
  * extended by appending a pointer (v_regs) to a quadword type (elf_vrreg_t)
- * followed by an unstructured (vmx_reserve) field of 69 doublewords.  This
+ * followed by an unstructured (vmx_reserve) field of 101 doublewords. This
  * allows the array of vector registers to be quadword aligned independent of
  * the alignment of the containing sigcontext or ucontext. It is the
  * responsibility of the code setting the sigcontext to set this pointer to
@@ -80,7 +85,7 @@ struct sigcontext {
  * registers and vscr/vrsave.
  */
 	elf_vrreg_t	__user *v_regs;
-	long		vmx_reserve[ELF_NVRREG+ELF_NVRREG+32+1];
+	long		vmx_reserve[ELF_NVRREG + ELF_NVRREG + 1 + 32];
 #endif
 };
 

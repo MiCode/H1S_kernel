@@ -1,165 +1,312 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/atomic.h>
-#include <linux/rwsem.h>
 #include <linux/percpu.h>
 #include <linux/wait.h>
 #include <linux/lockdep.h>
 #include <linux/percpu-rwsem.h>
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
+#include <linux/sched/task.h>
+#include <linux/sched/debug.h>
 #include <linux/errno.h>
+#include <trace/events/lock.h>
 
-int __percpu_init_rwsem(struct percpu_rw_semaphore *brw,
-			const char *name, struct lock_class_key *rwsem_key)
+#include <trace/hooks/dtask.h>
+
+/*
+ * trace_android_vh_record_pcpu_rwsem_starttime  is called in
+ * include/linux/percpu-rwsem.h by including include/hooks/dtask.h, which
+ * will result to build-err. So we create
+ * func:_trace_android_vh_record_pcpu_rwsem_starttime for percpu-rwsem.h to call.
+ */
+void _trace_android_vh_record_pcpu_rwsem_starttime(struct percpu_rw_semaphore *sem,
+		unsigned long settime)
 {
-	brw->fast_read_ctr = alloc_percpu(int);
-	if (unlikely(!brw->fast_read_ctr))
+	trace_android_vh_record_pcpu_rwsem_starttime(sem, settime);
+}
+EXPORT_SYMBOL_GPL(_trace_android_vh_record_pcpu_rwsem_starttime);
+
+int __percpu_init_rwsem(struct percpu_rw_semaphore *sem,
+			const char *name, struct lock_class_key *key)
+{
+	sem->read_count = alloc_percpu(int);
+	if (unlikely(!sem->read_count))
 		return -ENOMEM;
 
-	/* ->rw_sem represents the whole percpu_rw_semaphore for lockdep */
-	__init_rwsem(&brw->rw_sem, name, rwsem_key);
-	atomic_set(&brw->write_ctr, 0);
-	atomic_set(&brw->slow_read_ctr, 0);
-	init_waitqueue_head(&brw->write_waitq);
+	rcu_sync_init(&sem->rss);
+	rcuwait_init(&sem->writer);
+	init_waitqueue_head(&sem->waiters);
+	atomic_set(&sem->block, 0);
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	debug_check_no_locks_freed((void *)sem, sizeof(*sem));
+	lockdep_init_map(&sem->dep_map, name, key, 0);
+#endif
 	return 0;
 }
+EXPORT_SYMBOL_GPL(__percpu_init_rwsem);
 
-void percpu_free_rwsem(struct percpu_rw_semaphore *brw)
+void percpu_free_rwsem(struct percpu_rw_semaphore *sem)
 {
-	free_percpu(brw->fast_read_ctr);
-	brw->fast_read_ctr = NULL; /* catch use after free bugs */
+	/*
+	 * XXX: temporary kludge. The error path in alloc_super()
+	 * assumes that percpu_free_rwsem() is safe after kzalloc().
+	 */
+	if (!sem->read_count)
+		return;
+
+	rcu_sync_dtor(&sem->rss);
+	free_percpu(sem->read_count);
+	sem->read_count = NULL; /* catch use after free bugs */
+}
+EXPORT_SYMBOL_GPL(percpu_free_rwsem);
+
+static bool __percpu_down_read_trylock(struct percpu_rw_semaphore *sem)
+{
+	this_cpu_inc(*sem->read_count);
+
+	/*
+	 * Due to having preemption disabled the decrement happens on
+	 * the same CPU as the increment, avoiding the
+	 * increment-on-one-CPU-and-decrement-on-another problem.
+	 *
+	 * If the reader misses the writer's assignment of sem->block, then the
+	 * writer is guaranteed to see the reader's increment.
+	 *
+	 * Conversely, any readers that increment their sem->read_count after
+	 * the writer looks are guaranteed to see the sem->block value, which
+	 * in turn means that they are guaranteed to immediately decrement
+	 * their sem->read_count, so that it doesn't matter that the writer
+	 * missed them.
+	 */
+
+	smp_mb(); /* A matches D */
+
+	/*
+	 * If !sem->block the critical section starts here, matched by the
+	 * release in percpu_up_write().
+	 */
+	if (likely(!atomic_read_acquire(&sem->block)))
+		return true;
+
+	this_cpu_dec(*sem->read_count);
+
+	/* Prod writer to re-evaluate readers_active_check() */
+	rcuwait_wake_up(&sem->writer);
+
+	return false;
+}
+
+static inline bool __percpu_down_write_trylock(struct percpu_rw_semaphore *sem)
+{
+	if (atomic_read(&sem->block))
+		return false;
+
+	return atomic_xchg(&sem->block, 1) == 0;
+}
+
+static bool __percpu_rwsem_trylock(struct percpu_rw_semaphore *sem, bool reader)
+{
+	if (reader) {
+		bool ret;
+
+		preempt_disable();
+		ret = __percpu_down_read_trylock(sem);
+		preempt_enable();
+
+		return ret;
+	}
+	return __percpu_down_write_trylock(sem);
 }
 
 /*
- * This is the fast-path for down_read/up_read, it only needs to ensure
- * there is no pending writer (atomic_read(write_ctr) == 0) and inc/dec the
- * fast per-cpu counter. The writer uses synchronize_sched_expedited() to
- * serialize with the preempt-disabled section below.
+ * The return value of wait_queue_entry::func means:
  *
- * The nontrivial part is that we should guarantee acquire/release semantics
- * in case when
+ *  <0 - error, wakeup is terminated and the error is returned
+ *   0 - no wakeup, a next waiter is tried
+ *  >0 - woken, if EXCLUSIVE, counted towards @nr_exclusive.
  *
- *	R_W: down_write() comes after up_read(), the writer should see all
- *	     changes done by the reader
- * or
- *	W_R: down_read() comes after up_write(), the reader should see all
- *	     changes done by the writer
+ * We use EXCLUSIVE for both readers and writers to preserve FIFO order,
+ * and play games with the return value to allow waking multiple readers.
  *
- * If this helper fails the callers rely on the normal rw_semaphore and
- * atomic_dec_and_test(), so in this case we have the necessary barriers.
- *
- * But if it succeeds we do not have any barriers, atomic_read(write_ctr) or
- * __this_cpu_add() below can be reordered with any LOAD/STORE done by the
- * reader inside the critical section. See the comments in down_write and
- * up_write below.
+ * Specifically, we wake readers until we've woken a single writer, or until a
+ * trylock fails.
  */
-static bool update_fast_ctr(struct percpu_rw_semaphore *brw, unsigned int val)
+static int percpu_rwsem_wake_function(struct wait_queue_entry *wq_entry,
+				      unsigned int mode, int wake_flags,
+				      void *key)
 {
-	bool success = false;
+	bool reader = wq_entry->flags & WQ_FLAG_CUSTOM;
+	struct percpu_rw_semaphore *sem = key;
+	struct task_struct *p;
 
-	preempt_disable();
-	if (likely(!atomic_read(&brw->write_ctr))) {
-		__this_cpu_add(*brw->fast_read_ctr, val);
-		success = true;
+	/* concurrent against percpu_down_write(), can get stolen */
+	if (!__percpu_rwsem_trylock(sem, reader))
+		return 1;
+
+	p = get_task_struct(wq_entry->private);
+	list_del_init(&wq_entry->entry);
+	smp_store_release(&wq_entry->private, NULL);
+
+	wake_up_process(p);
+	put_task_struct(p);
+
+	return !reader; /* wake (readers until) 1 writer */
+}
+
+static void percpu_rwsem_wait(struct percpu_rw_semaphore *sem, bool reader)
+{
+	DEFINE_WAIT_FUNC(wq_entry, percpu_rwsem_wake_function);
+	bool wait;
+
+	spin_lock_irq(&sem->waiters.lock);
+	/*
+	 * Serialize against the wakeup in percpu_up_write(), if we fail
+	 * the trylock, the wakeup must see us on the list.
+	 */
+	wait = !__percpu_rwsem_trylock(sem, reader);
+	if (wait) {
+		wq_entry.flags |= WQ_FLAG_EXCLUSIVE | reader * WQ_FLAG_CUSTOM;
+		__add_wait_queue_entry_tail(&sem->waiters, &wq_entry);
+		trace_android_vh_percpu_rwsem_wq_add(sem, reader);
 	}
+	spin_unlock_irq(&sem->waiters.lock);
+
+	while (wait) {
+		set_current_state(TASK_UNINTERRUPTIBLE);
+		if (!smp_load_acquire(&wq_entry.private))
+			break;
+		schedule();
+	}
+	__set_current_state(TASK_RUNNING);
+}
+
+bool __sched __percpu_down_read(struct percpu_rw_semaphore *sem, bool try)
+{
+	bool ret = false;
+
+	if (__percpu_down_read_trylock(sem))
+		return true;
+
+	trace_android_vh_percpu_rwsem_down_read(sem, try, &ret);
+	if (ret)
+		return true;
+
+	if (try)
+		return false;
+
+	trace_contention_begin(sem, LCB_F_PERCPU | LCB_F_READ);
 	preempt_enable();
+	percpu_rwsem_wait(sem, /* .reader = */ true);
+	preempt_disable();
+	trace_contention_end(sem, 0);
 
-	return success;
+	return true;
 }
+EXPORT_SYMBOL_GPL(__percpu_down_read);
+
+#define per_cpu_sum(var)						\
+({									\
+	typeof(var) __sum = 0;						\
+	int cpu;							\
+	compiletime_assert_atomic_type(__sum);				\
+	for_each_possible_cpu(cpu)					\
+		__sum += per_cpu(var, cpu);				\
+	__sum;								\
+})
+
+bool percpu_is_read_locked(struct percpu_rw_semaphore *sem)
+{
+	return per_cpu_sum(*sem->read_count) != 0 && !atomic_read(&sem->block);
+}
+EXPORT_SYMBOL_GPL(percpu_is_read_locked);
 
 /*
- * Like the normal down_read() this is not recursive, the writer can
- * come after the first percpu_down_read() and create the deadlock.
+ * Return true if the modular sum of the sem->read_count per-CPU variable is
+ * zero.  If this sum is zero, then it is stable due to the fact that if any
+ * newly arriving readers increment a given counter, they will immediately
+ * decrement that same counter.
  *
- * Note: returns with lock_is_held(brw->rw_sem) == T for lockdep,
- * percpu_up_read() does rwsem_release(). This pairs with the usage
- * of ->rw_sem in percpu_down/up_write().
+ * Assumes sem->block is set.
  */
-void percpu_down_read(struct percpu_rw_semaphore *brw)
+static bool readers_active_check(struct percpu_rw_semaphore *sem)
 {
+	if (per_cpu_sum(*sem->read_count) != 0)
+		return false;
+
+	/*
+	 * If we observed the decrement; ensure we see the entire critical
+	 * section.
+	 */
+
+	smp_mb(); /* C matches B */
+
+	return true;
+}
+
+void __sched percpu_down_write(struct percpu_rw_semaphore *sem)
+{
+	bool complete = false;
+
 	might_sleep();
-	if (likely(update_fast_ctr(brw, +1))) {
-		rwsem_acquire_read(&brw->rw_sem.dep_map, 0, 0, _RET_IP_);
-		return;
-	}
+	rwsem_acquire(&sem->dep_map, 0, 0, _RET_IP_);
+	trace_contention_begin(sem, LCB_F_PERCPU | LCB_F_WRITE);
 
-	down_read(&brw->rw_sem);
-	atomic_inc(&brw->slow_read_ctr);
-	/* avoid up_read()->rwsem_release() */
-	__up_read(&brw->rw_sem);
-}
+	/* Notify readers to take the slow path. */
+	rcu_sync_enter(&sem->rss);
 
-void percpu_up_read(struct percpu_rw_semaphore *brw)
-{
-	rwsem_release(&brw->rw_sem.dep_map, 1, _RET_IP_);
-
-	if (likely(update_fast_ctr(brw, -1)))
-		return;
-
-	/* false-positive is possible but harmless */
-	if (atomic_dec_and_test(&brw->slow_read_ctr))
-		wake_up_all(&brw->write_waitq);
-}
-
-static int clear_fast_ctr(struct percpu_rw_semaphore *brw)
-{
-	unsigned int sum = 0;
-	int cpu;
-
-	for_each_possible_cpu(cpu) {
-		sum += per_cpu(*brw->fast_read_ctr, cpu);
-		per_cpu(*brw->fast_read_ctr, cpu) = 0;
-	}
-
-	return sum;
-}
-
-/*
- * A writer increments ->write_ctr to force the readers to switch to the
- * slow mode, note the atomic_read() check in update_fast_ctr().
- *
- * After that the readers can only inc/dec the slow ->slow_read_ctr counter,
- * ->fast_read_ctr is stable. Once the writer moves its sum into the slow
- * counter it represents the number of active readers.
- *
- * Finally the writer takes ->rw_sem for writing and blocks the new readers,
- * then waits until the slow counter becomes zero.
- */
-void percpu_down_write(struct percpu_rw_semaphore *brw)
-{
-	/* tell update_fast_ctr() there is a pending writer */
-	atomic_inc(&brw->write_ctr);
 	/*
-	 * 1. Ensures that write_ctr != 0 is visible to any down_read/up_read
-	 *    so that update_fast_ctr() can't succeed.
-	 *
-	 * 2. Ensures we see the result of every previous this_cpu_add() in
-	 *    update_fast_ctr().
-	 *
-	 * 3. Ensures that if any reader has exited its critical section via
-	 *    fast-path, it executes a full memory barrier before we return.
-	 *    See R_W case in the comment above update_fast_ctr().
+	 * Try set sem->block; this provides writer-writer exclusion.
+	 * Having sem->block set makes new readers block.
 	 */
-	synchronize_sched_expedited();
+	if (!__percpu_down_write_trylock(sem))
+		percpu_rwsem_wait(sem, /* .reader = */ false);
 
-	/* exclude other writers, and block the new readers completely */
-	down_write(&brw->rw_sem);
+	/* smp_mb() implied by __percpu_down_write_trylock() on success -- D matches A */
 
-	/* nobody can use fast_read_ctr, move its sum into slow_read_ctr */
-	atomic_add(clear_fast_ctr(brw), &brw->slow_read_ctr);
-
-	/* wait for all readers to complete their percpu_up_read() */
-	wait_event(brw->write_waitq, !atomic_read(&brw->slow_read_ctr));
-}
-
-void percpu_up_write(struct percpu_rw_semaphore *brw)
-{
-	/* release the lock, but the readers can't use the fast-path */
-	up_write(&brw->rw_sem);
 	/*
-	 * Insert the barrier before the next fast-path in down_read,
-	 * see W_R case in the comment above update_fast_ctr().
+	 * If they don't see our store of sem->block, then we are guaranteed to
+	 * see their sem->read_count increment, and therefore will wait for
+	 * them.
 	 */
-	synchronize_sched_expedited();
-	/* the last writer unblocks update_fast_ctr() */
-	atomic_dec(&brw->write_ctr);
+
+	/* Wait for all active readers to complete. */
+	trace_android_rvh_percpu_rwsem_wait_complete(sem, TASK_UNINTERRUPTIBLE, &complete);
+	if (!complete)
+		rcuwait_wait_event(&sem->writer, readers_active_check(sem), TASK_UNINTERRUPTIBLE);
+	trace_contention_end(sem, 0);
+	trace_android_vh_record_pcpu_rwsem_starttime(sem, jiffies);
 }
+EXPORT_SYMBOL_GPL(percpu_down_write);
+
+void percpu_up_write(struct percpu_rw_semaphore *sem)
+{
+	rwsem_release(&sem->dep_map, _RET_IP_);
+
+	trace_android_vh_percpu_rwsem_up_write(sem);
+
+	/*
+	 * Signal the writer is done, no fast path yet.
+	 *
+	 * One reason that we cannot just immediately flip to readers_fast is
+	 * that new readers might fail to see the results of this writer's
+	 * critical section.
+	 *
+	 * Therefore we force it through the slow path which guarantees an
+	 * acquire and thereby guarantees the critical section's consistency.
+	 */
+	atomic_set_release(&sem->block, 0);
+
+	/*
+	 * Prod any pending reader/writer to make progress.
+	 */
+	__wake_up(&sem->waiters, TASK_NORMAL, 1, sem);
+
+	/*
+	 * Once this completes (at least one RCU-sched grace period hence) the
+	 * reader fast path will be available again. Safe to use outside the
+	 * exclusive write lock because its counting.
+	 */
+	rcu_sync_exit(&sem->rss);
+	trace_android_vh_record_pcpu_rwsem_starttime(sem, 0);
+}
+EXPORT_SYMBOL_GPL(percpu_up_write);

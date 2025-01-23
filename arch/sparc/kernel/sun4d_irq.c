@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * SS1000/SC2000 interrupt handling.
  *
@@ -143,7 +144,7 @@ static void sun4d_sbus_handler_irq(int sbusl)
 	}
 }
 
-void sun4d_handler_irq(int pil, struct pt_regs *regs)
+void sun4d_handler_irq(unsigned int pil, struct pt_regs *regs)
 {
 	struct pt_regs *old_regs;
 	/* SBUS IRQ level (1 - 7) */
@@ -188,7 +189,7 @@ void sun4d_handler_irq(int pil, struct pt_regs *regs)
 
 static void sun4d_mask_irq(struct irq_data *data)
 {
-	struct sun4d_handler_data *handler_data = data->handler_data;
+	struct sun4d_handler_data *handler_data = irq_data_get_irq_handler_data(data);
 	unsigned int real_irq;
 #ifdef CONFIG_SMP
 	int cpuid = handler_data->cpuid;
@@ -206,7 +207,7 @@ static void sun4d_mask_irq(struct irq_data *data)
 
 static void sun4d_unmask_irq(struct irq_data *data)
 {
-	struct sun4d_handler_data *handler_data = data->handler_data;
+	struct sun4d_handler_data *handler_data = irq_data_get_irq_handler_data(data);
 	unsigned int real_irq;
 #ifdef CONFIG_SMP
 	int cpuid = handler_data->cpuid;
@@ -236,7 +237,7 @@ static void sun4d_shutdown_irq(struct irq_data *data)
 	irq_unlink(data->irq);
 }
 
-struct irq_chip sun4d_irq = {
+static struct irq_chip sun4d_irq = {
 	.name		= "sun4d",
 	.irq_startup	= sun4d_startup_irq,
 	.irq_shutdown	= sun4d_shutdown_irq,
@@ -285,9 +286,9 @@ static void __init sun4d_load_profile_irqs(void)
 	}
 }
 
-unsigned int _sun4d_build_device_irq(unsigned int real_irq,
-                                     unsigned int pil,
-                                     unsigned int board)
+static unsigned int _sun4d_build_device_irq(unsigned int real_irq,
+                                            unsigned int pil,
+                                            unsigned int board)
 {
 	struct sun4d_handler_data *handler_data;
 	unsigned int irq;
@@ -320,8 +321,8 @@ err_out:
 
 
 
-unsigned int sun4d_build_device_irq(struct platform_device *op,
-                                    unsigned int real_irq)
+static unsigned int sun4d_build_device_irq(struct platform_device *op,
+                                           unsigned int real_irq)
 {
 	struct device_node *dp = op->dev.of_node;
 	struct device_node *board_parent, *bus = dp->parent;
@@ -334,12 +335,12 @@ unsigned int sun4d_build_device_irq(struct platform_device *op,
 
 	irq = real_irq;
 	while (bus) {
-		if (!strcmp(bus->name, "sbi")) {
+		if (of_node_name_eq(bus, "sbi")) {
 			bus_connection = "io-unit";
 			break;
 		}
 
-		if (!strcmp(bus->name, "bootbus")) {
+		if (of_node_name_eq(bus, "bootbus")) {
 			bus_connection = "cpu-unit";
 			break;
 		}
@@ -359,16 +360,16 @@ unsigned int sun4d_build_device_irq(struct platform_device *op,
 	 * If Bus nodes parent is not io-unit/cpu-unit or the io-unit/cpu-unit
 	 * lacks a "board#" property, something is very wrong.
 	 */
-	if (!bus->parent || strcmp(bus->parent->name, bus_connection)) {
-		printk(KERN_ERR "%s: Error, parent is not %s.\n",
-			bus->full_name, bus_connection);
+	if (!of_node_name_eq(bus->parent, bus_connection)) {
+		printk(KERN_ERR "%pOF: Error, parent is not %s.\n",
+			bus, bus_connection);
 		goto err_out;
 	}
 	board_parent = bus->parent;
 	board = of_getintprop_default(board_parent, "board#", -1);
 	if (board == -1) {
-		printk(KERN_ERR "%s: Error, lacks board# property.\n",
-			board_parent->full_name);
+		printk(KERN_ERR "%pOF: Error, lacks board# property.\n",
+			board_parent);
 		goto err_out;
 	}
 
@@ -383,7 +384,8 @@ err_out:
 	return irq;
 }
 
-unsigned int sun4d_build_timer_irq(unsigned int board, unsigned int real_irq)
+static unsigned int sun4d_build_timer_irq(unsigned int board,
+                                          unsigned int real_irq)
 {
 	return _sun4d_build_device_irq(real_irq, real_irq, board);
 }

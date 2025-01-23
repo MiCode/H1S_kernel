@@ -1,13 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2012 Avionic Design GmbH
  * Copyright (C) 2012 NVIDIA CORPORATION.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/clk.h>
+#include <linux/of.h>
+
+#include <drm/drm_atomic_helper.h>
+#include <drm/drm_bridge_connector.h>
+#include <drm/drm_simple_kms_helper.h>
 
 #include "drm.h"
 #include "dc.h"
@@ -16,6 +18,8 @@ struct tegra_rgb {
 	struct tegra_output output;
 	struct tegra_dc *dc;
 
+	struct clk *pll_d_out0;
+	struct clk *pll_d2_out0;
 	struct clk *clk_parent;
 	struct clk *clk;
 };
@@ -84,10 +88,20 @@ static void tegra_dc_write_regs(struct tegra_dc *dc,
 		tegra_dc_writel(dc, table[i].value, table[i].offset);
 }
 
-static int tegra_output_rgb_enable(struct tegra_output *output)
+static void tegra_rgb_encoder_disable(struct drm_encoder *encoder)
 {
+	struct tegra_output *output = encoder_to_output(encoder);
 	struct tegra_rgb *rgb = to_rgb(output);
-	unsigned long value;
+
+	tegra_dc_write_regs(rgb->dc, rgb_disable, ARRAY_SIZE(rgb_disable));
+	tegra_dc_commit(rgb->dc);
+}
+
+static void tegra_rgb_encoder_enable(struct drm_encoder *encoder)
+{
+	struct tegra_output *output = encoder_to_output(encoder);
+	struct tegra_rgb *rgb = to_rgb(output);
+	u32 value;
 
 	tegra_dc_write_regs(rgb->dc, rgb_enable, ARRAY_SIZE(rgb_enable));
 
@@ -105,76 +119,75 @@ static int tegra_output_rgb_enable(struct tegra_output *output)
 		DISP_ORDER_RED_BLUE;
 	tegra_dc_writel(rgb->dc, value, DC_DISP_DISP_INTERFACE_CONTROL);
 
-	/* XXX: parameterize? */
-	value = SC0_H_QUALIFIER_NONE | SC1_H_QUALIFIER_NONE;
-	tegra_dc_writel(rgb->dc, value, DC_DISP_SHIFT_CLOCK_OPTIONS);
-
-	value = tegra_dc_readl(rgb->dc, DC_CMD_DISPLAY_COMMAND);
-	value &= ~DISP_CTRL_MODE_MASK;
-	value |= DISP_CTRL_MODE_C_DISPLAY;
-	tegra_dc_writel(rgb->dc, value, DC_CMD_DISPLAY_COMMAND);
-
-	value = tegra_dc_readl(rgb->dc, DC_CMD_DISPLAY_POWER_CONTROL);
-	value |= PW0_ENABLE | PW1_ENABLE | PW2_ENABLE | PW3_ENABLE |
-		 PW4_ENABLE | PM0_ENABLE | PM1_ENABLE;
-	tegra_dc_writel(rgb->dc, value, DC_CMD_DISPLAY_POWER_CONTROL);
-
-	tegra_dc_writel(rgb->dc, GENERAL_ACT_REQ << 8, DC_CMD_STATE_CONTROL);
-	tegra_dc_writel(rgb->dc, GENERAL_ACT_REQ, DC_CMD_STATE_CONTROL);
-
-	return 0;
+	tegra_dc_commit(rgb->dc);
 }
 
-static int tegra_output_rgb_disable(struct tegra_output *output)
+static bool tegra_rgb_pll_rate_change_allowed(struct tegra_rgb *rgb)
 {
+	if (!rgb->pll_d2_out0)
+		return false;
+
+	if (!clk_is_match(rgb->clk_parent, rgb->pll_d_out0) &&
+	    !clk_is_match(rgb->clk_parent, rgb->pll_d2_out0))
+		return false;
+
+	return true;
+}
+
+static int
+tegra_rgb_encoder_atomic_check(struct drm_encoder *encoder,
+			       struct drm_crtc_state *crtc_state,
+			       struct drm_connector_state *conn_state)
+{
+	struct tegra_output *output = encoder_to_output(encoder);
+	struct tegra_dc *dc = to_tegra_dc(conn_state->crtc);
+	unsigned long pclk = crtc_state->mode.clock * 1000;
 	struct tegra_rgb *rgb = to_rgb(output);
-	unsigned long value;
+	unsigned int div;
+	int err;
 
-	value = tegra_dc_readl(rgb->dc, DC_CMD_DISPLAY_POWER_CONTROL);
-	value &= ~(PW0_ENABLE | PW1_ENABLE | PW2_ENABLE | PW3_ENABLE |
-		   PW4_ENABLE | PM0_ENABLE | PM1_ENABLE);
-	tegra_dc_writel(rgb->dc, value, DC_CMD_DISPLAY_POWER_CONTROL);
-
-	value = tegra_dc_readl(rgb->dc, DC_CMD_DISPLAY_COMMAND);
-	value &= ~DISP_CTRL_MODE_MASK;
-	tegra_dc_writel(rgb->dc, value, DC_CMD_DISPLAY_COMMAND);
-
-	tegra_dc_writel(rgb->dc, GENERAL_ACT_REQ << 8, DC_CMD_STATE_CONTROL);
-	tegra_dc_writel(rgb->dc, GENERAL_ACT_REQ, DC_CMD_STATE_CONTROL);
-
-	tegra_dc_write_regs(rgb->dc, rgb_disable, ARRAY_SIZE(rgb_disable));
-
-	return 0;
-}
-
-static int tegra_output_rgb_setup_clock(struct tegra_output *output,
-					struct clk *clk, unsigned long pclk)
-{
-	struct tegra_rgb *rgb = to_rgb(output);
-
-	return clk_set_parent(clk, rgb->clk_parent);
-}
-
-static int tegra_output_rgb_check_mode(struct tegra_output *output,
-				       struct drm_display_mode *mode,
-				       enum drm_mode_status *status)
-{
 	/*
-	 * FIXME: For now, always assume that the mode is okay. There are
-	 * unresolved issues with clk_round_rate(), which doesn't always
-	 * reliably report whether a frequency can be set or not.
+	 * We may not want to change the frequency of the parent clock, since
+	 * it may be a parent for other peripherals. This is due to the fact
+	 * that on Tegra20 there's only a single clock dedicated to display
+	 * (pll_d_out0), whereas later generations have a second one that can
+	 * be used to independently drive a second output (pll_d2_out0).
+	 *
+	 * As a way to support multiple outputs on Tegra20 as well, pll_p is
+	 * typically used as the parent clock for the display controllers.
+	 * But this comes at a cost: pll_p is the parent of several other
+	 * peripherals, so its frequency shouldn't change out of the blue.
+	 *
+	 * The best we can do at this point is to use the shift clock divider
+	 * and hope that the desired frequency can be matched (or at least
+	 * matched sufficiently close that the panel will still work).
 	 */
+	if (tegra_rgb_pll_rate_change_allowed(rgb)) {
+		/*
+		 * Set display controller clock to x2 of PCLK in order to
+		 * produce higher resolution pulse positions.
+		 */
+		div = 2;
+		pclk *= 2;
+	} else {
+		div = ((clk_get_rate(rgb->clk) * 2) / pclk) - 2;
+		pclk = 0;
+	}
 
-	*status = MODE_OK;
+	err = tegra_dc_state_setup_clock(dc, crtc_state, rgb->clk_parent,
+					 pclk, div);
+	if (err < 0) {
+		dev_err(output->dev, "failed to setup CRTC state: %d\n", err);
+		return err;
+	}
 
-	return 0;
+	return err;
 }
 
-static const struct tegra_output_ops rgb_ops = {
-	.enable = tegra_output_rgb_enable,
-	.disable = tegra_output_rgb_disable,
-	.setup_clock = tegra_output_rgb_setup_clock,
-	.check_mode = tegra_output_rgb_check_mode,
+static const struct drm_encoder_helper_funcs tegra_rgb_encoder_helper_funcs = {
+	.disable = tegra_rgb_encoder_disable,
+	.enable = tegra_rgb_encoder_enable,
+	.atomic_check = tegra_rgb_encoder_atomic_check,
 };
 
 int tegra_dc_rgb_probe(struct tegra_dc *dc)
@@ -202,86 +215,148 @@ int tegra_dc_rgb_probe(struct tegra_dc *dc)
 	rgb->clk = devm_clk_get(dc->dev, NULL);
 	if (IS_ERR(rgb->clk)) {
 		dev_err(dc->dev, "failed to get clock\n");
-		return PTR_ERR(rgb->clk);
+		err = PTR_ERR(rgb->clk);
+		goto remove;
 	}
 
 	rgb->clk_parent = devm_clk_get(dc->dev, "parent");
 	if (IS_ERR(rgb->clk_parent)) {
 		dev_err(dc->dev, "failed to get parent clock\n");
-		return PTR_ERR(rgb->clk_parent);
+		err = PTR_ERR(rgb->clk_parent);
+		goto remove;
 	}
 
 	err = clk_set_parent(rgb->clk, rgb->clk_parent);
 	if (err < 0) {
 		dev_err(dc->dev, "failed to set parent clock: %d\n", err);
-		return err;
+		goto remove;
+	}
+
+	rgb->pll_d_out0 = clk_get_sys(NULL, "pll_d_out0");
+	if (IS_ERR(rgb->pll_d_out0)) {
+		err = PTR_ERR(rgb->pll_d_out0);
+		dev_err(dc->dev, "failed to get pll_d_out0: %d\n", err);
+		goto remove;
+	}
+
+	if (dc->soc->has_pll_d2_out0) {
+		rgb->pll_d2_out0 = clk_get_sys(NULL, "pll_d2_out0");
+		if (IS_ERR(rgb->pll_d2_out0)) {
+			err = PTR_ERR(rgb->pll_d2_out0);
+			dev_err(dc->dev, "failed to get pll_d2_out0: %d\n", err);
+			goto put_pll;
+		}
 	}
 
 	dc->rgb = &rgb->output;
 
 	return 0;
+
+put_pll:
+	clk_put(rgb->pll_d_out0);
+remove:
+	tegra_output_remove(&rgb->output);
+	return err;
 }
 
-int tegra_dc_rgb_remove(struct tegra_dc *dc)
+void tegra_dc_rgb_remove(struct tegra_dc *dc)
 {
-	int err;
+	struct tegra_rgb *rgb;
 
 	if (!dc->rgb)
-		return 0;
+		return;
 
-	err = tegra_output_remove(dc->rgb);
-	if (err < 0)
-		return err;
+	rgb = to_rgb(dc->rgb);
+	clk_put(rgb->pll_d2_out0);
+	clk_put(rgb->pll_d_out0);
 
-	return 0;
+	tegra_output_remove(dc->rgb);
+	dc->rgb = NULL;
 }
 
 int tegra_dc_rgb_init(struct drm_device *drm, struct tegra_dc *dc)
 {
-	struct tegra_rgb *rgb = to_rgb(dc->rgb);
+	struct tegra_output *output = dc->rgb;
+	struct drm_connector *connector;
 	int err;
 
 	if (!dc->rgb)
 		return -ENODEV;
 
-	rgb->output.type = TEGRA_OUTPUT_RGB;
-	rgb->output.ops = &rgb_ops;
+	drm_simple_encoder_init(drm, &output->encoder, DRM_MODE_ENCODER_LVDS);
+	drm_encoder_helper_add(&output->encoder,
+			       &tegra_rgb_encoder_helper_funcs);
 
-	err = tegra_output_init(dc->base.dev, &rgb->output);
+	/*
+	 * Wrap directly-connected panel into DRM bridge in order to let
+	 * DRM core to handle panel for us.
+	 */
+	if (output->panel) {
+		output->bridge = devm_drm_panel_bridge_add(output->dev,
+							   output->panel);
+		if (IS_ERR(output->bridge)) {
+			dev_err(output->dev,
+				"failed to wrap panel into bridge: %pe\n",
+				output->bridge);
+			return PTR_ERR(output->bridge);
+		}
+
+		output->panel = NULL;
+	}
+
+	/*
+	 * Tegra devices that have LVDS panel utilize LVDS encoder bridge
+	 * for converting up to 28 LCD LVTTL lanes into 5/4 LVDS lanes that
+	 * go to display panel's receiver.
+	 *
+	 * Encoder usually have a power-down control which needs to be enabled
+	 * in order to transmit data to the panel.  Historically devices that
+	 * use an older device-tree version didn't model the bridge, assuming
+	 * that encoder is turned ON by default, while today's DRM allows us
+	 * to model LVDS encoder properly.
+	 *
+	 * Newer device-trees utilize LVDS encoder bridge, which provides
+	 * us with a connector and handles the display panel.
+	 *
+	 * For older device-trees we wrapped panel into the panel-bridge.
+	 */
+	if (output->bridge) {
+		err = drm_bridge_attach(&output->encoder, output->bridge,
+					NULL, DRM_BRIDGE_ATTACH_NO_CONNECTOR);
+		if (err)
+			return err;
+
+		connector = drm_bridge_connector_init(drm, &output->encoder);
+		if (IS_ERR(connector)) {
+			dev_err(output->dev,
+				"failed to initialize bridge connector: %pe\n",
+				connector);
+			return PTR_ERR(connector);
+		}
+
+		drm_connector_attach_encoder(connector, &output->encoder);
+	}
+
+	err = tegra_output_init(drm, output);
 	if (err < 0) {
-		dev_err(dc->dev, "output setup failed: %d\n", err);
+		dev_err(output->dev, "failed to initialize output: %d\n", err);
 		return err;
 	}
 
 	/*
-	 * By default, outputs can be associated with each display controller.
-	 * RGB outputs are an exception, so we make sure they can be attached
-	 * to only their parent display controller.
+	 * Other outputs can be attached to either display controller. The RGB
+	 * outputs are an exception and work only with their parent display
+	 * controller.
 	 */
-	rgb->output.encoder.possible_crtcs = drm_crtc_mask(&dc->base);
+	output->encoder.possible_crtcs = drm_crtc_mask(&dc->base);
 
 	return 0;
 }
 
 int tegra_dc_rgb_exit(struct tegra_dc *dc)
 {
-	if (dc->rgb) {
-		int err;
-
-		err = tegra_output_disable(dc->rgb);
-		if (err < 0) {
-			dev_err(dc->dev, "output failed to disable: %d\n", err);
-			return err;
-		}
-
-		err = tegra_output_exit(dc->rgb);
-		if (err < 0) {
-			dev_err(dc->dev, "output cleanup failed: %d\n", err);
-			return err;
-		}
-
-		dc->rgb = NULL;
-	}
+	if (dc->rgb)
+		tegra_output_exit(dc->rgb);
 
 	return 0;
 }

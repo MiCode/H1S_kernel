@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * include/asm-xtensa/setup.h
  *
@@ -12,7 +13,5 @@
 #define _XTENSA_SETUP_H
 
 #define COMMAND_LINE_SIZE	256
-
-extern void set_except_vector(int n, void *addr);
 
 #endif

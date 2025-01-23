@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * "security" table
  *
@@ -10,10 +11,6 @@
  * Copyright (C) 1999 Paul `Rusty' Russell & Michael J. Neuling
  * Copyright (C) 2000-2004 Netfilter Core Team <coreteam <at> netfilter.org>
  * Copyright (C) 2008 Red Hat, Inc., James Morris <jmorris <at> redhat.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #include <linux/module.h>
 #include <linux/netfilter_ipv4/ip_tables.h>
@@ -36,75 +33,65 @@ static const struct xt_table security_table = {
 	.priority	= NF_IP_PRI_SECURITY,
 };
 
-static unsigned int
-iptable_security_hook(const struct nf_hook_ops *ops, struct sk_buff *skb,
-		      const struct net_device *in,
-		      const struct net_device *out,
-		      int (*okfn)(struct sk_buff *))
-{
-	const struct net *net;
-
-	if (ops->hooknum == NF_INET_LOCAL_OUT &&
-	    (skb->len < sizeof(struct iphdr) ||
-	     ip_hdrlen(skb) < sizeof(struct iphdr)))
-		/* Somebody is playing with raw sockets. */
-		return NF_ACCEPT;
-
-	net = dev_net((in != NULL) ? in : out);
-	return ipt_do_table(skb, ops->hooknum, in, out,
-			    net->ipv4.iptable_security);
-}
-
 static struct nf_hook_ops *sectbl_ops __read_mostly;
 
-static int __net_init iptable_security_net_init(struct net *net)
+static int iptable_security_table_init(struct net *net)
 {
 	struct ipt_replace *repl;
+	int ret;
 
 	repl = ipt_alloc_initial_table(&security_table);
 	if (repl == NULL)
 		return -ENOMEM;
-	net->ipv4.iptable_security =
-		ipt_register_table(net, &security_table, repl);
+	ret = ipt_register_table(net, &security_table, repl, sectbl_ops);
 	kfree(repl);
-	return PTR_ERR_OR_ZERO(net->ipv4.iptable_security);
+	return ret;
+}
+
+static void __net_exit iptable_security_net_pre_exit(struct net *net)
+{
+	ipt_unregister_table_pre_exit(net, "security");
 }
 
 static void __net_exit iptable_security_net_exit(struct net *net)
 {
-	ipt_unregister_table(net, net->ipv4.iptable_security);
+	ipt_unregister_table_exit(net, "security");
 }
 
 static struct pernet_operations iptable_security_net_ops = {
-	.init = iptable_security_net_init,
+	.pre_exit = iptable_security_net_pre_exit,
 	.exit = iptable_security_net_exit,
 };
 
 static int __init iptable_security_init(void)
 {
-	int ret;
+	int ret = xt_register_template(&security_table,
+				       iptable_security_table_init);
 
-	ret = register_pernet_subsys(&iptable_security_net_ops);
-        if (ret < 0)
+	if (ret < 0)
 		return ret;
 
-	sectbl_ops = xt_hook_link(&security_table, iptable_security_hook);
+	sectbl_ops = xt_hook_ops_alloc(&security_table, ipt_do_table);
 	if (IS_ERR(sectbl_ops)) {
-		ret = PTR_ERR(sectbl_ops);
-		goto cleanup_table;
+		xt_unregister_template(&security_table);
+		return PTR_ERR(sectbl_ops);
 	}
 
-	return ret;
+	ret = register_pernet_subsys(&iptable_security_net_ops);
+	if (ret < 0) {
+		xt_unregister_template(&security_table);
+		kfree(sectbl_ops);
+		return ret;
+	}
 
-cleanup_table:
-	unregister_pernet_subsys(&iptable_security_net_ops);
 	return ret;
 }
 
 static void __exit iptable_security_fini(void)
 {
-	xt_hook_unlink(&security_table, sectbl_ops);
 	unregister_pernet_subsys(&iptable_security_net_ops);
+	kfree(sectbl_ops);
+	xt_unregister_template(&security_table);
 }
 
 module_init(iptable_security_init);

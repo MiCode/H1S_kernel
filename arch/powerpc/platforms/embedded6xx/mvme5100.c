@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Board setup routines for the Motorola/Emerson MVME5100.
  *
@@ -8,21 +9,15 @@
  *    Matt Porter, MontaVista Software Inc.
  *    Copyright 2001 MontaVista Software Inc.
  *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
- *
  * Author: Stephen Chivers <schivers@csc.com>
- *
  */
 
+#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 
 #include <asm/i8259.h>
 #include <asm/pci-bridge.h>
 #include <asm/mpic.h>
-#include <asm/prom.h>
 #include <mm/mmu_decl.h>
 #include <asm/udbg.h>
 
@@ -42,12 +37,12 @@
 static phys_addr_t pci_membase;
 static u_char *restart;
 
-static void mvme5100_8259_cascade(unsigned int irq, struct irq_desc *desc)
+static void mvme5100_8259_cascade(struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 	unsigned int cascade_irq = i8259_irq();
 
-	if (cascade_irq != NO_IRQ)
+	if (cascade_irq)
 		generic_handle_irq(cascade_irq);
 
 	chip->irq_eoi(&desc->irq_data);
@@ -84,7 +79,7 @@ static void __init mvme5100_pic_init(void)
 	}
 
 	cirq = irq_of_parse_and_map(cp, 0);
-	if (cirq == NO_IRQ) {
+	if (!cirq) {
 		pr_warn("mvme5100_pic_init: no cascade interrupt?\n");
 		return;
 	}
@@ -115,7 +110,7 @@ static int __init mvme5100_add_bridge(struct device_node *dev)
 	struct pci_controller	*hose;
 	unsigned short		devid;
 
-	pr_info("Adding PCI host bridge %s\n", dev->full_name);
+	pr_info("Adding PCI host bridge %pOF\n", dev);
 
 	bus_range = of_get_property(dev, "bus-range", &len);
 
@@ -149,7 +144,7 @@ static int __init mvme5100_add_bridge(struct device_node *dev)
 	return 0;
 }
 
-static struct of_device_id mvme5100_of_bus_ids[] __initdata = {
+static const struct of_device_id mvme5100_of_bus_ids[] __initconst = {
 	{ .compatible = "hawk-bridge", },
 	{},
 };
@@ -159,17 +154,19 @@ static struct of_device_id mvme5100_of_bus_ids[] __initdata = {
  */
 static void __init mvme5100_setup_arch(void)
 {
-	struct device_node *np;
-
 	if (ppc_md.progress)
 		ppc_md.progress("mvme5100_setup_arch()", 0);
-
-	for_each_compatible_node(np, "pci", "hawk-pci")
-		mvme5100_add_bridge(np);
 
 	restart = ioremap(BOARD_MODRST_REG, 4);
 }
 
+static void __init mvme5100_setup_pci(void)
+{
+	struct device_node *np;
+
+	for_each_compatible_node(np, "pci", "hawk-pci")
+		mvme5100_add_bridge(np);
+}
 
 static void mvme5100_show_cpuinfo(struct seq_file *m)
 {
@@ -177,7 +174,7 @@ static void mvme5100_show_cpuinfo(struct seq_file *m)
 	seq_puts(m, "Machine\t\t: MVME5100\n");
 }
 
-static void mvme5100_restart(char *cmd)
+static void __noreturn mvme5100_restart(char *cmd)
 {
 
 	local_irq_disable();
@@ -187,16 +184,6 @@ static void mvme5100_restart(char *cmd)
 
 	while (1)
 		;
-}
-
-/*
- * Called very early, device-tree isn't unflattened
- */
-static int __init mvme5100_probe(void)
-{
-	unsigned long root = of_get_flat_dt_root();
-
-	return of_flat_dt_is_compatible(root, "MVME5100");
 }
 
 static int __init probe_of_platform_devices(void)
@@ -210,12 +197,12 @@ machine_device_initcall(mvme5100, probe_of_platform_devices);
 
 define_machine(mvme5100) {
 	.name			= "MVME5100",
-	.probe			= mvme5100_probe,
+	.compatible		= "MVME5100",
 	.setup_arch		= mvme5100_setup_arch,
+	.discover_phbs		= mvme5100_setup_pci,
 	.init_IRQ		= mvme5100_pic_init,
 	.show_cpuinfo		= mvme5100_show_cpuinfo,
 	.get_irq		= mpic_get_irq,
 	.restart		= mvme5100_restart,
-	.calibrate_decr		= generic_calibrate_decr,
 	.progress		= udbg_progress,
 };

@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Portions
+ * Copyright (C) 2022 Intel Corporation
+ */
 #include <linux/ieee80211.h>
 #include <linux/export.h>
 #include <net/cfg80211.h>
@@ -77,6 +82,7 @@ const struct mesh_config default_mesh_config = {
 	.power_mode = NL80211_MESH_POWER_ACTIVE,
 	.dot11MeshAwakeWindowDuration = MESH_DEFAULT_AWAKE_WINDOW,
 	.plink_timeout = MESH_DEFAULT_PLINK_TIMEOUT,
+	.dot11MeshNolearn = false,
 };
 
 const struct mesh_setup default_mesh_setup = {
@@ -99,7 +105,6 @@ int __cfg80211_join_mesh(struct cfg80211_registered_device *rdev,
 			 const struct mesh_config *conf)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
-	u8 radar_detect_width = 0;
 	int err;
 
 	BUILD_BUG_ON(IEEE80211_MAX_SSID_LEN != IEEE80211_MAX_MESH_ID_LEN);
@@ -113,7 +118,7 @@ int __cfg80211_join_mesh(struct cfg80211_registered_device *rdev,
 	      setup->is_secure)
 		return -EOPNOTSUPP;
 
-	if (wdev->mesh_id_len)
+	if (wdev->u.mesh.id_len)
 		return -EALREADY;
 
 	if (!setup->mesh_id_len)
@@ -124,14 +129,14 @@ int __cfg80211_join_mesh(struct cfg80211_registered_device *rdev,
 
 	if (!setup->chandef.chan) {
 		/* if no channel explicitly given, use preset channel */
-		setup->chandef = wdev->preset_chandef;
+		setup->chandef = wdev->u.mesh.preset_chandef;
 	}
 
 	if (!setup->chandef.chan) {
 		/* if we don't have that either, use the first usable channel */
-		enum ieee80211_band band;
+		enum nl80211_band band;
 
-		for (band = 0; band < IEEE80211_NUM_BANDS; band++) {
+		for (band = 0; band < NUM_NL80211_BANDS; band++) {
 			struct ieee80211_supported_band *sband;
 			struct ieee80211_channel *chan;
 			int i;
@@ -167,51 +172,49 @@ int __cfg80211_join_mesh(struct cfg80211_registered_device *rdev,
 	 * basic rates
 	 */
 	if (!setup->basic_rates) {
-		enum nl80211_bss_scan_width scan_width;
 		struct ieee80211_supported_band *sband =
 				rdev->wiphy.bands[setup->chandef.chan->band];
-		scan_width = cfg80211_chandef_to_scan_width(&setup->chandef);
-		setup->basic_rates = ieee80211_mandatory_rates(sband,
-							       scan_width);
+
+		if (setup->chandef.chan->band == NL80211_BAND_2GHZ) {
+			int i;
+
+			/*
+			 * Older versions selected the mandatory rates for
+			 * 2.4 GHz as well, but were broken in that only
+			 * 1 Mbps was regarded as a mandatory rate. Keep
+			 * using just 1 Mbps as the default basic rate for
+			 * mesh to be interoperable with older versions.
+			 */
+			for (i = 0; i < sband->n_bitrates; i++) {
+				if (sband->bitrates[i].bitrate == 10) {
+					setup->basic_rates = BIT(i);
+					break;
+				}
+			}
+		} else {
+			setup->basic_rates = ieee80211_mandatory_rates(sband);
+		}
 	}
 
-	if (!cfg80211_reg_can_beacon(&rdev->wiphy, &setup->chandef))
-		return -EINVAL;
-
-	err = cfg80211_chandef_dfs_required(wdev->wiphy, &setup->chandef);
+	err = cfg80211_chandef_dfs_required(&rdev->wiphy,
+					    &setup->chandef,
+					    NL80211_IFTYPE_MESH_POINT);
 	if (err < 0)
 		return err;
-	if (err)
-		radar_detect_width = BIT(setup->chandef.width);
+	if (err > 0 && !setup->userspace_handles_dfs)
+		return -EINVAL;
 
-	err = cfg80211_can_use_iftype_chan(rdev, wdev, wdev->iftype,
-					   setup->chandef.chan,
-					   CHAN_MODE_SHARED,
-					   radar_detect_width);
-	if (err)
-		return err;
+	if (!cfg80211_reg_can_beacon(&rdev->wiphy, &setup->chandef,
+				     NL80211_IFTYPE_MESH_POINT))
+		return -EINVAL;
 
 	err = rdev_join_mesh(rdev, dev, conf, setup);
 	if (!err) {
-		memcpy(wdev->ssid, setup->mesh_id, setup->mesh_id_len);
-		wdev->mesh_id_len = setup->mesh_id_len;
-		wdev->channel = setup->chandef.chan;
+		memcpy(wdev->u.mesh.id, setup->mesh_id, setup->mesh_id_len);
+		wdev->u.mesh.id_len = setup->mesh_id_len;
+		wdev->u.mesh.chandef = setup->chandef;
+		wdev->u.mesh.beacon_interval = setup->beacon_interval;
 	}
-
-	return err;
-}
-
-int cfg80211_join_mesh(struct cfg80211_registered_device *rdev,
-		       struct net_device *dev,
-		       struct mesh_setup *setup,
-		       const struct mesh_config *conf)
-{
-	struct wireless_dev *wdev = dev->ieee80211_ptr;
-	int err;
-
-	wdev_lock(wdev);
-	err = __cfg80211_join_mesh(rdev, dev, setup, conf);
-	wdev_unlock(wdev);
 
 	return err;
 }
@@ -236,28 +239,23 @@ int cfg80211_set_mesh_channel(struct cfg80211_registered_device *rdev,
 		if (!netif_running(wdev->netdev))
 			return -ENETDOWN;
 
-		err = cfg80211_can_use_chan(rdev, wdev, chandef->chan,
-					    CHAN_MODE_SHARED);
-		if (err)
-			return err;
-
 		err = rdev_libertas_set_mesh_channel(rdev, wdev->netdev,
 						     chandef->chan);
 		if (!err)
-			wdev->channel = chandef->chan;
+			wdev->u.mesh.chandef = *chandef;
 
 		return err;
 	}
 
-	if (wdev->mesh_id_len)
+	if (wdev->u.mesh.id_len)
 		return -EBUSY;
 
-	wdev->preset_chandef = *chandef;
+	wdev->u.mesh.preset_chandef = *chandef;
 	return 0;
 }
 
-static int __cfg80211_leave_mesh(struct cfg80211_registered_device *rdev,
-				 struct net_device *dev)
+int __cfg80211_leave_mesh(struct cfg80211_registered_device *rdev,
+			  struct net_device *dev)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	int err;
@@ -270,14 +268,18 @@ static int __cfg80211_leave_mesh(struct cfg80211_registered_device *rdev,
 	if (!rdev->ops->leave_mesh)
 		return -EOPNOTSUPP;
 
-	if (!wdev->mesh_id_len)
+	if (!wdev->u.mesh.id_len)
 		return -ENOTCONN;
 
 	err = rdev_leave_mesh(rdev, dev);
 	if (!err) {
-		wdev->mesh_id_len = 0;
-		wdev->channel = NULL;
+		wdev->conn_owner_nlportid = 0;
+		wdev->u.mesh.id_len = 0;
+		wdev->u.mesh.beacon_interval = 0;
+		memset(&wdev->u.mesh.chandef, 0,
+		       sizeof(wdev->u.mesh.chandef));
 		rdev_set_qos_map(rdev, dev, NULL);
+		cfg80211_sched_dfs_chan_update(rdev);
 	}
 
 	return err;

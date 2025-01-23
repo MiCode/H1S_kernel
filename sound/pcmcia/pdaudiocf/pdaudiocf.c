@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for Sound Core PDAudioCF soundcard
  *
  * Copyright (c) 2003 by Jaroslav Kysela <perex@perex.cz>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <sound/core.h>
@@ -35,7 +22,6 @@
 MODULE_AUTHOR("Jaroslav Kysela <perex@perex.cz>");
 MODULE_DESCRIPTION("Sound Core " CARD_NAME);
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("{{Sound Core," CARD_NAME "}}");
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
@@ -61,6 +47,7 @@ static void snd_pdacf_detach(struct pcmcia_device *p_dev);
 
 static void pdacf_release(struct pcmcia_device *link)
 {
+	free_irq(link->irq, link->priv);
 	pcmcia_disable_device(link);
 }
 
@@ -94,7 +81,7 @@ static int snd_pdacf_probe(struct pcmcia_device *link)
 	int i, err;
 	struct snd_pdacf *pdacf;
 	struct snd_card *card;
-	static struct snd_device_ops ops = {
+	static const struct snd_device_ops ops = {
 		.dev_free =	snd_pdacf_dev_free,
 	};
 
@@ -112,7 +99,8 @@ static int snd_pdacf_probe(struct pcmcia_device *link)
 		return -ENODEV; /* disabled explicitly */
 
 	/* ok, create a card instance */
-	err = snd_card_create(index[i], id[i], THIS_MODULE, 0, &card);
+	err = snd_card_new(&link->dev, index[i], id[i], THIS_MODULE,
+			   0, &card);
 	if (err < 0) {
 		snd_printk(KERN_ERR "pdacf: cannot create a card instance\n");
 		return err;
@@ -130,8 +118,6 @@ static int snd_pdacf_probe(struct pcmcia_device *link)
 		snd_card_free(card);
 		return err;
 	}
-
-	snd_card_set_dev(card, &link->dev);
 
 	pdacf->index = i;
 	card_list[i] = card;
@@ -152,6 +138,7 @@ static int snd_pdacf_probe(struct pcmcia_device *link)
 
 /**
  * snd_pdacf_assign_resources - initialize the hardware and card instance.
+ * @pdacf: context
  * @port: i/o port for the card
  * @irq: irq number for the card
  *
@@ -183,7 +170,8 @@ static int snd_pdacf_assign_resources(struct snd_pdacf *pdacf, int port, int irq
 	if (err < 0)
 		return err;
 
-	if ((err = snd_card_register(card)) < 0)
+	err = snd_card_register(card);
+	if (err < 0)
 		return err;
 
 	return 0;
@@ -221,11 +209,13 @@ static int pdacf_config(struct pcmcia_device *link)
 
 	ret = pcmcia_request_io(link);
 	if (ret)
-		goto failed;
+		goto failed_preirq;
 
-	ret = pcmcia_request_irq(link, pdacf_interrupt);
+	ret = request_threaded_irq(link->irq, pdacf_interrupt,
+				   pdacf_threaded_irq,
+				   IRQF_SHARED, link->devname, link->priv);
 	if (ret)
-		goto failed;
+		goto failed_preirq;
 
 	ret = pcmcia_enable_device(link);
 	if (ret)
@@ -235,9 +225,12 @@ static int pdacf_config(struct pcmcia_device *link)
 					link->irq) < 0)
 		goto failed;
 
+	pdacf->card->sync_irq = link->irq;
 	return 0;
 
-failed:
+ failed:
+	free_irq(link->irq, link->priv);
+failed_preirq:
 	pcmcia_disable_device(link);
 	return -ENODEV;
 }

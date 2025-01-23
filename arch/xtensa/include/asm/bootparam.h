@@ -34,26 +34,17 @@
 typedef struct bp_tag {
 	unsigned short id;	/* tag id */
 	unsigned short size;	/* size of this record excluding the structure*/
-	unsigned long data[0];	/* data */
+	unsigned long data[];	/* data */
 } bp_tag_t;
 
-typedef struct meminfo {
+struct bp_meminfo {
 	unsigned long type;
 	unsigned long start;
 	unsigned long end;
-} meminfo_t;
-
-#define SYSMEM_BANKS_MAX 5
+};
 
 #define MEMORY_TYPE_CONVENTIONAL	0x1000
 #define MEMORY_TYPE_NONE		0x2000
-
-typedef struct sysmem_info {
-	int nr_banks;
-	meminfo_t bank[SYSMEM_BANKS_MAX];
-} sysmem_info_t;
-
-extern sysmem_info_t sysmem;
 
 #endif
 #endif

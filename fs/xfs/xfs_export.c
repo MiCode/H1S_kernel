@@ -1,36 +1,21 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2004-2005 Silicon Graphics, Inc.
  * All Rights Reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it would be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write the Free Software Foundation,
- * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #include "xfs.h"
+#include "xfs_shared.h"
 #include "xfs_format.h"
 #include "xfs_log_format.h"
 #include "xfs_trans_resv.h"
-#include "xfs_sb.h"
-#include "xfs_ag.h"
 #include "xfs_mount.h"
-#include "xfs_da_format.h"
 #include "xfs_dir2.h"
 #include "xfs_export.h"
 #include "xfs_inode.h"
 #include "xfs_trans.h"
 #include "xfs_inode_item.h"
-#include "xfs_trace.h"
 #include "xfs_icache.h"
-#include "xfs_log.h"
+#include "xfs_pnfs.h"
 
 /*
  * Note that we only accept fileids which are long enough rather than allow
@@ -59,6 +44,7 @@ xfs_fs_encode_fh(
 	int		*max_len,
 	struct inode	*parent)
 {
+	struct xfs_mount	*mp = XFS_M(inode->i_sb);
 	struct fid		*fid = (struct fid *)fh;
 	struct xfs_fid64	*fid64 = (struct xfs_fid64 *)fh;
 	int			fileid_type;
@@ -71,15 +57,14 @@ xfs_fs_encode_fh(
 		fileid_type = FILEID_INO32_GEN_PARENT;
 
 	/*
-	 * If the the filesystem may contain 64bit inode numbers, we need
+	 * If the filesystem may contain 64bit inode numbers, we need
 	 * to use larger file handles that can represent them.
 	 *
 	 * While we only allocate inodes that do not fit into 32 bits any
 	 * large enough filesystem may contain them, thus the slightly
 	 * confusing looking conditional below.
 	 */
-	if (!(XFS_M(inode->i_sb)->m_flags & XFS_MOUNT_SMALL_INUMS) ||
-	    (XFS_M(inode->i_sb)->m_flags & XFS_MOUNT_32BITINODES))
+	if (!xfs_has_small_inums(mp) || xfs_is_inode32(mp))
 		fileid_type |= XFS_FILEID_TYPE_64FLAG;
 
 	/*
@@ -99,7 +84,7 @@ xfs_fs_encode_fh(
 	case FILEID_INO32_GEN_PARENT:
 		fid->i32.parent_ino = XFS_I(parent)->i_ino;
 		fid->i32.parent_gen = parent->i_generation;
-		/*FALLTHRU*/
+		fallthrough;
 	case FILEID_INO32_GEN:
 		fid->i32.ino = XFS_I(inode)->i_ino;
 		fid->i32.gen = inode->i_generation;
@@ -107,7 +92,7 @@ xfs_fs_encode_fh(
 	case FILEID_INO32_GEN_PARENT | XFS_FILEID_TYPE_64FLAG:
 		fid64->parent_ino = XFS_I(parent)->i_ino;
 		fid64->parent_gen = parent->i_generation;
-		/*FALLTHRU*/
+		fallthrough;
 	case FILEID_INO32_GEN | XFS_FILEID_TYPE_64FLAG:
 		fid64->ino = XFS_I(inode)->i_ino;
 		fid64->gen = inode->i_generation;
@@ -122,7 +107,7 @@ xfs_nfs_get_inode(
 	struct super_block	*sb,
 	u64			ino,
 	u32			generation)
- {
+{
  	xfs_mount_t		*mp = XFS_M(sb);
 	xfs_inode_t		*ip;
 	int			error;
@@ -140,20 +125,43 @@ xfs_nfs_get_inode(
 	 */
 	error = xfs_iget(mp, NULL, ino, XFS_IGET_UNTRUSTED, 0, &ip);
 	if (error) {
+
 		/*
 		 * EINVAL means the inode cluster doesn't exist anymore.
-		 * This implies the filehandle is stale, so we should
-		 * translate it here.
+		 * EFSCORRUPTED means the metadata pointing to the inode cluster
+		 * or the inode cluster itself is corrupt.  This implies the
+		 * filehandle is stale, so we should translate it here.
 		 * We don't use ESTALE directly down the chain to not
 		 * confuse applications using bulkstat that expect EINVAL.
 		 */
-		if (error == EINVAL || error == ENOENT)
-			error = ESTALE;
-		return ERR_PTR(-error);
+		switch (error) {
+		case -EINVAL:
+		case -ENOENT:
+		case -EFSCORRUPTED:
+			error = -ESTALE;
+			break;
+		default:
+			break;
+		}
+		return ERR_PTR(error);
 	}
 
-	if (ip->i_d.di_gen != generation) {
-		IRELE(ip);
+	/*
+	 * Reload the incore unlinked list to avoid failure in inodegc.
+	 * Use an unlocked check here because unrecovered unlinked inodes
+	 * should be somewhat rare.
+	 */
+	if (xfs_inode_unlinked_incomplete(ip)) {
+		error = xfs_inode_reload_unlinked(ip);
+		if (error) {
+			xfs_force_shutdown(mp, SHUTDOWN_CORRUPT_INCORE);
+			xfs_irele(ip);
+			return ERR_PTR(error);
+		}
+	}
+
+	if (VFS_I(ip)->i_generation != generation) {
+		xfs_irele(ip);
 		return ERR_PTR(-ESTALE);
 	}
 
@@ -215,9 +223,9 @@ xfs_fs_get_parent(
 	int			error;
 	struct xfs_inode	*cip;
 
-	error = xfs_lookup(XFS_I(child->d_inode), &xfs_name_dotdot, &cip, NULL);
+	error = xfs_lookup(XFS_I(d_inode(child)), &xfs_name_dotdot, &cip, NULL);
 	if (unlikely(error))
-		return ERR_PTR(-error);
+		return ERR_PTR(error);
 
 	return d_obtain_alias(VFS_I(cip));
 }
@@ -226,18 +234,7 @@ STATIC int
 xfs_fs_nfs_commit_metadata(
 	struct inode		*inode)
 {
-	struct xfs_inode	*ip = XFS_I(inode);
-	struct xfs_mount	*mp = ip->i_mount;
-	xfs_lsn_t		lsn = 0;
-
-	xfs_ilock(ip, XFS_ILOCK_SHARED);
-	if (xfs_ipincount(ip))
-		lsn = ip->i_itemp->ili_last_lsn;
-	xfs_iunlock(ip, XFS_ILOCK_SHARED);
-
-	if (!lsn)
-		return 0;
-	return _xfs_log_force_lsn(mp, lsn, XFS_LOG_SYNC, NULL);
+	return xfs_log_force_inode(XFS_I(inode));
 }
 
 const struct export_operations xfs_export_operations = {
@@ -246,4 +243,9 @@ const struct export_operations xfs_export_operations = {
 	.fh_to_parent		= xfs_fs_fh_to_parent,
 	.get_parent		= xfs_fs_get_parent,
 	.commit_metadata	= xfs_fs_nfs_commit_metadata,
+#ifdef CONFIG_EXPORTFS_BLOCK_OPS
+	.get_uuid		= xfs_fs_get_uuid,
+	.map_blocks		= xfs_fs_map_blocks,
+	.commit_blocks		= xfs_fs_commit_blocks,
+#endif
 };

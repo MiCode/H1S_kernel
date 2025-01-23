@@ -1,10 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * sata_inic162x.c - Driver for Initio 162x SATA controllers
  *
  * Copyright 2006  SUSE Linux Products GmbH
  * Copyright 2006  Tejun Heo <teheo@novell.com>
- *
- * This file is released under GPL v2.
  *
  * **** WARNING ****
  *
@@ -146,7 +145,7 @@ enum {
 
 	/* PORT_IDMA_CTL bits */
 	IDMA_CTL_RST_ATA	= (1 << 2),  /* hardreset ATA bus */
-	IDMA_CTL_RST_IDMA	= (1 << 5),  /* reset IDMA machinary */
+	IDMA_CTL_RST_IDMA	= (1 << 5),  /* reset IDMA machinery */
 	IDMA_CTL_GO		= (1 << 7),  /* IDMA mode go */
 	IDMA_CTL_ATA_NIEN	= (1 << 8),  /* ATA IRQ disable */
 
@@ -243,10 +242,17 @@ struct inic_port_priv {
 	dma_addr_t	cpb_tbl_dma;
 };
 
-static struct scsi_host_template inic_sht = {
+static const struct scsi_host_template inic_sht = {
 	ATA_BASE_SHT(DRV_NAME),
-	.sg_tablesize	= LIBATA_MAX_PRD,	/* maybe it can be larger? */
-	.dma_boundary	= INIC_DMA_BOUNDARY,
+	.sg_tablesize		= LIBATA_MAX_PRD, /* maybe it can be larger? */
+
+	/*
+	 * This controller is braindamaged.  dma_boundary is 0xffff like others
+	 * but it will lock up the whole machine HARD if 65536 byte PRD entry
+	 * is fed.  Reduce maximum segment size.
+	 */
+	.dma_boundary		= INIC_DMA_BOUNDARY,
+	.max_segment_size	= 65536 - 512,
 };
 
 static const int scr_map[] = {
@@ -472,7 +478,7 @@ static void inic_fill_sg(struct inic_prd *prd, struct ata_queued_cmd *qc)
 	prd[-1].flags |= PRD_END;
 }
 
-static void inic_qc_prep(struct ata_queued_cmd *qc)
+static enum ata_completion_errors inic_qc_prep(struct ata_queued_cmd *qc)
 {
 	struct inic_port_priv *pp = qc->ap->private_data;
 	struct inic_pkt *pkt = pp->pkt;
@@ -481,8 +487,6 @@ static void inic_qc_prep(struct ata_queued_cmd *qc)
 	bool is_atapi = ata_is_atapi(qc->tf.protocol);
 	bool is_data = ata_is_data(qc->tf.protocol);
 	unsigned int cdb_len = 0;
-
-	VPRINTK("ENTER\n");
 
 	if (is_atapi)
 		cdb_len = qc->dev->cdb_len;
@@ -532,6 +536,8 @@ static void inic_qc_prep(struct ata_queued_cmd *qc)
 		inic_fill_sg(prd, qc);
 
 	pp->cpb_tbl[0] = pp->pkt_dma;
+
+	return AC_ERR_OK;
 }
 
 static unsigned int inic_qc_issue(struct ata_queued_cmd *qc)
@@ -551,16 +557,16 @@ static void inic_tf_read(struct ata_port *ap, struct ata_taskfile *tf)
 {
 	void __iomem *port_base = inic_port_base(ap);
 
-	tf->feature	= readb(port_base + PORT_TF_FEATURE);
+	tf->error	= readb(port_base + PORT_TF_FEATURE);
 	tf->nsect	= readb(port_base + PORT_TF_NSECT);
 	tf->lbal	= readb(port_base + PORT_TF_LBAL);
 	tf->lbam	= readb(port_base + PORT_TF_LBAM);
 	tf->lbah	= readb(port_base + PORT_TF_LBAH);
 	tf->device	= readb(port_base + PORT_TF_DEVICE);
-	tf->command	= readb(port_base + PORT_TF_COMMAND);
+	tf->status	= readb(port_base + PORT_TF_COMMAND);
 }
 
-static bool inic_qc_fill_rtf(struct ata_queued_cmd *qc)
+static void inic_qc_fill_rtf(struct ata_queued_cmd *qc)
 {
 	struct ata_taskfile *rtf = &qc->result_tf;
 	struct ata_taskfile tf;
@@ -574,12 +580,10 @@ static bool inic_qc_fill_rtf(struct ata_queued_cmd *qc)
 	 */
 	inic_tf_read(qc->ap, &tf);
 
-	if (!(tf.command & ATA_ERR))
-		return false;
-
-	rtf->command = tf.command;
-	rtf->feature = tf.feature;
-	return true;
+	if (tf.status & ATA_ERR) {
+		rtf->status = tf.status;
+		rtf->error = tf.error;
+	}
 }
 
 static void inic_freeze(struct ata_port *ap)
@@ -615,7 +619,7 @@ static int inic_hardreset(struct ata_link *link, unsigned int *class,
 	struct ata_port *ap = link->ap;
 	void __iomem *port_base = inic_port_base(ap);
 	void __iomem *idma_ctl = port_base + PORT_IDMA_CTL;
-	const unsigned long *timing = sata_ehc_deb_timing(&link->eh_context);
+	const unsigned int *timing = sata_ehc_deb_timing(&link->eh_context);
 	int rc;
 
 	/* hammer it into sane state */
@@ -649,7 +653,7 @@ static int inic_hardreset(struct ata_link *link, unsigned int *class,
 		}
 
 		inic_tf_read(ap, &tf);
-		*class = ata_dev_classify(&tf);
+		*class = ata_port_classify(ap, &tf);
 	}
 
 	return 0;
@@ -666,7 +670,7 @@ static void inic_error_handler(struct ata_port *ap)
 static void inic_post_internal_cmd(struct ata_queued_cmd *qc)
 {
 	/* make DMA engine forget about the failed command */
-	if (qc->flags & ATA_QCFLAG_FAILED)
+	if (qc->flags & ATA_QCFLAG_EH)
 		inic_reset_port(inic_port_base(qc->ap));
 }
 
@@ -737,7 +741,7 @@ static struct ata_port_operations inic_port_ops = {
 	.port_start		= inic_port_start,
 };
 
-static struct ata_port_info inic_port_info = {
+static const struct ata_port_info inic_port_info = {
 	.flags			= ATA_FLAG_SATA | ATA_FLAG_PIO_DMA,
 	.pio_mask		= ATA_PIO4,
 	.mwdma_mask		= ATA_MWDMA2,
@@ -785,7 +789,7 @@ static int init_controller(void __iomem *mmio_base, u16 hctl)
 	return 0;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int inic_pci_device_resume(struct pci_dev *pdev)
 {
 	struct ata_host *host = pci_get_drvdata(pdev);
@@ -856,26 +860,9 @@ static int inic_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 
 	/* Set dma_mask.  This devices doesn't support 64bit addressing. */
-	rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+	rc = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
 	if (rc) {
 		dev_err(&pdev->dev, "32-bit DMA enable failed\n");
-		return rc;
-	}
-
-	rc = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
-	if (rc) {
-		dev_err(&pdev->dev, "32-bit consistent DMA enable failed\n");
-		return rc;
-	}
-
-	/*
-	 * This controller is braindamaged.  dma_boundary is 0xffff
-	 * like others but it will lock up the whole machine HARD if
-	 * 65536 byte PRD entry is fed. Reduce maximum segment size.
-	 */
-	rc = pci_set_dma_max_seg_size(pdev, 65536 - 512);
-	if (rc) {
-		dev_err(&pdev->dev, "failed to set the maximum segment size\n");
 		return rc;
 	}
 
@@ -898,7 +885,7 @@ static const struct pci_device_id inic_pci_tbl[] = {
 static struct pci_driver inic_pci_driver = {
 	.name 		= DRV_NAME,
 	.id_table	= inic_pci_tbl,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= inic_pci_device_resume,
 #endif

@@ -1,18 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2005-2010 Brocade Communications Systems, Inc.
+ * Copyright (c) 2005-2014 Brocade Communications Systems, Inc.
+ * Copyright (c) 2014- QLogic Corporation.
  * All rights reserved
- * www.brocade.com
+ * www.qlogic.com
  *
- * Linux driver for Brocade Fibre Channel Host Bus Adapter.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License (GPL) Version 2 as
- * published by the Free Software Foundation
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
+ * Linux driver for QLogic BR-series Fibre Channel Host Bus Adapter.
  */
 #ifndef __BFA_H__
 #define __BFA_H__
@@ -27,7 +20,6 @@
 struct bfa_s;
 
 typedef void (*bfa_isr_func_t) (struct bfa_s *bfa, struct bfi_msg_s *m);
-typedef void (*bfa_cb_cbfn_status_t) (void *cbarg, bfa_status_t status);
 
 /*
  * Interrupt message handlers
@@ -61,8 +53,7 @@ void bfa_isr_unhandled(struct bfa_s *bfa, struct bfi_msg_s *m);
 			((__bfa)->iocfc.cfg.drvcfg.num_reqq_elems - 1); \
 		writel((__bfa)->iocfc.req_cq_pi[__reqq],		\
 			(__bfa)->iocfc.bfa_regs.cpe_q_pi[__reqq]);	\
-		mmiowb();      \
-	} while (0)
+		} while (0)
 
 #define bfa_rspq_pi(__bfa, __rspq)					\
 	(*(u32 *)((__bfa)->iocfc.rsp_cq_shadow_pi[__rspq].kva))
@@ -440,6 +431,14 @@ struct bfa_cb_pending_q_s {
 #define bfa_pending_q_init(__qe, __cbfn, __cbarg, __data) do {	\
 	bfa_q_qe_init(&((__qe)->hcb_qe.qe));			\
 	(__qe)->hcb_qe.cbfn = (__cbfn);				\
+	(__qe)->hcb_qe.cbarg = (__cbarg);			\
+	(__qe)->hcb_qe.pre_rmv = BFA_TRUE;			\
+	(__qe)->data = (__data);				\
+} while (0)
+
+#define bfa_pending_q_init_status(__qe, __cbfn, __cbarg, __data) do {	\
+	bfa_q_qe_init(&((__qe)->hcb_qe.qe));			\
+	(__qe)->hcb_qe.cbfn_status = (__cbfn);			\
 	(__qe)->hcb_qe.cbarg = (__cbarg);			\
 	(__qe)->hcb_qe.pre_rmv = BFA_TRUE;			\
 	(__qe)->data = (__data);				\

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * USB ConnectTech WhiteHEAT driver
  *
@@ -7,12 +8,7 @@
  *      Copyright (C) 1999, 2000
  *          Greg Kroah-Hartman (greg@kroah.com)
  *
- *      This program is free software; you can redistribute it and/or modify
- *      it under the terms of the GNU General Public License as published by
- *      the Free Software Foundation; either version 2 of the License, or
- *      (at your option) any later version.
- *
- * See Documentation/usb/usb-serial.txt for more information on using this
+ * See Documentation/usb/usb-serial.rst for more information on using this
  * driver
  *
  */
@@ -91,7 +87,7 @@ struct whiteheat_simple {
 
 struct whiteheat_port_settings {
 	__u8	port;		/* port number (1 to N) */
-	__u32	baud;		/* any value 7 - 460800, firmware calculates
+	__le32	baud;		/* any value 7 - 460800, firmware calculates
 				   best fit; arrives little endian */
 	__u8	bits;		/* 5, 6, 7, or 8 */
 	__u8	stop;		/* 1 or 2, default 1 (2 = 1.5 if bits = 5) */

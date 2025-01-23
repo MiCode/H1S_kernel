@@ -18,7 +18,6 @@
 
 #include <linux/nl80211.h>
 #include <linux/pci.h>
-#include <linux/pci-aspm.h>
 #include <linux/etherdevice.h>
 #include <linux/module.h>
 #include "../ath.h"
@@ -28,7 +27,7 @@
 #include "reg.h"
 
 /* Known PCI ids */
-static DEFINE_PCI_DEVICE_TABLE(ath5k_pci_id_table) = {
+static const struct pci_device_id ath5k_pci_id_table[] = {
 	{ PCI_VDEVICE(ATHEROS, 0x0207) }, /* 5210 early */
 	{ PCI_VDEVICE(ATHEROS, 0x0007) }, /* 5210 */
 	{ PCI_VDEVICE(ATHEROS, 0x0011) }, /* 5311 - this is on AHB bus !*/
@@ -192,7 +191,7 @@ ath5k_pci_probe(struct pci_dev *pdev,
 	}
 
 	/* XXX 32-bit addressing only */
-	ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+	ret = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
 	if (ret) {
 		dev_err(&pdev->dev, "32-bit DMA not available\n");
 		goto err_dis;
@@ -301,8 +300,7 @@ ath5k_pci_remove(struct pci_dev *pdev)
 #ifdef CONFIG_PM_SLEEP
 static int ath5k_pci_suspend(struct device *dev)
 {
-	struct pci_dev *pdev = to_pci_dev(dev);
-	struct ieee80211_hw *hw = pci_get_drvdata(pdev);
+	struct ieee80211_hw *hw = dev_get_drvdata(dev);
 	struct ath5k_hw *ah = hw->priv;
 
 	ath5k_led_off(ah);

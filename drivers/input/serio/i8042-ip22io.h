@@ -1,14 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef _I8042_IP22_H
 #define _I8042_IP22_H
 
 #include <asm/sgi/ioc.h>
 #include <asm/sgi/ip22.h>
 
-/*
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- */
 
 /*
  * Names.
@@ -61,7 +57,7 @@ static inline int i8042_platform_init(void)
 		return -EBUSY;
 #endif
 
-	i8042_reset = 1;
+	i8042_reset = I8042_RESET_ALWAYS;
 
 	return 0;
 }

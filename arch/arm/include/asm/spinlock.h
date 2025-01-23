@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SPINLOCK_H
 #define __ASM_SPINLOCK_H
 
@@ -6,6 +7,8 @@
 #endif
 
 #include <linux/prefetch.h>
+#include <asm/barrier.h>
+#include <asm/processor.h>
 
 /*
  * sev and wfe are ARMv6K extensions.  Uniprocessor ARMv6 may not have the K
@@ -19,7 +22,7 @@
  * assembler to insert a extra (16-bit) IT instruction, depending on the
  * presence or absence of neighbouring conditional instructions.
  *
- * To avoid this unpredictableness, an approprite IT is inserted explicitly:
+ * To avoid this unpredictability, an appropriate IT is inserted explicitly:
  * the assembler won't change IT instructions which are explicitly present
  * in the input.
  */
@@ -37,18 +40,9 @@
 
 static inline void dsb_sev(void)
 {
-#if __LINUX_ARM_ARCH__ >= 7
-	__asm__ __volatile__ (
-		"dsb ishst\n"
-		SEV
-	);
-#else
-	__asm__ __volatile__ (
-		"mcr p15, 0, %0, c7, c10, 4\n"
-		SEV
-		: : "r" (0)
-	);
-#endif
+
+	dsb(ishst);
+	__asm__(SEV);
 }
 
 /*
@@ -58,11 +52,6 @@ static inline void dsb_sev(void)
  * release it, because V6 CPUs are assumed to have weakly ordered
  * memory.
  */
-
-#define arch_spin_unlock_wait(lock) \
-	do { while (arch_spin_is_locked(lock)) cpu_relax(); } while (0)
-
-#define arch_spin_lock_flags(lock, flags) arch_spin_lock(lock)
 
 static inline void arch_spin_lock(arch_spinlock_t *lock)
 {
@@ -83,7 +72,7 @@ static inline void arch_spin_lock(arch_spinlock_t *lock)
 
 	while (lockval.tickets.next != lockval.tickets.owner) {
 		wfe();
-		lockval.tickets.owner = ACCESS_ONCE(lock->tickets.owner);
+		lockval.tickets.owner = READ_ONCE(lock->tickets.owner);
 	}
 
 	smp_mb();
@@ -129,12 +118,12 @@ static inline int arch_spin_value_unlocked(arch_spinlock_t lock)
 
 static inline int arch_spin_is_locked(arch_spinlock_t *lock)
 {
-	return !arch_spin_value_unlocked(ACCESS_ONCE(*lock));
+	return !arch_spin_value_unlocked(READ_ONCE(*lock));
 }
 
 static inline int arch_spin_is_contended(arch_spinlock_t *lock)
 {
-	struct __raw_tickets tickets = ACCESS_ONCE(lock->tickets);
+	struct __raw_tickets tickets = READ_ONCE(lock->tickets);
 	return (tickets.next - tickets.owner) > 1;
 }
 #define arch_spin_is_contended	arch_spin_is_contended
@@ -203,9 +192,6 @@ static inline void arch_write_unlock(arch_rwlock_t *rw)
 	dsb_sev();
 }
 
-/* write_can_lock - would write_trylock() succeed? */
-#define arch_write_can_lock(x)		(ACCESS_ONCE((x)->lock) == 0)
-
 /*
  * Read locks are a bit more hairy:
  *  - Exclusively load the lock value.
@@ -224,11 +210,12 @@ static inline void arch_read_lock(arch_rwlock_t *rw)
 
 	prefetchw(&rw->lock);
 	__asm__ __volatile__(
+"	.syntax unified\n"
 "1:	ldrex	%0, [%2]\n"
 "	adds	%0, %0, #1\n"
 "	strexpl	%1, %0, [%2]\n"
 	WFE("mi")
-"	rsbpls	%0, %1, #0\n"
+"	rsbspl	%0, %1, #0\n"
 "	bmi	1b"
 	: "=&r" (tmp), "=&r" (tmp2)
 	: "r" (&rw->lock)
@@ -282,15 +269,5 @@ static inline int arch_read_trylock(arch_rwlock_t *rw)
 		return 0;
 	}
 }
-
-/* read_can_lock - would read_trylock() succeed? */
-#define arch_read_can_lock(x)		(ACCESS_ONCE((x)->lock) < 0x80000000)
-
-#define arch_read_lock_flags(lock, flags) arch_read_lock(lock)
-#define arch_write_lock_flags(lock, flags) arch_write_lock(lock)
-
-#define arch_spin_relax(lock)	cpu_relax()
-#define arch_read_relax(lock)	cpu_relax()
-#define arch_write_relax(lock)	cpu_relax()
 
 #endif /* __ASM_SPINLOCK_H */

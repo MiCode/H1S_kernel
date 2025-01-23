@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * saa717x - Philips SAA717xHL video decoder driver
  *
@@ -14,20 +15,6 @@
  * Note: this is a reversed engineered driver based on captures from
  * the I2C bus under Windows. This chip is very similar to the saa7134,
  * though. Unfortunately, this driver is currently only working for NTSC.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
@@ -86,13 +73,13 @@ static inline struct v4l2_subdev *to_sd(struct v4l2_ctrl *ctrl)
 /* ----------------------------------------------------------------------- */
 
 /* for audio mode */
-#define TUNER_AUDIO_MONO   	0  /* LL */
-#define TUNER_AUDIO_STEREO 	1  /* LR */
-#define TUNER_AUDIO_LANG1  	2  /* LL */
-#define TUNER_AUDIO_LANG2  	3  /* RR */
+#define TUNER_AUDIO_MONO	0  /* LL */
+#define TUNER_AUDIO_STEREO	1  /* LR */
+#define TUNER_AUDIO_LANG1	2  /* LL */
+#define TUNER_AUDIO_LANG2	3  /* RR */
 
-#define SAA717X_NTSC_WIDTH   	(704)
-#define SAA717X_NTSC_HEIGHT  	(480)
+#define SAA717X_NTSC_WIDTH	(704)
+#define SAA717X_NTSC_HEIGHT	(480)
 
 /* ----------------------------------------------------------------------- */
 
@@ -152,9 +139,9 @@ static u32 saa717x_read(struct v4l2_subdev *sd, u32 reg)
 	i2c_transfer(adap, msgs, 2);
 
 	if (fw_addr)
-		value = (mm2[2] & 0xff)  | ((mm2[1] & 0xff) >> 8) | ((mm2[0] & 0xff) >> 16);
+		value = (mm2[2] << 16)  | (mm2[1] << 8) | mm2[0];
 	else
-		value = mm2[0] & 0xff;
+		value = mm2[0];
 
 	v4l2_dbg(2, debug, sd, "read:  reg 0x%03x=0x%08x\n", reg, value);
 	return value;
@@ -848,7 +835,7 @@ static void set_h_prescale(struct v4l2_subdev *sd,
 	if (i == count)
 		return;
 
-	/* horizonal prescaling */
+	/* horizontal prescaling */
 	saa717x_write(sd, 0x60 + task_shift, vals[i].xpsc);
 	/* accumulation length */
 	saa717x_write(sd, 0x61 + task_shift, vals[i].xacl);
@@ -992,13 +979,16 @@ static int saa717x_s_register(struct v4l2_subdev *sd, const struct v4l2_dbg_regi
 }
 #endif
 
-static int saa717x_s_mbus_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *fmt)
+static int saa717x_set_fmt(struct v4l2_subdev *sd,
+		struct v4l2_subdev_state *sd_state,
+		struct v4l2_subdev_format *format)
 {
+	struct v4l2_mbus_framefmt *fmt = &format->format;
 	int prescale, h_scale, v_scale;
 
 	v4l2_dbg(1, debug, sd, "decoder set size\n");
 
-	if (fmt->code != V4L2_MBUS_FMT_FIXED)
+	if (format->pad || fmt->code != MEDIA_BUS_FMT_FIXED)
 		return -EINVAL;
 
 	/* FIXME need better bounds checking here */
@@ -1009,6 +999,9 @@ static int saa717x_s_mbus_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt 
 
 	fmt->field = V4L2_FIELD_INTERLACED;
 	fmt->colorspace = V4L2_COLORSPACE_SMPTE170M;
+
+	if (format->which == V4L2_SUBDEV_FORMAT_TRY)
+		return 0;
 
 	/* scaling setting */
 	/* NTSC and interlace only */
@@ -1067,7 +1060,7 @@ static int saa717x_s_std(struct v4l2_subdev *sd, v4l2_std_id std)
 	struct saa717x_state *decoder = to_state(sd);
 
 	v4l2_dbg(1, debug, sd, "decoder set norm ");
-	v4l2_dbg(1, debug, sd, "(not yet implementd)\n");
+	v4l2_dbg(1, debug, sd, "(not yet implemented)\n");
 
 	decoder->radio = 0;
 	decoder->std = std;
@@ -1198,14 +1191,6 @@ static const struct v4l2_subdev_core_ops saa717x_core_ops = {
 	.g_register = saa717x_g_register,
 	.s_register = saa717x_s_register,
 #endif
-	.s_std = saa717x_s_std,
-	.g_ext_ctrls = v4l2_subdev_g_ext_ctrls,
-	.try_ext_ctrls = v4l2_subdev_try_ext_ctrls,
-	.s_ext_ctrls = v4l2_subdev_s_ext_ctrls,
-	.g_ctrl = v4l2_subdev_g_ctrl,
-	.s_ctrl = v4l2_subdev_s_ctrl,
-	.queryctrl = v4l2_subdev_queryctrl,
-	.querymenu = v4l2_subdev_querymenu,
 	.log_status = saa717x_log_status,
 };
 
@@ -1216,8 +1201,8 @@ static const struct v4l2_subdev_tuner_ops saa717x_tuner_ops = {
 };
 
 static const struct v4l2_subdev_video_ops saa717x_video_ops = {
+	.s_std = saa717x_s_std,
 	.s_routing = saa717x_s_video_routing,
-	.s_mbus_fmt = saa717x_s_mbus_fmt,
 	.s_stream = saa717x_s_stream,
 };
 
@@ -1225,11 +1210,16 @@ static const struct v4l2_subdev_audio_ops saa717x_audio_ops = {
 	.s_routing = saa717x_s_audio_routing,
 };
 
+static const struct v4l2_subdev_pad_ops saa717x_pad_ops = {
+	.set_fmt = saa717x_set_fmt,
+};
+
 static const struct v4l2_subdev_ops saa717x_ops = {
 	.core = &saa717x_core_ops,
 	.tuner = &saa717x_tuner_ops,
 	.audio = &saa717x_audio_ops,
 	.video = &saa717x_video_ops,
+	.pad = &saa717x_pad_ops,
 };
 
 /* ----------------------------------------------------------------------- */
@@ -1238,8 +1228,7 @@ static const struct v4l2_subdev_ops saa717x_ops = {
 /* i2c implementation */
 
 /* ----------------------------------------------------------------------- */
-static int saa717x_probe(struct i2c_client *client,
-			 const struct i2c_device_id *did)
+static int saa717x_probe(struct i2c_client *client)
 {
 	struct saa717x_state *decoder;
 	struct v4l2_ctrl_handler *hdl;
@@ -1334,13 +1323,12 @@ static int saa717x_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int saa717x_remove(struct i2c_client *client)
+static void saa717x_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(sd->ctrl_handler);
-	return 0;
 }
 
 /* ----------------------------------------------------------------------- */
@@ -1353,7 +1341,6 @@ MODULE_DEVICE_TABLE(i2c, saa717x_id);
 
 static struct i2c_driver saa717x_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "saa717x",
 	},
 	.probe		= saa717x_probe,

@@ -1,27 +1,11 @@
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
  * resize.c
  *
  * volume resize.
  * Inspired by ext3/resize.c.
  *
  * Copyright (C) 2007 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
 #include <linux/fs.h>
@@ -53,14 +37,13 @@
  */
 static u16 ocfs2_calc_new_backup_super(struct inode *inode,
 				       struct ocfs2_group_desc *gd,
-				       int new_clusters,
-				       u32 first_new_cluster,
 				       u16 cl_cpg,
+				       u16 old_bg_clusters,
 				       int set)
 {
 	int i;
 	u16 backups = 0;
-	u32 cluster;
+	u32 cluster, lgd_cluster;
 	u64 blkno, gd_blkno, lgd_blkno = le64_to_cpu(gd->bg_blkno);
 
 	for (i = 0; i < OCFS2_MAX_BACKUP_SUPERBLOCKS; i++) {
@@ -72,6 +55,12 @@ static u16 ocfs2_calc_new_backup_super(struct inode *inode,
 			continue;
 		else if (gd_blkno > lgd_blkno)
 			break;
+
+		/* check if already done backup super */
+		lgd_cluster = ocfs2_blocks_to_clusters(inode->i_sb, lgd_blkno);
+		lgd_cluster += old_bg_clusters;
+		if (lgd_cluster >= cluster)
+			continue;
 
 		if (set)
 			ocfs2_set_bit(cluster % cl_cpg,
@@ -101,6 +90,7 @@ static int ocfs2_update_last_group_and_inode(handle_t *handle,
 	u16 chain, num_bits, backups = 0;
 	u16 cl_bpc = le16_to_cpu(cl->cl_bpc);
 	u16 cl_cpg = le16_to_cpu(cl->cl_cpg);
+	u16 old_bg_clusters;
 
 	trace_ocfs2_update_last_group_and_inode(new_clusters,
 						first_new_cluster);
@@ -114,6 +104,7 @@ static int ocfs2_update_last_group_and_inode(handle_t *handle,
 
 	group = (struct ocfs2_group_desc *)group_bh->b_data;
 
+	old_bg_clusters = le16_to_cpu(group->bg_bits) / cl_bpc;
 	/* update the group first. */
 	num_bits = new_clusters * cl_bpc;
 	le16_add_cpu(&group->bg_bits, num_bits);
@@ -127,9 +118,7 @@ static int ocfs2_update_last_group_and_inode(handle_t *handle,
 				     OCFS2_FEATURE_COMPAT_BACKUP_SB)) {
 		backups = ocfs2_calc_new_backup_super(bm_inode,
 						     group,
-						     new_clusters,
-						     first_new_cluster,
-						     cl_cpg, 1);
+						     cl_cpg, old_bg_clusters, 1);
 		le16_add_cpu(&group->bg_free_bits_count, -1 * backups);
 	}
 
@@ -157,7 +146,7 @@ static int ocfs2_update_last_group_and_inode(handle_t *handle,
 
 	spin_lock(&OCFS2_I(bm_inode)->ip_lock);
 	OCFS2_I(bm_inode)->ip_clusters = le32_to_cpu(fe->i_clusters);
-	le64_add_cpu(&fe->i_size, new_clusters << osb->s_clustersize_bits);
+	le64_add_cpu(&fe->i_size, (u64)new_clusters << osb->s_clustersize_bits);
 	spin_unlock(&OCFS2_I(bm_inode)->ip_lock);
 	i_size_write(bm_inode, le64_to_cpu(fe->i_size));
 
@@ -167,9 +156,7 @@ out_rollback:
 	if (ret < 0) {
 		ocfs2_calc_new_backup_super(bm_inode,
 					    group,
-					    new_clusters,
-					    first_new_cluster,
-					    cl_cpg, 0);
+					    cl_cpg, old_bg_clusters, 0);
 		le16_add_cpu(&group->bg_free_bits_count, backups);
 		le16_add_cpu(&group->bg_bits, -1 * num_bits);
 		le16_add_cpu(&group->bg_free_bits_count, -1 * num_bits);
@@ -193,7 +180,7 @@ static int update_backups(struct inode * inode, u32 clusters, char *data)
 	for (i = 0; i < OCFS2_MAX_BACKUP_SUPERBLOCKS; i++) {
 		blkno = ocfs2_backup_super_blkno(inode->i_sb, i);
 		cluster = ocfs2_blocks_to_clusters(inode->i_sb, blkno);
-		if (cluster > clusters)
+		if (cluster >= clusters)
 			break;
 
 		ret = ocfs2_read_blocks_sync(osb, blkno, 1, &backup);
@@ -298,7 +285,7 @@ int ocfs2_group_extend(struct inode * inode, int new_clusters)
 		goto out;
 	}
 
-	mutex_lock(&main_bm_inode->i_mutex);
+	inode_lock(main_bm_inode);
 
 	ret = ocfs2_inode_lock(main_bm_inode, &main_bm_bh, 1);
 	if (ret < 0) {
@@ -372,7 +359,7 @@ out_unlock:
 	ocfs2_inode_unlock(main_bm_inode, 1);
 
 out_mutex:
-	mutex_unlock(&main_bm_inode->i_mutex);
+	inode_unlock(main_bm_inode);
 	iput(main_bm_inode);
 
 out:
@@ -483,7 +470,7 @@ int ocfs2_group_add(struct inode *inode, struct ocfs2_new_group_input *input)
 		goto out;
 	}
 
-	mutex_lock(&main_bm_inode->i_mutex);
+	inode_lock(main_bm_inode);
 
 	ret = ocfs2_inode_lock(main_bm_inode, &main_bm_bh, 1);
 	if (ret < 0) {
@@ -569,7 +556,7 @@ int ocfs2_group_add(struct inode *inode, struct ocfs2_new_group_input *input)
 
 	spin_lock(&OCFS2_I(main_bm_inode)->ip_lock);
 	OCFS2_I(main_bm_inode)->ip_clusters = le32_to_cpu(fe->i_clusters);
-	le64_add_cpu(&fe->i_size, input->clusters << osb->s_clustersize_bits);
+	le64_add_cpu(&fe->i_size, (u64)input->clusters << osb->s_clustersize_bits);
 	spin_unlock(&OCFS2_I(main_bm_inode)->ip_lock);
 	i_size_write(main_bm_inode, le64_to_cpu(fe->i_size));
 
@@ -587,7 +574,7 @@ out_unlock:
 	ocfs2_inode_unlock(main_bm_inode, 1);
 
 out_mutex:
-	mutex_unlock(&main_bm_inode->i_mutex);
+	inode_unlock(main_bm_inode);
 	iput(main_bm_inode);
 
 out:

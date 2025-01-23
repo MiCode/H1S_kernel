@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Optmized version of the ip_fast_csum() function
  * Used for calculating IP header checksum
@@ -12,6 +13,7 @@
  * Copyright (C) 2002, 2006 Ken Chen <kenneth.w.chen@intel.com>
  */
 
+#include <linux/export.h>
 #include <asm/asmmacro.h>
 
 /*
@@ -92,6 +94,7 @@ GLOBAL_ENTRY(ip_fast_csum)
 	mov	b0=r34
 	br.ret.sptk.many b0
 END(ip_fast_csum)
+EXPORT_SYMBOL(ip_fast_csum)
 
 GLOBAL_ENTRY(csum_ipv6_magic)
 	ld4	r20=[in0],4
@@ -142,3 +145,4 @@ GLOBAL_ENTRY(csum_ipv6_magic)
 	andcm	r8=r9,r8
 	br.ret.sptk.many b0
 END(csum_ipv6_magic)
+EXPORT_SYMBOL(csum_ipv6_magic)

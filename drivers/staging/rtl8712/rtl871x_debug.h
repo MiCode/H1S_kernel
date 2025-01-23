@@ -1,19 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2010 Realtek Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
  *
  * Modifications for inclusion into the Linux staging tree are
  * Copyright(c) 2010 Larry Finger. All rights reserved.
@@ -29,7 +17,6 @@
 #include "osdep_service.h"
 #include "drv_types.h"
 
-
 #define _drv_emerg_			1
 #define _drv_alert_			2
 #define _drv_crit_			3
@@ -39,7 +26,6 @@
 #define _drv_info_			7
 #define _drv_dump_			8
 #define	_drv_debug_			9
-
 
 #define _module_rtl871x_xmit_c_		BIT(0)
 #define _module_xmit_osdep_c_		BIT(1)
@@ -141,27 +127,4 @@
 	#undef	_MODULE_DEFINE_
 #endif
 
-#define _dbgdump	printk
-
-#define MSG_8712(x, ...) {}
-
-#define DBG_8712(x, ...)  {}
-
-#define WRN_8712(x, ...)  {}
-
-#define ERR_8712(x, ...)  {}
-
-#undef MSG_8712
-#define MSG_8712 _dbgdump
-
-#undef DBG_8712
-#define DBG_8712 _dbgdump
-
-#undef WRN_8712
-#define WRN_8712 _dbgdump
-
-#undef ERR_8712
-#define ERR_8712 _dbgdump
-
 #endif	/*__RTL871X_DEBUG_H__*/
-

@@ -1,16 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, version 2, as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  *
  * Copyright SUSE Linux Products GmbH 2009
  *
@@ -24,6 +13,12 @@
 #define XICS_XIRR		4
 #define XICS_MFRR		0xc
 #define XICS_IPI		2	/* interrupt source # for IPIs */
+
+/* Maximum number of threads per physical core */
+#define MAX_SMT_THREADS		8
+
+/* Maximum number of subcores per physical core */
+#define MAX_SUBCORES		4
 
 #ifdef __ASSEMBLY__
 
@@ -65,6 +60,19 @@ kvmppc_resume_\intno:
 
 #else  /*__ASSEMBLY__ */
 
+struct kvmppc_vcore;
+
+/* Struct used for coordinating micro-threading (split-core) mode changes */
+struct kvm_split_mode {
+	unsigned long	rpr;
+	unsigned long	pmmar;
+	unsigned long	ldbar;
+	u8		subcore_size;
+	u8		do_nap;
+	u8		napped[MAX_SMT_THREADS];
+	struct kvmppc_vcore *vc[MAX_SUBCORES];
+};
+
 /*
  * This struct goes in the PACA on 64-bit processors.  It is used
  * to store host state that needs to be saved when we enter a guest
@@ -88,22 +96,27 @@ struct kvmppc_host_state {
 	u8 hwthread_req;
 	u8 hwthread_state;
 	u8 host_ipi;
-	u8 ptid;
+	u8 ptid;		/* thread number within subcore when split */
+	u8 fake_suspend;
 	struct kvm_vcpu *kvm_vcpu;
 	struct kvmppc_vcore *kvm_vcore;
-	unsigned long xics_phys;
+	void __iomem *xics_phys;
+	void __iomem *xive_tima_phys;
+	void __iomem *xive_tima_virt;
 	u32 saved_xirr;
 	u64 dabr;
-	u64 host_mmcr[3];
+	u64 host_mmcr[7];	/* MMCR 0,1,A, SIAR, SDAR, MMCR2, SIER */
 	u32 host_pmc[8];
 	u64 host_purr;
 	u64 host_spurr;
 	u64 host_dscr;
 	u64 dec_expires;
+	struct kvm_split_mode *kvm_split_mode;
 #endif
 #ifdef CONFIG_PPC_BOOK3S_64
 	u64 cfar;
 	u64 ppr;
+	u64 host_fscr;
 #endif
 };
 
@@ -111,7 +124,7 @@ struct kvmppc_book3s_shadow_vcpu {
 	bool in_use;
 	ulong gpr[14];
 	u32 cr;
-	u32 xer;
+	ulong xer;
 	ulong ctr;
 	ulong lr;
 	ulong pc;
@@ -133,6 +146,7 @@ struct kvmppc_book3s_shadow_vcpu {
 		u64     esid;
 		u64     vsid;
 	} slb[64];			/* guest SLB */
+	u64 shadow_fscr;
 #endif
 };
 
@@ -140,7 +154,7 @@ struct kvmppc_book3s_shadow_vcpu {
 
 /* Values for kvm_state */
 #define KVM_HWTHREAD_IN_KERNEL	0
-#define KVM_HWTHREAD_IN_NAP	1
+#define KVM_HWTHREAD_IN_IDLE	1
 #define KVM_HWTHREAD_IN_KVM	2
 
 #endif /* __ASM_KVM_BOOK3S_ASM_H__ */

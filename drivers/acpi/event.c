@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * event.c - exporting ACPI events via procfs
  *
@@ -5,6 +6,8 @@
  *  Copyright (C) 2001, 2002 Paul Diefenbaugh <paul.s.diefenbaugh@intel.com>
  *
  */
+
+#define pr_fmt(fmt) "ACPI: " fmt
 
 #include <linux/spinlock.h>
 #include <linux/export.h>
@@ -18,9 +21,6 @@
 
 #include "internal.h"
 
-#define _COMPONENT		ACPI_SYSTEM_COMPONENT
-ACPI_MODULE_NAME("event");
-
 /* ACPI notifier chain */
 static BLOCKING_NOTIFIER_HEAD(acpi_chain_head);
 
@@ -33,7 +33,7 @@ int acpi_notifier_call_chain(struct acpi_device *dev, u32 type, u32 data)
 	event.type = type;
 	event.data = data;
 	return (blocking_notifier_call_chain(&acpi_chain_head, 0, (void *)&event)
-                        == NOTIFY_BAD) ? -EINVAL : 0;
+			== NOTIFY_BAD) ? -EINVAL : 0;
 }
 EXPORT_SYMBOL(acpi_notifier_call_chain);
 
@@ -82,8 +82,8 @@ static const struct genl_multicast_group acpi_event_mcgrps[] = {
 	{ .name = ACPI_GENL_MCAST_GROUP_NAME, },
 };
 
-static struct genl_family acpi_event_genl_family = {
-	.id = GENL_ID_GENERATE,
+static struct genl_family acpi_event_genl_family __ro_after_init = {
+	.module = THIS_MODULE,
 	.name = ACPI_GENL_FAMILY_NAME,
 	.version = ACPI_GENL_VERSION,
 	.maxattr = ACPI_GENL_ATTR_MAX,
@@ -100,7 +100,6 @@ int acpi_bus_generate_netlink_event(const char *device_class,
 	struct acpi_genl_event *event;
 	void *msg_header;
 	int size;
-	int result;
 
 	/* allocate memory */
 	size = nla_total_size(sizeof(struct acpi_genl_event)) +
@@ -131,17 +130,13 @@ int acpi_bus_generate_netlink_event(const char *device_class,
 	event = nla_data(attr);
 	memset(event, 0, sizeof(struct acpi_genl_event));
 
-	strcpy(event->device_class, device_class);
-	strcpy(event->bus_id, bus_id);
+	strscpy(event->device_class, device_class, sizeof(event->device_class));
+	strscpy(event->bus_id, bus_id, sizeof(event->bus_id));
 	event->type = type;
 	event->data = data;
 
 	/* send multicast genetlink message */
-	result = genlmsg_end(skb, msg_header);
-	if (result < 0) {
-		nlmsg_free(skb);
-		return result;
-	}
+	genlmsg_end(skb, msg_header);
 
 	genlmsg_multicast(&acpi_event_genl_family, skb, 0, 0, GFP_ATOMIC);
 	return 0;
@@ -149,7 +144,7 @@ int acpi_bus_generate_netlink_event(const char *device_class,
 
 EXPORT_SYMBOL(acpi_bus_generate_netlink_event);
 
-static int acpi_event_genetlink_init(void)
+static int __init acpi_event_genetlink_init(void)
 {
 	return genl_register_family(&acpi_event_genl_family);
 }
@@ -172,7 +167,7 @@ static int acpi_event_genetlink_init(void)
 
 static int __init acpi_event_init(void)
 {
-	int error = 0;
+	int error;
 
 	if (acpi_disabled)
 		return 0;
@@ -180,8 +175,8 @@ static int __init acpi_event_init(void)
 	/* create genetlink for acpi event */
 	error = acpi_event_genetlink_init();
 	if (error)
-		printk(KERN_WARNING PREFIX
-		       "Failed to create genetlink family for ACPI event\n");
+		pr_warn("Failed to create genetlink family for ACPI event\n");
+
 	return 0;
 }
 

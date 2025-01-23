@@ -2,7 +2,7 @@
  * ST Microelectronics SPEAr Pulse Width Modulator driver
  *
  * Copyright (C) 2012 ST Microelectronics
- * Shiraz Hashim <shiraz.hashim@st.com>
+ * Shiraz Hashim <shiraz.linux.kernel@gmail.com>
  *
  * This file is licensed under the terms of the GNU General Public
  * License version 2. This program is licensed "as is" without any
@@ -75,7 +75,7 @@ static inline void spear_pwm_writel(struct spear_pwm_chip *chip,
 }
 
 static int spear_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
-			    int duty_ns, int period_ns)
+			    u64 duty_ns, u64 period_ns)
 {
 	struct spear_pwm_chip *pc = to_spear_pwm_chip(chip);
 	u64 val, div, clk_rate;
@@ -163,10 +163,32 @@ static void spear_pwm_disable(struct pwm_chip *chip, struct pwm_device *pwm)
 	clk_disable(pc->clk);
 }
 
+static int spear_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
+			   const struct pwm_state *state)
+{
+	int err;
+
+	if (state->polarity != PWM_POLARITY_NORMAL)
+		return -EINVAL;
+
+	if (!state->enabled) {
+		if (pwm->state.enabled)
+			spear_pwm_disable(chip, pwm);
+		return 0;
+	}
+
+	err = spear_pwm_config(chip, pwm, state->duty_cycle, state->period);
+	if (err)
+		return err;
+
+	if (!pwm->state.enabled)
+		return spear_pwm_enable(chip, pwm);
+
+	return 0;
+}
+
 static const struct pwm_ops spear_pwm_ops = {
-	.config = spear_pwm_config,
-	.enable = spear_pwm_enable,
-	.disable = spear_pwm_disable,
+	.apply = spear_pwm_apply,
 	.owner = THIS_MODULE,
 };
 
@@ -174,18 +196,14 @@ static int spear_pwm_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
 	struct spear_pwm_chip *pc;
-	struct resource *r;
 	int ret;
 	u32 val;
 
 	pc = devm_kzalloc(&pdev->dev, sizeof(*pc), GFP_KERNEL);
-	if (!pc) {
-		dev_err(&pdev->dev, "failed to allocate memory\n");
+	if (!pc)
 		return -ENOMEM;
-	}
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	pc->mmio_base = devm_ioremap_resource(&pdev->dev, r);
+	pc->mmio_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(pc->mmio_base))
 		return PTR_ERR(pc->mmio_base);
 
@@ -197,7 +215,6 @@ static int spear_pwm_probe(struct platform_device *pdev)
 
 	pc->chip.dev = &pdev->dev;
 	pc->chip.ops = &spear_pwm_ops;
-	pc->chip.base = -1;
 	pc->chip.npwm = NUM_PWM;
 
 	ret = clk_prepare(pc->clk);
@@ -222,7 +239,7 @@ static int spear_pwm_probe(struct platform_device *pdev)
 	}
 
 	ret = pwmchip_add(&pc->chip);
-	if (!ret) {
+	if (ret < 0) {
 		clk_unprepare(pc->clk);
 		dev_err(&pdev->dev, "pwmchip_add() failed: %d\n", ret);
 	}
@@ -230,17 +247,14 @@ static int spear_pwm_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int spear_pwm_remove(struct platform_device *pdev)
+static void spear_pwm_remove(struct platform_device *pdev)
 {
 	struct spear_pwm_chip *pc = platform_get_drvdata(pdev);
-	int i;
 
-	for (i = 0; i < NUM_PWM; i++)
-		pwm_disable(&pc->chip.pwms[i]);
+	pwmchip_remove(&pc->chip);
 
 	/* clk was prepared in probe, hence unprepare it here */
 	clk_unprepare(pc->clk);
-	return pwmchip_remove(&pc->chip);
 }
 
 static const struct of_device_id spear_pwm_of_match[] = {
@@ -254,16 +268,15 @@ MODULE_DEVICE_TABLE(of, spear_pwm_of_match);
 static struct platform_driver spear_pwm_driver = {
 	.driver = {
 		.name = "spear-pwm",
-		.owner = THIS_MODULE,
 		.of_match_table = spear_pwm_of_match,
 	},
 	.probe = spear_pwm_probe,
-	.remove = spear_pwm_remove,
+	.remove_new = spear_pwm_remove,
 };
 
 module_platform_driver(spear_pwm_driver);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Shiraz Hashim <shiraz.hashim@st.com>");
+MODULE_AUTHOR("Shiraz Hashim <shiraz.linux.kernel@gmail.com>");
 MODULE_AUTHOR("Viresh Kumar <viresh.kumar@linaro.com>");
 MODULE_ALIAS("platform:spear-pwm");

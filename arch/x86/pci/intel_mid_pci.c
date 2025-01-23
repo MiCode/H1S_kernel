@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Intel MID PCI support
  *   Copyright (c) 2008 Intel Corporation
@@ -27,13 +28,20 @@
 #include <linux/io.h>
 #include <linux/smp.h>
 
+#include <asm/cpu_device_id.h>
 #include <asm/segment.h>
 #include <asm/pci_x86.h>
 #include <asm/hw_irq.h>
 #include <asm/io_apic.h>
+#include <asm/intel-family.h>
 #include <asm/intel-mid.h>
+#include <asm/acpi.h>
 
 #define PCIE_CAP_OFFSET	0x100
+
+/* Quirks for the listed devices */
+#define PCI_DEVICE_ID_INTEL_MRFLD_MMC	0x1190
+#define PCI_DEVICE_ID_INTEL_MRFLD_HSU	0x1191
 
 /* Fixed BAR fields */
 #define PCIE_VNDR_CAP_ID_FIXED_BAR 0x00	/* Fixed BAR (TBD) */
@@ -134,6 +142,7 @@ static int pci_device_update_fixed(struct pci_bus *bus, unsigned int devfn,
  * type1_access_ok - check whether to use type 1
  * @bus: bus number
  * @devfn: device & function in question
+ * @reg: configuration register offset
  *
  * If the bus is on a Lincroft chip and it exists, or is not on a Lincroft at
  * all, the we can go ahead with any reads & writes.  If it's on a Lincroft,
@@ -206,30 +215,87 @@ static int pci_write(struct pci_bus *bus, unsigned int devfn, int where,
 			       where, size, value);
 }
 
+static const struct x86_cpu_id intel_mid_cpu_ids[] = {
+	X86_MATCH_INTEL_FAM6_MODEL(ATOM_SILVERMONT_MID, NULL),
+	{}
+};
+
 static int intel_mid_pci_irq_enable(struct pci_dev *dev)
 {
-	u8 pin;
-	struct io_apic_irq_attr irq_attr;
+	const struct x86_cpu_id *id;
+	struct irq_alloc_info info;
+	bool polarity_low;
+	u16 model = 0;
+	int ret;
+	u8 gsi;
 
-	pci_read_config_byte(dev, PCI_INTERRUPT_PIN, &pin);
+	if (dev->irq_managed && dev->irq > 0)
+		return 0;
+
+	ret = pci_read_config_byte(dev, PCI_INTERRUPT_LINE, &gsi);
+	if (ret < 0) {
+		dev_warn(&dev->dev, "Failed to read interrupt line: %d\n", ret);
+		return ret;
+	}
+
+	id = x86_match_cpu(intel_mid_cpu_ids);
+	if (id)
+		model = id->model;
+
+	switch (model) {
+	case INTEL_FAM6_ATOM_SILVERMONT_MID:
+		polarity_low = false;
+
+		/* Special treatment for IRQ0 */
+		if (gsi == 0) {
+			/*
+			 * Skip HS UART common registers device since it has
+			 * IRQ0 assigned and not used by the kernel.
+			 */
+			if (dev->device == PCI_DEVICE_ID_INTEL_MRFLD_HSU)
+				return -EBUSY;
+			/*
+			 * TNG has IRQ0 assigned to eMMC controller. But there
+			 * are also other devices with bogus PCI configuration
+			 * that have IRQ0 assigned. This check ensures that
+			 * eMMC gets it. The rest of devices still could be
+			 * enabled without interrupt line being allocated.
+			 */
+			if (dev->device != PCI_DEVICE_ID_INTEL_MRFLD_MMC)
+				return 0;
+		}
+		break;
+	default:
+		polarity_low = true;
+		break;
+	}
+
+	ioapic_set_alloc_attr(&info, dev_to_node(&dev->dev), 1, polarity_low);
 
 	/*
 	 * MRST only have IOAPIC, the PCI irq lines are 1:1 mapped to
 	 * IOAPIC RTE entries, so we just enable RTE for the device.
 	 */
-	irq_attr.ioapic = mp_find_ioapic(dev->irq);
-	irq_attr.ioapic_pin = dev->irq;
-	irq_attr.trigger = 1; /* level */
-	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER)
-		irq_attr.polarity = 0; /* active high */
-	else
-		irq_attr.polarity = 1; /* active low */
-	io_apic_set_pci_routing(&dev->dev, dev->irq, &irq_attr);
+	ret = mp_map_gsi_to_irq(gsi, IOAPIC_MAP_ALLOC, &info);
+	if (ret < 0)
+		return ret;
+
+	dev->irq = ret;
+	dev->irq_managed = 1;
 
 	return 0;
 }
 
-struct pci_ops intel_mid_pci_ops = {
+static void intel_mid_pci_irq_disable(struct pci_dev *dev)
+{
+	if (!mp_should_keep_irq(&dev->dev) && dev->irq_managed &&
+	    dev->irq > 0) {
+		mp_unmap_irq(dev->irq);
+		dev->irq_managed = 0;
+	}
+}
+
+static const struct pci_ops intel_mid_pci_ops __initconst = {
 	.read = pci_read,
 	.write = pci_write,
 };
@@ -245,9 +311,11 @@ int __init intel_mid_pci_init(void)
 	pr_info("Intel MID platform detected, using MID PCI ops\n");
 	pci_mmcfg_late_init();
 	pcibios_enable_irq = intel_mid_pci_irq_enable;
+	pcibios_disable_irq = intel_mid_pci_irq_disable;
 	pci_root_ops = intel_mid_pci_ops;
 	pci_soc_mode = 1;
 	/* Continue with standard init */
+	acpi_noirq_set();
 	return 1;
 }
 
@@ -269,19 +337,43 @@ static void pci_d3delay_fixup(struct pci_dev *dev)
 	 */
 	if (type1_access_ok(dev->bus->number, dev->devfn, PCI_DEVICE_ID))
 		return;
-	dev->d3_delay = 0;
+	dev->d3hot_delay = 0;
 }
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, PCI_ANY_ID, pci_d3delay_fixup);
 
-static void mrst_power_off_unused_dev(struct pci_dev *dev)
+static void mid_power_off_one_device(struct pci_dev *dev)
 {
+	u16 pmcsr;
+
+	/*
+	 * Update current state first, otherwise PCI core enforces PCI_D0 in
+	 * pci_set_power_state() for devices which status was PCI_UNKNOWN.
+	 */
+	pci_read_config_word(dev, dev->pm_cap + PCI_PM_CTRL, &pmcsr);
+	dev->current_state = (pci_power_t __force)(pmcsr & PCI_PM_CTRL_STATE_MASK);
+
 	pci_set_power_state(dev, PCI_D3hot);
 }
-DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x0801, mrst_power_off_unused_dev);
-DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x0809, mrst_power_off_unused_dev);
-DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x080C, mrst_power_off_unused_dev);
-DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x0812, mrst_power_off_unused_dev);
-DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x0815, mrst_power_off_unused_dev);
+
+static void mid_power_off_devices(struct pci_dev *dev)
+{
+	int id;
+
+	if (!pci_soc_mode)
+		return;
+
+	id = intel_mid_pwr_get_lss_id(dev);
+	if (id < 0)
+		return;
+
+	/*
+	 * This sets only PMCSR bits. The actual power off will happen in
+	 * arch/x86/platform/intel-mid/pwr.c.
+	 */
+	mid_power_off_one_device(dev);
+}
+
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, PCI_ANY_ID, mid_power_off_devices);
 
 /*
  * Langwell devices reside at fixed offsets, don't try to move them.
@@ -305,7 +397,7 @@ static void pci_fixed_bar_fixup(struct pci_dev *dev)
 	    PCI_DEVFN(2, 2) == dev->devfn)
 		return;
 
-	for (i = 0; i < PCI_ROM_RESOURCE; i++) {
+	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
 		pci_read_config_dword(dev, offset + 8 + (i * 4), &size);
 		dev->resource[i].end = dev->resource[i].start + size - 1;
 		dev->resource[i].flags |= IORESOURCE_PCI_FIXED;

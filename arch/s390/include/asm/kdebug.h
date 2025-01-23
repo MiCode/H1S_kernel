@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _S390_KDEBUG_H
 #define _S390_KDEBUG_H
 
@@ -22,6 +23,6 @@ enum die_val {
 	DIE_NMI_IPI,
 };
 
-extern void die(struct pt_regs *, const char *);
+extern void __noreturn die(struct pt_regs *, const char *);
 
 #endif

@@ -1,8 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 #include "acx.h"
 
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/crc7.h>
 
 #include "wl1251.h"
 #include "reg.h"
@@ -54,10 +54,7 @@ int wl1251_acx_station_id(struct wl1251 *wl)
 		mac->mac[i] = wl->mac_addr[ETH_ALEN - 1 - i];
 
 	ret = wl1251_cmd_configure(wl, DOT11_STATION_ID, mac, sizeof(*mac));
-	if (ret < 0)
-		goto out;
 
-out:
 	kfree(mac);
 	return ret;
 }

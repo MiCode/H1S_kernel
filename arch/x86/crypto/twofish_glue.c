@@ -38,8 +38,8 @@
  * Third Edition.
  */
 
+#include <crypto/algapi.h>
 #include <crypto/twofish.h>
-#include <linux/crypto.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/types.h>
@@ -81,20 +81,20 @@ static struct crypto_alg alg = {
 	}
 };
 
-static int __init init(void)
+static int __init twofish_glue_init(void)
 {
 	return crypto_register_alg(&alg);
 }
 
-static void __exit fini(void)
+static void __exit twofish_glue_fini(void)
 {
 	crypto_unregister_alg(&alg);
 }
 
-module_init(init);
-module_exit(fini);
+module_init(twofish_glue_init);
+module_exit(twofish_glue_fini);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION ("Twofish Cipher Algorithm, asm optimized");
-MODULE_ALIAS("twofish");
-MODULE_ALIAS("twofish-asm");
+MODULE_ALIAS_CRYPTO("twofish");
+MODULE_ALIAS_CRYPTO("twofish-asm");

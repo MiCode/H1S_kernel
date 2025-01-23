@@ -1,22 +1,4 @@
-/*
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to
- * deal in the Software without restriction, including without limitation the
- * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- * sell copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef __XEN_PUBLIC_PHYSDEV_H__
 #define __XEN_PUBLIC_PHYSDEV_H__
@@ -131,6 +113,7 @@ struct physdev_irq {
 #define MAP_PIRQ_TYPE_GSI		0x1
 #define MAP_PIRQ_TYPE_UNKNOWN		0x2
 #define MAP_PIRQ_TYPE_MSI_SEG		0x3
+#define MAP_PIRQ_TYPE_MULTI_MSI		0x4
 
 #define PHYSDEVOP_map_pirq		13
 struct physdev_map_pirq {
@@ -141,11 +124,16 @@ struct physdev_map_pirq {
     int index;
     /* IN or OUT */
     int pirq;
-    /* IN - high 16 bits hold segment for MAP_PIRQ_TYPE_MSI_SEG */
+    /* IN - high 16 bits hold segment for ..._MSI_SEG and ..._MULTI_MSI */
     int bus;
     /* IN */
     int devfn;
-    /* IN */
+    /* IN
+     * - For MSI-X contains entry number.
+     * - For MSI with ..._MULTI_MSI contains number of vectors.
+     * OUT (..._MULTI_MSI only)
+     * - Number of vectors allocated.
+     */
     int entry_nr;
     /* IN */
     uint64_t table_base;

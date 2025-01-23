@@ -1,24 +1,21 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * wm831x-core.c  --  Device access for Wolfson WM831x PMICs
  *
  * Copyright 2009 Wolfson Microelectronics PLC.
  *
  * Author: Mark Brown <broonie@opensource.wolfsonmicro.com>
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #include <linux/kernel.h>
-#include <linux/module.h>
+#include <linux/init.h>
+#include <linux/export.h>
 #include <linux/bcd.h>
 #include <linux/delay.h>
 #include <linux/mfd/core.h>
 #include <linux/slab.h>
 #include <linux/err.h>
+#include <linux/mod_devicetable.h>
 
 #include <linux/mfd/wm831x/core.h>
 #include <linux/mfd/wm831x/pdata.h>
@@ -31,7 +28,7 @@
 /* Current settings - values are 2*2^(reg_val/4) microamps.  These are
  * exported since they are used by multiple drivers.
  */
-int wm831x_isinkv_values[WM831X_ISINK_MAX_ISEL + 1] = {
+const unsigned int wm831x_isinkv_values[WM831X_ISINK_MAX_ISEL + 1] = {
 	2,
 	2,
 	3,
@@ -111,11 +108,13 @@ static int wm831x_reg_locked(struct wm831x *wm831x, unsigned short reg)
 }
 
 /**
- * wm831x_reg_unlock: Unlock user keyed registers
+ * wm831x_reg_lock: Unlock user keyed registers
  *
  * The WM831x has a user key preventing writes to particularly
  * critical registers.  This function locks those registers,
  * allowing writes to them.
+ *
+ * @wm831x: pointer to local driver data structure
  */
 void wm831x_reg_lock(struct wm831x *wm831x)
 {
@@ -142,6 +141,8 @@ EXPORT_SYMBOL_GPL(wm831x_reg_lock);
  * The WM831x has a user key preventing writes to particularly
  * critical registers.  This function locks those registers,
  * preventing spurious writes.
+ *
+ * @wm831x: pointer to local driver data structure
  */
 int wm831x_reg_unlock(struct wm831x *wm831x)
 {
@@ -614,90 +615,55 @@ int wm831x_set_bits(struct wm831x *wm831x, unsigned short reg,
 }
 EXPORT_SYMBOL_GPL(wm831x_set_bits);
 
-static struct resource wm831x_dcdc1_resources[] = {
+static const struct resource wm831x_dcdc1_resources[] = {
 	{
 		.start = WM831X_DC1_CONTROL_1,
 		.end   = WM831X_DC1_DVS_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_DC1,
-		.end   = WM831X_IRQ_UV_DC1,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name  = "HC",
-		.start = WM831X_IRQ_HC_DC1,
-		.end   = WM831X_IRQ_HC_DC1,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_DC1, "UV"),
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_HC_DC1, "HC"),
 };
 
 
-static struct resource wm831x_dcdc2_resources[] = {
+static const struct resource wm831x_dcdc2_resources[] = {
 	{
 		.start = WM831X_DC2_CONTROL_1,
 		.end   = WM831X_DC2_DVS_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_DC2,
-		.end   = WM831X_IRQ_UV_DC2,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name  = "HC",
-		.start = WM831X_IRQ_HC_DC2,
-		.end   = WM831X_IRQ_HC_DC2,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_DC2, "UV"),
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_HC_DC2, "HC"),
 };
 
-static struct resource wm831x_dcdc3_resources[] = {
+static const struct resource wm831x_dcdc3_resources[] = {
 	{
 		.start = WM831X_DC3_CONTROL_1,
 		.end   = WM831X_DC3_SLEEP_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_DC3,
-		.end   = WM831X_IRQ_UV_DC3,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_DC3, "UV"),
 };
 
-static struct resource wm831x_dcdc4_resources[] = {
+static const struct resource wm831x_dcdc4_resources[] = {
 	{
 		.start = WM831X_DC4_CONTROL,
 		.end   = WM831X_DC4_SLEEP_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_DC4,
-		.end   = WM831X_IRQ_UV_DC4,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_DC4, "UV"),
 };
 
-static struct resource wm8320_dcdc4_buck_resources[] = {
+static const struct resource wm8320_dcdc4_buck_resources[] = {
 	{
 		.start = WM831X_DC4_CONTROL,
 		.end   = WM832X_DC4_SLEEP_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_DC4,
-		.end   = WM831X_IRQ_UV_DC4,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_DC4, "UV"),
 };
 
-static struct resource wm831x_gpio_resources[] = {
+static const struct resource wm831x_gpio_resources[] = {
 	{
 		.start = WM831X_IRQ_GPIO_1,
 		.end   = WM831X_IRQ_GPIO_16,
@@ -705,173 +671,115 @@ static struct resource wm831x_gpio_resources[] = {
 	},
 };
 
-static struct resource wm831x_isink1_resources[] = {
+static const struct resource wm831x_isink1_resources[] = {
 	{
 		.start = WM831X_CURRENT_SINK_1,
 		.end   = WM831X_CURRENT_SINK_1,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.start = WM831X_IRQ_CS1,
-		.end   = WM831X_IRQ_CS1,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ(WM831X_IRQ_CS1),
 };
 
-static struct resource wm831x_isink2_resources[] = {
+static const struct resource wm831x_isink2_resources[] = {
 	{
 		.start = WM831X_CURRENT_SINK_2,
 		.end   = WM831X_CURRENT_SINK_2,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.start = WM831X_IRQ_CS2,
-		.end   = WM831X_IRQ_CS2,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ(WM831X_IRQ_CS2),
 };
 
-static struct resource wm831x_ldo1_resources[] = {
+static const struct resource wm831x_ldo1_resources[] = {
 	{
 		.start = WM831X_LDO1_CONTROL,
 		.end   = WM831X_LDO1_SLEEP_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_LDO1,
-		.end   = WM831X_IRQ_UV_LDO1,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_LDO1, "UV"),
 };
 
-static struct resource wm831x_ldo2_resources[] = {
+static const struct resource wm831x_ldo2_resources[] = {
 	{
 		.start = WM831X_LDO2_CONTROL,
 		.end   = WM831X_LDO2_SLEEP_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_LDO2,
-		.end   = WM831X_IRQ_UV_LDO2,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_LDO2, "UV"),
 };
 
-static struct resource wm831x_ldo3_resources[] = {
+static const struct resource wm831x_ldo3_resources[] = {
 	{
 		.start = WM831X_LDO3_CONTROL,
 		.end   = WM831X_LDO3_SLEEP_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_LDO3,
-		.end   = WM831X_IRQ_UV_LDO3,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_LDO3, "UV"),
 };
 
-static struct resource wm831x_ldo4_resources[] = {
+static const struct resource wm831x_ldo4_resources[] = {
 	{
 		.start = WM831X_LDO4_CONTROL,
 		.end   = WM831X_LDO4_SLEEP_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_LDO4,
-		.end   = WM831X_IRQ_UV_LDO4,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_LDO4, "UV"),
 };
 
-static struct resource wm831x_ldo5_resources[] = {
+static const struct resource wm831x_ldo5_resources[] = {
 	{
 		.start = WM831X_LDO5_CONTROL,
 		.end   = WM831X_LDO5_SLEEP_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_LDO5,
-		.end   = WM831X_IRQ_UV_LDO5,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_LDO5, "UV"),
 };
 
-static struct resource wm831x_ldo6_resources[] = {
+static const struct resource wm831x_ldo6_resources[] = {
 	{
 		.start = WM831X_LDO6_CONTROL,
 		.end   = WM831X_LDO6_SLEEP_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_LDO6,
-		.end   = WM831X_IRQ_UV_LDO6,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_LDO6, "UV"),
 };
 
-static struct resource wm831x_ldo7_resources[] = {
+static const struct resource wm831x_ldo7_resources[] = {
 	{
 		.start = WM831X_LDO7_CONTROL,
 		.end   = WM831X_LDO7_SLEEP_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_LDO7,
-		.end   = WM831X_IRQ_UV_LDO7,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_LDO7, "UV"),
 };
 
-static struct resource wm831x_ldo8_resources[] = {
+static const struct resource wm831x_ldo8_resources[] = {
 	{
 		.start = WM831X_LDO8_CONTROL,
 		.end   = WM831X_LDO8_SLEEP_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_LDO8,
-		.end   = WM831X_IRQ_UV_LDO8,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_LDO8, "UV"),
 };
 
-static struct resource wm831x_ldo9_resources[] = {
+static const struct resource wm831x_ldo9_resources[] = {
 	{
 		.start = WM831X_LDO9_CONTROL,
 		.end   = WM831X_LDO9_SLEEP_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_LDO9,
-		.end   = WM831X_IRQ_UV_LDO9,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_LDO9, "UV"),
 };
 
-static struct resource wm831x_ldo10_resources[] = {
+static const struct resource wm831x_ldo10_resources[] = {
 	{
 		.start = WM831X_LDO10_CONTROL,
 		.end   = WM831X_LDO10_SLEEP_CONTROL,
 		.flags = IORESOURCE_REG,
 	},
-	{
-		.name  = "UV",
-		.start = WM831X_IRQ_UV_LDO10,
-		.end   = WM831X_IRQ_UV_LDO10,
-		.flags = IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_UV_LDO10, "UV"),
 };
 
-static struct resource wm831x_ldo11_resources[] = {
+static const struct resource wm831x_ldo11_resources[] = {
 	{
 		.start = WM831X_LDO11_ON_CONTROL,
 		.end   = WM831X_LDO11_SLEEP_CONTROL,
@@ -879,100 +787,31 @@ static struct resource wm831x_ldo11_resources[] = {
 	},
 };
 
-static struct resource wm831x_on_resources[] = {
-	{
-		.start = WM831X_IRQ_ON,
-		.end   = WM831X_IRQ_ON,
-		.flags = IORESOURCE_IRQ,
-	},
+static const struct resource wm831x_on_resources[] = {
+	DEFINE_RES_IRQ(WM831X_IRQ_ON),
 };
 
 
-static struct resource wm831x_power_resources[] = {
-	{
-		.name = "SYSLO",
-		.start = WM831X_IRQ_PPM_SYSLO,
-		.end   = WM831X_IRQ_PPM_SYSLO,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "PWR SRC",
-		.start = WM831X_IRQ_PPM_PWR_SRC,
-		.end   = WM831X_IRQ_PPM_PWR_SRC,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "USB CURR",
-		.start = WM831X_IRQ_PPM_USB_CURR,
-		.end   = WM831X_IRQ_PPM_USB_CURR,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "BATT HOT",
-		.start = WM831X_IRQ_CHG_BATT_HOT,
-		.end   = WM831X_IRQ_CHG_BATT_HOT,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "BATT COLD",
-		.start = WM831X_IRQ_CHG_BATT_COLD,
-		.end   = WM831X_IRQ_CHG_BATT_COLD,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "BATT FAIL",
-		.start = WM831X_IRQ_CHG_BATT_FAIL,
-		.end   = WM831X_IRQ_CHG_BATT_FAIL,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "OV",
-		.start = WM831X_IRQ_CHG_OV,
-		.end   = WM831X_IRQ_CHG_OV,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "END",
-		.start = WM831X_IRQ_CHG_END,
-		.end   = WM831X_IRQ_CHG_END,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "TO",
-		.start = WM831X_IRQ_CHG_TO,
-		.end   = WM831X_IRQ_CHG_TO,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "MODE",
-		.start = WM831X_IRQ_CHG_MODE,
-		.end   = WM831X_IRQ_CHG_MODE,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "START",
-		.start = WM831X_IRQ_CHG_START,
-		.end   = WM831X_IRQ_CHG_START,
-		.flags = IORESOURCE_IRQ,
-	},
+static const struct resource wm831x_power_resources[] = {
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_PPM_SYSLO, "SYSLO"),
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_PPM_PWR_SRC, "PWR SRC"),
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_PPM_USB_CURR, "USB CURR"),
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_CHG_BATT_HOT, "BATT HOT"),
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_CHG_BATT_COLD, "BATT COLD"),
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_CHG_BATT_FAIL, "BATT FAIL"),
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_CHG_OV, "OV"),
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_CHG_END, "END"),
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_CHG_TO, "TO"),
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_CHG_MODE, "MODE"),
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_CHG_START, "START"),
 };
 
-static struct resource wm831x_rtc_resources[] = {
-	{
-		.name = "PER",
-		.start = WM831X_IRQ_RTC_PER,
-		.end   = WM831X_IRQ_RTC_PER,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "ALM",
-		.start = WM831X_IRQ_RTC_ALM,
-		.end   = WM831X_IRQ_RTC_ALM,
-		.flags = IORESOURCE_IRQ,
-	},
+static const struct resource wm831x_rtc_resources[] = {
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_RTC_PER, "PER"),
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_RTC_ALM, "ALM"),
 };
 
-static struct resource wm831x_status1_resources[] = {
+static const struct resource wm831x_status1_resources[] = {
 	{
 		.start = WM831X_STATUS_LED_1,
 		.end   = WM831X_STATUS_LED_1,
@@ -980,7 +819,7 @@ static struct resource wm831x_status1_resources[] = {
 	},
 };
 
-static struct resource wm831x_status2_resources[] = {
+static const struct resource wm831x_status2_resources[] = {
 	{
 		.start = WM831X_STATUS_LED_2,
 		.end   = WM831X_STATUS_LED_2,
@@ -988,27 +827,13 @@ static struct resource wm831x_status2_resources[] = {
 	},
 };
 
-static struct resource wm831x_touch_resources[] = {
-	{
-		.name = "TCHPD",
-		.start = WM831X_IRQ_TCHPD,
-		.end   = WM831X_IRQ_TCHPD,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "TCHDATA",
-		.start = WM831X_IRQ_TCHDATA,
-		.end   = WM831X_IRQ_TCHDATA,
-		.flags = IORESOURCE_IRQ,
-	},
+static const struct resource wm831x_touch_resources[] = {
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_TCHPD, "TCHPD"),
+	DEFINE_RES_IRQ_NAMED(WM831X_IRQ_TCHDATA, "TCHDATA"),
 };
 
-static struct resource wm831x_wdt_resources[] = {
-	{
-		.start = WM831X_IRQ_WDOG_TO,
-		.end   = WM831X_IRQ_WDOG_TO,
-		.flags = IORESOURCE_IRQ,
-	},
+static const struct resource wm831x_wdt_resources[] = {
+	DEFINE_RES_IRQ(WM831X_IRQ_WDOG_TO),
 };
 
 static const struct mfd_cell wm8310_devs[] = {
@@ -1604,7 +1429,7 @@ struct regmap_config wm831x_regmap_config = {
 	.reg_bits = 16,
 	.val_bits = 16,
 
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 
 	.max_register = WM831X_DBE_CHECK_DATA,
 	.readable_reg = wm831x_reg_readable,
@@ -1613,12 +1438,24 @@ struct regmap_config wm831x_regmap_config = {
 };
 EXPORT_SYMBOL_GPL(wm831x_regmap_config);
 
+const struct of_device_id wm831x_of_match[] = {
+	{ .compatible = "wlf,wm8310", .data = (void *)WM8310 },
+	{ .compatible = "wlf,wm8311", .data = (void *)WM8311 },
+	{ .compatible = "wlf,wm8312", .data = (void *)WM8312 },
+	{ .compatible = "wlf,wm8320", .data = (void *)WM8320 },
+	{ .compatible = "wlf,wm8321", .data = (void *)WM8321 },
+	{ .compatible = "wlf,wm8325", .data = (void *)WM8325 },
+	{ .compatible = "wlf,wm8326", .data = (void *)WM8326 },
+	{ },
+};
+EXPORT_SYMBOL_GPL(wm831x_of_match);
+
 /*
  * Instantiate the generic non-control parts of the device.
  */
-int wm831x_device_init(struct wm831x *wm831x, unsigned long id, int irq)
+int wm831x_device_init(struct wm831x *wm831x, int irq)
 {
-	struct wm831x_pdata *pdata = dev_get_platdata(wm831x->dev);
+	struct wm831x_pdata *pdata = &wm831x->pdata;
 	int rev, wm831x_num;
 	enum wm831x_parent parent;
 	int ret, i;
@@ -1626,6 +1463,7 @@ int wm831x_device_init(struct wm831x *wm831x, unsigned long id, int irq)
 	mutex_init(&wm831x->io_lock);
 	mutex_init(&wm831x->key_lock);
 	dev_set_drvdata(wm831x->dev, wm831x);
+
 	wm831x->soft_shutdown = pdata->soft_shutdown;
 
 	ret = wm831x_reg_read(wm831x, WM831X_PARENT_ID);
@@ -1661,7 +1499,7 @@ int wm831x_device_init(struct wm831x *wm831x, unsigned long id, int irq)
 	 */
 	if (ret == 0) {
 		dev_info(wm831x->dev, "Device is an engineering sample\n");
-		ret = id;
+		ret = wm831x->type;
 	}
 
 	switch (ret) {
@@ -1734,9 +1572,9 @@ int wm831x_device_init(struct wm831x *wm831x, unsigned long id, int irq)
 	/* This will need revisiting in future but is OK for all
 	 * current parts.
 	 */
-	if (parent != id)
-		dev_warn(wm831x->dev, "Device was registered as a WM%lx\n",
-			 id);
+	if (parent != wm831x->type)
+		dev_warn(wm831x->dev, "Device was registered as a WM%x\n",
+			 wm831x->type);
 
 	/* Bootstrap the user key */
 	ret = wm831x_reg_read(wm831x, WM831X_SECURITY_KEY);
@@ -1751,7 +1589,7 @@ int wm831x_device_init(struct wm831x *wm831x, unsigned long id, int irq)
 	}
 	wm831x->locked = 1;
 
-	if (pdata && pdata->pre_init) {
+	if (pdata->pre_init) {
 		ret = pdata->pre_init(wm831x);
 		if (ret != 0) {
 			dev_err(wm831x->dev, "pre_init() failed: %d\n", ret);
@@ -1759,19 +1597,17 @@ int wm831x_device_init(struct wm831x *wm831x, unsigned long id, int irq)
 		}
 	}
 
-	if (pdata) {
-		for (i = 0; i < ARRAY_SIZE(pdata->gpio_defaults); i++) {
-			if (!pdata->gpio_defaults[i])
-				continue;
+	for (i = 0; i < ARRAY_SIZE(pdata->gpio_defaults); i++) {
+		if (!pdata->gpio_defaults[i])
+			continue;
 
-			wm831x_reg_write(wm831x,
-					 WM831X_GPIO1_CONTROL + i,
-					 pdata->gpio_defaults[i] & 0xffff);
-		}
+		wm831x_reg_write(wm831x,
+				 WM831X_GPIO1_CONTROL + i,
+				 pdata->gpio_defaults[i] & 0xffff);
 	}
 
 	/* Multiply by 10 as we have many subdevices of the same type */
-	if (pdata && pdata->wm831x_num)
+	if (pdata->wm831x_num)
 		wm831x_num = pdata->wm831x_num * 10;
 	else
 		wm831x_num = -1;
@@ -1794,7 +1630,7 @@ int wm831x_device_init(struct wm831x *wm831x, unsigned long id, int irq)
 		ret = mfd_add_devices(wm831x->dev, wm831x_num,
 				      wm8311_devs, ARRAY_SIZE(wm8311_devs),
 				      NULL, 0, NULL);
-		if (!pdata || !pdata->disable_touch)
+		if (!pdata->disable_touch)
 			mfd_add_devices(wm831x->dev, wm831x_num,
 					touch_devs, ARRAY_SIZE(touch_devs),
 					NULL, 0, NULL);
@@ -1804,7 +1640,7 @@ int wm831x_device_init(struct wm831x *wm831x, unsigned long id, int irq)
 		ret = mfd_add_devices(wm831x->dev, wm831x_num,
 				      wm8312_devs, ARRAY_SIZE(wm8312_devs),
 				      NULL, 0, NULL);
-		if (!pdata || !pdata->disable_touch)
+		if (!pdata->disable_touch)
 			mfd_add_devices(wm831x->dev, wm831x_num,
 					touch_devs, ARRAY_SIZE(touch_devs),
 					NULL, 0, NULL);
@@ -1850,7 +1686,7 @@ int wm831x_device_init(struct wm831x *wm831x, unsigned long id, int irq)
 		dev_info(wm831x->dev, "32.768kHz clock disabled, no RTC\n");
 	}
 
-	if (pdata && pdata->backlight) {
+	if (pdata->backlight) {
 		/* Treat errors as non-critical */
 		ret = mfd_add_devices(wm831x->dev, wm831x_num, backlight_devs,
 				      ARRAY_SIZE(backlight_devs), NULL,
@@ -1862,7 +1698,7 @@ int wm831x_device_init(struct wm831x *wm831x, unsigned long id, int irq)
 
 	wm831x_otp_init(wm831x);
 
-	if (pdata && pdata->post_init) {
+	if (pdata->post_init) {
 		ret = pdata->post_init(wm831x);
 		if (ret != 0) {
 			dev_err(wm831x->dev, "post_init() failed: %d\n", ret);
@@ -1877,14 +1713,6 @@ err_irq:
 err:
 	mfd_remove_devices(wm831x->dev);
 	return ret;
-}
-
-void wm831x_device_exit(struct wm831x *wm831x)
-{
-	wm831x_otp_exit(wm831x);
-	mfd_remove_devices(wm831x->dev);
-	free_irq(wm831x_irq(wm831x, WM831X_IRQ_AUXADC_DATA), wm831x);
-	wm831x_irq_exit(wm831x);
 }
 
 int wm831x_device_suspend(struct wm831x *wm831x)
@@ -1931,7 +1759,3 @@ void wm831x_device_shutdown(struct wm831x *wm831x)
 	}
 }
 EXPORT_SYMBOL_GPL(wm831x_device_shutdown);
-
-MODULE_DESCRIPTION("Core support for the WM831X AudioPlus PMIC");
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Mark Brown");

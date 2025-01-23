@@ -1,20 +1,9 @@
-/**
+// SPDX-License-Identifier: GPL-2.0-only
+/*
  * Marvell NFC-over-USB driver: USB interface related functions
  *
  * Copyright (C) 2014, Marvell International Ltd.
- *
- * This software file (the "File") is distributed by Marvell International
- * Ltd. under the terms of the GNU General Public License Version 2, June 1991
- * (the "License").  You may use, redistribute and/or modify this File in
- * accordance with the terms and conditions of the License, a copy of which
- * is available on the worldwide web at
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
- *
- * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
- * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
- * this warranty disclaimer.
- **/
+ */
 
 #include <linux/module.h>
 #include <linux/usb.h>
@@ -23,10 +12,9 @@
 #include <net/nfc/nci_core.h>
 #include "nfcmrvl.h"
 
-#define VERSION "1.0"
-
 static struct usb_device_id nfcmrvl_table[] = {
-	{ USB_DEVICE_INTERFACE_CLASS(0x1286, 0x2046, 0xff) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(0x1286, 0x2046,
+					USB_CLASS_VENDOR_SPEC, 4, 1) },
 	{ }	/* Terminating entry */
 };
 
@@ -71,16 +59,26 @@ static void nfcmrvl_bulk_complete(struct urb *urb)
 	struct nfcmrvl_usb_drv_data *drv_data = urb->context;
 	int err;
 
-	dev_dbg(&drv_data->udev->dev, "urb %p status %d count %d",
+	dev_dbg(&drv_data->udev->dev, "urb %p status %d count %d\n",
 		urb, urb->status, urb->actual_length);
 
 	if (!test_bit(NFCMRVL_NCI_RUNNING, &drv_data->flags))
 		return;
 
 	if (!urb->status) {
-		if (nfcmrvl_nci_recv_frame(drv_data->priv, urb->transfer_buffer,
-					   urb->actual_length) < 0)
-			nfc_err(&drv_data->udev->dev, "corrupted Rx packet");
+		struct sk_buff *skb;
+
+		skb = nci_skb_alloc(drv_data->priv->ndev, urb->actual_length,
+				    GFP_ATOMIC);
+		if (!skb) {
+			nfc_err(&drv_data->udev->dev, "failed to alloc mem\n");
+		} else {
+			skb_put_data(skb, urb->transfer_buffer,
+				     urb->actual_length);
+			if (nfcmrvl_nci_recv_frame(drv_data->priv, skb) < 0)
+				nfc_err(&drv_data->udev->dev,
+					"corrupted Rx packet\n");
+		}
 	}
 
 	if (!test_bit(NFCMRVL_USB_BULK_RUNNING, &drv_data->flags))
@@ -96,7 +94,7 @@ static void nfcmrvl_bulk_complete(struct urb *urb)
 		 */
 		if (err != -EPERM && err != -ENODEV)
 			nfc_err(&drv_data->udev->dev,
-				"urb %p failed to resubmit (%d)", urb, -err);
+				"urb %p failed to resubmit (%d)\n", urb, -err);
 		usb_unanchor_urb(urb);
 	}
 }
@@ -137,7 +135,7 @@ nfcmrvl_submit_bulk_urb(struct nfcmrvl_usb_drv_data *drv_data, gfp_t mem_flags)
 	if (err) {
 		if (err != -EPERM && err != -ENODEV)
 			nfc_err(&drv_data->udev->dev,
-				"urb %p submission failed (%d)", urb, -err);
+				"urb %p submission failed (%d)\n", urb, -err);
 		usb_unanchor_urb(urb);
 	}
 
@@ -152,13 +150,14 @@ static void nfcmrvl_tx_complete(struct urb *urb)
 	struct nci_dev *ndev = (struct nci_dev *)skb->dev;
 	struct nfcmrvl_private *priv = nci_get_drvdata(ndev);
 	struct nfcmrvl_usb_drv_data *drv_data = priv->drv_data;
+	unsigned long flags;
 
-	nfc_info(priv->dev, "urb %p status %d count %d",
+	nfc_info(priv->dev, "urb %p status %d count %d\n",
 		 urb, urb->status, urb->actual_length);
 
-	spin_lock(&drv_data->txlock);
+	spin_lock_irqsave(&drv_data->txlock, flags);
 	drv_data->tx_in_flight--;
-	spin_unlock(&drv_data->txlock);
+	spin_unlock_irqrestore(&drv_data->txlock, flags);
 
 	kfree(urb->setup_packet);
 	kfree_skb(skb);
@@ -253,7 +252,7 @@ static int nfcmrvl_usb_nci_send(struct nfcmrvl_private *priv,
 	if (err) {
 		if (err != -EPERM && err != -ENODEV)
 			nfc_err(&drv_data->udev->dev,
-				"urb %p submission failed (%d)", urb, -err);
+				"urb %p submission failed (%d)\n", urb, -err);
 		kfree(urb->setup_packet);
 		usb_unanchor_urb(urb);
 	} else {
@@ -265,7 +264,7 @@ done:
 	return err;
 }
 
-static struct nfcmrvl_if_ops usb_ops = {
+static const struct nfcmrvl_if_ops usb_ops = {
 	.nci_open = nfcmrvl_usb_nci_open,
 	.nci_close = nfcmrvl_usb_nci_close,
 	.nci_send = nfcmrvl_usb_nci_send,
@@ -287,31 +286,33 @@ static void nfcmrvl_waker(struct work_struct *work)
 static int nfcmrvl_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
 {
-	struct usb_endpoint_descriptor *ep_desc;
 	struct nfcmrvl_usb_drv_data *drv_data;
 	struct nfcmrvl_private *priv;
 	int i;
 	struct usb_device *udev = interface_to_usbdev(intf);
+	struct nfcmrvl_platform_data config;
 
-	nfc_info(&udev->dev, "intf %p id %p", intf, id);
+	/* No configuration for USB */
+	memset(&config, 0, sizeof(config));
+	config.reset_n_io = -EINVAL;
+
+	nfc_info(&udev->dev, "intf %p id %p\n", intf, id);
 
 	drv_data = devm_kzalloc(&intf->dev, sizeof(*drv_data), GFP_KERNEL);
 	if (!drv_data)
 		return -ENOMEM;
 
 	for (i = 0; i < intf->cur_altsetting->desc.bNumEndpoints; i++) {
+		struct usb_endpoint_descriptor *ep_desc;
+
 		ep_desc = &intf->cur_altsetting->endpoint[i].desc;
 
 		if (!drv_data->bulk_tx_ep &&
 		    usb_endpoint_is_bulk_out(ep_desc)) {
 			drv_data->bulk_tx_ep = ep_desc;
-			continue;
-		}
-
-		if (!drv_data->bulk_rx_ep &&
-		    usb_endpoint_is_bulk_in(ep_desc)) {
+		} else if (!drv_data->bulk_rx_ep &&
+			   usb_endpoint_is_bulk_in(ep_desc)) {
 			drv_data->bulk_rx_ep = ep_desc;
-			continue;
 		}
 	}
 
@@ -328,13 +329,13 @@ static int nfcmrvl_probe(struct usb_interface *intf,
 	init_usb_anchor(&drv_data->bulk_anchor);
 	init_usb_anchor(&drv_data->deferred);
 
-	priv = nfcmrvl_nci_register_dev(drv_data, &usb_ops,
-					&drv_data->udev->dev);
+	priv = nfcmrvl_nci_register_dev(NFCMRVL_PHY_USB, drv_data, &usb_ops,
+					&intf->dev, &config);
 	if (IS_ERR(priv))
 		return PTR_ERR(priv);
 
 	drv_data->priv = priv;
-	priv->dev = &drv_data->udev->dev;
+	drv_data->priv->support_fw_dnld = false;
 
 	usb_set_intfdata(intf, drv_data);
 
@@ -348,7 +349,7 @@ static void nfcmrvl_disconnect(struct usb_interface *intf)
 	if (!drv_data)
 		return;
 
-	nfc_info(&drv_data->udev->dev, "intf %p", intf);
+	nfc_info(&drv_data->udev->dev, "intf %p\n", intf);
 
 	nfcmrvl_nci_unregister_dev(drv_data->priv);
 
@@ -360,7 +361,7 @@ static int nfcmrvl_suspend(struct usb_interface *intf, pm_message_t message)
 {
 	struct nfcmrvl_usb_drv_data *drv_data = usb_get_intfdata(intf);
 
-	nfc_info(&drv_data->udev->dev, "intf %p", intf);
+	nfc_info(&drv_data->udev->dev, "intf %p\n", intf);
 
 	if (drv_data->suspend_count++)
 		return 0;
@@ -387,13 +388,25 @@ static void nfcmrvl_play_deferred(struct nfcmrvl_usb_drv_data *drv_data)
 	int err;
 
 	while ((urb = usb_get_from_anchor(&drv_data->deferred))) {
+		usb_anchor_urb(urb, &drv_data->tx_anchor);
+
 		err = usb_submit_urb(urb, GFP_ATOMIC);
-		if (err)
+		if (err) {
+			kfree(urb->setup_packet);
+			usb_unanchor_urb(urb);
+			usb_free_urb(urb);
 			break;
+		}
 
 		drv_data->tx_in_flight++;
+		usb_free_urb(urb);
 	}
-	usb_scuttle_anchored_urbs(&drv_data->deferred);
+
+	/* Cleanup the rest deferred urbs. */
+	while ((urb = usb_get_from_anchor(&drv_data->deferred))) {
+		kfree(urb->setup_packet);
+		usb_free_urb(urb);
+	}
 }
 
 static int nfcmrvl_resume(struct usb_interface *intf)
@@ -401,7 +414,7 @@ static int nfcmrvl_resume(struct usb_interface *intf)
 	struct nfcmrvl_usb_drv_data *drv_data = usb_get_intfdata(intf);
 	int err = 0;
 
-	nfc_info(&drv_data->udev->dev, "intf %p", intf);
+	nfc_info(&drv_data->udev->dev, "intf %p\n", intf);
 
 	if (--drv_data->suspend_count)
 		return 0;
@@ -454,6 +467,5 @@ static struct usb_driver nfcmrvl_usb_driver = {
 module_usb_driver(nfcmrvl_usb_driver);
 
 MODULE_AUTHOR("Marvell International Ltd.");
-MODULE_DESCRIPTION("Marvell NFC-over-USB driver ver " VERSION);
-MODULE_VERSION(VERSION);
+MODULE_DESCRIPTION("Marvell NFC-over-USB driver");
 MODULE_LICENSE("GPL v2");

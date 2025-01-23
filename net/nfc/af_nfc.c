@@ -1,22 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2011 Instituto Nokia de Tecnologia
  *
  * Authors:
  *    Aloisio Almeida Jr <aloisio.almeida@openbossa.org>
  *    Lauro Ramos Venancio <lauro.venancio@openbossa.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/nfc.h>
@@ -40,7 +28,7 @@ static int nfc_sock_create(struct net *net, struct socket *sock, int proto,
 
 	read_lock(&proto_tab_lock);
 	if (proto_tab[proto] &&	try_module_get(proto_tab[proto]->owner)) {
-		rc = proto_tab[proto]->create(net, sock, proto_tab[proto]);
+		rc = proto_tab[proto]->create(net, sock, proto_tab[proto], kern);
 		module_put(proto_tab[proto]->owner);
 	}
 	read_unlock(&proto_tab_lock);
@@ -48,7 +36,7 @@ static int nfc_sock_create(struct net *net, struct socket *sock, int proto,
 	return rc;
 }
 
-static struct net_proto_family nfc_sock_family_ops = {
+static const struct net_proto_family nfc_sock_family_ops = {
 	.owner  = THIS_MODULE,
 	.family = PF_NFC,
 	.create = nfc_sock_create,
@@ -72,6 +60,9 @@ int nfc_proto_register(const struct nfc_protocol *nfc_proto)
 		proto_tab[nfc_proto->id] = nfc_proto;
 	write_unlock(&proto_tab_lock);
 
+	if (rc)
+		proto_unregister(nfc_proto->proto);
+
 	return rc;
 }
 EXPORT_SYMBOL(nfc_proto_register);
@@ -91,7 +82,7 @@ int __init af_nfc_init(void)
 	return sock_register(&nfc_sock_family_ops);
 }
 
-void af_nfc_exit(void)
+void __exit af_nfc_exit(void)
 {
 	sock_unregister(PF_NFC);
 }

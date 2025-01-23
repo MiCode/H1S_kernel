@@ -1,45 +1,11 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: dswload2 - Dispatcher second pass namespace load callbacks
  *
+ * Copyright (C) 2000 - 2023, Intel Corp.
+ *
  *****************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -49,6 +15,9 @@
 #include "acinterp.h"
 #include "acnamesp.h"
 #include "acevents.h"
+#ifdef ACPI_EXEC_APP
+#include "aecommon.h"
+#endif
 
 #define _COMPONENT          ACPI_DISPATCHER
 ACPI_MODULE_NAME("dswload2")
@@ -58,7 +27,7 @@ ACPI_MODULE_NAME("dswload2")
  * FUNCTION:    acpi_ds_load2_begin_op
  *
  * PARAMETERS:  walk_state      - Current state of the parse tree walk
- *              out_op          - Wher to return op if a new one is created
+ *              out_op          - Where to return op if a new one is created
  *
  * RETURN:      Status
  *
@@ -184,11 +153,14 @@ acpi_ds_load2_begin_op(struct acpi_walk_state *walk_state,
 				if (status == AE_NOT_FOUND) {
 					status = AE_OK;
 				} else {
-					ACPI_ERROR_NAMESPACE(buffer_ptr,
+					ACPI_ERROR_NAMESPACE(walk_state->
+							     scope_info,
+							     buffer_ptr,
 							     status);
 				}
 #else
-				ACPI_ERROR_NAMESPACE(buffer_ptr, status);
+				ACPI_ERROR_NAMESPACE(walk_state->scope_info,
+						     buffer_ptr, status);
 #endif
 				return_ACPI_STATUS(status);
 			}
@@ -242,7 +214,7 @@ acpi_ds_load2_begin_op(struct acpi_walk_state *walk_state,
 				break;
 			}
 
-			/*lint -fallthrough */
+			ACPI_FALLTHROUGH;
 
 		default:
 
@@ -310,6 +282,30 @@ acpi_ds_load2_begin_op(struct acpi_walk_state *walk_state,
 				flags |= ACPI_NS_TEMPORARY;
 			}
 		}
+#ifdef ACPI_ASL_COMPILER
+
+		/*
+		 * Do not open a scope for AML_EXTERNAL_OP
+		 * acpi_ns_lookup can open a new scope based on the object type
+		 * of this op. AML_EXTERNAL_OP is a declaration rather than a
+		 * definition. In the case that this external is a method object,
+		 * acpi_ns_lookup will open a new scope. However, an AML_EXTERNAL_OP
+		 * associated with the ACPI_TYPE_METHOD is a declaration, rather than
+		 * a definition. Flags is set to avoid opening a scope for any
+		 * AML_EXTERNAL_OP.
+		 */
+		if (walk_state->opcode == AML_EXTERNAL_OP) {
+			flags |= ACPI_NS_DONT_OPEN_SCOPE;
+		}
+#endif
+
+		/*
+		 * For name creation opcodes, the full namepath prefix must
+		 * exist, except for the final (new) nameseg.
+		 */
+		if (walk_state->op_info->flags & AML_NAMED) {
+			flags |= ACPI_NS_PREFIX_MUST_EXIST;
+		}
 
 		/* Add new entry or lookup existing entry */
 
@@ -327,7 +323,8 @@ acpi_ds_load2_begin_op(struct acpi_walk_state *walk_state,
 	}
 
 	if (ACPI_FAILURE(status)) {
-		ACPI_ERROR_NAMESPACE(buffer_ptr, status);
+		ACPI_ERROR_NAMESPACE(walk_state->scope_info,
+				     buffer_ptr, status);
 		return_ACPI_STATUS(status);
 	}
 
@@ -335,7 +332,7 @@ acpi_ds_load2_begin_op(struct acpi_walk_state *walk_state,
 
 		/* Create a new op */
 
-		op = acpi_ps_alloc_op(walk_state->opcode);
+		op = acpi_ps_alloc_op(walk_state->opcode, walk_state->aml);
 		if (!op) {
 			return_ACPI_STATUS(AE_NO_MEMORY);
 		}
@@ -377,9 +374,11 @@ acpi_status acpi_ds_load2_end_op(struct acpi_walk_state *walk_state)
 	struct acpi_namespace_node *node;
 	union acpi_parse_object *arg;
 	struct acpi_namespace_node *new_node;
-#ifndef ACPI_NO_METHOD_EXECUTION
 	u32 i;
 	u8 region_space;
+#ifdef ACPI_EXEC_APP
+	union acpi_operand_object *obj_desc;
+	char *namepath;
 #endif
 
 	ACPI_FUNCTION_TRACE(ds_load2_end_op);
@@ -467,7 +466,6 @@ acpi_status acpi_ds_load2_end_op(struct acpi_walk_state *walk_state)
 	arg = op->common.value.arg;
 
 	switch (walk_state->op_info->type) {
-#ifndef ACPI_NO_METHOD_EXECUTION
 
 	case AML_TYPE_CREATE_FIELD:
 		/*
@@ -475,6 +473,11 @@ acpi_status acpi_ds_load2_end_op(struct acpi_walk_state *walk_state)
 		 * be evaluated later during the execution phase
 		 */
 		status = acpi_ds_create_buffer_field(op, walk_state);
+		if (ACPI_FAILURE(status)) {
+			ACPI_EXCEPTION((AE_INFO, status,
+					"CreateBufferField failure"));
+			goto cleanup;
+			}
 		break;
 
 	case AML_TYPE_NAMED_FIELD:
@@ -490,8 +493,8 @@ acpi_status acpi_ds_load2_end_op(struct acpi_walk_state *walk_state)
 
 			status =
 			    acpi_ds_create_index_field(op,
-						       (acpi_handle) arg->
-						       common.node, walk_state);
+						       (acpi_handle)arg->common.
+						       node, walk_state);
 			break;
 
 		case AML_BANK_FIELD_OP:
@@ -528,7 +531,7 @@ acpi_status acpi_ds_load2_end_op(struct acpi_walk_state *walk_state)
 			status = acpi_ex_create_processor(walk_state);
 			break;
 
-		case AML_POWER_RES_OP:
+		case AML_POWER_RESOURCE_OP:
 
 			status = acpi_ex_create_power_resource(walk_state);
 			break;
@@ -564,12 +567,10 @@ acpi_status acpi_ds_load2_end_op(struct acpi_walk_state *walk_state)
 		}
 
 		break;
-#endif				/* ACPI_NO_METHOD_EXECUTION */
 
 	case AML_TYPE_NAMED_COMPLEX:
 
 		switch (op->common.aml_opcode) {
-#ifndef ACPI_NO_METHOD_EXECUTION
 		case AML_REGION_OP:
 		case AML_DATA_REGION_OP:
 
@@ -598,40 +599,46 @@ acpi_status acpi_ds_load2_end_op(struct acpi_walk_state *walk_state)
 				 * Executing a method: initialize the region and unlock
 				 * the interpreter
 				 */
-				status =
-				    acpi_ex_create_region(op->named.data,
-							  op->named.length,
-							  region_space,
-							  walk_state);
+				status = acpi_ex_create_region(op->named.data,
+							       op->named.length,
+							       region_space,
+							       walk_state);
 				if (ACPI_FAILURE(status)) {
 					return_ACPI_STATUS(status);
 				}
-
-				acpi_ex_exit_interpreter();
 			}
 
 			status =
 			    acpi_ev_initialize_region
-			    (acpi_ns_get_attached_object(node), FALSE);
-			if (walk_state->method_node) {
-				acpi_ex_enter_interpreter();
-			}
-
-			if (ACPI_FAILURE(status)) {
-				/*
-				 *  If AE_NOT_EXIST is returned, it is not fatal
-				 *  because many regions get created before a handler
-				 *  is installed for said region.
-				 */
-				if (AE_NOT_EXIST == status) {
-					status = AE_OK;
-				}
-			}
+			    (acpi_ns_get_attached_object(node));
 			break;
 
 		case AML_NAME_OP:
 
 			status = acpi_ds_create_node(walk_state, node, op);
+			if (ACPI_FAILURE(status)) {
+				goto cleanup;
+			}
+#ifdef ACPI_EXEC_APP
+			/*
+			 * acpi_exec support for namespace initialization file (initialize
+			 * Name opcodes in this code.)
+			 */
+			namepath = acpi_ns_get_external_pathname(node);
+			status = ae_lookup_init_file_entry(namepath, &obj_desc);
+			if (ACPI_SUCCESS(status)) {
+
+				/* Detach any existing object, attach new object */
+
+				if (node->object) {
+					acpi_ns_detach_object(node);
+				}
+				acpi_ns_attach_object(node, obj_desc,
+						      obj_desc->common.type);
+			}
+			ACPI_FREE(namepath);
+			status = AE_OK;
+#endif
 			break;
 
 		case AML_METHOD_OP:
@@ -664,6 +671,7 @@ acpi_status acpi_ds_load2_end_op(struct acpi_walk_state *walk_state)
 								  length,
 								  walk_state);
 				}
+
 				walk_state->operands[0] = NULL;
 				walk_state->num_operands = 0;
 
@@ -672,8 +680,6 @@ acpi_status acpi_ds_load2_end_op(struct acpi_walk_state *walk_state)
 				}
 			}
 			break;
-
-#endif				/* ACPI_NO_METHOD_EXECUTION */
 
 		default:
 
@@ -719,7 +725,8 @@ acpi_status acpi_ds_load2_end_op(struct acpi_walk_state *walk_state)
 			 */
 			op->common.node = new_node;
 		} else {
-			ACPI_ERROR_NAMESPACE(arg->common.value.string, status);
+			ACPI_ERROR_NAMESPACE(walk_state->scope_info,
+					     arg->common.value.string, status);
 		}
 		break;
 

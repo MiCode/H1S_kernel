@@ -30,7 +30,8 @@
 #include <linux/gpio_keys.h>
 #include <linux/input.h>
 #include <linux/gpio.h>
-#include <linux/pda_power.h>
+#include <linux/gpio/machine.h>
+#include <linux/power/gpio-charger.h>
 
 #include <video/sa1100fb.h>
 
@@ -96,65 +97,54 @@ static struct mcp_plat_data collie_mcp_data = {
 	.codec_pdata	= &collie_ucb1x00_data,
 };
 
+/* Battery management GPIOs */
+static struct gpiod_lookup_table collie_battery_gpiod_table = {
+	/* the MCP codec mcp0 has the ucb1x00 as attached device */
+	.dev_id = "ucb1x00",
+	.table = {
+		/* This is found on the main GPIO on the SA1100 */
+		GPIO_LOOKUP("gpio", COLLIE_GPIO_CO,
+			    "main battery full", GPIO_ACTIVE_HIGH),
+		GPIO_LOOKUP("gpio", COLLIE_GPIO_MAIN_BAT_LOW,
+			    "main battery low", GPIO_ACTIVE_HIGH),
+		/*
+		 * This is GPIO 0 on the Scoop expander, which is registered
+		 * from common/scoop.c with this gpio chip label.
+		 */
+		GPIO_LOOKUP("sharp-scoop", 0,
+			    "main charge on", GPIO_ACTIVE_HIGH),
+		{ },
+	},
+};
+
 /*
  * Collie AC IN
  */
-static int collie_power_init(struct device *dev)
-{
-	int ret = gpio_request(COLLIE_GPIO_AC_IN, "ac in");
-	if (ret)
-		goto err_gpio_req;
-
-	ret = gpio_direction_input(COLLIE_GPIO_AC_IN);
-	if (ret)
-		goto err_gpio_in;
-
-	return 0;
-
-err_gpio_in:
-	gpio_free(COLLIE_GPIO_AC_IN);
-err_gpio_req:
-	return ret;
-}
-
-static void collie_power_exit(struct device *dev)
-{
-	gpio_free(COLLIE_GPIO_AC_IN);
-}
-
-static int collie_power_ac_online(void)
-{
-	return gpio_get_value(COLLIE_GPIO_AC_IN) == 2;
-}
+static struct gpiod_lookup_table collie_power_gpiod_table = {
+	.dev_id = "gpio-charger",
+	.table = {
+		GPIO_LOOKUP("gpio", COLLIE_GPIO_AC_IN,
+			    NULL, GPIO_ACTIVE_HIGH),
+		{ },
+	},
+};
 
 static char *collie_ac_supplied_to[] = {
 	"main-battery",
 	"backup-battery",
 };
 
-static struct pda_power_pdata collie_power_data = {
-	.init			= collie_power_init,
-	.is_ac_online		= collie_power_ac_online,
-	.exit			= collie_power_exit,
+static struct gpio_charger_platform_data collie_power_data = {
+	.name			= "charger",
+	.type			= POWER_SUPPLY_TYPE_MAINS,
 	.supplied_to		= collie_ac_supplied_to,
 	.num_supplicants	= ARRAY_SIZE(collie_ac_supplied_to),
 };
 
-static struct resource collie_power_resource[] = {
-	{
-		.name		= "ac",
-		.flags		= IORESOURCE_IRQ |
-				  IORESOURCE_IRQ_HIGHEDGE |
-				  IORESOURCE_IRQ_LOWEDGE,
-	},
-};
-
 static struct platform_device collie_power_device = {
-	.name			= "pda-power",
+	.name			= "gpio-charger",
 	.id			= -1,
 	.dev.platform_data	= &collie_power_data,
-	.resource		= collie_power_resource,
-	.num_resources		= ARRAY_SIZE(collie_power_resource),
 };
 
 #ifdef CONFIG_SHARP_LOCOMO
@@ -202,18 +192,12 @@ static int collie_uart_probe(struct locomo_dev *dev)
 	return 0;
 }
 
-static int collie_uart_remove(struct locomo_dev *dev)
-{
-	return 0;
-}
-
 static struct locomo_driver collie_uart_driver = {
 	.drv = {
 		.name = "collie_uart",
 	},
 	.devid	= LOCOMO_DEVID_UART,
 	.probe	= collie_uart_probe,
-	.remove	= collie_uart_remove,
 };
 
 static int __init collie_uart_init(void)
@@ -297,6 +281,11 @@ static struct mtd_partition collie_partitions[] = {
 		.name		= "rootfs",
 		.offset 	= MTDPART_OFS_APPEND,
 		.size		= 0x00e20000,
+	}, {
+		.name		= "bootblock",
+		.offset		= MTDPART_OFS_APPEND,
+		.size		= 0x00020000,
+		.mask_flags	= MTD_WRITEABLE
 	}
 };
 
@@ -324,7 +313,7 @@ static void collie_flash_exit(void)
 }
 
 static struct flash_platform_data collie_flash_data = {
-	.map_name	= "jedec_probe",
+	.map_name	= "cfi_probe",
 	.init		= collie_flash_init,
 	.set_vpp	= collie_set_vpp,
 	.exit		= collie_flash_exit,
@@ -372,8 +361,7 @@ static void __init collie_init(void)
 		PPC_LDD6 | PPC_LDD7 | PPC_L_PCLK | PPC_L_LCLK | PPC_L_FCLK | PPC_L_BIAS |
 		PPC_TXD1 | PPC_TXD2 | PPC_TXD3 | PPC_TXD4 | PPC_SCLK | PPC_SFRM;
 
-	PWER = _COLLIE_GPIO_AC_IN | _COLLIE_GPIO_CO | _COLLIE_GPIO_ON_KEY |
-		_COLLIE_GPIO_WAKEUP | _COLLIE_GPIO_nREMOCON_INT | PWER_RTC;
+	PWER = 0;
 
 	PGSR = _COLLIE_GPIO_nREMOCON_ON;
 
@@ -383,13 +371,13 @@ static void __init collie_init(void)
 
 	GPSR |= _COLLIE_GPIO_UCB1x00_RESET;
 
-	collie_power_resource[0].start = gpio_to_irq(COLLIE_GPIO_AC_IN);
-	collie_power_resource[0].end = gpio_to_irq(COLLIE_GPIO_AC_IN);
-
 	sa11x0_ppc_configure_mcp();
 
 
 	platform_scoop_config = &collie_pcmcia_config;
+
+	gpiod_add_lookup_table(&collie_power_gpiod_table);
+	gpiod_add_lookup_table(&collie_battery_gpiod_table);
 
 	ret = platform_add_devices(devices, ARRAY_SIZE(devices));
 	if (ret) {

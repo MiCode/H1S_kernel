@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * PCI Backend - Functions for creating a virtual configuration space for
  *               exported PCI Devices.
@@ -9,15 +10,17 @@
  * Author: Ryan Wilson <hap9@epoch.ncsc.mil>
  */
 
+#define dev_fmt(fmt) DRV_NAME ": " fmt
+
 #include <linux/kernel.h>
-#include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/pci.h>
 #include "pciback.h"
 #include "conf_space.h"
 #include "conf_space_quirks.h"
 
-static bool permissive;
-module_param(permissive, bool, 0644);
+bool xen_pcibk_permissive;
+module_param_named(permissive, xen_pcibk_permissive, bool, 0644);
 
 /* This is where xen_pcibk_read_config_byte, xen_pcibk_read_config_word,
  * xen_pcibk_write_config_word, and xen_pcibk_write_config_byte are created. */
@@ -148,14 +151,12 @@ int xen_pcibk_config_read(struct pci_dev *dev, int offset, int size,
 	struct xen_pcibk_dev_data *dev_data = pci_get_drvdata(dev);
 	const struct config_field_entry *cfg_entry;
 	const struct config_field *field;
-	int req_start, req_end, field_start, field_end;
+	int field_start, field_end;
 	/* if read fails for any reason, return 0
 	 * (as if device didn't respond) */
 	u32 value = 0, tmp_val;
 
-	if (unlikely(verbose_request))
-		printk(KERN_DEBUG DRV_NAME ": %s: read %d bytes at 0x%x\n",
-		       pci_name(dev), size, offset);
+	dev_dbg(&dev->dev, "read %d bytes at 0x%x\n", size, offset);
 
 	if (!valid_request(offset, size)) {
 		err = XEN_PCI_ERR_invalid_offset;
@@ -178,13 +179,10 @@ int xen_pcibk_config_read(struct pci_dev *dev, int offset, int size,
 	list_for_each_entry(cfg_entry, &dev_data->config_fields, list) {
 		field = cfg_entry->field;
 
-		req_start = offset;
-		req_end = offset + size;
 		field_start = OFFSET(cfg_entry);
 		field_end = OFFSET(cfg_entry) + field->size;
 
-		if ((req_start >= field_start && req_start < field_end)
-		    || (req_end > field_start && req_end <= field_end)) {
+		if (offset + size > field_start && field_end > offset) {
 			err = conf_space_read(dev, cfg_entry, field_start,
 					      &tmp_val);
 			if (err)
@@ -192,14 +190,12 @@ int xen_pcibk_config_read(struct pci_dev *dev, int offset, int size,
 
 			value = merge_value(value, tmp_val,
 					    get_mask(field->size),
-					    field_start - req_start);
+					    field_start - offset);
 		}
 	}
 
 out:
-	if (unlikely(verbose_request))
-		printk(KERN_DEBUG DRV_NAME ": %s: read %d bytes at 0x%x = %x\n",
-		       pci_name(dev), size, offset, value);
+	dev_dbg(&dev->dev, "read %d bytes at 0x%x = %x\n", size, offset, value);
 
 	*ret_val = value;
 	return xen_pcibios_err_to_errno(err);
@@ -212,12 +208,10 @@ int xen_pcibk_config_write(struct pci_dev *dev, int offset, int size, u32 value)
 	const struct config_field_entry *cfg_entry;
 	const struct config_field *field;
 	u32 tmp_val;
-	int req_start, req_end, field_start, field_end;
+	int field_start, field_end;
 
-	if (unlikely(verbose_request))
-		printk(KERN_DEBUG
-		       DRV_NAME ": %s: write request %d bytes at 0x%x = %x\n",
-		       pci_name(dev), size, offset, value);
+	dev_dbg(&dev->dev, "write request %d bytes at 0x%x = %x\n",
+		size, offset, value);
 
 	if (!valid_request(offset, size))
 		return XEN_PCI_ERR_invalid_offset;
@@ -225,22 +219,17 @@ int xen_pcibk_config_write(struct pci_dev *dev, int offset, int size, u32 value)
 	list_for_each_entry(cfg_entry, &dev_data->config_fields, list) {
 		field = cfg_entry->field;
 
-		req_start = offset;
-		req_end = offset + size;
 		field_start = OFFSET(cfg_entry);
 		field_end = OFFSET(cfg_entry) + field->size;
 
-		if ((req_start >= field_start && req_start < field_end)
-		    || (req_end > field_start && req_end <= field_end)) {
-			tmp_val = 0;
-
-			err = xen_pcibk_config_read(dev, field_start,
-						  field->size, &tmp_val);
+		if (offset + size > field_start && field_end > offset) {
+			err = conf_space_read(dev, cfg_entry, field_start,
+					      &tmp_val);
 			if (err)
 				break;
 
 			tmp_val = merge_value(tmp_val, value, get_mask(size),
-					      req_start - field_start);
+					      offset - field_start);
 
 			err = conf_space_write(dev, cfg_entry, field_start,
 					       tmp_val);
@@ -262,7 +251,7 @@ int xen_pcibk_config_write(struct pci_dev *dev, int offset, int size, u32 value)
 		 * This means that some fields may still be read-only because
 		 * they have entries in the config_field list that intercept
 		 * the write and do nothing. */
-		if (dev_data->permissive || permissive) {
+		if (dev_data->permissive || xen_pcibk_permissive) {
 			switch (size) {
 			case 1:
 				err = pci_write_config_byte(dev, offset,
@@ -291,6 +280,50 @@ int xen_pcibk_config_write(struct pci_dev *dev, int offset, int size, u32 value)
 	}
 
 	return xen_pcibios_err_to_errno(err);
+}
+
+int xen_pcibk_get_interrupt_type(struct pci_dev *dev)
+{
+	int err;
+	u16 val;
+	int ret = 0;
+
+	/*
+	 * Do not trust dev->msi(x)_enabled here, as enabling could be done
+	 * bypassing the pci_*msi* functions, by the qemu.
+	 */
+	if (dev->msi_cap) {
+		err = pci_read_config_word(dev,
+				dev->msi_cap + PCI_MSI_FLAGS,
+				&val);
+		if (err)
+			return err;
+		if (val & PCI_MSI_FLAGS_ENABLE)
+			ret |= INTERRUPT_TYPE_MSI;
+	}
+	if (dev->msix_cap) {
+		err = pci_read_config_word(dev,
+				dev->msix_cap + PCI_MSIX_FLAGS,
+				&val);
+		if (err)
+			return err;
+		if (val & PCI_MSIX_FLAGS_ENABLE)
+			ret |= INTERRUPT_TYPE_MSIX;
+	}
+
+	/*
+	 * PCIe spec says device cannot use INTx if MSI/MSI-X is enabled,
+	 * so check for INTx only when both are disabled.
+	 */
+	if (!ret) {
+		err = pci_read_config_word(dev, PCI_COMMAND, &val);
+		if (err)
+			return err;
+		if (!(val & PCI_COMMAND_INTX_DISABLE))
+			ret |= INTERRUPT_TYPE_INTX;
+	}
+
+	return ret ?: INTERRUPT_TYPE_NONE;
 }
 
 void xen_pcibk_config_free_dyn_fields(struct pci_dev *dev)

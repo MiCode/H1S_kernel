@@ -1,45 +1,11 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: evevent - Fixed Event handling and dispatch
  *
+ * Copyright (C) 2000 - 2023, Intel Corp.
+ *
  *****************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -164,7 +130,7 @@ static acpi_status acpi_ev_fixed_event_initialize(void)
 
 	/*
 	 * Initialize the structure that keeps track of fixed event handlers and
-	 * enable the fixed events.
+	 * disable all of the fixed events.
 	 */
 	for (i = 0; i < ACPI_NUM_FIXED_EVENTS; i++) {
 		acpi_gbl_fixed_event_handlers[i].handler = NULL;
@@ -204,6 +170,7 @@ u32 acpi_ev_fixed_event_detect(void)
 	u32 fixed_status;
 	u32 fixed_enable;
 	u32 i;
+	acpi_status status;
 
 	ACPI_FUNCTION_NAME(ev_fixed_event_detect);
 
@@ -211,8 +178,12 @@ u32 acpi_ev_fixed_event_detect(void)
 	 * Read the fixed feature status and enable registers, as all the cases
 	 * depend on their values. Ignore errors here.
 	 */
-	(void)acpi_hw_register_read(ACPI_REGISTER_PM1_STATUS, &fixed_status);
-	(void)acpi_hw_register_read(ACPI_REGISTER_PM1_ENABLE, &fixed_enable);
+	status = acpi_hw_register_read(ACPI_REGISTER_PM1_STATUS, &fixed_status);
+	status |=
+	    acpi_hw_register_read(ACPI_REGISTER_PM1_ENABLE, &fixed_enable);
+	if (ACPI_FAILURE(status)) {
+		return (int_status);
+	}
 
 	ACPI_DEBUG_PRINT((ACPI_DB_INTERRUPTS,
 			  "Fixed Event Block: Enable %08X Status %08X\n",
@@ -292,6 +263,51 @@ static u32 acpi_ev_fixed_event_dispatch(u32 event)
 
 	return ((acpi_gbl_fixed_event_handlers[event].
 		 handler) (acpi_gbl_fixed_event_handlers[event].context));
+}
+
+/*******************************************************************************
+ *
+ * FUNCTION:    acpi_any_fixed_event_status_set
+ *
+ * PARAMETERS:  None
+ *
+ * RETURN:      TRUE or FALSE
+ *
+ * DESCRIPTION: Checks the PM status register for active fixed events
+ *
+ ******************************************************************************/
+
+u32 acpi_any_fixed_event_status_set(void)
+{
+	acpi_status status;
+	u32 in_status;
+	u32 in_enable;
+	u32 i;
+
+	status = acpi_hw_register_read(ACPI_REGISTER_PM1_ENABLE, &in_enable);
+	if (ACPI_FAILURE(status)) {
+		return (FALSE);
+	}
+
+	status = acpi_hw_register_read(ACPI_REGISTER_PM1_STATUS, &in_status);
+	if (ACPI_FAILURE(status)) {
+		return (FALSE);
+	}
+
+	/*
+	 * Check for all possible Fixed Events and dispatch those that are active
+	 */
+	for (i = 0; i < ACPI_NUM_FIXED_EVENTS; i++) {
+
+		/* Both the status and enable bits must be on for this event */
+
+		if ((in_status & acpi_gbl_fixed_event_info[i].status_bit_mask) &&
+		    (in_enable & acpi_gbl_fixed_event_info[i].enable_bit_mask)) {
+			return (TRUE);
+		}
+	}
+
+	return (FALSE);
 }
 
 #endif				/* !ACPI_REDUCED_HARDWARE */

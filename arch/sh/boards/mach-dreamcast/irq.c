@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/boards/dreamcast/irq.c
  *
@@ -6,11 +7,9 @@
  * Copyright (c) 2001, 2002 M. R. Brown <mrbrown@0xd6.org>
  *
  * This file is part of the LinuxDC project (www.linuxdc.org)
- * Released under the terms of the GNU GPL v2.0
  */
 #include <linux/irq.h>
 #include <linux/io.h>
-#include <linux/irq.h>
 #include <linux/export.h>
 #include <linux/err.h>
 #include <mach/sysasic.h>
@@ -109,13 +108,13 @@ int systemasic_irq_demux(int irq)
 	__u32 j, bit;
 
 	switch (irq) {
-	case 13:
+	case 13 + 16:
 		level = 0;
 		break;
-	case 11:
+	case 11 + 16:
 		level = 1;
 		break;
-	case  9:
+	case 9 + 16:
 		level = 2;
 		break;
 	default:

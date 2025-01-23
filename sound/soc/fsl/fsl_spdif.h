@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * fsl_spdif.h - ALSA S/PDIF interface for the Freescale i.MX SoC
  *
@@ -8,10 +9,6 @@
  * Based on fsl_ssi.h
  * Author: Timur Tabi <timur@freescale.com>
  * Copyright 2007-2008 Freescale Semiconductor, Inc.
- *
- * This file is licensed under the terms of the GNU General Public License
- * version 2.  This program  is licensed "as is" without any warranty of any
- * kind, whether express or implied.
  */
 
 #ifndef _FSL_SPDIF_DAI_H
@@ -34,9 +31,23 @@
 #define REG_SPDIF_STR			0x30	/* SPDIFTxRight Register */
 #define REG_SPDIF_STCSCH		0x34	/* SPDIFTxCChannelCons_h Register */
 #define REG_SPDIF_STCSCL		0x38	/* SPDIFTxCChannelCons_l Register */
+#define REG_SPDIF_STCSPH		0x3C	/* SPDIFTxCChannel_Prof_h Register */
+#define REG_SPDIF_STCSPL		0x40	/* SPDIFTxCChannel_Prof_l Register */
 #define REG_SPDIF_SRFM			0x44	/* FreqMeas Register */
 #define REG_SPDIF_STC			0x50	/* SPDIFTxClk Register */
 
+#define REG_SPDIF_SRCCA_31_0		0x60	/* SPDIF receive C channel register, bits 31-0 */
+#define REG_SPDIF_SRCCA_63_32		0x64	/* SPDIF receive C channel register, bits 63-32 */
+#define REG_SPDIF_SRCCA_95_64		0x68	/* SPDIF receive C channel register, bits 95-64 */
+#define REG_SPDIF_SRCCA_127_96		0x6C	/* SPDIF receive C channel register, bits 127-96 */
+#define REG_SPDIF_SRCCA_159_128		0x70	/* SPDIF receive C channel register, bits 159-128 */
+#define REG_SPDIF_SRCCA_191_160		0x74	/* SPDIF receive C channel register, bits 191-160 */
+#define REG_SPDIF_STCCA_31_0		0x78	/* SPDIF transmit C channel register, bits 31-0 */
+#define REG_SPDIF_STCCA_63_32		0x7C	/* SPDIF transmit C channel register, bits 63-32 */
+#define REG_SPDIF_STCCA_95_64		0x80	/* SPDIF transmit C channel register, bits 95-64 */
+#define REG_SPDIF_STCCA_127_96		0x84	/* SPDIF transmit C channel register, bits 127-96 */
+#define REG_SPDIF_STCCA_159_128		0x88	/* SPDIF transmit C channel register, bits 159-128 */
+#define REG_SPDIF_STCCA_191_160		0x8C	/* SPDIF transmit C channel register, bits 191-160 */
 
 /* SPDIF Configuration register */
 #define SCR_RXFIFO_CTL_OFFSET		23
@@ -66,6 +77,7 @@
 #define SCR_TXFIFO_FSEL_IF4		(0x1 << SCR_TXFIFO_FSEL_OFFSET)
 #define SCR_TXFIFO_FSEL_IF8		(0x2 << SCR_TXFIFO_FSEL_OFFSET)
 #define SCR_TXFIFO_FSEL_IF12		(0x3 << SCR_TXFIFO_FSEL_OFFSET)
+#define SCR_RAW_CAPTURE_MODE		BIT(14)
 #define SCR_LOW_POWER			(1 << 13)
 #define SCR_SOFT_RESET			(1 << 12)
 #define SCR_TXFIFO_CTRL_OFFSET		10
@@ -92,6 +104,8 @@
 #define SCR_USRC_SEL_NONE		(0x0 << SCR_USRC_SEL_OFFSET)
 #define SCR_USRC_SEL_RECV		(0x1 << SCR_USRC_SEL_OFFSET)
 #define SCR_USRC_SEL_CHIP		(0x3 << SCR_USRC_SEL_OFFSET)
+
+#define SCR_DMA_xX_EN(tx)		(tx ? SCR_DMA_TX_EN : SCR_DMA_RX_EN)
 
 /* SPDIF CDText control */
 #define SRCD_CD_USER_OFFSET		1
@@ -143,27 +157,34 @@ enum spdif_gainsel {
 #define INT_RXFIFO_FUL			(1 << 0)
 
 /* SPDIF Clock register */
-#define STC_SYSCLK_DIV_OFFSET		11
-#define STC_SYSCLK_DIV_MASK		(0x1ff << STC_TXCLK_SRC_OFFSET)
-#define STC_SYSCLK_DIV(x)		((((x) - 1) << STC_TXCLK_DIV_OFFSET) & STC_SYSCLK_DIV_MASK)
+#define STC_SYSCLK_DF_OFFSET		11
+#define STC_SYSCLK_DF_MASK		(0x1ff << STC_SYSCLK_DF_OFFSET)
+#define STC_SYSCLK_DF(x)		((((x) - 1) << STC_SYSCLK_DF_OFFSET) & STC_SYSCLK_DF_MASK)
 #define STC_TXCLK_SRC_OFFSET		8
 #define STC_TXCLK_SRC_MASK		(0x7 << STC_TXCLK_SRC_OFFSET)
 #define STC_TXCLK_SRC_SET(x)		((x << STC_TXCLK_SRC_OFFSET) & STC_TXCLK_SRC_MASK)
 #define STC_TXCLK_ALL_EN_OFFSET		7
 #define STC_TXCLK_ALL_EN_MASK		(1 << STC_TXCLK_ALL_EN_OFFSET)
 #define STC_TXCLK_ALL_EN		(1 << STC_TXCLK_ALL_EN_OFFSET)
-#define STC_TXCLK_DIV_OFFSET		0
-#define STC_TXCLK_DIV_MASK		(0x7ff << STC_TXCLK_DIV_OFFSET)
-#define STC_TXCLK_DIV(x)		((((x) - 1) << STC_TXCLK_DIV_OFFSET) & STC_TXCLK_DIV_MASK)
+#define STC_TXCLK_DF_OFFSET		0
+#define STC_TXCLK_DF_MASK		(0x7f << STC_TXCLK_DF_OFFSET)
+#define STC_TXCLK_DF(x)		((((x) - 1) << STC_TXCLK_DF_OFFSET) & STC_TXCLK_DF_MASK)
 #define STC_TXCLK_SRC_MAX		8
+
+#define STC_TXCLK_SPDIF_ROOT		1
 
 /* SPDIF tx rate */
 enum spdif_txrate {
-	SPDIF_TXRATE_32000 = 0,
+	SPDIF_TXRATE_22050 = 0,
+	SPDIF_TXRATE_32000,
 	SPDIF_TXRATE_44100,
 	SPDIF_TXRATE_48000,
+	SPDIF_TXRATE_88200,
+	SPDIF_TXRATE_96000,
+	SPDIF_TXRATE_176400,
+	SPDIF_TXRATE_192000,
 };
-#define SPDIF_TXRATE_MAX		(SPDIF_TXRATE_48000 + 1)
+#define SPDIF_TXRATE_MAX		(SPDIF_TXRATE_192000 + 1)
 
 
 #define SPDIF_CSTATUS_BYTE		6
@@ -171,16 +192,24 @@ enum spdif_txrate {
 #define SPDIF_QSUB_SIZE			(SPDIF_UBITS_SIZE / 8)
 
 
-#define FSL_SPDIF_RATES_PLAYBACK	(SNDRV_PCM_RATE_32000 |	\
+#define FSL_SPDIF_RATES_PLAYBACK	(SNDRV_PCM_RATE_22050 |	\
+					 SNDRV_PCM_RATE_32000 |	\
 					 SNDRV_PCM_RATE_44100 |	\
-					 SNDRV_PCM_RATE_48000)
+					 SNDRV_PCM_RATE_48000 |	\
+					 SNDRV_PCM_RATE_88200 | \
+					 SNDRV_PCM_RATE_96000 |	\
+					 SNDRV_PCM_RATE_176400 | \
+					 SNDRV_PCM_RATE_192000)
 
 #define FSL_SPDIF_RATES_CAPTURE		(SNDRV_PCM_RATE_16000 | \
 					 SNDRV_PCM_RATE_32000 |	\
 					 SNDRV_PCM_RATE_44100 | \
 					 SNDRV_PCM_RATE_48000 |	\
+					 SNDRV_PCM_RATE_88200 | \
 					 SNDRV_PCM_RATE_64000 | \
-					 SNDRV_PCM_RATE_96000)
+					 SNDRV_PCM_RATE_96000 | \
+					 SNDRV_PCM_RATE_176400 | \
+					 SNDRV_PCM_RATE_192000)
 
 #define FSL_SPDIF_FORMATS_PLAYBACK	(SNDRV_PCM_FMTBIT_S16_LE | \
 					 SNDRV_PCM_FMTBIT_S20_3LE | \

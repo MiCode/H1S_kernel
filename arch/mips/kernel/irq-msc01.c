@@ -1,8 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * This program is free software; you can redistribute	it and/or modify it
- * under  the terms of	the GNU General	 Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  *
  * Copyright (c) 2004 MIPS Inc
  * Author: chris@mips.com
@@ -53,13 +50,9 @@ static inline void unmask_msc_irq(struct irq_data *d)
  */
 static void level_mask_and_ack_msc_irq(struct irq_data *d)
 {
-	unsigned int irq = d->irq;
-
 	mask_msc_irq(d);
 	if (!cpu_has_veic)
 		MSCIC_WRITE(MSC01_IC_EOI, 0);
-	/* This actually needs to be a call into platform code */
-	smtc_im_ack_irq(irq);
 }
 
 /*
@@ -78,7 +71,6 @@ static void edge_mask_and_ack_msc_irq(struct irq_data *d)
 		MSCIC_WRITE(MSC01_IC_SUP+irq*8, r | ~MSC01_IC_SUP_EDGE_BIT);
 		MSCIC_WRITE(MSC01_IC_SUP+irq*8, r);
 	}
-	smtc_im_ack_irq(irq);
 }
 
 /*
@@ -131,7 +123,7 @@ void __init init_msc_irqs(unsigned long icubase, unsigned int irqbase, msc_irqma
 
 	board_bind_eic_interrupt = &msc_bind_eic_interrupt;
 
-	for (; nirq >= 0; nirq--, imp++) {
+	for (; nirq > 0; nirq--, imp++) {
 		int n = imp->im_irq;
 
 		switch (imp->im_type) {

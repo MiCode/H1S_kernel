@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/pci.c
  *
@@ -17,10 +18,11 @@
 #include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/kernel.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/module.h>
 #include <linux/cache.h>
 #include <linux/slab.h>
+#include <linux/syscalls.h>
 #include <asm/machvec.h>
 
 #include "proto.h"
@@ -196,9 +198,16 @@ pcibios_init(void)
 subsys_initcall(pcibios_init);
 
 #ifdef ALPHA_RESTORE_SRM_SETUP
+/* Store PCI device configuration left by SRM here. */
+struct pdev_srm_saved_conf
+{
+	struct pdev_srm_saved_conf *next;
+	struct pci_dev *dev;
+};
+
 static struct pdev_srm_saved_conf *srm_saved_configs;
 
-void pdev_save_srm_config(struct pci_dev *dev)
+static void pdev_save_srm_config(struct pci_dev *dev)
 {
 	struct pdev_srm_saved_conf *tmp;
 	static int printed = 0;
@@ -238,6 +247,8 @@ pci_restore_srm_config(void)
 		pci_restore_state(tmp->dev);
 	}
 }
+#else
+#define pdev_save_srm_config(dev)	do {} while (0)
 #endif
 
 void pcibios_fixup_bus(struct pci_bus *bus)
@@ -245,19 +256,13 @@ void pcibios_fixup_bus(struct pci_bus *bus)
 	struct pci_dev *dev = bus->self;
 
 	if (pci_has_flag(PCI_PROBE_ONLY) && dev &&
- 		   (dev->class >> 8) == PCI_CLASS_BRIDGE_PCI) {
- 		pci_read_bridge_bases(bus);
-	} 
+	    (dev->class >> 8) == PCI_CLASS_BRIDGE_PCI) {
+		pci_read_bridge_bases(bus);
+	}
 
 	list_for_each_entry(dev, &bus->devices, bus_list) {
 		pdev_save_srm_config(dev);
 	}
-}
-
-int
-pcibios_enable_device(struct pci_dev *dev, int mask)
-{
-	return pci_enable_resources(dev, mask);
 }
 
 /*
@@ -283,16 +288,19 @@ pcibios_claim_one_bus(struct pci_bus *b)
 	struct pci_bus *child_bus;
 
 	list_for_each_entry(dev, &b->devices, bus_list) {
+		struct resource *r;
 		int i;
 
-		for (i = 0; i < PCI_NUM_RESOURCES; i++) {
-			struct resource *r = &dev->resource[i];
-
+		pci_dev_for_each_resource(dev, r, i) {
 			if (r->parent || !r->start || !r->flags)
 				continue;
 			if (pci_has_flag(PCI_PROBE_ONLY) ||
-			    (r->flags & IORESOURCE_PCI_FIXED))
-				pci_claim_resource(dev, i);
+			    (r->flags & IORESOURCE_PCI_FIXED)) {
+				if (pci_claim_resource(dev, i) == 0)
+					continue;
+
+				pci_claim_bridge_resource(dev, i);
+			}
 		}
 	}
 
@@ -314,8 +322,9 @@ common_init_pci(void)
 {
 	struct pci_controller *hose;
 	struct list_head resources;
+	struct pci_host_bridge *bridge;
 	struct pci_bus *bus;
-	int next_busno;
+	int ret, next_busno;
 	int need_domain_info = 0;
 	u32 pci_mem_end;
 	u32 sg_base;
@@ -338,9 +347,25 @@ common_init_pci(void)
 		pci_add_resource_offset(&resources, hose->mem_space,
 					hose->mem_space->start);
 
-		bus = pci_scan_root_bus(NULL, next_busno, alpha_mv.pci_ops,
-					hose, &resources);
-		hose->bus = bus;
+		bridge = pci_alloc_host_bridge(0);
+		if (!bridge)
+			continue;
+
+		list_splice_init(&resources, &bridge->windows);
+		bridge->dev.parent = NULL;
+		bridge->sysdata = hose;
+		bridge->busnr = next_busno;
+		bridge->ops = alpha_mv.pci_ops;
+		bridge->swizzle_irq = alpha_mv.pci_swizzle;
+		bridge->map_irq = alpha_mv.pci_map_irq;
+
+		ret = pci_scan_root_bus_bridge(bridge);
+		if (ret) {
+			pci_free_host_bridge(bridge);
+			continue;
+		}
+
+		bus = hose->bus = bridge->bus;
 		hose->need_domain_info = need_domain_info;
 		next_busno = bus->busn_res.end + 1;
 		/* Don't allow 8-bit bus number overflow inside the hose -
@@ -354,16 +379,22 @@ common_init_pci(void)
 	pcibios_claim_console_setup();
 
 	pci_assign_unassigned_resources();
-	pci_fixup_irqs(alpha_mv.pci_swizzle, alpha_mv.pci_map_irq);
+	for (hose = hose_head; hose; hose = hose->next) {
+		bus = hose->bus;
+		if (bus)
+			pci_bus_add_devices(bus);
+	}
 }
-
 
 struct pci_controller * __init
 alloc_pci_controller(void)
 {
 	struct pci_controller *hose;
 
-	hose = alloc_bootmem(sizeof(*hose));
+	hose = memblock_alloc(sizeof(*hose), SMP_CACHE_BYTES);
+	if (!hose)
+		panic("%s: Failed to allocate %zu bytes\n", __func__,
+		      sizeof(*hose));
 
 	*hose_tail = hose;
 	hose_tail = &hose->next;
@@ -374,19 +405,21 @@ alloc_pci_controller(void)
 struct resource * __init
 alloc_resource(void)
 {
-	struct resource *res;
+	void *ptr = memblock_alloc(sizeof(struct resource), SMP_CACHE_BYTES);
 
-	res = alloc_bootmem(sizeof(*res));
+	if (!ptr)
+		panic("%s: Failed to allocate %zu bytes\n", __func__,
+		      sizeof(struct resource));
 
-	return res;
+	return ptr;
 }
 
 
 /* Provide information on locations of various I/O regions in physical
    memory.  Do this on a per-card basis so that we choose the right hose.  */
 
-asmlinkage long
-sys_pciconfig_iobase(long which, unsigned long bus, unsigned long dfn)
+SYSCALL_DEFINE3(pciconfig_iobase, long, which, unsigned long, bus,
+		unsigned long, dfn)
 {
 	struct pci_controller *hose;
 	struct pci_dev *dev;
@@ -401,7 +434,7 @@ sys_pciconfig_iobase(long which, unsigned long bus, unsigned long dfn)
 		if (bus == 0 && dfn == 0) {
 			hose = pci_isa_hose;
 		} else {
-			dev = pci_get_bus_and_slot(bus, dfn);
+			dev = pci_get_domain_bus_and_slot(0, bus, dfn);
 			if (!dev)
 				return -ENODEV;
 			hose = dev->sysdata;

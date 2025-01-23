@@ -1,24 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of wl1271
  *
  * Copyright (C) 2008-2009 Nokia Corporation
  *
  * Contact: Luciano Coelho <luciano.coelho@nokia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include "wlcore.h"
@@ -28,6 +14,97 @@
 #include "ps.h"
 #include "scan.h"
 #include "wl12xx_80211.h"
+#include "hw_ops.h"
+
+#define WL18XX_LOGGER_SDIO_BUFF_MAX	(0x1020)
+#define WL18XX_DATA_RAM_BASE_ADDRESS	(0x20000000)
+#define WL18XX_LOGGER_SDIO_BUFF_ADDR	(0x40159c)
+#define WL18XX_LOGGER_BUFF_OFFSET	(sizeof(struct fw_logger_information))
+#define WL18XX_LOGGER_READ_POINT_OFFSET		(12)
+
+int wlcore_event_fw_logger(struct wl1271 *wl)
+{
+	int ret;
+	struct fw_logger_information fw_log;
+	u8  *buffer;
+	u32 internal_fw_addrbase = WL18XX_DATA_RAM_BASE_ADDRESS;
+	u32 addr = WL18XX_LOGGER_SDIO_BUFF_ADDR;
+	u32 addr_ptr;
+	u32 buff_start_ptr;
+	u32 buff_read_ptr;
+	u32 buff_end_ptr;
+	u32 available_len;
+	u32 actual_len;
+	u32 clear_ptr;
+	size_t len;
+	u32 start_loc;
+
+	buffer = kzalloc(WL18XX_LOGGER_SDIO_BUFF_MAX, GFP_KERNEL);
+	if (!buffer) {
+		wl1271_error("Fail to allocate fw logger memory");
+		actual_len = 0;
+		goto out;
+	}
+
+	ret = wlcore_read(wl, addr, buffer, WL18XX_LOGGER_SDIO_BUFF_MAX,
+			  false);
+	if (ret < 0) {
+		wl1271_error("Fail to read logger buffer, error_id = %d",
+			     ret);
+		actual_len = 0;
+		goto free_out;
+	}
+
+	memcpy(&fw_log, buffer, sizeof(fw_log));
+
+	actual_len = le32_to_cpu(fw_log.actual_buff_size);
+	if (actual_len == 0)
+		goto free_out;
+
+	/* Calculate the internal pointer to the fwlog structure */
+	addr_ptr = internal_fw_addrbase + addr;
+
+	/* Calculate the internal pointers to the start and end of log buffer */
+	buff_start_ptr = addr_ptr + WL18XX_LOGGER_BUFF_OFFSET;
+	buff_end_ptr = buff_start_ptr + le32_to_cpu(fw_log.max_buff_size);
+
+	/* Read the read pointer and validate it */
+	buff_read_ptr = le32_to_cpu(fw_log.buff_read_ptr);
+	if (buff_read_ptr < buff_start_ptr ||
+	    buff_read_ptr >= buff_end_ptr) {
+		wl1271_error("buffer read pointer out of bounds: %x not in (%x-%x)\n",
+			     buff_read_ptr, buff_start_ptr, buff_end_ptr);
+		goto free_out;
+	}
+
+	start_loc = buff_read_ptr - addr_ptr;
+	available_len = buff_end_ptr - buff_read_ptr;
+
+	/* Copy initial part up to the end of ring buffer */
+	len = min(actual_len, available_len);
+	wl12xx_copy_fwlog(wl, &buffer[start_loc], len);
+	clear_ptr = addr_ptr + start_loc + actual_len;
+	if (clear_ptr == buff_end_ptr)
+		clear_ptr = buff_start_ptr;
+
+	/* Copy any remaining part from beginning of ring buffer */
+	len = actual_len - len;
+	if (len) {
+		wl12xx_copy_fwlog(wl,
+				  &buffer[WL18XX_LOGGER_BUFF_OFFSET],
+				  len);
+		clear_ptr = addr_ptr + WL18XX_LOGGER_BUFF_OFFSET + len;
+	}
+
+	/* Update the read pointer */
+	ret = wlcore_write32(wl, addr + WL18XX_LOGGER_READ_POINT_OFFSET,
+			     clear_ptr);
+free_out:
+	kfree(buffer);
+out:
+	return actual_len;
+}
+EXPORT_SYMBOL_GPL(wlcore_event_fw_logger);
 
 void wlcore_event_rssi_trigger(struct wl1271 *wl, s8 *metric_arr)
 {
@@ -47,7 +124,8 @@ void wlcore_event_rssi_trigger(struct wl1271 *wl, s8 *metric_arr)
 
 		vif = wl12xx_wlvif_to_vif(wlvif);
 		if (event != wlvif->last_rssi_event)
-			ieee80211_cqm_rssi_notify(vif, event, GFP_KERNEL);
+			ieee80211_cqm_rssi_notify(vif, event, metric,
+						  GFP_KERNEL);
 		wlvif->last_rssi_event = event;
 	}
 }
@@ -67,7 +145,7 @@ static void wl1271_stop_ba_event(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 		u8 hlid;
 		struct wl1271_link *lnk;
 		for_each_set_bit(hlid, wlvif->ap.sta_hlid_map,
-				 WL12XX_MAX_LINKS) {
+				 wl->num_links) {
 			lnk = &wl->links[hlid];
 			if (!lnk->ba_bitmap)
 				continue;
@@ -139,7 +217,7 @@ void wlcore_event_channel_switch(struct wl1271 *wl,
 	wl1271_debug(DEBUG_EVENT, "%s: roles=0x%lx success=%d",
 		     __func__, roles_bitmap, success);
 
-	wl12xx_for_each_wlvif_sta(wl, wlvif) {
+	wl12xx_for_each_wlvif(wl, wlvif) {
 		if (wlvif->role_id == WL12XX_INVALID_ROLE_ID ||
 		    !test_bit(wlvif->role_id , &roles_bitmap))
 			continue;
@@ -150,14 +228,24 @@ void wlcore_event_channel_switch(struct wl1271 *wl,
 
 		vif = wl12xx_wlvif_to_vif(wlvif);
 
-		ieee80211_chswitch_done(vif, success);
-		cancel_delayed_work(&wlvif->channel_switch_work);
+		if (wlvif->bss_type == BSS_TYPE_STA_BSS) {
+			ieee80211_chswitch_done(vif, success);
+			cancel_delayed_work(&wlvif->channel_switch_work);
+		} else {
+			set_bit(WLVIF_FLAG_BEACON_DISABLED, &wlvif->flags);
+			ieee80211_csa_finish(vif);
+		}
 	}
 }
 EXPORT_SYMBOL_GPL(wlcore_event_channel_switch);
 
 void wlcore_event_dummy_packet(struct wl1271 *wl)
 {
+	if (wl->plt) {
+		wl1271_info("Got DUMMY_PACKET event in PLT mode.  FW bug, ignoring.");
+		return;
+	}
+
 	wl1271_debug(DEBUG_EVENT, "DUMMY_PACKET_ID_EVENT_ID");
 	wl1271_tx_dummy_packet(wl);
 }
@@ -172,7 +260,7 @@ static void wlcore_disconnect_sta(struct wl1271 *wl, unsigned long sta_bitmap)
 	const u8 *addr;
 	int h;
 
-	for_each_set_bit(h, &sta_bitmap, WL12XX_MAX_LINKS) {
+	for_each_set_bit(h, &sta_bitmap, wl->num_links) {
 		bool found = false;
 		/* find the ap vif connected to this sta */
 		wl12xx_for_each_wlvif_ap(wl, wlvif) {
@@ -254,10 +342,7 @@ void wlcore_event_beacon_loss(struct wl1271 *wl, unsigned long roles_bitmap)
 					     &wlvif->connection_loss_work,
 					     msecs_to_jiffies(delay));
 
-		ieee80211_cqm_rssi_notify(
-				vif,
-				NL80211_CQM_RSSI_BEACON_LOSS_EVENT,
-				GFP_KERNEL);
+		ieee80211_cqm_beacon_loss_notify(vif, GFP_KERNEL);
 	}
 }
 EXPORT_SYMBOL_GPL(wlcore_event_beacon_loss);

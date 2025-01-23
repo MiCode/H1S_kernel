@@ -1,18 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2011 LAPIS Semiconductor Co., Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307, USA.
  */
 
 #include <linux/module.h>
@@ -68,16 +56,15 @@ static const DECLARE_TLV_DB_SCALE(alclvl, -2250, 150, 0);
 static const DECLARE_TLV_DB_SCALE(mingain, -1200, 600, 0);
 static const DECLARE_TLV_DB_SCALE(maxgain, -675, 600, 0);
 static const DECLARE_TLV_DB_SCALE(boost_vol, -1200, 75, 0);
-static const DECLARE_TLV_DB_SCALE(ngth, -7650, 150, 0);
 
 static const char * const ml26124_companding[] = {"16bit PCM", "u-law",
 						  "A-law"};
 
-static const struct soc_enum ml26124_adc_companding_enum
-	= SOC_ENUM_SINGLE(ML26124_SAI_TRANS_CTL, 6, 3, ml26124_companding);
+static SOC_ENUM_SINGLE_DECL(ml26124_adc_companding_enum,
+			    ML26124_SAI_TRANS_CTL, 6, ml26124_companding);
 
-static const struct soc_enum ml26124_dac_companding_enum
-	= SOC_ENUM_SINGLE(ML26124_SAI_RCV_CTL, 6, 3, ml26124_companding);
+static SOC_ENUM_SINGLE_DECL(ml26124_dac_companding_enum,
+			    ML26124_SAI_RCV_CTL, 6, ml26124_companding);
 
 static const struct snd_kcontrol_new ml26124_snd_controls[] = {
 	SOC_SINGLE_TLV("Capture Digital Volume", ML26124_RECORD_DIG_VOL, 0,
@@ -136,8 +123,8 @@ static const struct snd_kcontrol_new ml26124_output_mixer_controls[] = {
 static const char * const ml26124_input_select[] = {"Analog MIC SingleEnded in",
 				"Digital MIC in", "Analog MIC Differential in"};
 
-static const struct soc_enum ml26124_insel_enum =
-	SOC_ENUM_SINGLE(ML26124_MIC_IF_CTL, 0, 3, ml26124_input_select);
+static SOC_ENUM_SINGLE_DECL(ml26124_insel_enum,
+			    ML26124_MIC_IF_CTL, 0, ml26124_input_select);
 
 static const struct snd_kcontrol_new ml26124_input_mux_controls =
 	SOC_DAPM_ENUM("Input Select", ml26124_insel_enum);
@@ -199,7 +186,7 @@ static const struct clk_coeff coeff_div[] = {
 	{12288000, 48000, 0xc, 0x0, 0x30, 0x0, 0x4},
 };
 
-static struct reg_default ml26124_reg[] = {
+static const struct reg_default ml26124_reg[] = {
 	/* CLOCK control Register */
 	{0x00, 0x00 },	/* Sampling Rate */
 	{0x02, 0x00},	/* PLL NL */
@@ -338,9 +325,10 @@ static int ml26124_hw_params(struct snd_pcm_substream *substream,
 			    struct snd_pcm_hw_params *hw_params,
 			    struct snd_soc_dai *dai)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct ml26124_priv *priv = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = dai->component;
+	struct ml26124_priv *priv = snd_soc_component_get_drvdata(component);
 	int i = get_coeff(priv->mclk, params_rate(hw_params));
+	int srate;
 
 	if (i < 0)
 		return i;
@@ -350,96 +338,59 @@ static int ml26124_hw_params(struct snd_pcm_substream *substream,
 	if (priv->clk_in) {
 		switch (priv->mclk / params_rate(hw_params)) {
 		case 256:
-			snd_soc_update_bits(codec, ML26124_CLK_CTL,
+			snd_soc_component_update_bits(component, ML26124_CLK_CTL,
 					    BIT(0) | BIT(1), 1);
 			break;
 		case 512:
-			snd_soc_update_bits(codec, ML26124_CLK_CTL,
+			snd_soc_component_update_bits(component, ML26124_CLK_CTL,
 					    BIT(0) | BIT(1), 2);
 			break;
 		case 1024:
-			snd_soc_update_bits(codec, ML26124_CLK_CTL,
+			snd_soc_component_update_bits(component, ML26124_CLK_CTL,
 					    BIT(0) | BIT(1), 3);
 			break;
 		default:
-			dev_err(codec->dev, "Unsupported MCLKI\n");
+			dev_err(component->dev, "Unsupported MCLKI\n");
 			break;
 		}
 	} else {
-		snd_soc_update_bits(codec, ML26124_CLK_CTL,
+		snd_soc_component_update_bits(component, ML26124_CLK_CTL,
 				    BIT(0) | BIT(1), 0);
 	}
 
-	switch (params_rate(hw_params)) {
-	case 16000:
-		snd_soc_update_bits(codec, ML26124_SMPLING_RATE, 0xf,
-				    get_srate(params_rate(hw_params)));
-		snd_soc_update_bits(codec, ML26124_PLLNL, 0xff,
-				    coeff_div[i].pllnl);
-		snd_soc_update_bits(codec, ML26124_PLLNH, 0x1,
-				    coeff_div[i].pllnh);
-		snd_soc_update_bits(codec, ML26124_PLLML, 0xff,
-				    coeff_div[i].pllml);
-		snd_soc_update_bits(codec, ML26124_PLLMH, 0x3f,
-				    coeff_div[i].pllmh);
-		snd_soc_update_bits(codec, ML26124_PLLDIV, 0x1f,
-				    coeff_div[i].plldiv);
-		break;
-	case 32000:
-		snd_soc_update_bits(codec, ML26124_SMPLING_RATE, 0xf,
-				    get_srate(params_rate(hw_params)));
-		snd_soc_update_bits(codec, ML26124_PLLNL, 0xff,
-				    coeff_div[i].pllnl);
-		snd_soc_update_bits(codec, ML26124_PLLNH, 0x1,
-				    coeff_div[i].pllnh);
-		snd_soc_update_bits(codec, ML26124_PLLML, 0xff,
-				    coeff_div[i].pllml);
-		snd_soc_update_bits(codec, ML26124_PLLMH, 0x3f,
-				    coeff_div[i].pllmh);
-		snd_soc_update_bits(codec, ML26124_PLLDIV, 0x1f,
-				    coeff_div[i].plldiv);
-		break;
-	case 48000:
-		snd_soc_update_bits(codec, ML26124_SMPLING_RATE, 0xf,
-				    get_srate(params_rate(hw_params)));
-		snd_soc_update_bits(codec, ML26124_PLLNL, 0xff,
-				    coeff_div[i].pllnl);
-		snd_soc_update_bits(codec, ML26124_PLLNH, 0x1,
-				    coeff_div[i].pllnh);
-		snd_soc_update_bits(codec, ML26124_PLLML, 0xff,
-				    coeff_div[i].pllml);
-		snd_soc_update_bits(codec, ML26124_PLLMH, 0x3f,
-				    coeff_div[i].pllmh);
-		snd_soc_update_bits(codec, ML26124_PLLDIV, 0x1f,
-				    coeff_div[i].plldiv);
-		break;
-	default:
-		pr_err("%s:this rate is no support for ml26124\n", __func__);
-		return -EINVAL;
-	}
+	srate = get_srate(params_rate(hw_params));
+	if (srate < 0)
+		return srate;
+
+	snd_soc_component_update_bits(component, ML26124_SMPLING_RATE, 0xf, srate);
+	snd_soc_component_update_bits(component, ML26124_PLLNL, 0xff, coeff_div[i].pllnl);
+	snd_soc_component_update_bits(component, ML26124_PLLNH, 0x1, coeff_div[i].pllnh);
+	snd_soc_component_update_bits(component, ML26124_PLLML, 0xff, coeff_div[i].pllml);
+	snd_soc_component_update_bits(component, ML26124_PLLMH, 0x3f, coeff_div[i].pllmh);
+	snd_soc_component_update_bits(component, ML26124_PLLDIV, 0x1f, coeff_div[i].plldiv);
 
 	return 0;
 }
 
-static int ml26124_mute(struct snd_soc_dai *dai, int mute)
+static int ml26124_mute(struct snd_soc_dai *dai, int mute, int direction)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct ml26124_priv *priv = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = dai->component;
+	struct ml26124_priv *priv = snd_soc_component_get_drvdata(component);
 
 	switch (priv->substream->stream) {
 	case SNDRV_PCM_STREAM_CAPTURE:
-		snd_soc_update_bits(codec, ML26124_REC_PLYBAK_RUN, BIT(0), 1);
+		snd_soc_component_update_bits(component, ML26124_REC_PLYBAK_RUN, BIT(0), 1);
 		break;
 	case SNDRV_PCM_STREAM_PLAYBACK:
-		snd_soc_update_bits(codec, ML26124_REC_PLYBAK_RUN, BIT(1), 2);
+		snd_soc_component_update_bits(component, ML26124_REC_PLYBAK_RUN, BIT(1), 2);
 		break;
 	}
 
 	if (mute)
-		snd_soc_update_bits(codec, ML26124_DVOL_CTL, BIT(4),
+		snd_soc_component_update_bits(component, ML26124_DVOL_CTL, BIT(4),
 				    DVOL_CTL_DVMUTE_ON);
 	else
-		snd_soc_update_bits(codec, ML26124_DVOL_CTL, BIT(4),
+		snd_soc_component_update_bits(component, ML26124_DVOL_CTL, BIT(4),
 				    DVOL_CTL_DVMUTE_OFF);
 
 	return 0;
@@ -449,20 +400,19 @@ static int ml26124_set_dai_fmt(struct snd_soc_dai *codec_dai,
 		unsigned int fmt)
 {
 	unsigned char mode;
-	struct snd_soc_codec *codec = codec_dai->codec;
+	struct snd_soc_component *component = codec_dai->component;
 
-	/* set master/slave audio interface */
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_CBP_CFP:
 		mode = 1;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		mode = 0;
 		break;
 	default:
 		return -EINVAL;
 	}
-	snd_soc_update_bits(codec, ML26124_SAI_MODE_SEL, BIT(0), mode);
+	snd_soc_component_update_bits(component, ML26124_SAI_MODE_SEL, BIT(0), mode);
 
 	/* interface format */
 	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
@@ -486,8 +436,8 @@ static int ml26124_set_dai_fmt(struct snd_soc_dai *codec_dai,
 static int ml26124_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 		int clk_id, unsigned int freq, int dir)
 {
-	struct snd_soc_codec *codec = codec_dai->codec;
-	struct ml26124_priv *priv = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = codec_dai->component;
+	struct ml26124_priv *priv = snd_soc_component_get_drvdata(component);
 
 	switch (clk_id) {
 	case ML26124_USE_PLLOUT:
@@ -505,17 +455,17 @@ static int ml26124_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 	return 0;
 }
 
-static int ml26124_set_bias_level(struct snd_soc_codec *codec,
+static int ml26124_set_bias_level(struct snd_soc_component *component,
 		enum snd_soc_bias_level level)
 {
-	struct ml26124_priv *priv = snd_soc_codec_get_drvdata(codec);
+	struct ml26124_priv *priv = snd_soc_component_get_drvdata(component);
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
-		snd_soc_update_bits(codec, ML26124_PW_SPAMP_PW_MNG,
+		snd_soc_component_update_bits(component, ML26124_PW_SPAMP_PW_MNG,
 				    ML26124_R26_MASK, ML26124_BLT_PREAMP_ON);
 		msleep(100);
-		snd_soc_update_bits(codec, ML26124_PW_SPAMP_PW_MNG,
+		snd_soc_component_update_bits(component, ML26124_PW_SPAMP_PW_MNG,
 				    ML26124_R26_MASK,
 				    ML26124_MICBEN_ON | ML26124_BLT_ALL_ON);
 		break;
@@ -523,8 +473,8 @@ static int ml26124_set_bias_level(struct snd_soc_codec *codec,
 		break;
 	case SND_SOC_BIAS_STANDBY:
 		/* VMID ON */
-		if (codec->dapm.bias_level == SND_SOC_BIAS_OFF) {
-			snd_soc_update_bits(codec, ML26124_PW_REF_PW_MNG,
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
+			snd_soc_component_update_bits(component, ML26124_PW_REF_PW_MNG,
 					    ML26124_VMID, ML26124_VMID);
 			msleep(500);
 			regcache_sync(priv->regmap);
@@ -532,19 +482,19 @@ static int ml26124_set_bias_level(struct snd_soc_codec *codec,
 		break;
 	case SND_SOC_BIAS_OFF:
 		/* VMID OFF */
-		snd_soc_update_bits(codec, ML26124_PW_REF_PW_MNG,
+		snd_soc_component_update_bits(component, ML26124_PW_REF_PW_MNG,
 				    ML26124_VMID, 0);
 		break;
 	}
-	codec->dapm.bias_level = level;
 	return 0;
 }
 
 static const struct snd_soc_dai_ops ml26124_dai_ops = {
 	.hw_params	= ml26124_hw_params,
-	.digital_mute	= ml26124_mute,
+	.mute_stream	= ml26124_mute,
 	.set_fmt	= ml26124_set_dai_fmt,
 	.set_sysclk	= ml26124_set_dai_sysclk,
+	.no_capture_mute = 1,
 };
 
 static struct snd_soc_dai_driver ml26124_dai = {
@@ -562,60 +512,31 @@ static struct snd_soc_dai_driver ml26124_dai = {
 		.rates = ML26124_RATES,
 		.formats = ML26124_FORMATS,},
 	.ops = &ml26124_dai_ops,
-	.symmetric_rates = 1,
+	.symmetric_rate = 1,
 };
 
-#ifdef CONFIG_PM
-static int ml26124_suspend(struct snd_soc_codec *codec)
+static int ml26124_probe(struct snd_soc_component *component)
 {
-	ml26124_set_bias_level(codec, SND_SOC_BIAS_OFF);
-
-	return 0;
-}
-
-static int ml26124_resume(struct snd_soc_codec *codec)
-{
-	ml26124_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
-
-	return 0;
-}
-#else
-#define ml26124_suspend NULL
-#define ml26124_resume NULL
-#endif
-
-static int ml26124_probe(struct snd_soc_codec *codec)
-{
-	int ret;
-	struct ml26124_priv *priv = snd_soc_codec_get_drvdata(codec);
-	codec->control_data = priv->regmap;
-
-	ret = snd_soc_codec_set_cache_io(codec, 7, 9, SND_SOC_REGMAP);
-	if (ret < 0) {
-		dev_err(codec->dev, "Failed to set cache I/O: %d\n", ret);
-		return ret;
-	}
-
 	/* Software Reset */
-	snd_soc_update_bits(codec, ML26124_SW_RST, 0x01, 1);
-	snd_soc_update_bits(codec, ML26124_SW_RST, 0x01, 0);
-
-	ml26124_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
+	snd_soc_component_update_bits(component, ML26124_SW_RST, 0x01, 1);
+	snd_soc_component_update_bits(component, ML26124_SW_RST, 0x01, 0);
 
 	return 0;
 }
 
-static struct snd_soc_codec_driver soc_codec_dev_ml26124 = {
-	.probe =	ml26124_probe,
-	.suspend =	ml26124_suspend,
-	.resume =	ml26124_resume,
-	.set_bias_level = ml26124_set_bias_level,
-	.dapm_widgets = ml26124_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(ml26124_dapm_widgets),
-	.dapm_routes = ml26124_intercon,
-	.num_dapm_routes = ARRAY_SIZE(ml26124_intercon),
-	.controls = ml26124_snd_controls,
-	.num_controls = ARRAY_SIZE(ml26124_snd_controls),
+static const struct snd_soc_component_driver soc_component_dev_ml26124 = {
+	.probe			= ml26124_probe,
+	.set_bias_level		= ml26124_set_bias_level,
+	.controls		= ml26124_snd_controls,
+	.num_controls		= ARRAY_SIZE(ml26124_snd_controls),
+	.dapm_widgets		= ml26124_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(ml26124_dapm_widgets),
+	.dapm_routes		= ml26124_intercon,
+	.num_dapm_routes	= ARRAY_SIZE(ml26124_intercon),
+	.suspend_bias_off	= 1,
+	.idle_bias_on		= 1,
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
 };
 
 static const struct regmap_config ml26124_i2c_regmap = {
@@ -628,8 +549,7 @@ static const struct regmap_config ml26124_i2c_regmap = {
 	.write_flag_mask = 0x01,
 };
 
-static int ml26124_i2c_probe(struct i2c_client *i2c,
-			     const struct i2c_device_id *id)
+static int ml26124_i2c_probe(struct i2c_client *i2c)
 {
 	struct ml26124_priv *priv;
 	int ret;
@@ -647,14 +567,8 @@ static int ml26124_i2c_probe(struct i2c_client *i2c,
 		return ret;
 	}
 
-	return snd_soc_register_codec(&i2c->dev,
-			&soc_codec_dev_ml26124, &ml26124_dai, 1);
-}
-
-static int ml26124_i2c_remove(struct i2c_client *client)
-{
-	snd_soc_unregister_codec(&client->dev);
-	return 0;
+	return devm_snd_soc_register_component(&i2c->dev,
+			&soc_component_dev_ml26124, &ml26124_dai, 1);
 }
 
 static const struct i2c_device_id ml26124_i2c_id[] = {
@@ -666,10 +580,8 @@ MODULE_DEVICE_TABLE(i2c, ml26124_i2c_id);
 static struct i2c_driver ml26124_i2c_driver = {
 	.driver = {
 		.name = "ml26124",
-		.owner = THIS_MODULE,
 	},
 	.probe = ml26124_i2c_probe,
-	.remove = ml26124_i2c_remove,
 	.id_table = ml26124_i2c_id,
 };
 

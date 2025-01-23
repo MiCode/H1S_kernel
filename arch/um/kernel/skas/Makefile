@@ -1,6 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # Copyright (C) 2002 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
-# Licensed under the GPL
 #
 
 obj-y := clone.o mmu.o process.o syscall.o uaccess.o
@@ -12,4 +12,6 @@ obj-y := clone.o mmu.o process.o syscall.o uaccess.o
 CFLAGS_clone.o := $(CFLAGS_NO_HARDENING)
 UNPROFILE_OBJS := clone.o
 
-include arch/um/scripts/Makefile.rules
+KCOV_INSTRUMENT := n
+
+include $(srctree)/arch/um/scripts/Makefile.rules

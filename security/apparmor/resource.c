@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AppArmor security module
  *
@@ -5,17 +6,13 @@
  *
  * Copyright (C) 1998-2008 Novell/SUSE
  * Copyright 2009-2010 Canonical Ltd.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation, version 2 of the
- * License.
  */
 
 #include <linux/audit.h>
+#include <linux/security.h>
 
 #include "include/audit.h"
-#include "include/context.h"
+#include "include/cred.h"
 #include "include/resource.h"
 #include "include/policy.h"
 
@@ -24,8 +21,8 @@
  */
 #include "rlim_names.h"
 
-struct aa_fs_entry aa_fs_entry_rlimit[] = {
-	AA_FS_FILE_STRING("mask", AA_FS_RLIMIT_MASK),
+struct aa_sfs_entry aa_sfs_entry_rlimit[] = {
+	AA_SFS_FILE_STRING("mask", AA_SFS_RLIMIT_MASK),
 	{ }
 };
 
@@ -33,38 +30,49 @@ struct aa_fs_entry aa_fs_entry_rlimit[] = {
 static void audit_cb(struct audit_buffer *ab, void *va)
 {
 	struct common_audit_data *sa = va;
+	struct apparmor_audit_data *ad = aad(sa);
 
 	audit_log_format(ab, " rlimit=%s value=%lu",
-			 rlim_names[sa->aad->rlim.rlim], sa->aad->rlim.max);
+			 rlim_names[ad->rlim.rlim], ad->rlim.max);
+	if (ad->peer) {
+		audit_log_format(ab, " peer=");
+		aa_label_xaudit(ab, labels_ns(ad->subj_label), ad->peer,
+				FLAGS_NONE, GFP_ATOMIC);
+	}
 }
 
 /**
  * audit_resource - audit setting resource limit
+ * @subj_cred: cred setting the resource
  * @profile: profile being enforced  (NOT NULL)
- * @resoure: rlimit being auditing
+ * @resource: rlimit being auditing
  * @value: value being set
+ * @peer: aa_albel of the task being set
+ * @info: info being auditing
  * @error: error value
  *
- * Returns: 0 or sa->error else other error code on failure
+ * Returns: 0 or ad->error else other error code on failure
  */
-static int audit_resource(struct aa_profile *profile, unsigned int resource,
-			  unsigned long value, int error)
+static int audit_resource(const struct cred *subj_cred,
+			  struct aa_profile *profile, unsigned int resource,
+			  unsigned long value, struct aa_label *peer,
+			  const char *info, int error)
 {
-	struct common_audit_data sa;
-	struct apparmor_audit_data aad = {0,};
+	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_RLIMITS,
+			  OP_SETRLIMIT);
 
-	sa.type = LSM_AUDIT_DATA_NONE;
-	sa.aad = &aad;
-	aad.op = OP_SETRLIMIT,
-	aad.rlim.rlim = resource;
-	aad.rlim.max = value;
-	aad.error = error;
-	return aa_audit(AUDIT_APPARMOR_AUTO, profile, GFP_KERNEL, &sa,
-			audit_cb);
+	ad.subj_cred = subj_cred;
+	ad.rlim.rlim = resource;
+	ad.rlim.max = value;
+	ad.peer = peer;
+	ad.info = info;
+	ad.error = error;
+
+	return aa_audit(AUDIT_APPARMOR_AUTO, profile, &ad, audit_cb);
 }
 
 /**
- * aa_map_resouce - map compiled policy resource to internal #
+ * aa_map_resource - map compiled policy resource to internal #
  * @resource: flattened policy resource number
  *
  * Returns: resource # for the current architecture.
@@ -77,78 +85,122 @@ int aa_map_resource(int resource)
 	return rlim_map[resource];
 }
 
+static int profile_setrlimit(const struct cred *subj_cred,
+			     struct aa_profile *profile, unsigned int resource,
+			     struct rlimit *new_rlim)
+{
+	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+						    typeof(*rules), list);
+	int e = 0;
+
+	if (rules->rlimits.mask & (1 << resource) && new_rlim->rlim_max >
+	    rules->rlimits.limits[resource].rlim_max)
+		e = -EACCES;
+	return audit_resource(subj_cred, profile, resource, new_rlim->rlim_max,
+			      NULL, NULL, e);
+}
+
 /**
  * aa_task_setrlimit - test permission to set an rlimit
- * @profile - profile confining the task  (NOT NULL)
- * @task - task the resource is being set on
- * @resource - the resource being set
- * @new_rlim - the new resource limit  (NOT NULL)
+ * @subj_cred: cred setting the limit
+ * @label: label confining the task  (NOT NULL)
+ * @task: task the resource is being set on
+ * @resource: the resource being set
+ * @new_rlim: the new resource limit  (NOT NULL)
  *
  * Control raising the processes hard limit.
  *
  * Returns: 0 or error code if setting resource failed
  */
-int aa_task_setrlimit(struct aa_profile *profile, struct task_struct *task,
+int aa_task_setrlimit(const struct cred *subj_cred, struct aa_label *label,
+		      struct task_struct *task,
 		      unsigned int resource, struct rlimit *new_rlim)
 {
-	struct aa_profile *task_profile;
+	struct aa_profile *profile;
+	struct aa_label *peer;
 	int error = 0;
 
 	rcu_read_lock();
-	task_profile = aa_get_profile(aa_cred_profile(__task_cred(task)));
+	peer = aa_get_newest_cred_label(__task_cred(task));
 	rcu_read_unlock();
 
 	/* TODO: extend resource control to handle other (non current)
 	 * profiles.  AppArmor rules currently have the implicit assumption
 	 * that the task is setting the resource of a task confined with
-	 * the same profile.
+	 * the same profile or that the task setting the resource of another
+	 * task has CAP_SYS_RESOURCE.
 	 */
-	if (profile != task_profile ||
-	    (profile->rlimits.mask & (1 << resource) &&
-	     new_rlim->rlim_max > profile->rlimits.limits[resource].rlim_max))
-		error = -EACCES;
 
-	aa_put_profile(task_profile);
+	if (label != peer &&
+	    aa_capable(subj_cred, label, CAP_SYS_RESOURCE, CAP_OPT_NOAUDIT) != 0)
+		error = fn_for_each(label, profile,
+				audit_resource(subj_cred, profile, resource,
+					       new_rlim->rlim_max, peer,
+					       "cap_sys_resource", -EACCES));
+	else
+		error = fn_for_each_confined(label, profile,
+				profile_setrlimit(subj_cred, profile, resource,
+						  new_rlim));
+	aa_put_label(peer);
 
-	return audit_resource(profile, resource, new_rlim->rlim_max, error);
+	return error;
 }
 
 /**
  * __aa_transition_rlimits - apply new profile rlimits
- * @old: old profile on task  (NOT NULL)
- * @new: new profile with rlimits to apply  (NOT NULL)
+ * @old_l: old label on task  (NOT NULL)
+ * @new_l: new label with rlimits to apply  (NOT NULL)
  */
-void __aa_transition_rlimits(struct aa_profile *old, struct aa_profile *new)
+void __aa_transition_rlimits(struct aa_label *old_l, struct aa_label *new_l)
 {
 	unsigned int mask = 0;
 	struct rlimit *rlim, *initrlim;
-	int i;
+	struct aa_profile *old, *new;
+	struct label_it i;
 
-	/* for any rlimits the profile controlled reset the soft limit
-	 * to the less of the tasks hard limit and the init tasks soft limit
+	old = labels_profile(old_l);
+	new = labels_profile(new_l);
+
+	/* for any rlimits the profile controlled, reset the soft limit
+	 * to the lesser of the tasks hard limit and the init tasks soft limit
 	 */
-	if (old->rlimits.mask) {
-		for (i = 0, mask = 1; i < RLIM_NLIMITS; i++, mask <<= 1) {
-			if (old->rlimits.mask & mask) {
-				rlim = current->signal->rlim + i;
-				initrlim = init_task.signal->rlim + i;
-				rlim->rlim_cur = min(rlim->rlim_max,
-						     initrlim->rlim_cur);
+	label_for_each_confined(i, old_l, old) {
+		struct aa_ruleset *rules = list_first_entry(&old->rules,
+							    typeof(*rules),
+							    list);
+		if (rules->rlimits.mask) {
+			int j;
+
+			for (j = 0, mask = 1; j < RLIM_NLIMITS; j++,
+				     mask <<= 1) {
+				if (rules->rlimits.mask & mask) {
+					rlim = current->signal->rlim + j;
+					initrlim = init_task.signal->rlim + j;
+					rlim->rlim_cur = min(rlim->rlim_max,
+							    initrlim->rlim_cur);
+				}
 			}
 		}
 	}
 
 	/* set any new hard limits as dictated by the new profile */
-	if (!new->rlimits.mask)
-		return;
-	for (i = 0, mask = 1; i < RLIM_NLIMITS; i++, mask <<= 1) {
-		if (!(new->rlimits.mask & mask))
-			continue;
+	label_for_each_confined(i, new_l, new) {
+		struct aa_ruleset *rules = list_first_entry(&new->rules,
+							    typeof(*rules),
+							    list);
+		int j;
 
-		rlim = current->signal->rlim + i;
-		rlim->rlim_max = min(rlim->rlim_max,
-				     new->rlimits.limits[i].rlim_max);
-		/* soft limit should not exceed hard limit */
-		rlim->rlim_cur = min(rlim->rlim_cur, rlim->rlim_max);
+		if (!rules->rlimits.mask)
+			continue;
+		for (j = 0, mask = 1; j < RLIM_NLIMITS; j++, mask <<= 1) {
+			if (!(rules->rlimits.mask & mask))
+				continue;
+
+			rlim = current->signal->rlim + j;
+			rlim->rlim_max = min(rlim->rlim_max,
+					     rules->rlimits.limits[j].rlim_max);
+			/* soft limit should not exceed hard limit */
+			rlim->rlim_cur = min(rlim->rlim_cur, rlim->rlim_max);
+		}
 	}
 }

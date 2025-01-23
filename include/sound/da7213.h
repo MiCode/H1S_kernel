@@ -1,13 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * da7213.h - DA7213 ASoC Codec Driver Platform Data
  *
  * Copyright (c) 2013 Dialog Semiconductor
  *
  * Author: Adam Thomson <Adam.Thomson.Opensource@diasemi.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef _DA7213_PDATA_H
@@ -44,9 +41,6 @@ struct da7213_platform_data {
 	enum da7213_dmic_data_sel dmic_data_sel;
 	enum da7213_dmic_samplephase dmic_samplephase;
 	enum da7213_dmic_clk_rate dmic_clk_rate;
-
-	/* MCLK squaring config */
-	bool mclk_squaring;
 };
 
 #endif /* _DA7213_PDATA_H */

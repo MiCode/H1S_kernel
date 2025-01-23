@@ -1,10 +1,10 @@
 .TH "CPUPOWER-IDLE-SET" "1" "0.1" "" "cpupower Manual"
 .SH "NAME"
 .LP
-cpupower idle\-set \- Utility to set cpu idle state specific kernel options
+cpupower\-idle\-set \- Utility to set cpu idle state specific kernel options
 .SH "SYNTAX"
 .LP
-cpupower [ \-c cpulist ] idle\-info [\fIoptions\fP]
+cpupower [ \-c cpulist ] idle\-set [\fIoptions\fP]
 .SH "DESCRIPTION"
 .LP
 The cpupower idle\-set subcommand allows to set cpu idle, also called cpu
@@ -13,11 +13,19 @@ sleep states. This can be handy for power vs performance tuning.
 .SH "OPTIONS"
 .LP
 .TP
-\fB\-d\fR \fB\-\-disable\fR
+\fB\-d\fR \fB\-\-disable\fR <STATE_NO>
 Disable a specific processor sleep state.
 .TP
-\fB\-e\fR \fB\-\-enable\fR
+\fB\-e\fR \fB\-\-enable\fR <STATE_NO>
 Enable a specific processor sleep state.
+.TP
+\fB\-D\fR \fB\-\-disable-by-latency\fR <LATENCY>
+Disable all idle states with a equal or higher latency than <LATENCY>.
+
+Enable all idle states with a latency lower than <LATENCY>.
+.TP
+\fB\-E\fR \fB\-\-enable-all\fR
+Enable all idle states if not enabled already.
 
 .SH "REMARKS"
 .LP

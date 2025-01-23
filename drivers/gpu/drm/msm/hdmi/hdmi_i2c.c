@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include "hdmi.h"
@@ -66,7 +55,7 @@ static int ddc_clear_irq(struct hdmi_i2c_adapter *hdmi_i2c)
 	} while ((ddc_int_ctrl & HDMI_DDC_INT_CTRL_SW_DONE_INT) && retry);
 
 	if (!retry) {
-		dev_err(dev->dev, "timeout waiting for DDC\n");
+		DRM_DEV_ERROR(dev->dev, "timeout waiting for DDC\n");
 		return -ETIMEDOUT;
 	}
 
@@ -97,7 +86,7 @@ static bool sw_done(struct hdmi_i2c_adapter *hdmi_i2c)
 	return hdmi_i2c->sw_done;
 }
 
-static int hdmi_i2c_xfer(struct i2c_adapter *i2c,
+static int msm_hdmi_i2c_xfer(struct i2c_adapter *i2c,
 		struct i2c_msg *msgs, int num)
 {
 	struct hdmi_i2c_adapter *hdmi_i2c = to_hdmi_i2c_adapter(i2c);
@@ -216,17 +205,17 @@ static int hdmi_i2c_xfer(struct i2c_adapter *i2c,
 	return i;
 }
 
-static u32 hdmi_i2c_func(struct i2c_adapter *adapter)
+static u32 msm_hdmi_i2c_func(struct i2c_adapter *adapter)
 {
 	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL;
 }
 
-static const struct i2c_algorithm hdmi_i2c_algorithm = {
-	.master_xfer	= hdmi_i2c_xfer,
-	.functionality	= hdmi_i2c_func,
+static const struct i2c_algorithm msm_hdmi_i2c_algorithm = {
+	.master_xfer	= msm_hdmi_i2c_xfer,
+	.functionality	= msm_hdmi_i2c_func,
 };
 
-void hdmi_i2c_irq(struct i2c_adapter *i2c)
+void msm_hdmi_i2c_irq(struct i2c_adapter *i2c)
 {
 	struct hdmi_i2c_adapter *hdmi_i2c = to_hdmi_i2c_adapter(i2c);
 
@@ -234,16 +223,15 @@ void hdmi_i2c_irq(struct i2c_adapter *i2c)
 		wake_up_all(&hdmi_i2c->ddc_event);
 }
 
-void hdmi_i2c_destroy(struct i2c_adapter *i2c)
+void msm_hdmi_i2c_destroy(struct i2c_adapter *i2c)
 {
 	struct hdmi_i2c_adapter *hdmi_i2c = to_hdmi_i2c_adapter(i2c);
 	i2c_del_adapter(i2c);
 	kfree(hdmi_i2c);
 }
 
-struct i2c_adapter *hdmi_i2c_init(struct hdmi *hdmi)
+struct i2c_adapter *msm_hdmi_i2c_init(struct hdmi *hdmi)
 {
-	struct drm_device *dev = hdmi->dev;
 	struct hdmi_i2c_adapter *hdmi_i2c;
 	struct i2c_adapter *i2c = NULL;
 	int ret;
@@ -264,18 +252,16 @@ struct i2c_adapter *hdmi_i2c_init(struct hdmi *hdmi)
 	i2c->class = I2C_CLASS_DDC;
 	snprintf(i2c->name, sizeof(i2c->name), "msm hdmi i2c");
 	i2c->dev.parent = &hdmi->pdev->dev;
-	i2c->algo = &hdmi_i2c_algorithm;
+	i2c->algo = &msm_hdmi_i2c_algorithm;
 
 	ret = i2c_add_adapter(i2c);
-	if (ret) {
-		dev_err(dev->dev, "failed to register hdmi i2c: %d\n", ret);
+	if (ret)
 		goto fail;
-	}
 
 	return i2c;
 
 fail:
 	if (i2c)
-		hdmi_i2c_destroy(i2c);
+		msm_hdmi_i2c_destroy(i2c);
 	return ERR_PTR(ret);
 }

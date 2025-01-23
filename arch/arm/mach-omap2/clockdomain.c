@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMAP2/3/4 clockdomain framework functions
  *
@@ -6,10 +7,6 @@
  *
  * Written by Paul Walmsley and Jouni Högander
  * Added OMAP4 specific support by Abhijit Pagare <abhijitpagare@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #undef DEBUG
 
@@ -23,6 +20,7 @@
 #include <linux/limits.h>
 #include <linux/err.h>
 #include <linux/clk-provider.h>
+#include <linux/cpu_pm.h>
 
 #include <linux/io.h>
 
@@ -31,6 +29,7 @@
 #include "soc.h"
 #include "clock.h"
 #include "clockdomain.h"
+#include "pm.h"
 
 /* clkdm_list contains all registered struct clockdomains */
 static LIST_HEAD(clkdm_list);
@@ -39,6 +38,8 @@ static LIST_HEAD(clkdm_list);
 static struct clkdm_autodep *autodeps;
 
 static struct clkdm_ops *arch_clkdm;
+void clkdm_save_context(void);
+void clkdm_restore_context(void);
 
 /* Private functions */
 
@@ -449,6 +450,22 @@ int clkdm_register_autodeps(struct clkdm_autodep *ia)
 	return 0;
 }
 
+static int cpu_notifier(struct notifier_block *nb, unsigned long cmd, void *v)
+{
+	switch (cmd) {
+	case CPU_CLUSTER_PM_ENTER:
+		if (enable_off_mode)
+			clkdm_save_context();
+		break;
+	case CPU_CLUSTER_PM_EXIT:
+		if (enable_off_mode)
+			clkdm_restore_context();
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
 /**
  * clkdm_complete_init - set up the clockdomain layer
  *
@@ -460,21 +477,25 @@ int clkdm_register_autodeps(struct clkdm_autodep *ia)
 int clkdm_complete_init(void)
 {
 	struct clockdomain *clkdm;
+	static struct notifier_block nb;
 
 	if (list_empty(&clkdm_list))
 		return -EACCES;
 
 	list_for_each_entry(clkdm, &clkdm_list, node) {
-		if (clkdm->flags & CLKDM_CAN_FORCE_WAKEUP)
-			clkdm_wakeup(clkdm);
-		else if (clkdm->flags & CLKDM_CAN_DISABLE_AUTO)
-			clkdm_deny_idle(clkdm);
+		clkdm_deny_idle(clkdm);
 
 		_resolve_clkdm_deps(clkdm, clkdm->wkdep_srcs);
 		clkdm_clear_all_wkdeps(clkdm);
 
 		_resolve_clkdm_deps(clkdm, clkdm->sleepdep_srcs);
 		clkdm_clear_all_sleepdeps(clkdm);
+	}
+
+	/* Only AM43XX can lose clkdm context during rtc-ddr suspend */
+	if (soc_is_am43xx()) {
+		nb.notifier_call = cpu_notifier;
+		cpu_pm_register_notifier(&nb);
 	}
 
 	return 0;
@@ -810,7 +831,7 @@ int clkdm_clear_all_sleepdeps(struct clockdomain *clkdm)
  * -EINVAL if @clkdm is NULL or if clockdomain does not support
  * software-initiated sleep; 0 upon success.
  */
-int clkdm_sleep_nolock(struct clockdomain *clkdm)
+static int clkdm_sleep_nolock(struct clockdomain *clkdm)
 {
 	int ret;
 
@@ -864,7 +885,7 @@ int clkdm_sleep(struct clockdomain *clkdm)
  * -EINVAL if @clkdm is NULL or if the clockdomain does not support
  * software-controlled wakeup; 0 upon success.
  */
-int clkdm_wakeup_nolock(struct clockdomain *clkdm)
+static int clkdm_wakeup_nolock(struct clockdomain *clkdm)
 {
 	int ret;
 
@@ -925,11 +946,20 @@ void clkdm_allow_idle_nolock(struct clockdomain *clkdm)
 	if (!clkdm)
 		return;
 
-	if (!(clkdm->flags & CLKDM_CAN_ENABLE_AUTO)) {
-		pr_debug("clock: %s: automatic idle transitions cannot be enabled\n",
-			 clkdm->name);
+	if (!WARN_ON(!clkdm->forcewake_count))
+		clkdm->forcewake_count--;
+
+	if (clkdm->forcewake_count)
 		return;
-	}
+
+	if (!clkdm->usecount && (clkdm->flags & CLKDM_CAN_FORCE_SLEEP))
+		clkdm_sleep_nolock(clkdm);
+
+	if (!(clkdm->flags & CLKDM_CAN_ENABLE_AUTO))
+		return;
+
+	if (clkdm->flags & CLKDM_MISSING_IDLE_REPORTING)
+		return;
 
 	if (!arch_clkdm || !arch_clkdm->clkdm_allow_idle)
 		return;
@@ -974,11 +1004,17 @@ void clkdm_deny_idle_nolock(struct clockdomain *clkdm)
 	if (!clkdm)
 		return;
 
-	if (!(clkdm->flags & CLKDM_CAN_DISABLE_AUTO)) {
-		pr_debug("clockdomain: %s: automatic idle transitions cannot be disabled\n",
-			 clkdm->name);
+	if (clkdm->forcewake_count++)
 		return;
-	}
+
+	if (clkdm->flags & CLKDM_CAN_FORCE_WAKEUP)
+		clkdm_wakeup_nolock(clkdm);
+
+	if (!(clkdm->flags & CLKDM_CAN_DISABLE_AUTO))
+		return;
+
+	if (clkdm->flags & CLKDM_MISSING_IDLE_REPORTING)
+		return;
 
 	if (!arch_clkdm || !arch_clkdm->clkdm_deny_idle)
 		return;
@@ -1005,46 +1041,6 @@ void clkdm_deny_idle(struct clockdomain *clkdm)
 	pwrdm_lock(clkdm->pwrdm.ptr);
 	clkdm_deny_idle_nolock(clkdm);
 	pwrdm_unlock(clkdm->pwrdm.ptr);
-}
-
-/**
- * clkdm_in_hwsup - is clockdomain @clkdm have hardware-supervised idle enabled?
- * @clkdm: struct clockdomain *
- *
- * Returns true if clockdomain @clkdm currently has
- * hardware-supervised idle enabled, or false if it does not or if
- * @clkdm is NULL.  It is only valid to call this function after
- * clkdm_init() has been called.  This function does not actually read
- * bits from the hardware; it instead tests an in-memory flag that is
- * changed whenever the clockdomain code changes the auto-idle mode.
- */
-bool clkdm_in_hwsup(struct clockdomain *clkdm)
-{
-	bool ret;
-
-	if (!clkdm)
-		return false;
-
-	ret = (clkdm->_flags & _CLKDM_FLAG_HWSUP_ENABLED) ? true : false;
-
-	return ret;
-}
-
-/**
- * clkdm_missing_idle_reporting - can @clkdm enter autoidle even if in use?
- * @clkdm: struct clockdomain *
- *
- * Returns true if clockdomain @clkdm has the
- * CLKDM_MISSING_IDLE_REPORTING flag set, or false if not or @clkdm is
- * null.  More information is available in the documentation for the
- * CLKDM_MISSING_IDLE_REPORTING macro.
- */
-bool clkdm_missing_idle_reporting(struct clockdomain *clkdm)
-{
-	if (!clkdm)
-		return false;
-
-	return (clkdm->flags & CLKDM_MISSING_IDLE_REPORTING) ? true : false;
 }
 
 /* Public autodep handling functions (deprecated) */
@@ -1111,7 +1107,21 @@ void clkdm_del_autodeps(struct clockdomain *clkdm)
 
 /* Clockdomain-to-clock/hwmod framework interface code */
 
-static int _clkdm_clk_hwmod_enable(struct clockdomain *clkdm)
+/**
+ * clkdm_clk_enable - add an enabled downstream clock to this clkdm
+ * @clkdm: struct clockdomain *
+ * @clk: struct clk * of the enabled downstream clock
+ *
+ * Increment the usecount of the clockdomain @clkdm and ensure that it
+ * is awake before @clk is enabled.  Intended to be called by
+ * clk_enable() code.  If the clockdomain is in software-supervised
+ * idle mode, force the clockdomain to wake.  If the clockdomain is in
+ * hardware-supervised idle mode, add clkdm-pwrdm autodependencies, to
+ * ensure that devices in the clockdomain can be read from/written to
+ * by on-chip processors.  Returns -EINVAL if passed null pointers;
+ * returns 0 upon success or if the clockdomain is in hwsup idle mode.
+ */
+int clkdm_clk_enable(struct clockdomain *clkdm, struct clk *unused)
 {
 	if (!clkdm || !arch_clkdm || !arch_clkdm->clkdm_clk_enable)
 		return -EINVAL;
@@ -1139,33 +1149,6 @@ static int _clkdm_clk_hwmod_enable(struct clockdomain *clkdm)
 }
 
 /**
- * clkdm_clk_enable - add an enabled downstream clock to this clkdm
- * @clkdm: struct clockdomain *
- * @clk: struct clk * of the enabled downstream clock
- *
- * Increment the usecount of the clockdomain @clkdm and ensure that it
- * is awake before @clk is enabled.  Intended to be called by
- * clk_enable() code.  If the clockdomain is in software-supervised
- * idle mode, force the clockdomain to wake.  If the clockdomain is in
- * hardware-supervised idle mode, add clkdm-pwrdm autodependencies, to
- * ensure that devices in the clockdomain can be read from/written to
- * by on-chip processors.  Returns -EINVAL if passed null pointers;
- * returns 0 upon success or if the clockdomain is in hwsup idle mode.
- */
-int clkdm_clk_enable(struct clockdomain *clkdm, struct clk *clk)
-{
-	/*
-	 * XXX Rewrite this code to maintain a list of enabled
-	 * downstream clocks for debugging purposes?
-	 */
-
-	if (!clk)
-		return -EINVAL;
-
-	return _clkdm_clk_hwmod_enable(clkdm);
-}
-
-/**
  * clkdm_clk_disable - remove an enabled downstream clock from this clkdm
  * @clkdm: struct clockdomain *
  * @clk: struct clk * of the disabled downstream clock
@@ -1180,13 +1163,13 @@ int clkdm_clk_enable(struct clockdomain *clkdm, struct clk *clk)
  */
 int clkdm_clk_disable(struct clockdomain *clkdm, struct clk *clk)
 {
-	if (!clkdm || !clk || !arch_clkdm || !arch_clkdm->clkdm_clk_disable)
+	if (!clkdm || !arch_clkdm || !arch_clkdm->clkdm_clk_disable)
 		return -EINVAL;
 
 	pwrdm_lock(clkdm->pwrdm.ptr);
 
 	/* corner case: disabling unused clocks */
-	if ((__clk_get_enable_count(clk) == 0) && clkdm->usecount == 0)
+	if (clk && (__clk_get_enable_count(clk) == 0) && clkdm->usecount == 0)
 		goto ccd_exit;
 
 	if (clkdm->usecount == 0) {
@@ -1241,7 +1224,7 @@ int clkdm_hwmod_enable(struct clockdomain *clkdm, struct omap_hwmod *oh)
 	if (!oh)
 		return -EINVAL;
 
-	return _clkdm_clk_hwmod_enable(clkdm);
+	return clkdm_clk_enable(clkdm, NULL);
 }
 
 /**
@@ -1264,34 +1247,55 @@ int clkdm_hwmod_disable(struct clockdomain *clkdm, struct omap_hwmod *oh)
 	if (cpu_is_omap24xx() || cpu_is_omap34xx())
 		return 0;
 
-	/*
-	 * XXX Rewrite this code to maintain a list of enabled
-	 * downstream hwmods for debugging purposes?
-	 */
-
-	if (!clkdm || !oh || !arch_clkdm || !arch_clkdm->clkdm_clk_disable)
+	if (!oh)
 		return -EINVAL;
 
-	pwrdm_lock(clkdm->pwrdm.ptr);
-
-	if (clkdm->usecount == 0) {
-		pwrdm_unlock(clkdm->pwrdm.ptr);
-		WARN_ON(1); /* underflow */
-		return -ERANGE;
-	}
-
-	clkdm->usecount--;
-	if (clkdm->usecount > 0) {
-		pwrdm_unlock(clkdm->pwrdm.ptr);
-		return 0;
-	}
-
-	arch_clkdm->clkdm_clk_disable(clkdm);
-	pwrdm_state_switch_nolock(clkdm->pwrdm.ptr);
-	pwrdm_unlock(clkdm->pwrdm.ptr);
-
-	pr_debug("clockdomain: %s: disabled\n", clkdm->name);
-
-	return 0;
+	return clkdm_clk_disable(clkdm, NULL);
 }
 
+/**
+ * _clkdm_save_context - save the context for the control of this clkdm
+ *
+ * Due to a suspend or hibernation operation, the state of the registers
+ * controlling this clkdm will be lost, save their context.
+ */
+static int _clkdm_save_context(struct clockdomain *clkdm, void *unused)
+{
+	if (!arch_clkdm || !arch_clkdm->clkdm_save_context)
+		return -EINVAL;
+
+	return arch_clkdm->clkdm_save_context(clkdm);
+}
+
+/**
+ * _clkdm_restore_context - restore context for control of this clkdm
+ *
+ * Restore the register values for this clockdomain.
+ */
+static int _clkdm_restore_context(struct clockdomain *clkdm, void *unused)
+{
+	if (!arch_clkdm || !arch_clkdm->clkdm_restore_context)
+		return -EINVAL;
+
+	return arch_clkdm->clkdm_restore_context(clkdm);
+}
+
+/**
+ * clkdm_save_context - Saves the context for each registered clkdm
+ *
+ * Save the context for each registered clockdomain.
+ */
+void clkdm_save_context(void)
+{
+	clkdm_for_each(_clkdm_save_context, NULL);
+}
+
+/**
+ * clkdm_restore_context - Restores the context for each registered clkdm
+ *
+ * Restore the context for each registered clockdomain.
+ */
+void clkdm_restore_context(void)
+{
+	clkdm_for_each(_clkdm_restore_context, NULL);
+}

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/init.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
@@ -12,11 +13,10 @@
 #include <asm/bootinfo.h>
 #include <asm/bootinfo-apollo.h>
 #include <asm/byteorder.h>
-#include <asm/pgtable.h>
 #include <asm/apollohw.h>
 #include <asm/irq.h>
-#include <asm/rtc.h>
 #include <asm/machdep.h>
+#include <asm/config.h>
 
 u_long sio01_physaddr;
 u_long sio23_physaddr;
@@ -27,11 +27,9 @@ u_long cpuctrl_physaddr;
 u_long timer_physaddr;
 u_long apollo_model;
 
-extern void dn_sched_init(irq_handler_t handler);
+extern void dn_sched_init(void);
 extern void dn_init_IRQ(void);
-extern u32 dn_gettimeoffset(void);
 extern int dn_dummy_hwclk(int, struct rtc_time *);
-extern int dn_dummy_set_clock_mmss(unsigned long);
 extern void dn_dummy_reset(void);
 #ifdef CONFIG_HEARTBEAT
 static void dn_heartbeat(int on);
@@ -65,8 +63,8 @@ int __init apollo_parse_bootinfo(const struct bi_record *record)
 
 static void __init dn_setup_model(void)
 {
-	printk("Apollo hardware found: ");
-	printk("[%s]\n", apollo_models[apollo_model - APOLLO_DN3000]);
+	pr_info("Apollo hardware found: [%s]\n",
+		apollo_models[apollo_model - APOLLO_DN3000]);
 
 	switch(apollo_model) {
 		case APOLLO_UNKNOWN:
@@ -153,10 +151,7 @@ void __init config_apollo(void)
 
 	mach_sched_init=dn_sched_init; /* */
 	mach_init_IRQ=dn_init_IRQ;
-	arch_gettimeoffset   = dn_gettimeoffset;
-	mach_max_dma_address = 0xffffffff;
 	mach_hwclk           = dn_dummy_hwclk; /* */
-	mach_set_clock_mmss  = dn_dummy_set_clock_mmss; /* */
 	mach_reset	     = dn_dummy_reset;  /* */
 #ifdef CONFIG_HEARTBEAT
 	mach_heartbeat = dn_heartbeat;
@@ -173,11 +168,10 @@ void __init config_apollo(void)
 
 irqreturn_t dn_timer_int(int irq, void *dev_id)
 {
-	irq_handler_t timer_handler = dev_id;
-
 	volatile unsigned char x;
 
-	timer_handler(irq, dev_id);
+	legacy_timer_tick(1);
+	timer_heartbeat();
 
 	x = *(volatile unsigned char *)(apollo_timer + 3);
 	x = *(volatile unsigned char *)(apollo_timer + 5);
@@ -185,7 +179,7 @@ irqreturn_t dn_timer_int(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-void dn_sched_init(irq_handler_t timer_routine)
+void dn_sched_init(void)
 {
 	/* program timer 1 */
 	*(volatile unsigned char *)(apollo_timer + 3) = 0x01;
@@ -197,17 +191,14 @@ void dn_sched_init(irq_handler_t timer_routine)
 	*(volatile unsigned char *)(pica+1)&=(~8);
 
 #if 0
-	printk("*(0x10803) %02x\n",*(volatile unsigned char *)(apollo_timer + 0x3));
-	printk("*(0x10803) %02x\n",*(volatile unsigned char *)(apollo_timer + 0x3));
+	pr_info("*(0x10803) %02x\n",
+		*(volatile unsigned char *)(apollo_timer + 0x3));
+	pr_info("*(0x10803) %02x\n",
+		*(volatile unsigned char *)(apollo_timer + 0x3));
 #endif
 
-	if (request_irq(IRQ_APOLLO, dn_timer_int, 0, "time", timer_routine))
+	if (request_irq(IRQ_APOLLO, dn_timer_int, 0, "time", NULL))
 		pr_err("Couldn't register timer interrupt\n");
-}
-
-u32 dn_gettimeoffset(void)
-{
-	return 0xdeadbeef;
 }
 
 int dn_dummy_hwclk(int op, struct rtc_time *t) {
@@ -219,8 +210,10 @@ int dn_dummy_hwclk(int op, struct rtc_time *t) {
     t->tm_hour=rtc->hours;
     t->tm_mday=rtc->day_of_month;
     t->tm_wday=rtc->day_of_week;
-    t->tm_mon=rtc->month;
+    t->tm_mon = rtc->month - 1;
     t->tm_year=rtc->year;
+    if (t->tm_year < 70)
+	t->tm_year += 100;
   } else {
     rtc->second=t->tm_sec;
     rtc->minute=t->tm_min;
@@ -228,17 +221,9 @@ int dn_dummy_hwclk(int op, struct rtc_time *t) {
     rtc->day_of_month=t->tm_mday;
     if(t->tm_wday!=-1)
       rtc->day_of_week=t->tm_wday;
-    rtc->month=t->tm_mon;
-    rtc->year=t->tm_year;
+    rtc->month = t->tm_mon + 1;
+    rtc->year = t->tm_year % 100;
   }
-
-  return 0;
-
-}
-
-int dn_dummy_set_clock_mmss(unsigned long nowtime) {
-
-  printk("set_clock_mmss\n");
 
   return 0;
 

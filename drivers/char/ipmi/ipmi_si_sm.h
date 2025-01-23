@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * ipmi_si_sm.h
  *
@@ -11,57 +12,18 @@
  *         source@mvista.com
  *
  * Copyright 2002 MontaVista Software Inc.
- *
- *  This program is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License as published by the
- *  Free Software Foundation; either version 2 of the License, or (at your
- *  option) any later version.
- *
- *
- *  THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
- *  WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- *  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- *  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
- *  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- *  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
- *  OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- *  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
- *  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
- *  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  675 Mass Ave, Cambridge, MA 02139, USA.
  */
+
+#ifndef __IPMI_SI_SM_H__
+#define __IPMI_SI_SM_H__
+
+#include "ipmi_si.h"
 
 /*
  * This is defined by the state machines themselves, it is an opaque
  * data type for them to use.
  */
 struct si_sm_data;
-
-/*
- * The structure for doing I/O in the state machine.  The state
- * machine doesn't have the actual I/O routines, they are done through
- * this interface.
- */
-struct si_sm_io {
-	unsigned char (*inputb)(struct si_sm_io *io, unsigned int offset);
-	void (*outputb)(struct si_sm_io *io,
-			unsigned int  offset,
-			unsigned char b);
-
-	/*
-	 * Generic info used by the actual handling routines, the
-	 * state machine shouldn't touch these.
-	 */
-	void __iomem *addr;
-	int  regspacing;
-	int  regsize;
-	int  regshift;
-	int addr_type;
-	long addr_data;
-};
 
 /* Results of SMI events. */
 enum si_sm_result {
@@ -135,7 +97,8 @@ struct si_sm_handlers {
 };
 
 /* Current state machines that we can use. */
-extern struct si_sm_handlers kcs_smi_handlers;
-extern struct si_sm_handlers smic_smi_handlers;
-extern struct si_sm_handlers bt_smi_handlers;
+extern const struct si_sm_handlers kcs_smi_handlers;
+extern const struct si_sm_handlers smic_smi_handlers;
+extern const struct si_sm_handlers bt_smi_handlers;
 
+#endif /* __IPMI_SI_SM_H__ */

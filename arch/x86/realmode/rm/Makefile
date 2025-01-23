@@ -7,7 +7,16 @@
 #
 #
 
-always := realmode.bin realmode.relocs
+# Sanitizer runtimes are unavailable and cannot be linked here.
+KASAN_SANITIZE			:= n
+KCSAN_SANITIZE			:= n
+KMSAN_SANITIZE			:= n
+OBJECT_FILES_NON_STANDARD	:= y
+
+# Prevents link failures: __sanitizer_cov_trace_pc() is not linked in.
+KCOV_INSTRUMENT		:= n
+
+always-y := realmode.bin realmode.relocs
 
 wakeup-objs	:= wakeup_asm.o wakemain.o video-mode.o
 wakeup-objs	+= copy.o bioscall.o regs.o
@@ -32,8 +41,7 @@ REALMODE_OBJS = $(addprefix $(obj)/,$(realmode-y))
 sed-pasyms := -n -r -e 's/^([0-9a-fA-F]+) [ABCDGRSTVW] (.+)$$/pa_\2 = \2;/p'
 
 quiet_cmd_pasyms = PASYMS  $@
-      cmd_pasyms = $(NM) $(filter-out FORCE,$^) | \
-		   sed $(sed-pasyms) | sort | uniq > $@
+      cmd_pasyms = $(NM) $(real-prereqs) | sed $(sed-pasyms) | sort | uniq > $@
 
 targets += pasyms.h
 $(obj)/pasyms.h: $(REALMODE_OBJS) FORCE
@@ -42,8 +50,8 @@ $(obj)/pasyms.h: $(REALMODE_OBJS) FORCE
 targets += realmode.lds
 $(obj)/realmode.lds: $(obj)/pasyms.h
 
-LDFLAGS_realmode.elf := --emit-relocs -T
-CPPFLAGS_realmode.lds += -P -C -I$(obj)
+LDFLAGS_realmode.elf := -m elf_i386 --emit-relocs -T
+CPPFLAGS_realmode.lds += -P -C -I$(objtree)/$(obj)
 
 targets += realmode.elf
 $(obj)/realmode.elf: $(obj)/realmode.lds $(REALMODE_OBJS) FORCE
@@ -52,7 +60,7 @@ $(obj)/realmode.elf: $(obj)/realmode.lds $(REALMODE_OBJS) FORCE
 OBJCOPYFLAGS_realmode.bin := -O binary
 
 targets += realmode.bin
-$(obj)/realmode.bin: $(obj)/realmode.elf $(obj)/realmode.relocs
+$(obj)/realmode.bin: $(obj)/realmode.elf $(obj)/realmode.relocs FORCE
 	$(call if_changed,objcopy)
 
 quiet_cmd_relocs = RELOCS  $@
@@ -64,7 +72,9 @@ $(obj)/realmode.relocs: $(obj)/realmode.elf FORCE
 
 # ---------------------------------------------------------------------------
 
-KBUILD_CFLAGS	:= $(LINUXINCLUDE) $(REALMODE_CFLAGS) -D_SETUP -D_WAKEUP \
+KBUILD_CFLAGS	:= $(REALMODE_CFLAGS) -D_SETUP -D_WAKEUP \
 		   -I$(srctree)/arch/x86/boot
 KBUILD_AFLAGS	:= $(KBUILD_CFLAGS) -D__ASSEMBLY__
+KBUILD_CFLAGS	+= -fno-asynchronous-unwind-tables
 GCOV_PROFILE := n
+UBSAN_SANITIZE := n

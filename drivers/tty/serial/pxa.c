@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *  Based on drivers/serial/8250.c by Russell King.
  *
  *  Author:	Nicolas Pitre
  *  Created:	Feb 20, 2003
  *  Copyright:	(C) 2003 Monta Vista Software, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  *
  * Note 1: This driver is made separate from the already too overloaded
  * 8250.c because it needs some kirks of its own and that'll make it
@@ -23,15 +19,11 @@
  */
 
 
-#if defined(CONFIG_SERIAL_PXA_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
-#define SUPPORT_SYSRQ
-#endif
-
-#include <linux/module.h>
 #include <linux/ioport.h>
 #include <linux/init.h>
 #include <linux/console.h>
 #include <linux/sysrq.h>
+#include <linux/serial.h>
 #include <linux/serial_reg.h>
 #include <linux/circ_buf.h>
 #include <linux/delay.h>
@@ -98,7 +90,7 @@ static void serial_pxa_stop_rx(struct uart_port *port)
 
 static inline void receive_chars(struct uart_pxa_port *up, int *status)
 {
-	unsigned int ch, flag;
+	u8 ch, flag;
 	int max_count = 256;
 
 	do {
@@ -182,35 +174,12 @@ static inline void receive_chars(struct uart_pxa_port *up, int *status)
 
 static void transmit_chars(struct uart_pxa_port *up)
 {
-	struct circ_buf *xmit = &up->port.state->xmit;
-	int count;
+	u8 ch;
 
-	if (up->port.x_char) {
-		serial_out(up, UART_TX, up->port.x_char);
-		up->port.icount.tx++;
-		up->port.x_char = 0;
-		return;
-	}
-	if (uart_circ_empty(xmit) || uart_tx_stopped(&up->port)) {
-		serial_pxa_stop_tx(&up->port);
-		return;
-	}
-
-	count = up->port.fifosize / 2;
-	do {
-		serial_out(up, UART_TX, xmit->buf[xmit->tail]);
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		up->port.icount.tx++;
-		if (uart_circ_empty(xmit))
-			break;
-	} while (--count > 0);
-
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
-		uart_write_wakeup(&up->port);
-
-
-	if (uart_circ_empty(xmit))
-		serial_pxa_stop_tx(&up->port);
+	uart_port_tx_limited(&up->port, ch, up->port.fifosize / 2,
+		true,
+		serial_out(up, UART_TX, ch),
+		({}));
 }
 
 static void serial_pxa_start_tx(struct uart_port *port)
@@ -223,6 +192,7 @@ static void serial_pxa_start_tx(struct uart_port *port)
 	}
 }
 
+/* should hold up->port.lock */
 static inline void check_modem_status(struct uart_pxa_port *up)
 {
 	int status;
@@ -255,12 +225,14 @@ static inline irqreturn_t serial_pxa_irq(int irq, void *dev_id)
 	iir = serial_in(up, UART_IIR);
 	if (iir & UART_IIR_NO_INT)
 		return IRQ_NONE;
+	spin_lock(&up->port.lock);
 	lsr = serial_in(up, UART_LSR);
 	if (lsr & UART_LSR_DR)
 		receive_chars(up, &lsr);
 	check_modem_status(up);
 	if (lsr & UART_LSR_THRE)
 		transmit_chars(up);
+	spin_unlock(&up->port.lock);
 	return IRQ_HANDLED;
 }
 
@@ -428,7 +400,7 @@ static void serial_pxa_shutdown(struct uart_port *port)
 
 static void
 serial_pxa_set_termios(struct uart_port *port, struct ktermios *termios,
-		       struct ktermios *old)
+		       const struct ktermios *old)
 {
 	struct uart_pxa_port *up = (struct uart_pxa_port *)port;
 	unsigned char cval, fcr = 0;
@@ -436,21 +408,7 @@ serial_pxa_set_termios(struct uart_port *port, struct ktermios *termios,
 	unsigned int baud, quot;
 	unsigned int dll;
 
-	switch (termios->c_cflag & CSIZE) {
-	case CS5:
-		cval = UART_LCR_WLEN5;
-		break;
-	case CS6:
-		cval = UART_LCR_WLEN6;
-		break;
-	case CS7:
-		cval = UART_LCR_WLEN7;
-		break;
-	default:
-	case CS8:
-		cval = UART_LCR_WLEN8;
-		break;
-	}
+	cval = UART_LCR_WLEN(tty_get_char_size(termios->c_cflag));
 
 	if (termios->c_cflag & CSTOPB)
 		cval |= UART_LCR_STOP;
@@ -492,7 +450,7 @@ serial_pxa_set_termios(struct uart_port *port, struct ktermios *termios,
 	up->port.read_status_mask = UART_LSR_OE | UART_LSR_THRE | UART_LSR_DR;
 	if (termios->c_iflag & INPCK)
 		up->port.read_status_mask |= UART_LSR_FE | UART_LSR_PE;
-	if (termios->c_iflag & (BRKINT | PARMRK))
+	if (termios->c_iflag & (IGNBRK | BRKINT | PARMRK))
 		up->port.read_status_mask |= UART_LSR_BI;
 
 	/*
@@ -595,12 +553,10 @@ static struct uart_driver serial_pxa_reg;
 
 #ifdef CONFIG_SERIAL_PXA_CONSOLE
 
-#define BOTH_EMPTY (UART_LSR_TEMT | UART_LSR_THRE)
-
 /*
  *	Wait for transmitter & holding register to empty
  */
-static inline void wait_for_xmitr(struct uart_pxa_port *up)
+static void wait_for_xmitr(struct uart_pxa_port *up)
 {
 	unsigned int status, tmout = 10000;
 
@@ -614,7 +570,7 @@ static inline void wait_for_xmitr(struct uart_pxa_port *up)
 		if (--tmout == 0)
 			break;
 		udelay(1);
-	} while ((status & BOTH_EMPTY) != BOTH_EMPTY);
+	} while (!uart_lsr_tx_empty(status));
 
 	/* Wait up to 1s for flow control if necessary */
 	if (up->port.flags & UPF_CONS_FLOW) {
@@ -625,7 +581,7 @@ static inline void wait_for_xmitr(struct uart_pxa_port *up)
 	}
 }
 
-static void serial_pxa_console_putchar(struct uart_port *port, int ch)
+static void serial_pxa_console_putchar(struct uart_port *port, unsigned char ch)
 {
 	struct uart_pxa_port *up = (struct uart_pxa_port *)port;
 
@@ -711,13 +667,8 @@ static void serial_pxa_put_poll_char(struct uart_port *port,
 	wait_for_xmitr(up);
 	/*
 	 *	Send the character out.
-	 *	If a LF, also do CR...
 	 */
 	serial_out(up, UART_TX, c);
-	if (c == 10) {
-		wait_for_xmitr(up);
-		serial_out(up, UART_TX, 13);
-	}
 
 	/*
 	 *	Finally, wait for transmitter to become empty
@@ -765,7 +716,7 @@ static struct console serial_pxa_console = {
 #define PXA_CONSOLE	NULL
 #endif
 
-static struct uart_ops serial_pxa_pops = {
+static const struct uart_ops serial_pxa_pops = {
 	.tx_empty	= serial_pxa_tx_empty,
 	.set_mctrl	= serial_pxa_set_mctrl,
 	.get_mctrl	= serial_pxa_get_mctrl,
@@ -783,7 +734,7 @@ static struct uart_ops serial_pxa_pops = {
 	.request_port	= serial_pxa_request_port,
 	.config_port	= serial_pxa_config_port,
 	.verify_port	= serial_pxa_verify_port,
-#ifdef CONFIG_CONSOLE_POLL
+#if defined(CONFIG_CONSOLE_POLL) && defined(CONFIG_SERIAL_PXA_CONSOLE)
 	.poll_get_char = serial_pxa_get_poll_char,
 	.poll_put_char = serial_pxa_put_poll_char,
 #endif
@@ -826,12 +777,11 @@ static const struct dev_pm_ops serial_pxa_pm_ops = {
 };
 #endif
 
-static struct of_device_id serial_pxa_dt_ids[] = {
+static const struct of_device_id serial_pxa_dt_ids[] = {
 	{ .compatible = "mrvl,pxa-uart", },
 	{ .compatible = "mrvl,mmp-uart", },
 	{}
 };
-MODULE_DEVICE_TABLE(of, serial_pxa_dt_ids);
 
 static int serial_pxa_probe_dt(struct platform_device *pdev,
 			       struct uart_pxa_port *sport)
@@ -854,13 +804,17 @@ static int serial_pxa_probe_dt(struct platform_device *pdev,
 static int serial_pxa_probe(struct platform_device *dev)
 {
 	struct uart_pxa_port *sport;
-	struct resource *mmres, *irqres;
+	struct resource *mmres;
 	int ret;
+	int irq;
 
 	mmres = platform_get_resource(dev, IORESOURCE_MEM, 0);
-	irqres = platform_get_resource(dev, IORESOURCE_IRQ, 0);
-	if (!mmres || !irqres)
+	if (!mmres)
 		return -ENODEV;
+
+	irq = platform_get_irq(dev, 0);
+	if (irq < 0)
+		return irq;
 
 	sport = kzalloc(sizeof(struct uart_pxa_port), GFP_KERNEL);
 	if (!sport)
@@ -881,18 +835,24 @@ static int serial_pxa_probe(struct platform_device *dev)
 	sport->port.type = PORT_PXA;
 	sport->port.iotype = UPIO_MEM;
 	sport->port.mapbase = mmres->start;
-	sport->port.irq = irqres->start;
+	sport->port.irq = irq;
 	sport->port.fifosize = 64;
 	sport->port.ops = &serial_pxa_pops;
 	sport->port.dev = &dev->dev;
 	sport->port.flags = UPF_IOREMAP | UPF_BOOT_AUTOCONF;
 	sport->port.uartclk = clk_get_rate(sport->clk);
+	sport->port.has_sysrq = IS_ENABLED(CONFIG_SERIAL_PXA_CONSOLE);
 
 	ret = serial_pxa_probe_dt(dev, sport);
 	if (ret > 0)
 		sport->port.line = dev->id;
 	else if (ret < 0)
 		goto err_clk;
+	if (sport->port.line >= ARRAY_SIZE(serial_pxa_ports)) {
+		dev_err(&dev->dev, "serial%d out of range\n", sport->port.line);
+		ret = -EINVAL;
+		goto err_clk;
+	}
 	snprintf(sport->name, PXA_NAME_LEN - 1, "UART%d", sport->port.line + 1);
 
 	sport->port.membase = ioremap(mmres->start, resource_size(mmres));
@@ -916,33 +876,21 @@ static int serial_pxa_probe(struct platform_device *dev)
 	return ret;
 }
 
-static int serial_pxa_remove(struct platform_device *dev)
-{
-	struct uart_pxa_port *sport = platform_get_drvdata(dev);
-
-	uart_remove_one_port(&serial_pxa_reg, &sport->port);
-
-	clk_unprepare(sport->clk);
-	clk_put(sport->clk);
-	kfree(sport);
-
-	return 0;
-}
-
 static struct platform_driver serial_pxa_driver = {
         .probe          = serial_pxa_probe,
-        .remove         = serial_pxa_remove,
 
 	.driver		= {
 	        .name	= "pxa2xx-uart",
-		.owner	= THIS_MODULE,
 #ifdef CONFIG_PM
 		.pm	= &serial_pxa_pm_ops,
 #endif
+		.suppress_bind_attrs = true,
 		.of_match_table = serial_pxa_dt_ids,
 	},
 };
 
+
+/* 8250 driver for PXA serial ports should be used */
 static int __init serial_pxa_init(void)
 {
 	int ret;
@@ -957,15 +905,4 @@ static int __init serial_pxa_init(void)
 
 	return ret;
 }
-
-static void __exit serial_pxa_exit(void)
-{
-	platform_driver_unregister(&serial_pxa_driver);
-	uart_unregister_driver(&serial_pxa_reg);
-}
-
-module_init(serial_pxa_init);
-module_exit(serial_pxa_exit);
-
-MODULE_LICENSE("GPL");
-MODULE_ALIAS("platform:pxa2xx-uart");
+device_initcall(serial_pxa_init);

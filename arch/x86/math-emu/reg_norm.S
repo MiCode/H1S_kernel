@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*---------------------------------------------------------------------------+
  |  reg_norm.S                                                               |
  |                                                                           |
@@ -21,7 +22,7 @@
 
 
 .text
-ENTRY(FPU_normalize)
+SYM_FUNC_START(FPU_normalize)
 	pushl	%ebp
 	movl	%esp,%ebp
 	pushl	%ebx
@@ -71,7 +72,7 @@ L_exit_valid:
 L_exit:
 	popl	%ebx
 	leave
-	ret
+	RET
 
 
 L_zero:
@@ -94,11 +95,12 @@ L_overflow:
 	call	arith_overflow
 	pop	%ebx
 	jmp	L_exit
+SYM_FUNC_END(FPU_normalize)
 
 
 
 /* Normalise without reporting underflow or overflow */
-ENTRY(FPU_normalize_nuo)
+SYM_FUNC_START(FPU_normalize_nuo)
 	pushl	%ebp
 	movl	%esp,%ebp
 	pushl	%ebx
@@ -136,7 +138,7 @@ L_exit_nuo_valid:
 
 	popl	%ebx
 	leave
-	ret
+	RET
 
 L_exit_nuo_zero:
 	movl	TAG_Zero,%eax
@@ -144,4 +146,5 @@ L_exit_nuo_zero:
 
 	popl	%ebx
 	leave
-	ret
+	RET
+SYM_FUNC_END(FPU_normalize_nuo)

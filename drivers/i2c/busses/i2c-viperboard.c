@@ -1,15 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Nano River Technologies viperboard i2c master driver
  *
  *  (C) 2012 by Lemonage GmbH
  *  Author: Lars Poeschel <poeschel@lemonage.de>
  *  All rights reserved.
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the	License, or (at your
- *  option) any later version.
- *
  */
 
 #include <linux/kernel.h>
@@ -288,10 +283,6 @@ static int vprbrd_i2c_xfer(struct i2c_adapter *i2c, struct i2c_msg *msgs,
 			i, pmsg->flags & I2C_M_RD ? "read" : "write",
 			pmsg->flags, pmsg->len, pmsg->addr);
 
-		/* msgs longer than 2048 bytes are not supported by adapter */
-		if (pmsg->len > 2048)
-			return -EINVAL;
-
 		mutex_lock(&vb->lock);
 		/* directly send the message */
 		if (pmsg->flags & I2C_M_RD) {
@@ -341,7 +332,7 @@ static int vprbrd_i2c_xfer(struct i2c_adapter *i2c, struct i2c_msg *msgs,
 		}
 		mutex_unlock(&vb->lock);
 	}
-	return 0;
+	return num;
 error:
 	mutex_unlock(&vb->lock);
 	return error;
@@ -356,6 +347,11 @@ static u32 vprbrd_i2c_func(struct i2c_adapter *i2c)
 static const struct i2c_algorithm vprbrd_algorithm = {
 	.master_xfer	= vprbrd_i2c_xfer,
 	.functionality	= vprbrd_i2c_func,
+};
+
+static const struct i2c_adapter_quirks vprbrd_quirks = {
+	.max_read_len = 2048,
+	.max_write_len = 2048,
 };
 
 static int vprbrd_i2c_probe(struct platform_device *pdev)
@@ -373,6 +369,7 @@ static int vprbrd_i2c_probe(struct platform_device *pdev)
 	vb_i2c->i2c.owner = THIS_MODULE;
 	vb_i2c->i2c.class = I2C_CLASS_HWMON;
 	vb_i2c->i2c.algo = &vprbrd_algorithm;
+	vb_i2c->i2c.quirks = &vprbrd_quirks;
 	vb_i2c->i2c.algo_data = vb;
 	/* save the param in usb capabable memory */
 	vb_i2c->bus_freq_param = i2c_bus_param;
@@ -389,11 +386,11 @@ static int vprbrd_i2c_probe(struct platform_device *pdev)
 			VPRBRD_USB_REQUEST_I2C_FREQ, VPRBRD_USB_TYPE_OUT,
 			0x0000, 0x0000, &vb_i2c->bus_freq_param, 1,
 			VPRBRD_USB_TIMEOUT_MS);
-	    if (ret != 1) {
-		dev_err(&pdev->dev,
-			"failure setting i2c_bus_freq to %d\n", i2c_bus_freq);
-		return -EIO;
-	    }
+		if (ret != 1) {
+			dev_err(&pdev->dev, "failure setting i2c_bus_freq to %d\n",
+				i2c_bus_freq);
+			return -EIO;
+		}
 	} else {
 		dev_err(&pdev->dev,
 			"invalid i2c_bus_freq setting:%d\n", i2c_bus_freq);
@@ -410,20 +407,18 @@ static int vprbrd_i2c_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int vprbrd_i2c_remove(struct platform_device *pdev)
+static void vprbrd_i2c_remove(struct platform_device *pdev)
 {
 	struct vprbrd_i2c *vb_i2c = platform_get_drvdata(pdev);
 
 	i2c_del_adapter(&vb_i2c->i2c);
-
-	return 0;
 }
 
 static struct platform_driver vprbrd_i2c_driver = {
 	.driver.name	= "viperboard-i2c",
 	.driver.owner	= THIS_MODULE,
 	.probe		= vprbrd_i2c_probe,
-	.remove		= vprbrd_i2c_remove,
+	.remove_new	= vprbrd_i2c_remove,
 };
 
 static int __init vprbrd_i2c_init(void)

@@ -1,21 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  PS3 AV backend support.
  *
  *  Copyright (C) 2007 Sony Computer Entertainment Inc.
  *  Copyright 2007 Sony Corp.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; version 2 of the License.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #ifndef _ASM_POWERPC_PS3AV_H_
@@ -104,7 +92,7 @@
 #define PS3AV_CMD_AV_INPUTLEN_16			0x02
 #define PS3AV_CMD_AV_INPUTLEN_20			0x0a
 #define PS3AV_CMD_AV_INPUTLEN_24			0x0b
-/* alayout */
+/* av_layout */
 #define PS3AV_CMD_AV_LAYOUT_32				(1 << 0)
 #define PS3AV_CMD_AV_LAYOUT_44				(1 << 1)
 #define PS3AV_CMD_AV_LAYOUT_48				(1 << 2)
@@ -738,6 +726,4 @@ extern int ps3av_video_mode2res(u32, u32 *, u32 *);
 extern int ps3av_video_mute(int);
 extern int ps3av_audio_mute(int);
 extern int ps3av_audio_mute_analog(int);
-extern int ps3av_dev_open(void);
-extern int ps3av_dev_close(void);
 #endif	/* _ASM_POWERPC_PS3AV_H_ */

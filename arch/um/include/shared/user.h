@@ -1,6 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* 
  * Copyright (C) 2000 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
- * Licensed under the GPL
  */
 
 #ifndef __USER_H__
@@ -16,11 +16,12 @@
  */
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
-/* This is to get size_t */
-#ifdef __KERNEL__
+/* This is to get size_t and NULL */
+#ifndef __UM_HOST__
 #include <linux/types.h>
 #else
 #include <stddef.h>
+#include <sys/types.h>
 #endif
 
 extern void panic(const char *fmt, ...)
@@ -38,7 +39,8 @@ extern void panic(const char *fmt, ...)
 #define UM_KERN_CONT	KERN_CONT
 
 #ifdef UML_CONFIG_PRINTK
-extern int printk(const char *fmt, ...)
+#define printk(...) _printk(__VA_ARGS__)
+extern int _printk(const char *fmt, ...)
 	__attribute__ ((format (printf, 1, 2)));
 #else
 static inline int printk(const char *fmt, ...)
@@ -48,8 +50,8 @@ static inline int printk(const char *fmt, ...)
 #endif
 
 extern int in_aton(char *str);
-extern size_t strlcpy(char *, const char *, size_t);
 extern size_t strlcat(char *, const char *, size_t);
+extern size_t strscpy(char *, const char *, size_t);
 
 /* Copied from linux/compiler-gcc.h since we can't include it directly */
 #define barrier() __asm__ __volatile__("": : :"memory")

@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /* 
  * Copyright (C) 2001 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
- * Licensed under the GPL
  */
 
 #include <stdio.h>
@@ -47,7 +47,7 @@ static void tuntap_del_addr(unsigned char *addr, unsigned char *netmask,
 }
 
 struct tuntap_pre_exec_data {
-	int stdout;
+	int stdout_fd;
 	int close_me;
 };
 
@@ -55,7 +55,7 @@ static void tuntap_pre_exec(void *arg)
 {
 	struct tuntap_pre_exec_data *data = arg;
 
-	dup2(data->stdout, 1);
+	dup2(data->stdout_fd, 1);
 	close(data->close_me);
 }
 
@@ -74,13 +74,13 @@ static int tuntap_open_tramp(char *gate, int *fd_out, int me, int remote,
 
 	sprintf(version_buf, "%d", UML_NET_VERSION);
 
-	data.stdout = remote;
+	data.stdout_fd = remote;
 	data.close_me = me;
 
 	pid = run_helper(tuntap_pre_exec, &data, argv);
 
 	if (pid < 0)
-		return -pid;
+		return pid;
 
 	close(remote);
 
@@ -146,7 +146,7 @@ static int tuntap_open(void *data)
 		}
 		memset(&ifr, 0, sizeof(ifr));
 		ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
-		strlcpy(ifr.ifr_name, pri->dev_name, sizeof(ifr.ifr_name));
+		strscpy(ifr.ifr_name, pri->dev_name, sizeof(ifr.ifr_name));
 		if (ioctl(pri->fd, TUNSETIFF, &ifr) < 0) {
 			err = -errno;
 			printk(UM_KERN_ERR "TUNSETIFF failed, errno = %d\n",

@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * NFC Digital Protocol stack
  * Copyright (c) 2013, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
  */
 
 #ifndef __NFC_DIGITAL_H
@@ -35,6 +26,8 @@ enum {
 	NFC_DIGITAL_RF_TECH_106A = 0,
 	NFC_DIGITAL_RF_TECH_212F,
 	NFC_DIGITAL_RF_TECH_424F,
+	NFC_DIGITAL_RF_TECH_ISO15693,
+	NFC_DIGITAL_RF_TECH_106B,
 
 	NFC_DIGITAL_RF_TECH_LAST,
 };
@@ -47,15 +40,23 @@ enum {
 	NFC_DIGITAL_FRAMING_NFCA_SHORT = 0,
 	NFC_DIGITAL_FRAMING_NFCA_STANDARD,
 	NFC_DIGITAL_FRAMING_NFCA_STANDARD_WITH_CRC_A,
+	NFC_DIGITAL_FRAMING_NFCA_ANTICOL_COMPLETE,
 
 	NFC_DIGITAL_FRAMING_NFCA_T1T,
 	NFC_DIGITAL_FRAMING_NFCA_T2T,
+	NFC_DIGITAL_FRAMING_NFCA_T4T,
 	NFC_DIGITAL_FRAMING_NFCA_NFC_DEP,
 
 	NFC_DIGITAL_FRAMING_NFCF,
 	NFC_DIGITAL_FRAMING_NFCF_T3T,
 	NFC_DIGITAL_FRAMING_NFCF_NFC_DEP,
 	NFC_DIGITAL_FRAMING_NFC_DEP_ACTIVATED,
+
+	NFC_DIGITAL_FRAMING_ISO15693_INVENTORY,
+	NFC_DIGITAL_FRAMING_ISO15693_T5T,
+
+	NFC_DIGITAL_FRAMING_NFCB,
+	NFC_DIGITAL_FRAMING_NFCB_T4T,
 
 	NFC_DIGITAL_FRAMING_LAST,
 };
@@ -117,6 +118,15 @@ typedef void (*nfc_digital_cmd_complete_t)(struct nfc_digital_dev *ddev,
  *	the NFC-DEP ATR_REQ command through cb. The digital stack deducts the RF
  *	tech by analyzing the SoD of the frame containing the ATR_REQ command.
  *	This is an asynchronous function.
+ * @tg_listen_md: If supported, put the device in automatic listen mode with
+ *	mode detection but without automatic anti-collision. In this mode, the
+ *	device automatically detects the RF technology.  What the actual
+ *	RF technology is can be retrieved by calling @tg_get_rf_tech.
+ *	The digital stack will then perform the appropriate anti-collision
+ *	sequence.  This is an asynchronous function.
+ * @tg_get_rf_tech: Required when @tg_listen_md is supported, unused otherwise.
+ *	Return the RF Technology that was detected by the @tg_listen_md call.
+ *	This is a synchronous function.
  *
  * @switch_rf: Turns device radio on or off. The stack does not call explicitly
  *	switch_rf to turn the radio on. A call to in|tg_configure_hw must turn
@@ -151,6 +161,9 @@ struct nfc_digital_ops {
 			      struct digital_tg_mdaa_params *mdaa_params,
 			      u16 timeout, nfc_digital_cmd_complete_t cb,
 			      void *arg);
+	int (*tg_listen_md)(struct nfc_digital_dev *ddev, u16 timeout,
+			    nfc_digital_cmd_complete_t cb, void *arg);
+	int (*tg_get_rf_tech)(struct nfc_digital_dev *ddev, u8 *rf_tech);
 
 	int (*switch_rf)(struct nfc_digital_dev *ddev, bool on);
 	void (*abort_cmd)(struct nfc_digital_dev *ddev);
@@ -178,7 +191,7 @@ struct digital_poll_tech {
 
 struct nfc_digital_dev {
 	struct nfc_dev *nfc_dev;
-	struct nfc_digital_ops *ops;
+	const struct nfc_digital_ops *ops;
 
 	u32 protocols;
 
@@ -198,17 +211,32 @@ struct nfc_digital_dev {
 	struct list_head cmd_queue;
 	struct mutex cmd_lock;
 
-	struct work_struct poll_work;
+	struct delayed_work poll_work;
 
 	u8 curr_protocol;
 	u8 curr_rf_tech;
 	u8 curr_nfc_dep_pni;
+	u8 did;
+	u16 dep_rwt;
+
+	u8 local_payload_max;
+	u8 remote_payload_max;
+
+	struct sk_buff *chaining_skb;
+	struct digital_data_exch *data_exch;
+
+	int atn_count;
+	int nack_count;
+
+	struct sk_buff *saved_skb;
+
+	u16 target_fsc;
 
 	int (*skb_check_crc)(struct sk_buff *skb);
 	void (*skb_add_crc)(struct sk_buff *skb);
 };
 
-struct nfc_digital_dev *nfc_digital_allocate_device(struct nfc_digital_ops *ops,
+struct nfc_digital_dev *nfc_digital_allocate_device(const struct nfc_digital_ops *ops,
 						    __u32 supported_protocols,
 						    __u32 driver_capabilities,
 						    int tx_headroom,

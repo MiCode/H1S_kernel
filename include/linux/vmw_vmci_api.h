@@ -1,16 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * VMware VMCI Driver
  *
  * Copyright (C) 2012 VMware, Inc. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation version 2 and no later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * for more details.
  */
 
 #ifndef __VMW_VMCI_API_H__
@@ -24,8 +16,10 @@
 #define VMCI_KERNEL_API_VERSION_2 2
 #define VMCI_KERNEL_API_VERSION   VMCI_KERNEL_API_VERSION_2
 
+struct msghdr;
 typedef void (vmci_device_shutdown_fn) (void *device_registration,
 					void *user_data);
+typedef void (*vmci_vsock_cb) (bool is_host);
 
 int vmci_datagram_create_handle(u32 resource_id, u32 flags,
 				vmci_datagram_recv_cb recv_cb,
@@ -44,6 +38,7 @@ int vmci_doorbell_destroy(struct vmci_handle handle);
 int vmci_doorbell_notify(struct vmci_handle handle, u32 priv_flags);
 u32 vmci_get_context_id(void);
 bool vmci_is_context_owner(u32 context_id, kuid_t uid);
+int vmci_register_vsock_callback(vmci_vsock_cb callback);
 
 int vmci_event_subscribe(u32 event,
 			 vmci_event_cb callback, void *callback_data,
@@ -73,10 +68,10 @@ ssize_t vmci_qpair_dequeue(struct vmci_qp *qpair,
 ssize_t vmci_qpair_peek(struct vmci_qp *qpair, void *buf, size_t buf_size,
 			int mode);
 ssize_t vmci_qpair_enquev(struct vmci_qp *qpair,
-			  void *iov, size_t iov_size, int mode);
+			  struct msghdr *msg, size_t iov_size, int mode);
 ssize_t vmci_qpair_dequev(struct vmci_qp *qpair,
-			  void *iov, size_t iov_size, int mode);
-ssize_t vmci_qpair_peekv(struct vmci_qp *qpair, void *iov, size_t iov_size,
+			  struct msghdr *msg, size_t iov_size, int mode);
+ssize_t vmci_qpair_peekv(struct vmci_qp *qpair, struct msghdr *msg, size_t iov_size,
 			 int mode);
 
 #endif /* !__VMW_VMCI_API_H__ */

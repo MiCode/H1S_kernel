@@ -1,23 +1,44 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for Kernel-based Virtual Machine module
 #
 
-ccflags-y += -Ivirt/kvm -Iarch/arm64/kvm
-CFLAGS_arm.o := -I.
-CFLAGS_mmu.o := -I.
+ccflags-y += -I $(srctree)/$(src)
 
-KVM=../../../virt/kvm
-ARM=../../../arch/arm/kvm
+include $(srctree)/virt/kvm/Makefile.kvm
 
-obj-$(CONFIG_KVM_ARM_HOST) += kvm.o
+obj-$(CONFIG_KVM) += kvm.o
+obj-$(CONFIG_KVM) += hyp/
 
-kvm-$(CONFIG_KVM_ARM_HOST) += $(KVM)/kvm_main.o $(KVM)/coalesced_mmio.o
-kvm-$(CONFIG_KVM_ARM_HOST) += $(ARM)/arm.o $(ARM)/mmu.o $(ARM)/mmio.o
-kvm-$(CONFIG_KVM_ARM_HOST) += $(ARM)/psci.o $(ARM)/perf.o
+kvm-y += arm.o mmu.o mmio.o psci.o hypercalls.o pvtime.o \
+	 inject_fault.o va_layout.o handle_exit.o \
+	 guest.o debug.o reset.o sys_regs.o stacktrace.o \
+	 vgic-sys-reg-v3.o fpsimd.o pkvm.o \
+	 arch_timer.o trng.o vmid.o emulate-nested.o nested.o \
+	 vgic/vgic.o vgic/vgic-init.o \
+	 vgic/vgic-irqfd.o vgic/vgic-v2.o \
+	 vgic/vgic-v3.o vgic/vgic-v4.o \
+	 vgic/vgic-mmio.o vgic/vgic-mmio-v2.o \
+	 vgic/vgic-mmio-v3.o vgic/vgic-kvm-device.o \
+	 vgic/vgic-its.o vgic/vgic-debug.o iommu.o
 
-kvm-$(CONFIG_KVM_ARM_HOST) += emulate.o inject_fault.o regmap.o
-kvm-$(CONFIG_KVM_ARM_HOST) += hyp.o hyp-init.o handle_exit.o
-kvm-$(CONFIG_KVM_ARM_HOST) += guest.o reset.o sys_regs.o sys_regs_generic_v8.o
+kvm-$(CONFIG_HW_PERF_EVENTS)  += pmu-emul.o pmu.o
+kvm-$(CONFIG_PTDUMP_STAGE2_DEBUGFS) += ptdump.o
 
-kvm-$(CONFIG_KVM_ARM_VGIC) += $(KVM)/arm/vgic.o
-kvm-$(CONFIG_KVM_ARM_TIMER) += $(KVM)/arm/arch_timer.o
+kvm-$(CONFIG_TRACING) += hyp_events.o hyp_trace.o
+
+always-y := hyp_constants.h hyp-constants.s
+
+define rule_gen_hyp_constants
+	$(call filechk,offsets,__HYP_CONSTANTS_H__)
+endef
+
+CFLAGS_hyp-constants.o = -I $(srctree)/$(src)/hyp/include
+$(obj)/hyp-constants.s: $(src)/hyp/hyp-constants.c FORCE
+	$(call if_changed_dep,cc_s_c)
+
+$(obj)/hyp_constants.h: $(obj)/hyp-constants.s FORCE
+	$(call if_changed_rule,gen_hyp_constants)
+
+obj-kvm := $(addprefix $(obj)/, $(kvm-y))
+$(obj-kvm): $(obj)/hyp_constants.h

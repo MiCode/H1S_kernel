@@ -1,20 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * SS4200-E Hardware API
  * Copyright (c) 2009, Intel Corporation.
  * Copyright IBM Corporation, 2009
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
  *
  * Author: Dave Hansen <dave@sr71.net>
  */
@@ -63,7 +51,7 @@ MODULE_LICENSE("GPL");
 /*
  * PCI ID of the Intel ICH7 LPC Device within which the GPIO block lives.
  */
-static DEFINE_PCI_DEVICE_TABLE(ich7_lpc_pci_id) = {
+static const struct pci_device_id ich7_lpc_pci_id[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_ICH7_0) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_ICH7_1) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_ICH7_30) },
@@ -78,7 +66,7 @@ static int __init ss4200_led_dmi_callback(const struct dmi_system_id *id)
 	return 1;
 }
 
-static bool __initdata nodetect;
+static bool nodetect;
 module_param_named(nodetect, nodetect, bool, 0);
 MODULE_PARM_DESC(nodetect, "Skip DMI-based hardware detection");
 
@@ -91,13 +79,26 @@ MODULE_PARM_DESC(nodetect, "Skip DMI-based hardware detection");
  * detected as working, but in reality it is not) as low as
  * possible.
  */
-static struct dmi_system_id nas_led_whitelist[] __initdata = {
+static const struct dmi_system_id nas_led_whitelist[] __initconst = {
 	{
 		.callback = ss4200_led_dmi_callback,
 		.ident = "Intel SS4200-E",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Intel"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "SS4200-E"),
+			DMI_MATCH(DMI_PRODUCT_VERSION, "1.00.00")
+		}
+	},
+	{
+		/*
+		 * FUJITSU SIEMENS SCALEO Home Server/SS4200-E
+		 * BIOS V090L 12/19/2007
+		 */
+		.callback = ss4200_led_dmi_callback,
+		.ident = "Fujitsu Siemens SCALEO Home Server",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "FUJITSU SIEMENS"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "SCALEO Home Server"),
 			DMI_MATCH(DMI_PRODUCT_VERSION, "1.00.00")
 		}
 	},
@@ -440,8 +441,8 @@ static void set_power_light_amber_noblink(void)
 	nasgpio_led_set_brightness(&amber->led_cdev, LED_FULL);
 }
 
-static ssize_t nas_led_blink_show(struct device *dev,
-				  struct device_attribute *attr, char *buf)
+static ssize_t blink_show(struct device *dev,
+			  struct device_attribute *attr, char *buf)
 {
 	struct led_classdev *led = dev_get_drvdata(dev);
 	int blinking = 0;
@@ -450,9 +451,9 @@ static ssize_t nas_led_blink_show(struct device *dev,
 	return sprintf(buf, "%u\n", blinking);
 }
 
-static ssize_t nas_led_blink_store(struct device *dev,
-				   struct device_attribute *attr,
-				   const char *buf, size_t size)
+static ssize_t blink_store(struct device *dev,
+			   struct device_attribute *attr,
+			   const char *buf, size_t size)
 {
 	int ret;
 	struct led_classdev *led = dev_get_drvdata(dev);
@@ -467,11 +468,16 @@ static ssize_t nas_led_blink_store(struct device *dev,
 	return size;
 }
 
-static DEVICE_ATTR(blink, 0644, nas_led_blink_show, nas_led_blink_store);
+static DEVICE_ATTR_RW(blink);
+
+static struct attribute *nasgpio_led_attrs[] = {
+	&dev_attr_blink.attr,
+	NULL
+};
+ATTRIBUTE_GROUPS(nasgpio_led);
 
 static int register_nasgpio_led(int led_nr)
 {
-	int ret;
 	struct nasgpio_led *nas_led = &nasgpio_leds[led_nr];
 	struct led_classdev *led = get_classdev_for_led_nr(led_nr);
 
@@ -481,20 +487,15 @@ static int register_nasgpio_led(int led_nr)
 		led->brightness = LED_FULL;
 	led->brightness_set = nasgpio_led_set_brightness;
 	led->blink_set = nasgpio_led_set_blink;
-	ret = led_classdev_register(&nas_gpio_pci_dev->dev, led);
-	if (ret)
-		return ret;
-	ret = device_create_file(led->dev, &dev_attr_blink);
-	if (ret)
-		led_classdev_unregister(led);
-	return ret;
+	led->groups = nasgpio_led_groups;
+
+	return led_classdev_register(&nas_gpio_pci_dev->dev, led);
 }
 
 static void unregister_nasgpio_led(int led_nr)
 {
 	struct led_classdev *led = get_classdev_for_led_nr(led_nr);
 	led_classdev_unregister(led);
-	device_remove_file(led->dev, &dev_attr_blink);
 }
 /*
  * module load/initialization

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * HSI character device driver, implements the character device
  * interface.
@@ -5,20 +6,6 @@
  * Copyright (C) 2010 Nokia Corporation. All rights reserved.
  *
  * Contact: Andras Domokos <andras.domokos@nokia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
  */
 
 #include <linux/errno.h>
@@ -367,7 +354,7 @@ static int hsc_rx_set(struct hsi_client *cl, struct hsc_rx_config *rxc)
 		return -EINVAL;
 	tmp = cl->rx_cfg;
 	cl->rx_cfg.mode = rxc->mode;
-	cl->rx_cfg.channels = rxc->channels;
+	cl->rx_cfg.num_hw_channels = rxc->channels;
 	cl->rx_cfg.flow = rxc->flow;
 	ret = hsi_setup(cl);
 	if (ret < 0) {
@@ -383,7 +370,7 @@ static int hsc_rx_set(struct hsi_client *cl, struct hsc_rx_config *rxc)
 static inline void hsc_rx_get(struct hsi_client *cl, struct hsc_rx_config *rxc)
 {
 	rxc->mode = cl->rx_cfg.mode;
-	rxc->channels = cl->rx_cfg.channels;
+	rxc->channels = cl->rx_cfg.num_hw_channels;
 	rxc->flow = cl->rx_cfg.flow;
 }
 
@@ -402,7 +389,7 @@ static int hsc_tx_set(struct hsi_client *cl, struct hsc_tx_config *txc)
 		return -EINVAL;
 	tmp = cl->tx_cfg;
 	cl->tx_cfg.mode = txc->mode;
-	cl->tx_cfg.channels = txc->channels;
+	cl->tx_cfg.num_hw_channels = txc->channels;
 	cl->tx_cfg.speed = txc->speed;
 	cl->tx_cfg.arb_mode = txc->arb_mode;
 	ret = hsi_setup(cl);
@@ -417,7 +404,7 @@ static int hsc_tx_set(struct hsi_client *cl, struct hsc_tx_config *txc)
 static inline void hsc_tx_get(struct hsi_client *cl, struct hsc_tx_config *txc)
 {
 	txc->mode = cl->tx_cfg.mode;
-	txc->channels = cl->tx_cfg.channels;
+	txc->channels = cl->tx_cfg.num_hw_channels;
 	txc->speed = cl->tx_cfg.speed;
 	txc->arb_mode = cl->tx_cfg.arb_mode;
 }
@@ -435,7 +422,7 @@ static ssize_t hsc_read(struct file *file, char __user *buf, size_t len,
 		return -EINVAL;
 	if (len > max_data_size)
 		len = max_data_size;
-	if (channel->ch >= channel->cl->rx_cfg.channels)
+	if (channel->ch >= channel->cl->rx_cfg.num_hw_channels)
 		return -ECHRNG;
 	if (test_and_set_bit(HSC_CH_READ, &channel->flags))
 		return -EBUSY;
@@ -492,7 +479,7 @@ static ssize_t hsc_write(struct file *file, const char __user *buf, size_t len,
 		return -EINVAL;
 	if (len > max_data_size)
 		len = max_data_size;
-	if (channel->ch >= channel->cl->tx_cfg.channels)
+	if (channel->ch >= channel->cl->tx_cfg.num_hw_channels)
 		return -ECHRNG;
 	if (test_and_set_bit(HSC_CH_WRITE, &channel->flags))
 		return -EBUSY;
@@ -697,15 +684,14 @@ static int hsc_probe(struct device *dev)
 	int i;
 
 	cl_data = kzalloc(sizeof(*cl_data), GFP_KERNEL);
-	if (!cl_data) {
-		dev_err(dev, "Could not allocate hsc_client_data\n");
+	if (!cl_data)
 		return -ENOMEM;
-	}
+
 	hsc_baseminor = HSC_BASEMINOR(hsi_id(cl), hsi_port_id(cl));
 	if (!hsc_major) {
 		ret = alloc_chrdev_region(&hsc_dev, hsc_baseminor,
 						HSC_DEVS, devname);
-		if (ret > 0)
+		if (ret == 0)
 			hsc_major = MAJOR(hsc_dev);
 	} else {
 		hsc_dev = MKDEV(hsc_major, hsc_baseminor);
@@ -773,13 +759,13 @@ static int __init hsc_init(void)
 
 	if ((max_data_size < 4) || (max_data_size > 0x10000) ||
 		(max_data_size & (max_data_size - 1))) {
-		pr_err("Invalid max read/write data size");
+		pr_err("Invalid max read/write data size\n");
 		return -EINVAL;
 	}
 
 	ret = hsi_register_client_driver(&hsc_driver);
 	if (ret) {
-		pr_err("Error while registering HSI/SSI driver %d", ret);
+		pr_err("Error while registering HSI/SSI driver %d\n", ret);
 		return ret;
 	}
 

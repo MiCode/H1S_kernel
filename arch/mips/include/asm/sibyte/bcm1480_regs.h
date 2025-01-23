@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*  *********************************************************************
     *  BCM1255/BCM1280/BCM1455/BCM1480 Board Support Package
     *
@@ -13,20 +14,6 @@
     *  Copyright 2000,2001,2002,2003
     *  Broadcom Corporation. All rights reserved.
     *
-    *  This program is free software; you can redistribute it and/or
-    *  modify it under the terms of the GNU General Public License as
-    *  published by the Free Software Foundation; either version 2 of
-    *  the License, or (at your option) any later version.
-    *
-    *  This program is distributed in the hope that it will be useful,
-    *  but WITHOUT ANY WARRANTY; without even the implied warranty of
-    *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    *  GNU General Public License for more details.
-    *
-    *  You should have received a copy of the GNU General Public License
-    *  along with this program; if not, write to the Free Software
-    *  Foundation, Inc., 59 Temple Place, Suite 330, Boston,
-    *  MA 02111-1307 USA
     ********************************************************************* */
 
 #ifndef _BCM1480_REGS_H
@@ -415,8 +402,8 @@
 					(cpu)*BCM1480_IMR_ALIAS_MAILBOX_SPACING)
 #define A_BCM1480_IMR_ALIAS_MAILBOX_REGISTER(cpu, reg) (A_BCM1480_IMR_ALIAS_MAILBOX(cpu)+(reg))
 
-#define R_BCM1480_IMR_ALIAS_MAILBOX_0		0x0000		/* 0x0x0 */
-#define R_BCM1480_IMR_ALIAS_MAILBOX_0_SET	0x0008		/* 0x0x8 */
+#define R_BCM1480_IMR_ALIAS_MAILBOX_0		0x0000
+#define R_BCM1480_IMR_ALIAS_MAILBOX_0_SET	0x0008
 
 /*
  * these macros work together to build the address of a mailbox

@@ -1,10 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/sh/mm/cache.c
  *
  * Copyright (C) 1999, 2000, 2002  Niibe Yutaka
  * Copyright (C) 2002 - 2010  Paul Mundt
- *
- * Released under the terms of the GNU GPL v2.0.
  */
 #include <linux/mm.h>
 #include <linux/init.h>
@@ -21,9 +20,9 @@ void (*local_flush_cache_mm)(void *args) = cache_noop;
 void (*local_flush_cache_dup_mm)(void *args) = cache_noop;
 void (*local_flush_cache_page)(void *args) = cache_noop;
 void (*local_flush_cache_range)(void *args) = cache_noop;
-void (*local_flush_dcache_page)(void *args) = cache_noop;
+void (*local_flush_dcache_folio)(void *args) = cache_noop;
 void (*local_flush_icache_range)(void *args) = cache_noop;
-void (*local_flush_icache_page)(void *args) = cache_noop;
+void (*local_flush_icache_folio)(void *args) = cache_noop;
 void (*local_flush_cache_sigtramp)(void *args) = cache_noop;
 
 void (*__flush_wback_region)(void *start, int size);
@@ -42,6 +41,8 @@ static inline void cacheop_on_each_cpu(void (*func) (void *info), void *info,
 {
 	preempt_disable();
 
+	/* Needing IPI for cross-core flush is SHX3-specific. */
+#ifdef CONFIG_CPU_SHX3
 	/*
 	 * It's possible that this gets called early on when IRQs are
 	 * still disabled due to ioremapping by the boot CPU, so don't
@@ -49,6 +50,7 @@ static inline void cacheop_on_each_cpu(void (*func) (void *info), void *info,
 	 */
 	if (num_online_cpus() > 1)
 		smp_call_function(func, info, wait);
+#endif
 
 	func(info);
 
@@ -59,15 +61,17 @@ void copy_to_user_page(struct vm_area_struct *vma, struct page *page,
 		       unsigned long vaddr, void *dst, const void *src,
 		       unsigned long len)
 {
-	if (boot_cpu_data.dcache.n_aliases && page_mapped(page) &&
-	    test_bit(PG_dcache_clean, &page->flags)) {
+	struct folio *folio = page_folio(page);
+
+	if (boot_cpu_data.dcache.n_aliases && folio_mapped(folio) &&
+	    test_bit(PG_dcache_clean, &folio->flags)) {
 		void *vto = kmap_coherent(page, vaddr) + (vaddr & ~PAGE_MASK);
 		memcpy(vto, src, len);
 		kunmap_coherent(vto);
 	} else {
 		memcpy(dst, src, len);
 		if (boot_cpu_data.dcache.n_aliases)
-			clear_bit(PG_dcache_clean, &page->flags);
+			clear_bit(PG_dcache_clean, &folio->flags);
 	}
 
 	if (vma->vm_flags & VM_EXEC)
@@ -78,27 +82,30 @@ void copy_from_user_page(struct vm_area_struct *vma, struct page *page,
 			 unsigned long vaddr, void *dst, const void *src,
 			 unsigned long len)
 {
-	if (boot_cpu_data.dcache.n_aliases && page_mapped(page) &&
-	    test_bit(PG_dcache_clean, &page->flags)) {
+	struct folio *folio = page_folio(page);
+
+	if (boot_cpu_data.dcache.n_aliases && page_mapcount(page) &&
+	    test_bit(PG_dcache_clean, &folio->flags)) {
 		void *vfrom = kmap_coherent(page, vaddr) + (vaddr & ~PAGE_MASK);
 		memcpy(dst, vfrom, len);
 		kunmap_coherent(vfrom);
 	} else {
 		memcpy(dst, src, len);
 		if (boot_cpu_data.dcache.n_aliases)
-			clear_bit(PG_dcache_clean, &page->flags);
+			clear_bit(PG_dcache_clean, &folio->flags);
 	}
 }
 
 void copy_user_highpage(struct page *to, struct page *from,
 			unsigned long vaddr, struct vm_area_struct *vma)
 {
+	struct folio *src = page_folio(from);
 	void *vfrom, *vto;
 
 	vto = kmap_atomic(to);
 
-	if (boot_cpu_data.dcache.n_aliases && page_mapped(from) &&
-	    test_bit(PG_dcache_clean, &from->flags)) {
+	if (boot_cpu_data.dcache.n_aliases && folio_mapped(src) &&
+	    test_bit(PG_dcache_clean, &src->flags)) {
 		vfrom = kmap_coherent(from, vaddr);
 		copy_page(vto, vfrom);
 		kunmap_coherent(vfrom);
@@ -134,27 +141,28 @@ EXPORT_SYMBOL(clear_user_highpage);
 void __update_cache(struct vm_area_struct *vma,
 		    unsigned long address, pte_t pte)
 {
-	struct page *page;
 	unsigned long pfn = pte_pfn(pte);
 
 	if (!boot_cpu_data.dcache.n_aliases)
 		return;
 
-	page = pfn_to_page(pfn);
 	if (pfn_valid(pfn)) {
-		int dirty = !test_and_set_bit(PG_dcache_clean, &page->flags);
+		struct folio *folio = page_folio(pfn_to_page(pfn));
+		int dirty = !test_and_set_bit(PG_dcache_clean, &folio->flags);
 		if (dirty)
-			__flush_purge_region(page_address(page), PAGE_SIZE);
+			__flush_purge_region(folio_address(folio),
+						folio_size(folio));
 	}
 }
 
 void __flush_anon_page(struct page *page, unsigned long vmaddr)
 {
+	struct folio *folio = page_folio(page);
 	unsigned long addr = (unsigned long) page_address(page);
 
 	if (pages_do_alias(addr, vmaddr)) {
-		if (boot_cpu_data.dcache.n_aliases && page_mapped(page) &&
-		    test_bit(PG_dcache_clean, &page->flags)) {
+		if (boot_cpu_data.dcache.n_aliases && folio_mapped(folio) &&
+		    test_bit(PG_dcache_clean, &folio->flags)) {
 			void *kaddr;
 
 			kaddr = kmap_coherent(page, vmaddr);
@@ -162,7 +170,8 @@ void __flush_anon_page(struct page *page, unsigned long vmaddr)
 			/* __flush_purge_region((void *)kaddr, PAGE_SIZE); */
 			kunmap_coherent(kaddr);
 		} else
-			__flush_purge_region((void *)addr, PAGE_SIZE);
+			__flush_purge_region(folio_address(folio),
+						folio_size(folio));
 	}
 }
 
@@ -213,11 +222,11 @@ void flush_cache_range(struct vm_area_struct *vma, unsigned long start,
 }
 EXPORT_SYMBOL(flush_cache_range);
 
-void flush_dcache_page(struct page *page)
+void flush_dcache_folio(struct folio *folio)
 {
-	cacheop_on_each_cpu(local_flush_dcache_page, page, 1);
+	cacheop_on_each_cpu(local_flush_dcache_folio, folio, 1);
 }
-EXPORT_SYMBOL(flush_dcache_page);
+EXPORT_SYMBOL(flush_dcache_folio);
 
 void flush_icache_range(unsigned long start, unsigned long end)
 {
@@ -229,11 +238,13 @@ void flush_icache_range(unsigned long start, unsigned long end)
 
 	cacheop_on_each_cpu(local_flush_icache_range, (void *)&data, 1);
 }
+EXPORT_SYMBOL(flush_icache_range);
 
-void flush_icache_page(struct vm_area_struct *vma, struct page *page)
+void flush_icache_pages(struct vm_area_struct *vma, struct page *page,
+		unsigned int nr)
 {
-	/* Nothing uses the VMA, so just pass the struct page along */
-	cacheop_on_each_cpu(local_flush_icache_page, page, 1);
+	/* Nothing uses the VMA, so just pass the folio along */
+	cacheop_on_each_cpu(local_flush_icache_folio, page_folio(page), 1);
 }
 
 void flush_cache_sigtramp(unsigned long address)
@@ -243,7 +254,11 @@ void flush_cache_sigtramp(unsigned long address)
 
 static void compute_alias(struct cache_info *c)
 {
+#ifdef CONFIG_MMU
 	c->alias_mask = ((c->sets - 1) << c->entry_shift) & ~(PAGE_SIZE - 1);
+#else
+	c->alias_mask = 0;
+#endif
 	c->n_aliases = c->alias_mask ? (c->alias_mask >> PAGE_SHIFT) + 1 : 0;
 }
 
@@ -285,8 +300,8 @@ void __init cpu_cache_init(void)
 {
 	unsigned int cache_disabled = 0;
 
-#ifdef CCR
-	cache_disabled = !(__raw_readl(CCR) & CCR_CACHE_ENABLE);
+#ifdef SH_CCR
+	cache_disabled = !(__raw_readl(SH_CCR) & CCR_CACHE_ENABLE);
 #endif
 
 	compute_alias(&boot_cpu_data.icache);
@@ -304,7 +319,11 @@ void __init cpu_cache_init(void)
 	if (unlikely(cache_disabled))
 		goto skip;
 
-	if (boot_cpu_data.family == CPU_FAMILY_SH2) {
+	if (boot_cpu_data.type == CPU_J2) {
+		extern void __weak j2_cache_init(void);
+
+		j2_cache_init();
+	} else if (boot_cpu_data.family == CPU_FAMILY_SH2) {
 		extern void __weak sh2_cache_init(void);
 
 		sh2_cache_init();
@@ -342,12 +361,6 @@ void __init cpu_cache_init(void)
 
 			shx3_cache_init();
 		}
-	}
-
-	if (boot_cpu_data.family == CPU_FAMILY_SH5) {
-		extern void __weak sh5_cache_init(void);
-
-		sh5_cache_init();
 	}
 
 skip:

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Userspace API for hardware time stamping of network packets
  *
@@ -9,9 +10,10 @@
 #ifndef _NET_TIMESTAMPING_H
 #define _NET_TIMESTAMPING_H
 
+#include <linux/types.h>
 #include <linux/socket.h>   /* for SO_TIMESTAMPING */
 
-/* SO_TIMESTAMPING gets an integer bit field comprised of these values */
+/* SO_TIMESTAMPING flags */
 enum {
 	SOF_TIMESTAMPING_TX_HARDWARE = (1<<0),
 	SOF_TIMESTAMPING_TX_SOFTWARE = (1<<1),
@@ -20,15 +22,48 @@ enum {
 	SOF_TIMESTAMPING_SOFTWARE = (1<<4),
 	SOF_TIMESTAMPING_SYS_HARDWARE = (1<<5),
 	SOF_TIMESTAMPING_RAW_HARDWARE = (1<<6),
-	SOF_TIMESTAMPING_MASK =
-	(SOF_TIMESTAMPING_RAW_HARDWARE - 1) |
-	SOF_TIMESTAMPING_RAW_HARDWARE
+	SOF_TIMESTAMPING_OPT_ID = (1<<7),
+	SOF_TIMESTAMPING_TX_SCHED = (1<<8),
+	SOF_TIMESTAMPING_TX_ACK = (1<<9),
+	SOF_TIMESTAMPING_OPT_CMSG = (1<<10),
+	SOF_TIMESTAMPING_OPT_TSONLY = (1<<11),
+	SOF_TIMESTAMPING_OPT_STATS = (1<<12),
+	SOF_TIMESTAMPING_OPT_PKTINFO = (1<<13),
+	SOF_TIMESTAMPING_OPT_TX_SWHW = (1<<14),
+	SOF_TIMESTAMPING_BIND_PHC = (1 << 15),
+	SOF_TIMESTAMPING_OPT_ID_TCP = (1 << 16),
+
+	SOF_TIMESTAMPING_LAST = SOF_TIMESTAMPING_OPT_ID_TCP,
+	SOF_TIMESTAMPING_MASK = (SOF_TIMESTAMPING_LAST - 1) |
+				 SOF_TIMESTAMPING_LAST
+};
+
+/*
+ * SO_TIMESTAMPING flags are either for recording a packet timestamp or for
+ * reporting the timestamp to user space.
+ * Recording flags can be set both via socket options and control messages.
+ */
+#define SOF_TIMESTAMPING_TX_RECORD_MASK	(SOF_TIMESTAMPING_TX_HARDWARE | \
+					 SOF_TIMESTAMPING_TX_SOFTWARE | \
+					 SOF_TIMESTAMPING_TX_SCHED | \
+					 SOF_TIMESTAMPING_TX_ACK)
+
+/**
+ * struct so_timestamping - SO_TIMESTAMPING parameter
+ *
+ * @flags:	SO_TIMESTAMPING flags
+ * @bind_phc:	Index of PTP virtual clock bound to sock. This is available
+ *		if flag SOF_TIMESTAMPING_BIND_PHC is set.
+ */
+struct so_timestamping {
+	int flags;
+	int bind_phc;
 };
 
 /**
  * struct hwtstamp_config - %SIOCGHWTSTAMP and %SIOCSHWTSTAMP parameter
  *
- * @flags:	no flags defined right now, must be zero for %SIOCSHWTSTAMP
+ * @flags:	one of HWTSTAMP_FLAG_*
  * @tx_type:	one of HWTSTAMP_TX_*
  * @rx_filter:	one of HWTSTAMP_FILTER_*
  *
@@ -42,6 +77,21 @@ struct hwtstamp_config {
 	int flags;
 	int tx_type;
 	int rx_filter;
+};
+
+/* possible values for hwtstamp_config->flags */
+enum hwtstamp_flags {
+	/*
+	 * With this flag, the user could get bond active interface's
+	 * PHC index. Note this PHC index is not stable as when there
+	 * is a failover, the bond active interface will be changed, so
+	 * will be the PHC index.
+	 */
+	HWTSTAMP_FLAG_BONDED_PHC_INDEX = (1<<0),
+#define HWTSTAMP_FLAG_BONDED_PHC_INDEX	HWTSTAMP_FLAG_BONDED_PHC_INDEX
+
+	HWTSTAMP_FLAG_LAST = HWTSTAMP_FLAG_BONDED_PHC_INDEX,
+	HWTSTAMP_FLAG_MASK = (HWTSTAMP_FLAG_LAST - 1) | HWTSTAMP_FLAG_LAST
 };
 
 /* possible values for hwtstamp_config->tx_type */
@@ -69,6 +119,17 @@ enum hwtstamp_tx_types {
 	 * queue.
 	 */
 	HWTSTAMP_TX_ONESTEP_SYNC,
+
+	/*
+	 * Same as HWTSTAMP_TX_ONESTEP_SYNC, but also enables time
+	 * stamp insertion directly into PDelay_Resp packets. In this
+	 * case, neither transmitted Sync nor PDelay_Resp packets will
+	 * receive a time stamp via the socket error queue.
+	 */
+	HWTSTAMP_TX_ONESTEP_P2P,
+
+	/* add new constants above here */
+	__HWTSTAMP_TX_CNT
 };
 
 /* possible values for hwtstamp_config->rx_filter */
@@ -108,6 +169,37 @@ enum hwtstamp_rx_filters {
 	HWTSTAMP_FILTER_PTP_V2_SYNC,
 	/* PTP v2/802.AS1, any layer, Delay_req packet */
 	HWTSTAMP_FILTER_PTP_V2_DELAY_REQ,
+
+	/* NTP, UDP, all versions and packet modes */
+	HWTSTAMP_FILTER_NTP_ALL,
+
+	/* add new constants above here */
+	__HWTSTAMP_FILTER_CNT
+};
+
+/* SCM_TIMESTAMPING_PKTINFO control message */
+struct scm_ts_pktinfo {
+	__u32 if_index;
+	__u32 pkt_length;
+	__u32 reserved[2];
+};
+
+/*
+ * SO_TXTIME gets a struct sock_txtime with flags being an integer bit
+ * field comprised of these values.
+ */
+enum txtime_flags {
+	SOF_TXTIME_DEADLINE_MODE = (1 << 0),
+	SOF_TXTIME_REPORT_ERRORS = (1 << 1),
+
+	SOF_TXTIME_FLAGS_LAST = SOF_TXTIME_REPORT_ERRORS,
+	SOF_TXTIME_FLAGS_MASK = (SOF_TXTIME_FLAGS_LAST - 1) |
+				 SOF_TXTIME_FLAGS_LAST
+};
+
+struct sock_txtime {
+	__kernel_clockid_t	clockid;/* reference clockid */
+	__u32			flags;	/* as defined by enum txtime_flags */
 };
 
 #endif /* _NET_TIMESTAMPING_H */

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*---------------------------------------------------------------------------+
  |  round_Xsig.S                                                             |
  |                                                                           |
@@ -22,7 +23,7 @@
 
 
 .text
-ENTRY(round_Xsig)
+SYM_FUNC_START(round_Xsig)
 	pushl	%ebp
 	movl	%esp,%ebp
 	pushl	%ebx		/* Reserve some space */
@@ -77,12 +78,12 @@ L_exit:
 	popl	%esi
 	popl	%ebx
 	leave
-	ret
+	RET
+SYM_FUNC_END(round_Xsig)
 
 
 
-
-ENTRY(norm_Xsig)
+SYM_FUNC_START(norm_Xsig)
 	pushl	%ebp
 	movl	%esp,%ebp
 	pushl	%ebx		/* Reserve some space */
@@ -137,5 +138,5 @@ L_n_exit:
 	popl	%esi
 	popl	%ebx
 	leave
-	ret
-
+	RET
+SYM_FUNC_END(norm_Xsig)

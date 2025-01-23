@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/mach-orion5x/pci.c
  *
  * PCI and PCIe functions for Marvell Orion System On Chip
  *
  * Maintainer: Tzachi Perelstein <tzachi@marvell.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/kernel.h>
@@ -19,8 +16,8 @@
 #include <asm/mach/pci.h>
 #include <plat/pcie.h>
 #include <plat/addr-map.h>
-#include <mach/orion5x.h>
 #include "common.h"
+#include "orion5x.h"
 
 /*****************************************************************************
  * Orion has one PCIe controller and one PCI controller.
@@ -142,6 +139,7 @@ static struct pci_ops pcie_ops = {
 static int __init pcie_setup(struct pci_sys_data *sys)
 {
 	struct resource *res;
+	struct resource realio;
 	int dev;
 
 	/*
@@ -164,7 +162,9 @@ static int __init pcie_setup(struct pci_sys_data *sys)
 		pcie_ops.read = pcie_rd_conf_wa;
 	}
 
-	pci_ioremap_io(sys->busnr * SZ_64K, ORION5X_PCIE_IO_PHYS_BASE);
+	realio.start = sys->busnr * SZ_64K;
+	realio.end = realio.start + SZ_64K - 1;
+	pci_remap_iospace(&realio, ORION5X_PCIE_IO_PHYS_BASE);
 
 	/*
 	 * Request resources.
@@ -466,6 +466,7 @@ static void __init orion5x_setup_pci_wins(void)
 static int __init pci_setup(struct pci_sys_data *sys)
 {
 	struct resource *res;
+	struct resource realio;
 
 	/*
 	 * Point PCI unit MBUS decode windows to DRAM space.
@@ -482,7 +483,9 @@ static int __init pci_setup(struct pci_sys_data *sys)
 	 */
 	orion5x_setbits(PCI_CMD, PCI_CMD_HOST_REORDER);
 
-	pci_ioremap_io(sys->busnr * SZ_64K, ORION5X_PCI_IO_PHYS_BASE);
+	realio.start = sys->busnr * SZ_64K;
+	realio.end = realio.start + SZ_64K - 1;
+	pci_remap_iospace(&realio, ORION5X_PCI_IO_PHYS_BASE);
 
 	/*
 	 * Request resources
@@ -509,18 +512,24 @@ static int __init pci_setup(struct pci_sys_data *sys)
 /*****************************************************************************
  * General PCIe + PCI
  ****************************************************************************/
+
+/*
+ * The root complex has a hardwired class of PCI_CLASS_MEMORY_OTHER, when it
+ * is operating as a root complex this needs to be switched to
+ * PCI_CLASS_BRIDGE_HOST or Linux will errantly try to process the BAR's on
+ * the device. Decoding setup is handled by the orion code.
+ */
 static void rc_pci_fixup(struct pci_dev *dev)
 {
-	/*
-	 * Prevent enumeration of root complex.
-	 */
 	if (dev->bus->parent == NULL && dev->devfn == 0) {
-		int i;
+		struct resource *r;
 
-		for (i = 0; i < DEVICE_COUNT_RESOURCE; i++) {
-			dev->resource[i].start = 0;
-			dev->resource[i].end   = 0;
-			dev->resource[i].flags = 0;
+		dev->class &= 0xff;
+		dev->class |= PCI_CLASS_BRIDGE_HOST << 8;
+		pci_dev_for_each_resource(dev, r) {
+			r->start	= 0;
+			r->end		= 0;
+			r->flags	= 0;
 		}
 	}
 }
@@ -540,37 +549,42 @@ void __init orion5x_pci_set_cardbus_mode(void)
 
 int __init orion5x_pci_sys_setup(int nr, struct pci_sys_data *sys)
 {
-	int ret = 0;
-
 	vga_base = ORION5X_PCIE_MEM_PHYS_BASE;
 
 	if (nr == 0) {
 		orion_pcie_set_local_bus_nr(PCIE_BASE, sys->busnr);
-		ret = pcie_setup(sys);
-	} else if (nr == 1 && !orion5x_pci_disabled) {
-		orion5x_pci_set_bus_nr(sys->busnr);
-		ret = pci_setup(sys);
+		return pcie_setup(sys);
 	}
 
-	return ret;
+	if (nr == 1 && !orion5x_pci_disabled) {
+		orion5x_pci_set_bus_nr(sys->busnr);
+		return pci_setup(sys);
+	}
+
+	return 0;
 }
 
-struct pci_bus __init *orion5x_pci_sys_scan_bus(int nr, struct pci_sys_data *sys)
+int __init orion5x_pci_sys_scan_bus(int nr, struct pci_host_bridge *bridge)
 {
-	struct pci_bus *bus;
+	struct pci_sys_data *sys = pci_host_bridge_priv(bridge);
+
+	list_splice_init(&sys->resources, &bridge->windows);
+	bridge->dev.parent = NULL;
+	bridge->sysdata = sys;
+	bridge->busnr = sys->busnr;
 
 	if (nr == 0) {
-		bus = pci_scan_root_bus(NULL, sys->busnr, &pcie_ops, sys,
-					&sys->resources);
-	} else if (nr == 1 && !orion5x_pci_disabled) {
-		bus = pci_scan_root_bus(NULL, sys->busnr, &pci_ops, sys,
-					&sys->resources);
-	} else {
-		bus = NULL;
-		BUG();
+		bridge->ops = &pcie_ops;
+		return pci_scan_root_bus_bridge(bridge);
 	}
 
-	return bus;
+	if (nr == 1 && !orion5x_pci_disabled) {
+		bridge->ops = &pci_ops;
+		return pci_scan_root_bus_bridge(bridge);
+	}
+
+	BUG();
+	return -ENODEV;
 }
 
 int __init orion5x_pci_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)

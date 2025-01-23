@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # ST Microelectronics SPEAr PINCTRL drivers
 #
@@ -48,6 +49,7 @@ config PINCTRL_SPEAR1340
 config PINCTRL_SPEAR_PLGPIO
 	bool "SPEAr SoC PLGPIO Controller"
 	depends on GPIOLIB && PINCTRL_SPEAR
+	select GPIOLIB_IRQCHIP
 	help
 	  Say yes here to support PLGPIO controller on ST Microelectronics SPEAr
 	  SoCs.

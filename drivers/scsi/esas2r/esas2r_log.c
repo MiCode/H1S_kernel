@@ -75,7 +75,7 @@ static char event_buffer[EVENT_LOG_BUFF_SIZE];
 /* A lock to protect the shared buffer used for formatting messages. */
 static DEFINE_SPINLOCK(event_buffer_lock);
 
-/**
+/*
  * translates an esas2r-defined logging event level to a kernel logging level.
  *
  * @param [in] level the esas2r-defined logging event level to translate
@@ -101,7 +101,12 @@ static const char *translate_esas2r_event_level_to_kernel(const long level)
 	}
 }
 
-/**
+#pragma GCC diagnostic push
+#ifndef __clang__
+#pragma GCC diagnostic ignored "-Wsuggest-attribute=format"
+#endif
+
+/*
  * the master logging function.  this function will format the message as
  * outlined by the formatting string, the input device information and the
  * substitution arguments and output the resulting string to the system log.
@@ -129,11 +134,6 @@ static int esas2r_log_master(const long level,
 			translate_esas2r_event_level_to_kernel(level);
 
 		spin_lock_irqsave(&event_buffer_lock, flags);
-
-		if (buffer == NULL) {
-			spin_unlock_irqrestore(&event_buffer_lock, flags);
-			return -1;
-		}
 
 		memset(buffer, 0, buflen);
 
@@ -165,13 +165,9 @@ static int esas2r_log_master(const long level,
 
 		/*
 		 * Put a line break at the end of the formatted string so that
-		 * we don't wind up with run-on messages.  only append if there
-		 * is enough space in the buffer.
+		 * we don't wind up with run-on messages.
 		 */
-		if (strlen(event_buffer) < buflen)
-			strcat(buffer, "\n");
-
-		printk(event_buffer);
+		printk("%s\n", event_buffer);
 
 		spin_unlock_irqrestore(&event_buffer_lock, flags);
 	}
@@ -179,7 +175,9 @@ static int esas2r_log_master(const long level,
 	return 0;
 }
 
-/**
+#pragma GCC diagnostic pop
+
+/*
  * formats and logs a message to the system log.
  *
  * @param [in] level  the event level of the message
@@ -202,7 +200,7 @@ int esas2r_log(const long level, const char *format, ...)
 	return retval;
 }
 
-/**
+/*
  * formats and logs a message to the system log.  this message will include
  * device information.
  *
@@ -230,7 +228,7 @@ int esas2r_log_dev(const long level,
 	return retval;
 }
 
-/**
+/*
  * formats and logs a message to the system log.  this message will include
  * device information.
  *

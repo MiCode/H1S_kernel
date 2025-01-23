@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /*
 * cycx_cfm.h	Cyclom 2X WAN Link Driver.
 *		Definitions for the Cyclom 2X Firmware Module (CFM).
@@ -90,7 +91,7 @@ struct cycx_firmware {
 	unsigned short	    reserved[6];
 	char		    descr[CFM_DESCR_LEN];
 	struct cycx_fw_info info;
-	unsigned char	    image[0];
+	unsigned char	    image[];
 };
 
 struct cycx_fw_header {

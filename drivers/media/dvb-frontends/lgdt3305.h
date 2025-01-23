@@ -1,30 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *    Support for LG Electronics LGDT3304 and LGDT3305 - VSB/QAM
  *
  *    Copyright (C) 2008, 2009, 2010 Michael Krufky <mkrufky@linuxtv.org>
- *
- *    This program is free software; you can redistribute it and/or modify
- *    it under the terms of the GNU General Public License as published by
- *    the Free Software Foundation; either version 2 of the License, or
- *    (at your option) any later version.
- *
- *    This program is distributed in the hope that it will be useful,
- *    but WITHOUT ANY WARRANTY; without even the implied warranty of
- *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU General Public License for more details.
- *
- *    You should have received a copy of the GNU General Public License
- *    along with this program; if not, write to the Free Software
- *    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  */
 
 #ifndef _LGDT3305_H_
 #define _LGDT3305_H_
 
-#include <linux/kconfig.h>
 #include <linux/i2c.h>
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 
 
 enum lgdt3305_mpeg_mode {
@@ -35,6 +20,11 @@ enum lgdt3305_mpeg_mode {
 enum lgdt3305_tp_clock_edge {
 	LGDT3305_TPCLK_RISING_EDGE = 0,
 	LGDT3305_TPCLK_FALLING_EDGE = 1,
+};
+
+enum lgdt3305_tp_clock_mode {
+	LGDT3305_TPCLK_GATED = 0,
+	LGDT3305_TPCLK_FIXED = 1,
 };
 
 enum lgdt3305_tp_valid_polarity {
@@ -70,11 +60,12 @@ struct lgdt3305_config {
 
 	enum lgdt3305_mpeg_mode mpeg_mode;
 	enum lgdt3305_tp_clock_edge tpclk_edge;
+	enum lgdt3305_tp_clock_mode tpclk_mode;
 	enum lgdt3305_tp_valid_polarity tpvalid_polarity;
 	enum lgdt_demod_chip_type demod_chip;
 };
 
-#if IS_ENABLED(CONFIG_DVB_LGDT3305)
+#if IS_REACHABLE(CONFIG_DVB_LGDT3305)
 extern
 struct dvb_frontend *lgdt3305_attach(const struct lgdt3305_config *config,
 				     struct i2c_adapter *i2c_adap);

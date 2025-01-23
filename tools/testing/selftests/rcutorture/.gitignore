@@ -1,6 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
 initrd
-linux-2.6
 b[0-9]*
-rcu-test-image
 res
 *.swp

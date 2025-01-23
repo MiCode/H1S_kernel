@@ -1,18 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMAP interface clock support
  *
  * Copyright (C) 2013 Texas Instruments, Inc.
  *
  * Tero Kristo <t-kristo@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/clk-provider.h>
@@ -20,6 +12,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/clk/ti.h>
+#include "clock.h"
 
 #undef pr_fmt
 #define pr_fmt(fmt) "%s: " fmt, __func__
@@ -31,53 +24,68 @@ static const struct clk_ops ti_interface_clk_ops = {
 	.is_enabled	= &omap2_dflt_clk_is_enabled,
 };
 
-static void __init _of_ti_interface_clk_setup(struct device_node *node,
-					      const struct clk_hw_omap_ops *ops)
+static struct clk *_register_interface(struct device_node *node,
+				       const char *name,
+				       const char *parent_name,
+				       struct clk_omap_reg *reg, u8 bit_idx,
+				       const struct clk_hw_omap_ops *ops)
 {
-	struct clk *clk;
 	struct clk_init_data init = { NULL };
 	struct clk_hw_omap *clk_hw;
-	const char *parent_name;
-	u32 val;
+	struct clk *clk;
 
 	clk_hw = kzalloc(sizeof(*clk_hw), GFP_KERNEL);
 	if (!clk_hw)
-		return;
+		return ERR_PTR(-ENOMEM);
 
 	clk_hw->hw.init = &init;
 	clk_hw->ops = ops;
-	clk_hw->flags = MEMMAP_ADDRESSING;
+	memcpy(&clk_hw->enable_reg, reg, sizeof(*reg));
+	clk_hw->enable_bit = bit_idx;
 
-	clk_hw->enable_reg = ti_clk_get_reg_addr(node, 0);
-	if (!clk_hw->enable_reg)
-		goto cleanup;
-
-	if (!of_property_read_u32(node, "ti,bit-shift", &val))
-		clk_hw->enable_bit = val;
-
-	init.name = node->name;
+	init.name = name;
 	init.ops = &ti_interface_clk_ops;
 	init.flags = 0;
-
-	parent_name = of_clk_get_parent_name(node, 0);
-	if (!parent_name) {
-		pr_err("%s must have a parent\n", node->name);
-		goto cleanup;
-	}
 
 	init.num_parents = 1;
 	init.parent_names = &parent_name;
 
-	clk = clk_register(NULL, &clk_hw->hw);
+	clk = of_ti_clk_register_omap_hw(node, &clk_hw->hw, name);
 
-	if (!IS_ERR(clk)) {
-		of_clk_add_provider(node, of_clk_src_simple_get, clk);
-		omap2_init_clk_hw_omap_clocks(clk);
+	if (IS_ERR(clk))
+		kfree(clk_hw);
+
+	return clk;
+}
+
+static void __init _of_ti_interface_clk_setup(struct device_node *node,
+					      const struct clk_hw_omap_ops *ops)
+{
+	struct clk *clk;
+	const char *parent_name;
+	struct clk_omap_reg reg;
+	u8 enable_bit = 0;
+	const char *name;
+	u32 val;
+
+	if (ti_clk_get_reg_addr(node, 0, &reg))
+		return;
+
+	if (!of_property_read_u32(node, "ti,bit-shift", &val))
+		enable_bit = val;
+
+	parent_name = of_clk_get_parent_name(node, 0);
+	if (!parent_name) {
+		pr_err("%pOFn must have a parent\n", node);
 		return;
 	}
 
-cleanup:
-	kfree(clk_hw);
+	name = ti_dt_clk_name(node);
+	clk = _register_interface(node, name, parent_name, &reg,
+				  enable_bit, ops);
+
+	if (!IS_ERR(clk))
+		of_clk_add_provider(node, of_clk_src_simple_get, clk);
 }
 
 static void __init of_ti_interface_clk_setup(struct device_node *node)
@@ -94,6 +102,7 @@ static void __init of_ti_no_wait_interface_clk_setup(struct device_node *node)
 CLK_OF_DECLARE(ti_no_wait_interface_clk, "ti,omap3-no-wait-interface-clock",
 	       of_ti_no_wait_interface_clk_setup);
 
+#ifdef CONFIG_ARCH_OMAP3
 static void __init of_ti_hsotgusb_interface_clk_setup(struct device_node *node)
 {
 	_of_ti_interface_clk_setup(node,
@@ -123,3 +132,13 @@ static void __init of_ti_am35xx_interface_clk_setup(struct device_node *node)
 }
 CLK_OF_DECLARE(ti_am35xx_interface_clk, "ti,am35xx-interface-clock",
 	       of_ti_am35xx_interface_clk_setup);
+#endif
+
+#ifdef CONFIG_SOC_OMAP2430
+static void __init of_ti_omap2430_interface_clk_setup(struct device_node *node)
+{
+	_of_ti_interface_clk_setup(node, &clkhwops_omap2430_i2chs_wait);
+}
+CLK_OF_DECLARE(ti_omap2430_interface_clk, "ti,omap2430-interface-clock",
+	       of_ti_omap2430_interface_clk_setup);
+#endif

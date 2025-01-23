@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * HID driver for the apple ir device
  *
@@ -12,15 +13,6 @@
  * Copyright (C) 2010, 2012 Bastien Nocera <hadess@hadess.net>
  * Copyright (C) 2013 Benjamin Tissoires <benjamin.tissoires@gmail.com>
  * Copyright (C) 2013 Red Hat Inc. All Rights Reserved
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/device.h>
@@ -173,9 +165,9 @@ static void battery_flat(struct appleir *appleir)
 	dev_err(&appleir->input_dev->dev, "possible flat battery?\n");
 }
 
-static void key_up_tick(unsigned long data)
+static void key_up_tick(struct timer_list *t)
 {
-	struct appleir *appleir = (struct appleir *)data;
+	struct appleir *appleir = from_timer(appleir, t, key_up_timer);
 	struct hid_device *hid = appleir->hid;
 	unsigned long flags;
 
@@ -256,7 +248,7 @@ out:
 	return 0;
 }
 
-static void appleir_input_configured(struct hid_device *hid,
+static int appleir_input_configured(struct hid_device *hid,
 		struct hid_input *hidinput)
 {
 	struct input_dev *input_dev = hidinput->input;
@@ -275,6 +267,8 @@ static void appleir_input_configured(struct hid_device *hid,
 	for (i = 0; i < ARRAY_SIZE(appleir_key_table); i++)
 		set_bit(appleir->keymap[i], input_dev->keybit);
 	clear_bit(KEY_RESERVED, input_dev->keybit);
+
+	return 0;
 }
 
 static int appleir_input_mapping(struct hid_device *hid,
@@ -289,11 +283,9 @@ static int appleir_probe(struct hid_device *hid, const struct hid_device_id *id)
 	int ret;
 	struct appleir *appleir;
 
-	appleir = kzalloc(sizeof(struct appleir), GFP_KERNEL);
-	if (!appleir) {
-		ret = -ENOMEM;
-		goto allocfail;
-	}
+	appleir = devm_kzalloc(&hid->dev, sizeof(struct appleir), GFP_KERNEL);
+	if (!appleir)
+		return -ENOMEM;
 
 	appleir->hid = hid;
 
@@ -301,8 +293,7 @@ static int appleir_probe(struct hid_device *hid, const struct hid_device_id *id)
 	hid->quirks |= HID_QUIRK_HIDINPUT_FORCE;
 
 	spin_lock_init(&appleir->lock);
-	setup_timer(&appleir->key_up_timer,
-		    key_up_tick, (unsigned long) appleir);
+	timer_setup(&appleir->key_up_timer, key_up_tick, 0);
 
 	hid_set_drvdata(hid, appleir);
 
@@ -320,8 +311,7 @@ static int appleir_probe(struct hid_device *hid, const struct hid_device_id *id)
 
 	return 0;
 fail:
-	kfree(appleir);
-allocfail:
+	devm_kfree(&hid->dev, appleir);
 	return ret;
 }
 
@@ -330,7 +320,6 @@ static void appleir_remove(struct hid_device *hid)
 	struct appleir *appleir = hid_get_drvdata(hid);
 	hid_hw_stop(hid);
 	del_timer_sync(&appleir->key_up_timer);
-	kfree(appleir);
 }
 
 static const struct hid_device_id appleir_devices[] = {

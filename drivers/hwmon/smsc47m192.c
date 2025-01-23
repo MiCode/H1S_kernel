@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * smsc47m192.c - Support for hardware monitoring block of
  *		  SMSC LPC47M192 and compatible Super I/O chips
@@ -5,20 +6,6 @@
  * Copyright (C) 2006  Hartmut Rick <linux@rick.claranet.de>
  *
  * Derived from lm78.c and other chip drivers.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
@@ -77,16 +64,17 @@ static inline unsigned int IN_FROM_REG(u8 reg, int n)
 
 static inline u8 IN_TO_REG(unsigned long val, int n)
 {
-	return clamp_val(SCALE(val, 192, nom_mv[n]), 0, 255);
+	val = clamp_val(val, 0, nom_mv[n] * 255 / 192);
+	return SCALE(val, 192, nom_mv[n]);
 }
 
 /*
  * TEMP: 0.001 degC units (-128C to +127C)
  * REG: 1C/bit, two's complement
  */
-static inline s8 TEMP_TO_REG(int val)
+static inline s8 TEMP_TO_REG(long val)
 {
-	return clamp_val(SCALE(val, 1, 1000), -128000, 127000);
+	return SCALE(clamp_val(val, -128000, 127000), 1, 1000);
 }
 
 static inline int TEMP_FROM_REG(s8 val)
@@ -95,9 +83,10 @@ static inline int TEMP_FROM_REG(s8 val)
 }
 
 struct smsc47m192_data {
-	struct device *hwmon_dev;
+	struct i2c_client *client;
+	const struct attribute_group *groups[3];
 	struct mutex update_lock;
-	char valid;		/* !=0 if following fields are valid */
+	bool valid;		/* true if following fields are valid */
 	unsigned long last_updated;	/* In jiffies */
 
 	u8 in[8];		/* Register value */
@@ -112,34 +101,73 @@ struct smsc47m192_data {
 	u8 vrm;
 };
 
-static int smsc47m192_probe(struct i2c_client *client,
-			    const struct i2c_device_id *id);
-static int smsc47m192_detect(struct i2c_client *client,
-			     struct i2c_board_info *info);
-static int smsc47m192_remove(struct i2c_client *client);
-static struct smsc47m192_data *smsc47m192_update_device(struct device *dev);
+static struct smsc47m192_data *smsc47m192_update_device(struct device *dev)
+{
+	struct smsc47m192_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
+	int i, config;
 
-static const struct i2c_device_id smsc47m192_id[] = {
-	{ "smsc47m192", 0 },
-	{ }
-};
-MODULE_DEVICE_TABLE(i2c, smsc47m192_id);
+	mutex_lock(&data->update_lock);
 
-static struct i2c_driver smsc47m192_driver = {
-	.class		= I2C_CLASS_HWMON,
-	.driver = {
-		.name	= "smsc47m192",
-	},
-	.probe		= smsc47m192_probe,
-	.remove		= smsc47m192_remove,
-	.id_table	= smsc47m192_id,
-	.detect		= smsc47m192_detect,
-	.address_list	= normal_i2c,
-};
+	if (time_after(jiffies, data->last_updated + HZ + HZ / 2)
+	 || !data->valid) {
+		u8 sfr = i2c_smbus_read_byte_data(client, SMSC47M192_REG_SFR);
+
+		dev_dbg(&client->dev, "Starting smsc47m192 update\n");
+
+		for (i = 0; i <= 7; i++) {
+			data->in[i] = i2c_smbus_read_byte_data(client,
+						SMSC47M192_REG_IN(i));
+			data->in_min[i] = i2c_smbus_read_byte_data(client,
+						SMSC47M192_REG_IN_MIN(i));
+			data->in_max[i] = i2c_smbus_read_byte_data(client,
+						SMSC47M192_REG_IN_MAX(i));
+		}
+		for (i = 0; i < 3; i++) {
+			data->temp[i] = i2c_smbus_read_byte_data(client,
+						SMSC47M192_REG_TEMP[i]);
+			data->temp_max[i] = i2c_smbus_read_byte_data(client,
+						SMSC47M192_REG_TEMP_MAX[i]);
+			data->temp_min[i] = i2c_smbus_read_byte_data(client,
+						SMSC47M192_REG_TEMP_MIN[i]);
+		}
+		for (i = 1; i < 3; i++)
+			data->temp_offset[i] = i2c_smbus_read_byte_data(client,
+						SMSC47M192_REG_TEMP_OFFSET(i));
+		/*
+		 * first offset is temp_offset[0] if SFR bit 4 is set,
+		 * temp_offset[1] otherwise
+		 */
+		if (sfr & 0x10) {
+			data->temp_offset[0] = data->temp_offset[1];
+			data->temp_offset[1] = 0;
+		} else
+			data->temp_offset[0] = 0;
+
+		data->vid = i2c_smbus_read_byte_data(client, SMSC47M192_REG_VID)
+			    & 0x0f;
+		config = i2c_smbus_read_byte_data(client,
+						  SMSC47M192_REG_CONFIG);
+		if (config & 0x20)
+			data->vid |= (i2c_smbus_read_byte_data(client,
+					SMSC47M192_REG_VID4) & 0x01) << 4;
+		data->alarms = i2c_smbus_read_byte_data(client,
+						SMSC47M192_REG_ALARM1) |
+			       (i2c_smbus_read_byte_data(client,
+						SMSC47M192_REG_ALARM2) << 8);
+
+		data->last_updated = jiffies;
+		data->valid = true;
+	}
+
+	mutex_unlock(&data->update_lock);
+
+	return data;
+}
 
 /* Voltages */
-static ssize_t show_in(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t in_show(struct device *dev, struct device_attribute *attr,
+		       char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -147,8 +175,8 @@ static ssize_t show_in(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", IN_FROM_REG(data->in[nr], nr));
 }
 
-static ssize_t show_in_min(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t in_min_show(struct device *dev, struct device_attribute *attr,
+			   char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -156,8 +184,8 @@ static ssize_t show_in_min(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", IN_FROM_REG(data->in_min[nr], nr));
 }
 
-static ssize_t show_in_max(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t in_max_show(struct device *dev, struct device_attribute *attr,
+			   char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -165,13 +193,13 @@ static ssize_t show_in_max(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", IN_FROM_REG(data->in_max[nr], nr));
 }
 
-static ssize_t set_in_min(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t in_min_store(struct device *dev, struct device_attribute *attr,
+			    const char *buf, size_t count)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
-	struct i2c_client *client = to_i2c_client(dev);
-	struct smsc47m192_data *data = i2c_get_clientdata(client);
+	struct smsc47m192_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	unsigned long val;
 	int err;
 
@@ -187,13 +215,13 @@ static ssize_t set_in_min(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-static ssize_t set_in_max(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t in_max_store(struct device *dev, struct device_attribute *attr,
+			    const char *buf, size_t count)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
-	struct i2c_client *client = to_i2c_client(dev);
-	struct smsc47m192_data *data = i2c_get_clientdata(client);
+	struct smsc47m192_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	unsigned long val;
 	int err;
 
@@ -209,26 +237,34 @@ static ssize_t set_in_max(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-#define show_in_offset(offset)					\
-static SENSOR_DEVICE_ATTR(in##offset##_input, S_IRUGO,		\
-		show_in, NULL, offset);				\
-static SENSOR_DEVICE_ATTR(in##offset##_min, S_IRUGO | S_IWUSR,	\
-		show_in_min, set_in_min, offset);		\
-static SENSOR_DEVICE_ATTR(in##offset##_max, S_IRUGO | S_IWUSR,	\
-		show_in_max, set_in_max, offset);
-
-show_in_offset(0)
-show_in_offset(1)
-show_in_offset(2)
-show_in_offset(3)
-show_in_offset(4)
-show_in_offset(5)
-show_in_offset(6)
-show_in_offset(7)
+static SENSOR_DEVICE_ATTR_RO(in0_input, in, 0);
+static SENSOR_DEVICE_ATTR_RW(in0_min, in_min, 0);
+static SENSOR_DEVICE_ATTR_RW(in0_max, in_max, 0);
+static SENSOR_DEVICE_ATTR_RO(in1_input, in, 1);
+static SENSOR_DEVICE_ATTR_RW(in1_min, in_min, 1);
+static SENSOR_DEVICE_ATTR_RW(in1_max, in_max, 1);
+static SENSOR_DEVICE_ATTR_RO(in2_input, in, 2);
+static SENSOR_DEVICE_ATTR_RW(in2_min, in_min, 2);
+static SENSOR_DEVICE_ATTR_RW(in2_max, in_max, 2);
+static SENSOR_DEVICE_ATTR_RO(in3_input, in, 3);
+static SENSOR_DEVICE_ATTR_RW(in3_min, in_min, 3);
+static SENSOR_DEVICE_ATTR_RW(in3_max, in_max, 3);
+static SENSOR_DEVICE_ATTR_RO(in4_input, in, 4);
+static SENSOR_DEVICE_ATTR_RW(in4_min, in_min, 4);
+static SENSOR_DEVICE_ATTR_RW(in4_max, in_max, 4);
+static SENSOR_DEVICE_ATTR_RO(in5_input, in, 5);
+static SENSOR_DEVICE_ATTR_RW(in5_min, in_min, 5);
+static SENSOR_DEVICE_ATTR_RW(in5_max, in_max, 5);
+static SENSOR_DEVICE_ATTR_RO(in6_input, in, 6);
+static SENSOR_DEVICE_ATTR_RW(in6_min, in_min, 6);
+static SENSOR_DEVICE_ATTR_RW(in6_max, in_max, 6);
+static SENSOR_DEVICE_ATTR_RO(in7_input, in, 7);
+static SENSOR_DEVICE_ATTR_RW(in7_min, in_min, 7);
+static SENSOR_DEVICE_ATTR_RW(in7_max, in_max, 7);
 
 /* Temperatures */
-static ssize_t show_temp(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t temp_show(struct device *dev, struct device_attribute *attr,
+			 char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -236,8 +272,8 @@ static ssize_t show_temp(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp[nr]));
 }
 
-static ssize_t show_temp_min(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t temp_min_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -245,8 +281,8 @@ static ssize_t show_temp_min(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp_min[nr]));
 }
 
-static ssize_t show_temp_max(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t temp_max_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -254,13 +290,14 @@ static ssize_t show_temp_max(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp_max[nr]));
 }
 
-static ssize_t set_temp_min(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t temp_min_store(struct device *dev,
+			      struct device_attribute *attr, const char *buf,
+			      size_t count)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
-	struct i2c_client *client = to_i2c_client(dev);
-	struct smsc47m192_data *data = i2c_get_clientdata(client);
+	struct smsc47m192_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	long val;
 	int err;
 
@@ -276,13 +313,14 @@ static ssize_t set_temp_min(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-static ssize_t set_temp_max(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t temp_max_store(struct device *dev,
+			      struct device_attribute *attr, const char *buf,
+			      size_t count)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
-	struct i2c_client *client = to_i2c_client(dev);
-	struct smsc47m192_data *data = i2c_get_clientdata(client);
+	struct smsc47m192_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	long val;
 	int err;
 
@@ -298,8 +336,8 @@ static ssize_t set_temp_max(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-static ssize_t show_temp_offset(struct device *dev, struct device_attribute
-		*attr, char *buf)
+static ssize_t temp_offset_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -307,13 +345,14 @@ static ssize_t show_temp_offset(struct device *dev, struct device_attribute
 	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp_offset[nr]));
 }
 
-static ssize_t set_temp_offset(struct device *dev, struct device_attribute
-		*attr, const char *buf, size_t count)
+static ssize_t temp_offset_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
-	struct i2c_client *client = to_i2c_client(dev);
-	struct smsc47m192_data *data = i2c_get_clientdata(client);
+	struct smsc47m192_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	u8 sfr = i2c_smbus_read_byte_data(client, SMSC47M192_REG_SFR);
 	long val;
 	int err;
@@ -344,38 +383,37 @@ static ssize_t set_temp_offset(struct device *dev, struct device_attribute
 	return count;
 }
 
-#define show_temp_index(index)						\
-static SENSOR_DEVICE_ATTR(temp##index##_input, S_IRUGO,			\
-		show_temp, NULL, index-1);				\
-static SENSOR_DEVICE_ATTR(temp##index##_min, S_IRUGO | S_IWUSR,		\
-		show_temp_min, set_temp_min, index-1);			\
-static SENSOR_DEVICE_ATTR(temp##index##_max, S_IRUGO | S_IWUSR,		\
-		show_temp_max, set_temp_max, index-1);			\
-static SENSOR_DEVICE_ATTR(temp##index##_offset, S_IRUGO | S_IWUSR,	\
-		show_temp_offset, set_temp_offset, index-1);
-
-show_temp_index(1)
-show_temp_index(2)
-show_temp_index(3)
+static SENSOR_DEVICE_ATTR_RO(temp1_input, temp, 0);
+static SENSOR_DEVICE_ATTR_RW(temp1_min, temp_min, 0);
+static SENSOR_DEVICE_ATTR_RW(temp1_max, temp_max, 0);
+static SENSOR_DEVICE_ATTR_RW(temp1_offset, temp_offset, 0);
+static SENSOR_DEVICE_ATTR_RO(temp2_input, temp, 1);
+static SENSOR_DEVICE_ATTR_RW(temp2_min, temp_min, 1);
+static SENSOR_DEVICE_ATTR_RW(temp2_max, temp_max, 1);
+static SENSOR_DEVICE_ATTR_RW(temp2_offset, temp_offset, 1);
+static SENSOR_DEVICE_ATTR_RO(temp3_input, temp, 2);
+static SENSOR_DEVICE_ATTR_RW(temp3_min, temp_min, 2);
+static SENSOR_DEVICE_ATTR_RW(temp3_max, temp_max, 2);
+static SENSOR_DEVICE_ATTR_RW(temp3_offset, temp_offset, 2);
 
 /* VID */
-static ssize_t show_vid(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t cpu0_vid_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
 {
 	struct smsc47m192_data *data = smsc47m192_update_device(dev);
 	return sprintf(buf, "%d\n", vid_from_reg(data->vid, data->vrm));
 }
-static DEVICE_ATTR(cpu0_vid, S_IRUGO, show_vid, NULL);
+static DEVICE_ATTR_RO(cpu0_vid);
 
-static ssize_t show_vrm(struct device *dev, struct device_attribute *attr,
+static ssize_t vrm_show(struct device *dev, struct device_attribute *attr,
 		char *buf)
 {
 	struct smsc47m192_data *data = dev_get_drvdata(dev);
 	return sprintf(buf, "%d\n", data->vrm);
 }
 
-static ssize_t set_vrm(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t vrm_store(struct device *dev, struct device_attribute *attr,
+			 const char *buf, size_t count)
 {
 	struct smsc47m192_data *data = dev_get_drvdata(dev);
 	unsigned long val;
@@ -384,15 +422,17 @@ static ssize_t set_vrm(struct device *dev, struct device_attribute *attr,
 	err = kstrtoul(buf, 10, &val);
 	if (err)
 		return err;
+	if (val > 255)
+		return -EINVAL;
 
 	data->vrm = val;
 	return count;
 }
-static DEVICE_ATTR(vrm, S_IRUGO | S_IWUSR, show_vrm, set_vrm);
+static DEVICE_ATTR_RW(vrm);
 
 /* Alarms */
-static ssize_t show_alarm(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t alarm_show(struct device *dev, struct device_attribute *attr,
+			  char *buf)
 {
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
@@ -400,19 +440,19 @@ static ssize_t show_alarm(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%u\n", (data->alarms & nr) ? 1 : 0);
 }
 
-static SENSOR_DEVICE_ATTR(temp1_alarm, S_IRUGO, show_alarm, NULL, 0x0010);
-static SENSOR_DEVICE_ATTR(temp2_alarm, S_IRUGO, show_alarm, NULL, 0x0020);
-static SENSOR_DEVICE_ATTR(temp3_alarm, S_IRUGO, show_alarm, NULL, 0x0040);
-static SENSOR_DEVICE_ATTR(temp2_fault, S_IRUGO, show_alarm, NULL, 0x4000);
-static SENSOR_DEVICE_ATTR(temp3_fault, S_IRUGO, show_alarm, NULL, 0x8000);
-static SENSOR_DEVICE_ATTR(in0_alarm, S_IRUGO, show_alarm, NULL, 0x0001);
-static SENSOR_DEVICE_ATTR(in1_alarm, S_IRUGO, show_alarm, NULL, 0x0002);
-static SENSOR_DEVICE_ATTR(in2_alarm, S_IRUGO, show_alarm, NULL, 0x0004);
-static SENSOR_DEVICE_ATTR(in3_alarm, S_IRUGO, show_alarm, NULL, 0x0008);
-static SENSOR_DEVICE_ATTR(in4_alarm, S_IRUGO, show_alarm, NULL, 0x0100);
-static SENSOR_DEVICE_ATTR(in5_alarm, S_IRUGO, show_alarm, NULL, 0x0200);
-static SENSOR_DEVICE_ATTR(in6_alarm, S_IRUGO, show_alarm, NULL, 0x0400);
-static SENSOR_DEVICE_ATTR(in7_alarm, S_IRUGO, show_alarm, NULL, 0x0800);
+static SENSOR_DEVICE_ATTR_RO(temp1_alarm, alarm, 0x0010);
+static SENSOR_DEVICE_ATTR_RO(temp2_alarm, alarm, 0x0020);
+static SENSOR_DEVICE_ATTR_RO(temp3_alarm, alarm, 0x0040);
+static SENSOR_DEVICE_ATTR_RO(temp2_fault, alarm, 0x4000);
+static SENSOR_DEVICE_ATTR_RO(temp3_fault, alarm, 0x8000);
+static SENSOR_DEVICE_ATTR_RO(in0_alarm, alarm, 0x0001);
+static SENSOR_DEVICE_ATTR_RO(in1_alarm, alarm, 0x0002);
+static SENSOR_DEVICE_ATTR_RO(in2_alarm, alarm, 0x0004);
+static SENSOR_DEVICE_ATTR_RO(in3_alarm, alarm, 0x0008);
+static SENSOR_DEVICE_ATTR_RO(in4_alarm, alarm, 0x0100);
+static SENSOR_DEVICE_ATTR_RO(in5_alarm, alarm, 0x0200);
+static SENSOR_DEVICE_ATTR_RO(in6_alarm, alarm, 0x0400);
+static SENSOR_DEVICE_ATTR_RO(in7_alarm, alarm, 0x0800);
 
 static struct attribute *smsc47m192_attributes[] = {
 	&sensor_dev_attr_in0_input.dev_attr.attr,
@@ -542,132 +582,57 @@ static int smsc47m192_detect(struct i2c_client *client,
 		return -ENODEV;
 	}
 
-	strlcpy(info->type, "smsc47m192", I2C_NAME_SIZE);
+	strscpy(info->type, "smsc47m192", I2C_NAME_SIZE);
 
 	return 0;
 }
 
-static int smsc47m192_probe(struct i2c_client *client,
-			    const struct i2c_device_id *id)
+static int smsc47m192_probe(struct i2c_client *client)
 {
+	struct device *dev = &client->dev;
+	struct device *hwmon_dev;
 	struct smsc47m192_data *data;
 	int config;
-	int err;
 
-	data = devm_kzalloc(&client->dev, sizeof(struct smsc47m192_data),
-			    GFP_KERNEL);
+	data = devm_kzalloc(dev, sizeof(struct smsc47m192_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	i2c_set_clientdata(client, data);
+	data->client = client;
 	data->vrm = vid_which_vrm();
 	mutex_init(&data->update_lock);
 
 	/* Initialize the SMSC47M192 chip */
 	smsc47m192_init_client(client);
 
-	/* Register sysfs hooks */
-	err = sysfs_create_group(&client->dev.kobj, &smsc47m192_group);
-	if (err)
-		return err;
-
+	/* sysfs hooks */
+	data->groups[0] = &smsc47m192_group;
 	/* Pin 110 is either in4 (+12V) or VID4 */
 	config = i2c_smbus_read_byte_data(client, SMSC47M192_REG_CONFIG);
-	if (!(config & 0x20)) {
-		err = sysfs_create_group(&client->dev.kobj,
-					 &smsc47m192_group_in4);
-		if (err)
-			goto exit_remove_files;
-	}
+	if (!(config & 0x20))
+		data->groups[1] = &smsc47m192_group_in4;
 
-	data->hwmon_dev = hwmon_device_register(&client->dev);
-	if (IS_ERR(data->hwmon_dev)) {
-		err = PTR_ERR(data->hwmon_dev);
-		goto exit_remove_files;
-	}
-
-	return 0;
-
-exit_remove_files:
-	sysfs_remove_group(&client->dev.kobj, &smsc47m192_group);
-	sysfs_remove_group(&client->dev.kobj, &smsc47m192_group_in4);
-	return err;
+	hwmon_dev = devm_hwmon_device_register_with_groups(dev, client->name,
+							   data, data->groups);
+	return PTR_ERR_OR_ZERO(hwmon_dev);
 }
 
-static int smsc47m192_remove(struct i2c_client *client)
-{
-	struct smsc47m192_data *data = i2c_get_clientdata(client);
+static const struct i2c_device_id smsc47m192_id[] = {
+	{ "smsc47m192", 0 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, smsc47m192_id);
 
-	hwmon_device_unregister(data->hwmon_dev);
-	sysfs_remove_group(&client->dev.kobj, &smsc47m192_group);
-	sysfs_remove_group(&client->dev.kobj, &smsc47m192_group_in4);
-
-	return 0;
-}
-
-static struct smsc47m192_data *smsc47m192_update_device(struct device *dev)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	struct smsc47m192_data *data = i2c_get_clientdata(client);
-	int i, config;
-
-	mutex_lock(&data->update_lock);
-
-	if (time_after(jiffies, data->last_updated + HZ + HZ / 2)
-	 || !data->valid) {
-		u8 sfr = i2c_smbus_read_byte_data(client, SMSC47M192_REG_SFR);
-
-		dev_dbg(&client->dev, "Starting smsc47m192 update\n");
-
-		for (i = 0; i <= 7; i++) {
-			data->in[i] = i2c_smbus_read_byte_data(client,
-						SMSC47M192_REG_IN(i));
-			data->in_min[i] = i2c_smbus_read_byte_data(client,
-						SMSC47M192_REG_IN_MIN(i));
-			data->in_max[i] = i2c_smbus_read_byte_data(client,
-						SMSC47M192_REG_IN_MAX(i));
-		}
-		for (i = 0; i < 3; i++) {
-			data->temp[i] = i2c_smbus_read_byte_data(client,
-						SMSC47M192_REG_TEMP[i]);
-			data->temp_max[i] = i2c_smbus_read_byte_data(client,
-						SMSC47M192_REG_TEMP_MAX[i]);
-			data->temp_min[i] = i2c_smbus_read_byte_data(client,
-						SMSC47M192_REG_TEMP_MIN[i]);
-		}
-		for (i = 1; i < 3; i++)
-			data->temp_offset[i] = i2c_smbus_read_byte_data(client,
-						SMSC47M192_REG_TEMP_OFFSET(i));
-		/*
-		 * first offset is temp_offset[0] if SFR bit 4 is set,
-		 * temp_offset[1] otherwise
-		 */
-		if (sfr & 0x10) {
-			data->temp_offset[0] = data->temp_offset[1];
-			data->temp_offset[1] = 0;
-		} else
-			data->temp_offset[0] = 0;
-
-		data->vid = i2c_smbus_read_byte_data(client, SMSC47M192_REG_VID)
-			    & 0x0f;
-		config = i2c_smbus_read_byte_data(client,
-						  SMSC47M192_REG_CONFIG);
-		if (config & 0x20)
-			data->vid |= (i2c_smbus_read_byte_data(client,
-					SMSC47M192_REG_VID4) & 0x01) << 4;
-		data->alarms = i2c_smbus_read_byte_data(client,
-						SMSC47M192_REG_ALARM1) |
-			       (i2c_smbus_read_byte_data(client,
-						SMSC47M192_REG_ALARM2) << 8);
-
-		data->last_updated = jiffies;
-		data->valid = 1;
-	}
-
-	mutex_unlock(&data->update_lock);
-
-	return data;
-}
+static struct i2c_driver smsc47m192_driver = {
+	.class		= I2C_CLASS_HWMON,
+	.driver = {
+		.name	= "smsc47m192",
+	},
+	.probe		= smsc47m192_probe,
+	.id_table	= smsc47m192_id,
+	.detect		= smsc47m192_detect,
+	.address_list	= normal_i2c,
+};
 
 module_i2c_driver(smsc47m192_driver);
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  RouterBoard 500 specific prom routines
  *
@@ -6,32 +7,15 @@
  *  Copyright (C) 2007, Gabor Juhos <juhosg@openwrt.org>
  *			Felix Fietkau <nbd@openwrt.org>
  *			Florian Fainelli <florian@openwrt.org>
- *
- *  This program is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public License
- *  as published by the Free Software Foundation; either version 2
- *  of the License, or (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the
- *  Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- *  Boston, MA  02110-1301, USA.
- *
  */
 
 #include <linux/init.h>
 #include <linux/mm.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/string.h>
 #include <linux/console.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/ioport.h>
-#include <linux/blkdev.h>
 
 #include <asm/bootinfo.h>
 #include <asm/mach-rc32434/ddr.h>
@@ -48,11 +32,6 @@ static struct resource ddr_reg[] = {
 		.flags = IORESOURCE_MEM,
 	}
 };
-
-void __init prom_free_prom_memory(void)
-{
-	/* No prom memory to free */
-}
 
 static inline int match_tag(char *arg, const char *tag)
 {
@@ -122,10 +101,10 @@ void __init prom_setup_cmdline(void)
 void __init prom_init(void)
 {
 	struct ddr_ram __iomem *ddr;
-	phys_t memsize;
-	phys_t ddrbase;
+	phys_addr_t memsize;
+	phys_addr_t ddrbase;
 
-	ddr = ioremap_nocache(ddr_reg[0].start,
+	ddr = ioremap(ddr_reg[0].start,
 			ddr_reg[0].end - ddr_reg[0].start);
 
 	if (!ddr) {
@@ -133,13 +112,13 @@ void __init prom_init(void)
 		return;
 	}
 
-	ddrbase = (phys_t)&ddr->ddrbase;
-	memsize = (phys_t)&ddr->ddrmask;
+	ddrbase = (phys_addr_t)&ddr->ddrbase;
+	memsize = (phys_addr_t)&ddr->ddrmask;
 	memsize = 0 - memsize;
 
 	prom_setup_cmdline();
 
 	/* give all RAM to boot allocator,
 	 * except for the first 0x400 and the last 0x200 bytes */
-	add_memory_region(ddrbase + 0x400, memsize - 0x600, BOOT_MEM_RAM);
+	memblock_add(ddrbase + 0x400, memsize - 0x600);
 }

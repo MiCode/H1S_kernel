@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/arch/arm/mach-sa1100/jornada720.c
  *
@@ -6,17 +7,13 @@
  * Copyright (C) 2007 Kristoffer Ericson <Kristoffer.Ericson@gmail.com>
  * Copyright (C) 2006 Filip Zyzniewski <filip.zyzniewski@tefnet.pl>
  *  Copyright (C) 2005 Michael Gernoth <michael@gernoth.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/tty.h>
 #include <linux/delay.h>
+#include <linux/gpio/machine.h>
 #include <linux/platform_data/sa11x0-serial.h>
 #include <linux/platform_device.h>
 #include <linux/ioport.h>
@@ -189,6 +186,17 @@ static struct platform_device s1d13xxxfb_device = {
 	.resource	= s1d13xxxfb_resources,
 };
 
+static struct gpiod_lookup_table jornada_pcmcia_gpiod_table = {
+	.dev_id = "1800",
+	.table = {
+		GPIO_LOOKUP("sa1111", 0, "s0-power", GPIO_ACTIVE_HIGH),
+		GPIO_LOOKUP("sa1111", 1, "s1-power", GPIO_ACTIVE_HIGH),
+		GPIO_LOOKUP("sa1111", 2, "s0-3v", GPIO_ACTIVE_HIGH),
+		GPIO_LOOKUP("sa1111", 3, "s1-3v", GPIO_ACTIVE_HIGH),
+		{ },
+	},
+};
+
 static struct resource sa1111_resources[] = {
 	[0] = DEFINE_RES_MEM(SA1111REGSTART, SA1111REGLEN),
 	[1] = DEFINE_RES_IRQ(IRQ_GPIO1),
@@ -217,9 +225,22 @@ static struct platform_device jornada_ssp_device = {
 	.id             = -1,
 };
 
+static struct resource jornada_kbd_resources[] = {
+	DEFINE_RES_IRQ(IRQ_GPIO0),
+};
+
 static struct platform_device jornada_kbd_device = {
 	.name		= "jornada720_kbd",
 	.id		= -1,
+	.num_resources	= ARRAY_SIZE(jornada_kbd_resources),
+	.resource	= jornada_kbd_resources,
+};
+
+static struct gpiod_lookup_table jornada_ts_gpiod_table = {
+	.dev_id		= "jornada_ts",
+	.table		= {
+		GPIO_LOOKUP("gpio", 9, "penup", GPIO_ACTIVE_HIGH),
+	},
 };
 
 static struct platform_device jornada_ts_device = {
@@ -249,6 +270,9 @@ static int __init jornada720_init(void)
 		udelay(1);
 		GPSR = GPIO_GPIO20;	/* restart gpio20 */
 		udelay(20);		/* give it some time to restart */
+
+		gpiod_add_lookup_table(&jornada_ts_gpiod_table);
+		gpiod_add_lookup_table(&jornada_pcmcia_gpiod_table);
 
 		ret = platform_add_devices(devices, ARRAY_SIZE(devices));
 	}

@@ -1,17 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  *
  * Copyright (C) IBM Corporation, 2011
  *
@@ -27,11 +15,11 @@ int enter_vmx_usercopy(void)
 	if (in_interrupt())
 		return 0;
 
-	/* This acts as preempt_disable() as well and will make
-	 * enable_kernel_altivec(). We need to disable page faults
-	 * as they can call schedule and thus make us lose the VMX
-	 * context. So on page faults, we just fail which will cause
-	 * a fallback to the normal non-vmx copy.
+	preempt_disable();
+	/*
+	 * We need to disable page faults as they can call schedule and
+	 * thus make us lose the VMX context. So on page faults, we just
+	 * fail which will cause a fallback to the normal non-vmx copy.
 	 */
 	pagefault_disable();
 
@@ -46,11 +34,23 @@ int enter_vmx_usercopy(void)
  */
 int exit_vmx_usercopy(void)
 {
+	disable_kernel_altivec();
 	pagefault_enable();
+	preempt_enable_no_resched();
+	/*
+	 * Must never explicitly call schedule (including preempt_enable())
+	 * while in a kuap-unlocked user copy, because the AMR register will
+	 * not be saved and restored across context switch. However preempt
+	 * kernels need to be preempted as soon as possible if need_resched is
+	 * set and we are preemptible. The hack here is to schedule a
+	 * decrementer to fire here and reschedule for us if necessary.
+	 */
+	if (IS_ENABLED(CONFIG_PREEMPT) && need_resched())
+		set_dec(1);
 	return 0;
 }
 
-int enter_vmx_copy(void)
+int enter_vmx_ops(void)
 {
 	if (in_interrupt())
 		return 0;
@@ -67,8 +67,9 @@ int enter_vmx_copy(void)
  * passed a pointer to the destination which we return as required by a
  * memcpy implementation.
  */
-void *exit_vmx_copy(void *dest)
+void *exit_vmx_ops(void *dest)
 {
+	disable_kernel_altivec();
 	preempt_enable();
 	return dest;
 }

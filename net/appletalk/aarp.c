@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	AARP:		An implementation of the AppleTalk AARP protocol for
  *			Ethernet 'ELAP'.
@@ -13,12 +14,6 @@
  *		Use neighbour discovery code.
  *		Token Ring Support.
  *
- *		This program is free software; you can redistribute it and/or
- *		modify it under the terms of the GNU General Public License
- *		as published by the Free Software Foundation; either version
- *		2 of the License, or (at your option) any later version.
- *
- *
  *	References:
  *		Inside AppleTalk (2nd Ed).
  *	Fixes:
@@ -26,7 +21,6 @@
  *		Rob Newberry	-	Added proxy AARP and AARP proc fs,
  *					moved probing from DDP module.
  *		Arnaldo C. Melo -	don't mangle rx packets
- *
  */
 
 #include <linux/if_arp.h>
@@ -50,15 +44,15 @@ int sysctl_aarp_resolve_time = AARP_RESOLVE_TIME;
 /* Lists of aarp entries */
 /**
  *	struct aarp_entry - AARP entry
- *	@last_sent - Last time we xmitted the aarp request
- *	@packet_queue - Queue of frames wait for resolution
- *	@status - Used for proxy AARP
- *	expires_at - Entry expiry time
- *	target_addr - DDP Address
- *	dev - Device to use
- *	hwaddr - Physical i/f address of target/router
- *	xmit_count - When this hits 10 we give up
- *	next - Next entry in chain
+ *	@last_sent: Last time we xmitted the aarp request
+ *	@packet_queue: Queue of frames wait for resolution
+ *	@status: Used for proxy AARP
+ *	@expires_at: Entry expiry time
+ *	@target_addr: DDP Address
+ *	@dev:  Device to use
+ *	@hwaddr:  Physical i/f address of target/router
+ *	@xmit_count:  When this hits 10 we give up
+ *	@next: Next entry in chain
  */
 struct aarp_entry {
 	/* These first two are only used for unresolved entries */
@@ -141,7 +135,7 @@ static void __aarp_send_query(struct aarp_entry *a)
 	eah->pa_src_net	 = sat->s_net;
 	eah->pa_src_node = sat->s_node;
 
-	memset(eah->hw_dst, '\0', ETH_ALEN);
+	eth_zero_addr(eah->hw_dst);
 
 	eah->pa_dst_zero = 0;
 	eah->pa_dst_net	 = a->target_addr.s_net;
@@ -189,7 +183,7 @@ static void aarp_send_reply(struct net_device *dev, struct atalk_addr *us,
 	eah->pa_src_node = us->s_node;
 
 	if (!sha)
-		memset(eah->hw_dst, '\0', ETH_ALEN);
+		eth_zero_addr(eah->hw_dst);
 	else
 		ether_addr_copy(eah->hw_dst, sha);
 
@@ -239,7 +233,7 @@ static void aarp_send_probe(struct net_device *dev, struct atalk_addr *us)
 	eah->pa_src_net	 = us->s_net;
 	eah->pa_src_node = us->s_node;
 
-	memset(eah->hw_dst, '\0', ETH_ALEN);
+	eth_zero_addr(eah->hw_dst);
 
 	eah->pa_dst_zero = 0;
 	eah->pa_dst_net	 = us->s_net;
@@ -310,7 +304,7 @@ static void __aarp_expire_device(struct aarp_entry **n, struct net_device *dev)
 }
 
 /* Handle the timer event */
-static void aarp_expire_timeout(unsigned long unused)
+static void aarp_expire_timeout(struct timer_list *unused)
 {
 	int ct;
 
@@ -774,7 +768,7 @@ static int aarp_rcv(struct sk_buff *skb, struct net_device *dev,
 	if (a && a->status & ATIF_PROBE) {
 		a->status |= ATIF_PROBE_FAIL;
 		/*
-		 * we do not respond to probe or request packets for
+		 * we do not respond to probe or request packets of
 		 * this address while we are probing this address
 		 */
 		goto unlock;
@@ -879,15 +873,24 @@ static struct notifier_block aarp_notifier = {
 
 static unsigned char aarp_snap_id[] = { 0x00, 0x00, 0x00, 0x80, 0xF3 };
 
-void __init aarp_proto_init(void)
+int __init aarp_proto_init(void)
 {
+	int rc;
+
 	aarp_dl = register_snap_client(aarp_snap_id, aarp_rcv);
-	if (!aarp_dl)
+	if (!aarp_dl) {
 		printk(KERN_CRIT "Unable to register AARP with SNAP.\n");
-	setup_timer(&aarp_timer, aarp_expire_timeout, 0);
+		return -ENOMEM;
+	}
+	timer_setup(&aarp_timer, aarp_expire_timeout, 0);
 	aarp_timer.expires  = jiffies + sysctl_aarp_expiry_time;
 	add_timer(&aarp_timer);
-	register_netdevice_notifier(&aarp_notifier);
+	rc = register_netdevice_notifier(&aarp_notifier);
+	if (rc) {
+		del_timer_sync(&aarp_timer);
+		unregister_snap_client(aarp_dl);
+	}
+	return rc;
 }
 
 /* Remove the AARP entries associated with a device. */
@@ -907,11 +910,6 @@ void aarp_device_down(struct net_device *dev)
 }
 
 #ifdef CONFIG_PROC_FS
-struct aarp_iter_state {
-	int bucket;
-	struct aarp_entry **table;
-};
-
 /*
  * Get the aarp entry that is in the chain described
  * by the iterator.
@@ -926,7 +924,7 @@ static struct aarp_entry *iter_next(struct aarp_iter_state *iter, loff_t *pos)
 	struct aarp_entry *entry;
 
  rescan:
-	while(ct < AARP_HASH_SIZE) {
+	while (ct < AARP_HASH_SIZE) {
 		for (entry = table[ct]; entry; entry = entry->next) {
 			if (!pos || ++off == *pos) {
 				iter->table = table;
@@ -995,7 +993,7 @@ static const char *dt2str(unsigned long ticks)
 {
 	static char buf[32];
 
-	sprintf(buf, "%ld.%02ld", ticks / HZ, ((ticks % HZ) * 100 ) / HZ);
+	sprintf(buf, "%ld.%02ld", ticks / HZ, ((ticks % HZ) * 100) / HZ);
 
 	return buf;
 }
@@ -1033,25 +1031,11 @@ static int aarp_seq_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
-static const struct seq_operations aarp_seq_ops = {
+const struct seq_operations aarp_seq_ops = {
 	.start  = aarp_seq_start,
 	.next   = aarp_seq_next,
 	.stop   = aarp_seq_stop,
 	.show   = aarp_seq_show,
-};
-
-static int aarp_seq_open(struct inode *inode, struct file *file)
-{
-	return seq_open_private(file, &aarp_seq_ops,
-			sizeof(struct aarp_iter_state));
-}
-
-const struct file_operations atalk_seq_arp_fops = {
-	.owner		= THIS_MODULE,
-	.open           = aarp_seq_open,
-	.read           = seq_read,
-	.llseek         = seq_lseek,
-	.release	= seq_release_private,
 };
 #endif
 

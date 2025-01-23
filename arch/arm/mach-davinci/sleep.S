@@ -1,19 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * (C) Copyright 2009, Texas Instruments, Inc. http://www.ti.com/
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR /PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston,
- * MA 02111-1307 USA
+ * (C) Copyright 2009, Texas Instruments, Inc. https://www.ti.com/
  */
 
 /* replicated define because linux/bitops.h cannot be included in assembly */
@@ -21,8 +8,8 @@
 
 #include <linux/linkage.h>
 #include <asm/assembler.h>
-#include <mach/psc.h>
-#include <mach/ddr2.h>
+#include "psc.h"
+#include "ddr2.h"
 
 #include "clock.h"
 
@@ -37,6 +24,7 @@
 #define DEEPSLEEP_SLEEPENABLE_BIT	BIT(31)
 
 	.text
+	.arch	armv5te
 /*
  * Move DaVinci into deep sleep state
  *
@@ -213,7 +201,7 @@ ddr2clk_stop_done:
 	cmp	ip, r0
 	bne	ddr2clk_stop_done
 
-	mov	pc, lr
+	ret	lr
 ENDPROC(davinci_ddr_psc_config)
 
 CACHE_FLUSH:

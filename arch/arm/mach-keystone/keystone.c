@@ -1,79 +1,148 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Keystone2 based boards and SOC related code.
  *
  * Copyright 2013 Texas Instruments, Inc.
  *	Cyril Chemparathy <cyril@ti.com>
  *	Santosh Shilimkar <santosh.shillimkar@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
  */
+
 #include <linux/io.h>
-#include <linux/of.h>
+#include <linux/dma-map-ops.h>
 #include <linux/init.h>
-#include <linux/of_platform.h>
-#include <linux/of_address.h>
+#include <linux/pm_runtime.h>
+#include <linux/pm_clock.h>
+#include <linux/memblock.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 
 #include <asm/setup.h>
 #include <asm/mach/map.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/time.h>
-#include <asm/smp_plat.h>
+#include <asm/page.h>
 
-#include "keystone.h"
+#define KEYSTONE_LOW_PHYS_START		0x80000000ULL
+#define KEYSTONE_LOW_PHYS_SIZE		0x80000000ULL /* 2G */
+#define KEYSTONE_LOW_PHYS_END		(KEYSTONE_LOW_PHYS_START + \
+					 KEYSTONE_LOW_PHYS_SIZE - 1)
 
-#define PLL_RESET_WRITE_KEY_MASK		0xffff0000
-#define PLL_RESET_WRITE_KEY			0x5a69
-#define PLL_RESET				BIT(16)
+#define KEYSTONE_HIGH_PHYS_START	0x800000000ULL
+#define KEYSTONE_HIGH_PHYS_SIZE		0x400000000ULL	/* 16G */
+#define KEYSTONE_HIGH_PHYS_END		(KEYSTONE_HIGH_PHYS_START + \
+					 KEYSTONE_HIGH_PHYS_SIZE - 1)
 
-static void __iomem *keystone_rstctrl;
+static struct dev_pm_domain keystone_pm_domain = {
+	.ops = {
+		USE_PM_CLK_RUNTIME_OPS
+		USE_PLATFORM_PM_SLEEP_OPS
+	},
+};
+
+static struct pm_clk_notifier_block platform_domain_notifier = {
+	.pm_domain = &keystone_pm_domain,
+	.con_ids = { NULL },
+};
+
+static const struct of_device_id of_keystone_table[] = {
+	{.compatible = "ti,k2hk"},
+	{.compatible = "ti,k2e"},
+	{.compatible = "ti,k2l"},
+	{ /* end of list */ },
+};
+
+static int __init keystone_pm_runtime_init(void)
+{
+	struct device_node *np;
+
+	np = of_find_matching_node(NULL, of_keystone_table);
+	if (!np)
+		return 0;
+
+	pm_clk_add_notifier(&platform_bus_type, &platform_domain_notifier);
+
+	return 0;
+}
+
+#ifdef CONFIG_ARM_LPAE
+static int keystone_platform_notifier(struct notifier_block *nb,
+				      unsigned long event, void *data)
+{
+	struct device *dev = data;
+
+	if (event != BUS_NOTIFY_ADD_DEVICE)
+		return NOTIFY_DONE;
+
+	if (!dev)
+		return NOTIFY_BAD;
+
+	if (!dev->of_node) {
+		int ret = dma_direct_set_offset(dev, KEYSTONE_HIGH_PHYS_START,
+						KEYSTONE_LOW_PHYS_START,
+						KEYSTONE_HIGH_PHYS_SIZE);
+		dev_err(dev, "set dma_offset%08llx%s\n",
+			KEYSTONE_HIGH_PHYS_START - KEYSTONE_LOW_PHYS_START,
+			ret ? " failed" : "");
+	}
+	return NOTIFY_OK;
+}
+
+static struct notifier_block platform_nb = {
+	.notifier_call = keystone_platform_notifier,
+};
+#endif /* CONFIG_ARM_LPAE */
 
 static void __init keystone_init(void)
 {
-	struct device_node *node;
-
-	node = of_find_compatible_node(NULL, NULL, "ti,keystone-reset");
-	if (WARN_ON(!node))
-		pr_warn("ti,keystone-reset node undefined\n");
-
-	keystone_rstctrl = of_iomap(node, 0);
-	if (WARN_ON(!keystone_rstctrl))
-		pr_warn("ti,keystone-reset iomap error\n");
-
+#ifdef CONFIG_ARM_LPAE
+	if (PHYS_OFFSET >= KEYSTONE_HIGH_PHYS_START)
+		bus_register_notifier(&platform_bus_type, &platform_nb);
+#endif
 	keystone_pm_runtime_init();
-	of_platform_populate(NULL, of_default_bus_match_table, NULL, NULL);
 }
 
-static const char *keystone_match[] __initconst = {
-	"ti,keystone-evm",
+static long long __init keystone_pv_fixup(void)
+{
+	long long offset;
+	u64 mem_start, mem_end;
+
+	mem_start = memblock_start_of_DRAM();
+	mem_end = memblock_end_of_DRAM();
+
+	/* nothing to do if we are running out of the <32-bit space */
+	if (mem_start >= KEYSTONE_LOW_PHYS_START &&
+	    mem_end   <= KEYSTONE_LOW_PHYS_END)
+		return 0;
+
+	if (mem_start < KEYSTONE_HIGH_PHYS_START ||
+	    mem_end   > KEYSTONE_HIGH_PHYS_END) {
+		pr_crit("Invalid address space for memory (%08llx-%08llx)\n",
+		        mem_start, mem_end);
+		return 0;
+	}
+
+	offset = KEYSTONE_HIGH_PHYS_START - KEYSTONE_LOW_PHYS_START;
+
+	/* Populate the arch idmap hook */
+	arch_phys_to_idmap_offset = -offset;
+
+	return offset;
+}
+
+static const char *const keystone_match[] __initconst = {
+	"ti,k2hk",
+	"ti,k2e",
+	"ti,k2l",
+	"ti,k2g",
+	"ti,keystone",
 	NULL,
 };
-
-void keystone_restart(enum reboot_mode mode, const char *cmd)
-{
-	u32 val;
-
-	BUG_ON(!keystone_rstctrl);
-
-	/* Enable write access to RSTCTRL */
-	val = readl(keystone_rstctrl);
-	val &= PLL_RESET_WRITE_KEY_MASK;
-	val |= PLL_RESET_WRITE_KEY;
-	writel(val, keystone_rstctrl);
-
-	/* Reset the SOC */
-	val = readl(keystone_rstctrl);
-	val &= ~PLL_RESET;
-	writel(val, keystone_rstctrl);
-}
 
 DT_MACHINE_START(KEYSTONE, "Keystone")
 #if defined(CONFIG_ZONE_DMA) && defined(CONFIG_ARM_LPAE)
 	.dma_zone_size	= SZ_2G,
 #endif
-	.smp		= smp_ops(keystone_smp_ops),
 	.init_machine	= keystone_init,
 	.dt_compat	= keystone_match,
-	.restart	= keystone_restart,
+	.pv_fixup	= keystone_pv_fixup,
 MACHINE_END

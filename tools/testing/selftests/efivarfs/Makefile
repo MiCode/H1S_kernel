@@ -1,12 +1,8 @@
-CC = $(CROSS_COMPILE)gcc
+# SPDX-License-Identifier: GPL-2.0-only
 CFLAGS = -Wall
 
-test_objs = open-unlink create-read
+TEST_GEN_FILES := open-unlink create-read
+TEST_PROGS := efivarfs.sh
 
-all: $(test_objs)
+include ../lib.mk
 
-run_tests: all
-	@/bin/bash ./efivarfs.sh || echo "efivarfs selftests: [FAIL]"
-
-clean:
-	rm -f $(test_objs)

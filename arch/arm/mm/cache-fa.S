@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/arch/arm/mm/cache-fa.S
  *
@@ -7,15 +8,11 @@
  * Based on cache-v4wb.S:
  *  Copyright (C) 1997-2002 Russell king
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  *  Processors: FA520 FA526 FA626	
  */
 #include <linux/linkage.h>
 #include <linux/init.h>
-#include <asm/memory.h>
+#include <asm/assembler.h>
 #include <asm/page.h>
 
 #include "proc-macros.S"
@@ -45,7 +42,7 @@
 ENTRY(fa_flush_icache_all)
 	mov	r0, #0
 	mcr	p15, 0, r0, c7, c5, 0		@ invalidate I cache
-	mov	pc, lr
+	ret	lr
 ENDPROC(fa_flush_icache_all)
 
 /*
@@ -71,7 +68,7 @@ __flush_whole_cache:
 	mcrne	p15, 0, ip, c7, c5, 6		@ invalidate BTB
 	mcrne	p15, 0, ip, c7, c10, 4		@ drain write buffer
 	mcrne	p15, 0, ip, c7, c5, 4		@ prefetch flush
-	mov	pc, lr
+	ret	lr
 
 /*
  *	flush_user_cache_range(start, end, flags)
@@ -99,7 +96,7 @@ ENTRY(fa_flush_user_cache_range)
 	mcrne	p15, 0, ip, c7, c5, 6		@ invalidate BTB
 	mcrne	p15, 0, ip, c7, c10, 4		@ data write barrier
 	mcrne	p15, 0, ip, c7, c5, 4		@ prefetch flush
-	mov	pc, lr
+	ret	lr
 
 /*
  *	coherent_kern_range(start, end)
@@ -135,7 +132,7 @@ ENTRY(fa_coherent_user_range)
 	mcr	p15, 0, r0, c7, c5, 6		@ invalidate BTB
 	mcr	p15, 0, r0, c7, c10, 4		@ drain write buffer
 	mcr	p15, 0, r0, c7, c5, 4		@ prefetch flush
-	mov	pc, lr
+	ret	lr
 
 /*
  *	flush_kern_dcache_area(void *addr, size_t size)
@@ -155,7 +152,7 @@ ENTRY(fa_flush_kern_dcache_area)
 	mov	r0, #0
 	mcr	p15, 0, r0, c7, c5, 0		@ invalidate I cache
 	mcr	p15, 0, r0, c7, c10, 4		@ drain write buffer
-	mov	pc, lr
+	ret	lr
 
 /*
  *	dma_inv_range(start, end)
@@ -181,7 +178,7 @@ fa_dma_inv_range:
 	blo	1b
 	mov	r0, #0
 	mcr	p15, 0, r0, c7, c10, 4		@ drain write buffer
-	mov	pc, lr
+	ret	lr
 
 /*
  *	dma_clean_range(start, end)
@@ -199,7 +196,7 @@ fa_dma_clean_range:
 	blo	1b
 	mov	r0, #0	
 	mcr	p15, 0, r0, c7, c10, 4		@ drain write buffer
-	mov	pc, lr
+	ret	lr
 
 /*
  *	dma_flush_range(start,end)
@@ -214,7 +211,7 @@ ENTRY(fa_dma_flush_range)
 	blo	1b
 	mov	r0, #0	
 	mcr	p15, 0, r0, c7, c10, 4		@ drain write buffer
-	mov	pc, lr
+	ret	lr
 
 /*
  *	dma_map_area(start, size, dir)
@@ -237,7 +234,7 @@ ENDPROC(fa_dma_map_area)
  *	- dir	- DMA direction
  */
 ENTRY(fa_dma_unmap_area)
-	mov	pc, lr
+	ret	lr
 ENDPROC(fa_dma_unmap_area)
 
 	.globl	fa_flush_kern_cache_louis

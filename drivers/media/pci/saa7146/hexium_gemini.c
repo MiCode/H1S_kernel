@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
     hexium_gemini.c - v4l2 driver for Hexium Gemini frame grabber cards
 
@@ -6,27 +7,15 @@
 
     Copyright (C) 2003 Michael Hunold <michael@mihu.de>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define DEBUG_VARIABLE debug
 
-#include <media/saa7146_vv.h>
+#include <media/drv-intf/saa7146_vv.h>
 #include <linux/module.h>
+#include <linux/kernel.h>
 
 static int debug;
 module_param(debug, int, 0);
@@ -38,17 +27,18 @@ static int hexium_num;
 #define HEXIUM_GEMINI			4
 #define HEXIUM_GEMINI_DUAL		5
 
+#define HEXIUM_STD (V4L2_STD_PAL | V4L2_STD_SECAM | V4L2_STD_NTSC)
 #define HEXIUM_INPUTS	9
 static struct v4l2_input hexium_inputs[HEXIUM_INPUTS] = {
-	{ 0, "CVBS 1",	V4L2_INPUT_TYPE_CAMERA,	0, 0, V4L2_STD_ALL, 0, V4L2_IN_CAP_STD },
-	{ 1, "CVBS 2",	V4L2_INPUT_TYPE_CAMERA,	0, 0, V4L2_STD_ALL, 0, V4L2_IN_CAP_STD },
-	{ 2, "CVBS 3",	V4L2_INPUT_TYPE_CAMERA,	0, 0, V4L2_STD_ALL, 0, V4L2_IN_CAP_STD },
-	{ 3, "CVBS 4",	V4L2_INPUT_TYPE_CAMERA,	0, 0, V4L2_STD_ALL, 0, V4L2_IN_CAP_STD },
-	{ 4, "CVBS 5",	V4L2_INPUT_TYPE_CAMERA,	0, 0, V4L2_STD_ALL, 0, V4L2_IN_CAP_STD },
-	{ 5, "CVBS 6",	V4L2_INPUT_TYPE_CAMERA,	0, 0, V4L2_STD_ALL, 0, V4L2_IN_CAP_STD },
-	{ 6, "Y/C 1",	V4L2_INPUT_TYPE_CAMERA,	0, 0, V4L2_STD_ALL, 0, V4L2_IN_CAP_STD },
-	{ 7, "Y/C 2",	V4L2_INPUT_TYPE_CAMERA,	0, 0, V4L2_STD_ALL, 0, V4L2_IN_CAP_STD },
-	{ 8, "Y/C 3",	V4L2_INPUT_TYPE_CAMERA,	0, 0, V4L2_STD_ALL, 0, V4L2_IN_CAP_STD },
+	{ 0, "CVBS 1",	V4L2_INPUT_TYPE_CAMERA,	0, 0, HEXIUM_STD, 0, V4L2_IN_CAP_STD },
+	{ 1, "CVBS 2",	V4L2_INPUT_TYPE_CAMERA,	0, 0, HEXIUM_STD, 0, V4L2_IN_CAP_STD },
+	{ 2, "CVBS 3",	V4L2_INPUT_TYPE_CAMERA,	0, 0, HEXIUM_STD, 0, V4L2_IN_CAP_STD },
+	{ 3, "CVBS 4",	V4L2_INPUT_TYPE_CAMERA,	0, 0, HEXIUM_STD, 0, V4L2_IN_CAP_STD },
+	{ 4, "CVBS 5",	V4L2_INPUT_TYPE_CAMERA,	0, 0, HEXIUM_STD, 0, V4L2_IN_CAP_STD },
+	{ 5, "CVBS 6",	V4L2_INPUT_TYPE_CAMERA,	0, 0, HEXIUM_STD, 0, V4L2_IN_CAP_STD },
+	{ 6, "Y/C 1",	V4L2_INPUT_TYPE_CAMERA,	0, 0, HEXIUM_STD, 0, V4L2_IN_CAP_STD },
+	{ 7, "Y/C 2",	V4L2_INPUT_TYPE_CAMERA,	0, 0, HEXIUM_STD, 0, V4L2_IN_CAP_STD },
+	{ 8, "Y/C 3",	V4L2_INPUT_TYPE_CAMERA,	0, 0, HEXIUM_STD, 0, V4L2_IN_CAP_STD },
 };
 
 #define HEXIUM_AUDIOS	0
@@ -66,11 +56,11 @@ struct hexium
 {
 	int type;
 
-	struct video_device	*video_dev;
+	struct video_device	video_dev;
 	struct i2c_adapter	i2c_adapter;
 
-	int 		cur_input;	/* current input */
-	v4l2_std_id 	cur_std;	/* current standard */
+	int		cur_input;	/* current input */
+	v4l2_std_id	cur_std;	/* current standard */
 };
 
 /* Samsung KS0127B decoder default registers */
@@ -137,19 +127,19 @@ static struct hexium_data hexium_input_select[] = {
    are currently *not* supported*/
 static struct saa7146_standard hexium_standards[] = {
 	{
-		.name	= "PAL", 	.id	= V4L2_STD_PAL,
-		.v_offset	= 28,	.v_field 	= 288,
-		.h_offset	= 1,	.h_pixels 	= 680,
+		.name	= "PAL",	.id	= V4L2_STD_PAL,
+		.v_offset	= 28,	.v_field	= 288,
+		.h_offset	= 1,	.h_pixels	= 680,
 		.v_max_out	= 576,	.h_max_out	= 768,
 	}, {
-		.name	= "NTSC", 	.id	= V4L2_STD_NTSC,
-		.v_offset	= 28,	.v_field 	= 240,
-		.h_offset	= 1,	.h_pixels 	= 640,
+		.name	= "NTSC",	.id	= V4L2_STD_NTSC,
+		.v_offset	= 28,	.v_field	= 240,
+		.h_offset	= 1,	.h_pixels	= 640,
 		.v_max_out	= 480,	.h_max_out	= 640,
 	}, {
-		.name	= "SECAM", 	.id	= V4L2_STD_SECAM,
-		.v_offset	= 28,	.v_field 	= 288,
-		.h_offset	= 1,	.h_pixels 	= 720,
+		.name	= "SECAM",	.id	= V4L2_STD_SECAM,
+		.v_offset	= 28,	.v_field	= 288,
+		.h_offset	= 1,	.h_pixels	= 720,
 		.v_max_out	= 576,	.h_max_out	= 768,
 	}
 };
@@ -226,7 +216,7 @@ static int vidioc_enum_input(struct file *file, void *fh, struct v4l2_input *i)
 
 static int vidioc_g_input(struct file *file, void *fh, unsigned int *input)
 {
-	struct saa7146_dev *dev = ((struct saa7146_fh *)fh)->dev;
+	struct saa7146_dev *dev = video_drvdata(file);
 	struct hexium *hexium = (struct hexium *) dev->ext_priv;
 
 	*input = hexium->cur_input;
@@ -237,7 +227,7 @@ static int vidioc_g_input(struct file *file, void *fh, unsigned int *input)
 
 static int vidioc_s_input(struct file *file, void *fh, unsigned int input)
 {
-	struct saa7146_dev *dev = ((struct saa7146_fh *)fh)->dev;
+	struct saa7146_dev *dev = video_drvdata(file);
 	struct hexium *hexium = (struct hexium *) dev->ext_priv;
 
 	DEB_EE("VIDIOC_S_INPUT %d\n", input);
@@ -260,19 +250,17 @@ static int hexium_attach(struct saa7146_dev *dev, struct saa7146_pci_extension_d
 
 	DEB_EE("\n");
 
-	hexium = kzalloc(sizeof(struct hexium), GFP_KERNEL);
-	if (NULL == hexium) {
-		pr_err("not enough kernel memory in hexium_attach()\n");
+	hexium = kzalloc(sizeof(*hexium), GFP_KERNEL);
+	if (!hexium)
 		return -ENOMEM;
-	}
+
 	dev->ext_priv = hexium;
 
 	/* enable i2c-port pins */
 	saa7146_write(dev, MC1, (MASK_08 | MASK_24 | MASK_10 | MASK_26));
 
-	hexium->i2c_adapter = (struct i2c_adapter) {
-		.name = "hexium gemini",
-	};
+	strscpy(hexium->i2c_adapter.name, "hexium gemini",
+		sizeof(hexium->i2c_adapter.name));
 	saa7146_i2c_adapter_prepare(dev, &hexium->i2c_adapter, SAA7146_I2C_BUS_BIT_RATE_480);
 	if (i2c_add_adapter(&hexium->i2c_adapter) < 0) {
 		DEB_S("cannot register i2c-device. skipping.\n");
@@ -297,14 +285,22 @@ static int hexium_attach(struct saa7146_dev *dev, struct saa7146_pci_extension_d
 	hexium_set_input(hexium, 0);
 	hexium->cur_input = 0;
 
-	saa7146_vv_init(dev, &vv_data);
+	ret = saa7146_vv_init(dev, &vv_data);
+	if (ret) {
+		i2c_del_adapter(&hexium->i2c_adapter);
+		kfree(hexium);
+		return ret;
+	}
 
 	vv_data.vid_ops.vidioc_enum_input = vidioc_enum_input;
 	vv_data.vid_ops.vidioc_g_input = vidioc_g_input;
 	vv_data.vid_ops.vidioc_s_input = vidioc_s_input;
-	ret = saa7146_register_device(&hexium->video_dev, dev, "hexium gemini", VFL_TYPE_GRABBER);
+	ret = saa7146_register_device(&hexium->video_dev, dev, "hexium gemini", VFL_TYPE_VIDEO);
 	if (ret < 0) {
 		pr_err("cannot register capture v4l2 device. skipping.\n");
+		saa7146_vv_release(dev);
+		i2c_del_adapter(&hexium->i2c_adapter);
+		kfree(hexium);
 		return ret;
 	}
 
@@ -363,7 +359,7 @@ static struct saa7146_pci_extension_data hexium_gemini_dual_4bnc = {
 	.ext = &hexium_extension,
 };
 
-static struct pci_device_id pci_tbl[] = {
+static const struct pci_device_id pci_tbl[] = {
 	{
 	 .vendor = PCI_VENDOR_ID_PHILIPS,
 	 .device = PCI_DEVICE_ID_PHILIPS_SAA7146,
@@ -389,7 +385,7 @@ static struct saa7146_ext_vv vv_data = {
 	.inputs = HEXIUM_INPUTS,
 	.capabilities = 0,
 	.stds = &hexium_standards[0],
-	.num_stds = sizeof(hexium_standards) / sizeof(struct saa7146_standard),
+	.num_stds = ARRAY_SIZE(hexium_standards),
 	.std_callback = &std_callback,
 };
 

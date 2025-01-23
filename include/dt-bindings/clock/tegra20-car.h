@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * This header provides constants for binding nvidia,tegra20-car.
  *
@@ -49,7 +50,7 @@
 /* 30 */
 #define TEGRA20_CLK_CACHE2 31
 
-#define TEGRA20_CLK_MEM 32
+#define TEGRA20_CLK_MC 32
 #define TEGRA20_CLK_AHBDMA 33
 #define TEGRA20_CLK_APBDMA 34
 /* 35 */
@@ -130,7 +131,7 @@
 #define TEGRA20_CLK_CCLK 108
 #define TEGRA20_CLK_HCLK 109
 #define TEGRA20_CLK_PCLK 110
-#define TEGRA20_CLK_BLINK 111
+/* 111 */
 #define TEGRA20_CLK_PLL_A 112
 #define TEGRA20_CLK_PLL_A_OUT0 113
 #define TEGRA20_CLK_PLL_C 114

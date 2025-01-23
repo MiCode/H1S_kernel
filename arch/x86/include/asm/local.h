@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_LOCAL_H
 #define _ASM_X86_LOCAL_H
 
@@ -50,9 +51,9 @@ static inline void local_sub(long i, local_t *l)
  * true if the result is zero, or false for all
  * other cases.
  */
-static inline int local_sub_and_test(long i, local_t *l)
+static inline bool local_sub_and_test(long i, local_t *l)
 {
-	GEN_BINARY_RMWcc(_ASM_SUB, l->a.counter, "er", i, "%0", "e");
+	return GEN_BINARY_RMWcc(_ASM_SUB, l->a.counter, e, "er", i);
 }
 
 /**
@@ -63,9 +64,9 @@ static inline int local_sub_and_test(long i, local_t *l)
  * returns true if the result is 0, or false for all other
  * cases.
  */
-static inline int local_dec_and_test(local_t *l)
+static inline bool local_dec_and_test(local_t *l)
 {
-	GEN_UNARY_RMWcc(_ASM_DEC, l->a.counter, "%0", "e");
+	return GEN_UNARY_RMWcc(_ASM_DEC, l->a.counter, e);
 }
 
 /**
@@ -76,9 +77,9 @@ static inline int local_dec_and_test(local_t *l)
  * and returns true if the result is zero, or false for all
  * other cases.
  */
-static inline int local_inc_and_test(local_t *l)
+static inline bool local_inc_and_test(local_t *l)
 {
-	GEN_UNARY_RMWcc(_ASM_INC, l->a.counter, "%0", "e");
+	return GEN_UNARY_RMWcc(_ASM_INC, l->a.counter, e);
 }
 
 /**
@@ -90,9 +91,9 @@ static inline int local_inc_and_test(local_t *l)
  * if the result is negative, or false when
  * result is greater than or equal to zero.
  */
-static inline int local_add_negative(long i, local_t *l)
+static inline bool local_add_negative(long i, local_t *l)
 {
-	GEN_BINARY_RMWcc(_ASM_ADD, l->a.counter, "er", i, "%0", "s");
+	return GEN_BINARY_RMWcc(_ASM_ADD, l->a.counter, s, "er", i);
 }
 
 /**
@@ -119,8 +120,17 @@ static inline long local_sub_return(long i, local_t *l)
 #define local_inc_return(l)  (local_add_return(1, l))
 #define local_dec_return(l)  (local_sub_return(1, l))
 
-#define local_cmpxchg(l, o, n) \
-	(cmpxchg_local(&((l)->a.counter), (o), (n)))
+static inline long local_cmpxchg(local_t *l, long old, long new)
+{
+	return cmpxchg_local(&l->a.counter, old, new);
+}
+
+static inline bool local_try_cmpxchg(local_t *l, long *old, long new)
+{
+	return try_cmpxchg_local(&l->a.counter,
+				 (typeof(l->a.counter) *) old, new);
+}
+
 /* Always has a lock prefix */
 #define local_xchg(l, n) (xchg(&((l)->a.counter), (n)))
 

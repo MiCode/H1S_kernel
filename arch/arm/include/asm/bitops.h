@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright 1995, Russell King.
  * Various bits and pieces copyrights include:
@@ -25,9 +26,7 @@
 
 #include <linux/compiler.h>
 #include <linux/irqflags.h>
-
-#define smp_mb__before_clear_bit()	smp_mb()
-#define smp_mb__after_clear_bit()	smp_mb()
+#include <asm/barrier.h>
 
 /*
  * These functions are the basis of our bit ops.
@@ -37,9 +36,9 @@
 static inline void ____atomic_set_bit(unsigned int bit, volatile unsigned long *p)
 {
 	unsigned long flags;
-	unsigned long mask = 1UL << (bit & 31);
+	unsigned long mask = BIT_MASK(bit);
 
-	p += bit >> 5;
+	p += BIT_WORD(bit);
 
 	raw_local_irq_save(flags);
 	*p |= mask;
@@ -49,9 +48,9 @@ static inline void ____atomic_set_bit(unsigned int bit, volatile unsigned long *
 static inline void ____atomic_clear_bit(unsigned int bit, volatile unsigned long *p)
 {
 	unsigned long flags;
-	unsigned long mask = 1UL << (bit & 31);
+	unsigned long mask = BIT_MASK(bit);
 
-	p += bit >> 5;
+	p += BIT_WORD(bit);
 
 	raw_local_irq_save(flags);
 	*p &= ~mask;
@@ -61,9 +60,9 @@ static inline void ____atomic_clear_bit(unsigned int bit, volatile unsigned long
 static inline void ____atomic_change_bit(unsigned int bit, volatile unsigned long *p)
 {
 	unsigned long flags;
-	unsigned long mask = 1UL << (bit & 31);
+	unsigned long mask = BIT_MASK(bit);
 
-	p += bit >> 5;
+	p += BIT_WORD(bit);
 
 	raw_local_irq_save(flags);
 	*p ^= mask;
@@ -75,9 +74,9 @@ ____atomic_test_and_set_bit(unsigned int bit, volatile unsigned long *p)
 {
 	unsigned long flags;
 	unsigned int res;
-	unsigned long mask = 1UL << (bit & 31);
+	unsigned long mask = BIT_MASK(bit);
 
-	p += bit >> 5;
+	p += BIT_WORD(bit);
 
 	raw_local_irq_save(flags);
 	res = *p;
@@ -92,9 +91,9 @@ ____atomic_test_and_clear_bit(unsigned int bit, volatile unsigned long *p)
 {
 	unsigned long flags;
 	unsigned int res;
-	unsigned long mask = 1UL << (bit & 31);
+	unsigned long mask = BIT_MASK(bit);
 
-	p += bit >> 5;
+	p += BIT_WORD(bit);
 
 	raw_local_irq_save(flags);
 	res = *p;
@@ -109,9 +108,9 @@ ____atomic_test_and_change_bit(unsigned int bit, volatile unsigned long *p)
 {
 	unsigned long flags;
 	unsigned int res;
-	unsigned long mask = 1UL << (bit & 31);
+	unsigned long mask = BIT_MASK(bit);
 
-	p += bit >> 5;
+	p += BIT_WORD(bit);
 
 	raw_local_irq_save(flags);
 	res = *p;
@@ -161,18 +160,20 @@ extern int _test_and_change_bit(int nr, volatile unsigned long * p);
 /*
  * Little endian assembly bitops.  nr = 0 -> byte 0 bit 0.
  */
-extern int _find_first_zero_bit_le(const void * p, unsigned size);
-extern int _find_next_zero_bit_le(const void * p, int size, int offset);
-extern int _find_first_bit_le(const unsigned long *p, unsigned size);
-extern int _find_next_bit_le(const unsigned long *p, int size, int offset);
+unsigned long _find_first_zero_bit_le(const unsigned long *p, unsigned long size);
+unsigned long _find_next_zero_bit_le(const unsigned long *p,
+				     unsigned long size, unsigned long offset);
+unsigned long _find_first_bit_le(const unsigned long *p, unsigned long size);
+unsigned long _find_next_bit_le(const unsigned long *p, unsigned long size, unsigned long offset);
 
 /*
  * Big endian assembly bitops.  nr = 0 -> byte 3 bit 0.
  */
-extern int _find_first_zero_bit_be(const void * p, unsigned size);
-extern int _find_next_zero_bit_be(const void * p, int size, int offset);
-extern int _find_first_bit_be(const unsigned long *p, unsigned size);
-extern int _find_next_bit_be(const unsigned long *p, int size, int offset);
+unsigned long _find_first_zero_bit_be(const unsigned long *p, unsigned long size);
+unsigned long _find_next_zero_bit_be(const unsigned long *p,
+				     unsigned long size, unsigned long offset);
+unsigned long _find_first_bit_be(const unsigned long *p, unsigned long size);
+unsigned long _find_next_bit_be(const unsigned long *p, unsigned long size, unsigned long offset);
 
 #ifndef CONFIG_SMP
 /*
@@ -216,7 +217,6 @@ extern int _find_next_bit_be(const unsigned long *p, int size, int offset);
 
 #if __LINUX_ARM_ARCH__ < 5
 
-#include <asm-generic/bitops/ffz.h>
 #include <asm-generic/bitops/__fls.h>
 #include <asm-generic/bitops/__ffs.h>
 #include <asm-generic/bitops/fls.h>
@@ -224,92 +224,19 @@ extern int _find_next_bit_be(const unsigned long *p, int size, int offset);
 
 #else
 
-static inline int constant_fls(int x)
-{
-	int r = 32;
-
-	if (!x)
-		return 0;
-	if (!(x & 0xffff0000u)) {
-		x <<= 16;
-		r -= 16;
-	}
-	if (!(x & 0xff000000u)) {
-		x <<= 8;
-		r -= 8;
-	}
-	if (!(x & 0xf0000000u)) {
-		x <<= 4;
-		r -= 4;
-	}
-	if (!(x & 0xc0000000u)) {
-		x <<= 2;
-		r -= 2;
-	}
-	if (!(x & 0x80000000u)) {
-		x <<= 1;
-		r -= 1;
-	}
-	return r;
-}
-
 /*
- * On ARMv5 and above those functions can be implemented around the
- * clz instruction for much better code efficiency.  __clz returns
- * the number of leading zeros, zero input will return 32, and
- * 0x80000000 will return 0.
+ * On ARMv5 and above, the gcc built-ins may rely on the clz instruction
+ * and produce optimal inlined code in all cases. On ARMv7 it is even
+ * better by also using the rbit instruction.
  */
-static inline unsigned int __clz(unsigned int x)
-{
-	unsigned int ret;
-
-	asm("clz\t%0, %1" : "=r" (ret) : "r" (x));
-
-	return ret;
-}
-
-/*
- * fls() returns zero if the input is zero, otherwise returns the bit
- * position of the last set bit, where the LSB is 1 and MSB is 32.
- */
-static inline int fls(int x)
-{
-	if (__builtin_constant_p(x))
-	       return constant_fls(x);
-
-	return 32 - __clz(x);
-}
-
-/*
- * __fls() returns the bit position of the last bit set, where the
- * LSB is 0 and MSB is 31.  Zero input is undefined.
- */
-static inline unsigned long __fls(unsigned long x)
-{
-	return fls(x) - 1;
-}
-
-/*
- * ffs() returns zero if the input was zero, otherwise returns the bit
- * position of the first set bit, where the LSB is 1 and MSB is 32.
- */
-static inline int ffs(int x)
-{
-	return fls(x & -x);
-}
-
-/*
- * __ffs() returns the bit position of the first bit set, where the
- * LSB is 0 and MSB is 31.  Zero input is undefined.
- */
-static inline unsigned long __ffs(unsigned long x)
-{
-	return ffs(x) - 1;
-}
-
-#define ffz(x) __ffs( ~(x) )
+#include <asm-generic/bitops/builtin-__fls.h>
+#include <asm-generic/bitops/builtin-__ffs.h>
+#include <asm-generic/bitops/builtin-fls.h>
+#include <asm-generic/bitops/builtin-ffs.h>
 
 #endif
+
+#include <asm-generic/bitops/ffz.h>
 
 #include <asm-generic/bitops/fls64.h>
 

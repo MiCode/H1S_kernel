@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *   Copyright (C) International Business Machines Corp., 2000-2004
- *
- *   This program is free software;  you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY;  without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- *   the GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program;  if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/fs.h>
@@ -29,38 +16,20 @@
 void jfs_set_inode_flags(struct inode *inode)
 {
 	unsigned int flags = JFS_IP(inode)->mode2;
-
-	inode->i_flags &= ~(S_IMMUTABLE | S_APPEND |
-		S_NOATIME | S_DIRSYNC | S_SYNC);
+	unsigned int new_fl = 0;
 
 	if (flags & JFS_IMMUTABLE_FL)
-		inode->i_flags |= S_IMMUTABLE;
+		new_fl |= S_IMMUTABLE;
 	if (flags & JFS_APPEND_FL)
-		inode->i_flags |= S_APPEND;
+		new_fl |= S_APPEND;
 	if (flags & JFS_NOATIME_FL)
-		inode->i_flags |= S_NOATIME;
+		new_fl |= S_NOATIME;
 	if (flags & JFS_DIRSYNC_FL)
-		inode->i_flags |= S_DIRSYNC;
+		new_fl |= S_DIRSYNC;
 	if (flags & JFS_SYNC_FL)
-		inode->i_flags |= S_SYNC;
-}
-
-void jfs_get_inode_flags(struct jfs_inode_info *jfs_ip)
-{
-	unsigned int flags = jfs_ip->vfs_inode.i_flags;
-
-	jfs_ip->mode2 &= ~(JFS_IMMUTABLE_FL | JFS_APPEND_FL | JFS_NOATIME_FL |
-			   JFS_DIRSYNC_FL | JFS_SYNC_FL);
-	if (flags & S_IMMUTABLE)
-		jfs_ip->mode2 |= JFS_IMMUTABLE_FL;
-	if (flags & S_APPEND)
-		jfs_ip->mode2 |= JFS_APPEND_FL;
-	if (flags & S_NOATIME)
-		jfs_ip->mode2 |= JFS_NOATIME_FL;
-	if (flags & S_DIRSYNC)
-		jfs_ip->mode2 |= JFS_DIRSYNC_FL;
-	if (flags & S_SYNC)
-		jfs_ip->mode2 |= JFS_SYNC_FL;
+		new_fl |= S_SYNC;
+	inode_set_flags(inode, new_fl, S_IMMUTABLE | S_APPEND | S_NOATIME |
+			S_DIRSYNC | S_SYNC);
 }
 
 /*
@@ -79,8 +48,7 @@ struct inode *ialloc(struct inode *parent, umode_t mode)
 	inode = new_inode(sb);
 	if (!inode) {
 		jfs_warn("ialloc: new_inode returned NULL!");
-		rc = -ENOMEM;
-		goto fail;
+		return ERR_PTR(-ENOMEM);
 	}
 
 	jfs_inode = JFS_IP(inode);
@@ -88,8 +56,6 @@ struct inode *ialloc(struct inode *parent, umode_t mode)
 	rc = diAlloc(parent, S_ISDIR(mode), inode);
 	if (rc) {
 		jfs_warn("ialloc: diAlloc returned %d!", rc);
-		if (rc == -EIO)
-			make_bad_inode(inode);
 		goto fail_put;
 	}
 
@@ -98,7 +64,7 @@ struct inode *ialloc(struct inode *parent, umode_t mode)
 		goto fail_put;
 	}
 
-	inode_init_owner(inode, parent, mode);
+	inode_init_owner(&nop_mnt_idmap, inode, parent, mode);
 	/*
 	 * New inodes need to save sane values on disk when
 	 * uid & gid mount options are used
@@ -109,7 +75,9 @@ struct inode *ialloc(struct inode *parent, umode_t mode)
 	/*
 	 * Allocate inode to quota.
 	 */
-	dquot_initialize(inode);
+	rc = dquot_initialize(inode);
+	if (rc)
+		goto fail_drop;
 	rc = dquot_alloc_inode(inode);
 	if (rc)
 		goto fail_drop;
@@ -129,8 +97,8 @@ struct inode *ialloc(struct inode *parent, umode_t mode)
 	jfs_inode->mode2 |= inode->i_mode;
 
 	inode->i_blocks = 0;
-	inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME;
-	jfs_inode->otime = inode->i_ctime.tv_sec;
+	inode->i_mtime = inode->i_atime = inode_set_ctime_current(inode);
+	jfs_inode->otime = inode_get_ctime(inode).tv_sec;
 	inode->i_generation = JFS_SBI(sb)->gengen++;
 
 	jfs_inode->cflag = 0;
@@ -149,7 +117,7 @@ struct inode *ialloc(struct inode *parent, umode_t mode)
 	jfs_inode->xtlid = 0;
 	jfs_set_inode_flags(inode);
 
-	jfs_info("ialloc returns inode = 0x%p\n", inode);
+	jfs_info("ialloc returns inode = 0x%p", inode);
 
 	return inode;
 
@@ -157,9 +125,10 @@ fail_drop:
 	dquot_drop(inode);
 	inode->i_flags |= S_NOQUOTA;
 	clear_nlink(inode);
-	unlock_new_inode(inode);
+	discard_new_inode(inode);
+	return ERR_PTR(rc);
+
 fail_put:
 	iput(inode);
-fail:
 	return ERR_PTR(rc);
 }

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Power off by restarting and let u-boot keep hold of the machine
  * until the user presses a button for example.
@@ -5,10 +6,6 @@
  * Andrew Lunn <andrew@lunn.ch>
  *
  * Copyright (C) 2012 Andrew Lunn
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -16,11 +13,11 @@
 #include <linux/of_platform.h>
 #include <linux/module.h>
 #include <linux/reboot.h>
-#include <asm/system_misc.h>
 
 static void restart_poweroff_do_poweroff(void)
 {
-	arm_pm_restart(REBOOT_HARD, NULL);
+	reboot_mode = REBOOT_HARD;
+	machine_restart(NULL);
 }
 
 static int restart_poweroff_probe(struct platform_device *pdev)
@@ -48,13 +45,13 @@ static const struct of_device_id of_restart_poweroff_match[] = {
 	{ .compatible = "restart-poweroff", },
 	{},
 };
+MODULE_DEVICE_TABLE(of, of_restart_poweroff_match);
 
 static struct platform_driver restart_poweroff_driver = {
 	.probe = restart_poweroff_probe,
 	.remove = restart_poweroff_remove,
 	.driver = {
 		.name = "poweroff-restart",
-		.owner = THIS_MODULE,
 		.of_match_table = of_restart_poweroff_match,
 	},
 };
@@ -62,5 +59,4 @@ module_platform_driver(restart_poweroff_driver);
 
 MODULE_AUTHOR("Andrew Lunn <andrew@lunn.ch");
 MODULE_DESCRIPTION("restart poweroff driver");
-MODULE_LICENSE("GPLv2");
 MODULE_ALIAS("platform:poweroff-restart");

@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * cistpl.c -- 16-bit PCMCIA Card Information Structure parser
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * The initial developer of the original code is David A. Hinds
  * <dahinds@users.sourceforge.net>.  Portions created by David A. Hinds
@@ -24,12 +21,14 @@
 #include <linux/pci.h>
 #include <linux/ioport.h>
 #include <linux/io.h>
+#include <linux/security.h>
 #include <asm/byteorder.h>
 #include <asm/unaligned.h>
 
 #include <pcmcia/ss.h>
 #include <pcmcia/cisreg.h>
 #include <pcmcia/cistpl.h>
+#include <pcmcia/ds.h>
 #include "cs_internal.h"
 
 static const u_char mantissa[] = {
@@ -76,7 +75,7 @@ void release_cis_mem(struct pcmcia_socket *s)
 	mutex_unlock(&s->ops_mutex);
 }
 
-/**
+/*
  * set_cis_map() - map the card memory at "card_offset" into virtual space.
  *
  * If flags & MAP_ATTRIB, map the attribute space, otherwise
@@ -94,8 +93,7 @@ static void __iomem *set_cis_map(struct pcmcia_socket *s,
 		mem->res = pcmcia_find_mem_region(0, s->map_size,
 						s->map_size, 0, s);
 		if (mem->res == NULL) {
-			dev_printk(KERN_NOTICE, &s->dev,
-				   "cs: unable to map card memory!\n");
+			dev_notice(&s->dev, "cs: unable to map card memory!\n");
 			return NULL;
 		}
 		s->cis_virt = NULL;
@@ -128,7 +126,7 @@ static void __iomem *set_cis_map(struct pcmcia_socket *s,
 #define IS_ATTR		1
 #define IS_INDIRECT	8
 
-/**
+/*
  * pcmcia_read_cis_mem() - low-level function to read CIS memory
  *
  * must be called with ops_mutex held
@@ -168,9 +166,12 @@ int pcmcia_read_cis_mem(struct pcmcia_socket *s, int attr, u_int addr,
 	} else {
 		u_int inc = 1, card_offset, flags;
 
-		if (addr > CISTPL_MAX_CIS_SIZE)
+		if (addr > CISTPL_MAX_CIS_SIZE) {
 			dev_dbg(&s->dev,
 				"attempt to read CIS mem at addr %#x", addr);
+			memset(ptr, 0xff, len);
+			return -1;
+		}
 
 		flags = MAP_ACTIVE | ((cis_width) ? MAP_16BIT : 0);
 		if (attr) {
@@ -205,7 +206,7 @@ int pcmcia_read_cis_mem(struct pcmcia_socket *s, int attr, u_int addr,
 }
 
 
-/**
+/*
  * pcmcia_write_cis_mem() - low-level function to write CIS memory
  *
  * Probably only useful for writing one-byte registers. Must be called
@@ -276,7 +277,7 @@ int pcmcia_write_cis_mem(struct pcmcia_socket *s, int attr, u_int addr,
 }
 
 
-/**
+/*
  * read_cis_cache() - read CIS memory or its associated cache
  *
  * This is a wrapper around read_cis_mem, with the same interface,
@@ -364,7 +365,7 @@ void destroy_cis_cache(struct pcmcia_socket *s)
 	}
 }
 
-/**
+/*
  * verify_cis_cache() - does the CIS match what is in the CIS cache?
  */
 int verify_cis_cache(struct pcmcia_socket *s)
@@ -378,8 +379,7 @@ int verify_cis_cache(struct pcmcia_socket *s)
 
 	buf = kmalloc(256, GFP_KERNEL);
 	if (buf == NULL) {
-		dev_printk(KERN_WARNING, &s->dev,
-			   "no memory for verifying CIS\n");
+		dev_warn(&s->dev, "no memory for verifying CIS\n");
 		return -ENOMEM;
 	}
 	mutex_lock(&s->ops_mutex);
@@ -401,7 +401,7 @@ int verify_cis_cache(struct pcmcia_socket *s)
 	return 0;
 }
 
-/**
+/*
  * pcmcia_replace_cis() - use a replacement CIS instead of the card's CIS
  *
  * For really bad cards, we provide a facility for uploading a
@@ -411,14 +411,14 @@ int pcmcia_replace_cis(struct pcmcia_socket *s,
 		       const u8 *data, const size_t len)
 {
 	if (len > CISTPL_MAX_CIS_SIZE) {
-		dev_printk(KERN_WARNING, &s->dev, "replacement CIS too big\n");
+		dev_warn(&s->dev, "replacement CIS too big\n");
 		return -EINVAL;
 	}
 	mutex_lock(&s->ops_mutex);
 	kfree(s->fake_cis);
 	s->fake_cis = kmalloc(len, GFP_KERNEL);
 	if (s->fake_cis == NULL) {
-		dev_printk(KERN_WARNING, &s->dev, "no memory to replace CIS\n");
+		dev_warn(&s->dev, "no memory to replace CIS\n");
 		mutex_unlock(&s->ops_mutex);
 		return -ENOMEM;
 	}
@@ -431,17 +431,17 @@ int pcmcia_replace_cis(struct pcmcia_socket *s,
 
 /* The high-level CIS tuple services */
 
-typedef struct tuple_flags {
+struct tuple_flags {
 	u_int		link_space:4;
 	u_int		has_link:1;
 	u_int		mfc_fn:3;
 	u_int		space:4;
-} tuple_flags;
+};
 
-#define LINK_SPACE(f)	(((tuple_flags *)(&(f)))->link_space)
-#define HAS_LINK(f)	(((tuple_flags *)(&(f)))->has_link)
-#define MFC_FN(f)	(((tuple_flags *)(&(f)))->mfc_fn)
-#define SPACE(f)	(((tuple_flags *)(&(f)))->space)
+#define LINK_SPACE(f)	(((struct tuple_flags *)(&(f)))->link_space)
+#define HAS_LINK(f)	(((struct tuple_flags *)(&(f)))->has_link)
+#define MFC_FN(f)	(((struct tuple_flags *)(&(f)))->mfc_fn)
+#define SPACE(f)	(((struct tuple_flags *)(&(f)))->space)
 
 int pccard_get_first_tuple(struct pcmcia_socket *s, unsigned int function,
 			tuple_t *tuple)
@@ -1383,7 +1383,7 @@ int pccard_validate_cis(struct pcmcia_socket *s, unsigned int *info)
 	if (!s)
 		return -EINVAL;
 
-	if (s->functions) {
+	if (s->functions || !(s->state & SOCKET_PRESENT)) {
 		WARN_ON(1);
 		return -EINVAL;
 	}
@@ -1451,7 +1451,13 @@ done:
 		mutex_lock(&s->ops_mutex);
 		destroy_cis_cache(s);
 		mutex_unlock(&s->ops_mutex);
-		ret = -EIO;
+		/* We differentiate between dev_ok, ident_ok and count
+		   failures to allow for an override for anonymous cards
+		   in ds.c */
+		if (!dev_ok || !ident_ok)
+			ret = -EIO;
+		else
+			ret = -EFAULT;
 	}
 
 	if (info)
@@ -1474,11 +1480,11 @@ static ssize_t pccard_extract_cis(struct pcmcia_socket *s, char *buf,
 	u_char *tuplebuffer;
 	u_char *tempbuffer;
 
-	tuplebuffer = kmalloc(sizeof(u_char) * 256, GFP_KERNEL);
+	tuplebuffer = kmalloc_array(256, sizeof(u_char), GFP_KERNEL);
 	if (!tuplebuffer)
 		return -ENOMEM;
 
-	tempbuffer = kmalloc(sizeof(u_char) * 258, GFP_KERNEL);
+	tempbuffer = kmalloc_array(258, sizeof(u_char), GFP_KERNEL);
 	if (!tempbuffer) {
 		ret = -ENOMEM;
 		goto free_tuple;
@@ -1548,7 +1554,7 @@ static ssize_t pccard_show_cis(struct file *filp, struct kobject *kobj,
 		if (off + count > size)
 			count = size - off;
 
-		s = to_socket(container_of(kobj, struct device, kobj));
+		s = to_socket(kobj_to_dev(kobj));
 
 		if (!(s->state & SOCKET_PRESENT))
 			return -ENODEV;
@@ -1571,7 +1577,11 @@ static ssize_t pccard_store_cis(struct file *filp, struct kobject *kobj,
 	struct pcmcia_socket *s;
 	int error;
 
-	s = to_socket(container_of(kobj, struct device, kobj));
+	error = security_locked_down(LOCKDOWN_PCMCIA_CIS);
+	if (error)
+		return error;
+
+	s = to_socket(kobj_to_dev(kobj));
 
 	if (off)
 		return -EINVAL;
@@ -1592,7 +1602,7 @@ static ssize_t pccard_store_cis(struct file *filp, struct kobject *kobj,
 }
 
 
-struct bin_attribute pccard_cis_attr = {
+const struct bin_attribute pccard_cis_attr = {
 	.attr = { .name = "cis", .mode = S_IRUGO | S_IWUSR },
 	.size = 0x200,
 	.read = pccard_show_cis,

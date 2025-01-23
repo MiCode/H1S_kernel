@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * nvec_power: power supply driver for a NVIDIA compliant embedded controller
  *
@@ -5,11 +6,6 @@
  *
  * Authors:  Ilya Petrov <ilya.muromec@gmail.com>
  *           Marc Dietrich <marvin24@gmx.de>
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
- *
  */
 
 #include <linux/module.h>
@@ -82,15 +78,15 @@ struct bat_response {
 	};
 };
 
-static struct power_supply nvec_bat_psy;
-static struct power_supply nvec_psy;
+static struct power_supply *nvec_bat_psy;
+static struct power_supply *nvec_psy;
 
 static int nvec_power_notifier(struct notifier_block *nb,
 			       unsigned long event_type, void *data)
 {
 	struct nvec_power *power =
 	    container_of(nb, struct nvec_power, notifier);
-	struct bat_response *res = (struct bat_response *)data;
+	struct bat_response *res = data;
 
 	if (event_type != NVEC_SYS)
 		return NOTIFY_DONE;
@@ -98,7 +94,7 @@ static int nvec_power_notifier(struct notifier_block *nb,
 	if (res->sub_type == 0) {
 		if (power->on != res->plu) {
 			power->on = res->plu;
-			power_supply_changed(&nvec_psy);
+			power_supply_changed(nvec_psy);
 		}
 		return NOTIFY_STOP;
 	}
@@ -126,7 +122,7 @@ static int nvec_power_bat_notifier(struct notifier_block *nb,
 {
 	struct nvec_power *power =
 	    container_of(nb, struct nvec_power, notifier);
-	struct bat_response *res = (struct bat_response *)data;
+	struct bat_response *res = data;
 	int status_changed = 0;
 
 	if (event_type != NVEC_BAT)
@@ -167,7 +163,7 @@ static int nvec_power_bat_notifier(struct notifier_block *nb,
 		}
 		power->bat_cap = res->plc[1];
 		if (status_changed)
-			power_supply_changed(&nvec_bat_psy);
+			power_supply_changed(nvec_bat_psy);
 		break;
 	case VOLTAGE:
 		power->bat_voltage_now = res->plu * 1000;
@@ -207,8 +203,10 @@ static int nvec_power_bat_notifier(struct notifier_block *nb,
 	case TYPE:
 		memcpy(power->bat_type, &res->plc, res->length - 2);
 		power->bat_type[res->length - 2] = '\0';
-		/* this differs a little from the spec
-		   fill in more if you find some */
+		/*
+		 * This differs a little from the spec fill in more if you find
+		 * some.
+		 */
 		if (!strncmp(power->bat_type, "Li", 30))
 			power->bat_type_enum = POWER_SUPPLY_TECHNOLOGY_LION;
 		else
@@ -225,7 +223,8 @@ static int nvec_power_get_property(struct power_supply *psy,
 				   enum power_supply_property psp,
 				   union power_supply_propval *val)
 {
-	struct nvec_power *power = dev_get_drvdata(psy->dev->parent);
+	struct nvec_power *power = dev_get_drvdata(psy->dev.parent);
+
 	switch (psp) {
 	case POWER_SUPPLY_PROP_ONLINE:
 		val->intval = power->on;
@@ -240,7 +239,7 @@ static int nvec_battery_get_property(struct power_supply *psy,
 				     enum power_supply_property psp,
 				     union power_supply_propval *val)
 {
-	struct nvec_power *power = dev_get_drvdata(psy->dev->parent);
+	struct nvec_power *power = dev_get_drvdata(psy->dev.parent);
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
@@ -322,7 +321,7 @@ static char *nvec_power_supplied_to[] = {
 	"battery",
 };
 
-static struct power_supply nvec_bat_psy = {
+static const struct power_supply_desc nvec_bat_psy_desc = {
 	.name = "battery",
 	.type = POWER_SUPPLY_TYPE_BATTERY,
 	.properties = nvec_battery_props,
@@ -330,18 +329,16 @@ static struct power_supply nvec_bat_psy = {
 	.get_property = nvec_battery_get_property,
 };
 
-static struct power_supply nvec_psy = {
+static const struct power_supply_desc nvec_psy_desc = {
 	.name = "ac",
 	.type = POWER_SUPPLY_TYPE_MAINS,
-	.supplied_to = nvec_power_supplied_to,
-	.num_supplicants = ARRAY_SIZE(nvec_power_supplied_to),
 	.properties = nvec_power_props,
 	.num_properties = ARRAY_SIZE(nvec_power_props),
 	.get_property = nvec_power_get_property,
 };
 
 static int counter;
-static int const bat_iter[] = {
+static const int bat_iter[] = {
 	SLOT_STATUS, VOLTAGE, CURRENT, CAPACITY_REMAINING,
 #ifdef EC_FULL_DIAG
 	AVERAGE_CURRENT, TEMPERATURE, TIME_REMAINING,
@@ -357,12 +354,14 @@ static void nvec_power_poll(struct work_struct *work)
 	if (counter >= ARRAY_SIZE(bat_iter))
 		counter = 0;
 
-/* AC status via sys req */
+	/* AC status via sys req */
 	nvec_write_async(power->nvec, buf, 2);
 	msleep(100);
 
-/* select a battery request function via round robin
-   doing it all at once seems to overload the power supply */
+	/*
+	 * Select a battery request function via round robin doing it all at
+	 * once seems to overload the power supply.
+	 */
 	buf[0] = NVEC_BAT;
 	buf[1] = bat_iter[counter++];
 	nvec_write_async(power->nvec, buf, 2);
@@ -372,12 +371,14 @@ static void nvec_power_poll(struct work_struct *work)
 
 static int nvec_power_probe(struct platform_device *pdev)
 {
-	struct power_supply *psy;
+	struct power_supply **psy;
+	const struct power_supply_desc *psy_desc;
 	struct nvec_power *power;
 	struct nvec_chip *nvec = dev_get_drvdata(pdev->dev.parent);
+	struct power_supply_config psy_cfg = {};
 
 	power = devm_kzalloc(&pdev->dev, sizeof(struct nvec_power), GFP_NOWAIT);
-	if (power == NULL)
+	if (!power)
 		return -ENOMEM;
 
 	dev_set_drvdata(&pdev->dev, power);
@@ -386,6 +387,9 @@ static int nvec_power_probe(struct platform_device *pdev)
 	switch (pdev->id) {
 	case AC:
 		psy = &nvec_psy;
+		psy_desc = &nvec_psy_desc;
+		psy_cfg.supplied_to = nvec_power_supplied_to;
+		psy_cfg.num_supplicants = ARRAY_SIZE(nvec_power_supplied_to);
 
 		power->notifier.notifier_call = nvec_power_notifier;
 
@@ -394,6 +398,7 @@ static int nvec_power_probe(struct platform_device *pdev)
 		break;
 	case BAT:
 		psy = &nvec_bat_psy;
+		psy_desc = &nvec_bat_psy_desc;
 
 		power->notifier.notifier_call = nvec_power_bat_notifier;
 		break;
@@ -406,10 +411,12 @@ static int nvec_power_probe(struct platform_device *pdev)
 	if (pdev->id == BAT)
 		get_bat_mfg_data(power);
 
-	return power_supply_register(&pdev->dev, psy);
+	*psy = power_supply_register(&pdev->dev, psy_desc, &psy_cfg);
+
+	return PTR_ERR_OR_ZERO(*psy);
 }
 
-static int nvec_power_remove(struct platform_device *pdev)
+static void nvec_power_remove(struct platform_device *pdev)
 {
 	struct nvec_power *power = platform_get_drvdata(pdev);
 
@@ -417,22 +424,19 @@ static int nvec_power_remove(struct platform_device *pdev)
 	nvec_unregister_notifier(power->nvec, &power->notifier);
 	switch (pdev->id) {
 	case AC:
-		power_supply_unregister(&nvec_psy);
+		power_supply_unregister(nvec_psy);
 		break;
 	case BAT:
-		power_supply_unregister(&nvec_bat_psy);
+		power_supply_unregister(nvec_bat_psy);
 	}
-
-	return 0;
 }
 
 static struct platform_driver nvec_power_driver = {
 	.probe = nvec_power_probe,
-	.remove = nvec_power_remove,
+	.remove_new = nvec_power_remove,
 	.driver = {
 		   .name = "nvec-power",
-		   .owner = THIS_MODULE,
-		   }
+	}
 };
 
 module_platform_driver(nvec_power_driver);

@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * wm2200.c  --  WM2200 ALSA SoC Audio driver
  *
  * Copyright 2012 Wolfson Microelectronics plc
  *
  * Author: Mark Brown <broonie@opensource.wolfsonmicro.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -33,7 +30,6 @@
 #include <sound/wm2200.h>
 
 #include "wm2200.h"
-#include "wmfw.h"
 #include "wm_adsp.h"
 
 #define WM2200_DSP_CONTROL_1                   0x00
@@ -75,19 +71,12 @@ static const char *wm2200_core_supply_names[WM2200_NUM_CORE_SUPPLIES] = {
 	"LDOVDD",
 };
 
-struct wm2200_fll {
-	int fref;
-	int fout;
-	int src;
-	struct completion lock;
-};
-
 /* codec private data */
 struct wm2200_priv {
 	struct wm_adsp dsp[2];
 	struct regmap *regmap;
 	struct device *dev;
-	struct snd_soc_codec *codec;
+	struct snd_soc_component *component;
 	struct wm2200_pdata pdata;
 	struct regulator_bulk_data core_supplies[WM2200_NUM_CORE_SUPPLIES];
 
@@ -98,6 +87,8 @@ struct wm2200_priv {
 
 	int rev;
 	int sysclk;
+
+	unsigned int symmetric_rates:1;
 };
 
 #define WM2200_DSP_RANGE_BASE (WM2200_MAX_REGISTER + 1)
@@ -154,19 +145,19 @@ static const struct regmap_range_cfg wm2200_ranges[] = {
 	  .window_start = WM2200_DSP2_ZM_0, .window_len = 1024, },
 };
 
-static const struct wm_adsp_region wm2200_dsp1_regions[] = {
+static const struct cs_dsp_region wm2200_dsp1_regions[] = {
 	{ .type = WMFW_ADSP1_PM, .base = WM2200_DSP1_PM_BASE },
 	{ .type = WMFW_ADSP1_DM, .base = WM2200_DSP1_DM_BASE },
 	{ .type = WMFW_ADSP1_ZM, .base = WM2200_DSP1_ZM_BASE },
 };
 
-static const struct wm_adsp_region wm2200_dsp2_regions[] = {
+static const struct cs_dsp_region wm2200_dsp2_regions[] = {
 	{ .type = WMFW_ADSP1_PM, .base = WM2200_DSP2_PM_BASE },
 	{ .type = WMFW_ADSP1_DM, .base = WM2200_DSP2_DM_BASE },
 	{ .type = WMFW_ADSP1_ZM, .base = WM2200_DSP2_ZM_BASE },
 };
 
-static struct reg_default wm2200_reg_defaults[] = {
+static const struct reg_default wm2200_reg_defaults[] = {
 	{ 0x000B, 0x0000 },   /* R11    - Tone Generator 1 */
 	{ 0x0102, 0x0000 },   /* R258   - Clocking 3 */
 	{ 0x0103, 0x0011 },   /* R259   - Clocking 4 */
@@ -897,7 +888,7 @@ static bool wm2200_readable_register(struct device *dev, unsigned int reg)
 	}
 }
 
-static const struct reg_default wm2200_reva_patch[] = {
+static const struct reg_sequence wm2200_reva_patch[] = {
 	{ 0x07, 0x0003 },
 	{ 0x102, 0x0200 },
 	{ 0x203, 0x0084 },
@@ -999,7 +990,7 @@ static DECLARE_TLV_DB_SCALE(in_tlv, -6300, 100, 0);
 static DECLARE_TLV_DB_SCALE(digital_tlv, -6400, 50, 0);
 static DECLARE_TLV_DB_SCALE(out_tlv, -6400, 100, 0);
 
-static const char *wm2200_mixer_texts[] = {
+static const char * const wm2200_mixer_texts[] = {
 	"None",
 	"Tone Generator",
 	"AEC Loopback",
@@ -1033,7 +1024,7 @@ static const char *wm2200_mixer_texts[] = {
 	"DSP2.6",
 };
 
-static int wm2200_mixer_values[] = {
+static unsigned int wm2200_mixer_values[] = {
 	0x00,
 	0x04,   /* Tone */
 	0x08,   /* AEC */
@@ -1083,7 +1074,7 @@ static int wm2200_mixer_values[] = {
 
 #define WM2200_MUX_CTL_DECL(name) \
 	const struct snd_kcontrol_new name##_mux =	\
-		SOC_DAPM_VALUE_ENUM("Route", name##_enum)
+		SOC_DAPM_ENUM("Route", name##_enum)
 
 #define WM2200_MIXER_ENUMS(name, base_reg) \
 	static WM2200_MUX_ENUM_DECL(name##_in1_enum, base_reg);	     \
@@ -1113,11 +1104,10 @@ static const char *wm2200_rxanc_input_sel_texts[] = {
 	"None", "IN1", "IN2", "IN3",
 };
 
-static const struct soc_enum wm2200_rxanc_input_sel =
-	SOC_ENUM_SINGLE(WM2200_RXANC_SRC,
-			WM2200_IN_RXANC_SEL_SHIFT,
-			ARRAY_SIZE(wm2200_rxanc_input_sel_texts),
-			wm2200_rxanc_input_sel_texts);
+static SOC_ENUM_SINGLE_DECL(wm2200_rxanc_input_sel,
+			    WM2200_RXANC_SRC,
+			    WM2200_IN_RXANC_SEL_SHIFT,
+			    wm2200_rxanc_input_sel_texts);
 
 static const struct snd_kcontrol_new wm2200_snd_controls[] = {
 SOC_SINGLE("IN1 High Performance Switch", WM2200_IN1L_CONTROL,
@@ -1154,8 +1144,8 @@ SOC_DOUBLE_R_TLV("IN3 Digital Volume", WM2200_ADC_DIGITAL_VOLUME_3L,
 SND_SOC_BYTES_MASK("EQL Coefficients", WM2200_EQL_1, 20, WM2200_EQL_ENA),
 SND_SOC_BYTES_MASK("EQR Coefficients", WM2200_EQR_1, 20, WM2200_EQR_ENA),
 
-SND_SOC_BYTES("LHPF1 Coefficeints", WM2200_HPLPF1_2, 1),
-SND_SOC_BYTES("LHPF2 Coefficeints", WM2200_HPLPF2_2, 1),
+SND_SOC_BYTES("LHPF1 Coefficients", WM2200_HPLPF1_2, 1),
+SND_SOC_BYTES("LHPF2 Coefficients", WM2200_HPLPF2_2, 1),
 
 SOC_SINGLE("OUT1 High Performance Switch", WM2200_DAC_DIGITAL_VOLUME_1L,
 	   WM2200_OUT1_OSR_SHIFT, 1, 0),
@@ -1179,6 +1169,9 @@ SOC_DOUBLE_R_TLV("OUT2 Digital Volume", WM2200_DAC_DIGITAL_VOLUME_2L,
 SOC_DOUBLE("OUT2 Switch", WM2200_PDM_1, WM2200_SPK1L_MUTE_SHIFT,
 	   WM2200_SPK1R_MUTE_SHIFT, 1, 1),
 SOC_ENUM("RxANC Src", wm2200_rxanc_input_sel),
+
+WM_ADSP_FW_CONTROL("DSP1", 0),
+WM_ADSP_FW_CONTROL("DSP2", 1),
 };
 
 WM2200_MIXER_ENUMS(OUT1L, WM2200_OUT1LMIX_INPUT_1_SOURCE);
@@ -1208,7 +1201,7 @@ WM2200_MIXER_ENUMS(LHPF1, WM2200_LHPF1MIX_INPUT_1_SOURCE);
 WM2200_MIXER_ENUMS(LHPF2, WM2200_LHPF2MIX_INPUT_1_SOURCE);
 
 #define WM2200_MUX(name, ctrl) \
-	SND_SOC_DAPM_VALUE_MUX(name, SND_SOC_NOPM, 0, 0, ctrl)
+	SND_SOC_DAPM_MUX(name, SND_SOC_NOPM, 0, 0, ctrl)
 
 #define WM2200_MIXER_WIDGETS(name, name_str)	\
 	WM2200_MUX(name_str " Input 1", &name##_in1_mux), \
@@ -1288,11 +1281,10 @@ static const char *wm2200_aec_loopback_texts[] = {
 	"OUT1L", "OUT1R", "OUT2L", "OUT2R",
 };
 
-static const struct soc_enum wm2200_aec_loopback =
-	SOC_ENUM_SINGLE(WM2200_DAC_AEC_CONTROL_1,
-			WM2200_AEC_LOOPBACK_SRC_SHIFT,
-			ARRAY_SIZE(wm2200_aec_loopback_texts),
-			wm2200_aec_loopback_texts);
+static SOC_ENUM_SINGLE_DECL(wm2200_aec_loopback,
+			    WM2200_DAC_AEC_CONTROL_1,
+			    WM2200_AEC_LOOPBACK_SRC_SHIFT,
+			    wm2200_aec_loopback_texts);
 
 static const struct snd_kcontrol_new wm2200_aec_loopback_mux =
 	SOC_DAPM_ENUM("AEC Loopback", wm2200_aec_loopback);
@@ -1550,31 +1542,18 @@ static const struct snd_soc_dapm_route wm2200_dapm_routes[] = {
 	WM2200_MIXER_ROUTES("LHPF2", "LHPF2"),
 };
 
-static int wm2200_probe(struct snd_soc_codec *codec)
+static int wm2200_probe(struct snd_soc_component *component)
 {
-	struct wm2200_priv *wm2200 = dev_get_drvdata(codec->dev);
-	int ret;
+	struct wm2200_priv *wm2200 = snd_soc_component_get_drvdata(component);
 
-	wm2200->codec = codec;
-	codec->control_data = wm2200->regmap;
-	codec->dapm.bias_level = SND_SOC_BIAS_OFF;
+	wm2200->component = component;
 
-	ret = snd_soc_codec_set_cache_io(codec, 16, 16, SND_SOC_REGMAP);
-	if (ret != 0) {
-		dev_err(codec->dev, "Failed to set cache I/O: %d\n", ret);
-		return ret;
-	}
-
-	ret = snd_soc_add_codec_controls(codec, wm_adsp1_fw_controls, 2);
-	if (ret != 0)
-		return ret;
-
-	return ret;
+	return 0;
 }
 
 static int wm2200_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 {
-	struct snd_soc_codec *codec = dai->codec;
+	struct snd_soc_component *component = dai->component;
 	int lrclk, bclk, fmt_val;
 
 	lrclk = 0;
@@ -1588,7 +1567,7 @@ static int wm2200_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		fmt_val = 2;
 		break;
 	default:
-		dev_err(codec->dev, "Unsupported DAI format %d\n",
+		dev_err(component->dev, "Unsupported DAI format %d\n",
 			fmt & SND_SOC_DAIFMT_FORMAT_MASK);
 		return -EINVAL;
 	}
@@ -1607,7 +1586,7 @@ static int wm2200_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		bclk |= WM2200_AIF1_BCLK_MSTR;
 		break;
 	default:
-		dev_err(codec->dev, "Unsupported master mode %d\n",
+		dev_err(component->dev, "Unsupported master mode %d\n",
 			fmt & SND_SOC_DAIFMT_MASTER_MASK);
 		return -EINVAL;
 	}
@@ -1629,15 +1608,15 @@ static int wm2200_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		return -EINVAL;
 	}
 
-	snd_soc_update_bits(codec, WM2200_AUDIO_IF_1_1, WM2200_AIF1_BCLK_MSTR |
+	snd_soc_component_update_bits(component, WM2200_AUDIO_IF_1_1, WM2200_AIF1_BCLK_MSTR |
 			    WM2200_AIF1_BCLK_INV, bclk);
-	snd_soc_update_bits(codec, WM2200_AUDIO_IF_1_2,
+	snd_soc_component_update_bits(component, WM2200_AUDIO_IF_1_2,
 			    WM2200_AIF1TX_LRCLK_MSTR | WM2200_AIF1TX_LRCLK_INV,
 			    lrclk);
-	snd_soc_update_bits(codec, WM2200_AUDIO_IF_1_3,
+	snd_soc_component_update_bits(component, WM2200_AUDIO_IF_1_3,
 			    WM2200_AIF1TX_LRCLK_MSTR | WM2200_AIF1TX_LRCLK_INV,
 			    lrclk);
-	snd_soc_update_bits(codec, WM2200_AUDIO_IF_1_5,
+	snd_soc_component_update_bits(component, WM2200_AUDIO_IF_1_5,
 			    WM2200_AIF1_FMT_MASK, fmt_val);
 
 	return 0;
@@ -1706,20 +1685,20 @@ static int wm2200_hw_params(struct snd_pcm_substream *substream,
 			    struct snd_pcm_hw_params *params,
 			    struct snd_soc_dai *dai)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct wm2200_priv *wm2200 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = dai->component;
+	struct wm2200_priv *wm2200 = snd_soc_component_get_drvdata(component);
 	int i, bclk, lrclk, wl, fl, sr_code;
 	int *bclk_rates;
 
 	/* Data sizes if not using TDM */
-	wl = snd_pcm_format_width(params_format(params));
+	wl = params_width(params);
 	if (wl < 0)
 		return wl;
 	fl = snd_soc_params_to_frame_size(params);
 	if (fl < 0)
 		return fl;
 
-	dev_dbg(codec->dev, "Word length %d bits, frame length %d bits\n",
+	dev_dbg(component->dev, "Word length %d bits, frame length %d bits\n",
 		wl, fl);
 
 	/* Target BCLK rate */
@@ -1728,7 +1707,7 @@ static int wm2200_hw_params(struct snd_pcm_substream *substream,
 		return bclk;
 
 	if (!wm2200->sysclk) {
-		dev_err(codec->dev, "SYSCLK has no rate set\n");
+		dev_err(component->dev, "SYSCLK has no rate set\n");
 		return -EINVAL;
 	}
 
@@ -1736,13 +1715,13 @@ static int wm2200_hw_params(struct snd_pcm_substream *substream,
 		if (wm2200_sr_code[i] == params_rate(params))
 			break;
 	if (i == ARRAY_SIZE(wm2200_sr_code)) {
-		dev_err(codec->dev, "Unsupported sample rate: %dHz\n",
+		dev_err(component->dev, "Unsupported sample rate: %dHz\n",
 			params_rate(params));
 		return -EINVAL;
 	}
 	sr_code = i;
 
-	dev_dbg(codec->dev, "Target BCLK is %dHz, using %dHz SYSCLK\n",
+	dev_dbg(component->dev, "Target BCLK is %dHz, using %dHz SYSCLK\n",
 		bclk, wm2200->sysclk);
 
 	if (wm2200->sysclk % 4000)
@@ -1754,52 +1733,47 @@ static int wm2200_hw_params(struct snd_pcm_substream *substream,
 		if (bclk_rates[i] >= bclk && (bclk_rates[i] % bclk == 0))
 			break;
 	if (i == WM2200_NUM_BCLK_RATES) {
-		dev_err(codec->dev,
+		dev_err(component->dev,
 			"No valid BCLK for %dHz found from %dHz SYSCLK\n",
 			bclk, wm2200->sysclk);
 		return -EINVAL;
 	}
 
 	bclk = i;
-	dev_dbg(codec->dev, "Setting %dHz BCLK\n", bclk_rates[bclk]);
-	snd_soc_update_bits(codec, WM2200_AUDIO_IF_1_1,
+	dev_dbg(component->dev, "Setting %dHz BCLK\n", bclk_rates[bclk]);
+	snd_soc_component_update_bits(component, WM2200_AUDIO_IF_1_1,
 			    WM2200_AIF1_BCLK_DIV_MASK, bclk);
 
 	lrclk = bclk_rates[bclk] / params_rate(params);
-	dev_dbg(codec->dev, "Setting %dHz LRCLK\n", bclk_rates[bclk] / lrclk);
+	dev_dbg(component->dev, "Setting %dHz LRCLK\n", bclk_rates[bclk] / lrclk);
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK ||
-	    dai->symmetric_rates)
-		snd_soc_update_bits(codec, WM2200_AUDIO_IF_1_7,
+	    wm2200->symmetric_rates)
+		snd_soc_component_update_bits(component, WM2200_AUDIO_IF_1_7,
 				    WM2200_AIF1RX_BCPF_MASK, lrclk);
 	else
-		snd_soc_update_bits(codec, WM2200_AUDIO_IF_1_6,
+		snd_soc_component_update_bits(component, WM2200_AUDIO_IF_1_6,
 				    WM2200_AIF1TX_BCPF_MASK, lrclk);
 
 	i = (wl << WM2200_AIF1TX_WL_SHIFT) | wl;
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-		snd_soc_update_bits(codec, WM2200_AUDIO_IF_1_9,
+		snd_soc_component_update_bits(component, WM2200_AUDIO_IF_1_9,
 				    WM2200_AIF1RX_WL_MASK |
 				    WM2200_AIF1RX_SLOT_LEN_MASK, i);
 	else
-		snd_soc_update_bits(codec, WM2200_AUDIO_IF_1_8,
+		snd_soc_component_update_bits(component, WM2200_AUDIO_IF_1_8,
 				    WM2200_AIF1TX_WL_MASK |
 				    WM2200_AIF1TX_SLOT_LEN_MASK, i);
 
-	snd_soc_update_bits(codec, WM2200_CLOCKING_4,
+	snd_soc_component_update_bits(component, WM2200_CLOCKING_4,
 			    WM2200_SAMPLE_RATE_1_MASK, sr_code);
 
 	return 0;
 }
 
-static const struct snd_soc_dai_ops wm2200_dai_ops = {
-	.set_fmt = wm2200_set_fmt,
-	.hw_params = wm2200_hw_params,
-};
-
-static int wm2200_set_sysclk(struct snd_soc_codec *codec, int clk_id,
+static int wm2200_set_sysclk(struct snd_soc_component *component, int clk_id,
 			     int source, unsigned int freq, int dir)
 {
-	struct wm2200_priv *wm2200 = snd_soc_codec_get_drvdata(codec);
+	struct wm2200_priv *wm2200 = snd_soc_component_get_drvdata(component);
 	int fval;
 
 	switch (clk_id) {
@@ -1807,7 +1781,7 @@ static int wm2200_set_sysclk(struct snd_soc_codec *codec, int clk_id,
 		break;
 
 	default:
-		dev_err(codec->dev, "Unknown clock %d\n", clk_id);
+		dev_err(component->dev, "Unknown clock %d\n", clk_id);
 		return -EINVAL;
 	}
 
@@ -1818,7 +1792,7 @@ static int wm2200_set_sysclk(struct snd_soc_codec *codec, int clk_id,
 	case WM2200_CLKSRC_BCLK1:
 		break;
 	default:
-		dev_err(codec->dev, "Invalid source %d\n", source);
+		dev_err(component->dev, "Invalid source %d\n", source);
 		return -EINVAL;
 	}
 
@@ -1828,7 +1802,7 @@ static int wm2200_set_sysclk(struct snd_soc_codec *codec, int clk_id,
 		fval = 2;
 		break;
 	default:
-		dev_err(codec->dev, "Invalid clock rate: %d\n", freq);
+		dev_err(component->dev, "Invalid clock rate: %d\n", freq);
 		return -EINVAL;
 	}
 
@@ -1836,7 +1810,7 @@ static int wm2200_set_sysclk(struct snd_soc_codec *codec, int clk_id,
 	 * match.
 	 */
 
-	snd_soc_update_bits(codec, WM2200_CLOCKING_3, WM2200_SYSCLK_FREQ_MASK |
+	snd_soc_component_update_bits(component, WM2200_CLOCKING_3, WM2200_SYSCLK_FREQ_MASK |
 			    WM2200_SYSCLK_SRC_MASK,
 			    fval << WM2200_SYSCLK_FREQ_SHIFT | source);
 
@@ -1944,22 +1918,23 @@ static int fll_factors(struct _fll_div *fll_div, unsigned int Fref,
 	return 0;
 }
 
-static int wm2200_set_fll(struct snd_soc_codec *codec, int fll_id, int source,
+static int wm2200_set_fll(struct snd_soc_component *component, int fll_id, int source,
 			  unsigned int Fref, unsigned int Fout)
 {
-	struct i2c_client *i2c = to_i2c_client(codec->dev);
-	struct wm2200_priv *wm2200 = snd_soc_codec_get_drvdata(codec);
+	struct i2c_client *i2c = to_i2c_client(component->dev);
+	struct wm2200_priv *wm2200 = snd_soc_component_get_drvdata(component);
 	struct _fll_div factors;
 	int ret, i, timeout;
+	unsigned long time_left;
 
 	if (!Fout) {
-		dev_dbg(codec->dev, "FLL disabled");
+		dev_dbg(component->dev, "FLL disabled");
 
 		if (wm2200->fll_fout)
-			pm_runtime_put(codec->dev);
+			pm_runtime_put(component->dev);
 
 		wm2200->fll_fout = 0;
-		snd_soc_update_bits(codec, WM2200_FLL_CONTROL_1,
+		snd_soc_component_update_bits(component, WM2200_FLL_CONTROL_1,
 				    WM2200_FLL_ENA, 0);
 		return 0;
 	}
@@ -1970,7 +1945,7 @@ static int wm2200_set_fll(struct snd_soc_codec *codec, int fll_id, int source,
 	case WM2200_FLL_SRC_BCLK:
 		break;
 	default:
-		dev_err(codec->dev, "Invalid FLL source %d\n", source);
+		dev_err(component->dev, "Invalid FLL source %d\n", source);
 		return -EINVAL;
 	}
 
@@ -1979,44 +1954,44 @@ static int wm2200_set_fll(struct snd_soc_codec *codec, int fll_id, int source,
 		return ret;
 
 	/* Disable the FLL while we reconfigure */
-	snd_soc_update_bits(codec, WM2200_FLL_CONTROL_1, WM2200_FLL_ENA, 0);
+	snd_soc_component_update_bits(component, WM2200_FLL_CONTROL_1, WM2200_FLL_ENA, 0);
 
-	snd_soc_update_bits(codec, WM2200_FLL_CONTROL_2,
+	snd_soc_component_update_bits(component, WM2200_FLL_CONTROL_2,
 			    WM2200_FLL_OUTDIV_MASK | WM2200_FLL_FRATIO_MASK,
 			    (factors.fll_outdiv << WM2200_FLL_OUTDIV_SHIFT) |
 			    factors.fll_fratio);
 	if (factors.theta) {
-		snd_soc_update_bits(codec, WM2200_FLL_CONTROL_3,
+		snd_soc_component_update_bits(component, WM2200_FLL_CONTROL_3,
 				    WM2200_FLL_FRACN_ENA,
 				    WM2200_FLL_FRACN_ENA);
-		snd_soc_update_bits(codec, WM2200_FLL_EFS_2,
+		snd_soc_component_update_bits(component, WM2200_FLL_EFS_2,
 				    WM2200_FLL_EFS_ENA,
 				    WM2200_FLL_EFS_ENA);
 	} else {
-		snd_soc_update_bits(codec, WM2200_FLL_CONTROL_3,
+		snd_soc_component_update_bits(component, WM2200_FLL_CONTROL_3,
 				    WM2200_FLL_FRACN_ENA, 0);
-		snd_soc_update_bits(codec, WM2200_FLL_EFS_2,
+		snd_soc_component_update_bits(component, WM2200_FLL_EFS_2,
 				    WM2200_FLL_EFS_ENA, 0);
 	}
 
-	snd_soc_update_bits(codec, WM2200_FLL_CONTROL_4, WM2200_FLL_THETA_MASK,
+	snd_soc_component_update_bits(component, WM2200_FLL_CONTROL_4, WM2200_FLL_THETA_MASK,
 			    factors.theta);
-	snd_soc_update_bits(codec, WM2200_FLL_CONTROL_6, WM2200_FLL_N_MASK,
+	snd_soc_component_update_bits(component, WM2200_FLL_CONTROL_6, WM2200_FLL_N_MASK,
 			    factors.n);
-	snd_soc_update_bits(codec, WM2200_FLL_CONTROL_7,
+	snd_soc_component_update_bits(component, WM2200_FLL_CONTROL_7,
 			    WM2200_FLL_CLK_REF_DIV_MASK |
 			    WM2200_FLL_CLK_REF_SRC_MASK,
 			    (factors.fll_refclk_div
 			     << WM2200_FLL_CLK_REF_DIV_SHIFT) | source);
-	snd_soc_update_bits(codec, WM2200_FLL_EFS_1,
+	snd_soc_component_update_bits(component, WM2200_FLL_EFS_1,
 			    WM2200_FLL_LAMBDA_MASK, factors.lambda);
 
 	/* Clear any pending completions */
 	try_wait_for_completion(&wm2200->fll_lock);
 
-	pm_runtime_get_sync(codec->dev);
+	pm_runtime_get_sync(component->dev);
 
-	snd_soc_update_bits(codec, WM2200_FLL_CONTROL_1,
+	snd_soc_component_update_bits(component, WM2200_FLL_CONTROL_1,
 			    WM2200_FLL_ENA, WM2200_FLL_ENA);
 
 	if (i2c->irq)
@@ -2024,24 +1999,25 @@ static int wm2200_set_fll(struct snd_soc_codec *codec, int fll_id, int source,
 	else
 		timeout = 50;
 
-	snd_soc_update_bits(codec, WM2200_CLOCKING_3, WM2200_SYSCLK_ENA,
+	snd_soc_component_update_bits(component, WM2200_CLOCKING_3, WM2200_SYSCLK_ENA,
 			    WM2200_SYSCLK_ENA);
 
 	/* Poll for the lock; will use the interrupt to exit quickly */
 	for (i = 0; i < timeout; i++) {
 		if (i2c->irq) {
-			ret = wait_for_completion_timeout(&wm2200->fll_lock,
-							  msecs_to_jiffies(25));
-			if (ret > 0)
+			time_left = wait_for_completion_timeout(
+							&wm2200->fll_lock,
+							msecs_to_jiffies(25));
+			if (time_left > 0)
 				break;
 		} else {
 			msleep(1);
 		}
 
-		ret = snd_soc_read(codec,
+		ret = snd_soc_component_read(component,
 				   WM2200_INTERRUPT_RAW_STATUS_2);
 		if (ret < 0) {
-			dev_err(codec->dev,
+			dev_err(component->dev,
 				"Failed to read FLL status: %d\n",
 				ret);
 			continue;
@@ -2050,8 +2026,8 @@ static int wm2200_set_fll(struct snd_soc_codec *codec, int fll_id, int source,
 			break;
 	}
 	if (i == timeout) {
-		dev_err(codec->dev, "FLL lock timed out\n");
-		pm_runtime_put(codec->dev);
+		dev_err(component->dev, "FLL lock timed out\n");
+		pm_runtime_put(component->dev);
 		return -ETIMEDOUT;
 	}
 
@@ -2059,32 +2035,39 @@ static int wm2200_set_fll(struct snd_soc_codec *codec, int fll_id, int source,
 	wm2200->fll_fref = Fref;
 	wm2200->fll_fout = Fout;
 
-	dev_dbg(codec->dev, "FLL running %dHz->%dHz\n", Fref, Fout);
+	dev_dbg(component->dev, "FLL running %dHz->%dHz\n", Fref, Fout);
 
 	return 0;
 }
 
 static int wm2200_dai_probe(struct snd_soc_dai *dai)
 {
-	struct snd_soc_codec *codec = dai->codec;
+	struct snd_soc_component *component = dai->component;
+	struct wm2200_priv *wm2200 = snd_soc_component_get_drvdata(component);
 	unsigned int val = 0;
 	int ret;
 
-	ret = snd_soc_read(codec, WM2200_GPIO_CTRL_1);
+	ret = snd_soc_component_read(component, WM2200_GPIO_CTRL_1);
 	if (ret >= 0) {
 		if ((ret & WM2200_GP1_FN_MASK) != 0) {
-			dai->symmetric_rates = true;
+			wm2200->symmetric_rates = true;
 			val = WM2200_AIF1TX_LRCLK_SRC;
 		}
 	} else {
-		dev_err(codec->dev, "Failed to read GPIO 1 config: %d\n", ret);
+		dev_err(component->dev, "Failed to read GPIO 1 config: %d\n", ret);
 	}
 
-	snd_soc_update_bits(codec, WM2200_AUDIO_IF_1_2,
+	snd_soc_component_update_bits(component, WM2200_AUDIO_IF_1_2,
 			    WM2200_AIF1TX_LRCLK_SRC, val);
 
 	return 0;
 }
+
+static const struct snd_soc_dai_ops wm2200_dai_ops = {
+	.probe = wm2200_dai_probe,
+	.set_fmt = wm2200_set_fmt,
+	.hw_params = wm2200_hw_params,
+};
 
 #define WM2200_RATES SNDRV_PCM_RATE_8000_48000
 
@@ -2093,7 +2076,6 @@ static int wm2200_dai_probe(struct snd_soc_dai *dai)
 
 static struct snd_soc_dai_driver wm2200_dai = {
 	.name = "wm2200",
-	.probe = wm2200_dai_probe,
 	.playback = {
 		.stream_name = "Playback",
 		.channels_min = 2,
@@ -2111,20 +2093,17 @@ static struct snd_soc_dai_driver wm2200_dai = {
 	.ops = &wm2200_dai_ops,
 };
 
-static struct snd_soc_codec_driver soc_codec_wm2200 = {
-	.probe = wm2200_probe,
-
-	.idle_bias_off = true,
-	.ignore_pmdown_time = true,
-	.set_sysclk = wm2200_set_sysclk,
-	.set_pll = wm2200_set_fll,
-
-	.controls = wm2200_snd_controls,
-	.num_controls = ARRAY_SIZE(wm2200_snd_controls),
-	.dapm_widgets = wm2200_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(wm2200_dapm_widgets),
-	.dapm_routes = wm2200_dapm_routes,
-	.num_dapm_routes = ARRAY_SIZE(wm2200_dapm_routes),
+static const struct snd_soc_component_driver soc_component_wm2200 = {
+	.probe			= wm2200_probe,
+	.set_sysclk		= wm2200_set_sysclk,
+	.set_pll		= wm2200_set_fll,
+	.controls		= wm2200_snd_controls,
+	.num_controls		= ARRAY_SIZE(wm2200_snd_controls),
+	.dapm_widgets		= wm2200_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(wm2200_dapm_widgets),
+	.dapm_routes		= wm2200_dapm_routes,
+	.num_dapm_routes	= ARRAY_SIZE(wm2200_dapm_routes),
+	.endianness		= 1,
 };
 
 static irqreturn_t wm2200_irq(int irq, void *data)
@@ -2172,7 +2151,7 @@ static const struct regmap_config wm2200_regmap = {
 	.num_reg_defaults = ARRAY_SIZE(wm2200_reg_defaults),
 	.volatile_reg = wm2200_volatile_register,
 	.readable_reg = wm2200_readable_register,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.ranges = wm2200_ranges,
 	.num_ranges = ARRAY_SIZE(wm2200_ranges),
 };
@@ -2196,8 +2175,7 @@ static const unsigned int wm2200_mic_ctrl_reg[] = {
 	WM2200_IN3L_CONTROL,
 };
 
-static int wm2200_i2c_probe(struct i2c_client *i2c,
-			    const struct i2c_device_id *id)
+static int wm2200_i2c_probe(struct i2c_client *i2c)
 {
 	struct wm2200_pdata *pdata = dev_get_platdata(&i2c->dev);
 	struct wm2200_priv *wm2200;
@@ -2222,23 +2200,23 @@ static int wm2200_i2c_probe(struct i2c_client *i2c,
 	}
 
 	for (i = 0; i < 2; i++) {
-		wm2200->dsp[i].type = WMFW_ADSP1;
+		wm2200->dsp[i].cs_dsp.type = WMFW_ADSP1;
 		wm2200->dsp[i].part = "wm2200";
-		wm2200->dsp[i].num = i + 1;
-		wm2200->dsp[i].dev = &i2c->dev;
-		wm2200->dsp[i].regmap = wm2200->regmap;
-		wm2200->dsp[i].sysclk_reg = WM2200_CLOCKING_3;
-		wm2200->dsp[i].sysclk_mask = WM2200_SYSCLK_FREQ_MASK;
-		wm2200->dsp[i].sysclk_shift =  WM2200_SYSCLK_FREQ_SHIFT;
+		wm2200->dsp[i].cs_dsp.num = i + 1;
+		wm2200->dsp[i].cs_dsp.dev = &i2c->dev;
+		wm2200->dsp[i].cs_dsp.regmap = wm2200->regmap;
+		wm2200->dsp[i].cs_dsp.sysclk_reg = WM2200_CLOCKING_3;
+		wm2200->dsp[i].cs_dsp.sysclk_mask = WM2200_SYSCLK_FREQ_MASK;
+		wm2200->dsp[i].cs_dsp.sysclk_shift =  WM2200_SYSCLK_FREQ_SHIFT;
 	}
 
-	wm2200->dsp[0].base = WM2200_DSP1_CONTROL_1;
-	wm2200->dsp[0].mem = wm2200_dsp1_regions;
-	wm2200->dsp[0].num_mems = ARRAY_SIZE(wm2200_dsp1_regions);
+	wm2200->dsp[0].cs_dsp.base = WM2200_DSP1_CONTROL_1;
+	wm2200->dsp[0].cs_dsp.mem = wm2200_dsp1_regions;
+	wm2200->dsp[0].cs_dsp.num_mems = ARRAY_SIZE(wm2200_dsp1_regions);
 
-	wm2200->dsp[1].base = WM2200_DSP2_CONTROL_1;
-	wm2200->dsp[1].mem = wm2200_dsp2_regions;
-	wm2200->dsp[1].num_mems = ARRAY_SIZE(wm2200_dsp2_regions);
+	wm2200->dsp[1].cs_dsp.base = WM2200_DSP2_CONTROL_1;
+	wm2200->dsp[1].cs_dsp.mem = wm2200_dsp2_regions;
+	wm2200->dsp[1].cs_dsp.num_mems = ARRAY_SIZE(wm2200_dsp2_regions);
 
 	for (i = 0; i < ARRAY_SIZE(wm2200->dsp); i++)
 		wm_adsp1_init(&wm2200->dsp[i]);
@@ -2411,7 +2389,7 @@ static int wm2200_i2c_probe(struct i2c_client *i2c,
 	pm_runtime_enable(&i2c->dev);
 	pm_request_idle(&i2c->dev);
 
-	ret = snd_soc_register_codec(&i2c->dev, &soc_codec_wm2200,
+	ret = devm_snd_soc_register_component(&i2c->dev, &soc_component_wm2200,
 				     &wm2200_dai, 1);
 	if (ret != 0) {
 		dev_err(&i2c->dev, "Failed to register CODEC: %d\n", ret);
@@ -2422,6 +2400,8 @@ static int wm2200_i2c_probe(struct i2c_client *i2c,
 
 err_pm_runtime:
 	pm_runtime_disable(&i2c->dev);
+	if (i2c->irq)
+		free_irq(i2c->irq, wm2200);
 err_reset:
 	if (wm2200->pdata.reset)
 		gpio_set_value_cansleep(wm2200->pdata.reset, 0);
@@ -2434,22 +2414,22 @@ err_enable:
 	return ret;
 }
 
-static int wm2200_i2c_remove(struct i2c_client *i2c)
+static void wm2200_i2c_remove(struct i2c_client *i2c)
 {
 	struct wm2200_priv *wm2200 = i2c_get_clientdata(i2c);
 
-	snd_soc_unregister_codec(&i2c->dev);
+	pm_runtime_disable(&i2c->dev);
 	if (i2c->irq)
 		free_irq(i2c->irq, wm2200);
 	if (wm2200->pdata.reset)
 		gpio_set_value_cansleep(wm2200->pdata.reset, 0);
 	if (wm2200->pdata.ldo_ena)
 		gpio_set_value_cansleep(wm2200->pdata.ldo_ena, 0);
-
-	return 0;
+	regulator_bulk_disable(ARRAY_SIZE(wm2200->core_supplies),
+			       wm2200->core_supplies);
 }
 
-#ifdef CONFIG_PM_RUNTIME
+#ifdef CONFIG_PM
 static int wm2200_runtime_suspend(struct device *dev)
 {
 	struct wm2200_priv *wm2200 = dev_get_drvdata(dev);
@@ -2489,7 +2469,7 @@ static int wm2200_runtime_resume(struct device *dev)
 }
 #endif
 
-static struct dev_pm_ops wm2200_pm = {
+static const struct dev_pm_ops wm2200_pm = {
 	SET_RUNTIME_PM_OPS(wm2200_runtime_suspend, wm2200_runtime_resume,
 			   NULL)
 };
@@ -2503,7 +2483,6 @@ MODULE_DEVICE_TABLE(i2c, wm2200_i2c_id);
 static struct i2c_driver wm2200_i2c_driver = {
 	.driver = {
 		.name = "wm2200",
-		.owner = THIS_MODULE,
 		.pm = &wm2200_pm,
 	},
 	.probe =    wm2200_i2c_probe,

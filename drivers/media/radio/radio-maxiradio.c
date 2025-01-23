@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Guillemot Maxi Radio FM 2000 PCI radio card driver for Linux
  * (C) 2001 Dimitromanolakis Apostolos <apdim@grecian.net>
@@ -13,7 +14,7 @@
  * anybody does please mail me.
  *
  * For the pdf file see:
- * http://www.nxp.com/acrobat_download2/expired_datasheets/TEA5757_5759_3.pdf 
+ * http://www.nxp.com/acrobat_download2/expired_datasheets/TEA5757_5759_3.pdf
  *
  *
  * CHANGES:
@@ -27,7 +28,7 @@
  * BUGS:
  *   - card unmutes if you change frequency
  *
- * (c) 2006, 2007 by Mauro Carvalho Chehab <mchehab@infradead.org>:
+ * (c) 2006, 2007 by Mauro Carvalho Chehab <mchehab@kernel.org>:
  *	- Conversion to V4L2 API
  *      - Uses video_ioctl2 for parsing and to add debug support
  */
@@ -42,7 +43,7 @@
 #include <linux/videodev2.h>
 #include <linux/io.h>
 #include <linux/slab.h>
-#include <media/tea575x.h>
+#include <media/drv-intf/tea575x.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-fh.h>
@@ -108,7 +109,7 @@ static void maxiradio_tea575x_set_direction(struct snd_tea575x *tea, bool output
 {
 }
 
-static struct snd_tea575x_ops maxiradio_tea_ops = {
+static const struct snd_tea575x_ops maxiradio_tea_ops = {
 	.set_pins = maxiradio_tea575x_set_pins,
 	.get_pins = maxiradio_tea575x_get_pins,
 	.set_direction = maxiradio_tea575x_set_direction,
@@ -142,9 +143,7 @@ static int maxiradio_probe(struct pci_dev *pdev,
 	dev->tea.cannot_read_data = true;
 	dev->tea.v4l2_dev = v4l2_dev;
 	dev->tea.radio_nr = radio_nr;
-	strlcpy(dev->tea.card, "Maxi Radio FM2000", sizeof(dev->tea.card));
-	snprintf(dev->tea.bus_info, sizeof(dev->tea.bus_info),
-			"PCI:%s", pci_name(pdev));
+	strscpy(dev->tea.card, "Maxi Radio FM2000", sizeof(dev->tea.card));
 
 	retval = -ENODEV;
 
@@ -175,7 +174,7 @@ errfr:
 
 static void maxiradio_remove(struct pci_dev *pdev)
 {
-	struct v4l2_device *v4l2_dev = dev_get_drvdata(&pdev->dev);
+	struct v4l2_device *v4l2_dev = pci_get_drvdata(pdev);
 	struct maxiradio *dev = to_maxiradio(v4l2_dev);
 
 	snd_tea575x_exit(&dev->tea);
@@ -183,9 +182,10 @@ static void maxiradio_remove(struct pci_dev *pdev)
 	outb(0, dev->io);
 	v4l2_device_unregister(v4l2_dev);
 	release_region(pci_resource_start(pdev, 0), pci_resource_len(pdev, 0));
+	kfree(dev);
 }
 
-static struct pci_device_id maxiradio_pci_tbl[] = {
+static const struct pci_device_id maxiradio_pci_tbl[] = {
 	{ PCI_VENDOR_ID_GUILLEMOT, PCI_DEVICE_ID_GUILLEMOT_MAXIRADIO,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{ 0 }

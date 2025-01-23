@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * SGI O2 MACE PS2 controller driver for linux
  *
  * Copyright (C) 2002 Vivien Chappelier
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation
  */
 #include <linux/module.h>
 #include <linux/init.h>
@@ -162,7 +159,6 @@ static int maceps2_remove(struct platform_device *dev)
 static struct platform_driver maceps2_driver = {
 	.driver		= {
 		.name	= "maceps2",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= maceps2_probe,
 	.remove		= maceps2_remove,

@@ -1,10 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /* The industrial I/O core
  *
  *Copyright (c) 2008 Jonathan Cameron
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  *
  * General attributes
  */
@@ -12,19 +9,23 @@
 #ifndef _INDUSTRIAL_IO_SYSFS_H_
 #define _INDUSTRIAL_IO_SYSFS_H_
 
+struct iio_buffer;
 struct iio_chan_spec;
 
 /**
  * struct iio_dev_attr - iio specific device attribute
  * @dev_attr:	underlying device attribute
  * @address:	associated register address
- * @l:		list head for maintaining list of dynamically created attrs.
+ * @l:		list head for maintaining list of dynamically created attrs
+ * @c:		specification for the underlying channel
+ * @buffer:	the IIO buffer to which this attribute belongs to (if any)
  */
 struct iio_dev_attr {
 	struct device_attribute dev_attr;
 	u64 address;
 	struct list_head l;
 	struct iio_chan_spec const *c;
+	struct iio_buffer *buffer;
 };
 
 #define to_iio_dev_attr(_dev_attr)				\
@@ -54,9 +55,33 @@ struct iio_const_attr {
 	{ .dev_attr = __ATTR(_name, _mode, _show, _store),	\
 	  .address = _addr }
 
+#define IIO_ATTR_RO(_name, _addr)       \
+	{ .dev_attr = __ATTR_RO(_name), \
+	  .address = _addr }
+
+#define IIO_ATTR_WO(_name, _addr)       \
+	{ .dev_attr = __ATTR_WO(_name), \
+	  .address = _addr }
+
+#define IIO_ATTR_RW(_name, _addr)       \
+	{ .dev_attr = __ATTR_RW(_name), \
+	  .address = _addr }
+
 #define IIO_DEVICE_ATTR(_name, _mode, _show, _store, _addr)	\
 	struct iio_dev_attr iio_dev_attr_##_name		\
 	= IIO_ATTR(_name, _mode, _show, _store, _addr)
+
+#define IIO_DEVICE_ATTR_RO(_name, _addr)                       \
+	struct iio_dev_attr iio_dev_attr_##_name                \
+	= IIO_ATTR_RO(_name, _addr)
+
+#define IIO_DEVICE_ATTR_WO(_name, _addr)                       \
+	struct iio_dev_attr iio_dev_attr_##_name                \
+	= IIO_ATTR_WO(_name, _addr)
+
+#define IIO_DEVICE_ATTR_RW(_name, _addr)                                   \
+	struct iio_dev_attr iio_dev_attr_##_name                            \
+	= IIO_ATTR_RW(_name, _addr)
 
 #define IIO_DEVICE_ATTR_NAMED(_vname, _name, _mode, _show, _store, _addr) \
 	struct iio_dev_attr iio_dev_attr_##_vname			\
@@ -71,6 +96,17 @@ struct iio_const_attr {
 	struct iio_const_attr iio_const_attr_##_vname			\
 	= { .string = _string,						\
 	    .dev_attr = __ATTR(_name, S_IRUGO, iio_read_const_attr, NULL)}
+
+#define IIO_STATIC_CONST_DEVICE_ATTR(_name, _string)				\
+	static ssize_t iio_const_dev_attr_show_##_name(			\
+					struct device *dev,		\
+					struct device_attribute *attr,	\
+					char *buf)			\
+	{								\
+		return sysfs_emit(buf, "%s\n", _string);		\
+	}								\
+	static IIO_DEVICE_ATTR(_name, 0444,				\
+			       iio_const_dev_attr_show_##_name, NULL, 0)
 
 /* Generic attributes of onetype or another */
 

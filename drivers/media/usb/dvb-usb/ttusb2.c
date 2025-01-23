@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* DVB USB compliant linux driver for Technotrend DVB USB boxes and clones
  * (e.g. Pinnacle 400e DVB-S USB2.0).
  *
@@ -16,11 +17,7 @@
  * Copyright (c) 2003 Felix Domke <tmbinc@elitedvb.net>
  * Copyright (C) 2005-6 Patrick Boettcher <pb@linuxtv.org>
  *
- *	This program is free software; you can redistribute it and/or modify it
- *	under the terms of the GNU General Public License as published by the Free
- *	Software Foundation, version 2.
- *
- * see Documentation/dvb/README.dvb-usb for more information
+ * see Documentation/driver-api/media/drivers/dvb-usb.rst for more information
  */
 #define DVB_USB_LOG_PREFIX "ttusb2"
 #include "dvb-usb.h"
@@ -34,7 +31,7 @@
 #include "tda827x.h"
 #include "lnbp21.h"
 /* CA */
-#include "dvb_ca_en50221.h"
+#include <media/dvb_ca_en50221.h>
 
 /* debug */
 static int dvb_usb_ttusb2_debug;
@@ -77,6 +74,9 @@ static int ttusb2_msg(struct dvb_usb_device *d, u8 cmd,
 	struct ttusb2_state *st = d->priv;
 	u8 *s, *r = NULL;
 	int ret = 0;
+
+	if (4 + rlen > 64)
+		return -EIO;
 
 	s = kzalloc(wlen+4, GFP_KERNEL);
 	if (!s)
@@ -381,6 +381,22 @@ static int ttusb2_i2c_xfer(struct i2c_adapter *adap,struct i2c_msg msg[],int num
 		write_read = i+1 < num && (msg[i+1].flags & I2C_M_RD);
 		read = msg[i].flags & I2C_M_RD;
 
+		if (3 + msg[i].len > sizeof(obuf)) {
+			err("i2c wr len=%d too high", msg[i].len);
+			break;
+		}
+		if (write_read) {
+			if (3 + msg[i+1].len > sizeof(ibuf)) {
+				err("i2c rd len=%d too high", msg[i+1].len);
+				break;
+			}
+		} else if (read) {
+			if (3 + msg[i].len > sizeof(ibuf)) {
+				err("i2c rd len=%d too high", msg[i].len);
+				break;
+			}
+		}
+
 		obuf[0] = (msg[i].addr << 1) | (write_read | read);
 		if (read)
 			obuf[1] = 0;
@@ -438,9 +454,9 @@ static int tt3650_rc_query(struct dvb_usb_device *d)
 
 	if (rx[8] & 0x01) {
 		/* got a "press" event */
-		st->last_rc_key = (rx[3] << 8) | rx[2];
+		st->last_rc_key = RC_SCANCODE_RC5(rx[3], rx[2]);
 		deb_info("%s: cmd=0x%02x sys=0x%02x\n", __func__, rx[2], rx[3]);
-		rc_keydown(d->rc_dev, st->last_rc_key, rx[1]);
+		rc_keydown(d->rc_dev, RC_PROTO_RC5, st->last_rc_key, rx[1]);
 	} else if (st->last_rc_key) {
 		rc_keyup(d->rc_dev);
 		st->last_rc_key = 0;
@@ -451,9 +467,10 @@ static int tt3650_rc_query(struct dvb_usb_device *d)
 
 
 /* Callbacks for DVB USB */
-static int ttusb2_identify_state (struct usb_device *udev, struct
-		dvb_usb_device_properties *props, struct dvb_usb_device_description **desc,
-		int *cold)
+static int ttusb2_identify_state(struct usb_device *udev,
+				 const struct dvb_usb_device_properties *props,
+				 const struct dvb_usb_device_description **desc,
+				 int *cold)
 {
 	*cold = udev->descriptor.iManufacturer == 0 && udev->descriptor.iProduct == 0;
 	return 0;
@@ -613,17 +630,23 @@ static int ttusb2_probe(struct usb_interface *intf,
 	return -ENODEV;
 }
 
-static struct usb_device_id ttusb2_table [] = {
-	{ USB_DEVICE(USB_VID_PINNACLE, USB_PID_PCTV_400E) },
-	{ USB_DEVICE(USB_VID_PINNACLE, USB_PID_PCTV_450E) },
-	{ USB_DEVICE(USB_VID_TECHNOTREND,
-		USB_PID_TECHNOTREND_CONNECT_S2400) },
-	{ USB_DEVICE(USB_VID_TECHNOTREND,
-		USB_PID_TECHNOTREND_CONNECT_CT3650) },
-	{ USB_DEVICE(USB_VID_TECHNOTREND,
-		USB_PID_TECHNOTREND_CONNECT_S2400_8KEEPROM) },
-	{}		/* Terminating entry */
+enum {
+	PINNACLE_PCTV_400E,
+	PINNACLE_PCTV_450E,
+	TECHNOTREND_CONNECT_S2400,
+	TECHNOTREND_CONNECT_CT3650,
+	TECHNOTREND_CONNECT_S2400_8KEEPROM,
 };
+
+static struct usb_device_id ttusb2_table[] = {
+	DVB_USB_DEV(PINNACLE, PINNACLE_PCTV_400E),
+	DVB_USB_DEV(PINNACLE, PINNACLE_PCTV_450E),
+	DVB_USB_DEV(TECHNOTREND, TECHNOTREND_CONNECT_S2400),
+	DVB_USB_DEV(TECHNOTREND, TECHNOTREND_CONNECT_CT3650),
+	DVB_USB_DEV(TECHNOTREND, TECHNOTREND_CONNECT_S2400_8KEEPROM),
+	{ }
+};
+
 MODULE_DEVICE_TABLE (usb, ttusb2_table);
 
 static struct dvb_usb_device_properties ttusb2_properties = {
@@ -671,11 +694,11 @@ static struct dvb_usb_device_properties ttusb2_properties = {
 	.num_device_descs = 2,
 	.devices = {
 		{   "Pinnacle 400e DVB-S USB2.0",
-			{ &ttusb2_table[0], NULL },
+			{ &ttusb2_table[PINNACLE_PCTV_400E], NULL },
 			{ NULL },
 		},
 		{   "Pinnacle 450e DVB-S USB2.0",
-			{ &ttusb2_table[1], NULL },
+			{ &ttusb2_table[PINNACLE_PCTV_450E], NULL },
 			{ NULL },
 		},
 	}
@@ -726,11 +749,11 @@ static struct dvb_usb_device_properties ttusb2_properties_s2400 = {
 	.num_device_descs = 2,
 	.devices = {
 		{   "Technotrend TT-connect S-2400",
-			{ &ttusb2_table[2], NULL },
+			{ &ttusb2_table[TECHNOTREND_CONNECT_S2400], NULL },
 			{ NULL },
 		},
 		{   "Technotrend TT-connect S-2400 (8kB EEPROM)",
-			{ &ttusb2_table[4], NULL },
+			{ &ttusb2_table[TECHNOTREND_CONNECT_S2400_8KEEPROM], NULL },
 			{ NULL },
 		},
 	}
@@ -747,7 +770,7 @@ static struct dvb_usb_device_properties ttusb2_properties_ct3650 = {
 		.rc_interval      = 150, /* Less than IR_KEYPRESS_TIMEOUT */
 		.rc_codes         = RC_MAP_TT_1500,
 		.rc_query         = tt3650_rc_query,
-		.allowed_protos   = RC_BIT_UNKNOWN,
+		.allowed_protos   = RC_PROTO_BIT_RC5,
 	},
 
 	.num_adapters = 1,
@@ -806,7 +829,7 @@ static struct dvb_usb_device_properties ttusb2_properties_ct3650 = {
 	.num_device_descs = 1,
 	.devices = {
 		{   "Technotrend TT-connect CT-3650",
-			.warm_ids = { &ttusb2_table[3], NULL },
+			.warm_ids = { &ttusb2_table[TECHNOTREND_CONNECT_CT3650], NULL },
 		},
 	}
 };
@@ -820,7 +843,7 @@ static struct usb_driver ttusb2_driver = {
 
 module_usb_driver(ttusb2_driver);
 
-MODULE_AUTHOR("Patrick Boettcher <patrick.boettcher@desy.de>");
+MODULE_AUTHOR("Patrick Boettcher <patrick.boettcher@posteo.de>");
 MODULE_DESCRIPTION("Driver for Pinnacle PCTV 400e DVB-S USB2.0");
 MODULE_VERSION("1.0");
 MODULE_LICENSE("GPL");

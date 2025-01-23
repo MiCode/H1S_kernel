@@ -1,18 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2012,2013 - ARM Ltd
  * Author: Marc Zyngier <marc.zyngier@arm.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef __ARM64_KVM_MMU_H__
@@ -20,123 +9,320 @@
 
 #include <asm/page.h>
 #include <asm/memory.h>
+#include <asm/mmu.h>
+#include <asm/cpufeature.h>
 
 /*
- * As we only have the TTBR0_EL2 register, we cannot express
+ * As ARMv8.0 only has the TTBR0_EL2 register, we cannot express
  * "negative" addresses. This makes it impossible to directly share
  * mappings with the kernel.
  *
  * Instead, give the HYP mode its own VA region at a fixed offset from
  * the kernel by just masking the top bits (which are all ones for a
- * kernel address).
+ * kernel address). We need to find out how many bits to mask.
+ *
+ * We want to build a set of page tables that cover both parts of the
+ * idmap (the trampoline page used to initialize EL2), and our normal
+ * runtime VA space, at the same time.
+ *
+ * Given that the kernel uses VA_BITS for its entire address space,
+ * and that half of that space (VA_BITS - 1) is used for the linear
+ * mapping, we can also limit the EL2 space to (VA_BITS - 1).
+ *
+ * The main question is "Within the VA_BITS space, does EL2 use the
+ * top or the bottom half of that space to shadow the kernel's linear
+ * mapping?". As we need to idmap the trampoline page, this is
+ * determined by the range in which this page lives.
+ *
+ * If the page is in the bottom half, we have to use the top half. If
+ * the page is in the top half, we have to use the bottom half:
+ *
+ * T = __pa_symbol(__hyp_idmap_text_start)
+ * if (T & BIT(VA_BITS - 1))
+ *	HYP_VA_MIN = 0  //idmap in upper half
+ * else
+ *	HYP_VA_MIN = 1 << (VA_BITS - 1)
+ * HYP_VA_MAX = HYP_VA_MIN + (1 << (VA_BITS - 1)) - 1
+ *
+ * When using VHE, there are no separate hyp mappings and all KVM
+ * functionality is already mapped as part of the main kernel
+ * mappings, and none of this applies in that case.
  */
-#define HYP_PAGE_OFFSET_SHIFT	VA_BITS
-#define HYP_PAGE_OFFSET_MASK	((UL(1) << HYP_PAGE_OFFSET_SHIFT) - 1)
-#define HYP_PAGE_OFFSET		(PAGE_OFFSET & HYP_PAGE_OFFSET_MASK)
-
-/*
- * Our virtual mapping for the idmap-ed MMU-enable code. Must be
- * shared across all the page-tables. Conveniently, we use the last
- * possible page, where no kernel mapping will ever exist.
- */
-#define TRAMPOLINE_VA		(HYP_PAGE_OFFSET_MASK & PAGE_MASK)
 
 #ifdef __ASSEMBLY__
+
+#include <asm/alternative.h>
 
 /*
  * Convert a kernel VA into a HYP VA.
  * reg: VA to be converted.
+ *
+ * The actual code generation takes place in kvm_update_va_mask, and
+ * the instructions below are only there to reserve the space and
+ * perform the register allocation (kvm_update_va_mask uses the
+ * specific registers encoded in the instructions).
  */
 .macro kern_hyp_va	reg
-	and	\reg, \reg, #HYP_PAGE_OFFSET_MASK
+#ifndef __KVM_VHE_HYPERVISOR__
+alternative_cb ARM64_ALWAYS_SYSTEM, kvm_update_va_mask
+	and     \reg, \reg, #1		/* mask with va_mask */
+	ror	\reg, \reg, #1		/* rotate to the first tag bit */
+	add	\reg, \reg, #0		/* insert the low 12 bits of the tag */
+	add	\reg, \reg, #0, lsl 12	/* insert the top 12 bits of the tag */
+	ror	\reg, \reg, #63		/* rotate back */
+alternative_cb_end
+#endif
+.endm
+
+/*
+ * Convert a hypervisor VA to a PA
+ * reg: hypervisor address to be converted in place
+ * tmp: temporary register
+ */
+.macro hyp_pa reg, tmp
+	ldr_l	\tmp, hyp_physvirt_offset
+	add	\reg, \reg, \tmp
+.endm
+
+/*
+ * Convert a hypervisor VA to a kernel image address
+ * reg: hypervisor address to be converted in place
+ * tmp: temporary register
+ *
+ * The actual code generation takes place in kvm_get_kimage_voffset, and
+ * the instructions below are only there to reserve the space and
+ * perform the register allocation (kvm_get_kimage_voffset uses the
+ * specific registers encoded in the instructions).
+ */
+.macro hyp_kimg_va reg, tmp
+	/* Convert hyp VA -> PA. */
+	hyp_pa	\reg, \tmp
+
+	/* Load kimage_voffset. */
+alternative_cb ARM64_ALWAYS_SYSTEM, kvm_get_kimage_voffset
+	movz	\tmp, #0
+	movk	\tmp, #0, lsl #16
+	movk	\tmp, #0, lsl #32
+	movk	\tmp, #0, lsl #48
+alternative_cb_end
+
+	/* Convert PA -> kimg VA. */
+	add	\reg, \reg, \tmp
 .endm
 
 #else
 
-#include <asm/cachetype.h>
+#include <linux/pgtable.h>
+#include <asm/pgalloc.h>
+#include <asm/cache.h>
 #include <asm/cacheflush.h>
+#include <asm/mmu_context.h>
+#include <asm/kvm_emulate.h>
+#include <asm/kvm_host.h>
+#include <asm/kvm_pkvm_module.h>
 
-#define KERN_TO_HYP(kva)	((unsigned long)kva - PAGE_OFFSET + HYP_PAGE_OFFSET)
+void kvm_update_va_mask(struct alt_instr *alt,
+			__le32 *origptr, __le32 *updptr, int nr_inst);
+void kvm_compute_layout(void);
+void kvm_apply_hyp_relocations(void);
+
+#define __hyp_pa(x) (((phys_addr_t)(x)) + hyp_physvirt_offset)
+
+static __always_inline unsigned long __kern_hyp_va(unsigned long v)
+{
+#ifndef __KVM_VHE_HYPERVISOR__
+	if (!is_ttbr1_addr(v))
+		return v;
+
+	asm volatile(ALTERNATIVE_CB("and %0, %0, #1\n"
+				    "ror %0, %0, #1\n"
+				    "add %0, %0, #0\n"
+				    "add %0, %0, #0, lsl 12\n"
+				    "ror %0, %0, #63\n",
+				    ARM64_ALWAYS_SYSTEM,
+				    kvm_update_va_mask)
+		     : "+r" (v));
+#endif
+	return v;
+}
+
+#define kern_hyp_va(v) 	((typeof(v))(__kern_hyp_va((unsigned long)(v))))
 
 /*
- * Align KVM with the kernel's view of physical memory. Should be
- * 40bit IPA, with PGD being 8kB aligned in the 4KB page configuration.
+ * We currently support using a VM-specified IPA size. For backward
+ * compatibility, the default IPA size is fixed to 40bits.
  */
-#define KVM_PHYS_SHIFT	PHYS_MASK_SHIFT
-#define KVM_PHYS_SIZE	(1UL << KVM_PHYS_SHIFT)
-#define KVM_PHYS_MASK	(KVM_PHYS_SIZE - 1UL)
+#define KVM_PHYS_SHIFT	(40)
 
-/* Make sure we get the right size, and thus the right alignment */
-#define PTRS_PER_S2_PGD (1 << (KVM_PHYS_SHIFT - PGDIR_SHIFT))
-#define S2_PGD_ORDER	get_order(PTRS_PER_S2_PGD * sizeof(pgd_t))
+#define kvm_phys_shift(kvm)		VTCR_EL2_IPA(kvm->arch.vtcr)
+#define kvm_phys_size(kvm)		(_AC(1, ULL) << kvm_phys_shift(kvm))
+#define kvm_phys_mask(kvm)		(kvm_phys_size(kvm) - _AC(1, ULL))
 
-int create_hyp_mappings(void *from, void *to);
-int create_hyp_io_mappings(void *from, void *to, phys_addr_t);
-void free_boot_hyp_pgd(void);
-void free_hyp_pgds(void);
+#include <asm/kvm_pgtable.h>
+#include <asm/stage2_pgtable.h>
 
-int kvm_alloc_stage2_pgd(struct kvm *kvm);
-void kvm_free_stage2_pgd(struct kvm *kvm);
+int kvm_share_hyp(void *from, void *to);
+void kvm_unshare_hyp(void *from, void *to);
+int create_hyp_mappings(void *from, void *to, enum kvm_pgtable_prot prot);
+int __create_hyp_mappings(unsigned long start, unsigned long size,
+			  unsigned long phys, enum kvm_pgtable_prot prot);
+int hyp_alloc_private_va_range(size_t size, unsigned long *haddr);
+int create_hyp_io_mappings(phys_addr_t phys_addr, size_t size,
+			   void __iomem **kaddr,
+			   void __iomem **haddr);
+int create_hyp_exec_mappings(phys_addr_t phys_addr, size_t size,
+			     void **haddr);
+int create_hyp_stack(phys_addr_t phys_addr, unsigned long *haddr);
+void __init free_hyp_pgds(void);
+
+void stage2_unmap_vm(struct kvm *kvm);
+int kvm_init_stage2_mmu(struct kvm *kvm, struct kvm_s2_mmu *mmu, unsigned long type);
+void kvm_uninit_stage2_mmu(struct kvm *kvm);
+void kvm_free_stage2_pgd(struct kvm_s2_mmu *mmu);
 int kvm_phys_addr_ioremap(struct kvm *kvm, phys_addr_t guest_ipa,
-			  phys_addr_t pa, unsigned long size);
+			  phys_addr_t pa, unsigned long size, bool writable);
 
-int kvm_handle_guest_abort(struct kvm_vcpu *vcpu, struct kvm_run *run);
-
-void kvm_mmu_free_memory_caches(struct kvm_vcpu *vcpu);
+int kvm_handle_guest_abort(struct kvm_vcpu *vcpu);
+int pkvm_mem_abort_range(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa, size_t size);
 
 phys_addr_t kvm_mmu_get_httbr(void);
-phys_addr_t kvm_mmu_get_boot_httbr(void);
 phys_addr_t kvm_get_idmap_vector(void);
-int kvm_mmu_init(void);
-void kvm_clear_hyp_idmap(void);
+int __init kvm_mmu_init(u32 *hyp_va_bits);
 
-#define	kvm_set_pte(ptep, pte)		set_pte(ptep, pte)
-#define	kvm_set_pmd(pmdp, pmd)		set_pmd(pmdp, pmd)
-
-static inline bool kvm_is_write_fault(unsigned long esr)
+static inline void *__kvm_vector_slot2addr(void *base,
+					   enum arm64_hyp_spectre_vector slot)
 {
-	unsigned long esr_ec = esr >> ESR_EL2_EC_SHIFT;
+	int idx = slot - (slot != HYP_VECTOR_DIRECT);
 
-	if (esr_ec == ESR_EL2_EC_IABT)
-		return false;
-
-	if ((esr & ESR_EL2_ISV) && !(esr & ESR_EL2_WNR))
-		return false;
-
-	return true;
-}
-
-static inline void kvm_clean_dcache_area(void *addr, size_t size) {}
-static inline void kvm_clean_pgd(pgd_t *pgd) {}
-static inline void kvm_clean_pmd_entry(pmd_t *pmd) {}
-static inline void kvm_clean_pte(pte_t *pte) {}
-static inline void kvm_clean_pte_entry(pte_t *pte) {}
-
-static inline void kvm_set_s2pte_writable(pte_t *pte)
-{
-	pte_val(*pte) |= PTE_S2_RDWR;
-}
-
-static inline void kvm_set_s2pmd_writable(pmd_t *pmd)
-{
-	pmd_val(*pmd) |= PMD_S2_RDWR;
+	return base + (idx * SZ_2K);
 }
 
 struct kvm;
 
-static inline void coherent_icache_guest_page(struct kvm *kvm, hva_t hva,
-					      unsigned long size)
+#define kvm_flush_dcache_to_poc(a, l)	do {			\
+	unsigned long __a = (unsigned long)(a);			\
+	unsigned long __l = (unsigned long)(l);			\
+								\
+	if (__l)						\
+		dcache_clean_inval_poc(__a, __a + __l);		\
+} while (0)
+
+static inline bool vcpu_has_cache_enabled(struct kvm_vcpu *vcpu)
 {
-	if (!icache_is_aliasing()) {		/* PIPT */
-		flush_icache_range(hva, hva + size);
-	} else if (!icache_is_aivivt()) {	/* non ASID-tagged VIVT */
+	u64 cache_bits = SCTLR_ELx_M | SCTLR_ELx_C;
+	int reg;
+
+	if (vcpu_is_el2(vcpu))
+		reg = SCTLR_EL2;
+	else
+		reg = SCTLR_EL1;
+
+	return (vcpu_read_sys_reg(vcpu, reg) & cache_bits) == cache_bits;
+}
+
+static inline void __clean_dcache_guest_page(void *va, size_t size)
+{
+	/*
+	 * With FWB, we ensure that the guest always accesses memory using
+	 * cacheable attributes, and we don't have to clean to PoC when
+	 * faulting in pages. Furthermore, FWB implies IDC, so cleaning to
+	 * PoU is not required either in this case.
+	 */
+	if (cpus_have_const_cap(ARM64_HAS_STAGE2_FWB))
+		return;
+
+	kvm_flush_dcache_to_poc(va, size);
+}
+
+static inline void __invalidate_icache_guest_page(void *va, size_t size)
+{
+	if (icache_is_aliasing()) {
 		/* any kind of VIPT cache */
-		__flush_icache_all();
+		icache_inval_all_pou();
+	} else if (read_sysreg(CurrentEL) != CurrentEL_EL1 ||
+		   !icache_is_vpipt()) {
+		/* PIPT or VPIPT at EL2 (see comment in __kvm_tlb_flush_vmid_ipa) */
+		icache_inval_pou((unsigned long)va, (unsigned long)va + size);
 	}
 }
 
-#define kvm_flush_dcache_to_poc(a,l)	__flush_dcache_area((a), (l))
-#define kvm_virt_to_phys(x)		__virt_to_phys((unsigned long)(x))
+void kvm_set_way_flush(struct kvm_vcpu *vcpu);
+void kvm_toggle_cache(struct kvm_vcpu *vcpu, bool was_enabled);
 
+static inline unsigned int kvm_get_vmid_bits(void)
+{
+	int reg = read_sanitised_ftr_reg(SYS_ID_AA64MMFR1_EL1);
+
+	return get_vmid_bits(reg);
+}
+
+/*
+ * We are not in the kvm->srcu critical section most of the time, so we take
+ * the SRCU read lock here. Since we copy the data from the user page, we
+ * can immediately drop the lock again.
+ */
+static inline int kvm_read_guest_lock(struct kvm *kvm,
+				      gpa_t gpa, void *data, unsigned long len)
+{
+	int srcu_idx = srcu_read_lock(&kvm->srcu);
+	int ret = kvm_read_guest(kvm, gpa, data, len);
+
+	srcu_read_unlock(&kvm->srcu, srcu_idx);
+
+	return ret;
+}
+
+static inline int kvm_write_guest_lock(struct kvm *kvm, gpa_t gpa,
+				       const void *data, unsigned long len)
+{
+	int srcu_idx = srcu_read_lock(&kvm->srcu);
+	int ret = kvm_write_guest(kvm, gpa, data, len);
+
+	srcu_read_unlock(&kvm->srcu, srcu_idx);
+
+	return ret;
+}
+
+#define kvm_phys_to_vttbr(addr)		phys_to_ttbr(addr)
+
+/*
+ * When this is (directly or indirectly) used on the TLB invalidation
+ * path, we rely on a previously issued DSB so that page table updates
+ * and VMID reads are correctly ordered.
+ */
+static __always_inline u64 kvm_get_vttbr(struct kvm_s2_mmu *mmu)
+{
+	struct kvm_vmid *vmid = &mmu->vmid;
+	u64 vmid_field, baddr;
+	u64 cnp = system_supports_cnp() ? VTTBR_CNP_BIT : 0;
+
+	baddr = mmu->pgd_phys;
+	vmid_field = atomic64_read(&vmid->id) << VTTBR_VMID_SHIFT;
+	vmid_field &= VTTBR_VMID_MASK(kvm_arm_vmid_bits);
+	return kvm_phys_to_vttbr(baddr) | vmid_field | cnp;
+}
+
+/*
+ * Must be called from hyp code running at EL2 with an updated VTTBR
+ * and interrupts disabled.
+ */
+static __always_inline void __load_stage2(struct kvm_s2_mmu *mmu,
+					  struct kvm_arch *arch)
+{
+	write_sysreg(arch->vtcr, vtcr_el2);
+	write_sysreg(kvm_get_vttbr(mmu), vttbr_el2);
+
+	/*
+	 * ARM errata 1165522 and 1530923 require the actual execution of the
+	 * above before we can switch to the EL1/EL0 translation regime used by
+	 * the guest.
+	 */
+	asm(ALTERNATIVE("nop", "isb", ARM64_WORKAROUND_SPECULATIVE_AT));
+}
+
+static inline struct kvm *kvm_s2_mmu_to_kvm(struct kvm_s2_mmu *mmu)
+{
+	return container_of(mmu->arch, struct kvm, arch);
+}
 #endif /* __ASSEMBLY__ */
 #endif /* __ARM64_KVM_MMU_H__ */

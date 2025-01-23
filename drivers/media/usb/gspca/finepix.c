@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Fujifilm Finepix subdriver
  *
  * Copyright (C) 2008 Frank Zago
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -41,7 +28,6 @@ struct usb_fpix {
 	struct gspca_dev gspca_dev;	/* !! must be the first item */
 
 	struct work_struct work_struct;
-	struct workqueue_struct *work_thread;
 };
 
 /* Delay after which claim the next frame. If the delay is too small,
@@ -94,7 +80,7 @@ static void dostream(struct work_struct *work)
 	int ret = 0;
 	int len;
 
-	PDEBUG(D_STREAM, "dostream started");
+	gspca_dbg(gspca_dev, D_STREAM, "dostream started\n");
 
 	/* loop reading a frame */
 again:
@@ -143,7 +129,7 @@ again:
 				 * for, then it's the end of the
 				 * frame. Sometimes the jpeg is not complete,
 				 * but there's nothing we can do. We also end
-				 * here if the the jpeg ends right at the end
+				 * here if the jpeg ends right at the end
 				 * of the frame. */
 				gspca_frame_add(gspca_dev, LAST_PACKET,
 						data, len);
@@ -165,7 +151,7 @@ again:
 	}
 
 out:
-	PDEBUG(D_STREAM, "dostream stopped");
+	gspca_dbg(gspca_dev, D_STREAM, "dostream stopped\n");
 }
 
 /* this function is called at probe time */
@@ -226,9 +212,7 @@ static int sd_start(struct gspca_dev *gspca_dev)
 	/* Again, reset bulk in endpoint */
 	usb_clear_halt(gspca_dev->dev, gspca_dev->urb[0]->pipe);
 
-	/* Start the workqueue function to do the streaming */
-	dev->work_thread = create_singlethread_workqueue(MODULE_NAME);
-	queue_work(dev->work_thread, &dev->work_struct);
+	schedule_work(&dev->work_struct);
 
 	return 0;
 }
@@ -241,9 +225,8 @@ static void sd_stop0(struct gspca_dev *gspca_dev)
 
 	/* wait for the work queue to terminate */
 	mutex_unlock(&gspca_dev->usb_lock);
-	destroy_workqueue(dev->work_thread);
+	flush_work(&dev->work_struct);
 	mutex_lock(&gspca_dev->usb_lock);
-	dev->work_thread = NULL;
 }
 
 /* Table of supported USB devices */

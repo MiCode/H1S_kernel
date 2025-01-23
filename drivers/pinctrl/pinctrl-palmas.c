@@ -1,30 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * pinctrl-palmas.c -- TI PALMAS series pin control driver.
  *
  * Copyright (c) 2013, NVIDIA Corporation.
  *
  * Author: Laxman Dewangan <ldewangan@nvidia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any kind,
- * whether express or implied; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
- * 02111-1307, USA
  */
 
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/mfd/palmas.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pinctrl/machine.h>
 #include <linux/pinctrl/pinctrl.h>
@@ -656,7 +642,7 @@ static const struct pinctrl_ops palmas_pinctrl_ops = {
 	.get_group_name = palmas_pinctrl_get_group_name,
 	.get_group_pins = palmas_pinctrl_get_group_pins,
 	.dt_node_to_map = pinconf_generic_dt_node_to_map_pin,
-	.dt_free_map = pinctrl_utils_dt_free_map,
+	.dt_free_map = pinctrl_utils_free_map,
 };
 
 static int palmas_pinctrl_get_funcs_count(struct pinctrl_dev *pctldev)
@@ -685,7 +671,8 @@ static int palmas_pinctrl_get_func_groups(struct pinctrl_dev *pctldev,
 	return 0;
 }
 
-static int palmas_pinctrl_enable(struct pinctrl_dev *pctldev, unsigned function,
+static int palmas_pinctrl_set_mux(struct pinctrl_dev *pctldev,
+		unsigned function,
 		unsigned group)
 {
 	struct palmas_pctrl_chip_info *pci = pinctrl_dev_get_drvdata(pctldev);
@@ -742,7 +729,7 @@ static const struct pinmux_ops palmas_pinmux_ops = {
 	.get_functions_count = palmas_pinctrl_get_funcs_count,
 	.get_function_name = palmas_pinctrl_get_func_name,
 	.get_function_groups = palmas_pinctrl_get_func_groups,
-	.enable = palmas_pinctrl_enable,
+	.set_mux = palmas_pinctrl_set_mux,
 };
 
 static int palmas_pinconf_get(struct pinctrl_dev *pctldev,
@@ -859,7 +846,7 @@ static int palmas_pinconf_set(struct pinctrl_dev *pctldev,
 {
 	struct palmas_pctrl_chip_info *pci = pinctrl_dev_get_drvdata(pctldev);
 	enum pin_config_param param;
-	u16 param_val;
+	u32 param_val;
 	const struct palmas_pingroup *g;
 	const struct palmas_pin_info *opt;
 	int ret;
@@ -986,7 +973,7 @@ static struct palmas_pinctrl_data tps80036_pinctrl_data = {
 	.num_pin_groups = ARRAY_SIZE(tps80036_pingroups),
 };
 
-static struct of_device_id palmas_pinctrl_of_match[] = {
+static const struct of_device_id palmas_pinctrl_of_match[] = {
 	{ .compatible = "ti,palmas-pinctrl", .data = &tps65913_pinctrl_data},
 	{ .compatible = "ti,tps65913-pinctrl", .data = &tps65913_pinctrl_data},
 	{ .compatible = "ti,tps80036-pinctrl", .data = &tps80036_pinctrl_data},
@@ -1003,9 +990,7 @@ static int palmas_pinctrl_probe(struct platform_device *pdev)
 	bool enable_dvfs2 = false;
 
 	if (pdev->dev.of_node) {
-		const struct of_device_id *match;
-		match = of_match_device(palmas_pinctrl_of_match, &pdev->dev);
-		pinctrl_data = match->data;
+		pinctrl_data = of_device_get_match_data(&pdev->dev);
 		enable_dvfs1 = of_property_read_bool(pdev->dev.of_node,
 					"ti,palmas-enable-dvfs1");
 		enable_dvfs2 = of_property_read_bool(pdev->dev.of_node,
@@ -1013,10 +998,8 @@ static int palmas_pinctrl_probe(struct platform_device *pdev)
 	}
 
 	pci = devm_kzalloc(&pdev->dev, sizeof(*pci), GFP_KERNEL);
-	if (!pci) {
-		dev_err(&pdev->dev, "Malloc for pci failed\n");
+	if (!pci)
 		return -ENOMEM;
-	}
 
 	pci->dev = &pdev->dev;
 	pci->palmas = dev_get_drvdata(pdev->dev.parent);
@@ -1042,30 +1025,21 @@ static int palmas_pinctrl_probe(struct platform_device *pdev)
 	palmas_pinctrl_desc.name = dev_name(&pdev->dev);
 	palmas_pinctrl_desc.pins = palmas_pins_desc;
 	palmas_pinctrl_desc.npins = ARRAY_SIZE(palmas_pins_desc);
-	pci->pctl = pinctrl_register(&palmas_pinctrl_desc, &pdev->dev, pci);
-	if (!pci->pctl) {
+	pci->pctl = devm_pinctrl_register(&pdev->dev, &palmas_pinctrl_desc,
+					  pci);
+	if (IS_ERR(pci->pctl)) {
 		dev_err(&pdev->dev, "Couldn't register pinctrl driver\n");
-		return -ENODEV;
+		return PTR_ERR(pci->pctl);
 	}
-	return 0;
-}
-
-static int palmas_pinctrl_remove(struct platform_device *pdev)
-{
-	struct palmas_pctrl_chip_info *pci = platform_get_drvdata(pdev);
-
-	pinctrl_unregister(pci->pctl);
 	return 0;
 }
 
 static struct platform_driver palmas_pinctrl_driver = {
 	.driver = {
 		.name = "palmas-pinctrl",
-		.owner = THIS_MODULE,
 		.of_match_table = palmas_pinctrl_of_match,
 	},
 	.probe = palmas_pinctrl_probe,
-	.remove = palmas_pinctrl_remove,
 };
 
 module_platform_driver(palmas_pinctrl_driver);

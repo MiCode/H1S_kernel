@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-1.0+ WITH Linux-syscall-note */
 /* 	pg.h (c) 1998  Grant R. Guenther <grant@torque.net>
  		       Under the terms of the GNU General Public License
 
@@ -34,6 +35,9 @@
 
 */
 
+#ifndef _UAPI_LINUX_PG_H
+#define _UAPI_LINUX_PG_H
+
 #define PG_MAGIC	'P'
 #define PG_RESET	'Z'
 #define PG_COMMAND	'C'
@@ -60,4 +64,4 @@ struct pg_read_hdr {
 
 };
 
-/* end of pg.h */
+#endif /* _UAPI_LINUX_PG_H */

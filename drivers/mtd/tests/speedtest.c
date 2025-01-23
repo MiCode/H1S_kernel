@@ -1,18 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2007 Nokia Corporation
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; see the file COPYING. If not, write to the Free Software
- * Foundation, 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  *
  * Test read and write speed of a MTD device.
  *
@@ -22,6 +10,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/init.h>
+#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/err.h>
@@ -49,16 +38,15 @@ static int pgsize;
 static int ebcnt;
 static int pgcnt;
 static int goodebcnt;
-static struct timeval start, finish;
+static ktime_t start, finish;
 
 static int multiblock_erase(int ebnum, int blocks)
 {
 	int err;
 	struct erase_info ei;
-	loff_t addr = ebnum * mtd->erasesize;
+	loff_t addr = (loff_t)ebnum * mtd->erasesize;
 
 	memset(&ei, 0, sizeof(struct erase_info));
-	ei.mtd  = mtd;
 	ei.addr = addr;
 	ei.len  = mtd->erasesize * blocks;
 
@@ -69,18 +57,12 @@ static int multiblock_erase(int ebnum, int blocks)
 		return err;
 	}
 
-	if (ei.state == MTD_ERASE_FAILED) {
-		pr_err("some erase error occurred at EB %d,"
-		       "blocks %d\n", ebnum, blocks);
-		return -EIO;
-	}
-
 	return 0;
 }
 
 static int write_eraseblock(int ebnum)
 {
-	loff_t addr = ebnum * mtd->erasesize;
+	loff_t addr = (loff_t)ebnum * mtd->erasesize;
 
 	return mtdtest_write(mtd, addr, mtd->erasesize, iobuf);
 }
@@ -88,7 +70,7 @@ static int write_eraseblock(int ebnum)
 static int write_eraseblock_by_page(int ebnum)
 {
 	int i, err = 0;
-	loff_t addr = ebnum * mtd->erasesize;
+	loff_t addr = (loff_t)ebnum * mtd->erasesize;
 	void *buf = iobuf;
 
 	for (i = 0; i < pgcnt; i++) {
@@ -106,7 +88,7 @@ static int write_eraseblock_by_2pages(int ebnum)
 {
 	size_t sz = pgsize * 2;
 	int i, n = pgcnt / 2, err = 0;
-	loff_t addr = ebnum * mtd->erasesize;
+	loff_t addr = (loff_t)ebnum * mtd->erasesize;
 	void *buf = iobuf;
 
 	for (i = 0; i < n; i++) {
@@ -124,7 +106,7 @@ static int write_eraseblock_by_2pages(int ebnum)
 
 static int read_eraseblock(int ebnum)
 {
-	loff_t addr = ebnum * mtd->erasesize;
+	loff_t addr = (loff_t)ebnum * mtd->erasesize;
 
 	return mtdtest_read(mtd, addr, mtd->erasesize, iobuf);
 }
@@ -132,7 +114,7 @@ static int read_eraseblock(int ebnum)
 static int read_eraseblock_by_page(int ebnum)
 {
 	int i, err = 0;
-	loff_t addr = ebnum * mtd->erasesize;
+	loff_t addr = (loff_t)ebnum * mtd->erasesize;
 	void *buf = iobuf;
 
 	for (i = 0; i < pgcnt; i++) {
@@ -150,7 +132,7 @@ static int read_eraseblock_by_2pages(int ebnum)
 {
 	size_t sz = pgsize * 2;
 	int i, n = pgcnt / 2, err = 0;
-	loff_t addr = ebnum * mtd->erasesize;
+	loff_t addr = (loff_t)ebnum * mtd->erasesize;
 	void *buf = iobuf;
 
 	for (i = 0; i < n; i++) {
@@ -168,25 +150,23 @@ static int read_eraseblock_by_2pages(int ebnum)
 
 static inline void start_timing(void)
 {
-	do_gettimeofday(&start);
+	start = ktime_get();
 }
 
 static inline void stop_timing(void)
 {
-	do_gettimeofday(&finish);
+	finish = ktime_get();
 }
 
 static long calc_speed(void)
 {
-	uint64_t k;
-	long ms;
+	uint64_t k, us;
 
-	ms = (finish.tv_sec - start.tv_sec) * 1000 +
-	     (finish.tv_usec - start.tv_usec) / 1000;
-	if (ms == 0)
+	us = ktime_us_delta(finish, start);
+	if (us == 0)
 		return 0;
-	k = goodebcnt * (mtd->erasesize / 1024) * 1000;
-	do_div(k, ms);
+	k = (uint64_t)goodebcnt * (mtd->erasesize / 1024) * 1000000;
+	do_div(k, us);
 	return k;
 }
 
@@ -243,7 +223,7 @@ static int __init mtd_speedtest_init(void)
 	if (!iobuf)
 		goto out;
 
-	prandom_bytes(iobuf, mtd->erasesize);
+	get_random_bytes(iobuf, mtd->erasesize);
 
 	bbt = kzalloc(ebcnt, GFP_KERNEL);
 	if (!bbt)
@@ -269,7 +249,10 @@ static int __init mtd_speedtest_init(void)
 		err = write_eraseblock(i);
 		if (err)
 			goto out;
-		cond_resched();
+
+		err = mtdtest_relax();
+		if (err)
+			goto out;
 	}
 	stop_timing();
 	speed = calc_speed();
@@ -284,7 +267,10 @@ static int __init mtd_speedtest_init(void)
 		err = read_eraseblock(i);
 		if (err)
 			goto out;
-		cond_resched();
+
+		err = mtdtest_relax();
+		if (err)
+			goto out;
 	}
 	stop_timing();
 	speed = calc_speed();
@@ -303,7 +289,10 @@ static int __init mtd_speedtest_init(void)
 		err = write_eraseblock_by_page(i);
 		if (err)
 			goto out;
-		cond_resched();
+
+		err = mtdtest_relax();
+		if (err)
+			goto out;
 	}
 	stop_timing();
 	speed = calc_speed();
@@ -318,7 +307,10 @@ static int __init mtd_speedtest_init(void)
 		err = read_eraseblock_by_page(i);
 		if (err)
 			goto out;
-		cond_resched();
+
+		err = mtdtest_relax();
+		if (err)
+			goto out;
 	}
 	stop_timing();
 	speed = calc_speed();
@@ -337,7 +329,10 @@ static int __init mtd_speedtest_init(void)
 		err = write_eraseblock_by_2pages(i);
 		if (err)
 			goto out;
-		cond_resched();
+
+		err = mtdtest_relax();
+		if (err)
+			goto out;
 	}
 	stop_timing();
 	speed = calc_speed();
@@ -352,7 +347,10 @@ static int __init mtd_speedtest_init(void)
 		err = read_eraseblock_by_2pages(i);
 		if (err)
 			goto out;
-		cond_resched();
+
+		err = mtdtest_relax();
+		if (err)
+			goto out;
 	}
 	stop_timing();
 	speed = calc_speed();
@@ -385,7 +383,11 @@ static int __init mtd_speedtest_init(void)
 			err = multiblock_erase(i, j);
 			if (err)
 				goto out;
-			cond_resched();
+
+			err = mtdtest_relax();
+			if (err)
+				goto out;
+
 			i += j;
 		}
 		stop_timing();

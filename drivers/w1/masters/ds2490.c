@@ -1,22 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- *	dscore.c
+ *	ds2490.c  USB to one wire bridge
  *
  * Copyright (c) 2004 Evgeniy Polyakov <zbr@ioremap.net>
- *
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/module.h>
@@ -25,8 +11,11 @@
 #include <linux/usb.h>
 #include <linux/slab.h>
 
-#include "../w1_int.h"
-#include "../w1.h"
+#include <linux/w1.h>
+
+/* USB Standard */
+/* USB Control request vendor type */
+#define VENDOR				0x40
 
 /* COMMAND TYPE CODES */
 #define CONTROL_CMD			0x00
@@ -107,6 +96,8 @@
 #define ST_HALT				0x10  /* DS2490 is currently halted */
 #define ST_IDLE				0x20  /* DS2490 is currently idle */
 #define ST_EPOF				0x80
+/* Status transfer size, 16 bytes status, 16 byte result flags */
+#define ST_SIZE				0x20
 
 /* Result Register flags */
 #define RR_DETECT			0xA5 /* New device detected */
@@ -129,8 +120,7 @@
 #define EP_DATA_OUT			2
 #define EP_DATA_IN			3
 
-struct ds_device
-{
+struct ds_device {
 	struct list_head	ds_entry;
 
 	struct usb_device	*udev;
@@ -147,11 +137,13 @@ struct ds_device
 	 */
 	u16			spu_bit;
 
+	u8			st_buf[ST_SIZE];
+	u8			byte_buf;
+
 	struct w1_bus_master	master;
 };
 
-struct ds_status
-{
+struct ds_status {
 	u8			enable;
 	u8			speed;
 	u8			pullup_dur;
@@ -168,40 +160,21 @@ struct ds_status
 	u8			data_in_buffer_status;
 	u8			reserved1;
 	u8			reserved2;
-
 };
-
-static struct usb_device_id ds_id_table [] = {
-	{ USB_DEVICE(0x04fa, 0x2490) },
-	{ },
-};
-MODULE_DEVICE_TABLE(usb, ds_id_table);
-
-static int ds_probe(struct usb_interface *, const struct usb_device_id *);
-static void ds_disconnect(struct usb_interface *);
-
-static int ds_send_control(struct ds_device *, u16, u16);
-static int ds_send_control_cmd(struct ds_device *, u16, u16);
 
 static LIST_HEAD(ds_devices);
 static DEFINE_MUTEX(ds_mutex);
-
-static struct usb_driver ds_driver = {
-	.name =		"DS9490R",
-	.probe =	ds_probe,
-	.disconnect =	ds_disconnect,
-	.id_table =	ds_id_table,
-};
 
 static int ds_send_control_cmd(struct ds_device *dev, u16 value, u16 index)
 {
 	int err;
 
 	err = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, dev->ep[EP_CONTROL]),
-			CONTROL_CMD, 0x40, value, index, NULL, 0, 1000);
+			CONTROL_CMD, VENDOR, value, index, NULL, 0, 1000);
 	if (err < 0) {
-		printk(KERN_ERR "Failed to send command control message %x.%x: err=%d.\n",
-				value, index, err);
+		dev_err(&dev->udev->dev,
+			"Failed to send command control message %x.%x: err=%d.\n",
+			value, index, err);
 		return err;
 	}
 
@@ -213,10 +186,11 @@ static int ds_send_control_mode(struct ds_device *dev, u16 value, u16 index)
 	int err;
 
 	err = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, dev->ep[EP_CONTROL]),
-			MODE_CMD, 0x40, value, index, NULL, 0, 1000);
+			MODE_CMD, VENDOR, value, index, NULL, 0, 1000);
 	if (err < 0) {
-		printk(KERN_ERR "Failed to send mode control message %x.%x: err=%d.\n",
-				value, index, err);
+		dev_err(&dev->udev->dev,
+			"Failed to send mode control message %x.%x: err=%d.\n",
+			value, index, err);
 		return err;
 	}
 
@@ -228,92 +202,93 @@ static int ds_send_control(struct ds_device *dev, u16 value, u16 index)
 	int err;
 
 	err = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, dev->ep[EP_CONTROL]),
-			COMM_CMD, 0x40, value, index, NULL, 0, 1000);
+			COMM_CMD, VENDOR, value, index, NULL, 0, 1000);
 	if (err < 0) {
-		printk(KERN_ERR "Failed to send control message %x.%x: err=%d.\n",
-				value, index, err);
+		dev_err(&dev->udev->dev,
+			"Failed to send control message %x.%x: err=%d.\n",
+			value, index, err);
 		return err;
 	}
 
 	return err;
 }
 
-static int ds_recv_status_nodump(struct ds_device *dev, struct ds_status *st,
-				 unsigned char *buf, int size)
+static void ds_dump_status(struct ds_device *ds_dev, unsigned char *buf, int count)
+{
+	struct device *dev = &ds_dev->udev->dev;
+	int i;
+
+	dev_info(dev, "ep_status=0x%x, count=%d, status=%*phC",
+		ds_dev->ep[EP_STATUS], count, count, buf);
+
+	if (count >= 16) {
+		dev_dbg(dev, "enable flag: 0x%02x", buf[0]);
+		dev_dbg(dev, "1-wire speed: 0x%02x", buf[1]);
+		dev_dbg(dev, "strong pullup duration: 0x%02x", buf[2]);
+		dev_dbg(dev, "programming pulse duration: 0x%02x", buf[3]);
+		dev_dbg(dev, "pulldown slew rate control: 0x%02x", buf[4]);
+		dev_dbg(dev, "write-1 low time: 0x%02x", buf[5]);
+		dev_dbg(dev, "data sample offset/write-0 recovery time: 0x%02x", buf[6]);
+		dev_dbg(dev, "reserved (test register): 0x%02x", buf[7]);
+		dev_dbg(dev, "device status flags: 0x%02x", buf[8]);
+		dev_dbg(dev, "communication command byte 1: 0x%02x", buf[9]);
+		dev_dbg(dev, "communication command byte 2: 0x%02x", buf[10]);
+		dev_dbg(dev, "communication command buffer status: 0x%02x", buf[11]);
+		dev_dbg(dev, "1-wire data output buffer status: 0x%02x", buf[12]);
+		dev_dbg(dev, "1-wire data input buffer status: 0x%02x", buf[13]);
+		dev_dbg(dev, "reserved: 0x%02x", buf[14]);
+		dev_dbg(dev, "reserved: 0x%02x", buf[15]);
+	}
+
+	for (i = 16; i < count; ++i) {
+		if (buf[i] == RR_DETECT) {
+			dev_dbg(dev, "New device detect.\n");
+			continue;
+		}
+		dev_dbg(dev, "Result Register Value: 0x%02x", buf[i]);
+		if (buf[i] & RR_NRS)
+			dev_dbg(dev, "NRS: Reset no presence or ...\n");
+		if (buf[i] & RR_SH)
+			dev_dbg(dev, "SH: short on reset or set path\n");
+		if (buf[i] & RR_APP)
+			dev_dbg(dev, "APP: alarming presence on reset\n");
+		if (buf[i] & RR_VPP)
+			dev_dbg(dev, "VPP: 12V expected not seen\n");
+		if (buf[i] & RR_CMP)
+			dev_dbg(dev, "CMP: compare error\n");
+		if (buf[i] & RR_CRC)
+			dev_dbg(dev, "CRC: CRC error detected\n");
+		if (buf[i] & RR_RDP)
+			dev_dbg(dev, "RDP: redirected page\n");
+		if (buf[i] & RR_EOS)
+			dev_dbg(dev, "EOS: end of search error\n");
+	}
+}
+
+static int ds_recv_status(struct ds_device *dev, struct ds_status *st)
 {
 	int count, err;
 
-	memset(st, 0, sizeof(*st));
+	if (st)
+		memset(st, 0, sizeof(*st));
 
 	count = 0;
-	err = usb_bulk_msg(dev->udev, usb_rcvbulkpipe(dev->udev, dev->ep[EP_STATUS]), buf, size, &count, 100);
+	err = usb_interrupt_msg(dev->udev,
+				usb_rcvintpipe(dev->udev,
+					       dev->ep[EP_STATUS]),
+				dev->st_buf, sizeof(dev->st_buf),
+				&count, 1000);
 	if (err < 0) {
-		printk(KERN_ERR "Failed to read 1-wire data from 0x%x: err=%d.\n", dev->ep[EP_STATUS], err);
+		dev_err(&dev->udev->dev,
+			"Failed to read 1-wire data from 0x%x: err=%d.\n",
+			dev->ep[EP_STATUS], err);
 		return err;
 	}
 
-	if (count >= sizeof(*st))
-		memcpy(st, buf, sizeof(*st));
+	if (st && count >= sizeof(*st))
+		memcpy(st, dev->st_buf, sizeof(*st));
 
 	return count;
-}
-
-static inline void ds_print_msg(unsigned char *buf, unsigned char *str, int off)
-{
-	printk(KERN_INFO "%45s: %8x\n", str, buf[off]);
-}
-
-static void ds_dump_status(struct ds_device *dev, unsigned char *buf, int count)
-{
-	int i;
-
-	printk(KERN_INFO "0x%x: count=%d, status: ", dev->ep[EP_STATUS], count);
-	for (i=0; i<count; ++i)
-		printk("%02x ", buf[i]);
-	printk(KERN_INFO "\n");
-
-	if (count >= 16) {
-		ds_print_msg(buf, "enable flag", 0);
-		ds_print_msg(buf, "1-wire speed", 1);
-		ds_print_msg(buf, "strong pullup duration", 2);
-		ds_print_msg(buf, "programming pulse duration", 3);
-		ds_print_msg(buf, "pulldown slew rate control", 4);
-		ds_print_msg(buf, "write-1 low time", 5);
-		ds_print_msg(buf, "data sample offset/write-0 recovery time",
-			6);
-		ds_print_msg(buf, "reserved (test register)", 7);
-		ds_print_msg(buf, "device status flags", 8);
-		ds_print_msg(buf, "communication command byte 1", 9);
-		ds_print_msg(buf, "communication command byte 2", 10);
-		ds_print_msg(buf, "communication command buffer status", 11);
-		ds_print_msg(buf, "1-wire data output buffer status", 12);
-		ds_print_msg(buf, "1-wire data input buffer status", 13);
-		ds_print_msg(buf, "reserved", 14);
-		ds_print_msg(buf, "reserved", 15);
-	}
-	for (i = 16; i < count; ++i) {
-		if (buf[i] == RR_DETECT) {
-			ds_print_msg(buf, "new device detect", i);
-			continue;
-		}
-		ds_print_msg(buf, "Result Register Value: ", i);
-		if (buf[i] & RR_NRS)
-			printk(KERN_INFO "NRS: Reset no presence or ...\n");
-		if (buf[i] & RR_SH)
-			printk(KERN_INFO "SH: short on reset or set path\n");
-		if (buf[i] & RR_APP)
-			printk(KERN_INFO "APP: alarming presence on reset\n");
-		if (buf[i] & RR_VPP)
-			printk(KERN_INFO "VPP: 12V expected not seen\n");
-		if (buf[i] & RR_CMP)
-			printk(KERN_INFO "CMP: compare error\n");
-		if (buf[i] & RR_CRC)
-			printk(KERN_INFO "CRC: CRC error detected\n");
-		if (buf[i] & RR_RDP)
-			printk(KERN_INFO "RDP: redirected page\n");
-		if (buf[i] & RR_EOS)
-			printk(KERN_INFO "EOS: end of search error\n");
-	}
 }
 
 static void ds_reset_device(struct ds_device *dev)
@@ -323,22 +298,22 @@ static void ds_reset_device(struct ds_device *dev)
 	 * the strong pullup.
 	 */
 	if (ds_send_control_mode(dev, MOD_PULSE_EN, PULSE_SPUE))
-		printk(KERN_ERR "ds_reset_device: "
-			"Error allowing strong pullup\n");
+		dev_err(&dev->udev->dev,
+			"%s: Error allowing strong pullup\n", __func__);
 	/* Chip strong pullup time was cleared. */
 	if (dev->spu_sleep) {
 		/* lower 4 bits are 0, see ds_set_pullup */
 		u8 del = dev->spu_sleep>>4;
+
 		if (ds_send_control(dev, COMM_SET_DURATION | COMM_IM, del))
-			printk(KERN_ERR "ds_reset_device: "
-				"Error setting duration\n");
+			dev_err(&dev->udev->dev,
+				"%s: Error setting duration\n", __func__);
 	}
 }
 
 static int ds_recv_data(struct ds_device *dev, unsigned char *buf, int size)
 {
 	int count, err;
-	struct ds_status st;
 
 	/* Careful on size.  If size is less than what is available in
 	 * the input buffer, the device fails the bulk transfer and
@@ -353,14 +328,16 @@ static int ds_recv_data(struct ds_device *dev, unsigned char *buf, int size)
 	err = usb_bulk_msg(dev->udev, usb_rcvbulkpipe(dev->udev, dev->ep[EP_DATA_IN]),
 				buf, size, &count, 1000);
 	if (err < 0) {
-		u8 buf[0x20];
-		int count;
+		int recv_len;
 
-		printk(KERN_INFO "Clearing ep0x%x.\n", dev->ep[EP_DATA_IN]);
+		dev_info(&dev->udev->dev, "Clearing ep0x%x.\n", dev->ep[EP_DATA_IN]);
 		usb_clear_halt(dev->udev, usb_rcvbulkpipe(dev->udev, dev->ep[EP_DATA_IN]));
 
-		count = ds_recv_status_nodump(dev, &st, buf, sizeof(buf));
-		ds_dump_status(dev, buf, count);
+		/* status might tell us why endpoint is stuck? */
+		recv_len = ds_recv_status(dev, NULL);
+		if (recv_len >= 0)
+			ds_dump_status(dev, dev->st_buf, recv_len);
+
 		return err;
 	}
 
@@ -369,7 +346,7 @@ static int ds_recv_data(struct ds_device *dev, unsigned char *buf, int size)
 		int i;
 
 		printk("%s: count=%d: ", __func__, count);
-		for (i=0; i<count; ++i)
+		for (i = 0; i < count; ++i)
 			printk("%02x ", buf[i]);
 		printk("\n");
 	}
@@ -384,7 +361,7 @@ static int ds_send_data(struct ds_device *dev, unsigned char *buf, int len)
 	count = 0;
 	err = usb_bulk_msg(dev->udev, usb_sndbulkpipe(dev->udev, dev->ep[EP_DATA_OUT]), buf, len, &count, 1000);
 	if (err < 0) {
-		printk(KERN_ERR "Failed to write 1-wire data to ep0x%x: "
+		dev_err(&dev->udev->dev, "Failed to write 1-wire data to ep0x%x: "
 			"err=%d.\n", dev->ep[EP_DATA_OUT], err);
 		return err;
 	}
@@ -398,7 +375,6 @@ int ds_stop_pulse(struct ds_device *dev, int limit)
 {
 	struct ds_status st;
 	int count = 0, err = 0;
-	u8 buf[0x20];
 
 	do {
 		err = ds_send_control(dev, CTL_HALT_EXE_IDLE, 0);
@@ -407,7 +383,7 @@ int ds_stop_pulse(struct ds_device *dev, int limit)
 		err = ds_send_control(dev, CTL_RESUME_EXE, 0);
 		if (err)
 			break;
-		err = ds_recv_status_nodump(dev, &st, buf, sizeof(buf));
+		err = ds_recv_status(dev, &st);
 		if (err)
 			break;
 
@@ -416,7 +392,7 @@ int ds_stop_pulse(struct ds_device *dev, int limit)
 			if (err)
 				break;
 		}
-	} while(++count < limit);
+	} while (++count < limit);
 
 	return err;
 }
@@ -450,24 +426,24 @@ int ds_detect(struct ds_device *dev, struct ds_status *st)
 
 static int ds_wait_status(struct ds_device *dev, struct ds_status *st)
 {
-	u8 buf[0x20];
 	int err, count = 0;
 
 	do {
-		err = ds_recv_status_nodump(dev, st, buf, sizeof(buf));
+		st->status = 0;
+		err = ds_recv_status(dev, st);
 #if 0
 		if (err >= 0) {
 			int i;
 			printk("0x%x: count=%d, status: ", dev->ep[EP_STATUS], err);
-			for (i=0; i<err; ++i)
-				printk("%02x ", buf[i]);
+			for (i = 0; i < err; ++i)
+				printk("%02x ", dev->st_buf[i]);
 			printk("\n");
 		}
 #endif
-	} while (!(buf[0x08] & ST_IDLE) && !(err < 0) && ++count < 100);
+	} while (!(st->status & ST_IDLE) && !(err < 0) && ++count < 100);
 
 	if (err >= 16 && st->status & ST_EPOF) {
-		printk(KERN_INFO "Resetting device after ST_EPOF.\n");
+		dev_info(&dev->udev->dev, "Resetting device after ST_EPOF.\n");
 		ds_reset_device(dev);
 		/* Always dump the device status. */
 		count = 101;
@@ -478,7 +454,7 @@ static int ds_wait_status(struct ds_device *dev, struct ds_status *st)
 	 * can do something with it).
 	 */
 	if (err > 16 || count >= 100 || err < 0)
-		ds_dump_status(dev, buf, err);
+		ds_dump_status(dev, dev->st_buf, err);
 
 	/* Extended data isn't an error.  Well, a short is, but the dump
 	 * would have already told the user that and we can't do anything
@@ -601,7 +577,6 @@ static int ds_write_byte(struct ds_device *dev, u8 byte)
 {
 	int err;
 	struct ds_status st;
-	u8 rbyte;
 
 	err = ds_send_control(dev, COMM_BYTE_IO | COMM_IM | dev->spu_bit, byte);
 	if (err)
@@ -614,11 +589,11 @@ static int ds_write_byte(struct ds_device *dev, u8 byte)
 	if (err)
 		return err;
 
-	err = ds_recv_data(dev, &rbyte, sizeof(rbyte));
+	err = ds_recv_data(dev, &dev->byte_buf, 1);
 	if (err < 0)
 		return err;
 
-	return !(byte == rbyte);
+	return !(byte == dev->byte_buf);
 }
 
 static int ds_read_byte(struct ds_device *dev, u8 *byte)
@@ -626,7 +601,7 @@ static int ds_read_byte(struct ds_device *dev, u8 *byte)
 	int err;
 	struct ds_status st;
 
-	err = ds_send_control(dev, COMM_BYTE_IO | COMM_IM , 0xff);
+	err = ds_send_control(dev, COMM_BYTE_IO | COMM_IM, 0xff);
 	if (err)
 		return err;
 
@@ -690,37 +665,133 @@ static int ds_write_block(struct ds_device *dev, u8 *buf, int len)
 	return !(err == len);
 }
 
-#if 0
-
-static int ds_search(struct ds_device *dev, u64 init, u64 *buf, u8 id_number, int conditional_search)
+static void ds9490r_search(void *data, struct w1_master *master,
+	u8 search_type, w1_slave_found_callback callback)
 {
+	/* When starting with an existing id, the first id returned will
+	 * be that device (if it is still on the bus most likely).
+	 *
+	 * If the number of devices found is less than or equal to the
+	 * search_limit, that number of IDs will be returned.  If there are
+	 * more, search_limit IDs will be returned followed by a non-zero
+	 * discrepency value.
+	 */
+	struct ds_device *dev = data;
 	int err;
 	u16 value, index;
 	struct ds_status st;
+	int search_limit;
+	int found = 0;
+	int i;
 
-	memset(buf, 0, sizeof(buf));
+	/* DS18b20 spec, 13.16 ms per device, 75 per second, sleep for
+	 * discovering 8 devices (1 bulk transfer and 1/2 FIFO size) at a time.
+	 */
+	const unsigned long jtime = msecs_to_jiffies(1000*8/75);
+	/* FIFO 128 bytes, bulk packet size 64, read a multiple of the
+	 * packet size.
+	 */
+	const size_t bufsize = 2 * 64;
+	u64 *buf, *found_ids;
 
-	err = ds_send_data(ds_dev, (unsigned char *)&init, 8);
-	if (err)
-		return err;
+	buf = kmalloc(bufsize, GFP_KERNEL);
+	if (!buf)
+		return;
 
-	ds_wait_status(ds_dev, &st);
+	/*
+	 * We are holding the bus mutex during the scan, but adding devices via the
+	 * callback needs the bus to be unlocked. So we queue up found ids here.
+	 */
+	found_ids = kmalloc_array(master->max_slave_count, sizeof(u64), GFP_KERNEL);
+	if (!found_ids) {
+		kfree(buf);
+		return;
+	}
 
-	value = COMM_SEARCH_ACCESS | COMM_IM | COMM_SM | COMM_F | COMM_RTS;
-	index = (conditional_search ? 0xEC : 0xF0) | (id_number << 8);
-	err = ds_send_control(ds_dev, value, index);
-	if (err)
-		return err;
+	mutex_lock(&master->bus_mutex);
 
-	ds_wait_status(ds_dev, &st);
+	/* address to start searching at */
+	if (ds_send_data(dev, (u8 *)&master->search_id, 8) < 0)
+		goto search_out;
+	master->search_id = 0;
 
-	err = ds_recv_data(ds_dev, (unsigned char *)buf, 8*id_number);
-	if (err < 0)
-		return err;
+	value = COMM_SEARCH_ACCESS | COMM_IM | COMM_RST | COMM_SM | COMM_F |
+		COMM_RTS;
+	search_limit = master->max_slave_count;
+	if (search_limit > 255)
+		search_limit = 0;
+	index = search_type | (search_limit << 8);
+	if (ds_send_control(dev, value, index) < 0)
+		goto search_out;
 
-	return err/8;
+	do {
+		schedule_timeout(jtime);
+
+		err = ds_recv_status(dev, &st);
+		if (err < 0 || err < sizeof(st))
+			break;
+
+		if (st.data_in_buffer_status) {
+			/*
+			 * Bulk in can receive partial ids, but when it does
+			 * they fail crc and will be discarded anyway.
+			 * That has only been seen when status in buffer
+			 * is 0 and bulk is read anyway, so don't read
+			 * bulk without first checking if status says there
+			 * is data to read.
+			 */
+			err = ds_recv_data(dev, (u8 *)buf, bufsize);
+			if (err < 0)
+				break;
+			for (i = 0; i < err/8; ++i) {
+				found_ids[found++] = buf[i];
+				/*
+				 * can't know if there will be a discrepancy
+				 * value after until the next id
+				 */
+				if (found == search_limit) {
+					master->search_id = buf[i];
+					break;
+				}
+			}
+		}
+
+		if (test_bit(W1_ABORT_SEARCH, &master->flags))
+			break;
+	} while (!(st.status & (ST_IDLE | ST_HALT)));
+
+	/* only continue the search if some weren't found */
+	if (found <= search_limit) {
+		master->search_id = 0;
+	} else if (!test_bit(W1_WARN_MAX_COUNT, &master->flags)) {
+		/*
+		 * Only max_slave_count will be scanned in a search,
+		 * but it will start where it left off next search
+		 * until all ids are identified and then it will start
+		 * over.  A continued search will report the previous
+		 * last id as the first id (provided it is still on the
+		 * bus).
+		 */
+		dev_info(&dev->udev->dev, "%s: max_slave_count %d reached, "
+			"will continue next search.\n", __func__,
+			master->max_slave_count);
+		set_bit(W1_WARN_MAX_COUNT, &master->flags);
+	}
+
+search_out:
+	mutex_unlock(&master->bus_mutex);
+	kfree(buf);
+
+	for (i = 0; i < found; i++) /* run callback for all queued up IDs */
+		callback(master, found_ids[i]);
+	kfree(found_ids);
 }
 
+#if 0
+/*
+ * FIXME: if this disabled code is ever used in the future all ds_send_data()
+ * calls must be changed to use a DMAable buffer.
+ */
 static int ds_match_access(struct ds_device *dev, u64 init)
 {
 	int err;
@@ -769,13 +840,12 @@ static int ds_set_path(struct ds_device *dev, u64 init)
 
 static u8 ds9490r_touch_bit(void *data, u8 bit)
 {
-	u8 ret;
 	struct ds_device *dev = data;
 
-	if (ds_touch_bit(dev, bit, &ret))
+	if (ds_touch_bit(dev, bit, &dev->byte_buf))
 		return 0;
 
-	return ret;
+	return dev->byte_buf;
 }
 
 #if 0
@@ -790,13 +860,12 @@ static u8 ds9490r_read_bit(void *data)
 {
 	struct ds_device *dev = data;
 	int err;
-	u8 bit = 0;
 
-	err = ds_touch_bit(dev, 1, &bit);
+	err = ds_touch_bit(dev, 1, &dev->byte_buf);
 	if (err)
 		return 0;
 
-	return bit & 1;
+	return dev->byte_buf & 1;
 }
 #endif
 
@@ -811,32 +880,51 @@ static u8 ds9490r_read_byte(void *data)
 {
 	struct ds_device *dev = data;
 	int err;
-	u8 byte = 0;
 
-	err = ds_read_byte(dev, &byte);
+	err = ds_read_byte(dev, &dev->byte_buf);
 	if (err)
 		return 0;
 
-	return byte;
+	return dev->byte_buf;
 }
 
 static void ds9490r_write_block(void *data, const u8 *buf, int len)
 {
 	struct ds_device *dev = data;
+	u8 *tbuf;
 
-	ds_write_block(dev, (u8 *)buf, len);
+	if (len <= 0)
+		return;
+
+	tbuf = kmemdup(buf, len, GFP_KERNEL);
+	if (!tbuf)
+		return;
+
+	ds_write_block(dev, tbuf, len);
+
+	kfree(tbuf);
 }
 
 static u8 ds9490r_read_block(void *data, u8 *buf, int len)
 {
 	struct ds_device *dev = data;
 	int err;
+	u8 *tbuf;
 
-	err = ds_read_block(dev, buf, len);
-	if (err < 0)
+	if (len <= 0)
 		return 0;
 
-	return len;
+	tbuf = kmalloc(len, GFP_KERNEL);
+	if (!tbuf)
+		return 0;
+
+	err = ds_read_block(dev, tbuf, len);
+	if (err >= 0)
+		memcpy(buf, tbuf, len);
+
+	kfree(tbuf);
+
+	return err >= 0 ? len : 0;
 }
 
 static u8 ds9490r_reset(void *data)
@@ -894,6 +982,7 @@ static int ds_w1_init(struct ds_device *dev)
 	dev->master.write_block	= &ds9490r_write_block;
 	dev->master.reset_bus	= &ds9490r_reset;
 	dev->master.set_pullup	= &ds9490r_set_pullup;
+	dev->master.search	= &ds9490r_search;
 
 	return w1_add_master_device(&dev->master);
 }
@@ -910,15 +999,12 @@ static int ds_probe(struct usb_interface *intf,
 	struct usb_endpoint_descriptor *endpoint;
 	struct usb_host_interface *iface_desc;
 	struct ds_device *dev;
-	int i, err;
+	int i, err, alt;
 
-	dev = kmalloc(sizeof(struct ds_device), GFP_KERNEL);
-	if (!dev) {
-		printk(KERN_INFO "Failed to allocate new DS9490R structure.\n");
+	dev = kzalloc(sizeof(struct ds_device), GFP_KERNEL);
+	if (!dev)
 		return -ENOMEM;
-	}
-	dev->spu_sleep = 0;
-	dev->spu_bit = 0;
+
 	dev->udev = usb_get_dev(udev);
 	if (!dev->udev) {
 		err = -ENOMEM;
@@ -928,22 +1014,28 @@ static int ds_probe(struct usb_interface *intf,
 
 	usb_set_intfdata(intf, dev);
 
-	err = usb_set_interface(dev->udev, intf->altsetting[0].desc.bInterfaceNumber, 3);
-	if (err) {
-		printk(KERN_ERR "Failed to set alternative setting 3 for %d interface: err=%d.\n",
-				intf->altsetting[0].desc.bInterfaceNumber, err);
-		goto err_out_clear;
-	}
-
 	err = usb_reset_configuration(dev->udev);
 	if (err) {
-		printk(KERN_ERR "Failed to reset configuration: err=%d.\n", err);
+		dev_err(&dev->udev->dev,
+			"Failed to reset configuration: err=%d.\n", err);
 		goto err_out_clear;
 	}
 
-	iface_desc = &intf->altsetting[0];
+	/* alternative 3, 1ms interrupt (greatly speeds search), 64 byte bulk */
+	alt = 3;
+	err = usb_set_interface(dev->udev,
+		intf->cur_altsetting->desc.bInterfaceNumber, alt);
+	if (err) {
+		dev_err(&dev->udev->dev, "Failed to set alternative setting %d "
+			"for %d interface: err=%d.\n", alt,
+			intf->cur_altsetting->desc.bInterfaceNumber, err);
+		goto err_out_clear;
+	}
+
+	iface_desc = intf->cur_altsetting;
 	if (iface_desc->desc.bNumEndpoints != NUM_EP-1) {
-		printk(KERN_INFO "Num endpoints=%d. It is not DS9490R.\n", iface_desc->desc.bNumEndpoints);
+		dev_err(&dev->udev->dev, "Num endpoints=%d. It is not DS9490R.\n",
+			iface_desc->desc.bNumEndpoints);
 		err = -EINVAL;
 		goto err_out_clear;
 	}
@@ -1002,8 +1094,20 @@ static void ds_disconnect(struct usb_interface *intf)
 	kfree(dev);
 }
 
+static const struct usb_device_id ds_id_table[] = {
+	{ USB_DEVICE(0x04fa, 0x2490) },
+	{ },
+};
+MODULE_DEVICE_TABLE(usb, ds_id_table);
+
+static struct usb_driver ds_driver = {
+	.name =		"DS9490R",
+	.probe =	ds_probe,
+	.disconnect =	ds_disconnect,
+	.id_table =	ds_id_table,
+};
 module_usb_driver(ds_driver);
 
-MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Evgeniy Polyakov <zbr@ioremap.net>");
 MODULE_DESCRIPTION("DS2490 USB <-> W1 bus master driver (DS9490*)");
+MODULE_LICENSE("GPL");

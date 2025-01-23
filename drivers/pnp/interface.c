@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * interface.c - contains everything related to the user interface
  *
@@ -17,7 +18,7 @@
 #include <linux/slab.h>
 #include <linux/mutex.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "base.h"
 
@@ -32,6 +33,7 @@ struct pnp_info_buffer {
 
 typedef struct pnp_info_buffer pnp_info_buffer_t;
 
+__printf(2, 3)
 static int pnp_printf(pnp_info_buffer_t * buffer, char *fmt, ...)
 {
 	va_list args;
@@ -212,7 +214,7 @@ static ssize_t options_show(struct device *dmdev, struct device_attribute *attr,
 	int ret, dep = 0, set = 0;
 	char *indent;
 
-	buffer = pnp_alloc(sizeof(pnp_info_buffer_t));
+	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
 	if (!buffer)
 		return -ENOMEM;
 
@@ -255,7 +257,7 @@ static ssize_t resources_show(struct device *dmdev,
 	if (!dev)
 		return -EINVAL;
 
-	buffer = pnp_alloc(sizeof(pnp_info_buffer_t));
+	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
 	if (!buffer)
 		return -ENOMEM;
 
@@ -346,41 +348,41 @@ static ssize_t resources_store(struct device *dmdev,
 	}
 
 	buf = skip_spaces(buf);
-	if (!strnicmp(buf, "disable", 7)) {
+	if (!strncasecmp(buf, "disable", 7)) {
 		retval = pnp_disable_dev(dev);
 		goto done;
 	}
-	if (!strnicmp(buf, "activate", 8)) {
+	if (!strncasecmp(buf, "activate", 8)) {
 		retval = pnp_activate_dev(dev);
 		goto done;
 	}
-	if (!strnicmp(buf, "fill", 4)) {
+	if (!strncasecmp(buf, "fill", 4)) {
 		if (dev->active)
 			goto done;
 		retval = pnp_auto_config_dev(dev);
 		goto done;
 	}
-	if (!strnicmp(buf, "auto", 4)) {
+	if (!strncasecmp(buf, "auto", 4)) {
 		if (dev->active)
 			goto done;
 		pnp_init_resources(dev);
 		retval = pnp_auto_config_dev(dev);
 		goto done;
 	}
-	if (!strnicmp(buf, "clear", 5)) {
+	if (!strncasecmp(buf, "clear", 5)) {
 		if (dev->active)
 			goto done;
 		pnp_init_resources(dev);
 		goto done;
 	}
-	if (!strnicmp(buf, "get", 3)) {
+	if (!strncasecmp(buf, "get", 3)) {
 		mutex_lock(&pnp_res_mutex);
 		if (pnp_can_read(dev))
 			dev->protocol->get(dev);
 		mutex_unlock(&pnp_res_mutex);
 		goto done;
 	}
-	if (!strnicmp(buf, "set", 3)) {
+	if (!strncasecmp(buf, "set", 3)) {
 		resource_size_t start;
 		resource_size_t end;
 		unsigned long flags;
@@ -392,31 +394,31 @@ static ssize_t resources_store(struct device *dmdev,
 		mutex_lock(&pnp_res_mutex);
 		while (1) {
 			buf = skip_spaces(buf);
-			if (!strnicmp(buf, "io", 2)) {
+			if (!strncasecmp(buf, "io", 2)) {
 				buf = pnp_get_resource_value(buf + 2,
 							     IORESOURCE_IO,
 							     &start, &end,
 							     &flags);
 				pnp_add_io_resource(dev, start, end, flags);
-			} else if (!strnicmp(buf, "mem", 3)) {
+			} else if (!strncasecmp(buf, "mem", 3)) {
 				buf = pnp_get_resource_value(buf + 3,
 							     IORESOURCE_MEM,
 							     &start, &end,
 							     &flags);
 				pnp_add_mem_resource(dev, start, end, flags);
-			} else if (!strnicmp(buf, "irq", 3)) {
+			} else if (!strncasecmp(buf, "irq", 3)) {
 				buf = pnp_get_resource_value(buf + 3,
 							     IORESOURCE_IRQ,
 							     &start, NULL,
 							     &flags);
 				pnp_add_irq_resource(dev, start, flags);
-			} else if (!strnicmp(buf, "dma", 3)) {
+			} else if (!strncasecmp(buf, "dma", 3)) {
 				buf = pnp_get_resource_value(buf + 3,
 							     IORESOURCE_DMA,
 							     &start, NULL,
 							     &flags);
 				pnp_add_dma_resource(dev, start, flags);
-			} else if (!strnicmp(buf, "bus", 3)) {
+			} else if (!strncasecmp(buf, "bus", 3)) {
 				buf = pnp_get_resource_value(buf + 3,
 							     IORESOURCE_BUS,
 							     &start, &end,

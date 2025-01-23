@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * CAIF USB handler
  * Copyright (C) ST-Ericsson AB 2011
  * Author:	Sjur Brendeland
- * License terms: GNU General Public License (GPL) version 2
- *
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ":%s(): " fmt, __func__
@@ -63,7 +62,7 @@ static int cfusbl_transmit(struct cflayer *layr, struct cfpkt *pkt)
 	hpad = (info->hdr_len + CFUSB_PAD_DESCR_SZ) & (CFUSB_ALIGNMENT - 1);
 
 	if (skb_headroom(skb) < ETH_HLEN + CFUSB_PAD_DESCR_SZ + hpad) {
-		pr_warn("Headroom to small\n");
+		pr_warn("Headroom too small\n");
 		kfree_skb(skb);
 		return -EIO;
 	}
@@ -82,18 +81,17 @@ static void cfusbl_ctrlcmd(struct cflayer *layr, enum caif_ctrlcmd ctrl,
 		layr->up->ctrlcmd(layr->up, ctrl, layr->id);
 }
 
-static struct cflayer *cfusbl_create(int phyid, u8 ethaddr[ETH_ALEN],
+static struct cflayer *cfusbl_create(int phyid, const u8 ethaddr[ETH_ALEN],
 				      u8 braddr[ETH_ALEN])
 {
 	struct cfusbl *this = kmalloc(sizeof(struct cfusbl), GFP_ATOMIC);
 
-	if (!this) {
-		pr_warn("Out of memory\n");
+	if (!this)
 		return NULL;
-	}
+
 	caif_assert(offsetof(struct cfusbl, layer) == 0);
 
-	memset(this, 0, sizeof(struct cflayer));
+	memset(&this->layer, 0, sizeof(this->layer));
 	this->layer.receive = cfusbl_receive;
 	this->layer.transmit = cfusbl_transmit;
 	this->layer.ctrlcmd = cfusbl_ctrlcmd;
@@ -117,6 +115,11 @@ static struct cflayer *cfusbl_create(int phyid, u8 ethaddr[ETH_ALEN],
 	return (struct cflayer *) this;
 }
 
+static void cfusbl_release(struct cflayer *layer)
+{
+	kfree(layer);
+}
+
 static struct packet_type caif_usb_type __read_mostly = {
 	.type = cpu_to_be16(ETH_P_802_EX1),
 };
@@ -129,6 +132,10 @@ static int cfusbl_device_notify(struct notifier_block *me, unsigned long what,
 	struct cflayer *layer, *link_support;
 	struct usbnet *usbnet;
 	struct usb_device *usbdev;
+	int res;
+
+	if (what == NETDEV_UNREGISTER && dev->reg_state >= NETREG_UNREGISTERED)
+		return 0;
 
 	/* Check whether we have a NCM device, and find its VID/PID. */
 	if (!(dev->dev.parent && dev->dev.parent->driver &&
@@ -171,17 +178,21 @@ static int cfusbl_device_notify(struct notifier_block *me, unsigned long what,
 	if (dev->num_tx_queues > 1)
 		pr_warn("USB device uses more than one tx queue\n");
 
-	caif_enroll_dev(dev, &common, link_support, CFUSB_MAX_HEADLEN,
+	res = caif_enroll_dev(dev, &common, link_support, CFUSB_MAX_HEADLEN,
 			&layer, &caif_usb_type.func);
+	if (res)
+		goto err;
+
 	if (!pack_added)
 		dev_add_pack(&caif_usb_type);
 	pack_added = true;
 
-	strncpy(layer->name, dev->name,
-			sizeof(layer->name) - 1);
-	layer->name[sizeof(layer->name) - 1] = 0;
+	strscpy(layer->name, dev->name, sizeof(layer->name));
 
 	return 0;
+err:
+	cfusbl_release(link_support);
+	return res;
 }
 
 static struct notifier_block caif_device_notifier = {

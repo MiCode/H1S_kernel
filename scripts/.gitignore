@@ -1,13 +1,13 @@
-#
-# Generated files
-#
-conmakehash
-kallsyms
-pnmtologo
-bin2c
-unifdef
-ihex2fw
-recordmcount
-docproc
-sortextable
-asn1_compiler
+# SPDX-License-Identifier: GPL-2.0-only
+/asn1_compiler
+/generate_rust_target
+/insert-sys-cert
+/kallsyms
+/module.lds
+/recordmcount
+/rustdoc_test_builder
+/rustdoc_test_gen
+/sign-file
+/sorttable
+/target.json
+/unifdef

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * NetLabel Domain Hash Table
  *
@@ -7,25 +8,10 @@
  * as CIPSO and RIPSO.
  *
  * Author: Paul Moore <paul@paul-moore.com>
- *
  */
 
 /*
  * (c) Copyright Hewlett-Packard Development Company, L.P., 2006, 2008
- *
- * This program is free software;  you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY;  without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- * the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program;  if not, see <http://www.gnu.org/licenses/>.
- *
  */
 
 #ifndef _NETLABEL_DOMAINHASH_H
@@ -51,6 +37,7 @@ struct netlbl_dommap_def {
 	union {
 		struct netlbl_domaddr_map *addrsel;
 		struct cipso_v4_doi *cipso;
+		struct calipso_doi *calipso;
 	};
 };
 #define netlbl_domhsh_addr4_entry(iter) \
@@ -71,6 +58,7 @@ struct netlbl_domaddr6_map {
 struct netlbl_dom_map {
 	char *domain;
 	struct netlbl_dommap_def def;
+	u16 family;
 
 	u32 valid;
 	struct list_head list;
@@ -91,14 +79,23 @@ int netlbl_domhsh_remove_af4(const char *domain,
 			     const struct in_addr *addr,
 			     const struct in_addr *mask,
 			     struct netlbl_audit *audit_info);
-int netlbl_domhsh_remove(const char *domain, struct netlbl_audit *audit_info);
-int netlbl_domhsh_remove_default(struct netlbl_audit *audit_info);
-struct netlbl_dom_map *netlbl_domhsh_getentry(const char *domain);
+int netlbl_domhsh_remove_af6(const char *domain,
+			     const struct in6_addr *addr,
+			     const struct in6_addr *mask,
+			     struct netlbl_audit *audit_info);
+int netlbl_domhsh_remove(const char *domain, u16 family,
+			 struct netlbl_audit *audit_info);
+int netlbl_domhsh_remove_default(u16 family, struct netlbl_audit *audit_info);
+struct netlbl_dom_map *netlbl_domhsh_getentry(const char *domain, u16 family);
 struct netlbl_dommap_def *netlbl_domhsh_getentry_af4(const char *domain,
 						     __be32 addr);
 #if IS_ENABLED(CONFIG_IPV6)
 struct netlbl_dommap_def *netlbl_domhsh_getentry_af6(const char *domain,
 						   const struct in6_addr *addr);
+int netlbl_domhsh_remove_af6(const char *domain,
+			     const struct in6_addr *addr,
+			     const struct in6_addr *mask,
+			     struct netlbl_audit *audit_info);
 #endif /* IPv6 */
 
 int netlbl_domhsh_walk(u32 *skip_bkt,

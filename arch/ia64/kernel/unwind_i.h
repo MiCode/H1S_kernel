@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2000, 2002-2003 Hewlett-Packard Co
  *	David Mosberger-Tang <davidm@hpl.hp.com>
@@ -41,7 +42,7 @@ enum unw_register_index {
 
 struct unw_info_block {
 	u64 header;
-	u64 desc[0];		/* unwind descriptors */
+	u64 desc[];		/* unwind descriptors */
 	/* personality routine and language-specific data follow behind descriptors */
 };
 

@@ -1,8 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_PROCESSOR_H
 #define __ASM_SH_PROCESSOR_H
 
 #include <asm/cpu-features.h>
-#include <asm/segment.h>
 #include <asm/cache.h>
 
 #ifndef __ASSEMBLY__
@@ -15,7 +15,7 @@
  */
 enum cpu_type {
 	/* SH-2 types */
-	CPU_SH7619,
+	CPU_SH7619, CPU_J2,
 
 	/* SH-2A types */
 	CPU_SH7201, CPU_SH7203, CPU_SH7206, CPU_SH7263, CPU_SH7264, CPU_SH7269,
@@ -38,9 +38,6 @@ enum cpu_type {
 	/* SH4AL-DSP types */
 	CPU_SH7343, CPU_SH7722, CPU_SH7366, CPU_SH7372,
 
-	/* SH-5 types */
-        CPU_SH5_101, CPU_SH5_103,
-
 	/* Unknown subtype */
 	CPU_SH_NONE
 };
@@ -52,7 +49,6 @@ enum cpu_family {
 	CPU_FAMILY_SH4,
 	CPU_FAMILY_SH4A,
 	CPU_FAMILY_SH4AL_DSP,
-	CPU_FAMILY_SH5,
 	CPU_FAMILY_UNKNOWN,
 };
 
@@ -166,18 +162,14 @@ int vsyscall_init(void);
  */
 #ifdef CONFIG_CPU_SH2A
 extern unsigned int instruction_size(unsigned int insn);
-#elif defined(CONFIG_SUPERH32)
-#define instruction_size(insn)	(2)
 #else
-#define instruction_size(insn)	(4)
+#define instruction_size(insn)	(2)
 #endif
+
+void select_idle_routine(void);
 
 #endif /* __ASSEMBLY__ */
 
-#ifdef CONFIG_SUPERH32
-# include <asm/processor_32.h>
-#else
-# include <asm/processor_64.h>
-#endif
+#include <asm/processor_32.h>
 
 #endif /* __ASM_SH_PROCESSOR_H */

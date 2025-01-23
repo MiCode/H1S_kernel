@@ -1,14 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* fs/fat/nfs.c
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
 
 #include <linux/exportfs.h>
@@ -26,7 +17,7 @@ struct fat_fid {
 #define FAT_FID_SIZE_WITHOUT_PARENT 3
 #define FAT_FID_SIZE_WITH_PARENT (sizeof(struct fat_fid)/sizeof(u32))
 
-/**
+/*
  * Look up a directory inode given its starting cluster.
  */
 static struct inode *fat_dget(struct super_block *sb, int i_logstart)
@@ -139,12 +130,18 @@ fat_encode_fh_nostale(struct inode *inode, __u32 *fh, int *lenp,
 		fid->parent_i_gen = parent->i_generation;
 		type = FILEID_FAT_WITH_PARENT;
 		*lenp = FAT_FID_SIZE_WITH_PARENT;
+	} else {
+		/*
+		 * We need to initialize this field because the fh is actually
+		 * 12 bytes long
+		 */
+		fid->parent_i_pos_hi = 0;
 	}
 
 	return type;
 }
 
-/**
+/*
  * Map a NFS file handle to a corresponding dentry.
  * The dentry may or may not be connected to the filesystem root.
  */
@@ -266,7 +263,7 @@ struct inode *fat_rebuild_parent(struct super_block *sb, int parent_logstart)
  * Find the parent for a directory that is not currently connected to
  * the filesystem root.
  *
- * On entry, the caller holds child_dir->d_inode->i_mutex.
+ * On entry, the caller holds d_inode(child_dir)->i_mutex.
  */
 static struct dentry *fat_get_parent(struct dentry *child_dir)
 {
@@ -276,7 +273,7 @@ static struct dentry *fat_get_parent(struct dentry *child_dir)
 	struct inode *parent_inode = NULL;
 	struct msdos_sb_info *sbi = MSDOS_SB(sb);
 
-	if (!fat_get_dotdot_entry(child_dir->d_inode, &bh, &de)) {
+	if (!fat_get_dotdot_entry(d_inode(child_dir), &bh, &de)) {
 		int parent_logstart = fat_get_start(sbi, de);
 		parent_inode = fat_dget(sb, parent_logstart);
 		if (!parent_inode && sbi->options.nfs == FAT_NFS_NOSTALE_RO)

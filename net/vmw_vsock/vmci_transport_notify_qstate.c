@@ -1,16 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * VMware vSockets Driver
  *
  * Copyright (C) 2009-2013 VMware, Inc. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation version 2 and no later version.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include <linux/types.h>
@@ -92,7 +84,7 @@ vmci_transport_handle_wrote(struct sock *sk,
 			    bool bottom_half,
 			    struct sockaddr_vm *dst, struct sockaddr_vm *src)
 {
-	sk->sk_data_ready(sk, 0);
+	vsock_data_ready(sk);
 }
 
 static void vsock_block_update_write_window(struct sock *sk)
@@ -169,14 +161,14 @@ vmci_transport_notify_pkt_poll_in(struct sock *sk,
 {
 	struct vsock_sock *vsk = vsock_sk(sk);
 
-	if (vsock_stream_has_data(vsk)) {
+	if (vsock_stream_has_data(vsk) >= target) {
 		*data_ready_now = true;
 	} else {
-		/* We can't read right now because there is nothing in the
-		 * queue. Ask for notifications when there is something to
-		 * read.
+		/* We can't read right now because there is not enough data
+		 * in the queue. Ask for notifications when there is something
+		 * to read.
 		 */
-		if (sk->sk_state == SS_CONNECTED)
+		if (sk->sk_state == TCP_ESTABLISHED)
 			vsock_block_update_write_window(sk);
 		*data_ready_now = false;
 	}
@@ -290,7 +282,7 @@ vmci_transport_notify_pkt_recv_post_dequeue(
 		/* See the comment in
 		 * vmci_transport_notify_pkt_send_post_enqueue().
 		 */
-		sk->sk_data_ready(sk, 0);
+		vsock_data_ready(sk);
 	}
 
 	return err;
@@ -419,20 +411,20 @@ vmci_transport_notify_pkt_send_pre_enqueue(
 }
 
 /* Socket always on control packet based operations. */
-struct vmci_transport_notify_ops vmci_transport_notify_pkt_q_state_ops = {
-	vmci_transport_notify_pkt_socket_init,
-	vmci_transport_notify_pkt_socket_destruct,
-	vmci_transport_notify_pkt_poll_in,
-	vmci_transport_notify_pkt_poll_out,
-	vmci_transport_notify_pkt_handle_pkt,
-	vmci_transport_notify_pkt_recv_init,
-	vmci_transport_notify_pkt_recv_pre_block,
-	vmci_transport_notify_pkt_recv_pre_dequeue,
-	vmci_transport_notify_pkt_recv_post_dequeue,
-	vmci_transport_notify_pkt_send_init,
-	vmci_transport_notify_pkt_send_pre_block,
-	vmci_transport_notify_pkt_send_pre_enqueue,
-	vmci_transport_notify_pkt_send_post_enqueue,
-	vmci_transport_notify_pkt_process_request,
-	vmci_transport_notify_pkt_process_negotiate,
+const struct vmci_transport_notify_ops vmci_transport_notify_pkt_q_state_ops = {
+	.socket_init = vmci_transport_notify_pkt_socket_init,
+	.socket_destruct = vmci_transport_notify_pkt_socket_destruct,
+	.poll_in = vmci_transport_notify_pkt_poll_in,
+	.poll_out = vmci_transport_notify_pkt_poll_out,
+	.handle_notify_pkt = vmci_transport_notify_pkt_handle_pkt,
+	.recv_init = vmci_transport_notify_pkt_recv_init,
+	.recv_pre_block = vmci_transport_notify_pkt_recv_pre_block,
+	.recv_pre_dequeue = vmci_transport_notify_pkt_recv_pre_dequeue,
+	.recv_post_dequeue = vmci_transport_notify_pkt_recv_post_dequeue,
+	.send_init = vmci_transport_notify_pkt_send_init,
+	.send_pre_block = vmci_transport_notify_pkt_send_pre_block,
+	.send_pre_enqueue = vmci_transport_notify_pkt_send_pre_enqueue,
+	.send_post_enqueue = vmci_transport_notify_pkt_send_post_enqueue,
+	.process_request = vmci_transport_notify_pkt_process_request,
+	.process_negotiate = vmci_transport_notify_pkt_process_negotiate,
 };

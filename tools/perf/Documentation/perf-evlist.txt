@@ -20,17 +20,24 @@ OPTIONS
 --input=::
         Input file name. (default: perf.data unless stdin is a fifo)
 
+-f::
+--force::
+	Don't complain, do it.
+
 -F::
 --freq=::
 	Show just the sample frequency used for each event.
 
 -v::
---verbose=::
+--verbose::
 	Show all fields.
 
 -g::
 --group::
 	Show event group information.
+
+--trace-fields::
+	Show tracepoint field names.
 
 SEE ALSO
 --------

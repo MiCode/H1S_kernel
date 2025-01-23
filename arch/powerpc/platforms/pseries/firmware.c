@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  pSeries firmware setup code.
  *
@@ -14,17 +15,14 @@
  *    Copyright (C) 2005 Stephen Rothwell, IBM Corporation
  *
  *  Copyright 2006 IBM Corporation.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 
+#include <linux/of_fdt.h>
 #include <asm/firmware.h>
 #include <asm/prom.h>
 #include <asm/udbg.h>
+#include <asm/svm.h>
 
 #include "pseries.h"
 
@@ -58,18 +56,27 @@ hypertas_fw_features_table[] = {
 	{FW_FEATURE_LLAN,		"hcall-lLAN"},
 	{FW_FEATURE_BULK_REMOVE,	"hcall-bulk"},
 	{FW_FEATURE_XDABR,		"hcall-xdabr"},
-	{FW_FEATURE_MULTITCE,		"hcall-multi-tce"},
+	{FW_FEATURE_PUT_TCE_IND | FW_FEATURE_STUFF_TCE,
+					"hcall-multi-tce"},
 	{FW_FEATURE_SPLPAR,		"hcall-splpar"},
 	{FW_FEATURE_VPHN,		"hcall-vphn"},
 	{FW_FEATURE_SET_MODE,		"hcall-set-mode"},
 	{FW_FEATURE_BEST_ENERGY,	"hcall-best-energy-1*"},
+	{FW_FEATURE_HPT_RESIZE,		"hcall-hpt-resize"},
+	{FW_FEATURE_BLOCK_REMOVE,	"hcall-block-remove"},
+	{FW_FEATURE_PAPR_SCM,		"hcall-scm"},
+	{FW_FEATURE_RPT_INVALIDATE,	"hcall-rpt-invalidate"},
+	{FW_FEATURE_ENERGY_SCALE_INFO,	"hcall-energy-scale-info"},
+	{FW_FEATURE_WATCHDOG,		"hcall-watchdog"},
+	{FW_FEATURE_PLPKS,		"hcall-pks"},
 };
 
 /* Build up the firmware features bitmask using the contents of
  * device-tree/ibm,hypertas-functions.  Ultimately this functionality may
  * be moved into prom.c prom_init().
  */
-void __init fw_hypertas_feature_init(const char *hypertas, unsigned long len)
+static void __init fw_hypertas_feature_init(const char *hypertas,
+					    unsigned long len)
 {
 	const char *s;
 	int i;
@@ -99,6 +106,12 @@ void __init fw_hypertas_feature_init(const char *hypertas, unsigned long len)
 		}
 	}
 
+	if (is_secure_guest() &&
+	    (powerpc_firmware_features & FW_FEATURE_PUT_TCE_IND)) {
+		powerpc_firmware_features &= ~FW_FEATURE_PUT_TCE_IND;
+		pr_debug("SVM: disabling PUT_TCE_IND firmware feature\n");
+	}
+
 	pr_debug(" <- fw_hypertas_feature_init()\n");
 }
 
@@ -109,11 +122,14 @@ struct vec5_fw_feature {
 
 static __initdata struct vec5_fw_feature
 vec5_fw_features_table[] = {
-	{FW_FEATURE_TYPE1_AFFINITY,	OV5_TYPE1_AFFINITY},
+	{FW_FEATURE_FORM1_AFFINITY,	OV5_FORM1_AFFINITY},
 	{FW_FEATURE_PRRN,		OV5_PRRN},
+	{FW_FEATURE_DRMEM_V2,		OV5_DRMEM_V2},
+	{FW_FEATURE_DRC_INFO,		OV5_DRC_INFO},
+	{FW_FEATURE_FORM2_AFFINITY,	OV5_FORM2_AFFINITY},
 };
 
-void __init fw_vec5_feature_init(const char *vec5, unsigned long len)
+static void __init fw_vec5_feature_init(const char *vec5, unsigned long len)
 {
 	unsigned int index, feat;
 	int i;
@@ -124,10 +140,52 @@ void __init fw_vec5_feature_init(const char *vec5, unsigned long len)
 		index = OV5_INDX(vec5_fw_features_table[i].feature);
 		feat = OV5_FEAT(vec5_fw_features_table[i].feature);
 
-		if (vec5[index] & feat)
+		if (index < len && (vec5[index] & feat))
 			powerpc_firmware_features |=
 				vec5_fw_features_table[i].val;
 	}
 
 	pr_debug(" <- fw_vec5_feature_init()\n");
+}
+
+/*
+ * Called very early, MMU is off, device-tree isn't unflattened
+ */
+static int __init probe_fw_features(unsigned long node, const char *uname, int
+				    depth, void *data)
+{
+	const char *prop;
+	int len;
+	static int hypertas_found;
+	static int vec5_found;
+
+	if (depth != 1)
+		return 0;
+
+	if (!strcmp(uname, "rtas") || !strcmp(uname, "rtas@0")) {
+		prop = of_get_flat_dt_prop(node, "ibm,hypertas-functions",
+					   &len);
+		if (prop) {
+			powerpc_firmware_features |= FW_FEATURE_LPAR;
+			fw_hypertas_feature_init(prop, len);
+		}
+
+		hypertas_found = 1;
+	}
+
+	if (!strcmp(uname, "chosen")) {
+		prop = of_get_flat_dt_prop(node, "ibm,architecture-vec-5",
+					   &len);
+		if (prop)
+			fw_vec5_feature_init(prop, len);
+
+		vec5_found = 1;
+	}
+
+	return hypertas_found && vec5_found;
+}
+
+void __init pseries_probe_fw_features(void)
+{
+	of_scan_flat_dt(probe_fw_features, NULL);
 }

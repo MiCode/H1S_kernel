@@ -18,6 +18,7 @@
 #include <linux/init.h>
 #include <linux/seq_file.h>
 #include <linux/interrupt.h>
+#include <linux/irq.h>
 
 #include <asm/irq.h>
 #include <asm/amigahw.h>
@@ -87,10 +88,19 @@ static irqreturn_t cia_handler(int irq, void *dev_id)
 	struct ciabase *base = dev_id;
 	int mach_irq;
 	unsigned char ints;
+	unsigned long flags;
 
+	/* Interrupts get disabled while the timer irq flag is cleared and
+	 * the timer interrupt serviced.
+	 */
 	mach_irq = base->cia_irq;
+	local_irq_save(flags);
 	ints = cia_set_irq(base, CIA_ICR_ALL);
 	amiga_custom.intreq = base->int_mask;
+	if (ints & 1)
+		generic_handle_irq(mach_irq);
+	local_irq_restore(flags);
+	mach_irq++, ints >>= 1;
 	for (; ints; mach_irq++, ints >>= 1) {
 		if (ints & 1)
 			generic_handle_irq(mach_irq);

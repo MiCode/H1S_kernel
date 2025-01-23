@@ -1,24 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  cpufreq.h - definitions for libcpufreq
  *
  *  Copyright (C) 2004-2009  Dominik Brodowski <linux@dominikbrodowski.de>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation, version 2 of the License.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#ifndef _CPUFREQ_H
-#define _CPUFREQ_H 1
+#ifndef __CPUPOWER_CPUFREQ_H__
+#define __CPUPOWER_CPUFREQ_H__
 
 struct cpufreq_policy {
 	unsigned long min;
@@ -58,13 +46,6 @@ struct cpufreq_stats {
 extern "C" {
 #endif
 
-/*
- * returns 0 if the specified CPU is present (it doesn't say
- * whether it is online!), and an error value if not.
- */
-
-extern int cpufreq_cpu_exists(unsigned int cpu);
-
 /* determine current CPU frequency
  * - _kernel variant means kernel's opinion of CPU frequency
  * - _hardware variant means actual hardware CPU frequency,
@@ -73,9 +54,9 @@ extern int cpufreq_cpu_exists(unsigned int cpu);
  * returns 0 on failure, else frequency in kHz.
  */
 
-extern unsigned long cpufreq_get_freq_kernel(unsigned int cpu);
+unsigned long cpufreq_get_freq_kernel(unsigned int cpu);
 
-extern unsigned long cpufreq_get_freq_hardware(unsigned int cpu);
+unsigned long cpufreq_get_freq_hardware(unsigned int cpu);
 
 #define cpufreq_get(cpu) cpufreq_get_freq_kernel(cpu);
 
@@ -84,7 +65,7 @@ extern unsigned long cpufreq_get_freq_hardware(unsigned int cpu);
  *
  * returns 0 on failure, else transition latency in 10^(-9) s = nanoseconds
  */
-extern unsigned long cpufreq_get_transition_latency(unsigned int cpu);
+unsigned long cpufreq_get_transition_latency(unsigned int cpu);
 
 
 /* determine hardware CPU frequency limits
@@ -93,7 +74,7 @@ extern unsigned long cpufreq_get_transition_latency(unsigned int cpu);
  * considerations by cpufreq policy notifiers in the kernel.
  */
 
-extern int cpufreq_get_hardware_limits(unsigned int cpu,
+int cpufreq_get_hardware_limits(unsigned int cpu,
 				unsigned long *min,
 				unsigned long *max);
 
@@ -104,9 +85,9 @@ extern int cpufreq_get_hardware_limits(unsigned int cpu,
  * to avoid memory leakage, please.
  */
 
-extern char *cpufreq_get_driver(unsigned int cpu);
+char *cpufreq_get_driver(unsigned int cpu);
 
-extern void cpufreq_put_driver(char *ptr);
+void cpufreq_put_driver(char *ptr);
 
 
 /* determine CPUfreq policy currently used
@@ -116,9 +97,9 @@ extern void cpufreq_put_driver(char *ptr);
  */
 
 
-extern struct cpufreq_policy *cpufreq_get_policy(unsigned int cpu);
+struct cpufreq_policy *cpufreq_get_policy(unsigned int cpu);
 
-extern void cpufreq_put_policy(struct cpufreq_policy *policy);
+void cpufreq_put_policy(struct cpufreq_policy *policy);
 
 
 /* determine CPUfreq governors currently available
@@ -129,10 +110,10 @@ extern void cpufreq_put_policy(struct cpufreq_policy *policy);
  */
 
 
-extern struct cpufreq_available_governors
+struct cpufreq_available_governors
 *cpufreq_get_available_governors(unsigned int cpu);
 
-extern void cpufreq_put_available_governors(
+void cpufreq_put_available_governors(
 	struct cpufreq_available_governors *first);
 
 
@@ -140,13 +121,19 @@ extern void cpufreq_put_available_governors(
  *
  * Only present on _some_ ->target() cpufreq drivers. For information purposes
  * only. Please free allocated memory by calling
- * cpufreq_put_available_frequencies after use.
+ * cpufreq_put_frequencies after use.
  */
 
-extern struct cpufreq_available_frequencies
+struct cpufreq_available_frequencies
 *cpufreq_get_available_frequencies(unsigned int cpu);
 
-extern void cpufreq_put_available_frequencies(
+void cpufreq_put_available_frequencies(
+		struct cpufreq_available_frequencies *first);
+
+struct cpufreq_available_frequencies
+*cpufreq_get_boost_frequencies(unsigned int cpu);
+
+void cpufreq_put_boost_frequencies(
 		struct cpufreq_available_frequencies *first);
 
 
@@ -156,10 +143,10 @@ extern void cpufreq_put_available_frequencies(
  * to avoid memory leakage, please.
  */
 
-extern struct cpufreq_affected_cpus *cpufreq_get_affected_cpus(unsigned
+struct cpufreq_affected_cpus *cpufreq_get_affected_cpus(unsigned
 							int cpu);
 
-extern void cpufreq_put_affected_cpus(struct cpufreq_affected_cpus *first);
+void cpufreq_put_affected_cpus(struct cpufreq_affected_cpus *first);
 
 
 /* determine related CPUs
@@ -168,10 +155,10 @@ extern void cpufreq_put_affected_cpus(struct cpufreq_affected_cpus *first);
  * to avoid memory leakage, please.
  */
 
-extern struct cpufreq_affected_cpus *cpufreq_get_related_cpus(unsigned
+struct cpufreq_affected_cpus *cpufreq_get_related_cpus(unsigned
 							int cpu);
 
-extern void cpufreq_put_related_cpus(struct cpufreq_affected_cpus *first);
+void cpufreq_put_related_cpus(struct cpufreq_affected_cpus *first);
 
 
 /* determine stats for cpufreq subsystem
@@ -179,12 +166,12 @@ extern void cpufreq_put_related_cpus(struct cpufreq_affected_cpus *first);
  * This is not available in all kernel versions or configurations.
  */
 
-extern struct cpufreq_stats *cpufreq_get_stats(unsigned int cpu,
+struct cpufreq_stats *cpufreq_get_stats(unsigned int cpu,
 					unsigned long long *total_time);
 
-extern void cpufreq_put_stats(struct cpufreq_stats *stats);
+void cpufreq_put_stats(struct cpufreq_stats *stats);
 
-extern unsigned long cpufreq_get_transitions(unsigned int cpu);
+unsigned long cpufreq_get_transitions(unsigned int cpu);
 
 
 /* set new cpufreq policy
@@ -193,7 +180,7 @@ extern unsigned long cpufreq_get_transitions(unsigned int cpu);
  * but results may differ depending e.g. on governors being available.
  */
 
-extern int cpufreq_set_policy(unsigned int cpu, struct cpufreq_policy *policy);
+int cpufreq_set_policy(unsigned int cpu, struct cpufreq_policy *policy);
 
 
 /* modify a policy by only changing min/max freq or governor
@@ -201,9 +188,9 @@ extern int cpufreq_set_policy(unsigned int cpu, struct cpufreq_policy *policy);
  * Does not check whether result is what was intended.
  */
 
-extern int cpufreq_modify_policy_min(unsigned int cpu, unsigned long min_freq);
-extern int cpufreq_modify_policy_max(unsigned int cpu, unsigned long max_freq);
-extern int cpufreq_modify_policy_governor(unsigned int cpu, char *governor);
+int cpufreq_modify_policy_min(unsigned int cpu, unsigned long min_freq);
+int cpufreq_modify_policy_max(unsigned int cpu, unsigned long max_freq);
+int cpufreq_modify_policy_governor(unsigned int cpu, char *governor);
 
 
 /* set a specific frequency
@@ -213,8 +200,20 @@ extern int cpufreq_modify_policy_governor(unsigned int cpu, char *governor);
  * occurs. Also does not work on ->range() cpufreq drivers.
  */
 
-extern int cpufreq_set_frequency(unsigned int cpu,
+int cpufreq_set_frequency(unsigned int cpu,
 				unsigned long target_frequency);
+
+/*
+ * get the sysfs value from specific table
+ *
+ * Read the value with the sysfs file name from specific table. Does
+ * only work if the cpufreq driver has the specific sysfs interfaces.
+ */
+
+unsigned long cpufreq_get_sysfs_value_from_table(unsigned int cpu,
+						 const char **table,
+						 unsigned int index,
+						 unsigned int size);
 
 #ifdef __cplusplus
 }

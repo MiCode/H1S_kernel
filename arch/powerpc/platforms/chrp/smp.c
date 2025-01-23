@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Smp support for CHRP machines.
  *
@@ -15,15 +16,14 @@
 #include <linux/kernel_stat.h>
 #include <linux/delay.h>
 #include <linux/spinlock.h>
+#include <linux/pgtable.h>
 
 #include <asm/ptrace.h>
 #include <linux/atomic.h>
 #include <asm/irq.h>
 #include <asm/page.h>
-#include <asm/pgtable.h>
 #include <asm/sections.h>
 #include <asm/io.h>
-#include <asm/prom.h>
 #include <asm/smp.h>
 #include <asm/machdep.h>
 #include <asm/mpic.h>
@@ -44,6 +44,7 @@ static void smp_chrp_setup_cpu(int cpu_nr)
 
 /* CHRP with openpic */
 struct smp_ops_t chrp_smp_ops = {
+	.cause_nmi_ipi = NULL,
 	.message_pass = smp_mpic_message_pass,
 	.probe = smp_mpic_probe,
 	.kick_cpu = smp_chrp_kick_cpu,

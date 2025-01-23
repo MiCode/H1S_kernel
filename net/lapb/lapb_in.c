@@ -1,13 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	LAPB release 002
  *
  *	This code REQUIRES 2.1.15 or higher/ NET3.038
- *
- *	This module:
- *		This module is free software; you can redistribute it and/or
- *		modify it under the terms of the GNU General Public License
- *		as published by the Free Software Foundation; either version
- *		2 of the License, or (at your option) any later version.
  *
  *	History
  *	LAPB 001	Jonathan Naulor	Started Coding
@@ -31,7 +26,7 @@
 #include <linux/skbuff.h>
 #include <linux/slab.h>
 #include <net/sock.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/fcntl.h>
 #include <linux/mm.h>
 #include <linux/interrupt.h>
@@ -444,10 +439,9 @@ static void lapb_state3_machine(struct lapb_cb *lapb, struct sk_buff *skb,
 		break;
 
 	case LAPB_FRMR:
-		lapb_dbg(1, "(%p) S3 RX FRMR(%d) %02X %02X %02X %02X %02X\n",
+		lapb_dbg(1, "(%p) S3 RX FRMR(%d) %5ph\n",
 			 lapb->dev, frame->pf,
-			 skb->data[0], skb->data[1], skb->data[2],
-			 skb->data[3], skb->data[4]);
+			 skb->data);
 		lapb_establish_data_link(lapb);
 		lapb_dbg(0, "(%p) S3 -> S1\n", lapb->dev);
 		lapb_requeue_frames(lapb);

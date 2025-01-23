@@ -1,8 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * QLogic iSCSI HBA Driver
  * Copyright (c)  2003-2013 QLogic Corporation
- *
- * See LICENSE.qla4xxx for copyright and licensing details.
  */
 
 #include <scsi/iscsi_if.h>
@@ -14,7 +13,6 @@
 static void ql4xxx_set_mac_number(struct scsi_qla_host *ha)
 {
 	uint32_t value;
-	uint8_t func_number;
 	unsigned long flags;
 
 	/* Get the function number */
@@ -22,7 +20,6 @@ static void ql4xxx_set_mac_number(struct scsi_qla_host *ha)
 	value = readw(&ha->reg->ctrl_status);
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
-	func_number = (uint8_t) ((value >> 4) & 0x30);
 	switch (value & ISP_CONTROL_FN_MASK) {
 	case ISP_CONTROL_FN0_SCSI:
 		ha->mac_index = 1;
@@ -122,8 +119,8 @@ int qla4xxx_init_rings(struct scsi_qla_host *ha)
 		 * the interrupt_handler to think there are responses to be
 		 * processed when there aren't.
 		 */
-		ha->shadow_regs->req_q_out = __constant_cpu_to_le32(0);
-		ha->shadow_regs->rsp_q_in = __constant_cpu_to_le32(0);
+		ha->shadow_regs->req_q_out = cpu_to_le32(0);
+		ha->shadow_regs->rsp_q_in = cpu_to_le32(0);
 		wmb();
 
 		writel(0, &ha->reg->req_q_in);
@@ -161,7 +158,6 @@ int qla4xxx_get_sys_info(struct scsi_qla_host *ha)
 
 		goto exit_get_sys_info_no_free;
 	}
-	memset(sys_info, 0, sizeof(*sys_info));
 
 	/* Get flash sys info */
 	if (qla4xxx_get_flash(ha, sys_info_dma, FLASH_OFFSET_SYS_INFO,
@@ -282,6 +278,25 @@ qla4xxx_wait_for_ip_config(struct scsi_qla_host *ha)
 	return ipv4_wait|ipv6_wait;
 }
 
+static int qla4_80xx_is_minidump_dma_capable(struct scsi_qla_host *ha,
+		struct qla4_8xxx_minidump_template_hdr *md_hdr)
+{
+	int offset = (is_qla8022(ha)) ? QLA8022_TEMPLATE_CAP_OFFSET :
+					QLA83XX_TEMPLATE_CAP_OFFSET;
+	int rval = 1;
+	uint32_t *cap_offset;
+
+	cap_offset = (uint32_t *)((char *)md_hdr + offset);
+
+	if (!(le32_to_cpu(*cap_offset) & BIT_0)) {
+		ql4_printk(KERN_INFO, ha, "PEX DMA Not supported %d\n",
+			   *cap_offset);
+		rval = 0;
+	}
+
+	return rval;
+}
+
 /**
  * qla4xxx_alloc_fw_dump - Allocate memory for minidump data.
  * @ha: pointer to host adapter structure.
@@ -294,6 +309,7 @@ void qla4xxx_alloc_fw_dump(struct scsi_qla_host *ha)
 	void *md_tmp;
 	dma_addr_t md_tmp_dma;
 	struct qla4_8xxx_minidump_template_hdr *md_hdr;
+	int dma_capable;
 
 	if (ha->fw_dump) {
 		ql4_printk(KERN_WARNING, ha,
@@ -314,6 +330,12 @@ void qla4xxx_alloc_fw_dump(struct scsi_qla_host *ha)
 	/* Allocate memory for saving the template */
 	md_tmp = dma_alloc_coherent(&ha->pdev->dev, ha->fw_dump_tmplt_size,
 				    &md_tmp_dma, GFP_KERNEL);
+	if (!md_tmp) {
+		ql4_printk(KERN_INFO, ha,
+			   "scsi%ld: Failed to allocate DMA memory\n",
+			   ha->host_no);
+		return;
+	}
 
 	/* Request template */
 	status =  qla4xxx_get_minidump_template(ha, md_tmp_dma);
@@ -326,13 +348,19 @@ void qla4xxx_alloc_fw_dump(struct scsi_qla_host *ha)
 
 	md_hdr = (struct qla4_8xxx_minidump_template_hdr *)md_tmp;
 
+	dma_capable = qla4_80xx_is_minidump_dma_capable(ha, md_hdr);
+
 	capture_debug_level = md_hdr->capture_debug_level;
 
 	/* Get capture mask based on module loadtime setting. */
-	if (ql4xmdcapmask >= 0x3 && ql4xmdcapmask <= 0x7F)
+	if ((ql4xmdcapmask >= 0x3 && ql4xmdcapmask <= 0x7F) ||
+	    (ql4xmdcapmask == 0xFF && dma_capable))  {
 		ha->fw_dump_capture_mask = ql4xmdcapmask;
-	else
+	} else {
+		if (ql4xmdcapmask == 0xFF)
+			ql4_printk(KERN_INFO, ha, "Falling back to default capture mask, as PEX DMA is not supported\n");
 		ha->fw_dump_capture_mask = capture_debug_level;
+	}
 
 	md_hdr->driver_capture_mask = ha->fw_dump_capture_mask;
 
@@ -357,7 +385,7 @@ void qla4xxx_alloc_fw_dump(struct scsi_qla_host *ha)
 		goto alloc_cleanup;
 
 	DEBUG2(ql4_printk(KERN_INFO, ha,
-			  "Minidump Tempalate Size = 0x%x KB\n",
+			  "Minidump Template Size = 0x%x KB\n",
 			  ha->fw_dump_tmplt_size));
 	DEBUG2(ql4_printk(KERN_INFO, ha,
 			  "Total Minidump size = 0x%x KB\n", ha->fw_dump_size));
@@ -636,6 +664,9 @@ void qla4xxx_pci_config(struct scsi_qla_host *ha)
 
 	pci_set_master(ha->pdev);
 	status = pci_set_mwi(ha->pdev);
+	if (status)
+		ql4_printk(KERN_WARNING, ha, "Failed to set MWI\n");
+
 	/*
 	 * We want to respect framework's setting of PCI configuration space
 	 * command register and also want to make sure that all bits of
@@ -735,12 +766,10 @@ int ql4xxx_lock_drvr_wait(struct scsi_qla_host *a)
 	while (drvr_wait) {
 		if (ql4xxx_lock_drvr(a) == 0) {
 			ssleep(QL4_LOCK_DRVR_SLEEP);
-			if (drvr_wait) {
-				DEBUG2(printk("scsi%ld: %s: Waiting for "
-					      "Global Init Semaphore(%d)...\n",
-					      a->host_no,
-					      __func__, drvr_wait));
-			}
+			DEBUG2(printk("scsi%ld: %s: Waiting for "
+				      "Global Init Semaphore(%d)...\n",
+				      a->host_no,
+				      __func__, drvr_wait));
 			drvr_wait -= QL4_LOCK_DRVR_SLEEP;
 		} else {
 			DEBUG2(printk("scsi%ld: %s: Global Init Semaphore "
@@ -864,6 +893,8 @@ int qla4xxx_start_firmware(struct scsi_qla_host *ha)
 	if (status == QLA_SUCCESS) {
 		if (test_and_clear_bit(AF_GET_CRASH_RECORD, &ha->flags))
 			qla4xxx_get_crash_record(ha);
+
+		qla4xxx_init_rings(ha);
 	} else {
 		DEBUG(printk("scsi%ld: %s: Firmware has NOT started\n",
 			     ha->host_no, __func__));
@@ -914,6 +945,7 @@ void qla4xxx_free_ddb_index(struct scsi_qla_host *ha)
 /**
  * qla4xxx_initialize_adapter - initiailizes hba
  * @ha: Pointer to host adapter structure.
+ * @is_reset: Is this init path or reset path
  *
  * This routine parforms all of the steps necessary to initialize the adapter.
  *
@@ -959,13 +991,8 @@ int qla4xxx_initialize_adapter(struct scsi_qla_host *ha, int is_reset)
 		qla4xxx_build_ddb_list(ha, is_reset);
 
 	set_bit(AF_ONLINE, &ha->flags);
-exit_init_hba:
-	if (is_qla80XX(ha) && (status == QLA_ERROR)) {
-		/* Since interrupts are registered in start_firmware for
-		 * 80XX, release them here if initialize_adapter fails */
-		qla4xxx_free_irqs(ha);
-	}
 
+exit_init_hba:
 	DEBUG2(printk("scsi%ld: initialize adapter: %s\n", ha->host_no,
 	    status == QLA_ERROR ? "FAILED" : "SUCCEEDED"));
 	return status;
@@ -1130,9 +1157,10 @@ int qla4xxx_flash_ddb_change(struct scsi_qla_host *ha, uint32_t fw_ddb_index,
 
 /**
  * qla4xxx_process_ddb_changed - process ddb state change
- * @ha - Pointer to host adapter structure.
- * @fw_ddb_index - Firmware's device database index
- * @state - Device state
+ * @ha: Pointer to host adapter structure.
+ * @fw_ddb_index: Firmware's device database index
+ * @state: Device state
+ * @conn_err: Unused
  *
  * This routine processes a Decive Database Changed AEN Event.
  **/
@@ -1141,7 +1169,6 @@ int qla4xxx_process_ddb_changed(struct scsi_qla_host *ha,
 				uint32_t state, uint32_t conn_err)
 {
 	struct ddb_entry *ddb_entry;
-	int status = QLA_ERROR;
 
 	/* check for out of range index */
 	if (fw_ddb_index >= MAX_DDB_ENTRIES)
@@ -1163,7 +1190,7 @@ int qla4xxx_process_ddb_changed(struct scsi_qla_host *ha,
 	ddb_entry->ddb_change(ha, fw_ddb_index, ddb_entry, state);
 
 exit_ddb_event:
-	return status;
+	return QLA_ERROR;
 }
 
 /**

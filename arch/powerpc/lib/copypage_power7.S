@@ -1,17 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  *
  * Copyright (C) IBM Corporation, 2012
  *
@@ -42,29 +30,26 @@ _GLOBAL(copypage_power7)
 	lis	r8,0x8000	/* GO=1 */
 	clrldi	r8,r8,32
 
-.machine push
-.machine "power4"
 	/* setup read stream 0  */
-	dcbt	r0,r4,0b01000  	/* addr from */
-	dcbt	r0,r7,0b01010   /* length and depth from */
+	dcbt	0,r4,0b01000  	/* addr from */
+	dcbt	0,r7,0b01010   /* length and depth from */
 	/* setup write stream 1 */
-	dcbtst	r0,r9,0b01000   /* addr to */
-	dcbtst	r0,r10,0b01010  /* length and depth to */
+	dcbtst	0,r9,0b01000   /* addr to */
+	dcbtst	0,r10,0b01010  /* length and depth to */
 	eieio
-	dcbt	r0,r8,0b01010	/* all streams GO */
-.machine pop
+	dcbt	0,r8,0b01010	/* all streams GO */
 
 #ifdef CONFIG_ALTIVEC
 	mflr	r0
-	std	r3,48(r1)
-	std	r4,56(r1)
+	std	r3,-STACKFRAMESIZE+STK_REG(R31)(r1)
+	std	r4,-STACKFRAMESIZE+STK_REG(R30)(r1)
 	std	r0,16(r1)
 	stdu	r1,-STACKFRAMESIZE(r1)
-	bl	.enter_vmx_copy
+	bl	CFUNC(enter_vmx_ops)
 	cmpwi	r3,0
 	ld	r0,STACKFRAMESIZE+16(r1)
-	ld	r3,STACKFRAMESIZE+48(r1)
-	ld	r4,STACKFRAMESIZE+56(r1)
+	ld	r3,STK_REG(R31)(r1)
+	ld	r4,STK_REG(R30)(r1)
 	mtlr	r0
 
 	li	r0,(PAGE_SIZE/128)
@@ -83,27 +68,27 @@ _GLOBAL(copypage_power7)
 	li	r12,112
 
 	.align	5
-1:	lvx	vr7,r0,r4
-	lvx	vr6,r4,r6
-	lvx	vr5,r4,r7
-	lvx	vr4,r4,r8
-	lvx	vr3,r4,r9
-	lvx	vr2,r4,r10
-	lvx	vr1,r4,r11
-	lvx	vr0,r4,r12
+1:	lvx	v7,0,r4
+	lvx	v6,r4,r6
+	lvx	v5,r4,r7
+	lvx	v4,r4,r8
+	lvx	v3,r4,r9
+	lvx	v2,r4,r10
+	lvx	v1,r4,r11
+	lvx	v0,r4,r12
 	addi	r4,r4,128
-	stvx	vr7,r0,r3
-	stvx	vr6,r3,r6
-	stvx	vr5,r3,r7
-	stvx	vr4,r3,r8
-	stvx	vr3,r3,r9
-	stvx	vr2,r3,r10
-	stvx	vr1,r3,r11
-	stvx	vr0,r3,r12
+	stvx	v7,0,r3
+	stvx	v6,r3,r6
+	stvx	v5,r3,r7
+	stvx	v4,r3,r8
+	stvx	v3,r3,r9
+	stvx	v2,r3,r10
+	stvx	v1,r3,r11
+	stvx	v0,r3,r12
 	addi	r3,r3,128
 	bdnz	1b
 
-	b	.exit_vmx_copy		/* tail call optimise */
+	b	CFUNC(exit_vmx_ops)		/* tail call optimise */
 
 #else
 	li	r0,(PAGE_SIZE/128)

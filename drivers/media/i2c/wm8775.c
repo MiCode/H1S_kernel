@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * wm8775 - driver version 0.0.1
  *
@@ -9,32 +10,18 @@
  * - Cleanup
  * - V4L2 API update
  * - sound fixes
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/slab.h>
 #include <linux/ioctl.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/i2c.h>
 #include <linux/videodev2.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ctrls.h>
-#include <media/wm8775.h>
+#include <media/i2c/wm8775.h>
 
 MODULE_DESCRIPTION("wm8775 driver");
 MODULE_AUTHOR("Ulf Eklund, Hans Verkuil");
@@ -178,13 +165,6 @@ static const struct v4l2_ctrl_ops wm8775_ctrl_ops = {
 
 static const struct v4l2_subdev_core_ops wm8775_core_ops = {
 	.log_status = wm8775_log_status,
-	.g_ext_ctrls = v4l2_subdev_g_ext_ctrls,
-	.try_ext_ctrls = v4l2_subdev_try_ext_ctrls,
-	.s_ext_ctrls = v4l2_subdev_s_ext_ctrls,
-	.g_ctrl = v4l2_subdev_g_ctrl,
-	.s_ctrl = v4l2_subdev_s_ctrl,
-	.queryctrl = v4l2_subdev_queryctrl,
-	.querymenu = v4l2_subdev_querymenu,
 };
 
 static const struct v4l2_subdev_tuner_ops wm8775_tuner_ops = {
@@ -210,8 +190,7 @@ static const struct v4l2_subdev_ops wm8775_ops = {
  * concerning the addresses: i2c wants 7 bit (without the r/w bit), so '>>1'
  */
 
-static int wm8775_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int wm8775_probe(struct i2c_client *client)
 {
 	struct wm8775_state *state;
 	struct v4l2_subdev *sd;
@@ -300,14 +279,13 @@ static int wm8775_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int wm8775_remove(struct i2c_client *client)
+static void wm8775_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct wm8775_state *state = to_state(sd);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&state->hdl);
-	return 0;
 }
 
 static const struct i2c_device_id wm8775_id[] = {
@@ -318,7 +296,6 @@ MODULE_DEVICE_TABLE(i2c, wm8775_id);
 
 static struct i2c_driver wm8775_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "wm8775",
 	},
 	.probe		= wm8775_probe,

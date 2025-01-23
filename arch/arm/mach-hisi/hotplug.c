@@ -1,17 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2013 Linaro Ltd.
- * Copyright (c) 2013 Hisilicon Limited.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
+ * Copyright (c) 2013 HiSilicon Limited.
  */
 
 #include <linux/cpu.h>
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/of_address.h>
-#include <linux/of_platform.h>
 #include <asm/cacheflush.h>
 #include <asm/smp_plat.h>
 #include "core.h"
@@ -56,6 +52,17 @@
 #define CPU0_DBG_SRST_REQ_EN		(1 << 12)
 #define CPU0_NEON_SRST_REQ_EN		(1 << 4)
 #define CPU0_SRST_REQ_EN		(1 << 0)
+
+#define HIX5HD2_PERI_CRG20		0x50
+#define CRG20_CPU1_RESET		(1 << 17)
+
+#define HIX5HD2_PERI_PMC0		0x1000
+#define PMC0_CPU1_WAIT_MTCOMS_ACK	(1 << 8)
+#define PMC0_CPU1_PMC_ENABLE		(1 << 7)
+#define PMC0_CPU1_POWERDOWN		(1 << 3)
+
+#define HIP01_PERI9                    0x50
+#define PERI9_CPU1_RESET               (1 << 1)
 
 enum {
 	HI3620_CTRL,
@@ -137,13 +144,20 @@ static int hi3xxx_hotplug_init(void)
 	struct device_node *node;
 
 	node = of_find_compatible_node(NULL, NULL, "hisilicon,sysctrl");
-	if (node) {
-		ctrl_base = of_iomap(node, 0);
-		id = HI3620_CTRL;
-		return 0;
+	if (!node) {
+		id = ERROR_CTRL;
+		return -ENOENT;
 	}
-	id = ERROR_CTRL;
-	return -ENOENT;
+
+	ctrl_base = of_iomap(node, 0);
+	of_node_put(node);
+	if (!ctrl_base) {
+		id = ERROR_CTRL;
+		return -ENOMEM;
+	}
+
+	id = HI3620_CTRL;
+	return 0;
 }
 
 void hi3xxx_set_cpu(int cpu, bool enable)
@@ -155,6 +169,82 @@ void hi3xxx_set_cpu(int cpu, bool enable)
 
 	if (id == HI3620_CTRL)
 		set_cpu_hi3620(cpu, enable);
+}
+
+static bool hix5hd2_hotplug_init(void)
+{
+	struct device_node *np;
+
+	np = of_find_compatible_node(NULL, NULL, "hisilicon,cpuctrl");
+	if (!np)
+		return false;
+
+	ctrl_base = of_iomap(np, 0);
+	of_node_put(np);
+	if (!ctrl_base)
+		return false;
+
+	return true;
+}
+
+void hix5hd2_set_cpu(int cpu, bool enable)
+{
+	u32 val = 0;
+
+	if (!ctrl_base)
+		if (!hix5hd2_hotplug_init())
+			BUG();
+
+	if (enable) {
+		/* power on cpu1 */
+		val = readl_relaxed(ctrl_base + HIX5HD2_PERI_PMC0);
+		val &= ~(PMC0_CPU1_WAIT_MTCOMS_ACK | PMC0_CPU1_POWERDOWN);
+		val |= PMC0_CPU1_PMC_ENABLE;
+		writel_relaxed(val, ctrl_base + HIX5HD2_PERI_PMC0);
+		/* unreset */
+		val = readl_relaxed(ctrl_base + HIX5HD2_PERI_CRG20);
+		val &= ~CRG20_CPU1_RESET;
+		writel_relaxed(val, ctrl_base + HIX5HD2_PERI_CRG20);
+	} else {
+		/* power down cpu1 */
+		val = readl_relaxed(ctrl_base + HIX5HD2_PERI_PMC0);
+		val |= PMC0_CPU1_PMC_ENABLE | PMC0_CPU1_POWERDOWN;
+		val &= ~PMC0_CPU1_WAIT_MTCOMS_ACK;
+		writel_relaxed(val, ctrl_base + HIX5HD2_PERI_PMC0);
+
+		/* reset */
+		val = readl_relaxed(ctrl_base + HIX5HD2_PERI_CRG20);
+		val |= CRG20_CPU1_RESET;
+		writel_relaxed(val, ctrl_base + HIX5HD2_PERI_CRG20);
+	}
+}
+
+void hip01_set_cpu(int cpu, bool enable)
+{
+	unsigned int temp;
+	struct device_node *np;
+
+	if (!ctrl_base) {
+		np = of_find_compatible_node(NULL, NULL, "hisilicon,hip01-sysctrl");
+		BUG_ON(!np);
+		ctrl_base = of_iomap(np, 0);
+		of_node_put(np);
+		BUG_ON(!ctrl_base);
+	}
+
+	if (enable) {
+		/* reset on CPU1  */
+		temp = readl_relaxed(ctrl_base + HIP01_PERI9);
+		temp |= PERI9_CPU1_RESET;
+		writel_relaxed(temp, ctrl_base + HIP01_PERI9);
+
+		udelay(50);
+
+		/* unreset on CPU1 */
+		temp = readl_relaxed(ctrl_base + HIP01_PERI9);
+		temp &= ~PERI9_CPU1_RESET;
+		writel_relaxed(temp, ctrl_base + HIP01_PERI9);
+	}
 }
 
 static inline void cpu_enter_lowpower(void)
@@ -178,6 +268,7 @@ static inline void cpu_enter_lowpower(void)
 	  : "cc");
 }
 
+#ifdef CONFIG_HOTPLUG_CPU
 void hi3xxx_cpu_die(unsigned int cpu)
 {
 	cpu_enter_lowpower();
@@ -198,3 +289,10 @@ int hi3xxx_cpu_kill(unsigned int cpu)
 	hi3xxx_set_cpu(cpu, false);
 	return 1;
 }
+
+void hix5hd2_cpu_die(unsigned int cpu)
+{
+	flush_cache_all();
+	hix5hd2_set_cpu(cpu, false);
+}
+#endif

@@ -1,20 +1,8 @@
-/* Driver for Realtek PCI-Express card reader
- * Header file
+/* SPDX-License-Identifier: GPL-2.0+ */
+/*
+ * Driver for Realtek PCI-Express card reader
  *
  * Copyright(c) 2009-2013 Realtek Semiconductor Corp. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2, or (at your option) any
- * later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  * Author:
  *   Wei WANG (wei_wang@realsil.com.cn)
@@ -24,7 +12,6 @@
 #ifndef __REALTEK_RTSX_CARD_H
 #define __REALTEK_RTSX_CARD_H
 
-#include "debug.h"
 #include "rtsx.h"
 #include "rtsx_chip.h"
 #include "rtsx_transport.h"
@@ -1012,9 +999,9 @@ int switch_normal_clock(struct rtsx_chip *chip, int clk);
 int enable_card_clock(struct rtsx_chip *chip, u8 card);
 int disable_card_clock(struct rtsx_chip *chip, u8 card);
 int card_rw(struct scsi_cmnd *srb, struct rtsx_chip *chip,
-	u32 sec_addr, u16 sec_cnt);
+	    u32 sec_addr, u16 sec_cnt);
 void trans_dma_enable(enum dma_data_direction dir,
-		struct rtsx_chip *chip, u32 byte_cnt, u8 pack_size);
+		      struct rtsx_chip *chip, u32 byte_cnt, u8 pack_size);
 void toggle_gpio(struct rtsx_chip *chip, u8 gpio);
 void turn_on_led(struct rtsx_chip *chip, u8 gpio);
 void turn_off_led(struct rtsx_chip *chip, u8 gpio);
@@ -1025,21 +1012,19 @@ int detect_card_cd(struct rtsx_chip *chip, int card);
 int check_card_exist(struct rtsx_chip *chip, unsigned int lun);
 int check_card_ready(struct rtsx_chip *chip, unsigned int lun);
 int check_card_wp(struct rtsx_chip *chip, unsigned int lun);
-int check_card_fail(struct rtsx_chip *chip, unsigned int lun);
-int check_card_ejected(struct rtsx_chip *chip, unsigned int lun);
 void eject_card(struct rtsx_chip *chip, unsigned int lun);
 u8 get_lun_card(struct rtsx_chip *chip, unsigned int lun);
 
 static inline u32 get_card_size(struct rtsx_chip *chip, unsigned int lun)
 {
 #ifdef SUPPORT_SD_LOCK
-	struct sd_info *sd_card = &(chip->sd_card);
+	struct sd_info *sd_card = &chip->sd_card;
 
 	if ((get_lun_card(chip, lun) == SD_CARD) &&
-		(sd_card->sd_lock_status & SD_LOCKED))
+	    (sd_card->sd_lock_status & SD_LOCKED))
 		return 0;
-	else
-		return chip->capacity[lun];
+
+	return chip->capacity[lun];
 #else
 	return chip->capacity[lun];
 #endif
@@ -1062,7 +1047,11 @@ int card_power_off(struct rtsx_chip *chip, u8 card);
 
 static inline int card_power_off_all(struct rtsx_chip *chip)
 {
-	RTSX_WRITE_REG(chip, CARD_PWR_CTL, 0x0F, 0x0F);
+	int retval;
+
+	retval = rtsx_write_register(chip, CARD_PWR_CTL, 0x0F, 0x0F);
+	if (retval)
+		return retval;
 
 	return STATUS_SUCCESS;
 }
@@ -1070,25 +1059,25 @@ static inline int card_power_off_all(struct rtsx_chip *chip)
 static inline void rtsx_clear_xd_error(struct rtsx_chip *chip)
 {
 	rtsx_write_register(chip, CARD_STOP, XD_STOP | XD_CLR_ERR,
-			XD_STOP | XD_CLR_ERR);
+			    XD_STOP | XD_CLR_ERR);
 }
 
 static inline void rtsx_clear_sd_error(struct rtsx_chip *chip)
 {
 	rtsx_write_register(chip, CARD_STOP, SD_STOP | SD_CLR_ERR,
-			SD_STOP | SD_CLR_ERR);
+			    SD_STOP | SD_CLR_ERR);
 }
 
 static inline void rtsx_clear_ms_error(struct rtsx_chip *chip)
 {
 	rtsx_write_register(chip, CARD_STOP, MS_STOP | MS_CLR_ERR,
-			MS_STOP | MS_CLR_ERR);
+			    MS_STOP | MS_CLR_ERR);
 }
 
 static inline void rtsx_clear_spi_error(struct rtsx_chip *chip)
 {
 	rtsx_write_register(chip, CARD_STOP, SPI_STOP | SPI_CLR_ERR,
-			SPI_STOP | SPI_CLR_ERR);
+			    SPI_STOP | SPI_CLR_ERR);
 }
 
 #ifdef SUPPORT_SDIO_ASPM

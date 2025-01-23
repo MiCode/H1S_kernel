@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Normally compiler builtins are used, but sometimes the compiler calls out
  * of line code. Based on asm-i386/string.h.
@@ -5,13 +6,14 @@
  * This assembly file is re-written from memmove_64.c file.
  *	- Copyright 2011 Fenghua Yu <fenghua.yu@intel.com>
  */
-#define _STRING_C
 #include <linux/linkage.h>
-#include <asm/dwarf2.h>
-#include <asm/cpufeature.h>
-#include <asm/alternative-asm.h>
+#include <asm/cpufeatures.h>
+#include <asm/alternative.h>
+#include <asm/export.h>
 
 #undef memmove
+
+.section .noinstr.text, "ax"
 
 /*
  * Implement memmove(). This can handle overlap between src and dst.
@@ -24,13 +26,9 @@
  * Output:
  * rax: dest
  */
-ENTRY(memmove)
-	CFI_STARTPROC
+SYM_FUNC_START(__memmove)
 
-	/* Handle more 32 bytes in loop */
 	mov %rdi, %rax
-	cmp $0x20, %rdx
-	jb	1f
 
 	/* Decide forward/backward copy mode */
 	cmp %rdi, %rsi
@@ -40,7 +38,13 @@ ENTRY(memmove)
 	cmp %rdi, %r8
 	jg 2f
 
+#define CHECK_LEN	cmp $0x20, %rdx; jb 1f
+#define MEMMOVE_BYTES	movq %rdx, %rcx; rep movsb; RET
 .Lmemmove_begin_forward:
+	ALTERNATIVE_2 __stringify(CHECK_LEN), \
+		      __stringify(CHECK_LEN; MEMMOVE_BYTES), X86_FEATURE_ERMS, \
+		      __stringify(MEMMOVE_BYTES), X86_FEATURE_FSRM
+
 	/*
 	 * movsq instruction have many startup latency
 	 * so we handle small size by general register.
@@ -110,6 +114,8 @@ ENTRY(memmove)
 	 */
 	.p2align 4
 2:
+	cmp $0x20, %rdx
+	jb 1f
 	cmp $680, %rdx
 	jb 6f
 	cmp %dil, %sil
@@ -202,22 +208,9 @@ ENTRY(memmove)
 	movb (%rsi), %r11b
 	movb %r11b, (%rdi)
 13:
-	retq
-	CFI_ENDPROC
+	RET
+SYM_FUNC_END(__memmove)
+EXPORT_SYMBOL(__memmove)
 
-	.section .altinstr_replacement,"ax"
-.Lmemmove_begin_forward_efs:
-	/* Forward moving data. */
-	movq %rdx, %rcx
-	rep movsb
-	retq
-.Lmemmove_end_forward_efs:
-	.previous
-
-	.section .altinstructions,"a"
-	altinstruction_entry .Lmemmove_begin_forward,		\
-		.Lmemmove_begin_forward_efs,X86_FEATURE_ERMS,	\
-		.Lmemmove_end_forward-.Lmemmove_begin_forward,	\
-		.Lmemmove_end_forward_efs-.Lmemmove_begin_forward_efs
-	.previous
-ENDPROC(memmove)
+SYM_FUNC_ALIAS_MEMFUNC(memmove, __memmove)
+EXPORT_SYMBOL(memmove)

@@ -1,22 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * bitmap.c - NTFS kernel bitmap handling.  Part of the Linux-NTFS project.
  *
  * Copyright (c) 2004-2005 Anton Altaparmakov
- *
- * This program/include file is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as published
- * by the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program/include file is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program (in the main directory of the Linux-NTFS
- * distribution in the file COPYING); if not, write to the Free Software
- * Foundation,Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #ifdef NTFS_RW
@@ -67,8 +53,8 @@ int __ntfs_bitmap_set_bits_in_run(struct inode *vi, const s64 start_bit,
 	 * Calculate the indices for the pages containing the first and last
 	 * bits, i.e. @start_bit and @start_bit + @cnt - 1, respectively.
 	 */
-	index = start_bit >> (3 + PAGE_CACHE_SHIFT);
-	end_index = (start_bit + cnt - 1) >> (3 + PAGE_CACHE_SHIFT);
+	index = start_bit >> (3 + PAGE_SHIFT);
+	end_index = (start_bit + cnt - 1) >> (3 + PAGE_SHIFT);
 
 	/* Get the page containing the first bit (@start_bit). */
 	mapping = vi->i_mapping;
@@ -82,7 +68,7 @@ int __ntfs_bitmap_set_bits_in_run(struct inode *vi, const s64 start_bit,
 	kaddr = page_address(page);
 
 	/* Set @pos to the position of the byte containing @start_bit. */
-	pos = (start_bit >> 3) & ~PAGE_CACHE_MASK;
+	pos = (start_bit >> 3) & ~PAGE_MASK;
 
 	/* Calculate the position of @start_bit in the first byte. */
 	bit = start_bit & 7;
@@ -108,7 +94,7 @@ int __ntfs_bitmap_set_bits_in_run(struct inode *vi, const s64 start_bit,
 	 * Depending on @value, modify all remaining whole bytes in the page up
 	 * to @cnt.
 	 */
-	len = min_t(s64, cnt >> 3, PAGE_CACHE_SIZE - pos);
+	len = min_t(s64, cnt >> 3, PAGE_SIZE - pos);
 	memset(kaddr + pos, value ? 0xff : 0, len);
 	cnt -= len << 3;
 
@@ -132,7 +118,7 @@ int __ntfs_bitmap_set_bits_in_run(struct inode *vi, const s64 start_bit,
 		 * Depending on @value, modify all remaining whole bytes in the
 		 * page up to @cnt.
 		 */
-		len = min_t(s64, cnt >> 3, PAGE_CACHE_SIZE);
+		len = min_t(s64, cnt >> 3, PAGE_SIZE);
 		memset(kaddr, value ? 0xff : 0, len);
 		cnt -= len << 3;
 	}

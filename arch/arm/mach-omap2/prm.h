@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * OMAP2/3/4 Power/Reset Management (PRM) bitfield definitions
  *
@@ -5,10 +6,6 @@
  * Copyright (C) 2010 Nokia Corporation
  *
  * Paul Walmsley
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #ifndef __ARCH_ARM_MACH_OMAP2_PRM_H
 #define __ARCH_ARM_MACH_OMAP2_PRM_H
@@ -16,11 +13,20 @@
 #include "prcm-common.h"
 
 # ifndef __ASSEMBLER__
-extern void __iomem *prm_base;
-extern void omap2_set_globals_prm(void __iomem *prm);
-int of_prcm_init(void);
+extern struct omap_domain_base prm_base;
+extern u16 prm_features;
+int omap_prcm_init(void);
+int omap2_prcm_base_init(void);
 # endif
 
+/*
+ * prm_features flag values
+ *
+ * PRM_HAS_IO_WAKEUP: has IO wakeup capability
+ * PRM_HAS_VOLTAGE: has voltage domains
+ */
+#define PRM_HAS_IO_WAKEUP	BIT(0)
+#define PRM_HAS_VOLTAGE		BIT(1)
 
 /*
  * MAX_MODULE_SOFTRESET_WAIT: Maximum microseconds to wait for OMAP
@@ -118,6 +124,9 @@ struct prm_reset_src_map {
  * @read_reset_sources: ptr to the SoC PRM-specific get_reset_source impl
  * @was_any_context_lost_old: ptr to the SoC PRM context loss test fn
  * @clear_context_loss_flags_old: ptr to the SoC PRM context loss flag clear fn
+ * @late_init: ptr to the late init function
+ * @assert_hardreset: ptr to the SoC PRM hardreset assert impl
+ * @deassert_hardreset: ptr to the SoC PRM hardreset deassert impl
  *
  * XXX @was_any_context_lost_old and @clear_context_loss_flags_old are
  * deprecated.
@@ -126,14 +135,42 @@ struct prm_ll_data {
 	u32 (*read_reset_sources)(void);
 	bool (*was_any_context_lost_old)(u8 part, s16 inst, u16 idx);
 	void (*clear_context_loss_flags_old)(u8 part, s16 inst, u16 idx);
+	int (*late_init)(void);
+	int (*assert_hardreset)(u8 shift, u8 part, s16 prm_mod, u16 offset);
+	int (*deassert_hardreset)(u8 shift, u8 st_shift, u8 part, s16 prm_mod,
+				  u16 offset, u16 st_offset);
+	int (*is_hardreset_asserted)(u8 shift, u8 part, s16 prm_mod,
+				     u16 offset);
+	void (*reset_system)(void);
+	int (*clear_mod_irqs)(s16 module, u8 regs, u32 wkst_mask);
+	u32 (*vp_check_txdone)(u8 vp_id);
+	void (*vp_clear_txdone)(u8 vp_id);
 };
 
 extern int prm_register(struct prm_ll_data *pld);
 extern int prm_unregister(struct prm_ll_data *pld);
 
-extern u32 prm_read_reset_sources(void);
+int omap_prm_assert_hardreset(u8 shift, u8 part, s16 prm_mod, u16 offset);
+int omap_prm_deassert_hardreset(u8 shift, u8 st_shift, u8 part, s16 prm_mod,
+				u16 offset, u16 st_offset);
+int omap_prm_is_hardreset_asserted(u8 shift, u8 part, s16 prm_mod, u16 offset);
 extern bool prm_was_any_context_lost_old(u8 part, s16 inst, u16 idx);
 extern void prm_clear_context_loss_flags_old(u8 part, s16 inst, u16 idx);
+void omap_prm_reset_system(void);
+
+int omap_prm_clear_mod_irqs(s16 module, u8 regs, u32 wkst_mask);
+
+/*
+ * Voltage Processor (VP) identifiers
+ */
+#define OMAP3_VP_VDD_MPU_ID	0
+#define OMAP3_VP_VDD_CORE_ID	1
+#define OMAP4_VP_VDD_CORE_ID	0
+#define OMAP4_VP_VDD_IVA_ID	1
+#define OMAP4_VP_VDD_MPU_ID	2
+
+u32 omap_prm_vp_check_txdone(u8 vp_id);
+void omap_prm_vp_clear_txdone(u8 vp_id);
 
 #endif
 

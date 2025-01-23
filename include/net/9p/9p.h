@@ -1,27 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * include/net/9p/9p.h
- *
  * 9P protocol definitions.
  *
  *  Copyright (C) 2005 by Latchesar Ionkov <lucho@ionkov.net>
  *  Copyright (C) 2004 by Eric Van Hensbergen <ericvh@gmail.com>
  *  Copyright (C) 2002 by Ron Minnich <rminnich@lanl.gov>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2
- *  as published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to:
- *  Free Software Foundation
- *  51 Franklin Street, Fifth Floor
- *  Boston, MA  02111-1301  USA
- *
  */
 
 #ifndef NET_9P_H
@@ -47,18 +30,20 @@
  */
 
 enum p9_debug_flags {
-	P9_DEBUG_ERROR = 	(1<<0),
-	P9_DEBUG_9P = 		(1<<2),
+	P9_DEBUG_ERROR =	(1<<0),
+	P9_DEBUG_9P =		(1<<2),
 	P9_DEBUG_VFS =		(1<<3),
 	P9_DEBUG_CONV =		(1<<4),
 	P9_DEBUG_MUX =		(1<<5),
 	P9_DEBUG_TRANS =	(1<<6),
-	P9_DEBUG_SLABS =      	(1<<7),
+	P9_DEBUG_SLABS =	(1<<7),
 	P9_DEBUG_FCALL =	(1<<8),
 	P9_DEBUG_FID =		(1<<9),
 	P9_DEBUG_PKT =		(1<<10),
 	P9_DEBUG_FSC =		(1<<11),
 	P9_DEBUG_VPKT =		(1<<12),
+	P9_DEBUG_CACHE =	(1<<13),
+	P9_DEBUG_MMAP =		(1<<14),
 };
 
 #ifdef CONFIG_NET_9P_DEBUG
@@ -230,6 +215,10 @@ enum p9_open_mode_t {
 	P9_ORCLOSE = 0x40,
 	P9_OAPPEND = 0x80,
 	P9_OEXCL = 0x1000,
+	P9L_MODE_MASK = 0x1FFF, /* don't send anything under this to server */
+	P9L_DIRECT = 0x2000, /* cache disabled */
+	P9L_NOWRITECACHE = 0x4000, /* no write caching  */
+	P9L_LOOSE = 0x8000, /* loose cache */
 };
 
 /**
@@ -332,9 +321,12 @@ enum p9_qid_t {
 };
 
 /* 9P Magic Numbers */
-#define P9_NOTAG	(u16)(~0)
-#define P9_NOFID	(u32)(~0)
+#define P9_NOTAG	((u16)(~0))
+#define P9_NOFID	((u32)(~0))
 #define P9_MAXWELEM	16
+
+/* Minimal header size: size[4] type[1] tag[2] */
+#define P9_HDRSZ	7
 
 /* ample room for Twrite/Rread header */
 #define P9_IOHDRSZ	24
@@ -344,6 +336,9 @@ enum p9_qid_t {
 
 /* size of header for zero copy read/write */
 #define P9_ZC_HDR_SZ 4096
+
+/* maximum length of an error string */
+#define P9_ERRMAX 128
 
 /**
  * struct p9_qid - file system entity information
@@ -402,10 +397,10 @@ struct p9_wstat {
 	u32 atime;
 	u32 mtime;
 	u64 length;
-	char *name;
-	char *uid;
-	char *gid;
-	char *muid;
+	const char *name;
+	const char *uid;
+	const char *gid;
+	const char *muid;
 	char *extension;	/* 9p2000.u extensions */
 	kuid_t n_uid;		/* 9p2000.u extensions */
 	kgid_t n_gid;		/* 9p2000.u extensions */
@@ -542,6 +537,7 @@ struct p9_rstatfs {
  * @offset: used by marshalling routines to track current position in buffer
  * @capacity: used by marshalling routines to track total malloc'd capacity
  * @sdata: payload
+ * @zc: whether zero-copy is used
  *
  * &p9_fcall represents the structure for all 9P RPC
  * transactions.  Requests are packaged into fcalls, and reponses
@@ -558,20 +554,12 @@ struct p9_fcall {
 	size_t offset;
 	size_t capacity;
 
+	struct kmem_cache *cache;
 	u8 *sdata;
+	bool zc;
 };
-
-struct p9_idpool;
 
 int p9_errstr2errno(char *errstr, int len);
 
-struct p9_idpool *p9_idpool_create(void);
-void p9_idpool_destroy(struct p9_idpool *);
-int p9_idpool_get(struct p9_idpool *p);
-void p9_idpool_put(int id, struct p9_idpool *p);
-int p9_idpool_check(int id, struct p9_idpool *p);
-
 int p9_error_init(void);
-int p9_trans_fd_init(void);
-void p9_trans_fd_exit(void);
 #endif /* NET_9P_H */

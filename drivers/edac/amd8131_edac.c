@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * amd8131_edac.c, AMD8131 hypertransport chip EDAC kernel module
  *
@@ -6,19 +7,6 @@
  * Authors:	Cao Qingtao <qingtao.cao@windriver.com>
  * 		Benjamin Walsh <benjamin.walsh@windriver.com>
  * 		Hu Yongqi <yongqi.hu@windriver.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/module.h>
@@ -29,7 +17,6 @@
 #include <linux/edac.h>
 #include <linux/pci_ids.h>
 
-#include "edac_core.h"
 #include "edac_module.h"
 #include "amd8131_edac.h"
 
@@ -56,14 +43,6 @@ static void edac_pci_write_dword(struct pci_dev *dev, int reg, u32 val32)
 		printk(KERN_ERR AMD8131_EDAC_MOD_STR
 			" PCI Access Write Error at 0x%x\n", reg);
 }
-
-static char * const bridge_str[] = {
-	[NORTH_A] = "NORTH A",
-	[NORTH_B] = "NORTH B",
-	[SOUTH_A] = "SOUTH A",
-	[SOUTH_B] = "SOUTH B",
-	[NO_BRIDGE] = "NO BRIDGE",
-};
 
 /* Support up to two AMD8131 chipsets on a platform */
 static struct amd8131_dev_info amd8131_devices[] = {
@@ -375,5 +354,5 @@ module_init(amd8131_edac_init);
 module_exit(amd8131_edac_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Cao Qingtao <qingtao.cao@windriver.com>\n");
+MODULE_AUTHOR("Cao Qingtao <qingtao.cao@windriver.com>");
 MODULE_DESCRIPTION("AMD8131 HyperTransport PCI-X Tunnel EDAC kernel module");

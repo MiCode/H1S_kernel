@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2012 Marvell International Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/err.h>
@@ -21,7 +18,6 @@
 #include <linux/of_device.h>
 #include <linux/of_dma.h>
 #include <linux/of.h>
-#include <linux/dma/mmp-pdma.h>
 
 #include "dmaengine.h"
 
@@ -29,8 +25,8 @@
 #define DALGN		0x00a0
 #define DINT		0x00f0
 #define DDADR		0x0200
-#define DSADR		0x0204
-#define DTADR		0x0208
+#define DSADR(n)	(0x0204 + ((n) << 4))
+#define DTADR(n)	(0x0208 + ((n) << 4))
 #define DCMD		0x020c
 
 #define DCSR_RUN	BIT(31)	/* Run Bit (read / write) */
@@ -72,7 +68,6 @@
 #define DCMD_WIDTH4	(3 << 14)	/* 4 byte width (Word) */
 #define DCMD_LENGTH	0x01fff		/* length mask (max = 8K - 1) */
 
-#define PDMA_ALIGNMENT		3
 #define PDMA_MAX_DESC_BYTES	DCMD_LENGTH
 
 struct mmp_pdma_desc_hw {
@@ -97,6 +92,7 @@ struct mmp_pdma_chan {
 	struct dma_async_tx_descriptor desc;
 	struct mmp_pdma_phy *phy;
 	enum dma_transfer_direction dir;
+	struct dma_slave_config slave_config;
 
 	struct mmp_pdma_desc_sw *cyclic_first;	/* first desc_sw if channel
 						 * is in cyclic mode */
@@ -140,6 +136,10 @@ struct mmp_pdma_device {
 	container_of(dchan, struct mmp_pdma_chan, chan)
 #define to_mmp_pdma_dev(dmadev)					\
 	container_of(dmadev, struct mmp_pdma_device, device)
+
+static int mmp_pdma_config_write(struct dma_chan *dchan,
+			   struct dma_slave_config *cfg,
+			   enum dma_transfer_direction direction);
 
 static void set_desc(struct mmp_pdma_phy *phy, dma_addr_t addr)
 {
@@ -219,6 +219,9 @@ static irqreturn_t mmp_pdma_int_handler(int irq, void *dev_id)
 
 	while (dint) {
 		i = __ffs(dint);
+		/* only handle interrupts belonging to pdma driver*/
+		if (i >= pdev->dma_channels)
+			break;
 		dint &= (dint - 1);
 		phy = &pdev->phy[i];
 		ret = mmp_pdma_chan_handler(irq, phy);
@@ -277,7 +280,7 @@ static void mmp_pdma_free_phy(struct mmp_pdma_chan *pchan)
 		return;
 
 	/* clear the channel mapping in DRCMR */
-	reg = DRCMR(pchan->phy->vchan->drcmr);
+	reg = DRCMR(pchan->drcmr);
 	writel(0, pchan->phy->base + reg);
 
 	spin_lock_irqsave(&pdev->phy_lock, flags);
@@ -286,7 +289,7 @@ static void mmp_pdma_free_phy(struct mmp_pdma_chan *pchan)
 	spin_unlock_irqrestore(&pdev->phy_lock, flags);
 }
 
-/**
+/*
  * start_pending_queue - transfer any pending transactions
  * pending list ==> running list
  */
@@ -362,13 +365,12 @@ mmp_pdma_alloc_descriptor(struct mmp_pdma_chan *chan)
 	struct mmp_pdma_desc_sw *desc;
 	dma_addr_t pdesc;
 
-	desc = dma_pool_alloc(chan->desc_pool, GFP_ATOMIC, &pdesc);
+	desc = dma_pool_zalloc(chan->desc_pool, GFP_ATOMIC, &pdesc);
 	if (!desc) {
 		dev_err(chan->dev, "out of memory for link descriptor\n");
 		return NULL;
 	}
 
-	memset(desc, 0, sizeof(*desc));
 	INIT_LIST_HEAD(&desc->tx_list);
 	dma_async_tx_descriptor_init(&desc->async_tx, &chan->chan);
 	/* each desc has submit */
@@ -378,7 +380,7 @@ mmp_pdma_alloc_descriptor(struct mmp_pdma_chan *chan)
 	return desc;
 }
 
-/**
+/*
  * mmp_pdma_alloc_chan_resources - Allocate resources for DMA channel.
  *
  * This function will create a dma pool for descriptor allocation.
@@ -536,6 +538,8 @@ mmp_pdma_prep_slave_sg(struct dma_chan *dchan, struct scatterlist *sgl,
 
 	chan->byte_align = false;
 
+	mmp_pdma_config_write(dchan, &chan->slave_config, dir);
+
 	for_each_sg(sgl, sg, sg_len, i) {
 		addr = sg_dma_address(sg);
 		avail = sg_dma_len(sgl);
@@ -601,7 +605,7 @@ static struct dma_async_tx_descriptor *
 mmp_pdma_prep_dma_cyclic(struct dma_chan *dchan,
 			 dma_addr_t buf_addr, size_t len, size_t period_len,
 			 enum dma_transfer_direction direction,
-			 unsigned long flags, void *context)
+			 unsigned long flags)
 {
 	struct mmp_pdma_chan *chan;
 	struct mmp_pdma_desc_sw *first = NULL, *prev = NULL, *new;
@@ -618,6 +622,7 @@ mmp_pdma_prep_dma_cyclic(struct dma_chan *dchan,
 		return NULL;
 
 	chan = to_mmp_pdma_chan(dchan);
+	mmp_pdma_config_write(dchan, &chan->slave_config, direction);
 
 	switch (direction) {
 	case DMA_MEM_TO_DEV:
@@ -683,79 +688,166 @@ fail:
 	return NULL;
 }
 
-static int mmp_pdma_control(struct dma_chan *dchan, enum dma_ctrl_cmd cmd,
-			    unsigned long arg)
+static int mmp_pdma_config_write(struct dma_chan *dchan,
+			   struct dma_slave_config *cfg,
+			   enum dma_transfer_direction direction)
 {
 	struct mmp_pdma_chan *chan = to_mmp_pdma_chan(dchan);
-	struct dma_slave_config *cfg = (void *)arg;
-	unsigned long flags;
 	u32 maxburst = 0, addr = 0;
 	enum dma_slave_buswidth width = DMA_SLAVE_BUSWIDTH_UNDEFINED;
 
 	if (!dchan)
 		return -EINVAL;
 
-	switch (cmd) {
-	case DMA_TERMINATE_ALL:
-		disable_chan(chan->phy);
-		mmp_pdma_free_phy(chan);
-		spin_lock_irqsave(&chan->desc_lock, flags);
-		mmp_pdma_free_desc_list(chan, &chan->chain_pending);
-		mmp_pdma_free_desc_list(chan, &chan->chain_running);
-		spin_unlock_irqrestore(&chan->desc_lock, flags);
-		chan->idle = true;
-		break;
-	case DMA_SLAVE_CONFIG:
-		if (cfg->direction == DMA_DEV_TO_MEM) {
-			chan->dcmd = DCMD_INCTRGADDR | DCMD_FLOWSRC;
-			maxburst = cfg->src_maxburst;
-			width = cfg->src_addr_width;
-			addr = cfg->src_addr;
-		} else if (cfg->direction == DMA_MEM_TO_DEV) {
-			chan->dcmd = DCMD_INCSRCADDR | DCMD_FLOWTRG;
-			maxburst = cfg->dst_maxburst;
-			width = cfg->dst_addr_width;
-			addr = cfg->dst_addr;
-		}
-
-		if (width == DMA_SLAVE_BUSWIDTH_1_BYTE)
-			chan->dcmd |= DCMD_WIDTH1;
-		else if (width == DMA_SLAVE_BUSWIDTH_2_BYTES)
-			chan->dcmd |= DCMD_WIDTH2;
-		else if (width == DMA_SLAVE_BUSWIDTH_4_BYTES)
-			chan->dcmd |= DCMD_WIDTH4;
-
-		if (maxburst == 8)
-			chan->dcmd |= DCMD_BURST8;
-		else if (maxburst == 16)
-			chan->dcmd |= DCMD_BURST16;
-		else if (maxburst == 32)
-			chan->dcmd |= DCMD_BURST32;
-
-		chan->dir = cfg->direction;
-		chan->dev_addr = addr;
-		/* FIXME: drivers should be ported over to use the filter
-		 * function. Once that's done, the following two lines can
-		 * be removed.
-		 */
-		if (cfg->slave_id)
-			chan->drcmr = cfg->slave_id;
-		break;
-	default:
-		return -ENOSYS;
+	if (direction == DMA_DEV_TO_MEM) {
+		chan->dcmd = DCMD_INCTRGADDR | DCMD_FLOWSRC;
+		maxburst = cfg->src_maxburst;
+		width = cfg->src_addr_width;
+		addr = cfg->src_addr;
+	} else if (direction == DMA_MEM_TO_DEV) {
+		chan->dcmd = DCMD_INCSRCADDR | DCMD_FLOWTRG;
+		maxburst = cfg->dst_maxburst;
+		width = cfg->dst_addr_width;
+		addr = cfg->dst_addr;
 	}
 
+	if (width == DMA_SLAVE_BUSWIDTH_1_BYTE)
+		chan->dcmd |= DCMD_WIDTH1;
+	else if (width == DMA_SLAVE_BUSWIDTH_2_BYTES)
+		chan->dcmd |= DCMD_WIDTH2;
+	else if (width == DMA_SLAVE_BUSWIDTH_4_BYTES)
+		chan->dcmd |= DCMD_WIDTH4;
+
+	if (maxburst == 8)
+		chan->dcmd |= DCMD_BURST8;
+	else if (maxburst == 16)
+		chan->dcmd |= DCMD_BURST16;
+	else if (maxburst == 32)
+		chan->dcmd |= DCMD_BURST32;
+
+	chan->dir = direction;
+	chan->dev_addr = addr;
+
 	return 0;
+}
+
+static int mmp_pdma_config(struct dma_chan *dchan,
+			   struct dma_slave_config *cfg)
+{
+	struct mmp_pdma_chan *chan = to_mmp_pdma_chan(dchan);
+
+	memcpy(&chan->slave_config, cfg, sizeof(*cfg));
+	return 0;
+}
+
+static int mmp_pdma_terminate_all(struct dma_chan *dchan)
+{
+	struct mmp_pdma_chan *chan = to_mmp_pdma_chan(dchan);
+	unsigned long flags;
+
+	if (!dchan)
+		return -EINVAL;
+
+	disable_chan(chan->phy);
+	mmp_pdma_free_phy(chan);
+	spin_lock_irqsave(&chan->desc_lock, flags);
+	mmp_pdma_free_desc_list(chan, &chan->chain_pending);
+	mmp_pdma_free_desc_list(chan, &chan->chain_running);
+	spin_unlock_irqrestore(&chan->desc_lock, flags);
+	chan->idle = true;
+
+	return 0;
+}
+
+static unsigned int mmp_pdma_residue(struct mmp_pdma_chan *chan,
+				     dma_cookie_t cookie)
+{
+	struct mmp_pdma_desc_sw *sw;
+	u32 curr, residue = 0;
+	bool passed = false;
+	bool cyclic = chan->cyclic_first != NULL;
+
+	/*
+	 * If the channel does not have a phy pointer anymore, it has already
+	 * been completed. Therefore, its residue is 0.
+	 */
+	if (!chan->phy)
+		return 0;
+
+	if (chan->dir == DMA_DEV_TO_MEM)
+		curr = readl(chan->phy->base + DTADR(chan->phy->idx));
+	else
+		curr = readl(chan->phy->base + DSADR(chan->phy->idx));
+
+	list_for_each_entry(sw, &chan->chain_running, node) {
+		u32 start, end, len;
+
+		if (chan->dir == DMA_DEV_TO_MEM)
+			start = sw->desc.dtadr;
+		else
+			start = sw->desc.dsadr;
+
+		len = sw->desc.dcmd & DCMD_LENGTH;
+		end = start + len;
+
+		/*
+		 * 'passed' will be latched once we found the descriptor which
+		 * lies inside the boundaries of the curr pointer. All
+		 * descriptors that occur in the list _after_ we found that
+		 * partially handled descriptor are still to be processed and
+		 * are hence added to the residual bytes counter.
+		 */
+
+		if (passed) {
+			residue += len;
+		} else if (curr >= start && curr <= end) {
+			residue += end - curr;
+			passed = true;
+		}
+
+		/*
+		 * Descriptors that have the ENDIRQEN bit set mark the end of a
+		 * transaction chain, and the cookie assigned with it has been
+		 * returned previously from mmp_pdma_tx_submit().
+		 *
+		 * In case we have multiple transactions in the running chain,
+		 * and the cookie does not match the one the user asked us
+		 * about, reset the state variables and start over.
+		 *
+		 * This logic does not apply to cyclic transactions, where all
+		 * descriptors have the ENDIRQEN bit set, and for which we
+		 * can't have multiple transactions on one channel anyway.
+		 */
+		if (cyclic || !(sw->desc.dcmd & DCMD_ENDIRQEN))
+			continue;
+
+		if (sw->async_tx.cookie == cookie) {
+			return residue;
+		} else {
+			residue = 0;
+			passed = false;
+		}
+	}
+
+	/* We should only get here in case of cyclic transactions */
+	return residue;
 }
 
 static enum dma_status mmp_pdma_tx_status(struct dma_chan *dchan,
 					  dma_cookie_t cookie,
 					  struct dma_tx_state *txstate)
 {
-	return dma_cookie_status(dchan, cookie, txstate);
+	struct mmp_pdma_chan *chan = to_mmp_pdma_chan(dchan);
+	enum dma_status ret;
+
+	ret = dma_cookie_status(dchan, cookie, txstate);
+	if (likely(ret != DMA_ERROR))
+		dma_set_residue(txstate, mmp_pdma_residue(chan, cookie));
+
+	return ret;
 }
 
-/**
+/*
  * mmp_pdma_issue_pending - Issue the DMA start command
  * pending list ==> running list
  */
@@ -774,25 +866,21 @@ static void mmp_pdma_issue_pending(struct dma_chan *dchan)
  * Do call back
  * Start pending list
  */
-static void dma_do_tasklet(unsigned long data)
+static void dma_do_tasklet(struct tasklet_struct *t)
 {
-	struct mmp_pdma_chan *chan = (struct mmp_pdma_chan *)data;
+	struct mmp_pdma_chan *chan = from_tasklet(chan, t, tasklet);
 	struct mmp_pdma_desc_sw *desc, *_desc;
 	LIST_HEAD(chain_cleanup);
 	unsigned long flags;
+	struct dmaengine_desc_callback cb;
 
 	if (chan->cyclic_first) {
-		dma_async_tx_callback cb = NULL;
-		void *cb_data = NULL;
-
 		spin_lock_irqsave(&chan->desc_lock, flags);
 		desc = chan->cyclic_first;
-		cb = desc->async_tx.callback;
-		cb_data = desc->async_tx.callback_param;
+		dmaengine_desc_get_callback(&desc->async_tx, &cb);
 		spin_unlock_irqrestore(&chan->desc_lock, flags);
 
-		if (cb)
-			cb(cb_data);
+		dmaengine_desc_callback_invoke(&cb, NULL);
 
 		return;
 	}
@@ -837,8 +925,8 @@ static void dma_do_tasklet(unsigned long data)
 		/* Remove from the list of transactions */
 		list_del(&desc->node);
 		/* Run the link descriptor callback function */
-		if (txd->callback)
-			txd->callback(txd->callback_param);
+		dmaengine_desc_get_callback(txd, &cb);
+		dmaengine_desc_callback_invoke(&cb, NULL);
 
 		dma_pool_free(chan->desc_pool, desc, txd->phys);
 	}
@@ -847,6 +935,27 @@ static void dma_do_tasklet(unsigned long data)
 static int mmp_pdma_remove(struct platform_device *op)
 {
 	struct mmp_pdma_device *pdev = platform_get_drvdata(op);
+	struct mmp_pdma_phy *phy;
+	int i, irq = 0, irq_num = 0;
+
+	if (op->dev.of_node)
+		of_dma_controller_free(op->dev.of_node);
+
+	for (i = 0; i < pdev->dma_channels; i++) {
+		if (platform_get_irq(op, i) > 0)
+			irq_num++;
+	}
+
+	if (irq_num != pdev->dma_channels) {
+		irq = platform_get_irq(op, 0);
+		devm_free_irq(&op->dev, irq, pdev);
+	} else {
+		for (i = 0; i < pdev->dma_channels; i++) {
+			phy = &pdev->phy[i];
+			irq = platform_get_irq(op, i);
+			devm_free_irq(&op->dev, irq, phy);
+		}
+	}
 
 	dma_async_device_unregister(&pdev->device);
 	return 0;
@@ -858,8 +967,7 @@ static int mmp_pdma_chan_init(struct mmp_pdma_device *pdev, int idx, int irq)
 	struct mmp_pdma_chan *chan;
 	int ret;
 
-	chan = devm_kzalloc(pdev->dev, sizeof(struct mmp_pdma_chan),
-			    GFP_KERNEL);
+	chan = devm_kzalloc(pdev->dev, sizeof(*chan), GFP_KERNEL);
 	if (chan == NULL)
 		return -ENOMEM;
 
@@ -867,8 +975,8 @@ static int mmp_pdma_chan_init(struct mmp_pdma_device *pdev, int idx, int irq)
 	phy->base = pdev->base;
 
 	if (irq) {
-		ret = devm_request_irq(pdev->dev, irq, mmp_pdma_chan_handler, 0,
-				       "pdma", phy);
+		ret = devm_request_irq(pdev->dev, irq, mmp_pdma_chan_handler,
+				       IRQF_SHARED, "pdma", phy);
 		if (ret) {
 			dev_err(pdev->dev, "channel request irq fail!\n");
 			return ret;
@@ -878,7 +986,7 @@ static int mmp_pdma_chan_init(struct mmp_pdma_device *pdev, int idx, int irq)
 	spin_lock_init(&chan->desc_lock);
 	chan->dev = pdev->dev;
 	chan->chan.device = &pdev->device;
-	tasklet_init(&chan->tasklet, dma_do_tasklet, (unsigned long)chan);
+	tasklet_setup(&chan->tasklet, dma_do_tasklet);
 	INIT_LIST_HEAD(&chan->chain_pending);
 	INIT_LIST_HEAD(&chan->chain_running);
 
@@ -888,7 +996,7 @@ static int mmp_pdma_chan_init(struct mmp_pdma_device *pdev, int idx, int irq)
 	return 0;
 }
 
-static struct of_device_id mmp_pdma_dt_ids[] = {
+static const struct of_device_id mmp_pdma_dt_ids[] = {
 	{ .compatible = "marvell,pdma-1.0", },
 	{}
 };
@@ -914,9 +1022,11 @@ static int mmp_pdma_probe(struct platform_device *op)
 	struct mmp_pdma_device *pdev;
 	const struct of_device_id *of_id;
 	struct mmp_dma_platdata *pdata = dev_get_platdata(&op->dev);
-	struct resource *iores;
 	int i, ret, irq = 0;
 	int dma_channels = 0, irq_num = 0;
+	const enum dma_slave_buswidth widths =
+		DMA_SLAVE_BUSWIDTH_1_BYTE   | DMA_SLAVE_BUSWIDTH_2_BYTES |
+		DMA_SLAVE_BUSWIDTH_4_BYTES;
 
 	pdev = devm_kzalloc(&op->dev, sizeof(*pdev), GFP_KERNEL);
 	if (!pdev)
@@ -926,28 +1036,30 @@ static int mmp_pdma_probe(struct platform_device *op)
 
 	spin_lock_init(&pdev->phy_lock);
 
-	iores = platform_get_resource(op, IORESOURCE_MEM, 0);
-	pdev->base = devm_ioremap_resource(pdev->dev, iores);
+	pdev->base = devm_platform_ioremap_resource(op, 0);
 	if (IS_ERR(pdev->base))
 		return PTR_ERR(pdev->base);
 
 	of_id = of_match_device(mmp_pdma_dt_ids, pdev->dev);
-	if (of_id)
-		of_property_read_u32(pdev->dev->of_node, "#dma-channels",
-				     &dma_channels);
-	else if (pdata && pdata->dma_channels)
+	if (of_id) {
+		/* Parse new and deprecated dma-channels properties */
+		if (of_property_read_u32(pdev->dev->of_node, "dma-channels",
+					 &dma_channels))
+			of_property_read_u32(pdev->dev->of_node, "#dma-channels",
+					     &dma_channels);
+	} else if (pdata && pdata->dma_channels) {
 		dma_channels = pdata->dma_channels;
-	else
+	} else {
 		dma_channels = 32;	/* default 32 channel */
+	}
 	pdev->dma_channels = dma_channels;
 
 	for (i = 0; i < dma_channels; i++) {
-		if (platform_get_irq(op, i) > 0)
+		if (platform_get_irq_optional(op, i) > 0)
 			irq_num++;
 	}
 
-	pdev->phy = devm_kcalloc(pdev->dev,
-				 dma_channels, sizeof(struct mmp_pdma_chan),
+	pdev->phy = devm_kcalloc(pdev->dev, dma_channels, sizeof(*pdev->phy),
 				 GFP_KERNEL);
 	if (pdev->phy == NULL)
 		return -ENOMEM;
@@ -957,8 +1069,8 @@ static int mmp_pdma_probe(struct platform_device *op)
 	if (irq_num != dma_channels) {
 		/* all chan share one irq, demux inside */
 		irq = platform_get_irq(op, 0);
-		ret = devm_request_irq(pdev->dev, irq, mmp_pdma_int_handler, 0,
-				       "pdma", pdev);
+		ret = devm_request_irq(pdev->dev, irq, mmp_pdma_int_handler,
+				       IRQF_SHARED, "pdma", pdev);
 		if (ret)
 			return ret;
 	}
@@ -982,8 +1094,13 @@ static int mmp_pdma_probe(struct platform_device *op)
 	pdev->device.device_prep_slave_sg = mmp_pdma_prep_slave_sg;
 	pdev->device.device_prep_dma_cyclic = mmp_pdma_prep_dma_cyclic;
 	pdev->device.device_issue_pending = mmp_pdma_issue_pending;
-	pdev->device.device_control = mmp_pdma_control;
-	pdev->device.copy_align = PDMA_ALIGNMENT;
+	pdev->device.device_config = mmp_pdma_config;
+	pdev->device.device_terminate_all = mmp_pdma_terminate_all;
+	pdev->device.copy_align = DMAENGINE_ALIGN_8_BYTES;
+	pdev->device.src_addr_widths = widths;
+	pdev->device.dst_addr_widths = widths;
+	pdev->device.directions = BIT(DMA_MEM_TO_DEV) | BIT(DMA_DEV_TO_MEM);
+	pdev->device.residue_granularity = DMA_RESIDUE_GRANULARITY_DESCRIPTOR;
 
 	if (pdev->dev->coherent_dma_mask)
 		dma_set_mask(pdev->dev, pdev->dev->coherent_dma_mask);
@@ -1002,6 +1119,7 @@ static int mmp_pdma_probe(struct platform_device *op)
 						 mmp_pdma_dma_xlate, pdev);
 		if (ret < 0) {
 			dev_err(&op->dev, "of_dma_controller_register failed\n");
+			dma_async_device_unregister(&pdev->device);
 			return ret;
 		}
 	}
@@ -1019,26 +1137,12 @@ static const struct platform_device_id mmp_pdma_id_table[] = {
 static struct platform_driver mmp_pdma_driver = {
 	.driver		= {
 		.name	= "mmp-pdma",
-		.owner  = THIS_MODULE,
 		.of_match_table = mmp_pdma_dt_ids,
 	},
 	.id_table	= mmp_pdma_id_table,
 	.probe		= mmp_pdma_probe,
 	.remove		= mmp_pdma_remove,
 };
-
-bool mmp_pdma_filter_fn(struct dma_chan *chan, void *param)
-{
-	struct mmp_pdma_chan *c = to_mmp_pdma_chan(chan);
-
-	if (chan->device->dev->driver != &mmp_pdma_driver.driver)
-		return false;
-
-	c->drcmr = *(unsigned int *)param;
-
-	return true;
-}
-EXPORT_SYMBOL_GPL(mmp_pdma_filter_fn);
 
 module_platform_driver(mmp_pdma_driver);
 

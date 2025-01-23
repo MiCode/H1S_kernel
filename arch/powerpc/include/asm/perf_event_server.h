@@ -1,12 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Performance event support - PowerPC classic/server specific definitions.
  *
  * Copyright 2008-2009 Paul Mackerras, IBM Corporation.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 #include <linux/types.h>
@@ -14,10 +10,20 @@
 #include <linux/device.h>
 #include <uapi/asm/perf_event.h>
 
+/* Update perf_event_print_debug() if this changes */
 #define MAX_HWEVENTS		8
 #define MAX_EVENT_ALTERNATIVES	8
 #define MAX_LIMITED_HWCOUNTERS	2
 
+struct perf_event;
+
+struct mmcr_regs {
+	unsigned long mmcr0;
+	unsigned long mmcr1;
+	unsigned long mmcr2;
+	unsigned long mmcra;
+	unsigned long mmcr3;
+};
 /*
  * This struct provides the constants and functions needed to
  * describe the PMU on a particular POWER-family CPU.
@@ -29,25 +35,44 @@ struct power_pmu {
 	unsigned long	add_fields;
 	unsigned long	test_adder;
 	int		(*compute_mmcr)(u64 events[], int n_ev,
-				unsigned int hwc[], unsigned long mmcr[]);
+				unsigned int hwc[], struct mmcr_regs *mmcr,
+				struct perf_event *pevents[], u32 flags);
 	int		(*get_constraint)(u64 event_id, unsigned long *mskp,
-				unsigned long *valp);
+				unsigned long *valp, u64 event_config1);
 	int		(*get_alternatives)(u64 event_id, unsigned int flags,
 				u64 alt[]);
+	void		(*get_mem_data_src)(union perf_mem_data_src *dsrc,
+				u32 flags, struct pt_regs *regs);
+	void		(*get_mem_weight)(u64 *weight, u64 type);
+	unsigned long	group_constraint_mask;
+	unsigned long	group_constraint_val;
 	u64             (*bhrb_filter_map)(u64 branch_sample_type);
 	void            (*config_bhrb)(u64 pmu_bhrb_filter);
-	void		(*disable_pmc)(unsigned int pmc, unsigned long mmcr[]);
+	void		(*disable_pmc)(unsigned int pmc, struct mmcr_regs *mmcr);
 	int		(*limited_pmc_event)(u64 event_id);
 	u32		flags;
 	const struct attribute_group	**attr_groups;
 	int		n_generic;
 	int		*generic_events;
-	int		(*cache_events)[PERF_COUNT_HW_CACHE_MAX]
+	u64		(*cache_events)[PERF_COUNT_HW_CACHE_MAX]
 			       [PERF_COUNT_HW_CACHE_OP_MAX]
 			       [PERF_COUNT_HW_CACHE_RESULT_MAX];
 
+	int		n_blacklist_ev;
+	int 		*blacklist_ev;
 	/* BHRB entries in the PMU */
 	int		bhrb_nr;
+	/*
+	 * set this flag with `PERF_PMU_CAP_EXTENDED_REGS` if
+	 * the pmu supports extended perf regs capability
+	 */
+	int		capabilities;
+	/*
+	 * Function to check event code for values which are
+	 * reserved. Function takes struct perf_event as input,
+	 * since event code could be spread in attr.config*
+	 */
+	int		(*check_attr_config)(struct perf_event *ev);
 };
 
 /*
@@ -60,8 +85,11 @@ struct power_pmu {
 #define PPMU_SIAR_VALID		0x00000010 /* Processor has SIAR Valid bit */
 #define PPMU_HAS_SSLOT		0x00000020 /* Has sampled slot in MMCRA */
 #define PPMU_HAS_SIER		0x00000040 /* Has SIER */
-#define PPMU_BHRB		0x00000080 /* has BHRB feature enabled */
-#define PPMU_EBB		0x00000100 /* supports event based branch */
+#define PPMU_ARCH_207S		0x00000080 /* PMC is architecture v2.07S */
+#define PPMU_NO_SIAR		0x00000100 /* Do not use SIAR */
+#define PPMU_ARCH_31		0x00000200 /* Has MMCR3, SIER2 and SIER3 */
+#define PPMU_P10_DD1		0x00000400 /* Is power10 DD1 processor version */
+#define PPMU_HAS_ATTR_CONFIG1	0x00000800 /* Using config1 attribute */
 
 /*
  * Values for flags to get_alternatives()
@@ -70,7 +98,7 @@ struct power_pmu {
 #define PPMU_LIMITED_PMC_REQD	2	/* have to put this on a limited PMC */
 #define PPMU_ONLY_COUNT_RUN	4	/* only counting in run state */
 
-extern int register_power_pmu(struct power_pmu *);
+int __init register_power_pmu(struct power_pmu *pmu);
 
 struct pt_regs;
 extern unsigned long perf_misc_flags(struct pt_regs *regs);
@@ -133,16 +161,24 @@ extern ssize_t power_events_sysfs_show(struct device *dev,
  * event 'cpu-cycles' can have two entries in sysfs: 'cpu-cycles' and
  * 'PM_CYC' where the latter is the name by which the event is known in
  * POWER CPU specification.
+ *
+ * Similarly, some hardware and cache events use the same event code. Eg.
+ * on POWER8, both "cache-references" and "L1-dcache-loads" events refer
+ * to the same event, PM_LD_REF_L1.  The suffix, allows us to have two
+ * sysfs objects for the same event and thus two entries/aliases in sysfs.
  */
 #define	EVENT_VAR(_id, _suffix)		event_attr_##_id##_suffix
 #define	EVENT_PTR(_id, _suffix)		&EVENT_VAR(_id, _suffix).attr.attr
 
 #define	EVENT_ATTR(_name, _id, _suffix)					\
-	PMU_EVENT_ATTR(_name, EVENT_VAR(_id, _suffix), PME_##_id,	\
+	PMU_EVENT_ATTR(_name, EVENT_VAR(_id, _suffix), _id,		\
 			power_events_sysfs_show)
 
 #define	GENERIC_EVENT_ATTR(_name, _id)	EVENT_ATTR(_name, _id, _g)
 #define	GENERIC_EVENT_PTR(_id)		EVENT_PTR(_id, _g)
+
+#define	CACHE_EVENT_ATTR(_name, _id)	EVENT_ATTR(_name, _id, _c)
+#define	CACHE_EVENT_PTR(_id)		EVENT_PTR(_id, _c)
 
 #define	POWER_EVENT_ATTR(_name, _id)	EVENT_ATTR(_name, _id, _p)
 #define	POWER_EVENT_PTR(_id)		EVENT_PTR(_id, _p)

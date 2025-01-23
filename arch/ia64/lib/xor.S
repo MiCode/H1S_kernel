@@ -1,18 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * arch/ia64/lib/xor.S
  *
  * Optimized RAID-5 checksumming functions for IA-64.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * You should have received a copy of the GNU General Public License
- * (for example /usr/src/linux/COPYING); if not, write to the Free
- * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#include <linux/export.h>
 #include <asm/asmmacro.h>
 
 GLOBAL_ENTRY(xor_ia64_2)
@@ -51,6 +44,7 @@ GLOBAL_ENTRY(xor_ia64_2)
 	mov pr = r29, -1
 	br.ret.sptk.few rp
 END(xor_ia64_2)
+EXPORT_SYMBOL(xor_ia64_2)
 
 GLOBAL_ENTRY(xor_ia64_3)
 	.prologue
@@ -91,6 +85,7 @@ GLOBAL_ENTRY(xor_ia64_3)
 	mov pr = r29, -1
 	br.ret.sptk.few rp
 END(xor_ia64_3)
+EXPORT_SYMBOL(xor_ia64_3)
 
 GLOBAL_ENTRY(xor_ia64_4)
 	.prologue
@@ -134,6 +129,7 @@ GLOBAL_ENTRY(xor_ia64_4)
 	mov pr = r29, -1
 	br.ret.sptk.few rp
 END(xor_ia64_4)
+EXPORT_SYMBOL(xor_ia64_4)
 
 GLOBAL_ENTRY(xor_ia64_5)
 	.prologue
@@ -182,3 +178,4 @@ GLOBAL_ENTRY(xor_ia64_5)
 	mov pr = r29, -1
 	br.ret.sptk.few rp
 END(xor_ia64_5)
+EXPORT_SYMBOL(xor_ia64_5)

@@ -1,15 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2013
  * Phillip Lougher <phillip@squashfs.org.uk>
- *
- * This work is licensed under the terms of the GNU GPL, version 2. See
- * the COPYING file in the top-level directory.
  */
 
 #include <linux/types.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
-#include <linux/buffer_head.h>
+#include <linux/bio.h>
 
 #include "squashfs_fs.h"
 #include "squashfs_fs_sb.h"
@@ -26,7 +24,7 @@ struct squashfs_stream {
 	struct mutex	mutex;
 };
 
-void *squashfs_decompressor_create(struct squashfs_sb_info *msblk,
+static void *squashfs_decompressor_create(struct squashfs_sb_info *msblk,
 						void *comp_opts)
 {
 	struct squashfs_stream *stream;
@@ -51,7 +49,7 @@ out:
 	return ERR_PTR(err);
 }
 
-void squashfs_decompressor_destroy(struct squashfs_sb_info *msblk)
+static void squashfs_decompressor_destroy(struct squashfs_sb_info *msblk)
 {
 	struct squashfs_stream *stream = msblk->stream;
 
@@ -61,14 +59,15 @@ void squashfs_decompressor_destroy(struct squashfs_sb_info *msblk)
 	}
 }
 
-int squashfs_decompress(struct squashfs_sb_info *msblk, struct buffer_head **bh,
-	int b, int offset, int length, struct squashfs_page_actor *output)
+static int squashfs_decompress(struct squashfs_sb_info *msblk, struct bio *bio,
+			int offset, int length,
+			struct squashfs_page_actor *output)
 {
 	int res;
 	struct squashfs_stream *stream = msblk->stream;
 
 	mutex_lock(&stream->mutex);
-	res = msblk->decompressor->decompress(msblk, stream->stream, bh, b,
+	res = msblk->decompressor->decompress(msblk, stream->stream, bio,
 		offset, length, output);
 	mutex_unlock(&stream->mutex);
 
@@ -79,7 +78,14 @@ int squashfs_decompress(struct squashfs_sb_info *msblk, struct buffer_head **bh,
 	return res;
 }
 
-int squashfs_max_decompressors(void)
+static int squashfs_max_decompressors(void)
 {
 	return 1;
 }
+
+const struct squashfs_decompressor_thread_ops squashfs_decompressor_single = {
+	.create = squashfs_decompressor_create,
+	.destroy = squashfs_decompressor_destroy,
+	.decompress = squashfs_decompress,
+	.max_decompressors = squashfs_max_decompressors,
+};

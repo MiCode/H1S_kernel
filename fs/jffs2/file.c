@@ -25,9 +25,9 @@ static int jffs2_write_end(struct file *filp, struct address_space *mapping,
 			loff_t pos, unsigned len, unsigned copied,
 			struct page *pg, void *fsdata);
 static int jffs2_write_begin(struct file *filp, struct address_space *mapping,
-			loff_t pos, unsigned len, unsigned flags,
+			loff_t pos, unsigned len,
 			struct page **pagep, void **fsdata);
-static int jffs2_readpage (struct file *filp, struct page *pg);
+static int jffs2_read_folio(struct file *filp, struct folio *folio);
 
 int jffs2_fsync(struct file *filp, loff_t start, loff_t end, int datasync)
 {
@@ -35,14 +35,14 @@ int jffs2_fsync(struct file *filp, loff_t start, loff_t end, int datasync)
 	struct jffs2_sb_info *c = JFFS2_SB_INFO(inode->i_sb);
 	int ret;
 
-	ret = filemap_write_and_wait_range(inode->i_mapping, start, end);
+	ret = file_write_and_wait_range(filp, start, end);
 	if (ret)
 		return ret;
 
-	mutex_lock(&inode->i_mutex);
+	inode_lock(inode);
 	/* Trigger GC to flush any pending writes for this inode */
 	jffs2_flush_wbuf_gc(c, inode->i_ino);
-	mutex_unlock(&inode->i_mutex);
+	inode_unlock(inode);
 
 	return 0;
 }
@@ -51,32 +51,28 @@ const struct file_operations jffs2_file_operations =
 {
 	.llseek =	generic_file_llseek,
 	.open =		generic_file_open,
- 	.read =		do_sync_read,
- 	.aio_read =	generic_file_aio_read,
- 	.write =	do_sync_write,
- 	.aio_write =	generic_file_aio_write,
+ 	.read_iter =	generic_file_read_iter,
+ 	.write_iter =	generic_file_write_iter,
 	.unlocked_ioctl=jffs2_ioctl,
 	.mmap =		generic_file_readonly_mmap,
 	.fsync =	jffs2_fsync,
-	.splice_read =	generic_file_splice_read,
+	.splice_read =	filemap_splice_read,
+	.splice_write = iter_file_splice_write,
 };
 
 /* jffs2_file_inode_operations */
 
 const struct inode_operations jffs2_file_inode_operations =
 {
-	.get_acl =	jffs2_get_acl,
+	.get_inode_acl =	jffs2_get_acl,
 	.set_acl =	jffs2_set_acl,
 	.setattr =	jffs2_setattr,
-	.setxattr =	jffs2_setxattr,
-	.getxattr =	jffs2_getxattr,
 	.listxattr =	jffs2_listxattr,
-	.removexattr =	jffs2_removexattr
 };
 
 const struct address_space_operations jffs2_file_address_operations =
 {
-	.readpage =	jffs2_readpage,
+	.read_folio =	jffs2_read_folio,
 	.write_begin =	jffs2_write_begin,
 	.write_end =	jffs2_write_end,
 };
@@ -89,14 +85,15 @@ static int jffs2_do_readpage_nolock (struct inode *inode, struct page *pg)
 	int ret;
 
 	jffs2_dbg(2, "%s(): ino #%lu, page at offset 0x%lx\n",
-		  __func__, inode->i_ino, pg->index << PAGE_CACHE_SHIFT);
+		  __func__, inode->i_ino, pg->index << PAGE_SHIFT);
 
 	BUG_ON(!PageLocked(pg));
 
 	pg_buf = kmap(pg);
 	/* FIXME: Can kmap fail? */
 
-	ret = jffs2_read_inode_range(c, f, pg_buf, pg->index << PAGE_CACHE_SHIFT, PAGE_CACHE_SIZE);
+	ret = jffs2_read_inode_range(c, f, pg_buf, pg->index << PAGE_SHIFT,
+				     PAGE_SIZE);
 
 	if (ret) {
 		ClearPageUptodate(pg);
@@ -113,65 +110,52 @@ static int jffs2_do_readpage_nolock (struct inode *inode, struct page *pg)
 	return ret;
 }
 
-int jffs2_do_readpage_unlock(struct inode *inode, struct page *pg)
+int __jffs2_read_folio(struct file *file, struct folio *folio)
 {
-	int ret = jffs2_do_readpage_nolock(inode, pg);
-	unlock_page(pg);
+	int ret = jffs2_do_readpage_nolock(folio->mapping->host, &folio->page);
+	folio_unlock(folio);
 	return ret;
 }
 
-
-static int jffs2_readpage (struct file *filp, struct page *pg)
+static int jffs2_read_folio(struct file *file, struct folio *folio)
 {
-	struct jffs2_inode_info *f = JFFS2_INODE_INFO(pg->mapping->host);
+	struct jffs2_inode_info *f = JFFS2_INODE_INFO(folio->mapping->host);
 	int ret;
 
 	mutex_lock(&f->sem);
-	ret = jffs2_do_readpage_unlock(pg->mapping->host, pg);
+	ret = __jffs2_read_folio(file, folio);
 	mutex_unlock(&f->sem);
 	return ret;
 }
 
 static int jffs2_write_begin(struct file *filp, struct address_space *mapping,
-			loff_t pos, unsigned len, unsigned flags,
+			loff_t pos, unsigned len,
 			struct page **pagep, void **fsdata)
 {
 	struct page *pg;
 	struct inode *inode = mapping->host;
 	struct jffs2_inode_info *f = JFFS2_INODE_INFO(inode);
 	struct jffs2_sb_info *c = JFFS2_SB_INFO(inode->i_sb);
-	struct jffs2_raw_inode ri;
-	uint32_t alloc_len = 0;
-	pgoff_t index = pos >> PAGE_CACHE_SHIFT;
-	uint32_t pageofs = index << PAGE_CACHE_SHIFT;
+	pgoff_t index = pos >> PAGE_SHIFT;
 	int ret = 0;
 
 	jffs2_dbg(1, "%s()\n", __func__);
 
-	if (pageofs > inode->i_size) {
+	if (pos > inode->i_size) {
+		/* Make new hole frag from old EOF to new position */
+		struct jffs2_raw_inode ri;
+		struct jffs2_full_dnode *fn;
+		uint32_t alloc_len;
+
+		jffs2_dbg(1, "Writing new hole frag 0x%x-0x%x between current EOF and new position\n",
+			  (unsigned int)inode->i_size, (uint32_t)pos);
+
 		ret = jffs2_reserve_space(c, sizeof(ri), &alloc_len,
 					  ALLOC_NORMAL, JFFS2_SUMMARY_INODE_SIZE);
 		if (ret)
-			return ret;
-	}
+			goto out_err;
 
-	mutex_lock(&f->sem);
-	pg = grab_cache_page_write_begin(mapping, index, flags);
-	if (!pg) {
-		if (alloc_len)
-			jffs2_complete_reservation(c);
-		mutex_unlock(&f->sem);
-		return -ENOMEM;
-	}
-	*pagep = pg;
-
-	if (alloc_len) {
-		/* Make new hole frag from old EOF to new page */
-		struct jffs2_full_dnode *fn;
-
-		jffs2_dbg(1, "Writing new hole frag 0x%x-0x%x between current EOF and new page\n",
-			  (unsigned int)inode->i_size, pageofs);
-
+		mutex_lock(&f->sem);
 		memset(&ri, 0, sizeof(ri));
 
 		ri.magic = cpu_to_je16(JFFS2_MAGIC_BITMASK);
@@ -184,10 +168,10 @@ static int jffs2_write_begin(struct file *filp, struct address_space *mapping,
 		ri.mode = cpu_to_jemode(inode->i_mode);
 		ri.uid = cpu_to_je16(i_uid_read(inode));
 		ri.gid = cpu_to_je16(i_gid_read(inode));
-		ri.isize = cpu_to_je32(max((uint32_t)inode->i_size, pageofs));
-		ri.atime = ri.ctime = ri.mtime = cpu_to_je32(get_seconds());
+		ri.isize = cpu_to_je32((uint32_t)pos);
+		ri.atime = ri.ctime = ri.mtime = cpu_to_je32(JFFS2_NOW());
 		ri.offset = cpu_to_je32(inode->i_size);
-		ri.dsize = cpu_to_je32(pageofs - inode->i_size);
+		ri.dsize = cpu_to_je32((uint32_t)pos - inode->i_size);
 		ri.csize = cpu_to_je32(0);
 		ri.compr = JFFS2_COMPR_ZERO;
 		ri.node_crc = cpu_to_je32(crc32(0, &ri, sizeof(ri)-8));
@@ -198,7 +182,8 @@ static int jffs2_write_begin(struct file *filp, struct address_space *mapping,
 		if (IS_ERR(fn)) {
 			ret = PTR_ERR(fn);
 			jffs2_complete_reservation(c);
-			goto out_page;
+			mutex_unlock(&f->sem);
+			goto out_err;
 		}
 		ret = jffs2_add_full_dnode_to_inode(c, f, fn);
 		if (f->metadata) {
@@ -212,11 +197,26 @@ static int jffs2_write_begin(struct file *filp, struct address_space *mapping,
 			jffs2_mark_node_obsolete(c, fn->raw);
 			jffs2_free_full_dnode(fn);
 			jffs2_complete_reservation(c);
-			goto out_page;
+			mutex_unlock(&f->sem);
+			goto out_err;
 		}
 		jffs2_complete_reservation(c);
-		inode->i_size = pageofs;
+		inode->i_size = pos;
+		mutex_unlock(&f->sem);
 	}
+
+	/*
+	 * While getting a page and reading data in, lock c->alloc_sem until
+	 * the page is Uptodate. Otherwise GC task may attempt to read the same
+	 * page in read_cache_page(), which causes a deadlock.
+	 */
+	mutex_lock(&c->alloc_sem);
+	pg = grab_cache_page_write_begin(mapping, index);
+	if (!pg) {
+		ret = -ENOMEM;
+		goto release_sem;
+	}
+	*pagep = pg;
 
 	/*
 	 * Read in the page if it wasn't already present. Cannot optimize away
@@ -224,18 +224,20 @@ static int jffs2_write_begin(struct file *filp, struct address_space *mapping,
 	 * case of a short-copy.
 	 */
 	if (!PageUptodate(pg)) {
+		mutex_lock(&f->sem);
 		ret = jffs2_do_readpage_nolock(inode, pg);
-		if (ret)
-			goto out_page;
+		mutex_unlock(&f->sem);
+		if (ret) {
+			unlock_page(pg);
+			put_page(pg);
+			goto release_sem;
+		}
 	}
-	mutex_unlock(&f->sem);
 	jffs2_dbg(1, "end write_begin(). pg->flags %lx\n", pg->flags);
-	return ret;
 
-out_page:
-	unlock_page(pg);
-	page_cache_release(pg);
-	mutex_unlock(&f->sem);
+release_sem:
+	mutex_unlock(&c->alloc_sem);
+out_err:
 	return ret;
 }
 
@@ -250,14 +252,14 @@ static int jffs2_write_end(struct file *filp, struct address_space *mapping,
 	struct jffs2_inode_info *f = JFFS2_INODE_INFO(inode);
 	struct jffs2_sb_info *c = JFFS2_SB_INFO(inode->i_sb);
 	struct jffs2_raw_inode *ri;
-	unsigned start = pos & (PAGE_CACHE_SIZE - 1);
+	unsigned start = pos & (PAGE_SIZE - 1);
 	unsigned end = start + copied;
 	unsigned aligned_start = start & ~3;
 	int ret = 0;
 	uint32_t writtenlen = 0;
 
 	jffs2_dbg(1, "%s(): ino #%lu, page at 0x%lx, range %d-%d, flags %lx\n",
-		  __func__, inode->i_ino, pg->index << PAGE_CACHE_SHIFT,
+		  __func__, inode->i_ino, pg->index << PAGE_SHIFT,
 		  start, end, pg->flags);
 
 	/* We need to avoid deadlock with page_cache_read() in
@@ -266,7 +268,7 @@ static int jffs2_write_end(struct file *filp, struct address_space *mapping,
 	   to re-lock it. */
 	BUG_ON(!PageUptodate(pg));
 
-	if (end == PAGE_CACHE_SIZE) {
+	if (end == PAGE_SIZE) {
 		/* When writing out the end of a page, write out the
 		   _whole_ page. This helps to reduce the number of
 		   nodes in files which have many short writes, like
@@ -280,7 +282,7 @@ static int jffs2_write_end(struct file *filp, struct address_space *mapping,
 		jffs2_dbg(1, "%s(): Allocation of raw inode failed\n",
 			  __func__);
 		unlock_page(pg);
-		page_cache_release(pg);
+		put_page(pg);
 		return -ENOMEM;
 	}
 
@@ -290,14 +292,14 @@ static int jffs2_write_end(struct file *filp, struct address_space *mapping,
 	ri->uid = cpu_to_je16(i_uid_read(inode));
 	ri->gid = cpu_to_je16(i_gid_read(inode));
 	ri->isize = cpu_to_je32((uint32_t)inode->i_size);
-	ri->atime = ri->ctime = ri->mtime = cpu_to_je32(get_seconds());
+	ri->atime = ri->ctime = ri->mtime = cpu_to_je32(JFFS2_NOW());
 
 	/* In 2.4, it was already kmapped by generic_file_write(). Doesn't
 	   hurt to do it again. The alternative is ifdefs, which are ugly. */
 	kmap(pg);
 
 	ret = jffs2_write_inode_range(c, f, ri, page_address(pg) + aligned_start,
-				      (pg->index << PAGE_CACHE_SHIFT) + aligned_start,
+				      (pg->index << PAGE_SHIFT) + aligned_start,
 				      end - aligned_start, &writtenlen);
 
 	kunmap(pg);
@@ -315,7 +317,8 @@ static int jffs2_write_end(struct file *filp, struct address_space *mapping,
 			inode->i_size = pos + writtenlen;
 			inode->i_blocks = (inode->i_size + 511) >> 9;
 
-			inode->i_ctime = inode->i_mtime = ITIME(je32_to_cpu(ri->ctime));
+			inode->i_mtime = inode_set_ctime_to_ts(inode,
+							       ITIME(je32_to_cpu(ri->ctime)));
 		}
 	}
 
@@ -334,6 +337,6 @@ static int jffs2_write_end(struct file *filp, struct address_space *mapping,
 	jffs2_dbg(1, "%s() returning %d\n",
 		  __func__, writtenlen > 0 ? writtenlen : ret);
 	unlock_page(pg);
-	page_cache_release(pg);
+	put_page(pg);
 	return writtenlen > 0 ? writtenlen : ret;
 }

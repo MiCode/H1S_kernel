@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * hvcserver.c
  * Copyright (C) 2004 Ryan S Arnold, IBM Corporation
  *
  * PPC64 virtual I/O console server support.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <linux/kernel.h>
@@ -58,7 +45,7 @@ static int hvcs_convert(long to_convert)
 		case H_LONG_BUSY_ORDER_10_SEC:
 		case H_LONG_BUSY_ORDER_100_SEC:
 			return -EBUSY;
-		case H_FUNCTION: /* fall through */
+		case H_FUNCTION:
 		default:
 			return -EPERM;
 	}
@@ -142,11 +129,11 @@ int hvcs_get_partner_info(uint32_t unit_address, struct list_head *head,
 	int more = 1;
 	int retval;
 
-	memset(pi_buff, 0x00, PAGE_SIZE);
 	/* invalid parameters */
 	if (!head || !pi_buff)
 		return -EINVAL;
 
+	memset(pi_buff, 0x00, PAGE_SIZE);
 	last_p_partition_ID = last_p_unit_address = ~0UL;
 	INIT_LIST_HEAD(head);
 
@@ -163,8 +150,8 @@ int hvcs_get_partner_info(uint32_t unit_address, struct list_head *head,
 			return retval;
 		}
 
-		last_p_partition_ID = pi_buff[0];
-		last_p_unit_address = pi_buff[1];
+		last_p_partition_ID = be64_to_cpu(pi_buff[0]);
+		last_p_unit_address = be64_to_cpu(pi_buff[1]);
 
 		/* This indicates that there are no further partners */
 		if (last_p_partition_ID == ~0UL
@@ -189,7 +176,7 @@ int hvcs_get_partner_info(uint32_t unit_address, struct list_head *head,
 			= (unsigned int)last_p_partition_ID;
 
 		/* copy the Null-term char too */
-		strlcpy(&next_partner_info->location_code[0],
+		strscpy(&next_partner_info->location_code[0],
 			(char *)&pi_buff[2],
 			sizeof(next_partner_info->location_code));
 

@@ -1,19 +1,39 @@
+/* SPDX-License-Identifier: MIT */
 #ifndef __NOUVEAU_DEBUGFS_H__
 #define __NOUVEAU_DEBUGFS_H__
 
-#include <drm/drmP.h>
+#include <drm/drm_debugfs.h>
 
 #if defined(CONFIG_DEBUG_FS)
-extern int  nouveau_debugfs_init(struct drm_minor *);
-extern void nouveau_debugfs_takedown(struct drm_minor *);
-#else
-static inline int
-nouveau_debugfs_init(struct drm_minor *minor)
+
+#include "nouveau_drv.h"
+
+struct nouveau_debugfs {
+	struct nvif_object ctrl;
+};
+
+static inline struct nouveau_debugfs *
+nouveau_debugfs(struct drm_device *dev)
 {
-       return 0;
+	return nouveau_drm(dev)->debugfs;
 }
 
-static inline void nouveau_debugfs_takedown(struct drm_minor *minor)
+extern void  nouveau_drm_debugfs_init(struct drm_minor *);
+extern int  nouveau_debugfs_init(struct nouveau_drm *);
+extern void nouveau_debugfs_fini(struct nouveau_drm *);
+#else
+static inline void
+nouveau_drm_debugfs_init(struct drm_minor *minor)
+{}
+
+static inline int
+nouveau_debugfs_init(struct nouveau_drm *drm)
+{
+	return 0;
+}
+
+static inline void
+nouveau_debugfs_fini(struct nouveau_drm *drm)
 {
 }
 

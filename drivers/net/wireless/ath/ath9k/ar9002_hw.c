@@ -108,8 +108,7 @@ static void ar9280_20_hw_init_rxgain_ini(struct ath_hw *ah)
 {
 	u32 rxgain_type;
 
-	if (ah->eep_ops->get_eeprom(ah, EEP_MINOR_REV) >=
-	    AR5416_EEP_MINOR_VER_17) {
+	if (ah->eep_ops->get_eeprom_rev(ah) >= AR5416_EEP_MINOR_VER_17) {
 		rxgain_type = ah->eep_ops->get_eeprom(ah, EEP_RXGAIN_TYPE);
 
 		if (rxgain_type == AR5416_EEP_RXGAIN_13DB_BACKOFF)
@@ -129,8 +128,7 @@ static void ar9280_20_hw_init_rxgain_ini(struct ath_hw *ah)
 
 static void ar9280_20_hw_init_txgain_ini(struct ath_hw *ah, u32 txgain_type)
 {
-	if (ah->eep_ops->get_eeprom(ah, EEP_MINOR_REV) >=
-	    AR5416_EEP_MINOR_VER_19) {
+	if (ah->eep_ops->get_eeprom_rev(ah) >= AR5416_EEP_MINOR_VER_19) {
 		if (txgain_type == AR5416_EEP_TXGAIN_HIGH_POWER)
 			INIT_INI_ARRAY(&ah->iniModesTxGain,
 				       ar9280Modes_high_power_tx_gain_9280_2);
@@ -251,9 +249,9 @@ static void ar9002_hw_configpcipowersave(struct ath_hw *ah,
 
 	if (power_off) {
 		/* clear bit 19 to disable L1 */
-		REG_CLR_BIT(ah, AR_PCIE_PM_CTRL, AR_PCIE_PM_CTRL_ENA);
+		REG_CLR_BIT(ah, AR_PCIE_PM_CTRL(ah), AR_PCIE_PM_CTRL_ENA);
 
-		val = REG_READ(ah, AR_WA);
+		val = REG_READ(ah, AR_WA(ah));
 
 		/*
 		 * Set PCIe workaround bits
@@ -288,7 +286,7 @@ static void ar9002_hw_configpcipowersave(struct ath_hw *ah,
 		if (AR_SREV_9285E_20(ah))
 			val |= AR_WA_BIT23;
 
-		REG_WRITE(ah, AR_WA, val);
+		REG_WRITE(ah, AR_WA(ah), val);
 	} else {
 		if (ah->config.pcie_waen) {
 			val = ah->config.pcie_waen;
@@ -316,10 +314,10 @@ static void ar9002_hw_configpcipowersave(struct ath_hw *ah,
 		if (AR_SREV_9285E_20(ah))
 			val |= AR_WA_BIT23;
 
-		REG_WRITE(ah, AR_WA, val);
+		REG_WRITE(ah, AR_WA(ah), val);
 
 		/* set bit 19 to allow forcing of pcie core into L1 state */
-		REG_SET_BIT(ah, AR_PCIE_PM_CTRL, AR_PCIE_PM_CTRL_ENA);
+		REG_SET_BIT(ah, AR_PCIE_PM_CTRL(ah), AR_PCIE_PM_CTRL_ENA);
 	}
 }
 

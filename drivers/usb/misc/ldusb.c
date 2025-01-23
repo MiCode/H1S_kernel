@@ -1,4 +1,5 @@
-/**
+// SPDX-License-Identifier: GPL-2.0+
+/*
  * Generic USB driver for report based interrupt in/out devices
  * like LD Didactic's USB devices. LD Didactic's USB devices are
  * HID devices which do not use HID report definitons (they use
@@ -12,11 +13,6 @@
  *
  * Copyright (C) 2005 Michael Hund <mhund@ld-didactic.de>
  *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License as
- *	published by the Free Software Foundation; either version 2 of
- *	the License, or (at your option) any later version.
- *
  * Derived from Lego USB Tower driver
  * Copyright (C) 2003 David Glance <advidgsf@sourceforge.net>
  *		 2001-2004 Juergen Stuber <starblue@users.sourceforge.net>
@@ -28,7 +24,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/input.h>
 #include <linux/usb.h>
 #include <linux/poll.h>
@@ -46,6 +42,9 @@
 #define USB_DEVICE_ID_LD_MICROCASSYTIME		0x1033	/* USB Product ID of Micro-CASSY Time (reserved) */
 #define USB_DEVICE_ID_LD_MICROCASSYTEMPERATURE	0x1035	/* USB Product ID of Micro-CASSY Temperature */
 #define USB_DEVICE_ID_LD_MICROCASSYPH		0x1038	/* USB Product ID of Micro-CASSY pH */
+#define USB_DEVICE_ID_LD_POWERANALYSERCASSY	0x1040	/* USB Product ID of Power Analyser CASSY */
+#define USB_DEVICE_ID_LD_CONVERTERCONTROLLERCASSY	0x1042	/* USB Product ID of Converter Controller CASSY */
+#define USB_DEVICE_ID_LD_MACHINETESTCASSY	0x1043	/* USB Product ID of Machine Test CASSY */
 #define USB_DEVICE_ID_LD_JWM		0x1080	/* USB Product ID of Joule and Wattmeter */
 #define USB_DEVICE_ID_LD_DMMP		0x1081	/* USB Product ID of Digital Multimeter P (reserved) */
 #define USB_DEVICE_ID_LD_UMIP		0x1090	/* USB Product ID of UMI P */
@@ -69,12 +68,6 @@
 #define USB_DEVICE_ID_LD_HYBRID		0x2090	/* USB Product ID of Automotive Hybrid */
 #define USB_DEVICE_ID_LD_HEATCONTROL	0x20A0	/* USB Product ID of Heat control */
 
-#define USB_VENDOR_ID_VERNIER		0x08f7
-#define USB_DEVICE_ID_VERNIER_GOTEMP	0x0002
-#define USB_DEVICE_ID_VERNIER_SKIP	0x0003
-#define USB_DEVICE_ID_VERNIER_CYCLOPS	0x0004
-#define USB_DEVICE_ID_VERNIER_LCSPEC	0x0006
-
 #ifdef CONFIG_USB_DYNAMIC_MINORS
 #define USB_LD_MINOR_BASE	0
 #else
@@ -94,6 +87,9 @@ static const struct usb_device_id ld_usb_table[] = {
 	{ USB_DEVICE(USB_VENDOR_ID_LD, USB_DEVICE_ID_LD_MICROCASSYTIME) },
 	{ USB_DEVICE(USB_VENDOR_ID_LD, USB_DEVICE_ID_LD_MICROCASSYTEMPERATURE) },
 	{ USB_DEVICE(USB_VENDOR_ID_LD, USB_DEVICE_ID_LD_MICROCASSYPH) },
+	{ USB_DEVICE(USB_VENDOR_ID_LD, USB_DEVICE_ID_LD_POWERANALYSERCASSY) },
+	{ USB_DEVICE(USB_VENDOR_ID_LD, USB_DEVICE_ID_LD_CONVERTERCONTROLLERCASSY) },
+	{ USB_DEVICE(USB_VENDOR_ID_LD, USB_DEVICE_ID_LD_MACHINETESTCASSY) },
 	{ USB_DEVICE(USB_VENDOR_ID_LD, USB_DEVICE_ID_LD_JWM) },
 	{ USB_DEVICE(USB_VENDOR_ID_LD, USB_DEVICE_ID_LD_DMMP) },
 	{ USB_DEVICE(USB_VENDOR_ID_LD, USB_DEVICE_ID_LD_UMIP) },
@@ -115,30 +111,24 @@ static const struct usb_device_id ld_usb_table[] = {
 	{ USB_DEVICE(USB_VENDOR_ID_LD, USB_DEVICE_ID_LD_MCT) },
 	{ USB_DEVICE(USB_VENDOR_ID_LD, USB_DEVICE_ID_LD_HYBRID) },
 	{ USB_DEVICE(USB_VENDOR_ID_LD, USB_DEVICE_ID_LD_HEATCONTROL) },
-	{ USB_DEVICE(USB_VENDOR_ID_VERNIER, USB_DEVICE_ID_VERNIER_GOTEMP) },
-	{ USB_DEVICE(USB_VENDOR_ID_VERNIER, USB_DEVICE_ID_VERNIER_SKIP) },
-	{ USB_DEVICE(USB_VENDOR_ID_VERNIER, USB_DEVICE_ID_VERNIER_CYCLOPS) },
-	{ USB_DEVICE(USB_VENDOR_ID_VERNIER, USB_DEVICE_ID_VERNIER_LCSPEC) },
 	{ }					/* Terminating entry */
 };
 MODULE_DEVICE_TABLE(usb, ld_usb_table);
-MODULE_VERSION("V0.14");
 MODULE_AUTHOR("Michael Hund <mhund@ld-didactic.de>");
 MODULE_DESCRIPTION("LD USB Driver");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("LD USB Devices");
 
 /* All interrupt in transfers are collected in a ring buffer to
  * avoid racing conditions and get better performance of the driver.
  */
 static int ring_buffer_size = 128;
-module_param(ring_buffer_size, int, 0);
+module_param(ring_buffer_size, int, 0000);
 MODULE_PARM_DESC(ring_buffer_size, "Read ring buffer size in reports");
 
 /* The write_buffer can contain more than one interrupt out transfer.
  */
 static int write_buffer_size = 10;
-module_param(write_buffer_size, int, 0);
+module_param(write_buffer_size, int, 0000);
 MODULE_PARM_DESC(write_buffer_size, "Write buffer size in reports");
 
 /* As of kernel version 2.6.4 ehci-hcd uses an
@@ -151,30 +141,31 @@ MODULE_PARM_DESC(write_buffer_size, "Write buffer size in reports");
  * or set to 1 to use the standard interval from the endpoint descriptors.
  */
 static int min_interrupt_in_interval = 2;
-module_param(min_interrupt_in_interval, int, 0);
+module_param(min_interrupt_in_interval, int, 0000);
 MODULE_PARM_DESC(min_interrupt_in_interval, "Minimum interrupt in interval in ms");
 
 static int min_interrupt_out_interval = 2;
-module_param(min_interrupt_out_interval, int, 0);
+module_param(min_interrupt_out_interval, int, 0000);
 MODULE_PARM_DESC(min_interrupt_out_interval, "Minimum interrupt out interval in ms");
 
 /* Structure to hold all of our device specific stuff */
 struct ld_usb {
 	struct mutex		mutex;		/* locks this structure */
-	struct usb_interface*	intf;		/* save off the usb interface pointer */
+	struct usb_interface	*intf;		/* save off the usb interface pointer */
+	unsigned long		disconnected:1;
 
 	int			open_count;	/* number of times this port has been opened */
 
-	char*			ring_buffer;
+	char			*ring_buffer;
 	unsigned int		ring_head;
 	unsigned int		ring_tail;
 
 	wait_queue_head_t	read_wait;
 	wait_queue_head_t	write_wait;
 
-	char*			interrupt_in_buffer;
-	struct usb_endpoint_descriptor* interrupt_in_endpoint;
-	struct urb*		interrupt_in_urb;
+	char			*interrupt_in_buffer;
+	struct usb_endpoint_descriptor *interrupt_in_endpoint;
+	struct urb		*interrupt_in_urb;
 	int			interrupt_in_interval;
 	size_t			interrupt_in_endpoint_size;
 	int			interrupt_in_running;
@@ -182,9 +173,9 @@ struct ld_usb {
 	int			buffer_overflow;
 	spinlock_t		rbsl;
 
-	char*			interrupt_out_buffer;
-	struct usb_endpoint_descriptor* interrupt_out_endpoint;
-	struct urb*		interrupt_out_urb;
+	char			*interrupt_out_buffer;
+	struct usb_endpoint_descriptor *interrupt_out_endpoint;
+	struct urb		*interrupt_out_urb;
 	int			interrupt_out_interval;
 	size_t			interrupt_out_endpoint_size;
 	int			interrupt_out_busy;
@@ -192,7 +183,7 @@ struct ld_usb {
 
 static struct usb_driver ld_usb_driver;
 
-/**
+/*
  *	ld_usb_abort_transfers
  *      aborts transfers and frees associated data structures
  */
@@ -201,21 +192,17 @@ static void ld_usb_abort_transfers(struct ld_usb *dev)
 	/* shutdown transfer */
 	if (dev->interrupt_in_running) {
 		dev->interrupt_in_running = 0;
-		if (dev->intf)
-			usb_kill_urb(dev->interrupt_in_urb);
+		usb_kill_urb(dev->interrupt_in_urb);
 	}
 	if (dev->interrupt_out_busy)
-		if (dev->intf)
-			usb_kill_urb(dev->interrupt_out_urb);
+		usb_kill_urb(dev->interrupt_out_urb);
 }
 
-/**
+/*
  *	ld_usb_delete
  */
 static void ld_usb_delete(struct ld_usb *dev)
 {
-	ld_usb_abort_transfers(dev);
-
 	/* free data structures */
 	usb_free_urb(dev->interrupt_in_urb);
 	usb_free_urb(dev->interrupt_out_urb);
@@ -225,7 +212,7 @@ static void ld_usb_delete(struct ld_usb *dev)
 	kfree(dev);
 }
 
-/**
+/*
  *	ld_usb_interrupt_in_callback
  */
 static void ld_usb_interrupt_in_callback(struct urb *urb)
@@ -234,6 +221,7 @@ static void ld_usb_interrupt_in_callback(struct urb *urb)
 	size_t *actual_buffer;
 	unsigned int next_ring_head;
 	int status = urb->status;
+	unsigned long flags;
 	int retval;
 
 	if (status) {
@@ -245,16 +233,16 @@ static void ld_usb_interrupt_in_callback(struct urb *urb)
 			dev_dbg(&dev->intf->dev,
 				"%s: nonzero status received: %d\n", __func__,
 				status);
-			spin_lock(&dev->rbsl);
+			spin_lock_irqsave(&dev->rbsl, flags);
 			goto resubmit; /* maybe we can recover */
 		}
 	}
 
-	spin_lock(&dev->rbsl);
+	spin_lock_irqsave(&dev->rbsl, flags);
 	if (urb->actual_length > 0) {
 		next_ring_head = (dev->ring_head+1) % ring_buffer_size;
 		if (next_ring_head != dev->ring_tail) {
-			actual_buffer = (size_t*)(dev->ring_buffer + dev->ring_head*(sizeof(size_t)+dev->interrupt_in_endpoint_size));
+			actual_buffer = (size_t *)(dev->ring_buffer + dev->ring_head * (sizeof(size_t)+dev->interrupt_in_endpoint_size));
 			/* actual_buffer gets urb->actual_length + interrupt_in_buffer */
 			*actual_buffer = urb->actual_length;
 			memcpy(actual_buffer+1, dev->interrupt_in_buffer, urb->actual_length);
@@ -271,7 +259,7 @@ static void ld_usb_interrupt_in_callback(struct urb *urb)
 
 resubmit:
 	/* resubmit if we're still running */
-	if (dev->interrupt_in_running && !dev->buffer_overflow && dev->intf) {
+	if (dev->interrupt_in_running && !dev->buffer_overflow) {
 		retval = usb_submit_urb(dev->interrupt_in_urb, GFP_ATOMIC);
 		if (retval) {
 			dev_err(&dev->intf->dev,
@@ -279,13 +267,13 @@ resubmit:
 			dev->buffer_overflow = 1;
 		}
 	}
-	spin_unlock(&dev->rbsl);
+	spin_unlock_irqrestore(&dev->rbsl, flags);
 exit:
 	dev->interrupt_in_done = 1;
 	wake_up_interruptible(&dev->read_wait);
 }
 
-/**
+/*
  *	ld_usb_interrupt_out_callback
  */
 static void ld_usb_interrupt_out_callback(struct urb *urb)
@@ -305,7 +293,7 @@ static void ld_usb_interrupt_out_callback(struct urb *urb)
 	wake_up_interruptible(&dev->write_wait);
 }
 
-/**
+/*
  *	ld_usb_open
  */
 static int ld_usb_open(struct inode *inode, struct file *file)
@@ -315,7 +303,7 @@ static int ld_usb_open(struct inode *inode, struct file *file)
 	int retval;
 	struct usb_interface *interface;
 
-	nonseekable_open(inode, file);
+	stream_open(inode, file);
 	subminor = iminor(inode);
 
 	interface = usb_find_interface(&ld_usb_driver, subminor);
@@ -376,7 +364,7 @@ unlock_exit:
 	return retval;
 }
 
-/**
+/*
  *	ld_usb_release
  */
 static int ld_usb_release(struct inode *inode, struct file *file)
@@ -391,16 +379,13 @@ static int ld_usb_release(struct inode *inode, struct file *file)
 		goto exit;
 	}
 
-	if (mutex_lock_interruptible(&dev->mutex)) {
-		retval = -ERESTARTSYS;
-		goto exit;
-	}
+	mutex_lock(&dev->mutex);
 
 	if (dev->open_count != 1) {
 		retval = -ENODEV;
 		goto unlock_exit;
 	}
-	if (dev->intf == NULL) {
+	if (dev->disconnected) {
 		/* the device was unplugged before the file was released */
 		mutex_unlock(&dev->mutex);
 		/* unlock here as ld_usb_delete frees dev */
@@ -421,31 +406,31 @@ exit:
 	return retval;
 }
 
-/**
+/*
  *	ld_usb_poll
  */
-static unsigned int ld_usb_poll(struct file *file, poll_table *wait)
+static __poll_t ld_usb_poll(struct file *file, poll_table *wait)
 {
 	struct ld_usb *dev;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 
 	dev = file->private_data;
 
-	if (!dev->intf)
-		return POLLERR | POLLHUP;
+	if (dev->disconnected)
+		return EPOLLERR | EPOLLHUP;
 
 	poll_wait(file, &dev->read_wait, wait);
 	poll_wait(file, &dev->write_wait, wait);
 
 	if (dev->ring_head != dev->ring_tail)
-		mask |= POLLIN | POLLRDNORM;
+		mask |= EPOLLIN | EPOLLRDNORM;
 	if (!dev->interrupt_out_busy)
-		mask |= POLLOUT | POLLWRNORM;
+		mask |= EPOLLOUT | EPOLLWRNORM;
 
 	return mask;
 }
 
-/**
+/*
  *	ld_usb_read
  */
 static ssize_t ld_usb_read(struct file *file, char __user *buffer, size_t count,
@@ -470,7 +455,7 @@ static ssize_t ld_usb_read(struct file *file, char __user *buffer, size_t count,
 	}
 
 	/* verify that the device wasn't unplugged */
-	if (dev->intf == NULL) {
+	if (dev->disconnected) {
 		retval = -ENODEV;
 		printk(KERN_ERR "ldusb: No device or device unplugged %d\n", retval);
 		goto unlock_exit;
@@ -478,7 +463,7 @@ static ssize_t ld_usb_read(struct file *file, char __user *buffer, size_t count,
 
 	/* wait for data */
 	spin_lock_irq(&dev->rbsl);
-	if (dev->ring_head == dev->ring_tail) {
+	while (dev->ring_head == dev->ring_tail) {
 		dev->interrupt_in_done = 0;
 		spin_unlock_irq(&dev->rbsl);
 		if (file->f_flags & O_NONBLOCK) {
@@ -488,15 +473,20 @@ static ssize_t ld_usb_read(struct file *file, char __user *buffer, size_t count,
 		retval = wait_event_interruptible(dev->read_wait, dev->interrupt_in_done);
 		if (retval < 0)
 			goto unlock_exit;
-	} else {
-		spin_unlock_irq(&dev->rbsl);
+
+		spin_lock_irq(&dev->rbsl);
 	}
+	spin_unlock_irq(&dev->rbsl);
 
 	/* actual_buffer contains actual_length + interrupt_in_buffer */
-	actual_buffer = (size_t*)(dev->ring_buffer + dev->ring_tail*(sizeof(size_t)+dev->interrupt_in_endpoint_size));
+	actual_buffer = (size_t *)(dev->ring_buffer + dev->ring_tail * (sizeof(size_t)+dev->interrupt_in_endpoint_size));
+	if (*actual_buffer > dev->interrupt_in_endpoint_size) {
+		retval = -EIO;
+		goto unlock_exit;
+	}
 	bytes_to_read = min(count, *actual_buffer);
 	if (bytes_to_read < *actual_buffer)
-		dev_warn(&dev->intf->dev, "Read buffer overflow, %zd bytes dropped\n",
+		dev_warn(&dev->intf->dev, "Read buffer overflow, %zu bytes dropped\n",
 			 *actual_buffer-bytes_to_read);
 
 	/* copy one interrupt_in_buffer from ring_buffer into userspace */
@@ -504,11 +494,11 @@ static ssize_t ld_usb_read(struct file *file, char __user *buffer, size_t count,
 		retval = -EFAULT;
 		goto unlock_exit;
 	}
-	dev->ring_tail = (dev->ring_tail+1) % ring_buffer_size;
-
 	retval = bytes_to_read;
 
 	spin_lock_irq(&dev->rbsl);
+	dev->ring_tail = (dev->ring_tail + 1) % ring_buffer_size;
+
 	if (dev->buffer_overflow) {
 		dev->buffer_overflow = 0;
 		spin_unlock_irq(&dev->rbsl);
@@ -527,7 +517,7 @@ exit:
 	return retval;
 }
 
-/**
+/*
  *	ld_usb_write
  */
 static ssize_t ld_usb_write(struct file *file, const char __user *buffer,
@@ -550,7 +540,7 @@ static ssize_t ld_usb_write(struct file *file, const char __user *buffer,
 	}
 
 	/* verify that the device wasn't unplugged */
-	if (dev->intf == NULL) {
+	if (dev->disconnected) {
 		retval = -ENODEV;
 		printk(KERN_ERR "ldusb: No device or device unplugged %d\n", retval);
 		goto unlock_exit;
@@ -571,8 +561,9 @@ static ssize_t ld_usb_write(struct file *file, const char __user *buffer,
 	/* write the data into interrupt_out_buffer from userspace */
 	bytes_to_write = min(count, write_buffer_size*dev->interrupt_out_endpoint_size);
 	if (bytes_to_write < count)
-		dev_warn(&dev->intf->dev, "Write buffer overflow, %zd bytes dropped\n",count-bytes_to_write);
-	dev_dbg(&dev->intf->dev, "%s: count = %zd, bytes_to_write = %zd\n",
+		dev_warn(&dev->intf->dev, "Write buffer overflow, %zu bytes dropped\n",
+			count - bytes_to_write);
+	dev_dbg(&dev->intf->dev, "%s: count = %zu, bytes_to_write = %zu\n",
 		__func__, count, bytes_to_write);
 
 	if (copy_from_user(dev->interrupt_out_buffer, buffer, bytes_to_write)) {
@@ -589,7 +580,7 @@ static ssize_t ld_usb_write(struct file *file, const char __user *buffer,
 					 1 << 8, 0,
 					 dev->interrupt_out_buffer,
 					 bytes_to_write,
-					 USB_CTRL_SET_TIMEOUT * HZ);
+					 USB_CTRL_SET_TIMEOUT);
 		if (retval < 0)
 			dev_err(&dev->intf->dev,
 				"Couldn't submit HID_REQ_SET_REPORT %d\n",
@@ -649,7 +640,7 @@ static struct usb_class_driver ld_usb_class = {
 	.minor_base =	USB_LD_MINOR_BASE,
 };
 
-/**
+/*
  *	ld_usb_probe
  *
  *	Called by the usb core when a new device is connected that it thinks
@@ -660,18 +651,15 @@ static int ld_usb_probe(struct usb_interface *intf, const struct usb_device_id *
 	struct usb_device *udev = interface_to_usbdev(intf);
 	struct ld_usb *dev = NULL;
 	struct usb_host_interface *iface_desc;
-	struct usb_endpoint_descriptor *endpoint;
 	char *buffer;
-	int i;
 	int retval = -ENOMEM;
+	int res;
 
 	/* allocate memory for our device state and initialize it */
 
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
-	if (dev == NULL) {
-		dev_err(&intf->dev, "Out of memory\n");
+	if (!dev)
 		goto exit;
-	}
 	mutex_init(&dev->mutex);
 	spin_lock_init(&dev->rbsl);
 	dev->intf = intf;
@@ -684,10 +672,8 @@ static int ld_usb_probe(struct usb_interface *intf, const struct usb_device_id *
 	     (le16_to_cpu(udev->descriptor.idProduct) == USB_DEVICE_ID_LD_COM3LAB)) &&
 	    (le16_to_cpu(udev->descriptor.bcdDevice) <= 0x103)) {
 		buffer = kmalloc(256, GFP_KERNEL);
-		if (buffer == NULL) {
-			dev_err(&intf->dev, "Couldn't allocate string buffer\n");
+		if (!buffer)
 			goto error;
-		}
 		/* usb_string makes SETUP+STALL to leave always ControlReadLoop */
 		usb_string(udev, 255, buffer, 256);
 		kfree(buffer);
@@ -695,54 +681,46 @@ static int ld_usb_probe(struct usb_interface *intf, const struct usb_device_id *
 
 	iface_desc = intf->cur_altsetting;
 
-	/* set up the endpoint information */
-	for (i = 0; i < iface_desc->desc.bNumEndpoints; ++i) {
-		endpoint = &iface_desc->endpoint[i].desc;
-
-		if (usb_endpoint_is_int_in(endpoint))
-			dev->interrupt_in_endpoint = endpoint;
-
-		if (usb_endpoint_is_int_out(endpoint))
-			dev->interrupt_out_endpoint = endpoint;
-	}
-	if (dev->interrupt_in_endpoint == NULL) {
+	res = usb_find_last_int_in_endpoint(iface_desc,
+			&dev->interrupt_in_endpoint);
+	if (res) {
 		dev_err(&intf->dev, "Interrupt in endpoint not found\n");
+		retval = res;
 		goto error;
 	}
-	if (dev->interrupt_out_endpoint == NULL)
+
+	res = usb_find_last_int_out_endpoint(iface_desc,
+			&dev->interrupt_out_endpoint);
+	if (res)
 		dev_warn(&intf->dev, "Interrupt out endpoint not found (using control endpoint instead)\n");
 
 	dev->interrupt_in_endpoint_size = usb_endpoint_maxp(dev->interrupt_in_endpoint);
-	dev->ring_buffer = kmalloc(ring_buffer_size*(sizeof(size_t)+dev->interrupt_in_endpoint_size), GFP_KERNEL);
-	if (!dev->ring_buffer) {
-		dev_err(&intf->dev, "Couldn't allocate ring_buffer\n");
+	dev->ring_buffer = kcalloc(ring_buffer_size,
+			sizeof(size_t) + dev->interrupt_in_endpoint_size,
+			GFP_KERNEL);
+	if (!dev->ring_buffer)
 		goto error;
-	}
 	dev->interrupt_in_buffer = kmalloc(dev->interrupt_in_endpoint_size, GFP_KERNEL);
-	if (!dev->interrupt_in_buffer) {
-		dev_err(&intf->dev, "Couldn't allocate interrupt_in_buffer\n");
+	if (!dev->interrupt_in_buffer)
 		goto error;
-	}
 	dev->interrupt_in_urb = usb_alloc_urb(0, GFP_KERNEL);
-	if (!dev->interrupt_in_urb) {
-		dev_err(&intf->dev, "Couldn't allocate interrupt_in_urb\n");
+	if (!dev->interrupt_in_urb)
 		goto error;
-	}
 	dev->interrupt_out_endpoint_size = dev->interrupt_out_endpoint ? usb_endpoint_maxp(dev->interrupt_out_endpoint) :
 									 udev->descriptor.bMaxPacketSize0;
-	dev->interrupt_out_buffer = kmalloc(write_buffer_size*dev->interrupt_out_endpoint_size, GFP_KERNEL);
-	if (!dev->interrupt_out_buffer) {
-		dev_err(&intf->dev, "Couldn't allocate interrupt_out_buffer\n");
+	dev->interrupt_out_buffer =
+		kmalloc_array(write_buffer_size,
+			      dev->interrupt_out_endpoint_size, GFP_KERNEL);
+	if (!dev->interrupt_out_buffer)
 		goto error;
-	}
 	dev->interrupt_out_urb = usb_alloc_urb(0, GFP_KERNEL);
-	if (!dev->interrupt_out_urb) {
-		dev_err(&intf->dev, "Couldn't allocate interrupt_out_urb\n");
+	if (!dev->interrupt_out_urb)
 		goto error;
-	}
-	dev->interrupt_in_interval = min_interrupt_in_interval > dev->interrupt_in_endpoint->bInterval ? min_interrupt_in_interval : dev->interrupt_in_endpoint->bInterval;
+	dev->interrupt_in_interval = max_t(int, min_interrupt_in_interval,
+					   dev->interrupt_in_endpoint->bInterval);
 	if (dev->interrupt_out_endpoint)
-		dev->interrupt_out_interval = min_interrupt_out_interval > dev->interrupt_out_endpoint->bInterval ? min_interrupt_out_interval : dev->interrupt_out_endpoint->bInterval;
+		dev->interrupt_out_interval = max_t(int, min_interrupt_out_interval,
+						    dev->interrupt_out_endpoint->bInterval);
 
 	/* we can register the device now, as it is ready */
 	usb_set_intfdata(intf, dev);
@@ -768,7 +746,7 @@ error:
 	return retval;
 }
 
-/**
+/*
  *	ld_usb_disconnect
  *
  *	Called by the usb core when the device is removed from the system.
@@ -786,6 +764,9 @@ static void ld_usb_disconnect(struct usb_interface *intf)
 	/* give back our minor */
 	usb_deregister_dev(intf, &ld_usb_class);
 
+	usb_poison_urb(dev->interrupt_in_urb);
+	usb_poison_urb(dev->interrupt_out_urb);
+
 	mutex_lock(&dev->mutex);
 
 	/* if the device is not opened, then we clean up right now */
@@ -793,7 +774,7 @@ static void ld_usb_disconnect(struct usb_interface *intf)
 		mutex_unlock(&dev->mutex);
 		ld_usb_delete(dev);
 	} else {
-		dev->intf = NULL;
+		dev->disconnected = 1;
 		/* wake up pollers */
 		wake_up_interruptible_all(&dev->read_wait);
 		wake_up_interruptible_all(&dev->write_wait);

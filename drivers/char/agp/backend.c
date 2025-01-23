@@ -62,6 +62,7 @@ EXPORT_SYMBOL(agp_find_bridge);
 
 /**
  *	agp_backend_acquire  -  attempt to acquire an agp backend.
+ *	@pdev: the PCI device
  *
  */
 struct agp_bridge_data *agp_backend_acquire(struct pci_dev *pdev)
@@ -83,6 +84,7 @@ EXPORT_SYMBOL(agp_backend_acquire);
 
 /**
  *	agp_backend_release  -  release the lock on the agp backend.
+ *	@bridge: the AGP backend to release
  *
  *	The caller must insure that the graphics aperture translation table
  *	is read for use by another entity.
@@ -115,9 +117,9 @@ static int agp_find_max(void)
 	long memory, index, result;
 
 #if PAGE_SHIFT < 20
-	memory = totalram_pages >> (20 - PAGE_SHIFT);
+	memory = totalram_pages() >> (20 - PAGE_SHIFT);
 #else
-	memory = totalram_pages << (PAGE_SHIFT - 20);
+	memory = totalram_pages() << (PAGE_SHIFT - 20);
 #endif
 	index = 1;
 
@@ -356,7 +358,7 @@ static __init int agp_setup(char *s)
 __setup("agp=", agp_setup);
 #endif
 
-MODULE_AUTHOR("Dave Jones <davej@redhat.com>");
+MODULE_AUTHOR("Dave Jones, Jeff Hartmann");
 MODULE_DESCRIPTION("AGP GART driver");
 MODULE_LICENSE("GPL and additional rights");
 MODULE_ALIAS_MISCDEV(AGPGART_MINOR);

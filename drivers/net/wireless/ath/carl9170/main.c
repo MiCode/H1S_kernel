@@ -48,11 +48,11 @@
 #include "cmd.h"
 
 static bool modparam_nohwcrypt;
-module_param_named(nohwcrypt, modparam_nohwcrypt, bool, S_IRUGO);
+module_param_named(nohwcrypt, modparam_nohwcrypt, bool, 0444);
 MODULE_PARM_DESC(nohwcrypt, "Disable hardware crypto offload.");
 
 int modparam_noht;
-module_param_named(noht, modparam_noht, int, S_IRUGO);
+module_param_named(noht, modparam_noht, int, 0444);
 MODULE_PARM_DESC(noht, "Disable MPDU aggregation.");
 
 #define RATE(_bitrate, _hw_rate, _txpidx, _flags) {	\
@@ -307,8 +307,7 @@ static void carl9170_zap_queues(struct ar9170 *ar)
 	for (i = 0; i < ar->hw->queues; i++)
 		ar->tx_stats[i].limit = CARL9170_NUM_TX_LIMIT_HARD;
 
-	for (i = 0; i < DIV_ROUND_UP(ar->fw.mem_blocks, BITS_PER_LONG); i++)
-		ar->mem_bitmap[i] = 0;
+	bitmap_zero(ar->mem_bitmap, ar->fw.mem_blocks);
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(cvif, &ar->vif_list, list) {
@@ -582,11 +581,10 @@ static int carl9170_init_interface(struct ar9170 *ar,
 	ar->disable_offload |= ((vif->type != NL80211_IFTYPE_STATION) &&
 	    (vif->type != NL80211_IFTYPE_AP));
 
-	/* While the driver supports HW offload in a single
-	 * P2P client configuration, it doesn't support HW
-	 * offload in the favourit, concurrent P2P GO+CLIENT
-	 * configuration. Hence, HW offload will always be
-	 * disabled for P2P.
+	/* The driver used to have P2P GO+CLIENT support,
+	 * but since this was dropped and we don't know if
+	 * there are any gremlins lurking in the shadows,
+	 * so best we keep HW offload disabled for P2P.
 	 */
 	ar->disable_offload |= vif->p2p;
 
@@ -639,18 +637,6 @@ static int carl9170_op_add_interface(struct ieee80211_hw *hw,
 			if (vif->type == NL80211_IFTYPE_STATION)
 				break;
 
-			/* P2P GO [master] use-case
-			 * Because the P2P GO station is selected dynamically
-			 * by all participating peers of a WIFI Direct network,
-			 * the driver has be able to change the main interface
-			 * operating mode on the fly.
-			 */
-			if (main_vif->p2p && vif->p2p &&
-			    vif->type == NL80211_IFTYPE_AP) {
-				old_main = main_vif;
-				break;
-			}
-
 			err = -EBUSY;
 			rcu_read_unlock();
 
@@ -659,7 +645,6 @@ static int carl9170_op_add_interface(struct ieee80211_hw *hw,
 		case NL80211_IFTYPE_MESH_POINT:
 		case NL80211_IFTYPE_AP:
 			if ((vif->type == NL80211_IFTYPE_STATION) ||
-			    (vif->type == NL80211_IFTYPE_WDS) ||
 			    (vif->type == NL80211_IFTYPE_AP) ||
 			    (vif->type == NL80211_IFTYPE_MESH_POINT))
 				break;
@@ -1011,9 +996,8 @@ static void carl9170_op_configure_filter(struct ieee80211_hw *hw,
 	if (multicast != ar->cur_mc_hash)
 		WARN_ON(carl9170_update_multicast(ar, multicast));
 
-	if (changed_flags & (FIF_OTHER_BSS | FIF_PROMISC_IN_BSS)) {
-		ar->sniffer_enabled = !!(*new_flags &
-			(FIF_OTHER_BSS | FIF_PROMISC_IN_BSS));
+	if (changed_flags & FIF_OTHER_BSS) {
+		ar->sniffer_enabled = !!(*new_flags & FIF_OTHER_BSS);
 
 		WARN_ON(carl9170_set_operating_mode(ar));
 	}
@@ -1033,7 +1017,7 @@ static void carl9170_op_configure_filter(struct ieee80211_hw *hw,
 		if (!(*new_flags & FIF_PSPOLL))
 			rx_filter |= CARL9170_RX_FILTER_CTL_PSPOLL;
 
-		if (!(*new_flags & (FIF_OTHER_BSS | FIF_PROMISC_IN_BSS))) {
+		if (!(*new_flags & FIF_OTHER_BSS)) {
 			rx_filter |= CARL9170_RX_FILTER_OTHER_RA;
 			rx_filter |= CARL9170_RX_FILTER_DECRY_FAIL;
 		}
@@ -1048,7 +1032,7 @@ static void carl9170_op_configure_filter(struct ieee80211_hw *hw,
 static void carl9170_op_bss_info_changed(struct ieee80211_hw *hw,
 					 struct ieee80211_vif *vif,
 					 struct ieee80211_bss_conf *bss_conf,
-					 u32 changed)
+					 u64 changed)
 {
 	struct ar9170 *ar = hw->priv;
 	struct ath_common *common = &ar->common;
@@ -1131,7 +1115,7 @@ static void carl9170_op_bss_info_changed(struct ieee80211_hw *hw,
 	}
 
 	if (changed & BSS_CHANGED_ASSOC) {
-		ar->common.curaid = bss_conf->aid;
+		ar->common.curaid = vif->cfg.aid;
 		err = carl9170_set_beacon_timers(ar);
 		if (err)
 			goto out;
@@ -1322,8 +1306,8 @@ static int carl9170_op_sta_add(struct ieee80211_hw *hw,
 
 	atomic_set(&sta_info->pending_frames, 0);
 
-	if (sta->ht_cap.ht_supported) {
-		if (sta->ht_cap.ampdu_density > 6) {
+	if (sta->deflink.ht_cap.ht_supported) {
+		if (sta->deflink.ht_cap.ampdu_density > 6) {
 			/*
 			 * HW does support 16us AMPDU density.
 			 * No HT-Xmit for station.
@@ -1335,7 +1319,7 @@ static int carl9170_op_sta_add(struct ieee80211_hw *hw,
 		for (i = 0; i < ARRAY_SIZE(sta_info->agg); i++)
 			RCU_INIT_POINTER(sta_info->agg[i], NULL);
 
-		sta_info->ampdu_max_len = 1 << (3 + sta->ht_cap.ampdu_factor);
+		sta_info->ampdu_max_len = 1 << (3 + sta->deflink.ht_cap.ampdu_factor);
 		sta_info->ht_sta = true;
 	}
 
@@ -1351,7 +1335,7 @@ static int carl9170_op_sta_remove(struct ieee80211_hw *hw,
 	unsigned int i;
 	bool cleanup = false;
 
-	if (sta->ht_cap.ht_supported) {
+	if (sta->deflink.ht_cap.ht_supported) {
 
 		sta_info->ht_sta = false;
 
@@ -1381,20 +1365,16 @@ static int carl9170_op_sta_remove(struct ieee80211_hw *hw,
 }
 
 static int carl9170_op_conf_tx(struct ieee80211_hw *hw,
-			       struct ieee80211_vif *vif, u16 queue,
+			       struct ieee80211_vif *vif,
+			       unsigned int link_id, u16 queue,
 			       const struct ieee80211_tx_queue_params *param)
 {
 	struct ar9170 *ar = hw->priv;
 	int ret;
 
 	mutex_lock(&ar->mutex);
-	if (queue < ar->hw->queues) {
-		memcpy(&ar->edcf[ar9170_qmap[queue]], param, sizeof(*param));
-		ret = carl9170_set_qos(ar);
-	} else {
-		ret = -EINVAL;
-	}
-
+	memcpy(&ar->edcf[ar9170_qmap(queue)], param, sizeof(*param));
+	ret = carl9170_set_qos(ar);
 	mutex_unlock(&ar->mutex);
 	return ret;
 }
@@ -1414,10 +1394,12 @@ static void carl9170_ampdu_work(struct work_struct *work)
 
 static int carl9170_op_ampdu_action(struct ieee80211_hw *hw,
 				    struct ieee80211_vif *vif,
-				    enum ieee80211_ampdu_mlme_action action,
-				    struct ieee80211_sta *sta,
-				    u16 tid, u16 *ssn, u8 buf_size)
+				    struct ieee80211_ampdu_params *params)
 {
+	struct ieee80211_sta *sta = params->sta;
+	enum ieee80211_ampdu_mlme_action action = params->action;
+	u16 tid = params->tid;
+	u16 *ssn = &params->ssn;
 	struct ar9170 *ar = hw->priv;
 	struct carl9170_sta_info *sta_info = (void *) sta->drv_priv;
 	struct carl9170_sta_tid *tid_info;
@@ -1430,18 +1412,10 @@ static int carl9170_op_ampdu_action(struct ieee80211_hw *hw,
 		if (!sta_info->ht_sta)
 			return -EOPNOTSUPP;
 
-		rcu_read_lock();
-		if (rcu_dereference(sta_info->agg[tid])) {
-			rcu_read_unlock();
-			return -EBUSY;
-		}
-
 		tid_info = kzalloc(sizeof(struct carl9170_sta_tid),
-				   GFP_ATOMIC);
-		if (!tid_info) {
-			rcu_read_unlock();
+				   GFP_KERNEL);
+		if (!tid_info)
 			return -ENOMEM;
-		}
 
 		tid_info->hsn = tid_info->bsn = tid_info->snx = (*ssn);
 		tid_info->state = CARL9170_TID_STATE_PROGRESS;
@@ -1460,10 +1434,8 @@ static int carl9170_op_ampdu_action(struct ieee80211_hw *hw,
 		list_add_tail_rcu(&tid_info->list, &ar->tx_ampdu_list);
 		rcu_assign_pointer(sta_info->agg[tid], tid_info);
 		spin_unlock_bh(&ar->tx_ampdu_list_lock);
-		rcu_read_unlock();
 
-		ieee80211_start_tx_ba_cb_irqsafe(vif, sta->addr, tid);
-		break;
+		return IEEE80211_AMPDU_TX_START_IMMEDIATE;
 
 	case IEEE80211_AMPDU_TX_STOP_CONT:
 	case IEEE80211_AMPDU_TX_STOP_FLUSH:
@@ -1523,7 +1495,7 @@ static int carl9170_register_wps_button(struct ar9170 *ar)
 	if (!(ar->features & CARL9170_WPS_BUTTON))
 		return 0;
 
-	input = input_allocate_device();
+	input = devm_input_allocate_device(&ar->udev->dev);
 	if (!input)
 		return -ENOMEM;
 
@@ -1541,10 +1513,8 @@ static int carl9170_register_wps_button(struct ar9170 *ar)
 	input_set_capability(input, EV_KEY, KEY_WPS_BUTTON);
 
 	err = input_register_device(input);
-	if (err) {
-		input_free_device(input);
+	if (err)
 		return err;
-	}
 
 	ar->wps.pbc = input;
 	return 0;
@@ -1568,7 +1538,7 @@ static int carl9170_rng_get(struct ar9170 *ar)
 
 	BUILD_BUG_ON(RB > CARL9170_MAX_CMD_PAYLOAD_LEN);
 
-	if (!IS_ACCEPTING_CMD(ar) || !ar->rng.initialized)
+	if (!IS_ACCEPTING_CMD(ar))
 		return -EAGAIN;
 
 	count = ARRAY_SIZE(ar->rng.cache);
@@ -1614,14 +1584,6 @@ static int carl9170_rng_read(struct hwrng *rng, u32 *data)
 	return sizeof(u16);
 }
 
-static void carl9170_unregister_hwrng(struct ar9170 *ar)
-{
-	if (ar->rng.initialized) {
-		hwrng_unregister(&ar->rng.rng);
-		ar->rng.initialized = false;
-	}
-}
-
 static int carl9170_register_hwrng(struct ar9170 *ar)
 {
 	int err;
@@ -1632,25 +1594,14 @@ static int carl9170_register_hwrng(struct ar9170 *ar)
 	ar->rng.rng.data_read = carl9170_rng_read;
 	ar->rng.rng.priv = (unsigned long)ar;
 
-	if (WARN_ON(ar->rng.initialized))
-		return -EALREADY;
-
-	err = hwrng_register(&ar->rng.rng);
+	err = devm_hwrng_register(&ar->udev->dev, &ar->rng.rng);
 	if (err) {
 		dev_err(&ar->udev->dev, "Failed to register the random "
 			"number generator (%d)\n", err);
 		return err;
 	}
 
-	ar->rng.initialized = true;
-
-	err = carl9170_rng_get(ar);
-	if (err) {
-		carl9170_unregister_hwrng(ar);
-		return err;
-	}
-
-	return 0;
+	return carl9170_rng_get(ar);
 }
 #endif /* CONFIG_CARL9170_HWRNG */
 
@@ -1674,7 +1625,7 @@ static int carl9170_op_get_survey(struct ieee80211_hw *hw, int idx,
 			return err;
 	}
 
-	for (b = 0; b < IEEE80211_NUM_BANDS; b++) {
+	for (b = 0; b < NUM_NL80211_BANDS; b++) {
 		band = ar->hw->wiphy->bands[b];
 
 		if (!band)
@@ -1699,15 +1650,17 @@ found:
 		survey->filled |= SURVEY_INFO_IN_USE;
 
 	if (ar->fw.hw_counters) {
-		survey->filled |= SURVEY_INFO_CHANNEL_TIME |
-				  SURVEY_INFO_CHANNEL_TIME_BUSY |
-				  SURVEY_INFO_CHANNEL_TIME_TX;
+		survey->filled |= SURVEY_INFO_TIME |
+				  SURVEY_INFO_TIME_BUSY |
+				  SURVEY_INFO_TIME_TX;
 	}
 
 	return 0;
 }
 
-static void carl9170_op_flush(struct ieee80211_hw *hw, u32 queues, bool drop)
+static void carl9170_op_flush(struct ieee80211_hw *hw,
+			      struct ieee80211_vif *vif,
+			      u32 queues, bool drop)
 {
 	struct ar9170 *ar = hw->priv;
 	unsigned int vid;
@@ -1762,6 +1715,7 @@ static const struct ieee80211_ops carl9170_ops = {
 	.start			= carl9170_op_start,
 	.stop			= carl9170_op_stop,
 	.tx			= carl9170_op_tx,
+	.wake_tx_queue		= ieee80211_handle_wake_tx_queue,
 	.flush			= carl9170_op_flush,
 	.add_interface		= carl9170_op_add_interface,
 	.remove_interface	= carl9170_op_remove_interface,
@@ -1852,22 +1806,22 @@ void *carl9170_alloc(size_t priv_size)
 	/* firmware decides which modes we support */
 	hw->wiphy->interface_modes = 0;
 
-	hw->flags |= IEEE80211_HW_RX_INCLUDES_FCS |
-		     IEEE80211_HW_MFP_CAPABLE |
-		     IEEE80211_HW_REPORTS_TX_ACK_STATUS |
-		     IEEE80211_HW_SUPPORTS_PS |
-		     IEEE80211_HW_PS_NULLFUNC_STACK |
-		     IEEE80211_HW_NEED_DTIM_BEFORE_ASSOC |
-		     IEEE80211_HW_SUPPORTS_RC_TABLE |
-		     IEEE80211_HW_SIGNAL_DBM |
-		     IEEE80211_HW_SUPPORTS_HT_CCK_RATES;
+	ieee80211_hw_set(hw, RX_INCLUDES_FCS);
+	ieee80211_hw_set(hw, MFP_CAPABLE);
+	ieee80211_hw_set(hw, REPORTS_TX_ACK_STATUS);
+	ieee80211_hw_set(hw, SUPPORTS_PS);
+	ieee80211_hw_set(hw, PS_NULLFUNC_STACK);
+	ieee80211_hw_set(hw, NEED_DTIM_BEFORE_ASSOC);
+	ieee80211_hw_set(hw, SUPPORTS_RC_TABLE);
+	ieee80211_hw_set(hw, SIGNAL_DBM);
+	ieee80211_hw_set(hw, SUPPORTS_HT_CCK_RATES);
 
 	if (!modparam_noht) {
 		/*
 		 * see the comment above, why we allow the user
 		 * to disable HT by a module parameter.
 		 */
-		hw->flags |= IEEE80211_HW_AMPDU_AGGREGATION;
+		ieee80211_hw_set(hw, AMPDU_AGGREGATION);
 	}
 
 	hw->extra_tx_headroom = sizeof(struct _carl9170_tx_superframe);
@@ -1879,6 +1833,8 @@ void *carl9170_alloc(size_t priv_size)
 
 	for (i = 0; i < ARRAY_SIZE(ar->noise); i++)
 		ar->noise[i] = -95; /* ATH_DEFAULT_NOISE_FLOOR */
+
+	wiphy_ext_feature_set(hw->wiphy, NL80211_EXT_FEATURE_CQM_RSSI_LIST);
 
 	return ar;
 
@@ -1939,7 +1895,7 @@ static int carl9170_parse_eeprom(struct ar9170 *ar)
 		WARN_ON(!(tx_streams >= 1 && tx_streams <=
 			IEEE80211_HT_MCS_TX_MAX_STREAMS));
 
-		tx_params = (tx_streams - 1) <<
+		tx_params |= (tx_streams - 1) <<
 			    IEEE80211_HT_MCS_TX_MAX_STREAMS_SHIFT;
 
 		carl9170_band_2GHz.ht_cap.mcs.tx_params |= tx_params;
@@ -1947,13 +1903,13 @@ static int carl9170_parse_eeprom(struct ar9170 *ar)
 	}
 
 	if (ar->eeprom.operating_flags & AR9170_OPFLAG_2GHZ) {
-		ar->hw->wiphy->bands[IEEE80211_BAND_2GHZ] =
+		ar->hw->wiphy->bands[NL80211_BAND_2GHZ] =
 			&carl9170_band_2GHz;
 		chans += carl9170_band_2GHz.n_channels;
 		bands++;
 	}
 	if (ar->eeprom.operating_flags & AR9170_OPFLAG_5GHZ) {
-		ar->hw->wiphy->bands[IEEE80211_BAND_5GHZ] =
+		ar->hw->wiphy->bands[NL80211_BAND_5GHZ] =
 			&carl9170_band_5GHz;
 		chans += carl9170_band_5GHz.n_channels;
 		bands++;
@@ -1962,7 +1918,8 @@ static int carl9170_parse_eeprom(struct ar9170 *ar)
 	if (!bands)
 		return -EINVAL;
 
-	ar->survey = kzalloc(sizeof(struct survey_info) * chans, GFP_KERNEL);
+	ar->survey = devm_kcalloc(&ar->udev->dev, chans,
+				  sizeof(struct survey_info), GFP_KERNEL);
 	if (!ar->survey)
 		return -ENOMEM;
 	ar->num_channels = chans;
@@ -1989,12 +1946,7 @@ int carl9170_register(struct ar9170 *ar)
 	struct ath_regulatory *regulatory = &ar->common.regulatory;
 	int err = 0, i;
 
-	if (WARN_ON(ar->mem_bitmap))
-		return -EINVAL;
-
-	ar->mem_bitmap = kzalloc(roundup(ar->fw.mem_blocks, BITS_PER_LONG) *
-				 sizeof(unsigned long), GFP_KERNEL);
-
+	ar->mem_bitmap = devm_bitmap_zalloc(&ar->udev->dev, ar->fw.mem_blocks, GFP_KERNEL);
 	if (!ar->mem_bitmap)
 		return -ENOMEM;
 
@@ -2083,17 +2035,6 @@ void carl9170_unregister(struct ar9170 *ar)
 	carl9170_debugfs_unregister(ar);
 #endif /* CONFIG_CARL9170_DEBUGFS */
 
-#ifdef CONFIG_CARL9170_WPC
-	if (ar->wps.pbc) {
-		input_unregister_device(ar->wps.pbc);
-		ar->wps.pbc = NULL;
-	}
-#endif /* CONFIG_CARL9170_WPC */
-
-#ifdef CONFIG_CARL9170_HWRNG
-	carl9170_unregister_hwrng(ar);
-#endif /* CONFIG_CARL9170_HWRNG */
-
 	carl9170_cancel_worker(ar);
 	cancel_work_sync(&ar->restart_work);
 
@@ -2107,12 +2048,6 @@ void carl9170_free(struct ar9170 *ar)
 
 	kfree_skb(ar->rx_failover);
 	ar->rx_failover = NULL;
-
-	kfree(ar->mem_bitmap);
-	ar->mem_bitmap = NULL;
-
-	kfree(ar->survey);
-	ar->survey = NULL;
 
 	mutex_destroy(&ar->mutex);
 

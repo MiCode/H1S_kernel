@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SPARC64_PGALLOC_H
 #define _SPARC64_PGALLOC_H
 
@@ -15,6 +16,13 @@
 
 extern struct kmem_cache *pgtable_cache;
 
+static inline void __p4d_populate(p4d_t *p4d, pud_t *pud)
+{
+	p4d_set(p4d, pud);
+}
+
+#define p4d_populate(MM, P4D, PUD)	__p4d_populate(P4D, PUD)
+
 static inline pgd_t *pgd_alloc(struct mm_struct *mm)
 {
 	return kmem_cache_alloc(pgtable_cache, GFP_KERNEL);
@@ -25,12 +33,26 @@ static inline void pgd_free(struct mm_struct *mm, pgd_t *pgd)
 	kmem_cache_free(pgtable_cache, pgd);
 }
 
-#define pud_populate(MM, PUD, PMD)	pud_set(PUD, PMD)
+static inline void __pud_populate(pud_t *pud, pmd_t *pmd)
+{
+	pud_set(pud, pmd);
+}
+
+#define pud_populate(MM, PUD, PMD)	__pud_populate(PUD, PMD)
+
+static inline pud_t *pud_alloc_one(struct mm_struct *mm, unsigned long addr)
+{
+	return kmem_cache_alloc(pgtable_cache, GFP_KERNEL);
+}
+
+static inline void pud_free(struct mm_struct *mm, pud_t *pud)
+{
+	kmem_cache_free(pgtable_cache, pud);
+}
 
 static inline pmd_t *pmd_alloc_one(struct mm_struct *mm, unsigned long addr)
 {
-	return kmem_cache_alloc(pgtable_cache,
-				GFP_KERNEL|__GFP_REPEAT);
+	return kmem_cache_alloc(pgtable_cache, GFP_KERNEL);
 }
 
 static inline void pmd_free(struct mm_struct *mm, pmd_t *pmd)
@@ -38,25 +60,24 @@ static inline void pmd_free(struct mm_struct *mm, pmd_t *pmd)
 	kmem_cache_free(pgtable_cache, pmd);
 }
 
-extern pte_t *pte_alloc_one_kernel(struct mm_struct *mm,
-				   unsigned long address);
-extern pgtable_t pte_alloc_one(struct mm_struct *mm,
-			       unsigned long address);
-extern void pte_free_kernel(struct mm_struct *mm, pte_t *pte);
-extern void pte_free(struct mm_struct *mm, pgtable_t ptepage);
+pte_t *pte_alloc_one_kernel(struct mm_struct *mm);
+pgtable_t pte_alloc_one(struct mm_struct *mm);
+void pte_free_kernel(struct mm_struct *mm, pte_t *pte);
+void pte_free(struct mm_struct *mm, pgtable_t ptepage);
+
+/* arch use pte_free_defer() implementation in arch/sparc/mm/init_64.c */
+#define pte_free_defer pte_free_defer
+void pte_free_defer(struct mm_struct *mm, pgtable_t pgtable);
 
 #define pmd_populate_kernel(MM, PMD, PTE)	pmd_set(MM, PMD, PTE)
 #define pmd_populate(MM, PMD, PTE)		pmd_set(MM, PMD, PTE)
-#define pmd_pgtable(PMD)			((pte_t *)__pmd_page(PMD))
 
-#define check_pgt_cache()	do { } while (0)
-
-extern void pgtable_free(void *table, bool is_page);
+void pgtable_free(void *table, bool is_page);
 
 #ifdef CONFIG_SMP
 
 struct mmu_gather;
-extern void tlb_remove_table(struct mmu_gather *, void *);
+void tlb_remove_table(struct mmu_gather *, void *);
 
 static inline void pgtable_free_tlb(struct mmu_gather *tlb, void *table, bool is_page)
 {
@@ -90,5 +111,8 @@ static inline void __pte_free_tlb(struct mmu_gather *tlb, pte_t *pte,
 
 #define __pmd_free_tlb(tlb, pmd, addr)		      \
 	pgtable_free_tlb(tlb, pmd, false)
+
+#define __pud_free_tlb(tlb, pud, addr)		      \
+	pgtable_free_tlb(tlb, pud, false)
 
 #endif /* _SPARC64_PGALLOC_H */

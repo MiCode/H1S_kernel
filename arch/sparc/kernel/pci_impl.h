@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* pci_impl.h: Helper definitions for PCI controller support.
  *
  * Copyright (C) 1999, 2007 David S. Miller (davem@davemloft.net)
@@ -10,7 +11,6 @@
 #include <linux/spinlock.h>
 #include <linux/pci.h>
 #include <linux/msi.h>
-#include <linux/of_device.h>
 #include <asm/io.h>
 #include <asm/prom.h>
 #include <asm/iommu.h>
@@ -48,8 +48,8 @@ struct sparc64_msiq_ops {
 			      unsigned long devino);
 };
 
-extern void sparc64_pbm_msi_init(struct pci_pbm_info *pbm,
-				 const struct sparc64_msiq_ops *ops);
+void sparc64_pbm_msi_init(struct pci_pbm_info *pbm,
+			  const struct sparc64_msiq_ops *ops);
 
 struct sparc64_msiq_cookie {
 	struct pci_pbm_info *pbm;
@@ -97,7 +97,12 @@ struct pci_pbm_info {
 	/* PBM I/O and Memory space resources. */
 	struct resource			io_space;
 	struct resource			mem_space;
+	struct resource			mem64_space;
 	struct resource			busn;
+	/* offset */
+	resource_size_t			io_offset;
+	resource_size_t			mem_offset;
+	resource_size_t			mem64_offset;
 
 	/* Base of PCI Config space, can be per-PBM or shared. */
 	unsigned long			config_space;
@@ -158,23 +163,23 @@ extern struct pci_pbm_info *pci_pbm_root;
 extern int pci_num_pbms;
 
 /* PCI bus scanning and fixup support. */
-extern void pci_get_pbm_props(struct pci_pbm_info *pbm);
-extern struct pci_bus *pci_scan_one_pbm(struct pci_pbm_info *pbm,
-					struct device *parent);
-extern void pci_determine_mem_io_space(struct pci_pbm_info *pbm);
+void pci_get_pbm_props(struct pci_pbm_info *pbm);
+struct pci_bus *pci_scan_one_pbm(struct pci_pbm_info *pbm,
+				 struct device *parent);
+void pci_determine_mem_io_space(struct pci_pbm_info *pbm);
 
 /* Error reporting support. */
-extern void pci_scan_for_target_abort(struct pci_pbm_info *, struct pci_bus *);
-extern void pci_scan_for_master_abort(struct pci_pbm_info *, struct pci_bus *);
-extern void pci_scan_for_parity_error(struct pci_pbm_info *, struct pci_bus *);
+void pci_scan_for_target_abort(struct pci_pbm_info *, struct pci_bus *);
+void pci_scan_for_master_abort(struct pci_pbm_info *, struct pci_bus *);
+void pci_scan_for_parity_error(struct pci_pbm_info *, struct pci_bus *);
 
 /* Configuration space access. */
-extern void pci_config_read8(u8 *addr, u8 *ret);
-extern void pci_config_read16(u16 *addr, u16 *ret);
-extern void pci_config_read32(u32 *addr, u32 *ret);
-extern void pci_config_write8(u8 *addr, u8 val);
-extern void pci_config_write16(u16 *addr, u16 val);
-extern void pci_config_write32(u32 *addr, u32 val);
+void pci_config_read8(u8 *addr, u8 *ret);
+void pci_config_read16(u16 *addr, u16 *ret);
+void pci_config_read32(u32 *addr, u32 *ret);
+void pci_config_write8(u8 *addr, u8 val);
+void pci_config_write16(u16 *addr, u16 val);
+void pci_config_write32(u32 *addr, u32 val);
 
 extern struct pci_ops sun4u_pci_ops;
 extern struct pci_ops sun4v_pci_ops;

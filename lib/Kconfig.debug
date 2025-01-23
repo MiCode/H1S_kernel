@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
+menu "Kernel hacking"
+
 menu "printk and dmesg options"
 
 config PRINTK_TIME
@@ -13,9 +16,63 @@ config PRINTK_TIME
 	  be included, not that the timestamp is recorded.
 
 	  The behavior is also controlled by the kernel command line
-	  parameter printk.time=1. See Documentation/kernel-parameters.txt
+	  parameter printk.time=1. See Documentation/admin-guide/kernel-parameters.rst
 
-config DEFAULT_MESSAGE_LOGLEVEL
+config PRINTK_CALLER
+	bool "Show caller information on printks"
+	depends on PRINTK
+	help
+	  Selecting this option causes printk() to add a caller "thread id" (if
+	  in task context) or a caller "processor id" (if not in task context)
+	  to every message.
+
+	  This option is intended for environments where multiple threads
+	  concurrently call printk() for many times, for it is difficult to
+	  interpret without knowing where these lines (or sometimes individual
+	  line which was divided into multiple lines due to race) came from.
+
+	  Since toggling after boot makes the code racy, currently there is
+	  no option to enable/disable at the kernel command line parameter or
+	  sysfs interface.
+
+config STACKTRACE_BUILD_ID
+	bool "Show build ID information in stacktraces"
+	depends on PRINTK
+	help
+	  Selecting this option adds build ID information for symbols in
+	  stacktraces printed with the printk format '%p[SR]b'.
+
+	  This option is intended for distros where debuginfo is not easily
+	  accessible but can be downloaded given the build ID of the vmlinux or
+	  kernel module where the function is located.
+
+config CONSOLE_LOGLEVEL_DEFAULT
+	int "Default console loglevel (1-15)"
+	range 1 15
+	default "7"
+	help
+	  Default loglevel to determine what will be printed on the console.
+
+	  Setting a default here is equivalent to passing in loglevel=<x> in
+	  the kernel bootargs. loglevel=<x> continues to override whatever
+	  value is specified here as well.
+
+	  Note: This does not affect the log level of un-prefixed printk()
+	  usage in the kernel. That is controlled by the MESSAGE_LOGLEVEL_DEFAULT
+	  option.
+
+config CONSOLE_LOGLEVEL_QUIET
+	int "quiet console loglevel (1-15)"
+	range 1 15
+	default "4"
+	help
+	  loglevel to use when "quiet" is passed on the kernel commandline.
+
+	  When "quiet" is passed on the kernel commandline this loglevel
+	  will be used as the loglevel. IOW passing "quiet" will be the
+	  equivalent of passing "loglevel=<CONSOLE_LOGLEVEL_QUIET>"
+
+config MESSAGE_LOGLEVEL_DEFAULT
 	int "Default message log level (1-7)"
 	range 1 7
 	default "4"
@@ -25,6 +82,10 @@ config DEFAULT_MESSAGE_LOGLEVEL
 	  This was hard-coded to KERN_WARNING since at least 2.6.10 but folks
 	  that are auditing their logs closely may want to set it to a lower
 	  priority.
+
+	  Note: This does not affect what message level gets printed on the console
+	  by default. To change that, use loglevel=<x> in the kernel bootargs,
+	  or pick a different CONSOLE_LOGLEVEL_DEFAULT configuration value.
 
 config BOOT_PRINTK_DELAY
 	bool "Delay each boot printk message by N milliseconds"
@@ -48,7 +109,8 @@ config DYNAMIC_DEBUG
 	bool "Enable dynamic printk() support"
 	default n
 	depends on PRINTK
-	depends on DEBUG_FS
+	depends on (DEBUG_FS || PROC_FS)
+	select DYNAMIC_DEBUG_CORE
 	help
 
 	  Compiles debug level messages into the kernel, which would not
@@ -66,8 +128,9 @@ config DYNAMIC_DEBUG
 	  Usage:
 
 	  Dynamic debugging is controlled via the 'dynamic_debug/control' file,
-	  which is contained in the 'debugfs' filesystem. Thus, the debugfs
-	  filesystem must first be mounted before making use of this feature.
+	  which is contained in the 'debugfs' filesystem or procfs.
+	  Thus, the debugfs or procfs filesystem must first be mounted before
+	  making use of this feature.
 	  We refer the control file as: <debugfs>/dynamic_debug/control. This
 	  file contains a list of the debug statements that can be enabled. The
 	  format for each line of the file is:
@@ -78,8 +141,8 @@ config DYNAMIC_DEBUG
 	  lineno : line number of the debug statement
 	  module : module that contains the debug statement
 	  function : function that contains the debug statement
-          flags : '=p' means the line is turned 'on' for printing
-          format : the format used for the debug statement
+	  flags : '=p' means the line is turned 'on' for printing
+	  format : the format used for the debug statement
 
 	  From a live system:
 
@@ -111,28 +174,134 @@ config DYNAMIC_DEBUG
 		nullarbor:~ # echo -n 'func svc_process -p' >
 						<debugfs>/dynamic_debug/control
 
-	  See Documentation/dynamic-debug-howto.txt for additional information.
+	  See Documentation/admin-guide/dynamic-debug-howto.rst for additional
+	  information.
+
+config DYNAMIC_DEBUG_CORE
+	bool "Enable core function of dynamic debug support"
+	depends on PRINTK
+	depends on (DEBUG_FS || PROC_FS)
+	help
+	  Enable core functional support of dynamic debug. It is useful
+	  when you want to tie dynamic debug to your kernel modules with
+	  DYNAMIC_DEBUG_MODULE defined for each of them, especially for
+	  the case of embedded system where the kernel image size is
+	  sensitive for people.
+
+config SYMBOLIC_ERRNAME
+	bool "Support symbolic error names in printf"
+	default y if PRINTK
+	help
+	  If you say Y here, the kernel's printf implementation will
+	  be able to print symbolic error names such as ENOSPC instead
+	  of the number 28. It makes the kernel image slightly larger
+	  (about 3KB), but can make the kernel logs easier to read.
+
+config DEBUG_BUGVERBOSE
+	bool "Verbose BUG() reporting (adds 70K)" if DEBUG_KERNEL && EXPERT
+	depends on BUG && (GENERIC_BUG || HAVE_DEBUG_BUGVERBOSE)
+	default y
+	help
+	  Say Y here to make BUG() panics output the file name and line number
+	  of the BUG call as well as the EIP and oops trace.  This aids
+	  debugging but costs about 70-100K of memory.
 
 endmenu # "printk and dmesg options"
+
+config DEBUG_KERNEL
+	bool "Kernel debugging"
+	help
+	  Say Y here if you are developing drivers or trying to debug and
+	  identify kernel problems.
+
+config DEBUG_MISC
+	bool "Miscellaneous debug code"
+	default DEBUG_KERNEL
+	depends on DEBUG_KERNEL
+	help
+	  Say Y here if you need to enable miscellaneous debug code that should
+	  be under a more specific debug option but isn't.
 
 menu "Compile-time checks and compiler options"
 
 config DEBUG_INFO
-	bool "Compile the kernel with debug info"
+	bool
+	help
+	  A kernel debug info option other than "None" has been selected
+	  in the "Debug information" choice below, indicating that debug
+	  information will be generated for build targets.
+
+# Clang is known to generate .{s,u}leb128 with symbol deltas with DWARF5, which
+# some targets may not support: https://sourceware.org/bugzilla/show_bug.cgi?id=27215
+config AS_HAS_NON_CONST_LEB128
+	def_bool $(as-instr,.uleb128 .Lexpr_end4 - .Lexpr_start3\n.Lexpr_start3:\n.Lexpr_end4:)
+
+choice
+	prompt "Debug information"
 	depends on DEBUG_KERNEL
 	help
-          If you say Y here the resulting kernel image will include
-	  debugging info resulting in a larger kernel image.
+	  Selecting something other than "None" results in a kernel image
+	  that will include debugging info resulting in a larger kernel image.
 	  This adds debug symbols to the kernel and modules (gcc -g), and
 	  is needed if you intend to use kernel crashdump or binary object
 	  tools like crash, kgdb, LKCD, gdb, etc on the kernel.
-	  Say Y here only if you plan to debug the kernel.
 
-	  If unsure, say N.
+	  Choose which version of DWARF debug info to emit. If unsure,
+	  select "Toolchain default".
+
+config DEBUG_INFO_NONE
+	bool "Disable debug information"
+	help
+	  Do not build the kernel with debugging information, which will
+	  result in a faster and smaller build.
+
+config DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
+	bool "Rely on the toolchain's implicit default DWARF version"
+	select DEBUG_INFO
+	depends on !CC_IS_CLANG || AS_IS_LLVM || CLANG_VERSION < 140000 || (AS_IS_GNU && AS_VERSION >= 23502 && AS_HAS_NON_CONST_LEB128)
+	help
+	  The implicit default version of DWARF debug info produced by a
+	  toolchain changes over time.
+
+	  This can break consumers of the debug info that haven't upgraded to
+	  support newer revisions, and prevent testing newer versions, but
+	  those should be less common scenarios.
+
+config DEBUG_INFO_DWARF4
+	bool "Generate DWARF Version 4 debuginfo"
+	select DEBUG_INFO
+	depends on !CC_IS_CLANG || AS_IS_LLVM || (AS_IS_GNU && AS_VERSION >= 23502)
+	help
+	  Generate DWARF v4 debug info. This requires gcc 4.5+, binutils 2.35.2
+	  if using clang without clang's integrated assembler, and gdb 7.0+.
+
+	  If you have consumers of DWARF debug info that are not ready for
+	  newer revisions of DWARF, you may wish to choose this or have your
+	  config select this.
+
+config DEBUG_INFO_DWARF5
+	bool "Generate DWARF Version 5 debuginfo"
+	select DEBUG_INFO
+	depends on !CC_IS_CLANG || AS_IS_LLVM || (AS_IS_GNU && AS_VERSION >= 23502 && AS_HAS_NON_CONST_LEB128)
+	help
+	  Generate DWARF v5 debug info. Requires binutils 2.35.2, gcc 5.0+ (gcc
+	  5.0+ accepts the -gdwarf-5 flag but only had partial support for some
+	  draft features until 7.0), and gdb 8.0+.
+
+	  Changes to the structure of debug info in Version 5 allow for around
+	  15-18% savings in resulting image and debug info section sizes as
+	  compared to DWARF Version 4. DWARF Version 5 standardizes previous
+	  extensions such as accelerators for symbol indexing and the format
+	  for fission (.dwo/.dwp) files. Users may not want to select this
+	  config if they rely on tooling that has not yet been updated to
+	  support DWARF Version 5.
+
+endchoice # "Debug information"
+
+if DEBUG_INFO
 
 config DEBUG_INFO_REDUCED
 	bool "Reduce debugging information"
-	depends on DEBUG_INFO
 	help
 	  If you say Y here gcc is instructed to generate less debugging
 	  information for structure types. This means that tools that
@@ -143,32 +312,139 @@ config DEBUG_INFO_REDUCED
 	  DEBUG_INFO build and compile times are reduced too.
 	  Only works with newer gcc versions.
 
-config ENABLE_WARN_DEPRECATED
-	bool "Enable __deprecated logic"
-	default y
+choice
+	prompt "Compressed Debug information"
 	help
-	  Enable the __deprecated logic in the kernel build.
-	  Disable this to suppress the "warning: 'foo' is deprecated
-	  (declared at kernel/power/somefile.c:1234)" messages.
+	  Compress the resulting debug info. Results in smaller debug info sections,
+	  but requires that consumers are able to decompress the results.
 
-config ENABLE_MUST_CHECK
-	bool "Enable __must_check logic"
-	default y
+	  If unsure, choose DEBUG_INFO_COMPRESSED_NONE.
+
+config DEBUG_INFO_COMPRESSED_NONE
+	bool "Don't compress debug information"
 	help
-	  Enable the __must_check logic in the kernel build.  Disable this to
-	  suppress the "warning: ignoring return value of 'foo', declared with
-	  attribute warn_unused_result" messages.
+	  Don't compress debug info sections.
+
+config DEBUG_INFO_COMPRESSED_ZLIB
+	bool "Compress debugging information with zlib"
+	depends on $(cc-option,-gz=zlib)
+	depends on $(ld-option,--compress-debug-sections=zlib)
+	help
+	  Compress the debug information using zlib.  Requires GCC 5.0+ or Clang
+	  5.0+, binutils 2.26+, and zlib.
+
+	  Users of dpkg-deb via scripts/package/builddeb may find an increase in
+	  size of their debug .deb packages with this config set, due to the
+	  debug info being compressed with zlib, then the object files being
+	  recompressed with a different compression scheme. But this is still
+	  preferable to setting $KDEB_COMPRESS to "none" which would be even
+	  larger.
+
+config DEBUG_INFO_COMPRESSED_ZSTD
+	bool "Compress debugging information with zstd"
+	depends on $(cc-option,-gz=zstd)
+	depends on $(ld-option,--compress-debug-sections=zstd)
+	help
+	  Compress the debug information using zstd.  This may provide better
+	  compression than zlib, for about the same time costs, but requires newer
+	  toolchain support.  Requires GCC 13.0+ or Clang 16.0+, binutils 2.40+, and
+	  zstd.
+
+endchoice # "Compressed Debug information"
+
+config DEBUG_INFO_SPLIT
+	bool "Produce split debuginfo in .dwo files"
+	depends on $(cc-option,-gsplit-dwarf)
+	# RISC-V linker relaxation + -gsplit-dwarf has issues with LLVM and GCC
+	# prior to 12.x:
+	# https://github.com/llvm/llvm-project/issues/56642
+	# https://gcc.gnu.org/bugzilla/show_bug.cgi?id=99090
+	depends on !RISCV || GCC_VERSION >= 120000
+	help
+	  Generate debug info into separate .dwo files. This significantly
+	  reduces the build directory size for builds with DEBUG_INFO,
+	  because it stores the information only once on disk in .dwo
+	  files instead of multiple times in object files and executables.
+	  In addition the debug information is also compressed.
+
+	  Requires recent gcc (4.7+) and recent gdb/binutils.
+	  Any tool that packages or reads debug information would need
+	  to know about the .dwo files and include them.
+	  Incompatible with older versions of ccache.
+
+config DEBUG_INFO_BTF
+	bool "Generate BTF typeinfo"
+	depends on !DEBUG_INFO_SPLIT && !DEBUG_INFO_REDUCED
+	depends on !GCC_PLUGIN_RANDSTRUCT || COMPILE_TEST
+	depends on BPF_SYSCALL
+	depends on !DEBUG_INFO_DWARF5 || PAHOLE_VERSION >= 121
+	help
+	  Generate deduplicated BTF type information from DWARF debug info.
+	  Turning this on expects presence of pahole tool, which will convert
+	  DWARF type info into equivalent deduplicated BTF type info.
+
+config PAHOLE_HAS_SPLIT_BTF
+	def_bool PAHOLE_VERSION >= 119
+
+config PAHOLE_HAS_BTF_TAG
+	def_bool PAHOLE_VERSION >= 123
+	depends on CC_IS_CLANG
+	help
+	  Decide whether pahole emits btf_tag attributes (btf_type_tag and
+	  btf_decl_tag) or not. Currently only clang compiler implements
+	  these attributes, so make the config depend on CC_IS_CLANG.
+
+config PAHOLE_HAS_LANG_EXCLUDE
+	def_bool PAHOLE_VERSION >= 124
+	help
+	  Support for the --lang_exclude flag which makes pahole exclude
+	  compilation units from the supplied language. Used in Kbuild to
+	  omit Rust CUs which are not supported in version 1.24 of pahole,
+	  otherwise it would emit malformed kernel and module binaries when
+	  using DEBUG_INFO_BTF_MODULES.
+
+config DEBUG_INFO_BTF_MODULES
+	def_bool y
+	depends on DEBUG_INFO_BTF && MODULES && PAHOLE_HAS_SPLIT_BTF
+	help
+	  Generate compact split BTF type information for kernel modules.
+
+config MODULE_ALLOW_BTF_MISMATCH
+	bool "Allow loading modules with non-matching BTF type info"
+	depends on DEBUG_INFO_BTF_MODULES
+	help
+	  For modules whose split BTF does not match vmlinux, load without
+	  BTF rather than refusing to load. The default behavior with
+	  module BTF enabled is to reject modules with such mismatches;
+	  this option will still load module BTF where possible but ignore
+	  it when a mismatch is found.
+
+config GDB_SCRIPTS
+	bool "Provide GDB scripts for kernel debugging"
+	help
+	  This creates the required links to GDB helper scripts in the
+	  build directory. If you load vmlinux into gdb, the helper
+	  scripts will be automatically imported by gdb as well, and
+	  additional functions are available to analyze a Linux kernel
+	  instance. See Documentation/dev-tools/gdb-kernel-debugging.rst
+	  for further details.
+
+endif # DEBUG_INFO
 
 config FRAME_WARN
-	int "Warn for stack frames larger than (needs gcc 4.4)"
+	int "Warn for stack frames larger than"
 	range 0 8192
+	default 0 if KMSAN
+	default 2048 if GCC_PLUGIN_LATENT_ENTROPY
+	default 2048 if PARISC
+	default 1536 if (!64BIT && XTENSA)
+	default 1280 if KASAN && !64BIT
 	default 1024 if !64BIT
 	default 2048 if 64BIT
 	help
-	  Tell gcc to warn at build time for stack frames larger than this.
+	  Tell the compiler to warn at build time for stack frames larger than this.
 	  Setting this too low will cause a lot of warnings.
 	  Setting it to 0 disables the warning.
-	  Requires gcc 4.4
 
 config STRIP_ASM_SYMS
 	bool "Strip assembler-generated symbols during link"
@@ -179,58 +455,28 @@ config STRIP_ASM_SYMS
 	  get_wchan() and suchlike.
 
 config READABLE_ASM
-        bool "Generate readable assembler code"
-        depends on DEBUG_KERNEL
-        help
-          Disable some compiler optimizations that tend to generate human unreadable
-          assembler output. This may make the kernel slightly slower, but it helps
-          to keep kernel developers who have to stare a lot at assembler listings
-          sane.
-
-config UNUSED_SYMBOLS
-	bool "Enable unused/obsolete exported symbols"
-	default y if X86
+	bool "Generate readable assembler code"
+	depends on DEBUG_KERNEL
+	depends on CC_IS_GCC
 	help
-	  Unused but exported symbols make the kernel needlessly bigger.  For
-	  that reason most of these unused exports will soon be removed.  This
-	  option is provided temporarily to provide a transition period in case
-	  some external kernel module needs one of these symbols anyway. If you
-	  encounter such a case in your module, consider if you are actually
-	  using the right API.  (rationale: since nobody in the kernel is using
-	  this in a module, there is a pretty good chance it's actually the
-	  wrong interface to use).  If you really need the symbol, please send a
-	  mail to the linux kernel mailing list mentioning the symbol and why
-	  you really need it, and what the merge plan to the mainline kernel for
-	  your module is.
+	  Disable some compiler optimizations that tend to generate human unreadable
+	  assembler output. This may make the kernel slightly slower, but it helps
+	  to keep kernel developers who have to stare a lot at assembler listings
+	  sane.
 
-config DEBUG_FS
-	bool "Debug Filesystem"
-	help
-	  debugfs is a virtual file system that kernel developers use to put
-	  debugging files into.  Enable this option to be able to read and
-	  write to these files.
-
-	  For detailed documentation on the debugfs API, see
-	  Documentation/DocBook/filesystems.
-
-	  If unsure, say N.
-
-config HEADERS_CHECK
-	bool "Run 'make headers_check' when building vmlinux"
+config HEADERS_INSTALL
+	bool "Install uapi headers to usr/include"
 	depends on !UML
 	help
-	  This option will extract the user-visible kernel headers whenever
-	  building the kernel, and will run basic sanity checks on them to
-	  ensure that exported files do not attempt to include files which
-	  were not exported, etc.
-
-	  If you're making modifications to header files which are
-	  relevant for userspace, say 'Y', and check the headers
-	  exported to $(INSTALL_HDR_PATH) (usually 'usr/include' in
-	  your build tree), to make sure they're suitable.
+	  This option will install uapi headers (headers exported to user-space)
+	  into the usr/include directory for use during the kernel build.
+	  This is unneeded for building the kernel itself, but needed for some
+	  user-space program samples. It is also needed by some features such
+	  as uapi header sanity checks.
 
 config DEBUG_SECTION_MISMATCH
 	bool "Enable full Section mismatch analysis"
+	depends on CC_IS_GCC
 	help
 	  The section mismatch analysis checks if there are illegal
 	  references from one section to another section.
@@ -242,23 +488,35 @@ config DEBUG_SECTION_MISMATCH
 	  which results in the code/data being placed in specific sections.
 	  The section mismatch analysis is always performed after a full
 	  kernel build, and enabling this option causes the following
-	  additional steps to occur:
+	  additional step to occur:
 	  - Add the option -fno-inline-functions-called-once to gcc commands.
 	    When inlining a function annotated with __init in a non-init
 	    function, we would lose the section information and thus
 	    the analysis would not catch the illegal reference.
 	    This option tells gcc to inline less (but it does result in
 	    a larger kernel).
-	  - Run the section mismatch analysis for each module/built-in.o file.
-	    When we run the section mismatch analysis on vmlinux.o, we
-	    lose valueble information about where the mismatch was
-	    introduced.
-	    Running the analysis for each module/built-in.o file
-	    tells where the mismatch happens much closer to the
-	    source. The drawback is that the same mismatch is
-	    reported at least twice.
-	  - Enable verbose reporting from modpost in order to help resolve
-	    the section mismatches that are reported.
+
+config SECTION_MISMATCH_WARN_ONLY
+	bool "Make section mismatch errors non-fatal"
+	default y
+	help
+	  If you say N here, the build process will fail if there are any
+	  section mismatch, instead of just throwing warnings.
+
+	  If unsure, say Y.
+
+config DEBUG_FORCE_FUNCTION_ALIGN_64B
+	bool "Force all function address 64B aligned"
+	depends on EXPERT && (X86_64 || ARM64 || PPC32 || PPC64 || ARC || RISCV || S390)
+	select FUNCTION_ALIGNMENT_64B
+	help
+	  There are cases that a commit from one domain changes the function
+	  address alignment of other domains, and cause magic performance
+	  bump (regression or improvement). Enable this option will help to
+	  verify if the bump is caused by function alignment changes, while
+	  it will slightly increase the kernel size and affect icache usage.
+
+	  It is mainly for debug and performance tuning use.
 
 #
 # Select this config option from the architecture Kconfig, if it
@@ -267,19 +525,46 @@ config DEBUG_SECTION_MISMATCH
 #
 config ARCH_WANT_FRAME_POINTERS
 	bool
-	help
 
 config FRAME_POINTER
 	bool "Compile the kernel with frame pointers"
-	depends on DEBUG_KERNEL && \
-		(CRIS || M68K || FRV || UML || \
-		 AVR32 || SUPERH || BLACKFIN || MN10300 || METAG) || \
-		ARCH_WANT_FRAME_POINTERS
+	depends on DEBUG_KERNEL && (M68K || UML || SUPERH) || ARCH_WANT_FRAME_POINTERS
 	default y if (DEBUG_INFO && UML) || ARCH_WANT_FRAME_POINTERS
 	help
 	  If you say Y here the resulting kernel image will be slightly
 	  larger and slower, but it gives very useful debugging information
 	  in case of kernel bugs. (precise oopses/stacktraces/warnings)
+
+config OBJTOOL
+	bool
+
+config STACK_VALIDATION
+	bool "Compile-time stack metadata validation"
+	depends on HAVE_STACK_VALIDATION && UNWINDER_FRAME_POINTER
+	select OBJTOOL
+	default n
+	help
+	  Validate frame pointer rules at compile-time.  This helps ensure that
+	  runtime stack traces are more reliable.
+
+	  For more information, see
+	  tools/objtool/Documentation/objtool.txt.
+
+config NOINSTR_VALIDATION
+	bool
+	depends on HAVE_NOINSTR_VALIDATION && DEBUG_ENTRY
+	select OBJTOOL
+	default y
+
+config VMLINUX_MAP
+	bool "Generate vmlinux.map file when linking"
+	depends on EXPERT
+	help
+	  Selecting this option will pass "-Map=vmlinux.map" to ld
+	  when linking vmlinux. That file can be useful for verifying
+	  and debugging magic section games, and for seeing which
+	  pieces of code get eliminated with
+	  CONFIG_LD_DEAD_CODE_DATA_ELIMINATION.
 
 config DEBUG_FORCE_WEAK_PER_CPU
 	bool "Force weak per-cpu definitions"
@@ -298,6 +583,8 @@ config DEBUG_FORCE_WEAK_PER_CPU
 
 endmenu # "Compiler options"
 
+menu "Generic Kernel Debugging Instruments"
+
 config MAGIC_SYSRQ
 	bool "Magic SysRq key"
 	depends on !UML
@@ -309,8 +596,8 @@ config MAGIC_SYSRQ
 	  by pressing various keys while holding SysRq (Alt+PrintScreen). It
 	  also works on a serial console (on PC hardware at least), if you
 	  send a BREAK and then within 5 seconds a command keypress. The
-	  keys are documented in <file:Documentation/sysrq.txt>. Don't say Y
-	  unless you really know what this hack does.
+	  keys are documented in <file:Documentation/admin-guide/sysrq.rst>.
+	  Don't say Y unless you really know what this hack does.
 
 config MAGIC_SYSRQ_DEFAULT_ENABLE
 	hex "Enable magic SysRq key functions by default"
@@ -319,17 +606,87 @@ config MAGIC_SYSRQ_DEFAULT_ENABLE
 	help
 	  Specifies which SysRq key functions are enabled by default.
 	  This may be set to 1 or 0 to enable or disable them all, or
-	  to a bitmask as described in Documentation/sysrq.txt.
+	  to a bitmask as described in Documentation/admin-guide/sysrq.rst.
 
-config DEBUG_KERNEL
-	bool "Kernel debugging"
+config MAGIC_SYSRQ_SERIAL
+	bool "Enable magic SysRq key over serial"
+	depends on MAGIC_SYSRQ
+	default y
 	help
-	  Say Y here if you are developing drivers or trying to debug and
-	  identify kernel problems.
+	  Many embedded boards have a disconnected TTL level serial which can
+	  generate some garbage that can lead to spurious false sysrq detects.
+	  This option allows you to decide whether you want to enable the
+	  magic SysRq key.
+
+config MAGIC_SYSRQ_SERIAL_SEQUENCE
+	string "Char sequence that enables magic SysRq over serial"
+	depends on MAGIC_SYSRQ_SERIAL
+	default ""
+	help
+	  Specifies a sequence of characters that can follow BREAK to enable
+	  SysRq on a serial console.
+
+	  If unsure, leave an empty string and the option will not be enabled.
+
+config DEBUG_FS
+	bool "Debug Filesystem"
+	help
+	  debugfs is a virtual file system that kernel developers use to put
+	  debugging files into.  Enable this option to be able to read and
+	  write to these files.
+
+	  For detailed documentation on the debugfs API, see
+	  Documentation/filesystems/.
+
+	  If unsure, say N.
+
+choice
+	prompt "Debugfs default access"
+	depends on DEBUG_FS
+	default DEBUG_FS_ALLOW_ALL
+	help
+	  This selects the default access restrictions for debugfs.
+	  It can be overridden with kernel command line option
+	  debugfs=[on,no-mount,off]. The restrictions apply for API access
+	  and filesystem registration.
+
+config DEBUG_FS_ALLOW_ALL
+	bool "Access normal"
+	help
+	  No restrictions apply. Both API and filesystem registration
+	  is on. This is the normal default operation.
+
+config DEBUG_FS_DISALLOW_MOUNT
+	bool "Do not register debugfs as filesystem"
+	help
+	  The API is open but filesystem is not loaded. Clients can still do
+	  their work and read with debug tools that do not need
+	  debugfs filesystem.
+
+config DEBUG_FS_ALLOW_NONE
+	bool "No access"
+	help
+	  Access is off. Clients get -PERM when trying to create nodes in
+	  debugfs tree and debugfs is not registered as a filesystem.
+	  Client can then back-off or continue without debugfs access.
+
+endchoice
+
+source "lib/Kconfig.kgdb"
+source "lib/Kconfig.ubsan"
+source "lib/Kconfig.kcsan"
+
+endmenu
+
+menu "Networking Debugging"
+
+source "net/Kconfig.debug"
+
+endmenu # "Networking Debugging"
 
 menu "Memory Debugging"
 
-source mm/Kconfig.debug
+source "mm/Kconfig.debug"
 
 config DEBUG_OBJECTS
 	bool "Debug object operations"
@@ -386,118 +743,75 @@ config DEBUG_OBJECTS_PERCPU_COUNTER
 
 config DEBUG_OBJECTS_ENABLE_DEFAULT
 	int "debug_objects bootup default value (0-1)"
-        range 0 1
-        default "1"
-        depends on DEBUG_OBJECTS
-        help
-          Debug objects boot parameter default value
-
-config DEBUG_SLAB
-	bool "Debug slab memory allocations"
-	depends on DEBUG_KERNEL && SLAB && !KMEMCHECK
+	range 0 1
+	default "1"
+	depends on DEBUG_OBJECTS
 	help
-	  Say Y here to have the kernel do limited verification on memory
-	  allocation as well as poisoning memory on free to catch use of freed
-	  memory. This can make kmalloc/kfree-intensive workloads much slower.
+	  Debug objects boot parameter default value
 
-config DEBUG_SLAB_LEAK
-	bool "Memory leak debugging"
-	depends on DEBUG_SLAB
-
-config SLUB_DEBUG_ON
-	bool "SLUB debugging on by default"
-	depends on SLUB && SLUB_DEBUG && !KMEMCHECK
-	default n
+config SHRINKER_DEBUG
+	bool "Enable shrinker debugging support"
+	depends on DEBUG_FS
 	help
-	  Boot with debugging on by default. SLUB boots by default with
-	  the runtime debug capabilities switched off. Enabling this is
-	  equivalent to specifying the "slub_debug" parameter on boot.
-	  There is no support for more fine grained debug control like
-	  possible with slub_debug=xxx. SLUB debugging may be switched
-	  off in a kernel built with CONFIG_SLUB_DEBUG_ON by specifying
-	  "slub_debug=-".
-
-config SLUB_STATS
-	default n
-	bool "Enable SLUB performance statistics"
-	depends on SLUB && SYSFS
-	help
-	  SLUB statistics are useful to debug SLUBs allocation behavior in
-	  order find ways to optimize the allocator. This should never be
-	  enabled for production use since keeping statistics slows down
-	  the allocator by a few percentage points. The slabinfo command
-	  supports the determination of the most active slabs to figure
-	  out which slabs are relevant to a particular load.
-	  Try running: slabinfo -DA
-
-config HAVE_DEBUG_KMEMLEAK
-	bool
-
-config DEBUG_KMEMLEAK
-	bool "Kernel memory leak detector"
-	depends on DEBUG_KERNEL && HAVE_DEBUG_KMEMLEAK
-	select DEBUG_FS
-	select STACKTRACE if STACKTRACE_SUPPORT
-	select KALLSYMS
-	select CRC32
-	help
-	  Say Y here if you want to enable the memory leak
-	  detector. The memory allocation/freeing is traced in a way
-	  similar to the Boehm's conservative garbage collector, the
-	  difference being that the orphan objects are not freed but
-	  only shown in /sys/kernel/debug/kmemleak. Enabling this
-	  feature will introduce an overhead to memory
-	  allocations. See Documentation/kmemleak.txt for more
-	  details.
-
-	  Enabling DEBUG_SLAB or SLUB_DEBUG may increase the chances
-	  of finding leaks due to the slab objects poisoning.
-
-	  In order to access the kmemleak file, debugfs needs to be
-	  mounted (usually at /sys/kernel/debug).
-
-config DEBUG_KMEMLEAK_EARLY_LOG_SIZE
-	int "Maximum kmemleak early log entries"
-	depends on DEBUG_KMEMLEAK
-	range 200 40000
-	default 400
-	help
-	  Kmemleak must track all the memory allocations to avoid
-	  reporting false positives. Since memory may be allocated or
-	  freed before kmemleak is initialised, an early log buffer is
-	  used to store these actions. If kmemleak reports "early log
-	  buffer exceeded", please increase this value.
-
-config DEBUG_KMEMLEAK_TEST
-	tristate "Simple test for the kernel memory leak detector"
-	depends on DEBUG_KMEMLEAK && m
-	help
-	  This option enables a module that explicitly leaks memory.
-
-	  If unsure, say N.
-
-config DEBUG_KMEMLEAK_DEFAULT_OFF
-	bool "Default kmemleak to off"
-	depends on DEBUG_KMEMLEAK
-	help
-	  Say Y here to disable kmemleak by default. It can then be enabled
-	  on the command line via kmemleak=on.
+	  Say Y to enable the shrinker debugfs interface which provides
+	  visibility into the kernel memory shrinkers subsystem.
+	  Disable it to avoid an extra memory footprint.
 
 config DEBUG_STACK_USAGE
 	bool "Stack utilization instrumentation"
-	depends on DEBUG_KERNEL && !IA64 && !PARISC && !METAG
+	depends on DEBUG_KERNEL && !IA64
 	help
 	  Enables the display of the minimum amount of free stack which each
 	  task has ever had available in the sysrq-T and sysrq-P debug output.
 
 	  This option will slow down process creation somewhat.
 
+config SCHED_STACK_END_CHECK
+	bool "Detect stack corruption on calls to schedule()"
+	depends on DEBUG_KERNEL
+	default n
+	help
+	  This option checks for a stack overrun on calls to schedule().
+	  If the stack end location is found to be over written always panic as
+	  the content of the corrupted region can no longer be trusted.
+	  This is to ensure no erroneous behaviour occurs which could result in
+	  data corruption or a sporadic crash at a later stage once the region
+	  is examined. The runtime overhead introduced is minimal.
+
+config ARCH_HAS_DEBUG_VM_PGTABLE
+	bool
+	help
+	  An architecture should select this when it can successfully
+	  build and run DEBUG_VM_PGTABLE.
+
+config DEBUG_VM_IRQSOFF
+	def_bool DEBUG_VM && !PREEMPT_RT
+
 config DEBUG_VM
 	bool "Debug VM"
 	depends on DEBUG_KERNEL
 	help
 	  Enable this to turn on extended checks in the virtual-memory system
-          that may impact performance.
+	  that may impact performance.
+
+	  If unsure, say N.
+
+config DEBUG_VM_SHOOT_LAZIES
+	bool "Debug MMU_LAZY_TLB_SHOOTDOWN implementation"
+	depends on DEBUG_VM
+	depends on MMU_LAZY_TLB_SHOOTDOWN
+	help
+	  Enable additional IPIs that ensure lazy tlb mm references are removed
+	  before the mm is freed.
+
+	  If unsure, say N.
+
+config DEBUG_VM_MAPLE_TREE
+	bool "Debug VM maple trees"
+	depends on DEBUG_VM
+	select DEBUG_MAPLE_TREE
+	help
+	  Enable VM maple tree debugging information and extra validations.
 
 	  If unsure, say N.
 
@@ -505,14 +819,40 @@ config DEBUG_VM_RB
 	bool "Debug VM red-black trees"
 	depends on DEBUG_VM
 	help
-	  Enable this to turn on more extended checks in the virtual-memory
-	  system that may impact performance.
+	  Enable VM red-black tree debugging information and extra validations.
 
 	  If unsure, say N.
 
+config DEBUG_VM_PGFLAGS
+	bool "Debug page-flags operations"
+	depends on DEBUG_VM
+	help
+	  Enables extra validation on page flags operations.
+
+	  If unsure, say N.
+
+config DEBUG_VM_PGTABLE
+	bool "Debug arch page table for semantics compliance"
+	depends on MMU
+	depends on ARCH_HAS_DEBUG_VM_PGTABLE
+	default y if DEBUG_VM
+	help
+	  This option provides a debug method which can be used to test
+	  architecture page table helper functions on various platforms in
+	  verifying if they comply with expected generic MM semantics. This
+	  will help architecture code in making sure that any changes or
+	  new additions of these helpers still conform to expected
+	  semantics of the generic MM. Platforms will have to opt in for
+	  this through ARCH_HAS_DEBUG_VM_PGTABLE.
+
+	  If unsure, say N.
+
+config ARCH_HAS_DEBUG_VIRTUAL
+	bool
+
 config DEBUG_VIRTUAL
 	bool "Debug VM translations"
-	depends on DEBUG_KERNEL && X86
+	depends on DEBUG_KERNEL && ARCH_HAS_DEBUG_VIRTUAL
 	help
 	  Enable some costly sanity checks in virtual to page code. This can
 	  catch mistakes with virt_to_page() and friends.
@@ -540,7 +880,7 @@ config DEBUG_MEMORY_INIT
 
 config MEMORY_NOTIFIER_ERROR_INJECT
 	tristate "Memory hotplug notifier error injection module"
-	depends on MEMORY_HOTPLUG_SPARSE && NOTIFIER_ERROR_INJECTION
+	depends on MEMORY_HOTPLUG && NOTIFIER_ERROR_INJECTION
 	help
 	  This option provides the ability to inject artificial errors to
 	  memory hotplug notifier chain callbacks.  It is controlled through
@@ -572,12 +912,34 @@ config DEBUG_PER_CPU_MAPS
 
 	  Say N if unsure.
 
+config DEBUG_KMAP_LOCAL
+	bool "Debug kmap_local temporary mappings"
+	depends on DEBUG_KERNEL && KMAP_LOCAL
+	help
+	  This option enables additional error checking for the kmap_local
+	  infrastructure.  Disable for production use.
+
+config ARCH_SUPPORTS_KMAP_LOCAL_FORCE_MAP
+	bool
+
+config DEBUG_KMAP_LOCAL_FORCE_MAP
+	bool "Enforce kmap_local temporary mappings"
+	depends on DEBUG_KERNEL && ARCH_SUPPORTS_KMAP_LOCAL_FORCE_MAP
+	select KMAP_LOCAL
+	select DEBUG_KMAP_LOCAL
+	help
+	  This option enforces temporary mappings through the kmap_local
+	  mechanism for non-highmem pages and on non-highmem systems.
+	  Disable this for production systems!
+
 config DEBUG_HIGHMEM
 	bool "Highmem debugging"
 	depends on DEBUG_KERNEL && HIGHMEM
+	select DEBUG_KMAP_LOCAL_FORCE_MAP if ARCH_SUPPORTS_KMAP_LOCAL_FORCE_MAP
+	select DEBUG_KMAP_LOCAL
 	help
-	  This options enables addition error checking for high memory systems.
-	  Disable for production systems.
+	  This option enables additional error checking for high memory
+	  systems.  Disable for production systems.
 
 config HAVE_DEBUG_STACKOVERFLOW
 	bool
@@ -585,9 +947,9 @@ config HAVE_DEBUG_STACKOVERFLOW
 config DEBUG_STACKOVERFLOW
 	bool "Check for stack overflows"
 	depends on DEBUG_KERNEL && HAVE_DEBUG_STACKOVERFLOW
-	---help---
+	help
 	  Say Y here if you want to check for overflows of kernel, IRQ
-	  and exception stacks (if your archicture uses them). This
+	  and exception stacks (if your architecture uses them). This
 	  option will show detailed messages if free stack space drops
 	  below a certain limit.
 
@@ -600,7 +962,9 @@ config DEBUG_STACKOVERFLOW
 
 	  If in doubt, say "N".
 
-source "lib/Kconfig.kmemcheck"
+source "lib/Kconfig.kasan"
+source "lib/Kconfig.kfence"
+source "lib/Kconfig.kmsan"
 
 endmenu # "Memory Debugging"
 
@@ -608,63 +972,74 @@ config DEBUG_SHIRQ
 	bool "Debug shared IRQ handlers"
 	depends on DEBUG_KERNEL
 	help
-	  Enable this to generate a spurious interrupt as soon as a shared
-	  interrupt handler is registered, and just before one is deregistered.
-	  Drivers ought to be able to handle interrupts coming in at those
-	  points; some don't and need to be caught.
+	  Enable this to generate a spurious interrupt just before a shared
+	  interrupt handler is deregistered (generating one when registering
+	  is currently disabled). Drivers need to handle this correctly. Some
+	  don't and need to be caught.
 
-menu "Debug Lockups and Hangs"
+menu "Debug Oops, Lockups and Hangs"
+
+config PANIC_ON_OOPS
+	bool "Panic on Oops"
+	help
+	  Say Y here to enable the kernel to panic when it oopses. This
+	  has the same effect as setting oops=panic on the kernel command
+	  line.
+
+	  This feature is useful to ensure that the kernel does not do
+	  anything erroneous after an oops which could result in data
+	  corruption or other issues.
+
+	  Say N if unsure.
+
+config PANIC_ON_OOPS_VALUE
+	int
+	range 0 1
+	default 0 if !PANIC_ON_OOPS
+	default 1 if PANIC_ON_OOPS
+
+config PANIC_TIMEOUT
+	int "panic timeout"
+	default 0
+	help
+	  Set the timeout value (in seconds) until a reboot occurs when
+	  the kernel panics. If n = 0, then we wait forever. A timeout
+	  value n > 0 will wait n seconds before rebooting, while a timeout
+	  value n < 0 will reboot immediately.
 
 config LOCKUP_DETECTOR
-	bool "Detect Hard and Soft Lockups"
+	bool
+
+config SOFTLOCKUP_DETECTOR
+	bool "Detect Soft Lockups"
 	depends on DEBUG_KERNEL && !S390
+	select LOCKUP_DETECTOR
 	help
 	  Say Y here to enable the kernel to act as a watchdog to detect
-	  hard and soft lockups.
+	  soft lockups.
 
 	  Softlockups are bugs that cause the kernel to loop in kernel
 	  mode for more than 20 seconds, without giving other tasks a
 	  chance to run.  The current stack trace is displayed upon
 	  detection and the system will stay locked up.
 
-	  Hardlockups are bugs that cause the CPU to loop in kernel mode
-	  for more than 10 seconds, without letting other interrupts have a
-	  chance to run.  The current stack trace is displayed upon detection
-	  and the system will stay locked up.
-
-	  The overhead should be minimal.  A periodic hrtimer runs to
-	  generate interrupts and kick the watchdog task every 4 seconds.
-	  An NMI is generated every 10 seconds or so to check for hardlockups.
-
-	  The frequency of hrtimer and NMI events and the soft and hard lockup
-	  thresholds can be controlled through the sysctl watchdog_thresh.
-
-config HARDLOCKUP_DETECTOR
-	def_bool y
-	depends on LOCKUP_DETECTOR && !HAVE_NMI_WATCHDOG
-	depends on PERF_EVENTS && HAVE_PERF_EVENTS_NMI
-
-config BOOTPARAM_HARDLOCKUP_PANIC
-	bool "Panic (Reboot) On Hard Lockups"
-	depends on HARDLOCKUP_DETECTOR
+config SOFTLOCKUP_DETECTOR_INTR_STORM
+	bool "Detect Interrupt Storm in Soft Lockups"
+	depends on SOFTLOCKUP_DETECTOR && IRQ_TIME_ACCOUNTING
+	select GENERIC_IRQ_STAT_SNAPSHOT
+	default y if NR_CPUS <= 128
 	help
-	  Say Y here to enable the kernel to panic on "hard lockups",
-	  which are bugs that cause the kernel to loop in kernel
-	  mode with interrupts disabled for more than 10 seconds (configurable
-	  using the watchdog_thresh sysctl).
+	  Say Y here to enable the kernel to detect interrupt storm
+	  during "soft lockups".
 
-	  Say N if unsure.
-
-config BOOTPARAM_HARDLOCKUP_PANIC_VALUE
-	int
-	depends on HARDLOCKUP_DETECTOR
-	range 0 1
-	default 0 if !BOOTPARAM_HARDLOCKUP_PANIC
-	default 1 if BOOTPARAM_HARDLOCKUP_PANIC
+	  "soft lockups" can be caused by a variety of reasons. If one is
+	  caused by an interrupt storm, then the storming interrupts will not
+	  be on the callstack. To detect this case, it is necessary to report
+	  the CPU stats and the interrupt counts during the "soft lockups".
 
 config BOOTPARAM_SOFTLOCKUP_PANIC
 	bool "Panic (Reboot) On Soft Lockups"
-	depends on LOCKUP_DETECTOR
+	depends on SOFTLOCKUP_DETECTOR
 	help
 	  Say Y here to enable the kernel to panic on "soft lockups",
 	  which are bugs that cause the kernel to loop in kernel
@@ -679,21 +1054,115 @@ config BOOTPARAM_SOFTLOCKUP_PANIC
 
 	  Say N if unsure.
 
-config BOOTPARAM_SOFTLOCKUP_PANIC_VALUE
-	int
-	depends on LOCKUP_DETECTOR
-	range 0 1
-	default 0 if !BOOTPARAM_SOFTLOCKUP_PANIC
-	default 1 if BOOTPARAM_SOFTLOCKUP_PANIC
+config HAVE_HARDLOCKUP_DETECTOR_BUDDY
+	bool
+	depends on SMP
+	default y
+
+#
+# Global switch whether to build a hardlockup detector at all. It is available
+# only when the architecture supports at least one implementation. There are
+# two exceptions. The hardlockup detector is never enabled on:
+#
+#	s390: it reported many false positives there
+#
+#	sparc64: has a custom implementation which is not using the common
+#		hardlockup command line options and sysctl interface.
+#
+config HARDLOCKUP_DETECTOR
+	bool "Detect Hard Lockups"
+	depends on DEBUG_KERNEL && !S390 && !HARDLOCKUP_DETECTOR_SPARC64
+	depends on HAVE_HARDLOCKUP_DETECTOR_PERF || HAVE_HARDLOCKUP_DETECTOR_BUDDY || HAVE_HARDLOCKUP_DETECTOR_ARCH
+	imply HARDLOCKUP_DETECTOR_PERF
+	imply HARDLOCKUP_DETECTOR_BUDDY
+	imply HARDLOCKUP_DETECTOR_ARCH
+	select LOCKUP_DETECTOR
+
+	help
+	  Say Y here to enable the kernel to act as a watchdog to detect
+	  hard lockups.
+
+	  Hardlockups are bugs that cause the CPU to loop in kernel mode
+	  for more than 10 seconds, without letting other interrupts have a
+	  chance to run.  The current stack trace is displayed upon detection
+	  and the system will stay locked up.
+
+#
+# Note that arch-specific variants are always preferred.
+#
+config HARDLOCKUP_DETECTOR_PREFER_BUDDY
+	bool "Prefer the buddy CPU hardlockup detector"
+	depends on HARDLOCKUP_DETECTOR
+	depends on HAVE_HARDLOCKUP_DETECTOR_PERF && HAVE_HARDLOCKUP_DETECTOR_BUDDY
+	depends on !HAVE_HARDLOCKUP_DETECTOR_ARCH
+	help
+	  Say Y here to prefer the buddy hardlockup detector over the perf one.
+
+	  With the buddy detector, each CPU uses its softlockup hrtimer
+	  to check that the next CPU is processing hrtimer interrupts by
+	  verifying that a counter is increasing.
+
+	  This hardlockup detector is useful on systems that don't have
+	  an arch-specific hardlockup detector or if resources needed
+	  for the hardlockup detector are better used for other things.
+
+config HARDLOCKUP_DETECTOR_PERF
+	bool
+	depends on HARDLOCKUP_DETECTOR
+	depends on HAVE_HARDLOCKUP_DETECTOR_PERF && !HARDLOCKUP_DETECTOR_PREFER_BUDDY
+	depends on !HAVE_HARDLOCKUP_DETECTOR_ARCH
+	select HARDLOCKUP_DETECTOR_COUNTS_HRTIMER
+
+config HARDLOCKUP_DETECTOR_BUDDY
+	bool
+	depends on HARDLOCKUP_DETECTOR
+	depends on HAVE_HARDLOCKUP_DETECTOR_BUDDY
+	depends on !HAVE_HARDLOCKUP_DETECTOR_PERF || HARDLOCKUP_DETECTOR_PREFER_BUDDY
+	depends on !HAVE_HARDLOCKUP_DETECTOR_ARCH
+	select HARDLOCKUP_DETECTOR_COUNTS_HRTIMER
+
+config HARDLOCKUP_DETECTOR_ARCH
+	bool
+	depends on HARDLOCKUP_DETECTOR
+	depends on HAVE_HARDLOCKUP_DETECTOR_ARCH
+	help
+	  The arch-specific implementation of the hardlockup detector will
+	  be used.
+
+#
+# Both the "perf" and "buddy" hardlockup detectors count hrtimer
+# interrupts. This config enables functions managing this common code.
+#
+config HARDLOCKUP_DETECTOR_COUNTS_HRTIMER
+	bool
+	select SOFTLOCKUP_DETECTOR
+
+#
+# Enables a timestamp based low pass filter to compensate for perf based
+# hard lockup detection which runs too fast due to turbo modes.
+#
+config HARDLOCKUP_CHECK_TIMESTAMP
+	bool
+
+config BOOTPARAM_HARDLOCKUP_PANIC
+	bool "Panic (Reboot) On Hard Lockups"
+	depends on HARDLOCKUP_DETECTOR
+	help
+	  Say Y here to enable the kernel to panic on "hard lockups",
+	  which are bugs that cause the kernel to loop in kernel
+	  mode with interrupts disabled for more than 10 seconds (configurable
+	  using the watchdog_thresh sysctl).
+
+	  Say N if unsure.
 
 config DETECT_HUNG_TASK
 	bool "Detect Hung Tasks"
 	depends on DEBUG_KERNEL
-	default LOCKUP_DETECTOR
+	default SOFTLOCKUP_DETECTOR
 	help
 	  Say Y here to enable the kernel to detect "hung tasks",
 	  which are bugs that cause the task to be stuck in
-	  uninterruptible "D" state indefinitiley.
+	  uninterruptible "D" state indefinitely.
 
 	  When a hung task is detected, the kernel will print the
 	  current stack trace (which you should report), but the
@@ -733,55 +1202,64 @@ config BOOTPARAM_HUNG_TASK_PANIC
 
 	  Say N if unsure.
 
-config BOOTPARAM_HUNG_TASK_PANIC_VALUE
-	int
-	depends on DETECT_HUNG_TASK
-	range 0 1
-	default 0 if !BOOTPARAM_HUNG_TASK_PANIC
-	default 1 if BOOTPARAM_HUNG_TASK_PANIC
+config WQ_WATCHDOG
+	bool "Detect Workqueue Stalls"
+	depends on DEBUG_KERNEL
+	help
+	  Say Y here to enable stall detection on workqueues.  If a
+	  worker pool doesn't make forward progress on a pending work
+	  item for over a given amount of time, 30s by default, a
+	  warning message is printed along with dump of workqueue
+	  state.  This can be configured through kernel parameter
+	  "workqueue.watchdog_thresh" and its sysfs counterpart.
+
+config WQ_CPU_INTENSIVE_REPORT
+	bool "Report per-cpu work items which hog CPU for too long"
+	depends on DEBUG_KERNEL
+	help
+	  Say Y here to enable reporting of concurrency-managed per-cpu work
+	  items that hog CPUs for longer than
+	  workqueue.cpu_intensive_thresh_us. Workqueue automatically
+	  detects and excludes them from concurrency management to prevent
+	  them from stalling other per-cpu work items. Occassional
+	  triggering may not necessarily indicate a problem. Repeated
+	  triggering likely indicates that the work item should be switched
+	  to use an unbound workqueue.
+
+config TEST_LOCKUP
+	tristate "Test module to generate lockups"
+	depends on m
+	help
+	  This builds the "test_lockup" module that helps to make sure
+	  that watchdogs and lockup detectors are working properly.
+
+	  Depending on module parameters it could emulate soft or hard
+	  lockup, "hung task", or locking arbitrary lock for a long time.
+	  Also it could generate series of lockups with cooling-down periods.
+
+	  If unsure, say N.
 
 endmenu # "Debug lockups and hangs"
 
-config PANIC_ON_OOPS
-	bool "Panic on Oops"
-	help
-	  Say Y here to enable the kernel to panic when it oopses. This
-	  has the same effect as setting oops=panic on the kernel command
-	  line.
-
-	  This feature is useful to ensure that the kernel does not do
-	  anything erroneous after an oops which could result in data
-	  corruption or other issues.
-
-	  Say N if unsure.
-
-config PANIC_ON_OOPS_VALUE
-	int
-	range 0 1
-	default 0 if !PANIC_ON_OOPS
-	default 1 if PANIC_ON_OOPS
-
-config PANIC_TIMEOUT
-	int "panic timeout"
-	default 0
-	help
-	  Set the timeout value (in seconds) until a reboot occurs when the
-	  the kernel panics. If n = 0, then we wait forever. A timeout
-	  value n > 0 will wait n seconds before rebooting, while a timeout
-	  value n < 0 will reboot immediately.
+menu "Scheduler Debugging"
 
 config SCHED_DEBUG
 	bool "Collect scheduler debugging info"
-	depends on DEBUG_KERNEL && PROC_FS
+	depends on DEBUG_KERNEL && DEBUG_FS
 	default y
 	help
-	  If you say Y here, the /proc/sched_debug file will be provided
+	  If you say Y here, the /sys/kernel/debug/sched file will be provided
 	  that can help debug the scheduler. The runtime overhead of this
 	  option is minimal.
+
+config SCHED_INFO
+	bool
+	default n
 
 config SCHEDSTATS
 	bool "Collect scheduler statistics"
 	depends on DEBUG_KERNEL && PROC_FS
+	select SCHED_INFO
 	help
 	  If you say Y here, additional code will be inserted into the
 	  scheduler and related routines to collect statistics about
@@ -791,101 +1269,52 @@ config SCHEDSTATS
 	  application, you can say N to avoid the very slight overhead
 	  this adds.
 
-config TIMER_STATS
-	bool "Collect kernel timers statistics"
-	depends on DEBUG_KERNEL && PROC_FS
+endmenu
+
+config DEBUG_TIMEKEEPING
+	bool "Enable extra timekeeping sanity checking"
 	help
-	  If you say Y here, additional code will be inserted into the
-	  timer routines to collect statistics about kernel timers being
-	  reprogrammed. The statistics can be read from /proc/timer_stats.
-	  The statistics collection is started by writing 1 to /proc/timer_stats,
-	  writing 0 stops it. This feature is useful to collect information
-	  about timer usage patterns in kernel and userspace. This feature
-	  is lightweight if enabled in the kernel config but not activated
-	  (it defaults to deactivated on bootup and will only be activated
-	  if some application like powertop activates it explicitly).
+	  This option will enable additional timekeeping sanity checks
+	  which may be helpful when diagnosing issues where timekeeping
+	  problems are suspected.
+
+	  This may include checks in the timekeeping hotpaths, so this
+	  option may have a (very small) performance impact to some
+	  workloads.
+
+	  If unsure, say N.
 
 config DEBUG_PREEMPT
 	bool "Debug preemptible kernel"
-	depends on DEBUG_KERNEL && PREEMPT && TRACE_IRQFLAGS_SUPPORT
-	default y
+	depends on DEBUG_KERNEL && PREEMPTION && TRACE_IRQFLAGS_SUPPORT
 	help
 	  If you say Y here then the kernel will use a debug variant of the
 	  commonly used smp_processor_id() function and will print warnings
 	  if kernel code uses it in a preemption-unsafe way. Also, the kernel
 	  will detect preemption count underflows.
 
+	  This option has potential to introduce high runtime overhead,
+	  depending on workload as it triggers debugging routines for each
+	  this_cpu operation. It should only be used for debugging purposes.
+
 menu "Lock Debugging (spinlocks, mutexes, etc...)"
 
-config DEBUG_RT_MUTEXES
-	bool "RT Mutex debugging, deadlock detection"
-	depends on DEBUG_KERNEL && RT_MUTEXES
-	help
-	 This allows rt mutex semantics violations and rt mutex related
-	 deadlocks (lockups) to be detected and reported automatically.
-
-config DEBUG_PI_LIST
+config LOCK_DEBUGGING_SUPPORT
 	bool
+	depends on TRACE_IRQFLAGS_SUPPORT && STACKTRACE_SUPPORT && LOCKDEP_SUPPORT
 	default y
-	depends on DEBUG_RT_MUTEXES
-
-config RT_MUTEX_TESTER
-	bool "Built-in scriptable tester for rt-mutexes"
-	depends on DEBUG_KERNEL && RT_MUTEXES
-	help
-	  This option enables a rt-mutex tester.
-
-config DEBUG_SPINLOCK
-	bool "Spinlock and rw-lock debugging: basic checks"
-	depends on DEBUG_KERNEL
-	select UNINLINE_SPIN_UNLOCK
-	help
-	  Say Y here and build SMP to catch missing spinlock initialization
-	  and certain other kinds of spinlock errors commonly made.  This is
-	  best used in conjunction with the NMI watchdog so that spinlock
-	  deadlocks are also debuggable.
-
-config DEBUG_MUTEXES
-	bool "Mutex debugging: basic checks"
-	depends on DEBUG_KERNEL
-	help
-	 This feature allows mutex semantics violations to be detected and
-	 reported.
-
-config DEBUG_WW_MUTEX_SLOWPATH
-	bool "Wait/wound mutex debugging: Slowpath testing"
-	depends on DEBUG_KERNEL && TRACE_IRQFLAGS_SUPPORT && STACKTRACE_SUPPORT && LOCKDEP_SUPPORT
-	select DEBUG_LOCK_ALLOC
-	select DEBUG_SPINLOCK
-	select DEBUG_MUTEXES
-	help
-	 This feature enables slowpath testing for w/w mutex users by
-	 injecting additional -EDEADLK wound/backoff cases. Together with
-	 the full mutex checks enabled with (CONFIG_PROVE_LOCKING) this
-	 will test all possible w/w mutex interface abuse with the
-	 exception of simply not acquiring all the required locks.
-
-config DEBUG_LOCK_ALLOC
-	bool "Lock debugging: detect incorrect freeing of live locks"
-	depends on DEBUG_KERNEL && TRACE_IRQFLAGS_SUPPORT && STACKTRACE_SUPPORT && LOCKDEP_SUPPORT
-	select DEBUG_SPINLOCK
-	select DEBUG_MUTEXES
-	select LOCKDEP
-	help
-	 This feature will check whether any held lock (spinlock, rwlock,
-	 mutex or rwsem) is incorrectly freed by the kernel, via any of the
-	 memory-freeing routines (kfree(), kmem_cache_free(), free_pages(),
-	 vfree(), etc.), whether a live lock is incorrectly reinitialized via
-	 spin_lock_init()/mutex_init()/etc., or whether there is any lock
-	 held during task exit.
 
 config PROVE_LOCKING
 	bool "Lock debugging: prove locking correctness"
-	depends on DEBUG_KERNEL && TRACE_IRQFLAGS_SUPPORT && STACKTRACE_SUPPORT && LOCKDEP_SUPPORT
+	depends on DEBUG_KERNEL && LOCK_DEBUGGING_SUPPORT
 	select LOCKDEP
 	select DEBUG_SPINLOCK
-	select DEBUG_MUTEXES
+	select DEBUG_MUTEXES if !PREEMPT_RT
+	select DEBUG_RT_MUTEXES if RT_MUTEXES
+	select DEBUG_RWSEMS
+	select DEBUG_WW_MUTEX_SLOWPATH
 	select DEBUG_LOCK_ALLOC
+	select PREEMPT_COUNT if !ARCH_NO_PREEMPT
 	select TRACE_IRQFLAGS
 	default n
 	help
@@ -920,28 +1349,38 @@ config PROVE_LOCKING
 	 the proof of observed correctness is also maintained for an
 	 arbitrary combination of these separate locking variants.
 
-	 For more details, see Documentation/lockdep-design.txt.
+	 For more details, see Documentation/locking/lockdep-design.rst.
 
-config LOCKDEP
-	bool
-	depends on DEBUG_KERNEL && TRACE_IRQFLAGS_SUPPORT && STACKTRACE_SUPPORT && LOCKDEP_SUPPORT
-	select STACKTRACE
-	select FRAME_POINTER if !MIPS && !PPC && !ARM_UNWIND && !S390 && !MICROBLAZE && !ARC
-	select KALLSYMS
-	select KALLSYMS_ALL
+config PROVE_RAW_LOCK_NESTING
+	bool "Enable raw_spinlock - spinlock nesting checks"
+	depends on PROVE_LOCKING
+	default n
+	help
+	 Enable the raw_spinlock vs. spinlock nesting checks which ensure
+	 that the lock nesting rules for PREEMPT_RT enabled kernels are
+	 not violated.
+
+	 NOTE: There are known nesting problems. So if you enable this
+	 option expect lockdep splats until these problems have been fully
+	 addressed which is work in progress. This config switch allows to
+	 identify and analyze these problems. It will be removed and the
+	 check permanently enabled once the main issues have been fixed.
+
+	 If unsure, select N.
 
 config LOCK_STAT
 	bool "Lock usage statistics"
-	depends on DEBUG_KERNEL && TRACE_IRQFLAGS_SUPPORT && STACKTRACE_SUPPORT && LOCKDEP_SUPPORT
+	depends on DEBUG_KERNEL && LOCK_DEBUGGING_SUPPORT
 	select LOCKDEP
 	select DEBUG_SPINLOCK
-	select DEBUG_MUTEXES
+	select DEBUG_MUTEXES if !PREEMPT_RT
+	select DEBUG_RT_MUTEXES if RT_MUTEXES
 	select DEBUG_LOCK_ALLOC
 	default n
 	help
 	 This feature enables tracking lock contention points
 
-	 For more details, see Documentation/lockstat.txt
+	 For more details, see Documentation/locking/lockstat.rst
 
 	 This also enables lock events required by "perf lock",
 	 subcommand of perf.
@@ -951,9 +1390,124 @@ config LOCK_STAT
 	 CONFIG_LOCK_STAT defines "contended" and "acquired" lock events.
 	 (CONFIG_LOCKDEP defines "acquire" and "release" events.)
 
+config DEBUG_RT_MUTEXES
+	bool "RT Mutex debugging, deadlock detection"
+	depends on DEBUG_KERNEL && RT_MUTEXES
+	help
+	 This allows rt mutex semantics violations and rt mutex related
+	 deadlocks (lockups) to be detected and reported automatically.
+
+config DEBUG_SPINLOCK
+	bool "Spinlock and rw-lock debugging: basic checks"
+	depends on DEBUG_KERNEL
+	select UNINLINE_SPIN_UNLOCK
+	help
+	  Say Y here and build SMP to catch missing spinlock initialization
+	  and certain other kinds of spinlock errors commonly made.  This is
+	  best used in conjunction with the NMI watchdog so that spinlock
+	  deadlocks are also debuggable.
+
+config DEBUG_MUTEXES
+	bool "Mutex debugging: basic checks"
+	depends on DEBUG_KERNEL && !PREEMPT_RT
+	help
+	 This feature allows mutex semantics violations to be detected and
+	 reported.
+
+config DEBUG_WW_MUTEX_SLOWPATH
+	bool "Wait/wound mutex debugging: Slowpath testing"
+	depends on DEBUG_KERNEL && LOCK_DEBUGGING_SUPPORT
+	select DEBUG_LOCK_ALLOC
+	select DEBUG_SPINLOCK
+	select DEBUG_MUTEXES if !PREEMPT_RT
+	select DEBUG_RT_MUTEXES if PREEMPT_RT
+	help
+	 This feature enables slowpath testing for w/w mutex users by
+	 injecting additional -EDEADLK wound/backoff cases. Together with
+	 the full mutex checks enabled with (CONFIG_PROVE_LOCKING) this
+	 will test all possible w/w mutex interface abuse with the
+	 exception of simply not acquiring all the required locks.
+	 Note that this feature can introduce significant overhead, so
+	 it really should not be enabled in a production or distro kernel,
+	 even a debug kernel.  If you are a driver writer, enable it.  If
+	 you are a distro, do not.
+
+config DEBUG_RWSEMS
+	bool "RW Semaphore debugging: basic checks"
+	depends on DEBUG_KERNEL
+	help
+	  This debugging feature allows mismatched rw semaphore locks
+	  and unlocks to be detected and reported.
+
+config DEBUG_LOCK_ALLOC
+	bool "Lock debugging: detect incorrect freeing of live locks"
+	depends on DEBUG_KERNEL && LOCK_DEBUGGING_SUPPORT
+	select DEBUG_SPINLOCK
+	select DEBUG_MUTEXES if !PREEMPT_RT
+	select DEBUG_RT_MUTEXES if RT_MUTEXES
+	select LOCKDEP
+	help
+	 This feature will check whether any held lock (spinlock, rwlock,
+	 mutex or rwsem) is incorrectly freed by the kernel, via any of the
+	 memory-freeing routines (kfree(), kmem_cache_free(), free_pages(),
+	 vfree(), etc.), whether a live lock is incorrectly reinitialized via
+	 spin_lock_init()/mutex_init()/etc., or whether there is any lock
+	 held during task exit.
+
+config LOCKDEP
+	bool
+	depends on DEBUG_KERNEL && LOCK_DEBUGGING_SUPPORT
+	select STACKTRACE
+	select KALLSYMS
+	select KALLSYMS_ALL
+
+config LOCKDEP_SMALL
+	bool
+
+config LOCKDEP_BITS
+	int "Bitsize for MAX_LOCKDEP_ENTRIES"
+	depends on LOCKDEP && !LOCKDEP_SMALL
+	range 10 30
+	default 15
+	help
+	  Try increasing this value if you hit "BUG: MAX_LOCKDEP_ENTRIES too low!" message.
+
+config LOCKDEP_CHAINS_BITS
+	int "Bitsize for MAX_LOCKDEP_CHAINS"
+	depends on LOCKDEP && !LOCKDEP_SMALL
+	range 10 30
+	default 16
+	help
+	  Try increasing this value if you hit "BUG: MAX_LOCKDEP_CHAINS too low!" message.
+
+config LOCKDEP_STACK_TRACE_BITS
+	int "Bitsize for MAX_STACK_TRACE_ENTRIES"
+	depends on LOCKDEP && !LOCKDEP_SMALL
+	range 10 30
+	default 19
+	help
+	  Try increasing this value if you hit "BUG: MAX_STACK_TRACE_ENTRIES too low!" message.
+
+config LOCKDEP_STACK_TRACE_HASH_BITS
+	int "Bitsize for STACK_TRACE_HASH_SIZE"
+	depends on LOCKDEP && !LOCKDEP_SMALL
+	range 10 30
+	default 14
+	help
+	  Try increasing this value if you need large STACK_TRACE_HASH_SIZE.
+
+config LOCKDEP_CIRCULAR_QUEUE_BITS
+	int "Bitsize for elements in circular_queue struct"
+	depends on LOCKDEP
+	range 10 30
+	default 12
+	help
+	  Try increasing this value if you hit "lockdep bfs error:-1" warning due to __cq_enqueue() failure.
+
 config DEBUG_LOCKDEP
 	bool "Lock dependency engine debugging"
 	depends on DEBUG_KERNEL && LOCKDEP
+	select DEBUG_IRQFLAGS
 	help
 	  If you say Y here, the lock dependency engine will do
 	  additional runtime checks to debug itself, at the price
@@ -963,6 +1517,7 @@ config DEBUG_ATOMIC_SLEEP
 	bool "Sleep inside atomic section checking"
 	select PREEMPT_COUNT
 	depends on DEBUG_KERNEL
+	depends on !ARCH_NO_PREEMPT
 	help
 	  If you say Y here, various routines which may sleep will become very
 	  noisy if they are called inside atomic sections: when a spinlock is
@@ -976,28 +1531,140 @@ config DEBUG_LOCKING_API_SELFTESTS
 	  Say Y here if you want the kernel to run a short self-test during
 	  bootup. The self-test checks whether common types of locking bugs
 	  are detected by debugging mechanisms or not. (if you disable
-	  lock debugging then those bugs wont be detected of course.)
+	  lock debugging then those bugs won't be detected of course.)
 	  The following locking APIs are covered: spinlocks, rwlocks,
 	  mutexes and rwsems.
+
+config LOCK_TORTURE_TEST
+	tristate "torture tests for locking"
+	depends on DEBUG_KERNEL
+	select TORTURE_TEST
+	help
+	  This option provides a kernel module that runs torture tests
+	  on kernel locking primitives.  The kernel module may be built
+	  after the fact on the running kernel to be tested, if desired.
+
+	  Say Y here if you want kernel locking-primitive torture tests
+	  to be built into the kernel.
+	  Say M if you want these torture tests to build as a module.
+	  Say N if you are unsure.
+
+config WW_MUTEX_SELFTEST
+	tristate "Wait/wound mutex selftests"
+	help
+	  This option provides a kernel module that runs tests on the
+	  on the struct ww_mutex locking API.
+
+	  It is recommended to enable DEBUG_WW_MUTEX_SLOWPATH in conjunction
+	  with this test harness.
+
+	  Say M if you want these self tests to build as a module.
+	  Say N if you are unsure.
+
+config SCF_TORTURE_TEST
+	tristate "torture tests for smp_call_function*()"
+	depends on DEBUG_KERNEL
+	select TORTURE_TEST
+	help
+	  This option provides a kernel module that runs torture tests
+	  on the smp_call_function() family of primitives.  The kernel
+	  module may be built after the fact on the running kernel to
+	  be tested, if desired.
+
+config CSD_LOCK_WAIT_DEBUG
+	bool "Debugging for csd_lock_wait(), called from smp_call_function*()"
+	depends on DEBUG_KERNEL
+	depends on 64BIT
+	default n
+	help
+	  This option enables debug prints when CPUs are slow to respond
+	  to the smp_call_function*() IPI wrappers.  These debug prints
+	  include the IPI handler function currently executing (if any)
+	  and relevant stack traces.
+
+config CSD_LOCK_WAIT_DEBUG_DEFAULT
+	bool "Default csd_lock_wait() debugging on at boot time"
+	depends on CSD_LOCK_WAIT_DEBUG
+	depends on 64BIT
+	default n
+	help
+	  This option causes the csdlock_debug= kernel boot parameter to
+	  default to 1 (basic debugging) instead of 0 (no debugging).
 
 endmenu # lock debugging
 
 config TRACE_IRQFLAGS
+	depends on TRACE_IRQFLAGS_SUPPORT
 	bool
 	help
 	  Enables hooks to interrupt enabling and disabling for
 	  either tracing or lock debugging.
 
+config TRACE_IRQFLAGS_NMI
+	def_bool y
+	depends on TRACE_IRQFLAGS
+	depends on TRACE_IRQFLAGS_NMI_SUPPORT
+
+config NMI_CHECK_CPU
+	bool "Debugging for CPUs failing to respond to backtrace requests"
+	depends on DEBUG_KERNEL
+	depends on X86
+	default n
+	help
+	  Enables debug prints when a CPU fails to respond to a given
+	  backtrace NMI.  These prints provide some reasons why a CPU
+	  might legitimately be failing to respond, for example, if it
+	  is offline of if ignore_nmis is set.
+
+config DEBUG_IRQFLAGS
+	bool "Debug IRQ flag manipulation"
+	help
+	  Enables checks for potentially unsafe enabling or disabling of
+	  interrupts, such as calling raw_local_irq_restore() when interrupts
+	  are enabled.
+
 config STACKTRACE
-	bool
+	bool "Stack backtrace support"
 	depends on STACKTRACE_SUPPORT
+	help
+	  This option causes the kernel to create a /proc/pid/stack for
+	  every process, showing its current stack trace.
+	  It is also used by various kernel debugging features that require
+	  stack trace generation.
+
+config WARN_ALL_UNSEEDED_RANDOM
+	bool "Warn for all uses of unseeded randomness"
+	default n
+	help
+	  Some parts of the kernel contain bugs relating to their use of
+	  cryptographically secure random numbers before it's actually possible
+	  to generate those numbers securely. This setting ensures that these
+	  flaws don't go unnoticed, by enabling a message, should this ever
+	  occur. This will allow people with obscure setups to know when things
+	  are going wrong, so that they might contact developers about fixing
+	  it.
+
+	  Unfortunately, on some models of some architectures getting
+	  a fully seeded CRNG is extremely difficult, and so this can
+	  result in dmesg getting spammed for a surprisingly long
+	  time.  This is really bad from a security perspective, and
+	  so architecture maintainers really need to do what they can
+	  to get the CRNG seeded sooner after the system is booted.
+	  However, since users cannot do anything actionable to
+	  address this, by default this option is disabled.
+
+	  Say Y here if you want to receive warnings for all uses of
+	  unseeded randomness.  This will be of use primarily for
+	  those developers interested in improving the security of
+	  Linux kernels running on their architecture (or
+	  subarchitecture).
 
 config DEBUG_KOBJECT
 	bool "kobject debugging"
 	depends on DEBUG_KERNEL
 	help
 	  If you say Y here, some extra kobject debugging messages will be sent
-	  to the syslog. 
+	  to the syslog.
 
 config DEBUG_KOBJECT_RELEASE
 	bool "kobject release debugging"
@@ -1005,7 +1672,7 @@ config DEBUG_KOBJECT_RELEASE
 	help
 	  kobjects are reference counted objects.  This means that their
 	  last reference count put is not predictable, and the kobject can
-	  live on past the point at which a driver decides to drop it's
+	  live on past the point at which a driver decides to drop its
 	  initial reference to the kobject gained on allocation.  An
 	  example of this would be a struct device which has just been
 	  unregistered.
@@ -1021,31 +1688,29 @@ config DEBUG_KOBJECT_RELEASE
 config HAVE_DEBUG_BUGVERBOSE
 	bool
 
-config DEBUG_BUGVERBOSE
-	bool "Verbose BUG() reporting (adds 70K)" if DEBUG_KERNEL && EXPERT
-	depends on BUG && (GENERIC_BUG || HAVE_DEBUG_BUGVERBOSE)
-	default y
-	help
-	  Say Y here to make BUG() panics output the file name and line number
-	  of the BUG call as well as the EIP and oops trace.  This aids
-	  debugging but costs about 70-100K of memory.
-
-config DEBUG_WRITECOUNT
-	bool "Debug filesystem writers count"
-	depends on DEBUG_KERNEL
-	help
-	  Enable this to catch wrong use of the writers count in struct
-	  vfsmount.  This will increase the size of each file struct by
-	  32 bits.
-
-	  If unsure, say N.
+menu "Debug kernel data structures"
 
 config DEBUG_LIST
 	bool "Debug linked list manipulation"
 	depends on DEBUG_KERNEL
+	select LIST_HARDENED
 	help
-	  Enable this to turn on extended checks in the linked-list
-	  walking routines.
+	  Enable this to turn on extended checks in the linked-list walking
+	  routines.
+
+	  This option trades better quality error reports for performance, and
+	  is more suitable for kernel debugging. If you care about performance,
+	  you should only enable CONFIG_LIST_HARDENED instead.
+
+	  If unsure, say N.
+
+config DEBUG_PLIST
+	bool "Debug priority linked list manipulation"
+	depends on DEBUG_KERNEL
+	help
+	  Enable this to turn on extended checks in the priority-ordered
+	  linked-list (plist) walking routines.  This checks the entire
+	  list multiple times during each manipulation.
 
 	  If unsure, say N.
 
@@ -1069,185 +1734,151 @@ config DEBUG_NOTIFIERS
 	  This is a relatively cheap check but if you care about maximum
 	  performance, say N.
 
-config DEBUG_CREDENTIALS
-	bool "Debug credential management"
+config DEBUG_MAPLE_TREE
+	bool "Debug maple trees"
 	depends on DEBUG_KERNEL
 	help
-	  Enable this to turn on some debug checking for credential
-	  management.  The additional code keeps track of the number of
-	  pointers from task_structs to any given cred struct, and checks to
-	  see that this number never exceeds the usage count of the cred
-	  struct.
-
-	  Furthermore, if SELinux is enabled, this also checks that the
-	  security pointer in the cred struct is never seen to be invalid.
+	  Enable maple tree debugging information and extra validations.
 
 	  If unsure, say N.
 
-menu "RCU Debugging"
+endmenu
 
-config PROVE_RCU
-	bool "RCU debugging: prove RCU correctness"
-	depends on PROVE_LOCKING
-	default n
-	help
-	 This feature enables lockdep extensions that check for correct
-	 use of RCU APIs.  This is currently under development.  Say Y
-	 if you want to debug RCU usage or help work on the PROVE_RCU
-	 feature.
+source "kernel/rcu/Kconfig.debug"
 
-	 Say N if you are unsure.
-
-config PROVE_RCU_REPEATEDLY
-	bool "RCU debugging: don't disable PROVE_RCU on first splat"
-	depends on PROVE_RCU
-	default n
-	help
-	 By itself, PROVE_RCU will disable checking upon issuing the
-	 first warning (or "splat").  This feature prevents such
-	 disabling, allowing multiple RCU-lockdep warnings to be printed
-	 on a single reboot.
-
-	 Say Y to allow multiple RCU-lockdep warnings per boot.
-
-	 Say N if you are unsure.
-
-config PROVE_RCU_DELAY
-	bool "RCU debugging: preemptible RCU race provocation"
-	depends on DEBUG_KERNEL && PREEMPT_RCU
-	default n
-	help
-	 There is a class of races that involve an unlikely preemption
-	 of __rcu_read_unlock() just after ->rcu_read_lock_nesting has
-	 been set to INT_MIN.  This feature inserts a delay at that
-	 point to increase the probability of these races.
-
-	 Say Y to increase probability of preemption of __rcu_read_unlock().
-
-	 Say N if you are unsure.
-
-config SPARSE_RCU_POINTER
-	bool "RCU debugging: sparse-based checks for pointer usage"
-	default n
-	help
-	 This feature enables the __rcu sparse annotation for
-	 RCU-protected pointers.  This annotation will cause sparse
-	 to flag any non-RCU used of annotated pointers.  This can be
-	 helpful when debugging RCU usage.  Please note that this feature
-	 is not intended to enforce code cleanliness; it is instead merely
-	 a debugging aid.
-
-	 Say Y to make sparse flag questionable use of RCU-protected pointers
-
-	 Say N if you are unsure.
-
-config RCU_TORTURE_TEST
-	tristate "torture tests for RCU"
+config DEBUG_WQ_FORCE_RR_CPU
+	bool "Force round-robin CPU selection for unbound work items"
 	depends on DEBUG_KERNEL
 	default n
 	help
-	  This option provides a kernel module that runs torture tests
-	  on the RCU infrastructure.  The kernel module may be built
-	  after the fact on the running kernel to be tested, if desired.
+	  Workqueue used to implicitly guarantee that work items queued
+	  without explicit CPU specified are put on the local CPU.  This
+	  guarantee is no longer true and while local CPU is still
+	  preferred work items may be put on foreign CPUs.  Kernel
+	  parameter "workqueue.debug_force_rr_cpu" is added to force
+	  round-robin CPU selection to flush out usages which depend on the
+	  now broken guarantee.  This config option enables the debug
+	  feature by default.  When enabled, memory and cache locality will
+	  be impacted.
 
-	  Say Y here if you want RCU torture tests to be built into
-	  the kernel.
-	  Say M if you want the RCU torture tests to build as a module.
-	  Say N if you are unsure.
-
-config RCU_TORTURE_TEST_RUNNABLE
-	bool "torture tests for RCU runnable by default"
-	depends on RCU_TORTURE_TEST = y
-	default n
-	help
-	  This option provides a way to build the RCU torture tests
-	  directly into the kernel without them starting up at boot
-	  time.  You can use /proc/sys/kernel/rcutorture_runnable
-	  to manually override this setting.  This /proc file is
-	  available only when the RCU torture tests have been built
-	  into the kernel.
-
-	  Say Y here if you want the RCU torture tests to start during
-	  boot (you probably don't).
-	  Say N here if you want the RCU torture tests to start only
-	  after being manually enabled via /proc.
-
-config RCU_CPU_STALL_TIMEOUT
-	int "RCU CPU stall timeout in seconds"
-	depends on RCU_STALL_COMMON
-	range 3 300
-	default 21
-	help
-	  If a given RCU grace period extends more than the specified
-	  number of seconds, a CPU stall warning is printed.  If the
-	  RCU grace period persists, additional CPU stall warnings are
-	  printed at more widely spaced intervals.
-
-config RCU_CPU_STALL_VERBOSE
-	bool "Print additional per-task information for RCU_CPU_STALL_DETECTOR"
-	depends on TREE_PREEMPT_RCU
-	default y
-	help
-	  This option causes RCU to printk detailed per-task information
-	  for any tasks that are stalling the current RCU grace period.
-
-	  Say N if you are unsure.
-
-	  Say Y if you want to enable such checks.
-
-config RCU_CPU_STALL_INFO
-	bool "Print additional diagnostics on RCU CPU stall"
-	depends on (TREE_RCU || TREE_PREEMPT_RCU) && DEBUG_KERNEL
-	default n
-	help
-	  For each stalled CPU that is aware of the current RCU grace
-	  period, print out additional per-CPU diagnostic information
-	  regarding scheduling-clock ticks, idle state, and,
-	  for RCU_FAST_NO_HZ kernels, idle-entry state.
-
-	  Say N if you are unsure.
-
-	  Say Y if you want to enable such diagnostics.
-
-config RCU_TRACE
-	bool "Enable tracing for RCU"
+config CPU_HOTPLUG_STATE_CONTROL
+	bool "Enable CPU hotplug state control"
 	depends on DEBUG_KERNEL
-	select TRACE_CLOCK
-	help
-	  This option provides tracing in RCU which presents stats
-	  in debugfs for debugging RCU implementation.
-
-	  Say Y here if you want to enable RCU tracing
-	  Say N if you are unsure.
-
-endmenu # "RCU Debugging"
-
-config DEBUG_BLOCK_EXT_DEVT
-        bool "Force extended block device numbers and spread them"
-	depends on DEBUG_KERNEL
-	depends on BLOCK
+	depends on HOTPLUG_CPU
 	default n
 	help
-	  BIG FAT WARNING: ENABLING THIS OPTION MIGHT BREAK BOOTING ON
-	  SOME DISTRIBUTIONS.  DO NOT ENABLE THIS UNLESS YOU KNOW WHAT
-	  YOU ARE DOING.  Distros, please enable this and fix whatever
-	  is broken.
+	  Allows to write steps between "offline" and "online" to the CPUs
+	  sysfs target file so states can be stepped granular. This is a debug
+	  option for now as the hotplug machinery cannot be stopped and
+	  restarted at arbitrary points yet.
 
-	  Conventionally, block device numbers are allocated from
-	  predetermined contiguous area.  However, extended block area
-	  may introduce non-contiguous block device numbers.  This
-	  option forces most block device numbers to be allocated from
-	  the extended space and spreads them to discover kernel or
-	  userland code paths which assume predetermined contiguous
-	  device number allocation.
+	  Say N if your are unsure.
 
-	  Note that turning on this debug option shuffles all the
-	  device numbers for all IDE and SCSI devices including libata
-	  ones, so root partition specified using device number
-	  directly (via rdev or root=MAJ:MIN) won't work anymore.
-	  Textual device names (root=/dev/sdXn) will continue to work.
+config LATENCYTOP
+	bool "Latency measuring infrastructure"
+	depends on DEBUG_KERNEL
+	depends on STACKTRACE_SUPPORT
+	depends on PROC_FS
+	depends on FRAME_POINTER || MIPS || PPC || S390 || MICROBLAZE || ARM || ARC || X86
+	select KALLSYMS
+	select KALLSYMS_ALL
+	select STACKTRACE
+	select SCHEDSTATS
+	help
+	  Enable this option if you want to use the LatencyTOP tool
+	  to find out which userspace is blocking on what kernel operations.
 
-	  Say N if you are unsure.
+config DEBUG_CGROUP_REF
+	bool "Disable inlining of cgroup css reference count functions"
+	depends on DEBUG_KERNEL
+	depends on CGROUPS
+	depends on KPROBES
+	default n
+	help
+	  Force cgroup css reference count functions to not be inlined so
+	  that they can be kprobed for debugging.
+
+source "kernel/trace/Kconfig"
+
+config PROVIDE_OHCI1394_DMA_INIT
+	bool "Remote debugging over FireWire early on boot"
+	depends on PCI && X86
+	help
+	  If you want to debug problems which hang or crash the kernel early
+	  on boot and the crashing machine has a FireWire port, you can use
+	  this feature to remotely access the memory of the crashed machine
+	  over FireWire. This employs remote DMA as part of the OHCI1394
+	  specification which is now the standard for FireWire controllers.
+
+	  With remote DMA, you can monitor the printk buffer remotely using
+	  firescope and access all memory below 4GB using fireproxy from gdb.
+	  Even controlling a kernel debugger is possible using remote DMA.
+
+	  Usage:
+
+	  If ohci1394_dma=early is used as boot parameter, it will initialize
+	  all OHCI1394 controllers which are found in the PCI config space.
+
+	  As all changes to the FireWire bus such as enabling and disabling
+	  devices cause a bus reset and thereby disable remote DMA for all
+	  devices, be sure to have the cable plugged and FireWire enabled on
+	  the debugging host before booting the debug target for debugging.
+
+	  This code (~1k) is freed after boot. By then, the firewire stack
+	  in charge of the OHCI-1394 controllers should be used instead.
+
+	  See Documentation/core-api/debugging-via-ohci1394.rst for more information.
+
+source "samples/Kconfig"
+
+config ARCH_HAS_DEVMEM_IS_ALLOWED
+	bool
+
+config STRICT_DEVMEM
+	bool "Filter access to /dev/mem"
+	depends on MMU && DEVMEM
+	depends on ARCH_HAS_DEVMEM_IS_ALLOWED || GENERIC_LIB_DEVMEM_IS_ALLOWED
+	default y if PPC || X86 || ARM64
+	help
+	  If this option is disabled, you allow userspace (root) access to all
+	  of memory, including kernel and userspace memory. Accidental
+	  access to this is obviously disastrous, but specific access can
+	  be used by people debugging the kernel. Note that with PAT support
+	  enabled, even in this case there are restrictions on /dev/mem
+	  use due to the cache aliasing requirements.
+
+	  If this option is switched on, and IO_STRICT_DEVMEM=n, the /dev/mem
+	  file only allows userspace access to PCI space and the BIOS code and
+	  data regions.  This is sufficient for dosemu and X and all common
+	  users of /dev/mem.
+
+	  If in doubt, say Y.
+
+config IO_STRICT_DEVMEM
+	bool "Filter I/O access to /dev/mem"
+	depends on STRICT_DEVMEM
+	help
+	  If this option is disabled, you allow userspace (root) access to all
+	  io-memory regardless of whether a driver is actively using that
+	  range.  Accidental access to this is obviously disastrous, but
+	  specific access can be used by people debugging kernel drivers.
+
+	  If this option is switched on, the /dev/mem file only allows
+	  userspace access to *idle* io-memory ranges (see /proc/iomem) This
+	  may break traditional users of /dev/mem (dosemu, legacy X, etc...)
+	  if the driver using a given range cannot be disabled.
+
+	  If in doubt, say Y.
+
+menu "$(SRCARCH) Debugging"
+
+source "arch/$(SRCARCH)/Kconfig.debug"
+
+endmenu
+
+menu "Kernel Testing and Coverage"
+
+source "lib/kunit/Kconfig"
 
 config NOTIFIER_ERROR_INJECTION
 	tristate "Notifier error injection"
@@ -1259,30 +1890,6 @@ config NOTIFIER_ERROR_INJECTION
 	  handling of notifier call chain failures.
 
 	  Say N if unsure.
-
-config CPU_NOTIFIER_ERROR_INJECT
-	tristate "CPU notifier error injection module"
-	depends on HOTPLUG_CPU && NOTIFIER_ERROR_INJECTION
-	help
-	  This option provides a kernel module that can be used to test
-	  the error handling of the cpu notifiers by injecting artificial
-	  errors to CPU notifier chain callbacks.  It is controlled through
-	  debugfs interface under /sys/kernel/debug/notifier-error-inject/cpu
-
-	  If the notifier call chain should be failed with some events
-	  notified, write the error code to "actions/<notifier event>/error".
-
-	  Example: Inject CPU offline error (-1 == -EPERM)
-
-	  # cd /sys/kernel/debug/notifier-error-inject/cpu
-	  # echo -1 > actions/CPU_DOWN_PREPARE/error
-	  # echo 0 > /sys/devices/system/cpu/cpu1/online
-	  bash: echo: write error: Operation not permitted
-
-	  To compile this code as a module, choose M here: the module will
-	  be called cpu-notifier-error-inject.
-
-	  If unsure, say N.
 
 config PM_NOTIFIER_ERROR_INJECT
 	tristate "PM notifier error injection module"
@@ -1325,6 +1932,39 @@ config OF_RECONFIG_NOTIFIER_ERROR_INJECT
 
 	  If unsure, say N.
 
+config NETDEV_NOTIFIER_ERROR_INJECT
+	tristate "Netdev notifier error injection module"
+	depends on NET && NOTIFIER_ERROR_INJECTION
+	help
+	  This option provides the ability to inject artificial errors to
+	  netdevice notifier chain callbacks.  It is controlled through debugfs
+	  interface /sys/kernel/debug/notifier-error-inject/netdev
+
+	  If the notifier call chain should be failed with some events
+	  notified, write the error code to "actions/<notifier event>/error".
+
+	  Example: Inject netdevice mtu change error (-22 = -EINVAL)
+
+	  # cd /sys/kernel/debug/notifier-error-inject/netdev
+	  # echo -22 > actions/NETDEV_CHANGEMTU/error
+	  # ip link set eth0 mtu 1024
+	  RTNETLINK answers: Invalid argument
+
+	  To compile this code as a module, choose M here: the module will
+	  be called netdev-notifier-error-inject.
+
+	  If unsure, say N.
+
+config FUNCTION_ERROR_INJECTION
+	bool "Fault-injections of functions"
+	depends on HAVE_FUNCTION_ERROR_INJECTION && KPROBES
+	help
+	  Add fault injections into various functions that are annotated with
+	  ALLOW_ERROR_INJECTION() in the kernel. BPF may also modify the return
+	  value of these functions. This is useful to test error paths of code.
+
+	  If unsure, say N
+
 config FAULT_INJECTION
 	bool "Fault-injection framework"
 	depends on DEBUG_KERNEL
@@ -1340,10 +1980,17 @@ config FAILSLAB
 	  Provide fault-injection capability for kmalloc.
 
 config FAIL_PAGE_ALLOC
-	bool "Fault-injection capabilitiy for alloc_pages()"
+	bool "Fault-injection capability for alloc_pages()"
 	depends on FAULT_INJECTION
 	help
 	  Provide fault-injection capability for alloc_pages().
+
+config FAULT_INJECTION_USERCOPY
+	bool "Fault injection capability for usercopy functions"
+	depends on FAULT_INJECTION
+	help
+	  Provides fault-injection capability to inject failures
+	  in usercopy functions (copy_from_user(), get_user(), ...).
 
 config FAIL_MAKE_REQUEST
 	bool "Fault-injection capability for disk IO"
@@ -1360,18 +2007,14 @@ config FAIL_IO_TIMEOUT
 	  thus exercising the error handling.
 
 	  Only works with drivers that use the generic timeout handling,
-	  for others it wont do anything.
+	  for others it won't do anything.
 
-config FAIL_MMC_REQUEST
-	bool "Fault-injection capability for MMC IO"
+config FAIL_FUTEX
+	bool "Fault-injection capability for futexes"
 	select DEBUG_FS
-	depends on FAULT_INJECTION && MMC
+	depends on FAULT_INJECTION && FUTEX
 	help
-	  Provide fault-injection capability for MMC IO.
-	  This will make the mmc core return data errors. This is
-	  useful to test the error handling in the mmc block device
-	  and to test how the mmc host driver handles retries from
-	  the block device.
+	  Provide fault-injection capability for futexes.
 
 config FAULT_INJECTION_DEBUG_FS
 	bool "Debugfs entries for fault-injection capabilities"
@@ -1379,58 +2022,157 @@ config FAULT_INJECTION_DEBUG_FS
 	help
 	  Enable configuration of fault-injection capabilities via debugfs.
 
+config FAIL_FUNCTION
+	bool "Fault-injection capability for functions"
+	depends on FAULT_INJECTION_DEBUG_FS && FUNCTION_ERROR_INJECTION
+	help
+	  Provide function-based fault-injection capability.
+	  This will allow you to override a specific function with a return
+	  with given return value. As a result, function caller will see
+	  an error value and have to handle it. This is useful to test the
+	  error handling in various subsystems.
+
+config FAIL_MMC_REQUEST
+	bool "Fault-injection capability for MMC IO"
+	depends on FAULT_INJECTION_DEBUG_FS && MMC
+	help
+	  Provide fault-injection capability for MMC IO.
+	  This will make the mmc core return data errors. This is
+	  useful to test the error handling in the mmc block device
+	  and to test how the mmc host driver handles retries from
+	  the block device.
+
+config FAIL_SUNRPC
+	bool "Fault-injection capability for SunRPC"
+	depends on FAULT_INJECTION_DEBUG_FS && SUNRPC_DEBUG
+	help
+	  Provide fault-injection capability for SunRPC and
+	  its consumers.
+
+config FAULT_INJECTION_CONFIGFS
+	bool "Configfs interface for fault-injection capabilities"
+	depends on FAULT_INJECTION
+	select CONFIGFS_FS
+	help
+	  This option allows configfs-based drivers to dynamically configure
+	  fault-injection via configfs.  Each parameter for driver-specific
+	  fault-injection can be made visible as a configfs attribute in a
+	  configfs group.
+
+
 config FAULT_INJECTION_STACKTRACE_FILTER
 	bool "stacktrace filter for fault-injection capabilities"
-	depends on FAULT_INJECTION_DEBUG_FS && STACKTRACE_SUPPORT
-	depends on !X86_64
+	depends on FAULT_INJECTION
+	depends on (FAULT_INJECTION_DEBUG_FS || FAULT_INJECTION_CONFIGFS) && STACKTRACE_SUPPORT
 	select STACKTRACE
-	select FRAME_POINTER if !MIPS && !PPC && !S390 && !MICROBLAZE && !ARM_UNWIND && !ARC
+	depends on FRAME_POINTER || MIPS || PPC || S390 || MICROBLAZE || ARM || ARC || X86
 	help
 	  Provide stacktrace filter for fault-injection capabilities
 
-config LATENCYTOP
-	bool "Latency measuring infrastructure"
-	depends on HAVE_LATENCYTOP_SUPPORT
-	depends on DEBUG_KERNEL
-	depends on STACKTRACE_SUPPORT
-	depends on PROC_FS
-	select FRAME_POINTER if !MIPS && !PPC && !S390 && !MICROBLAZE && !ARM_UNWIND && !ARC
-	select KALLSYMS
-	select KALLSYMS_ALL
-	select STACKTRACE
-	select SCHEDSTATS
-	select SCHED_DEBUG
-	help
-	  Enable this option if you want to use the LatencyTOP tool
-	  to find out which userspace is blocking on what kernel operations.
-
-config ARCH_HAS_DEBUG_STRICT_USER_COPY_CHECKS
+config ARCH_HAS_KCOV
 	bool
-
-config DEBUG_STRICT_USER_COPY_CHECKS
-	bool "Strict user copy size checks"
-	depends on ARCH_HAS_DEBUG_STRICT_USER_COPY_CHECKS
-	depends on DEBUG_KERNEL && !TRACE_BRANCH_PROFILING
 	help
-	  Enabling this option turns a certain set of sanity checks for user
-	  copy operations into compile time failures.
+	  An architecture should select this when it can successfully
+	  build and run with CONFIG_KCOV. This typically requires
+	  disabling instrumentation for some early boot code.
 
-	  The copy_from_user() etc checks are there to help test if there
-	  are sufficient security checks on the length argument of
-	  the copy operation, by having gcc prove that the argument is
-	  within bounds.
+config CC_HAS_SANCOV_TRACE_PC
+	def_bool $(cc-option,-fsanitize-coverage=trace-pc)
+
+
+config KCOV
+	bool "Code coverage for fuzzing"
+	depends on ARCH_HAS_KCOV
+	depends on CC_HAS_SANCOV_TRACE_PC || GCC_PLUGINS
+	depends on !ARCH_WANTS_NO_INSTR || HAVE_NOINSTR_HACK || \
+		   GCC_VERSION >= 120000 || CLANG_VERSION >= 130000
+	select DEBUG_FS
+	select GCC_PLUGIN_SANCOV if !CC_HAS_SANCOV_TRACE_PC
+	select OBJTOOL if HAVE_NOINSTR_HACK
+	help
+	  KCOV exposes kernel code coverage information in a form suitable
+	  for coverage-guided fuzzing (randomized testing).
+
+	  If RANDOMIZE_BASE is enabled, PC values will not be stable across
+	  different machines and across reboots. If you need stable PC values,
+	  disable RANDOMIZE_BASE.
+
+	  For more details, see Documentation/dev-tools/kcov.rst.
+
+config KCOV_ENABLE_COMPARISONS
+	bool "Enable comparison operands collection by KCOV"
+	depends on KCOV
+	depends on $(cc-option,-fsanitize-coverage=trace-cmp)
+	help
+	  KCOV also exposes operands of every comparison in the instrumented
+	  code along with operand sizes and PCs of the comparison instructions.
+	  These operands can be used by fuzzing engines to improve the quality
+	  of fuzzing coverage.
+
+config KCOV_INSTRUMENT_ALL
+	bool "Instrument all code by default"
+	depends on KCOV
+	default y
+	help
+	  If you are doing generic system call fuzzing (like e.g. syzkaller),
+	  then you will want to instrument the whole kernel and you should
+	  say y here. If you are doing more targeted fuzzing (like e.g.
+	  filesystem fuzzing with AFL) then you will want to enable coverage
+	  for more specific subsets of files, and should say n here.
+
+config KCOV_IRQ_AREA_SIZE
+	hex "Size of interrupt coverage collection area in words"
+	depends on KCOV
+	default 0x40000
+	help
+	  KCOV uses preallocated per-cpu areas to collect coverage from
+	  soft interrupts. This specifies the size of those areas in the
+	  number of unsigned long words.
+
+menuconfig RUNTIME_TESTING_MENU
+	bool "Runtime Testing"
+	def_bool y
+
+if RUNTIME_TESTING_MENU
+
+config TEST_DHRY
+	tristate "Dhrystone benchmark test"
+	help
+	  Enable this to include the Dhrystone 2.1 benchmark.  This test
+	  calculates the number of Dhrystones per second, and the number of
+	  DMIPS (Dhrystone MIPS) obtained when the Dhrystone score is divided
+	  by 1757 (the number of Dhrystones per second obtained on the VAX
+	  11/780, nominally a 1 MIPS machine).
+
+	  To run the benchmark, it needs to be enabled explicitly, either from
+	  the kernel command line (when built-in), or from userspace (when
+	  built-in or modular.
+
+	  Run once during kernel boot:
+
+	      test_dhry.run
+
+	  Set number of iterations from kernel command line:
+
+	      test_dhry.iterations=<n>
+
+	  Set number of iterations from userspace:
+
+	      echo <n> > /sys/module/test_dhry/parameters/iterations
+
+	  Trigger manual run from userspace:
+
+	      echo y > /sys/module/test_dhry/parameters/run
+
+	  If the number of iterations is <= 0, the test will devise a suitable
+	  number of iterations (test runs for at least 2s) automatically.
+	  This process takes ca. 4s.
 
 	  If unsure, say N.
-
-source kernel/trace/Kconfig
-
-menu "Runtime Testing"
 
 config LKDTM
 	tristate "Linux Kernel Dump Test Tool Module"
 	depends on DEBUG_FS
-	depends on BLOCK
-	default n
 	help
 	This module enables testing of the different dumping mechanisms by
 	inducing system failures at predefined crash points.
@@ -1439,33 +2181,102 @@ config LKDTM
 	called lkdtm.
 
 	Documentation on how to use the module can be found in
-	Documentation/fault-injection/provoke-crashes.txt
+	Documentation/fault-injection/provoke-crashes.rst
+
+config CPUMASK_KUNIT_TEST
+	tristate "KUnit test for cpumask" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Enable to turn on cpumask tests, running at boot or module load time.
+
+	  For more information on KUnit and unit tests in general, please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
 
 config TEST_LIST_SORT
-	bool "Linked list sorting test"
-	depends on DEBUG_KERNEL
+	tristate "Linked list sorting test" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
 	help
 	  Enable this to turn on 'list_sort()' function test. This test is
-	  executed only once during system boot, so affects only boot time.
+	  executed only once during system boot (so affects only boot time),
+	  or at module load time.
+
+	  If unsure, say N.
+
+config TEST_MIN_HEAP
+	tristate "Min heap test"
+	depends on DEBUG_KERNEL || m
+	help
+	  Enable this to turn on min heap function tests. This test is
+	  executed only once during system boot (so affects only boot time),
+	  or at module load time.
+
+	  If unsure, say N.
+
+config TEST_SORT
+	tristate "Array-based sort test" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  This option enables the self-test function of 'sort()' at boot,
+	  or at module load time.
+
+	  If unsure, say N.
+
+config TEST_DIV64
+	tristate "64bit/32bit division and modulo test"
+	depends on DEBUG_KERNEL || m
+	help
+	  Enable this to turn on 'do_div()' function test. This test is
+	  executed only once during system boot (so affects only boot time),
+	  or at module load time.
+
+	  If unsure, say N.
+
+config TEST_IOV_ITER
+	tristate "Test iov_iter operation" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	depends on MMU
+	default KUNIT_ALL_TESTS
+	help
+	  Enable this to turn on testing of the operation of the I/O iterator
+	  (iov_iter). This test is executed only once during system boot (so
+	  affects only boot time), or at module load time.
 
 	  If unsure, say N.
 
 config KPROBES_SANITY_TEST
-	bool "Kprobes sanity tests"
+	tristate "Kprobes sanity tests" if !KUNIT_ALL_TESTS
 	depends on DEBUG_KERNEL
 	depends on KPROBES
-	default n
+	depends on KUNIT
+	select STACKTRACE if ARCH_CORRECT_STACKTRACE_ON_KRETPROBE
+	default KUNIT_ALL_TESTS
 	help
 	  This option provides for testing basic kprobes functionality on
-	  boot. A sample kprobe, jprobe and kretprobe are inserted and
+	  boot. Samples of kprobe and kretprobe are inserted and
 	  verified for functionality.
+
+	  Say N if you are unsure.
+
+config FPROBE_SANITY_TEST
+	bool "Self test for fprobe"
+	depends on DEBUG_KERNEL
+	depends on FPROBE
+	depends on KUNIT=y
+	help
+	  This option will enable testing the fprobe when the system boot.
+	  A series of tests are made to verify that the fprobe is functioning
+	  properly.
 
 	  Say N if you are unsure.
 
 config BACKTRACE_SELF_TEST
 	tristate "Self test for the backtrace code"
 	depends on DEBUG_KERNEL
-	default n
 	help
 	  This option provides a kernel module that can be used to test
 	  the kernel stack backtrace code. This option is not useful
@@ -1477,6 +2288,16 @@ config BACKTRACE_SELF_TEST
 
 	  Say N if you are unsure.
 
+config TEST_REF_TRACKER
+	tristate "Self test for reference tracker"
+	depends on DEBUG_KERNEL && STACKTRACE_SUPPORT
+	select REF_TRACKER
+	help
+	  This option provides a kernel module performing tests
+	  using reference tracker infrastructure.
+
+	  Say N if you are unsure.
+
 config RBTREE_TEST
 	tristate "Red-Black tree test"
 	depends on DEBUG_KERNEL
@@ -1484,9 +2305,22 @@ config RBTREE_TEST
 	  A benchmark measuring the performance of the rbtree library.
 	  Also includes rbtree invariant checks.
 
+config REED_SOLOMON_TEST
+	tristate "Reed-Solomon library test"
+	depends on DEBUG_KERNEL || m
+	select REED_SOLOMON
+	select REED_SOLOMON_ENC16
+	select REED_SOLOMON_DEC16
+	help
+	  This option enables the self-test function of rslib at boot,
+	  or at module load time.
+
+	  If unsure, say N.
+
 config INTERVAL_TREE_TEST
 	tristate "Interval tree test"
-	depends on m && DEBUG_KERNEL
+	depends on DEBUG_KERNEL
+	select INTERVAL_TREE
 	help
 	  A benchmark measuring the performance of the interval tree library
 
@@ -1500,9 +2334,10 @@ config PERCPU_TEST
 	  If unsure, say N.
 
 config ATOMIC64_SELFTEST
-	bool "Perform an atomic64_t self-test at boot"
+	tristate "Perform an atomic64_t self-test"
 	help
-	  Enable this option to test the atomic64_t functions at boot.
+	  Enable this option to test the atomic64_t functions at boot or
+	  at module load time.
 
 	  If unsure, say N.
 
@@ -1510,7 +2345,7 @@ config ASYNC_RAID6_TEST
 	tristate "Self test for hardware accelerated raid6 recovery"
 	depends on ASYNC_RAID6_RECOV
 	select ASYNC_MEMCPY
-	---help---
+	help
 	  This is a one-shot self test that permutes through the
 	  recovery of all the possible two disk failure scenarios for a
 	  N-disk array.  Recovery is performed with the asynchronous
@@ -1519,74 +2354,75 @@ config ASYNC_RAID6_TEST
 
 	  If unsure, say N.
 
+config TEST_HEXDUMP
+	tristate "Test functions located in the hexdump module at runtime"
+
+config STRING_SELFTEST
+	tristate "Test string functions at runtime"
+
 config TEST_STRING_HELPERS
 	tristate "Test functions located in the string_helpers module at runtime"
 
 config TEST_KSTRTOX
 	tristate "Test kstrto*() family of functions at runtime"
 
-endmenu # runtime tests
+config TEST_PRINTF
+	tristate "Test printf() family of functions at runtime"
 
-config PROVIDE_OHCI1394_DMA_INIT
-	bool "Remote debugging over FireWire early on boot"
-	depends on PCI && X86
+config TEST_SCANF
+	tristate "Test scanf() family of functions at runtime"
+
+config TEST_BITMAP
+	tristate "Test bitmap_*() family of functions at runtime"
 	help
-	  If you want to debug problems which hang or crash the kernel early
-	  on boot and the crashing machine has a FireWire port, you can use
-	  this feature to remotely access the memory of the crashed machine
-	  over FireWire. This employs remote DMA as part of the OHCI1394
-	  specification which is now the standard for FireWire controllers.
-
-	  With remote DMA, you can monitor the printk buffer remotely using
-	  firescope and access all memory below 4GB using fireproxy from gdb.
-	  Even controlling a kernel debugger is possible using remote DMA.
-
-	  Usage:
-
-	  If ohci1394_dma=early is used as boot parameter, it will initialize
-	  all OHCI1394 controllers which are found in the PCI config space.
-
-	  As all changes to the FireWire bus such as enabling and disabling
-	  devices cause a bus reset and thereby disable remote DMA for all
-	  devices, be sure to have the cable plugged and FireWire enabled on
-	  the debugging host before booting the debug target for debugging.
-
-	  This code (~1k) is freed after boot. By then, the firewire stack
-	  in charge of the OHCI-1394 controllers should be used instead.
-
-	  See Documentation/debugging-via-ohci1394.txt for more information.
-
-config BUILD_DOCSRC
-	bool "Build targets in Documentation/ tree"
-	depends on HEADERS_CHECK
-	help
-	  This option attempts to build objects from the source files in the
-	  kernel Documentation/ tree.
-
-	  Say N if you are unsure.
-
-config DMA_API_DEBUG
-	bool "Enable debugging of DMA-API usage"
-	depends on HAVE_DMA_API_DEBUG
-	help
-	  Enable this option to debug the use of the DMA API by device drivers.
-	  With this option you will be able to detect common bugs in device
-	  drivers like double-freeing of DMA mappings or freeing mappings that
-	  were never allocated.
-
-	  This also attempts to catch cases where a page owned by DMA is
-	  accessed by the cpu in a way that could cause data corruption.  For
-	  example, this enables cow_user_page() to check that the source page is
-	  not undergoing DMA.
-
-	  This option causes a performance degradation.  Use only if you want to
-	  debug device drivers and dma interactions.
+	  Enable this option to test the bitmap functions at boot.
 
 	  If unsure, say N.
 
-config TEST_MODULE
+config TEST_UUID
+	tristate "Test functions located in the uuid module at runtime"
+
+config TEST_XARRAY
+	tristate "Test the XArray code at runtime"
+
+config TEST_MAPLE_TREE
+	tristate "Test the Maple Tree code at runtime or module load"
+	help
+	  Enable this option to test the maple tree code functions at boot, or
+	  when the module is loaded. Enable "Debug Maple Trees" will enable
+	  more verbose output on failures.
+
+	  If unsure, say N.
+
+config TEST_RHASHTABLE
+	tristate "Perform selftest on resizable hash table"
+	help
+	  Enable this option to test the rhashtable functions at boot.
+
+	  If unsure, say N.
+
+config TEST_IDA
+	tristate "Perform selftest on IDA functions"
+
+config TEST_PARMAN
+	tristate "Perform selftest on priority array manager"
+	depends on PARMAN
+	help
+	  Enable this option to test priority array manager on boot
+	  (or module load).
+
+	  If unsure, say N.
+
+config TEST_IRQ_TIMINGS
+	bool "IRQ timings selftest"
+	depends on IRQ_TIMINGS
+	help
+	  Enable this option to test the irq timings code on boot.
+
+	  If unsure, say N.
+
+config TEST_LKM
 	tristate "Test module loading with 'hello world' module"
-	default n
 	depends on m
 	help
 	  This builds the "test_module" module that emits "Hello, world"
@@ -1598,9 +2434,34 @@ config TEST_MODULE
 
 	  If unsure, say N.
 
+config TEST_BITOPS
+	tristate "Test module for compilation of bitops operations"
+	depends on m
+	help
+	  This builds the "test_bitops" module that is much like the
+	  TEST_LKM module except that it does a basic exercise of the
+	  set/clear_bit macros and get_count_order/long to make sure there are
+	  no compiler warnings from C=1 sparse checker or -Wextra
+	  compilations. It has no dependencies and doesn't run or load unless
+	  explicitly requested by name.  for example: modprobe test_bitops.
+
+	  If unsure, say N.
+
+config TEST_VMALLOC
+	tristate "Test module for stress/performance analysis of vmalloc allocator"
+	default n
+       depends on MMU
+	depends on m
+	help
+	  This builds the "test_vmalloc" module that should be used for
+	  stress and performance analysis. So, any new change for vmalloc
+	  subsystem can be evaluated from performance and stability point
+	  of view.
+
+	  If unsure, say N.
+
 config TEST_USER_COPY
 	tristate "Test user/kernel boundary protections"
-	default n
 	depends on m
 	help
 	  This builds the "test_user_copy" module that runs sanity checks
@@ -1611,7 +2472,571 @@ config TEST_USER_COPY
 
 	  If unsure, say N.
 
-source "samples/Kconfig"
+config TEST_BPF
+	tristate "Test BPF filter functionality"
+	depends on m && NET
+	help
+	  This builds the "test_bpf" module that runs various test vectors
+	  against the BPF interpreter or BPF JIT compiler depending on the
+	  current setting. This is in particular useful for BPF JIT compiler
+	  development, but also to run regression tests against changes in
+	  the interpreter code. It also enables test stubs for eBPF maps and
+	  verifier used by user space verifier testsuite.
 
-source "lib/Kconfig.kgdb"
+	  If unsure, say N.
 
+config TEST_BLACKHOLE_DEV
+	tristate "Test blackhole netdev functionality"
+	depends on m && NET
+	help
+	  This builds the "test_blackhole_dev" module that validates the
+	  data path through this blackhole netdev.
+
+	  If unsure, say N.
+
+config FIND_BIT_BENCHMARK
+	tristate "Test find_bit functions"
+	help
+	  This builds the "test_find_bit" module that measure find_*_bit()
+	  functions performance.
+
+	  If unsure, say N.
+
+config TEST_FIRMWARE
+	tristate "Test firmware loading via userspace interface"
+	depends on FW_LOADER
+	help
+	  This builds the "test_firmware" module that creates a userspace
+	  interface for testing firmware loading. This can be used to
+	  control the triggering of firmware loading without needing an
+	  actual firmware-using device. The contents can be rechecked by
+	  userspace.
+
+	  If unsure, say N.
+
+config TEST_SYSCTL
+	tristate "sysctl test driver"
+	depends on PROC_SYSCTL
+	help
+	  This builds the "test_sysctl" module. This driver enables to test the
+	  proc sysctl interfaces available to drivers safely without affecting
+	  production knobs which might alter system functionality.
+
+	  If unsure, say N.
+
+config BITFIELD_KUNIT
+	tristate "KUnit test bitfield functions at runtime" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Enable this option to test the bitfield functions at boot.
+
+	  KUnit tests run during boot and output the results to the debug log
+	  in TAP format (http://testanything.org/). Only useful for kernel devs
+	  running the KUnit test harness, and not intended for inclusion into a
+	  production build.
+
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config CHECKSUM_KUNIT
+	tristate "KUnit test checksum functions at runtime" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Enable this option to test the checksum functions at boot.
+
+	  KUnit tests run during boot and output the results to the debug log
+	  in TAP format (http://testanything.org/). Only useful for kernel devs
+	  running the KUnit test harness, and not intended for inclusion into a
+	  production build.
+
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config HASH_KUNIT_TEST
+	tristate "KUnit Test for integer hash functions" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Enable this option to test the kernel's string (<linux/stringhash.h>), and
+	  integer (<linux/hash.h>) hash functions on boot.
+
+	  KUnit tests run during boot and output the results to the debug log
+	  in TAP format (https://testanything.org/). Only useful for kernel devs
+	  running the KUnit test harness, and not intended for inclusion into a
+	  production build.
+
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  This is intended to help people writing architecture-specific
+	  optimized versions. If unsure, say N.
+
+config RESOURCE_KUNIT_TEST
+	tristate "KUnit test for resource API" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  This builds the resource API unit test.
+	  Tests the logic of API provided by resource.c and ioport.h.
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config SYSCTL_KUNIT_TEST
+	tristate "KUnit test for sysctl" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  This builds the proc sysctl unit test, which runs on boot.
+	  Tests the API contract and implementation correctness of sysctl.
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config LIST_KUNIT_TEST
+	tristate "KUnit Test for Kernel Linked-list structures" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  This builds the linked list KUnit test suite.
+	  It tests that the API and basic functionality of the list_head type
+	  and associated macros.
+
+	  KUnit tests run during boot and output the results to the debug log
+	  in TAP format (https://testanything.org/). Only useful for kernel devs
+	  running the KUnit test harness, and not intended for inclusion into a
+	  production build.
+
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config HASHTABLE_KUNIT_TEST
+	tristate "KUnit Test for Kernel Hashtable structures" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  This builds the hashtable KUnit test suite.
+	  It tests the basic functionality of the API defined in
+	  include/linux/hashtable.h. For more information on KUnit and
+	  unit tests in general please refer to the KUnit documentation
+	  in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config LINEAR_RANGES_TEST
+	tristate "KUnit test for linear_ranges"
+	depends on KUNIT
+	select LINEAR_RANGES
+	help
+	  This builds the linear_ranges unit test, which runs on boot.
+	  Tests the linear_ranges logic correctness.
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config CMDLINE_KUNIT_TEST
+	tristate "KUnit test for cmdline API" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  This builds the cmdline API unit test.
+	  Tests the logic of API provided by cmdline.c.
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config BITS_TEST
+	tristate "KUnit test for bits.h" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  This builds the bits unit test.
+	  Tests the logic of macros defined in bits.h.
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config SLUB_KUNIT_TEST
+	tristate "KUnit test for SLUB cache error detection" if !KUNIT_ALL_TESTS
+	depends on SLUB_DEBUG && KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  This builds SLUB allocator unit test.
+	  Tests SLUB cache debugging functionality.
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config RATIONAL_KUNIT_TEST
+	tristate "KUnit test for rational.c" if !KUNIT_ALL_TESTS
+	depends on KUNIT && RATIONAL
+	default KUNIT_ALL_TESTS
+	help
+	  This builds the rational math unit test.
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config MEMCPY_KUNIT_TEST
+	tristate "Test memcpy(), memmove(), and memset() functions at runtime" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Builds unit tests for memcpy(), memmove(), and memset() functions.
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config MEMCPY_SLOW_KUNIT_TEST
+	bool "Include exhaustive memcpy tests"
+	depends on MEMCPY_KUNIT_TEST
+	default y
+	help
+	  Some memcpy tests are quite exhaustive in checking for overlaps
+	  and bit ranges. These can be very slow, so they are split out
+	  as a separate config, in case they need to be disabled.
+
+	  Note this config option will be replaced by the use of KUnit test
+	  attributes.
+
+config IS_SIGNED_TYPE_KUNIT_TEST
+	tristate "Test is_signed_type() macro" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Builds unit tests for the is_signed_type() macro.
+
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config OVERFLOW_KUNIT_TEST
+	tristate "Test check_*_overflow() functions at runtime" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Builds unit tests for the check_*_overflow(), size_*(), allocation, and
+	  related functions.
+
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config STACKINIT_KUNIT_TEST
+	tristate "Test level of stack variable initialization" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Test if the kernel is zero-initializing stack variables and
+	  padding. Coverage is controlled by compiler flags,
+	  CONFIG_INIT_STACK_ALL_PATTERN, CONFIG_INIT_STACK_ALL_ZERO,
+	  CONFIG_GCC_PLUGIN_STRUCTLEAK, CONFIG_GCC_PLUGIN_STRUCTLEAK_BYREF,
+	  or CONFIG_GCC_PLUGIN_STRUCTLEAK_BYREF_ALL.
+
+config FORTIFY_KUNIT_TEST
+	tristate "Test fortified str*() and mem*() function internals at runtime" if !KUNIT_ALL_TESTS
+	depends on KUNIT && FORTIFY_SOURCE
+	default KUNIT_ALL_TESTS
+	help
+	  Builds unit tests for checking internals of FORTIFY_SOURCE as used
+	  by the str*() and mem*() family of functions. For testing runtime
+	  traps of FORTIFY_SOURCE, see LKDTM's "FORTIFY_*" tests.
+
+config HW_BREAKPOINT_KUNIT_TEST
+	bool "Test hw_breakpoint constraints accounting" if !KUNIT_ALL_TESTS
+	depends on HAVE_HW_BREAKPOINT
+	depends on KUNIT=y
+	default KUNIT_ALL_TESTS
+	help
+	  Tests for hw_breakpoint constraints accounting.
+
+	  If unsure, say N.
+
+config STRCAT_KUNIT_TEST
+	tristate "Test strcat() family of functions at runtime" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+
+config STRSCPY_KUNIT_TEST
+	tristate "Test strscpy*() family of functions at runtime" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+
+config SIPHASH_KUNIT_TEST
+	tristate "Perform selftest on siphash functions" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Enable this option to test the kernel's siphash (<linux/siphash.h>) hash
+	  functions on boot (or module load).
+
+	  This is intended to help people writing architecture-specific
+	  optimized versions.  If unsure, say N.
+
+config TEST_UDELAY
+	tristate "udelay test driver"
+	help
+	  This builds the "udelay_test" module that helps to make sure
+	  that udelay() is working properly.
+
+	  If unsure, say N.
+
+config TEST_STATIC_KEYS
+	tristate "Test static keys"
+	depends on m
+	help
+	  Test the static key interfaces.
+
+	  If unsure, say N.
+
+config TEST_DYNAMIC_DEBUG
+	tristate "Test DYNAMIC_DEBUG"
+	depends on DYNAMIC_DEBUG
+	help
+	  This module registers a tracer callback to count enabled
+	  pr_debugs in a 'do_debugging' function, then alters their
+	  enablements, calls the function, and compares counts.
+
+	  If unsure, say N.
+
+config TEST_KMOD
+	tristate "kmod stress tester"
+	depends on m
+	depends on NETDEVICES && NET_CORE && INET # for TUN
+	depends on BLOCK
+	depends on PAGE_SIZE_LESS_THAN_256KB # for BTRFS
+	select TEST_LKM
+	select XFS_FS
+	select TUN
+	select BTRFS_FS
+	help
+	  Test the kernel's module loading mechanism: kmod. kmod implements
+	  support to load modules using the Linux kernel's usermode helper.
+	  This test provides a series of tests against kmod.
+
+	  Although technically you can either build test_kmod as a module or
+	  into the kernel we disallow building it into the kernel since
+	  it stress tests request_module() and this will very likely cause
+	  some issues by taking over precious threads available from other
+	  module load requests, ultimately this could be fatal.
+
+	  To run tests run:
+
+	  tools/testing/selftests/kmod/kmod.sh --help
+
+	  If unsure, say N.
+
+config TEST_DEBUG_VIRTUAL
+	tristate "Test CONFIG_DEBUG_VIRTUAL feature"
+	depends on DEBUG_VIRTUAL
+	help
+	  Test the kernel's ability to detect incorrect calls to
+	  virt_to_phys() done against the non-linear part of the
+	  kernel's virtual address map.
+
+	  If unsure, say N.
+
+config TEST_MEMCAT_P
+	tristate "Test memcat_p() helper function"
+	help
+	  Test the memcat_p() helper for correctly merging two
+	  pointer arrays together.
+
+	  If unsure, say N.
+
+config TEST_LIVEPATCH
+	tristate "Test livepatching"
+	default n
+	depends on DYNAMIC_DEBUG
+	depends on LIVEPATCH
+	depends on m
+	help
+	  Test kernel livepatching features for correctness.  The tests will
+	  load test modules that will be livepatched in various scenarios.
+
+	  To run all the livepatching tests:
+
+	  make -C tools/testing/selftests TARGETS=livepatch run_tests
+
+	  Alternatively, individual tests may be invoked:
+
+	  tools/testing/selftests/livepatch/test-callbacks.sh
+	  tools/testing/selftests/livepatch/test-livepatch.sh
+	  tools/testing/selftests/livepatch/test-shadow-vars.sh
+
+	  If unsure, say N.
+
+config TEST_OBJAGG
+	tristate "Perform selftest on object aggreration manager"
+	default n
+	depends on OBJAGG
+	help
+	  Enable this option to test object aggregation manager on boot
+	  (or module load).
+
+config TEST_MEMINIT
+	tristate "Test heap/page initialization"
+	help
+	  Test if the kernel is zero-initializing heap and page allocations.
+	  This can be useful to test init_on_alloc and init_on_free features.
+
+	  If unsure, say N.
+
+config TEST_HMM
+	tristate "Test HMM (Heterogeneous Memory Management)"
+	depends on TRANSPARENT_HUGEPAGE
+	depends on DEVICE_PRIVATE
+	select HMM_MIRROR
+	select MMU_NOTIFIER
+	help
+	  This is a pseudo device driver solely for testing HMM.
+	  Say M here if you want to build the HMM test module.
+	  Doing so will allow you to run tools/testing/selftest/vm/hmm-tests.
+
+	  If unsure, say N.
+
+config TEST_FREE_PAGES
+	tristate "Test freeing pages"
+	help
+	  Test that a memory leak does not occur due to a race between
+	  freeing a block of pages and a speculative page reference.
+	  Loading this module is safe if your kernel has the bug fixed.
+	  If the bug is not fixed, it will leak gigabytes of memory and
+	  probably OOM your system.
+
+config TEST_FPU
+	tristate "Test floating point operations in kernel space"
+	depends on X86 && !KCOV_INSTRUMENT_ALL
+	help
+	  Enable this option to add /sys/kernel/debug/selftest_helpers/test_fpu
+	  which will trigger a sequence of floating point operations. This is used
+	  for self-testing floating point control register setting in
+	  kernel_fpu_begin().
+
+	  If unsure, say N.
+
+config TEST_CLOCKSOURCE_WATCHDOG
+	tristate "Test clocksource watchdog in kernel space"
+	depends on CLOCKSOURCE_WATCHDOG
+	help
+	  Enable this option to create a kernel module that will trigger
+	  a test of the clocksource watchdog.  This module may be loaded
+	  via modprobe or insmod in which case it will run upon being
+	  loaded, or it may be built in, in which case it will run
+	  shortly after boot.
+
+	  If unsure, say N.
+
+endif # RUNTIME_TESTING_MENU
+
+config ARCH_USE_MEMTEST
+	bool
+	help
+	  An architecture should select this when it uses early_memtest()
+	  during boot process.
+
+config MEMTEST
+	bool "Memtest"
+	depends on ARCH_USE_MEMTEST
+	help
+	  This option adds a kernel parameter 'memtest', which allows memtest
+	  to be set and executed.
+	        memtest=0, mean disabled; -- default
+	        memtest=1, mean do 1 test pattern;
+	        ...
+	        memtest=17, mean do 17 test patterns.
+	  If you are unsure how to answer this question, answer N.
+
+
+
+config HYPERV_TESTING
+	bool "Microsoft Hyper-V driver testing"
+	default n
+	depends on HYPERV && DEBUG_FS
+	help
+	  Select this option to enable Hyper-V vmbus testing.
+
+endmenu # "Kernel Testing and Coverage"
+
+menu "Rust hacking"
+
+config RUST_DEBUG_ASSERTIONS
+	bool "Debug assertions"
+	depends on RUST
+	help
+	  Enables rustc's `-Cdebug-assertions` codegen option.
+
+	  This flag lets you turn `cfg(debug_assertions)` conditional
+	  compilation on or off. This can be used to enable extra debugging
+	  code in development but not in production. For example, it controls
+	  the behavior of the standard library's `debug_assert!` macro.
+
+	  Note that this will apply to all Rust code, including `core`.
+
+	  If unsure, say N.
+
+config RUST_OVERFLOW_CHECKS
+	bool "Overflow checks"
+	default y
+	depends on RUST
+	help
+	  Enables rustc's `-Coverflow-checks` codegen option.
+
+	  This flag allows you to control the behavior of runtime integer
+	  overflow. When overflow-checks are enabled, a Rust panic will occur
+	  on overflow.
+
+	  Note that this will apply to all Rust code, including `core`.
+
+	  If unsure, say Y.
+
+config RUST_BUILD_ASSERT_ALLOW
+	bool "Allow unoptimized build-time assertions"
+	depends on RUST
+	help
+	  Controls how are `build_error!` and `build_assert!` handled during build.
+
+	  If calls to them exist in the binary, it may indicate a violated invariant
+	  or that the optimizer failed to verify the invariant during compilation.
+
+	  This should not happen, thus by default the build is aborted. However,
+	  as an escape hatch, you can choose Y here to ignore them during build
+	  and let the check be carried at runtime (with `panic!` being called if
+	  the check fails).
+
+	  If unsure, say N.
+
+config RUST_KERNEL_DOCTESTS
+	bool "Doctests for the `kernel` crate" if !KUNIT_ALL_TESTS
+	depends on RUST && KUNIT=y
+	default KUNIT_ALL_TESTS
+	help
+	  This builds the documentation tests of the `kernel` crate
+	  as KUnit tests.
+
+	  For more information on KUnit and unit tests in general,
+	  please refer to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+endmenu # "Rust"
+
+endmenu # Kernel hacking

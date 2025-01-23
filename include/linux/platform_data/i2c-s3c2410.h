@@ -1,17 +1,13 @@
-/* arch/arm/plat-s3c/include/plat/iic.h
- *
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
  * Copyright 2004-2009 Simtec Electronics
  *	Ben Dooks <ben@simtec.co.uk>
  *
  * S3C - I2C Controller platform_device info
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
 */
 
-#ifndef __ASM_ARCH_IIC_H
-#define __ASM_ARCH_IIC_H __FILE__
+#ifndef __I2C_S3C2410_H
+#define __I2C_S3C2410_H __FILE__
 
 #define S3C_IICFLG_FILTER	(1<<0)	/* enable s3c2440 filter */
 
@@ -76,4 +72,4 @@ extern void s3c_i2c7_cfg_gpio(struct platform_device *dev);
 
 extern struct s3c2410_platform_i2c default_i2c_data;
 
-#endif /* __ASM_ARCH_IIC_H */
+#endif /* __I2C_S3C2410_H */

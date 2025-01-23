@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Freescale QUICC Engine USB Host Controller Driver
  *
@@ -8,11 +9,6 @@
  *               Peter Barada <peterb@logicpd.com>
  * Copyright (c) MontaVista Software, Inc. 2008.
  *               Anton Vorontsov <avorontsov@ru.mvista.com>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -23,17 +19,17 @@
 #include <linux/io.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
-#include <linux/gpio.h>
-#include <asm/qe.h>
+#include <linux/gpio/consumer.h>
+#include <soc/fsl/qe/qe.h>
 #include "fhci.h"
 
 /* virtual root hub specific descriptor */
 static u8 root_hub_des[] = {
 	0x09, /* blength */
-	0x29, /* bDescriptorType;hub-descriptor */
+	USB_DT_HUB, /* bDescriptorType;hub-descriptor */
 	0x01, /* bNbrPorts */
-	0x00, /* wHubCharacteristics */
-	0x00,
+	HUB_CHAR_INDV_PORT_LPSM | HUB_CHAR_NO_OCPM, /* wHubCharacteristics */
+	0x00, /* per-port power, no overcurrent */
 	0x01, /* bPwrOn2pwrGood;2ms */
 	0x00, /* bHubContrCurrent;0mA */
 	0x00, /* DeviceRemoveable */
@@ -42,13 +38,12 @@ static u8 root_hub_des[] = {
 
 static void fhci_gpio_set_value(struct fhci_hcd *fhci, int gpio_nr, bool on)
 {
-	int gpio = fhci->gpios[gpio_nr];
-	bool alow = fhci->alow_gpios[gpio_nr];
+	struct gpio_desc *gpiod = fhci->gpiods[gpio_nr];
 
-	if (!gpio_is_valid(gpio))
+	if (!gpiod)
 		return;
 
-	gpio_set_value(gpio, on ^ alow);
+	gpiod_set_value(gpiod, on);
 	mdelay(5);
 }
 
@@ -133,9 +128,9 @@ void fhci_io_port_generate_reset(struct fhci_hcd *fhci)
 {
 	fhci_dbg(fhci, "-> %s\n", __func__);
 
-	gpio_direction_output(fhci->gpios[GPIO_USBOE], 0);
-	gpio_direction_output(fhci->gpios[GPIO_USBTP], 0);
-	gpio_direction_output(fhci->gpios[GPIO_USBTN], 0);
+	gpiod_direction_output(fhci->gpiods[GPIO_USBOE], 0);
+	gpiod_direction_output(fhci->gpiods[GPIO_USBTP], 0);
+	gpiod_direction_output(fhci->gpiods[GPIO_USBTN], 0);
 
 	mdelay(5);
 
@@ -208,7 +203,6 @@ int fhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 {
 	struct fhci_hcd *fhci = hcd_to_fhci(hcd);
 	int retval = 0;
-	int len = 0;
 	struct usb_hub_status *hub_status;
 	struct usb_port_status *port_status;
 	unsigned long flags;
@@ -272,8 +266,6 @@ int fhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 		break;
 	case GetHubDescriptor:
 		memcpy(buf, root_hub_des, sizeof(root_hub_des));
-		buf[3] = 0x11; /* per-port power, no ovrcrnt */
-		len = (buf[0] < wLength) ? buf[0] : wLength;
 		break;
 	case GetHubStatus:
 		hub_status = (struct usb_hub_status *)buf;
@@ -281,7 +273,6 @@ int fhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 		    cpu_to_le16(fhci->vroot_hub->hub.wHubStatus);
 		hub_status->wHubChange =
 		    cpu_to_le16(fhci->vroot_hub->hub.wHubChange);
-		len = 4;
 		break;
 	case GetPortStatus:
 		port_status = (struct usb_port_status *)buf;
@@ -289,7 +280,6 @@ int fhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 		    cpu_to_le16(fhci->vroot_hub->port.wPortStatus);
 		port_status->wPortChange =
 		    cpu_to_le16(fhci->vroot_hub->port.wPortChange);
-		len = 4;
 		break;
 	case SetHubFeature:
 		switch (wValue) {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * uncompress.c
  *
@@ -14,6 +15,8 @@
  * only have one stream, and we'll initialize it only once even if it
  * then is used by multiple filesystems.
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -37,7 +40,7 @@ int cramfs_uncompress_block(void *dst, int dstlen, void *src, int srclen)
 
 	err = zlib_inflateReset(&stream);
 	if (err != Z_OK) {
-		printk("zlib_inflateReset error %d\n", err);
+		pr_err("zlib_inflateReset error %d\n", err);
 		zlib_inflateEnd(&stream);
 		zlib_inflateInit(&stream);
 	}
@@ -48,8 +51,8 @@ int cramfs_uncompress_block(void *dst, int dstlen, void *src, int srclen)
 	return stream.total_out;
 
 err:
-	printk("Error %d while decompressing!\n", err);
-	printk("%p(%d)->%p(%d)\n", src, srclen, dst, dstlen);
+	pr_err("Error %d while decompressing!\n", err);
+	pr_err("%p(%d)->%p(%d)\n", src, srclen, dst, dstlen);
 	return -EIO;
 }
 
@@ -57,7 +60,7 @@ int cramfs_uncompress_init(void)
 {
 	if (!initialized++) {
 		stream.workspace = vmalloc(zlib_inflate_workspacesize());
-		if ( !stream.workspace ) {
+		if (!stream.workspace) {
 			initialized = 0;
 			return -ENOMEM;
 		}

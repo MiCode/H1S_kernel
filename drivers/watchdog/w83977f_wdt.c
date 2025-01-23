@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	W83977F Watchdog Timer Driver for Winbond W83977F I/O Chip
  *
@@ -7,12 +8,6 @@
  *           and wdt977.c by Woody Suwalski
  *
  *			-----------------------
- *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License
- *	as published by the Free Software Foundation; either version
- *	2 of the License, or (at your option) any later version.
- *
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -224,7 +219,7 @@ static int wdt_keepalive(void)
 
 static int wdt_set_timeout(int t)
 {
-	int tmrval;
+	unsigned int tmrval;
 
 	/*
 	 * Convert seconds to watchdog counter time units, rounding up.
@@ -298,7 +293,7 @@ static int wdt_open(struct inode *inode, struct file *file)
 		__module_get(THIS_MODULE);
 
 	wdt_start();
-	return nonseekable_open(inode, file);
+	return stream_open(inode, file);
 }
 
 static int wdt_release(struct inode *inode, struct file *file)
@@ -326,7 +321,7 @@ static int wdt_release(struct inode *inode, struct file *file)
  *      @ppos: pointer to the position to write. No seeks allowed
  *
  *      A write to a watchdog device is defined as a keepalive signal. Any
- *      write of data will do, as we we don't define content meaning.
+ *      write of data will do, as we don't define content meaning.
  */
 
 static ssize_t wdt_write(struct file *file, const char __user *buf,
@@ -427,7 +422,7 @@ static long wdt_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			return -EINVAL;
 
 		wdt_keepalive();
-		/* Fall */
+		fallthrough;
 
 	case WDIOC_GETTIMEOUT:
 		return put_user(timeout, uarg.i);
@@ -451,6 +446,7 @@ static const struct file_operations wdt_fops = {
 	.llseek		= no_llseek,
 	.write		= wdt_write,
 	.unlocked_ioctl	= wdt_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
 	.open		= wdt_open,
 	.release	= wdt_release,
 };

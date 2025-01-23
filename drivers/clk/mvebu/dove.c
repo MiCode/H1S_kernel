@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Marvell Dove SoC clocks
  *
@@ -7,9 +8,6 @@
  * Sebastian Hesselbarth <sebastian.hesselbarth@gmail.com>
  * Andrew Lunn <andrew@lunn.ch>
  *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/kernel.h>
@@ -17,6 +15,7 @@
 #include <linux/io.h>
 #include <linux/of.h>
 #include "common.h"
+#include "dove-divider.h"
 
 /*
  * Core Clocks
@@ -154,12 +153,6 @@ static const struct coreclk_soc_desc dove_coreclks = {
 	.num_ratios = ARRAY_SIZE(dove_coreclk_ratios),
 };
 
-static void __init dove_coreclk_init(struct device_node *np)
-{
-	mvebu_coreclk_setup(np, &dove_coreclks);
-}
-CLK_OF_DECLARE(dove_core_clk, "marvell,dove-core-clock", dove_coreclk_init);
-
 /*
  * Clock Gating Control
  */
@@ -186,9 +179,23 @@ static const struct clk_gating_soc_desc dove_gating_desc[] __initconst = {
 	{ }
 };
 
-static void __init dove_clk_gating_init(struct device_node *np)
+static void __init dove_clk_init(struct device_node *np)
 {
-	mvebu_clk_gating_setup(np, dove_gating_desc);
+	struct device_node *cgnp =
+		of_find_compatible_node(NULL, NULL, "marvell,dove-gating-clock");
+	struct device_node *ddnp =
+		of_find_compatible_node(NULL, NULL, "marvell,dove-divider-clock");
+
+	mvebu_coreclk_setup(np, &dove_coreclks);
+
+	if (ddnp) {
+		dove_divider_clk_init(ddnp);
+		of_node_put(ddnp);
+	}
+
+	if (cgnp) {
+		mvebu_clk_gating_setup(cgnp, dove_gating_desc);
+		of_node_put(cgnp);
+	}
 }
-CLK_OF_DECLARE(dove_clk_gating, "marvell,dove-gating-clock",
-	       dove_clk_gating_init);
+CLK_OF_DECLARE(dove_clk, "marvell,dove-core-clock", dove_clk_init);

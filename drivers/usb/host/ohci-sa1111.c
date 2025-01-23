@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-1.0+
 /*
  * OHCI HCD (Host Controller Driver) for USB.
  *
@@ -13,9 +14,7 @@
  * This file is licenced under the GPL.
  */
 
-#include <mach/hardware.h>
 #include <asm/mach-types.h>
-#include <mach/assabet.h>
 #include <asm/hardware/sa1111.h>
 
 #ifndef CONFIG_SA1111
@@ -44,7 +43,7 @@
 #if 0
 static void dump_hci_status(struct usb_hcd *hcd, const char *label)
 {
-	unsigned long status = sa1111_readl(hcd->regs + USB_STATUS);
+	unsigned long status = readl_relaxed(hcd->regs + USB_STATUS);
 
 	printk(KERN_DEBUG "%s USB_STATUS = { %s%s%s%s%s}\n", label,
 	     ((status & USB_STATUS_IRQHCIRMTWKUP) ? "IRQHCIRMTWKUP " : ""),
@@ -85,7 +84,7 @@ static const struct hc_driver ohci_sa1111_hc_driver = {
 	 * generic hardware linkage
 	 */
 	.irq =			ohci_irq,
-	.flags =		HCD_USB11 | HCD_MEMORY,
+	.flags =		HCD_USB11 | HCD_DMA | HCD_MEMORY,
 
 	/*
 	 * basic lifecycle operations
@@ -126,17 +125,14 @@ static int sa1111_start_hc(struct sa1111_dev *dev)
 
 	dev_dbg(&dev->dev, "starting SA-1111 OHCI USB Controller\n");
 
-	if (machine_is_xp860() ||
-	    machine_has_neponset() ||
-	    machine_is_pfs168() ||
-	    machine_is_badge4())
+	if (machine_is_assabet())
 		usb_rst = USB_RESET_PWRSENSELOW | USB_RESET_PWRCTRLLOW;
 
 	/*
 	 * Configure the power sense and control lines.  Place the USB
 	 * host controller in reset.
 	 */
-	sa1111_writel(usb_rst | USB_RESET_FORCEIFRESET | USB_RESET_FORCEHCRESET,
+	writel_relaxed(usb_rst | USB_RESET_FORCEIFRESET | USB_RESET_FORCEHCRESET,
 		      dev->mapbase + USB_RESET);
 
 	/*
@@ -146,7 +142,7 @@ static int sa1111_start_hc(struct sa1111_dev *dev)
 	ret = sa1111_enable_device(dev);
 	if (ret == 0) {
 		udelay(11);
-		sa1111_writel(usb_rst, dev->mapbase + USB_RESET);
+		writel_relaxed(usb_rst, dev->mapbase + USB_RESET);
 	}
 
 	return ret;
@@ -161,8 +157,8 @@ static void sa1111_stop_hc(struct sa1111_dev *dev)
 	/*
 	 * Put the USB host controller into reset.
 	 */
-	usb_rst = sa1111_readl(dev->mapbase + USB_RESET);
-	sa1111_writel(usb_rst | USB_RESET_FORCEIFRESET | USB_RESET_FORCEHCRESET,
+	usb_rst = readl_relaxed(dev->mapbase + USB_RESET);
+	writel_relaxed(usb_rst | USB_RESET_FORCEIFRESET | USB_RESET_FORCEHCRESET,
 		      dev->mapbase + USB_RESET);
 
 	/*
@@ -180,7 +176,7 @@ static void sa1111_stop_hc(struct sa1111_dev *dev)
 static int ohci_hcd_sa1111_probe(struct sa1111_dev *dev)
 {
 	struct usb_hcd *hcd;
-	int ret;
+	int ret, irq;
 
 	if (usb_disabled())
 		return -ENODEV;
@@ -198,6 +194,37 @@ static int ohci_hcd_sa1111_probe(struct sa1111_dev *dev)
 	hcd->rsrc_start = dev->res.start;
 	hcd->rsrc_len = resource_size(&dev->res);
 
+	irq = sa1111_get_irq(dev, 1);
+	if (irq <= 0) {
+		ret = irq ? : -ENXIO;
+		goto err1;
+	}
+
+	/*
+	 * According to the "Intel StrongARM SA-1111 Microprocessor Companion
+	 * Chip Specification Update" (June 2000), erratum #7, there is a
+	 * significant bug in the SA1111 SDRAM shared memory controller.  If
+	 * an access to a region of memory above 1MB relative to the bank base,
+	 * it is important that address bit 10 _NOT_ be asserted. Depending
+	 * on the configuration of the RAM, bit 10 may correspond to one
+	 * of several different (processor-relative) address bits.
+	 *
+	 * Section 4.6 of the "Intel StrongARM SA-1111 Development Module
+	 * User's Guide" mentions that jumpers R51 and R52 control the
+	 * target of SA-1111 DMA (either SDRAM bank 0 on Assabet, or
+	 * SDRAM bank 1 on Neponset). The default configuration selects
+	 * Assabet, so any address in bank 1 is necessarily invalid.
+	 *
+	 * As a workaround, use a bounce buffer in addressable memory
+	 * as local_mem, relying on ZONE_DMA to provide an area that
+	 * fits within the above constraints.
+	 *
+	 * SZ_64K is an estimate for what size this might need.
+	 */
+	ret = usb_hcd_setup_local_mem(hcd, 0, 0, SZ_64K);
+	if (ret)
+		goto err1;
+
 	if (!request_mem_region(hcd->rsrc_start, hcd->rsrc_len, hcd_name)) {
 		dev_dbg(&dev->dev, "request_mem_region failed\n");
 		ret = -EBUSY;
@@ -210,7 +237,7 @@ static int ohci_hcd_sa1111_probe(struct sa1111_dev *dev)
 	if (ret)
 		goto err2;
 
-	ret = usb_add_hcd(hcd, dev->irq[1], 0);
+	ret = usb_add_hcd(hcd, irq, 0);
 	if (ret == 0) {
 		device_wakeup_enable(hcd->self.controller);
 		return ret;
@@ -231,7 +258,7 @@ static int ohci_hcd_sa1111_probe(struct sa1111_dev *dev)
  * Reverses the effect of ohci_hcd_sa1111_probe(), first invoking
  * the HCD's stop() method.
  */
-static int ohci_hcd_sa1111_remove(struct sa1111_dev *dev)
+static void ohci_hcd_sa1111_remove(struct sa1111_dev *dev)
 {
 	struct usb_hcd *hcd = sa1111_get_drvdata(dev);
 
@@ -239,12 +266,11 @@ static int ohci_hcd_sa1111_remove(struct sa1111_dev *dev)
 	sa1111_stop_hc(dev);
 	release_mem_region(hcd->rsrc_start, hcd->rsrc_len);
 	usb_put_hcd(hcd);
-
-	return 0;
 }
 
-static void ohci_hcd_sa1111_shutdown(struct sa1111_dev *dev)
+static void ohci_hcd_sa1111_shutdown(struct device *_dev)
 {
+	struct sa1111_dev *dev = to_sa1111_device(_dev);
 	struct usb_hcd *hcd = sa1111_get_drvdata(dev);
 
 	if (test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags)) {
@@ -257,9 +283,9 @@ static struct sa1111_driver ohci_hcd_sa1111_driver = {
 	.drv = {
 		.name	= "sa1111-ohci",
 		.owner	= THIS_MODULE,
+		.shutdown = ohci_hcd_sa1111_shutdown,
 	},
 	.devid		= SA1111_DEVID_USB,
 	.probe		= ohci_hcd_sa1111_probe,
 	.remove		= ohci_hcd_sa1111_remove,
-	.shutdown	= ohci_hcd_sa1111_shutdown,
 };

@@ -1,10 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*======================================================================
 
   Device driver for the PCMCIA control functionality of PXA2xx
   microprocessors.
 
-    The contents of this file may be used under the
-    terms of the GNU Public License version 2 (the "GPL")
 
     (c) Ian Molton (spyro@f2s.com) 2003
     (c) Stefan Eletzhofer (stefan.eletzhofer@inquant.de) 2003,4
@@ -24,12 +23,11 @@
 #include <linux/kernel.h>
 #include <linux/spinlock.h>
 #include <linux/platform_device.h>
+#include <linux/soc/pxa/cpu.h>
+#include <linux/soc/pxa/smemc.h>
 
-#include <mach/hardware.h>
-#include <mach/smemc.h>
 #include <asm/io.h>
 #include <asm/irq.h>
-#include <mach/pxa2xx-regs.h>
 #include <asm/mach-types.h>
 
 #include <pcmcia/ss.h>
@@ -114,7 +112,7 @@ static inline u_int pxa2xx_pcmcia_cmd_time(u_int mem_clk_10khz,
 	return (300000 * (pcmcia_mcxx_asst + 1) / mem_clk_10khz);
 }
 
-static int pxa2xx_pcmcia_set_mcmem( int sock, int speed, int clock )
+static uint32_t pxa2xx_pcmcia_mcmem(int sock, int speed, int clock)
 {
 	uint32_t val;
 
@@ -125,12 +123,10 @@ static int pxa2xx_pcmcia_set_mcmem( int sock, int speed, int clock )
 		| ((pxa2xx_mcxx_hold(speed, clock)
 		& MCXX_HOLD_MASK) << MCXX_HOLD_SHIFT);
 
-	__raw_writel(val, MCMEM(sock));
-
-	return 0;
+	return val;
 }
 
-static int pxa2xx_pcmcia_set_mcio( int sock, int speed, int clock )
+static int pxa2xx_pcmcia_mcio(int sock, int speed, int clock)
 {
 	uint32_t val;
 
@@ -141,12 +137,11 @@ static int pxa2xx_pcmcia_set_mcio( int sock, int speed, int clock )
 		| ((pxa2xx_mcxx_hold(speed, clock)
 		& MCXX_HOLD_MASK) << MCXX_HOLD_SHIFT);
 
-	__raw_writel(val, MCIO(sock));
 
-	return 0;
+	return val;
 }
 
-static int pxa2xx_pcmcia_set_mcatt( int sock, int speed, int clock )
+static int pxa2xx_pcmcia_mcatt(int sock, int speed, int clock)
 {
 	uint32_t val;
 
@@ -157,29 +152,24 @@ static int pxa2xx_pcmcia_set_mcatt( int sock, int speed, int clock )
 		| ((pxa2xx_mcxx_hold(speed, clock)
 		& MCXX_HOLD_MASK) << MCXX_HOLD_SHIFT);
 
-	__raw_writel(val, MCATT(sock));
 
-	return 0;
+	return val;
 }
 
-static int pxa2xx_pcmcia_set_mcxx(struct soc_pcmcia_socket *skt, unsigned int clk)
+static int pxa2xx_pcmcia_set_timing(struct soc_pcmcia_socket *skt)
 {
+	unsigned long clk = clk_get_rate(skt->clk) / 10000;
 	struct soc_pcmcia_timing timing;
 	int sock = skt->nr;
 
 	soc_common_pcmcia_get_timing(skt, &timing);
 
-	pxa2xx_pcmcia_set_mcmem(sock, timing.mem, clk);
-	pxa2xx_pcmcia_set_mcatt(sock, timing.attr, clk);
-	pxa2xx_pcmcia_set_mcio(sock, timing.io, clk);
+	pxa_smemc_set_pcmcia_timing(sock,
+		pxa2xx_pcmcia_mcmem(sock, timing.mem, clk),
+		pxa2xx_pcmcia_mcatt(sock, timing.attr, clk),
+		pxa2xx_pcmcia_mcio(sock, timing.io, clk));
 
 	return 0;
-}
-
-static int pxa2xx_pcmcia_set_timing(struct soc_pcmcia_socket *skt)
-{
-	unsigned long clk = clk_get_rate(skt->clk);
-	return pxa2xx_pcmcia_set_mcxx(skt, clk / 10000);
 }
 
 #ifdef CONFIG_CPU_FREQ
@@ -214,21 +204,9 @@ pxa2xx_pcmcia_frequency_change(struct soc_pcmcia_socket *skt,
 }
 #endif
 
-void pxa2xx_configure_sockets(struct device *dev)
+void pxa2xx_configure_sockets(struct device *dev, struct pcmcia_low_level *ops)
 {
-	struct pcmcia_low_level *ops = dev->platform_data;
-	/*
-	 * We have at least one socket, so set MECR:CIT
-	 * (Card Is There)
-	 */
-	uint32_t mecr = MECR_CIT;
-
-	/* Set MECR:NOS (Number Of Sockets) */
-	if ((ops->first + ops->nr) > 1 ||
-	    machine_is_viper() || machine_is_arcom_zeus())
-		mecr |= MECR_NOS;
-
-	__raw_writel(mecr, MECR);
+	pxa_smemc_set_pcmcia_socket(1);
 }
 EXPORT_SYMBOL(pxa2xx_configure_sockets);
 
@@ -296,20 +274,18 @@ static int pxa2xx_drv_pcmcia_probe(struct platform_device *dev)
 		goto err0;
 	}
 
-	clk = clk_get(&dev->dev, NULL);
+	clk = devm_clk_get(&dev->dev, NULL);
 	if (IS_ERR(clk))
 		return -ENODEV;
 
 	pxa2xx_drv_pcmcia_ops(ops);
 
-	sinfo = kzalloc(SKT_DEV_INFO_SIZE(ops->nr), GFP_KERNEL);
-	if (!sinfo) {
-		clk_put(clk);
+	sinfo = devm_kzalloc(&dev->dev, SKT_DEV_INFO_SIZE(ops->nr),
+			     GFP_KERNEL);
+	if (!sinfo)
 		return -ENOMEM;
-	}
 
 	sinfo->nskt = ops->nr;
-	sinfo->clk = clk;
 
 	/* Initialize processor specific parameters */
 	for (i = 0; i < ops->nr; i++) {
@@ -324,7 +300,7 @@ static int pxa2xx_drv_pcmcia_probe(struct platform_device *dev)
 			goto err1;
 	}
 
-	pxa2xx_configure_sockets(&dev->dev);
+	pxa2xx_configure_sockets(&dev->dev, ops);
 	dev_set_drvdata(&dev->dev, sinfo);
 
 	return 0;
@@ -332,8 +308,7 @@ static int pxa2xx_drv_pcmcia_probe(struct platform_device *dev)
 err1:
 	while (--i >= 0)
 		soc_pcmcia_remove_one(&sinfo->skt[i]);
-	clk_put(clk);
-	kfree(sinfo);
+
 err0:
 	return ret;
 }
@@ -343,19 +318,17 @@ static int pxa2xx_drv_pcmcia_remove(struct platform_device *dev)
 	struct skt_dev_info *sinfo = platform_get_drvdata(dev);
 	int i;
 
-	platform_set_drvdata(dev, NULL);
-
 	for (i = 0; i < sinfo->nskt; i++)
 		soc_pcmcia_remove_one(&sinfo->skt[i]);
 
-	clk_put(sinfo->clk);
-	kfree(sinfo);
 	return 0;
 }
 
 static int pxa2xx_drv_pcmcia_resume(struct device *dev)
 {
-	pxa2xx_configure_sockets(dev);
+	struct pcmcia_low_level *ops = (struct pcmcia_low_level *)dev->platform_data;
+
+	pxa2xx_configure_sockets(dev, ops);
 	return 0;
 }
 
@@ -368,7 +341,6 @@ static struct platform_driver pxa2xx_pcmcia_driver = {
 	.remove		= pxa2xx_drv_pcmcia_remove,
 	.driver		= {
 		.name	= "pxa2xx-pcmcia",
-		.owner	= THIS_MODULE,
 		.pm	= &pxa2xx_drv_pcmcia_pm_ops,
 	},
 };

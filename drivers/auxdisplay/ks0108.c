@@ -1,36 +1,21 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *    Filename: ks0108.c
  *     Version: 0.1.0
  * Description: ks0108 LCD Controller driver
- *     License: GPLv2
  *     Depends: parport
  *
- *      Author: Copyright (C) Miguel Ojeda Sandonis
+ *      Author: Copyright (C) Miguel Ojeda <ojeda@kernel.org>
  *        Date: 2006-10-31
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/delay.h>
-#include <linux/fs.h>
-#include <linux/io.h>
 #include <linux/parport.h>
-#include <linux/uaccess.h>
 #include <linux/ks0108.h>
 
 #define KS0108_NAME "ks0108"
@@ -40,11 +25,11 @@
  */
 
 static unsigned int ks0108_port = CONFIG_KS0108_PORT;
-module_param(ks0108_port, uint, S_IRUGO);
+module_param(ks0108_port, uint, 0444);
 MODULE_PARM_DESC(ks0108_port, "Parallel port where the LCD is connected");
 
 static unsigned int ks0108_delay = CONFIG_KS0108_DELAY;
-module_param(ks0108_delay, uint, S_IRUGO);
+module_param(ks0108_delay, uint, 0444);
 MODULE_PARM_DESC(ks0108_delay, "Delay between each control writing (microseconds)");
 
 /*
@@ -90,17 +75,19 @@ void ks0108_displaystate(unsigned char state)
 
 void ks0108_startline(unsigned char startline)
 {
-	ks0108_writedata(min(startline,(unsigned char)63) | bit(6) | bit(7));
+	ks0108_writedata(min_t(unsigned char, startline, 63) | bit(6) |
+			 bit(7));
 }
 
 void ks0108_address(unsigned char address)
 {
-	ks0108_writedata(min(address,(unsigned char)63) | bit(6));
+	ks0108_writedata(min_t(unsigned char, address, 63) | bit(6));
 }
 
 void ks0108_page(unsigned char page)
 {
-	ks0108_writedata(min(page,(unsigned char)7) | bit(3) | bit(4) | bit(5) | bit(7));
+	ks0108_writedata(min_t(unsigned char, page, 7) | bit(3) | bit(4) |
+			 bit(5) | bit(7));
 }
 
 EXPORT_SYMBOL_GPL(ks0108_writedata);
@@ -121,58 +108,65 @@ unsigned char ks0108_isinited(void)
 }
 EXPORT_SYMBOL_GPL(ks0108_isinited);
 
+static void ks0108_parport_attach(struct parport *port)
+{
+	struct pardev_cb ks0108_cb;
+
+	if (port->base != ks0108_port)
+		return;
+
+	memset(&ks0108_cb, 0, sizeof(ks0108_cb));
+	ks0108_cb.flags = PARPORT_DEV_EXCL;
+	ks0108_pardevice = parport_register_dev_model(port, KS0108_NAME,
+						      &ks0108_cb, 0);
+	if (!ks0108_pardevice) {
+		pr_err("ERROR: parport didn't register new device\n");
+		return;
+	}
+	if (parport_claim(ks0108_pardevice)) {
+		pr_err("could not claim access to parport %i. Aborting.\n",
+		       ks0108_port);
+		goto err_unreg_device;
+	}
+
+	ks0108_parport = port;
+	ks0108_inited = 1;
+	return;
+
+err_unreg_device:
+	parport_unregister_device(ks0108_pardevice);
+	ks0108_pardevice = NULL;
+}
+
+static void ks0108_parport_detach(struct parport *port)
+{
+	if (port->base != ks0108_port)
+		return;
+
+	if (!ks0108_pardevice) {
+		pr_err("%s: already unregistered.\n", KS0108_NAME);
+		return;
+	}
+
+	parport_release(ks0108_pardevice);
+	parport_unregister_device(ks0108_pardevice);
+	ks0108_pardevice = NULL;
+	ks0108_parport = NULL;
+}
+
 /*
  * Module Init & Exit
  */
 
-static int __init ks0108_init(void)
-{
-	int result;
-	int ret = -EINVAL;
-
-	ks0108_parport = parport_find_base(ks0108_port);
-	if (ks0108_parport == NULL) {
-		printk(KERN_ERR KS0108_NAME ": ERROR: "
-			"parport didn't find %i port\n", ks0108_port);
-		goto none;
-	}
-
-	ks0108_pardevice = parport_register_device(ks0108_parport, KS0108_NAME,
-		NULL, NULL, NULL, PARPORT_DEV_EXCL, NULL);
-	if (ks0108_pardevice == NULL) {
-		printk(KERN_ERR KS0108_NAME ": ERROR: "
-			"parport didn't register new device\n");
-		goto none;
-	}
-
-	result = parport_claim(ks0108_pardevice);
-	if (result != 0) {
-		printk(KERN_ERR KS0108_NAME ": ERROR: "
-			"can't claim %i parport, maybe in use\n", ks0108_port);
-		ret = result;
-		goto registered;
-	}
-
-	ks0108_inited = 1;
-	return 0;
-
-registered:
-	parport_unregister_device(ks0108_pardevice);
-
-none:
-	return ret;
-}
-
-static void __exit ks0108_exit(void)
-{
-	parport_release(ks0108_pardevice);
-	parport_unregister_device(ks0108_pardevice);
-}
-
-module_init(ks0108_init);
-module_exit(ks0108_exit);
+static struct parport_driver ks0108_parport_driver = {
+	.name = "ks0108",
+	.match_port = ks0108_parport_attach,
+	.detach = ks0108_parport_detach,
+	.devmodel = true,
+};
+module_parport_driver(ks0108_parport_driver);
 
 MODULE_LICENSE("GPL v2");
-MODULE_AUTHOR("Miguel Ojeda Sandonis <miguel.ojeda.sandonis@gmail.com>");
+MODULE_AUTHOR("Miguel Ojeda <ojeda@kernel.org>");
 MODULE_DESCRIPTION("ks0108 LCD Controller driver");
 

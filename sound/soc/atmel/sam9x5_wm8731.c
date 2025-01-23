@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * sam9x5_wm8731   --	SoC audio for AT91SAM9X5-based boards
  *			that are using WM8731 as codec.
@@ -10,12 +11,6 @@
  *
  * Based on sam9g20_wm8731.c by:
  * Sedji Gaouaou <sedji.gaouaou@atmel.com>
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 #include <linux/of.h>
 #include <linux/export.h>
@@ -45,17 +40,17 @@ struct sam9x5_drvdata {
  */
 static int sam9x5_wm8731_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 	struct device *dev = rtd->dev;
 	int ret;
 
-	dev_dbg(dev, "ASoC: %s called\n", __func__);
+	dev_dbg(dev, "%s called\n", __func__);
 
 	/* set the codec system clock for DAC and ADC */
 	ret = snd_soc_dai_set_sysclk(codec_dai, WM8731_SYSCLK_XTAL,
 				     MCLK_RATE, SND_SOC_CLOCK_IN);
 	if (ret < 0) {
-		dev_err(dev, "ASoC: Failed to set WM8731 SYSCLK: %d\n", ret);
+		dev_err(dev, "Failed to set WM8731 SYSCLK: %d\n", ret);
 		return ret;
 	}
 
@@ -82,6 +77,7 @@ static int sam9x5_wm8731_driver_probe(struct platform_device *pdev)
 	struct snd_soc_card *card;
 	struct snd_soc_dai_link *dai;
 	struct sam9x5_drvdata *priv;
+	struct snd_soc_dai_link_component *comp;
 	int ret;
 
 	if (!np) {
@@ -92,7 +88,8 @@ static int sam9x5_wm8731_driver_probe(struct platform_device *pdev)
 	card = devm_kzalloc(&pdev->dev, sizeof(*card), GFP_KERNEL);
 	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	dai = devm_kzalloc(&pdev->dev, sizeof(*dai), GFP_KERNEL);
-	if (!dai || !card || !priv) {
+	comp = devm_kzalloc(&pdev->dev, 3 * sizeof(*comp), GFP_KERNEL);
+	if (!dai || !card || !priv || !comp) {
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -105,12 +102,20 @@ static int sam9x5_wm8731_driver_probe(struct platform_device *pdev)
 	card->num_links = 1;
 	card->dapm_widgets = sam9x5_dapm_widgets;
 	card->num_dapm_widgets = ARRAY_SIZE(sam9x5_dapm_widgets);
+
+	dai->cpus = &comp[0];
+	dai->num_cpus = 1;
+	dai->codecs = &comp[1];
+	dai->num_codecs = 1;
+	dai->platforms = &comp[2];
+	dai->num_platforms = 1;
+
 	dai->name = "WM8731";
 	dai->stream_name = "WM8731 PCM";
-	dai->codec_dai_name = "wm8731-hifi";
+	dai->codecs->dai_name = "wm8731-hifi";
 	dai->init = sam9x5_wm8731_init;
 	dai->dai_fmt = SND_SOC_DAIFMT_DSP_A | SND_SOC_DAIFMT_NB_NF
-		| SND_SOC_DAIFMT_CBM_CFM;
+		| SND_SOC_DAIFMT_CBP_CFP;
 
 	ret = snd_soc_of_parse_card_name(card, "atmel,model");
 	if (ret) {
@@ -131,56 +136,52 @@ static int sam9x5_wm8731_driver_probe(struct platform_device *pdev)
 		goto out;
 	}
 
-	dai->codec_of_node = codec_np;
+	dai->codecs->of_node = codec_np;
 
 	cpu_np = of_parse_phandle(np, "atmel,ssc-controller", 0);
 	if (!cpu_np) {
 		dev_err(&pdev->dev, "atmel,ssc-controller node missing\n");
 		ret = -EINVAL;
-		goto out;
+		goto out_put_codec_np;
 	}
-	dai->cpu_of_node = cpu_np;
-	dai->platform_of_node = cpu_np;
+	dai->cpus->of_node = cpu_np;
+	dai->platforms->of_node = cpu_np;
 
 	priv->ssc_id = of_alias_get_id(cpu_np, "ssc");
 
 	ret = atmel_ssc_set_audio(priv->ssc_id);
 	if (ret != 0) {
-		dev_err(&pdev->dev,
-			"ASoC: Failed to set SSC %d for audio: %d\n",
+		dev_err(&pdev->dev, "Failed to set SSC %d for audio: %d\n",
 			ret, priv->ssc_id);
-		goto out;
+		goto out_put_cpu_np;
 	}
 
-	of_node_put(codec_np);
-	of_node_put(cpu_np);
-
-	ret = snd_soc_register_card(card);
+	ret = devm_snd_soc_register_card(&pdev->dev, card);
 	if (ret) {
-		dev_err(&pdev->dev,
-			"ASoC: Platform device allocation failed\n");
+		dev_err(&pdev->dev, "Platform device allocation failed\n");
 		goto out_put_audio;
 	}
 
-	dev_dbg(&pdev->dev, "ASoC: %s ok\n", __func__);
+	dev_dbg(&pdev->dev, "%s ok\n", __func__);
 
-	return ret;
+	goto out_put_cpu_np;
 
 out_put_audio:
 	atmel_ssc_put_audio(priv->ssc_id);
+out_put_cpu_np:
+	of_node_put(cpu_np);
+out_put_codec_np:
+	of_node_put(codec_np);
 out:
 	return ret;
 }
 
-static int sam9x5_wm8731_driver_remove(struct platform_device *pdev)
+static void sam9x5_wm8731_driver_remove(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = platform_get_drvdata(pdev);
 	struct sam9x5_drvdata *priv = card->drvdata;
 
-	snd_soc_unregister_card(card);
 	atmel_ssc_put_audio(priv->ssc_id);
-
-	return 0;
 }
 
 static const struct of_device_id sam9x5_wm8731_of_match[] = {
@@ -192,11 +193,10 @@ MODULE_DEVICE_TABLE(of, sam9x5_wm8731_of_match);
 static struct platform_driver sam9x5_wm8731_driver = {
 	.driver = {
 		.name = DRV_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(sam9x5_wm8731_of_match),
 	},
 	.probe = sam9x5_wm8731_driver_probe,
-	.remove = sam9x5_wm8731_driver_remove,
+	.remove_new = sam9x5_wm8731_driver_remove,
 };
 module_platform_driver(sam9x5_wm8731_driver);
 

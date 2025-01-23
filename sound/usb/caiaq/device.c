@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * caiaq.c: ALSA driver for caiaq/NativeInstruments devices
  *
  *   Copyright (c) 2007 Daniel Mack <daniel@caiaq.de>
  *                      Karsten Wiese <fzu@wemgehoertderstaat.de>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
 */
 
 #include <linux/moduleparam.h>
@@ -39,20 +26,6 @@
 MODULE_AUTHOR("Daniel Mack <daniel@caiaq.de>");
 MODULE_DESCRIPTION("caiaq USB audio");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("{{Native Instruments,RigKontrol2},"
-			 "{Native Instruments,RigKontrol3},"
-			 "{Native Instruments,Kore Controller},"
-			 "{Native Instruments,Kore Controller 2},"
-			 "{Native Instruments,Audio Kontrol 1},"
-			 "{Native Instruments,Audio 2 DJ},"
-			 "{Native Instruments,Audio 4 DJ},"
-			 "{Native Instruments,Audio 8 DJ},"
-			 "{Native Instruments,Traktor Audio 2},"
-			 "{Native Instruments,Session I/O},"
-			 "{Native Instruments,GuitarRig mobile},"
-			 "{Native Instruments,Traktor Kontrol X1},"
-			 "{Native Instruments,Traktor Kontrol S4},"
-			 "{Native Instruments,Maschine Controller}}");
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX; /* Index 0-max */
 static char* id[SNDRV_CARDS] = SNDRV_DEFAULT_STR; /* Id for this card */
@@ -81,7 +54,7 @@ enum {
 	DEPTH_32	= 3
 };
 
-static struct usb_device_id snd_usb_id_table[] = {
+static const struct usb_device_id snd_usb_id_table[] = {
 	{
 		.match_flags =	USB_DEVICE_ID_MATCH_DEVICE,
 		.idVendor =	USB_VID_NATIVEINSTRUMENTS,
@@ -200,6 +173,7 @@ static void usb_ep1_command_reply_dispatch (struct urb* urb)
 			break;
 		}
 #ifdef CONFIG_SND_USB_CAIAQ_INPUT
+		fallthrough;
 	case EP1_CMD_READ_ERP:
 	case EP1_CMD_READ_ANALOG:
 		snd_usb_caiaq_input_dispatch(cdev, buf, urb->actual_length);
@@ -418,8 +392,9 @@ static int create_card(struct usb_device *usb_dev,
 	if (devnum >= SNDRV_CARDS)
 		return -ENODEV;
 
-	err = snd_card_create(index[devnum], id[devnum], THIS_MODULE,
-			      sizeof(struct snd_usb_caiaqdev), &card);
+	err = snd_card_new(&intf->dev,
+			   index[devnum], id[devnum], THIS_MODULE,
+			   sizeof(struct snd_usb_caiaqdev), &card);
 	if (err < 0)
 		return err;
 
@@ -429,7 +404,6 @@ static int create_card(struct usb_device *usb_dev,
 	cdev->chip.usb_id = USB_ID(le16_to_cpu(usb_dev->descriptor.idVendor),
 				  le16_to_cpu(usb_dev->descriptor.idProduct));
 	spin_lock_init(&cdev->spinlock);
-	snd_card_set_dev(card, &intf->dev);
 
 	*cardp = card;
 	return 0;
@@ -461,6 +435,13 @@ static int init_card(struct snd_usb_caiaqdev *cdev)
 			  cdev->midi_out_buf, EP1_BUFSIZE,
 			  snd_usb_caiaq_midi_output_done, cdev);
 
+	/* sanity checks of EPs before actually submitting */
+	if (usb_urb_ep_type_check(&cdev->ep1_in_urb) ||
+	    usb_urb_ep_type_check(&cdev->midi_out_urb)) {
+		dev_err(dev, "invalid EPs\n");
+		return -EINVAL;
+	}
+
 	init_waitqueue_head(&cdev->ep1_wait_queue);
 	init_waitqueue_head(&cdev->prepare_wait_queue);
 
@@ -469,10 +450,12 @@ static int init_card(struct snd_usb_caiaqdev *cdev)
 
 	err = snd_usb_caiaq_send_command(cdev, EP1_CMD_GET_DEVICE_INFO, NULL, 0);
 	if (err)
-		return err;
+		goto err_kill_urb;
 
-	if (!wait_event_timeout(cdev->ep1_wait_queue, cdev->spec_received, HZ))
-		return -ENODEV;
+	if (!wait_event_timeout(cdev->ep1_wait_queue, cdev->spec_received, HZ)) {
+		err = -ENODEV;
+		goto err_kill_urb;
+	}
 
 	usb_string(usb_dev, usb_dev->descriptor.iManufacturer,
 		   cdev->vendor_name, CAIAQ_USB_STR_LEN);
@@ -480,9 +463,9 @@ static int init_card(struct snd_usb_caiaqdev *cdev)
 	usb_string(usb_dev, usb_dev->descriptor.iProduct,
 		   cdev->product_name, CAIAQ_USB_STR_LEN);
 
-	strlcpy(card->driver, MODNAME, sizeof(card->driver));
-	strlcpy(card->shortname, cdev->product_name, sizeof(card->shortname));
-	strlcpy(card->mixername, cdev->product_name, sizeof(card->mixername));
+	strscpy(card->driver, MODNAME, sizeof(card->driver));
+	strscpy(card->shortname, cdev->product_name, sizeof(card->shortname));
+	strscpy(card->mixername, cdev->product_name, sizeof(card->mixername));
 
 	/* if the id was not passed as module option, fill it with a shortened
 	 * version of the product string which does not contain any
@@ -502,11 +485,15 @@ static int init_card(struct snd_usb_caiaqdev *cdev)
 	}
 
 	usb_make_path(usb_dev, usbpath, sizeof(usbpath));
-	snprintf(card->longname, sizeof(card->longname), "%s %s (%s)",
+	scnprintf(card->longname, sizeof(card->longname), "%s %s (%s)",
 		       cdev->vendor_name, cdev->product_name, usbpath);
 
 	setup_card(cdev);
 	return 0;
+
+ err_kill_urb:
+	usb_kill_urb(&cdev->ep1_in_urb);
+	return err;
 }
 
 static int snd_probe(struct usb_interface *intf,

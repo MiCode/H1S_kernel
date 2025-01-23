@@ -44,11 +44,7 @@
 
 #include <sys/types.h>
 
-#ifdef __linux__
 #include "aicdb.h"
-#else
-#include <db.h>
-#endif
 #include <fcntl.h>
 #include <inttypes.h>
 #include <regex.h>
@@ -56,6 +52,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sysexits.h>
+#include <ctype.h>
 
 #include "aicasm_symbol.h"
 #include "aicasm.h"

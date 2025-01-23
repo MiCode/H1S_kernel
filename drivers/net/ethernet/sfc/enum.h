@@ -1,10 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /****************************************************************************
  * Driver for Solarflare network controllers and boards
  * Copyright 2007-2013 Solarflare Communications Inc.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation, incorporated herein by reference.
  */
 
 #ifndef EFX_ENUM_H
@@ -81,7 +78,6 @@ enum efx_loopback_mode {
 			    (1 << LOOPBACK_XAUI) |		\
 			    (1 << LOOPBACK_GMII) |		\
 			    (1 << LOOPBACK_SGMII) |		\
-			    (1 << LOOPBACK_SGMII) |		\
 			    (1 << LOOPBACK_XGBR) |		\
 			    (1 << LOOPBACK_XFI) |		\
 			    (1 << LOOPBACK_XAUI_FAR) |		\
@@ -143,29 +139,37 @@ enum efx_loopback_mode {
  * @RESET_TYPE_WORLD: Reset as much as possible
  * @RESET_TYPE_RECOVER_OR_DISABLE: Try to recover. Apply RESET_TYPE_DISABLE if
  * unsuccessful.
+ * @RESET_TYPE_DATAPATH: Reset datapath only.
+ * @RESET_TYPE_MC_BIST: MC entering BIST mode.
  * @RESET_TYPE_DISABLE: Reset datapath, MAC and PHY; leave NIC disabled
  * @RESET_TYPE_TX_WATCHDOG: reset due to TX watchdog
  * @RESET_TYPE_INT_ERROR: reset due to internal error
- * @RESET_TYPE_RX_RECOVERY: reset to recover from RX datapath errors
  * @RESET_TYPE_DMA_ERROR: DMA error
  * @RESET_TYPE_TX_SKIP: hardware completed empty tx descriptors
  * @RESET_TYPE_MC_FAILURE: MC reboot/assertion
+ * @RESET_TYPE_MCDI_TIMEOUT: MCDI timeout.
  */
 enum reset_type {
-	RESET_TYPE_INVISIBLE = 0,
-	RESET_TYPE_RECOVER_OR_ALL = 1,
-	RESET_TYPE_ALL = 2,
-	RESET_TYPE_WORLD = 3,
-	RESET_TYPE_RECOVER_OR_DISABLE = 4,
-	RESET_TYPE_DISABLE = 5,
+	RESET_TYPE_INVISIBLE,
+	RESET_TYPE_RECOVER_OR_ALL,
+	RESET_TYPE_ALL,
+	RESET_TYPE_WORLD,
+	RESET_TYPE_RECOVER_OR_DISABLE,
+	RESET_TYPE_DATAPATH,
+	RESET_TYPE_MC_BIST,
+	RESET_TYPE_DISABLE,
 	RESET_TYPE_MAX_METHOD,
 	RESET_TYPE_TX_WATCHDOG,
 	RESET_TYPE_INT_ERROR,
-	RESET_TYPE_RX_RECOVERY,
 	RESET_TYPE_DMA_ERROR,
 	RESET_TYPE_TX_SKIP,
 	RESET_TYPE_MC_FAILURE,
-	RESET_TYPE_MC_BIST,
+	/* RESET_TYPE_MCDI_TIMEOUT is actually a method, not just a reason, but
+	 * it doesn't fit the scope hierarchy (not well-ordered by inclusion).
+	 * We encode this by having its enum value be greater than
+	 * RESET_TYPE_MAX_METHOD.
+	 */
+	RESET_TYPE_MCDI_TIMEOUT,
 	RESET_TYPE_MAX,
 };
 

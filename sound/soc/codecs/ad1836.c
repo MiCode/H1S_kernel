@@ -1,10 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
  /*
  * Audio Codec driver supporting:
  *  AD1835A, AD1836, AD1837A, AD1838A, AD1839A
  *
  * Copyright 2009-2011 Analog Devices Inc.
- *
- * Licensed under the GPL-2 or later.
  */
 
 #include <linux/init.h>
@@ -40,8 +39,8 @@ struct ad1836_priv {
  */
 static const char *ad1836_deemp[] = {"None", "44.1kHz", "32kHz", "48kHz"};
 
-static const struct soc_enum ad1836_deemp_enum =
-	SOC_ENUM_SINGLE(AD1836_DAC_CTRL1, 8, 4, ad1836_deemp);
+static SOC_ENUM_SINGLE_DECL(ad1836_deemp_enum,
+			    AD1836_DAC_CTRL1, 8, ad1836_deemp);
 
 #define AD1836_DAC_VOLUME(x) \
 	SOC_DOUBLE_R("DAC" #x " Playback Volume", AD1836_DAC_L_VOL(x), \
@@ -149,9 +148,9 @@ static int ad1836_set_dai_fmt(struct snd_soc_dai *codec_dai,
 		return -EINVAL;
 	}
 
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	/* ALCLK,ABCLK are both output, AD1836 can only be master */
-	case SND_SOC_DAIFMT_CBM_CFM:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	/* ALCLK,ABCLK are both output, AD1836 can only be provider */
+	case SND_SOC_DAIFMT_CBP_CFP:
 		break;
 	default:
 		return -EINVAL;
@@ -164,7 +163,7 @@ static int ad1836_hw_params(struct snd_pcm_substream *substream,
 		struct snd_pcm_hw_params *params,
 		struct snd_soc_dai *dai)
 {
-	struct ad1836_priv *ad1836 = snd_soc_codec_get_drvdata(dai->codec);
+	struct ad1836_priv *ad1836 = snd_soc_component_get_drvdata(dai->component);
 	int word_len = 0;
 
 	/* bit size */
@@ -228,17 +227,17 @@ static struct snd_soc_dai_driver ad183x_dais[] = {
 };
 
 #ifdef CONFIG_PM
-static int ad1836_suspend(struct snd_soc_codec *codec)
+static int ad1836_suspend(struct snd_soc_component *component)
 {
-	struct ad1836_priv *ad1836 = snd_soc_codec_get_drvdata(codec);
+	struct ad1836_priv *ad1836 = snd_soc_component_get_drvdata(component);
 	/* reset clock control mode */
 	return regmap_update_bits(ad1836->regmap, AD1836_ADC_CTRL2,
 		AD1836_ADC_SERFMT_MASK, 0);
 }
 
-static int ad1836_resume(struct snd_soc_codec *codec)
+static int ad1836_resume(struct snd_soc_component *component)
 {
-	struct ad1836_priv *ad1836 = snd_soc_codec_get_drvdata(codec);
+	struct ad1836_priv *ad1836 = snd_soc_component_get_drvdata(component);
 	/* restore clock control mode */
 	return regmap_update_bits(ad1836->regmap, AD1836_ADC_CTRL2,
 		AD1836_ADC_SERFMT_MASK, AD1836_ADC_AUX);
@@ -248,10 +247,10 @@ static int ad1836_resume(struct snd_soc_codec *codec)
 #define ad1836_resume  NULL
 #endif
 
-static int ad1836_probe(struct snd_soc_codec *codec)
+static int ad1836_probe(struct snd_soc_component *component)
 {
-	struct ad1836_priv *ad1836 = snd_soc_codec_get_drvdata(codec);
-	struct snd_soc_dapm_context *dapm = &codec->dapm;
+	struct ad1836_priv *ad1836 = snd_soc_component_get_drvdata(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
 	int num_dacs, num_adcs;
 	int ret = 0;
 	int i;
@@ -277,7 +276,7 @@ static int ad1836_probe(struct snd_soc_codec *codec)
 	if (ad1836->type == AD1836) {
 		/* left/right diff:PGA/MUX */
 		regmap_write(ad1836->regmap, AD1836_ADC_CTRL3, 0x3A);
-		ret = snd_soc_add_codec_controls(codec, ad1836_controls,
+		ret = snd_soc_add_component_controls(component, ad1836_controls,
 				ARRAY_SIZE(ad1836_controls));
 		if (ret)
 			return ret;
@@ -285,11 +284,11 @@ static int ad1836_probe(struct snd_soc_codec *codec)
 		regmap_write(ad1836->regmap, AD1836_ADC_CTRL3, 0x00);
 	}
 
-	ret = snd_soc_add_codec_controls(codec, ad183x_dac_controls, num_dacs * 2);
+	ret = snd_soc_add_component_controls(component, ad183x_dac_controls, num_dacs * 2);
 	if (ret)
 		return ret;
 
-	ret = snd_soc_add_codec_controls(codec, ad183x_adc_controls, num_adcs);
+	ret = snd_soc_add_component_controls(component, ad183x_adc_controls, num_adcs);
 	if (ret)
 		return ret;
 
@@ -306,33 +305,33 @@ static int ad1836_probe(struct snd_soc_codec *codec)
 		return ret;
 
 	ret = snd_soc_dapm_add_routes(dapm, ad183x_adc_routes, num_adcs);
-	if (ret)
-		return ret;
 
 	return ret;
 }
 
 /* power down chip */
-static int ad1836_remove(struct snd_soc_codec *codec)
+static void ad1836_remove(struct snd_soc_component *component)
 {
-	struct ad1836_priv *ad1836 = snd_soc_codec_get_drvdata(codec);
+	struct ad1836_priv *ad1836 = snd_soc_component_get_drvdata(component);
 	/* reset clock control mode */
-	return regmap_update_bits(ad1836->regmap, AD1836_ADC_CTRL2,
+	regmap_update_bits(ad1836->regmap, AD1836_ADC_CTRL2,
 		AD1836_ADC_SERFMT_MASK, 0);
 }
 
-static struct snd_soc_codec_driver soc_codec_dev_ad1836 = {
-	.probe = ad1836_probe,
-	.remove = ad1836_remove,
-	.suspend = ad1836_suspend,
-	.resume = ad1836_resume,
-
-	.controls = ad183x_controls,
-	.num_controls = ARRAY_SIZE(ad183x_controls),
-	.dapm_widgets = ad183x_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(ad183x_dapm_widgets),
-	.dapm_routes = ad183x_dapm_routes,
-	.num_dapm_routes = ARRAY_SIZE(ad183x_dapm_routes),
+static const struct snd_soc_component_driver soc_component_dev_ad1836 = {
+	.probe			= ad1836_probe,
+	.remove			= ad1836_remove,
+	.suspend		= ad1836_suspend,
+	.resume			= ad1836_resume,
+	.controls		= ad183x_controls,
+	.num_controls		= ARRAY_SIZE(ad183x_controls),
+	.dapm_widgets		= ad183x_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(ad183x_dapm_widgets),
+	.dapm_routes		= ad183x_dapm_routes,
+	.num_dapm_routes	= ARRAY_SIZE(ad183x_dapm_routes),
+	.idle_bias_on		= 1,
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
 };
 
 static const struct reg_default ad1836_reg_defaults[] = {
@@ -359,7 +358,7 @@ static const struct regmap_config ad1836_regmap_config = {
 	.max_register = AD1836_ADC_CTRL3,
 	.reg_defaults = ad1836_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(ad1836_reg_defaults),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 };
 
 static int ad1836_spi_probe(struct spi_device *spi)
@@ -380,15 +379,9 @@ static int ad1836_spi_probe(struct spi_device *spi)
 
 	spi_set_drvdata(spi, ad1836);
 
-	ret = snd_soc_register_codec(&spi->dev,
-			&soc_codec_dev_ad1836, &ad183x_dais[ad1836->type], 1);
+	ret = devm_snd_soc_register_component(&spi->dev,
+			&soc_component_dev_ad1836, &ad183x_dais[ad1836->type], 1);
 	return ret;
-}
-
-static int ad1836_spi_remove(struct spi_device *spi)
-{
-	snd_soc_unregister_codec(&spi->dev);
-	return 0;
 }
 
 static const struct spi_device_id ad1836_ids[] = {
@@ -404,10 +397,8 @@ MODULE_DEVICE_TABLE(spi, ad1836_ids);
 static struct spi_driver ad1836_spi_driver = {
 	.driver = {
 		.name	= "ad1836",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= ad1836_spi_probe,
-	.remove		= ad1836_spi_remove,
 	.id_table	= ad1836_ids,
 };
 

@@ -1,13 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2013 Samsung Electronics Co., Ltd.
- * Author: Andrzej Haja <a.hajda@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Author: Andrzej Hajda <a.hajda@samsung.com>
  *
  * Device Tree binding constants for Exynos5250 clock controller.
-*/
+ */
 
 #ifndef _DT_BINDINGS_CLOCK_EXYNOS_5250_H
 #define _DT_BINDINGS_CLOCK_EXYNOS_5250_H
@@ -21,6 +18,8 @@
 #define CLK_FOUT_CPLL		6
 #define CLK_FOUT_EPLL		7
 #define CLK_FOUT_VPLL		8
+#define CLK_ARM_CLK		9
+#define CLK_DIV_ARM2		10
 
 /* gate for special clocks (sclk) */
 #define CLK_SCLK_CAM_BAYER	128
@@ -150,11 +149,32 @@
 #define CLK_G2D			345
 #define CLK_MDMA0		346
 #define CLK_SMMU_MDMA0		347
+#define CLK_SSS			348
+#define CLK_G3D			349
+#define CLK_SMMU_TV		350
+#define CLK_SMMU_FIMD1		351
+#define CLK_SMMU_2D		352
+#define CLK_SMMU_FIMC_ISP	353
+#define CLK_SMMU_FIMC_DRC	354
+#define CLK_SMMU_FIMC_SCC	355
+#define CLK_SMMU_FIMC_SCP	356
+#define CLK_SMMU_FIMC_FD	357
+#define CLK_SMMU_FIMC_MCU	358
+#define CLK_SMMU_FIMC_ODC	359
+#define CLK_SMMU_FIMC_DIS0	360
+#define CLK_SMMU_FIMC_DIS1	361
+#define CLK_SMMU_FIMC_3DNR	362
+#define CLK_SMMU_FIMC_LITE0	363
+#define CLK_SMMU_FIMC_LITE1	364
+#define CLK_CAMIF_TOP		365
 
 /* mux clocks */
 #define CLK_MOUT_HDMI		1024
-
-/* must be greater than maximal clock id */
-#define CLK_NR_CLKS		1025
+#define CLK_MOUT_GPLL		1025
+#define CLK_MOUT_ACLK200_DISP1_SUB	1026
+#define CLK_MOUT_ACLK300_DISP1_SUB	1027
+#define CLK_MOUT_APLL		1028
+#define CLK_MOUT_MPLL		1029
+#define CLK_MOUT_VPLLSRC	1030
 
 #endif /* _DT_BINDINGS_CLOCK_EXYNOS_5250_H */

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2013, The Linux Foundation. All rights reserved.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #ifndef _DT_BINDINGS_RESET_MSM_MMCC_8960_H
@@ -89,5 +81,13 @@
 #define CSI2_RESET					72
 #define CSI_RDI1_RESET					73
 #define CSI_RDI2_RESET					74
+#define GFX3D_AXI_RESET					75
+#define VCAP_AXI_RESET					76
+#define SMMU_VCAP_AHB_RESET				77
+#define VCAP_AHB_RESET					78
+#define CSI_RDI_RESET					79
+#define CSI_PIX_RESET					80
+#define VCAP_NPL_RESET					81
+#define VCAP_RESET					82
 
 #endif

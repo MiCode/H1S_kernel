@@ -1,21 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2005 Simtec Electronics
  *	Ben Dooks <ben@simtec.co.uk>
  *
  * Simtec Generic I2C Controller
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 */
 
 #include <linux/kernel.h>
@@ -77,10 +65,8 @@ static int simtec_i2c_probe(struct platform_device *dev)
 	int ret;
 
 	pd = kzalloc(sizeof(struct simtec_i2c_data), GFP_KERNEL);
-	if (pd == NULL) {
-		dev_err(&dev->dev, "cannot allocate private data\n");
+	if (pd == NULL)
 		return -ENOMEM;
-	}
 
 	platform_set_drvdata(dev, pd);
 
@@ -113,7 +99,7 @@ static int simtec_i2c_probe(struct platform_device *dev)
 	pd->adap.algo_data = &pd->bit;
 	pd->adap.dev.parent = &dev->dev;
 
-	strlcpy(pd->adap.name, "Simtec I2C", sizeof(pd->adap.name));
+	strscpy(pd->adap.name, "Simtec I2C", sizeof(pd->adap.name));
 
 	pd->bit.data = pd;
 	pd->bit.setsda = simtec_i2c_setsda;
@@ -133,26 +119,22 @@ static int simtec_i2c_probe(struct platform_device *dev)
 	iounmap(pd->reg);
 
  err_res:
-	release_resource(pd->ioarea);
-	kfree(pd->ioarea);
+	release_mem_region(pd->ioarea->start, size);
 
  err:
 	kfree(pd);
 	return ret;
 }
 
-static int simtec_i2c_remove(struct platform_device *dev)
+static void simtec_i2c_remove(struct platform_device *dev)
 {
 	struct simtec_i2c_data *pd = platform_get_drvdata(dev);
 
 	i2c_del_adapter(&pd->adap);
 
 	iounmap(pd->reg);
-	release_resource(pd->ioarea);
-	kfree(pd->ioarea);
+	release_mem_region(pd->ioarea->start, resource_size(pd->ioarea));
 	kfree(pd);
-
-	return 0;
 }
 
 /* device driver */
@@ -160,10 +142,9 @@ static int simtec_i2c_remove(struct platform_device *dev)
 static struct platform_driver simtec_i2c_driver = {
 	.driver		= {
 		.name		= "simtec-i2c",
-		.owner		= THIS_MODULE,
 	},
 	.probe		= simtec_i2c_probe,
-	.remove		= simtec_i2c_remove,
+	.remove_new	= simtec_i2c_remove,
 };
 
 module_platform_driver(simtec_i2c_driver);

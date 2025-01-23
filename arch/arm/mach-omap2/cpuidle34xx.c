@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/arch/arm/mach-omap2/cpuidle34xx.c
  *
@@ -16,10 +17,6 @@
  * Richard Woodruff <r-woodruff2@ti.com>
  *
  * Based on pm.c for omap2
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/sched.h>
@@ -34,6 +31,7 @@
 #include "pm.h"
 #include "control.h"
 #include "common.h"
+#include "soc.h"
 
 /* Mach specific information to be recorded in the C-state driver_data */
 struct omap3_idle_statedata {
@@ -111,6 +109,7 @@ static int omap3_enter_idle(struct cpuidle_device *dev,
 			    int index)
 {
 	struct omap3_idle_statedata *cx = &omap3_idle_data[index];
+	int error;
 
 	if (omap_irq_pending() || need_resched())
 		goto return_sleep_time;
@@ -127,11 +126,14 @@ static int omap3_enter_idle(struct cpuidle_device *dev,
 	 * Call idle CPU PM enter notifier chain so that
 	 * VFP context is saved.
 	 */
-	if (cx->mpu_state == PWRDM_POWER_OFF)
-		cpu_pm_enter();
+	if (cx->mpu_state == PWRDM_POWER_OFF) {
+		error = cpu_pm_enter();
+		if (error)
+			goto out_clkdm_set;
+	}
 
 	/* Execute ARM wfi */
-	omap_sram_idle();
+	omap_sram_idle(true);
 
 	/*
 	 * Call idle CPU PM enter notifier chain to restore
@@ -141,6 +143,7 @@ static int omap3_enter_idle(struct cpuidle_device *dev,
 	    pwrdm_read_prev_pwrst(mpu_pd) == PWRDM_POWER_OFF)
 		cpu_pm_exit();
 
+out_clkdm_set:
 	/* Re-allow idle for C1 */
 	if (cx->flags & OMAP_CPUIDLE_CX_NO_CLKDM_IDLE)
 		clkdm_allow_idle(mpu_pd->pwrdm_clkdms[0]);
@@ -262,58 +265,128 @@ static struct cpuidle_driver omap3_idle_driver = {
 	.owner            = THIS_MODULE,
 	.states = {
 		{
+			.flags		  = CPUIDLE_FLAG_RCU_IDLE,
 			.enter		  = omap3_enter_idle_bm,
 			.exit_latency	  = 2 + 2,
 			.target_residency = 5,
-			.flags		  = CPUIDLE_FLAG_TIME_VALID,
 			.name		  = "C1",
 			.desc		  = "MPU ON + CORE ON",
 		},
 		{
+			.flags		  = CPUIDLE_FLAG_RCU_IDLE,
 			.enter		  = omap3_enter_idle_bm,
 			.exit_latency	  = 10 + 10,
 			.target_residency = 30,
-			.flags		  = CPUIDLE_FLAG_TIME_VALID,
 			.name		  = "C2",
 			.desc		  = "MPU ON + CORE ON",
 		},
 		{
+			.flags		  = CPUIDLE_FLAG_RCU_IDLE,
 			.enter		  = omap3_enter_idle_bm,
 			.exit_latency	  = 50 + 50,
 			.target_residency = 300,
-			.flags		  = CPUIDLE_FLAG_TIME_VALID,
 			.name		  = "C3",
 			.desc		  = "MPU RET + CORE ON",
 		},
 		{
+			.flags		  = CPUIDLE_FLAG_RCU_IDLE,
 			.enter		  = omap3_enter_idle_bm,
 			.exit_latency	  = 1500 + 1800,
 			.target_residency = 4000,
-			.flags		  = CPUIDLE_FLAG_TIME_VALID,
 			.name		  = "C4",
 			.desc		  = "MPU OFF + CORE ON",
 		},
 		{
+			.flags		  = CPUIDLE_FLAG_RCU_IDLE,
 			.enter		  = omap3_enter_idle_bm,
 			.exit_latency	  = 2500 + 7500,
 			.target_residency = 12000,
-			.flags		  = CPUIDLE_FLAG_TIME_VALID,
 			.name		  = "C5",
 			.desc		  = "MPU RET + CORE RET",
 		},
 		{
+			.flags		  = CPUIDLE_FLAG_RCU_IDLE,
 			.enter		  = omap3_enter_idle_bm,
 			.exit_latency	  = 3000 + 8500,
 			.target_residency = 15000,
-			.flags		  = CPUIDLE_FLAG_TIME_VALID,
 			.name		  = "C6",
 			.desc		  = "MPU OFF + CORE RET",
 		},
 		{
+			.flags		  = CPUIDLE_FLAG_RCU_IDLE,
 			.enter		  = omap3_enter_idle_bm,
 			.exit_latency	  = 10000 + 30000,
 			.target_residency = 30000,
-			.flags		  = CPUIDLE_FLAG_TIME_VALID,
+			.name		  = "C7",
+			.desc		  = "MPU OFF + CORE OFF",
+		},
+	},
+	.state_count = ARRAY_SIZE(omap3_idle_data),
+	.safe_state_index = 0,
+};
+
+/*
+ * Numbers based on measurements made in October 2009 for PM optimized kernel
+ * with CPU freq enabled on device Nokia N900. Assumes OPP2 (main idle OPP,
+ * and worst case latencies).
+ */
+static struct cpuidle_driver omap3430_idle_driver = {
+	.name             = "omap3430_idle",
+	.owner            = THIS_MODULE,
+	.states = {
+		{
+			.flags		  = CPUIDLE_FLAG_RCU_IDLE,
+			.enter		  = omap3_enter_idle_bm,
+			.exit_latency	  = 110 + 162,
+			.target_residency = 5,
+			.name		  = "C1",
+			.desc		  = "MPU ON + CORE ON",
+		},
+		{
+			.flags		  = CPUIDLE_FLAG_RCU_IDLE,
+			.enter		  = omap3_enter_idle_bm,
+			.exit_latency	  = 106 + 180,
+			.target_residency = 309,
+			.name		  = "C2",
+			.desc		  = "MPU ON + CORE ON",
+		},
+		{
+			.flags		  = CPUIDLE_FLAG_RCU_IDLE,
+			.enter		  = omap3_enter_idle_bm,
+			.exit_latency	  = 107 + 410,
+			.target_residency = 46057,
+			.name		  = "C3",
+			.desc		  = "MPU RET + CORE ON",
+		},
+		{
+			.flags		  = CPUIDLE_FLAG_RCU_IDLE,
+			.enter		  = omap3_enter_idle_bm,
+			.exit_latency	  = 121 + 3374,
+			.target_residency = 46057,
+			.name		  = "C4",
+			.desc		  = "MPU OFF + CORE ON",
+		},
+		{
+			.flags		  = CPUIDLE_FLAG_RCU_IDLE,
+			.enter		  = omap3_enter_idle_bm,
+			.exit_latency	  = 855 + 1146,
+			.target_residency = 46057,
+			.name		  = "C5",
+			.desc		  = "MPU RET + CORE RET",
+		},
+		{
+			.flags		  = CPUIDLE_FLAG_RCU_IDLE,
+			.enter		  = omap3_enter_idle_bm,
+			.exit_latency	  = 7580 + 4134,
+			.target_residency = 484329,
+			.name		  = "C6",
+			.desc		  = "MPU OFF + CORE RET",
+		},
+		{
+			.flags		  = CPUIDLE_FLAG_RCU_IDLE,
+			.enter		  = omap3_enter_idle_bm,
+			.exit_latency	  = 7505 + 15274,
+			.target_residency = 484329,
 			.name		  = "C7",
 			.desc		  = "MPU OFF + CORE OFF",
 		},
@@ -340,5 +413,8 @@ int __init omap3_idle_init(void)
 	if (!mpu_pd || !core_pd || !per_pd || !cam_pd)
 		return -ENODEV;
 
-	return cpuidle_register(&omap3_idle_driver, NULL);
+	if (cpu_is_omap3430())
+		return cpuidle_register(&omap3430_idle_driver, NULL);
+	else
+		return cpuidle_register(&omap3_idle_driver, NULL);
 }

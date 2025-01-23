@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *    pata_oldpiix.c - Intel PATA/SATA controllers
  *
@@ -16,7 +17,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -204,7 +204,7 @@ static unsigned int oldpiix_qc_issue(struct ata_queued_cmd *qc)
 }
 
 
-static struct scsi_host_template oldpiix_sht = {
+static const struct scsi_host_template oldpiix_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -259,7 +259,7 @@ static struct pci_driver oldpiix_pci_driver = {
 	.id_table		= oldpiix_pci_tbl,
 	.probe			= oldpiix_init_one,
 	.remove			= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= ata_pci_device_suspend,
 	.resume			= ata_pci_device_resume,
 #endif

@@ -1,26 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Marvell 88SE64xx hardware specific
  *
  * Copyright 2007 Red Hat, Inc.
  * Copyright 2008 Marvell. <kewei@marvell.com>
  * Copyright 2009-2011 Marvell. <yuxiangl@marvell.com>
- *
- * This file is licensed under GPLv2.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; version 2 of the
- * License.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
 */
 
 #include "mv_sas.h"
@@ -136,7 +120,8 @@ static void mvs_64xx_phy_reset(struct mvs_info *mvi, u32 phy_id, int hard)
 	}
 }
 
-void mvs_64xx_clear_srs_irq(struct mvs_info *mvi, u8 reg_set, u8 clear_all)
+static void
+mvs_64xx_clear_srs_irq(struct mvs_info *mvi, u8 reg_set, u8 clear_all)
 {
 	void __iomem *regs = mvi->regs;
 	u32 tmp;
@@ -563,7 +548,7 @@ static u8 mvs_64xx_assign_reg_set(struct mvs_info *mvi, u8 *tfs)
 	return MVS_ID_NOT_MAPPED;
 }
 
-void mvs_64xx_make_prd(struct scatterlist *scatter, int nr, void *prd)
+static void mvs_64xx_make_prd(struct scatterlist *scatter, int nr, void *prd)
 {
 	int i;
 	struct scatterlist *sg;
@@ -633,7 +618,7 @@ static void mvs_64xx_phy_work_around(struct mvs_info *mvi, int i)
 	mvs_write_port_vsr_data(mvi, i, tmp);
 }
 
-void mvs_64xx_phy_set_link_rate(struct mvs_info *mvi, u32 phy_id,
+static void mvs_64xx_phy_set_link_rate(struct mvs_info *mvi, u32 phy_id,
 			struct sas_phy_linkrates *rates)
 {
 	u32 lrmin = 0, lrmax = 0;
@@ -668,20 +653,21 @@ static void mvs_64xx_clear_active_cmds(struct mvs_info *mvi)
 }
 
 
-u32 mvs_64xx_spi_read_data(struct mvs_info *mvi)
+static u32 mvs_64xx_spi_read_data(struct mvs_info *mvi)
 {
 	void __iomem *regs = mvi->regs_ex;
 	return ior32(SPI_DATA_REG_64XX);
 }
 
-void mvs_64xx_spi_write_data(struct mvs_info *mvi, u32 data)
+static void mvs_64xx_spi_write_data(struct mvs_info *mvi, u32 data)
 {
 	void __iomem *regs = mvi->regs_ex;
-	 iow32(SPI_DATA_REG_64XX, data);
+
+	iow32(SPI_DATA_REG_64XX, data);
 }
 
 
-int mvs_64xx_spi_buildcmd(struct mvs_info *mvi,
+static int mvs_64xx_spi_buildcmd(struct mvs_info *mvi,
 			u32      *dwCmd,
 			u8       cmd,
 			u8       read,
@@ -705,7 +691,7 @@ int mvs_64xx_spi_buildcmd(struct mvs_info *mvi,
 }
 
 
-int mvs_64xx_spi_issuecmd(struct mvs_info *mvi, u32 cmd)
+static int mvs_64xx_spi_issuecmd(struct mvs_info *mvi, u32 cmd)
 {
 	void __iomem *regs = mvi->regs_ex;
 	int     retry;
@@ -720,7 +706,7 @@ int mvs_64xx_spi_issuecmd(struct mvs_info *mvi, u32 cmd)
 	return 0;
 }
 
-int mvs_64xx_spi_waitdataready(struct mvs_info *mvi, u32 timeout)
+static int mvs_64xx_spi_waitdataready(struct mvs_info *mvi, u32 timeout)
 {
 	void __iomem *regs = mvi->regs_ex;
 	u32 i, dwTmp;
@@ -735,7 +721,7 @@ int mvs_64xx_spi_waitdataready(struct mvs_info *mvi, u32 timeout)
 	return -1;
 }
 
-void mvs_64xx_fix_dma(struct mvs_info *mvi, u32 phy_mask,
+static void mvs_64xx_fix_dma(struct mvs_info *mvi, u32 phy_mask,
 				int buf_len, int from, void *prd)
 {
 	int i;

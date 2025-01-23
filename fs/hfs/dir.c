@@ -31,21 +31,15 @@ static struct dentry *hfs_lookup(struct inode *dir, struct dentry *dentry,
 	hfs_cat_build_key(dir->i_sb, fd.search_key, dir->i_ino, &dentry->d_name);
 	res = hfs_brec_read(&fd, &rec, sizeof(rec));
 	if (res) {
-		hfs_find_exit(&fd);
-		if (res == -ENOENT) {
-			/* No such entry */
-			inode = NULL;
-			goto done;
-		}
-		return ERR_PTR(res);
+		if (res != -ENOENT)
+			inode = ERR_PTR(res);
+	} else {
+		inode = hfs_iget(dir->i_sb, &fd.search_key->cat, &rec);
+		if (!inode)
+			inode = ERR_PTR(-EACCES);
 	}
-	inode = hfs_iget(dir->i_sb, &fd.search_key->cat, &rec);
 	hfs_find_exit(&fd);
-	if (!inode)
-		return ERR_PTR(-EACCES);
-done:
-	d_add(dentry, inode);
-	return NULL;
+	return d_splice_alias(inode, dentry);
 }
 
 /*
@@ -161,9 +155,15 @@ static int hfs_readdir(struct file *file, struct dir_context *ctx)
 		}
 		file->private_data = rd;
 		rd->file = file;
+		spin_lock(&HFS_I(inode)->open_dir_lock);
 		list_add(&rd->list, &HFS_I(inode)->open_dir_list);
+		spin_unlock(&HFS_I(inode)->open_dir_lock);
 	}
-	memcpy(&rd->key, &fd.key, sizeof(struct hfs_cat_key));
+	/*
+	 * Can be done after the list insertion; exclusion with
+	 * hfs_delete_cat() is provided by directory lock.
+	 */
+	memcpy(&rd->key, &fd.key->cat, sizeof(struct hfs_cat_key));
 out:
 	hfs_find_exit(&fd);
 	return err;
@@ -173,9 +173,9 @@ static int hfs_dir_release(struct inode *inode, struct file *file)
 {
 	struct hfs_readdir_data *rd = file->private_data;
 	if (rd) {
-		mutex_lock(&inode->i_mutex);
+		spin_lock(&HFS_I(inode)->open_dir_lock);
 		list_del(&rd->list);
-		mutex_unlock(&inode->i_mutex);
+		spin_unlock(&HFS_I(inode)->open_dir_lock);
 		kfree(rd);
 	}
 	return 0;
@@ -189,15 +189,15 @@ static int hfs_dir_release(struct inode *inode, struct file *file)
  * a directory and return a corresponding inode, given the inode for
  * the directory and the name (and its length) of the new file.
  */
-static int hfs_create(struct inode *dir, struct dentry *dentry, umode_t mode,
-		      bool excl)
+static int hfs_create(struct mnt_idmap *idmap, struct inode *dir,
+		      struct dentry *dentry, umode_t mode, bool excl)
 {
 	struct inode *inode;
 	int res;
 
 	inode = hfs_new_inode(dir, &dentry->d_name, mode);
 	if (!inode)
-		return -ENOSPC;
+		return -ENOMEM;
 
 	res = hfs_cat_create(inode->i_ino, dir, &dentry->d_name, inode);
 	if (res) {
@@ -219,14 +219,15 @@ static int hfs_create(struct inode *dir, struct dentry *dentry, umode_t mode,
  * in a directory, given the inode for the parent directory and the
  * name (and its length) of the new directory.
  */
-static int hfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
+static int hfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
+		     struct dentry *dentry, umode_t mode)
 {
 	struct inode *inode;
 	int res;
 
 	inode = hfs_new_inode(dir, &dentry->d_name, S_IFDIR | mode);
 	if (!inode)
-		return -ENOSPC;
+		return -ENOMEM;
 
 	res = hfs_cat_create(inode->i_ino, dir, &dentry->d_name, inode);
 	if (res) {
@@ -253,7 +254,7 @@ static int hfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
  */
 static int hfs_remove(struct inode *dir, struct dentry *dentry)
 {
-	struct inode *inode = dentry->d_inode;
+	struct inode *inode = d_inode(dentry);
 	int res;
 
 	if (S_ISDIR(inode->i_mode) && inode->i_size != 2)
@@ -262,7 +263,7 @@ static int hfs_remove(struct inode *dir, struct dentry *dentry)
 	if (res)
 		return res;
 	clear_nlink(inode);
-	inode->i_ctime = CURRENT_TIME_SEC;
+	inode_set_ctime_current(inode);
 	hfs_delete_inode(inode);
 	mark_inode_dirty(inode);
 	return 0;
@@ -279,31 +280,35 @@ static int hfs_remove(struct inode *dir, struct dentry *dentry)
  * new file/directory.
  * XXX: how do you handle must_be dir?
  */
-static int hfs_rename(struct inode *old_dir, struct dentry *old_dentry,
-		      struct inode *new_dir, struct dentry *new_dentry)
+static int hfs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
+		      struct dentry *old_dentry, struct inode *new_dir,
+		      struct dentry *new_dentry, unsigned int flags)
 {
 	int res;
 
+	if (flags & ~RENAME_NOREPLACE)
+		return -EINVAL;
+
 	/* Unlink destination if it already exists */
-	if (new_dentry->d_inode) {
+	if (d_really_is_positive(new_dentry)) {
 		res = hfs_remove(new_dir, new_dentry);
 		if (res)
 			return res;
 	}
 
-	res = hfs_cat_move(old_dentry->d_inode->i_ino,
+	res = hfs_cat_move(d_inode(old_dentry)->i_ino,
 			   old_dir, &old_dentry->d_name,
 			   new_dir, &new_dentry->d_name);
 	if (!res)
 		hfs_cat_build_key(old_dir->i_sb,
-				  (btree_key *)&HFS_I(old_dentry->d_inode)->cat_key,
+				  (btree_key *)&HFS_I(d_inode(old_dentry))->cat_key,
 				  new_dir->i_ino, &new_dentry->d_name);
 	return res;
 }
 
 const struct file_operations hfs_dir_operations = {
 	.read		= generic_read_dir,
-	.iterate	= hfs_readdir,
+	.iterate_shared	= hfs_readdir,
 	.llseek		= generic_file_llseek,
 	.release	= hfs_dir_release,
 };

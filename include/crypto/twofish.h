@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _CRYPTO_TWOFISH_H
 #define _CRYPTO_TWOFISH_H
 
@@ -18,7 +19,7 @@ struct twofish_ctx {
 };
 
 int __twofish_setkey(struct twofish_ctx *ctx, const u8 *key,
-		     unsigned int key_len, u32 *flags);
+		     unsigned int key_len);
 int twofish_setkey(struct crypto_tfm *tfm, const u8 *key, unsigned int key_len);
 
 #endif

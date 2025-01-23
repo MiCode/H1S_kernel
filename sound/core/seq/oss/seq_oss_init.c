@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * OSS compatible sequencer driver
  *
  * open/close and reset interface
  *
  * Copyright (C) 1998-1999 Takashi Iwai <tiwai@suse.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include "seq_oss_device.h"
@@ -79,7 +66,7 @@ snd_seq_oss_create_client(void)
 	struct snd_seq_port_info *port;
 	struct snd_seq_port_callback port_callback;
 
-	port = kmalloc(sizeof(*port), GFP_KERNEL);
+	port = kzalloc(sizeof(*port), GFP_KERNEL);
 	if (!port) {
 		rc = -ENOMEM;
 		goto __error;
@@ -92,10 +79,8 @@ snd_seq_oss_create_client(void)
 		goto __error;
 
 	system_client = rc;
-	debug_printk(("new client = %d\n", rc));
 
-	/* create annoucement receiver port */
-	memset(port, 0, sizeof(*port));
+	/* create announcement receiver port */
 	strcpy(port->name, "Receiver");
 	port->addr.client = system_client;
 	port->capability = SNDRV_SEQ_PORT_CAP_WRITE; /* receive only */
@@ -108,10 +93,10 @@ snd_seq_oss_create_client(void)
 	port_callback.event_input = receive_announce;
 	port->kernel = &port_callback;
 	
-	call_ctl(SNDRV_SEQ_IOCTL_CREATE_PORT, port);
-	if ((system_port = port->addr.port) >= 0) {
+	if (call_ctl(SNDRV_SEQ_IOCTL_CREATE_PORT, port) >= 0) {
 		struct snd_seq_port_subscribe subs;
 
+		system_port = port->addr.port;
 		memset(&subs, 0, sizeof(subs));
 		subs.sender.client = SNDRV_SEQ_CLIENT_SYSTEM;
 		subs.sender.port = SNDRV_SEQ_PORT_SYSTEM_ANNOUNCE;
@@ -189,11 +174,8 @@ snd_seq_oss_open(struct file *file, int level)
 	struct seq_oss_devinfo *dp;
 
 	dp = kzalloc(sizeof(*dp), GFP_KERNEL);
-	if (!dp) {
-		snd_printk(KERN_ERR "can't malloc device info\n");
+	if (!dp)
 		return -ENOMEM;
-	}
-	debug_printk(("oss_open: dp = %p\n", dp));
 
 	dp->cseq = system_client;
 	dp->port = -1;
@@ -206,7 +188,7 @@ snd_seq_oss_open(struct file *file, int level)
 
 	dp->index = i;
 	if (i >= SNDRV_SEQ_OSS_MAX_CLIENTS) {
-		snd_printk(KERN_ERR "too many applications\n");
+		pr_debug("ALSA: seq_oss: too many applications\n");
 		rc = -ENOMEM;
 		goto _error;
 	}
@@ -216,21 +198,19 @@ snd_seq_oss_open(struct file *file, int level)
 	snd_seq_oss_midi_setup(dp);
 
 	if (dp->synth_opened == 0 && dp->max_mididev == 0) {
-		/* snd_printk(KERN_ERR "no device found\n"); */
+		/* pr_err("ALSA: seq_oss: no device found\n"); */
 		rc = -ENODEV;
 		goto _error;
 	}
 
 	/* create port */
-	debug_printk(("create new port\n"));
 	rc = create_port(dp);
 	if (rc < 0) {
-		snd_printk(KERN_ERR "can't create port\n");
+		pr_err("ALSA: seq_oss: can't create port\n");
 		goto _error;
 	}
 
 	/* allocate queue */
-	debug_printk(("allocate queue\n"));
 	rc = alloc_seq_queue(dp);
 	if (rc < 0)
 		goto _error;
@@ -247,7 +227,6 @@ snd_seq_oss_open(struct file *file, int level)
 	dp->file_mode = translate_mode(file);
 
 	/* initialize read queue */
-	debug_printk(("initialize read queue\n"));
 	if (is_read_mode(dp->file_mode)) {
 		dp->readq = snd_seq_oss_readq_new(dp, maxqlen);
 		if (!dp->readq) {
@@ -257,7 +236,6 @@ snd_seq_oss_open(struct file *file, int level)
 	}
 
 	/* initialize write queue */
-	debug_printk(("initialize write queue\n"));
 	if (is_write_mode(dp->file_mode)) {
 		dp->writeq = snd_seq_oss_writeq_new(dp, maxqlen);
 		if (!dp->writeq) {
@@ -267,14 +245,12 @@ snd_seq_oss_open(struct file *file, int level)
 	}
 
 	/* initialize timer */
-	debug_printk(("initialize timer\n"));
 	dp->timer = snd_seq_oss_timer_new(dp);
 	if (!dp->timer) {
-		snd_printk(KERN_ERR "can't alloc timer\n");
+		pr_err("ALSA: seq_oss: can't alloc timer\n");
 		rc = -ENOMEM;
 		goto _error;
 	}
-	debug_printk(("timer initialized\n"));
 
 	/* set private data pointer */
 	file->private_data = dp;
@@ -288,7 +264,6 @@ snd_seq_oss_open(struct file *file, int level)
 	client_table[dp->index] = dp;
 	num_clients++;
 
-	debug_printk(("open done\n"));
 	return 0;
 
  _error:
@@ -347,7 +322,6 @@ create_port(struct seq_oss_devinfo *dp)
 		return rc;
 
 	dp->port = port.addr.port;
-	debug_printk(("new port = %d\n", port.addr.port));
 
 	return 0;
 }
@@ -363,7 +337,6 @@ delete_port(struct seq_oss_devinfo *dp)
 		return 0;
 	}
 
-	debug_printk(("delete_port %i\n", dp->port));
 	return snd_seq_event_port_detach(dp->cseq, dp->port);
 }
 
@@ -380,7 +353,8 @@ alloc_seq_queue(struct seq_oss_devinfo *dp)
 	qinfo.owner = system_client;
 	qinfo.locked = 1;
 	strcpy(qinfo.name, "OSS Sequencer Emulation");
-	if ((rc = call_ctl(SNDRV_SEQ_IOCTL_CREATE_QUEUE, &qinfo)) < 0)
+	rc = call_ctl(SNDRV_SEQ_IOCTL_CREATE_QUEUE, &qinfo);
+	if (rc < 0)
 		return rc;
 	dp->queue = qinfo.queue;
 	return 0;
@@ -401,7 +375,7 @@ delete_seq_queue(int queue)
 	qinfo.queue = queue;
 	rc = call_ctl(SNDRV_SEQ_IOCTL_DELETE_QUEUE, &qinfo);
 	if (rc < 0)
-		printk(KERN_ERR "seq-oss: unable to delete queue %d (%d)\n", queue, rc);
+		pr_err("ALSA: seq_oss: unable to delete queue %d (%d)\n", queue, rc);
 	return rc;
 }
 
@@ -414,14 +388,11 @@ free_devinfo(void *private)
 {
 	struct seq_oss_devinfo *dp = (struct seq_oss_devinfo *)private;
 
-	if (dp->timer)
-		snd_seq_oss_timer_delete(dp->timer);
+	snd_seq_oss_timer_delete(dp->timer);
 		
-	if (dp->writeq)
-		snd_seq_oss_writeq_delete(dp->writeq);
+	snd_seq_oss_writeq_delete(dp->writeq);
 
-	if (dp->readq)
-		snd_seq_oss_readq_delete(dp->readq);
+	snd_seq_oss_readq_delete(dp->readq);
 	
 	kfree(dp);
 }
@@ -438,38 +409,16 @@ snd_seq_oss_release(struct seq_oss_devinfo *dp)
 	client_table[dp->index] = NULL;
 	num_clients--;
 
-	debug_printk(("resetting..\n"));
 	snd_seq_oss_reset(dp);
 
-	debug_printk(("cleaning up..\n"));
 	snd_seq_oss_synth_cleanup(dp);
 	snd_seq_oss_midi_cleanup(dp);
 
 	/* clear slot */
-	debug_printk(("releasing resource..\n"));
 	queue = dp->queue;
 	if (dp->port >= 0)
 		delete_port(dp);
 	delete_seq_queue(queue);
-
-	debug_printk(("release done\n"));
-}
-
-
-/*
- * Wait until the queue is empty (if we don't have nonblock)
- */
-void
-snd_seq_oss_drain_write(struct seq_oss_devinfo *dp)
-{
-	if (! dp->timer->running)
-		return;
-	if (is_write_mode(dp->file_mode) && !is_nonblock_mode(dp->file_mode) &&
-	    dp->writeq) {
-		debug_printk(("syncing..\n"));
-		while (snd_seq_oss_writeq_sync(dp->writeq))
-			;
-	}
 }
 
 
@@ -501,8 +450,7 @@ snd_seq_oss_reset(struct seq_oss_devinfo *dp)
 	snd_seq_oss_timer_stop(dp->timer);
 }
 
-
-#ifdef CONFIG_PROC_FS
+#ifdef CONFIG_SND_PROC_FS
 /*
  * misc. functions for proc interface
  */
@@ -512,10 +460,10 @@ enabled_str(int bool)
 	return bool ? "enabled" : "disabled";
 }
 
-static char *
+static const char *
 filemode_str(int val)
 {
-	static char *str[] = {
+	static const char * const str[] = {
 		"none", "read", "write", "read/write",
 	};
 	return str[val & SNDRV_SEQ_OSS_FILE_ACMODE];
@@ -537,7 +485,8 @@ snd_seq_oss_system_info_read(struct snd_info_buffer *buf)
 	snd_iprintf(buf, "\nNumber of applications: %d\n", num_clients);
 	for (i = 0; i < num_clients; i++) {
 		snd_iprintf(buf, "\nApplication %d: ", i);
-		if ((dp = client_table[i]) == NULL) {
+		dp = client_table[i];
+		if (!dp) {
 			snd_iprintf(buf, "*empty*\n");
 			continue;
 		}
@@ -553,4 +502,4 @@ snd_seq_oss_system_info_read(struct snd_info_buffer *buf)
 			snd_seq_oss_readq_info_read(dp->readq, buf);
 	}
 }
-#endif /* CONFIG_PROC_FS */
+#endif /* CONFIG_SND_PROC_FS */

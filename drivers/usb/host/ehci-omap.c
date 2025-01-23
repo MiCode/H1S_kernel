@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * ehci-omap.c - driver for USBHOST on OMAP3/4 processors
  *
@@ -14,21 +15,6 @@
  *	Contact: Felipe Balbi <felipe.balbi@nokia.com>
  *
  * Based on "ehci-fsl.c" and "ehci-au1xxx.c" ehci glue layers
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <linux/kernel.h>
@@ -38,7 +24,6 @@
 #include <linux/slab.h>
 #include <linux/usb/ulpi.h>
 #include <linux/pm_runtime.h>
-#include <linux/gpio.h>
 #include <linux/clk.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
@@ -76,22 +61,18 @@ static inline void ehci_write(void __iomem *base, u32 reg, u32 val)
 	__raw_writel(val, base + reg);
 }
 
-static inline u32 ehci_read(void __iomem *base, u32 reg)
-{
-	return __raw_readl(base + reg);
-}
-
 /* configure so an HC device and id are always provided */
 /* always called with process context; sleeping is OK */
 
 static struct hc_driver __read_mostly ehci_omap_hc_driver;
 
-static const struct ehci_driver_overrides ehci_omap_overrides __initdata = {
+static const struct ehci_driver_overrides ehci_omap_overrides __initconst = {
 	.extra_priv_size = sizeof(struct omap_hcd),
 };
 
 /**
  * ehci_hcd_omap_probe - initialize TI-based HCDs
+ * @pdev: Pointer to this platform device's information
  *
  * Allocates basic resources for this USB host controller, and
  * then invokes the start() method for the HCD associated with it
@@ -129,13 +110,10 @@ static int ehci_hcd_omap_probe(struct platform_device *pdev)
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		dev_err(dev, "EHCI irq failed\n");
-		return -ENODEV;
-	}
+	if (irq < 0)
+		return irq;
 
-	res =  platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	regs = devm_ioremap_resource(dev, res);
+	regs = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(regs))
 		return PTR_ERR(regs);
 
@@ -171,17 +149,16 @@ static int ehci_hcd_omap_probe(struct platform_device *pdev)
 		struct usb_phy *phy;
 
 		/* get the PHY device */
-		if (dev->of_node)
-			phy = devm_usb_get_phy_by_phandle(dev, "phys", i);
-		else
-			phy = devm_usb_get_phy_dev(dev, i);
+		phy = devm_usb_get_phy_by_phandle(dev, "phys", i);
 		if (IS_ERR(phy)) {
-			/* Don't bail out if PHY is not absolutely necessary */
-			if (pdata->port_mode[i] != OMAP_EHCI_PORT_MODE_PHY)
-				continue;
-
 			ret = PTR_ERR(phy);
-			dev_err(dev, "Can't get PHY device for port %d: %d\n",
+			if (ret == -ENODEV) { /* no PHY */
+				phy = NULL;
+				continue;
+			}
+
+			if (ret != -EPROBE_DEFER)
+				dev_err(dev, "Can't get PHY for port %d: %d\n",
 					i, ret);
 			goto err_phy;
 		}
@@ -237,6 +214,7 @@ static int ehci_hcd_omap_probe(struct platform_device *pdev)
 
 err_pm_runtime:
 	pm_runtime_put_sync(dev);
+	pm_runtime_disable(dev);
 
 err_phy:
 	for (i = 0; i < omap->nports; i++) {
@@ -258,7 +236,7 @@ err_phy:
  * the HCD's stop() method.  It is always called from a thread
  * context, normally "rmmod", "apmd", or something similar.
  */
-static int ehci_hcd_omap_remove(struct platform_device *pdev)
+static void ehci_hcd_omap_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
@@ -275,8 +253,6 @@ static int ehci_hcd_omap_remove(struct platform_device *pdev)
 	usb_put_hcd(hcd);
 	pm_runtime_put_sync(dev);
 	pm_runtime_disable(dev);
-
-	return 0;
 }
 
 static const struct of_device_id omap_ehci_dt_ids[] = {
@@ -288,7 +264,7 @@ MODULE_DEVICE_TABLE(of, omap_ehci_dt_ids);
 
 static struct platform_driver ehci_hcd_omap_driver = {
 	.probe			= ehci_hcd_omap_probe,
-	.remove			= ehci_hcd_omap_remove,
+	.remove_new		= ehci_hcd_omap_remove,
 	.shutdown		= usb_hcd_platform_shutdown,
 	/*.suspend		= ehci_hcd_omap_suspend, */
 	/*.resume		= ehci_hcd_omap_resume, */
@@ -304,8 +280,6 @@ static int __init ehci_omap_init(void)
 {
 	if (usb_disabled())
 		return -ENODEV;
-
-	pr_info("%s: " DRIVER_DESC "\n", hcd_name);
 
 	ehci_init_driver(&ehci_omap_hc_driver, &ehci_omap_overrides);
 	return platform_driver_register(&ehci_hcd_omap_driver);

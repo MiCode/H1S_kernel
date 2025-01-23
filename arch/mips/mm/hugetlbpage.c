@@ -21,57 +21,41 @@
 #include <asm/tlb.h>
 #include <asm/tlbflush.h>
 
-pte_t *huge_pte_alloc(struct mm_struct *mm, unsigned long addr,
-		      unsigned long sz)
+pte_t *huge_pte_alloc(struct mm_struct *mm, struct vm_area_struct *vma,
+		      unsigned long addr, unsigned long sz)
 {
 	pgd_t *pgd;
+	p4d_t *p4d;
 	pud_t *pud;
 	pte_t *pte = NULL;
 
 	pgd = pgd_offset(mm, addr);
-	pud = pud_alloc(mm, pgd, addr);
+	p4d = p4d_alloc(mm, pgd, addr);
+	pud = pud_alloc(mm, p4d, addr);
 	if (pud)
 		pte = (pte_t *)pmd_alloc(mm, pud, addr);
 
 	return pte;
 }
 
-pte_t *huge_pte_offset(struct mm_struct *mm, unsigned long addr)
+pte_t *huge_pte_offset(struct mm_struct *mm, unsigned long addr,
+		       unsigned long sz)
 {
 	pgd_t *pgd;
+	p4d_t *p4d;
 	pud_t *pud;
 	pmd_t *pmd = NULL;
 
 	pgd = pgd_offset(mm, addr);
 	if (pgd_present(*pgd)) {
-		pud = pud_offset(pgd, addr);
-		if (pud_present(*pud))
-			pmd = pmd_offset(pud, addr);
+		p4d = p4d_offset(pgd, addr);
+		if (p4d_present(*p4d)) {
+			pud = pud_offset(p4d, addr);
+			if (pud_present(*pud))
+				pmd = pmd_offset(pud, addr);
+		}
 	}
 	return (pte_t *) pmd;
-}
-
-int huge_pmd_unshare(struct mm_struct *mm, unsigned long *addr, pte_t *ptep)
-{
-	return 0;
-}
-
-/*
- * This function checks for proper alignment of input addr and len parameters.
- */
-int is_aligned_hugepage_range(unsigned long addr, unsigned long len)
-{
-	if (len & ~HPAGE_MASK)
-		return -EINVAL;
-	if (addr & ~HPAGE_MASK)
-		return -EINVAL;
-	return 0;
-}
-
-struct page *
-follow_huge_addr(struct mm_struct *mm, unsigned long address, int write)
-{
-	return ERR_PTR(-EINVAL);
 }
 
 int pmd_huge(pmd_t pmd)
@@ -82,21 +66,4 @@ int pmd_huge(pmd_t pmd)
 int pud_huge(pud_t pud)
 {
 	return (pud_val(pud) & _PAGE_HUGE) != 0;
-}
-
-int pmd_huge_support(void)
-{
-	return 1;
-}
-
-struct page *
-follow_huge_pmd(struct mm_struct *mm, unsigned long address,
-		pmd_t *pmd, int write)
-{
-	struct page *page;
-
-	page = pte_page(*(pte_t *)pmd);
-	if (page)
-		page += ((address & ~HPAGE_MASK) >> PAGE_SHIFT);
-	return page;
 }

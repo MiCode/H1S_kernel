@@ -1,7 +1,11 @@
 #ifndef __NET_WIRELESS_REG_H
 #define __NET_WIRELESS_REG_H
+
+#include <net/cfg80211.h>
+
 /*
  * Copyright 2008-2011	Luis R. Rodriguez <mcgrof@qca.qualcomm.com>
+ * Copyright (C) 2019 Intel Corporation
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -16,6 +20,12 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+enum ieee80211_regd_source {
+	REGD_SOURCE_INTERNAL_DB,
+	REGD_SOURCE_CRDA,
+	REGD_SOURCE_CACHED,
+};
+
 extern const struct ieee80211_regdomain __rcu *cfg80211_regdomain;
 
 bool reg_is_valid_request(const char *alpha2);
@@ -26,14 +36,31 @@ enum nl80211_dfs_regions reg_get_dfs_region(struct wiphy *wiphy);
 int regulatory_hint_user(const char *alpha2,
 			 enum nl80211_user_reg_hint_type user_reg_hint_type);
 
-int reg_device_uevent(struct device *dev, struct kobj_uevent_env *env);
+/**
+ * regulatory_hint_indoor - hint operation in indoor env. or not
+ * @is_indoor: if true indicates that user space thinks that the
+ * device is operating in an indoor environment.
+ * @portid: the netlink port ID on which the hint was given.
+ */
+int regulatory_hint_indoor(bool is_indoor, u32 portid);
+
+/**
+ * regulatory_netlink_notify - notify on released netlink socket
+ * @portid: the netlink socket port ID
+ */
+void regulatory_netlink_notify(u32 portid);
+
 void wiphy_regulatory_register(struct wiphy *wiphy);
 void wiphy_regulatory_deregister(struct wiphy *wiphy);
 
 int __init regulatory_init(void);
 void regulatory_exit(void);
 
-int set_regdom(const struct ieee80211_regdomain *rd);
+int set_regdom(const struct ieee80211_regdomain *rd,
+	       enum ieee80211_regd_source regd_src);
+
+unsigned int reg_get_max_bandwidth(const struct ieee80211_regdomain *rd,
+				   const struct ieee80211_reg_rule *rule);
 
 bool reg_last_request_cell_base(void);
 
@@ -81,12 +108,12 @@ int regulatory_hint_found_beacon(struct wiphy *wiphy,
  * information for a band the BSS is not present in it will be ignored.
  */
 void regulatory_hint_country_ie(struct wiphy *wiphy,
-			 enum ieee80211_band band,
+			 enum nl80211_band band,
 			 const u8 *country_ie,
 			 u8 country_ie_len);
 
 /**
- * regulatory_hint_disconnect - informs all devices have been disconneted
+ * regulatory_hint_disconnect - informs all devices have been disconnected
  *
  * Regulotory rules can be enhanced further upon scanning and upon
  * connection to an AP. These rules become stale if we disconnect
@@ -102,5 +129,61 @@ void regulatory_hint_country_ie(struct wiphy *wiphy,
  * Must be called from process context.
  */
 void regulatory_hint_disconnect(void);
+
+/**
+ * cfg80211_get_unii - get the U-NII band for the frequency
+ * @freq: the frequency for which we want to get the UNII band.
+
+ * Get a value specifying the U-NII band frequency belongs to.
+ * U-NII bands are defined by the FCC in C.F.R 47 part 15.
+ *
+ * Returns -EINVAL if freq is invalid, 0 for UNII-1, 1 for UNII-2A,
+ * 2 for UNII-2B, 3 for UNII-2C and 4 for UNII-3.
+ */
+int cfg80211_get_unii(int freq);
+
+/**
+ * regulatory_indoor_allowed - is indoor operation allowed
+ */
+bool regulatory_indoor_allowed(void);
+
+/*
+ * Grace period to timeout pre-CAC results on the dfs channels. This timeout
+ * value is used for Non-ETSI domain.
+ * TODO: May be make this timeout available through regdb?
+ */
+#define REG_PRE_CAC_EXPIRY_GRACE_MS 2000
+
+/**
+ * regulatory_propagate_dfs_state - Propagate DFS channel state to other wiphys
+ * @wiphy - wiphy on which radar is detected and the event will be propagated
+ *	to other available wiphys having the same DFS domain
+ * @chandef - Channel definition of radar detected channel
+ * @dfs_state - DFS channel state to be set
+ * @event - Type of radar event which triggered this DFS state change
+ *
+ * This function should be called with rtnl lock held.
+ */
+void regulatory_propagate_dfs_state(struct wiphy *wiphy,
+				    struct cfg80211_chan_def *chandef,
+				    enum nl80211_dfs_state dfs_state,
+				    enum nl80211_radar_event event);
+
+/**
+ * reg_dfs_domain_same - Checks if both wiphy have same DFS domain configured
+ * @wiphy1 - wiphy it's dfs_region to be checked against that of wiphy2
+ * @wiphy2 - wiphy it's dfs_region to be checked against that of wiphy1
+ */
+bool reg_dfs_domain_same(struct wiphy *wiphy1, struct wiphy *wiphy2);
+
+/**
+ * reg_reload_regdb - reload the regulatory.db firmware file
+ */
+int reg_reload_regdb(void);
+
+extern const u8 shipped_regdb_certs[];
+extern unsigned int shipped_regdb_certs_len;
+extern const u8 extra_regdb_certs[];
+extern unsigned int extra_regdb_certs_len;
 
 #endif  /* __NET_WIRELESS_REG_H */

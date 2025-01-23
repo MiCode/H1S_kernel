@@ -1,10 +1,6 @@
-CFLAGS += -iquote../../../../include/uapi -Wall
-peeksiginfo: peeksiginfo.c
+# SPDX-License-Identifier: GPL-2.0-only
+CFLAGS += -std=c99 -pthread -Wall $(KHDR_INCLUDES)
 
-all: peeksiginfo
+TEST_GEN_PROGS := get_syscall_info peeksiginfo vmaccess get_set_sud
 
-clean:
-	rm -f peeksiginfo
-
-run_tests: all
-	@./peeksiginfo || echo "peeksiginfo selftests: [FAIL]"
+include ../lib.mk

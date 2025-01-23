@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* cache.h:  Cache specific code for the Sparc.  These include flushing
  *           and direct tag/data line access.
  *
@@ -20,6 +21,6 @@
 
 #define SMP_CACHE_BYTES (1 << SMP_CACHE_BYTES_SHIFT)
 
-#define __read_mostly __attribute__((__section__(".data..read_mostly")))
+#define __read_mostly __section(".data..read_mostly")
 
 #endif /* !(_SPARC_CACHE_H) */

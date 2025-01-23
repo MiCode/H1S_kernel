@@ -10,44 +10,68 @@
 #include <linux/fcntl.h>
 #include <linux/kernel.h>
 #include <linux/linkage.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/sched.h>
 #include <linux/syscalls.h>
 #include <linux/mm.h>
+#include <linux/highmem.h>
+#include <linux/pagemap.h>
 
+#include <asm/bcache.h>
 #include <asm/cacheflush.h>
 #include <asm/processor.h>
 #include <asm/cpu.h>
 #include <asm/cpu-features.h>
+#include <asm/setup.h>
+#include <asm/pgtable.h>
 
 /* Cache operations. */
 void (*flush_cache_all)(void);
 void (*__flush_cache_all)(void);
+EXPORT_SYMBOL_GPL(__flush_cache_all);
 void (*flush_cache_mm)(struct mm_struct *mm);
 void (*flush_cache_range)(struct vm_area_struct *vma, unsigned long start,
 	unsigned long end);
 void (*flush_cache_page)(struct vm_area_struct *vma, unsigned long page,
 	unsigned long pfn);
 void (*flush_icache_range)(unsigned long start, unsigned long end);
+EXPORT_SYMBOL_GPL(flush_icache_range);
 void (*local_flush_icache_range)(unsigned long start, unsigned long end);
+EXPORT_SYMBOL_GPL(local_flush_icache_range);
+void (*__flush_icache_user_range)(unsigned long start, unsigned long end);
+void (*__local_flush_icache_user_range)(unsigned long start, unsigned long end);
+EXPORT_SYMBOL_GPL(__local_flush_icache_user_range);
 
 void (*__flush_cache_vmap)(void);
 void (*__flush_cache_vunmap)(void);
 
 void (*__flush_kernel_vmap_range)(unsigned long vaddr, int size);
-void (*__invalidate_kernel_vmap_range)(unsigned long vaddr, int size);
-
 EXPORT_SYMBOL_GPL(__flush_kernel_vmap_range);
 
 /* MIPS specific cache operations */
-void (*flush_cache_sigtramp)(unsigned long addr);
-void (*local_flush_data_cache_page)(void * addr);
 void (*flush_data_cache_page)(unsigned long addr);
 void (*flush_icache_all)(void);
 
-EXPORT_SYMBOL_GPL(local_flush_data_cache_page);
 EXPORT_SYMBOL(flush_data_cache_page);
 EXPORT_SYMBOL(flush_icache_all);
+
+/*
+ * Dummy cache handling routine
+ */
+
+void cache_noop(void) {}
+
+#ifdef CONFIG_BOARD_SCACHE
+
+static struct bcache_ops no_sc_ops = {
+	.bc_enable = (void *)cache_noop,
+	.bc_disable = (void *)cache_noop,
+	.bc_wback_inv = (void *)cache_noop,
+	.bc_inv = (void *)cache_noop
+};
+
+struct bcache_ops *bcops = &no_sc_ops;
+#endif
 
 #ifdef CONFIG_DMA_NONCOHERENT
 
@@ -55,8 +79,6 @@ EXPORT_SYMBOL(flush_icache_all);
 void (*_dma_cache_wback_inv)(unsigned long start, unsigned long size);
 void (*_dma_cache_wback)(unsigned long start, unsigned long size);
 void (*_dma_cache_inv)(unsigned long start, unsigned long size);
-
-EXPORT_SYMBOL(_dma_cache_wback_inv);
 
 #endif /* CONFIG_DMA_NONCOHERENT */
 
@@ -69,23 +91,23 @@ SYSCALL_DEFINE3(cacheflush, unsigned long, addr, unsigned long, bytes,
 {
 	if (bytes == 0)
 		return 0;
-	if (!access_ok(VERIFY_WRITE, (void __user *) addr, bytes))
+	if (!access_ok((void __user *) addr, bytes))
 		return -EFAULT;
 
-	flush_icache_range(addr, addr + bytes);
+	__flush_icache_user_range(addr, addr + bytes);
 
 	return 0;
 }
 
-void __flush_dcache_page(struct page *page)
+void __flush_dcache_pages(struct page *page, unsigned int nr)
 {
-	struct address_space *mapping = page_mapping(page);
+	struct folio *folio = page_folio(page);
+	struct address_space *mapping = folio_flush_mapping(folio);
 	unsigned long addr;
+	unsigned int i;
 
-	if (PageHighMem(page))
-		return;
 	if (mapping && !mapping_mapped(mapping)) {
-		SetPageDcacheDirty(page);
+		folio_set_dcache_dirty(folio);
 		return;
 	}
 
@@ -94,18 +116,21 @@ void __flush_dcache_page(struct page *page)
 	 * case is for exec env/arg pages and those are %99 certainly going to
 	 * get faulted into the tlb (and thus flushed) anyways.
 	 */
-	addr = (unsigned long) page_address(page);
-	flush_data_cache_page(addr);
+	for (i = 0; i < nr; i++) {
+		addr = (unsigned long)kmap_local_page(nth_page(page, i));
+		flush_data_cache_page(addr);
+		kunmap_local((void *)addr);
+	}
 }
-
-EXPORT_SYMBOL(__flush_dcache_page);
+EXPORT_SYMBOL(__flush_dcache_pages);
 
 void __flush_anon_page(struct page *page, unsigned long vmaddr)
 {
 	unsigned long addr = (unsigned long) page_address(page);
+	struct folio *folio = page_folio(page);
 
 	if (pages_do_alias(addr, vmaddr)) {
-		if (page_mapped(page) && !Page_dcache_dirty(page)) {
+		if (folio_mapped(folio) && !folio_test_dcache_dirty(folio)) {
 			void *kaddr;
 
 			kaddr = kmap_coherent(page, vmaddr);
@@ -118,68 +143,65 @@ void __flush_anon_page(struct page *page, unsigned long vmaddr)
 
 EXPORT_SYMBOL(__flush_anon_page);
 
-void __update_cache(struct vm_area_struct *vma, unsigned long address,
-	pte_t pte)
+void __update_cache(unsigned long address, pte_t pte)
 {
-	struct page *page;
+	struct folio *folio;
 	unsigned long pfn, addr;
-	int exec = (vma->vm_flags & VM_EXEC) && !cpu_has_ic_fills_f_dc;
+	int exec = !pte_no_exec(pte) && !cpu_has_ic_fills_f_dc;
+	unsigned int i;
 
 	pfn = pte_pfn(pte);
 	if (unlikely(!pfn_valid(pfn)))
 		return;
-	page = pfn_to_page(pfn);
-	if (page_mapping(page) && Page_dcache_dirty(page)) {
-		addr = (unsigned long) page_address(page);
-		if (exec || pages_do_alias(addr, address & PAGE_MASK))
-			flush_data_cache_page(addr);
-		ClearPageDcacheDirty(page);
+
+	folio = page_folio(pfn_to_page(pfn));
+	address &= PAGE_MASK;
+	address -= offset_in_folio(folio, pfn << PAGE_SHIFT);
+
+	if (folio_test_dcache_dirty(folio)) {
+		for (i = 0; i < folio_nr_pages(folio); i++) {
+			addr = (unsigned long)kmap_local_folio(folio, i);
+
+			if (exec || pages_do_alias(addr, address))
+				flush_data_cache_page(addr);
+			kunmap_local((void *)addr);
+			address += PAGE_SIZE;
+		}
+		folio_clear_dcache_dirty(folio);
 	}
 }
 
 unsigned long _page_cachable_default;
 EXPORT_SYMBOL(_page_cachable_default);
 
+#define PM(p)	__pgprot(_page_cachable_default | (p))
+
+static pgprot_t protection_map[16] __ro_after_init;
+DECLARE_VM_GET_PAGE_PROT
+
 static inline void setup_protection_map(void)
 {
-	if (cpu_has_rixi) {
-		protection_map[0]  = __pgprot(_page_cachable_default | _PAGE_PRESENT | _PAGE_NO_EXEC | _PAGE_NO_READ);
-		protection_map[1]  = __pgprot(_page_cachable_default | _PAGE_PRESENT | _PAGE_NO_EXEC);
-		protection_map[2]  = __pgprot(_page_cachable_default | _PAGE_PRESENT | _PAGE_NO_EXEC | _PAGE_NO_READ);
-		protection_map[3]  = __pgprot(_page_cachable_default | _PAGE_PRESENT | _PAGE_NO_EXEC);
-		protection_map[4]  = __pgprot(_page_cachable_default | _PAGE_PRESENT | _PAGE_NO_READ);
-		protection_map[5]  = __pgprot(_page_cachable_default | _PAGE_PRESENT);
-		protection_map[6]  = __pgprot(_page_cachable_default | _PAGE_PRESENT | _PAGE_NO_READ);
-		protection_map[7]  = __pgprot(_page_cachable_default | _PAGE_PRESENT);
+	protection_map[0]  = PM(_PAGE_PRESENT | _PAGE_NO_EXEC | _PAGE_NO_READ);
+	protection_map[1]  = PM(_PAGE_PRESENT | _PAGE_NO_EXEC);
+	protection_map[2]  = PM(_PAGE_PRESENT | _PAGE_NO_EXEC | _PAGE_NO_READ);
+	protection_map[3]  = PM(_PAGE_PRESENT | _PAGE_NO_EXEC);
+	protection_map[4]  = PM(_PAGE_PRESENT);
+	protection_map[5]  = PM(_PAGE_PRESENT);
+	protection_map[6]  = PM(_PAGE_PRESENT);
+	protection_map[7]  = PM(_PAGE_PRESENT);
 
-		protection_map[8]  = __pgprot(_page_cachable_default | _PAGE_PRESENT | _PAGE_NO_EXEC | _PAGE_NO_READ);
-		protection_map[9]  = __pgprot(_page_cachable_default | _PAGE_PRESENT | _PAGE_NO_EXEC);
-		protection_map[10] = __pgprot(_page_cachable_default | _PAGE_PRESENT | _PAGE_NO_EXEC | _PAGE_WRITE | _PAGE_NO_READ);
-		protection_map[11] = __pgprot(_page_cachable_default | _PAGE_PRESENT | _PAGE_NO_EXEC | _PAGE_WRITE);
-		protection_map[12] = __pgprot(_page_cachable_default | _PAGE_PRESENT | _PAGE_NO_READ);
-		protection_map[13] = __pgprot(_page_cachable_default | _PAGE_PRESENT);
-		protection_map[14] = __pgprot(_page_cachable_default | _PAGE_PRESENT | _PAGE_WRITE  | _PAGE_NO_READ);
-		protection_map[15] = __pgprot(_page_cachable_default | _PAGE_PRESENT | _PAGE_WRITE);
-
-	} else {
-		protection_map[0] = PAGE_NONE;
-		protection_map[1] = PAGE_READONLY;
-		protection_map[2] = PAGE_COPY;
-		protection_map[3] = PAGE_COPY;
-		protection_map[4] = PAGE_READONLY;
-		protection_map[5] = PAGE_READONLY;
-		protection_map[6] = PAGE_COPY;
-		protection_map[7] = PAGE_COPY;
-		protection_map[8] = PAGE_NONE;
-		protection_map[9] = PAGE_READONLY;
-		protection_map[10] = PAGE_SHARED;
-		protection_map[11] = PAGE_SHARED;
-		protection_map[12] = PAGE_READONLY;
-		protection_map[13] = PAGE_READONLY;
-		protection_map[14] = PAGE_SHARED;
-		protection_map[15] = PAGE_SHARED;
-	}
+	protection_map[8]  = PM(_PAGE_PRESENT | _PAGE_NO_EXEC | _PAGE_NO_READ);
+	protection_map[9]  = PM(_PAGE_PRESENT | _PAGE_NO_EXEC);
+	protection_map[10] = PM(_PAGE_PRESENT | _PAGE_NO_EXEC | _PAGE_WRITE |
+				_PAGE_NO_READ);
+	protection_map[11] = PM(_PAGE_PRESENT | _PAGE_NO_EXEC | _PAGE_WRITE);
+	protection_map[12] = PM(_PAGE_PRESENT);
+	protection_map[13] = PM(_PAGE_PRESENT);
+	protection_map[14] = PM(_PAGE_PRESENT | _PAGE_WRITE);
+	protection_map[15] = PM(_PAGE_PRESENT | _PAGE_WRITE);
 }
+
+#undef PM
 
 void cpu_cache_init(void)
 {
@@ -188,25 +210,10 @@ void cpu_cache_init(void)
 
 		r3k_cache_init();
 	}
-	if (cpu_has_6k_cache) {
-		extern void __weak r6k_cache_init(void);
-
-		r6k_cache_init();
-	}
 	if (cpu_has_4k_cache) {
 		extern void __weak r4k_cache_init(void);
 
 		r4k_cache_init();
-	}
-	if (cpu_has_8k_cache) {
-		extern void __weak r8k_cache_init(void);
-
-		r8k_cache_init();
-	}
-	if (cpu_has_tx39_cache) {
-		extern void __weak tx39_cache_init(void);
-
-		tx39_cache_init();
 	}
 
 	if (cpu_has_octeon_cache) {
@@ -216,12 +223,4 @@ void cpu_cache_init(void)
 	}
 
 	setup_protection_map();
-}
-
-int __weak __uncached_access(struct file *file, unsigned long addr)
-{
-	if (file->f_flags & O_DSYNC)
-		return 1;
-
-	return addr >= __pa(high_memory);
 }

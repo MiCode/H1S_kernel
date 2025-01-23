@@ -1,14 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2000 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
- * Licensed under the GPL
  */
 
 #include <linux/mm.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/hardirq.h>
 #include <linux/module.h>
+#include <linux/uaccess.h>
+#include <linux/sched/debug.h>
 #include <asm/current.h>
-#include <asm/pgtable.h>
 #include <asm/tlbflush.h>
 #include <arch.h>
 #include <as-layout.h>
@@ -17,7 +18,7 @@
 #include <skas.h>
 
 /*
- * Note this is constrained to return 0, -EFAULT, -EACCESS, -ENOMEM by
+ * Note this is constrained to return 0, -EFAULT, -EACCES, -ENOMEM by
  * segv().
  */
 int handle_page_fault(unsigned long address, unsigned long ip,
@@ -25,37 +26,36 @@ int handle_page_fault(unsigned long address, unsigned long ip,
 {
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
-	pgd_t *pgd;
-	pud_t *pud;
 	pmd_t *pmd;
 	pte_t *pte;
 	int err = -EFAULT;
-	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+	unsigned int flags = FAULT_FLAG_DEFAULT;
 
 	*code_out = SEGV_MAPERR;
 
 	/*
-	 * If the fault was during atomic operation, don't take the fault, just
+	 * If the fault was with pagefaults disabled, don't take the fault, just
 	 * fail.
 	 */
-	if (in_atomic())
+	if (faulthandler_disabled())
 		goto out_nosemaphore;
 
 	if (is_user)
 		flags |= FAULT_FLAG_USER;
 retry:
-	down_read(&mm->mmap_sem);
+	mmap_read_lock(mm);
 	vma = find_vma(mm, address);
 	if (!vma)
 		goto out;
-	else if (vma->vm_start <= address)
+	if (vma->vm_start <= address)
 		goto good_area;
-	else if (!(vma->vm_flags & VM_GROWSDOWN))
+	if (!(vma->vm_flags & VM_GROWSDOWN))
 		goto out;
-	else if (is_user && !ARCH_IS_STACKGROW(address))
+	if (is_user && !ARCH_IS_STACKGROW(address))
 		goto out;
-	else if (expand_stack(vma, address))
-		goto out;
+	vma = expand_stack(mm, address);
+	if (!vma)
+		goto out_nosemaphore;
 
 good_area:
 	*code_out = SEGV_ACCERR;
@@ -70,38 +70,35 @@ good_area:
 	}
 
 	do {
-		int fault;
+		vm_fault_t fault;
 
-		fault = handle_mm_fault(mm, vma, address, flags);
+		fault = handle_mm_fault(vma, address, flags, NULL);
 
 		if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
 			goto out_nosemaphore;
 
+		/* The fault is fully completed (including releasing mmap lock) */
+		if (fault & VM_FAULT_COMPLETED)
+			return 0;
+
 		if (unlikely(fault & VM_FAULT_ERROR)) {
 			if (fault & VM_FAULT_OOM) {
 				goto out_of_memory;
+			} else if (fault & VM_FAULT_SIGSEGV) {
+				goto out;
 			} else if (fault & VM_FAULT_SIGBUS) {
 				err = -EACCES;
 				goto out;
 			}
 			BUG();
 		}
-		if (flags & FAULT_FLAG_ALLOW_RETRY) {
-			if (fault & VM_FAULT_MAJOR)
-				current->maj_flt++;
-			else
-				current->min_flt++;
-			if (fault & VM_FAULT_RETRY) {
-				flags &= ~FAULT_FLAG_ALLOW_RETRY;
-				flags |= FAULT_FLAG_TRIED;
+		if (fault & VM_FAULT_RETRY) {
+			flags |= FAULT_FLAG_TRIED;
 
-				goto retry;
-			}
+			goto retry;
 		}
 
-		pgd = pgd_offset(mm, address);
-		pud = pud_offset(pgd, address);
-		pmd = pmd_offset(pud, address);
+		pmd = pmd_off(mm, address);
 		pte = pte_offset_kernel(pmd, address);
 	} while (!pte_present(*pte));
 	err = 0;
@@ -118,7 +115,7 @@ good_area:
 #endif
 	flush_tlb_page(vma, address);
 out:
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 out_nosemaphore:
 	return err;
 
@@ -127,13 +124,12 @@ out_of_memory:
 	 * We ran out of memory, call the OOM killer, and return the userspace
 	 * (which will retry the fault, or kill us if we got oom-killed).
 	 */
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 	if (!is_user)
 		goto out_nosemaphore;
 	pagefault_out_of_memory();
 	return 0;
 }
-EXPORT_SYMBOL(handle_page_fault);
 
 static void show_segv_info(struct uml_pt_regs *regs)
 {
@@ -146,7 +142,7 @@ static void show_segv_info(struct uml_pt_regs *regs)
 	if (!printk_ratelimit())
 		return;
 
-	printk("%s%s[%d]: segfault at %lx ip %p sp %p error %x",
+	printk("%s%s[%d]: segfault at %lx ip %px sp %px error %x",
 		task_pid_nr(tsk) > 1 ? KERN_INFO : KERN_EMERG,
 		tsk->comm, task_pid_nr(tsk), FAULT_ADDRESS(*fi),
 		(void *)UPT_IP(regs), (void *)UPT_SP(regs),
@@ -158,19 +154,14 @@ static void show_segv_info(struct uml_pt_regs *regs)
 
 static void bad_segv(struct faultinfo fi, unsigned long ip)
 {
-	struct siginfo si;
-
-	si.si_signo = SIGSEGV;
-	si.si_code = SEGV_ACCERR;
-	si.si_addr = (void __user *) FAULT_ADDRESS(fi);
 	current->thread.arch.faultinfo = fi;
-	force_sig_info(SIGSEGV, &si, current);
+	force_sig_fault(SIGSEGV, SEGV_ACCERR, (void __user *) FAULT_ADDRESS(fi));
 }
 
 void fatal_sigsegv(void)
 {
-	force_sigsegv(SIGSEGV, current);
-	do_signal();
+	force_fatal_sig(SIGSEGV);
+	do_signal(&current->thread.regs);
 	/*
 	 * This is to tell gcc that we're not returning - do_signal
 	 * can, in general, return, but in this case, it's not, since
@@ -179,6 +170,16 @@ void fatal_sigsegv(void)
 	os_dump_core();
 }
 
+/**
+ * segv_handler() - the SIGSEGV handler
+ * @sig:	the signal number
+ * @unused_si:	the signal info struct; unused in this handler
+ * @regs:	the ptrace register information
+ *
+ * The handler first extracts the faultinfo from the UML ptrace regs struct.
+ * If the userfault did not happen in an UML userspace process, bad_segv is called.
+ * Otherwise the signal did happen in a cloned userspace process, handle it.
+ */
 void segv_handler(int sig, struct siginfo *unused_si, struct uml_pt_regs *regs)
 {
 	struct faultinfo * fi = UPT_FAULTINFO(regs);
@@ -200,13 +201,13 @@ void segv_handler(int sig, struct siginfo *unused_si, struct uml_pt_regs *regs)
 unsigned long segv(struct faultinfo fi, unsigned long ip, int is_user,
 		   struct uml_pt_regs *regs)
 {
-	struct siginfo si;
 	jmp_buf *catcher;
+	int si_code;
 	int err;
 	int is_write = FAULT_WRITE(fi);
 	unsigned long address = FAULT_ADDRESS(fi);
 
-	if (regs)
+	if (!is_user && regs)
 		current->thread.segv_regs = container_of(regs, struct pt_regs, regs);
 
 	if (!is_user && (address >= start_vm) && (address < end_vm)) {
@@ -217,10 +218,15 @@ unsigned long segv(struct faultinfo fi, unsigned long ip, int is_user,
 		show_regs(container_of(regs, struct pt_regs, regs));
 		panic("Segfault with no mm");
 	}
+	else if (!is_user && address > PAGE_SIZE && address < TASK_SIZE) {
+		show_regs(container_of(regs, struct pt_regs, regs));
+		panic("Kernel tried to access user memory at addr 0x%lx, ip 0x%lx",
+		       address, ip);
+	}
 
-	if (SEGV_IS_FIXABLE(&fi) || SEGV_MAYBE_FIXABLE(&fi))
+	if (SEGV_IS_FIXABLE(&fi))
 		err = handle_page_fault(address, ip, is_write, is_user,
-					&si.si_code);
+					&si_code);
 	else {
 		err = -EFAULT;
 		/*
@@ -252,18 +258,12 @@ unsigned long segv(struct faultinfo fi, unsigned long ip, int is_user,
 	show_segv_info(regs);
 
 	if (err == -EACCES) {
-		si.si_signo = SIGBUS;
-		si.si_errno = 0;
-		si.si_code = BUS_ADRERR;
-		si.si_addr = (void __user *)address;
 		current->thread.arch.faultinfo = fi;
-		force_sig_info(SIGBUS, &si, current);
+		force_sig_fault(SIGBUS, BUS_ADRERR, (void __user *)address);
 	} else {
 		BUG_ON(err != -EFAULT);
-		si.si_signo = SIGSEGV;
-		si.si_addr = (void __user *) address;
 		current->thread.arch.faultinfo = fi;
-		force_sig_info(SIGSEGV, &si, current);
+		force_sig_fault(SIGSEGV, si_code, (void __user *) address);
 	}
 
 out:
@@ -275,9 +275,7 @@ out:
 
 void relay_signal(int sig, struct siginfo *si, struct uml_pt_regs *regs)
 {
-	struct faultinfo *fi;
-	struct siginfo clean_si;
-
+	int code, err;
 	if (!UPT_IS_USER(regs)) {
 		if (sig == SIGBUS)
 			printk(KERN_ERR "Bus error - the host /dev/shm or /tmp "
@@ -287,29 +285,20 @@ void relay_signal(int sig, struct siginfo *si, struct uml_pt_regs *regs)
 
 	arch_examine_signal(sig, regs);
 
-	memset(&clean_si, 0, sizeof(clean_si));
-	clean_si.si_signo = si->si_signo;
-	clean_si.si_errno = si->si_errno;
-	clean_si.si_code = si->si_code;
-	switch (sig) {
-	case SIGILL:
-	case SIGFPE:
-	case SIGSEGV:
-	case SIGBUS:
-	case SIGTRAP:
-		fi = UPT_FAULTINFO(regs);
-		clean_si.si_addr = (void __user *) FAULT_ADDRESS(*fi);
+	/* Is the signal layout for the signal known?
+	 * Signal data must be scrubbed to prevent information leaks.
+	 */
+	code = si->si_code;
+	err = si->si_errno;
+	if ((err == 0) && (siginfo_layout(sig, code) == SIL_FAULT)) {
+		struct faultinfo *fi = UPT_FAULTINFO(regs);
 		current->thread.arch.faultinfo = *fi;
-#ifdef __ARCH_SI_TRAPNO
-		clean_si.si_trapno = si->si_trapno;
-#endif
-		break;
-	default:
-		printk(KERN_ERR "Attempted to relay unknown signal %d (si_code = %d)\n",
-			sig, si->si_code);
+		force_sig_fault(sig, code, (void __user *)FAULT_ADDRESS(*fi));
+	} else {
+		printk(KERN_ERR "Attempted to relay unknown signal %d (si_code = %d) with errno %d\n",
+		       sig, code, err);
+		force_sig(sig);
 	}
-
-	force_sig_info(sig, &clean_si, current);
 }
 
 void bus_handler(int sig, struct siginfo *si, struct uml_pt_regs *regs)
@@ -323,8 +312,4 @@ void bus_handler(int sig, struct siginfo *si, struct uml_pt_regs *regs)
 void winch(int sig, struct siginfo *unused_si, struct uml_pt_regs *regs)
 {
 	do_IRQ(WINCH_IRQ, regs);
-}
-
-void trap_init(void)
-{
 }

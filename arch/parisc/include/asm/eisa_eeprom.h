@@ -1,13 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * eisa_eeprom.h - provide support for EISA adapters in PA-RISC machines
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
- *
  * Copyright (c) 2001, 2002 Daniel Engstrom <5116@telia.com>
- *
  */
 
 #ifndef ASM_EISA_EEPROM_H
@@ -99,7 +94,7 @@ struct eeprom_eisa_slot_info
 #define HPEE_MEMORY_DECODE_24BITS 0x04
 #define HPEE_MEMORY_DECODE_32BITS 0x08
 /* byte 2 and 3 are a 16bit LE value
- * containging the memory size in kilobytes */
+ * containing the memory size in kilobytes */
 /* byte 4,5,6 are a 24bit LE value
  * containing the memory base address */
 
@@ -135,7 +130,7 @@ struct eeprom_eisa_slot_info
 #define HPEE_PORT_SHARED    0x40
 #define HPEE_PORT_MORE      0x80
 /* byte 1 and 2 is a 16bit LE value
- * conating the start port number */
+ * containing the start port number */
 
 #define HPEE_PORT_INIT_MAX_LEN     60 /* in bytes here */
 /* port init entry byte 0 */

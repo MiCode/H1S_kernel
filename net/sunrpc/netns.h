@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __SUNRPC_NETNS_H__
 #define __SUNRPC_NETNS_H__
 
@@ -32,9 +33,10 @@ struct sunrpc_net {
 	int pipe_version;
 	atomic_t pipe_users;
 	struct proc_dir_entry *use_gssp_proc;
+	struct proc_dir_entry *gss_krb5_enctypes;
 };
 
-extern int sunrpc_net_id;
+extern unsigned int sunrpc_net_id;
 
 int ip_map_cache_create(struct net *);
 void ip_map_cache_destroy(struct net *);

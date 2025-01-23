@@ -1,27 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * File: af_phonet.h
  *
  * Phonet sockets kernel definitions
  *
  * Copyright (C) 2008 Nokia Corporation.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
  */
 
 #ifndef AF_PHONET_H
 #define AF_PHONET_H
+
+#include <linux/phonet.h>
+#include <linux/skbuff.h>
+#include <net/sock.h>
 
 /*
  * The lower layers may not require more space, ever. Make sure it's
@@ -51,7 +42,7 @@ void pn_sock_init(void);
 struct sock *pn_find_sock_by_sa(struct net *net, const struct sockaddr_pn *sa);
 void pn_deliver_sock_broadcast(struct net *net, struct sk_buff *skb);
 void phonet_get_local_port_range(int *min, int *max);
-void pn_sock_hash(struct sock *sk);
+int pn_sock_hash(struct sock *sk);
 void pn_sock_unhash(struct sock *sk);
 int pn_sock_get_port(struct sock *sk, unsigned short sport);
 
@@ -108,12 +99,35 @@ struct phonet_protocol {
 	int			sock_type;
 };
 
-int phonet_proto_register(unsigned int protocol, struct phonet_protocol *pp);
-void phonet_proto_unregister(unsigned int protocol, struct phonet_protocol *pp);
+int phonet_proto_register(unsigned int protocol,
+		const struct phonet_protocol *pp);
+void phonet_proto_unregister(unsigned int protocol,
+		const struct phonet_protocol *pp);
 
 int phonet_sysctl_init(void);
 void phonet_sysctl_exit(void);
 int isi_register(void);
 void isi_unregister(void);
 
+static inline bool sk_is_phonet(struct sock *sk)
+{
+	return sk->sk_family == PF_PHONET;
+}
+
+static inline int phonet_sk_ioctl(struct sock *sk, unsigned int cmd,
+				  void __user *arg)
+{
+	int karg;
+
+	switch (cmd) {
+	case SIOCPNADDRESOURCE:
+	case SIOCPNDELRESOURCE:
+		if (get_user(karg, (int __user *)arg))
+			return -EFAULT;
+
+		return sk->sk_prot->ioctl(sk, cmd, &karg);
+	}
+	/* A positive return value means that the ioctl was not processed */
+	return 1;
+}
 #endif

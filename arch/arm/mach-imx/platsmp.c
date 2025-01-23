@@ -1,17 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright 2011 Freescale Semiconductor, Inc.
  * Copyright 2011 Linaro Ltd.
- *
- * The code contained herein is licensed under the GNU General Public
- * License. You may obtain a copy of the GNU General Public License
- * Version 2 or later at the following locations:
- *
- * http://www.opensource.org/licenses/gpl-license.html
- * http://www.gnu.org/copyleft/gpl.html
  */
 
 #include <linux/init.h>
+#include <linux/of_address.h>
+#include <linux/of.h>
 #include <linux/smp.h>
+
 #include <asm/cacheflush.h>
 #include <asm/page.h>
 #include <asm/smp_scu.h>
@@ -19,8 +16,6 @@
 
 #include "common.h"
 #include "hardware.h"
-
-#define SCU_STANDBY_ENABLE	(1 << 5)
 
 u32 g_diag_reg;
 static void __iomem *scu_base;
@@ -43,14 +38,6 @@ void __init imx_scu_map_io(void)
 	iotable_init(&scu_io_desc, 1);
 
 	scu_base = IMX_IO_ADDRESS(base);
-}
-
-void imx_scu_standby_enable(void)
-{
-	u32 val = readl_relaxed(scu_base);
-
-	val |= SCU_STANDBY_ENABLE;
-	writel_relaxed(val, scu_base);
 }
 
 static int imx_boot_secondary(unsigned int cpu, struct task_struct *idle)
@@ -95,7 +82,7 @@ static void __init imx_smp_prepare_cpus(unsigned int max_cpus)
 	sync_cache_w(&g_diag_reg);
 }
 
-struct smp_operations  imx_smp_ops __initdata = {
+const struct smp_operations imx_smp_ops __initconst = {
 	.smp_init_cpus		= imx_smp_init_cpus,
 	.smp_prepare_cpus	= imx_smp_prepare_cpus,
 	.smp_boot_secondary	= imx_boot_secondary,
@@ -103,4 +90,61 @@ struct smp_operations  imx_smp_ops __initdata = {
 	.cpu_die		= imx_cpu_die,
 	.cpu_kill		= imx_cpu_kill,
 #endif
+};
+
+/*
+ * Initialise the CPU possible map early - this describes the CPUs
+ * which may be present or become present in the system.
+ */
+static void __init imx7_smp_init_cpus(void)
+{
+	struct device_node *np;
+	int i, ncores = 0;
+
+	/* The iMX7D SCU does not report core count, get it from DT */
+	for_each_of_cpu_node(np)
+		ncores++;
+
+	for (i = ncores; i < NR_CPUS; i++)
+		set_cpu_possible(i, false);
+}
+
+const struct smp_operations imx7_smp_ops __initconst = {
+	.smp_init_cpus		= imx7_smp_init_cpus,
+	.smp_boot_secondary	= imx_boot_secondary,
+#ifdef CONFIG_HOTPLUG_CPU
+	.cpu_die		= imx_cpu_die,
+	.cpu_kill		= imx_cpu_kill,
+#endif
+};
+
+#define DCFG_CCSR_SCRATCHRW1	0x200
+
+static int ls1021a_boot_secondary(unsigned int cpu, struct task_struct *idle)
+{
+	arch_send_wakeup_ipi_mask(cpumask_of(cpu));
+
+	return 0;
+}
+
+static void __init ls1021a_smp_prepare_cpus(unsigned int max_cpus)
+{
+	struct device_node *np;
+	void __iomem *dcfg_base;
+	unsigned long paddr;
+
+	np = of_find_compatible_node(NULL, NULL, "fsl,ls1021a-dcfg");
+	dcfg_base = of_iomap(np, 0);
+	of_node_put(np);
+	BUG_ON(!dcfg_base);
+
+	paddr = __pa_symbol(secondary_startup);
+	writel_relaxed(cpu_to_be32(paddr), dcfg_base + DCFG_CCSR_SCRATCHRW1);
+
+	iounmap(dcfg_base);
+}
+
+const struct smp_operations ls1021a_smp_ops __initconst = {
+	.smp_prepare_cpus	= ls1021a_smp_prepare_cpus,
+	.smp_boot_secondary	= ls1021a_boot_secondary,
 };

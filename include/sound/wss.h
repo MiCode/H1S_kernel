@@ -1,25 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef __SOUND_WSS_H
 #define __SOUND_WSS_H
 
 /*
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>
  *  Definitions for CS4231 & InterWave chips & compatible chips
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <sound/control.h>
@@ -154,8 +139,8 @@ int snd_wss_create(struct snd_card *card,
 		      unsigned short hardware,
 		      unsigned short hwshare,
 		      struct snd_wss **rchip);
-int snd_wss_pcm(struct snd_wss *chip, int device, struct snd_pcm **rpcm);
-int snd_wss_timer(struct snd_wss *chip, int device, struct snd_timer **rtimer);
+int snd_wss_pcm(struct snd_wss *chip, int device);
+int snd_wss_timer(struct snd_wss *chip, int device);
 int snd_wss_mixer(struct snd_wss *chip);
 
 const struct snd_pcm_ops *snd_wss_get_pcm_ops(int direction);
@@ -167,7 +152,7 @@ int snd_cs4236_create(struct snd_card *card,
 		      unsigned short hardware,
 		      unsigned short hwshare,
 		      struct snd_wss **rchip);
-int snd_cs4236_pcm(struct snd_wss *chip, int device, struct snd_pcm **rpcm);
+int snd_cs4236_pcm(struct snd_wss *chip, int device);
 int snd_cs4236_mixer(struct snd_wss *chip);
 
 /*

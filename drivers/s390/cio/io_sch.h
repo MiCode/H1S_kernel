@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef S390_IO_SCH_H
 #define S390_IO_SCH_H
 
@@ -8,15 +9,20 @@
 #include "css.h"
 #include "orb.h"
 
+struct io_subchannel_dma_area {
+	struct ccw1 sense_ccw;	/* static ccw for sense command */
+};
+
 struct io_subchannel_private {
 	union orb orb;		/* operation request block */
-	struct ccw1 sense_ccw;	/* static ccw for sense command */
 	struct ccw_device *cdev;/* pointer to the child ccw device */
 	struct {
 		unsigned int suspend:1;	/* allow suspend */
 		unsigned int prefetch:1;/* deny prefetch */
 		unsigned int inter:1;	/* suppress intermediate interrupts */
 	} __packed options;
+	struct io_subchannel_dma_area *dma_area;
+	dma_addr_t dma_area_dma;
 } __aligned(8);
 
 #define to_io_private(n) ((struct io_subchannel_private *) \
@@ -114,13 +120,19 @@ enum cdev_todo {
 #define FAKE_CMD_IRB	1
 #define FAKE_TM_IRB	2
 
+struct ccw_device_dma_area {
+	struct senseid senseid;	/* SenseID info */
+	struct ccw1 iccws[2];	/* ccws for SNID/SID/SPGID commands */
+	struct irb irb;		/* device status */
+	struct pgid pgid[8];	/* path group IDs per chpid*/
+};
+
 struct ccw_device_private {
 	struct ccw_device *cdev;
 	struct subchannel *sch;
 	int state;		/* device state */
 	atomic_t onoff;
 	struct ccw_dev_id dev_id;	/* device id */
-	struct subchannel_id schid;	/* subchannel number */
 	struct ccw_request req;		/* internal I/O request */
 	int iretry;
 	u8 pgid_valid_mask;	/* mask of valid PGIDs */
@@ -132,6 +144,8 @@ struct ccw_device_private {
 				   not operable */
 	u8 path_gone_mask;	/* mask of paths, that became unavailable */
 	u8 path_new_mask;	/* mask of paths, that became available */
+	u8 path_broken_mask;	/* mask of paths, which were found to be
+				   unusable */
 	struct {
 		unsigned int fast:1;	/* post with "channel end" */
 		unsigned int repall:1;	/* report every interrupt status */
@@ -146,7 +160,6 @@ struct ccw_device_private {
 		unsigned int donotify:1;    /* call notify function */
 		unsigned int recog_done:1;  /* dev. recog. complete */
 		unsigned int fake_irb:2;    /* deliver faked irb */
-		unsigned int resuming:1;    /* recognition while resume */
 		unsigned int pgroup:1;	    /* pathgroup is set up */
 		unsigned int mpath:1;	    /* multipathing is set up */
 		unsigned int pgid_unknown:1;/* unknown pgid state */
@@ -154,10 +167,7 @@ struct ccw_device_private {
 	} __attribute__((packed)) flags;
 	unsigned long intparm;	/* user interruption parameter */
 	struct qdio_irq *qdio_data;
-	struct irb irb;		/* device status */
-	struct senseid senseid;	/* SenseID info */
-	struct pgid pgid[8];	/* path group IDs per chpid*/
-	struct ccw1 iccws[2];	/* ccws for SNID/SID/SPGID commands */
+	int async_kill_io_rc;
 	struct work_struct todo_work;
 	enum cdev_todo todo;
 	wait_queue_head_t wait_q;
@@ -166,52 +176,9 @@ struct ccw_device_private {
 	struct list_head cmb_list;	/* list of measured devices */
 	u64 cmb_start_time;		/* clock value of cmb reset */
 	void *cmb_wait;			/* deferred cmb enable/disable */
+	struct gen_pool *dma_pool;
+	struct ccw_device_dma_area *dma_area;
 	enum interruption_class int_class;
 };
-
-static inline int rsch(struct subchannel_id schid)
-{
-	register struct subchannel_id reg1 asm("1") = schid;
-	int ccode;
-
-	asm volatile(
-		"	rsch\n"
-		"	ipm	%0\n"
-		"	srl	%0,28"
-		: "=d" (ccode)
-		: "d" (reg1)
-		: "cc", "memory");
-	return ccode;
-}
-
-static inline int hsch(struct subchannel_id schid)
-{
-	register struct subchannel_id reg1 asm("1") = schid;
-	int ccode;
-
-	asm volatile(
-		"	hsch\n"
-		"	ipm	%0\n"
-		"	srl	%0,28"
-		: "=d" (ccode)
-		: "d" (reg1)
-		: "cc");
-	return ccode;
-}
-
-static inline int xsch(struct subchannel_id schid)
-{
-	register struct subchannel_id reg1 asm("1") = schid;
-	int ccode;
-
-	asm volatile(
-		"	.insn	rre,0xb2760000,%1,0\n"
-		"	ipm	%0\n"
-		"	srl	%0,28"
-		: "=d" (ccode)
-		: "d" (reg1)
-		: "cc");
-	return ccode;
-}
 
 #endif

@@ -1,17 +1,36 @@
-#include <stdio.h>
-#include <sys/types.h>
-#include <unistd.h>
+// SPDX-License-Identifier: GPL-2.0
+#include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <linux/types.h>
 #include <sys/prctl.h>
+#include <perf/cpumap.h>
+#include <perf/evlist.h>
+#include <perf/mmap.h>
 
+#include "debug.h"
 #include "parse-events.h"
 #include "evlist.h"
 #include "evsel.h"
 #include "thread_map.h"
-#include "cpumap.h"
+#include "record.h"
+#include "tsc.h"
+#include "mmap.h"
 #include "tests.h"
+#include "util/sample.h"
 
-#include "../arch/x86/util/tsc.h"
+/*
+ * Except x86_64/i386 and Arm64, other archs don't support TSC in perf.  Just
+ * enable the test for x86_64/i386 and Arm64 archs.
+ */
+#if defined(__x86_64__) || defined(__i386__) || defined(__aarch64__)
+#define TSC_IS_SUPPORTED 1
+#else
+#define TSC_IS_SUPPORTED 0
+#endif
 
 #define CHECK__(x) {				\
 	while ((x) < 0) {			\
@@ -27,13 +46,15 @@
 	}					\
 }
 
-static u64 rdtsc(void)
+static int test__tsc_is_supported(struct test_suite *test __maybe_unused,
+				  int subtest __maybe_unused)
 {
-	unsigned int low, high;
+	if (!TSC_IS_SUPPORTED) {
+		pr_debug("Test not supported on this architecture\n");
+		return TEST_SKIP;
+	}
 
-	asm volatile("rdtsc" : "=a" (low), "=d" (high));
-
-	return low | ((u64)high) << 32;
+	return TEST_OK;
 }
 
 /**
@@ -42,68 +63,77 @@ static u64 rdtsc(void)
  * This function implements a test that checks that the conversion of perf time
  * to and from TSC is consistent with the order of events.  If the test passes
  * %0 is returned, otherwise %-1 is returned.  If TSC conversion is not
- * supported then then the test passes but " (not supported)" is printed.
+ * supported then the test passes but " (not supported)" is printed.
  */
-int test__perf_time_to_tsc(void)
+static int test__perf_time_to_tsc(struct test_suite *test __maybe_unused, int subtest __maybe_unused)
 {
 	struct record_opts opts = {
 		.mmap_pages	     = UINT_MAX,
 		.user_freq	     = UINT_MAX,
 		.user_interval	     = ULLONG_MAX,
-		.freq		     = 4000,
 		.target		     = {
 			.uses_mmap   = true,
 		},
 		.sample_time	     = true,
 	};
-	struct thread_map *threads = NULL;
-	struct cpu_map *cpus = NULL;
-	struct perf_evlist *evlist = NULL;
-	struct perf_evsel *evsel = NULL;
-	int err = -1, ret, i;
+	struct perf_thread_map *threads = NULL;
+	struct perf_cpu_map *cpus = NULL;
+	struct evlist *evlist = NULL;
+	struct evsel *evsel = NULL;
+	int err = TEST_FAIL, ret, i;
 	const char *comm1, *comm2;
 	struct perf_tsc_conversion tc;
 	struct perf_event_mmap_page *pc;
 	union perf_event *event;
 	u64 test_tsc, comm1_tsc, comm2_tsc;
 	u64 test_time, comm1_time = 0, comm2_time = 0;
+	struct mmap *md;
+
 
 	threads = thread_map__new(-1, getpid(), UINT_MAX);
 	CHECK_NOT_NULL__(threads);
 
-	cpus = cpu_map__new(NULL);
+	cpus = perf_cpu_map__new(NULL);
 	CHECK_NOT_NULL__(cpus);
 
-	evlist = perf_evlist__new();
+	evlist = evlist__new();
 	CHECK_NOT_NULL__(evlist);
 
-	perf_evlist__set_maps(evlist, cpus, threads);
+	perf_evlist__set_maps(&evlist->core, cpus, threads);
 
-	CHECK__(parse_events(evlist, "cycles:u"));
+	CHECK__(parse_event(evlist, "cycles:u"));
 
-	perf_evlist__config(evlist, &opts);
+	evlist__config(evlist, &opts, NULL);
 
-	evsel = perf_evlist__first(evlist);
+	/* For hybrid "cycles:u", it creates two events */
+	evlist__for_each_entry(evlist, evsel) {
+		evsel->core.attr.comm = 1;
+		evsel->core.attr.disabled = 1;
+		evsel->core.attr.enable_on_exec = 0;
+	}
 
-	evsel->attr.comm = 1;
-	evsel->attr.disabled = 1;
-	evsel->attr.enable_on_exec = 0;
+	ret = evlist__open(evlist);
+	if (ret < 0) {
+		if (ret == -ENOENT)
+			err = TEST_SKIP;
+		else
+			pr_debug("evlist__open() failed\n");
+		goto out_err;
+	}
 
-	CHECK__(perf_evlist__open(evlist));
+	CHECK__(evlist__mmap(evlist, UINT_MAX));
 
-	CHECK__(perf_evlist__mmap(evlist, UINT_MAX, false));
-
-	pc = evlist->mmap[0].base;
+	pc = evlist->mmap[0].core.base;
 	ret = perf_read_tsc_conversion(pc, &tc);
 	if (ret) {
 		if (ret == -EOPNOTSUPP) {
-			fprintf(stderr, " (not supported)");
-			return 0;
+			pr_debug("perf_read_tsc_conversion is not supported in current kernel\n");
+			err = TEST_SKIP;
 		}
 		goto out_err;
 	}
 
-	perf_evlist__enable(evlist);
+	evlist__enable(evlist);
 
 	comm1 = "Test COMM 1";
 	CHECK__(prctl(PR_SET_NAME, (unsigned long)comm1, 0, 0, 0));
@@ -113,10 +143,14 @@ int test__perf_time_to_tsc(void)
 	comm2 = "Test COMM 2";
 	CHECK__(prctl(PR_SET_NAME, (unsigned long)comm2, 0, 0, 0));
 
-	perf_evlist__disable(evlist);
+	evlist__disable(evlist);
 
-	for (i = 0; i < evlist->nr_mmaps; i++) {
-		while ((event = perf_evlist__mmap_read(evlist, i)) != NULL) {
+	for (i = 0; i < evlist->core.nr_mmaps; i++) {
+		md = &evlist->mmap[i];
+		if (perf_mmap__read_init(&md->core) < 0)
+			continue;
+
+		while ((event = perf_mmap__read_event(&md->core)) != NULL) {
 			struct perf_sample sample;
 
 			if (event->header.type != PERF_RECORD_COMM ||
@@ -125,18 +159,19 @@ int test__perf_time_to_tsc(void)
 				goto next_event;
 
 			if (strcmp(event->comm.comm, comm1) == 0) {
-				CHECK__(perf_evsel__parse_sample(evsel, event,
-								 &sample));
+				CHECK_NOT_NULL__(evsel = evlist__event2evsel(evlist, event));
+				CHECK__(evsel__parse_sample(evsel, event, &sample));
 				comm1_time = sample.time;
 			}
 			if (strcmp(event->comm.comm, comm2) == 0) {
-				CHECK__(perf_evsel__parse_sample(evsel, event,
-								 &sample));
+				CHECK_NOT_NULL__(evsel = evlist__event2evsel(evlist, event));
+				CHECK__(evsel__parse_sample(evsel, event, &sample));
 				comm2_time = sample.time;
 			}
 next_event:
-			perf_evlist__mmap_consume(evlist, i);
+			perf_mmap__consume(&md->core);
 		}
+		perf_mmap__read_done(&md->core);
 	}
 
 	if (!comm1_time || !comm2_time)
@@ -161,13 +196,24 @@ next_event:
 	    test_tsc >= comm2_tsc)
 		goto out_err;
 
-	err = 0;
+	err = TEST_OK;
 
 out_err:
-	if (evlist) {
-		perf_evlist__disable(evlist);
-		perf_evlist__delete(evlist);
-	}
-
+	evlist__delete(evlist);
+	perf_cpu_map__put(cpus);
+	perf_thread_map__put(threads);
 	return err;
 }
+
+static struct test_case time_to_tsc_tests[] = {
+	TEST_CASE_REASON("TSC support", tsc_is_supported,
+			 "This architecture does not support"),
+	TEST_CASE_REASON("Perf time to TSC", perf_time_to_tsc,
+			 "perf_read_tsc_conversion is not supported"),
+	{ .name = NULL, }
+};
+
+struct test_suite suite__perf_time_to_tsc = {
+	.desc = "Convert perf time to TSC",
+	.test_cases = time_to_tsc_tests,
+};

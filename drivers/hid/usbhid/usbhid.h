@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef __USBHID_H
 #define __USBHID_H
 
@@ -8,20 +9,6 @@
  */
 
 /*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
  */
 
 #include <linux/types.h>
@@ -34,11 +21,7 @@
 #include <linux/input.h>
 
 /*  API provided by hid-core.c for USB HID drivers */
-void usbhid_close(struct hid_device *hid);
-int usbhid_open(struct hid_device *hid);
 void usbhid_init_reports(struct hid_device *hid);
-int usbhid_get_power(struct hid_device *hid);
-void usbhid_put_power(struct hid_device *hid);
 struct usb_interface *usbhid_find_interface(int minor);
 
 /* iofl flags */
@@ -52,6 +35,18 @@ struct usb_interface *usbhid_find_interface(int minor);
 #define HID_STARTED		8
 #define HID_KEYS_PRESSED	10
 #define HID_NO_BANDWIDTH	11
+#define HID_RESUME_RUNNING	12
+/*
+ * The device is opened, meaning there is a client that is interested
+ * in data coming from the device.
+ */
+#define HID_OPENED		13
+/*
+ * We are polling input endpoint by [re]submitting IN URB, because
+ * either HID device is opened or ALWAYS POLL quirk is set for the
+ * device.
+ */
+#define HID_IN_POLLING		14
 
 /*
  * USB-specific HID struct, to be pointed to
@@ -85,6 +80,7 @@ struct usbhid_device {
 	dma_addr_t outbuf_dma;                                          /* Output buffer dma */
 	unsigned long last_out;							/* record of last output for timeouts */
 
+	struct mutex mutex;						/* start/stop/open/close */
 	spinlock_t lock;						/* fifo spinlock */
 	unsigned long iofl;                                             /* I/O flags (CTRL_RUNNING, OUT_RUNNING) */
 	struct timer_list io_retry;                                     /* Retry timer */
@@ -95,7 +91,7 @@ struct usbhid_device {
 };
 
 #define	hid_to_usb_dev(hid_dev) \
-	container_of(hid_dev->dev.parent->parent, struct usb_device, dev)
+	to_usb_device(hid_dev->dev.parent->parent)
 
 #endif
 

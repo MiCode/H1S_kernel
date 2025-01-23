@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Keymile km82xx support
  * Copyright 2008-2011 DENX Software Engineering GmbH
@@ -6,11 +7,6 @@
  * based on code from:
  * Copyright 2007 Freescale Semiconductor, Inc.
  * Author: Scott Wood <scottwood@freescale.com>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/init.h>
@@ -23,8 +19,6 @@
 #include <asm/udbg.h>
 #include <asm/machdep.h>
 #include <linux/time.h>
-#include <asm/mpc8260.h>
-#include <asm/prom.h>
 
 #include <sysdev/fsl_soc.h>
 #include <sysdev/cpm2_pic.h>
@@ -180,7 +174,7 @@ static void __init km82xx_setup_arch(void)
 		ppc_md.progress("km82xx_setup_arch(), finish", 0);
 }
 
-static  __initdata struct of_device_id of_bus_ids[] = {
+static const struct of_device_id of_bus_ids[] __initconst = {
 	{ .compatible = "simple-bus", },
 	{},
 };
@@ -193,23 +187,13 @@ static int __init declare_of_platform_devices(void)
 }
 machine_device_initcall(km82xx, declare_of_platform_devices);
 
-/*
- * Called very early, device-tree isn't unflattened
- */
-static int __init km82xx_probe(void)
-{
-	unsigned long root = of_get_flat_dt_root();
-	return of_flat_dt_is_compatible(root, "keymile,km82xx");
-}
-
 define_machine(km82xx)
 {
 	.name = "Keymile km82xx",
-	.probe = km82xx_probe,
+	.compatible = "keymile,km82xx",
 	.setup_arch = km82xx_setup_arch,
 	.init_IRQ = km82xx_pic_init,
 	.get_irq = cpm2_get_irq,
-	.calibrate_decr = generic_calibrate_decr,
 	.restart = pq2_restart,
 	.progress = udbg_progress,
 };

@@ -1,11 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * include/linux/if_team.h - Network team device driver header
  * Copyright (c) 2011 Jiri Pirko <jpirko@redhat.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 #ifndef _LINUX_IF_TEAM_H_
 #define _LINUX_IF_TEAM_H_
@@ -16,14 +12,15 @@
 #include <uapi/linux/if_team.h>
 
 struct team_pcpu_stats {
-	u64			rx_packets;
-	u64			rx_bytes;
-	u64			rx_multicast;
-	u64			tx_packets;
-	u64			tx_bytes;
+	u64_stats_t		rx_packets;
+	u64_stats_t		rx_bytes;
+	u64_stats_t		rx_multicast;
+	u64_stats_t		tx_packets;
+	u64_stats_t		tx_bytes;
 	struct u64_stats_sync	syncp;
 	u32			rx_dropped;
 	u32			tx_dropped;
+	u32			rx_nohandler;
 };
 
 struct team;
@@ -70,8 +67,13 @@ struct team_port {
 	u16 queue_id;
 	struct list_head qom_list; /* node in queue override mapping list */
 	struct rcu_head	rcu;
-	long mode_priv[0];
+	long mode_priv[];
 };
+
+static inline struct team_port *team_port_get_rcu(const struct net_device *dev)
+{
+	return rcu_dereference(dev->rx_handler_data);
+}
 
 static inline bool team_port_enabled(struct team_port *port)
 {
@@ -83,14 +85,24 @@ static inline bool team_port_txable(struct team_port *port)
 	return port->linkup && team_port_enabled(port);
 }
 
+static inline bool team_port_dev_txable(const struct net_device *port_dev)
+{
+	struct team_port *port;
+	bool txable;
+
+	rcu_read_lock();
+	port = team_port_get_rcu(port_dev);
+	txable = port ? team_port_txable(port) : false;
+	rcu_read_unlock();
+
+	return txable;
+}
+
 #ifdef CONFIG_NET_POLL_CONTROLLER
 static inline void team_netpoll_send_skb(struct team_port *port,
 					 struct sk_buff *skb)
 {
-	struct netpoll *np = port->np;
-
-	if (np)
-		netpoll_send_skb(np, skb);
+	netpoll_send_skb(port->np, skb);
 }
 #else
 static inline void team_netpoll_send_skb(struct team_port *port,
@@ -150,8 +162,8 @@ struct team_option {
 	bool per_port;
 	unsigned int array_size; /* != 0 means the option is array */
 	enum team_option_type type;
-	int (*init)(struct team *team, struct team_option_inst_info *info);
-	int (*getter)(struct team *team, struct team_gsetter_ctx *ctx);
+	void (*init)(struct team *team, struct team_option_inst_info *info);
+	void (*getter)(struct team *team, struct team_gsetter_ctx *ctx);
 	int (*setter)(struct team *team, struct team_gsetter_ctx *ctx);
 };
 
@@ -164,6 +176,7 @@ struct team_mode {
 	size_t priv_size;
 	size_t port_priv_size;
 	const struct team_mode_ops *ops;
+	enum netdev_lag_tx_type lag_tx_type;
 };
 
 #define TEAM_PORT_HASHBITS 4
@@ -175,6 +188,8 @@ struct team_mode {
 struct team {
 	struct net_device *dev; /* associated netdevice */
 	struct team_pcpu_stats __percpu *pcpu_stats;
+
+	const struct header_ops *header_ops_cache;
 
 	struct mutex lock; /* used for overall locking, e.g. port lists write */
 
@@ -194,6 +209,8 @@ struct team {
 	bool user_carrier_enabled;
 	bool queue_override_enabled;
 	struct list_head *qom_lists; /* array of queue override mapping lists */
+	bool port_mtu_change_allowed;
+	bool notifier_ctx;
 	struct {
 		unsigned int count;
 		unsigned int interval; /* in ms */
@@ -206,6 +223,7 @@ struct team {
 		atomic_t count_pending;
 		struct delayed_work dw;
 	} mcast_rejoin;
+	struct lock_class_key team_lock_key;
 	long mode_priv[TEAM_MODE_PRIV_LONGS];
 };
 
@@ -242,9 +260,9 @@ static inline struct team_port *team_get_port_by_index(struct team *team,
 	return NULL;
 }
 
-static inline int team_num_to_port_index(struct team *team, int num)
+static inline int team_num_to_port_index(struct team *team, unsigned int num)
 {
-	int en_port_count = ACCESS_ONCE(team->en_port_count);
+	int en_port_count = READ_ONCE(team->en_port_count);
 
 	if (unlikely(!en_port_count))
 		return 0;
@@ -294,5 +312,7 @@ extern void team_mode_unregister(const struct team_mode *mode);
 
 #define TEAM_DEFAULT_NUM_TX_QUEUES 16
 #define TEAM_DEFAULT_NUM_RX_QUEUES 16
+
+#define MODULE_ALIAS_TEAM_MODE(kind) MODULE_ALIAS("team-mode-" kind)
 
 #endif /* _LINUX_IF_TEAM_H_ */

@@ -1,24 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	connector.c
  *
  * 2004+ Copyright (c) Evgeniy Polyakov <zbr@ioremap.net>
  * All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#include <linux/compiler.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/list.h>
@@ -43,6 +31,8 @@ static struct cn_dev cdev;
 static int cn_already_initialized;
 
 /*
+ * Sends mult (multiple) cn_msg at a time.
+ *
  * msg->seq and msg->ack are used to determine message genealogy.
  * When someone sends message it puts there locally unique sequence
  * and random acknowledge numbers.  Sequence number may be copied into
@@ -50,7 +40,7 @@ static int cn_already_initialized;
  *
  * Sequence number is incremented with each message to be sent.
  *
- * If we expect reply to our message then the sequence number in
+ * If we expect a reply to our message then the sequence number in
  * received message MUST be the same as in original message, and
  * acknowledge number MUST be the same + 1.
  *
@@ -62,8 +52,16 @@ static int cn_already_initialized;
  * the acknowledgement number in the original message + 1, then it is
  * a new message.
  *
+ * If msg->len != len, then additional cn_msg messages are expected following
+ * the first msg.
+ *
+ * The message is sent to, the portid if given, the group if given, both if
+ * both, or if both are zero then the group is looked up and sent there.
  */
-int cn_netlink_send(struct cn_msg *msg, u32 __group, gfp_t gfp_mask)
+int cn_netlink_send_mult(struct cn_msg *msg, u16 len, u32 portid, u32 __group,
+	gfp_t gfp_mask,
+	int (*filter)(struct sock *dsk, struct sk_buff *skb, void *data),
+	void *filter_data)
 {
 	struct cn_callback_entry *__cbq;
 	unsigned int size;
@@ -74,7 +72,9 @@ int cn_netlink_send(struct cn_msg *msg, u32 __group, gfp_t gfp_mask)
 	u32 group = 0;
 	int found = 0;
 
-	if (!__group) {
+	if (portid || __group) {
+		group = __group;
+	} else {
 		spin_lock_bh(&dev->cbdev->queue_lock);
 		list_for_each_entry(__cbq, &dev->cbdev->queue_list,
 				    callback_entry) {
@@ -88,14 +88,12 @@ int cn_netlink_send(struct cn_msg *msg, u32 __group, gfp_t gfp_mask)
 
 		if (!found)
 			return -ENODEV;
-	} else {
-		group = __group;
 	}
 
-	if (!netlink_has_listeners(dev->nls, group))
+	if (!portid && !netlink_has_listeners(dev->nls, group))
 		return -ESRCH;
 
-	size = sizeof(*msg) + msg->len;
+	size = sizeof(*msg) + len;
 
 	skb = nlmsg_new(size, gfp_mask);
 	if (!skb)
@@ -113,7 +111,21 @@ int cn_netlink_send(struct cn_msg *msg, u32 __group, gfp_t gfp_mask)
 
 	NETLINK_CB(skb).dst_group = group;
 
-	return netlink_broadcast(dev->nls, skb, 0, group, gfp_mask);
+	if (group)
+		return netlink_broadcast_filtered(dev->nls, skb, portid, group,
+						  gfp_mask, filter,
+						  (void *)filter_data);
+	return netlink_unicast(dev->nls, skb, portid,
+			!gfpflags_allow_blocking(gfp_mask));
+}
+EXPORT_SYMBOL_GPL(cn_netlink_send_mult);
+
+/* same as cn_netlink_send_mult except msg->len is used for len */
+int cn_netlink_send(struct cn_msg *msg, u32 portid, u32 __group,
+	gfp_t gfp_mask)
+{
+	return cn_netlink_send_mult(msg, msg->len, portid, __group, gfp_mask,
+				    NULL, NULL);
 }
 EXPORT_SYMBOL_GPL(cn_netlink_send);
 
@@ -122,16 +134,22 @@ EXPORT_SYMBOL_GPL(cn_netlink_send);
  */
 static int cn_call_callback(struct sk_buff *skb)
 {
+	struct nlmsghdr *nlh;
 	struct cn_callback_entry *i, *cbq = NULL;
 	struct cn_dev *dev = &cdev;
 	struct cn_msg *msg = nlmsg_data(nlmsg_hdr(skb));
 	struct netlink_skb_parms *nsp = &NETLINK_CB(skb);
 	int err = -ENODEV;
 
+	/* verify msg->len is within skb */
+	nlh = nlmsg_hdr(skb);
+	if (nlh->nlmsg_len < NLMSG_HDRLEN + sizeof(struct cn_msg) + msg->len)
+		return -EINVAL;
+
 	spin_lock_bh(&dev->cbdev->queue_lock);
 	list_for_each_entry(i, &dev->cbdev->queue_list, callback_entry) {
 		if (cn_cb_equal(&i->id.id, &msg->id)) {
-			atomic_inc(&i->refcnt);
+			refcount_inc(&i->refcnt);
 			cbq = i;
 			break;
 		}
@@ -139,7 +157,6 @@ static int cn_call_callback(struct sk_buff *skb)
 	spin_unlock_bh(&dev->cbdev->queue_lock);
 
 	if (cbq != NULL) {
-		err = 0;
 		cbq->callback(msg, nsp);
 		kfree_skb(skb);
 		cn_queue_release_callback(cbq);
@@ -150,17 +167,39 @@ static int cn_call_callback(struct sk_buff *skb)
 }
 
 /*
+ * Allow non-root access for NETLINK_CONNECTOR family having CN_IDX_PROC
+ * multicast group.
+ */
+static int cn_bind(struct net *net, int group)
+{
+	unsigned long groups = (unsigned long) group;
+
+	if (ns_capable(net->user_ns, CAP_NET_ADMIN))
+		return 0;
+
+	if (test_bit(CN_IDX_PROC - 1, &groups))
+		return 0;
+
+	return -EPERM;
+}
+
+static void cn_release(struct sock *sk, unsigned long *groups)
+{
+	if (groups && test_bit(CN_IDX_PROC - 1, groups)) {
+		kfree(sk->sk_user_data);
+		sk->sk_user_data = NULL;
+	}
+}
+
+/*
  * Main netlink receiving function.
  *
  * It checks skb, netlink header and msg sizes, and calls callback helper.
  */
-static void cn_rx_skb(struct sk_buff *__skb)
+static void cn_rx_skb(struct sk_buff *skb)
 {
 	struct nlmsghdr *nlh;
-	struct sk_buff *skb;
 	int len, err;
-
-	skb = skb_get(__skb);
 
 	if (skb->len >= NLMSG_HDRLEN) {
 		nlh = nlmsg_hdr(skb);
@@ -168,12 +207,10 @@ static void cn_rx_skb(struct sk_buff *__skb)
 
 		if (len < (int)sizeof(struct cn_msg) ||
 		    skb->len < nlh->nlmsg_len ||
-		    len > CONNECTOR_MAX_MSG_SIZE) {
-			kfree_skb(skb);
+		    len > CONNECTOR_MAX_MSG_SIZE)
 			return;
-		}
 
-		err = cn_call_callback(skb);
+		err = cn_call_callback(skb_get(skb));
 		if (err < 0)
 			kfree_skb(skb);
 	}
@@ -185,21 +222,16 @@ static void cn_rx_skb(struct sk_buff *__skb)
  *
  * May sleep.
  */
-int cn_add_callback(struct cb_id *id, const char *name,
+int cn_add_callback(const struct cb_id *id, const char *name,
 		    void (*callback)(struct cn_msg *,
 				     struct netlink_skb_parms *))
 {
-	int err;
 	struct cn_dev *dev = &cdev;
 
 	if (!cn_already_initialized)
 		return -EAGAIN;
 
-	err = cn_queue_add_callback(dev->cbdev, name, id, callback);
-	if (err)
-		return err;
-
-	return 0;
+	return cn_queue_add_callback(dev->cbdev, name, id, callback);
 }
 EXPORT_SYMBOL_GPL(cn_add_callback);
 
@@ -211,7 +243,7 @@ EXPORT_SYMBOL_GPL(cn_add_callback);
  *
  * May sleep while waiting for reference counter to become zero.
  */
-void cn_del_callback(struct cb_id *id)
+void cn_del_callback(const struct cb_id *id)
 {
 	struct cn_dev *dev = &cdev;
 
@@ -219,7 +251,7 @@ void cn_del_callback(struct cb_id *id)
 }
 EXPORT_SYMBOL_GPL(cn_del_callback);
 
-static int cn_proc_show(struct seq_file *m, void *v)
+static int __maybe_unused cn_proc_show(struct seq_file *m, void *v)
 {
 	struct cn_queue_dev *dev = cdev.cbdev;
 	struct cn_callback_entry *cbq;
@@ -240,29 +272,15 @@ static int cn_proc_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static int cn_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, cn_proc_show, NULL);
-}
-
-static const struct file_operations cn_file_ops = {
-	.owner   = THIS_MODULE,
-	.open    = cn_proc_open,
-	.read    = seq_read,
-	.llseek  = seq_lseek,
-	.release = single_release
-};
-
-static struct cn_dev cdev = {
-	.input   = cn_rx_skb,
-};
-
 static int cn_init(void)
 {
 	struct cn_dev *dev = &cdev;
 	struct netlink_kernel_cfg cfg = {
 		.groups	= CN_NETLINK_USERS + 0xf,
-		.input	= dev->input,
+		.input	= cn_rx_skb,
+		.flags  = NL_CFG_F_NONROOT_RECV,
+		.bind   = cn_bind,
+		.release = cn_release,
 	};
 
 	dev->nls = netlink_kernel_create(&init_net, NETLINK_CONNECTOR, &cfg);
@@ -277,7 +295,7 @@ static int cn_init(void)
 
 	cn_already_initialized = 1;
 
-	proc_create("connector", S_IRUGO, init_net.proc_net, &cn_file_ops);
+	proc_create_single("connector", S_IRUGO, init_net.proc_net, cn_proc_show);
 
 	return 0;
 }

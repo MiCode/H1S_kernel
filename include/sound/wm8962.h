@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * wm8962.h  --  WM8962 Soc Audio driver platform data
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef _WM8962_PDATA_H
@@ -37,6 +34,7 @@
 #define WM8962_GPIO_FN_MICSCD          22
 
 struct wm8962_pdata {
+	struct clk *mclk;
 	int gpio_base;
 	u32 gpio_init[WM8962_MAX_GPIO];
 

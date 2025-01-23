@@ -1,37 +1,26 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef _LINUX_UPROBES_H
 #define _LINUX_UPROBES_H
 /*
  * User-space Probes (UProbes)
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
- *
  * Copyright (C) IBM Corporation, 2008-2012
  * Authors:
  *	Srikar Dronamraju
  *	Jim Keniston
- * Copyright (C) 2011-2012 Red Hat, Inc., Peter Zijlstra <pzijlstr@redhat.com>
+ * Copyright (C) 2011-2012 Red Hat, Inc., Peter Zijlstra
  */
 
 #include <linux/errno.h>
 #include <linux/rbtree.h>
 #include <linux/types.h>
+#include <linux/wait.h>
 
 struct vm_area_struct;
 struct mm_struct;
 struct inode;
 struct notifier_block;
+struct page;
 
 #define UPROBE_HANDLER_REMOVE		1
 #define UPROBE_HANDLER_MASK		1
@@ -91,19 +80,38 @@ struct uprobe_task {
 	unsigned int			depth;
 };
 
+struct return_instance {
+	struct uprobe		*uprobe;
+	unsigned long		func;
+	unsigned long		stack;		/* stack pointer */
+	unsigned long		orig_ret_vaddr; /* original return address */
+	bool			chained;	/* true, if instance is nested */
+
+	struct return_instance	*next;		/* keep as stack */
+};
+
+enum rp_check {
+	RP_CHECK_CALL,
+	RP_CHECK_CHAIN_CALL,
+	RP_CHECK_RET,
+};
+
 struct xol_area;
 
 struct uprobes_state {
 	struct xol_area		*xol_area;
 };
 
-extern int __weak set_swbp(struct arch_uprobe *aup, struct mm_struct *mm, unsigned long vaddr);
-extern int __weak set_orig_insn(struct arch_uprobe *aup, struct mm_struct *mm, unsigned long vaddr);
-extern bool __weak is_swbp_insn(uprobe_opcode_t *insn);
-extern bool __weak is_trap_insn(uprobe_opcode_t *insn);
-extern unsigned long __weak uprobe_get_swbp_addr(struct pt_regs *regs);
-extern int uprobe_write_opcode(struct mm_struct *mm, unsigned long vaddr, uprobe_opcode_t);
+extern void __init uprobes_init(void);
+extern int set_swbp(struct arch_uprobe *aup, struct mm_struct *mm, unsigned long vaddr);
+extern int set_orig_insn(struct arch_uprobe *aup, struct mm_struct *mm, unsigned long vaddr);
+extern bool is_swbp_insn(uprobe_opcode_t *insn);
+extern bool is_trap_insn(uprobe_opcode_t *insn);
+extern unsigned long uprobe_get_swbp_addr(struct pt_regs *regs);
+extern unsigned long uprobe_get_trap_addr(struct pt_regs *regs);
+extern int uprobe_write_opcode(struct arch_uprobe *auprobe, struct mm_struct *mm, unsigned long vaddr, uprobe_opcode_t);
 extern int uprobe_register(struct inode *inode, loff_t offset, struct uprobe_consumer *uc);
+extern int uprobe_register_refctr(struct inode *inode, loff_t offset, loff_t ref_ctr_offset, struct uprobe_consumer *uc);
 extern int uprobe_apply(struct inode *inode, loff_t offset, struct uprobe_consumer *uc, bool);
 extern void uprobe_unregister(struct inode *inode, loff_t offset, struct uprobe_consumer *uc);
 extern int uprobe_mmap(struct vm_area_struct *vma);
@@ -126,11 +134,26 @@ extern bool arch_uprobe_xol_was_trapped(struct task_struct *tsk);
 extern int  arch_uprobe_exception_notify(struct notifier_block *self, unsigned long val, void *data);
 extern void arch_uprobe_abort_xol(struct arch_uprobe *aup, struct pt_regs *regs);
 extern unsigned long arch_uretprobe_hijack_return_addr(unsigned long trampoline_vaddr, struct pt_regs *regs);
+extern bool arch_uretprobe_is_alive(struct return_instance *ret, enum rp_check ctx, struct pt_regs *regs);
+extern bool arch_uprobe_ignore(struct arch_uprobe *aup, struct pt_regs *regs);
+extern void arch_uprobe_copy_ixol(struct page *page, unsigned long vaddr,
+					 void *src, unsigned long len);
 #else /* !CONFIG_UPROBES */
 struct uprobes_state {
 };
+
+static inline void uprobes_init(void)
+{
+}
+
+#define uprobe_get_trap_addr(regs)	instruction_pointer(regs)
+
 static inline int
 uprobe_register(struct inode *inode, loff_t offset, struct uprobe_consumer *uc)
+{
+	return -ENOSYS;
+}
+static inline int uprobe_register_refctr(struct inode *inode, loff_t offset, loff_t ref_ctr_offset, struct uprobe_consumer *uc)
 {
 	return -ENOSYS;
 }

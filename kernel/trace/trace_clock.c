@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * tracing clocks
  *
@@ -18,6 +19,7 @@
 #include <linux/module.h>
 #include <linux/percpu.h>
 #include <linux/sched.h>
+#include <linux/sched/clock.h>
 #include <linux/ktime.h>
 #include <linux/trace_clock.h>
 
@@ -56,17 +58,20 @@ u64 notrace trace_clock(void)
 {
 	return local_clock();
 }
+EXPORT_SYMBOL_GPL(trace_clock);
 
 /*
  * trace_jiffy_clock(): Simply use jiffies as a clock counter.
+ * Note that this use of jiffies_64 is not completely safe on
+ * 32-bit systems. But the window is tiny, and the effect if
+ * we are affected is that we will have an obviously bogus
+ * timestamp on a trace event - i.e. not life threatening.
  */
 u64 notrace trace_clock_jiffies(void)
 {
-	u64 jiffy = jiffies - INITIAL_JIFFIES;
-
-	/* Return nsecs */
-	return (u64)jiffies_to_usecs(jiffy) * 1000ULL;
+	return jiffies_64_to_clock_t(jiffies_64 - INITIAL_JIFFIES);
 }
+EXPORT_SYMBOL_GPL(trace_clock_jiffies);
 
 /*
  * trace_clock_global(): special globally coherent trace clock
@@ -90,38 +95,55 @@ u64 notrace trace_clock_global(void)
 {
 	unsigned long flags;
 	int this_cpu;
-	u64 now;
+	u64 now, prev_time;
 
-	local_irq_save(flags);
+	raw_local_irq_save(flags);
 
 	this_cpu = raw_smp_processor_id();
-	now = sched_clock_cpu(this_cpu);
+
 	/*
-	 * If in an NMI context then dont risk lockups and return the
-	 * cpu_clock() time:
+	 * The global clock "guarantees" that the events are ordered
+	 * between CPUs. But if two events on two different CPUS call
+	 * trace_clock_global at roughly the same time, it really does
+	 * not matter which one gets the earlier time. Just make sure
+	 * that the same CPU will always show a monotonic clock.
+	 *
+	 * Use a read memory barrier to get the latest written
+	 * time that was recorded.
+	 */
+	smp_rmb();
+	prev_time = READ_ONCE(trace_clock_struct.prev_time);
+	now = sched_clock_cpu(this_cpu);
+
+	/* Make sure that now is always greater than or equal to prev_time */
+	if ((s64)(now - prev_time) < 0)
+		now = prev_time;
+
+	/*
+	 * If in an NMI context then dont risk lockups and simply return
+	 * the current time.
 	 */
 	if (unlikely(in_nmi()))
 		goto out;
 
-	arch_spin_lock(&trace_clock_struct.lock);
+	/* Tracing can cause strange recursion, always use a try lock */
+	if (arch_spin_trylock(&trace_clock_struct.lock)) {
+		/* Reread prev_time in case it was already updated */
+		prev_time = READ_ONCE(trace_clock_struct.prev_time);
+		if ((s64)(now - prev_time) < 0)
+			now = prev_time;
 
-	/*
-	 * TODO: if this happens often then maybe we should reset
-	 * my_scd->clock to prev_time+1, to make sure
-	 * we start ticking with the local clock from now on?
-	 */
-	if ((s64)(now - trace_clock_struct.prev_time) < 0)
-		now = trace_clock_struct.prev_time + 1;
+		trace_clock_struct.prev_time = now;
 
-	trace_clock_struct.prev_time = now;
-
-	arch_spin_unlock(&trace_clock_struct.lock);
-
+		/* The unlock acts as the wmb for the above rmb */
+		arch_spin_unlock(&trace_clock_struct.lock);
+	}
  out:
-	local_irq_restore(flags);
+	raw_local_irq_restore(flags);
 
 	return now;
 }
+EXPORT_SYMBOL_GPL(trace_clock_global);
 
 static atomic64_t trace_counter;
 

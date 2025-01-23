@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /***************************************************************************
  *   Copyright (C) 2010-2012 Hans de Goede <hdegoede@redhat.com>           *
  *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -28,15 +15,13 @@
 #include <linux/delay.h>
 #include <linux/fs.h>
 #include <linux/watchdog.h>
-#include <linux/miscdevice.h>
 #include <linux/uaccess.h>
-#include <linux/kref.h>
 #include <linux/slab.h>
 #include "sch56xx-common.h"
 
 /* Insmod parameters */
-static int nowayout = WATCHDOG_NOWAYOUT;
-module_param(nowayout, int, 0);
+static bool nowayout = WATCHDOG_NOWAYOUT;
+module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
 	__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
@@ -67,7 +52,6 @@ MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
 struct sch56xx_watchdog_data {
 	u16 addr;
 	struct mutex *io_lock;
-	struct kref kref;
 	struct watchdog_info wdinfo;
 	struct watchdog_device wddev;
 	u8 watchdog_preset;
@@ -150,7 +134,7 @@ static int sch56xx_send_cmd(u16 addr, u8 cmd, u16 reg, u8 v)
 	/* EM Interface Polling "Algorithm" */
 	for (i = 0; i < max_busy_polls + max_lazy_polls; i++) {
 		if (i >= max_busy_polls)
-			msleep(1);
+			usleep_range(1000, 2000);
 		/* Read Interrupt source Register */
 		val = inb(addr + 8);
 		/* Write Clear the interrupt source bits */
@@ -257,15 +241,6 @@ EXPORT_SYMBOL(sch56xx_read_virtual_reg12);
 /*
  * Watchdog routines
  */
-
-/* Release our data struct when we're unregistered *and*
-   all references to our watchdog device are released */
-static void watchdog_release_resources(struct kref *r)
-{
-	struct sch56xx_watchdog_data *data =
-		container_of(r, struct sch56xx_watchdog_data, kref);
-	kfree(data);
-}
 
 static int watchdog_set_timeout(struct watchdog_device *wddev,
 				unsigned int timeout)
@@ -395,32 +370,16 @@ static int watchdog_stop(struct watchdog_device *wddev)
 	return 0;
 }
 
-static void watchdog_ref(struct watchdog_device *wddev)
-{
-	struct sch56xx_watchdog_data *data = watchdog_get_drvdata(wddev);
-
-	kref_get(&data->kref);
-}
-
-static void watchdog_unref(struct watchdog_device *wddev)
-{
-	struct sch56xx_watchdog_data *data = watchdog_get_drvdata(wddev);
-
-	kref_put(&data->kref, watchdog_release_resources);
-}
-
 static const struct watchdog_ops watchdog_ops = {
 	.owner		= THIS_MODULE,
 	.start		= watchdog_start,
 	.stop		= watchdog_stop,
 	.ping		= watchdog_trigger,
 	.set_timeout	= watchdog_set_timeout,
-	.ref		= watchdog_ref,
-	.unref		= watchdog_unref,
 };
 
-struct sch56xx_watchdog_data *sch56xx_watchdog_register(struct device *parent,
-	u16 addr, u32 revision, struct mutex *io_lock, int check_enabled)
+void sch56xx_watchdog_register(struct device *parent, u16 addr, u32 revision,
+			       struct mutex *io_lock, int check_enabled)
 {
 	struct sch56xx_watchdog_data *data;
 	int err, control, output_enable;
@@ -434,24 +393,22 @@ struct sch56xx_watchdog_data *sch56xx_watchdog_register(struct device *parent,
 	mutex_unlock(io_lock);
 
 	if (control < 0)
-		return NULL;
+		return;
 	if (output_enable < 0)
-		return NULL;
+		return;
 	if (check_enabled && !(output_enable & SCH56XX_WDOG_OUTPUT_ENABLE)) {
 		pr_warn("Watchdog not enabled by BIOS, not registering\n");
-		return NULL;
+		return;
 	}
 
-	data = kzalloc(sizeof(struct sch56xx_watchdog_data), GFP_KERNEL);
+	data = devm_kzalloc(parent, sizeof(struct sch56xx_watchdog_data), GFP_KERNEL);
 	if (!data)
-		return NULL;
+		return;
 
 	data->addr = addr;
 	data->io_lock = io_lock;
-	kref_init(&data->kref);
 
-	strlcpy(data->wdinfo.identity, "sch56xx watchdog",
-		sizeof(data->wdinfo.identity));
+	strscpy(data->wdinfo.identity, "sch56xx watchdog", sizeof(data->wdinfo.identity));
 	data->wdinfo.firmware_version = revision;
 	data->wdinfo.options = WDIOF_KEEPALIVEPING | WDIOF_SETTIMEOUT;
 	if (!nowayout)
@@ -463,10 +420,9 @@ struct sch56xx_watchdog_data *sch56xx_watchdog_register(struct device *parent,
 	data->wddev.timeout = 60;
 	data->wddev.min_timeout = 1;
 	data->wddev.max_timeout = 255 * 60;
-	if (nowayout)
-		set_bit(WDOG_NO_WAY_OUT, &data->wddev.status);
+	watchdog_set_nowayout(&data->wddev, nowayout);
 	if (output_enable & SCH56XX_WDOG_OUTPUT_ENABLE)
-		set_bit(WDOG_ACTIVE, &data->wddev.status);
+		set_bit(WDOG_HW_RUNNING, &data->wddev.status);
 
 	/* Since the watchdog uses a downcounter there is no register to read
 	   the BIOS set timeout from (if any was set at all) ->
@@ -480,24 +436,13 @@ struct sch56xx_watchdog_data *sch56xx_watchdog_register(struct device *parent,
 	data->watchdog_output_enable = output_enable;
 
 	watchdog_set_drvdata(&data->wddev, data);
-	err = watchdog_register_device(&data->wddev);
+	err = devm_watchdog_register_device(parent, &data->wddev);
 	if (err) {
 		pr_err("Registering watchdog chardev: %d\n", err);
-		kfree(data);
-		return NULL;
+		devm_kfree(parent, data);
 	}
-
-	return data;
 }
 EXPORT_SYMBOL(sch56xx_watchdog_register);
-
-void sch56xx_watchdog_unregister(struct sch56xx_watchdog_data *data)
-{
-	watchdog_unregister_device(&data->wddev);
-	kref_put(&data->kref, watchdog_release_resources);
-	/* Don't touch data after this it may have been free-ed! */
-}
-EXPORT_SYMBOL(sch56xx_watchdog_unregister);
 
 /*
  * platform dev find, add and remove functions
@@ -559,37 +504,18 @@ static int __init sch56xx_device_add(int address, const char *name)
 	struct resource res = {
 		.start	= address,
 		.end	= address + REGION_LENGTH - 1,
+		.name	= name,
 		.flags	= IORESOURCE_IO,
 	};
 	int err;
 
-	sch56xx_pdev = platform_device_alloc(name, address);
-	if (!sch56xx_pdev)
-		return -ENOMEM;
-
-	res.name = sch56xx_pdev->name;
 	err = acpi_check_resource_conflict(&res);
 	if (err)
-		goto exit_device_put;
+		return err;
 
-	err = platform_device_add_resources(sch56xx_pdev, &res, 1);
-	if (err) {
-		pr_err("Device resource addition failed\n");
-		goto exit_device_put;
-	}
+	sch56xx_pdev = platform_device_register_simple(name, -1, &res, 1);
 
-	err = platform_device_add(sch56xx_pdev);
-	if (err) {
-		pr_err("Device addition failed\n");
-		goto exit_device_put;
-	}
-
-	return 0;
-
-exit_device_put:
-	platform_device_put(sch56xx_pdev);
-
-	return err;
+	return PTR_ERR_OR_ZERO(sch56xx_pdev);
 }
 
 static int __init sch56xx_init(void)

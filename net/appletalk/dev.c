@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Moved here from drivers/net/net_init.c, which is:
  *	Written 1993,1994,1995 by Donald Becker.
@@ -39,6 +40,7 @@ static void ltalk_setup(struct net_device *dev)
 
 struct net_device *alloc_ltalkdev(int sizeof_priv)
 {
-	return alloc_netdev(sizeof_priv, "lt%d", ltalk_setup);
+	return alloc_netdev(sizeof_priv, "lt%d", NET_NAME_UNKNOWN,
+			    ltalk_setup);
 }
 EXPORT_SYMBOL(alloc_ltalkdev);

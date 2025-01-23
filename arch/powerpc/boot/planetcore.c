@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * PlanetCore configuration data support functions
  *
  * Author: Scott Wood <scottwood@freescale.com>
  *
  * Copyright (c) 2007 Freescale Semiconductor, Inc.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
  */
 
 #include "stdio.h"
@@ -130,37 +127,4 @@ void planetcore_set_stdout_path(const char *table)
 		return;
 
 	setprop_str(chosen, "linux,stdout-path", path);
-}
-
-void planetcore_set_serial_speed(const char *table)
-{
-	void *chosen, *stdout;
-	u64 baud;
-	u32 baud32;
-	int len;
-
-	chosen = finddevice("/chosen");
-	if (!chosen)
-		return;
-
-	len = getprop(chosen, "linux,stdout-path", prop_buf, MAX_PROP_LEN);
-	if (len <= 0)
-		return;
-
-	stdout = finddevice(prop_buf);
-	if (!stdout) {
-		printf("planetcore_set_serial_speed: "
-		       "Bad /chosen/linux,stdout-path.\r\n");
-
-		return;
-	}
-
-	if (!planetcore_get_decimal(table, PLANETCORE_KEY_SERIAL_BAUD,
-	                            &baud)) {
-		printf("planetcore_set_serial_speed: No SB tag.\r\n");
-		return;
-	}
-
-	baud32 = baud;
-	setprop(stdout, "current-speed", &baud32, 4);
 }

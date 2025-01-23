@@ -1,19 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ARMv8 single-step debug support and mdscr context switching.
  *
  * Copyright (C) 2012 ARM Limited
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  * Author: Will Deacon <will.deacon@arm.com>
  */
@@ -23,26 +12,23 @@
 #include <linux/hardirq.h>
 #include <linux/init.h>
 #include <linux/ptrace.h>
+#include <linux/kprobes.h>
 #include <linux/stat.h>
 #include <linux/uaccess.h>
+#include <linux/sched/task_stack.h>
 
-#include <asm/debug-monitors.h>
+#include <asm/cpufeature.h>
 #include <asm/cputype.h>
+#include <asm/daifflags.h>
+#include <asm/debug-monitors.h>
 #include <asm/system_misc.h>
-
-/* Low-level stepping controls. */
-#define DBG_MDSCR_SS		(1 << 0)
-#define DBG_SPSR_SS		(1 << 21)
-
-/* MDSCR_EL1 enabling bits */
-#define DBG_MDSCR_KDE		(1 << 13)
-#define DBG_MDSCR_MDE		(1 << 15)
-#define DBG_MDSCR_MASK		~(DBG_MDSCR_KDE | DBG_MDSCR_MDE)
+#include <asm/traps.h>
 
 /* Determine debug architecture. */
 u8 debug_monitors_arch(void)
 {
-	return read_cpuid(ID_AA64DFR0_EL1) & 0xf;
+	return cpuid_feature_extract_unsigned_field(read_sanitised_ftr_reg(SYS_ID_AA64DFR0_EL1),
+						ID_AA64DFR0_EL1_DebugVer_SHIFT);
 }
 
 /*
@@ -51,23 +37,23 @@ u8 debug_monitors_arch(void)
 static void mdscr_write(u32 mdscr)
 {
 	unsigned long flags;
-	local_dbg_save(flags);
-	asm volatile("msr mdscr_el1, %0" :: "r" (mdscr));
-	local_dbg_restore(flags);
+	flags = local_daif_save();
+	write_sysreg(mdscr, mdscr_el1);
+	local_daif_restore(flags);
 }
+NOKPROBE_SYMBOL(mdscr_write);
 
 static u32 mdscr_read(void)
 {
-	u32 mdscr;
-	asm volatile("mrs %0, mdscr_el1" : "=r" (mdscr));
-	return mdscr;
+	return read_sysreg(mdscr_el1);
 }
+NOKPROBE_SYMBOL(mdscr_read);
 
 /*
  * Allow root to disable self-hosted debug from userspace.
  * This is useful if you want to connect an external JTAG debugger.
  */
-static u32 debug_enabled = 1;
+static bool debug_enabled = true;
 
 static int create_debug_debugfs_entry(void)
 {
@@ -78,7 +64,7 @@ fs_initcall(create_debug_debugfs_entry);
 
 static int __init early_debug_disable(char *buf)
 {
-	debug_enabled = 0;
+	debug_enabled = false;
 	return 0;
 }
 
@@ -91,7 +77,7 @@ early_param("nodebugmon", early_debug_disable);
 static DEFINE_PER_CPU(int, mde_ref_count);
 static DEFINE_PER_CPU(int, kde_ref_count);
 
-void enable_debug_monitors(enum debug_el el)
+void enable_debug_monitors(enum dbg_active_el el)
 {
 	u32 mdscr, enable = 0;
 
@@ -110,8 +96,9 @@ void enable_debug_monitors(enum debug_el el)
 		mdscr_write(mdscr);
 	}
 }
+NOKPROBE_SYMBOL(enable_debug_monitors);
 
-void disable_debug_monitors(enum debug_el el)
+void disable_debug_monitors(enum dbg_active_el el)
 {
 	u32 mdscr, disable = 0;
 
@@ -130,109 +117,131 @@ void disable_debug_monitors(enum debug_el el)
 		mdscr_write(mdscr);
 	}
 }
+NOKPROBE_SYMBOL(disable_debug_monitors);
 
 /*
  * OS lock clearing.
  */
-static void clear_os_lock(void *unused)
+static int clear_os_lock(unsigned int cpu)
 {
-	asm volatile("msr oslar_el1, %0" : : "r" (0));
+	write_sysreg(0, osdlr_el1);
+	write_sysreg(0, oslar_el1);
 	isb();
-}
-
-static int os_lock_notify(struct notifier_block *self,
-				    unsigned long action, void *data)
-{
-	int cpu = (unsigned long)data;
-	if (action == CPU_ONLINE)
-		smp_call_function_single(cpu, clear_os_lock, NULL, 1);
-	return NOTIFY_OK;
-}
-
-static struct notifier_block os_lock_nb = {
-	.notifier_call = os_lock_notify,
-};
-
-static int debug_monitors_init(void)
-{
-	/* Clear the OS lock. */
-	smp_call_function(clear_os_lock, NULL, 1);
-	clear_os_lock(NULL);
-
-	/* Register hotplug handler. */
-	register_cpu_notifier(&os_lock_nb);
 	return 0;
+}
+
+static int __init debug_monitors_init(void)
+{
+	return cpuhp_setup_state(CPUHP_AP_ARM64_DEBUG_MONITORS_STARTING,
+				 "arm64/debug_monitors:starting",
+				 clear_os_lock, NULL);
 }
 postcore_initcall(debug_monitors_init);
 
 /*
  * Single step API and exception handling.
  */
-static void set_regs_spsr_ss(struct pt_regs *regs)
+static void set_user_regs_spsr_ss(struct user_pt_regs *regs)
 {
-	unsigned long spsr;
+	regs->pstate |= DBG_SPSR_SS;
+}
+NOKPROBE_SYMBOL(set_user_regs_spsr_ss);
 
-	spsr = regs->pstate;
-	spsr &= ~DBG_SPSR_SS;
-	spsr |= DBG_SPSR_SS;
-	regs->pstate = spsr;
+static void clear_user_regs_spsr_ss(struct user_pt_regs *regs)
+{
+	regs->pstate &= ~DBG_SPSR_SS;
+}
+NOKPROBE_SYMBOL(clear_user_regs_spsr_ss);
+
+#define set_regs_spsr_ss(r)	set_user_regs_spsr_ss(&(r)->user_regs)
+#define clear_regs_spsr_ss(r)	clear_user_regs_spsr_ss(&(r)->user_regs)
+
+static DEFINE_SPINLOCK(debug_hook_lock);
+static LIST_HEAD(user_step_hook);
+static LIST_HEAD(kernel_step_hook);
+
+static void register_debug_hook(struct list_head *node, struct list_head *list)
+{
+	spin_lock(&debug_hook_lock);
+	list_add_rcu(node, list);
+	spin_unlock(&debug_hook_lock);
+
 }
 
-static void clear_regs_spsr_ss(struct pt_regs *regs)
+static void unregister_debug_hook(struct list_head *node)
 {
-	unsigned long spsr;
-
-	spsr = regs->pstate;
-	spsr &= ~DBG_SPSR_SS;
-	regs->pstate = spsr;
+	spin_lock(&debug_hook_lock);
+	list_del_rcu(node);
+	spin_unlock(&debug_hook_lock);
+	synchronize_rcu();
 }
 
-/* EL1 Single Step Handler hooks */
-static LIST_HEAD(step_hook);
-DEFINE_RWLOCK(step_hook_lock);
-
-void register_step_hook(struct step_hook *hook)
+void register_user_step_hook(struct step_hook *hook)
 {
-	write_lock(&step_hook_lock);
-	list_add(&hook->node, &step_hook);
-	write_unlock(&step_hook_lock);
+	register_debug_hook(&hook->node, &user_step_hook);
 }
 
-void unregister_step_hook(struct step_hook *hook)
+void unregister_user_step_hook(struct step_hook *hook)
 {
-	write_lock(&step_hook_lock);
-	list_del(&hook->node);
-	write_unlock(&step_hook_lock);
+	unregister_debug_hook(&hook->node);
+}
+
+void register_kernel_step_hook(struct step_hook *hook)
+{
+	register_debug_hook(&hook->node, &kernel_step_hook);
+}
+
+void unregister_kernel_step_hook(struct step_hook *hook)
+{
+	unregister_debug_hook(&hook->node);
 }
 
 /*
- * Call registered single step handers
+ * Call registered single step handlers
  * There is no Syndrome info to check for determining the handler.
  * So we call all the registered handlers, until the right handler is
  * found which returns zero.
  */
-static int call_step_hook(struct pt_regs *regs, unsigned int esr)
+static int call_step_hook(struct pt_regs *regs, unsigned long esr)
 {
 	struct step_hook *hook;
+	struct list_head *list;
 	int retval = DBG_HOOK_ERROR;
 
-	read_lock(&step_hook_lock);
+	list = user_mode(regs) ? &user_step_hook : &kernel_step_hook;
 
-	list_for_each_entry(hook, &step_hook, node)	{
+	/*
+	 * Since single-step exception disables interrupt, this function is
+	 * entirely not preemptible, and we can use rcu list safely here.
+	 */
+	list_for_each_entry_rcu(hook, list, node)	{
 		retval = hook->fn(regs, esr);
 		if (retval == DBG_HOOK_HANDLED)
 			break;
 	}
 
-	read_unlock(&step_hook_lock);
-
 	return retval;
 }
+NOKPROBE_SYMBOL(call_step_hook);
 
-static int single_step_handler(unsigned long addr, unsigned int esr,
+static void send_user_sigtrap(int si_code)
+{
+	struct pt_regs *regs = current_pt_regs();
+
+	if (WARN_ON(!user_mode(regs)))
+		return;
+
+	if (interrupts_enabled(regs))
+		local_irq_enable();
+
+	arm64_force_sig_fault(SIGTRAP, si_code, instruction_pointer(regs),
+			      "User debug trap");
+}
+
+static int single_step_handler(unsigned long unused, unsigned long esr,
 			       struct pt_regs *regs)
 {
-	siginfo_t info;
+	bool handler_found = false;
 
 	/*
 	 * If we are stepping a pending breakpoint, call the hw_breakpoint
@@ -241,12 +250,11 @@ static int single_step_handler(unsigned long addr, unsigned int esr,
 	if (!reinstall_suspended_bps(regs))
 		return 0;
 
-	if (user_mode(regs)) {
-		info.si_signo = SIGTRAP;
-		info.si_errno = 0;
-		info.si_code  = TRAP_HWBKPT;
-		info.si_addr  = (void __user *)instruction_pointer(regs);
-		force_sig_info(SIGTRAP, &info, current);
+	if (!handler_found && call_step_hook(regs, esr) == DBG_HOOK_HANDLED)
+		handler_found = true;
+
+	if (!handler_found && user_mode(regs)) {
+		send_user_sigtrap(TRAP_TRACE);
 
 		/*
 		 * ptrace will disable single step unless explicitly
@@ -255,11 +263,8 @@ static int single_step_handler(unsigned long addr, unsigned int esr,
 		 * to the active-not-pending state).
 		 */
 		user_rewind_single_step(current);
-	} else {
-		if (call_step_hook(regs, esr) == DBG_HOOK_HANDLED)
-			return 0;
-
-		pr_warning("Unexpected kernel single-step exception at EL1\n");
+	} else if (!handler_found) {
+		pr_warn("Unexpected kernel single-step exception at EL1\n");
 		/*
 		 * Re-enable stepping since we know that we will be
 		 * returning to regs.
@@ -269,71 +274,75 @@ static int single_step_handler(unsigned long addr, unsigned int esr,
 
 	return 0;
 }
+NOKPROBE_SYMBOL(single_step_handler);
 
-/*
- * Breakpoint handler is re-entrant as another breakpoint can
- * hit within breakpoint handler, especically in kprobes.
- * Use reader/writer locks instead of plain spinlock.
- */
-static LIST_HEAD(break_hook);
-DEFINE_RWLOCK(break_hook_lock);
+static LIST_HEAD(user_break_hook);
+static LIST_HEAD(kernel_break_hook);
 
-void register_break_hook(struct break_hook *hook)
+void register_user_break_hook(struct break_hook *hook)
 {
-	write_lock(&break_hook_lock);
-	list_add(&hook->node, &break_hook);
-	write_unlock(&break_hook_lock);
+	register_debug_hook(&hook->node, &user_break_hook);
 }
+EXPORT_SYMBOL_GPL(register_user_break_hook);
 
-void unregister_break_hook(struct break_hook *hook)
+void unregister_user_break_hook(struct break_hook *hook)
 {
-	write_lock(&break_hook_lock);
-	list_del(&hook->node);
-	write_unlock(&break_hook_lock);
+	unregister_debug_hook(&hook->node);
 }
+EXPORT_SYMBOL_GPL(unregister_user_break_hook);
 
-static int call_break_hook(struct pt_regs *regs, unsigned int esr)
+void register_kernel_break_hook(struct break_hook *hook)
+{
+	register_debug_hook(&hook->node, &kernel_break_hook);
+}
+EXPORT_SYMBOL_GPL(register_kernel_break_hook);
+
+void unregister_kernel_break_hook(struct break_hook *hook)
+{
+	unregister_debug_hook(&hook->node);
+}
+EXPORT_SYMBOL_GPL(unregister_kernel_break_hook);
+
+static int call_break_hook(struct pt_regs *regs, unsigned long esr)
 {
 	struct break_hook *hook;
-	int (*fn)(struct pt_regs *regs, unsigned int esr) = NULL;
+	struct list_head *list;
+	int (*fn)(struct pt_regs *regs, unsigned long esr) = NULL;
 
-	read_lock(&break_hook_lock);
-	list_for_each_entry(hook, &break_hook, node)
-		if ((esr & hook->esr_mask) == hook->esr_val)
+	list = user_mode(regs) ? &user_break_hook : &kernel_break_hook;
+
+	/*
+	 * Since brk exception disables interrupt, this function is
+	 * entirely not preemptible, and we can use rcu list safely here.
+	 */
+	list_for_each_entry_rcu(hook, list, node) {
+		if ((esr_brk_comment(esr) & ~hook->mask) == hook->imm)
 			fn = hook->fn;
-	read_unlock(&break_hook_lock);
+	}
 
 	return fn ? fn(regs, esr) : DBG_HOOK_ERROR;
 }
+NOKPROBE_SYMBOL(call_break_hook);
 
-static int brk_handler(unsigned long addr, unsigned int esr,
+static int brk_handler(unsigned long unused, unsigned long esr,
 		       struct pt_regs *regs)
 {
-	siginfo_t info;
-
 	if (call_break_hook(regs, esr) == DBG_HOOK_HANDLED)
 		return 0;
 
-	pr_warn("unexpected brk exception at %lx, esr=0x%x\n",
-			(long)instruction_pointer(regs), esr);
-
-	if (!user_mode(regs))
+	if (user_mode(regs)) {
+		send_user_sigtrap(TRAP_BRKPT);
+	} else {
+		pr_warn("Unexpected kernel BRK exception at EL1\n");
 		return -EFAULT;
+	}
 
-	info = (siginfo_t) {
-		.si_signo = SIGTRAP,
-		.si_errno = 0,
-		.si_code  = TRAP_BRKPT,
-		.si_addr  = (void __user *)instruction_pointer(regs),
-	};
-
-	force_sig_info(SIGTRAP, &info, current);
 	return 0;
 }
+NOKPROBE_SYMBOL(brk_handler);
 
 int aarch32_break_handler(struct pt_regs *regs)
 {
-	siginfo_t info;
 	u32 arm_instr;
 	u16 thumb_instr;
 	bool bp = false;
@@ -344,46 +353,40 @@ int aarch32_break_handler(struct pt_regs *regs)
 
 	if (compat_thumb_mode(regs)) {
 		/* get 16-bit Thumb instruction */
-		get_user(thumb_instr, (u16 __user *)pc);
-		thumb_instr = le16_to_cpu(thumb_instr);
+		__le16 instr;
+		get_user(instr, (__le16 __user *)pc);
+		thumb_instr = le16_to_cpu(instr);
 		if (thumb_instr == AARCH32_BREAK_THUMB2_LO) {
 			/* get second half of 32-bit Thumb-2 instruction */
-			get_user(thumb_instr, (u16 __user *)(pc + 2));
-			thumb_instr = le16_to_cpu(thumb_instr);
+			get_user(instr, (__le16 __user *)(pc + 2));
+			thumb_instr = le16_to_cpu(instr);
 			bp = thumb_instr == AARCH32_BREAK_THUMB2_HI;
 		} else {
 			bp = thumb_instr == AARCH32_BREAK_THUMB;
 		}
 	} else {
 		/* 32-bit ARM instruction */
-		get_user(arm_instr, (u32 __user *)pc);
-		arm_instr = le32_to_cpu(arm_instr);
+		__le32 instr;
+		get_user(instr, (__le32 __user *)pc);
+		arm_instr = le32_to_cpu(instr);
 		bp = (arm_instr & ~0xf0000000) == AARCH32_BREAK_ARM;
 	}
 
 	if (!bp)
 		return -EFAULT;
 
-	info = (siginfo_t) {
-		.si_signo = SIGTRAP,
-		.si_errno = 0,
-		.si_code  = TRAP_BRKPT,
-		.si_addr  = pc,
-	};
-
-	force_sig_info(SIGTRAP, &info, current);
+	send_user_sigtrap(TRAP_BRKPT);
 	return 0;
 }
+NOKPROBE_SYMBOL(aarch32_break_handler);
 
-static int __init debug_traps_init(void)
+void __init debug_traps_init(void)
 {
 	hook_debug_fault_code(DBG_ESR_EVT_HWSS, single_step_handler, SIGTRAP,
-			      TRAP_HWBKPT, "single-step handler");
+			      TRAP_TRACE, "single-step handler");
 	hook_debug_fault_code(DBG_ESR_EVT_BRK, brk_handler, SIGTRAP,
-			      TRAP_BRKPT, "ptrace BRK handler");
-	return 0;
+			      TRAP_BRKPT, "BRK handler");
 }
-arch_initcall(debug_traps_init);
 
 /* Re-enable single step for syscall restarting. */
 void user_rewind_single_step(struct task_struct *task)
@@ -392,14 +395,24 @@ void user_rewind_single_step(struct task_struct *task)
 	 * If single step is active for this thread, then set SPSR.SS
 	 * to 1 to avoid returning to the active-pending state.
 	 */
-	if (test_ti_thread_flag(task_thread_info(task), TIF_SINGLESTEP))
+	if (test_tsk_thread_flag(task, TIF_SINGLESTEP))
 		set_regs_spsr_ss(task_pt_regs(task));
 }
+NOKPROBE_SYMBOL(user_rewind_single_step);
 
 void user_fastforward_single_step(struct task_struct *task)
 {
-	if (test_ti_thread_flag(task_thread_info(task), TIF_SINGLESTEP))
+	if (test_tsk_thread_flag(task, TIF_SINGLESTEP))
 		clear_regs_spsr_ss(task_pt_regs(task));
+}
+
+void user_regs_reset_single_step(struct user_pt_regs *regs,
+				 struct task_struct *task)
+{
+	if (test_tsk_thread_flag(task, TIF_SINGLESTEP))
+		set_user_regs_spsr_ss(regs);
+	else
+		clear_user_regs_spsr_ss(regs);
 }
 
 /* Kernel API */
@@ -410,6 +423,7 @@ void kernel_enable_single_step(struct pt_regs *regs)
 	mdscr_write(mdscr_read() | DBG_MDSCR_SS);
 	enable_debug_monitors(DBG_ACTIVE_EL1);
 }
+NOKPROBE_SYMBOL(kernel_enable_single_step);
 
 void kernel_disable_single_step(void)
 {
@@ -417,21 +431,32 @@ void kernel_disable_single_step(void)
 	mdscr_write(mdscr_read() & ~DBG_MDSCR_SS);
 	disable_debug_monitors(DBG_ACTIVE_EL1);
 }
+NOKPROBE_SYMBOL(kernel_disable_single_step);
 
 int kernel_active_single_step(void)
 {
 	WARN_ON(!irqs_disabled());
 	return mdscr_read() & DBG_MDSCR_SS;
 }
+NOKPROBE_SYMBOL(kernel_active_single_step);
+
+void kernel_rewind_single_step(struct pt_regs *regs)
+{
+	set_regs_spsr_ss(regs);
+}
 
 /* ptrace API */
 void user_enable_single_step(struct task_struct *task)
 {
-	set_ti_thread_flag(task_thread_info(task), TIF_SINGLESTEP);
-	set_regs_spsr_ss(task_pt_regs(task));
+	struct thread_info *ti = task_thread_info(task);
+
+	if (!test_and_set_ti_thread_flag(ti, TIF_SINGLESTEP))
+		set_regs_spsr_ss(task_pt_regs(task));
 }
+NOKPROBE_SYMBOL(user_enable_single_step);
 
 void user_disable_single_step(struct task_struct *task)
 {
 	clear_ti_thread_flag(task_thread_info(task), TIF_SINGLESTEP);
 }
+NOKPROBE_SYMBOL(user_disable_single_step);

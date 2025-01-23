@@ -1,84 +1,134 @@
-/*
- * clk-max77686.c - Clock driver for Maxim 77686
- *
- * Copyright (C) 2012 Samsung Electornics
- * Jonghwa Lee <jonghwa3.lee@samsung.com>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
- */
+// SPDX-License-Identifier: GPL-2.0+
+//
+// clk-max77686.c - Clock driver for Maxim 77686/MAX77802
+//
+// Copyright (C) 2012 Samsung Electornics
+// Jonghwa Lee <jonghwa3.lee@samsung.com>
 
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/err.h>
+#include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/mfd/max77620.h>
 #include <linux/mfd/max77686.h>
 #include <linux/mfd/max77686-private.h>
 #include <linux/clk-provider.h>
 #include <linux/mutex.h>
 #include <linux/clkdev.h>
+#include <linux/of.h>
+#include <linux/regmap.h>
 
-enum {
-	MAX77686_CLK_AP = 0,
-	MAX77686_CLK_CP,
-	MAX77686_CLK_PMIC,
-	MAX77686_CLKS_NUM,
+#include <dt-bindings/clock/maxim,max77686.h>
+#include <dt-bindings/clock/maxim,max77802.h>
+#include <dt-bindings/clock/maxim,max77620.h>
+
+#define MAX77802_CLOCK_LOW_JITTER_SHIFT 0x3
+
+enum max77686_chip_name {
+	CHIP_MAX77686,
+	CHIP_MAX77802,
+	CHIP_MAX77620,
 };
 
-struct max77686_clk {
-	struct max77686_dev *iodev;
-	u32 mask;
+struct max77686_hw_clk_info {
+	const char *name;
+	u32 clk_reg;
+	u32 clk_enable_mask;
+	u32 flags;
+};
+
+struct max77686_clk_init_data {
+	struct regmap *regmap;
 	struct clk_hw hw;
-	struct clk_lookup *lookup;
+	struct clk_init_data clk_idata;
+	const struct max77686_hw_clk_info *clk_info;
 };
 
-static struct max77686_clk *to_max77686_clk(struct clk_hw *hw)
+struct max77686_clk_driver_data {
+	enum max77686_chip_name chip;
+	struct max77686_clk_init_data *max_clk_data;
+	size_t num_clks;
+};
+
+static const struct
+max77686_hw_clk_info max77686_hw_clks_info[MAX77686_CLKS_NUM] = {
+	[MAX77686_CLK_AP] = {
+		.name = "32khz_ap",
+		.clk_reg = MAX77686_REG_32KHZ,
+		.clk_enable_mask = BIT(MAX77686_CLK_AP),
+	},
+	[MAX77686_CLK_CP] = {
+		.name = "32khz_cp",
+		.clk_reg = MAX77686_REG_32KHZ,
+		.clk_enable_mask = BIT(MAX77686_CLK_CP),
+	},
+	[MAX77686_CLK_PMIC] = {
+		.name = "32khz_pmic",
+		.clk_reg = MAX77686_REG_32KHZ,
+		.clk_enable_mask = BIT(MAX77686_CLK_PMIC),
+	},
+};
+
+static const struct
+max77686_hw_clk_info max77802_hw_clks_info[MAX77802_CLKS_NUM] = {
+	[MAX77802_CLK_32K_AP] = {
+		.name = "32khz_ap",
+		.clk_reg = MAX77802_REG_32KHZ,
+		.clk_enable_mask = BIT(MAX77802_CLK_32K_AP),
+	},
+	[MAX77802_CLK_32K_CP] = {
+		.name = "32khz_cp",
+		.clk_reg = MAX77802_REG_32KHZ,
+		.clk_enable_mask = BIT(MAX77802_CLK_32K_CP),
+	},
+};
+
+static const struct
+max77686_hw_clk_info max77620_hw_clks_info[MAX77620_CLKS_NUM] = {
+	[MAX77620_CLK_32K_OUT0] = {
+		.name = "32khz_out0",
+		.clk_reg = MAX77620_REG_CNFG1_32K,
+		.clk_enable_mask = MAX77620_CNFG1_32K_OUT0_EN,
+	},
+};
+
+static struct max77686_clk_init_data *to_max77686_clk_init_data(
+				struct clk_hw *hw)
 {
-	return container_of(hw, struct max77686_clk, hw);
+	return container_of(hw, struct max77686_clk_init_data, hw);
 }
 
 static int max77686_clk_prepare(struct clk_hw *hw)
 {
-	struct max77686_clk *max77686 = to_max77686_clk(hw);
+	struct max77686_clk_init_data *max77686 = to_max77686_clk_init_data(hw);
 
-	return regmap_update_bits(max77686->iodev->regmap,
-				  MAX77686_REG_32KHZ, max77686->mask,
-				  max77686->mask);
+	return regmap_update_bits(max77686->regmap, max77686->clk_info->clk_reg,
+				  max77686->clk_info->clk_enable_mask,
+				  max77686->clk_info->clk_enable_mask);
 }
 
 static void max77686_clk_unprepare(struct clk_hw *hw)
 {
-	struct max77686_clk *max77686 = to_max77686_clk(hw);
+	struct max77686_clk_init_data *max77686 = to_max77686_clk_init_data(hw);
 
-	regmap_update_bits(max77686->iodev->regmap,
-		MAX77686_REG_32KHZ, max77686->mask, ~max77686->mask);
+	regmap_update_bits(max77686->regmap, max77686->clk_info->clk_reg,
+			   max77686->clk_info->clk_enable_mask,
+			   ~max77686->clk_info->clk_enable_mask);
 }
 
 static int max77686_clk_is_prepared(struct clk_hw *hw)
 {
-	struct max77686_clk *max77686 = to_max77686_clk(hw);
+	struct max77686_clk_init_data *max77686 = to_max77686_clk_init_data(hw);
 	int ret;
 	u32 val;
 
-	ret = regmap_read(max77686->iodev->regmap,
-				MAX77686_REG_32KHZ, &val);
+	ret = regmap_read(max77686->regmap, max77686->clk_info->clk_reg, &val);
 
 	if (ret < 0)
 		return -EINVAL;
 
-	return val & max77686->mask;
+	return val & max77686->clk_info->clk_enable_mask;
 }
 
 static unsigned long max77686_recalc_rate(struct clk_hw *hw,
@@ -87,165 +137,155 @@ static unsigned long max77686_recalc_rate(struct clk_hw *hw,
 	return 32768;
 }
 
-static struct clk_ops max77686_clk_ops = {
+static const struct clk_ops max77686_clk_ops = {
 	.prepare	= max77686_clk_prepare,
 	.unprepare	= max77686_clk_unprepare,
 	.is_prepared	= max77686_clk_is_prepared,
 	.recalc_rate	= max77686_recalc_rate,
 };
 
-static struct clk_init_data max77686_clks_init[MAX77686_CLKS_NUM] = {
-	[MAX77686_CLK_AP] = {
-		.name = "32khz_ap",
-		.ops = &max77686_clk_ops,
-		.flags = CLK_IS_ROOT,
-	},
-	[MAX77686_CLK_CP] = {
-		.name = "32khz_cp",
-		.ops = &max77686_clk_ops,
-		.flags = CLK_IS_ROOT,
-	},
-	[MAX77686_CLK_PMIC] = {
-		.name = "32khz_pmic",
-		.ops = &max77686_clk_ops,
-		.flags = CLK_IS_ROOT,
-	},
-};
-
-static struct clk *max77686_clk_register(struct device *dev,
-				struct max77686_clk *max77686)
+static struct clk_hw *
+of_clk_max77686_get(struct of_phandle_args *clkspec, void *data)
 {
-	struct clk *clk;
-	struct clk_hw *hw = &max77686->hw;
+	struct max77686_clk_driver_data *drv_data = data;
+	unsigned int idx = clkspec->args[0];
 
-	clk = clk_register(dev, hw);
-	if (IS_ERR(clk))
-		return clk;
+	if (idx >= drv_data->num_clks) {
+		pr_err("%s: invalid index %u\n", __func__, idx);
+		return ERR_PTR(-EINVAL);
+	}
 
-	max77686->lookup = kzalloc(sizeof(struct clk_lookup), GFP_KERNEL);
-	if (!max77686->lookup)
-		return ERR_PTR(-ENOMEM);
-
-	max77686->lookup->con_id = hw->init->name;
-	max77686->lookup->clk = clk;
-
-	clkdev_add(max77686->lookup);
-
-	return clk;
+	return &drv_data->max_clk_data[idx].hw;
 }
 
 static int max77686_clk_probe(struct platform_device *pdev)
 {
-	struct max77686_dev *iodev = dev_get_drvdata(pdev->dev.parent);
-	struct max77686_clk *max77686_clks[MAX77686_CLKS_NUM];
-	struct clk **clocks;
-	int i, ret;
+	struct device *dev = &pdev->dev;
+	struct device *parent = dev->parent;
+	const struct platform_device_id *id = platform_get_device_id(pdev);
+	struct max77686_clk_driver_data *drv_data;
+	const struct max77686_hw_clk_info *hw_clks;
+	struct regmap *regmap;
+	int i, ret, num_clks;
 
-	clocks = devm_kzalloc(&pdev->dev, sizeof(struct clk *)
-					* MAX77686_CLKS_NUM, GFP_KERNEL);
-	if (!clocks)
+	drv_data = devm_kzalloc(dev, sizeof(*drv_data), GFP_KERNEL);
+	if (!drv_data)
 		return -ENOMEM;
 
-	for (i = 0; i < MAX77686_CLKS_NUM; i++) {
-		max77686_clks[i] = devm_kzalloc(&pdev->dev,
-					sizeof(struct max77686_clk), GFP_KERNEL);
-		if (!max77686_clks[i])
-			return -ENOMEM;
+	regmap = dev_get_regmap(parent, NULL);
+	if (!regmap) {
+		dev_err(dev, "Failed to get rtc regmap\n");
+		return -ENODEV;
 	}
 
-	for (i = 0; i < MAX77686_CLKS_NUM; i++) {
-		max77686_clks[i]->iodev = iodev;
-		max77686_clks[i]->mask = 1 << i;
-		max77686_clks[i]->hw.init = &max77686_clks_init[i];
+	drv_data->chip = id->driver_data;
 
-		clocks[i] = max77686_clk_register(&pdev->dev, max77686_clks[i]);
-		if (IS_ERR(clocks[i])) {
-			ret = PTR_ERR(clocks[i]);
-			dev_err(&pdev->dev, "failed to register %s\n",
-				max77686_clks[i]->hw.init->name);
-			goto err_clocks;
-		}
+	switch (drv_data->chip) {
+	case CHIP_MAX77686:
+		num_clks = MAX77686_CLKS_NUM;
+		hw_clks = max77686_hw_clks_info;
+		break;
+
+	case CHIP_MAX77802:
+		num_clks = MAX77802_CLKS_NUM;
+		hw_clks = max77802_hw_clks_info;
+		break;
+
+	case CHIP_MAX77620:
+		num_clks = MAX77620_CLKS_NUM;
+		hw_clks = max77620_hw_clks_info;
+		break;
+
+	default:
+		dev_err(dev, "Unknown Chip ID\n");
+		return -EINVAL;
 	}
 
-	platform_set_drvdata(pdev, clocks);
+	drv_data->num_clks = num_clks;
+	drv_data->max_clk_data = devm_kcalloc(dev, num_clks,
+					      sizeof(*drv_data->max_clk_data),
+					      GFP_KERNEL);
+	if (!drv_data->max_clk_data)
+		return -ENOMEM;
 
-	if (iodev->dev->of_node) {
-		struct clk_onecell_data *of_data;
+	for (i = 0; i < num_clks; i++) {
+		struct max77686_clk_init_data *max_clk_data;
+		const char *clk_name;
 
-		of_data = devm_kzalloc(&pdev->dev,
-					sizeof(*of_data), GFP_KERNEL);
-		if (!of_data) {
-			ret = -ENOMEM;
-			goto err_clocks;
-		}
+		max_clk_data = &drv_data->max_clk_data[i];
 
-		of_data->clks = clocks;
-		of_data->clk_num = MAX77686_CLKS_NUM;
-		ret = of_clk_add_provider(iodev->dev->of_node,
-					of_clk_src_onecell_get, of_data);
+		max_clk_data->regmap = regmap;
+		max_clk_data->clk_info = &hw_clks[i];
+		max_clk_data->clk_idata.flags = hw_clks[i].flags;
+		max_clk_data->clk_idata.ops = &max77686_clk_ops;
+
+		if (parent->of_node &&
+		    !of_property_read_string_index(parent->of_node,
+						   "clock-output-names",
+						   i, &clk_name))
+			max_clk_data->clk_idata.name = clk_name;
+		else
+			max_clk_data->clk_idata.name = hw_clks[i].name;
+
+		max_clk_data->hw.init = &max_clk_data->clk_idata;
+
+		ret = devm_clk_hw_register(dev, &max_clk_data->hw);
 		if (ret) {
-			dev_err(&pdev->dev, "failed to register OF clock provider\n");
-			goto err_clocks;
+			dev_err(dev, "Failed to clock register: %d\n", ret);
+			return ret;
+		}
+
+		ret = devm_clk_hw_register_clkdev(dev, &max_clk_data->hw,
+						  max_clk_data->clk_idata.name,
+						  NULL);
+		if (ret < 0) {
+			dev_err(dev, "Failed to clkdev register: %d\n", ret);
+			return ret;
 		}
 	}
 
-	return 0;
+	if (parent->of_node) {
+		ret = devm_of_clk_add_hw_provider(dev, of_clk_max77686_get,
+						  drv_data);
 
-err_clocks:
-	for (--i; i >= 0; --i) {
-		clkdev_drop(max77686_clks[i]->lookup);
-		clk_unregister(max77686_clks[i]->hw.clk);
+		if (ret < 0) {
+			dev_err(dev, "Failed to register OF clock provider: %d\n",
+				ret);
+			return ret;
+		}
 	}
 
-	return ret;
-}
-
-static int max77686_clk_remove(struct platform_device *pdev)
-{
-	struct max77686_dev *iodev = dev_get_drvdata(pdev->dev.parent);
-	struct clk **clocks = platform_get_drvdata(pdev);
-	int i;
-
-	if (iodev->dev->of_node)
-		of_clk_del_provider(iodev->dev->of_node);
-
-	for (i = 0; i < MAX77686_CLKS_NUM; i++) {
-		struct clk_hw *hw = __clk_get_hw(clocks[i]);
-		struct max77686_clk *max77686 = to_max77686_clk(hw);
-
-		clkdev_drop(max77686->lookup);
-		clk_unregister(clocks[i]);
+	/* MAX77802: Enable low-jitter mode on the 32khz clocks. */
+	if (drv_data->chip == CHIP_MAX77802) {
+		ret = regmap_update_bits(regmap, MAX77802_REG_32KHZ,
+					 1 << MAX77802_CLOCK_LOW_JITTER_SHIFT,
+					 1 << MAX77802_CLOCK_LOW_JITTER_SHIFT);
+		if (ret < 0) {
+			dev_err(dev, "Failed to config low-jitter: %d\n", ret);
+			return ret;
+		}
 	}
+
 	return 0;
 }
 
 static const struct platform_device_id max77686_clk_id[] = {
-	{ "max77686-clk", 0},
-	{ },
+	{ "max77686-clk", .driver_data = CHIP_MAX77686, },
+	{ "max77802-clk", .driver_data = CHIP_MAX77802, },
+	{ "max77620-clock", .driver_data = CHIP_MAX77620, },
+	{},
 };
 MODULE_DEVICE_TABLE(platform, max77686_clk_id);
 
 static struct platform_driver max77686_clk_driver = {
 	.driver = {
 		.name  = "max77686-clk",
-		.owner = THIS_MODULE,
 	},
 	.probe = max77686_clk_probe,
-	.remove = max77686_clk_remove,
 	.id_table = max77686_clk_id,
 };
 
-static int __init max77686_clk_init(void)
-{
-	return platform_driver_register(&max77686_clk_driver);
-}
-subsys_initcall(max77686_clk_init);
-
-static void __init max77686_clk_cleanup(void)
-{
-	platform_driver_unregister(&max77686_clk_driver);
-}
-module_exit(max77686_clk_cleanup);
+module_platform_driver(max77686_clk_driver);
 
 MODULE_DESCRIPTION("MAXIM 77686 Clock Driver");
 MODULE_AUTHOR("Jonghwa Lee <jonghwa3.lee@samsung.com>");

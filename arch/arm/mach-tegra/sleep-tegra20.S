@@ -1,24 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2010-2012, NVIDIA Corporation. All rights reserved.
  * Copyright (c) 2011, Google, Inc.
  *
  * Author: Colin Cross <ccross@android.com>
  *         Gary King <gking@nvidia.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/linkage.h>
+
+#include <soc/tegra/flowctrl.h>
 
 #include <asm/assembler.h>
 #include <asm/proc-fns.h>
@@ -26,12 +17,11 @@
 #include <asm/cache.h>
 
 #include "irammap.h"
+#include "reset.h"
 #include "sleep.h"
-#include "flowctrl.h"
 
 #define EMC_CFG				0xc
 #define EMC_ADR_CFG			0x10
-#define EMC_REFRESH			0x70
 #define EMC_NOP				0xdc
 #define EMC_SELF_REF			0xe0
 #define EMC_REQ_CTRL			0x2b0
@@ -53,11 +43,36 @@
 #define APB_MISC_XM2CFGCPADCTRL2	0x8e4
 #define APB_MISC_XM2CFGDPADCTRL2	0x8e8
 
-.macro pll_enable, rd, r_car_base, pll_base
+#define PLLC_STORE_MASK			(1 << 0)
+#define PLLM_STORE_MASK			(1 << 1)
+#define PLLP_STORE_MASK			(1 << 2)
+
+.arch armv7-a
+
+.macro test_pll_state, rd, test_mask
+	ldr	\rd, tegra_pll_state
+	tst	\rd, #\test_mask
+.endm
+
+.macro store_pll_state, rd, tmp, r_car_base, pll_base, pll_mask
+	ldr	\rd, [\r_car_base, #\pll_base]
+	tst	\rd, #(1 << 30)
+	ldr	\rd, tegra_pll_state
+	biceq	\rd, \rd, #\pll_mask
+	orrne	\rd, \rd, #\pll_mask
+	adr	\tmp, tegra_pll_state
+	str	\rd, [\tmp]
+.endm
+
+.macro pll_enable, rd, r_car_base, pll_base, test_mask
+	test_pll_state \rd, \test_mask
+	beq	1f
+
 	ldr	\rd, [\r_car_base, #\pll_base]
 	tst	\rd, #(1 << 30)
 	orreq	\rd, \rd, #(1 << 30)
 	streq	\rd, [\r_car_base, #\pll_base]
+1:
 .endm
 
 .macro emc_device_mask, rd, base
@@ -78,7 +93,7 @@ ENTRY(tegra20_hotplug_shutdown)
 	/* Put this CPU down */
 	cpu_id	r0
 	bl	tegra20_cpu_shutdown
-	mov	pc, lr			@ should never get here
+	ret	lr			@ should never get here
 ENDPROC(tegra20_hotplug_shutdown)
 
 /*
@@ -96,10 +111,7 @@ ENDPROC(tegra20_hotplug_shutdown)
  */
 ENTRY(tegra20_cpu_shutdown)
 	cmp	r0, #0
-	moveq	pc, lr			@ must not be called for CPU 0
-	mov32	r1, TEGRA_PMC_VIRT + PMC_SCRATCH41
-	mov	r12, #CPU_RESETTABLE
-	str	r12, [r1]
+	reteq	lr			@ must not be called for CPU 0
 
 	cpu_to_halt_reg r1, r0
 	ldr	r3, =TEGRA_FLOW_CTRL_VIRT
@@ -117,109 +129,11 @@ ENTRY(tegra20_cpu_shutdown)
 	cpu_id	r3
 	cmp	r3, r0
 	beq	.
-	mov	pc, lr
+	ret	lr
 ENDPROC(tegra20_cpu_shutdown)
 #endif
 
 #ifdef CONFIG_PM_SLEEP
-/*
- * tegra_pen_lock
- *
- * spinlock implementation with no atomic test-and-set and no coherence
- * using Peterson's algorithm on strongly-ordered registers
- * used to synchronize a cpu waking up from wfi with entering lp2 on idle
- *
- * The reference link of Peterson's algorithm:
- * http://en.wikipedia.org/wiki/Peterson's_algorithm
- *
- * SCRATCH37 = r1 = !turn (inverted from Peterson's algorithm)
- * on cpu 0:
- * r2 = flag[0] (in SCRATCH38)
- * r3 = flag[1] (in SCRATCH39)
- * on cpu1:
- * r2 = flag[1] (in SCRATCH39)
- * r3 = flag[0] (in SCRATCH38)
- *
- * must be called with MMU on
- * corrupts r0-r3, r12
- */
-ENTRY(tegra_pen_lock)
-	mov32	r3, TEGRA_PMC_VIRT
-	cpu_id	r0
-	add	r1, r3, #PMC_SCRATCH37
-	cmp	r0, #0
-	addeq	r2, r3, #PMC_SCRATCH38
-	addeq	r3, r3, #PMC_SCRATCH39
-	addne	r2, r3, #PMC_SCRATCH39
-	addne	r3, r3, #PMC_SCRATCH38
-
-	mov	r12, #1
-	str	r12, [r2]		@ flag[cpu] = 1
-	dsb
-	str	r12, [r1]		@ !turn = cpu
-1:	dsb
-	ldr	r12, [r3]
-	cmp	r12, #1			@ flag[!cpu] == 1?
-	ldreq	r12, [r1]
-	cmpeq	r12, r0			@ !turn == cpu?
-	beq	1b			@ while !turn == cpu && flag[!cpu] == 1
-
-	mov	pc, lr			@ locked
-ENDPROC(tegra_pen_lock)
-
-ENTRY(tegra_pen_unlock)
-	dsb
-	mov32	r3, TEGRA_PMC_VIRT
-	cpu_id	r0
-	cmp	r0, #0
-	addeq	r2, r3, #PMC_SCRATCH38
-	addne	r2, r3, #PMC_SCRATCH39
-	mov	r12, #0
-	str	r12, [r2]
-	mov     pc, lr
-ENDPROC(tegra_pen_unlock)
-
-/*
- * tegra20_cpu_clear_resettable(void)
- *
- * Called to clear the "resettable soon" flag in PMC_SCRATCH41 when
- * it is expected that the secondary CPU will be idle soon.
- */
-ENTRY(tegra20_cpu_clear_resettable)
-	mov32	r1, TEGRA_PMC_VIRT + PMC_SCRATCH41
-	mov	r12, #CPU_NOT_RESETTABLE
-	str	r12, [r1]
-	mov	pc, lr
-ENDPROC(tegra20_cpu_clear_resettable)
-
-/*
- * tegra20_cpu_set_resettable_soon(void)
- *
- * Called to set the "resettable soon" flag in PMC_SCRATCH41 when
- * it is expected that the secondary CPU will be idle soon.
- */
-ENTRY(tegra20_cpu_set_resettable_soon)
-	mov32	r1, TEGRA_PMC_VIRT + PMC_SCRATCH41
-	mov	r12, #CPU_RESETTABLE_SOON
-	str	r12, [r1]
-	mov	pc, lr
-ENDPROC(tegra20_cpu_set_resettable_soon)
-
-/*
- * tegra20_cpu_is_resettable_soon(void)
- *
- * Returns true if the "resettable soon" flag in PMC_SCRATCH41 has been
- * set because it is expected that the secondary CPU will be idle soon.
- */
-ENTRY(tegra20_cpu_is_resettable_soon)
-	mov32	r1, TEGRA_PMC_VIRT + PMC_SCRATCH41
-	ldr	r12, [r1]
-	cmp	r12, #CPU_RESETTABLE_SOON
-	moveq	r0, #1
-	movne	r0, #0
-	mov	pc, lr
-ENDPROC(tegra20_cpu_is_resettable_soon)
-
 /*
  * tegra20_sleep_core_finish(unsigned long v2p)
  *
@@ -227,8 +141,11 @@ ENDPROC(tegra20_cpu_is_resettable_soon)
  * tegra20_tear_down_core in IRAM
  */
 ENTRY(tegra20_sleep_core_finish)
+	mov     r4, r0
 	/* Flush, disable the L1 data cache and exit SMP */
+	mov     r0, #TEGRA_FLUSH_CACHE_ALL
 	bl	tegra_disable_clean_inv_dcache
+	mov     r0, r4
 
 	mov32	r3, tegra_shut_off_mmu
 	add	r3, r3, r0
@@ -239,69 +156,8 @@ ENTRY(tegra20_sleep_core_finish)
 	mov32	r1, TEGRA_IRAM_LPx_RESUME_AREA
 	add	r0, r0, r1
 
-	mov	pc, r3
+	ret	r3
 ENDPROC(tegra20_sleep_core_finish)
-
-/*
- * tegra20_sleep_cpu_secondary_finish(unsigned long v2p)
- *
- * Enters WFI on secondary CPU by exiting coherency.
- */
-ENTRY(tegra20_sleep_cpu_secondary_finish)
-	stmfd	sp!, {r4-r11, lr}
-
-	mrc	p15, 0, r11, c1, c0, 1  @ save actlr before exiting coherency
-
-	/* Flush and disable the L1 data cache */
-	mov	r0, #TEGRA_FLUSH_CACHE_LOUIS
-	bl	tegra_disable_clean_inv_dcache
-
-	mov32	r0, TEGRA_PMC_VIRT + PMC_SCRATCH41
-	mov	r3, #CPU_RESETTABLE
-	str	r3, [r0]
-
-	bl	tegra_cpu_do_idle
-
-	/*
-	 * cpu may be reset while in wfi, which will return through
-	 * tegra_resume to cpu_resume
-	 * or interrupt may wake wfi, which will return here
-	 * cpu state is unchanged - MMU is on, cache is on, coherency
-	 * is off, and the data cache is off
-	 *
-	 * r11 contains the original actlr
-	 */
-
-	bl	tegra_pen_lock
-
-	mov32	r3, TEGRA_PMC_VIRT
-	add	r0, r3, #PMC_SCRATCH41
-	mov	r3, #CPU_NOT_RESETTABLE
-	str	r3, [r0]
-
-	bl	tegra_pen_unlock
-
-	/* Re-enable the data cache */
-	mrc	p15, 0, r10, c1, c0, 0
-	orr	r10, r10, #CR_C
-	mcr	p15, 0, r10, c1, c0, 0
-	isb
-
-	mcr	p15, 0, r11, c1, c0, 1	@ reenable coherency
-
-	/* Invalidate the TLBs & BTAC */
-	mov	r1, #0
-	mcr	p15, 0, r1, c8, c3, 0	@ invalidate shared TLBs
-	mcr	p15, 0, r1, c7, c1, 6	@ invalidate shared BTAC
-	dsb
-	isb
-
-	/* the cpu was running with coherency disabled,
-	 * caches may be out of date */
-	bl	v7_flush_kern_cache_louis
-
-	ldmfd	sp!, {r4 - r11, pc}
-ENDPROC(tegra20_sleep_cpu_secondary_finish)
 
 /*
  * tegra20_tear_down_cpu
@@ -346,9 +202,9 @@ ENTRY(tegra20_lp1_reset)
 	str	r1, [r0, #CLK_RESET_CCLK_DIVIDER]
 	str	r1, [r0, #CLK_RESET_SCLK_DIVIDER]
 
-	pll_enable r1, r0, CLK_RESET_PLLM_BASE
-	pll_enable r1, r0, CLK_RESET_PLLP_BASE
-	pll_enable r1, r0, CLK_RESET_PLLC_BASE
+	pll_enable r1, r0, CLK_RESET_PLLM_BASE, PLLM_STORE_MASK
+	pll_enable r1, r0, CLK_RESET_PLLP_BASE, PLLP_STORE_MASK
+	pll_enable r1, r0, CLK_RESET_PLLC_BASE, PLLC_STORE_MASK
 
 	adr	r2, tegra20_sdram_pad_address
 	adr	r4, tegra20_sdram_pad_save
@@ -388,7 +244,6 @@ padload_done:
 	mov	r1, #1
 	str	r1, [r0, #EMC_NOP]
 	str	r1, [r0, #EMC_NOP]
-	str	r1, [r0, #EMC_REFRESH]
 
 	emc_device_mask r1, r0
 
@@ -402,7 +257,7 @@ exit_selfrefresh_loop:
 
 	mov32	r0, TEGRA_PMC_BASE
 	ldr	r0, [r0, #PMC_SCRATCH41]
-	mov	pc, r0			@ jump to tegra_resume
+	ret	r0			@ jump to tegra_resume
 ENDPROC(tegra20_lp1_reset)
 
 /*
@@ -440,6 +295,10 @@ tegra20_switch_cpu_to_clk32k:
 	add	r1, r1, #2
 	wait_until r1, r7, r9
 
+	store_pll_state r0, r1, r5, CLK_RESET_PLLC_BASE, PLLC_STORE_MASK
+	store_pll_state r0, r1, r5, CLK_RESET_PLLM_BASE, PLLM_STORE_MASK
+	store_pll_state r0, r1, r5, CLK_RESET_PLLP_BASE, PLLP_STORE_MASK
+
 	/* disable PLLM, PLLP and PLLC */
 	ldr	r0, [r5, #CLK_RESET_PLLM_BASE]
 	bic	r0, r0, #(1 << 30)
@@ -455,7 +314,7 @@ tegra20_switch_cpu_to_clk32k:
 	mov	r0, #0	/* brust policy = 32KHz */
 	str	r0, [r5, #CLK_RESET_SCLK_BURST]
 
-	mov	pc, lr
+	ret	lr
 
 /*
  * tegra20_enter_sleep
@@ -535,7 +394,7 @@ padsave_done:
 	adr	r2, tegra20_sclk_save
 	str	r0, [r2]
 	dsb
-	mov	pc, lr
+	ret	lr
 
 tegra20_sdram_pad_address:
 	.word	TEGRA_APB_MISC_BASE + APB_MISC_XM2CFGCPADCTRL
@@ -565,6 +424,9 @@ tegra20_sdram_pad_save:
 	.rept (tegra20_sdram_pad_size - tegra20_sdram_pad_address) / 4
 	.long	0
 	.endr
+
+tegra_pll_state:
+	.word	0x0
 
 	.ltorg
 /* dummy symbol for end of IRAM */

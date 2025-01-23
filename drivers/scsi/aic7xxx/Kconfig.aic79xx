@@ -1,10 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # AIC79XX 2.5.X Kernel configuration File.
 # $Id: //depot/linux-aic79xx-2.5.0/drivers/scsi/aic7xxx/Kconfig.aic79xx#4 $
 #
 config SCSI_AIC79XX
 	tristate "Adaptec AIC79xx U320 support"
-	depends on PCI && SCSI
+	depends on PCI && HAS_IOPORT && SCSI
 	select SCSI_SPI_ATTRS
 	help
 	This driver supports all of Adaptec's Ultra 320 PCI-X
@@ -14,7 +15,7 @@ config AIC79XX_CMDS_PER_DEVICE
 	int "Maximum number of TCQ commands per device"
 	depends on SCSI_AIC79XX
 	default "32"
-	---help---
+	help
 	Specify the number of commands you would like to allocate per SCSI
 	device when Tagged Command Queueing (TCQ) is enabled on that device.
 
@@ -31,13 +32,13 @@ config AIC79XX_CMDS_PER_DEVICE
 	on some devices.  The upper bound is 253.  0 disables tagged queueing.
 
 	Per device tag depth can be controlled via the kernel command line
-	"tag_info" option.  See Documentation/scsi/aic79xx.txt for details.
+	"tag_info" option.  See Documentation/scsi/aic79xx.rst for details.
 
 config AIC79XX_RESET_DELAY_MS
 	int "Initial bus reset delay in milli-seconds"
 	depends on SCSI_AIC79XX
 	default "5000"
-	---help---
+	help
 	The number of milliseconds to delay after an initial bus reset.
 	The bus settle delay following all error recovery actions is
 	dictated by the SCSI layer and is not affected by this value.
@@ -70,7 +71,7 @@ config AIC79XX_DEBUG_MASK
 	default "0"
 	help
 	Bit mask of debug options that is only valid if the
-	CONFIG_AIC79XX_DEBUG_ENBLE option is enabled.  The bits in this mask
+	CONFIG_AIC79XX_DEBUG_ENABLE option is enabled.  The bits in this mask
 	are defined in the drivers/scsi/aic7xxx/aic79xx.h - search for the
 	variable ahd_debug in that file to find them.
 

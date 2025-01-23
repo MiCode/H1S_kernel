@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * net/sched/em_ipset.c	ipset ematch
  *
  * Copyright (c) 2012 Florian Westphal <fw@strlen.de>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
  */
 
 #include <linux/gfp.h>
@@ -19,12 +16,11 @@
 #include <net/ip.h>
 #include <net/pkt_cls.h>
 
-static int em_ipset_change(struct tcf_proto *tp, void *data, int data_len,
+static int em_ipset_change(struct net *net, void *data, int data_len,
 			   struct tcf_ematch *em)
 {
 	struct xt_set_info *set = data;
 	ip_set_id_t index;
-	struct net *net = dev_net(qdisc_dev(tp->q));
 
 	if (data_len != sizeof(*set))
 		return -EINVAL;
@@ -42,11 +38,11 @@ static int em_ipset_change(struct tcf_proto *tp, void *data, int data_len,
 	return -ENOMEM;
 }
 
-static void em_ipset_destroy(struct tcf_proto *p, struct tcf_ematch *em)
+static void em_ipset_destroy(struct tcf_ematch *em)
 {
 	const struct xt_set_info *set = (const void *) em->data;
 	if (set) {
-		ip_set_nfnl_put(dev_net(qdisc_dev(p->q)), set->index);
+		ip_set_nfnl_put(em->net, set->index);
 		kfree((void *) em->data);
 	}
 }
@@ -58,17 +54,20 @@ static int em_ipset_match(struct sk_buff *skb, struct tcf_ematch *em,
 	struct xt_action_param acpar;
 	const struct xt_set_info *set = (const void *) em->data;
 	struct net_device *dev, *indev = NULL;
+	struct nf_hook_state state = {
+		.net	= em->net,
+	};
 	int ret, network_offset;
 
-	switch (skb->protocol) {
+	switch (skb_protocol(skb, true)) {
 	case htons(ETH_P_IP):
-		acpar.family = NFPROTO_IPV4;
+		state.pf = NFPROTO_IPV4;
 		if (!pskb_network_may_pull(skb, sizeof(struct iphdr)))
 			return 0;
 		acpar.thoff = ip_hdrlen(skb);
 		break;
 	case htons(ETH_P_IPV6):
-		acpar.family = NFPROTO_IPV6;
+		state.pf = NFPROTO_IPV6;
 		if (!pskb_network_may_pull(skb, sizeof(struct ipv6hdr)))
 			return 0;
 		/* doesn't call ipv6_find_hdr() because ipset doesn't use thoff, yet */
@@ -78,9 +77,7 @@ static int em_ipset_match(struct sk_buff *skb, struct tcf_ematch *em,
 		return 0;
 	}
 
-	acpar.hooknum = 0;
-
-	opt.family = acpar.family;
+	opt.family = state.pf;
 	opt.dim = set->dim;
 	opt.flags = set->flags;
 	opt.cmdflags = 0;
@@ -93,11 +90,12 @@ static int em_ipset_match(struct sk_buff *skb, struct tcf_ematch *em,
 
 	rcu_read_lock();
 
-	if (dev && skb->skb_iif)
-		indev = dev_get_by_index_rcu(dev_net(dev), skb->skb_iif);
+	if (skb->skb_iif)
+		indev = dev_get_by_index_rcu(em->net, skb->skb_iif);
 
-	acpar.in      = indev ? indev : dev;
-	acpar.out     = dev;
+	state.in      = indev ? indev : dev;
+	state.out     = dev;
+	acpar.state   = &state;
 
 	ret = ip_set_test(set->index, skb, &acpar, &opt);
 

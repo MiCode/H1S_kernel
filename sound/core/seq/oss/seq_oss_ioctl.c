@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * OSS compatible sequencer driver
  *
  * OSS compatible i/o control
  *
  * Copyright (C) 1998,99 Takashi Iwai <tiwai@suse.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include "seq_oss_device.h"
@@ -62,7 +49,7 @@ static int snd_seq_oss_oob_user(struct seq_oss_devinfo *dp, void __user *arg)
 	if (copy_from_user(ev, arg, 8))
 		return -EFAULT;
 	memset(&tmpev, 0, sizeof(tmpev));
-	snd_seq_oss_fill_addr(dp, &tmpev, dp->addr.port, dp->addr.client);
+	snd_seq_oss_fill_addr(dp, &tmpev, dp->addr.client, dp->addr.port);
 	tmpev.time.tick = 0;
 	if (! snd_seq_oss_process_event(dp, (union evrec *)ev, &tmpev)) {
 		snd_seq_oss_dispatch(dp, &tmpev, 0, 0);
@@ -90,12 +77,10 @@ snd_seq_oss_ioctl(struct seq_oss_devinfo *dp, unsigned int cmd, unsigned long ca
 		return snd_seq_oss_timer_ioctl(dp->timer, cmd, arg);
 
 	case SNDCTL_SEQ_PANIC:
-		debug_printk(("panic\n"));
 		snd_seq_oss_reset(dp);
 		return -EINVAL;
 
 	case SNDCTL_SEQ_SYNC:
-		debug_printk(("sync\n"));
 		if (! is_write_mode(dp->file_mode) || dp->writeq == NULL)
 			return 0;
 		while (snd_seq_oss_writeq_sync(dp->writeq))
@@ -105,55 +90,45 @@ snd_seq_oss_ioctl(struct seq_oss_devinfo *dp, unsigned int cmd, unsigned long ca
 		return 0;
 
 	case SNDCTL_SEQ_RESET:
-		debug_printk(("reset\n"));
 		snd_seq_oss_reset(dp);
 		return 0;
 
 	case SNDCTL_SEQ_TESTMIDI:
-		debug_printk(("test midi\n"));
 		if (get_user(dev, p))
 			return -EFAULT;
 		return snd_seq_oss_midi_open(dp, dev, dp->file_mode);
 
 	case SNDCTL_SEQ_GETINCOUNT:
-		debug_printk(("get in count\n"));
 		if (dp->readq == NULL || ! is_read_mode(dp->file_mode))
 			return 0;
 		return put_user(dp->readq->qlen, p) ? -EFAULT : 0;
 
 	case SNDCTL_SEQ_GETOUTCOUNT:
-		debug_printk(("get out count\n"));
 		if (! is_write_mode(dp->file_mode) || dp->writeq == NULL)
 			return 0;
 		return put_user(snd_seq_oss_writeq_get_free_size(dp->writeq), p) ? -EFAULT : 0;
 
 	case SNDCTL_SEQ_GETTIME:
-		debug_printk(("get time\n"));
 		return put_user(snd_seq_oss_timer_cur_tick(dp->timer), p) ? -EFAULT : 0;
 
 	case SNDCTL_SEQ_RESETSAMPLES:
-		debug_printk(("reset samples\n"));
 		if (get_user(dev, p))
 			return -EFAULT;
 		return snd_seq_oss_synth_ioctl(dp, dev, cmd, carg);
 
 	case SNDCTL_SEQ_NRSYNTHS:
-		debug_printk(("nr synths\n"));
 		return put_user(dp->max_synthdev, p) ? -EFAULT : 0;
 
 	case SNDCTL_SEQ_NRMIDIS:
-		debug_printk(("nr midis\n"));
 		return put_user(dp->max_mididev, p) ? -EFAULT : 0;
 
 	case SNDCTL_SYNTH_MEMAVL:
-		debug_printk(("mem avail\n"));
 		if (get_user(dev, p))
 			return -EFAULT;
 		val = snd_seq_oss_synth_ioctl(dp, dev, cmd, carg);
 		return put_user(val, p) ? -EFAULT : 0;
 
 	case SNDCTL_FM_4OP_ENABLE:
-		debug_printk(("4op\n"));
 		if (get_user(dev, p))
 			return -EFAULT;
 		snd_seq_oss_synth_ioctl(dp, dev, cmd, carg);
@@ -161,19 +136,15 @@ snd_seq_oss_ioctl(struct seq_oss_devinfo *dp, unsigned int cmd, unsigned long ca
 
 	case SNDCTL_SYNTH_INFO:
 	case SNDCTL_SYNTH_ID:
-		debug_printk(("synth info\n"));
 		return snd_seq_oss_synth_info_user(dp, arg);
 
 	case SNDCTL_SEQ_OUTOFBAND:
-		debug_printk(("out of band\n"));
 		return snd_seq_oss_oob_user(dp, arg);
 
 	case SNDCTL_MIDI_INFO:
-		debug_printk(("midi info\n"));
 		return snd_seq_oss_midi_info_user(dp, arg);
 
 	case SNDCTL_SEQ_THRESHOLD:
-		debug_printk(("threshold\n"));
 		if (! is_write_mode(dp->file_mode))
 			return 0;
 		if (get_user(val, p))
@@ -186,7 +157,6 @@ snd_seq_oss_ioctl(struct seq_oss_devinfo *dp, unsigned int cmd, unsigned long ca
 		return 0;
 
 	case SNDCTL_MIDI_PRETIME:
-		debug_printk(("pretime\n"));
 		if (dp->readq == NULL || !is_read_mode(dp->file_mode))
 			return 0;
 		if (get_user(val, p))
@@ -199,7 +169,6 @@ snd_seq_oss_ioctl(struct seq_oss_devinfo *dp, unsigned int cmd, unsigned long ca
 		return put_user(val, p) ? -EFAULT : 0;
 
 	default:
-		debug_printk(("others\n"));
 		if (! is_write_mode(dp->file_mode))
 			return -EIO;
 		return snd_seq_oss_synth_ioctl(dp, 0, cmd, carg);

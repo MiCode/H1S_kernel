@@ -1,12 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) ST-Ericsson SA 2010
  *
- * License Terms: GNU General Public License v2
  * Author: Sundar Iyer <sundar.iyer@stericsson.com> for ST-Ericsson
  *
  * AB8500 Power-On Key handler
  */
 
+#include <linux/device.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -18,7 +19,7 @@
 
 /**
  * struct ab8500_ponkey - ab8500 ponkey information
- * @input_dev: pointer to input device
+ * @idev: pointer to input device
  * @ab8500: ab8500 parent
  * @irq_dbf: irq number for falling transition
  * @irq_dbr: irq number for rising transition
@@ -54,23 +55,21 @@ static int ab8500_ponkey_probe(struct platform_device *pdev)
 	int error;
 
 	irq_dbf = platform_get_irq_byname(pdev, "ONKEY_DBF");
-	if (irq_dbf < 0) {
-		dev_err(&pdev->dev, "No IRQ for ONKEY_DBF, error=%d\n", irq_dbf);
+	if (irq_dbf < 0)
 		return irq_dbf;
-	}
 
 	irq_dbr = platform_get_irq_byname(pdev, "ONKEY_DBR");
-	if (irq_dbr < 0) {
-		dev_err(&pdev->dev, "No IRQ for ONKEY_DBR, error=%d\n", irq_dbr);
+	if (irq_dbr < 0)
 		return irq_dbr;
-	}
 
-	ponkey = kzalloc(sizeof(struct ab8500_ponkey), GFP_KERNEL);
-	input = input_allocate_device();
-	if (!ponkey || !input) {
-		error = -ENOMEM;
-		goto err_free_mem;
-	}
+	ponkey = devm_kzalloc(&pdev->dev, sizeof(struct ab8500_ponkey),
+			      GFP_KERNEL);
+	if (!ponkey)
+		return -ENOMEM;
+
+	input = devm_input_allocate_device(&pdev->dev);
+	if (!input)
+		return -ENOMEM;
 
 	ponkey->idev = input;
 	ponkey->ab8500 = ab8500;
@@ -82,50 +81,29 @@ static int ab8500_ponkey_probe(struct platform_device *pdev)
 
 	input_set_capability(input, EV_KEY, KEY_POWER);
 
-	error = request_any_context_irq(ponkey->irq_dbf, ab8500_ponkey_handler,
-					0, "ab8500-ponkey-dbf", ponkey);
+	error = devm_request_any_context_irq(&pdev->dev, ponkey->irq_dbf,
+					     ab8500_ponkey_handler, 0,
+					     "ab8500-ponkey-dbf", ponkey);
 	if (error < 0) {
 		dev_err(ab8500->dev, "Failed to request dbf IRQ#%d: %d\n",
 			ponkey->irq_dbf, error);
-		goto err_free_mem;
+		return error;
 	}
 
-	error = request_any_context_irq(ponkey->irq_dbr, ab8500_ponkey_handler,
-					0, "ab8500-ponkey-dbr", ponkey);
+	error = devm_request_any_context_irq(&pdev->dev, ponkey->irq_dbr,
+					     ab8500_ponkey_handler, 0,
+					     "ab8500-ponkey-dbr", ponkey);
 	if (error < 0) {
 		dev_err(ab8500->dev, "Failed to request dbr IRQ#%d: %d\n",
 			ponkey->irq_dbr, error);
-		goto err_free_dbf_irq;
+		return error;
 	}
 
 	error = input_register_device(ponkey->idev);
 	if (error) {
 		dev_err(ab8500->dev, "Can't register input device: %d\n", error);
-		goto err_free_dbr_irq;
+		return error;
 	}
-
-	platform_set_drvdata(pdev, ponkey);
-	return 0;
-
-err_free_dbr_irq:
-	free_irq(ponkey->irq_dbr, ponkey);
-err_free_dbf_irq:
-	free_irq(ponkey->irq_dbf, ponkey);
-err_free_mem:
-	input_free_device(input);
-	kfree(ponkey);
-
-	return error;
-}
-
-static int ab8500_ponkey_remove(struct platform_device *pdev)
-{
-	struct ab8500_ponkey *ponkey = platform_get_drvdata(pdev);
-
-	free_irq(ponkey->irq_dbf, ponkey);
-	free_irq(ponkey->irq_dbr, ponkey);
-	input_unregister_device(ponkey->idev);
-	kfree(ponkey);
 
 	return 0;
 }
@@ -135,16 +113,15 @@ static const struct of_device_id ab8500_ponkey_match[] = {
 	{ .compatible = "stericsson,ab8500-ponkey", },
 	{}
 };
+MODULE_DEVICE_TABLE(of, ab8500_ponkey_match);
 #endif
 
 static struct platform_driver ab8500_ponkey_driver = {
 	.driver		= {
 		.name	= "ab8500-poweron-key",
-		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(ab8500_ponkey_match),
 	},
 	.probe		= ab8500_ponkey_probe,
-	.remove		= ab8500_ponkey_remove,
 };
 module_platform_driver(ab8500_ponkey_driver);
 

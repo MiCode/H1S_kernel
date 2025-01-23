@@ -1,9 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
 
 menuconfig MACINTOSH_DRIVERS
 	bool "Macintosh device drivers"
 	depends on PPC || MAC || X86
 	default y if (PPC_PMAC || MAC)
-	---help---
+	help
 	  Say Y here to get to see options for devices used with Macintosh
 	  computers. This option alone does not add any kernel code.
 
@@ -30,14 +31,6 @@ config ADB_MACII
 	  Quadra 610, Quadra 650, Quadra 700, Quadra 800, Centris 610 and
 	  Centris 650.
 
-config ADB_MACIISI
-	bool "Include Mac IIsi ADB driver"
-	depends on ADB && MAC && BROKEN
-	help
-	  Say Y here if want your kernel to support Macintosh systems that use
-	  the Mac IIsi style ADB.  This includes the IIsi, IIvi, IIvx, Classic
-	  II, LC, LC II, LC III, Performa 460, and the Performa 600.
-
 config ADB_IOP
 	bool "Include IOP (IIfx/Quadra 9x0) ADB driver"
 	depends on ADB && MAC
@@ -47,36 +40,25 @@ config ADB_IOP
 	  <http://www.angelfire.com/ca2/dev68k/iopdesc.html> to enable direct
 	  support for it, say 'Y' here.
 
-config ADB_PMU68K
-	bool "Include PMU (Powerbook) ADB driver"
-	depends on ADB && MAC
-	help
-	  Say Y here if want your kernel to support the m68k based Powerbooks.
-	  This includes the PowerBook 140, PowerBook 145, PowerBook 150,
-	  PowerBook 160, PowerBook 165, PowerBook 165c, PowerBook 170,
-	  PowerBook 180, PowerBook, 180c, PowerBook 190cs, PowerBook 520,
-	  PowerBook Duo 210, PowerBook Duo 230, PowerBook Duo 250,
-	  PowerBook Duo 270c, PowerBook Duo 280 and PowerBook Duo 280c.
-
 # we want to change this to something like CONFIG_SYSCTRL_CUDA/PMU
 config ADB_CUDA
-	bool "Support for CUDA based Macs and PowerMacs"
+	bool "Support for Cuda/Egret based Macs and PowerMacs"
 	depends on (ADB || PPC_PMAC) && !PPC_PMAC64
+	select RTC_LIB
 	help
-	  This provides support for CUDA based Macintosh and Power Macintosh
-	  systems.  This includes many m68k based Macs (Color Classic, Mac TV,
-	  Performa 475, Performa 520, Performa 550, Performa 575,
-	  Performa 588, Quadra 605, Quadra 630, Quadra/Centris 660AV, and
-	  Quadra 840AV), most OldWorld PowerMacs, the first generation iMacs,
-	  the Blue&White G3 and the "Yikes" G4 (PCI Graphics).  All later
-	  models should use CONFIG_ADB_PMU instead.  It is safe to say Y here
-	  even if your machine doesn't have a CUDA.
+	  This provides support for Cuda/Egret based Macintosh and
+	  Power Macintosh systems. This includes most m68k based Macs,
+	  most Old World PowerMacs, the first generation iMacs, the
+	  Blue & White G3 and the "Yikes" G4 (PCI Graphics). All later
+	  models should use CONFIG_ADB_PMU instead. It is safe to say Y
+	  here even if your machine doesn't have a Cuda or Egret device.
 
 	  If unsure say Y.
 
 config ADB_PMU
-	bool "Support for PMU  based PowerMacs"
-	depends on PPC_PMAC
+	bool "Support for PMU based PowerMacs and PowerBooks"
+	depends on PPC_PMAC || MAC
+	select RTC_LIB
 	help
 	  On PowerBooks, iBooks, and recent iMacs and Power Macintoshes, the
 	  PMU is an embedded microprocessor whose primary function is to
@@ -87,28 +69,31 @@ config ADB_PMU
 	  this device; you should do so if your machine is one of those
 	  mentioned above.
 
+config ADB_PMU_EVENT
+	def_bool y
+	depends on ADB_PMU && INPUT=y
+
 config ADB_PMU_LED
 	bool "Support for the Power/iBook front LED"
-	depends on ADB_PMU
+	depends on PPC_PMAC && ADB_PMU
 	select NEW_LEDS
 	select LEDS_CLASS
 	help
 	  Support the front LED on Power/iBooks as a generic LED that can
 	  be triggered by any of the supported triggers. To get the
 	  behaviour of the old CONFIG_BLK_DEV_IDE_PMAC_BLINK, select this
-	  and the ide-disk LED trigger and configure appropriately through
-	  sysfs.
+	  and the disk LED trigger and configure appropriately through sysfs.
 
-config ADB_PMU_LED_IDE
-	bool "Use front LED as IDE LED by default"
+config ADB_PMU_LED_DISK
+	bool "Use front LED as DISK LED by default"
+	depends on ATA
 	depends on ADB_PMU_LED
 	depends on LEDS_CLASS
-	depends on IDE_GD_ATA
 	select LEDS_TRIGGERS
-	select LEDS_TRIGGER_IDE_DISK
+	select LEDS_TRIGGER_DISK
 	help
-	  This option makes the front LED default to the IDE trigger
-	  so that it blinks on IDE activity.
+	  This option makes the front LED default to the disk trigger
+	  so that it blinks on disk activity.
 
 config PMAC_SMU
 	bool "Support for SMU  based PowerMacs"
@@ -134,7 +119,7 @@ config PMAC_MEDIABAY
 
 config PMAC_BACKLIGHT
 	bool "Backlight control for LCD screens"
-	depends on ADB_PMU && FB = y && (BROKEN || !PPC64)
+	depends on PPC_PMAC && ADB_PMU && FB = y && (BROKEN || !PPC64)
 	select FB_BACKLIGHT
 	help
 	  Say Y here to enable Macintosh specific extensions of the generic
@@ -166,9 +151,8 @@ config INPUT_ADBHID
 	  Say Y here if you want to have ADB (Apple Desktop Bus) HID devices
 	  such as keyboards, mice, joysticks, trackpads  or graphic tablets
 	  handled by the input layer.  If you say Y here, make sure to say Y to
-	  the corresponding drivers "Keyboard support" (CONFIG_INPUT_KEYBDEV),
-	  "Mouse Support" (CONFIG_INPUT_MOUSEDEV) and "Event interface
-	  support" (CONFIG_INPUT_EVDEV) as well.
+	  the corresponding drivers "Mouse Support" (CONFIG_INPUT_MOUSEDEV) and
+	  "Event interface support" (CONFIG_INPUT_EVDEV) as well.
 
 	  If unsure, say Y.
 
@@ -201,18 +185,8 @@ config THERM_ADT746X
 	depends on I2C && I2C_POWERMAC && PPC_PMAC && !PPC_PMAC64
 	help
 	  This driver provides some thermostat and fan control for the
-          iBook G4, and the ATI based aluminium PowerBooks, allowing slightly
+	  iBook G4, and the ATI based aluminium PowerBooks, allowing slightly
 	  better fan behaviour by default, and some manual control.
-
-config THERM_PM72
-	tristate "Support for thermal management on PowerMac G5 (AGP)"
-	depends on I2C && I2C_POWERMAC && PPC_PMAC64
-	default n
-	help
-	  This driver provides thermostat and fan control for the desktop
-	  G5 machines.
-
-	  This is deprecated, use windfarm instead.
 
 config WINDFARM
 	tristate "New PowerMac thermal control infrastructure"
@@ -247,7 +221,7 @@ config WINDFARM_PM91
 	select I2C_POWERMAC
 	help
 	  This driver provides thermal control for the PowerMac9,1
-          which is the recent (SMU based) single CPU desktop G5
+	  which is the recent (SMU based) single CPU desktop G5
 
 config WINDFARM_PM112
 	tristate "Support for thermal management on PowerMac11,2"
@@ -275,12 +249,11 @@ config PMAC_RACKMETER
 	depends on PPC_PMAC
 	help
 	  This driver provides some support to control the front panel
-          blue LEDs "vu-meter" of the XServer macs.
+	  blue LEDs "vu-meter" of the XServer macs.
 
 config SENSORS_AMS
 	tristate "Apple Motion Sensor driver"
 	depends on PPC_PMAC && !PPC64 && INPUT && ((ADB_PMU && I2C = y) || (ADB_PMU && !I2C) || I2C)
-	select INPUT_POLLDEV
 	help
 	  Support for the motion sensor included in PowerBooks. Includes
 	  implementations for PMU and I2C.

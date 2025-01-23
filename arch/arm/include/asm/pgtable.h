@@ -1,11 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  arch/arm/include/asm/pgtable.h
  *
  *  Copyright (C) 1995-2002 Russell King
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #ifndef _ASMARM_PGTABLE_H
 #define _ASMARM_PGTABLE_H
@@ -13,15 +10,24 @@
 #include <linux/const.h>
 #include <asm/proc-fns.h>
 
+#ifndef __ASSEMBLY__
+/*
+ * ZERO_PAGE is a global shared page that is always zero: used
+ * for zero-mapped memory areas etc..
+ */
+extern struct page *empty_zero_page;
+#define ZERO_PAGE(vaddr)	(empty_zero_page)
+#endif
+
 #ifndef CONFIG_MMU
 
-#include <asm-generic/4level-fixup.h>
+#include <asm-generic/pgtable-nopud.h>
 #include <asm/pgtable-nommu.h>
 
 #else
 
 #include <asm-generic/pgtable-nopud.h>
-#include <asm/memory.h>
+#include <asm/page.h>
 #include <asm/pgtable-hwdef.h>
 
 
@@ -43,7 +49,7 @@
  */
 #define VMALLOC_OFFSET		(8*1024*1024)
 #define VMALLOC_START		(((unsigned long)high_memory + VMALLOC_OFFSET) & ~(VMALLOC_OFFSET-1))
-#define VMALLOC_END		0xff000000UL
+#define VMALLOC_END		0xff800000UL
 
 #define LIBRARY_TEXT_START	0x0c000000
 
@@ -82,9 +88,6 @@ extern void __pgd_error(const char *file, int line, pgd_t);
 
 extern pgprot_t		pgprot_user;
 extern pgprot_t		pgprot_kernel;
-extern pgprot_t		pgprot_hyp_device;
-extern pgprot_t		pgprot_s2;
-extern pgprot_t		pgprot_s2_device;
 
 #define _MOD_PROT(p, b)	__pgprot(pgprot_val(p) | (b))
 
@@ -97,10 +100,6 @@ extern pgprot_t		pgprot_s2_device;
 #define PAGE_READONLY_EXEC	_MOD_PROT(pgprot_user, L_PTE_USER | L_PTE_RDONLY)
 #define PAGE_KERNEL		_MOD_PROT(pgprot_kernel, L_PTE_XN)
 #define PAGE_KERNEL_EXEC	pgprot_kernel
-#define PAGE_HYP		_MOD_PROT(pgprot_kernel, L_PTE_HYP)
-#define PAGE_HYP_DEVICE		_MOD_PROT(pgprot_hyp_device, L_PTE_HYP)
-#define PAGE_S2			_MOD_PROT(pgprot_s2, L_PTE_S2_RDONLY)
-#define PAGE_S2_DEVICE		_MOD_PROT(pgprot_s2_device, L_PTE_S2_RDWR)
 
 #define __PAGE_NONE		__pgprot(_L_PTE_DEFAULT | L_PTE_RDONLY | L_PTE_XN | L_PTE_NONE)
 #define __PAGE_SHARED		__pgprot(_L_PTE_DEFAULT | L_PTE_USER | L_PTE_XN)
@@ -121,6 +120,9 @@ extern pgprot_t		pgprot_s2_device;
 
 #define pgprot_stronglyordered(prot) \
 	__pgprot_modify(prot, L_PTE_MT_MASK, L_PTE_MT_UNCACHED)
+
+#define pgprot_device(prot) \
+	__pgprot_modify(prot, L_PTE_MT_MASK, L_PTE_MT_DEV_SHARED | L_PTE_SHARED | L_PTE_DIRTY | L_PTE_XN)
 
 #ifdef CONFIG_ARM_DMA_MEM_BUFFERABLE
 #define pgprot_dmacoherent(prot) \
@@ -144,45 +146,15 @@ extern pgprot_t phys_mem_access_prot(struct file *file, unsigned long pfn,
  *  2) If we could do execute protection, then read is implied
  *  3) write implies read permissions
  */
-#define __P000  __PAGE_NONE
-#define __P001  __PAGE_READONLY
-#define __P010  __PAGE_COPY
-#define __P011  __PAGE_COPY
-#define __P100  __PAGE_READONLY_EXEC
-#define __P101  __PAGE_READONLY_EXEC
-#define __P110  __PAGE_COPY_EXEC
-#define __P111  __PAGE_COPY_EXEC
-
-#define __S000  __PAGE_NONE
-#define __S001  __PAGE_READONLY
-#define __S010  __PAGE_SHARED
-#define __S011  __PAGE_SHARED
-#define __S100  __PAGE_READONLY_EXEC
-#define __S101  __PAGE_READONLY_EXEC
-#define __S110  __PAGE_SHARED_EXEC
-#define __S111  __PAGE_SHARED_EXEC
 
 #ifndef __ASSEMBLY__
-/*
- * ZERO_PAGE is a global shared page that is always zero: used
- * for zero-mapped memory areas etc..
- */
-extern struct page *empty_zero_page;
-#define ZERO_PAGE(vaddr)	(empty_zero_page)
-
 
 extern pgd_t swapper_pg_dir[PTRS_PER_PGD];
 
-/* to find an entry in a page-table-directory */
-#define pgd_index(addr)		((addr) >> PGDIR_SHIFT)
-
-#define pgd_offset(mm, addr)	((mm)->pgd + pgd_index(addr))
-
-/* to find an entry in a kernel page-table-directory */
-#define pgd_offset_k(addr)	pgd_offset(&init_mm, addr)
+#define pud_page(pud)		pmd_page(__pmd(pud_val(pud)))
+#define pud_write(pud)		pmd_write(__pmd(pud_val(pud)))
 
 #define pmd_none(pmd)		(!pmd_val(pmd))
-#define pmd_present(pmd)	(pmd_val(pmd))
 
 static inline pte_t *pmd_page_vaddr(pmd_t pmd)
 {
@@ -190,21 +162,6 @@ static inline pte_t *pmd_page_vaddr(pmd_t pmd)
 }
 
 #define pmd_page(pmd)		pfn_to_page(__phys_to_pfn(pmd_val(pmd) & PHYS_MASK))
-
-#ifndef CONFIG_HIGHPTE
-#define __pte_map(pmd)		pmd_page_vaddr(*(pmd))
-#define __pte_unmap(pte)	do { } while (0)
-#else
-#define __pte_map(pmd)		(pte_t *)kmap_atomic(pmd_page(*(pmd)))
-#define __pte_unmap(pte)	kunmap_atomic(pte)
-#endif
-
-#define pte_index(addr)		(((addr) >> PAGE_SHIFT) & (PTRS_PER_PTE - 1))
-
-#define pte_offset_kernel(pmd,addr)	(pmd_page_vaddr(*(pmd)) + pte_index(addr))
-
-#define pte_offset_map(pmd,addr)	(__pte_map(pmd) + pte_index(addr))
-#define pte_unmap(pte)			__pte_unmap(pte)
 
 #define pte_pfn(pte)		((pte_val(pte) & PHYS_MASK) >> PAGE_SHIFT)
 #define pfn_pte(pfn,prot)	__pte(__pfn_to_phys(pfn) | pgprot_val(prot))
@@ -214,15 +171,33 @@ static inline pte_t *pmd_page_vaddr(pmd_t pmd)
 
 #define pte_clear(mm,addr,ptep)	set_pte_ext(ptep, __pte(0), 0)
 
-#define pte_none(pte)		(!pte_val(pte))
-#define pte_present(pte)	(pte_val(pte) & L_PTE_PRESENT)
-#define pte_write(pte)		(!(pte_val(pte) & L_PTE_RDONLY))
-#define pte_dirty(pte)		(pte_val(pte) & L_PTE_DIRTY)
-#define pte_young(pte)		(pte_val(pte) & L_PTE_YOUNG)
-#define pte_exec(pte)		(!(pte_val(pte) & L_PTE_XN))
-#define pte_special(pte)	(0)
+#define pte_isset(pte, val)	((u32)(val) == (val) ? pte_val(pte) & (val) \
+						: !!(pte_val(pte) & (val)))
+#define pte_isclear(pte, val)	(!(pte_val(pte) & (val)))
 
-#define pte_present_user(pte)  (pte_present(pte) && (pte_val(pte) & L_PTE_USER))
+#define pte_none(pte)		(!pte_val(pte))
+#define pte_present(pte)	(pte_isset((pte), L_PTE_PRESENT))
+#define pte_valid(pte)		(pte_isset((pte), L_PTE_VALID))
+#define pte_accessible(mm, pte)	(mm_tlb_flush_pending(mm) ? pte_present(pte) : pte_valid(pte))
+#define pte_write(pte)		(pte_isclear((pte), L_PTE_RDONLY))
+#define pte_dirty(pte)		(pte_isset((pte), L_PTE_DIRTY))
+#define pte_young(pte)		(pte_isset((pte), L_PTE_YOUNG))
+#define pte_exec(pte)		(pte_isclear((pte), L_PTE_XN))
+
+#define pte_valid_user(pte)	\
+	(pte_valid(pte) && pte_isset((pte), L_PTE_USER) && pte_young(pte))
+
+static inline bool pte_access_permitted(pte_t pte, bool write)
+{
+	pteval_t mask = L_PTE_PRESENT | L_PTE_USER;
+	pteval_t needed = mask;
+
+	if (write)
+		mask |= L_PTE_RDONLY;
+
+	return (pte_val(pte) & mask) == needed;
+}
+#define pte_access_permitted pte_access_permitted
 
 #if __LINUX_ARM_ARCH__ < 6
 static inline void __sync_icache_dcache(pte_t pteval)
@@ -232,32 +207,63 @@ static inline void __sync_icache_dcache(pte_t pteval)
 extern void __sync_icache_dcache(pte_t pteval);
 #endif
 
-static inline void set_pte_at(struct mm_struct *mm, unsigned long addr,
-			      pte_t *ptep, pte_t pteval)
+#define PFN_PTE_SHIFT		PAGE_SHIFT
+
+void set_ptes(struct mm_struct *mm, unsigned long addr,
+		      pte_t *ptep, pte_t pteval, unsigned int nr);
+#define set_ptes set_ptes
+
+static inline pte_t clear_pte_bit(pte_t pte, pgprot_t prot)
 {
-	unsigned long ext = 0;
-
-	if (addr < TASK_SIZE && pte_present_user(pteval)) {
-		__sync_icache_dcache(pteval);
-		ext |= PTE_EXT_NG;
-	}
-
-	set_pte_ext(ptep, pteval, ext);
+	pte_val(pte) &= ~pgprot_val(prot);
+	return pte;
 }
 
-#define PTE_BIT_FUNC(fn,op) \
-static inline pte_t pte_##fn(pte_t pte) { pte_val(pte) op; return pte; }
+static inline pte_t set_pte_bit(pte_t pte, pgprot_t prot)
+{
+	pte_val(pte) |= pgprot_val(prot);
+	return pte;
+}
 
-PTE_BIT_FUNC(wrprotect, |= L_PTE_RDONLY);
-PTE_BIT_FUNC(mkwrite,   &= ~L_PTE_RDONLY);
-PTE_BIT_FUNC(mkclean,   &= ~L_PTE_DIRTY);
-PTE_BIT_FUNC(mkdirty,   |= L_PTE_DIRTY);
-PTE_BIT_FUNC(mkold,     &= ~L_PTE_YOUNG);
-PTE_BIT_FUNC(mkyoung,   |= L_PTE_YOUNG);
-PTE_BIT_FUNC(mkexec,   &= ~L_PTE_XN);
-PTE_BIT_FUNC(mknexec,   |= L_PTE_XN);
+static inline pte_t pte_wrprotect(pte_t pte)
+{
+	return set_pte_bit(pte, __pgprot(L_PTE_RDONLY));
+}
 
-static inline pte_t pte_mkspecial(pte_t pte) { return pte; }
+static inline pte_t pte_mkwrite_novma(pte_t pte)
+{
+	return clear_pte_bit(pte, __pgprot(L_PTE_RDONLY));
+}
+
+static inline pte_t pte_mkclean(pte_t pte)
+{
+	return clear_pte_bit(pte, __pgprot(L_PTE_DIRTY));
+}
+
+static inline pte_t pte_mkdirty(pte_t pte)
+{
+	return set_pte_bit(pte, __pgprot(L_PTE_DIRTY));
+}
+
+static inline pte_t pte_mkold(pte_t pte)
+{
+	return clear_pte_bit(pte, __pgprot(L_PTE_YOUNG));
+}
+
+static inline pte_t pte_mkyoung(pte_t pte)
+{
+	return set_pte_bit(pte, __pgprot(L_PTE_YOUNG));
+}
+
+static inline pte_t pte_mkexec(pte_t pte)
+{
+	return clear_pte_bit(pte, __pgprot(L_PTE_XN));
+}
+
+static inline pte_t pte_mknexec(pte_t pte)
+{
+	return set_pte_bit(pte, __pgprot(L_PTE_XN));
+}
 
 static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 {
@@ -268,27 +274,47 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 }
 
 /*
- * Encode and decode a swap entry.  Swap entries are stored in the Linux
- * page tables as follows:
+ * Encode/decode swap entries and swap PTEs. Swap PTEs are all PTEs that
+ * are !pte_none() && !pte_present().
+ *
+ * Format of swap PTEs:
  *
  *   3 3 2 2 2 2 2 2 2 2 2 2 1 1 1 1 1 1 1 1 1 1
  *   1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0
- *   <--------------- offset ----------------------> < type -> 0 0 0
+ *   <------------------- offset ------------------> E < type -> 0 0
+ *
+ *   E is the exclusive marker that is not stored in swap entries.
  *
  * This gives us up to 31 swap files and 64GB per swap file.  Note that
  * the offset field is always non-zero.
  */
-#define __SWP_TYPE_SHIFT	3
+#define __SWP_TYPE_SHIFT	2
 #define __SWP_TYPE_BITS		5
 #define __SWP_TYPE_MASK		((1 << __SWP_TYPE_BITS) - 1)
-#define __SWP_OFFSET_SHIFT	(__SWP_TYPE_BITS + __SWP_TYPE_SHIFT)
+#define __SWP_OFFSET_SHIFT	(__SWP_TYPE_BITS + __SWP_TYPE_SHIFT + 1)
 
 #define __swp_type(x)		(((x).val >> __SWP_TYPE_SHIFT) & __SWP_TYPE_MASK)
 #define __swp_offset(x)		((x).val >> __SWP_OFFSET_SHIFT)
-#define __swp_entry(type,offset) ((swp_entry_t) { ((type) << __SWP_TYPE_SHIFT) | ((offset) << __SWP_OFFSET_SHIFT) })
+#define __swp_entry(type, offset) ((swp_entry_t) { (((type) & __SWP_TYPE_MASK) << __SWP_TYPE_SHIFT) | \
+						   ((offset) << __SWP_OFFSET_SHIFT) })
 
 #define __pte_to_swp_entry(pte)	((swp_entry_t) { pte_val(pte) })
-#define __swp_entry_to_pte(swp)	((pte_t) { (swp).val })
+#define __swp_entry_to_pte(swp)	__pte((swp).val)
+
+static inline int pte_swp_exclusive(pte_t pte)
+{
+	return pte_isset(pte, L_PTE_SWP_EXCLUSIVE);
+}
+
+static inline pte_t pte_swp_mkexclusive(pte_t pte)
+{
+	return set_pte_bit(pte, __pgprot(L_PTE_SWP_EXCLUSIVE));
+}
+
+static inline pte_t pte_swp_clear_exclusive(pte_t pte)
+{
+	return clear_pte_bit(pte, __pgprot(L_PTE_SWP_EXCLUSIVE));
+}
 
 /*
  * It is an error for the kernel to have more swap files than we can
@@ -298,32 +324,10 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 #define MAX_SWAPFILES_CHECK() BUILD_BUG_ON(MAX_SWAPFILES_SHIFT > __SWP_TYPE_BITS)
 
 /*
- * Encode and decode a file entry.  File entries are stored in the Linux
- * page tables as follows:
- *
- *   3 3 2 2 2 2 2 2 2 2 2 2 1 1 1 1 1 1 1 1 1 1
- *   1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0
- *   <----------------------- offset ------------------------> 1 0 0
- */
-#define pte_file(pte)		(pte_val(pte) & L_PTE_FILE)
-#define pte_to_pgoff(x)		(pte_val(x) >> 3)
-#define pgoff_to_pte(x)		__pte(((x) << 3) | L_PTE_FILE)
-
-#define PTE_FILE_MAX_BITS	29
-
-/* Needs to be defined here and not in linux/mm.h, as it is arch dependent */
-/* FIXME: this is not correct */
-#define kern_addr_valid(addr)	(1)
-
-#include <asm-generic/pgtable.h>
-
-/*
  * We provide our own arch_get_unmapped_area to cope with VIPT caches.
  */
 #define HAVE_ARCH_UNMAPPED_AREA
 #define HAVE_ARCH_UNMAPPED_AREA_TOPDOWN
-
-#define pgtable_cache_init() do { } while (0)
 
 #endif /* !__ASSEMBLY__ */
 

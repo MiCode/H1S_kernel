@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <signal.h>
@@ -30,6 +31,10 @@ static int sys_ptrace(int request, pid_t pid, void *addr, void *data)
 #define SIGNR 10
 #define TEST_SICODE_PRIV	-1
 #define TEST_SICODE_SHARE	-2
+
+#ifndef PAGE_SIZE
+#define PAGE_SIZE sysconf(_SC_PAGESIZE)
+#endif
 
 #define err(fmt, ...)						\
 		fprintf(stderr,					\
@@ -146,7 +151,7 @@ out:
 
 int main(int argc, char *argv[])
 {
-	siginfo_t siginfo[SIGNR];
+	siginfo_t siginfo;
 	int i, exit_code = 1;
 	sigset_t blockmask;
 	pid_t child;
@@ -171,13 +176,13 @@ int main(int argc, char *argv[])
 
 	/* Send signals in process-wide and per-thread queues */
 	for (i = 0; i < SIGNR; i++) {
-		siginfo->si_code = TEST_SICODE_SHARE;
-		siginfo->si_int = i;
-		sys_rt_sigqueueinfo(child, SIGRTMIN, siginfo);
+		siginfo.si_code = TEST_SICODE_SHARE;
+		siginfo.si_int = i;
+		sys_rt_sigqueueinfo(child, SIGRTMIN, &siginfo);
 
-		siginfo->si_code = TEST_SICODE_PRIV;
-		siginfo->si_int = i;
-		sys_rt_tgsigqueueinfo(child, child, SIGRTMIN, siginfo);
+		siginfo.si_code = TEST_SICODE_PRIV;
+		siginfo.si_int = i;
+		sys_rt_tgsigqueueinfo(child, child, SIGRTMIN, &siginfo);
 	}
 
 	if (sys_ptrace(PTRACE_ATTACH, child, NULL, NULL) == -1)

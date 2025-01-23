@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * stv0367_priv.h
  *
@@ -6,21 +7,6 @@
  * Copyright (C) ST Microelectronics.
  * Copyright (C) 2010,2011 NetUP Inc.
  * Copyright (C) 2010,2011 Igor M. Liplianin <liplianin@netup.ru>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 /* Common driver error constants */
 
@@ -39,7 +25,6 @@
 #endif
 
 /* MACRO definitions */
-#define ABS(X) ((X) < 0 ? (-1 * (X)) : (X))
 #define MAX(X, Y) ((X) >= (Y) ? (X) : (Y))
 #define MIN(X, Y) ((X) <= (Y) ? (X) : (Y))
 #define INRANGE(X, Y, Z) \
@@ -188,7 +173,7 @@ struct stv0367_cab_signal_info {
 	u32 frequency; /* kHz */
 	u32 symbol_rate; /* Mbds */
 	enum stv0367cab_mod modulation;
-	fe_spectral_inversion_t spect_inv;
+	enum fe_spectral_inversion spect_inv;
 	s32 Power_dBmx10;	/* Power of the RF signal (dBm x 10) */
 	u32	CN_dBx10;	/* Carrier to noise ratio (dB x 10) */
 	u32	BER;		/* Bit error rate (x 10000000)	*/

@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
- * dat.c - NILFS disk address translation.
+ * NILFS disk address translation.
  *
  * Copyright (C) 2006-2008 Nippon Telegraph and Telephone Corporation.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
- * Written by Koji Sato <koji@osrg.net>.
+ * Written by Koji Sato.
  */
 
 #include <linux/types.h>
@@ -53,8 +40,21 @@ static inline struct nilfs_dat_info *NILFS_DAT_I(struct inode *dat)
 static int nilfs_dat_prepare_entry(struct inode *dat,
 				   struct nilfs_palloc_req *req, int create)
 {
-	return nilfs_palloc_get_entry_block(dat, req->pr_entry_nr,
-					    create, &req->pr_entry_bh);
+	int ret;
+
+	ret = nilfs_palloc_get_entry_block(dat, req->pr_entry_nr,
+					   create, &req->pr_entry_bh);
+	if (unlikely(ret == -ENOENT)) {
+		nilfs_err(dat->i_sb,
+			  "DAT doesn't have a block to manage vblocknr = %llu",
+			  (unsigned long long)req->pr_entry_nr);
+		/*
+		 * Return internal code -EINVAL to notify bmap layer of
+		 * metadata corruption.
+		 */
+		ret = -EINVAL;
+	}
+	return ret;
 }
 
 static void nilfs_dat_commit_entry(struct inode *dat,
@@ -124,16 +124,19 @@ static void nilfs_dat_commit_free(struct inode *dat,
 	kunmap_atomic(kaddr);
 
 	nilfs_dat_commit_entry(dat, req);
+
+	if (unlikely(req->pr_desc_bh == NULL || req->pr_bitmap_bh == NULL)) {
+		nilfs_error(dat->i_sb,
+			    "state inconsistency probably due to duplicate use of vblocknr = %llu",
+			    (unsigned long long)req->pr_entry_nr);
+		return;
+	}
 	nilfs_palloc_commit_free_entry(dat, req);
 }
 
 int nilfs_dat_prepare_start(struct inode *dat, struct nilfs_palloc_req *req)
 {
-	int ret;
-
-	ret = nilfs_dat_prepare_entry(dat, req, 0);
-	WARN_ON(ret == -ENOENT);
-	return ret;
+	return nilfs_dat_prepare_entry(dat, req, 0);
 }
 
 void nilfs_dat_commit_start(struct inode *dat, struct nilfs_palloc_req *req,
@@ -161,10 +164,8 @@ int nilfs_dat_prepare_end(struct inode *dat, struct nilfs_palloc_req *req)
 	int ret;
 
 	ret = nilfs_dat_prepare_entry(dat, req, 0);
-	if (ret < 0) {
-		WARN_ON(ret == -ENOENT);
+	if (ret < 0)
 		return ret;
-	}
 
 	kaddr = kmap_atomic(req->pr_entry_bh->b_page);
 	entry = nilfs_palloc_block_get_entry(dat, req->pr_entry_nr,
@@ -179,6 +180,15 @@ int nilfs_dat_prepare_end(struct inode *dat, struct nilfs_palloc_req *req)
 			nilfs_dat_abort_entry(dat, req);
 			return ret;
 		}
+	}
+	if (unlikely(start > nilfs_mdt_cno(dat))) {
+		nilfs_err(dat->i_sb,
+			  "vblocknr = %llu has abnormal lifetime: start cno (= %llu) > current cno (= %llu)",
+			  (unsigned long long)req->pr_entry_nr,
+			  (unsigned long long)start,
+			  (unsigned long long)nilfs_mdt_cno(dat));
+		nilfs_dat_abort_entry(dat, req);
+		return -EINVAL;
 	}
 
 	return 0;
@@ -355,10 +365,11 @@ int nilfs_dat_move(struct inode *dat, __u64 vblocknr, sector_t blocknr)
 	kaddr = kmap_atomic(entry_bh->b_page);
 	entry = nilfs_palloc_block_get_entry(dat, vblocknr, entry_bh, kaddr);
 	if (unlikely(entry->de_blocknr == cpu_to_le64(0))) {
-		printk(KERN_CRIT "%s: vbn = %llu, [%llu, %llu)\n", __func__,
-		       (unsigned long long)vblocknr,
-		       (unsigned long long)le64_to_cpu(entry->de_start),
-		       (unsigned long long)le64_to_cpu(entry->de_end));
+		nilfs_crit(dat->i_sb,
+			   "%s: invalid vblocknr = %llu, [%llu, %llu)",
+			   __func__, (unsigned long long)vblocknr,
+			   (unsigned long long)le64_to_cpu(entry->de_start),
+			   (unsigned long long)le64_to_cpu(entry->de_end));
 		kunmap_atomic(kaddr);
 		brelse(entry_bh);
 		return -EINVAL;
@@ -430,7 +441,7 @@ int nilfs_dat_translate(struct inode *dat, __u64 vblocknr, sector_t *blocknrp)
 	return ret;
 }
 
-ssize_t nilfs_dat_get_vinfo(struct inode *dat, void *buf, unsigned visz,
+ssize_t nilfs_dat_get_vinfo(struct inode *dat, void *buf, unsigned int visz,
 			    size_t nvi)
 {
 	struct buffer_head *entry_bh;
@@ -484,6 +495,16 @@ int nilfs_dat_read(struct super_block *sb, size_t entry_size,
 	struct nilfs_dat_info *di;
 	int err;
 
+	if (entry_size > sb->s_blocksize) {
+		nilfs_err(sb, "too large DAT entry size: %zu bytes",
+			  entry_size);
+		return -EINVAL;
+	} else if (entry_size < NILFS_MIN_DAT_ENTRY_SIZE) {
+		nilfs_err(sb, "too small DAT entry size: %zu bytes",
+			  entry_size);
+		return -EINVAL;
+	}
+
 	dat = nilfs_iget_locked(sb, NULL, NILFS_DAT_INO);
 	if (unlikely(!dat))
 		return -ENOMEM;
@@ -501,7 +522,9 @@ int nilfs_dat_read(struct super_block *sb, size_t entry_size,
 	di = NILFS_DAT_I(dat);
 	lockdep_set_class(&di->mi.mi_sem, &dat_lock_key);
 	nilfs_palloc_setup_cache(dat, &di->palloc_cache);
-	nilfs_mdt_setup_shadow_map(dat, &di->shadow);
+	err = nilfs_mdt_setup_shadow_map(dat, &di->shadow);
+	if (err)
+		goto failed;
 
 	err = nilfs_read_inode_common(dat, raw_inode);
 	if (err)

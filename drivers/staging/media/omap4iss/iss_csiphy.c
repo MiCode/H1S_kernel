@@ -1,18 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * TI OMAP4 ISS V4L2 Driver - CSI PHY module
  *
  * Copyright (C) 2012 Texas Instruments, Inc.
  *
  * Author: Sergio Aguirre <sergio.a.aguirre@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/delay.h>
 #include <linux/device.h>
+#include <linux/regmap.h>
 
 #include "../../../../arch/arm/mach-omap2/control.h"
 
@@ -140,9 +137,11 @@ int omap4iss_csiphy_config(struct iss_device *iss,
 	 * - bit [18] : CSIPHY1 CTRLCLK enable
 	 * - bit [17:16] : CSIPHY1 config: 00 d-phy, 01/10 ccp2
 	 */
-	cam_rx_ctrl = omap4_ctrl_pad_readl(
-			OMAP4_CTRL_MODULE_PAD_CORE_CONTROL_CAMERA_RX);
-
+	/*
+	 * TODO: When implementing DT support specify the CONTROL_CAMERA_RX
+	 * register offset in the syscon property instead of hardcoding it.
+	 */
+	regmap_read(iss->syscon, 0x68, &cam_rx_ctrl);
 
 	if (subdevs->interface == ISS_INTERFACE_CSI2A_PHY1) {
 		cam_rx_ctrl &= ~(OMAP4_CAMERARX_CSI21_LANEENABLE_MASK |
@@ -166,8 +165,7 @@ int omap4iss_csiphy_config(struct iss_device *iss,
 		cam_rx_ctrl |= OMAP4_CAMERARX_CSI22_CTRLCLKEN_MASK;
 	}
 
-	omap4_ctrl_pad_writel(cam_rx_ctrl,
-		 OMAP4_CTRL_MODULE_PAD_CORE_CONTROL_CAMERA_RX);
+	regmap_write(iss->syscon, 0x68, cam_rx_ctrl);
 
 	/* Reset used lane count */
 	csi2->phy->used_data_lanes = 0;

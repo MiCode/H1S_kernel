@@ -1,22 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * index.c - NTFS kernel index handling.  Part of the Linux-NTFS project.
  *
  * Copyright (c) 2004-2005 Anton Altaparmakov
- *
- * This program/include file is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as published
- * by the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program/include file is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program (in the main directory of the Linux-NTFS
- * distribution in the file COPYING); if not, write to the Free Software
- * Foundation,Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/slab.h>
@@ -272,11 +258,11 @@ done:
 descend_into_child_node:
 	/*
 	 * Convert vcn to index into the index allocation attribute in units
-	 * of PAGE_CACHE_SIZE and map the page cache page, reading it from
+	 * of PAGE_SIZE and map the page cache page, reading it from
 	 * disk if necessary.
 	 */
 	page = ntfs_map_page(ia_mapping, vcn <<
-			idx_ni->itype.index.vcn_size_bits >> PAGE_CACHE_SHIFT);
+			idx_ni->itype.index.vcn_size_bits >> PAGE_SHIFT);
 	if (IS_ERR(page)) {
 		ntfs_error(sb, "Failed to map index page, error %ld.",
 				-PTR_ERR(page));
@@ -288,9 +274,9 @@ descend_into_child_node:
 fast_descend_into_child_node:
 	/* Get to the index allocation block. */
 	ia = (INDEX_ALLOCATION*)(kaddr + ((vcn <<
-			idx_ni->itype.index.vcn_size_bits) & ~PAGE_CACHE_MASK));
+			idx_ni->itype.index.vcn_size_bits) & ~PAGE_MASK));
 	/* Bounds checks. */
-	if ((u8*)ia < kaddr || (u8*)ia > kaddr + PAGE_CACHE_SIZE) {
+	if ((u8*)ia < kaddr || (u8*)ia > kaddr + PAGE_SIZE) {
 		ntfs_error(sb, "Out of bounds check failed.  Corrupt inode "
 				"0x%lx or driver bug.", idx_ni->mft_no);
 		goto unm_err_out;
@@ -323,7 +309,7 @@ fast_descend_into_child_node:
 		goto unm_err_out;
 	}
 	index_end = (u8*)ia + idx_ni->itype.index.block_size;
-	if (index_end > kaddr + PAGE_CACHE_SIZE) {
+	if (index_end > kaddr + PAGE_SIZE) {
 		ntfs_error(sb, "Index buffer (VCN 0x%llx) of inode 0x%lx "
 				"crosses page boundary.  Impossible!  Cannot "
 				"access!  This is probably a bug in the "
@@ -427,9 +413,9 @@ ia_done:
 		 * the mapped page.
 		 */
 		if (old_vcn << vol->cluster_size_bits >>
-				PAGE_CACHE_SHIFT == vcn <<
+				PAGE_SHIFT == vcn <<
 				vol->cluster_size_bits >>
-				PAGE_CACHE_SHIFT)
+				PAGE_SHIFT)
 			goto fast_descend_into_child_node;
 		unlock_page(page);
 		ntfs_unmap_page(page);

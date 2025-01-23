@@ -1,8 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * QLogic iSCSI HBA Driver
  * Copyright (c)  2003-2013 QLogic Corporation
- *
- * See LICENSE.qla4xxx for copyright and licensing details.
  */
 
 #ifndef __QL483XX_H
@@ -86,23 +85,6 @@
 #define QLA83XX_ASIC_TEMP		0x37B4
 #define QLA83XX_FW_API			0x356C
 #define QLA83XX_DRV_OP_MODE		0x3570
-
-static const uint32_t qla4_83xx_reg_tbl[] = {
-	QLA83XX_PEG_HALT_STATUS1,
-	QLA83XX_PEG_HALT_STATUS2,
-	QLA83XX_PEG_ALIVE_COUNTER,
-	QLA83XX_CRB_DRV_ACTIVE,
-	QLA83XX_CRB_DEV_STATE,
-	QLA83XX_CRB_DRV_STATE,
-	QLA83XX_CRB_DRV_SCRATCH,
-	QLA83XX_CRB_DEV_PART_INFO1,
-	QLA83XX_CRB_IDC_VER_MAJOR,
-	QLA83XX_FW_VER_MAJOR,
-	QLA83XX_FW_VER_MINOR,
-	QLA83XX_FW_VER_SUB,
-	QLA83XX_CMDPEG_STATE,
-	QLA83XX_ASIC_TEMP,
-};
 
 #define QLA83XX_CRB_WIN_BASE		0x3800
 #define QLA83XX_CRB_WIN_FUNC(f)		(QLA83XX_CRB_WIN_BASE+((f)*4))
@@ -253,6 +235,50 @@ struct qla83xx_minidump_entry_pollrd {
 	uint32_t data_size;
 	uint32_t rsvd_1;
 };
+
+struct qla8044_minidump_entry_rddfe {
+	struct qla8xxx_minidump_entry_hdr h;
+	uint32_t addr_1;
+	uint32_t value;
+	uint8_t stride;
+	uint8_t stride2;
+	uint16_t count;
+	uint32_t poll;
+	uint32_t mask;
+	uint32_t modify_mask;
+	uint32_t data_size;
+	uint32_t rsvd;
+
+} __packed;
+
+struct qla8044_minidump_entry_rdmdio {
+	struct qla8xxx_minidump_entry_hdr h;
+
+	uint32_t addr_1;
+	uint32_t addr_2;
+	uint32_t value_1;
+	uint8_t stride_1;
+	uint8_t stride_2;
+	uint16_t count;
+	uint32_t poll;
+	uint32_t mask;
+	uint32_t value_2;
+	uint32_t data_size;
+
+} __packed;
+
+struct qla8044_minidump_entry_pollwr {
+	struct qla8xxx_minidump_entry_hdr h;
+	uint32_t addr_1;
+	uint32_t addr_2;
+	uint32_t value_1;
+	uint32_t value_2;
+	uint32_t poll;
+	uint32_t mask;
+	uint32_t data_size;
+	uint32_t rsvd;
+
+} __packed;
 
 /* RDMUX2 Entry */
 struct qla83xx_minidump_entry_rdmux2 {

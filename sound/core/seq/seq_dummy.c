@@ -1,21 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * ALSA sequencer MIDI-through client
  * Copyright (c) 1999-2000 by Takashi Iwai <tiwai@suse.de>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <linux/init.h>
@@ -34,15 +20,15 @@
   are redirected to output port immediately.
   The routing can be done via aconnect program in alsa-utils.
 
-  Each client has a static client number 62 (= SNDRV_SEQ_CLIENT_DUMMY).
+  Each client has a static client number 14 (= SNDRV_SEQ_CLIENT_DUMMY).
   If you want to auto-load this module, you may add the following alias
   in your /etc/conf.modules file.
 
-	alias snd-seq-client-62  snd-seq-dummy
+	alias snd-seq-client-14  snd-seq-dummy
 
-  The module is loaded on demand for client 62, or /proc/asound/seq/
+  The module is loaded on demand for client 14, or /proc/asound/seq/
   is accessed.  If you don't need this module to be loaded, alias
-  snd-seq-client-62 as "off".  This will help modprobe.
+  snd-seq-client-14 as "off".  This will help modprobe.
 
   The number of ports to be created can be specified via the module
   parameter "ports".  For example, to create four ports, add the
@@ -80,36 +66,6 @@ struct snd_seq_dummy_port {
 };
 
 static int my_client = -1;
-
-/*
- * unuse callback - send ALL_SOUNDS_OFF and RESET_CONTROLLERS events
- * to subscribers.
- * Note: this callback is called only after all subscribers are removed.
- */
-static int
-dummy_unuse(void *private_data, struct snd_seq_port_subscribe *info)
-{
-	struct snd_seq_dummy_port *p;
-	int i;
-	struct snd_seq_event ev;
-
-	p = private_data;
-	memset(&ev, 0, sizeof(ev));
-	if (p->duplex)
-		ev.source.port = p->connect;
-	else
-		ev.source.port = p->port;
-	ev.dest.client = SNDRV_SEQ_ADDRESS_SUBSCRIBERS;
-	ev.type = SNDRV_SEQ_EVENT_CONTROLLER;
-	for (i = 0; i < 16; i++) {
-		ev.data.control.channel = i;
-		ev.data.control.param = MIDI_CTL_ALL_SOUNDS_OFF;
-		snd_seq_kernel_client_dispatch(p->client, &ev, 0, 0);
-		ev.data.control.param = MIDI_CTL_RESET_CONTROLLERS;
-		snd_seq_kernel_client_dispatch(p->client, &ev, 0, 0);
-	}
-	return 0;
-}
 
 /*
  * event input callback - just redirect events to subscribers
@@ -153,7 +109,8 @@ create_port(int idx, int type)
 	struct snd_seq_port_callback pcb;
 	struct snd_seq_dummy_port *rec;
 
-	if ((rec = kzalloc(sizeof(*rec), GFP_KERNEL)) == NULL)
+	rec = kzalloc(sizeof(*rec), GFP_KERNEL);
+	if (!rec)
 		return NULL;
 
 	rec->client = my_client;
@@ -170,12 +127,12 @@ create_port(int idx, int type)
 	pinfo.capability |= SNDRV_SEQ_PORT_CAP_WRITE | SNDRV_SEQ_PORT_CAP_SUBS_WRITE;
 	if (duplex)
 		pinfo.capability |= SNDRV_SEQ_PORT_CAP_DUPLEX;
+	pinfo.direction = SNDRV_SEQ_PORT_DIR_BIDIRECTION;
 	pinfo.type = SNDRV_SEQ_PORT_TYPE_MIDI_GENERIC
 		| SNDRV_SEQ_PORT_TYPE_SOFTWARE
 		| SNDRV_SEQ_PORT_TYPE_PORT;
 	memset(&pcb, 0, sizeof(pcb));
 	pcb.owner = THIS_MODULE;
-	pcb.unuse = dummy_unuse;
 	pcb.event_input = dummy_input;
 	pcb.private_free = dummy_free;
 	pcb.private_data = rec;
@@ -195,10 +152,11 @@ static int __init
 register_client(void)
 {
 	struct snd_seq_dummy_port *rec1, *rec2;
+	struct snd_seq_client *client;
 	int i;
 
 	if (ports < 1) {
-		snd_printk(KERN_ERR "invalid number of ports %d\n", ports);
+		pr_err("ALSA: seq_dummy: invalid number of ports %d\n", ports);
 		return -EINVAL;
 	}
 
@@ -207,6 +165,13 @@ register_client(void)
 						 "Midi Through");
 	if (my_client < 0)
 		return my_client;
+
+	/* don't convert events but just pass-through */
+	client = snd_seq_kernel_client_get(my_client);
+	if (!client)
+		return -EINVAL;
+	client->filter = SNDRV_SEQ_FILTER_NO_CONVERT;
+	snd_seq_kernel_client_put(client);
 
 	/* create ports */
 	for (i = 0; i < ports; i++) {
@@ -245,11 +210,7 @@ delete_client(void)
 
 static int __init alsa_seq_dummy_init(void)
 {
-	int err;
-	snd_seq_autoload_lock();
-	err = register_client();
-	snd_seq_autoload_unlock();
-	return err;
+	return register_client();
 }
 
 static void __exit alsa_seq_dummy_exit(void)

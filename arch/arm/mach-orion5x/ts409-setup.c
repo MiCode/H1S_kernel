@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * QNAP TS-409 Board Setup
  *
@@ -5,11 +6,6 @@
  *
  * Copyright (C) 2008  Sylver Bruneau <sylver.bruneau@gmail.com>
  * Copyright (C) 2008  Martin Michlmayr <tbm@cyrius.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 #include <linux/gpio.h>
 #include <linux/kernel.h>
@@ -27,9 +23,9 @@
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/pci.h>
-#include <mach/orion5x.h>
 #include "common.h"
 #include "mpp.h"
+#include "orion5x.h"
 #include "tsx09-common.h"
 
 /*****************************************************************************
@@ -302,7 +298,7 @@ static void __init qnap_ts409_init(void)
 			gpio_free(TS409_RTC_GPIO);
 	}
 	if (qnap_ts409_i2c_rtc.irq == 0)
-		pr_warning("qnap_ts409_init: failed to get RTC IRQ\n");
+		pr_warn("qnap_ts409_init: failed to get RTC IRQ\n");
 	i2c_register_board_info(0, &qnap_ts409_i2c_rtc, 1);
 	platform_device_register(&ts409_leds);
 
@@ -313,6 +309,7 @@ static void __init qnap_ts409_init(void)
 MACHINE_START(TS409, "QNAP TS-409")
 	/* Maintainer:  Sylver Bruneau <sylver.bruneau@gmail.com> */
 	.atag_offset	= 0x100,
+	.nr_irqs	= ORION5X_NR_IRQS,
 	.init_machine	= qnap_ts409_init,
 	.map_io		= orion5x_map_io,
 	.init_early	= orion5x_init_early,

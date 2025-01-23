@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Just like strncpy() except that if a fault occurs during copying,
  * -EFAULT is returned.
@@ -16,6 +17,7 @@
  *			 by Andreas Schwab <schwab@suse.de>).
  */
 
+#include <linux/export.h>
 #include <asm/asmmacro.h>
 
 GLOBAL_ENTRY(__strncpy_from_user)
@@ -42,3 +44,4 @@ GLOBAL_ENTRY(__strncpy_from_user)
 [.Lexit:]
 	br.ret.sptk.many rp
 END(__strncpy_from_user)
+EXPORT_SYMBOL(__strncpy_from_user)

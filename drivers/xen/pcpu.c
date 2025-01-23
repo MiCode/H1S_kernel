@@ -40,12 +40,16 @@
 #include <linux/capability.h>
 
 #include <xen/xen.h>
+#include <xen/acpi.h>
 #include <xen/xenbus.h>
 #include <xen/events.h>
 #include <xen/interface/platform.h>
 #include <asm/xen/hypervisor.h>
 #include <asm/xen/hypercall.h>
 
+#ifdef CONFIG_ACPI
+#include <acpi/processor.h>
+#endif
 
 /*
  * @cpu_id: Xen physical cpu logic number
@@ -57,6 +61,7 @@ struct pcpu {
 	struct list_head list;
 	struct device dev;
 	uint32_t cpu_id;
+	uint32_t acpi_id;
 	uint32_t flags;
 };
 
@@ -77,7 +82,7 @@ static int xen_pcpu_down(uint32_t cpu_id)
 		.u.cpu_ol.cpuid		= cpu_id,
 	};
 
-	return HYPERVISOR_dom0_op(&op);
+	return HYPERVISOR_platform_op(&op);
 }
 
 static int xen_pcpu_up(uint32_t cpu_id)
@@ -88,10 +93,10 @@ static int xen_pcpu_up(uint32_t cpu_id)
 		.u.cpu_ol.cpuid		= cpu_id,
 	};
 
-	return HYPERVISOR_dom0_op(&op);
+	return HYPERVISOR_platform_op(&op);
 }
 
-static ssize_t show_online(struct device *dev,
+static ssize_t online_show(struct device *dev,
 			   struct device_attribute *attr,
 			   char *buf)
 {
@@ -100,7 +105,7 @@ static ssize_t show_online(struct device *dev,
 	return sprintf(buf, "%u\n", !!(cpu->flags & XEN_PCPU_FLAGS_ONLINE));
 }
 
-static ssize_t __ref store_online(struct device *dev,
+static ssize_t __ref online_store(struct device *dev,
 				  struct device_attribute *attr,
 				  const char *buf, size_t count)
 {
@@ -129,7 +134,34 @@ static ssize_t __ref store_online(struct device *dev,
 		ret = count;
 	return ret;
 }
-static DEVICE_ATTR(online, S_IRUGO | S_IWUSR, show_online, store_online);
+static DEVICE_ATTR_RW(online);
+
+static struct attribute *pcpu_dev_attrs[] = {
+	&dev_attr_online.attr,
+	NULL
+};
+
+static umode_t pcpu_dev_is_visible(struct kobject *kobj,
+				   struct attribute *attr, int idx)
+{
+	struct device *dev = kobj_to_dev(kobj);
+	/*
+	 * Xen never offline cpu0 due to several restrictions
+	 * and assumptions. This basically doesn't add a sys control
+	 * to user, one cannot attempt to offline BSP.
+	 */
+	return dev->id ? attr->mode : 0;
+}
+
+static const struct attribute_group pcpu_dev_group = {
+	.attrs = pcpu_dev_attrs,
+	.is_visible = pcpu_dev_is_visible,
+};
+
+static const struct attribute_group *pcpu_dev_groups[] = {
+	&pcpu_dev_group,
+	NULL
+};
 
 static bool xen_pcpu_online(uint32_t flags)
 {
@@ -180,9 +212,6 @@ static void unregister_and_remove_pcpu(struct pcpu *pcpu)
 		return;
 
 	dev = &pcpu->dev;
-	if (dev->id)
-		device_remove_file(dev, &dev_attr_online);
-
 	/* pcpu remove would be implicitly done */
 	device_unregister(dev);
 }
@@ -199,24 +228,12 @@ static int register_pcpu(struct pcpu *pcpu)
 	dev->bus = &xen_pcpu_subsys;
 	dev->id = pcpu->cpu_id;
 	dev->release = pcpu_release;
+	dev->groups = pcpu_dev_groups;
 
 	err = device_register(dev);
 	if (err) {
-		pcpu_release(dev);
+		put_device(dev);
 		return err;
-	}
-
-	/*
-	 * Xen never offline cpu0 due to several restrictions
-	 * and assumptions. This basically doesn't add a sys control
-	 * to user, one cannot attempt to offline BSP.
-	 */
-	if (dev->id) {
-		err = device_create_file(dev, &dev_attr_online);
-		if (err) {
-			device_unregister(dev);
-			return err;
-		}
 	}
 
 	return 0;
@@ -236,6 +253,7 @@ static struct pcpu *create_and_register_pcpu(struct xenpf_pcpuinfo *info)
 
 	INIT_LIST_HEAD(&pcpu->list);
 	pcpu->cpu_id = info->xen_cpuid;
+	pcpu->acpi_id = info->acpi_id;
 	pcpu->flags = info->flags;
 
 	/* Need hold on xen_pcpu_lock before pcpu list manipulations */
@@ -264,7 +282,7 @@ static int sync_pcpu(uint32_t cpu, uint32_t *max_cpu)
 		.u.pcpu_info.xen_cpuid = cpu,
 	};
 
-	ret = HYPERVISOR_dom0_op(&op);
+	ret = HYPERVISOR_platform_op(&op);
 	if (ret)
 		return ret;
 
@@ -332,41 +350,6 @@ static irqreturn_t xen_pcpu_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-/* Sync with Xen hypervisor after cpu hotadded */
-void xen_pcpu_hotplug_sync(void)
-{
-	schedule_work(&xen_pcpu_work);
-}
-EXPORT_SYMBOL_GPL(xen_pcpu_hotplug_sync);
-
-/*
- * For hypervisor presented cpu, return logic cpu id;
- * For hypervisor non-presented cpu, return -ENODEV.
- */
-int xen_pcpu_id(uint32_t acpi_id)
-{
-	int cpu_id = 0, max_id = 0;
-	struct xen_platform_op op;
-
-	op.cmd = XENPF_get_cpuinfo;
-	while (cpu_id <= max_id) {
-		op.u.pcpu_info.xen_cpuid = cpu_id;
-		if (HYPERVISOR_dom0_op(&op)) {
-			cpu_id++;
-			continue;
-		}
-
-		if (acpi_id == op.u.pcpu_info.acpi_id)
-			return cpu_id;
-		if (op.u.pcpu_info.max_present > max_id)
-			max_id = op.u.pcpu_info.max_present;
-		cpu_id++;
-	}
-
-	return -ENODEV;
-}
-EXPORT_SYMBOL_GPL(xen_pcpu_id);
-
 static int __init xen_pcpu_init(void)
 {
 	int irq, ret;
@@ -403,3 +386,40 @@ err1:
 	return ret;
 }
 arch_initcall(xen_pcpu_init);
+
+#ifdef CONFIG_ACPI
+bool __init xen_processor_present(uint32_t acpi_id)
+{
+	const struct pcpu *pcpu;
+	bool online = false;
+
+	mutex_lock(&xen_pcpu_lock);
+	list_for_each_entry(pcpu, &xen_pcpus, list)
+		if (pcpu->acpi_id == acpi_id) {
+			online = pcpu->flags & XEN_PCPU_FLAGS_ONLINE;
+			break;
+		}
+	mutex_unlock(&xen_pcpu_lock);
+
+	return online;
+}
+
+void xen_sanitize_proc_cap_bits(uint32_t *cap)
+{
+	struct xen_platform_op op = {
+		.cmd			= XENPF_set_processor_pminfo,
+		.u.set_pminfo.id	= -1,
+		.u.set_pminfo.type	= XEN_PM_PDC,
+	};
+	u32 buf[3] = { ACPI_PDC_REVISION_ID, 1, *cap };
+	int ret;
+
+	set_xen_guest_handle(op.u.set_pminfo.pdc, buf);
+	ret = HYPERVISOR_platform_op(&op);
+	if (ret)
+		pr_err("sanitize of _PDC buffer bits from Xen failed: %d\n",
+		       ret);
+	else
+		*cap = buf[2];
+}
+#endif

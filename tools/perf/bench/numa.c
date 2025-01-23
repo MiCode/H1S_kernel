@@ -1,13 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * numa.c
  *
  * numa: Simulate NUMA-sensitive workload and measure their NUMA performance
  */
 
-#include "../perf.h"
-#include "../builtin.h"
-#include "../util/util.h"
-#include "../util/parse-options.h"
+#include <inttypes.h>
+
+#include <subcmd/parse-options.h>
+#include "../util/cloexec.h"
 
 #include "bench.h"
 
@@ -15,34 +16,46 @@
 #include <sched.h>
 #include <stdio.h>
 #include <assert.h>
+#include <debug.h>
 #include <malloc.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <sys/mman.h>
 #include <sys/time.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <sys/prctl.h>
 #include <sys/types.h>
+#include <linux/kernel.h>
+#include <linux/time64.h>
+#include <linux/numa.h>
+#include <linux/zalloc.h>
 
+#include "../util/header.h"
+#include "../util/mutex.h"
 #include <numa.h>
 #include <numaif.h>
 
+#ifndef RUSAGE_THREAD
+# define RUSAGE_THREAD 1
+#endif
+
 /*
- * Regular printout to the terminal, supressed if -q is specified:
+ * Regular printout to the terminal, suppressed if -q is specified:
  */
 #define tprintf(x...) do { if (g && g->p.show_details >= 0) printf(x); } while (0)
 
 /*
  * Debug printf:
  */
+#undef dprintf
 #define dprintf(x...) do { if (g && g->p.show_details >= 1) printf(x); } while (0)
 
 struct thread_data {
 	int			curr_cpu;
-	cpu_set_t		bind_cpumask;
+	cpu_set_t		*bind_cpumask;
 	int			bind_node;
 	u8			*process_data;
 	int			process_nr;
@@ -51,7 +64,10 @@ struct thread_data {
 	unsigned int		loops_done;
 	u64			val;
 	u64			runtime_ns;
-	pthread_mutex_t		*process_lock;
+	u64			system_time_ns;
+	u64			user_time_ns;
+	double			speed_gbs;
+	struct mutex		*process_lock;
 };
 
 /* Parameters set by options: */
@@ -101,7 +117,6 @@ struct params {
 	long			bytes_thread;
 
 	int			nr_tasks;
-	bool			show_quiet;
 
 	bool			show_convergence;
 	bool			measure_convergence;
@@ -121,15 +136,16 @@ struct params {
 struct global_info {
 	u8			*data;
 
-	pthread_mutex_t		startup_mutex;
+	struct mutex		startup_mutex;
+	struct cond		startup_cond;
 	int			nr_tasks_started;
 
-	pthread_mutex_t		startup_done_mutex;
-
-	pthread_mutex_t		start_work_mutex;
+	struct mutex		start_work_mutex;
+	struct cond		start_work_cond;
 	int			nr_tasks_working;
+	bool			start_work;
 
-	pthread_mutex_t		stop_work_mutex;
+	struct mutex		stop_work_mutex;
 	u64			bytes_done;
 
 	struct thread_data	*threads;
@@ -159,11 +175,11 @@ static const struct option options[] = {
 	OPT_STRING('L', "mb_proc_locked", &p0.mb_proc_locked_str,"MB", "process serialized/locked memory access (MBs), <= process_memory"),
 	OPT_STRING('T', "mb_thread"	, &p0.mb_thread_str,	"MB", "thread  memory (MBs)"),
 
-	OPT_UINTEGER('l', "nr_loops"	, &p0.nr_loops,		"max number of loops to run"),
-	OPT_UINTEGER('s', "nr_secs"	, &p0.nr_secs,		"max number of seconds to run"),
+	OPT_UINTEGER('l', "nr_loops"	, &p0.nr_loops,		"max number of loops to run (default: unlimited)"),
+	OPT_UINTEGER('s', "nr_secs"	, &p0.nr_secs,		"max number of seconds to run (default: 5 secs)"),
 	OPT_UINTEGER('u', "usleep"	, &p0.sleep_usecs,	"usecs to sleep per loop iteration"),
 
-	OPT_BOOLEAN('R', "data_reads"	, &p0.data_reads,	"access the data via writes (can be mixed with -W)"),
+	OPT_BOOLEAN('R', "data_reads"	, &p0.data_reads,	"access the data via reads (can be mixed with -W)"),
 	OPT_BOOLEAN('W', "data_writes"	, &p0.data_writes,	"access the data via writes (can be mixed with -R)"),
 	OPT_BOOLEAN('B', "data_backwards", &p0.data_backwards,	"access the data backwards as well"),
 	OPT_BOOLEAN('Z', "data_zero_memset", &p0.data_zero_memset,"access the data via glibc bzero only"),
@@ -178,9 +194,11 @@ static const struct option options[] = {
 	OPT_INCR   ('d', "show_details"	, &p0.show_details,	"Show details"),
 	OPT_INCR   ('a', "all"		, &p0.run_all,		"Run all tests in the suite"),
 	OPT_INTEGER('H', "thp"		, &p0.thp,		"MADV_NOHUGEPAGE < 0 < MADV_HUGEPAGE"),
-	OPT_BOOLEAN('c', "show_convergence", &p0.show_convergence, "show convergence details"),
+	OPT_BOOLEAN('c', "show_convergence", &p0.show_convergence, "show convergence details, "
+		    "convergence is reached when each process (all its threads) is running on a single NUMA node."),
 	OPT_BOOLEAN('m', "measure_convergence",	&p0.measure_convergence, "measure convergence latency"),
-	OPT_BOOLEAN('q', "quiet"	, &p0.show_quiet,	"bzero the initial allocations"),
+	OPT_BOOLEAN('q', "quiet"	, &quiet,
+		    "quiet mode (do not show any warnings or messages)"),
 	OPT_BOOLEAN('S', "serialize-startup", &p0.serialize_startup,"serialize thread startup"),
 
 	/* Special option string parsing callbacks: */
@@ -203,72 +221,163 @@ static const char * const numa_usage[] = {
 	NULL
 };
 
-static cpu_set_t bind_to_cpu(int target_cpu)
+/*
+ * To get number of numa nodes present.
+ */
+static int nr_numa_nodes(void)
 {
-	cpu_set_t orig_mask, mask;
-	int ret;
+	int i, nr_nodes = 0;
 
-	ret = sched_getaffinity(0, sizeof(orig_mask), &orig_mask);
-	BUG_ON(ret);
+	for (i = 0; i < g->p.nr_nodes; i++) {
+		if (numa_bitmask_isbitset(numa_nodes_ptr, i))
+			nr_nodes++;
+	}
 
-	CPU_ZERO(&mask);
+	return nr_nodes;
+}
+
+/*
+ * To check if given numa node is present.
+ */
+static int is_node_present(int node)
+{
+	return numa_bitmask_isbitset(numa_nodes_ptr, node);
+}
+
+/*
+ * To check given numa node has cpus.
+ */
+static bool node_has_cpus(int node)
+{
+	struct bitmask *cpumask = numa_allocate_cpumask();
+	bool ret = false; /* fall back to nocpus */
+	int cpu;
+
+	BUG_ON(!cpumask);
+	if (!numa_node_to_cpus(node, cpumask)) {
+		for (cpu = 0; cpu < (int)cpumask->size; cpu++) {
+			if (numa_bitmask_isbitset(cpumask, cpu)) {
+				ret = true;
+				break;
+			}
+		}
+	}
+	numa_free_cpumask(cpumask);
+
+	return ret;
+}
+
+static cpu_set_t *bind_to_cpu(int target_cpu)
+{
+	int nrcpus = numa_num_possible_cpus();
+	cpu_set_t *orig_mask, *mask;
+	size_t size;
+
+	orig_mask = CPU_ALLOC(nrcpus);
+	BUG_ON(!orig_mask);
+	size = CPU_ALLOC_SIZE(nrcpus);
+	CPU_ZERO_S(size, orig_mask);
+
+	if (sched_getaffinity(0, size, orig_mask))
+		goto err_out;
+
+	mask = CPU_ALLOC(nrcpus);
+	if (!mask)
+		goto err_out;
+
+	CPU_ZERO_S(size, mask);
 
 	if (target_cpu == -1) {
 		int cpu;
 
 		for (cpu = 0; cpu < g->p.nr_cpus; cpu++)
-			CPU_SET(cpu, &mask);
+			CPU_SET_S(cpu, size, mask);
 	} else {
-		BUG_ON(target_cpu < 0 || target_cpu >= g->p.nr_cpus);
-		CPU_SET(target_cpu, &mask);
+		if (target_cpu < 0 || target_cpu >= g->p.nr_cpus)
+			goto err;
+
+		CPU_SET_S(target_cpu, size, mask);
 	}
 
-	ret = sched_setaffinity(0, sizeof(mask), &mask);
-	BUG_ON(ret);
+	if (sched_setaffinity(0, size, mask))
+		goto err;
 
 	return orig_mask;
+
+err:
+	CPU_FREE(mask);
+err_out:
+	CPU_FREE(orig_mask);
+
+	/* BUG_ON due to failure in allocation of orig_mask/mask */
+	BUG_ON(-1);
+	return NULL;
 }
 
-static cpu_set_t bind_to_node(int target_node)
+static cpu_set_t *bind_to_node(int target_node)
 {
-	int cpus_per_node = g->p.nr_cpus/g->p.nr_nodes;
-	cpu_set_t orig_mask, mask;
+	int nrcpus = numa_num_possible_cpus();
+	size_t size;
+	cpu_set_t *orig_mask, *mask;
 	int cpu;
-	int ret;
 
-	BUG_ON(cpus_per_node*g->p.nr_nodes != g->p.nr_cpus);
-	BUG_ON(!cpus_per_node);
+	orig_mask = CPU_ALLOC(nrcpus);
+	BUG_ON(!orig_mask);
+	size = CPU_ALLOC_SIZE(nrcpus);
+	CPU_ZERO_S(size, orig_mask);
 
-	ret = sched_getaffinity(0, sizeof(orig_mask), &orig_mask);
-	BUG_ON(ret);
+	if (sched_getaffinity(0, size, orig_mask))
+		goto err_out;
 
-	CPU_ZERO(&mask);
+	mask = CPU_ALLOC(nrcpus);
+	if (!mask)
+		goto err_out;
 
-	if (target_node == -1) {
+	CPU_ZERO_S(size, mask);
+
+	if (target_node == NUMA_NO_NODE) {
 		for (cpu = 0; cpu < g->p.nr_cpus; cpu++)
-			CPU_SET(cpu, &mask);
+			CPU_SET_S(cpu, size, mask);
 	} else {
-		int cpu_start = (target_node + 0) * cpus_per_node;
-		int cpu_stop  = (target_node + 1) * cpus_per_node;
+		struct bitmask *cpumask = numa_allocate_cpumask();
 
-		BUG_ON(cpu_stop > g->p.nr_cpus);
+		if (!cpumask)
+			goto err;
 
-		for (cpu = cpu_start; cpu < cpu_stop; cpu++)
-			CPU_SET(cpu, &mask);
+		if (!numa_node_to_cpus(target_node, cpumask)) {
+			for (cpu = 0; cpu < (int)cpumask->size; cpu++) {
+				if (numa_bitmask_isbitset(cpumask, cpu))
+					CPU_SET_S(cpu, size, mask);
+			}
+		}
+		numa_free_cpumask(cpumask);
 	}
 
-	ret = sched_setaffinity(0, sizeof(mask), &mask);
-	BUG_ON(ret);
+	if (sched_setaffinity(0, size, mask))
+		goto err;
 
 	return orig_mask;
+
+err:
+	CPU_FREE(mask);
+err_out:
+	CPU_FREE(orig_mask);
+
+	/* BUG_ON due to failure in allocation of orig_mask/mask */
+	BUG_ON(-1);
+	return NULL;
 }
 
-static void bind_to_cpumask(cpu_set_t mask)
+static void bind_to_cpumask(cpu_set_t *mask)
 {
 	int ret;
+	size_t size = CPU_ALLOC_SIZE(numa_num_possible_cpus());
 
-	ret = sched_setaffinity(0, sizeof(mask), &mask);
-	BUG_ON(ret);
+	ret = sched_setaffinity(0, size, mask);
+	if (ret) {
+		CPU_FREE(mask);
+		BUG_ON(ret);
+	}
 }
 
 static void mempol_restore(void)
@@ -282,18 +391,22 @@ static void mempol_restore(void)
 
 static void bind_to_memnode(int node)
 {
-	unsigned long nodemask;
+	struct bitmask *node_mask;
 	int ret;
 
-	if (node == -1)
+	if (node == NUMA_NO_NODE)
 		return;
 
-	BUG_ON(g->p.nr_nodes > (int)sizeof(nodemask));
-	nodemask = 1L << node;
+	node_mask = numa_allocate_nodemask();
+	BUG_ON(!node_mask);
 
-	ret = set_mempolicy(MPOL_BIND, &nodemask, sizeof(nodemask)*8);
-	dprintf("binding to node %d, mask: %016lx => %d\n", node, nodemask, ret);
+	numa_bitmask_clearall(node_mask);
+	numa_bitmask_setbit(node_mask, node);
 
+	ret = set_mempolicy(MPOL_BIND, node_mask->maskp, node_mask->size + 1);
+	dprintf("binding to node %d, mask: %016lx => %d\n", node, *node_mask->maskp, ret);
+
+	numa_bitmask_free(node_mask);
 	BUG_ON(ret);
 }
 
@@ -310,7 +423,7 @@ do {							\
 static u8 *alloc_data(ssize_t bytes0, int map_flags,
 		      int init_zero, int init_cpu0, int thp, int init_random)
 {
-	cpu_set_t orig_mask;
+	cpu_set_t *orig_mask = NULL;
 	ssize_t bytes;
 	u8 *buf;
 	int ret;
@@ -320,8 +433,10 @@ static u8 *alloc_data(ssize_t bytes0, int map_flags,
 
 	/* Allocate and initialize all memory on CPU#0: */
 	if (init_cpu0) {
-		orig_mask = bind_to_node(0);
-		bind_to_memnode(0);
+		int node = numa_node_of_cpu(0);
+
+		orig_mask = bind_to_node(node);
+		bind_to_memnode(node);
 	}
 
 	bytes = bytes0 + HPSIZE;
@@ -366,6 +481,7 @@ static u8 *alloc_data(ssize_t bytes0, int map_flags,
 	/* Restore affinity: */
 	if (init_cpu0) {
 		bind_to_cpumask(orig_mask);
+		CPU_FREE(orig_mask);
 		mempol_restore();
 	}
 
@@ -406,18 +522,6 @@ static void * setup_shared_data(ssize_t bytes)
 static void * setup_private_data(ssize_t bytes)
 {
 	return alloc_data(bytes, MAP_PRIVATE, 0, g->p.init_cpu0,  g->p.thp, g->p.init_random);
-}
-
-/*
- * Return a process-shared (global) mutex:
- */
-static void init_global_mutex(pthread_mutex_t *mutex)
-{
-	pthread_mutexattr_t attr;
-
-	pthread_mutexattr_init(&attr);
-	pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
-	pthread_mutex_init(mutex, &attr);
 }
 
 static int parse_cpu_list(const char *arg)
@@ -505,10 +609,16 @@ static int parse_setup_cpu_list(void)
 			return -1;
 		}
 
+		if (is_cpu_online(bind_cpu_0) != 1 || is_cpu_online(bind_cpu_1) != 1) {
+			printf("\nTest not applicable, bind_cpu_0 or bind_cpu_1 is offline\n");
+			return -1;
+		}
+
 		BUG_ON(bind_cpu_0 < 0 || bind_cpu_1 < 0);
 		BUG_ON(bind_cpu_0 > bind_cpu_1);
 
 		for (bind_cpu = bind_cpu_0; bind_cpu <= bind_cpu_1; bind_cpu += step) {
+			size_t size = CPU_ALLOC_SIZE(g->p.nr_cpus);
 			int i;
 
 			for (i = 0; i < mul; i++) {
@@ -528,10 +638,15 @@ static int parse_setup_cpu_list(void)
 					tprintf("%2d", bind_cpu);
 				}
 
-				CPU_ZERO(&td->bind_cpumask);
+				td->bind_cpumask = CPU_ALLOC(g->p.nr_cpus);
+				BUG_ON(!td->bind_cpumask);
+				CPU_ZERO_S(size, td->bind_cpumask);
 				for (cpu = bind_cpu; cpu < bind_cpu+bind_len; cpu++) {
-					BUG_ON(cpu < 0 || cpu >= g->p.nr_cpus);
-					CPU_SET(cpu, &td->bind_cpumask);
+					if (cpu < 0 || cpu >= g->p.nr_cpus) {
+						CPU_FREE(td->bind_cpumask);
+						BUG_ON(-1);
+					}
+					CPU_SET_S(cpu, size, td->bind_cpumask);
 				}
 				t++;
 			}
@@ -636,7 +751,7 @@ static int parse_setup_node_list(void)
 			int i;
 
 			for (i = 0; i < mul; i++) {
-				if (t >= g->p.nr_tasks) {
+				if (t >= g->p.nr_tasks || !node_has_cpus(bind_node)) {
 					printf("\n# NOTE: ignoring bind NODEs starting at NODE#%d\n", bind_node);
 					goto out;
 				}
@@ -670,11 +785,7 @@ static int parse_nodes_opt(const struct option *opt __maybe_unused,
 		return -1;
 
 	return parse_node_list(arg);
-
-	return 0;
 }
-
-#define BIT(x) (1ul << x)
 
 static inline uint32_t lfsr_32(uint32_t lfsr)
 {
@@ -688,7 +799,7 @@ static inline uint32_t lfsr_32(uint32_t lfsr)
  * kernel (KSM, zero page, etc.) cannot optimize away RAM
  * accesses:
  */
-static inline u64 access_data(u64 *data __attribute__((unused)), u64 val)
+static inline u64 access_data(u64 *data, u64 val)
 {
 	if (g->p.data_reads)
 		val += *data;
@@ -736,7 +847,7 @@ static u64 do_work(u8 *__data, long bytes, int nr, int nr_max, int loop, u64 val
 
 	if (g->p.data_rand_walk) {
 		u32 lfsr = nr + loop + val;
-		int j;
+		long j;
 
 		for (i = 0; i < words/1024; i++) {
 			long start, end;
@@ -754,12 +865,12 @@ static u64 do_work(u8 *__data, long bytes, int nr, int nr_max, int loop, u64 val
 			}
 		}
 	} else if (!g->p.data_backwards || (nr + loop) & 1) {
+		/* Process data forwards: */
 
 		d0 = data + off;
 		d  = data + off + 1;
 		d1 = data + words;
 
-		/* Process data forwards: */
 		for (;;) {
 			if (unlikely(d >= d1))
 				d = data;
@@ -777,7 +888,6 @@ static u64 do_work(u8 *__data, long bytes, int nr, int nr_max, int loop, u64 val
 		d  = data + off - 1;
 		d1 = data + words;
 
-		/* Process data forwards: */
 		for (;;) {
 			if (unlikely(d < data))
 				d = data + words-1;
@@ -803,8 +913,6 @@ static void update_curr_cpu(int task_nr, unsigned long bytes_worked)
 	prctl(0, bytes_worked);
 }
 
-#define MAX_NR_NODES	64
-
 /*
  * Count the number of nodes a process's threads
  * are spread out on.
@@ -815,9 +923,14 @@ static void update_curr_cpu(int task_nr, unsigned long bytes_worked)
  */
 static int count_process_nodes(int process_nr)
 {
-	char node_present[MAX_NR_NODES] = { 0, };
+	char *node_present;
 	int nodes;
 	int n, t;
+
+	node_present = (char *)malloc(g->p.nr_nodes * sizeof(char));
+	BUG_ON(!node_present);
+	for (nodes = 0; nodes < g->p.nr_nodes; nodes++)
+		node_present[nodes] = 0;
 
 	for (t = 0; t < g->p.nr_threads; t++) {
 		struct thread_data *td;
@@ -828,14 +941,20 @@ static int count_process_nodes(int process_nr)
 		td = g->threads + task_nr;
 
 		node = numa_node_of_cpu(td->curr_cpu);
+		if (node < 0) /* curr_cpu was likely still -1 */ {
+			free(node_present);
+			return 0;
+		}
+
 		node_present[node] = 1;
 	}
 
 	nodes = 0;
 
-	for (n = 0; n < MAX_NR_NODES; n++)
+	for (n = 0; n < g->p.nr_nodes; n++)
 		nodes += node_present[n];
 
+	free(node_present);
 	return nodes;
 }
 
@@ -882,6 +1001,11 @@ static void calc_convergence_compression(int *strong)
 	for (p = 0; p < g->p.nr_proc; p++) {
 		unsigned int nodes = count_process_nodes(p);
 
+		if (!nodes) {
+			*strong = 0;
+			return;
+		}
+
 		nodes_min = min(nodes, nodes_min);
 		nodes_max = max(nodes, nodes_max);
 	}
@@ -899,7 +1023,7 @@ static void calc_convergence(double runtime_ns_max, double *convergence)
 {
 	unsigned int loops_done_min, loops_done_max;
 	int process_groups;
-	int nodes[MAX_NR_NODES];
+	int *nodes;
 	int distance;
 	int nr_min;
 	int nr_max;
@@ -913,6 +1037,8 @@ static void calc_convergence(double runtime_ns_max, double *convergence)
 	if (!g->p.show_convergence && !g->p.measure_convergence)
 		return;
 
+	nodes = (int *)malloc(g->p.nr_nodes * sizeof(int));
+	BUG_ON(!nodes);
 	for (node = 0; node < g->p.nr_nodes; node++)
 		nodes[node] = 0;
 
@@ -943,6 +1069,8 @@ static void calc_convergence(double runtime_ns_max, double *convergence)
 	sum = 0;
 
 	for (node = 0; node < g->p.nr_nodes; node++) {
+		if (!is_node_present(node))
+			continue;
 		nr = nodes[node];
 		nr_min = min(nr, nr_min);
 		nr_max = max(nr, nr_max);
@@ -952,8 +1080,10 @@ static void calc_convergence(double runtime_ns_max, double *convergence)
 
 	BUG_ON(sum > g->p.nr_tasks);
 
-	if (0 && (sum < g->p.nr_tasks))
+	if (0 && (sum < g->p.nr_tasks)) {
+		free(nodes);
 		return;
+	}
 
 	/*
 	 * Count the number of distinct process groups present
@@ -963,8 +1093,11 @@ static void calc_convergence(double runtime_ns_max, double *convergence)
 	process_groups = 0;
 
 	for (node = 0; node < g->p.nr_nodes; node++) {
-		int processes = count_node_processes(node);
+		int processes;
 
+		if (!is_node_present(node))
+			continue;
+		processes = count_node_processes(node);
 		nr = nodes[node];
 		tprintf(" %2d/%-2d", nr, processes);
 
@@ -989,7 +1122,7 @@ static void calc_convergence(double runtime_ns_max, double *convergence)
 	if (strong && process_groups == g->p.nr_proc) {
 		if (!*convergence) {
 			*convergence = runtime_ns_max;
-			tprintf(" (%6.1fs converged)\n", *convergence/1e9);
+			tprintf(" (%6.1fs converged)\n", *convergence / NSEC_PER_SEC);
 			if (g->p.measure_convergence) {
 				g->all_converged = true;
 				g->stop_work = true;
@@ -997,17 +1130,19 @@ static void calc_convergence(double runtime_ns_max, double *convergence)
 		}
 	} else {
 		if (*convergence) {
-			tprintf(" (%6.1fs de-converged)", runtime_ns_max/1e9);
+			tprintf(" (%6.1fs de-converged)", runtime_ns_max / NSEC_PER_SEC);
 			*convergence = 0;
 		}
 		tprintf("\n");
 	}
+
+	free(nodes);
 }
 
 static void show_summary(double runtime_ns_max, int l, double *convergence)
 {
 	tprintf("\r #  %5.1f%%  [%.1f mins]",
-		(double)(l+1)/g->p.nr_loops*100.0, runtime_ns_max/1e9 / 60.0);
+		(double)(l+1)/g->p.nr_loops*100.0, runtime_ns_max / NSEC_PER_SEC / 60.0);
 
 	calc_convergence(runtime_ns_max, convergence);
 
@@ -1031,9 +1166,10 @@ static void *worker_thread(void *__tdata)
 	u8 *global_data;
 	u8 *process_data;
 	u8 *thread_data;
-	u64 bytes_done;
+	u64 bytes_done, secs;
 	long work_done;
 	u32 l;
+	struct rusage rusage;
 
 	bind_to_cpumask(td->bind_cpumask);
 	bind_to_memnode(td->bind_node);
@@ -1060,19 +1196,22 @@ static void *worker_thread(void *__tdata)
 	}
 
 	if (g->p.serialize_startup) {
-		pthread_mutex_lock(&g->startup_mutex);
+		mutex_lock(&g->startup_mutex);
 		g->nr_tasks_started++;
-		pthread_mutex_unlock(&g->startup_mutex);
+		/* The last thread wakes the main process. */
+		if (g->nr_tasks_started == g->p.nr_tasks)
+			cond_signal(&g->startup_cond);
+
+		mutex_unlock(&g->startup_mutex);
 
 		/* Here we will wait for the main process to start us all at once: */
-		pthread_mutex_lock(&g->start_work_mutex);
+		mutex_lock(&g->start_work_mutex);
+		g->start_work = false;
 		g->nr_tasks_working++;
+		while (!g->start_work)
+			cond_wait(&g->start_work_cond, &g->start_work_mutex);
 
-		/* Last one wake the main process: */
-		if (g->nr_tasks_working == g->p.nr_tasks)
-			pthread_mutex_unlock(&g->startup_done_mutex);
-
-		pthread_mutex_unlock(&g->start_work_mutex);
+		mutex_unlock(&g->start_work_mutex);
 	}
 
 	gettimeofday(&start0, NULL);
@@ -1091,17 +1230,17 @@ static void *worker_thread(void *__tdata)
 		val += do_work(thread_data,  g->p.bytes_thread,  0,          1,		l, val);
 
 		if (g->p.sleep_usecs) {
-			pthread_mutex_lock(td->process_lock);
+			mutex_lock(td->process_lock);
 			usleep(g->p.sleep_usecs);
-			pthread_mutex_unlock(td->process_lock);
+			mutex_unlock(td->process_lock);
 		}
 		/*
 		 * Amount of work to be done under a process-global lock:
 		 */
 		if (g->p.bytes_process_locked) {
-			pthread_mutex_lock(td->process_lock);
+			mutex_lock(td->process_lock);
 			val += do_work(process_data, g->p.bytes_process_locked, thread_nr,  g->p.nr_threads,	l, val);
-			pthread_mutex_unlock(td->process_lock);
+			mutex_unlock(td->process_lock);
 		}
 
 		work_done = g->p.bytes_global + g->p.bytes_process +
@@ -1135,7 +1274,7 @@ static void *worker_thread(void *__tdata)
 		 * by migrating to CPU#0:
 		 */
 		if (first_task && g->p.perturb_secs && (int)(stop.tv_sec - last_perturbance) >= g->p.perturb_secs) {
-			cpu_set_t orig_mask;
+			cpu_set_t *orig_mask;
 			int target_cpu;
 			int this_cpu;
 
@@ -1159,12 +1298,13 @@ static void *worker_thread(void *__tdata)
 				printf(" (injecting perturbalance, moved to CPU#%d)\n", target_cpu);
 
 			bind_to_cpumask(orig_mask);
+			CPU_FREE(orig_mask);
 		}
 
 		if (details >= 3) {
 			timersub(&stop, &start, &diff);
-			runtime_ns_max = diff.tv_sec * 1000000000;
-			runtime_ns_max += diff.tv_usec * 1000;
+			runtime_ns_max = diff.tv_sec * NSEC_PER_SEC;
+			runtime_ns_max += diff.tv_usec * NSEC_PER_USEC;
 
 			if (details >= 0) {
 				printf(" #%2d / %2d: %14.2lf nsecs/op [val: %016"PRIx64"]\n",
@@ -1176,22 +1316,30 @@ static void *worker_thread(void *__tdata)
 			continue;
 
 		timersub(&stop, &start0, &diff);
-		runtime_ns_max = diff.tv_sec * 1000000000ULL;
-		runtime_ns_max += diff.tv_usec * 1000ULL;
+		runtime_ns_max = diff.tv_sec * NSEC_PER_SEC;
+		runtime_ns_max += diff.tv_usec * NSEC_PER_USEC;
 
 		show_summary(runtime_ns_max, l, &convergence);
 	}
 
 	gettimeofday(&stop, NULL);
 	timersub(&stop, &start0, &diff);
-	td->runtime_ns = diff.tv_sec * 1000000000ULL;
-	td->runtime_ns += diff.tv_usec * 1000ULL;
+	td->runtime_ns = diff.tv_sec * NSEC_PER_SEC;
+	td->runtime_ns += diff.tv_usec * NSEC_PER_USEC;
+	secs = td->runtime_ns / NSEC_PER_SEC;
+	td->speed_gbs = secs ? bytes_done / secs / 1e9 : 0;
+
+	getrusage(RUSAGE_THREAD, &rusage);
+	td->system_time_ns = rusage.ru_stime.tv_sec * NSEC_PER_SEC;
+	td->system_time_ns += rusage.ru_stime.tv_usec * NSEC_PER_USEC;
+	td->user_time_ns = rusage.ru_utime.tv_sec * NSEC_PER_SEC;
+	td->user_time_ns += rusage.ru_utime.tv_usec * NSEC_PER_USEC;
 
 	free_data(thread_data, g->p.bytes_thread);
 
-	pthread_mutex_lock(&g->stop_work_mutex);
+	mutex_lock(&g->stop_work_mutex);
 	g->bytes_done += bytes_done;
-	pthread_mutex_unlock(&g->stop_work_mutex);
+	mutex_unlock(&g->stop_work_mutex);
 
 	return NULL;
 }
@@ -1201,7 +1349,7 @@ static void *worker_thread(void *__tdata)
  */
 static void worker_process(int process_nr)
 {
-	pthread_mutex_t process_lock;
+	struct mutex process_lock;
 	struct thread_data *td;
 	pthread_t *pthreads;
 	u8 *process_data;
@@ -1209,7 +1357,7 @@ static void worker_process(int process_nr)
 	int ret;
 	int t;
 
-	pthread_mutex_init(&process_lock, NULL);
+	mutex_init(&process_lock);
 	set_taskname("process %d", process_nr);
 
 	/*
@@ -1262,7 +1410,7 @@ static void print_summary(void)
 
 	printf("\n ###\n");
 	printf(" # %d %s will execute (on %d nodes, %d CPUs):\n",
-		g->p.nr_tasks, g->p.nr_tasks == 1 ? "task" : "tasks", g->p.nr_nodes, g->p.nr_cpus);
+		g->p.nr_tasks, g->p.nr_tasks == 1 ? "task" : "tasks", nr_numa_nodes(), g->p.nr_cpus);
 	printf(" #      %5dx %5ldMB global  shared mem operations\n",
 			g->p.nr_loops, g->p.bytes_global/1024/1024);
 	printf(" #      %5dx %5ldMB process shared mem operations\n",
@@ -1284,21 +1432,31 @@ static void init_thread_data(void)
 
 	for (t = 0; t < g->p.nr_tasks; t++) {
 		struct thread_data *td = g->threads + t;
+		size_t cpuset_size = CPU_ALLOC_SIZE(g->p.nr_cpus);
 		int cpu;
 
 		/* Allow all nodes by default: */
-		td->bind_node = -1;
+		td->bind_node = NUMA_NO_NODE;
 
 		/* Allow all CPUs by default: */
-		CPU_ZERO(&td->bind_cpumask);
+		td->bind_cpumask = CPU_ALLOC(g->p.nr_cpus);
+		BUG_ON(!td->bind_cpumask);
+		CPU_ZERO_S(cpuset_size, td->bind_cpumask);
 		for (cpu = 0; cpu < g->p.nr_cpus; cpu++)
-			CPU_SET(cpu, &td->bind_cpumask);
+			CPU_SET_S(cpu, cpuset_size, td->bind_cpumask);
 	}
 }
 
 static void deinit_thread_data(void)
 {
 	ssize_t size = sizeof(*g->threads)*g->p.nr_tasks;
+	int t;
+
+	/* Free the bind_cpumask allocated for thread_data */
+	for (t = 0; t < g->p.nr_tasks; t++) {
+		struct thread_data *td = g->threads + t;
+		CPU_FREE(td->bind_cpumask);
+	}
 
 	free_data(g->threads, size);
 }
@@ -1315,9 +1473,9 @@ static int init(void)
 	g->p.nr_nodes = numa_max_node() + 1;
 
 	/* char array in count_process_nodes(): */
-	BUG_ON(g->p.nr_nodes > MAX_NR_NODES || g->p.nr_nodes < 0);
+	BUG_ON(g->p.nr_nodes < 0);
 
-	if (g->p.show_quiet && !g->p.show_details)
+	if (quiet && !g->p.show_details)
 		g->p.show_details = -1;
 
 	/* Some memory should be specified: */
@@ -1358,10 +1516,11 @@ static int init(void)
 	g->data = setup_shared_data(g->p.bytes_global);
 
 	/* Startup serialization: */
-	init_global_mutex(&g->start_work_mutex);
-	init_global_mutex(&g->startup_mutex);
-	init_global_mutex(&g->startup_done_mutex);
-	init_global_mutex(&g->stop_work_mutex);
+	mutex_init_pshared(&g->start_work_mutex);
+	cond_init_pshared(&g->start_work_cond);
+	mutex_init_pshared(&g->startup_mutex);
+	cond_init_pshared(&g->startup_cond);
+	mutex_init_pshared(&g->stop_work_mutex);
 
 	init_thread_data();
 
@@ -1395,7 +1554,7 @@ static void print_res(const char *name, double val,
 	if (!name)
 		name = "main,";
 
-	if (g->p.show_quiet)
+	if (!quiet)
 		printf(" %-30s %15.3f, %-15s %s\n", name, val, txt_unit, txt_short);
 	else
 		printf(" %14.3f %s\n", val, txt_long);
@@ -1412,16 +1571,13 @@ static int __bench_numa(const char *name)
 	double runtime_sec_min;
 	int wait_stat;
 	double bytes;
-	int i, t;
+	int i, t, p;
 
 	if (init())
 		return -1;
 
 	pids = zalloc(g->p.nr_proc * sizeof(*pids));
 	pid = -1;
-
-	/* All threads try to acquire it, this way we can wait for them to start up: */
-	pthread_mutex_lock(&g->start_work_mutex);
 
 	if (g->p.serialize_startup) {
 		tprintf(" #\n");
@@ -1444,36 +1600,47 @@ static int __bench_numa(const char *name)
 		pids[i] = pid;
 
 	}
-	/* Wait for all the threads to start up: */
-	while (g->nr_tasks_started != g->p.nr_tasks)
-		usleep(1000);
-
-	BUG_ON(g->nr_tasks_started != g->p.nr_tasks);
 
 	if (g->p.serialize_startup) {
+		bool threads_ready = false;
 		double startup_sec;
 
-		pthread_mutex_lock(&g->startup_done_mutex);
+		/*
+		 * Wait for all the threads to start up. The last thread will
+		 * signal this process.
+		 */
+		mutex_lock(&g->startup_mutex);
+		while (g->nr_tasks_started != g->p.nr_tasks)
+			cond_wait(&g->startup_cond, &g->startup_mutex);
 
-		/* This will start all threads: */
-		pthread_mutex_unlock(&g->start_work_mutex);
+		mutex_unlock(&g->startup_mutex);
 
-		/* This mutex is locked - the last started thread will wake us: */
-		pthread_mutex_lock(&g->startup_done_mutex);
+		/* Wait for all threads to be at the start_work_cond. */
+		while (!threads_ready) {
+			mutex_lock(&g->start_work_mutex);
+			threads_ready = (g->nr_tasks_working == g->p.nr_tasks);
+			mutex_unlock(&g->start_work_mutex);
+			if (!threads_ready)
+				usleep(1);
+		}
 
 		gettimeofday(&stop, NULL);
 
 		timersub(&stop, &start, &diff);
 
-		startup_sec = diff.tv_sec * 1000000000.0;
-		startup_sec += diff.tv_usec * 1000.0;
-		startup_sec /= 1e9;
+		startup_sec = diff.tv_sec * NSEC_PER_SEC;
+		startup_sec += diff.tv_usec * NSEC_PER_USEC;
+		startup_sec /= NSEC_PER_SEC;
 
 		tprintf(" threads initialized in %.6f seconds.\n", startup_sec);
 		tprintf(" #\n");
 
 		start = stop;
-		pthread_mutex_unlock(&g->startup_done_mutex);
+		/* Start all threads running. */
+		mutex_lock(&g->start_work_mutex);
+		g->start_work = true;
+		mutex_unlock(&g->start_work_mutex);
+		cond_broadcast(&g->start_work_cond);
 	} else {
 		gettimeofday(&start, NULL);
 	}
@@ -1506,14 +1673,14 @@ static int __bench_numa(const char *name)
 	tprintf("\n ###\n");
 	tprintf("\n");
 
-	runtime_sec_max = diff.tv_sec * 1000000000.0;
-	runtime_sec_max += diff.tv_usec * 1000.0;
-	runtime_sec_max /= 1e9;
+	runtime_sec_max = diff.tv_sec * NSEC_PER_SEC;
+	runtime_sec_max += diff.tv_usec * NSEC_PER_USEC;
+	runtime_sec_max /= NSEC_PER_SEC;
 
-	runtime_sec_min = runtime_ns_min/1e9;
+	runtime_sec_min = runtime_ns_min / NSEC_PER_SEC;
 
 	bytes = g->bytes_done;
-	runtime_avg = (double)runtime_ns_sum / g->p.nr_tasks / 1e9;
+	runtime_avg = (double)runtime_ns_sum / g->p.nr_tasks / NSEC_PER_SEC;
 
 	if (g->p.measure_convergence) {
 		print_res(name, runtime_sec_max,
@@ -1539,7 +1706,7 @@ static int __bench_numa(const char *name)
 	print_res(name, bytes / 1e9,
 		"GB,", "data-total",		"GB data processed, total");
 
-	print_res(name, runtime_sec_max * 1e9 / (bytes / g->p.nr_tasks),
+	print_res(name, runtime_sec_max * NSEC_PER_SEC / (bytes / g->p.nr_tasks),
 		"nsecs,", "runtime/byte/thread","nsecs/byte/thread runtime");
 
 	print_res(name, bytes / g->p.nr_tasks / 1e9 / runtime_sec_max,
@@ -1547,6 +1714,24 @@ static int __bench_numa(const char *name)
 
 	print_res(name, bytes / runtime_sec_max / 1e9,
 		"GB/sec,", "total-speed",	"GB/sec total speed");
+
+	if (g->p.show_details >= 2) {
+		char tname[14 + 2 * 11 + 1];
+		struct thread_data *td;
+		for (p = 0; p < g->p.nr_proc; p++) {
+			for (t = 0; t < g->p.nr_threads; t++) {
+				memset(tname, 0, sizeof(tname));
+				td = g->threads + p*g->p.nr_threads + t;
+				snprintf(tname, sizeof(tname), "process%d:thread%d", p, t);
+				print_res(tname, td->speed_gbs,
+					"GB/sec",	"thread-speed", "GB/sec/thread speed");
+				print_res(tname, td->system_time_ns / NSEC_PER_SEC,
+					"secs",	"thread-system-time", "system CPU time/thread");
+				print_res(tname, td->user_time_ns / NSEC_PER_SEC,
+					"secs",	"thread-user-time", "user CPU time/thread");
+			}
+		}
+	}
 
 	free(pids);
 
@@ -1593,6 +1778,11 @@ static void init_params(struct params *p, const char *name, int argc, const char
 	p->data_rand_walk		= true;
 	p->nr_loops			= -1;
 	p->init_random			= true;
+	p->mb_global_str		= "1";
+	p->nr_proc			= 1;
+	p->nr_threads			= 1;
+	p->nr_secs			= 5;
+	p->run_all			= argc == 1;
 }
 
 static int run_bench_numa(const char *name, const char **argv)
@@ -1629,12 +1819,12 @@ err:
  */
 static const char *tests[][MAX_ARGS] = {
    /* Basic single-stream NUMA bandwidth measurements: */
-   { "RAM-bw-local,",	  "mem",  "-p",  "1",  "-t",  "1", "-P", "1024",
+   { "RAM-bw-local,",     "mem",  "-p",  "1",  "-t",  "1", "-P", "1024",
 			  "-C" ,   "0", "-M",   "0", OPT_BW_RAM },
    { "RAM-bw-local-NOTHP,",
 			  "mem",  "-p",  "1",  "-t",  "1", "-P", "1024",
 			  "-C" ,   "0", "-M",   "0", OPT_BW_RAM_NOTHP },
-   { "RAM-bw-remote,",	  "mem",  "-p",  "1",  "-t",  "1", "-P", "1024",
+   { "RAM-bw-remote,",    "mem",  "-p",  "1",  "-t",  "1", "-P", "1024",
 			  "-C" ,   "0", "-M",   "1", OPT_BW_RAM },
 
    /* 2-stream NUMA bandwidth measurements: */
@@ -1651,7 +1841,7 @@ static const char *tests[][MAX_ARGS] = {
    { " 1x3-convergence,", "mem",  "-p",  "1", "-t",  "3", "-P",  "512", OPT_CONV },
    { " 1x4-convergence,", "mem",  "-p",  "1", "-t",  "4", "-P",  "512", OPT_CONV },
    { " 1x6-convergence,", "mem",  "-p",  "1", "-t",  "6", "-P", "1020", OPT_CONV },
-   { " 2x3-convergence,", "mem",  "-p",  "3", "-t",  "3", "-P", "1020", OPT_CONV },
+   { " 2x3-convergence,", "mem",  "-p",  "2", "-t",  "3", "-P", "1020", OPT_CONV },
    { " 3x3-convergence,", "mem",  "-p",  "3", "-t",  "3", "-P", "1020", OPT_CONV },
    { " 4x4-convergence,", "mem",  "-p",  "4", "-t",  "4", "-P",  "512", OPT_CONV },
    { " 4x4-convergence-NOTHP,",
@@ -1676,24 +1866,24 @@ static const char *tests[][MAX_ARGS] = {
 			  "mem",  "-p",  "8", "-t",  "1", "-P", " 512", OPT_BW_NOTHP },
    { "16x1-bw-process,",  "mem",  "-p", "16", "-t",  "1", "-P",  "256", OPT_BW },
 
-   { " 4x1-bw-thread,",	  "mem",  "-p",  "1", "-t",  "4", "-T",  "256", OPT_BW },
-   { " 8x1-bw-thread,",	  "mem",  "-p",  "1", "-t",  "8", "-T",  "256", OPT_BW },
-   { "16x1-bw-thread,",   "mem",  "-p",  "1", "-t", "16", "-T",  "128", OPT_BW },
-   { "32x1-bw-thread,",   "mem",  "-p",  "1", "-t", "32", "-T",   "64", OPT_BW },
+   { " 1x4-bw-thread,",   "mem",  "-p",  "1", "-t",  "4", "-T",  "256", OPT_BW },
+   { " 1x8-bw-thread,",   "mem",  "-p",  "1", "-t",  "8", "-T",  "256", OPT_BW },
+   { "1x16-bw-thread,",   "mem",  "-p",  "1", "-t", "16", "-T",  "128", OPT_BW },
+   { "1x32-bw-thread,",   "mem",  "-p",  "1", "-t", "32", "-T",   "64", OPT_BW },
 
-   { " 2x3-bw-thread,",	  "mem",  "-p",  "2", "-t",  "3", "-P",  "512", OPT_BW },
-   { " 4x4-bw-thread,",	  "mem",  "-p",  "4", "-t",  "4", "-P",  "512", OPT_BW },
-   { " 4x6-bw-thread,",	  "mem",  "-p",  "4", "-t",  "6", "-P",  "512", OPT_BW },
-   { " 4x8-bw-thread,",	  "mem",  "-p",  "4", "-t",  "8", "-P",  "512", OPT_BW },
-   { " 4x8-bw-thread-NOTHP,",
+   { " 2x3-bw-process,",  "mem",  "-p",  "2", "-t",  "3", "-P",  "512", OPT_BW },
+   { " 4x4-bw-process,",  "mem",  "-p",  "4", "-t",  "4", "-P",  "512", OPT_BW },
+   { " 4x6-bw-process,",  "mem",  "-p",  "4", "-t",  "6", "-P",  "512", OPT_BW },
+   { " 4x8-bw-process,",  "mem",  "-p",  "4", "-t",  "8", "-P",  "512", OPT_BW },
+   { " 4x8-bw-process-NOTHP,",
 			  "mem",  "-p",  "4", "-t",  "8", "-P",  "512", OPT_BW_NOTHP },
-   { " 3x3-bw-thread,",	  "mem",  "-p",  "3", "-t",  "3", "-P",  "512", OPT_BW },
-   { " 5x5-bw-thread,",	  "mem",  "-p",  "5", "-t",  "5", "-P",  "512", OPT_BW },
+   { " 3x3-bw-process,",  "mem",  "-p",  "3", "-t",  "3", "-P",  "512", OPT_BW },
+   { " 5x5-bw-process,",  "mem",  "-p",  "5", "-t",  "5", "-P",  "512", OPT_BW },
 
-   { "2x16-bw-thread,",   "mem",  "-p",  "2", "-t", "16", "-P",  "512", OPT_BW },
-   { "1x32-bw-thread,",   "mem",  "-p",  "1", "-t", "32", "-P", "2048", OPT_BW },
+   { "2x16-bw-process,",  "mem",  "-p",  "2", "-t", "16", "-P",  "512", OPT_BW },
+   { "1x32-bw-process,",  "mem",  "-p",  "1", "-t", "32", "-P", "2048", OPT_BW },
 
-   { "numa02-bw,",	  "mem",  "-p",  "1", "-t", "32", "-T",   "32", OPT_BW },
+   { "numa02-bw,",        "mem",  "-p",  "1", "-t", "32", "-T",   "32", OPT_BW },
    { "numa02-bw-NOTHP,",  "mem",  "-p",  "1", "-t", "32", "-T",   "32", OPT_BW_NOTHP },
    { "numa01-bw-thread,", "mem",  "-p",  "2", "-t", "16", "-T",  "192", OPT_BW },
    { "numa01-bw-thread-NOTHP,",
@@ -1718,7 +1908,7 @@ static int bench_all(void)
 	return 0;
 }
 
-int bench_numa(int argc, const char **argv, const char *prefix __maybe_unused)
+int bench_numa(int argc, const char **argv)
 {
 	init_params(&p0, "main,", argc, argv);
 	argc = parse_options(argc, argv, options, bench_numa_usage, 0);

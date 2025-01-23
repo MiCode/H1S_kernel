@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /* $Id: capicmd.h,v 1.2.6.2 2001/09/23 22:24:33 kai Exp $
  * 
  * CAPI 2.0 Interface for Linux
@@ -15,6 +16,7 @@
 #define CAPI_MSG_BASELEN		8
 #define CAPI_DATA_B3_REQ_LEN		(CAPI_MSG_BASELEN+4+4+2+2+2)
 #define CAPI_DATA_B3_RESP_LEN		(CAPI_MSG_BASELEN+4+2)
+#define CAPI_DISCONNECT_B3_RESP_LEN	(CAPI_MSG_BASELEN+4)
 
 /*----- CAPI commands -----*/
 #define CAPI_ALERT		    0x01

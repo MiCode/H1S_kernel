@@ -1,19 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2010 Realtek Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
  *
  * Modifications for inclusion into the Linux staging tree are
  * Copyright(c) 2010 Larry Finger. All rights reserved.
@@ -50,8 +38,8 @@ struct cmd_obj {
 };
 
 struct cmd_priv {
-	struct semaphore cmd_queue_sema;
-	struct semaphore terminate_cmdthread_sema;
+	struct completion cmd_queue_comp;
+	struct completion terminate_cmdthread_comp;
 	struct  __queue	cmd_queue;
 	u8 cmd_seq;
 	u8 *cmd_buf;	/*shall be non-paged, and 4 bytes aligned*/
@@ -78,12 +66,11 @@ struct	evt_priv {
 	u8	*evt_buf;	/*shall be non-paged, and 4 bytes aligned*/
 	u8	*evt_allocated_buf;
 	u32	evt_done_cnt;
-	struct tasklet_struct event_tasklet;
 };
 
 #define init_h2fwcmd_w_parm_no_rsp(pcmd, pparm, code) \
 do {\
-	_init_listhead(&pcmd->list);\
+	INIT_LIST_HEAD(&pcmd->list);\
 	pcmd->cmdcode = code;\
 	pcmd->parmbuf = (u8 *)(pparm);\
 	pcmd->cmdsz = sizeof(*pparm);\
@@ -91,14 +78,14 @@ do {\
 	pcmd->rspsz = 0;\
 } while (0)
 
-u32 r8712_enqueue_cmd(struct cmd_priv *pcmdpriv, struct cmd_obj *obj);
-u32 r8712_enqueue_cmd_ex(struct cmd_priv *pcmdpriv, struct cmd_obj *obj);
+void r8712_enqueue_cmd(struct cmd_priv *pcmdpriv, struct cmd_obj *obj);
+void r8712_enqueue_cmd_ex(struct cmd_priv *pcmdpriv, struct cmd_obj *obj);
 struct cmd_obj *r8712_dequeue_cmd(struct  __queue *queue);
 void r8712_free_cmd_obj(struct cmd_obj *pcmd);
 int r8712_cmd_thread(void *context);
-u32 r8712_init_cmd_priv(struct cmd_priv *pcmdpriv);
+int r8712_init_cmd_priv(struct cmd_priv *pcmdpriv);
 void r8712_free_cmd_priv(struct cmd_priv *pcmdpriv);
-u32 r8712_init_evt_priv(struct evt_priv *pevtpriv);
+int r8712_init_evt_priv(struct evt_priv *pevtpriv);
 void r8712_free_evt_priv(struct evt_priv *pevtpriv);
 
 enum rtl871x_drvint_cid {
@@ -123,30 +110,12 @@ struct usb_suspend_parm {
 };
 
 /*
- * Caller Mode: Infra, Ad-Hoc
- * Notes: To join the specified bss
- * Command Event Mode
- */
-struct joinbss_parm {
-	struct ndis_wlan_bssid_ex network;
-};
-
-/*
  * Caller Mode: Infra, Ad-HoC(C)
  * Notes: To disconnect the current associated BSS
  * Command Mode
  */
 struct disconnect_parm {
 	u32 rsvd;
-};
-
-/*
- * Caller Mode: AP, Ad-HoC(M)
- * Notes: To create a BSS
- * Command Mode
- */
-struct createbss_parm {
-	struct ndis_wlan_bssid_ex network;
 };
 
 /*
@@ -162,7 +131,7 @@ struct createbss_parm {
  * #define IW_MODE_REPEAT	4	// Wireless Repeater (forwarder)
  * #define IW_MODE_SECOND	5	// Secondary master/repeater (backup)
  * #define IW_MODE_MONITOR	6	// Passive monitor (listen only)
-*/
+ */
 struct	setopmode_parm {
 	u8	mode;
 	u8	rsvd[3];
@@ -174,9 +143,9 @@ struct	setopmode_parm {
  * Command-Event Mode
  */
 struct sitesurvey_parm {
-	sint passive_mode;	/*active: 1, passive: 0 */
-	sint bsslimit;	/* 1 ~ 48 */
-	sint	ss_ssidlen;
+	__le32	passive_mode;	/*active: 1, passive: 0 */
+	__le32	bsslimit;	/* 1 ~ 48 */
+	__le32	ss_ssidlen;
 	u8	ss_ssid[IW_ESSID_MAX_SIZE + 1];
 };
 
@@ -203,10 +172,12 @@ struct setauth_parm {
  */
 struct setkey_parm {
 	u8	algorithm;	/* encryption algorithm, could be none, wep40,
-				 * TKIP, CCMP, wep104 */
+				 * TKIP, CCMP, wep104
+				 */
 	u8	keyid;
 	u8	grpkey;		/* 1: this is the grpkey for 802.1x.
-				 * 0: this is the unicast key for 802.1x */
+				 * 0: this is the unicast key for 802.1x
+				 */
 	u8	key[16];	/* this could be 40 or 104 */
 };
 
@@ -233,15 +204,15 @@ struct SetMacAddr_param {
 };
 
 /*
-Caller Ad-Hoc/AP
-
-Command -Rsp(AID == CAMID) mode
-
-This is to force fw to add an sta_data entry per driver's request.
-
-FW will write an cam entry associated with it.
-
-*/
+ *	Caller Ad-Hoc/AP
+ *
+ *	Command -Rsp(AID == CAMID) mode
+ *
+ *	This is to force fw to add an sta_data entry per driver's request.
+ *
+ *	FW will write an cam entry associated with it.
+ *
+ */
 struct set_assocsta_parm {
 	u8	addr[ETH_ALEN];
 };
@@ -252,27 +223,27 @@ struct set_assocsta_rsp {
 };
 
 /*
-	Caller Ad-Hoc/AP
-
-	Command mode
-
-	This is to force fw to del an sta_data entry per driver's request
-
-	FW will invalidate the cam entry associated with it.
-
-*/
+ *	Caller Ad-Hoc/AP
+ *
+ *	Command mode
+ *
+ *	This is to force fw to del an sta_data entry per driver's request
+ *
+ *	FW will invalidate the cam entry associated with it.
+ *
+ */
 struct del_assocsta_parm {
 	u8	addr[ETH_ALEN];
 };
 
 /*
-Caller Mode: AP/Ad-HoC(M)
-
-Notes: To notify fw that given staid has changed its power state
-
-Command Mode
-
-*/
+ *	Caller Mode: AP/Ad-HoC(M)
+ *
+ *	Notes: To notify fw that given staid has changed its power state
+ *
+ *	Command Mode
+ *
+ */
 struct setstapwrstate_parm {
 	u8	staid;
 	u8	status;
@@ -280,25 +251,25 @@ struct setstapwrstate_parm {
 };
 
 /*
-Caller Mode: Any
-
-Notes: To setup the basic rate of RTL8711
-
-Command Mode
-
-*/
+ *	Caller Mode: Any
+ *
+ *	Notes: To setup the basic rate of RTL8711
+ *
+ *	Command Mode
+ *
+ */
 struct	setbasicrate_parm {
 	u8	basicrates[NumRates];
 };
 
 /*
-Caller Mode: Any
-
-Notes: To read the current basic rate
-
-Command-Rsp Mode
-
-*/
+ *	Caller Mode: Any
+ *
+ *	Notes: To read the current basic rate
+ *
+ *	Command-Rsp Mode
+ *
+ */
 struct getbasicrate_parm {
 	u32 rsvd;
 };
@@ -308,13 +279,13 @@ struct getbasicrate_rsp {
 };
 
 /*
-Caller Mode: Any
-
-Notes: To setup the data rate of RTL8711
-
-Command Mode
-
-*/
+ *	Caller Mode: Any
+ *
+ *	Notes: To setup the data rate of RTL8711
+ *
+ *	Command Mode
+ *
+ */
 struct setdatarate_parm {
 	u8	mac_id;
 	u8	datarates[NumRates];
@@ -344,59 +315,58 @@ enum _RT_CHANNEL_DOMAIN {
 	RT_CHANNEL_DOMAIN_MAX,
 };
 
-
 struct SetChannelPlan_param {
 	enum _RT_CHANNEL_DOMAIN ChannelPlan;
 };
 
 /*
-Caller Mode: Any
-
-Notes: To read the current data rate
-
-Command-Rsp Mode
-
-*/
+ *	Caller Mode: Any
+ *
+ *	Notes: To read the current data rate
+ *
+ *	Command-Rsp Mode
+ *
+ */
 struct getdatarate_parm {
 	u32 rsvd;
 
 };
+
 struct getdatarate_rsp {
 	u8 datarates[NumRates];
 };
 
+/*
+ *	Caller Mode: Any
+ *	AP: AP can use the info for the contents of beacon frame
+ *	Infra: STA can use the info when sitesurveying
+ *	Ad-HoC(M): Like AP
+ *	Ad-HoC(C): Like STA
+ *
+ *
+ *	Notes: To set the phy capability of the NIC
+ *
+ *	Command Mode
+ *
+ */
 
 /*
-Caller Mode: Any
-AP: AP can use the info for the contents of beacon frame
-Infra: STA can use the info when sitesurveying
-Ad-HoC(M): Like AP
-Ad-HoC(C): Like STA
-
-
-Notes: To set the phy capability of the NIC
-
-Command Mode
-
-*/
-
+ *	Caller Mode: Any
+ *
+ *	Notes: To set the channel/modem/band
+ *	This command will be used when channel/modem/band is changed.
+ *
+ *	Command Mode
+ *
+ */
 /*
-Caller Mode: Any
-
-Notes: To set the channel/modem/band
-This command will be used when channel/modem/band is changed.
-
-Command Mode
-
-*/
-/*
-Caller Mode: Any
-
-Notes: To get the current setting of channel/modem/band
-
-Command-Rsp Mode
-
-*/
+ *	Caller Mode: Any
+ *
+ *	Notes: To get the current setting of channel/modem/band
+ *
+ *	Command-Rsp Mode
+ *
+ */
 struct	getphy_rsp {
 	u8	rfchannel;
 	u8	modem;
@@ -405,6 +375,7 @@ struct	getphy_rsp {
 struct readBB_parm {
 	u8	offset;
 };
+
 struct readBB_rsp {
 	u8	value;
 };
@@ -412,6 +383,7 @@ struct readBB_rsp {
 struct readTSSI_parm {
 	u8	offset;
 };
+
 struct readTSSI_rsp {
 	u8	value;
 };
@@ -428,6 +400,7 @@ struct writePTM_parm {
 struct readRF_parm {
 	u8	offset;
 };
+
 struct readRF_rsp {
 	u32	value;
 };
@@ -446,58 +419,58 @@ struct getrfintfs_parm {
 };
 
 /*
-	Notes: This command is used for H2C/C2H loopback testing
-
-	mac[0] == 0
-	==> CMD mode, return H2C_SUCCESS.
-	The following condition must be ture under CMD mode
-		mac[1] == mac[4], mac[2] == mac[3], mac[0]=mac[5]= 0;
-		s0 == 0x1234, s1 == 0xabcd, w0 == 0x78563412, w1 == 0x5aa5def7;
-		s2 == (b1 << 8 | b0);
-
-	mac[0] == 1
-	==> CMD_RSP mode, return H2C_SUCCESS_RSP
-
-	The rsp layout shall be:
-	rsp:			parm:
-		mac[0]  =   mac[5];
-		mac[1]  =   mac[4];
-		mac[2]  =   mac[3];
-		mac[3]  =   mac[2];
-		mac[4]  =   mac[1];
-		mac[5]  =   mac[0];
-		s0		=   s1;
-		s1		=   swap16(s0);
-		w0		=	swap32(w1);
-		b0		=	b1
-		s2		=	s0 + s1
-		b1		=	b0
-		w1		=	w0
-
-	mac[0] ==	2
-	==> CMD_EVENT mode, return	H2C_SUCCESS
-	The event layout shall be:
-	event:	     parm:
-	mac[0]  =   mac[5];
-	mac[1]  =   mac[4];
-	mac[2]  =   event's sequence number, starting from 1 to parm's marc[3]
-	mac[3]  =   mac[2];
-	mac[4]  =   mac[1];
-	mac[5]  =   mac[0];
-	s0		=   swap16(s0) - event.mac[2];
-	s1		=   s1 + event.mac[2];
-	w0		=	swap32(w0);
-	b0		=	b1
-	s2		=	s0 + event.mac[2]
-	b1		=	b0
-	w1		=	swap32(w1) - event.mac[2];
-
-	parm->mac[3] is the total event counts that host requested.
-
-
-	event will be the same with the cmd's param.
-
-*/
+ *	Notes: This command is used for H2C/C2H loopback testing
+ *
+ *	mac[0] == 0
+ *	==> CMD mode, return H2C_SUCCESS.
+ *	The following condition must be true under CMD mode
+ *		mac[1] == mac[4], mac[2] == mac[3], mac[0]=mac[5]= 0;
+ *		s0 == 0x1234, s1 == 0xabcd, w0 == 0x78563412, w1 == 0x5aa5def7;
+ *		s2 == (b1 << 8 | b0);
+ *
+ *	mac[0] == 1
+ *	==> CMD_RSP mode, return H2C_SUCCESS_RSP
+ *
+ *	The rsp layout shall be:
+ *	rsp:			parm:
+ *		mac[0]  =   mac[5];
+ *		mac[1]  =   mac[4];
+ *		mac[2]  =   mac[3];
+ *		mac[3]  =   mac[2];
+ *		mac[4]  =   mac[1];
+ *		mac[5]  =   mac[0];
+ *		s0		=   s1;
+ *		s1		=   swap16(s0);
+ *		w0		=	swap32(w1);
+ *		b0		=	b1
+ *		s2		=	s0 + s1
+ *		b1		=	b0
+ *		w1		=	w0
+ *
+ *	mac[0] ==	2
+ *	==> CMD_EVENT mode, return	H2C_SUCCESS
+ *	The event layout shall be:
+ *	event:	     parm:
+ *	mac[0]  =   mac[5];
+ *	mac[1]  =   mac[4];
+ *	mac[2]  =   event's sequence number, starting from 1 to parm's marc[3]
+ *	mac[3]  =   mac[2];
+ *	mac[4]  =   mac[1];
+ *	mac[5]  =   mac[0];
+ *	s0		=   swap16(s0) - event.mac[2];
+ *	s1		=   s1 + event.mac[2];
+ *	w0		=	swap32(w0);
+ *	b0		=	b1
+ *	s2		=	s0 + event.mac[2]
+ *	b1		=	b0
+ *	w1		=	swap32(w1) - event.mac[2];
+ *
+ *	parm->mac[3] is the total event counts that host requested.
+ *
+ *
+ *	event will be the same with the cmd's param.
+ *
+ */
 
 /* CMD param Formart for DRV INTERNAL CMD HDL*/
 struct drvint_cmd_parm {
@@ -506,7 +479,7 @@ struct drvint_cmd_parm {
 	unsigned char *pbuf;
 };
 
-/*------------------- Below are used for RF/BB tunning ---------------------*/
+/*------------------- Below are used for RF/BB tuning ---------------------*/
 
 struct	setantenna_parm {
 	u8	tx_antset;
@@ -526,6 +499,7 @@ struct settxagctbl_parm {
 struct gettxagctbl_parm {
 	u32 rsvd;
 };
+
 struct gettxagctbl_rsp {
 	u32	txagc[MAX_RATES_LENGTH];
 };
@@ -541,6 +515,7 @@ struct setssup_parm	{
 struct getssup_parm	{
 	u32 rsvd;
 };
+
 struct getssup_rsp	{
 	u8	ss_ForceUp[MAX_RATES_LENGTH];
 };
@@ -552,6 +527,7 @@ struct setssdlevel_parm	{
 struct getssdlevel_parm	{
 	u32 rsvd;
 };
+
 struct getssdlevel_rsp	{
 	u8	ss_DLevel[MAX_RATES_LENGTH];
 };
@@ -563,6 +539,7 @@ struct setssulevel_parm	{
 struct getssulevel_parm	{
 	u32 rsvd;
 };
+
 struct getssulevel_rsp	{
 	u8	ss_ULevel[MAX_RATES_LENGTH];
 };
@@ -588,7 +565,8 @@ struct setpwrmode_parm  {
 	u8	bcn_rx_en;
 	u8	bcn_pass_cnt;	  /* fw report one beacon information to
 				   * driver  when it receives bcn_pass_cnt
-				   *  beacons. */
+				   * beacons.
+				   */
 	u8	bcn_to;		  /* beacon TO (ms). ¡§=0¡¨ no limit.*/
 	u16	bcn_itv;
 	u8	app_itv; /* only for VOIP mode. */
@@ -612,6 +590,7 @@ struct setratable_parm {
 struct getratable_parm {
 	uint rsvd;
 };
+
 struct getratable_rsp {
 	u8 ss_ForceUp[NumRates];
 	u8 ss_ULevel[NumRates];
@@ -648,6 +627,7 @@ struct getbcnokcnt_rsp {
 struct getbcnerrcnt_parm {
 	unsigned int rsvd;
 };
+
 struct getbcnerrcnt_rsp {
 	unsigned long bcnerrcnt;
 };
@@ -674,25 +654,25 @@ struct setra_parm {
 struct setprobereqextraie_parm {
 	unsigned char e_id;
 	unsigned char ie_len;
-	unsigned char ie[0];
+	unsigned char ie[];
 };
 
 struct setassocreqextraie_parm {
 	unsigned char e_id;
 	unsigned char ie_len;
-	unsigned char ie[0];
+	unsigned char ie[];
 };
 
 struct setproberspextraie_parm {
 	unsigned char e_id;
 	unsigned char ie_len;
-	unsigned char ie[0];
+	unsigned char ie[];
 };
 
 struct setassocrspextraie_parm {
 	unsigned char e_id;
 	unsigned char ie_len;
-	unsigned char ie[0];
+	unsigned char ie[];
 };
 
 struct addBaReq_parm {
@@ -735,31 +715,22 @@ struct DisconnectCtrlEx_param {
 #define H2C_CMD_OVERFLOW		0x06
 #define H2C_RESERVED			0x07
 
-u8 r8712_setMacAddr_cmd(struct _adapter *padapter, u8 *mac_addr);
-u8 r8712_setassocsta_cmd(struct _adapter *padapter, u8 *mac_addr);
+void r8712_setMacAddr_cmd(struct _adapter *padapter, const u8 *mac_addr);
 u8 r8712_sitesurvey_cmd(struct _adapter *padapter,
 			struct ndis_802_11_ssid *pssid);
-u8 r8712_createbss_cmd(struct _adapter *padapter);
-u8 r8712_setstakey_cmd(struct _adapter *padapter, u8 *psta, u8 unicast_key);
-u8 r8712_joinbss_cmd(struct _adapter *padapter,
-		     struct wlan_network *pnetwork);
-u8 r8712_disassoc_cmd(struct _adapter *padapter);
-u8 r8712_setopmode_cmd(struct _adapter *padapter,
+int r8712_createbss_cmd(struct _adapter *padapter);
+void r8712_setstakey_cmd(struct _adapter *padapter, u8 *psta, u8 unicast_key);
+int r8712_joinbss_cmd(struct _adapter *padapter,
+		      struct wlan_network *pnetwork);
+void r8712_disassoc_cmd(struct _adapter *padapter);
+void r8712_setopmode_cmd(struct _adapter *padapter,
 		 enum NDIS_802_11_NETWORK_INFRASTRUCTURE networktype);
-u8 r8712_setdatarate_cmd(struct _adapter *padapter, u8 *rateset);
-u8 r8712_set_chplan_cmd(struct _adapter  *padapter, int chplan);
-u8 r8712_setbasicrate_cmd(struct _adapter *padapter, u8 *rateset);
-u8 r8712_getrfreg_cmd(struct _adapter *padapter, u8 offset, u8 *pval);
-u8 r8712_setrfintfs_cmd(struct _adapter *padapter, u8 mode);
-u8 r8712_setrfreg_cmd(struct _adapter  *padapter, u8 offset, u32 val);
-u8 r8712_setrttbl_cmd(struct _adapter  *padapter,
-		      struct setratable_parm *prate_table);
-u8 r8712_gettssi_cmd(struct _adapter  *padapter, u8 offset, u8 *pval);
-u8 r8712_setptm_cmd(struct _adapter *padapter, u8 type);
-u8 r8712_setfwdig_cmd(struct _adapter *padapter, u8 type);
-u8 r8712_setfwra_cmd(struct _adapter *padapter, u8 type);
-u8 r8712_addbareq_cmd(struct _adapter *padapter, u8 tid);
-u8 r8712_wdg_wk_cmd(struct _adapter *padapter);
+int r8712_setdatarate_cmd(struct _adapter *padapter, u8 *rateset);
+void r8712_set_chplan_cmd(struct _adapter  *padapter, int chplan);
+int r8712_getrfreg_cmd(struct _adapter *padapter, u8 offset, u8 *pval);
+int r8712_setrfreg_cmd(struct _adapter  *padapter, u8 offset, u32 val);
+void r8712_addbareq_cmd(struct _adapter *padapter, u8 tid);
+void r8712_wdg_wk_cmd(struct _adapter *padapter);
 void r8712_survey_cmd_callback(struct _adapter  *padapter,
 			       struct cmd_obj *pcmd);
 void r8712_disassoc_cmd_callback(struct _adapter  *padapter,
@@ -776,7 +747,7 @@ void r8712_setstaKey_cmdrsp_callback(struct _adapter  *padapter,
 				     struct cmd_obj *pcmd);
 void r8712_setassocsta_cmdrsp_callback(struct _adapter  *padapter,
 				       struct cmd_obj *pcmd);
-u8 r8712_disconnectCtrlEx_cmd(struct _adapter *adapter, u32 enableDrvCtrl,
+void r8712_disconnectCtrlEx_cmd(struct _adapter *adapter, u32 enableDrvCtrl,
 			u32 tryPktCnt, u32 tryPktInterval, u32 firstStageTO);
 
 struct _cmd_callback {

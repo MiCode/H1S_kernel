@@ -1,45 +1,9 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /*******************************************************************************
  *
  * Module Name: nssearch - Namespace search
  *
  ******************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -105,7 +69,7 @@ acpi_ns_search_one_scope(u32 target_name,
 	if (ACPI_LV_NAMES & acpi_dbg_level) {
 		char *scope_name;
 
-		scope_name = acpi_ns_get_external_pathname(parent_node);
+		scope_name = acpi_ns_get_normalized_pathname(parent_node, TRUE);
 		if (scope_name) {
 			ACPI_DEBUG_PRINT((ACPI_DB_NAMES,
 					  "Searching %s (%p) For [%4.4s] (%s)\n",
@@ -325,8 +289,41 @@ acpi_ns_search_and_enter(u32 target_name,
 		 * If we found it AND the request specifies that a find is an error,
 		 * return the error
 		 */
-		if ((status == AE_OK) && (flags & ACPI_NS_ERROR_IF_FOUND)) {
-			status = AE_ALREADY_EXISTS;
+		if (status == AE_OK) {
+
+			/* The node was found in the namespace */
+
+			/*
+			 * If the namespace override feature is enabled for this node,
+			 * delete any existing attached sub-object and make the node
+			 * look like a new node that is owned by the override table.
+			 */
+			if (flags & ACPI_NS_OVERRIDE_IF_FOUND) {
+				ACPI_DEBUG_PRINT((ACPI_DB_NAMES,
+						  "Namespace override: %4.4s pass %u type %X Owner %X\n",
+						  ACPI_CAST_PTR(char,
+								&target_name),
+						  interpreter_mode,
+						  (*return_node)->type,
+						  walk_state->owner_id));
+
+				acpi_ns_delete_children(*return_node);
+				if (acpi_gbl_runtime_namespace_override) {
+					acpi_ut_remove_reference((*return_node)->object);
+					(*return_node)->object = NULL;
+					(*return_node)->owner_id =
+					    walk_state->owner_id;
+				} else {
+					acpi_ns_remove_node(*return_node);
+					*return_node = ACPI_ENTRY_NOT_FOUND;
+				}
+			}
+
+			/* Return an error if we don't expect to find the object */
+
+			else if (flags & ACPI_NS_ERROR_IF_FOUND) {
+				status = AE_ALREADY_EXISTS;
+			}
 		}
 #ifdef ACPI_ASL_COMPILER
 		if (*return_node && (*return_node)->type == ACPI_TYPE_ANY) {

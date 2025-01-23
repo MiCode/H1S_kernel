@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * SN9C2028 library
  *
  * Copyright (C) 2009 Theodore Kilgore <kilgota@auburn.edu>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -33,6 +20,16 @@ struct sd {
 	struct gspca_dev gspca_dev;  /* !! must be the first item */
 	u8 sof_read;
 	u16 model;
+
+#define MIN_AVG_LUM 8500
+#define MAX_AVG_LUM 10000
+	int avg_lum;
+	u8 avg_lum_l;
+
+	struct { /* autogain and gain control cluster */
+		struct v4l2_ctrl *autogain;
+		struct v4l2_ctrl *gain;
+	};
 };
 
 struct init_command {
@@ -63,8 +60,9 @@ static int sn9c2028_command(struct gspca_dev *gspca_dev, u8 *command)
 {
 	int rc;
 
-	PDEBUG(D_USBO, "sending command %02x%02x%02x%02x%02x%02x", command[0],
-	       command[1], command[2], command[3], command[4], command[5]);
+	gspca_dbg(gspca_dev, D_USBO, "sending command %02x%02x%02x%02x%02x%02x\n",
+		  command[0], command[1], command[2],
+		  command[3], command[4], command[5]);
 
 	memcpy(gspca_dev->usb_buf, command, 6);
 	rc = usb_control_msg(gspca_dev->dev,
@@ -94,7 +92,8 @@ static int sn9c2028_read1(struct gspca_dev *gspca_dev)
 		pr_err("read1 error %d\n", rc);
 		return (rc < 0) ? rc : -EIO;
 	}
-	PDEBUG(D_USBI, "read1 response %02x", gspca_dev->usb_buf[0]);
+	gspca_dbg(gspca_dev, D_USBI, "read1 response %02x\n",
+		  gspca_dev->usb_buf[0]);
 	return gspca_dev->usb_buf[0];
 }
 
@@ -111,8 +110,8 @@ static int sn9c2028_read4(struct gspca_dev *gspca_dev, u8 *reading)
 		return (rc < 0) ? rc : -EIO;
 	}
 	memcpy(reading, gspca_dev->usb_buf, 4);
-	PDEBUG(D_USBI, "read4 response %02x%02x%02x%02x", reading[0],
-	       reading[1], reading[2], reading[3]);
+	gspca_dbg(gspca_dev, D_USBI, "read4 response %02x%02x%02x%02x\n",
+		  reading[0], reading[1], reading[2], reading[3]);
 	return rc;
 }
 
@@ -128,9 +127,9 @@ static int sn9c2028_long_command(struct gspca_dev *gspca_dev, u8 *command)
 	status = -1;
 	for (i = 0; i < 256 && status < 2; i++)
 		status = sn9c2028_read1(gspca_dev);
-	if (status != 2) {
+	if (status < 0) {
 		pr_err("long command status read error %d\n", status);
-		return (status < 0) ? status : -EIO;
+		return status;
 	}
 
 	memset(reading, 0, 4);
@@ -169,29 +168,32 @@ static int sd_config(struct gspca_dev *gspca_dev,
 	struct sd *sd = (struct sd *) gspca_dev;
 	struct cam *cam = &gspca_dev->cam;
 
-	PDEBUG(D_PROBE, "SN9C2028 camera detected (vid/pid 0x%04X:0x%04X)",
-	       id->idVendor, id->idProduct);
+	gspca_dbg(gspca_dev, D_PROBE, "SN9C2028 camera detected (vid/pid 0x%04X:0x%04X)\n",
+		  id->idVendor, id->idProduct);
 
 	sd->model = id->idProduct;
 
 	switch (sd->model) {
 	case 0x7005:
-		PDEBUG(D_PROBE, "Genius Smart 300 camera");
+		gspca_dbg(gspca_dev, D_PROBE, "Genius Smart 300 camera\n");
+		break;
+	case 0x7003:
+		gspca_dbg(gspca_dev, D_PROBE, "Genius Videocam Live v2\n");
 		break;
 	case 0x8000:
-		PDEBUG(D_PROBE, "DC31VC");
+		gspca_dbg(gspca_dev, D_PROBE, "DC31VC\n");
 		break;
 	case 0x8001:
-		PDEBUG(D_PROBE, "Spy camera");
+		gspca_dbg(gspca_dev, D_PROBE, "Spy camera\n");
 		break;
 	case 0x8003:
-		PDEBUG(D_PROBE, "CIF camera");
+		gspca_dbg(gspca_dev, D_PROBE, "CIF camera\n");
 		break;
 	case 0x8008:
-		PDEBUG(D_PROBE, "Mini-Shotz ms-350 camera");
+		gspca_dbg(gspca_dev, D_PROBE, "Mini-Shotz ms-350 camera\n");
 		break;
 	case 0x800a:
-		PDEBUG(D_PROBE, "Vivitar 3350b type camera");
+		gspca_dbg(gspca_dev, D_PROBE, "Vivitar 3350b type camera\n");
 		cam->input_flags = V4L2_IN_ST_VFLIP | V4L2_IN_ST_HFLIP;
 		break;
 	}
@@ -213,7 +215,7 @@ static int sd_config(struct gspca_dev *gspca_dev,
 /* this function is called at probe and resume time */
 static int sd_init(struct gspca_dev *gspca_dev)
 {
-	int status = -1;
+	int status;
 
 	sn9c2028_read1(gspca_dev);
 	sn9c2028_read1(gspca_dev);
@@ -248,6 +250,78 @@ static int run_start_commands(struct gspca_dev *gspca_dev,
 	return 0;
 }
 
+static void set_gain(struct gspca_dev *gspca_dev, s32 g)
+{
+	struct sd *sd = (struct sd *) gspca_dev;
+
+	struct init_command genius_vcam_live_gain_cmds[] = {
+		{{0x1d, 0x25, 0x10 /* This byte is gain */,
+		  0x20, 0xab, 0x00}, 0},
+	};
+	if (!gspca_dev->streaming)
+		return;
+
+	switch (sd->model) {
+	case 0x7003:
+		genius_vcam_live_gain_cmds[0].instruction[2] = g;
+		run_start_commands(gspca_dev, genius_vcam_live_gain_cmds,
+				   ARRAY_SIZE(genius_vcam_live_gain_cmds));
+		break;
+	default:
+		break;
+	}
+}
+
+static int sd_s_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct gspca_dev *gspca_dev =
+		container_of(ctrl->handler, struct gspca_dev, ctrl_handler);
+	struct sd *sd = (struct sd *)gspca_dev;
+
+	gspca_dev->usb_err = 0;
+
+	if (!gspca_dev->streaming)
+		return 0;
+
+	switch (ctrl->id) {
+	/* standalone gain control */
+	case V4L2_CID_GAIN:
+		set_gain(gspca_dev, ctrl->val);
+		break;
+	/* autogain */
+	case V4L2_CID_AUTOGAIN:
+		set_gain(gspca_dev, sd->gain->val);
+		break;
+	}
+	return gspca_dev->usb_err;
+}
+
+static const struct v4l2_ctrl_ops sd_ctrl_ops = {
+	.s_ctrl = sd_s_ctrl,
+};
+
+
+static int sd_init_controls(struct gspca_dev *gspca_dev)
+{
+	struct v4l2_ctrl_handler *hdl = &gspca_dev->ctrl_handler;
+	struct sd *sd = (struct sd *)gspca_dev;
+
+	gspca_dev->vdev.ctrl_handler = hdl;
+	v4l2_ctrl_handler_init(hdl, 2);
+
+	switch (sd->model) {
+	case 0x7003:
+		sd->gain = v4l2_ctrl_new_std(hdl, &sd_ctrl_ops,
+			V4L2_CID_GAIN, 0, 20, 1, 0);
+		sd->autogain = v4l2_ctrl_new_std(hdl, &sd_ctrl_ops,
+			V4L2_CID_AUTOGAIN, 0, 1, 1, 1);
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
 static int start_spy_cam(struct gspca_dev *gspca_dev)
 {
 	struct init_command spy_start_commands[] = {
@@ -530,6 +604,119 @@ static int start_genius_cam(struct gspca_dev *gspca_dev)
 				  ARRAY_SIZE(genius_start_commands));
 }
 
+static int start_genius_videocam_live(struct gspca_dev *gspca_dev)
+{
+	int r;
+	struct sd *sd = (struct sd *) gspca_dev;
+	struct init_command genius_vcam_live_start_commands[] = {
+		{{0x0c, 0x01, 0x00, 0x00, 0x00, 0x00}, 0},
+		{{0x16, 0x01, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x10, 0x00, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x13, 0x25, 0x01, 0x16, 0x00, 0x00}, 4},
+		{{0x13, 0x26, 0x01, 0x12, 0x00, 0x00}, 4},
+
+		{{0x13, 0x28, 0x01, 0x0e, 0x00, 0x00}, 4},
+		{{0x13, 0x27, 0x01, 0x20, 0x00, 0x00}, 4},
+		{{0x13, 0x29, 0x01, 0x22, 0x00, 0x00}, 4},
+		{{0x13, 0x2c, 0x01, 0x02, 0x00, 0x00}, 4},
+		{{0x13, 0x2d, 0x01, 0x02, 0x00, 0x00}, 4},
+		{{0x13, 0x2e, 0x01, 0x09, 0x00, 0x00}, 4},
+		{{0x13, 0x2f, 0x01, 0x07, 0x00, 0x00}, 4},
+		{{0x11, 0x20, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x21, 0x2d, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x22, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x23, 0x03, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x10, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x11, 0x64, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x12, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x13, 0x91, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x14, 0x01, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x15, 0x20, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x16, 0x01, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x17, 0x60, 0x00, 0x00, 0x00}, 4},
+		{{0x1c, 0x20, 0x00, 0x2d, 0x00, 0x00}, 4},
+		{{0x13, 0x20, 0x01, 0x00, 0x00, 0x00}, 4},
+		{{0x13, 0x21, 0x01, 0x00, 0x00, 0x00}, 4},
+		{{0x13, 0x22, 0x01, 0x00, 0x00, 0x00}, 4},
+		{{0x13, 0x23, 0x01, 0x01, 0x00, 0x00}, 4},
+		{{0x13, 0x24, 0x01, 0x00, 0x00, 0x00}, 4},
+		{{0x13, 0x25, 0x01, 0x16, 0x00, 0x00}, 4},
+		{{0x13, 0x26, 0x01, 0x12, 0x00, 0x00}, 4},
+		{{0x13, 0x27, 0x01, 0x20, 0x00, 0x00}, 4},
+		{{0x13, 0x28, 0x01, 0x0e, 0x00, 0x00}, 4},
+		{{0x13, 0x29, 0x01, 0x22, 0x00, 0x00}, 4},
+		{{0x13, 0x2a, 0x01, 0x00, 0x00, 0x00}, 4},
+		{{0x13, 0x2b, 0x01, 0x00, 0x00, 0x00}, 4},
+		{{0x13, 0x2c, 0x01, 0x02, 0x00, 0x00}, 4},
+		{{0x13, 0x2d, 0x01, 0x02, 0x00, 0x00}, 4},
+		{{0x13, 0x2e, 0x01, 0x09, 0x00, 0x00}, 4},
+		{{0x13, 0x2f, 0x01, 0x07, 0x00, 0x00}, 4},
+		{{0x12, 0x34, 0x01, 0x00, 0x00, 0x00}, 4},
+		{{0x13, 0x34, 0x01, 0xa1, 0x00, 0x00}, 4},
+		{{0x13, 0x35, 0x01, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x01, 0x04, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x02, 0x92, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x10, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x11, 0x64, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x12, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x13, 0x91, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x14, 0x01, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x15, 0x20, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x16, 0x01, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x17, 0x60, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x20, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x21, 0x2d, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x22, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x23, 0x03, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x25, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x26, 0x02, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x27, 0x88, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x30, 0x38, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x31, 0x2a, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x32, 0x2a, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x33, 0x2a, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x34, 0x02, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x5b, 0x0a, 0x00, 0x00, 0x00}, 4},
+		{{0x13, 0x25, 0x01, 0x28, 0x00, 0x00}, 4},
+		{{0x13, 0x26, 0x01, 0x1e, 0x00, 0x00}, 4},
+		{{0x13, 0x28, 0x01, 0x0e, 0x00, 0x00}, 4},
+		{{0x13, 0x27, 0x01, 0x20, 0x00, 0x00}, 4},
+		{{0x13, 0x29, 0x01, 0x62, 0x00, 0x00}, 4},
+		{{0x13, 0x2c, 0x01, 0x02, 0x00, 0x00}, 4},
+		{{0x13, 0x2d, 0x01, 0x03, 0x00, 0x00}, 4},
+		{{0x13, 0x2e, 0x01, 0x0f, 0x00, 0x00}, 4},
+		{{0x13, 0x2f, 0x01, 0x0c, 0x00, 0x00}, 4},
+		{{0x11, 0x20, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x21, 0x2a, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x22, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x23, 0x28, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x10, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x11, 0x04, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x12, 0x00, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x13, 0x03, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x14, 0x01, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x15, 0xe0, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x16, 0x02, 0x00, 0x00, 0x00}, 4},
+		{{0x11, 0x17, 0x80, 0x00, 0x00, 0x00}, 4},
+		{{0x1c, 0x20, 0x00, 0x2a, 0x00, 0x00}, 1},
+		{{0x20, 0x34, 0xa1, 0x00, 0x00, 0x00}, 0},
+		/* Camera should start to capture now. */
+		{{0x12, 0x27, 0x01, 0x00, 0x00, 0x00}, 0},
+		{{0x1b, 0x32, 0x26, 0x00, 0x00, 0x00}, 0},
+		{{0x1d, 0x25, 0x10, 0x20, 0xab, 0x00}, 0},
+	};
+
+	r = run_start_commands(gspca_dev, genius_vcam_live_start_commands,
+				  ARRAY_SIZE(genius_vcam_live_start_commands));
+	if (r < 0)
+		return r;
+
+	if (sd->gain)
+		set_gain(gspca_dev, v4l2_ctrl_g_ctrl(sd->gain));
+
+	return r;
+}
+
 static int start_vivitar_cam(struct gspca_dev *gspca_dev)
 {
 	struct init_command vivitar_start_commands[] = {
@@ -623,6 +810,9 @@ static int sd_start(struct gspca_dev *gspca_dev)
 	case 0x7005:
 		err_code = start_genius_cam(gspca_dev);
 		break;
+	case 0x7003:
+		err_code = start_genius_videocam_live(gspca_dev);
+		break;
 	case 0x8001:
 		err_code = start_spy_cam(gspca_dev);
 		break;
@@ -640,6 +830,8 @@ static int sd_start(struct gspca_dev *gspca_dev)
 		return -ENXIO;
 	}
 
+	sd->avg_lum = -1;
+
 	return err_code;
 }
 
@@ -650,13 +842,46 @@ static void sd_stopN(struct gspca_dev *gspca_dev)
 
 	result = sn9c2028_read1(gspca_dev);
 	if (result < 0)
-		PERR("Camera Stop read failed");
+		gspca_err(gspca_dev, "Camera Stop read failed\n");
 
 	memset(data, 0, 6);
 	data[0] = 0x14;
 	result = sn9c2028_command(gspca_dev, data);
 	if (result < 0)
-		PERR("Camera Stop command failed");
+		gspca_err(gspca_dev, "Camera Stop command failed\n");
+}
+
+static void do_autogain(struct gspca_dev *gspca_dev, int avg_lum)
+{
+	struct sd *sd = (struct sd *) gspca_dev;
+	s32 cur_gain = v4l2_ctrl_g_ctrl(sd->gain);
+
+	if (avg_lum == -1)
+		return;
+
+	if (avg_lum < MIN_AVG_LUM) {
+		if (cur_gain == sd->gain->maximum)
+			return;
+		cur_gain++;
+		v4l2_ctrl_s_ctrl(sd->gain, cur_gain);
+	}
+	if (avg_lum > MAX_AVG_LUM) {
+		if (cur_gain == sd->gain->minimum)
+			return;
+		cur_gain--;
+		v4l2_ctrl_s_ctrl(sd->gain, cur_gain);
+	}
+
+}
+
+static void sd_dqcallback(struct gspca_dev *gspca_dev)
+{
+	struct sd *sd = (struct sd *) gspca_dev;
+
+	if (sd->autogain == NULL || !v4l2_ctrl_g_ctrl(sd->autogain))
+		return;
+
+	do_autogain(gspca_dev, sd->avg_lum);
 }
 
 /* Include sn9c2028 sof detection functions */
@@ -693,14 +918,17 @@ static const struct sd_desc sd_desc = {
 	.name = MODULE_NAME,
 	.config = sd_config,
 	.init = sd_init,
+	.init_controls = sd_init_controls,
 	.start = sd_start,
 	.stopN = sd_stopN,
+	.dq_callback = sd_dqcallback,
 	.pkt_scan = sd_pkt_scan,
 };
 
 /* -- module initialisation -- */
 static const struct usb_device_id device_table[] = {
 	{USB_DEVICE(0x0458, 0x7005)}, /* Genius Smart 300, version 2 */
+	{USB_DEVICE(0x0458, 0x7003)}, /* Genius Videocam Live v2  */
 	/* The Genius Smart is untested. I can't find an owner ! */
 	/* {USB_DEVICE(0x0c45, 0x8000)}, DC31VC, Don't know this camera */
 	{USB_DEVICE(0x0c45, 0x8001)}, /* Wild Planet digital spy cam */

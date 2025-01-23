@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
     TDA10023  - DVB-C decoder
     (as used in Philips CU1216-3 NIM and the Reelbox DVB-C tuner card)
@@ -10,19 +11,6 @@
     Copyright (C) 2004 Markus Schulz <msc@antzsystem.de>
 		   Support for TDA10021
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
 #include <linux/delay.h>
@@ -35,7 +23,7 @@
 
 #include <asm/div64.h>
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "tda1002x.h"
 
 #define REG0_INIT_VAL 0x23
@@ -72,8 +60,7 @@ static u8 tda10023_readreg (struct tda10023_state* state, u8 reg)
 	ret = i2c_transfer (state->i2c, msg, 2);
 	if (ret != 2) {
 		int num = state->frontend.dvb ? state->frontend.dvb->num : -1;
-		printk(KERN_ERR "DVB: TDA10023(%d): %s: readreg error "
-			"(reg == 0x%02x, ret == %i)\n",
+		printk(KERN_ERR "DVB: TDA10023(%d): %s: readreg error (reg == 0x%02x, ret == %i)\n",
 			num, __func__, reg, ret);
 	}
 	return b1[0];
@@ -88,8 +75,7 @@ static int tda10023_writereg (struct tda10023_state* state, u8 reg, u8 data)
 	ret = i2c_transfer (state->i2c, &msg, 1);
 	if (ret != 1) {
 		int num = state->frontend.dvb ? state->frontend.dvb->num : -1;
-		printk(KERN_ERR "DVB: TDA10023(%d): %s, writereg error "
-			"(reg == 0x%02x, val == 0x%02x, ret == %i)\n",
+		printk(KERN_ERR "DVB: TDA10023(%d): %s, writereg error (reg == 0x%02x, val == 0x%02x, ret == %i)\n",
 			num, __func__, reg, data, ret);
 	}
 	return (ret != 1) ? -EREMOTEIO : 0;
@@ -213,7 +199,7 @@ static int tda10023_set_symbolrate (struct tda10023_state* state, u32 sr)
 
 		BDRX=1<<(24+NDEC);
 		BDRX*=sr;
-		do_div(BDRX, state->sysclk); 	/* BDRX/=SYSCLK; */
+		do_div(BDRX, state->sysclk);	/* BDRX/=SYSCLK; */
 
 		BDR=(s32)BDRX;
 	}
@@ -331,7 +317,7 @@ static int tda10023_set_parameters(struct dvb_frontend *fe)
 	}
 
 	/*
-	 * gcc optimizes the code bellow the same way as it would code:
+	 * gcc optimizes the code below the same way as it would code:
 	 *		 "if (qam > 5) return -EINVAL;"
 	 * Yet, the code is clearer, as it shows what QAM standards are
 	 * supported by the driver, and avoids the usage of magic numbers on
@@ -376,7 +362,8 @@ static int tda10023_set_parameters(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int tda10023_read_status(struct dvb_frontend* fe, fe_status_t* status)
+static int tda10023_read_status(struct dvb_frontend *fe,
+				enum fe_status *status)
 {
 	struct tda10023_state* state = fe->demodulator_priv;
 	int sync;
@@ -456,9 +443,9 @@ static int tda10023_read_ucblocks(struct dvb_frontend* fe, u32* ucblocks)
 	return 0;
 }
 
-static int tda10023_get_frontend(struct dvb_frontend *fe)
+static int tda10023_get_frontend(struct dvb_frontend *fe,
+				 struct dtv_frontend_properties *p)
 {
-	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
 	struct tda10023_state* state = fe->demodulator_priv;
 	int sync,inv;
 	s8 afc = 0;
@@ -515,7 +502,7 @@ static void tda10023_release(struct dvb_frontend* fe)
 	kfree(state);
 }
 
-static struct dvb_frontend_ops tda10023_ops;
+static const struct dvb_frontend_ops tda10023_ops;
 
 struct dvb_frontend *tda10023_attach(const struct tda10023_config *config,
 				     struct i2c_adapter *i2c,
@@ -572,13 +559,13 @@ error:
 	return NULL;
 }
 
-static struct dvb_frontend_ops tda10023_ops = {
+static const struct dvb_frontend_ops tda10023_ops = {
 	.delsys = { SYS_DVBC_ANNEX_A, SYS_DVBC_ANNEX_C },
 	.info = {
 		.name = "Philips TDA10023 DVB-C",
-		.frequency_stepsize = 62500,
-		.frequency_min =  47000000,
-		.frequency_max = 862000000,
+		.frequency_min_hz =  47 * MHz,
+		.frequency_max_hz = 862 * MHz,
+		.frequency_stepsize_hz = 62500,
 		.symbol_rate_min = 0,  /* set in tda10023_attach */
 		.symbol_rate_max = 0,  /* set in tda10023_attach */
 		.caps = 0x400 | //FE_CAN_QAM_4
@@ -607,4 +594,4 @@ MODULE_DESCRIPTION("Philips TDA10023 DVB-C demodulator driver");
 MODULE_AUTHOR("Georg Acher, Hartmut Birr");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(tda10023_attach);
+EXPORT_SYMBOL_GPL(tda10023_attach);

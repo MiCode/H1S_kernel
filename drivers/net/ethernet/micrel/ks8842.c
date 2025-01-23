@@ -1,19 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ks8842.c timberdale KS8842 ethernet driver
  * Copyright (c) 2009 Intel Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 /* Supports:
@@ -360,13 +348,15 @@ static void ks8842_reset_hw(struct ks8842_adapter *adapter)
 	ks8842_write16(adapter, 32, 0x1, REG_SW_ID_AND_ENABLE);
 }
 
-static void ks8842_read_mac_addr(struct ks8842_adapter *adapter, u8 *dest)
+static void ks8842_init_mac_addr(struct ks8842_adapter *adapter)
 {
+	u8 addr[ETH_ALEN];
 	int i;
 	u16 mac;
 
 	for (i = 0; i < ETH_ALEN; i++)
-		dest[ETH_ALEN - i - 1] = ks8842_read8(adapter, 2, REG_MARL + i);
+		addr[ETH_ALEN - i - 1] = ks8842_read8(adapter, 2, REG_MARL + i);
+	eth_hw_addr_set(adapter->netdev, addr);
 
 	if (adapter->conf_flags & MICREL_KS884X) {
 		/*
@@ -392,7 +382,7 @@ static void ks8842_read_mac_addr(struct ks8842_adapter *adapter, u8 *dest)
 	}
 }
 
-static void ks8842_write_mac_addr(struct ks8842_adapter *adapter, u8 *mac)
+static void ks8842_write_mac_addr(struct ks8842_adapter *adapter, const u8 *mac)
 {
 	unsigned long flags;
 	unsigned i;
@@ -561,8 +551,8 @@ static int __ks8842_start_new_rx_dma(struct net_device *netdev)
 		sg_init_table(sg, 1);
 		sg_dma_address(sg) = dma_map_single(adapter->dev,
 			ctl->skb->data, DMA_BUFFER_SIZE, DMA_FROM_DEVICE);
-		err = dma_mapping_error(adapter->dev, sg_dma_address(sg));
-		if (unlikely(err)) {
+		if (dma_mapping_error(adapter->dev, sg_dma_address(sg))) {
+			err = -ENOMEM;
 			sg_dma_address(sg) = 0;
 			goto out;
 		}
@@ -572,8 +562,10 @@ static int __ks8842_start_new_rx_dma(struct net_device *netdev)
 		ctl->adesc = dmaengine_prep_slave_sg(ctl->chan,
 			sg, 1, DMA_DEV_TO_MEM, DMA_PREP_INTERRUPT);
 
-		if (!ctl->adesc)
+		if (!ctl->adesc) {
+			err = -ENOMEM;
 			goto out;
+		}
 
 		ctl->adesc->callback_param = netdev;
 		ctl->adesc->callback = ks8842_dma_rx_cb;
@@ -584,25 +576,23 @@ static int __ks8842_start_new_rx_dma(struct net_device *netdev)
 		goto out;
 	}
 
-	return err;
+	return 0;
 out:
 	if (sg_dma_address(sg))
 		dma_unmap_single(adapter->dev, sg_dma_address(sg),
 			DMA_BUFFER_SIZE, DMA_FROM_DEVICE);
 	sg_dma_address(sg) = 0;
-	if (ctl->skb)
-		dev_kfree_skb(ctl->skb);
-
+	dev_kfree_skb(ctl->skb);
 	ctl->skb = NULL;
 
 	printk(KERN_ERR DRV_NAME": Failed to start RX DMA: %d\n", err);
 	return err;
 }
 
-static void ks8842_rx_frame_dma_tasklet(unsigned long arg)
+static void ks8842_rx_frame_dma_tasklet(struct tasklet_struct *t)
 {
-	struct net_device *netdev = (struct net_device *)arg;
-	struct ks8842_adapter *adapter = netdev_priv(netdev);
+	struct ks8842_adapter *adapter = from_tasklet(adapter, t, dma_rx.tasklet);
+	struct net_device *netdev = adapter->netdev;
 	struct ks8842_rx_dma_ctl *ctl = &adapter->dma_rx;
 	struct sk_buff *skb = ctl->skb;
 	dma_addr_t addr = sg_dma_address(&ctl->sg);
@@ -667,7 +657,7 @@ static void ks8842_rx_frame(struct net_device *netdev,
 			ks8842_update_rx_counters(netdev, status, len);
 
 			if (adapter->conf_flags & KS884X_16BIT) {
-				u16 *data16 = (u16 *)skb_put(skb, len);
+				u16 *data16 = skb_put(skb, len);
 				ks8842_select_bank(adapter, 17);
 				while (len > 0) {
 					*data16++ = ioread16(adapter->hw_addr +
@@ -677,7 +667,7 @@ static void ks8842_rx_frame(struct net_device *netdev,
 					len -= sizeof(u32);
 				}
 			} else {
-				u32 *data = (u32 *)skb_put(skb, len);
+				u32 *data = skb_put(skb, len);
 
 				ks8842_select_bank(adapter, 17);
 				while (len > 0) {
@@ -732,10 +722,10 @@ static void ks8842_handle_rx_overrun(struct net_device *netdev,
 	netdev->stats.rx_fifo_errors++;
 }
 
-static void ks8842_tasklet(unsigned long arg)
+static void ks8842_tasklet(struct tasklet_struct *t)
 {
-	struct net_device *netdev = (struct net_device *)arg;
-	struct ks8842_adapter *adapter = netdev_priv(netdev);
+	struct ks8842_adapter *adapter = from_tasklet(adapter, t, tasklet);
+	struct net_device *netdev = adapter->netdev;
 	u16 isr;
 	unsigned long flags;
 	u16 entry_bank;
@@ -875,13 +865,11 @@ static void ks8842_stop_dma(struct ks8842_adapter *adapter)
 
 	tx_ctl->adesc = NULL;
 	if (tx_ctl->chan)
-		tx_ctl->chan->device->device_control(tx_ctl->chan,
-			DMA_TERMINATE_ALL, 0);
+		dmaengine_terminate_all(tx_ctl->chan);
 
 	rx_ctl->adesc = NULL;
 	if (rx_ctl->chan)
-		rx_ctl->chan->device->device_control(rx_ctl->chan,
-			DMA_TERMINATE_ALL, 0);
+		dmaengine_terminate_all(rx_ctl->chan);
 
 	if (sg_dma_address(&rx_ctl->sg))
 		dma_unmap_single(adapter->dev, sg_dma_address(&rx_ctl->sg),
@@ -954,9 +942,8 @@ static int ks8842_alloc_dma_bufs(struct net_device *netdev)
 
 	sg_dma_address(&tx_ctl->sg) = dma_map_single(adapter->dev,
 		tx_ctl->buf, DMA_BUFFER_SIZE, DMA_TO_DEVICE);
-	err = dma_mapping_error(adapter->dev,
-		sg_dma_address(&tx_ctl->sg));
-	if (err) {
+	if (dma_mapping_error(adapter->dev, sg_dma_address(&tx_ctl->sg))) {
+		err = -ENOMEM;
 		sg_dma_address(&tx_ctl->sg) = 0;
 		goto err;
 	}
@@ -968,8 +955,7 @@ static int ks8842_alloc_dma_bufs(struct net_device *netdev)
 		goto err;
 	}
 
-	tasklet_init(&rx_ctl->tasklet, ks8842_rx_frame_dma_tasklet,
-		(unsigned long)netdev);
+	tasklet_setup(&rx_ctl->tasklet, ks8842_rx_frame_dma_tasklet);
 
 	return 0;
 err:
@@ -1080,7 +1066,7 @@ static int ks8842_set_mac(struct net_device *netdev, void *p)
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	memcpy(netdev->dev_addr, mac, netdev->addr_len);
+	eth_hw_addr_set(netdev, mac);
 
 	ks8842_write_mac_addr(adapter, mac);
 	return 0;
@@ -1118,7 +1104,7 @@ static void ks8842_tx_timeout_work(struct work_struct *work)
 		__ks8842_start_new_rx_dma(netdev);
 }
 
-static void ks8842_tx_timeout(struct net_device *netdev)
+static void ks8842_tx_timeout(struct net_device *netdev, unsigned int txqueue)
 {
 	struct ks8842_adapter *adapter = netdev_priv(netdev);
 
@@ -1151,6 +1137,10 @@ static int ks8842_probe(struct platform_device *pdev)
 	unsigned i;
 
 	iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!iomem) {
+		dev_err(&pdev->dev, "Invalid resource\n");
+		return -EINVAL;
+	}
 	if (!request_mem_region(iomem->start, resource_size(iomem), DRV_NAME))
 		goto err_mem_region;
 
@@ -1188,7 +1178,7 @@ static int ks8842_probe(struct platform_device *pdev)
 		adapter->dma_tx.channel = -1;
 	}
 
-	tasklet_init(&adapter->tasklet, ks8842_tasklet, (unsigned long)netdev);
+	tasklet_setup(&adapter->tasklet, ks8842_tasklet);
 	spin_lock_init(&adapter->lock);
 
 	netdev->netdev_ops = &ks8842_netdev_ops;
@@ -1203,12 +1193,11 @@ static int ks8842_probe(struct platform_device *pdev)
 
 		if (i < netdev->addr_len)
 			/* an address was passed, use it */
-			memcpy(netdev->dev_addr, pdata->macaddr,
-				netdev->addr_len);
+			eth_hw_addr_set(netdev, pdata->macaddr);
 	}
 
 	if (i == netdev->addr_len) {
-		ks8842_read_mac_addr(adapter, netdev->dev_addr);
+		ks8842_init_mac_addr(adapter);
 
 		if (!is_valid_ether_addr(netdev->dev_addr))
 			eth_hw_addr_random(netdev);
@@ -1257,7 +1246,6 @@ static int ks8842_remove(struct platform_device *pdev)
 static struct platform_driver ks8842_platform_driver = {
 	.driver = {
 		.name	= DRV_NAME,
-		.owner	= THIS_MODULE,
 	},
 	.probe		= ks8842_probe,
 	.remove		= ks8842_remove,

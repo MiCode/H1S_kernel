@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
 #include <linux/exportfs.h>
@@ -36,11 +37,13 @@ struct isofs_sb_info {
 	unsigned long s_max_size;
 	
 	int           s_rock_offset; /* offset of SUSP fields within SU area */
+	s32           s_sbsector;
 	unsigned char s_joliet_level;
 	unsigned char s_mapping;
+	unsigned char s_check;
+	unsigned char s_session;
 	unsigned int  s_high_sierra:1;
 	unsigned int  s_rock:2;
-	unsigned int  s_utf8:1;
 	unsigned int  s_cruft:1; /* Broken disks with high byte of length
 				  * containing junk */
 	unsigned int  s_nocompress:1;
@@ -69,45 +72,45 @@ static inline struct iso_inode_info *ISOFS_I(struct inode *inode)
 	return container_of(inode, struct iso_inode_info, vfs_inode);
 }
 
-static inline int isonum_711(char *p)
+static inline int isonum_711(u8 *p)
 {
-	return *(u8 *)p;
+	return *p;
 }
-static inline int isonum_712(char *p)
+static inline int isonum_712(s8 *p)
 {
-	return *(s8 *)p;
+	return *p;
 }
-static inline unsigned int isonum_721(char *p)
+static inline unsigned int isonum_721(u8 *p)
 {
 	return get_unaligned_le16(p);
 }
-static inline unsigned int isonum_722(char *p)
+static inline unsigned int isonum_722(u8 *p)
 {
 	return get_unaligned_be16(p);
 }
-static inline unsigned int isonum_723(char *p)
+static inline unsigned int isonum_723(u8 *p)
 {
 	/* Ignore bigendian datum due to broken mastering programs */
 	return get_unaligned_le16(p);
 }
-static inline unsigned int isonum_731(char *p)
+static inline unsigned int isonum_731(u8 *p)
 {
 	return get_unaligned_le32(p);
 }
-static inline unsigned int isonum_732(char *p)
+static inline unsigned int isonum_732(u8 *p)
 {
 	return get_unaligned_be32(p);
 }
-static inline unsigned int isonum_733(char *p)
+static inline unsigned int isonum_733(u8 *p)
 {
 	/* Ignore bigendian datum due to broken mastering programs */
 	return get_unaligned_le32(p);
 }
-extern int iso_date(char *, int);
+extern int iso_date(u8 *, int);
 
 struct inode;		/* To make gcc happy */
 
-extern int parse_rock_ridge_inode(struct iso_directory_record *, struct inode *);
+extern int parse_rock_ridge_inode(struct iso_directory_record *, struct inode *, int relocated);
 extern int get_rock_ridge_filename(struct iso_directory_record *, char *, struct inode *);
 extern int isofs_name_translate(struct iso_directory_record *, char *, struct inode *);
 
@@ -118,9 +121,24 @@ extern struct dentry *isofs_lookup(struct inode *, struct dentry *, unsigned int
 extern struct buffer_head *isofs_bread(struct inode *, sector_t);
 extern int isofs_get_blocks(struct inode *, sector_t, struct buffer_head **, unsigned long);
 
-extern struct inode *isofs_iget(struct super_block *sb,
-                                unsigned long block,
-                                unsigned long offset);
+struct inode *__isofs_iget(struct super_block *sb,
+			   unsigned long block,
+			   unsigned long offset,
+			   int relocated);
+
+static inline struct inode *isofs_iget(struct super_block *sb,
+				       unsigned long block,
+				       unsigned long offset)
+{
+	return __isofs_iget(sb, block, offset, 0);
+}
+
+static inline struct inode *isofs_iget_reloc(struct super_block *sb,
+					     unsigned long block,
+					     unsigned long offset)
+{
+	return __isofs_iget(sb, block, offset, 1);
+}
 
 /* Because the inode number is no longer relevant to finding the
  * underlying meta-data for an inode, we are free to choose a more

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Sysctl operations for Coda filesystem
  * Original version: (C) 1996 P. Braam and M. Callahan
@@ -11,10 +12,9 @@
 
 #include "coda_int.h"
 
-#ifdef CONFIG_SYSCTL
 static struct ctl_table_header *fs_table_header;
 
-static ctl_table coda_table[] = {
+static struct ctl_table coda_table[] = {
 	{
 		.procname	= "timeout",
 		.data		= &coda_timeout,
@@ -39,19 +39,10 @@ static ctl_table coda_table[] = {
 	{}
 };
 
-static ctl_table fs_table[] = {
-	{
-		.procname	= "coda",
-		.mode		= 0555,
-		.child		= coda_table
-	},
-	{}
-};
-
 void coda_sysctl_init(void)
 {
 	if ( !fs_table_header )
-		fs_table_header = register_sysctl_table(fs_table);
+		fs_table_header = register_sysctl("coda", coda_table);
 }
 
 void coda_sysctl_clean(void)
@@ -61,13 +52,3 @@ void coda_sysctl_clean(void)
 		fs_table_header = NULL;
 	}
 }
-
-#else
-void coda_sysctl_init(void)
-{
-}
-
-void coda_sysctl_clean(void)
-{
-}
-#endif

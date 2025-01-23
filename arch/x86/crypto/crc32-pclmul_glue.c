@@ -24,7 +24,7 @@
 /*
  * Copyright 2012 Xyratex Technology Limited
  *
- * Wrappers for kernel crypto shash api to pclmulqdq crc32 imlementation.
+ * Wrappers for kernel crypto shash api to pclmulqdq crc32 implementation.
  */
 #include <linux/init.h>
 #include <linux/module.h>
@@ -32,10 +32,11 @@
 #include <linux/kernel.h>
 #include <linux/crc32.h>
 #include <crypto/internal/hash.h>
+#include <crypto/internal/simd.h>
 
-#include <asm/cpufeature.h>
+#include <asm/cpufeatures.h>
 #include <asm/cpu_device_id.h>
-#include <asm/i387.h>
+#include <asm/simd.h>
 
 #define CHKSUM_BLOCK_SIZE	1
 #define CHKSUM_DIGEST_SIZE	4
@@ -54,7 +55,7 @@ static u32 __attribute__((pure))
 	unsigned int iremainder;
 	unsigned int prealign;
 
-	if (len < PCLMUL_MIN_LEN + SCALE_F_MASK || !irq_fpu_usable())
+	if (len < PCLMUL_MIN_LEN + SCALE_F_MASK || !crypto_simd_usable())
 		return crc32_le(crc, p, len);
 
 	if ((long)p & SCALE_F_MASK) {
@@ -93,10 +94,8 @@ static int crc32_pclmul_setkey(struct crypto_shash *hash, const u8 *key,
 {
 	u32 *mctx = crypto_shash_ctx(hash);
 
-	if (keylen != sizeof(u32)) {
-		crypto_shash_set_flags(hash, CRYPTO_TFM_RES_BAD_KEY_LEN);
+	if (keylen != sizeof(u32))
 		return -EINVAL;
-	}
 	*mctx = le32_to_cpup((__le32 *)key);
 	return 0;
 }
@@ -162,6 +161,7 @@ static struct shash_alg alg = {
 			.cra_name		= "crc32",
 			.cra_driver_name	= "crc32-pclmul",
 			.cra_priority		= 200,
+			.cra_flags		= CRYPTO_ALG_OPTIONAL_KEY,
 			.cra_blocksize		= CHKSUM_BLOCK_SIZE,
 			.cra_ctxsize		= sizeof(u32),
 			.cra_module		= THIS_MODULE,
@@ -170,7 +170,7 @@ static struct shash_alg alg = {
 };
 
 static const struct x86_cpu_id crc32pclmul_cpu_id[] = {
-	X86_FEATURE_MATCH(X86_FEATURE_PCLMULQDQ),
+	X86_MATCH_FEATURE(X86_FEATURE_PCLMULQDQ, NULL),
 	{}
 };
 MODULE_DEVICE_TABLE(x86cpu, crc32pclmul_cpu_id);
@@ -197,5 +197,5 @@ module_exit(crc32_pclmul_mod_fini);
 MODULE_AUTHOR("Alexander Boyko <alexander_boyko@xyratex.com>");
 MODULE_LICENSE("GPL");
 
-MODULE_ALIAS("crc32");
-MODULE_ALIAS("crc32-pclmul");
+MODULE_ALIAS_CRYPTO("crc32");
+MODULE_ALIAS_CRYPTO("crc32-pclmul");

@@ -112,9 +112,9 @@ static void ath6kl_credit_init(struct ath6kl_htc_credit_info *cred_info,
 		if (cur_ep_dist->endpoint == ENDPOINT_0)
 			continue;
 
-		if (cur_ep_dist->svc_id == WMI_CONTROL_SVC)
+		if (cur_ep_dist->svc_id == WMI_CONTROL_SVC) {
 			cur_ep_dist->cred_norm = cur_ep_dist->cred_per_msg;
-		else {
+		} else {
 			/*
 			 * For the remaining data endpoints, we assume that
 			 * each cred_per_msg are the same. We use a simple
@@ -129,7 +129,6 @@ static void ath6kl_credit_init(struct ath6kl_htc_credit_info *cred_info,
 			count = (count * 3) >> 2;
 			count = max(count, cur_ep_dist->cred_per_msg);
 			cur_ep_dist->cred_norm = count;
-
 		}
 
 		ath6kl_dbg(ATH6KL_DBG_CREDIT,
@@ -549,7 +548,6 @@ static int htc_check_credits(struct htc_target *target,
 			     enum htc_endpoint_id eid, unsigned int len,
 			     int *req_cred)
 {
-
 	*req_cred = (len > target->tgt_cred_sz) ?
 		     DIV_ROUND_UP(len, target->tgt_cred_sz) : 1;
 
@@ -608,7 +606,6 @@ static void ath6kl_htc_tx_pkts_get(struct htc_target *target,
 	unsigned int len;
 
 	while (true) {
-
 		flags = 0;
 
 		if (list_empty(&endpoint->txq))
@@ -889,7 +886,6 @@ static void ath6kl_htc_tx_from_queue(struct htc_target *target,
 		ac = target->dev->ar->ep2ac_map[endpoint->eid];
 
 	while (true) {
-
 		if (list_empty(&endpoint->txq))
 			break;
 
@@ -1089,9 +1085,7 @@ static int htc_setup_tx_complete(struct htc_target *target)
 	send_pkt->completion = NULL;
 	ath6kl_htc_tx_prep_pkt(send_pkt, 0, 0, 0);
 	status = ath6kl_htc_tx_issue(target, send_pkt);
-
-	if (send_pkt != NULL)
-		htc_reclaim_txctrl_buf(target, send_pkt);
+	htc_reclaim_txctrl_buf(target, send_pkt);
 
 	return status;
 }
@@ -1190,7 +1184,6 @@ static void ath6kl_htc_mbox_flush_txep(struct htc_target *target,
 		list_add_tail(&packet->list, &container);
 		htc_tx_complete(endpoint, &container);
 	}
-
 }
 
 static void ath6kl_htc_flush_txep_all(struct htc_target *target)
@@ -1394,7 +1387,6 @@ static int ath6kl_htc_rx_setup(struct htc_target *target,
 
 	ep_cb = ep->ep_cb;
 	for (j = 0; j < n_msg; j++) {
-
 		/*
 		 * Reset flag, any packets allocated using the
 		 * rx_alloc() API cannot be recycled on
@@ -1424,9 +1416,9 @@ static int ath6kl_htc_rx_setup(struct htc_target *target,
 				}
 			}
 
-			if (list_empty(&ep->rx_bufq))
+			if (list_empty(&ep->rx_bufq)) {
 				packet = NULL;
-			else {
+			} else {
 				packet = list_first_entry(&ep->rx_bufq,
 						struct htc_packet, list);
 				list_del(&packet->list);
@@ -1487,7 +1479,6 @@ static int ath6kl_htc_rx_alloc(struct htc_target *target,
 	spin_lock_bh(&target->rx_lock);
 
 	for (i = 0; i < msg; i++) {
-
 		htc_hdr = (struct htc_frame_hdr *)&lk_ahds[i];
 
 		if (htc_hdr->eid >= ENDPOINT_MAX) {
@@ -1547,7 +1538,7 @@ static int ath6kl_htc_rx_alloc(struct htc_target *target,
 					     queue, n_msg);
 
 		/*
-		 * This is due to unavailabilty of buffers to rx entire data.
+		 * This is due to unavailability of buffers to rx entire data.
 		 * Return no error so that free buffers from queue can be used
 		 * to receive partial data.
 		 */
@@ -1708,7 +1699,6 @@ static int htc_parse_trailer(struct htc_target *target,
 		lk_ahd = (struct htc_lookahead_report *) record_buf;
 		if ((lk_ahd->pre_valid == ((~lk_ahd->post_valid) & 0xFF)) &&
 		    next_lk_ahds) {
-
 			ath6kl_dbg(ATH6KL_DBG_HTC,
 				   "htc rx lk_ahd found pre_valid 0x%x post_valid 0x%x\n",
 				   lk_ahd->pre_valid, lk_ahd->post_valid);
@@ -1755,7 +1745,6 @@ static int htc_parse_trailer(struct htc_target *target,
 	}
 
 	return 0;
-
 }
 
 static int htc_proc_trailer(struct htc_target *target,
@@ -1776,7 +1765,6 @@ static int htc_proc_trailer(struct htc_target *target,
 	status = 0;
 
 	while (len > 0) {
-
 		if (len < sizeof(struct htc_record_hdr)) {
 			status = -ENOMEM;
 			break;
@@ -2098,7 +2086,6 @@ static int ath6kl_htc_rx_fetch(struct htc_target *target,
 		}
 
 		if (!fetched_pkts) {
-
 			packet = list_first_entry(rx_pktq, struct htc_packet,
 						   list);
 
@@ -2173,7 +2160,6 @@ int ath6kl_htc_rxmsg_pending_handler(struct htc_target *target,
 	look_aheads[0] = msg_look_ahead;
 
 	while (true) {
-
 		/*
 		 * First lookahead sets the expected endpoint IDs for all
 		 * packets in a bundle.
@@ -2236,8 +2222,9 @@ int ath6kl_htc_rxmsg_pending_handler(struct htc_target *target,
 	}
 
 	if (status) {
-		ath6kl_err("failed to get pending recv messages: %d\n",
-			   status);
+		if (status != -ECANCELED)
+			ath6kl_err("failed to get pending recv messages: %d\n",
+				   status);
 
 		/* cleanup any packets in sync completion queue */
 		list_for_each_entry_safe(packets, tmp_pkt, &comp_pktq, list) {
@@ -2273,19 +2260,16 @@ int ath6kl_htc_rxmsg_pending_handler(struct htc_target *target,
 static struct htc_packet *htc_wait_for_ctrl_msg(struct htc_target *target)
 {
 	struct htc_packet *packet = NULL;
-	struct htc_frame_hdr *htc_hdr;
-	u32 look_ahead;
+	struct htc_frame_look_ahead look_ahead;
 
-	if (ath6kl_hif_poll_mboxmsg_rx(target->dev, &look_ahead,
+	if (ath6kl_hif_poll_mboxmsg_rx(target->dev, &look_ahead.word,
 				       HTC_TARGET_RESPONSE_TIMEOUT))
 		return NULL;
 
 	ath6kl_dbg(ATH6KL_DBG_HTC,
-		   "htc rx wait ctrl look_ahead 0x%X\n", look_ahead);
+		   "htc rx wait ctrl look_ahead 0x%X\n", look_ahead.word);
 
-	htc_hdr = (struct htc_frame_hdr *)&look_ahead;
-
-	if (htc_hdr->eid != ENDPOINT_0)
+	if (look_ahead.eid != ENDPOINT_0)
 		return NULL;
 
 	packet = htc_get_control_buf(target, false);
@@ -2294,8 +2278,8 @@ static struct htc_packet *htc_wait_for_ctrl_msg(struct htc_target *target)
 		return NULL;
 
 	packet->info.rx.rx_flags = 0;
-	packet->info.rx.exp_hdr = look_ahead;
-	packet->act_len = le16_to_cpu(htc_hdr->payld_len) + HTC_HDR_LENGTH;
+	packet->info.rx.exp_hdr = look_ahead.word;
+	packet->act_len = le16_to_cpu(look_ahead.payld_len) + HTC_HDR_LENGTH;
 
 	if (packet->act_len > packet->buf_len)
 		goto fail_ctrl_rx;
@@ -2825,8 +2809,9 @@ static int ath6kl_htc_reset(struct htc_target *target)
 			packet->buf = packet->buf_start;
 			packet->endpoint = ENDPOINT_0;
 			list_add_tail(&packet->list, &target->free_ctrl_rxbuf);
-		} else
+		} else {
 			list_add_tail(&packet->list, &target->free_ctrl_txbuf);
+		}
 	}
 
 	return 0;
@@ -2867,8 +2852,8 @@ static void *ath6kl_htc_mbox_create(struct ath6kl *ar)
 	target->dev = kzalloc(sizeof(*target->dev), GFP_KERNEL);
 	if (!target->dev) {
 		ath6kl_err("unable to allocate memory\n");
-		status = -ENOMEM;
-		goto err_htc_cleanup;
+		kfree(target);
+		return NULL;
 	}
 
 	spin_lock_init(&target->htc_lock);

@@ -34,7 +34,7 @@
 		Phone (337) 232-1234 or 1-800-738-2226
 		Fax   (337) 232-1297
 
-		http://www.hospiceacadiana.com/
+		https://www.hospiceacadiana.com/
 
 	Manuel
  */
@@ -51,6 +51,7 @@
 #endif /* STATIC */
 
 #include <linux/decompress/mm.h>
+#include <linux/crc32poly.h>
 
 #ifndef INT_MAX
 #define INT_MAX 0x7fffffff
@@ -79,7 +80,7 @@
 
 /* This is what we know about each Huffman coding group */
 struct group_data {
-	/* We have an extra slot at the end of limit[] for a sentinal value. */
+	/* We have an extra slot at the end of limit[] for a sentinel value. */
 	int limit[MAX_HUFCODE_BITS+1];
 	int base[MAX_HUFCODE_BITS];
 	int permute[MAX_SYMBOLS];
@@ -92,8 +93,8 @@ struct bunzip_data {
 	/* State for interrupting output loop */
 	int writeCopies, writePos, writeRunCountdown, writeCount, writeCurrent;
 	/* I/O tracking data (file handles, buffers, positions, etc.) */
-	int (*fill)(void*, unsigned int);
-	int inbufCount, inbufPos /*, outbufPos*/;
+	long (*fill)(void*, unsigned long);
+	long inbufCount, inbufPos /*, outbufPos*/;
 	unsigned char *inbuf /*,*outbuf*/;
 	unsigned int inbufBitCount, inbufBits;
 	/* The CRC values stored in the block header and calculated from the
@@ -184,7 +185,7 @@ static int INIT get_next_block(struct bunzip_data *bd)
 	if (get_bits(bd, 1))
 		return RETVAL_OBSOLETE_INPUT;
 	origPtr = get_bits(bd, 24);
-	if (origPtr > dbufSize)
+	if (origPtr >= dbufSize)
 		return RETVAL_DATA_ERROR;
 	/* mapping table: if some byte values are never used (encoding things
 	   like ascii text), the compression code removes the gaps to have fewer
@@ -336,7 +337,7 @@ static int INIT get_next_block(struct bunzip_data *bd)
 			pp <<= 1;
 			base[i+1] = pp-(t += temp[i]);
 		}
-		limit[maxLen+1] = INT_MAX; /* Sentinal value for
+		limit[maxLen+1] = INT_MAX; /* Sentinel value for
 					    * reading next sym. */
 		limit[maxLen] = pp+temp[maxLen]-1;
 		base[minLen] = 0;
@@ -384,12 +385,12 @@ static int INIT get_next_block(struct bunzip_data *bd)
 			bd->inbufBits =
 				(bd->inbufBits << 8)|bd->inbuf[bd->inbufPos++];
 			bd->inbufBitCount += 8;
-		};
+		}
 		bd->inbufBitCount -= hufGroup->maxLen;
 		j = (bd->inbufBits >> bd->inbufBitCount)&
 			((1 << hufGroup->maxLen)-1);
 got_huff_bits:
-		/* Figure how how many bits are in next symbol and
+		/* Figure how many bits are in next symbol and
 		 * unget extras */
 		i = hufGroup->minLen;
 		while (j > limit[i])
@@ -617,7 +618,7 @@ decode_next_byte:
 	goto decode_next_byte;
 }
 
-static int INIT nofill(void *buf, unsigned int len)
+static long INIT nofill(void *buf, unsigned long len)
 {
 	return -1;
 }
@@ -625,8 +626,8 @@ static int INIT nofill(void *buf, unsigned int len)
 /* Allocate the structure, read file header.  If in_fd ==-1, inbuf must contain
    a complete bunzip file (len bytes long).  If in_fd!=-1, inbuf and len are
    ignored, and data is read from file handle into temporary buffer. */
-static int INIT start_bunzip(struct bunzip_data **bdp, void *inbuf, int len,
-			     int (*fill)(void*, unsigned int))
+static int INIT start_bunzip(struct bunzip_data **bdp, void *inbuf, long len,
+			     long (*fill)(void*, unsigned long))
 {
 	struct bunzip_data *bd;
 	unsigned int i, j, c;
@@ -654,7 +655,7 @@ static int INIT start_bunzip(struct bunzip_data **bdp, void *inbuf, int len,
 	for (i = 0; i < 256; i++) {
 		c = i << 24;
 		for (j = 8; j; j--)
-			c = c&0x80000000 ? (c << 1)^0x04c11db7 : (c << 1);
+			c = c&0x80000000 ? (c << 1)^(CRC32_POLY_BE) : (c << 1);
 		bd->crc32Table[i] = c;
 	}
 
@@ -675,11 +676,11 @@ static int INIT start_bunzip(struct bunzip_data **bdp, void *inbuf, int len,
 
 /* Example usage: decompress src_fd to dst_fd.  (Stops at end of bzip2 data,
    not end of file.) */
-STATIC int INIT bunzip2(unsigned char *buf, int len,
-			int(*fill)(void*, unsigned int),
-			int(*flush)(void*, unsigned int),
+STATIC int INIT bunzip2(unsigned char *buf, long len,
+			long (*fill)(void*, unsigned long),
+			long (*flush)(void*, unsigned long),
 			unsigned char *outbuf,
-			int *pos,
+			long *pos,
 			void(*error)(char *x))
 {
 	struct bunzip_data *bd;
@@ -743,12 +744,12 @@ exit_0:
 }
 
 #ifdef PREBOOT
-STATIC int INIT decompress(unsigned char *buf, int len,
-			int(*fill)(void*, unsigned int),
-			int(*flush)(void*, unsigned int),
-			unsigned char *outbuf,
-			int *pos,
-			void(*error)(char *x))
+STATIC int INIT __decompress(unsigned char *buf, long len,
+			long (*fill)(void*, unsigned long),
+			long (*flush)(void*, unsigned long),
+			unsigned char *outbuf, long olen,
+			long *pos,
+			void (*error)(char *x))
 {
 	return bunzip2(buf, len - 4, fill, flush, outbuf, pos, error);
 }

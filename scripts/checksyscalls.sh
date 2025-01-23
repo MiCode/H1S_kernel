@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
 #
 # Check if current architecture are missing any function calls compared
 # to i386.
@@ -25,17 +26,26 @@ cat << EOF
 #define __IGNORE_rmdir		/* unlinkat */
 #define __IGNORE_lchown		/* fchownat */
 #define __IGNORE_access		/* faccessat */
-#define __IGNORE_rename		/* renameat */
+#define __IGNORE_rename		/* renameat2 */
 #define __IGNORE_readlink	/* readlinkat */
 #define __IGNORE_symlink	/* symlinkat */
 #define __IGNORE_utimes		/* futimesat */
-#if BITS_PER_LONG == 64
 #define __IGNORE_stat		/* fstatat */
 #define __IGNORE_lstat		/* fstatat */
-#else
 #define __IGNORE_stat64		/* fstatat64 */
 #define __IGNORE_lstat64	/* fstatat64 */
+
+#ifndef __ARCH_WANT_SET_GET_RLIMIT
+#define __IGNORE_getrlimit	/* getrlimit */
+#define __IGNORE_setrlimit	/* setrlimit */
 #endif
+
+#ifndef __ARCH_WANT_MEMFD_SECRET
+#define __IGNORE_memfd_secret
+#endif
+
+/* Missing flags argument */
+#define __IGNORE_renameat	/* renameat2 */
 
 /* CLOEXEC flag */
 #define __IGNORE_pipe		/* pipe2 */
@@ -72,21 +82,38 @@ cat << EOF
 #define __IGNORE_truncate64
 #define __IGNORE_stat64
 #define __IGNORE_lstat64
-#define __IGNORE_fstat64
 #define __IGNORE_fcntl64
 #define __IGNORE_fadvise64_64
-#define __IGNORE_fstatat64
 #define __IGNORE_fstatfs64
 #define __IGNORE_statfs64
 #define __IGNORE_llseek
 #define __IGNORE_mmap2
+#define __IGNORE_clock_gettime64
+#define __IGNORE_clock_settime64
+#define __IGNORE_clock_adjtime64
+#define __IGNORE_clock_getres_time64
+#define __IGNORE_clock_nanosleep_time64
+#define __IGNORE_timer_gettime64
+#define __IGNORE_timer_settime64
+#define __IGNORE_timerfd_gettime64
+#define __IGNORE_timerfd_settime64
+#define __IGNORE_utimensat_time64
+#define __IGNORE_pselect6_time64
+#define __IGNORE_ppoll_time64
+#define __IGNORE_io_pgetevents_time64
+#define __IGNORE_recvmmsg_time64
+#define __IGNORE_mq_timedsend_time64
+#define __IGNORE_mq_timedreceive_time64
+#define __IGNORE_semtimedop_time64
+#define __IGNORE_rt_sigtimedwait_time64
+#define __IGNORE_futex_time64
+#define __IGNORE_sched_rr_get_interval_time64
 #else
 #define __IGNORE_sendfile
 #define __IGNORE_ftruncate
 #define __IGNORE_truncate
 #define __IGNORE_stat
 #define __IGNORE_lstat
-#define __IGNORE_fstat
 #define __IGNORE_fcntl
 #define __IGNORE_fadvise64
 #define __IGNORE_newfstatat
@@ -94,6 +121,33 @@ cat << EOF
 #define __IGNORE_statfs
 #define __IGNORE_lseek
 #define __IGNORE_mmap
+#define __IGNORE_clock_gettime
+#define __IGNORE_clock_settime
+#define __IGNORE_clock_adjtime
+#define __IGNORE_clock_getres
+#define __IGNORE_clock_nanosleep
+#define __IGNORE_timer_gettime
+#define __IGNORE_timer_settime
+#define __IGNORE_timerfd_gettime
+#define __IGNORE_timerfd_settime
+#define __IGNORE_utimensat
+#define __IGNORE_pselect6
+#define __IGNORE_ppoll
+#define __IGNORE_io_pgetevents
+#define __IGNORE_recvmmsg
+#define __IGNORE_mq_timedsend
+#define __IGNORE_mq_timedreceive
+#define __IGNORE_semtimedop
+#define __IGNORE_rt_sigtimedwait
+#define __IGNORE_futex
+#define __IGNORE_sched_rr_get_interval
+#define __IGNORE_gettimeofday
+#define __IGNORE_settimeofday
+#define __IGNORE_wait4
+#define __IGNORE_adjtimex
+#define __IGNORE_nanosleep
+#define __IGNORE_io_getevents
+#define __IGNORE_recvmmsg
 #endif
 
 /* i386-specific or historical system calls */
@@ -145,6 +199,8 @@ cat << EOF
 #define __IGNORE_sysfs
 #define __IGNORE_uselib
 #define __IGNORE__sysctl
+#define __IGNORE_arch_prctl
+#define __IGNORE_nfsservctl
 
 /* ... including the "new" 32-bit uid syscalls */
 #define __IGNORE_lchown32
@@ -194,20 +250,24 @@ cat << EOF
 #define __IGNORE_getpmsg
 #define __IGNORE_putpmsg
 #define __IGNORE_vserver
+
+/* 64-bit ports never needed these, and new 32-bit ports can use statx */
+#define __IGNORE_fstat64
+#define __IGNORE_fstatat64
+
+/* Newer ports are not required to provide fstat in favor of statx */
+#define __IGNORE_fstat
 EOF
 }
 
 syscall_list() {
-    grep '^[0-9]' "$1" | sort -n | (
+    grep '^[0-9]' "$1" | sort -n |
 	while read nr abi name entry ; do
-	    cat <<EOF
-#if !defined(__NR_${name}) && !defined(__IGNORE_${name})
-#warning syscall ${name} not implemented
-#endif
-EOF
+		echo "#if !defined(__NR_${name}) && !defined(__IGNORE_${name})"
+		echo "#warning syscall ${name} not implemented"
+		echo "#endif"
 	done
-    )
 }
 
-(ignore_list && syscall_list $(dirname $0)/../arch/x86/syscalls/syscall_32.tbl) | \
-$* -E -x c - > /dev/null
+(ignore_list && syscall_list $(dirname $0)/../arch/x86/entry/syscalls/syscall_32.tbl) | \
+$* -Wno-error -Wno-unused-macros -E -x c - > /dev/null

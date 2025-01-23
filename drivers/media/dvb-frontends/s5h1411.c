@@ -1,21 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
     Samsung S5H1411 VSB/QAM demodulator driver
 
     Copyright (C) 2008 Steven Toth <stoth@linuxtv.org>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 */
 
@@ -25,7 +13,7 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "s5h1411.h"
 
 struct s5h1411_state {
@@ -37,7 +25,7 @@ struct s5h1411_state {
 
 	struct dvb_frontend frontend;
 
-	fe_modulation_t current_modulation;
+	enum fe_modulation current_modulation;
 	unsigned int first_tune:1;
 
 	u32 current_frequency;
@@ -51,7 +39,7 @@ static int debug;
 #define dprintk(arg...) do {	\
 	if (debug)		\
 		printk(arg);	\
-	} while (0)
+} while (0)
 
 /* Register values to initialise the demod, defaults to VSB */
 static struct init_tab {
@@ -162,7 +150,7 @@ static struct vsb_snr_tab {
 	{  0x35b, 235, },
 	{  0x353, 230, },
 	{  0x349, 225, },
-	{  0x340, 320, },
+	{  0x340, 220, },
 	{  0x337, 215, },
 	{  0x327, 210, },
 	{  0x31b, 205, },
@@ -350,8 +338,8 @@ static int s5h1411_writereg(struct s5h1411_state *state,
 	ret = i2c_transfer(state->i2c, &msg, 1);
 
 	if (ret != 1)
-		printk(KERN_ERR "%s: writereg error 0x%02x 0x%02x 0x%04x, "
-		       "ret == %i)\n", __func__, addr, reg, data, ret);
+		printk(KERN_ERR "%s: writereg error 0x%02x 0x%02x 0x%04x, ret == %i)\n",
+		       __func__, addr, reg, data, ret);
 
 	return (ret != 1) ? -1 : 0;
 }
@@ -410,7 +398,7 @@ static int s5h1411_set_if_freq(struct dvb_frontend *fe, int KHz)
 	default:
 		dprintk("%s(%d KHz) Invalid, defaulting to 5380\n",
 			__func__, KHz);
-		/* no break, need to continue */
+		fallthrough;
 	case 5380:
 	case 44000:
 		s5h1411_writereg(state, S5H1411_I2C_TOP_ADDR, 0x38, 0x1be4);
@@ -433,17 +421,17 @@ static int s5h1411_set_mpeg_timing(struct dvb_frontend *fe, int mode)
 
 	val = s5h1411_readreg(state, S5H1411_I2C_TOP_ADDR, 0xbe) & 0xcfff;
 	switch (mode) {
-	case S5H1411_MPEGTIMING_CONTINOUS_INVERTING_CLOCK:
+	case S5H1411_MPEGTIMING_CONTINUOUS_INVERTING_CLOCK:
 		val |= 0x0000;
 		break;
-	case S5H1411_MPEGTIMING_CONTINOUS_NONINVERTING_CLOCK:
+	case S5H1411_MPEGTIMING_CONTINUOUS_NONINVERTING_CLOCK:
 		dprintk("%s(%d) Mode1 or Defaulting\n", __func__, mode);
 		val |= 0x1000;
 		break;
-	case S5H1411_MPEGTIMING_NONCONTINOUS_INVERTING_CLOCK:
+	case S5H1411_MPEGTIMING_NONCONTINUOUS_INVERTING_CLOCK:
 		val |= 0x2000;
 		break;
-	case S5H1411_MPEGTIMING_NONCONTINOUS_NONINVERTING_CLOCK:
+	case S5H1411_MPEGTIMING_NONCONTINUOUS_NONINVERTING_CLOCK:
 		val |= 0x3000;
 		break;
 	default:
@@ -484,7 +472,7 @@ static int s5h1411_set_serialmode(struct dvb_frontend *fe, int serial)
 }
 
 static int s5h1411_enable_modulation(struct dvb_frontend *fe,
-				     fe_modulation_t m)
+				     enum fe_modulation m)
 {
 	struct s5h1411_state *state = fe->demodulator_priv;
 
@@ -659,7 +647,7 @@ static int s5h1411_init(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int s5h1411_read_status(struct dvb_frontend *fe, fe_status_t *status)
+static int s5h1411_read_status(struct dvb_frontend *fe, enum fe_status *status)
 {
 	struct s5h1411_state *state = fe->demodulator_priv;
 	u16 reg;
@@ -840,9 +828,9 @@ static int s5h1411_read_ber(struct dvb_frontend *fe, u32 *ber)
 	return s5h1411_read_ucblocks(fe, ber);
 }
 
-static int s5h1411_get_frontend(struct dvb_frontend *fe)
+static int s5h1411_get_frontend(struct dvb_frontend *fe,
+				struct dtv_frontend_properties *p)
 {
-	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
 	struct s5h1411_state *state = fe->demodulator_priv;
 
 	p->frequency = state->current_frequency;
@@ -864,7 +852,7 @@ static void s5h1411_release(struct dvb_frontend *fe)
 	kfree(state);
 }
 
-static struct dvb_frontend_ops s5h1411_ops;
+static const struct dvb_frontend_ops s5h1411_ops;
 
 struct dvb_frontend *s5h1411_attach(const struct s5h1411_config *config,
 				    struct i2c_adapter *i2c)
@@ -912,15 +900,15 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(s5h1411_attach);
+EXPORT_SYMBOL_GPL(s5h1411_attach);
 
-static struct dvb_frontend_ops s5h1411_ops = {
+static const struct dvb_frontend_ops s5h1411_ops = {
 	.delsys = { SYS_ATSC, SYS_DVBC_ANNEX_B },
 	.info = {
 		.name			= "Samsung S5H1411 QAM/8VSB Frontend",
-		.frequency_min		= 54000000,
-		.frequency_max		= 858000000,
-		.frequency_stepsize	= 62500,
+		.frequency_min_hz	=  54 * MHz,
+		.frequency_max_hz	= 858 * MHz,
+		.frequency_stepsize_hz	= 62500,
 		.caps = FE_CAN_QAM_64 | FE_CAN_QAM_256 | FE_CAN_8VSB
 	},
 
@@ -944,8 +932,3 @@ MODULE_PARM_DESC(debug, "Enable verbose debug messages");
 MODULE_DESCRIPTION("Samsung S5H1411 QAM-B/ATSC Demodulator driver");
 MODULE_AUTHOR("Steven Toth");
 MODULE_LICENSE("GPL");
-
-/*
- * Local variables:
- * c-basic-offset: 8
- */

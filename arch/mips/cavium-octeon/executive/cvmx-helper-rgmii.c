@@ -4,7 +4,7 @@
  * Contact: support@caviumnetworks.com
  * This file is part of the OCTEON SDK
  *
- * Copyright (c) 2003-2008 Cavium Networks
+ * Copyright (C) 2003-2018 Cavium, Inc.
  *
  * This file is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, Version 2, as
@@ -33,8 +33,6 @@
 
 #include <asm/octeon/cvmx-config.h>
 
-
-#include <asm/octeon/cvmx-mdio.h>
 #include <asm/octeon/cvmx-pko.h>
 #include <asm/octeon/cvmx-helper.h>
 #include <asm/octeon/cvmx-helper-board.h>
@@ -44,10 +42,7 @@
 #include <asm/octeon/cvmx-asxx-defs.h>
 #include <asm/octeon/cvmx-dbg-defs.h>
 
-void __cvmx_interrupt_gmxx_enable(int interface);
-void __cvmx_interrupt_asxx_enable(int block);
-
-/**
+/*
  * Probe RGMII ports and determine the number present
  *
  * @interface: Interface to probe
@@ -93,7 +88,7 @@ int __cvmx_helper_rgmii_probe(int interface)
 	return num_ports;
 }
 
-/**
+/*
  * Put an RGMII interface in loopback mode. Internal packets sent
  * out will be received back again on the same port. Externally
  * received packets will echo back out.
@@ -125,7 +120,7 @@ void cvmx_helper_rgmii_internal_loopback(int port)
 	cvmx_write_csr(CVMX_GMXX_PRTX_CFG(index, interface), gmx_cfg.u64);
 }
 
-/**
+/*
  * Workaround ASX setup errata with CN38XX pass1
  *
  * @interface: Interface to setup
@@ -153,8 +148,8 @@ static int __cvmx_helper_errata_asx_pass1(int interface, int port,
 	return 0;
 }
 
-/**
- * Configure all of the ASX, GMX, and PKO regsiters required
+/*
+ * Configure all of the ASX, GMX, and PKO registers required
  * to get RGMII to function on the supplied interface.
  *
  * @interface: PKO Interface to configure (0 or 1)
@@ -243,8 +238,7 @@ int __cvmx_helper_rgmii_enable(int interface)
 	/* enable the ports now */
 	for (port = 0; port < num_ports; port++) {
 		union cvmx_gmxx_prtx_cfg gmx_cfg;
-		cvmx_helper_link_autoconf(cvmx_helper_get_ipd_port
-					  (interface, port));
+
 		gmx_cfg.u64 =
 		    cvmx_read_csr(CVMX_GMXX_PRTX_CFG(port, interface));
 		gmx_cfg.s.en = 1;
@@ -257,7 +251,7 @@ int __cvmx_helper_rgmii_enable(int interface)
 	return 0;
 }
 
-/**
+/*
  * Return the link state of an IPD/PKO port as returned by
  * auto negotiation. The result of this function may not match
  * Octeon's link config if auto negotiation has changed since
@@ -267,7 +261,7 @@ int __cvmx_helper_rgmii_enable(int interface)
  *
  * Returns Link state
  */
-cvmx_helper_link_info_t __cvmx_helper_rgmii_link_get(int ipd_port)
+union cvmx_helper_link_info __cvmx_helper_rgmii_link_get(int ipd_port)
 {
 	int interface = cvmx_helper_get_interface_num(ipd_port);
 	int index = cvmx_helper_get_interface_index_num(ipd_port);
@@ -276,7 +270,7 @@ cvmx_helper_link_info_t __cvmx_helper_rgmii_link_get(int ipd_port)
 	asxx_prt_loop.u64 = cvmx_read_csr(CVMX_ASXX_PRT_LOOP(interface));
 	if (asxx_prt_loop.s.int_loop & (1 << index)) {
 		/* Force 1Gbps full duplex on internal loopback */
-		cvmx_helper_link_info_t result;
+		union cvmx_helper_link_info result;
 		result.u64 = 0;
 		result.s.full_duplex = 1;
 		result.s.link_up = 1;
@@ -286,12 +280,11 @@ cvmx_helper_link_info_t __cvmx_helper_rgmii_link_get(int ipd_port)
 		return __cvmx_helper_board_link_get(ipd_port);
 }
 
-/**
+/*
  * Configure an IPD/PKO port for the specified link state. This
  * function does not influence auto negotiation at the PHY level.
  * The passed link state must always match the link state returned
- * by cvmx_helper_link_get(). It is normally best to use
- * cvmx_helper_link_autoconf() instead.
+ * by cvmx_helper_link_get().
  *
  * @ipd_port:  IPD/PKO port to configure
  * @link_info: The new link state
@@ -299,7 +292,7 @@ cvmx_helper_link_info_t __cvmx_helper_rgmii_link_get(int ipd_port)
  * Returns Zero on success, negative on failure
  */
 int __cvmx_helper_rgmii_link_set(int ipd_port,
-				 cvmx_helper_link_info_t link_info)
+				 union cvmx_helper_link_info link_info)
 {
 	int result = 0;
 	int interface = cvmx_helper_get_interface_num(ipd_port);
@@ -455,72 +448,4 @@ int __cvmx_helper_rgmii_link_set(int ipd_port,
 	cvmx_write_csr(CVMX_GMXX_PRTX_CFG(index, interface), new_gmx_cfg.u64);
 
 	return result;
-}
-
-/**
- * Configure a port for internal and/or external loopback. Internal loopback
- * causes packets sent by the port to be received by Octeon. External loopback
- * causes packets received from the wire to sent out again.
- *
- * @ipd_port: IPD/PKO port to loopback.
- * @enable_internal:
- *		   Non zero if you want internal loopback
- * @enable_external:
- *		   Non zero if you want external loopback
- *
- * Returns Zero on success, negative on failure.
- */
-int __cvmx_helper_rgmii_configure_loopback(int ipd_port, int enable_internal,
-					   int enable_external)
-{
-	int interface = cvmx_helper_get_interface_num(ipd_port);
-	int index = cvmx_helper_get_interface_index_num(ipd_port);
-	int original_enable;
-	union cvmx_gmxx_prtx_cfg gmx_cfg;
-	union cvmx_asxx_prt_loop asxx_prt_loop;
-
-	/* Read the current enable state and save it */
-	gmx_cfg.u64 = cvmx_read_csr(CVMX_GMXX_PRTX_CFG(index, interface));
-	original_enable = gmx_cfg.s.en;
-	/* Force port to be disabled */
-	gmx_cfg.s.en = 0;
-	if (enable_internal) {
-		/* Force speed if we're doing internal loopback */
-		gmx_cfg.s.duplex = 1;
-		gmx_cfg.s.slottime = 1;
-		gmx_cfg.s.speed = 1;
-		cvmx_write_csr(CVMX_GMXX_TXX_CLK(index, interface), 1);
-		cvmx_write_csr(CVMX_GMXX_TXX_SLOT(index, interface), 0x200);
-		cvmx_write_csr(CVMX_GMXX_TXX_BURST(index, interface), 0x2000);
-	}
-	cvmx_write_csr(CVMX_GMXX_PRTX_CFG(index, interface), gmx_cfg.u64);
-
-	/* Set the loopback bits */
-	asxx_prt_loop.u64 = cvmx_read_csr(CVMX_ASXX_PRT_LOOP(interface));
-	if (enable_internal)
-		asxx_prt_loop.s.int_loop |= 1 << index;
-	else
-		asxx_prt_loop.s.int_loop &= ~(1 << index);
-	if (enable_external)
-		asxx_prt_loop.s.ext_loop |= 1 << index;
-	else
-		asxx_prt_loop.s.ext_loop &= ~(1 << index);
-	cvmx_write_csr(CVMX_ASXX_PRT_LOOP(interface), asxx_prt_loop.u64);
-
-	/* Force enables in internal loopback */
-	if (enable_internal) {
-		uint64_t tmp;
-		tmp = cvmx_read_csr(CVMX_ASXX_TX_PRT_EN(interface));
-		cvmx_write_csr(CVMX_ASXX_TX_PRT_EN(interface),
-			       (1 << index) | tmp);
-		tmp = cvmx_read_csr(CVMX_ASXX_RX_PRT_EN(interface));
-		cvmx_write_csr(CVMX_ASXX_RX_PRT_EN(interface),
-			       (1 << index) | tmp);
-		original_enable = 1;
-	}
-
-	/* Restore the enable state */
-	gmx_cfg.s.en = original_enable;
-	cvmx_write_csr(CVMX_GMXX_PRTX_CFG(index, interface), gmx_cfg.u64);
-	return 0;
 }

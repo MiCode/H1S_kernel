@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Interface for OSS sequencer emulation
  *
  *  Copyright (C) 1999 Takashi Iwai <tiwai@suse.de>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  *
  * Changes
  * 19990227   Steve Ratcliffe   Made separate file and merged in latest
@@ -23,10 +10,8 @@
  */
 
 
-#ifdef CONFIG_SND_SEQUENCER_OSS
-
 #include <linux/export.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <sound/core.h>
 #include "emux_voice.h"
 #include <sound/asoundef.h>
@@ -49,7 +34,7 @@ static void fake_event(struct snd_emux *emu, struct snd_emux_port *port,
 		       int ch, int param, int val, int atomic, int hop);
 
 /* operators */
-static struct snd_seq_oss_callback oss_callback = {
+static const struct snd_seq_oss_callback oss_callback = {
 	.owner = THIS_MODULE,
 	.open = snd_emux_open_seq_oss,
 	.close = snd_emux_close_seq_oss,
@@ -69,7 +54,8 @@ snd_emux_init_seq_oss(struct snd_emux *emu)
 	struct snd_seq_oss_reg *arg;
 	struct snd_seq_device *dev;
 
-	if (snd_seq_device_new(emu->card, 0, SNDRV_SEQ_DEV_ID_OSS,
+	/* using device#1 here for avoiding conflicts with OPL3 */
+	if (snd_seq_device_new(emu->card, 1, SNDRV_SEQ_DEV_ID_OSS,
 			       sizeof(struct snd_seq_oss_reg), &dev) < 0)
 		return;
 
@@ -118,12 +104,8 @@ snd_emux_open_seq_oss(struct snd_seq_oss_arg *arg, void *closure)
 	if (snd_BUG_ON(!arg || !emu))
 		return -ENXIO;
 
-	mutex_lock(&emu->register_mutex);
-
-	if (!snd_emux_inc_count(emu)) {
-		mutex_unlock(&emu->register_mutex);
+	if (!snd_emux_inc_count(emu))
 		return -EFAULT;
-	}
 
 	memset(&callback, 0, sizeof(callback));
 	callback.owner = THIS_MODULE;
@@ -135,7 +117,6 @@ snd_emux_open_seq_oss(struct snd_seq_oss_arg *arg, void *closure)
 	if (p == NULL) {
 		snd_printk(KERN_ERR "can't create port\n");
 		snd_emux_dec_count(emu);
-		mutex_unlock(&emu->register_mutex);
 		return -ENOMEM;
 	}
 
@@ -148,8 +129,6 @@ snd_emux_open_seq_oss(struct snd_seq_oss_arg *arg, void *closure)
 	reset_port_mode(p, arg->seq_mode);
 
 	snd_emux_reset_port(p);
-
-	mutex_unlock(&emu->register_mutex);
 	return 0;
 }
 
@@ -195,13 +174,11 @@ snd_emux_close_seq_oss(struct snd_seq_oss_arg *arg)
 	if (snd_BUG_ON(!emu))
 		return -ENXIO;
 
-	mutex_lock(&emu->register_mutex);
 	snd_emux_sounds_off_all(p);
 	snd_soundfont_close_check(emu->sflist, SF_CLIENT_NO(p->chset.port));
 	snd_seq_event_port_detach(p->chset.client, p->chset.port);
 	snd_emux_dec_count(emu);
 
-	mutex_unlock(&emu->register_mutex);
 	return 0;
 }
 
@@ -233,9 +210,9 @@ snd_emux_load_patch_seq_oss(struct snd_seq_oss_arg *arg, int format,
 	else if (format == SNDRV_OSS_SOUNDFONT_PATCH) {
 		struct soundfont_patch_info patch;
 		if (count < (int)sizeof(patch))
-			rc = -EINVAL;
+			return -EINVAL;
 		if (copy_from_user(&patch, buf, sizeof(patch)))
-			rc = -EFAULT;
+			return -EFAULT;
 		if (patch.type >= SNDRV_SFNT_LOAD_INFO &&
 		    patch.type <= SNDRV_SFNT_PROBE_DATA)
 			rc = snd_soundfont_load(emu->sflist, buf, count, SF_CLIENT_NO(p->chset.port));
@@ -440,7 +417,6 @@ gusspec_control(struct snd_emux *emu, struct snd_emux_port *port, int cmd,
 {
 	int voice;
 	unsigned short p1;
-	short p2;
 	int plong;
 	struct snd_midi_channel *chan;
 
@@ -455,7 +431,6 @@ gusspec_control(struct snd_emux *emu, struct snd_emux_port *port, int cmd,
 	chan = &port->chset.channels[voice];
 
 	p1 = *(unsigned short *) &event[4];
-	p2 = *(short *) &event[6];
 	plong = *(int*) &event[4];
 
 	switch (cmd) {
@@ -513,5 +488,3 @@ fake_event(struct snd_emux *emu, struct snd_emux_port *port, int ch, int param, 
 	ev.data.control.value = val;
 	snd_emux_event_input(&ev, 0, port, atomic, hop);
 }
-
-#endif /* CONFIG_SND_SEQUENCER_OSS */

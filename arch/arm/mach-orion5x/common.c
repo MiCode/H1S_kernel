@@ -1,17 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/mach-orion5x/common.c
  *
  * Core functions for Marvell Orion 5x SoCs
  *
  * Maintainer: Tzachi Perelstein <tzachi@marvell.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/io.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/serial_8250.h>
@@ -20,21 +18,20 @@
 #include <linux/delay.h>
 #include <linux/clk-provider.h>
 #include <linux/cpu.h>
-#include <net/dsa.h>
 #include <asm/page.h>
 #include <asm/setup.h>
 #include <asm/system_misc.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/mach/time.h>
-#include <mach/bridge-regs.h>
-#include <mach/hardware.h>
-#include <mach/orion5x.h>
 #include <linux/platform_data/mtd-orion_nand.h>
 #include <linux/platform_data/usb-ehci-orion.h>
 #include <plat/time.h>
 #include <plat/common.h>
+
+#include "bridge-regs.h"
 #include "common.h"
+#include "orion5x.h"
 
 /*****************************************************************************
  * I/O Address Mapping
@@ -66,8 +63,7 @@ static struct clk *tclk;
 
 void __init clk_init(void)
 {
-	tclk = clk_register_fixed_rate(NULL, "tclk", NULL, CLK_IS_ROOT,
-				       orion5x_tclk);
+	tclk = clk_register_fixed_rate(NULL, "tclk", NULL, 0, orion5x_tclk);
 
 	orion_clkdev_init(tclk);
 }
@@ -100,15 +96,6 @@ void __init orion5x_eth_init(struct mv643xx_eth_platform_data *eth_data)
 			ORION5X_ETH_PHYS_BASE, IRQ_ORION5X_ETH_SUM,
 			IRQ_ORION5X_ETH_ERR,
 			MV643XX_TX_CSUM_DEFAULT_LIMIT);
-}
-
-
-/*****************************************************************************
- * Ethernet switch
- ****************************************************************************/
-void __init orion5x_eth_switch_init(struct dsa_platform_data *d, int irq)
-{
-	orion_ge00_switch_init(d, irq);
 }
 
 
@@ -184,9 +171,21 @@ static void __init orion5x_crypto_init(void)
 /*****************************************************************************
  * Watchdog
  ****************************************************************************/
+static struct resource orion_wdt_resource[] = {
+		DEFINE_RES_MEM(TIMER_PHYS_BASE, 0x04),
+		DEFINE_RES_MEM(RSTOUTn_MASK_PHYS, 0x04),
+};
+
+static struct platform_device orion_wdt_device = {
+	.name		= "orion_wdt",
+	.id		= -1,
+	.num_resources	= ARRAY_SIZE(orion_wdt_resource),
+	.resource	= orion_wdt_resource,
+};
+
 static void __init orion5x_wdt_init(void)
 {
-	orion_wdt_init();
+	platform_device_register(&orion_wdt_device);
 }
 
 
@@ -365,8 +364,7 @@ void orion5x_restart(enum reboot_mode mode, const char *cmd)
  * Many orion-based systems have buggy bootloader implementations.
  * This is a common fixup for bogus memory tags.
  */
-void __init tag_fixup_mem32(struct tag *t, char **from,
-			    struct meminfo *meminfo)
+void __init tag_fixup_mem32(struct tag *t, char **from)
 {
 	for (; t->hdr.size; t = tag_next(t))
 		if (t->hdr.tag == ATAG_MEM &&

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  cx18 ioctl system call
  *
@@ -5,21 +6,6 @@
  *
  *  Copyright (C) 2007  Hans Verkuil <hverkuil@xs4all.nl>
  *  Copyright (C) 2008  Andy Walls <awalls@md.metrocast.net>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
- *  02111-1307  USA
  */
 
 #include "cx18-driver.h"
@@ -39,6 +25,134 @@
 #include "cx18-cards.h"
 #include "cx18-av-core.h"
 #include <media/tveeprom.h>
+#include <media/v4l2-event.h>
+
+static const struct v4l2_fmtdesc cx18_formats_yuv[] = {
+	{
+		.index = 0,
+		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+		.pixelformat = V4L2_PIX_FMT_NV12_16L16,
+	},
+	{
+		.index = 1,
+		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+		.pixelformat = V4L2_PIX_FMT_UYVY,
+	},
+};
+
+static const struct v4l2_fmtdesc cx18_formats_mpeg[] = {
+	{
+		.index = 0,
+		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+		.flags = V4L2_FMT_FLAG_COMPRESSED,
+		.pixelformat = V4L2_PIX_FMT_MPEG,
+	},
+};
+
+static int cx18_g_fmt_vid_cap(struct file *file, void *fh,
+			      struct v4l2_format *fmt)
+{
+	struct cx18_open_id *id = fh2id(fh);
+	struct cx18 *cx = id->cx;
+	struct cx18_stream *s = &cx->streams[id->type];
+	struct v4l2_pix_format *pixfmt = &fmt->fmt.pix;
+
+	pixfmt->width = cx->cxhdl.width;
+	pixfmt->height = cx->cxhdl.height;
+	pixfmt->colorspace = V4L2_COLORSPACE_SMPTE170M;
+	pixfmt->field = V4L2_FIELD_INTERLACED;
+	if (id->type == CX18_ENC_STREAM_TYPE_YUV) {
+		pixfmt->pixelformat = s->pixelformat;
+		pixfmt->sizeimage = s->vb_bytes_per_frame;
+		pixfmt->bytesperline = s->vb_bytes_per_line;
+	} else {
+		pixfmt->pixelformat = V4L2_PIX_FMT_MPEG;
+		pixfmt->sizeimage = 128 * 1024;
+		pixfmt->bytesperline = 0;
+	}
+	return 0;
+}
+
+static int cx18_try_fmt_vid_cap(struct file *file, void *fh,
+				struct v4l2_format *fmt)
+{
+	struct cx18_open_id *id = fh2id(fh);
+	struct cx18 *cx = id->cx;
+	struct v4l2_pix_format *pixfmt = &fmt->fmt.pix;
+	int w = pixfmt->width;
+	int h = pixfmt->height;
+
+	w = min(w, 720);
+	w = max(w, 720 / 16);
+
+	h = min(h, cx->is_50hz ? 576 : 480);
+	h = max(h, (cx->is_50hz ? 576 : 480) / 8);
+
+	if (id->type == CX18_ENC_STREAM_TYPE_YUV) {
+		if (pixfmt->pixelformat != V4L2_PIX_FMT_NV12_16L16 &&
+		    pixfmt->pixelformat != V4L2_PIX_FMT_UYVY)
+			pixfmt->pixelformat = V4L2_PIX_FMT_UYVY;
+		/* YUV height must be a multiple of 32 */
+		h = round_up(h, 32);
+		/*
+		 * HM12 YUV size is (Y=(h*720) + UV=(h*(720/2)))
+		 * UYUV YUV size is (Y=(h*720) + UV=(h*(720)))
+		 */
+		if (pixfmt->pixelformat == V4L2_PIX_FMT_NV12_16L16) {
+			pixfmt->sizeimage = h * 720 * 3 / 2;
+			pixfmt->bytesperline = 720; /* First plane */
+		} else {
+			pixfmt->sizeimage = h * 720 * 2;
+			pixfmt->bytesperline = 1440; /* Packed */
+		}
+	} else {
+		pixfmt->pixelformat = V4L2_PIX_FMT_MPEG;
+		pixfmt->sizeimage = 128 * 1024;
+		pixfmt->bytesperline = 0;
+	}
+
+	pixfmt->width = w;
+	pixfmt->height = h;
+	pixfmt->colorspace = V4L2_COLORSPACE_SMPTE170M;
+	pixfmt->field = V4L2_FIELD_INTERLACED;
+	return 0;
+}
+
+static int cx18_s_fmt_vid_cap(struct file *file, void *fh,
+			      struct v4l2_format *fmt)
+{
+	struct cx18_open_id *id = fh2id(fh);
+	struct cx18 *cx = id->cx;
+	struct v4l2_subdev_format format = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+	};
+	struct cx18_stream *s = &cx->streams[id->type];
+	int ret;
+	int w, h;
+
+	ret = cx18_try_fmt_vid_cap(file, fh, fmt);
+	if (ret)
+		return ret;
+	w = fmt->fmt.pix.width;
+	h = fmt->fmt.pix.height;
+
+	if (cx->cxhdl.width == w && cx->cxhdl.height == h &&
+	    s->pixelformat == fmt->fmt.pix.pixelformat)
+		return 0;
+
+	if (atomic_read(&cx->ana_capturing) > 0)
+		return -EBUSY;
+
+	s->pixelformat = fmt->fmt.pix.pixelformat;
+	s->vb_bytes_per_frame = fmt->fmt.pix.sizeimage;
+	s->vb_bytes_per_line = fmt->fmt.pix.bytesperline;
+
+	format.format.width = cx->cxhdl.width = w;
+	format.format.height = cx->cxhdl.height = h;
+	format.format.code = MEDIA_BUS_FMT_FIXED;
+	v4l2_subdev_call(cx->sd_av, pad, set_fmt, NULL, &format);
+	return cx18_g_fmt_vid_cap(file, fh, fmt);
+}
 
 u16 cx18_service2vbi(int type)
 {
@@ -91,7 +205,7 @@ static u16 select_service_from_set(int field, int line, u16 set, int is_pal)
 			return 0;
 	}
 	for (i = 0; i < 32; i++) {
-		if ((1 << i) & set)
+		if (BIT(i) & set)
 			return 1 << i;
 	}
 	return 0;
@@ -144,31 +258,6 @@ u16 cx18_get_service_set(struct v4l2_sliced_vbi_format *fmt)
 	return set;
 }
 
-static int cx18_g_fmt_vid_cap(struct file *file, void *fh,
-				struct v4l2_format *fmt)
-{
-	struct cx18_open_id *id = fh2id(fh);
-	struct cx18 *cx = id->cx;
-	struct cx18_stream *s = &cx->streams[id->type];
-	struct v4l2_pix_format *pixfmt = &fmt->fmt.pix;
-
-	pixfmt->width = cx->cxhdl.width;
-	pixfmt->height = cx->cxhdl.height;
-	pixfmt->colorspace = V4L2_COLORSPACE_SMPTE170M;
-	pixfmt->field = V4L2_FIELD_INTERLACED;
-	pixfmt->priv = 0;
-	if (id->type == CX18_ENC_STREAM_TYPE_YUV) {
-		pixfmt->pixelformat = s->pixelformat;
-		pixfmt->sizeimage = s->vb_bytes_per_frame;
-		pixfmt->bytesperline = 720;
-	} else {
-		pixfmt->pixelformat = V4L2_PIX_FMT_MPEG;
-		pixfmt->sizeimage = 128 * 1024;
-		pixfmt->bytesperline = 0;
-	}
-	return 0;
-}
-
 static int cx18_g_fmt_vbi_cap(struct file *file, void *fh,
 				struct v4l2_format *fmt)
 {
@@ -177,7 +266,7 @@ static int cx18_g_fmt_vbi_cap(struct file *file, void *fh,
 
 	vbifmt->sampling_rate = 27000000;
 	vbifmt->offset = 248; /* FIXME - slightly wrong for both 50 & 60 Hz */
-	vbifmt->samples_per_line = vbi_active_samples - 4;
+	vbifmt->samples_per_line = VBI_ACTIVE_SAMPLES - 4;
 	vbifmt->sample_format = V4L2_PIX_FMT_GREY;
 	vbifmt->start[0] = cx->vbi.start[0];
 	vbifmt->start[1] = cx->vbi.start[1];
@@ -213,30 +302,6 @@ static int cx18_g_fmt_sliced_vbi_cap(struct file *file, void *fh,
 	return 0;
 }
 
-static int cx18_try_fmt_vid_cap(struct file *file, void *fh,
-				struct v4l2_format *fmt)
-{
-	struct cx18_open_id *id = fh2id(fh);
-	struct cx18 *cx = id->cx;
-	int w = fmt->fmt.pix.width;
-	int h = fmt->fmt.pix.height;
-	int min_h = 2;
-
-	w = min(w, 720);
-	w = max(w, 2);
-	if (id->type == CX18_ENC_STREAM_TYPE_YUV) {
-		/* YUV height must be a multiple of 32 */
-		h &= ~0x1f;
-		min_h = 32;
-	}
-	h = min(h, cx->is_50hz ? 576 : 480);
-	h = max(h, min_h);
-
-	fmt->fmt.pix.width = w;
-	fmt->fmt.pix.height = h;
-	return 0;
-}
-
 static int cx18_try_fmt_vbi_cap(struct file *file, void *fh,
 				struct v4l2_format *fmt)
 {
@@ -260,44 +325,6 @@ static int cx18_try_fmt_sliced_vbi_cap(struct file *file, void *fh,
 	if (check_service_set(vbifmt, cx->is_50hz))
 		vbifmt->service_set = cx18_get_service_set(vbifmt);
 	return 0;
-}
-
-static int cx18_s_fmt_vid_cap(struct file *file, void *fh,
-				struct v4l2_format *fmt)
-{
-	struct cx18_open_id *id = fh2id(fh);
-	struct cx18 *cx = id->cx;
-	struct v4l2_mbus_framefmt mbus_fmt;
-	struct cx18_stream *s = &cx->streams[id->type];
-	int ret;
-	int w, h;
-
-	ret = cx18_try_fmt_vid_cap(file, fh, fmt);
-	if (ret)
-		return ret;
-	w = fmt->fmt.pix.width;
-	h = fmt->fmt.pix.height;
-
-	if (cx->cxhdl.width == w && cx->cxhdl.height == h &&
-	    s->pixelformat == fmt->fmt.pix.pixelformat)
-		return 0;
-
-	if (atomic_read(&cx->ana_capturing) > 0)
-		return -EBUSY;
-
-	s->pixelformat = fmt->fmt.pix.pixelformat;
-	/* HM12 YUV size is (Y=(h*720) + UV=(h*(720/2)))
-	   UYUV YUV size is (Y=(h*720) + UV=(h*(720))) */
-	if (s->pixelformat == V4L2_PIX_FMT_HM12)
-		s->vb_bytes_per_frame = h * 720 * 3 / 2;
-	else
-		s->vb_bytes_per_frame = h * 720 * 2;
-
-	mbus_fmt.width = cx->cxhdl.width = w;
-	mbus_fmt.height = cx->cxhdl.height = h;
-	mbus_fmt.code = V4L2_MBUS_FMT_FIXED;
-	v4l2_subdev_call(cx->sd_av, video, s_mbus_fmt, &mbus_fmt);
-	return cx18_g_fmt_vid_cap(file, fh, fmt);
 }
 
 static int cx18_s_fmt_vbi_cap(struct file *file, void *fh,
@@ -396,13 +423,9 @@ static int cx18_querycap(struct file *file, void *fh,
 	struct cx18_open_id *id = fh2id(fh);
 	struct cx18 *cx = id->cx;
 
-	strlcpy(vcap->driver, CX18_DRIVER_NAME, sizeof(vcap->driver));
-	strlcpy(vcap->card, cx->card_name, sizeof(vcap->card));
-	snprintf(vcap->bus_info, sizeof(vcap->bus_info),
-		 "PCI:%s", pci_name(cx->pci_dev));
-	vcap->capabilities = cx->v4l2_cap; 	    /* capabilities */
-	if (id->type == CX18_ENC_STREAM_TYPE_YUV)
-		vcap->capabilities |= V4L2_CAP_STREAMING;
+	strscpy(vcap->driver, CX18_DRIVER_NAME, sizeof(vcap->driver));
+	strscpy(vcap->card, cx->card_name, sizeof(vcap->card));
+	vcap->capabilities = cx->v4l2_cap | V4L2_CAP_DEVICE_CAPS;
 	return 0;
 }
 
@@ -440,61 +463,53 @@ static int cx18_enum_input(struct file *file, void *fh, struct v4l2_input *vin)
 	return cx18_get_input(cx, vin->index, vin);
 }
 
-static int cx18_cropcap(struct file *file, void *fh,
-			struct v4l2_cropcap *cropcap)
+static int cx18_g_pixelaspect(struct file *file, void *fh,
+			      int type, struct v4l2_fract *f)
 {
 	struct cx18 *cx = fh2id(fh)->cx;
 
-	if (cropcap->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+	if (type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
-	cropcap->bounds.top = cropcap->bounds.left = 0;
-	cropcap->bounds.width = 720;
-	cropcap->bounds.height = cx->is_50hz ? 576 : 480;
-	cropcap->pixelaspect.numerator = cx->is_50hz ? 59 : 10;
-	cropcap->pixelaspect.denominator = cx->is_50hz ? 54 : 11;
-	cropcap->defrect = cropcap->bounds;
+
+	f->numerator = cx->is_50hz ? 54 : 11;
+	f->denominator = cx->is_50hz ? 59 : 10;
 	return 0;
 }
 
-static int cx18_s_crop(struct file *file, void *fh, const struct v4l2_crop *crop)
-{
-	struct cx18_open_id *id = fh2id(fh);
-	struct cx18 *cx = id->cx;
-
-	if (crop->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
-		return -EINVAL;
-	CX18_DEBUG_WARN("VIDIOC_S_CROP not implemented\n");
-	return -EINVAL;
-}
-
-static int cx18_g_crop(struct file *file, void *fh, struct v4l2_crop *crop)
+static int cx18_g_selection(struct file *file, void *fh,
+			    struct v4l2_selection *sel)
 {
 	struct cx18 *cx = fh2id(fh)->cx;
 
-	if (crop->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+	if (sel->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
-	CX18_DEBUG_WARN("VIDIOC_G_CROP not implemented\n");
-	return -EINVAL;
+	switch (sel->target) {
+	case V4L2_SEL_TGT_CROP_BOUNDS:
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+		sel->r.top = sel->r.left = 0;
+		sel->r.width = 720;
+		sel->r.height = cx->is_50hz ? 576 : 480;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
 }
 
 static int cx18_enum_fmt_vid_cap(struct file *file, void *fh,
 					struct v4l2_fmtdesc *fmt)
 {
-	static const struct v4l2_fmtdesc formats[] = {
-		{ 0, V4L2_BUF_TYPE_VIDEO_CAPTURE, 0,
-		  "HM12 (YUV 4:1:1)", V4L2_PIX_FMT_HM12, { 0, 0, 0, 0 }
-		},
-		{ 1, V4L2_BUF_TYPE_VIDEO_CAPTURE, V4L2_FMT_FLAG_COMPRESSED,
-		  "MPEG", V4L2_PIX_FMT_MPEG, { 0, 0, 0, 0 }
-		},
-		{ 2, V4L2_BUF_TYPE_VIDEO_CAPTURE, 0,
-		  "UYVY 4:2:2", V4L2_PIX_FMT_UYVY, { 0, 0, 0, 0 }
-		},
-	};
+	struct cx18_open_id *id = fh2id(fh);
 
-	if (fmt->index > ARRAY_SIZE(formats) - 1)
+	if (id->type == CX18_ENC_STREAM_TYPE_YUV) {
+		if (fmt->index >= ARRAY_SIZE(cx18_formats_yuv))
+			return -EINVAL;
+		*fmt = cx18_formats_yuv[fmt->index];
+		return 0;
+	}
+	if (fmt->index)
 		return -EINVAL;
-	*fmt = formats[fmt->index];
+	*fmt = cx18_formats_mpeg[0];
 	return 0;
 }
 
@@ -510,6 +525,9 @@ int cx18_s_input(struct file *file, void *fh, unsigned int inp)
 {
 	struct cx18_open_id *id = fh2id(fh);
 	struct cx18 *cx = id->cx;
+	v4l2_std_id std = V4L2_STD_ALL;
+	const struct cx18_card_video_input *card_input =
+				cx->card->video_inputs + inp;
 
 	if (inp >= cx->nof_inputs)
 		return -EINVAL;
@@ -525,6 +543,11 @@ int cx18_s_input(struct file *file, void *fh, unsigned int inp)
 	cx->active_input = inp;
 	/* Set the audio input to whatever is appropriate for the input type. */
 	cx->audio_input = cx->card->video_inputs[inp].audio_index;
+	if (card_input->video_type == V4L2_INPUT_TYPE_TUNER)
+		std = cx->tuner_std;
+	cx->streams[CX18_ENC_STREAM_TYPE_MPG].video_dev.tvnorms = std;
+	cx->streams[CX18_ENC_STREAM_TYPE_YUV].video_dev.tvnorms = std;
+	cx->streams[CX18_ENC_STREAM_TYPE_VBI].video_dev.tvnorms = std;
 
 	/* prevent others from messing with the streams until
 	   we're finished changing inputs. */
@@ -595,6 +618,19 @@ int cx18_s_std(struct file *file, void *fh, v4l2_std_id std)
 	cx2341x_handler_set_50hz(&cx->cxhdl, cx->is_50hz);
 	cx->cxhdl.width = 720;
 	cx->cxhdl.height = cx->is_50hz ? 576 : 480;
+	/*
+	 * HM12 YUV size is (Y=(h*720) + UV=(h*(720/2)))
+	 * UYUV YUV size is (Y=(h*720) + UV=(h*(720)))
+	 */
+	if (cx->streams[CX18_ENC_STREAM_TYPE_YUV].pixelformat == V4L2_PIX_FMT_NV12_16L16) {
+		cx->streams[CX18_ENC_STREAM_TYPE_YUV].vb_bytes_per_frame =
+			cx->cxhdl.height * 720 * 3 / 2;
+		cx->streams[CX18_ENC_STREAM_TYPE_YUV].vb_bytes_per_line = 720;
+	} else {
+		cx->streams[CX18_ENC_STREAM_TYPE_YUV].vb_bytes_per_frame =
+			cx->cxhdl.height * 720 * 2;
+		cx->streams[CX18_ENC_STREAM_TYPE_YUV].vb_bytes_per_line = 1440;
+	}
 	cx->vbi.count = cx->is_50hz ? 18 : 12;
 	cx->vbi.start[0] = cx->is_50hz ? 6 : 10;
 	cx->vbi.start[1] = cx->is_50hz ? 318 : 273;
@@ -602,7 +638,7 @@ int cx18_s_std(struct file *file, void *fh, v4l2_std_id std)
 			(unsigned long long) cx->std);
 
 	/* Tuner */
-	cx18_call_all(cx, core, s_std, cx->std);
+	cx18_call_all(cx, video, s_std, cx->std);
 	return 0;
 }
 
@@ -628,9 +664,9 @@ static int cx18_g_tuner(struct file *file, void *fh, struct v4l2_tuner *vt)
 	cx18_call_all(cx, tuner, g_tuner, vt);
 
 	if (vt->type == V4L2_TUNER_RADIO)
-		strlcpy(vt->name, "cx18 Radio Tuner", sizeof(vt->name));
+		strscpy(vt->name, "cx18 Radio Tuner", sizeof(vt->name));
 	else
-		strlcpy(vt->name, "cx18 TV Tuner", sizeof(vt->name));
+		strscpy(vt->name, "cx18 TV Tuner", sizeof(vt->name));
 	return 0;
 }
 
@@ -671,7 +707,7 @@ static int _cx18_process_idx_data(struct cx18_buffer *buf,
 	struct cx18_enc_idx_entry *e_buf;
 
 	/* Frame type lookup: 1=I, 2=P, 4=B */
-	const int mapping[8] = {
+	static const int mapping[8] = {
 		-1, V4L2_ENC_IDX_FRAME_I, V4L2_ENC_IDX_FRAME_P,
 		-1, V4L2_ENC_IDX_FRAME_B, -1, -1, -1
 	};
@@ -802,117 +838,6 @@ static int cx18_g_enc_index(struct file *file, void *fh,
 	return 0;
 }
 
-static struct videobuf_queue *cx18_vb_queue(struct cx18_open_id *id)
-{
-	struct videobuf_queue *q = NULL;
-	struct cx18 *cx = id->cx;
-	struct cx18_stream *s = &cx->streams[id->type];
-
-	switch (s->vb_type) {
-	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
-		q = &s->vbuf_q;
-		break;
-	case V4L2_BUF_TYPE_VBI_CAPTURE:
-		break;
-	default:
-		break;
-	}
-	return q;
-}
-
-static int cx18_streamon(struct file *file, void *priv,
-	enum v4l2_buf_type type)
-{
-	struct cx18_open_id *id = file->private_data;
-	struct cx18 *cx = id->cx;
-	struct cx18_stream *s = &cx->streams[id->type];
-
-	/* Start the hardware only if we're the video device */
-	if ((s->vb_type != V4L2_BUF_TYPE_VIDEO_CAPTURE) &&
-		(s->vb_type != V4L2_BUF_TYPE_VBI_CAPTURE))
-		return -EINVAL;
-
-	if (id->type != CX18_ENC_STREAM_TYPE_YUV)
-		return -EINVAL;
-
-	/* Establish a buffer timeout */
-	mod_timer(&s->vb_timeout, msecs_to_jiffies(2000) + jiffies);
-
-	return videobuf_streamon(cx18_vb_queue(id));
-}
-
-static int cx18_streamoff(struct file *file, void *priv,
-	enum v4l2_buf_type type)
-{
-	struct cx18_open_id *id = file->private_data;
-	struct cx18 *cx = id->cx;
-	struct cx18_stream *s = &cx->streams[id->type];
-
-	/* Start the hardware only if we're the video device */
-	if ((s->vb_type != V4L2_BUF_TYPE_VIDEO_CAPTURE) &&
-		(s->vb_type != V4L2_BUF_TYPE_VBI_CAPTURE))
-		return -EINVAL;
-
-	if (id->type != CX18_ENC_STREAM_TYPE_YUV)
-		return -EINVAL;
-
-	return videobuf_streamoff(cx18_vb_queue(id));
-}
-
-static int cx18_reqbufs(struct file *file, void *priv,
-	struct v4l2_requestbuffers *rb)
-{
-	struct cx18_open_id *id = file->private_data;
-	struct cx18 *cx = id->cx;
-	struct cx18_stream *s = &cx->streams[id->type];
-
-	if ((s->vb_type != V4L2_BUF_TYPE_VIDEO_CAPTURE) &&
-		(s->vb_type != V4L2_BUF_TYPE_VBI_CAPTURE))
-		return -EINVAL;
-
-	return videobuf_reqbufs(cx18_vb_queue(id), rb);
-}
-
-static int cx18_querybuf(struct file *file, void *priv,
-	struct v4l2_buffer *b)
-{
-	struct cx18_open_id *id = file->private_data;
-	struct cx18 *cx = id->cx;
-	struct cx18_stream *s = &cx->streams[id->type];
-
-	if ((s->vb_type != V4L2_BUF_TYPE_VIDEO_CAPTURE) &&
-		(s->vb_type != V4L2_BUF_TYPE_VBI_CAPTURE))
-		return -EINVAL;
-
-	return videobuf_querybuf(cx18_vb_queue(id), b);
-}
-
-static int cx18_qbuf(struct file *file, void *priv, struct v4l2_buffer *b)
-{
-	struct cx18_open_id *id = file->private_data;
-	struct cx18 *cx = id->cx;
-	struct cx18_stream *s = &cx->streams[id->type];
-
-	if ((s->vb_type != V4L2_BUF_TYPE_VIDEO_CAPTURE) &&
-		(s->vb_type != V4L2_BUF_TYPE_VBI_CAPTURE))
-		return -EINVAL;
-
-	return videobuf_qbuf(cx18_vb_queue(id), b);
-}
-
-static int cx18_dqbuf(struct file *file, void *priv, struct v4l2_buffer *b)
-{
-	struct cx18_open_id *id = file->private_data;
-	struct cx18 *cx = id->cx;
-	struct cx18_stream *s = &cx->streams[id->type];
-
-	if ((s->vb_type != V4L2_BUF_TYPE_VIDEO_CAPTURE) &&
-		(s->vb_type != V4L2_BUF_TYPE_VBI_CAPTURE))
-		return -EINVAL;
-
-	return videobuf_dqbuf(cx18_vb_queue(id), b, file->f_flags & O_NONBLOCK);
-}
-
 static int cx18_encoder_cmd(struct file *file, void *fh,
 				struct v4l2_encoder_cmd *enc)
 {
@@ -929,7 +854,7 @@ static int cx18_encoder_cmd(struct file *file, void *fh,
 	case V4L2_ENC_CMD_STOP:
 		CX18_DEBUG_IOCTL("V4L2_ENC_CMD_STOP\n");
 		enc->flags &= V4L2_ENC_CMD_STOP_AT_GOP_END;
-		cx18_stop_capture(id,
+		cx18_stop_capture(&cx->streams[id->type],
 				  enc->flags & V4L2_ENC_CMD_STOP_AT_GOP_END);
 		break;
 
@@ -942,8 +867,7 @@ static int cx18_encoder_cmd(struct file *file, void *fh,
 			return 0;
 		h = cx18_find_handle(cx);
 		if (h == CX18_INVALID_TASK_HANDLE) {
-			CX18_ERR("Can't find valid task handle for "
-				 "V4L2_ENC_CMD_PAUSE\n");
+			CX18_ERR("Can't find valid task handle for V4L2_ENC_CMD_PAUSE\n");
 			return -EBADFD;
 		}
 		cx18_mute(cx);
@@ -959,8 +883,7 @@ static int cx18_encoder_cmd(struct file *file, void *fh,
 			return 0;
 		h = cx18_find_handle(cx);
 		if (h == CX18_INVALID_TASK_HANDLE) {
-			CX18_ERR("Can't find valid task handle for "
-				 "V4L2_ENC_CMD_RESUME\n");
+			CX18_ERR("Can't find valid task handle for V4L2_ENC_CMD_RESUME\n");
 			return -EBADFD;
 		}
 		cx18_vapi(cx, CX18_CPU_CAPTURE_RESUME, 1, h);
@@ -1036,7 +959,7 @@ static int cx18_log_status(struct file *file, void *fh)
 	for (i = 0; i < CX18_MAX_STREAMS; i++) {
 		struct cx18_stream *s = &cx->streams[i];
 
-		if (s->video_dev == NULL || s->buffers == 0)
+		if (s->video_dev.v4l2_dev == NULL || s->buffers == 0)
 			continue;
 		CX18_INFO("Stream %s: status 0x%04lx, %d%% of %d KiB (%d buffers) in use\n",
 			  s->name, s->s_flags,
@@ -1077,9 +1000,8 @@ static const struct v4l2_ioctl_ops cx18_ioctl_ops = {
 	.vidioc_g_audio                 = cx18_g_audio,
 	.vidioc_enumaudio               = cx18_enumaudio,
 	.vidioc_enum_input              = cx18_enum_input,
-	.vidioc_cropcap                 = cx18_cropcap,
-	.vidioc_s_crop                  = cx18_s_crop,
-	.vidioc_g_crop                  = cx18_g_crop,
+	.vidioc_g_pixelaspect           = cx18_g_pixelaspect,
+	.vidioc_g_selection             = cx18_g_selection,
 	.vidioc_g_input                 = cx18_g_input,
 	.vidioc_s_input                 = cx18_s_input,
 	.vidioc_g_frequency             = cx18_g_frequency,
@@ -1108,12 +1030,17 @@ static const struct v4l2_ioctl_ops cx18_ioctl_ops = {
 	.vidioc_s_register              = cx18_s_register,
 #endif
 	.vidioc_default                 = cx18_default,
-	.vidioc_streamon                = cx18_streamon,
-	.vidioc_streamoff               = cx18_streamoff,
-	.vidioc_reqbufs                 = cx18_reqbufs,
-	.vidioc_querybuf                = cx18_querybuf,
-	.vidioc_qbuf                    = cx18_qbuf,
-	.vidioc_dqbuf                   = cx18_dqbuf,
+
+	.vidioc_reqbufs			= vb2_ioctl_reqbufs,
+	.vidioc_querybuf		= vb2_ioctl_querybuf,
+	.vidioc_qbuf			= vb2_ioctl_qbuf,
+	.vidioc_dqbuf			= vb2_ioctl_dqbuf,
+	.vidioc_create_bufs		= vb2_ioctl_create_bufs,
+	.vidioc_streamon		= vb2_ioctl_streamon,
+	.vidioc_streamoff		= vb2_ioctl_streamoff,
+	.vidioc_prepare_buf		= vb2_ioctl_prepare_buf,
+	.vidioc_subscribe_event		= v4l2_ctrl_subscribe_event,
+	.vidioc_unsubscribe_event	= v4l2_event_unsubscribe,
 };
 
 void cx18_set_funcs(struct video_device *vdev)

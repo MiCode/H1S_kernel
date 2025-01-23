@@ -1,10 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *	w1_ds2408.c - w1 family 29 (DS2408) driver
  *
  * Copyright (c) 2010 Jean-Francois Dagenais <dagenaisj@sonatest.com>
- *
- * This source code is licensed under the GNU General Public License,
- * Version 2. See the file COPYING for more details.
  */
 
 #include <linux/kernel.h>
@@ -15,15 +13,9 @@
 #include <linux/delay.h>
 #include <linux/slab.h>
 
-#include "../w1.h"
-#include "../w1_int.h"
-#include "../w1_family.h"
+#include <linux/w1.h>
 
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Jean-Francois Dagenais <dagenaisj@sonatest.com>");
-MODULE_DESCRIPTION("w1 family 29 driver for DS2408 8 Pin IO");
-MODULE_ALIAS("w1-family-" __stringify(W1_FAMILY_DS2408));
-
+#define W1_FAMILY_DS2408	0x29
 
 #define W1_F29_RETRIES		3
 
@@ -43,12 +35,12 @@ MODULE_ALIAS("w1-family-" __stringify(W1_FAMILY_DS2408));
 
 #define W1_F29_SUCCESS_CONFIRM_BYTE        0xAA
 
-static int _read_reg(struct w1_slave *sl, u8 address, unsigned char* buf)
+static int _read_reg(struct w1_slave *sl, u8 address, unsigned char *buf)
 {
 	u8 wrbuf[3];
-	dev_dbg(&sl->dev,
-			"Reading with slave: %p, reg addr: %0#4x, buff addr: %p",
-			sl, (unsigned int)address, buf);
+
+	dev_dbg(&sl->dev, "Reading with slave: %p, reg addr: %0#4x, buff addr: %p",
+		sl, (unsigned int)address, buf);
 
 	if (!buf)
 		return -EINVAL;
@@ -144,14 +136,37 @@ static ssize_t status_control_read(struct file *filp, struct kobject *kobj,
 		W1_F29_REG_CONTROL_AND_STATUS, buf);
 }
 
+#ifdef CONFIG_W1_SLAVE_DS2408_READBACK
+static bool optional_read_back_valid(struct w1_slave *sl, u8 expected)
+{
+	u8 w1_buf[3];
+
+	if (w1_reset_resume_command(sl->master))
+		return false;
+
+	w1_buf[0] = W1_F29_FUNC_READ_PIO_REGS;
+	w1_buf[1] = W1_F29_REG_OUTPUT_LATCH_STATE;
+	w1_buf[2] = 0;
+
+	w1_write_block(sl->master, w1_buf, 3);
+
+	return (w1_read_8(sl->master) == expected);
+}
+#else
+static bool optional_read_back_valid(struct w1_slave *sl, u8 expected)
+{
+	return true;
+}
+#endif
+
 static ssize_t output_write(struct file *filp, struct kobject *kobj,
 			    struct bin_attribute *bin_attr, char *buf,
 			    loff_t off, size_t count)
 {
 	struct w1_slave *sl = kobj_to_w1_slave(kobj);
 	u8 w1_buf[3];
-	u8 readBack;
 	unsigned int retries = W1_F29_RETRIES;
+	ssize_t bytes_written = -EIO;
 
 	if (count != 1 || off != 0)
 		return -EFAULT;
@@ -161,58 +176,37 @@ static ssize_t output_write(struct file *filp, struct kobject *kobj,
 	dev_dbg(&sl->dev, "mutex locked");
 
 	if (w1_reset_select_slave(sl))
-		goto error;
+		goto out;
 
-	while (retries--) {
+	do {
 		w1_buf[0] = W1_F29_FUNC_CHANN_ACCESS_WRITE;
 		w1_buf[1] = *buf;
 		w1_buf[2] = ~(*buf);
+
 		w1_write_block(sl->master, w1_buf, 3);
 
-		readBack = w1_read_8(sl->master);
-
-		if (readBack != W1_F29_SUCCESS_CONFIRM_BYTE) {
-			if (w1_reset_resume_command(sl->master))
-				goto error;
-			/* try again, the slave is ready for a command */
-			continue;
+		if (w1_read_8(sl->master) == W1_F29_SUCCESS_CONFIRM_BYTE &&
+		    optional_read_back_valid(sl, *buf)) {
+			bytes_written = 1;
+			goto out;
 		}
 
-#ifdef CONFIG_W1_SLAVE_DS2408_READBACK
-		/* here the master could read another byte which
-		   would be the PIO reg (the actual pin logic state)
-		   since in this driver we don't know which pins are
-		   in and outs, there's no value to read the state and
-		   compare. with (*buf) so end this command abruptly: */
 		if (w1_reset_resume_command(sl->master))
-			goto error;
+			goto out; /* unrecoverable error */
+		/* try again, the slave is ready for a command */
+	} while (--retries);
 
-		/* go read back the output latches */
-		/* (the direct effect of the write above) */
-		w1_buf[0] = W1_F29_FUNC_READ_PIO_REGS;
-		w1_buf[1] = W1_F29_REG_OUTPUT_LATCH_STATE;
-		w1_buf[2] = 0;
-		w1_write_block(sl->master, w1_buf, 3);
-		/* read the result of the READ_PIO_REGS command */
-		if (w1_read_8(sl->master) == *buf)
-#endif
-		{
-			/* success! */
-			mutex_unlock(&sl->master->bus_mutex);
-			dev_dbg(&sl->dev,
-				"mutex unlocked, retries:%d", retries);
-			return 1;
-		}
-	}
-error:
+out:
 	mutex_unlock(&sl->master->bus_mutex);
-	dev_dbg(&sl->dev, "mutex unlocked in error, retries:%d", retries);
 
-	return -EIO;
+	dev_dbg(&sl->dev, "%s, mutex unlocked retries:%d\n",
+		(bytes_written > 0) ? "succeeded" : "error", retries);
+
+	return bytes_written;
 }
 
 
-/**
+/*
  * Writing to the activity file resets the activity latches.
  */
 static ssize_t activity_write(struct file *filp, struct kobject *kobj,
@@ -298,7 +292,7 @@ static int w1_f29_disable_test_mode(struct w1_slave *sl)
 {
 	int res;
 	u8 magic[10] = {0x96, };
-	u64 rn = le64_to_cpu(*((u64*)&sl->reg_num));
+	u64 rn = le64_to_cpu(*((u64 *)&sl->reg_num));
 
 	memcpy(&magic[1], &rn, 8);
 	magic[9] = 0x3C;
@@ -342,7 +336,7 @@ static const struct attribute_group *w1_f29_groups[] = {
 	NULL,
 };
 
-static struct w1_family_ops w1_f29_fops = {
+static const struct w1_family_ops w1_f29_fops = {
 	.add_slave      = w1_f29_disable_test_mode,
 	.groups		= w1_f29_groups,
 };
@@ -351,16 +345,9 @@ static struct w1_family w1_family_29 = {
 	.fid = W1_FAMILY_DS2408,
 	.fops = &w1_f29_fops,
 };
+module_w1_family(w1_family_29);
 
-static int __init w1_f29_init(void)
-{
-	return w1_register_family(&w1_family_29);
-}
-
-static void __exit w1_f29_exit(void)
-{
-	w1_unregister_family(&w1_family_29);
-}
-
-module_init(w1_f29_init);
-module_exit(w1_f29_exit);
+MODULE_AUTHOR("Jean-Francois Dagenais <dagenaisj@sonatest.com>");
+MODULE_DESCRIPTION("w1 family 29 driver for DS2408 8 Pin IO");
+MODULE_LICENSE("GPL");
+MODULE_ALIAS("w1-family-" __stringify(W1_FAMILY_DS2408));

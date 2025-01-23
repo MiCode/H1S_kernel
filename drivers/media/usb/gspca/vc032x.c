@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Z-star vc0321 library
  *
  * Copyright (C) 2009-2010 Jean-François Moine <http://moinejf.free.fr>
  * Copyright (C) 2006 Koninski Artur takeshi87@o2.pl
  * Copyright (C) 2006 Michel Xhaard
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -68,12 +55,12 @@ enum sensors {
 
 static const struct v4l2_pix_format vc0321_mode[] = {
 	{320, 240, V4L2_PIX_FMT_YVYU, V4L2_FIELD_NONE,
-		.bytesperline = 320,
+		.bytesperline = 320 * 2,
 		.sizeimage = 320 * 240 * 2,
 		.colorspace = V4L2_COLORSPACE_SRGB,
 		.priv = 1},
 	{640, 480, V4L2_PIX_FMT_YVYU, V4L2_FIELD_NONE,
-		.bytesperline = 640,
+		.bytesperline = 640 * 2,
 		.sizeimage = 640 * 480 * 2,
 		.colorspace = V4L2_COLORSPACE_SRGB,
 		.priv = 0},
@@ -97,17 +84,17 @@ static const struct v4l2_pix_format vc0323_mode[] = {
 };
 static const struct v4l2_pix_format bi_mode[] = {
 	{320, 240, V4L2_PIX_FMT_YUYV, V4L2_FIELD_NONE,
-		.bytesperline = 320,
+		.bytesperline = 320 * 2,
 		.sizeimage = 320 * 240 * 2,
 		.colorspace = V4L2_COLORSPACE_SRGB,
 		.priv = 2},
 	{640, 480, V4L2_PIX_FMT_YUYV, V4L2_FIELD_NONE,
-		.bytesperline = 640,
+		.bytesperline = 640 * 2,
 		.sizeimage = 640 * 480 * 2,
 		.colorspace = V4L2_COLORSPACE_SRGB,
 		.priv = 1},
 	{1280, 1024, V4L2_PIX_FMT_YUYV, V4L2_FIELD_NONE,
-		.bytesperline = 1280,
+		.bytesperline = 1280 * 2,
 		.sizeimage = 1280 * 1024 * 2,
 		.colorspace = V4L2_COLORSPACE_SRGB,
 		.priv = 0},
@@ -1809,7 +1796,7 @@ static const u8 ov7660_60HZ[][4] = {
 	{}
 };
 
-static const u8 ov7660_NoFliker[][4] = {
+static const u8 ov7660_NoFlicker[][4] = {
 	{0x00, 0x13, 0x87, 0xaa},
 	{}
 };
@@ -2919,6 +2906,11 @@ static void reg_r_i(struct gspca_dev *gspca_dev,
 	if (ret < 0) {
 		pr_err("reg_r err %d\n", ret);
 		gspca_dev->usb_err = ret;
+		/*
+		 * Make sure the buffer is zeroed to avoid uninitialized
+		 * values.
+		 */
+		memset(gspca_dev->usb_buf, 0, USB_BUF_SZ);
 	}
 }
 static void reg_r(struct gspca_dev *gspca_dev,
@@ -2930,11 +2922,12 @@ static void reg_r(struct gspca_dev *gspca_dev,
 	if (gspca_dev->usb_err < 0)
 		return;
 	if (len == 1)
-		PDEBUG(D_USBI, "GET %02x 0001 %04x %02x", req, index,
-				gspca_dev->usb_buf[0]);
+		gspca_dbg(gspca_dev, D_USBI, "GET %02x 0001 %04x %02x\n",
+			  req, index,
+			  gspca_dev->usb_buf[0]);
 	else
-		PDEBUG(D_USBI, "GET %02x 0001 %04x %*ph",
-				req, index, 3, gspca_dev->usb_buf);
+		gspca_dbg(gspca_dev, D_USBI, "GET %02x 0001 %04x %*ph\n",
+			  req, index, 3, gspca_dev->usb_buf);
 }
 
 static void reg_w_i(struct gspca_dev *gspca_dev,
@@ -2964,7 +2957,7 @@ static void reg_w(struct gspca_dev *gspca_dev,
 {
 	if (gspca_dev->usb_err < 0)
 		return;
-	PDEBUG(D_USBO, "SET %02x %04x %04x", req, value, index);
+	gspca_dbg(gspca_dev, D_USBO, "SET %02x %04x %04x\n", req, value, index);
 	reg_w_i(gspca_dev, req, value, index);
 }
 
@@ -2996,8 +2989,8 @@ static u16 read_sensor_register(struct gspca_dev *gspca_dev,
 	reg_r(gspca_dev, 0xa1, 0xb33c, 1);
 	hdata = gspca_dev->usb_buf[0];
 	if (hdata != 0 && mdata != 0 && ldata != 0)
-		PDEBUG(D_PROBE, "Read Sensor %02x%02x %02x",
-			hdata, mdata, ldata);
+		gspca_dbg(gspca_dev, D_PROBE, "Read Sensor %02x%02x %02x\n",
+			  hdata, mdata, ldata);
 	reg_r(gspca_dev, 0xa1, 0xb334, 1);
 	if (gspca_dev->usb_buf[0] == 0x02)
 		return (hdata << 8) + mdata;
@@ -3019,8 +3012,8 @@ static int vc032x_probe_sensor(struct gspca_dev *gspca_dev)
 	}
 
 	reg_r(gspca_dev, 0xa1, 0xbfcf, 1);
-	PDEBUG(D_PROBE, "vc032%d check sensor header %02x",
-		sd->bridge == BRIDGE_VC0321 ? 1 : 3, gspca_dev->usb_buf[0]);
+	gspca_dbg(gspca_dev, D_PROBE, "vc032%d check sensor header %02x\n",
+		  sd->bridge == BRIDGE_VC0321 ? 1 : 3, gspca_dev->usb_buf[0]);
 	if (sd->bridge == BRIDGE_VC0321) {
 		ptsensor_info = vc0321_probe_data;
 		n = ARRAY_SIZE(vc0321_probe_data);
@@ -3040,7 +3033,8 @@ static int vc032x_probe_sensor(struct gspca_dev *gspca_dev)
 		if (value == 0 && ptsensor_info->IdAdd == 0x82)
 			value = read_sensor_register(gspca_dev, 0x83);
 		if (value != 0) {
-			PDEBUG(D_PROBE, "Sensor ID %04x (%d)", value, i);
+			gspca_dbg(gspca_dev, D_PROBE, "Sensor ID %04x (%d)\n",
+				  value, i);
 			if (value == ptsensor_info->VpId)
 				return ptsensor_info->sensorId;
 
@@ -3067,9 +3061,10 @@ static void i2c_write(struct gspca_dev *gspca_dev,
 	if (gspca_dev->usb_err < 0)
 		return;
 	if (size == 1)
-		PDEBUG(D_USBO, "i2c_w %02x %02x", reg, *val);
+		gspca_dbg(gspca_dev, D_USBO, "i2c_w %02x %02x\n", reg, *val);
 	else
-		PDEBUG(D_USBO, "i2c_w %02x %02x%02x", reg, *val, val[1]);
+		gspca_dbg(gspca_dev, D_USBO, "i2c_w %02x %02x%02x\n",
+			  reg, *val, val[1]);
 	reg_r_i(gspca_dev, 0xa1, 0xb33f, 1);
 /*fixme:should check if (!(gspca_dev->usb_buf[0] & 0x02)) error*/
 	reg_w_i(gspca_dev, 0xa0, size, 0xb334);
@@ -3174,35 +3169,35 @@ static int sd_init(struct gspca_dev *gspca_dev)
 		pr_err("Unknown sensor...\n");
 		return -EINVAL;
 	case SENSOR_HV7131R:
-		PDEBUG(D_PROBE, "Find Sensor HV7131R");
+		gspca_dbg(gspca_dev, D_PROBE, "Find Sensor HV7131R\n");
 		break;
 	case SENSOR_MI0360:
-		PDEBUG(D_PROBE, "Find Sensor MI0360");
+		gspca_dbg(gspca_dev, D_PROBE, "Find Sensor MI0360\n");
 		sd->bridge = BRIDGE_VC0323;
 		break;
 	case SENSOR_MI1310_SOC:
-		PDEBUG(D_PROBE, "Find Sensor MI1310_SOC");
+		gspca_dbg(gspca_dev, D_PROBE, "Find Sensor MI1310_SOC\n");
 		break;
 	case SENSOR_MI1320:
-		PDEBUG(D_PROBE, "Find Sensor MI1320");
+		gspca_dbg(gspca_dev, D_PROBE, "Find Sensor MI1320\n");
 		break;
 	case SENSOR_MI1320_SOC:
-		PDEBUG(D_PROBE, "Find Sensor MI1320_SOC");
+		gspca_dbg(gspca_dev, D_PROBE, "Find Sensor MI1320_SOC\n");
 		break;
 	case SENSOR_OV7660:
-		PDEBUG(D_PROBE, "Find Sensor OV7660");
+		gspca_dbg(gspca_dev, D_PROBE, "Find Sensor OV7660\n");
 		break;
 	case SENSOR_OV7670:
-		PDEBUG(D_PROBE, "Find Sensor OV7670");
+		gspca_dbg(gspca_dev, D_PROBE, "Find Sensor OV7670\n");
 		break;
 	case SENSOR_PO1200:
-		PDEBUG(D_PROBE, "Find Sensor PO1200");
+		gspca_dbg(gspca_dev, D_PROBE, "Find Sensor PO1200\n");
 		break;
 	case SENSOR_PO3130NC:
-		PDEBUG(D_PROBE, "Find Sensor PO3130NC");
+		gspca_dbg(gspca_dev, D_PROBE, "Find Sensor PO3130NC\n");
 		break;
 	case SENSOR_POxxxx:
-		PDEBUG(D_PROBE, "Sensor POxxxx");
+		gspca_dbg(gspca_dev, D_PROBE, "Sensor POxxxx\n");
 		break;
 	}
 	sd->sensor = sensor;
@@ -3324,8 +3319,8 @@ static void sethvflip(struct gspca_dev *gspca_dev, bool hflip, bool vflip)
 static void setlightfreq(struct gspca_dev *gspca_dev, s32 val)
 {
 	struct sd *sd = (struct sd *) gspca_dev;
-	static const u8 (*ov7660_freq_tb[3])[4] =
-		{ov7660_NoFliker, ov7660_50HZ, ov7660_60HZ};
+	static const u8 (*ov7660_freq_tb[3])[4] = {
+		ov7660_NoFlicker, ov7660_50HZ, ov7660_60HZ};
 
 	if (sd->sensor != SENSOR_OV7660)
 		return;
@@ -3628,8 +3623,8 @@ static void sd_pkt_scan(struct gspca_dev *gspca_dev,
 	struct sd *sd = (struct sd *) gspca_dev;
 
 	if (data[0] == 0xff && data[1] == 0xd8) {
-		PDEBUG(D_PACK,
-			"vc032x header packet found len %d", len);
+		gspca_dbg(gspca_dev, D_PACK,
+			  "vc032x header packet found len %d\n", len);
 		gspca_frame_add(gspca_dev, LAST_PACKET, NULL, 0);
 		data += sd->image_offset;
 		len -= sd->image_offset;
@@ -3643,7 +3638,7 @@ static void sd_pkt_scan(struct gspca_dev *gspca_dev,
 		int size, l;
 
 		l = gspca_dev->image_len;
-		size = gspca_dev->frsz;
+		size = gspca_dev->pixfmt.sizeimage;
 		if (len > size - l)
 			len = size - l;
 	}

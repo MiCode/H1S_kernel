@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This is the driver for the STA2x11 Video Input Port.
  *
@@ -6,23 +7,6 @@
  * Copyright (C) 2010       WindRiver Systems, Inc.
  *     authors: Andreas Kies <andreas.kies@windriver.com>
  *              Vlad Lungu   <vlad.lungu@windriver.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
- *
- * The full GNU General Public License is included in this distribution in
- * the file called "COPYING".
- *
  */
 
 #include <linux/types.h>
@@ -34,6 +18,7 @@
 #include <linux/pci.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/gpio/consumer.h>
 #include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/delay.h>
@@ -88,11 +73,11 @@
 
 
 struct vip_buffer {
-	struct vb2_buffer	vb;
+	struct vb2_v4l2_buffer vb;
 	struct list_head	list;
 	dma_addr_t		dma;
 };
-static inline struct vip_buffer *to_vip_buffer(struct vb2_buffer *vb2)
+static inline struct vip_buffer *to_vip_buffer(struct vb2_v4l2_buffer *vb2)
 {
 	return container_of(vb2, struct vip_buffer, vb);
 }
@@ -110,13 +95,13 @@ static inline struct vip_buffer *to_vip_buffer(struct vb2_buffer *vb2)
  * @std: video standard (e.g. PAL/NTSC)
  * @input: input line for video signal ( 0 or 1 )
  * @disabled: Device is in power down state
- * @slock: for excluse acces of registers
- * @alloc_ctx: context for videobuf2
+ * @slock: for excluse access of registers
  * @vb_vidq: queue maintained by videobuf2 layer
  * @buffer_list: list of buffer in use
  * @sequence: sequence number of acquired buffer
  * @active: current active buffer
  * @lock: used in videobuf2 callback
+ * @v4l_lock: serialize its video4linux ioctls
  * @tcount: Number of top frames
  * @bcount: Number of bottom frames
  * @overflow: Number of FIFO overflows
@@ -127,7 +112,7 @@ static inline struct vip_buffer *to_vip_buffer(struct vb2_buffer *vb2)
  */
 struct sta2x11_vip {
 	struct v4l2_device v4l2_dev;
-	struct video_device *video_dev;
+	struct video_device video_dev;
 	struct pci_dev *pdev;
 	struct i2c_adapter *adapter;
 	unsigned int register_save_area[IRQ_COUNT + SAVE_COUNT + AUX_COUNT];
@@ -141,18 +126,18 @@ struct sta2x11_vip {
 	int disabled;
 	spinlock_t slock;
 
-	struct vb2_alloc_ctx *alloc_ctx;
 	struct vb2_queue vb_vidq;
 	struct list_head buffer_list;
 	unsigned int sequence;
 	struct vip_buffer *active; /* current active buffer */
 	spinlock_t lock; /* Used in videobuf2 callback */
+	struct mutex v4l_lock;
 
 	/* Interrupt counters */
 	int tcount, bcount;
 	int overflow;
 
-	void *iomem;	/* I/O Memory */
+	void __iomem *iomem;	/* I/O Memory */
 	struct vip_config *config;
 };
 
@@ -265,9 +250,9 @@ static void vip_active_buf_next(struct sta2x11_vip *vip)
 
 
 /* Videobuf2 Operations */
-static int queue_setup(struct vb2_queue *vq, const struct v4l2_format *fmt,
+static int queue_setup(struct vb2_queue *vq,
 		       unsigned int *nbuffers, unsigned int *nplanes,
-		       unsigned int sizes[], void *alloc_ctxs[])
+		       unsigned int sizes[], struct device *alloc_devs[])
 {
 	struct sta2x11_vip *vip = vb2_get_drv_priv(vq);
 
@@ -276,7 +261,6 @@ static int queue_setup(struct vb2_queue *vq, const struct v4l2_format *fmt,
 
 	*nplanes = 1;
 	sizes[0] = vip->format.sizeimage;
-	alloc_ctxs[0] = vip->alloc_ctx;
 
 	vip->sequence = 0;
 	vip->active = NULL;
@@ -287,7 +271,8 @@ static int queue_setup(struct vb2_queue *vq, const struct v4l2_format *fmt,
 };
 static int buffer_init(struct vb2_buffer *vb)
 {
-	struct vip_buffer *vip_buf = to_vip_buffer(vb);
+	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
+	struct vip_buffer *vip_buf = to_vip_buffer(vbuf);
 
 	vip_buf->dma = vb2_dma_contig_plane_dma_addr(vb, 0);
 	INIT_LIST_HEAD(&vip_buf->list);
@@ -296,8 +281,9 @@ static int buffer_init(struct vb2_buffer *vb)
 
 static int buffer_prepare(struct vb2_buffer *vb)
 {
+	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct sta2x11_vip *vip = vb2_get_drv_priv(vb->vb2_queue);
-	struct vip_buffer *vip_buf = to_vip_buffer(vb);
+	struct vip_buffer *vip_buf = to_vip_buffer(vbuf);
 	unsigned long size;
 
 	size = vip->format.sizeimage;
@@ -307,14 +293,15 @@ static int buffer_prepare(struct vb2_buffer *vb)
 		return -EINVAL;
 	}
 
-	vb2_set_plane_payload(&vip_buf->vb, 0, size);
+	vb2_set_plane_payload(&vip_buf->vb.vb2_buf, 0, size);
 
 	return 0;
 }
 static void buffer_queue(struct vb2_buffer *vb)
 {
+	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct sta2x11_vip *vip = vb2_get_drv_priv(vb->vb2_queue);
-	struct vip_buffer *vip_buf = to_vip_buffer(vb);
+	struct vip_buffer *vip_buf = to_vip_buffer(vbuf);
 
 	spin_lock(&vip->lock);
 	list_add_tail(&vip_buf->list, &vip->buffer_list);
@@ -327,19 +314,19 @@ static void buffer_queue(struct vb2_buffer *vb)
 	}
 	spin_unlock(&vip->lock);
 }
-static int buffer_finish(struct vb2_buffer *vb)
+static void buffer_finish(struct vb2_buffer *vb)
 {
+	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct sta2x11_vip *vip = vb2_get_drv_priv(vb->vb2_queue);
-	struct vip_buffer *vip_buf = to_vip_buffer(vb);
+	struct vip_buffer *vip_buf = to_vip_buffer(vbuf);
 
 	/* Buffer handled, remove it from the list */
 	spin_lock(&vip->lock);
 	list_del_init(&vip_buf->list);
 	spin_unlock(&vip->lock);
 
-	vip_active_buf_next(vip);
-
-	return 0;
+	if (vb2_is_streaming(vb->vb2_queue))
+		vip_active_buf_next(vip);
 }
 
 static int start_streaming(struct vb2_queue *vq, unsigned int count)
@@ -358,7 +345,7 @@ static int start_streaming(struct vb2_queue *vq, unsigned int count)
 }
 
 /* abort streaming and wait for last buffer */
-static int stop_streaming(struct vb2_queue *vq)
+static void stop_streaming(struct vb2_queue *vq)
 {
 	struct sta2x11_vip *vip = vb2_get_drv_priv(vq);
 	struct vip_buffer *vip_buf, *node;
@@ -371,14 +358,13 @@ static int stop_streaming(struct vb2_queue *vq)
 	/* Release all active buffers */
 	spin_lock(&vip->lock);
 	list_for_each_entry_safe(vip_buf, node, &vip->buffer_list, list) {
-		vb2_buffer_done(&vip_buf->vb, VB2_BUF_STATE_ERROR);
+		vb2_buffer_done(&vip_buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
 		list_del(&vip_buf->list);
 	}
 	spin_unlock(&vip->lock);
-	return 0;
 }
 
-static struct vb2_ops vip_video_qops = {
+static const struct vb2_ops vip_video_qops = {
 	.queue_setup		= queue_setup,
 	.buf_init		= buffer_init,
 	.buf_prepare		= buffer_prepare,
@@ -386,6 +372,8 @@ static struct vb2_ops vip_video_qops = {
 	.buf_queue		= buffer_queue,
 	.start_streaming	= start_streaming,
 	.stop_streaming		= stop_streaming,
+	.wait_prepare		= vb2_ops_wait_prepare,
+	.wait_finish		= vb2_ops_wait_finish,
 };
 
 
@@ -405,6 +393,7 @@ static const struct v4l2_file_operations vip_fops = {
  * vidioc_querycap - return capabilities of device
  * @file: descriptor of device
  * @cap: contains return values
+ * @priv: unused
  *
  * the capabilities of the device are returned
  *
@@ -413,16 +402,8 @@ static const struct v4l2_file_operations vip_fops = {
 static int vidioc_querycap(struct file *file, void *priv,
 			   struct v4l2_capability *cap)
 {
-	struct sta2x11_vip *vip = video_drvdata(file);
-
-	strcpy(cap->driver, KBUILD_MODNAME);
-	strcpy(cap->card, KBUILD_MODNAME);
-	snprintf(cap->bus_info, sizeof(cap->bus_info), "PCI:%s",
-		 pci_name(vip->pdev));
-	cap->device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_READWRITE |
-			   V4L2_CAP_STREAMING;
-	cap->capabilities = cap->device_caps | V4L2_CAP_DEVICE_CAPS;
-
+	strscpy(cap->driver, KBUILD_MODNAME, sizeof(cap->driver));
+	strscpy(cap->card, KBUILD_MODNAME, sizeof(cap->card));
 	return 0;
 }
 
@@ -430,6 +411,7 @@ static int vidioc_querycap(struct file *file, void *priv,
  * vidioc_s_std - set video standard
  * @file: descriptor of device
  * @std: contains standard to be set
+ * @priv: unused
  *
  * the video standard is set
  *
@@ -442,39 +424,32 @@ static int vidioc_querycap(struct file *file, void *priv,
 static int vidioc_s_std(struct file *file, void *priv, v4l2_std_id std)
 {
 	struct sta2x11_vip *vip = video_drvdata(file);
-	v4l2_std_id oldstd = vip->std, newstd;
-	int status;
 
-	if (V4L2_STD_ALL == std) {
-		v4l2_subdev_call(vip->decoder, core, s_std, std);
-		ssleep(2);
-		v4l2_subdev_call(vip->decoder, video, querystd, &newstd);
-		v4l2_subdev_call(vip->decoder, video, g_input_status, &status);
-		if (status & V4L2_IN_ST_NO_SIGNAL)
+	/*
+	 * This is here for backwards compatibility only.
+	 * The use of V4L2_STD_ALL to trigger a querystd is non-standard.
+	 */
+	if (std == V4L2_STD_ALL) {
+		v4l2_subdev_call(vip->decoder, video, querystd, &std);
+		if (std == V4L2_STD_UNKNOWN)
 			return -EIO;
-		std = vip->std = newstd;
-		if (oldstd != std) {
-			if (V4L2_STD_525_60 & std)
-				vip->format = formats_60[0];
-			else
-				vip->format = formats_50[0];
-		}
-		return 0;
 	}
 
-	if (oldstd != std) {
+	if (vip->std != std) {
+		vip->std = std;
 		if (V4L2_STD_525_60 & std)
 			vip->format = formats_60[0];
 		else
 			vip->format = formats_50[0];
 	}
 
-	return v4l2_subdev_call(vip->decoder, core, s_std, std);
+	return v4l2_subdev_call(vip->decoder, video, s_std, std);
 }
 
 /**
  * vidioc_g_std - get video standard
  * @file: descriptor of device
+ * @priv: unused
  * @std: contains return values
  *
  * the current video standard is returned
@@ -492,6 +467,7 @@ static int vidioc_g_std(struct file *file, void *priv, v4l2_std_id *std)
 /**
  * vidioc_querystd - get possible video standards
  * @file: descriptor of device
+ * @priv: unused
  * @std: contains return values
  *
  * all possible video standards are returned
@@ -521,6 +497,7 @@ static int vidioc_enum_input(struct file *file, void *priv,
 /**
  * vidioc_s_input - set input line
  * @file: descriptor of device
+ * @priv: unused
  * @i: new input line number
  *
  * the current active input line is set
@@ -547,6 +524,7 @@ static int vidioc_s_input(struct file *file, void *priv, unsigned int i)
 /**
  * vidioc_g_input - return input line
  * @file: descriptor of device
+ * @priv: unused
  * @i: returned input line number
  *
  * the current active input line is returned
@@ -563,6 +541,8 @@ static int vidioc_g_input(struct file *file, void *priv, unsigned int *i)
 
 /**
  * vidioc_enum_fmt_vid_cap - return video capture format
+ * @file: descriptor of device
+ * @priv: unused
  * @f: returned format information
  *
  * returns name and format of video capture
@@ -577,15 +557,14 @@ static int vidioc_enum_fmt_vid_cap(struct file *file, void *priv,
 	if (f->index != 0)
 		return -EINVAL;
 
-	strcpy(f->description, "4:2:2, packed, UYVY");
 	f->pixelformat = V4L2_PIX_FMT_UYVY;
-	f->flags = 0;
 	return 0;
 }
 
 /**
  * vidioc_try_fmt_vid_cap - set video capture format
  * @file: descriptor of device
+ * @priv: unused
  * @f: new format
  *
  * new video format is set which includes width and
@@ -642,13 +621,13 @@ static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,
 	f->fmt.pix.bytesperline = f->fmt.pix.width * 2;
 	f->fmt.pix.sizeimage = f->fmt.pix.width * 2 * f->fmt.pix.height;
 	f->fmt.pix.colorspace = V4L2_COLORSPACE_SMPTE170M;
-	f->fmt.pix.priv = 0;
 	return 0;
 }
 
 /**
  * vidioc_s_fmt_vid_cap - set current video format parameters
  * @file: descriptor of device
+ * @priv: unused
  * @f: returned format information
  *
  * set new capture format
@@ -716,6 +695,7 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 /**
  * vidioc_g_fmt_vid_cap - get current video format parameters
  * @file: descriptor of device
+ * @priv: unused
  * @f: contains format information
  *
  * returns current video format parameters
@@ -764,18 +744,20 @@ static const struct v4l2_ioctl_ops vip_ioctl_ops = {
 	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
 };
 
-static struct video_device video_dev_template = {
+static const struct video_device video_dev_template = {
 	.name = KBUILD_MODNAME,
-	.release = video_device_release,
+	.release = video_device_release_empty,
 	.fops = &vip_fops,
 	.ioctl_ops = &vip_ioctl_ops,
 	.tvnorms = V4L2_STD_ALL,
+	.device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_READWRITE |
+		       V4L2_CAP_STREAMING,
 };
 
 /**
  * vip_irq - interrupt routine
  * @irq: Number of interrupt ( not used, correct number is assumed )
- * @vip: local data structure containing all information
+ * @data: local data structure containing all information
  *
  * check for both frame interrupts set ( top and bottom ).
  * check FIFO overflow, but limit number of log messages after open.
@@ -785,8 +767,9 @@ static struct video_device video_dev_template = {
  *
  * IRQ_HANDLED, interrupt done.
  */
-static irqreturn_t vip_irq(int irq, struct sta2x11_vip *vip)
+static irqreturn_t vip_irq(int irq, void *data)
 {
+	struct sta2x11_vip *vip = data;
 	unsigned int status;
 
 	status = reg_read(vip, DVP_ITS);
@@ -816,9 +799,9 @@ static irqreturn_t vip_irq(int irq, struct sta2x11_vip *vip)
 		/* Disable acquisition */
 		reg_write(vip, DVP_CTL, reg_read(vip, DVP_CTL) & ~DVP_CTL_ENA);
 		/* Remove the active buffer from the list */
-		do_gettimeofday(&vip->active->vb.v4l2_buf.timestamp);
-		vip->active->vb.v4l2_buf.sequence = vip->sequence++;
-		vb2_buffer_done(&vip->active->vb, VB2_BUF_STATE_DONE);
+		vip->active->vb.vb2_buf.timestamp = ktime_get_ns();
+		vip->active->vb.sequence = vip->sequence++;
+		vb2_buffer_done(&vip->active->vb.vb2_buf, VB2_BUF_STATE_DONE);
 	}
 
 	return IRQ_HANDLED;
@@ -867,25 +850,17 @@ static int sta2x11_vip_init_buffer(struct sta2x11_vip *vip)
 	vip->vb_vidq.buf_struct_size = sizeof(struct vip_buffer);
 	vip->vb_vidq.ops = &vip_video_qops;
 	vip->vb_vidq.mem_ops = &vb2_dma_contig_memops;
+	vip->vb_vidq.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+	vip->vb_vidq.dev = &vip->pdev->dev;
+	vip->vb_vidq.lock = &vip->v4l_lock;
 	err = vb2_queue_init(&vip->vb_vidq);
 	if (err)
 		return err;
 	INIT_LIST_HEAD(&vip->buffer_list);
 	spin_lock_init(&vip->lock);
-
-
-	vip->alloc_ctx = vb2_dma_contig_init_ctx(&vip->pdev->dev);
-	if (IS_ERR(vip->alloc_ctx)) {
-		v4l2_err(&vip->v4l2_dev, "Can't allocate buffer context");
-		return PTR_ERR(vip->alloc_ctx);
-	}
-
 	return 0;
 }
-static void sta2x11_vip_release_buffer(struct sta2x11_vip *vip)
-{
-	vb2_dma_contig_cleanup_ctx(vip->alloc_ctx);
-}
+
 static int sta2x11_vip_init_controls(struct sta2x11_vip *vip)
 {
 	/*
@@ -916,10 +891,11 @@ static int sta2x11_vip_init_controls(struct sta2x11_vip *vip)
 static int vip_gpio_reserve(struct device *dev, int pin, int dir,
 			    const char *name)
 {
-	int ret;
+	struct gpio_desc *desc = gpio_to_desc(pin);
+	int ret = -ENODEV;
 
-	if (pin == -1)
-		return 0;
+	if (!gpio_is_valid(pin))
+		return ret;
 
 	ret = gpio_request(pin, name);
 	if (ret) {
@@ -927,7 +903,7 @@ static int vip_gpio_reserve(struct device *dev, int pin, int dir,
 		return ret;
 	}
 
-	ret = gpio_direction_output(pin, dir);
+	ret = gpiod_direction_output(desc, dir);
 	if (ret) {
 		dev_err(dev, "Failed to set direction for pin %d (%s)\n",
 			pin, name);
@@ -935,7 +911,7 @@ static int vip_gpio_reserve(struct device *dev, int pin, int dir,
 		return ret;
 	}
 
-	ret = gpio_export(pin, false);
+	ret = gpiod_export(desc, false);
 	if (ret) {
 		dev_err(dev, "Failed to export pin %d (%s)\n", pin, name);
 		gpio_free(pin);
@@ -954,9 +930,11 @@ static int vip_gpio_reserve(struct device *dev, int pin, int dir,
  */
 static void vip_gpio_release(struct device *dev, int pin, const char *name)
 {
-	if (pin != -1) {
+	if (gpio_is_valid(pin)) {
+		struct gpio_desc *desc = gpio_to_desc(pin);
+
 		dev_dbg(dev, "releasing pin %d (%s)\n",	pin, name);
-		gpio_unexport(pin);
+		gpiod_unexport(desc);
 		gpio_free(pin);
 	}
 }
@@ -1011,25 +989,24 @@ static int sta2x11_vip_init_one(struct pci_dev *pdev,
 	if (ret)
 		goto disable;
 
-	if (config->reset_pin >= 0) {
-		ret = vip_gpio_reserve(&pdev->dev, config->reset_pin, 0,
-				       config->reset_name);
-		if (ret) {
-			vip_gpio_release(&pdev->dev, config->pwr_pin,
-					 config->pwr_name);
-			goto disable;
-		}
-	}
-	if (config->pwr_pin != -1) {
-		/* Datasheet says 5ms between PWR and RST */
-		usleep_range(5000, 25000);
-		ret = gpio_direction_output(config->pwr_pin, 1);
+	ret = vip_gpio_reserve(&pdev->dev, config->reset_pin, 0,
+			       config->reset_name);
+	if (ret) {
+		vip_gpio_release(&pdev->dev, config->pwr_pin,
+				 config->pwr_name);
+		goto disable;
 	}
 
-	if (config->reset_pin != -1) {
+	if (gpio_is_valid(config->pwr_pin)) {
 		/* Datasheet says 5ms between PWR and RST */
 		usleep_range(5000, 25000);
-		ret = gpio_direction_output(config->reset_pin, 1);
+		gpio_direction_output(config->pwr_pin, 1);
+	}
+
+	if (gpio_is_valid(config->reset_pin)) {
+		/* Datasheet says 5ms between PWR and RST */
+		usleep_range(5000, 25000);
+		gpio_direction_output(config->reset_pin, 1);
 	}
 	usleep_range(5000, 25000);
 
@@ -1043,6 +1020,7 @@ static int sta2x11_vip_init_one(struct pci_dev *pdev,
 	vip->std = V4L2_STD_PAL;
 	vip->format = formats_50[0];
 	vip->config = config;
+	mutex_init(&vip->v4l_lock);
 
 	ret = sta2x11_vip_init_controls(vip);
 	if (ret)
@@ -1076,29 +1054,21 @@ static int sta2x11_vip_init_one(struct pci_dev *pdev,
 
 	spin_lock_init(&vip->slock);
 
-	ret = request_irq(pdev->irq,
-			  (irq_handler_t) vip_irq,
-			  IRQF_SHARED, KBUILD_MODNAME, vip);
+	ret = request_irq(pdev->irq, vip_irq, IRQF_SHARED, KBUILD_MODNAME, vip);
 	if (ret) {
 		dev_err(&pdev->dev, "request_irq failed\n");
 		ret = -ENODEV;
 		goto release_buf;
 	}
 
-	/* Alloc, initialize and register video device */
-	vip->video_dev = video_device_alloc();
-	if (!vip->video_dev) {
-		ret = -ENOMEM;
-		goto release_irq;
-	}
+	/* Initialize and register video device */
+	vip->video_dev = video_dev_template;
+	vip->video_dev.v4l2_dev = &vip->v4l2_dev;
+	vip->video_dev.queue = &vip->vb_vidq;
+	vip->video_dev.lock = &vip->v4l_lock;
+	video_set_drvdata(&vip->video_dev, vip);
 
-	vip->video_dev = &video_dev_template;
-	vip->video_dev->v4l2_dev = &vip->v4l2_dev;
-	vip->video_dev->queue = &vip->vb_vidq;
-	set_bit(V4L2_FL_USE_FH_PRIO, &vip->video_dev->flags);
-	video_set_drvdata(vip->video_dev, vip);
-
-	ret = video_register_device(vip->video_dev, VFL_TYPE_GRABBER, -1);
+	ret = video_register_device(&vip->video_dev, VFL_TYPE_VIDEO, -1);
 	if (ret)
 		goto vrelease;
 
@@ -1128,19 +1098,13 @@ static int sta2x11_vip_init_one(struct pci_dev *pdev,
 	return 0;
 
 vunreg:
-	video_set_drvdata(vip->video_dev, NULL);
+	video_set_drvdata(&vip->video_dev, NULL);
 vrelease:
-	if (video_is_registered(vip->video_dev))
-		video_unregister_device(vip->video_dev);
-	else
-		video_device_release(vip->video_dev);
-release_irq:
+	vb2_video_unregister_device(&vip->video_dev);
 	free_irq(pdev->irq, vip);
 release_buf:
-	sta2x11_vip_release_buffer(vip);
 	pci_disable_msi(pdev);
 unmap:
-	vb2_queue_release(&vip->vb_vidq);
 	pci_iounmap(pdev, vip->iomem);
 release:
 	pci_release_regions(pdev);
@@ -1179,12 +1143,10 @@ static void sta2x11_vip_remove_one(struct pci_dev *pdev)
 
 	sta2x11_vip_clear_register(vip);
 
-	video_set_drvdata(vip->video_dev, NULL);
-	video_unregister_device(vip->video_dev);
-	/*do not call video_device_release() here, is already done */
+	video_set_drvdata(&vip->video_dev, NULL);
+	vb2_video_unregister_device(&vip->video_dev);
 	free_irq(pdev->irq, vip);
 	pci_disable_msi(pdev);
-	vb2_queue_release(&vip->vb_vidq);
 	pci_iounmap(pdev, vip->iomem);
 	pci_release_regions(pdev);
 
@@ -1202,21 +1164,18 @@ static void sta2x11_vip_remove_one(struct pci_dev *pdev)
 	 */
 }
 
-#ifdef CONFIG_PM
-
 /**
  * sta2x11_vip_suspend - set device into power save mode
- * @pdev: PCI device
- * @state: new state of device
+ * @dev_d: PCI device
  *
  * all relevant registers are saved and an attempt to set a new state is made.
  *
  * return value: 0 always indicate success,
  * even if device could not be disabled. (workaround for hardware problem)
  */
-static int sta2x11_vip_suspend(struct pci_dev *pdev, pm_message_t state)
+static int __maybe_unused sta2x11_vip_suspend(struct device *dev_d)
 {
-	struct v4l2_device *v4l2_dev = pci_get_drvdata(pdev);
+	struct v4l2_device *v4l2_dev = dev_get_drvdata(dev_d);
 	struct sta2x11_vip *vip =
 	    container_of(v4l2_dev, struct sta2x11_vip, v4l2_dev);
 	unsigned long flags;
@@ -1233,15 +1192,8 @@ static int sta2x11_vip_suspend(struct pci_dev *pdev, pm_message_t state)
 		vip->register_save_area[SAVE_COUNT + IRQ_COUNT + i] =
 		    reg_read(vip, registers_to_save[i]);
 	spin_unlock_irqrestore(&vip->slock, flags);
-	/* save pci state */
-	pci_save_state(pdev);
-	if (pci_set_power_state(pdev, pci_choose_state(pdev, state))) {
-		/*
-		 * do not call pci_disable_device on sta2x11 because it
-		 * break all other Bus masters on this EP
-		 */
-		vip->disabled = 1;
-	}
+
+	vip->disabled = 1;
 
 	pr_info("VIP: suspend\n");
 	return 0;
@@ -1249,45 +1201,23 @@ static int sta2x11_vip_suspend(struct pci_dev *pdev, pm_message_t state)
 
 /**
  * sta2x11_vip_resume - resume device operation
- * @pdev : PCI device
- *
- * re-enable device, set PCI state to powered and restore registers.
- * resume normal device operation afterwards.
+ * @dev_d : PCI device
  *
  * return value: 0, no error.
  *
  * other, could not set device to power on state.
  */
-static int sta2x11_vip_resume(struct pci_dev *pdev)
+static int __maybe_unused sta2x11_vip_resume(struct device *dev_d)
 {
-	struct v4l2_device *v4l2_dev = pci_get_drvdata(pdev);
+	struct v4l2_device *v4l2_dev = dev_get_drvdata(dev_d);
 	struct sta2x11_vip *vip =
 	    container_of(v4l2_dev, struct sta2x11_vip, v4l2_dev);
 	unsigned long flags;
-	int ret, i;
+	int i;
 
 	pr_info("VIP: resume\n");
-	/* restore pci state */
-	if (vip->disabled) {
-		ret = pci_enable_device(pdev);
-		if (ret) {
-			pr_warn("VIP: Can't enable device.\n");
-			return ret;
-		}
-		vip->disabled = 0;
-	}
-	ret = pci_set_power_state(pdev, PCI_D0);
-	if (ret) {
-		/*
-		 * do not call pci_disable_device on sta2x11 because it
-		 * break all other Bus masters on this EP
-		 */
-		pr_warn("VIP: Can't enable device.\n");
-		vip->disabled = 1;
-		return ret;
-	}
 
-	pci_restore_state(pdev);
+	vip->disabled = 0;
 
 	spin_lock_irqsave(&vip->slock, flags);
 	for (i = 1; i < SAVE_COUNT; i++)
@@ -1301,22 +1231,21 @@ static int sta2x11_vip_resume(struct pci_dev *pdev)
 	return 0;
 }
 
-#endif
-
 static const struct pci_device_id sta2x11_vip_pci_tbl[] = {
 	{PCI_DEVICE(PCI_VENDOR_ID_STMICRO, PCI_DEVICE_ID_STMICRO_VIP)},
 	{0,}
 };
+
+static SIMPLE_DEV_PM_OPS(sta2x11_vip_pm_ops,
+			 sta2x11_vip_suspend,
+			 sta2x11_vip_resume);
 
 static struct pci_driver sta2x11_vip_driver = {
 	.name = KBUILD_MODNAME,
 	.probe = sta2x11_vip_init_one,
 	.remove = sta2x11_vip_remove_one,
 	.id_table = sta2x11_vip_pci_tbl,
-#ifdef CONFIG_PM
-	.suspend = sta2x11_vip_suspend,
-	.resume = sta2x11_vip_resume,
-#endif
+	.driver.pm = &sta2x11_vip_pm_ops,
 };
 
 static int __init sta2x11_vip_init_module(void)
@@ -1339,6 +1268,5 @@ late_initcall_sync(sta2x11_vip_init_module);
 MODULE_DESCRIPTION("STA2X11 Video Input Port driver");
 MODULE_AUTHOR("Wind River");
 MODULE_LICENSE("GPL v2");
-MODULE_SUPPORTED_DEVICE("sta2x11 video input");
 MODULE_VERSION(DRV_VERSION);
 MODULE_DEVICE_TABLE(pci, sta2x11_vip_pci_tbl);

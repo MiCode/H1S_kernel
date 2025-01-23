@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * OMAP1 reset support
  */
@@ -5,8 +6,7 @@
 #include <linux/io.h>
 #include <linux/reboot.h>
 
-#include <mach/hardware.h>
-
+#include "hardware.h"
 #include "iomap.h"
 #include "common.h"
 

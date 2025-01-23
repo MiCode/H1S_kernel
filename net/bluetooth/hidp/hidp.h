@@ -24,6 +24,7 @@
 #define __HIDP_H
 
 #include <linux/types.h>
+#include <linux/hid.h>
 #include <linux/kref.h>
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/l2cap.h>
@@ -121,7 +122,7 @@ struct hidp_connlist_req {
 	struct hidp_conninfo __user *ci;
 };
 
-int hidp_connection_add(struct hidp_connadd_req *req, struct socket *ctrl_sock, struct socket *intr_sock);
+int hidp_connection_add(const struct hidp_connadd_req *req, struct socket *ctrl_sock, struct socket *intr_sock);
 int hidp_connection_del(struct hidp_conndel_req *req);
 int hidp_get_connlist(struct hidp_connlist_req *req);
 int hidp_get_conninfo(struct hidp_conninfo *ci);
@@ -179,6 +180,9 @@ struct hidp_session {
 
 	/* Used in hidp_output_raw_report() */
 	int output_report_success; /* boolean */
+
+	/* temporary input buffer */
+	u8 input_buf[HID_MAX_BUFFER_SIZE];
 };
 
 /* HIDP init defines */

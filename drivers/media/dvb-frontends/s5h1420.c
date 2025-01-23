@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for
  *    Samsung S5H1420 and
@@ -5,21 +6,6 @@
  *
  * Copyright (C) 2005 Andrew de Quincey <adq_dvb@lidskialf.net>
  * Copyright (C) 2005-8 Patrick Boettcher <pb@linuxtv.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/kernel.h>
@@ -34,7 +20,7 @@
 #include <linux/i2c.h>
 
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "s5h1420.h"
 #include "s5h1420_priv.h"
 
@@ -52,7 +38,7 @@ struct s5h1420_state {
 	u8 postlocked:1;
 	u32 fclk;
 	u32 tunedfreq;
-	fe_code_rate_t fec_inner;
+	enum fe_code_rate fec_inner;
 	u32 symbol_rate;
 
 	/* FIXME: ugly workaround for flexcop's incapable i2c-controller
@@ -124,7 +110,8 @@ static int s5h1420_writereg (struct s5h1420_state* state, u8 reg, u8 data)
 	return 0;
 }
 
-static int s5h1420_set_voltage (struct dvb_frontend* fe, fe_sec_voltage_t voltage)
+static int s5h1420_set_voltage(struct dvb_frontend *fe,
+			       enum fe_sec_voltage voltage)
 {
 	struct s5h1420_state* state = fe->demodulator_priv;
 
@@ -149,7 +136,8 @@ static int s5h1420_set_voltage (struct dvb_frontend* fe, fe_sec_voltage_t voltag
 	return 0;
 }
 
-static int s5h1420_set_tone (struct dvb_frontend* fe, fe_sec_tone_mode_t tone)
+static int s5h1420_set_tone(struct dvb_frontend *fe,
+			    enum fe_sec_tone_mode tone)
 {
 	struct s5h1420_state* state = fe->demodulator_priv;
 
@@ -180,7 +168,7 @@ static int s5h1420_send_master_cmd (struct dvb_frontend* fe,
 	int result = 0;
 
 	dprintk("enter %s\n", __func__);
-	if (cmd->msg_len > 8)
+	if (cmd->msg_len > sizeof(cmd->msg))
 		return -EINVAL;
 
 	/* setup for DISEQC */
@@ -270,7 +258,8 @@ exit:
 	return result;
 }
 
-static int s5h1420_send_burst (struct dvb_frontend* fe, fe_sec_mini_cmd_t minicmd)
+static int s5h1420_send_burst(struct dvb_frontend *fe,
+			      enum fe_sec_mini_cmd minicmd)
 {
 	struct s5h1420_state* state = fe->demodulator_priv;
 	u8 val;
@@ -307,10 +296,10 @@ static int s5h1420_send_burst (struct dvb_frontend* fe, fe_sec_mini_cmd_t minicm
 	return result;
 }
 
-static fe_status_t s5h1420_get_status_bits(struct s5h1420_state* state)
+static enum fe_status s5h1420_get_status_bits(struct s5h1420_state *state)
 {
 	u8 val;
-	fe_status_t status = 0;
+	enum fe_status status = 0;
 
 	val = s5h1420_readreg(state, 0x14);
 	if (val & 0x02)
@@ -328,7 +317,8 @@ static fe_status_t s5h1420_get_status_bits(struct s5h1420_state* state)
 	return status;
 }
 
-static int s5h1420_read_status(struct dvb_frontend* fe, fe_status_t* status)
+static int s5h1420_read_status(struct dvb_frontend *fe,
+			       enum fe_status *status)
 {
 	struct s5h1420_state* state = fe->demodulator_priv;
 	u8 val;
@@ -561,27 +551,33 @@ static void s5h1420_setfec_inversion(struct s5h1420_state* state,
 	} else {
 		switch (p->fec_inner) {
 		case FEC_1_2:
-			vit08 = 0x01; vit09 = 0x10;
+			vit08 = 0x01;
+			vit09 = 0x10;
 			break;
 
 		case FEC_2_3:
-			vit08 = 0x02; vit09 = 0x11;
+			vit08 = 0x02;
+			vit09 = 0x11;
 			break;
 
 		case FEC_3_4:
-			vit08 = 0x04; vit09 = 0x12;
+			vit08 = 0x04;
+			vit09 = 0x12;
 			break;
 
 		case FEC_5_6:
-			vit08 = 0x08; vit09 = 0x13;
+			vit08 = 0x08;
+			vit09 = 0x13;
 			break;
 
 		case FEC_6_7:
-			vit08 = 0x10; vit09 = 0x14;
+			vit08 = 0x10;
+			vit09 = 0x14;
 			break;
 
 		case FEC_7_8:
-			vit08 = 0x20; vit09 = 0x15;
+			vit08 = 0x20;
+			vit09 = 0x15;
 			break;
 
 		default:
@@ -595,7 +591,7 @@ static void s5h1420_setfec_inversion(struct s5h1420_state* state,
 	dprintk("leave %s\n", __func__);
 }
 
-static fe_code_rate_t s5h1420_getfec(struct s5h1420_state* state)
+static enum fe_code_rate s5h1420_getfec(struct s5h1420_state *state)
 {
 	switch(s5h1420_readreg(state, 0x32) & 0x07) {
 	case 0:
@@ -620,7 +616,8 @@ static fe_code_rate_t s5h1420_getfec(struct s5h1420_state* state)
 	return FEC_NONE;
 }
 
-static fe_spectral_inversion_t s5h1420_getinversion(struct s5h1420_state* state)
+static enum fe_spectral_inversion
+s5h1420_getinversion(struct s5h1420_state *state)
 {
 	if (s5h1420_readreg(state, 0x32) & 0x08)
 		return INVERSION_ON;
@@ -745,9 +742,9 @@ static int s5h1420_set_frontend(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int s5h1420_get_frontend(struct dvb_frontend* fe)
+static int s5h1420_get_frontend(struct dvb_frontend* fe,
+				struct dtv_frontend_properties *p)
 {
-	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
 	struct s5h1420_state* state = fe->demodulator_priv;
 
 	p->frequency = state->tunedfreq + s5h1420_getfreqoffset(state);
@@ -857,7 +854,7 @@ static int s5h1420_tuner_i2c_tuner_xfer(struct i2c_adapter *i2c_adap, struct i2c
 	return i2c_transfer(state->i2c, m, 1 + num) == 1 + num ? num : -EIO;
 }
 
-static struct i2c_algorithm s5h1420_tuner_i2c_algo = {
+static const struct i2c_algorithm s5h1420_tuner_i2c_algo = {
 	.master_xfer   = s5h1420_tuner_i2c_tuner_xfer,
 	.functionality = s5h1420_tuner_i2c_func,
 };
@@ -869,7 +866,7 @@ struct i2c_adapter *s5h1420_get_tuner_i2c_adapter(struct dvb_frontend *fe)
 }
 EXPORT_SYMBOL(s5h1420_get_tuner_i2c_adapter);
 
-static struct dvb_frontend_ops s5h1420_ops;
+static const struct dvb_frontend_ops s5h1420_ops;
 
 struct dvb_frontend *s5h1420_attach(const struct s5h1420_config *config,
 				    struct i2c_adapter *i2c)
@@ -905,7 +902,7 @@ struct dvb_frontend *s5h1420_attach(const struct s5h1420_config *config,
 	state->frontend.demodulator_priv = state;
 
 	/* create tuner i2c adapter */
-	strlcpy(state->tuner_i2c_adapter.name, "S5H1420-PN1010 tuner I2C bus",
+	strscpy(state->tuner_i2c_adapter.name, "S5H1420-PN1010 tuner I2C bus",
 		sizeof(state->tuner_i2c_adapter.name));
 	state->tuner_i2c_adapter.algo      = &s5h1420_tuner_i2c_algo;
 	state->tuner_i2c_adapter.algo_data = NULL;
@@ -921,16 +918,16 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(s5h1420_attach);
+EXPORT_SYMBOL_GPL(s5h1420_attach);
 
-static struct dvb_frontend_ops s5h1420_ops = {
+static const struct dvb_frontend_ops s5h1420_ops = {
 	.delsys = { SYS_DVBS },
 	.info = {
 		.name     = "Samsung S5H1420/PnpNetwork PN1010 DVB-S",
-		.frequency_min    = 950000,
-		.frequency_max    = 2150000,
-		.frequency_stepsize = 125,     /* kHz for QPSK frontends */
-		.frequency_tolerance  = 29500,
+		.frequency_min_hz    =  950 * MHz,
+		.frequency_max_hz    = 2150 * MHz,
+		.frequency_stepsize_hz = 125 * kHz,
+		.frequency_tolerance_hz  = 29500 * kHz,
 		.symbol_rate_min  = 1000000,
 		.symbol_rate_max  = 45000000,
 		/*  .symbol_rate_tolerance  = ???,*/

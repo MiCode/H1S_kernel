@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * trace binary printk
  *
@@ -5,7 +6,7 @@
  *
  */
 #include <linux/seq_file.h>
-#include <linux/debugfs.h>
+#include <linux/security.h>
 #include <linux/uaccess.h>
 #include <linux/kernel.h>
 #include <linux/ftrace.h>
@@ -15,7 +16,6 @@
 #include <linux/ctype.h>
 #include <linux/list.h>
 #include <linux/slab.h>
-#include <linux/fs.h>
 
 #include "trace.h"
 
@@ -38,6 +38,10 @@ struct trace_bprintk_fmt {
 static inline struct trace_bprintk_fmt *lookup_format(const char *fmt)
 {
 	struct trace_bprintk_fmt *pos;
+
+	if (!fmt)
+		return ERR_PTR(-EINVAL);
+
 	list_for_each_entry(pos, &trace_bprintk_fmt_list, list) {
 		if (!strcmp(pos->fmt, fmt))
 			return pos;
@@ -59,7 +63,8 @@ void hold_module_trace_bprintk_format(const char **start, const char **end)
 	for (iter = start; iter < end; iter++) {
 		struct trace_bprintk_fmt *tb_fmt = lookup_format(*iter);
 		if (tb_fmt) {
-			*iter = tb_fmt->fmt;
+			if (!IS_ERR(tb_fmt))
+				*iter = tb_fmt->fmt;
 			continue;
 		}
 
@@ -91,7 +96,7 @@ static int module_trace_bprintk_format_notify(struct notifier_block *self,
 		if (val == MODULE_STATE_COMING)
 			hold_module_trace_bprintk_format(start, end);
 	}
-	return 0;
+	return NOTIFY_OK;
 }
 
 /*
@@ -111,7 +116,7 @@ static int module_trace_bprintk_format_notify(struct notifier_block *self,
  * section, then we need to read the link list pointers. The trick is
  * we pass the address of the string to the seq function just like
  * we do for the kernel core formats. To get back the structure that
- * holds the format, we simply use containerof() and then go to the
+ * holds the format, we simply use container_of() and then go to the
  * next format in the list.
  */
 static const char **
@@ -169,7 +174,7 @@ __init static int
 module_trace_bprintk_format_notify(struct notifier_block *self,
 		unsigned long val, void *data)
 {
-	return 0;
+	return NOTIFY_OK;
 }
 static inline const char **
 find_next_mod_format(int start_index, void *v, const char **fmt, loff_t *pos)
@@ -180,6 +185,12 @@ static inline void format_mod_start(void) { }
 static inline void format_mod_stop(void) { }
 #endif /* CONFIG_MODULES */
 
+static bool __read_mostly trace_printk_enabled = true;
+
+void trace_printk_control(bool enabled)
+{
+	trace_printk_enabled = enabled;
+}
 
 __initdata_or_module static
 struct notifier_block module_trace_bprintk_format_nb = {
@@ -187,14 +198,14 @@ struct notifier_block module_trace_bprintk_format_nb = {
 };
 
 int __trace_bprintk(unsigned long ip, const char *fmt, ...)
- {
+{
 	int ret;
 	va_list ap;
 
 	if (unlikely(!fmt))
 		return 0;
 
-	if (!(trace_flags & TRACE_ITER_PRINTK))
+	if (!trace_printk_enabled)
 		return 0;
 
 	va_start(ap, fmt);
@@ -205,11 +216,11 @@ int __trace_bprintk(unsigned long ip, const char *fmt, ...)
 EXPORT_SYMBOL_GPL(__trace_bprintk);
 
 int __ftrace_vbprintk(unsigned long ip, const char *fmt, va_list ap)
- {
+{
 	if (unlikely(!fmt))
 		return 0;
 
-	if (!(trace_flags & TRACE_ITER_PRINTK))
+	if (!trace_printk_enabled)
 		return 0;
 
 	return trace_vbprintk(ip, fmt, ap);
@@ -221,7 +232,7 @@ int __trace_printk(unsigned long ip, const char *fmt, ...)
 	int ret;
 	va_list ap;
 
-	if (!(trace_flags & TRACE_ITER_PRINTK))
+	if (!trace_printk_enabled)
 		return 0;
 
 	va_start(ap, fmt);
@@ -233,12 +244,23 @@ EXPORT_SYMBOL_GPL(__trace_printk);
 
 int __ftrace_vprintk(unsigned long ip, const char *fmt, va_list ap)
 {
-	if (!(trace_flags & TRACE_ITER_PRINTK))
+	if (!trace_printk_enabled)
 		return 0;
 
 	return trace_vprintk(ip, fmt, ap);
 }
 EXPORT_SYMBOL_GPL(__ftrace_vprintk);
+
+bool trace_is_tracepoint_string(const char *str)
+{
+	const char **ptr = __start___tracepoint_str;
+
+	for (ptr = __start___tracepoint_str; ptr < __stop___tracepoint_str; ptr++) {
+		if (str == *ptr)
+			return true;
+	}
+	return false;
+}
 
 static const char **find_next(void *v, loff_t *pos)
 {
@@ -269,6 +291,7 @@ static const char **find_next(void *v, loff_t *pos)
 	if (*pos < last_index + start_index)
 		return __start___tracepoint_str + (*pos - last_index);
 
+	start_index += last_index;
 	return find_next_mod_format(start_index, v, fmt, pos);
 }
 
@@ -291,6 +314,9 @@ static int t_show(struct seq_file *m, void *v)
 	const char *str = *fmt;
 	int i;
 
+	if (!*fmt)
+		return 0;
+
 	seq_printf(m, "0x%lx : \"", *(unsigned long *)fmt);
 
 	/*
@@ -305,7 +331,7 @@ static int t_show(struct seq_file *m, void *v)
 			seq_puts(m, "\\t");
 			break;
 		case '\\':
-			seq_puts(m, "\\");
+			seq_putc(m, '\\');
 			break;
 		case '"':
 			seq_puts(m, "\\\"");
@@ -334,6 +360,12 @@ static const struct seq_operations show_format_seq_ops = {
 static int
 ftrace_formats_open(struct inode *inode, struct file *file)
 {
+	int ret;
+
+	ret = security_locked_down(LOCKDOWN_TRACEFS);
+	if (ret)
+		return ret;
+
 	return seq_open(file, &show_format_seq_ops);
 }
 
@@ -346,13 +378,13 @@ static const struct file_operations ftrace_formats_fops = {
 
 static __init int init_trace_printk_function_export(void)
 {
-	struct dentry *d_tracer;
+	int ret;
 
-	d_tracer = tracing_init_dentry();
-	if (!d_tracer)
+	ret = tracing_init_dentry();
+	if (ret)
 		return 0;
 
-	trace_create_file("printk_formats", 0444, d_tracer,
+	trace_create_file("printk_formats", TRACE_MODE_READ, NULL,
 				    NULL, &ftrace_formats_fops);
 
 	return 0;

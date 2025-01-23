@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Industrial I/O - generic interrupt based trigger support
  *
  * Copyright (c) 2008-2013 Jonathan Cameron
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -24,14 +21,9 @@ struct iio_interrupt_trigger_info {
 
 static irqreturn_t iio_interrupt_trigger_poll(int irq, void *private)
 {
-	/* Timestamp not currently provided */
-	iio_trigger_poll(private, 0);
+	iio_trigger_poll(private);
 	return IRQ_HANDLED;
 }
-
-static const struct iio_trigger_ops iio_interrupt_trigger_ops = {
-	.owner = THIS_MODULE,
-};
 
 static int iio_interrupt_trigger_probe(struct platform_device *pdev)
 {
@@ -50,7 +42,7 @@ static int iio_interrupt_trigger_probe(struct platform_device *pdev)
 
 	irq = irq_res->start;
 
-	trig = iio_trigger_alloc("irqtrig%d", irq);
+	trig = iio_trigger_alloc(NULL, "irqtrig%d", irq);
 	if (!trig) {
 		ret = -ENOMEM;
 		goto error_ret;
@@ -59,11 +51,10 @@ static int iio_interrupt_trigger_probe(struct platform_device *pdev)
 	trig_info = kzalloc(sizeof(*trig_info), GFP_KERNEL);
 	if (!trig_info) {
 		ret = -ENOMEM;
-		goto error_put_trigger;
+		goto error_free_trigger;
 	}
 	iio_trigger_set_drvdata(trig, trig_info);
 	trig_info->irq = irq;
-	trig->ops = &iio_interrupt_trigger_ops;
 	ret = request_irq(irq, iio_interrupt_trigger_poll,
 			  irqflags, trig->name, trig);
 	if (ret) {
@@ -84,8 +75,8 @@ error_release_irq:
 	free_irq(irq, trig);
 error_free_trig_info:
 	kfree(trig_info);
-error_put_trigger:
-	iio_trigger_put(trig);
+error_free_trigger:
+	iio_trigger_free(trig);
 error_ret:
 	return ret;
 }
@@ -100,7 +91,7 @@ static int iio_interrupt_trigger_remove(struct platform_device *pdev)
 	iio_trigger_unregister(trig);
 	free_irq(trig_info->irq, trig);
 	kfree(trig_info);
-	iio_trigger_put(trig);
+	iio_trigger_free(trig);
 
 	return 0;
 }
@@ -110,7 +101,6 @@ static struct platform_driver iio_interrupt_trigger_driver = {
 	.remove = iio_interrupt_trigger_remove,
 	.driver = {
 		.name = "iio_interrupt_trigger",
-		.owner = THIS_MODULE,
 	},
 };
 

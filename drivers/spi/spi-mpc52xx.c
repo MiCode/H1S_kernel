@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * MPC52xx SPI bus driver.
  *
  * Copyright (C) 2008 Secret Lab Technologies Ltd.
- *
- * This file is released under the GPLv2
  *
  * This is the driver for the MPC5200's dedicated SPI controller.
  *
@@ -12,15 +11,18 @@
  */
 
 #include <linux/module.h>
-#include <linux/init.h>
+#include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/of_platform.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/spi/spi.h>
 #include <linux/io.h>
-#include <linux/of_gpio.h>
 #include <linux/slab.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
+
 #include <asm/time.h>
 #include <asm/mpc52xx.h>
 
@@ -88,7 +90,7 @@ struct mpc52xx_spi {
 	const u8 *tx_buf;
 	int cs_change;
 	int gpio_cs_count;
-	unsigned int *gpio_cs;
+	struct gpio_desc **gpio_cs;
 };
 
 /*
@@ -99,10 +101,11 @@ static void mpc52xx_spi_chipsel(struct mpc52xx_spi *ms, int value)
 	int cs;
 
 	if (ms->gpio_cs_count > 0) {
-		cs = ms->message->spi->chip_select;
-		gpio_set_value(ms->gpio_cs[cs], value ? 0 : 1);
-	} else
+		cs = spi_get_chipselect(ms->message->spi, 0);
+		gpiod_set_value(ms->gpio_cs[cs], value);
+	} else {
 		out_8(ms->regs + SPI_PORTDATA, value ? 0 : 0x08);
+	}
 }
 
 /*
@@ -122,7 +125,7 @@ static void mpc52xx_spi_start_transfer(struct mpc52xx_spi *ms)
 	ms->cs_change = ms->transfer->cs_change;
 
 	/* Write out the first byte */
-	ms->wcol_tx_timestamp = get_tbl();
+	ms->wcol_tx_timestamp = mftb();
 	if (ms->tx_buf)
 		out_8(ms->regs + SPI_DATA, *ms->tx_buf++);
 	else
@@ -148,7 +151,7 @@ mpc52xx_spi_fsmstate_idle(int irq, struct mpc52xx_spi *ms, u8 status, u8 data)
 	int spr, sppr;
 	u8 ctrl1;
 
-	if (status && (irq != NO_IRQ))
+	if (status && irq)
 		dev_err(&ms->master->dev, "spurious irq, status=0x%.2x\n",
 			status);
 
@@ -223,8 +226,8 @@ static int mpc52xx_spi_fsmstate_transfer(int irq, struct mpc52xx_spi *ms,
 		 * but it can also be worked around simply by retrying the
 		 * transfer which is what we do here. */
 		ms->wcol_count++;
-		ms->wcol_ticks += get_tbl() - ms->wcol_tx_timestamp;
-		ms->wcol_tx_timestamp = get_tbl();
+		ms->wcol_ticks += mftb() - ms->wcol_tx_timestamp;
+		ms->wcol_tx_timestamp = mftb();
 		data = 0;
 		if (ms->tx_buf)
 			data = *(ms->tx_buf - 1);
@@ -235,7 +238,8 @@ static int mpc52xx_spi_fsmstate_transfer(int irq, struct mpc52xx_spi *ms,
 		dev_err(&ms->master->dev, "mode fault\n");
 		mpc52xx_spi_chipsel(ms, 0);
 		ms->message->status = -EIO;
-		ms->message->complete(ms->message->context);
+		if (ms->message->complete)
+			ms->message->complete(ms->message->context);
 		ms->state = mpc52xx_spi_fsmstate_idle;
 		return FSM_CONTINUE;
 	}
@@ -248,14 +252,16 @@ static int mpc52xx_spi_fsmstate_transfer(int irq, struct mpc52xx_spi *ms,
 	/* Is the transfer complete? */
 	ms->len--;
 	if (ms->len == 0) {
-		ms->timestamp = get_tbl();
-		ms->timestamp += ms->transfer->delay_usecs * tb_ticks_per_usec;
+		ms->timestamp = mftb();
+		if (ms->transfer->delay.unit == SPI_DELAY_UNIT_USECS)
+			ms->timestamp += ms->transfer->delay.value *
+					 tb_ticks_per_usec;
 		ms->state = mpc52xx_spi_fsmstate_wait;
 		return FSM_CONTINUE;
 	}
 
 	/* Write out the next byte */
-	ms->wcol_tx_timestamp = get_tbl();
+	ms->wcol_tx_timestamp = mftb();
 	if (ms->tx_buf)
 		out_8(ms->regs + SPI_DATA, *ms->tx_buf++);
 	else
@@ -277,7 +283,7 @@ mpc52xx_spi_fsmstate_wait(int irq, struct mpc52xx_spi *ms, u8 status, u8 data)
 		dev_err(&ms->master->dev, "spurious irq, status=0x%.2x\n",
 			status);
 
-	if (((int)get_tbl()) - ms->timestamp < 0)
+	if (((int)mftb()) - ms->timestamp < 0)
 		return FSM_POLL;
 
 	ms->message->actual_length += ms->transfer->len;
@@ -289,7 +295,8 @@ mpc52xx_spi_fsmstate_wait(int irq, struct mpc52xx_spi *ms, u8 status, u8 data)
 		ms->msg_count++;
 		mpc52xx_spi_chipsel(ms, 0);
 		ms->message->status = 0;
-		ms->message->complete(ms->message->context);
+		if (ms->message->complete)
+			ms->message->complete(ms->message->context);
 		ms->state = mpc52xx_spi_fsmstate_idle;
 		return FSM_CONTINUE;
 	}
@@ -357,20 +364,6 @@ static void mpc52xx_spi_wq(struct work_struct *work)
  * spi_master ops
  */
 
-static int mpc52xx_spi_setup(struct spi_device *spi)
-{
-	if (spi->bits_per_word % 8)
-		return -EINVAL;
-
-	if (spi->mode & ~(SPI_CPOL | SPI_CPHA | SPI_LSB_FIRST))
-		return -EINVAL;
-
-	if (spi->chip_select >= spi->master->num_chipselect)
-		return -EINVAL;
-
-	return 0;
-}
-
 static int mpc52xx_spi_transfer(struct spi_device *spi, struct spi_message *m)
 {
 	struct mpc52xx_spi *ms = spi_master_get_devdata(spi->master);
@@ -394,10 +387,10 @@ static int mpc52xx_spi_probe(struct platform_device *op)
 {
 	struct spi_master *master;
 	struct mpc52xx_spi *ms;
+	struct gpio_desc *gpio_cs;
 	void __iomem *regs;
 	u8 ctrl1;
 	int rc, i = 0;
-	int gpio_cs;
 
 	/* MMIO registers */
 	dev_dbg(&op->dev, "probing mpc5200 SPI device\n");
@@ -427,15 +420,15 @@ static int mpc52xx_spi_probe(struct platform_device *op)
 	}
 
 	dev_dbg(&op->dev, "allocating spi_master struct\n");
-	master = spi_alloc_master(&op->dev, sizeof *ms);
+	master = spi_alloc_master(&op->dev, sizeof(*ms));
 	if (!master) {
 		rc = -ENOMEM;
 		goto err_alloc;
 	}
 
-	master->setup = mpc52xx_spi_setup;
 	master->transfer = mpc52xx_spi_transfer;
 	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_LSB_FIRST;
+	master->bits_per_word_mask = SPI_BPW_MASK(8);
 	master->dev.of_node = op->dev.of_node;
 
 	platform_set_drvdata(op, master);
@@ -446,36 +439,29 @@ static int mpc52xx_spi_probe(struct platform_device *op)
 	ms->irq0 = irq_of_parse_and_map(op->dev.of_node, 0);
 	ms->irq1 = irq_of_parse_and_map(op->dev.of_node, 1);
 	ms->state = mpc52xx_spi_fsmstate_idle;
-	ms->ipb_freq = mpc5xxx_get_bus_frequency(op->dev.of_node);
-	ms->gpio_cs_count = of_gpio_count(op->dev.of_node);
+	ms->ipb_freq = mpc5xxx_get_bus_frequency(&op->dev);
+	ms->gpio_cs_count = gpiod_count(&op->dev, NULL);
 	if (ms->gpio_cs_count > 0) {
 		master->num_chipselect = ms->gpio_cs_count;
-		ms->gpio_cs = kmalloc(ms->gpio_cs_count * sizeof(unsigned int),
-				GFP_KERNEL);
+		ms->gpio_cs = kmalloc_array(ms->gpio_cs_count,
+					    sizeof(*ms->gpio_cs),
+					    GFP_KERNEL);
 		if (!ms->gpio_cs) {
 			rc = -ENOMEM;
 			goto err_alloc_gpio;
 		}
 
 		for (i = 0; i < ms->gpio_cs_count; i++) {
-			gpio_cs = of_get_gpio(op->dev.of_node, i);
-			if (gpio_cs < 0) {
-				dev_err(&op->dev,
-					"could not parse the gpio field "
-					"in oftree\n");
-				rc = -ENODEV;
-				goto err_gpio;
-			}
-
-			rc = gpio_request(gpio_cs, dev_name(&op->dev));
+			gpio_cs = gpiod_get_index(&op->dev,
+						  NULL, i, GPIOD_OUT_LOW);
+			rc = PTR_ERR_OR_ZERO(gpio_cs);
 			if (rc) {
 				dev_err(&op->dev,
-					"can't request spi cs gpio #%d "
-					"on gpio line %d\n", i, gpio_cs);
+					"failed to get spi cs gpio #%d: %d\n",
+					i, rc);
 				goto err_gpio;
 			}
 
-			gpio_direction_output(gpio_cs, 1);
 			ms->gpio_cs[i] = gpio_cs;
 		}
 	}
@@ -516,7 +502,7 @@ static int mpc52xx_spi_probe(struct platform_device *op)
 	dev_err(&ms->master->dev, "initialization failed\n");
  err_gpio:
 	while (i-- > 0)
-		gpio_free(ms->gpio_cs[i]);
+		gpiod_put(ms->gpio_cs[i]);
 
 	kfree(ms->gpio_cs);
  err_alloc_gpio:
@@ -527,7 +513,7 @@ static int mpc52xx_spi_probe(struct platform_device *op)
 	return rc;
 }
 
-static int mpc52xx_spi_remove(struct platform_device *op)
+static void mpc52xx_spi_remove(struct platform_device *op)
 {
 	struct spi_master *master = spi_master_get(platform_get_drvdata(op));
 	struct mpc52xx_spi *ms = spi_master_get_devdata(master);
@@ -537,14 +523,12 @@ static int mpc52xx_spi_remove(struct platform_device *op)
 	free_irq(ms->irq1, ms);
 
 	for (i = 0; i < ms->gpio_cs_count; i++)
-		gpio_free(ms->gpio_cs[i]);
+		gpiod_put(ms->gpio_cs[i]);
 
 	kfree(ms->gpio_cs);
 	spi_unregister_master(master);
 	iounmap(ms->regs);
 	spi_master_put(master);
-
-	return 0;
 }
 
 static const struct of_device_id mpc52xx_spi_match[] = {
@@ -556,10 +540,9 @@ MODULE_DEVICE_TABLE(of, mpc52xx_spi_match);
 static struct platform_driver mpc52xx_spi_of_driver = {
 	.driver = {
 		.name = "mpc52xx-spi",
-		.owner = THIS_MODULE,
 		.of_match_table = mpc52xx_spi_match,
 	},
 	.probe = mpc52xx_spi_probe,
-	.remove = mpc52xx_spi_remove,
+	.remove_new = mpc52xx_spi_remove,
 };
 module_platform_driver(mpc52xx_spi_of_driver);

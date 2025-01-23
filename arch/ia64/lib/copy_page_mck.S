@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * McKinley-optimized version of copy_page().
  *
@@ -59,6 +60,7 @@
  *	to fetch the second-half of the L2 cache line into L1, and the tX words are copied in
  *	an order that avoids bank conflicts.
  */
+#include <linux/export.h>
 #include <asm/asmmacro.h>
 #include <asm/page.h>
 
@@ -183,3 +185,4 @@ GLOBAL_ENTRY(copy_page)
 	mov pr = saved_pr, -1
 	br.ret.sptk.many rp
 END(copy_page)
+EXPORT_SYMBOL(copy_page)

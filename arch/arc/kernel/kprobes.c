@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/types.h>
@@ -225,24 +222,18 @@ int __kprobes arc_kprobe_handler(unsigned long addr, struct pt_regs *regs)
 
 		/* If we have no pre-handler or it returned 0, we continue with
 		 * normal processing. If we have a pre-handler and it returned
-		 * non-zero - which is expected from setjmp_pre_handler for
-		 * jprobe, we return without single stepping and leave that to
-		 * the break-handler which is invoked by a kprobe from
-		 * jprobe_return
+		 * non-zero - which means user handler setup registers to exit
+		 * to another instruction, we must skip the single stepping.
 		 */
 		if (!p->pre_handler || !p->pre_handler(p, regs)) {
 			setup_singlestep(p, regs);
 			kcb->kprobe_status = KPROBE_HIT_SS;
+		} else {
+			reset_current_kprobe();
+			preempt_enable_no_resched();
 		}
 
 		return 1;
-	} else if (kprobe_running()) {
-		p = __this_cpu_read(current_kprobe);
-		if (p->break_handler && p->break_handler(p, regs)) {
-			setup_singlestep(p, regs);
-			kcb->kprobe_status = KPROBE_HIT_SS;
-			return 1;
-		}
 	}
 
 	/* no_kprobe: */
@@ -326,22 +317,6 @@ int __kprobes kprobe_fault_handler(struct pt_regs *regs, unsigned long trapnr)
 		 * caused the fault.
 		 */
 
-		/* We increment the nmissed count for accounting,
-		 * we can also use npre/npostfault count for accounting
-		 * these specific fault cases.
-		 */
-		kprobes_inc_nmissed_count(cur);
-
-		/*
-		 * We come here because instructions in the pre/post
-		 * handler caused the page_fault, this could happen
-		 * if handler tries to access user space by
-		 * copy_from_user(), get_user() etc. Let the
-		 * user-specified handler try to fix it first.
-		 */
-		if (cur->fault_handler && cur->fault_handler(cur, regs, trapnr))
-			return 1;
-
 		/*
 		 * In case the user-specified fault handler returned zero,
 		 * try to fix up.
@@ -386,42 +361,11 @@ int __kprobes kprobe_exceptions_notify(struct notifier_block *self,
 	return ret;
 }
 
-int __kprobes setjmp_pre_handler(struct kprobe *p, struct pt_regs *regs)
-{
-	struct jprobe *jp = container_of(p, struct jprobe, kp);
-	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
-	unsigned long sp_addr = regs->sp;
-
-	kcb->jprobe_saved_regs = *regs;
-	memcpy(kcb->jprobes_stack, (void *)sp_addr, MIN_STACK_SIZE(sp_addr));
-	regs->ret = (unsigned long)(jp->entry);
-
-	return 1;
-}
-
-void __kprobes jprobe_return(void)
-{
-	__asm__ __volatile__("unimp_s");
-	return;
-}
-
-int __kprobes longjmp_break_handler(struct kprobe *p, struct pt_regs *regs)
-{
-	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
-	unsigned long sp_addr;
-
-	*regs = kcb->jprobe_saved_regs;
-	sp_addr = regs->sp;
-	memcpy((void *)sp_addr, kcb->jprobes_stack, MIN_STACK_SIZE(sp_addr));
-	preempt_enable_no_resched();
-
-	return 1;
-}
-
 static void __used kretprobe_trampoline_holder(void)
 {
-	__asm__ __volatile__(".global kretprobe_trampoline\n"
-			     "kretprobe_trampoline:\n" "nop\n");
+	__asm__ __volatile__(".global __kretprobe_trampoline\n"
+			     "__kretprobe_trampoline:\n"
+			     "nop\n");
 }
 
 void __kprobes arch_prepare_kretprobe(struct kretprobe_instance *ri,
@@ -429,68 +373,16 @@ void __kprobes arch_prepare_kretprobe(struct kretprobe_instance *ri,
 {
 
 	ri->ret_addr = (kprobe_opcode_t *) regs->blink;
+	ri->fp = NULL;
 
 	/* Replace the return addr with trampoline addr */
-	regs->blink = (unsigned long)&kretprobe_trampoline;
+	regs->blink = (unsigned long)&__kretprobe_trampoline;
 }
 
 static int __kprobes trampoline_probe_handler(struct kprobe *p,
 					      struct pt_regs *regs)
 {
-	struct kretprobe_instance *ri = NULL;
-	struct hlist_head *head, empty_rp;
-	struct hlist_node *tmp;
-	unsigned long flags, orig_ret_address = 0;
-	unsigned long trampoline_address = (unsigned long)&kretprobe_trampoline;
-
-	INIT_HLIST_HEAD(&empty_rp);
-	kretprobe_hash_lock(current, &head, &flags);
-
-	/*
-	 * It is possible to have multiple instances associated with a given
-	 * task either because an multiple functions in the call path
-	 * have a return probe installed on them, and/or more than one return
-	 * return probe was registered for a target function.
-	 *
-	 * We can handle this because:
-	 *     - instances are always inserted at the head of the list
-	 *     - when multiple return probes are registered for the same
-	 *       function, the first instance's ret_addr will point to the
-	 *       real return address, and all the rest will point to
-	 *       kretprobe_trampoline
-	 */
-	hlist_for_each_entry_safe(ri, tmp, head, hlist) {
-		if (ri->task != current)
-			/* another task is sharing our hash bucket */
-			continue;
-
-		if (ri->rp && ri->rp->handler)
-			ri->rp->handler(ri, regs);
-
-		orig_ret_address = (unsigned long)ri->ret_addr;
-		recycle_rp_inst(ri, &empty_rp);
-
-		if (orig_ret_address != trampoline_address) {
-			/*
-			 * This is the real return address. Any other
-			 * instances associated with this task are for
-			 * other calls deeper on the call stack
-			 */
-			break;
-		}
-	}
-
-	kretprobe_assert(ri, orig_ret_address, trampoline_address);
-	regs->ret = orig_ret_address;
-
-	reset_current_kprobe();
-	kretprobe_hash_unlock(current, &flags);
-	preempt_enable_no_resched();
-
-	hlist_for_each_entry_safe(ri, tmp, &empty_rp, hlist) {
-		hlist_del(&ri->hlist);
-		kfree(ri);
-	}
+	regs->ret = __kretprobe_trampoline_handler(regs, NULL);
 
 	/* By returning a non zero value, we are telling the kprobe handler
 	 * that we don't want the post_handler to run
@@ -499,7 +391,7 @@ static int __kprobes trampoline_probe_handler(struct kprobe *p,
 }
 
 static struct kprobe trampoline_p = {
-	.addr = (kprobe_opcode_t *) &kretprobe_trampoline,
+	.addr = (kprobe_opcode_t *) &__kretprobe_trampoline,
 	.pre_handler = trampoline_probe_handler
 };
 
@@ -511,7 +403,7 @@ int __init arch_init_kprobes(void)
 
 int __kprobes arch_trampoline_kprobe(struct kprobe *p)
 {
-	if (p->addr == (kprobe_opcode_t *) &kretprobe_trampoline)
+	if (p->addr == (kprobe_opcode_t *) &__kretprobe_trampoline)
 		return 1;
 
 	return 0;

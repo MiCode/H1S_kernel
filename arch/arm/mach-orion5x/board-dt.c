@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2012 (C), Thomas Petazzoni <thomas.petazzoni@free-electrons.com>
  *
  * arch/arm/mach-orion5x/board-dt.c
  *
  * Flattened Device Tree board initialization
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/kernel.h>
@@ -15,10 +12,15 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/cpu.h>
+#include <linux/mbus.h>
+#include <linux/clocksource.h>
 #include <asm/system_misc.h>
 #include <asm/mach/arch.h>
-#include <mach/orion5x.h>
+#include <asm/mach/map.h>
 #include <plat/irq.h>
+#include <plat/time.h>
+#include "orion5x.h"
+#include "bridge-regs.h"
 #include "common.h"
 
 static struct of_dev_auxdata orion5x_auxdata_lookup[] __initdata = {
@@ -39,13 +41,12 @@ static void __init orion5x_dt_init(void)
 	orion5x_id(&dev, &rev, &dev_name);
 	printk(KERN_INFO "Orion ID: %s. TCLK=%d.\n", dev_name, orion5x_tclk);
 
+	BUG_ON(mvebu_mbus_dt_init(false));
+
 	/*
 	 * Setup Orion address map
 	 */
 	orion5x_setup_wins();
-
-	/* Setup root of clk tree */
-	clk_init();
 
 	/*
 	 * Don't issue "Wait for Interrupt" instruction if we are
@@ -56,11 +57,13 @@ static void __init orion5x_dt_init(void)
 		cpu_idle_poll_ctrl(true);
 	}
 
-	if (of_machine_is_compatible("lacie,ethernet-disk-mini-v2"))
-		edmini_v2_init();
+	if (of_machine_is_compatible("maxtor,shared-storage-2"))
+		mss2_init();
 
-	of_platform_populate(NULL, of_default_bus_match_table,
-			     orion5x_auxdata_lookup, NULL);
+	if (of_machine_is_compatible("lacie,d2-network"))
+		d2net_init();
+
+	of_platform_default_populate(NULL, orion5x_auxdata_lookup, NULL);
 }
 
 static const char *orion5x_dt_compat[] = {
@@ -71,9 +74,6 @@ static const char *orion5x_dt_compat[] = {
 DT_MACHINE_START(ORION5X_DT, "Marvell Orion5x (Flattened Device Tree)")
 	/* Maintainer: Thomas Petazzoni <thomas.petazzoni@free-electrons.com> */
 	.map_io		= orion5x_map_io,
-	.init_early	= orion5x_init_early,
-	.init_irq	= orion_dt_init_irq,
-	.init_time	= orion5x_timer_init,
 	.init_machine	= orion5x_dt_init,
 	.restart	= orion5x_restart,
 	.dt_compat	= orion5x_dt_compat,

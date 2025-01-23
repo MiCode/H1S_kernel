@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * ashldi3.S:	GCC emits these for certain drivers playing
  *		with long longs.
@@ -5,6 +6,7 @@
  * Copyright (C) 1999 David S. Miller (davem@redhat.com)
  */
 
+#include <linux/export.h>
 #include <linux/linkage.h>
 
 	.text
@@ -33,3 +35,4 @@ ENTRY(__ashldi3)
 	retl
 	 nop
 ENDPROC(__ashldi3)
+EXPORT_SYMBOL(__ashldi3)

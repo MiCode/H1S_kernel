@@ -1,22 +1,22 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2001 Sistina Software (UK) Limited
  *
  * This file is released under the GPL.
  */
 
-#include "dm.h"
+#include "dm-core.h"
 
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/kmod.h>
 #include <linux/bio.h>
+#include <linux/dax.h>
 
 #define DM_MSG_PREFIX "target"
 
 static LIST_HEAD(_targets);
 static DECLARE_RWSEM(_lock);
-
-#define DM_MOD_NAME_SIZE 32
 
 static inline struct target_type *__find_target_type(const char *name)
 {
@@ -85,14 +85,18 @@ int dm_register_target(struct target_type *tt)
 	int rv = 0;
 
 	down_write(&_lock);
-	if (__find_target_type(tt->name))
+	if (__find_target_type(tt->name)) {
+		DMERR("%s: '%s' target already registered",
+		      __func__, tt->name);
 		rv = -EEXIST;
-	else
+	} else {
 		list_add(&tt->list, &_targets);
-
+	}
 	up_write(&_lock);
+
 	return rv;
 }
+EXPORT_SYMBOL(dm_register_target);
 
 void dm_unregister_target(struct target_type *tt)
 {
@@ -106,6 +110,7 @@ void dm_unregister_target(struct target_type *tt)
 
 	up_write(&_lock);
 }
+EXPORT_SYMBOL(dm_unregister_target);
 
 /*
  * io-err: always fails an io, useful for bringing
@@ -117,6 +122,7 @@ static int io_err_ctr(struct dm_target *tt, unsigned int argc, char **args)
 	 * Return error for discards instead of -EOPNOTSUPP
 	 */
 	tt->num_discard_bios = 1;
+	tt->discards_supported = true;
 
 	return 0;
 }
@@ -128,22 +134,46 @@ static void io_err_dtr(struct dm_target *tt)
 
 static int io_err_map(struct dm_target *tt, struct bio *bio)
 {
-	return -EIO;
+	return DM_MAPIO_KILL;
 }
 
-static int io_err_map_rq(struct dm_target *ti, struct request *clone,
-			 union map_info *map_context)
+static int io_err_clone_and_map_rq(struct dm_target *ti, struct request *rq,
+				   union map_info *map_context,
+				   struct request **clone)
+{
+	return DM_MAPIO_KILL;
+}
+
+static void io_err_release_clone_rq(struct request *clone,
+				    union map_info *map_context)
+{
+}
+
+static void io_err_io_hints(struct dm_target *ti, struct queue_limits *limits)
+{
+	limits->max_discard_sectors = UINT_MAX;
+	limits->max_hw_discard_sectors = UINT_MAX;
+	limits->discard_granularity = 512;
+}
+
+static long io_err_dax_direct_access(struct dm_target *ti, pgoff_t pgoff,
+		long nr_pages, enum dax_access_mode mode, void **kaddr,
+		pfn_t *pfn)
 {
 	return -EIO;
 }
 
 static struct target_type error_target = {
 	.name = "error",
-	.version = {1, 2, 0},
+	.version = {1, 6, 0},
+	.features = DM_TARGET_WILDCARD,
 	.ctr  = io_err_ctr,
 	.dtr  = io_err_dtr,
 	.map  = io_err_map,
-	.map_rq = io_err_map_rq,
+	.clone_and_map_rq = io_err_clone_and_map_rq,
+	.release_clone_rq = io_err_release_clone_rq,
+	.io_hints = io_err_io_hints,
+	.direct_access = io_err_dax_direct_access,
 };
 
 int __init dm_target_init(void)
@@ -155,6 +185,3 @@ void dm_target_exit(void)
 {
 	dm_unregister_target(&error_target);
 }
-
-EXPORT_SYMBOL(dm_register_target);
-EXPORT_SYMBOL(dm_unregister_target);

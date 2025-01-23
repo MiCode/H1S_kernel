@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*---------------------------------------------------------------------------+
  |  get_address.c                                                            |
  |                                                                           |
@@ -19,8 +20,8 @@
 
 #include <linux/stddef.h>
 
-#include <asm/uaccess.h>
-#include <asm/desc.h>
+#include <linux/uaccess.h>
+#include <asm/vm86.h>
 
 #include "fpu_system.h"
 #include "exception.h"
@@ -152,24 +153,25 @@ static long pm_address(u_char FPU_modrm, u_char segment,
 	switch (segment) {
 	case PREFIX_GS_ - 1:
 		/* user gs handling can be lazy, use special accessors */
-		addr->selector = get_user_gs(FPU_info->regs);
+		savesegment(gs, addr->selector);
 		break;
 	default:
 		addr->selector = PM_REG_(segment);
 	}
 
-	descriptor = LDT_DESCRIPTOR(PM_REG_(segment));
-	base_address = SEG_BASE_ADDR(descriptor);
+	descriptor = FPU_get_ldt_descriptor(addr->selector);
+	base_address = seg_get_base(&descriptor);
 	address = base_address + offset;
-	limit = base_address
-	    + (SEG_LIMIT(descriptor) + 1) * SEG_GRANULARITY(descriptor) - 1;
+	limit = seg_get_limit(&descriptor) + 1;
+	limit *= seg_get_granularity(&descriptor);
+	limit += base_address - 1;
 	if (limit < base_address)
 		limit = 0xffffffff;
 
-	if (SEG_EXPAND_DOWN(descriptor)) {
-		if (SEG_G_BIT(descriptor))
+	if (seg_expands_down(&descriptor)) {
+		if (descriptor.g) {
 			seg_top = 0xffffffff;
-		else {
+		} else {
 			seg_top = base_address + (1 << 20);
 			if (seg_top < base_address)
 				seg_top = 0xffffffff;
@@ -182,8 +184,8 @@ static long pm_address(u_char FPU_modrm, u_char segment,
 		    (address > limit) || (address < base_address) ? 0 :
 		    ((limit - address) >= 254 ? 255 : limit - address + 1);
 	}
-	if (SEG_EXECUTE_ONLY(descriptor) ||
-	    (!SEG_WRITE_PERM(descriptor) && (FPU_modrm & FPU_WRITE_BIT))) {
+	if (seg_execute_only(&descriptor) ||
+	    (!seg_writable(&descriptor) && (FPU_modrm & FPU_WRITE_BIT))) {
 		access_limit = 0;
 	}
 	return address;

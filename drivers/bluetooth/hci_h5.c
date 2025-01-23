@@ -1,34 +1,28 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *
  *  Bluetooth HCI Three-wire UART driver
  *
  *  Copyright (C) 2012  Intel Corporation
- *
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
-#include <linux/kernel.h>
+#include <linux/acpi.h>
 #include <linux/errno.h>
+#include <linux/gpio/consumer.h>
+#include <linux/kernel.h>
+#include <linux/mod_devicetable.h>
+#include <linux/of.h>
+#include <linux/pm_runtime.h>
+#include <linux/serdev.h>
 #include <linux/skbuff.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
 
+#include "btrtl.h"
 #include "hci_uart.h"
+
+#define SUSPEND_TIMEOUT_MS	6000
 
 #define HCI_3WIRE_ACK_PKT	0
 #define HCI_3WIRE_LINK_PKT	15
@@ -51,7 +45,7 @@
 #define H5_HDR_CRC(hdr)		(((hdr)[0] >> 6) & 0x01)
 #define H5_HDR_RELIABLE(hdr)	(((hdr)[0] >> 7) & 0x01)
 #define H5_HDR_PKT_TYPE(hdr)	((hdr)[1] & 0x0f)
-#define H5_HDR_LEN(hdr)		((((hdr)[1] >> 4) & 0xff) + ((hdr)[2] << 4))
+#define H5_HDR_LEN(hdr)		((((hdr)[1] >> 4) & 0x0f) + ((hdr)[2] << 4))
 
 #define SLIP_DELIMITER	0xc0
 #define SLIP_ESC	0xdb
@@ -60,11 +54,16 @@
 
 /* H5 state flags */
 enum {
-	H5_RX_ESC,	/* SLIP escape mode */
-	H5_TX_ACK_REQ,	/* Pending ack to send */
+	H5_RX_ESC,		/* SLIP escape mode */
+	H5_TX_ACK_REQ,		/* Pending ack to send */
+	H5_WAKEUP_DISABLE,	/* Device cannot wake host */
+	H5_HW_FLOW_CONTROL,	/* Use HW flow control */
 };
 
 struct h5 {
+	/* Must be the first member, hci_serdev.c expects this. */
+	struct hci_uart		serdev_hu;
+
 	struct sk_buff_head	unack;		/* Unack'ed packets queue */
 	struct sk_buff_head	rel;		/* Reliable packets queue */
 	struct sk_buff_head	unrel;		/* Unreliable packets queue */
@@ -75,9 +74,10 @@ struct h5 {
 	size_t			rx_pending;	/* Expecting more bytes */
 	u8			rx_ack;		/* Last ack number received */
 
-	int			(*rx_func) (struct hci_uart *hu, u8 c);
+	int			(*rx_func)(struct hci_uart *hu, u8 c);
 
 	struct timer_list	timer;		/* Retransmission timer */
+	struct hci_uart		*hu;		/* Parent HCI UART */
 
 	u8			tx_seq;		/* Next seq number to send */
 	u8			tx_ack;		/* Next ack number to send */
@@ -94,6 +94,31 @@ struct h5 {
 		H5_SLEEPING,
 		H5_WAKING_UP,
 	} sleep;
+
+	const struct h5_vnd *vnd;
+	const char *id;
+
+	struct gpio_desc *enable_gpio;
+	struct gpio_desc *device_wake_gpio;
+};
+
+enum h5_driver_info {
+	H5_INFO_WAKEUP_DISABLE = BIT(0),
+};
+
+struct h5_vnd {
+	int (*setup)(struct h5 *h5);
+	void (*open)(struct h5 *h5);
+	void (*close)(struct h5 *h5);
+	int (*suspend)(struct h5 *h5);
+	int (*resume)(struct h5 *h5);
+	const struct acpi_gpio_mapping *acpi_gpio_map;
+	int sizeof_priv;
+};
+
+struct h5_device_data {
+	uint32_t driver_info;
+	struct h5_vnd *vnd;
 };
 
 static void h5_reset_rx(struct h5 *h5);
@@ -107,29 +132,25 @@ static void h5_link_control(struct hci_uart *hu, const void *data, size_t len)
 	if (!nskb)
 		return;
 
-	bt_cb(nskb)->pkt_type = HCI_3WIRE_LINK_PKT;
+	hci_skb_pkt_type(nskb) = HCI_3WIRE_LINK_PKT;
 
-	memcpy(skb_put(nskb, len), data, len);
+	skb_put_data(nskb, data, len);
 
 	skb_queue_tail(&h5->unrel, nskb);
 }
 
 static u8 h5_cfg_field(struct h5 *h5)
 {
-	u8 field = 0;
-
 	/* Sliding window size (first 3 bits) */
-	field |= (h5->tx_win & 7);
-
-	return field;
+	return h5->tx_win & 0x07;
 }
 
-static void h5_timed_event(unsigned long arg)
+static void h5_timed_event(struct timer_list *t)
 {
 	const unsigned char sync_req[] = { 0x01, 0x7e };
-	unsigned char conf_req[] = { 0x03, 0xfc, 0x01 };
-	struct hci_uart *hu = (struct hci_uart *) arg;
-	struct h5 *h5 = hu->priv;
+	unsigned char conf_req[3] = { 0x03, 0xfc };
+	struct h5 *h5 = from_timer(h5, t, timer);
+	struct hci_uart *hu = h5->hu;
 	struct sk_buff *skb;
 	unsigned long flags;
 
@@ -168,6 +189,27 @@ wakeup:
 	hci_uart_tx_wakeup(hu);
 }
 
+static void h5_peer_reset(struct hci_uart *hu)
+{
+	struct h5 *h5 = hu->priv;
+
+	bt_dev_err(hu->hdev, "Peer device has reset");
+
+	h5->state = H5_UNINITIALIZED;
+
+	del_timer(&h5->timer);
+
+	skb_queue_purge(&h5->rel);
+	skb_queue_purge(&h5->unrel);
+	skb_queue_purge(&h5->unack);
+
+	h5->tx_seq = 0;
+	h5->tx_ack = 0;
+
+	/* Send reset request to upper stack */
+	hci_reset_dev(hu->hdev);
+}
+
 static int h5_open(struct hci_uart *hu)
 {
 	struct h5 *h5;
@@ -175,11 +217,16 @@ static int h5_open(struct hci_uart *hu)
 
 	BT_DBG("hu %p", hu);
 
-	h5 = kzalloc(sizeof(*h5), GFP_KERNEL);
-	if (!h5)
-		return -ENOMEM;
+	if (hu->serdev) {
+		h5 = serdev_device_get_drvdata(hu->serdev);
+	} else {
+		h5 = kzalloc(sizeof(*h5), GFP_KERNEL);
+		if (!h5)
+			return -ENOMEM;
+	}
 
 	hu->priv = h5;
+	h5->hu = hu;
 
 	skb_queue_head_init(&h5->unack);
 	skb_queue_head_init(&h5->rel);
@@ -187,11 +234,12 @@ static int h5_open(struct hci_uart *hu)
 
 	h5_reset_rx(h5);
 
-	init_timer(&h5->timer);
-	h5->timer.function = h5_timed_event;
-	h5->timer.data = (unsigned long) hu;
+	timer_setup(&h5->timer, h5_timed_event, 0);
 
 	h5->tx_win = H5_TX_WIN_MAX;
+
+	if (h5->vnd && h5->vnd->open)
+		h5->vnd->open(h5);
 
 	set_bit(HCI_UART_INIT_PENDING, &hu->hdev_flags);
 
@@ -206,13 +254,30 @@ static int h5_close(struct hci_uart *hu)
 {
 	struct h5 *h5 = hu->priv;
 
+	del_timer_sync(&h5->timer);
+
 	skb_queue_purge(&h5->unack);
 	skb_queue_purge(&h5->rel);
 	skb_queue_purge(&h5->unrel);
 
-	del_timer(&h5->timer);
+	kfree_skb(h5->rx_skb);
+	h5->rx_skb = NULL;
 
-	kfree(h5);
+	if (h5->vnd && h5->vnd->close)
+		h5->vnd->close(h5);
+
+	if (!hu->serdev)
+		kfree(h5);
+
+	return 0;
+}
+
+static int h5_setup(struct hci_uart *hu)
+{
+	struct h5 *h5 = hu->priv;
+
+	if (h5->vnd && h5->vnd->setup)
+		return h5->vnd->setup(h5);
 
 	return 0;
 }
@@ -237,7 +302,7 @@ static void h5_pkt_cull(struct h5 *h5)
 			break;
 
 		to_remove--;
-		seq = (seq - 1) % 8;
+		seq = (seq - 1) & 0x07;
 	}
 
 	if (seq != h5->rx_ack)
@@ -249,7 +314,7 @@ static void h5_pkt_cull(struct h5 *h5)
 			break;
 
 		__skb_unlink(skb, &h5->unack);
-		kfree_skb(skb);
+		dev_kfree_skb_irq(skb);
 	}
 
 	if (skb_queue_empty(&h5->unack))
@@ -264,7 +329,7 @@ static void h5_handle_internal_rx(struct hci_uart *hu)
 	struct h5 *h5 = hu->priv;
 	const unsigned char sync_req[] = { 0x01, 0x7e };
 	const unsigned char sync_rsp[] = { 0x02, 0x7d };
-	unsigned char conf_req[] = { 0x03, 0xfc, 0x01 };
+	unsigned char conf_req[3] = { 0x03, 0xfc };
 	const unsigned char conf_rsp[] = { 0x04, 0x7b };
 	const unsigned char wakeup_req[] = { 0x05, 0xfa };
 	const unsigned char woken_req[] = { 0x06, 0xf9 };
@@ -283,8 +348,12 @@ static void h5_handle_internal_rx(struct hci_uart *hu)
 	conf_req[2] = h5_cfg_field(h5);
 
 	if (memcmp(data, sync_req, 2) == 0) {
+		if (h5->state == H5_ACTIVE)
+			h5_peer_reset(hu);
 		h5_link_control(hu, sync_rsp, 2);
 	} else if (memcmp(data, sync_rsp, 2) == 0) {
+		if (h5->state == H5_ACTIVE)
+			h5_peer_reset(hu);
 		h5->state = H5_INITIALIZED;
 		h5_link_control(hu, conf_req, 3);
 	} else if (memcmp(data, conf_req, 2) == 0) {
@@ -292,7 +361,7 @@ static void h5_handle_internal_rx(struct hci_uart *hu)
 		h5_link_control(hu, conf_req, 3);
 	} else if (memcmp(data, conf_rsp, 2) == 0) {
 		if (H5_HDR_LEN(hdr) > 2)
-			h5->tx_win = (data[2] & 7);
+			h5->tx_win = (data[2] & 0x07);
 		BT_DBG("Three-wire init complete. tx_win %u", h5->tx_win);
 		h5->state = H5_ACTIVE;
 		hci_uart_init_ready(hu);
@@ -335,7 +404,8 @@ static void h5_complete_rx_pkt(struct hci_uart *hu)
 	case HCI_EVENT_PKT:
 	case HCI_ACLDATA_PKT:
 	case HCI_SCODATA_PKT:
-		bt_cb(h5->rx_skb)->pkt_type = H5_HDR_PKT_TYPE(hdr);
+	case HCI_ISODATA_PKT:
+		hci_skb_pkt_type(h5->rx_skb) = H5_HDR_PKT_TYPE(hdr);
 
 		/* Remove Three-wire header */
 		skb_pull(h5->rx_skb, 4);
@@ -355,10 +425,7 @@ static void h5_complete_rx_pkt(struct hci_uart *hu)
 
 static int h5_rx_crc(struct hci_uart *hu, unsigned char c)
 {
-	struct h5 *h5 = hu->priv;
-
 	h5_complete_rx_pkt(hu);
-	h5_reset_rx(h5);
 
 	return 0;
 }
@@ -373,7 +440,6 @@ static int h5_rx_payload(struct hci_uart *hu, unsigned char c)
 		h5->rx_pending = 2;
 	} else {
 		h5_complete_rx_pkt(hu);
-		h5_reset_rx(h5);
 	}
 
 	return 0;
@@ -390,22 +456,25 @@ static int h5_rx_3wire_hdr(struct hci_uart *hu, unsigned char c)
 	       H5_HDR_LEN(hdr));
 
 	if (((hdr[0] + hdr[1] + hdr[2] + hdr[3]) & 0xff) != 0xff) {
-		BT_ERR("Invalid header checksum");
+		bt_dev_err(hu->hdev, "Invalid header checksum");
 		h5_reset_rx(h5);
 		return 0;
 	}
 
 	if (H5_HDR_RELIABLE(hdr) && H5_HDR_SEQ(hdr) != h5->tx_ack) {
-		BT_ERR("Out-of-order packet arrived (%u != %u)",
-		       H5_HDR_SEQ(hdr), h5->tx_ack);
+		bt_dev_err(hu->hdev, "Out-of-order packet arrived (%u != %u)",
+			   H5_HDR_SEQ(hdr), h5->tx_ack);
+		set_bit(H5_TX_ACK_REQ, &h5->flags);
+		hci_uart_tx_wakeup(hu);
 		h5_reset_rx(h5);
 		return 0;
 	}
 
 	if (h5->state != H5_ACTIVE &&
 	    H5_HDR_PKT_TYPE(hdr) != HCI_3WIRE_LINK_PKT) {
-		BT_ERR("Non-link packet received in non-active state");
+		bt_dev_err(hu->hdev, "Non-link packet received in non-active state");
 		h5_reset_rx(h5);
+		return 0;
 	}
 
 	h5->rx_func = h5_rx_payload;
@@ -426,12 +495,12 @@ static int h5_rx_pkt_start(struct hci_uart *hu, unsigned char c)
 
 	h5->rx_skb = bt_skb_alloc(H5_MAX_LEN, GFP_ATOMIC);
 	if (!h5->rx_skb) {
-		BT_ERR("Can't allocate mem for new packet");
+		bt_dev_err(hu->hdev, "Can't allocate mem for new packet");
 		h5_reset_rx(h5);
 		return -ENOMEM;
 	}
 
-	h5->rx_skb->dev = (void *) hu->hdev;
+	h5->rx_skb->dev = (void *)hu->hdev;
 
 	return 0;
 }
@@ -471,10 +540,10 @@ static void h5_unslip_one_byte(struct h5 *h5, unsigned char c)
 		}
 	}
 
-	memcpy(skb_put(h5->rx_skb, 1), byte, 1);
+	skb_put_data(h5->rx_skb, byte, 1);
 	h5->rx_pending--;
 
-	BT_DBG("unsliped 0x%02hhx, rx_pending %zu", *byte, h5->rx_pending);
+	BT_DBG("unslipped 0x%02hhx, rx_pending %zu", *byte, h5->rx_pending);
 }
 
 static void h5_reset_rx(struct h5 *h5)
@@ -489,10 +558,10 @@ static void h5_reset_rx(struct h5 *h5)
 	clear_bit(H5_RX_ESC, &h5->flags);
 }
 
-static int h5_recv(struct hci_uart *hu, void *data, int count)
+static int h5_recv(struct hci_uart *hu, const void *data, int count)
 {
 	struct h5 *h5 = hu->priv;
-	unsigned char *ptr = data;
+	const unsigned char *ptr = data;
 
 	BT_DBG("%s pending %zu count %d", hu->hdev->name, h5->rx_pending,
 	       count);
@@ -502,7 +571,7 @@ static int h5_recv(struct hci_uart *hu, void *data, int count)
 
 		if (h5->rx_pending > 0) {
 			if (*ptr == SLIP_DELIMITER) {
-				BT_ERR("Too short H5 packet");
+				bt_dev_err(hu->hdev, "Too short H5 packet");
 				h5_reset_rx(h5);
 				continue;
 			}
@@ -521,6 +590,12 @@ static int h5_recv(struct hci_uart *hu, void *data, int count)
 		count -= processed;
 	}
 
+	if (hu->serdev) {
+		pm_runtime_get(&hu->serdev->dev);
+		pm_runtime_mark_last_busy(&hu->serdev->dev);
+		pm_runtime_put_autosuspend(&hu->serdev->dev);
+	}
+
 	return 0;
 }
 
@@ -529,31 +604,38 @@ static int h5_enqueue(struct hci_uart *hu, struct sk_buff *skb)
 	struct h5 *h5 = hu->priv;
 
 	if (skb->len > 0xfff) {
-		BT_ERR("Packet too long (%u bytes)", skb->len);
+		bt_dev_err(hu->hdev, "Packet too long (%u bytes)", skb->len);
 		kfree_skb(skb);
 		return 0;
 	}
 
 	if (h5->state != H5_ACTIVE) {
-		BT_ERR("Ignoring HCI data in non-active state");
+		bt_dev_err(hu->hdev, "Ignoring HCI data in non-active state");
 		kfree_skb(skb);
 		return 0;
 	}
 
-	switch (bt_cb(skb)->pkt_type) {
+	switch (hci_skb_pkt_type(skb)) {
 	case HCI_ACLDATA_PKT:
 	case HCI_COMMAND_PKT:
 		skb_queue_tail(&h5->rel, skb);
 		break;
 
 	case HCI_SCODATA_PKT:
+	case HCI_ISODATA_PKT:
 		skb_queue_tail(&h5->unrel, skb);
 		break;
 
 	default:
-		BT_ERR("Unknown packet type %u", bt_cb(skb)->pkt_type);
+		bt_dev_err(hu->hdev, "Unknown packet type %u", hci_skb_pkt_type(skb));
 		kfree_skb(skb);
 		break;
+	}
+
+	if (hu->serdev) {
+		pm_runtime_get_sync(&hu->serdev->dev);
+		pm_runtime_mark_last_busy(&hu->serdev->dev);
+		pm_runtime_put_autosuspend(&hu->serdev->dev);
 	}
 
 	return 0;
@@ -563,7 +645,7 @@ static void h5_slip_delim(struct sk_buff *skb)
 {
 	const char delim = SLIP_DELIMITER;
 
-	memcpy(skb_put(skb, 1), &delim, 1);
+	skb_put_data(skb, &delim, 1);
 }
 
 static void h5_slip_one_byte(struct sk_buff *skb, u8 c)
@@ -573,13 +655,13 @@ static void h5_slip_one_byte(struct sk_buff *skb, u8 c)
 
 	switch (c) {
 	case SLIP_DELIMITER:
-		memcpy(skb_put(skb, 2), &esc_delim, 2);
+		skb_put_data(skb, &esc_delim, 2);
 		break;
 	case SLIP_ESC:
-		memcpy(skb_put(skb, 2), &esc_esc, 2);
+		skb_put_data(skb, &esc_esc, 2);
 		break;
 	default:
-		memcpy(skb_put(skb, 1), &c, 1);
+		skb_put_data(skb, &c, 1);
 	}
 }
 
@@ -589,6 +671,7 @@ static bool valid_packet_type(u8 type)
 	case HCI_ACLDATA_PKT:
 	case HCI_COMMAND_PKT:
 	case HCI_SCODATA_PKT:
+	case HCI_ISODATA_PKT:
 	case HCI_3WIRE_LINK_PKT:
 	case HCI_3WIRE_ACK_PKT:
 		return true;
@@ -606,7 +689,7 @@ static struct sk_buff *h5_prepare_pkt(struct hci_uart *hu, u8 pkt_type,
 	int i;
 
 	if (!valid_packet_type(pkt_type)) {
-		BT_ERR("Unknown packet type %u", pkt_type);
+		bt_dev_err(hu->hdev, "Unknown packet type %u", pkt_type);
 		return NULL;
 	}
 
@@ -620,7 +703,7 @@ static struct sk_buff *h5_prepare_pkt(struct hci_uart *hu, u8 pkt_type,
 	if (!nskb)
 		return NULL;
 
-	bt_cb(nskb)->pkt_type = pkt_type;
+	hci_skb_pkt_type(nskb) = pkt_type;
 
 	h5_slip_delim(nskb);
 
@@ -673,8 +756,9 @@ static struct sk_buff *h5_dequeue(struct hci_uart *hu)
 		return h5_prepare_pkt(hu, HCI_3WIRE_LINK_PKT, wakeup_req, 2);
 	}
 
-	if ((skb = skb_dequeue(&h5->unrel)) != NULL) {
-		nskb = h5_prepare_pkt(hu, bt_cb(skb)->pkt_type,
+	skb = skb_dequeue(&h5->unrel);
+	if (skb) {
+		nskb = h5_prepare_pkt(hu, hci_skb_pkt_type(skb),
 				      skb->data, skb->len);
 		if (nskb) {
 			kfree_skb(skb);
@@ -682,7 +766,7 @@ static struct sk_buff *h5_dequeue(struct hci_uart *hu)
 		}
 
 		skb_queue_head(&h5->unrel, skb);
-		BT_ERR("Could not dequeue pkt because alloc_skb failed");
+		bt_dev_err(hu->hdev, "Could not dequeue pkt because alloc_skb failed");
 	}
 
 	spin_lock_irqsave_nested(&h5->unack.lock, flags, SINGLE_DEPTH_NESTING);
@@ -690,8 +774,9 @@ static struct sk_buff *h5_dequeue(struct hci_uart *hu)
 	if (h5->unack.qlen >= h5->tx_win)
 		goto unlock;
 
-	if ((skb = skb_dequeue(&h5->rel)) != NULL) {
-		nskb = h5_prepare_pkt(hu, bt_cb(skb)->pkt_type,
+	skb = skb_dequeue(&h5->rel);
+	if (skb) {
+		nskb = h5_prepare_pkt(hu, hci_skb_pkt_type(skb),
 				      skb->data, skb->len);
 		if (nskb) {
 			__skb_queue_tail(&h5->unack, skb);
@@ -701,7 +786,7 @@ static struct sk_buff *h5_dequeue(struct hci_uart *hu)
 		}
 
 		skb_queue_head(&h5->rel, skb);
-		BT_ERR("Could not dequeue pkt because alloc_skb failed");
+		bt_dev_err(hu->hdev, "Could not dequeue pkt because alloc_skb failed");
 	}
 
 unlock:
@@ -719,29 +804,337 @@ static int h5_flush(struct hci_uart *hu)
 	return 0;
 }
 
-static struct hci_uart_proto h5p = {
+static const struct hci_uart_proto h5p = {
 	.id		= HCI_UART_3WIRE,
+	.name		= "Three-wire (H5)",
 	.open		= h5_open,
 	.close		= h5_close,
+	.setup		= h5_setup,
 	.recv		= h5_recv,
 	.enqueue	= h5_enqueue,
 	.dequeue	= h5_dequeue,
 	.flush		= h5_flush,
 };
 
-int __init h5_init(void)
+static int h5_serdev_probe(struct serdev_device *serdev)
 {
-	int err = hci_uart_register_proto(&h5p);
+	struct device *dev = &serdev->dev;
+	struct h5 *h5;
+	const struct h5_device_data *data;
 
-	if (!err)
-		BT_INFO("HCI Three-wire UART (H5) protocol initialized");
-	else
-		BT_ERR("HCI Three-wire UART (H5) protocol init failed");
+	h5 = devm_kzalloc(dev, sizeof(*h5), GFP_KERNEL);
+	if (!h5)
+		return -ENOMEM;
+
+	h5->hu = &h5->serdev_hu;
+	h5->serdev_hu.serdev = serdev;
+	serdev_device_set_drvdata(serdev, h5);
+
+	if (has_acpi_companion(dev)) {
+		const struct acpi_device_id *match;
+
+		match = acpi_match_device(dev->driver->acpi_match_table, dev);
+		if (!match)
+			return -ENODEV;
+
+		data = (const struct h5_device_data *)match->driver_data;
+		h5->vnd = data->vnd;
+		h5->id  = (char *)match->id;
+
+		if (h5->vnd->acpi_gpio_map)
+			devm_acpi_dev_add_driver_gpios(dev,
+						       h5->vnd->acpi_gpio_map);
+	} else {
+		data = of_device_get_match_data(dev);
+		if (!data)
+			return -ENODEV;
+
+		h5->vnd = data->vnd;
+	}
+
+	if (data->driver_info & H5_INFO_WAKEUP_DISABLE)
+		set_bit(H5_WAKEUP_DISABLE, &h5->flags);
+
+	h5->enable_gpio = devm_gpiod_get_optional(dev, "enable", GPIOD_OUT_LOW);
+	if (IS_ERR(h5->enable_gpio))
+		return PTR_ERR(h5->enable_gpio);
+
+	h5->device_wake_gpio = devm_gpiod_get_optional(dev, "device-wake",
+						       GPIOD_OUT_LOW);
+	if (IS_ERR(h5->device_wake_gpio))
+		return PTR_ERR(h5->device_wake_gpio);
+
+	return hci_uart_register_device_priv(&h5->serdev_hu, &h5p,
+					     h5->vnd->sizeof_priv);
+}
+
+static void h5_serdev_remove(struct serdev_device *serdev)
+{
+	struct h5 *h5 = serdev_device_get_drvdata(serdev);
+
+	hci_uart_unregister_device(&h5->serdev_hu);
+}
+
+static int __maybe_unused h5_serdev_suspend(struct device *dev)
+{
+	struct h5 *h5 = dev_get_drvdata(dev);
+	int ret = 0;
+
+	if (h5->vnd && h5->vnd->suspend)
+		ret = h5->vnd->suspend(h5);
+
+	return ret;
+}
+
+static int __maybe_unused h5_serdev_resume(struct device *dev)
+{
+	struct h5 *h5 = dev_get_drvdata(dev);
+	int ret = 0;
+
+	if (h5->vnd && h5->vnd->resume)
+		ret = h5->vnd->resume(h5);
+
+	return ret;
+}
+
+#ifdef CONFIG_BT_HCIUART_RTL
+static int h5_btrtl_setup(struct h5 *h5)
+{
+	struct btrtl_device_info *btrtl_dev;
+	struct sk_buff *skb;
+	__le32 baudrate_data;
+	u32 device_baudrate;
+	unsigned int controller_baudrate;
+	bool flow_control;
+	int err;
+
+	btrtl_dev = btrtl_initialize(h5->hu->hdev, h5->id);
+	if (IS_ERR(btrtl_dev))
+		return PTR_ERR(btrtl_dev);
+
+	err = btrtl_get_uart_settings(h5->hu->hdev, btrtl_dev,
+				      &controller_baudrate, &device_baudrate,
+				      &flow_control);
+	if (err)
+		goto out_free;
+
+	baudrate_data = cpu_to_le32(device_baudrate);
+	skb = __hci_cmd_sync(h5->hu->hdev, 0xfc17, sizeof(baudrate_data),
+			     &baudrate_data, HCI_INIT_TIMEOUT);
+	if (IS_ERR(skb)) {
+		rtl_dev_err(h5->hu->hdev, "set baud rate command failed\n");
+		err = PTR_ERR(skb);
+		goto out_free;
+	} else {
+		kfree_skb(skb);
+	}
+	/* Give the device some time to set up the new baudrate. */
+	usleep_range(10000, 20000);
+
+	serdev_device_set_baudrate(h5->hu->serdev, controller_baudrate);
+	serdev_device_set_flow_control(h5->hu->serdev, flow_control);
+
+	if (flow_control)
+		set_bit(H5_HW_FLOW_CONTROL, &h5->flags);
+
+	err = btrtl_download_firmware(h5->hu->hdev, btrtl_dev);
+	/* Give the device some time before the hci-core sends it a reset */
+	usleep_range(10000, 20000);
+	if (err)
+		goto out_free;
+
+	btrtl_set_quirks(h5->hu->hdev, btrtl_dev);
+
+out_free:
+	btrtl_free(btrtl_dev);
 
 	return err;
 }
 
+static void h5_btrtl_open(struct h5 *h5)
+{
+	/*
+	 * Since h5_btrtl_resume() does a device_reprobe() the suspend handling
+	 * done by the hci_suspend_notifier is not necessary; it actually causes
+	 * delays and a bunch of errors to get logged, so disable it.
+	 */
+	if (test_bit(H5_WAKEUP_DISABLE, &h5->flags))
+		set_bit(HCI_UART_NO_SUSPEND_NOTIFIER, &h5->hu->flags);
+
+	/* Devices always start with these fixed parameters */
+	serdev_device_set_flow_control(h5->hu->serdev, false);
+	serdev_device_set_parity(h5->hu->serdev, SERDEV_PARITY_EVEN);
+	serdev_device_set_baudrate(h5->hu->serdev, 115200);
+
+	if (!test_bit(H5_WAKEUP_DISABLE, &h5->flags)) {
+		pm_runtime_set_active(&h5->hu->serdev->dev);
+		pm_runtime_use_autosuspend(&h5->hu->serdev->dev);
+		pm_runtime_set_autosuspend_delay(&h5->hu->serdev->dev,
+						 SUSPEND_TIMEOUT_MS);
+		pm_runtime_enable(&h5->hu->serdev->dev);
+	}
+
+	/* The controller needs reset to startup */
+	gpiod_set_value_cansleep(h5->enable_gpio, 0);
+	gpiod_set_value_cansleep(h5->device_wake_gpio, 0);
+	msleep(100);
+
+	/* The controller needs up to 500ms to wakeup */
+	gpiod_set_value_cansleep(h5->enable_gpio, 1);
+	gpiod_set_value_cansleep(h5->device_wake_gpio, 1);
+	msleep(500);
+}
+
+static void h5_btrtl_close(struct h5 *h5)
+{
+	if (!test_bit(H5_WAKEUP_DISABLE, &h5->flags))
+		pm_runtime_disable(&h5->hu->serdev->dev);
+
+	gpiod_set_value_cansleep(h5->device_wake_gpio, 0);
+	gpiod_set_value_cansleep(h5->enable_gpio, 0);
+}
+
+/* Suspend/resume support. On many devices the RTL BT device loses power during
+ * suspend/resume, causing it to lose its firmware and all state. So we simply
+ * turn it off on suspend and reprobe on resume. This mirrors how RTL devices
+ * are handled in the USB driver, where the BTUSB_WAKEUP_DISABLE is used which
+ * also causes a reprobe on resume.
+ */
+static int h5_btrtl_suspend(struct h5 *h5)
+{
+	serdev_device_set_flow_control(h5->hu->serdev, false);
+	gpiod_set_value_cansleep(h5->device_wake_gpio, 0);
+
+	if (test_bit(H5_WAKEUP_DISABLE, &h5->flags))
+		gpiod_set_value_cansleep(h5->enable_gpio, 0);
+
+	return 0;
+}
+
+struct h5_btrtl_reprobe {
+	struct device *dev;
+	struct work_struct work;
+};
+
+static void h5_btrtl_reprobe_worker(struct work_struct *work)
+{
+	struct h5_btrtl_reprobe *reprobe =
+		container_of(work, struct h5_btrtl_reprobe, work);
+	int ret;
+
+	ret = device_reprobe(reprobe->dev);
+	if (ret && ret != -EPROBE_DEFER)
+		dev_err(reprobe->dev, "Reprobe error %d\n", ret);
+
+	put_device(reprobe->dev);
+	kfree(reprobe);
+	module_put(THIS_MODULE);
+}
+
+static int h5_btrtl_resume(struct h5 *h5)
+{
+	if (test_bit(H5_WAKEUP_DISABLE, &h5->flags)) {
+		struct h5_btrtl_reprobe *reprobe;
+
+		reprobe = kzalloc(sizeof(*reprobe), GFP_KERNEL);
+		if (!reprobe)
+			return -ENOMEM;
+
+		__module_get(THIS_MODULE);
+
+		INIT_WORK(&reprobe->work, h5_btrtl_reprobe_worker);
+		reprobe->dev = get_device(&h5->hu->serdev->dev);
+		queue_work(system_long_wq, &reprobe->work);
+	} else {
+		gpiod_set_value_cansleep(h5->device_wake_gpio, 1);
+
+		if (test_bit(H5_HW_FLOW_CONTROL, &h5->flags))
+			serdev_device_set_flow_control(h5->hu->serdev, true);
+	}
+
+	return 0;
+}
+
+static const struct acpi_gpio_params btrtl_device_wake_gpios = { 0, 0, false };
+static const struct acpi_gpio_params btrtl_enable_gpios = { 1, 0, false };
+static const struct acpi_gpio_params btrtl_host_wake_gpios = { 2, 0, false };
+static const struct acpi_gpio_mapping acpi_btrtl_gpios[] = {
+	{ "device-wake-gpios", &btrtl_device_wake_gpios, 1 },
+	{ "enable-gpios", &btrtl_enable_gpios, 1 },
+	{ "host-wake-gpios", &btrtl_host_wake_gpios, 1 },
+	{},
+};
+
+static struct h5_vnd rtl_vnd = {
+	.setup		= h5_btrtl_setup,
+	.open		= h5_btrtl_open,
+	.close		= h5_btrtl_close,
+	.suspend	= h5_btrtl_suspend,
+	.resume		= h5_btrtl_resume,
+	.acpi_gpio_map	= acpi_btrtl_gpios,
+	.sizeof_priv    = sizeof(struct btrealtek_data),
+};
+
+static const struct h5_device_data h5_data_rtl8822cs = {
+	.vnd = &rtl_vnd,
+};
+
+static const struct h5_device_data h5_data_rtl8723bs = {
+	.driver_info = H5_INFO_WAKEUP_DISABLE,
+	.vnd = &rtl_vnd,
+};
+#endif
+
+#ifdef CONFIG_ACPI
+static const struct acpi_device_id h5_acpi_match[] = {
+#ifdef CONFIG_BT_HCIUART_RTL
+	{ "OBDA0623", (kernel_ulong_t)&h5_data_rtl8723bs },
+	{ "OBDA8723", (kernel_ulong_t)&h5_data_rtl8723bs },
+#endif
+	{ },
+};
+MODULE_DEVICE_TABLE(acpi, h5_acpi_match);
+#endif
+
+static const struct dev_pm_ops h5_serdev_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(h5_serdev_suspend, h5_serdev_resume)
+	SET_RUNTIME_PM_OPS(h5_serdev_suspend, h5_serdev_resume, NULL)
+};
+
+static const struct of_device_id rtl_bluetooth_of_match[] = {
+#ifdef CONFIG_BT_HCIUART_RTL
+	{ .compatible = "realtek,rtl8822cs-bt",
+	  .data = (const void *)&h5_data_rtl8822cs },
+	{ .compatible = "realtek,rtl8723bs-bt",
+	  .data = (const void *)&h5_data_rtl8723bs },
+	{ .compatible = "realtek,rtl8723cs-bt",
+	  .data = (const void *)&h5_data_rtl8723bs },
+	{ .compatible = "realtek,rtl8723ds-bt",
+	  .data = (const void *)&h5_data_rtl8723bs },
+#endif
+	{ },
+};
+MODULE_DEVICE_TABLE(of, rtl_bluetooth_of_match);
+
+static struct serdev_device_driver h5_serdev_driver = {
+	.probe = h5_serdev_probe,
+	.remove = h5_serdev_remove,
+	.driver = {
+		.name = "hci_uart_h5",
+		.acpi_match_table = ACPI_PTR(h5_acpi_match),
+		.pm = &h5_serdev_pm_ops,
+		.of_match_table = rtl_bluetooth_of_match,
+	},
+};
+
+int __init h5_init(void)
+{
+	serdev_device_driver_register(&h5_serdev_driver);
+	return hci_uart_register_proto(&h5p);
+}
+
 int __exit h5_deinit(void)
 {
+	serdev_device_driver_unregister(&h5_serdev_driver);
 	return hci_uart_unregister_proto(&h5p);
 }

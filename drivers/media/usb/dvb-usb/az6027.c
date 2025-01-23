@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* DVB USB compliant Linux driver for the AZUREWAVE DVB-S/S2 USB2.0 (AZ6027)
  * receiver.
  *
  * Copyright (C) 2009 Adams.Xu <adams.xu@azwave.com.cn>
  *
- *	This program is free software; you can redistribute it and/or modify it
- *	under the terms of the GNU General Public License as published by the Free
- *	Software Foundation, version 2.
- *
- * see Documentation/dvb/README.dvb-usb for more information
+ * see Documentation/driver-api/media/drivers/dvb-usb.rst for more information
  */
 #include "az6027.h"
 
@@ -17,7 +14,7 @@
 
 #include "stb6100.h"
 #include "stb6100_cfg.h"
-#include "dvb_ca_en50221.h"
+#include <media/dvb_ca_en50221.h>
 
 int dvb_usb_az6027_debug;
 module_param_named(debug, dvb_usb_az6027_debug, int, 0644);
@@ -36,70 +33,70 @@ static const struct stb0899_s1_reg az6027_stb0899_s1_init_1[] = {
 	/* 0x0000000b, SYSREG */
 	{ STB0899_DEV_ID		, 0x30 },
 	{ STB0899_DISCNTRL1		, 0x32 },
-	{ STB0899_DISCNTRL2     	, 0x80 },
-	{ STB0899_DISRX_ST0     	, 0x04 },
-	{ STB0899_DISRX_ST1     	, 0x00 },
-	{ STB0899_DISPARITY     	, 0x00 },
+	{ STB0899_DISCNTRL2		, 0x80 },
+	{ STB0899_DISRX_ST0		, 0x04 },
+	{ STB0899_DISRX_ST1		, 0x00 },
+	{ STB0899_DISPARITY		, 0x00 },
 	{ STB0899_DISSTATUS		, 0x20 },
-	{ STB0899_DISF22        	, 0x99 },
-	{ STB0899_DISF22RX      	, 0xa8 },
+	{ STB0899_DISF22		, 0x99 },
+	{ STB0899_DISF22RX		, 0xa8 },
 	/* SYSREG ? */
-	{ STB0899_ACRPRESC      	, 0x11 },
-	{ STB0899_ACRDIV1       	, 0x0a },
-	{ STB0899_ACRDIV2       	, 0x05 },
-	{ STB0899_DACR1         	, 0x00 },
-	{ STB0899_DACR2         	, 0x00 },
-	{ STB0899_OUTCFG        	, 0x00 },
-	{ STB0899_MODECFG       	, 0x00 },
+	{ STB0899_ACRPRESC		, 0x11 },
+	{ STB0899_ACRDIV1		, 0x0a },
+	{ STB0899_ACRDIV2		, 0x05 },
+	{ STB0899_DACR1			, 0x00 },
+	{ STB0899_DACR2			, 0x00 },
+	{ STB0899_OUTCFG		, 0x00 },
+	{ STB0899_MODECFG		, 0x00 },
 	{ STB0899_IRQSTATUS_3		, 0xfe },
 	{ STB0899_IRQSTATUS_2		, 0x03 },
 	{ STB0899_IRQSTATUS_1		, 0x7c },
 	{ STB0899_IRQSTATUS_0		, 0xf4 },
-	{ STB0899_IRQMSK_3      	, 0xf3 },
-	{ STB0899_IRQMSK_2      	, 0xfc },
-	{ STB0899_IRQMSK_1      	, 0xff },
+	{ STB0899_IRQMSK_3		, 0xf3 },
+	{ STB0899_IRQMSK_2		, 0xfc },
+	{ STB0899_IRQMSK_1		, 0xff },
 	{ STB0899_IRQMSK_0		, 0xff },
 	{ STB0899_IRQCFG		, 0x00 },
-	{ STB0899_I2CCFG        	, 0x88 },
-	{ STB0899_I2CRPT        	, 0x58 },
+	{ STB0899_I2CCFG		, 0x88 },
+	{ STB0899_I2CRPT		, 0x58 },
 	{ STB0899_IOPVALUE5		, 0x00 },
 	{ STB0899_IOPVALUE4		, 0x33 },
 	{ STB0899_IOPVALUE3		, 0x6d },
 	{ STB0899_IOPVALUE2		, 0x90 },
 	{ STB0899_IOPVALUE1		, 0x60 },
 	{ STB0899_IOPVALUE0		, 0x00 },
-	{ STB0899_GPIO00CFG     	, 0x82 },
-	{ STB0899_GPIO01CFG     	, 0x82 },
-	{ STB0899_GPIO02CFG     	, 0x82 },
-	{ STB0899_GPIO03CFG     	, 0x82 },
-	{ STB0899_GPIO04CFG     	, 0x82 },
-	{ STB0899_GPIO05CFG     	, 0x82 },
-	{ STB0899_GPIO06CFG     	, 0x82 },
-	{ STB0899_GPIO07CFG     	, 0x82 },
-	{ STB0899_GPIO08CFG     	, 0x82 },
-	{ STB0899_GPIO09CFG     	, 0x82 },
-	{ STB0899_GPIO10CFG     	, 0x82 },
-	{ STB0899_GPIO11CFG     	, 0x82 },
-	{ STB0899_GPIO12CFG     	, 0x82 },
-	{ STB0899_GPIO13CFG     	, 0x82 },
-	{ STB0899_GPIO14CFG     	, 0x82 },
-	{ STB0899_GPIO15CFG     	, 0x82 },
-	{ STB0899_GPIO16CFG     	, 0x82 },
-	{ STB0899_GPIO17CFG     	, 0x82 },
-	{ STB0899_GPIO18CFG     	, 0x82 },
-	{ STB0899_GPIO19CFG     	, 0x82 },
-	{ STB0899_GPIO20CFG     	, 0x82 },
-	{ STB0899_SDATCFG       	, 0xb8 },
-	{ STB0899_SCLTCFG       	, 0xba },
-	{ STB0899_AGCRFCFG      	, 0x1c }, /* 0x11 */
-	{ STB0899_GPIO22        	, 0x82 }, /* AGCBB2CFG */
-	{ STB0899_GPIO21        	, 0x91 }, /* AGCBB1CFG */
-	{ STB0899_DIRCLKCFG     	, 0x82 },
-	{ STB0899_CLKOUT27CFG   	, 0x7e },
-	{ STB0899_STDBYCFG      	, 0x82 },
-	{ STB0899_CS0CFG        	, 0x82 },
-	{ STB0899_CS1CFG        	, 0x82 },
-	{ STB0899_DISEQCOCFG    	, 0x20 },
+	{ STB0899_GPIO00CFG		, 0x82 },
+	{ STB0899_GPIO01CFG		, 0x82 },
+	{ STB0899_GPIO02CFG		, 0x82 },
+	{ STB0899_GPIO03CFG		, 0x82 },
+	{ STB0899_GPIO04CFG		, 0x82 },
+	{ STB0899_GPIO05CFG		, 0x82 },
+	{ STB0899_GPIO06CFG		, 0x82 },
+	{ STB0899_GPIO07CFG		, 0x82 },
+	{ STB0899_GPIO08CFG		, 0x82 },
+	{ STB0899_GPIO09CFG		, 0x82 },
+	{ STB0899_GPIO10CFG		, 0x82 },
+	{ STB0899_GPIO11CFG		, 0x82 },
+	{ STB0899_GPIO12CFG		, 0x82 },
+	{ STB0899_GPIO13CFG		, 0x82 },
+	{ STB0899_GPIO14CFG		, 0x82 },
+	{ STB0899_GPIO15CFG		, 0x82 },
+	{ STB0899_GPIO16CFG		, 0x82 },
+	{ STB0899_GPIO17CFG		, 0x82 },
+	{ STB0899_GPIO18CFG		, 0x82 },
+	{ STB0899_GPIO19CFG		, 0x82 },
+	{ STB0899_GPIO20CFG		, 0x82 },
+	{ STB0899_SDATCFG		, 0xb8 },
+	{ STB0899_SCLTCFG		, 0xba },
+	{ STB0899_AGCRFCFG		, 0x1c }, /* 0x11 */
+	{ STB0899_GPIO22		, 0x82 }, /* AGCBB2CFG */
+	{ STB0899_GPIO21		, 0x91 }, /* AGCBB1CFG */
+	{ STB0899_DIRCLKCFG		, 0x82 },
+	{ STB0899_CLKOUT27CFG		, 0x7e },
+	{ STB0899_STDBYCFG		, 0x82 },
+	{ STB0899_CS0CFG		, 0x82 },
+	{ STB0899_CS1CFG		, 0x82 },
+	{ STB0899_DISEQCOCFG		, 0x20 },
 	{ STB0899_GPIO32CFG		, 0x82 },
 	{ STB0899_GPIO33CFG		, 0x82 },
 	{ STB0899_GPIO34CFG		, 0x82 },
@@ -108,35 +105,35 @@ static const struct stb0899_s1_reg az6027_stb0899_s1_init_1[] = {
 	{ STB0899_GPIO37CFG		, 0x82 },
 	{ STB0899_GPIO38CFG		, 0x82 },
 	{ STB0899_GPIO39CFG		, 0x82 },
-	{ STB0899_NCOARSE       	, 0x17 }, /* 0x15 = 27 Mhz Clock, F/3 = 198MHz, F/6 = 99MHz */
-	{ STB0899_SYNTCTRL      	, 0x02 }, /* 0x00 = CLK from CLKI, 0x02 = CLK from XTALI */
-	{ STB0899_FILTCTRL      	, 0x00 },
-	{ STB0899_SYSCTRL       	, 0x01 },
-	{ STB0899_STOPCLK1      	, 0x20 },
-	{ STB0899_STOPCLK2      	, 0x00 },
+	{ STB0899_NCOARSE		, 0x17 }, /* 0x15 = 27 Mhz Clock, F/3 = 198MHz, F/6 = 99MHz */
+	{ STB0899_SYNTCTRL		, 0x02 }, /* 0x00 = CLK from CLKI, 0x02 = CLK from XTALI */
+	{ STB0899_FILTCTRL		, 0x00 },
+	{ STB0899_SYSCTRL		, 0x01 },
+	{ STB0899_STOPCLK1		, 0x20 },
+	{ STB0899_STOPCLK2		, 0x00 },
 	{ STB0899_INTBUFSTATUS		, 0x00 },
-	{ STB0899_INTBUFCTRL    	, 0x0a },
+	{ STB0899_INTBUFCTRL		, 0x0a },
 	{ 0xffff			, 0xff },
 };
 
 static const struct stb0899_s1_reg az6027_stb0899_s1_init_3[] = {
-	{ STB0899_DEMOD         	, 0x00 },
-	{ STB0899_RCOMPC        	, 0xc9 },
-	{ STB0899_AGC1CN        	, 0x01 },
-	{ STB0899_AGC1REF       	, 0x10 },
+	{ STB0899_DEMOD			, 0x00 },
+	{ STB0899_RCOMPC		, 0xc9 },
+	{ STB0899_AGC1CN		, 0x01 },
+	{ STB0899_AGC1REF		, 0x10 },
 	{ STB0899_RTC			, 0x23 },
-	{ STB0899_TMGCFG        	, 0x4e },
-	{ STB0899_AGC2REF       	, 0x34 },
-	{ STB0899_TLSR          	, 0x84 },
-	{ STB0899_CFD           	, 0xf7 },
+	{ STB0899_TMGCFG		, 0x4e },
+	{ STB0899_AGC2REF		, 0x34 },
+	{ STB0899_TLSR			, 0x84 },
+	{ STB0899_CFD			, 0xf7 },
 	{ STB0899_ACLC			, 0x87 },
-	{ STB0899_BCLC          	, 0x94 },
-	{ STB0899_EQON          	, 0x41 },
-	{ STB0899_LDT           	, 0xf1 },
-	{ STB0899_LDT2          	, 0xe3 },
-	{ STB0899_EQUALREF      	, 0xb4 },
-	{ STB0899_TMGRAMP       	, 0x10 },
-	{ STB0899_TMGTHD        	, 0x30 },
+	{ STB0899_BCLC			, 0x94 },
+	{ STB0899_EQON			, 0x41 },
+	{ STB0899_LDT			, 0xf1 },
+	{ STB0899_LDT2			, 0xe3 },
+	{ STB0899_EQUALREF		, 0xb4 },
+	{ STB0899_TMGRAMP		, 0x10 },
+	{ STB0899_TMGTHD		, 0x30 },
 	{ STB0899_IDCCOMP		, 0xfd },
 	{ STB0899_QDCCOMP		, 0xff },
 	{ STB0899_POWERI		, 0x0c },
@@ -155,12 +152,12 @@ static const struct stb0899_s1_reg az6027_stb0899_s1_init_3[] = {
 	{ STB0899_NIRL			, 0x80 },
 	{ STB0899_ISYMB			, 0x1d },
 	{ STB0899_QSYMB			, 0xa6 },
-	{ STB0899_SFRH          	, 0x2f },
-	{ STB0899_SFRM          	, 0x68 },
-	{ STB0899_SFRL          	, 0x40 },
-	{ STB0899_SFRUPH        	, 0x2f },
-	{ STB0899_SFRUPM        	, 0x68 },
-	{ STB0899_SFRUPL        	, 0x40 },
+	{ STB0899_SFRH			, 0x2f },
+	{ STB0899_SFRM			, 0x68 },
+	{ STB0899_SFRL			, 0x40 },
+	{ STB0899_SFRUPH		, 0x2f },
+	{ STB0899_SFRUPM		, 0x68 },
+	{ STB0899_SFRUPL		, 0x40 },
 	{ STB0899_EQUAI1		, 0x02 },
 	{ STB0899_EQUAQ1		, 0xff },
 	{ STB0899_EQUAI2		, 0x04 },
@@ -172,7 +169,7 @@ static const struct stb0899_s1_reg az6027_stb0899_s1_init_3[] = {
 	{ STB0899_EQUAI5		, 0x08 },
 	{ STB0899_EQUAQ5		, 0xf5 },
 	{ STB0899_DSTATUS2		, 0x00 },
-	{ STB0899_VSTATUS       	, 0x00 },
+	{ STB0899_VSTATUS		, 0x00 },
 	{ STB0899_VERROR		, 0x86 },
 	{ STB0899_IQSWAP		, 0x2a },
 	{ STB0899_ECNT1M		, 0x00 },
@@ -181,26 +178,26 @@ static const struct stb0899_s1_reg az6027_stb0899_s1_init_3[] = {
 	{ STB0899_ECNT2L		, 0x00 },
 	{ STB0899_ECNT3M		, 0x0a },
 	{ STB0899_ECNT3L		, 0xad },
-	{ STB0899_FECAUTO1      	, 0x06 },
+	{ STB0899_FECAUTO1		, 0x06 },
 	{ STB0899_FECM			, 0x01 },
-	{ STB0899_VTH12         	, 0xb0 },
-	{ STB0899_VTH23         	, 0x7a },
+	{ STB0899_VTH12			, 0xb0 },
+	{ STB0899_VTH23			, 0x7a },
 	{ STB0899_VTH34			, 0x58 },
-	{ STB0899_VTH56         	, 0x38 },
-	{ STB0899_VTH67         	, 0x34 },
-	{ STB0899_VTH78         	, 0x24 },
-	{ STB0899_PRVIT         	, 0xff },
-	{ STB0899_VITSYNC       	, 0x19 },
-	{ STB0899_RSULC         	, 0xb1 }, /* DVB = 0xb1, DSS = 0xa1 */
-	{ STB0899_TSULC         	, 0x42 },
-	{ STB0899_RSLLC         	, 0x41 },
+	{ STB0899_VTH56			, 0x38 },
+	{ STB0899_VTH67			, 0x34 },
+	{ STB0899_VTH78			, 0x24 },
+	{ STB0899_PRVIT			, 0xff },
+	{ STB0899_VITSYNC		, 0x19 },
+	{ STB0899_RSULC			, 0xb1 }, /* DVB = 0xb1, DSS = 0xa1 */
+	{ STB0899_TSULC			, 0x42 },
+	{ STB0899_RSLLC			, 0x41 },
 	{ STB0899_TSLPL			, 0x12 },
-	{ STB0899_TSCFGH        	, 0x0c },
-	{ STB0899_TSCFGM        	, 0x00 },
-	{ STB0899_TSCFGL        	, 0x00 },
+	{ STB0899_TSCFGH		, 0x0c },
+	{ STB0899_TSCFGM		, 0x00 },
+	{ STB0899_TSCFGL		, 0x00 },
 	{ STB0899_TSOUT			, 0x69 }, /* 0x0d for CAM */
-	{ STB0899_RSSYNCDEL     	, 0x00 },
-	{ STB0899_TSINHDELH     	, 0x02 },
+	{ STB0899_RSSYNCDEL		, 0x00 },
+	{ STB0899_TSINHDELH		, 0x02 },
 	{ STB0899_TSINHDELM		, 0x00 },
 	{ STB0899_TSINHDELL		, 0x00 },
 	{ STB0899_TSLLSTKM		, 0x1b },
@@ -211,18 +208,18 @@ static const struct stb0899_s1_reg az6027_stb0899_s1_init_3[] = {
 	{ STB0899_PCKLENLL		, 0xcc },
 	{ STB0899_RSPCKLEN		, 0xbd },
 	{ STB0899_TSSTATUS		, 0x90 },
-	{ STB0899_ERRCTRL1      	, 0xb6 },
-	{ STB0899_ERRCTRL2      	, 0x95 },
-	{ STB0899_ERRCTRL3      	, 0x8d },
+	{ STB0899_ERRCTRL1		, 0xb6 },
+	{ STB0899_ERRCTRL2		, 0x95 },
+	{ STB0899_ERRCTRL3		, 0x8d },
 	{ STB0899_DMONMSK1		, 0x27 },
 	{ STB0899_DMONMSK0		, 0x03 },
-	{ STB0899_DEMAPVIT      	, 0x5c },
+	{ STB0899_DEMAPVIT		, 0x5c },
 	{ STB0899_PLPARM		, 0x19 },
-	{ STB0899_PDELCTRL      	, 0x48 },
-	{ STB0899_PDELCTRL2     	, 0x00 },
-	{ STB0899_BBHCTRL1      	, 0x00 },
-	{ STB0899_BBHCTRL2      	, 0x00 },
-	{ STB0899_HYSTTHRESH    	, 0x77 },
+	{ STB0899_PDELCTRL		, 0x48 },
+	{ STB0899_PDELCTRL2		, 0x00 },
+	{ STB0899_BBHCTRL1		, 0x00 },
+	{ STB0899_BBHCTRL2		, 0x00 },
+	{ STB0899_HYSTTHRESH		, 0x77 },
 	{ STB0899_MATCSTM		, 0x00 },
 	{ STB0899_MATCSTL		, 0x00 },
 	{ STB0899_UPLCSTM		, 0x00 },
@@ -261,7 +258,7 @@ static struct stb0899_config az6027_stb0899_config = {
 	.init_s2_fec		= stb0899_s2_init_4,
 	.init_tst		= stb0899_s1_init_5,
 
-	.demod_address 		= 0xd0, /* 0x68, 0xd0 >> 1 */
+	.demod_address		= 0xd0, /* 0x68, 0xd0 >> 1 */
 
 	.xtal_freq		= 27000000,
 	.inversion		= IQ_SWAP_ON,
@@ -394,6 +391,7 @@ static struct rc_map_table rc_map_az6027_table[] = {
 /* remote control stuff (does not work with my box) */
 static int az6027_rc_query(struct dvb_usb_device *d, u32 *event, int *state)
 {
+	*state = REMOTE_NO_KEY_PRESSED;
 	return 0;
 }
 
@@ -409,8 +407,8 @@ static int az6027_ci_read_attribute_mem(struct dvb_ca_en50221 *ca,
 					int slot,
 					int address)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
-	struct az6027_device_state *state = (struct az6027_device_state *)d->priv;
+	struct dvb_usb_device *d = ca->data;
+	struct az6027_device_state *state = d->priv;
 
 	int ret;
 	u8 req;
@@ -451,8 +449,8 @@ static int az6027_ci_write_attribute_mem(struct dvb_ca_en50221 *ca,
 					 int address,
 					 u8 value)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
-	struct az6027_device_state *state = (struct az6027_device_state *)d->priv;
+	struct dvb_usb_device *d = ca->data;
+	struct az6027_device_state *state = d->priv;
 
 	int ret;
 	u8 req;
@@ -482,8 +480,8 @@ static int az6027_ci_read_cam_control(struct dvb_ca_en50221 *ca,
 				      int slot,
 				      u8 address)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
-	struct az6027_device_state *state = (struct az6027_device_state *)d->priv;
+	struct dvb_usb_device *d = ca->data;
+	struct az6027_device_state *state = d->priv;
 
 	int ret;
 	u8 req;
@@ -528,8 +526,8 @@ static int az6027_ci_write_cam_control(struct dvb_ca_en50221 *ca,
 				       u8 address,
 				       u8 value)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
-	struct az6027_device_state *state = (struct az6027_device_state *)d->priv;
+	struct dvb_usb_device *d = ca->data;
+	struct az6027_device_state *state = d->priv;
 
 	int ret;
 	u8 req;
@@ -559,7 +557,7 @@ failed:
 
 static int CI_CamReady(struct dvb_ca_en50221 *ca, int slot)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
+	struct dvb_usb_device *d = ca->data;
 
 	int ret;
 	u8 req;
@@ -590,8 +588,8 @@ static int CI_CamReady(struct dvb_ca_en50221 *ca, int slot)
 
 static int az6027_ci_slot_reset(struct dvb_ca_en50221 *ca, int slot)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
-	struct az6027_device_state *state = (struct az6027_device_state *)d->priv;
+	struct dvb_usb_device *d = ca->data;
+	struct az6027_device_state *state = d->priv;
 
 	int ret, i;
 	u8 req;
@@ -646,8 +644,8 @@ static int az6027_ci_slot_shutdown(struct dvb_ca_en50221 *ca, int slot)
 
 static int az6027_ci_slot_ts_enable(struct dvb_ca_en50221 *ca, int slot)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
-	struct az6027_device_state *state = (struct az6027_device_state *)d->priv;
+	struct dvb_usb_device *d = ca->data;
+	struct az6027_device_state *state = d->priv;
 
 	int ret;
 	u8 req;
@@ -675,8 +673,8 @@ failed:
 
 static int az6027_ci_poll_slot_status(struct dvb_ca_en50221 *ca, int slot, int open)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
-	struct az6027_device_state *state = (struct az6027_device_state *)d->priv;
+	struct dvb_usb_device *d = ca->data;
+	struct az6027_device_state *state = d->priv;
 	int ret;
 	u8 req;
 	u16 value;
@@ -721,7 +719,7 @@ static void az6027_ci_uninit(struct dvb_usb_device *d)
 	if (NULL == d)
 		return;
 
-	state = (struct az6027_device_state *)d->priv;
+	state = d->priv;
 	if (NULL == state)
 		return;
 
@@ -737,7 +735,7 @@ static void az6027_ci_uninit(struct dvb_usb_device *d)
 static int az6027_ci_init(struct dvb_usb_adapter *a)
 {
 	struct dvb_usb_device *d = a->dev;
-	struct az6027_device_state *state = (struct az6027_device_state *)d->priv;
+	struct az6027_device_state *state = d->priv;
 	int ret;
 
 	deb_info("%s", __func__);
@@ -778,7 +776,8 @@ static int az6027_read_mac_addr(struct dvb_usb_device *d, u8 mac[6])
 }
 */
 
-static int az6027_set_voltage(struct dvb_frontend *fe, fe_sec_voltage_t voltage)
+static int az6027_set_voltage(struct dvb_frontend *fe,
+			      enum fe_sec_voltage voltage)
 {
 
 	u8 buf;
@@ -976,6 +975,10 @@ static int az6027_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[], int n
 		if (msg[i].addr == 0x99) {
 			req = 0xBE;
 			index = 0;
+			if (msg[i].len < 1) {
+				i = -EOPNOTSUPP;
+				break;
+			}
 			value = msg[i].buf[0] & 0x00ff;
 			length = 1;
 			az6027_usb_out_op(d, req, value, index, data, length);
@@ -985,6 +988,10 @@ static int az6027_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[], int n
 			/* write/read request */
 			if (i + 1 < num && (msg[i + 1].flags & I2C_M_RD)) {
 				req = 0xB9;
+				if (msg[i].len < 1) {
+					i = -EOPNOTSUPP;
+					break;
+				}
 				index = (((msg[i].buf[0] << 8) & 0xff00) | (msg[i].buf[1] & 0x00ff));
 				value = msg[i].addr + (msg[i].len << 8);
 				length = msg[i + 1].len + 6;
@@ -998,6 +1005,10 @@ static int az6027_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[], int n
 
 				/* demod 16bit addr */
 				req = 0xBD;
+				if (msg[i].len < 1) {
+					i = -EOPNOTSUPP;
+					break;
+				}
 				index = (((msg[i].buf[0] << 8) & 0xff00) | (msg[i].buf[1] & 0x00ff));
 				value = msg[i].addr + (2 << 8);
 				length = msg[i].len - 2;
@@ -1023,6 +1034,10 @@ static int az6027_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[], int n
 			} else {
 
 				req = 0xBD;
+				if (msg[i].len < 1) {
+					i = -EOPNOTSUPP;
+					break;
+				}
 				index = msg[i].buf[0] & 0x00FF;
 				value = msg[i].addr + (1 << 8);
 				length = msg[i].len - 1;
@@ -1053,8 +1068,8 @@ static struct i2c_algorithm az6027_i2c_algo = {
 };
 
 static int az6027_identify_state(struct usb_device *udev,
-				 struct dvb_usb_device_properties *props,
-				 struct dvb_usb_device_description **desc,
+				 const struct dvb_usb_device_properties *props,
+				 const struct dvb_usb_device_description **desc,
 				 int *cold)
 {
 	u8 *b;
@@ -1081,14 +1096,27 @@ static int az6027_identify_state(struct usb_device *udev,
 }
 
 
+enum {
+	AZUREWAVE_AZ6027,
+	TERRATEC_DVBS2CI_V1,
+	TERRATEC_DVBS2CI_V2,
+	TECHNISAT_USB2_HDCI_V1,
+	TECHNISAT_USB2_HDCI_V2,
+	ELGATO_EYETV_SAT,
+	ELGATO_EYETV_SAT_V2,
+	ELGATO_EYETV_SAT_V3,
+};
+
 static struct usb_device_id az6027_usb_table[] = {
-	{ USB_DEVICE(USB_VID_AZUREWAVE, USB_PID_AZUREWAVE_AZ6027) },
-	{ USB_DEVICE(USB_VID_TERRATEC,  USB_PID_TERRATEC_DVBS2CI_V1) },
-	{ USB_DEVICE(USB_VID_TERRATEC,  USB_PID_TERRATEC_DVBS2CI_V2) },
-	{ USB_DEVICE(USB_VID_TECHNISAT, USB_PID_TECHNISAT_USB2_HDCI_V1) },
-	{ USB_DEVICE(USB_VID_TECHNISAT, USB_PID_TECHNISAT_USB2_HDCI_V2) },
-	{ USB_DEVICE(USB_VID_ELGATO, USB_PID_ELGATO_EYETV_SAT) },
-	{ },
+	DVB_USB_DEV(AZUREWAVE, AZUREWAVE_AZ6027),
+	DVB_USB_DEV(TERRATEC, TERRATEC_DVBS2CI_V1),
+	DVB_USB_DEV(TERRATEC, TERRATEC_DVBS2CI_V2),
+	DVB_USB_DEV(TECHNISAT, TECHNISAT_USB2_HDCI_V1),
+	DVB_USB_DEV(TECHNISAT, TECHNISAT_USB2_HDCI_V2),
+	DVB_USB_DEV(ELGATO, ELGATO_EYETV_SAT),
+	DVB_USB_DEV(ELGATO, ELGATO_EYETV_SAT_V2),
+	DVB_USB_DEV(ELGATO, ELGATO_EYETV_SAT_V3),
+	{ }
 };
 
 MODULE_DEVICE_TABLE(usb, az6027_usb_table);
@@ -1136,31 +1164,39 @@ static struct dvb_usb_device_properties az6027_properties = {
 
 	.i2c_algo         = &az6027_i2c_algo,
 
-	.num_device_descs = 6,
+	.num_device_descs = 8,
 	.devices = {
 		{
 			.name = "AZUREWAVE DVB-S/S2 USB2.0 (AZ6027)",
-			.cold_ids = { &az6027_usb_table[0], NULL },
+			.cold_ids = { &az6027_usb_table[AZUREWAVE_AZ6027], NULL },
 			.warm_ids = { NULL },
 		}, {
 			.name = "TERRATEC S7",
-			.cold_ids = { &az6027_usb_table[1], NULL },
+			.cold_ids = { &az6027_usb_table[TERRATEC_DVBS2CI_V1], NULL },
 			.warm_ids = { NULL },
 		}, {
 			.name = "TERRATEC S7 MKII",
-			.cold_ids = { &az6027_usb_table[2], NULL },
+			.cold_ids = { &az6027_usb_table[TERRATEC_DVBS2CI_V2], NULL },
 			.warm_ids = { NULL },
 		}, {
 			.name = "Technisat SkyStar USB 2 HD CI",
-			.cold_ids = { &az6027_usb_table[3], NULL },
+			.cold_ids = { &az6027_usb_table[TECHNISAT_USB2_HDCI_V1], NULL },
 			.warm_ids = { NULL },
 		}, {
 			.name = "Technisat SkyStar USB 2 HD CI",
-			.cold_ids = { &az6027_usb_table[4], NULL },
+			.cold_ids = { &az6027_usb_table[TECHNISAT_USB2_HDCI_V2], NULL },
 			.warm_ids = { NULL },
 		}, {
 			.name = "Elgato EyeTV Sat",
-			.cold_ids = { &az6027_usb_table[5], NULL },
+			.cold_ids = { &az6027_usb_table[ELGATO_EYETV_SAT], NULL },
+			.warm_ids = { NULL },
+		}, {
+			.name = "Elgato EyeTV Sat",
+			.cold_ids = { &az6027_usb_table[ELGATO_EYETV_SAT_V2], NULL },
+			.warm_ids = { NULL },
+		}, {
+			.name = "Elgato EyeTV Sat",
+			.cold_ids = { &az6027_usb_table[ELGATO_EYETV_SAT_V3], NULL },
 			.warm_ids = { NULL },
 		},
 		{ NULL },
@@ -1170,9 +1206,9 @@ static struct dvb_usb_device_properties az6027_properties = {
 /* usb specific object needed to register this driver with the usb subsystem */
 static struct usb_driver az6027_usb_driver = {
 	.name		= "dvb_usb_az6027",
-	.probe 		= az6027_usb_probe,
-	.disconnect 	= az6027_usb_disconnect,
-	.id_table 	= az6027_usb_table,
+	.probe		= az6027_usb_probe,
+	.disconnect	= az6027_usb_disconnect,
+	.id_table	= az6027_usb_table,
 };
 
 module_usb_driver(az6027_usb_driver);

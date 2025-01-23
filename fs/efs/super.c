@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * super.c
  *
@@ -12,6 +13,7 @@
 #include <linux/slab.h>
 #include <linux/buffer_head.h>
 #include <linux/vfs.h>
+#include <linux/blkdev.h>
 
 #include "efs.h"
 #include <linux/efs_vh.h>
@@ -67,21 +69,15 @@ static struct kmem_cache * efs_inode_cachep;
 static struct inode *efs_alloc_inode(struct super_block *sb)
 {
 	struct efs_inode_info *ei;
-	ei = (struct efs_inode_info *)kmem_cache_alloc(efs_inode_cachep, GFP_KERNEL);
+	ei = alloc_inode_sb(sb, efs_inode_cachep, GFP_KERNEL);
 	if (!ei)
 		return NULL;
 	return &ei->vfs_inode;
 }
 
-static void efs_i_callback(struct rcu_head *head)
+static void efs_free_inode(struct inode *inode)
 {
-	struct inode *inode = container_of(head, struct inode, i_rcu);
 	kmem_cache_free(efs_inode_cachep, INODE_INFO(inode));
-}
-
-static void efs_destroy_inode(struct inode *inode)
-{
-	call_rcu(&inode->i_rcu, efs_i_callback);
 }
 
 static void init_once(void *foo)
@@ -91,12 +87,12 @@ static void init_once(void *foo)
 	inode_init_once(&ei->vfs_inode);
 }
 
-static int init_inodecache(void)
+static int __init init_inodecache(void)
 {
 	efs_inode_cachep = kmem_cache_create("efs_inode_cache",
-				sizeof(struct efs_inode_info),
-				0, SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD,
-				init_once);
+				sizeof(struct efs_inode_info), 0,
+				SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD|
+				SLAB_ACCOUNT, init_once);
 	if (efs_inode_cachep == NULL)
 		return -ENOMEM;
 	return 0;
@@ -114,13 +110,14 @@ static void destroy_inodecache(void)
 
 static int efs_remount(struct super_block *sb, int *flags, char *data)
 {
-	*flags |= MS_RDONLY;
+	sync_filesystem(sb);
+	*flags |= SB_RDONLY;
 	return 0;
 }
 
 static const struct super_operations efs_superblock_operations = {
 	.alloc_inode	= efs_alloc_inode,
-	.destroy_inode	= efs_destroy_inode,
+	.free_inode	= efs_free_inode,
 	.statfs		= efs_statfs,
 	.remount_fs	= efs_remount,
 };
@@ -133,7 +130,7 @@ static const struct export_operations efs_export_ops = {
 
 static int __init init_efs_fs(void) {
 	int err;
-	printk("EFS: "EFS_VERSION" - http://aeschi.ch.eu.org/efs/\n");
+	pr_info(EFS_VERSION" - http://aeschi.ch.eu.org/efs/\n");
 	err = init_inodecache();
 	if (err)
 		goto out1;
@@ -178,12 +175,12 @@ static efs_block_t efs_validate_vh(struct volume_header *vh) {
 		csum += be32_to_cpu(cs);
 	}
 	if (csum) {
-		printk(KERN_INFO "EFS: SGI disklabel: checksum bad, label corrupted\n");
+		pr_warn("SGI disklabel: checksum bad, label corrupted\n");
 		return 0;
 	}
 
 #ifdef DEBUG
-	printk(KERN_DEBUG "EFS: bf: \"%16s\"\n", vh->vh_bootfile);
+	pr_debug("bf: \"%16s\"\n", vh->vh_bootfile);
 
 	for(i = 0; i < NVDIR; i++) {
 		int	j;
@@ -195,9 +192,8 @@ static efs_block_t efs_validate_vh(struct volume_header *vh) {
 		name[j] = (char) 0;
 
 		if (name[0]) {
-			printk(KERN_DEBUG "EFS: vh: %8s block: 0x%08x size: 0x%08x\n",
-				name,
-				(int) be32_to_cpu(vh->vh_vd[i].vd_lbn),
+			pr_debug("vh: %8s block: 0x%08x size: 0x%08x\n",
+				name, (int) be32_to_cpu(vh->vh_vd[i].vd_lbn),
 				(int) be32_to_cpu(vh->vh_vd[i].vd_nbytes));
 		}
 	}
@@ -210,12 +206,11 @@ static efs_block_t efs_validate_vh(struct volume_header *vh) {
 		}
 #ifdef DEBUG
 		if (be32_to_cpu(vh->vh_pt[i].pt_nblks)) {
-			printk(KERN_DEBUG "EFS: pt %2d: start: %08d size: %08d type: 0x%02x (%s)\n",
-				i,
-				(int) be32_to_cpu(vh->vh_pt[i].pt_firstlbn),
-				(int) be32_to_cpu(vh->vh_pt[i].pt_nblks),
-				pt_type,
-				(pt_entry->pt_name) ? pt_entry->pt_name : "unknown");
+			pr_debug("pt %2d: start: %08d size: %08d type: 0x%02x (%s)\n",
+				 i, (int)be32_to_cpu(vh->vh_pt[i].pt_firstlbn),
+				 (int)be32_to_cpu(vh->vh_pt[i].pt_nblks),
+				 pt_type, (pt_entry->pt_name) ?
+				 pt_entry->pt_name : "unknown");
 		}
 #endif
 		if (IS_EFS(pt_type)) {
@@ -225,11 +220,10 @@ static efs_block_t efs_validate_vh(struct volume_header *vh) {
 	}
 
 	if (slice == -1) {
-		printk(KERN_NOTICE "EFS: partition table contained no EFS partitions\n");
+		pr_notice("partition table contained no EFS partitions\n");
 #ifdef DEBUG
 	} else {
-		printk(KERN_INFO "EFS: using slice %d (type %s, offset 0x%x)\n",
-			slice,
+		pr_info("using slice %d (type %s, offset 0x%x)\n", slice,
 			(pt_entry->pt_name) ? pt_entry->pt_name : "unknown",
 			sblock);
 #endif
@@ -264,10 +258,12 @@ static int efs_fill_super(struct super_block *s, void *d, int silent)
 	if (!sb)
 		return -ENOMEM;
 	s->s_fs_info = sb;
+	s->s_time_min = 0;
+	s->s_time_max = U32_MAX;
  
 	s->s_magic		= EFS_SUPER_MAGIC;
 	if (!sb_set_blocksize(s, EFS_BLOCKSIZE)) {
-		printk(KERN_ERR "EFS: device does not support %d byte blocks\n",
+		pr_err("device does not support %d byte blocks\n",
 			EFS_BLOCKSIZE);
 		return -EINVAL;
 	}
@@ -276,8 +272,8 @@ static int efs_fill_super(struct super_block *s, void *d, int silent)
 	bh = sb_bread(s, 0);
 
 	if (!bh) {
-		printk(KERN_ERR "EFS: cannot read volume header\n");
-		return -EINVAL;
+		pr_err("cannot read volume header\n");
+		return -EIO;
 	}
 
 	/*
@@ -294,36 +290,37 @@ static int efs_fill_super(struct super_block *s, void *d, int silent)
 
 	bh = sb_bread(s, sb->fs_start + EFS_SUPER);
 	if (!bh) {
-		printk(KERN_ERR "EFS: cannot read superblock\n");
-		return -EINVAL;
+		pr_err("cannot read superblock\n");
+		return -EIO;
 	}
 		
 	if (efs_validate_super(sb, (struct efs_super *) bh->b_data)) {
 #ifdef DEBUG
-		printk(KERN_WARNING "EFS: invalid superblock at block %u\n", sb->fs_start + EFS_SUPER);
+		pr_warn("invalid superblock at block %u\n",
+			sb->fs_start + EFS_SUPER);
 #endif
 		brelse(bh);
 		return -EINVAL;
 	}
 	brelse(bh);
 
-	if (!(s->s_flags & MS_RDONLY)) {
+	if (!sb_rdonly(s)) {
 #ifdef DEBUG
-		printk(KERN_INFO "EFS: forcing read-only mode\n");
+		pr_info("forcing read-only mode\n");
 #endif
-		s->s_flags |= MS_RDONLY;
+		s->s_flags |= SB_RDONLY;
 	}
 	s->s_op   = &efs_superblock_operations;
 	s->s_export_op = &efs_export_ops;
 	root = efs_iget(s, EFS_ROOTINODE);
 	if (IS_ERR(root)) {
-		printk(KERN_ERR "EFS: get root inode failed\n");
+		pr_err("get root inode failed\n");
 		return PTR_ERR(root);
 	}
 
 	s->s_root = d_make_root(root);
 	if (!(s->s_root)) {
-		printk(KERN_ERR "EFS: get root dentry failed\n");
+		pr_err("get root dentry failed\n");
 		return -ENOMEM;
 	}
 
@@ -345,8 +342,7 @@ static int efs_statfs(struct dentry *dentry, struct kstatfs *buf) {
 			sbi->inode_blocks *
 			(EFS_BLOCKSIZE / sizeof(struct efs_dinode));
 	buf->f_ffree   = sbi->inode_free;	/* free inodes */
-	buf->f_fsid.val[0] = (u32)id;
-	buf->f_fsid.val[1] = (u32)(id >> 32);
+	buf->f_fsid    = u64_to_fsid(id);
 	buf->f_namelen = EFS_MAXNAMELEN;	/* max filename length */
 
 	return 0;

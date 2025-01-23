@@ -1,62 +1,93 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (C) 2013 Boris BREZILLON <b.brezillon@overkiz.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
  */
 
 #include <linux/clk-provider.h>
 #include <linux/clkdev.h>
 #include <linux/clk/at91_pmc.h>
-#include <linux/interrupt.h>
-#include <linux/irq.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
-#include <linux/io.h>
-#include <linux/sched.h>
-#include <linux/wait.h>
+#include <linux/mfd/syscon.h>
+#include <linux/regmap.h>
+#include <soc/at91/atmel-sfr.h>
 
 #include "pmc.h"
 
-#define UTMI_FIXED_MUL		40
+/*
+ * The purpose of this clock is to generate a 480 MHz signal. A different
+ * rate can't be configured.
+ */
+#define UTMI_RATE	480000000
 
 struct clk_utmi {
 	struct clk_hw hw;
-	struct at91_pmc *pmc;
-	unsigned int irq;
-	wait_queue_head_t wait;
+	struct regmap *regmap_pmc;
+	struct regmap *regmap_sfr;
+	struct at91_clk_pms pms;
 };
 
 #define to_clk_utmi(hw) container_of(hw, struct clk_utmi, hw)
 
-static irqreturn_t clk_utmi_irq_handler(int irq, void *dev_id)
+static inline bool clk_utmi_ready(struct regmap *regmap)
 {
-	struct clk_utmi *utmi = (struct clk_utmi *)dev_id;
+	unsigned int status;
 
-	wake_up(&utmi->wait);
-	disable_irq_nosync(utmi->irq);
+	regmap_read(regmap, AT91_PMC_SR, &status);
 
-	return IRQ_HANDLED;
+	return status & AT91_PMC_LOCKU;
 }
 
 static int clk_utmi_prepare(struct clk_hw *hw)
 {
+	struct clk_hw *hw_parent;
 	struct clk_utmi *utmi = to_clk_utmi(hw);
-	struct at91_pmc *pmc = utmi->pmc;
-	u32 tmp = at91_pmc_read(AT91_CKGR_UCKR) | AT91_PMC_UPLLEN |
-		  AT91_PMC_UPLLCOUNT | AT91_PMC_BIASEN;
+	unsigned int uckr = AT91_PMC_UPLLEN | AT91_PMC_UPLLCOUNT |
+			    AT91_PMC_BIASEN;
+	unsigned int utmi_ref_clk_freq;
+	unsigned long parent_rate;
 
-	pmc_write(pmc, AT91_CKGR_UCKR, tmp);
+	/*
+	 * If mainck rate is different from 12 MHz, we have to configure the
+	 * FREQ field of the SFR_UTMICKTRIM register to generate properly
+	 * the utmi clock.
+	 */
+	hw_parent = clk_hw_get_parent(hw);
+	parent_rate = clk_hw_get_rate(hw_parent);
 
-	while (!(pmc_read(pmc, AT91_PMC_SR) & AT91_PMC_LOCKU)) {
-		enable_irq(utmi->irq);
-		wait_event(utmi->wait,
-			   pmc_read(pmc, AT91_PMC_SR) & AT91_PMC_LOCKU);
+	switch (parent_rate) {
+	case 12000000:
+		utmi_ref_clk_freq = 0;
+		break;
+	case 16000000:
+		utmi_ref_clk_freq = 1;
+		break;
+	case 24000000:
+		utmi_ref_clk_freq = 2;
+		break;
+	/*
+	 * Not supported on SAMA5D2 but it's not an issue since MAINCK
+	 * maximum value is 24 MHz.
+	 */
+	case 48000000:
+		utmi_ref_clk_freq = 3;
+		break;
+	default:
+		pr_err("UTMICK: unsupported mainck rate\n");
+		return -EINVAL;
 	}
+
+	if (utmi->regmap_sfr) {
+		regmap_update_bits(utmi->regmap_sfr, AT91_SFR_UTMICKTRIM,
+				   AT91_UTMICKTRIM_FREQ, utmi_ref_clk_freq);
+	} else if (utmi_ref_clk_freq) {
+		pr_err("UTMICK: sfr node required\n");
+		return -EINVAL;
+	}
+
+	regmap_update_bits(utmi->regmap_pmc, AT91_CKGR_UCKR, uckr, uckr);
+
+	while (!clk_utmi_ready(utmi->regmap_pmc))
+		cpu_relax();
 
 	return 0;
 }
@@ -64,25 +95,40 @@ static int clk_utmi_prepare(struct clk_hw *hw)
 static int clk_utmi_is_prepared(struct clk_hw *hw)
 {
 	struct clk_utmi *utmi = to_clk_utmi(hw);
-	struct at91_pmc *pmc = utmi->pmc;
 
-	return !!(pmc_read(pmc, AT91_PMC_SR) & AT91_PMC_LOCKU);
+	return clk_utmi_ready(utmi->regmap_pmc);
 }
 
 static void clk_utmi_unprepare(struct clk_hw *hw)
 {
 	struct clk_utmi *utmi = to_clk_utmi(hw);
-	struct at91_pmc *pmc = utmi->pmc;
-	u32 tmp = at91_pmc_read(AT91_CKGR_UCKR) & ~AT91_PMC_UPLLEN;
 
-	pmc_write(pmc, AT91_CKGR_UCKR, tmp);
+	regmap_update_bits(utmi->regmap_pmc, AT91_CKGR_UCKR,
+			   AT91_PMC_UPLLEN, 0);
 }
 
 static unsigned long clk_utmi_recalc_rate(struct clk_hw *hw,
 					  unsigned long parent_rate)
 {
-	/* UTMI clk is a fixed clk multiplier */
-	return parent_rate * UTMI_FIXED_MUL;
+	/* UTMI clk rate is fixed. */
+	return UTMI_RATE;
+}
+
+static int clk_utmi_save_context(struct clk_hw *hw)
+{
+	struct clk_utmi *utmi = to_clk_utmi(hw);
+
+	utmi->pms.status = clk_utmi_is_prepared(hw);
+
+	return 0;
+}
+
+static void clk_utmi_restore_context(struct clk_hw *hw)
+{
+	struct clk_utmi *utmi = to_clk_utmi(hw);
+
+	if (utmi->pms.status)
+		clk_utmi_prepare(hw);
 }
 
 static const struct clk_ops utmi_ops = {
@@ -90,70 +136,161 @@ static const struct clk_ops utmi_ops = {
 	.unprepare = clk_utmi_unprepare,
 	.is_prepared = clk_utmi_is_prepared,
 	.recalc_rate = clk_utmi_recalc_rate,
+	.save_context = clk_utmi_save_context,
+	.restore_context = clk_utmi_restore_context,
 };
 
-static struct clk * __init
-at91_clk_register_utmi(struct at91_pmc *pmc, unsigned int irq,
-		       const char *name, const char *parent_name)
+static struct clk_hw * __init
+at91_clk_register_utmi_internal(struct regmap *regmap_pmc,
+				struct regmap *regmap_sfr,
+				const char *name, const char *parent_name,
+				struct clk_hw *parent_hw,
+				const struct clk_ops *ops, unsigned long flags)
 {
-	int ret;
 	struct clk_utmi *utmi;
-	struct clk *clk = NULL;
-	struct clk_init_data init;
+	struct clk_hw *hw;
+	struct clk_init_data init = {};
+	int ret;
+
+	if (!(parent_name || parent_hw))
+		return ERR_PTR(-EINVAL);
 
 	utmi = kzalloc(sizeof(*utmi), GFP_KERNEL);
 	if (!utmi)
 		return ERR_PTR(-ENOMEM);
 
 	init.name = name;
-	init.ops = &utmi_ops;
-	init.parent_names = parent_name ? &parent_name : NULL;
-	init.num_parents = parent_name ? 1 : 0;
-	init.flags = CLK_SET_RATE_GATE;
+	init.ops = ops;
+	if (parent_hw) {
+		init.parent_hws = parent_hw ? (const struct clk_hw **)&parent_hw : NULL;
+		init.num_parents = parent_hw ? 1 : 0;
+	} else {
+		init.parent_names = parent_name ? &parent_name : NULL;
+		init.num_parents = parent_name ? 1 : 0;
+	}
+	init.flags = flags;
 
 	utmi->hw.init = &init;
-	utmi->pmc = pmc;
-	utmi->irq = irq;
-	init_waitqueue_head(&utmi->wait);
-	irq_set_status_flags(utmi->irq, IRQ_NOAUTOEN);
-	ret = request_irq(utmi->irq, clk_utmi_irq_handler,
-			  IRQF_TRIGGER_HIGH, "clk-utmi", utmi);
-	if (ret)
-		return ERR_PTR(ret);
+	utmi->regmap_pmc = regmap_pmc;
+	utmi->regmap_sfr = regmap_sfr;
 
-	clk = clk_register(NULL, &utmi->hw);
-	if (IS_ERR(clk))
+	hw = &utmi->hw;
+	ret = clk_hw_register(NULL, &utmi->hw);
+	if (ret) {
 		kfree(utmi);
+		hw = ERR_PTR(ret);
+	}
 
-	return clk;
+	return hw;
 }
 
-static void __init
-of_at91_clk_utmi_setup(struct device_node *np, struct at91_pmc *pmc)
+struct clk_hw * __init
+at91_clk_register_utmi(struct regmap *regmap_pmc, struct regmap *regmap_sfr,
+		       const char *name, const char *parent_name,
+		       struct clk_hw *parent_hw)
 {
-	unsigned int irq;
-	struct clk *clk;
-	const char *parent_name;
-	const char *name = np->name;
-
-	parent_name = of_clk_get_parent_name(np, 0);
-
-	of_property_read_string(np, "clock-output-names", &name);
-
-	irq = irq_of_parse_and_map(np, 0);
-	if (!irq)
-		return;
-
-	clk = at91_clk_register_utmi(pmc, irq, name, parent_name);
-	if (IS_ERR(clk))
-		return;
-
-	of_clk_add_provider(np, of_clk_src_simple_get, clk);
-	return;
+	return at91_clk_register_utmi_internal(regmap_pmc, regmap_sfr, name,
+			parent_name, parent_hw, &utmi_ops, CLK_SET_RATE_GATE);
 }
 
-void __init of_at91sam9x5_clk_utmi_setup(struct device_node *np,
-					 struct at91_pmc *pmc)
+static int clk_utmi_sama7g5_prepare(struct clk_hw *hw)
 {
-	of_at91_clk_utmi_setup(np, pmc);
+	struct clk_utmi *utmi = to_clk_utmi(hw);
+	struct clk_hw *hw_parent;
+	unsigned long parent_rate;
+	unsigned int val;
+
+	hw_parent = clk_hw_get_parent(hw);
+	parent_rate = clk_hw_get_rate(hw_parent);
+
+	switch (parent_rate) {
+	case 16000000:
+		val = 0;
+		break;
+	case 20000000:
+		val = 2;
+		break;
+	case 24000000:
+		val = 3;
+		break;
+	case 32000000:
+		val = 5;
+		break;
+	default:
+		pr_err("UTMICK: unsupported main_xtal rate\n");
+		return -EINVAL;
+	}
+
+	regmap_write(utmi->regmap_pmc, AT91_PMC_XTALF, val);
+
+	return 0;
+
+}
+
+static int clk_utmi_sama7g5_is_prepared(struct clk_hw *hw)
+{
+	struct clk_utmi *utmi = to_clk_utmi(hw);
+	struct clk_hw *hw_parent;
+	unsigned long parent_rate;
+	unsigned int val;
+
+	hw_parent = clk_hw_get_parent(hw);
+	parent_rate = clk_hw_get_rate(hw_parent);
+
+	regmap_read(utmi->regmap_pmc, AT91_PMC_XTALF, &val);
+	switch (val & 0x7) {
+	case 0:
+		if (parent_rate == 16000000)
+			return 1;
+		break;
+	case 2:
+		if (parent_rate == 20000000)
+			return 1;
+		break;
+	case 3:
+		if (parent_rate == 24000000)
+			return 1;
+		break;
+	case 5:
+		if (parent_rate == 32000000)
+			return 1;
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+static int clk_utmi_sama7g5_save_context(struct clk_hw *hw)
+{
+	struct clk_utmi *utmi = to_clk_utmi(hw);
+
+	utmi->pms.status = clk_utmi_sama7g5_is_prepared(hw);
+
+	return 0;
+}
+
+static void clk_utmi_sama7g5_restore_context(struct clk_hw *hw)
+{
+	struct clk_utmi *utmi = to_clk_utmi(hw);
+
+	if (utmi->pms.status)
+		clk_utmi_sama7g5_prepare(hw);
+}
+
+static const struct clk_ops sama7g5_utmi_ops = {
+	.prepare = clk_utmi_sama7g5_prepare,
+	.is_prepared = clk_utmi_sama7g5_is_prepared,
+	.recalc_rate = clk_utmi_recalc_rate,
+	.save_context = clk_utmi_sama7g5_save_context,
+	.restore_context = clk_utmi_sama7g5_restore_context,
+};
+
+struct clk_hw * __init
+at91_clk_sama7g5_register_utmi(struct regmap *regmap_pmc, const char *name,
+			       const char *parent_name, struct clk_hw *parent_hw)
+{
+	return at91_clk_register_utmi_internal(regmap_pmc, NULL, name,
+			parent_name, parent_hw, &sama7g5_utmi_ops, 0);
 }

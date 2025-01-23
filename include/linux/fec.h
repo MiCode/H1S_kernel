@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /* include/linux/fec.h
  *
  * Copyright (c) 2009 Orex Computed Radiography
@@ -6,10 +7,6 @@
  * Copyright (C) 2010 Freescale Semiconductor, Inc.
  *
  * Header file for the FEC platform data
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #ifndef __LINUX_FEC_H__
 #define __LINUX_FEC_H__
@@ -19,6 +16,7 @@
 struct fec_platform_data {
 	phy_interface_t phy;
 	unsigned char mac[ETH_ALEN];
+	void (*sleep_mode_enable)(int enabled);
 };
 
 #endif

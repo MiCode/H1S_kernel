@@ -10,6 +10,7 @@
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
 #include <asm/cpu.h>
+#include <asm/debug.h>
 #include <asm/mipsregs.h>
 
 static void build_segment_config(char *str, unsigned int cfg)
@@ -25,24 +26,27 @@ static void build_segment_config(char *str, unsigned int cfg)
 
 	/*
 	 * Access modes MK, MSK and MUSK are mapped segments. Therefore
-	 * there is no direct physical address mapping.
+	 * there is no direct physical address mapping unless it becomes
+	 * unmapped uncached at error level due to EU.
 	 */
-	if ((am == 0) || (am > 3)) {
+	if ((am == 0) || (am > 3) || (cfg & MIPS_SEGCFG_EU))
 		str += sprintf(str, "         %03lx",
 			((cfg & MIPS_SEGCFG_PA) >> MIPS_SEGCFG_PA_SHIFT));
+	else
+		str += sprintf(str, "         UND");
+
+	if ((am == 0) || (am > 3))
 		str += sprintf(str, "         %01ld",
 			((cfg & MIPS_SEGCFG_C) >> MIPS_SEGCFG_C_SHIFT));
-	} else {
-		str += sprintf(str, "         UND");
+	else
 		str += sprintf(str, "         U");
-	}
 
 	/* Exception configuration. */
 	str += sprintf(str, "       %01ld\n",
 		((cfg & MIPS_SEGCFG_EU) >> MIPS_SEGCFG_EU_SHIFT));
 }
 
-static int show_segments(struct seq_file *m, void *v)
+static int segments_show(struct seq_file *m, void *v)
 {
 	unsigned int segcfg;
 	char str[42];
@@ -76,34 +80,13 @@ static int show_segments(struct seq_file *m, void *v)
 
 	return 0;
 }
-
-static int segments_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, show_segments, NULL);
-}
-
-static const struct file_operations segments_fops = {
-	.open		= segments_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(segments);
 
 static int __init segments_info(void)
 {
-	extern struct dentry *mips_debugfs_dir;
-	struct dentry *segments;
-
-	if (cpu_has_segments) {
-		if (!mips_debugfs_dir)
-			return -ENODEV;
-
-		segments = debugfs_create_file("segments", S_IRUGO,
-					       mips_debugfs_dir, NULL,
-					       &segments_fops);
-		if (!segments)
-			return -ENOMEM;
-	}
+	if (cpu_has_segments)
+		debugfs_create_file("segments", S_IRUGO, mips_debugfs_dir, NULL,
+				    &segments_fops);
 	return 0;
 }
 

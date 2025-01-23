@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) Paul Mackerras 1997.
  *
  * Updates for PPC64 by Todd Inglett, Dave Engebretsen & Peter Bergner.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -15,10 +11,7 @@
 #include "string.h"
 #include "stdio.h"
 #include "ops.h"
-#include "gunzip_util.h"
 #include "reg.h"
-
-static struct gunzip_state gzstate;
 
 struct addr_range {
 	void *addr;
@@ -30,15 +23,21 @@ struct addr_range {
 static struct addr_range prep_kernel(void)
 {
 	char elfheader[256];
-	void *vmlinuz_addr = _vmlinux_start;
+	unsigned char *vmlinuz_addr = (unsigned char *)_vmlinux_start;
 	unsigned long vmlinuz_size = _vmlinux_end - _vmlinux_start;
 	void *addr = 0;
 	struct elf_info ei;
-	int len;
+	long len;
+	int uncompressed_image = 0;
 
-	/* gunzip the ELF header of the kernel */
-	gunzip_start(&gzstate, vmlinuz_addr, vmlinuz_size);
-	gunzip_exactly(&gzstate, elfheader, sizeof(elfheader));
+	len = partial_decompress(vmlinuz_addr, vmlinuz_size,
+		elfheader, sizeof(elfheader), 0);
+	/* assume uncompressed data if -1 is returned */
+	if (len == -1) {
+		uncompressed_image = 1;
+		memcpy(elfheader, vmlinuz_addr, sizeof(elfheader));
+		printf("No valid compressed data found, assume uncompressed data\n\r");
+	}
 
 	if (!parse_elf64(elfheader, &ei) && !parse_elf32(elfheader, &ei))
 		fatal("Error: not a valid PPC32 or PPC64 ELF file!\n\r");
@@ -51,7 +50,7 @@ static struct addr_range prep_kernel(void)
 	 * the kernel bss must be claimed (it will be zero'd by the
 	 * kernel itself)
 	 */
-	printf("Allocating 0x%lx bytes for kernel ...\n\r", ei.memsize);
+	printf("Allocating 0x%lx bytes for kernel...\n\r", ei.memsize);
 
 	if (platform_ops.vmlinux_alloc) {
 		addr = platform_ops.vmlinux_alloc(ei.memsize);
@@ -71,17 +70,29 @@ static struct addr_range prep_kernel(void)
 					"device tree\n\r");
 	}
 
-	/* Finally, gunzip the kernel */
-	printf("gunzipping (0x%p <- 0x%p:0x%p)...", addr,
-	       vmlinuz_addr, vmlinuz_addr+vmlinuz_size);
-	/* discard up to the actual load data */
-	gunzip_discard(&gzstate, ei.elfoffset - sizeof(elfheader));
-	len = gunzip_finish(&gzstate, addr, ei.loadsize);
-	if (len != ei.loadsize)
-		fatal("ran out of data!  only got 0x%x of 0x%lx bytes.\n\r",
-				len, ei.loadsize);
-	printf("done 0x%x bytes\n\r", len);
+	if (uncompressed_image) {
+		memcpy(addr, vmlinuz_addr + ei.elfoffset, ei.loadsize);
+		printf("0x%lx bytes of uncompressed data copied\n\r",
+		       ei.loadsize);
+		goto out;
+	}
 
+	/* Finally, decompress the kernel */
+	printf("Decompressing (0x%p <- 0x%p:0x%p)...\n\r", addr,
+	       vmlinuz_addr, vmlinuz_addr+vmlinuz_size);
+
+	len = partial_decompress(vmlinuz_addr, vmlinuz_size,
+		addr, ei.loadsize, ei.elfoffset);
+
+	if (len < 0)
+		fatal("Decompression failed with error code %ld\n\r", len);
+
+	if (len != ei.loadsize)
+		 fatal("Decompression error: got 0x%lx bytes, expected 0x%lx.\n\r",
+			 len, ei.loadsize);
+
+	printf("Done! Decompressed 0x%lx bytes\n\r", len);
+out:
 	flush_cache(addr, ei.loadsize);
 
 	return (struct addr_range){addr, ei.memsize};
@@ -93,7 +104,7 @@ static struct addr_range prep_initrd(struct addr_range vmlinux, void *chosen,
 {
 	/* If we have an image attached to us, it overrides anything
 	 * supplied by the loader. */
-	if (_initrd_end > _initrd_start) {
+	if (&_initrd_end > &_initrd_start) {
 		printf("Attached initrd image at 0x%p-0x%p\n\r",
 		       _initrd_start, _initrd_end);
 		initrd_addr = (unsigned long)_initrd_start;
@@ -135,22 +146,73 @@ static struct addr_range prep_initrd(struct addr_range vmlinux, void *chosen,
 	return (struct addr_range){(void *)initrd_addr, initrd_size};
 }
 
+#ifdef __powerpc64__
+static void prep_esm_blob(struct addr_range vmlinux, void *chosen)
+{
+	unsigned long esm_blob_addr, esm_blob_size;
+
+	/* Do we have an ESM (Enter Secure Mode) blob? */
+	if (&_esm_blob_end <= &_esm_blob_start)
+		return;
+
+	printf("Attached ESM blob at 0x%p-0x%p\n\r",
+	       _esm_blob_start, _esm_blob_end);
+	esm_blob_addr = (unsigned long)_esm_blob_start;
+	esm_blob_size = _esm_blob_end - _esm_blob_start;
+
+	/*
+	 * If the ESM blob is too low it will be clobbered when the
+	 * kernel relocates to its final location.  In this case,
+	 * allocate a safer place and move it.
+	 */
+	if (esm_blob_addr < vmlinux.size) {
+		void *old_addr = (void *)esm_blob_addr;
+
+		printf("Allocating 0x%lx bytes for esm_blob ...\n\r",
+		       esm_blob_size);
+		esm_blob_addr = (unsigned long)malloc(esm_blob_size);
+		if (!esm_blob_addr)
+			fatal("Can't allocate memory for ESM blob !\n\r");
+		printf("Relocating ESM blob 0x%lx <- 0x%p (0x%lx bytes)\n\r",
+		       esm_blob_addr, old_addr, esm_blob_size);
+		memmove((void *)esm_blob_addr, old_addr, esm_blob_size);
+	}
+
+	/* Tell the kernel ESM blob address via device tree. */
+	setprop_val(chosen, "linux,esm-blob-start", (u32)(esm_blob_addr));
+	setprop_val(chosen, "linux,esm-blob-end", (u32)(esm_blob_addr + esm_blob_size));
+}
+#else
+static inline void prep_esm_blob(struct addr_range vmlinux, void *chosen) { }
+#endif
+
 /* A buffer that may be edited by tools operating on a zImage binary so as to
  * edit the command line passed to vmlinux (by setting /chosen/bootargs).
  * The buffer is put in it's own section so that tools may locate it easier.
  */
-static char cmdline[COMMAND_LINE_SIZE]
+static char cmdline[BOOT_COMMAND_LINE_SIZE]
 	__attribute__((__section__("__builtin_cmdline")));
 
 static void prep_cmdline(void *chosen)
 {
+	unsigned int getline_timeout = 5000;
+	int v;
+	int n;
+
+	/* Wait-for-input time */
+	n = getprop(chosen, "linux,cmdline-timeout", &v, sizeof(v));
+	if (n == sizeof(v))
+		getline_timeout = v;
+
 	if (cmdline[0] == '\0')
-		getprop(chosen, "bootargs", cmdline, COMMAND_LINE_SIZE-1);
+		getprop(chosen, "bootargs", cmdline, BOOT_COMMAND_LINE_SIZE-1);
 
 	printf("\n\rLinux/PowerPC load: %s", cmdline);
+
 	/* If possible, edit the command line */
-	if (console_ops.edit_cmdline)
-		console_ops.edit_cmdline(cmdline, COMMAND_LINE_SIZE);
+	if (console_ops.edit_cmdline && getline_timeout)
+		console_ops.edit_cmdline(cmdline, BOOT_COMMAND_LINE_SIZE, getline_timeout);
+
 	printf("\n\r");
 
 	/* Put the command line back into the devtree for the kernel */
@@ -174,7 +236,7 @@ void start(void)
 	 * built-in command line wasn't set by an external tool */
 	if ((loader_info.cmdline_len > 0) && (cmdline[0] == '\0'))
 		memmove(cmdline, loader_info.cmdline,
-			min(loader_info.cmdline_len, COMMAND_LINE_SIZE-1));
+			min(loader_info.cmdline_len, BOOT_COMMAND_LINE_SIZE-1));
 
 	if (console_ops.open && (console_ops.open() < 0))
 		exit();
@@ -192,6 +254,7 @@ void start(void)
 	vmlinux = prep_kernel();
 	initrd = prep_initrd(vmlinux, chosen,
 			     loader_info.initrd_addr, loader_info.initrd_size);
+	prep_esm_blob(vmlinux, chosen);
 	prep_cmdline(chosen);
 
 	printf("Finalizing device tree...");
@@ -206,8 +269,12 @@ void start(void)
 		console_ops.close();
 
 	kentry = (kernel_entry_t) vmlinux.addr;
-	if (ft_addr)
-		kentry(ft_addr, 0, NULL);
+	if (ft_addr) {
+		if(platform_ops.kentry)
+			platform_ops.kentry(ft_addr, vmlinux.addr);
+		else
+			kentry(ft_addr, 0, NULL);
+	}
 	else
 		kentry((unsigned long)initrd.addr, initrd.size,
 		       loader_info.promptr);

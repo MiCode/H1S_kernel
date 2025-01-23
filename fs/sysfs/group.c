@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * fs/sysfs/group.c - Operations for adding/removing multiple files at once.
  *
@@ -5,9 +6,6 @@
  * Copyright (c) 2003 Open Source Development Lab
  * Copyright (c) 2013 Greg Kroah-Hartman
  * Copyright (c) 2013 The Linux Foundation
- *
- * This file is released undert the GPL v2.
- *
  */
 
 #include <linux/kobject.h>
@@ -15,10 +13,11 @@
 #include <linux/dcache.h>
 #include <linux/namei.h>
 #include <linux/err.h>
+#include <linux/fs.h>
 #include "sysfs.h"
 
 
-static void remove_files(struct kernfs_node *parent, struct kobject *kobj,
+static void remove_files(struct kernfs_node *parent,
 			 const struct attribute_group *grp)
 {
 	struct attribute *const *attr;
@@ -29,10 +28,11 @@ static void remove_files(struct kernfs_node *parent, struct kobject *kobj,
 			kernfs_remove_by_name(parent, (*attr)->name);
 	if (grp->bin_attrs)
 		for (bin_attr = grp->bin_attrs; *bin_attr; bin_attr++)
-			sysfs_remove_bin_file(kobj, *bin_attr);
+			kernfs_remove_by_name(parent, (*bin_attr)->attr.name);
 }
 
 static int create_files(struct kernfs_node *parent, struct kobject *kobj,
+			kuid_t uid, kgid_t gid,
 			const struct attribute_group *grp, int update)
 {
 	struct attribute *const *attr;
@@ -41,7 +41,7 @@ static int create_files(struct kernfs_node *parent, struct kobject *kobj,
 
 	if (grp->attrs) {
 		for (i = 0, attr = grp->attrs; *attr && !error; i++, attr++) {
-			umode_t mode = 0;
+			umode_t mode = (*attr)->mode;
 
 			/*
 			 * In update mode, we're changing the permissions or
@@ -55,28 +55,49 @@ static int create_files(struct kernfs_node *parent, struct kobject *kobj,
 				if (!mode)
 					continue;
 			}
-			error = sysfs_add_file_mode_ns(parent, *attr, false,
-						       (*attr)->mode | mode,
-						       NULL);
+
+			WARN(mode & ~(SYSFS_PREALLOC | 0664),
+			     "Attribute %s: Invalid permissions 0%o\n",
+			     (*attr)->name, mode);
+
+			mode &= SYSFS_PREALLOC | 0664;
+			error = sysfs_add_file_mode_ns(parent, *attr, mode, uid,
+						       gid, NULL);
 			if (unlikely(error))
 				break;
 		}
 		if (error) {
-			remove_files(parent, kobj, grp);
+			remove_files(parent, grp);
 			goto exit;
 		}
 	}
 
 	if (grp->bin_attrs) {
-		for (bin_attr = grp->bin_attrs; *bin_attr; bin_attr++) {
+		for (i = 0, bin_attr = grp->bin_attrs; *bin_attr; i++, bin_attr++) {
+			umode_t mode = (*bin_attr)->attr.mode;
+
 			if (update)
-				sysfs_remove_bin_file(kobj, *bin_attr);
-			error = sysfs_create_bin_file(kobj, *bin_attr);
+				kernfs_remove_by_name(parent,
+						(*bin_attr)->attr.name);
+			if (grp->is_bin_visible) {
+				mode = grp->is_bin_visible(kobj, *bin_attr, i);
+				if (!mode)
+					continue;
+			}
+
+			WARN(mode & ~(SYSFS_PREALLOC | 0664),
+			     "Attribute %s: Invalid permissions 0%o\n",
+			     (*bin_attr)->attr.name, mode);
+
+			mode &= SYSFS_PREALLOC | 0664;
+			error = sysfs_add_bin_file_mode_ns(parent, *bin_attr,
+							   mode, uid, gid,
+							   NULL);
 			if (error)
 				break;
 		}
 		if (error)
-			remove_files(parent, kobj, grp);
+			remove_files(parent, grp);
 	}
 exit:
 	return error;
@@ -87,35 +108,57 @@ static int internal_create_group(struct kobject *kobj, int update,
 				 const struct attribute_group *grp)
 {
 	struct kernfs_node *kn;
+	kuid_t uid;
+	kgid_t gid;
 	int error;
 
-	BUG_ON(!kobj || (!update && !kobj->sd));
+	if (WARN_ON(!kobj || (!update && !kobj->sd)))
+		return -EINVAL;
 
 	/* Updates may happen before the object has been instantiated */
 	if (unlikely(update && !kobj->sd))
 		return -EINVAL;
+
 	if (!grp->attrs && !grp->bin_attrs) {
-		WARN(1, "sysfs: (bin_)attrs not set by subsystem for group: %s/%s\n",
-			kobj->name, grp->name ? "" : grp->name);
-		return -EINVAL;
+		pr_debug("sysfs: (bin_)attrs not set by subsystem for group: %s/%s, skipping\n",
+			 kobj->name, grp->name ?: "");
+		return 0;
 	}
+
+	kobject_get_ownership(kobj, &uid, &gid);
 	if (grp->name) {
-		kn = kernfs_create_dir(kobj->sd, grp->name,
-				       S_IRWXU | S_IRUGO | S_IXUGO, kobj);
-		if (IS_ERR(kn)) {
-			if (PTR_ERR(kn) == -EEXIST)
-				sysfs_warn_dup(kobj->sd, grp->name);
-			return PTR_ERR(kn);
+		if (update) {
+			kn = kernfs_find_and_get(kobj->sd, grp->name);
+			if (!kn) {
+				pr_warn("Can't update unknown attr grp name: %s/%s\n",
+					kobj->name, grp->name);
+				return -EINVAL;
+			}
+		} else {
+			kn = kernfs_create_dir_ns(kobj->sd, grp->name,
+						  S_IRWXU | S_IRUGO | S_IXUGO,
+						  uid, gid, kobj, NULL);
+			if (IS_ERR(kn)) {
+				if (PTR_ERR(kn) == -EEXIST)
+					sysfs_warn_dup(kobj->sd, grp->name);
+				return PTR_ERR(kn);
+			}
 		}
-	} else
+	} else {
 		kn = kobj->sd;
+	}
+
 	kernfs_get(kn);
-	error = create_files(kn, kobj, grp, update);
+	error = create_files(kn, kobj, uid, gid, grp, update);
 	if (error) {
 		if (grp->name)
 			kernfs_remove(kn);
 	}
 	kernfs_put(kn);
+
+	if (grp->name && update)
+		kernfs_put(kn);
+
 	return error;
 }
 
@@ -127,7 +170,7 @@ static int internal_create_group(struct kobject *kobj, int update,
  * This function creates a group for the first time.  It will explicitly
  * warn and error if any of the attribute files being created already exist.
  *
- * Returns 0 on success or error.
+ * Returns 0 on success or error code on failure.
  */
 int sysfs_create_group(struct kobject *kobj,
 		       const struct attribute_group *grp)
@@ -135,6 +178,26 @@ int sysfs_create_group(struct kobject *kobj,
 	return internal_create_group(kobj, 0, grp);
 }
 EXPORT_SYMBOL_GPL(sysfs_create_group);
+
+static int internal_create_groups(struct kobject *kobj, int update,
+				  const struct attribute_group **groups)
+{
+	int error = 0;
+	int i;
+
+	if (!groups)
+		return 0;
+
+	for (i = 0; groups[i]; i++) {
+		error = internal_create_group(kobj, update, groups[i]);
+		if (error) {
+			while (--i >= 0)
+				sysfs_remove_group(kobj, groups[i]);
+			break;
+		}
+	}
+	return error;
+}
 
 /**
  * sysfs_create_groups - given a directory kobject, create a bunch of attribute groups
@@ -147,28 +210,32 @@ EXPORT_SYMBOL_GPL(sysfs_create_group);
  * It will explicitly warn and error if any of the attribute files being
  * created already exist.
  *
- * Returns 0 on success or error code from sysfs_create_group on error.
+ * Returns 0 on success or error code from sysfs_create_group on failure.
  */
 int sysfs_create_groups(struct kobject *kobj,
 			const struct attribute_group **groups)
 {
-	int error = 0;
-	int i;
-
-	if (!groups)
-		return 0;
-
-	for (i = 0; groups[i]; i++) {
-		error = sysfs_create_group(kobj, groups[i]);
-		if (error) {
-			while (--i >= 0)
-				sysfs_remove_group(kobj, groups[i]);
-			break;
-		}
-	}
-	return error;
+	return internal_create_groups(kobj, 0, groups);
 }
 EXPORT_SYMBOL_GPL(sysfs_create_groups);
+
+/**
+ * sysfs_update_groups - given a directory kobject, create a bunch of attribute groups
+ * @kobj:	The kobject to update the group on
+ * @groups:	The attribute groups to update, NULL terminated
+ *
+ * This function update a bunch of attribute groups.  If an error occurs when
+ * updating a group, all previously updated groups will be removed together
+ * with already existing (not updated) attributes.
+ *
+ * Returns 0 on success or error code from sysfs_update_group on failure.
+ */
+int sysfs_update_groups(struct kobject *kobj,
+			const struct attribute_group **groups)
+{
+	return internal_create_groups(kobj, 1, groups);
+}
+EXPORT_SYMBOL_GPL(sysfs_update_groups);
 
 /**
  * sysfs_update_group - given a directory kobject, update an attribute group
@@ -180,12 +247,13 @@ EXPORT_SYMBOL_GPL(sysfs_create_groups);
  * of the attribute files being created already exist.  Furthermore,
  * if the visibility of the files has changed through the is_visible()
  * callback, it will update the permissions and add or remove the
- * relevant files.
+ * relevant files. Changing a group's name (subdirectory name under
+ * kobj's directory in sysfs) is not allowed.
  *
  * The primary use for this function is to call it after making a change
  * that affects group visibility.
  *
- * Returns 0 on success or error.
+ * Returns 0 on success or error code on failure.
  */
 int sysfs_update_group(struct kobject *kobj,
 		       const struct attribute_group *grp)
@@ -212,8 +280,8 @@ void sysfs_remove_group(struct kobject *kobj,
 		kn = kernfs_find_and_get(parent, grp->name);
 		if (!kn) {
 			WARN(!kn, KERN_WARNING
-			     "sysfs group %p not found for kobject '%s'\n",
-			     grp, kobject_name(kobj));
+			     "sysfs group '%s' not found for kobject '%s'\n",
+			     grp->name, kobject_name(kobj));
 			return;
 		}
 	} else {
@@ -221,7 +289,7 @@ void sysfs_remove_group(struct kobject *kobj,
 		kernfs_get(kn);
 	}
 
-	remove_files(kn, kobj, grp);
+	remove_files(kn, grp);
 	if (grp->name)
 		kernfs_remove(kn);
 
@@ -262,6 +330,8 @@ int sysfs_merge_group(struct kobject *kobj,
 		       const struct attribute_group *grp)
 {
 	struct kernfs_node *parent;
+	kuid_t uid;
+	kgid_t gid;
 	int error = 0;
 	struct attribute *const *attr;
 	int i;
@@ -270,8 +340,11 @@ int sysfs_merge_group(struct kobject *kobj,
 	if (!parent)
 		return -ENOENT;
 
+	kobject_get_ownership(kobj, &uid, &gid);
+
 	for ((i = 0, attr = grp->attrs); *attr && !error; (++i, ++attr))
-		error = sysfs_add_file(parent, *attr, false);
+		error = sysfs_add_file_mode_ns(parent, *attr, (*attr)->mode,
+					       uid, gid, NULL);
 	if (error) {
 		while (--i >= 0)
 			kernfs_remove_by_name(parent, (*--attr)->name);
@@ -344,3 +417,167 @@ void sysfs_remove_link_from_group(struct kobject *kobj, const char *group_name,
 	}
 }
 EXPORT_SYMBOL_GPL(sysfs_remove_link_from_group);
+
+/**
+ * compat_only_sysfs_link_entry_to_kobj - add a symlink to a kobject pointing
+ * to a group or an attribute
+ * @kobj:		The kobject containing the group.
+ * @target_kobj:	The target kobject.
+ * @target_name:	The name of the target group or attribute.
+ * @symlink_name:	The name of the symlink file (target_name will be
+ *			considered if symlink_name is NULL).
+ */
+int compat_only_sysfs_link_entry_to_kobj(struct kobject *kobj,
+					 struct kobject *target_kobj,
+					 const char *target_name,
+					 const char *symlink_name)
+{
+	struct kernfs_node *target;
+	struct kernfs_node *entry;
+	struct kernfs_node *link;
+
+	/*
+	 * We don't own @target_kobj and it may be removed at any time.
+	 * Synchronize using sysfs_symlink_target_lock. See sysfs_remove_dir()
+	 * for details.
+	 */
+	spin_lock(&sysfs_symlink_target_lock);
+	target = target_kobj->sd;
+	if (target)
+		kernfs_get(target);
+	spin_unlock(&sysfs_symlink_target_lock);
+	if (!target)
+		return -ENOENT;
+
+	entry = kernfs_find_and_get(target, target_name);
+	if (!entry) {
+		kernfs_put(target);
+		return -ENOENT;
+	}
+
+	if (!symlink_name)
+		symlink_name = target_name;
+
+	link = kernfs_create_link(kobj->sd, symlink_name, entry);
+	if (PTR_ERR(link) == -EEXIST)
+		sysfs_warn_dup(kobj->sd, symlink_name);
+
+	kernfs_put(entry);
+	kernfs_put(target);
+	return PTR_ERR_OR_ZERO(link);
+}
+EXPORT_SYMBOL_GPL(compat_only_sysfs_link_entry_to_kobj);
+
+static int sysfs_group_attrs_change_owner(struct kernfs_node *grp_kn,
+					  const struct attribute_group *grp,
+					  struct iattr *newattrs)
+{
+	struct kernfs_node *kn;
+	int error;
+
+	if (grp->attrs) {
+		struct attribute *const *attr;
+
+		for (attr = grp->attrs; *attr; attr++) {
+			kn = kernfs_find_and_get(grp_kn, (*attr)->name);
+			if (!kn)
+				return -ENOENT;
+
+			error = kernfs_setattr(kn, newattrs);
+			kernfs_put(kn);
+			if (error)
+				return error;
+		}
+	}
+
+	if (grp->bin_attrs) {
+		struct bin_attribute *const *bin_attr;
+
+		for (bin_attr = grp->bin_attrs; *bin_attr; bin_attr++) {
+			kn = kernfs_find_and_get(grp_kn, (*bin_attr)->attr.name);
+			if (!kn)
+				return -ENOENT;
+
+			error = kernfs_setattr(kn, newattrs);
+			kernfs_put(kn);
+			if (error)
+				return error;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * sysfs_group_change_owner - change owner of an attribute group.
+ * @kobj:	The kobject containing the group.
+ * @grp:	The attribute group.
+ * @kuid:	new owner's kuid
+ * @kgid:	new owner's kgid
+ *
+ * Returns 0 on success or error code on failure.
+ */
+int sysfs_group_change_owner(struct kobject *kobj,
+			     const struct attribute_group *grp, kuid_t kuid,
+			     kgid_t kgid)
+{
+	struct kernfs_node *grp_kn;
+	int error;
+	struct iattr newattrs = {
+		.ia_valid = ATTR_UID | ATTR_GID,
+		.ia_uid = kuid,
+		.ia_gid = kgid,
+	};
+
+	if (!kobj->state_in_sysfs)
+		return -EINVAL;
+
+	if (grp->name) {
+		grp_kn = kernfs_find_and_get(kobj->sd, grp->name);
+	} else {
+		kernfs_get(kobj->sd);
+		grp_kn = kobj->sd;
+	}
+	if (!grp_kn)
+		return -ENOENT;
+
+	error = kernfs_setattr(grp_kn, &newattrs);
+	if (!error)
+		error = sysfs_group_attrs_change_owner(grp_kn, grp, &newattrs);
+
+	kernfs_put(grp_kn);
+
+	return error;
+}
+EXPORT_SYMBOL_GPL(sysfs_group_change_owner);
+
+/**
+ * sysfs_groups_change_owner - change owner of a set of attribute groups.
+ * @kobj:	The kobject containing the groups.
+ * @groups:	The attribute groups.
+ * @kuid:	new owner's kuid
+ * @kgid:	new owner's kgid
+ *
+ * Returns 0 on success or error code on failure.
+ */
+int sysfs_groups_change_owner(struct kobject *kobj,
+			      const struct attribute_group **groups,
+			      kuid_t kuid, kgid_t kgid)
+{
+	int error = 0, i;
+
+	if (!kobj->state_in_sysfs)
+		return -EINVAL;
+
+	if (!groups)
+		return 0;
+
+	for (i = 0; groups[i]; i++) {
+		error = sysfs_group_change_owner(kobj, groups[i], kuid, kgid);
+		if (error)
+			break;
+	}
+
+	return error;
+}
+EXPORT_SYMBOL_GPL(sysfs_groups_change_owner);

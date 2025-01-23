@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * OMAP3XXX L3 Interconnect Driver
  *
@@ -5,21 +6,6 @@
  *	Felipe Balbi <balbi@ti.com>
  *	Santosh Shilimkar <santosh.shilimkar@ti.com>
  *	Sricharan <r.sricharan@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
  */
 
 #include <linux/kernel.h>
@@ -27,6 +13,9 @@
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/module.h>
+#include <linux/of.h>
+
 #include "omap_l3_smx.h"
 
 static inline u64 omap3_l3_readll(void __iomem *base, u16 reg)
@@ -176,19 +165,10 @@ static irqreturn_t omap3_l3_app_irq(int irq, void *_l3)
 	irqreturn_t ret = IRQ_NONE;
 
 	int_type = irq == l3->app_irq ? L3_APPLICATION_ERROR : L3_DEBUG_ERROR;
-	if (!int_type) {
+	if (!int_type)
 		status = omap3_l3_readll(l3->rt, L3_SI_FLAG_STATUS_0);
-		/*
-		 * if we have a timeout error, there's nothing we can
-		 * do besides rebooting the board. So let's BUG on any
-		 * of such errors and handle the others. timeout error
-		 * is severe and not expected to occur.
-		 */
-		BUG_ON(status & L3_STATUS_0_TIMEOUT_MASK);
-	} else {
+	else
 		status = omap3_l3_readll(l3->rt, L3_SI_FLAG_STATUS_1);
-		/* No timeout error for debug sources */
-	}
 
 	/* identify the error source */
 	err_source = __ffs(status);
@@ -199,6 +179,14 @@ static irqreturn_t omap3_l3_app_irq(int irq, void *_l3)
 		error_addr = omap3_l3_readll(base, L3_ERROR_LOG_ADDR);
 		ret |= omap3_l3_block_irq(l3, error, error_addr);
 	}
+
+	/*
+	 * if we have a timeout error, there's nothing we can
+	 * do besides rebooting the board. So let's BUG on any
+	 * of such errors and handle the others. timeout error
+	 * is severe and not expected to occur.
+	 */
+	BUG_ON(!int_type && status & L3_STATUS_0_TIMEOUT_MASK);
 
 	/* Clear the status register */
 	clear = (L3_AGENT_STATUS_CLEAR_IA << int_type) |
@@ -211,7 +199,17 @@ static irqreturn_t omap3_l3_app_irq(int irq, void *_l3)
 	return ret;
 }
 
-static int __init omap3_l3_probe(struct platform_device *pdev)
+#if IS_BUILTIN(CONFIG_OF)
+static const struct of_device_id omap3_l3_match[] = {
+	{
+		.compatible = "ti,omap3-l3-smx",
+	},
+	{ },
+};
+MODULE_DEVICE_TABLE(of, omap3_l3_match);
+#endif
+
+static int omap3_l3_probe(struct platform_device *pdev)
 {
 	struct omap3_l3 *l3;
 	struct resource *res;
@@ -237,18 +235,16 @@ static int __init omap3_l3_probe(struct platform_device *pdev)
 	}
 
 	l3->debug_irq = platform_get_irq(pdev, 0);
-	ret = request_irq(l3->debug_irq, omap3_l3_app_irq,
-		IRQF_DISABLED | IRQF_TRIGGER_RISING,
-		"l3-debug-irq", l3);
+	ret = request_irq(l3->debug_irq, omap3_l3_app_irq, IRQF_TRIGGER_RISING,
+			  "l3-debug-irq", l3);
 	if (ret) {
 		dev_err(&pdev->dev, "couldn't request debug irq\n");
 		goto err1;
 	}
 
 	l3->app_irq = platform_get_irq(pdev, 1);
-	ret = request_irq(l3->app_irq, omap3_l3_app_irq,
-		IRQF_DISABLED | IRQF_TRIGGER_RISING,
-		"l3-app-irq", l3);
+	ret = request_irq(l3->app_irq, omap3_l3_app_irq, IRQF_TRIGGER_RISING,
+			  "l3-app-irq", l3);
 	if (ret) {
 		dev_err(&pdev->dev, "couldn't request app irq\n");
 		goto err2;
@@ -265,7 +261,7 @@ err0:
 	return ret;
 }
 
-static int __exit omap3_l3_remove(struct platform_device *pdev)
+static int omap3_l3_remove(struct platform_device *pdev)
 {
 	struct omap3_l3         *l3 = platform_get_drvdata(pdev);
 
@@ -278,15 +274,17 @@ static int __exit omap3_l3_remove(struct platform_device *pdev)
 }
 
 static struct platform_driver omap3_l3_driver = {
-	.remove         = __exit_p(omap3_l3_remove),
+	.probe		= omap3_l3_probe,
+	.remove         = omap3_l3_remove,
 	.driver         = {
-	.name   = "omap_l3_smx",
+		.name   = "omap_l3_smx",
+		.of_match_table = of_match_ptr(omap3_l3_match),
 	},
 };
 
 static int __init omap3_l3_init(void)
 {
-	return platform_driver_probe(&omap3_l3_driver, omap3_l3_probe);
+	return platform_driver_register(&omap3_l3_driver);
 }
 postcore_initcall_sync(omap3_l3_init);
 
@@ -295,3 +293,9 @@ static void __exit omap3_l3_exit(void)
 	platform_driver_unregister(&omap3_l3_driver);
 }
 module_exit(omap3_l3_exit);
+
+MODULE_AUTHOR("Felipe Balbi");
+MODULE_AUTHOR("Santosh Shilimkar");
+MODULE_AUTHOR("Sricharan R");
+MODULE_DESCRIPTION("OMAP3XXX L3 Interconnect Driver");
+MODULE_LICENSE("GPL");

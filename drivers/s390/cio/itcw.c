@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  Functions for incremental construction of fcx enabled I/O control blocks.
  *
@@ -8,13 +9,14 @@
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/string.h>
+#include <linux/io.h>
 #include <linux/errno.h>
 #include <linux/err.h>
 #include <linux/module.h>
 #include <asm/fcx.h>
 #include <asm/itcw.h>
 
-/**
+/*
  * struct itcw - incremental tcw helper data type
  *
  * This structure serves as a handle for the incremental construction of a
@@ -186,7 +188,7 @@ struct itcw *itcw_init(void *buffer, size_t size, int op, int intrg,
 	/* Check for 2G limit. */
 	start = (addr_t) buffer;
 	end = start + size;
-	if (end > (1 << 31))
+	if ((virt_to_phys(buffer) + size) > (1 << 31))
 		return ERR_PTR(-EINVAL);
 	memset(buffer, 0, size);
 	/* ITCW. */

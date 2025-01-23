@@ -1,9 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef SI21XX_H
 #define SI21XX_H
 
-#include <linux/kconfig.h>
 #include <linux/dvb/frontend.h>
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 
 struct si21xx_config {
 	/* the demodulator's i2c address */
@@ -13,7 +13,7 @@ struct si21xx_config {
 	int min_delay_ms;
 };
 
-#if IS_ENABLED(CONFIG_DVB_SI21XX)
+#if IS_REACHABLE(CONFIG_DVB_SI21XX)
 extern struct dvb_frontend *si21xx_attach(const struct si21xx_config *config,
 						struct i2c_adapter *i2c);
 #else

@@ -1,5 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef CEPH_CRUSH_HASH_H
 #define CEPH_CRUSH_HASH_H
+
+#ifdef __KERNEL__
+# include <linux/types.h>
+#else
+# include "crush_compat.h"
+#endif
 
 #define CRUSH_HASH_RJENKINS1   0
 

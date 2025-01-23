@@ -1,14 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef BCM63XX_IOREMAP_H_
 #define BCM63XX_IOREMAP_H_
 
 #include <bcm63xx_cpu.h>
 
-static inline phys_t fixup_bigphys_addr(phys_t phys_addr, phys_t size)
-{
-	return phys_addr;
-}
-
-static inline int is_bcm63xx_internal_registers(phys_t offset)
+static inline int is_bcm63xx_internal_registers(phys_addr_t offset)
 {
 	switch (bcm63xx_get_cpu_id()) {
 	case BCM3368_CPU_ID:
@@ -32,7 +28,7 @@ static inline int is_bcm63xx_internal_registers(phys_t offset)
 	return 0;
 }
 
-static inline void __iomem *plat_ioremap(phys_t offset, unsigned long size,
+static inline void __iomem *plat_ioremap(phys_addr_t offset, unsigned long size,
 					 unsigned long flags)
 {
 	if (is_bcm63xx_internal_registers(offset))

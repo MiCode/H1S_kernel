@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* asm/floppy.h: Sparc specific parts of the Floppy driver.
  *
  * Copyright (C) 1995 David S. Miller (davem@davemloft.net)
@@ -7,13 +8,14 @@
 #define __ASM_SPARC_FLOPPY_H
 
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/of_platform.h>
+#include <linux/pgtable.h>
 
-#include <asm/page.h>
-#include <asm/pgtable.h>
 #include <asm/idprom.h>
 #include <asm/oplib.h>
 #include <asm/auxio.h>
+#include <asm/setup.h>
+#include <asm/page.h>
 #include <asm/irq.h>
 
 /* We don't need no stinkin' I/O port allocation crap. */
@@ -49,7 +51,6 @@ struct sun_flpy_controller {
 
 /* You'll only ever find one controller on a SparcStation anyways. */
 static struct sun_flpy_controller *sun_fdc = NULL;
-extern volatile unsigned char *fdc_status;
 
 struct sun_floppy_ops {
 	unsigned char (*fd_inb)(int port);
@@ -58,8 +59,8 @@ struct sun_floppy_ops {
 
 static struct sun_floppy_ops sun_fdops;
 
-#define fd_inb(port)              sun_fdops.fd_inb(port)
-#define fd_outb(value,port)       sun_fdops.fd_outb(value,port)
+#define fd_inb(base, reg)         sun_fdops.fd_inb(reg)
+#define fd_outb(value, base, reg) sun_fdops.fd_outb(value, reg)
 #define fd_enable_dma()           sun_fd_enable_dma()
 #define fd_disable_dma()          sun_fd_disable_dma()
 #define fd_request_dma()          (0) /* nothing... */
@@ -70,7 +71,6 @@ static struct sun_floppy_ops sun_fdops;
 #define fd_set_dma_count(count)   sun_fd_set_dma_count(count)
 #define fd_enable_irq()           /* nothing... */
 #define fd_disable_irq()          /* nothing... */
-#define fd_cacheflush(addr, size) /* nothing... */
 #define fd_request_irq()          sun_fd_request_irq()
 #define fd_free_irq()             /* nothing... */
 #if 0  /* P3: added by Alain, these cause a MMU corruption. 19960524 XXX */
@@ -114,15 +114,15 @@ static unsigned char sun_read_dir(void)
 static unsigned char sun_82072_fd_inb(int port)
 {
 	udelay(5);
-	switch(port & 7) {
+	switch (port) {
 	default:
 		printk("floppy: Asked to read unknown port %d\n", port);
 		panic("floppy: Port bolixed.");
-	case 4: /* FD_STATUS */
+	case FD_STATUS:
 		return sun_fdc->status_82072 & ~STATUS_DMA;
-	case 5: /* FD_DATA */
+	case FD_DATA:
 		return sun_fdc->data_82072;
-	case 7: /* FD_DIR */
+	case FD_DIR:
 		return sun_read_dir();
 	}
 	panic("sun_82072_fd_inb: How did I get here?");
@@ -131,20 +131,20 @@ static unsigned char sun_82072_fd_inb(int port)
 static void sun_82072_fd_outb(unsigned char value, int port)
 {
 	udelay(5);
-	switch(port & 7) {
+	switch (port) {
 	default:
 		printk("floppy: Asked to write to unknown port %d\n", port);
 		panic("floppy: Port bolixed.");
-	case 2: /* FD_DOR */
+	case FD_DOR:
 		sun_set_dor(value, 0);
 		break;
-	case 5: /* FD_DATA */
+	case FD_DATA:
 		sun_fdc->data_82072 = value;
 		break;
-	case 7: /* FD_DCR */
+	case FD_DCR:
 		sun_fdc->dcr_82072 = value;
 		break;
-	case 4: /* FD_STATUS */
+	case FD_DSR:
 		sun_fdc->status_82072 = value;
 		break;
 	}
@@ -154,23 +154,23 @@ static void sun_82072_fd_outb(unsigned char value, int port)
 static unsigned char sun_82077_fd_inb(int port)
 {
 	udelay(5);
-	switch(port & 7) {
+	switch (port) {
 	default:
 		printk("floppy: Asked to read unknown port %d\n", port);
 		panic("floppy: Port bolixed.");
-	case 0: /* FD_STATUS_0 */
+	case FD_SRA:
 		return sun_fdc->status1_82077;
-	case 1: /* FD_STATUS_1 */
+	case FD_SRB:
 		return sun_fdc->status2_82077;
-	case 2: /* FD_DOR */
+	case FD_DOR:
 		return sun_fdc->dor_82077;
-	case 3: /* FD_TDR */
+	case FD_TDR:
 		return sun_fdc->tapectl_82077;
-	case 4: /* FD_STATUS */
+	case FD_STATUS:
 		return sun_fdc->status_82077 & ~STATUS_DMA;
-	case 5: /* FD_DATA */
+	case FD_DATA:
 		return sun_fdc->data_82077;
-	case 7: /* FD_DIR */
+	case FD_DIR:
 		return sun_read_dir();
 	}
 	panic("sun_82077_fd_inb: How did I get here?");
@@ -179,23 +179,23 @@ static unsigned char sun_82077_fd_inb(int port)
 static void sun_82077_fd_outb(unsigned char value, int port)
 {
 	udelay(5);
-	switch(port & 7) {
+	switch (port) {
 	default:
 		printk("floppy: Asked to write to unknown port %d\n", port);
 		panic("floppy: Port bolixed.");
-	case 2: /* FD_DOR */
+	case FD_DOR:
 		sun_set_dor(value, 1);
 		break;
-	case 5: /* FD_DATA */
+	case FD_DATA:
 		sun_fdc->data_82077 = value;
 		break;
-	case 7: /* FD_DCR */
+	case FD_DCR:
 		sun_fdc->dcr_82077 = value;
 		break;
-	case 4: /* FD_STATUS */
+	case FD_DSR:
 		sun_fdc->status_82077 = value;
 		break;
-	case 3: /* FD_TDR */
+	case FD_TDR:
 		sun_fdc->tapectl_82077 = value;
 		break;
 	}
@@ -212,13 +212,6 @@ static void sun_82077_fd_outb(unsigned char value, int port)
  * underruns.  If non-zero, doing_pdma encodes the direction of
  * the transfer for debugging.  1=read 2=write
  */
-extern char *pdma_vaddr;
-extern unsigned long pdma_size;
-extern volatile int doing_pdma;
-
-/* This is software state */
-extern char *pdma_base;
-extern unsigned long pdma_areasize;
 
 /* Common routines to all controller types on the Sparc. */
 static inline void virtual_dma_init(void)
@@ -263,8 +256,7 @@ static inline void sun_fd_enable_dma(void)
 	pdma_areasize = pdma_size;
 }
 
-extern int sparc_floppy_request_irq(unsigned int irq,
-                                    irq_handler_t irq_handler);
+int sparc_floppy_request_irq(unsigned int irq, irq_handler_t irq_handler);
 
 static int sun_fd_request_irq(void)
 {

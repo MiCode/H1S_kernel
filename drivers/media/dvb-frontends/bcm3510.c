@@ -3,7 +3,7 @@
  *
  *  Copyright (C) 2001-5, B2C2 inc.
  *
- *  GPL/Linux driver written by Patrick Boettcher <patrick.boettcher@desy.de>
+ *  GPL/Linux driver written by Patrick Boettcher <patrick.boettcher@posteo.de>
  *
  *  This driver is "hard-coded" to be used with the 1st generation of
  *  Technisat/B2C2's Air2PC ATSC PCI/USB cards/boxes. The pll-programming
@@ -40,7 +40,7 @@
 #include <linux/slab.h>
 #include <linux/mutex.h>
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "bcm3510.h"
 #include "bcm3510_priv.h"
 
@@ -289,7 +289,7 @@ static int bcm3510_refresh_state(struct bcm3510_state *st)
 	return 0;
 }
 
-static int bcm3510_read_status(struct dvb_frontend *fe, fe_status_t *status)
+static int bcm3510_read_status(struct dvb_frontend *fe, enum fe_status *status)
 {
 	struct bcm3510_state* st = fe->demodulator_priv;
 	bcm3510_refresh_state(st);
@@ -538,6 +538,7 @@ static int bcm3510_set_frontend(struct dvb_frontend *fe)
 			cmd.ACQUIRE0.MODE = 0x9;
 			cmd.ACQUIRE1.SYM_RATE = 0x0;
 			cmd.ACQUIRE1.IF_FREQ = 0x0;
+			break;
 		default:
 			return -EINVAL;
 	}
@@ -639,15 +640,16 @@ static int bcm3510_download_firmware(struct dvb_frontend* fe)
 		err("could not load firmware (%s): %d",BCM3510_DEFAULT_FIRMWARE,ret);
 		return ret;
 	}
-	deb_info("got firmware: %zd\n",fw->size);
+	deb_info("got firmware: %zu\n", fw->size);
 
 	b = fw->data;
 	for (i = 0; i < fw->size;) {
-		addr = le16_to_cpu( *( (u16 *)&b[i] ) );
-		len  = le16_to_cpu( *( (u16 *)&b[i+2] ) );
+		addr = le16_to_cpu(*((__le16 *)&b[i]));
+		len  = le16_to_cpu(*((__le16 *)&b[i+2]));
 		deb_info("firmware chunk, addr: 0x%04x, len: 0x%04x, total length: 0x%04zx\n",addr,len,fw->size);
 		if ((ret = bcm3510_write_ram(st,addr,&b[i+4],len)) < 0) {
 			err("firmware download failed: %d\n",ret);
+			release_firmware(fw);
 			return ret;
 		}
 		i += 4 + len;
@@ -685,7 +687,7 @@ static int bcm3510_reset(struct bcm3510_state *st)
 	if ((ret = bcm3510_writeB(st,0xa0,v)) < 0)
 		return ret;
 
-    t = jiffies + 3*HZ;
+	t = jiffies + 3*HZ;
 	while (time_before(jiffies, t)) {
 		msleep(10);
 		if ((ret = bcm3510_readB(st,0xa2,&v)) < 0)
@@ -708,7 +710,7 @@ static int bcm3510_clear_reset(struct bcm3510_state *st)
 	if ((ret = bcm3510_writeB(st,0xa0,v)) < 0)
 		return ret;
 
-    t = jiffies + 3*HZ;
+	t = jiffies + 3*HZ;
 	while (time_before(jiffies, t)) {
 		msleep(10);
 		if ((ret = bcm3510_readB(st,0xa2,&v)) < 0)
@@ -772,7 +774,8 @@ static int bcm3510_init(struct dvb_frontend* fe)
 			deb_info("attempting to download firmware\n");
 			if ((ret = bcm3510_init_cold(st)) < 0)
 				return ret;
-		case JDEC_EEPROM_LOAD_WAIT: /* fall-through is wanted */
+			fallthrough;
+		case JDEC_EEPROM_LOAD_WAIT:
 			deb_info("firmware is loaded\n");
 			bcm3510_check_firmware_version(st);
 			break;
@@ -788,7 +791,7 @@ static int bcm3510_init(struct dvb_frontend* fe)
 }
 
 
-static struct dvb_frontend_ops bcm3510_ops;
+static const struct dvb_frontend_ops bcm3510_ops;
 
 struct dvb_frontend* bcm3510_attach(const struct bcm3510_config *config,
 				   struct i2c_adapter *i2c)
@@ -832,16 +835,14 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(bcm3510_attach);
+EXPORT_SYMBOL_GPL(bcm3510_attach);
 
-static struct dvb_frontend_ops bcm3510_ops = {
+static const struct dvb_frontend_ops bcm3510_ops = {
 	.delsys = { SYS_ATSC, SYS_DVBC_ANNEX_B },
 	.info = {
 		.name = "Broadcom BCM3510 VSB/QAM frontend",
-		.frequency_min =  54000000,
-		.frequency_max = 803000000,
-		/* stepsize is just a guess */
-		.frequency_stepsize = 0,
+		.frequency_min_hz =  54 * MHz,
+		.frequency_max_hz = 803 * MHz,
 		.caps =
 			FE_CAN_FEC_1_2 | FE_CAN_FEC_2_3 | FE_CAN_FEC_3_4 |
 			FE_CAN_FEC_5_6 | FE_CAN_FEC_7_8 | FE_CAN_FEC_AUTO |
@@ -865,5 +866,5 @@ static struct dvb_frontend_ops bcm3510_ops = {
 };
 
 MODULE_DESCRIPTION("Broadcom BCM3510 ATSC (8VSB/16VSB & ITU J83 AnnexB FEC QAM64/256) demodulator driver");
-MODULE_AUTHOR("Patrick Boettcher <patrick.boettcher@desy.de>");
+MODULE_AUTHOR("Patrick Boettcher <patrick.boettcher@posteo.de>");
 MODULE_LICENSE("GPL");

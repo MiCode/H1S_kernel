@@ -30,85 +30,100 @@ struct ath6kl_fwlog_slot {
 	__le32 length;
 
 	/* max ATH6KL_FWLOG_PAYLOAD_SIZE bytes */
-	u8 payload[0];
+	u8 payload[];
 };
 
 #define ATH6KL_FWLOG_MAX_ENTRIES 20
 
 #define ATH6KL_FWLOG_VALID_MASK 0x1ffff
 
-int ath6kl_printk(const char *level, const char *fmt, ...)
+void ath6kl_printk(const char *level, const char *fmt, ...)
 {
 	struct va_format vaf;
 	va_list args;
-	int rtn;
 
 	va_start(args, fmt);
 
 	vaf.fmt = fmt;
 	vaf.va = &args;
 
-	rtn = printk("%sath6kl: %pV", level, &vaf);
+	printk("%sath6kl: %pV", level, &vaf);
 
 	va_end(args);
-
-	return rtn;
 }
 EXPORT_SYMBOL(ath6kl_printk);
 
-int ath6kl_info(const char *fmt, ...)
+void ath6kl_info(const char *fmt, ...)
 {
 	struct va_format vaf = {
 		.fmt = fmt,
 	};
 	va_list args;
-	int ret;
 
 	va_start(args, fmt);
 	vaf.va = &args;
-	ret = ath6kl_printk(KERN_INFO, "%pV", &vaf);
+	ath6kl_printk(KERN_INFO, "%pV", &vaf);
 	trace_ath6kl_log_info(&vaf);
 	va_end(args);
-
-	return ret;
 }
 EXPORT_SYMBOL(ath6kl_info);
 
-int ath6kl_err(const char *fmt, ...)
+void ath6kl_err(const char *fmt, ...)
 {
 	struct va_format vaf = {
 		.fmt = fmt,
 	};
 	va_list args;
-	int ret;
 
 	va_start(args, fmt);
 	vaf.va = &args;
-	ret = ath6kl_printk(KERN_ERR, "%pV", &vaf);
+	ath6kl_printk(KERN_ERR, "%pV", &vaf);
 	trace_ath6kl_log_err(&vaf);
 	va_end(args);
-
-	return ret;
 }
 EXPORT_SYMBOL(ath6kl_err);
 
-int ath6kl_warn(const char *fmt, ...)
+void ath6kl_warn(const char *fmt, ...)
 {
 	struct va_format vaf = {
 		.fmt = fmt,
 	};
 	va_list args;
-	int ret;
 
 	va_start(args, fmt);
 	vaf.va = &args;
-	ret = ath6kl_printk(KERN_WARNING, "%pV", &vaf);
+	ath6kl_printk(KERN_WARNING, "%pV", &vaf);
 	trace_ath6kl_log_warn(&vaf);
 	va_end(args);
-
-	return ret;
 }
 EXPORT_SYMBOL(ath6kl_warn);
+
+int ath6kl_read_tgt_stats(struct ath6kl *ar, struct ath6kl_vif *vif)
+{
+	long left;
+
+	if (down_interruptible(&ar->sem))
+		return -EBUSY;
+
+	set_bit(STATS_UPDATE_PEND, &vif->flags);
+
+	if (ath6kl_wmi_get_stats_cmd(ar->wmi, 0)) {
+		up(&ar->sem);
+		return -EIO;
+	}
+
+	left = wait_event_interruptible_timeout(ar->event_wq,
+						!test_bit(STATS_UPDATE_PEND,
+						&vif->flags), WMI_TIMEOUT);
+
+	up(&ar->sem);
+
+	if (left <= 0)
+		return -ETIMEDOUT;
+
+	return 0;
+}
+EXPORT_SYMBOL(ath6kl_read_tgt_stats);
 
 #ifdef CONFIG_ATH6KL_DEBUG
 
@@ -172,7 +187,6 @@ void ath6kl_dump_registers(struct ath6kl_device *dev,
 			   struct ath6kl_irq_proc_registers *irq_proc_reg,
 			   struct ath6kl_irq_enable_reg *irq_enable_reg)
 {
-
 	ath6kl_dbg(ATH6KL_DBG_IRQ, ("<------- Register Table -------->\n"));
 
 	if (irq_proc_reg != NULL) {
@@ -219,7 +233,6 @@ void ath6kl_dump_registers(struct ath6kl_device *dev,
 				   "GMBOX lookahead alias 1:   0x%x\n",
 				   irq_proc_reg->rx_gmbox_lkahd_alias[1]);
 		}
-
 	}
 
 	if (irq_enable_reg != NULL) {
@@ -335,7 +348,7 @@ void ath6kl_debug_fwlog_event(struct ath6kl *ar, const void *buf, size_t len)
 	if (!skb)
 		return;
 
-	slot = (struct ath6kl_fwlog_slot *) skb_put(skb, slot_len);
+	slot = skb_put(skb, slot_len);
 	slot->timestamp = cpu_to_le32(jiffies);
 	slot->length = cpu_to_le32(len);
 	memcpy(slot->payload, buf, len);
@@ -558,42 +571,24 @@ static ssize_t read_file_tgt_stats(struct file *file, char __user *user_buf,
 	char *buf;
 	unsigned int len = 0, buf_len = 1500;
 	int i;
-	long left;
 	ssize_t ret_cnt;
+	int rv;
 
 	vif = ath6kl_vif_first(ar);
 	if (!vif)
 		return -EIO;
 
-	tgt_stats = &vif->target_stats;
-
 	buf = kzalloc(buf_len, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 
-	if (down_interruptible(&ar->sem)) {
+	rv = ath6kl_read_tgt_stats(ar, vif);
+	if (rv < 0) {
 		kfree(buf);
-		return -EBUSY;
+		return rv;
 	}
 
-	set_bit(STATS_UPDATE_PEND, &vif->flags);
-
-	if (ath6kl_wmi_get_stats_cmd(ar->wmi, 0)) {
-		up(&ar->sem);
-		kfree(buf);
-		return -EIO;
-	}
-
-	left = wait_event_interruptible_timeout(ar->event_wq,
-						!test_bit(STATS_UPDATE_PEND,
-						&vif->flags), WMI_TIMEOUT);
-
-	up(&ar->sem);
-
-	if (left <= 0) {
-		kfree(buf);
-		return -ETIMEDOUT;
-	}
+	tgt_stats = &vif->target_stats;
 
 	len += scnprintf(buf + len, buf_len - len, "\n");
 	len += scnprintf(buf + len, buf_len - len, "%25s\n",
@@ -650,7 +645,7 @@ static ssize_t read_file_tgt_stats(struct file *file, char __user *user_buf,
 	len += scnprintf(buf + len, buf_len - len, "%20s %10llu\n",
 			 "CRC Err", tgt_stats->rx_crc_err);
 	len += scnprintf(buf + len, buf_len - len, "%20s %10llu\n",
-			 "Key chache miss", tgt_stats->rx_key_cache_miss);
+			 "Key cache miss", tgt_stats->rx_key_cache_miss);
 	len += scnprintf(buf + len, buf_len - len, "%20s %10llu\n",
 			 "Decrypt Err", tgt_stats->rx_decrypt_err);
 	len += scnprintf(buf + len, buf_len - len, "%20s %10llu\n",
@@ -1032,14 +1027,17 @@ static ssize_t ath6kl_lrssi_roam_write(struct file *file,
 {
 	struct ath6kl *ar = file->private_data;
 	unsigned long lrssi_roam_threshold;
+	int ret;
 
 	if (kstrtoul_from_user(user_buf, count, 0, &lrssi_roam_threshold))
 		return -EINVAL;
 
 	ar->lrssi_roam_threshold = lrssi_roam_threshold;
 
-	ath6kl_wmi_set_roam_lrssi_cmd(ar->wmi, ar->lrssi_roam_threshold);
+	ret = ath6kl_wmi_set_roam_lrssi_cmd(ar->wmi, ar->lrssi_roam_threshold);
 
+	if (ret)
+		return ret;
 	return count;
 }
 
@@ -1137,8 +1135,7 @@ int ath6kl_debug_roam_tbl_event(struct ath6kl *ar, const void *buf,
 
 	tbl = (const struct wmi_target_roam_tbl *) buf;
 	num_entries = le16_to_cpu(tbl->num_entries);
-	if (sizeof(*tbl) + num_entries * sizeof(struct wmi_bss_roam_info) >
-	    len)
+	if (struct_size(tbl, info, num_entries) > len)
 		return -EINVAL;
 
 	if (ar->debug.roam_tbl == NULL ||
@@ -1396,7 +1393,6 @@ static ssize_t ath6kl_create_qos_write(struct file *file,
 						const char __user *user_buf,
 						size_t count, loff_t *ppos)
 {
-
 	struct ath6kl *ar = file->private_data;
 	struct ath6kl_vif *vif;
 	char buf[200];
@@ -1575,7 +1571,6 @@ static ssize_t ath6kl_delete_qos_write(struct file *file,
 				const char __user *user_buf,
 				size_t count, loff_t *ppos)
 {
-
 	struct ath6kl *ar = file->private_data;
 	struct ath6kl_vif *vif;
 	char buf[100];
@@ -1798,72 +1793,69 @@ int ath6kl_debug_init_fs(struct ath6kl *ar)
 {
 	ar->debugfs_phy = debugfs_create_dir("ath6kl",
 					     ar->wiphy->debugfsdir);
-	if (!ar->debugfs_phy)
-		return -ENOMEM;
 
-	debugfs_create_file("tgt_stats", S_IRUSR, ar->debugfs_phy, ar,
+	debugfs_create_file("tgt_stats", 0400, ar->debugfs_phy, ar,
 			    &fops_tgt_stats);
 
 	if (ar->hif_type == ATH6KL_HIF_TYPE_SDIO)
-		debugfs_create_file("credit_dist_stats", S_IRUSR,
+		debugfs_create_file("credit_dist_stats", 0400,
 				    ar->debugfs_phy, ar,
 				    &fops_credit_dist_stats);
 
-	debugfs_create_file("endpoint_stats", S_IRUSR | S_IWUSR,
+	debugfs_create_file("endpoint_stats", 0600,
 			    ar->debugfs_phy, ar, &fops_endpoint_stats);
 
-	debugfs_create_file("fwlog", S_IRUSR, ar->debugfs_phy, ar,
-			    &fops_fwlog);
+	debugfs_create_file("fwlog", 0400, ar->debugfs_phy, ar, &fops_fwlog);
 
-	debugfs_create_file("fwlog_block", S_IRUSR, ar->debugfs_phy, ar,
+	debugfs_create_file("fwlog_block", 0400, ar->debugfs_phy, ar,
 			    &fops_fwlog_block);
 
-	debugfs_create_file("fwlog_mask", S_IRUSR | S_IWUSR, ar->debugfs_phy,
+	debugfs_create_file("fwlog_mask", 0600, ar->debugfs_phy,
 			    ar, &fops_fwlog_mask);
 
-	debugfs_create_file("reg_addr", S_IRUSR | S_IWUSR, ar->debugfs_phy, ar,
+	debugfs_create_file("reg_addr", 0600, ar->debugfs_phy, ar,
 			    &fops_diag_reg_read);
 
-	debugfs_create_file("reg_dump", S_IRUSR, ar->debugfs_phy, ar,
+	debugfs_create_file("reg_dump", 0400, ar->debugfs_phy, ar,
 			    &fops_reg_dump);
 
-	debugfs_create_file("lrssi_roam_threshold", S_IRUSR | S_IWUSR,
+	debugfs_create_file("lrssi_roam_threshold", 0600,
 			    ar->debugfs_phy, ar, &fops_lrssi_roam_threshold);
 
-	debugfs_create_file("reg_write", S_IRUSR | S_IWUSR,
+	debugfs_create_file("reg_write", 0600,
 			    ar->debugfs_phy, ar, &fops_diag_reg_write);
 
-	debugfs_create_file("war_stats", S_IRUSR, ar->debugfs_phy, ar,
+	debugfs_create_file("war_stats", 0400, ar->debugfs_phy, ar,
 			    &fops_war_stats);
 
-	debugfs_create_file("roam_table", S_IRUSR, ar->debugfs_phy, ar,
+	debugfs_create_file("roam_table", 0400, ar->debugfs_phy, ar,
 			    &fops_roam_table);
 
-	debugfs_create_file("force_roam", S_IWUSR, ar->debugfs_phy, ar,
+	debugfs_create_file("force_roam", 0200, ar->debugfs_phy, ar,
 			    &fops_force_roam);
 
-	debugfs_create_file("roam_mode", S_IWUSR, ar->debugfs_phy, ar,
+	debugfs_create_file("roam_mode", 0200, ar->debugfs_phy, ar,
 			    &fops_roam_mode);
 
-	debugfs_create_file("keepalive", S_IRUSR | S_IWUSR, ar->debugfs_phy, ar,
+	debugfs_create_file("keepalive", 0600, ar->debugfs_phy, ar,
 			    &fops_keepalive);
 
-	debugfs_create_file("disconnect_timeout", S_IRUSR | S_IWUSR,
+	debugfs_create_file("disconnect_timeout", 0600,
 			    ar->debugfs_phy, ar, &fops_disconnect_timeout);
 
-	debugfs_create_file("create_qos", S_IWUSR, ar->debugfs_phy, ar,
+	debugfs_create_file("create_qos", 0200, ar->debugfs_phy, ar,
 			    &fops_create_qos);
 
-	debugfs_create_file("delete_qos", S_IWUSR, ar->debugfs_phy, ar,
+	debugfs_create_file("delete_qos", 0200, ar->debugfs_phy, ar,
 			    &fops_delete_qos);
 
-	debugfs_create_file("bgscan_interval", S_IWUSR,
+	debugfs_create_file("bgscan_interval", 0200,
 			    ar->debugfs_phy, ar, &fops_bgscan_int);
 
-	debugfs_create_file("listen_interval", S_IRUSR | S_IWUSR,
+	debugfs_create_file("listen_interval", 0600,
 			    ar->debugfs_phy, ar, &fops_listen_int);
 
-	debugfs_create_file("power_params", S_IWUSR, ar->debugfs_phy, ar,
+	debugfs_create_file("power_params", 0200, ar->debugfs_phy, ar,
 			    &fops_power_params);
 
 	return 0;

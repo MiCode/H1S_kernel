@@ -1,28 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright 2011 Calxeda, Inc.
  * Based on PPC version Copyright 2007 MontaVista Software, Inc.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #ifndef ASM_EDAC_H
 #define ASM_EDAC_H
 /*
  * ECC atomic, DMA, SMP and interrupt safe scrub function.
- * Implements the per arch atomic_scrub() that EDAC use for software
+ * Implements the per arch edac_atomic_scrub() that EDAC use for software
  * ECC scrubbing.  It reads memory and then writes back the original
  * value, allowing the hardware to detect and correct memory errors.
  */
-static inline void atomic_scrub(void *va, u32 size)
+
+static inline void edac_atomic_scrub(void *va, u32 size)
 {
 #if __LINUX_ARM_ARCH__ >= 6
 	unsigned int *virt_addr = va;

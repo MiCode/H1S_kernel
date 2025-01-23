@@ -1,21 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * VMware VMCI Driver
  *
  * Copyright (C) 2012 VMware, Inc. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation version 2 and no later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * for more details.
  */
 
 #include <linux/vmw_vmci_defs.h>
 #include <linux/vmw_vmci_api.h>
-#include <linux/moduleparam.h>
 #include <linux/miscdevice.h>
 #include <linux/interrupt.h>
 #include <linux/highmem.h>
@@ -24,6 +15,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/sched.h>
+#include <linux/cred.h>
 #include <linux/slab.h>
 #include <linux/file.h>
 #include <linux/init.h>
@@ -116,6 +108,11 @@ bool vmci_host_code_active(void)
 	     atomic_read(&vmci_host_active_users) > 0);
 }
 
+int vmci_host_users(void)
+{
+	return atomic_read(&vmci_host_active_users);
+}
+
 /*
  * Called on open of /dev/vmci.
  */
@@ -165,13 +162,19 @@ static int vmci_host_close(struct inode *inode, struct file *filp)
  * This is used to wake up the VMX when a VMCI call arrives, or
  * to wake up select() or poll() at the next clock tick.
  */
-static unsigned int vmci_host_poll(struct file *filp, poll_table *wait)
+static __poll_t vmci_host_poll(struct file *filp, poll_table *wait)
 {
 	struct vmci_host_dev *vmci_host_dev = filp->private_data;
-	struct vmci_ctx *context = vmci_host_dev->context;
-	unsigned int mask = 0;
+	struct vmci_ctx *context;
+	__poll_t mask = 0;
 
 	if (vmci_host_dev->ct_type == VMCIOBJ_CONTEXT) {
+		/*
+		 * Read context only if ct_type == VMCIOBJ_CONTEXT to make
+		 * sure that context is initialized
+		 */
+		context = vmci_host_dev->context;
+
 		/* Check for VMCI calls to this VM context. */
 		if (wait)
 			poll_wait(filp, &context->host_context.wait_queue,
@@ -181,7 +184,7 @@ static unsigned int vmci_host_poll(struct file *filp, poll_table *wait)
 		if (context->pending_datagrams > 0 ||
 		    vmci_handle_arr_get_size(
 				context->pending_doorbell_array) > 0) {
-			mask = POLLIN;
+			mask = EPOLLIN;
 		}
 		spin_unlock(&context->lock);
 	}
@@ -218,13 +221,12 @@ static int drv_cp_harray_to_user(void __user *user_buf_uva,
 }
 
 /*
- * Sets up a given context for notify to work.  Calls drv_map_bool_ptr()
- * which maps the notify boolean in user VA in kernel space.
+ * Sets up a given context for notify to work. Maps the notify
+ * boolean in user VA into kernel space.
  */
 static int vmci_host_setup_notify(struct vmci_ctx *context,
 				  unsigned long uva)
 {
-	struct page *page;
 	int retval;
 
 	if (context->notify_page) {
@@ -237,20 +239,22 @@ static int vmci_host_setup_notify(struct vmci_ctx *context,
 	 * about the size.
 	 */
 	BUILD_BUG_ON(sizeof(bool) != sizeof(u8));
-	if (!access_ok(VERIFY_WRITE, (void __user *)uva, sizeof(u8)))
-		return VMCI_ERROR_GENERIC;
 
 	/*
 	 * Lock physical page backing a given user VA.
 	 */
-	retval = get_user_pages_fast(PAGE_ALIGN(uva), 1, 1, &page);
-	if (retval != 1)
+	retval = get_user_pages_fast(uva, 1, FOLL_WRITE, &context->notify_page);
+	if (retval != 1) {
+		context->notify_page = NULL;
 		return VMCI_ERROR_GENERIC;
+	}
+	if (context->notify_page == NULL)
+		return VMCI_ERROR_UNAVAILABLE;
 
 	/*
 	 * Map the locked page and set up notify pointer.
 	 */
-	context->notify = kmap(page) + (uva & (PAGE_SIZE - 1));
+	context->notify = kmap(context->notify_page) + (uva & (PAGE_SIZE - 1));
 	vmci_ctx_check_signal_notify(context);
 
 	return VMCI_SUCCESS;
@@ -345,6 +349,8 @@ static int vmci_host_do_init_context(struct vmci_host_dev *vmci_host_dev,
 	vmci_host_dev->ct_type = VMCIOBJ_CONTEXT;
 	atomic_inc(&vmci_host_active_users);
 
+	vmci_call_vsock_callback(true);
+
 	retval = 0;
 
 out:
@@ -380,18 +386,18 @@ static int vmci_host_do_send_datagram(struct vmci_host_dev *vmci_host_dev,
 		return -EINVAL;
 	}
 
-	dg = kmalloc(send_info.len, GFP_KERNEL);
-	if (!dg) {
+	dg = memdup_user((void __user *)(uintptr_t)send_info.addr,
+			 send_info.len);
+	if (IS_ERR(dg)) {
 		vmci_ioctl_err(
 			"cannot allocate memory to dispatch datagram\n");
-		return -ENOMEM;
+		return PTR_ERR(dg);
 	}
 
-	if (copy_from_user(dg, (void __user *)(uintptr_t)send_info.addr,
-			   send_info.len)) {
-		vmci_ioctl_err("error getting datagram\n");
+	if (VMCI_DG_SIZE(dg) != send_info.len) {
+		vmci_ioctl_err("datagram size mismatch\n");
 		kfree(dg);
-		return -EFAULT;
+		return -EINVAL;
 	}
 
 	pr_devel("Datagram dst (handle=0x%x:0x%x) src (handle=0x%x:0x%x), payload (size=%llu bytes)\n",
@@ -446,14 +452,11 @@ static int vmci_host_do_alloc_queuepair(struct vmci_host_dev *vmci_host_dev,
 	struct vmci_handle handle;
 	int vmci_status;
 	int __user *retptr;
-	u32 cid;
 
 	if (vmci_host_dev->ct_type != VMCIOBJ_CONTEXT) {
 		vmci_ioctl_err("only valid for contexts\n");
 		return -EINVAL;
 	}
-
-	cid = vmci_ctx_get_id(vmci_host_dev->context);
 
 	if (vmci_host_dev->user_version < VMCI_VERSION_NOVMVM) {
 		struct vmci_qp_alloc_info_vmvm alloc_info;
@@ -752,19 +755,10 @@ static int vmci_host_do_ctx_set_cpt_state(struct vmci_host_dev *vmci_host_dev,
 	if (copy_from_user(&set_info, uptr, sizeof(set_info)))
 		return -EFAULT;
 
-	cpt_buf = kmalloc(set_info.buf_size, GFP_KERNEL);
-	if (!cpt_buf) {
-		vmci_ioctl_err(
-			"cannot allocate memory to set cpt state (type=%d)\n",
-			set_info.cpt_type);
-		return -ENOMEM;
-	}
-
-	if (copy_from_user(cpt_buf, (void __user *)(uintptr_t)set_info.cpt_buf,
-			   set_info.buf_size)) {
-		retval = -EFAULT;
-		goto out;
-	}
+	cpt_buf = memdup_user((void __user *)(uintptr_t)set_info.cpt_buf,
+				set_info.buf_size);
+	if (IS_ERR(cpt_buf))
+		return PTR_ERR(cpt_buf);
 
 	cid = vmci_ctx_get_id(vmci_host_dev->context);
 	set_info.result = vmci_ctx_set_chkpt_state(cid, set_info.cpt_type,
@@ -772,7 +766,6 @@ static int vmci_host_do_ctx_set_cpt_state(struct vmci_host_dev *vmci_host_dev,
 
 	retval = copy_to_user(uptr, &set_info, sizeof(set_info)) ? -EFAULT : 0;
 
-out:
 	kfree(cpt_buf);
 	return retval;
 }
@@ -923,7 +916,7 @@ static long vmci_host_unlocked_ioctl(struct file *filp,
 				     unsigned int iocmd, unsigned long ioarg)
 {
 #define VMCI_DO_IOCTL(ioctl_name, ioctl_fn) do {			\
-		char *name = __stringify(IOCTL_VMCI_ ## ioctl_name);	\
+		char *name = "IOCTL_VMCI_" # ioctl_name;		\
 		return vmci_host_do_ ## ioctl_fn(			\
 			vmci_host_dev, name, uptr);			\
 	} while (0)
@@ -981,7 +974,7 @@ static const struct file_operations vmuser_fops = {
 	.release	= vmci_host_close,
 	.poll		= vmci_host_poll,
 	.unlocked_ioctl	= vmci_host_unlocked_ioctl,
-	.compat_ioctl	= vmci_host_unlocked_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
 };
 
 static struct miscdevice vmci_host_miscdev = {
@@ -1024,14 +1017,9 @@ int __init vmci_host_init(void)
 
 void __exit vmci_host_exit(void)
 {
-	int error;
-
 	vmci_host_device_initialized = false;
 
-	error = misc_deregister(&vmci_host_miscdev);
-	if (error)
-		pr_warn("Error unregistering character device: %d\n", error);
-
+	misc_deregister(&vmci_host_miscdev);
 	vmci_ctx_destroy(host_context);
 	vmci_qp_broker_exit();
 

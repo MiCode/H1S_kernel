@@ -1,15 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * arch/arm/common/mcpm_head.S -- kernel entry point for multi-cluster PM
  *
  * Created by:  Nicolas Pitre, March 2012
  * Copyright:   (C) 2012-2013  Linaro Limited
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- *
- * Refer to Documentation/arm/cluster-pm-race-avoidance.txt
+ * Refer to Documentation/arch/arm/cluster-pm-race-avoidance.rst
  * for details of the synchronisation algorithms used here.
  */
 
@@ -18,6 +14,8 @@
 #include <asm/assembler.h>
 
 #include "vlock.h"
+
+.arch armv7-a
 
 .if MCPM_SYNC_CLUSTER_CPUS
 .error "cpus must be the first member of struct mcpm_sync_struct"
@@ -49,7 +47,7 @@
 ENTRY(mcpm_entry_point)
 
  ARM_BE8(setend        be)
- THUMB(	adr	r12, BSYM(1f)	)
+ THUMB(	badr	r12, 1f		)
  THUMB(	bx	r12		)
  THUMB(	.thumb			)
 1:

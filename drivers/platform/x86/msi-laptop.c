@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*-*-linux-c-*-*/
 
 /*
   Copyright (C) 2006 Lennart Poettering <mzxreary (at) 0pointer (dot) de>
 
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation; either version 2 of the License, or
-  (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful, but
-  WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-  General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
-  02110-1301, USA.
  */
 
 /*
@@ -64,8 +51,7 @@
 #include <linux/i8042.h>
 #include <linux/input.h>
 #include <linux/input/sparse-keymap.h>
-
-#define MSI_DRIVER_VERSION "0.5"
+#include <acpi/video.h>
 
 #define MSI_LCD_LEVEL_MAX 9
 
@@ -222,7 +208,7 @@ static ssize_t set_device_state(const char *buf, size_t count, u8 mask)
 		return -EINVAL;
 
 	if (quirks->ec_read_only)
-		return -EOPNOTSUPP;
+		return 0;
 
 	/* read current device state */
 	result = ec_read(MSI_STANDARD_EC_COMMAND_ADDRESS, &rdata);
@@ -562,18 +548,17 @@ static struct attribute *msipf_old_attributes[] = {
 	NULL
 };
 
-static struct attribute_group msipf_attribute_group = {
+static const struct attribute_group msipf_attribute_group = {
 	.attrs = msipf_attributes
 };
 
-static struct attribute_group msipf_old_attribute_group = {
+static const struct attribute_group msipf_old_attribute_group = {
 	.attrs = msipf_old_attributes
 };
 
 static struct platform_driver msipf_driver = {
 	.driver = {
 		.name = "msi-laptop-pf",
-		.owner = THIS_MODULE,
 		.pm = &msi_laptop_pm,
 	},
 };
@@ -605,15 +590,22 @@ static int dmi_check_cb(const struct dmi_system_id *dmi)
 	return 1;
 }
 
-static struct dmi_system_id __initdata msi_dmi_table[] = {
+static unsigned long msi_work_delay(int msecs)
+{
+	if (quirks->ec_delay)
+		return msecs_to_jiffies(msecs);
+
+	return 0;
+}
+
+static const struct dmi_system_id msi_dmi_table[] __initconst = {
 	{
 		.ident = "MSI S270",
 		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "MICRO-STAR INT'L CO.,LTD"),
+			DMI_MATCH(DMI_SYS_VENDOR, "MICRO-STAR INT"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "MS-1013"),
 			DMI_MATCH(DMI_PRODUCT_VERSION, "0131"),
-			DMI_MATCH(DMI_CHASSIS_VENDOR,
-				  "MICRO-STAR INT'L CO.,LTD")
+			DMI_MATCH(DMI_CHASSIS_VENDOR, "MICRO-STAR INT")
 		},
 		.driver_data = &quirk_old_ec_model,
 		.callback = dmi_check_cb
@@ -646,8 +638,7 @@ static struct dmi_system_id __initdata msi_dmi_table[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "NOTEBOOK"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "SAM2000"),
 			DMI_MATCH(DMI_PRODUCT_VERSION, "0131"),
-			DMI_MATCH(DMI_CHASSIS_VENDOR,
-				  "MICRO-STAR INT'L CO.,LTD")
+			DMI_MATCH(DMI_CHASSIS_VENDOR, "MICRO-STAR INT")
 		},
 		.driver_data = &quirk_old_ec_model,
 		.callback = dmi_check_cb
@@ -718,6 +709,7 @@ static struct dmi_system_id __initdata msi_dmi_table[] = {
 	},
 	{ }
 };
+MODULE_DEVICE_TABLE(dmi, msi_dmi_table);
 
 static int rfkill_bluetooth_set(void *data, bool blocked)
 {
@@ -798,7 +790,6 @@ static void msi_update_rfkill(struct work_struct *ignored)
 		msi_rfkill_set_state(rfk_threeg, !threeg_s);
 }
 static DECLARE_DELAYED_WORK(msi_rfkill_dwork, msi_update_rfkill);
-static DECLARE_WORK(msi_rfkill_work, msi_update_rfkill);
 
 static void msi_send_touchpad_key(struct work_struct *ignored)
 {
@@ -814,14 +805,13 @@ static void msi_send_touchpad_key(struct work_struct *ignored)
 		KEY_TOUCHPAD_ON : KEY_TOUCHPAD_OFF, 1, true);
 }
 static DECLARE_DELAYED_WORK(msi_touchpad_dwork, msi_send_touchpad_key);
-static DECLARE_WORK(msi_touchpad_work, msi_send_touchpad_key);
 
 static bool msi_laptop_i8042_filter(unsigned char data, unsigned char str,
 				struct serio *port)
 {
 	static bool extended;
 
-	if (str & 0x20)
+	if (str & I8042_STR_AUXDATA)
 		return false;
 
 	/* 0x54 wwan, 0x62 bluetooth, 0x76 wlan, 0xE4 touchpad toggle*/
@@ -832,20 +822,12 @@ static bool msi_laptop_i8042_filter(unsigned char data, unsigned char str,
 		extended = false;
 		switch (data) {
 		case 0xE4:
-			if (quirks->ec_delay) {
-				schedule_delayed_work(&msi_touchpad_dwork,
-					round_jiffies_relative(0.5 * HZ));
-			} else
-				schedule_work(&msi_touchpad_work);
+			schedule_delayed_work(&msi_touchpad_dwork, msi_work_delay(500));
 			break;
 		case 0x54:
 		case 0x62:
 		case 0x76:
-			if (quirks->ec_delay) {
-				schedule_delayed_work(&msi_rfkill_dwork,
-					round_jiffies_relative(0.5 * HZ));
-			} else
-				schedule_work(&msi_rfkill_work);
+			schedule_delayed_work(&msi_rfkill_dwork, msi_work_delay(500));
 			break;
 		}
 	}
@@ -856,15 +838,15 @@ static bool msi_laptop_i8042_filter(unsigned char data, unsigned char str,
 static void msi_init_rfkill(struct work_struct *ignored)
 {
 	if (rfk_wlan) {
-		rfkill_set_sw_state(rfk_wlan, !wlan_s);
+		msi_rfkill_set_state(rfk_wlan, !wlan_s);
 		rfkill_wlan_set(NULL, !wlan_s);
 	}
 	if (rfk_bluetooth) {
-		rfkill_set_sw_state(rfk_bluetooth, !bluetooth_s);
+		msi_rfkill_set_state(rfk_bluetooth, !bluetooth_s);
 		rfkill_bluetooth_set(NULL, !bluetooth_s);
 	}
 	if (rfk_threeg) {
-		rfkill_set_sw_state(rfk_threeg, !threeg_s);
+		msi_rfkill_set_state(rfk_threeg, !threeg_s);
 		rfkill_threeg_set(NULL, !threeg_s);
 	}
 }
@@ -912,12 +894,7 @@ static int rfkill_init(struct platform_device *sdev)
 	}
 
 	/* schedule to run rfkill state initial */
-	if (quirks->ec_delay) {
-		schedule_delayed_work(&msi_rfkill_init,
-			round_jiffies_relative(1 * HZ));
-	} else
-		schedule_work(&msi_rfkill_work);
-
+	schedule_delayed_work(&msi_rfkill_init, msi_work_delay(1000));
 	return 0;
 
 err_threeg:
@@ -934,8 +911,7 @@ err_bluetooth:
 	return retval;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int msi_laptop_resume(struct device *device)
+static int msi_scm_disable_hw_fn_handling(void)
 {
 	u8 data;
 	int result;
@@ -954,6 +930,12 @@ static int msi_laptop_resume(struct device *device)
 		return result;
 
 	return 0;
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int msi_laptop_resume(struct device *device)
+{
+	return msi_scm_disable_hw_fn_handling();
 }
 #endif
 
@@ -976,26 +958,17 @@ static int __init msi_laptop_input_setup(void)
 
 	err = input_register_device(msi_laptop_input_dev);
 	if (err)
-		goto err_free_keymap;
+		goto err_free_dev;
 
 	return 0;
 
-err_free_keymap:
-	sparse_keymap_free(msi_laptop_input_dev);
 err_free_dev:
 	input_free_device(msi_laptop_input_dev);
 	return err;
 }
 
-static void msi_laptop_input_destroy(void)
-{
-	sparse_keymap_free(msi_laptop_input_dev);
-	input_unregister_device(msi_laptop_input_dev);
-}
-
 static int __init load_scm_model_init(struct platform_device *sdev)
 {
-	u8 data;
 	int result;
 
 	if (!quirks->ec_read_only) {
@@ -1009,12 +982,7 @@ static int __init load_scm_model_init(struct platform_device *sdev)
 	}
 
 	/* disable hardware control by fn key */
-	result = ec_read(MSI_STANDARD_EC_SCM_LOAD_ADDRESS, &data);
-	if (result < 0)
-		return result;
-
-	result = ec_write(MSI_STANDARD_EC_SCM_LOAD_ADDRESS,
-		data | MSI_STANDARD_EC_SCM_LOAD_MASK);
+	result = msi_scm_disable_hw_fn_handling();
 	if (result < 0)
 		return result;
 
@@ -1037,15 +1005,25 @@ static int __init load_scm_model_init(struct platform_device *sdev)
 	return 0;
 
 fail_filter:
-	msi_laptop_input_destroy();
+	input_unregister_device(msi_laptop_input_dev);
 
 fail_input:
 	rfkill_cleanup();
 
 fail_rfkill:
-
 	return result;
+}
 
+static void msi_scm_model_exit(void)
+{
+	if (!quirks->load_scm_model)
+		return;
+
+	i8042_remove_filter(msi_laptop_i8042_filter);
+	cancel_delayed_work_sync(&msi_touchpad_dwork);
+	input_unregister_device(msi_laptop_input_dev);
+	cancel_delayed_work_sync(&msi_rfkill_dwork);
+	rfkill_cleanup();
 }
 
 static int __init msi_init(void)
@@ -1069,10 +1047,8 @@ static int __init msi_init(void)
 		return -EINVAL;
 
 	/* Register backlight stuff */
-
-	if (!quirks->old_ec_model || acpi_video_backlight_support()) {
-		pr_info("Brightness ignored, must be controlled by ACPI video driver\n");
-	} else {
+	if (quirks->old_ec_model &&
+	    acpi_video_get_backlight_type() == acpi_backlight_vendor) {
 		struct backlight_properties props;
 		memset(&props, 0, sizeof(struct backlight_properties));
 		props.type = BACKLIGHT_PLATFORM;
@@ -1090,7 +1066,7 @@ static int __init msi_init(void)
 
 	/* Register platform stuff */
 
-	msipf_device = platform_device_alloc("msi-laptop-pf", -1);
+	msipf_device = platform_device_alloc("msi-laptop-pf", PLATFORM_DEVID_NONE);
 	if (!msipf_device) {
 		ret = -ENOMEM;
 		goto fail_platform_driver;
@@ -1130,19 +1106,12 @@ static int __init msi_init(void)
 			set_auto_brightness(auto_brightness);
 	}
 
-	pr_info("driver " MSI_DRIVER_VERSION " successfully loaded\n");
-
 	return 0;
 
 fail_create_attr:
 	sysfs_remove_group(&msipf_device->dev.kobj, &msipf_attribute_group);
 fail_create_group:
-	if (quirks->load_scm_model) {
-		i8042_remove_filter(msi_laptop_i8042_filter);
-		cancel_delayed_work_sync(&msi_rfkill_dwork);
-		cancel_work_sync(&msi_rfkill_work);
-		rfkill_cleanup();
-	}
+	msi_scm_model_exit();
 fail_scm_model_init:
 	platform_device_del(msipf_device);
 fail_device_add:
@@ -1157,14 +1126,7 @@ fail_backlight:
 
 static void __exit msi_cleanup(void)
 {
-	if (quirks->load_scm_model) {
-		i8042_remove_filter(msi_laptop_i8042_filter);
-		msi_laptop_input_destroy();
-		cancel_delayed_work_sync(&msi_rfkill_dwork);
-		cancel_work_sync(&msi_rfkill_work);
-		rfkill_cleanup();
-	}
-
+	msi_scm_model_exit();
 	sysfs_remove_group(&msipf_device->dev.kobj, &msipf_attribute_group);
 	if (!quirks->old_ec_model && threeg_exists)
 		device_remove_file(&msipf_device->dev, &dev_attr_threeg);
@@ -1177,8 +1139,6 @@ static void __exit msi_cleanup(void)
 		if (auto_brightness != 2)
 			set_auto_brightness(1);
 	}
-
-	pr_info("driver unloaded\n");
 }
 
 module_init(msi_init);
@@ -1186,16 +1146,4 @@ module_exit(msi_cleanup);
 
 MODULE_AUTHOR("Lennart Poettering");
 MODULE_DESCRIPTION("MSI Laptop Support");
-MODULE_VERSION(MSI_DRIVER_VERSION);
 MODULE_LICENSE("GPL");
-
-MODULE_ALIAS("dmi:*:svnMICRO-STARINT'LCO.,LTD:pnMS-1013:pvr0131*:cvnMICRO-STARINT'LCO.,LTD:ct10:*");
-MODULE_ALIAS("dmi:*:svnMicro-StarInternational:pnMS-1058:pvr0581:rvnMSI:rnMS-1058:*:ct10:*");
-MODULE_ALIAS("dmi:*:svnMicro-StarInternational:pnMS-1412:*:rvnMSI:rnMS-1412:*:cvnMICRO-STARINT'LCO.,LTD:ct10:*");
-MODULE_ALIAS("dmi:*:svnNOTEBOOK:pnSAM2000:pvr0131*:cvnMICRO-STARINT'LCO.,LTD:ct10:*");
-MODULE_ALIAS("dmi:*:svnMICRO-STARINTERNATIONAL*:pnMS-N034:*");
-MODULE_ALIAS("dmi:*:svnMICRO-STARINTERNATIONAL*:pnMS-N051:*");
-MODULE_ALIAS("dmi:*:svnMICRO-STARINTERNATIONAL*:pnMS-N014:*");
-MODULE_ALIAS("dmi:*:svnMicro-StarInternational*:pnCR620:*");
-MODULE_ALIAS("dmi:*:svnMicro-StarInternational*:pnU270series:*");
-MODULE_ALIAS("dmi:*:svnMICRO-STARINTERNATIONAL*:pnU90/U100:*");

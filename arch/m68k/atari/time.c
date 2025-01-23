@@ -16,48 +16,80 @@
 #include <linux/init.h>
 #include <linux/rtc.h>
 #include <linux/bcd.h>
+#include <linux/clocksource.h>
 #include <linux/delay.h>
 #include <linux/export.h>
 
 #include <asm/atariints.h>
+#include <asm/machdep.h>
 
 DEFINE_SPINLOCK(rtc_lock);
 EXPORT_SYMBOL_GPL(rtc_lock);
 
+static u64 atari_read_clk(struct clocksource *cs);
+
+static struct clocksource atari_clk = {
+	.name   = "mfp",
+	.rating = 100,
+	.read   = atari_read_clk,
+	.mask   = CLOCKSOURCE_MASK(32),
+	.flags  = CLOCK_SOURCE_IS_CONTINUOUS,
+};
+
+static u32 clk_total;
+static u8 last_timer_count;
+
+static irqreturn_t mfp_timer_c_handler(int irq, void *dev_id)
+{
+	unsigned long flags;
+
+	local_irq_save(flags);
+	do {
+		last_timer_count = st_mfp.tim_dt_c;
+	} while (last_timer_count == 1);
+	clk_total += INT_TICKS;
+	legacy_timer_tick(1);
+	timer_heartbeat();
+	local_irq_restore(flags);
+
+	return IRQ_HANDLED;
+}
+
 void __init
-atari_sched_init(irq_handler_t timer_routine)
+atari_sched_init(void)
 {
     /* set Timer C data Register */
     st_mfp.tim_dt_c = INT_TICKS;
     /* start timer C, div = 1:100 */
     st_mfp.tim_ct_cd = (st_mfp.tim_ct_cd & 15) | 0x60;
     /* install interrupt service routine for MFP Timer C */
-    if (request_irq(IRQ_MFP_TIMC, timer_routine, IRQ_TYPE_SLOW,
-		    "timer", timer_routine))
+    if (request_irq(IRQ_MFP_TIMC, mfp_timer_c_handler, IRQF_TIMER, "timer",
+                    NULL))
 	pr_err("Couldn't register timer interrupt\n");
+
+    clocksource_register_hz(&atari_clk, INT_CLK);
 }
 
 /* ++andreas: gettimeoffset fixed to check for pending interrupt */
 
-#define TICK_SIZE 10000
-
-/* This is always executed with interrupts disabled.  */
-u32 atari_gettimeoffset(void)
+static u64 atari_read_clk(struct clocksource *cs)
 {
-  u32 ticks, offset = 0;
+	unsigned long flags;
+	u8 count;
+	u32 ticks;
 
-  /* read MFP timer C current value */
-  ticks = st_mfp.tim_dt_c;
-  /* The probability of underflow is less than 2% */
-  if (ticks > INT_TICKS - INT_TICKS / 50)
-    /* Check for pending timer interrupt */
-    if (st_mfp.int_pn_b & (1 << 5))
-      offset = TICK_SIZE;
+	local_irq_save(flags);
+	/* Ensure that the count is monotonically decreasing, even though
+	 * the result may briefly stop changing after counter wrap-around.
+	 */
+	count = min(st_mfp.tim_dt_c, last_timer_count);
+	last_timer_count = count;
 
-  ticks = INT_TICKS - ticks;
-  ticks = ticks * 10000L / INT_TICKS;
+	ticks = INT_TICKS - count;
+	ticks += clk_total;
+	local_irq_restore(flags);
 
-  return (ticks + offset) * 1000;
+	return ticks;
 }
 
 
@@ -285,73 +317,3 @@ int atari_tt_hwclk( int op, struct rtc_time *t )
 
     return( 0 );
 }
-
-
-int atari_mste_set_clock_mmss (unsigned long nowtime)
-{
-    short real_seconds = nowtime % 60, real_minutes = (nowtime / 60) % 60;
-    struct MSTE_RTC val;
-    unsigned char rtc_minutes;
-
-    mste_read(&val);
-    rtc_minutes= val.min_ones + val.min_tens * 10;
-    if ((rtc_minutes < real_minutes
-         ? real_minutes - rtc_minutes
-         : rtc_minutes - real_minutes) < 30)
-    {
-        val.sec_ones = real_seconds % 10;
-        val.sec_tens = real_seconds / 10;
-        val.min_ones = real_minutes % 10;
-        val.min_tens = real_minutes / 10;
-        mste_write(&val);
-    }
-    else
-        return -1;
-    return 0;
-}
-
-int atari_tt_set_clock_mmss (unsigned long nowtime)
-{
-    int retval = 0;
-    short real_seconds = nowtime % 60, real_minutes = (nowtime / 60) % 60;
-    unsigned char save_control, save_freq_select, rtc_minutes;
-
-    save_control = RTC_READ (RTC_CONTROL); /* tell the clock it's being set */
-    RTC_WRITE (RTC_CONTROL, save_control | RTC_SET);
-
-    save_freq_select = RTC_READ (RTC_FREQ_SELECT); /* stop and reset prescaler */
-    RTC_WRITE (RTC_FREQ_SELECT, save_freq_select | RTC_DIV_RESET2);
-
-    rtc_minutes = RTC_READ (RTC_MINUTES);
-    if (!(save_control & RTC_DM_BINARY))
-	rtc_minutes = bcd2bin(rtc_minutes);
-
-    /* Since we're only adjusting minutes and seconds, don't interfere
-       with hour overflow.  This avoids messing with unknown time zones
-       but requires your RTC not to be off by more than 30 minutes.  */
-    if ((rtc_minutes < real_minutes
-         ? real_minutes - rtc_minutes
-         : rtc_minutes - real_minutes) < 30)
-        {
-            if (!(save_control & RTC_DM_BINARY))
-                {
-		    real_seconds = bin2bcd(real_seconds);
-		    real_minutes = bin2bcd(real_minutes);
-                }
-            RTC_WRITE (RTC_SECONDS, real_seconds);
-            RTC_WRITE (RTC_MINUTES, real_minutes);
-        }
-    else
-        retval = -1;
-
-    RTC_WRITE (RTC_FREQ_SELECT, save_freq_select);
-    RTC_WRITE (RTC_CONTROL, save_control);
-    return retval;
-}
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  tab-width: 8
- * End:
- */

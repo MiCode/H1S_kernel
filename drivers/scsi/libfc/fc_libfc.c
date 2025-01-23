@@ -1,18 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright(c) 2009 Intel Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
  *
  * Maintained at www.Open-FCoE.org
  */
@@ -24,8 +12,8 @@
 #include <linux/module.h>
 
 #include <scsi/libfc.h>
-#include <scsi/fc_encode.h>
 
+#include "fc_encode.h"
 #include "fc_libfc.h"
 
 MODULE_AUTHOR("Open-FCoE.org");
@@ -178,7 +166,7 @@ void fc_fill_hdr(struct fc_frame *fp, const struct fc_frame *in_fp,
 		fill = -fr_len(fp) & 3;
 		if (fill) {
 			/* TODO, this may be a problem with fragmented skb */
-			memset(skb_put(fp_skb(fp), fill), 0, fill);
+			skb_put_zero(fp_skb(fp), fill);
 			f_ctl |= fill;
 		}
 		fr_eof(fp) = FC_EOF_T;
@@ -226,7 +214,7 @@ void fc_fill_reply_hdr(struct fc_frame *fp, const struct fc_frame *in_fp,
 
 	sp = fr_seq(in_fp);
 	if (sp)
-		fr_seq(fp) = fr_dev(in_fp)->tt.seq_start_next(sp);
+		fr_seq(fp) = fc_seq_start_next(sp);
 	fc_fill_hdr(fp, in_fp, r_ctl, FC_FCTL_RESP, 0, parm_offset);
 }
 EXPORT_SYMBOL(fc_fill_reply_hdr);
@@ -296,9 +284,9 @@ void fc_fc4_deregister_provider(enum fc_fh_type type, struct fc4_prov *prov)
 	BUG_ON(type >= FC_FC4_PROV_SIZE);
 	mutex_lock(&fc_prov_mutex);
 	if (prov->recv)
-		rcu_assign_pointer(fc_passive_prov[type], NULL);
+		RCU_INIT_POINTER(fc_passive_prov[type], NULL);
 	else
-		rcu_assign_pointer(fc_active_prov[type], NULL);
+		RCU_INIT_POINTER(fc_active_prov[type], NULL);
 	mutex_unlock(&fc_prov_mutex);
 	synchronize_rcu();
 }

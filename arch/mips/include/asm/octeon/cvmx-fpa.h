@@ -36,6 +36,8 @@
 #ifndef __CVMX_FPA_H__
 #define __CVMX_FPA_H__
 
+#include <linux/delay.h>
+
 #include <asm/octeon/cvmx-address.h>
 #include <asm/octeon/cvmx-fpa-defs.h>
 
@@ -49,6 +51,7 @@
 typedef union {
 	uint64_t u64;
 	struct {
+#ifdef __BIG_ENDIAN_BITFIELD
 		/*
 		 * the (64-bit word) location in scratchpad to write
 		 * to (if len != 0)
@@ -63,6 +66,12 @@ typedef union {
 		 * the NCB bus.
 		 */
 		uint64_t addr:40;
+#else
+		uint64_t addr:40;
+		uint64_t did:8;
+		uint64_t len:8;
+		uint64_t scraddr:8;
+#endif
 	} s;
 } cvmx_fpa_iobdma_data_t;
 
@@ -158,7 +167,7 @@ static inline void cvmx_fpa_enable(void)
 		}
 
 		/* Enforce a 10 cycle delay between config and enable */
-		cvmx_wait(10);
+		__delay(10);
 	}
 
 	/* FIXME: CVMX_FPA_CTL_STATUS read is unmodelled */
@@ -253,26 +262,6 @@ static inline void cvmx_fpa_free(void *ptr, uint64_t pool,
 	/* value written is number of cache lines not written back */
 	cvmx_write_io(newptr.u64, num_cache_lines);
 }
-
-/**
- * Setup a FPA pool to control a new block of memory.
- * This can only be called once per pool. Make sure proper
- * locking enforces this.
- *
- * @pool:	Pool to initialize
- *		     0 <= pool < 8
- * @name:	Constant character string to name this pool.
- *		     String is not copied.
- * @buffer:	Pointer to the block of memory to use. This must be
- *		     accessible by all processors and external hardware.
- * @block_size: Size for each block controlled by the FPA
- * @num_blocks: Number of blocks
- *
- * Returns 0 on Success,
- *	   -1 on failure
- */
-extern int cvmx_fpa_setup_pool(uint64_t pool, const char *name, void *buffer,
-			       uint64_t block_size, uint64_t num_blocks);
 
 /**
  * Shutdown a Memory pool and validate that it had all of

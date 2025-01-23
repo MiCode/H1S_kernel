@@ -1,12 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright 2004-2007 Freescale Semiconductor, Inc. All Rights Reserved.
  */
 
-/*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- */
 
 #ifndef __MACH_MX3x_H__
 #define __MACH_MX3x_H__
@@ -184,12 +180,5 @@
 #define MX3x_INT_EXT_TV		(NR_IRQS_LEGACY + 63)
 
 #define MX3x_PROD_SIGNATURE		0x1	/* For MX31 */
-
-/* Mandatory defines used globally */
-
-#if !defined(__ASSEMBLY__) && !defined(__MXC_BOOT_UNCOMPRESS)
-extern int mx35_revision(void);
-extern int mx31_revision(void);
-#endif
 
 #endif /* ifndef __MACH_MX3x_H__ */

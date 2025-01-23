@@ -64,23 +64,17 @@
  *   bit to be sent from the chip.
  */
 
-#ifdef __linux__
 #include "aic7xxx_osm.h"
 #include "aic7xxx_inline.h"
 #include "aic7xxx_93cx6.h"
-#else
-#include <dev/aic7xxx/aic7xxx_osm.h>
-#include <dev/aic7xxx/aic7xxx_inline.h>
-#include <dev/aic7xxx/aic7xxx_93cx6.h>
-#endif
 
 /*
  * Right now, we only have to read the SEEPROM.  But we make it easier to
  * add other 93Cx6 functions.
  */
 struct seeprom_cmd {
-  	uint8_t len;
- 	uint8_t bits[11];
+	uint8_t len;
+	uint8_t bits[11];
 };
 
 /* Short opcodes for the c46 */

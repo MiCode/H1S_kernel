@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Atheros AR71XX/AR724X/AR913X built-in hardware watchdog timer.
  *
@@ -10,19 +11,14 @@
  *
  * which again was based on sa1100 driver,
  *	Copyright (C) 2000 Oleg Drokin <green@crimea.edu>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
- *
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/bitops.h>
+#include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
-#include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/miscdevice.h>
@@ -35,6 +31,7 @@
 #include <linux/err.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
+#include <linux/uaccess.h>
 
 #define DRIVER_NAME	"ath79-wdt"
 
@@ -91,6 +88,15 @@ static inline void ath79_wdt_keepalive(void)
 static inline void ath79_wdt_enable(void)
 {
 	ath79_wdt_keepalive();
+
+	/*
+	 * Updating the TIMER register requires a few microseconds
+	 * on the AR934x SoCs at least. Use a small delay to ensure
+	 * that the TIMER register is updated within the hardware
+	 * before enabling the watchdog.
+	 */
+	udelay(2);
+
 	ath79_wdt_wr(WDOG_REG_CTRL, WDOG_CTRL_ACTION_FCR);
 	/* flush write */
 	ath79_wdt_rr(WDOG_REG_CTRL);
@@ -122,7 +128,7 @@ static int ath79_wdt_open(struct inode *inode, struct file *file)
 	clear_bit(WDT_FLAGS_EXPECT_CLOSE, &wdt_flags);
 	ath79_wdt_enable();
 
-	return nonseekable_open(inode, file);
+	return stream_open(inode, file);
 }
 
 static int ath79_wdt_release(struct inode *inode, struct file *file)
@@ -209,8 +215,8 @@ static long ath79_wdt_ioctl(struct file *file, unsigned int cmd,
 		err = ath79_wdt_set_timeout(t);
 		if (err)
 			break;
+		fallthrough;
 
-		/* fallthrough */
 	case WDIOC_GETTIMEOUT:
 		err = put_user(timeout, p);
 		break;
@@ -228,6 +234,7 @@ static const struct file_operations ath79_wdt_fops = {
 	.llseek		= no_llseek,
 	.write		= ath79_wdt_write,
 	.unlocked_ioctl	= ath79_wdt_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
 	.open		= ath79_wdt_open,
 	.release	= ath79_wdt_release,
 };
@@ -240,15 +247,13 @@ static struct miscdevice ath79_wdt_miscdev = {
 
 static int ath79_wdt_probe(struct platform_device *pdev)
 {
-	struct resource *res;
 	u32 ctrl;
 	int err;
 
 	if (wdt_base)
 		return -EBUSY;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	wdt_base = devm_ioremap_resource(&pdev->dev, res);
+	wdt_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(wdt_base))
 		return PTR_ERR(wdt_base);
 
@@ -256,7 +261,7 @@ static int ath79_wdt_probe(struct platform_device *pdev)
 	if (IS_ERR(wdt_clk))
 		return PTR_ERR(wdt_clk);
 
-	err = clk_enable(wdt_clk);
+	err = clk_prepare_enable(wdt_clk);
 	if (err)
 		return err;
 
@@ -287,18 +292,17 @@ static int ath79_wdt_probe(struct platform_device *pdev)
 	return 0;
 
 err_clk_disable:
-	clk_disable(wdt_clk);
+	clk_disable_unprepare(wdt_clk);
 	return err;
 }
 
-static int ath79_wdt_remove(struct platform_device *pdev)
+static void ath79_wdt_remove(struct platform_device *pdev)
 {
 	misc_deregister(&ath79_wdt_miscdev);
-	clk_disable(wdt_clk);
-	return 0;
+	clk_disable_unprepare(wdt_clk);
 }
 
-static void ath97_wdt_shutdown(struct platform_device *pdev)
+static void ath79_wdt_shutdown(struct platform_device *pdev)
 {
 	ath79_wdt_disable();
 }
@@ -313,11 +317,10 @@ MODULE_DEVICE_TABLE(of, ath79_wdt_match);
 
 static struct platform_driver ath79_wdt_driver = {
 	.probe		= ath79_wdt_probe,
-	.remove		= ath79_wdt_remove,
-	.shutdown	= ath97_wdt_shutdown,
+	.remove_new	= ath79_wdt_remove,
+	.shutdown	= ath79_wdt_shutdown,
 	.driver		= {
 		.name	= DRIVER_NAME,
-		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(ath79_wdt_match),
 	},
 };

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* Terratec ActiveRadio ISA Standalone card driver for Linux radio support
  * (c) 1999 R. Offermanns (rolf@offermanns.de)
  * based on the aimslab radio driver from M. Kirkwood
@@ -17,10 +18,10 @@
  *  Volume Control is done digitally
  *
  * Converted to the radio-isa framework by Hans Verkuil <hans.verkuil@cisco.com>
- * Converted to V4L2 API by Mauro Carvalho Chehab <mchehab@infradead.org>
+ * Converted to V4L2 API by Mauro Carvalho Chehab <mchehab@kernel.org>
  */
 
-#include <linux/module.h>	/* Modules 			*/
+#include <linux/module.h>	/* Modules			*/
 #include <linux/init.h>		/* Initdata			*/
 #include <linux/ioport.h>	/* request_region		*/
 #include <linux/videodev2.h>	/* kernel radio structs		*/
@@ -45,12 +46,12 @@ static int radio_nr = -1;
 module_param(radio_nr, int, 0444);
 MODULE_PARM_DESC(radio_nr, "Radio device number");
 
-#define WRT_DIS 	0x00
+#define WRT_DIS		0x00
 #define CLK_OFF		0x00
 #define IIC_DATA	0x01
 #define IIC_CLK		0x02
 #define DATA		0x04
-#define CLK_ON 		0x08
+#define CLK_ON		0x08
 #define WRT_EN		0x10
 
 static struct radio_isa_card *terratec_alloc(void)
@@ -81,7 +82,6 @@ static int terratec_s_mute_volume(struct radio_isa_card *isa, bool mute, int vol
 static int terratec_s_frequency(struct radio_isa_card *isa, u32 freq)
 {
 	int i;
-	int p;
 	int temp;
 	long rest;
 	unsigned char buffer[25];		/* we have to bit shift 25 registers */
@@ -92,7 +92,6 @@ static int terratec_s_frequency(struct radio_isa_card *isa, u32 freq)
 	rest = freq * 10 + 10700;	/* I once had understood what is going on here */
 					/* maybe some wise guy (friedhelm?) can comment this stuff */
 	i = 13;
-	p = 10;
 	temp = 102400;
 	while (rest != 0) {
 		if (rest % temp  == rest)
@@ -102,7 +101,6 @@ static int terratec_s_frequency(struct radio_isa_card *isa, u32 freq)
 			rest = rest - temp;
 		}
 		i--;
-		p--;
 		temp = temp / 2;
 	}
 

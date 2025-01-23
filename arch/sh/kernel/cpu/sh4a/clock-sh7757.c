@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/kernel/cpu/sh4/clock-sh7757.c
  *
  * SH7757 support for the clock framework
  *
  *  Copyright (C) 2009-2010  Renesas Solutions Corp.
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -123,16 +120,16 @@ static struct clk_lookup lookups[] = {
 	CLKDEV_CON_ID("riic6", &mstp_clks[MSTP000]),
 	CLKDEV_CON_ID("riic7", &mstp_clks[MSTP000]),
 
-	CLKDEV_ICK_ID("tmu_fck", "sh_tmu.0", &mstp_clks[MSTP113]),
-	CLKDEV_ICK_ID("tmu_fck", "sh_tmu.1", &mstp_clks[MSTP114]),
-	CLKDEV_ICK_ID("sci_fck", "sh-sci.2", &mstp_clks[MSTP112]),
-	CLKDEV_ICK_ID("sci_fck", "sh-sci.1", &mstp_clks[MSTP111]),
-	CLKDEV_ICK_ID("sci_fck", "sh-sci.0", &mstp_clks[MSTP110]),
+	CLKDEV_ICK_ID("fck", "sh-tmu.0", &mstp_clks[MSTP113]),
+	CLKDEV_ICK_ID("fck", "sh-tmu.1", &mstp_clks[MSTP114]),
+	CLKDEV_ICK_ID("fck", "sh-sci.2", &mstp_clks[MSTP112]),
+	CLKDEV_ICK_ID("fck", "sh-sci.1", &mstp_clks[MSTP111]),
+	CLKDEV_ICK_ID("fck", "sh-sci.0", &mstp_clks[MSTP110]),
 
 	CLKDEV_CON_ID("usb_fck", &mstp_clks[MSTP103]),
 	CLKDEV_DEV_ID("renesas_usbhs.0", &mstp_clks[MSTP102]),
 	CLKDEV_CON_ID("mmc0", &mstp_clks[MSTP220]),
-	CLKDEV_CON_ID("rspi2", &mstp_clks[MSTP127]),
+	CLKDEV_DEV_ID("rspi.2", &mstp_clks[MSTP127]),
 };
 
 int __init arch_clk_init(void)
@@ -141,8 +138,8 @@ int __init arch_clk_init(void)
 
 	for (i = 0; i < ARRAY_SIZE(clks); i++)
 		ret |= clk_register(clks[i]);
-	for (i = 0; i < ARRAY_SIZE(lookups); i++)
-		clkdev_add(&lookups[i]);
+
+	clkdev_add_table(lookups, ARRAY_SIZE(lookups));
 
 	if (!ret)
 		ret = sh_clk_div4_register(div4_clks, ARRAY_SIZE(div4_clks),

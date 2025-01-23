@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * INET		An implementation of the TCP/IP protocol suite for the LINUX
  *		operating system.  INET is implemented using the  BSD Socket
@@ -15,7 +16,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/types.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/unaligned.h>
 #include <linux/skbuff.h>
 #include <linux/ip.h>
@@ -41,40 +42,26 @@
  */
 
 void ip_options_build(struct sk_buff *skb, struct ip_options *opt,
-		      __be32 daddr, struct rtable *rt, int is_frag)
+		      __be32 daddr, struct rtable *rt)
 {
 	unsigned char *iph = skb_network_header(skb);
 
 	memcpy(&(IPCB(skb)->opt), opt, sizeof(struct ip_options));
-	memcpy(iph+sizeof(struct iphdr), opt->__data, opt->optlen);
+	memcpy(iph + sizeof(struct iphdr), opt->__data, opt->optlen);
 	opt = &(IPCB(skb)->opt);
 
 	if (opt->srr)
-		memcpy(iph+opt->srr+iph[opt->srr+1]-4, &daddr, 4);
+		memcpy(iph + opt->srr + iph[opt->srr + 1] - 4, &daddr, 4);
 
-	if (!is_frag) {
-		if (opt->rr_needaddr)
-			ip_rt_get_source(iph+opt->rr+iph[opt->rr+2]-5, skb, rt);
-		if (opt->ts_needaddr)
-			ip_rt_get_source(iph+opt->ts+iph[opt->ts+2]-9, skb, rt);
-		if (opt->ts_needtime) {
-			struct timespec tv;
-			__be32 midtime;
-			getnstimeofday(&tv);
-			midtime = htonl((tv.tv_sec % 86400) * MSEC_PER_SEC + tv.tv_nsec / NSEC_PER_MSEC);
-			memcpy(iph+opt->ts+iph[opt->ts+2]-5, &midtime, 4);
-		}
-		return;
-	}
-	if (opt->rr) {
-		memset(iph+opt->rr, IPOPT_NOP, iph[opt->rr+1]);
-		opt->rr = 0;
-		opt->rr_needaddr = 0;
-	}
-	if (opt->ts) {
-		memset(iph+opt->ts, IPOPT_NOP, iph[opt->ts+1]);
-		opt->ts = 0;
-		opt->ts_needaddr = opt->ts_needtime = 0;
+	if (opt->rr_needaddr)
+		ip_rt_get_source(iph + opt->rr + iph[opt->rr + 2] - 5, skb, rt);
+	if (opt->ts_needaddr)
+		ip_rt_get_source(iph + opt->ts + iph[opt->ts + 2] - 9, skb, rt);
+	if (opt->ts_needtime) {
+		__be32 midtime;
+
+		midtime = inet_current_timestamp();
+		memcpy(iph + opt->ts + iph[opt->ts + 2] - 5, &midtime, 4);
 	}
 }
 
@@ -87,16 +74,14 @@ void ip_options_build(struct sk_buff *skb, struct ip_options *opt,
  * NOTE: dopt cannot point to skb.
  */
 
-int ip_options_echo(struct ip_options *dopt, struct sk_buff *skb)
+int __ip_options_echo(struct net *net, struct ip_options *dopt,
+		      struct sk_buff *skb, const struct ip_options *sopt)
 {
-	const struct ip_options *sopt;
 	unsigned char *sptr, *dptr;
 	int soffset, doffset;
 	int	optlen;
 
 	memset(dopt, 0, sizeof(struct ip_options));
-
-	sopt = &(IPCB(skb)->opt);
 
 	if (sopt->optlen == 0)
 		return 0;
@@ -143,7 +128,7 @@ int ip_options_echo(struct ip_options *dopt, struct sk_buff *skb)
 						__be32 addr;
 
 						memcpy(&addr, dptr+soffset-1, 4);
-						if (inet_addr_type(dev_net(skb_dst(skb)->dev), addr) != RTN_UNICAST) {
+						if (inet_addr_type(net, addr) != RTN_UNICAST) {
 							dopt->ts_needtime = 1;
 							soffset += 8;
 						}
@@ -177,9 +162,6 @@ int ip_options_echo(struct ip_options *dopt, struct sk_buff *skb)
 				doffset -= 4;
 		}
 		if (doffset > 3) {
-			__be32 daddr = fib_compute_spec_dst(skb);
-
-			memcpy(&start[doffset-1], &daddr, 4);
 			dopt->faddr = faddr;
 			dptr[0] = start[0];
 			dptr[1] = doffset+3;
@@ -256,8 +238,9 @@ static void spec_dst_fill(__be32 *spec_dst, struct sk_buff *skb)
  * If opt == NULL, then skb->data should point to IP header.
  */
 
-int ip_options_compile(struct net *net,
-		       struct ip_options *opt, struct sk_buff *skb)
+int __ip_options_compile(struct net *net,
+			 struct ip_options *opt, struct sk_buff *skb,
+			 __be32 *info)
 {
 	__be32 spec_dst = htonl(INADDR_ANY);
 	unsigned char *pp_ptr = NULL;
@@ -266,7 +249,7 @@ int ip_options_compile(struct net *net,
 	unsigned char *iph;
 	int optlen, l;
 
-	if (skb != NULL) {
+	if (skb) {
 		rt = skb_rtable(skb);
 		optptr = (unsigned char *)&(ip_hdr(skb)[1]);
 	} else
@@ -287,6 +270,10 @@ int ip_options_compile(struct net *net,
 			l--;
 			optptr++;
 			continue;
+		}
+		if (unlikely(l < 2)) {
+			pp_ptr = optptr;
+			goto error;
 		}
 		optlen = optptr[1];
 		if (optlen < 2 || optlen > l) {
@@ -364,7 +351,7 @@ int ip_options_compile(struct net *net,
 			}
 			if (optptr[2] <= optlen) {
 				unsigned char *timeptr = NULL;
-				if (optptr[2]+3 > optptr[1]) {
+				if (optptr[2]+3 > optlen) {
 					pp_ptr = optptr + 2;
 					goto error;
 				}
@@ -376,7 +363,7 @@ int ip_options_compile(struct net *net,
 					optptr[2] += 4;
 					break;
 				case IPOPT_TS_TSANDADDR:
-					if (optptr[2]+7 > optptr[1]) {
+					if (optptr[2]+7 > optlen) {
 						pp_ptr = optptr + 2;
 						goto error;
 					}
@@ -390,7 +377,7 @@ int ip_options_compile(struct net *net,
 					optptr[2] += 8;
 					break;
 				case IPOPT_TS_PRESPEC:
-					if (optptr[2]+7 > optptr[1]) {
+					if (optptr[2]+7 > optlen) {
 						pp_ptr = optptr + 2;
 						goto error;
 					}
@@ -413,11 +400,10 @@ int ip_options_compile(struct net *net,
 					break;
 				}
 				if (timeptr) {
-					struct timespec tv;
-					u32  midtime;
-					getnstimeofday(&tv);
-					midtime = (tv.tv_sec % 86400) * MSEC_PER_SEC + tv.tv_nsec / NSEC_PER_MSEC;
-					put_unaligned_be32(midtime, timeptr);
+					__be32 midtime;
+
+					midtime = inet_current_timestamp();
+					memcpy(timeptr, &midtime, 4);
 					opt->is_changed = 1;
 				}
 			} else if ((optptr[3]&0xF) != IPOPT_TS_PRESPEC) {
@@ -470,10 +456,22 @@ eol:
 		return 0;
 
 error:
-	if (skb) {
-		icmp_send(skb, ICMP_PARAMETERPROB, 0, htonl((pp_ptr-iph)<<24));
-	}
+	if (info)
+		*info = htonl((pp_ptr-iph)<<24);
 	return -EINVAL;
+}
+EXPORT_SYMBOL(__ip_options_compile);
+
+int ip_options_compile(struct net *net,
+		       struct ip_options *opt, struct sk_buff *skb)
+{
+	int ret;
+	__be32 info;
+
+	ret = __ip_options_compile(net, opt, skb, &info);
+	if (ret != 0 && skb)
+		icmp_send(skb, ICMP_PARAMETERPROB, 0, info);
+	return ret;
 }
 EXPORT_SYMBOL(ip_options_compile);
 
@@ -484,39 +482,47 @@ EXPORT_SYMBOL(ip_options_compile);
 void ip_options_undo(struct ip_options *opt)
 {
 	if (opt->srr) {
-		unsigned  char *optptr = opt->__data+opt->srr-sizeof(struct  iphdr);
-		memmove(optptr+7, optptr+3, optptr[1]-7);
-		memcpy(optptr+3, &opt->faddr, 4);
+		unsigned char *optptr = opt->__data + opt->srr - sizeof(struct iphdr);
+
+		memmove(optptr + 7, optptr + 3, optptr[1] - 7);
+		memcpy(optptr + 3, &opt->faddr, 4);
 	}
 	if (opt->rr_needaddr) {
-		unsigned  char *optptr = opt->__data+opt->rr-sizeof(struct  iphdr);
+		unsigned char *optptr = opt->__data + opt->rr - sizeof(struct iphdr);
+
 		optptr[2] -= 4;
-		memset(&optptr[optptr[2]-1], 0, 4);
+		memset(&optptr[optptr[2] - 1], 0, 4);
 	}
 	if (opt->ts) {
-		unsigned  char *optptr = opt->__data+opt->ts-sizeof(struct  iphdr);
+		unsigned char *optptr = opt->__data + opt->ts - sizeof(struct iphdr);
+
 		if (opt->ts_needtime) {
 			optptr[2] -= 4;
-			memset(&optptr[optptr[2]-1], 0, 4);
-			if ((optptr[3]&0xF) == IPOPT_TS_PRESPEC)
+			memset(&optptr[optptr[2] - 1], 0, 4);
+			if ((optptr[3] & 0xF) == IPOPT_TS_PRESPEC)
 				optptr[2] -= 4;
 		}
 		if (opt->ts_needaddr) {
 			optptr[2] -= 4;
-			memset(&optptr[optptr[2]-1], 0, 4);
+			memset(&optptr[optptr[2] - 1], 0, 4);
 		}
 	}
 }
 
-static struct ip_options_rcu *ip_options_get_alloc(const int optlen)
+int ip_options_get(struct net *net, struct ip_options_rcu **optp,
+		   sockptr_t data, int optlen)
 {
-	return kzalloc(sizeof(struct ip_options_rcu) + ((optlen + 3) & ~3),
-		       GFP_KERNEL);
-}
+	struct ip_options_rcu *opt;
 
-static int ip_options_get_finish(struct net *net, struct ip_options_rcu **optp,
-				 struct ip_options_rcu *opt, int optlen)
-{
+	opt = kzalloc(sizeof(struct ip_options_rcu) + ((optlen + 3) & ~3),
+		       GFP_KERNEL);
+	if (!opt)
+		return -ENOMEM;
+	if (optlen && copy_from_sockptr(opt->opt.__data, data, optlen)) {
+		kfree(opt);
+		return -EFAULT;
+	}
+
 	while (optlen & 3)
 		opt->opt.__data[optlen++] = IPOPT_END;
 	opt->opt.optlen = optlen;
@@ -527,32 +533,6 @@ static int ip_options_get_finish(struct net *net, struct ip_options_rcu **optp,
 	kfree(*optp);
 	*optp = opt;
 	return 0;
-}
-
-int ip_options_get_from_user(struct net *net, struct ip_options_rcu **optp,
-			     unsigned char __user *data, int optlen)
-{
-	struct ip_options_rcu *opt = ip_options_get_alloc(optlen);
-
-	if (!opt)
-		return -ENOMEM;
-	if (optlen && copy_from_user(opt->opt.__data, data, optlen)) {
-		kfree(opt);
-		return -EFAULT;
-	}
-	return ip_options_get_finish(net, optp, opt, optlen);
-}
-
-int ip_options_get(struct net *net, struct ip_options_rcu **optp,
-		   unsigned char *data, int optlen)
-{
-	struct ip_options_rcu *opt = ip_options_get_alloc(optlen);
-
-	if (!opt)
-		return -ENOMEM;
-	if (optlen)
-		memcpy(opt->opt.__data, data, optlen);
-	return ip_options_get_finish(net, optp, opt, optlen);
 }
 
 void ip_forward_options(struct sk_buff *skb)
@@ -602,7 +582,7 @@ void ip_forward_options(struct sk_buff *skb)
 	}
 }
 
-int ip_options_rcv_srr(struct sk_buff *skb)
+int ip_options_rcv_srr(struct sk_buff *skb, struct net_device *dev)
 {
 	struct ip_options *opt = &(IPCB(skb)->opt);
 	int srrspace, srrptr;
@@ -637,7 +617,7 @@ int ip_options_rcv_srr(struct sk_buff *skb)
 
 		orefdst = skb->_skb_refdst;
 		skb_dst_set(skb, NULL);
-		err = ip_route_input(skb, nexthop, iph->saddr, iph->tos, skb->dev);
+		err = ip_route_input(skb, nexthop, iph->saddr, iph->tos, dev);
 		rt2 = skb_rtable(skb);
 		if (err || (rt2->rt_type != RTN_UNICAST && rt2->rt_type != RTN_LOCAL)) {
 			skb_dst_drop(skb);

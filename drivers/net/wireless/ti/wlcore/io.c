@@ -1,24 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of wl1271
  *
  * Copyright (C) 2008-2010 Nokia Corporation
  *
  * Contact: Luciano Coelho <luciano.coelho@nokia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include <linux/module.h>
@@ -175,12 +161,24 @@ int wlcore_set_partition(struct wl1271 *wl,
 	if (ret < 0)
 		goto out;
 
-	/*
-	 * We don't need the size of the last partition, as it is
-	 * automatically calculated based on the total memory size and
-	 * the sizes of the previous partitions.
+	/* wl12xx only: We don't need the size of the last partition,
+	 * as it is automatically calculated based on the total memory
+	 * size and the sizes of the previous partitions.
+	 *
+	 * wl18xx re-defines the HW_PART3 addresses for logger over
+	 * SDIO support. wl12xx is expecting the write to
+	 * HW_PART3_START_ADDR at offset 24. This creates conflict
+	 * between the addresses.
+	 * In order to fix this the expected value is written to
+	 * HW_PART3_SIZE_ADDR instead which is at offset 24 after changes.
 	 */
 	ret = wlcore_raw_write32(wl, HW_PART3_START_ADDR, p->mem3.start);
+	if (ret < 0)
+		goto out;
+
+	ret = wlcore_raw_write32(wl, HW_PART3_SIZE_ADDR, p->mem3.size);
+	if (ret < 0)
+		goto out;
 
 out:
 	return ret;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Convert integer string representation to an integer.
  * If an integer doesn't fit into specified type, -E is returned.
@@ -13,13 +14,15 @@
  */
 #include <linux/ctype.h>
 #include <linux/errno.h>
-#include <linux/kernel.h>
-#include <linux/math64.h>
 #include <linux/export.h>
+#include <linux/kstrtox.h>
+#include <linux/math64.h>
 #include <linux/types.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
+
 #include "kstrtox.h"
 
+noinline
 const char *_parse_integer_fixup_radix(const char *s, unsigned int *base)
 {
 	if (*base == 0) {
@@ -38,28 +41,31 @@ const char *_parse_integer_fixup_radix(const char *s, unsigned int *base)
 
 /*
  * Convert non-negative integer string representation in explicitly given radix
- * to an integer.
+ * to an integer. A maximum of max_chars characters will be converted.
+ *
  * Return number of characters consumed maybe or-ed with overflow bit.
  * If overflow occurs, result integer (incorrect) is still returned.
  *
  * Don't you dare use this function.
  */
-unsigned int _parse_integer(const char *s, unsigned int base, unsigned long long *p)
+noinline
+unsigned int _parse_integer_limit(const char *s, unsigned int base, unsigned long long *p,
+				  size_t max_chars)
 {
 	unsigned long long res;
 	unsigned int rv;
-	int overflow;
 
 	res = 0;
 	rv = 0;
-	overflow = 0;
-	while (*s) {
+	while (max_chars--) {
+		unsigned int c = *s;
+		unsigned int lc = _tolower(c);
 		unsigned int val;
 
-		if ('0' <= *s && *s <= '9')
-			val = *s - '0';
-		else if ('a' <= _tolower(*s) && _tolower(*s) <= 'f')
-			val = _tolower(*s) - 'a' + 10;
+		if ('0' <= c && c <= '9')
+			val = c - '0';
+		else if ('a' <= lc && lc <= 'f')
+			val = lc - 'a' + 10;
 		else
 			break;
 
@@ -71,16 +77,20 @@ unsigned int _parse_integer(const char *s, unsigned int base, unsigned long long
 		 */
 		if (unlikely(res & (~0ull << 60))) {
 			if (res > div_u64(ULLONG_MAX - val, base))
-				overflow = 1;
+				rv |= KSTRTOX_OVERFLOW;
 		}
 		res = res * base + val;
 		rv++;
 		s++;
 	}
 	*p = res;
-	if (overflow)
-		rv |= KSTRTOX_OVERFLOW;
 	return rv;
+}
+
+noinline
+unsigned int _parse_integer(const char *s, unsigned int base, unsigned long long *p)
+{
+	return _parse_integer_limit(s, base, p, INT_MAX);
 }
 
 static int _kstrtoull(const char *s, unsigned int base, unsigned long long *res)
@@ -116,9 +126,9 @@ static int _kstrtoull(const char *s, unsigned int base, unsigned long long *res)
  * @res: Where to write the result of the conversion on success.
  *
  * Returns 0 on success, -ERANGE on overflow and -EINVAL on parsing error.
- * Used as a replacement for the obsolete simple_strtoull. Return code must
- * be checked.
+ * Preferred over simple_strtoull(). Return code must be checked.
  */
+noinline
 int kstrtoull(const char *s, unsigned int base, unsigned long long *res)
 {
 	if (s[0] == '+')
@@ -140,9 +150,9 @@ EXPORT_SYMBOL(kstrtoull);
  * @res: Where to write the result of the conversion on success.
  *
  * Returns 0 on success, -ERANGE on overflow and -EINVAL on parsing error.
- * Used as a replacement for the obsolete simple_strtoull. Return code must
- * be checked.
+ * Preferred over simple_strtoll(). Return code must be checked.
  */
+noinline
 int kstrtoll(const char *s, unsigned int base, long long *res)
 {
 	unsigned long long tmp;
@@ -152,7 +162,7 @@ int kstrtoll(const char *s, unsigned int base, long long *res)
 		rv = _kstrtoull(s + 1, base, &tmp);
 		if (rv < 0)
 			return rv;
-		if ((long long)(-tmp) >= 0)
+		if ((long long)-tmp > 0)
 			return -ERANGE;
 		*res = -tmp;
 	} else {
@@ -176,7 +186,7 @@ int _kstrtoul(const char *s, unsigned int base, unsigned long *res)
 	rv = kstrtoull(s, base, &tmp);
 	if (rv < 0)
 		return rv;
-	if (tmp != (unsigned long long)(unsigned long)tmp)
+	if (tmp != (unsigned long)tmp)
 		return -ERANGE;
 	*res = tmp;
 	return 0;
@@ -192,7 +202,7 @@ int _kstrtol(const char *s, unsigned int base, long *res)
 	rv = kstrtoll(s, base, &tmp);
 	if (rv < 0)
 		return rv;
-	if (tmp != (long long)(long)tmp)
+	if (tmp != (long)tmp)
 		return -ERANGE;
 	*res = tmp;
 	return 0;
@@ -212,9 +222,9 @@ EXPORT_SYMBOL(_kstrtol);
  * @res: Where to write the result of the conversion on success.
  *
  * Returns 0 on success, -ERANGE on overflow and -EINVAL on parsing error.
- * Used as a replacement for the obsolete simple_strtoull. Return code must
- * be checked.
+ * Preferred over simple_strtoul(). Return code must be checked.
  */
+noinline
 int kstrtouint(const char *s, unsigned int base, unsigned int *res)
 {
 	unsigned long long tmp;
@@ -223,7 +233,7 @@ int kstrtouint(const char *s, unsigned int base, unsigned int *res)
 	rv = kstrtoull(s, base, &tmp);
 	if (rv < 0)
 		return rv;
-	if (tmp != (unsigned long long)(unsigned int)tmp)
+	if (tmp != (unsigned int)tmp)
 		return -ERANGE;
 	*res = tmp;
 	return 0;
@@ -243,9 +253,9 @@ EXPORT_SYMBOL(kstrtouint);
  * @res: Where to write the result of the conversion on success.
  *
  * Returns 0 on success, -ERANGE on overflow and -EINVAL on parsing error.
- * Used as a replacement for the obsolete simple_strtoull. Return code must
- * be checked.
+ * Preferred over simple_strtol(). Return code must be checked.
  */
+noinline
 int kstrtoint(const char *s, unsigned int base, int *res)
 {
 	long long tmp;
@@ -254,13 +264,14 @@ int kstrtoint(const char *s, unsigned int base, int *res)
 	rv = kstrtoll(s, base, &tmp);
 	if (rv < 0)
 		return rv;
-	if (tmp != (long long)(int)tmp)
+	if (tmp != (int)tmp)
 		return -ERANGE;
 	*res = tmp;
 	return 0;
 }
 EXPORT_SYMBOL(kstrtoint);
 
+noinline
 int kstrtou16(const char *s, unsigned int base, u16 *res)
 {
 	unsigned long long tmp;
@@ -269,13 +280,14 @@ int kstrtou16(const char *s, unsigned int base, u16 *res)
 	rv = kstrtoull(s, base, &tmp);
 	if (rv < 0)
 		return rv;
-	if (tmp != (unsigned long long)(u16)tmp)
+	if (tmp != (u16)tmp)
 		return -ERANGE;
 	*res = tmp;
 	return 0;
 }
 EXPORT_SYMBOL(kstrtou16);
 
+noinline
 int kstrtos16(const char *s, unsigned int base, s16 *res)
 {
 	long long tmp;
@@ -284,13 +296,14 @@ int kstrtos16(const char *s, unsigned int base, s16 *res)
 	rv = kstrtoll(s, base, &tmp);
 	if (rv < 0)
 		return rv;
-	if (tmp != (long long)(s16)tmp)
+	if (tmp != (s16)tmp)
 		return -ERANGE;
 	*res = tmp;
 	return 0;
 }
 EXPORT_SYMBOL(kstrtos16);
 
+noinline
 int kstrtou8(const char *s, unsigned int base, u8 *res)
 {
 	unsigned long long tmp;
@@ -299,13 +312,14 @@ int kstrtou8(const char *s, unsigned int base, u8 *res)
 	rv = kstrtoull(s, base, &tmp);
 	if (rv < 0)
 		return rv;
-	if (tmp != (unsigned long long)(u8)tmp)
+	if (tmp != (u8)tmp)
 		return -ERANGE;
 	*res = tmp;
 	return 0;
 }
 EXPORT_SYMBOL(kstrtou8);
 
+noinline
 int kstrtos8(const char *s, unsigned int base, s8 *res)
 {
 	long long tmp;
@@ -314,12 +328,82 @@ int kstrtos8(const char *s, unsigned int base, s8 *res)
 	rv = kstrtoll(s, base, &tmp);
 	if (rv < 0)
 		return rv;
-	if (tmp != (long long)(s8)tmp)
+	if (tmp != (s8)tmp)
 		return -ERANGE;
 	*res = tmp;
 	return 0;
 }
 EXPORT_SYMBOL(kstrtos8);
+
+/**
+ * kstrtobool - convert common user inputs into boolean values
+ * @s: input string
+ * @res: result
+ *
+ * This routine returns 0 iff the first character is one of 'YyTt1NnFf0', or
+ * [oO][NnFf] for "on" and "off". Otherwise it will return -EINVAL.  Value
+ * pointed to by res is updated upon finding a match.
+ */
+noinline
+int kstrtobool(const char *s, bool *res)
+{
+	if (!s)
+		return -EINVAL;
+
+	switch (s[0]) {
+	case 'y':
+	case 'Y':
+	case 't':
+	case 'T':
+	case '1':
+		*res = true;
+		return 0;
+	case 'n':
+	case 'N':
+	case 'f':
+	case 'F':
+	case '0':
+		*res = false;
+		return 0;
+	case 'o':
+	case 'O':
+		switch (s[1]) {
+		case 'n':
+		case 'N':
+			*res = true;
+			return 0;
+		case 'f':
+		case 'F':
+			*res = false;
+			return 0;
+		default:
+			break;
+		}
+		break;
+	default:
+		break;
+	}
+
+	return -EINVAL;
+}
+EXPORT_SYMBOL(kstrtobool);
+
+/*
+ * Since "base" would be a nonsense argument, this open-codes the
+ * _from_user helper instead of using the helper macro below.
+ */
+int kstrtobool_from_user(const char __user *s, size_t count, bool *res)
+{
+	/* Longest string needed to differentiate, newline, terminator */
+	char buf[4];
+
+	count = min(count, sizeof(buf) - 1);
+	if (copy_from_user(buf, s, count))
+		return -EFAULT;
+	buf[count] = '\0';
+	return kstrtobool(buf, res);
+}
+EXPORT_SYMBOL(kstrtobool_from_user);
 
 #define kstrto_from_user(f, g, type)					\
 int f(const char __user *s, size_t count, unsigned int base, type *res)	\

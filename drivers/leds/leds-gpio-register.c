@@ -1,19 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2011 Pengutronix
  * Uwe Kleine-Koenig <u.kleine-koenig@pengutronix.de>
- *
- * This program is free software; you can redistribute it and/or modify it under
- * the terms of the GNU General Public License version 2 as published by the
- * Free Software Foundation.
  */
 #include <linux/err.h>
+#include <linux/leds.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <linux/leds.h>
 
 /**
  * gpio_led_register_device - register a gpio-led device
  * @pdata: the platform data used for the new device
+ * @id: platform ID
  *
  * Makes a copy of pdata and pdata->leds and registers a new leds-gpio device
  * with the result. This allows to have pdata and pdata-leds in .init.rodata
@@ -27,6 +25,9 @@ struct platform_device *__init gpio_led_register_device(
 {
 	struct platform_device *ret;
 	struct gpio_led_platform_data _pdata = *pdata;
+
+	if (!pdata->num_leds)
+		return ERR_PTR(-EINVAL);
 
 	_pdata.leds = kmemdup(pdata->leds,
 			pdata->num_leds * sizeof(*pdata->leds), GFP_KERNEL);

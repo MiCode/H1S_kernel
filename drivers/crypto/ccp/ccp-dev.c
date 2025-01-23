@@ -1,13 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AMD Cryptographic Coprocessor (CCP) driver
  *
- * Copyright (C) 2013 Advanced Micro Devices, Inc.
+ * Copyright (C) 2013,2019 Advanced Micro Devices, Inc.
  *
  * Author: Tom Lendacky <thomas.lendacky@amd.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Author: Gary R Hook <gary.hook@amd.com>
  */
 
 #include <linux/module.h>
@@ -16,36 +14,256 @@
 #include <linux/sched.h>
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
+#include <linux/spinlock_types.h>
+#include <linux/types.h>
 #include <linux/mutex.h>
 #include <linux/delay.h>
 #include <linux/hw_random.h>
 #include <linux/cpu.h>
+#include <linux/atomic.h>
+#ifdef CONFIG_X86
 #include <asm/cpu_device_id.h>
+#endif
 #include <linux/ccp.h>
 
 #include "ccp-dev.h"
 
-MODULE_AUTHOR("Tom Lendacky <thomas.lendacky@amd.com>");
-MODULE_LICENSE("GPL");
-MODULE_VERSION("1.0.0");
-MODULE_DESCRIPTION("AMD Cryptographic Coprocessor driver");
+#define MAX_CCPS 32
 
+/* Limit CCP use to a specifed number of queues per device */
+static unsigned int nqueues;
+module_param(nqueues, uint, 0444);
+MODULE_PARM_DESC(nqueues, "Number of queues per CCP (minimum 1; default: all available)");
 
-static struct ccp_device *ccp_dev;
-static inline struct ccp_device *ccp_get_device(void)
+/* Limit the maximum number of configured CCPs */
+static atomic_t dev_count = ATOMIC_INIT(0);
+static unsigned int max_devs = MAX_CCPS;
+module_param(max_devs, uint, 0444);
+MODULE_PARM_DESC(max_devs, "Maximum number of CCPs to enable (default: all; 0 disables all CCPs)");
+
+struct ccp_tasklet_data {
+	struct completion completion;
+	struct ccp_cmd *cmd;
+};
+
+/* Human-readable error strings */
+#define CCP_MAX_ERROR_CODE	64
+static char *ccp_error_codes[] = {
+	"",
+	"ILLEGAL_ENGINE",
+	"ILLEGAL_KEY_ID",
+	"ILLEGAL_FUNCTION_TYPE",
+	"ILLEGAL_FUNCTION_MODE",
+	"ILLEGAL_FUNCTION_ENCRYPT",
+	"ILLEGAL_FUNCTION_SIZE",
+	"Zlib_MISSING_INIT_EOM",
+	"ILLEGAL_FUNCTION_RSVD",
+	"ILLEGAL_BUFFER_LENGTH",
+	"VLSB_FAULT",
+	"ILLEGAL_MEM_ADDR",
+	"ILLEGAL_MEM_SEL",
+	"ILLEGAL_CONTEXT_ID",
+	"ILLEGAL_KEY_ADDR",
+	"0xF Reserved",
+	"Zlib_ILLEGAL_MULTI_QUEUE",
+	"Zlib_ILLEGAL_JOBID_CHANGE",
+	"CMD_TIMEOUT",
+	"IDMA0_AXI_SLVERR",
+	"IDMA0_AXI_DECERR",
+	"0x15 Reserved",
+	"IDMA1_AXI_SLAVE_FAULT",
+	"IDMA1_AIXI_DECERR",
+	"0x18 Reserved",
+	"ZLIBVHB_AXI_SLVERR",
+	"ZLIBVHB_AXI_DECERR",
+	"0x1B Reserved",
+	"ZLIB_UNEXPECTED_EOM",
+	"ZLIB_EXTRA_DATA",
+	"ZLIB_BTYPE",
+	"ZLIB_UNDEFINED_SYMBOL",
+	"ZLIB_UNDEFINED_DISTANCE_S",
+	"ZLIB_CODE_LENGTH_SYMBOL",
+	"ZLIB _VHB_ILLEGAL_FETCH",
+	"ZLIB_UNCOMPRESSED_LEN",
+	"ZLIB_LIMIT_REACHED",
+	"ZLIB_CHECKSUM_MISMATCH0",
+	"ODMA0_AXI_SLVERR",
+	"ODMA0_AXI_DECERR",
+	"0x28 Reserved",
+	"ODMA1_AXI_SLVERR",
+	"ODMA1_AXI_DECERR",
+};
+
+void ccp_log_error(struct ccp_device *d, unsigned int e)
 {
-	return ccp_dev;
+	if (WARN_ON(e >= CCP_MAX_ERROR_CODE))
+		return;
+
+	if (e < ARRAY_SIZE(ccp_error_codes))
+		dev_err(d->dev, "CCP error %d: %s\n", e, ccp_error_codes[e]);
+	else
+		dev_err(d->dev, "CCP error %d: Unknown Error\n", e);
 }
 
-static inline void ccp_add_device(struct ccp_device *ccp)
+/* List of CCPs, CCP count, read-write access lock, and access functions
+ *
+ * Lock structure: get ccp_unit_lock for reading whenever we need to
+ * examine the CCP list. While holding it for reading we can acquire
+ * the RR lock to update the round-robin next-CCP pointer. The unit lock
+ * must be acquired before the RR lock.
+ *
+ * If the unit-lock is acquired for writing, we have total control over
+ * the list, so there's no value in getting the RR lock.
+ */
+static DEFINE_RWLOCK(ccp_unit_lock);
+static LIST_HEAD(ccp_units);
+
+/* Round-robin counter */
+static DEFINE_SPINLOCK(ccp_rr_lock);
+static struct ccp_device *ccp_rr;
+
+/**
+ * ccp_add_device - add a CCP device to the list
+ *
+ * @ccp: ccp_device struct pointer
+ *
+ * Put this CCP on the unit list, which makes it available
+ * for use.
+ *
+ * Returns zero if a CCP device is present, -ENODEV otherwise.
+ */
+void ccp_add_device(struct ccp_device *ccp)
 {
-	ccp_dev = ccp;
+	unsigned long flags;
+
+	write_lock_irqsave(&ccp_unit_lock, flags);
+	list_add_tail(&ccp->entry, &ccp_units);
+	if (!ccp_rr)
+		/* We already have the list lock (we're first) so this
+		 * pointer can't change on us. Set its initial value.
+		 */
+		ccp_rr = ccp;
+	write_unlock_irqrestore(&ccp_unit_lock, flags);
 }
 
-static inline void ccp_del_device(struct ccp_device *ccp)
+/**
+ * ccp_del_device - remove a CCP device from the list
+ *
+ * @ccp: ccp_device struct pointer
+ *
+ * Remove this unit from the list of devices. If the next device
+ * up for use is this one, adjust the pointer. If this is the last
+ * device, NULL the pointer.
+ */
+void ccp_del_device(struct ccp_device *ccp)
 {
-	ccp_dev = NULL;
+	unsigned long flags;
+
+	write_lock_irqsave(&ccp_unit_lock, flags);
+	if (ccp_rr == ccp) {
+		/* ccp_unit_lock is read/write; any read access
+		 * will be suspended while we make changes to the
+		 * list and RR pointer.
+		 */
+		if (list_is_last(&ccp_rr->entry, &ccp_units))
+			ccp_rr = list_first_entry(&ccp_units, struct ccp_device,
+						  entry);
+		else
+			ccp_rr = list_next_entry(ccp_rr, entry);
+	}
+	list_del(&ccp->entry);
+	if (list_empty(&ccp_units))
+		ccp_rr = NULL;
+	write_unlock_irqrestore(&ccp_unit_lock, flags);
 }
+
+
+
+int ccp_register_rng(struct ccp_device *ccp)
+{
+	int ret = 0;
+
+	dev_dbg(ccp->dev, "Registering RNG...\n");
+	/* Register an RNG */
+	ccp->hwrng.name = ccp->rngname;
+	ccp->hwrng.read = ccp_trng_read;
+	ret = hwrng_register(&ccp->hwrng);
+	if (ret)
+		dev_err(ccp->dev, "error registering hwrng (%d)\n", ret);
+
+	return ret;
+}
+
+void ccp_unregister_rng(struct ccp_device *ccp)
+{
+	if (ccp->hwrng.name)
+		hwrng_unregister(&ccp->hwrng);
+}
+
+static struct ccp_device *ccp_get_device(void)
+{
+	unsigned long flags;
+	struct ccp_device *dp = NULL;
+
+	/* We round-robin through the unit list.
+	 * The (ccp_rr) pointer refers to the next unit to use.
+	 */
+	read_lock_irqsave(&ccp_unit_lock, flags);
+	if (!list_empty(&ccp_units)) {
+		spin_lock(&ccp_rr_lock);
+		dp = ccp_rr;
+		if (list_is_last(&ccp_rr->entry, &ccp_units))
+			ccp_rr = list_first_entry(&ccp_units, struct ccp_device,
+						  entry);
+		else
+			ccp_rr = list_next_entry(ccp_rr, entry);
+		spin_unlock(&ccp_rr_lock);
+	}
+	read_unlock_irqrestore(&ccp_unit_lock, flags);
+
+	return dp;
+}
+
+/**
+ * ccp_present - check if a CCP device is present
+ *
+ * Returns zero if a CCP device is present, -ENODEV otherwise.
+ */
+int ccp_present(void)
+{
+	unsigned long flags;
+	int ret;
+
+	read_lock_irqsave(&ccp_unit_lock, flags);
+	ret = list_empty(&ccp_units);
+	read_unlock_irqrestore(&ccp_unit_lock, flags);
+
+	return ret ? -ENODEV : 0;
+}
+EXPORT_SYMBOL_GPL(ccp_present);
+
+/**
+ * ccp_version - get the version of the CCP device
+ *
+ * Returns the version from the first unit on the list;
+ * otherwise a zero if no CCP device is present
+ */
+unsigned int ccp_version(void)
+{
+	struct ccp_device *dp;
+	unsigned long flags;
+	int ret = 0;
+
+	read_lock_irqsave(&ccp_unit_lock, flags);
+	if (!list_empty(&ccp_units)) {
+		dp = list_first_entry(&ccp_units, struct ccp_device, entry);
+		ret = dp->vdata->version;
+	}
+	read_unlock_irqrestore(&ccp_unit_lock, flags);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(ccp_version);
 
 /**
  * ccp_enqueue_cmd - queue an operation for processing by the CCP
@@ -70,10 +288,13 @@ static inline void ccp_del_device(struct ccp_device *ccp)
  */
 int ccp_enqueue_cmd(struct ccp_cmd *cmd)
 {
-	struct ccp_device *ccp = ccp_get_device();
+	struct ccp_device *ccp;
 	unsigned long flags;
 	unsigned int i;
 	int ret;
+
+	/* Some commands might need to be sent to a specific device */
+	ccp = cmd->ccp ? cmd->ccp : ccp_get_device();
 
 	if (!ccp)
 		return -ENODEV;
@@ -89,9 +310,12 @@ int ccp_enqueue_cmd(struct ccp_cmd *cmd)
 	i = ccp->cmd_q_count;
 
 	if (ccp->cmd_count >= MAX_CMD_QLEN) {
-		ret = -EBUSY;
-		if (cmd->flags & CCP_CMD_MAY_BACKLOG)
+		if (cmd->flags & CCP_CMD_MAY_BACKLOG) {
+			ret = -EBUSY;
 			list_add_tail(&cmd->entry, &ccp->backlog);
+		} else {
+			ret = -ENOSPC;
+		}
 	} else {
 		ret = -EINPROGRESS;
 		ccp->cmd_count++;
@@ -192,17 +416,29 @@ static struct ccp_cmd *ccp_dequeue_cmd(struct ccp_cmd_queue *cmd_q)
 	return cmd;
 }
 
-static void ccp_do_cmd_complete(struct work_struct *work)
+static void ccp_do_cmd_complete(unsigned long data)
 {
-	struct ccp_cmd *cmd = container_of(work, struct ccp_cmd, work);
+	struct ccp_tasklet_data *tdata = (struct ccp_tasklet_data *)data;
+	struct ccp_cmd *cmd = tdata->cmd;
 
 	cmd->callback(cmd->data, cmd->ret);
+
+	complete(&tdata->completion);
 }
 
-static int ccp_cmd_queue_thread(void *data)
+/**
+ * ccp_cmd_queue_thread - create a kernel thread to manage a CCP queue
+ *
+ * @data: thread-specific data
+ */
+int ccp_cmd_queue_thread(void *data)
 {
 	struct ccp_cmd_queue *cmd_q = (struct ccp_cmd_queue *)data;
 	struct ccp_cmd *cmd;
+	struct ccp_tasklet_data tdata;
+	struct tasklet_struct tasklet;
+
+	tasklet_init(&tasklet, ccp_do_cmd_complete, (unsigned long)&tdata);
 
 	set_current_state(TASK_INTERRUPTIBLE);
 	while (!kthread_should_stop()) {
@@ -220,8 +456,10 @@ static int ccp_cmd_queue_thread(void *data)
 		cmd->ret = ccp_run_cmd(cmd_q, cmd);
 
 		/* Schedule the completion callback */
-		INIT_WORK(&cmd->work, ccp_do_cmd_complete);
-		schedule_work(&cmd->work);
+		tdata.cmd = cmd;
+		init_completion(&tdata.completion);
+		tasklet_schedule(&tasklet);
+		wait_for_completion(&tdata.completion);
 	}
 
 	__set_current_state(TASK_RUNNING);
@@ -229,14 +467,49 @@ static int ccp_cmd_queue_thread(void *data)
 	return 0;
 }
 
-static int ccp_trng_read(struct hwrng *rng, void *data, size_t max, bool wait)
+/**
+ * ccp_alloc_struct - allocate and initialize the ccp_device struct
+ *
+ * @sp: sp_device struct of the CCP
+ */
+struct ccp_device *ccp_alloc_struct(struct sp_device *sp)
+{
+	struct device *dev = sp->dev;
+	struct ccp_device *ccp;
+
+	ccp = devm_kzalloc(dev, sizeof(*ccp), GFP_KERNEL);
+	if (!ccp)
+		return NULL;
+	ccp->dev = dev;
+	ccp->sp = sp;
+	ccp->axcache = sp->axcache;
+
+	INIT_LIST_HEAD(&ccp->cmd);
+	INIT_LIST_HEAD(&ccp->backlog);
+
+	spin_lock_init(&ccp->cmd_lock);
+	mutex_init(&ccp->req_mutex);
+	mutex_init(&ccp->sb_mutex);
+	ccp->sb_count = KSB_COUNT;
+	ccp->sb_start = 0;
+
+	/* Initialize the wait queues */
+	init_waitqueue_head(&ccp->sb_queue);
+	init_waitqueue_head(&ccp->suspend_queue);
+
+	snprintf(ccp->name, MAX_CCP_NAME_LEN, "ccp-%u", sp->ord);
+	snprintf(ccp->rngname, MAX_CCP_NAME_LEN, "ccp-%u-rng", sp->ord);
+
+	return ccp;
+}
+
+int ccp_trng_read(struct hwrng *rng, void *data, size_t max, bool wait)
 {
 	struct ccp_device *ccp = container_of(rng, struct ccp_device, hwrng);
 	u32 trng_value;
 	int len = min_t(int, sizeof(trng_value), max);
 
-	/*
-	 * Locking is provided by the caller so we can update device
+	/* Locking is provided by the caller so we can update device
 	 * hwrng-related fields safely
 	 */
 	trng_value = ioread32(ccp->io_regs + TRNG_OUT_REG);
@@ -258,275 +531,6 @@ static int ccp_trng_read(struct hwrng *rng, void *data, size_t max, bool wait)
 	return len;
 }
 
-/**
- * ccp_alloc_struct - allocate and initialize the ccp_device struct
- *
- * @dev: device struct of the CCP
- */
-struct ccp_device *ccp_alloc_struct(struct device *dev)
-{
-	struct ccp_device *ccp;
-
-	ccp = kzalloc(sizeof(*ccp), GFP_KERNEL);
-	if (ccp == NULL) {
-		dev_err(dev, "unable to allocate device struct\n");
-		return NULL;
-	}
-	ccp->dev = dev;
-
-	INIT_LIST_HEAD(&ccp->cmd);
-	INIT_LIST_HEAD(&ccp->backlog);
-
-	spin_lock_init(&ccp->cmd_lock);
-	mutex_init(&ccp->req_mutex);
-	mutex_init(&ccp->ksb_mutex);
-	ccp->ksb_count = KSB_COUNT;
-	ccp->ksb_start = 0;
-
-	return ccp;
-}
-
-/**
- * ccp_init - initialize the CCP device
- *
- * @ccp: ccp_device struct
- */
-int ccp_init(struct ccp_device *ccp)
-{
-	struct device *dev = ccp->dev;
-	struct ccp_cmd_queue *cmd_q;
-	struct dma_pool *dma_pool;
-	char dma_pool_name[MAX_DMAPOOL_NAME_LEN];
-	unsigned int qmr, qim, i;
-	int ret;
-
-	/* Find available queues */
-	qim = 0;
-	qmr = ioread32(ccp->io_regs + Q_MASK_REG);
-	for (i = 0; i < MAX_HW_QUEUES; i++) {
-		if (!(qmr & (1 << i)))
-			continue;
-
-		/* Allocate a dma pool for this queue */
-		snprintf(dma_pool_name, sizeof(dma_pool_name), "ccp_q%d", i);
-		dma_pool = dma_pool_create(dma_pool_name, dev,
-					   CCP_DMAPOOL_MAX_SIZE,
-					   CCP_DMAPOOL_ALIGN, 0);
-		if (!dma_pool) {
-			dev_err(dev, "unable to allocate dma pool\n");
-			ret = -ENOMEM;
-			goto e_pool;
-		}
-
-		cmd_q = &ccp->cmd_q[ccp->cmd_q_count];
-		ccp->cmd_q_count++;
-
-		cmd_q->ccp = ccp;
-		cmd_q->id = i;
-		cmd_q->dma_pool = dma_pool;
-
-		/* Reserve 2 KSB regions for the queue */
-		cmd_q->ksb_key = KSB_START + ccp->ksb_start++;
-		cmd_q->ksb_ctx = KSB_START + ccp->ksb_start++;
-		ccp->ksb_count -= 2;
-
-		/* Preset some register values and masks that are queue
-		 * number dependent
-		 */
-		cmd_q->reg_status = ccp->io_regs + CMD_Q_STATUS_BASE +
-				    (CMD_Q_STATUS_INCR * i);
-		cmd_q->reg_int_status = ccp->io_regs + CMD_Q_INT_STATUS_BASE +
-					(CMD_Q_STATUS_INCR * i);
-		cmd_q->int_ok = 1 << (i * 2);
-		cmd_q->int_err = 1 << ((i * 2) + 1);
-
-		cmd_q->free_slots = CMD_Q_DEPTH(ioread32(cmd_q->reg_status));
-
-		init_waitqueue_head(&cmd_q->int_queue);
-
-		/* Build queue interrupt mask (two interrupts per queue) */
-		qim |= cmd_q->int_ok | cmd_q->int_err;
-
-		dev_dbg(dev, "queue #%u available\n", i);
-	}
-	if (ccp->cmd_q_count == 0) {
-		dev_notice(dev, "no command queues available\n");
-		ret = -EIO;
-		goto e_pool;
-	}
-	dev_notice(dev, "%u command queues available\n", ccp->cmd_q_count);
-
-	/* Disable and clear interrupts until ready */
-	iowrite32(0x00, ccp->io_regs + IRQ_MASK_REG);
-	for (i = 0; i < ccp->cmd_q_count; i++) {
-		cmd_q = &ccp->cmd_q[i];
-
-		ioread32(cmd_q->reg_int_status);
-		ioread32(cmd_q->reg_status);
-	}
-	iowrite32(qim, ccp->io_regs + IRQ_STATUS_REG);
-
-	/* Request an irq */
-	ret = ccp->get_irq(ccp);
-	if (ret) {
-		dev_err(dev, "unable to allocate an IRQ\n");
-		goto e_pool;
-	}
-
-	/* Initialize the queues used to wait for KSB space and suspend */
-	init_waitqueue_head(&ccp->ksb_queue);
-	init_waitqueue_head(&ccp->suspend_queue);
-
-	/* Create a kthread for each queue */
-	for (i = 0; i < ccp->cmd_q_count; i++) {
-		struct task_struct *kthread;
-
-		cmd_q = &ccp->cmd_q[i];
-
-		kthread = kthread_create(ccp_cmd_queue_thread, cmd_q,
-					 "ccp-q%u", cmd_q->id);
-		if (IS_ERR(kthread)) {
-			dev_err(dev, "error creating queue thread (%ld)\n",
-				PTR_ERR(kthread));
-			ret = PTR_ERR(kthread);
-			goto e_kthread;
-		}
-
-		cmd_q->kthread = kthread;
-		wake_up_process(kthread);
-	}
-
-	/* Register the RNG */
-	ccp->hwrng.name = "ccp-rng";
-	ccp->hwrng.read = ccp_trng_read;
-	ret = hwrng_register(&ccp->hwrng);
-	if (ret) {
-		dev_err(dev, "error registering hwrng (%d)\n", ret);
-		goto e_kthread;
-	}
-
-	/* Make the device struct available before enabling interrupts */
-	ccp_add_device(ccp);
-
-	/* Enable interrupts */
-	iowrite32(qim, ccp->io_regs + IRQ_MASK_REG);
-
-	return 0;
-
-e_kthread:
-	for (i = 0; i < ccp->cmd_q_count; i++)
-		if (ccp->cmd_q[i].kthread)
-			kthread_stop(ccp->cmd_q[i].kthread);
-
-	ccp->free_irq(ccp);
-
-e_pool:
-	for (i = 0; i < ccp->cmd_q_count; i++)
-		dma_pool_destroy(ccp->cmd_q[i].dma_pool);
-
-	return ret;
-}
-
-/**
- * ccp_destroy - tear down the CCP device
- *
- * @ccp: ccp_device struct
- */
-void ccp_destroy(struct ccp_device *ccp)
-{
-	struct ccp_cmd_queue *cmd_q;
-	struct ccp_cmd *cmd;
-	unsigned int qim, i;
-
-	/* Remove general access to the device struct */
-	ccp_del_device(ccp);
-
-	/* Unregister the RNG */
-	hwrng_unregister(&ccp->hwrng);
-
-	/* Stop the queue kthreads */
-	for (i = 0; i < ccp->cmd_q_count; i++)
-		if (ccp->cmd_q[i].kthread)
-			kthread_stop(ccp->cmd_q[i].kthread);
-
-	/* Build queue interrupt mask (two interrupt masks per queue) */
-	qim = 0;
-	for (i = 0; i < ccp->cmd_q_count; i++) {
-		cmd_q = &ccp->cmd_q[i];
-		qim |= cmd_q->int_ok | cmd_q->int_err;
-	}
-
-	/* Disable and clear interrupts */
-	iowrite32(0x00, ccp->io_regs + IRQ_MASK_REG);
-	for (i = 0; i < ccp->cmd_q_count; i++) {
-		cmd_q = &ccp->cmd_q[i];
-
-		ioread32(cmd_q->reg_int_status);
-		ioread32(cmd_q->reg_status);
-	}
-	iowrite32(qim, ccp->io_regs + IRQ_STATUS_REG);
-
-	ccp->free_irq(ccp);
-
-	for (i = 0; i < ccp->cmd_q_count; i++)
-		dma_pool_destroy(ccp->cmd_q[i].dma_pool);
-
-	/* Flush the cmd and backlog queue */
-	while (!list_empty(&ccp->cmd)) {
-		/* Invoke the callback directly with an error code */
-		cmd = list_first_entry(&ccp->cmd, struct ccp_cmd, entry);
-		list_del(&cmd->entry);
-		cmd->callback(cmd->data, -ENODEV);
-	}
-	while (!list_empty(&ccp->backlog)) {
-		/* Invoke the callback directly with an error code */
-		cmd = list_first_entry(&ccp->backlog, struct ccp_cmd, entry);
-		list_del(&cmd->entry);
-		cmd->callback(cmd->data, -ENODEV);
-	}
-}
-
-/**
- * ccp_irq_handler - handle interrupts generated by the CCP device
- *
- * @irq: the irq associated with the interrupt
- * @data: the data value supplied when the irq was created
- */
-irqreturn_t ccp_irq_handler(int irq, void *data)
-{
-	struct device *dev = data;
-	struct ccp_device *ccp = dev_get_drvdata(dev);
-	struct ccp_cmd_queue *cmd_q;
-	u32 q_int, status;
-	unsigned int i;
-
-	status = ioread32(ccp->io_regs + IRQ_STATUS_REG);
-
-	for (i = 0; i < ccp->cmd_q_count; i++) {
-		cmd_q = &ccp->cmd_q[i];
-
-		q_int = status & (cmd_q->int_ok | cmd_q->int_err);
-		if (q_int) {
-			cmd_q->int_status = status;
-			cmd_q->q_status = ioread32(cmd_q->reg_status);
-			cmd_q->q_int_status = ioread32(cmd_q->reg_int_status);
-
-			/* On error, only save the first error value */
-			if ((q_int & cmd_q->int_err) && !cmd_q->cmd_error)
-				cmd_q->cmd_error = CMD_Q_ERROR(cmd_q->q_status);
-
-			cmd_q->int_rcvd = 1;
-
-			/* Acknowledge the interrupt and wake the kthread */
-			iowrite32(q_int, ccp->io_regs + IRQ_STATUS_REG);
-			wake_up_interruptible(&cmd_q->int_queue);
-		}
-	}
-
-	return IRQ_HANDLED;
-}
-
-#ifdef CONFIG_PM
 bool ccp_queues_suspended(struct ccp_device *ccp)
 {
 	unsigned int suspended = 0;
@@ -543,53 +547,124 @@ bool ccp_queues_suspended(struct ccp_device *ccp)
 
 	return ccp->cmd_q_count == suspended;
 }
-#endif
 
-static const struct x86_cpu_id ccp_support[] = {
-	{ X86_VENDOR_AMD, 22, },
-};
-
-static int __init ccp_mod_init(void)
+void ccp_dev_suspend(struct sp_device *sp)
 {
-	struct cpuinfo_x86 *cpuinfo = &boot_cpu_data;
+	struct ccp_device *ccp = sp->ccp_data;
+	unsigned long flags;
+	unsigned int i;
+
+	/* If there's no device there's nothing to do */
+	if (!ccp)
+		return;
+
+	spin_lock_irqsave(&ccp->cmd_lock, flags);
+
+	ccp->suspending = 1;
+
+	/* Wake all the queue kthreads to prepare for suspend */
+	for (i = 0; i < ccp->cmd_q_count; i++)
+		wake_up_process(ccp->cmd_q[i].kthread);
+
+	spin_unlock_irqrestore(&ccp->cmd_lock, flags);
+
+	/* Wait for all queue kthreads to say they're done */
+	while (!ccp_queues_suspended(ccp))
+		wait_event_interruptible(ccp->suspend_queue,
+					 ccp_queues_suspended(ccp));
+}
+
+void ccp_dev_resume(struct sp_device *sp)
+{
+	struct ccp_device *ccp = sp->ccp_data;
+	unsigned long flags;
+	unsigned int i;
+
+	/* If there's no device there's nothing to do */
+	if (!ccp)
+		return;
+
+	spin_lock_irqsave(&ccp->cmd_lock, flags);
+
+	ccp->suspending = 0;
+
+	/* Wake up all the kthreads */
+	for (i = 0; i < ccp->cmd_q_count; i++) {
+		ccp->cmd_q[i].suspended = 0;
+		wake_up_process(ccp->cmd_q[i].kthread);
+	}
+
+	spin_unlock_irqrestore(&ccp->cmd_lock, flags);
+}
+
+int ccp_dev_init(struct sp_device *sp)
+{
+	struct device *dev = sp->dev;
+	struct ccp_device *ccp;
 	int ret;
 
-	if (!x86_match_cpu(ccp_support))
-		return -ENODEV;
+	/*
+	 * Check how many we have so far, and stop after reaching
+	 * that number
+	 */
+	if (atomic_inc_return(&dev_count) > max_devs)
+		return 0; /* don't fail the load */
 
-	switch (cpuinfo->x86) {
-	case 22:
-		if ((cpuinfo->x86_model < 48) || (cpuinfo->x86_model > 63))
-			return -ENODEV;
+	ret = -ENOMEM;
+	ccp = ccp_alloc_struct(sp);
+	if (!ccp)
+		goto e_err;
+	sp->ccp_data = ccp;
 
-		ret = ccp_pci_init();
-		if (ret)
-			return ret;
+	if (!nqueues || (nqueues > MAX_HW_QUEUES))
+		ccp->max_q_count = MAX_HW_QUEUES;
+	else
+		ccp->max_q_count = nqueues;
 
-		/* Don't leave the driver loaded if init failed */
-		if (!ccp_get_device()) {
-			ccp_pci_exit();
-			return -ENODEV;
-		}
-
-		return 0;
-
-		break;
+	ccp->vdata = (struct ccp_vdata *)sp->dev_vdata->ccp_vdata;
+	if (!ccp->vdata || !ccp->vdata->version) {
+		ret = -ENODEV;
+		dev_err(dev, "missing driver data\n");
+		goto e_err;
 	}
 
-	return -ENODEV;
+	ccp->use_tasklet = sp->use_tasklet;
+
+	ccp->io_regs = sp->io_map + ccp->vdata->offset;
+	if (ccp->vdata->setup)
+		ccp->vdata->setup(ccp);
+
+	ret = ccp->vdata->perform->init(ccp);
+	if (ret) {
+		/* A positive number means that the device cannot be initialized,
+		 * but no additional message is required.
+		 */
+		if (ret > 0)
+			goto e_quiet;
+
+		/* An unexpected problem occurred, and should be reported in the log */
+		goto e_err;
+	}
+
+	dev_notice(dev, "ccp enabled\n");
+
+	return 0;
+
+e_err:
+	dev_notice(dev, "ccp initialization failed\n");
+
+e_quiet:
+	sp->ccp_data = NULL;
+
+	return ret;
 }
 
-static void __exit ccp_mod_exit(void)
+void ccp_dev_destroy(struct sp_device *sp)
 {
-	struct cpuinfo_x86 *cpuinfo = &boot_cpu_data;
+	struct ccp_device *ccp = sp->ccp_data;
 
-	switch (cpuinfo->x86) {
-	case 22:
-		ccp_pci_exit();
-		break;
-	}
+	if (!ccp)
+		return;
+
+	ccp->vdata->perform->destroy(ccp);
 }
-
-module_init(ccp_mod_init);
-module_exit(ccp_mod_exit);

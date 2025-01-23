@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * SH-X3 SMP
  *
  *  Copyright (C) 2007 - 2010  Paul Mundt
  *  Copyright (C) 2007  Magnus Damm
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -73,13 +70,12 @@ static void shx3_prepare_cpus(unsigned int max_cpus)
 {
 	int i;
 
-	local_timer_setup(0);
-
 	BUILD_BUG_ON(SMP_MSG_NR >= 8);
 
 	for (i = 0; i < SMP_MSG_NR; i++)
-		request_irq(104 + i, ipi_interrupt_handler,
-			    IRQF_PERCPU, "IPI", (void *)(long)i);
+		if (request_irq(104 + i, ipi_interrupt_handler,
+			    IRQF_PERCPU, "IPI", (void *)(long)i))
+			pr_err("Failed to request irq %d\n", i);
 
 	for (i = 0; i < max_cpus; i++)
 		set_cpu_present(i, true);
@@ -124,32 +120,16 @@ static void shx3_update_boot_vector(unsigned int cpu)
 	__raw_writel(STBCR_RESET, STBCR_REG(cpu));
 }
 
-static int
-shx3_cpu_callback(struct notifier_block *nfb, unsigned long action, void *hcpu)
+static int shx3_cpu_prepare(unsigned int cpu)
 {
-	unsigned int cpu = (unsigned int)hcpu;
-
-	switch (action) {
-	case CPU_UP_PREPARE:
-		shx3_update_boot_vector(cpu);
-		break;
-	case CPU_ONLINE:
-		pr_info("CPU %u is now online\n", cpu);
-		break;
-	case CPU_DEAD:
-		break;
-	}
-
-	return NOTIFY_OK;
+	shx3_update_boot_vector(cpu);
+	return 0;
 }
-
-static struct notifier_block shx3_cpu_notifier = {
-	.notifier_call		= shx3_cpu_callback,
-};
 
 static int register_shx3_cpu_notifier(void)
 {
-	register_hotcpu_notifier(&shx3_cpu_notifier);
+	cpuhp_setup_state_nocalls(CPUHP_SH_SH3X_PREPARE, "sh/shx3:prepare",
+				  shx3_cpu_prepare, NULL);
 	return 0;
 }
 late_initcall(register_shx3_cpu_notifier);

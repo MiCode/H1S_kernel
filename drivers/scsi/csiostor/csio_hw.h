@@ -48,6 +48,7 @@
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_transport_fc.h>
 
+#include "t4_hw.h"
 #include "csio_hw_chip.h"
 #include "csio_wr.h"
 #include "csio_mb.h"
@@ -70,6 +71,7 @@
 #define CSIO_MAX_CMD_PER_LUN	32
 #define CSIO_MAX_DDP_BUF_SIZE	(1024 * 1024)
 #define CSIO_MAX_SECTOR_SIZE	128
+#define CSIO_MIN_T6_FW		0x01102D00  /* FW 1.16.45.0 */
 
 /* Interrupts */
 #define CSIO_EXTRA_MSI_IQS	2	/* Extra iqs for INTX/MSI mode
@@ -94,7 +96,6 @@ enum {
 };
 
 struct csio_msix_entries {
-	unsigned short	vector;		/* Vector assigned by pci_enable_msix */
 	void		*dev_id;	/* Priv object associated w/ this msix*/
 	char		desc[24];	/* Description of this vector */
 };
@@ -110,7 +111,6 @@ struct csio_scsi_cpu_info {
 };
 
 extern int csio_dbg_level;
-extern int csio_force_master;
 extern unsigned int csio_port_mask;
 extern int csio_msi;
 
@@ -118,10 +118,10 @@ extern int csio_msi;
 #define CSIO_ASIC_DEVID_PROTO_MASK		0xFF00
 #define CSIO_ASIC_DEVID_TYPE_MASK		0x00FF
 
-#define CSIO_GLBL_INTR_MASK		(CIM | MPS | PL | PCIE | MC | EDC0 | \
-					 EDC1 | LE | TP | MA | PM_TX | PM_RX | \
-					 ULP_RX | CPL_SWITCH | SGE | \
-					 ULP_TX | SF)
+#define CSIO_GLBL_INTR_MASK	(CIM_F | MPS_F | PL_F | PCIE_F | MC_F | \
+				 EDC0_F | EDC1_F | LE_F | TP_F | MA_F | \
+				 PM_TX_F | PM_RX_F | ULP_RX_F | \
+				 CPL_SWITCH_F | SGE_F | ULP_TX_F | SF_F)
 
 /*
  * Hard parameters used to initialize the card in the absence of a
@@ -175,16 +175,12 @@ struct csio_evt_msg {
 };
 
 enum {
-	EEPROMVSIZE    = 32768, /* Serial EEPROM virtual address space size */
 	SERNUM_LEN     = 16,    /* Serial # length */
 	EC_LEN         = 16,    /* E/C length */
 	ID_LEN         = 16,    /* ID length */
-	TRACE_LEN      = 112,   /* length of trace data and mask */
 };
 
 enum {
-	SF_PAGE_SIZE = 256,           /* serial flash page size */
-	SF_SEC_SIZE = 64 * 1024,      /* serial flash sector size */
 	SF_SIZE = SF_SEC_SIZE * 16,   /* serial flash size */
 };
 
@@ -200,38 +196,7 @@ enum {
 	SF_RD_DATA_FAST = 0xb,        /* read flash */
 	SF_RD_ID	= 0x9f,	      /* read ID */
 	SF_ERASE_SECTOR = 0xd8,       /* erase sector */
-
-	FW_START_SEC = 8,             /* first flash sector for FW */
-	FW_END_SEC = 15,              /* last flash sector for FW */
-	FW_IMG_START = FW_START_SEC * SF_SEC_SIZE,
-	FW_MAX_SIZE = (FW_END_SEC - FW_START_SEC + 1) * SF_SEC_SIZE,
-
-	FLASH_CFG_MAX_SIZE    = 0x10000 , /* max size of the flash config file*/
-	FLASH_CFG_OFFSET      = 0x1f0000,
-	FLASH_CFG_START_SEC   = FLASH_CFG_OFFSET / SF_SEC_SIZE,
 };
-
-/*
- * Flash layout.
- */
-#define FLASH_START(start)	((start) * SF_SEC_SIZE)
-#define FLASH_MAX_SIZE(nsecs)	((nsecs) * SF_SEC_SIZE)
-
-enum {
-	/*
-	 * Location of firmware image in FLASH.
-	 */
-	FLASH_FW_START_SEC = 8,
-	FLASH_FW_NSECS = 8,
-	FLASH_FW_START = FLASH_START(FLASH_FW_START_SEC),
-	FLASH_FW_MAX_SIZE = FLASH_MAX_SIZE(FLASH_FW_NSECS),
-
-	/* Location of Firmware Configuration File in FLASH. */
-	FLASH_CFG_START = FLASH_START(FLASH_CFG_START_SEC),
-};
-
-#undef FLASH_START
-#undef FLASH_MAX_SIZE
 
 /* Management module */
 enum {
@@ -303,8 +268,62 @@ struct csio_vpd {
 	uint8_t id[ID_LEN + 1];
 };
 
+/* Firmware Port Capabilities types. */
+
+typedef u16 fw_port_cap16_t;    /* 16-bit Port Capabilities integral value */
+typedef u32 fw_port_cap32_t;    /* 32-bit Port Capabilities integral value */
+
+enum fw_caps {
+	FW_CAPS_UNKNOWN = 0,    /* 0'ed out initial state */
+	FW_CAPS16       = 1,    /* old Firmware: 16-bit Port Capabilities */
+	FW_CAPS32       = 2,    /* new Firmware: 32-bit Port Capabilities */
+};
+
+enum cc_pause {
+	PAUSE_RX      = 1 << 0,
+	PAUSE_TX      = 1 << 1,
+	PAUSE_AUTONEG = 1 << 2
+};
+
+enum cc_fec {
+	FEC_AUTO	= 1 << 0,  /* IEEE 802.3 "automatic" */
+	FEC_RS		= 1 << 1,  /* Reed-Solomon */
+	FEC_BASER_RS	= 1 << 2   /* BaseR/Reed-Solomon */
+};
+
+struct link_config {
+	fw_port_cap32_t pcaps;		/* link capabilities */
+	fw_port_cap32_t def_acaps;	/* default advertised capabilities */
+	fw_port_cap32_t acaps;		/* advertised capabilities */
+	fw_port_cap32_t lpacaps;	/* peer advertised capabilities */
+
+	fw_port_cap32_t speed_caps;	/* speed(s) user has requested */
+	unsigned int   speed;		/* actual link speed (Mb/s) */
+
+	enum cc_pause  requested_fc;	/* flow control user has requested */
+	enum cc_pause  fc;		/* actual link flow control */
+
+	enum cc_fec    requested_fec;	/* Forward Error Correction: */
+	enum cc_fec    fec;		/* requested and actual in use */
+
+	unsigned char  autoneg;		/* autonegotiating? */
+
+	unsigned char  link_ok;		/* link up? */
+	unsigned char  link_down_rc;	/* link down reason */
+};
+
+#define FW_LEN16(fw_struct) FW_CMD_LEN16_V(sizeof(fw_struct) / 16)
+
+#define ADVERT_MASK (FW_PORT_CAP32_SPEED_V(FW_PORT_CAP32_SPEED_M) | \
+		     FW_PORT_CAP32_ANEG)
+
+/* Enable or disable autonegotiation. */
+#define AUTONEG_DISABLE	0x00
+#define AUTONEG_ENABLE	0x01
+
 struct csio_pport {
 	uint16_t	pcap;
+	uint16_t	acap;
 	uint8_t		portid;
 	uint8_t		link_status;
 	uint16_t	link_speed;
@@ -313,6 +332,7 @@ struct csio_pport {
 	uint8_t		rsvd1;
 	uint8_t		rsvd2;
 	uint8_t		rsvd3;
+	struct link_config link_cfg;
 };
 
 /* fcoe resource information */
@@ -403,6 +423,9 @@ struct csio_hw_stats {
 #define	CSIO_HWF_HOST_INTR_ENABLED	0x00000200	/* Are host interrupts
 							 * enabled?
 							 */
+#define CSIO_HWF_ROOT_NO_RELAXED_ORDERING 0x00000400	/* Is PCIe relaxed
+							 * ordering enabled
+							 */
 
 #define csio_is_hw_intr_enabled(__hw)	\
 				((__hw)->flags & CSIO_HWF_HW_INTR_ENABLED)
@@ -483,11 +506,6 @@ struct csio_hw {
 	uint32_t		tp_vers;
 	char			chip_ver;
 	uint16_t		chip_id;		/* Tells T4/T5 chip */
-	uint32_t		cfg_finiver;
-	uint32_t		cfg_finicsum;
-	uint32_t		cfg_cfcsum;
-	uint8_t			cfg_csum_status;
-	uint8_t			cfg_store;
 	enum csio_dev_state	fw_state;
 	struct csio_vpd		vpd;
 
@@ -505,7 +523,7 @@ struct csio_hw {
 	struct csio_pport	pport[CSIO_MAX_PPORTS];	/* Ports (XGMACs) */
 	struct csio_hw_params	params;			/* Hw parameters */
 
-	struct pci_pool		*scsi_pci_pool;		/* PCI pool for SCSI */
+	struct dma_pool		*scsi_dma_pool;		/* DMA pool for SCSI */
 	mempool_t		*mb_mempool;		/* Mailbox memory pool*/
 	mempool_t		*rnode_mempool;		/* rnode memory pool */
 
@@ -618,6 +636,11 @@ void csio_hw_intr_disable(struct csio_hw *);
 int csio_hw_slow_intr_handler(struct csio_hw *);
 int csio_handle_intr_status(struct csio_hw *, unsigned int,
 			    const struct intr_info *);
+
+fw_port_cap32_t fwcap_to_fwspeed(fw_port_cap32_t acaps);
+fw_port_cap32_t fwcaps16_to_caps32(fw_port_cap16_t caps16);
+fw_port_cap16_t fwcaps32_to_caps16(fw_port_cap32_t caps32);
+fw_port_cap32_t lstatus_to_fwcap(u32 lstatus);
 
 int csio_hw_start(struct csio_hw *);
 int csio_hw_stop(struct csio_hw *);

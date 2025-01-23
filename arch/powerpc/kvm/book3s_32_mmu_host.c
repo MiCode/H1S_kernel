@@ -1,31 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2010 SUSE Linux Products GmbH. All rights reserved.
  *
  * Authors:
  *     Alexander Graf <agraf@suse.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, version 2, as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
 #include <linux/kvm_host.h>
 
 #include <asm/kvm_ppc.h>
 #include <asm/kvm_book3s.h>
-#include <asm/mmu-hash32.h>
+#include <asm/book3s/32/mmu-hash.h>
 #include <asm/machdep.h>
 #include <asm/mmu_context.h>
 #include <asm/hw_irq.h>
+#include "book3s.h"
 
 /* #define DEBUG_MMU */
 /* #define DEBUG_SR */
@@ -92,7 +81,7 @@ static struct kvmppc_sid_map *find_sid_vsid(struct kvm_vcpu *vcpu, u64 gvsid)
 	struct kvmppc_sid_map *map;
 	u16 sid_map_mask;
 
-	if (vcpu->arch.shared->msr & MSR_PR)
+	if (kvmppc_get_msr(vcpu) & MSR_PR)
 		gvsid |= VSID_PR;
 
 	sid_map_mask = kvmppc_sid_hash(vcpu, gvsid);
@@ -141,7 +130,7 @@ extern char etext[];
 int kvmppc_mmu_map_page(struct kvm_vcpu *vcpu, struct kvmppc_pte *orig_pte,
 			bool iswrite)
 {
-	pfn_t hpaddr;
+	kvm_pfn_t hpaddr;
 	u64 vpn;
 	u64 vsid;
 	struct kvmppc_sid_map *map;
@@ -156,11 +145,10 @@ int kvmppc_mmu_map_page(struct kvm_vcpu *vcpu, struct kvmppc_pte *orig_pte,
 	bool writable;
 
 	/* Get host physical address for gpa */
-	hpaddr = kvmppc_gfn_to_pfn(vcpu, orig_pte->raddr >> PAGE_SHIFT,
-				   iswrite, &writable);
+	hpaddr = kvmppc_gpa_to_pfn(vcpu, orig_pte->raddr, iswrite, &writable);
 	if (is_error_noslot_pfn(hpaddr)) {
-		printk(KERN_INFO "Couldn't get guest page for gfn %lx!\n",
-				 orig_pte->eaddr);
+		printk(KERN_INFO "Couldn't get guest page for gpa %lx!\n",
+				 orig_pte->raddr);
 		r = -EINVAL;
 		goto out;
 	}
@@ -279,7 +267,7 @@ static struct kvmppc_sid_map *create_sid_map(struct kvm_vcpu *vcpu, u64 gvsid)
 	u16 sid_map_mask;
 	static int backwards_map = 0;
 
-	if (vcpu->arch.shared->msr & MSR_PR)
+	if (kvmppc_get_msr(vcpu) & MSR_PR)
 		gvsid |= VSID_PR;
 
 	/* We might get collisions that trap in preceding order, so let's
@@ -365,10 +353,7 @@ void kvmppc_mmu_destroy_pr(struct kvm_vcpu *vcpu)
 	preempt_enable();
 }
 
-/* From mm/mmu_context_hash32.c */
-#define CTX_TO_VSID(c, id)	((((c) * (897 * 16)) + (id * 0x111)) & 0xffffff)
-
-int kvmppc_mmu_init(struct kvm_vcpu *vcpu)
+int kvmppc_mmu_init_pr(struct kvm_vcpu *vcpu)
 {
 	struct kvmppc_vcpu_book3s *vcpu3s = to_book3s(vcpu);
 	int err;

@@ -1,14 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/kernel.h>
 #include <linux/crash_dump.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/export.h>
-
-/*
- * If we have booted due to a crash, max_pfn will be a very low value. We need
- * to know the amount of memory that the previous kernel used.
- */
-unsigned long saved_max_pfn;
 
 /*
  * stores the physical address of elf header of crash image
@@ -18,6 +13,7 @@ unsigned long saved_max_pfn;
  * it under CONFIG_CRASH_DUMP and not CONFIG_PROC_VMCORE.
  */
 unsigned long long elfcorehdr_addr = ELFCORE_ADDR_MAX;
+EXPORT_SYMBOL_GPL(elfcorehdr_addr);
 
 /*
  * stores the size of elf header of crash image

@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * lm3533-als.c -- LM3533 Ambient Light Sensor driver
  *
  * Copyright (C) 2011-2012 Texas Instruments
  *
  * Author: Johan Hovold <jhovold@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under  the terms of the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the License, or (at your
- * option) any later version.
  */
 
 #include <linux/atomic.h>
@@ -199,7 +195,7 @@ static int lm3533_als_read_raw(struct iio_dev *indio_dev,
 	int ret;
 
 	switch (mask) {
-	case 0:
+	case IIO_CHAN_INFO_RAW:
 		switch (chan->type) {
 		case IIO_LIGHT:
 			ret = lm3533_als_get_adc(indio_dev, false, val);
@@ -267,7 +263,7 @@ static irqreturn_t lm3533_als_isr(int irq, void *dev_id)
 					    0,
 					    IIO_EV_TYPE_THRESH,
 					    IIO_EV_DIR_EITHER),
-		       iio_get_time_ns());
+		       iio_get_time_ns(indio_dev));
 out:
 	return IRQ_HANDLED;
 }
@@ -421,7 +417,7 @@ static ssize_t show_thresh_either_en(struct device *dev,
 		enable = 0;
 	}
 
-	return scnprintf(buf, PAGE_SIZE, "%u\n", enable);
+	return sysfs_emit(buf, "%u\n", enable);
 }
 
 static ssize_t store_thresh_either_en(struct device *dev,
@@ -478,7 +474,7 @@ static ssize_t show_zone(struct device *dev,
 	if (ret)
 		return ret;
 
-	return scnprintf(buf, PAGE_SIZE, "%u\n", zone);
+	return sysfs_emit(buf, "%u\n", zone);
 }
 
 enum lm3533_als_attribute_type {
@@ -534,7 +530,7 @@ static ssize_t show_als_attr(struct device *dev,
 	if (ret)
 		return ret;
 
-	return scnprintf(buf, PAGE_SIZE, "%u\n", val);
+	return sysfs_emit(buf, "%u\n", val);
 }
 
 static ssize_t store_als_attr(struct device *dev,
@@ -657,7 +653,7 @@ static ALS_HYSTERESIS_ATTR_RO(3);
 #define ILLUMINANCE_ATTR_RO(_name) \
 	DEVICE_ATTR(in_illuminance0_##_name, S_IRUGO, show_##_name, NULL)
 #define ILLUMINANCE_ATTR_RW(_name) \
-	DEVICE_ATTR(in_illuminance0_##_name, S_IRUGO | S_IWUSR , \
+	DEVICE_ATTR(in_illuminance0_##_name, S_IRUGO | S_IWUSR, \
 						show_##_name, store_##_name)
 /*
  * ALS Zone threshold-event enable
@@ -690,7 +686,7 @@ static struct attribute *lm3533_als_event_attributes[] = {
 	NULL
 };
 
-static struct attribute_group lm3533_als_event_attribute_group = {
+static const struct attribute_group lm3533_als_event_attribute_group = {
 	.attrs = lm3533_als_event_attributes
 };
 
@@ -714,7 +710,7 @@ static struct attribute *lm3533_als_attributes[] = {
 	NULL
 };
 
-static struct attribute_group lm3533_als_attribute_group = {
+static const struct attribute_group lm3533_als_attribute_group = {
 	.attrs = lm3533_als_attributes
 };
 
@@ -743,8 +739,10 @@ static int lm3533_als_set_resistor(struct lm3533_als *als, u8 val)
 {
 	int ret;
 
-	if (val < LM3533_ALS_RESISTOR_MIN || val > LM3533_ALS_RESISTOR_MAX)
+	if (val < LM3533_ALS_RESISTOR_MIN || val > LM3533_ALS_RESISTOR_MAX) {
+		dev_err(&als->pdev->dev, "invalid resistor value\n");
 		return -EINVAL;
+	}
 
 	ret = lm3533_write(als->lm3533, LM3533_REG_ALS_RESISTOR_SELECT, val);
 	if (ret) {
@@ -825,7 +823,6 @@ static int lm3533_als_disable(struct lm3533_als *als)
 static const struct iio_info lm3533_als_info = {
 	.attrs		= &lm3533_als_attribute_group,
 	.event_attrs	= &lm3533_als_event_attribute_group,
-	.driver_module	= THIS_MODULE,
 	.read_raw	= &lm3533_als_read_raw,
 };
 
@@ -855,7 +852,7 @@ static int lm3533_als_probe(struct platform_device *pdev)
 	indio_dev->channels = lm3533_als_channels;
 	indio_dev->num_channels = ARRAY_SIZE(lm3533_als_channels);
 	indio_dev->name = dev_name(&pdev->dev);
-	indio_dev->dev.parent = pdev->dev.parent;
+	iio_device_set_parent(indio_dev, pdev->dev.parent);
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
 	als = iio_priv(indio_dev);
@@ -915,7 +912,6 @@ static int lm3533_als_remove(struct platform_device *pdev)
 static struct platform_driver lm3533_als_driver = {
 	.driver	= {
 		.name	= "lm3533-als",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= lm3533_als_probe,
 	.remove		= lm3533_als_remove,

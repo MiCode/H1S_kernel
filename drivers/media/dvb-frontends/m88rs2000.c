@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
 	Driver for M88RS2000 demodulator and tuner
 
@@ -7,19 +8,6 @@
 	Include various calculation code from DS3000 driver.
 	Copyright (C) 2009 Konstantin Dimitrov.
 
-	This program is free software; you can redistribute it and/or modify
-	it under the terms of the GNU General Public License as published by
-	the Free Software Foundation; either version 2 of the License, or
-	(at your option) any later version.
-
-	This program is distributed in the hope that it will be useful,
-	but WITHOUT ANY WARRANTY; without even the implied warranty of
-	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-	GNU General Public License for more details.
-
-	You should have received a copy of the GNU General Public License
-	along with this program; if not, write to the Free Software
-	Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 */
 #include <linux/init.h>
@@ -31,7 +19,7 @@
 #include <linux/types.h>
 
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "m88rs2000.h"
 
 struct m88rs2000_state {
@@ -41,7 +29,7 @@ struct m88rs2000_state {
 	u8 no_lock_count;
 	u32 tuner_frequency;
 	u32 symbol_rate;
-	fe_code_rate_t fec_inner;
+	enum fe_code_rate fec_inner;
 	u8 tuner_level;
 	int errmode;
 };
@@ -75,8 +63,8 @@ static int m88rs2000_writereg(struct m88rs2000_state *state,
 	ret = i2c_transfer(state->i2c, &msg, 1);
 
 	if (ret != 1)
-		deb_info("%s: writereg error (reg == 0x%02x, val == 0x%02x, "
-			"ret == %i)\n", __func__, reg, data, ret);
+		deb_info("%s: writereg error (reg == 0x%02x, val == 0x%02x, ret == %i)\n",
+			 __func__, reg, data, ret);
 
 	return (ret != 1) ? -EREMOTEIO : 0;
 }
@@ -247,7 +235,7 @@ static int m88rs2000_send_diseqc_msg(struct dvb_frontend *fe,
 }
 
 static int m88rs2000_send_diseqc_burst(struct dvb_frontend *fe,
-						fe_sec_mini_cmd_t burst)
+				       enum fe_sec_mini_cmd burst)
 {
 	struct m88rs2000_state *state = fe->demodulator_priv;
 	u8 reg0, reg1;
@@ -264,7 +252,8 @@ static int m88rs2000_send_diseqc_burst(struct dvb_frontend *fe,
 	return 0;
 }
 
-static int m88rs2000_set_tone(struct dvb_frontend *fe, fe_sec_tone_mode_t tone)
+static int m88rs2000_set_tone(struct dvb_frontend *fe,
+			      enum fe_sec_tone_mode tone)
 {
 	struct m88rs2000_state *state = fe->demodulator_priv;
 	u8 reg0, reg1;
@@ -297,7 +286,7 @@ struct inittab {
 	u8 val;
 };
 
-struct inittab m88rs2000_setup[] = {
+static struct inittab m88rs2000_setup[] = {
 	{DEMOD_WRITE, 0x9a, 0x30},
 	{DEMOD_WRITE, 0x00, 0x01},
 	{WRITE_DELAY, 0x19, 0x00},
@@ -315,7 +304,7 @@ struct inittab m88rs2000_setup[] = {
 	{0xff, 0xaa, 0xff}
 };
 
-struct inittab m88rs2000_shutdown[] = {
+static struct inittab m88rs2000_shutdown[] = {
 	{DEMOD_WRITE, 0x9a, 0x30},
 	{DEMOD_WRITE, 0xb0, 0x00},
 	{DEMOD_WRITE, 0xf1, 0x89},
@@ -325,7 +314,7 @@ struct inittab m88rs2000_shutdown[] = {
 	{0xff, 0xaa, 0xff}
 };
 
-struct inittab fe_reset[] = {
+static struct inittab fe_reset[] = {
 	{DEMOD_WRITE, 0x00, 0x01},
 	{DEMOD_WRITE, 0x20, 0x81},
 	{DEMOD_WRITE, 0x21, 0x80},
@@ -363,7 +352,7 @@ struct inittab fe_reset[] = {
 	{0xff, 0xaa, 0xff}
 };
 
-struct inittab fe_trigger[] = {
+static struct inittab fe_trigger[] = {
 	{DEMOD_WRITE, 0x97, 0x04},
 	{DEMOD_WRITE, 0x99, 0x77},
 	{DEMOD_WRITE, 0x9b, 0x64},
@@ -401,6 +390,7 @@ static int m88rs2000_tab_set(struct m88rs2000_state *state,
 		case 0xff:
 			if (tab[i].reg == 0xaa && tab[i].val == 0xff)
 				return 0;
+			break;
 		case 0x00:
 			break;
 		default:
@@ -412,7 +402,8 @@ static int m88rs2000_tab_set(struct m88rs2000_state *state,
 	return 0;
 }
 
-static int m88rs2000_set_voltage(struct dvb_frontend *fe, fe_sec_voltage_t volt)
+static int m88rs2000_set_voltage(struct dvb_frontend *fe,
+				 enum fe_sec_voltage volt)
 {
 	struct m88rs2000_state *state = fe->demodulator_priv;
 	u8 data;
@@ -462,7 +453,8 @@ static int m88rs2000_sleep(struct dvb_frontend *fe)
 	return ret;
 }
 
-static int m88rs2000_read_status(struct dvb_frontend *fe, fe_status_t *status)
+static int m88rs2000_read_status(struct dvb_frontend *fe,
+				 enum fe_status *status)
 {
 	struct m88rs2000_state *state = fe->demodulator_priv;
 	u8 reg = m88rs2000_readreg(state, 0x8c);
@@ -539,7 +531,7 @@ static int m88rs2000_read_ucblocks(struct dvb_frontend *fe, u32 *ucblocks)
 }
 
 static int m88rs2000_set_fec(struct m88rs2000_state *state,
-		fe_code_rate_t fec)
+			     enum fe_code_rate fec)
 {
 	u8 fec_set, reg;
 	int ret;
@@ -574,7 +566,7 @@ static int m88rs2000_set_fec(struct m88rs2000_state *state,
 	return ret;
 }
 
-static fe_code_rate_t m88rs2000_get_fec(struct m88rs2000_state *state)
+static enum fe_code_rate m88rs2000_get_fec(struct m88rs2000_state *state)
 {
 	u8 reg;
 	m88rs2000_writereg(state, 0x9a, 0x30);
@@ -606,7 +598,7 @@ static int m88rs2000_set_frontend(struct dvb_frontend *fe)
 {
 	struct m88rs2000_state *state = fe->demodulator_priv;
 	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
-	fe_status_t status;
+	enum fe_status status = 0;
 	int i, ret = 0;
 	u32 tuner_freq;
 	s16 offset = 0;
@@ -615,10 +607,9 @@ static int m88rs2000_set_frontend(struct dvb_frontend *fe)
 	state->no_lock_count = 0;
 
 	if (c->delivery_system != SYS_DVBS) {
-			deb_info("%s: unsupported delivery "
-				"system selected (%d)\n",
-				__func__, c->delivery_system);
-			return -EOPNOTSUPP;
+		deb_info("%s: unsupported delivery system selected (%d)\n",
+			 __func__, c->delivery_system);
+		return -EOPNOTSUPP;
 	}
 
 	/* Set Tuner */
@@ -628,13 +619,16 @@ static int m88rs2000_set_frontend(struct dvb_frontend *fe)
 	if (ret < 0)
 		return -ENODEV;
 
-	if (fe->ops.tuner_ops.get_frequency)
+	if (fe->ops.tuner_ops.get_frequency) {
 		ret = fe->ops.tuner_ops.get_frequency(fe, &tuner_freq);
 
-	if (ret < 0)
-		return -ENODEV;
+		if (ret < 0)
+			return -ENODEV;
 
-	offset = (s16)((s32)tuner_freq - c->frequency);
+		offset = (s16)((s32)tuner_freq - c->frequency);
+	} else {
+		offset = 0;
+	}
 
 	/* default mclk value 96.4285 * 2 * 1000 = 192857 */
 	if (((c->frequency % 192857) >= (192857 - 3000)) ||
@@ -696,7 +690,7 @@ static int m88rs2000_set_frontend(struct dvb_frontend *fe)
 
 	if (status & FE_HAS_LOCK) {
 		state->fec_inner = m88rs2000_get_fec(state);
-		/* Uknown suspect SNR level */
+		/* Unknown suspect SNR level */
 		reg = m88rs2000_readreg(state, 0x65);
 	}
 
@@ -705,13 +699,30 @@ static int m88rs2000_set_frontend(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int m88rs2000_get_frontend(struct dvb_frontend *fe)
+static int m88rs2000_get_frontend(struct dvb_frontend *fe,
+				  struct dtv_frontend_properties *c)
 {
-	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
 	struct m88rs2000_state *state = fe->demodulator_priv;
+
 	c->fec_inner = state->fec_inner;
 	c->frequency = state->tuner_frequency;
 	c->symbol_rate = state->symbol_rate;
+	return 0;
+}
+
+static int m88rs2000_get_tune_settings(struct dvb_frontend *fe,
+	struct dvb_frontend_tune_settings *tune)
+{
+	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
+
+	if (c->symbol_rate > 3000000)
+		tune->min_delay_ms = 2000;
+	else
+		tune->min_delay_ms = 3000;
+
+	tune->step_size = c->symbol_rate / 16000;
+	tune->max_drift = c->symbol_rate / 2000;
+
 	return 0;
 }
 
@@ -733,20 +744,20 @@ static void m88rs2000_release(struct dvb_frontend *fe)
 	kfree(state);
 }
 
-static struct dvb_frontend_ops m88rs2000_ops = {
+static const struct dvb_frontend_ops m88rs2000_ops = {
 	.delsys = { SYS_DVBS },
 	.info = {
 		.name			= "M88RS2000 DVB-S",
-		.frequency_min		= 950000,
-		.frequency_max		= 2150000,
-		.frequency_stepsize	= 1000,	 /* kHz for QPSK frontends */
-		.frequency_tolerance	= 5000,
+		.frequency_min_hz	=  950 * MHz,
+		.frequency_max_hz	= 2150 * MHz,
+		.frequency_stepsize_hz	= 1 * MHz,
+		.frequency_tolerance_hz	= 5 * MHz,
 		.symbol_rate_min	= 1000000,
 		.symbol_rate_max	= 45000000,
 		.symbol_rate_tolerance	= 500,	/* ppm */
 		.caps = FE_CAN_FEC_1_2 | FE_CAN_FEC_2_3 | FE_CAN_FEC_3_4 |
 		      FE_CAN_FEC_5_6 | FE_CAN_FEC_7_8 |
-		      FE_CAN_QPSK |
+		      FE_CAN_QPSK | FE_CAN_INVERSION_AUTO |
 		      FE_CAN_FEC_AUTO
 	},
 
@@ -766,6 +777,7 @@ static struct dvb_frontend_ops m88rs2000_ops = {
 
 	.set_frontend = m88rs2000_set_frontend,
 	.get_frontend = m88rs2000_get_frontend,
+	.get_tune_settings = m88rs2000_get_tune_settings,
 };
 
 struct dvb_frontend *m88rs2000_attach(const struct m88rs2000_config *config,
@@ -796,7 +808,7 @@ error:
 
 	return NULL;
 }
-EXPORT_SYMBOL(m88rs2000_attach);
+EXPORT_SYMBOL_GPL(m88rs2000_attach);
 
 MODULE_DESCRIPTION("M88RS2000 DVB-S Demodulator driver");
 MODULE_AUTHOR("Malcolm Priestley tvboxspy@gmail.com");

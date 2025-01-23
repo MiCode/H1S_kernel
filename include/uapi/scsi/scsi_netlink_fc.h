@@ -1,26 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /*
  *  FC Transport Netlink Interface
  *
  *  Copyright (C) 2006   James Smart, Emulex Corporation
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 #ifndef SCSI_NETLINK_FC_H
 #define SCSI_NETLINK_FC_H
 
+#include <linux/types.h>
 #include <scsi/scsi_netlink.h>
 
 /*
@@ -48,7 +35,7 @@
  * FC Transport Broadcast Event Message :
  *   FC_NL_ASYNC_EVENT
  *
- * Note: if Vendor Unique message, &event_data will be  start of
+ * Note: if Vendor Unique message, event_data_flex will be start of
  * 	 vendor unique payload, and the length of the payload is
  *       per event_datalen
  *
@@ -57,14 +44,17 @@
  */
 struct fc_nl_event {
 	struct scsi_nl_hdr snlh;		/* must be 1st element ! */
-	uint64_t seconds;
-	uint64_t vendor_id;
-	uint16_t host_no;
-	uint16_t event_datalen;
-	uint32_t event_num;
-	uint32_t event_code;
-	uint32_t event_data;
-} __attribute__((aligned(sizeof(uint64_t))));
+	__u64 seconds;
+	__u64 vendor_id;
+	__u16 host_no;
+	__u16 event_datalen;
+	__u32 event_num;
+	__u32 event_code;
+	union {
+		__u32 event_data;
+		__DECLARE_FLEX_ARRAY(__u8, event_data_flex);
+	};
+} __attribute__((aligned(sizeof(__u64))));
 
 
 #endif /* SCSI_NETLINK_FC_H */

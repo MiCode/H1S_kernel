@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * PAL Firmware support
  * IA-64 Processor Programmers Reference Vol 2
@@ -12,6 +13,7 @@
  * 05/24/2000 eranian Added support for physical mode static calls
  */
 
+#include <linux/export.h>
 #include <asm/asmmacro.h>
 #include <asm/processor.h>
 
@@ -84,9 +86,10 @@ GLOBAL_ENTRY(ia64_pal_call_static)
 	mov ar.pfs = loc1
 	mov rp = loc0
 	;;
-	srlz.d				// seralize restoration of psr.l
+	srlz.d				// serialize restoration of psr.l
 	br.ret.sptk.many b0
 END(ia64_pal_call_static)
+EXPORT_SYMBOL(ia64_pal_call_static)
 
 /*
  * Make a PAL call using the stacked registers calling convention.
@@ -122,6 +125,7 @@ GLOBAL_ENTRY(ia64_pal_call_stacked)
 	srlz.d				// serialize restoration of psr.l
 	br.ret.sptk.many b0
 END(ia64_pal_call_stacked)
+EXPORT_SYMBOL(ia64_pal_call_stacked)
 
 /*
  * Make a physical mode PAL call using the static registers calling convention.
@@ -190,9 +194,10 @@ GLOBAL_ENTRY(ia64_pal_call_phys_static)
 	mov rp = loc0
 	;;
 	mov ar.rsc=loc4			// restore RSE configuration
-	srlz.d				// seralize restoration of psr.l
+	srlz.d				// serialize restoration of psr.l
 	br.ret.sptk.many b0
 END(ia64_pal_call_phys_static)
+EXPORT_SYMBOL(ia64_pal_call_phys_static)
 
 /*
  * Make a PAL call using the stacked registers in physical mode.
@@ -247,9 +252,10 @@ GLOBAL_ENTRY(ia64_pal_call_phys_stacked)
 	mov rp = loc0
 	;;
 	mov ar.rsc=loc4			// restore RSE configuration
-	srlz.d				// seralize restoration of psr.l
+	srlz.d				// serialize restoration of psr.l
 	br.ret.sptk.many b0
 END(ia64_pal_call_phys_stacked)
+EXPORT_SYMBOL(ia64_pal_call_phys_stacked)
 
 /*
  * Save scratch fp scratch regs which aren't saved in pt_regs already
@@ -275,6 +281,7 @@ GLOBAL_ENTRY(ia64_save_scratch_fpregs)
 	stf.spill [r2]  = f15,32
 	br.ret.sptk.many rp
 END(ia64_save_scratch_fpregs)
+EXPORT_SYMBOL(ia64_save_scratch_fpregs)
 
 /*
  * Load scratch fp scratch regs (fp10-fp15)
@@ -296,3 +303,4 @@ GLOBAL_ENTRY(ia64_load_scratch_fpregs)
 	ldf.fill  f15 = [r2],32
 	br.ret.sptk.many rp
 END(ia64_load_scratch_fpregs)
+EXPORT_SYMBOL(ia64_load_scratch_fpregs)

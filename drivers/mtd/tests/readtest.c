@@ -1,18 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2006-2008 Nokia Corporation
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; see the file COPYING. If not, write to the Free Software
- * Foundation, 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  *
  * Check MTD device read.
  *
@@ -47,7 +35,7 @@ static int pgcnt;
 static int read_eraseblock_by_page(int ebnum)
 {
 	int i, ret, err = 0;
-	loff_t addr = ebnum * mtd->erasesize;
+	loff_t addr = (loff_t)ebnum * mtd->erasesize;
 	void *buf = iobuf;
 	void *oobbuf = iobuf1;
 
@@ -59,7 +47,7 @@ static int read_eraseblock_by_page(int ebnum)
 				err = ret;
 		}
 		if (mtd->oobsize) {
-			struct mtd_oob_ops ops;
+			struct mtd_oob_ops ops = { };
 
 			ops.mode      = MTD_OPS_PLACE_OOB;
 			ops.len       = 0;
@@ -190,7 +178,12 @@ static int __init mtd_readtest_init(void)
 			if (!err)
 				err = ret;
 		}
-		cond_resched();
+
+		ret = mtdtest_relax();
+		if (ret) {
+			err = ret;
+			goto out;
+		}
 	}
 
 	if (err)

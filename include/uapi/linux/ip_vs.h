@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  *      IP Virtual Server
  *      data structure and functionality definitions
@@ -123,6 +124,19 @@
 
 #define IP_VS_PEDATA_MAXLEN     255
 
+/* Tunnel types */
+enum {
+	IP_VS_CONN_F_TUNNEL_TYPE_IPIP = 0,	/* IPIP */
+	IP_VS_CONN_F_TUNNEL_TYPE_GUE,		/* GUE */
+	IP_VS_CONN_F_TUNNEL_TYPE_GRE,		/* GRE */
+	IP_VS_CONN_F_TUNNEL_TYPE_MAX,
+};
+
+/* Tunnel encapsulation flags */
+#define IP_VS_TUNNEL_ENCAP_FLAG_NOCSUM		(0)
+#define IP_VS_TUNNEL_ENCAP_FLAG_CSUM		(1 << 0)
+#define IP_VS_TUNNEL_ENCAP_FLAG_REMCSUM		(1 << 1)
+
 /*
  *	The struct ip_vs_service_user and struct ip_vs_dest_user are
  *	used to set IPVS rules through setsockopt.
@@ -240,7 +254,7 @@ struct ip_vs_get_dests {
 	unsigned int		num_dests;
 
 	/* the real servers */
-	struct ip_vs_dest_entry	entrytable[0];
+	struct ip_vs_dest_entry	entrytable[];
 };
 
 
@@ -250,7 +264,7 @@ struct ip_vs_get_services {
 	unsigned int		num_services;
 
 	/* service table */
-	struct ip_vs_service_entry entrytable[0];
+	struct ip_vs_service_entry entrytable[];
 };
 
 
@@ -358,6 +372,8 @@ enum {
 
 	IPVS_SVC_ATTR_PE_NAME,		/* name of ct retriever */
 
+	IPVS_SVC_ATTR_STATS64,		/* nested attribute for service stats */
+
 	__IPVS_SVC_ATTR_MAX,
 };
 
@@ -384,6 +400,17 @@ enum {
 	IPVS_DEST_ATTR_PERSIST_CONNS,	/* persistent connections */
 
 	IPVS_DEST_ATTR_STATS,		/* nested attribute for dest stats */
+
+	IPVS_DEST_ATTR_ADDR_FAMILY,	/* Address family of address */
+
+	IPVS_DEST_ATTR_STATS64,		/* nested attribute for dest stats */
+
+	IPVS_DEST_ATTR_TUN_TYPE,	/* tunnel type */
+
+	IPVS_DEST_ATTR_TUN_PORT,	/* tunnel port */
+
+	IPVS_DEST_ATTR_TUN_FLAGS,	/* tunnel flags */
+
 	__IPVS_DEST_ATTR_MAX,
 };
 
@@ -399,6 +426,11 @@ enum {
 	IPVS_DAEMON_ATTR_STATE,		/* sync daemon state (master/backup) */
 	IPVS_DAEMON_ATTR_MCAST_IFN,	/* multicast interface name */
 	IPVS_DAEMON_ATTR_SYNC_ID,	/* SyncID we belong to */
+	IPVS_DAEMON_ATTR_SYNC_MAXLEN,	/* UDP Payload Size */
+	IPVS_DAEMON_ATTR_MCAST_GROUP,	/* IPv4 Multicast Address */
+	IPVS_DAEMON_ATTR_MCAST_GROUP6,	/* IPv6 Multicast Address */
+	IPVS_DAEMON_ATTR_MCAST_PORT,	/* Multicast Port (base) */
+	IPVS_DAEMON_ATTR_MCAST_TTL,	/* Multicast TTL */
 	__IPVS_DAEMON_ATTR_MAX,
 };
 
@@ -407,7 +439,8 @@ enum {
 /*
  * Attributes used to describe service or destination entry statistics
  *
- * Used inside nested attributes IPVS_SVC_ATTR_STATS and IPVS_DEST_ATTR_STATS
+ * Used inside nested attributes IPVS_SVC_ATTR_STATS, IPVS_DEST_ATTR_STATS,
+ * IPVS_SVC_ATTR_STATS64 and IPVS_DEST_ATTR_STATS64.
  */
 enum {
 	IPVS_STATS_ATTR_UNSPEC = 0,
@@ -422,6 +455,7 @@ enum {
 	IPVS_STATS_ATTR_OUTPPS,		/* current out packet rate */
 	IPVS_STATS_ATTR_INBPS,		/* current in byte rate */
 	IPVS_STATS_ATTR_OUTBPS,		/* current out byte rate */
+	IPVS_STATS_ATTR_PAD,
 	__IPVS_STATS_ATTR_MAX,
 };
 

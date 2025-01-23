@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MPL-1.1)
 /*======================================================================
 
     A driver for PCMCIA serial devices
@@ -28,7 +29,7 @@
     and other provisions required by the GPL.  If you do not delete
     the provisions above, a recipient may use your version of this
     file under either the MPL or the GPL.
-    
+
 ======================================================================*/
 
 #include <linux/module.h>
@@ -257,7 +258,7 @@ static const struct serial_quirk quirks[] = {
 };
 
 
-static int serial_config(struct pcmcia_device * link);
+static int serial_config(struct pcmcia_device *link);
 
 
 static void serial_remove(struct pcmcia_device *link)
@@ -305,11 +306,12 @@ static int serial_resume(struct pcmcia_device *link)
 static int serial_probe(struct pcmcia_device *link)
 {
 	struct serial_info *info;
+	int ret;
 
 	dev_dbg(&link->dev, "serial_attach()\n");
 
 	/* Create new serial device */
-	info = kzalloc(sizeof (*info), GFP_KERNEL);
+	info = kzalloc(sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 	info->p_dev = link;
@@ -319,7 +321,15 @@ static int serial_probe(struct pcmcia_device *link)
 	if (do_sound)
 		link->config_flags |= CONF_ENABLE_SPKR;
 
-	return serial_config(link);
+	ret = serial_config(link);
+	if (ret)
+		goto free_info;
+
+	return 0;
+
+free_info:
+	kfree(info);
+	return ret;
 }
 
 static void serial_detach(struct pcmcia_device *link)
@@ -339,7 +349,7 @@ static void serial_detach(struct pcmcia_device *link)
 
 /*====================================================================*/
 
-static int setup_serial(struct pcmcia_device *handle, struct serial_info * info,
+static int setup_serial(struct pcmcia_device *handle, struct serial_info *info,
 			unsigned int iobase, int irq)
 {
 	struct uart_8250_port uart;
@@ -439,23 +449,27 @@ static int simple_config_check_notpicky(struct pcmcia_device *p_dev,
 static int simple_config(struct pcmcia_device *link)
 {
 	struct serial_info *info = link->priv;
-	int i = -ENODEV, try;
+	int ret, try;
 
-	/* First pass: look for a config entry that looks normal.
-	 * Two tries: without IO aliases, then with aliases */
+	/*
+	 * First pass: look for a config entry that looks normal.
+	 * Two tries: without IO aliases, then with aliases.
+	 */
 	link->config_flags |= CONF_AUTO_SET_VPP;
 	for (try = 0; try < 4; try++)
 		if (!pcmcia_loop_config(link, simple_config_check, &try))
 			goto found_port;
 
-	/* Second pass: try to find an entry that isn't picky about
-	   its base address, then try to grab any standard serial port
-	   address, and finally try to get any free port. */
-	if (!pcmcia_loop_config(link, simple_config_check_notpicky, NULL))
-		goto found_port;
-
-	dev_warn(&link->dev, "no usable port range found, giving up\n");
-	return -1;
+	/*
+	 * Second pass: try to find an entry that isn't picky about
+	 * its base address, then try to grab any standard serial port
+	 * address, and finally try to get any free port.
+	 */
+	ret = pcmcia_loop_config(link, simple_config_check_notpicky, NULL);
+	if (ret) {
+		dev_warn(&link->dev, "no usable port range found, giving up\n");
+		return ret;
+	}
 
 found_port:
 	if (info->multi && (info->manfid == MANFID_3COM))
@@ -467,9 +481,9 @@ found_port:
 	if (info->quirk && info->quirk->config)
 		info->quirk->config(link);
 
-	i = pcmcia_enable_device(link);
-	if (i != 0)
-		return -1;
+	ret = pcmcia_enable_device(link);
+	if (ret != 0)
+		return ret;
 	return setup_serial(link, info, link->resource[0]->start, link->irq);
 }
 
@@ -480,8 +494,10 @@ static int multi_config_check(struct pcmcia_device *p_dev, void *priv_data)
 	if (p_dev->resource[1]->end)
 		return -EINVAL;
 
-	/* The quad port cards have bad CIS's, so just look for a
-	   window larger than 8 ports and assume it will be right */
+	/*
+	 * The quad port cards have bad CIS's, so just look for a
+	 * window larger than 8 ports and assume it will be right.
+	 */
 	if (p_dev->resource[0]->end <= 8)
 		return -EINVAL;
 
@@ -527,8 +543,8 @@ static int multi_config(struct pcmcia_device *link)
 		info->multi = 2;
 		if (pcmcia_loop_config(link, multi_config_check_notpicky,
 				       &base2)) {
-			dev_warn(&link->dev, "no usable port range "
-			       "found, giving up\n");
+			dev_warn(&link->dev,
+				 "no usable port range found, giving up\n");
 			return -ENODEV;
 		}
 	}
@@ -552,16 +568,13 @@ static int multi_config(struct pcmcia_device *link)
 	 */
 	if (info->manfid == MANFID_OXSEMI || (info->manfid == MANFID_POSSIO &&
 				info->prodid == PRODID_POSSIO_GCC)) {
-		int err;
-
 		if (link->config_index == 1 ||
 		    link->config_index == 3) {
-			err = setup_serial(link, info, base2,
-					link->irq);
+			setup_serial(link, info, base2, link->irq);
 			base2 = link->resource[0]->start;
 		} else {
-			err = setup_serial(link, info, link->resource[0]->start,
-					link->irq);
+			setup_serial(link, info, link->resource[0]->start,
+				     link->irq);
 		}
 		info->c950ctrl = base2;
 
@@ -600,7 +613,7 @@ static int serial_check_for_multi(struct pcmcia_device *p_dev,  void *priv_data)
 }
 
 
-static int serial_config(struct pcmcia_device * link)
+static int serial_config(struct pcmcia_device *link)
 {
 	struct serial_info *info = link->priv;
 	int i;
@@ -623,14 +636,18 @@ static int serial_config(struct pcmcia_device * link)
 			break;
 		}
 
-	/* Another check for dual-serial cards: look for either serial or
-	   multifunction cards that ask for appropriate IO port ranges */
+	/*
+	 * Another check for dual-serial cards: look for either serial or
+	 * multifunction cards that ask for appropriate IO port ranges.
+	 */
 	if ((info->multi == 0) &&
 	    (link->has_func_id) &&
 	    (link->socket->pcmcia_pfc == 0) &&
 	    ((link->func_id == CISTPL_FUNCID_MULTI) ||
-	     (link->func_id == CISTPL_FUNCID_SERIAL)))
-		pcmcia_loop_config(link, serial_check_for_multi, info);
+	     (link->func_id == CISTPL_FUNCID_SERIAL))) {
+		if (pcmcia_loop_config(link, serial_check_for_multi, info))
+			goto failed;
+	}
 
 	/*
 	 * Apply any multi-port quirk.
@@ -701,7 +718,7 @@ static const struct pcmcia_device_id serial_ids[] = {
 	PCMCIA_PFC_DEVICE_PROD_ID12(1, "LINKSYS", "PCMLM336", 0xf7cb0b07, 0x7a821b58),
 	PCMCIA_PFC_DEVICE_PROD_ID12(1, "MEGAHERTZ", "XJEM1144/CCEM1144", 0xf510db04, 0x52d21e1e),
 	PCMCIA_PFC_DEVICE_PROD_ID12(1, "MICRO RESEARCH", "COMBO-L/M-336", 0xb2ced065, 0x3ced0555),
-	PCMCIA_PFC_DEVICE_PROD_ID12(1, "NEC", "PK-UG-J001" ,0x18df0ba0 ,0x831b1064),
+	PCMCIA_PFC_DEVICE_PROD_ID12(1, "NEC", "PK-UG-J001", 0x18df0ba0, 0x831b1064),
 	PCMCIA_PFC_DEVICE_PROD_ID12(1, "Ositech", "Trumpcard:Jack of Diamonds Modem+Ethernet", 0xc2f80cd, 0x656947b9),
 	PCMCIA_PFC_DEVICE_PROD_ID12(1, "Ositech", "Trumpcard:Jack of Hearts Modem+Ethernet", 0xc2f80cd, 0xdc9ba5ed),
 	PCMCIA_PFC_DEVICE_PROD_ID12(1, "PCMCIAs", "ComboCard", 0xdcfe12d3, 0xcd8906cc),
@@ -769,6 +786,7 @@ static const struct pcmcia_device_id serial_ids[] = {
 	PCMCIA_DEVICE_PROD_ID12("Multi-Tech", "MT2834LT", 0x5f73be51, 0x4cd7c09e),
 	PCMCIA_DEVICE_PROD_ID12("OEM      ", "C288MX     ", 0xb572d360, 0xd2385b7a),
 	PCMCIA_DEVICE_PROD_ID12("Option International", "V34bis GSM/PSTN Data/Fax Modem", 0x9d7cd6f5, 0x5cb8bf41),
+	PCMCIA_DEVICE_PROD_ID12("Option International", "GSM-Ready 56K/ISDN", 0x9d7cd6f5, 0xb23844aa),
 	PCMCIA_DEVICE_PROD_ID12("PCMCIA   ", "C336MX     ", 0x99bcafe9, 0xaa25bcab),
 	PCMCIA_DEVICE_PROD_ID12("Quatech Inc", "PCMCIA Dual RS-232 Serial Port Card", 0xc4420b35, 0x92abc92f),
 	PCMCIA_DEVICE_PROD_ID12("Quatech Inc", "Dual RS-232 Serial Port PC Card", 0xc4420b35, 0x031a380d),
@@ -796,31 +814,30 @@ static const struct pcmcia_device_id serial_ids[] = {
 	PCMCIA_DEVICE_CIS_PROD_ID12("ADVANTECH", "COMpad-32/85B-4", 0x96913a85, 0xcec8f102, "cis/COMpad4.cis"),
 	PCMCIA_DEVICE_CIS_PROD_ID123("ADVANTECH", "COMpad-32/85", "1.0", 0x96913a85, 0x8fbe92ae, 0x0877b627, "cis/COMpad2.cis"),
 	PCMCIA_DEVICE_CIS_PROD_ID2("RS-COM 2P", 0xad20b156, "cis/RS-COM-2P.cis"),
-	PCMCIA_DEVICE_CIS_MANF_CARD(0x0013, 0x0000, "cis/GLOBETROTTER.cis"),
-	PCMCIA_DEVICE_PROD_ID12("ELAN DIGITAL SYSTEMS LTD, c1997.","SERIAL CARD: SL100  1.00.",0x19ca78af,0xf964f42b),
-	PCMCIA_DEVICE_PROD_ID12("ELAN DIGITAL SYSTEMS LTD, c1997.","SERIAL CARD: SL100",0x19ca78af,0x71d98e83),
-	PCMCIA_DEVICE_PROD_ID12("ELAN DIGITAL SYSTEMS LTD, c1997.","SERIAL CARD: SL232  1.00.",0x19ca78af,0x69fb7490),
-	PCMCIA_DEVICE_PROD_ID12("ELAN DIGITAL SYSTEMS LTD, c1997.","SERIAL CARD: SL232",0x19ca78af,0xb6bc0235),
-	PCMCIA_DEVICE_PROD_ID12("ELAN DIGITAL SYSTEMS LTD, c2000.","SERIAL CARD: CF232",0x63f2e0bd,0xb9e175d3),
-	PCMCIA_DEVICE_PROD_ID12("ELAN DIGITAL SYSTEMS LTD, c2000.","SERIAL CARD: CF232-5",0x63f2e0bd,0xfce33442),
-	PCMCIA_DEVICE_PROD_ID12("Elan","Serial Port: CF232",0x3beb8cf2,0x171e7190),
-	PCMCIA_DEVICE_PROD_ID12("Elan","Serial Port: CF232-5",0x3beb8cf2,0x20da4262),
-	PCMCIA_DEVICE_PROD_ID12("Elan","Serial Port: CF428",0x3beb8cf2,0xea5dd57d),
-	PCMCIA_DEVICE_PROD_ID12("Elan","Serial Port: CF500",0x3beb8cf2,0xd77255fa),
-	PCMCIA_DEVICE_PROD_ID12("Elan","Serial Port: IC232",0x3beb8cf2,0x6a709903),
-	PCMCIA_DEVICE_PROD_ID12("Elan","Serial Port: SL232",0x3beb8cf2,0x18430676),
-	PCMCIA_DEVICE_PROD_ID12("Elan","Serial Port: XL232",0x3beb8cf2,0x6f933767),
-	PCMCIA_MFC_DEVICE_PROD_ID12(0,"Elan","Serial Port: CF332",0x3beb8cf2,0x16dc1ba7),
-	PCMCIA_MFC_DEVICE_PROD_ID12(0,"Elan","Serial Port: SL332",0x3beb8cf2,0x19816c41),
-	PCMCIA_MFC_DEVICE_PROD_ID12(0,"Elan","Serial Port: SL385",0x3beb8cf2,0x64112029),
-	PCMCIA_MFC_DEVICE_PROD_ID12(0,"Elan","Serial Port: SL432",0x3beb8cf2,0x1cce7ac4),
-	PCMCIA_MFC_DEVICE_PROD_ID12(0,"Elan","Serial+Parallel Port: SP230",0x3beb8cf2,0xdb9e58bc),
-	PCMCIA_MFC_DEVICE_PROD_ID12(1,"Elan","Serial Port: CF332",0x3beb8cf2,0x16dc1ba7),
-	PCMCIA_MFC_DEVICE_PROD_ID12(1,"Elan","Serial Port: SL332",0x3beb8cf2,0x19816c41),
-	PCMCIA_MFC_DEVICE_PROD_ID12(1,"Elan","Serial Port: SL385",0x3beb8cf2,0x64112029),
-	PCMCIA_MFC_DEVICE_PROD_ID12(1,"Elan","Serial Port: SL432",0x3beb8cf2,0x1cce7ac4),
-	PCMCIA_MFC_DEVICE_PROD_ID12(2,"Elan","Serial Port: SL432",0x3beb8cf2,0x1cce7ac4),
-	PCMCIA_MFC_DEVICE_PROD_ID12(3,"Elan","Serial Port: SL432",0x3beb8cf2,0x1cce7ac4),
+	PCMCIA_DEVICE_PROD_ID12("ELAN DIGITAL SYSTEMS LTD, c1997.", "SERIAL CARD: SL100  1.00.", 0x19ca78af, 0xf964f42b),
+	PCMCIA_DEVICE_PROD_ID12("ELAN DIGITAL SYSTEMS LTD, c1997.", "SERIAL CARD: SL100", 0x19ca78af, 0x71d98e83),
+	PCMCIA_DEVICE_PROD_ID12("ELAN DIGITAL SYSTEMS LTD, c1997.", "SERIAL CARD: SL232  1.00.", 0x19ca78af, 0x69fb7490),
+	PCMCIA_DEVICE_PROD_ID12("ELAN DIGITAL SYSTEMS LTD, c1997.", "SERIAL CARD: SL232", 0x19ca78af, 0xb6bc0235),
+	PCMCIA_DEVICE_PROD_ID12("ELAN DIGITAL SYSTEMS LTD, c2000.", "SERIAL CARD: CF232", 0x63f2e0bd, 0xb9e175d3),
+	PCMCIA_DEVICE_PROD_ID12("ELAN DIGITAL SYSTEMS LTD, c2000.", "SERIAL CARD: CF232-5", 0x63f2e0bd, 0xfce33442),
+	PCMCIA_DEVICE_PROD_ID12("Elan", "Serial Port: CF232", 0x3beb8cf2, 0x171e7190),
+	PCMCIA_DEVICE_PROD_ID12("Elan", "Serial Port: CF232-5", 0x3beb8cf2, 0x20da4262),
+	PCMCIA_DEVICE_PROD_ID12("Elan", "Serial Port: CF428", 0x3beb8cf2, 0xea5dd57d),
+	PCMCIA_DEVICE_PROD_ID12("Elan", "Serial Port: CF500", 0x3beb8cf2, 0xd77255fa),
+	PCMCIA_DEVICE_PROD_ID12("Elan", "Serial Port: IC232", 0x3beb8cf2, 0x6a709903),
+	PCMCIA_DEVICE_PROD_ID12("Elan", "Serial Port: SL232", 0x3beb8cf2, 0x18430676),
+	PCMCIA_DEVICE_PROD_ID12("Elan", "Serial Port: XL232", 0x3beb8cf2, 0x6f933767),
+	PCMCIA_MFC_DEVICE_PROD_ID12(0, "Elan", "Serial Port: CF332", 0x3beb8cf2, 0x16dc1ba7),
+	PCMCIA_MFC_DEVICE_PROD_ID12(0, "Elan", "Serial Port: SL332", 0x3beb8cf2, 0x19816c41),
+	PCMCIA_MFC_DEVICE_PROD_ID12(0, "Elan", "Serial Port: SL385", 0x3beb8cf2, 0x64112029),
+	PCMCIA_MFC_DEVICE_PROD_ID12(0, "Elan", "Serial Port: SL432", 0x3beb8cf2, 0x1cce7ac4),
+	PCMCIA_MFC_DEVICE_PROD_ID12(0, "Elan", "Serial+Parallel Port: SP230", 0x3beb8cf2, 0xdb9e58bc),
+	PCMCIA_MFC_DEVICE_PROD_ID12(1, "Elan", "Serial Port: CF332", 0x3beb8cf2, 0x16dc1ba7),
+	PCMCIA_MFC_DEVICE_PROD_ID12(1, "Elan", "Serial Port: SL332", 0x3beb8cf2, 0x19816c41),
+	PCMCIA_MFC_DEVICE_PROD_ID12(1, "Elan", "Serial Port: SL385", 0x3beb8cf2, 0x64112029),
+	PCMCIA_MFC_DEVICE_PROD_ID12(1, "Elan", "Serial Port: SL432", 0x3beb8cf2, 0x1cce7ac4),
+	PCMCIA_MFC_DEVICE_PROD_ID12(2, "Elan", "Serial Port: SL432", 0x3beb8cf2, 0x1cce7ac4),
+	PCMCIA_MFC_DEVICE_PROD_ID12(3, "Elan", "Serial Port: SL432", 0x3beb8cf2, 0x1cce7ac4),
 	PCMCIA_DEVICE_MANF_CARD(0x0279, 0x950b),
 	/* too generic */
 	/* PCMCIA_MFC_DEVICE_MANF_CARD(0, 0x0160, 0x0002), */

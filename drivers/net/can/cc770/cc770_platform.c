@@ -1,16 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for CC770 and AN82527 CAN controllers on the platform bus
  *
  * Copyright (C) 2009, 2011 Wolfgang Grandegger <wg@grandegger.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the version 2 of the GNU General Public License
- * as published by the Free Software Foundation
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 /*
@@ -101,20 +93,20 @@ static int cc770_get_of_node_data(struct platform_device *pdev,
 	if (priv->can.clock.freq > 8000000)
 		priv->cpu_interface |= CPUIF_DMC;
 
-	if (of_get_property(np, "bosch,divide-memory-clock", NULL))
+	if (of_property_read_bool(np, "bosch,divide-memory-clock"))
 		priv->cpu_interface |= CPUIF_DMC;
-	if (of_get_property(np, "bosch,iso-low-speed-mux", NULL))
+	if (of_property_read_bool(np, "bosch,iso-low-speed-mux"))
 		priv->cpu_interface |= CPUIF_MUX;
 
 	if (!of_get_property(np, "bosch,no-comperator-bypass", NULL))
 		priv->bus_config |= BUSCFG_CBY;
-	if (of_get_property(np, "bosch,disconnect-rx0-input", NULL))
+	if (of_property_read_bool(np, "bosch,disconnect-rx0-input"))
 		priv->bus_config |= BUSCFG_DR0;
-	if (of_get_property(np, "bosch,disconnect-rx1-input", NULL))
+	if (of_property_read_bool(np, "bosch,disconnect-rx1-input"))
 		priv->bus_config |= BUSCFG_DR1;
-	if (of_get_property(np, "bosch,disconnect-tx1-output", NULL))
+	if (of_property_read_bool(np, "bosch,disconnect-tx1-output"))
 		priv->bus_config |= BUSCFG_DT1;
-	if (of_get_property(np, "bosch,polarity-dominant", NULL))
+	if (of_property_read_bool(np, "bosch,polarity-dominant"))
 		priv->bus_config |= BUSCFG_POL;
 
 	prop = of_get_property(np, "bosch,clock-out-frequency", &prop_size);
@@ -238,7 +230,7 @@ exit_release_mem:
 	return err;
 }
 
-static int cc770_platform_remove(struct platform_device *pdev)
+static void cc770_platform_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct cc770_priv *priv = netdev_priv(dev);
@@ -250,11 +242,9 @@ static int cc770_platform_remove(struct platform_device *pdev)
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	release_mem_region(mem->start, resource_size(mem));
-
-	return 0;
 }
 
-static struct of_device_id cc770_platform_table[] = {
+static const struct of_device_id cc770_platform_table[] = {
 	{.compatible = "bosch,cc770"}, /* CC770 from Bosch */
 	{.compatible = "intc,82527"},  /* AN82527 from Intel CP */
 	{},
@@ -264,11 +254,10 @@ MODULE_DEVICE_TABLE(of, cc770_platform_table);
 static struct platform_driver cc770_platform_driver = {
 	.driver = {
 		.name = DRV_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = cc770_platform_table,
 	},
 	.probe = cc770_platform_probe,
-	.remove = cc770_platform_remove,
+	.remove_new = cc770_platform_remove,
 };
 
 module_platform_driver(cc770_platform_driver);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMAP3 Voltage Processor (VP) data
  *
@@ -9,10 +10,6 @@
  * Copyright (C) 2008, 2011 Nokia Corporation
  * Kalle Jokiniemi
  * Paul Walmsley
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/io.h>
@@ -28,8 +25,8 @@
 #include "prm2xxx_3xxx.h"
 
 static const struct omap_vp_ops omap3_vp_ops = {
-	.check_txdone = omap3_prm_vp_check_txdone,
-	.clear_txdone = omap3_prm_vp_clear_txdone,
+	.check_txdone = omap_prm_vp_check_txdone,
+	.clear_txdone = omap_prm_vp_clear_txdone,
 };
 
 /*

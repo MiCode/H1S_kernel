@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* envctrl.c: Temperature and Fan monitoring on Machines providing it.
  *
  * Copyright (C) 1998  Eddie C. Dost  (ecd@skynet.be)
@@ -27,16 +28,14 @@
 #include <linux/reboot.h>
 #include <linux/slab.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/envctrl.h>
 #include <asm/io.h>
 
 #define DRIVER_NAME	"envctrl"
 #define PFX		DRIVER_NAME ": "
-
-#define ENVCTRL_MINOR	162
 
 #define PCF8584_ADDRESS	0x55
 
@@ -364,8 +363,8 @@ static int envctrl_read_cpu_info(int cpu, struct i2c_child_t *pchild,
 				 char mon_type, unsigned char *bufdata)
 {
 	unsigned char data;
-	int i;
-	char *tbl, j = -1;
+	int i, j = -1;
+	char *tbl;
 
 	/* Find the right monitor type and channel. */
 	for (i = 0; i < PCF8584_MAX_CHANNELS; i++) {
@@ -714,9 +713,7 @@ static const struct file_operations envctrl_fops = {
 	.owner =		THIS_MODULE,
 	.read =			envctrl_read,
 	.unlocked_ioctl =	envctrl_ioctl,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl =		envctrl_ioctl,
-#endif
+	.compat_ioctl =		compat_ptr_ioctl,
 	.open =			envctrl_open,
 	.release =		envctrl_release,
 	.llseek =		noop_llseek,
@@ -906,12 +903,14 @@ static void envctrl_init_i2c_child(struct device_node *dp,
 		int len;
 
 		root_node = of_find_node_by_path("/");
-		if (!strcmp(root_node->name, "SUNW,UltraSPARC-IIi-cEngine")) {
+		if (of_node_name_eq(root_node, "SUNW,UltraSPARC-IIi-cEngine")) {
 			for (len = 0; len < PCF8584_MAX_CHANNELS; ++len) {
 				pchild->mon_type[len] = ENVCTRL_NOMON;
 			}
+			of_node_put(root_node);
 			return;
 		}
+		of_node_put(root_node);
 	}
 
 	/* Get the monitor channels. */
@@ -970,18 +969,13 @@ static struct i2c_child_t *envctrl_get_i2c_child(unsigned char mon_type)
 static void envctrl_do_shutdown(void)
 {
 	static int inprog = 0;
-	int ret;
 
 	if (inprog != 0)
 		return;
 
 	inprog = 1;
 	printk(KERN_CRIT "kenvctrld: WARNING: Shutting down the system now.\n");
-	ret = orderly_poweroff(true);
-	if (ret < 0) {
-		printk(KERN_CRIT "kenvctrld: WARNING: system shutdown failed!\n"); 
-		inprog = 0;  /* unlikely to succeed, but we could try again */
-	}
+	orderly_poweroff(true);
 }
 
 static struct task_struct *kenvctrld_task;
@@ -1042,10 +1036,10 @@ static int envctrl_probe(struct platform_device *op)
 	index = 0;
 	dp = op->dev.of_node->child;
 	while (dp) {
-		if (!strcmp(dp->name, "gpio")) {
+		if (of_node_name_eq(dp, "gpio")) {
 			i2c_childlist[index].i2ctype = I2C_GPIO;
 			envctrl_init_i2c_child(dp, &(i2c_childlist[index++]));
-		} else if (!strcmp(dp->name, "adc")) {
+		} else if (of_node_name_eq(dp, "adc")) {
 			i2c_childlist[index].i2ctype = I2C_ADC;
 			envctrl_init_i2c_child(dp, &(i2c_childlist[index++]));
 		}
@@ -1130,7 +1124,6 @@ MODULE_DEVICE_TABLE(of, envctrl_match);
 static struct platform_driver envctrl_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = envctrl_match,
 	},
 	.probe		= envctrl_probe,

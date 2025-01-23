@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2012 Synopsys, Inc. (www.synopsys.com)
  *
  * Based on reduced version of METAG
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 
@@ -14,8 +11,31 @@
 #include <linux/memblock.h>
 #include <linux/of.h>
 #include <linux/of_fdt.h>
-#include <asm/clk.h>
 #include <asm/mach_desc.h>
+#include <asm/serial.h>
+
+#ifdef CONFIG_SERIAL_EARLYCON
+
+static unsigned int __initdata arc_base_baud;
+
+unsigned int __init arc_early_base_baud(void)
+{
+	return arc_base_baud/16;
+}
+
+static void __init arc_set_early_base_baud(unsigned long dt_root)
+{
+	if (of_flat_dt_is_compatible(dt_root, "abilis,arc-tb10x"))
+		arc_base_baud = 166666666;	/* Fixed 166.6MHz clk (TB10x) */
+	else if (of_flat_dt_is_compatible(dt_root, "snps,arc-sdp") ||
+		 of_flat_dt_is_compatible(dt_root, "snps,hsdk"))
+		arc_base_baud = 33333333;	/* Fixed 33MHz clk (AXS10x & HSDK) */
+	else
+		arc_base_baud = 50000000;	/* Fixed default 50MHz */
+}
+#else
+#define arc_set_early_base_baud(dt_root)
+#endif
 
 static const void * __init arch_get_next_mach(const char *const **match)
 {
@@ -41,8 +61,6 @@ const struct machine_desc * __init setup_machine_fdt(void *dt)
 {
 	const struct machine_desc *mdesc;
 	unsigned long dt_root;
-	void *clk;
-	unsigned long len;
 
 	if (!early_init_dt_scan(dt))
 		return NULL;
@@ -52,9 +70,7 @@ const struct machine_desc * __init setup_machine_fdt(void *dt)
 		machine_halt();
 
 	dt_root = of_get_flat_dt_root();
-	clk = of_get_flat_dt_prop(dt_root, "clock-frequency", &len);
-	if (clk)
-		arc_set_core_freq(of_read_ulong(clk, len/4));
+	arc_set_early_base_baud(dt_root);
 
 	return mdesc;
 }

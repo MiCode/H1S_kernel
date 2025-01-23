@@ -1,15 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * wm831x-irq.c  --  Interrupt controller support for Wolfson WM831x PMICs
  *
  * Copyright 2009 Wolfson Microelectronics PLC.
  *
  * Author: Mark Brown <broonie@opensource.wolfsonmicro.com>
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #include <linux/kernel.h>
@@ -552,26 +547,19 @@ static int wm831x_irq_map(struct irq_domain *h, unsigned int virq,
 	irq_set_chip_data(virq, h->host_data);
 	irq_set_chip_and_handler(virq, &wm831x_irq_chip, handle_edge_irq);
 	irq_set_nested_thread(virq, 1);
-
-	/* ARM needs us to explicitly flag the IRQ as valid
-	 * and will set them noprobe when we do so. */
-#ifdef CONFIG_ARM
-	set_irq_flags(virq, IRQF_VALID);
-#else
 	irq_set_noprobe(virq);
-#endif
 
 	return 0;
 }
 
-static struct irq_domain_ops wm831x_irq_domain_ops = {
+static const struct irq_domain_ops wm831x_irq_domain_ops = {
 	.map	= wm831x_irq_map,
 	.xlate	= irq_domain_xlate_twocell,
 };
 
 int wm831x_irq_init(struct wm831x *wm831x, int irq)
 {
-	struct wm831x_pdata *pdata = dev_get_platdata(wm831x->dev);
+	struct wm831x_pdata *pdata = &wm831x->pdata;
 	struct irq_domain *domain;
 	int i, ret, irq_base;
 
@@ -586,7 +574,7 @@ int wm831x_irq_init(struct wm831x *wm831x, int irq)
 	}
 
 	/* Try to dynamically allocate IRQs if no base is specified */
-	if (pdata && pdata->irq_base) {
+	if (pdata->irq_base) {
 		irq_base = irq_alloc_descs(pdata->irq_base, 0,
 					   WM831X_NUM_IRQS, 0);
 		if (irq_base < 0) {
@@ -615,7 +603,7 @@ int wm831x_irq_init(struct wm831x *wm831x, int irq)
 		return -EINVAL;
 	}
 
-	if (pdata && pdata->irq_cmos)
+	if (pdata->irq_cmos)
 		i = 0;
 	else
 		i = WM831X_IRQ_OD;

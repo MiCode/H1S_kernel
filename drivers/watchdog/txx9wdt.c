@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * txx9wdt: A Hardware Watchdog Driver for TXx9 SoCs
  *
  * Copyright (C) 2007 Atsushi Nemoto <anemo@mba.ocn.ne.jp>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -103,7 +100,6 @@ static struct watchdog_device txx9wdt = {
 
 static int __init txx9wdt_probe(struct platform_device *dev)
 {
-	struct resource *res;
 	int ret;
 
 	txx9_imclk = clk_get(NULL, "imbus_clk");
@@ -112,15 +108,14 @@ static int __init txx9wdt_probe(struct platform_device *dev)
 		txx9_imclk = NULL;
 		goto exit;
 	}
-	ret = clk_enable(txx9_imclk);
+	ret = clk_prepare_enable(txx9_imclk);
 	if (ret) {
 		clk_put(txx9_imclk);
 		txx9_imclk = NULL;
 		goto exit;
 	}
 
-	res = platform_get_resource(dev, IORESOURCE_MEM, 0);
-	txx9wdt_reg = devm_ioremap_resource(&dev->dev, res);
+	txx9wdt_reg = devm_platform_ioremap_resource(dev, 0);
 	if (IS_ERR(txx9wdt_reg)) {
 		ret = PTR_ERR(txx9wdt_reg);
 		goto exit;
@@ -131,6 +126,7 @@ static int __init txx9wdt_probe(struct platform_device *dev)
 	txx9wdt.timeout = timeout;
 	txx9wdt.min_timeout = 1;
 	txx9wdt.max_timeout = WD_MAX_TIMEOUT;
+	txx9wdt.parent = &dev->dev;
 	watchdog_set_nowayout(&txx9wdt, nowayout);
 
 	ret = watchdog_register_device(&txx9wdt);
@@ -143,7 +139,7 @@ static int __init txx9wdt_probe(struct platform_device *dev)
 	return 0;
 exit:
 	if (txx9_imclk) {
-		clk_disable(txx9_imclk);
+		clk_disable_unprepare(txx9_imclk);
 		clk_put(txx9_imclk);
 	}
 	return ret;
@@ -152,7 +148,7 @@ exit:
 static int __exit txx9wdt_remove(struct platform_device *dev)
 {
 	watchdog_unregister_device(&txx9wdt);
-	clk_disable(txx9_imclk);
+	clk_disable_unprepare(txx9_imclk);
 	clk_put(txx9_imclk);
 	return 0;
 }
@@ -167,7 +163,6 @@ static struct platform_driver txx9wdt_driver = {
 	.shutdown = txx9wdt_shutdown,
 	.driver = {
 		.name = "txx9wdt",
-		.owner = THIS_MODULE,
 	},
 };
 

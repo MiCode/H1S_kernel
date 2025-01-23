@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *
  * Optimized version of the standard copy_page() function
@@ -14,6 +15,7 @@
  *
  * 4/06/01 davidm	Tuned to make it perform well both for cached and uncached copies.
  */
+#include <linux/export.h>
 #include <asm/asmmacro.h>
 #include <asm/page.h>
 
@@ -96,3 +98,4 @@ GLOBAL_ENTRY(copy_page)
 	mov ar.lc=saved_lc
 	br.ret.sptk.many rp
 END(copy_page)
+EXPORT_SYMBOL(copy_page)

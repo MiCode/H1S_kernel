@@ -1,22 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * This file is part of wl18xx
  *
  * Copyright (C) 2012 Texas Instruments. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #ifndef __WL18XX_SCAN_H__
@@ -74,8 +60,8 @@ struct wl18xx_cmd_scan_params {
 	u8 dfs;		   /* number of dfs channels in 5ghz */
 	u8 passive_active; /* number of passive before active channels 2.4ghz */
 
-	__le16 short_cycles_sec;
-	__le16 long_cycles_sec;
+	__le16 short_cycles_msec;
+	__le16 long_cycles_msec;
 	u8 short_cycles_count;
 	u8 total_cycles; /* 0 - infinite */
 	u8 padding[2];
@@ -122,6 +108,6 @@ int wl18xx_scan_stop(struct wl1271 *wl, struct wl12xx_vif *wlvif);
 void wl18xx_scan_completed(struct wl1271 *wl, struct wl12xx_vif *wlvif);
 int wl18xx_sched_scan_start(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 			    struct cfg80211_sched_scan_request *req,
-			    struct ieee80211_sched_scan_ies *ies);
+			    struct ieee80211_scan_ies *ies);
 void wl18xx_scan_sched_scan_stop(struct wl1271 *wl, struct wl12xx_vif *wlvif);
 #endif

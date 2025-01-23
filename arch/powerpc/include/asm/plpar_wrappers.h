@@ -1,20 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_POWERPC_PLPAR_WRAPPERS_H
 #define _ASM_POWERPC_PLPAR_WRAPPERS_H
+
+#ifdef CONFIG_PPC_PSERIES
 
 #include <linux/string.h>
 #include <linux/irqflags.h>
 
 #include <asm/hvcall.h>
 #include <asm/paca.h>
+#include <asm/lppaca.h>
 #include <asm/page.h>
-
-/* Get state of physical CPU from query_cpu_stopped */
-int smp_query_cpu_stopped(unsigned int pcpu);
-#define QCSS_STOPPED 0
-#define QCSS_STOPPING 1
-#define QCSS_NOT_STOPPED 2
-#define QCSS_HARDWARE_ERROR -1
-#define QCSS_HARDWARE_BUSY -2
 
 static inline long poll_pending(void)
 {
@@ -33,7 +29,11 @@ static inline void set_cede_latency_hint(u8 latency_hint)
 
 static inline long cede_processor(void)
 {
-	return plpar_hcall_norets(H_CEDE);
+	/*
+	 * We cannot call tracepoints inside RCU idle regions which
+	 * means we must not trace H_CEDE.
+	 */
+	return plpar_hcall_norets_notrace(H_CEDE);
 }
 
 static inline long extended_cede_processor(unsigned long latency_hint)
@@ -44,11 +44,10 @@ static inline long extended_cede_processor(unsigned long latency_hint)
 	set_cede_latency_hint(latency_hint);
 
 	rc = cede_processor();
-#ifdef CONFIG_TRACE_IRQFLAGS
-		/* Ensure that H_CEDE returns with IRQs on */
-		if (WARN_ON(!(mfmsr() & MSR_EE)))
-			__hard_irq_enable();
-#endif
+
+	/* Ensure that H_CEDE returns with IRQs on */
+	if (WARN_ON(IS_ENABLED(CONFIG_PPC_IRQ_SOFT_MASK_DEBUG) && !(mfmsr() & MSR_EE)))
+		__hard_irq_enable();
 
 	set_cede_latency_hint(old_latency_hint);
 
@@ -91,38 +90,6 @@ static inline long unregister_dtl(unsigned long cpu)
 static inline long register_dtl(unsigned long cpu, unsigned long vpa)
 {
 	return vpa_call(H_VPA_REG_DTL, cpu, vpa);
-}
-
-static inline long plpar_page_set_loaned(unsigned long vpa)
-{
-	unsigned long cmo_page_sz = cmo_get_page_size();
-	long rc = 0;
-	int i;
-
-	for (i = 0; !rc && i < PAGE_SIZE; i += cmo_page_sz)
-		rc = plpar_hcall_norets(H_PAGE_INIT, H_PAGE_SET_LOANED, vpa + i, 0);
-
-	for (i -= cmo_page_sz; rc && i != 0; i -= cmo_page_sz)
-		plpar_hcall_norets(H_PAGE_INIT, H_PAGE_SET_ACTIVE,
-				   vpa + i - cmo_page_sz, 0);
-
-	return rc;
-}
-
-static inline long plpar_page_set_active(unsigned long vpa)
-{
-	unsigned long cmo_page_sz = cmo_get_page_size();
-	long rc = 0;
-	int i;
-
-	for (i = 0; !rc && i < PAGE_SIZE; i += cmo_page_sz)
-		rc = plpar_hcall_norets(H_PAGE_INIT, H_PAGE_SET_ACTIVE, vpa + i, 0);
-
-	for (i -= cmo_page_sz; rc && i != 0; i -= cmo_page_sz)
-		plpar_hcall_norets(H_PAGE_INIT, H_PAGE_SET_LOANED,
-				   vpa + i - cmo_page_sz, 0);
-
-	return rc;
 }
 
 extern void vpa_init(int cpu);
@@ -202,6 +169,23 @@ static inline long plpar_pte_read_raw(unsigned long flags, unsigned long ptex,
 }
 
 /*
+ * ptes must be 8*sizeof(unsigned long)
+ */
+static inline long plpar_pte_read_4(unsigned long flags, unsigned long ptex,
+				    unsigned long *ptes)
+
+{
+	long rc;
+	unsigned long retbuf[PLPAR_HCALL9_BUFSIZE];
+
+	rc = plpar_hcall9(H_READ, retbuf, flags | H_READ_4, ptex);
+
+	memcpy(ptes, retbuf, 8*sizeof(unsigned long));
+
+	return rc;
+}
+
+/*
  * plpar_pte_read_4_raw can be called in real mode.
  * ptes must be 8*sizeof(unsigned long)
  */
@@ -223,6 +207,18 @@ static inline long plpar_pte_protect(unsigned long flags, unsigned long ptex,
 		unsigned long avpn)
 {
 	return plpar_hcall_norets(H_PROTECT, flags, ptex, avpn);
+}
+
+static inline long plpar_resize_hpt_prepare(unsigned long flags,
+					    unsigned long shift)
+{
+	return plpar_hcall_norets(H_RESIZE_HPT_PREPARE, flags, shift);
+}
+
+static inline long plpar_resize_hpt_commit(unsigned long flags,
+					   unsigned long shift)
+{
+	return plpar_hcall_norets(H_RESIZE_HPT_COMMIT, flags, shift);
 }
 
 static inline long plpar_tce_get(unsigned long liobn, unsigned long ioba,
@@ -273,7 +269,7 @@ static inline long plpar_set_mode(unsigned long mflags, unsigned long resource,
 static inline long enable_reloc_on_exceptions(void)
 {
 	/* mflags = 3: Exceptions at 0xC000000000004000 */
-	return plpar_set_mode(3, 3, 0, 0);
+	return plpar_set_mode(3, H_SET_MODE_RESOURCE_ADDR_TRANS_MODE, 0, 0);
 }
 
 /*
@@ -284,7 +280,7 @@ static inline long enable_reloc_on_exceptions(void)
  * returns H_SUCCESS.
  */
 static inline long disable_reloc_on_exceptions(void) {
-	return plpar_set_mode(0, 3, 0, 0);
+	return plpar_set_mode(0, H_SET_MODE_RESOURCE_ADDR_TRANS_MODE, 0, 0);
 }
 
 /*
@@ -297,7 +293,7 @@ static inline long disable_reloc_on_exceptions(void) {
 static inline long enable_big_endian_exceptions(void)
 {
 	/* mflags = 0: big endian exceptions */
-	return plpar_set_mode(0, 4, 0, 0);
+	return plpar_set_mode(0, H_SET_MODE_RESOURCE_LE, 0, 0);
 }
 
 /*
@@ -310,17 +306,107 @@ static inline long enable_big_endian_exceptions(void)
 static inline long enable_little_endian_exceptions(void)
 {
 	/* mflags = 1: little endian exceptions */
-	return plpar_set_mode(1, 4, 0, 0);
+	return plpar_set_mode(1, H_SET_MODE_RESOURCE_LE, 0, 0);
 }
 
-static inline long plapr_set_ciabr(unsigned long ciabr)
+static inline long plpar_set_ciabr(unsigned long ciabr)
 {
-	return plpar_set_mode(0, 1, ciabr, 0);
+	return plpar_set_mode(0, H_SET_MODE_RESOURCE_SET_CIABR, ciabr, 0);
 }
 
-static inline long plapr_set_watchpoint0(unsigned long dawr0, unsigned long dawrx0)
+static inline long plpar_set_watchpoint0(unsigned long dawr0, unsigned long dawrx0)
 {
-	return plpar_set_mode(0, 2, dawr0, dawrx0);
+	return plpar_set_mode(0, H_SET_MODE_RESOURCE_SET_DAWR0, dawr0, dawrx0);
 }
+
+static inline long plpar_set_watchpoint1(unsigned long dawr1, unsigned long dawrx1)
+{
+	return plpar_set_mode(0, H_SET_MODE_RESOURCE_SET_DAWR1, dawr1, dawrx1);
+}
+
+static inline long plpar_signal_sys_reset(long cpu)
+{
+	return plpar_hcall_norets(H_SIGNAL_SYS_RESET, cpu);
+}
+
+static inline long plpar_get_cpu_characteristics(struct h_cpu_char_result *p)
+{
+	unsigned long retbuf[PLPAR_HCALL_BUFSIZE];
+	long rc;
+
+	rc = plpar_hcall(H_GET_CPU_CHARACTERISTICS, retbuf);
+	if (rc == H_SUCCESS) {
+		p->character = retbuf[0];
+		p->behaviour = retbuf[1];
+	}
+
+	return rc;
+}
+
+/*
+ * Wrapper to H_RPT_INVALIDATE hcall that handles return values appropriately
+ *
+ * - Returns H_SUCCESS on success
+ * - For H_BUSY return value, we retry the hcall.
+ * - For any other hcall failures, attempt a full flush once before
+ *   resorting to BUG().
+ *
+ * Note: This hcall is expected to fail only very rarely. The correct
+ * error recovery of killing the process/guest will be eventually
+ * needed.
+ */
+static inline long pseries_rpt_invalidate(u32 pid, u64 target, u64 type,
+					  u64 page_sizes, u64 start, u64 end)
+{
+	long rc;
+	unsigned long all;
+
+	while (true) {
+		rc = plpar_hcall_norets(H_RPT_INVALIDATE, pid, target, type,
+					page_sizes, start, end);
+		if (rc == H_BUSY) {
+			cpu_relax();
+			continue;
+		} else if (rc == H_SUCCESS)
+			return rc;
+
+		/* Flush request failed, try with a full flush once */
+		if (type & H_RPTI_TYPE_NESTED)
+			all = H_RPTI_TYPE_NESTED | H_RPTI_TYPE_NESTED_ALL;
+		else
+			all = H_RPTI_TYPE_ALL;
+retry:
+		rc = plpar_hcall_norets(H_RPT_INVALIDATE, pid, target,
+					all, page_sizes, 0, -1UL);
+		if (rc == H_BUSY) {
+			cpu_relax();
+			goto retry;
+		} else if (rc == H_SUCCESS)
+			return rc;
+
+		BUG();
+	}
+}
+
+#else /* !CONFIG_PPC_PSERIES */
+
+static inline long plpar_set_ciabr(unsigned long ciabr)
+{
+	return 0;
+}
+
+static inline long plpar_pte_read_4(unsigned long flags, unsigned long ptex,
+				    unsigned long *ptes)
+{
+	return 0;
+}
+
+static inline long pseries_rpt_invalidate(u32 pid, u64 target, u64 type,
+					  u64 page_sizes, u64 start, u64 end)
+{
+	return 0;
+}
+
+#endif /* CONFIG_PPC_PSERIES */
 
 #endif /* _ASM_POWERPC_PLPAR_WRAPPERS_H */

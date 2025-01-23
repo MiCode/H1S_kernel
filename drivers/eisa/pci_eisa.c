@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Minimalist driver for a generic PCI-to-EISA bridge.
  *
  * (C) 2003 Marc Zyngier <maz@wild-wind.fr.eu.org>
- *
- * This code is released under the GPL version 2.
  *
  * Ivan Kokshaysky <ink@jurassic.park.msu.ru> :
  * Generalisation from i82375 to PCI_CLASS_BRIDGE_EISA.
@@ -21,8 +20,8 @@ static struct eisa_root_device pci_eisa_root;
 
 static int __init pci_eisa_init(struct pci_dev *pdev)
 {
-	int rc, i;
 	struct resource *res, *bus_res = NULL;
+	int rc;
 
 	if ((rc = pci_enable_device (pdev))) {
 		dev_err(&pdev->dev, "Could not enable device\n");
@@ -39,7 +38,7 @@ static int __init pci_eisa_init(struct pci_dev *pdev)
 	 * eisa_root_register() can only deal with a single io port resource,
 	*  so we use the first valid io port resource.
 	 */
-	pci_bus_for_each_resource(pdev->bus, res, i)
+	pci_bus_for_each_resource(pdev->bus, res)
 		if (res && (res->flags & IORESOURCE_IO)) {
 			bus_res = res;
 			break;
@@ -50,11 +49,11 @@ static int __init pci_eisa_init(struct pci_dev *pdev)
 		return -1;
 	}
 
-	pci_eisa_root.dev              = &pdev->dev;
-	pci_eisa_root.res	       = bus_res;
-	pci_eisa_root.bus_base_addr    = bus_res->start;
-	pci_eisa_root.slots	       = EISA_MAX_SLOTS;
-	pci_eisa_root.dma_mask         = pdev->dma_mask;
+	pci_eisa_root.dev		= &pdev->dev;
+	pci_eisa_root.res		= bus_res;
+	pci_eisa_root.bus_base_addr	= bus_res->start;
+	pci_eisa_root.slots		= EISA_MAX_SLOTS;
+	pci_eisa_root.dma_mask		= pdev->dma_mask;
 	dev_set_drvdata(pci_eisa_root.dev, &pci_eisa_root);
 
 	if (eisa_root_register (&pci_eisa_root)) {

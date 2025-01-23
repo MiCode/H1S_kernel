@@ -1,16 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Intel SpeedStep SMI driver.
  *
  * (C) 2003  Hiroshi Miura <miura@da-cha.org>
- *
- *  Licensed under the terms of the GNU GPL License version 2.
- *
  */
 
 
 /*********************************************************************
  *                        SPEEDSTEP - DEFINITIONS                    *
  *********************************************************************/
+
+#define pr_fmt(fmt) "cpufreq: " fmt
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -42,9 +42,9 @@ static enum speedstep_processor speedstep_processor;
  * are in kHz for the time being.
  */
 static struct cpufreq_frequency_table speedstep_freqs[] = {
-	{SPEEDSTEP_HIGH,	0},
-	{SPEEDSTEP_LOW,		0},
-	{0,			CPUFREQ_TABLE_END},
+	{0, SPEEDSTEP_HIGH,	0},
+	{0, SPEEDSTEP_LOW,	0},
+	{0, 0,			CPUFREQ_TABLE_END},
 };
 
 #define GET_SPEEDSTEP_OWNER 0
@@ -156,6 +156,7 @@ static void speedstep_set_state(unsigned int state)
 		return;
 
 	/* Disable IRQs */
+	preempt_disable();
 	local_irq_save(flags);
 
 	command = (smi_sig & 0xffffff00) | (smi_cmd & 0xff);
@@ -166,9 +167,19 @@ static void speedstep_set_state(unsigned int state)
 
 	do {
 		if (retry) {
+			/*
+			 * We need to enable interrupts, otherwise the blockage
+			 * won't resolve.
+			 *
+			 * We disable preemption so that other processes don't
+			 * run. If other processes were running, they could
+			 * submit more DMA requests, making the blockage worse.
+			 */
 			pr_debug("retry %u, previous result %u, waiting...\n",
 					retry, result);
+			local_irq_enable();
 			mdelay(retry * 50);
+			local_irq_disable();
 		}
 		retry++;
 		__asm__ __volatile__(
@@ -185,6 +196,7 @@ static void speedstep_set_state(unsigned int state)
 
 	/* enable IRQs */
 	local_irq_restore(flags);
+	preempt_enable();
 
 	if (new_state == state)
 		pr_debug("change to %u MHz succeeded after %u tries "
@@ -192,9 +204,8 @@ static void speedstep_set_state(unsigned int state)
 			(speedstep_freqs[new_state].frequency / 1000),
 			retry, result);
 	else
-		printk(KERN_ERR "cpufreq: change to state %u "
-			"failed with new_state %u and result %u\n",
-			state, new_state, result);
+		pr_err("change to state %u failed with new_state %u and result %u\n",
+		       state, new_state, result);
 
 	return;
 }
@@ -253,8 +264,9 @@ static int speedstep_cpu_init(struct cpufreq_policy *policy)
 			pr_debug("workaround worked.\n");
 	}
 
-	policy->cpuinfo.transition_latency = CPUFREQ_ETERNAL;
-	return cpufreq_table_validate_and_show(policy, speedstep_freqs);
+	policy->freq_table = speedstep_freqs;
+
+	return 0;
 }
 
 static unsigned int speedstep_get(unsigned int cpu)
@@ -277,25 +289,21 @@ static int speedstep_resume(struct cpufreq_policy *policy)
 
 static struct cpufreq_driver speedstep_driver = {
 	.name		= "speedstep-smi",
+	.flags		= CPUFREQ_NO_AUTO_DYNAMIC_SWITCHING,
 	.verify		= cpufreq_generic_frequency_table_verify,
 	.target_index	= speedstep_target,
 	.init		= speedstep_cpu_init,
-	.exit		= cpufreq_generic_exit,
 	.get		= speedstep_get,
 	.resume		= speedstep_resume,
 	.attr		= cpufreq_generic_attr,
 };
 
 static const struct x86_cpu_id ss_smi_ids[] = {
-	{ X86_VENDOR_INTEL, 6, 0xb, },
-	{ X86_VENDOR_INTEL, 6, 0x8, },
-	{ X86_VENDOR_INTEL, 15, 2 },
+	X86_MATCH_VENDOR_FAM_MODEL(INTEL,  6, 0x8, 0),
+	X86_MATCH_VENDOR_FAM_MODEL(INTEL,  6, 0xb, 0),
+	X86_MATCH_VENDOR_FAM_MODEL(INTEL, 15, 0x2, 0),
 	{}
 };
-#if 0
-/* Not auto loaded currently */
-MODULE_DEVICE_TABLE(x86cpu, ss_smi_ids);
-#endif
 
 /**
  * speedstep_init - initializes the SpeedStep CPUFreq driver
@@ -325,8 +333,8 @@ static int __init speedstep_init(void)
 		return -ENODEV;
 	}
 
-	pr_debug("signature:0x%.8ulx, command:0x%.8ulx, "
-		"event:0x%.8ulx, perf_level:0x%.8ulx.\n",
+	pr_debug("signature:0x%.8x, command:0x%.8x, "
+		"event:0x%.8x, perf_level:0x%.8x.\n",
 		ist_info.signature, ist_info.command,
 		ist_info.event, ist_info.perf_level);
 
@@ -366,7 +374,7 @@ static void __exit speedstep_exit(void)
 	cpufreq_unregister_driver(&speedstep_driver);
 }
 
-module_param(smi_port, int, 0444);
+module_param_hw(smi_port, int, ioport, 0444);
 module_param(smi_cmd,  int, 0444);
 module_param(smi_sig, uint, 0444);
 

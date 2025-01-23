@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  FM Driver for Connectivity chip of Texas Instruments.
  *  This file provides interfaces to V4L2 subsystem.
@@ -12,20 +13,6 @@
  *  Copyright (C) 2011 Texas Instruments
  *  Author: Raja Mani <raja_mani@ti.com>
  *  Author: Manjunatha Halli <manjunatha_halli@ti.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
 #include <linux/export.h>
@@ -36,7 +23,7 @@
 #include "fmdrv_rx.h"
 #include "fmdrv_tx.h"
 
-static struct video_device *gradio_dev;
+static struct video_device gradio_dev;
 static u8 radio_disconnected;
 
 /* -- V4L2 RADIO (/dev/radioX) device file operation interfaces --- */
@@ -106,7 +93,7 @@ static ssize_t fm_v4l2_fops_write(struct file *file, const char __user * buf,
 	return sizeof(rds);
 }
 
-static u32 fm_v4l2_fops_poll(struct file *file, struct poll_table_struct *pts)
+static __poll_t fm_v4l2_fops_poll(struct file *file, struct poll_table_struct *pts)
 {
 	int ret;
 	struct fmdev *fmdev;
@@ -116,7 +103,7 @@ static u32 fm_v4l2_fops_poll(struct file *file, struct poll_table_struct *pts)
 	ret = fmc_is_rds_data_available(fmdev, file, pts);
 	mutex_unlock(&fmdev->mutex);
 	if (ret < 0)
-		return POLLIN | POLLRDNORM;
+		return EPOLLIN | EPOLLRDNORM;
 
 	return 0;
 }
@@ -194,15 +181,10 @@ release_unlock:
 static int fm_v4l2_vidioc_querycap(struct file *file, void *priv,
 		struct v4l2_capability *capability)
 {
-	strlcpy(capability->driver, FM_DRV_NAME, sizeof(capability->driver));
-	strlcpy(capability->card, FM_DRV_CARD_SHORT_NAME,
-			sizeof(capability->card));
+	strscpy(capability->driver, FM_DRV_NAME, sizeof(capability->driver));
+	strscpy(capability->card, FM_DRV_CARD_SHORT_NAME,
+		sizeof(capability->card));
 	sprintf(capability->bus_info, "UART");
-	capability->capabilities = V4L2_CAP_HW_FREQ_SEEK | V4L2_CAP_TUNER |
-		V4L2_CAP_RADIO | V4L2_CAP_MODULATOR |
-		V4L2_CAP_AUDIO | V4L2_CAP_READWRITE |
-		V4L2_CAP_RDS_CAPTURE;
-
 	return 0;
 }
 
@@ -251,7 +233,7 @@ static int fm_v4l2_vidioc_g_audio(struct file *file, void *priv,
 		struct v4l2_audio *audio)
 {
 	memset(audio, 0, sizeof(*audio));
-	strcpy(audio->name, "Radio");
+	strscpy(audio->name, "Radio", sizeof(audio->name));
 	audio->capability = V4L2_AUDCAP_STEREO;
 
 	return 0;
@@ -295,7 +277,7 @@ static int fm_v4l2_vidioc_g_tuner(struct file *file, void *priv,
 	if (ret != 0)
 		return ret;
 
-	strcpy(tuner->name, "FM");
+	strscpy(tuner->name, "FM", sizeof(tuner->name));
 	tuner->type = V4L2_TUNER_RADIO;
 	/* Store rangelow and rangehigh freq in unit of 62.5 Hz */
 	tuner->rangelow = bottom_freq * 16;
@@ -511,11 +493,11 @@ static const struct v4l2_ioctl_ops fm_drv_ioctl_ops = {
 };
 
 /* V4L2 RADIO device parent structure */
-static struct video_device fm_viddev_template = {
+static const struct video_device fm_viddev_template = {
 	.fops = &fm_drv_fops,
 	.ioctl_ops = &fm_drv_ioctl_ops,
 	.name = FM_DRV_NAME,
-	.release = video_device_release,
+	.release = video_device_release_empty,
 	/*
 	 * To ensure both the tuner and modulator ioctls are accessible we
 	 * set the vfl_dir to M2M to indicate this.
@@ -526,6 +508,9 @@ static struct video_device fm_viddev_template = {
 	 * but that would affect applications using this driver.
 	 */
 	.vfl_dir = VFL_DIR_M2M,
+	.device_caps = V4L2_CAP_HW_FREQ_SEEK | V4L2_CAP_TUNER | V4L2_CAP_RADIO |
+		       V4L2_CAP_MODULATOR | V4L2_CAP_AUDIO |
+		       V4L2_CAP_READWRITE | V4L2_CAP_RDS_CAPTURE,
 };
 
 int fm_v4l2_init_video_device(struct fmdev *fmdev, int radio_nr)
@@ -533,7 +518,8 @@ int fm_v4l2_init_video_device(struct fmdev *fmdev, int radio_nr)
 	struct v4l2_ctrl *ctrl;
 	int ret;
 
-	strlcpy(fmdev->v4l2_dev.name, FM_DRV_NAME, sizeof(fmdev->v4l2_dev.name));
+	strscpy(fmdev->v4l2_dev.name, FM_DRV_NAME,
+		sizeof(fmdev->v4l2_dev.name));
 	ret = v4l2_device_register(NULL, &fmdev->v4l2_dev);
 	if (ret < 0)
 		return ret;
@@ -541,29 +527,22 @@ int fm_v4l2_init_video_device(struct fmdev *fmdev, int radio_nr)
 	/* Init mutex for core locking */
 	mutex_init(&fmdev->mutex);
 
-	/* Allocate new video device */
-	gradio_dev = video_device_alloc();
-	if (NULL == gradio_dev) {
-		fmerr("Can't allocate video device\n");
-		return -ENOMEM;
-	}
-
 	/* Setup FM driver's V4L2 properties */
-	memcpy(gradio_dev, &fm_viddev_template, sizeof(fm_viddev_template));
+	gradio_dev = fm_viddev_template;
 
-	video_set_drvdata(gradio_dev, fmdev);
+	video_set_drvdata(&gradio_dev, fmdev);
 
-	gradio_dev->lock = &fmdev->mutex;
-	gradio_dev->v4l2_dev = &fmdev->v4l2_dev;
+	gradio_dev.lock = &fmdev->mutex;
+	gradio_dev.v4l2_dev = &fmdev->v4l2_dev;
 
 	/* Register with V4L2 subsystem as RADIO device */
-	if (video_register_device(gradio_dev, VFL_TYPE_RADIO, radio_nr)) {
-		video_device_release(gradio_dev);
+	if (video_register_device(&gradio_dev, VFL_TYPE_RADIO, radio_nr)) {
+		v4l2_device_unregister(&fmdev->v4l2_dev);
 		fmerr("Could not register video device\n");
 		return -ENOMEM;
 	}
 
-	fmdev->radio_dev = gradio_dev;
+	fmdev->radio_dev = &gradio_dev;
 
 	/* Register to v4l2 ctrl handler framework */
 	fmdev->radio_dev->ctrl_handler = &fmdev->ctrl_handler;
@@ -572,6 +551,8 @@ int fm_v4l2_init_video_device(struct fmdev *fmdev, int radio_nr)
 	if (ret < 0) {
 		fmerr("(fmdev): Can't init ctrl handler\n");
 		v4l2_ctrl_handler_free(&fmdev->ctrl_handler);
+		video_unregister_device(fmdev->radio_dev);
+		v4l2_device_unregister(&fmdev->v4l2_dev);
 		return -EBUSY;
 	}
 
@@ -609,13 +590,13 @@ void *fm_v4l2_deinit_video_device(void)
 	struct fmdev *fmdev;
 
 
-	fmdev = video_get_drvdata(gradio_dev);
+	fmdev = video_get_drvdata(&gradio_dev);
 
 	/* Unregister to v4l2 ctrl handler framework*/
 	v4l2_ctrl_handler_free(&fmdev->ctrl_handler);
 
 	/* Unregister RADIO device from V4L2 subsystem */
-	video_unregister_device(gradio_dev);
+	video_unregister_device(&gradio_dev);
 
 	v4l2_device_unregister(&fmdev->v4l2_dev);
 

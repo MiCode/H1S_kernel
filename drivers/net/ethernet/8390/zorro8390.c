@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Amiga Linux/m68k and Linux/PPC Zorro NS8390 Ethernet Driver
  *
@@ -6,12 +7,6 @@
  *  ---------------------------------------------------------------------------
  *
  *  This program is based on all the other NE2000 drivers for Linux
- *
- *  ---------------------------------------------------------------------------
- *
- *  This file is subject to the terms and conditions of the GNU General Public
- *  License.  See the file COPYING in the main directory of the Linux
- *  distribution for more details.
  *
  *  ---------------------------------------------------------------------------
  *
@@ -43,8 +38,6 @@
 
 static const char version[] =
 	"8390.c:v1.10cvs 9/23/94 Donald Becker (becker@cesdis.gsfc.nasa.gov)\n";
-
-static u32 zorro8390_msg_enable;
 
 #include "lib8390.c"
 
@@ -284,7 +277,6 @@ static const struct net_device_ops zorro8390_netdev_ops = {
 	.ndo_set_rx_mode	= __ei_set_multicast_list,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= eth_mac_addr,
-	.ndo_change_mtu		= eth_change_mtu,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= __ei_poll,
 #endif
@@ -297,7 +289,6 @@ static int zorro8390_init(struct net_device *dev, unsigned long board,
 	int err;
 	unsigned char SA_prom[32];
 	int start_page, stop_page;
-	struct ei_device *ei_local = netdev_priv(dev);
 	static u32 zorro8390_offsets[16] = {
 		0x00, 0x02, 0x04, 0x06, 0x08, 0x0a, 0x0c, 0x0e,
 		0x10, 0x12, 0x14, 0x16, 0x18, 0x1a, 0x1c, 0x1e,
@@ -368,8 +359,7 @@ static int zorro8390_init(struct net_device *dev, unsigned long board,
 	if (i)
 		return i;
 
-	for (i = 0; i < ETH_ALEN; i++)
-		dev->dev_addr[i] = SA_prom[i];
+	eth_hw_addr_set(dev, SA_prom);
 
 	pr_debug("Found ethernet address: %pM\n", dev->dev_addr);
 
@@ -388,8 +378,6 @@ static int zorro8390_init(struct net_device *dev, unsigned long board,
 
 	dev->netdev_ops = &zorro8390_netdev_ops;
 	__NS8390_init(dev, 0);
-
-	ei_local->msg_enable = zorro8390_msg_enable;
 
 	err = register_netdev(dev);
 	if (err) {

@@ -1,31 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef __SOUND_SB_H
 #define __SOUND_SB_H
 
 /*
  *  Header file for SoundBlaster cards
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <sound/pcm.h>
 #include <sound/rawmidi.h>
 #include <linux/interrupt.h>
-#include <asm/io.h>
+#include <linux/io.h>
 
 enum sb_hw_type {
 	SB_HW_AUTO,
@@ -308,7 +293,7 @@ void snd_sbmixer_resume(struct snd_sb *chip);
 #endif
 
 /* sb8_init.c */
-int snd_sb8dsp_pcm(struct snd_sb *chip, int device, struct snd_pcm ** rpcm);
+int snd_sb8dsp_pcm(struct snd_sb *chip, int device);
 /* sb8.c */
 irqreturn_t snd_sb8dsp_interrupt(struct snd_sb *chip);
 int snd_sb8_playback_open(struct snd_pcm_substream *substream);
@@ -317,10 +302,10 @@ int snd_sb8_playback_close(struct snd_pcm_substream *substream);
 int snd_sb8_capture_close(struct snd_pcm_substream *substream);
 /* midi8.c */
 irqreturn_t snd_sb8dsp_midi_interrupt(struct snd_sb *chip);
-int snd_sb8dsp_midi(struct snd_sb *chip, int device, struct snd_rawmidi ** rrawmidi);
+int snd_sb8dsp_midi(struct snd_sb *chip, int device);
 
 /* sb16_init.c */
-int snd_sb16dsp_pcm(struct snd_sb *chip, int device, struct snd_pcm ** rpcm);
+int snd_sb16dsp_pcm(struct snd_sb *chip, int device);
 const struct snd_pcm_ops *snd_sb16dsp_get_pcm_ops(int direction);
 int snd_sb16dsp_configure(struct snd_sb *chip);
 /* sb16.c */

@@ -1,5 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- *  linux/arch/x86_64/kernel/head.S -- start in 32bit and switch to 64bit
+ *  linux/arch/x86/kernel/head_64.S -- start in 32bit and switch to 64bit
  *
  *  Copyright (C) 2000 Andrea Arcangeli <andrea@suse.de> SuSE
  *  Copyright (C) 2000 Pavel Machek <pavel@suse.cz>
@@ -12,51 +13,50 @@
 #include <linux/linkage.h>
 #include <linux/threads.h>
 #include <linux/init.h>
+#include <linux/pgtable.h>
 #include <asm/segment.h>
-#include <asm/pgtable.h>
 #include <asm/page.h>
 #include <asm/msr.h>
 #include <asm/cache.h>
 #include <asm/processor-flags.h>
 #include <asm/percpu.h>
 #include <asm/nops.h>
+#include "../entry/calling.h"
+#include <asm/export.h>
+#include <asm/nospec-branch.h>
+#include <asm/apicdef.h>
+#include <asm/fixmap.h>
+#include <asm/smp.h>
 
-#ifdef CONFIG_PARAVIRT
-#include <asm/asm-offsets.h>
-#include <asm/paravirt.h>
-#define GET_CR2_INTO(reg) GET_CR2_INTO_RAX ; movq %rax, reg
-#else
-#define GET_CR2_INTO(reg) movq %cr2, reg
-#define INTERRUPT_RETURN iretq
-#endif
-
-/* we are not able to switch in one step to the final KERNEL ADDRESS SPACE
+/*
+ * We are not able to switch in one step to the final KERNEL ADDRESS SPACE
  * because we need identity-mapped pages.
- *
  */
-
+#define l4_index(x)	(((x) >> 39) & 511)
 #define pud_index(x)	(((x) >> PUD_SHIFT) & (PTRS_PER_PUD-1))
 
-L4_PAGE_OFFSET = pgd_index(__PAGE_OFFSET)
-L3_PAGE_OFFSET = pud_index(__PAGE_OFFSET)
-L4_START_KERNEL = pgd_index(__START_KERNEL_map)
+L4_PAGE_OFFSET = l4_index(__PAGE_OFFSET_BASE_L4)
+L4_START_KERNEL = l4_index(__START_KERNEL_map)
+
 L3_START_KERNEL = pud_index(__START_KERNEL_map)
 
 	.text
 	__HEAD
 	.code64
-	.globl startup_64
-startup_64:
+SYM_CODE_START_NOALIGN(startup_64)
+	UNWIND_HINT_END_OF_STACK
 	/*
 	 * At this point the CPU runs in 64bit mode CS.L = 1 CS.D = 0,
 	 * and someone has loaded an identity mapped page table
 	 * for us.  These identity mapped page tables map all of the
 	 * kernel pages and possibly all of memory.
 	 *
-	 * %rsi holds a physical pointer to real_mode_data.
+	 * %RSI holds the physical address of the boot_params structure
+	 * provided by the bootloader. Preserve it in %R15 so C function calls
+	 * will not clobber it.
 	 *
 	 * We come here either directly from a 64bit bootloader, or from
-	 * arch/x86_64/boot/compressed/head.S.
+	 * arch/x86/boot/compressed/head_64.S.
 	 *
 	 * We only come here initially at boot nothing else comes here.
 	 *
@@ -64,107 +64,66 @@ startup_64:
 	 * compiled to run at we first fixup the physical addresses in our page
 	 * tables and then reload them.
 	 */
+	mov	%rsi, %r15
 
+	/* Set up the stack for verify_cpu() */
+	leaq	(__end_init_task - PTREGS_SIZE)(%rip), %rsp
+
+	leaq	_text(%rip), %rdi
+
+	/* Setup GSBASE to allow stack canary access for C code */
+	movl	$MSR_GS_BASE, %ecx
+	leaq	INIT_PER_CPU_VAR(fixed_percpu_data)(%rip), %rdx
+	movl	%edx, %eax
+	shrq	$32,  %rdx
+	wrmsr
+
+	call	startup_64_setup_env
+
+	/* Now switch to __KERNEL_CS so IRET works reliably */
+	pushq	$__KERNEL_CS
+	leaq	.Lon_kernel_cs(%rip), %rax
+	pushq	%rax
+	lretq
+
+.Lon_kernel_cs:
+	UNWIND_HINT_END_OF_STACK
+
+#ifdef CONFIG_AMD_MEM_ENCRYPT
 	/*
-	 * Compute the delta between the address I am compiled to run at and the
-	 * address I am actually running at.
+	 * Activate SEV/SME memory encryption if supported/enabled. This needs to
+	 * be done now, since this also includes setup of the SEV-SNP CPUID table,
+	 * which needs to be done before any CPUID instructions are executed in
+	 * subsequent code. Pass the boot_params pointer as the first argument.
 	 */
-	leaq	_text(%rip), %rbp
-	subq	$_text - __START_KERNEL_map, %rbp
+	movq	%r15, %rdi
+	call	sme_enable
+#endif
 
-	/* Is the address not 2M aligned? */
-	movq	%rbp, %rax
-	andl	$~PMD_PAGE_MASK, %eax
-	testl	%eax, %eax
-	jnz	bad_address
+	/* Sanitize CPU configuration */
+	call verify_cpu
 
 	/*
-	 * Is the address too large?
-	 */
-	leaq	_text(%rip), %rax
-	shrq	$MAX_PHYSMEM_BITS, %rax
-	jnz	bad_address
-
-	/*
-	 * Fixup the physical addresses in the page table
-	 */
-	addq	%rbp, early_level4_pgt + (L4_START_KERNEL*8)(%rip)
-
-	addq	%rbp, level3_kernel_pgt + (510*8)(%rip)
-	addq	%rbp, level3_kernel_pgt + (511*8)(%rip)
-
-	addq	%rbp, level2_fixmap_pgt + (506*8)(%rip)
-
-	/*
-	 * Set up the identity mapping for the switchover.  These
-	 * entries should *NOT* have the global bit set!  This also
-	 * creates a bunch of nonsense entries but that is fine --
-	 * it avoids problems around wraparound.
+	 * Perform pagetable fixups. Additionally, if SME is active, encrypt
+	 * the kernel and retrieve the modifier (SME encryption mask if SME
+	 * is active) to be added to the initial pgdir entry that will be
+	 * programmed into CR3.
 	 */
 	leaq	_text(%rip), %rdi
-	leaq	early_level4_pgt(%rip), %rbx
+	movq	%r15, %rsi
+	call	__startup_64
 
-	movq	%rdi, %rax
-	shrq	$PGDIR_SHIFT, %rax
-
-	leaq	(4096 + _KERNPG_TABLE)(%rbx), %rdx
-	movq	%rdx, 0(%rbx,%rax,8)
-	movq	%rdx, 8(%rbx,%rax,8)
-
-	addq	$4096, %rdx
-	movq	%rdi, %rax
-	shrq	$PUD_SHIFT, %rax
-	andl	$(PTRS_PER_PUD-1), %eax
-	movq	%rdx, 4096(%rbx,%rax,8)
-	incl	%eax
-	andl	$(PTRS_PER_PUD-1), %eax
-	movq	%rdx, 4096(%rbx,%rax,8)
-
-	addq	$8192, %rbx
-	movq	%rdi, %rax
-	shrq	$PMD_SHIFT, %rdi
-	addq	$(__PAGE_KERNEL_LARGE_EXEC & ~_PAGE_GLOBAL), %rax
-	leaq	(_end - 1)(%rip), %rcx
-	shrq	$PMD_SHIFT, %rcx
-	subq	%rdi, %rcx
-	incl	%ecx
-
-1:
-	andq	$(PTRS_PER_PMD - 1), %rdi
-	movq	%rax, (%rbx,%rdi,8)
-	incq	%rdi
-	addq	$PMD_SIZE, %rax
-	decl	%ecx
-	jnz	1b
-
-	/*
-	 * Fixup the kernel text+data virtual addresses. Note that
-	 * we might write invalid pmds, when the kernel is relocated
-	 * cleanup_highmap() fixes this up along with the mappings
-	 * beyond _end.
-	 */
-	leaq	level2_kernel_pgt(%rip), %rdi
-	leaq	4096(%rdi), %r8
-	/* See if it is a valid page table entry */
-1:	testq	$1, 0(%rdi)
-	jz	2f
-	addq	%rbp, 0(%rdi)
-	/* Go to the next page */
-2:	addq	$8, %rdi
-	cmp	%r8, %rdi
-	jne	1b
-
-	/* Fixup phys_base */
-	addq	%rbp, phys_base(%rip)
-
-	movq	$(early_level4_pgt - __START_KERNEL_map), %rax
+	/* Form the CR3 value being sure to include the CR3 modifier */
+	addq	$(early_top_pgt - __START_KERNEL_map), %rax
 	jmp 1f
-ENTRY(secondary_startup_64)
+SYM_CODE_END(startup_64)
+
+SYM_CODE_START(secondary_startup_64)
+	UNWIND_HINT_END_OF_STACK
+	ANNOTATE_NOENDBR
 	/*
 	 * At this point the CPU runs in 64bit mode CS.L = 1 CS.D = 0,
 	 * and someone has loaded a mapped page table.
-	 *
-	 * %rsi holds a physical pointer to real_mode_data.
 	 *
 	 * We come here either from startup_64 (using physical addresses)
 	 * or from trampoline.S (using virtual addresses).
@@ -174,59 +133,218 @@ ENTRY(secondary_startup_64)
 	 * after the boot processor executes this code.
 	 */
 
-	movq	$(init_level4_pgt - __START_KERNEL_map), %rax
+	/* Sanitize CPU configuration */
+	call verify_cpu
+
+	/*
+	 * The secondary_startup_64_no_verify entry point is only used by
+	 * SEV-ES guests. In those guests the call to verify_cpu() would cause
+	 * #VC exceptions which can not be handled at this stage of secondary
+	 * CPU bringup.
+	 *
+	 * All non SEV-ES systems, especially Intel systems, need to execute
+	 * verify_cpu() above to make sure NX is enabled.
+	 */
+SYM_INNER_LABEL(secondary_startup_64_no_verify, SYM_L_GLOBAL)
+	UNWIND_HINT_END_OF_STACK
+	ANNOTATE_NOENDBR
+
+	/* Clear %R15 which holds the boot_params pointer on the boot CPU */
+	xorq	%r15, %r15
+
+	/*
+	 * Retrieve the modifier (SME encryption mask if SME is active) to be
+	 * added to the initial pgdir entry that will be programmed into CR3.
+	 */
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+	movq	sme_me_mask, %rax
+#else
+	xorq	%rax, %rax
+#endif
+
+	/* Form the CR3 value being sure to include the CR3 modifier */
+	addq	$(init_top_pgt - __START_KERNEL_map), %rax
 1:
 
-	/* Enable PAE mode and PGE */
-	movl	$(X86_CR4_PAE | X86_CR4_PGE), %ecx
+#ifdef CONFIG_X86_MCE
+	/*
+	 * Preserve CR4.MCE if the kernel will enable #MC support.
+	 * Clearing MCE may fault in some environments (that also force #MC
+	 * support). Any machine check that occurs before #MC support is fully
+	 * configured will crash the system regardless of the CR4.MCE value set
+	 * here.
+	 */
+	movq	%cr4, %rcx
+	andl	$X86_CR4_MCE, %ecx
+#else
+	movl	$0, %ecx
+#endif
+
+	/* Enable PAE mode, PGE and LA57 */
+	orl	$(X86_CR4_PAE | X86_CR4_PGE), %ecx
+#ifdef CONFIG_X86_5LEVEL
+	testl	$1, __pgtable_l5_enabled(%rip)
+	jz	1f
+	orl	$X86_CR4_LA57, %ecx
+1:
+#endif
 	movq	%rcx, %cr4
 
-	/* Setup early boot stage 4 level pagetables. */
+	/* Setup early boot stage 4-/5-level pagetables. */
 	addq	phys_base(%rip), %rax
+
+	/*
+	 * For SEV guests: Verify that the C-bit is correct. A malicious
+	 * hypervisor could lie about the C-bit position to perform a ROP
+	 * attack on the guest by writing to the unencrypted stack and wait for
+	 * the next RET instruction.
+	 */
+	movq	%rax, %rdi
+	call	sev_verify_cbit
+
+	/*
+	 * Switch to new page-table
+	 *
+	 * For the boot CPU this switches to early_top_pgt which still has the
+	 * indentity mappings present. The secondary CPUs will switch to the
+	 * init_top_pgt here, away from the trampoline_pgd and unmap the
+	 * indentity mapped ranges.
+	 */
 	movq	%rax, %cr3
+
+	/*
+	 * Do a global TLB flush after the CR3 switch to make sure the TLB
+	 * entries from the identity mapping are flushed.
+	 */
+	movq	%cr4, %rcx
+	movq	%rcx, %rax
+	xorq	$X86_CR4_PGE, %rcx
+	movq	%rcx, %cr4
+	movq	%rax, %cr4
 
 	/* Ensure I am executing from virtual addresses */
 	movq	$1f, %rax
+	ANNOTATE_RETPOLINE_SAFE
 	jmp	*%rax
 1:
+	UNWIND_HINT_END_OF_STACK
+	ANNOTATE_NOENDBR // above
 
-	/* Check if nx is implemented */
-	movl	$0x80000001, %eax
-	cpuid
-	movl	%edx,%edi
+#ifdef CONFIG_SMP
+	/*
+	 * For parallel boot, the APIC ID is read from the APIC, and then
+	 * used to look up the CPU number.  For booting a single CPU, the
+	 * CPU number is encoded in smpboot_control.
+	 *
+	 * Bit 31	STARTUP_READ_APICID (Read APICID from APIC)
+	 * Bit 0-23	CPU# if STARTUP_xx flags are not set
+	 */
+	movl	smpboot_control(%rip), %ecx
+	testl	$STARTUP_READ_APICID, %ecx
+	jnz	.Lread_apicid
+	/*
+	 * No control bit set, single CPU bringup. CPU number is provided
+	 * in bit 0-23. This is also the boot CPU case (CPU number 0).
+	 */
+	andl	$(~STARTUP_PARALLEL_MASK), %ecx
+	jmp	.Lsetup_cpu
 
-	/* Setup EFER (Extended Feature Enable Register) */
-	movl	$MSR_EFER, %ecx
+.Lread_apicid:
+	/* Check whether X2APIC mode is already enabled */
+	mov	$MSR_IA32_APICBASE, %ecx
 	rdmsr
-	btsl	$_EFER_SCE, %eax	/* Enable System Call */
-	btl	$20,%edi		/* No Execute supported? */
-	jnc     1f
-	btsl	$_EFER_NX, %eax
-	btsq	$_PAGE_BIT_NX,early_pmd_flags(%rip)
-1:	wrmsr				/* Make changes effective */
+	testl	$X2APIC_ENABLE, %eax
+	jnz	.Lread_apicid_msr
 
-	/* Setup cr0 */
-#define CR0_STATE	(X86_CR0_PE | X86_CR0_MP | X86_CR0_ET | \
-			 X86_CR0_NE | X86_CR0_WP | X86_CR0_AM | \
-			 X86_CR0_PG)
-	movl	$CR0_STATE, %eax
-	/* Make changes effective */
-	movq	%rax, %cr0
+#ifdef CONFIG_X86_X2APIC
+	/*
+	 * If system is in X2APIC mode then MMIO base might not be
+	 * mapped causing the MMIO read below to fault. Faults can't
+	 * be handled at that point.
+	 */
+	cmpl	$0, x2apic_mode(%rip)
+	jz	.Lread_apicid_mmio
 
-	/* Setup a boot time stack */
-	movq stack_start(%rip), %rsp
+	/* Force the AP into X2APIC mode. */
+	orl	$X2APIC_ENABLE, %eax
+	wrmsr
+	jmp	.Lread_apicid_msr
+#endif
 
-	/* zero EFLAGS after setting rsp */
-	pushq $0
-	popfq
+.Lread_apicid_mmio:
+	/* Read the APIC ID from the fix-mapped MMIO space. */
+	movq	apic_mmio_base(%rip), %rcx
+	addq	$APIC_ID, %rcx
+	movl	(%rcx), %eax
+	shr	$24, %eax
+	jmp	.Llookup_AP
 
+.Lread_apicid_msr:
+	mov	$APIC_X2APIC_ID_MSR, %ecx
+	rdmsr
+
+.Llookup_AP:
+	/* EAX contains the APIC ID of the current CPU */
+	xorq	%rcx, %rcx
+	leaq	cpuid_to_apicid(%rip), %rbx
+
+.Lfind_cpunr:
+	cmpl	(%rbx,%rcx,4), %eax
+	jz	.Lsetup_cpu
+	inc	%ecx
+#ifdef CONFIG_FORCE_NR_CPUS
+	cmpl	$NR_CPUS, %ecx
+#else
+	cmpl	nr_cpu_ids(%rip), %ecx
+#endif
+	jb	.Lfind_cpunr
+
+	/*  APIC ID not found in the table. Drop the trampoline lock and bail. */
+	movq	trampoline_lock(%rip), %rax
+	movl	$0, (%rax)
+
+1:	cli
+	hlt
+	jmp	1b
+
+.Lsetup_cpu:
+	/* Get the per cpu offset for the given CPU# which is in ECX */
+	movq	__per_cpu_offset(,%rcx,8), %rdx
+#else
+	xorl	%edx, %edx /* zero-extended to clear all of RDX */
+#endif /* CONFIG_SMP */
+
+	/*
+	 * Setup a boot time stack - Any secondary CPU will have lost its stack
+	 * by now because the cr3-switch above unmaps the real-mode stack.
+	 *
+	 * RDX contains the per-cpu offset
+	 */
+	movq	pcpu_hot + X86_current_task(%rdx), %rax
+	movq	TASK_threadsp(%rax), %rsp
+
+	/*
+	 * Now that this CPU is running on its own stack, drop the realmode
+	 * protection. For the boot CPU the pointer is NULL!
+	 */
+	movq	trampoline_lock(%rip), %rax
+	testq	%rax, %rax
+	jz	.Lsetup_gdt
+	movl	$0, (%rax)
+
+.Lsetup_gdt:
 	/*
 	 * We must switch to a new descriptor in kernel space for the GDT
 	 * because soon the kernel won't have access anymore to the userspace
 	 * addresses where we're currently running on. We have to do that here
 	 * because in 32bit we couldn't load a 64bit linear address.
 	 */
-	lgdt	early_gdt_descr(%rip)
+	subq	$16, %rsp
+	movw	$(GDT_SIZE-1), (%rsp)
+	leaq	gdt_page(%rdx), %rax
+	movq	%rax, 2(%rsp)
+	lgdt	(%rsp)
+	addq	$16, %rsp
 
 	/* set up data segments */
 	xorl %eax,%eax
@@ -244,21 +362,62 @@ ENTRY(secondary_startup_64)
 
 	/* Set up %gs.
 	 *
-	 * The base of %gs always points to the bottom of the irqstack
-	 * union.  If the stack protector canary is enabled, it is
-	 * located at %gs:40.  Note that, on SMP, the boot cpu uses
-	 * init data section till per cpu areas are set up.
+	 * The base of %gs always points to fixed_percpu_data. If the
+	 * stack protector canary is enabled, it is located at %gs:40.
+	 * Note that, on SMP, the boot cpu uses init data section until
+	 * the per cpu areas are set up.
 	 */
 	movl	$MSR_GS_BASE,%ecx
-	movl	initial_gs(%rip),%eax
-	movl	initial_gs+4(%rip),%edx
-	wrmsr	
+#ifndef CONFIG_SMP
+	leaq	INIT_PER_CPU_VAR(fixed_percpu_data)(%rip), %rdx
+#endif
+	movl	%edx, %eax
+	shrq	$32, %rdx
+	wrmsr
 
-	/* rsi is pointer to real mode structure with interesting info.
-	   pass it to C */
-	movq	%rsi, %rdi
-	
-	/* Finally jump to run C code and to be on real kernel address
+	/* Setup and Load IDT */
+	call	early_setup_idt
+
+	/* Check if nx is implemented */
+	movl	$0x80000001, %eax
+	cpuid
+	movl	%edx,%edi
+
+	/* Setup EFER (Extended Feature Enable Register) */
+	movl	$MSR_EFER, %ecx
+	rdmsr
+	/*
+	 * Preserve current value of EFER for comparison and to skip
+	 * EFER writes if no change was made (for TDX guest)
+	 */
+	movl    %eax, %edx
+	btsl	$_EFER_SCE, %eax	/* Enable System Call */
+	btl	$20,%edi		/* No Execute supported? */
+	jnc     1f
+	btsl	$_EFER_NX, %eax
+	btsq	$_PAGE_BIT_NX,early_pmd_flags(%rip)
+
+	/* Avoid writing EFER if no change was made (for TDX guest) */
+1:	cmpl	%edx, %eax
+	je	1f
+	xor	%edx, %edx
+	wrmsr				/* Make changes effective */
+1:
+	/* Setup cr0 */
+	movl	$CR0_STATE, %eax
+	/* Make changes effective */
+	movq	%rax, %cr0
+
+	/* zero EFLAGS after setting rsp */
+	pushq $0
+	popfq
+
+	/* Pass the boot_params pointer as first argument */
+	movq	%r15, %rdi
+
+.Ljump_to_C_code:
+	/*
+	 * Jump to run C code and to be on a real kernel address.
 	 * Since we are running on identity-mapped space we have to jump
 	 * to the full 64bit address, this is only possible as indirect
 	 * jump.  In addition we need to ensure %cs is set so we make this
@@ -282,150 +441,195 @@ ENTRY(secondary_startup_64)
 	 *	REX.W + FF /5 JMP m16:64 Jump far, absolute indirect,
 	 *		address given in m16:64.
 	 */
-	movq	initial_code(%rip),%rax
-	pushq	$0		# fake return address to stop unwinder
+	pushq	$.Lafter_lret	# put return address on stack for unwinder
+	xorl	%ebp, %ebp	# clear frame pointer
+	movq	initial_code(%rip), %rax
 	pushq	$__KERNEL_CS	# set correct cs
 	pushq	%rax		# target address in negative space
 	lretq
+.Lafter_lret:
+	ANNOTATE_NOENDBR
+SYM_CODE_END(secondary_startup_64)
 
-#ifdef CONFIG_HOTPLUG_CPU
+#include "verify_cpu.S"
+#include "sev_verify_cbit.S"
+
+#if defined(CONFIG_HOTPLUG_CPU) && defined(CONFIG_AMD_MEM_ENCRYPT)
 /*
- * Boot CPU0 entry point. It's called from play_dead(). Everything has been set
- * up already except stack. We just set up stack here. Then call
- * start_secondary().
+ * Entry point for soft restart of a CPU. Invoked from xxx_play_dead() for
+ * restarting the boot CPU or for restarting SEV guest CPUs after CPU hot
+ * unplug. Everything is set up already except the stack.
  */
-ENTRY(start_cpu0)
-	movq stack_start(%rip),%rsp
-	movq	initial_code(%rip),%rax
-	pushq	$0		# fake return address to stop unwinder
-	pushq	$__KERNEL_CS	# set correct cs
-	pushq	%rax		# target address in negative space
-	lretq
-ENDPROC(start_cpu0)
+SYM_CODE_START(soft_restart_cpu)
+	ANNOTATE_NOENDBR
+	UNWIND_HINT_END_OF_STACK
+
+	/* Find the idle task stack */
+	movq	PER_CPU_VAR(pcpu_hot) + X86_current_task, %rcx
+	movq	TASK_threadsp(%rcx), %rsp
+
+	jmp	.Ljump_to_C_code
+SYM_CODE_END(soft_restart_cpu)
 #endif
 
-	/* SMP bootup changes these two */
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+/*
+ * VC Exception handler used during early boot when running on kernel
+ * addresses, but before the switch to the idt_table can be made.
+ * The early_idt_handler_array can't be used here because it calls into a lot
+ * of __init code and this handler is also used during CPU offlining/onlining.
+ * Therefore this handler ends up in the .text section so that it stays around
+ * when .init.text is freed.
+ */
+SYM_CODE_START_NOALIGN(vc_boot_ghcb)
+	UNWIND_HINT_IRET_REGS offset=8
+	ENDBR
+
+	/* Build pt_regs */
+	PUSH_AND_CLEAR_REGS
+
+	/* Call C handler */
+	movq    %rsp, %rdi
+	movq	ORIG_RAX(%rsp), %rsi
+	movq	initial_vc_handler(%rip), %rax
+	ANNOTATE_RETPOLINE_SAFE
+	call	*%rax
+
+	/* Unwind pt_regs */
+	POP_REGS
+
+	/* Remove Error Code */
+	addq    $8, %rsp
+
+	iretq
+SYM_CODE_END(vc_boot_ghcb)
+#endif
+
+	/* Both SMP bootup and ACPI suspend change these variables */
 	__REFDATA
 	.balign	8
-	GLOBAL(initial_code)
-	.quad	x86_64_start_kernel
-	GLOBAL(initial_gs)
-	.quad	INIT_PER_CPU_VAR(irq_stack_union)
+SYM_DATA(initial_code,	.quad x86_64_start_kernel)
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+SYM_DATA(initial_vc_handler,	.quad handle_vc_boot_ghcb)
+#endif
 
-	GLOBAL(stack_start)
-	.quad  init_thread_union+THREAD_SIZE-8
-	.word  0
+SYM_DATA(trampoline_lock, .quad 0);
 	__FINITDATA
 
-bad_address:
-	jmp bad_address
-
 	__INIT
-	.globl early_idt_handlers
-early_idt_handlers:
-	# 104(%rsp) %rflags
-	#  96(%rsp) %cs
-	#  88(%rsp) %rip
-	#  80(%rsp) error code
+SYM_CODE_START(early_idt_handler_array)
 	i = 0
 	.rept NUM_EXCEPTION_VECTORS
-	.if (EXCEPTION_ERRCODE_MASK >> i) & 1
-	ASM_NOP2
+	.if ((EXCEPTION_ERRCODE_MASK >> i) & 1) == 0
+		UNWIND_HINT_IRET_REGS
+		ENDBR
+		pushq $0	# Dummy error code, to make stack frame uniform
 	.else
-	pushq $0		# Dummy error code, to make stack frame uniform
+		UNWIND_HINT_IRET_REGS offset=8
+		ENDBR
 	.endif
 	pushq $i		# 72(%rsp) Vector number
-	jmp early_idt_handler
+	jmp early_idt_handler_common
+	UNWIND_HINT_IRET_REGS
 	i = i + 1
+	.fill early_idt_handler_array + i*EARLY_IDT_HANDLER_SIZE - ., 1, 0xcc
 	.endr
+SYM_CODE_END(early_idt_handler_array)
+	ANNOTATE_NOENDBR // early_idt_handler_array[NUM_EXCEPTION_VECTORS]
 
-/* This is global to keep gas from relaxing the jumps */
-ENTRY(early_idt_handler)
+SYM_CODE_START_LOCAL(early_idt_handler_common)
+	UNWIND_HINT_IRET_REGS offset=16
+	/*
+	 * The stack is the hardware frame, an error code or zero, and the
+	 * vector number.
+	 */
 	cld
 
-	cmpl $2,early_recursion_flag(%rip)
-	jz  1f
 	incl early_recursion_flag(%rip)
 
-	pushq %rax		# 64(%rsp)
-	pushq %rcx		# 56(%rsp)
-	pushq %rdx		# 48(%rsp)
-	pushq %rsi		# 40(%rsp)
-	pushq %rdi		# 32(%rsp)
-	pushq %r8		# 24(%rsp)
-	pushq %r9		# 16(%rsp)
-	pushq %r10		#  8(%rsp)
-	pushq %r11		#  0(%rsp)
+	/* The vector number is currently in the pt_regs->di slot. */
+	pushq %rsi				/* pt_regs->si */
+	movq 8(%rsp), %rsi			/* RSI = vector number */
+	movq %rdi, 8(%rsp)			/* pt_regs->di = RDI */
+	pushq %rdx				/* pt_regs->dx */
+	pushq %rcx				/* pt_regs->cx */
+	pushq %rax				/* pt_regs->ax */
+	pushq %r8				/* pt_regs->r8 */
+	pushq %r9				/* pt_regs->r9 */
+	pushq %r10				/* pt_regs->r10 */
+	pushq %r11				/* pt_regs->r11 */
+	pushq %rbx				/* pt_regs->bx */
+	pushq %rbp				/* pt_regs->bp */
+	pushq %r12				/* pt_regs->r12 */
+	pushq %r13				/* pt_regs->r13 */
+	pushq %r14				/* pt_regs->r14 */
+	pushq %r15				/* pt_regs->r15 */
+	UNWIND_HINT_REGS
 
-	cmpl $__KERNEL_CS,96(%rsp)
-	jne 11f
+	movq %rsp,%rdi		/* RDI = pt_regs; RSI is already trapnr */
+	call do_early_exception
 
-	cmpl $14,72(%rsp)	# Page fault?
-	jnz 10f
-	GET_CR2_INTO(%rdi)	# can clobber any volatile register if pv
-	call early_make_pgtable
-	andl %eax,%eax
-	jz 20f			# All good
-
-10:
-	leaq 88(%rsp),%rdi	# Pointer to %rip
-	call early_fixup_exception
-	andl %eax,%eax
-	jnz 20f			# Found an exception entry
-
-11:
-#ifdef CONFIG_EARLY_PRINTK
-	GET_CR2_INTO(%r9)	# can clobber any volatile register if pv
-	movl 80(%rsp),%r8d	# error code
-	movl 72(%rsp),%esi	# vector number
-	movl 96(%rsp),%edx	# %cs
-	movq 88(%rsp),%rcx	# %rip
-	xorl %eax,%eax
-	leaq early_idt_msg(%rip),%rdi
-	call early_printk
-	cmpl $2,early_recursion_flag(%rip)
-	jz  1f
-	call dump_stack
-#ifdef CONFIG_KALLSYMS	
-	leaq early_idt_ripmsg(%rip),%rdi
-	movq 40(%rsp),%rsi	# %rip again
-	call __print_symbol
-#endif
-#endif /* EARLY_PRINTK */
-1:	hlt
-	jmp 1b
-
-20:	# Exception table entry found or page table generated
-	popq %r11
-	popq %r10
-	popq %r9
-	popq %r8
-	popq %rdi
-	popq %rsi
-	popq %rdx
-	popq %rcx
-	popq %rax
-	addq $16,%rsp		# drop vector number and error code
 	decl early_recursion_flag(%rip)
-	INTERRUPT_RETURN
-ENDPROC(early_idt_handler)
+	jmp restore_regs_and_return_to_kernel
+SYM_CODE_END(early_idt_handler_common)
 
-	__INITDATA
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+/*
+ * VC Exception handler used during very early boot. The
+ * early_idt_handler_array can't be used because it returns via the
+ * paravirtualized INTERRUPT_RETURN and pv-ops don't work that early.
+ *
+ * XXX it does, fix this.
+ *
+ * This handler will end up in the .init.text section and not be
+ * available to boot secondary CPUs.
+ */
+SYM_CODE_START_NOALIGN(vc_no_ghcb)
+	UNWIND_HINT_IRET_REGS offset=8
+	ENDBR
 
-	.balign 4
-early_recursion_flag:
-	.long 0
+	/* Build pt_regs */
+	PUSH_AND_CLEAR_REGS
 
-#ifdef CONFIG_EARLY_PRINTK
-early_idt_msg:
-	.asciz "PANIC: early exception %02lx rip %lx:%lx error %lx cr2 %lx\n"
-early_idt_ripmsg:
-	.asciz "RIP %s\n"
-#endif /* CONFIG_EARLY_PRINTK */
+	/* Call C handler */
+	movq    %rsp, %rdi
+	movq	ORIG_RAX(%rsp), %rsi
+	call    do_vc_no_ghcb
 
-#define NEXT_PAGE(name) \
-	.balign	PAGE_SIZE; \
-GLOBAL(name)
+	/* Unwind pt_regs */
+	POP_REGS
+
+	/* Remove Error Code */
+	addq    $8, %rsp
+
+	/* Pure iret required here - don't use INTERRUPT_RETURN */
+	iretq
+SYM_CODE_END(vc_no_ghcb)
+#endif
+
+#define SYM_DATA_START_PAGE_ALIGNED(name)			\
+	SYM_START(name, SYM_L_GLOBAL, .balign PAGE_SIZE)
+
+#ifdef CONFIG_PAGE_TABLE_ISOLATION
+/*
+ * Each PGD needs to be 8k long and 8k aligned.  We do not
+ * ever go out to userspace with these, so we do not
+ * strictly *need* the second page, but this allows us to
+ * have a single set_pgd() implementation that does not
+ * need to worry about whether it has 4k or 8k to work
+ * with.
+ *
+ * This ensures PGDs are 8k long:
+ */
+#define PTI_USER_PGD_FILL	512
+/* This ensures they are 8k-aligned: */
+#define SYM_DATA_START_PTI_ALIGNED(name) \
+	SYM_START(name, SYM_L_GLOBAL, .balign 2 * PAGE_SIZE)
+#else
+#define SYM_DATA_START_PTI_ALIGNED(name) \
+	SYM_DATA_START_PAGE_ALIGNED(name)
+#define PTI_USER_PGD_FILL	0
+#endif
 
 /* Automate the creation of 1 to 1 mapping pmd entries */
 #define PMDS(START, PERM, COUNT)			\
@@ -436,82 +640,120 @@ GLOBAL(name)
 	.endr
 
 	__INITDATA
-NEXT_PAGE(early_level4_pgt)
-	.fill	511,8,0
-	.quad	level3_kernel_pgt - __START_KERNEL_map + _PAGE_TABLE
+	.balign 4
 
-NEXT_PAGE(early_dynamic_pgts)
+SYM_DATA_START_PTI_ALIGNED(early_top_pgt)
+	.fill	512,8,0
+	.fill	PTI_USER_PGD_FILL,8,0
+SYM_DATA_END(early_top_pgt)
+
+SYM_DATA_START_PAGE_ALIGNED(early_dynamic_pgts)
 	.fill	512*EARLY_DYNAMIC_PAGE_TABLES,8,0
+SYM_DATA_END(early_dynamic_pgts)
+
+SYM_DATA(early_recursion_flag, .long 0)
 
 	.data
 
-#ifndef CONFIG_XEN
-NEXT_PAGE(init_level4_pgt)
-	.fill	512,8,0
-#else
-NEXT_PAGE(init_level4_pgt)
-	.quad   level3_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE
-	.org    init_level4_pgt + L4_PAGE_OFFSET*8, 0
-	.quad   level3_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE
-	.org    init_level4_pgt + L4_START_KERNEL*8, 0
+#if defined(CONFIG_XEN_PV) || defined(CONFIG_PVH)
+SYM_DATA_START_PTI_ALIGNED(init_top_pgt)
+	.quad   level3_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE_NOENC
+	.org    init_top_pgt + L4_PAGE_OFFSET*8, 0
+	.quad   level3_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE_NOENC
+	.org    init_top_pgt + L4_START_KERNEL*8, 0
 	/* (2^48-(2*1024*1024*1024))/(2^39) = 511 */
-	.quad   level3_kernel_pgt - __START_KERNEL_map + _PAGE_TABLE
+	.quad   level3_kernel_pgt - __START_KERNEL_map + _PAGE_TABLE_NOENC
+	.fill	PTI_USER_PGD_FILL,8,0
+SYM_DATA_END(init_top_pgt)
 
-NEXT_PAGE(level3_ident_pgt)
-	.quad	level2_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE
+SYM_DATA_START_PAGE_ALIGNED(level3_ident_pgt)
+	.quad	level2_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE_NOENC
 	.fill	511, 8, 0
-NEXT_PAGE(level2_ident_pgt)
-	/* Since I easily can, map the first 1G.
+SYM_DATA_END(level3_ident_pgt)
+SYM_DATA_START_PAGE_ALIGNED(level2_ident_pgt)
+	/*
+	 * Since I easily can, map the first 1G.
 	 * Don't set NX because code runs from these pages.
+	 *
+	 * Note: This sets _PAGE_GLOBAL despite whether
+	 * the CPU supports it or it is enabled.  But,
+	 * the CPU should ignore the bit.
 	 */
 	PMDS(0, __PAGE_KERNEL_IDENT_LARGE_EXEC, PTRS_PER_PMD)
+SYM_DATA_END(level2_ident_pgt)
+#else
+SYM_DATA_START_PTI_ALIGNED(init_top_pgt)
+	.fill	512,8,0
+	.fill	PTI_USER_PGD_FILL,8,0
+SYM_DATA_END(init_top_pgt)
 #endif
 
-NEXT_PAGE(level3_kernel_pgt)
+#ifdef CONFIG_X86_5LEVEL
+SYM_DATA_START_PAGE_ALIGNED(level4_kernel_pgt)
+	.fill	511,8,0
+	.quad	level3_kernel_pgt - __START_KERNEL_map + _PAGE_TABLE_NOENC
+SYM_DATA_END(level4_kernel_pgt)
+#endif
+
+SYM_DATA_START_PAGE_ALIGNED(level3_kernel_pgt)
 	.fill	L3_START_KERNEL,8,0
 	/* (2^48-(2*1024*1024*1024)-((2^39)*511))/(2^30) = 510 */
-	.quad	level2_kernel_pgt - __START_KERNEL_map + _KERNPG_TABLE
-	.quad	level2_fixmap_pgt - __START_KERNEL_map + _PAGE_TABLE
+	.quad	level2_kernel_pgt - __START_KERNEL_map + _KERNPG_TABLE_NOENC
+	.quad	level2_fixmap_pgt - __START_KERNEL_map + _PAGE_TABLE_NOENC
+SYM_DATA_END(level3_kernel_pgt)
 
-NEXT_PAGE(level2_kernel_pgt)
+SYM_DATA_START_PAGE_ALIGNED(level2_kernel_pgt)
 	/*
-	 * 512 MB kernel mapping. We spend a full page on this pagetable
-	 * anyway.
+	 * Kernel high mapping.
 	 *
-	 * The kernel code+data+bss must not be bigger than that.
+	 * The kernel code+data+bss must be located below KERNEL_IMAGE_SIZE in
+	 * virtual address space, which is 1 GiB if RANDOMIZE_BASE is enabled,
+	 * 512 MiB otherwise.
 	 *
-	 * (NOTE: at +512MB starts the module area, see MODULES_VADDR.
-	 *  If you want to increase this then increase MODULES_VADDR
-	 *  too.)
+	 * (NOTE: after that starts the module area, see MODULES_VADDR.)
+	 *
+	 * This table is eventually used by the kernel during normal runtime.
+	 * Care must be taken to clear out undesired bits later, like _PAGE_RW
+	 * or _PAGE_GLOBAL in some cases.
 	 */
-	PMDS(0, __PAGE_KERNEL_LARGE_EXEC,
-		KERNEL_IMAGE_SIZE/PMD_SIZE)
+	PMDS(0, __PAGE_KERNEL_LARGE_EXEC, KERNEL_IMAGE_SIZE/PMD_SIZE)
+SYM_DATA_END(level2_kernel_pgt)
 
-NEXT_PAGE(level2_fixmap_pgt)
-	.fill	506,8,0
-	.quad	level1_fixmap_pgt - __START_KERNEL_map + _PAGE_TABLE
-	/* 8MB reserved for vsyscalls + a 2MB hole = 4 + 1 entries */
-	.fill	5,8,0
+SYM_DATA_START_PAGE_ALIGNED(level2_fixmap_pgt)
+	.fill	(512 - 4 - FIXMAP_PMD_NUM),8,0
+	pgtno = 0
+	.rept (FIXMAP_PMD_NUM)
+	.quad level1_fixmap_pgt + (pgtno << PAGE_SHIFT) - __START_KERNEL_map \
+		+ _PAGE_TABLE_NOENC;
+	pgtno = pgtno + 1
+	.endr
+	/* 6 MB reserved space + a 2MB hole */
+	.fill	4,8,0
+SYM_DATA_END(level2_fixmap_pgt)
 
-NEXT_PAGE(level1_fixmap_pgt)
+SYM_DATA_START_PAGE_ALIGNED(level1_fixmap_pgt)
+	.rept (FIXMAP_PMD_NUM)
 	.fill	512,8,0
+	.endr
+SYM_DATA_END(level1_fixmap_pgt)
 
 #undef PMDS
 
 	.data
 	.align 16
-	.globl early_gdt_descr
-early_gdt_descr:
-	.word	GDT_ENTRIES*8-1
-early_gdt_descr_base:
-	.quad	INIT_PER_CPU_VAR(gdt_page)
 
-ENTRY(phys_base)
-	/* This must match the first entry in level2_kernel_pgt */
-	.quad   0x0000000000000000
+SYM_DATA(smpboot_control,		.long 0)
+
+	.align 16
+/* This must match the first entry in level2_kernel_pgt */
+SYM_DATA(phys_base, .quad 0x0)
+EXPORT_SYMBOL(phys_base)
 
 #include "../../x86/xen/xen-head.S"
-	
+
 	__PAGE_ALIGNED_BSS
-NEXT_PAGE(empty_zero_page)
+SYM_DATA_START_PAGE_ALIGNED(empty_zero_page)
 	.skip PAGE_SIZE
+SYM_DATA_END(empty_zero_page)
+EXPORT_SYMBOL(empty_zero_page)
+

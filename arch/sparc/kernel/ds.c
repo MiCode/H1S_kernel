@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* ds.c: Domain Services driver for Logical Domains
  *
  * Copyright (C) 2007, 2008 David S. Miller <davem@davemloft.net>
@@ -9,6 +10,7 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
+#include <linux/sched/clock.h>
 #include <linux/delay.h>
 #include <linux/mutex.h>
 #include <linux/kthread.h>
@@ -85,7 +87,7 @@ struct ds_reg_req {
 	__u64			handle;
 	__u16			major;
 	__u16			minor;
-	char			svc_id[0];
+	char			svc_id[];
 };
 
 struct ds_reg_ack {
@@ -553,7 +555,7 @@ static int dr_cpu_configure(struct ds_info *dp, struct ds_cap_state *cp,
 
 		printk(KERN_INFO "ds-%llu: Starting cpu %d...\n",
 		       dp->id, cpu);
-		err = cpu_up(cpu);
+		err = add_cpu(cpu);
 		if (err) {
 			__u32 res = DR_CPU_RES_FAILURE;
 			__u32 stat = DR_CPU_STAT_UNCONFIGURED;
@@ -609,7 +611,7 @@ static int dr_cpu_unconfigure(struct ds_info *dp,
 
 		printk(KERN_INFO "ds-%llu: Shutting down cpu %d...\n",
 		       dp->id, cpu);
-		err = cpu_down(cpu);
+		err = remove_cpu(cpu);
 		if (err)
 			dr_cpu_mark(resp, cpu, ncpus,
 				    DR_CPU_RES_FAILURE,
@@ -699,12 +701,12 @@ struct ds_var_hdr {
 
 struct ds_var_set_msg {
 	struct ds_var_hdr		hdr;
-	char				name_and_value[0];
+	char				name_and_value[];
 };
 
 struct ds_var_delete_msg {
 	struct ds_var_hdr		hdr;
-	char				name[0];
+	char				name[];
 };
 
 struct ds_var_resp {
@@ -875,7 +877,7 @@ void ldom_power_off(void)
 
 static void ds_conn_reset(struct ds_info *dp)
 {
-	printk(KERN_ERR "ds-%llu: ds_conn_reset() from %pf\n",
+	printk(KERN_ERR "ds-%llu: ds_conn_reset() from %ps\n",
 	       dp->id, __builtin_return_address(0));
 }
 
@@ -908,7 +910,7 @@ static int register_services(struct ds_info *dp)
 		pbuf.req.handle = cp->handle;
 		pbuf.req.major = 1;
 		pbuf.req.minor = 0;
-		strcpy(pbuf.req.svc_id, cp->service_id);
+		strcpy(pbuf.id_buf, cp->service_id);
 
 		err = __ds_send(lp, &pbuf, msg_len);
 		if (err > 0)
@@ -987,7 +989,7 @@ struct ds_queue_entry {
 	struct ds_info			*dp;
 	int				req_len;
 	int				__pad;
-	u64				req[0];
+	u64				req[];
 };
 
 static void process_ds_work(void)
@@ -1200,14 +1202,14 @@ static int ds_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 	ds_cfg.tx_irq = vdev->tx_irq;
 	ds_cfg.rx_irq = vdev->rx_irq;
 
-	lp = ldc_alloc(vdev->channel_id, &ds_cfg, dp);
+	lp = ldc_alloc(vdev->channel_id, &ds_cfg, dp, "DS");
 	if (IS_ERR(lp)) {
 		err = PTR_ERR(lp);
 		goto out_free_ds_states;
 	}
 	dp->lp = lp;
 
-	err = ldc_bind(lp, "DS");
+	err = ldc_bind(lp);
 	if (err)
 		goto out_free_ldc;
 
@@ -1234,11 +1236,6 @@ out_err:
 	return err;
 }
 
-static int ds_remove(struct vio_dev *vdev)
-{
-	return 0;
-}
-
 static const struct vio_device_id ds_match[] = {
 	{
 		.type = "domain-services-port",
@@ -1249,7 +1246,6 @@ static const struct vio_device_id ds_match[] = {
 static struct vio_driver ds_driver = {
 	.id_table	= ds_match,
 	.probe		= ds_probe,
-	.remove		= ds_remove,
 	.name		= "ds",
 };
 

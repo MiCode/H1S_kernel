@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/arch/m68k/sun3/dvma.c
  *
@@ -10,10 +11,9 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/list.h>
 #include <asm/page.h>
-#include <asm/pgtable.h>
 #include <asm/sun3mmu.h>
 #include <asm/dvma.h>
 
@@ -29,10 +29,9 @@ static unsigned long dvma_page(unsigned long kaddr, unsigned long vaddr)
 	j = *(volatile unsigned long *)kaddr;
 	*(volatile unsigned long *)kaddr = j;
 
-	ptep = pfn_pte(virt_to_pfn(kaddr), PAGE_KERNEL);
+	ptep = pfn_pte(virt_to_pfn((void *)kaddr), PAGE_KERNEL);
 	pte = pte_val(ptep);
-//		printk("dvma_remap: addr %lx -> %lx pte %08lx len %x\n",
-//		       kaddr, vaddr, pte, len);
+//	pr_info("dvma_remap: addr %lx -> %lx pte %08lx\n", kaddr, vaddr, pte);
 	if(ptelist[(vaddr & 0xff000) >> PAGE_SHIFT] != pte) {
 		sun3_put_pte(vaddr, pte);
 		ptelist[(vaddr & 0xff000) >> PAGE_SHIFT] = pte;

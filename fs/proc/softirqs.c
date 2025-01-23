@@ -1,7 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/init.h>
 #include <linux/kernel_stat.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include "internal.h"
 
 /*
  * /proc/softirqs  ... display the number of softirqs
@@ -24,21 +26,12 @@ static int show_softirqs(struct seq_file *p, void *v)
 	return 0;
 }
 
-static int softirqs_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, show_softirqs, NULL);
-}
-
-static const struct file_operations proc_softirqs_operations = {
-	.open		= softirqs_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
 static int __init proc_softirqs_init(void)
 {
-	proc_create("softirqs", 0, NULL, &proc_softirqs_operations);
+	struct proc_dir_entry *pde;
+
+	pde = proc_create_single("softirqs", 0, NULL, show_softirqs);
+	pde_make_permanent(pde);
 	return 0;
 }
 fs_initcall(proc_softirqs_init);

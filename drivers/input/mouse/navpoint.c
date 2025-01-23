@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Synaptics NavPoint (PXA27x SSP/SPI) driver.
  *
  * Copyright (C) 2012 Paul Parsons <lost.distance@yahoo.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -108,7 +105,7 @@ static void navpoint_packet(struct navpoint *navpoint)
 	case 0x19:	/* Module 0, Hello packet */
 		if ((navpoint->data[1] & 0xf0) == 0x10)
 			break;
-		/* FALLTHROUGH */
+		fallthrough;
 	default:
 		dev_warn(navpoint->dev,
 			 "spurious packet: data=0x%02x,0x%02x,...\n",
@@ -318,7 +315,6 @@ static int navpoint_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int navpoint_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -326,7 +322,7 @@ static int navpoint_suspend(struct device *dev)
 	struct input_dev *input = navpoint->input;
 
 	mutex_lock(&input->mutex);
-	if (input->users)
+	if (input_device_enabled(input))
 		navpoint_down(navpoint);
 	mutex_unlock(&input->mutex);
 
@@ -340,23 +336,22 @@ static int navpoint_resume(struct device *dev)
 	struct input_dev *input = navpoint->input;
 
 	mutex_lock(&input->mutex);
-	if (input->users)
+	if (input_device_enabled(input))
 		navpoint_up(navpoint);
 	mutex_unlock(&input->mutex);
 
 	return 0;
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(navpoint_pm_ops, navpoint_suspend, navpoint_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(navpoint_pm_ops,
+				navpoint_suspend, navpoint_resume);
 
 static struct platform_driver navpoint_driver = {
 	.probe		= navpoint_probe,
 	.remove		= navpoint_remove,
 	.driver = {
 		.name	= "navpoint",
-		.owner	= THIS_MODULE,
-		.pm	= &navpoint_pm_ops,
+		.pm	= pm_sleep_ptr(&navpoint_pm_ops),
 	},
 };
 

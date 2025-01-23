@@ -14,9 +14,8 @@
 #include <linux/pci.h>
 #include <linux/pci_ids.h>
 #include <linux/edac.h>
-#include "edac_core.h"
+#include "edac_module.h"
 
-#define  I82860_REVISION " Ver: 2.0.2"
 #define EDAC_MOD_STR	"i82860_edac"
 
 #define i82860_printk(level, fmt, arg...) \
@@ -124,7 +123,7 @@ static int i82860_process_error_info(struct mem_ctl_info *mci,
 				     dimm->location[0], dimm->location[1], -1,
 				     "i82860 UE", "");
 	else
-		edac_mc_handle_error(HW_EVENT_ERR_UNCORRECTED, mci, 1,
+		edac_mc_handle_error(HW_EVENT_ERR_CORRECTED, mci, 1,
 				     info->eap, 0, info->derrsyn,
 				     dimm->location[0], dimm->location[1], -1,
 				     "i82860 CE", "");
@@ -136,7 +135,6 @@ static void i82860_check(struct mem_ctl_info *mci)
 {
 	struct i82860_error_info info;
 
-	edac_dbg(1, "MC%d\n", mci->mc_idx);
 	i82860_get_error_info(mci, &info);
 	i82860_process_error_info(mci, &info, 1);
 }
@@ -216,7 +214,6 @@ static int i82860_probe1(struct pci_dev *pdev, int dev_idx)
 	/* I"m not sure about this but I think that all RDRAM is SECDED */
 	mci->edac_cap = EDAC_FLAG_SECDED;
 	mci->mod_name = EDAC_MOD_STR;
-	mci->mod_ver = I82860_REVISION;
 	mci->ctl_name = i82860_devs[dev_idx].ctl_name;
 	mci->dev_name = pci_name(pdev);
 	mci->edac_check = i82860_check;
@@ -343,28 +340,22 @@ fail1:
 	pci_unregister_driver(&i82860_driver);
 
 fail0:
-	if (mci_pdev != NULL)
-		pci_dev_put(mci_pdev);
-
+	pci_dev_put(mci_pdev);
 	return pci_rc;
 }
 
 static void __exit i82860_exit(void)
 {
 	edac_dbg(3, "\n");
-
 	pci_unregister_driver(&i82860_driver);
-
-	if (mci_pdev != NULL)
-		pci_dev_put(mci_pdev);
+	pci_dev_put(mci_pdev);
 }
 
 module_init(i82860_init);
 module_exit(i82860_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Red Hat Inc. (http://www.redhat.com) "
-		"Ben Woodard <woodard@redhat.com>");
+MODULE_AUTHOR("Red Hat Inc. (http://www.redhat.com) Ben Woodard <woodard@redhat.com>");
 MODULE_DESCRIPTION("ECC support for Intel 82860 memory hub controllers");
 
 module_param(edac_op_state, int, 0444);

@@ -14,27 +14,29 @@
 #include <linux/types.h>
 #include <linux/interrupt.h>
 #include <linux/string.h>
-#include <linux/module.h>
-#include <linux/clk.h>
+#include <linux/export.h>
+#include <linux/clk-provider.h>
+#include <linux/clkdev.h>
 #include <linux/err.h>
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 #include <linux/platform_device.h>
+#include <linux/platform_data/txx9/ndfmc.h>
 #include <linux/serial_core.h>
 #include <linux/mtd/physmap.h>
 #include <linux/leds.h>
 #include <linux/device.h>
 #include <linux/slab.h>
+#include <linux/io.h>
 #include <linux/irq.h>
 #include <asm/bootinfo.h>
 #include <asm/idle.h>
 #include <asm/time.h>
 #include <asm/reboot.h>
 #include <asm/r4kcache.h>
-#include <asm/sections.h>
+#include <asm/setup.h>
 #include <asm/txx9/generic.h>
 #include <asm/txx9/pci.h>
 #include <asm/txx9tmr.h>
-#include <asm/txx9/ndfmc.h>
 #include <asm/txx9/dmac.h>
 #ifdef CONFIG_CPU_TX49XX
 #include <asm/txx9/tx4938.h>
@@ -76,62 +78,7 @@ unsigned int txx9_master_clock;
 unsigned int txx9_cpu_clock;
 unsigned int txx9_gbus_clock;
 
-#ifdef CONFIG_CPU_TX39XX
-/* don't enable by default - see errata */
-int txx9_ccfg_toeon __initdata;
-#else
 int txx9_ccfg_toeon __initdata = 1;
-#endif
-
-/* Minimum CLK support */
-
-struct clk *clk_get(struct device *dev, const char *id)
-{
-	if (!strcmp(id, "spi-baseclk"))
-		return (struct clk *)((unsigned long)txx9_gbus_clock / 2 / 2);
-	if (!strcmp(id, "imbus_clk"))
-		return (struct clk *)((unsigned long)txx9_gbus_clock / 2);
-	return ERR_PTR(-ENOENT);
-}
-EXPORT_SYMBOL(clk_get);
-
-int clk_enable(struct clk *clk)
-{
-	return 0;
-}
-EXPORT_SYMBOL(clk_enable);
-
-void clk_disable(struct clk *clk)
-{
-}
-EXPORT_SYMBOL(clk_disable);
-
-unsigned long clk_get_rate(struct clk *clk)
-{
-	return (unsigned long)clk;
-}
-EXPORT_SYMBOL(clk_get_rate);
-
-void clk_put(struct clk *clk)
-{
-}
-EXPORT_SYMBOL(clk_put);
-
-/* GPIO support */
-
-#ifdef CONFIG_GPIOLIB
-int gpio_to_irq(unsigned gpio)
-{
-	return -EINVAL;
-}
-EXPORT_SYMBOL(gpio_to_irq);
-
-int irq_to_gpio(unsigned irq)
-{
-	return -EINVAL;
-}
-EXPORT_SYMBOL(irq_to_gpio);
-#endif
 
 #define BOARD_VEC(board)	extern struct txx9_board_vec board;
 #include <asm/txx9/boards.h>
@@ -242,53 +189,6 @@ static void __init txx9_cache_fixup(void)
 	if (conf & TX49_CONF_DC)
 		pr_info("TX49XX D-Cache disabled.\n");
 }
-#elif defined(CONFIG_CPU_TX39XX)
-/* flush all cache on very early stage (before tx39_cache_init) */
-static void __init early_flush_dcache(void)
-{
-	unsigned int conf = read_c0_config();
-	unsigned int dc_size = 1 << (10 + ((conf & TX39_CONF_DCS_MASK) >>
-					   TX39_CONF_DCS_SHIFT));
-	unsigned int linesz = 16;
-	unsigned long addr, end;
-
-	end = INDEX_BASE + dc_size / 2;
-	/* 2way, waybit=0 */
-	for (addr = INDEX_BASE; addr < end; addr += linesz) {
-		cache_op(Index_Writeback_Inv_D, addr | 0);
-		cache_op(Index_Writeback_Inv_D, addr | 1);
-	}
-}
-
-static void __init txx9_cache_fixup(void)
-{
-	unsigned int conf;
-
-	conf = read_c0_config();
-	/* flush and disable */
-	if (txx9_ic_disable) {
-		conf &= ~TX39_CONF_ICE;
-		write_c0_config(conf);
-	}
-	if (txx9_dc_disable) {
-		early_flush_dcache();
-		conf &= ~TX39_CONF_DCE;
-		write_c0_config(conf);
-	}
-
-	/* enable cache */
-	conf = read_c0_config();
-	if (!txx9_ic_disable)
-		conf |= TX39_CONF_ICE;
-	if (!txx9_dc_disable)
-		conf |= TX39_CONF_DCE;
-	write_c0_config(conf);
-
-	if (!(conf & TX39_CONF_ICE))
-		pr_info("TX39XX I-Cache disabled.\n");
-	if (!(conf & TX39_CONF_DCE))
-		pr_info("TX39XX D-Cache disabled.\n");
-}
 #else
 static inline void txx9_cache_fixup(void)
 {
@@ -309,8 +209,8 @@ static void __init preprocess_cmdline(void)
 			txx9_board_vec = find_board_byname(str + 6);
 			continue;
 		} else if (strncmp(str, "masterclk=", 10) == 0) {
-			unsigned long val;
-			if (strict_strtoul(str + 10, 10, &val) == 0)
+			unsigned int val;
+			if (kstrtouint(str + 10, 10, &val) == 0)
 				txx9_master_clock = val;
 			continue;
 		} else if (strcmp(str, "icdisable") == 0) {
@@ -350,9 +250,6 @@ static void __init select_board(void)
 	}
 
 	/* select "default" board */
-#ifdef CONFIG_TOSHIBA_JMR3927
-	txx9_board_vec = &jmr3927_vec;
-#endif
 #ifdef CONFIG_CPU_TX49XX
 	switch (TX4938_REV_PCODE()) {
 #ifdef CONFIG_TOSHIBA_RBTX4927
@@ -361,16 +258,6 @@ static void __init select_board(void)
 		break;
 	case 0x4937:
 		txx9_board_vec = &rbtx4937_vec;
-		break;
-#endif
-#ifdef CONFIG_TOSHIBA_RBTX4938
-	case 0x4938:
-		txx9_board_vec = &rbtx4938_vec;
-		break;
-#endif
-#ifdef CONFIG_TOSHIBA_RBTX4939
-	case 0x4939:
-		txx9_board_vec = &rbtx4939_vec;
 		break;
 #endif
 	}
@@ -386,15 +273,6 @@ void __init prom_init(void)
 	strcpy(txx9_system_type, txx9_board_vec->system);
 
 	txx9_board_vec->prom_init();
-}
-
-void __init prom_free_prom_memory(void)
-{
-	unsigned long saddr = PAGE_SIZE;
-	unsigned long eaddr = __pa_symbol(&_text);
-
-	if (saddr < eaddr)
-		free_init_pages("prom memory", saddr, eaddr);
 }
 
 const char *get_system_type(void)
@@ -576,8 +454,41 @@ void __init plat_time_init(void)
 	txx9_board_vec->time_init();
 }
 
+static void txx9_clk_init(void)
+{
+	struct clk_hw *hw;
+	int error;
+
+	hw = clk_hw_register_fixed_rate(NULL, "gbus", NULL, 0, txx9_gbus_clock);
+	if (IS_ERR(hw)) {
+		error = PTR_ERR(hw);
+		goto fail;
+	}
+
+	hw = clk_hw_register_fixed_factor(NULL, "imbus", "gbus", 0, 1, 2);
+	error = clk_hw_register_clkdev(hw, "imbus_clk", NULL);
+	if (error)
+		goto fail;
+
+#ifdef CONFIG_CPU_TX49XX
+	if (TX4938_REV_PCODE() == 0x4938) {
+		hw = clk_hw_register_fixed_factor(NULL, "spi", "gbus", 0, 1, 4);
+		error = clk_hw_register_clkdev(hw, "spi-baseclk", NULL);
+		if (error)
+			goto fail;
+	}
+#endif
+
+	return;
+
+fail:
+	pr_err("Failed to register clocks: %d\n", error);
+}
+
 static int __init _txx9_arch_init(void)
 {
+	txx9_clk_init();
+
 	if (txx9_board_vec->arch_init)
 		txx9_board_vec->arch_init();
 	return 0;
@@ -612,21 +523,6 @@ static unsigned long __swizzle_addr_none(unsigned long port)
 }
 unsigned long (*__swizzle_addr_b)(unsigned long port) = __swizzle_addr_none;
 EXPORT_SYMBOL(__swizzle_addr_b);
-#endif
-
-#ifdef NEEDS_TXX9_IOSWABW
-static u16 ioswabw_default(volatile u16 *a, u16 x)
-{
-	return le16_to_cpu(x);
-}
-static u16 __mem_ioswabw_default(volatile u16 *a, u16 x)
-{
-	return x;
-}
-u16 (*ioswabw)(volatile u16 *a, u16 x) = ioswabw_default;
-EXPORT_SYMBOL(ioswabw);
-u16 (*__mem_ioswabw)(volatile u16 *a, u16 x) = __mem_ioswabw_default;
-EXPORT_SYMBOL(__mem_ioswabw);
 #endif
 
 void __init txx9_physmap_flash_init(int no, unsigned long addr,
@@ -703,16 +599,14 @@ struct txx9_iocled_data {
 
 static int txx9_iocled_get(struct gpio_chip *chip, unsigned int offset)
 {
-	struct txx9_iocled_data *data =
-		container_of(chip, struct txx9_iocled_data, chip);
-	return data->cur_val & (1 << offset);
+	struct txx9_iocled_data *data = gpiochip_get_data(chip);
+	return !!(data->cur_val & (1 << offset));
 }
 
 static void txx9_iocled_set(struct gpio_chip *chip, unsigned int offset,
 			    int value)
 {
-	struct txx9_iocled_data *data =
-		container_of(chip, struct txx9_iocled_data, chip);
+	struct txx9_iocled_data *data = gpiochip_get_data(chip);
 	unsigned long flags;
 	spin_lock_irqsave(&txx9_iocled_lock, flags);
 	if (value)
@@ -745,7 +639,7 @@ void __init txx9_iocled_init(unsigned long baseaddr,
 	int i;
 	static char *default_triggers[] __initdata = {
 		"heartbeat",
-		"ide-disk",
+		"disk-activity",
 		"nand-disk",
 		NULL,
 	};
@@ -765,7 +659,7 @@ void __init txx9_iocled_init(unsigned long baseaddr,
 	iocled->chip.label = "iocled";
 	iocled->chip.base = basenum;
 	iocled->chip.ngpio = num;
-	if (gpiochip_add(&iocled->chip))
+	if (gpiochip_add_data(&iocled->chip, iocled))
 		goto out_unmap;
 	if (basenum < 0)
 		basenum = iocled->chip.base;
@@ -789,11 +683,11 @@ void __init txx9_iocled_init(unsigned long baseaddr,
 	if (platform_device_add(pdev))
 		goto out_pdev;
 	return;
+
 out_pdev:
 	platform_device_put(pdev);
 out_gpio:
-	if (gpiochip_remove(&iocled->chip))
-		return;
+	gpiochip_remove(&iocled->chip);
 out_unmap:
 	iounmap(iocled->mmioaddr);
 out_free:
@@ -866,34 +760,6 @@ void __init txx9_aclc_init(unsigned long baseaddr, int irq,
 			   unsigned int dma_chan_out,
 			   unsigned int dma_chan_in)
 {
-#if IS_ENABLED(CONFIG_SND_SOC_TXX9ACLC)
-	unsigned int dma_base = dmac_id * TXX9_DMA_MAX_NR_CHANNELS;
-	struct resource res[] = {
-		{
-			.start = baseaddr,
-			.end = baseaddr + 0x100 - 1,
-			.flags = IORESOURCE_MEM,
-		}, {
-			.start = irq,
-			.flags = IORESOURCE_IRQ,
-		}, {
-			.name = "txx9dmac-chan",
-			.start = dma_base + dma_chan_out,
-			.flags = IORESOURCE_DMA,
-		}, {
-			.name = "txx9dmac-chan",
-			.start = dma_base + dma_chan_in,
-			.flags = IORESOURCE_DMA,
-		}
-	};
-	struct platform_device *pdev =
-		platform_device_alloc("txx9aclc-ac97", -1);
-
-	if (!pdev ||
-	    platform_device_add_resources(pdev, res, ARRAY_SIZE(res)) ||
-	    platform_device_add(pdev))
-		platform_device_put(pdev);
-#endif
 }
 
 static struct bus_type txx9_sramc_subsys = {
@@ -937,6 +803,14 @@ static ssize_t txx9_sram_write(struct file *filp, struct kobject *kobj,
 	return size;
 }
 
+static void txx9_device_release(struct device *dev)
+{
+	struct txx9_sramc_dev *tdev;
+
+	tdev = container_of(dev, struct txx9_sramc_dev, dev);
+	kfree(tdev);
+}
+
 void __init txx9_sramc_init(struct resource *r)
 {
 	struct txx9_sramc_dev *dev;
@@ -951,8 +825,11 @@ void __init txx9_sramc_init(struct resource *r)
 		return;
 	size = resource_size(r);
 	dev->base = ioremap(r->start, size);
-	if (!dev->base)
-		goto exit;
+	if (!dev->base) {
+		kfree(dev);
+		return;
+	}
+	dev->dev.release = &txx9_device_release;
 	dev->dev.bus = &txx9_sramc_subsys;
 	sysfs_bin_attr_init(&dev->bindata_attr);
 	dev->bindata_attr.attr.name = "bindata";
@@ -963,17 +840,14 @@ void __init txx9_sramc_init(struct resource *r)
 	dev->bindata_attr.private = dev;
 	err = device_register(&dev->dev);
 	if (err)
-		goto exit;
+		goto exit_put;
 	err = sysfs_create_bin_file(&dev->dev.kobj, &dev->bindata_attr);
 	if (err) {
+		iounmap(dev->base);
 		device_unregister(&dev->dev);
-		goto exit;
 	}
 	return;
-exit:
-	if (dev) {
-		if (dev->base)
-			iounmap(dev->base);
-		kfree(dev);
-	}
+exit_put:
+	iounmap(dev->base);
+	put_device(&dev->dev);
 }

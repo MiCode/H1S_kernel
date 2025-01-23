@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_PREEMPT_H
 #define __ASM_PREEMPT_H
 
@@ -7,10 +8,10 @@
 
 static __always_inline int preempt_count(void)
 {
-	return current_thread_info()->preempt_count;
+	return READ_ONCE(current_thread_info()->preempt_count);
 }
 
-static __always_inline int *preempt_count_ptr(void)
+static __always_inline volatile int *preempt_count_ptr(void)
 {
 	return &current_thread_info()->preempt_count;
 }
@@ -23,15 +24,12 @@ static __always_inline void preempt_count_set(int pc)
 /*
  * must be macros to avoid header recursion hell
  */
-#define task_preempt_count(p) \
-	(task_thread_info(p)->preempt_count & ~PREEMPT_NEED_RESCHED)
-
 #define init_task_preempt_count(p) do { \
-	task_thread_info(p)->preempt_count = PREEMPT_DISABLED; \
+	task_thread_info(p)->preempt_count = FORK_PREEMPT_COUNT; \
 } while (0)
 
 #define init_idle_preempt_count(p, cpu) do { \
-	task_thread_info(p)->preempt_count = PREEMPT_ENABLED; \
+	task_thread_info(p)->preempt_count = PREEMPT_DISABLED; \
 } while (0)
 
 static __always_inline void set_preempt_need_resched(void)
@@ -74,19 +72,29 @@ static __always_inline bool __preempt_count_dec_and_test(void)
 /*
  * Returns true when we need to resched and can (barring IRQ state).
  */
-static __always_inline bool should_resched(void)
+static __always_inline bool should_resched(int preempt_offset)
 {
-	return unlikely(!preempt_count() && tif_need_resched());
+	return unlikely(preempt_count() == preempt_offset &&
+			tif_need_resched());
 }
 
-#ifdef CONFIG_PREEMPT
+#ifdef CONFIG_PREEMPTION
 extern asmlinkage void preempt_schedule(void);
-#define __preempt_schedule() preempt_schedule()
+extern asmlinkage void preempt_schedule_notrace(void);
 
-#ifdef CONFIG_CONTEXT_TRACKING
-extern asmlinkage void preempt_schedule_context(void);
-#define __preempt_schedule_context() preempt_schedule_context()
-#endif
-#endif /* CONFIG_PREEMPT */
+#if defined(CONFIG_PREEMPT_DYNAMIC) && defined(CONFIG_HAVE_PREEMPT_DYNAMIC_KEY)
+
+void dynamic_preempt_schedule(void);
+void dynamic_preempt_schedule_notrace(void);
+#define __preempt_schedule()		dynamic_preempt_schedule()
+#define __preempt_schedule_notrace()	dynamic_preempt_schedule_notrace()
+
+#else /* !CONFIG_PREEMPT_DYNAMIC || !CONFIG_HAVE_PREEMPT_DYNAMIC_KEY*/
+
+#define __preempt_schedule() preempt_schedule()
+#define __preempt_schedule_notrace() preempt_schedule_notrace()
+
+#endif /* CONFIG_PREEMPT_DYNAMIC && CONFIG_HAVE_PREEMPT_DYNAMIC_KEY*/
+#endif /* CONFIG_PREEMPTION */
 
 #endif /* __ASM_PREEMPT_H */

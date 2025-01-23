@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* SF16-FMR2 and SF16-FMD2 radio driver for Linux
  * Copyright (c) 2011 Ondrej Zary
  *
@@ -7,14 +8,14 @@
  */
 
 #include <linux/delay.h>
-#include <linux/module.h>	/* Modules 			*/
+#include <linux/module.h>	/* Modules			*/
 #include <linux/init.h>		/* Initdata			*/
 #include <linux/slab.h>
 #include <linux/ioport.h>	/* request_region		*/
 #include <linux/io.h>		/* outb, outb_p			*/
 #include <linux/isa.h>
 #include <linux/pnp.h>
-#include <media/tea575x.h>
+#include <media/drv-intf/tea575x.h>
 
 MODULE_AUTHOR("Ondrej Zary");
 MODULE_DESCRIPTION("MediaForte SF16-FMR2 and SF16-FMD2 FM radio card driver");
@@ -82,7 +83,7 @@ static void fmr2_tea575x_set_direction(struct snd_tea575x *tea, bool output)
 {
 }
 
-static struct snd_tea575x_ops fmr2_tea_ops = {
+static const struct snd_tea575x_ops fmr2_tea_ops = {
 	.set_pins = fmr2_tea575x_set_pins,
 	.get_pins = fmr2_tea575x_get_pins,
 	.set_direction = fmr2_tea575x_set_direction,
@@ -197,7 +198,7 @@ static int fmr2_tea_ext_init(struct snd_tea575x *tea)
 	return 0;
 }
 
-static struct pnp_device_id fmr2_pnp_ids[] = {
+static const struct pnp_device_id fmr2_pnp_ids[] = {
 	{ .id = "MFRad13" }, /* tuner subdevice of SF16-FMD2 */
 	{ .id = "" }
 };
@@ -213,8 +214,8 @@ static int fmr2_probe(struct fmr2 *fmr2, struct device *pdev, int io)
 		if (io == fmr2_cards[i]->io)
 			return -EBUSY;
 
-	strlcpy(fmr2->v4l2_dev.name, "radio-sf16fmr2",
-			sizeof(fmr2->v4l2_dev.name)),
+	strscpy(fmr2->v4l2_dev.name, "radio-sf16fmr2",
+		sizeof(fmr2->v4l2_dev.name));
 	fmr2->io = io;
 
 	if (!request_region(fmr2->io, 2, fmr2->v4l2_dev.name)) {
@@ -234,7 +235,7 @@ static int fmr2_probe(struct fmr2 *fmr2, struct device *pdev, int io)
 	fmr2->tea.radio_nr = radio_nr[num_fmr2_cards];
 	fmr2->tea.ops = &fmr2_tea_ops;
 	fmr2->tea.ext_init = fmr2_tea_ext_init;
-	strlcpy(fmr2->tea.card, card_name, sizeof(fmr2->tea.card));
+	strscpy(fmr2->tea.card, card_name, sizeof(fmr2->tea.card));
 	snprintf(fmr2->tea.bus_info, sizeof(fmr2->tea.bus_info), "%s:%s",
 			fmr2->is_fmd2 ? "PnP" : "ISA", dev_name(pdev));
 
@@ -292,11 +293,9 @@ static void fmr2_remove(struct fmr2 *fmr2)
 	kfree(fmr2);
 }
 
-static int fmr2_isa_remove(struct device *pdev, unsigned int ndev)
+static void fmr2_isa_remove(struct device *pdev, unsigned int ndev)
 {
 	fmr2_remove(dev_get_drvdata(pdev));
-
-	return 0;
 }
 
 static void fmr2_pnp_remove(struct pnp_dev *pdev)
@@ -305,7 +304,7 @@ static void fmr2_pnp_remove(struct pnp_dev *pdev)
 	pnp_set_drvdata(pdev, NULL);
 }
 
-struct isa_driver fmr2_isa_driver = {
+static struct isa_driver fmr2_isa_driver = {
 	.match		= fmr2_isa_match,
 	.remove		= fmr2_isa_remove,
 	.driver		= {
@@ -313,7 +312,7 @@ struct isa_driver fmr2_isa_driver = {
 	},
 };
 
-struct pnp_driver fmr2_pnp_driver = {
+static struct pnp_driver fmr2_pnp_driver = {
 	.name		= "radio-sf16fmr2",
 	.id_table	= fmr2_pnp_ids,
 	.probe		= fmr2_pnp_probe,

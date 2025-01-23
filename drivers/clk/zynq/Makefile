@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # Zynq clock specific Makefile
 
-obj-$(CONFIG_ARCH_ZYNQ)	+= clkc.o pll.o
+obj-y	+= clkc.o pll.o

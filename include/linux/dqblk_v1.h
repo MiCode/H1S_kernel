@@ -1,12 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *	File with in-memory structures of old quota format
  */
 
 #ifndef _LINUX_DQBLK_V1_H
 #define _LINUX_DQBLK_V1_H
-
-/* Root squash turned on */
-#define V1_DQF_RSQUASH 1
 
 /* Numbers of blocks needed for updates */
 #define V1_INIT_ALLOC 1

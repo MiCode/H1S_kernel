@@ -1,22 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*  Architecture specific parts of HP's STI (framebuffer) driver.
  *  Structures are HP-UX compatible for XFree86 usage.
  * 
  *    Linux/PA-RISC Project (http://www.parisc-linux.org/)
  *    Copyright (C) 2001 Helge Deller (deller a parisc-linux org)
- *
- *    This program is free software; you can redistribute it and/or modify
- *    it under the terms of the GNU General Public License as published by
- *    the Free Software Foundation; either version 2 of the License, or
- *    (at your option) any later version.
- *
- *    This program is distributed in the hope that it will be useful,
- *    but WITHOUT ANY WARRANTY; without even the implied warranty of
- *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU General Public License for more details.
- *
- *    You should have received a copy of the GNU General Public License
- *    along with this program; if not, write to the Free Software
- *    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #ifndef __ASM_PARISC_GRFIOCTL_H
@@ -72,42 +59,4 @@
 #define CRT_ID_LEGO		0x35ACDA30	/* Lego FX5, FX10 ... */
 #define CRT_ID_PINNACLE		0x35ACDA16	/* Pinnacle FXe */ 
 
-/* structure for ioctl(GCDESCRIBE) */
-
-#define gaddr_t unsigned long	/* FIXME: PA2.0 (64bit) portable ? */
-
-struct	grf_fbinfo {
-	unsigned int	id;		/* upper 32 bits of graphics id */
-	unsigned int	mapsize;	/* mapped size of framebuffer */
-	unsigned int	dwidth, dlength;/* x and y sizes */
-	unsigned int	width, length;	/* total x and total y size */
-	unsigned int	xlen;		/* x pitch size */
-	unsigned int	bpp, bppu;	/* bits per pixel and used bpp */
-	unsigned int	npl, nplbytes;	/* # of planes and bytes per plane */
-	char		name[32];	/* name of the device (from ROM) */
-	unsigned int	attr;		/* attributes */
-	gaddr_t 	fbbase, regbase;/* framebuffer and register base addr */
-	gaddr_t		regions[6];	/* region bases */
-};
-
-#define	GCID		_IOR('G', 0, int)
-#define	GCON		_IO('G', 1)
-#define	GCOFF		_IO('G', 2)
-#define	GCAON		_IO('G', 3)
-#define	GCAOFF		_IO('G', 4)
-#define	GCMAP		_IOWR('G', 5, int)
-#define	GCUNMAP		_IOWR('G', 6, int)
-#define	GCMAP_HPUX	_IO('G', 5)
-#define	GCUNMAP_HPUX	_IO('G', 6)
-#define	GCLOCK		_IO('G', 7)
-#define	GCUNLOCK	_IO('G', 8)
-#define	GCLOCK_MINIMUM	_IO('G', 9)
-#define	GCUNLOCK_MINIMUM _IO('G', 10)
-#define	GCSTATIC_CMAP	_IO('G', 11)
-#define	GCVARIABLE_CMAP _IO('G', 12)
-#define GCTERM		_IOWR('G',20,int)	/* multi-headed Tomcat */ 
-#define GCDESCRIBE	_IOR('G', 21, struct grf_fbinfo)
-#define GCFASTLOCK	_IO('G', 26)
-
 #endif /* __ASM_PARISC_GRFIOCTL_H */
-

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/proc/kmsg.c
  *
@@ -14,10 +15,7 @@
 #include <linux/fs.h>
 #include <linux/syslog.h>
 
-#include <asm/uaccess.h>
 #include <asm/io.h>
-
-extern wait_queue_head_t log_wait;
 
 static int kmsg_open(struct inode * inode, struct file * file)
 {
@@ -39,26 +37,27 @@ static ssize_t kmsg_read(struct file *file, char __user *buf,
 	return do_syslog(SYSLOG_ACTION_READ, buf, count, SYSLOG_FROM_PROC);
 }
 
-static unsigned int kmsg_poll(struct file *file, poll_table *wait)
+static __poll_t kmsg_poll(struct file *file, poll_table *wait)
 {
 	poll_wait(file, &log_wait, wait);
 	if (do_syslog(SYSLOG_ACTION_SIZE_UNREAD, NULL, 0, SYSLOG_FROM_PROC))
-		return POLLIN | POLLRDNORM;
+		return EPOLLIN | EPOLLRDNORM;
 	return 0;
 }
 
 
-static const struct file_operations proc_kmsg_operations = {
-	.read		= kmsg_read,
-	.poll		= kmsg_poll,
-	.open		= kmsg_open,
-	.release	= kmsg_release,
-	.llseek		= generic_file_llseek,
+static const struct proc_ops kmsg_proc_ops = {
+	.proc_flags	= PROC_ENTRY_PERMANENT,
+	.proc_read	= kmsg_read,
+	.proc_poll	= kmsg_poll,
+	.proc_open	= kmsg_open,
+	.proc_release	= kmsg_release,
+	.proc_lseek	= generic_file_llseek,
 };
 
 static int __init proc_kmsg_init(void)
 {
-	proc_create("kmsg", S_IRUSR, NULL, &proc_kmsg_operations);
+	proc_create("kmsg", S_IRUSR, NULL, &kmsg_proc_ops);
 	return 0;
 }
 fs_initcall(proc_kmsg_init);

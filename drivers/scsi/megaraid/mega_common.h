@@ -1,13 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *
  *			Linux MegaRAID device driver
  *
  * Copyright (c) 2003-2004  LSI Logic Corporation.
- *
- *	   This program is free software; you can redistribute it and/or
- *	   modify it under the terms of the GNU General Public License
- *	   as published by the Free Software Foundation; either version
- *	   2 of the License, or (at your option) any later version.
  *
  * FILE		: mega_common.h
  *
@@ -204,7 +200,7 @@ typedef struct {
 #define SCP2HOSTDATA(scp)		SCP2HOST(scp)->hostdata	// to soft state
 #define SCP2CHANNEL(scp)		(scp)->device->channel	// to channel
 #define SCP2TARGET(scp)			(scp)->device->id	// to target
-#define SCP2LUN(scp)			(scp)->device->lun	// to LUN
+#define SCP2LUN(scp)			(u32)(scp)->device->lun	// to LUN
 
 // generic macro to convert scsi command and host to controller's soft state
 #define SCSIHOST2ADAP(host)	(((caddr_t *)(host->hostdata))[0])
@@ -286,5 +282,3 @@ struct mraid_pci_blk {
 };
 
 #endif // _MEGA_COMMON_H_
-
-// vim: set ts=8 sw=8 tw=78:

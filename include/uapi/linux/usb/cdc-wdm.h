@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * USB CDC Device Management userspace API definitions
  *
@@ -8,6 +9,8 @@
 
 #ifndef _UAPI__LINUX_USB_CDC_WDM_H
 #define _UAPI__LINUX_USB_CDC_WDM_H
+
+#include <linux/types.h>
 
 /*
  * This IOCTL is used to retrieve the wMaxCommand for the device,

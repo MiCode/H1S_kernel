@@ -1,25 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* cx25840 VBI functions
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
 
 #include <linux/videodev2.h>
 #include <linux/i2c.h>
 #include <media/v4l2-common.h>
-#include <media/cx25840.h>
+#include <media/drv-intf/cx25840.h>
 
 #include "cx25840-core.h"
 
@@ -99,12 +86,14 @@ int cx25840_g_sliced_fmt(struct v4l2_subdev *sd, struct v4l2_sliced_vbi_format *
 	memset(svbi->service_lines, 0, sizeof(svbi->service_lines));
 	svbi->service_set = 0;
 	/* we're done if raw VBI is active */
+	/* TODO: this will have to be changed for generic_mode VBI */
 	if ((cx25840_read(client, 0x404) & 0x10) == 0)
 		return 0;
 
 	if (is_pal) {
 		for (i = 7; i <= 23; i++) {
-			u8 v = cx25840_read(client, 0x424 + i - 7);
+			u8 v = cx25840_read(client,
+				 state->vbi_regs_offset + 0x424 + i - 7);
 
 			svbi->service_lines[0][i] = lcr2vbi[v >> 4];
 			svbi->service_lines[1][i] = lcr2vbi[v & 0xf];
@@ -113,7 +102,8 @@ int cx25840_g_sliced_fmt(struct v4l2_subdev *sd, struct v4l2_sliced_vbi_format *
 		}
 	} else {
 		for (i = 10; i <= 21; i++) {
-			u8 v = cx25840_read(client, 0x424 + i - 10);
+			u8 v = cx25840_read(client,
+				state->vbi_regs_offset + 0x424 + i - 10);
 
 			svbi->service_lines[0][i] = lcr2vbi[v >> 4];
 			svbi->service_lines[1][i] = lcr2vbi[v & 0xf];
@@ -135,7 +125,11 @@ int cx25840_s_raw_fmt(struct v4l2_subdev *sd, struct v4l2_vbi_format *fmt)
 	cx25840_std_setup(client);
 
 	/* VBI Offset */
-	cx25840_write(client, 0x47f, vbi_offset);
+	if (is_cx23888(state))
+		cx25840_write(client, 0x54f, vbi_offset);
+	else
+		cx25840_write(client, 0x47f, vbi_offset);
+	/* TODO: this will have to be changed for generic_mode VBI */
 	cx25840_write(client, 0x404, 0x2e);
 	return 0;
 }
@@ -156,9 +150,13 @@ int cx25840_s_sliced_fmt(struct v4l2_subdev *sd, struct v4l2_sliced_vbi_format *
 	cx25840_std_setup(client);
 
 	/* Sliced VBI */
+	/* TODO: this will have to be changed for generic_mode VBI */
 	cx25840_write(client, 0x404, 0x32);	/* Ancillary data */
 	cx25840_write(client, 0x406, 0x13);
-	cx25840_write(client, 0x47f, vbi_offset);
+	if (is_cx23888(state))
+		cx25840_write(client, 0x54f, vbi_offset);
+	else
+		cx25840_write(client, 0x47f, vbi_offset);
 
 	if (is_pal) {
 		for (i = 0; i <= 6; i++)
@@ -194,17 +192,24 @@ int cx25840_s_sliced_fmt(struct v4l2_subdev *sd, struct v4l2_sliced_vbi_format *
 	}
 
 	if (is_pal) {
-		for (x = 1, i = 0x424; i <= 0x434; i++, x++)
+		for (x = 1, i = state->vbi_regs_offset + 0x424;
+		     i <= state->vbi_regs_offset + 0x434; i++, x++)
 			cx25840_write(client, i, lcr[6 + x]);
 	} else {
-		for (x = 1, i = 0x424; i <= 0x430; i++, x++)
+		for (x = 1, i = state->vbi_regs_offset + 0x424;
+		     i <= state->vbi_regs_offset + 0x430; i++, x++)
 			cx25840_write(client, i, lcr[9 + x]);
-		for (i = 0x431; i <= 0x434; i++)
+		for (i = state->vbi_regs_offset + 0x431;
+		     i <= state->vbi_regs_offset + 0x434; i++)
 			cx25840_write(client, i, 0);
 	}
 
-	cx25840_write(client, 0x43c, 0x16);
-	cx25840_write(client, 0x474, is_pal ? 0x2a : 0x22);
+	cx25840_write(client, state->vbi_regs_offset + 0x43c, 0x16);
+	/* TODO: this will have to be changed for generic_mode VBI */
+	if (is_cx23888(state))
+		cx25840_write(client, 0x428, is_pal ? 0x2a : 0x22);
+	else
+		cx25840_write(client, 0x474, is_pal ? 0x2a : 0x22);
 	return 0;
 }
 

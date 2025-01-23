@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/net/sunrpc/svc.c
  *
@@ -11,7 +12,7 @@
  */
 
 #include <linux/linkage.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/errno.h>
 #include <linux/net.h>
 #include <linux/in.h>
@@ -28,11 +29,15 @@
 #include <linux/sunrpc/clnt.h>
 #include <linux/sunrpc/bc_xprt.h>
 
+#include <trace/events/sunrpc.h>
+
+#include "fail.h"
+
 #define RPCDBG_FACILITY	RPCDBG_SVCDSP
 
 static void svc_unregister(const struct svc_serv *serv, struct net *net);
 
-#define svc_serv_is_pooled(serv)    ((serv)->sv_function)
+#define SVC_POOL_DEFAULT	SVC_POOL_GLOBAL
 
 /*
  * Mode for mapping cpus to pools.
@@ -44,13 +49,13 @@ enum {
 	SVC_POOL_PERCPU,	/* one pool per cpu */
 	SVC_POOL_PERNODE	/* one pool per numa node */
 };
-#define SVC_POOL_DEFAULT	SVC_POOL_GLOBAL
 
 /*
  * Structure for mapping cpus to pools and vice versa.
  * Setup once during sunrpc initialisation.
  */
-static struct svc_pool_map {
+
+struct svc_pool_map {
 	int count;			/* How many svc_servs use us */
 	int mode;			/* Note: int not enum to avoid
 					 * warnings about "enumeration value
@@ -58,14 +63,16 @@ static struct svc_pool_map {
 	unsigned int npools;
 	unsigned int *pool_to;		/* maps pool id to cpu or node */
 	unsigned int *to_pool;		/* maps cpu or node to pool id */
-} svc_pool_map = {
-	.count = 0,
+};
+
+static struct svc_pool_map svc_pool_map = {
 	.mode = SVC_POOL_DEFAULT
 };
+
 static DEFINE_MUTEX(svc_pool_map_mutex);/* protects svc_pool_map.count only */
 
 static int
-param_set_pool_mode(const char *val, struct kernel_param *kp)
+param_set_pool_mode(const char *val, const struct kernel_param *kp)
 {
 	int *ip = (int *)kp->arg;
 	struct svc_pool_map *m = &svc_pool_map;
@@ -95,22 +102,22 @@ out:
 }
 
 static int
-param_get_pool_mode(char *buf, struct kernel_param *kp)
+param_get_pool_mode(char *buf, const struct kernel_param *kp)
 {
 	int *ip = (int *)kp->arg;
 
 	switch (*ip)
 	{
 	case SVC_POOL_AUTO:
-		return strlcpy(buf, "auto", 20);
+		return sysfs_emit(buf, "auto\n");
 	case SVC_POOL_GLOBAL:
-		return strlcpy(buf, "global", 20);
+		return sysfs_emit(buf, "global\n");
 	case SVC_POOL_PERCPU:
-		return strlcpy(buf, "percpu", 20);
+		return sysfs_emit(buf, "percpu\n");
 	case SVC_POOL_PERNODE:
-		return strlcpy(buf, "pernode", 20);
+		return sysfs_emit(buf, "pernode\n");
 	default:
-		return sprintf(buf, "%d", *ip);
+		return sysfs_emit(buf, "%d\n", *ip);
 	}
 }
 
@@ -189,7 +196,7 @@ svc_pool_map_init_percpu(struct svc_pool_map *m)
 		return err;
 
 	for_each_online_cpu(cpu) {
-		BUG_ON(pidx > maxpools);
+		BUG_ON(pidx >= maxpools);
 		m->to_pool[cpu] = pidx;
 		m->pool_to[pidx] = cpu;
 		pidx++;
@@ -231,8 +238,10 @@ svc_pool_map_init_pernode(struct svc_pool_map *m)
 
 /*
  * Add a reference to the global map of cpus to pools (and
- * vice versa).  Initialise the map if we're the first user.
- * Returns the number of pools.
+ * vice versa) if pools are in use.
+ * Initialise the map if we're the first user.
+ * Returns the number of pools. If this is '1', no reference
+ * was taken.
  */
 static unsigned int
 svc_pool_map_get(void)
@@ -244,6 +253,7 @@ svc_pool_map_get(void)
 
 	if (m->count++) {
 		mutex_unlock(&svc_pool_map_mutex);
+		WARN_ON_ONCE(m->npools <= 1);
 		return m->npools;
 	}
 
@@ -259,30 +269,36 @@ svc_pool_map_get(void)
 		break;
 	}
 
-	if (npools < 0) {
+	if (npools <= 0) {
 		/* default, or memory allocation failure */
 		npools = 1;
 		m->mode = SVC_POOL_GLOBAL;
 	}
 	m->npools = npools;
 
+	if (npools == 1)
+		/* service is unpooled, so doesn't hold a reference */
+		m->count--;
+
 	mutex_unlock(&svc_pool_map_mutex);
-	return m->npools;
+	return npools;
 }
 
-
 /*
- * Drop a reference to the global map of cpus to pools.
+ * Drop a reference to the global map of cpus to pools, if
+ * pools were in use, i.e. if npools > 1.
  * When the last reference is dropped, the map data is
  * freed; this allows the sysadmin to change the pool
  * mode using the pool_mode module option without
  * rebooting or re-loading sunrpc.ko.
  */
 static void
-svc_pool_map_put(void)
+svc_pool_map_put(int npools)
 {
 	struct svc_pool_map *m = &svc_pool_map;
 
+	if (npools <= 1)
+		return;
 	mutex_lock(&svc_pool_map_mutex);
 
 	if (!--m->count) {
@@ -295,7 +311,6 @@ svc_pool_map_put(void)
 
 	mutex_unlock(&svc_pool_map_mutex);
 }
-
 
 static int svc_pool_map_get_node(unsigned int pidx)
 {
@@ -341,32 +356,35 @@ svc_pool_map_set_cpumask(struct task_struct *task, unsigned int pidx)
 	}
 }
 
-/*
- * Use the mapping mode to choose a pool for a given CPU.
- * Used when enqueueing an incoming RPC.  Always returns
- * a non-NULL pool pointer.
+/**
+ * svc_pool_for_cpu - Select pool to run a thread on this cpu
+ * @serv: An RPC service
+ *
+ * Use the active CPU and the svc_pool_map's mode setting to
+ * select the svc thread pool to use. Once initialized, the
+ * svc_pool_map does not change.
+ *
+ * Return value:
+ *   A pointer to an svc_pool
  */
-struct svc_pool *
-svc_pool_for_cpu(struct svc_serv *serv, int cpu)
+struct svc_pool *svc_pool_for_cpu(struct svc_serv *serv)
 {
 	struct svc_pool_map *m = &svc_pool_map;
+	int cpu = raw_smp_processor_id();
 	unsigned int pidx = 0;
 
-	/*
-	 * An uninitialised map happens in a pure client when
-	 * lockd is brought up, so silently treat it the
-	 * same as SVC_POOL_GLOBAL.
-	 */
-	if (svc_serv_is_pooled(serv)) {
-		switch (m->mode) {
-		case SVC_POOL_PERCPU:
-			pidx = m->to_pool[cpu];
-			break;
-		case SVC_POOL_PERNODE:
-			pidx = m->to_pool[cpu_to_node(cpu)];
-			break;
-		}
+	if (serv->sv_nrpools <= 1)
+		return serv->sv_pools;
+
+	switch (m->mode) {
+	case SVC_POOL_PERCPU:
+		pidx = m->to_pool[cpu];
+		break;
+	case SVC_POOL_PERNODE:
+		pidx = m->to_pool[cpu_to_node(cpu)];
+		break;
 	}
+
 	return &serv->sv_pools[pidx % serv->sv_nrpools];
 }
 
@@ -400,7 +418,7 @@ static int svc_uses_rpcbind(struct svc_serv *serv)
 		for (i = 0; i < progp->pg_nvers; i++) {
 			if (progp->pg_vers[i] == NULL)
 				continue;
-			if (progp->pg_vers[i]->vs_hidden == 0)
+			if (!progp->pg_vers[i]->vs_hidden)
 				return 1;
 		}
 	}
@@ -416,12 +434,27 @@ int svc_bind(struct svc_serv *serv, struct net *net)
 }
 EXPORT_SYMBOL_GPL(svc_bind);
 
+#if defined(CONFIG_SUNRPC_BACKCHANNEL)
+static void
+__svc_init_bc(struct svc_serv *serv)
+{
+	INIT_LIST_HEAD(&serv->sv_cb_list);
+	spin_lock_init(&serv->sv_cb_lock);
+	init_waitqueue_head(&serv->sv_cb_waitq);
+}
+#else
+static void
+__svc_init_bc(struct svc_serv *serv)
+{
+}
+#endif
+
 /*
  * Create an RPC service
  */
 static struct svc_serv *
 __svc_create(struct svc_program *prog, unsigned int bufsize, int npools,
-	     void (*shutdown)(struct svc_serv *serv, struct net *net))
+	     int (*threadfn)(void *data))
 {
 	struct svc_serv	*serv;
 	unsigned int vers;
@@ -432,13 +465,13 @@ __svc_create(struct svc_program *prog, unsigned int bufsize, int npools,
 		return NULL;
 	serv->sv_name      = prog->pg_name;
 	serv->sv_program   = prog;
-	serv->sv_nrthreads = 1;
+	kref_init(&serv->sv_refcnt);
 	serv->sv_stats     = prog->pg_stats;
 	if (bufsize > RPCSVC_MAXPAYLOAD)
 		bufsize = RPCSVC_MAXPAYLOAD;
 	serv->sv_max_payload = bufsize? bufsize : 4096;
 	serv->sv_max_mesg  = roundup(serv->sv_max_payload + PAGE_SIZE, PAGE_SIZE);
-	serv->sv_shutdown  = shutdown;
+	serv->sv_threadfn = threadfn;
 	xdrsize = 0;
 	while (prog) {
 		prog->pg_lovers = prog->pg_nvers-1;
@@ -455,8 +488,10 @@ __svc_create(struct svc_program *prog, unsigned int bufsize, int npools,
 	serv->sv_xdrsize   = xdrsize;
 	INIT_LIST_HEAD(&serv->sv_tempsocks);
 	INIT_LIST_HEAD(&serv->sv_permsocks);
-	init_timer(&serv->sv_temptimer);
+	timer_setup(&serv->sv_temptimer, NULL, 0);
 	spin_lock_init(&serv->sv_lock);
+
+	__svc_init_bc(serv);
 
 	serv->sv_nrpools = npools;
 	serv->sv_pools =
@@ -474,74 +509,70 @@ __svc_create(struct svc_program *prog, unsigned int bufsize, int npools,
 				i, serv->sv_name);
 
 		pool->sp_id = i;
-		INIT_LIST_HEAD(&pool->sp_threads);
 		INIT_LIST_HEAD(&pool->sp_sockets);
 		INIT_LIST_HEAD(&pool->sp_all_threads);
 		spin_lock_init(&pool->sp_lock);
-	}
 
-	if (svc_uses_rpcbind(serv) && (!serv->sv_shutdown))
-		serv->sv_shutdown = svc_rpcb_cleanup;
+		percpu_counter_init(&pool->sp_messages_arrived, 0, GFP_KERNEL);
+		percpu_counter_init(&pool->sp_sockets_queued, 0, GFP_KERNEL);
+		percpu_counter_init(&pool->sp_threads_woken, 0, GFP_KERNEL);
+	}
 
 	return serv;
 }
 
-struct svc_serv *
-svc_create(struct svc_program *prog, unsigned int bufsize,
-	   void (*shutdown)(struct svc_serv *serv, struct net *net))
+/**
+ * svc_create - Create an RPC service
+ * @prog: the RPC program the new service will handle
+ * @bufsize: maximum message size for @prog
+ * @threadfn: a function to service RPC requests for @prog
+ *
+ * Returns an instantiated struct svc_serv object or NULL.
+ */
+struct svc_serv *svc_create(struct svc_program *prog, unsigned int bufsize,
+			    int (*threadfn)(void *data))
 {
-	return __svc_create(prog, bufsize, /*npools*/1, shutdown);
+	return __svc_create(prog, bufsize, 1, threadfn);
 }
 EXPORT_SYMBOL_GPL(svc_create);
 
-struct svc_serv *
-svc_create_pooled(struct svc_program *prog, unsigned int bufsize,
-		  void (*shutdown)(struct svc_serv *serv, struct net *net),
-		  svc_thread_fn func, struct module *mod)
+/**
+ * svc_create_pooled - Create an RPC service with pooled threads
+ * @prog: the RPC program the new service will handle
+ * @bufsize: maximum message size for @prog
+ * @threadfn: a function to service RPC requests for @prog
+ *
+ * Returns an instantiated struct svc_serv object or NULL.
+ */
+struct svc_serv *svc_create_pooled(struct svc_program *prog,
+				   unsigned int bufsize,
+				   int (*threadfn)(void *data))
 {
 	struct svc_serv *serv;
 	unsigned int npools = svc_pool_map_get();
 
-	serv = __svc_create(prog, bufsize, npools, shutdown);
-
-	if (serv != NULL) {
-		serv->sv_function = func;
-		serv->sv_module = mod;
-	}
-
+	serv = __svc_create(prog, bufsize, npools, threadfn);
+	if (!serv)
+		goto out_err;
 	return serv;
+out_err:
+	svc_pool_map_put(npools);
+	return NULL;
 }
 EXPORT_SYMBOL_GPL(svc_create_pooled);
 
-void svc_shutdown_net(struct svc_serv *serv, struct net *net)
-{
-	svc_close_net(serv, net);
-
-	if (serv->sv_shutdown)
-		serv->sv_shutdown(serv, net);
-}
-EXPORT_SYMBOL_GPL(svc_shutdown_net);
-
 /*
  * Destroy an RPC service. Should be called with appropriate locking to
- * protect the sv_nrthreads, sv_permsocks and sv_tempsocks.
+ * protect sv_permsocks and sv_tempsocks.
  */
 void
-svc_destroy(struct svc_serv *serv)
+svc_destroy(struct kref *ref)
 {
-	dprintk("svc: svc_destroy(%s, %d)\n",
-				serv->sv_program->pg_name,
-				serv->sv_nrthreads);
+	struct svc_serv *serv = container_of(ref, struct svc_serv, sv_refcnt);
+	unsigned int i;
 
-	if (serv->sv_nrthreads) {
-		if (--(serv->sv_nrthreads) != 0) {
-			svc_sock_update_bufs(serv);
-			return;
-		}
-	} else
-		printk("svc_destroy: no threads for serv=%p!\n", serv);
-
-	del_timer_sync(&serv->sv_temptimer);
+	dprintk("svc: svc_destroy(%s)\n", serv->sv_program->pg_name);
+	timer_shutdown_sync(&serv->sv_temptimer);
 
 	/*
 	 * The last user is gone and thus all sockets have to be destroyed to
@@ -552,42 +583,39 @@ svc_destroy(struct svc_serv *serv)
 
 	cache_clean_deferred(serv);
 
-	if (svc_serv_is_pooled(serv))
-		svc_pool_map_put();
+	svc_pool_map_put(serv->sv_nrpools);
 
+	for (i = 0; i < serv->sv_nrpools; i++) {
+		struct svc_pool *pool = &serv->sv_pools[i];
+
+		percpu_counter_destroy(&pool->sp_messages_arrived);
+		percpu_counter_destroy(&pool->sp_sockets_queued);
+		percpu_counter_destroy(&pool->sp_threads_woken);
+	}
 	kfree(serv->sv_pools);
 	kfree(serv);
 }
 EXPORT_SYMBOL_GPL(svc_destroy);
 
-/*
- * Allocate an RPC server's buffer space.
- * We allocate pages and place them in rq_argpages.
- */
-static int
+static bool
 svc_init_buffer(struct svc_rqst *rqstp, unsigned int size, int node)
 {
-	unsigned int pages, arghi;
+	unsigned long pages, ret;
 
 	/* bc_xprt uses fore channel allocated buffers */
 	if (svc_is_backchannel(rqstp))
-		return 1;
+		return true;
 
 	pages = size / PAGE_SIZE + 1; /* extra page as we hold both request and reply.
 				       * We assume one is at most one page
 				       */
-	arghi = 0;
 	WARN_ON_ONCE(pages > RPCSVC_MAXPAGES);
 	if (pages > RPCSVC_MAXPAGES)
 		pages = RPCSVC_MAXPAGES;
-	while (pages) {
-		struct page *p = alloc_pages_node(node, GFP_KERNEL, 0);
-		if (!p)
-			break;
-		rqstp->rq_pages[arghi++] = p;
-		pages--;
-	}
-	return pages == 0;
+
+	ret = alloc_pages_bulk_array_node(GFP_KERNEL, node, pages,
+					  rqstp->rq_pages);
+	return ret == pages;
 }
 
 /*
@@ -604,60 +632,101 @@ svc_release_buffer(struct svc_rqst *rqstp)
 }
 
 struct svc_rqst *
-svc_prepare_thread(struct svc_serv *serv, struct svc_pool *pool, int node)
+svc_rqst_alloc(struct svc_serv *serv, struct svc_pool *pool, int node)
 {
 	struct svc_rqst	*rqstp;
 
 	rqstp = kzalloc_node(sizeof(*rqstp), GFP_KERNEL, node);
 	if (!rqstp)
-		goto out_enomem;
+		return rqstp;
 
-	init_waitqueue_head(&rqstp->rq_wait);
+	folio_batch_init(&rqstp->rq_fbatch);
 
-	serv->sv_nrthreads++;
-	spin_lock_bh(&pool->sp_lock);
-	pool->sp_nrthreads++;
-	list_add(&rqstp->rq_all, &pool->sp_all_threads);
-	spin_unlock_bh(&pool->sp_lock);
+	__set_bit(RQ_BUSY, &rqstp->rq_flags);
 	rqstp->rq_server = serv;
 	rqstp->rq_pool = pool;
 
+	rqstp->rq_scratch_page = alloc_pages_node(node, GFP_KERNEL, 0);
+	if (!rqstp->rq_scratch_page)
+		goto out_enomem;
+
 	rqstp->rq_argp = kmalloc_node(serv->sv_xdrsize, GFP_KERNEL, node);
 	if (!rqstp->rq_argp)
-		goto out_thread;
+		goto out_enomem;
 
 	rqstp->rq_resp = kmalloc_node(serv->sv_xdrsize, GFP_KERNEL, node);
 	if (!rqstp->rq_resp)
-		goto out_thread;
+		goto out_enomem;
 
 	if (!svc_init_buffer(rqstp, serv->sv_max_mesg, node))
-		goto out_thread;
+		goto out_enomem;
 
 	return rqstp;
-out_thread:
-	svc_exit_thread(rqstp);
 out_enomem:
-	return ERR_PTR(-ENOMEM);
+	svc_rqst_free(rqstp);
+	return NULL;
 }
-EXPORT_SYMBOL_GPL(svc_prepare_thread);
+EXPORT_SYMBOL_GPL(svc_rqst_alloc);
 
-/*
- * Choose a pool in which to create a new thread, for svc_set_num_threads
- */
-static inline struct svc_pool *
-choose_pool(struct svc_serv *serv, struct svc_pool *pool, unsigned int *state)
+static struct svc_rqst *
+svc_prepare_thread(struct svc_serv *serv, struct svc_pool *pool, int node)
 {
-	if (pool != NULL)
-		return pool;
+	struct svc_rqst	*rqstp;
 
-	return &serv->sv_pools[(*state)++ % serv->sv_nrpools];
+	rqstp = svc_rqst_alloc(serv, pool, node);
+	if (!rqstp)
+		return ERR_PTR(-ENOMEM);
+
+	svc_get(serv);
+	spin_lock_bh(&serv->sv_lock);
+	serv->sv_nrthreads += 1;
+	spin_unlock_bh(&serv->sv_lock);
+
+	spin_lock_bh(&pool->sp_lock);
+	pool->sp_nrthreads++;
+	list_add_rcu(&rqstp->rq_all, &pool->sp_all_threads);
+	spin_unlock_bh(&pool->sp_lock);
+	return rqstp;
 }
 
-/*
- * Choose a thread to kill, for svc_set_num_threads
+/**
+ * svc_pool_wake_idle_thread - Awaken an idle thread in @pool
+ * @pool: service thread pool
+ *
+ * Can be called from soft IRQ or process context. Finding an idle
+ * service thread and marking it BUSY is atomic with respect to
+ * other calls to svc_pool_wake_idle_thread().
+ *
  */
-static inline struct task_struct *
-choose_victim(struct svc_serv *serv, struct svc_pool *pool, unsigned int *state)
+void svc_pool_wake_idle_thread(struct svc_pool *pool)
+{
+	struct svc_rqst	*rqstp;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(rqstp, &pool->sp_all_threads, rq_all) {
+		if (test_and_set_bit(RQ_BUSY, &rqstp->rq_flags))
+			continue;
+
+		WRITE_ONCE(rqstp->rq_qtime, ktime_get());
+		wake_up_process(rqstp->rq_task);
+		rcu_read_unlock();
+		percpu_counter_inc(&pool->sp_threads_woken);
+		trace_svc_wake_up(rqstp->rq_task->pid);
+		return;
+	}
+	rcu_read_unlock();
+
+	set_bit(SP_CONGESTED, &pool->sp_flags);
+}
+
+static struct svc_pool *
+svc_pool_next(struct svc_serv *serv, struct svc_pool *pool, unsigned int *state)
+{
+	return pool ? pool : &serv->sv_pools[(*state)++ % serv->sv_nrpools];
+}
+
+static struct task_struct *
+svc_pool_victim(struct svc_serv *serv, struct svc_pool *pool, unsigned int *state)
 {
 	unsigned int i;
 	struct task_struct *task = NULL;
@@ -665,7 +734,6 @@ choose_victim(struct svc_serv *serv, struct svc_pool *pool, unsigned int *state)
 	if (pool != NULL) {
 		spin_lock_bh(&pool->sp_lock);
 	} else {
-		/* choose a pool in round-robin fashion */
 		for (i = 0; i < serv->sv_nrpools; i++) {
 			pool = &serv->sv_pools[--(*state) % serv->sv_nrpools];
 			spin_lock_bh(&pool->sp_lock);
@@ -680,72 +748,37 @@ found_pool:
 	if (!list_empty(&pool->sp_all_threads)) {
 		struct svc_rqst *rqstp;
 
-		/*
-		 * Remove from the pool->sp_all_threads list
-		 * so we don't try to kill it again.
-		 */
 		rqstp = list_entry(pool->sp_all_threads.next, struct svc_rqst, rq_all);
-		list_del_init(&rqstp->rq_all);
+		set_bit(RQ_VICTIM, &rqstp->rq_flags);
+		list_del_rcu(&rqstp->rq_all);
 		task = rqstp->rq_task;
 	}
 	spin_unlock_bh(&pool->sp_lock);
-
 	return task;
 }
 
-/*
- * Create or destroy enough new threads to make the number
- * of threads the given number.  If `pool' is non-NULL, applies
- * only to threads in that pool, otherwise round-robins between
- * all pools.  Caller must ensure that mutual exclusion between this and
- * server startup or shutdown.
- *
- * Destroying threads relies on the service threads filling in
- * rqstp->rq_task, which only the nfs ones do.  Assumes the serv
- * has been created using svc_create_pooled().
- *
- * Based on code that used to be in nfsd_svc() but tweaked
- * to be pool-aware.
- */
-int
-svc_set_num_threads(struct svc_serv *serv, struct svc_pool *pool, int nrservs)
+static int
+svc_start_kthreads(struct svc_serv *serv, struct svc_pool *pool, int nrservs)
 {
 	struct svc_rqst	*rqstp;
 	struct task_struct *task;
 	struct svc_pool *chosen_pool;
-	int error = 0;
 	unsigned int state = serv->sv_nrthreads-1;
 	int node;
 
-	if (pool == NULL) {
-		/* The -1 assumes caller has done a svc_get() */
-		nrservs -= (serv->sv_nrthreads-1);
-	} else {
-		spin_lock_bh(&pool->sp_lock);
-		nrservs -= pool->sp_nrthreads;
-		spin_unlock_bh(&pool->sp_lock);
-	}
-
-	/* create new threads */
-	while (nrservs > 0) {
+	do {
 		nrservs--;
-		chosen_pool = choose_pool(serv, pool, &state);
-
+		chosen_pool = svc_pool_next(serv, pool, &state);
 		node = svc_pool_map_get_node(chosen_pool->sp_id);
-		rqstp = svc_prepare_thread(serv, chosen_pool, node);
-		if (IS_ERR(rqstp)) {
-			error = PTR_ERR(rqstp);
-			break;
-		}
 
-		__module_get(serv->sv_module);
-		task = kthread_create_on_node(serv->sv_function, rqstp,
+		rqstp = svc_prepare_thread(serv, chosen_pool, node);
+		if (IS_ERR(rqstp))
+			return PTR_ERR(rqstp);
+		task = kthread_create_on_node(serv->sv_threadfn, rqstp,
 					      node, "%s", serv->sv_name);
 		if (IS_ERR(task)) {
-			error = PTR_ERR(task);
-			module_put(serv->sv_module);
 			svc_exit_thread(rqstp);
-			break;
+			return PTR_ERR(task);
 		}
 
 		rqstp->rq_task = task;
@@ -754,43 +787,157 @@ svc_set_num_threads(struct svc_serv *serv, struct svc_pool *pool, int nrservs)
 
 		svc_sock_update_bufs(serv);
 		wake_up_process(task);
-	}
-	/* destroy old threads */
-	while (nrservs < 0 &&
-	       (task = choose_victim(serv, pool, &state)) != NULL) {
-		send_sig(SIGINT, task, 1);
+	} while (nrservs > 0);
+
+	return 0;
+}
+
+static int
+svc_stop_kthreads(struct svc_serv *serv, struct svc_pool *pool, int nrservs)
+{
+	struct svc_rqst	*rqstp;
+	struct task_struct *task;
+	unsigned int state = serv->sv_nrthreads-1;
+
+	do {
+		task = svc_pool_victim(serv, pool, &state);
+		if (task == NULL)
+			break;
+		rqstp = kthread_data(task);
+		/* Did we lose a race to svo_function threadfn? */
+		if (kthread_stop(task) == -EINTR)
+			svc_exit_thread(rqstp);
 		nrservs++;
+	} while (nrservs < 0);
+	return 0;
+}
+
+/**
+ * svc_set_num_threads - adjust number of threads per RPC service
+ * @serv: RPC service to adjust
+ * @pool: Specific pool from which to choose threads, or NULL
+ * @nrservs: New number of threads for @serv (0 or less means kill all threads)
+ *
+ * Create or destroy threads to make the number of threads for @serv the
+ * given number. If @pool is non-NULL, change only threads in that pool;
+ * otherwise, round-robin between all pools for @serv. @serv's
+ * sv_nrthreads is adjusted for each thread created or destroyed.
+ *
+ * Caller must ensure mutual exclusion between this and server startup or
+ * shutdown.
+ *
+ * Returns zero on success or a negative errno if an error occurred while
+ * starting a thread.
+ */
+int
+svc_set_num_threads(struct svc_serv *serv, struct svc_pool *pool, int nrservs)
+{
+	if (pool == NULL) {
+		nrservs -= serv->sv_nrthreads;
+	} else {
+		spin_lock_bh(&pool->sp_lock);
+		nrservs -= pool->sp_nrthreads;
+		spin_unlock_bh(&pool->sp_lock);
 	}
 
-	return error;
+	if (nrservs > 0)
+		return svc_start_kthreads(serv, pool, nrservs);
+	if (nrservs < 0)
+		return svc_stop_kthreads(serv, pool, nrservs);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(svc_set_num_threads);
 
-/*
- * Called from a server thread as it's exiting. Caller must hold the BKL or
- * the "service mutex", whichever is appropriate for the service.
+/**
+ * svc_rqst_replace_page - Replace one page in rq_pages[]
+ * @rqstp: svc_rqst with pages to replace
+ * @page: replacement page
+ *
+ * When replacing a page in rq_pages, batch the release of the
+ * replaced pages to avoid hammering the page allocator.
+ *
+ * Return values:
+ *   %true: page replaced
+ *   %false: array bounds checking failed
  */
+bool svc_rqst_replace_page(struct svc_rqst *rqstp, struct page *page)
+{
+	struct page **begin = rqstp->rq_pages;
+	struct page **end = &rqstp->rq_pages[RPCSVC_MAXPAGES];
+
+	if (unlikely(rqstp->rq_next_page < begin || rqstp->rq_next_page > end)) {
+		trace_svc_replace_page_err(rqstp);
+		return false;
+	}
+
+	if (*rqstp->rq_next_page) {
+		if (!folio_batch_add(&rqstp->rq_fbatch,
+				page_folio(*rqstp->rq_next_page)))
+			__folio_batch_release(&rqstp->rq_fbatch);
+	}
+
+	get_page(page);
+	*(rqstp->rq_next_page++) = page;
+	return true;
+}
+EXPORT_SYMBOL_GPL(svc_rqst_replace_page);
+
+/**
+ * svc_rqst_release_pages - Release Reply buffer pages
+ * @rqstp: RPC transaction context
+ *
+ * Release response pages that might still be in flight after
+ * svc_send, and any spliced filesystem-owned pages.
+ */
+void svc_rqst_release_pages(struct svc_rqst *rqstp)
+{
+	int i, count = rqstp->rq_next_page - rqstp->rq_respages;
+
+	if (count) {
+		release_pages(rqstp->rq_respages, count);
+		for (i = 0; i < count; i++)
+			rqstp->rq_respages[i] = NULL;
+	}
+}
+
+/*
+ * Called from a server thread as it's exiting. Caller must hold the "service
+ * mutex" for the service.
+ */
+void
+svc_rqst_free(struct svc_rqst *rqstp)
+{
+	folio_batch_release(&rqstp->rq_fbatch);
+	svc_release_buffer(rqstp);
+	if (rqstp->rq_scratch_page)
+		put_page(rqstp->rq_scratch_page);
+	kfree(rqstp->rq_resp);
+	kfree(rqstp->rq_argp);
+	kfree(rqstp->rq_auth_data);
+	kfree_rcu(rqstp, rq_rcu_head);
+}
+EXPORT_SYMBOL_GPL(svc_rqst_free);
+
 void
 svc_exit_thread(struct svc_rqst *rqstp)
 {
 	struct svc_serv	*serv = rqstp->rq_server;
 	struct svc_pool	*pool = rqstp->rq_pool;
 
-	svc_release_buffer(rqstp);
-	kfree(rqstp->rq_resp);
-	kfree(rqstp->rq_argp);
-	kfree(rqstp->rq_auth_data);
-
 	spin_lock_bh(&pool->sp_lock);
 	pool->sp_nrthreads--;
-	list_del(&rqstp->rq_all);
+	if (!test_and_set_bit(RQ_VICTIM, &rqstp->rq_flags))
+		list_del_rcu(&rqstp->rq_all);
 	spin_unlock_bh(&pool->sp_lock);
 
-	kfree(rqstp);
+	spin_lock_bh(&serv->sv_lock);
+	serv->sv_nrthreads -= 1;
+	spin_unlock_bh(&serv->sv_lock);
+	svc_sock_update_bufs(serv);
 
-	/* Release the server */
-	if (serv)
-		svc_destroy(serv);
+	svc_rqst_free(rqstp);
+
+	svc_put(serv);
 }
 EXPORT_SYMBOL_GPL(svc_exit_thread);
 
@@ -916,8 +1063,53 @@ static int __svc_register(struct net *net, const char *progname,
 #endif
 	}
 
+	trace_svc_register(progname, version, family, protocol, port, error);
 	return error;
 }
+
+int svc_rpcbind_set_version(struct net *net,
+			    const struct svc_program *progp,
+			    u32 version, int family,
+			    unsigned short proto,
+			    unsigned short port)
+{
+	return __svc_register(net, progp->pg_name, progp->pg_prog,
+				version, family, proto, port);
+
+}
+EXPORT_SYMBOL_GPL(svc_rpcbind_set_version);
+
+int svc_generic_rpcbind_set(struct net *net,
+			    const struct svc_program *progp,
+			    u32 version, int family,
+			    unsigned short proto,
+			    unsigned short port)
+{
+	const struct svc_version *vers = progp->pg_vers[version];
+	int error;
+
+	if (vers == NULL)
+		return 0;
+
+	if (vers->vs_hidden) {
+		trace_svc_noregister(progp->pg_name, version, proto,
+				     port, family, 0);
+		return 0;
+	}
+
+	/*
+	 * Don't register a UDP port if we need congestion
+	 * control.
+	 */
+	if (vers->vs_need_cong_ctrl && proto == IPPROTO_UDP)
+		return 0;
+
+	error = svc_rpcbind_set_version(net, progp, version,
+					family, proto, port);
+
+	return (vers->vs_rpcb_optnl) ? 0 : error;
+}
+EXPORT_SYMBOL_GPL(svc_generic_rpcbind_set);
 
 /**
  * svc_register - register an RPC service with the local portmapper
@@ -934,7 +1126,6 @@ int svc_register(const struct svc_serv *serv, struct net *net,
 		 const unsigned short port)
 {
 	struct svc_program	*progp;
-	struct svc_version	*vers;
 	unsigned int		i;
 	int			error = 0;
 
@@ -944,30 +1135,9 @@ int svc_register(const struct svc_serv *serv, struct net *net,
 
 	for (progp = serv->sv_program; progp; progp = progp->pg_next) {
 		for (i = 0; i < progp->pg_nvers; i++) {
-			vers = progp->pg_vers[i];
-			if (vers == NULL)
-				continue;
 
-			dprintk("svc: svc_register(%sv%d, %s, %u, %u)%s\n",
-					progp->pg_name,
-					i,
-					proto == IPPROTO_UDP?  "udp" : "tcp",
-					port,
-					family,
-					vers->vs_hidden ?
-					" (but not telling portmap)" : "");
-
-			if (vers->vs_hidden)
-				continue;
-
-			error = __svc_register(net, progp->pg_name, progp->pg_prog,
-						i, family, proto, port);
-
-			if (vers->vs_rpcb_optnl) {
-				error = 0;
-				continue;
-			}
-
+			error = progp->pg_rpcbind_set(net, progp, i,
+					family, proto, port);
 			if (error < 0) {
 				printk(KERN_WARNING "svc: failed to register "
 					"%sv%u RPC service (errno %d).\n",
@@ -1001,8 +1171,7 @@ static void __svc_unregister(struct net *net, const u32 program, const u32 versi
 	if (error == -EPROTONOSUPPORT)
 		error = rpcb_register(net, program, version, 0, 0);
 
-	dprintk("svc: %s(%sv%u), error %d\n",
-			__func__, progname, version, error);
+	trace_svc_unregister(progname, version, error);
 }
 
 /*
@@ -1015,6 +1184,7 @@ static void __svc_unregister(struct net *net, const u32 program, const u32 versi
  */
 static void svc_unregister(const struct svc_serv *serv, struct net *net)
 {
+	struct sighand_struct *sighand;
 	struct svc_program *progp;
 	unsigned long flags;
 	unsigned int i;
@@ -1027,22 +1197,22 @@ static void svc_unregister(const struct svc_serv *serv, struct net *net)
 				continue;
 			if (progp->pg_vers[i]->vs_hidden)
 				continue;
-
-			dprintk("svc: attempting to unregister %sv%u\n",
-				progp->pg_name, i);
 			__svc_unregister(net, progp->pg_prog, i, progp->pg_name);
 		}
 	}
 
-	spin_lock_irqsave(&current->sighand->siglock, flags);
+	rcu_read_lock();
+	sighand = rcu_dereference(current->sighand);
+	spin_lock_irqsave(&sighand->siglock, flags);
 	recalc_sigpending();
-	spin_unlock_irqrestore(&current->sighand->siglock, flags);
+	spin_unlock_irqrestore(&sighand->siglock, flags);
+	rcu_read_unlock();
 }
 
 /*
  * dprintk the given error with the address of the client that caused it.
  */
-#ifdef RPC_DEBUG
+#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
 static __printf(2, 3)
 void svc_printk(struct svc_rqst *rqstp, const char *fmt, ...)
 {
@@ -1063,58 +1233,100 @@ void svc_printk(struct svc_rqst *rqstp, const char *fmt, ...)
 static __printf(2,3) void svc_printk(struct svc_rqst *rqstp, const char *fmt, ...) {}
 #endif
 
+__be32
+svc_generic_init_request(struct svc_rqst *rqstp,
+		const struct svc_program *progp,
+		struct svc_process_info *ret)
+{
+	const struct svc_version *versp = NULL;	/* compiler food */
+	const struct svc_procedure *procp = NULL;
+
+	if (rqstp->rq_vers >= progp->pg_nvers )
+		goto err_bad_vers;
+	versp = progp->pg_vers[rqstp->rq_vers];
+	if (!versp)
+		goto err_bad_vers;
+
+	/*
+	 * Some protocol versions (namely NFSv4) require some form of
+	 * congestion control.  (See RFC 7530 section 3.1 paragraph 2)
+	 * In other words, UDP is not allowed. We mark those when setting
+	 * up the svc_xprt, and verify that here.
+	 *
+	 * The spec is not very clear about what error should be returned
+	 * when someone tries to access a server that is listening on UDP
+	 * for lower versions. RPC_PROG_MISMATCH seems to be the closest
+	 * fit.
+	 */
+	if (versp->vs_need_cong_ctrl && rqstp->rq_xprt &&
+	    !test_bit(XPT_CONG_CTRL, &rqstp->rq_xprt->xpt_flags))
+		goto err_bad_vers;
+
+	if (rqstp->rq_proc >= versp->vs_nproc)
+		goto err_bad_proc;
+	rqstp->rq_procinfo = procp = &versp->vs_proc[rqstp->rq_proc];
+	if (!procp)
+		goto err_bad_proc;
+
+	/* Initialize storage for argp and resp */
+	memset(rqstp->rq_argp, 0, procp->pc_argzero);
+	memset(rqstp->rq_resp, 0, procp->pc_ressize);
+
+	/* Bump per-procedure stats counter */
+	this_cpu_inc(versp->vs_count[rqstp->rq_proc]);
+
+	ret->dispatch = versp->vs_dispatch;
+	return rpc_success;
+err_bad_vers:
+	ret->mismatch.lovers = progp->pg_lovers;
+	ret->mismatch.hivers = progp->pg_hivers;
+	return rpc_prog_mismatch;
+err_bad_proc:
+	return rpc_proc_unavail;
+}
+EXPORT_SYMBOL_GPL(svc_generic_init_request);
+
 /*
  * Common routine for processing the RPC request.
  */
 static int
-svc_process_common(struct svc_rqst *rqstp, struct kvec *argv, struct kvec *resv)
+svc_process_common(struct svc_rqst *rqstp)
 {
+	struct xdr_stream	*xdr = &rqstp->rq_res_stream;
 	struct svc_program	*progp;
-	struct svc_version	*versp = NULL;	/* compiler food */
-	struct svc_procedure	*procp = NULL;
+	const struct svc_procedure *procp = NULL;
 	struct svc_serv		*serv = rqstp->rq_server;
-	kxdrproc_t		xdr;
-	__be32			*statp;
-	u32			prog, vers, proc;
-	__be32			auth_stat, rpc_stat;
-	int			auth_res;
-	__be32			*reply_statp;
+	struct svc_process_info process;
+	enum svc_auth_status	auth_res;
+	unsigned int		aoffset;
+	int			rc;
+	__be32			*p;
 
-	rpc_stat = rpc_success;
-
-	if (argv->iov_len < 6*4)
-		goto err_short_len;
-
-	/* Will be turned off only in gss privacy case: */
-	rqstp->rq_splice_ok = 1;
+	/* Will be turned off by GSS integrity and privacy services */
+	set_bit(RQ_SPLICE_OK, &rqstp->rq_flags);
 	/* Will be turned off only when NFSv4 Sessions are used */
-	rqstp->rq_usedeferral = 1;
-	rqstp->rq_dropme = false;
+	set_bit(RQ_USEDEFERRAL, &rqstp->rq_flags);
+	clear_bit(RQ_DROPME, &rqstp->rq_flags);
 
-	/* Setup reply header */
-	rqstp->rq_xprt->xpt_ops->xpo_prep_reply_hdr(rqstp);
+	/* Construct the first words of the reply: */
+	svcxdr_init_encode(rqstp);
+	xdr_stream_encode_be32(xdr, rqstp->rq_xid);
+	xdr_stream_encode_be32(xdr, rpc_reply);
 
-	svc_putu32(resv, rqstp->rq_xid);
-
-	vers = svc_getnl(argv);
-
-	/* First words of reply: */
-	svc_putnl(resv, 1);		/* REPLY */
-
-	if (vers != 2)		/* RPC version number */
+	p = xdr_inline_decode(&rqstp->rq_arg_stream, XDR_UNIT * 4);
+	if (unlikely(!p))
+		goto err_short_len;
+	if (*p++ != cpu_to_be32(RPC_VERSION))
 		goto err_bad_rpc;
 
-	/* Save position in case we later decide to reject: */
-	reply_statp = resv->iov_base + resv->iov_len;
+	xdr_stream_encode_be32(xdr, rpc_msg_accepted);
 
-	svc_putnl(resv, 0);		/* ACCEPT */
-
-	rqstp->rq_prog = prog = svc_getnl(argv);	/* program number */
-	rqstp->rq_vers = vers = svc_getnl(argv);	/* version number */
-	rqstp->rq_proc = proc = svc_getnl(argv);	/* procedure number */
+	rqstp->rq_prog = be32_to_cpup(p++);
+	rqstp->rq_vers = be32_to_cpup(p++);
+	rqstp->rq_proc = be32_to_cpup(p);
 
 	for (progp = serv->sv_program; progp; progp = progp->pg_next)
-		if (prog == progp->pg_prog)
+		if (rqstp->rq_prog == progp->pg_prog)
 			break;
 
 	/*
@@ -1122,56 +1334,55 @@ svc_process_common(struct svc_rqst *rqstp, struct kvec *argv, struct kvec *resv)
 	 * We do this before anything else in order to get a decent
 	 * auth verifier.
 	 */
-	auth_res = svc_authenticate(rqstp, &auth_stat);
+	auth_res = svc_authenticate(rqstp);
 	/* Also give the program a chance to reject this call: */
-	if (auth_res == SVC_OK && progp) {
-		auth_stat = rpc_autherr_badcred;
+	if (auth_res == SVC_OK && progp)
 		auth_res = progp->pg_authenticate(rqstp);
-	}
+	trace_svc_authenticate(rqstp, auth_res);
 	switch (auth_res) {
 	case SVC_OK:
 		break;
 	case SVC_GARBAGE:
-		goto err_garbage;
+		goto err_garbage_args;
 	case SVC_SYSERR:
-		rpc_stat = rpc_system_err;
-		goto err_bad;
+		goto err_system_err;
 	case SVC_DENIED:
 		goto err_bad_auth;
 	case SVC_CLOSE:
-		if (test_bit(XPT_TEMP, &rqstp->rq_xprt->xpt_flags))
-			svc_close_xprt(rqstp->rq_xprt);
+		goto close;
 	case SVC_DROP:
 		goto dropit;
 	case SVC_COMPLETE:
 		goto sendit;
+	default:
+		pr_warn_once("Unexpected svc_auth_status (%d)\n", auth_res);
+		goto err_system_err;
 	}
 
 	if (progp == NULL)
 		goto err_bad_prog;
 
-	if (vers >= progp->pg_nvers ||
-	  !(versp = progp->pg_vers[vers]))
+	switch (progp->pg_init_request(rqstp, progp, &process)) {
+	case rpc_success:
+		break;
+	case rpc_prog_unavail:
+		goto err_bad_prog;
+	case rpc_prog_mismatch:
 		goto err_bad_vers;
-
-	procp = versp->vs_proc + proc;
-	if (proc >= versp->vs_nproc || !procp->pc_func)
+	case rpc_proc_unavail:
 		goto err_bad_proc;
-	rqstp->rq_procinfo = procp;
+	}
+
+	procp = rqstp->rq_procinfo;
+	/* Should this check go into the dispatcher? */
+	if (!procp || !procp->pc_func)
+		goto err_bad_proc;
 
 	/* Syntactic check complete */
 	serv->sv_stats->rpccnt++;
+	trace_svc_process(rqstp, progp->pg_name);
 
-	/* Build the reply header. */
-	statp = resv->iov_base +resv->iov_len;
-	svc_putnl(resv, RPC_SUCCESS);
-
-	/* Bump per-procedure stats counter */
-	procp->pc_count++;
-
-	/* Initialize storage for argp and resp */
-	memset(rqstp->rq_argp, 0, procp->pc_argsize);
-	memset(rqstp->rq_resp, 0, procp->pc_ressize);
+	aoffset = xdr_stream_pos(xdr);
 
 	/* un-reserve some of the out-queue now that we have a
 	 * better idea of reply size
@@ -1180,51 +1391,25 @@ svc_process_common(struct svc_rqst *rqstp, struct kvec *argv, struct kvec *resv)
 		svc_reserve_auth(rqstp, procp->pc_xdrressize<<2);
 
 	/* Call the function that processes the request. */
-	if (!versp->vs_dispatch) {
-		/* Decode arguments */
-		xdr = procp->pc_decode;
-		if (xdr && !xdr(rqstp, argv->iov_base, rqstp->rq_argp))
-			goto err_garbage;
-
-		*statp = procp->pc_func(rqstp, rqstp->rq_argp, rqstp->rq_resp);
-
-		/* Encode reply */
-		if (rqstp->rq_dropme) {
-			if (procp->pc_release)
-				procp->pc_release(rqstp, NULL, rqstp->rq_resp);
-			goto dropit;
-		}
-		if (*statp == rpc_success &&
-		    (xdr = procp->pc_encode) &&
-		    !xdr(rqstp, resv->iov_base+resv->iov_len, rqstp->rq_resp)) {
-			dprintk("svc: failed to encode reply\n");
-			/* serv->sv_stats->rpcsystemerr++; */
-			*statp = rpc_system_err;
-		}
-	} else {
-		dprintk("svc: calling dispatcher\n");
-		if (!versp->vs_dispatch(rqstp, statp)) {
-			/* Release reply info */
-			if (procp->pc_release)
-				procp->pc_release(rqstp, NULL, rqstp->rq_resp);
-			goto dropit;
-		}
-	}
-
-	/* Check RPC status result */
-	if (*statp != rpc_success)
-		resv->iov_len = ((void*)statp)  - resv->iov_base + 4;
-
-	/* Release reply info */
+	rc = process.dispatch(rqstp);
 	if (procp->pc_release)
-		procp->pc_release(rqstp, NULL, rqstp->rq_resp);
+		procp->pc_release(rqstp);
+	xdr_finish_decode(xdr);
+
+	if (!rc)
+		goto dropit;
+	if (rqstp->rq_auth_stat != rpc_auth_ok)
+		goto err_bad_auth;
+
+	if (*rqstp->rq_accept_statp != rpc_success)
+		xdr_truncate_encode(xdr, aoffset);
 
 	if (procp->pc_encode == NULL)
 		goto dropit;
 
  sendit:
 	if (svc_authorise(rqstp))
-		goto dropit;
+		goto close_xprt;
 	return 1;		/* Caller can now send it */
 
  dropit:
@@ -1232,74 +1417,95 @@ svc_process_common(struct svc_rqst *rqstp, struct kvec *argv, struct kvec *resv)
 	dprintk("svc: svc_process dropit\n");
 	return 0;
 
-err_short_len:
-	svc_printk(rqstp, "short len %Zd, dropping request\n",
-			argv->iov_len);
+ close:
+	svc_authorise(rqstp);
+close_xprt:
+	if (rqstp->rq_xprt && test_bit(XPT_TEMP, &rqstp->rq_xprt->xpt_flags))
+		svc_xprt_close(rqstp->rq_xprt);
+	dprintk("svc: svc_process close\n");
+	return 0;
 
-	goto dropit;			/* drop request */
+err_short_len:
+	svc_printk(rqstp, "short len %u, dropping request\n",
+		   rqstp->rq_arg.len);
+	goto close_xprt;
 
 err_bad_rpc:
 	serv->sv_stats->rpcbadfmt++;
-	svc_putnl(resv, 1);	/* REJECT */
-	svc_putnl(resv, 0);	/* RPC_MISMATCH */
-	svc_putnl(resv, 2);	/* Only RPCv2 supported */
-	svc_putnl(resv, 2);
-	goto sendit;
+	xdr_stream_encode_u32(xdr, RPC_MSG_DENIED);
+	xdr_stream_encode_u32(xdr, RPC_MISMATCH);
+	/* Only RPCv2 supported */
+	xdr_stream_encode_u32(xdr, RPC_VERSION);
+	xdr_stream_encode_u32(xdr, RPC_VERSION);
+	return 1;	/* don't wrap */
 
 err_bad_auth:
-	dprintk("svc: authentication failed (%d)\n", ntohl(auth_stat));
+	dprintk("svc: authentication failed (%d)\n",
+		be32_to_cpu(rqstp->rq_auth_stat));
 	serv->sv_stats->rpcbadauth++;
-	/* Restore write pointer to location of accept status: */
-	xdr_ressize_check(rqstp, reply_statp);
-	svc_putnl(resv, 1);	/* REJECT */
-	svc_putnl(resv, 1);	/* AUTH_ERROR */
-	svc_putnl(resv, ntohl(auth_stat));	/* status */
+	/* Restore write pointer to location of reply status: */
+	xdr_truncate_encode(xdr, XDR_UNIT * 2);
+	xdr_stream_encode_u32(xdr, RPC_MSG_DENIED);
+	xdr_stream_encode_u32(xdr, RPC_AUTH_ERROR);
+	xdr_stream_encode_be32(xdr, rqstp->rq_auth_stat);
 	goto sendit;
 
 err_bad_prog:
-	dprintk("svc: unknown program %d\n", prog);
+	dprintk("svc: unknown program %d\n", rqstp->rq_prog);
 	serv->sv_stats->rpcbadfmt++;
-	svc_putnl(resv, RPC_PROG_UNAVAIL);
+	*rqstp->rq_accept_statp = rpc_prog_unavail;
 	goto sendit;
 
 err_bad_vers:
 	svc_printk(rqstp, "unknown version (%d for prog %d, %s)\n",
-		       vers, prog, progp->pg_name);
+		       rqstp->rq_vers, rqstp->rq_prog, progp->pg_name);
 
 	serv->sv_stats->rpcbadfmt++;
-	svc_putnl(resv, RPC_PROG_MISMATCH);
-	svc_putnl(resv, progp->pg_lovers);
-	svc_putnl(resv, progp->pg_hivers);
+	*rqstp->rq_accept_statp = rpc_prog_mismatch;
+
+	/*
+	 * svc_authenticate() has already added the verifier and
+	 * advanced the stream just past rq_accept_statp.
+	 */
+	xdr_stream_encode_u32(xdr, process.mismatch.lovers);
+	xdr_stream_encode_u32(xdr, process.mismatch.hivers);
 	goto sendit;
 
 err_bad_proc:
-	svc_printk(rqstp, "unknown procedure (%d)\n", proc);
+	svc_printk(rqstp, "unknown procedure (%d)\n", rqstp->rq_proc);
 
 	serv->sv_stats->rpcbadfmt++;
-	svc_putnl(resv, RPC_PROC_UNAVAIL);
+	*rqstp->rq_accept_statp = rpc_proc_unavail;
 	goto sendit;
 
-err_garbage:
-	svc_printk(rqstp, "failed to decode args\n");
+err_garbage_args:
+	svc_printk(rqstp, "failed to decode RPC header\n");
 
-	rpc_stat = rpc_garbage_args;
-err_bad:
 	serv->sv_stats->rpcbadfmt++;
-	svc_putnl(resv, ntohl(rpc_stat));
+	*rqstp->rq_accept_statp = rpc_garbage_args;
+	goto sendit;
+
+err_system_err:
+	serv->sv_stats->rpcbadfmt++;
+	*rqstp->rq_accept_statp = rpc_system_err;
 	goto sendit;
 }
-EXPORT_SYMBOL_GPL(svc_process);
 
-/*
- * Process the RPC request.
+/**
+ * svc_process - Execute one RPC transaction
+ * @rqstp: RPC transaction context
+ *
  */
-int
-svc_process(struct svc_rqst *rqstp)
+void svc_process(struct svc_rqst *rqstp)
 {
-	struct kvec		*argv = &rqstp->rq_arg.head[0];
 	struct kvec		*resv = &rqstp->rq_res.head[0];
-	struct svc_serv		*serv = rqstp->rq_server;
-	u32			dir;
+	__be32 *p;
+
+#if IS_ENABLED(CONFIG_FAIL_SUNRPC)
+	if (!fail_sunrpc.ignore_server_disconnect &&
+	    should_fail(&fail_sunrpc.attr, 1))
+		svc_xprt_deferred_close(rqstp->rq_xprt);
+#endif
 
 	/*
 	 * Setup response xdr_buf.
@@ -1308,7 +1514,7 @@ svc_process(struct svc_rqst *rqstp)
 	rqstp->rq_next_page = &rqstp->rq_respages[1];
 	resv->iov_base = page_address(rqstp->rq_respages[0]);
 	resv->iov_len = 0;
-	rqstp->rq_res.pages = rqstp->rq_respages + 1;
+	rqstp->rq_res.pages = rqstp->rq_next_page;
 	rqstp->rq_res.len = 0;
 	rqstp->rq_res.page_base = 0;
 	rqstp->rq_res.page_len = 0;
@@ -1316,24 +1522,25 @@ svc_process(struct svc_rqst *rqstp)
 	rqstp->rq_res.tail[0].iov_base = NULL;
 	rqstp->rq_res.tail[0].iov_len = 0;
 
-	rqstp->rq_xid = svc_getu32(argv);
+	svcxdr_init_decode(rqstp);
+	p = xdr_inline_decode(&rqstp->rq_arg_stream, XDR_UNIT * 2);
+	if (unlikely(!p))
+		goto out_drop;
+	rqstp->rq_xid = *p++;
+	if (unlikely(*p != rpc_call))
+		goto out_baddir;
 
-	dir  = svc_getnl(argv);
-	if (dir != 0) {
-		/* direction != CALL */
-		svc_printk(rqstp, "bad direction %d, dropping request\n", dir);
-		serv->sv_stats->rpcbadfmt++;
-		svc_drop(rqstp);
-		return 0;
-	}
+	if (!svc_process_common(rqstp))
+		goto out_drop;
+	svc_send(rqstp);
+	return;
 
-	/* Returns 1 for send, 0 for drop */
-	if (svc_process_common(rqstp, argv, resv))
-		return svc_send(rqstp);
-	else {
-		svc_drop(rqstp);
-		return 0;
-	}
+out_baddir:
+	svc_printk(rqstp, "bad direction 0x%08x, dropping request\n",
+		   be32_to_cpu(*p));
+	rqstp->rq_server->sv_stats->rpcbadfmt++;
+out_drop:
+	svc_drop(rqstp);
 }
 
 #if defined(CONFIG_SUNRPC_BACKCHANNEL)
@@ -1345,51 +1552,84 @@ int
 bc_svc_process(struct svc_serv *serv, struct rpc_rqst *req,
 	       struct svc_rqst *rqstp)
 {
-	struct kvec	*argv = &rqstp->rq_arg.head[0];
-	struct kvec	*resv = &rqstp->rq_res.head[0];
+	struct rpc_task *task;
+	int proc_error;
+	int error;
+
+	dprintk("svc: %s(%p)\n", __func__, req);
 
 	/* Build the svc_rqst used by the common processing routine */
-	rqstp->rq_xprt = serv->sv_bc_xprt;
 	rqstp->rq_xid = req->rq_xid;
 	rqstp->rq_prot = req->rq_xprt->prot;
 	rqstp->rq_server = serv;
+	rqstp->rq_bc_net = req->rq_xprt->xprt_net;
 
 	rqstp->rq_addrlen = sizeof(req->rq_xprt->addr);
 	memcpy(&rqstp->rq_addr, &req->rq_xprt->addr, rqstp->rq_addrlen);
 	memcpy(&rqstp->rq_arg, &req->rq_rcv_buf, sizeof(rqstp->rq_arg));
 	memcpy(&rqstp->rq_res, &req->rq_snd_buf, sizeof(rqstp->rq_res));
 
-	/* reset result send buffer "put" position */
-	resv->iov_len = 0;
+	/* Adjust the argument buffer length */
+	rqstp->rq_arg.len = req->rq_private_buf.len;
+	if (rqstp->rq_arg.len <= rqstp->rq_arg.head[0].iov_len) {
+		rqstp->rq_arg.head[0].iov_len = rqstp->rq_arg.len;
+		rqstp->rq_arg.page_len = 0;
+	} else if (rqstp->rq_arg.len <= rqstp->rq_arg.head[0].iov_len +
+			rqstp->rq_arg.page_len)
+		rqstp->rq_arg.page_len = rqstp->rq_arg.len -
+			rqstp->rq_arg.head[0].iov_len;
+	else
+		rqstp->rq_arg.len = rqstp->rq_arg.head[0].iov_len +
+			rqstp->rq_arg.page_len;
 
-	if (rqstp->rq_prot != IPPROTO_TCP) {
-		printk(KERN_ERR "No support for Non-TCP transports!\n");
-		BUG();
-	}
+	/* Reset the response buffer */
+	rqstp->rq_res.head[0].iov_len = 0;
 
 	/*
-	 * Skip the next two words because they've already been
-	 * processed in the trasport
+	 * Skip the XID and calldir fields because they've already
+	 * been processed by the caller.
 	 */
-	svc_getu32(argv);	/* XID */
-	svc_getnl(argv);	/* CALLDIR */
-
-	/* Returns 1 for send, 0 for drop */
-	if (svc_process_common(rqstp, argv, resv)) {
-		memcpy(&req->rq_snd_buf, &rqstp->rq_res,
-						sizeof(req->rq_snd_buf));
-		return bc_send(req);
-	} else {
-		/* drop request */
-		xprt_free_bc_request(req);
-		return 0;
+	svcxdr_init_decode(rqstp);
+	if (!xdr_inline_decode(&rqstp->rq_arg_stream, XDR_UNIT * 2)) {
+		error = -EINVAL;
+		goto out;
 	}
+
+	/* Parse and execute the bc call */
+	proc_error = svc_process_common(rqstp);
+
+	atomic_dec(&req->rq_xprt->bc_slot_count);
+	if (!proc_error) {
+		/* Processing error: drop the request */
+		xprt_free_bc_request(req);
+		error = -EINVAL;
+		goto out;
+	}
+	/* Finally, send the reply synchronously */
+	memcpy(&req->rq_snd_buf, &rqstp->rq_res, sizeof(req->rq_snd_buf));
+	task = rpc_run_bc_task(req);
+	if (IS_ERR(task)) {
+		error = PTR_ERR(task);
+		goto out;
+	}
+
+	WARN_ON_ONCE(atomic_read(&task->tk_count) != 1);
+	error = task->tk_status;
+	rpc_put_task(task);
+
+out:
+	dprintk("svc: %s(), error=%d\n", __func__, error);
+	return error;
 }
 EXPORT_SYMBOL_GPL(bc_svc_process);
 #endif /* CONFIG_SUNRPC_BACKCHANNEL */
 
-/*
- * Return (transport-specific) limit on the rpc payload.
+/**
+ * svc_max_payload - Return transport-specific limit on the RPC payload
+ * @rqstp: RPC transaction context
+ *
+ * Returns the maximum number of payload bytes the current transport
+ * allows.
  */
 u32 svc_max_payload(const struct svc_rqst *rqstp)
 {
@@ -1400,3 +1640,125 @@ u32 svc_max_payload(const struct svc_rqst *rqstp)
 	return max;
 }
 EXPORT_SYMBOL_GPL(svc_max_payload);
+
+/**
+ * svc_proc_name - Return RPC procedure name in string form
+ * @rqstp: svc_rqst to operate on
+ *
+ * Return value:
+ *   Pointer to a NUL-terminated string
+ */
+const char *svc_proc_name(const struct svc_rqst *rqstp)
+{
+	if (rqstp && rqstp->rq_procinfo)
+		return rqstp->rq_procinfo->pc_name;
+	return "unknown";
+}
+
+
+/**
+ * svc_encode_result_payload - mark a range of bytes as a result payload
+ * @rqstp: svc_rqst to operate on
+ * @offset: payload's byte offset in rqstp->rq_res
+ * @length: size of payload, in bytes
+ *
+ * Returns zero on success, or a negative errno if a permanent
+ * error occurred.
+ */
+int svc_encode_result_payload(struct svc_rqst *rqstp, unsigned int offset,
+			      unsigned int length)
+{
+	return rqstp->rq_xprt->xpt_ops->xpo_result_payload(rqstp, offset,
+							   length);
+}
+EXPORT_SYMBOL_GPL(svc_encode_result_payload);
+
+/**
+ * svc_fill_write_vector - Construct data argument for VFS write call
+ * @rqstp: svc_rqst to operate on
+ * @payload: xdr_buf containing only the write data payload
+ *
+ * Fills in rqstp::rq_vec, and returns the number of elements.
+ */
+unsigned int svc_fill_write_vector(struct svc_rqst *rqstp,
+				   struct xdr_buf *payload)
+{
+	struct page **pages = payload->pages;
+	struct kvec *first = payload->head;
+	struct kvec *vec = rqstp->rq_vec;
+	size_t total = payload->len;
+	unsigned int i;
+
+	/* Some types of transport can present the write payload
+	 * entirely in rq_arg.pages. In this case, @first is empty.
+	 */
+	i = 0;
+	if (first->iov_len) {
+		vec[i].iov_base = first->iov_base;
+		vec[i].iov_len = min_t(size_t, total, first->iov_len);
+		total -= vec[i].iov_len;
+		++i;
+	}
+
+	while (total) {
+		vec[i].iov_base = page_address(*pages);
+		vec[i].iov_len = min_t(size_t, total, PAGE_SIZE);
+		total -= vec[i].iov_len;
+		++i;
+		++pages;
+	}
+
+	WARN_ON_ONCE(i > ARRAY_SIZE(rqstp->rq_vec));
+	return i;
+}
+EXPORT_SYMBOL_GPL(svc_fill_write_vector);
+
+/**
+ * svc_fill_symlink_pathname - Construct pathname argument for VFS symlink call
+ * @rqstp: svc_rqst to operate on
+ * @first: buffer containing first section of pathname
+ * @p: buffer containing remaining section of pathname
+ * @total: total length of the pathname argument
+ *
+ * The VFS symlink API demands a NUL-terminated pathname in mapped memory.
+ * Returns pointer to a NUL-terminated string, or an ERR_PTR. Caller must free
+ * the returned string.
+ */
+char *svc_fill_symlink_pathname(struct svc_rqst *rqstp, struct kvec *first,
+				void *p, size_t total)
+{
+	size_t len, remaining;
+	char *result, *dst;
+
+	result = kmalloc(total + 1, GFP_KERNEL);
+	if (!result)
+		return ERR_PTR(-ESERVERFAULT);
+
+	dst = result;
+	remaining = total;
+
+	len = min_t(size_t, total, first->iov_len);
+	if (len) {
+		memcpy(dst, first->iov_base, len);
+		dst += len;
+		remaining -= len;
+	}
+
+	if (remaining) {
+		len = min_t(size_t, remaining, PAGE_SIZE);
+		memcpy(dst, p, len);
+		dst += len;
+	}
+
+	*dst = '\0';
+
+	/* Sanity check: Linux doesn't allow the pathname argument to
+	 * contain a NUL byte.
+	 */
+	if (strlen(result) != total) {
+		kfree(result);
+		return ERR_PTR(-EINVAL);
+	}
+	return result;
+}
+EXPORT_SYMBOL_GPL(svc_fill_symlink_pathname);

@@ -1,9 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Input device configuration
 #
 
 menu "Input device support"
-	depends on !UML
 
 config INPUT
 	tristate "Generic input layer (needed for keyboard, mouse, ...)" if EXPERT
@@ -16,7 +16,7 @@ config INPUT
 
 	  Say N here if you have a headless (no monitor, no keyboard) system.
 
-	  More information is available: <file:Documentation/input/input.txt>
+	  More information is available: <file:Documentation/input/input.rst>
 
 	  If unsure, say Y.
 
@@ -24,6 +24,19 @@ config INPUT
 	  module will be called input.
 
 if INPUT
+
+config INPUT_LEDS
+	tristate "Export input device LEDs in sysfs"
+	depends on LEDS_CLASS
+	default INPUT
+	help
+	  Say Y here if you would like to export LEDs on input devices
+	  as standard LED class devices in sysfs.
+
+	  If unsure, say Y.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called input-leds.
 
 config INPUT_FF_MEMLESS
 	tristate "Support for memoryless force-feedback devices"
@@ -37,19 +50,6 @@ config INPUT_FF_MEMLESS
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called ff-memless.
-
-config INPUT_POLLDEV
-	tristate "Polled input device skeleton"
-	help
-	  Say Y here if you are using a driver for an input
-	  device that periodically polls hardware state. This
-	  option is only useful for out-of-tree drivers since
-	  in-tree drivers select it automatically.
-
-	  If unsure, say N.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called input-polldev.
 
 config INPUT_SPARSEKMAP
 	tristate "Sparse keymap support library"
@@ -77,11 +77,17 @@ config INPUT_MATRIXKMAP
 	  To compile this driver as a module, choose M here: the
 	  module will be called matrix-keymap.
 
+config INPUT_VIVALDIFMAP
+	tristate
+	help
+	  ChromeOS Vivaldi keymap support library. This is a hidden
+	  option so that drivers can use common code to parse and
+	  expose the vivaldi function row keymap.
+
 comment "Userland interfaces"
 
 config INPUT_MOUSEDEV
 	tristate "Mouse interface"
-	default y
 	help
 	  Say Y here if you want your mouse to be accessible as char devices
 	  13:32+ - /dev/input/mouseX and 13:63 - /dev/input/mice as an
@@ -96,7 +102,6 @@ config INPUT_MOUSEDEV
 
 config INPUT_MOUSEDEV_PSAUX
 	bool "Provide legacy /dev/psaux device"
-	default y
 	depends on INPUT_MOUSEDEV
 	help
 	  Say Y here if you want your mouse also be accessible as char device
@@ -104,7 +109,6 @@ config INPUT_MOUSEDEV_PSAUX
 	  the same as the data from /dev/input/mice.
 
 	  If unsure, say Y.
-
 
 config INPUT_MOUSEDEV_SCREEN_X
 	int "Horizontal screen resolution"
@@ -134,7 +138,7 @@ config INPUT_JOYDEV
 
 	  If unsure, say Y.
 
-	  More information is available: <file:Documentation/input/joystick.txt>
+	  More information is available: <file:Documentation/input/joydev/joystick.rst>
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called joydev.
@@ -162,6 +166,16 @@ config INPUT_EVBUG
 	  To compile this driver as a module, choose M here: the
 	  module will be called evbug.
 
+config INPUT_KUNIT_TEST
+	tristate "KUnit tests for Input" if !KUNIT_ALL_TESTS
+	depends on INPUT && KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Say Y here if you want to build the KUnit tests for the input
+	  subsystem.
+
+	  If in doubt, say "N".
+
 config INPUT_APMPOWER
 	tristate "Input Power Event -> APM Bridge" if EXPERT
 	depends on INPUT && APM_EMULATION
@@ -187,6 +201,12 @@ source "drivers/input/tablet/Kconfig"
 source "drivers/input/touchscreen/Kconfig"
 
 source "drivers/input/misc/Kconfig"
+
+source "drivers/input/rmi4/Kconfig"
+
+source "drivers/input/fingerprint/Kconfig"
+
+source "drivers/input/stmvl53l5/Kconfig"
 
 endif
 

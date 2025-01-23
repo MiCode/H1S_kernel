@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * max77693.h - Driver for the Maxim 77693
  *
@@ -5,20 +6,6 @@
  *  SangYoung Son <hello.son@samsung.com>
  *
  * This program is not provided / owned by Maxim Integrated Products.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  * This driver is based on max8997.h
  *
@@ -30,18 +17,12 @@
 #ifndef __LINUX_MFD_MAX77693_H
 #define __LINUX_MFD_MAX77693_H
 
-/* MAX77686 regulator IDs */
+/* MAX77693 regulator IDs */
 enum max77693_regulators {
 	MAX77693_ESAFEOUT1 = 0,
 	MAX77693_ESAFEOUT2,
 	MAX77693_CHARGER,
 	MAX77693_REG_MAX,
-};
-
-struct max77693_regulator_data {
-	int id;
-	struct regulator_init_data *initdata;
-	struct device_node *of_node;
 };
 
 struct max77693_reg_data {
@@ -63,12 +44,35 @@ struct max77693_muic_platform_data {
 	int path_uart;
 };
 
-struct max77693_platform_data {
-	/* regulator data */
-	struct max77693_regulator_data *regulators;
-	int num_regulators;
+/* MAX77693 led flash */
 
+/* triggers */
+enum max77693_led_trigger {
+	MAX77693_LED_TRIG_OFF,
+	MAX77693_LED_TRIG_FLASH,
+	MAX77693_LED_TRIG_TORCH,
+	MAX77693_LED_TRIG_EXT,
+	MAX77693_LED_TRIG_SOFT,
+};
+
+/* trigger types */
+enum max77693_led_trigger_type {
+	MAX77693_LED_TRIG_TYPE_EDGE,
+	MAX77693_LED_TRIG_TYPE_LEVEL,
+};
+
+/* boost modes */
+enum max77693_led_boost_mode {
+	MAX77693_LED_BOOST_NONE,
+	MAX77693_LED_BOOST_ADAPTIVE,
+	MAX77693_LED_BOOST_FIXED,
+};
+
+/* MAX77693 */
+
+struct max77693_platform_data {
 	/* muic data */
 	struct max77693_muic_platform_data *muic_data;
+	struct max77693_led_platform_data *led_data;
 };
 #endif	/* __LINUX_MFD_MAX77693_H */

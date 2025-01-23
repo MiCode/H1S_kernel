@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Interface to the libusual.
  *
@@ -67,8 +68,26 @@
 		/* Initial READ(10) (and others) must be retried */	\
 	US_FLAG(WRITE_CACHE,	0x00200000)			\
 		/* Write Cache status is not available */	\
-	US_FLAG(NEEDS_CAP16,	0x00400000)
-		/* cannot handle READ_CAPACITY_10 */
+	US_FLAG(NEEDS_CAP16,	0x00400000)			\
+		/* cannot handle READ_CAPACITY_10 */		\
+	US_FLAG(IGNORE_UAS,	0x00800000)			\
+		/* Device advertises UAS but it is broken */	\
+	US_FLAG(BROKEN_FUA,	0x01000000)			\
+		/* Cannot handle FUA in WRITE or READ CDBs */	\
+	US_FLAG(NO_ATA_1X,	0x02000000)			\
+		/* Cannot handle ATA_12 or ATA_16 CDBs */	\
+	US_FLAG(NO_REPORT_OPCODES,	0x04000000)		\
+		/* Cannot handle MI_REPORT_SUPPORTED_OPERATION_CODES */	\
+	US_FLAG(MAX_SECTORS_240,	0x08000000)		\
+		/* Sets max_sectors to 240 */			\
+	US_FLAG(NO_REPORT_LUNS,	0x10000000)			\
+		/* Cannot handle REPORT_LUNS */			\
+	US_FLAG(ALWAYS_SYNC, 0x20000000)			\
+		/* lies about caching, so always sync */	\
+	US_FLAG(NO_SAME, 0x40000000)				\
+		/* Cannot handle WRITE_SAME */			\
+	US_FLAG(SENSE_AFTER_SYNC, 0x80000000)			\
+		/* Do REQUEST_SENSE after SYNCHRONIZE_CACHE */	\
 
 #define US_FLAG(name, value)	US_FL_##name = value ,
 enum { US_DO_ALL_FLAGS };
@@ -77,6 +96,6 @@ enum { US_DO_ALL_FLAGS };
 #include <linux/usb/storage.h>
 
 extern int usb_usual_ignore_device(struct usb_interface *intf);
-extern struct usb_device_id usb_storage_usb_ids[];
+extern const struct usb_device_id usb_storage_usb_ids[];
 
 #endif /* __LINUX_USB_USUAL_H */

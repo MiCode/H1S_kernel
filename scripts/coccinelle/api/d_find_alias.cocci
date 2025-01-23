@@ -1,9 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /// Make sure calls to d_find_alias() have a corresponding call to dput().
 //
 // Keywords: d_find_alias, dput
 //
 // Confidence: Moderate
-// URL: http://coccinelle.lip6.fr/
+// URL: https://coccinelle.gitlabpages.inria.fr/website
 // Options: --include-headers
 
 virtual context

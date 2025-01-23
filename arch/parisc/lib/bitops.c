@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * bitops.c: atomic operations which got too long to be inlined all over
  *      the place.
@@ -17,7 +18,7 @@ arch_spinlock_t __atomic_hash[ATOMIC_HASH_SIZE] __lock_aligned = {
 #endif
 
 #ifdef CONFIG_64BIT
-unsigned long __xchg64(unsigned long x, unsigned long *ptr)
+unsigned long notrace __xchg64(unsigned long x, volatile unsigned long *ptr)
 {
 	unsigned long temp, flags;
 
@@ -29,7 +30,7 @@ unsigned long __xchg64(unsigned long x, unsigned long *ptr)
 }
 #endif
 
-unsigned long __xchg32(int x, int *ptr)
+unsigned long notrace __xchg32(int x, volatile int *ptr)
 {
 	unsigned long flags;
 	long temp;
@@ -42,7 +43,7 @@ unsigned long __xchg32(int x, int *ptr)
 }
 
 
-unsigned long __xchg8(char x, char *ptr)
+unsigned long notrace __xchg8(char x, volatile char *ptr)
 {
 	unsigned long flags;
 	long temp;
@@ -55,11 +56,10 @@ unsigned long __xchg8(char x, char *ptr)
 }
 
 
-#ifdef CONFIG_64BIT
-unsigned long __cmpxchg_u64(volatile unsigned long *ptr, unsigned long old, unsigned long new)
+u64 notrace __cmpxchg_u64(volatile u64 *ptr, u64 old, u64 new)
 {
 	unsigned long flags;
-	unsigned long prev;
+	u64 prev;
 
 	_atomic_spin_lock_irqsave(ptr, flags);
 	if ((prev = *ptr) == old)
@@ -67,9 +67,8 @@ unsigned long __cmpxchg_u64(volatile unsigned long *ptr, unsigned long old, unsi
 	_atomic_spin_unlock_irqrestore(ptr, flags);
 	return prev;
 }
-#endif
 
-unsigned long __cmpxchg_u32(volatile unsigned int *ptr, unsigned int old, unsigned int new)
+unsigned long notrace __cmpxchg_u32(volatile unsigned int *ptr, unsigned int old, unsigned int new)
 {
 	unsigned long flags;
 	unsigned int prev;
@@ -79,4 +78,16 @@ unsigned long __cmpxchg_u32(volatile unsigned int *ptr, unsigned int old, unsign
 		*ptr = new;
 	_atomic_spin_unlock_irqrestore(ptr, flags);
 	return (unsigned long)prev;
+}
+
+u8 notrace __cmpxchg_u8(volatile u8 *ptr, u8 old, u8 new)
+{
+	unsigned long flags;
+	u8 prev;
+
+	_atomic_spin_lock_irqsave(ptr, flags);
+	if ((prev = *ptr) == old)
+		*ptr = new;
+	_atomic_spin_unlock_irqrestore(ptr, flags);
+	return prev;
 }

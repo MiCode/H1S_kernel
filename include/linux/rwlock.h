@@ -1,7 +1,7 @@
 #ifndef __LINUX_RWLOCK_H
 #define __LINUX_RWLOCK_H
 
-#ifndef __LINUX_SPINLOCK_H
+#ifndef __LINUX_INSIDE_SPINLOCK_H
 # error "please don't include this file directly"
 #endif
 
@@ -30,28 +30,19 @@ do {								\
 
 #ifdef CONFIG_DEBUG_SPINLOCK
  extern void do_raw_read_lock(rwlock_t *lock) __acquires(lock);
-#define do_raw_read_lock_flags(lock, flags) do_raw_read_lock(lock)
  extern int do_raw_read_trylock(rwlock_t *lock);
  extern void do_raw_read_unlock(rwlock_t *lock) __releases(lock);
  extern void do_raw_write_lock(rwlock_t *lock) __acquires(lock);
-#define do_raw_write_lock_flags(lock, flags) do_raw_write_lock(lock)
  extern int do_raw_write_trylock(rwlock_t *lock);
  extern void do_raw_write_unlock(rwlock_t *lock) __releases(lock);
 #else
 # define do_raw_read_lock(rwlock)	do {__acquire(lock); arch_read_lock(&(rwlock)->raw_lock); } while (0)
-# define do_raw_read_lock_flags(lock, flags) \
-		do {__acquire(lock); arch_read_lock_flags(&(lock)->raw_lock, *(flags)); } while (0)
 # define do_raw_read_trylock(rwlock)	arch_read_trylock(&(rwlock)->raw_lock)
 # define do_raw_read_unlock(rwlock)	do {arch_read_unlock(&(rwlock)->raw_lock); __release(lock); } while (0)
 # define do_raw_write_lock(rwlock)	do {__acquire(lock); arch_write_lock(&(rwlock)->raw_lock); } while (0)
-# define do_raw_write_lock_flags(lock, flags) \
-		do {__acquire(lock); arch_write_lock_flags(&(lock)->raw_lock, *(flags)); } while (0)
 # define do_raw_write_trylock(rwlock)	arch_write_trylock(&(rwlock)->raw_lock)
 # define do_raw_write_unlock(rwlock)	do {arch_write_unlock(&(rwlock)->raw_lock); __release(lock); } while (0)
 #endif
-
-#define read_can_lock(rwlock)		arch_read_can_lock(&(rwlock)->raw_lock)
-#define write_can_lock(rwlock)		arch_write_can_lock(&(rwlock)->raw_lock)
 
 /*
  * Define the various rw_lock methods.  Note we define these
@@ -63,6 +54,12 @@ do {								\
 
 #define write_lock(lock)	_raw_write_lock(lock)
 #define read_lock(lock)		_raw_read_lock(lock)
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+#define write_lock_nested(lock, subclass)	_raw_write_lock_nested(lock, subclass)
+#else
+#define write_lock_nested(lock, subclass)	_raw_write_lock(lock)
+#endif
 
 #if defined(CONFIG_SMP) || defined(CONFIG_DEBUG_SPINLOCK)
 
@@ -121,5 +118,12 @@ do {								\
 	write_trylock(lock) ? \
 	1 : ({ local_irq_restore(flags); 0; }); \
 })
+
+#ifdef arch_rwlock_is_contended
+#define rwlock_is_contended(lock) \
+	 arch_rwlock_is_contended(&(lock)->raw_lock)
+#else
+#define rwlock_is_contended(lock)	((void)(lock), 0)
+#endif /* arch_rwlock_is_contended */
 
 #endif /* __LINUX_RWLOCK_H */

@@ -1,33 +1,33 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * PIKA Warp(tm) board specific routines
  *
  * Copyright (c) 2008-2009 PIKA Technologies
  *   Sean MacLennan <smaclennan@pikatech.com>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
+#include <linux/err.h>
 #include <linux/init.h>
 #include <linux/of_platform.h>
 #include <linux/kthread.h>
+#include <linux/leds.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
-#include <linux/of_gpio.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
+#include <linux/gpio/consumer.h>
 #include <linux/slab.h>
 #include <linux/export.h>
 
 #include <asm/machdep.h>
-#include <asm/prom.h>
 #include <asm/udbg.h>
 #include <asm/time.h>
 #include <asm/uic.h>
 #include <asm/ppc4xx.h>
+#include <asm/dma.h>
 
 
-static __initdata struct of_device_id warp_of_bus[] = {
+static const struct of_device_id warp_of_bus[] __initconst = {
 	{ .compatible = "ibm,plb4", },
 	{ .compatible = "ibm,opb", },
 	{ .compatible = "ibm,ebc", },
@@ -41,27 +41,13 @@ static int __init warp_device_probe(void)
 }
 machine_device_initcall(warp, warp_device_probe);
 
-static int __init warp_probe(void)
-{
-	unsigned long root = of_get_flat_dt_root();
-
-	if (!of_flat_dt_is_compatible(root, "pika,warp"))
-		return 0;
-
-	/* For __dma_alloc_coherent */
-	ISA_DMA_THRESHOLD = ~0L;
-
-	return 1;
-}
-
 define_machine(warp) {
 	.name		= "Warp",
-	.probe 		= warp_probe,
+	.compatible	= "pika,warp",
 	.progress 	= udbg_progress,
 	.init_IRQ 	= uic_init_tree,
 	.get_irq 	= uic_get_irq,
 	.restart	= ppc4xx_reset_system,
-	.calibrate_decr = generic_calibrate_decr,
 };
 
 
@@ -97,60 +83,44 @@ static int __init warp_post_info(void)
 
 #ifdef CONFIG_SENSORS_AD7414
 
-static LIST_HEAD(dtm_shutdown_list);
 static void __iomem *dtm_fpga;
-static unsigned green_led, red_led;
 
+#define WARP_GREEN_LED	0
+#define WARP_RED_LED	1
 
-struct dtm_shutdown {
-	struct list_head list;
-	void (*func)(void *arg);
-	void *arg;
+static struct gpio_led warp_gpio_led_pins[] = {
+	[WARP_GREEN_LED] = {
+		.name		= "green",
+		.default_state	= LEDS_DEFSTATE_KEEP,
+		.gpiod		= NULL, /* to be filled by pika_setup_leds() */
+	},
+	[WARP_RED_LED] = {
+		.name		= "red",
+		.default_state	= LEDS_DEFSTATE_KEEP,
+		.gpiod		= NULL, /* to be filled by pika_setup_leds() */
+	},
 };
 
+static struct gpio_led_platform_data warp_gpio_led_data = {
+	.leds		= warp_gpio_led_pins,
+	.num_leds	= ARRAY_SIZE(warp_gpio_led_pins),
+};
 
-int pika_dtm_register_shutdown(void (*func)(void *arg), void *arg)
-{
-	struct dtm_shutdown *shutdown;
-
-	shutdown = kmalloc(sizeof(struct dtm_shutdown), GFP_KERNEL);
-	if (shutdown == NULL)
-		return -ENOMEM;
-
-	shutdown->func = func;
-	shutdown->arg = arg;
-
-	list_add(&shutdown->list, &dtm_shutdown_list);
-
-	return 0;
-}
-
-int pika_dtm_unregister_shutdown(void (*func)(void *arg), void *arg)
-{
-	struct dtm_shutdown *shutdown;
-
-	list_for_each_entry(shutdown, &dtm_shutdown_list, list)
-		if (shutdown->func == func && shutdown->arg == arg) {
-			list_del(&shutdown->list);
-			kfree(shutdown);
-			return 0;
-		}
-
-	return -EINVAL;
-}
+static struct platform_device warp_gpio_leds = {
+	.name	= "leds-gpio",
+	.id	= -1,
+	.dev	= {
+		.platform_data = &warp_gpio_led_data,
+	},
+};
 
 static irqreturn_t temp_isr(int irq, void *context)
 {
-	struct dtm_shutdown *shutdown;
 	int value = 1;
 
 	local_irq_disable();
 
-	gpio_set_value(green_led, 0);
-
-	/* Run through the shutdown list. */
-	list_for_each_entry(shutdown, &dtm_shutdown_list, list)
-		shutdown->func(shutdown->arg);
+	gpiod_set_value(warp_gpio_led_pins[WARP_GREEN_LED].gpiod, 0);
 
 	printk(KERN_EMERG "\n\nCritical Temperature Shutdown\n\n");
 
@@ -160,7 +130,7 @@ static irqreturn_t temp_isr(int irq, void *context)
 			out_be32(dtm_fpga + 0x14, reset);
 		}
 
-		gpio_set_value(red_led, value);
+		gpiod_set_value(warp_gpio_led_pins[WARP_RED_LED].gpiod, value);
 		value ^= 1;
 		mdelay(500);
 	}
@@ -169,25 +139,78 @@ static irqreturn_t temp_isr(int irq, void *context)
 	return IRQ_HANDLED;
 }
 
+/*
+ * Because green and red power LEDs are normally driven by leds-gpio driver,
+ * but in case of critical temperature shutdown we want to drive them
+ * ourselves, we acquire both and then create leds-gpio platform device
+ * ourselves, instead of doing it through device tree. This way we can still
+ * keep access to the gpios and use them when needed.
+ */
 static int pika_setup_leds(void)
 {
 	struct device_node *np, *child;
+	struct gpio_desc *gpio;
+	struct gpio_led *led;
+	int led_count = 0;
+	int error;
+	int i;
 
-	np = of_find_compatible_node(NULL, NULL, "gpio-leds");
+	np = of_find_compatible_node(NULL, NULL, "warp-power-leds");
 	if (!np) {
 		printk(KERN_ERR __FILE__ ": Unable to find leds\n");
 		return -ENOENT;
 	}
 
-	for_each_child_of_node(np, child)
-		if (strcmp(child->name, "green") == 0)
-			green_led = of_get_gpio(child, 0);
-		else if (strcmp(child->name, "red") == 0)
-			red_led = of_get_gpio(child, 0);
+	for_each_child_of_node(np, child) {
+		for (i = 0; i < ARRAY_SIZE(warp_gpio_led_pins); i++) {
+			led = &warp_gpio_led_pins[i];
+
+			if (!of_node_name_eq(child, led->name))
+				continue;
+
+			if (led->gpiod) {
+				printk(KERN_ERR __FILE__ ": %s led has already been defined\n",
+				       led->name);
+				continue;
+			}
+
+			gpio = fwnode_gpiod_get_index(of_fwnode_handle(child),
+						      NULL, 0, GPIOD_ASIS,
+						      led->name);
+			error = PTR_ERR_OR_ZERO(gpio);
+			if (error) {
+				printk(KERN_ERR __FILE__ ": Failed to get %s led gpio: %d\n",
+				       led->name, error);
+				of_node_put(child);
+				goto err_cleanup_pins;
+			}
+
+			led->gpiod = gpio;
+			led_count++;
+		}
+	}
 
 	of_node_put(np);
 
+	/* Skip device registration if no leds have been defined */
+	if (led_count) {
+		error = platform_device_register(&warp_gpio_leds);
+		if (error) {
+			printk(KERN_ERR __FILE__ ": Unable to add leds-gpio: %d\n",
+			       error);
+			goto err_cleanup_pins;
+		}
+	}
+
 	return 0;
+
+err_cleanup_pins:
+	for (i = 0; i < ARRAY_SIZE(warp_gpio_led_pins); i++) {
+		led = &warp_gpio_led_pins[i];
+		gpiod_put(led->gpiod);
+		led->gpiod = NULL;
+	}
+	return error;
 }
 
 static void pika_setup_critical_temp(struct device_node *np,
@@ -205,7 +228,7 @@ static void pika_setup_critical_temp(struct device_node *np,
 	i2c_smbus_write_byte_data(client, 3,  0); /* Tlow */
 
 	irq = irq_of_parse_and_map(np, 0);
-	if (irq  == NO_IRQ) {
+	if (!irq) {
 		printk(KERN_ERR __FILE__ ": Unable to get ad7414 irq\n");
 		return;
 	}
@@ -301,19 +324,6 @@ machine_late_initcall(warp, pika_dtm_start);
 
 #else /* !CONFIG_SENSORS_AD7414 */
 
-int pika_dtm_register_shutdown(void (*func)(void *arg), void *arg)
-{
-	return 0;
-}
-
-int pika_dtm_unregister_shutdown(void (*func)(void *arg), void *arg)
-{
-	return 0;
-}
-
 machine_late_initcall(warp, warp_post_info);
 
 #endif
-
-EXPORT_SYMBOL(pika_dtm_register_shutdown);
-EXPORT_SYMBOL(pika_dtm_unregister_shutdown);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * pata_cmd64x.c 	- CMD64x PATA for new ATA layer
  *			  (C) 2005 Red Hat Inc
@@ -26,7 +27,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <scsi/scsi_host.h>
@@ -116,7 +116,7 @@ static void cmd64x_set_timing(struct ata_port *ap, struct ata_device *adev, u8 m
 	/* ata_timing_compute is smart and will produce timings for MWDMA
 	   that don't violate the drives PIO capabilities. */
 	if (ata_timing_compute(adev, mode, &t, T, 0) < 0) {
-		printk(KERN_ERR DRV_NAME ": mode computation failed.\n");
+		ata_dev_err(adev, DRV_NAME ": mode computation failed.\n");
 		return;
 	}
 	if (ap->port_no) {
@@ -130,7 +130,7 @@ static void cmd64x_set_timing(struct ata_port *ap, struct ata_device *adev, u8 m
 		}
 	}
 
-	printk(KERN_DEBUG DRV_NAME ": active %d recovery %d setup %d.\n",
+	ata_dev_dbg(adev, DRV_NAME ": active %d recovery %d setup %d.\n",
 		t.active, t.recover, t.setup);
 	if (t.recover > 16) {
 		t.active += t.recover - 16;
@@ -319,7 +319,7 @@ static void cmd646r1_bmdma_stop(struct ata_queued_cmd *qc)
 	ata_bmdma_stop(qc);
 }
 
-static struct scsi_host_template cmd64x_sht = {
+static const struct scsi_host_template cmd64x_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -461,7 +461,7 @@ static int cmd64x_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 		case 1:
 			ppi[0] = &cmd_info[4];
 			ppi[1] = &cmd_info[4];
-			/* FALL THRU */
+			fallthrough;
 		/* Early revs have no CNTRL_CH0 */
 		case 2:
 		case 0:
@@ -488,7 +488,7 @@ static int cmd64x_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	return ata_pci_bmdma_init_one(pdev, ppi, &cmd64x_sht, NULL, 0);
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int cmd64x_reinit_one(struct pci_dev *pdev)
 {
 	struct ata_host *host = pci_get_drvdata(pdev);
@@ -519,7 +519,7 @@ static struct pci_driver cmd64x_pci_driver = {
 	.id_table	= cmd64x,
 	.probe 		= cmd64x_init_one,
 	.remove		= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= cmd64x_reinit_one,
 #endif

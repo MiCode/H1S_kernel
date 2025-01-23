@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	Zorro Device Name Tables
  *
@@ -14,6 +15,7 @@
 #include <linux/types.h>
 #include <linux/zorro.h>
 
+#include "zorro.h"
 
 struct zorro_prod_info {
 	__u16 prod;
@@ -46,13 +48,13 @@ struct zorro_manuf_info {
 #include "devlist.h"
 
 static struct zorro_manuf_info __initdata zorro_manuf_list[] = {
-#define MANUF( manuf, name )		{ 0x##manuf, sizeof(__prods_##manuf) / sizeof(struct zorro_prod_info), __manufstr_##manuf, __prods_##manuf },
+#define MANUF( manuf, name )		{ 0x##manuf, ARRAY_SIZE(__prods_##manuf), __manufstr_##manuf, __prods_##manuf },
 #define ENDMANUF()
 #define PRODUCT( manuf, prod, name )
 #include "devlist.h"
 };
 
-#define MANUFS (sizeof(zorro_manuf_list)/sizeof(struct zorro_manuf_info))
+#define MANUFS ARRAY_SIZE(zorro_manuf_list)
 
 void __init zorro_name_device(struct zorro_dev *dev)
 {

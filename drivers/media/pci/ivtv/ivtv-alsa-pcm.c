@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  ALSA PCM device for the
  *  ALSA interface to ivtv PCM capture streams
@@ -6,31 +7,7 @@
  *  Copyright (C) 2009  Devin Heitmueller <dheitmueller@kernellabs.com>
  *
  *  Portions of this work were sponsored by ONELAN Limited for the cx18 driver
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
- *  02111-1307  USA
  */
-
-#include <linux/init.h>
-#include <linux/kernel.h>
-#include <linux/vmalloc.h>
-
-#include <media/v4l2-device.h>
-
-#include <sound/core.h>
-#include <sound/pcm.h>
 
 #include "ivtv-driver.h"
 #include "ivtv-queue.h"
@@ -38,6 +15,10 @@
 #include "ivtv-fileops.h"
 #include "ivtv-alsa.h"
 #include "ivtv-alsa-pcm.h"
+
+#include <sound/core.h>
+#include <sound/pcm.h>
+
 
 static unsigned int pcm_debug;
 module_param(pcm_debug, int, 0644);
@@ -49,7 +30,7 @@ MODULE_PARM_DESC(pcm_debug, "enable debug messages for pcm");
 			pr_info("ivtv-alsa-pcm %s: " fmt, __func__, ##arg); \
 	} while (0)
 
-static struct snd_pcm_hardware snd_ivtv_hw_capture = {
+static const struct snd_pcm_hardware snd_ivtv_hw_capture = {
 	.info = SNDRV_PCM_INFO_BLOCK_TRANSFER |
 		SNDRV_PCM_INFO_MMAP           |
 		SNDRV_PCM_INFO_INTERLEAVED    |
@@ -81,7 +62,7 @@ static void ivtv_alsa_announce_pcm_data(struct snd_ivtv_card *itvsc,
 	int period_elapsed = 0;
 	int length;
 
-	dprintk("ivtv alsa announce ptr=%p data=%p num_bytes=%zd\n", itvsc,
+	dprintk("ivtv alsa announce ptr=%p data=%p num_bytes=%zu\n", itvsc,
 		pcm_data, num_bytes);
 
 	substream = itvsc->capture_pcm_substream;
@@ -159,15 +140,22 @@ static int snd_ivtv_pcm_capture_open(struct snd_pcm_substream *substream)
 
 	/* Instruct the CX2341[56] to start sending packets */
 	snd_ivtv_lock(itvsc);
+
+	if (ivtv_init_on_first_open(itv)) {
+		snd_ivtv_unlock(itvsc);
+		return -ENXIO;
+	}
+
 	s = &itv->streams[IVTV_ENC_STREAM_TYPE_PCM];
 
-	v4l2_fh_init(&item.fh, s->vdev);
+	v4l2_fh_init(&item.fh, &s->vdev);
 	item.itv = itv;
 	item.type = s->type;
 
 	/* See if the stream is available */
 	if (ivtv_claim_stream(&item, item.type)) {
 		/* No, it's already in use */
+		v4l2_fh_exit(&item.fh);
 		snd_ivtv_unlock(itvsc);
 		return -EBUSY;
 	}
@@ -216,65 +204,6 @@ static int snd_ivtv_pcm_capture_close(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-static int snd_ivtv_pcm_ioctl(struct snd_pcm_substream *substream,
-		     unsigned int cmd, void *arg)
-{
-	struct snd_ivtv_card *itvsc = snd_pcm_substream_chip(substream);
-	int ret;
-
-	snd_ivtv_lock(itvsc);
-	ret = snd_pcm_lib_ioctl(substream, cmd, arg);
-	snd_ivtv_unlock(itvsc);
-	return ret;
-}
-
-
-static int snd_pcm_alloc_vmalloc_buffer(struct snd_pcm_substream *subs,
-					size_t size)
-{
-	struct snd_pcm_runtime *runtime = subs->runtime;
-
-	dprintk("Allocating vbuffer\n");
-	if (runtime->dma_area) {
-		if (runtime->dma_bytes > size)
-			return 0;
-
-		vfree(runtime->dma_area);
-	}
-	runtime->dma_area = vmalloc(size);
-	if (!runtime->dma_area)
-		return -ENOMEM;
-
-	runtime->dma_bytes = size;
-
-	return 0;
-}
-
-static int snd_ivtv_pcm_hw_params(struct snd_pcm_substream *substream,
-			 struct snd_pcm_hw_params *params)
-{
-	dprintk("%s called\n", __func__);
-
-	return snd_pcm_alloc_vmalloc_buffer(substream,
-					   params_buffer_bytes(params));
-}
-
-static int snd_ivtv_pcm_hw_free(struct snd_pcm_substream *substream)
-{
-	struct snd_ivtv_card *itvsc = snd_pcm_substream_chip(substream);
-	unsigned long flags;
-
-	spin_lock_irqsave(&itvsc->slock, flags);
-	if (substream->runtime->dma_area) {
-		dprintk("freeing pcm capture region\n");
-		vfree(substream->runtime->dma_area);
-		substream->runtime->dma_area = NULL;
-	}
-	spin_unlock_irqrestore(&itvsc->slock, flags);
-
-	return 0;
-}
-
 static int snd_ivtv_pcm_prepare(struct snd_pcm_substream *substream)
 {
 	struct snd_ivtv_card *itvsc = snd_pcm_substream_chip(substream);
@@ -304,24 +233,12 @@ snd_pcm_uframes_t snd_ivtv_pcm_pointer(struct snd_pcm_substream *substream)
 	return hwptr_done;
 }
 
-static struct page *snd_pcm_get_vmalloc_page(struct snd_pcm_substream *subs,
-					     unsigned long offset)
-{
-	void *pageptr = subs->runtime->dma_area + offset;
-
-	return vmalloc_to_page(pageptr);
-}
-
-static struct snd_pcm_ops snd_ivtv_pcm_capture_ops = {
+static const struct snd_pcm_ops snd_ivtv_pcm_capture_ops = {
 	.open		= snd_ivtv_pcm_capture_open,
 	.close		= snd_ivtv_pcm_capture_close,
-	.ioctl		= snd_ivtv_pcm_ioctl,
-	.hw_params	= snd_ivtv_pcm_hw_params,
-	.hw_free	= snd_ivtv_pcm_hw_free,
 	.prepare	= snd_ivtv_pcm_prepare,
 	.trigger	= snd_ivtv_pcm_trigger,
 	.pointer	= snd_ivtv_pcm_pointer,
-	.page		= snd_pcm_get_vmalloc_page,
 };
 
 int snd_ivtv_pcm_create(struct snd_ivtv_card *itvsc)
@@ -347,9 +264,10 @@ int snd_ivtv_pcm_create(struct snd_ivtv_card *itvsc)
 
 	snd_pcm_set_ops(sp, SNDRV_PCM_STREAM_CAPTURE,
 			&snd_ivtv_pcm_capture_ops);
+	snd_pcm_set_managed_buffer_all(sp, SNDRV_DMA_TYPE_VMALLOC, NULL, 0, 0);
 	sp->info_flags = 0;
 	sp->private_data = itvsc;
-	strlcpy(sp->name, itv->card_name, sizeof(sp->name));
+	strscpy(sp->name, itv->card_name, sizeof(sp->name));
 
 	return 0;
 

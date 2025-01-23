@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * tsi108/109 device setup code
  *
  * Maintained by Roy Zang < tie-fei.zang@freescale.com >
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/stddef.h>
@@ -18,14 +14,16 @@
 #include <linux/irq.h>
 #include <linux/export.h>
 #include <linux/device.h>
+#include <linux/etherdevice.h>
 #include <linux/platform_device.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/of_net.h>
 #include <asm/tsi108.h>
 
 #include <linux/atomic.h>
 #include <asm/io.h>
 #include <asm/irq.h>
-#include <asm/prom.h>
 #include <mm/mmu_decl.h>
 
 #undef DEBUG
@@ -47,20 +45,19 @@ phys_addr_t get_csrbase(void)
 
 	tsi = of_find_node_by_type(NULL, "tsi-bridge");
 	if (tsi) {
-		unsigned int size;
-		const void *prop = of_get_property(tsi, "reg", &size);
-		tsi108_csr_base = of_translate_address(tsi, prop);
+		struct resource res;
+		of_address_to_resource(tsi, 0, &res);
+		tsi108_csr_base = res.start;
 		of_node_put(tsi);
-	};
+	}
 	return tsi108_csr_base;
 }
+EXPORT_SYMBOL(get_csrbase);
 
 u32 get_vir_csrbase(void)
 {
 	return (u32) (ioremap(get_csrbase(), 0x10000));
 }
-
-EXPORT_SYMBOL(get_csrbase);
 EXPORT_SYMBOL(get_vir_csrbase);
 
 static int __init tsi108_eth_of_init(void)
@@ -76,7 +73,6 @@ static int __init tsi108_eth_of_init(void)
 		struct device_node *phy, *mdio;
 		hw_info tsi_eth_data;
 		const unsigned int *phy_id;
-		const void *mac_addr;
 		const phandle *ph;
 
 		memset(r, 0, sizeof(r));
@@ -104,9 +100,7 @@ static int __init tsi108_eth_of_init(void)
 			goto err;
 		}
 
-		mac_addr = of_get_mac_address(np);
-		if (mac_addr)
-			memcpy(tsi_eth_data.mac_addr, mac_addr, 6);
+		of_get_mac_address(np, tsi_eth_data.mac_addr);
 
 		ph = of_get_property(np, "mdio-handle", NULL);
 		mdio = of_find_node_by_phandle(*ph);
@@ -138,7 +132,7 @@ static int __init tsi108_eth_of_init(void)
 		 * driver itself to phylib and use a non-misleading
 		 * name for the workaround flag - it's not actually to
 		 * do with the model of PHY in use */
-		if (of_get_property(phy, "txc-rxc-delay-disable", NULL))
+		if (of_property_read_bool(phy, "txc-rxc-delay-disable"))
 			tsi_eth_data.phy_type = TSI108_PHY_BCM54XX;
 		of_node_put(phy);
 

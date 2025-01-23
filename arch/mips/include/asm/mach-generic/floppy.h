@@ -21,19 +21,18 @@
 #include <asm/floppy.h>
 #include <asm/io.h>
 #include <asm/irq.h>
-#include <asm/pgtable.h>
 
 /*
  * How to access the FDC's registers.
  */
-static inline unsigned char fd_inb(unsigned int port)
+static inline unsigned char fd_inb(unsigned int base, unsigned int reg)
 {
-	return inb_p(port);
+	return inb_p(base + reg);
 }
 
-static inline void fd_outb(unsigned char value, unsigned int port)
+static inline void fd_outb(unsigned char value, unsigned int base, unsigned int reg)
 {
-	outb_p(value, port);
+	outb_p(value, base + reg);
 }
 
 /*
@@ -115,11 +114,7 @@ static inline unsigned long fd_getfdaddr1(void)
 
 static inline unsigned long fd_dma_mem_alloc(unsigned long size)
 {
-	unsigned long mem;
-
-	mem = __get_dma_pages(GFP_KERNEL, get_order(size));
-
-	return mem;
+	return __get_dma_pages(GFP_KERNEL, get_order(size));
 }
 
 static inline void fd_dma_mem_free(unsigned long addr, unsigned long size)

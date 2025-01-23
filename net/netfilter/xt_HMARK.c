@@ -1,13 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * xt_HMARK - Netfilter module to set mark by means of hashing
  *
  * (C) 2012 by Hans Schillstrom <hans.schillstrom@ericsson.com>
  * (C) 2012 by Pablo Neira Ayuso <pablo@netfilter.org>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 #include <linux/skbuff.h>
@@ -84,7 +83,7 @@ hmark_ct_set_htuple(const struct sk_buff *skb, struct hmark_tuple *t,
 	struct nf_conntrack_tuple *otuple;
 	struct nf_conntrack_tuple *rtuple;
 
-	if (ct == NULL || nf_ct_is_untracked(ct))
+	if (ct == NULL)
 		return -1;
 
 	otuple = &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple;
@@ -126,7 +125,7 @@ hmark_hash(struct hmark_tuple *t, const struct xt_hmark_info *info)
 	hash = jhash_3words(src, dst, t->uports.v32, info->hashrnd);
 	hash = hash ^ (t->proto & info->proto_mask);
 
-	return (((u64)hash * info->hmodulus) >> 32) + info->hoffset;
+	return reciprocal_scale(hash, info->hmodulus) + info->hoffset;
 }
 
 static void
@@ -240,11 +239,7 @@ static int get_inner_hdr(const struct sk_buff *skb, int iphsz, int *nhoff)
 		return 0;
 
 	/* Error message? */
-	if (icmph->type != ICMP_DEST_UNREACH &&
-	    icmph->type != ICMP_SOURCE_QUENCH &&
-	    icmph->type != ICMP_TIME_EXCEEDED &&
-	    icmph->type != ICMP_PARAMETERPROB &&
-	    icmph->type != ICMP_REDIRECT)
+	if (!icmp_is_err(icmph->type))
 		return 0;
 
 	*nhoff += iphsz + sizeof(_ih);
@@ -281,7 +276,7 @@ hmark_pkt_set_htuple_ipv4(const struct sk_buff *skb, struct hmark_tuple *t,
 		return 0;
 
 	/* follow-up fragments don't contain ports, skip all fragments */
-	if (ip->frag_off & htons(IP_MF | IP_OFFSET))
+	if (ip_is_fragment(ip))
 		return 0;
 
 	hmark_set_tuple_ports(skb, (ip->ihl * 4) + nhoff, t, info);
@@ -312,29 +307,30 @@ hmark_tg_v4(struct sk_buff *skb, const struct xt_action_param *par)
 static int hmark_tg_check(const struct xt_tgchk_param *par)
 {
 	const struct xt_hmark_info *info = par->targinfo;
+	const char *errmsg = "proto mask must be zero with L3 mode";
 
-	if (!info->hmodulus) {
-		pr_info("xt_HMARK: hash modulus can't be zero\n");
+	if (!info->hmodulus)
 		return -EINVAL;
-	}
+
 	if (info->proto_mask &&
-	    (info->flags & XT_HMARK_FLAG(XT_HMARK_METHOD_L3))) {
-		pr_info("xt_HMARK: proto mask must be zero with L3 mode\n");
-		return -EINVAL;
-	}
+	    (info->flags & XT_HMARK_FLAG(XT_HMARK_METHOD_L3)))
+		goto err;
+
 	if (info->flags & XT_HMARK_FLAG(XT_HMARK_SPI_MASK) &&
 	    (info->flags & (XT_HMARK_FLAG(XT_HMARK_SPORT_MASK) |
-			     XT_HMARK_FLAG(XT_HMARK_DPORT_MASK)))) {
-		pr_info("xt_HMARK: spi-mask and port-mask can't be combined\n");
+			     XT_HMARK_FLAG(XT_HMARK_DPORT_MASK))))
 		return -EINVAL;
-	}
+
 	if (info->flags & XT_HMARK_FLAG(XT_HMARK_SPI) &&
 	    (info->flags & (XT_HMARK_FLAG(XT_HMARK_SPORT) |
 			     XT_HMARK_FLAG(XT_HMARK_DPORT)))) {
-		pr_info("xt_HMARK: spi-set and port-set can't be combined\n");
-		return -EINVAL;
+		errmsg = "spi-set and port-set can't be combined";
+		goto err;
 	}
 	return 0;
+err:
+	pr_info_ratelimited("%s\n", errmsg);
+	return -EINVAL;
 }
 
 static struct xt_target hmark_tg_reg[] __read_mostly = {

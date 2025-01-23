@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 menu "CPU Frequency scaling"
 
 config CPU_FREQ
@@ -11,47 +12,44 @@ config CPU_FREQ
 	  clock speed, you need to either enable a dynamic cpufreq governor
 	  (see below) after boot, or use a userspace tool.
 
-	  For details, take a look at <file:Documentation/cpu-freq>.
+	  For details, take a look at
+	  <file:Documentation/admin-guide/pm/cpufreq.rst>.
 
 	  If in doubt, say N.
 
 if CPU_FREQ
 
-config CPU_FREQ_GOV_COMMON
+config CPU_FREQ_GOV_ATTR_SET
 	bool
 
-config CPU_FREQ_BOOST_SW
+config CPU_FREQ_GOV_COMMON
+	select CPU_FREQ_GOV_ATTR_SET
+	select IRQ_WORK
 	bool
-	depends on THERMAL
 
 config CPU_FREQ_STAT
-	tristate "CPU frequency translation statistics"
-	default y
+	bool "CPU frequency transition statistics"
 	help
-	  This driver exports CPU frequency statistics information through sysfs
-	  file system.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called cpufreq_stats.
+	  Export CPU frequency statistics information through sysfs.
 
 	  If in doubt, say N.
 
-config CPU_FREQ_STAT_DETAILS
-	bool "CPU frequency translation statistics details"
-	depends on CPU_FREQ_STAT
-	help
-	  This will show detail CPU frequency translation table in sysfs file
-	  system.
+config CPU_FREQ_TIMES
+       bool "CPU frequency time-in-state statistics"
+       help
+         Export CPU time-in-state information through procfs.
 
-	  If in doubt, say N.
+         If in doubt, say N.
 
 choice
 	prompt "Default CPUFreq governor"
-	default CPU_FREQ_DEFAULT_GOV_USERSPACE if ARM_SA1100_CPUFREQ || ARM_SA1110_CPUFREQ
+	default CPU_FREQ_DEFAULT_GOV_USERSPACE if ARM_SA1110_CPUFREQ
+	default CPU_FREQ_DEFAULT_GOV_SCHEDUTIL if ARM64 || ARM
+	default CPU_FREQ_DEFAULT_GOV_SCHEDUTIL if (X86_INTEL_PSTATE || X86_AMD_PSTATE) && SMP
 	default CPU_FREQ_DEFAULT_GOV_PERFORMANCE
 	help
 	  This option sets which CPUFreq governor shall be loaded at
-	  startup. If in doubt, select 'performance'.
+	  startup. If in doubt, use the default setting.
 
 config CPU_FREQ_DEFAULT_GOV_PERFORMANCE
 	bool "performance"
@@ -63,7 +61,6 @@ config CPU_FREQ_DEFAULT_GOV_PERFORMANCE
 
 config CPU_FREQ_DEFAULT_GOV_POWERSAVE
 	bool "powersave"
-	depends on EXPERT
 	select CPU_FREQ_GOV_POWERSAVE
 	help
 	  Use the CPUFreq governor 'powersave' as default. This sets
@@ -81,6 +78,7 @@ config CPU_FREQ_DEFAULT_GOV_USERSPACE
 
 config CPU_FREQ_DEFAULT_GOV_ONDEMAND
 	bool "ondemand"
+	depends on !(X86_INTEL_PSTATE && SMP)
 	select CPU_FREQ_GOV_ONDEMAND
 	select CPU_FREQ_GOV_PERFORMANCE
 	help
@@ -93,6 +91,7 @@ config CPU_FREQ_DEFAULT_GOV_ONDEMAND
 
 config CPU_FREQ_DEFAULT_GOV_CONSERVATIVE
 	bool "conservative"
+	depends on !(X86_INTEL_PSTATE && SMP)
 	select CPU_FREQ_GOV_CONSERVATIVE
 	select CPU_FREQ_GOV_PERFORMANCE
 	help
@@ -102,6 +101,17 @@ config CPU_FREQ_DEFAULT_GOV_CONSERVATIVE
 	  Be aware that not all cpufreq drivers support the conservative
 	  governor. If unsure have a look at the help section of the
 	  driver. Fallback governor will be the performance governor.
+
+config CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
+	bool "schedutil"
+	depends on SMP
+	select CPU_FREQ_GOV_SCHEDUTIL
+	select CPU_FREQ_GOV_PERFORMANCE
+	help
+	  Use the 'schedutil' CPUFreq governor by default. If unsure,
+	  have a look at the help section of that governor. The fallback
+	  governor will be 'performance'.
+
 endchoice
 
 config CPU_FREQ_GOV_PERFORMANCE
@@ -137,8 +147,6 @@ config CPU_FREQ_GOV_USERSPACE
 	  To compile this driver as a module, choose M here: the
 	  module will be called cpufreq_userspace.
 
-	  For details, take a look at <file:Documentation/cpu-freq/>.
-
 	  If in doubt, say Y.
 
 config CPU_FREQ_GOV_ONDEMAND
@@ -155,7 +163,8 @@ config CPU_FREQ_GOV_ONDEMAND
 	  To compile this driver as a module, choose M here: the
 	  module will be called cpufreq_ondemand.
 
-	  For details, take a look at linux/Documentation/cpu-freq.
+	  For details, take a look at
+	  <file:Documentation/admin-guide/pm/cpufreq.rst>.
 
 	  If in doubt, say N.
 
@@ -179,47 +188,89 @@ config CPU_FREQ_GOV_CONSERVATIVE
 	  To compile this driver as a module, choose M here: the
 	  module will be called cpufreq_conservative.
 
-	  For details, take a look at linux/Documentation/cpu-freq.
+	  For details, take a look at
+	  <file:Documentation/admin-guide/pm/cpufreq.rst>.
 
 	  If in doubt, say N.
 
-config GENERIC_CPUFREQ_CPU0
-	tristate "Generic CPU0 cpufreq driver"
-	depends on HAVE_CLK && REGULATOR && OF && THERMAL && CPU_THERMAL
+config CPU_FREQ_GOV_SCHEDUTIL
+	bool "'schedutil' cpufreq policy governor"
+	depends on CPU_FREQ && SMP
+	select CPU_FREQ_GOV_ATTR_SET
+	select IRQ_WORK
+	help
+	  This governor makes decisions based on the utilization data provided
+	  by the scheduler.  It sets the CPU frequency to be proportional to
+	  the utilization/capacity ratio coming from the scheduler.  If the
+	  utilization is frequency-invariant, the new frequency is also
+	  proportional to the maximum available frequency.  If that is not the
+	  case, it is proportional to the current frequency of the CPU.  The
+	  frequency tipping point is at utilization/capacity equal to 80% in
+	  both cases.
+
+	  If in doubt, say N.
+
+comment "CPU frequency scaling drivers"
+
+config CPUFREQ_DT
+	tristate "Generic DT based cpufreq driver"
+	depends on HAVE_CLK && OF
+	select CPUFREQ_DT_PLATDEV
 	select PM_OPP
 	help
-	  This adds a generic cpufreq driver for CPU0 frequency management.
+	  This adds a generic DT based cpufreq driver for frequency management.
 	  It supports both uniprocessor (UP) and symmetric multiprocessor (SMP)
-	  systems which share clock and voltage across all CPUs.
+	  systems.
 
 	  If in doubt, say N.
 
-menu "x86 CPU frequency scaling drivers"
-depends on X86
-source "drivers/cpufreq/Kconfig.x86"
-endmenu
-
-menu "ARM CPU frequency scaling drivers"
-depends on ARM
-source "drivers/cpufreq/Kconfig.arm"
-endmenu
-
-menu "AVR32 CPU frequency scaling drivers"
-depends on AVR32
-
-config AVR32_AT32AP_CPUFREQ
-	bool "CPU frequency driver for AT32AP"
-	depends on PLATFORM_AT32AP
-	default n
+config ANDROID_V_CPUFREQ_VIRT
+	tristate "Android-V Virtual cpufreq driver"
+	depends on OF && GENERIC_ARCH_TOPOLOGY
+	select PM_OPP
 	help
-	  This enables the CPU frequency driver for AT32AP processors.
+	  This adds a virtualized cpufreq driver for guest kernels that
+	  read/writes to a MMIO region for a virtualized cpufreq device to
+	  communicate with the host. It sends frequency updates to the host
+	  which gets used as a hint to schedule vCPU threads and select CPU
+	  frequency. If a VM does not support a virtualized FIE such as AMUs,
+	  it updates the frequency scaling factor by polling host CPU frequency
+	  to enable accurate Per-Entity Load Tracking for tasks running in the guest.
+
 	  If in doubt, say N.
 
-endmenu
+config CPUFREQ_DT_PLATDEV
+	tristate "Generic DT based cpufreq platdev driver"
+	depends on OF
+	help
+	  This adds a generic DT based cpufreq platdev driver for frequency
+	  management.  This creates a 'cpufreq-dt' platform device, on the
+	  supported platforms.
 
-menu "CPUFreq processor drivers"
-depends on IA64
+	  If in doubt, say N.
 
+config CPUFREQ_DUMMY
+	tristate "Dummy CPU frequency driver"
+	help
+	  This option adds a generic dummy CPUfreq driver, which sets a fake
+	  2-frequency table when initializing each policy and otherwise does
+	  nothing.
+
+	  If in doubt, say N
+
+if X86
+source "drivers/cpufreq/Kconfig.x86"
+endif
+
+if ARM || ARM64
+source "drivers/cpufreq/Kconfig.arm"
+endif
+
+if PPC32 || PPC64
+source "drivers/cpufreq/Kconfig.powerpc"
+endif
+
+if IA64
 config IA64_ACPI_CPUFREQ
 	tristate "ACPI Processor P-States driver"
 	depends on ACPI_PROCESSOR
@@ -227,42 +278,37 @@ config IA64_ACPI_CPUFREQ
 	This driver adds a CPUFreq driver which utilizes the ACPI
 	Processor Performance States.
 
-	For details, take a look at <file:Documentation/cpu-freq/>.
-
 	If in doubt, say N.
+endif
 
-endmenu
+if MIPS
+config BMIPS_CPUFREQ
+	tristate "BMIPS CPUfreq Driver"
+	help
+	  This option adds a CPUfreq driver for BMIPS processors with
+	  support for configurable CPU frequency.
 
-menu "MIPS CPUFreq processor drivers"
-depends on MIPS
+	  For now, BMIPS5 chips are supported (such as the Broadcom 7425).
+
+	  If in doubt, say N.
 
 config LOONGSON2_CPUFREQ
 	tristate "Loongson2 CPUFreq Driver"
+	depends on LEMOTE_MACH2F
 	help
 	  This option adds a CPUFreq driver for loongson processors which
 	  support software configurable cpu frequency.
 
-	  Loongson2F and it's successors support this feature.
-
-	  For details, take a look at <file:Documentation/cpu-freq/>.
+	  Loongson2F and its successors support this feature.
 
 	  If in doubt, say N.
+endif
 
-endmenu
-
-menu "PowerPC CPU frequency scaling drivers"
-depends on PPC32 || PPC64
-source "drivers/cpufreq/Kconfig.powerpc"
-endmenu
-
-menu "SPARC CPU frequency scaling drivers"
-depends on SPARC64
+if SPARC64
 config SPARC_US3_CPUFREQ
 	tristate "UltraSPARC-III CPU Frequency driver"
 	help
 	  This adds the CPUFreq driver for UltraSPARC-III processors.
-
-	  For details, take a look at <file:Documentation/cpu-freq>.
 
 	  If in doubt, say N.
 
@@ -271,13 +317,10 @@ config SPARC_US2E_CPUFREQ
 	help
 	  This adds the CPUFreq driver for UltraSPARC-IIe processors.
 
-	  For details, take a look at <file:Documentation/cpu-freq>.
-
 	  If in doubt, say N.
-endmenu
+endif
 
-menu "SH CPU Frequency scaling"
-depends on SUPERH
+if SUPERH
 config SH_CPU_FREQ
 	tristate "SuperH CPU Frequency driver"
 	help
@@ -288,10 +331,17 @@ config SH_CPU_FREQ
 	  will also generate a notice in the boot log before disabling
 	  itself if the CPU in question is not capable of rate rounding.
 
-	  For details, take a look at <file:Documentation/cpu-freq>.
-
 	  If unsure, say N.
-endmenu
+endif
+
+config QORIQ_CPUFREQ
+	tristate "CPU frequency scaling driver for Freescale QorIQ SoCs"
+	depends on OF && COMMON_CLK
+	depends on PPC_E500MC || SOC_LS1021A || ARCH_LAYERSCAPE || COMPILE_TEST
+	select CLK_QORIQ
+	help
+	  This adds the CPUFreq driver support for Freescale QorIQ SoCs
+	  which are capable of changing the CPU's frequency dynamically.
 
 endif
 endmenu

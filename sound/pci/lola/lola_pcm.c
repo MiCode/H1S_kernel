@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Support for Digigram Lola PCI-e boards
  *
  *  Copyright (c) 2011 Takashi Iwai <tiwai@suse.de>
- *
- *  This program is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License as published by the Free
- *  Software Foundation; either version 2 of the License, or (at your option)
- *  any later version.
- *
- *  This program is distributed in the hope that it will be useful, but WITHOUT
- *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- *  more details.
- *
- *  You should have received a copy of the GNU General Public License along with
- *  this program; if not, write to the Free Software Foundation, Inc., 59
- *  Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 
 #include <linux/kernel.h>
@@ -103,7 +90,7 @@ static void wait_for_srst_clear(struct lola *chip, struct lola_stream *str)
 			return;
 		msleep(1);
 	}
-	printk(KERN_WARNING SFX "SRST not clear (stream %d)\n", str->dsd);
+	dev_warn(chip->card->dev, "SRST not clear (stream %d)\n", str->dsd);
 }
 
 static int lola_stream_wait_for_fifo(struct lola *chip,
@@ -118,7 +105,7 @@ static int lola_stream_wait_for_fifo(struct lola *chip,
 			return 0;
 		msleep(1);
 	}
-	printk(KERN_WARNING SFX "FIFO not ready (stream %d)\n", str->dsd);
+	dev_warn(chip->card->dev, "FIFO not ready (stream %d)\n", str->dsd);
 	return -EIO;
 }
 
@@ -156,7 +143,7 @@ static int lola_sync_wait_for_fifo(struct lola *chip,
 			return 0;
 		msleep(1);
 	}
-	printk(KERN_WARNING SFX "FIFO not ready (pending %d)\n", pending - 1);
+	dev_warn(chip->card->dev, "FIFO not ready (pending %d)\n", pending - 1);
 	return -EIO;
 }
 
@@ -197,7 +184,7 @@ static void lola_stream_reset(struct lola *chip, struct lola_stream *str)
 	}
 }
 
-static struct snd_pcm_hardware lola_pcm_hw = {
+static const struct snd_pcm_hardware lola_pcm_hw = {
 	.info =			(SNDRV_PCM_INFO_MMAP |
 				 SNDRV_PCM_INFO_INTERLEAVED |
 				 SNDRV_PCM_INFO_BLOCK_TRANSFER |
@@ -295,8 +282,7 @@ static int lola_pcm_hw_params(struct snd_pcm_substream *substream,
 	str->bufsize = 0;
 	str->period_bytes = 0;
 	str->format_verb = 0;
-	return snd_pcm_lib_malloc_pages(substream,
-					params_buffer_bytes(hw_params));
+	return 0;
 }
 
 static int lola_pcm_hw_free(struct snd_pcm_substream *substream)
@@ -309,17 +295,17 @@ static int lola_pcm_hw_free(struct snd_pcm_substream *substream)
 	lola_stream_reset(chip, str);
 	lola_cleanup_slave_streams(pcm, str);
 	mutex_unlock(&chip->open_mutex);
-	return snd_pcm_lib_free_pages(substream);
+	return 0;
 }
 
 /*
  * set up a BDL entry
  */
 static int setup_bdle(struct snd_pcm_substream *substream,
-		      struct lola_stream *str, u32 **bdlp,
+		      struct lola_stream *str, __le32 **bdlp,
 		      int ofs, int size)
 {
-	u32 *bdl = *bdlp;
+	__le32 *bdl = *bdlp;
 
 	while (size > 0) {
 		dma_addr_t addr;
@@ -355,14 +341,14 @@ static int lola_setup_periods(struct lola *chip, struct lola_pcm *pcm,
 			      struct snd_pcm_substream *substream,
 			      struct lola_stream *str)
 {
-	u32 *bdl;
+	__le32 *bdl;
 	int i, ofs, periods, period_bytes;
 
 	period_bytes = str->period_bytes;
 	periods = str->bufsize / period_bytes;
 
 	/* program the initial BDL entries */
-	bdl = (u32 *)(pcm->bdl.area + LOLA_BDL_ENTRY_SIZE * str->index);
+	bdl = (__le32 *)(pcm->bdl->area + LOLA_BDL_ENTRY_SIZE * str->index);
 	ofs = 0;
 	str->frags = 0;
 	for (i = 0; i < periods; i++) {
@@ -373,7 +359,7 @@ static int lola_setup_periods(struct lola *chip, struct lola_pcm *pcm,
 	return 0;
 
  error:
-	snd_printk(KERN_ERR SFX "Too many BDL entries: buffer=%d, period=%d\n",
+	dev_err(chip->card->dev, "Too many BDL entries: buffer=%d, period=%d\n",
 		   str->bufsize, period_bytes);
 	return -EINVAL;
 }
@@ -415,7 +401,7 @@ static int lola_set_stream_config(struct lola *chip,
 	err = lola_codec_read(chip, str->nid, LOLA_VERB_SET_STREAM_FORMAT,
 			      str->format_verb, 0, &val, NULL);
 	if (err < 0) {
-		printk(KERN_ERR SFX "Cannot set stream format 0x%x\n",
+		dev_err(chip->card->dev, "Cannot set stream format 0x%x\n",
 		       str->format_verb);
 		return err;
 	}
@@ -427,7 +413,8 @@ static int lola_set_stream_config(struct lola *chip,
 				      LOLA_VERB_SET_CHANNEL_STREAMID, 0, verb,
 				      &val, NULL);
 		if (err < 0) {
-			printk(KERN_ERR SFX "Cannot set stream channel %d\n", i);
+			dev_err(chip->card->dev,
+				"Cannot set stream channel %d\n", i);
 			return err;
 		}
 	}
@@ -446,7 +433,7 @@ static int lola_setup_controller(struct lola *chip, struct lola_pcm *pcm,
 		return -EINVAL;
 
 	/* set up BDL */
-	bdl = pcm->bdl.addr + LOLA_BDL_ENTRY_SIZE * str->index;
+	bdl = pcm->bdl->addr + LOLA_BDL_ENTRY_SIZE * str->index;
 	lola_dsd_write(chip, str->dsd, BDPL, (u32)bdl);
 	lola_dsd_write(chip, str->dsd, BDPU, upper_32_bits(bdl));
 	/* program the stream LVI (last valid index) of the BDL */
@@ -574,8 +561,9 @@ static snd_pcm_uframes_t lola_pcm_pointer(struct snd_pcm_substream *substream)
 void lola_pcm_update(struct lola *chip, struct lola_pcm *pcm, unsigned int bits)
 {
 	int i;
+	u8 num_streams = min_t(u8, pcm->num_streams, ARRAY_SIZE(pcm->streams));
 
-	for (i = 0; bits && i < pcm->num_streams; i++) {
+	for (i = 0; bits && i < num_streams; i++) {
 		if (bits & (1 << i)) {
 			struct lola_stream *str = &pcm->streams[i];
 			if (str->substream && str->running)
@@ -585,16 +573,14 @@ void lola_pcm_update(struct lola *chip, struct lola_pcm *pcm, unsigned int bits)
 	}
 }
 
-static struct snd_pcm_ops lola_pcm_ops = {
+static const struct snd_pcm_ops lola_pcm_ops = {
 	.open = lola_pcm_open,
 	.close = lola_pcm_close,
-	.ioctl = snd_pcm_lib_ioctl,
 	.hw_params = lola_pcm_hw_params,
 	.hw_free = lola_pcm_hw_free,
 	.prepare = lola_pcm_prepare,
 	.trigger = lola_pcm_trigger,
 	.pointer = lola_pcm_pointer,
-	.page = snd_pcm_sgbuf_ops_page,
 };
 
 int lola_create_pcm(struct lola *chip)
@@ -603,11 +589,11 @@ int lola_create_pcm(struct lola *chip)
 	int i, err;
 
 	for (i = 0; i < 2; i++) {
-		err = snd_dma_alloc_pages(SNDRV_DMA_TYPE_DEV,
-					  snd_dma_pci_data(chip->pci),
-					  PAGE_SIZE, &chip->pcm[i].bdl);
-		if (err < 0)
-			return err;
+		chip->pcm[i].bdl =
+			snd_devm_alloc_pages(&chip->pci->dev, SNDRV_DMA_TYPE_DEV,
+					     PAGE_SIZE);
+		if (!chip->pcm[i].bdl)
+			return -ENOMEM;
 	}
 
 	err = snd_pcm_new(chip->card, "Digigram Lola", 0,
@@ -616,23 +602,17 @@ int lola_create_pcm(struct lola *chip)
 			  &pcm);
 	if (err < 0)
 		return err;
-	strlcpy(pcm->name, "Digigram Lola", sizeof(pcm->name));
+	strscpy(pcm->name, "Digigram Lola", sizeof(pcm->name));
 	pcm->private_data = chip;
 	for (i = 0; i < 2; i++) {
 		if (chip->pcm[i].num_streams)
 			snd_pcm_set_ops(pcm, i, &lola_pcm_ops);
 	}
 	/* buffer pre-allocation */
-	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV_SG,
-					      snd_dma_pci_data(chip->pci),
-					      1024 * 64, 32 * 1024 * 1024);
+	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV_SG,
+				       &chip->pci->dev,
+				       1024 * 64, 32 * 1024 * 1024);
 	return 0;
-}
-
-void lola_free_pcm(struct lola *chip)
-{
-	snd_dma_free_pages(&chip->pcm[0].bdl);
-	snd_dma_free_pages(&chip->pcm[1].bdl);
 }
 
 /*
@@ -651,13 +631,14 @@ static int lola_init_stream(struct lola *chip, struct lola_stream *str,
 		str->dsd += MAX_STREAM_IN_COUNT;
 	err = lola_read_param(chip, nid, LOLA_PAR_AUDIO_WIDGET_CAP, &val);
 	if (err < 0) {
-		printk(KERN_ERR SFX "Can't read wcaps for 0x%x\n", nid);
+		dev_err(chip->card->dev, "Can't read wcaps for 0x%x\n", nid);
 		return err;
 	}
 	if (dir == PLAY) {
 		/* test TYPE and bits 0..11 (no test bit9 : Digital = 0/1) */
 		if ((val & 0x00f00dff) != 0x00000010) {
-			printk(KERN_ERR SFX "Invalid wcaps 0x%x for 0x%x\n",
+			dev_err(chip->card->dev,
+				"Invalid wcaps 0x%x for 0x%x\n",
 			       val, nid);
 			return -EINVAL;
 		}
@@ -666,7 +647,8 @@ static int lola_init_stream(struct lola *chip, struct lola_stream *str,
 		 * (bug : ignore bit8: Conn list = 0/1)
 		 */
 		if ((val & 0x00f00cff) != 0x00100010) {
-			printk(KERN_ERR SFX "Invalid wcaps 0x%x for 0x%x\n",
+			dev_err(chip->card->dev,
+				"Invalid wcaps 0x%x for 0x%x\n",
 			       val, nid);
 			return -EINVAL;
 		}
@@ -677,14 +659,15 @@ static int lola_init_stream(struct lola *chip, struct lola_stream *str,
 
 	err = lola_read_param(chip, nid, LOLA_PAR_STREAM_FORMATS, &val);
 	if (err < 0) {
-		printk(KERN_ERR SFX "Can't read FORMATS 0x%x\n", nid);
+		dev_err(chip->card->dev, "Can't read FORMATS 0x%x\n", nid);
 		return err;
 	}
 	val &= 3;
 	if (val == 3)
 		str->can_float = true;
 	if (!(val & 1)) {
-		printk(KERN_ERR SFX "Invalid formats 0x%x for 0x%x", val, nid);
+		dev_err(chip->card->dev,
+			"Invalid formats 0x%x for 0x%x", val, nid);
 		return -EINVAL;
 	}
 	return 0;

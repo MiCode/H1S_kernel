@@ -1,12 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2001 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
- * Licensed under the GPL
  */
 
 #include <linux/irqreturn.h>
 #include <linux/kd.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/slab.h>
+
 #include "chan.h"
 #include <irq_kern.h>
 #include <irq_user.h>
@@ -31,7 +32,7 @@ static irqreturn_t line_interrupt(int irq, void *data)
  *
  * Should be called while holding line->lock (this does not modify data).
  */
-static int write_room(struct line *line)
+static unsigned int write_room(struct line *line)
 {
 	int n;
 
@@ -46,11 +47,11 @@ static int write_room(struct line *line)
 	return n - 1;
 }
 
-int line_write_room(struct tty_struct *tty)
+unsigned int line_write_room(struct tty_struct *tty)
 {
 	struct line *line = tty->driver_data;
 	unsigned long flags;
-	int room;
+	unsigned int room;
 
 	spin_lock_irqsave(&line->lock, flags);
 	room = write_room(line);
@@ -59,11 +60,11 @@ int line_write_room(struct tty_struct *tty)
 	return room;
 }
 
-int line_chars_in_buffer(struct tty_struct *tty)
+unsigned int line_chars_in_buffer(struct tty_struct *tty)
 {
 	struct line *line = tty->driver_data;
 	unsigned long flags;
-	int ret;
+	unsigned int ret;
 
 	spin_lock_irqsave(&line->lock, flags);
 	/* write_room subtracts 1 for the needed NULL, so we readd it.*/
@@ -138,7 +139,7 @@ static int flush_buffer(struct line *line)
 		count = line->buffer + LINE_BUFSIZE - line->head;
 
 		n = write_chan(line->chan_out, line->head, count,
-			       line->driver->write_irq);
+			       line->write_irq);
 		if (n < 0)
 			return n;
 		if (n == count) {
@@ -155,7 +156,7 @@ static int flush_buffer(struct line *line)
 
 	count = line->tail - line->head;
 	n = write_chan(line->chan_out, line->head, count,
-		       line->driver->write_irq);
+		       line->write_irq);
 
 	if (n < 0)
 		return n;
@@ -183,12 +184,7 @@ void line_flush_chars(struct tty_struct *tty)
 	line_flush_buffer(tty);
 }
 
-int line_put_char(struct tty_struct *tty, unsigned char ch)
-{
-	return line_write(tty, &ch, sizeof(ch));
-}
-
-int line_write(struct tty_struct *tty, const unsigned char *buf, int len)
+ssize_t line_write(struct tty_struct *tty, const u8 *buf, size_t len)
 {
 	struct line *line = tty->driver_data;
 	unsigned long flags;
@@ -199,7 +195,7 @@ int line_write(struct tty_struct *tty, const unsigned char *buf, int len)
 		ret = buffer_data(line, buf, len);
 	else {
 		n = write_chan(line->chan_out, buf, len,
-			       line->driver->write_irq);
+			       line->write_irq);
 		if (n < 0) {
 			ret = n;
 			goto out_up;
@@ -215,16 +211,11 @@ out_up:
 	return ret;
 }
 
-void line_set_termios(struct tty_struct *tty, struct ktermios * old)
-{
-	/* nothing */
-}
-
 void line_throttle(struct tty_struct *tty)
 {
 	struct line *line = tty->driver_data;
 
-	deactivate_chan(line->chan_in, line->driver->read_irq);
+	deactivate_chan(line->chan_in, line->read_irq);
 	line->throttled = 1;
 }
 
@@ -233,15 +224,7 @@ void line_unthrottle(struct tty_struct *tty)
 	struct line *line = tty->driver_data;
 
 	line->throttled = 0;
-	chan_interrupt(line, line->driver->read_irq);
-
-	/*
-	 * Maybe there is enough stuff pending that calling the interrupt
-	 * throttles us again.  In this case, line->throttled will be 1
-	 * again and we shouldn't turn the interrupt back on.
-	 */
-	if (!line->throttled)
-		reactivate_chan(line->chan_in, line->driver->read_irq);
+	chan_interrupt(line, line->read_irq);
 }
 
 static irqreturn_t line_write_interrupt(int irq, void *data)
@@ -260,7 +243,7 @@ static irqreturn_t line_write_interrupt(int irq, void *data)
 	if (err == 0) {
 		spin_unlock(&line->lock);
 		return IRQ_NONE;
-	} else if (err < 0) {
+	} else if ((err < 0) && (err != -EAGAIN)) {
 		line->head = line->buffer;
 		line->tail = line->buffer;
 	}
@@ -274,19 +257,29 @@ static irqreturn_t line_write_interrupt(int irq, void *data)
 int line_setup_irq(int fd, int input, int output, struct line *line, void *data)
 {
 	const struct line_driver *driver = line->driver;
-	int err = 0;
+	int err;
 
-	if (input)
-		err = um_request_irq(driver->read_irq, fd, IRQ_READ,
-				     line_interrupt, IRQF_SHARED,
+	if (input) {
+		err = um_request_irq(UM_IRQ_ALLOC, fd, IRQ_READ,
+				     line_interrupt, 0,
 				     driver->read_irq_name, data);
-	if (err)
-		return err;
-	if (output)
-		err = um_request_irq(driver->write_irq, fd, IRQ_WRITE,
-				     line_write_interrupt, IRQF_SHARED,
+		if (err < 0)
+			return err;
+
+		line->read_irq = err;
+	}
+
+	if (output) {
+		err = um_request_irq(UM_IRQ_ALLOC, fd, IRQ_WRITE,
+				     line_write_interrupt, 0,
 				     driver->write_irq_name, data);
-	return err;
+		if (err < 0)
+			return err;
+
+		line->write_irq = err;
+	}
+
+	return 0;
 }
 
 static int line_activate(struct tty_port *port, struct tty_struct *tty)
@@ -549,12 +542,14 @@ int register_lines(struct line_driver *line_driver,
 		   const struct tty_operations *ops,
 		   struct line *lines, int nlines)
 {
-	struct tty_driver *driver = alloc_tty_driver(nlines);
+	struct tty_driver *driver;
 	int err;
 	int i;
 
-	if (!driver)
-		return -ENOMEM;
+	driver = tty_alloc_driver(nlines, TTY_DRIVER_REAL_RAW |
+			TTY_DRIVER_DYNAMIC_DEV);
+	if (IS_ERR(driver))
+		return PTR_ERR(driver);
 
 	driver->driver_name = line_driver->name;
 	driver->name = line_driver->device_name;
@@ -562,9 +557,8 @@ int register_lines(struct line_driver *line_driver,
 	driver->minor_start = line_driver->minor_start;
 	driver->type = line_driver->type;
 	driver->subtype = line_driver->subtype;
-	driver->flags = TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV;
 	driver->init_termios = tty_std_termios;
-	
+
 	for (i = 0; i < nlines; i++) {
 		tty_port_init(&lines[i].port);
 		lines[i].port.ops = &line_port_ops;
@@ -578,7 +572,7 @@ int register_lines(struct line_driver *line_driver,
 	if (err) {
 		printk(KERN_ERR "register_lines : can't register %s driver\n",
 		       line_driver->name);
-		put_tty_driver(driver);
+		tty_driver_kref_put(driver);
 		for (i = 0; i < nlines; i++)
 			tty_port_destroy(&lines[i].port);
 		return err;
@@ -620,7 +614,6 @@ static void free_winch(struct winch *winch)
 	winch->fd = -1;
 	if (fd != -1)
 		os_close_file(fd);
-	list_del(&winch->list);
 	__free_winch(&winch->work);
 }
 
@@ -632,6 +625,7 @@ static irqreturn_t winch_interrupt(int irq, void *data)
 	int fd = winch->fd;
 	int err;
 	char c;
+	struct pid *pgrp;
 
 	if (fd != -1) {
 		err = generic_read(fd, &c, NULL);
@@ -657,13 +651,14 @@ static irqreturn_t winch_interrupt(int irq, void *data)
 		if (line != NULL) {
 			chan_window_size(line, &tty->winsize.ws_row,
 					 &tty->winsize.ws_col);
-			kill_pgrp(tty->pgrp, SIGWINCH, 1);
+			pgrp = tty_get_pgrp(tty);
+			if (pgrp)
+				kill_pgrp(pgrp, SIGWINCH, 1);
+			put_pid(pgrp);
 		}
 		tty_kref_put(tty);
 	}
  out:
-	if (winch->fd != -1)
-		reactivate_fd(winch->fd, WINCH_IRQ);
 	return IRQ_HANDLED;
 }
 
@@ -719,6 +714,8 @@ static void unregister_winch(struct tty_struct *tty)
 		winch = list_entry(ele, struct winch, list);
 		wtty = tty_port_tty_get(winch->port);
 		if (wtty == tty) {
+			list_del(&winch->list);
+			spin_unlock(&winch_handler_lock);
 			free_winch(winch);
 			break;
 		}
@@ -729,14 +726,17 @@ static void unregister_winch(struct tty_struct *tty)
 
 static void winch_cleanup(void)
 {
-	struct list_head *ele, *next;
 	struct winch *winch;
 
 	spin_lock(&winch_handler_lock);
+	while ((winch = list_first_entry_or_null(&winch_handlers,
+						 struct winch, list))) {
+		list_del(&winch->list);
+		spin_unlock(&winch_handler_lock);
 
-	list_for_each_safe(ele, next, &winch_handlers) {
-		winch = list_entry(ele, struct winch, list);
 		free_winch(winch);
+
+		spin_lock(&winch_handler_lock);
 	}
 
 	spin_unlock(&winch_handler_lock);

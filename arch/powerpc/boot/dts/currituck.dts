@@ -39,7 +39,7 @@
 			d-cache-size = <32768>;
 			dcr-controller;
 			dcr-access-method = "native";
-			status = "ok";
+			status = "okay";
 		};
 		cpu@1 {
 			device_type = "cpu";
@@ -108,7 +108,7 @@
 				reg = <0x50000000 0x4>;
 			};
 
-			IIC0: i2c@00000000 {
+			IIC0: i2c@0 {
 				compatible = "ibm,iic-currituck", "ibm,iic";
 				reg = <0x0 0x00000014>;
 				interrupt-parent = <&MPIC>;
@@ -116,13 +116,13 @@
 				#address-cells = <1>;
 				#size-cells = <0>;
                                 rtc@68 {
-                                        compatible = "stm,m41t80", "m41st85";
+                                        compatible = "st,m41t80", "m41st85";
                                         reg = <0x68>;
                                 };
 			};
 		};
 
-		PCIE0: pciex@10100000000 {		// 4xGBIF1
+		PCIE0: pcie@10100000000 {		// 4xGBIF1
 			device_type = "pci";
 			#interrupt-cells = <1>;
 			#size-cells = <2>;
@@ -160,7 +160,7 @@
 				0x0 0x0 0x0 0x4 &MPIC 49 0x2 /* int D */>;
 		};
 
-		PCIE1: pciex@30100000000 {		// 4xGBIF0
+		PCIE1: pcie@30100000000 {		// 4xGBIF0
 			device_type = "pci";
 			#interrupt-cells = <1>;
 			#size-cells = <2>;
@@ -197,7 +197,7 @@
 				0x0 0x0 0x0 0x4 &MPIC 41 0x2 /* int D */>;
 		};
 
-		PCIE2: pciex@38100000000 {		// 2xGBIF0
+		PCIE2: pcie@38100000000 {		// 2xGBIF0
 			device_type = "pci";
 			#interrupt-cells = <1>;
 			#size-cells = <2>;
@@ -237,6 +237,6 @@
 	};
 
 	chosen {
-		linux,stdout-path = &UART0;
+		stdout-path = &UART0;
 	};
 };

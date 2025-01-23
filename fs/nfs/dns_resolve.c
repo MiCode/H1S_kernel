@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/fs/nfs/dns_resolve.c
  *
@@ -6,22 +7,26 @@
  * Resolves DNS hostnames into valid ip addresses
  */
 
-#ifdef CONFIG_NFS_USE_KERNEL_DNS
-
 #include <linux/module.h>
 #include <linux/sunrpc/clnt.h>
 #include <linux/sunrpc/addr.h>
-#include <linux/dns_resolver.h>
+
 #include "dns_resolve.h"
 
+#ifdef CONFIG_NFS_USE_KERNEL_DNS
+
+#include <linux/dns_resolver.h>
+
 ssize_t nfs_dns_resolve_name(struct net *net, char *name, size_t namelen,
-		struct sockaddr *sa, size_t salen)
+		struct sockaddr_storage *ss, size_t salen)
 {
+	struct sockaddr *sa = (struct sockaddr *)ss;
 	ssize_t ret;
 	char *ip_addr = NULL;
 	int ip_len;
 
-	ip_len = dns_query(NULL, name, namelen, NULL, &ip_addr, NULL);
+	ip_len = dns_query(net, NULL, name, namelen, NULL, &ip_addr, NULL,
+			   false);
 	if (ip_len > 0)
 		ret = rpc_pton(net, ip_addr, ip_len, sa, salen);
 	else
@@ -32,24 +37,19 @@ ssize_t nfs_dns_resolve_name(struct net *net, char *name, size_t namelen,
 
 #else
 
-#include <linux/module.h>
 #include <linux/hash.h>
 #include <linux/string.h>
 #include <linux/kmod.h>
 #include <linux/slab.h>
-#include <linux/module.h>
 #include <linux/socket.h>
 #include <linux/seq_file.h>
 #include <linux/inet.h>
-#include <linux/sunrpc/clnt.h>
-#include <linux/sunrpc/addr.h>
 #include <linux/sunrpc/cache.h>
 #include <linux/sunrpc/svcauth.h>
 #include <linux/sunrpc/rpc_pipe_fs.h>
 #include <linux/nfs_fs.h>
 
 #include "nfs4_fs.h"
-#include "dns_resolve.h"
 #include "cache_lib.h"
 #include "netns.h"
 
@@ -64,6 +64,7 @@ struct nfs_dns_ent {
 
 	struct sockaddr_storage addr;
 	size_t addrlen;
+	struct rcu_head rcu_head;
 };
 
 
@@ -90,7 +91,7 @@ static void nfs_dns_ent_init(struct cache_head *cnew,
 	key = container_of(ckey, struct nfs_dns_ent, h);
 
 	kfree(new->hostname);
-	new->hostname = kstrndup(key->hostname, key->namelen, GFP_KERNEL);
+	new->hostname = kmemdup_nul(key->hostname, key->namelen, GFP_KERNEL);
 	if (new->hostname) {
 		new->namelen = key->namelen;
 		nfs_dns_ent_update(cnew, ckey);
@@ -100,13 +101,21 @@ static void nfs_dns_ent_init(struct cache_head *cnew,
 	}
 }
 
+static void nfs_dns_ent_free_rcu(struct rcu_head *head)
+{
+	struct nfs_dns_ent *item;
+
+	item = container_of(head, struct nfs_dns_ent, rcu_head);
+	kfree(item->hostname);
+	kfree(item);
+}
+
 static void nfs_dns_ent_put(struct kref *ref)
 {
 	struct nfs_dns_ent *item;
 
 	item = container_of(ref, struct nfs_dns_ent, h.ref);
-	kfree(item->hostname);
-	kfree(item);
+	call_rcu(&item->rcu_head, nfs_dns_ent_free_rcu);
 }
 
 static struct cache_head *nfs_dns_ent_alloc(void)
@@ -141,12 +150,13 @@ static int nfs_dns_upcall(struct cache_detail *cd,
 		struct cache_head *ch)
 {
 	struct nfs_dns_ent *key = container_of(ch, struct nfs_dns_ent, h);
-	int ret;
 
-	ret = nfs_cache_upcall(cd, key->hostname);
-	if (ret)
-		ret = sunrpc_cache_pipe_upcall(cd, ch);
-	return ret;
+	if (test_and_set_bit(CACHE_PENDING, &ch->flags))
+		return 0;
+	if (!nfs_cache_upcall(cd, key->hostname))
+		return 0;
+	clear_bit(CACHE_PENDING, &ch->flags);
+	return sunrpc_cache_pipe_upcall_timeout(cd, ch);
 }
 
 static int nfs_dns_match(struct cache_head *ca,
@@ -194,7 +204,7 @@ static struct nfs_dns_ent *nfs_dns_lookup(struct cache_detail *cd,
 {
 	struct cache_head *ch;
 
-	ch = sunrpc_cache_lookup(cd,
+	ch = sunrpc_cache_lookup_rcu(cd,
 			&key->h,
 			nfs_dns_hash(key));
 	if (!ch)
@@ -330,7 +340,7 @@ out:
 }
 
 ssize_t nfs_dns_resolve_name(struct net *net, char *name,
-		size_t namelen, struct sockaddr *sa, size_t salen)
+		size_t namelen, struct sockaddr_storage *ss, size_t salen)
 {
 	struct nfs_dns_ent key = {
 		.hostname = name,
@@ -343,7 +353,7 @@ ssize_t nfs_dns_resolve_name(struct net *net, char *name,
 	ret = do_cache_lookup_wait(nn->nfs_dns_resolve, &key, &item);
 	if (ret == 0) {
 		if (salen >= item->addrlen) {
-			memcpy(sa, &item->addr, item->addrlen);
+			memcpy(ss, &item->addr, item->addrlen);
 			ret = item->addrlen;
 		} else
 			ret = -EOVERFLOW;

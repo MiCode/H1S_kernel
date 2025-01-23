@@ -1,19 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Macros for manipulating and testing flags related to a
  * pageblock_nr_pages number of pages.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation version 2 of the License
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  *
  * Copyright (C) IBM Corporation, 2006
  *
@@ -25,14 +13,18 @@
 
 #include <linux/types.h>
 
+#define PB_migratetype_bits 3
 /* Bit indices that affect a whole block of pages */
 enum pageblock_bits {
 	PB_migrate,
-	PB_migrate_end = PB_migrate + 3 - 1,
+	PB_migrate_end = PB_migrate + PB_migratetype_bits - 1,
 			/* 3 bits required for migrate types */
-#ifdef CONFIG_COMPACTION
 	PB_migrate_skip,/* If set the block is skipped by compaction */
-#endif /* CONFIG_COMPACTION */
+
+	/*
+	 * Assume the bits will always align on a word. If this assumption
+	 * changes then get/set pageblock needs updating.
+	 */
 	NR_PAGEBLOCK_BITS
 };
 
@@ -41,43 +33,66 @@ enum pageblock_bits {
 #ifdef CONFIG_HUGETLB_PAGE_SIZE_VARIABLE
 
 /* Huge page sizes are variable */
-extern int pageblock_order;
+extern unsigned int pageblock_order;
 
 #else /* CONFIG_HUGETLB_PAGE_SIZE_VARIABLE */
 
-/* Huge pages are a constant size */
-#define pageblock_order		HUGETLB_PAGE_ORDER
+/*
+ * Huge pages are a constant size, but don't exceed the maximum allocation
+ * granularity.
+ */
+#define pageblock_order		min_t(unsigned int, HUGETLB_PAGE_ORDER, MAX_ORDER)
 
 #endif /* CONFIG_HUGETLB_PAGE_SIZE_VARIABLE */
 
 #else /* CONFIG_HUGETLB_PAGE */
 
 /* If huge pages are not used, group by MAX_ORDER_NR_PAGES */
-#define pageblock_order		(MAX_ORDER-1)
+#define pageblock_order		MAX_ORDER
 
 #endif /* CONFIG_HUGETLB_PAGE */
 
 #define pageblock_nr_pages	(1UL << pageblock_order)
+#define pageblock_align(pfn)	ALIGN((pfn), pageblock_nr_pages)
+#define pageblock_aligned(pfn)	IS_ALIGNED((pfn), pageblock_nr_pages)
+#define pageblock_start_pfn(pfn)	ALIGN_DOWN((pfn), pageblock_nr_pages)
+#define pageblock_end_pfn(pfn)		ALIGN((pfn) + 1, pageblock_nr_pages)
 
 /* Forward declaration */
 struct page;
 
-/* Declarations for getting and setting flags. See mm/page_alloc.c */
-unsigned long get_pageblock_flags_group(struct page *page,
-					int start_bitidx, int end_bitidx);
-void set_pageblock_flags_group(struct page *page, unsigned long flags,
-					int start_bitidx, int end_bitidx);
+unsigned long get_pfnblock_flags_mask(const struct page *page,
+				unsigned long pfn,
+				unsigned long mask);
 
+void set_pfnblock_flags_mask(struct page *page,
+				unsigned long flags,
+				unsigned long pfn,
+				unsigned long mask);
+
+/* Declarations for getting and setting flags. See mm/page_alloc.c */
 #ifdef CONFIG_COMPACTION
 #define get_pageblock_skip(page) \
-			get_pageblock_flags_group(page, PB_migrate_skip,     \
-							PB_migrate_skip)
+	get_pfnblock_flags_mask(page, page_to_pfn(page),	\
+			(1 << (PB_migrate_skip)))
 #define clear_pageblock_skip(page) \
-			set_pageblock_flags_group(page, 0, PB_migrate_skip,  \
-							PB_migrate_skip)
+	set_pfnblock_flags_mask(page, 0, page_to_pfn(page),	\
+			(1 << PB_migrate_skip))
 #define set_pageblock_skip(page) \
-			set_pageblock_flags_group(page, 1, PB_migrate_skip,  \
-							PB_migrate_skip)
+	set_pfnblock_flags_mask(page, (1 << PB_migrate_skip),	\
+			page_to_pfn(page),			\
+			(1 << PB_migrate_skip))
+#else
+static inline bool get_pageblock_skip(struct page *page)
+{
+	return false;
+}
+static inline void clear_pageblock_skip(struct page *page)
+{
+}
+static inline void set_pageblock_skip(struct page *page)
+{
+}
 #endif /* CONFIG_COMPACTION */
 
 #endif	/* PAGEBLOCK_FLAGS_H */

@@ -1,18 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- *
- * Copyright (C) 2011 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2011 Texas Instruments Incorporated - https://www.ti.com/
  * Author: Rob Clark <rob@ti.com>
  *         Andy Gross <andy.gross@ti.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
+
 #ifndef OMAP_DMM_PRIV_H
 #define OMAP_DMM_PRIV_H
 
@@ -59,12 +51,12 @@
 #define DMM_IRQSTAT_ERR_UPD_DATA	(1<<6)
 #define DMM_IRQSTAT_ERR_LUT_MISS	(1<<7)
 
-#define DMM_IRQSTAT_ERR_MASK	(DMM_IRQ_STAT_ERR_INV_DSC | \
-				DMM_IRQ_STAT_ERR_INV_DATA | \
-				DMM_IRQ_STAT_ERR_UPD_AREA | \
-				DMM_IRQ_STAT_ERR_UPD_CTRL | \
-				DMM_IRQ_STAT_ERR_UPD_DATA | \
-				DMM_IRQ_STAT_ERR_LUT_MISS)
+#define DMM_IRQSTAT_ERR_MASK	(DMM_IRQSTAT_ERR_INV_DSC | \
+				DMM_IRQSTAT_ERR_INV_DATA | \
+				DMM_IRQSTAT_ERR_UPD_AREA | \
+				DMM_IRQSTAT_ERR_UPD_CTRL | \
+				DMM_IRQSTAT_ERR_UPD_DATA | \
+				DMM_IRQSTAT_ERR_LUT_MISS)
 
 #define DMM_PATSTATUS_READY		(1<<0)
 #define DMM_PATSTATUS_VALID		(1<<1)
@@ -102,10 +94,10 @@ struct pat_ctrl {
 };
 
 struct pat {
-	uint32_t next_pa;
+	u32 next_pa;
 	struct pat_area area;
 	struct pat_ctrl ctrl;
-	uint32_t data_pa;
+	u32 data_pa;
 };
 
 #define DMM_FIXED_RETRY_COUNT 1000
@@ -129,7 +121,7 @@ struct dmm_txn {
 	void *engine_handle;
 	struct tcm *tcm;
 
-	uint8_t *current_va;
+	u8 *current_va;
 	dma_addr_t current_pa;
 
 	struct pat *last_pat;
@@ -140,7 +132,7 @@ struct refill_engine {
 	struct dmm *dmm;
 	struct tcm *tcm;
 
-	uint8_t *refill_va;
+	u8 *refill_va;
 	dma_addr_t refill_pa;
 
 	/* only one trans per engine for now */
@@ -148,13 +140,18 @@ struct refill_engine {
 
 	bool async;
 
-	wait_queue_head_t wait_for_refill;
+	struct completion compl;
 
 	struct list_head idle_node;
 };
 
+struct dmm_platform_data {
+	u32 cpu_cache_flags;
+};
+
 struct dmm {
 	struct device *dev;
+	dma_addr_t phys_base;
 	void __iomem *base;
 	int irq;
 
@@ -183,6 +180,14 @@ struct dmm {
 
 	/* allocation list and lock */
 	struct list_head alloc_head;
+
+	const struct dmm_platform_data *plat_data;
+
+	bool dmm_workaround;
+	spinlock_t wa_lock;
+	u32 *wa_dma_data;
+	dma_addr_t wa_dma_handle;
+	struct dma_chan *wa_dma_chan;
 };
 
 #endif

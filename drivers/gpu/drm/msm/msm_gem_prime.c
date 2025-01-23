@@ -1,56 +1,59 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+
+#include <linux/dma-buf.h>
+
+#include <drm/drm_prime.h>
 
 #include "msm_drv.h"
 #include "msm_gem.h"
 
-
 struct sg_table *msm_gem_prime_get_sg_table(struct drm_gem_object *obj)
 {
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
-	BUG_ON(!msm_obj->sgt);  /* should have already pinned! */
-	return msm_obj->sgt;
+	int npages = obj->size >> PAGE_SHIFT;
+
+	if (WARN_ON(!msm_obj->pages))  /* should have already pinned! */
+		return ERR_PTR(-ENOMEM);
+
+	return drm_prime_pages_to_sg(obj->dev, msm_obj->pages, npages);
 }
 
-void *msm_gem_prime_vmap(struct drm_gem_object *obj)
+int msm_gem_prime_vmap(struct drm_gem_object *obj, struct iosys_map *map)
 {
-	return msm_gem_vaddr(obj);
+	void *vaddr;
+
+	vaddr = msm_gem_get_vaddr_locked(obj);
+	if (IS_ERR(vaddr))
+		return PTR_ERR(vaddr);
+	iosys_map_set_vaddr(map, vaddr);
+
+	return 0;
 }
 
-void msm_gem_prime_vunmap(struct drm_gem_object *obj, void *vaddr)
+void msm_gem_prime_vunmap(struct drm_gem_object *obj, struct iosys_map *map)
 {
-	/* TODO msm_gem_vunmap() */
+	msm_gem_put_vaddr_locked(obj);
 }
 
 struct drm_gem_object *msm_gem_prime_import_sg_table(struct drm_device *dev,
-		size_t size, struct sg_table *sg)
+		struct dma_buf_attachment *attach, struct sg_table *sg)
 {
-	return msm_gem_import(dev, size, sg);
+	return msm_gem_import(dev, attach->dmabuf, sg);
 }
 
 int msm_gem_prime_pin(struct drm_gem_object *obj)
 {
 	if (!obj->import_attach)
-		msm_gem_get_pages(obj);
+		msm_gem_pin_pages(obj);
 	return 0;
 }
 
 void msm_gem_prime_unpin(struct drm_gem_object *obj)
 {
 	if (!obj->import_attach)
-		msm_gem_put_pages(obj);
+		msm_gem_unpin_pages(obj);
 }

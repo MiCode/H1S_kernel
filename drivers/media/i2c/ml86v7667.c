@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * OKI Semiconductor ML86V7667 video decoder driver
  *
  * Author: Vladimir Barinov <source@cogentembedded.com>
  * Copyright (C) 2013 Cogent Embedded, Inc.
  * Copyright (C) 2013 Renesas Solutions Corp.
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/init.h>
@@ -191,23 +187,29 @@ static int ml86v7667_g_input_status(struct v4l2_subdev *sd, u32 *status)
 	return 0;
 }
 
-static int ml86v7667_enum_mbus_fmt(struct v4l2_subdev *sd, unsigned int index,
-				   enum v4l2_mbus_pixelcode *code)
+static int ml86v7667_enum_mbus_code(struct v4l2_subdev *sd,
+		struct v4l2_subdev_state *sd_state,
+		struct v4l2_subdev_mbus_code_enum *code)
 {
-	if (index > 0)
+	if (code->pad || code->index > 0)
 		return -EINVAL;
 
-	*code = V4L2_MBUS_FMT_YUYV8_2X8;
+	code->code = MEDIA_BUS_FMT_YUYV8_2X8;
 
 	return 0;
 }
 
-static int ml86v7667_mbus_fmt(struct v4l2_subdev *sd,
-			      struct v4l2_mbus_framefmt *fmt)
+static int ml86v7667_fill_fmt(struct v4l2_subdev *sd,
+		struct v4l2_subdev_state *sd_state,
+		struct v4l2_subdev_format *format)
 {
 	struct ml86v7667_priv *priv = to_ml86v7667(sd);
+	struct v4l2_mbus_framefmt *fmt = &format->format;
 
-	fmt->code = V4L2_MBUS_FMT_YUYV8_2X8;
+	if (format->pad)
+		return -EINVAL;
+
+	fmt->code = MEDIA_BUS_FMT_YUYV8_2X8;
 	fmt->colorspace = V4L2_COLORSPACE_SMPTE170M;
 	/* The top field is always transferred first by the chip */
 	fmt->field = V4L2_FIELD_INTERLACED_TB;
@@ -217,12 +219,23 @@ static int ml86v7667_mbus_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int ml86v7667_g_mbus_config(struct v4l2_subdev *sd,
-				   struct v4l2_mbus_config *cfg)
+static int ml86v7667_get_mbus_config(struct v4l2_subdev *sd,
+				     unsigned int pad,
+				     struct v4l2_mbus_config *cfg)
 {
-	cfg->flags = V4L2_MBUS_MASTER | V4L2_MBUS_PCLK_SAMPLE_RISING |
-		     V4L2_MBUS_DATA_ACTIVE_HIGH;
 	cfg->type = V4L2_MBUS_BT656;
+	cfg->bus.parallel.flags = V4L2_MBUS_MASTER |
+				  V4L2_MBUS_PCLK_SAMPLE_RISING |
+				  V4L2_MBUS_DATA_ACTIVE_HIGH;
+
+	return 0;
+}
+
+static int ml86v7667_g_std(struct v4l2_subdev *sd, v4l2_std_id *std)
+{
+	struct ml86v7667_priv *priv = to_ml86v7667(sd);
+
+	*std = priv->std;
 
 	return 0;
 }
@@ -275,27 +288,31 @@ static const struct v4l2_ctrl_ops ml86v7667_ctrl_ops = {
 	.s_ctrl = ml86v7667_s_ctrl,
 };
 
-static struct v4l2_subdev_video_ops ml86v7667_subdev_video_ops = {
+static const struct v4l2_subdev_video_ops ml86v7667_subdev_video_ops = {
+	.g_std = ml86v7667_g_std,
+	.s_std = ml86v7667_s_std,
 	.querystd = ml86v7667_querystd,
 	.g_input_status = ml86v7667_g_input_status,
-	.enum_mbus_fmt = ml86v7667_enum_mbus_fmt,
-	.try_mbus_fmt = ml86v7667_mbus_fmt,
-	.g_mbus_fmt = ml86v7667_mbus_fmt,
-	.s_mbus_fmt = ml86v7667_mbus_fmt,
-	.g_mbus_config = ml86v7667_g_mbus_config,
 };
 
-static struct v4l2_subdev_core_ops ml86v7667_subdev_core_ops = {
-	.s_std = ml86v7667_s_std,
+static const struct v4l2_subdev_pad_ops ml86v7667_subdev_pad_ops = {
+	.enum_mbus_code = ml86v7667_enum_mbus_code,
+	.get_fmt = ml86v7667_fill_fmt,
+	.set_fmt = ml86v7667_fill_fmt,
+	.get_mbus_config = ml86v7667_get_mbus_config,
+};
+
+static const struct v4l2_subdev_core_ops ml86v7667_subdev_core_ops = {
 #ifdef CONFIG_VIDEO_ADV_DEBUG
 	.g_register = ml86v7667_g_register,
 	.s_register = ml86v7667_s_register,
 #endif
 };
 
-static struct v4l2_subdev_ops ml86v7667_subdev_ops = {
+static const struct v4l2_subdev_ops ml86v7667_subdev_ops = {
 	.core = &ml86v7667_subdev_core_ops,
 	.video = &ml86v7667_subdev_video_ops,
+	.pad = &ml86v7667_subdev_pad_ops,
 };
 
 static int ml86v7667_init(struct ml86v7667_priv *priv)
@@ -342,8 +359,7 @@ static int ml86v7667_init(struct ml86v7667_priv *priv)
 	return ret;
 }
 
-static int ml86v7667_probe(struct i2c_client *client,
-			   const struct i2c_device_id *did)
+static int ml86v7667_probe(struct i2c_client *client)
 {
 	struct ml86v7667_priv *priv;
 	int ret;
@@ -398,15 +414,13 @@ cleanup:
 	return ret;
 }
 
-static int ml86v7667_remove(struct i2c_client *client)
+static void ml86v7667_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ml86v7667_priv *priv = to_ml86v7667(sd);
 
 	v4l2_ctrl_handler_free(&priv->hdl);
 	v4l2_device_unregister_subdev(&priv->sd);
-
-	return 0;
 }
 
 static const struct i2c_device_id ml86v7667_id[] = {
@@ -418,7 +432,6 @@ MODULE_DEVICE_TABLE(i2c, ml86v7667_id);
 static struct i2c_driver ml86v7667_i2c_driver = {
 	.driver = {
 		.name	= DRV_NAME,
-		.owner	= THIS_MODULE,
 	},
 	.probe		= ml86v7667_probe,
 	.remove		= ml86v7667_remove,

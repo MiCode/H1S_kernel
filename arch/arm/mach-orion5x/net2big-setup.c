@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/mach-orion5x/net2big-setup.c
  *
  * LaCie 2Big Network NAS setup
  *
  * Copyright (C) 2009 Simon Guinot <sguinot@lacie.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/kernel.h>
@@ -24,10 +21,10 @@
 #include <linux/delay.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
-#include <mach/orion5x.h>
 #include <plat/orion-gpio.h>
 #include "common.h"
 #include "mpp.h"
+#include "orion5x.h"
 
 /*****************************************************************************
  * LaCie 2Big Network Info
@@ -423,6 +420,7 @@ static void __init net2big_init(void)
 /* Warning: LaCie use a wrong mach-type (0x20e=526) in their bootloader. */
 MACHINE_START(NET2BIG, "LaCie 2Big Network")
 	.atag_offset	= 0x100,
+	.nr_irqs	= ORION5X_NR_IRQS,
 	.init_machine	= net2big_init,
 	.map_io		= orion5x_map_io,
 	.init_early	= orion5x_init_early,
@@ -431,4 +429,3 @@ MACHINE_START(NET2BIG, "LaCie 2Big Network")
 	.fixup		= tag_fixup_mem32,
 	.restart	= orion5x_restart,
 MACHINE_END
-

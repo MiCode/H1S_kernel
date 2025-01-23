@@ -14,6 +14,9 @@
 #include <asm/io.h>
 #include <linux/rtc.h>			/* get the user-level API */
 #include <asm/mc146818rtc.h>		/* register access macros */
+#include <linux/bcd.h>
+#include <linux/delay.h>
+#include <linux/pm-trace.h>
 
 #ifdef __KERNEL__
 #include <linux/spinlock.h>		/* spinlock_t */
@@ -30,6 +33,10 @@ extern spinlock_t rtc_lock;		/* serialize CMOS RAM access */
 struct cmos_rtc_board_info {
 	void	(*wake_on)(struct device *dev);
 	void	(*wake_off)(struct device *dev);
+
+	u32	flags;
+#define CMOS_RTC_FLAGS_NOFREQ	(1 << 0)
+	int	address_space;
 
 	u8	rtc_day_alarm;		/* zero, or register index */
 	u8	rtc_mon_alarm;		/* zero, or register index */
@@ -79,6 +86,8 @@ struct cmos_rtc_board_info {
    /* 2 values for divider stage reset, others for "testing purposes only" */
 #  define RTC_DIV_RESET1	0x60
 #  define RTC_DIV_RESET2	0x70
+   /* In AMD BKDG bit 5 and 6 are reserved, bit 4 is for select dv0 bank */
+#  define RTC_AMD_BANK_SELECT	0x10
   /* Periodic intr. / Square wave rate select. 0=none, 1=32.8kHz,... 15=2Hz */
 # define RTC_RATE_SELECT 	0x0F
 
@@ -115,5 +124,13 @@ struct cmos_rtc_board_info {
 #else
 #define RTC_IO_EXTENT_USED      RTC_IO_EXTENT
 #endif /* ARCH_RTC_LOCATION */
+
+bool mc146818_does_rtc_work(void);
+int mc146818_get_time(struct rtc_time *time, int timeout);
+int mc146818_set_time(struct rtc_time *time);
+
+bool mc146818_avoid_UIP(void (*callback)(unsigned char seconds, void *param),
+			int timeout,
+			void *param);
 
 #endif /* _MC146818RTC_H */

@@ -1,9 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * CAIF Framing Layer.
  *
  * Copyright (C) ST-Ericsson AB 2010
  * Author:	Sjur Brendeland
- * License terms: GNU General Public License (GPL) version 2
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ":%s(): " fmt, __func__
@@ -84,7 +84,7 @@ static int cffrml_receive(struct cflayer *layr, struct cfpkt *pkt)
 	u16 tmp;
 	u16 len;
 	u16 hdrchks;
-	u16 pktchks;
+	int pktchks;
 	struct cffrml *this;
 	this = container_obj(layr);
 

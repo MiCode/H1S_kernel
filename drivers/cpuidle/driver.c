@@ -11,9 +11,12 @@
 #include <linux/mutex.h>
 #include <linux/module.h>
 #include <linux/sched.h>
+#include <linux/sched/idle.h>
 #include <linux/cpuidle.h>
 #include <linux/cpumask.h>
-#include <linux/clockchips.h>
+#include <linux/tick.h>
+#include <linux/cpu.h>
+#include <linux/math64.h>
 
 #include "cpuidle.h"
 
@@ -60,24 +63,23 @@ static inline void __cpuidle_unset_driver(struct cpuidle_driver *drv)
  * __cpuidle_set_driver - set per CPU driver variables for the given driver.
  * @drv: a valid pointer to a struct cpuidle_driver
  *
- * For each CPU in the driver's cpumask, unset the registered driver per CPU
- * to @drv.
- *
- * Returns 0 on success, -EBUSY if the CPUs have driver(s) already.
+ * Returns 0 on success, -EBUSY if any CPU in the cpumask have a driver
+ * different from drv already.
  */
 static inline int __cpuidle_set_driver(struct cpuidle_driver *drv)
 {
 	int cpu;
 
 	for_each_cpu(cpu, drv->cpumask) {
+		struct cpuidle_driver *old_drv;
 
-		if (__cpuidle_get_cpu_driver(cpu)) {
-			__cpuidle_unset_driver(drv);
+		old_drv = __cpuidle_get_cpu_driver(cpu);
+		if (old_drv && old_drv != drv)
 			return -EBUSY;
-		}
-
-		per_cpu(cpuidle_drivers, cpu) = drv;
 	}
+
+	for_each_cpu(cpu, drv->cpumask)
+		per_cpu(cpuidle_drivers, cpu) = drv;
 
 	return 0;
 }
@@ -130,21 +132,20 @@ static inline void __cpuidle_unset_driver(struct cpuidle_driver *drv)
 #endif
 
 /**
- * cpuidle_setup_broadcast_timer - enable/disable the broadcast timer
+ * cpuidle_setup_broadcast_timer - enable/disable the broadcast timer on a cpu
  * @arg: a void pointer used to match the SMP cross call API
  *
- * @arg is used as a value of type 'long' with one of the two values:
- * - CLOCK_EVT_NOTIFY_BROADCAST_ON
- * - CLOCK_EVT_NOTIFY_BROADCAST_OFF
+ * If @arg is NULL broadcast is disabled otherwise enabled
  *
- * Set the broadcast timer notification for the current CPU.  This function
- * is executed per CPU by an SMP cross call.  It not supposed to be called
- * directly.
+ * This function is executed per CPU by an SMP cross call.  It's not
+ * supposed to be called directly.
  */
 static void cpuidle_setup_broadcast_timer(void *arg)
 {
-	int cpu = smp_processor_id();
-	clockevents_notify((long)(arg), &cpu);
+	if (arg)
+		tick_broadcast_enable();
+	else
+		tick_broadcast_disable();
 }
 
 /**
@@ -155,8 +156,6 @@ static void __cpuidle_driver_init(struct cpuidle_driver *drv)
 {
 	int i;
 
-	drv->refcnt = 0;
-
 	/*
 	 * Use all possible CPUs as the default, because if the kernel boots
 	 * with some CPUs offline and then we online one of them, the CPU
@@ -165,57 +164,37 @@ static void __cpuidle_driver_init(struct cpuidle_driver *drv)
 	if (!drv->cpumask)
 		drv->cpumask = (struct cpumask *)cpu_possible_mask;
 
-	/*
-	 * Look for the timer stop flag in the different states, so that we know
-	 * if the broadcast timer has to be set up.  The loop is in the reverse
-	 * order, because usually one of the deeper states have this flag set.
-	 */
-	for (i = drv->state_count - 1; i >= 0 ; i--) {
-		if (drv->states[i].flags & CPUIDLE_FLAG_TIMER_STOP) {
+	for (i = 0; i < drv->state_count; i++) {
+		struct cpuidle_state *s = &drv->states[i];
+
+		/*
+		 * Look for the timer stop flag in the different states and if
+		 * it is found, indicate that the broadcast timer has to be set
+		 * up.
+		 */
+		if (s->flags & CPUIDLE_FLAG_TIMER_STOP)
 			drv->bctimer = 1;
-			break;
-		}
+
+		/*
+		 * The core will use the target residency and exit latency
+		 * values in nanoseconds, but allow drivers to provide them in
+		 * microseconds too.
+		 */
+		if (s->target_residency > 0)
+			s->target_residency_ns = s->target_residency * NSEC_PER_USEC;
+		else if (s->target_residency_ns < 0)
+			s->target_residency_ns = 0;
+		else
+			s->target_residency = div_u64(s->target_residency_ns, NSEC_PER_USEC);
+
+		if (s->exit_latency > 0)
+			s->exit_latency_ns = mul_u32_u32(s->exit_latency, NSEC_PER_USEC);
+		else if (s->exit_latency_ns < 0)
+			s->exit_latency_ns =  0;
+		else
+			s->exit_latency = div_u64(s->exit_latency_ns, NSEC_PER_USEC);
 	}
 }
-
-#ifdef CONFIG_ARCH_HAS_CPU_RELAX
-static int poll_idle(struct cpuidle_device *dev,
-		struct cpuidle_driver *drv, int index)
-{
-	ktime_t	t1, t2;
-	s64 diff;
-
-	t1 = ktime_get();
-	local_irq_enable();
-	while (!need_resched())
-		cpu_relax();
-
-	t2 = ktime_get();
-	diff = ktime_to_us(ktime_sub(t2, t1));
-	if (diff > INT_MAX)
-		diff = INT_MAX;
-
-	dev->last_residency = (int) diff;
-
-	return index;
-}
-
-static void poll_idle_init(struct cpuidle_driver *drv)
-{
-	struct cpuidle_state *state = &drv->states[0];
-
-	snprintf(state->name, CPUIDLE_NAME_LEN, "POLL");
-	snprintf(state->desc, CPUIDLE_DESC_LEN, "CPUIDLE CORE POLL IDLE");
-	state->exit_latency = 0;
-	state->target_residency = 0;
-	state->power_usage = -1;
-	state->flags = 0;
-	state->enter = poll_idle;
-	state->disabled = false;
-}
-#else
-static void poll_idle_init(struct cpuidle_driver *drv) {}
-#endif /* !CONFIG_ARCH_HAS_CPU_RELAX */
 
 /**
  * __cpuidle_register_driver: register the driver
@@ -237,6 +216,10 @@ static int __cpuidle_register_driver(struct cpuidle_driver *drv)
 	if (!drv || !drv->state_count)
 		return -EINVAL;
 
+	ret = cpuidle_coupled_state_verify(drv);
+	if (ret)
+		return ret;
+
 	if (cpuidle_disabled())
 		return -ENODEV;
 
@@ -248,9 +231,7 @@ static int __cpuidle_register_driver(struct cpuidle_driver *drv)
 
 	if (drv->bctimer)
 		on_each_cpu_mask(drv->cpumask, cpuidle_setup_broadcast_timer,
-				 (void *)CLOCK_EVT_NOTIFY_BROADCAST_ON, 1);
-
-	poll_idle_init(drv);
+				 (void *)1, 1);
 
 	return 0;
 }
@@ -266,13 +247,10 @@ static int __cpuidle_register_driver(struct cpuidle_driver *drv)
  */
 static void __cpuidle_unregister_driver(struct cpuidle_driver *drv)
 {
-	if (WARN_ON(drv->refcnt > 0))
-		return;
-
 	if (drv->bctimer) {
 		drv->bctimer = 0;
 		on_each_cpu_mask(drv->cpumask, cpuidle_setup_broadcast_timer,
-				 (void *)CLOCK_EVT_NOTIFY_BROADCAST_OFF, 1);
+				 NULL, 1);
 	}
 
 	__cpuidle_unset_driver(drv);
@@ -290,11 +268,24 @@ static void __cpuidle_unregister_driver(struct cpuidle_driver *drv)
  */
 int cpuidle_register_driver(struct cpuidle_driver *drv)
 {
+	struct cpuidle_governor *gov;
 	int ret;
 
 	spin_lock(&cpuidle_driver_lock);
 	ret = __cpuidle_register_driver(drv);
 	spin_unlock(&cpuidle_driver_lock);
+
+	if (!ret && !strlen(param_governor) && drv->governor &&
+	    (cpuidle_get_driver() == drv)) {
+		mutex_lock(&cpuidle_lock);
+		gov = cpuidle_find_governor(drv->governor);
+		if (gov) {
+			cpuidle_prev_governor = cpuidle_curr_governor;
+			if (cpuidle_switch_governor(gov) < 0)
+				cpuidle_prev_governor = NULL;
+		}
+		mutex_unlock(&cpuidle_lock);
+	}
 
 	return ret;
 }
@@ -310,9 +301,21 @@ EXPORT_SYMBOL_GPL(cpuidle_register_driver);
  */
 void cpuidle_unregister_driver(struct cpuidle_driver *drv)
 {
+	bool enabled = (cpuidle_get_driver() == drv);
+
 	spin_lock(&cpuidle_driver_lock);
 	__cpuidle_unregister_driver(drv);
 	spin_unlock(&cpuidle_driver_lock);
+
+	if (!enabled)
+		return;
+
+	mutex_lock(&cpuidle_lock);
+	if (cpuidle_prev_governor) {
+		if (!cpuidle_switch_governor(cpuidle_prev_governor))
+			cpuidle_prev_governor = NULL;
+	}
+	mutex_unlock(&cpuidle_lock);
 }
 EXPORT_SYMBOL_GPL(cpuidle_unregister_driver);
 
@@ -351,42 +354,39 @@ struct cpuidle_driver *cpuidle_get_cpu_driver(struct cpuidle_device *dev)
 EXPORT_SYMBOL_GPL(cpuidle_get_cpu_driver);
 
 /**
- * cpuidle_driver_ref - get a reference to the driver.
- *
- * Increment the reference counter of the cpuidle driver associated with
- * the current CPU.
- *
- * Returns a pointer to the driver, or NULL if the current CPU has no driver.
+ * cpuidle_driver_state_disabled - Disable or enable an idle state
+ * @drv: cpuidle driver owning the state
+ * @idx: State index
+ * @disable: Whether or not to disable the state
  */
-struct cpuidle_driver *cpuidle_driver_ref(void)
+void cpuidle_driver_state_disabled(struct cpuidle_driver *drv, int idx,
+				 bool disable)
 {
-	struct cpuidle_driver *drv;
+	unsigned int cpu;
+
+	mutex_lock(&cpuidle_lock);
 
 	spin_lock(&cpuidle_driver_lock);
 
-	drv = cpuidle_get_driver();
-	if (drv)
-		drv->refcnt++;
+	if (!drv->cpumask) {
+		drv->states[idx].flags |= CPUIDLE_FLAG_UNUSABLE;
+		goto unlock;
+	}
 
+	for_each_cpu(cpu, drv->cpumask) {
+		struct cpuidle_device *dev = per_cpu(cpuidle_devices, cpu);
+
+		if (!dev)
+			continue;
+
+		if (disable)
+			dev->states_usage[idx].disable |= CPUIDLE_STATE_DISABLED_BY_DRIVER;
+		else
+			dev->states_usage[idx].disable &= ~CPUIDLE_STATE_DISABLED_BY_DRIVER;
+	}
+
+unlock:
 	spin_unlock(&cpuidle_driver_lock);
-	return drv;
-}
 
-/**
- * cpuidle_driver_unref - puts down the refcount for the driver
- *
- * Decrement the reference counter of the cpuidle driver associated with
- * the current CPU.
- */
-void cpuidle_driver_unref(void)
-{
-	struct cpuidle_driver *drv;
-
-	spin_lock(&cpuidle_driver_lock);
-
-	drv = cpuidle_get_driver();
-	if (drv && !WARN_ON(drv->refcnt <= 0))
-		drv->refcnt--;
-
-	spin_unlock(&cpuidle_driver_lock);
+	mutex_unlock(&cpuidle_lock);
 }

@@ -1,20 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright 2008-2010 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
- *
- * This program is free software; you may redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
  */
 
 #ifndef _VNIC_NIC_H_
@@ -41,12 +28,14 @@
 #define NIC_CFG_IG_VLAN_STRIP_EN_MASK_FIELD	1UL
 #define NIC_CFG_IG_VLAN_STRIP_EN_SHIFT		24
 
+#define NIC_CFG_RSS_HASH_TYPE_UDP_IPV4		(1 << 0)
 #define NIC_CFG_RSS_HASH_TYPE_IPV4		(1 << 1)
 #define NIC_CFG_RSS_HASH_TYPE_TCP_IPV4		(1 << 2)
 #define NIC_CFG_RSS_HASH_TYPE_IPV6		(1 << 3)
 #define NIC_CFG_RSS_HASH_TYPE_TCP_IPV6		(1 << 4)
 #define NIC_CFG_RSS_HASH_TYPE_IPV6_EX		(1 << 5)
 #define NIC_CFG_RSS_HASH_TYPE_TCP_IPV6_EX	(1 << 6)
+#define NIC_CFG_RSS_HASH_TYPE_UDP_IPV6		(1 << 7)
 
 static inline void vnic_set_nic_cfg(u32 *nic_cfg,
 	u8 rss_default_cpu, u8 rss_hash_type,

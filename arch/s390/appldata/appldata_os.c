@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Data gathering module for Linux-VM Monitor Stream, Stage 1.
  * Collects misc. OS related data (CPU utilization, running processes).
@@ -17,14 +18,12 @@
 #include <linux/kernel_stat.h>
 #include <linux/netdevice.h>
 #include <linux/sched.h>
+#include <linux/sched/loadavg.h>
+#include <linux/sched/stat.h>
 #include <asm/appldata.h>
 #include <asm/smp.h>
 
 #include "appldata.h"
-
-
-#define LOAD_INT(x) ((x) >> FSHIFT)
-#define LOAD_FRAC(x) LOAD_INT(((x) & (FIXED_1-1)) * 100)
 
 /*
  * OS data
@@ -33,10 +32,6 @@
  * the structure version (product ID, see appldata_base.c) needs to be changed
  * as well and all documentation and z/VM applications using it must be
  * updated.
- *
- * The record layout is documented in the Linux for zSeries Device Drivers
- * book:
- * http://oss.software.ibm.com/developerworks/opensource/linux390/index.shtml
  */
 struct appldata_os_per_cpu {
 	u32 per_cpu_user;	/* timer ticks spent in user mode   */
@@ -76,7 +71,7 @@ struct appldata_os_data {
 				   (waiting for I/O)               */
 
 	/* per cpu data */
-	struct appldata_os_per_cpu os_cpu[0];
+	struct appldata_os_per_cpu os_cpu[];
 } __attribute__((packed));
 
 static struct appldata_os_data *appldata_os_data;
@@ -113,29 +108,28 @@ static void appldata_get_os_data(void *data)
 	j = 0;
 	for_each_online_cpu(i) {
 		os_data->os_cpu[j].per_cpu_user =
-			cputime_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_USER]);
+			nsecs_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_USER]);
 		os_data->os_cpu[j].per_cpu_nice =
-			cputime_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_NICE]);
+			nsecs_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_NICE]);
 		os_data->os_cpu[j].per_cpu_system =
-			cputime_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_SYSTEM]);
+			nsecs_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_SYSTEM]);
 		os_data->os_cpu[j].per_cpu_idle =
-			cputime_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_IDLE]);
+			nsecs_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_IDLE]);
 		os_data->os_cpu[j].per_cpu_irq =
-			cputime_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_IRQ]);
+			nsecs_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_IRQ]);
 		os_data->os_cpu[j].per_cpu_softirq =
-			cputime_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_SOFTIRQ]);
+			nsecs_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_SOFTIRQ]);
 		os_data->os_cpu[j].per_cpu_iowait =
-			cputime_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_IOWAIT]);
+			nsecs_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_IOWAIT]);
 		os_data->os_cpu[j].per_cpu_steal =
-			cputime_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_STEAL]);
+			nsecs_to_jiffies(kcpustat_cpu(i).cpustat[CPUTIME_STEAL]);
 		os_data->os_cpu[j].cpu_id = i;
 		j++;
 	}
 
 	os_data->nr_cpus = j;
 
-	new_size = sizeof(struct appldata_os_data) +
-		   (os_data->nr_cpus * sizeof(struct appldata_os_per_cpu));
+	new_size = struct_size(os_data, os_cpu, os_data->nr_cpus);
 	if (ops.size != new_size) {
 		if (ops.active) {
 			rc = appldata_diag(APPLDATA_RECORD_OS_ID,
@@ -170,8 +164,7 @@ static int __init appldata_os_init(void)
 {
 	int rc, max_size;
 
-	max_size = sizeof(struct appldata_os_data) +
-		   (NR_CPUS * sizeof(struct appldata_os_per_cpu));
+	max_size = struct_size(appldata_os_data, os_cpu, num_possible_cpus());
 	if (max_size > APPLDATA_MAX_REC_SIZE) {
 		pr_err("Maximum OS record size %i exceeds the maximum "
 		       "record size %i\n", max_size, APPLDATA_MAX_REC_SIZE);

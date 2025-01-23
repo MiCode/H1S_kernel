@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * cs5345 Cirrus Logic 24-bit, 192 kHz Stereo Audio ADC
  * Copyright (C) 2007 Hans Verkuil
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 
@@ -132,13 +119,6 @@ static const struct v4l2_ctrl_ops cs5345_ctrl_ops = {
 
 static const struct v4l2_subdev_core_ops cs5345_core_ops = {
 	.log_status = cs5345_log_status,
-	.g_ext_ctrls = v4l2_subdev_g_ext_ctrls,
-	.try_ext_ctrls = v4l2_subdev_try_ext_ctrls,
-	.s_ext_ctrls = v4l2_subdev_s_ext_ctrls,
-	.g_ctrl = v4l2_subdev_g_ctrl,
-	.s_ctrl = v4l2_subdev_s_ctrl,
-	.queryctrl = v4l2_subdev_queryctrl,
-	.querymenu = v4l2_subdev_querymenu,
 #ifdef CONFIG_VIDEO_ADV_DEBUG
 	.g_register = cs5345_g_register,
 	.s_register = cs5345_s_register,
@@ -156,8 +136,7 @@ static const struct v4l2_subdev_ops cs5345_ops = {
 
 /* ----------------------------------------------------------------------- */
 
-static int cs5345_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int cs5345_probe(struct i2c_client *client)
 {
 	struct cs5345_state *state;
 	struct v4l2_subdev *sd;
@@ -198,14 +177,13 @@ static int cs5345_probe(struct i2c_client *client,
 
 /* ----------------------------------------------------------------------- */
 
-static int cs5345_remove(struct i2c_client *client)
+static void cs5345_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct cs5345_state *state = to_state(sd);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&state->hdl);
-	return 0;
 }
 
 /* ----------------------------------------------------------------------- */
@@ -218,7 +196,6 @@ MODULE_DEVICE_TABLE(i2c, cs5345_id);
 
 static struct i2c_driver cs5345_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "cs5345",
 	},
 	.probe		= cs5345_probe,

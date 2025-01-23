@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /***************************************************************************
  *            au88x0_a3d.c
  *
@@ -9,19 +10,6 @@
  ****************************************************************************/
 
 /*
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU Library General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
 #include "au88x0_a3d.h"
@@ -463,7 +451,7 @@ static void a3dsrc_ZeroSliceIO(a3dsrc_t * a)
 static void a3dsrc_ZeroState(a3dsrc_t * a)
 {
 	/*
-	printk(KERN_DEBUG "vortex: ZeroState slice: %d, source %d\n",
+	pr_debug( "vortex: ZeroState slice: %d, source %d\n",
 	       a->slice, a->source);
 	*/
 	a3dsrc_SetAtmosState(a, 0, 0, 0, 0);
@@ -484,12 +472,13 @@ static void a3dsrc_ZeroState(a3dsrc_t * a)
 }
 
 /* Reset entire A3D engine */
-static void a3dsrc_ZeroStateA3D(a3dsrc_t * a)
+static void a3dsrc_ZeroStateA3D(a3dsrc_t *a, vortex_t *v)
 {
 	int i, var, var2;
 
 	if ((a->vortex) == NULL) {
-		printk(KERN_ERR "vortex: ZeroStateA3D: ERROR: a->vortex is NULL\n");
+		dev_err(v->card->dev,
+			"ZeroStateA3D: ERROR: a->vortex is NULL\n");
 		return;
 	}
 
@@ -601,7 +590,7 @@ static void vortex_Vort3D_enable(vortex_t *v)
 	Vort3DRend_Initialize(v, XT_HEADPHONE);
 	for (i = 0; i < NR_A3D; i++) {
 		vortex_A3dSourceHw_Initialize(v, i % 4, i >> 2);
-		a3dsrc_ZeroStateA3D(&(v->a3d[0]));
+		a3dsrc_ZeroStateA3D(&v->a3d[0], v);
 	}
 	/* Register ALSA controls */
 	vortex_a3d_register_controls(v);
@@ -628,15 +617,15 @@ static void vortex_Vort3D_connect(vortex_t * v, int en)
 	v->mixxtlk[0] =
 	    vortex_adb_checkinout(v, v->fixed_res, en, VORTEX_RESOURCE_MIXIN);
 	if (v->mixxtlk[0] < 0) {
-		printk
-		    ("vortex: vortex_Vort3D: ERROR: not enough free mixer resources.\n");
+		dev_warn(v->card->dev,
+			 "vortex_Vort3D: ERROR: not enough free mixer resources.\n");
 		return;
 	}
 	v->mixxtlk[1] =
 	    vortex_adb_checkinout(v, v->fixed_res, en, VORTEX_RESOURCE_MIXIN);
 	if (v->mixxtlk[1] < 0) {
-		printk
-		    ("vortex: vortex_Vort3D: ERROR: not enough free mixer resources.\n");
+		dev_warn(v->card->dev,
+			 "vortex_Vort3D: ERROR: not enough free mixer resources.\n");
 		return;
 	}
 #endif
@@ -676,11 +665,11 @@ static void vortex_Vort3D_connect(vortex_t * v, int en)
 }
 
 /* Initialize one single A3D source. */
-static void vortex_Vort3D_InitializeSource(a3dsrc_t * a, int en)
+static void vortex_Vort3D_InitializeSource(a3dsrc_t *a, int en, vortex_t *v)
 {
 	if (a->vortex == NULL) {
-		printk
-		    ("vortex: Vort3D_InitializeSource: A3D source not initialized\n");
+		dev_warn(v->card->dev,
+			 "Vort3D_InitializeSource: A3D source not initialized\n");
 		return;
 	}
 	if (en) {
@@ -776,7 +765,7 @@ snd_vortex_a3d_hrtf_put(struct snd_kcontrol *kcontrol,
 			struct snd_ctl_elem_value *ucontrol)
 {
 	a3dsrc_t *a = kcontrol->private_data;
-	int changed = 1, i;
+	int i;
 	int coord[6];
 	for (i = 0; i < 6; i++)
 		coord[i] = ucontrol->value.integer.value[i];
@@ -785,7 +774,7 @@ snd_vortex_a3d_hrtf_put(struct snd_kcontrol *kcontrol,
 	vortex_a3d_coord2hrtf(a->hrtf[1], coord);
 	a3dsrc_SetHrtfTarget(a, a->hrtf[0], a->hrtf[1]);
 	a3dsrc_SetHrtfCurrent(a, a->hrtf[0], a->hrtf[1]);
-	return changed;
+	return 1;
 }
 
 static int
@@ -794,7 +783,7 @@ snd_vortex_a3d_itd_put(struct snd_kcontrol *kcontrol,
 {
 	a3dsrc_t *a = kcontrol->private_data;
 	int coord[6];
-	int i, changed = 1;
+	int i;
 	for (i = 0; i < 6; i++)
 		coord[i] = ucontrol->value.integer.value[i];
 	/* Translate orientation coordinates to a3d params. */
@@ -804,7 +793,7 @@ snd_vortex_a3d_itd_put(struct snd_kcontrol *kcontrol,
 	a3dsrc_SetItdTarget(a, a->itd[0], a->itd[1]);
 	a3dsrc_SetItdCurrent(a, a->itd[0], a->itd[1]);
 	a3dsrc_SetItdDline(a, a->dline);
-	return changed;
+	return 1;
 }
 
 static int
@@ -812,7 +801,6 @@ snd_vortex_a3d_ild_put(struct snd_kcontrol *kcontrol,
 		       struct snd_ctl_elem_value *ucontrol)
 {
 	a3dsrc_t *a = kcontrol->private_data;
-	int changed = 1;
 	int l, r;
 	/* There may be some scale tranlation needed here. */
 	l = ucontrol->value.integer.value[0];
@@ -821,7 +809,7 @@ snd_vortex_a3d_ild_put(struct snd_kcontrol *kcontrol,
 	/* Left Right panning. */
 	a3dsrc_SetGainTarget(a, l, r);
 	a3dsrc_SetGainCurrent(a, l, r);
-	return changed;
+	return 1;
 }
 
 static int
@@ -829,7 +817,7 @@ snd_vortex_a3d_filter_put(struct snd_kcontrol *kcontrol,
 			  struct snd_ctl_elem_value *ucontrol)
 {
 	a3dsrc_t *a = kcontrol->private_data;
-	int i, changed = 1;
+	int i;
 	int params[6];
 	for (i = 0; i < 6; i++)
 		params[i] = ucontrol->value.integer.value[i];
@@ -842,10 +830,10 @@ snd_vortex_a3d_filter_put(struct snd_kcontrol *kcontrol,
 	a3dsrc_SetAtmosCurrent(a, a->filter[0],
 			       a->filter[1], a->filter[2],
 			       a->filter[3], a->filter[4]);
-	return changed;
+	return 1;
 }
 
-static struct snd_kcontrol_new vortex_a3d_kcontrol = {
+static const struct snd_kcontrol_new vortex_a3d_kcontrol = {
 	.iface = SNDRV_CTL_ELEM_IFACE_PCM,
 	.name = "Playback PCM advanced processing",
 	.access = SNDRV_CTL_ELEM_ACCESS_READWRITE,
@@ -861,46 +849,50 @@ static int vortex_a3d_register_controls(vortex_t *vortex)
 	int err, i;
 	/* HRTF controls. */
 	for (i = 0; i < NR_A3D; i++) {
-		if ((kcontrol =
-		     snd_ctl_new1(&vortex_a3d_kcontrol, &vortex->a3d[i])) == NULL)
+		kcontrol = snd_ctl_new1(&vortex_a3d_kcontrol, &vortex->a3d[i]);
+		if (!kcontrol)
 			return -ENOMEM;
 		kcontrol->id.numid = CTRLID_HRTF;
 		kcontrol->info = snd_vortex_a3d_hrtf_info;
 		kcontrol->put = snd_vortex_a3d_hrtf_put;
-		if ((err = snd_ctl_add(vortex->card, kcontrol)) < 0)
+		err = snd_ctl_add(vortex->card, kcontrol);
+		if (err < 0)
 			return err;
 	}
 	/* ITD controls. */
 	for (i = 0; i < NR_A3D; i++) {
-		if ((kcontrol =
-		     snd_ctl_new1(&vortex_a3d_kcontrol, &vortex->a3d[i])) == NULL)
+		kcontrol = snd_ctl_new1(&vortex_a3d_kcontrol, &vortex->a3d[i]);
+		if (!kcontrol)
 			return -ENOMEM;
 		kcontrol->id.numid = CTRLID_ITD;
 		kcontrol->info = snd_vortex_a3d_itd_info;
 		kcontrol->put = snd_vortex_a3d_itd_put;
-		if ((err = snd_ctl_add(vortex->card, kcontrol)) < 0)
+		err = snd_ctl_add(vortex->card, kcontrol);
+		if (err < 0)
 			return err;
 	}
 	/* ILD (gains) controls. */
 	for (i = 0; i < NR_A3D; i++) {
-		if ((kcontrol =
-		     snd_ctl_new1(&vortex_a3d_kcontrol, &vortex->a3d[i])) == NULL)
+		kcontrol = snd_ctl_new1(&vortex_a3d_kcontrol, &vortex->a3d[i]);
+		if (!kcontrol)
 			return -ENOMEM;
 		kcontrol->id.numid = CTRLID_GAINS;
 		kcontrol->info = snd_vortex_a3d_ild_info;
 		kcontrol->put = snd_vortex_a3d_ild_put;
-		if ((err = snd_ctl_add(vortex->card, kcontrol)) < 0)
+		err = snd_ctl_add(vortex->card, kcontrol);
+		if (err < 0)
 			return err;
 	}
 	/* Filter controls. */
 	for (i = 0; i < NR_A3D; i++) {
-		if ((kcontrol =
-		     snd_ctl_new1(&vortex_a3d_kcontrol, &vortex->a3d[i])) == NULL)
+		kcontrol = snd_ctl_new1(&vortex_a3d_kcontrol, &vortex->a3d[i]);
+		if (!kcontrol)
 			return -ENOMEM;
 		kcontrol->id.numid = CTRLID_FILTER;
 		kcontrol->info = snd_vortex_a3d_filter_info;
 		kcontrol->put = snd_vortex_a3d_filter_put;
-		if ((err = snd_ctl_add(vortex->card, kcontrol)) < 0)
+		err = snd_ctl_add(vortex->card, kcontrol);
+		if (err < 0)
 			return err;
 	}
 	return 0;

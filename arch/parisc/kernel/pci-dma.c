@@ -1,8 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
 ** PARISC 1.1 Dynamic DMA mapping support.
 ** This implementation is for PA-RISC platforms that do not support
 ** I/O TLBs (aka DMA address translation hardware).
-** See Documentation/DMA-API-HOWTO.txt for interface definitions.
+** See Documentation/core-api/dma-api-howto.rst for interface definitions.
 **
 **      (c) Copyright 1999,2000 Hewlett-Packard Company
 **      (c) Copyright 2000 Grant Grundler
@@ -20,28 +21,26 @@
 #include <linux/init.h>
 #include <linux/gfp.h>
 #include <linux/mm.h>
-#include <linux/pci.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/string.h>
 #include <linux/types.h>
-#include <linux/scatterlist.h>
-#include <linux/export.h>
+#include <linux/dma-direct.h>
+#include <linux/dma-map-ops.h>
 
 #include <asm/cacheflush.h>
 #include <asm/dma.h>    /* for DMA_CHUNK_SIZE */
 #include <asm/io.h>
 #include <asm/page.h>	/* get_order */
-#include <asm/pgalloc.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/tlbflush.h>	/* for purge_tlb_*() macros */
 
 static struct proc_dir_entry * proc_gsc_root __read_mostly = NULL;
-static unsigned long pcxl_used_bytes __read_mostly = 0;
-static unsigned long pcxl_used_pages __read_mostly = 0;
+static unsigned long pcxl_used_bytes __read_mostly;
+static unsigned long pcxl_used_pages __read_mostly;
 
-extern unsigned long pcxl_dma_start; /* Start of pcxl dma mapping area */
-static spinlock_t   pcxl_res_lock;
+unsigned long pcxl_dma_start __ro_after_init; /* pcxl dma mapping area start */
+static DEFINE_SPINLOCK(pcxl_res_lock);
 static char    *pcxl_res_map;
 static int     pcxl_res_hint;
 static int     pcxl_res_size;
@@ -74,11 +73,6 @@ void dump_resmap(void)
 static inline void dump_resmap(void) {;}
 #endif
 
-static int pa11_dma_supported( struct device *dev, u64 mask)
-{
-	return 1;
-}
-
 static inline int map_pte_uncached(pte_t * pte,
 		unsigned long vaddr,
 		unsigned long size, unsigned long *paddr_ptr)
@@ -95,9 +89,9 @@ static inline int map_pte_uncached(pte_t * pte,
 
 		if (!pte_none(*pte))
 			printk(KERN_ERR "map_pte_uncached: page already exists\n");
-		set_pte(pte, __mk_pte(*paddr_ptr, PAGE_KERNEL_UNC));
 		purge_tlb_start(flags);
-		pdtlb_kernel(orig_vaddr);
+		set_pte(pte, __mk_pte(*paddr_ptr, PAGE_KERNEL_UNC));
+		pdtlb(SR_KERNEL, orig_vaddr);
 		purge_tlb_end(flags);
 		vaddr += PAGE_SIZE;
 		orig_vaddr += PAGE_SIZE;
@@ -138,9 +132,14 @@ static inline int map_uncached_pages(unsigned long vaddr, unsigned long size,
 
 	dir = pgd_offset_k(vaddr);
 	do {
+		p4d_t *p4d;
+		pud_t *pud;
 		pmd_t *pmd;
-		
-		pmd = pmd_alloc(NULL, dir, vaddr);
+
+		p4d = p4d_offset(dir, vaddr);
+		pud = pud_offset(p4d, vaddr);
+		pmd = pmd_alloc(NULL, pud, vaddr);
+
 		if (!pmd)
 			return -ENOMEM;
 		if (map_pmd_uncached(pmd, vaddr, end - vaddr, &paddr))
@@ -165,7 +164,7 @@ static inline void unmap_uncached_pte(pmd_t * pmd, unsigned long vaddr,
 		pmd_clear(pmd);
 		return;
 	}
-	pte = pte_offset_map(pmd, vaddr);
+	pte = pte_offset_kernel(pmd, vaddr);
 	vaddr &= ~PMD_MASK;
 	end = vaddr + size;
 	if (end > PMD_SIZE)
@@ -176,7 +175,7 @@ static inline void unmap_uncached_pte(pmd_t * pmd, unsigned long vaddr,
 
 		pte_clear(&init_mm, vaddr, pte);
 		purge_tlb_start(flags);
-		pdtlb_kernel(orig_vaddr);
+		pdtlb(SR_KERNEL, orig_vaddr);
 		purge_tlb_end(flags);
 		vaddr += PAGE_SIZE;
 		orig_vaddr += PAGE_SIZE;
@@ -201,7 +200,7 @@ static inline void unmap_uncached_pmd(pgd_t * dir, unsigned long vaddr,
 		pgd_clear(dir);
 		return;
 	}
-	pmd = pmd_offset(dir, vaddr);
+	pmd = pmd_offset(pud_offset(p4d_offset(dir, vaddr), vaddr), vaddr);
 	vaddr &= ~PGDIR_MASK;
 	end = vaddr + size;
 	if (end > PGDIR_SIZE)
@@ -246,7 +245,7 @@ static void unmap_uncached_pages(unsigned long vaddr, unsigned long size)
        PCXL_SEARCH_LOOP(idx, mask, size); \
 }
 
-unsigned long
+static unsigned long
 pcxl_alloc_range(size_t size)
 {
 	int res_idx;
@@ -336,7 +335,7 @@ pcxl_free_range(unsigned long vaddr, size_t size)
 	dump_resmap();
 }
 
-static int proc_pcxl_dma_show(struct seq_file *m, void *v)
+static int __maybe_unused proc_pcxl_dma_show(struct seq_file *m, void *v)
 {
 #if 0
 	u_long i = 0;
@@ -371,39 +370,25 @@ static int proc_pcxl_dma_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static int proc_pcxl_dma_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, proc_pcxl_dma_show, NULL);
-}
-
-static const struct file_operations proc_pcxl_dma_ops = {
-	.owner		= THIS_MODULE,
-	.open		= proc_pcxl_dma_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
 static int __init
 pcxl_dma_init(void)
 {
 	if (pcxl_dma_start == 0)
 		return 0;
 
-	spin_lock_init(&pcxl_res_lock);
 	pcxl_res_size = PCXL_DMA_MAP_SIZE >> (PAGE_SHIFT + 3);
 	pcxl_res_hint = 0;
 	pcxl_res_map = (char *)__get_free_pages(GFP_KERNEL,
 					    get_order(pcxl_res_size));
 	memset(pcxl_res_map, 0, pcxl_res_size);
-	proc_gsc_root = proc_mkdir("gsc", NULL);
+	proc_gsc_root = proc_mkdir("bus/gsc", NULL);
 	if (!proc_gsc_root)
     		printk(KERN_WARNING
 			"pcxl_dma_init: Unable to create gsc /proc dir entry\n");
 	else {
 		struct proc_dir_entry* ent;
-		ent = proc_create("pcxl_dma", 0, proc_gsc_root,
-				  &proc_pcxl_dma_ops);
+		ent = proc_create_single("pcxl_dma", 0, proc_gsc_root,
+				proc_pcxl_dma_show);
 		if (!ent)
 			printk(KERN_WARNING
 				"pci-dma.c: Unable to create pcxl_dma /proc entry.\n");
@@ -413,184 +398,67 @@ pcxl_dma_init(void)
 
 __initcall(pcxl_dma_init);
 
-static void * pa11_dma_alloc_consistent (struct device *dev, size_t size, dma_addr_t *dma_handle, gfp_t flag)
+void *arch_dma_alloc(struct device *dev, size_t size,
+		dma_addr_t *dma_handle, gfp_t gfp, unsigned long attrs)
 {
 	unsigned long vaddr;
 	unsigned long paddr;
 	int order;
 
+	if (boot_cpu_data.cpu_type != pcxl2 && boot_cpu_data.cpu_type != pcxl)
+		return NULL;
+
 	order = get_order(size);
 	size = 1 << (order + PAGE_SHIFT);
 	vaddr = pcxl_alloc_range(size);
-	paddr = __get_free_pages(flag, order);
+	paddr = __get_free_pages(gfp | __GFP_ZERO, order);
 	flush_kernel_dcache_range(paddr, size);
 	paddr = __pa(paddr);
 	map_uncached_pages(vaddr, size, paddr);
 	*dma_handle = (dma_addr_t) paddr;
 
-#if 0
-/* This probably isn't needed to support EISA cards.
-** ISA cards will certainly only support 24-bit DMA addressing.
-** Not clear if we can, want, or need to support ISA.
-*/
-	if (!dev || *dev->coherent_dma_mask < 0xffffffff)
-		gfp |= GFP_DMA;
-#endif
 	return (void *)vaddr;
 }
 
-static void pa11_dma_free_consistent (struct device *dev, size_t size, void *vaddr, dma_addr_t dma_handle)
+void arch_dma_free(struct device *dev, size_t size, void *vaddr,
+		dma_addr_t dma_handle, unsigned long attrs)
 {
-	int order;
+	int order = get_order(size);
 
-	order = get_order(size);
+	WARN_ON_ONCE(boot_cpu_data.cpu_type != pcxl2 &&
+		     boot_cpu_data.cpu_type != pcxl);
+
 	size = 1 << (order + PAGE_SHIFT);
 	unmap_uncached_pages((unsigned long)vaddr, size);
 	pcxl_free_range((unsigned long)vaddr, size);
+
 	free_pages((unsigned long)__va(dma_handle), order);
 }
 
-static dma_addr_t pa11_dma_map_single(struct device *dev, void *addr, size_t size, enum dma_data_direction direction)
+void arch_sync_dma_for_device(phys_addr_t paddr, size_t size,
+		enum dma_data_direction dir)
 {
-	BUG_ON(direction == DMA_NONE);
-
-	flush_kernel_dcache_range((unsigned long) addr, size);
-	return virt_to_phys(addr);
-}
-
-static void pa11_dma_unmap_single(struct device *dev, dma_addr_t dma_handle, size_t size, enum dma_data_direction direction)
-{
-	BUG_ON(direction == DMA_NONE);
-
-	if (direction == DMA_TO_DEVICE)
-	    return;
-
 	/*
-	 * For PCI_DMA_FROMDEVICE this flush is not necessary for the
-	 * simple map/unmap case. However, it IS necessary if if
-	 * pci_dma_sync_single_* has been called and the buffer reused.
+	 * fdc: The data cache line is written back to memory, if and only if
+	 * it is dirty, and then invalidated from the data cache.
 	 */
-
-	flush_kernel_dcache_range((unsigned long) phys_to_virt(dma_handle), size);
-	return;
+	flush_kernel_dcache_range((unsigned long)phys_to_virt(paddr), size);
 }
 
-static int pa11_dma_map_sg(struct device *dev, struct scatterlist *sglist, int nents, enum dma_data_direction direction)
+void arch_sync_dma_for_cpu(phys_addr_t paddr, size_t size,
+		enum dma_data_direction dir)
 {
-	int i;
+	unsigned long addr = (unsigned long) phys_to_virt(paddr);
 
-	BUG_ON(direction == DMA_NONE);
-
-	for (i = 0; i < nents; i++, sglist++ ) {
-		unsigned long vaddr = sg_virt_addr(sglist);
-		sg_dma_address(sglist) = (dma_addr_t) virt_to_phys(vaddr);
-		sg_dma_len(sglist) = sglist->length;
-		flush_kernel_dcache_range(vaddr, sglist->length);
+	switch (dir) {
+	case DMA_TO_DEVICE:
+	case DMA_BIDIRECTIONAL:
+		flush_kernel_dcache_range(addr, size);
+		return;
+	case DMA_FROM_DEVICE:
+		purge_kernel_dcache_range_asm(addr, addr + size);
+		return;
+	default:
+		BUG();
 	}
-	return nents;
 }
-
-static void pa11_dma_unmap_sg(struct device *dev, struct scatterlist *sglist, int nents, enum dma_data_direction direction)
-{
-	int i;
-
-	BUG_ON(direction == DMA_NONE);
-
-	if (direction == DMA_TO_DEVICE)
-	    return;
-
-	/* once we do combining we'll need to use phys_to_virt(sg_dma_address(sglist)) */
-
-	for (i = 0; i < nents; i++, sglist++ )
-		flush_kernel_dcache_range(sg_virt_addr(sglist), sglist->length);
-	return;
-}
-
-static void pa11_dma_sync_single_for_cpu(struct device *dev, dma_addr_t dma_handle, unsigned long offset, size_t size, enum dma_data_direction direction)
-{
-	BUG_ON(direction == DMA_NONE);
-
-	flush_kernel_dcache_range((unsigned long) phys_to_virt(dma_handle) + offset, size);
-}
-
-static void pa11_dma_sync_single_for_device(struct device *dev, dma_addr_t dma_handle, unsigned long offset, size_t size, enum dma_data_direction direction)
-{
-	BUG_ON(direction == DMA_NONE);
-
-	flush_kernel_dcache_range((unsigned long) phys_to_virt(dma_handle) + offset, size);
-}
-
-static void pa11_dma_sync_sg_for_cpu(struct device *dev, struct scatterlist *sglist, int nents, enum dma_data_direction direction)
-{
-	int i;
-
-	/* once we do combining we'll need to use phys_to_virt(sg_dma_address(sglist)) */
-
-	for (i = 0; i < nents; i++, sglist++ )
-		flush_kernel_dcache_range(sg_virt_addr(sglist), sglist->length);
-}
-
-static void pa11_dma_sync_sg_for_device(struct device *dev, struct scatterlist *sglist, int nents, enum dma_data_direction direction)
-{
-	int i;
-
-	/* once we do combining we'll need to use phys_to_virt(sg_dma_address(sglist)) */
-
-	for (i = 0; i < nents; i++, sglist++ )
-		flush_kernel_dcache_range(sg_virt_addr(sglist), sglist->length);
-}
-
-struct hppa_dma_ops pcxl_dma_ops = {
-	.dma_supported =	pa11_dma_supported,
-	.alloc_consistent =	pa11_dma_alloc_consistent,
-	.alloc_noncoherent =	pa11_dma_alloc_consistent,
-	.free_consistent =	pa11_dma_free_consistent,
-	.map_single =		pa11_dma_map_single,
-	.unmap_single =		pa11_dma_unmap_single,
-	.map_sg =		pa11_dma_map_sg,
-	.unmap_sg =		pa11_dma_unmap_sg,
-	.dma_sync_single_for_cpu = pa11_dma_sync_single_for_cpu,
-	.dma_sync_single_for_device = pa11_dma_sync_single_for_device,
-	.dma_sync_sg_for_cpu = pa11_dma_sync_sg_for_cpu,
-	.dma_sync_sg_for_device = pa11_dma_sync_sg_for_device,
-};
-
-static void *fail_alloc_consistent(struct device *dev, size_t size,
-				   dma_addr_t *dma_handle, gfp_t flag)
-{
-	return NULL;
-}
-
-static void *pa11_dma_alloc_noncoherent(struct device *dev, size_t size,
-					  dma_addr_t *dma_handle, gfp_t flag)
-{
-	void *addr;
-
-	addr = (void *)__get_free_pages(flag, get_order(size));
-	if (addr)
-		*dma_handle = (dma_addr_t)virt_to_phys(addr);
-
-	return addr;
-}
-
-static void pa11_dma_free_noncoherent(struct device *dev, size_t size,
-					void *vaddr, dma_addr_t iova)
-{
-	free_pages((unsigned long)vaddr, get_order(size));
-	return;
-}
-
-struct hppa_dma_ops pcx_dma_ops = {
-	.dma_supported =	pa11_dma_supported,
-	.alloc_consistent =	fail_alloc_consistent,
-	.alloc_noncoherent =	pa11_dma_alloc_noncoherent,
-	.free_consistent =	pa11_dma_free_noncoherent,
-	.map_single =		pa11_dma_map_single,
-	.unmap_single =		pa11_dma_unmap_single,
-	.map_sg =		pa11_dma_map_sg,
-	.unmap_sg =		pa11_dma_unmap_sg,
-	.dma_sync_single_for_cpu =	pa11_dma_sync_single_for_cpu,
-	.dma_sync_single_for_device =	pa11_dma_sync_single_for_device,
-	.dma_sync_sg_for_cpu =		pa11_dma_sync_sg_for_cpu,
-	.dma_sync_sg_for_device =	pa11_dma_sync_sg_for_device,
-};

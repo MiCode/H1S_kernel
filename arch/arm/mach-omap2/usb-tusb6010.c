@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/arch/arm/mach-omap2/usb-tusb6010.c
  *
  * Copyright (C) 2006 Nokia Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/err.h>
@@ -14,15 +11,13 @@
 #include <linux/errno.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
-#include <linux/gpio.h>
 #include <linux/export.h>
 #include <linux/platform_data/usb-omap.h>
 
 #include <linux/usb/musb.h>
 
+#include "usb-tusb6010.h"
 #include "gpmc.h"
-
-#include "mux.h"
 
 static u8		async_cs, sync_cs;
 static unsigned		refclk_psec;
@@ -71,7 +66,7 @@ static int tusb_set_async_mode(unsigned sysclk_ps)
 
 	gpmc_calc_timings(&t, &tusb_async, &dev_t);
 
-	return gpmc_cs_set_timings(async_cs, &t);
+	return gpmc_cs_set_timings(async_cs, &t, &tusb_async);
 }
 
 static int tusb_set_sync_mode(unsigned sysclk_ps)
@@ -95,15 +90,14 @@ static int tusb_set_sync_mode(unsigned sysclk_ps)
 	dev_t.t_avdp_w = t_scsnh_advnh;
 	dev_t.cyc_aavdh_we = 3;
 	dev_t.cyc_wpl = 6;
-	dev_t.t_ce_rdyz = 7000;
 
 	gpmc_calc_timings(&t, &tusb_sync, &dev_t);
 
-	return gpmc_cs_set_timings(sync_cs, &t);
+	return gpmc_cs_set_timings(sync_cs, &t, &tusb_sync);
 }
 
 /* tusb driver calls this when it changes the chip's clocking */
-int tusb6010_platform_retime(unsigned is_refclk)
+static int tusb6010_platform_retime(unsigned is_refclk)
 {
 	static const char	error[] =
 		KERN_ERR "tusb6010 %s retime error %d\n";
@@ -127,7 +121,6 @@ int tusb6010_platform_retime(unsigned is_refclk)
 done:
 	return status;
 }
-EXPORT_SYMBOL_GPL(tusb6010_platform_retime);
 
 static struct resource tusb_resources[] = {
 	/* Order is significant!  The start/end fields
@@ -138,10 +131,6 @@ static struct resource tusb_resources[] = {
 	},
 	{ /* Synchronous access */
 		.flags	= IORESOURCE_MEM,
-	},
-	{ /* IRQ */
-		.name	= "mc",
-		.flags	= IORESOURCE_IRQ,
 	},
 };
 
@@ -160,11 +149,10 @@ static struct platform_device tusb_device = {
 
 
 /* this may be called only from board-*.c setup code */
-int __init
-tusb6010_setup_interface(struct musb_hdrc_platform_data *data,
-		unsigned ps_refclk, unsigned waitpin,
-		unsigned async, unsigned sync,
-		unsigned irq, unsigned dmachan)
+int __init tusb6010_setup_interface(struct musb_hdrc_platform_data *data,
+		unsigned int ps_refclk, unsigned int waitpin,
+		unsigned int async, unsigned int sync,
+		unsigned int dmachan)
 {
 	int		status;
 	static char	error[] __initdata =
@@ -200,14 +188,6 @@ tusb6010_setup_interface(struct musb_hdrc_platform_data *data,
 	if (status < 0)
 		return status;
 
-	/* IRQ */
-	status = gpio_request_one(irq, GPIOF_IN, "TUSB6010 irq");
-	if (status < 0) {
-		printk(error, 3, status);
-		return status;
-	}
-	tusb_resources[2].start = gpio_to_irq(irq);
-
 	/* set up memory timings ... can speed them up later */
 	if (!ps_refclk) {
 		printk(error, 4, status);
@@ -226,25 +206,6 @@ tusb6010_setup_interface(struct musb_hdrc_platform_data *data,
 		return -ENODEV;
 	}
 	tusb_device.dev.platform_data = data;
-
-	/* REVISIT let the driver know what DMA channels work */
-	if (!dmachan)
-		tusb_device.dev.dma_mask = NULL;
-	else {
-		/* assume OMAP 2420 ES2.0 and later */
-		if (dmachan & (1 << 0))
-			omap_mux_init_signal("sys_ndmareq0", 0);
-		if (dmachan & (1 << 1))
-			omap_mux_init_signal("sys_ndmareq1", 0);
-		if (dmachan & (1 << 2))
-			omap_mux_init_signal("sys_ndmareq2", 0);
-		if (dmachan & (1 << 3))
-			omap_mux_init_signal("sys_ndmareq3", 0);
-		if (dmachan & (1 << 4))
-			omap_mux_init_signal("sys_ndmareq4", 0);
-		if (dmachan & (1 << 5))
-			omap_mux_init_signal("sys_ndmareq5", 0);
-	}
 
 	/* so far so good ... register the device */
 	status = platform_device_register(&tusb_device);

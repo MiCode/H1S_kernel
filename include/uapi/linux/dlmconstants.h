@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /******************************************************************************
 *******************************************************************************
 **
@@ -86,7 +87,6 @@
  * DLM_LKF_NODLCKWT
  *
  * Do not cancel the lock if it gets into conversion deadlock.
- * Exclude this lock from being monitored due to DLM_LSFL_TIMEWARN.
  *
  * DLM_LKF_NODLCKBLK
  *
@@ -114,7 +114,7 @@
  *
  * DLM_LKF_ORPHAN
  *
- * not yet implemented
+ * Acquire an orphan lock.
  *
  * DLM_LKF_ALTPR
  *
@@ -130,6 +130,10 @@
  *
  * Unlock the lock even if it is converting or waiting or has sublocks.
  * Only really for use by the userland device.c code.
+ *
+ * DLM_LKF_TIMEOUT
+ *
+ * This value is deprecated and reserved. DO NOT USE!
  *
  */
 

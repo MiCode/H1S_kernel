@@ -1,22 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Freescale/Motorola Coldfire Queued SPI driver
  *
  * Copyright 2010 Steven King <sfking@fdwdc.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA
- *
 */
 
 #include <linux/kernel.h>
@@ -77,8 +63,6 @@ struct mcfqspi {
 	struct mcfqspi_cs_control *cs_control;
 
 	wait_queue_head_t waitq;
-
-	struct device *dev;
 };
 
 static void mcfqspi_wr_qmr(struct mcfqspi *mcfqspi, u16 val)
@@ -135,13 +119,13 @@ static void mcfqspi_cs_deselect(struct mcfqspi *mcfqspi, u8 chip_select,
 
 static int mcfqspi_cs_setup(struct mcfqspi *mcfqspi)
 {
-	return (mcfqspi->cs_control && mcfqspi->cs_control->setup) ?
+	return (mcfqspi->cs_control->setup) ?
 		mcfqspi->cs_control->setup(mcfqspi->cs_control) : 0;
 }
 
 static void mcfqspi_cs_teardown(struct mcfqspi *mcfqspi)
 {
-	if (mcfqspi->cs_control && mcfqspi->cs_control->teardown)
+	if (mcfqspi->cs_control->teardown)
 		mcfqspi->cs_control->teardown(mcfqspi->cs_control);
 }
 
@@ -300,74 +284,51 @@ static void mcfqspi_transfer_msg16(struct mcfqspi *mcfqspi, unsigned count,
 	}
 }
 
-static int mcfqspi_transfer_one_message(struct spi_master *master,
-					 struct spi_message *msg)
+static void mcfqspi_set_cs(struct spi_device *spi, bool enable)
 {
-	struct mcfqspi *mcfqspi = spi_master_get_devdata(master);
-	struct spi_device *spi = msg->spi;
-	struct spi_transfer *t;
-	int status = 0;
+	struct mcfqspi *mcfqspi = spi_controller_get_devdata(spi->controller);
+	bool cs_high = spi->mode & SPI_CS_HIGH;
 
-	list_for_each_entry(t, &msg->transfers, transfer_list) {
-		bool cs_high = spi->mode & SPI_CS_HIGH;
-		u16 qmr = MCFQSPI_QMR_MSTR;
+	if (enable)
+		mcfqspi_cs_select(mcfqspi, spi_get_chipselect(spi, 0), cs_high);
+	else
+		mcfqspi_cs_deselect(mcfqspi, spi_get_chipselect(spi, 0), cs_high);
+}
 
-		qmr |= t->bits_per_word << 10;
-		if (spi->mode & SPI_CPHA)
-			qmr |= MCFQSPI_QMR_CPHA;
-		if (spi->mode & SPI_CPOL)
-			qmr |= MCFQSPI_QMR_CPOL;
-		if (t->speed_hz)
-			qmr |= mcfqspi_qmr_baud(t->speed_hz);
-		else
-			qmr |= mcfqspi_qmr_baud(spi->max_speed_hz);
-		mcfqspi_wr_qmr(mcfqspi, qmr);
+static int mcfqspi_transfer_one(struct spi_controller *host,
+				struct spi_device *spi,
+				struct spi_transfer *t)
+{
+	struct mcfqspi *mcfqspi = spi_controller_get_devdata(host);
+	u16 qmr = MCFQSPI_QMR_MSTR;
 
-		mcfqspi_cs_select(mcfqspi, spi->chip_select, cs_high);
+	qmr |= t->bits_per_word << 10;
+	if (spi->mode & SPI_CPHA)
+		qmr |= MCFQSPI_QMR_CPHA;
+	if (spi->mode & SPI_CPOL)
+		qmr |= MCFQSPI_QMR_CPOL;
+	qmr |= mcfqspi_qmr_baud(t->speed_hz);
+	mcfqspi_wr_qmr(mcfqspi, qmr);
 
-		mcfqspi_wr_qir(mcfqspi, MCFQSPI_QIR_SPIFE);
-		if (t->bits_per_word == 8)
-			mcfqspi_transfer_msg8(mcfqspi, t->len, t->tx_buf,
-					t->rx_buf);
-		else
-			mcfqspi_transfer_msg16(mcfqspi, t->len / 2, t->tx_buf,
-					t->rx_buf);
-		mcfqspi_wr_qir(mcfqspi, 0);
+	mcfqspi_wr_qir(mcfqspi, MCFQSPI_QIR_SPIFE);
+	if (t->bits_per_word == 8)
+		mcfqspi_transfer_msg8(mcfqspi, t->len, t->tx_buf, t->rx_buf);
+	else
+		mcfqspi_transfer_msg16(mcfqspi, t->len / 2, t->tx_buf,
+				       t->rx_buf);
+	mcfqspi_wr_qir(mcfqspi, 0);
 
-		if (t->delay_usecs)
-			udelay(t->delay_usecs);
-		if (t->cs_change) {
-			if (!list_is_last(&t->transfer_list, &msg->transfers))
-				mcfqspi_cs_deselect(mcfqspi, spi->chip_select,
-						cs_high);
-		} else {
-			if (list_is_last(&t->transfer_list, &msg->transfers))
-				mcfqspi_cs_deselect(mcfqspi, spi->chip_select,
-						cs_high);
-		}
-		msg->actual_length += t->len;
-	}
-	msg->status = status;
-	spi_finalize_current_message(master);
-
-	return status;
-
+	return 0;
 }
 
 static int mcfqspi_setup(struct spi_device *spi)
 {
-	if (spi->chip_select >= spi->master->num_chipselect) {
-		dev_dbg(&spi->dev, "%d chip select is out of range\n",
-			spi->chip_select);
-		return -EINVAL;
-	}
-
-	mcfqspi_cs_deselect(spi_master_get_devdata(spi->master),
-			    spi->chip_select, spi->mode & SPI_CS_HIGH);
+	mcfqspi_cs_deselect(spi_controller_get_devdata(spi->controller),
+			    spi_get_chipselect(spi, 0), spi->mode & SPI_CS_HIGH);
 
 	dev_dbg(&spi->dev,
 			"bits per word %d, chip select %d, speed %d KHz\n",
-			spi->bits_per_word, spi->chip_select,
+			spi->bits_per_word, spi_get_chipselect(spi, 0),
 			(MCFQSPI_BUSCLK / mcfqspi_qmr_baud(spi->max_speed_hz))
 			/ 1000);
 
@@ -376,9 +337,8 @@ static int mcfqspi_setup(struct spi_device *spi)
 
 static int mcfqspi_probe(struct platform_device *pdev)
 {
-	struct spi_master *master;
+	struct spi_controller *host;
 	struct mcfqspi *mcfqspi;
-	struct resource *res;
 	struct mcfqspi_platform_data *pdata;
 	int status;
 
@@ -388,16 +348,20 @@ static int mcfqspi_probe(struct platform_device *pdev)
 		return -ENOENT;
 	}
 
-	master = spi_alloc_master(&pdev->dev, sizeof(*mcfqspi));
-	if (master == NULL) {
-		dev_dbg(&pdev->dev, "spi_alloc_master failed\n");
+	if (!pdata->cs_control) {
+		dev_dbg(&pdev->dev, "pdata->cs_control is NULL\n");
+		return -EINVAL;
+	}
+
+	host = spi_alloc_host(&pdev->dev, sizeof(*mcfqspi));
+	if (host == NULL) {
+		dev_dbg(&pdev->dev, "spi_alloc_host failed\n");
 		return -ENOMEM;
 	}
 
-	mcfqspi = spi_master_get_devdata(master);
+	mcfqspi = spi_controller_get_devdata(host);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	mcfqspi->iobase = devm_ioremap_resource(&pdev->dev, res);
+	mcfqspi->iobase = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(mcfqspi->iobase)) {
 		status = PTR_ERR(mcfqspi->iobase);
 		goto fail0;
@@ -417,81 +381,78 @@ static int mcfqspi_probe(struct platform_device *pdev)
 		goto fail0;
 	}
 
-	mcfqspi->clk = devm_clk_get(&pdev->dev, "qspi_clk");
+	mcfqspi->clk = devm_clk_get_enabled(&pdev->dev, "qspi_clk");
 	if (IS_ERR(mcfqspi->clk)) {
 		dev_dbg(&pdev->dev, "clk_get failed\n");
 		status = PTR_ERR(mcfqspi->clk);
 		goto fail0;
 	}
-	clk_enable(mcfqspi->clk);
 
-	master->bus_num = pdata->bus_num;
-	master->num_chipselect = pdata->num_chipselect;
+	host->bus_num = pdata->bus_num;
+	host->num_chipselect = pdata->num_chipselect;
 
 	mcfqspi->cs_control = pdata->cs_control;
 	status = mcfqspi_cs_setup(mcfqspi);
 	if (status) {
 		dev_dbg(&pdev->dev, "error initializing cs_control\n");
-		goto fail1;
+		goto fail0;
 	}
 
 	init_waitqueue_head(&mcfqspi->waitq);
-	mcfqspi->dev = &pdev->dev;
 
-	master->mode_bits = SPI_CS_HIGH | SPI_CPOL | SPI_CPHA;
-	master->bits_per_word_mask = SPI_BPW_RANGE_MASK(8, 16);
-	master->setup = mcfqspi_setup;
-	master->transfer_one_message = mcfqspi_transfer_one_message;
-	master->auto_runtime_pm = true;
+	host->mode_bits = SPI_CS_HIGH | SPI_CPOL | SPI_CPHA;
+	host->bits_per_word_mask = SPI_BPW_RANGE_MASK(8, 16);
+	host->setup = mcfqspi_setup;
+	host->set_cs = mcfqspi_set_cs;
+	host->transfer_one = mcfqspi_transfer_one;
+	host->auto_runtime_pm = true;
 
-	platform_set_drvdata(pdev, master);
+	platform_set_drvdata(pdev, host);
+	pm_runtime_enable(&pdev->dev);
 
-	status = devm_spi_register_master(&pdev->dev, master);
+	status = devm_spi_register_controller(&pdev->dev, host);
 	if (status) {
-		dev_dbg(&pdev->dev, "spi_register_master failed\n");
-		goto fail2;
+		dev_dbg(&pdev->dev, "devm_spi_register_controller failed\n");
+		goto fail1;
 	}
-	pm_runtime_enable(mcfqspi->dev);
 
 	dev_info(&pdev->dev, "Coldfire QSPI bus driver\n");
 
 	return 0;
 
-fail2:
-	mcfqspi_cs_teardown(mcfqspi);
 fail1:
-	clk_disable(mcfqspi->clk);
+	pm_runtime_disable(&pdev->dev);
+	mcfqspi_cs_teardown(mcfqspi);
 fail0:
-	spi_master_put(master);
+	spi_controller_put(host);
 
 	dev_dbg(&pdev->dev, "Coldfire QSPI probe failed\n");
 
 	return status;
 }
 
-static int mcfqspi_remove(struct platform_device *pdev)
+static void mcfqspi_remove(struct platform_device *pdev)
 {
-	struct spi_master *master = platform_get_drvdata(pdev);
-	struct mcfqspi *mcfqspi = spi_master_get_devdata(master);
-	struct resource *res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	struct spi_controller *host = platform_get_drvdata(pdev);
+	struct mcfqspi *mcfqspi = spi_controller_get_devdata(host);
 
-	pm_runtime_disable(mcfqspi->dev);
+	pm_runtime_disable(&pdev->dev);
 	/* disable the hardware (set the baud rate to 0) */
 	mcfqspi_wr_qmr(mcfqspi, MCFQSPI_QMR_MSTR);
 
 	mcfqspi_cs_teardown(mcfqspi);
-	clk_disable(mcfqspi->clk);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
 static int mcfqspi_suspend(struct device *dev)
 {
-	struct spi_master *master = dev_get_drvdata(dev);
-	struct mcfqspi *mcfqspi = spi_master_get_devdata(master);
+	struct spi_controller *host = dev_get_drvdata(dev);
+	struct mcfqspi *mcfqspi = spi_controller_get_devdata(host);
+	int ret;
 
-	spi_master_suspend(master);
+	ret = spi_controller_suspend(host);
+	if (ret)
+		return ret;
 
 	clk_disable(mcfqspi->clk);
 
@@ -500,21 +461,20 @@ static int mcfqspi_suspend(struct device *dev)
 
 static int mcfqspi_resume(struct device *dev)
 {
-	struct spi_master *master = dev_get_drvdata(dev);
-	struct mcfqspi *mcfqspi = spi_master_get_devdata(master);
-
-	spi_master_resume(master);
+	struct spi_controller *host = dev_get_drvdata(dev);
+	struct mcfqspi *mcfqspi = spi_controller_get_devdata(host);
 
 	clk_enable(mcfqspi->clk);
 
-	return 0;
+	return spi_controller_resume(host);
 }
 #endif
 
-#ifdef CONFIG_PM_RUNTIME
+#ifdef CONFIG_PM
 static int mcfqspi_runtime_suspend(struct device *dev)
 {
-	struct mcfqspi *mcfqspi = dev_get_drvdata(dev);
+	struct spi_controller *host = dev_get_drvdata(dev);
+	struct mcfqspi *mcfqspi = spi_controller_get_devdata(host);
 
 	clk_disable(mcfqspi->clk);
 
@@ -523,7 +483,8 @@ static int mcfqspi_runtime_suspend(struct device *dev)
 
 static int mcfqspi_runtime_resume(struct device *dev)
 {
-	struct mcfqspi *mcfqspi = dev_get_drvdata(dev);
+	struct spi_controller *host = dev_get_drvdata(dev);
+	struct mcfqspi *mcfqspi = spi_controller_get_devdata(host);
 
 	clk_enable(mcfqspi->clk);
 
@@ -542,7 +503,7 @@ static struct platform_driver mcfqspi_driver = {
 	.driver.owner	= THIS_MODULE,
 	.driver.pm	= &mcfqspi_pm,
 	.probe		= mcfqspi_probe,
-	.remove		= mcfqspi_remove,
+	.remove_new	= mcfqspi_remove,
 };
 module_platform_driver(mcfqspi_driver);
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * cpufreq driver for Enhanced SpeedStep, as found in Intel's Pentium
  * M (part of the Centrino chipset).
@@ -13,6 +14,8 @@
  * Copyright (C) 2003 Jeremy Fitzhardinge <jeremy@goop.org>
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
@@ -27,8 +30,7 @@
 #include <asm/cpufeature.h>
 #include <asm/cpu_device_id.h>
 
-#define PFX		"speedstep-centrino: "
-#define MAINTAINER	"cpufreq@vger.kernel.org"
+#define MAINTAINER	"linux-pm@vger.kernel.org"
 
 #define INTEL_MSR_RANGE	(0xffff)
 
@@ -36,7 +38,7 @@ struct cpu_id
 {
 	__u8	x86;            /* CPU family */
 	__u8	x86_model;	/* model */
-	__u8	x86_mask;	/* stepping */
+	__u8	x86_stepping;	/* stepping */
 };
 
 enum {
@@ -276,7 +278,7 @@ static int centrino_verify_cpu_id(const struct cpuinfo_x86 *c,
 {
 	if ((c->x86 == x->x86) &&
 	    (c->x86_model == x->x86_model) &&
-	    (c->x86_mask == x->x86_mask))
+	    (c->x86_stepping == x->x86_stepping))
 		return 1;
 	return 0;
 }
@@ -386,17 +388,16 @@ static int centrino_cpu_init(struct cpufreq_policy *policy)
 		/* check to see if it stuck */
 		rdmsr(MSR_IA32_MISC_ENABLE, l, h);
 		if (!(l & MSR_IA32_MISC_ENABLE_ENHANCED_SPEEDSTEP)) {
-			printk(KERN_INFO PFX
-				"couldn't enable Enhanced SpeedStep\n");
+			pr_info("couldn't enable Enhanced SpeedStep\n");
 			return -ENODEV;
 		}
 	}
 
 	policy->cpuinfo.transition_latency = 10000;
 						/* 10uS transition latency */
+	policy->freq_table = per_cpu(centrino_model, policy->cpu)->op_points;
 
-	return cpufreq_table_validate_and_show(policy,
-		per_cpu(centrino_model, policy->cpu)->op_points);
+	return 0;
 }
 
 static int centrino_cpu_exit(struct cpufreq_policy *policy)
@@ -406,15 +407,13 @@ static int centrino_cpu_exit(struct cpufreq_policy *policy)
 	if (!per_cpu(centrino_model, cpu))
 		return -ENODEV;
 
-	cpufreq_frequency_table_put_attr(cpu);
-
 	per_cpu(centrino_model, cpu) = NULL;
 
 	return 0;
 }
 
 /**
- * centrino_setpolicy - set a new CPUFreq policy
+ * centrino_target - set a new CPUFreq policy
  * @policy: new policy
  * @index: index of target frequency
  *
@@ -521,18 +520,12 @@ static struct cpufreq_driver centrino_driver = {
  * or ASCII model IDs.
  */
 static const struct x86_cpu_id centrino_ids[] = {
-	{ X86_VENDOR_INTEL, 6, 9, X86_FEATURE_EST },
-	{ X86_VENDOR_INTEL, 6, 13, X86_FEATURE_EST },
-	{ X86_VENDOR_INTEL, 6, 13, X86_FEATURE_EST },
-	{ X86_VENDOR_INTEL, 6, 13, X86_FEATURE_EST },
-	{ X86_VENDOR_INTEL, 15, 3, X86_FEATURE_EST },
-	{ X86_VENDOR_INTEL, 15, 4, X86_FEATURE_EST },
+	X86_MATCH_VENDOR_FAM_MODEL_FEATURE(INTEL,  6,  9, X86_FEATURE_EST, NULL),
+	X86_MATCH_VENDOR_FAM_MODEL_FEATURE(INTEL,  6, 13, X86_FEATURE_EST, NULL),
+	X86_MATCH_VENDOR_FAM_MODEL_FEATURE(INTEL, 15,  3, X86_FEATURE_EST, NULL),
+	X86_MATCH_VENDOR_FAM_MODEL_FEATURE(INTEL, 15,  4, X86_FEATURE_EST, NULL),
 	{}
 };
-#if 0
-/* Autoload or not? Do not for now. */
-MODULE_DEVICE_TABLE(x86cpu, centrino_ids);
-#endif
 
 /**
  * centrino_init - initializes the Enhanced SpeedStep CPUFreq driver

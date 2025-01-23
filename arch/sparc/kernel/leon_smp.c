@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* leon_smp.c: Sparc-Leon SMP support.
  *
  * based on sun4m_smp.c
@@ -9,7 +10,7 @@
 #include <asm/head.h>
 
 #include <linux/kernel.h>
-#include <linux/sched.h>
+#include <linux/sched/mm.h>
 #include <linux/threads.h>
 #include <linux/smp.h>
 #include <linux/interrupt.h>
@@ -37,8 +38,6 @@
 #include <asm/delay.h>
 #include <asm/irq.h>
 #include <asm/page.h>
-#include <asm/pgalloc.h>
-#include <asm/pgtable.h>
 #include <asm/oplib.h>
 #include <asm/cpudata.h>
 #include <asm/asi.h>
@@ -93,7 +92,7 @@ void leon_cpu_pre_online(void *arg)
 			     : "memory" /* paranoid */);
 
 	/* Attach to the address space of init_task. */
-	atomic_inc(&init_mm.mm_count);
+	mmgrab(&init_mm);
 	current->active_mm = &init_mm;
 
 	while (!cpumask_test_cpu(cpuid, &smp_commenced_mask))
@@ -130,7 +129,7 @@ void leon_configure_cache_smp(void)
 	local_ops->tlb_all();
 }
 
-void leon_smp_setbroadcast(unsigned int mask)
+static void leon_smp_setbroadcast(unsigned int mask)
 {
 	int broadcast =
 	    ((LEON3_BYPASS_LOAD_PA(&(leon3_irqctrl_regs->mpstatus)) >>
@@ -146,13 +145,6 @@ void leon_smp_setbroadcast(unsigned int mask)
 		}
 	}
 	LEON_BYPASS_STORE_PA(&(leon3_irqctrl_regs->mpbroadcast), mask);
-}
-
-unsigned int leon_smp_getbroadcast(void)
-{
-	unsigned int mask;
-	mask = LEON_BYPASS_LOAD_PA(&(leon3_irqctrl_regs->mpbroadcast));
-	return mask;
 }
 
 int leon_smp_nrcpus(void)
@@ -266,10 +258,6 @@ void __init leon_smp_done(void)
 
 }
 
-void leon_irq_rotate(int cpu)
-{
-}
-
 struct leon_ipi_work {
 	int single;
 	int msk;
@@ -354,7 +342,7 @@ static void leon_ipi_resched(int cpu)
 
 void leonsmp_ipi_interrupt(void)
 {
-	struct leon_ipi_work *work = &__get_cpu_var(leon_ipi_work);
+	struct leon_ipi_work *work = this_cpu_ptr(&leon_ipi_work);
 
 	if (work->single) {
 		work->single = 0;
@@ -371,7 +359,7 @@ void leonsmp_ipi_interrupt(void)
 }
 
 static struct smp_funcall {
-	smpfunc_t func;
+	void *func;
 	unsigned long arg1;
 	unsigned long arg2;
 	unsigned long arg3;
@@ -379,12 +367,12 @@ static struct smp_funcall {
 	unsigned long arg5;
 	unsigned long processors_in[NR_CPUS];	/* Set when ipi entered. */
 	unsigned long processors_out[NR_CPUS];	/* Set when ipi exited. */
-} ccall_info;
+} ccall_info __attribute__((aligned(8)));
 
 static DEFINE_SPINLOCK(cross_call_lock);
 
 /* Cross calls must be serialized, at least currently. */
-static void leon_cross_call(smpfunc_t func, cpumask_t mask, unsigned long arg1,
+static void leon_cross_call(void *func, cpumask_t mask, unsigned long arg1,
 			    unsigned long arg2, unsigned long arg3,
 			    unsigned long arg4)
 {
@@ -396,7 +384,7 @@ static void leon_cross_call(smpfunc_t func, cpumask_t mask, unsigned long arg1,
 
 		{
 			/* If you make changes here, make sure gcc generates proper code... */
-			register smpfunc_t f asm("i0") = func;
+			register void *f asm("i0") = func;
 			register unsigned long a1 asm("i1") = arg1;
 			register unsigned long a2 asm("i2") = arg2;
 			register unsigned long a3 asm("i3") = arg3;
@@ -456,11 +444,13 @@ static void leon_cross_call(smpfunc_t func, cpumask_t mask, unsigned long arg1,
 /* Running cross calls. */
 void leon_cross_call_irq(void)
 {
+	void (*func)(unsigned long, unsigned long, unsigned long, unsigned long,
+		     unsigned long) = ccall_info.func;
 	int i = smp_processor_id();
 
 	ccall_info.processors_in[i] = 1;
-	ccall_info.func(ccall_info.arg1, ccall_info.arg2, ccall_info.arg3,
-			ccall_info.arg4, ccall_info.arg5);
+	func(ccall_info.arg1, ccall_info.arg2, ccall_info.arg3, ccall_info.arg4,
+	     ccall_info.arg5);
 	ccall_info.processors_out[i] = 1;
 }
 

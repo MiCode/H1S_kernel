@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * CHRP pci routines.
  */
@@ -7,12 +8,12 @@
 #include <linux/delay.h>
 #include <linux/string.h>
 #include <linux/init.h>
+#include <linux/pgtable.h>
+#include <linux/of_address.h>
 
 #include <asm/io.h>
-#include <asm/pgtable.h>
 #include <asm/irq.h>
 #include <asm/hydra.h>
-#include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/sections.h>
 #include <asm/pci-bridge.h>
@@ -30,7 +31,7 @@ void __iomem *gg2_pci_config_base;
  * limit the bus number to 3 bits
  */
 
-int gg2_read_config(struct pci_bus *bus, unsigned int devfn, int off,
+static int gg2_read_config(struct pci_bus *bus, unsigned int devfn, int off,
 			   int len, u32 *val)
 {
 	volatile void __iomem *cfg_data;
@@ -57,7 +58,7 @@ int gg2_read_config(struct pci_bus *bus, unsigned int devfn, int off,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int gg2_write_config(struct pci_bus *bus, unsigned int devfn, int off,
+static int gg2_write_config(struct pci_bus *bus, unsigned int devfn, int off,
 			    int len, u32 val)
 {
 	volatile void __iomem *cfg_data;
@@ -93,8 +94,8 @@ static struct pci_ops gg2_pci_ops =
 /*
  * Access functions for PCI config space using RTAS calls.
  */
-int rtas_read_config(struct pci_bus *bus, unsigned int devfn, int offset,
-		     int len, u32 *val)
+static int rtas_read_config(struct pci_bus *bus, unsigned int devfn, int offset,
+			    int len, u32 *val)
 {
 	struct pci_controller *hose = pci_bus_to_host(bus);
 	unsigned long addr = (offset & 0xff) | ((devfn & 0xff) << 8)
@@ -103,13 +104,13 @@ int rtas_read_config(struct pci_bus *bus, unsigned int devfn, int offset,
         int ret = -1;
 	int rval;
 
-	rval = rtas_call(rtas_token("read-pci-config"), 2, 2, &ret, addr, len);
+	rval = rtas_call(rtas_function_token(RTAS_FN_READ_PCI_CONFIG), 2, 2, &ret, addr, len);
 	*val = ret;
 	return rval? PCIBIOS_DEVICE_NOT_FOUND: PCIBIOS_SUCCESSFUL;
 }
 
-int rtas_write_config(struct pci_bus *bus, unsigned int devfn, int offset,
-		      int len, u32 val)
+static int rtas_write_config(struct pci_bus *bus, unsigned int devfn, int offset,
+			     int len, u32 val)
 {
 	struct pci_controller *hose = pci_bus_to_host(bus);
 	unsigned long addr = (offset & 0xff) | ((devfn & 0xff) << 8)
@@ -117,7 +118,7 @@ int rtas_write_config(struct pci_bus *bus, unsigned int devfn, int offset,
 		| (hose->global_number << 24);
 	int rval;
 
-	rval = rtas_call(rtas_token("write-pci-config"), 3, 1, NULL,
+	rval = rtas_call(rtas_function_token(RTAS_FN_WRITE_PCI_CONFIG), 3, 1, NULL,
 			 addr, len, val);
 	return rval? PCIBIOS_DEVICE_NOT_FOUND: PCIBIOS_SUCCESSFUL;
 }
@@ -130,8 +131,7 @@ static struct pci_ops rtas_pci_ops =
 
 volatile struct Hydra __iomem *Hydra = NULL;
 
-int __init
-hydra_init(void)
+static int __init hydra_init(void)
 {
 	struct device_node *np;
 	struct resource r;
@@ -229,20 +229,20 @@ chrp_find_bridges(void)
 		else if (strncmp(machine, "Pegasos", 7) == 0)
 			is_pegasos = 1;
 	}
-	for (dev = root->child; dev != NULL; dev = dev->sibling) {
-		if (dev->type == NULL || strcmp(dev->type, "pci") != 0)
+	for_each_child_of_node(root, dev) {
+		if (!of_node_is_type(dev, "pci"))
 			continue;
 		++index;
 		/* The GG2 bridge on the LongTrail doesn't have an address */
 		if (of_address_to_resource(dev, 0, &r) && !is_longtrail) {
-			printk(KERN_WARNING "Can't use %s: no address\n",
-			       dev->full_name);
+			printk(KERN_WARNING "Can't use %pOF: no address\n",
+			       dev);
 			continue;
 		}
 		bus_range = of_get_property(dev, "bus-range", &len);
 		if (bus_range == NULL || len < 2 * sizeof(int)) {
-			printk(KERN_WARNING "Can't get bus-range for %s\n",
-				dev->full_name);
+			printk(KERN_WARNING "Can't get bus-range for %pOF\n",
+				dev);
 			continue;
 		}
 		if (bus_range[1] == bus_range[0])
@@ -250,15 +250,15 @@ chrp_find_bridges(void)
 		else
 			printk(KERN_INFO "PCI buses %d..%d",
 			       bus_range[0], bus_range[1]);
-		printk(" controlled by %s", dev->full_name);
+		printk(" controlled by %pOF", dev);
 		if (!is_longtrail)
 			printk(" at %llx", (unsigned long long)r.start);
 		printk("\n");
 
 		hose = pcibios_alloc_controller(dev);
 		if (!hose) {
-			printk("Can't allocate PCI controller structure for %s\n",
-				dev->full_name);
+			printk("Can't allocate PCI controller structure for %pOF\n",
+				dev);
 			continue;
 		}
 		hose->first_busno = hose->self_busno = bus_range[0];
@@ -297,8 +297,8 @@ chrp_find_bridges(void)
 				}
 			}
 		} else {
-			printk("No methods for %s (model %s), using RTAS\n",
-			       dev->full_name, model);
+			printk("No methods for %pOF (model %s), using RTAS\n",
+			       dev, model);
 			hose->ops = &rtas_pci_ops;
 		}
 
@@ -313,6 +313,14 @@ chrp_find_bridges(void)
 		}
 	}
 	of_node_put(root);
+
+	/*
+	 *  "Temporary" fixes for PCI devices.
+	 *  -- Geert
+	 */
+	hydra_init();		/* Mac I/O */
+
+	pci_create_OF_bus_map();
 }
 
 /* SL82C105 IDE Control/Status Register */

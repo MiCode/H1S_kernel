@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * omap_hwmod_2420_data.c - hardware modules present on the OMAP2420 chips
  *
@@ -5,19 +6,11 @@
  * Copyright (C) 2012 Texas Instruments, Inc.
  * Paul Walmsley
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  * XXX handle crossbar/shared link difference for L3?
  * XXX these should be marked initdata for multi-OMAP kernels
  */
 
-#include <linux/i2c-omap.h>
-#include <linux/platform_data/spi-omap2-mcspi.h>
-#include <linux/omap-dma.h>
-#include <linux/platform_data/mailbox-omap.h>
-#include <plat/dmtimer.h>
+#include <linux/platform_data/i2c-omap.h>
 
 #include "omap_hwmod.h"
 #include "l3_2xxx.h"
@@ -29,7 +22,6 @@
 #include "prm-regbits-24xx.h"
 #include "i2c.h"
 #include "mmc.h"
-#include "serial.h"
 #include "wd_timer.h"
 
 /*
@@ -94,15 +86,7 @@ static struct omap_hwmod_class_sysconfig i2c_sysc = {
 static struct omap_hwmod_class i2c_class = {
 	.name		= "i2c",
 	.sysc		= &i2c_sysc,
-	.rev		= OMAP_I2C_IP_VERSION_1,
 	.reset		= &omap_i2c_reset,
-};
-
-static struct omap_i2c_dev_attr i2c_dev_attr = {
-	.flags		= OMAP_I2C_FLAG_NO_FIFO |
-			  OMAP_I2C_FLAG_SIMPLE_CLOCK |
-			  OMAP_I2C_FLAG_16BIT_DATA_REG |
-			  OMAP_I2C_FLAG_BUS_SHIFT_2,
 };
 
 /* I2C1 */
@@ -112,14 +96,11 @@ static struct omap_hwmod omap2420_i2c1_hwmod = {
 	.prcm		= {
 		.omap2 = {
 			.module_offs = CORE_MOD,
-			.prcm_reg_id = 1,
-			.module_bit = OMAP2420_EN_I2C1_SHIFT,
 			.idlest_reg_id = 1,
 			.idlest_idle_bit = OMAP2420_ST_I2C1_SHIFT,
 		},
 	},
 	.class		= &i2c_class,
-	.dev_attr	= &i2c_dev_attr,
 	/*
 	 * From mach-omap2/pm24xx.c: "Putting MPU into the WFI state
 	 * while a transfer is active seems to cause the I2C block to
@@ -135,60 +116,26 @@ static struct omap_hwmod omap2420_i2c2_hwmod = {
 	.prcm		= {
 		.omap2 = {
 			.module_offs = CORE_MOD,
-			.prcm_reg_id = 1,
-			.module_bit = OMAP2420_EN_I2C2_SHIFT,
 			.idlest_reg_id = 1,
 			.idlest_idle_bit = OMAP2420_ST_I2C2_SHIFT,
 		},
 	},
 	.class		= &i2c_class,
-	.dev_attr	= &i2c_dev_attr,
 	.flags		= HWMOD_16BIT_REG,
 };
 
-/* dma attributes */
-static struct omap_dma_dev_attr dma_dev_attr = {
-	.dev_caps  = RESERVE_CHANNEL | DMA_LINKED_LCH | GLOBAL_PRIORITY |
-						IS_CSSA_32 | IS_CDSA_32,
-	.lch_count = 32,
-};
-
-static struct omap_hwmod omap2420_dma_system_hwmod = {
-	.name		= "dma",
-	.class		= &omap2xxx_dma_hwmod_class,
-	.mpu_irqs	= omap2_dma_system_irqs,
-	.main_clk	= "core_l3_ck",
-	.dev_attr	= &dma_dev_attr,
-	.flags		= HWMOD_NO_IDLEST,
-};
-
 /* mailbox */
-static struct omap_mbox_dev_info omap2420_mailbox_info[] = {
-	{ .name = "dsp", .tx_id = 0, .rx_id = 1, .irq_id = 0, .usr_id = 0 },
-	{ .name = "iva", .tx_id = 2, .rx_id = 3, .irq_id = 1, .usr_id = 3 },
-};
-
-static struct omap_mbox_pdata omap2420_mailbox_attrs = {
-	.num_users	= 4,
-	.num_fifos	= 6,
-	.info_cnt	= ARRAY_SIZE(omap2420_mailbox_info),
-	.info		= omap2420_mailbox_info,
-};
-
 static struct omap_hwmod omap2420_mailbox_hwmod = {
 	.name		= "mailbox",
 	.class		= &omap2xxx_mailbox_hwmod_class,
 	.main_clk	= "mailboxes_ick",
 	.prcm		= {
 		.omap2 = {
-			.prcm_reg_id = 1,
-			.module_bit = OMAP24XX_EN_MAILBOXES_SHIFT,
 			.module_offs = CORE_MOD,
 			.idlest_reg_id = 1,
 			.idlest_idle_bit = OMAP24XX_ST_MAILBOXES_SHIFT,
 		},
 	},
-	.dev_attr	= &omap2420_mailbox_attrs,
 };
 
 /*
@@ -212,8 +159,6 @@ static struct omap_hwmod omap2420_mcbsp1_hwmod = {
 	.main_clk	= "mcbsp1_fck",
 	.prcm		= {
 		.omap2 = {
-			.prcm_reg_id = 1,
-			.module_bit = OMAP24XX_EN_MCBSP1_SHIFT,
 			.module_offs = CORE_MOD,
 			.idlest_reg_id = 1,
 			.idlest_idle_bit = OMAP24XX_ST_MCBSP1_SHIFT,
@@ -230,8 +175,6 @@ static struct omap_hwmod omap2420_mcbsp2_hwmod = {
 	.main_clk	= "mcbsp2_fck",
 	.prcm		= {
 		.omap2 = {
-			.prcm_reg_id = 1,
-			.module_bit = OMAP24XX_EN_MCBSP2_SHIFT,
 			.module_offs = CORE_MOD,
 			.idlest_reg_id = 1,
 			.idlest_idle_bit = OMAP24XX_ST_MCBSP2_SHIFT,
@@ -262,8 +205,6 @@ static struct omap_hwmod omap2420_msdi1_hwmod = {
 	.main_clk	= "mmc_fck",
 	.prcm		= {
 		.omap2 = {
-			.prcm_reg_id = 1,
-			.module_bit = OMAP2420_EN_MMC_SHIFT,
 			.module_offs = CORE_MOD,
 			.idlest_reg_id = 1,
 			.idlest_idle_bit = OMAP2420_ST_MMC_SHIFT,
@@ -279,8 +220,6 @@ static struct omap_hwmod omap2420_hdq1w_hwmod = {
 	.prcm		= {
 		.omap2 = {
 			.module_offs = CORE_MOD,
-			.prcm_reg_id = 1,
-			.module_bit = OMAP24XX_EN_HDQ_SHIFT,
 			.idlest_reg_id = 1,
 			.idlest_idle_bit = OMAP24XX_ST_HDQ_SHIFT,
 		},
@@ -324,14 +263,6 @@ static struct omap_hwmod_ocp_if omap2420_l3__dsp = {
 	.user		= OCP_USER_MPU | OCP_USER_SDMA,
 };
 
-/* l4_wkup -> timer1 */
-static struct omap_hwmod_ocp_if omap2420_l4_wkup__timer1 = {
-	.master		= &omap2xxx_l4_wkup_hwmod,
-	.slave		= &omap2xxx_timer1_hwmod,
-	.clk		= "gpt1_ick",
-	.user		= OCP_USER_MPU | OCP_USER_SDMA,
-};
-
 /* l4_wkup -> wd_timer2 */
 static struct omap_hwmod_ocp_if omap2420_l4_wkup__wd_timer2 = {
 	.master		= &omap2xxx_l4_wkup_hwmod,
@@ -369,23 +300,6 @@ static struct omap_hwmod_ocp_if omap2420_l4_wkup__gpio4 = {
 	.master		= &omap2xxx_l4_wkup_hwmod,
 	.slave		= &omap2xxx_gpio4_hwmod,
 	.clk		= "gpios_ick",
-	.user		= OCP_USER_MPU | OCP_USER_SDMA,
-};
-
-/* dma_system -> L3 */
-static struct omap_hwmod_ocp_if omap2420_dma_system__l3 = {
-	.master		= &omap2420_dma_system_hwmod,
-	.slave		= &omap2xxx_l3_main_hwmod,
-	.clk		= "core_l3_ck",
-	.user		= OCP_USER_MPU | OCP_USER_SDMA,
-};
-
-/* l4_core -> dma_system */
-static struct omap_hwmod_ocp_if omap2420_l4_core__dma_system = {
-	.master		= &omap2xxx_l4_core_hwmod,
-	.slave		= &omap2420_dma_system_hwmod,
-	.clk		= "sdma_ick",
-	.addr		= omap2_dma_system_addrs,
 	.user		= OCP_USER_MPU | OCP_USER_SDMA,
 };
 
@@ -429,15 +343,6 @@ static struct omap_hwmod_ocp_if omap2420_l4_core__hdq1w = {
 	.flags		= OMAP_FIREWALL_L4 | OCPIF_SWSUP_IDLE,
 };
 
-
-/* l4_wkup -> 32ksync_counter */
-static struct omap_hwmod_ocp_if omap2420_l4_wkup__counter_32k = {
-	.master		= &omap2xxx_l4_wkup_hwmod,
-	.slave		= &omap2xxx_counter_32k_hwmod,
-	.clk		= "sync_32k_ick",
-	.user		= OCP_USER_MPU | OCP_USER_SDMA,
-};
-
 static struct omap_hwmod_ocp_if omap2420_l3__gpmc = {
 	.master		= &omap2xxx_l3_main_hwmod,
 	.slave		= &omap2xxx_gpmc_hwmod,
@@ -459,8 +364,6 @@ static struct omap_hwmod_ocp_if *omap2420_hwmod_ocp_ifs[] __initdata = {
 	&omap2420_l4_core__i2c2,
 	&omap2420_l3__iva,
 	&omap2420_l3__dsp,
-	&omap2420_l4_wkup__timer1,
-	&omap2xxx_l4_core__timer2,
 	&omap2xxx_l4_core__timer3,
 	&omap2xxx_l4_core__timer4,
 	&omap2xxx_l4_core__timer5,
@@ -480,8 +383,6 @@ static struct omap_hwmod_ocp_if *omap2420_hwmod_ocp_ifs[] __initdata = {
 	&omap2420_l4_wkup__gpio2,
 	&omap2420_l4_wkup__gpio3,
 	&omap2420_l4_wkup__gpio4,
-	&omap2420_dma_system__l3,
-	&omap2420_l4_core__dma_system,
 	&omap2420_l4_core__mailbox,
 	&omap2420_l4_core__mcbsp1,
 	&omap2420_l4_core__mcbsp2,
@@ -490,7 +391,6 @@ static struct omap_hwmod_ocp_if *omap2420_hwmod_ocp_ifs[] __initdata = {
 	&omap2xxx_l4_core__sham,
 	&omap2xxx_l4_core__aes,
 	&omap2420_l4_core__hdq1w,
-	&omap2420_l4_wkup__counter_32k,
 	&omap2420_l3__gpmc,
 	NULL,
 };

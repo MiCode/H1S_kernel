@@ -1,21 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *
- *
  *  Copyright (C) 2005 Mike Isely <isely@pobox.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
 #include "pvrusb2-ctrl.h"
@@ -369,11 +355,8 @@ static int parse_token(const char *ptr,unsigned int len,
 		       int *valptr,
 		       const char * const *names, unsigned int namecnt)
 {
-	char buf[33];
 	unsigned int slen;
 	unsigned int idx;
-	int negfl;
-	char *p2;
 	*valptr = 0;
 	if (!names) namecnt = 0;
 	for (idx = 0; idx < namecnt; idx++) {
@@ -384,18 +367,7 @@ static int parse_token(const char *ptr,unsigned int len,
 		*valptr = idx;
 		return 0;
 	}
-	negfl = 0;
-	if ((*ptr == '-') || (*ptr == '+')) {
-		negfl = (*ptr == '-');
-		ptr++; len--;
-	}
-	if (len >= sizeof(buf)) return -EINVAL;
-	memcpy(buf,ptr,len);
-	buf[len] = 0;
-	*valptr = simple_strtol(buf,&p2,0);
-	if (negfl) *valptr = -(*valptr);
-	if (*p2) return -EINVAL;
-	return 1;
+	return kstrtoint(ptr, 0, valptr) ? -EINVAL : 1;
 }
 
 
@@ -403,10 +375,8 @@ static int parse_mtoken(const char *ptr,unsigned int len,
 			int *valptr,
 			const char **names,int valid_bits)
 {
-	char buf[33];
 	unsigned int slen;
 	unsigned int idx;
-	char *p2;
 	int msk;
 	*valptr = 0;
 	for (idx = 0, msk = 1; valid_bits; idx++, msk <<= 1) {
@@ -419,12 +389,7 @@ static int parse_mtoken(const char *ptr,unsigned int len,
 		*valptr = msk;
 		return 0;
 	}
-	if (len >= sizeof(buf)) return -EINVAL;
-	memcpy(buf,ptr,len);
-	buf[len] = 0;
-	*valptr = simple_strtol(buf,&p2,0);
-	if (*p2) return -EINVAL;
-	return 0;
+	return kstrtoint(ptr, 0, valptr);
 }
 
 
@@ -596,14 +561,3 @@ int pvr2_ctrl_value_to_sym(struct pvr2_ctrl *cptr,
 	} while(0); LOCK_GIVE(cptr->hdw->big_lock);
 	return ret;
 }
-
-
-/*
-  Stuff for Emacs to see, in order to encourage consistent editing style:
-  *** Local Variables: ***
-  *** mode: c ***
-  *** fill-column: 75 ***
-  *** tab-width: 8 ***
-  *** c-basic-offset: 8 ***
-  *** End: ***
-  */

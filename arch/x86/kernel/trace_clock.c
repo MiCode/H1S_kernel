@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * X86 trace clocks
  */
@@ -12,10 +13,5 @@
  */
 u64 notrace trace_clock_x86_tsc(void)
 {
-	u64 ret;
-
-	rdtsc_barrier();
-	rdtscll(ret);
-
-	return ret;
+	return rdtsc_ordered();
 }

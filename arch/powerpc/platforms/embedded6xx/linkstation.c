@@ -15,13 +15,12 @@
 #include <linux/of_platform.h>
 
 #include <asm/time.h>
-#include <asm/prom.h>
 #include <asm/mpic.h>
 #include <asm/pci-bridge.h>
 
 #include "mpc10x.h"
 
-static __initdata struct of_device_id of_bus_ids[] = {
+static const struct of_device_id of_bus_ids[] __initconst = {
 	{ .type = "soc", },
 	{ .compatible = "simple-bus", },
 	{},
@@ -41,12 +40,12 @@ static int __init linkstation_add_bridge(struct device_node *dev)
 	struct pci_controller *hose;
 	const int *bus_range;
 
-	printk("Adding PCI host bridge %s\n", dev->full_name);
+	printk("Adding PCI host bridge %pOF\n", dev);
 
 	bus_range = of_get_property(dev, "bus-range", &len);
 	if (bus_range == NULL || len < 2 * sizeof(int))
-		printk(KERN_WARNING "Can't get bus-range for %s, assume"
-				" bus 0\n", dev->full_name);
+		printk(KERN_WARNING "Can't get bus-range for %pOF, assume"
+				" bus 0\n", dev);
 
 	hose = pcibios_alloc_controller(dev);
 	if (hose == NULL)
@@ -64,14 +63,17 @@ static int __init linkstation_add_bridge(struct device_node *dev)
 
 static void __init linkstation_setup_arch(void)
 {
+	printk(KERN_INFO "BUFFALO Network Attached Storage Series\n");
+	printk(KERN_INFO "(C) 2002-2005 BUFFALO INC.\n");
+}
+
+static void __init linkstation_setup_pci(void)
+{
 	struct device_node *np;
 
 	/* Lookup PCI host bridges */
 	for_each_compatible_node(np, "pci", "mpc10x-pci")
 		linkstation_add_bridge(np);
-
-	printk(KERN_INFO "BUFFALO Network Attached Storage Series\n");
-	printk(KERN_INFO "(C) 2002-2005 BUFFALO INC.\n");
 }
 
 /*
@@ -97,10 +99,7 @@ static void __init linkstation_init_IRQ(void)
 	mpic_init(mpic);
 }
 
-extern void avr_uart_configure(void);
-extern void avr_uart_send(const char);
-
-static void linkstation_restart(char *cmd)
+static void __noreturn linkstation_restart(char *cmd)
 {
 	local_irq_disable();
 
@@ -113,7 +112,7 @@ static void linkstation_restart(char *cmd)
 		avr_uart_send('G');	/* "kick" */
 }
 
-static void linkstation_power_off(void)
+static void __noreturn linkstation_power_off(void)
 {
 	local_irq_disable();
 
@@ -127,7 +126,7 @@ static void linkstation_power_off(void)
 	/* NOTREACHED */
 }
 
-static void linkstation_halt(void)
+static void __noreturn linkstation_halt(void)
 {
 	linkstation_power_off();
 	/* NOTREACHED */
@@ -141,24 +140,20 @@ static void linkstation_show_cpuinfo(struct seq_file *m)
 
 static int __init linkstation_probe(void)
 {
-	unsigned long root;
+	pm_power_off = linkstation_power_off;
 
-	root = of_get_flat_dt_root();
-
-	if (!of_flat_dt_is_compatible(root, "linkstation"))
-		return 0;
 	return 1;
 }
 
 define_machine(linkstation){
 	.name 			= "Buffalo Linkstation",
+	.compatible		= "linkstation",
 	.probe 			= linkstation_probe,
 	.setup_arch 		= linkstation_setup_arch,
+	.discover_phbs		= linkstation_setup_pci,
 	.init_IRQ 		= linkstation_init_IRQ,
 	.show_cpuinfo 		= linkstation_show_cpuinfo,
 	.get_irq 		= mpic_get_irq,
 	.restart 		= linkstation_restart,
-	.power_off 		= linkstation_power_off,
 	.halt	 		= linkstation_halt,
-	.calibrate_decr 	= generic_calibrate_decr,
 };

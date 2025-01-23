@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * EZ-USB specific functions used by some of the USB to Serial drivers.
  *
  * Copyright (C) 1999 - 2002 Greg Kroah-Hartman (greg@kroah.com)
- *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License version
- *	2 as published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -22,7 +19,7 @@ struct ezusb_fx_type {
 	unsigned short max_internal_adress;
 };
 
-static struct ezusb_fx_type ezusb_fx1 = {
+static const struct ezusb_fx_type ezusb_fx1 = {
 	.cpucs_reg = 0x7F92,
 	.max_internal_adress = 0x1B3F,
 };
@@ -34,24 +31,12 @@ static struct ezusb_fx_type ezusb_fx1 = {
 static int ezusb_writememory(struct usb_device *dev, int address,
 				unsigned char *data, int length, __u8 request)
 {
-	int result;
-	unsigned char *transfer_buffer;
-
 	if (!dev)
 		return -ENODEV;
 
-	transfer_buffer = kmemdup(data, length, GFP_KERNEL);
-	if (!transfer_buffer) {
-		dev_err(&dev->dev, "%s - kmalloc(%d) failed.\n",
-							__func__, length);
-		return -ENOMEM;
-	}
-	result = usb_control_msg(dev, usb_sndctrlpipe(dev, 0), request,
+	return usb_control_msg_send(dev, 0, request,
 				 USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
-				 address, 0, transfer_buffer, length, 3000);
-
-	kfree(transfer_buffer);
-	return result;
+				 address, 0, data, length, 3000, GFP_KERNEL);
 }
 
 static int ezusb_set_reset(struct usb_device *dev, unsigned short cpucs_reg,

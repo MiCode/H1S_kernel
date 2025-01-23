@@ -1,45 +1,11 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: utpredef - support functions for predefined names
  *
+ * Copyright (C) 2000 - 2023, Intel Corp.
+ *
  *****************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -118,7 +84,7 @@ const union acpi_predefined_info *acpi_ut_match_predefined_method(char *name)
 
 	this_name = acpi_gbl_predefined_methods;
 	while (this_name->info.name[0]) {
-		if (ACPI_COMPARE_NAME(name, this_name->info.name)) {
+		if (ACPI_COMPARE_NAMESEG(name, this_name->info.name)) {
 			return (this_name);
 		}
 
@@ -148,7 +114,7 @@ void acpi_ut_get_expected_return_types(char *buffer, u32 expected_btypes)
 	u32 j;
 
 	if (!expected_btypes) {
-		ACPI_STRCPY(buffer, "NONE");
+		strcpy(buffer, "NONE");
 		return;
 	}
 
@@ -161,7 +127,7 @@ void acpi_ut_get_expected_return_types(char *buffer, u32 expected_btypes)
 		/* If one of the expected types, concatenate the name of this type */
 
 		if (expected_btypes & this_rtype) {
-			ACPI_STRCAT(buffer, &ut_rtype_names[i][j]);
+			strcat(buffer, &ut_rtype_names[i][j]);
 			j = 0;	/* Use name separator from now on */
 		}
 
@@ -176,8 +142,6 @@ void acpi_ut_get_expected_return_types(char *buffer, u32 expected_btypes)
  ******************************************************************************/
 
 #if (defined ACPI_ASL_COMPILER || defined ACPI_HELP_APP)
-#include <stdio.h>
-#include <string.h>
 
 /* Local prototypes */
 
@@ -187,7 +151,7 @@ static u32 acpi_ut_get_argument_types(char *buffer, u16 argument_types);
 
 static const char *ut_external_type_names[] =	/* Indexed by ACPI_TYPE_* */
 {
-	", UNSUPPORTED-TYPE",
+	", Type_ANY",
 	", Integer",
 	", String",
 	", Buffer",
@@ -225,8 +189,10 @@ const union acpi_predefined_info *acpi_ut_match_resource_name(char *name)
 {
 	const union acpi_predefined_info *this_name;
 
-	/* Quick check for a predefined name, first character must be underscore */
-
+	/*
+	 * Quick check for a predefined name, first character must
+	 * be underscore
+	 */
 	if (name[0] != '_') {
 		return (NULL);
 	}
@@ -235,7 +201,7 @@ const union acpi_predefined_info *acpi_ut_match_resource_name(char *name)
 
 	this_name = acpi_gbl_resource_names;
 	while (this_name->info.name[0]) {
-		if (ACPI_COMPARE_NAME(name, this_name->info.name)) {
+		if (ACPI_COMPARE_NAMESEG(name, this_name->info.name)) {
 			return (this_name);
 		}
 
@@ -345,8 +311,7 @@ static u32 acpi_ut_get_argument_types(char *buffer, u16 argument_types)
 	for (i = 0; i < arg_count; i++) {
 		this_argument_type = METHOD_GET_NEXT_TYPE(argument_types);
 
-		if (!this_argument_type
-		    || (this_argument_type > METHOD_MAX_ARG_TYPE)) {
+		if (this_argument_type > METHOD_MAX_ARG_TYPE) {
 			printf("**** Invalid argument type (%u) "
 			       "in predefined info structure\n",
 			       this_argument_type);

@@ -1,30 +1,5 @@
-/*******************************************************************************
-
-  Intel PRO/1000 Linux driver
-  Copyright(c) 1999 - 2013 Intel Corporation.
-
-  This program is free software; you can redistribute it and/or modify it
-  under the terms and conditions of the GNU General Public License,
-  version 2, as published by the Free Software Foundation.
-
-  This program is distributed in the hope it will be useful, but WITHOUT
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
-  more details.
-
-  You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc.,
-  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
-
-  The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
-
-  Contact Information:
-  Linux NICS <linux.nics@intel.com>
-  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
-  Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
-
-*******************************************************************************/
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright(c) 1999 - 2018 Intel Corporation. */
 
 /* PTP 1588 Hardware Clock (PHC)
  * Derived from PTP Hardware Clock driver for Intel 82576 and 82580 (igb)
@@ -33,49 +8,50 @@
 
 #include "e1000.h"
 
+#ifdef CONFIG_E1000E_HWTS
+#include <linux/clocksource.h>
+#include <linux/ktime.h>
+#include <asm/tsc.h>
+#endif
+
 /**
- * e1000e_phc_adjfreq - adjust the frequency of the hardware clock
+ * e1000e_phc_adjfine - adjust the frequency of the hardware clock
  * @ptp: ptp clock structure
- * @delta: Desired frequency change in parts per billion
+ * @delta: Desired frequency chance in scaled parts per million
  *
  * Adjust the frequency of the PHC cycle counter by the indicated delta from
  * the base frequency.
+ *
+ * Scaled parts per million is ppm but with a 16 bit binary fractional field.
  **/
-static int e1000e_phc_adjfreq(struct ptp_clock_info *ptp, s32 delta)
+static int e1000e_phc_adjfine(struct ptp_clock_info *ptp, long delta)
 {
 	struct e1000_adapter *adapter = container_of(ptp, struct e1000_adapter,
 						     ptp_clock_info);
 	struct e1000_hw *hw = &adapter->hw;
-	bool neg_adj = false;
-	u64 adjustment;
-	u32 timinca, incvalue;
+	unsigned long flags;
+	u64 incvalue;
+	u32 timinca;
 	s32 ret_val;
-
-	if ((delta > ptp->max_adj) || (delta <= -1000000000))
-		return -EINVAL;
-
-	if (delta < 0) {
-		neg_adj = true;
-		delta = -delta;
-	}
 
 	/* Get the System Time Register SYSTIM base frequency */
 	ret_val = e1000e_get_base_timinca(adapter, &timinca);
 	if (ret_val)
 		return ret_val;
 
+	spin_lock_irqsave(&adapter->systim_lock, flags);
+
 	incvalue = timinca & E1000_TIMINCA_INCVALUE_MASK;
-
-	adjustment = incvalue;
-	adjustment *= delta;
-	adjustment = div_u64(adjustment, 1000000000);
-
-	incvalue = neg_adj ? (incvalue - adjustment) : (incvalue + adjustment);
+	incvalue = adjust_by_scaled_ppm(incvalue, delta);
 
 	timinca &= ~E1000_TIMINCA_INCVALUE_MASK;
 	timinca |= incvalue;
 
 	ew32(TIMINCA, timinca);
+
+	adapter->ptp_delta = delta;
+
+	spin_unlock_irqrestore(&adapter->systim_lock, flags);
 
 	return 0;
 }
@@ -92,39 +68,114 @@ static int e1000e_phc_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	struct e1000_adapter *adapter = container_of(ptp, struct e1000_adapter,
 						     ptp_clock_info);
 	unsigned long flags;
-	s64 now;
 
 	spin_lock_irqsave(&adapter->systim_lock, flags);
-	now = timecounter_read(&adapter->tc);
-	now += delta;
-	timecounter_init(&adapter->tc, &adapter->cc, now);
+	timecounter_adjtime(&adapter->tc, delta);
 	spin_unlock_irqrestore(&adapter->systim_lock, flags);
 
 	return 0;
 }
 
+#ifdef CONFIG_E1000E_HWTS
+#define MAX_HW_WAIT_COUNT (3)
+
 /**
- * e1000e_phc_gettime - Reads the current time from the hardware clock
+ * e1000e_phc_get_syncdevicetime - Callback given to timekeeping code reads system/device registers
+ * @device: current device time
+ * @system: system counter value read synchronously with device time
+ * @ctx: context provided by timekeeping code
+ *
+ * Read device and system (ART) clock simultaneously and return the corrected
+ * clock values in ns.
+ **/
+static int e1000e_phc_get_syncdevicetime(ktime_t *device,
+					 struct system_counterval_t *system,
+					 void *ctx)
+{
+	struct e1000_adapter *adapter = (struct e1000_adapter *)ctx;
+	struct e1000_hw *hw = &adapter->hw;
+	unsigned long flags;
+	int i;
+	u32 tsync_ctrl;
+	u64 dev_cycles;
+	u64 sys_cycles;
+
+	tsync_ctrl = er32(TSYNCTXCTL);
+	tsync_ctrl |= E1000_TSYNCTXCTL_START_SYNC |
+		E1000_TSYNCTXCTL_MAX_ALLOWED_DLY_MASK;
+	ew32(TSYNCTXCTL, tsync_ctrl);
+	for (i = 0; i < MAX_HW_WAIT_COUNT; ++i) {
+		udelay(1);
+		tsync_ctrl = er32(TSYNCTXCTL);
+		if (tsync_ctrl & E1000_TSYNCTXCTL_SYNC_COMP)
+			break;
+	}
+
+	if (i == MAX_HW_WAIT_COUNT)
+		return -ETIMEDOUT;
+
+	dev_cycles = er32(SYSSTMPH);
+	dev_cycles <<= 32;
+	dev_cycles |= er32(SYSSTMPL);
+	spin_lock_irqsave(&adapter->systim_lock, flags);
+	*device = ns_to_ktime(timecounter_cyc2time(&adapter->tc, dev_cycles));
+	spin_unlock_irqrestore(&adapter->systim_lock, flags);
+
+	sys_cycles = er32(PLTSTMPH);
+	sys_cycles <<= 32;
+	sys_cycles |= er32(PLTSTMPL);
+	*system = convert_art_to_tsc(sys_cycles);
+
+	return 0;
+}
+
+/**
+ * e1000e_phc_getcrosststamp - Reads the current system/device cross timestamp
  * @ptp: ptp clock structure
- * @ts: timespec structure to hold the current time value
+ * @xtstamp: structure containing timestamp
+ *
+ * Read device and system (ART) clock simultaneously and return the scaled
+ * clock values in ns.
+ **/
+static int e1000e_phc_getcrosststamp(struct ptp_clock_info *ptp,
+				     struct system_device_crosststamp *xtstamp)
+{
+	struct e1000_adapter *adapter = container_of(ptp, struct e1000_adapter,
+						     ptp_clock_info);
+
+	return get_device_system_crosststamp(e1000e_phc_get_syncdevicetime,
+						adapter, NULL, xtstamp);
+}
+#endif/*CONFIG_E1000E_HWTS*/
+
+/**
+ * e1000e_phc_gettimex - Reads the current time from the hardware clock and
+ *                       system clock
+ * @ptp: ptp clock structure
+ * @ts: timespec structure to hold the current PHC time
+ * @sts: structure to hold the current system time
  *
  * Read the timecounter and return the correct value in ns after converting
  * it into a struct timespec.
  **/
-static int e1000e_phc_gettime(struct ptp_clock_info *ptp, struct timespec *ts)
+static int e1000e_phc_gettimex(struct ptp_clock_info *ptp,
+			       struct timespec64 *ts,
+			       struct ptp_system_timestamp *sts)
 {
 	struct e1000_adapter *adapter = container_of(ptp, struct e1000_adapter,
 						     ptp_clock_info);
 	unsigned long flags;
-	u32 remainder;
-	u64 ns;
+	u64 cycles, ns;
 
 	spin_lock_irqsave(&adapter->systim_lock, flags);
-	ns = timecounter_read(&adapter->tc);
+
+	/* NOTE: Non-monotonic SYSTIM readings may be returned */
+	cycles = e1000e_read_systim(adapter, sts);
+	ns = timecounter_cyc2time(&adapter->tc, cycles);
+
 	spin_unlock_irqrestore(&adapter->systim_lock, flags);
 
-	ts->tv_sec = div_u64_rem(ns, NSEC_PER_SEC, &remainder);
-	ts->tv_nsec = remainder;
+	*ts = ns_to_timespec64(ns);
 
 	return 0;
 }
@@ -138,14 +189,14 @@ static int e1000e_phc_gettime(struct ptp_clock_info *ptp, struct timespec *ts)
  * wall timer value.
  **/
 static int e1000e_phc_settime(struct ptp_clock_info *ptp,
-			      const struct timespec *ts)
+			      const struct timespec64 *ts)
 {
 	struct e1000_adapter *adapter = container_of(ptp, struct e1000_adapter,
 						     ptp_clock_info);
 	unsigned long flags;
 	u64 ns;
 
-	ns = timespec_to_ns(ts);
+	ns = timespec64_to_ns(ts);
 
 	/* reset the timecounter */
 	spin_lock_irqsave(&adapter->systim_lock, flags);
@@ -176,11 +227,15 @@ static void e1000e_systim_overflow_work(struct work_struct *work)
 	struct e1000_adapter *adapter = container_of(work, struct e1000_adapter,
 						     systim_overflow_work.work);
 	struct e1000_hw *hw = &adapter->hw;
-	struct timespec ts;
+	struct timespec64 ts;
+	u64 ns;
 
-	adapter->ptp_clock_info.gettime(&adapter->ptp_clock_info, &ts);
+	/* Update the timecounter */
+	ns = timecounter_read(&adapter->tc);
 
-	e_dbg("SYSTIM overflow check at %ld.%09lu\n", ts.tv_sec, ts.tv_nsec);
+	ts = ns_to_timespec64(ns);
+	e_dbg("SYSTIM overflow check at %lld.%09lu\n",
+	      (long long) ts.tv_sec, ts.tv_nsec);
 
 	schedule_delayed_work(&adapter->systim_overflow_work,
 			      E1000_SYSTIM_OVERFLOW_PERIOD);
@@ -191,11 +246,12 @@ static const struct ptp_clock_info e1000e_ptp_clock_info = {
 	.n_alarm	= 0,
 	.n_ext_ts	= 0,
 	.n_per_out	= 0,
+	.n_pins		= 0,
 	.pps		= 0,
-	.adjfreq	= e1000e_phc_adjfreq,
+	.adjfine	= e1000e_phc_adjfine,
 	.adjtime	= e1000e_phc_adjtime,
-	.gettime	= e1000e_phc_gettime,
-	.settime	= e1000e_phc_settime,
+	.gettimex64	= e1000e_phc_gettimex,
+	.settime64	= e1000e_phc_settime,
 	.enable		= e1000e_phc_enable,
 };
 
@@ -224,20 +280,43 @@ void e1000e_ptp_init(struct e1000_adapter *adapter)
 
 	switch (hw->mac.type) {
 	case e1000_pch2lan:
+		adapter->ptp_clock_info.max_adj = MAX_PPB_96MHZ;
+		break;
 	case e1000_pch_lpt:
-		if ((hw->mac.type != e1000_pch_lpt) ||
-		    (er32(TSYNCRXCTL) & E1000_TSYNCRXCTL_SYSCFI)) {
-			adapter->ptp_clock_info.max_adj = 24000000 - 1;
-			break;
-		}
-		/* fall-through */
+		if (er32(TSYNCRXCTL) & E1000_TSYNCRXCTL_SYSCFI)
+			adapter->ptp_clock_info.max_adj = MAX_PPB_96MHZ;
+		else
+			adapter->ptp_clock_info.max_adj = MAX_PPB_25MHZ;
+		break;
+	case e1000_pch_spt:
+		adapter->ptp_clock_info.max_adj = MAX_PPB_24MHZ;
+		break;
+	case e1000_pch_cnp:
+	case e1000_pch_tgp:
+	case e1000_pch_adp:
+	case e1000_pch_mtp:
+	case e1000_pch_lnp:
+	case e1000_pch_ptp:
+	case e1000_pch_nvp:
+		if (er32(TSYNCRXCTL) & E1000_TSYNCRXCTL_SYSCFI)
+			adapter->ptp_clock_info.max_adj = MAX_PPB_24MHZ;
+		else
+			adapter->ptp_clock_info.max_adj = MAX_PPB_38400KHZ;
+		break;
 	case e1000_82574:
 	case e1000_82583:
-		adapter->ptp_clock_info.max_adj = 600000000 - 1;
+		adapter->ptp_clock_info.max_adj = MAX_PPB_25MHZ;
 		break;
 	default:
 		break;
 	}
+
+#ifdef CONFIG_E1000E_HWTS
+	/* CPU must have ART and GBe must be from Sunrise Point or greater */
+	if (hw->mac.type >= e1000_pch_spt && boot_cpu_has(X86_FEATURE_ART))
+		adapter->ptp_clock_info.getcrosststamp =
+			e1000e_phc_getcrosststamp;
+#endif/*CONFIG_E1000E_HWTS*/
 
 	INIT_DELAYED_WORK(&adapter->systim_overflow_work,
 			  e1000e_systim_overflow_work);
@@ -250,7 +329,7 @@ void e1000e_ptp_init(struct e1000_adapter *adapter)
 	if (IS_ERR(adapter->ptp_clock)) {
 		adapter->ptp_clock = NULL;
 		e_err("ptp_clock_register failed\n");
-	} else {
+	} else if (adapter->ptp_clock) {
 		e_info("registered PHC clock\n");
 	}
 }

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * NFSv3 protocol definitions
  */
@@ -60,6 +61,12 @@ enum nfs3_ftype {
 	NF3SOCK = 6,
 	NF3FIFO = 7,	/* changed from NFSv2 (was 8) */
 	NF3BAD  = 8
+};
+
+enum nfs3_time_how {
+	DONT_CHANGE		= 0,
+	SET_TO_SERVER_TIME	= 1,
+	SET_TO_CLIENT_TIME	= 2,
 };
 
 struct nfs3_fh {

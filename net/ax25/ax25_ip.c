@@ -1,8 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  *
  * Copyright (C) Jonathan Naylor G4KLX (g4klx@g4klx.demon.co.uk)
  */
@@ -23,7 +20,7 @@
 #include <linux/if_arp.h>
 #include <linux/skbuff.h>
 #include <net/sock.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/fcntl.h>
 #include <linux/termios.h>	/* For TIOCINQ/OUTQ */
 #include <linux/mm.h>
@@ -31,7 +28,6 @@
 #include <linux/notifier.h>
 #include <linux/proc_fs.h>
 #include <linux/stat.h>
-#include <linux/netfilter.h>
 #include <linux/sysctl.h>
 #include <net/ip.h>
 #include <net/arp.h>
@@ -46,9 +42,9 @@
 
 #ifdef CONFIG_INET
 
-int ax25_hard_header(struct sk_buff *skb, struct net_device *dev,
-		     unsigned short type, const void *daddr,
-		     const void *saddr, unsigned int len)
+static int ax25_hard_header(struct sk_buff *skb, struct net_device *dev,
+			    unsigned short type, const void *daddr,
+			    const void *saddr, unsigned int len)
 {
 	unsigned char *buff;
 
@@ -100,7 +96,7 @@ int ax25_hard_header(struct sk_buff *skb, struct net_device *dev,
 	return -AX25_HEADER_LEN;	/* Unfinished header */
 }
 
-int ax25_rebuild_header(struct sk_buff *skb)
+netdev_tx_t ax25_ip_xmit(struct sk_buff *skb)
 {
 	struct sk_buff *ourskb;
 	unsigned char *bp  = skb->data;
@@ -115,9 +111,7 @@ int ax25_rebuild_header(struct sk_buff *skb)
 	dst = (ax25_address *)(bp + 1);
 	src = (ax25_address *)(bp + 8);
 
-	if (arp_find(bp + 1, skb))
-		return 1;
-
+	ax25_route_lock_use();
 	route = ax25_get_route(dst, NULL);
 	if (route) {
 		digipeat = route->digipeat;
@@ -129,6 +123,7 @@ int ax25_rebuild_header(struct sk_buff *skb)
 		dev = skb->dev;
 
 	if ((ax25_dev = ax25_dev_ax25dev(dev)) == NULL) {
+		kfree_skb(skb);
 		goto put;
 	}
 
@@ -198,10 +193,8 @@ int ax25_rebuild_header(struct sk_buff *skb)
 	skb_pull(skb, AX25_KISS_HEADER_LEN);
 
 	if (digipeat != NULL) {
-		if ((ourskb = ax25_rt_build_path(skb, src, dst, route->digipeat)) == NULL) {
-			kfree_skb(skb);
+		if ((ourskb = ax25_rt_build_path(skb, src, dst, route->digipeat)) == NULL)
 			goto put;
-		}
 
 		skb = ourskb;
 	}
@@ -209,34 +202,45 @@ int ax25_rebuild_header(struct sk_buff *skb)
 	ax25_queue_xmit(skb, dev);
 
 put:
-	if (route)
-		ax25_put_route(route);
 
-	return 1;
+	ax25_route_lock_unuse();
+	return NETDEV_TX_OK;
 }
 
 #else	/* INET */
 
-int ax25_hard_header(struct sk_buff *skb, struct net_device *dev,
-		     unsigned short type, const void *daddr,
-		     const void *saddr, unsigned int len)
+static int ax25_hard_header(struct sk_buff *skb, struct net_device *dev,
+			    unsigned short type, const void *daddr,
+			    const void *saddr, unsigned int len)
 {
 	return -AX25_HEADER_LEN;
 }
 
-int ax25_rebuild_header(struct sk_buff *skb)
+netdev_tx_t ax25_ip_xmit(struct sk_buff *skb)
 {
-	return 1;
+	kfree_skb(skb);
+	return NETDEV_TX_OK;
 }
-
 #endif
+
+static bool ax25_validate_header(const char *header, unsigned int len)
+{
+	ax25_digi digi;
+
+	if (!len)
+		return false;
+
+	if (header[0])
+		return true;
+
+	return ax25_addr_parse(header + 1, len - 1, NULL, NULL, &digi, NULL,
+			       NULL);
+}
 
 const struct header_ops ax25_header_ops = {
 	.create = ax25_hard_header,
-	.rebuild = ax25_rebuild_header,
+	.validate = ax25_validate_header,
 };
 
-EXPORT_SYMBOL(ax25_hard_header);
-EXPORT_SYMBOL(ax25_rebuild_header);
 EXPORT_SYMBOL(ax25_header_ops);
-
+EXPORT_SYMBOL(ax25_ip_xmit);

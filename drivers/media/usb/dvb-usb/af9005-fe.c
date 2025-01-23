@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* Frontend part of the Linux driver for the Afatech 9005
  * USB1.1 DVB-T receiver.
  *
@@ -5,21 +6,7 @@
  *
  * Thanks to Afatech who kindly provided information.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
- * see Documentation/dvb/README.dvb-usb for more information
+ * see Documentation/driver-api/media/drivers/dvb-usb.rst for more information
  */
 #include "af9005.h"
 #include "af9005-script.h"
@@ -29,7 +16,7 @@
 
 struct af9005_fe_state {
 	struct dvb_usb_device *d;
-	fe_status_t stat;
+	enum fe_status stat;
 
 	/* retraining parameters */
 	u32 original_fcw;
@@ -437,7 +424,8 @@ static int af9005_fe_refresh_state(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int af9005_fe_read_status(struct dvb_frontend *fe, fe_status_t * stat)
+static int af9005_fe_read_status(struct dvb_frontend *fe,
+				 enum fe_status *stat)
 {
 	struct af9005_fe_state *state = fe->demodulator_priv;
 	u8 temp;
@@ -481,7 +469,7 @@ static int af9005_fe_read_status(struct dvb_frontend *fe, fe_status_t * stat)
 		return ret;
 	if (temp != state->strong) {
 		deb_info("adjust for strong signal %d\n", temp);
-			state->strong = temp;
+		state->strong = temp;
 	}
 	return 0;
 }
@@ -1226,9 +1214,9 @@ static int af9005_fe_set_frontend(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int af9005_fe_get_frontend(struct dvb_frontend *fe)
+static int af9005_fe_get_frontend(struct dvb_frontend *fe,
+				  struct dtv_frontend_properties *fep)
 {
-	struct dtv_frontend_properties *fep = &fe->dtv_property_cache;
 	struct af9005_fe_state *state = fe->demodulator_priv;
 	int ret;
 	u8 temp;
@@ -1424,12 +1412,11 @@ static int af9005_fe_get_frontend(struct dvb_frontend *fe)
 
 static void af9005_fe_release(struct dvb_frontend *fe)
 {
-	struct af9005_fe_state *state =
-	    (struct af9005_fe_state *)fe->demodulator_priv;
+	struct af9005_fe_state *state = fe->demodulator_priv;
 	kfree(state);
 }
 
-static struct dvb_frontend_ops af9005_fe_ops;
+static const struct dvb_frontend_ops af9005_fe_ops;
 
 struct dvb_frontend *af9005_fe_attach(struct dvb_usb_device *d)
 {
@@ -1454,13 +1441,13 @@ struct dvb_frontend *af9005_fe_attach(struct dvb_usb_device *d)
 	return NULL;
 }
 
-static struct dvb_frontend_ops af9005_fe_ops = {
+static const struct dvb_frontend_ops af9005_fe_ops = {
 	.delsys = { SYS_DVBT },
 	.info = {
 		 .name = "AF9005 USB DVB-T",
-		 .frequency_min = 44250000,
-		 .frequency_max = 867250000,
-		 .frequency_stepsize = 250000,
+		 .frequency_min_hz =    44250 * kHz,
+		 .frequency_max_hz =   867250 * kHz,
+		 .frequency_stepsize_hz = 250 * kHz,
 		 .caps = FE_CAN_INVERSION_AUTO |
 		 FE_CAN_FEC_1_2 | FE_CAN_FEC_2_3 | FE_CAN_FEC_3_4 |
 		 FE_CAN_FEC_5_6 | FE_CAN_FEC_7_8 | FE_CAN_FEC_AUTO |

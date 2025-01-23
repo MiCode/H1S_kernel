@@ -1,7 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) ST-Ericsson SA 2010
  *
- * License Terms: GNU General Public License v2
  * Author: Srinidhi Kasagar <srinidhi.kasagar@stericsson.com>
  */
 #ifndef MFD_AB8500_H
@@ -62,6 +62,8 @@ enum ab8500_version {
 #define AB8500_PROD_TEST	0x13
 #define AB8500_STE_TEST		0x14
 #define AB8500_OTP_EMUL		0x15
+
+#define AB8500_DEBUG_FIELD_LAST	0x16
 
 /*
  * Interrupts
@@ -347,7 +349,6 @@ struct ab8500 {
 	struct mutex	lock;
 	struct mutex	irq_lock;
 	atomic_t	transfer_ongoing;
-	int		irq_base;
 	int		irq;
 	struct irq_domain  *domain;
 	enum ab8500_version version;
@@ -367,7 +368,6 @@ struct ab8500 {
 	int it_latchhier_num;
 };
 
-struct ab8500_regulator_platform_data;
 struct ab8500_codec_platform_data;
 struct ab8500_sysctrl_platform_data;
 
@@ -375,19 +375,12 @@ struct ab8500_sysctrl_platform_data;
  * struct ab8500_platform_data - AB8500 platform data
  * @irq_base: start of AB8500 IRQs, AB8500_NR_IRQS will be used
  * @init: board-specific initialization after detection of ab8500
- * @regulator: machine-specific constraints for regulators
  */
 struct ab8500_platform_data {
-	int irq_base;
 	void (*init) (struct ab8500 *);
-	struct ab8500_regulator_platform_data *regulator;
 	struct ab8500_codec_platform_data *codec;
 	struct ab8500_sysctrl_platform_data *sysctrl;
 };
-
-extern int ab8500_init(struct ab8500 *ab8500,
-				 enum ab8500_version version);
-extern int ab8500_exit(struct ab8500 *ab8500);
 
 extern int ab8500_suspend(struct ab8500 *ab8500);
 
@@ -507,6 +500,7 @@ static inline int is_ab9540_2p0_or_earlier(struct ab8500 *ab)
 void ab8500_override_turn_on_stat(u8 mask, u8 set);
 
 #ifdef CONFIG_AB8500_DEBUG
+extern int prcmu_abb_read(u8 slave, u8 reg, u8 *value, u8 size);
 void ab8500_dump_all_banks(struct device *dev);
 void ab8500_debug_register_interrupt(int line);
 #else

@@ -1,22 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- *
  *
  *  Copyright (C) 2005 Mike Isely <isely@pobox.com>
  *  Copyright (C) 2004 Aurelien Alleaume <slts@free.fr>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
 #include <linux/kernel.h>
@@ -30,9 +16,7 @@
 #include "pvrusb2-context.h"
 #include "pvrusb2-debug.h"
 #include "pvrusb2-v4l2.h"
-#ifdef CONFIG_VIDEO_PVRUSB2_SYSFS
 #include "pvrusb2-sysfs.h"
-#endif /* CONFIG_VIDEO_PVRUSB2_SYSFS */
 
 #define DRIVER_AUTHOR "Mike Isely <isely@pobox.com>"
 #define DRIVER_DESC "Hauppauge WinTV-PVR-USB2 MPEG2 Encoder/Tuner"
@@ -50,10 +34,6 @@ int pvrusb2_debug = DEFAULT_DEBUG_MASK;
 module_param_named(debug,pvrusb2_debug,int,S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(debug, "Debug trace mask");
 
-#ifdef CONFIG_VIDEO_PVRUSB2_SYSFS
-static struct pvr2_sysfs_class *class_ptr = NULL;
-#endif /* CONFIG_VIDEO_PVRUSB2_SYSFS */
-
 static void pvr_setup_attach(struct pvr2_context *pvr)
 {
 	/* Create association with v4l layer */
@@ -62,9 +42,7 @@ static void pvr_setup_attach(struct pvr2_context *pvr)
 	/* Create association with dvb layer */
 	pvr2_dvb_create(pvr);
 #endif
-#ifdef CONFIG_VIDEO_PVRUSB2_SYSFS
-	pvr2_sysfs_create(pvr,class_ptr);
-#endif /* CONFIG_VIDEO_PVRUSB2_SYSFS */
+	pvr2_sysfs_create(pvr);
 }
 
 static int pvr_probe(struct usb_interface *intf,
@@ -129,17 +107,15 @@ static int __init pvr_init(void)
 		return ret;
 	}
 
-#ifdef CONFIG_VIDEO_PVRUSB2_SYSFS
-	class_ptr = pvr2_sysfs_class_create();
-#endif /* CONFIG_VIDEO_PVRUSB2_SYSFS */
+	pvr2_sysfs_class_create();
 
 	ret = usb_register(&pvr_driver);
 
 	if (ret == 0)
-		printk(KERN_INFO "pvrusb2: " DRIVER_VERSION ":"
+		pr_info("pvrusb2: " DRIVER_VERSION ":"
 		       DRIVER_DESC "\n");
 	if (pvrusb2_debug)
-		printk(KERN_INFO "pvrusb2: Debug mask is %d (0x%x)\n",
+		pr_info("pvrusb2: Debug mask is %d (0x%x)\n",
 		       pvrusb2_debug,pvrusb2_debug);
 
 	pvr2_trace(PVR2_TRACE_INIT,"pvr_init complete");
@@ -155,9 +131,7 @@ static void __exit pvr_exit(void)
 
 	pvr2_context_global_done();
 
-#ifdef CONFIG_VIDEO_PVRUSB2_SYSFS
-	pvr2_sysfs_class_destroy(class_ptr);
-#endif /* CONFIG_VIDEO_PVRUSB2_SYSFS */
+	pvr2_sysfs_class_destroy();
 
 	pvr2_trace(PVR2_TRACE_INIT,"pvr_exit complete");
 }
@@ -169,14 +143,3 @@ MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
 MODULE_VERSION("0.9.1");
-
-
-/*
-  Stuff for Emacs to see, in order to encourage consistent editing style:
-  *** Local Variables: ***
-  *** mode: c ***
-  *** fill-column: 70 ***
-  *** tab-width: 8 ***
-  *** c-basic-offset: 8 ***
-  *** End: ***
-  */

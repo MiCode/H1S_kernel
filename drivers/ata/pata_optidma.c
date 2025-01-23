@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * pata_optidma.c 	- Opti DMA PATA for new ATA layer
  *			  (C) 2006 Red Hat Inc
@@ -25,7 +26,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <scsi/scsi_host.h>
@@ -153,7 +153,7 @@ static void optidma_mode_setup(struct ata_port *ap, struct ata_device *adev, u8 
 	if (pair) {
 		u8 pair_addr;
 		/* Hardware constraint */
-		if (pair->dma_mode)
+		if (ata_dma_enabled(pair))
 			pair_addr = 0;
 		else
 			pair_addr = addr_timing[pci_clock][pair->pio_mode - XFER_PIO_0];
@@ -287,7 +287,7 @@ static void optiplus_set_dma_mode(struct ata_port *ap, struct ata_device *adev)
 }
 
 /**
- *	optidma_make_bits	-	PCI setup helper
+ *	optidma_make_bits43	-	PCI setup helper
  *	@adev: ATA device
  *
  *	Turn the ATA device setup into PCI configuration bits
@@ -301,7 +301,7 @@ static u8 optidma_make_bits43(struct ata_device *adev)
 	};
 	if (!ata_dev_enabled(adev))
 		return 0;
-	if (adev->dma_mode)
+	if (ata_dma_enabled(adev))
 		return adev->dma_mode - XFER_MW_DMA_0;
 	return bits43[adev->pio_mode - XFER_PIO_0];
 }
@@ -309,6 +309,7 @@ static u8 optidma_make_bits43(struct ata_device *adev)
 /**
  *	optidma_set_mode	-	mode setup
  *	@link: link to set up
+ *	@r_failed: out parameter for failed device
  *
  *	Use the standard setup to tune the chipset and then finalise the
  *	configuration by writing the nibble of extra bits of data into
@@ -333,7 +334,7 @@ static int optidma_set_mode(struct ata_link *link, struct ata_device **r_failed)
 	return rc;
 }
 
-static struct scsi_host_template optidma_sht = {
+static const struct scsi_host_template optidma_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -354,7 +355,7 @@ static struct ata_port_operations optiplus_port_ops = {
 
 /**
  *	optiplus_with_udma	-	Look for UDMA capable setup
- *	@pdev; ATA controller
+ *	@pdev: ATA controller
  */
 
 static int optiplus_with_udma(struct pci_dev *pdev)
@@ -441,7 +442,7 @@ static struct pci_driver optidma_pci_driver = {
 	.id_table	= optidma,
 	.probe 		= optidma_init_one,
 	.remove		= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= ata_pci_device_resume,
 #endif

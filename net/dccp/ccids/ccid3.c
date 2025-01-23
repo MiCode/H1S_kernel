@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (c) 2007   The University of Aberdeen, Scotland, UK
  *  Copyright (c) 2005-7 The University of Waikato, Hamilton, New Zealand.
@@ -6,7 +7,7 @@
  *  An implementation of the DCCP protocol
  *
  *  This code has been developed by the University of Waikato WAND
- *  research group. For further information please see http://www.wand.net.nz/
+ *  research group. For further information please see https://www.wand.net.nz/
  *
  *  This code also uses code from Lulea University, rereleased as GPL by its
  *  authors:
@@ -17,20 +18,6 @@
  *  Arnaldo Carvalho de Melo <acme@conectiva.com.br>.
  *
  *  Copyright (c) 2005 Arnaldo Carvalho de Melo <acme@conectiva.com.br>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 #include "../dccp.h"
 #include "ccid3.h"
@@ -92,6 +79,8 @@ static inline u64 rfc3390_initial_rate(struct sock *sk)
 
 /**
  * ccid3_update_send_interval  -  Calculate new t_ipi = s / X_inst
+ * @hc: socket to have the send interval updated
+ *
  * This respects the granularity of X_inst (64 * bytes/second).
  */
 static void ccid3_update_send_interval(struct ccid3_hc_tx_sock *hc)
@@ -112,6 +101,7 @@ static u32 ccid3_hc_tx_idle_rtt(struct ccid3_hc_tx_sock *hc, ktime_t now)
 
 /**
  * ccid3_hc_tx_update_x  -  Update allowed sending rate X
+ * @sk: socket to be updated
  * @stamp: most recent time if available - can be left NULL.
  *
  * This function tracks draft rfc3448bis, check there for latest details.
@@ -164,6 +154,7 @@ static void ccid3_hc_tx_update_x(struct sock *sk, ktime_t *stamp)
 
 /**
  *	ccid3_hc_tx_update_s - Track the mean packet size `s'
+ *	@hc: socket to be updated
  *	@len: DCCP packet payload size in bytes
  *
  *	cf. RFC 4342, 5.3 and  RFC 3448, 4.1
@@ -195,10 +186,10 @@ static inline void ccid3_hc_tx_update_win_count(struct ccid3_hc_tx_sock *hc,
 	}
 }
 
-static void ccid3_hc_tx_no_feedback_timer(unsigned long data)
+static void ccid3_hc_tx_no_feedback_timer(struct timer_list *t)
 {
-	struct sock *sk = (struct sock *)data;
-	struct ccid3_hc_tx_sock *hc = ccid3_hc_tx_sk(sk);
+	struct ccid3_hc_tx_sock *hc = from_timer(hc, t, tx_no_feedback_timer);
+	struct sock *sk = hc->sk;
 	unsigned long t_nfb = USEC_PER_SEC / 5;
 
 	bh_lock_sock(sk);
@@ -272,6 +263,7 @@ out:
 
 /**
  * ccid3_hc_tx_send_packet  -  Delay-based dequeueing of TX packets
+ * @sk: socket to send packet from
  * @skb: next packet candidate to send on @sk
  *
  * This function uses the convention of ccid_packet_dequeue_eval() and
@@ -505,8 +497,9 @@ static int ccid3_hc_tx_init(struct ccid *ccid, struct sock *sk)
 
 	hc->tx_state = TFRC_SSTATE_NO_SENT;
 	hc->tx_hist  = NULL;
-	setup_timer(&hc->tx_no_feedback_timer,
-			ccid3_hc_tx_no_feedback_timer, (unsigned long)sk);
+	hc->sk	     = sk;
+	timer_setup(&hc->tx_no_feedback_timer,
+		    ccid3_hc_tx_no_feedback_timer, 0);
 	return 0;
 }
 
@@ -599,7 +592,7 @@ static void ccid3_hc_rx_send_feedback(struct sock *sk,
 {
 	struct ccid3_hc_rx_sock *hc = ccid3_hc_rx_sk(sk);
 	struct dccp_sock *dp = dccp_sk(sk);
-	ktime_t now = ktime_get_real();
+	ktime_t now = ktime_get();
 	s64 delta = 0;
 
 	switch (fbtype) {
@@ -620,19 +613,18 @@ static void ccid3_hc_rx_send_feedback(struct sock *sk,
 		 */
 		if (hc->rx_x_recv > 0)
 			break;
-		/* fall through */
+		fallthrough;
 	case CCID3_FBACK_PERIODIC:
 		delta = ktime_us_delta(now, hc->rx_tstamp_last_feedback);
 		if (delta <= 0)
-			DCCP_BUG("delta (%ld) <= 0", (long)delta);
-		else
-			hc->rx_x_recv = scaled_div32(hc->rx_bytes_recv, delta);
+			delta = 1;
+		hc->rx_x_recv = scaled_div32(hc->rx_bytes_recv, delta);
 		break;
 	default:
 		return;
 	}
 
-	ccid3_pr_debug("Interval %ldusec, X_recv=%u, 1/p=%u\n", (long)delta,
+	ccid3_pr_debug("Interval %lldusec, X_recv=%u, 1/p=%u\n", delta,
 		       hc->rx_x_recv, hc->rx_pinv);
 
 	hc->rx_tstamp_last_feedback = now;
@@ -668,6 +660,7 @@ static int ccid3_hc_rx_insert_options(struct sock *sk, struct sk_buff *skb)
 
 /**
  * ccid3_first_li  -  Implements [RFC 5348, 6.3.1]
+ * @sk: socket to calculate loss interval for
  *
  * Determine the length of the first loss interval via inverse lookup.
  * Assume that X_recv can be computed by the throughput equation
@@ -679,7 +672,8 @@ static int ccid3_hc_rx_insert_options(struct sock *sk, struct sk_buff *skb)
 static u32 ccid3_first_li(struct sock *sk)
 {
 	struct ccid3_hc_rx_sock *hc = ccid3_hc_rx_sk(sk);
-	u32 x_recv, p, delta;
+	u32 x_recv, p;
+	s64 delta;
 	u64 fval;
 
 	if (hc->rx_rtt == 0) {
@@ -687,7 +681,9 @@ static u32 ccid3_first_li(struct sock *sk)
 		hc->rx_rtt = DCCP_FALLBACK_RTT;
 	}
 
-	delta  = ktime_to_us(net_timedelta(hc->rx_tstamp_last_feedback));
+	delta = ktime_us_delta(ktime_get(), hc->rx_tstamp_last_feedback);
+	if (delta <= 0)
+		delta = 1;
 	x_recv = scaled_div32(hc->rx_bytes_recv, delta);
 	if (x_recv == 0) {		/* would also trigger divide-by-zero */
 		DCCP_WARN("X_recv==0\n");

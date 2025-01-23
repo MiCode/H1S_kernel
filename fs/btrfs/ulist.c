@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2011 STRATO AG
  * written by Arne Jansen <sensille@gmx.net>
- * Distributed under the GNU GPL license version 2.
  */
 
 #include <linux/slab.h>
+#include "messages.h"
 #include "ulist.h"
 #include "ctree.h"
 
@@ -28,7 +29,7 @@
  * }
  * ulist_free(ulist);
  *
- * This assumes the graph nodes are adressable by u64. This stems from the
+ * This assumes the graph nodes are addressable by u64. This stems from the
  * usage for tree enumeration in btrfs, where the logical addresses are
  * 64 bit.
  *
@@ -37,8 +38,9 @@
  * loop would be similar to the above.
  */
 
-/**
- * ulist_init - freshly initialize a ulist
+/*
+ * Freshly initialize a ulist.
+ *
  * @ulist:	the ulist to initialize
  *
  * Note: don't use this function to init an already used ulist, use
@@ -51,14 +53,15 @@ void ulist_init(struct ulist *ulist)
 	ulist->nnodes = 0;
 }
 
-/**
- * ulist_fini - free up additionally allocated memory for the ulist
+/*
+ * Free up additionally allocated memory for the ulist.
+ *
  * @ulist:	the ulist from which to free the additional memory
  *
  * This is useful in cases where the base 'struct ulist' has been statically
  * allocated.
  */
-static void ulist_fini(struct ulist *ulist)
+void ulist_release(struct ulist *ulist)
 {
 	struct ulist_node *node;
 	struct ulist_node *next;
@@ -70,8 +73,9 @@ static void ulist_fini(struct ulist *ulist)
 	INIT_LIST_HEAD(&ulist->nodes);
 }
 
-/**
- * ulist_reinit - prepare a ulist for reuse
+/*
+ * Prepare a ulist for reuse.
+ *
  * @ulist:	ulist to be reused
  *
  * Free up all additional memory allocated for the list elements and reinit
@@ -79,12 +83,13 @@ static void ulist_fini(struct ulist *ulist)
  */
 void ulist_reinit(struct ulist *ulist)
 {
-	ulist_fini(ulist);
+	ulist_release(ulist);
 	ulist_init(ulist);
 }
 
-/**
- * ulist_alloc - dynamically allocate a ulist
+/*
+ * Dynamically allocate a ulist.
+ *
  * @gfp_mask:	allocation flags to for base allocation
  *
  * The allocated ulist will be returned in an initialized state.
@@ -101,17 +106,18 @@ struct ulist *ulist_alloc(gfp_t gfp_mask)
 	return ulist;
 }
 
-/**
- * ulist_free - free dynamically allocated ulist
+/*
+ * Free dynamically allocated ulist.
+ *
  * @ulist:	ulist to free
  *
- * It is not necessary to call ulist_fini before.
+ * It is not necessary to call ulist_release before.
  */
 void ulist_free(struct ulist *ulist)
 {
 	if (!ulist)
 		return;
-	ulist_fini(ulist);
+	ulist_release(ulist);
 	kfree(ulist);
 }
 
@@ -130,6 +136,15 @@ static struct ulist_node *ulist_rbtree_search(struct ulist *ulist, u64 val)
 			return u;
 	}
 	return NULL;
+}
+
+static void ulist_rbtree_erase(struct ulist *ulist, struct ulist_node *node)
+{
+	rb_erase(&node->rb_node, &ulist->root);
+	list_del(&node->list);
+	kfree(node);
+	BUG_ON(ulist->nnodes == 0);
+	ulist->nnodes--;
 }
 
 static int ulist_rbtree_insert(struct ulist *ulist, struct ulist_node *ins)
@@ -154,8 +169,9 @@ static int ulist_rbtree_insert(struct ulist *ulist, struct ulist_node *ins)
 	return 0;
 }
 
-/**
- * ulist_add - add an element to the ulist
+/*
+ * Add an element to the ulist.
+ *
  * @ulist:	ulist to add the element to
  * @val:	value to add to ulist
  * @aux:	auxiliary value to store along with val
@@ -197,9 +213,6 @@ int ulist_add_merge(struct ulist *ulist, u64 val, u64 aux,
 
 	node->val = val;
 	node->aux = aux;
-#ifdef CONFIG_BTRFS_DEBUG
-	node->seqnum = ulist->nnodes;
-#endif
 
 	ret = ulist_rbtree_insert(ulist, node);
 	ASSERT(!ret);
@@ -209,8 +222,36 @@ int ulist_add_merge(struct ulist *ulist, u64 val, u64 aux,
 	return 1;
 }
 
-/**
- * ulist_next - iterate ulist
+/*
+ * ulist_del - delete one node from ulist
+ * @ulist:	ulist to remove node from
+ * @val:	value to delete
+ * @aux:	aux to delete
+ *
+ * The deletion will only be done when *BOTH* val and aux matches.
+ * Return 0 for successful delete.
+ * Return > 0 for not found.
+ */
+int ulist_del(struct ulist *ulist, u64 val, u64 aux)
+{
+	struct ulist_node *node;
+
+	node = ulist_rbtree_search(ulist, val);
+	/* Not found */
+	if (!node)
+		return 1;
+
+	if (node->aux != aux)
+		return 1;
+
+	/* Found and delete */
+	ulist_rbtree_erase(ulist, node);
+	return 0;
+}
+
+/*
+ * Iterate ulist.
+ *
  * @ulist:	ulist to iterate
  * @uiter:	iterator variable, initialized with ULIST_ITER_INIT(&iterator)
  *
@@ -225,7 +266,7 @@ int ulist_add_merge(struct ulist *ulist, u64 val, u64 aux,
  * It is allowed to call ulist_add during an enumeration. Newly added items
  * are guaranteed to show up in the running enumeration.
  */
-struct ulist_node *ulist_next(struct ulist *ulist, struct ulist_iterator *uiter)
+struct ulist_node *ulist_next(const struct ulist *ulist, struct ulist_iterator *uiter)
 {
 	struct ulist_node *node;
 
@@ -237,15 +278,7 @@ struct ulist_node *ulist_next(struct ulist *ulist, struct ulist_iterator *uiter)
 		uiter->cur_list = uiter->cur_list->next;
 	} else {
 		uiter->cur_list = ulist->nodes.next;
-#ifdef CONFIG_BTRFS_DEBUG
-		uiter->i = 0;
-#endif
 	}
 	node = list_entry(uiter->cur_list, struct ulist_node, list);
-#ifdef CONFIG_BTRFS_DEBUG
-	ASSERT(node->seqnum == uiter->i);
-	ASSERT(uiter->i >= 0 && uiter->i < ulist->nnodes);
-	uiter->i++;
-#endif
 	return node;
 }

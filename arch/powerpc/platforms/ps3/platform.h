@@ -1,21 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  PS3 platform declarations.
  *
  *  Copyright (C) 2006 Sony Computer Entertainment Inc.
  *  Copyright 2006 Sony Corp.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; version 2 of the License.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #if !defined(_PS3_PLATFORM_H)
@@ -47,7 +35,7 @@ void __init ps3_register_ipi_irq(unsigned int cpu, unsigned int virq);
 
 /* smp */
 
-void smp_init_ps3(void);
+void __init smp_init_ps3(void);
 #ifdef CONFIG_SMP
 void ps3_smp_cleanup_cpu(int cpu);
 #else
@@ -57,7 +45,7 @@ static inline void ps3_smp_cleanup_cpu(int cpu) { }
 /* time */
 
 void __init ps3_calibrate_decr(void);
-unsigned long __init ps3_get_boot_time(void);
+time64_t __init ps3_get_boot_time(void);
 void ps3_get_rtc_time(struct rtc_time *time);
 int ps3_set_rtc_time(struct rtc_time *time);
 
@@ -146,9 +134,9 @@ struct ps3_repository_device {
 int ps3_repository_find_device(struct ps3_repository_device *repo);
 int ps3_repository_find_device_by_id(struct ps3_repository_device *repo,
 				     u64 bus_id, u64 dev_id);
-int ps3_repository_find_devices(enum ps3_bus_type bus_type,
+int __init ps3_repository_find_devices(enum ps3_bus_type bus_type,
 	int (*callback)(const struct ps3_repository_device *repo));
-int ps3_repository_find_bus(enum ps3_bus_type bus_type, unsigned int from,
+int __init ps3_repository_find_bus(enum ps3_bus_type bus_type, unsigned int from,
 	unsigned int *bus_index);
 int ps3_repository_find_interrupt(const struct ps3_repository_device *repo,
 	enum ps3_interrupt_type intr_type, unsigned int *interrupt_id);
@@ -196,6 +184,7 @@ int ps3_repository_read_highmem_size(unsigned int region_index,
 int ps3_repository_read_highmem_info(unsigned int region_index,
 	u64 *highmem_base, u64 *highmem_size);
 
+#if defined (CONFIG_PS3_REPOSITORY_WRITE)
 int ps3_repository_write_highmem_region_count(unsigned int region_count);
 int ps3_repository_write_highmem_base(unsigned int region_index,
 	u64 highmem_base);
@@ -204,14 +193,26 @@ int ps3_repository_write_highmem_size(unsigned int region_index,
 int ps3_repository_write_highmem_info(unsigned int region_index,
 	u64 highmem_base, u64 highmem_size);
 int ps3_repository_delete_highmem_info(unsigned int region_index);
+#else
+static inline int ps3_repository_write_highmem_region_count(
+	unsigned int region_count) {return 0;}
+static inline int ps3_repository_write_highmem_base(unsigned int region_index,
+	u64 highmem_base) {return 0;}
+static inline int ps3_repository_write_highmem_size(unsigned int region_index,
+	u64 highmem_size) {return 0;}
+static inline int ps3_repository_write_highmem_info(unsigned int region_index,
+	u64 highmem_base, u64 highmem_size) {return 0;}
+static inline int ps3_repository_delete_highmem_info(unsigned int region_index)
+	{return 0;}
+#endif
 
 /* repository pme info */
 
 int ps3_repository_read_num_be(unsigned int *num_be);
 int ps3_repository_read_be_node_id(unsigned int be_index, u64 *node_id);
 int ps3_repository_read_be_id(u64 node_id, u64 *be_id);
-int ps3_repository_read_tb_freq(u64 node_id, u64 *tb_freq);
-int ps3_repository_read_be_tb_freq(unsigned int be_index, u64 *tb_freq);
+int __init ps3_repository_read_tb_freq(u64 node_id, u64 *tb_freq);
+int __init ps3_repository_read_be_tb_freq(unsigned int be_index, u64 *tb_freq);
 
 /* repository performance monitor info */
 
@@ -246,7 +247,7 @@ int ps3_repository_read_spu_resource_id(unsigned int res_index,
 
 /* repository vuart info */
 
-int ps3_repository_read_vuart_av_port(unsigned int *port);
-int ps3_repository_read_vuart_sysmgr_port(unsigned int *port);
+int __init ps3_repository_read_vuart_av_port(unsigned int *port);
+int __init ps3_repository_read_vuart_sysmgr_port(unsigned int *port);
 
 #endif

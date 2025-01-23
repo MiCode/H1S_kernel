@@ -1,15 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- *  This program is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License version 2 as published
- *  by the Free Software Foundation.
  *
- * Copyright (C) 2010 John Crispin <blogic@openwrt.org>
+ * Copyright (C) 2010 John Crispin <john@phrozen.org>
  */
 
 #include <linux/export.h>
 #include <linux/clk.h>
-#include <linux/bootmem.h>
-#include <linux/of_platform.h>
+#include <linux/memblock.h>
 #include <linux/of_fdt.h>
 
 #include <asm/bootinfo.h>
@@ -31,13 +28,22 @@ EXPORT_SYMBOL_GPL(ebu_lock);
  */
 static struct ltq_soc_info soc_info;
 
+/*
+ * These structs are used to override vsmp_init_secondary()
+ */
+#if defined(CONFIG_MIPS_MT_SMP)
+extern const struct plat_smp_ops vsmp_smp_ops;
+static struct plat_smp_ops lantiq_smp_ops;
+#endif
+
 const char *get_system_type(void)
 {
 	return soc_info.sys_type;
 }
 
-void prom_free_prom_memory(void)
+int ltq_soc_type(void)
 {
+	return soc_info.type;
 }
 
 static void __init prom_init_cmdline(void)
@@ -60,6 +66,8 @@ static void __init prom_init_cmdline(void)
 
 void __init plat_mem_setup(void)
 {
+	void *dtb;
+
 	ioport_resource.start = IOPORT_RESOURCE_START;
 	ioport_resource.end = IOPORT_RESOURCE_END;
 	iomem_resource.start = IOMEM_RESOURCE_START;
@@ -67,28 +75,27 @@ void __init plat_mem_setup(void)
 
 	set_io_port_base((unsigned long) KSEG1);
 
+	dtb = get_fdt();
+	if (dtb == NULL)
+		panic("no dtb found");
+
 	/*
-	 * Load the builtin devicetree. This causes the chosen node to be
+	 * Load the devicetree. This causes the chosen node to be
 	 * parsed resulting in our memory appearing
 	 */
-	__dt_setup_arch(&__dtb_start);
+	__dt_setup_arch(dtb);
 }
 
-void __init device_tree_init(void)
+#if defined(CONFIG_MIPS_MT_SMP)
+static void lantiq_init_secondary(void)
 {
-	unsigned long base, size;
-
-	if (!initial_boot_params)
-		return;
-
-	base = virt_to_phys((void *)initial_boot_params);
-	size = be32_to_cpu(initial_boot_params->totalsize);
-
-	/* Before we do anything, lets reserve the dt blob */
-	reserve_bootmem(base, size, BOOTMEM_DEFAULT);
-
-	unflatten_device_tree();
+	/*
+	 * MIPS CPU startup function vsmp_init_secondary() will only
+	 * enable some of the interrupts for the second CPU/VPE.
+	 */
+	set_c0_status(ST0_IM);
 }
+#endif
 
 void __init prom_init(void)
 {
@@ -101,23 +108,9 @@ void __init prom_init(void)
 	prom_init_cmdline();
 
 #if defined(CONFIG_MIPS_MT_SMP)
-	if (register_vsmp_smp_ops())
-		panic("failed to register_vsmp_smp_ops()");
+	lantiq_smp_ops = vsmp_smp_ops;
+	if (cpu_has_mipsmt)
+		lantiq_smp_ops.init_secondary = lantiq_init_secondary;
+	register_smp_ops(&lantiq_smp_ops);
 #endif
 }
-
-int __init plat_of_setup(void)
-{
-	static struct of_device_id of_ids[3];
-
-	if (!of_have_populated_dt())
-		panic("device tree not present");
-
-	strlcpy(of_ids[0].compatible, soc_info.compatible,
-		sizeof(of_ids[0].compatible));
-	strncpy(of_ids[1].compatible, "simple-bus",
-		sizeof(of_ids[1].compatible));
-	return of_platform_populate(NULL, of_ids, NULL, NULL);
-}
-
-arch_initcall(plat_of_setup);

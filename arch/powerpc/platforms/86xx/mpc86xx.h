@@ -1,10 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Copyright 2006 Freescale Semiconductor Inc.
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #ifndef __MPC86XX_H__
@@ -17,5 +13,7 @@
 
 extern void mpc86xx_smp_init(void);
 extern void mpc86xx_init_irq(void);
+extern long mpc86xx_time_init(void);
+extern int mpc86xx_common_publish_devices(void);
 
 #endif	/* __MPC86XX_H__ */

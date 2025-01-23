@@ -1,10 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) Paul Mackerras 1997.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -20,6 +16,28 @@ size_t strnlen(const char * s, size_t count)
 		/* nothing */;
 	return sc - s;
 }
+
+char *strrchr(const char *s, int c)
+{
+	const char *last = NULL;
+	do {
+		if (*s == (char)c)
+			last = s;
+	} while (*s++);
+	return (char *)last;
+}
+
+#ifdef __powerpc64__
+
+# define do_div(n, base) ({						\
+	unsigned int __base = (base);					\
+	unsigned int __rem;						\
+	__rem = ((unsigned long long)(n)) % __base;			\
+	(n) = ((unsigned long long)(n)) / __base;			\
+	__rem;								\
+})
+
+#else
 
 extern unsigned int __div64_32(unsigned long long *dividend,
 			       unsigned int divisor);
@@ -38,6 +56,8 @@ extern unsigned int __div64_32(unsigned long long *dividend,
 		__rem = __div64_32(&(n), __base);			\
 	__rem;								\
  })
+
+#endif /* __powerpc64__ */
 
 static int skip_atoi(const char **s)
 {

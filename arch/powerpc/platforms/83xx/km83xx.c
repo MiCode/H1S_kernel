@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright 2008-2011 DENX Software Engineering GmbH
  * Author: Heiko Schocher <hs@denx.de>
  *
  * Description:
  * Keymile 83xx platform specific routines.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/stddef.h>
@@ -24,8 +20,8 @@
 #include <linux/seq_file.h>
 #include <linux/root_dev.h>
 #include <linux/initrd.h>
-#include <linux/of_platform.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
 
 #include <linux/atomic.h>
 #include <linux/time.h>
@@ -33,18 +29,16 @@
 #include <asm/machdep.h>
 #include <asm/ipic.h>
 #include <asm/irq.h>
-#include <asm/prom.h>
 #include <asm/udbg.h>
 #include <sysdev/fsl_soc.h>
 #include <sysdev/fsl_pci.h>
-#include <asm/qe.h>
-#include <asm/qe_ic.h>
+#include <soc/fsl/qe/qe.h>
 
 #include "mpc83xx.h"
 
 #define SVR_REV(svr)    (((svr) >>  0) & 0xFFFF) /* Revision field */
 
-static void quirk_mpc8360e_qe_enet10(void)
+static void __init quirk_mpc8360e_qe_enet10(void)
 {
 	/*
 	 * handle mpc8360E Erratum QE_ENET10:
@@ -58,17 +52,19 @@ static void quirk_mpc8360e_qe_enet10(void)
 
 	np_par = of_find_node_by_name(NULL, "par_io");
 	if (np_par == NULL) {
-		pr_warn("%s couldn;t find par_io node\n", __func__);
+		pr_warn("%s couldn't find par_io node\n", __func__);
 		return;
 	}
 	/* Map Parallel I/O ports registers */
 	ret = of_address_to_resource(np_par, 0, &res);
 	if (ret) {
-		pr_warn("%s couldn;t map par_io registers\n", __func__);
-		return;
+		pr_warn("%s couldn't map par_io registers\n", __func__);
+		goto out;
 	}
 
-	base = ioremap(res.start, res.end - res.start + 1);
+	base = ioremap(res.start, resource_size(&res));
+	if (!base)
+		goto out;
 
 	/*
 	 * set output delay adjustments to default values according
@@ -116,6 +112,7 @@ static void quirk_mpc8360e_qe_enet10(void)
 		setbits32((base + 0xac), 0x0000c000);
 	}
 	iounmap(base);
+out:
 	of_node_put(np_par);
 }
 
@@ -130,14 +127,9 @@ static void __init mpc83xx_km_setup_arch(void)
 	struct device_node *np;
 #endif
 
-	if (ppc_md.progress)
-		ppc_md.progress("kmpbec83xx_setup_arch()", 0);
-
-	mpc83xx_setup_pci();
+	mpc83xx_setup_arch();
 
 #ifdef CONFIG_QUICC_ENGINE
-	qe_reset();
-
 	np = of_find_node_by_name(NULL, "par_io");
 	if (np != NULL) {
 		par_io_init(np);
@@ -173,11 +165,10 @@ static char *board[] __initdata = {
  */
 static int __init mpc83xx_km_probe(void)
 {
-	unsigned long node = of_get_flat_dt_root();
 	int i = 0;
 
 	while (board[i]) {
-		if (of_flat_dt_is_compatible(node, board[i]))
+		if (of_machine_is_compatible(board[i]))
 			break;
 		i++;
 	}
@@ -188,10 +179,10 @@ define_machine(mpc83xx_km) {
 	.name		= "mpc83xx-km-platform",
 	.probe		= mpc83xx_km_probe,
 	.setup_arch	= mpc83xx_km_setup_arch,
-	.init_IRQ	= mpc83xx_ipic_and_qe_init_IRQ,
+	.discover_phbs	= mpc83xx_setup_pci,
+	.init_IRQ	= mpc83xx_ipic_init_IRQ,
 	.get_irq	= ipic_get_irq,
 	.restart	= mpc83xx_restart,
 	.time_init	= mpc83xx_time_init,
-	.calibrate_decr	= generic_calibrate_decr,
 	.progress	= udbg_progress,
 };

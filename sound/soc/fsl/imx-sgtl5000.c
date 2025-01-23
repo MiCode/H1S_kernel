@@ -1,14 +1,7 @@
-/*
- * Copyright 2012 Freescale Semiconductor, Inc.
- * Copyright 2012 Linaro Ltd.
- *
- * The code contained herein is licensed under the GNU General Public
- * License. You may obtain a copy of the GNU General Public License
- * Version 2 or later at the following locations:
- *
- * http://www.opensource.org/licenses/gpl-license.html
- * http://www.gnu.org/copyleft/gpl.html
- */
+// SPDX-License-Identifier: GPL-2.0+
+//
+// Copyright 2012 Freescale Semiconductor, Inc.
+// Copyright 2012 Linaro Ltd.
 
 #include <linux/module.h>
 #include <linux/of.h>
@@ -33,12 +26,11 @@ struct imx_sgtl5000_data {
 
 static int imx_sgtl5000_dai_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct imx_sgtl5000_data *data = container_of(rtd->card,
-					struct imx_sgtl5000_data, card);
+	struct imx_sgtl5000_data *data = snd_soc_card_get_drvdata(rtd->card);
 	struct device *dev = rtd->card->dev;
 	int ret;
 
-	ret = snd_soc_dai_set_sysclk(rtd->codec_dai, SGTL5000_SYSCLK,
+	ret = snd_soc_dai_set_sysclk(asoc_rtd_to_codec(rtd, 0), SGTL5000_SYSCLK,
 				     data->clk_frequency, SND_SOC_CLOCK_IN);
 	if (ret) {
 		dev_err(dev, "could not set codec driver clock params\n");
@@ -63,6 +55,7 @@ static int imx_sgtl5000_probe(struct platform_device *pdev)
 	struct platform_device *ssi_pdev;
 	struct i2c_client *codec_dev;
 	struct imx_sgtl5000_data *data = NULL;
+	struct snd_soc_dai_link_component *comp;
 	int int_port, ext_port;
 	int ret;
 
@@ -112,83 +105,100 @@ static int imx_sgtl5000_probe(struct platform_device *pdev)
 
 	ssi_pdev = of_find_device_by_node(ssi_np);
 	if (!ssi_pdev) {
-		dev_err(&pdev->dev, "failed to find SSI platform device\n");
+		dev_dbg(&pdev->dev, "failed to find SSI platform device\n");
 		ret = -EPROBE_DEFER;
 		goto fail;
 	}
+	put_device(&ssi_pdev->dev);
 	codec_dev = of_find_i2c_device_by_node(codec_np);
 	if (!codec_dev) {
-		dev_err(&pdev->dev, "failed to find codec platform device\n");
-		return -EPROBE_DEFER;
+		dev_dbg(&pdev->dev, "failed to find codec platform device\n");
+		ret = -EPROBE_DEFER;
+		goto fail;
 	}
 
 	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data) {
 		ret = -ENOMEM;
-		goto fail;
+		goto put_device;
+	}
+
+	comp = devm_kzalloc(&pdev->dev, 3 * sizeof(*comp), GFP_KERNEL);
+	if (!comp) {
+		ret = -ENOMEM;
+		goto put_device;
 	}
 
 	data->codec_clk = clk_get(&codec_dev->dev, NULL);
 	if (IS_ERR(data->codec_clk)) {
 		ret = PTR_ERR(data->codec_clk);
-		goto fail;
+		goto put_device;
 	}
 
 	data->clk_frequency = clk_get_rate(data->codec_clk);
 
+	data->dai.cpus		= &comp[0];
+	data->dai.codecs	= &comp[1];
+	data->dai.platforms	= &comp[2];
+
+	data->dai.num_cpus	= 1;
+	data->dai.num_codecs	= 1;
+	data->dai.num_platforms	= 1;
+
 	data->dai.name = "HiFi";
 	data->dai.stream_name = "HiFi";
-	data->dai.codec_dai_name = "sgtl5000";
-	data->dai.codec_of_node = codec_np;
-	data->dai.cpu_of_node = ssi_np;
-	data->dai.platform_of_node = ssi_np;
+	data->dai.codecs->dai_name = "sgtl5000";
+	data->dai.codecs->of_node = codec_np;
+	data->dai.cpus->of_node = ssi_np;
+	data->dai.platforms->of_node = ssi_np;
 	data->dai.init = &imx_sgtl5000_dai_init;
 	data->dai.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
-			    SND_SOC_DAIFMT_CBM_CFM;
+			    SND_SOC_DAIFMT_CBP_CFP;
 
 	data->card.dev = &pdev->dev;
 	ret = snd_soc_of_parse_card_name(&data->card, "model");
 	if (ret)
-		goto fail;
+		goto put_device;
 	ret = snd_soc_of_parse_audio_routing(&data->card, "audio-routing");
 	if (ret)
-		goto fail;
+		goto put_device;
 	data->card.num_links = 1;
 	data->card.owner = THIS_MODULE;
 	data->card.dai_link = &data->dai;
 	data->card.dapm_widgets = imx_sgtl5000_dapm_widgets;
 	data->card.num_dapm_widgets = ARRAY_SIZE(imx_sgtl5000_dapm_widgets);
 
+	platform_set_drvdata(pdev, &data->card);
+	snd_soc_card_set_drvdata(&data->card, data);
+
 	ret = devm_snd_soc_register_card(&pdev->dev, &data->card);
 	if (ret) {
-		dev_err(&pdev->dev, "snd_soc_register_card failed (%d)\n", ret);
-		goto fail;
+		dev_err_probe(&pdev->dev, ret, "snd_soc_register_card failed\n");
+		goto put_device;
 	}
 
-	platform_set_drvdata(pdev, data);
 	of_node_put(ssi_np);
 	of_node_put(codec_np);
 
 	return 0;
 
+put_device:
+	put_device(&codec_dev->dev);
 fail:
 	if (data && !IS_ERR(data->codec_clk))
 		clk_put(data->codec_clk);
-	if (ssi_np)
-		of_node_put(ssi_np);
-	if (codec_np)
-		of_node_put(codec_np);
+	of_node_put(ssi_np);
+	of_node_put(codec_np);
 
 	return ret;
 }
 
-static int imx_sgtl5000_remove(struct platform_device *pdev)
+static void imx_sgtl5000_remove(struct platform_device *pdev)
 {
-	struct imx_sgtl5000_data *data = platform_get_drvdata(pdev);
+	struct snd_soc_card *card = platform_get_drvdata(pdev);
+	struct imx_sgtl5000_data *data = snd_soc_card_get_drvdata(card);
 
 	clk_put(data->codec_clk);
-
-	return 0;
 }
 
 static const struct of_device_id imx_sgtl5000_dt_ids[] = {
@@ -200,12 +210,11 @@ MODULE_DEVICE_TABLE(of, imx_sgtl5000_dt_ids);
 static struct platform_driver imx_sgtl5000_driver = {
 	.driver = {
 		.name = "imx-sgtl5000",
-		.owner = THIS_MODULE,
 		.pm = &snd_soc_pm_ops,
 		.of_match_table = imx_sgtl5000_dt_ids,
 	},
 	.probe = imx_sgtl5000_probe,
-	.remove = imx_sgtl5000_remove,
+	.remove_new = imx_sgtl5000_remove,
 };
 module_platform_driver(imx_sgtl5000_driver);
 

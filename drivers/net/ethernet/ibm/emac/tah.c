@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * drivers/net/ethernet/ibm/emac/tah.c
  *
@@ -12,13 +13,10 @@
  * Matt Porter <mporter@kernel.crashing.org>
  *
  * Copyright (c) 2005 Eugene Surovegin <ebs@ebshome.net>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
+#include <linux/mod_devicetable.h>
 #include <linux/of_address.h>
+#include <linux/platform_device.h>
 #include <asm/io.h>
 
 #include "emac.h"
@@ -58,8 +56,7 @@ void tah_reset(struct platform_device *ofdev)
 		--n;
 
 	if (unlikely(!n))
-		printk(KERN_ERR "%s: reset timeout\n",
-			ofdev->dev.of_node->full_name);
+		printk(KERN_ERR "%pOF: reset timeout\n", ofdev->dev.of_node);
 
 	/* 10KB TAH TX FIFO accommodates the max MTU of 9000 */
 	out_be32(&p->mr,
@@ -105,8 +102,7 @@ static int tah_probe(struct platform_device *ofdev)
 
 	rc = -ENXIO;
 	if (of_address_to_resource(np, 0, &regs)) {
-		printk(KERN_ERR "%s: Can't get registers address\n",
-		       np->full_name);
+		printk(KERN_ERR "%pOF: Can't get registers address\n", np);
 		goto err_free;
 	}
 
@@ -114,8 +110,7 @@ static int tah_probe(struct platform_device *ofdev)
 	dev->base = (struct tah_regs __iomem *)ioremap(regs.start,
 					       sizeof(struct tah_regs));
 	if (dev->base == NULL) {
-		printk(KERN_ERR "%s: Can't map device registers!\n",
-		       np->full_name);
+		printk(KERN_ERR "%pOF: Can't map device registers!\n", np);
 		goto err_free;
 	}
 
@@ -124,8 +119,7 @@ static int tah_probe(struct platform_device *ofdev)
 	/* Initialize TAH and enable IPv4 checksum verification, no TSO yet */
 	tah_reset(ofdev);
 
-	printk(KERN_INFO
-	       "TAH %s initialized\n", ofdev->dev.of_node->full_name);
+	printk(KERN_INFO "TAH %pOF initialized\n", ofdev->dev.of_node);
 	wmb();
 
 	return 0;
@@ -148,7 +142,7 @@ static int tah_remove(struct platform_device *ofdev)
 	return 0;
 }
 
-static struct of_device_id tah_match[] =
+static const struct of_device_id tah_match[] =
 {
 	{
 		.compatible	= "ibm,tah",
@@ -163,7 +157,6 @@ static struct of_device_id tah_match[] =
 static struct platform_driver tah_driver = {
 	.driver = {
 		.name = "emac-tah",
-		.owner = THIS_MODULE,
 		.of_match_table = tah_match,
 	},
 	.probe = tah_probe,

@@ -1,8 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * QLogic qlcnic NIC Driver
  * Copyright (c) 2009-2013 QLogic Corporation
- *
- * See LICENSE.qlcnic for copyright and licensing details.
  */
 
 #include "qlcnic.h"
@@ -95,10 +94,8 @@ void qlcnic_release_rx_buffers(struct qlcnic_adapter *adapter)
 			if (rx_buf->skb == NULL)
 				continue;
 
-			pci_unmap_single(adapter->pdev,
-					rx_buf->dma,
-					rds_ring->dma_size,
-					PCI_DMA_FROMDEVICE);
+			dma_unmap_single(&adapter->pdev->dev, rx_buf->dma,
+					 rds_ring->dma_size, DMA_FROM_DEVICE);
 
 			dev_kfree_skb_any(rx_buf->skb);
 		}
@@ -140,16 +137,16 @@ void qlcnic_release_tx_buffers(struct qlcnic_adapter *adapter,
 	for (i = 0; i < tx_ring->num_desc; i++) {
 		buffrag = cmd_buf->frag_array;
 		if (buffrag->dma) {
-			pci_unmap_single(adapter->pdev, buffrag->dma,
-					 buffrag->length, PCI_DMA_TODEVICE);
+			dma_unmap_single(&adapter->pdev->dev, buffrag->dma,
+					 buffrag->length, DMA_TO_DEVICE);
 			buffrag->dma = 0ULL;
 		}
 		for (j = 1; j < cmd_buf->frag_count; j++) {
 			buffrag++;
 			if (buffrag->dma) {
-				pci_unmap_page(adapter->pdev, buffrag->dma,
-					       buffrag->length,
-					       PCI_DMA_TODEVICE);
+				dma_unmap_page(&adapter->pdev->dev,
+					       buffrag->dma, buffrag->length,
+					       DMA_TO_DEVICE);
 				buffrag->dma = 0ULL;
 			}
 		}
@@ -440,7 +437,6 @@ int qlcnic_pinit_from_rom(struct qlcnic_adapter *adapter)
 	QLCWR32(adapter, QLCNIC_CRB_PEG_NET_4 + 0x3c, 1);
 	msleep(20);
 
-	qlcnic_rom_unlock(adapter);
 	/* big hammer don't reset CAM block on reset */
 	QLCWR32(adapter, QLCNIC_ROMUSB_GLB_SW_RESET, 0xfeffffff);
 
@@ -537,7 +533,7 @@ int qlcnic_pinit_from_rom(struct qlcnic_adapter *adapter)
 	QLCWR32(adapter, QLCNIC_CRB_PEG_NET_3 + 0xc, 0);
 	QLCWR32(adapter, QLCNIC_CRB_PEG_NET_4 + 0x8, 0);
 	QLCWR32(adapter, QLCNIC_CRB_PEG_NET_4 + 0xc, 0);
-	msleep(1);
+	usleep_range(1000, 1500);
 
 	QLC_SHARED_REG_WR32(adapter, QLCNIC_PEG_HALT_STATUS1, 0);
 	QLC_SHARED_REG_WR32(adapter, QLCNIC_PEG_HALT_STATUS2, 0);
@@ -592,13 +588,9 @@ qlcnic_receive_peg_ready(struct qlcnic_adapter *adapter)
 
 	} while (--retries);
 
-	if (!retries) {
-		dev_err(&adapter->pdev->dev, "Receive Peg initialization not "
-			      "complete, state: 0x%x.\n", val);
-		return -EIO;
-	}
-
-	return 0;
+	dev_err(&adapter->pdev->dev, "Receive Peg initialization not complete, state: 0x%x.\n",
+		val);
+	return -EIO;
 }
 
 int
@@ -1198,7 +1190,7 @@ qlcnic_load_firmware(struct qlcnic_adapter *adapter)
 			flashaddr += 8;
 		}
 	}
-	msleep(1);
+	usleep_range(1000, 1500);
 
 	QLCWR32(adapter, QLCNIC_CRB_PEG_NET_0 + 0x18, 0x1020);
 	QLCWR32(adapter, QLCNIC_ROMUSB_GLB_SW_RESET, 0x80001e);
@@ -1295,7 +1287,7 @@ next:
 		rc = qlcnic_validate_firmware(adapter);
 		if (rc != 0) {
 			release_firmware(adapter->fw);
-			msleep(1);
+			usleep_range(1000, 1500);
 			goto next;
 		}
 	}

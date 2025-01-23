@@ -1,32 +1,17 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Fitipower FC0013 tuner driver
  *
  * Copyright (C) 2012 Hans-Frieder Vogt <hfvogt@gmx.net>
- *
- *    This program is free software; you can redistribute it and/or modify
- *    it under the terms of the GNU General Public License as published by
- *    the Free Software Foundation; either version 2 of the License, or
- *    (at your option) any later version.
- *
- *    This program is distributed in the hope that it will be useful,
- *    but WITHOUT ANY WARRANTY; without even the implied warranty of
- *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU General Public License for more details.
- *
- *    You should have received a copy of the GNU General Public License
- *    along with this program; if not, write to the Free Software
- *    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  */
 
 #ifndef _FC0013_H_
 #define _FC0013_H_
 
-#include <linux/kconfig.h>
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "fc001x-common.h"
 
-#if IS_ENABLED(CONFIG_MEDIA_TUNER_FC0013)
+#if IS_REACHABLE(CONFIG_MEDIA_TUNER_FC0013)
 extern struct dvb_frontend *fc0013_attach(struct dvb_frontend *fe,
 					struct i2c_adapter *i2c,
 					u8 i2c_address, int dual_master,

@@ -1,7 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Performance event support - s390 specific definitions.
  *
- * Copyright IBM Corp. 2009, 2013
+ * Copyright IBM Corp. 2009, 2017
  * Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>
  *	      Hendrik Brueckner <brueckner@linux.vnet.ibm.com>
  */
@@ -9,11 +10,9 @@
 #ifndef _ASM_S390_PERF_EVENT_H
 #define _ASM_S390_PERF_EVENT_H
 
-#ifdef CONFIG_64BIT
-
 #include <linux/perf_event.h>
 #include <linux/device.h>
-#include <asm/cpu_mf.h>
+#include <asm/stacktrace.h>
 
 /* Per-CPU flags for PMU states */
 #define PMU_F_RESERVED			0x1000
@@ -23,7 +22,7 @@
 #define PMU_F_ERR_LSDA			0x0200
 #define PMU_F_ERR_MASK			(PMU_F_ERR_IBE|PMU_F_ERR_LSDA)
 
-/* Perf defintions for PMU event attributes in sysfs */
+/* Perf definitions for PMU event attributes in sysfs */
 extern __init const struct attribute_group **cpumf_cf_event_group(void);
 extern ssize_t cpumf_events_sysfs_show(struct device *dev,
 				       struct device_attribute *attr,
@@ -41,6 +40,7 @@ struct pt_regs;
 extern unsigned long perf_instruction_pointer(struct pt_regs *regs);
 extern unsigned long perf_misc_flags(struct pt_regs *regs);
 #define perf_misc_flags(regs) perf_misc_flags(regs)
+#define perf_arch_bpf_user_pt_regs(regs) &regs->user_regs
 
 /* Perf pt_regs extension for sample-data-entry indicators */
 struct perf_sf_sde_regs {
@@ -49,48 +49,33 @@ struct perf_sf_sde_regs {
 };
 
 /* Perf PMU definitions for the counter facility */
-#define PERF_CPUM_CF_MAX_CTR		256
+#define PERF_CPUM_CF_MAX_CTR		0xffffUL  /* Max ctr for ECCTR */
 
 /* Perf PMU definitions for the sampling facility */
 #define PERF_CPUM_SF_MAX_CTR		2
 #define PERF_EVENT_CPUM_SF		0xB0000UL /* Event: Basic-sampling */
 #define PERF_EVENT_CPUM_SF_DIAG		0xBD000UL /* Event: Combined-sampling */
+#define PERF_EVENT_CPUM_CF_DIAG		0xBC000UL /* Event: Counter sets */
 #define PERF_CPUM_SF_BASIC_MODE		0x0001	  /* Basic-sampling flag */
 #define PERF_CPUM_SF_DIAG_MODE		0x0002	  /* Diagnostic-sampling flag */
 #define PERF_CPUM_SF_MODE_MASK		(PERF_CPUM_SF_BASIC_MODE| \
 					 PERF_CPUM_SF_DIAG_MODE)
-#define PERF_CPUM_SF_FULL_BLOCKS	0x0004	  /* Process full SDBs only */
+#define PERF_CPUM_SF_FREQ_MODE		0x0008	  /* Sampling with frequency */
 
 #define REG_NONE		0
 #define REG_OVERFLOW		1
 #define OVERFLOW_REG(hwc)	((hwc)->extra_reg.config)
 #define SFB_ALLOC_REG(hwc)	((hwc)->extra_reg.alloc)
-#define RAWSAMPLE_REG(hwc)	((hwc)->config)
 #define TEAR_REG(hwc)		((hwc)->last_tag)
 #define SAMPL_RATE(hwc)		((hwc)->event_base)
 #define SAMPL_FLAGS(hwc)	((hwc)->config_base)
 #define SAMPL_DIAG_MODE(hwc)	(SAMPL_FLAGS(hwc) & PERF_CPUM_SF_DIAG_MODE)
-#define SDB_FULL_BLOCKS(hwc)	(SAMPL_FLAGS(hwc) & PERF_CPUM_SF_FULL_BLOCKS)
+#define SAMPLE_FREQ_MODE(hwc)	(SAMPL_FLAGS(hwc) & PERF_CPUM_SF_FREQ_MODE)
 
-/* Structure for sampling data entries to be passed as perf raw sample data
- * to user space.  Note that raw sample data must be aligned and, thus, might
- * be padded with zeros.
- */
-struct sf_raw_sample {
-#define SF_RAW_SAMPLE_BASIC	PERF_CPUM_SF_BASIC_MODE
-#define SF_RAW_SAMPLE_DIAG	PERF_CPUM_SF_DIAG_MODE
-	u64			format;
-	u32			 size;	  /* Size of sf_raw_sample */
-	u16			bsdes;	  /* Basic-sampling data entry size */
-	u16			dsdes;	  /* Diagnostic-sampling data entry size */
-	struct hws_basic_entry	basic;	  /* Basic-sampling data entry */
-	struct hws_diag_entry	 diag;	  /* Diagnostic-sampling data entry */
-	u8		    padding[];	  /* Padding to next multiple of 8 */
-} __packed;
+#define perf_arch_fetch_caller_regs(regs, __ip) do {			\
+	(regs)->psw.addr = (__ip);					\
+	(regs)->gprs[15] = (unsigned long)__builtin_frame_address(0) -	\
+		offsetof(struct stack_frame, back_chain);		\
+} while (0)
 
-/* Perf hardware reserve and release functions */
-int perf_reserve_sampling(void);
-void perf_release_sampling(void);
-
-#endif /* CONFIG_64BIT */
 #endif /* _ASM_S390_PERF_EVENT_H */

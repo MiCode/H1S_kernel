@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Input driver for PCAP events:
  *   * Power key
  *   * Headphone button
  *
  *  Copyright (c) 2008,2009 Ilya Petrov <ilya.muromec@gmail.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
  */
 
 #include <linux/module.h>
@@ -121,7 +117,6 @@ static struct platform_driver pcap_keys_device_driver = {
 	.remove		= pcap_keys_remove,
 	.driver		= {
 		.name	= "pcap-keys",
-		.owner	= THIS_MODULE,
 	}
 };
 module_platform_driver(pcap_keys_device_driver);

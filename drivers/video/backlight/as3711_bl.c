@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * AS3711 PMIC backlight driver, using DCDC Step Up Converters
  *
  * Copyright (C) 2012 Renesas Electronics Corporation
  * Author: Guennadi Liakhovetski, <g.liakhovetski@gmx.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the version 2 of the GNU General Public License as
- * published by the Free Software Foundation
  */
 
 #include <linux/backlight.h>
@@ -28,8 +25,6 @@ enum as3711_bl_type {
 
 struct as3711_bl_data {
 	bool powered;
-	const char *fb_name;
-	struct device *fb_dev;
 	enum as3711_bl_type type;
 	int brightness;
 	struct backlight_device *bl;
@@ -109,17 +104,10 @@ static int as3711_bl_update_status(struct backlight_device *bl)
 	struct as3711_bl_data *data = bl_get_data(bl);
 	struct as3711_bl_supply *supply = to_supply(data);
 	struct as3711 *as3711 = supply->as3711;
-	int brightness = bl->props.brightness;
+	int brightness;
 	int ret = 0;
 
-	dev_dbg(&bl->dev, "%s(): brightness %u, pwr %x, blank %x, state %x\n",
-		__func__, bl->props.brightness, bl->props.power,
-		bl->props.fb_blank, bl->props.state);
-
-	if (bl->props.power != FB_BLANK_UNBLANK ||
-	    bl->props.fb_blank != FB_BLANK_UNBLANK ||
-	    bl->props.state & (BL_CORE_SUSPENDED | BL_CORE_FBBLANK))
-		brightness = 0;
+	brightness = backlight_get_brightness(bl);
 
 	if (data->type == AS3711_BL_SU1) {
 		ret = as3711_set_brightness_v(as3711, brightness,
@@ -262,10 +250,10 @@ static int as3711_bl_register(struct platform_device *pdev,
 static int as3711_backlight_parse_dt(struct device *dev)
 {
 	struct as3711_bl_pdata *pdata = dev_get_platdata(dev);
-	struct device_node *bl =
-		of_find_node_by_name(dev->parent->of_node, "backlight"), *fb;
+	struct device_node *bl, *fb;
 	int ret;
 
+	bl = of_get_child_by_name(dev->parent->of_node, "backlight");
 	if (!bl) {
 		dev_dbg(dev, "backlight node not found\n");
 		return -ENODEV;
@@ -273,80 +261,88 @@ static int as3711_backlight_parse_dt(struct device *dev)
 
 	fb = of_parse_phandle(bl, "su1-dev", 0);
 	if (fb) {
-		pdata->su1_fb = fb->full_name;
+		of_node_put(fb);
+
+		pdata->su1_fb = true;
 
 		ret = of_property_read_u32(bl, "su1-max-uA", &pdata->su1_max_uA);
 		if (pdata->su1_max_uA <= 0)
 			ret = -EINVAL;
 		if (ret < 0)
-			return ret;
+			goto err_put_bl;
 	}
 
 	fb = of_parse_phandle(bl, "su2-dev", 0);
 	if (fb) {
 		int count = 0;
 
-		pdata->su2_fb = fb->full_name;
+		of_node_put(fb);
+
+		pdata->su2_fb = true;
 
 		ret = of_property_read_u32(bl, "su2-max-uA", &pdata->su2_max_uA);
 		if (pdata->su2_max_uA <= 0)
 			ret = -EINVAL;
 		if (ret < 0)
-			return ret;
+			goto err_put_bl;
 
-		if (of_find_property(bl, "su2-feedback-voltage", NULL)) {
+		if (of_property_read_bool(bl, "su2-feedback-voltage")) {
 			pdata->su2_feedback = AS3711_SU2_VOLTAGE;
 			count++;
 		}
-		if (of_find_property(bl, "su2-feedback-curr1", NULL)) {
+		if (of_property_read_bool(bl, "su2-feedback-curr1")) {
 			pdata->su2_feedback = AS3711_SU2_CURR1;
 			count++;
 		}
-		if (of_find_property(bl, "su2-feedback-curr2", NULL)) {
+		if (of_property_read_bool(bl, "su2-feedback-curr2")) {
 			pdata->su2_feedback = AS3711_SU2_CURR2;
 			count++;
 		}
-		if (of_find_property(bl, "su2-feedback-curr3", NULL)) {
+		if (of_property_read_bool(bl, "su2-feedback-curr3")) {
 			pdata->su2_feedback = AS3711_SU2_CURR3;
 			count++;
 		}
-		if (of_find_property(bl, "su2-feedback-curr-auto", NULL)) {
+		if (of_property_read_bool(bl, "su2-feedback-curr-auto")) {
 			pdata->su2_feedback = AS3711_SU2_CURR_AUTO;
 			count++;
 		}
-		if (count != 1)
-			return -EINVAL;
+		if (count != 1) {
+			ret = -EINVAL;
+			goto err_put_bl;
+		}
 
 		count = 0;
-		if (of_find_property(bl, "su2-fbprot-lx-sd4", NULL)) {
+		if (of_property_read_bool(bl, "su2-fbprot-lx-sd4")) {
 			pdata->su2_fbprot = AS3711_SU2_LX_SD4;
 			count++;
 		}
-		if (of_find_property(bl, "su2-fbprot-gpio2", NULL)) {
+		if (of_property_read_bool(bl, "su2-fbprot-gpio2")) {
 			pdata->su2_fbprot = AS3711_SU2_GPIO2;
 			count++;
 		}
-		if (of_find_property(bl, "su2-fbprot-gpio3", NULL)) {
+		if (of_property_read_bool(bl, "su2-fbprot-gpio3")) {
 			pdata->su2_fbprot = AS3711_SU2_GPIO3;
 			count++;
 		}
-		if (of_find_property(bl, "su2-fbprot-gpio4", NULL)) {
+		if (of_property_read_bool(bl, "su2-fbprot-gpio4")) {
 			pdata->su2_fbprot = AS3711_SU2_GPIO4;
 			count++;
 		}
-		if (count != 1)
-			return -EINVAL;
+		if (count != 1) {
+			ret = -EINVAL;
+			goto err_put_bl;
+		}
 
 		count = 0;
-		if (of_find_property(bl, "su2-auto-curr1", NULL)) {
+		if (of_property_read_bool(bl, "su2-auto-curr1")) {
 			pdata->su2_auto_curr1 = true;
 			count++;
 		}
-		if (of_find_property(bl, "su2-auto-curr2", NULL)) {
+		if (of_property_read_bool(bl, "su2-auto-curr2")) {
 			pdata->su2_auto_curr2 = true;
 			count++;
 		}
-		if (of_find_property(bl, "su2-auto-curr3", NULL)) {
+		if (of_property_read_bool(bl, "su2-auto-curr3")) {
 			pdata->su2_auto_curr3 = true;
 			count++;
 		}
@@ -355,11 +351,20 @@ static int as3711_backlight_parse_dt(struct device *dev)
 		 * At least one su2-auto-curr* must be specified iff
 		 * AS3711_SU2_CURR_AUTO is used
 		 */
-		if (!count ^ (pdata->su2_feedback != AS3711_SU2_CURR_AUTO))
-			return -EINVAL;
+		if (!count ^ (pdata->su2_feedback != AS3711_SU2_CURR_AUTO)) {
+			ret = -EINVAL;
+			goto err_put_bl;
+		}
 	}
 
+	of_node_put(bl);
+
 	return 0;
+
+err_put_bl:
+	of_node_put(bl);
+
+	return ret;
 }
 
 static int as3711_backlight_probe(struct platform_device *pdev)
@@ -412,7 +417,6 @@ static int as3711_backlight_probe(struct platform_device *pdev)
 
 	if (pdata->su1_fb) {
 		su = &supply->su1;
-		su->fb_name = pdata->su1_fb;
 		su->type = AS3711_BL_SU1;
 
 		max_brightness = min(pdata->su1_max_uA, 31);
@@ -423,7 +427,6 @@ static int as3711_backlight_probe(struct platform_device *pdev)
 
 	if (pdata->su2_fb) {
 		su = &supply->su2;
-		su->fb_name = pdata->su2_fb;
 		su->type = AS3711_BL_SU2;
 
 		switch (pdata->su2_fbprot) {
@@ -467,7 +470,6 @@ static int as3711_backlight_probe(struct platform_device *pdev)
 static struct platform_driver as3711_backlight_driver = {
 	.driver		= {
 		.name	= "as3711-backlight",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= as3711_backlight_probe,
 };
@@ -476,5 +478,5 @@ module_platform_driver(as3711_backlight_driver);
 
 MODULE_DESCRIPTION("Backlight Driver for AS3711 PMICs");
 MODULE_AUTHOR("Guennadi Liakhovetski <g.liakhovetski@gmx.de");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("platform:as3711-backlight");

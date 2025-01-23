@@ -1,18 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * LED Triggers Core
  * For the HP Jornada 620/660/680/690 handhelds
  *
  * Copyright 2008 Kristoffer Ericson <kristoffer.ericson@gmail.com>
  *     this driver is based on leds-spitz.c by Richard Purdie.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/leds.h>
 #include <asm/hd64461.h>
@@ -51,7 +47,7 @@ static struct led_classdev hp6xx_red_led = {
 
 static struct led_classdev hp6xx_green_led = {
 	.name			= "hp6xx:green",
-	.default_trigger	= "ide-disk",
+	.default_trigger	= "disk-activity",
 	.brightness_set		= hp6xxled_green_set,
 	.flags			= LED_CORE_SUSPENDRESUME,
 };
@@ -60,31 +56,17 @@ static int hp6xxled_probe(struct platform_device *pdev)
 {
 	int ret;
 
-	ret = led_classdev_register(&pdev->dev, &hp6xx_red_led);
+	ret = devm_led_classdev_register(&pdev->dev, &hp6xx_red_led);
 	if (ret < 0)
 		return ret;
 
-	ret = led_classdev_register(&pdev->dev, &hp6xx_green_led);
-	if (ret < 0)
-		led_classdev_unregister(&hp6xx_red_led);
-
-	return ret;
-}
-
-static int hp6xxled_remove(struct platform_device *pdev)
-{
-	led_classdev_unregister(&hp6xx_red_led);
-	led_classdev_unregister(&hp6xx_green_led);
-
-	return 0;
+	return devm_led_classdev_register(&pdev->dev, &hp6xx_green_led);
 }
 
 static struct platform_driver hp6xxled_driver = {
 	.probe		= hp6xxled_probe,
-	.remove		= hp6xxled_remove,
 	.driver		= {
 		.name		= "hp6xx-led",
-		.owner		= THIS_MODULE,
 	},
 };
 

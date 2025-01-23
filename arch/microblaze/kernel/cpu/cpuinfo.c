@@ -41,8 +41,17 @@ const struct cpu_ver_key cpu_ver_lookup[] = {
 	{"8.40.a", 0x18},
 	{"8.40.b", 0x19},
 	{"8.50.a", 0x1a},
+	{"8.50.b", 0x1c},
+	{"8.50.c", 0x1e},
 	{"9.0", 0x1b},
 	{"9.1", 0x1d},
+	{"9.2", 0x1f},
+	{"9.3", 0x20},
+	{"9.4", 0x21},
+	{"9.5", 0x22},
+	{"9.6", 0x23},
+	{"10.0", 0x24},
+	{"11.0", 0x25},
 	{NULL, 0},
 };
 
@@ -61,11 +70,18 @@ const struct family_string_key family_string_lookup[] = {
 	{"spartan3adsp", 0xc},
 	{"spartan6", 0xd},
 	{"virtex6", 0xe},
+	{"virtex7", 0xf},
 	/* FIXME There is no key code defined for spartan2 */
 	{"spartan2", 0xf0},
 	{"kintex7", 0x10},
 	{"artix7", 0x11},
 	{"zynq7000", 0x12},
+	{"UltraScale Virtex", 0x13},
+	{"UltraScale Kintex", 0x14},
+	{"UltraScale+ Zynq", 0x15},
+	{"UltraScale+ Virtex", 0x16},
+	{"UltraScale+ Kintex", 0x17},
+	{"Spartan7", 0x18},
 	{NULL, 0},
 };
 
@@ -74,9 +90,9 @@ static struct device_node *cpu;
 
 void __init setup_cpuinfo(void)
 {
-	cpu = (struct device_node *) of_find_node_by_type(NULL, "cpu");
+	cpu = of_get_cpu_node(0, NULL);
 	if (!cpu)
-		pr_err("You don't have cpu!!!\n");
+		pr_err("You don't have cpu or are missing cpu reg property!!!\n");
 
 	pr_info("%s: initialising\n", __func__);
 
@@ -102,6 +118,8 @@ void __init setup_cpuinfo(void)
 	if (cpuinfo.mmu_privins)
 		pr_warn("%s: Stream instructions enabled"
 			" - USERSPACE CAN LOCK THIS KERNEL!\n", __func__);
+
+	of_node_put(cpu);
 }
 
 void __init setup_cpuinfo_clk(void)

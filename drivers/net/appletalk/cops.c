@@ -70,6 +70,8 @@ static const char *version =
 #include <linux/bitops.h>
 #include <linux/jiffies.h>
 
+#include <net/Space.h>
+
 #include <asm/io.h>
 #include <asm/dma.h>
 
@@ -155,6 +157,7 @@ static int cops_irqlist[] = {
 };
 
 static struct timer_list cops_timer;
+static struct net_device *cops_timer_dev;
 
 /* use 0 for production, 1 for verification, 2 for debug, 3 for verbose debug */
 #ifndef COPS_DEBUG
@@ -187,8 +190,8 @@ static void cops_load (struct net_device *dev);
 static int  cops_nodeid (struct net_device *dev, int nodeid);
 
 static irqreturn_t cops_interrupt (int irq, void *dev_id);
-static void cops_poll (unsigned long ltdev);
-static void cops_timeout(struct net_device *dev);
+static void cops_poll(struct timer_list *t);
+static void cops_timeout(struct net_device *dev, unsigned int txqueue);
 static void cops_rx (struct net_device *dev);
 static netdev_tx_t  cops_send_packet (struct sk_buff *skb,
 					    struct net_device *dev);
@@ -300,7 +303,7 @@ static int __init cops_probe1(struct net_device *dev, int ioaddr)
 			dev->irq = cops_irq(ioaddr, board);
 			if (dev->irq)
 				break;
-			/* No IRQ found on this port, fallthrough */
+			fallthrough;	/* Once no IRQ found on this port */
 		case 1:
 			retval = -EINVAL;
 			goto err_out;
@@ -324,14 +327,14 @@ static int __init cops_probe1(struct net_device *dev, int ioaddr)
 			break;
 	}
 
+	dev->base_addr = ioaddr;
+
 	/* Reserve any actual interrupt. */
 	if (dev->irq) {
 		retval = request_irq(dev->irq, cops_interrupt, 0, dev->name, dev);
 		if (retval)
 			goto err_out;
 	}
-
-	dev->base_addr = ioaddr;
 
         lp = netdev_priv(dev);
         spin_lock_init(&lp->lock);
@@ -424,9 +427,8 @@ static int cops_open(struct net_device *dev)
 		 */
 		if(lp->board==TANGENT)	/* Poll 20 times per second */
 		{
-		    init_timer(&cops_timer);
-		    cops_timer.function = cops_poll;
-		    cops_timer.data 	= (unsigned long)dev;
+		    cops_timer_dev = dev;
+		    timer_setup(&cops_timer, cops_poll, 0);
 		    cops_timer.expires 	= jiffies + HZ/20;
 		    add_timer(&cops_timer);
 		} 
@@ -607,12 +609,12 @@ static int cops_nodeid (struct net_device *dev, int nodeid)
 
 	if(lp->board == DAYNA)
         {
-        	/* Empty any pending adapter responses. */
+		/* Empty any pending adapter responses. */
                 while((inb(ioaddr+DAYNA_CARD_STATUS)&DAYNA_TX_READY)==0)
                 {
 			outb(0, ioaddr+COPS_CLEAR_INT);	/* Clear interrupts. */
-        		if((inb(ioaddr+DAYNA_CARD_STATUS)&0x03)==DAYNA_RX_REQUEST)
-                		cops_rx(dev);	/* Kick any packets waiting. */
+			if((inb(ioaddr+DAYNA_CARD_STATUS)&0x03)==DAYNA_RX_REQUEST)
+				cops_rx(dev);	/* Kick any packets waiting. */
 			schedule();
                 }
 
@@ -628,13 +630,13 @@ static int cops_nodeid (struct net_device *dev, int nodeid)
                 while(inb(ioaddr+TANG_CARD_STATUS)&TANG_RX_READY)
                 {
 			outb(0, ioaddr+COPS_CLEAR_INT);	/* Clear interrupt. */
-                	cops_rx(dev);          	/* Kick out packets waiting. */
+			cops_rx(dev);          	/* Kick out packets waiting. */
 			schedule();
                 }
 
 		/* Not sure what Tangent does if nodeid picked is used. */
                 if(nodeid == 0)	         		/* Seed. */
-                	nodeid = jiffies&0xFF;		/* Get a random try */
+			nodeid = jiffies&0xFF;		/* Get a random try */
                 outb(2, ioaddr);        		/* Command length LSB */
                 outb(0, ioaddr);       			/* Command length MSB */
                 outb(LAP_INIT, ioaddr); 		/* Send LAP_INIT byte */
@@ -649,13 +651,13 @@ static int cops_nodeid (struct net_device *dev, int nodeid)
 
 		if(lp->board == DAYNA)
 		{
-                	if((inb(ioaddr+DAYNA_CARD_STATUS)&0x03)==DAYNA_RX_REQUEST)
-                		cops_rx(dev);	/* Grab the nodeid put in lp->node_acquire. */
+			if((inb(ioaddr+DAYNA_CARD_STATUS)&0x03)==DAYNA_RX_REQUEST)
+				cops_rx(dev);	/* Grab the nodeid put in lp->node_acquire. */
 		}
 		if(lp->board == TANGENT)
 		{	
 			if(inb(ioaddr+TANG_CARD_STATUS)&TANG_RX_READY)
-                                cops_rx(dev);   /* Grab the nodeid put in lp->node_acquire. */
+				cops_rx(dev);   /* Grab the nodeid put in lp->node_acquire. */
 		}
 		schedule();
 	}
@@ -673,12 +675,11 @@ static int cops_nodeid (struct net_device *dev, int nodeid)
  *	Poll the Tangent type cards to see if we have work.
  */
  
-static void cops_poll(unsigned long ltdev)
+static void cops_poll(struct timer_list *unused)
 {
 	int ioaddr, status;
 	int boguscount = 0;
-
-	struct net_device *dev = (struct net_device *)ltdev;
+	struct net_device *dev = cops_timer_dev;
 
 	del_timer(&cops_timer);
 
@@ -718,16 +719,16 @@ static irqreturn_t cops_interrupt(int irq, void *dev_id)
 	{
 		do {
 			outb(0, ioaddr + COPS_CLEAR_INT);
-                       	status=inb(ioaddr+DAYNA_CARD_STATUS);
-                       	if((status&0x03)==DAYNA_RX_REQUEST)
-                       	        cops_rx(dev);
-                	netif_wake_queue(dev);
+			status=inb(ioaddr+DAYNA_CARD_STATUS);
+			if((status&0x03)==DAYNA_RX_REQUEST)
+				cops_rx(dev);
+			netif_wake_queue(dev);
 		} while(++boguscount < 20);
 	}
 	else
 	{
 		do {
-                       	status=inb(ioaddr+TANG_CARD_STATUS);
+			status=inb(ioaddr+TANG_CARD_STATUS);
 			if(status & TANG_RX_READY)
 				cops_rx(dev);
 			if(status & TANG_TX_READY)
@@ -778,10 +779,7 @@ static void cops_rx(struct net_device *dev)
         }
 
         /* Get response length. */
-	if(lp->board==DAYNA)
-        	pkt_len = inb(ioaddr) & 0xFF;
-	else
-		pkt_len = inb(ioaddr) & 0x00FF;
+	pkt_len = inb(ioaddr);
         pkt_len |= (inb(ioaddr) << 8);
         /* Input IO code. */
         rsp_type=inb(ioaddr);
@@ -848,7 +846,7 @@ static void cops_rx(struct net_device *dev)
         netif_rx(skb);
 }
 
-static void cops_timeout(struct net_device *dev)
+static void cops_timeout(struct net_device *dev, unsigned int txqueue)
 {
         struct cops_local *lp = netdev_priv(dev);
         int ioaddr = dev->base_addr;
@@ -857,11 +855,11 @@ static void cops_timeout(struct net_device *dev)
         if(lp->board==TANGENT)
         {
 		if((inb(ioaddr+TANG_CARD_STATUS)&TANG_TX_READY)==0)
-               		printk(KERN_WARNING "%s: No TX complete interrupt.\n", dev->name);
+			printk(KERN_WARNING "%s: No TX complete interrupt.\n", dev->name);
 	}
 	printk(KERN_WARNING "%s: Transmit timed out.\n", dev->name);
 	cops_jumpstart(dev);	/* Restart the card. */
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	netif_trans_update(dev); /* prevent tx timeout */
 	netif_wake_queue(dev);
 }
 
@@ -893,16 +891,13 @@ static netdev_tx_t cops_send_packet(struct sk_buff *skb,
 
 	/* Output IO length. */
 	outb(skb->len, ioaddr);
-	if(lp->board == DAYNA)
-               	outb(skb->len >> 8, ioaddr);
-	else
-		outb((skb->len >> 8)&0x0FF, ioaddr);
+	outb(skb->len >> 8, ioaddr);
 
 	/* Output IO code. */
 	outb(LAP_WRITE, ioaddr);
 
 	if(lp->board == DAYNA)	/* Check the transmit buffer again. */
-        	while((inb(ioaddr+DAYNA_CARD_STATUS)&DAYNA_TX_READY)==0);
+		while((inb(ioaddr+DAYNA_CARD_STATUS)&DAYNA_TX_READY)==0);
 
 	outsb(ioaddr, skb->data, skb->len);	/* Send out the data. */
 
@@ -950,8 +945,8 @@ static int cops_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
                         dev->broadcast[0]       = 0xFF;
 			
 			/* Set hardware address. */
-                        dev->dev_addr[0]        = aa->s_node;
                         dev->addr_len           = 1;
+			dev_addr_set(dev, &aa->s_node);
                         return 0;
 
                 case SIOCGIFADDR:
@@ -986,9 +981,9 @@ static int cops_close(struct net_device *dev)
 static struct net_device *cops_dev;
 
 MODULE_LICENSE("GPL");
-module_param(io, int, 0);
-module_param(irq, int, 0);
-module_param(board_type, int, 0);
+module_param_hw(io, int, ioport, 0);
+module_param_hw(irq, int, irq, 0);
+module_param_hw(board_type, int, other, 0);
 
 static int __init cops_module_init(void)
 {

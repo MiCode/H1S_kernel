@@ -1,20 +1,25 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * wm8994.h  --  WM8994 Soc Audio driver
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef _WM8994_H
 #define _WM8994_H
 
+#include <linux/clk.h>
 #include <sound/soc.h>
 #include <linux/firmware.h>
 #include <linux/completion.h>
 #include <linux/workqueue.h>
+#include <linux/mutex.h>
 
 #include "wm_hubs.h"
+
+enum {
+	WM8994_MCLK1,
+	WM8994_MCLK2,
+	WM8994_NUM_MCLK
+};
 
 /* Sources for AIF1/2 SYSCLK - use with set_dai_sysclk() */
 #define WM8994_SYSCLK_MCLK1 1
@@ -42,18 +47,18 @@ enum wm8994_vmid_mode {
 typedef void (*wm1811_micdet_cb)(void *data);
 typedef void (*wm1811_mic_id_cb)(void *data, u16 status);
 
-int wm8994_mic_detect(struct snd_soc_codec *codec, struct snd_soc_jack *jack,
+int wm8994_mic_detect(struct snd_soc_component *component, struct snd_soc_jack *jack,
 		      int micbias);
-int wm8958_mic_detect(struct snd_soc_codec *codec, struct snd_soc_jack *jack,
-		      wm1811_micdet_cb cb, void *det_cb_data,
+int wm8958_mic_detect(struct snd_soc_component *component, struct snd_soc_jack *jack,
+		      wm1811_micdet_cb det_cb, void *det_cb_data,
 		      wm1811_mic_id_cb id_cb, void *id_cb_data);
 
-int wm8994_vmid_mode(struct snd_soc_codec *codec, enum wm8994_vmid_mode mode);
+int wm8994_vmid_mode(struct snd_soc_component *component, enum wm8994_vmid_mode mode);
 
 int wm8958_aif_ev(struct snd_soc_dapm_widget *w,
 		  struct snd_kcontrol *kcontrol, int event);
 
-void wm8958_dsp2_init(struct snd_soc_codec *codec);
+void wm8958_dsp2_init(struct snd_soc_component *component);
 
 struct wm8994_micdet {
 	struct snd_soc_jack *jack;
@@ -75,9 +80,10 @@ struct wm8994;
 struct wm8994_priv {
 	struct wm_hubs_data hubs;
 	struct wm8994 *wm8994;
+	struct clk_bulk_data mclk[WM8994_NUM_MCLK];
 	int sysclk[2];
 	int sysclk_rate[2];
-	int mclk[2];
+	int mclk_rate[2];
 	int aifclk[2];
 	int aifdiv[2];
 	int channels[2];
@@ -156,6 +162,7 @@ struct wm8994_priv {
 	unsigned int aif1clk_disable:1;
 	unsigned int aif2clk_disable:1;
 
+	struct mutex fw_lock;
 	int dsp_active;
 	const struct firmware *cur_fw;
 	const struct firmware *mbc;

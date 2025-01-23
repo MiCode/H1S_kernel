@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* Derived from Applicom driver ac.c for SCO Unix                            */
 /* Ported by David Woodhouse, Axiom (Cambridge) Ltd.                         */
 /* dwmw2@infradead.org 30/8/98                                               */
@@ -23,7 +24,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/slab.h>
 #include <linux/errno.h>
 #include <linux/mutex.h>
@@ -32,9 +33,10 @@
 #include <linux/wait.h>
 #include <linux/init.h>
 #include <linux/fs.h>
+#include <linux/nospec.h>
 
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "applicom.h"
 
@@ -51,7 +53,6 @@
 #define MAX_BOARD 8		/* maximum of pc board possible */
 #define MAX_ISA_BOARD 4
 #define LEN_RAM_IO 0x800
-#define AC_MINOR 157
 
 #ifndef PCI_VENDOR_ID_APPLICOM
 #define PCI_VENDOR_ID_APPLICOM                0x1389
@@ -67,7 +68,7 @@ static char *applicom_pci_devnames[] = {
 	"PCI2000PFB"
 };
 
-static struct pci_device_id applicom_pci_tbl[] = {
+static const struct pci_device_id applicom_pci_tbl[] = {
 	{ PCI_VDEVICE(APPLICOM, PCI_DEVICE_ID_APPLICOM_PCIGENERIC) },
 	{ PCI_VDEVICE(APPLICOM, PCI_DEVICE_ID_APPLICOM_PCI2000IBS_CAN) },
 	{ PCI_VDEVICE(APPLICOM, PCI_DEVICE_ID_APPLICOM_PCI2000PFB) },
@@ -80,9 +81,6 @@ MODULE_DESCRIPTION("Driver for Applicom Profibus card");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_MISCDEV(AC_MINOR);
 
-MODULE_SUPPORTED_DEVICE("ac");
-
-
 static struct applicom_board {
 	unsigned long PhysIO;
 	void __iomem *RamIO;
@@ -91,12 +89,12 @@ static struct applicom_board {
 	spinlock_t mutex;
 } apbs[MAX_BOARD];
 
-static unsigned int irq = 0;	/* interrupt number IRQ       */
-static unsigned long mem = 0;	/* physical segment of board  */
+static unsigned int irq;	/* interrupt number IRQ       */
+static unsigned long mem;	/* physical segment of board  */
 
-module_param(irq, uint, 0);
+module_param_hw(irq, uint, irq, 0);
 MODULE_PARM_DESC(irq, "IRQ of the Applicom board");
-module_param(mem, ulong, 0);
+module_param_hw(mem, ulong, iomem, 0);
 MODULE_PARM_DESC(mem, "Shared Memory Address of Applicom board");
 
 static unsigned int numboards;	/* number of installed boards */
@@ -199,16 +197,19 @@ static int __init applicom_init(void)
 		if (!pci_match_id(applicom_pci_tbl, dev))
 			continue;
 		
-		if (pci_enable_device(dev))
+		if (pci_enable_device(dev)) {
+			pci_dev_put(dev);
 			return -EIO;
+		}
 
-		RamIO = ioremap_nocache(pci_resource_start(dev, 0), LEN_RAM_IO);
+		RamIO = ioremap(pci_resource_start(dev, 0), LEN_RAM_IO);
 
 		if (!RamIO) {
 			printk(KERN_INFO "ac.o: Failed to ioremap PCI memory "
 				"space at 0x%llx\n",
 				(unsigned long long)pci_resource_start(dev, 0));
 			pci_disable_device(dev);
+			pci_dev_put(dev);
 			return -EIO;
 		}
 
@@ -257,7 +258,7 @@ static int __init applicom_init(void)
 	/* Now try the specified ISA cards */
 
 	for (i = 0; i < MAX_ISA_BOARD; i++) {
-		RamIO = ioremap_nocache(mem + (LEN_RAM_IO * i), LEN_RAM_IO);
+		RamIO = ioremap(mem + (LEN_RAM_IO * i), LEN_RAM_IO);
 
 		if (!RamIO) {
 			printk(KERN_INFO "ac.o: Failed to ioremap the ISA card's memory space (slot #%d)\n", i + 1);
@@ -345,7 +346,6 @@ out:
 			free_irq(apbs[i].irq, &dummy);
 		iounmap(apbs[i].RamIO);
 	}
-	pci_disable_device(dev);
 	return ret;
 }
 
@@ -387,7 +387,11 @@ static ssize_t ac_write(struct file *file, const char __user *buf, size_t count,
 	TicCard = st_loc.tic_des_from_pc;	/* tic number to send            */
 	IndexCard = NumCard - 1;
 
-	if((NumCard < 1) || (NumCard > MAX_BOARD) || !apbs[IndexCard].RamIO)
+	if (IndexCard >= MAX_BOARD)
+		return -EINVAL;
+	IndexCard = array_index_nospec(IndexCard, MAX_BOARD);
+
+	if (!apbs[IndexCard].RamIO)
 		return -EINVAL;
 
 #ifdef DEBUG
@@ -698,6 +702,7 @@ static long ac_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	unsigned char IndexCard;
 	void __iomem *pmem;
 	int ret = 0;
+	static int warncount = 10;
 	volatile unsigned char byte_reset_it;
 	struct st_ram_io *adgl;
 	void __user *argp = (void __user *)arg;
@@ -712,16 +717,12 @@ static long ac_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	mutex_lock(&ac_mutex);	
 	IndexCard = adgl->num_card-1;
 	 
-	if(cmd != 6 && ((IndexCard >= MAX_BOARD) || !apbs[IndexCard].RamIO)) {
-		static int warncount = 10;
-		if (warncount) {
-			printk( KERN_WARNING "APPLICOM driver IOCTL, bad board number %d\n",(int)IndexCard+1);
-			warncount--;
-		}
-		kfree(adgl);
-		mutex_unlock(&ac_mutex);
-		return -EINVAL;
-	}
+	if (cmd != 6 && IndexCard >= MAX_BOARD)
+		goto err;
+	IndexCard = array_index_nospec(IndexCard, MAX_BOARD);
+
+	if (cmd != 6 && !apbs[IndexCard].RamIO)
+		goto err;
 
 	switch (cmd) {
 		
@@ -838,6 +839,17 @@ static long ac_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	Dummy = readb(apbs[IndexCard].RamIO + VERS);
 	kfree(adgl);
 	mutex_unlock(&ac_mutex);
-	return 0;
+	return ret;
+
+err:
+	if (warncount) {
+		pr_warn("APPLICOM driver IOCTL, bad board number %d\n",
+			(int)IndexCard + 1);
+		warncount--;
+	}
+	kfree(adgl);
+	mutex_unlock(&ac_mutex);
+	return -EINVAL;
+
 }
 

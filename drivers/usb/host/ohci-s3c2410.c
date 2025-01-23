@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-1.0+
 /*
  * OHCI HCD (Host Controller Driver) for USB.
  *
@@ -38,16 +39,12 @@
 
 #define DRIVER_DESC "OHCI S3C2410 driver"
 
-static const char hcd_name[] = "ohci-s3c2410";
-
 static struct clk *clk;
 static struct clk *usb_clk;
 
-/* forward definitions */
+static struct hc_driver __read_mostly ohci_s3c2410_hc_driver;
 
-static int (*orig_ohci_hub_control)(struct usb_hcd  *hcd, u16 typeReq,
-			u16 wValue, u16 wIndex, char *buf, u16 wLength);
-static int (*orig_ohci_hub_status_data)(struct usb_hcd *hcd, char *buf);
+/* forward definitions */
 
 static void s3c2410_hcd_oc(struct s3c2410_hcd_info *info, int port_oc);
 
@@ -110,7 +107,7 @@ ohci_s3c2410_hub_status_data(struct usb_hcd *hcd, char *buf)
 	int orig;
 	int portno;
 
-	orig = orig_ohci_hub_status_data(hcd, buf);
+	orig = ohci_hub_status_data(hcd, buf);
 
 	if (info == NULL)
 		return orig;
@@ -181,7 +178,7 @@ static int ohci_s3c2410_hub_control(
 	 * process the request straight away and exit */
 
 	if (info == NULL) {
-		ret = orig_ohci_hub_control(hcd, typeReq, wValue,
+		ret = ohci_hub_control(hcd, typeReq, wValue,
 				       wIndex, buf, wLength);
 		goto out;
 	}
@@ -231,7 +228,7 @@ static int ohci_s3c2410_hub_control(
 		break;
 	}
 
-	ret = orig_ohci_hub_control(hcd, typeReq, wValue, wIndex, buf, wLength);
+	ret = ohci_hub_control(hcd, typeReq, wValue, wIndex, buf, wLength);
 	if (ret)
 		goto out;
 
@@ -253,14 +250,14 @@ static int ohci_s3c2410_hub_control(
 		 */
 
 		desc->wHubCharacteristics &= ~cpu_to_le16(HUB_CHAR_LPSM);
-		desc->wHubCharacteristics |= cpu_to_le16(0x0001);
+		desc->wHubCharacteristics |= cpu_to_le16(
+			HUB_CHAR_INDV_PORT_LPSM);
 
 		if (info->enable_oc) {
 			desc->wHubCharacteristics &= ~cpu_to_le16(
 				HUB_CHAR_OCPM);
 			desc->wHubCharacteristics |=  cpu_to_le16(
-				0x0008 |
-				0x0001);
+				HUB_CHAR_INDV_PORT_OCPM);
 		}
 
 		dev_dbg(hcd->self.controller, "wHubCharacteristics after 0x%04x\n",
@@ -294,7 +291,6 @@ static int ohci_s3c2410_hub_control(
 static void s3c2410_hcd_oc(struct s3c2410_hcd_info *info, int port_oc)
 {
 	struct s3c2410_hcd_port *port;
-	struct usb_hcd *hcd;
 	unsigned long flags;
 	int portno;
 
@@ -302,7 +298,6 @@ static void s3c2410_hcd_oc(struct s3c2410_hcd_info *info, int port_oc)
 		return;
 
 	port = &info->port[0];
-	hcd = info->hcd;
 
 	local_irq_save(flags);
 
@@ -325,44 +320,45 @@ static void s3c2410_hcd_oc(struct s3c2410_hcd_info *info, int port_oc)
 /* may be called with controller, bus, and devices active */
 
 /*
- * usb_hcd_s3c2410_remove - shutdown processing for HCD
+ * ohci_hcd_s3c2410_remove - shutdown processing for HCD
  * @dev: USB Host Controller being removed
- * Context: !in_interrupt()
  *
- * Reverses the effect of usb_hcd_3c2410_probe(), first invoking
+ * Context: task context, might sleep
+ *
+ * Reverses the effect of ohci_hcd_3c2410_probe(), first invoking
  * the HCD's stop() method.  It is always called from a thread
  * context, normally "rmmod", "apmd", or something similar.
- *
-*/
-
+ */
 static void
-usb_hcd_s3c2410_remove(struct usb_hcd *hcd, struct platform_device *dev)
+ohci_hcd_s3c2410_remove(struct platform_device *dev)
 {
+	struct usb_hcd *hcd = platform_get_drvdata(dev);
+
 	usb_remove_hcd(hcd);
 	s3c2410_stop_hc(dev);
 	usb_put_hcd(hcd);
 }
 
-/**
- * usb_hcd_s3c2410_probe - initialize S3C2410-based HCDs
- * Context: !in_interrupt()
+/*
+ * ohci_hcd_s3c2410_probe - initialize S3C2410-based HCDs
+ * @dev: USB Host Controller to be probed
+ *
+ * Context: task context, might sleep
  *
  * Allocates basic resources for this USB host controller, and
  * then invokes the start() method for the HCD associated with it
  * through the hotplug entry's driver_data.
- *
  */
-static int usb_hcd_s3c2410_probe(const struct hc_driver *driver,
-				  struct platform_device *dev)
+static int ohci_hcd_s3c2410_probe(struct platform_device *dev)
 {
 	struct usb_hcd *hcd = NULL;
 	struct s3c2410_hcd_info *info = dev_get_platdata(&dev->dev);
-	int retval;
+	int retval, irq;
 
 	s3c2410_usb_set_power(info, 1, 1);
 	s3c2410_usb_set_power(info, 2, 1);
 
-	hcd = usb_create_hcd(driver, &dev->dev, "s3c24xx");
+	hcd = usb_create_hcd(&ohci_s3c2410_hc_driver, &dev->dev, "s3c24xx");
 	if (hcd == NULL)
 		return -ENOMEM;
 
@@ -389,9 +385,15 @@ static int usb_hcd_s3c2410_probe(const struct hc_driver *driver,
 		goto err_put;
 	}
 
+	irq = platform_get_irq(dev, 0);
+	if (irq < 0) {
+		retval = irq;
+		goto err_put;
+	}
+
 	s3c2410_start_hc(dev, hcd);
 
-	retval = usb_add_hcd(hcd, dev->resource[1].start, 0);
+	retval = usb_add_hcd(hcd, irq, 0);
 	if (retval != 0)
 		goto err_ioremap;
 
@@ -407,21 +409,6 @@ static int usb_hcd_s3c2410_probe(const struct hc_driver *driver,
 }
 
 /*-------------------------------------------------------------------------*/
-
-static struct hc_driver __read_mostly ohci_s3c2410_hc_driver;
-
-static int ohci_hcd_s3c2410_drv_probe(struct platform_device *pdev)
-{
-	return usb_hcd_s3c2410_probe(&ohci_s3c2410_hc_driver, pdev);
-}
-
-static int ohci_hcd_s3c2410_drv_remove(struct platform_device *pdev)
-{
-	struct usb_hcd *hcd = platform_get_drvdata(pdev);
-
-	usb_hcd_s3c2410_remove(hcd, pdev);
-	return 0;
-}
 
 #ifdef CONFIG_PM
 static int ohci_hcd_s3c2410_drv_suspend(struct device *dev)
@@ -461,14 +448,21 @@ static const struct dev_pm_ops ohci_hcd_s3c2410_pm_ops = {
 	.resume		= ohci_hcd_s3c2410_drv_resume,
 };
 
+static const struct of_device_id ohci_hcd_s3c2410_dt_ids[] = {
+	{ .compatible = "samsung,s3c2410-ohci" },
+	{ /* sentinel */ }
+};
+
+MODULE_DEVICE_TABLE(of, ohci_hcd_s3c2410_dt_ids);
+
 static struct platform_driver ohci_hcd_s3c2410_driver = {
-	.probe		= ohci_hcd_s3c2410_drv_probe,
-	.remove		= ohci_hcd_s3c2410_drv_remove,
+	.probe		= ohci_hcd_s3c2410_probe,
+	.remove_new	= ohci_hcd_s3c2410_remove,
 	.shutdown	= usb_hcd_platform_shutdown,
 	.driver		= {
-		.owner	= THIS_MODULE,
 		.name	= "s3c2410-ohci",
 		.pm	= &ohci_hcd_s3c2410_pm_ops,
+		.of_match_table	= ohci_hcd_s3c2410_dt_ids,
 	},
 };
 
@@ -477,7 +471,6 @@ static int __init ohci_s3c2410_init(void)
 	if (usb_disabled())
 		return -ENODEV;
 
-	pr_info("%s: " DRIVER_DESC "\n", hcd_name);
 	ohci_init_driver(&ohci_s3c2410_hc_driver, NULL);
 
 	/*
@@ -488,9 +481,6 @@ static int __init ohci_s3c2410_init(void)
 	 * is an unusual case, and we don't want to encourage others to
 	 * override these functions by making it too easy.
 	 */
-
-	orig_ohci_hub_control = ohci_s3c2410_hc_driver.hub_control;
-	orig_ohci_hub_status_data = ohci_s3c2410_hc_driver.hub_status_data;
 
 	ohci_s3c2410_hc_driver.hub_status_data	= ohci_s3c2410_hub_status_data;
 	ohci_s3c2410_hc_driver.hub_control	= ohci_s3c2410_hub_control;

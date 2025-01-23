@@ -1,30 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2000-2001 Christoph Hellwig.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. The name of the author may not be used to endorse or promote products
- *    derived from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL").
- *
- * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR
- * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
- * SUCH DAMAGE.
+ * Copyright (c) 2016 Krzysztof Blaszkowski
  */
 
 /*
@@ -108,30 +85,25 @@ vxfs_read_fshead(struct super_block *sbp)
 {
 	struct vxfs_sb_info		*infp = VXFS_SBI(sbp);
 	struct vxfs_fsh			*pfp, *sfp;
-	struct vxfs_inode_info		*vip, *tip;
+	struct vxfs_inode_info		*vip;
 
-	vip = vxfs_blkiget(sbp, infp->vsi_iext, infp->vsi_fshino);
-	if (!vip) {
+	infp->vsi_fship = vxfs_blkiget(sbp, infp->vsi_iext, infp->vsi_fshino);
+	if (!infp->vsi_fship) {
 		printk(KERN_ERR "vxfs: unable to read fsh inode\n");
 		return -EINVAL;
 	}
+
+	vip = VXFS_INO(infp->vsi_fship);
 	if (!VXFS_ISFSH(vip)) {
 		printk(KERN_ERR "vxfs: fsh list inode is of wrong type (%x)\n",
 				vip->vii_mode & VXFS_TYPE_MASK); 
-		goto out_free_fship;
+		goto out_iput_fship;
 	}
-
 
 #ifdef DIAGNOSTIC
 	printk("vxfs: fsh inode dump:\n");
 	vxfs_dumpi(vip, infp->vsi_fshino);
 #endif
-
-	infp->vsi_fship = vxfs_get_fake_inode(sbp, vip);
-	if (!infp->vsi_fship) {
-		printk(KERN_ERR "vxfs: unable to get fsh inode\n");
-		goto out_free_fship;
-	}
 
 	sfp = vxfs_getfsh(infp->vsi_fship, 0);
 	if (!sfp) {
@@ -153,14 +125,10 @@ vxfs_read_fshead(struct super_block *sbp)
 	vxfs_dumpfsh(pfp);
 #endif
 
-	tip = vxfs_blkiget(sbp, infp->vsi_iext, sfp->fsh_ilistino[0]);
-	if (!tip)
-		goto out_free_pfp;
-
-	infp->vsi_stilist = vxfs_get_fake_inode(sbp, tip);
+	infp->vsi_stilist = vxfs_blkiget(sbp, infp->vsi_iext,
+			fs32_to_cpu(infp, sfp->fsh_ilistino[0]));
 	if (!infp->vsi_stilist) {
 		printk(KERN_ERR "vxfs: unable to get structural list inode\n");
-		kfree(tip);
 		goto out_free_pfp;
 	}
 	if (!VXFS_ISILT(VXFS_INO(infp->vsi_stilist))) {
@@ -169,13 +137,9 @@ vxfs_read_fshead(struct super_block *sbp)
 		goto out_iput_stilist;
 	}
 
-	tip = vxfs_stiget(sbp, pfp->fsh_ilistino[0]);
-	if (!tip)
-		goto out_iput_stilist;
-	infp->vsi_ilist = vxfs_get_fake_inode(sbp, tip);
+	infp->vsi_ilist = vxfs_stiget(sbp, fs32_to_cpu(infp, pfp->fsh_ilistino[0]));
 	if (!infp->vsi_ilist) {
 		printk(KERN_ERR "vxfs: unable to get inode list inode\n");
-		kfree(tip);
 		goto out_iput_stilist;
 	}
 	if (!VXFS_ISILT(VXFS_INO(infp->vsi_ilist))) {
@@ -184,6 +148,8 @@ vxfs_read_fshead(struct super_block *sbp)
 		goto out_iput_ilist;
 	}
 
+	kfree(pfp);
+	kfree(sfp);
 	return 0;
 
  out_iput_ilist:
@@ -196,8 +162,5 @@ vxfs_read_fshead(struct super_block *sbp)
  	kfree(sfp);
  out_iput_fship:
 	iput(infp->vsi_fship);
-	return -EINVAL;
- out_free_fship:
- 	kfree(vip);
 	return -EINVAL;
 }

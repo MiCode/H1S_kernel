@@ -1,70 +1,93 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Driver for the Synopsys DesignWare DMA Controller
  *
  * Copyright (C) 2013 Intel Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
-#ifndef _DW_DMAC_INTERNAL_H
-#define _DW_DMAC_INTERNAL_H
+#ifndef _DMA_DW_INTERNAL_H
+#define _DMA_DW_INTERNAL_H
 
-#include <linux/device.h>
-#include <linux/dw_dmac.h>
+#include <linux/dma/dw.h>
 
 #include "regs.h"
 
-/**
- * struct dw_dma_chip - representation of DesignWare DMA controller hardware
- * @dev:		struct device of the DMA controller
- * @irq:		irq line
- * @regs:		memory mapped I/O space
- * @dw:			struct dw_dma that is filed by dw_dma_probe()
- */
-struct dw_dma_chip {
-	struct device	*dev;
-	int		irq;
-	void __iomem	*regs;
-	struct dw_dma	*dw;
+int do_dma_probe(struct dw_dma_chip *chip);
+int do_dma_remove(struct dw_dma_chip *chip);
+
+void do_dw_dma_on(struct dw_dma *dw);
+void do_dw_dma_off(struct dw_dma *dw);
+
+int do_dw_dma_disable(struct dw_dma_chip *chip);
+int do_dw_dma_enable(struct dw_dma_chip *chip);
+
+extern bool dw_dma_filter(struct dma_chan *chan, void *param);
+
+#ifdef CONFIG_ACPI
+void dw_dma_acpi_controller_register(struct dw_dma *dw);
+void dw_dma_acpi_controller_free(struct dw_dma *dw);
+#else /* !CONFIG_ACPI */
+static inline void dw_dma_acpi_controller_register(struct dw_dma *dw) {}
+static inline void dw_dma_acpi_controller_free(struct dw_dma *dw) {}
+#endif /* !CONFIG_ACPI */
+
+struct platform_device;
+
+#ifdef CONFIG_OF
+struct dw_dma_platform_data *dw_dma_parse_dt(struct platform_device *pdev);
+void dw_dma_of_controller_register(struct dw_dma *dw);
+void dw_dma_of_controller_free(struct dw_dma *dw);
+#else
+static inline struct dw_dma_platform_data *dw_dma_parse_dt(struct platform_device *pdev)
+{
+	return NULL;
+}
+static inline void dw_dma_of_controller_register(struct dw_dma *dw) {}
+static inline void dw_dma_of_controller_free(struct dw_dma *dw) {}
+#endif
+
+struct dw_dma_chip_pdata {
+	const struct dw_dma_platform_data *pdata;
+	int (*probe)(struct dw_dma_chip *chip);
+	int (*remove)(struct dw_dma_chip *chip);
+	struct dw_dma_chip *chip;
 };
 
-/* Export to the platform drivers */
-int dw_dma_probe(struct dw_dma_chip *chip, struct dw_dma_platform_data *pdata);
-int dw_dma_remove(struct dw_dma_chip *chip);
+static __maybe_unused const struct dw_dma_chip_pdata dw_dma_chip_pdata = {
+	.probe = dw_dma_probe,
+	.remove = dw_dma_remove,
+};
 
-void dw_dma_shutdown(struct dw_dma_chip *chip);
+static const struct dw_dma_platform_data idma32_pdata = {
+	.nr_channels = 8,
+	.chan_allocation_order = CHAN_ALLOCATION_ASCENDING,
+	.chan_priority = CHAN_PRIORITY_ASCENDING,
+	.block_size = 131071,
+	.nr_masters = 1,
+	.data_width = {4},
+	.multi_block = {1, 1, 1, 1, 1, 1, 1, 1},
+};
 
-#ifdef CONFIG_PM_SLEEP
+static __maybe_unused const struct dw_dma_chip_pdata idma32_chip_pdata = {
+	.pdata = &idma32_pdata,
+	.probe = idma32_dma_probe,
+	.remove = idma32_dma_remove,
+};
 
-int dw_dma_suspend(struct dw_dma_chip *chip);
-int dw_dma_resume(struct dw_dma_chip *chip);
+static const struct dw_dma_platform_data xbar_pdata = {
+	.nr_channels = 8,
+	.chan_allocation_order = CHAN_ALLOCATION_ASCENDING,
+	.chan_priority = CHAN_PRIORITY_ASCENDING,
+	.block_size = 131071,
+	.nr_masters = 1,
+	.data_width = {4},
+	.quirks = DW_DMA_QUIRK_XBAR_PRESENT,
+};
 
-#endif /* CONFIG_PM_SLEEP */
+static __maybe_unused const struct dw_dma_chip_pdata xbar_chip_pdata = {
+	.pdata = &xbar_pdata,
+	.probe = idma32_dma_probe,
+	.remove = idma32_dma_remove,
+};
 
-/**
- * dwc_get_dms - get destination master
- * @slave:	pointer to the custom slave configuration
- *
- * Returns destination master in the custom slave configuration if defined, or
- * default value otherwise.
- */
-static inline unsigned int dwc_get_dms(struct dw_dma_slave *slave)
-{
-	return slave ? slave->dst_master : 0;
-}
-
-/**
- * dwc_get_sms - get source master
- * @slave:	pointer to the custom slave configuration
- *
- * Returns source master in the custom slave configuration if defined, or
- * default value otherwise.
- */
-static inline unsigned int dwc_get_sms(struct dw_dma_slave *slave)
-{
-	return slave ? slave->src_master : 1;
-}
-
-#endif /* _DW_DMAC_INTERNAL_H */
+#endif /* _DMA_DW_INTERNAL_H */

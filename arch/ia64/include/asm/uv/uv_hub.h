@@ -108,7 +108,7 @@ struct uv_hub_info_s {
 	unsigned char	n_val;
 };
 DECLARE_PER_CPU(struct uv_hub_info_s, __uv_hub_info);
-#define uv_hub_info 		(&__get_cpu_var(__uv_hub_info))
+#define uv_hub_info 		this_cpu_ptr(&__uv_hub_info)
 #define uv_cpu_hub_info(cpu)	(&per_cpu(__uv_hub_info, cpu))
 
 /*
@@ -257,7 +257,7 @@ static inline int uv_numa_blade_id(void)
 	return 0;
 }
 
-/* Convert a cpu number to the the UV blade number */
+/* Convert a cpu number to the UV blade number */
 static inline int uv_cpu_to_blade_id(int cpu)
 {
 	return 0;

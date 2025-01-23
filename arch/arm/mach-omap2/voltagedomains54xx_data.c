@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMAP5 Voltage Management Routines
  *
  * Based on voltagedomains44xx_data.c
  *
- * Copyright (C) 2013 Texas Instruments Incorporated - http://www.ti.com
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Copyright (C) 2013 Texas Instruments Incorporated - https://www.ti.com
  */
 #include <linux/kernel.h>
 #include <linux/err.h>
@@ -78,7 +75,7 @@ static struct voltagedomain *voltagedomains_omap5[] __initdata = {
 	NULL,
 };
 
-static const char *sys_clk_name __initdata = "sys_clkin";
+static const char *const sys_clk_name __initconst = "sys_clkin";
 
 void __init omap54xx_voltagedomains_init(void)
 {

@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  drivers/rtc/rtc-pcf8583.c
  *
  *  Copyright (C) 2000 Russell King
  *  Copyright (C) 2008 Wolfram Sang & Juergen Beisert, Pengutronix
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  *  Driver for PCF8583 RTC & RAM chip
  *
@@ -176,7 +173,11 @@ static int pcf8583_rtc_read_time(struct device *dev, struct rtc_time *tm)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	unsigned char ctrl, year[2];
-	struct rtc_mem mem = { CMOS_YEAR, sizeof(year), year };
+	struct rtc_mem mem = {
+		.loc = CMOS_YEAR,
+		.nr = sizeof(year),
+		.data = year
+	};
 	int real_year, year_offset, err;
 
 	/*
@@ -222,8 +223,16 @@ static int pcf8583_rtc_set_time(struct device *dev, struct rtc_time *tm)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	unsigned char year[2], chk;
-	struct rtc_mem cmos_year  = { CMOS_YEAR, sizeof(year), year };
-	struct rtc_mem cmos_check = { CMOS_CHECKSUM, 1, &chk };
+	struct rtc_mem cmos_year  = {
+		.loc = CMOS_YEAR,
+		.nr = sizeof(year),
+		.data = year
+	};
+	struct rtc_mem cmos_check = {
+		.loc = CMOS_CHECKSUM,
+		.nr = 1,
+		.data = &chk
+	};
 	unsigned int proper_year = tm->tm_year + 1900;
 	int ret;
 
@@ -266,8 +275,7 @@ static const struct rtc_class_ops pcf8583_rtc_ops = {
 	.set_time	= pcf8583_rtc_set_time,
 };
 
-static int pcf8583_probe(struct i2c_client *client,
-				const struct i2c_device_id *id)
+static int pcf8583_probe(struct i2c_client *client)
 {
 	struct pcf8583 *pcf8583;
 
@@ -297,7 +305,6 @@ MODULE_DEVICE_TABLE(i2c, pcf8583_id);
 static struct i2c_driver pcf8583_driver = {
 	.driver = {
 		.name	= "pcf8583",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= pcf8583_probe,
 	.id_table	= pcf8583_id,

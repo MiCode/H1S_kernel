@@ -1,10 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Analog Devices ADAU1373 Audio Codec drive
  *
  * Copyright 2011 Analog Devices Inc.
  * Author: Lars-Peter Clausen <lars@metafoo.de>
- *
- * Licensed under the GPL-2 or later.
  */
 
 #include <linux/module.h>
@@ -13,7 +12,6 @@
 #include <linux/pm.h>
 #include <linux/i2c.h>
 #include <linux/slab.h>
-#include <linux/gcd.h>
 
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -23,12 +21,13 @@
 #include <sound/adau1373.h>
 
 #include "adau1373.h"
+#include "adau-utils.h"
 
 struct adau1373_dai {
 	unsigned int clk_src;
 	unsigned int sysclk;
 	bool enable_src;
-	bool master;
+	bool clock_provider;
 };
 
 struct adau1373 {
@@ -320,13 +319,12 @@ static const struct reg_default adau1373_reg_defaults[] = {
 	{ ADAU1373_DIGEN,		0x00 },
 };
 
-static const unsigned int adau1373_out_tlv[] = {
-	TLV_DB_RANGE_HEAD(4),
+static const DECLARE_TLV_DB_RANGE(adau1373_out_tlv,
 	0, 7, TLV_DB_SCALE_ITEM(-7900, 400, 1),
 	8, 15, TLV_DB_SCALE_ITEM(-4700, 300, 0),
 	16, 23, TLV_DB_SCALE_ITEM(-2300, 200, 0),
-	24, 31, TLV_DB_SCALE_ITEM(-700, 100, 0),
-};
+	24, 31, TLV_DB_SCALE_ITEM(-700, 100, 0)
+);
 
 static const DECLARE_TLV_DB_MINMAX(adau1373_digital_tlv, -9563, 0);
 static const DECLARE_TLV_DB_SCALE(adau1373_in_pga_tlv, -1300, 100, 1);
@@ -345,15 +343,15 @@ static const char *adau1373_fdsp_sel_text[] = {
 	"Channel 5",
 };
 
-static const SOC_ENUM_SINGLE_DECL(adau1373_drc1_channel_enum,
+static SOC_ENUM_SINGLE_DECL(adau1373_drc1_channel_enum,
 	ADAU1373_FDSP_SEL1, 4, adau1373_fdsp_sel_text);
-static const SOC_ENUM_SINGLE_DECL(adau1373_drc2_channel_enum,
+static SOC_ENUM_SINGLE_DECL(adau1373_drc2_channel_enum,
 	ADAU1373_FDSP_SEL1, 0, adau1373_fdsp_sel_text);
-static const SOC_ENUM_SINGLE_DECL(adau1373_drc3_channel_enum,
+static SOC_ENUM_SINGLE_DECL(adau1373_drc3_channel_enum,
 	ADAU1373_FDSP_SEL2, 0, adau1373_fdsp_sel_text);
-static const SOC_ENUM_SINGLE_DECL(adau1373_hpf_channel_enum,
+static SOC_ENUM_SINGLE_DECL(adau1373_hpf_channel_enum,
 	ADAU1373_FDSP_SEL3, 0, adau1373_fdsp_sel_text);
-static const SOC_ENUM_SINGLE_DECL(adau1373_bass_channel_enum,
+static SOC_ENUM_SINGLE_DECL(adau1373_bass_channel_enum,
 	ADAU1373_FDSP_SEL4, 4, adau1373_fdsp_sel_text);
 
 static const char *adau1373_hpf_cutoff_text[] = {
@@ -362,7 +360,7 @@ static const char *adau1373_hpf_cutoff_text[] = {
 	"800Hz",
 };
 
-static const SOC_ENUM_SINGLE_DECL(adau1373_hpf_cutoff_enum,
+static SOC_ENUM_SINGLE_DECL(adau1373_hpf_cutoff_enum,
 	ADAU1373_HPF_CTRL, 3, adau1373_hpf_cutoff_text);
 
 static const char *adau1373_bass_lpf_cutoff_text[] = {
@@ -381,21 +379,20 @@ static const char *adau1373_bass_hpf_cutoff_text[] = {
 	"158Hz", "232Hz", "347Hz", "520Hz",
 };
 
-static const unsigned int adau1373_bass_tlv[] = {
-	TLV_DB_RANGE_HEAD(3),
+static const DECLARE_TLV_DB_RANGE(adau1373_bass_tlv,
 	0, 2, TLV_DB_SCALE_ITEM(-600, 600, 1),
 	3, 4, TLV_DB_SCALE_ITEM(950, 250, 0),
-	5, 7, TLV_DB_SCALE_ITEM(1400, 150, 0),
-};
+	5, 7, TLV_DB_SCALE_ITEM(1400, 150, 0)
+);
 
-static const SOC_ENUM_SINGLE_DECL(adau1373_bass_lpf_cutoff_enum,
+static SOC_ENUM_SINGLE_DECL(adau1373_bass_lpf_cutoff_enum,
 	ADAU1373_BASS1, 5, adau1373_bass_lpf_cutoff_text);
 
-static const SOC_VALUE_ENUM_SINGLE_DECL(adau1373_bass_clip_level_enum,
+static SOC_VALUE_ENUM_SINGLE_DECL(adau1373_bass_clip_level_enum,
 	ADAU1373_BASS1, 2, 7, adau1373_bass_clip_level_text,
 	adau1373_bass_clip_level_values);
 
-static const SOC_ENUM_SINGLE_DECL(adau1373_bass_hpf_cutoff_enum,
+static SOC_ENUM_SINGLE_DECL(adau1373_bass_hpf_cutoff_enum,
 	ADAU1373_BASS1, 0, adau1373_bass_hpf_cutoff_text);
 
 static const char *adau1373_3d_level_text[] = {
@@ -409,16 +406,15 @@ static const char *adau1373_3d_cutoff_text[] = {
 	"0.16875 fs", "0.27083 fs"
 };
 
-static const SOC_ENUM_SINGLE_DECL(adau1373_3d_level_enum,
+static SOC_ENUM_SINGLE_DECL(adau1373_3d_level_enum,
 	ADAU1373_3D_CTRL1, 4, adau1373_3d_level_text);
-static const SOC_ENUM_SINGLE_DECL(adau1373_3d_cutoff_enum,
+static SOC_ENUM_SINGLE_DECL(adau1373_3d_cutoff_enum,
 	ADAU1373_3D_CTRL1, 0, adau1373_3d_cutoff_text);
 
-static const unsigned int adau1373_3d_tlv[] = {
-	TLV_DB_RANGE_HEAD(2),
+static const DECLARE_TLV_DB_RANGE(adau1373_3d_tlv,
 	0, 0, TLV_DB_SCALE_ITEM(0, 0, 0),
-	1, 7, TLV_DB_LINEAR_ITEM(-1800, -120),
-};
+	1, 7, TLV_DB_LINEAR_ITEM(-1800, -120)
+);
 
 static const char *adau1373_lr_mux_text[] = {
 	"Mute",
@@ -427,11 +423,11 @@ static const char *adau1373_lr_mux_text[] = {
 	"Stereo",
 };
 
-static const SOC_ENUM_SINGLE_DECL(adau1373_lineout1_lr_mux_enum,
+static SOC_ENUM_SINGLE_DECL(adau1373_lineout1_lr_mux_enum,
 	ADAU1373_OUTPUT_CTRL, 4, adau1373_lr_mux_text);
-static const SOC_ENUM_SINGLE_DECL(adau1373_lineout2_lr_mux_enum,
+static SOC_ENUM_SINGLE_DECL(adau1373_lineout2_lr_mux_enum,
 	ADAU1373_OUTPUT_CTRL, 6, adau1373_lr_mux_text);
-static const SOC_ENUM_SINGLE_DECL(adau1373_speaker_lr_mux_enum,
+static SOC_ENUM_SINGLE_DECL(adau1373_speaker_lr_mux_enum,
 	ADAU1373_LS_CTRL, 4, adau1373_lr_mux_text);
 
 static const struct snd_kcontrol_new adau1373_controls[] = {
@@ -519,8 +515,7 @@ static const struct snd_kcontrol_new adau1373_controls[] = {
 	SOC_ENUM("HPF Channel", adau1373_hpf_channel_enum),
 
 	SOC_ENUM("Bass HPF Cutoff", adau1373_bass_hpf_cutoff_enum),
-	SOC_VALUE_ENUM("Bass Clip Level Threshold",
-	    adau1373_bass_clip_level_enum),
+	SOC_ENUM("Bass Clip Level Threshold", adau1373_bass_clip_level_enum),
 	SOC_ENUM("Bass LPF Cutoff", adau1373_bass_lpf_cutoff_enum),
 	SOC_DOUBLE("Bass Playback Switch", ADAU1373_BASS2, 0, 1, 1, 0),
 	SOC_SINGLE_TLV("Bass Playback Volume", ADAU1373_BASS2, 2, 7, 0,
@@ -552,8 +547,8 @@ static const struct snd_kcontrol_new adau1373_drc_controls[] = {
 static int adau1373_pll_event(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
-	struct snd_soc_codec *codec = w->codec;
-	struct adau1373 *adau1373 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+	struct adau1373 *adau1373 = snd_soc_component_get_drvdata(component);
 	unsigned int pll_id = w->name[3] - '1';
 	unsigned int val;
 
@@ -576,11 +571,11 @@ static const char *adau1373_decimator_text[] = {
 	"DMIC1",
 };
 
-static const struct soc_enum adau1373_decimator_enum =
-	SOC_ENUM_SINGLE(0, 0, 2, adau1373_decimator_text);
+static SOC_ENUM_SINGLE_VIRT_DECL(adau1373_decimator_enum,
+	adau1373_decimator_text);
 
 static const struct snd_kcontrol_new adau1373_decimator_mux =
-	SOC_DAPM_ENUM_VIRT("Decimator Mux", adau1373_decimator_enum);
+	SOC_DAPM_ENUM("Decimator Mux", adau1373_decimator_enum);
 
 static const struct snd_kcontrol_new adau1373_left_adc_mixer_controls[] = {
 	SOC_DAPM_SINGLE("DAC1 Switch", ADAU1373_LADC_MIXER, 4, 1, 0),
@@ -694,7 +689,7 @@ static const struct snd_soc_dapm_widget adau1373_dapm_widgets[] = {
 	SND_SOC_DAPM_ADC("DMIC1", NULL, ADAU1373_DIGMICCTRL, 0, 0),
 	SND_SOC_DAPM_ADC("DMIC2", NULL, ADAU1373_DIGMICCTRL, 2, 0),
 
-	SND_SOC_DAPM_VIRT_MUX("Decimator Mux", SND_SOC_NOPM, 0, 0,
+	SND_SOC_DAPM_MUX("Decimator Mux", SND_SOC_NOPM, 0, 0,
 		&adau1373_decimator_mux),
 
 	SND_SOC_DAPM_SUPPLY("MICBIAS2", ADAU1373_PWDN_CTRL1, 5, 0, NULL, 0),
@@ -824,14 +819,14 @@ static const struct snd_soc_dapm_widget adau1373_dapm_widgets[] = {
 static int adau1373_check_aif_clk(struct snd_soc_dapm_widget *source,
 	struct snd_soc_dapm_widget *sink)
 {
-	struct snd_soc_codec *codec = source->codec;
-	struct adau1373 *adau1373 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = snd_soc_dapm_to_component(source->dapm);
+	struct adau1373 *adau1373 = snd_soc_component_get_drvdata(component);
 	unsigned int dai;
 	const char *clk;
 
 	dai = sink->name[3] - '1';
 
-	if (!adau1373->dais[dai].master)
+	if (!adau1373->dais[dai].clock_provider)
 		return 0;
 
 	if (adau1373->dais[dai].clk_src == ADAU1373_CLK_SRC_PLL1)
@@ -845,8 +840,8 @@ static int adau1373_check_aif_clk(struct snd_soc_dapm_widget *source,
 static int adau1373_check_src(struct snd_soc_dapm_widget *source,
 	struct snd_soc_dapm_widget *sink)
 {
-	struct snd_soc_codec *codec = source->codec;
-	struct adau1373 *adau1373 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = snd_soc_dapm_to_component(source->dapm);
+	struct adau1373 *adau1373 = snd_soc_component_get_drvdata(component);
 	unsigned int dai;
 
 	dai = sink->name[3] - '1';
@@ -1034,8 +1029,8 @@ static const struct snd_soc_dapm_route adau1373_dapm_routes[] = {
 static int adau1373_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *params, struct snd_soc_dai *dai)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct adau1373 *adau1373 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = dai->component;
+	struct adau1373 *adau1373 = snd_soc_component_get_drvdata(component);
 	struct adau1373_dai *adau1373_dai = &adau1373->dais[dai->id];
 	unsigned int div;
 	unsigned int freq;
@@ -1101,19 +1096,19 @@ static int adau1373_hw_params(struct snd_pcm_substream *substream,
 
 static int adau1373_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct adau1373 *adau1373 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = dai->component;
+	struct adau1373 *adau1373 = snd_soc_component_get_drvdata(component);
 	struct adau1373_dai *adau1373_dai = &adau1373->dais[dai->id];
 	unsigned int ctrl;
 
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_CBP_CFP:
 		ctrl = ADAU1373_DAI_MASTER;
-		adau1373_dai->master = true;
+		adau1373_dai->clock_provider = true;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		ctrl = 0;
-		adau1373_dai->master = false;
+		adau1373_dai->clock_provider = false;
 		break;
 	default:
 		return -EINVAL;
@@ -1161,7 +1156,7 @@ static int adau1373_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 static int adau1373_set_dai_sysclk(struct snd_soc_dai *dai,
 	int clk_id, unsigned int freq, int dir)
 {
-	struct adau1373 *adau1373 = snd_soc_codec_get_drvdata(dai->codec);
+	struct adau1373 *adau1373 = snd_soc_component_get_drvdata(dai->component);
 	struct adau1373_dai *adau1373_dai = &adau1373->dais[dai->id];
 
 	switch (clk_id) {
@@ -1209,7 +1204,7 @@ static struct snd_soc_dai_driver adau1373_dai_driver[] = {
 			.formats = ADAU1373_FORMATS,
 		},
 		.ops = &adau1373_dai_ops,
-		.symmetric_rates = 1,
+		.symmetric_rate = 1,
 	},
 	{
 		.id = 1,
@@ -1229,7 +1224,7 @@ static struct snd_soc_dai_driver adau1373_dai_driver[] = {
 			.formats = ADAU1373_FORMATS,
 		},
 		.ops = &adau1373_dai_ops,
-		.symmetric_rates = 1,
+		.symmetric_rate = 1,
 	},
 	{
 		.id = 2,
@@ -1249,16 +1244,17 @@ static struct snd_soc_dai_driver adau1373_dai_driver[] = {
 			.formats = ADAU1373_FORMATS,
 		},
 		.ops = &adau1373_dai_ops,
-		.symmetric_rates = 1,
+		.symmetric_rate = 1,
 	},
 };
 
-static int adau1373_set_pll(struct snd_soc_codec *codec, int pll_id,
+static int adau1373_set_pll(struct snd_soc_component *component, int pll_id,
 	int source, unsigned int freq_in, unsigned int freq_out)
 {
-	struct adau1373 *adau1373 = snd_soc_codec_get_drvdata(codec);
+	struct adau1373 *adau1373 = snd_soc_component_get_drvdata(component);
 	unsigned int dpll_div = 0;
-	unsigned int x, r, n, m, i, j, mode;
+	uint8_t pll_regs[5];
+	int ret;
 
 	switch (pll_id) {
 	case ADAU1373_PLL1:
@@ -1299,27 +1295,8 @@ static int adau1373_set_pll(struct snd_soc_codec *codec, int pll_id,
 		dpll_div++;
 	}
 
-	if (freq_out % freq_in != 0) {
-		/* fout = fin * (r + (n/m)) / x */
-		x = DIV_ROUND_UP(freq_in, 13500000);
-		freq_in /= x;
-		r = freq_out / freq_in;
-		i = freq_out % freq_in;
-		j = gcd(i, freq_in);
-		n = i / j;
-		m = freq_in / j;
-		x--;
-		mode = 1;
-	} else {
-		/* fout = fin / r */
-		r = freq_out / freq_in;
-		n = 0;
-		m = 0;
-		x = 0;
-		mode = 0;
-	}
-
-	if (r < 2 || r > 8 || x > 3 || m > 0xffff || n > 0xffff)
+	ret = adau_calc_pll_cfg(freq_in, freq_out, pll_regs);
+	if (ret)
 		return -EINVAL;
 
 	if (dpll_div) {
@@ -1334,12 +1311,11 @@ static int adau1373_set_pll(struct snd_soc_codec *codec, int pll_id,
 
 	regmap_write(adau1373->regmap, ADAU1373_DPLL_CTRL(pll_id),
 		(source << 4) | dpll_div);
-	regmap_write(adau1373->regmap, ADAU1373_PLL_CTRL1(pll_id), (m >> 8) & 0xff);
-	regmap_write(adau1373->regmap, ADAU1373_PLL_CTRL2(pll_id), m & 0xff);
-	regmap_write(adau1373->regmap, ADAU1373_PLL_CTRL3(pll_id), (n >> 8) & 0xff);
-	regmap_write(adau1373->regmap, ADAU1373_PLL_CTRL4(pll_id), n & 0xff);
-	regmap_write(adau1373->regmap, ADAU1373_PLL_CTRL5(pll_id),
-		(r << 3) | (x << 1) | mode);
+	regmap_write(adau1373->regmap, ADAU1373_PLL_CTRL1(pll_id), pll_regs[0]);
+	regmap_write(adau1373->regmap, ADAU1373_PLL_CTRL2(pll_id), pll_regs[1]);
+	regmap_write(adau1373->regmap, ADAU1373_PLL_CTRL3(pll_id), pll_regs[2]);
+	regmap_write(adau1373->regmap, ADAU1373_PLL_CTRL4(pll_id), pll_regs[3]);
+	regmap_write(adau1373->regmap, ADAU1373_PLL_CTRL5(pll_id), pll_regs[4]);
 
 	/* Set sysclk to pll_rate / 4 */
 	regmap_update_bits(adau1373->regmap, ADAU1373_CLK_SRC_DIV(pll_id), 0x3f, 0x09);
@@ -1370,20 +1346,13 @@ static bool adau1373_valid_micbias(enum adau1373_micbias_voltage micbias)
 	return false;
 }
 
-static int adau1373_probe(struct snd_soc_codec *codec)
+static int adau1373_probe(struct snd_soc_component *component)
 {
-	struct adau1373 *adau1373 = snd_soc_codec_get_drvdata(codec);
-	struct adau1373_platform_data *pdata = codec->dev->platform_data;
+	struct adau1373 *adau1373 = snd_soc_component_get_drvdata(component);
+	struct adau1373_platform_data *pdata = component->dev->platform_data;
 	bool lineout_differential = false;
 	unsigned int val;
-	int ret;
 	int i;
-
-	ret = snd_soc_codec_set_cache_io(codec, 0, 0, SND_SOC_REGMAP);
-	if (ret) {
-		dev_err(codec->dev, "failed to set cache I/O: %d\n", ret);
-		return ret;
-	}
 
 	if (pdata) {
 		if (pdata->num_drc > ARRAY_SIZE(pdata->drc_setting))
@@ -1398,7 +1367,7 @@ static int adau1373_probe(struct snd_soc_codec *codec)
 				pdata->drc_setting[i]);
 		}
 
-		snd_soc_add_codec_controls(codec, adau1373_drc_controls,
+		snd_soc_add_component_controls(component, adau1373_drc_controls,
 			pdata->num_drc);
 
 		val = 0;
@@ -1423,7 +1392,7 @@ static int adau1373_probe(struct snd_soc_codec *codec)
 	}
 
 	if (!lineout_differential) {
-		snd_soc_add_codec_controls(codec, adau1373_lineout2_controls,
+		snd_soc_add_component_controls(component, adau1373_lineout2_controls,
 			ARRAY_SIZE(adau1373_lineout2_controls));
 	}
 
@@ -1433,10 +1402,10 @@ static int adau1373_probe(struct snd_soc_codec *codec)
 	return 0;
 }
 
-static int adau1373_set_bias_level(struct snd_soc_codec *codec,
+static int adau1373_set_bias_level(struct snd_soc_component *component,
 	enum snd_soc_bias_level level)
 {
-	struct adau1373 *adau1373 = snd_soc_codec_get_drvdata(codec);
+	struct adau1373 *adau1373 = snd_soc_component_get_drvdata(component);
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
@@ -1452,33 +1421,13 @@ static int adau1373_set_bias_level(struct snd_soc_codec *codec,
 			ADAU1373_PWDN_CTRL3_PWR_EN, 0);
 		break;
 	}
-	codec->dapm.bias_level = level;
 	return 0;
 }
 
-static int adau1373_remove(struct snd_soc_codec *codec)
+static int adau1373_resume(struct snd_soc_component *component)
 {
-	adau1373_set_bias_level(codec, SND_SOC_BIAS_OFF);
-	return 0;
-}
+	struct adau1373 *adau1373 = snd_soc_component_get_drvdata(component);
 
-static int adau1373_suspend(struct snd_soc_codec *codec)
-{
-	struct adau1373 *adau1373 = snd_soc_codec_get_drvdata(codec);
-	int ret;
-
-	ret = adau1373_set_bias_level(codec, SND_SOC_BIAS_OFF);
-	regcache_cache_only(adau1373->regmap, true);
-
-	return ret;
-}
-
-static int adau1373_resume(struct snd_soc_codec *codec)
-{
-	struct adau1373 *adau1373 = snd_soc_codec_get_drvdata(codec);
-
-	regcache_cache_only(adau1373->regmap, false);
-	adau1373_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
 	regcache_sync(adau1373->regmap);
 
 	return 0;
@@ -1502,31 +1451,27 @@ static const struct regmap_config adau1373_regmap_config = {
 	.volatile_reg = adau1373_register_volatile,
 	.max_register = ADAU1373_SOFT_RESET,
 
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = adau1373_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(adau1373_reg_defaults),
 };
 
-static struct snd_soc_codec_driver adau1373_codec_driver = {
-	.probe =	adau1373_probe,
-	.remove =	adau1373_remove,
-	.suspend =	adau1373_suspend,
-	.resume =	adau1373_resume,
-	.set_bias_level = adau1373_set_bias_level,
-	.idle_bias_off = true,
-
-	.set_pll = adau1373_set_pll,
-
-	.controls = adau1373_controls,
-	.num_controls = ARRAY_SIZE(adau1373_controls),
-	.dapm_widgets = adau1373_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(adau1373_dapm_widgets),
-	.dapm_routes = adau1373_dapm_routes,
-	.num_dapm_routes = ARRAY_SIZE(adau1373_dapm_routes),
+static const struct snd_soc_component_driver adau1373_component_driver = {
+	.probe			= adau1373_probe,
+	.resume			= adau1373_resume,
+	.set_bias_level		= adau1373_set_bias_level,
+	.set_pll		= adau1373_set_pll,
+	.controls		= adau1373_controls,
+	.num_controls		= ARRAY_SIZE(adau1373_controls),
+	.dapm_widgets		= adau1373_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(adau1373_dapm_widgets),
+	.dapm_routes		= adau1373_dapm_routes,
+	.num_dapm_routes	= ARRAY_SIZE(adau1373_dapm_routes),
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
 };
 
-static int adau1373_i2c_probe(struct i2c_client *client,
-			      const struct i2c_device_id *id)
+static int adau1373_i2c_probe(struct i2c_client *client)
 {
 	struct adau1373 *adau1373;
 	int ret;
@@ -1544,15 +1489,10 @@ static int adau1373_i2c_probe(struct i2c_client *client,
 
 	dev_set_drvdata(&client->dev, adau1373);
 
-	ret = snd_soc_register_codec(&client->dev, &adau1373_codec_driver,
+	ret = devm_snd_soc_register_component(&client->dev,
+			&adau1373_component_driver,
 			adau1373_dai_driver, ARRAY_SIZE(adau1373_dai_driver));
 	return ret;
-}
-
-static int adau1373_i2c_remove(struct i2c_client *client)
-{
-	snd_soc_unregister_codec(&client->dev);
-	return 0;
 }
 
 static const struct i2c_device_id adau1373_i2c_id[] = {
@@ -1564,10 +1504,8 @@ MODULE_DEVICE_TABLE(i2c, adau1373_i2c_id);
 static struct i2c_driver adau1373_i2c_driver = {
 	.driver = {
 		.name = "adau1373",
-		.owner = THIS_MODULE,
 	},
 	.probe = adau1373_i2c_probe,
-	.remove = adau1373_i2c_remove,
 	.id_table = adau1373_i2c_id,
 };
 

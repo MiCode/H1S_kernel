@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/arch/alpha/kernel/osf_sys.c
  *
@@ -11,7 +12,10 @@
  */
 
 #include <linux/errno.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/task_stack.h>
+#include <linux/sched/cputime.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/smp.h>
@@ -32,6 +36,7 @@
 #include <linux/types.h>
 #include <linux/ipc.h>
 #include <linux/namei.h>
+#include <linux/mount.h>
 #include <linux/uio.h>
 #include <linux/vfs.h>
 #include <linux/rcupdate.h>
@@ -39,7 +44,7 @@
 
 #include <asm/fpu.h>
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/sysinfo.h>
 #include <asm/thread_info.h>
 #include <asm/hwrpb.h>
@@ -92,7 +97,7 @@ struct osf_dirent {
 	unsigned int d_ino;
 	unsigned short d_reclen;
 	unsigned short d_namlen;
-	char d_name[1];
+	char d_name[];
 };
 
 struct osf_dirent_callback {
@@ -103,22 +108,23 @@ struct osf_dirent_callback {
 	int error;
 };
 
-static int
-osf_filldir(void *__buf, const char *name, int namlen, loff_t offset,
-	    u64 ino, unsigned int d_type)
+static bool
+osf_filldir(struct dir_context *ctx, const char *name, int namlen,
+	    loff_t offset, u64 ino, unsigned int d_type)
 {
 	struct osf_dirent __user *dirent;
-	struct osf_dirent_callback *buf = (struct osf_dirent_callback *) __buf;
+	struct osf_dirent_callback *buf =
+		container_of(ctx, struct osf_dirent_callback, ctx);
 	unsigned int reclen = ALIGN(NAME_OFFSET + namlen + 1, sizeof(u32));
 	unsigned int d_ino;
 
 	buf->error = -EINVAL;	/* only used if we fail */
 	if (reclen > buf->count)
-		return -EINVAL;
+		return false;
 	d_ino = ino;
 	if (sizeof(d_ino) < sizeof(ino) && d_ino != ino) {
 		buf->error = -EOVERFLOW;
-		return -EOVERFLOW;
+		return false;
 	}
 	if (buf->basep) {
 		if (put_user(offset, buf->basep))
@@ -135,10 +141,10 @@ osf_filldir(void *__buf, const char *name, int namlen, loff_t offset,
 	dirent = (void __user *)dirent + reclen;
 	buf->dirent = dirent;
 	buf->count -= reclen;
-	return 0;
+	return true;
 Efault:
 	buf->error = -EFAULT;
-	return -EFAULT;
+	return false;
 }
 
 SYSCALL_DEFINE4(osf_getdirentries, unsigned int, fd,
@@ -146,7 +152,7 @@ SYSCALL_DEFINE4(osf_getdirentries, unsigned int, fd,
 		long __user *, basep)
 {
 	int error;
-	struct fd arg = fdget(fd);
+	struct fd arg = fdget_pos(fd);
 	struct osf_dirent_callback buf = {
 		.ctx.actor = osf_filldir,
 		.dirent = dirent,
@@ -163,7 +169,7 @@ SYSCALL_DEFINE4(osf_getdirentries, unsigned int, fd,
 	if (count != buf.count)
 		error = count - buf.count;
 
-	fdput(arg);
+	fdput_pos(arg);
 	return error;
 }
 
@@ -184,7 +190,7 @@ SYSCALL_DEFINE6(osf_mmap, unsigned long, addr, unsigned long, len,
 		goto out;
 	if (off & ~PAGE_MASK)
 		goto out;
-	ret = sys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
+	ret = ksys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
  out:
 	return ret;
 }
@@ -446,7 +452,8 @@ struct procfs_args {
  * unhappy with OSF UFS. [CHECKME]
  */
 static int
-osf_ufs_mount(const char *dirname, struct ufs_args __user *args, int flags)
+osf_ufs_mount(const char __user *dirname,
+	      struct ufs_args __user *args, int flags)
 {
 	int retval;
 	struct cdfs_args tmp;
@@ -466,7 +473,8 @@ osf_ufs_mount(const char *dirname, struct ufs_args __user *args, int flags)
 }
 
 static int
-osf_cdfs_mount(const char *dirname, struct cdfs_args __user *args, int flags)
+osf_cdfs_mount(const char __user *dirname,
+	       struct cdfs_args __user *args, int flags)
 {
 	int retval;
 	struct cdfs_args tmp;
@@ -486,7 +494,8 @@ osf_cdfs_mount(const char *dirname, struct cdfs_args __user *args, int flags)
 }
 
 static int
-osf_procfs_mount(const char *dirname, struct procfs_args __user *args, int flags)
+osf_procfs_mount(const char __user *dirname,
+		 struct procfs_args __user *args, int flags)
 {
 	struct procfs_args tmp;
 
@@ -500,52 +509,40 @@ SYSCALL_DEFINE4(osf_mount, unsigned long, typenr, const char __user *, path,
 		int, flag, void __user *, data)
 {
 	int retval;
-	struct filename *name;
 
-	name = getname(path);
-	retval = PTR_ERR(name);
-	if (IS_ERR(name))
-		goto out;
 	switch (typenr) {
 	case 1:
-		retval = osf_ufs_mount(name->name, data, flag);
+		retval = osf_ufs_mount(path, data, flag);
 		break;
 	case 6:
-		retval = osf_cdfs_mount(name->name, data, flag);
+		retval = osf_cdfs_mount(path, data, flag);
 		break;
 	case 9:
-		retval = osf_procfs_mount(name->name, data, flag);
+		retval = osf_procfs_mount(path, data, flag);
 		break;
 	default:
 		retval = -EINVAL;
-		printk("osf_mount(%ld, %x)\n", typenr, flag);
+		printk_ratelimited("osf_mount(%ld, %x)\n", typenr, flag);
 	}
-	putname(name);
- out:
+
 	return retval;
 }
 
 SYSCALL_DEFINE1(osf_utsname, char __user *, name)
 {
-	int error;
+	char tmp[5 * 32];
 
 	down_read(&uts_sem);
-	error = -EFAULT;
-	if (copy_to_user(name + 0, utsname()->sysname, 32))
-		goto out;
-	if (copy_to_user(name + 32, utsname()->nodename, 32))
-		goto out;
-	if (copy_to_user(name + 64, utsname()->release, 32))
-		goto out;
-	if (copy_to_user(name + 96, utsname()->version, 32))
-		goto out;
-	if (copy_to_user(name + 128, utsname()->machine, 32))
-		goto out;
+	memcpy(tmp + 0 * 32, utsname()->sysname, 32);
+	memcpy(tmp + 1 * 32, utsname()->nodename, 32);
+	memcpy(tmp + 2 * 32, utsname()->release, 32);
+	memcpy(tmp + 3 * 32, utsname()->version, 32);
+	memcpy(tmp + 4 * 32, utsname()->machine, 32);
+	up_read(&uts_sem);
 
-	error = 0;
- out:
-	up_read(&uts_sem);	
-	return error;
+	if (copy_to_user(name, tmp, sizeof(tmp)))
+		return -EFAULT;
+	return 0;
 }
 
 SYSCALL_DEFINE0(getpagesize)
@@ -563,24 +560,22 @@ SYSCALL_DEFINE0(getdtablesize)
  */
 SYSCALL_DEFINE2(osf_getdomainname, char __user *, name, int, namelen)
 {
-	unsigned len;
-	int i;
+	int len;
+	char *kname;
+	char tmp[32];
 
-	if (!access_ok(VERIFY_WRITE, name, namelen))
-		return -EFAULT;
-
-	len = namelen;
-	if (len > 32)
-		len = 32;
+	if (namelen < 0 || namelen > 32)
+		namelen = 32;
 
 	down_read(&uts_sem);
-	for (i = 0; i < len; ++i) {
-		__put_user(utsname()->domainname[i], name + i);
-		if (utsname()->domainname[i] == '\0')
-			break;
-	}
+	kname = utsname()->domainname;
+	len = strnlen(kname, namelen);
+	len = min(len + 1, namelen);
+	memcpy(tmp, kname, len);
 	up_read(&uts_sem);
 
+	if (copy_to_user(name, tmp, len))
+		return -EFAULT;
 	return 0;
 }
 
@@ -683,7 +678,7 @@ SYSCALL_DEFINE2(osf_proplist_syscall, enum pl_code, code,
 	default:
 		error = -EOPNOTSUPP;
 		break;
-	};
+	}
 	return error;
 }
 
@@ -717,9 +712,8 @@ SYSCALL_DEFINE2(osf_sigstack, struct sigstack __user *, uss,
 
 	if (uoss) {
 		error = -EFAULT;
-		if (! access_ok(VERIFY_WRITE, uoss, sizeof(*uoss))
-		    || __put_user(oss_sp, &uoss->ss_sp)
-		    || __put_user(oss_os, &uoss->ss_onstack))
+		if (put_user(oss_sp, &uoss->ss_sp) ||
+		    put_user(oss_os, &uoss->ss_onstack))
 			goto out;
 	}
 
@@ -743,13 +737,14 @@ SYSCALL_DEFINE3(osf_sysinfo, int, command, char __user *, buf, long, count)
 	};
 	unsigned long offset;
 	const char *res;
-	long len, err = -EINVAL;
+	long len;
+	char tmp[__NEW_UTS_LEN + 1];
 
 	offset = command-1;
 	if (offset >= ARRAY_SIZE(sysinfo_table)) {
 		/* Digital UNIX has a few unpublished interfaces here */
 		printk("sysinfo(%d)", command);
-		goto out;
+		return -EINVAL;
 	}
 
 	down_read(&uts_sem);
@@ -757,13 +752,11 @@ SYSCALL_DEFINE3(osf_sysinfo, int, command, char __user *, buf, long, count)
 	len = strlen(res)+1;
 	if ((unsigned long)len > (unsigned long)count)
 		len = count;
-	if (copy_to_user(buf, res, len))
-		err = -EFAULT;
-	else
-		err = 0;
+	memcpy(tmp, res, len);
 	up_read(&uts_sem);
- out:
-	return err;
+	if (copy_to_user(buf, tmp, len))
+		return -EFAULT;
+	return 0;
 }
 
 SYSCALL_DEFINE5(osf_getsysinfo, unsigned long, op, void __user *, buffer,
@@ -842,7 +835,7 @@ SYSCALL_DEFINE5(osf_setsysinfo, unsigned long, op, void __user *, buffer,
 			return -EFAULT;
 		state = &current_thread_info()->ieee_state;
 
-		/* Update softare trap enable bits.  */
+		/* Update software trap enable bits.  */
 		*state = (*state & ~IEEE_SW_MASK) | (swcr & IEEE_SW_MASK);
 
 		/* Update the real fpcr.  */
@@ -862,7 +855,7 @@ SYSCALL_DEFINE5(osf_setsysinfo, unsigned long, op, void __user *, buffer,
 		state = &current_thread_info()->ieee_state;
 		exc &= IEEE_STATUS_MASK;
 
-		/* Update softare trap enable bits.  */
+		/* Update software trap enable bits.  */
  		swcr = (*state & IEEE_SW_MASK) | exc;
 		*state |= exc;
 
@@ -875,8 +868,7 @@ SYSCALL_DEFINE5(osf_setsysinfo, unsigned long, op, void __user *, buffer,
 		   send a signal.  Old exceptions are not signaled.  */
 		fex = (exc >> IEEE_STATUS_TO_EXCSUM_SHIFT) & swcr;
  		if (fex) {
-			siginfo_t info;
-			int si_code = 0;
+			int si_code = FPE_FLTUNK;
 
 			if (fex & IEEE_TRAP_ENABLE_DNO) si_code = FPE_FLTUND;
 			if (fex & IEEE_TRAP_ENABLE_INE) si_code = FPE_FLTRES;
@@ -885,11 +877,9 @@ SYSCALL_DEFINE5(osf_setsysinfo, unsigned long, op, void __user *, buffer,
 			if (fex & IEEE_TRAP_ENABLE_DZE) si_code = FPE_FLTDIV;
 			if (fex & IEEE_TRAP_ENABLE_INV) si_code = FPE_FLTINV;
 
-			info.si_signo = SIGFPE;
-			info.si_errno = 0;
-			info.si_code = si_code;
-			info.si_addr = NULL;  /* FIXME */
- 			send_sig_info(SIGFPE, &info, current);
+			send_sig_fault_trapno(SIGFPE, si_code,
+				       (void __user *)NULL,  /* FIXME */
+				       0, current);
  		}
 		return 0;
 	}
@@ -954,39 +944,32 @@ struct itimerval32
 };
 
 static inline long
-get_tv32(struct timeval *o, struct timeval32 __user *i)
+get_tv32(struct timespec64 *o, struct timeval32 __user *i)
 {
-	return (!access_ok(VERIFY_READ, i, sizeof(*i)) ||
-		(__get_user(o->tv_sec, &i->tv_sec) |
-		 __get_user(o->tv_usec, &i->tv_usec)));
+	struct timeval32 tv;
+	if (copy_from_user(&tv, i, sizeof(struct timeval32)))
+		return -EFAULT;
+	o->tv_sec = tv.tv_sec;
+	o->tv_nsec = tv.tv_usec * NSEC_PER_USEC;
+	return 0;
 }
 
 static inline long
-put_tv32(struct timeval32 __user *o, struct timeval *i)
+put_tv32(struct timeval32 __user *o, struct timespec64 *i)
 {
-	return (!access_ok(VERIFY_WRITE, o, sizeof(*o)) ||
-		(__put_user(i->tv_sec, &o->tv_sec) |
-		 __put_user(i->tv_usec, &o->tv_usec)));
+	return copy_to_user(o, &(struct timeval32){
+				.tv_sec = i->tv_sec,
+				.tv_usec = i->tv_nsec / NSEC_PER_USEC},
+			    sizeof(struct timeval32));
 }
 
 static inline long
-get_it32(struct itimerval *o, struct itimerval32 __user *i)
+put_tv_to_tv32(struct timeval32 __user *o, struct __kernel_old_timeval *i)
 {
-	return (!access_ok(VERIFY_READ, i, sizeof(*i)) ||
-		(__get_user(o->it_interval.tv_sec, &i->it_interval.tv_sec) |
-		 __get_user(o->it_interval.tv_usec, &i->it_interval.tv_usec) |
-		 __get_user(o->it_value.tv_sec, &i->it_value.tv_sec) |
-		 __get_user(o->it_value.tv_usec, &i->it_value.tv_usec)));
-}
-
-static inline long
-put_it32(struct itimerval32 __user *o, struct itimerval *i)
-{
-	return (!access_ok(VERIFY_WRITE, o, sizeof(*o)) ||
-		(__put_user(i->it_interval.tv_sec, &o->it_interval.tv_sec) |
-		 __put_user(i->it_interval.tv_usec, &o->it_interval.tv_usec) |
-		 __put_user(i->it_value.tv_sec, &o->it_value.tv_sec) |
-		 __put_user(i->it_value.tv_usec, &o->it_value.tv_usec)));
+	return copy_to_user(o, &(struct timeval32){
+				.tv_sec = i->tv_sec,
+				.tv_usec = i->tv_usec},
+			    sizeof(struct timeval32));
 }
 
 static inline void
@@ -1000,9 +983,10 @@ SYSCALL_DEFINE2(osf_gettimeofday, struct timeval32 __user *, tv,
 		struct timezone __user *, tz)
 {
 	if (tv) {
-		struct timeval ktv;
-		do_gettimeofday(&ktv);
-		if (put_tv32(tv, &ktv))
+		struct timespec64 kts;
+
+		ktime_get_real_ts64(&kts);
+		if (put_tv32(tv, &kts))
 			return -EFAULT;
 	}
 	if (tz) {
@@ -1015,11 +999,11 @@ SYSCALL_DEFINE2(osf_gettimeofday, struct timeval32 __user *, tv,
 SYSCALL_DEFINE2(osf_settimeofday, struct timeval32 __user *, tv,
 		struct timezone __user *, tz)
 {
-	struct timespec kts;
+	struct timespec64 kts;
 	struct timezone ktz;
 
  	if (tv) {
-		if (get_tv32((struct timeval *)&kts, tv))
+		if (get_tv32(&kts, tv))
 			return -EFAULT;
 	}
 	if (tz) {
@@ -1027,65 +1011,22 @@ SYSCALL_DEFINE2(osf_settimeofday, struct timeval32 __user *, tv,
 			return -EFAULT;
 	}
 
-	kts.tv_nsec *= 1000;
-
-	return do_sys_settimeofday(tv ? &kts : NULL, tz ? &ktz : NULL);
-}
-
-SYSCALL_DEFINE2(osf_getitimer, int, which, struct itimerval32 __user *, it)
-{
-	struct itimerval kit;
-	int error;
-
-	error = do_getitimer(which, &kit);
-	if (!error && put_it32(it, &kit))
-		error = -EFAULT;
-
-	return error;
-}
-
-SYSCALL_DEFINE3(osf_setitimer, int, which, struct itimerval32 __user *, in,
-		struct itimerval32 __user *, out)
-{
-	struct itimerval kin, kout;
-	int error;
-
-	if (in) {
-		if (get_it32(&kin, in))
-			return -EFAULT;
-	} else
-		memset(&kin, 0, sizeof(kin));
-
-	error = do_setitimer(which, &kin, out ? &kout : NULL);
-	if (error || !out)
-		return error;
-
-	if (put_it32(out, &kout))
-		return -EFAULT;
-
-	return 0;
-
+	return do_sys_settimeofday64(tv ? &kts : NULL, tz ? &ktz : NULL);
 }
 
 SYSCALL_DEFINE2(osf_utimes, const char __user *, filename,
 		struct timeval32 __user *, tvs)
 {
-	struct timespec tv[2];
+	struct timespec64 tv[2];
 
 	if (tvs) {
-		struct timeval ktvs[2];
-		if (get_tv32(&ktvs[0], &tvs[0]) ||
-		    get_tv32(&ktvs[1], &tvs[1]))
+		if (get_tv32(&tv[0], &tvs[0]) ||
+		    get_tv32(&tv[1], &tvs[1]))
 			return -EFAULT;
 
-		if (ktvs[0].tv_usec < 0 || ktvs[0].tv_usec >= 1000000 ||
-		    ktvs[1].tv_usec < 0 || ktvs[1].tv_usec >= 1000000)
+		if (tv[0].tv_nsec < 0 || tv[0].tv_nsec >= 1000000000 ||
+		    tv[1].tv_nsec < 0 || tv[1].tv_nsec >= 1000000000)
 			return -EINVAL;
-
-		tv[0].tv_sec = ktvs[0].tv_sec;
-		tv[0].tv_nsec = 1000 * ktvs[0].tv_usec;
-		tv[1].tv_sec = ktvs[1].tv_sec;
-		tv[1].tv_nsec = 1000 * ktvs[1].tv_usec;
 	}
 
 	return do_utimes(AT_FDCWD, filename, tvs ? tv : NULL, 0);
@@ -1094,22 +1035,18 @@ SYSCALL_DEFINE2(osf_utimes, const char __user *, filename,
 SYSCALL_DEFINE5(osf_select, int, n, fd_set __user *, inp, fd_set __user *, outp,
 		fd_set __user *, exp, struct timeval32 __user *, tvp)
 {
-	struct timespec end_time, *to = NULL;
+	struct timespec64 end_time, *to = NULL;
 	if (tvp) {
-		time_t sec, usec;
-
+		struct timespec64 tv;
 		to = &end_time;
 
-		if (!access_ok(VERIFY_READ, tvp, sizeof(*tvp))
-		    || __get_user(sec, &tvp->tv_sec)
-		    || __get_user(usec, &tvp->tv_usec)) {
+		if (get_tv32(&tv, tvp))
 		    	return -EFAULT;
-		}
 
-		if (sec < 0 || usec < 0)
+		if (tv.tv_sec < 0 || tv.tv_nsec < 0)
 			return -EINVAL;
 
-		if (poll_select_set_timeout(to, sec, usec * NSEC_PER_USEC))
+		if (poll_select_set_timeout(to, tv.tv_sec, tv.tv_nsec))
 			return -EINVAL;		
 
 	}
@@ -1140,7 +1077,8 @@ struct rusage32 {
 SYSCALL_DEFINE2(osf_getrusage, int, who, struct rusage32 __user *, ru)
 {
 	struct rusage32 r;
-	cputime_t utime, stime;
+	u64 utime, stime;
+	unsigned long utime_jiffies, stime_jiffies;
 
 	if (who != RUSAGE_SELF && who != RUSAGE_CHILDREN)
 		return -EINVAL;
@@ -1149,14 +1087,18 @@ SYSCALL_DEFINE2(osf_getrusage, int, who, struct rusage32 __user *, ru)
 	switch (who) {
 	case RUSAGE_SELF:
 		task_cputime(current, &utime, &stime);
-		jiffies_to_timeval32(utime, &r.ru_utime);
-		jiffies_to_timeval32(stime, &r.ru_stime);
+		utime_jiffies = nsecs_to_jiffies(utime);
+		stime_jiffies = nsecs_to_jiffies(stime);
+		jiffies_to_timeval32(utime_jiffies, &r.ru_utime);
+		jiffies_to_timeval32(stime_jiffies, &r.ru_stime);
 		r.ru_minflt = current->min_flt;
 		r.ru_majflt = current->maj_flt;
 		break;
 	case RUSAGE_CHILDREN:
-		jiffies_to_timeval32(current->signal->cutime, &r.ru_utime);
-		jiffies_to_timeval32(current->signal->cstime, &r.ru_stime);
+		utime_jiffies = nsecs_to_jiffies(current->signal->cutime);
+		stime_jiffies = nsecs_to_jiffies(current->signal->cstime);
+		jiffies_to_timeval32(utime_jiffies, &r.ru_utime);
+		jiffies_to_timeval32(stime_jiffies, &r.ru_stime);
 		r.ru_minflt = current->signal->cmin_flt;
 		r.ru_majflt = current->signal->cmaj_flt;
 		break;
@@ -1169,45 +1111,19 @@ SYSCALL_DEFINE4(osf_wait4, pid_t, pid, int __user *, ustatus, int, options,
 		struct rusage32 __user *, ur)
 {
 	struct rusage r;
-	long ret, err;
-	unsigned int status = 0;
-	mm_segment_t old_fs;
-
+	long err = kernel_wait4(pid, ustatus, options, &r);
+	if (err <= 0)
+		return err;
 	if (!ur)
-		return sys_wait4(pid, ustatus, options, NULL);
-
-	old_fs = get_fs();
-		
-	set_fs (KERNEL_DS);
-	ret = sys_wait4(pid, (unsigned int __user *) &status, options,
-			(struct rusage __user *) &r);
-	set_fs (old_fs);
-
-	if (!access_ok(VERIFY_WRITE, ur, sizeof(*ur)))
+		return err;
+	if (put_tv_to_tv32(&ur->ru_utime, &r.ru_utime))
 		return -EFAULT;
-
-	err = 0;
-	err |= put_user(status, ustatus);
-	err |= __put_user(r.ru_utime.tv_sec, &ur->ru_utime.tv_sec);
-	err |= __put_user(r.ru_utime.tv_usec, &ur->ru_utime.tv_usec);
-	err |= __put_user(r.ru_stime.tv_sec, &ur->ru_stime.tv_sec);
-	err |= __put_user(r.ru_stime.tv_usec, &ur->ru_stime.tv_usec);
-	err |= __put_user(r.ru_maxrss, &ur->ru_maxrss);
-	err |= __put_user(r.ru_ixrss, &ur->ru_ixrss);
-	err |= __put_user(r.ru_idrss, &ur->ru_idrss);
-	err |= __put_user(r.ru_isrss, &ur->ru_isrss);
-	err |= __put_user(r.ru_minflt, &ur->ru_minflt);
-	err |= __put_user(r.ru_majflt, &ur->ru_majflt);
-	err |= __put_user(r.ru_nswap, &ur->ru_nswap);
-	err |= __put_user(r.ru_inblock, &ur->ru_inblock);
-	err |= __put_user(r.ru_oublock, &ur->ru_oublock);
-	err |= __put_user(r.ru_msgsnd, &ur->ru_msgsnd);
-	err |= __put_user(r.ru_msgrcv, &ur->ru_msgrcv);
-	err |= __put_user(r.ru_nsignals, &ur->ru_nsignals);
-	err |= __put_user(r.ru_nvcsw, &ur->ru_nvcsw);
-	err |= __put_user(r.ru_nivcsw, &ur->ru_nivcsw);
-
-	return err ? err : ret;
+	if (put_tv_to_tv32(&ur->ru_stime, &r.ru_stime))
+		return -EFAULT;
+	if (copy_to_user(&ur->ru_maxrss, &r.ru_maxrss,
+	      sizeof(struct rusage32) - offsetof(struct rusage32, ru_maxrss)))
+		return -EFAULT;
+	return err;
 }
 
 /*
@@ -1218,18 +1134,18 @@ SYSCALL_DEFINE4(osf_wait4, pid_t, pid, int __user *, ustatus, int, options,
 SYSCALL_DEFINE2(osf_usleep_thread, struct timeval32 __user *, sleep,
 		struct timeval32 __user *, remain)
 {
-	struct timeval tmp;
+	struct timespec64 tmp;
 	unsigned long ticks;
 
 	if (get_tv32(&tmp, sleep))
 		goto fault;
 
-	ticks = timeval_to_jiffies(&tmp);
+	ticks = timespec64_to_jiffies(&tmp);
 
 	ticks = schedule_timeout_interruptible(ticks);
 
 	if (remain) {
-		jiffies_to_timeval(ticks, &tmp);
+		jiffies_to_timespec64(ticks, &tmp);
 		if (put_tv32(remain, &tmp))
 			goto fault;
 	}
@@ -1271,13 +1187,13 @@ struct timex32 {
 
 SYSCALL_DEFINE1(old_adjtimex, struct timex32 __user *, txc_p)
 {
-        struct timex txc;
+	struct __kernel_timex txc;
 	int ret;
 
 	/* copy relevant bits of struct timex. */
 	if (copy_from_user(&txc, txc_p, offsetof(struct timex32, time)) ||
 	    copy_from_user(&txc.tick, &txc_p->tick, sizeof(struct timex32) - 
-			   offsetof(struct timex32, time)))
+			   offsetof(struct timex32, tick)))
 	  return -EFAULT;
 
 	ret = do_adjtimex(&txc);	
@@ -1288,7 +1204,8 @@ SYSCALL_DEFINE1(old_adjtimex, struct timex32 __user *, txc_p)
 	if (copy_to_user(txc_p, &txc, offsetof(struct timex32, time)) ||
 	    (copy_to_user(&txc_p->tick, &txc.tick, sizeof(struct timex32) - 
 			  offsetof(struct timex32, tick))) ||
-	    (put_tv32(&txc_p->time, &txc.time)))
+	    (put_user(txc.time.tv_sec, &txc_p->time.tv_sec)) ||
+	    (put_user(txc.time.tv_usec, &txc_p->time.tv_usec)))
 	  return -EFAULT;
 
 	return ret;
@@ -1358,45 +1275,6 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
 
 	return addr;
 }
-
-#ifdef CONFIG_OSF4_COMPAT
-
-/* Clear top 32 bits of iov_len in the user's buffer for
-   compatibility with old versions of OSF/1 where iov_len
-   was defined as int. */
-static int
-osf_fix_iov_len(const struct iovec __user *iov, unsigned long count)
-{
-	unsigned long i;
-
-	for (i = 0 ; i < count ; i++) {
-		int __user *iov_len_high = (int __user *)&iov[i].iov_len + 1;
-
-		if (put_user(0, iov_len_high))
-			return -EFAULT;
-	}
-	return 0;
-}
-
-SYSCALL_DEFINE3(osf_readv, unsigned long, fd,
-		const struct iovec __user *, vector, unsigned long, count)
-{
-	if (unlikely(personality(current->personality) == PER_OSF4))
-		if (osf_fix_iov_len(vector, count))
-			return -EFAULT;
-	return sys_readv(fd, vector, count);
-}
-
-SYSCALL_DEFINE3(osf_writev, unsigned long, fd,
-		const struct iovec __user *, vector, unsigned long, count)
-{
-	if (unlikely(personality(current->personality) == PER_OSF4))
-		if (osf_fix_iov_len(vector, count))
-			return -EFAULT;
-	return sys_writev(fd, vector, count);
-}
-
-#endif
 
 SYSCALL_DEFINE2(osf_getpriority, int, which, int, who)
 {

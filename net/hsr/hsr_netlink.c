@@ -1,14 +1,10 @@
-/* Copyright 2011-2013 Autronica Fire and Security AS
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright 2011-2014 Autronica Fire and Security AS
  *
  * Author(s):
- *	2011-2013 Arvid Brodin, arvid.brodin@xdin.com
+ *	2011-2014 Arvid Brodin, arvid.brodin@alten.se
  *
- * Routines for handling Netlink messages for HSR.
+ * Routines for handling Netlink messages for HSR and PRP.
  */
 
 #include "hsr_netlink.h"
@@ -23,61 +19,130 @@ static const struct nla_policy hsr_policy[IFLA_HSR_MAX + 1] = {
 	[IFLA_HSR_SLAVE1]		= { .type = NLA_U32 },
 	[IFLA_HSR_SLAVE2]		= { .type = NLA_U32 },
 	[IFLA_HSR_MULTICAST_SPEC]	= { .type = NLA_U8 },
-	[IFLA_HSR_SUPERVISION_ADDR]	= { .type = NLA_BINARY, .len = ETH_ALEN },
+	[IFLA_HSR_VERSION]	= { .type = NLA_U8 },
+	[IFLA_HSR_SUPERVISION_ADDR]	= { .len = ETH_ALEN },
 	[IFLA_HSR_SEQ_NR]		= { .type = NLA_U16 },
+	[IFLA_HSR_PROTOCOL]		= { .type = NLA_U8 },
 };
-
 
 /* Here, it seems a netdevice has already been allocated for us, and the
  * hsr_dev_setup routine has been executed. Nice!
  */
 static int hsr_newlink(struct net *src_net, struct net_device *dev,
-		       struct nlattr *tb[], struct nlattr *data[])
+		       struct nlattr *tb[], struct nlattr *data[],
+		       struct netlink_ext_ack *extack)
 {
-	struct net_device *link[2];
+	enum hsr_version proto_version;
 	unsigned char multicast_spec;
+	u8 proto = HSR_PROTOCOL_HSR;
+	struct net_device *link[2];
 
+	if (!data) {
+		NL_SET_ERR_MSG_MOD(extack, "No slave devices specified");
+		return -EINVAL;
+	}
 	if (!data[IFLA_HSR_SLAVE1]) {
-		netdev_info(dev, "IFLA_HSR_SLAVE1 missing!\n");
+		NL_SET_ERR_MSG_MOD(extack, "Slave1 device not specified");
 		return -EINVAL;
 	}
-	link[0] = __dev_get_by_index(src_net, nla_get_u32(data[IFLA_HSR_SLAVE1]));
+	link[0] = __dev_get_by_index(src_net,
+				     nla_get_u32(data[IFLA_HSR_SLAVE1]));
+	if (!link[0]) {
+		NL_SET_ERR_MSG_MOD(extack, "Slave1 does not exist");
+		return -EINVAL;
+	}
 	if (!data[IFLA_HSR_SLAVE2]) {
-		netdev_info(dev, "IFLA_HSR_SLAVE2 missing!\n");
+		NL_SET_ERR_MSG_MOD(extack, "Slave2 device not specified");
 		return -EINVAL;
 	}
-	link[1] = __dev_get_by_index(src_net, nla_get_u32(data[IFLA_HSR_SLAVE2]));
-
-	if (!link[0] || !link[1])
-		return -ENODEV;
-	if (link[0] == link[1])
+	link[1] = __dev_get_by_index(src_net,
+				     nla_get_u32(data[IFLA_HSR_SLAVE2]));
+	if (!link[1]) {
+		NL_SET_ERR_MSG_MOD(extack, "Slave2 does not exist");
 		return -EINVAL;
+	}
+
+	if (link[0] == link[1]) {
+		NL_SET_ERR_MSG_MOD(extack, "Slave1 and Slave2 are same");
+		return -EINVAL;
+	}
 
 	if (!data[IFLA_HSR_MULTICAST_SPEC])
 		multicast_spec = 0;
 	else
 		multicast_spec = nla_get_u8(data[IFLA_HSR_MULTICAST_SPEC]);
 
-	return hsr_dev_finalize(dev, link, multicast_spec);
+	if (data[IFLA_HSR_PROTOCOL])
+		proto = nla_get_u8(data[IFLA_HSR_PROTOCOL]);
+
+	if (proto >= HSR_PROTOCOL_MAX) {
+		NL_SET_ERR_MSG_MOD(extack, "Unsupported protocol");
+		return -EINVAL;
+	}
+
+	if (!data[IFLA_HSR_VERSION]) {
+		proto_version = HSR_V0;
+	} else {
+		if (proto == HSR_PROTOCOL_PRP) {
+			NL_SET_ERR_MSG_MOD(extack, "PRP version unsupported");
+			return -EINVAL;
+		}
+
+		proto_version = nla_get_u8(data[IFLA_HSR_VERSION]);
+		if (proto_version > HSR_V1) {
+			NL_SET_ERR_MSG_MOD(extack,
+					   "Only HSR version 0/1 supported");
+			return -EINVAL;
+		}
+	}
+
+	if (proto == HSR_PROTOCOL_PRP)
+		proto_version = PRP_V1;
+
+	return hsr_dev_finalize(dev, link, multicast_spec, proto_version, extack);
+}
+
+static void hsr_dellink(struct net_device *dev, struct list_head *head)
+{
+	struct hsr_priv *hsr = netdev_priv(dev);
+
+	del_timer_sync(&hsr->prune_timer);
+	del_timer_sync(&hsr->announce_timer);
+
+	hsr_debugfs_term(hsr);
+	hsr_del_ports(hsr);
+
+	hsr_del_self_node(hsr);
+	hsr_del_nodes(&hsr->node_db);
+
+	unregister_netdevice_queue(dev, head);
 }
 
 static int hsr_fill_info(struct sk_buff *skb, const struct net_device *dev)
 {
-	struct hsr_priv *hsr_priv;
+	struct hsr_priv *hsr = netdev_priv(dev);
+	u8 proto = HSR_PROTOCOL_HSR;
+	struct hsr_port *port;
 
-	hsr_priv = netdev_priv(dev);
-
-	if (hsr_priv->slave[0])
-		if (nla_put_u32(skb, IFLA_HSR_SLAVE1, hsr_priv->slave[0]->ifindex))
+	port = hsr_port_get_hsr(hsr, HSR_PT_SLAVE_A);
+	if (port) {
+		if (nla_put_u32(skb, IFLA_HSR_SLAVE1, port->dev->ifindex))
 			goto nla_put_failure;
+	}
 
-	if (hsr_priv->slave[1])
-		if (nla_put_u32(skb, IFLA_HSR_SLAVE2, hsr_priv->slave[1]->ifindex))
+	port = hsr_port_get_hsr(hsr, HSR_PT_SLAVE_B);
+	if (port) {
+		if (nla_put_u32(skb, IFLA_HSR_SLAVE2, port->dev->ifindex))
 			goto nla_put_failure;
+	}
 
 	if (nla_put(skb, IFLA_HSR_SUPERVISION_ADDR, ETH_ALEN,
-		    hsr_priv->sup_multicast_addr) ||
-	    nla_put_u16(skb, IFLA_HSR_SEQ_NR, hsr_priv->sequence_nr))
+		    hsr->sup_multicast_addr) ||
+	    nla_put_u16(skb, IFLA_HSR_SEQ_NR, hsr->sequence_nr))
+		goto nla_put_failure;
+	if (hsr->prot_version == PRP_V1)
+		proto = HSR_PROTOCOL_PRP;
+	if (nla_put_u8(skb, IFLA_HSR_PROTOCOL, proto))
 		goto nla_put_failure;
 
 	return 0;
@@ -93,16 +158,14 @@ static struct rtnl_link_ops hsr_link_ops __read_mostly = {
 	.priv_size	= sizeof(struct hsr_priv),
 	.setup		= hsr_dev_setup,
 	.newlink	= hsr_newlink,
+	.dellink	= hsr_dellink,
 	.fill_info	= hsr_fill_info,
 };
 
-
-
 /* attribute policy */
-/* NLA_BINARY missing in libnl; use NLA_UNSPEC in userspace instead. */
 static const struct nla_policy hsr_genl_policy[HSR_A_MAX + 1] = {
-	[HSR_A_NODE_ADDR] = { .type = NLA_BINARY, .len = ETH_ALEN },
-	[HSR_A_NODE_ADDR_B] = { .type = NLA_BINARY, .len = ETH_ALEN },
+	[HSR_A_NODE_ADDR] = { .len = ETH_ALEN },
+	[HSR_A_NODE_ADDR_B] = { .len = ETH_ALEN },
 	[HSR_A_IFINDEX] = { .type = NLA_U32 },
 	[HSR_A_IF1_AGE] = { .type = NLA_U32 },
 	[HSR_A_IF2_AGE] = { .type = NLA_U32 },
@@ -110,37 +173,30 @@ static const struct nla_policy hsr_genl_policy[HSR_A_MAX + 1] = {
 	[HSR_A_IF2_SEQ] = { .type = NLA_U16 },
 };
 
-static struct genl_family hsr_genl_family = {
-	.id = GENL_ID_GENERATE,
-	.hdrsize = 0,
-	.name = "HSR",
-	.version = 1,
-	.maxattr = HSR_A_MAX,
-};
+static struct genl_family hsr_genl_family;
 
 static const struct genl_multicast_group hsr_mcgrps[] = {
 	{ .name = "hsr-network", },
 };
 
-
-
 /* This is called if for some node with MAC address addr, we only get frames
  * over one of the slave interfaces. This would indicate an open network ring
  * (i.e. a link has failed somewhere).
  */
-void hsr_nl_ringerror(struct hsr_priv *hsr_priv, unsigned char addr[ETH_ALEN],
-		      enum hsr_dev_idx dev_idx)
+void hsr_nl_ringerror(struct hsr_priv *hsr, unsigned char addr[ETH_ALEN],
+		      struct hsr_port *port)
 {
 	struct sk_buff *skb;
 	void *msg_head;
+	struct hsr_port *master;
 	int res;
-	int ifindex;
 
 	skb = genlmsg_new(NLMSG_GOODSIZE, GFP_ATOMIC);
 	if (!skb)
 		goto fail;
 
-	msg_head = genlmsg_put(skb, 0, 0, &hsr_genl_family, 0, HSR_C_RING_ERROR);
+	msg_head = genlmsg_put(skb, 0, 0, &hsr_genl_family, 0,
+			       HSR_C_RING_ERROR);
 	if (!msg_head)
 		goto nla_put_failure;
 
@@ -148,11 +204,7 @@ void hsr_nl_ringerror(struct hsr_priv *hsr_priv, unsigned char addr[ETH_ALEN],
 	if (res < 0)
 		goto nla_put_failure;
 
-	if (hsr_priv->slave[dev_idx])
-		ifindex = hsr_priv->slave[dev_idx]->ifindex;
-	else
-		ifindex = -1;
-	res = nla_put_u32(skb, HSR_A_IFINDEX, ifindex);
+	res = nla_put_u32(skb, HSR_A_IFINDEX, port->dev->ifindex);
 	if (res < 0)
 		goto nla_put_failure;
 
@@ -165,16 +217,20 @@ nla_put_failure:
 	kfree_skb(skb);
 
 fail:
-	netdev_warn(hsr_priv->dev, "Could not send HSR ring error message\n");
+	rcu_read_lock();
+	master = hsr_port_get_hsr(hsr, HSR_PT_MASTER);
+	netdev_warn(master->dev, "Could not send HSR ring error message\n");
+	rcu_read_unlock();
 }
 
 /* This is called when we haven't heard from the node with MAC address addr for
  * some time (just before the node is removed from the node table/list).
  */
-void hsr_nl_nodedown(struct hsr_priv *hsr_priv, unsigned char addr[ETH_ALEN])
+void hsr_nl_nodedown(struct hsr_priv *hsr, unsigned char addr[ETH_ALEN])
 {
 	struct sk_buff *skb;
 	void *msg_head;
+	struct hsr_port *master;
 	int res;
 
 	skb = genlmsg_new(NLMSG_GOODSIZE, GFP_ATOMIC);
@@ -185,7 +241,6 @@ void hsr_nl_nodedown(struct hsr_priv *hsr_priv, unsigned char addr[ETH_ALEN])
 	if (!msg_head)
 		goto nla_put_failure;
 
-
 	res = nla_put(skb, HSR_A_NODE_ADDR, ETH_ALEN, addr);
 	if (res < 0)
 		goto nla_put_failure;
@@ -199,9 +254,11 @@ nla_put_failure:
 	kfree_skb(skb);
 
 fail:
-	netdev_warn(hsr_priv->dev, "Could not send HSR node down\n");
+	rcu_read_lock();
+	master = hsr_port_get_hsr(hsr, HSR_PT_MASTER);
+	netdev_warn(master->dev, "Could not send HSR node down\n");
+	rcu_read_unlock();
 }
-
 
 /* HSR_C_GET_NODE_STATUS lets userspace query the internal HSR node table
  * about the status of a specific node in the network, defined by its MAC
@@ -220,7 +277,8 @@ static int hsr_get_node_status(struct sk_buff *skb_in, struct genl_info *info)
 	/* For sending */
 	struct sk_buff *skb_out;
 	void *msg_head;
-	struct hsr_priv *hsr_priv;
+	struct hsr_priv *hsr;
+	struct hsr_port *port;
 	unsigned char hsr_node_addr_b[ETH_ALEN];
 	int hsr_node_if1_age;
 	u16 hsr_node_if1_seq;
@@ -239,25 +297,24 @@ static int hsr_get_node_status(struct sk_buff *skb_in, struct genl_info *info)
 	if (!na)
 		goto invalid;
 
-	hsr_dev = __dev_get_by_index(genl_info_net(info),
-					nla_get_u32(info->attrs[HSR_A_IFINDEX]));
+	rcu_read_lock();
+	hsr_dev = dev_get_by_index_rcu(genl_info_net(info),
+				       nla_get_u32(info->attrs[HSR_A_IFINDEX]));
 	if (!hsr_dev)
-		goto invalid;
+		goto rcu_unlock;
 	if (!is_hsr_master(hsr_dev))
-		goto invalid;
-
+		goto rcu_unlock;
 
 	/* Send reply */
-
-	skb_out = genlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
+	skb_out = genlmsg_new(NLMSG_GOODSIZE, GFP_ATOMIC);
 	if (!skb_out) {
 		res = -ENOMEM;
 		goto fail;
 	}
 
 	msg_head = genlmsg_put(skb_out, NETLINK_CB(skb_in).portid,
-				info->snd_seq, &hsr_genl_family, 0,
-				HSR_C_SET_NODE_STATUS);
+			       info->snd_seq, &hsr_genl_family, 0,
+			       HSR_C_SET_NODE_STATUS);
 	if (!msg_head) {
 		res = -ENOMEM;
 		goto nla_put_failure;
@@ -267,30 +324,32 @@ static int hsr_get_node_status(struct sk_buff *skb_in, struct genl_info *info)
 	if (res < 0)
 		goto nla_put_failure;
 
-	hsr_priv = netdev_priv(hsr_dev);
-	res = hsr_get_node_data(hsr_priv,
-			(unsigned char *) nla_data(info->attrs[HSR_A_NODE_ADDR]),
-			hsr_node_addr_b,
-			&addr_b_ifindex,
-			&hsr_node_if1_age,
-			&hsr_node_if1_seq,
-			&hsr_node_if2_age,
-			&hsr_node_if2_seq);
+	hsr = netdev_priv(hsr_dev);
+	res = hsr_get_node_data(hsr,
+				(unsigned char *)
+				nla_data(info->attrs[HSR_A_NODE_ADDR]),
+					 hsr_node_addr_b,
+					 &addr_b_ifindex,
+					 &hsr_node_if1_age,
+					 &hsr_node_if1_seq,
+					 &hsr_node_if2_age,
+					 &hsr_node_if2_seq);
 	if (res < 0)
 		goto nla_put_failure;
 
 	res = nla_put(skb_out, HSR_A_NODE_ADDR, ETH_ALEN,
-					nla_data(info->attrs[HSR_A_NODE_ADDR]));
+		      nla_data(info->attrs[HSR_A_NODE_ADDR]));
 	if (res < 0)
 		goto nla_put_failure;
 
 	if (addr_b_ifindex > -1) {
 		res = nla_put(skb_out, HSR_A_NODE_ADDR_B, ETH_ALEN,
-								hsr_node_addr_b);
+			      hsr_node_addr_b);
 		if (res < 0)
 			goto nla_put_failure;
 
-		res = nla_put_u32(skb_out, HSR_A_ADDR_B_IFINDEX, addr_b_ifindex);
+		res = nla_put_u32(skb_out, HSR_A_ADDR_B_IFINDEX,
+				  addr_b_ifindex);
 		if (res < 0)
 			goto nla_put_failure;
 	}
@@ -301,9 +360,10 @@ static int hsr_get_node_status(struct sk_buff *skb_in, struct genl_info *info)
 	res = nla_put_u16(skb_out, HSR_A_IF1_SEQ, hsr_node_if1_seq);
 	if (res < 0)
 		goto nla_put_failure;
-	if (hsr_priv->slave[0])
+	port = hsr_port_get_hsr(hsr, HSR_PT_SLAVE_A);
+	if (port)
 		res = nla_put_u32(skb_out, HSR_A_IF1_IFINDEX,
-						hsr_priv->slave[0]->ifindex);
+				  port->dev->ifindex);
 	if (res < 0)
 		goto nla_put_failure;
 
@@ -313,17 +373,24 @@ static int hsr_get_node_status(struct sk_buff *skb_in, struct genl_info *info)
 	res = nla_put_u16(skb_out, HSR_A_IF2_SEQ, hsr_node_if2_seq);
 	if (res < 0)
 		goto nla_put_failure;
-	if (hsr_priv->slave[1])
+	port = hsr_port_get_hsr(hsr, HSR_PT_SLAVE_B);
+	if (port)
 		res = nla_put_u32(skb_out, HSR_A_IF2_IFINDEX,
-						hsr_priv->slave[1]->ifindex);
+				  port->dev->ifindex);
+	if (res < 0)
+		goto nla_put_failure;
+
+	rcu_read_unlock();
 
 	genlmsg_end(skb_out, msg_head);
 	genlmsg_unicast(genl_info_net(info), skb_out, info->snd_portid);
 
 	return 0;
 
+rcu_unlock:
+	rcu_read_unlock();
 invalid:
-	netlink_ack(skb_in, nlmsg_hdr(skb_in), -EINVAL);
+	netlink_ack(skb_in, nlmsg_hdr(skb_in), -EINVAL, NULL);
 	return 0;
 
 nla_put_failure:
@@ -331,23 +398,22 @@ nla_put_failure:
 	/* Fall through */
 
 fail:
+	rcu_read_unlock();
 	return res;
 }
 
-/* Get a list of MacAddressA of all nodes known to this node (other than self).
+/* Get a list of MacAddressA of all nodes known to this node (including self).
  */
 static int hsr_get_node_list(struct sk_buff *skb_in, struct genl_info *info)
 {
-	/* For receiving */
-	struct nlattr *na;
-	struct net_device *hsr_dev;
-
-	/* For sending */
-	struct sk_buff *skb_out;
-	void *msg_head;
-	struct hsr_priv *hsr_priv;
-	void *pos;
 	unsigned char addr[ETH_ALEN];
+	struct net_device *hsr_dev;
+	struct sk_buff *skb_out;
+	struct hsr_priv *hsr;
+	bool restart = false;
+	struct nlattr *na;
+	void *pos = NULL;
+	void *msg_head;
 	int res;
 
 	if (!info)
@@ -357,45 +423,53 @@ static int hsr_get_node_list(struct sk_buff *skb_in, struct genl_info *info)
 	if (!na)
 		goto invalid;
 
-	hsr_dev = __dev_get_by_index(genl_info_net(info),
-				     nla_get_u32(info->attrs[HSR_A_IFINDEX]));
+	rcu_read_lock();
+	hsr_dev = dev_get_by_index_rcu(genl_info_net(info),
+				       nla_get_u32(info->attrs[HSR_A_IFINDEX]));
 	if (!hsr_dev)
-		goto invalid;
+		goto rcu_unlock;
 	if (!is_hsr_master(hsr_dev))
-		goto invalid;
+		goto rcu_unlock;
 
-
+restart:
 	/* Send reply */
-
-	skb_out = genlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
+	skb_out = genlmsg_new(GENLMSG_DEFAULT_SIZE, GFP_ATOMIC);
 	if (!skb_out) {
 		res = -ENOMEM;
 		goto fail;
 	}
 
 	msg_head = genlmsg_put(skb_out, NETLINK_CB(skb_in).portid,
-				info->snd_seq, &hsr_genl_family, 0,
-				HSR_C_SET_NODE_LIST);
+			       info->snd_seq, &hsr_genl_family, 0,
+			       HSR_C_SET_NODE_LIST);
 	if (!msg_head) {
 		res = -ENOMEM;
 		goto nla_put_failure;
 	}
 
-	res = nla_put_u32(skb_out, HSR_A_IFINDEX, hsr_dev->ifindex);
-	if (res < 0)
-		goto nla_put_failure;
+	if (!restart) {
+		res = nla_put_u32(skb_out, HSR_A_IFINDEX, hsr_dev->ifindex);
+		if (res < 0)
+			goto nla_put_failure;
+	}
 
-	hsr_priv = netdev_priv(hsr_dev);
+	hsr = netdev_priv(hsr_dev);
 
-	rcu_read_lock();
-	pos = hsr_get_next_node(hsr_priv, NULL, addr);
+	if (!pos)
+		pos = hsr_get_next_node(hsr, NULL, addr);
 	while (pos) {
 		res = nla_put(skb_out, HSR_A_NODE_ADDR, ETH_ALEN, addr);
 		if (res < 0) {
-			rcu_read_unlock();
+			if (res == -EMSGSIZE) {
+				genlmsg_end(skb_out, msg_head);
+				genlmsg_unicast(genl_info_net(info), skb_out,
+						info->snd_portid);
+				restart = true;
+				goto restart;
+			}
 			goto nla_put_failure;
 		}
-		pos = hsr_get_next_node(hsr_priv, pos, addr);
+		pos = hsr_get_next_node(hsr, pos, addr);
 	}
 	rcu_read_unlock();
 
@@ -404,34 +478,51 @@ static int hsr_get_node_list(struct sk_buff *skb_in, struct genl_info *info)
 
 	return 0;
 
+rcu_unlock:
+	rcu_read_unlock();
 invalid:
-	netlink_ack(skb_in, nlmsg_hdr(skb_in), -EINVAL);
+	netlink_ack(skb_in, nlmsg_hdr(skb_in), -EINVAL, NULL);
 	return 0;
 
 nla_put_failure:
-	kfree_skb(skb_out);
+	nlmsg_free(skb_out);
 	/* Fall through */
 
 fail:
+	rcu_read_unlock();
 	return res;
 }
 
-
-static const struct genl_ops hsr_ops[] = {
+static const struct genl_small_ops hsr_ops[] = {
 	{
 		.cmd = HSR_C_GET_NODE_STATUS,
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
 		.flags = 0,
-		.policy = hsr_genl_policy,
 		.doit = hsr_get_node_status,
 		.dumpit = NULL,
 	},
 	{
 		.cmd = HSR_C_GET_NODE_LIST,
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
 		.flags = 0,
-		.policy = hsr_genl_policy,
 		.doit = hsr_get_node_list,
 		.dumpit = NULL,
 	},
+};
+
+static struct genl_family hsr_genl_family __ro_after_init = {
+	.hdrsize = 0,
+	.name = "HSR",
+	.version = 1,
+	.maxattr = HSR_A_MAX,
+	.policy = hsr_genl_policy,
+	.netnsok = true,
+	.module = THIS_MODULE,
+	.small_ops = hsr_ops,
+	.n_small_ops = ARRAY_SIZE(hsr_ops),
+	.resv_start_op = HSR_C_SET_NODE_LIST + 1,
+	.mcgrps = hsr_mcgrps,
+	.n_mcgrps = ARRAY_SIZE(hsr_mcgrps),
 };
 
 int __init hsr_netlink_init(void)
@@ -442,11 +533,11 @@ int __init hsr_netlink_init(void)
 	if (rc)
 		goto fail_rtnl_link_register;
 
-	rc = genl_register_family_with_ops_groups(&hsr_genl_family, hsr_ops,
-						  hsr_mcgrps);
+	rc = genl_register_family(&hsr_genl_family);
 	if (rc)
 		goto fail_genl_register_family;
 
+	hsr_debugfs_create_root();
 	return 0;
 
 fail_genl_register_family:

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * mmconfig.c - Low-level direct PCI config space access via MMCONFIG
  *
@@ -10,7 +11,7 @@
 #include <linux/acpi.h>
 #include <linux/bitmap.h>
 #include <linux/rcupdate.h>
-#include <asm/e820.h>
+#include <asm/e820/api.h>
 #include <asm/pci_x86.h>
 
 #define PREFIX "PCI: "
@@ -104,7 +105,7 @@ static void __iomem *mcfg_ioremap(struct pci_mmcfg_region *cfg)
 	start = cfg->address + PCI_MMCFG_BUS_OFFSET(cfg->start_bus);
 	num_buses = cfg->end_bus - cfg->start_bus + 1;
 	size = PCI_MMCFG_BUS_OFFSET(num_buses);
-	addr = ioremap_nocache(start, size);
+	addr = ioremap(start, size);
 	if (addr)
 		addr -= PCI_MMCFG_BUS_OFFSET(cfg->start_bus);
 	return addr;

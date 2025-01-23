@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Detection routine for the NCR53c710 based MVME16x SCSI Controllers for Linux.
  *
@@ -126,7 +127,6 @@ static int mvme16x_device_remove(struct platform_device *dev)
 static struct platform_driver mvme16x_scsi_driver = {
 	.driver = {
 		.name           = "mvme16x-scsi",
-		.owner          = THIS_MODULE,
 	},
 	.probe          = mvme16x_probe,
 	.remove         = mvme16x_device_remove,

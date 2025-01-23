@@ -22,42 +22,40 @@
  * Authors: Alex Deucher
  */
 
-#include "drmP.h"
 #include "radeon.h"
 #include "rv740d.h"
 #include "r600_dpm.h"
+#include "rv770.h"
 #include "rv770_dpm.h"
 #include "atom.h"
-
-struct rv7xx_power_info *rv770_get_pi(struct radeon_device *rdev);
 
 u32 rv740_get_decoded_reference_divider(u32 encoded_ref)
 {
 	u32 ref = 0;
 
 	switch (encoded_ref) {
-        case 0:
+	case 0:
 		ref = 1;
 		break;
-        case 16:
+	case 16:
 		ref = 2;
 		break;
-        case 17:
+	case 17:
 		ref = 3;
 		break;
-        case 18:
+	case 18:
 		ref = 2;
 		break;
-        case 19:
+	case 19:
 		ref = 3;
 		break;
-        case 20:
+	case 20:
 		ref = 4;
 		break;
-        case 21:
+	case 21:
 		ref = 5;
 		break;
-        default:
+	default:
 		DRM_ERROR("Invalid encoded Reference Divider\n");
 		ref = 0;
 		break;
@@ -251,8 +249,12 @@ int rv740_populate_mclk_value(struct radeon_device *rdev,
 						     ASIC_INTERNAL_MEMORY_SS, vco_freq)) {
 			u32 reference_clock = rdev->clock.mpll.reference_freq;
 			u32 decoded_ref = rv740_get_decoded_reference_divider(dividers.ref_div);
-			u32 clk_s = reference_clock * 5 / (decoded_ref * ss.rate);
-			u32 clk_v = 0x40000 * ss.percentage *
+			u32 clk_s, clk_v;
+
+			if (!decoded_ref)
+				return -EINVAL;
+			clk_s = reference_clock * 5 / (decoded_ref * ss.rate);
+			clk_v = 0x40000 * ss.percentage *
 				(dividers.whole_fb_div + (dividers.frac_fb_div / 8)) / (clk_s * 10000);
 
 			mpll_ss1 &= ~CLKV_MASK;

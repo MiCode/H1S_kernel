@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Based on arch/arm/kernel/irq.c
  *
@@ -7,138 +8,130 @@
  * Dynamic Tick Timer written by Tony Lindgren <tony@atomide.com> and
  * Tuukka Tikkanen <tuukka.tikkanen@elektrobit.com>.
  * Copyright (C) 2012 ARM Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <linux/kernel_stat.h>
-#include <linux/irq.h>
-#include <linux/smp.h>
+#include <linux/hardirq.h>
 #include <linux/init.h>
+#include <linux/irq.h>
 #include <linux/irqchip.h>
+#include <linux/kprobes.h>
+#include <linux/memory.h>
+#include <linux/scs.h>
 #include <linux/seq_file.h>
-#include <linux/ratelimit.h>
+#include <linux/smp.h>
+#include <linux/vmalloc.h>
+#include <asm/daifflags.h>
+#include <asm/exception.h>
+#include <asm/numa.h>
+#include <asm/softirq_stack.h>
+#include <asm/stacktrace.h>
+#include <asm/vmap_stack.h>
 
-unsigned long irq_err_count;
+/* Only access this in an NMI enter/exit */
+DEFINE_PER_CPU(struct nmi_ctx, nmi_contexts);
 
-int arch_show_interrupts(struct seq_file *p, int prec)
-{
-#ifdef CONFIG_SMP
-	show_ipi_list(p, prec);
+DEFINE_PER_CPU(unsigned long *, irq_stack_ptr);
+
+
+DECLARE_PER_CPU(unsigned long *, irq_shadow_call_stack_ptr);
+
+#ifdef CONFIG_SHADOW_CALL_STACK
+DEFINE_PER_CPU(unsigned long *, irq_shadow_call_stack_ptr);
 #endif
-	seq_printf(p, "%*s: %10lu\n", prec, "Err", irq_err_count);
+
+static void init_irq_scs(void)
+{
+	int cpu;
+
+	if (!scs_is_enabled())
+		return;
+
+	for_each_possible_cpu(cpu)
+		per_cpu(irq_shadow_call_stack_ptr, cpu) =
+			scs_alloc(early_cpu_to_node(cpu));
+}
+
+#ifdef CONFIG_VMAP_STACK
+static void __init init_irq_stacks(void)
+{
+	int cpu;
+	unsigned long *p;
+
+	for_each_possible_cpu(cpu) {
+		p = arch_alloc_vmap_stack(IRQ_STACK_SIZE, early_cpu_to_node(cpu));
+		per_cpu(irq_stack_ptr, cpu) = p;
+	}
+}
+#else
+/* irq stack only needs to be 16 byte aligned - not IRQ_STACK_SIZE aligned. */
+DEFINE_PER_CPU_ALIGNED(unsigned long [IRQ_STACK_SIZE/sizeof(long)], irq_stack);
+
+static void init_irq_stacks(void)
+{
+	int cpu;
+
+	for_each_possible_cpu(cpu)
+		per_cpu(irq_stack_ptr, cpu) = per_cpu(irq_stack, cpu);
+}
+#endif
+
+#ifndef CONFIG_PREEMPT_RT
+static void ____do_softirq(struct pt_regs *regs)
+{
+	__do_softirq();
+}
+
+void do_softirq_own_stack(void)
+{
+	call_on_irq_stack(NULL, ____do_softirq);
+}
+#endif
+
+static void default_handle_irq(struct pt_regs *regs)
+{
+	panic("IRQ taken without a root IRQ handler\n");
+}
+
+static void default_handle_fiq(struct pt_regs *regs)
+{
+	panic("FIQ taken without a root FIQ handler\n");
+}
+
+void (*handle_arch_irq)(struct pt_regs *) __ro_after_init = default_handle_irq;
+void (*handle_arch_fiq)(struct pt_regs *) __ro_after_init = default_handle_fiq;
+
+int __init set_handle_irq(void (*handle_irq)(struct pt_regs *))
+{
+	if (handle_arch_irq != default_handle_irq)
+		return -EBUSY;
+
+	handle_arch_irq = handle_irq;
+	pr_info("Root IRQ handler: %ps\n", handle_irq);
 	return 0;
 }
 
-/*
- * handle_IRQ handles all hardware IRQ's.  Decoded IRQs should
- * not come via this function.  Instead, they should provide their
- * own 'handler'.  Used by platform code implementing C-based 1st
- * level decoding.
- */
-void handle_IRQ(unsigned int irq, struct pt_regs *regs)
+int __init set_handle_fiq(void (*handle_fiq)(struct pt_regs *))
 {
-	struct pt_regs *old_regs = set_irq_regs(regs);
+	if (handle_arch_fiq != default_handle_fiq)
+		return -EBUSY;
 
-	irq_enter();
-
-	/*
-	 * Some hardware gives randomly wrong interrupts.  Rather
-	 * than crashing, do something sensible.
-	 */
-	if (unlikely(irq >= nr_irqs)) {
-		pr_warn_ratelimited("Bad IRQ%u\n", irq);
-		ack_bad_irq(irq);
-	} else {
-		generic_handle_irq(irq);
-	}
-
-	irq_exit();
-	set_irq_regs(old_regs);
-}
-
-void __init set_handle_irq(void (*handle_irq)(struct pt_regs *))
-{
-	if (handle_arch_irq)
-		return;
-
-	handle_arch_irq = handle_irq;
+	handle_arch_fiq = handle_fiq;
+	pr_info("Root FIQ handler: %ps\n", handle_fiq);
+	return 0;
 }
 
 void __init init_IRQ(void)
 {
+	init_irq_stacks();
+	init_irq_scs();
 	irqchip_init();
-	if (!handle_arch_irq)
-		panic("No interrupt controller found.");
-}
 
-#ifdef CONFIG_HOTPLUG_CPU
-static bool migrate_one_irq(struct irq_desc *desc)
-{
-	struct irq_data *d = irq_desc_get_irq_data(desc);
-	const struct cpumask *affinity = d->affinity;
-	struct irq_chip *c;
-	bool ret = false;
-
-	/*
-	 * If this is a per-CPU interrupt, or the affinity does not
-	 * include this CPU, then we have nothing to do.
-	 */
-	if (irqd_is_per_cpu(d) || !cpumask_test_cpu(smp_processor_id(), affinity))
-		return false;
-
-	if (cpumask_any_and(affinity, cpu_online_mask) >= nr_cpu_ids) {
-		affinity = cpu_online_mask;
-		ret = true;
+	if (system_uses_irq_prio_masking()) {
+		/*
+		 * Now that we have a stack for our IRQ handler, set
+		 * the PMR/PSR pair to a consistent state.
+		 */
+		WARN_ON(read_sysreg(daif) & PSR_A_BIT);
+		local_daif_restore(DAIF_PROCCTX_NOIRQ);
 	}
-
-	c = irq_data_get_irq_chip(d);
-	if (!c->irq_set_affinity)
-		pr_debug("IRQ%u: unable to set affinity\n", d->irq);
-	else if (c->irq_set_affinity(d, affinity, true) == IRQ_SET_MASK_OK && ret)
-		cpumask_copy(d->affinity, affinity);
-
-	return ret;
 }
-
-/*
- * The current CPU has been marked offline.  Migrate IRQs off this CPU.
- * If the affinity settings do not allow other CPUs, force them onto any
- * available CPU.
- *
- * Note: we must iterate over all IRQs, whether they have an attached
- * action structure or not, as we need to get chained interrupts too.
- */
-void migrate_irqs(void)
-{
-	unsigned int i;
-	struct irq_desc *desc;
-	unsigned long flags;
-
-	local_irq_save(flags);
-
-	for_each_irq_desc(i, desc) {
-		bool affinity_broken;
-
-		raw_spin_lock(&desc->lock);
-		affinity_broken = migrate_one_irq(desc);
-		raw_spin_unlock(&desc->lock);
-
-		if (affinity_broken)
-			pr_warn_ratelimited("IRQ%u no longer affine to CPU%u\n",
-					    i, smp_processor_id());
-	}
-
-	local_irq_restore(flags);
-}
-#endif /* CONFIG_HOTPLUG_CPU */

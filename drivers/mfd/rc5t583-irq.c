@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Interrupt driver for RICOH583 power management chip.
  *
@@ -6,24 +7,10 @@
  *
  * based on code
  *      Copyright (C) 2011 RICOH COMPANY,LTD
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
  */
+#include <linux/device.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
-#include <linux/init.h>
-#include <linux/i2c.h>
 #include <linux/mfd/rc5t583.h>
 
 enum int_type {
@@ -241,15 +228,12 @@ static void rc5t583_irq_sync_unlock(struct irq_data *irq_data)
 
 	mutex_unlock(&rc5t583->irq_lock);
 }
-#ifdef CONFIG_PM_SLEEP
+
 static int rc5t583_irq_set_wake(struct irq_data *irq_data, unsigned int on)
 {
 	struct rc5t583 *rc5t583 = irq_data_get_irq_chip_data(irq_data);
 	return irq_set_irq_wake(rc5t583->chip_irq, on);
 }
-#else
-#define rc5t583_irq_set_wake NULL
-#endif
 
 static irqreturn_t rc5t583_irq(int irq, void *data)
 {
@@ -330,7 +314,7 @@ static struct irq_chip rc5t583_irq_chip = {
 	.irq_bus_lock = rc5t583_irq_lock,
 	.irq_bus_sync_unlock = rc5t583_irq_sync_unlock,
 	.irq_set_type = rc5t583_irq_set_type,
-	.irq_set_wake = rc5t583_irq_set_wake,
+	.irq_set_wake = pm_sleep_ptr(rc5t583_irq_set_wake),
 };
 
 int rc5t583_irq_init(struct rc5t583 *rc5t583, int irq, int irq_base)
@@ -387,22 +371,13 @@ int rc5t583_irq_init(struct rc5t583 *rc5t583, int irq, int irq_base)
 		irq_set_chip_and_handler(__irq, &rc5t583_irq_chip,
 					 handle_simple_irq);
 		irq_set_nested_thread(__irq, 1);
-#ifdef CONFIG_ARM
-		set_irq_flags(__irq, IRQF_VALID);
-#endif
+		irq_clear_status_flags(__irq, IRQ_NOREQUEST);
 	}
 
-	ret = request_threaded_irq(irq, NULL, rc5t583_irq, IRQF_ONESHOT,
-				"rc5t583", rc5t583);
+	ret = devm_request_threaded_irq(rc5t583->dev, irq, NULL, rc5t583_irq,
+					IRQF_ONESHOT, "rc5t583", rc5t583);
 	if (ret < 0)
 		dev_err(rc5t583->dev,
 			"Error in registering interrupt error: %d\n", ret);
 	return ret;
-}
-
-int rc5t583_irq_exit(struct rc5t583 *rc5t583)
-{
-	if (rc5t583->chip_irq)
-		free_irq(rc5t583->chip_irq, rc5t583);
-	return 0;
 }

@@ -1,9 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * device_cgroup.c - device cgroup subsystem
  *
  * Copyright 2007 IBM Corp
  */
 
+#include <linux/bpf-cgroup.h>
 #include <linux/device_cgroup.h>
 #include <linux/cgroup.h>
 #include <linux/ctype.h>
@@ -14,14 +16,7 @@
 #include <linux/rcupdate.h>
 #include <linux/mutex.h>
 
-#define ACC_MKNOD 1
-#define ACC_READ  2
-#define ACC_WRITE 4
-#define ACC_MASK (ACC_MKNOD | ACC_READ | ACC_WRITE)
-
-#define DEV_BLOCK 1
-#define DEV_CHAR  2
-#define DEV_ALL   4  /* this represents all devices */
+#ifdef CONFIG_CGROUP_DEVICE
 
 static DEFINE_MUTEX(devcgroup_mutex);
 
@@ -58,10 +53,8 @@ static inline struct dev_cgroup *css_to_devcgroup(struct cgroup_subsys_state *s)
 
 static inline struct dev_cgroup *task_devcgroup(struct task_struct *task)
 {
-	return css_to_devcgroup(task_css(task, devices_subsys_id));
+	return css_to_devcgroup(task_css(task, devices_cgrp_id));
 }
-
-struct cgroup_subsys devices_subsys;
 
 /*
  * called under devcgroup_mutex
@@ -87,6 +80,17 @@ free_and_exit:
 		kfree(ex);
 	}
 	return -ENOMEM;
+}
+
+static void dev_exceptions_move(struct list_head *dest, struct list_head *orig)
+{
+	struct dev_exception_item *ex, *tmp;
+
+	lockdep_assert_held(&devcgroup_mutex);
+
+	list_for_each_entry_safe(ex, tmp, orig, list) {
+		list_move_tail(&ex->list, dest);
+	}
 }
 
 /*
@@ -184,7 +188,7 @@ static inline bool is_devcg_online(const struct dev_cgroup *devcg)
 static int devcgroup_online(struct cgroup_subsys_state *css)
 {
 	struct dev_cgroup *dev_cgroup = css_to_devcgroup(css);
-	struct dev_cgroup *parent_dev_cgroup = css_to_devcgroup(css_parent(css));
+	struct dev_cgroup *parent_dev_cgroup = css_to_devcgroup(css->parent);
 	int ret = 0;
 
 	mutex_lock(&devcgroup_mutex);
@@ -212,7 +216,7 @@ static void devcgroup_offline(struct cgroup_subsys_state *css)
 }
 
 /*
- * called from kernel/cgroup.c with cgroup_lock() held.
+ * called from kernel/cgroup/cgroup.c with cgroup_lock() held.
  */
 static struct cgroup_subsys_state *
 devcgroup_css_alloc(struct cgroup_subsys_state *parent_css)
@@ -247,21 +251,21 @@ static void set_access(char *acc, short access)
 {
 	int idx = 0;
 	memset(acc, 0, ACCLEN);
-	if (access & ACC_READ)
+	if (access & DEVCG_ACC_READ)
 		acc[idx++] = 'r';
-	if (access & ACC_WRITE)
+	if (access & DEVCG_ACC_WRITE)
 		acc[idx++] = 'w';
-	if (access & ACC_MKNOD)
+	if (access & DEVCG_ACC_MKNOD)
 		acc[idx++] = 'm';
 }
 
 static char type_to_char(short type)
 {
-	if (type == DEV_ALL)
+	if (type == DEVCG_DEV_ALL)
 		return 'a';
-	if (type == DEV_CHAR)
+	if (type == DEVCG_DEV_CHAR)
 		return 'c';
-	if (type == DEV_BLOCK)
+	if (type == DEVCG_DEV_BLOCK)
 		return 'b';
 	return 'X';
 }
@@ -288,10 +292,10 @@ static int devcgroup_seq_show(struct seq_file *m, void *v)
 	 * This way, the file remains as a "whitelist of devices"
 	 */
 	if (devcgroup->behavior == DEVCG_DEFAULT_ALLOW) {
-		set_access(acc, ACC_MASK);
+		set_access(acc, DEVCG_ACC_MASK);
 		set_majmin(maj, ~0);
 		set_majmin(min, ~0);
-		seq_printf(m, "%c %s:%s %s\n", type_to_char(DEV_ALL),
+		seq_printf(m, "%c %s:%s %s\n", type_to_char(DEVCG_DEV_ALL),
 			   maj, min, acc);
 	} else {
 		list_for_each_entry_rcu(ex, &devcgroup->exceptions, list) {
@@ -308,57 +312,139 @@ static int devcgroup_seq_show(struct seq_file *m, void *v)
 }
 
 /**
- * may_access - verifies if a new exception is part of what is allowed
- *		by a dev cgroup based on the default policy +
- *		exceptions. This is used to make sure a child cgroup
- *		won't have more privileges than its parent or to
- *		verify if a certain access is allowed.
- * @dev_cgroup: dev cgroup to be tested against
- * @refex: new exception
- * @behavior: behavior of the exception
+ * match_exception	- iterates the exception list trying to find a complete match
+ * @exceptions: list of exceptions
+ * @type: device type (DEVCG_DEV_BLOCK or DEVCG_DEV_CHAR)
+ * @major: device file major number, ~0 to match all
+ * @minor: device file minor number, ~0 to match all
+ * @access: permission mask (DEVCG_ACC_READ, DEVCG_ACC_WRITE, DEVCG_ACC_MKNOD)
+ *
+ * It is considered a complete match if an exception is found that will
+ * contain the entire range of provided parameters.
+ *
+ * Return: true in case it matches an exception completely
  */
-static bool may_access(struct dev_cgroup *dev_cgroup,
-		       struct dev_exception_item *refex,
-		       enum devcg_behavior behavior)
+static bool match_exception(struct list_head *exceptions, short type,
+			    u32 major, u32 minor, short access)
 {
 	struct dev_exception_item *ex;
+
+	list_for_each_entry_rcu(ex, exceptions, list) {
+		if ((type & DEVCG_DEV_BLOCK) && !(ex->type & DEVCG_DEV_BLOCK))
+			continue;
+		if ((type & DEVCG_DEV_CHAR) && !(ex->type & DEVCG_DEV_CHAR))
+			continue;
+		if (ex->major != ~0 && ex->major != major)
+			continue;
+		if (ex->minor != ~0 && ex->minor != minor)
+			continue;
+		/* provided access cannot have more than the exception rule */
+		if (access & (~ex->access))
+			continue;
+		return true;
+	}
+	return false;
+}
+
+/**
+ * match_exception_partial - iterates the exception list trying to find a partial match
+ * @exceptions: list of exceptions
+ * @type: device type (DEVCG_DEV_BLOCK or DEVCG_DEV_CHAR)
+ * @major: device file major number, ~0 to match all
+ * @minor: device file minor number, ~0 to match all
+ * @access: permission mask (DEVCG_ACC_READ, DEVCG_ACC_WRITE, DEVCG_ACC_MKNOD)
+ *
+ * It is considered a partial match if an exception's range is found to
+ * contain *any* of the devices specified by provided parameters. This is
+ * used to make sure no extra access is being granted that is forbidden by
+ * any of the exception list.
+ *
+ * Return: true in case the provided range mat matches an exception completely
+ */
+static bool match_exception_partial(struct list_head *exceptions, short type,
+				    u32 major, u32 minor, short access)
+{
+	struct dev_exception_item *ex;
+
+	list_for_each_entry_rcu(ex, exceptions, list,
+				lockdep_is_held(&devcgroup_mutex)) {
+		if ((type & DEVCG_DEV_BLOCK) && !(ex->type & DEVCG_DEV_BLOCK))
+			continue;
+		if ((type & DEVCG_DEV_CHAR) && !(ex->type & DEVCG_DEV_CHAR))
+			continue;
+		/*
+		 * We must be sure that both the exception and the provided
+		 * range aren't masking all devices
+		 */
+		if (ex->major != ~0 && major != ~0 && ex->major != major)
+			continue;
+		if (ex->minor != ~0 && minor != ~0 && ex->minor != minor)
+			continue;
+		/*
+		 * In order to make sure the provided range isn't matching
+		 * an exception, all its access bits shouldn't match the
+		 * exception's access bits
+		 */
+		if (!(access & ex->access))
+			continue;
+		return true;
+	}
+	return false;
+}
+
+/**
+ * verify_new_ex - verifies if a new exception is allowed by parent cgroup's permissions
+ * @dev_cgroup: dev cgroup to be tested against
+ * @refex: new exception
+ * @behavior: behavior of the exception's dev_cgroup
+ *
+ * This is used to make sure a child cgroup won't have more privileges
+ * than its parent
+ */
+static bool verify_new_ex(struct dev_cgroup *dev_cgroup,
+		          struct dev_exception_item *refex,
+		          enum devcg_behavior behavior)
+{
 	bool match = false;
 
-	rcu_lockdep_assert(rcu_read_lock_held() ||
-			   lockdep_is_held(&devcgroup_mutex),
-			   "device_cgroup::may_access() called without proper synchronization");
-
-	list_for_each_entry_rcu(ex, &dev_cgroup->exceptions, list) {
-		if ((refex->type & DEV_BLOCK) && !(ex->type & DEV_BLOCK))
-			continue;
-		if ((refex->type & DEV_CHAR) && !(ex->type & DEV_CHAR))
-			continue;
-		if (ex->major != ~0 && ex->major != refex->major)
-			continue;
-		if (ex->minor != ~0 && ex->minor != refex->minor)
-			continue;
-		if (refex->access & (~ex->access))
-			continue;
-		match = true;
-		break;
-	}
+	RCU_LOCKDEP_WARN(!rcu_read_lock_held() &&
+			 !lockdep_is_held(&devcgroup_mutex),
+			 "device_cgroup:verify_new_ex called without proper synchronization");
 
 	if (dev_cgroup->behavior == DEVCG_DEFAULT_ALLOW) {
 		if (behavior == DEVCG_DEFAULT_ALLOW) {
-			/* the exception will deny access to certain devices */
+			/*
+			 * new exception in the child doesn't matter, only
+			 * adding extra restrictions
+			 */ 
 			return true;
 		} else {
-			/* the exception will allow access to certain devices */
+			/*
+			 * new exception in the child will add more devices
+			 * that can be accessed, so it can't match any of
+			 * parent's exceptions, even slightly
+			 */ 
+			match = match_exception_partial(&dev_cgroup->exceptions,
+							refex->type,
+							refex->major,
+							refex->minor,
+							refex->access);
+
 			if (match)
-				/*
-				 * a new exception allowing access shouldn't
-				 * match an parent's exception
-				 */
 				return false;
 			return true;
 		}
 	} else {
-		/* only behavior == DEVCG_DEFAULT_DENY allowed here */
+		/*
+		 * Only behavior == DEVCG_DEFAULT_DENY allowed here, therefore
+		 * the new exception will add access to more devices and must
+		 * be contained completely in an parent's exception to be
+		 * allowed
+		 */
+		match = match_exception(&dev_cgroup->exceptions, refex->type,
+					refex->major, refex->minor,
+					refex->access);
+
 		if (match)
 			/* parent has an exception that matches the proposed */
 			return true;
@@ -376,11 +462,42 @@ static bool may_access(struct dev_cgroup *dev_cgroup,
 static int parent_has_perm(struct dev_cgroup *childcg,
 				  struct dev_exception_item *ex)
 {
-	struct dev_cgroup *parent = css_to_devcgroup(css_parent(&childcg->css));
+	struct dev_cgroup *parent = css_to_devcgroup(childcg->css.parent);
 
 	if (!parent)
 		return 1;
-	return may_access(parent, ex, childcg->behavior);
+	return verify_new_ex(parent, ex, childcg->behavior);
+}
+
+/**
+ * parent_allows_removal - verify if it's ok to remove an exception
+ * @childcg: child cgroup from where the exception will be removed
+ * @ex: exception being removed
+ *
+ * When removing an exception in cgroups with default ALLOW policy, it must
+ * be checked if removing it will give the child cgroup more access than the
+ * parent.
+ *
+ * Return: true if it's ok to remove exception, false otherwise
+ */
+static bool parent_allows_removal(struct dev_cgroup *childcg,
+				  struct dev_exception_item *ex)
+{
+	struct dev_cgroup *parent = css_to_devcgroup(childcg->css.parent);
+
+	if (!parent)
+		return true;
+
+	/* It's always allowed to remove access to devices */
+	if (childcg->behavior == DEVCG_DEFAULT_DENY)
+		return true;
+
+	/*
+	 * Make sure you're not removing part or a whole exception existing in
+	 * the parent cgroup
+	 */
+	return !match_exception_partial(&parent->exceptions, ex->type,
+					ex->major, ex->minor, ex->access);
 }
 
 /**
@@ -407,7 +524,7 @@ static inline int may_allow_all(struct dev_cgroup *parent)
  * This is one of the three key functions for hierarchy implementation.
  * This function is responsible for re-evaluating all the cgroup's active
  * exceptions due to a parent's exception change.
- * Refer to Documentation/cgroups/devices.txt for more details.
+ * Refer to Documentation/admin-guide/cgroup-v1/devices.rst for more details.
  */
 static void revalidate_active_exceptions(struct dev_cgroup *devcg)
 {
@@ -458,7 +575,7 @@ static int propagate_exception(struct dev_cgroup *devcg_root,
 		    devcg->behavior == DEVCG_DEFAULT_ALLOW) {
 			rc = dev_exception_add(devcg, ex);
 			if (rc)
-				break;
+				return rc;
 		} else {
 			/*
 			 * in the other possible cases:
@@ -477,13 +594,6 @@ static int propagate_exception(struct dev_cgroup *devcg_root,
 	return rc;
 }
 
-static inline bool has_children(struct dev_cgroup *devcgroup)
-{
-	struct cgroup *cgrp = devcgroup->css.cgroup;
-
-	return !list_empty(&cgrp->children);
-}
-
 /*
  * Modify the exception list using allow/deny rules.
  * CAP_SYS_ADMIN is needed for this.  It's at least separate from CAP_MKNOD
@@ -498,41 +608,55 @@ static inline bool has_children(struct dev_cgroup *devcgroup)
  * parent cgroup has the access you're asking for.
  */
 static int devcgroup_update_access(struct dev_cgroup *devcgroup,
-				   int filetype, const char *buffer)
+				   int filetype, char *buffer)
 {
 	const char *b;
 	char temp[12];		/* 11 + 1 characters needed for a u32 */
 	int count, rc = 0;
 	struct dev_exception_item ex;
-	struct dev_cgroup *parent = css_to_devcgroup(css_parent(&devcgroup->css));
+	struct dev_cgroup *parent = css_to_devcgroup(devcgroup->css.parent);
+	struct dev_cgroup tmp_devcgrp;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
 	memset(&ex, 0, sizeof(ex));
+	memset(&tmp_devcgrp, 0, sizeof(tmp_devcgrp));
 	b = buffer;
 
 	switch (*b) {
 	case 'a':
 		switch (filetype) {
 		case DEVCG_ALLOW:
-			if (has_children(devcgroup))
+			if (css_has_online_children(&devcgroup->css))
 				return -EINVAL;
 
 			if (!may_allow_all(parent))
 				return -EPERM;
-			dev_exception_clean(devcgroup);
-			devcgroup->behavior = DEVCG_DEFAULT_ALLOW;
-			if (!parent)
+			if (!parent) {
+				devcgroup->behavior = DEVCG_DEFAULT_ALLOW;
+				dev_exception_clean(devcgroup);
 				break;
+			}
 
-			rc = dev_exceptions_copy(&devcgroup->exceptions,
-						 &parent->exceptions);
+			INIT_LIST_HEAD(&tmp_devcgrp.exceptions);
+			rc = dev_exceptions_copy(&tmp_devcgrp.exceptions,
+						 &devcgroup->exceptions);
 			if (rc)
 				return rc;
+			dev_exception_clean(devcgroup);
+			rc = dev_exceptions_copy(&devcgroup->exceptions,
+						 &parent->exceptions);
+			if (rc) {
+				dev_exceptions_move(&devcgroup->exceptions,
+						    &tmp_devcgrp.exceptions);
+				return rc;
+			}
+			devcgroup->behavior = DEVCG_DEFAULT_ALLOW;
+			dev_exception_clean(&tmp_devcgrp);
 			break;
 		case DEVCG_DENY:
-			if (has_children(devcgroup))
+			if (css_has_online_children(&devcgroup->css))
 				return -EINVAL;
 
 			dev_exception_clean(devcgroup);
@@ -543,10 +667,10 @@ static int devcgroup_update_access(struct dev_cgroup *devcgroup,
 		}
 		return 0;
 	case 'b':
-		ex.type = DEV_BLOCK;
+		ex.type = DEVCG_DEV_BLOCK;
 		break;
 	case 'c':
-		ex.type = DEV_CHAR;
+		ex.type = DEVCG_DEV_CHAR;
 		break;
 	default:
 		return -EINVAL;
@@ -599,13 +723,13 @@ static int devcgroup_update_access(struct dev_cgroup *devcgroup,
 	for (b++, count = 0; count < 3; count++, b++) {
 		switch (*b) {
 		case 'r':
-			ex.access |= ACC_READ;
+			ex.access |= DEVCG_ACC_READ;
 			break;
 		case 'w':
-			ex.access |= ACC_WRITE;
+			ex.access |= DEVCG_ACC_WRITE;
 			break;
 		case 'm':
-			ex.access |= ACC_MKNOD;
+			ex.access |= DEVCG_ACC_MKNOD;
 			break;
 		case '\n':
 		case '\0':
@@ -618,17 +742,21 @@ static int devcgroup_update_access(struct dev_cgroup *devcgroup,
 
 	switch (filetype) {
 	case DEVCG_ALLOW:
-		if (!parent_has_perm(devcgroup, &ex))
-			return -EPERM;
 		/*
 		 * If the default policy is to allow by default, try to remove
 		 * an matching exception instead. And be silent about it: we
 		 * don't want to break compatibility
 		 */
 		if (devcgroup->behavior == DEVCG_DEFAULT_ALLOW) {
+			/* Check if the parent allows removing it first */
+			if (!parent_allows_removal(devcgroup, &ex))
+				return -EPERM;
 			dev_exception_rm(devcgroup, &ex);
-			return 0;
+			break;
 		}
+
+		if (!parent_has_perm(devcgroup, &ex))
+			return -EPERM;
 		rc = dev_exception_add(devcgroup, &ex);
 		break;
 	case DEVCG_DENY:
@@ -653,27 +781,27 @@ static int devcgroup_update_access(struct dev_cgroup *devcgroup,
 	return rc;
 }
 
-static int devcgroup_access_write(struct cgroup_subsys_state *css,
-				  struct cftype *cft, const char *buffer)
+static ssize_t devcgroup_access_write(struct kernfs_open_file *of,
+				      char *buf, size_t nbytes, loff_t off)
 {
 	int retval;
 
 	mutex_lock(&devcgroup_mutex);
-	retval = devcgroup_update_access(css_to_devcgroup(css),
-					 cft->private, buffer);
+	retval = devcgroup_update_access(css_to_devcgroup(of_css(of)),
+					 of_cft(of)->private, strstrip(buf));
 	mutex_unlock(&devcgroup_mutex);
-	return retval;
+	return retval ?: nbytes;
 }
 
 static struct cftype dev_cgroup_files[] = {
 	{
 		.name = "allow",
-		.write_string  = devcgroup_access_write,
+		.write = devcgroup_access_write,
 		.private = DEVCG_ALLOW,
 	},
 	{
 		.name = "deny",
-		.write_string = devcgroup_access_write,
+		.write = devcgroup_access_write,
 		.private = DEVCG_DENY,
 	},
 	{
@@ -684,42 +812,39 @@ static struct cftype dev_cgroup_files[] = {
 	{ }	/* terminate */
 };
 
-struct cgroup_subsys devices_subsys = {
-	.name = "devices",
+struct cgroup_subsys devices_cgrp_subsys = {
 	.css_alloc = devcgroup_css_alloc,
 	.css_free = devcgroup_css_free,
 	.css_online = devcgroup_online,
 	.css_offline = devcgroup_offline,
-	.subsys_id = devices_subsys_id,
-	.base_cftypes = dev_cgroup_files,
+	.legacy_cftypes = dev_cgroup_files,
 };
 
 /**
- * __devcgroup_check_permission - checks if an inode operation is permitted
- * @dev_cgroup: the dev cgroup to be tested against
+ * devcgroup_legacy_check_permission - checks if an inode operation is permitted
  * @type: device type
  * @major: device major number
  * @minor: device minor number
- * @access: combination of ACC_WRITE, ACC_READ and ACC_MKNOD
+ * @access: combination of DEVCG_ACC_WRITE, DEVCG_ACC_READ and DEVCG_ACC_MKNOD
  *
  * returns 0 on success, -EPERM case the operation is not permitted
  */
-static int __devcgroup_check_permission(short type, u32 major, u32 minor,
-				        short access)
+static int devcgroup_legacy_check_permission(short type, u32 major, u32 minor,
+					short access)
 {
 	struct dev_cgroup *dev_cgroup;
-	struct dev_exception_item ex;
-	int rc;
-
-	memset(&ex, 0, sizeof(ex));
-	ex.type = type;
-	ex.major = major;
-	ex.minor = minor;
-	ex.access = access;
+	bool rc;
 
 	rcu_read_lock();
 	dev_cgroup = task_devcgroup(current);
-	rc = may_access(dev_cgroup, &ex, dev_cgroup->behavior);
+	if (dev_cgroup->behavior == DEVCG_DEFAULT_ALLOW)
+		/* Can't match any of the exceptions, even partially */
+		rc = !match_exception_partial(&dev_cgroup->exceptions,
+					      type, major, minor, access);
+	else
+		/* Need to match completely one exception to be allowed */
+		rc = match_exception(&dev_cgroup->exceptions, type, major,
+				     minor, access);
 	rcu_read_unlock();
 
 	if (!rc)
@@ -728,36 +853,24 @@ static int __devcgroup_check_permission(short type, u32 major, u32 minor,
 	return 0;
 }
 
-int __devcgroup_inode_permission(struct inode *inode, int mask)
+#endif /* CONFIG_CGROUP_DEVICE */
+
+#if defined(CONFIG_CGROUP_DEVICE) || defined(CONFIG_CGROUP_BPF)
+
+int devcgroup_check_permission(short type, u32 major, u32 minor, short access)
 {
-	short type, access = 0;
+	int rc = BPF_CGROUP_RUN_PROG_DEVICE_CGROUP(type, major, minor, access);
 
-	if (S_ISBLK(inode->i_mode))
-		type = DEV_BLOCK;
-	if (S_ISCHR(inode->i_mode))
-		type = DEV_CHAR;
-	if (mask & MAY_WRITE)
-		access |= ACC_WRITE;
-	if (mask & MAY_READ)
-		access |= ACC_READ;
+	if (rc)
+		return rc;
 
-	return __devcgroup_check_permission(type, imajor(inode), iminor(inode),
-			access);
+	#ifdef CONFIG_CGROUP_DEVICE
+	return devcgroup_legacy_check_permission(type, major, minor, access);
+
+	#else /* CONFIG_CGROUP_DEVICE */
+	return 0;
+
+	#endif /* CONFIG_CGROUP_DEVICE */
 }
-
-int devcgroup_inode_mknod(int mode, dev_t dev)
-{
-	short type;
-
-	if (!S_ISBLK(mode) && !S_ISCHR(mode))
-		return 0;
-
-	if (S_ISBLK(mode))
-		type = DEV_BLOCK;
-	else
-		type = DEV_CHAR;
-
-	return __devcgroup_check_permission(type, MAJOR(dev), MINOR(dev),
-			ACC_MKNOD);
-
-}
+EXPORT_SYMBOL(devcgroup_check_permission);
+#endif /* defined(CONFIG_CGROUP_DEVICE) || defined(CONFIG_CGROUP_BPF) */

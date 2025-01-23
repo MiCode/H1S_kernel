@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#include <linux/export.h>
 #include <linux/linkage.h>
 
 	.text
@@ -31,3 +33,4 @@ ENTRY(ip_fast_csum) /* %o0 = iph, %o1 = ihl */
 	retl
 	 and	%o2, %o1, %o0
 ENDPROC(ip_fast_csum)
+EXPORT_SYMBOL(ip_fast_csum)

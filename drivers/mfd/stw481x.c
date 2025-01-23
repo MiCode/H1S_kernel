@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Core driver for STw4810/STw4811
  *
@@ -5,8 +6,6 @@
  * Written on behalf of Linaro for ST-Ericsson
  *
  * Author: Linus Walleij <linus.walleij@linaro.org>
- *
- * License terms: GNU General Public License (GPL) version 2
  */
 
 #include <linux/err.h>
@@ -72,10 +71,12 @@ static int stw481x_get_pctl_reg(struct stw481x *stw481x, u8 reg)
 static int stw481x_startup(struct stw481x *stw481x)
 {
 	/* Voltages multiplied by 100 */
-	u8 vcore_val[] = { 100, 105, 110, 115, 120, 122, 124, 126, 128,
-			   130, 132, 134, 136, 138, 140, 145 };
-	u8 vpll_val[] = { 105, 120, 130, 180 };
-	u8 vaux_val[] = { 15, 18, 25, 28 };
+	static const u8 vcore_val[] = {
+		100, 105, 110, 115, 120, 122, 124, 126, 128,
+		130, 132, 134, 136, 138, 140, 145
+	};
+	static const u8 vpll_val[] = { 105, 120, 130, 180 };
+	static const u8 vaux_val[] = { 15, 18, 25, 28 };
 	u8 vcore;
 	u8 vcore_slp;
 	u8 vpll;
@@ -167,13 +168,12 @@ static struct mfd_cell stw481x_cells[] = {
 	},
 };
 
-const struct regmap_config stw481x_regmap_config = {
+static const struct regmap_config stw481x_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 };
 
-static int stw481x_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int stw481x_probe(struct i2c_client *client)
 {
 	struct stw481x			*stw481x;
 	int ret;
@@ -186,6 +186,12 @@ static int stw481x_probe(struct i2c_client *client,
 	i2c_set_clientdata(client, stw481x);
 	stw481x->client = client;
 	stw481x->map = devm_regmap_init_i2c(client, &stw481x_regmap_config);
+	if (IS_ERR(stw481x->map)) {
+		ret = PTR_ERR(stw481x->map);
+		dev_err(&client->dev, "Failed to allocate register map: %d\n",
+			ret);
+		return ret;
+	}
 
 	ret = stw481x_startup(stw481x);
 	if (ret) {
@@ -200,20 +206,14 @@ static int stw481x_probe(struct i2c_client *client,
 		stw481x_cells[i].pdata_size = sizeof(*stw481x);
 	}
 
-	ret = mfd_add_devices(&client->dev, 0, stw481x_cells,
-			ARRAY_SIZE(stw481x_cells), NULL, 0, NULL);
+	ret = devm_mfd_add_devices(&client->dev, 0, stw481x_cells,
+				   ARRAY_SIZE(stw481x_cells), NULL, 0, NULL);
 	if (ret)
 		return ret;
 
 	dev_info(&client->dev, "initialized STw481x device\n");
 
 	return ret;
-}
-
-static int stw481x_remove(struct i2c_client *client)
-{
-	mfd_remove_devices(&client->dev);
-	return 0;
 }
 
 /*
@@ -225,6 +225,7 @@ static const struct i2c_device_id stw481x_id[] = {
 	{ "stw481x", 0 },
 	{ },
 };
+MODULE_DEVICE_TABLE(i2c, stw481x_id);
 
 static const struct of_device_id stw481x_match[] = {
 	{ .compatible = "st,stw4810", },
@@ -239,7 +240,6 @@ static struct i2c_driver stw481x_driver = {
 		.of_match_table = stw481x_match,
 	},
 	.probe		= stw481x_probe,
-	.remove		= stw481x_remove,
 	.id_table	= stw481x_id,
 };
 

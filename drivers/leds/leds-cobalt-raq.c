@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  LEDs driver for the Cobalt Raq series.
  *
  *  Copyright (C) 2007  Yoichi Yuasa <yuasa@linux-mips.org>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 #include <linux/init.h>
 #include <linux/io.h>
@@ -108,29 +95,11 @@ err_null:
 	return retval;
 }
 
-static int cobalt_raq_led_remove(struct platform_device *pdev)
-{
-	led_classdev_unregister(&raq_power_off_led);
-	led_classdev_unregister(&raq_web_led);
-
-	if (led_port)
-		led_port = NULL;
-
-	return 0;
-}
-
 static struct platform_driver cobalt_raq_led_driver = {
 	.probe	= cobalt_raq_led_probe,
-	.remove	= cobalt_raq_led_remove,
 	.driver = {
 		.name	= "cobalt-raq-leds",
-		.owner	= THIS_MODULE,
 	},
 };
 
-static int __init cobalt_raq_led_init(void)
-{
-	return platform_driver_register(&cobalt_raq_led_driver);
-}
-
-module_init(cobalt_raq_led_init);
+builtin_platform_driver(cobalt_raq_led_driver);

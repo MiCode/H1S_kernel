@@ -1,10 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) Sistina Software, Inc.  1997-2003 All rights reserved.
  * Copyright (C) 2004-2006 Red Hat, Inc.  All rights reserved.
- *
- * This copyrighted material is made available to anyone wishing to use,
- * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License version 2.
  */
 
 #ifndef __EATTR_DOT_H__
@@ -62,6 +59,5 @@ extern int gfs2_ea_dealloc(struct gfs2_inode *ip);
 /* Exported to acl.c */
 
 extern int gfs2_xattr_acl_get(struct gfs2_inode *ip, const char *name, char **data);
-extern int gfs2_xattr_acl_chmod(struct gfs2_inode *ip, struct iattr *attr, char *data);
 
 #endif /* __EATTR_DOT_H__ */

@@ -1,14 +1,21 @@
-#include <pthread.h>
+// SPDX-License-Identifier: GPL-2.0
 #include <dlfcn.h>
+#include <signal.h>
+#include <unistd.h>
 
-#include "../util/cache.h"
+#include <subcmd/pager.h>
 #include "../util/debug.h"
 #include "../util/hist.h"
+#include "ui.h"
 
-pthread_mutex_t ui__lock = PTHREAD_MUTEX_INITIALIZER;
+struct mutex ui__lock;
 void *perf_gtk_handle;
+int use_browser = -1;
+
+#define PERF_GTK_DSO "libperf-gtk.so"
 
 #ifdef HAVE_GTK2_SUPPORT
+
 static int setup_gtk_browser(void)
 {
 	int (*perf_ui_init)(void);
@@ -60,8 +67,16 @@ static inline int setup_gtk_browser(void) { return -1; }
 static inline void exit_gtk_browser(bool wait_for_ok __maybe_unused) {}
 #endif
 
+int stdio__config_color(const struct option *opt __maybe_unused,
+			const char *mode, int unset __maybe_unused)
+{
+	perf_use_color_default = perf_config_colorbool("color.ui", mode, -1);
+	return 0;
+}
+
 void setup_browser(bool fallback_to_pager)
 {
+	mutex_init(&ui__lock);
 	if (use_browser < 2 && (!isatty(1) || dump_trace))
 		use_browser = 0;
 
@@ -76,9 +91,9 @@ void setup_browser(bool fallback_to_pager)
 		printf("GTK browser requested but could not find %s\n",
 		       PERF_GTK_DSO);
 		sleep(1);
+		use_browser = 1;
 		/* fall through */
 	case 1:
-		use_browser = 1;
 		if (ui__init() == 0)
 			break;
 		/* fall through */
@@ -86,8 +101,6 @@ void setup_browser(bool fallback_to_pager)
 		use_browser = 0;
 		if (fallback_to_pager)
 			setup_pager();
-
-		perf_hpp__init();
 		break;
 	}
 }
@@ -106,4 +119,23 @@ void exit_browser(bool wait_for_ok)
 	default:
 		break;
 	}
+	mutex_destroy(&ui__lock);
+}
+
+void pthread__block_sigwinch(void)
+{
+	sigset_t set;
+
+	sigemptyset(&set);
+	sigaddset(&set, SIGWINCH);
+	pthread_sigmask(SIG_BLOCK, &set, NULL);
+}
+
+void pthread__unblock_sigwinch(void)
+{
+	sigset_t set;
+
+	sigemptyset(&set);
+	sigaddset(&set, SIGWINCH);
+	pthread_sigmask(SIG_UNBLOCK, &set, NULL);
 }

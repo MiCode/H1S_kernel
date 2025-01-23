@@ -1,25 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 /*
  * IBM ASM Service Processor Device Driver
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
- *
  * Copyright (C) IBM Corporation, 2004
  *
  * Author: Max Asböck <amax@us.ibm.com>
- *
  */
 
 #include <linux/kernel.h>
@@ -34,6 +20,7 @@
 #include <linux/kref.h>
 #include <linux/device.h>
 #include <linux/input.h>
+#include <linux/time64.h>
 
 /* Driver identification */
 #define DRIVER_NAME	"ibmasm"
@@ -53,9 +40,11 @@ extern int ibmasm_debug;
 
 static inline char *get_timestamp(char *buf)
 {
-	struct timeval now;
-	do_gettimeofday(&now);
-	sprintf(buf, "%lu.%lu", now.tv_sec, now.tv_usec);
+	struct timespec64 now;
+
+	ktime_get_real_ts64(&now);
+	sprintf(buf, "%llu.%.08lu", (long long)now.tv_sec,
+				now.tv_nsec / NSEC_PER_USEC);
 	return buf;
 }
 
@@ -211,7 +200,7 @@ void ibmasmfs_unregister(void);
 void ibmasmfs_add_sp(struct service_processor *sp);
 
 /* uart */
-#ifdef CONFIG_SERIAL_8250
+#if IS_ENABLED(CONFIG_SERIAL_8250)
 void ibmasm_register_uart(struct service_processor *sp);
 void ibmasm_unregister_uart(struct service_processor *sp);
 #else

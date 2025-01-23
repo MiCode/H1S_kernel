@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * EP93XX PATA controller driver.
  *
@@ -34,18 +35,18 @@
 #include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <scsi/scsi_host.h>
 #include <linux/ata.h>
 #include <linux/libata.h>
 #include <linux/platform_device.h>
+#include <linux/sys_soc.h>
 #include <linux/delay.h>
 #include <linux/dmaengine.h>
 #include <linux/ktime.h>
 
 #include <linux/platform_data/dma-ep93xx.h>
-#include <mach/platform.h>
+#include <linux/soc/cirrus/ep93xx.h>
 
 #define DRV_NAME	"ep93xx-ide"
 #define DRV_VERSION	"1.0"
@@ -416,8 +417,8 @@ static void ep93xx_pata_tf_read(struct ata_port *ap, struct ata_taskfile *tf)
 {
 	struct ep93xx_pata_data *drv_data = ap->host->private_data;
 
-	tf->command = ep93xx_pata_check_status(ap);
-	tf->feature = ep93xx_pata_read_reg(drv_data, IDECTRL_ADDR_FEATURE);
+	tf->status = ep93xx_pata_check_status(ap);
+	tf->error = ep93xx_pata_read_reg(drv_data, IDECTRL_ADDR_FEATURE);
 	tf->nsect = ep93xx_pata_read_reg(drv_data, IDECTRL_ADDR_NSECT);
 	tf->lbal = ep93xx_pata_read_reg(drv_data, IDECTRL_ADDR_LBAL);
 	tf->lbam = ep93xx_pata_read_reg(drv_data, IDECTRL_ADDR_LBAM);
@@ -475,11 +476,11 @@ static void ep93xx_pata_set_devctl(struct ata_port *ap, u8 ctl)
 }
 
 /* Note: original code is ata_sff_data_xfer */
-static unsigned int ep93xx_pata_data_xfer(struct ata_device *adev,
+static unsigned int ep93xx_pata_data_xfer(struct ata_queued_cmd *qc,
 					  unsigned char *buf,
 					  unsigned int buflen, int rw)
 {
-	struct ata_port *ap = adev->link->ap;
+	struct ata_port *ap = qc->dev->link->ap;
 	struct ep93xx_pata_data *drv_data = ap->host->private_data;
 	u16 *data = (u16 *)buf;
 	unsigned int words = buflen >> 1;
@@ -660,7 +661,7 @@ static void ep93xx_pata_dma_init(struct ep93xx_pata_data *drv_data)
 	 * start of new transfer.
 	 */
 	drv_data->dma_rx_data.port = EP93XX_DMA_IDE;
-	drv_data->dma_rx_data.direction = DMA_FROM_DEVICE;
+	drv_data->dma_rx_data.direction = DMA_DEV_TO_MEM;
 	drv_data->dma_rx_data.name = "ep93xx-pata-rx";
 	drv_data->dma_rx_channel = dma_request_channel(mask,
 		ep93xx_pata_dma_filter, &drv_data->dma_rx_data);
@@ -668,7 +669,7 @@ static void ep93xx_pata_dma_init(struct ep93xx_pata_data *drv_data)
 		return;
 
 	drv_data->dma_tx_data.port = EP93XX_DMA_IDE;
-	drv_data->dma_tx_data.direction = DMA_TO_DEVICE;
+	drv_data->dma_tx_data.direction = DMA_MEM_TO_DEV;
 	drv_data->dma_tx_data.name = "ep93xx-pata-tx";
 	drv_data->dma_tx_channel = dma_request_channel(mask,
 		ep93xx_pata_dma_filter, &drv_data->dma_tx_data);
@@ -679,7 +680,7 @@ static void ep93xx_pata_dma_init(struct ep93xx_pata_data *drv_data)
 
 	/* Configure receive channel direction and source address */
 	memset(&conf, 0, sizeof(conf));
-	conf.direction = DMA_FROM_DEVICE;
+	conf.direction = DMA_DEV_TO_MEM;
 	conf.src_addr = drv_data->udma_in_phys;
 	conf.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
 	if (dmaengine_slave_config(drv_data->dma_rx_channel, &conf)) {
@@ -690,7 +691,7 @@ static void ep93xx_pata_dma_init(struct ep93xx_pata_data *drv_data)
 
 	/* Configure transmit channel direction and destination address */
 	memset(&conf, 0, sizeof(conf));
-	conf.direction = DMA_TO_DEVICE;
+	conf.direction = DMA_MEM_TO_DEV;
 	conf.dst_addr = drv_data->udma_out_phys;
 	conf.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
 	if (dmaengine_slave_config(drv_data->dma_tx_channel, &conf)) {
@@ -709,8 +710,8 @@ static void ep93xx_pata_dma_start(struct ata_queued_cmd *qc)
 	struct dma_chan *channel = qc->dma_dir == DMA_TO_DEVICE
 		? drv_data->dma_tx_channel : drv_data->dma_rx_channel;
 
-	txd = channel->device->device_prep_slave_sg(channel, qc->sg,
-		 qc->n_elem, qc->dma_dir, DMA_CTRL_ACK, NULL);
+	txd = dmaengine_prep_slave_sg(channel, qc->sg, qc->n_elem, qc->dma_dir,
+		DMA_CTRL_ACK);
 	if (!txd) {
 		dev_err(qc->ap->dev, "failed to prepare slave for sg dma\n");
 		return;
@@ -855,7 +856,6 @@ static void ep93xx_pata_drain_fifo(struct ata_queued_cmd *qc)
 		     && count < 65536; count += 2)
 		ep93xx_pata_read_reg(drv_data, IDECTRL_ADDR_DATA);
 
-	/* Can become DEBUG later */
 	if (count)
 		ata_port_dbg(ap, "drained %d bytes to clear DRQ.\n", count);
 
@@ -873,7 +873,7 @@ static int ep93xx_pata_port_start(struct ata_port *ap)
 	return 0;
 }
 
-static struct scsi_host_template ep93xx_pata_sht = {
+static const struct scsi_host_template ep93xx_pata_sht = {
 	ATA_BASE_SHT(DRV_NAME),
 	/* ep93xx dma implementation limit */
 	.sg_tablesize		= 32,
@@ -911,12 +911,18 @@ static struct ata_port_operations ep93xx_pata_port_ops = {
 	.port_start		= ep93xx_pata_port_start,
 };
 
+static const struct soc_device_attribute ep93xx_soc_table[] = {
+	{ .revision = "E1", .data = (void *)ATA_UDMA3 },
+	{ .revision = "E2", .data = (void *)ATA_UDMA4 },
+	{ /* sentinel */ }
+};
+
 static int ep93xx_pata_probe(struct platform_device *pdev)
 {
 	struct ep93xx_pata_data *drv_data;
 	struct ata_host *host;
 	struct ata_port *ap;
-	unsigned int irq;
+	int irq;
 	struct resource *mem_res;
 	void __iomem *ide_base;
 	int err;
@@ -928,12 +934,11 @@ static int ep93xx_pata_probe(struct platform_device *pdev)
 	/* INT[3] (IRQ_EP93XX_EXT3) line connected as pull down */
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
-		err = -ENXIO;
+		err = irq;
 		goto err_rel_gpio;
 	}
 
-	mem_res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	ide_base = devm_ioremap_resource(&pdev->dev, mem_res);
+	ide_base = devm_platform_get_and_ioremap_resource(pdev, 0, &mem_res);
 	if (IS_ERR(ide_base)) {
 		err = PTR_ERR(ide_base);
 		goto err_rel_gpio;
@@ -941,11 +946,10 @@ static int ep93xx_pata_probe(struct platform_device *pdev)
 
 	drv_data = devm_kzalloc(&pdev->dev, sizeof(*drv_data), GFP_KERNEL);
 	if (!drv_data) {
-		err = -ENXIO;
+		err = -ENOMEM;
 		goto err_rel_gpio;
 	}
 
-	platform_set_drvdata(pdev, drv_data);
 	drv_data->pdev = pdev;
 	drv_data->ide_base = ide_base;
 	drv_data->udma_in_phys = mem_res->start + IDEUDMADATAIN;
@@ -955,7 +959,7 @@ static int ep93xx_pata_probe(struct platform_device *pdev)
 	/* allocate host */
 	host = ata_host_alloc(&pdev->dev, 1);
 	if (!host) {
-		err = -ENXIO;
+		err = -ENOMEM;
 		goto err_rel_dma;
 	}
 
@@ -979,12 +983,11 @@ static int ep93xx_pata_probe(struct platform_device *pdev)
 	 * so this driver supports only UDMA modes.
 	 */
 	if (drv_data->dma_rx_channel && drv_data->dma_tx_channel) {
-		int chip_rev = ep93xx_chip_revision();
+		const struct soc_device_attribute *match;
 
-		if (chip_rev == EP93XX_CHIP_REV_E1)
-			ap->udma_mask = ATA_UDMA3;
-		else if (chip_rev == EP93XX_CHIP_REV_E2)
-			ap->udma_mask = ATA_UDMA4;
+		match = soc_device_match(ep93xx_soc_table);
+		if (match)
+			ap->udma_mask = (unsigned int) match->data;
 		else
 			ap->udma_mask = ATA_UDMA2;
 	}
@@ -1007,7 +1010,7 @@ err_rel_gpio:
 	return err;
 }
 
-static int ep93xx_pata_remove(struct platform_device *pdev)
+static void ep93xx_pata_remove(struct platform_device *pdev)
 {
 	struct ata_host *host = platform_get_drvdata(pdev);
 	struct ep93xx_pata_data *drv_data = host->private_data;
@@ -1016,16 +1019,14 @@ static int ep93xx_pata_remove(struct platform_device *pdev)
 	ep93xx_pata_release_dma(drv_data);
 	ep93xx_pata_clear_regs(drv_data->ide_base);
 	ep93xx_ide_release_gpio(pdev);
-	return 0;
 }
 
 static struct platform_driver ep93xx_pata_platform_driver = {
 	.driver = {
 		.name = DRV_NAME,
-		.owner = THIS_MODULE,
 	},
 	.probe = ep93xx_pata_probe,
-	.remove = ep93xx_pata_remove,
+	.remove_new = ep93xx_pata_remove,
 };
 
 module_platform_driver(ep93xx_pata_platform_driver);

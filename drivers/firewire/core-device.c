@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Device probing and sysfs code.
  *
  * Copyright (C) 2005-2006  Kristian Hoegsberg <krh@bitplanet.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
 #include <linux/bug.h>
@@ -113,8 +100,10 @@ static int textual_leaf_to_string(const u32 *block, char *buf, size_t size)
  * @buf:	where to put the string
  * @size:	size of @buf, in bytes
  *
- * The string is taken from a minimal ASCII text descriptor leaf after
- * the immediate entry with @key.  The string is zero-terminated.
+ * The string is taken from a minimal ASCII text descriptor leaf just after the entry with the
+ * @key. The string is zero-terminated. An overlong string is silently truncated such that it
+ * and the zero byte fit into @size.
+ *
  * Returns strlen(buf) or a negative error code.
  */
 int fw_csr_string(const u32 *directory, int key, char *buf, size_t size)
@@ -143,7 +132,7 @@ static void get_ids(const u32 *directory, int *id)
 	}
 }
 
-static void get_modalias_ids(struct fw_unit *unit, int *id)
+static void get_modalias_ids(const struct fw_unit *unit, int *id)
 {
 	get_ids(&fw_parent_device(unit)->config_rom[5], id);
 	get_ids(unit->directory, id);
@@ -197,15 +186,15 @@ static int fw_unit_probe(struct device *dev)
 	return driver->probe(fw_unit(dev), unit_match(dev, dev->driver));
 }
 
-static int fw_unit_remove(struct device *dev)
+static void fw_unit_remove(struct device *dev)
 {
 	struct fw_driver *driver =
 			container_of(dev->driver, struct fw_driver, driver);
 
-	return driver->remove(fw_unit(dev)), 0;
+	driver->remove(fw_unit(dev));
 }
 
-static int get_modalias(struct fw_unit *unit, char *buffer, size_t buffer_size)
+static int get_modalias(const struct fw_unit *unit, char *buffer, size_t buffer_size)
 {
 	int id[] = {0, 0, 0, 0};
 
@@ -216,9 +205,9 @@ static int get_modalias(struct fw_unit *unit, char *buffer, size_t buffer_size)
 			id[0], id[1], id[2], id[3]);
 }
 
-static int fw_unit_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int fw_unit_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct fw_unit *unit = fw_unit(dev);
+	const struct fw_unit *unit = fw_unit(dev);
 	char modalias[64];
 
 	get_modalias(unit, modalias, sizeof(modalias));
@@ -382,8 +371,7 @@ static ssize_t rom_index_show(struct device *dev,
 	struct fw_device *device = fw_device(dev->parent);
 	struct fw_unit *unit = fw_unit(dev);
 
-	return snprintf(buf, PAGE_SIZE, "%d\n",
-			(int)(unit->directory - device->config_rom));
+	return sysfs_emit(buf, "%td\n", unit->directory - device->config_rom);
 }
 
 static struct device_attribute fw_unit_attributes[] = {
@@ -413,8 +401,7 @@ static ssize_t guid_show(struct device *dev,
 	int ret;
 
 	down_read(&fw_device_rwsem);
-	ret = snprintf(buf, PAGE_SIZE, "0x%08x%08x\n",
-		       device->config_rom[3], device->config_rom[4]);
+	ret = sysfs_emit(buf, "0x%08x%08x\n", device->config_rom[3], device->config_rom[4]);
 	up_read(&fw_device_rwsem);
 
 	return ret;
@@ -729,14 +716,11 @@ static void create_units(struct fw_device *device)
 					fw_unit_attributes,
 					&unit->attribute_group);
 
-		if (device_register(&unit->device) < 0)
-			goto skip_unit;
-
 		fw_device_get(device);
-		continue;
-
-	skip_unit:
-		kfree(unit);
+		if (device_register(&unit->device) < 0) {
+			put_device(&unit->device);
+			continue;
+		}
 	}
 }
 
@@ -916,7 +900,7 @@ static int lookup_existing_device(struct device *dev, void *data)
 		old->config_rom_retries = 0;
 		fw_notice(card, "rediscovered device %s\n", dev_name(dev));
 
-		PREPARE_DELAYED_WORK(&old->work, fw_device_update);
+		old->workfn = fw_device_update;
 		fw_schedule_device_work(old, 0);
 
 		if (current_node == card->root_node)
@@ -967,7 +951,7 @@ static void set_broadcast_channel(struct fw_device *device, int generation)
 				device->bc_implemented = BC_IMPLEMENTED;
 				break;
 			}
-			/* else fall through to case address error */
+			fallthrough;	/* to case address error */
 		case RCODE_ADDRESS_ERROR:
 			device->bc_implemented = BC_UNIMPLEMENTED;
 		}
@@ -1065,7 +1049,7 @@ static void fw_device_init(struct work_struct *work)
 
 	/*
 	 * Transition the device to running state.  If it got pulled
-	 * out from under us while we did the intialization work, we
+	 * out from under us while we did the initialization work, we
 	 * have to shut down the device again here.  Normally, though,
 	 * fw_node_event will be responsible for shutting it down when
 	 * necessary.  We have to use the atomic cmpxchg here to avoid
@@ -1075,7 +1059,7 @@ static void fw_device_init(struct work_struct *work)
 	if (atomic_cmpxchg(&device->state,
 			   FW_DEVICE_INITIALIZING,
 			   FW_DEVICE_RUNNING) == FW_DEVICE_GONE) {
-		PREPARE_DELAYED_WORK(&device->work, fw_device_shutdown);
+		device->workfn = fw_device_shutdown;
 		fw_schedule_device_work(device, SHUTDOWN_DELAY);
 	} else {
 		fw_notice(card, "created device %s: GUID %08x%08x, S%d00\n",
@@ -1196,11 +1180,18 @@ static void fw_device_refresh(struct work_struct *work)
 		  dev_name(&device->device), fw_rcode_string(ret));
  gone:
 	atomic_set(&device->state, FW_DEVICE_GONE);
-	PREPARE_DELAYED_WORK(&device->work, fw_device_shutdown);
+	device->workfn = fw_device_shutdown;
 	fw_schedule_device_work(device, SHUTDOWN_DELAY);
  out:
 	if (node_id == card->root_node->node_id)
 		fw_schedule_bm_work(card, 0);
+}
+
+static void fw_device_workfn(struct work_struct *work)
+{
+	struct fw_device *device = container_of(to_delayed_work(work),
+						struct fw_device, work);
+	device->workfn(work);
 }
 
 void fw_node_event(struct fw_card *card, struct fw_node *node, int event)
@@ -1221,7 +1212,7 @@ void fw_node_event(struct fw_card *card, struct fw_node *node, int event)
 			break;
 
 		/*
-		 * Do minimal intialization of the device here, the
+		 * Do minimal initialization of the device here, the
 		 * rest will happen in fw_device_init().
 		 *
 		 * Attention:  A lot of things, even fw_device_get(),
@@ -1252,7 +1243,8 @@ void fw_node_event(struct fw_card *card, struct fw_node *node, int event)
 		 * power-up after getting plugged in.  We schedule the
 		 * first config rom scan half a second after bus reset.
 		 */
-		INIT_DELAYED_WORK(&device->work, fw_device_init);
+		device->workfn = fw_device_init;
+		INIT_DELAYED_WORK(&device->work, fw_device_workfn);
 		fw_schedule_device_work(device, INITIAL_DELAY);
 		break;
 
@@ -1268,7 +1260,7 @@ void fw_node_event(struct fw_card *card, struct fw_node *node, int event)
 		if (atomic_cmpxchg(&device->state,
 			    FW_DEVICE_RUNNING,
 			    FW_DEVICE_INITIALIZING) == FW_DEVICE_RUNNING) {
-			PREPARE_DELAYED_WORK(&device->work, fw_device_refresh);
+			device->workfn = fw_device_refresh;
 			fw_schedule_device_work(device,
 				device->is_local ? 0 : INITIAL_DELAY);
 		}
@@ -1283,7 +1275,7 @@ void fw_node_event(struct fw_card *card, struct fw_node *node, int event)
 		smp_wmb();  /* update node_id before generation */
 		device->generation = card->generation;
 		if (atomic_read(&device->state) == FW_DEVICE_RUNNING) {
-			PREPARE_DELAYED_WORK(&device->work, fw_device_update);
+			device->workfn = fw_device_update;
 			fw_schedule_device_work(device, 0);
 		}
 		break;
@@ -1308,7 +1300,7 @@ void fw_node_event(struct fw_card *card, struct fw_node *node, int event)
 		device = node->data;
 		if (atomic_xchg(&device->state,
 				FW_DEVICE_GONE) == FW_DEVICE_RUNNING) {
-			PREPARE_DELAYED_WORK(&device->work, fw_device_shutdown);
+			device->workfn = fw_device_shutdown;
 			fw_schedule_device_work(device,
 				list_empty(&card->link) ? 0 : SHUTDOWN_DELAY);
 		}

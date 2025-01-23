@@ -1,9 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 /* New Hydra driver using generic 8390 core */
 /* Based on old hydra driver by Topi Kanerva (topi@susanna.oulu.fi) */
-
-/* This file is subject to the terms and conditions of the GNU General      */
-/* Public License.  See the file COPYING in the main directory of the       */
-/* Linux distribution for more details.                                     */
 
 /* Peter De Schrijver (p2@mind.be) */
 /* Oldenburg 2000 */
@@ -66,7 +64,6 @@ static void hydra_block_input(struct net_device *dev, int count,
 static void hydra_block_output(struct net_device *dev, int count,
 			       const unsigned char *buf, int start_page);
 static void hydra_remove_one(struct zorro_dev *z);
-static u32 hydra_msg_enable;
 
 static struct zorro_device_id hydra_zorro_tbl[] = {
     { ZORRO_PROD_HYDRA_SYSTEMS_AMIGANET },
@@ -105,7 +102,6 @@ static const struct net_device_ops hydra_netdev_ops = {
 	.ndo_set_rx_mode	= __ei_set_multicast_list,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= eth_mac_addr,
-	.ndo_change_mtu		= eth_change_mtu,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= __ei_poll,
 #endif
@@ -118,9 +114,9 @@ static int hydra_init(struct zorro_dev *z)
     unsigned long ioaddr = board+HYDRA_NIC_BASE;
     const char name[] = "NE2000";
     int start_page, stop_page;
+    u8 macaddr[ETH_ALEN];
     int j;
     int err;
-    struct ei_device *ei_local;
 
     static u32 hydra_offsets[16] = {
 	0x00, 0x02, 0x04, 0x06, 0x08, 0x0a, 0x0c, 0x0e,
@@ -132,15 +128,14 @@ static int hydra_init(struct zorro_dev *z)
 	return -ENOMEM;
 
     for (j = 0; j < ETH_ALEN; j++)
-	dev->dev_addr[j] = *((u8 *)(board + HYDRA_ADDRPROM + 2*j));
+	macaddr[j] = *((u8 *)(board + HYDRA_ADDRPROM + 2*j));
+    eth_hw_addr_set(dev, macaddr);
 
     /* We must set the 8390 for word mode. */
     z_writeb(0x4b, ioaddr + NE_EN0_DCFG);
     start_page = NESM_START_PG;
     stop_page = NESM_STOP_PG;
 
-    ei_local = netdev_priv(dev);
-    ei_local->msg_enable = hydra_msg_enable;
     dev->base_addr = ioaddr;
     dev->irq = IRQ_AMIGA_PORTS;
 

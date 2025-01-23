@@ -1,5 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- *  External connector (extcon) class driver
+ * External Connector (extcon) framework
+ * - linux/include/linux/extcon.h for extcon consumer device driver.
+ *
+ * Copyright (C) 2015 Samsung Electronics
+ * Author: Chanwoo Choi <cw00.choi@samsung.com>
  *
  * Copyright (C) 2012 Samsung Electronics
  * Author: Donggeun Kim <dg77.kim@samsung.com>
@@ -8,321 +13,319 @@
  * based on switch class driver
  * Copyright (C) 2008 Google, Inc.
  * Author: Mike Lockwood <lockwood@android.com>
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
-*/
+ */
 
 #ifndef __LINUX_EXTCON_H__
 #define __LINUX_EXTCON_H__
 
 #include <linux/device.h>
-#include <linux/notifier.h>
-#include <linux/sysfs.h>
-
-#define SUPPORTED_CABLE_MAX	32
-#define CABLE_NAME_MAX		30
 
 /*
- * The standard cable name is to help support general notifier
- * and notifiee device drivers to share the common names.
- * Please use standard cable names unless your notifier device has
- * a very unique and abnormal cable or
- * the cable type is supposed to be used with only one unique
- * pair of notifier/notifiee devices.
+ * Define the type of supported external connectors
+ */
+#define EXTCON_TYPE_USB		BIT(0)	/* USB connector */
+#define EXTCON_TYPE_CHG		BIT(1)	/* Charger connector */
+#define EXTCON_TYPE_JACK	BIT(2)	/* Jack connector */
+#define EXTCON_TYPE_DISP	BIT(3)	/* Display connector */
+#define EXTCON_TYPE_MISC	BIT(4)	/* Miscellaneous connector */
+
+/*
+ * Define the unique id of supported external connectors
+ */
+#define EXTCON_NONE		0
+
+/* USB external connector */
+#define EXTCON_USB		1
+#define EXTCON_USB_HOST		2
+
+/*
+ * Charging external connector
  *
- * Please add any other "standard" cables used with extcon dev.
+ * When one SDP charger connector was reported, we should also report
+ * the USB connector, which means EXTCON_CHG_USB_SDP should always
+ * appear together with EXTCON_USB. The same as ACA charger connector,
+ * EXTCON_CHG_USB_ACA would normally appear with EXTCON_USB_HOST.
  *
- * You may add a dot and number to specify version or specification
- * of the specific cable if it is required. (e.g., "Fast-charger.18"
- * and "Fast-charger.10" for 1.8A and 1.0A chargers)
- * However, the notifiee and notifier should be able to handle such
- * string and if the notifiee can negotiate the protocol or identify,
- * you don't need such convention. This convention is helpful when
- * notifier can distinguish but notifiee cannot.
+ * The EXTCON_CHG_USB_SLOW connector can provide at least 500mA of
+ * current at 5V. The EXTCON_CHG_USB_FAST connector can provide at
+ * least 1A of current at 5V.
  */
-enum extcon_cable_name {
-	EXTCON_USB = 0,
-	EXTCON_USB_HOST,
-	EXTCON_TA,			/* Travel Adaptor */
-	EXTCON_FAST_CHARGER,
-	EXTCON_SLOW_CHARGER,
-	EXTCON_CHARGE_DOWNSTREAM,	/* Charging an external device */
-	EXTCON_HDMI,
-	EXTCON_MHL,
-	EXTCON_DVI,
-	EXTCON_VGA,
-	EXTCON_DOCK,
-	EXTCON_LINE_IN,
-	EXTCON_LINE_OUT,
-	EXTCON_MIC_IN,
-	EXTCON_HEADPHONE_OUT,
-	EXTCON_SPDIF_IN,
-	EXTCON_SPDIF_OUT,
-	EXTCON_VIDEO_IN,
-	EXTCON_VIDEO_OUT,
-	EXTCON_MECHANICAL,
-};
-extern const char extcon_cable_name[][CABLE_NAME_MAX + 1];
+#define EXTCON_CHG_USB_SDP	5	/* Standard Downstream Port */
+#define EXTCON_CHG_USB_DCP	6	/* Dedicated Charging Port */
+#define EXTCON_CHG_USB_CDP	7	/* Charging Downstream Port */
+#define EXTCON_CHG_USB_ACA	8	/* Accessory Charger Adapter */
+#define EXTCON_CHG_USB_FAST	9
+#define EXTCON_CHG_USB_SLOW	10
+#define EXTCON_CHG_WPT		11	/* Wireless Power Transfer */
+#define EXTCON_CHG_USB_PD	12	/* USB Power Delivery */
 
-struct extcon_cable;
+/* Jack external connector */
+#define EXTCON_JACK_MICROPHONE	20
+#define EXTCON_JACK_HEADPHONE	21
+#define EXTCON_JACK_LINE_IN	22
+#define EXTCON_JACK_LINE_OUT	23
+#define EXTCON_JACK_VIDEO_IN	24
+#define EXTCON_JACK_VIDEO_OUT	25
+#define EXTCON_JACK_SPDIF_IN	26	/* Sony Philips Digital InterFace */
+#define EXTCON_JACK_SPDIF_OUT	27
 
-/**
- * struct extcon_dev - An extcon device represents one external connector.
- * @name:		The name of this extcon device. Parent device name is
- *			used if NULL.
- * @supported_cable:	Array of supported cable names ending with NULL.
- *			If supported_cable is NULL, cable name related APIs
- *			are disabled.
- * @mutually_exclusive:	Array of mutually exclusive set of cables that cannot
- *			be attached simultaneously. The array should be
- *			ending with NULL or be NULL (no mutually exclusive
- *			cables). For example, if it is { 0x7, 0x30, 0}, then,
- *			{0, 1}, {0, 1, 2}, {0, 2}, {1, 2}, or {4, 5} cannot
- *			be attached simulataneously. {0x7, 0} is equivalent to
- *			{0x3, 0x6, 0x5, 0}. If it is {0xFFFFFFFF, 0}, there
- *			can be no simultaneous connections.
- * @print_name:		An optional callback to override the method to print the
- *			name of the extcon device.
- * @print_state:	An optional callback to override the method to print the
- *			status of the extcon device.
- * @dev:		Device of this extcon.
- * @state:		Attach/detach state of this extcon. Do not provide at
- *			register-time.
- * @nh:			Notifier for the state change events from this extcon
- * @entry:		To support list of extcon devices so that users can search
- *			for extcon devices based on the extcon name.
- * @lock:
- * @max_supported:	Internal value to store the number of cables.
- * @extcon_dev_type:	Device_type struct to provide attribute_groups
- *			customized for each extcon device.
- * @cables:		Sysfs subdirectories. Each represents one cable.
+/* Display external connector */
+#define EXTCON_DISP_HDMI	40	/* High-Definition Multimedia Interface */
+#define EXTCON_DISP_MHL		41	/* Mobile High-Definition Link */
+#define EXTCON_DISP_DVI		42	/* Digital Visual Interface */
+#define EXTCON_DISP_VGA		43	/* Video Graphics Array */
+#define EXTCON_DISP_DP		44	/* Display Port */
+#define EXTCON_DISP_HMD		45	/* Head-Mounted Display */
+#define EXTCON_DISP_CVBS	46	/* Composite Video Broadcast Signal */
+#define EXTCON_DISP_EDP		47	/* Embedded Display Port */
+
+/* Miscellaneous external connector */
+#define EXTCON_DOCK		60
+#define EXTCON_JIG		61
+#define EXTCON_MECHANICAL	62
+
+#define EXTCON_NUM		63
+
+/*
+ * Define the properties of supported external connectors.
  *
- * In most cases, users only need to provide "User initializing data" of
- * this struct when registering an extcon. In some exceptional cases,
- * optional callbacks may be needed. However, the values in "internal data"
- * are overwritten by register function.
+ * When adding the new extcon property, they *must* have
+ * the type/value/default information. Also, you *have to*
+ * modify the EXTCON_PROP_[type]_START/END definitions
+ * which mean the range of the supported properties
+ * for each extcon type.
+ *
+ * The naming style of property
+ * : EXTCON_PROP_[type]_[property name]
+ *
+ * EXTCON_PROP_USB_[property name]	: USB property
+ * EXTCON_PROP_CHG_[property name]	: Charger property
+ * EXTCON_PROP_JACK_[property name]	: Jack property
+ * EXTCON_PROP_DISP_[property name]	: Display property
  */
-struct extcon_dev {
-	/* Optional user initializing data */
-	const char *name;
-	const char **supported_cable;
-	const u32 *mutually_exclusive;
 
-	/* Optional callbacks to override class functions */
-	ssize_t	(*print_name)(struct extcon_dev *edev, char *buf);
-	ssize_t	(*print_state)(struct extcon_dev *edev, char *buf);
+/*
+ * Properties of EXTCON_TYPE_USB.
+ *
+ * - EXTCON_PROP_USB_VBUS
+ * @type:	integer (intval)
+ * @value:	0 (low) or 1 (high)
+ * @default:	0 (low)
+ * - EXTCON_PROP_USB_TYPEC_POLARITY
+ * @type:	integer (intval)
+ * @value:	0 (normal) or 1 (flip)
+ * @default:	0 (normal)
+ * - EXTCON_PROP_USB_SS (SuperSpeed)
+ * @type:       integer (intval)
+ * @value:      0 (USB/USB2) or 1 (USB3)
+ * @default:    0 (USB/USB2)
+ *
+ */
+#define EXTCON_PROP_USB_VBUS		0
+#define EXTCON_PROP_USB_TYPEC_POLARITY	1
+#define EXTCON_PROP_USB_SS		2
 
-	/* Internal data. Please do not set. */
-	struct device dev;
-	struct raw_notifier_head nh;
-	struct list_head entry;
-	int max_supported;
-	spinlock_t lock;	/* could be called by irq handler */
-	u32 state;
+#define EXTCON_PROP_USB_MIN		0
+#define EXTCON_PROP_USB_MAX		2
+#define EXTCON_PROP_USB_CNT	(EXTCON_PROP_USB_MAX - EXTCON_PROP_USB_MIN + 1)
 
-	/* /sys/class/extcon/.../cable.n/... */
-	struct device_type extcon_dev_type;
-	struct extcon_cable *cables;
+/* Properties of EXTCON_TYPE_CHG. */
+#define EXTCON_PROP_CHG_MIN		50
+#define EXTCON_PROP_CHG_MAX		50
+#define EXTCON_PROP_CHG_CNT	(EXTCON_PROP_CHG_MAX - EXTCON_PROP_CHG_MIN + 1)
 
-	/* /sys/class/extcon/.../mutually_exclusive/... */
-	struct attribute_group attr_g_muex;
-	struct attribute **attrs_muex;
-	struct device_attribute *d_attrs_muex;
+/* Properties of EXTCON_TYPE_JACK. */
+#define EXTCON_PROP_JACK_MIN		100
+#define EXTCON_PROP_JACK_MAX		100
+#define EXTCON_PROP_JACK_CNT (EXTCON_PROP_JACK_MAX - EXTCON_PROP_JACK_MIN + 1)
+
+/*
+ * Properties of EXTCON_TYPE_DISP.
+ *
+ * - EXTCON_PROP_DISP_HPD (Hot Plug Detect)
+ * @type:       integer (intval)
+ * @value:      0 (no hpd) or 1 (hpd)
+ * @default:    0 (no hpd)
+ *
+ */
+#define EXTCON_PROP_DISP_HPD		150
+
+/* Properties of EXTCON_TYPE_DISP. */
+#define EXTCON_PROP_DISP_MIN		150
+#define EXTCON_PROP_DISP_MAX		151
+#define EXTCON_PROP_DISP_CNT (EXTCON_PROP_DISP_MAX - EXTCON_PROP_DISP_MIN + 1)
+
+/*
+ * Define the type of property's value.
+ *
+ * Define the property's value as union type. Because each property
+ * would need the different data type to store it.
+ */
+union extcon_property_value {
+	int intval;	/* type : integer (intval) */
 };
 
-/**
- * struct extcon_cable - An internal data for each cable of extcon device.
- * @edev:		The extcon device
- * @cable_index:	Index of this cable in the edev
- * @attr_g:		Attribute group for the cable
- * @attr_name:		"name" sysfs entry
- * @attr_state:		"state" sysfs entry
- * @attrs:		Array pointing to attr_name and attr_state for attr_g
- */
-struct extcon_cable {
-	struct extcon_dev *edev;
-	int cable_index;
-
-	struct attribute_group attr_g;
-	struct device_attribute attr_name;
-	struct device_attribute attr_state;
-
-	struct attribute *attrs[3]; /* to be fed to attr_g.attrs */
-};
-
-/**
- * struct extcon_specific_cable_nb - An internal data for
- *				     extcon_register_interest().
- * @internal_nb:	A notifier block bridging extcon notifier
- *			and cable notifier.
- * @user_nb:		user provided notifier block for events from
- *			a specific cable.
- * @cable_index:	the target cable.
- * @edev:		the target extcon device.
- * @previous_value:	the saved previous event value.
- */
-struct extcon_specific_cable_nb {
-	struct notifier_block internal_nb;
-	struct notifier_block *user_nb;
-	int cable_index;
-	struct extcon_dev *edev;
-	unsigned long previous_value;
-};
+struct extcon_dev;
 
 #if IS_ENABLED(CONFIG_EXTCON)
+/*
+ * Following APIs get the connected state of each external connector.
+ * The 'id' argument indicates the defined external connector.
+ */
+int extcon_get_state(struct extcon_dev *edev, unsigned int id);
 
 /*
- * Following APIs are for notifiers or configurations.
- * Notifiers are the external port and connection devices.
+ * Following APIs get the property of each external connector.
+ * The 'id' argument indicates the defined external connector
+ * and the 'prop' indicates the extcon property.
+ *
+ * And extcon_get_property_capability() get the capability of the property
+ * for each external connector. They are used to get the capability of the
+ * property of each external connector based on the id and property.
  */
-extern int extcon_dev_register(struct extcon_dev *edev);
-extern void extcon_dev_unregister(struct extcon_dev *edev);
-extern struct extcon_dev *extcon_get_extcon_dev(const char *extcon_name);
+int extcon_get_property(struct extcon_dev *edev, unsigned int id,
+				unsigned int prop,
+				union extcon_property_value *prop_val);
+int extcon_get_property_capability(struct extcon_dev *edev,
+				unsigned int id, unsigned int prop);
 
 /*
- * get/set/update_state access the 32b encoded state value, which represents
- * states of all possible cables of the multistate port. For example, if one
- * calls extcon_set_state(edev, 0x7), it may mean that all the three cables
- * are attached to the port.
+ * Following APIs register the notifier block in order to detect
+ * the change of both state and property value for each external connector.
+ *
+ * extcon_register_notifier(*edev, id, *nb) : Register a notifier block
+ *			for specific external connector of the extcon.
+ * extcon_register_notifier_all(*edev, *nb) : Register a notifier block
+ *			for all supported external connectors of the extcon.
  */
-static inline u32 extcon_get_state(struct extcon_dev *edev)
-{
-	return edev->state;
-}
+int extcon_register_notifier(struct extcon_dev *edev, unsigned int id,
+				struct notifier_block *nb);
+int extcon_unregister_notifier(struct extcon_dev *edev, unsigned int id,
+				struct notifier_block *nb);
+int devm_extcon_register_notifier(struct device *dev,
+				struct extcon_dev *edev, unsigned int id,
+				struct notifier_block *nb);
+void devm_extcon_unregister_notifier(struct device *dev,
+				struct extcon_dev *edev, unsigned int id,
+				struct notifier_block *nb);
 
-extern int extcon_set_state(struct extcon_dev *edev, u32 state);
-extern int extcon_update_state(struct extcon_dev *edev, u32 mask, u32 state);
+int extcon_register_notifier_all(struct extcon_dev *edev,
+				struct notifier_block *nb);
+int extcon_unregister_notifier_all(struct extcon_dev *edev,
+				struct notifier_block *nb);
+int devm_extcon_register_notifier_all(struct device *dev,
+				struct extcon_dev *edev,
+				struct notifier_block *nb);
+void devm_extcon_unregister_notifier_all(struct device *dev,
+				struct extcon_dev *edev,
+				struct notifier_block *nb);
 
 /*
- * get/set_cable_state access each bit of the 32b encoded state value.
- * They are used to access the status of each cable based on the cable_name
- * or cable_index, which is retrieved by extcon_find_cable_index
+ * Following APIs get the extcon_dev from devicetree or by through extcon name.
  */
-extern int extcon_find_cable_index(struct extcon_dev *sdev,
-				   const char *cable_name);
-extern int extcon_get_cable_state_(struct extcon_dev *edev, int cable_index);
-extern int extcon_set_cable_state_(struct extcon_dev *edev, int cable_index,
-				   bool cable_state);
+struct extcon_dev *extcon_get_extcon_dev(const char *extcon_name);
+struct extcon_dev *extcon_find_edev_by_node(struct device_node *node);
+struct extcon_dev *extcon_get_edev_by_phandle(struct device *dev,
+						     int index);
 
-extern int extcon_get_cable_state(struct extcon_dev *edev,
-				  const char *cable_name);
-extern int extcon_set_cable_state(struct extcon_dev *edev,
-				  const char *cable_name, bool cable_state);
+/* Following API get the name of extcon device. */
+const char *extcon_get_edev_name(struct extcon_dev *edev);
 
-/*
- * Following APIs are for notifiees (those who want to be notified)
- * to register a callback for events from a specific cable of the extcon.
- * Notifiees are the connected device drivers wanting to get notified by
- * a specific external port of a connection device.
- */
-extern int extcon_register_interest(struct extcon_specific_cable_nb *obj,
-				    const char *extcon_name,
-				    const char *cable_name,
-				    struct notifier_block *nb);
-extern int extcon_unregister_interest(struct extcon_specific_cable_nb *nb);
-
-/*
- * Following APIs are to monitor every action of a notifier.
- * Registrar gets notified for every external port of a connection device.
- * Probably this could be used to debug an action of notifier; however,
- * we do not recommend to use this for normal 'notifiee' device drivers who
- * want to be notified by a specific external port of the notifier.
- */
-extern int extcon_register_notifier(struct extcon_dev *edev,
-				    struct notifier_block *nb);
-extern int extcon_unregister_notifier(struct extcon_dev *edev,
-				      struct notifier_block *nb);
 #else /* CONFIG_EXTCON */
-static inline int extcon_dev_register(struct extcon_dev *edev)
+static inline int extcon_get_state(struct extcon_dev *edev, unsigned int id)
 {
 	return 0;
 }
 
-static inline void extcon_dev_unregister(struct extcon_dev *edev) { }
-
-static inline u32 extcon_get_state(struct extcon_dev *edev)
+static inline int extcon_get_property(struct extcon_dev *edev, unsigned int id,
+				unsigned int prop,
+				union extcon_property_value *prop_val)
 {
 	return 0;
 }
 
-static inline int extcon_set_state(struct extcon_dev *edev, u32 state)
+static inline int extcon_get_property_capability(struct extcon_dev *edev,
+				unsigned int id, unsigned int prop)
 {
 	return 0;
 }
 
-static inline int extcon_update_state(struct extcon_dev *edev, u32 mask,
-				       u32 state)
+static inline int extcon_register_notifier(struct extcon_dev *edev,
+				unsigned int id, struct notifier_block *nb)
 {
 	return 0;
 }
 
-static inline int extcon_find_cable_index(struct extcon_dev *edev,
-					  const char *cable_name)
+static inline int extcon_unregister_notifier(struct extcon_dev *edev,
+				unsigned int id, struct notifier_block *nb)
 {
 	return 0;
 }
 
-static inline int extcon_get_cable_state_(struct extcon_dev *edev,
-					  int cable_index)
+static inline int devm_extcon_register_notifier(struct device *dev,
+				struct extcon_dev *edev, unsigned int id,
+				struct notifier_block *nb)
+{
+	return -ENOSYS;
+}
+
+static inline  void devm_extcon_unregister_notifier(struct device *dev,
+				struct extcon_dev *edev, unsigned int id,
+				struct notifier_block *nb) { }
+
+static inline int extcon_register_notifier_all(struct extcon_dev *edev,
+					       struct notifier_block *nb)
 {
 	return 0;
 }
 
-static inline int extcon_set_cable_state_(struct extcon_dev *edev,
-					  int cable_index, bool cable_state)
+static inline int extcon_unregister_notifier_all(struct extcon_dev *edev,
+						 struct notifier_block *nb)
 {
 	return 0;
 }
 
-static inline int extcon_get_cable_state(struct extcon_dev *edev,
-			const char *cable_name)
+static inline int devm_extcon_register_notifier_all(struct device *dev,
+						    struct extcon_dev *edev,
+						    struct notifier_block *nb)
 {
 	return 0;
 }
 
-static inline int extcon_set_cable_state(struct extcon_dev *edev,
-			const char *cable_name, int state)
-{
-	return 0;
-}
+static inline void devm_extcon_unregister_notifier_all(struct device *dev,
+						       struct extcon_dev *edev,
+						       struct notifier_block *nb) { }
 
 static inline struct extcon_dev *extcon_get_extcon_dev(const char *extcon_name)
 {
 	return NULL;
 }
 
-static inline int extcon_register_notifier(struct extcon_dev *edev,
-					   struct notifier_block *nb)
+static inline struct extcon_dev *extcon_find_edev_by_node(struct device_node *node)
 {
-	return 0;
+	return ERR_PTR(-ENODEV);
 }
 
-static inline int extcon_unregister_notifier(struct extcon_dev *edev,
-					     struct notifier_block *nb)
+static inline struct extcon_dev *extcon_get_edev_by_phandle(struct device *dev,
+				int index)
 {
-	return 0;
+	return ERR_PTR(-ENODEV);
 }
 
-static inline int extcon_register_interest(struct extcon_specific_cable_nb *obj,
-					   const char *extcon_name,
-					   const char *cable_name,
-					   struct notifier_block *nb)
+static inline const char *extcon_get_edev_name(struct extcon_dev *edev)
 {
-	return 0;
-}
-
-static inline int extcon_unregister_interest(struct extcon_specific_cable_nb
-						    *obj)
-{
-	return 0;
+	return NULL;
 }
 #endif /* CONFIG_EXTCON */
+
+/*
+ * Following structure and API are deprecated. EXTCON remains the function
+ * definition to prevent the build break.
+ */
+struct extcon_specific_cable_nb {
+       struct notifier_block *user_nb;
+       int cable_index;
+       struct extcon_dev *edev;
+       unsigned long previous_value;
+};
 #endif /* __LINUX_EXTCON_H__ */

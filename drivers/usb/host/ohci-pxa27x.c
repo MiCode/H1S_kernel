@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-1.0+
 /*
  * OHCI HCD (Host Controller Driver) for USB.
  *
@@ -28,14 +29,14 @@
 #include <linux/of_platform.h>
 #include <linux/of_gpio.h>
 #include <linux/platform_data/usb-ohci-pxa27x.h>
-#include <linux/platform_data/usb-pxa3xx-ulpi.h>
+#include <linux/platform_data/pxa2xx_udc.h>
 #include <linux/platform_device.h>
+#include <linux/regulator/consumer.h>
 #include <linux/signal.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
 #include <linux/usb/otg.h>
-
-#include <mach/hardware.h>
+#include <linux/soc/pxa/cpu.h>
 
 #include "ohci.h"
 
@@ -113,13 +114,13 @@
 
 #define PXA_UHC_MAX_PORTNUM    3
 
-static const char hcd_name[] = "ohci-pxa27x";
-
 static struct hc_driver __read_mostly ohci_pxa27x_hc_driver;
 
 struct pxa27x_ohci {
 	struct clk	*clk;
 	void __iomem	*mmio_base;
+	struct regulator *vbus[3];
+	bool		vbus_enabled[3];
 };
 
 #define to_pxa27x_ohci(hcd)	(struct pxa27x_ohci *)(hcd_to_ohci(hcd)->priv)
@@ -144,7 +145,7 @@ static int pxa27x_ohci_select_pmm(struct pxa27x_ohci *pxa_ohci, int mode)
 		uhcrhda |= RH_A_NPS;
 		break;
 	case PMM_GLOBAL_MODE:
-		uhcrhda &= ~(RH_A_NPS & RH_A_PSM);
+		uhcrhda &= ~(RH_A_NPS | RH_A_PSM);
 		break;
 	case PMM_PERPORT_MODE:
 		uhcrhda &= ~(RH_A_NPS);
@@ -166,6 +167,52 @@ static int pxa27x_ohci_select_pmm(struct pxa27x_ohci *pxa_ohci, int mode)
 	return 0;
 }
 
+static int pxa27x_ohci_set_vbus_power(struct pxa27x_ohci *pxa_ohci,
+				      unsigned int port, bool enable)
+{
+	struct regulator *vbus = pxa_ohci->vbus[port];
+	int ret = 0;
+
+	if (IS_ERR_OR_NULL(vbus))
+		return 0;
+
+	if (enable && !pxa_ohci->vbus_enabled[port])
+		ret = regulator_enable(vbus);
+	else if (!enable && pxa_ohci->vbus_enabled[port])
+		ret = regulator_disable(vbus);
+
+	if (ret < 0)
+		return ret;
+
+	pxa_ohci->vbus_enabled[port] = enable;
+
+	return 0;
+}
+
+static int pxa27x_ohci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
+				   u16 wIndex, char *buf, u16 wLength)
+{
+	struct pxa27x_ohci *pxa_ohci = to_pxa27x_ohci(hcd);
+	int ret;
+
+	switch (typeReq) {
+	case SetPortFeature:
+	case ClearPortFeature:
+		if (!wIndex || wIndex > 3)
+			return -EPIPE;
+
+		if (wValue != USB_PORT_FEAT_POWER)
+			break;
+
+		ret = pxa27x_ohci_set_vbus_power(pxa_ohci, wIndex - 1,
+						 typeReq == SetPortFeature);
+		if (ret)
+			return ret;
+		break;
+	}
+
+	return ohci_hub_control(hcd, typeReq, wValue, wIndex, buf, wLength);
+}
 /*-------------------------------------------------------------------------*/
 
 static inline void pxa27x_setup_hc(struct pxa27x_ohci *pxa_ohci,
@@ -217,22 +264,17 @@ static inline void pxa27x_reset_hc(struct pxa27x_ohci *pxa_ohci)
 	__raw_writel(uhchr & ~UHCHR_FHR, pxa_ohci->mmio_base + UHCHR);
 }
 
-#ifdef CONFIG_PXA27x
-extern void pxa27x_clear_otgph(void);
-#else
-#define pxa27x_clear_otgph()	do {} while (0)
-#endif
-
 static int pxa27x_start_hc(struct pxa27x_ohci *pxa_ohci, struct device *dev)
 {
-	int retval = 0;
+	int retval;
 	struct pxaohci_platform_data *inf;
 	uint32_t uhchr;
-	struct usb_hcd *hcd = dev_get_drvdata(dev);
 
 	inf = dev_get_platdata(dev);
 
-	clk_prepare_enable(pxa_ohci->clk);
+	retval = clk_prepare_enable(pxa_ohci->clk);
+	if (retval)
+		return retval;
 
 	pxa27x_reset_hc(pxa_ohci);
 
@@ -247,11 +289,10 @@ static int pxa27x_start_hc(struct pxa27x_ohci *pxa_ohci, struct device *dev)
 	if (inf->init)
 		retval = inf->init(dev);
 
-	if (retval < 0)
+	if (retval < 0) {
+		clk_disable_unprepare(pxa_ohci->clk);
 		return retval;
-
-	if (cpu_is_pxa3xx())
-		pxa3xx_u2d_start_hc(&hcd->self);
+	}
 
 	uhchr = __raw_readl(pxa_ohci->mmio_base + UHCHR) & ~UHCHR_SSE;
 	__raw_writel(uhchr, pxa_ohci->mmio_base + UHCHR);
@@ -265,13 +306,9 @@ static int pxa27x_start_hc(struct pxa27x_ohci *pxa_ohci, struct device *dev)
 static void pxa27x_stop_hc(struct pxa27x_ohci *pxa_ohci, struct device *dev)
 {
 	struct pxaohci_platform_data *inf;
-	struct usb_hcd *hcd = dev_get_drvdata(dev);
 	uint32_t uhccoms;
 
 	inf = dev_get_platdata(dev);
-
-	if (cpu_is_pxa3xx())
-		pxa3xx_u2d_stop_hc(&hcd->self);
 
 	if (inf->exit)
 		inf->exit(dev);
@@ -316,19 +353,19 @@ static int ohci_pxa_of_init(struct platform_device *pdev)
 	if (!pdata)
 		return -ENOMEM;
 
-	if (of_get_property(np, "marvell,enable-port1", NULL))
+	if (of_property_read_bool(np, "marvell,enable-port1"))
 		pdata->flags |= ENABLE_PORT1;
-	if (of_get_property(np, "marvell,enable-port2", NULL))
+	if (of_property_read_bool(np, "marvell,enable-port2"))
 		pdata->flags |= ENABLE_PORT2;
-	if (of_get_property(np, "marvell,enable-port3", NULL))
+	if (of_property_read_bool(np, "marvell,enable-port3"))
 		pdata->flags |= ENABLE_PORT3;
-	if (of_get_property(np, "marvell,port-sense-low", NULL))
+	if (of_property_read_bool(np, "marvell,port-sense-low"))
 		pdata->flags |= POWER_SENSE_LOW;
-	if (of_get_property(np, "marvell,power-control-low", NULL))
+	if (of_property_read_bool(np, "marvell,power-control-low"))
 		pdata->flags |= POWER_CONTROL_LOW;
-	if (of_get_property(np, "marvell,no-oc-protection", NULL))
+	if (of_property_read_bool(np, "marvell,no-oc-protection"))
 		pdata->flags |= NO_OC_PROTECTION;
-	if (of_get_property(np, "marvell,oc-mode-perport", NULL))
+	if (of_property_read_bool(np, "marvell,oc-mode-perport"))
 		pdata->flags |= OC_MODE_PERPORT;
 	if (!of_property_read_u32(np, "marvell,power-on-delay", &tmp))
 		pdata->power_on_delay = tmp;
@@ -355,15 +392,16 @@ static int ohci_pxa_of_init(struct platform_device *pdev)
 
 
 /**
- * usb_hcd_pxa27x_probe - initialize pxa27x-based HCDs
- * Context: !in_interrupt()
+ * ohci_hcd_pxa27x_probe - initialize pxa27x-based HCDs
+ * @pdev:	USB Host controller to probe
+ *
+ * Context: task context, might sleep
  *
  * Allocates basic resources for this USB host controller, and
  * then invokes the start() method for the HCD associated with it
  * through the hotplug entry's driver_data.
- *
  */
-int usb_hcd_pxa27x_probe (const struct hc_driver *driver, struct platform_device *pdev)
+static int ohci_hcd_pxa27x_probe(struct platform_device *pdev)
 {
 	int retval, irq;
 	struct usb_hcd *hcd;
@@ -372,6 +410,7 @@ int usb_hcd_pxa27x_probe (const struct hc_driver *driver, struct platform_device
 	struct ohci_hcd *ohci;
 	struct resource *r;
 	struct clk *usb_clk;
+	unsigned int i;
 
 	retval = ohci_pxa_of_init(pdev);
 	if (retval)
@@ -385,37 +424,39 @@ int usb_hcd_pxa27x_probe (const struct hc_driver *driver, struct platform_device
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
 		pr_err("no resource of IORESOURCE_IRQ");
-		return -ENXIO;
+		return irq;
 	}
 
 	usb_clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(usb_clk))
 		return PTR_ERR(usb_clk);
 
-	hcd = usb_create_hcd (driver, &pdev->dev, "pxa27x");
+	hcd = usb_create_hcd(&ohci_pxa27x_hc_driver, &pdev->dev, "pxa27x");
 	if (!hcd)
 		return -ENOMEM;
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!r) {
-		pr_err("no resource of IORESOURCE_MEM");
-		retval = -ENXIO;
-		goto err;
-	}
-
-	hcd->rsrc_start = r->start;
-	hcd->rsrc_len = resource_size(r);
-
-	hcd->regs = devm_ioremap_resource(&pdev->dev, r);
+	hcd->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &r);
 	if (IS_ERR(hcd->regs)) {
 		retval = PTR_ERR(hcd->regs);
 		goto err;
 	}
+	hcd->rsrc_start = r->start;
+	hcd->rsrc_len = resource_size(r);
 
 	/* initialize "struct pxa27x_ohci" */
 	pxa_ohci = to_pxa27x_ohci(hcd);
 	pxa_ohci->clk = usb_clk;
 	pxa_ohci->mmio_base = (void __iomem *)hcd->regs;
+
+	for (i = 0; i < 3; ++i) {
+		char name[6];
+
+		if (!(inf->flags & (ENABLE_PORT1 << i)))
+			continue;
+
+		sprintf(name, "vbus%u", i + 1);
+		pxa_ohci->vbus[i] = devm_regulator_get(&pdev->dev, name);
+	}
 
 	retval = pxa27x_start_hc(pxa_ohci, &pdev->dev);
 	if (retval < 0) {
@@ -450,43 +491,31 @@ int usb_hcd_pxa27x_probe (const struct hc_driver *driver, struct platform_device
 /* may be called with controller, bus, and devices active */
 
 /**
- * usb_hcd_pxa27x_remove - shutdown processing for pxa27x-based HCDs
- * @dev: USB Host Controller being removed
- * Context: !in_interrupt()
+ * ohci_hcd_pxa27x_remove - shutdown processing for pxa27x-based HCDs
+ * @pdev: USB Host Controller being removed
  *
- * Reverses the effect of usb_hcd_pxa27x_probe(), first invoking
+ * Context: task context, might sleep
+ *
+ * Reverses the effect of ohci_hcd_pxa27x_probe(), first invoking
  * the HCD's stop() method.  It is always called from a thread
  * context, normally "rmmod", "apmd", or something similar.
- *
  */
-void usb_hcd_pxa27x_remove (struct usb_hcd *hcd, struct platform_device *pdev)
+static void ohci_hcd_pxa27x_remove(struct platform_device *pdev)
 {
+	struct usb_hcd *hcd = platform_get_drvdata(pdev);
 	struct pxa27x_ohci *pxa_ohci = to_pxa27x_ohci(hcd);
+	unsigned int i;
 
 	usb_remove_hcd(hcd);
 	pxa27x_stop_hc(pxa_ohci, &pdev->dev);
+
+	for (i = 0; i < 3; ++i)
+		pxa27x_ohci_set_vbus_power(pxa_ohci, i, false);
+
 	usb_put_hcd(hcd);
 }
 
 /*-------------------------------------------------------------------------*/
-
-static int ohci_hcd_pxa27x_drv_probe(struct platform_device *pdev)
-{
-	pr_debug ("In ohci_hcd_pxa27x_drv_probe");
-
-	if (usb_disabled())
-		return -ENODEV;
-
-	return usb_hcd_pxa27x_probe(&ohci_pxa27x_hc_driver, pdev);
-}
-
-static int ohci_hcd_pxa27x_drv_remove(struct platform_device *pdev)
-{
-	struct usb_hcd *hcd = platform_get_drvdata(pdev);
-
-	usb_hcd_pxa27x_remove(hcd, pdev);
-	return 0;
-}
 
 #ifdef CONFIG_PM
 static int ohci_hcd_pxa27x_drv_suspend(struct device *dev)
@@ -540,12 +569,11 @@ static const struct dev_pm_ops ohci_hcd_pxa27x_pm_ops = {
 #endif
 
 static struct platform_driver ohci_hcd_pxa27x_driver = {
-	.probe		= ohci_hcd_pxa27x_drv_probe,
-	.remove		= ohci_hcd_pxa27x_drv_remove,
+	.probe		= ohci_hcd_pxa27x_probe,
+	.remove_new	= ohci_hcd_pxa27x_remove,
 	.shutdown	= usb_hcd_platform_shutdown,
 	.driver		= {
 		.name	= "pxa27x-ohci",
-		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(pxa_ohci_dt_ids),
 #ifdef CONFIG_PM
 		.pm	= &ohci_hcd_pxa27x_pm_ops,
@@ -562,8 +590,9 @@ static int __init ohci_pxa27x_init(void)
 	if (usb_disabled())
 		return -ENODEV;
 
-	pr_info("%s: " DRIVER_DESC "\n", hcd_name);
 	ohci_init_driver(&ohci_pxa27x_hc_driver, &pxa27x_overrides);
+	ohci_pxa27x_hc_driver.hub_control = pxa27x_ohci_hub_control;
+
 	return platform_driver_register(&ohci_hcd_pxa27x_driver);
 }
 module_init(ohci_pxa27x_init);

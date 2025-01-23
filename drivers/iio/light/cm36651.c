@@ -1,10 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2013 Samsung Electronics Co., Ltd.
  * Author: Beomho Seo <beomho.seo@samsung.com>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General Public License version 2, as published
- * by the Free Software Foundation.
  */
 
 #include <linux/delay.h>
@@ -50,10 +47,10 @@
 #define CM36651_CS_CONF2_DEFAULT_BIT	0x08
 
 /* CS_CONF3 channel integration time */
-#define CM36651_CS_IT1			0x00 /* Integration time 80000 usec */
-#define CM36651_CS_IT2			0x40 /* Integration time 160000 usec */
-#define CM36651_CS_IT3			0x80 /* Integration time 320000 usec */
-#define CM36651_CS_IT4			0xC0 /* Integration time 640000 usec */
+#define CM36651_CS_IT1			0x00 /* Integration time 80 msec */
+#define CM36651_CS_IT2			0x40 /* Integration time 160 msec */
+#define CM36651_CS_IT3			0x80 /* Integration time 320 msec */
+#define CM36651_CS_IT4			0xC0 /* Integration time 640 msec */
 
 /* PS_CONF1 command code */
 #define CM36651_PS_ENABLE		0x00
@@ -64,10 +61,10 @@
 #define CM36651_PS_PERS4		0x0C
 
 /* PS_CONF1 command code: integration time */
-#define CM36651_PS_IT1			0x00 /* Integration time 320 usec */
-#define CM36651_PS_IT2			0x10 /* Integration time 420 usec */
-#define CM36651_PS_IT3			0x20 /* Integration time 520 usec */
-#define CM36651_PS_IT4			0x30 /* Integration time 640 usec */
+#define CM36651_PS_IT1			0x00 /* Integration time 0.32 msec */
+#define CM36651_PS_IT2			0x10 /* Integration time 0.42 msec */
+#define CM36651_PS_IT3			0x20 /* Integration time 0.52 msec */
+#define CM36651_PS_IT4			0x30 /* Integration time 0.64 msec */
 
 /* PS_CONF1 command code: duty ratio */
 #define CM36651_PS_DR1			0x00 /* Duty ratio 1/80 */
@@ -93,8 +90,8 @@
 #define CM36651_CLOSE_PROXIMITY		0x32
 #define CM36651_FAR_PROXIMITY			0x33
 
-#define CM36651_CS_INT_TIME_AVAIL	"80000 160000 320000 640000"
-#define CM36651_PS_INT_TIME_AVAIL	"320 420 520 640"
+#define CM36651_CS_INT_TIME_AVAIL	"0.08 0.16 0.32 0.64"
+#define CM36651_PS_INT_TIME_AVAIL	"0.000320 0.000420 0.000520 0.000640"
 
 enum cm36651_operation_mode {
 	CM36651_LIGHT_EN,
@@ -268,7 +265,7 @@ static irqreturn_t cm36651_irq_handler(int irq, void *data)
 				CM36651_CMD_READ_RAW_PROXIMITY,
 				IIO_EV_TYPE_THRESH, ev_dir);
 
-	iio_push_event(indio_dev, ev_code, iio_get_time_ns());
+	iio_push_event(indio_dev, ev_code, iio_get_time_ns(indio_dev));
 
 	return IRQ_HANDLED;
 }
@@ -356,30 +353,30 @@ static int cm36651_read_channel(struct cm36651_data *cm36651,
 }
 
 static int cm36651_read_int_time(struct cm36651_data *cm36651,
-				struct iio_chan_spec const *chan, int *val)
+				struct iio_chan_spec const *chan, int *val2)
 {
 	switch (chan->type) {
 	case IIO_LIGHT:
 		if (cm36651->cs_int_time[chan->address] == CM36651_CS_IT1)
-			*val = 80000;
+			*val2 = 80000;
 		else if (cm36651->cs_int_time[chan->address] == CM36651_CS_IT2)
-			*val = 160000;
+			*val2 = 160000;
 		else if (cm36651->cs_int_time[chan->address] == CM36651_CS_IT3)
-			*val = 320000;
+			*val2 = 320000;
 		else if (cm36651->cs_int_time[chan->address] == CM36651_CS_IT4)
-			*val = 640000;
+			*val2 = 640000;
 		else
 			return -EINVAL;
 		break;
 	case IIO_PROXIMITY:
 		if (cm36651->ps_int_time == CM36651_PS_IT1)
-			*val = 320;
+			*val2 = 320;
 		else if (cm36651->ps_int_time == CM36651_PS_IT2)
-			*val = 420;
+			*val2 = 420;
 		else if (cm36651->ps_int_time == CM36651_PS_IT3)
-			*val = 520;
+			*val2 = 520;
 		else if (cm36651->ps_int_time == CM36651_PS_IT4)
-			*val = 640;
+			*val2 = 640;
 		else
 			return -EINVAL;
 		break;
@@ -387,7 +384,7 @@ static int cm36651_read_int_time(struct cm36651_data *cm36651,
 		return -EINVAL;
 	}
 
-	return IIO_VAL_INT;
+	return IIO_VAL_INT_PLUS_MICRO;
 }
 
 static int cm36651_write_int_time(struct cm36651_data *cm36651,
@@ -459,7 +456,8 @@ static int cm36651_read_raw(struct iio_dev *indio_dev,
 		ret = cm36651_read_channel(cm36651, chan, val);
 		break;
 	case IIO_CHAN_INFO_INT_TIME:
-		ret = cm36651_read_int_time(cm36651, chan, val);
+		*val = 0;
+		ret = cm36651_read_int_time(cm36651, chan, val2);
 		break;
 	default:
 		ret = -EINVAL;
@@ -479,7 +477,7 @@ static int cm36651_write_raw(struct iio_dev *indio_dev,
 	int ret = -EINVAL;
 
 	if (mask == IIO_CHAN_INFO_INT_TIME) {
-		ret = cm36651_write_int_time(cm36651, chan, val);
+		ret = cm36651_write_int_time(cm36651, chan, val2);
 		if (ret < 0)
 			dev_err(&client->dev, "Integration time write failed\n");
 	}
@@ -534,7 +532,7 @@ static int cm36651_write_prox_event_config(struct iio_dev *indio_dev,
 					int state)
 {
 	struct cm36651_data *cm36651 = iio_priv(indio_dev);
-	int cmd, ret = -EINVAL;
+	int cmd, ret;
 
 	mutex_lock(&cm36651->lock);
 
@@ -611,7 +609,6 @@ static const struct attribute_group cm36651_attribute_group = {
 };
 
 static const struct iio_info cm36651_info = {
-	.driver_module		= THIS_MODULE,
 	.read_raw		= &cm36651_read_raw,
 	.write_raw		= &cm36651_write_raw,
 	.read_event_value	= &cm36651_read_prox_thresh,
@@ -621,9 +618,9 @@ static const struct iio_info cm36651_info = {
 	.attrs			= &cm36651_attribute_group,
 };
 
-static int cm36651_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static int cm36651_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct cm36651_data *cm36651;
 	struct iio_dev *indio_dev;
 	int ret;
@@ -635,10 +632,9 @@ static int cm36651_probe(struct i2c_client *client,
 	cm36651 = iio_priv(indio_dev);
 
 	cm36651->vled_reg = devm_regulator_get(&client->dev, "vled");
-	if (IS_ERR(cm36651->vled_reg)) {
-		dev_err(&client->dev, "get regulator vled failed\n");
-		return PTR_ERR(cm36651->vled_reg);
-	}
+	if (IS_ERR(cm36651->vled_reg))
+		return dev_err_probe(&client->dev, PTR_ERR(cm36651->vled_reg),
+				     "get regulator vled failed\n");
 
 	ret = regulator_enable(cm36651->vled_reg);
 	if (ret) {
@@ -649,11 +645,22 @@ static int cm36651_probe(struct i2c_client *client,
 	i2c_set_clientdata(client, indio_dev);
 
 	cm36651->client = client;
-	cm36651->ps_client = i2c_new_dummy(client->adapter,
+	cm36651->ps_client = i2c_new_dummy_device(client->adapter,
 						     CM36651_I2C_ADDR_PS);
-	cm36651->ara_client = i2c_new_dummy(client->adapter, CM36651_ARA);
+	if (IS_ERR(cm36651->ps_client)) {
+		dev_err(&client->dev, "%s: new i2c device failed\n", __func__);
+		ret = PTR_ERR(cm36651->ps_client);
+		goto error_disable_reg;
+	}
+
+	cm36651->ara_client = i2c_new_dummy_device(client->adapter, CM36651_ARA);
+	if (IS_ERR(cm36651->ara_client)) {
+		dev_err(&client->dev, "%s: new i2c device failed\n", __func__);
+		ret = PTR_ERR(cm36651->ara_client);
+		goto error_i2c_unregister_ps;
+	}
+
 	mutex_init(&cm36651->lock);
-	indio_dev->dev.parent = &client->dev;
 	indio_dev->channels = cm36651_channels;
 	indio_dev->num_channels = ARRAY_SIZE(cm36651_channels);
 	indio_dev->info = &cm36651_info;
@@ -663,7 +670,7 @@ static int cm36651_probe(struct i2c_client *client,
 	ret = cm36651_setup_reg(cm36651);
 	if (ret) {
 		dev_err(&client->dev, "%s: register setup failed\n", __func__);
-		goto error_disable_reg;
+		goto error_i2c_unregister_ara;
 	}
 
 	ret = request_threaded_irq(client->irq, NULL, cm36651_irq_handler,
@@ -671,7 +678,7 @@ static int cm36651_probe(struct i2c_client *client,
 							"cm36651", indio_dev);
 	if (ret) {
 		dev_err(&client->dev, "%s: request irq failed\n", __func__);
-		goto error_disable_reg;
+		goto error_i2c_unregister_ara;
 	}
 
 	ret = iio_device_register(indio_dev);
@@ -684,12 +691,16 @@ static int cm36651_probe(struct i2c_client *client,
 
 error_free_irq:
 	free_irq(client->irq, indio_dev);
+error_i2c_unregister_ara:
+	i2c_unregister_device(cm36651->ara_client);
+error_i2c_unregister_ps:
+	i2c_unregister_device(cm36651->ps_client);
 error_disable_reg:
 	regulator_disable(cm36651->vled_reg);
 	return ret;
 }
 
-static int cm36651_remove(struct i2c_client *client)
+static void cm36651_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct cm36651_data *cm36651 = iio_priv(indio_dev);
@@ -697,8 +708,8 @@ static int cm36651_remove(struct i2c_client *client)
 	iio_device_unregister(indio_dev);
 	regulator_disable(cm36651->vled_reg);
 	free_irq(client->irq, indio_dev);
-
-	return 0;
+	i2c_unregister_device(cm36651->ps_client);
+	i2c_unregister_device(cm36651->ara_client);
 }
 
 static const struct i2c_device_id cm36651_id[] = {
@@ -712,12 +723,12 @@ static const struct of_device_id cm36651_of_match[] = {
 	{ .compatible = "capella,cm36651" },
 	{ }
 };
+MODULE_DEVICE_TABLE(of, cm36651_of_match);
 
 static struct i2c_driver cm36651_driver = {
 	.driver = {
 		.name	= "cm36651",
 		.of_match_table = cm36651_of_match,
-		.owner	= THIS_MODULE,
 	},
 	.probe		= cm36651_probe,
 	.remove		= cm36651_remove,

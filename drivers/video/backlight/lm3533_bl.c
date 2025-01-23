@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * lm3533-bl.c -- LM3533 Backlight driver
  *
  * Copyright (C) 2011-2012 Texas Instruments
  *
  * Author: Johan Hovold <jhovold@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under  the terms of the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the License, or (at your
- * option) any later version.
  */
 
 #include <linux/module.h>
@@ -43,14 +39,8 @@ static inline int lm3533_bl_get_ctrlbank_id(struct lm3533_bl *bl)
 static int lm3533_bl_update_status(struct backlight_device *bd)
 {
 	struct lm3533_bl *bl = bl_get_data(bd);
-	int brightness = bd->props.brightness;
 
-	if (bd->props.power != FB_BLANK_UNBLANK)
-		brightness = 0;
-	if (bd->props.fb_blank != FB_BLANK_UNBLANK)
-		brightness = 0;
-
-	return lm3533_ctrlbank_set_brightness(&bl->cb, (u8)brightness);
+	return lm3533_ctrlbank_set_brightness(&bl->cb, backlight_get_brightness(bd));
 }
 
 static int lm3533_bl_get_brightness(struct backlight_device *bd)
@@ -239,7 +229,7 @@ static struct attribute *lm3533_bl_attributes[] = {
 static umode_t lm3533_bl_attr_is_visible(struct kobject *kobj,
 					     struct attribute *attr, int n)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct lm3533_bl *bl = dev_get_drvdata(dev);
 	umode_t mode = attr->mode;
 
@@ -296,11 +286,8 @@ static int lm3533_bl_probe(struct platform_device *pdev)
 	}
 
 	bl = devm_kzalloc(&pdev->dev, sizeof(*bl), GFP_KERNEL);
-	if (!bl) {
-		dev_err(&pdev->dev,
-				"failed to allocate memory for backlight\n");
+	if (!bl)
 		return -ENOMEM;
-	}
 
 	bl->lm3533 = lm3533;
 	bl->id = pdev->id;
@@ -350,7 +337,7 @@ err_sysfs_remove:
 	return ret;
 }
 
-static int lm3533_bl_remove(struct platform_device *pdev)
+static void lm3533_bl_remove(struct platform_device *pdev)
 {
 	struct lm3533_bl *bl = platform_get_drvdata(pdev);
 	struct backlight_device *bd = bl->bd;
@@ -362,8 +349,6 @@ static int lm3533_bl_remove(struct platform_device *pdev)
 
 	lm3533_ctrlbank_disable(&bl->cb);
 	sysfs_remove_group(&bd->dev.kobj, &lm3533_bl_attribute_group);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -400,11 +385,10 @@ static void lm3533_bl_shutdown(struct platform_device *pdev)
 static struct platform_driver lm3533_bl_driver = {
 	.driver = {
 		.name	= "lm3533-backlight",
-		.owner	= THIS_MODULE,
 		.pm	= &lm3533_bl_pm_ops,
 	},
 	.probe		= lm3533_bl_probe,
-	.remove		= lm3533_bl_remove,
+	.remove_new	= lm3533_bl_remove,
 	.shutdown	= lm3533_bl_shutdown,
 };
 module_platform_driver(lm3533_bl_driver);

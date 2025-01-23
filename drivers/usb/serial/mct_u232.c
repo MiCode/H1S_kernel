@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * MCT (Magic Control Technology Corp.) USB RS232 Converter Driver
  *
  *   Copyright (C) 2000 Wolfgang Grandegger (wolfgang@ces.ch)
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
  *
  * This program is largely derived from the Belkin USB Serial Adapter Driver
  * (see belkin_sa.[ch]). All of the information about the device was acquired
@@ -43,14 +39,15 @@
  * Function prototypes
  */
 static int  mct_u232_port_probe(struct usb_serial_port *port);
-static int  mct_u232_port_remove(struct usb_serial_port *remove);
+static void mct_u232_port_remove(struct usb_serial_port *remove);
 static int  mct_u232_open(struct tty_struct *tty, struct usb_serial_port *port);
 static void mct_u232_close(struct usb_serial_port *port);
 static void mct_u232_dtr_rts(struct usb_serial_port *port, int on);
 static void mct_u232_read_int_callback(struct urb *urb);
 static void mct_u232_set_termios(struct tty_struct *tty,
-			struct usb_serial_port *port, struct ktermios *old);
-static void mct_u232_break_ctl(struct tty_struct *tty, int break_state);
+				 struct usb_serial_port *port,
+				 const struct ktermios *old_termios);
+static int  mct_u232_break_ctl(struct tty_struct *tty, int break_state);
 static int  mct_u232_tiocmget(struct tty_struct *tty);
 static int  mct_u232_tiocmset(struct tty_struct *tty,
 			unsigned int set, unsigned int clear);
@@ -189,7 +186,7 @@ static int mct_u232_set_baud_rate(struct tty_struct *tty,
 		return -ENOMEM;
 
 	divisor = mct_u232_calculate_baud_rate(serial, value, &speed);
-	put_unaligned_le32(cpu_to_le32(divisor), buf);
+	put_unaligned_le32(divisor, buf);
 	rc = usb_control_msg(serial->dev, usb_sndctrlpipe(serial->dev, 0),
 				MCT_U232_SET_BAUD_RATE_REQUEST,
 				MCT_U232_SET_REQUEST_TYPE,
@@ -322,8 +319,12 @@ static int mct_u232_get_modem_stat(struct usb_serial_port *port,
 			MCT_U232_GET_REQUEST_TYPE,
 			0, 0, buf, MCT_U232_GET_MODEM_STAT_SIZE,
 			WDR_TIMEOUT);
-	if (rc < 0) {
+	if (rc < MCT_U232_GET_MODEM_STAT_SIZE) {
 		dev_err(&port->dev, "Get MODEM STATus failed (error = %d)\n", rc);
+
+		if (rc >= 0)
+			rc = -EIO;
+
 		*msr = 0;
 	} else {
 		*msr = buf[0];
@@ -376,14 +377,21 @@ static void mct_u232_msr_to_state(struct usb_serial_port *port,
 
 static int mct_u232_port_probe(struct usb_serial_port *port)
 {
+	struct usb_serial *serial = port->serial;
 	struct mct_u232_private *priv;
+
+	/* check first to simplify error handling */
+	if (!serial->port[1] || !serial->port[1]->interrupt_in_urb) {
+		dev_err(&port->dev, "expected endpoint missing\n");
+		return -ENODEV;
+	}
 
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
 	/* Use second interrupt-in endpoint for reading. */
-	priv->read_urb = port->serial->port[1]->interrupt_in_urb;
+	priv->read_urb = serial->port[1]->interrupt_in_urb;
 	priv->read_urb->context = port;
 
 	spin_lock_init(&priv->lock);
@@ -393,14 +401,12 @@ static int mct_u232_port_probe(struct usb_serial_port *port)
 	return 0;
 }
 
-static int mct_u232_port_remove(struct usb_serial_port *port)
+static void mct_u232_port_remove(struct usb_serial_port *port)
 {
 	struct mct_u232_private *priv;
 
 	priv = usb_get_serial_port_data(port);
 	kfree(priv);
-
-	return 0;
 }
 
 static int  mct_u232_open(struct tty_struct *tty, struct usb_serial_port *port)
@@ -428,7 +434,7 @@ static int  mct_u232_open(struct tty_struct *tty, struct usb_serial_port *port)
 	 * either.
 	 */
 	spin_lock_irqsave(&priv->lock, flags);
-	if (tty && (tty->termios.c_cflag & CBAUD))
+	if (tty && C_BAUD(tty))
 		priv->control_state = TIOCM_DTR | TIOCM_RTS;
 	else
 		priv->control_state = 0;
@@ -588,7 +594,7 @@ exit:
 
 static void mct_u232_set_termios(struct tty_struct *tty,
 				 struct usb_serial_port *port,
-				 struct ktermios *old_termios)
+				 const struct ktermios *old_termios)
 {
 	struct usb_serial *serial = port->serial;
 	struct mct_u232_private *priv = usb_get_serial_port_data(port);
@@ -671,7 +677,7 @@ static void mct_u232_set_termios(struct tty_struct *tty,
 	spin_unlock_irqrestore(&priv->lock, flags);
 } /* mct_u232_set_termios */
 
-static void mct_u232_break_ctl(struct tty_struct *tty, int break_state)
+static int mct_u232_break_ctl(struct tty_struct *tty, int break_state)
 {
 	struct usb_serial_port *port = tty->driver_data;
 	struct mct_u232_private *priv = usb_get_serial_port_data(port);
@@ -685,7 +691,7 @@ static void mct_u232_break_ctl(struct tty_struct *tty, int break_state)
 		lcr |= MCT_U232_SET_BREAK;
 	spin_unlock_irqrestore(&priv->lock, flags);
 
-	mct_u232_set_line_ctrl(port, lcr);
+	return mct_u232_set_line_ctrl(port, lcr);
 } /* mct_u232_break_ctl */
 
 

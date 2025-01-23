@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 OR MIT */
 /**************************************************************************
  *
  * Copyright (c) 2006-2009 VMware, Inc., Palo Alto, CA., USA
@@ -31,11 +32,9 @@
 
 #define pr_fmt(fmt) "[TTM] " fmt
 
-#include <drm/ttm/ttm_module.h>
-#include <drm/ttm/ttm_bo_driver.h>
-#include <drm/ttm/ttm_page_alloc.h>
-#ifdef TTM_HAS_AGP
-#include <drm/ttm/ttm_placement.h>
+#include <drm/ttm/ttm_device.h>
+#include <drm/ttm/ttm_tt.h>
+#include <drm/ttm/ttm_resource.h>
 #include <linux/agp_backend.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -48,13 +47,16 @@ struct ttm_agp_backend {
 	struct agp_bridge_data *bridge;
 };
 
-static int ttm_agp_bind(struct ttm_tt *ttm, struct ttm_mem_reg *bo_mem)
+int ttm_agp_bind(struct ttm_tt *ttm, struct ttm_resource *bo_mem)
 {
 	struct ttm_agp_backend *agp_be = container_of(ttm, struct ttm_agp_backend, ttm);
-	struct drm_mm_node *node = bo_mem->mm_node;
+	struct page *dummy_read_page = ttm_glob.dummy_read_page;
 	struct agp_memory *mem;
-	int ret, cached = (bo_mem->placement & TTM_PL_FLAG_CACHED);
+	int ret, cached = ttm->caching == ttm_cached;
 	unsigned i;
+
+	if (agp_be->mem)
+		return 0;
 
 	mem = agp_allocate_memory(agp_be->bridge, ttm->num_pages, AGP_USER_MEMORY);
 	if (unlikely(mem == NULL))
@@ -65,7 +67,7 @@ static int ttm_agp_bind(struct ttm_tt *ttm, struct ttm_mem_reg *bo_mem)
 		struct page *page = ttm->pages[i];
 
 		if (!page)
-			page = ttm->dummy_read_page;
+			page = dummy_read_page;
 
 		mem->pages[mem->page_count++] = page;
 	}
@@ -74,27 +76,41 @@ static int ttm_agp_bind(struct ttm_tt *ttm, struct ttm_mem_reg *bo_mem)
 	mem->is_flushed = 1;
 	mem->type = (cached) ? AGP_USER_CACHED_MEMORY : AGP_USER_MEMORY;
 
-	ret = agp_bind_memory(mem, node->start);
+	ret = agp_bind_memory(mem, bo_mem->start);
 	if (ret)
 		pr_err("AGP Bind memory failed\n");
 
 	return ret;
 }
+EXPORT_SYMBOL(ttm_agp_bind);
 
-static int ttm_agp_unbind(struct ttm_tt *ttm)
+void ttm_agp_unbind(struct ttm_tt *ttm)
 {
 	struct ttm_agp_backend *agp_be = container_of(ttm, struct ttm_agp_backend, ttm);
 
 	if (agp_be->mem) {
-		if (agp_be->mem->is_bound)
-			return agp_unbind_memory(agp_be->mem);
+		if (agp_be->mem->is_bound) {
+			agp_unbind_memory(agp_be->mem);
+			return;
+		}
 		agp_free_memory(agp_be->mem);
 		agp_be->mem = NULL;
 	}
-	return 0;
 }
+EXPORT_SYMBOL(ttm_agp_unbind);
 
-static void ttm_agp_destroy(struct ttm_tt *ttm)
+bool ttm_agp_is_bound(struct ttm_tt *ttm)
+{
+	struct ttm_agp_backend *agp_be = container_of(ttm, struct ttm_agp_backend, ttm);
+
+	if (!ttm)
+		return false;
+
+	return (agp_be->mem != NULL);
+}
+EXPORT_SYMBOL(ttm_agp_is_bound);
+
+void ttm_agp_destroy(struct ttm_tt *ttm)
 {
 	struct ttm_agp_backend *agp_be = container_of(ttm, struct ttm_agp_backend, ttm);
 
@@ -103,17 +119,11 @@ static void ttm_agp_destroy(struct ttm_tt *ttm)
 	ttm_tt_fini(ttm);
 	kfree(agp_be);
 }
+EXPORT_SYMBOL(ttm_agp_destroy);
 
-static struct ttm_backend_func ttm_agp_func = {
-	.bind = ttm_agp_bind,
-	.unbind = ttm_agp_unbind,
-	.destroy = ttm_agp_destroy,
-};
-
-struct ttm_tt *ttm_agp_tt_create(struct ttm_bo_device *bdev,
+struct ttm_tt *ttm_agp_tt_create(struct ttm_buffer_object *bo,
 				 struct agp_bridge_data *bridge,
-				 unsigned long size, uint32_t page_flags,
-				 struct page *dummy_read_page)
+				 uint32_t page_flags)
 {
 	struct ttm_agp_backend *agp_be;
 
@@ -123,29 +133,12 @@ struct ttm_tt *ttm_agp_tt_create(struct ttm_bo_device *bdev,
 
 	agp_be->mem = NULL;
 	agp_be->bridge = bridge;
-	agp_be->ttm.func = &ttm_agp_func;
 
-	if (ttm_tt_init(&agp_be->ttm, bdev, size, page_flags, dummy_read_page)) {
+	if (ttm_tt_init(&agp_be->ttm, bo, page_flags, ttm_write_combined, 0)) {
+		kfree(agp_be);
 		return NULL;
 	}
 
 	return &agp_be->ttm;
 }
 EXPORT_SYMBOL(ttm_agp_tt_create);
-
-int ttm_agp_tt_populate(struct ttm_tt *ttm)
-{
-	if (ttm->state != tt_unpopulated)
-		return 0;
-
-	return ttm_pool_populate(ttm);
-}
-EXPORT_SYMBOL(ttm_agp_tt_populate);
-
-void ttm_agp_tt_unpopulate(struct ttm_tt *ttm)
-{
-	ttm_pool_unpopulate(ttm);
-}
-EXPORT_SYMBOL(ttm_agp_tt_unpopulate);
-
-#endif

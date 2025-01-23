@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for the Analog Devices digital potentiometers (SPI bus)
  *
  * Copyright (C) 2010-2011 Michael Hennerich, Analog Devices Inc.
- *
- * Licensed under the GPL-2 or later.
  */
 
 #include <linux/spi/spi.h>
@@ -15,18 +14,21 @@
 static int write8(void *client, u8 val)
 {
 	u8 data = val;
+
 	return spi_write(client, &data, 1);
 }
 
 static int write16(void *client, u8 reg, u8 val)
 {
 	u8 data[2] = {reg, val};
+
 	return spi_write(client, data, 2);
 }
 
 static int write24(void *client, u8 reg, u16 val)
 {
 	u8 data[3] = {reg, val >> 8, val};
+
 	return spi_write(client, data, 3);
 }
 
@@ -34,6 +36,7 @@ static int read8(void *client)
 {
 	int ret;
 	u8 data;
+
 	ret = spi_read(client, &data, 1);
 	if (ret < 0)
 		return ret;
@@ -87,9 +90,9 @@ static int ad_dpot_spi_probe(struct spi_device *spi)
 			     spi_get_device_id(spi)->name);
 }
 
-static int ad_dpot_spi_remove(struct spi_device *spi)
+static void ad_dpot_spi_remove(struct spi_device *spi)
 {
-	return ad_dpot_remove(&spi->dev);
+	ad_dpot_remove(&spi->dev);
 }
 
 static const struct spi_device_id ad_dpot_spi_id[] = {
@@ -128,7 +131,6 @@ MODULE_DEVICE_TABLE(spi, ad_dpot_spi_id);
 static struct spi_driver ad_dpot_spi_driver = {
 	.driver = {
 		.name	= "ad_dpot",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= ad_dpot_spi_probe,
 	.remove		= ad_dpot_spi_remove,
@@ -137,7 +139,7 @@ static struct spi_driver ad_dpot_spi_driver = {
 
 module_spi_driver(ad_dpot_spi_driver);
 
-MODULE_AUTHOR("Michael Hennerich <hennerich@blackfin.uclinux.org>");
+MODULE_AUTHOR("Michael Hennerich <michael.hennerich@analog.com>");
 MODULE_DESCRIPTION("digital potentiometer SPI bus driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("spi:ad_dpot");

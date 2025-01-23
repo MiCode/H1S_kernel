@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  This file contains quirk handling code for PnP devices
  *  Some devices do not report all their resources, and need to have extra
@@ -15,11 +16,11 @@
 
 #include <linux/types.h>
 #include <linux/kernel.h>
+#include <linux/pci.h>
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/pnp.h>
 #include <linux/io.h>
-#include <linux/kallsyms.h>
 #include "base.h"
 
 static void quirk_awe32_add_ports(struct pnp_dev *dev,
@@ -225,13 +226,10 @@ static void quirk_ad1815_mpu_resources(struct pnp_dev *dev)
 	dev_info(&dev->dev, "made independent IRQ optional\n");
 }
 
-#include <linux/pci.h>
-
 static void quirk_system_pci_resources(struct pnp_dev *dev)
 {
 	struct pci_dev *pdev = NULL;
-	struct resource *res;
-	resource_size_t pnp_start, pnp_end, pci_start, pci_end;
+	struct resource *res, *r;
 	int i, j;
 
 	/*
@@ -244,29 +242,26 @@ static void quirk_system_pci_resources(struct pnp_dev *dev)
 	 * so they won't be claimed by the PNP system driver.
 	 */
 	for_each_pci_dev(pdev) {
-		for (i = 0; i < DEVICE_COUNT_RESOURCE; i++) {
-			unsigned long type;
+		pci_dev_for_each_resource(pdev, r, i) {
+			unsigned long type = resource_type(r);
 
-			type = pci_resource_flags(pdev, i) &
-					(IORESOURCE_IO | IORESOURCE_MEM);
-			if (!type || pci_resource_len(pdev, i) == 0)
+			if (!(type == IORESOURCE_IO || type == IORESOURCE_MEM) ||
+			    resource_size(r) == 0)
 				continue;
 
-			pci_start = pci_resource_start(pdev, i);
-			pci_end = pci_resource_end(pdev, i);
+			if (r->flags & IORESOURCE_UNSET)
+				continue;
+
 			for (j = 0;
 			     (res = pnp_get_resource(dev, type, j)); j++) {
 				if (res->start == 0 && res->end == 0)
 					continue;
 
-				pnp_start = res->start;
-				pnp_end = res->end;
-
 				/*
 				 * If the PNP region doesn't overlap the PCI
 				 * region at all, there's no problem.
 				 */
-				if (pnp_end < pci_start || pnp_start > pci_end)
+				if (!resource_overlaps(res, r))
 					continue;
 
 				/*
@@ -276,8 +271,7 @@ static void quirk_system_pci_resources(struct pnp_dev *dev)
 				 * PNP device describes a bridge with PCI
 				 * behind it.
 				 */
-				if (pnp_start <= pci_start &&
-				    pnp_end >= pci_end)
+				if (res->start <= r->start && res->end >= r->end)
 					continue;
 
 				/*
@@ -286,9 +280,8 @@ static void quirk_system_pci_resources(struct pnp_dev *dev)
 				 * driver from requesting its resources.
 				 */
 				dev_warn(&dev->dev,
-					 "disabling %pR because it overlaps "
-					 "%s BAR %d %pR\n", res,
-					 pci_name(pdev), i, &pdev->resource[i]);
+					 "disabling %pR because it overlaps %s BAR %d %pR\n",
+					 res, pci_name(pdev), i, r);
 				res->flags |= IORESOURCE_DISABLED;
 			}
 		}
@@ -334,6 +327,83 @@ static void quirk_amd_mmconfig_area(struct pnp_dev *dev)
 }
 #endif
 
+#ifdef CONFIG_PCI
+/* Device IDs of parts that have 32KB MCH space */
+static const unsigned int mch_quirk_devices[] = {
+	0x0154,	/* Ivy Bridge */
+	0x0a04, /* Haswell-ULT */
+	0x0c00,	/* Haswell */
+	0x1604, /* Broadwell */
+};
+
+static struct pci_dev *get_intel_host(void)
+{
+	int i;
+	struct pci_dev *host;
+
+	for (i = 0; i < ARRAY_SIZE(mch_quirk_devices); i++) {
+		host = pci_get_device(PCI_VENDOR_ID_INTEL, mch_quirk_devices[i],
+				      NULL);
+		if (host)
+			return host;
+	}
+	return NULL;
+}
+
+static void quirk_intel_mch(struct pnp_dev *dev)
+{
+	struct pci_dev *host;
+	u32 addr_lo, addr_hi;
+	struct pci_bus_region region;
+	struct resource mch;
+	struct pnp_resource *pnp_res;
+	struct resource *res;
+
+	host = get_intel_host();
+	if (!host)
+		return;
+
+	/*
+	 * MCHBAR is not an architected PCI BAR, so MCH space is usually
+	 * reported as a PNP0C02 resource.  The MCH space was originally
+	 * 16KB, but is 32KB in newer parts.  Some BIOSes still report a
+	 * PNP0C02 resource that is only 16KB, which means the rest of the
+	 * MCH space is consumed but unreported.
+	 */
+
+	/*
+	 * Read MCHBAR for Host Member Mapped Register Range Base
+	 * https://www-ssl.intel.com/content/www/us/en/processors/core/4th-gen-core-family-desktop-vol-2-datasheet
+	 * Sec 3.1.12.
+	 */
+	pci_read_config_dword(host, 0x48, &addr_lo);
+	region.start = addr_lo & ~0x7fff;
+	pci_read_config_dword(host, 0x4c, &addr_hi);
+	region.start |= (u64) addr_hi << 32;
+	region.end = region.start + 32*1024 - 1;
+
+	memset(&mch, 0, sizeof(mch));
+	mch.flags = IORESOURCE_MEM;
+	pcibios_bus_to_resource(host->bus, &mch, &region);
+
+	list_for_each_entry(pnp_res, &dev->resources, list) {
+		res = &pnp_res->res;
+		if (res->end < mch.start || res->start > mch.end)
+			continue;	/* no overlap */
+		if (res->start == mch.start && res->end == mch.end)
+			continue;	/* exact match */
+
+		dev_info(&dev->dev, FW_BUG "PNP resource %pR covers only part of %s Intel MCH; extending to %pR\n",
+			 res, pci_name(host), &mch);
+		res->start = mch.start;
+		res->end = mch.end;
+		break;
+	}
+
+	pci_dev_put(host);
+}
+#endif
+
 /*
  *  PnP Quirks
  *  Cards or devices that need some tweaking due to incomplete resource info
@@ -364,6 +434,9 @@ static struct pnp_fixup pnp_fixups[] = {
 #ifdef CONFIG_AMD_NB
 	{"PNP0c01", quirk_amd_mmconfig_area},
 #endif
+#ifdef CONFIG_PCI
+	{"PNP0c02", quirk_intel_mch},
+#endif
 	{""}
 };
 
@@ -374,7 +447,7 @@ void pnp_fixup_device(struct pnp_dev *dev)
 	for (f = pnp_fixups; *f->id; f++) {
 		if (!compare_pnp_id(dev->id, f->id))
 			continue;
-		pnp_dbg(&dev->dev, "%s: calling %pF\n", f->id,
+		pnp_dbg(&dev->dev, "%s: calling %pS\n", f->id,
 			f->quirk_function);
 		f->quirk_function(dev);
 	}

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_TYPES_H
 #define _LINUX_TYPES_H
 
@@ -9,14 +10,19 @@
 #define DECLARE_BITMAP(name,bits) \
 	unsigned long name[BITS_TO_LONGS(bits)]
 
-typedef __u32 __kernel_dev_t;
+#ifdef __SIZEOF_INT128__
+typedef __s128 s128;
+typedef __u128 u128;
+#endif
+
+typedef u32 __kernel_dev_t;
 
 typedef __kernel_fd_set		fd_set;
 typedef __kernel_dev_t		dev_t;
-typedef __kernel_ino_t		ino_t;
+typedef __kernel_ulong_t	ino_t;
 typedef __kernel_mode_t		mode_t;
 typedef unsigned short		umode_t;
-typedef __u32			nlink_t;
+typedef u32			nlink_t;
 typedef __kernel_off_t		off_t;
 typedef __kernel_pid_t		pid_t;
 typedef __kernel_daddr_t	daddr_t;
@@ -34,8 +40,9 @@ typedef __kernel_uid16_t        uid16_t;
 typedef __kernel_gid16_t        gid16_t;
 
 typedef unsigned long		uintptr_t;
+typedef long			intptr_t;
 
-#ifdef CONFIG_UID16
+#ifdef CONFIG_HAVE_UID16
 /* This is defined by include/asm-{arch}/posix_types.h */
 typedef __kernel_old_uid_t	old_uid_t;
 typedef __kernel_old_gid_t	old_gid_t;
@@ -64,11 +71,6 @@ typedef __kernel_ssize_t	ssize_t;
 typedef __kernel_ptrdiff_t	ptrdiff_t;
 #endif
 
-#ifndef _TIME_T
-#define _TIME_T
-typedef __kernel_time_t		time_t;
-#endif
-
 #ifndef _CLOCK_T
 #define _CLOCK_T
 typedef __kernel_clock_t	clock_t;
@@ -94,29 +96,29 @@ typedef unsigned long		ulong;
 #ifndef __BIT_TYPES_DEFINED__
 #define __BIT_TYPES_DEFINED__
 
-typedef		__u8		u_int8_t;
-typedef		__s8		int8_t;
-typedef		__u16		u_int16_t;
-typedef		__s16		int16_t;
-typedef		__u32		u_int32_t;
-typedef		__s32		int32_t;
+typedef u8			u_int8_t;
+typedef s8			int8_t;
+typedef u16			u_int16_t;
+typedef s16			int16_t;
+typedef u32			u_int32_t;
+typedef s32			int32_t;
 
 #endif /* !(__BIT_TYPES_DEFINED__) */
 
-typedef		__u8		uint8_t;
-typedef		__u16		uint16_t;
-typedef		__u32		uint32_t;
+typedef u8			uint8_t;
+typedef u16			uint16_t;
+typedef u32			uint32_t;
 
 #if defined(__GNUC__)
-typedef		__u64		uint64_t;
-typedef		__u64		u_int64_t;
-typedef		__s64		int64_t;
+typedef u64			uint64_t;
+typedef u64			u_int64_t;
+typedef s64			int64_t;
 #endif
 
 /* this is a special 64bit data type that is 8-byte aligned */
-#define aligned_u64 __u64 __attribute__((aligned(8)))
-#define aligned_be64 __be64 __attribute__((aligned(8)))
-#define aligned_le64 __le64 __attribute__((aligned(8)))
+#define aligned_u64		__aligned_u64
+#define aligned_be64		__aligned_be64
+#define aligned_le64		__aligned_le64
 
 /**
  * The type used for indexing onto a disc or disc partition.
@@ -126,37 +128,32 @@ typedef		__s64		int64_t;
  *
  * blkcnt_t is the type of the inode's block count.
  */
-#ifdef CONFIG_LBDAF
 typedef u64 sector_t;
 typedef u64 blkcnt_t;
-#else
-typedef unsigned long sector_t;
-typedef unsigned long blkcnt_t;
-#endif
 
 /*
- * The type of an index into the pagecache.  Use a #define so asm/types.h
- * can override it.
+ * The type of an index into the pagecache.
  */
-#ifndef pgoff_t
 #define pgoff_t unsigned long
-#endif
 
+/*
+ * A dma_addr_t can hold any valid DMA address, i.e., any address returned
+ * by the DMA API.
+ *
+ * If the DMA API only uses 32-bit addresses, dma_addr_t need only be 32
+ * bits wide.  Bus addresses, e.g., PCI BARs, may be wider than 32 bits,
+ * but drivers do memory-mapped I/O to ioremapped kernel virtual addresses,
+ * so they don't care about the size of the actual bus addresses.
+ */
 #ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
 typedef u64 dma_addr_t;
 #else
 typedef u32 dma_addr_t;
-#endif /* dma_addr_t */
+#endif
 
-#ifdef __CHECKER__
-#else
-#endif
-#ifdef __CHECK_ENDIAN__
-#else
-#endif
-typedef unsigned __bitwise__ gfp_t;
-typedef unsigned __bitwise__ fmode_t;
-typedef unsigned __bitwise__ oom_flags_t;
+typedef unsigned int __bitwise gfp_t;
+typedef unsigned int __bitwise slab_flags_t;
+typedef unsigned int __bitwise fmode_t;
 
 #ifdef CONFIG_PHYS_ADDR_T_64BIT
 typedef u64 phys_addr_t;
@@ -176,11 +173,19 @@ typedef struct {
 	int counter;
 } atomic_t;
 
+#define ATOMIC_INIT(i) { (i) }
+
 #ifdef CONFIG_64BIT
 typedef struct {
-	long counter;
+	s64 counter;
 } atomic64_t;
 #endif
+
+typedef struct {
+	atomic_t refcnt;
+} rcuref_t;
+
+#define RCUREF_INIT(i)	{ .refcnt = ATOMIC_INIT(i - 1) }
 
 struct list_head {
 	struct list_head *next, *prev;
@@ -196,7 +201,11 @@ struct hlist_node {
 
 struct ustat {
 	__kernel_daddr_t	f_tfree;
-	__kernel_ino_t		f_tinode;
+#ifdef CONFIG_ARCH_32BIT_USTAT_F_TINODE
+	unsigned int		f_tinode;
+#else
+	unsigned long		f_tinode;
+#endif
 	char			f_fname[6];
 	char			f_fpack[6];
 };
@@ -205,12 +214,35 @@ struct ustat {
  * struct callback_head - callback structure for use with RCU and task_work
  * @next: next update requests in a list
  * @func: actual update function to call after the grace period.
+ *
+ * The struct is aligned to size of pointer. On most architectures it happens
+ * naturally due ABI requirements, but some architectures (like CRIS) have
+ * weird ABI and we need to ask it explicitly.
+ *
+ * The alignment is required to guarantee that bit 0 of @next will be
+ * clear under normal conditions -- as long as we use call_rcu() or
+ * call_srcu() to queue the callback.
+ *
+ * This guarantee is important for few reasons:
+ *  - future call_rcu_lazy() will make use of lower bits in the pointer;
+ *  - the structure shares storage space in struct page with @compound_head,
+ *    which encode PageTail() in bit 0. The guarantee is needed to avoid
+ *    false-positive PageTail().
  */
 struct callback_head {
 	struct callback_head *next;
 	void (*func)(struct callback_head *head);
-};
+} __attribute__((aligned(sizeof(void *))));
 #define rcu_head callback_head
+
+typedef void (*rcu_callback_t)(struct rcu_head *head);
+typedef void (*call_rcu_func_t)(struct rcu_head *head, rcu_callback_t func);
+
+typedef void (*swap_r_func_t)(void *a, void *b, int size, const void *priv);
+typedef void (*swap_func_t)(void *a, void *b, int size);
+
+typedef int (*cmp_r_func_t)(const void *a, const void *b, const void *priv);
+typedef int (*cmp_func_t)(const void *a, const void *b);
 
 #endif /*  __ASSEMBLY__ */
 #endif /* _LINUX_TYPES_H */

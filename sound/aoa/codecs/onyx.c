@@ -1,10 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Apple Onboard Audio driver for Onyx codec
  *
  * Copyright 2006 Johannes Berg <johannes@sipsolutions.net>
- *
- * GPL v2, can be found in COPYING.
- *
  *
  * This is a driver for the pcm3052 codec chip (codenamed Onyx)
  * that is present in newer Apple hardware (with digital output).
@@ -29,7 +27,6 @@
  *	 having just a single card on a system, and making the
  *	 'card' pointer accessible to anyone who needs it instead
  *	 of hiding it in the aoa_snd_* functions...
- *
  */
 #include <linux/delay.h>
 #include <linux/module.h>
@@ -74,8 +71,10 @@ static int onyx_read_register(struct onyx *onyx, u8 reg, u8 *value)
 		return 0;
 	}
 	v = i2c_smbus_read_byte_data(onyx->i2c, reg);
-	if (v < 0)
+	if (v < 0) {
+		*value = 0;
 		return -1;
+	}
 	*value = (u8)v;
 	onyx->cache[ONYX_REG_CONTROL-FIRSTREGISTER] = *value;
 	return 0;
@@ -98,7 +97,7 @@ static int onyx_dev_register(struct snd_device *dev)
 	return 0;
 }
 
-static struct snd_device_ops ops = {
+static const struct snd_device_ops ops = {
 	.dev_register = onyx_dev_register,
 };
 
@@ -167,7 +166,7 @@ static int onyx_snd_vol_put(struct snd_kcontrol *kcontrol,
 	return 1;
 }
 
-static struct snd_kcontrol_new volume_control = {
+static const struct snd_kcontrol_new volume_control = {
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name = "Master Playback Volume",
 	.access = SNDRV_CTL_ELEM_ACCESS_READWRITE,
@@ -229,7 +228,7 @@ static int onyx_snd_inputgain_put(struct snd_kcontrol *kcontrol,
 	return n != v;
 }
 
-static struct snd_kcontrol_new inputgain_control = {
+static const struct snd_kcontrol_new inputgain_control = {
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name = "Master Capture Volume",
 	.access = SNDRV_CTL_ELEM_ACCESS_READWRITE,
@@ -241,15 +240,9 @@ static struct snd_kcontrol_new inputgain_control = {
 static int onyx_snd_capture_source_info(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_info *uinfo)
 {
-	static char *texts[] = { "Line-In", "Microphone" };
+	static const char * const texts[] = { "Line-In", "Microphone" };
 
-	uinfo->type = SNDRV_CTL_ELEM_TYPE_ENUMERATED;
-	uinfo->count = 1;
-	uinfo->value.enumerated.items = 2;
-	if (uinfo->value.enumerated.item > 1)
-		uinfo->value.enumerated.item = 1;
-	strcpy(uinfo->value.enumerated.name, texts[uinfo->value.enumerated.item]);
-	return 0;
+	return snd_ctl_enum_info(uinfo, 1, 2, texts);
 }
 
 static int onyx_snd_capture_source_get(struct snd_kcontrol *kcontrol,
@@ -290,7 +283,7 @@ static int onyx_snd_capture_source_put(struct snd_kcontrol *kcontrol,
 	return 1;
 }
 
-static struct snd_kcontrol_new capture_source_control = {
+static const struct snd_kcontrol_new capture_source_control = {
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	/* If we name this 'Input Source', it properly shows up in
 	 * alsamixer as a selection, * but it's shown under the
@@ -354,7 +347,7 @@ static int onyx_snd_mute_put(struct snd_kcontrol *kcontrol,
 	return !err ? (v != c) : err;
 }
 
-static struct snd_kcontrol_new mute_control = {
+static const struct snd_kcontrol_new mute_control = {
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name = "Master Playback Switch",
 	.access = SNDRV_CTL_ELEM_ACCESS_READWRITE,
@@ -420,7 +413,7 @@ static int onyx_snd_single_bit_put(struct snd_kcontrol *kcontrol,
 }
 
 #define SINGLE_BIT(n, type, description, address, mask, flags)	 	\
-static struct snd_kcontrol_new n##_control = {				\
+static const struct snd_kcontrol_new n##_control = {			\
 	.iface = SNDRV_CTL_ELEM_IFACE_##type,				\
 	.name = description,						\
 	.access = SNDRV_CTL_ELEM_ACCESS_READWRITE,			\
@@ -482,7 +475,7 @@ static int onyx_spdif_mask_get(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static struct snd_kcontrol_new onyx_spdif_mask = {
+static const struct snd_kcontrol_new onyx_spdif_mask = {
 	.access =	SNDRV_CTL_ELEM_ACCESS_READ,
 	.iface =	SNDRV_CTL_ELEM_IFACE_PCM,
 	.name =		SNDRV_CTL_NAME_IEC958("",PLAYBACK,CON_MASK),
@@ -539,7 +532,7 @@ static int onyx_spdif_put(struct snd_kcontrol *kcontrol,
 	return 1;
 }
 
-static struct snd_kcontrol_new onyx_spdif_ctrl = {
+static const struct snd_kcontrol_new onyx_spdif_ctrl = {
 	.access =	SNDRV_CTL_ELEM_ACCESS_READWRITE,
 	.iface =	SNDRV_CTL_ELEM_IFACE_PCM,
 	.name =		SNDRV_CTL_NAME_IEC958("",PLAYBACK,DEFAULT),
@@ -550,7 +543,7 @@ static struct snd_kcontrol_new onyx_spdif_ctrl = {
 
 /* our registers */
 
-static u8 register_map[] = {
+static const u8 register_map[] = {
 	ONYX_REG_DAC_ATTEN_LEFT,
 	ONYX_REG_DAC_ATTEN_RIGHT,
 	ONYX_REG_CONTROL,
@@ -566,7 +559,7 @@ static u8 register_map[] = {
 	ONYX_REG_DIG_INFO4
 };
 
-static u8 initial_values[ARRAY_SIZE(register_map)] = {
+static const u8 initial_values[ARRAY_SIZE(register_map)] = {
 	0x80, 0x80, /* muted */
 	ONYX_MRST | ONYX_SRST, /* but handled specially! */
 	ONYX_MUTE_LEFT | ONYX_MUTE_RIGHT,
@@ -889,7 +882,7 @@ static int onyx_init_codec(struct aoa_codec *codec)
 		return -ENODEV;
 	}
 
-	if (aoa_snd_device_new(SNDRV_DEV_LOWLEVEL, onyx, &ops)) {
+	if (aoa_snd_device_new(SNDRV_DEV_CODEC, onyx, &ops)) {
 		printk(KERN_ERR PFX "failed to create onyx snd device!\n");
 		return -ENODEV;
 	}
@@ -997,8 +990,7 @@ static void onyx_exit_codec(struct aoa_codec *codec)
 	onyx->codec.soundbus_dev->detach_codec(onyx->codec.soundbus_dev, onyx);
 }
 
-static int onyx_i2c_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int onyx_i2c_probe(struct i2c_client *client)
 {
 	struct device_node *node = client->dev.of_node;
 	struct onyx *onyx;
@@ -1020,7 +1012,7 @@ static int onyx_i2c_probe(struct i2c_client *client,
 		goto fail;
 	}
 
-	strlcpy(onyx->codec.name, "onyx", MAX_CODEC_NAME_LEN);
+	strscpy(onyx->codec.name, "onyx", MAX_CODEC_NAME_LEN);
 	onyx->codec.owner = THIS_MODULE;
 	onyx->codec.init = onyx_init_codec;
 	onyx->codec.exit = onyx_exit_codec;
@@ -1036,7 +1028,7 @@ static int onyx_i2c_probe(struct i2c_client *client,
 	return -ENODEV;
 }
 
-static int onyx_i2c_remove(struct i2c_client *client)
+static void onyx_i2c_remove(struct i2c_client *client)
 {
 	struct onyx *onyx = i2c_get_clientdata(client);
 
@@ -1044,7 +1036,6 @@ static int onyx_i2c_remove(struct i2c_client *client)
 	of_node_put(onyx->codec.node);
 	kfree(onyx->codec_info);
 	kfree(onyx);
-	return 0;
 }
 
 static const struct i2c_device_id onyx_i2c_id[] = {
@@ -1056,7 +1047,6 @@ MODULE_DEVICE_TABLE(i2c,onyx_i2c_id);
 static struct i2c_driver onyx_driver = {
 	.driver = {
 		.name = "aoa_codec_onyx",
-		.owner = THIS_MODULE,
 	},
 	.probe = onyx_i2c_probe,
 	.remove = onyx_i2c_remove,

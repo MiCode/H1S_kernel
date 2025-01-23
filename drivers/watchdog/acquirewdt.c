@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *	Acquire Single Board Computer Watchdog Timer driver
  *
@@ -5,11 +6,6 @@
  *
  *	(c) Copyright 1996 Alan Cox <alan@lxorguk.ukuu.org.uk>,
  *						All Rights Reserved.
- *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License
- *	as published by the Free Software Foundation; either version
- *	2 of the License, or (at your option) any later version.
  *
  *	Neither Alan Cox nor CymruNet Ltd. admit liability nor provide
  *	warranty for any of this software. This material is provided
@@ -200,7 +196,7 @@ static int acq_open(struct inode *inode, struct file *file)
 
 	/* Activate */
 	acq_keepalive();
-	return nonseekable_open(inode, file);
+	return stream_open(inode, file);
 }
 
 static int acq_close(struct inode *inode, struct file *file)
@@ -225,6 +221,7 @@ static const struct file_operations acq_fops = {
 	.llseek		= no_llseek,
 	.write		= acq_write,
 	.unlocked_ioctl	= acq_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
 	.open		= acq_open,
 	.release	= acq_close,
 };
@@ -239,7 +236,7 @@ static struct miscdevice acq_miscdev = {
  *	Init & exit routines
  */
 
-static int acq_probe(struct platform_device *dev)
+static int __init acq_probe(struct platform_device *dev)
 {
 	int ret;
 
@@ -274,14 +271,12 @@ out:
 	return ret;
 }
 
-static int acq_remove(struct platform_device *dev)
+static void acq_remove(struct platform_device *dev)
 {
 	misc_deregister(&acq_miscdev);
 	release_region(wdt_start, 1);
 	if (wdt_stop != wdt_start)
 		release_region(wdt_stop, 1);
-
-	return 0;
 }
 
 static void acq_shutdown(struct platform_device *dev)
@@ -291,11 +286,9 @@ static void acq_shutdown(struct platform_device *dev)
 }
 
 static struct platform_driver acquirewdt_driver = {
-	.probe		= acq_probe,
-	.remove		= acq_remove,
+	.remove_new	= acq_remove,
 	.shutdown	= acq_shutdown,
 	.driver		= {
-		.owner	= THIS_MODULE,
 		.name	= DRV_NAME,
 	},
 };
@@ -306,20 +299,18 @@ static int __init acq_init(void)
 
 	pr_info("WDT driver for Acquire single board computer initialising\n");
 
-	err = platform_driver_register(&acquirewdt_driver);
-	if (err)
-		return err;
-
 	acq_platform_device = platform_device_register_simple(DRV_NAME,
 								-1, NULL, 0);
-	if (IS_ERR(acq_platform_device)) {
-		err = PTR_ERR(acq_platform_device);
-		goto unreg_platform_driver;
-	}
+	if (IS_ERR(acq_platform_device))
+		return PTR_ERR(acq_platform_device);
+
+	err = platform_driver_probe(&acquirewdt_driver, acq_probe);
+	if (err)
+		goto unreg_platform_device;
 	return 0;
 
-unreg_platform_driver:
-	platform_driver_unregister(&acquirewdt_driver);
+unreg_platform_device:
+	platform_device_unregister(acq_platform_device);
 	return err;
 }
 

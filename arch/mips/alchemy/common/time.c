@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2008-2009 Manuel Lauss <manuel.lauss@gmail.com>
  *
@@ -9,19 +10,6 @@
  * Copyright (C) 1999,2000 MIPS Technologies, Inc.  All rights reserved.
  *
  * ########################################################################
- *
- *  This program is free software; you can distribute it and/or modify it
- *  under the terms of the GNU General Public License (Version 2) as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope it will be useful, but WITHOUT
- *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- *  for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
  *
  * ########################################################################
  *
@@ -44,9 +32,9 @@
 /* 32kHz clock enabled and detected */
 #define CNTR_OK (SYS_CNTRL_E0 | SYS_CNTRL_32S)
 
-static cycle_t au1x_counter1_read(struct clocksource *cs)
+static u64 au1x_counter1_read(struct clocksource *cs)
 {
-	return au_readl(SYS_RTCREAD);
+	return alchemy_rdsys(AU1000_SYS_RTCREAD);
 }
 
 static struct clocksource au1x_counter1_clocksource = {
@@ -60,19 +48,13 @@ static struct clocksource au1x_counter1_clocksource = {
 static int au1x_rtcmatch2_set_next_event(unsigned long delta,
 					 struct clock_event_device *cd)
 {
-	delta += au_readl(SYS_RTCREAD);
+	delta += alchemy_rdsys(AU1000_SYS_RTCREAD);
 	/* wait for register access */
-	while (au_readl(SYS_COUNTER_CNTRL) & SYS_CNTRL_M21)
+	while (alchemy_rdsys(AU1000_SYS_CNTRCTRL) & SYS_CNTRL_M21)
 		;
-	au_writel(delta, SYS_RTCMATCH2);
-	au_sync();
+	alchemy_wrsys(delta, AU1000_SYS_RTCMATCH2);
 
 	return 0;
-}
-
-static void au1x_rtcmatch2_set_mode(enum clock_event_mode mode,
-				    struct clock_event_device *cd)
-{
 }
 
 static irqreturn_t au1x_rtcmatch2_irq(int irq, void *dev_id)
@@ -87,15 +69,7 @@ static struct clock_event_device au1x_rtcmatch2_clockdev = {
 	.features	= CLOCK_EVT_FEAT_ONESHOT,
 	.rating		= 1500,
 	.set_next_event = au1x_rtcmatch2_set_next_event,
-	.set_mode	= au1x_rtcmatch2_set_mode,
-	.cpumask	= cpu_all_mask,
-};
-
-static struct irqaction au1x_rtcmatch2_irqaction = {
-	.handler	= au1x_rtcmatch2_irq,
-	.flags		= IRQF_TIMER,
-	.name		= "timer",
-	.dev_id		= &au1x_rtcmatch2_clockdev,
+	.cpumask	= cpu_possible_mask,
 };
 
 static int __init alchemy_time_init(unsigned int m2int)
@@ -112,31 +86,29 @@ static int __init alchemy_time_init(unsigned int m2int)
 	 * (the 32S bit seems to be stuck set to 1 once a single clock-
 	 * edge is detected, hence the timeouts).
 	 */
-	if (CNTR_OK != (au_readl(SYS_COUNTER_CNTRL) & CNTR_OK))
+	if (CNTR_OK != (alchemy_rdsys(AU1000_SYS_CNTRCTRL) & CNTR_OK))
 		goto cntr_err;
 
 	/*
 	 * setup counter 1 (RTC) to tick at full speed
 	 */
 	t = 0xffffff;
-	while ((au_readl(SYS_COUNTER_CNTRL) & SYS_CNTRL_T1S) && --t)
+	while ((alchemy_rdsys(AU1000_SYS_CNTRCTRL) & SYS_CNTRL_T1S) && --t)
 		asm volatile ("nop");
 	if (!t)
 		goto cntr_err;
 
-	au_writel(0, SYS_RTCTRIM);	/* 32.768 kHz */
-	au_sync();
+	alchemy_wrsys(0, AU1000_SYS_RTCTRIM);	/* 32.768 kHz */
 
 	t = 0xffffff;
-	while ((au_readl(SYS_COUNTER_CNTRL) & SYS_CNTRL_C1S) && --t)
+	while ((alchemy_rdsys(AU1000_SYS_CNTRCTRL) & SYS_CNTRL_C1S) && --t)
 		asm volatile ("nop");
 	if (!t)
 		goto cntr_err;
-	au_writel(0, SYS_RTCWRITE);
-	au_sync();
+	alchemy_wrsys(0, AU1000_SYS_RTCWRITE);
 
 	t = 0xffffff;
-	while ((au_readl(SYS_COUNTER_CNTRL) & SYS_CNTRL_C1S) && --t)
+	while ((alchemy_rdsys(AU1000_SYS_CNTRCTRL) & SYS_CNTRL_C1S) && --t)
 		asm volatile ("nop");
 	if (!t)
 		goto cntr_err;
@@ -147,9 +119,13 @@ static int __init alchemy_time_init(unsigned int m2int)
 	cd->shift = 32;
 	cd->mult = div_sc(32768, NSEC_PER_SEC, cd->shift);
 	cd->max_delta_ns = clockevent_delta2ns(0xffffffff, cd);
-	cd->min_delta_ns = clockevent_delta2ns(9, cd);	/* ~0.28ms */
+	cd->max_delta_ticks = 0xffffffff;
+	cd->min_delta_ns = clockevent_delta2ns(9, cd);
+	cd->min_delta_ticks = 9;	/* ~0.28ms */
 	clockevents_register_device(cd);
-	setup_irq(m2int, &au1x_rtcmatch2_irqaction);
+	if (request_irq(m2int, au1x_rtcmatch2_irq, IRQF_TIMER, "timer",
+			&au1x_rtcmatch2_clockdev))
+		pr_err("Failed to register timer interrupt\n");
 
 	printk(KERN_INFO "Alchemy clocksource installed\n");
 

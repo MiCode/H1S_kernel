@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  linux/boot/head.S
  *
@@ -29,67 +30,22 @@
 #include <asm/page_types.h>
 #include <asm/boot.h>
 #include <asm/asm-offsets.h>
+#include <asm/bootparam.h>
+
+/*
+ * These symbols needed to be marked as .hidden to prevent the BFD linker from
+ * generating R_386_32 (rather than R_386_RELATIVE) relocations for them when
+ * the 32-bit compressed kernel is linked as PIE. This is no longer necessary,
+ * but it doesn't hurt to keep them .hidden.
+ */
+	.hidden _bss
+	.hidden _ebss
+	.hidden _end
 
 	__HEAD
-ENTRY(startup_32)
-#ifdef CONFIG_EFI_STUB
-	jmp	preferred_addr
-
-	/*
-	 * We don't need the return address, so set up the stack so
-	 * efi_main() can find its arguments.
-	 */
-ENTRY(efi_pe_entry)
-	add	$0x4, %esp
-
-	call	make_boot_params
-	cmpl	$0, %eax
-	je	1f
-	movl	0x4(%esp), %esi
-	movl	(%esp), %ecx
-	pushl	%eax
-	pushl	%esi
-	pushl	%ecx
-	sub	$0x4, %esp
-
-ENTRY(efi_stub_entry)
-	add	$0x4, %esp
-	call	efi_main
-	cmpl	$0, %eax
-	movl	%eax, %esi
-	jne	2f
-1:
-	/* EFI init failed, so hang. */
-	hlt
-	jmp	1b
-2:
-	call	3f
-3:
-	popl	%eax
-	subl	$3b, %eax
-	subl	BP_pref_address(%esi), %eax
-	add	BP_code32_start(%esi), %eax
-	leal	preferred_addr(%eax), %eax
-	jmp	*%eax
-
-preferred_addr:
-#endif
+SYM_FUNC_START(startup_32)
 	cld
-	/*
-	 * Test KEEP_SEGMENTS flag to see if the bootloader is asking
-	 * us to not reload segments
-	 */
-	testb	$(1<<6), BP_loadflags(%esi)
-	jnz	1f
-
 	cli
-	movl	$__BOOT_DS, %eax
-	movl	%eax, %ds
-	movl	%eax, %es
-	movl	%eax, %fs
-	movl	%eax, %gs
-	movl	%eax, %ss
-1:
 
 /*
  * Calculate the delta between where we were compiled to run
@@ -101,33 +57,51 @@ preferred_addr:
  */
 	leal	(BP_scratch+4)(%esi), %esp
 	call	1f
-1:	popl	%ebp
-	subl	$1b, %ebp
+1:	popl	%edx
+	addl	$_GLOBAL_OFFSET_TABLE_+(.-1b), %edx
+
+	/* Load new GDT */
+	leal	gdt@GOTOFF(%edx), %eax
+	movl	%eax, 2(%eax)
+	lgdt	(%eax)
+
+	/* Load segment registers with our descriptors */
+	movl	$__BOOT_DS, %eax
+	movl	%eax, %ds
+	movl	%eax, %es
+	movl	%eax, %fs
+	movl	%eax, %gs
+	movl	%eax, %ss
 
 /*
- * %ebp contains the address we are loaded at by the boot loader and %ebx
- * contains the address where we should move the kernel image temporarily
- * for safe in-place decompression.
+ * %edx contains the address we are loaded at by the boot loader (plus the
+ * offset to the GOT).  The below code calculates %ebx to be the address where
+ * we should move the kernel image temporarily for safe in-place decompression
+ * (again, plus the offset to the GOT).
+ *
+ * %ebp is calculated to be the address that the kernel will be decompressed to.
  */
 
 #ifdef CONFIG_RELOCATABLE
-	movl	%ebp, %ebx
+	leal	startup_32@GOTOFF(%edx), %ebx
 	movl	BP_kernel_alignment(%esi), %eax
 	decl	%eax
 	addl    %eax, %ebx
 	notl	%eax
 	andl    %eax, %ebx
 	cmpl	$LOAD_PHYSICAL_ADDR, %ebx
-	jge	1f
+	jae	1f
 #endif
 	movl	$LOAD_PHYSICAL_ADDR, %ebx
 1:
 
+	movl	%ebx, %ebp	// Save the output address for later
 	/* Target address to relocate to for decompression */
-	addl	$z_extract_offset, %ebx
+	addl    BP_init_size(%esi), %ebx
+	subl    $_end@GOTOFF, %ebx
 
 	/* Set up the stack */
-	leal	boot_stack_end(%ebx), %esp
+	leal	boot_stack_end@GOTOFF(%ebx), %esp
 
 	/* Zero EFLAGS */
 	pushl	$0
@@ -138,8 +112,8 @@ preferred_addr:
  * where decompression in place becomes safe.
  */
 	pushl	%esi
-	leal	(_bss-4)(%ebp), %esi
-	leal	(_bss-4)(%ebx), %edi
+	leal	(_bss@GOTOFF-4)(%edx), %esi
+	leal	(_bss@GOTOFF-4)(%ebx), %edi
 	movl	$(_bss - startup_32), %ecx
 	shrl	$2, %ecx
 	std
@@ -147,68 +121,68 @@ preferred_addr:
 	cld
 	popl	%esi
 
+	/*
+	 * The GDT may get overwritten either during the copy we just did or
+	 * during extract_kernel below. To avoid any issues, repoint the GDTR
+	 * to the new copy of the GDT.
+	 */
+	leal	gdt@GOTOFF(%ebx), %eax
+	movl	%eax, 2(%eax)
+	lgdt	(%eax)
+
 /*
  * Jump to the relocated address.
  */
-	leal	relocated(%ebx), %eax
+	leal	.Lrelocated@GOTOFF(%ebx), %eax
 	jmp	*%eax
-ENDPROC(startup_32)
+SYM_FUNC_END(startup_32)
 
 	.text
-relocated:
+SYM_FUNC_START_LOCAL_NOALIGN(.Lrelocated)
 
 /*
  * Clear BSS (stack is currently empty)
  */
 	xorl	%eax, %eax
-	leal	_bss(%ebx), %edi
-	leal	_ebss(%ebx), %ecx
+	leal	_bss@GOTOFF(%ebx), %edi
+	leal	_ebss@GOTOFF(%ebx), %ecx
 	subl	%edi, %ecx
 	shrl	$2, %ecx
 	rep	stosl
 
 /*
- * Adjust our own GOT
+ * Do the extraction, and jump to the new kernel..
  */
-	leal	_got(%ebx), %edx
-	leal	_egot(%ebx), %ecx
-1:
-	cmpl	%ecx, %edx
-	jae	2f
-	addl	%ebx, (%edx)
-	addl	$4, %edx
-	jmp	1b
-2:
+	/* push arguments for extract_kernel: */
 
-/*
- * Do the decompression, and jump to the new kernel..
- */
-				/* push arguments for decompress_kernel: */
-	pushl	$z_output_len	/* decompressed length */
-	leal	z_extract_offset_negative(%ebx), %ebp
-	pushl	%ebp		/* output address */
-	pushl	$z_input_len	/* input_len */
-	leal	input_data(%ebx), %eax
-	pushl	%eax		/* input_data */
-	leal	boot_heap(%ebx), %eax
-	pushl	%eax		/* heap area */
-	pushl	%esi		/* real mode pointer */
-	call	decompress_kernel /* returns kernel location in %eax */
+	pushl	%ebp			/* output address */
+	pushl	%esi			/* real mode pointer */
+	call	extract_kernel		/* returns kernel entry point in %eax */
 	addl	$24, %esp
 
 /*
- * Jump to the decompressed kernel.
+ * Jump to the extracted kernel.
  */
 	xorl	%ebx, %ebx
 	jmp	*%eax
+SYM_FUNC_END(.Lrelocated)
+
+	.data
+	.balign	8
+SYM_DATA_START_LOCAL(gdt)
+	.word	gdt_end - gdt - 1
+	.long	0
+	.word	0
+	.quad	0x0000000000000000	/* Reserved */
+	.quad	0x00cf9a000000ffff	/* __KERNEL_CS */
+	.quad	0x00cf92000000ffff	/* __KERNEL_DS */
+SYM_DATA_END_LABEL(gdt, SYM_L_LOCAL, gdt_end)
 
 /*
  * Stack and heap for uncompression
  */
 	.bss
 	.balign 4
-boot_heap:
-	.fill BOOT_HEAP_SIZE, 1, 0
 boot_stack:
 	.fill BOOT_STACK_SIZE, 1, 0
 boot_stack_end:

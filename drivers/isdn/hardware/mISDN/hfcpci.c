@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *
  * hfcpci.c     low level driver for CCD's hfc-pci based cards
@@ -8,20 +9,6 @@
  *
  * Copyright 1999  by Werner Cornelius (werner@isdn-development.de)
  * Copyright 2008  by Karsten Keil <kkeil@novell.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * Module options:
  *
@@ -41,7 +28,6 @@
  *	If kernel uses a frequency of 1000 Hz, steps of 8 samples are possible.
  *	If the kernel uses 100 Hz, steps of 80 samples are possible.
  *	If the kernel uses 300 Hz, steps of about 26 samples are possible.
- *
  */
 
 #include <linux/interrupt.h>
@@ -172,7 +158,8 @@ release_io_hfcpci(struct hfc_pci *hc)
 	/* disable memory mapped ports + busmaster */
 	pci_write_config_word(hc->pdev, PCI_COMMAND, 0);
 	del_timer(&hc->hw.timer);
-	pci_free_consistent(hc->pdev, 0x8000, hc->hw.fifos, hc->hw.dmahandle);
+	dma_free_coherent(&hc->pdev->dev, 0x8000, hc->hw.fifos,
+			  hc->hw.dmahandle);
 	iounmap(hc->hw.pci_io);
 }
 
@@ -301,8 +288,9 @@ reset_hfcpci(struct hfc_pci *hc)
  * Timer function called when kernel timer expires
  */
 static void
-hfcpci_Timer(struct hfc_pci *hc)
+hfcpci_Timer(struct timer_list *t)
 {
+	struct hfc_pci *hc = from_timer(hc, t, hw.timer);
 	hc->hw.timer.expires = jiffies + 75;
 	/* WD RESET */
 /*
@@ -579,8 +567,7 @@ hfcpci_empty_fifo_trans(struct bchannel *bch, struct bzfifo *rxbz,
 	}
 	maxlen = bchannel_get_rxbuf(bch, fcnt_rx);
 	if (maxlen < 0) {
-		pr_warning("B%d: No bufferspace for %d bytes\n",
-			   bch->nr, fcnt_rx);
+		pr_warn("B%d: No bufferspace for %d bytes\n", bch->nr, fcnt_rx);
 	} else {
 		ptr = skb_put(bch->rx_skb, fcnt_rx);
 		if (le16_to_cpu(*z2r) + fcnt_rx <= B_FIFO_SIZE + B_SUB_VAL)
@@ -852,7 +839,7 @@ hfcpci_fill_fifo(struct bchannel *bch)
 		*z1t = cpu_to_le16(new_z1);	/* now send data */
 		if (bch->tx_idx < bch->tx_skb->len)
 			return;
-		dev_kfree_skb(bch->tx_skb);
+		dev_kfree_skb_any(bch->tx_skb);
 		if (get_next_bframe(bch))
 			goto next_t_frame;
 		return;
@@ -908,7 +895,7 @@ hfcpci_fill_fifo(struct bchannel *bch)
 	}
 	bz->za[new_f1].z1 = cpu_to_le16(new_z1);	/* for next buffer */
 	bz->f1 = new_f1;	/* next frame */
-	dev_kfree_skb(bch->tx_skb);
+	dev_kfree_skb_any(bch->tx_skb);
 	get_next_bframe(bch);
 }
 
@@ -1132,8 +1119,7 @@ tx_birq(struct bchannel *bch)
 	if (bch->tx_skb && bch->tx_idx < bch->tx_skb->len)
 		hfcpci_fill_fifo(bch);
 	else {
-		if (bch->tx_skb)
-			dev_kfree_skb(bch->tx_skb);
+		dev_kfree_skb_any(bch->tx_skb);
 		if (get_next_bframe(bch))
 			hfcpci_fill_fifo(bch);
 	}
@@ -1145,8 +1131,7 @@ tx_dirq(struct dchannel *dch)
 	if (dch->tx_skb && dch->tx_idx < dch->tx_skb->len)
 		hfcpci_fill_dfifo(dch->hw);
 	else {
-		if (dch->tx_skb)
-			dev_kfree_skb(dch->tx_skb);
+		dev_kfree_skb(dch->tx_skb);
 		if (get_next_dframe(dch))
 			hfcpci_fill_dfifo(dch->hw);
 	}
@@ -1241,7 +1226,7 @@ hfcpci_int(int intno, void *dev_id)
  * timer callback for D-chan busy resolution. Currently no function
  */
 static void
-hfcpci_dbusy_timer(struct hfc_pci *hc)
+hfcpci_dbusy_timer(struct timer_list *t)
 {
 }
 
@@ -1295,6 +1280,7 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 	case (-1): /* used for init */
 		bch->state = -1;
 		bch->nr = bc;
+		fallthrough;
 	case (ISDN_P_NONE):
 		if (bch->state == ISDN_P_NONE)
 			return 0;
@@ -1631,16 +1617,19 @@ hfcpci_l2l1D(struct mISDNchannel *ch, struct sk_buff *skb)
 		test_and_clear_bit(FLG_L2_ACTIVATED, &dch->Flags);
 		spin_lock_irqsave(&hc->lock, flags);
 		if (hc->hw.protocol == ISDN_P_NT_S0) {
+			struct sk_buff_head free_queue;
+
+			__skb_queue_head_init(&free_queue);
 			/* prepare deactivation */
 			Write_hfc(hc, HFCPCI_STATES, 0x40);
-			skb_queue_purge(&dch->squeue);
+			skb_queue_splice_init(&dch->squeue, &free_queue);
 			if (dch->tx_skb) {
-				dev_kfree_skb(dch->tx_skb);
+				__skb_queue_tail(&free_queue, dch->tx_skb);
 				dch->tx_skb = NULL;
 			}
 			dch->tx_idx = 0;
 			if (dch->rx_skb) {
-				dev_kfree_skb(dch->rx_skb);
+				__skb_queue_tail(&free_queue, dch->rx_skb);
 				dch->rx_skb = NULL;
 			}
 			test_and_clear_bit(FLG_TX_BUSY, &dch->Flags);
@@ -1653,10 +1642,12 @@ hfcpci_l2l1D(struct mISDNchannel *ch, struct sk_buff *skb)
 			hc->hw.mst_m &= ~HFCPCI_MASTER;
 			Write_hfc(hc, HFCPCI_MST_MODE, hc->hw.mst_m);
 			ret = 0;
+			spin_unlock_irqrestore(&hc->lock, flags);
+			__skb_queue_purge(&free_queue);
 		} else {
 			ret = l1_event(dch->l1, hh->prim);
+			spin_unlock_irqrestore(&hc->lock, flags);
 		}
-		spin_unlock_irqrestore(&hc->lock, flags);
 		break;
 	}
 	if (!ret)
@@ -1717,9 +1708,7 @@ static void
 inithfcpci(struct hfc_pci *hc)
 {
 	printk(KERN_DEBUG "inithfcpci: entered\n");
-	hc->dch.timer.function = (void *) hfcpci_dbusy_timer;
-	hc->dch.timer.data = (long) &hc->dch;
-	init_timer(&hc->dch.timer);
+	timer_setup(&hc->dch.timer, hfcpci_dbusy_timer, 0);
 	hc->chanlimit = 2;
 	mode_hfcpci(&hc->bch[0], 1, -1);
 	mode_hfcpci(&hc->bch[1], 2, -1);
@@ -1755,7 +1744,7 @@ init_card(struct hfc_pci *hc)
 		enable_hwirq(hc);
 		spin_unlock_irqrestore(&hc->lock, flags);
 		/* Timeout 80ms */
-		current->state = TASK_UNINTERRUPTIBLE;
+		set_current_state(TASK_UNINTERRUPTIBLE);
 		schedule_timeout((80 * HZ) / 1000);
 		printk(KERN_INFO "HFC PCI: IRQ %d count %d\n",
 		       hc->irq, hc->irqcnt);
@@ -2010,32 +1999,46 @@ setup_hw(struct hfc_pci *hc)
 	pci_set_master(hc->pdev);
 	if (!hc->irq) {
 		printk(KERN_WARNING "HFC-PCI: No IRQ for PCI card found\n");
-		return 1;
+		return -EINVAL;
 	}
 	hc->hw.pci_io =
 		(char __iomem *)(unsigned long)hc->pdev->resource[1].start;
 
 	if (!hc->hw.pci_io) {
 		printk(KERN_WARNING "HFC-PCI: No IO-Mem for PCI card found\n");
-		return 1;
+		return -ENOMEM;
 	}
 	/* Allocate memory for FIFOS */
 	/* the memory needs to be on a 32k boundary within the first 4G */
-	pci_set_dma_mask(hc->pdev, 0xFFFF8000);
-	buffer = pci_alloc_consistent(hc->pdev, 0x8000, &hc->hw.dmahandle);
+	if (dma_set_mask(&hc->pdev->dev, 0xFFFF8000)) {
+		printk(KERN_WARNING
+		       "HFC-PCI: No usable DMA configuration!\n");
+		return -EIO;
+	}
+	buffer = dma_alloc_coherent(&hc->pdev->dev, 0x8000, &hc->hw.dmahandle,
+				    GFP_KERNEL);
 	/* We silently assume the address is okay if nonzero */
 	if (!buffer) {
 		printk(KERN_WARNING
 		       "HFC-PCI: Error allocating memory for FIFO!\n");
-		return 1;
+		return -ENOMEM;
 	}
 	hc->hw.fifos = buffer;
 	pci_write_config_dword(hc->pdev, 0x80, hc->hw.dmahandle);
 	hc->hw.pci_io = ioremap((ulong) hc->hw.pci_io, 256);
+	if (unlikely(!hc->hw.pci_io)) {
+		printk(KERN_WARNING
+		       "HFC-PCI: Error in ioremap for PCI!\n");
+		dma_free_coherent(&hc->pdev->dev, 0x8000, hc->hw.fifos,
+				  hc->hw.dmahandle);
+		return -ENOMEM;
+	}
+
 	printk(KERN_INFO
-	       "HFC-PCI: defined at mem %#lx fifo %#lx(%#lx) IRQ %d HZ %d\n",
-	       (u_long) hc->hw.pci_io, (u_long) hc->hw.fifos,
-	       (u_long) hc->hw.dmahandle, hc->irq, HZ);
+	       "HFC-PCI: defined at mem %#lx fifo %p(%pad) IRQ %d HZ %d\n",
+	       (u_long) hc->hw.pci_io, hc->hw.fifos,
+	       &hc->hw.dmahandle, hc->irq, HZ);
+
 	/* enable memory mapped ports, disable busmaster */
 	pci_write_config_word(hc->pdev, PCI_COMMAND, PCI_ENA_MEMIO);
 	hc->hw.int_m2 = 0;
@@ -2044,9 +2047,7 @@ setup_hw(struct hfc_pci *hc)
 	Write_hfc(hc, HFCPCI_INT_M1, hc->hw.int_m1);
 	/* At this point the needed PCI config is done */
 	/* fifos are still not enabled */
-	hc->hw.timer.function = (void *) hfcpci_Timer;
-	hc->hw.timer.data = (long) hc;
-	init_timer(&hc->hw.timer);
+	timer_setup(&hc->hw.timer, hfcpci_Timer, 0);
 	/* default PCM master */
 	test_and_set_bit(HFC_CFG_MASTER, &hc->cfg);
 	return 0;
@@ -2164,7 +2165,7 @@ static const struct _hfc_map hfc_map[] =
 	{},
 };
 
-static struct pci_device_id hfc_ids[] =
+static const struct pci_device_id hfc_ids[] =
 {
 	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_2BD0),
 	  (unsigned long) &hfc_map[0] },
@@ -2222,7 +2223,7 @@ hfc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct hfc_pci	*card;
 	struct _hfc_map	*m = (struct _hfc_map *)ent->driver_data;
 
-	card = kzalloc(sizeof(struct hfc_pci), GFP_ATOMIC);
+	card = kzalloc(sizeof(struct hfc_pci), GFP_KERNEL);
 	if (!card) {
 		printk(KERN_ERR "No kmem for HFC card\n");
 		return err;
@@ -2268,7 +2269,7 @@ static struct pci_driver hfc_driver = {
 };
 
 static int
-_hfcpci_softirq(struct device *dev, void *arg)
+_hfcpci_softirq(struct device *dev, void *unused)
 {
 	struct hfc_pci  *hc = dev_get_drvdata(dev);
 	struct bchannel *bch;
@@ -2276,7 +2277,7 @@ _hfcpci_softirq(struct device *dev, void *arg)
 		return 0;
 
 	if (hc->hw.int_m2 & HFCPCI_IRQ_ENABLE) {
-		spin_lock(&hc->lock);
+		spin_lock_irq(&hc->lock);
 		bch = Sel_BCS(hc, hc->hw.bswapped ? 2 : 1);
 		if (bch && bch->state == ISDN_P_B_RAW) { /* B1 rx&tx */
 			main_rec_hfcpci(bch);
@@ -2287,15 +2288,15 @@ _hfcpci_softirq(struct device *dev, void *arg)
 			main_rec_hfcpci(bch);
 			tx_birq(bch);
 		}
-		spin_unlock(&hc->lock);
+		spin_unlock_irq(&hc->lock);
 	}
 	return 0;
 }
 
 static void
-hfcpci_softirq(void *arg)
+hfcpci_softirq(struct timer_list *unused)
 {
-	WARN_ON_ONCE(driver_for_each_device(&hfc_driver.driver, NULL, arg,
+	WARN_ON_ONCE(driver_for_each_device(&hfc_driver.driver, NULL, NULL,
 				      _hfcpci_softirq) != 0);
 
 	/* if next event would be in the past ... */
@@ -2330,9 +2331,7 @@ HFC_init(void)
 	if (poll != HFCPCI_BTRANS_THRESHOLD) {
 		printk(KERN_INFO "%s: Using alternative poll value of %d\n",
 		       __func__, poll);
-		hfc_tl.function = (void *)hfcpci_softirq;
-		hfc_tl.data = 0;
-		init_timer(&hfc_tl);
+		timer_setup(&hfc_tl, hfcpci_softirq, 0);
 		hfc_tl.expires = jiffies + tics;
 		hfc_jiffies = hfc_tl.expires;
 		add_timer(&hfc_tl);
@@ -2351,8 +2350,7 @@ HFC_init(void)
 static void __exit
 HFC_cleanup(void)
 {
-	if (timer_pending(&hfc_tl))
-		del_timer(&hfc_tl);
+	del_timer_sync(&hfc_tl);
 
 	pci_unregister_driver(&hfc_driver);
 }

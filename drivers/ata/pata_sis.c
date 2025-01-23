@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *    pata_sis.c - SiS ATA driver
  *
@@ -26,7 +27,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -114,7 +114,6 @@ static int sis_port_base(struct ata_device *adev)
 /**
  *	sis_133_cable_detect - check for 40/80 pin
  *	@ap: Port
- *	@deadline: deadline jiffies for the operation
  *
  *	Perform cable detection for the later UDMA133 capable
  *	SiS chipset.
@@ -521,11 +520,12 @@ static void sis_133_set_dmamode (struct ata_port *ap, struct ata_device *adev)
 /**
  *	sis_133_mode_filter - mode selection filter
  *	@adev: ATA device
+ *	@mask: received mask to manipulate and pass back
  *
  *	Block UDMA6 on devices that do not support it.
  */
 
-static unsigned long sis_133_mode_filter(struct ata_device *adev, unsigned long mask)
+static unsigned int sis_133_mode_filter(struct ata_device *adev, unsigned int mask)
 {
 	struct ata_port *ap = adev->link->ap;
 	struct pci_dev *pdev = to_pci_dev(ap->host->dev);
@@ -539,7 +539,7 @@ static unsigned long sis_133_mode_filter(struct ata_device *adev, unsigned long 
 	return mask;
 }
 
-static struct scsi_host_template sis_sht = {
+static const struct scsi_host_template sis_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -870,7 +870,7 @@ static int sis_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 	return ata_pci_bmdma_init_one(pdev, ppi, &sis_sht, chipset, 0);
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int sis_reinit_one(struct pci_dev *pdev)
 {
 	struct ata_host *host = pci_get_drvdata(pdev);
@@ -900,7 +900,7 @@ static struct pci_driver sis_pci_driver = {
 	.id_table		= sis_pci_tbl,
 	.probe			= sis_init_one,
 	.remove			= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= ata_pci_device_suspend,
 	.resume			= sis_reinit_one,
 #endif

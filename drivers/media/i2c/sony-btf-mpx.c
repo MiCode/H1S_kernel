@@ -1,18 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2005-2006 Micronas USA Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License (Version 2) as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
  */
 
 #include <linux/module.h>
@@ -327,24 +315,23 @@ static int sony_btf_mpx_s_tuner(struct v4l2_subdev *sd, const struct v4l2_tuner 
 
 /* --------------------------------------------------------------------------*/
 
-static const struct v4l2_subdev_core_ops sony_btf_mpx_core_ops = {
-	.s_std = sony_btf_mpx_s_std,
-};
-
 static const struct v4l2_subdev_tuner_ops sony_btf_mpx_tuner_ops = {
 	.s_tuner = sony_btf_mpx_s_tuner,
 	.g_tuner = sony_btf_mpx_g_tuner,
 };
 
+static const struct v4l2_subdev_video_ops sony_btf_mpx_video_ops = {
+	.s_std = sony_btf_mpx_s_std,
+};
+
 static const struct v4l2_subdev_ops sony_btf_mpx_ops = {
-	.core = &sony_btf_mpx_core_ops,
 	.tuner = &sony_btf_mpx_tuner_ops,
+	.video = &sony_btf_mpx_video_ops,
 };
 
 /* --------------------------------------------------------------------------*/
 
-static int sony_btf_mpx_probe(struct i2c_client *client,
-				const struct i2c_device_id *id)
+static int sony_btf_mpx_probe(struct i2c_client *client)
 {
 	struct sony_btf_mpx *t;
 	struct v4l2_subdev *sd;
@@ -369,13 +356,11 @@ static int sony_btf_mpx_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int sony_btf_mpx_remove(struct i2c_client *client)
+static void sony_btf_mpx_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
-
-	return 0;
 }
 
 /* ----------------------------------------------------------------------- */
@@ -388,7 +373,6 @@ MODULE_DEVICE_TABLE(i2c, sony_btf_mpx_id);
 
 static struct i2c_driver sony_btf_mpx_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "sony-btf-mpx",
 	},
 	.probe = sony_btf_mpx_probe,

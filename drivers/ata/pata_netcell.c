@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *    pata_netcell.c - Netcell PATA driver
  *
@@ -7,7 +8,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -21,16 +21,17 @@
 /* No PIO or DMA methods needed for this device */
 
 static unsigned int netcell_read_id(struct ata_device *adev,
-					struct ata_taskfile *tf, u16 *id)
+				    struct ata_taskfile *tf, __le16 *id)
 {
 	unsigned int err_mask = ata_do_dev_read_id(adev, tf, id);
+
 	/* Firmware forgets to mark words 85-87 valid */
 	if (err_mask == 0)
-		id[ATA_ID_CSF_DEFAULT] |= 0x4000;
+		id[ATA_ID_CSF_DEFAULT] |= cpu_to_le16(0x4000);
 	return err_mask;
 }
 
-static struct scsi_host_template netcell_sht = {
+static const struct scsi_host_template netcell_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -93,7 +94,7 @@ static struct pci_driver netcell_pci_driver = {
 	.id_table		= netcell_pci_tbl,
 	.probe			= netcell_init_one,
 	.remove			= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= ata_pci_device_suspend,
 	.resume			= ata_pci_device_resume,
 #endif

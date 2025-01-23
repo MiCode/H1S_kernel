@@ -1,29 +1,32 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * zfcp device driver
  *
  * Data structure and helper functions for tracking pending FSF
  * requests.
  *
- * Copyright IBM Corp. 2009
+ * Copyright IBM Corp. 2009, 2023
  */
 
 #ifndef ZFCP_REQLIST_H
 #define ZFCP_REQLIST_H
 
+#include <linux/types.h>
+
 /* number of hash buckets */
-#define ZFCP_REQ_LIST_BUCKETS 128
+#define ZFCP_REQ_LIST_BUCKETS 128u
 
 /**
  * struct zfcp_reqlist - Container for request list (reqlist)
  * @lock: Spinlock for protecting the hash list
- * @list: Array of hashbuckets, each is a list of requests in this bucket
+ * @buckets: Array of hashbuckets, each is a list of requests in this bucket
  */
 struct zfcp_reqlist {
 	spinlock_t lock;
 	struct list_head buckets[ZFCP_REQ_LIST_BUCKETS];
 };
 
-static inline int zfcp_reqlist_hash(unsigned long req_id)
+static inline size_t zfcp_reqlist_hash(u64 req_id)
 {
 	return req_id % ZFCP_REQ_LIST_BUCKETS;
 }
@@ -36,7 +39,7 @@ static inline int zfcp_reqlist_hash(unsigned long req_id)
  */
 static inline struct zfcp_reqlist *zfcp_reqlist_alloc(void)
 {
-	unsigned int i;
+	size_t i;
 	struct zfcp_reqlist *rl;
 
 	rl = kzalloc(sizeof(struct zfcp_reqlist), GFP_KERNEL);
@@ -59,7 +62,7 @@ static inline struct zfcp_reqlist *zfcp_reqlist_alloc(void)
  */
 static inline int zfcp_reqlist_isempty(struct zfcp_reqlist *rl)
 {
-	unsigned int i;
+	size_t i;
 
 	for (i = 0; i < ZFCP_REQ_LIST_BUCKETS; i++)
 		if (!list_empty(&rl->buckets[i]))
@@ -80,10 +83,10 @@ static inline void zfcp_reqlist_free(struct zfcp_reqlist *rl)
 }
 
 static inline struct zfcp_fsf_req *
-_zfcp_reqlist_find(struct zfcp_reqlist *rl, unsigned long req_id)
+_zfcp_reqlist_find(struct zfcp_reqlist *rl, u64 req_id)
 {
 	struct zfcp_fsf_req *req;
-	unsigned int i;
+	size_t i;
 
 	i = zfcp_reqlist_hash(req_id);
 	list_for_each_entry(req, &rl->buckets[i], list)
@@ -101,7 +104,7 @@ _zfcp_reqlist_find(struct zfcp_reqlist *rl, unsigned long req_id)
  * or NULL if there is no known FSF request with this id.
  */
 static inline struct zfcp_fsf_req *
-zfcp_reqlist_find(struct zfcp_reqlist *rl, unsigned long req_id)
+zfcp_reqlist_find(struct zfcp_reqlist *rl, u64 req_id)
 {
 	unsigned long flags;
 	struct zfcp_fsf_req *req;
@@ -126,7 +129,7 @@ zfcp_reqlist_find(struct zfcp_reqlist *rl, unsigned long req_id)
  * NULL if it has not been found.
  */
 static inline struct zfcp_fsf_req *
-zfcp_reqlist_find_rm(struct zfcp_reqlist *rl, unsigned long req_id)
+zfcp_reqlist_find_rm(struct zfcp_reqlist *rl, u64 req_id)
 {
 	unsigned long flags;
 	struct zfcp_fsf_req *req;
@@ -153,7 +156,7 @@ zfcp_reqlist_find_rm(struct zfcp_reqlist *rl, unsigned long req_id)
 static inline void zfcp_reqlist_add(struct zfcp_reqlist *rl,
 				    struct zfcp_fsf_req *req)
 {
-	unsigned int i;
+	size_t i;
 	unsigned long flags;
 
 	i = zfcp_reqlist_hash(req->req_id);
@@ -171,12 +174,40 @@ static inline void zfcp_reqlist_add(struct zfcp_reqlist *rl,
 static inline void zfcp_reqlist_move(struct zfcp_reqlist *rl,
 				     struct list_head *list)
 {
-	unsigned int i;
+	size_t i;
 	unsigned long flags;
 
 	spin_lock_irqsave(&rl->lock, flags);
 	for (i = 0; i < ZFCP_REQ_LIST_BUCKETS; i++)
 		list_splice_init(&rl->buckets[i], list);
+	spin_unlock_irqrestore(&rl->lock, flags);
+}
+
+/**
+ * zfcp_reqlist_apply_for_all() - apply a function to every request.
+ * @rl: the requestlist that contains the target requests.
+ * @f: the function to apply to each request; the first parameter of the
+ *     function will be the target-request; the second parameter is the same
+ *     pointer as given with the argument @data.
+ * @data: freely chosen argument; passed through to @f as second parameter.
+ *
+ * Uses :c:macro:`list_for_each_entry` to iterate over the lists in the hash-
+ * table (not a 'safe' variant, so don't modify the list).
+ *
+ * Holds @rl->lock over the entire request-iteration.
+ */
+static inline void
+zfcp_reqlist_apply_for_all(struct zfcp_reqlist *rl,
+			   void (*f)(struct zfcp_fsf_req *, void *), void *data)
+{
+	struct zfcp_fsf_req *req;
+	unsigned long flags;
+	size_t i;
+
+	spin_lock_irqsave(&rl->lock, flags);
+	for (i = 0; i < ZFCP_REQ_LIST_BUCKETS; i++)
+		list_for_each_entry(req, &rl->buckets[i], list)
+			f(req, data);
 	spin_unlock_irqrestore(&rl->lock, flags);
 }
 

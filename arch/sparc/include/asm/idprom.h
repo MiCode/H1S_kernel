@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * idprom.h: Macros and defines for idprom routines
  *
@@ -20,6 +21,6 @@ struct idprom {
 };
 
 extern struct idprom *idprom;
-extern void idprom_init(void);
+void idprom_init(void);
 
 #endif /* !(_SPARC_IDPROM_H) */

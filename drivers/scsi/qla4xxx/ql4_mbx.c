@@ -1,8 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * QLogic iSCSI HBA Driver
  * Copyright (c)  2003-2013 QLogic Corporation
- *
- * See LICENSE.qla4xxx for copyright and licensing details.
  */
 
 #include <linux/ctype.h>
@@ -45,9 +44,9 @@ void qla4xxx_process_mbox_intr(struct scsi_qla_host *ha, int out_count)
 }
 
 /**
- * qla4xxx_is_intr_poll_mode – Are we allowed to poll for interrupts?
+ * qla4xxx_is_intr_poll_mode - Are we allowed to poll for interrupts?
  * @ha: Pointer to host adapter structure.
- * @ret: 1=polling mode, 0=non-polling mode
+ * returns: 1=polling mode, 0=non-polling mode
  **/
 static int qla4xxx_is_intr_poll_mode(struct scsi_qla_host *ha)
 {
@@ -212,9 +211,8 @@ int qla4xxx_mailbox_command(struct scsi_qla_host *ha, uint8_t inCount,
 			    ha->host_no, __func__));
 			goto mbox_exit;
 		}
-		DEBUG2(printk("scsi%ld: Mailbox Cmd 0x%08X timed out ...,"
-			      " Scheduling Adapter Reset\n", ha->host_no,
-			      mbx_cmd[0]));
+		ql4_printk(KERN_WARNING, ha, "scsi%ld: Mailbox Cmd 0x%08X timed out, Scheduling Adapter Reset\n",
+			   ha->host_no, mbx_cmd[0]);
 		ha->mailbox_timeout_count++;
 		mbx_sts[0] = (-1);
 		set_bit(DPC_RESET_HA, &ha->dpc_flags);
@@ -251,15 +249,16 @@ int qla4xxx_mailbox_command(struct scsi_qla_host *ha, uint8_t inCount,
 		break;
 
 	case MBOX_STS_BUSY:
-		DEBUG2( printk("scsi%ld: %s: Cmd = %08X, ISP BUSY\n",
-			       ha->host_no, __func__, mbx_cmd[0]));
+		ql4_printk(KERN_WARNING, ha, "scsi%ld: %s: Cmd = %08X, ISP BUSY\n",
+			   ha->host_no, __func__, mbx_cmd[0]);
 		ha->mailbox_timeout_count++;
 		break;
 
 	default:
-		DEBUG2(printk("scsi%ld: %s: **** FAILED, cmd = %08X, "
-			      "sts = %08X ****\n", ha->host_no, __func__,
-			      mbx_cmd[0], mbx_sts[0]));
+		ql4_printk(KERN_WARNING, ha, "scsi%ld: %s: FAILED, MBOX CMD = %08X, MBOX STS = %08X %08X %08X %08X %08X %08X %08X %08X\n",
+			   ha->host_no, __func__, mbx_cmd[0], mbx_sts[0],
+			   mbx_sts[1], mbx_sts[2], mbx_sts[3], mbx_sts[4],
+			   mbx_sts[5], mbx_sts[6], mbx_sts[7]);
 		break;
 	}
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
@@ -383,7 +382,6 @@ qla4xxx_set_ifcb(struct scsi_qla_host *ha, uint32_t *mbox_cmd,
 	mbox_cmd[2] = LSDW(init_fw_cb_dma);
 	mbox_cmd[3] = MSDW(init_fw_cb_dma);
 	mbox_cmd[4] = sizeof(struct addr_ctrl_blk);
-	mbox_cmd[5] = (IFCB_VER_MAX << 8) | IFCB_VER_MIN;
 
 	if (qla4xxx_mailbox_command(ha, 6, 6, mbox_cmd, mbox_sts) !=
 	    QLA_SUCCESS) {
@@ -634,7 +632,6 @@ int qla4xxx_initialize_fw_cb(struct scsi_qla_host * ha)
 			      ha->host_no, __func__));
 		goto exit_init_fw_cb_no_free;
 	}
-	memset(init_fw_cb, 0, sizeof(struct addr_ctrl_blk));
 
 	/* Get Initialize Firmware Control Block. */
 	memset(&mbox_cmd, 0, sizeof(mbox_cmd));
@@ -642,20 +639,14 @@ int qla4xxx_initialize_fw_cb(struct scsi_qla_host * ha)
 
 	if (qla4xxx_get_ifcb(ha, &mbox_cmd[0], &mbox_sts[0], init_fw_cb_dma) !=
 	    QLA_SUCCESS) {
-		dma_free_coherent(&ha->pdev->dev,
-				  sizeof(struct addr_ctrl_blk),
-				  init_fw_cb, init_fw_cb_dma);
 		goto exit_init_fw_cb;
 	}
-
-	/* Initialize request and response queues. */
-	qla4xxx_init_rings(ha);
 
 	/* Fill in the request and response queue information. */
 	init_fw_cb->rqq_consumer_idx = cpu_to_le16(ha->request_out);
 	init_fw_cb->compq_producer_idx = cpu_to_le16(ha->response_in);
-	init_fw_cb->rqq_len = __constant_cpu_to_le16(REQUEST_QUEUE_DEPTH);
-	init_fw_cb->compq_len = __constant_cpu_to_le16(RESPONSE_QUEUE_DEPTH);
+	init_fw_cb->rqq_len = cpu_to_le16(REQUEST_QUEUE_DEPTH);
+	init_fw_cb->compq_len = cpu_to_le16(RESPONSE_QUEUE_DEPTH);
 	init_fw_cb->rqq_addr_lo = cpu_to_le32(LSDW(ha->request_dma));
 	init_fw_cb->rqq_addr_hi = cpu_to_le32(MSDW(ha->request_dma));
 	init_fw_cb->compq_addr_lo = cpu_to_le32(LSDW(ha->response_dma));
@@ -665,20 +656,20 @@ int qla4xxx_initialize_fw_cb(struct scsi_qla_host * ha)
 
 	/* Set up required options. */
 	init_fw_cb->fw_options |=
-		__constant_cpu_to_le16(FWOPT_SESSION_MODE |
-				       FWOPT_INITIATOR_MODE);
+		cpu_to_le16(FWOPT_SESSION_MODE |
+			    FWOPT_INITIATOR_MODE);
 
 	if (is_qla80XX(ha))
 		init_fw_cb->fw_options |=
-		    __constant_cpu_to_le16(FWOPT_ENABLE_CRBDB);
+		    cpu_to_le16(FWOPT_ENABLE_CRBDB);
 
-	init_fw_cb->fw_options &= __constant_cpu_to_le16(~FWOPT_TARGET_MODE);
+	init_fw_cb->fw_options &= cpu_to_le16(~FWOPT_TARGET_MODE);
 
 	init_fw_cb->add_fw_options = 0;
 	init_fw_cb->add_fw_options |=
-			__constant_cpu_to_le16(ADFWOPT_SERIALIZE_TASK_MGMT);
+			cpu_to_le16(ADFWOPT_SERIALIZE_TASK_MGMT);
 	init_fw_cb->add_fw_options |=
-			__constant_cpu_to_le16(ADFWOPT_AUTOCONN_DISABLE);
+			cpu_to_le16(ADFWOPT_AUTOCONN_DISABLE);
 
 	if (qla4xxx_set_ifcb(ha, &mbox_cmd[0], &mbox_sts[0], init_fw_cb_dma)
 		!= QLA_SUCCESS) {
@@ -724,7 +715,6 @@ int qla4xxx_get_dhcp_ip_address(struct scsi_qla_host * ha)
 	}
 
 	/* Get Initialize Firmware Control Block. */
-	memset(init_fw_cb, 0, sizeof(struct addr_ctrl_blk));
 	if (qla4xxx_get_ifcb(ha, &mbox_cmd[0], &mbox_sts[0], init_fw_cb_dma) !=
 	    QLA_SUCCESS) {
 		DEBUG2(printk("scsi%ld: %s: Failed to get init_fw_ctrl_blk\n",
@@ -819,7 +809,7 @@ int qla4xxx_get_firmware_status(struct scsi_qla_host * ha)
 	return QLA_SUCCESS;
 }
 
-/**
+/*
  * qla4xxx_get_fwddb_entry - retrieves firmware ddb entry
  * @ha: Pointer to host adapter structure.
  * @fw_ddb_index: Firmware's device database index
@@ -943,7 +933,7 @@ int qla4xxx_conn_open(struct scsi_qla_host *ha, uint16_t fw_ddb_index)
 }
 
 /**
- * qla4xxx_set_fwddb_entry - sets a ddb entry.
+ * qla4xxx_set_ddb_entry - sets a ddb entry.
  * @ha: Pointer to host adapter structure.
  * @fw_ddb_index: Firmware's device database index
  * @fw_ddb_entry_dma: dma address of ddb entry
@@ -1002,6 +992,10 @@ int qla4xxx_session_logout_ddb(struct scsi_qla_host *ha,
 				  "%s: MBOX_CMD_CONN_CLOSE_SESS_LOGOUT "
 				  "failed sts %04X %04X", __func__,
 				  mbox_sts[0], mbox_sts[1]));
+		if ((mbox_sts[0] == MBOX_STS_COMMAND_ERROR) &&
+		    (mbox_sts[1] == DDB_NOT_LOGGED_IN)) {
+			set_bit(DDB_CONN_CLOSE_FAILURE, &ddb_entry->flags);
+		}
 	}
 
 	return status;
@@ -1205,7 +1199,7 @@ int qla4xxx_abort_task(struct scsi_qla_host *ha, struct srb *srb)
 	if (mbox_sts[0] != MBOX_STS_COMMAND_COMPLETE) {
 		status = QLA_ERROR;
 
-		DEBUG2(printk(KERN_WARNING "scsi%ld:%d:%d: abort task FAILED: "
+		DEBUG2(printk(KERN_WARNING "scsi%ld:%d:%llu: abort task FAILED: "
 		    "mbx0=%04X, mb1=%04X, mb2=%04X, mb3=%04X, mb4=%04X\n",
 		    ha->host_no, cmd->device->id, cmd->device->lun, mbox_sts[0],
 		    mbox_sts[1], mbox_sts[2], mbox_sts[3], mbox_sts[4]));
@@ -1225,14 +1219,14 @@ int qla4xxx_abort_task(struct scsi_qla_host *ha, struct srb *srb)
  * are valid before calling this routine.
  **/
 int qla4xxx_reset_lun(struct scsi_qla_host * ha, struct ddb_entry * ddb_entry,
-		      int lun)
+		      uint64_t lun)
 {
 	uint32_t mbox_cmd[MBOX_REG_COUNT];
 	uint32_t mbox_sts[MBOX_REG_COUNT];
 	uint32_t scsi_lun[2];
 	int status = QLA_SUCCESS;
 
-	DEBUG2(printk("scsi%ld:%d:%d: lun reset issued\n", ha->host_no,
+	DEBUG2(printk("scsi%ld:%d:%llu: lun reset issued\n", ha->host_no,
 		      ddb_entry->fw_ddb_index, lun));
 
 	/*
@@ -1264,8 +1258,7 @@ int qla4xxx_reset_lun(struct scsi_qla_host * ha, struct ddb_entry * ddb_entry,
 /**
  * qla4xxx_reset_target - issues target Reset
  * @ha: Pointer to host adapter structure.
- * @db_entry: Pointer to device database entry
- * @un_entry: Pointer to lun entry structure
+ * @ddb_entry: Pointer to device database entry
  *
  * This routine performs a TARGET RESET on the specified target.
  * The caller must ensure that the ddb_entry pointers
@@ -1351,7 +1344,6 @@ int qla4xxx_about_firmware(struct scsi_qla_host *ha)
 		return status;
 	}
 
-	memset(about_fw, 0, sizeof(struct about_fw_info));
 	memset(&mbox_cmd, 0, sizeof(mbox_cmd));
 	memset(&mbox_sts, 0, sizeof(mbox_sts));
 
@@ -1587,12 +1579,11 @@ int qla4xxx_get_chap(struct scsi_qla_host *ha, char *username, char *password,
 	struct ql4_chap_table *chap_table;
 	dma_addr_t chap_dma;
 
-	chap_table = dma_pool_alloc(ha->chap_dma_pool, GFP_KERNEL, &chap_dma);
+	chap_table = dma_pool_zalloc(ha->chap_dma_pool, GFP_KERNEL, &chap_dma);
 	if (chap_table == NULL)
 		return -ENOMEM;
 
 	chap_size = sizeof(struct ql4_chap_table);
-	memset(chap_table, 0, chap_size);
 
 	if (is_qla40XX(ha))
 		offset = FLASH_CHAP_OFFSET | (idx * chap_size);
@@ -1620,9 +1611,9 @@ int qla4xxx_get_chap(struct scsi_qla_host *ha, char *username, char *password,
 		goto exit_get_chap;
 	}
 
-	strncpy(password, chap_table->secret, QL4_CHAP_MAX_SECRET_LEN);
-	strncpy(username, chap_table->name, QL4_CHAP_MAX_NAME_LEN);
-	chap_table->cookie = __constant_cpu_to_le16(CHAP_VALID_COOKIE);
+	strscpy(password, chap_table->secret, QL4_CHAP_MAX_SECRET_LEN);
+	strscpy(username, chap_table->name, QL4_CHAP_MAX_NAME_LEN);
+	chap_table->cookie = cpu_to_le16(CHAP_VALID_COOKIE);
 
 exit_get_chap:
 	dma_pool_free(ha->chap_dma_pool, chap_table, chap_dma);
@@ -1651,21 +1642,20 @@ int qla4xxx_set_chap(struct scsi_qla_host *ha, char *username, char *password,
 	uint32_t chap_size = 0;
 	dma_addr_t chap_dma;
 
-	chap_table = dma_pool_alloc(ha->chap_dma_pool, GFP_KERNEL, &chap_dma);
+	chap_table = dma_pool_zalloc(ha->chap_dma_pool, GFP_KERNEL, &chap_dma);
 	if (chap_table == NULL) {
 		ret =  -ENOMEM;
 		goto exit_set_chap;
 	}
 
-	memset(chap_table, 0, sizeof(struct ql4_chap_table));
 	if (bidi)
 		chap_table->flags |= BIT_6; /* peer */
 	else
 		chap_table->flags |= BIT_7; /* local */
 	chap_table->secret_len = strlen(password);
-	strncpy(chap_table->secret, password, MAX_CHAP_SECRET_LEN);
-	strncpy(chap_table->name, username, MAX_CHAP_NAME_LEN);
-	chap_table->cookie = __constant_cpu_to_le16(CHAP_VALID_COOKIE);
+	strncpy(chap_table->secret, password, MAX_CHAP_SECRET_LEN - 1);
+	strncpy(chap_table->name, username, MAX_CHAP_NAME_LEN - 1);
+	chap_table->cookie = cpu_to_le16(CHAP_VALID_COOKIE);
 
 	if (is_qla40XX(ha)) {
 		chap_size = MAX_CHAP_ENTRIES_40XX * sizeof(*chap_table);
@@ -1731,7 +1721,7 @@ int qla4xxx_get_uni_chap_at_index(struct scsi_qla_host *ha, char *username,
 
 	mutex_lock(&ha->chap_sem);
 	chap_table = (struct ql4_chap_table *)ha->chap_list + chap_index;
-	if (chap_table->cookie != __constant_cpu_to_le16(CHAP_VALID_COOKIE)) {
+	if (chap_table->cookie != cpu_to_le16(CHAP_VALID_COOKIE)) {
 		rval = QLA_ERROR;
 		goto exit_unlock_uni_chap;
 	}
@@ -1742,8 +1732,8 @@ int qla4xxx_get_uni_chap_at_index(struct scsi_qla_host *ha, char *username,
 		goto exit_unlock_uni_chap;
 	}
 
-	strncpy(password, chap_table->secret, MAX_CHAP_SECRET_LEN);
-	strncpy(username, chap_table->name, MAX_CHAP_NAME_LEN);
+	strscpy(password, chap_table->secret, MAX_CHAP_SECRET_LEN);
+	strscpy(username, chap_table->name, MAX_CHAP_NAME_LEN);
 
 	rval = QLA_SUCCESS;
 
@@ -1794,7 +1784,7 @@ int qla4xxx_get_chap_index(struct scsi_qla_host *ha, char *username,
 	for (i = 0; i < max_chap_entries; i++) {
 		chap_table = (struct ql4_chap_table *)ha->chap_list + i;
 		if (chap_table->cookie !=
-		    __constant_cpu_to_le16(CHAP_VALID_COOKIE)) {
+		    cpu_to_le16(CHAP_VALID_COOKIE)) {
 			if (i > MAX_RESRV_CHAP_IDX && free_index == -1)
 				free_index = i;
 			continue;
@@ -1918,6 +1908,7 @@ int qla4xxx_disable_acb(struct scsi_qla_host *ha)
 				  mbox_sts[0], mbox_sts[1], mbox_sts[2]));
 	} else {
 		if (is_qla8042(ha) &&
+		    test_bit(DPC_POST_IDC_ACK, &ha->dpc_flags) &&
 		    (mbox_sts[0] != MBOX_STS_COMMAND_COMPLETE)) {
 			/*
 			 * Disable ACB mailbox command takes time to complete
@@ -2031,10 +2022,7 @@ int qla4xxx_set_param_ddbentry(struct scsi_qla_host *ha,
 	ptid = (uint16_t *)&fw_ddb_entry->isid[1];
 	*ptid = cpu_to_le16((uint16_t)ddb_entry->sess->target_id);
 
-	DEBUG2(ql4_printk(KERN_INFO, ha, "ISID [%02x%02x%02x%02x%02x%02x]\n",
-			  fw_ddb_entry->isid[5], fw_ddb_entry->isid[4],
-			  fw_ddb_entry->isid[3], fw_ddb_entry->isid[2],
-			  fw_ddb_entry->isid[1], fw_ddb_entry->isid[0]));
+	DEBUG2(ql4_printk(KERN_INFO, ha, "ISID [%pmR]\n", fw_ddb_entry->isid));
 
 	iscsi_opts = le16_to_cpu(fw_ddb_entry->iscsi_options);
 	memset(fw_ddb_entry->iscsi_alias, 0, sizeof(fw_ddb_entry->iscsi_alias));
@@ -2117,18 +2105,18 @@ int qla4xxx_set_param_ddbentry(struct scsi_qla_host *ha,
 
 	if (conn->max_recv_dlength)
 		fw_ddb_entry->iscsi_max_rcv_data_seg_len =
-		  __constant_cpu_to_le16((conn->max_recv_dlength / BYTE_UNITS));
+		  cpu_to_le16((conn->max_recv_dlength / BYTE_UNITS));
 
 	if (sess->max_r2t)
 		fw_ddb_entry->iscsi_max_outsnd_r2t = cpu_to_le16(sess->max_r2t);
 
 	if (sess->first_burst)
 		fw_ddb_entry->iscsi_first_burst_len =
-		       __constant_cpu_to_le16((sess->first_burst / BYTE_UNITS));
+		       cpu_to_le16((sess->first_burst / BYTE_UNITS));
 
 	if (sess->max_burst)
 		fw_ddb_entry->iscsi_max_burst_len =
-			__constant_cpu_to_le16((sess->max_burst / BYTE_UNITS));
+			cpu_to_le16((sess->max_burst / BYTE_UNITS));
 
 	if (sess->time2wait)
 		fw_ddb_entry->iscsi_def_time2wait =
@@ -2294,7 +2282,7 @@ int qla4_8xxx_set_param(struct scsi_qla_host *ha, int param)
 	if (param == SET_DRVR_VERSION) {
 		mbox_cmd[1] = SET_DRVR_VERSION;
 		strncpy((char *)&mbox_cmd[2], QLA4XXX_DRIVER_VERSION,
-			MAX_DRVR_VER_LEN);
+			MAX_DRVR_VER_LEN - 1);
 	} else {
 		ql4_printk(KERN_ERR, ha, "%s: invalid parameter 0x%x\n",
 			   __func__, param);
@@ -2380,7 +2368,7 @@ int qla4_84xx_config_acb(struct scsi_qla_host *ha, int acb_config)
 			ql4_printk(KERN_ERR, ha, "%s: Unable to alloc acb\n",
 				   __func__);
 			rval = QLA_ERROR;
-			goto exit_config_acb;
+			goto exit_free_acb;
 		}
 		memcpy(ha->saved_acb, acb, acb_len);
 		break;
@@ -2394,8 +2382,6 @@ int qla4_84xx_config_acb(struct scsi_qla_host *ha, int acb_config)
 		}
 
 		memcpy(acb, ha->saved_acb, acb_len);
-		kfree(ha->saved_acb);
-		ha->saved_acb = NULL;
 
 		rval = qla4xxx_set_acb(ha, &mbox_cmd[0], &mbox_sts[0], acb_dma);
 		if (rval != QLA_SUCCESS)
@@ -2411,6 +2397,10 @@ exit_free_acb:
 	dma_free_coherent(&ha->pdev->dev, sizeof(struct addr_ctrl_blk), acb,
 			  acb_dma);
 exit_config_acb:
+	if ((acb_config == ACB_CONFIG_SET) && ha->saved_acb) {
+		kfree(ha->saved_acb);
+		ha->saved_acb = NULL;
+	}
 	DEBUG2(ql4_printk(KERN_INFO, ha,
 			  "%s %s\n", __func__,
 			  rval == QLA_SUCCESS ? "SUCCEEDED" : "FAILED"));

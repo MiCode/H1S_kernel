@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *      NetBIOS name service broadcast connection tracking helper
  *
  *      (c) 2005 Patrick McHardy <kaber@trash.net>
- *
- *      This program is free software; you can redistribute it and/or
- *      modify it under the terms of the GNU General Public License
- *      as published by the Free Software Foundation; either version
- *      2 of the License, or (at your option) any later version.
  */
 /*
  *      This helper tracks locally originating NetBIOS name service
@@ -24,16 +20,17 @@
 #include <net/netfilter/nf_conntrack_helper.h>
 #include <net/netfilter/nf_conntrack_expect.h>
 
+#define HELPER_NAME	"netbios-ns"
 #define NMBD_PORT	137
 
 MODULE_AUTHOR("Patrick McHardy <kaber@trash.net>");
 MODULE_DESCRIPTION("NetBIOS name service broadcast connection tracking helper");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("ip_conntrack_netbios_ns");
-MODULE_ALIAS_NFCT_HELPER("netbios_ns");
+MODULE_ALIAS_NFCT_HELPER(HELPER_NAME);
 
 static unsigned int timeout __read_mostly = 3;
-module_param(timeout, uint, S_IRUSR);
+module_param(timeout, uint, 0400);
 MODULE_PARM_DESC(timeout, "timeout for master connection/replies in seconds");
 
 static struct nf_conntrack_expect_policy exp_policy = {
@@ -41,13 +38,14 @@ static struct nf_conntrack_expect_policy exp_policy = {
 };
 
 static int netbios_ns_help(struct sk_buff *skb, unsigned int protoff,
-		   struct nf_conn *ct, enum ip_conntrack_info ctinfo)
+			   struct nf_conn *ct,
+			   enum ip_conntrack_info ctinfo)
 {
-	return nf_conntrack_broadcast_help(skb, protoff, ct, ctinfo, timeout);
+	return nf_conntrack_broadcast_help(skb, ct, ctinfo, timeout);
 }
 
 static struct nf_conntrack_helper helper __read_mostly = {
-	.name			= "netbios-ns",
+	.name			= HELPER_NAME,
 	.tuple.src.l3num	= NFPROTO_IPV4,
 	.tuple.src.u.udp.port	= cpu_to_be16(NMBD_PORT),
 	.tuple.dst.protonum	= IPPROTO_UDP,
@@ -58,6 +56,8 @@ static struct nf_conntrack_helper helper __read_mostly = {
 
 static int __init nf_conntrack_netbios_ns_init(void)
 {
+	NF_CT_HELPER_BUILD_BUG_ON(0);
+
 	exp_policy.timeout = timeout;
 	return nf_conntrack_helper_register(&helper);
 }

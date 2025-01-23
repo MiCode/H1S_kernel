@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
     Driver for Zarlink VP310/MT312/ZL10313 Satellite Channel Decoder
 
     Copyright (C) 2003 Andreas Oberritter <obi@linuxtv.org>
     Copyright (C) 2008 Matthias Schwarzott <zzam@gentoo.org>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
     References:
     http://products.zarlink.com/product_profiles/MT312.htm
@@ -32,7 +19,7 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "mt312_priv.h"
 #include "mt312.h"
 
@@ -103,7 +90,7 @@ static int mt312_write(struct mt312_state *state, const enum mt312_reg_addr reg,
 
 	if (1 + count > sizeof(buf)) {
 		printk(KERN_WARNING
-		       "mt312: write: len=%zd is too big!\n", count);
+		       "mt312: write: len=%zu is too big!\n", count);
 		return -EINVAL;
 	}
 
@@ -142,12 +129,10 @@ static inline int mt312_readreg(struct mt312_state *state,
 static inline int mt312_writereg(struct mt312_state *state,
 				 const enum mt312_reg_addr reg, const u8 val)
 {
-	return mt312_write(state, reg, &val, 1);
-}
+	u8 tmp = val; /* see gcc.gnu.org/bugzilla/show_bug.cgi?id=81715 */
 
-static inline u32 mt312_div(u32 a, u32 b)
-{
-	return (a + (b / 2)) / b;
+
+	return mt312_write(state, reg, &tmp, 1);
 }
 
 static int mt312_reset(struct mt312_state *state, const u8 full)
@@ -156,7 +141,7 @@ static int mt312_reset(struct mt312_state *state, const u8 full)
 }
 
 static int mt312_get_inversion(struct mt312_state *state,
-			       fe_spectral_inversion_t *i)
+			       enum fe_spectral_inversion *i)
 {
 	int ret;
 	u8 vit_mode;
@@ -197,7 +182,7 @@ static int mt312_get_symbol_rate(struct mt312_state *state, u32 *sr)
 		monitor = (buf[0] << 8) | buf[1];
 
 		dprintk("sr(auto) = %u\n",
-		       mt312_div(monitor * 15625, 4));
+			DIV_ROUND_CLOSEST(monitor * 15625, 4));
 	} else {
 		ret = mt312_writereg(state, MON_CTRL, 0x05);
 		if (ret < 0)
@@ -225,9 +210,9 @@ static int mt312_get_symbol_rate(struct mt312_state *state, u32 *sr)
 	return 0;
 }
 
-static int mt312_get_code_rate(struct mt312_state *state, fe_code_rate_t *cr)
+static int mt312_get_code_rate(struct mt312_state *state, enum fe_code_rate *cr)
 {
-	const fe_code_rate_t fec_tab[8] =
+	const enum fe_code_rate fec_tab[8] =
 	    { FEC_1_2, FEC_2_3, FEC_3_4, FEC_5_6, FEC_6_7, FEC_7_8,
 		FEC_AUTO, FEC_AUTO };
 
@@ -301,10 +286,10 @@ static int mt312_initfe(struct dvb_frontend *fe)
 	}
 
 	/* SYS_CLK */
-	buf[0] = mt312_div(state->xtal * state->freq_mult * 2, 1000000);
+	buf[0] = DIV_ROUND_CLOSEST(state->xtal * state->freq_mult * 2, 1000000);
 
 	/* DISEQC_RATIO */
-	buf[1] = mt312_div(state->xtal, 22000 * 4);
+	buf[1] = DIV_ROUND_CLOSEST(state->xtal, 22000 * 4);
 
 	ret = mt312_write(state, SYS_CLK, buf, sizeof(buf));
 	if (ret < 0)
@@ -380,7 +365,8 @@ static int mt312_send_master_cmd(struct dvb_frontend *fe,
 	return 0;
 }
 
-static int mt312_send_burst(struct dvb_frontend *fe, const fe_sec_mini_cmd_t c)
+static int mt312_send_burst(struct dvb_frontend *fe,
+			    const enum fe_sec_mini_cmd c)
 {
 	struct mt312_state *state = fe->demodulator_priv;
 	const u8 mini_tab[2] = { 0x02, 0x03 };
@@ -403,7 +389,8 @@ static int mt312_send_burst(struct dvb_frontend *fe, const fe_sec_mini_cmd_t c)
 	return 0;
 }
 
-static int mt312_set_tone(struct dvb_frontend *fe, const fe_sec_tone_mode_t t)
+static int mt312_set_tone(struct dvb_frontend *fe,
+			  const enum fe_sec_tone_mode t)
 {
 	struct mt312_state *state = fe->demodulator_priv;
 	const u8 tone_tab[2] = { 0x01, 0x00 };
@@ -426,7 +413,8 @@ static int mt312_set_tone(struct dvb_frontend *fe, const fe_sec_tone_mode_t t)
 	return 0;
 }
 
-static int mt312_set_voltage(struct dvb_frontend *fe, const fe_sec_voltage_t v)
+static int mt312_set_voltage(struct dvb_frontend *fe,
+			     const enum fe_sec_voltage v)
 {
 	struct mt312_state *state = fe->demodulator_priv;
 	const u8 volt_tab[3] = { 0x00, 0x40, 0x00 };
@@ -442,7 +430,7 @@ static int mt312_set_voltage(struct dvb_frontend *fe, const fe_sec_voltage_t v)
 	return mt312_writereg(state, DISEQC_MODE, val);
 }
 
-static int mt312_read_status(struct dvb_frontend *fe, fe_status_t *s)
+static int mt312_read_status(struct dvb_frontend *fe, enum fe_status *s)
 {
 	struct mt312_state *state = fe->demodulator_priv;
 	int ret;
@@ -454,8 +442,8 @@ static int mt312_read_status(struct dvb_frontend *fe, fe_status_t *s)
 	if (ret < 0)
 		return ret;
 
-	dprintk("QPSK_STAT_H: 0x%02x, QPSK_STAT_L: 0x%02x,"
-		" FEC_STATUS: 0x%02x\n", status[0], status[1], status[2]);
+	dprintk("QPSK_STAT_H: 0x%02x, QPSK_STAT_L: 0x%02x, FEC_STATUS: 0x%02x\n",
+		status[0], status[1], status[2]);
 
 	if (status[0] & 0xc0)
 		*s |= FE_HAS_SIGNAL;	/* signal noise ratio */
@@ -553,8 +541,8 @@ static int mt312_set_frontend(struct dvb_frontend *fe)
 
 	dprintk("%s: Freq %d\n", __func__, p->frequency);
 
-	if ((p->frequency < fe->ops.info.frequency_min)
-	    || (p->frequency > fe->ops.info.frequency_max))
+	if ((p->frequency < fe->ops.info.frequency_min_hz / kHz)
+	    || (p->frequency > fe->ops.info.frequency_max_hz / kHz))
 		return -EINVAL;
 
 	if (((int)p->inversion < INVERSION_OFF)
@@ -617,7 +605,7 @@ static int mt312_set_frontend(struct dvb_frontend *fe)
 	}
 
 	/* sr = (u16)(sr * 256.0 / 1000000.0) */
-	sr = mt312_div(p->symbol_rate * 4, 15625);
+	sr = DIV_ROUND_CLOSEST(p->symbol_rate * 4, 15625);
 
 	/* SYM_RATE */
 	buf[0] = (sr >> 8) & 0x3f;
@@ -639,14 +627,16 @@ static int mt312_set_frontend(struct dvb_frontend *fe)
 	if (ret < 0)
 		return ret;
 
-	mt312_reset(state, 0);
+	ret = mt312_reset(state, 0);
+	if (ret < 0)
+		return ret;
 
 	return 0;
 }
 
-static int mt312_get_frontend(struct dvb_frontend *fe)
+static int mt312_get_frontend(struct dvb_frontend *fe,
+			      struct dtv_frontend_properties *p)
 {
-	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
 	struct mt312_state *state = fe->demodulator_priv;
 	int ret;
 
@@ -745,14 +735,14 @@ static void mt312_release(struct dvb_frontend *fe)
 }
 
 #define MT312_SYS_CLK		90000000UL	/* 90 MHz */
-static struct dvb_frontend_ops mt312_ops = {
+static const struct dvb_frontend_ops mt312_ops = {
 	.delsys = { SYS_DVBS },
 	.info = {
 		.name = "Zarlink ???? DVB-S",
-		.frequency_min = 950000,
-		.frequency_max = 2150000,
+		.frequency_min_hz =  950 * MHz,
+		.frequency_max_hz = 2150 * MHz,
 		/* FIXME: adjust freq to real used xtal */
-		.frequency_stepsize = (MT312_PLL_CLK / 1000) / 128,
+		.frequency_stepsize_hz = MT312_PLL_CLK / 128,
 		.symbol_rate_min = MT312_SYS_CLK / 128, /* FIXME as above */
 		.symbol_rate_max = MT312_SYS_CLK / 2,
 		.caps =
@@ -809,23 +799,25 @@ struct dvb_frontend *mt312_attach(const struct mt312_config *config,
 
 	switch (state->id) {
 	case ID_VP310:
-		strcpy(state->frontend.ops.info.name, "Zarlink VP310 DVB-S");
+		strscpy(state->frontend.ops.info.name, "Zarlink VP310 DVB-S",
+			sizeof(state->frontend.ops.info.name));
 		state->xtal = MT312_PLL_CLK;
 		state->freq_mult = 9;
 		break;
 	case ID_MT312:
-		strcpy(state->frontend.ops.info.name, "Zarlink MT312 DVB-S");
+		strscpy(state->frontend.ops.info.name, "Zarlink MT312 DVB-S",
+			sizeof(state->frontend.ops.info.name));
 		state->xtal = MT312_PLL_CLK;
 		state->freq_mult = 6;
 		break;
 	case ID_ZL10313:
-		strcpy(state->frontend.ops.info.name, "Zarlink ZL10313 DVB-S");
+		strscpy(state->frontend.ops.info.name, "Zarlink ZL10313 DVB-S",
+			sizeof(state->frontend.ops.info.name));
 		state->xtal = MT312_PLL_CLK_10_111;
 		state->freq_mult = 9;
 		break;
 	default:
-		printk(KERN_WARNING "Only Zarlink VP310/MT312/ZL10313"
-			" are supported chips.\n");
+		printk(KERN_WARNING "Only Zarlink VP310/MT312/ZL10313 are supported chips.\n");
 		goto error;
 	}
 
@@ -835,7 +827,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(mt312_attach);
+EXPORT_SYMBOL_GPL(mt312_attach);
 
 module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "Turn on/off frontend debugging (default:off).");

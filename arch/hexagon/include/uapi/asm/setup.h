@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Copyright (c) 2010-2011, The Linux Foundation. All rights reserved.
  *
@@ -19,7 +20,12 @@
 #ifndef _ASM_SETUP_H
 #define _ASM_SETUP_H
 
+#ifdef __KERNEL__
 #include <linux/init.h>
+#else
+#define __init
+#endif
+
 #include <asm-generic/setup.h>
 
 extern char external_cmdline_buffer;

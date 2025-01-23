@@ -1,29 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (c) 1998-2005 Vojtech Pavlik
  */
 
 /*
  * Logitech ADI joystick family driver for Linux
- */
-
-/*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
- * Should you need to contact me, the author, you can do so either by
- * e-mail - mail your message to <vojtech@ucw.cz>, or by paper mail:
- * Vojtech Pavlik, Simunkova 1594, Prague 8, 182 00 Czech Republic
  */
 
 #include <linux/delay.h>
@@ -139,7 +120,7 @@ static void adi_read_packet(struct adi_port *port)
 {
 	struct adi *adi = port->adi;
 	struct gameport *gameport = port->gameport;
-	unsigned char u, v, w, x, z;
+	unsigned char u, v, w, x;
 	int t[2], s[2], i;
 	unsigned long flags;
 
@@ -152,7 +133,7 @@ static void adi_read_packet(struct adi_port *port)
 	local_irq_save(flags);
 
 	gameport_trigger(gameport);
-	v = z = gameport_read(gameport);
+	v = gameport_read(gameport);
 
 	do {
 		u = v;
@@ -313,7 +294,7 @@ static void adi_close(struct input_dev *dev)
 
 static void adi_init_digital(struct gameport *gameport)
 {
-	int seq[] = { 4, -2, -3, 10, -6, -11, -7, -9, 11, 0 };
+	static const int seq[] = { 4, -2, -3, 10, -6, -11, -7, -9, 11, 0 };
 	int i;
 
 	for (i = 0; seq[i]; i++) {
@@ -535,8 +516,7 @@ static int adi_connect(struct gameport *gameport, struct gameport_driver *drv)
 		}
 	}
  fail2:	for (i = 0; i < 2; i++)
-		if (port->adi[i].dev)
-			input_free_device(port->adi[i].dev);
+		input_free_device(port->adi[i].dev);
 	gameport_close(gameport);
  fail1:	gameport_set_drvdata(gameport, NULL);
 	kfree(port);

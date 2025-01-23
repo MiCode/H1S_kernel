@@ -1,28 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  PS3 pagetable management routines.
  *
  *  Copyright (C) 2006 Sony Computer Entertainment Inc.
  *  Copyright 2006, 2007 Sony Corporation
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; version 2 of the License.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/kernel.h>
 #include <linux/memblock.h>
 
 #include <asm/machdep.h>
-#include <asm/prom.h>
 #include <asm/udbg.h>
 #include <asm/lv1call.h>
 #include <asm/ps3fb.h>
@@ -110,7 +97,7 @@ static long ps3_hpte_remove(unsigned long hpte_group)
 
 static long ps3_hpte_updatepp(unsigned long slot, unsigned long newpp,
 			      unsigned long vpn, int psize, int apsize,
-			      int ssize, int local)
+			      int ssize, unsigned long inv_flags)
 {
 	int result;
 	u64 hpte_v, want_v, hpte_rs;
@@ -159,7 +146,7 @@ static long ps3_hpte_updatepp(unsigned long slot, unsigned long newpp,
 static void ps3_hpte_updateboltedpp(unsigned long newpp, unsigned long ea,
 	int psize, int ssize)
 {
-	panic("ps3_hpte_updateboltedpp() not implemented");
+	pr_info("ps3_hpte_updateboltedpp() not implemented");
 }
 
 static void ps3_hpte_invalidate(unsigned long slot, unsigned long vpn,
@@ -181,7 +168,8 @@ static void ps3_hpte_invalidate(unsigned long slot, unsigned long vpn,
 	spin_unlock_irqrestore(&ps3_htab_lock, flags);
 }
 
-static void ps3_hpte_clear(void)
+/* Called during kexec sequence with MMU off */
+static notrace void ps3_hpte_clear(void)
 {
 	unsigned long hpte_count = (1UL << ppc64_pft_size) >> 4;
 	u64 i;
@@ -195,12 +183,12 @@ static void ps3_hpte_clear(void)
 
 void __init ps3_hpte_init(unsigned long htab_size)
 {
-	ppc_md.hpte_invalidate = ps3_hpte_invalidate;
-	ppc_md.hpte_updatepp = ps3_hpte_updatepp;
-	ppc_md.hpte_updateboltedpp = ps3_hpte_updateboltedpp;
-	ppc_md.hpte_insert = ps3_hpte_insert;
-	ppc_md.hpte_remove = ps3_hpte_remove;
-	ppc_md.hpte_clear_all = ps3_hpte_clear;
+	mmu_hash_ops.hpte_invalidate = ps3_hpte_invalidate;
+	mmu_hash_ops.hpte_updatepp = ps3_hpte_updatepp;
+	mmu_hash_ops.hpte_updateboltedpp = ps3_hpte_updateboltedpp;
+	mmu_hash_ops.hpte_insert = ps3_hpte_insert;
+	mmu_hash_ops.hpte_remove = ps3_hpte_remove;
+	mmu_hash_ops.hpte_clear_all = ps3_hpte_clear;
 
 	ppc64_pft_size = __ilog2(htab_size);
 }

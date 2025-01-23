@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/kernel/cpu/sh4/sq.c
  *
@@ -5,10 +6,6 @@
  *
  * Copyright (C) 2001 - 2006  Paul Mundt
  * Copyright (C) 2001, 2002  M. R. Brown
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/init.h>
 #include <linux/cpu.h>
@@ -106,7 +103,8 @@ static int __sq_remap(struct sq_mapping *map, pgprot_t prot)
 #if defined(CONFIG_MMU)
 	struct vm_struct *vma;
 
-	vma = __get_vm_area(map->size, VM_ALLOC, map->sq_addr, SQ_ADDRMAX);
+	vma = __get_vm_area_caller(map->size, VM_IOREMAP, map->sq_addr,
+			SQ_ADDRMAX, __builtin_return_address(0));
 	if (!vma)
 		return -ENOMEM;
 
@@ -326,6 +324,7 @@ static struct attribute *sq_sysfs_attrs[] = {
 	&mapping_attr.attr,
 	NULL,
 };
+ATTRIBUTE_GROUPS(sq_sysfs);
 
 static const struct sysfs_ops sq_sysfs_ops = {
 	.show	= sq_sysfs_show,
@@ -334,7 +333,7 @@ static const struct sysfs_ops sq_sysfs_ops = {
 
 static struct kobj_type ktype_percpu_entry = {
 	.sysfs_ops	= &sq_sysfs_ops,
-	.default_attrs	= sq_sysfs_attrs,
+	.default_groups	= sq_sysfs_groups,
 };
 
 static int sq_dev_add(struct device *dev, struct subsys_interface *sif)
@@ -355,13 +354,12 @@ static int sq_dev_add(struct device *dev, struct subsys_interface *sif)
 	return error;
 }
 
-static int sq_dev_remove(struct device *dev, struct subsys_interface *sif)
+static void sq_dev_remove(struct device *dev, struct subsys_interface *sif)
 {
 	unsigned int cpu = dev->id;
 	struct kobject *kobj = sq_kobject[cpu];
 
 	kobject_put(kobj);
-	return 0;
 }
 
 static struct subsys_interface sq_interface = {
@@ -374,7 +372,6 @@ static struct subsys_interface sq_interface = {
 static int __init sq_api_init(void)
 {
 	unsigned int nr_pages = 0x04000000 >> PAGE_SHIFT;
-	unsigned int size = (nr_pages + (BITS_PER_LONG - 1)) / BITS_PER_LONG;
 	int ret = -ENOMEM;
 
 	printk(KERN_NOTICE "sq: Registering store queue API.\n");
@@ -384,7 +381,7 @@ static int __init sq_api_init(void)
 	if (unlikely(!sq_cache))
 		return ret;
 
-	sq_bitmap = kzalloc(size, GFP_KERNEL);
+	sq_bitmap = bitmap_zalloc(nr_pages, GFP_KERNEL);
 	if (unlikely(!sq_bitmap))
 		goto out;
 
@@ -395,7 +392,7 @@ static int __init sq_api_init(void)
 	return 0;
 
 out:
-	kfree(sq_bitmap);
+	bitmap_free(sq_bitmap);
 	kmem_cache_destroy(sq_cache);
 
 	return ret;
@@ -404,7 +401,7 @@ out:
 static void __exit sq_api_exit(void)
 {
 	subsys_interface_unregister(&sq_interface);
-	kfree(sq_bitmap);
+	bitmap_free(sq_bitmap);
 	kmem_cache_destroy(sq_cache);
 }
 

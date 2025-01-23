@@ -1,14 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Ralink RT288x/RT3xxx/MT76xx built-in hardware watchdog timer
  *
  * Copyright (C) 2011 Gabor Juhos <juhosg@openwrt.org>
- * Copyright (C) 2013 John Crispin <blogic@openwrt.org>
+ * Copyright (C) 2013 John Crispin <john@phrozen.org>
  *
  * This driver was based on: drivers/watchdog/softdog.c
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
  */
 
 #include <linux/clk.h>
@@ -18,6 +15,7 @@
 #include <linux/watchdog.h>
 #include <linux/moduleparam.h>
 #include <linux/platform_device.h>
+#include <linux/mod_devicetable.h>
 
 #include <asm/mach-ralink/ralink_regs.h>
 
@@ -42,9 +40,13 @@
 #define TMR1CTL_PRESCALE_MASK		0xf
 #define TMR1CTL_PRESCALE_65536		0xf
 
-static struct clk *rt288x_wdt_clk;
-static unsigned long rt288x_wdt_freq;
-static void __iomem *rt288x_wdt_base;
+struct rt2880_wdt_data {
+	void __iomem *base;
+	unsigned long freq;
+	struct clk *clk;
+	struct reset_control *rst;
+	struct watchdog_device wdt;
+};
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
@@ -52,52 +54,56 @@ MODULE_PARM_DESC(nowayout,
 		"Watchdog cannot be stopped once started (default="
 		__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
-static inline void rt_wdt_w32(unsigned reg, u32 val)
+static inline void rt_wdt_w32(void __iomem *base, unsigned int reg, u32 val)
 {
-	iowrite32(val, rt288x_wdt_base + reg);
+	iowrite32(val, base + reg);
 }
 
-static inline u32 rt_wdt_r32(unsigned reg)
+static inline u32 rt_wdt_r32(void __iomem *base, unsigned int reg)
 {
-	return ioread32(rt288x_wdt_base + reg);
+	return ioread32(base + reg);
 }
 
 static int rt288x_wdt_ping(struct watchdog_device *w)
 {
-	rt_wdt_w32(TIMER_REG_TMR1LOAD, w->timeout * rt288x_wdt_freq);
+	struct rt2880_wdt_data *drvdata = watchdog_get_drvdata(w);
+
+	rt_wdt_w32(drvdata->base, TIMER_REG_TMR1LOAD, w->timeout * drvdata->freq);
 
 	return 0;
 }
 
 static int rt288x_wdt_start(struct watchdog_device *w)
 {
+	struct rt2880_wdt_data *drvdata = watchdog_get_drvdata(w);
 	u32 t;
 
-	t = rt_wdt_r32(TIMER_REG_TMR1CTL);
+	t = rt_wdt_r32(drvdata->base, TIMER_REG_TMR1CTL);
 	t &= ~(TMR1CTL_MODE_MASK << TMR1CTL_MODE_SHIFT |
 		TMR1CTL_PRESCALE_MASK);
 	t |= (TMR1CTL_MODE_WDT << TMR1CTL_MODE_SHIFT |
 		TMR1CTL_PRESCALE_65536);
-	rt_wdt_w32(TIMER_REG_TMR1CTL, t);
+	rt_wdt_w32(drvdata->base, TIMER_REG_TMR1CTL, t);
 
 	rt288x_wdt_ping(w);
 
-	t = rt_wdt_r32(TIMER_REG_TMR1CTL);
+	t = rt_wdt_r32(drvdata->base, TIMER_REG_TMR1CTL);
 	t |= TMR1CTL_ENABLE;
-	rt_wdt_w32(TIMER_REG_TMR1CTL, t);
+	rt_wdt_w32(drvdata->base, TIMER_REG_TMR1CTL, t);
 
 	return 0;
 }
 
 static int rt288x_wdt_stop(struct watchdog_device *w)
 {
+	struct rt2880_wdt_data *drvdata = watchdog_get_drvdata(w);
 	u32 t;
 
 	rt288x_wdt_ping(w);
 
-	t = rt_wdt_r32(TIMER_REG_TMR1CTL);
+	t = rt_wdt_r32(drvdata->base, TIMER_REG_TMR1CTL);
 	t &= ~TMR1CTL_ENABLE;
-	rt_wdt_w32(TIMER_REG_TMR1CTL, t);
+	rt_wdt_w32(drvdata->base, TIMER_REG_TMR1CTL, t);
 
 	return 0;
 }
@@ -118,12 +124,12 @@ static int rt288x_wdt_bootcause(void)
 	return 0;
 }
 
-static struct watchdog_info rt288x_wdt_info = {
+static const struct watchdog_info rt288x_wdt_info = {
 	.identity = "Ralink Watchdog",
 	.options = WDIOF_SETTIMEOUT | WDIOF_KEEPALIVEPING | WDIOF_MAGICCLOSE,
 };
 
-static struct watchdog_ops rt288x_wdt_ops = {
+static const struct watchdog_ops rt288x_wdt_ops = {
 	.owner = THIS_MODULE,
 	.start = rt288x_wdt_start,
 	.stop = rt288x_wdt_stop,
@@ -131,55 +137,49 @@ static struct watchdog_ops rt288x_wdt_ops = {
 	.set_timeout = rt288x_wdt_set_timeout,
 };
 
-static struct watchdog_device rt288x_wdt_dev = {
-	.info = &rt288x_wdt_info,
-	.ops = &rt288x_wdt_ops,
-	.min_timeout = 1,
-};
-
 static int rt288x_wdt_probe(struct platform_device *pdev)
 {
-	struct resource *res;
+	struct device *dev = &pdev->dev;
+	struct watchdog_device *wdt;
+	struct rt2880_wdt_data *drvdata;
 	int ret;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	rt288x_wdt_base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(rt288x_wdt_base))
-		return PTR_ERR(rt288x_wdt_base);
+	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
+	if (!drvdata)
+		return -ENOMEM;
 
-	rt288x_wdt_clk = devm_clk_get(&pdev->dev, NULL);
-	if (IS_ERR(rt288x_wdt_clk))
-		return PTR_ERR(rt288x_wdt_clk);
+	drvdata->base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(drvdata->base))
+		return PTR_ERR(drvdata->base);
 
-	device_reset(&pdev->dev);
+	drvdata->clk = devm_clk_get(dev, NULL);
+	if (IS_ERR(drvdata->clk))
+		return PTR_ERR(drvdata->clk);
 
-	rt288x_wdt_freq = clk_get_rate(rt288x_wdt_clk) / RALINK_WDT_PRESCALE;
+	drvdata->rst = devm_reset_control_get_exclusive(dev, NULL);
+	if (!IS_ERR(drvdata->rst))
+		reset_control_deassert(drvdata->rst);
 
-	rt288x_wdt_dev.dev = &pdev->dev;
-	rt288x_wdt_dev.bootstatus = rt288x_wdt_bootcause();
+	drvdata->freq = clk_get_rate(drvdata->clk) / RALINK_WDT_PRESCALE;
 
-	rt288x_wdt_dev.max_timeout = (0xfffful / rt288x_wdt_freq);
-	rt288x_wdt_dev.timeout = rt288x_wdt_dev.max_timeout;
+	wdt = &drvdata->wdt;
+	wdt->info = &rt288x_wdt_info;
+	wdt->ops = &rt288x_wdt_ops;
+	wdt->min_timeout = 1;
+	wdt->max_timeout = (0xfffful / drvdata->freq);
+	wdt->parent = dev;
+	wdt->bootstatus = rt288x_wdt_bootcause();
 
-	watchdog_set_nowayout(&rt288x_wdt_dev, nowayout);
+	watchdog_init_timeout(wdt, wdt->max_timeout, dev);
+	watchdog_set_nowayout(wdt, nowayout);
+	watchdog_set_drvdata(wdt, drvdata);
 
-	ret = watchdog_register_device(&rt288x_wdt_dev);
+	watchdog_stop_on_reboot(wdt);
+	ret = devm_watchdog_register_device(dev, &drvdata->wdt);
 	if (!ret)
-		dev_info(&pdev->dev, "Initialized\n");
+		dev_info(dev, "Initialized\n");
 
 	return 0;
-}
-
-static int rt288x_wdt_remove(struct platform_device *pdev)
-{
-	watchdog_unregister_device(&rt288x_wdt_dev);
-
-	return 0;
-}
-
-static void rt288x_wdt_shutdown(struct platform_device *pdev)
-{
-	rt288x_wdt_stop(&rt288x_wdt_dev);
 }
 
 static const struct of_device_id rt288x_wdt_match[] = {
@@ -190,11 +190,8 @@ MODULE_DEVICE_TABLE(of, rt288x_wdt_match);
 
 static struct platform_driver rt288x_wdt_driver = {
 	.probe		= rt288x_wdt_probe,
-	.remove		= rt288x_wdt_remove,
-	.shutdown	= rt288x_wdt_shutdown,
 	.driver		= {
 		.name		= KBUILD_MODNAME,
-		.owner		= THIS_MODULE,
 		.of_match_table	= rt288x_wdt_match,
 	},
 };

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * mmconfig-shared.c - Low-level direct PCI config space access via
  *                     MMCONFIG - common code between i386 and x86-64.
@@ -10,15 +11,16 @@
  * themselves.
  */
 
+#include <linux/acpi.h>
+#include <linux/efi.h>
 #include <linux/pci.h>
 #include <linux/init.h>
-#include <linux/sfi_acpi.h>
 #include <linux/bitmap.h>
 #include <linux/dmi.h>
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/rculist.h>
-#include <asm/e820.h>
+#include <asm/e820/api.h>
 #include <asm/pci_x86.h>
 #include <asm/acpi.h>
 
@@ -28,10 +30,11 @@
 static bool pci_mmcfg_running_state;
 static bool pci_mmcfg_arch_init_failed;
 static DEFINE_MUTEX(pci_mmcfg_lock);
+#define pci_mmcfg_lock_held() lock_is_held(&(pci_mmcfg_lock).dep_map)
 
 LIST_HEAD(pci_mmcfg_list);
 
-static __init void pci_mmconfig_remove(struct pci_mmcfg_region *cfg)
+static void __init pci_mmconfig_remove(struct pci_mmcfg_region *cfg)
 {
 	if (cfg->res.parent)
 		release_resource(&cfg->res);
@@ -39,7 +42,7 @@ static __init void pci_mmconfig_remove(struct pci_mmcfg_region *cfg)
 	kfree(cfg);
 }
 
-static __init void free_all_mmcfg(void)
+static void __init free_all_mmcfg(void)
 {
 	struct pci_mmcfg_region *cfg, *tmp;
 
@@ -53,7 +56,7 @@ static void list_add_sorted(struct pci_mmcfg_region *new)
 	struct pci_mmcfg_region *cfg;
 
 	/* keep list sorted by segment and starting bus number */
-	list_for_each_entry_rcu(cfg, &pci_mmcfg_list, list) {
+	list_for_each_entry_rcu(cfg, &pci_mmcfg_list, list, pci_mmcfg_lock_held()) {
 		if (cfg->segment > new->segment ||
 		    (cfg->segment == new->segment &&
 		     cfg->start_bus >= new->start_bus)) {
@@ -93,8 +96,8 @@ static struct pci_mmcfg_region *pci_mmconfig_alloc(int segment, int start,
 	return new;
 }
 
-static __init struct pci_mmcfg_region *pci_mmconfig_add(int segment, int start,
-							int end, u64 addr)
+struct pci_mmcfg_region *__init pci_mmconfig_add(int segment, int start,
+						 int end, u64 addr)
 {
 	struct pci_mmcfg_region *new;
 
@@ -117,7 +120,7 @@ struct pci_mmcfg_region *pci_mmconfig_lookup(int segment, int bus)
 {
 	struct pci_mmcfg_region *cfg;
 
-	list_for_each_entry_rcu(cfg, &pci_mmcfg_list, list)
+	list_for_each_entry_rcu(cfg, &pci_mmcfg_list, list, pci_mmcfg_lock_held())
 		if (cfg->segment == segment &&
 		    cfg->start_bus <= bus && bus <= cfg->end_bus)
 			return cfg;
@@ -125,7 +128,7 @@ struct pci_mmcfg_region *pci_mmconfig_lookup(int segment, int bus)
 	return NULL;
 }
 
-static const char __init *pci_mmcfg_e7520(void)
+static const char *__init pci_mmcfg_e7520(void)
 {
 	u32 win;
 	raw_pci_ops->read(0, 0, PCI_DEVFN(0, 0), 0xce, 2, &win);
@@ -140,7 +143,7 @@ static const char __init *pci_mmcfg_e7520(void)
 	return "Intel Corporation E7520 Memory Controller Hub";
 }
 
-static const char __init *pci_mmcfg_intel_945(void)
+static const char *__init pci_mmcfg_intel_945(void)
 {
 	u32 pciexbar, mask = 0, len = 0;
 
@@ -184,7 +187,7 @@ static const char __init *pci_mmcfg_intel_945(void)
 	return "Intel Corporation 945G/GZ/P/PL Express Memory Controller Hub";
 }
 
-static const char __init *pci_mmcfg_amd_fam10h(void)
+static const char *__init pci_mmcfg_amd_fam10h(void)
 {
 	u32 low, high, address;
 	u64 base, msr;
@@ -235,21 +238,25 @@ static const char __init *pci_mmcfg_amd_fam10h(void)
 }
 
 static bool __initdata mcp55_checked;
-static const char __init *pci_mmcfg_nvidia_mcp55(void)
+static const char *__init pci_mmcfg_nvidia_mcp55(void)
 {
 	int bus;
 	int mcp55_mmconf_found = 0;
 
-	static const u32 extcfg_regnum		= 0x90;
-	static const u32 extcfg_regsize		= 4;
-	static const u32 extcfg_enable_mask	= 1<<31;
-	static const u32 extcfg_start_mask	= 0xff<<16;
-	static const int extcfg_start_shift	= 16;
-	static const u32 extcfg_size_mask	= 0x3<<28;
-	static const int extcfg_size_shift	= 28;
-	static const int extcfg_sizebus[]	= {0x100, 0x80, 0x40, 0x20};
-	static const u32 extcfg_base_mask[]	= {0x7ff8, 0x7ffc, 0x7ffe, 0x7fff};
-	static const int extcfg_base_lshift	= 25;
+	static const u32 extcfg_regnum __initconst	= 0x90;
+	static const u32 extcfg_regsize __initconst	= 4;
+	static const u32 extcfg_enable_mask __initconst	= 1 << 31;
+	static const u32 extcfg_start_mask __initconst	= 0xff << 16;
+	static const int extcfg_start_shift __initconst	= 16;
+	static const u32 extcfg_size_mask __initconst	= 0x3 << 28;
+	static const int extcfg_size_shift __initconst	= 28;
+	static const int extcfg_sizebus[] __initconst	= {
+		0x100, 0x80, 0x40, 0x20
+	};
+	static const u32 extcfg_base_mask[] __initconst	= {
+		0x7ff8, 0x7ffc, 0x7ffe, 0x7fff
+	};
+	static const int extcfg_base_lshift __initconst	= 25;
 
 	/*
 	 * do check if amd fam10h already took over
@@ -302,7 +309,7 @@ struct pci_mmcfg_hostbridge_probe {
 	const char *(*probe)(void);
 };
 
-static struct pci_mmcfg_hostbridge_probe pci_mmcfg_probes[] __initdata = {
+static const struct pci_mmcfg_hostbridge_probe pci_mmcfg_probes[] __initconst = {
 	{ 0, PCI_DEVFN(0, 0), PCI_VENDOR_ID_INTEL,
 	  PCI_DEVICE_ID_INTEL_E7520_MCH, pci_mmcfg_e7520 },
 	{ 0, PCI_DEVFN(0, 0), PCI_VENDOR_ID_INTEL,
@@ -393,12 +400,12 @@ static acpi_status check_mcfg_resource(struct acpi_resource *res, void *data)
 
 	status = acpi_resource_to_address64(res, &address);
 	if (ACPI_FAILURE(status) ||
-	   (address.address_length <= 0) ||
+	   (address.address.address_length <= 0) ||
 	   (address.resource_type != ACPI_MEMORY_RANGE))
 		return AE_OK;
 
-	if ((mcfg_res->start >= address.minimum) &&
-	    (mcfg_res->end < (address.minimum + address.address_length))) {
+	if ((mcfg_res->start >= address.address.minimum) &&
+	    (mcfg_res->end < (address.address.minimum + address.address.address_length))) {
 		mcfg_res->flags = 1;
 		return AE_CTRL_TERMINATE;
 	}
@@ -419,7 +426,7 @@ static acpi_status find_mboard_resource(acpi_handle handle, u32 lvl,
 	return AE_OK;
 }
 
-static int is_acpi_reserved(u64 start, u64 end, unsigned not_used)
+static bool is_acpi_reserved(u64 start, u64 end, enum e820_type not_used)
 {
 	struct resource mcfg_res;
 
@@ -436,32 +443,57 @@ static int is_acpi_reserved(u64 start, u64 end, unsigned not_used)
 	return mcfg_res.flags;
 }
 
-typedef int (*check_reserved_t)(u64 start, u64 end, unsigned type);
+static bool is_efi_mmio(u64 start, u64 end, enum e820_type not_used)
+{
+#ifdef CONFIG_EFI
+	efi_memory_desc_t *md;
+	u64 size, mmio_start, mmio_end;
 
-static int __ref is_mmconf_reserved(check_reserved_t is_reserved,
-				    struct pci_mmcfg_region *cfg,
-				    struct device *dev, int with_e820)
+	for_each_efi_memory_desc(md) {
+		if (md->type == EFI_MEMORY_MAPPED_IO) {
+			size = md->num_pages << EFI_PAGE_SHIFT;
+			mmio_start = md->phys_addr;
+			mmio_end = mmio_start + size;
+
+			/*
+			 * N.B. Caller supplies (start, start + size),
+			 * so to match, mmio_end is the first address
+			 * *past* the EFI_MEMORY_MAPPED_IO area.
+			 */
+			if (mmio_start <= start && end <= mmio_end)
+				return true;
+		}
+	}
+#endif
+
+	return false;
+}
+
+typedef bool (*check_reserved_t)(u64 start, u64 end, enum e820_type type);
+
+static bool __ref is_mmconf_reserved(check_reserved_t is_reserved,
+				     struct pci_mmcfg_region *cfg,
+				     struct device *dev, const char *method)
 {
 	u64 addr = cfg->res.start;
 	u64 size = resource_size(&cfg->res);
 	u64 old_size = size;
 	int num_buses;
-	char *method = with_e820 ? "E820" : "ACPI motherboard resources";
 
-	while (!is_reserved(addr, addr + size, E820_RESERVED)) {
+	while (!is_reserved(addr, addr + size, E820_TYPE_RESERVED)) {
 		size >>= 1;
 		if (size < (16UL<<20))
 			break;
 	}
 
 	if (size < (16UL<<20) && size != old_size)
-		return 0;
+		return false;
 
 	if (dev)
-		dev_info(dev, "MMCONFIG at %pR reserved in %s\n",
+		dev_info(dev, "MMCONFIG at %pR reserved as %s\n",
 			 &cfg->res, method);
 	else
-		pr_info(PREFIX "MMCONFIG at %pR reserved in %s\n",
+		pr_info(PREFIX "MMCONFIG at %pR reserved as %s\n",
 		       &cfg->res, method);
 
 	if (old_size != size) {
@@ -487,15 +519,18 @@ static int __ref is_mmconf_reserved(check_reserved_t is_reserved,
 				&cfg->res, (unsigned long) cfg->address);
 	}
 
-	return 1;
+	return true;
 }
 
-static int __ref pci_mmcfg_check_reserved(struct device *dev,
-		  struct pci_mmcfg_region *cfg, int early)
+static bool __ref
+pci_mmcfg_check_reserved(struct device *dev, struct pci_mmcfg_region *cfg, int early)
 {
+	struct resource *conflict;
+
 	if (!early && !acpi_disabled) {
-		if (is_mmconf_reserved(is_acpi_reserved, cfg, dev, 0))
-			return 1;
+		if (is_mmconf_reserved(is_acpi_reserved, cfg, dev,
+				       "ACPI motherboard resource"))
+			return true;
 
 		if (dev)
 			dev_info(dev, FW_INFO
@@ -507,23 +542,37 @@ static int __ref pci_mmcfg_check_reserved(struct device *dev,
 			       "MMCONFIG at %pR not reserved in "
 			       "ACPI motherboard resources\n",
 			       &cfg->res);
+
+		if (is_mmconf_reserved(is_efi_mmio, cfg, dev,
+				       "EfiMemoryMappedIO")) {
+			conflict = insert_resource_conflict(&iomem_resource,
+							    &cfg->res);
+			if (conflict)
+				pr_warn("MMCONFIG %pR conflicts with %s %pR\n",
+					&cfg->res, conflict->name, conflict);
+			else
+				pr_info("MMCONFIG %pR reserved to work around lack of ACPI motherboard _CRS\n",
+					&cfg->res);
+			return true;
+		}
 	}
 
 	/*
-	 * e820_all_mapped() is marked as __init.
+	 * e820__mapped_all() is marked as __init.
 	 * All entries from ACPI MCFG table have been checked at boot time.
 	 * For MCFG information constructed from hotpluggable host bridge's
 	 * _CBA method, just assume it's reserved.
 	 */
 	if (pci_mmcfg_running_state)
-		return 1;
+		return true;
 
 	/* Don't try to do this check unless configuration
 	   type 1 is available. how about type 2 ?*/
 	if (raw_pci_ops)
-		return is_mmconf_reserved(e820_all_mapped, cfg, dev, 1);
+		return is_mmconf_reserved(e820__mapped_all, cfg, dev,
+					  "E820 entry");
 
-	return 0;
+	return false;
 }
 
 static void __init pci_mmcfg_reject_broken(int early)
@@ -542,19 +591,14 @@ static void __init pci_mmcfg_reject_broken(int early)
 static int __init acpi_mcfg_check_entry(struct acpi_table_mcfg *mcfg,
 					struct acpi_mcfg_allocation *cfg)
 {
-	int year;
-
 	if (cfg->address < 0xFFFFFFFF)
 		return 0;
 
 	if (!strncmp(mcfg->header.oem_id, "SGI", 3))
 		return 0;
 
-	if (mcfg->header.revision >= 1) {
-		if (dmi_get_date(DMI_BIOS_DATE, &year, NULL, NULL) &&
-		    year >= 2010)
-			return 0;
-	}
+	if ((mcfg->header.revision >= 1) && (dmi_get_bios_year() >= 2010))
+		return 0;
 
 	pr_err(PREFIX "MCFG region for %04x [bus %02x-%02x] at %#llx "
 	       "is above 4GB, ignored\n", cfg->pci_segment,
@@ -606,6 +650,32 @@ static int __init pci_parse_mcfg(struct acpi_table_header *header)
 	return 0;
 }
 
+#ifdef CONFIG_ACPI_APEI
+extern int (*arch_apei_filter_addr)(int (*func)(__u64 start, __u64 size,
+				     void *data), void *data);
+
+static int pci_mmcfg_for_each_region(int (*func)(__u64 start, __u64 size,
+				     void *data), void *data)
+{
+	struct pci_mmcfg_region *cfg;
+	int rc;
+
+	if (list_empty(&pci_mmcfg_list))
+		return 0;
+
+	list_for_each_entry(cfg, &pci_mmcfg_list, list) {
+		rc = func(cfg->res.start, resource_size(&cfg->res), data);
+		if (rc)
+			return rc;
+	}
+
+	return 0;
+}
+#define set_apei_filter() (arch_apei_filter_addr = pci_mmcfg_for_each_region)
+#else
+#define set_apei_filter()
+#endif
+
 static void __init __pci_mmcfg_init(int early)
 {
 	pci_mmcfg_reject_broken(early);
@@ -638,8 +708,10 @@ void __init pci_mmcfg_early_init(void)
 		if (pci_mmcfg_check_hostbridge())
 			known_bridge = 1;
 		else
-			acpi_sfi_table_parse(ACPI_SIG_MCFG, pci_parse_mcfg);
+			acpi_table_parse(ACPI_SIG_MCFG, pci_parse_mcfg);
 		__pci_mmcfg_init(1);
+
+		set_apei_filter();
 	}
 }
 
@@ -654,7 +726,7 @@ void __init pci_mmcfg_late_init(void)
 
 	/* MMCONFIG hasn't been enabled yet, try again */
 	if (pci_probe & PCI_PROBE_MASK & ~PCI_PROBE_MMCONF) {
-		acpi_sfi_table_parse(ACPI_SIG_MCFG, pci_parse_mcfg);
+		acpi_table_parse(ACPI_SIG_MCFG, pci_parse_mcfg);
 		__pci_mmcfg_init(0);
 	}
 }

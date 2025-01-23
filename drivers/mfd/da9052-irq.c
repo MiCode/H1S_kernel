@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * DA9052 interrupt support
  *
@@ -7,10 +8,6 @@
  * Copyright 2012 Wolfson Microelectronics plc
  *
  * Author: Mark Brown <broonie@opensource.wolfsonmicro.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/device.h>
@@ -35,7 +32,7 @@
 #define DA9052_IRQ_MASK_POS_7		0x40
 #define DA9052_IRQ_MASK_POS_8		0x80
 
-static struct regmap_irq da9052_irqs[] = {
+static const struct regmap_irq da9052_irqs[] = {
 	[DA9052_IRQ_DCIN] = {
 		.reg_offset = 0,
 		.mask = DA9052_IRQ_MASK_POS_1,
@@ -166,7 +163,7 @@ static struct regmap_irq da9052_irqs[] = {
 	},
 };
 
-static struct regmap_irq_chip da9052_regmap_irq_chip = {
+static const struct regmap_irq_chip da9052_regmap_irq_chip = {
 	.name = "da9052_irq",
 	.status_base = DA9052_EVENT_A_REG,
 	.mask_base = DA9052_IRQ_MASK_A_REG,
@@ -262,6 +259,8 @@ int da9052_irq_init(struct da9052 *da9052)
 		goto regmap_err;
 	}
 
+	enable_irq_wake(da9052->chip_irq);
+
 	ret = da9052_request_irq(da9052, DA9052_IRQ_ADC_EOM, "adc-irq",
 			    da9052_auxadc_irq, da9052);
 
@@ -281,7 +280,7 @@ regmap_err:
 
 int da9052_irq_exit(struct da9052 *da9052)
 {
-	da9052_free_irq(da9052, DA9052_IRQ_ADC_EOM , da9052);
+	da9052_free_irq(da9052, DA9052_IRQ_ADC_EOM, da9052);
 	regmap_del_irq_chip(da9052->chip_irq, da9052->irq_data);
 
 	return 0;

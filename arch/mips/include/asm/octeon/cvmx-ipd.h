@@ -36,10 +36,11 @@
 #include <asm/octeon/octeon-feature.h>
 
 #include <asm/octeon/cvmx-ipd-defs.h>
+#include <asm/octeon/cvmx-pip-defs.h>
 
 enum cvmx_ipd_mode {
    CVMX_IPD_OPC_MODE_STT = 0LL,	  /* All blocks DRAM, not cached in L2 */
-   CVMX_IPD_OPC_MODE_STF = 1LL,	  /* All bloccks into  L2 */
+   CVMX_IPD_OPC_MODE_STF = 1LL,	  /* All blocks into  L2 */
    CVMX_IPD_OPC_MODE_STF1_STT = 2LL,   /* 1st block L2, rest DRAM */
    CVMX_IPD_OPC_MODE_STF2_STT = 3LL    /* 1st, 2nd blocks L2, rest DRAM */
 };

@@ -33,8 +33,6 @@
  */
 #define	ATH_KEYMAX	        128     /* max key cache size we handle */
 
-static const u8 ath_bcast_mac[ETH_ALEN] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-
 struct ath_ani {
 	bool caldone;
 	unsigned int longcal_timer;
@@ -56,6 +54,17 @@ enum ath_device_state {
 	ATH_HW_INITIALIZED,
 };
 
+enum ath_op_flags {
+	ATH_OP_INVALID,
+	ATH_OP_BEACONS,
+	ATH_OP_ANI_RUN,
+	ATH_OP_PRIM_STA_VIF,
+	ATH_OP_HW_RESET,
+	ATH_OP_SCANNING,
+	ATH_OP_MULTI_CHANNEL,
+	ATH_OP_WOW_ENABLED,
+};
+
 enum ath_bus_type {
 	ATH_PCI,
 	ATH_AHB,
@@ -63,13 +72,14 @@ enum ath_bus_type {
 };
 
 struct reg_dmn_pair_mapping {
-	u16 regDmnEnum;
+	u16 reg_domain;
 	u16 reg_5ghz_ctl;
 	u16 reg_2ghz_ctl;
 };
 
 struct ath_regulatory {
 	char alpha2[2];
+	enum nl80211_dfs_regions region;
 	u16 country_code;
 	u16 max_power_level;
 	u16 current_rd;
@@ -86,11 +96,13 @@ struct ath_keyval {
 	u8 kv_type;
 	u8 kv_pad;
 	u16 kv_len;
-	u8 kv_val[16]; /* TK */
-	u8 kv_mic[8]; /* Michael MIC key */
-	u8 kv_txmic[8]; /* Michael MIC TX key (used only if the hardware
-			 * supports both MIC keys in the same key cache entry;
-			 * in that case, kv_mic is the RX key) */
+	struct_group(kv_values,
+		u8 kv_val[16]; /* TK */
+		u8 kv_mic[8]; /* Michael MIC key */
+		u8 kv_txmic[8]; /* Michael MIC TX key (used only if the hardware
+				 * supports both MIC keys in the same key cache entry;
+				 * in that case, kv_mic is the RX key) */
+	);
 };
 
 enum ath_cipher {
@@ -119,10 +131,18 @@ struct ath_ops {
 	void (*enable_write_buffer)(void *);
 	void (*write_flush) (void *);
 	u32 (*rmw)(void *, u32 reg_offset, u32 set, u32 clr);
+	void (*enable_rmw_buffer)(void *);
+	void (*rmw_flush) (void *);
+
 };
 
 struct ath_common;
 struct ath_bus_ops;
+
+struct ath_ps_ops {
+	void (*wakeup)(struct ath_common *common);
+	void (*restore)(struct ath_common *common);
+};
 
 struct ath_common {
 	void *ah;
@@ -130,13 +150,14 @@ struct ath_common {
 	struct ieee80211_hw *hw;
 	int debug_mask;
 	enum ath_device_state state;
+	unsigned long op_flags;
 
 	struct ath_ani ani;
 
 	u16 cachelsz;
 	u16 curaid;
 	u8 macaddr[ETH_ALEN];
-	u8 curbssid[ETH_ALEN];
+	u8 curbssid[ETH_ALEN] __aligned(2);
 	u8 bssidmask[ETH_ALEN];
 
 	u32 rx_bufsize;
@@ -157,11 +178,20 @@ struct ath_common {
 	struct ath_regulatory reg_world_copy;
 	const struct ath_ops *ops;
 	const struct ath_bus_ops *bus_ops;
+	const struct ath_ps_ops *ps_ops;
 
 	bool btcoex_enabled;
 	bool disable_ani;
 	bool bt_ant_diversity;
+
+	int last_rssi;
+	struct ieee80211_supported_band sbands[NUM_NL80211_BANDS];
 };
+
+static inline const struct ath_ps_ops *ath_ps_ops(struct ath_common *common)
+{
+	return common->ps_ops;
+}
 
 struct sk_buff *ath_rxbuf_alloc(struct ath_common *common,
 				u32 len,
@@ -169,12 +199,13 @@ struct sk_buff *ath_rxbuf_alloc(struct ath_common *common,
 bool ath_is_mybeacon(struct ath_common *common, struct ieee80211_hdr *hdr);
 
 void ath_hw_setbssidmask(struct ath_common *common);
-void ath_key_delete(struct ath_common *common, struct ieee80211_key_conf *key);
+void ath_key_delete(struct ath_common *common, u8 hw_key_idx);
 int ath_key_config(struct ath_common *common,
 			  struct ieee80211_vif *vif,
 			  struct ieee80211_sta *sta,
 			  struct ieee80211_key_conf *key);
 bool ath_hw_keyreset(struct ath_common *common, u16 entry);
+bool ath_hw_keysetmac(struct ath_common *common, u16 entry, const u8 *mac);
 void ath_hw_cycle_counters_update(struct ath_common *common);
 int32_t ath_hw_get_listen_time(struct ath_common *common);
 
@@ -220,6 +251,8 @@ void ath_printk(const char *level, const struct ath_common *common,
  *	AR9462.
  * @ATH_DBG_DFS: radar datection
  * @ATH_DBG_WOW: Wake on Wireless
+ * @ATH_DBG_DYNACK: dynack handling
+ * @ATH_DBG_SPECTRAL_SCAN: FFT spectral scan
  * @ATH_DBG_ANY: enable all debugging
  *
  * The debug level is used to control the amount and type of debugging output
@@ -247,10 +280,14 @@ enum ATH_DEBUG {
 	ATH_DBG_MCI		= 0x00008000,
 	ATH_DBG_DFS		= 0x00010000,
 	ATH_DBG_WOW		= 0x00020000,
+	ATH_DBG_CHAN_CTX	= 0x00040000,
+	ATH_DBG_DYNACK		= 0x00080000,
+	ATH_DBG_SPECTRAL_SCAN	= 0x00100000,
 	ATH_DBG_ANY		= 0xffffffff
 };
 
 #define ATH_DBG_DEFAULT (ATH_DBG_FATAL)
+#define ATH_DBG_MAX_LEN 512
 
 #ifdef CONFIG_ATH_DEBUG
 
@@ -290,5 +327,11 @@ static inline const char *ath_opmode_to_string(enum nl80211_iftype opmode)
 	return "UNKNOWN";
 }
 #endif
+
+extern const char *ath_bus_type_strings[];
+static inline const char *ath_bus_type_to_string(enum ath_bus_type bustype)
+{
+	return ath_bus_type_strings[bustype];
+}
 
 #endif /* ATH_H */

@@ -1,28 +1,30 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/usb/otg.h>
-#include <linux/usb/usb_phy_gen_xceiv.h>
+#include <linux/usb/usb_phy_generic.h>
 #include <linux/slab.h>
 #include <linux/clk.h>
-#include <linux/regulator/consumer.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/usb/of.h>
 
-#include "am35x-phy-control.h"
+#include "phy-am335x-control.h"
 #include "phy-generic.h"
 
 struct am335x_phy {
-	struct usb_phy_gen_xceiv usb_phy_gen;
+	struct usb_phy_generic usb_phy_gen;
 	struct phy_control *phy_ctrl;
 	int id;
+	enum usb_dr_mode dr_mode;
 };
 
 static int am335x_init(struct usb_phy *phy)
 {
 	struct am335x_phy *am_phy = dev_get_drvdata(phy->dev);
 
-	phy_ctrl_power(am_phy->phy_ctrl, am_phy->id, true);
+	phy_ctrl_power(am_phy->phy_ctrl, am_phy->id, am_phy->dr_mode, true);
 	return 0;
 }
 
@@ -30,7 +32,7 @@ static void am335x_shutdown(struct usb_phy *phy)
 {
 	struct am335x_phy *am_phy = dev_get_drvdata(phy->dev);
 
-	phy_ctrl_power(am_phy->phy_ctrl, am_phy->id, false);
+	phy_ctrl_power(am_phy->phy_ctrl, am_phy->id, am_phy->dr_mode, false);
 }
 
 static int am335x_phy_probe(struct platform_device *pdev)
@@ -46,19 +48,19 @@ static int am335x_phy_probe(struct platform_device *pdev)
 	am_phy->phy_ctrl = am335x_get_phy_control(dev);
 	if (!am_phy->phy_ctrl)
 		return -EPROBE_DEFER;
+
 	am_phy->id = of_alias_get_id(pdev->dev.of_node, "phy");
 	if (am_phy->id < 0) {
 		dev_err(&pdev->dev, "Missing PHY id: %d\n", am_phy->id);
 		return am_phy->id;
 	}
 
-	ret = usb_phy_gen_create_phy(dev, &am_phy->usb_phy_gen, NULL);
+	am_phy->dr_mode = of_usb_get_dr_mode_by_phy(pdev->dev.of_node, -1);
+
+	ret = usb_phy_gen_create_phy(dev, &am_phy->usb_phy_gen);
 	if (ret)
 		return ret;
 
-	ret = usb_add_phy_dev(&am_phy->usb_phy_gen.phy);
-	if (ret)
-		return ret;
 	am_phy->usb_phy_gen.phy.init = am335x_init;
 	am_phy->usb_phy_gen.phy.shutdown = am335x_shutdown;
 
@@ -75,24 +77,22 @@ static int am335x_phy_probe(struct platform_device *pdev)
 	 */
 
 	device_set_wakeup_enable(dev, false);
-	phy_ctrl_power(am_phy->phy_ctrl, am_phy->id, false);
+	phy_ctrl_power(am_phy->phy_ctrl, am_phy->id, am_phy->dr_mode, false);
 
-	return 0;
+	return usb_add_phy_dev(&am_phy->usb_phy_gen.phy);
 }
 
-static int am335x_phy_remove(struct platform_device *pdev)
+static void am335x_phy_remove(struct platform_device *pdev)
 {
 	struct am335x_phy *am_phy = platform_get_drvdata(pdev);
 
 	usb_remove_phy(&am_phy->usb_phy_gen.phy);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
 static int am335x_phy_suspend(struct device *dev)
 {
-	struct platform_device	*pdev = to_platform_device(dev);
-	struct am335x_phy *am_phy = platform_get_drvdata(pdev);
+	struct am335x_phy *am_phy = dev_get_drvdata(dev);
 
 	/*
 	 * Enable phy wakeup only if dev->power.can_wakeup is true.
@@ -105,32 +105,25 @@ static int am335x_phy_suspend(struct device *dev)
 	if (device_may_wakeup(dev))
 		phy_ctrl_wkup(am_phy->phy_ctrl, am_phy->id, true);
 
-	phy_ctrl_power(am_phy->phy_ctrl, am_phy->id, false);
+	phy_ctrl_power(am_phy->phy_ctrl, am_phy->id, am_phy->dr_mode, false);
 
 	return 0;
 }
 
 static int am335x_phy_resume(struct device *dev)
 {
-	struct platform_device	*pdev = to_platform_device(dev);
-	struct am335x_phy	*am_phy = platform_get_drvdata(pdev);
+	struct am335x_phy	*am_phy = dev_get_drvdata(dev);
 
-	phy_ctrl_power(am_phy->phy_ctrl, am_phy->id, true);
+	phy_ctrl_power(am_phy->phy_ctrl, am_phy->id, am_phy->dr_mode, true);
 
 	if (device_may_wakeup(dev))
 		phy_ctrl_wkup(am_phy->phy_ctrl, am_phy->id, false);
 
 	return 0;
 }
-
-static const struct dev_pm_ops am335x_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(am335x_phy_suspend, am335x_phy_resume)
-};
-
-#define DEV_PM_OPS     (&am335x_pm_ops)
-#else
-#define DEV_PM_OPS     NULL
 #endif
+
+static SIMPLE_DEV_PM_OPS(am335x_pm_ops, am335x_phy_suspend, am335x_phy_resume);
 
 static const struct of_device_id am335x_phy_ids[] = {
 	{ .compatible = "ti,am335x-usb-phy" },
@@ -140,11 +133,10 @@ MODULE_DEVICE_TABLE(of, am335x_phy_ids);
 
 static struct platform_driver am335x_phy_driver = {
 	.probe          = am335x_phy_probe,
-	.remove         = am335x_phy_remove,
+	.remove_new     = am335x_phy_remove,
 	.driver         = {
 		.name   = "am335x-phy-driver",
-		.owner  = THIS_MODULE,
-		.pm = DEV_PM_OPS,
+		.pm = &am335x_pm_ops,
 		.of_match_table = am335x_phy_ids,
 	},
 };

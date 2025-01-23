@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for TPS61050/61052 boost converters, typically used for white LEDs
  * or audio amplifiers.
@@ -6,15 +7,13 @@
  * Written on behalf of Linaro for ST-Ericsson
  *
  * Author: Linus Walleij <linus.walleij@linaro.org>
- *
- * License terms: GNU General Public License (GPL) version 2
  */
 
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/err.h>
-#include <linux/i2c.h>
+#include <linux/regmap.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/driver.h>
 #include <linux/mfd/core.h>
@@ -27,101 +26,30 @@ static const unsigned int tps6105x_voltages[] = {
 	5000000, /* There is an additional 5V */
 };
 
-static int tps6105x_regulator_enable(struct regulator_dev *rdev)
-{
-	struct tps6105x *tps6105x = rdev_get_drvdata(rdev);
-	int ret;
-
-	/* Activate voltage mode */
-	ret = tps6105x_mask_and_set(tps6105x, TPS6105X_REG_0,
-		TPS6105X_REG0_MODE_MASK,
-		TPS6105X_REG0_MODE_VOLTAGE << TPS6105X_REG0_MODE_SHIFT);
-	if (ret)
-		return ret;
-
-	return 0;
-}
-
-static int tps6105x_regulator_disable(struct regulator_dev *rdev)
-{
-	struct tps6105x *tps6105x = rdev_get_drvdata(rdev);
-	int ret;
-
-	/* Set into shutdown mode */
-	ret = tps6105x_mask_and_set(tps6105x, TPS6105X_REG_0,
-		TPS6105X_REG0_MODE_MASK,
-		TPS6105X_REG0_MODE_SHUTDOWN << TPS6105X_REG0_MODE_SHIFT);
-	if (ret)
-		return ret;
-
-	return 0;
-}
-
-static int tps6105x_regulator_is_enabled(struct regulator_dev *rdev)
-{
-	struct tps6105x *tps6105x = rdev_get_drvdata(rdev);
-	u8 regval;
-	int ret;
-
-	ret = tps6105x_get(tps6105x, TPS6105X_REG_0, &regval);
-	if (ret)
-		return ret;
-	regval &= TPS6105X_REG0_MODE_MASK;
-	regval >>= TPS6105X_REG0_MODE_SHIFT;
-
-	if (regval == TPS6105X_REG0_MODE_VOLTAGE)
-		return 1;
-
-	return 0;
-}
-
-static int tps6105x_regulator_get_voltage_sel(struct regulator_dev *rdev)
-{
-	struct tps6105x *tps6105x = rdev_get_drvdata(rdev);
-	u8 regval;
-	int ret;
-
-	ret = tps6105x_get(tps6105x, TPS6105X_REG_0, &regval);
-	if (ret)
-		return ret;
-
-	regval &= TPS6105X_REG0_VOLTAGE_MASK;
-	regval >>= TPS6105X_REG0_VOLTAGE_SHIFT;
-	return (int) regval;
-}
-
-static int tps6105x_regulator_set_voltage_sel(struct regulator_dev *rdev,
-					      unsigned selector)
-{
-	struct tps6105x *tps6105x = rdev_get_drvdata(rdev);
-	int ret;
-
-	ret = tps6105x_mask_and_set(tps6105x, TPS6105X_REG_0,
-				    TPS6105X_REG0_VOLTAGE_MASK,
-				    selector << TPS6105X_REG0_VOLTAGE_SHIFT);
-	if (ret)
-		return ret;
-
-	return 0;
-}
-
-static struct regulator_ops tps6105x_regulator_ops = {
-	.enable		= tps6105x_regulator_enable,
-	.disable	= tps6105x_regulator_disable,
-	.is_enabled	= tps6105x_regulator_is_enabled,
-	.get_voltage_sel = tps6105x_regulator_get_voltage_sel,
-	.set_voltage_sel = tps6105x_regulator_set_voltage_sel,
+static const struct regulator_ops tps6105x_regulator_ops = {
+	.enable		= regulator_enable_regmap,
+	.disable	= regulator_disable_regmap,
+	.is_enabled	= regulator_is_enabled_regmap,
+	.get_voltage_sel = regulator_get_voltage_sel_regmap,
+	.set_voltage_sel = regulator_set_voltage_sel_regmap,
 	.list_voltage	= regulator_list_voltage_table,
 };
 
 static const struct regulator_desc tps6105x_regulator_desc = {
 	.name		= "tps6105x-boost",
+	.of_match	= of_match_ptr("regulator"),
 	.ops		= &tps6105x_regulator_ops,
 	.type		= REGULATOR_VOLTAGE,
 	.id		= 0,
 	.owner		= THIS_MODULE,
 	.n_voltages	= ARRAY_SIZE(tps6105x_voltages),
 	.volt_table	= tps6105x_voltages,
+	.vsel_reg	= TPS6105X_REG_0,
+	.vsel_mask	= TPS6105X_REG0_VOLTAGE_MASK,
+	.enable_reg	= TPS6105X_REG_0,
+	.enable_mask	= TPS6105X_REG0_MODE_MASK,
+	.enable_val	= TPS6105X_REG0_MODE_VOLTAGE <<
+			  TPS6105X_REG0_MODE_SHIFT,
 };
 
 /*
@@ -144,6 +72,8 @@ static int tps6105x_regulator_probe(struct platform_device *pdev)
 	config.dev = &tps6105x->client->dev;
 	config.init_data = pdata->regulator_data;
 	config.driver_data = tps6105x;
+	config.of_node = pdev->dev.parent->of_node;
+	config.regmap = tps6105x->regmap;
 
 	/* Register regulator with framework */
 	tps6105x->regulator = devm_regulator_register(&pdev->dev,
@@ -163,7 +93,7 @@ static int tps6105x_regulator_probe(struct platform_device *pdev)
 static struct platform_driver tps6105x_regulator_driver = {
 	.driver = {
 		.name  = "tps6105x-regulator",
-		.owner = THIS_MODULE,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe = tps6105x_regulator_probe,
 };

@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for IMS Passenger Control Unit Devices
  *
  * Copyright (C) 2013 The IMS Company
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2
- * as published by the Free Software Foundation.
  */
 
 #include <linux/completion.h>
@@ -39,8 +36,6 @@ struct ims_pcu_gamepad {
 
 struct ims_pcu_backlight {
 	struct led_classdev cdev;
-	struct work_struct work;
-	enum led_brightness desired_brightness;
 	char name[32];
 };
 
@@ -50,6 +45,8 @@ struct ims_pcu_backlight {
 #define IMS_PCU_FW_VERSION_LEN		(9 + 1)
 #define IMS_PCU_BL_VERSION_LEN		(9 + 1)
 #define IMS_PCU_BL_RESET_REASON_LEN	(2 + 1)
+
+#define IMS_PCU_PCU_B_DEVICE_ID		5
 
 #define IMS_PCU_BUF_SIZE		128
 
@@ -68,6 +65,9 @@ struct ims_pcu {
 	char bl_version[IMS_PCU_BL_VERSION_LEN];
 	char reset_reason[IMS_PCU_BL_RESET_REASON_LEN];
 	int update_firmware_status;
+	u8 device_id;
+
+	u8 ofn_reg_addr;
 
 	struct usb_interface *ctrl_intf;
 
@@ -335,7 +335,7 @@ static int ims_pcu_setup_gamepad(struct ims_pcu *pcu)
 err_free_mem:
 	input_free_device(input);
 	kfree(gamepad);
-	return -ENOMEM;
+	return error;
 }
 
 static void ims_pcu_destroy_gamepad(struct ims_pcu *pcu)
@@ -371,6 +371,8 @@ static void ims_pcu_destroy_gamepad(struct ims_pcu *pcu)
 #define IMS_PCU_CMD_GET_DEVICE_ID	0xae
 #define IMS_PCU_CMD_SPECIAL_INFO	0xb0
 #define IMS_PCU_CMD_BOOTLOADER		0xb1	/* Pass data to bootloader */
+#define IMS_PCU_CMD_OFN_SET_CONFIG	0xb3
+#define IMS_PCU_CMD_OFN_GET_CONFIG	0xb4
 
 /* PCU responses */
 #define IMS_PCU_RSP_STATUS		0xc0
@@ -389,6 +391,9 @@ static void ims_pcu_destroy_gamepad(struct ims_pcu *pcu)
 #define IMS_PCU_RSP_GET_DEVICE_ID	0xce
 #define IMS_PCU_RSP_SPECIAL_INFO	0xd0
 #define IMS_PCU_RSP_BOOTLOADER		0xd1	/* Bootloader response */
+#define IMS_PCU_RSP_OFN_SET_CONFIG	0xd2
+#define IMS_PCU_RSP_OFN_GET_CONFIG	0xd3
+
 
 #define IMS_PCU_RSP_EVNT_BUTTONS	0xe0	/* Unsolicited, button state */
 #define IMS_PCU_GAMEPAD_MASK		0x0001ff80UL	/* Bits 7 through 16 */
@@ -642,8 +647,8 @@ static int __ims_pcu_execute_command(struct ims_pcu *pcu,
 #define IMS_PCU_BL_DATA_OFFSET		3
 
 static int __ims_pcu_execute_bl_command(struct ims_pcu *pcu,
-				        u8 command, const void *data, size_t len,
-				        u8 expected_response, int response_time)
+					u8 command, const void *data, size_t len,
+					u8 expected_response, int response_time)
 {
 	int error;
 
@@ -739,7 +744,7 @@ static int ims_pcu_switch_to_bootloader(struct ims_pcu *pcu)
 	error = ims_pcu_execute_command(pcu, JUMP_TO_BTLDR, NULL, 0);
 	if (error) {
 		dev_err(pcu->dev,
-			"Failure when sending JUMP TO BOOLTLOADER command, error: %d\n",
+			"Failure when sending JUMP TO BOOTLOADER command, error: %d\n",
 			error);
 		return error;
 	}
@@ -939,14 +944,14 @@ out:
 
 #define IMS_PCU_MAX_BRIGHTNESS		31998
 
-static void ims_pcu_backlight_work(struct work_struct *work)
+static int ims_pcu_backlight_set_brightness(struct led_classdev *cdev,
+					    enum led_brightness value)
 {
 	struct ims_pcu_backlight *backlight =
-			container_of(work, struct ims_pcu_backlight, work);
+			container_of(cdev, struct ims_pcu_backlight, cdev);
 	struct ims_pcu *pcu =
 			container_of(backlight, struct ims_pcu, backlight);
-	int desired_brightness = backlight->desired_brightness;
-	__le16 br_val = cpu_to_le16(desired_brightness);
+	__le16 br_val = cpu_to_le16(value);
 	int error;
 
 	mutex_lock(&pcu->cmd_mutex);
@@ -956,19 +961,11 @@ static void ims_pcu_backlight_work(struct work_struct *work)
 	if (error && error != -ENODEV)
 		dev_warn(pcu->dev,
 			 "Failed to set desired brightness %u, error: %d\n",
-			 desired_brightness, error);
+			 value, error);
 
 	mutex_unlock(&pcu->cmd_mutex);
-}
 
-static void ims_pcu_backlight_set_brightness(struct led_classdev *cdev,
-					     enum led_brightness value)
-{
-	struct ims_pcu_backlight *backlight =
-			container_of(cdev, struct ims_pcu_backlight, cdev);
-
-	backlight->desired_brightness = value;
-	schedule_work(&backlight->work);
+	return error;
 }
 
 static enum led_brightness
@@ -1005,14 +1002,14 @@ static int ims_pcu_setup_backlight(struct ims_pcu *pcu)
 	struct ims_pcu_backlight *backlight = &pcu->backlight;
 	int error;
 
-	INIT_WORK(&backlight->work, ims_pcu_backlight_work);
 	snprintf(backlight->name, sizeof(backlight->name),
 		 "pcu%d::kbd_backlight", pcu->device_no);
 
 	backlight->cdev.name = backlight->name;
 	backlight->cdev.max_brightness = IMS_PCU_MAX_BRIGHTNESS;
 	backlight->cdev.brightness_get = ims_pcu_backlight_get_brightness;
-	backlight->cdev.brightness_set = ims_pcu_backlight_set_brightness;
+	backlight->cdev.brightness_set_blocking =
+					 ims_pcu_backlight_set_brightness;
 
 	error = led_classdev_register(pcu->dev, &backlight->cdev);
 	if (error) {
@@ -1030,7 +1027,6 @@ static void ims_pcu_destroy_backlight(struct ims_pcu *pcu)
 	struct ims_pcu_backlight *backlight = &pcu->backlight;
 
 	led_classdev_unregister(&backlight->cdev);
-	cancel_work_sync(&backlight->work);
 }
 
 
@@ -1232,7 +1228,7 @@ static struct attribute *ims_pcu_attrs[] = {
 static umode_t ims_pcu_is_attr_visible(struct kobject *kobj,
 				       struct attribute *attr, int n)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct usb_interface *intf = to_usb_interface(dev);
 	struct ims_pcu *pcu = usb_get_intfdata(intf);
 	umode_t mode = attr->mode;
@@ -1251,9 +1247,228 @@ static umode_t ims_pcu_is_attr_visible(struct kobject *kobj,
 	return mode;
 }
 
-static struct attribute_group ims_pcu_attr_group = {
+static const struct attribute_group ims_pcu_attr_group = {
 	.is_visible	= ims_pcu_is_attr_visible,
 	.attrs		= ims_pcu_attrs,
+};
+
+/* Support for a separate OFN attribute group */
+
+#define OFN_REG_RESULT_OFFSET	2
+
+static int ims_pcu_read_ofn_config(struct ims_pcu *pcu, u8 addr, u8 *data)
+{
+	int error;
+	s16 result;
+
+	error = ims_pcu_execute_command(pcu, OFN_GET_CONFIG,
+					&addr, sizeof(addr));
+	if (error)
+		return error;
+
+	result = (s16)get_unaligned_le16(pcu->cmd_buf + OFN_REG_RESULT_OFFSET);
+	if (result < 0)
+		return -EIO;
+
+	/* We only need LSB */
+	*data = pcu->cmd_buf[OFN_REG_RESULT_OFFSET];
+	return 0;
+}
+
+static int ims_pcu_write_ofn_config(struct ims_pcu *pcu, u8 addr, u8 data)
+{
+	u8 buffer[] = { addr, data };
+	int error;
+	s16 result;
+
+	error = ims_pcu_execute_command(pcu, OFN_SET_CONFIG,
+					&buffer, sizeof(buffer));
+	if (error)
+		return error;
+
+	result = (s16)get_unaligned_le16(pcu->cmd_buf + OFN_REG_RESULT_OFFSET);
+	if (result < 0)
+		return -EIO;
+
+	return 0;
+}
+
+static ssize_t ims_pcu_ofn_reg_data_show(struct device *dev,
+					 struct device_attribute *dattr,
+					 char *buf)
+{
+	struct usb_interface *intf = to_usb_interface(dev);
+	struct ims_pcu *pcu = usb_get_intfdata(intf);
+	int error;
+	u8 data;
+
+	mutex_lock(&pcu->cmd_mutex);
+	error = ims_pcu_read_ofn_config(pcu, pcu->ofn_reg_addr, &data);
+	mutex_unlock(&pcu->cmd_mutex);
+
+	if (error)
+		return error;
+
+	return scnprintf(buf, PAGE_SIZE, "%x\n", data);
+}
+
+static ssize_t ims_pcu_ofn_reg_data_store(struct device *dev,
+					  struct device_attribute *dattr,
+					  const char *buf, size_t count)
+{
+	struct usb_interface *intf = to_usb_interface(dev);
+	struct ims_pcu *pcu = usb_get_intfdata(intf);
+	int error;
+	u8 value;
+
+	error = kstrtou8(buf, 0, &value);
+	if (error)
+		return error;
+
+	mutex_lock(&pcu->cmd_mutex);
+	error = ims_pcu_write_ofn_config(pcu, pcu->ofn_reg_addr, value);
+	mutex_unlock(&pcu->cmd_mutex);
+
+	return error ?: count;
+}
+
+static DEVICE_ATTR(reg_data, S_IRUGO | S_IWUSR,
+		   ims_pcu_ofn_reg_data_show, ims_pcu_ofn_reg_data_store);
+
+static ssize_t ims_pcu_ofn_reg_addr_show(struct device *dev,
+					 struct device_attribute *dattr,
+					 char *buf)
+{
+	struct usb_interface *intf = to_usb_interface(dev);
+	struct ims_pcu *pcu = usb_get_intfdata(intf);
+	int error;
+
+	mutex_lock(&pcu->cmd_mutex);
+	error = scnprintf(buf, PAGE_SIZE, "%x\n", pcu->ofn_reg_addr);
+	mutex_unlock(&pcu->cmd_mutex);
+
+	return error;
+}
+
+static ssize_t ims_pcu_ofn_reg_addr_store(struct device *dev,
+					  struct device_attribute *dattr,
+					  const char *buf, size_t count)
+{
+	struct usb_interface *intf = to_usb_interface(dev);
+	struct ims_pcu *pcu = usb_get_intfdata(intf);
+	int error;
+	u8 value;
+
+	error = kstrtou8(buf, 0, &value);
+	if (error)
+		return error;
+
+	mutex_lock(&pcu->cmd_mutex);
+	pcu->ofn_reg_addr = value;
+	mutex_unlock(&pcu->cmd_mutex);
+
+	return count;
+}
+
+static DEVICE_ATTR(reg_addr, S_IRUGO | S_IWUSR,
+		   ims_pcu_ofn_reg_addr_show, ims_pcu_ofn_reg_addr_store);
+
+struct ims_pcu_ofn_bit_attribute {
+	struct device_attribute dattr;
+	u8 addr;
+	u8 nr;
+};
+
+static ssize_t ims_pcu_ofn_bit_show(struct device *dev,
+				    struct device_attribute *dattr,
+				    char *buf)
+{
+	struct usb_interface *intf = to_usb_interface(dev);
+	struct ims_pcu *pcu = usb_get_intfdata(intf);
+	struct ims_pcu_ofn_bit_attribute *attr =
+		container_of(dattr, struct ims_pcu_ofn_bit_attribute, dattr);
+	int error;
+	u8 data;
+
+	mutex_lock(&pcu->cmd_mutex);
+	error = ims_pcu_read_ofn_config(pcu, attr->addr, &data);
+	mutex_unlock(&pcu->cmd_mutex);
+
+	if (error)
+		return error;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", !!(data & (1 << attr->nr)));
+}
+
+static ssize_t ims_pcu_ofn_bit_store(struct device *dev,
+				     struct device_attribute *dattr,
+				     const char *buf, size_t count)
+{
+	struct usb_interface *intf = to_usb_interface(dev);
+	struct ims_pcu *pcu = usb_get_intfdata(intf);
+	struct ims_pcu_ofn_bit_attribute *attr =
+		container_of(dattr, struct ims_pcu_ofn_bit_attribute, dattr);
+	int error;
+	int value;
+	u8 data;
+
+	error = kstrtoint(buf, 0, &value);
+	if (error)
+		return error;
+
+	if (value > 1)
+		return -EINVAL;
+
+	mutex_lock(&pcu->cmd_mutex);
+
+	error = ims_pcu_read_ofn_config(pcu, attr->addr, &data);
+	if (!error) {
+		if (value)
+			data |= 1U << attr->nr;
+		else
+			data &= ~(1U << attr->nr);
+
+		error = ims_pcu_write_ofn_config(pcu, attr->addr, data);
+	}
+
+	mutex_unlock(&pcu->cmd_mutex);
+
+	return error ?: count;
+}
+
+#define IMS_PCU_OFN_BIT_ATTR(_field, _addr, _nr)			\
+struct ims_pcu_ofn_bit_attribute ims_pcu_ofn_attr_##_field = {		\
+	.dattr = __ATTR(_field, S_IWUSR | S_IRUGO,			\
+			ims_pcu_ofn_bit_show, ims_pcu_ofn_bit_store),	\
+	.addr = _addr,							\
+	.nr = _nr,							\
+}
+
+static IMS_PCU_OFN_BIT_ATTR(engine_enable,   0x60, 7);
+static IMS_PCU_OFN_BIT_ATTR(speed_enable,    0x60, 6);
+static IMS_PCU_OFN_BIT_ATTR(assert_enable,   0x60, 5);
+static IMS_PCU_OFN_BIT_ATTR(xyquant_enable,  0x60, 4);
+static IMS_PCU_OFN_BIT_ATTR(xyscale_enable,  0x60, 1);
+
+static IMS_PCU_OFN_BIT_ATTR(scale_x2,        0x63, 6);
+static IMS_PCU_OFN_BIT_ATTR(scale_y2,        0x63, 7);
+
+static struct attribute *ims_pcu_ofn_attrs[] = {
+	&dev_attr_reg_data.attr,
+	&dev_attr_reg_addr.attr,
+	&ims_pcu_ofn_attr_engine_enable.dattr.attr,
+	&ims_pcu_ofn_attr_speed_enable.dattr.attr,
+	&ims_pcu_ofn_attr_assert_enable.dattr.attr,
+	&ims_pcu_ofn_attr_xyquant_enable.dattr.attr,
+	&ims_pcu_ofn_attr_xyscale_enable.dattr.attr,
+	&ims_pcu_ofn_attr_scale_x2.dattr.attr,
+	&ims_pcu_ofn_attr_scale_y2.dattr.attr,
+	NULL
+};
+
+static const struct attribute_group ims_pcu_ofn_attr_group = {
+	.name	= "ofn",
+	.attrs	= ims_pcu_ofn_attrs,
 };
 
 static void ims_pcu_irq(struct urb *urb)
@@ -1337,6 +1552,7 @@ static int ims_pcu_buffers_alloc(struct ims_pcu *pcu)
 	if (!pcu->urb_ctrl_buf) {
 		dev_err(pcu->dev,
 			"Failed to allocate memory for read buffer\n");
+		error = -ENOMEM;
 		goto err_free_urb_out_buf;
 	}
 
@@ -1405,13 +1621,25 @@ ims_pcu_get_cdc_union_desc(struct usb_interface *intf)
 		return NULL;
 	}
 
-	while (buflen > 0) {
+	while (buflen >= sizeof(*union_desc)) {
 		union_desc = (struct usb_cdc_union_desc *)buf;
+
+		if (union_desc->bLength > buflen) {
+			dev_err(&intf->dev, "Too large descriptor\n");
+			return NULL;
+		}
 
 		if (union_desc->bDescriptorType == USB_DT_CS_INTERFACE &&
 		    union_desc->bDescriptorSubType == USB_CDC_UNION_TYPE) {
 			dev_dbg(&intf->dev, "Found union header\n");
-			return union_desc;
+
+			if (union_desc->bLength >= sizeof(*union_desc))
+				return union_desc;
+
+			dev_err(&intf->dev,
+				"Union descriptor too short (%d vs %zd)\n",
+				union_desc->bLength, sizeof(*union_desc));
+			return NULL;
 		}
 
 		buflen -= union_desc->bLength;
@@ -1433,13 +1661,21 @@ static int ims_pcu_parse_cdc_data(struct usb_interface *intf, struct ims_pcu *pc
 
 	pcu->ctrl_intf = usb_ifnum_to_if(pcu->udev,
 					 union_desc->bMasterInterface0);
+	if (!pcu->ctrl_intf)
+		return -EINVAL;
 
 	alt = pcu->ctrl_intf->cur_altsetting;
+
+	if (alt->desc.bNumEndpoints < 1)
+		return -ENODEV;
+
 	pcu->ep_ctrl = &alt->endpoint[0].desc;
 	pcu->max_ctrl_size = usb_endpoint_maxp(pcu->ep_ctrl);
 
 	pcu->data_intf = usb_ifnum_to_if(pcu->udev,
 					 union_desc->bSlaveInterface0);
+	if (!pcu->data_intf)
+		return -EINVAL;
 
 	alt = pcu->data_intf->cur_altsetting;
 	if (alt->desc.bNumEndpoints != 2) {
@@ -1621,10 +1857,9 @@ static int ims_pcu_identify_type(struct ims_pcu *pcu, u8 *device_id)
 
 static int ims_pcu_init_application_mode(struct ims_pcu *pcu)
 {
-	static atomic_t device_no = ATOMIC_INIT(0);
+	static atomic_t device_no = ATOMIC_INIT(-1);
 
 	const struct ims_pcu_device_info *info;
-	u8 device_id;
 	int error;
 
 	error = ims_pcu_get_device_info(pcu);
@@ -1633,7 +1868,7 @@ static int ims_pcu_init_application_mode(struct ims_pcu *pcu)
 		return error;
 	}
 
-	error = ims_pcu_identify_type(pcu, &device_id);
+	error = ims_pcu_identify_type(pcu, &pcu->device_id);
 	if (error) {
 		dev_err(pcu->dev,
 			"Failed to identify device, error: %d\n", error);
@@ -1645,21 +1880,31 @@ static int ims_pcu_init_application_mode(struct ims_pcu *pcu)
 		return 0;
 	}
 
-	if (device_id >= ARRAY_SIZE(ims_pcu_device_info) ||
-	    !ims_pcu_device_info[device_id].keymap) {
-		dev_err(pcu->dev, "Device ID %d is not valid\n", device_id);
+	if (pcu->device_id >= ARRAY_SIZE(ims_pcu_device_info) ||
+	    !ims_pcu_device_info[pcu->device_id].keymap) {
+		dev_err(pcu->dev, "Device ID %d is not valid\n", pcu->device_id);
 		/* Same as above, punt to userspace */
 		return 0;
 	}
 
 	/* Device appears to be operable, complete initialization */
-	pcu->device_no = atomic_inc_return(&device_no) - 1;
+	pcu->device_no = atomic_inc_return(&device_no);
+
+	/*
+	 * PCU-B devices, both GEN_1 and GEN_2 do not have OFN sensor
+	 */
+	if (pcu->device_id != IMS_PCU_PCU_B_DEVICE_ID) {
+		error = sysfs_create_group(&pcu->dev->kobj,
+					   &ims_pcu_ofn_attr_group);
+		if (error)
+			return error;
+	}
 
 	error = ims_pcu_setup_backlight(pcu);
 	if (error)
 		return error;
 
-	info = &ims_pcu_device_info[device_id];
+	info = &ims_pcu_device_info[pcu->device_id];
 	error = ims_pcu_setup_buttons(pcu, info->keymap, info->keymap_len);
 	if (error)
 		goto err_destroy_backlight;
@@ -1674,10 +1919,10 @@ static int ims_pcu_init_application_mode(struct ims_pcu *pcu)
 
 	return 0;
 
-err_destroy_backlight:
-	ims_pcu_destroy_backlight(pcu);
 err_destroy_buttons:
 	ims_pcu_destroy_buttons(pcu);
+err_destroy_backlight:
+	ims_pcu_destroy_backlight(pcu);
 	return error;
 }
 
@@ -1691,6 +1936,10 @@ static void ims_pcu_destroy_application_mode(struct ims_pcu *pcu)
 			ims_pcu_destroy_gamepad(pcu);
 		ims_pcu_destroy_buttons(pcu);
 		ims_pcu_destroy_backlight(pcu);
+
+		if (pcu->device_id != IMS_PCU_PCU_B_DEVICE_ID)
+			sysfs_remove_group(&pcu->dev->kobj,
+					   &ims_pcu_ofn_attr_group);
 	}
 }
 
@@ -1769,7 +2018,6 @@ static int ims_pcu_probe(struct usb_interface *intf,
 	}
 
 	usb_set_intfdata(pcu->ctrl_intf, pcu);
-	usb_set_intfdata(pcu->data_intf, pcu);
 
 	error = ims_pcu_buffers_alloc(pcu);
 	if (error)

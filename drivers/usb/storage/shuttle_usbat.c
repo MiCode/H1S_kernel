@@ -1,4 +1,6 @@
-/* Driver for SCM Microsystems (a.k.a. Shuttle) USB-ATAPI cable
+// SPDX-License-Identifier: GPL-2.0+
+/*
+ * Driver for SCM Microsystems (a.k.a. Shuttle) USB-ATAPI cable
  *
  * Current development and maintenance by:
  *   (c) 2000, 2001 Robert Baruch (autophile@starband.net)
@@ -25,20 +27,6 @@
  *
  * See the Kconfig help text for a list of devices known to be supported by
  * this driver.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2, or (at your option) any
- * later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/errno.h>
@@ -53,10 +41,14 @@
 #include "transport.h"
 #include "protocol.h"
 #include "debug.h"
+#include "scsiglue.h"
+
+#define DRV_NAME "ums-usbat"
 
 MODULE_DESCRIPTION("Driver for SCM Microsystems (a.k.a. Shuttle) USB-ATAPI cable");
 MODULE_AUTHOR("Daniel Drake <dsd@gentoo.org>, Robert Baruch <autophile@starband.net>");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(USB_STORAGE);
 
 /* Supported device types */
 #define USBAT_DEV_HP8200	0x01
@@ -405,7 +397,8 @@ static int usbat_wait_not_busy(struct us_data *us, int minutes)
 	int result;
 	unsigned char *status = us->iobuf;
 
-	/* Synchronizing cache on a CDR could take a heck of a long time,
+	/*
+	 * Synchronizing cache on a CDR could take a heck of a long time,
 	 * but probably not more than 10 minutes or so. On the other hand,
 	 * doing a full blank on a CDRW at speed 1 will take about 75
 	 * minutes!
@@ -1463,7 +1456,7 @@ static int init_usbat(struct us_data *us, int devicetype)
 
 	us->extra = kzalloc(sizeof(struct usbat_info), GFP_NOIO);
 	if (!us->extra)
-		return 1;
+		return -ENOMEM;
 
 	info = (struct usbat_info *) (us->extra);
 
@@ -1472,7 +1465,7 @@ static int init_usbat(struct us_data *us, int devicetype)
 				 USBAT_UIO_OE1 | USBAT_UIO_OE0,
 				 USBAT_UIO_EPAD | USBAT_UIO_1);
 	if (rc != USB_STOR_XFER_GOOD)
-		return USB_STOR_TRANSPORT_ERROR;
+		return -EIO;
 
 	usb_stor_dbg(us, "INIT 1\n");
 
@@ -1480,42 +1473,42 @@ static int init_usbat(struct us_data *us, int devicetype)
 
 	rc = usbat_read_user_io(us, status);
 	if (rc != USB_STOR_TRANSPORT_GOOD)
-		return rc;
+		return -EIO;
 
 	usb_stor_dbg(us, "INIT 2\n");
 
 	rc = usbat_read_user_io(us, status);
 	if (rc != USB_STOR_XFER_GOOD)
-		return USB_STOR_TRANSPORT_ERROR;
+		return -EIO;
 
 	rc = usbat_read_user_io(us, status);
 	if (rc != USB_STOR_XFER_GOOD)
-		return USB_STOR_TRANSPORT_ERROR;
+		return -EIO;
 
 	usb_stor_dbg(us, "INIT 3\n");
 
 	rc = usbat_select_and_test_registers(us);
 	if (rc != USB_STOR_TRANSPORT_GOOD)
-		return rc;
+		return -EIO;
 
 	usb_stor_dbg(us, "INIT 4\n");
 
 	rc = usbat_read_user_io(us, status);
 	if (rc != USB_STOR_XFER_GOOD)
-		return USB_STOR_TRANSPORT_ERROR;
+		return -EIO;
 
 	usb_stor_dbg(us, "INIT 5\n");
 
 	/* Enable peripheral control signals and card detect */
 	rc = usbat_device_enable_cdt(us);
 	if (rc != USB_STOR_TRANSPORT_GOOD)
-		return rc;
+		return -EIO;
 
 	usb_stor_dbg(us, "INIT 6\n");
 
 	rc = usbat_read_user_io(us, status);
 	if (rc != USB_STOR_XFER_GOOD)
-		return USB_STOR_TRANSPORT_ERROR;
+		return -EIO;
 
 	usb_stor_dbg(us, "INIT 7\n");
 
@@ -1523,19 +1516,19 @@ static int init_usbat(struct us_data *us, int devicetype)
 
 	rc = usbat_read_user_io(us, status);
 	if (rc != USB_STOR_XFER_GOOD)
-		return USB_STOR_TRANSPORT_ERROR;
+		return -EIO;
 
 	usb_stor_dbg(us, "INIT 8\n");
 
 	rc = usbat_select_and_test_registers(us);
 	if (rc != USB_STOR_TRANSPORT_GOOD)
-		return rc;
+		return -EIO;
 
 	usb_stor_dbg(us, "INIT 9\n");
 
 	/* At this point, we need to detect which device we are using */
 	if (usbat_set_transport(us, info, devicetype))
-		return USB_STOR_TRANSPORT_ERROR;
+		return -EIO;
 
 	usb_stor_dbg(us, "INIT 10\n");
 
@@ -1546,11 +1539,11 @@ static int init_usbat(struct us_data *us, int devicetype)
 	rc = usbat_set_shuttle_features(us, (USBAT_FEAT_ETEN | USBAT_FEAT_ET2 | USBAT_FEAT_ET1),
 									0x00, 0x88, 0x08, subcountH, subcountL);
 	if (rc != USB_STOR_XFER_GOOD)
-		return USB_STOR_TRANSPORT_ERROR;
+		return -EIO;
 
 	usb_stor_dbg(us, "INIT 11\n");
 
-	return USB_STOR_TRANSPORT_GOOD;
+	return 0;
 }
 
 /*
@@ -1567,9 +1560,10 @@ static int usbat_hp8200e_transport(struct scsi_cmnd *srb, struct us_data *us)
 
 	len = scsi_bufflen(srb);
 
-	/* Send A0 (ATA PACKET COMMAND).
-	   Note: I guess we're never going to get any of the ATA
-	   commands... just ATA Packet Commands.
+	/*
+	 * Send A0 (ATA PACKET COMMAND).
+	 * Note: I guess we're never going to get any of the ATA
+	 * commands... just ATA Packet Commands.
  	 */
 
 	registers[0] = USBAT_ATA_FEATURES;
@@ -1834,6 +1828,8 @@ static int init_usbat_flash(struct us_data *us)
 	return init_usbat(us, USBAT_DEV_FLASH);
 }
 
+static struct scsi_host_template usbat_host_template;
+
 static int usbat_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
 {
@@ -1841,24 +1837,26 @@ static int usbat_probe(struct usb_interface *intf,
 	int result;
 
 	result = usb_stor_probe1(&us, intf, id,
-			(id - usbat_usb_ids) + usbat_unusual_dev_list);
+			(id - usbat_usb_ids) + usbat_unusual_dev_list,
+			&usbat_host_template);
 	if (result)
 		return result;
 
-	/* The actual transport will be determined later by the
+	/*
+	 * The actual transport will be determined later by the
 	 * initialization routine; this is just a placeholder.
 	 */
 	us->transport_name = "Shuttle USBAT";
 	us->transport = usbat_flash_transport;
 	us->transport_reset = usb_stor_CB_reset;
-	us->max_lun = 1;
+	us->max_lun = 0;
 
 	result = usb_stor_probe2(us);
 	return result;
 }
 
 static struct usb_driver usbat_driver = {
-	.name =		"ums-usbat",
+	.name =		DRV_NAME,
 	.probe =	usbat_probe,
 	.disconnect =	usb_stor_disconnect,
 	.suspend =	usb_stor_suspend,
@@ -1871,4 +1869,4 @@ static struct usb_driver usbat_driver = {
 	.no_dynamic_id = 1,
 };
 
-module_usb_driver(usbat_driver);
+module_usb_stor_driver(usbat_driver, usbat_host_template, DRV_NAME);

@@ -1,101 +1,81 @@
-/* p80211mgmt.h
-*
-* Macros, types, and functions to handle 802.11 mgmt frames
-*
-* Copyright (C) 1999 AbsoluteValue Systems, Inc.  All Rights Reserved.
-* --------------------------------------------------------------------
-*
-* linux-wlan
-*
-*   The contents of this file are subject to the Mozilla Public
-*   License Version 1.1 (the "License"); you may not use this file
-*   except in compliance with the License. You may obtain a copy of
-*   the License at http://www.mozilla.org/MPL/
-*
-*   Software distributed under the License is distributed on an "AS
-*   IS" basis, WITHOUT WARRANTY OF ANY KIND, either express or
-*   implied. See the License for the specific language governing
-*   rights and limitations under the License.
-*
-*   Alternatively, the contents of this file may be used under the
-*   terms of the GNU Public License version 2 (the "GPL"), in which
-*   case the provisions of the GPL are applicable instead of the
-*   above.  If you wish to allow the use of your version of this file
-*   only under the terms of the GPL and not to allow others to use
-*   your version of this file under the MPL, indicate your decision
-*   by deleting the provisions above and replace them with the notice
-*   and other provisions required by the GPL.  If you do not delete
-*   the provisions above, a recipient may use your version of this
-*   file under either the MPL or the GPL.
-*
-* --------------------------------------------------------------------
-*
-* Inquiries regarding the linux-wlan Open Source project can be
-* made directly to:
-*
-* AbsoluteValue Systems Inc.
-* info@linux-wlan.com
-* http://www.linux-wlan.com
-*
-* --------------------------------------------------------------------
-*
-* Portions of the development of this software were funded by
-* Intersil Corporation as part of PRISM(R) chipset product development.
-*
-* --------------------------------------------------------------------
-*
-* This file declares the constants and types used in the interface
-* between a wlan driver and the user mode utilities.
-*
-* Notes:
-*  - Constant values are always in HOST byte order.  To assign
-*    values to multi-byte fields they _must_ be converted to
-*    ieee byte order.  To retrieve multi-byte values from incoming
-*    frames, they must be converted to host order.
-*
-*  - The len member of the frame structure does NOT!!! include
-*    the MAC CRC.  Therefore, the len field on rx'd frames should
-*    have 4 subtracted from it.
-*
-* All functions declared here are implemented in p80211.c
-*
-* The types, macros, and functions defined here are primarily
-* used for encoding and decoding management frames.  They are
-* designed to follow these patterns of use:
-*
-* DECODE:
-* 1) a frame of length len is received into buffer b
-* 2) using the hdr structure and macros, we determine the type
-* 3) an appropriate mgmt frame structure, mf, is allocated and zeroed
-* 4) mf.hdr = b
-*    mf.buf = b
-*    mf.len = len
-* 5) call mgmt_decode( mf )
-* 6) the frame field pointers in mf are now set.  Note that any
-*    multi-byte frame field values accessed using the frame field
-*    pointers are in ieee byte order and will have to be converted
-*    to host order.
-*
-* ENCODE:
-* 1) Library client allocates buffer space for maximum length
-*    frame of the desired type
-* 2) Library client allocates a mgmt frame structure, called mf,
-*    of the desired type
-* 3) Set the following:
-*    mf.type = <desired type>
-*    mf.buf = <allocated buffer address>
-* 4) call mgmt_encode( mf )
-* 5) all of the fixed field pointers and fixed length information element
-*    pointers in mf are now set to their respective locations in the
-*    allocated space (fortunately, all variable length information elements
-*    fall at the end of their respective frames).
-* 5a) The length field is set to include the last of the fixed and fixed
-*     length fields.  It may have to be updated for optional or variable
-* 	length information elements.
-* 6) Optional and variable length information elements are special cases
-*    and must be handled individually by the client code.
-* --------------------------------------------------------------------
-*/
+/* SPDX-License-Identifier: (GPL-2.0 OR MPL-1.1) */
+/*
+ *
+ * Macros, types, and functions to handle 802.11 mgmt frames
+ *
+ * Copyright (C) 1999 AbsoluteValue Systems, Inc.  All Rights Reserved.
+ * --------------------------------------------------------------------
+ *
+ * linux-wlan
+ *
+ * --------------------------------------------------------------------
+ *
+ * Inquiries regarding the linux-wlan Open Source project can be
+ * made directly to:
+ *
+ * AbsoluteValue Systems Inc.
+ * info@linux-wlan.com
+ * http://www.linux-wlan.com
+ *
+ * --------------------------------------------------------------------
+ *
+ * Portions of the development of this software were funded by
+ * Intersil Corporation as part of PRISM(R) chipset product development.
+ *
+ * --------------------------------------------------------------------
+ *
+ * This file declares the constants and types used in the interface
+ * between a wlan driver and the user mode utilities.
+ *
+ * Notes:
+ *  - Constant values are always in HOST byte order.  To assign
+ *    values to multi-byte fields they _must_ be converted to
+ *    ieee byte order.  To retrieve multi-byte values from incoming
+ *    frames, they must be converted to host order.
+ *
+ *  - The len member of the frame structure does NOT!!! include
+ *    the MAC CRC.  Therefore, the len field on rx'd frames should
+ *    have 4 subtracted from it.
+ *
+ * All functions declared here are implemented in p80211.c
+ *
+ * The types, macros, and functions defined here are primarily
+ * used for encoding and decoding management frames.  They are
+ * designed to follow these patterns of use:
+ *
+ * DECODE:
+ * 1) a frame of length len is received into buffer b
+ * 2) using the hdr structure and macros, we determine the type
+ * 3) an appropriate mgmt frame structure, mf, is allocated and zeroed
+ * 4) mf.hdr = b
+ *    mf.buf = b
+ *    mf.len = len
+ * 5) call mgmt_decode( mf )
+ * 6) the frame field pointers in mf are now set.  Note that any
+ *    multi-byte frame field values accessed using the frame field
+ *    pointers are in ieee byte order and will have to be converted
+ *    to host order.
+ *
+ * ENCODE:
+ * 1) Library client allocates buffer space for maximum length
+ *    frame of the desired type
+ * 2) Library client allocates a mgmt frame structure, called mf,
+ *    of the desired type
+ * 3) Set the following:
+ *    mf.type = <desired type>
+ *    mf.buf = <allocated buffer address>
+ * 4) call mgmt_encode( mf )
+ * 5) all of the fixed field pointers and fixed length information element
+ *    pointers in mf are now set to their respective locations in the
+ *    allocated space (fortunately, all variable length information elements
+ *    fall at the end of their respective frames).
+ * 5a) The length field is set to include the last of the fixed and fixed
+ *     length fields.  It may have to be updated for optional or variable
+ *	length information elements.
+ * 6) Optional and variable length information elements are special cases
+ *    and must be handled individually by the client code.
+ * --------------------------------------------------------------------
+ */
 
 #ifndef _P80211MGMT_H
 #define _P80211MGMT_H
@@ -215,306 +195,5 @@
 #define WLAN_SET_MGMT_CAP_INFO_SHORT(n)		((n) << 5)
 #define WLAN_SET_MGMT_CAP_INFO_PBCC(n)		((n) << 6)
 #define WLAN_SET_MGMT_CAP_INFO_AGILITY(n)	((n) << 7)
-
-/*-- Information Element Types --------------------*/
-/* prototype structure, all IEs start with these members */
-
-typedef struct wlan_ie {
-	u8 eid;
-	u8 len;
-} __packed wlan_ie_t;
-
-/*-- Service Set Identity (SSID)  -----------------*/
-typedef struct wlan_ie_ssid {
-	u8 eid;
-	u8 len;
-	u8 ssid[1];		/* may be zero, ptrs may overlap */
-} __packed wlan_ie_ssid_t;
-
-/*-- Supported Rates  -----------------------------*/
-typedef struct wlan_ie_supp_rates {
-	u8 eid;
-	u8 len;
-	u8 rates[1];		/* had better be at LEAST one! */
-} __packed wlan_ie_supp_rates_t;
-
-/*-- FH Parameter Set  ----------------------------*/
-typedef struct wlan_ie_fh_parms {
-	u8 eid;
-	u8 len;
-	u16 dwell;
-	u8 hopset;
-	u8 hoppattern;
-	u8 hopindex;
-} __packed wlan_ie_fh_parms_t;
-
-/*-- DS Parameter Set  ----------------------------*/
-typedef struct wlan_ie_ds_parms {
-	u8 eid;
-	u8 len;
-	u8 curr_ch;
-} __packed wlan_ie_ds_parms_t;
-
-/*-- CF Parameter Set  ----------------------------*/
-
-typedef struct wlan_ie_cf_parms {
-	u8 eid;
-	u8 len;
-	u8 cfp_cnt;
-	u8 cfp_period;
-	u16 cfp_maxdur;
-	u16 cfp_durremaining;
-} __packed wlan_ie_cf_parms_t;
-
-/*-- TIM ------------------------------------------*/
-typedef struct wlan_ie_tim {
-	u8 eid;
-	u8 len;
-	u8 dtim_cnt;
-	u8 dtim_period;
-	u8 bitmap_ctl;
-	u8 virt_bm[1];
-} __packed wlan_ie_tim_t;
-
-/*-- IBSS Parameter Set ---------------------------*/
-typedef struct wlan_ie_ibss_parms {
-	u8 eid;
-	u8 len;
-	u16 atim_win;
-} __packed wlan_ie_ibss_parms_t;
-
-/*-- Challenge Text  ------------------------------*/
-typedef struct wlan_ie_challenge {
-	u8 eid;
-	u8 len;
-	u8 challenge[1];
-} __packed wlan_ie_challenge_t;
-
-/*-------------------------------------------------*/
-/*  Frame Types  */
-
-/* prototype structure, all mgmt frame types will start with these members */
-typedef struct wlan_fr_mgmt {
-	u16 type;
-	u16 len;		/* DOES NOT include CRC !!!! */
-	u8 *buf;
-	union p80211_hdr *hdr;
-	/* used for target specific data, skb in Linux */
-	void *priv;
-	/*-- fixed fields -----------*/
-	/*-- info elements ----------*/
-} wlan_fr_mgmt_t;
-
-/*-- Beacon ---------------------------------------*/
-typedef struct wlan_fr_beacon {
-	u16 type;
-	u16 len;
-	u8 *buf;
-	union p80211_hdr *hdr;
-	/* used for target specific data, skb in Linux */
-	void *priv;
-	/*-- fixed fields -----------*/
-	u64 *ts;
-	u16 *bcn_int;
-	u16 *cap_info;
-	/*-- info elements ----------*/
-	wlan_ie_ssid_t *ssid;
-	wlan_ie_supp_rates_t *supp_rates;
-	wlan_ie_fh_parms_t *fh_parms;
-	wlan_ie_ds_parms_t *ds_parms;
-	wlan_ie_cf_parms_t *cf_parms;
-	wlan_ie_ibss_parms_t *ibss_parms;
-	wlan_ie_tim_t *tim;
-
-} wlan_fr_beacon_t;
-
-/*-- IBSS ATIM ------------------------------------*/
-typedef struct wlan_fr_ibssatim {
-	u16 type;
-	u16 len;
-	u8 *buf;
-	union p80211_hdr *hdr;
-	/* used for target specific data, skb in Linux */
-	void *priv;
-
-	/*-- fixed fields -----------*/
-	/*-- info elements ----------*/
-
-	/* this frame type has a null body */
-
-} wlan_fr_ibssatim_t;
-
-/*-- Disassociation -------------------------------*/
-typedef struct wlan_fr_disassoc {
-	u16 type;
-	u16 len;
-	u8 *buf;
-	union p80211_hdr *hdr;
-	/* used for target specific data, skb in Linux */
-	void *priv;
-	/*-- fixed fields -----------*/
-	u16 *reason;
-
-	/*-- info elements ----------*/
-
-} wlan_fr_disassoc_t;
-
-/*-- Association Request --------------------------*/
-typedef struct wlan_fr_assocreq {
-	u16 type;
-	u16 len;
-	u8 *buf;
-	union p80211_hdr *hdr;
-	/* used for target specific data, skb in Linux */
-	void *priv;
-	/*-- fixed fields -----------*/
-	u16 *cap_info;
-	u16 *listen_int;
-	/*-- info elements ----------*/
-	wlan_ie_ssid_t *ssid;
-	wlan_ie_supp_rates_t *supp_rates;
-
-} wlan_fr_assocreq_t;
-
-/*-- Association Response -------------------------*/
-typedef struct wlan_fr_assocresp {
-	u16 type;
-	u16 len;
-	u8 *buf;
-	union p80211_hdr *hdr;
-	/* used for target specific data, skb in Linux */
-	void *priv;
-	/*-- fixed fields -----------*/
-	u16 *cap_info;
-	u16 *status;
-	u16 *aid;
-	/*-- info elements ----------*/
-	wlan_ie_supp_rates_t *supp_rates;
-
-} wlan_fr_assocresp_t;
-
-/*-- Reassociation Request ------------------------*/
-typedef struct wlan_fr_reassocreq {
-	u16 type;
-	u16 len;
-	u8 *buf;
-	union p80211_hdr *hdr;
-	/* used for target specific data, skb in Linux */
-	void *priv;
-	/*-- fixed fields -----------*/
-	u16 *cap_info;
-	u16 *listen_int;
-	u8 *curr_ap;
-	/*-- info elements ----------*/
-	wlan_ie_ssid_t *ssid;
-	wlan_ie_supp_rates_t *supp_rates;
-
-} wlan_fr_reassocreq_t;
-
-/*-- Reassociation Response -----------------------*/
-typedef struct wlan_fr_reassocresp {
-	u16 type;
-	u16 len;
-	u8 *buf;
-	union p80211_hdr *hdr;
-	/* used for target specific data, skb in Linux */
-	void *priv;
-	/*-- fixed fields -----------*/
-	u16 *cap_info;
-	u16 *status;
-	u16 *aid;
-	/*-- info elements ----------*/
-	wlan_ie_supp_rates_t *supp_rates;
-
-} wlan_fr_reassocresp_t;
-
-/*-- Probe Request --------------------------------*/
-typedef struct wlan_fr_probereq {
-	u16 type;
-	u16 len;
-	u8 *buf;
-	union p80211_hdr *hdr;
-	/* used for target specific data, skb in Linux */
-	void *priv;
-	/*-- fixed fields -----------*/
-	/*-- info elements ----------*/
-	wlan_ie_ssid_t *ssid;
-	wlan_ie_supp_rates_t *supp_rates;
-
-} wlan_fr_probereq_t;
-
-/*-- Probe Response -------------------------------*/
-typedef struct wlan_fr_proberesp {
-	u16 type;
-	u16 len;
-	u8 *buf;
-	union p80211_hdr *hdr;
-	/* used for target specific data, skb in Linux */
-	void *priv;
-	/*-- fixed fields -----------*/
-	u64 *ts;
-	u16 *bcn_int;
-	u16 *cap_info;
-	/*-- info elements ----------*/
-	wlan_ie_ssid_t *ssid;
-	wlan_ie_supp_rates_t *supp_rates;
-	wlan_ie_fh_parms_t *fh_parms;
-	wlan_ie_ds_parms_t *ds_parms;
-	wlan_ie_cf_parms_t *cf_parms;
-	wlan_ie_ibss_parms_t *ibss_parms;
-} wlan_fr_proberesp_t;
-
-/*-- Authentication -------------------------------*/
-typedef struct wlan_fr_authen {
-	u16 type;
-	u16 len;
-	u8 *buf;
-	union p80211_hdr *hdr;
-	/* used for target specific data, skb in Linux */
-	void *priv;
-	/*-- fixed fields -----------*/
-	u16 *auth_alg;
-	u16 *auth_seq;
-	u16 *status;
-	/*-- info elements ----------*/
-	wlan_ie_challenge_t *challenge;
-
-} wlan_fr_authen_t;
-
-/*-- Deauthenication -----------------------------*/
-typedef struct wlan_fr_deauthen {
-	u16 type;
-	u16 len;
-	u8 *buf;
-	union p80211_hdr *hdr;
-	/* used for target specific data, skb in Linux */
-	void *priv;
-	/*-- fixed fields -----------*/
-	u16 *reason;
-
-	/*-- info elements ----------*/
-
-} wlan_fr_deauthen_t;
-
-void wlan_mgmt_encode_beacon(wlan_fr_beacon_t *f);
-void wlan_mgmt_decode_beacon(wlan_fr_beacon_t *f);
-void wlan_mgmt_encode_disassoc(wlan_fr_disassoc_t *f);
-void wlan_mgmt_decode_disassoc(wlan_fr_disassoc_t *f);
-void wlan_mgmt_encode_assocreq(wlan_fr_assocreq_t *f);
-void wlan_mgmt_decode_assocreq(wlan_fr_assocreq_t *f);
-void wlan_mgmt_encode_assocresp(wlan_fr_assocresp_t *f);
-void wlan_mgmt_decode_assocresp(wlan_fr_assocresp_t *f);
-void wlan_mgmt_encode_reassocreq(wlan_fr_reassocreq_t *f);
-void wlan_mgmt_decode_reassocreq(wlan_fr_reassocreq_t *f);
-void wlan_mgmt_encode_reassocresp(wlan_fr_reassocresp_t *f);
-void wlan_mgmt_decode_reassocresp(wlan_fr_reassocresp_t *f);
-void wlan_mgmt_encode_probereq(wlan_fr_probereq_t *f);
-void wlan_mgmt_decode_probereq(wlan_fr_probereq_t *f);
-void wlan_mgmt_encode_proberesp(wlan_fr_proberesp_t *f);
-void wlan_mgmt_decode_proberesp(wlan_fr_proberesp_t *f);
-void wlan_mgmt_encode_authen(wlan_fr_authen_t *f);
-void wlan_mgmt_decode_authen(wlan_fr_authen_t *f);
-void wlan_mgmt_encode_deauthen(wlan_fr_deauthen_t *f);
-void wlan_mgmt_decode_deauthen(wlan_fr_deauthen_t *f);
 
 #endif /* _P80211MGMT_H */

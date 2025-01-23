@@ -1,24 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>
  *                   Uros Bizjak <uros@kss-loka.si>
  *
  *  Routines for control of 8-bit SoundBlaster cards and clones
  *  Please note: I don't have access to old SB8 soundcards.
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  *
  * --
  *
@@ -30,7 +16,7 @@
  *   Cleaned up and rewrote lowlevel routines.
  */
 
-#include <asm/io.h>
+#include <linux/io.h>
 #include <asm/dma.h>
 #include <linux/init.h>
 #include <linux/time.h>
@@ -46,19 +32,19 @@ MODULE_LICENSE("GPL");
 #define SB8_DEN(v)	((SB8_CLOCK + (v) / 2) / (v))
 #define SB8_RATE(v)	(SB8_CLOCK / SB8_DEN(v))
 
-static struct snd_ratnum clock = {
+static const struct snd_ratnum clock = {
 	.num = SB8_CLOCK,
 	.den_min = 1,
 	.den_max = 256,
 	.den_step = 1,
 };
 
-static struct snd_pcm_hw_constraint_ratnums hw_constraints_clock = {
+static const struct snd_pcm_hw_constraint_ratnums hw_constraints_clock = {
 	.nrats = 1,
 	.rats = &clock,
 };
 
-static struct snd_ratnum stereo_clocks[] = {
+static const struct snd_ratnum stereo_clocks[] = {
 	{
 		.num = SB8_CLOCK,
 		.den_min = SB8_DEN(22050),
@@ -130,13 +116,13 @@ static int snd_sb8_playback_prepare(struct snd_pcm_substream *substream)
 			chip->playback_format = SB_DSP_HI_OUTPUT_AUTO;
 			break;
 		}
-		/* fallthru */
+		fallthrough;
 	case SB_HW_201:
 		if (rate > 23000) {
 			chip->playback_format = SB_DSP_HI_OUTPUT_AUTO;
 			break;
 		}
-		/* fallthru */
+		fallthrough;
 	case SB_HW_20:
 		chip->playback_format = SB_DSP_LO_OUTPUT_AUTO;
 		break;
@@ -239,18 +225,6 @@ static int snd_sb8_playback_trigger(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static int snd_sb8_hw_params(struct snd_pcm_substream *substream,
-			     struct snd_pcm_hw_params *hw_params)
-{
-	return snd_pcm_lib_malloc_pages(substream, params_buffer_bytes(hw_params));
-}
-
-static int snd_sb8_hw_free(struct snd_pcm_substream *substream)
-{
-	snd_pcm_lib_free_pages(substream);
-	return 0;
-}
-
 static int snd_sb8_capture_prepare(struct snd_pcm_substream *substream)
 {
 	unsigned long flags;
@@ -287,7 +261,7 @@ static int snd_sb8_capture_prepare(struct snd_pcm_substream *substream)
 			chip->capture_format = SB_DSP_HI_INPUT_AUTO;
 			break;
 		}
-		/* fallthru */
+		fallthrough;
 	case SB_HW_20:
 		chip->capture_format = SB_DSP_LO_INPUT_AUTO;
 		break;
@@ -381,17 +355,15 @@ static int snd_sb8_capture_trigger(struct snd_pcm_substream *substream,
 irqreturn_t snd_sb8dsp_interrupt(struct snd_sb *chip)
 {
 	struct snd_pcm_substream *substream;
-	struct snd_pcm_runtime *runtime;
 
 	snd_sb_ack_8bit(chip);
 	switch (chip->mode) {
 	case SB_MODE_PLAYBACK_16:	/* ok.. playback is active */
 		if (chip->hardware != SB_HW_JAZZ16)
 			break;
-		/* fallthru */
+		fallthrough;
 	case SB_MODE_PLAYBACK_8:
 		substream = chip->playback_substream;
-		runtime = substream->runtime;
 		if (chip->playback_format == SB_DSP_OUTPUT)
 		    	snd_sb8_playback_trigger(substream, SNDRV_PCM_TRIGGER_START);
 		snd_pcm_period_elapsed(substream);
@@ -399,10 +371,9 @@ irqreturn_t snd_sb8dsp_interrupt(struct snd_sb *chip)
 	case SB_MODE_CAPTURE_16:
 		if (chip->hardware != SB_HW_JAZZ16)
 			break;
-		/* fallthru */
+		fallthrough;
 	case SB_MODE_CAPTURE_8:
 		substream = chip->capture_substream;
-		runtime = substream->runtime;
 		if (chip->capture_format == SB_DSP_INPUT)
 		    	snd_sb8_capture_trigger(substream, SNDRV_PCM_TRIGGER_START);
 		snd_pcm_period_elapsed(substream);
@@ -447,7 +418,7 @@ static snd_pcm_uframes_t snd_sb8_capture_pointer(struct snd_pcm_substream *subst
 
  */
 
-static struct snd_pcm_hardware snd_sb8_playback =
+static const struct snd_pcm_hardware snd_sb8_playback =
 {
 	.info =			(SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
 				 SNDRV_PCM_INFO_MMAP_VALID),
@@ -466,7 +437,7 @@ static struct snd_pcm_hardware snd_sb8_playback =
 	.fifo_size =		0,
 };
 
-static struct snd_pcm_hardware snd_sb8_capture =
+static const struct snd_pcm_hardware snd_sb8_capture =
 {
 	.info =			(SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
 				 SNDRV_PCM_INFO_MMAP_VALID),
@@ -535,6 +506,7 @@ static int snd_sb8_open(struct snd_pcm_substream *substream)
 		} else {
 			runtime->hw.rate_max = 15000;
 		}
+		break;
 	default:
 		break;
 	}
@@ -572,38 +544,31 @@ static int snd_sb8_close(struct snd_pcm_substream *substream)
  *  Initialization part
  */
  
-static struct snd_pcm_ops snd_sb8_playback_ops = {
+static const struct snd_pcm_ops snd_sb8_playback_ops = {
 	.open =			snd_sb8_open,
 	.close =		snd_sb8_close,
-	.ioctl =		snd_pcm_lib_ioctl,
-	.hw_params =		snd_sb8_hw_params,
-	.hw_free =		snd_sb8_hw_free,
 	.prepare =		snd_sb8_playback_prepare,
 	.trigger =		snd_sb8_playback_trigger,
 	.pointer =		snd_sb8_playback_pointer,
 };
 
-static struct snd_pcm_ops snd_sb8_capture_ops = {
+static const struct snd_pcm_ops snd_sb8_capture_ops = {
 	.open =			snd_sb8_open,
 	.close =		snd_sb8_close,
-	.ioctl =		snd_pcm_lib_ioctl,
-	.hw_params =		snd_sb8_hw_params,
-	.hw_free =		snd_sb8_hw_free,
 	.prepare =		snd_sb8_capture_prepare,
 	.trigger =		snd_sb8_capture_trigger,
 	.pointer =		snd_sb8_capture_pointer,
 };
 
-int snd_sb8dsp_pcm(struct snd_sb *chip, int device, struct snd_pcm ** rpcm)
+int snd_sb8dsp_pcm(struct snd_sb *chip, int device)
 {
 	struct snd_card *card = chip->card;
 	struct snd_pcm *pcm;
 	int err;
 	size_t max_prealloc = 64 * 1024;
 
-	if (rpcm)
-		*rpcm = NULL;
-	if ((err = snd_pcm_new(card, "SB8 DSP", device, 1, 1, &pcm)) < 0)
+	err = snd_pcm_new(card, "SB8 DSP", device, 1, 1, &pcm);
+	if (err < 0)
 		return err;
 	sprintf(pcm->name, "DSP v%i.%i", chip->version >> 8, chip->version & 0xff);
 	pcm->info_flags = SNDRV_PCM_INFO_HALF_DUPLEX;
@@ -614,12 +579,9 @@ int snd_sb8dsp_pcm(struct snd_sb *chip, int device, struct snd_pcm ** rpcm)
 
 	if (chip->dma8 > 3 || chip->dma16 >= 0)
 		max_prealloc = 128 * 1024;
-	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV,
-					      snd_dma_isa_data(),
-					      64*1024, max_prealloc);
+	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV,
+				       card->dev, 64*1024, max_prealloc);
 
-	if (rpcm)
-		*rpcm = pcm;
 	return 0;
 }
 
@@ -628,19 +590,3 @@ EXPORT_SYMBOL(snd_sb8dsp_interrupt);
   /* sb8_midi.c */
 EXPORT_SYMBOL(snd_sb8dsp_midi_interrupt);
 EXPORT_SYMBOL(snd_sb8dsp_midi);
-
-/*
- *  INIT part
- */
-
-static int __init alsa_sb8_init(void)
-{
-	return 0;
-}
-
-static void __exit alsa_sb8_exit(void)
-{
-}
-
-module_init(alsa_sb8_init)
-module_exit(alsa_sb8_exit)

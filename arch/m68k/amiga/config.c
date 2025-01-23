@@ -17,6 +17,7 @@
 #include <linux/mm.h>
 #include <linux/seq_file.h>
 #include <linux/tty.h>
+#include <linux/clocksource.h>
 #include <linux/console.h>
 #include <linux/rtc.h>
 #include <linux/init.h>
@@ -31,13 +32,12 @@
 #include <asm/bootinfo-amiga.h>
 #include <asm/byteorder.h>
 #include <asm/setup.h>
-#include <asm/pgtable.h>
 #include <asm/amigahw.h>
 #include <asm/amigaints.h>
 #include <asm/irq.h>
-#include <asm/rtc.h>
 #include <asm/machdep.h>
 #include <asm/io.h>
+#include <asm/config.h>
 
 static unsigned long amiga_model;
 
@@ -93,11 +93,9 @@ static char *amiga_models[] __initdata = {
 
 static char amiga_model_name[13] = "Amiga ";
 
-static void amiga_sched_init(irq_handler_t handler);
+static void amiga_sched_init(void);
 static void amiga_get_model(char *model);
 static void amiga_get_hardware_list(struct seq_file *m);
-/* amiga specific timer functions */
-static u32 amiga_gettimeoffset(void);
 extern void amiga_mksound(unsigned int count, unsigned int ticks);
 static void amiga_reset(void);
 extern void amiga_init_sound(void);
@@ -183,7 +181,7 @@ int __init amiga_parse_bootinfo(const struct bi_record *record)
 			dev->boardaddr = be32_to_cpu(cd->cd_BoardAddr);
 			dev->boardsize = be32_to_cpu(cd->cd_BoardSize);
 		} else
-			printk("amiga_parse_bootinfo: too many AutoConfig devices\n");
+			pr_warn("amiga_parse_bootinfo: too many AutoConfig devices\n");
 #endif /* CONFIG_ZORRO */
 		break;
 
@@ -209,108 +207,53 @@ static void __init amiga_identify(void)
 
 	memset(&amiga_hw_present, 0, sizeof(amiga_hw_present));
 
-	printk("Amiga hardware found: ");
+	pr_info("Amiga hardware found: ");
 	if (amiga_model >= AMI_500 && amiga_model <= AMI_DRACO) {
-		printk("[%s] ", amiga_models[amiga_model-AMI_500]);
+		pr_cont("[%s] ", amiga_models[amiga_model-AMI_500]);
 		strcat(amiga_model_name, amiga_models[amiga_model-AMI_500]);
 	}
 
 	switch (amiga_model) {
 	case AMI_UNKNOWN:
-		goto Generic;
+		break;
 
 	case AMI_600:
 	case AMI_1200:
 		AMIGAHW_SET(A1200_IDE);
 		AMIGAHW_SET(PCMCIA);
+		fallthrough;
 	case AMI_500:
 	case AMI_500PLUS:
 	case AMI_1000:
 	case AMI_2000:
 	case AMI_2500:
 		AMIGAHW_SET(A2000_CLK);	/* Is this correct for all models? */
-		goto Generic;
+		break;
 
 	case AMI_3000:
 	case AMI_3000T:
 		AMIGAHW_SET(AMBER_FF);
 		AMIGAHW_SET(MAGIC_REKICK);
-		/* fall through */
+		fallthrough;
 	case AMI_3000PLUS:
 		AMIGAHW_SET(A3000_SCSI);
 		AMIGAHW_SET(A3000_CLK);
 		AMIGAHW_SET(ZORRO3);
-		goto Generic;
+		break;
 
 	case AMI_4000T:
 		AMIGAHW_SET(A4000_SCSI);
-		/* fall through */
+		fallthrough;
 	case AMI_4000:
 		AMIGAHW_SET(A4000_IDE);
 		AMIGAHW_SET(A3000_CLK);
 		AMIGAHW_SET(ZORRO3);
-		goto Generic;
+		break;
 
 	case AMI_CDTV:
 	case AMI_CD32:
 		AMIGAHW_SET(CD_ROM);
 		AMIGAHW_SET(A2000_CLK);             /* Is this correct? */
-		goto Generic;
-
-	Generic:
-		AMIGAHW_SET(AMI_VIDEO);
-		AMIGAHW_SET(AMI_BLITTER);
-		AMIGAHW_SET(AMI_AUDIO);
-		AMIGAHW_SET(AMI_FLOPPY);
-		AMIGAHW_SET(AMI_KEYBOARD);
-		AMIGAHW_SET(AMI_MOUSE);
-		AMIGAHW_SET(AMI_SERIAL);
-		AMIGAHW_SET(AMI_PARALLEL);
-		AMIGAHW_SET(CHIP_RAM);
-		AMIGAHW_SET(PAULA);
-
-		switch (amiga_chipset) {
-		case CS_OCS:
-		case CS_ECS:
-		case CS_AGA:
-			switch (amiga_custom.deniseid & 0xf) {
-			case 0x0c:
-				AMIGAHW_SET(DENISE_HR);
-				break;
-			case 0x08:
-				AMIGAHW_SET(LISA);
-				break;
-			}
-			break;
-		default:
-			AMIGAHW_SET(DENISE);
-			break;
-		}
-		switch ((amiga_custom.vposr>>8) & 0x7f) {
-		case 0x00:
-			AMIGAHW_SET(AGNUS_PAL);
-			break;
-		case 0x10:
-			AMIGAHW_SET(AGNUS_NTSC);
-			break;
-		case 0x20:
-		case 0x21:
-			AMIGAHW_SET(AGNUS_HR_PAL);
-			break;
-		case 0x30:
-		case 0x31:
-			AMIGAHW_SET(AGNUS_HR_NTSC);
-			break;
-		case 0x22:
-		case 0x23:
-			AMIGAHW_SET(ALICE_PAL);
-			break;
-		case 0x32:
-		case 0x33:
-			AMIGAHW_SET(ALICE_NTSC);
-			break;
-		}
-		AMIGAHW_SET(ZORRO);
 		break;
 
 	case AMI_DRACO:
@@ -320,9 +263,63 @@ static void __init amiga_identify(void)
 		panic("Unknown Amiga Model");
 	}
 
+	AMIGAHW_SET(AMI_VIDEO);
+	AMIGAHW_SET(AMI_BLITTER);
+	AMIGAHW_SET(AMI_AUDIO);
+	AMIGAHW_SET(AMI_FLOPPY);
+	AMIGAHW_SET(AMI_KEYBOARD);
+	AMIGAHW_SET(AMI_MOUSE);
+	AMIGAHW_SET(AMI_SERIAL);
+	AMIGAHW_SET(AMI_PARALLEL);
+	AMIGAHW_SET(CHIP_RAM);
+	AMIGAHW_SET(PAULA);
+
+	switch (amiga_chipset) {
+	case CS_OCS:
+	case CS_ECS:
+	case CS_AGA:
+		switch (amiga_custom.deniseid & 0xf) {
+		case 0x0c:
+			AMIGAHW_SET(DENISE_HR);
+			break;
+		case 0x08:
+			AMIGAHW_SET(LISA);
+			break;
+		default:
+			AMIGAHW_SET(DENISE);
+			break;
+		}
+		break;
+	}
+	switch ((amiga_custom.vposr>>8) & 0x7f) {
+	case 0x00:
+		AMIGAHW_SET(AGNUS_PAL);
+		break;
+	case 0x10:
+		AMIGAHW_SET(AGNUS_NTSC);
+		break;
+	case 0x20:
+	case 0x21:
+		AMIGAHW_SET(AGNUS_HR_PAL);
+		break;
+	case 0x30:
+	case 0x31:
+		AMIGAHW_SET(AGNUS_HR_NTSC);
+		break;
+	case 0x22:
+	case 0x23:
+		AMIGAHW_SET(ALICE_PAL);
+		break;
+	case 0x32:
+	case 0x33:
+		AMIGAHW_SET(ALICE_NTSC);
+		break;
+	}
+	AMIGAHW_SET(ZORRO);
+
 #define AMIGAHW_ANNOUNCE(name, str)		\
 	if (AMIGAHW_PRESENT(name))		\
-		printk(str)
+		pr_cont(str)
 
 	AMIGAHW_ANNOUNCE(AMI_VIDEO, "VIDEO ");
 	AMIGAHW_ANNOUNCE(AMI_BLITTER, "BLITTER ");
@@ -354,8 +351,8 @@ static void __init amiga_identify(void)
 	AMIGAHW_ANNOUNCE(MAGIC_REKICK, "MAGIC_REKICK ");
 	AMIGAHW_ANNOUNCE(PCMCIA, "PCMCIA ");
 	if (AMIGAHW_PRESENT(ZORRO))
-		printk("ZORRO%s ", AMIGAHW_PRESENT(ZORRO3) ? "3" : "");
-	printk("\n");
+		pr_cont("ZORRO%s ", AMIGAHW_PRESENT(ZORRO3) ? "3" : "");
+	pr_cont("\n");
 
 #undef AMIGAHW_ANNOUNCE
 }
@@ -387,17 +384,8 @@ void __init config_amiga(void)
 	mach_init_IRQ        = amiga_init_IRQ;
 	mach_get_model       = amiga_get_model;
 	mach_get_hardware_list = amiga_get_hardware_list;
-	arch_gettimeoffset   = amiga_gettimeoffset;
-
-	/*
-	 * default MAX_DMA=0xffffffff on all machines. If we don't do so, the SCSI
-	 * code will not be able to allocate any mem for transfers, unless we are
-	 * dealing with a Z2 mem only system.                  /Jes
-	 */
-	mach_max_dma_address = 0xffffffff;
-
 	mach_reset           = amiga_reset;
-#if defined(CONFIG_INPUT_M68K_BEEP) || defined(CONFIG_INPUT_M68K_BEEP_MODULE)
+#if IS_ENABLED(CONFIG_INPUT_M68K_BEEP)
 	mach_beep            = amiga_mksound;
 #endif
 
@@ -424,7 +412,7 @@ void __init config_amiga(void)
 			if (m68k_memory[i].addr < 16*1024*1024) {
 				if (i == 0) {
 					/* don't cut off the branch we're sitting on */
-					printk("Warning: kernel runs in Zorro II memory\n");
+					pr_warn("Warning: kernel runs in Zorro II memory\n");
 					continue;
 				}
 				disabled_z2mem += m68k_memory[i].size;
@@ -435,8 +423,8 @@ void __init config_amiga(void)
 			}
 		}
 		if (disabled_z2mem)
-		printk("%dK of Zorro II memory will not be used as system memory\n",
-		disabled_z2mem>>10);
+			pr_info("%dK of Zorro II memory will not be used as system memory\n",
+				disabled_z2mem>>10);
 	}
 
 	/* request all RAM */
@@ -465,9 +453,30 @@ void __init config_amiga(void)
 		*(unsigned char *)ZTWO_VADDR(0xde0002) |= 0x80;
 }
 
-static unsigned short jiffy_ticks;
+static u64 amiga_read_clk(struct clocksource *cs);
 
-static void __init amiga_sched_init(irq_handler_t timer_routine)
+static struct clocksource amiga_clk = {
+	.name   = "ciab",
+	.rating = 250,
+	.read   = amiga_read_clk,
+	.mask   = CLOCKSOURCE_MASK(32),
+	.flags  = CLOCK_SOURCE_IS_CONTINUOUS,
+};
+
+static unsigned short jiffy_ticks;
+static u32 clk_total, clk_offset;
+
+static irqreturn_t ciab_timer_handler(int irq, void *dev_id)
+{
+	clk_total += jiffy_ticks;
+	clk_offset = 0;
+	legacy_timer_tick(1);
+	timer_heartbeat();
+
+	return IRQ_HANDLED;
+}
+
+static void __init amiga_sched_init(void)
 {
 	static struct resource sched_res = {
 		.name = "timer", .start = 0x00bfd400, .end = 0x00bfd5ff,
@@ -475,7 +484,7 @@ static void __init amiga_sched_init(irq_handler_t timer_routine)
 	jiffy_ticks = DIV_ROUND_CLOSEST(amiga_eclock, HZ);
 
 	if (request_resource(&mb_resources._ciab, &sched_res))
-		printk("Cannot allocate ciab.ta{lo,hi}\n");
+		pr_warn("Cannot allocate ciab.ta{lo,hi}\n");
 	ciab.cra &= 0xC0;   /* turn off timer A, continuous mode, from Eclk */
 	ciab.talo = jiffy_ticks % 256;
 	ciab.tahi = jiffy_ticks / 256;
@@ -485,19 +494,22 @@ static void __init amiga_sched_init(irq_handler_t timer_routine)
 	 * Please don't change this to use ciaa, as it interferes with the
 	 * SCSI code. We'll have to take a look at this later
 	 */
-	if (request_irq(IRQ_AMIGA_CIAB_TA, timer_routine, 0, "timer", NULL))
+	if (request_irq(IRQ_AMIGA_CIAB_TA, ciab_timer_handler, IRQF_TIMER,
+			"timer", NULL))
 		pr_err("Couldn't register timer interrupt\n");
 	/* start timer */
 	ciab.cra |= 0x11;
+
+	clocksource_register_hz(&amiga_clk, amiga_eclock);
 }
 
-#define TICK_SIZE 10000
-
-/* This is always executed with interrupts disabled.  */
-static u32 amiga_gettimeoffset(void)
+static u64 amiga_read_clk(struct clocksource *cs)
 {
 	unsigned short hi, lo, hi2;
-	u32 ticks, offset = 0;
+	unsigned long flags;
+	u32 ticks;
+
+	local_irq_save(flags);
 
 	/* read CIA B timer A current value */
 	hi  = ciab.tahi;
@@ -514,12 +526,14 @@ static u32 amiga_gettimeoffset(void)
 	if (ticks > jiffy_ticks / 2)
 		/* check for pending interrupt */
 		if (cia_set_irq(&ciab_base, 0) & CIA_ICR_TA)
-			offset = 10000;
+			clk_offset = jiffy_ticks;
 
 	ticks = jiffy_ticks - ticks;
-	ticks = (10000 * ticks) / jiffy_ticks;
+	ticks += clk_offset + clk_total;
 
-	return (ticks + offset) * 1000;
+	local_irq_restore(flags);
+
+	return ticks;
 }
 
 static void amiga_reset(void)  __noreturn;
@@ -604,7 +618,7 @@ struct savekmsg {
 	unsigned long magic2;		/* SAVEKMSG_MAGIC2 */
 	unsigned long magicptr;		/* address of magic1 */
 	unsigned long size;
-	char data[0];
+	char data[];
 };
 
 static struct savekmsg *savekmsg;
@@ -787,8 +801,7 @@ static void amiga_get_hardware_list(struct seq_file *m)
 	if (AMIGAHW_PRESENT(name))			\
 		seq_printf (m, "\t%s\n", str)
 
-	seq_printf (m, "Detected hardware:\n");
-
+	seq_puts(m, "Detected hardware:\n");
 	AMIGAHW_ANNOUNCE(AMI_VIDEO, "Amiga Video");
 	AMIGAHW_ANNOUNCE(AMI_BLITTER, "Blitter");
 	AMIGAHW_ANNOUNCE(AMBER_FF, "Amber Flicker Fixer");

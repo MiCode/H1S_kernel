@@ -1,45 +1,9 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /*******************************************************************************
  *
  * Module Name: rslist - Linked list utilities
  *
  ******************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -89,16 +53,23 @@ acpi_rs_convert_aml_to_resources(u8 * aml,
 	/* Get the appropriate conversion info table */
 
 	aml_resource = ACPI_CAST_PTR(union aml_resource, aml);
+
 	if (acpi_ut_get_resource_type(aml) == ACPI_RESOURCE_NAME_SERIAL_BUS) {
-		if (aml_resource->common_serial_bus.type >
-		    AML_RESOURCE_MAX_SERIALBUSTYPE) {
+
+		/* Avoid undefined behavior: member access within misaligned address */
+
+		struct aml_resource_common_serialbus common_serial_bus;
+		memcpy(&common_serial_bus, aml_resource,
+		       sizeof(common_serial_bus));
+
+		if (common_serial_bus.type > AML_RESOURCE_MAX_SERIALBUSTYPE) {
 			conversion_table = NULL;
 		} else {
-			/* This is an I2C, SPI, or UART serial_bus descriptor */
+			/* This is an I2C, SPI, UART, or CSI2 serial_bus descriptor */
 
 			conversion_table =
 			    acpi_gbl_convert_resource_serial_bus_dispatch
-			    [aml_resource->common_serial_bus.type];
+			    [common_serial_bus.type];
 		}
 	} else {
 		conversion_table =
@@ -122,6 +93,11 @@ acpi_rs_convert_aml_to_resources(u8 * aml,
 				"Could not convert AML resource (Type 0x%X)",
 				*aml));
 		return_ACPI_STATUS(status);
+	}
+
+	if (!resource->length) {
+		ACPI_EXCEPTION((AE_INFO, status,
+				"Zero-length resource returned from RsConvertAmlToResource"));
 	}
 
 	ACPI_DEBUG_PRINT((ACPI_DB_RESOURCES,
@@ -193,7 +169,7 @@ acpi_rs_convert_resources_to_aml(struct acpi_resource *resource,
 			    AML_RESOURCE_MAX_SERIALBUSTYPE) {
 				conversion_table = NULL;
 			} else {
-				/* This is an I2C, SPI, or UART serial_bus descriptor */
+				/* This is an I2C, SPI, UART or CSI2 serial_bus descriptor */
 
 				conversion_table =
 				    acpi_gbl_convert_resource_serial_bus_dispatch
@@ -225,10 +201,10 @@ acpi_rs_convert_resources_to_aml(struct acpi_resource *resource,
 
 		/* Perform final sanity check on the new AML resource descriptor */
 
-		status = acpi_ut_validate_resource(NULL,
-						   ACPI_CAST_PTR(union
-								 aml_resource,
-								 aml), NULL);
+		status =
+		    acpi_ut_validate_resource(NULL,
+					      ACPI_CAST_PTR(union aml_resource,
+							    aml), NULL);
 		if (ACPI_FAILURE(status)) {
 			return_ACPI_STATUS(status);
 		}

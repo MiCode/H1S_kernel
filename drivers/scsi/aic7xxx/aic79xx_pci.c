@@ -41,14 +41,8 @@
  * $Id: //depot/aic7xxx/aic7xxx/aic79xx_pci.c#92 $
  */
 
-#ifdef __linux__
 #include "aic79xx_osm.h"
 #include "aic79xx_inline.h"
-#else
-#include <dev/aic7xxx/aic79xx_osm.h>
-#include <dev/aic7xxx/aic79xx_inline.h>
-#endif
-
 #include "aic79xx_pci.h"
 
 static inline uint64_t
@@ -266,8 +260,8 @@ ahd_find_pci_device(ahd_dev_softc_t pci)
 
 	vendor = ahd_pci_read_config(pci, PCIR_DEVVENDOR, /*bytes*/2);
 	device = ahd_pci_read_config(pci, PCIR_DEVICE, /*bytes*/2);
-	subvendor = ahd_pci_read_config(pci, PCIR_SUBVEND_0, /*bytes*/2);
-	subdevice = ahd_pci_read_config(pci, PCIR_SUBDEV_0, /*bytes*/2);
+	subvendor = ahd_pci_read_config(pci, PCI_SUBSYSTEM_VENDOR_ID, /*bytes*/2);
+	subdevice = ahd_pci_read_config(pci, PCI_SUBSYSTEM_ID, /*bytes*/2);
 	full_id = ahd_compose_id(device,
 				 vendor,
 				 subdevice,
@@ -294,19 +288,17 @@ ahd_find_pci_device(ahd_dev_softc_t pci)
 int
 ahd_pci_config(struct ahd_softc *ahd, const struct ahd_pci_identity *entry)
 {
-	struct scb_data *shared_scb_data;
 	u_int		 command;
 	uint32_t	 devconfig;
 	uint16_t	 subvendor; 
 	int		 error;
 
-	shared_scb_data = NULL;
 	ahd->description = entry->name;
 	/*
 	 * Record if this is an HP board.
 	 */
 	subvendor = ahd_pci_read_config(ahd->dev_softc,
-					PCIR_SUBVEND_0, /*bytes*/2);
+					PCI_SUBSYSTEM_VENDOR_ID, /*bytes*/2);
 	if (subvendor == SUBID_HP)
 		ahd->flags |= AHD_HP_BOARD;
 
@@ -385,8 +377,7 @@ ahd_pci_config(struct ahd_softc *ahd, const struct ahd_pci_identity *entry)
 	return ahd_pci_map_int(ahd);
 }
 
-#ifdef CONFIG_PM
-void
+void __maybe_unused
 ahd_pci_suspend(struct ahd_softc *ahd)
 {
 	/*
@@ -402,7 +393,7 @@ ahd_pci_suspend(struct ahd_softc *ahd)
 
 }
 
-void
+void __maybe_unused
 ahd_pci_resume(struct ahd_softc *ahd)
 {
 	ahd_pci_write_config(ahd->dev_softc, DEVCONFIG,
@@ -412,7 +403,6 @@ ahd_pci_resume(struct ahd_softc *ahd)
 	ahd_pci_write_config(ahd->dev_softc, CSIZE_LATTIME,
 			     ahd->suspend_state.pci_state.csize_lattime, /*bytes*/1);
 }
-#endif
 
 /*
  * Perform some simple tests that should catch situations where
@@ -827,7 +817,7 @@ ahd_pci_intr(struct ahd_softc *ahd)
 		for (bit = 0; bit < 8; bit++) {
 
 			if ((pci_status[i] & (0x1 << bit)) != 0) {
-				static const char *s;
+				const char *s;
 
 				s = pci_status_strings[bit];
 				if (i == 7/*TARG*/ && bit == 3)
@@ -887,23 +877,15 @@ ahd_pci_split_intr(struct ahd_softc *ahd, u_int intstat)
 
 		for (bit = 0; bit < 8; bit++) {
 
-			if ((split_status[i] & (0x1 << bit)) != 0) {
-				static const char *s;
-
-				s = split_status_strings[bit];
-				printk(s, ahd_name(ahd),
+			if ((split_status[i] & (0x1 << bit)) != 0)
+				printk(split_status_strings[bit], ahd_name(ahd),
 				       split_status_source[i]);
-			}
 
 			if (i > 1)
 				continue;
 
-			if ((sg_split_status[i] & (0x1 << bit)) != 0) {
-				static const char *s;
-
-				s = split_status_strings[bit];
-				printk(s, ahd_name(ahd), "SG");
-			}
+			if ((sg_split_status[i] & (0x1 << bit)) != 0)
+				printk(split_status_strings[bit], ahd_name(ahd), "SG");
 		}
 	}
 	/*

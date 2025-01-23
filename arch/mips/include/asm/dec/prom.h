@@ -1,14 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *	include/asm-mips/dec/prom.h
  *
  *	DECstation PROM interface.
  *
  *	Copyright (C) 2002  Maciej W. Rozycki
- *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License
- *	as published by the Free Software Foundation; either version
- *	2 of the License, or (at your option) any later version.
  *
  *	Based on arch/mips/dec/prom/prom.h by the Anonymous.
  */
@@ -47,16 +43,11 @@
  */
 #define REX_PROM_MAGIC		0x30464354
 
-#ifdef CONFIG_64BIT
-
-#define prom_is_rex(magic)	1	/* KN04 and KN05 are REX PROMs.  */
-
-#else /* !CONFIG_64BIT */
-
-#define prom_is_rex(magic)	((magic) == REX_PROM_MAGIC)
-
-#endif /* !CONFIG_64BIT */
-
+/* KN04 and KN05 are REX PROMs, so only do the check for R3k systems.  */
+static inline bool prom_is_rex(u32 magic)
+{
+	return !IS_ENABLED(CONFIG_CPU_R3000) || magic == REX_PROM_MAGIC;
+}
 
 /*
  * 3MIN/MAXINE PROM entry points for DS5000/1xx's, DS5000/xx's and
@@ -79,7 +70,7 @@
  */
 typedef struct {
 	int pagesize;
-	unsigned char bitmap[0];
+	unsigned char bitmap[];
 } memmap;
 
 
@@ -113,31 +104,31 @@ extern int (*__pmax_close)(int);
 #define __DEC_PROM_O32(fun, arg) fun arg __asm__(#fun); \
 				 __asm__(#fun " = call_o32")
 
-int __DEC_PROM_O32(_rex_bootinit, (int (*)(void)));
-int __DEC_PROM_O32(_rex_bootread, (int (*)(void)));
-int __DEC_PROM_O32(_rex_getbitmap, (int (*)(memmap *), memmap *));
+int __DEC_PROM_O32(_rex_bootinit, (int (*)(void), void *));
+int __DEC_PROM_O32(_rex_bootread, (int (*)(void), void *));
+int __DEC_PROM_O32(_rex_getbitmap, (int (*)(memmap *), void *, memmap *));
 unsigned long *__DEC_PROM_O32(_rex_slot_address,
-			     (unsigned long *(*)(int), int));
-void *__DEC_PROM_O32(_rex_gettcinfo, (void *(*)(void)));
-int __DEC_PROM_O32(_rex_getsysid, (int (*)(void)));
-void __DEC_PROM_O32(_rex_clear_cache, (void (*)(void)));
+			     (unsigned long *(*)(int), void *, int));
+void *__DEC_PROM_O32(_rex_gettcinfo, (void *(*)(void), void *));
+int __DEC_PROM_O32(_rex_getsysid, (int (*)(void), void *));
+void __DEC_PROM_O32(_rex_clear_cache, (void (*)(void), void *));
 
-int __DEC_PROM_O32(_prom_getchar, (int (*)(void)));
-char *__DEC_PROM_O32(_prom_getenv, (char *(*)(char *), char *));
-int __DEC_PROM_O32(_prom_printf, (int (*)(char *, ...), char *, ...));
+int __DEC_PROM_O32(_prom_getchar, (int (*)(void), void *));
+char *__DEC_PROM_O32(_prom_getenv, (char *(*)(char *), void *, char *));
+int __DEC_PROM_O32(_prom_printf, (int (*)(char *, ...), void *, char *, ...));
 
 
-#define rex_bootinit()		_rex_bootinit(__rex_bootinit)
-#define rex_bootread()		_rex_bootread(__rex_bootread)
-#define rex_getbitmap(x)	_rex_getbitmap(__rex_getbitmap, x)
-#define rex_slot_address(x)	_rex_slot_address(__rex_slot_address, x)
-#define rex_gettcinfo()		_rex_gettcinfo(__rex_gettcinfo)
-#define rex_getsysid()		_rex_getsysid(__rex_getsysid)
-#define rex_clear_cache()	_rex_clear_cache(__rex_clear_cache)
+#define rex_bootinit()		_rex_bootinit(__rex_bootinit, NULL)
+#define rex_bootread()		_rex_bootread(__rex_bootread, NULL)
+#define rex_getbitmap(x)	_rex_getbitmap(__rex_getbitmap, NULL, x)
+#define rex_slot_address(x)	_rex_slot_address(__rex_slot_address, NULL, x)
+#define rex_gettcinfo()		_rex_gettcinfo(__rex_gettcinfo, NULL)
+#define rex_getsysid()		_rex_getsysid(__rex_getsysid, NULL)
+#define rex_clear_cache()	_rex_clear_cache(__rex_clear_cache, NULL)
 
-#define prom_getchar()		_prom_getchar(__prom_getchar)
-#define prom_getenv(x)		_prom_getenv(__prom_getenv, x)
-#define prom_printf(x...)	_prom_printf(__prom_printf, x)
+#define prom_getchar()		_prom_getchar(__prom_getchar, NULL)
+#define prom_getenv(x)		_prom_getenv(__prom_getenv, NULL, x)
+#define prom_printf(x...)	_prom_printf(__prom_printf, NULL, x)
 
 #else /* !CONFIG_64BIT */
 

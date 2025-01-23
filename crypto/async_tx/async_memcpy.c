@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * copy offload engine support
  *
@@ -8,20 +9,6 @@
  *      with architecture considerations by:
  *      Neil Brown <neilb@suse.de>
  *      Jeff Garzik <jeff@garzik.org>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 #include <linux/kernel.h>
 #include <linux/highmem.h>
@@ -53,7 +40,7 @@ async_memcpy(struct page *dest, struct page *src, unsigned int dest_offset,
 	struct dmaengine_unmap_data *unmap = NULL;
 
 	if (device)
-		unmap = dmaengine_get_unmap_data(device->dev, 2, GFP_NOIO);
+		unmap = dmaengine_get_unmap_data(device->dev, 2, GFP_NOWAIT);
 
 	if (unmap && is_dma_copy_aligned(device, src_offset, dest_offset, len)) {
 		unsigned long dma_prep_flags = 0;

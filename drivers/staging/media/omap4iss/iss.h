@@ -1,26 +1,24 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * TI OMAP4 ISS V4L2 Driver
  *
  * Copyright (C) 2012 Texas Instruments.
  *
  * Author: Sergio Aguirre <sergio.a.aguirre@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #ifndef _OMAP4_ISS_H_
 #define _OMAP4_ISS_H_
 
 #include <media/v4l2-device.h>
+#include <media/v4l2-mc.h>
+
 #include <linux/device.h>
 #include <linux/io.h>
 #include <linux/platform_device.h>
 #include <linux/wait.h>
 
-#include <media/omap4iss.h>
+#include <linux/platform_data/media/omap4iss.h>
 
 #include "iss_regs.h"
 #include "iss_csiphy.h"
@@ -28,6 +26,8 @@
 #include "iss_ipipeif.h"
 #include "iss_ipipe.h"
 #include "iss_resizer.h"
+
+struct regmap;
 
 #define to_iss_device(ptr_module)				\
 	container_of(ptr_module, struct iss_device, ptr_module)
@@ -79,7 +79,8 @@ struct iss_reg {
 
 /*
  * struct iss_device - ISS device structure.
- * @crashed: Bitmask of crashed entities (indexed by entity ID)
+ * @syscon: Regmap for the syscon register space
+ * @crashed: Crashed entities
  */
 struct iss_device {
 	struct v4l2_device v4l2_dev;
@@ -93,11 +94,12 @@ struct iss_device {
 
 	struct resource *res[OMAP4_ISS_MEM_LAST];
 	void __iomem *regs[OMAP4_ISS_MEM_LAST];
+	struct regmap *syscon;
 
 	u64 raw_dmamask;
 
 	struct mutex iss_mutex;	/* For handling ref_count field */
-	bool crashed;
+	struct media_entity_enum crashed;
 	int has_context;
 	int ref_count;
 
@@ -116,9 +118,6 @@ struct iss_device {
 	unsigned int subclk_resources;
 	unsigned int isp_subclk_resources;
 };
-
-#define v4l2_dev_to_iss_device(dev) \
-	container_of(dev, struct iss_device, v4l2_dev)
 
 int omap4iss_get_external_info(struct iss_pipeline *pipe,
 			       struct media_link *link);
@@ -146,8 +145,6 @@ void omap4iss_isp_subclk_enable(struct iss_device *iss,
 				enum iss_isp_subclk_resource res);
 void omap4iss_isp_subclk_disable(struct iss_device *iss,
 				 enum iss_isp_subclk_resource res);
-
-int omap4iss_pipeline_pm_use(struct media_entity *entity, int use);
 
 int omap4iss_register_entities(struct platform_device *pdev,
 			       struct v4l2_device *v4l2_dev);
@@ -232,5 +229,19 @@ void iss_reg_update(struct iss_device *iss, enum iss_mem_resources res,
 
 	iss_reg_write(iss, res, offset, (v & ~clr) | set);
 }
+
+#define iss_poll_condition_timeout(cond, timeout, min_ival, max_ival)	\
+({									\
+	unsigned long __timeout = jiffies + usecs_to_jiffies(timeout);	\
+	unsigned int __min_ival = (min_ival);				\
+	unsigned int __max_ival = (max_ival);				\
+	bool __cond;							\
+	while (!(__cond = (cond))) {					\
+		if (time_after(jiffies, __timeout))			\
+			break;						\
+		usleep_range(__min_ival, __max_ival);			\
+	}								\
+	!__cond;							\
+})
 
 #endif /* _OMAP4_ISS_H_ */

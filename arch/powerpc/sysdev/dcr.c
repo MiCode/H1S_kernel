@@ -1,27 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * (c) Copyright 2006 Benjamin Herrenschmidt, IBM Corp.
  *                    <benh@kernel.crashing.org>
- *
- *   This program is free software;  you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY;  without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- *   the GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program;  if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #undef DEBUG
 
 #include <linux/kernel.h>
 #include <linux/export.h>
-#include <asm/prom.h>
+#include <linux/of_address.h>
 #include <asm/dcr.h>
 
 #ifdef CONFIG_PPC_DCR_MMIO
@@ -31,7 +18,7 @@ static struct device_node *find_dcr_parent(struct device_node *node)
 	const u32 *p;
 
 	for (par = of_node_get(node); par;) {
-		if (of_get_property(par, "dcr-controller", NULL))
+		if (of_property_read_bool(par, "dcr-controller"))
 			break;
 		p = of_get_property(par, "dcr-parent", NULL);
 		tmp = par;
@@ -54,7 +41,7 @@ bool dcr_map_ok_generic(dcr_host_t host)
 	else if (host.type == DCR_HOST_MMIO)
 		return dcr_map_ok_mmio(host.host.mmio);
 	else
-		return 0;
+		return false;
 }
 EXPORT_SYMBOL_GPL(dcr_map_ok_generic);
 
@@ -152,9 +139,9 @@ EXPORT_SYMBOL_GPL(dcr_resource_len);
 
 #ifdef CONFIG_PPC_DCR_MMIO
 
-u64 of_translate_dcr_address(struct device_node *dev,
-			     unsigned int dcr_n,
-			     unsigned int *out_stride)
+static u64 of_translate_dcr_address(struct device_node *dev,
+				    unsigned int dcr_n,
+				    unsigned int *out_stride)
 {
 	struct device_node *dp;
 	const u32 *p;
@@ -195,8 +182,8 @@ dcr_host_mmio_t dcr_map_mmio(struct device_node *dev,
 	dcr_host_mmio_t ret = { .token = NULL, .stride = 0, .base = dcr_n };
 	u64 addr;
 
-	pr_debug("dcr_map(%s, 0x%x, 0x%x)\n",
-		 dev->full_name, dcr_n, dcr_c);
+	pr_debug("dcr_map(%pOF, 0x%x, 0x%x)\n",
+		 dev, dcr_n, dcr_c);
 
 	addr = of_translate_dcr_address(dev, dcr_n, &ret.stride);
 	pr_debug("translates to addr: 0x%llx, stride: 0x%x\n",
@@ -230,5 +217,6 @@ EXPORT_SYMBOL_GPL(dcr_unmap_mmio);
 
 #ifdef CONFIG_PPC_DCR_NATIVE
 DEFINE_SPINLOCK(dcr_ind_lock);
+EXPORT_SYMBOL_GPL(dcr_ind_lock);
 #endif	/* defined(CONFIG_PPC_DCR_NATIVE) */
 

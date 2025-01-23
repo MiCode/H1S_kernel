@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Renesas Technology Europe RSK+ Support.
  *
  * Copyright (C) 2008 Paul Mundt
  * Copyright (C) 2008 Peter Griffin <pgriffin@mpc-data.co.uk>
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/init.h>
 #include <linux/types.h>
@@ -26,8 +23,6 @@ static struct regulator_consumer_supply dummy_supplies[] = {
 	REGULATOR_SUPPLY("vddvario", "smsc911x"),
 	REGULATOR_SUPPLY("vdd33a", "smsc911x"),
 };
-
-static const char *part_probes[] = { "cmdlinepart", NULL };
 
 static struct mtd_partition rsk_partitions[] = {
 	{
@@ -50,7 +45,6 @@ static struct physmap_flash_data flash_data = {
 	.parts			= rsk_partitions,
 	.nr_parts		= ARRAY_SIZE(rsk_partitions),
 	.width			= 2,
-	.part_probe_types	= part_probes,
 };
 
 static struct resource flash_resource = {

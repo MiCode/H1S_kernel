@@ -1,14 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * max9877.c  --  amp driver for max9877
  *
  * Copyright (C) 2009 Samsung Electronics Co.Ltd
  * Author: Joonyoung Shim <jy0922.shim@samsung.com>
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #include <linux/module.h>
@@ -20,9 +15,7 @@
 
 #include "max9877.h"
 
-static struct regmap *regmap;
-
-static struct reg_default max9877_regs[] = {
+static const struct reg_default max9877_regs[] = {
 	{ 0, 0x40 },
 	{ 1, 0x00 },
 	{ 2, 0x00 },
@@ -30,19 +23,17 @@ static struct reg_default max9877_regs[] = {
 	{ 4, 0x49 },
 };
 
-static const unsigned int max9877_pgain_tlv[] = {
-	TLV_DB_RANGE_HEAD(2),
+static const DECLARE_TLV_DB_RANGE(max9877_pgain_tlv,
 	0, 1, TLV_DB_SCALE_ITEM(0, 900, 0),
-	2, 2, TLV_DB_SCALE_ITEM(2000, 0, 0),
-};
+	2, 2, TLV_DB_SCALE_ITEM(2000, 0, 0)
+);
 
-static const unsigned int max9877_output_tlv[] = {
-	TLV_DB_RANGE_HEAD(4),
+static const DECLARE_TLV_DB_RANGE(max9877_output_tlv,
 	0, 7, TLV_DB_SCALE_ITEM(-7900, 400, 1),
 	8, 15, TLV_DB_SCALE_ITEM(-4700, 300, 0),
 	16, 23, TLV_DB_SCALE_ITEM(-2300, 200, 0),
-	24, 31, TLV_DB_SCALE_ITEM(-700, 100, 0),
-};
+	24, 31, TLV_DB_SCALE_ITEM(-700, 100, 0)
+);
 
 static const char *max9877_out_mode[] = {
 	"INA -> SPK",
@@ -123,7 +114,7 @@ static const struct snd_soc_dapm_route max9877_dapm_routes[] = {
 	{ "HPR", NULL, "SHDN" },
 };
 
-static const struct snd_soc_codec_driver max9877_codec = {
+static const struct snd_soc_component_driver max9877_component_driver = {
 	.controls = max9877_controls,
 	.num_controls = ARRAY_SIZE(max9877_controls),
 
@@ -142,9 +133,9 @@ static const struct regmap_config max9877_regmap = {
 	.cache_type = REGCACHE_RBTREE,
 };
 
-static int max9877_i2c_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static int max9877_i2c_probe(struct i2c_client *client)
 {
+	struct regmap *regmap;
 	int i;
 
 	regmap = devm_regmap_init_i2c(client, &max9877_regmap);
@@ -155,14 +146,8 @@ static int max9877_i2c_probe(struct i2c_client *client,
 	for (i = 0; i < ARRAY_SIZE(max9877_regs); i++)
 		regmap_write(regmap, max9877_regs[i].reg, max9877_regs[i].def);
 
-	return snd_soc_register_codec(&client->dev, &max9877_codec, NULL, 0);
-}
-
-static int max9877_i2c_remove(struct i2c_client *client)
-{
-	snd_soc_unregister_codec(&client->dev);
-
-	return 0;
+	return devm_snd_soc_register_component(&client->dev,
+			&max9877_component_driver, NULL, 0);
 }
 
 static const struct i2c_device_id max9877_i2c_id[] = {
@@ -174,10 +159,8 @@ MODULE_DEVICE_TABLE(i2c, max9877_i2c_id);
 static struct i2c_driver max9877_i2c_driver = {
 	.driver = {
 		.name = "max9877",
-		.owner = THIS_MODULE,
 	},
 	.probe = max9877_i2c_probe,
-	.remove = max9877_i2c_remove,
 	.id_table = max9877_i2c_id,
 };
 

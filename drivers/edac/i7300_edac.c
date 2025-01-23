@@ -1,13 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Intel 7300 class Memory Controllers kernel module (Clarksboro)
  *
- * This file may be distributed under the terms of the
- * GNU General Public License version 2 only.
- *
  * Copyright (c) 2010 by:
- *	 Mauro Carvalho Chehab <mchehab@redhat.com>
+ *	 Mauro Carvalho Chehab
  *
- * Red Hat Inc. http://www.redhat.com
+ * Red Hat Inc. https://www.redhat.com
  *
  * Intel 7300 Chipset Memory Controller Hub (MCH) - Datasheet
  *	http://www.intel.com/Assets/PDF/datasheet/318082.pdf
@@ -26,7 +24,7 @@
 #include <linux/edac.h>
 #include <linux/mmzone.h>
 
-#include "edac_core.h"
+#include "edac_module.h"
 
 /*
  * Alter this version for the I7300 module when modifications are made
@@ -304,7 +302,6 @@ static const char *ferr_global_lo_name[] = {
 #define REDMEMA		0xdc
 
 #define REDMEMB		0x7c
-  #define IS_SECOND_CH(v)	((v) * (1 << 17))
 
 #define RECMEMA		0xe0
   #define RECMEMA_BANK(v)	(((v) >> 12) & 7)
@@ -483,8 +480,9 @@ static void i7300_process_fbd_error(struct mem_ctl_info *mci)
 		pci_read_config_dword(pvt->pci_dev_16_1_fsb_addr_map,
 				     REDMEMB, &value);
 		channel = (branch << 1);
-		if (IS_SECOND_CH(value))
-			channel++;
+
+		/* Second channel ? */
+		channel += !!(value & BIT(17));
 
 		/* Clear the error bit */
 		pci_write_config_dword(pvt->pci_dev_16_1_fsb_addr_map,
@@ -582,7 +580,7 @@ static void i7300_enable_error_reporting(struct mem_ctl_info *mci)
  * @ch: Channel number within the branch (0 or 1)
  * @branch: Branch number (0 or 1)
  * @dinfo: Pointer to DIMM info where dimm size is stored
- * @p_csrow: Pointer to the struct csrow_info that corresponds to that element
+ * @dimm: Pointer to the struct dimm_info that corresponds to that element
  */
 static int decode_mtr(struct i7300_pvt *pvt,
 		      int slot, int ch, int branch,
@@ -796,8 +794,7 @@ static int i7300_init_csrows(struct mem_ctl_info *mci)
 			for (ch = 0; ch < max_channel; ch++) {
 				int channel = to_channel(ch, branch);
 
-				dimm = EDAC_DIMM_PTR(mci->layers, mci->dimms,
-					       mci->n_layers, branch, ch, slot);
+				dimm = edac_get_dimm(mci, branch, ch, slot);
 
 				dinfo = &pvt->dimm_info[slot][channel];
 
@@ -819,7 +816,7 @@ static int i7300_init_csrows(struct mem_ctl_info *mci)
 
 /**
  * decode_mir() - Decodes Memory Interleave Register (MIR) info
- * @int mir_no: number of the MIR register to decode
+ * @mir_no: number of the MIR register to decode
  * @mir: array with the MIR data cached on the driver
  */
 static void decode_mir(int mir_no, u16 mir[MAX_MIR])
@@ -943,31 +940,33 @@ static int i7300_get_devices(struct mem_ctl_info *mci)
 
 	/* Attempt to 'get' the MCH register we want */
 	pdev = NULL;
-	while (!pvt->pci_dev_16_1_fsb_addr_map ||
-	       !pvt->pci_dev_16_2_fsb_err_regs) {
-		pdev = pci_get_device(PCI_VENDOR_ID_INTEL,
-				      PCI_DEVICE_ID_INTEL_I7300_MCH_ERR, pdev);
-		if (!pdev) {
-			/* End of list, leave */
-			i7300_printk(KERN_ERR,
-				"'system address,Process Bus' "
-				"device not found:"
-				"vendor 0x%x device 0x%x ERR funcs "
-				"(broken BIOS?)\n",
-				PCI_VENDOR_ID_INTEL,
-				PCI_DEVICE_ID_INTEL_I7300_MCH_ERR);
-			goto error;
-		}
-
+	while ((pdev = pci_get_device(PCI_VENDOR_ID_INTEL,
+				      PCI_DEVICE_ID_INTEL_I7300_MCH_ERR,
+				      pdev))) {
 		/* Store device 16 funcs 1 and 2 */
 		switch (PCI_FUNC(pdev->devfn)) {
 		case 1:
-			pvt->pci_dev_16_1_fsb_addr_map = pdev;
+			if (!pvt->pci_dev_16_1_fsb_addr_map)
+				pvt->pci_dev_16_1_fsb_addr_map =
+							pci_dev_get(pdev);
 			break;
 		case 2:
-			pvt->pci_dev_16_2_fsb_err_regs = pdev;
+			if (!pvt->pci_dev_16_2_fsb_err_regs)
+				pvt->pci_dev_16_2_fsb_err_regs =
+							pci_dev_get(pdev);
 			break;
 		}
+	}
+
+	if (!pvt->pci_dev_16_1_fsb_addr_map ||
+	    !pvt->pci_dev_16_2_fsb_err_regs) {
+		/* At least one device was not found */
+		i7300_printk(KERN_ERR,
+			"'system address,Process Bus' device not found:"
+			"vendor 0x%x device 0x%x ERR funcs (broken BIOS?)\n",
+			PCI_VENDOR_ID_INTEL,
+			PCI_DEVICE_ID_INTEL_I7300_MCH_ERR);
+		goto error;
 	}
 
 	edac_dbg(1, "System Address, processor bus- PCI Bus ID: %s  %x:%x\n",
@@ -1075,7 +1074,6 @@ static int i7300_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	mci->edac_ctl_cap = EDAC_FLAG_NONE;
 	mci->edac_cap = EDAC_FLAG_NONE;
 	mci->mod_name = "i7300_edac.c";
-	mci->mod_ver = I7300_REVISION;
 	mci->ctl_name = i7300_devs[0].ctl_name;
 	mci->dev_name = pci_name(pdev);
 	mci->ctl_page_to_phys = NULL;
@@ -1195,7 +1193,7 @@ static int __init i7300_init(void)
 }
 
 /**
- * i7300_init() - Unregisters the driver
+ * i7300_exit() - Unregisters the driver
  */
 static void __exit i7300_exit(void)
 {
@@ -1207,8 +1205,8 @@ module_init(i7300_init);
 module_exit(i7300_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Mauro Carvalho Chehab <mchehab@redhat.com>");
-MODULE_AUTHOR("Red Hat Inc. (http://www.redhat.com)");
+MODULE_AUTHOR("Mauro Carvalho Chehab");
+MODULE_AUTHOR("Red Hat Inc. (https://www.redhat.com)");
 MODULE_DESCRIPTION("MC Driver for Intel I7300 memory controllers - "
 		   I7300_REVISION);
 

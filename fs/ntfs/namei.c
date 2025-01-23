@@ -1,23 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * namei.c - NTFS kernel directory inode operations. Part of the Linux-NTFS
  *	     project.
  *
  * Copyright (c) 2001-2006 Anton Altaparmakov
- *
- * This program/include file is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as published
- * by the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program/include file is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program (in the main directory of the Linux-NTFS
- * distribution in the file COPYING); if not, write to the Free Software
- * Foundation,Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/dcache.h>
@@ -35,7 +21,7 @@
  * ntfs_lookup - find the inode represented by a dentry in a directory inode
  * @dir_ino:	directory inode in which to look for the inode
  * @dent:	dentry representing the inode to look for
- * @nd:		lookup nameidata
+ * @flags:	lookup flags
  *
  * In short, ntfs_lookup() looks for the inode represented by the dentry @dent
  * in the directory inode @dir_ino and if found attaches the inode to the
@@ -111,8 +97,8 @@ static struct dentry *ntfs_lookup(struct inode *dir_ino, struct dentry *dent,
 	unsigned long dent_ino;
 	int uname_len;
 
-	ntfs_debug("Looking up %s in directory inode 0x%lx.",
-			dent->d_name.name, dir_ino->i_ino);
+	ntfs_debug("Looking up %pd in directory inode 0x%lx.",
+			dent, dir_ino->i_ino);
 	/* Convert the name of the dentry to Unicode. */
 	uname_len = ntfs_nlstoucs(vol, dent->d_name.name, dent->d_name.len,
 			&uname);
@@ -129,7 +115,7 @@ static struct dentry *ntfs_lookup(struct inode *dir_ino, struct dentry *dent,
 		dent_ino = MREF(mref);
 		ntfs_debug("Found inode 0x%lx. Calling ntfs_iget.", dent_ino);
 		dent_inode = ntfs_iget(vol->sb, dent_ino);
-		if (likely(!IS_ERR(dent_inode))) {
+		if (!IS_ERR(dent_inode)) {
 			/* Consistency check. */
 			if (is_bad_inode(dent_inode) || MSEQNO(mref) ==
 					NTFS_I(dent_inode)->seq_no ||
@@ -159,7 +145,7 @@ static struct dentry *ntfs_lookup(struct inode *dir_ino, struct dentry *dent,
 					PTR_ERR(dent_inode));
 		kfree(name);
 		/* Return the error code. */
-		return (struct dentry *)dent_inode;
+		return ERR_CAST(dent_inode);
 	}
 	/* It is guaranteed that @name is no longer allocated at this point. */
 	if (MREF_ERR(mref) == -ENOENT) {
@@ -253,7 +239,7 @@ handle_name:
 		err = (signed)nls_name.len;
 		goto err_out;
 	}
-	nls_name.hash = full_name_hash(nls_name.name, nls_name.len);
+	nls_name.hash = full_name_hash(dent, nls_name.name, nls_name.len);
 
 	dent = d_add_ci(dent, dent_inode, &nls_name);
 	kfree(nls_name.name);
@@ -273,7 +259,7 @@ err_out:
    }
 }
 
-/**
+/*
  * Inode operations for directories.
  */
 const struct inode_operations ntfs_dir_inode_ops = {
@@ -292,14 +278,14 @@ const struct inode_operations ntfs_dir_inode_ops = {
  * The code is based on the ext3 ->get_parent() implementation found in
  * fs/ext3/namei.c::ext3_get_parent().
  *
- * Note: ntfs_get_parent() is called with @child_dent->d_inode->i_mutex down.
+ * Note: ntfs_get_parent() is called with @d_inode(child_dent)->i_mutex down.
  *
  * Return the dentry of the parent directory on success or the error code on
  * error (IS_ERR() is true).
  */
 static struct dentry *ntfs_get_parent(struct dentry *child_dent)
 {
-	struct inode *vi = child_dent->d_inode;
+	struct inode *vi = d_inode(child_dent);
 	ntfs_inode *ni = NTFS_I(vi);
 	MFT_RECORD *mrec;
 	ntfs_attr_search_ctx *ctx;
@@ -312,7 +298,7 @@ static struct dentry *ntfs_get_parent(struct dentry *child_dent)
 	/* Get the mft record of the inode belonging to the child dentry. */
 	mrec = map_mft_record(ni);
 	if (IS_ERR(mrec))
-		return (struct dentry *)mrec;
+		return ERR_CAST(mrec);
 	/* Find the first file name attribute in the mft record. */
 	ctx = ntfs_attr_get_search_ctx(ni, mrec);
 	if (unlikely(!ctx)) {
@@ -378,7 +364,7 @@ static struct dentry *ntfs_fh_to_parent(struct super_block *sb, struct fid *fid,
 				    ntfs_nfs_get_inode);
 }
 
-/**
+/*
  * Export operations allowing NFS exporting of mounted NTFS partitions.
  *
  * We use the default ->encode_fh() for now.  Note that they

@@ -1,25 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
     tda18271-priv.h - private header for the NXP TDA18271 silicon tuner
 
     Copyright (C) 2007, 2008 Michael Krufky <mkrufky@linuxtv.org>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
 #ifndef __TDA18271_PRIV_H__
 #define __TDA18271_PRIV_H__
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -139,8 +129,8 @@ extern int tda18271_debug;
 #define DBG_CAL  16
 
 __attribute__((format(printf, 4, 5)))
-int _tda_printk(struct tda18271_priv *state, const char *level,
-		const char *func, const char *fmt, ...);
+void _tda_printk(struct tda18271_priv *state, const char *level,
+		 const char *func, const char *fmt, ...);
 
 #define tda_printk(st, lvl, fmt, arg...)			\
 	_tda_printk(st, lvl, __func__, fmt, ##arg)
@@ -226,11 +216,3 @@ extern int tda18271_calc_ir_measure(struct dvb_frontend *fe, u32 *freq);
 extern int tda18271_calc_rf_cal(struct dvb_frontend *fe, u32 *freq);
 
 #endif /* __TDA18271_PRIV_H__ */
-
-/*
- * Overrides for Emacs so that we follow Linus's tabbing style.
- * ---------------------------------------------------------------------------
- * Local variables:
- * c-basic-offset: 8
- * End:
- */

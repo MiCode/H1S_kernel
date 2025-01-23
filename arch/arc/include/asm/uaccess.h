@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * vineetg: June 2010
  *    -__clear_user( ) called multiple times during elf load was byte loop
@@ -24,38 +21,7 @@
 #ifndef _ASM_ARC_UACCESS_H
 #define _ASM_ARC_UACCESS_H
 
-#include <linux/sched.h>
-#include <asm/errno.h>
 #include <linux/string.h>	/* for generic string functions */
-
-
-#define __kernel_ok		(segment_eq(get_fs(), KERNEL_DS))
-
-/*
- * Algorthmically, for __user_ok() we want do:
- * 	(start < TASK_SIZE) && (start+len < TASK_SIZE)
- * where TASK_SIZE could either be retrieved from thread_info->addr_limit or
- * emitted directly in code.
- *
- * This can however be rewritten as follows:
- *	(len <= TASK_SIZE) && (start+len < TASK_SIZE)
- *
- * Because it essentially checks if buffer end is within limit and @len is
- * non-ngeative, which implies that buffer start will be within limit too.
- *
- * The reason for rewriting being, for majority of cases, @len is generally
- * compile time constant, causing first sub-expression to be compile time
- * subsumed.
- *
- * The second part would generate weird large LIMMs e.g. (0x6000_0000 - 0x10),
- * so we check for TASK_SIZE using get_fs() since the addr_limit load from mem
- * would already have been done at this call site for __kernel_ok()
- *
- */
-#define __user_ok(addr, sz)	(((sz) <= TASK_SIZE) && \
-				 ((addr) <= (get_fs() - (sz))))
-#define __access_ok(addr, sz)	(unlikely(__kernel_ok) || \
-				 likely(__user_ok((addr), (sz))))
 
 /*********** Single byte/hword/word copies ******************/
 
@@ -83,7 +49,10 @@
 	"2:	;nop\n"				\
 	"	.section .fixup, \"ax\"\n"	\
 	"	.align 4\n"			\
-	"3:	mov %0, %3\n"			\
+	"3:	# return -EFAULT\n"		\
+	"	mov %0, %3\n"			\
+	"	# zero out dst ptr\n"		\
+	"	mov %1,  0\n"			\
 	"	j   2b\n"			\
 	"	.previous\n"			\
 	"	.section __ex_table, \"a\"\n"	\
@@ -101,7 +70,11 @@
 	"2:	;nop\n"				\
 	"	.section .fixup, \"ax\"\n"	\
 	"	.align 4\n"			\
-	"3:	mov %0, %3\n"			\
+	"3:	# return -EFAULT\n"		\
+	"	mov %0, %3\n"			\
+	"	# zero out dst ptr\n"		\
+	"	mov %1,  0\n"			\
+	"	mov %R1, 0\n"			\
 	"	j   2b\n"			\
 	"	.previous\n"			\
 	"	.section __ex_table, \"a\"\n"	\
@@ -163,7 +136,7 @@
 
 
 static inline unsigned long
-__arc_copy_from_user(void *to, const void __user *from, unsigned long n)
+raw_copy_from_user(void *to, const void __user *from, unsigned long n)
 {
 	long res = 0;
 	char val;
@@ -173,8 +146,9 @@ __arc_copy_from_user(void *to, const void __user *from, unsigned long n)
 	if (n == 0)
 		return 0;
 
-	/* unaligned */
-	if (((unsigned long)to & 0x3) || ((unsigned long)from & 0x3)) {
+	/* fallback for unaligned access when hardware doesn't support */
+	if (!IS_ENABLED(CONFIG_ARC_USE_UNALIGNED_MEM_ACCESS) &&
+	     (((unsigned long)to & 0x3) || ((unsigned long)from & 0x3))) {
 
 		unsigned char tmp;
 
@@ -202,7 +176,7 @@ __arc_copy_from_user(void *to, const void __user *from, unsigned long n)
 		*/
 		  "=&r" (tmp), "+r" (to), "+r" (from)
 		:
-		: "lp_count", "lp_start", "lp_end", "memory");
+		: "lp_count", "memory");
 
 		return n;
 	}
@@ -389,11 +363,8 @@ __arc_copy_from_user(void *to, const void __user *from, unsigned long n)
 	return res;
 }
 
-extern unsigned long slowpath_copy_to_user(void __user *to, const void *from,
-					   unsigned long n);
-
 static inline unsigned long
-__arc_copy_to_user(void __user *to, const void *from, unsigned long n)
+raw_copy_to_user(void __user *to, const void *from, unsigned long n)
 {
 	long res = 0;
 	char val;
@@ -403,8 +374,9 @@ __arc_copy_to_user(void __user *to, const void *from, unsigned long n)
 	if (n == 0)
 		return 0;
 
-	/* unaligned */
-	if (((unsigned long)to & 0x3) || ((unsigned long)from & 0x3)) {
+	/* fallback for unaligned access when hardware doesn't support */
+	if (!IS_ENABLED(CONFIG_ARC_USE_UNALIGNED_MEM_ACCESS) &&
+	     (((unsigned long)to & 0x3) || ((unsigned long)from & 0x3))) {
 
 		unsigned char tmp;
 
@@ -431,7 +403,7 @@ __arc_copy_to_user(void __user *to, const void *from, unsigned long n)
 		 */
 		  "=&r" (tmp), "+r" (to), "+r" (from)
 		:
-		: "lp_count", "lp_start", "lp_end", "memory");
+		: "lp_count", "memory");
 
 		return n;
 	}
@@ -614,7 +586,7 @@ __arc_copy_to_user(void __user *to, const void *from, unsigned long n)
 	return res;
 }
 
-static inline unsigned long __arc_clear_user(void __user *to, unsigned long n)
+static inline unsigned long __clear_user(void __user *to, unsigned long n)
 {
 	long res = n;
 	unsigned char *d_char = to;
@@ -651,101 +623,16 @@ static inline unsigned long __arc_clear_user(void __user *to, unsigned long n)
 	"	.previous			\n"
 	: "+r"(d_char), "+r"(res)
 	: "i"(0)
-	: "lp_count", "lp_start", "lp_end", "memory");
+	: "lp_count", "memory");
 
 	return res;
 }
 
-static inline long
-__arc_strncpy_from_user(char *dst, const char __user *src, long count)
-{
-	long res = count;
-	char val;
-	unsigned int hw_count;
+#define INLINE_COPY_TO_USER
+#define INLINE_COPY_FROM_USER
 
-	if (count == 0)
-		return 0;
-
-	__asm__ __volatile__(
-	"	lp 2f		\n"
-	"1:	ldb.ab  %3, [%2, 1]		\n"
-	"	breq.d  %3, 0, 2f		\n"
-	"	stb.ab  %3, [%1, 1]		\n"
-	"2:	sub %0, %6, %4			\n"
-	"3:	;nop				\n"
-	"	.section .fixup, \"ax\"		\n"
-	"	.align 4			\n"
-	"4:	mov %0, %5			\n"
-	"	j   3b				\n"
-	"	.previous			\n"
-	"	.section __ex_table, \"a\"	\n"
-	"	.align 4			\n"
-	"	.word   1b, 4b			\n"
-	"	.previous			\n"
-	: "=r"(res), "+r"(dst), "+r"(src), "=&r"(val), "=l"(hw_count)
-	: "g"(-EFAULT), "ir"(count), "4"(count)	/* this "4" seeds lp_count */
-	: "memory");
-
-	return res;
-}
-
-static inline long __arc_strnlen_user(const char __user *s, long n)
-{
-	long res, tmp1, cnt;
-	char val;
-
-	__asm__ __volatile__(
-	"	mov %2, %1			\n"
-	"1:	ldb.ab  %3, [%0, 1]		\n"
-	"	breq.d  %3, 0, 2f		\n"
-	"	sub.f   %2, %2, 1		\n"
-	"	bnz 1b				\n"
-	"	sub %2, %2, 1			\n"
-	"2:	sub %0, %1, %2			\n"
-	"3:	;nop				\n"
-	"	.section .fixup, \"ax\"		\n"
-	"	.align 4			\n"
-	"4:	mov %0, 0			\n"
-	"	j   3b				\n"
-	"	.previous			\n"
-	"	.section __ex_table, \"a\"	\n"
-	"	.align 4			\n"
-	"	.word 1b, 4b			\n"
-	"	.previous			\n"
-	: "=r"(res), "=r"(tmp1), "=r"(cnt), "=r"(val)
-	: "0"(s), "1"(n)
-	: "memory");
-
-	return res;
-}
-
-#ifndef CONFIG_CC_OPTIMIZE_FOR_SIZE
-#define __copy_from_user(t, f, n)	__arc_copy_from_user(t, f, n)
-#define __copy_to_user(t, f, n)		__arc_copy_to_user(t, f, n)
-#define __clear_user(d, n)		__arc_clear_user(d, n)
-#define __strncpy_from_user(d, s, n)	__arc_strncpy_from_user(d, s, n)
-#define __strnlen_user(s, n)		__arc_strnlen_user(s, n)
-#else
-extern long arc_copy_from_user_noinline(void *to, const void __user * from,
-		unsigned long n);
-extern long arc_copy_to_user_noinline(void __user *to, const void *from,
-		unsigned long n);
-extern unsigned long arc_clear_user_noinline(void __user *to,
-		unsigned long n);
-extern long arc_strncpy_from_user_noinline (char *dst, const char __user *src,
-		long count);
-extern long arc_strnlen_user_noinline(const char __user *src, long n);
-
-#define __copy_from_user(t, f, n)	arc_copy_from_user_noinline(t, f, n)
-#define __copy_to_user(t, f, n)		arc_copy_to_user_noinline(t, f, n)
-#define __clear_user(d, n)		arc_clear_user_noinline(d, n)
-#define __strncpy_from_user(d, s, n)	arc_strncpy_from_user_noinline(d, s, n)
-#define __strnlen_user(s, n)		arc_strnlen_user_noinline(s, n)
-
-#endif
+#define __clear_user			__clear_user
 
 #include <asm-generic/uaccess.h>
-
-extern int fixup_exception(struct pt_regs *regs);
 
 #endif

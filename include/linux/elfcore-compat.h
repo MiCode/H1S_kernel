@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_ELFCORE_COMPAT_H
 #define _LINUX_ELFCORE_COMPAT_H
 
@@ -16,7 +17,7 @@ struct compat_elf_siginfo
 	compat_int_t			si_errno;
 };
 
-struct compat_elf_prstatus
+struct compat_elf_prstatus_common
 {
 	struct compat_elf_siginfo	pr_info;
 	short				pr_cursig;
@@ -26,16 +27,10 @@ struct compat_elf_prstatus
 	compat_pid_t			pr_ppid;
 	compat_pid_t			pr_pgrp;
 	compat_pid_t			pr_sid;
-	struct compat_timeval		pr_utime;
-	struct compat_timeval		pr_stime;
-	struct compat_timeval		pr_cutime;
-	struct compat_timeval		pr_cstime;
-	compat_elf_gregset_t		pr_reg;
-#ifdef CONFIG_BINFMT_ELF_FDPIC
-	compat_ulong_t			pr_exec_fdpic_loadmap;
-	compat_ulong_t			pr_interp_fdpic_loadmap;
-#endif
-	compat_int_t			pr_fpvalid;
+	struct old_timeval32		pr_utime;
+	struct old_timeval32		pr_stime;
+	struct old_timeval32		pr_cutime;
+	struct old_timeval32		pr_cstime;
 };
 
 struct compat_elf_prpsinfo
@@ -48,8 +43,24 @@ struct compat_elf_prpsinfo
 	__compat_uid_t			pr_uid;
 	__compat_gid_t			pr_gid;
 	compat_pid_t			pr_pid, pr_ppid, pr_pgrp, pr_sid;
+	/*
+	 * The hard-coded 16 is derived from TASK_COMM_LEN, but it can't be
+	 * changed as it is exposed to userspace. We'd better make it hard-coded
+	 * here.
+	 */
 	char				pr_fname[16];
 	char				pr_psargs[ELF_PRARGSZ];
+};
+
+#ifdef CONFIG_ARCH_HAS_ELFCORE_COMPAT
+#include <asm/elfcore-compat.h>
+#endif
+
+struct compat_elf_prstatus
+{
+	struct compat_elf_prstatus_common	common;
+	compat_elf_gregset_t		pr_reg;
+	compat_int_t			pr_fpvalid;
 };
 
 #endif /* _LINUX_ELFCORE_COMPAT_H */

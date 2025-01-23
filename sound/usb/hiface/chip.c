@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Linux driver for M2Tech hiFace compatible devices
  *
@@ -7,11 +8,6 @@
  *           Antonio Ospite <ao2@amarulasolutions.com>
  *
  * The driver is based on the work done in TerraTec DMX 6Fire USB
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/module.h>
@@ -25,23 +21,6 @@ MODULE_AUTHOR("Michael Trimarchi <michael@amarulasolutions.com>");
 MODULE_AUTHOR("Antonio Ospite <ao2@amarulasolutions.com>");
 MODULE_DESCRIPTION("M2Tech hiFace USB-SPDIF audio driver");
 MODULE_LICENSE("GPL v2");
-MODULE_SUPPORTED_DEVICE("{{M2Tech,Young},"
-			 "{M2Tech,hiFace},"
-			 "{M2Tech,North Star},"
-			 "{M2Tech,W4S Young},"
-			 "{M2Tech,Corrson},"
-			 "{M2Tech,AUDIA},"
-			 "{M2Tech,SL Audio},"
-			 "{M2Tech,Empirical},"
-			 "{M2Tech,Rockna},"
-			 "{M2Tech,Pathos},"
-			 "{M2Tech,Metronome},"
-			 "{M2Tech,CAD},"
-			 "{M2Tech,Audio Esclusive},"
-			 "{M2Tech,Rotel},"
-			 "{M2Tech,Eeaudio},"
-			 "{The Chord Company,CHORD},"
-			 "{AVA Group A/S,Vitus}}");
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX; /* Index 0-max */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR; /* Id for card */
@@ -64,7 +43,8 @@ struct hiface_vendor_quirk {
 	u8 extra_freq;
 };
 
-static int hiface_chip_create(struct usb_device *device, int idx,
+static int hiface_chip_create(struct usb_interface *intf,
+			      struct usb_device *device, int idx,
 			      const struct hiface_vendor_quirk *quirk,
 			      struct hiface_chip **rchip)
 {
@@ -76,18 +56,19 @@ static int hiface_chip_create(struct usb_device *device, int idx,
 	*rchip = NULL;
 
 	/* if we are here, card can be registered in alsa. */
-	ret = snd_card_create(index[idx], id[idx], THIS_MODULE, sizeof(*chip), &card);
+	ret = snd_card_new(&intf->dev, index[idx], id[idx], THIS_MODULE,
+			   sizeof(*chip), &card);
 	if (ret < 0) {
 		dev_err(&device->dev, "cannot create alsa card.\n");
 		return ret;
 	}
 
-	strlcpy(card->driver, DRIVER_NAME, sizeof(card->driver));
+	strscpy(card->driver, DRIVER_NAME, sizeof(card->driver));
 
 	if (quirk && quirk->device_name)
-		strlcpy(card->shortname, quirk->device_name, sizeof(card->shortname));
+		strscpy(card->shortname, quirk->device_name, sizeof(card->shortname));
 	else
-		strlcpy(card->shortname, "M2Tech generic audio", sizeof(card->shortname));
+		strscpy(card->shortname, "M2Tech generic audio", sizeof(card->shortname));
 
 	strlcat(card->longname, card->shortname, sizeof(card->longname));
 	len = strlcat(card->longname, " at ", sizeof(card->longname));
@@ -132,11 +113,9 @@ static int hiface_chip_probe(struct usb_interface *intf,
 		goto err;
 	}
 
-	ret = hiface_chip_create(device, i, quirk, &chip);
+	ret = hiface_chip_create(intf, device, i, quirk, &chip);
 	if (ret < 0)
 		goto err;
-
-	snd_card_set_dev(chip->card, &intf->dev);
 
 	ret = hiface_pcm_init(chip, quirk ? quirk->extra_freq : 0);
 	if (ret < 0)

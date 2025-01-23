@@ -1,12 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /******************************************************************************
 *******************************************************************************
 **
 **  Copyright (C) Sistina Software, Inc.  1997-2003  All rights reserved.
 **  Copyright (C) 2004-2005 Red Hat, Inc.  All rights reserved.
 **
-**  This copyrighted material is made available to anyone wishing to use,
-**  modify, copy, or redistribute it subject to the terms and conditions
-**  of the GNU General Public License v.2.
 **
 *******************************************************************************
 ******************************************************************************/
@@ -60,7 +58,7 @@ void dlm_recover_dir_nodeid(struct dlm_ls *ls)
 	up_read(&ls->ls_root_sem);
 }
 
-int dlm_recover_directory(struct dlm_ls *ls)
+int dlm_recover_directory(struct dlm_ls *ls, uint64_t seq)
 {
 	struct dlm_member *memb;
 	char *b, *last_name = NULL;
@@ -68,7 +66,7 @@ int dlm_recover_directory(struct dlm_ls *ls)
 	uint16_t namelen;
 	unsigned int count = 0, count_match = 0, count_bad = 0, count_add = 0;
 
-	log_debug(ls, "dlm_recover_directory");
+	log_rinfo(ls, "dlm_recover_directory");
 
 	if (dlm_no_directory(ls))
 		goto out_status;
@@ -86,12 +84,13 @@ int dlm_recover_directory(struct dlm_ls *ls)
 
 		for (;;) {
 			int left;
-			error = dlm_recovery_stopped(ls);
-			if (error)
+			if (dlm_recovery_stopped(ls)) {
+				error = -EINTR;
 				goto out_free;
+			}
 
 			error = dlm_rcom_names(ls, memb->nodeid,
-					       last_name, last_len);
+					       last_name, last_len, seq);
 			if (error)
 				goto out_free;
 
@@ -102,7 +101,7 @@ int dlm_recover_directory(struct dlm_ls *ls)
 			 */
 
 			b = ls->ls_recover_buf->rc_buf;
-			left = ls->ls_recover_buf->rc_header.h_length;
+			left = le16_to_cpu(ls->ls_recover_buf->rc_header.h_length);
 			left -= sizeof(struct dlm_rcom);
 
 			for (;;) {
@@ -189,7 +188,7 @@ int dlm_recover_directory(struct dlm_ls *ls)
 	error = 0;
 	dlm_set_recover_status(ls, DLM_RS_DIR);
 
-	log_debug(ls, "dlm_recover_directory %u in %u new",
+	log_rinfo(ls, "dlm_recover_directory %u in %u new",
 		  count, count_add);
  out_free:
 	kfree(last_name);
@@ -197,7 +196,8 @@ int dlm_recover_directory(struct dlm_ls *ls)
 	return error;
 }
 
-static struct dlm_rsb *find_rsb_root(struct dlm_ls *ls, char *name, int len)
+static struct dlm_rsb *find_rsb_root(struct dlm_ls *ls, const char *name,
+				     int len)
 {
 	struct dlm_rsb *r;
 	uint32_t hash, bucket;
@@ -233,7 +233,7 @@ static struct dlm_rsb *find_rsb_root(struct dlm_ls *ls, char *name, int len)
    for rsb's we're master of and whose directory node matches the requesting
    node.  inbuf is the rsb name last sent, inlen is the name's length */
 
-void dlm_copy_master_names(struct dlm_ls *ls, char *inbuf, int inlen,
+void dlm_copy_master_names(struct dlm_ls *ls, const char *inbuf, int inlen,
  			   char *outbuf, int outlen, int nodeid)
 {
 	struct list_head *list;
@@ -246,9 +246,8 @@ void dlm_copy_master_names(struct dlm_ls *ls, char *inbuf, int inlen,
 	if (inlen > 1) {
 		r = find_rsb_root(ls, inbuf, inlen);
 		if (!r) {
-			inbuf[inlen - 1] = '\0';
-			log_error(ls, "copy_master_names from %d start %d %s",
-				  nodeid, inlen, inbuf);
+			log_error(ls, "copy_master_names from %d start %d %.*s",
+				  nodeid, inlen, inlen, inbuf);
 			goto out;
 		}
 		list = r->res_root_list.next;

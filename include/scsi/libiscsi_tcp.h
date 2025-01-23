@@ -1,21 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * iSCSI over TCP/IP Data-Path lib
  *
  * Copyright (C) 2008 Mike Christie
  * Copyright (C) 2008 Red Hat, Inc.  All rights reserved.
  * maintained by open-iscsi@googlegroups.com
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published
- * by the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
- *
- * See the file COPYING included with this distribution for more details.
  */
 
 #ifndef LIBISCSI_TCP_H
@@ -26,7 +15,7 @@
 struct iscsi_tcp_conn;
 struct iscsi_segment;
 struct sk_buff;
-struct hash_desc;
+struct ahash_request;
 
 typedef int iscsi_segment_done_fn_t(struct iscsi_tcp_conn *,
 				    struct iscsi_segment *);
@@ -38,7 +27,7 @@ struct iscsi_segment {
 	unsigned int		total_size;
 	unsigned int		total_copied;
 
-	struct hash_desc	*hash;
+	struct ahash_request	*hash;
 	unsigned char		padbuf[ISCSI_PAD_LEN];
 	unsigned char		recv_digest[ISCSI_DIGEST_SIZE];
 	unsigned char		digest[ISCSI_DIGEST_SIZE];
@@ -73,7 +62,7 @@ struct iscsi_tcp_conn {
 	/* control data */
 	struct iscsi_tcp_recv	in;		/* TCP receive context */
 	/* CRC32C (Rx) LLD should set this is they do not offload */
-	struct hash_desc	*rx_hash;
+	struct ahash_request	*rx_hash;
 };
 
 struct iscsi_tcp_task {
@@ -83,6 +72,8 @@ struct iscsi_tcp_task {
 	struct iscsi_pool	r2tpool;
 	struct kfifo		r2tqueue;
 	void			*dd_data;
+	spinlock_t		pool2queue;
+	spinlock_t		queue2pool;
 };
 
 enum {
@@ -109,15 +100,16 @@ extern void iscsi_tcp_segment_unmap(struct iscsi_segment *segment);
 extern void iscsi_segment_init_linear(struct iscsi_segment *segment,
 				      void *data, size_t size,
 				      iscsi_segment_done_fn_t *done,
-				      struct hash_desc *hash);
+				      struct ahash_request *hash);
 extern int
 iscsi_segment_seek_sg(struct iscsi_segment *segment,
 		      struct scatterlist *sg_list, unsigned int sg_count,
 		      unsigned int offset, size_t size,
-		      iscsi_segment_done_fn_t *done, struct hash_desc *hash);
+		      iscsi_segment_done_fn_t *done,
+		      struct ahash_request *hash);
 
 /* digest helpers */
-extern void iscsi_tcp_dgst_header(struct hash_desc *hash, const void *hdr,
+extern void iscsi_tcp_dgst_header(struct ahash_request *hash, const void *hdr,
 				  size_t hdrlen,
 				  unsigned char digest[ISCSI_DIGEST_SIZE]);
 extern struct iscsi_cls_conn *

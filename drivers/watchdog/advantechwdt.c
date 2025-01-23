@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *	Advantech Single Board Computer WDT driver
  *
@@ -8,11 +9,6 @@
  *
  *	(c) Copyright 1996 Alan Cox <alan@lxorguk.ukuu.org.uk>,
  *						All Rights Reserved.
- *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License
- *	as published by the Free Software Foundation; either version
- *	2 of the License, or (at your option) any later version.
  *
  *	Neither Alan Cox nor CymruNet Ltd. admit liability nor provide
  *	warranty for any of this software. This material is provided
@@ -181,7 +177,7 @@ static long advwdt_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		if (advwdt_set_heartbeat(new_timeout))
 			return -EINVAL;
 		advwdt_ping();
-		/* Fall */
+		fallthrough;
 	case WDIOC_GETTIMEOUT:
 		return put_user(timeout, p);
 	default:
@@ -199,7 +195,7 @@ static int advwdt_open(struct inode *inode, struct file *file)
 	 */
 
 	advwdt_ping();
-	return nonseekable_open(inode, file);
+	return stream_open(inode, file);
 }
 
 static int advwdt_close(struct inode *inode, struct file *file)
@@ -224,6 +220,7 @@ static const struct file_operations advwdt_fops = {
 	.llseek		= no_llseek,
 	.write		= advwdt_write,
 	.unlocked_ioctl	= advwdt_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
 	.open		= advwdt_open,
 	.release	= advwdt_close,
 };
@@ -238,7 +235,7 @@ static struct miscdevice advwdt_miscdev = {
  *	Init & exit routines
  */
 
-static int advwdt_probe(struct platform_device *dev)
+static int __init advwdt_probe(struct platform_device *dev)
 {
 	int ret;
 
@@ -282,14 +279,12 @@ unreg_stop:
 	goto out;
 }
 
-static int advwdt_remove(struct platform_device *dev)
+static void advwdt_remove(struct platform_device *dev)
 {
 	misc_deregister(&advwdt_miscdev);
 	release_region(wdt_start, 1);
 	if (wdt_stop != wdt_start)
 		release_region(wdt_stop, 1);
-
-	return 0;
 }
 
 static void advwdt_shutdown(struct platform_device *dev)
@@ -299,11 +294,9 @@ static void advwdt_shutdown(struct platform_device *dev)
 }
 
 static struct platform_driver advwdt_driver = {
-	.probe		= advwdt_probe,
-	.remove		= advwdt_remove,
+	.remove_new	= advwdt_remove,
 	.shutdown	= advwdt_shutdown,
 	.driver		= {
-		.owner	= THIS_MODULE,
 		.name	= DRV_NAME,
 	},
 };
@@ -314,21 +307,19 @@ static int __init advwdt_init(void)
 
 	pr_info("WDT driver for Advantech single board computer initialising\n");
 
-	err = platform_driver_register(&advwdt_driver);
-	if (err)
-		return err;
-
 	advwdt_platform_device = platform_device_register_simple(DRV_NAME,
 								-1, NULL, 0);
-	if (IS_ERR(advwdt_platform_device)) {
-		err = PTR_ERR(advwdt_platform_device);
-		goto unreg_platform_driver;
-	}
+	if (IS_ERR(advwdt_platform_device))
+		return PTR_ERR(advwdt_platform_device);
+
+	err = platform_driver_probe(&advwdt_driver, advwdt_probe);
+	if (err)
+		goto unreg_platform_device;
 
 	return 0;
 
-unreg_platform_driver:
-	platform_driver_unregister(&advwdt_driver);
+unreg_platform_device:
+	platform_device_unregister(advwdt_platform_device);
 	return err;
 }
 

@@ -21,7 +21,7 @@
 
 static void ar9002_hw_rx_enable(struct ath_hw *ah)
 {
-	REG_WRITE(ah, AR_CR, AR_CR_RXE);
+	REG_WRITE(ah, AR_CR, AR_CR_RXE(ah));
 }
 
 static void ar9002_hw_set_desc_link(void *ds, u32 ds_link)
@@ -40,14 +40,14 @@ static bool ar9002_hw_get_isr(struct ath_hw *ah, enum ath9k_int *masked,
 	struct ath_common *common = ath9k_hw_common(ah);
 
 	if (!AR_SREV_9100(ah)) {
-		if (REG_READ(ah, AR_INTR_ASYNC_CAUSE) & AR_INTR_MAC_IRQ) {
-			if ((REG_READ(ah, AR_RTC_STATUS) & AR_RTC_STATUS_M)
+		if (REG_READ(ah, AR_INTR_ASYNC_CAUSE(ah)) & AR_INTR_MAC_IRQ) {
+			if ((REG_READ(ah, AR_RTC_STATUS(ah)) & AR_RTC_STATUS_M(ah))
 			    == AR_RTC_STATUS_ON) {
 				isr = REG_READ(ah, AR_ISR);
 			}
 		}
 
-		sync_cause = REG_READ(ah, AR_INTR_SYNC_CAUSE) &
+		sync_cause = REG_READ(ah, AR_INTR_SYNC_CAUSE(ah)) &
 			AR_INTR_SYNC_DEFAULT;
 
 		*masked = 0;
@@ -120,7 +120,7 @@ static bool ar9002_hw_get_isr(struct ath_hw *ah, enum ath9k_int *masked,
 					 AR_ISR_TXEOL);
 			}
 
-			ah->intr_txqs |= MS(s0_s, AR_ISR_S0_QCU_TXOK);
+			ah->intr_txqs = MS(s0_s, AR_ISR_S0_QCU_TXOK);
 			ah->intr_txqs |= MS(s0_s, AR_ISR_S0_QCU_TXDESC);
 			ah->intr_txqs |= MS(s1_s, AR_ISR_S1_QCU_TXERR);
 			ah->intr_txqs |= MS(s1_s, AR_ISR_S1_QCU_TXEOL);
@@ -138,7 +138,7 @@ static bool ar9002_hw_get_isr(struct ath_hw *ah, enum ath9k_int *masked,
 		u32 s5_s;
 
 		if (pCap->hw_caps & ATH9K_HW_CAP_RAC_SUPPORTED) {
-			s5_s = REG_READ(ah, AR_ISR_S5_S);
+			s5_s = REG_READ(ah, AR_ISR_S5_S(ah));
 		} else {
 			s5_s = REG_READ(ah, AR_ISR_S5);
 		}
@@ -201,8 +201,8 @@ static bool ar9002_hw_get_isr(struct ath_hw *ah, enum ath9k_int *masked,
 				"AR_INTR_SYNC_LOCAL_TIMEOUT\n");
 		}
 
-		REG_WRITE(ah, AR_INTR_SYNC_CAUSE_CLR, sync_cause);
-		(void) REG_READ(ah, AR_INTR_SYNC_CAUSE_CLR);
+		REG_WRITE(ah, AR_INTR_SYNC_CAUSE_CLR(ah), sync_cause);
+		(void) REG_READ(ah, AR_INTR_SYNC_CAUSE_CLR(ah));
 	}
 
 	return true;
@@ -220,8 +220,8 @@ ar9002_set_txdesc(struct ath_hw *ah, void *ds, struct ath_tx_info *i)
 	ads->ds_txstatus6 = ads->ds_txstatus7 = 0;
 	ads->ds_txstatus8 = ads->ds_txstatus9 = 0;
 
-	ACCESS_ONCE(ads->ds_link) = i->link;
-	ACCESS_ONCE(ads->ds_data) = i->buf_addr[0];
+	WRITE_ONCE(ads->ds_link, i->link);
+	WRITE_ONCE(ads->ds_data, i->buf_addr[0]);
 
 	ctl1 = i->buf_len[0] | (i->is_last ? 0 : AR_TxMore);
 	ctl6 = SM(i->keytype, AR_EncrType);
@@ -235,26 +235,26 @@ ar9002_set_txdesc(struct ath_hw *ah, void *ds, struct ath_tx_info *i)
 
 	if ((i->is_first || i->is_last) &&
 	    i->aggr != AGGR_BUF_MIDDLE && i->aggr != AGGR_BUF_LAST) {
-		ACCESS_ONCE(ads->ds_ctl2) = set11nTries(i->rates, 0)
+		WRITE_ONCE(ads->ds_ctl2, set11nTries(i->rates, 0)
 			| set11nTries(i->rates, 1)
 			| set11nTries(i->rates, 2)
 			| set11nTries(i->rates, 3)
 			| (i->dur_update ? AR_DurUpdateEna : 0)
-			| SM(0, AR_BurstDur);
+			| SM(0, AR_BurstDur));
 
-		ACCESS_ONCE(ads->ds_ctl3) = set11nRate(i->rates, 0)
+		WRITE_ONCE(ads->ds_ctl3, set11nRate(i->rates, 0)
 			| set11nRate(i->rates, 1)
 			| set11nRate(i->rates, 2)
-			| set11nRate(i->rates, 3);
+			| set11nRate(i->rates, 3));
 	} else {
-		ACCESS_ONCE(ads->ds_ctl2) = 0;
-		ACCESS_ONCE(ads->ds_ctl3) = 0;
+		WRITE_ONCE(ads->ds_ctl2, 0);
+		WRITE_ONCE(ads->ds_ctl3, 0);
 	}
 
 	if (!i->is_first) {
-		ACCESS_ONCE(ads->ds_ctl0) = 0;
-		ACCESS_ONCE(ads->ds_ctl1) = ctl1;
-		ACCESS_ONCE(ads->ds_ctl6) = ctl6;
+		WRITE_ONCE(ads->ds_ctl0, 0);
+		WRITE_ONCE(ads->ds_ctl1, ctl1);
+		WRITE_ONCE(ads->ds_ctl6, ctl6);
 		return;
 	}
 
@@ -267,7 +267,7 @@ ar9002_set_txdesc(struct ath_hw *ah, void *ds, struct ath_tx_info *i)
 	switch (i->aggr) {
 	case AGGR_BUF_FIRST:
 		ctl6 |= SM(i->aggr_len, AR_AggrLen);
-		/* fall through */
+		fallthrough;
 	case AGGR_BUF_MIDDLE:
 		ctl1 |= AR_IsAggr | AR_MoreAggr;
 		ctl6 |= SM(i->ndelim, AR_PadDelim);
@@ -279,33 +279,38 @@ ar9002_set_txdesc(struct ath_hw *ah, void *ds, struct ath_tx_info *i)
 		break;
 	}
 
-	ACCESS_ONCE(ads->ds_ctl0) = (i->pkt_len & AR_FrameLen)
+	WRITE_ONCE(ads->ds_ctl0, (i->pkt_len & AR_FrameLen)
 		| (i->flags & ATH9K_TXDESC_VMF ? AR_VirtMoreFrag : 0)
-		| SM(i->txpower, AR_XmitPower)
+		| SM(i->txpower[0], AR_XmitPower0)
 		| (i->flags & ATH9K_TXDESC_VEOL ? AR_VEOL : 0)
 		| (i->flags & ATH9K_TXDESC_INTREQ ? AR_TxIntrReq : 0)
 		| (i->keyix != ATH9K_TXKEYIX_INVALID ? AR_DestIdxValid : 0)
 		| (i->flags & ATH9K_TXDESC_CLRDMASK ? AR_ClrDestMask : 0)
 		| (i->flags & ATH9K_TXDESC_RTSENA ? AR_RTSEnable :
-		   (i->flags & ATH9K_TXDESC_CTSENA ? AR_CTSEnable : 0));
+		   (i->flags & ATH9K_TXDESC_CTSENA ? AR_CTSEnable : 0)));
 
-	ACCESS_ONCE(ads->ds_ctl1) = ctl1;
-	ACCESS_ONCE(ads->ds_ctl6) = ctl6;
+	WRITE_ONCE(ads->ds_ctl1, ctl1);
+	WRITE_ONCE(ads->ds_ctl6, ctl6);
 
 	if (i->aggr == AGGR_BUF_MIDDLE || i->aggr == AGGR_BUF_LAST)
 		return;
 
-	ACCESS_ONCE(ads->ds_ctl4) = set11nPktDurRTSCTS(i->rates, 0)
-		| set11nPktDurRTSCTS(i->rates, 1);
+	WRITE_ONCE(ads->ds_ctl4, set11nPktDurRTSCTS(i->rates, 0)
+		| set11nPktDurRTSCTS(i->rates, 1));
 
-	ACCESS_ONCE(ads->ds_ctl5) = set11nPktDurRTSCTS(i->rates, 2)
-		| set11nPktDurRTSCTS(i->rates, 3);
+	WRITE_ONCE(ads->ds_ctl5, set11nPktDurRTSCTS(i->rates, 2)
+		| set11nPktDurRTSCTS(i->rates, 3));
 
-	ACCESS_ONCE(ads->ds_ctl7) = set11nRateFlags(i->rates, 0)
-		| set11nRateFlags(i->rates, 1)
-		| set11nRateFlags(i->rates, 2)
-		| set11nRateFlags(i->rates, 3)
-		| SM(i->rtscts_rate, AR_RTSCTSRate);
+	WRITE_ONCE(ads->ds_ctl7,
+		  set11nRateFlags(i->rates, 0) | set11nChainSel(i->rates, 0)
+		| set11nRateFlags(i->rates, 1) | set11nChainSel(i->rates, 1)
+		| set11nRateFlags(i->rates, 2) | set11nChainSel(i->rates, 2)
+		| set11nRateFlags(i->rates, 3) | set11nChainSel(i->rates, 3)
+		| SM(i->rtscts_rate, AR_RTSCTSRate));
+
+	WRITE_ONCE(ads->ds_ctl9, SM(i->txpower[1], AR_XmitPower1));
+	WRITE_ONCE(ads->ds_ctl10, SM(i->txpower[2], AR_XmitPower2));
+	WRITE_ONCE(ads->ds_ctl11, SM(i->txpower[3], AR_XmitPower3));
 }
 
 static int ar9002_hw_proc_txdesc(struct ath_hw *ah, void *ds,
@@ -314,7 +319,7 @@ static int ar9002_hw_proc_txdesc(struct ath_hw *ah, void *ds,
 	struct ar5416_desc *ads = AR5416DESC(ds);
 	u32 status;
 
-	status = ACCESS_ONCE(ads->ds_txstatus9);
+	status = READ_ONCE(ads->ds_txstatus9);
 	if ((status & AR_TxDone) == 0)
 		return -EINPROGRESS;
 
@@ -328,7 +333,7 @@ static int ar9002_hw_proc_txdesc(struct ath_hw *ah, void *ds,
 	ts->ts_rateindex = MS(status, AR_FinalTxIdx);
 	ts->ts_seqnum = MS(status, AR_SeqNum);
 
-	status = ACCESS_ONCE(ads->ds_txstatus0);
+	status = READ_ONCE(ads->ds_txstatus0);
 	ts->ts_rssi_ctl0 = MS(status, AR_TxRSSIAnt00);
 	ts->ts_rssi_ctl1 = MS(status, AR_TxRSSIAnt01);
 	ts->ts_rssi_ctl2 = MS(status, AR_TxRSSIAnt02);
@@ -338,7 +343,7 @@ static int ar9002_hw_proc_txdesc(struct ath_hw *ah, void *ds,
 		ts->ba_high = ads->AR_BaBitmapHigh;
 	}
 
-	status = ACCESS_ONCE(ads->ds_txstatus1);
+	status = READ_ONCE(ads->ds_txstatus1);
 	if (status & AR_FrmXmitOK)
 		ts->ts_status |= ATH9K_TX_ACKED;
 	else {
@@ -367,7 +372,7 @@ static int ar9002_hw_proc_txdesc(struct ath_hw *ah, void *ds,
 	ts->ts_longretry = MS(status, AR_DataFailCnt);
 	ts->ts_virtcol = MS(status, AR_VirtRetryCnt);
 
-	status = ACCESS_ONCE(ads->ds_txstatus5);
+	status = READ_ONCE(ads->ds_txstatus5);
 	ts->ts_rssi = MS(status, AR_TxRSSICombined);
 	ts->ts_rssi_ext0 = MS(status, AR_TxRSSIAnt10);
 	ts->ts_rssi_ext1 = MS(status, AR_TxRSSIAnt11);
@@ -378,6 +383,24 @@ static int ar9002_hw_proc_txdesc(struct ath_hw *ah, void *ds,
 	ts->evm2 = ads->AR_TxEVM2;
 
 	return 0;
+}
+
+static int ar9002_hw_get_duration(struct ath_hw *ah, const void *ds, int index)
+{
+	struct ar5416_desc *ads = AR5416DESC(ds);
+
+	switch (index) {
+	case 0:
+		return MS(READ_ONCE(ads->ds_ctl4), AR_PacketDur0);
+	case 1:
+		return MS(READ_ONCE(ads->ds_ctl4), AR_PacketDur1);
+	case 2:
+		return MS(READ_ONCE(ads->ds_ctl5), AR_PacketDur2);
+	case 3:
+		return MS(READ_ONCE(ads->ds_ctl5), AR_PacketDur3);
+	default:
+		return -1;
+	}
 }
 
 void ath9k_hw_setuprxdesc(struct ath_hw *ah, struct ath_desc *ds,
@@ -402,4 +425,5 @@ void ar9002_hw_attach_mac_ops(struct ath_hw *ah)
 	ops->get_isr = ar9002_hw_get_isr;
 	ops->set_txdesc = ar9002_set_txdesc;
 	ops->proc_txdesc = ar9002_hw_proc_txdesc;
+	ops->get_duration = ar9002_hw_get_duration;
 }

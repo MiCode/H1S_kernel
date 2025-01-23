@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 /* If dst and src are 4 byte aligned, copy 8 bytes at a time.
@@ -16,9 +13,9 @@
    there, but the it is not likely to be taken often, and it
    would also be likey to cost an unaligned mispredict at the next call.  */
 
-#include <asm/linkage.h>
+#include <linux/linkage.h>
 
-ARC_ENTRY strcpy
+ENTRY_CFI(strcpy)
 	or	r2,r0,r1
 	bmsk_s	r2,r2,1
 	brne.d	r2,0,charloop
@@ -67,4 +64,4 @@ charloop:
 	brne.d	r3,0,charloop
 	stb.ab	r3,[r10,1]
 	j	[blink]
-ARC_EXIT strcpy
+END_CFI(strcpy)

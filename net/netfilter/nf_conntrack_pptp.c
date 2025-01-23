@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Connection tracking support for PPTP (Point to Point Tunneling Protocol).
- * PPTP is a a protocol for creating virtual private networks.
+ * PPTP is a protocol for creating virtual private networks.
  * It is a specification defined by Microsoft and some vendors
  * working with Microsoft.  PPTP is built on top of a modified
  * version of the Internet Generic Routing Encapsulation Protocol.
@@ -44,51 +45,37 @@ MODULE_ALIAS_NFCT_HELPER("pptp");
 
 static DEFINE_SPINLOCK(nf_pptp_lock);
 
-int
-(*nf_nat_pptp_hook_outbound)(struct sk_buff *skb,
-			     struct nf_conn *ct, enum ip_conntrack_info ctinfo,
-			     unsigned int protoff, struct PptpControlHeader *ctlh,
-			     union pptp_ctrl_union *pptpReq) __read_mostly;
-EXPORT_SYMBOL_GPL(nf_nat_pptp_hook_outbound);
-
-int
-(*nf_nat_pptp_hook_inbound)(struct sk_buff *skb,
-			    struct nf_conn *ct, enum ip_conntrack_info ctinfo,
-			    unsigned int protoff, struct PptpControlHeader *ctlh,
-			    union pptp_ctrl_union *pptpReq) __read_mostly;
-EXPORT_SYMBOL_GPL(nf_nat_pptp_hook_inbound);
-
-void
-(*nf_nat_pptp_hook_exp_gre)(struct nf_conntrack_expect *expect_orig,
-			    struct nf_conntrack_expect *expect_reply)
-			    __read_mostly;
-EXPORT_SYMBOL_GPL(nf_nat_pptp_hook_exp_gre);
-
-void
-(*nf_nat_pptp_hook_expectfn)(struct nf_conn *ct,
-			     struct nf_conntrack_expect *exp) __read_mostly;
-EXPORT_SYMBOL_GPL(nf_nat_pptp_hook_expectfn);
+const struct nf_nat_pptp_hook __rcu *nf_nat_pptp_hook;
+EXPORT_SYMBOL_GPL(nf_nat_pptp_hook);
 
 #if defined(DEBUG) || defined(CONFIG_DYNAMIC_DEBUG)
 /* PptpControlMessageType names */
-const char *const pptp_msg_name[] = {
-	"UNKNOWN_MESSAGE",
-	"START_SESSION_REQUEST",
-	"START_SESSION_REPLY",
-	"STOP_SESSION_REQUEST",
-	"STOP_SESSION_REPLY",
-	"ECHO_REQUEST",
-	"ECHO_REPLY",
-	"OUT_CALL_REQUEST",
-	"OUT_CALL_REPLY",
-	"IN_CALL_REQUEST",
-	"IN_CALL_REPLY",
-	"IN_CALL_CONNECT",
-	"CALL_CLEAR_REQUEST",
-	"CALL_DISCONNECT_NOTIFY",
-	"WAN_ERROR_NOTIFY",
-	"SET_LINK_INFO"
+static const char *const pptp_msg_name_array[PPTP_MSG_MAX + 1] = {
+	[0]				= "UNKNOWN_MESSAGE",
+	[PPTP_START_SESSION_REQUEST]	= "START_SESSION_REQUEST",
+	[PPTP_START_SESSION_REPLY]	= "START_SESSION_REPLY",
+	[PPTP_STOP_SESSION_REQUEST]	= "STOP_SESSION_REQUEST",
+	[PPTP_STOP_SESSION_REPLY]	= "STOP_SESSION_REPLY",
+	[PPTP_ECHO_REQUEST]		= "ECHO_REQUEST",
+	[PPTP_ECHO_REPLY]		= "ECHO_REPLY",
+	[PPTP_OUT_CALL_REQUEST]		= "OUT_CALL_REQUEST",
+	[PPTP_OUT_CALL_REPLY]		= "OUT_CALL_REPLY",
+	[PPTP_IN_CALL_REQUEST]		= "IN_CALL_REQUEST",
+	[PPTP_IN_CALL_REPLY]		= "IN_CALL_REPLY",
+	[PPTP_IN_CALL_CONNECT]		= "IN_CALL_CONNECT",
+	[PPTP_CALL_CLEAR_REQUEST]	= "CALL_CLEAR_REQUEST",
+	[PPTP_CALL_DISCONNECT_NOTIFY]	= "CALL_DISCONNECT_NOTIFY",
+	[PPTP_WAN_ERROR_NOTIFY]		= "WAN_ERROR_NOTIFY",
+	[PPTP_SET_LINK_INFO]		= "SET_LINK_INFO"
 };
+
+const char *pptp_msg_name(u_int16_t msg)
+{
+	if (msg > PPTP_MSG_MAX)
+		return pptp_msg_name_array[0];
+
+	return pptp_msg_name_array[msg];
+}
 EXPORT_SYMBOL(pptp_msg_name);
 #endif
 
@@ -102,8 +89,8 @@ EXPORT_SYMBOL(pptp_msg_name);
 static void pptp_expectfn(struct nf_conn *ct,
 			 struct nf_conntrack_expect *exp)
 {
+	const struct nf_nat_pptp_hook *hook;
 	struct net *net = nf_ct_net(ct);
-	typeof(nf_nat_pptp_hook_expectfn) nf_nat_pptp_expectfn;
 	pr_debug("increasing timeouts\n");
 
 	/* increase timeout of GRE data channel conntrack entry */
@@ -113,16 +100,15 @@ static void pptp_expectfn(struct nf_conn *ct,
 	/* Can you see how rusty this code is, compared with the pre-2.6.11
 	 * one? That's what happened to my shiny newnat of 2002 ;( -HW */
 
-	rcu_read_lock();
-	nf_nat_pptp_expectfn = rcu_dereference(nf_nat_pptp_hook_expectfn);
-	if (nf_nat_pptp_expectfn && ct->master->status & IPS_NAT_MASK)
-		nf_nat_pptp_expectfn(ct, exp);
+	hook = rcu_dereference(nf_nat_pptp_hook);
+	if (hook && ct->master->status & IPS_NAT_MASK)
+		hook->expectfn(ct, exp);
 	else {
 		struct nf_conntrack_tuple inv_t;
 		struct nf_conntrack_expect *exp_other;
 
 		/* obviously this tuple inversion only works until you do NAT */
-		nf_ct_invert_tuplepr(&inv_t, &exp->tuple);
+		nf_ct_invert_tuple(&inv_t, &exp->tuple);
 		pr_debug("trying to unexpect other dir: ");
 		nf_ct_dump_tuple(&inv_t);
 
@@ -136,28 +122,27 @@ static void pptp_expectfn(struct nf_conn *ct,
 			pr_debug("not found\n");
 		}
 	}
-	rcu_read_unlock();
 }
 
 static int destroy_sibling_or_exp(struct net *net, struct nf_conn *ct,
 				  const struct nf_conntrack_tuple *t)
 {
 	const struct nf_conntrack_tuple_hash *h;
+	const struct nf_conntrack_zone *zone;
 	struct nf_conntrack_expect *exp;
 	struct nf_conn *sibling;
-	u16 zone = nf_ct_zone(ct);
 
 	pr_debug("trying to timeout ct or exp for tuple ");
 	nf_ct_dump_tuple(t);
 
+	zone = nf_ct_zone(ct);
 	h = nf_conntrack_find_get(net, zone, t);
 	if (h)  {
 		sibling = nf_ct_tuplehash_to_ctrack(h);
 		pr_debug("setting timeout of conntrack %p to 0\n", sibling);
 		sibling->proto.gre.timeout	  = 0;
 		sibling->proto.gre.stream_timeout = 0;
-		if (del_timer(&sibling->timeout))
-			sibling->timeout.function((unsigned long)sibling);
+		nf_ct_kill(sibling);
 		nf_ct_put(sibling);
 		return 1;
 	} else {
@@ -202,9 +187,9 @@ static void pptp_destroy_siblings(struct nf_conn *ct)
 static int exp_gre(struct nf_conn *ct, __be16 callid, __be16 peer_callid)
 {
 	struct nf_conntrack_expect *exp_orig, *exp_reply;
+	const struct nf_nat_pptp_hook *hook;
 	enum ip_conntrack_dir dir;
 	int ret = 1;
-	typeof(nf_nat_pptp_hook_exp_gre) nf_nat_pptp_exp_gre;
 
 	exp_orig = nf_ct_expect_alloc(ct);
 	if (exp_orig == NULL)
@@ -232,12 +217,12 @@ static int exp_gre(struct nf_conn *ct, __be16 callid, __be16 peer_callid)
 			  IPPROTO_GRE, &callid, &peer_callid);
 	exp_reply->expectfn = pptp_expectfn;
 
-	nf_nat_pptp_exp_gre = rcu_dereference(nf_nat_pptp_hook_exp_gre);
-	if (nf_nat_pptp_exp_gre && ct->status & IPS_NAT_MASK)
-		nf_nat_pptp_exp_gre(exp_orig, exp_reply);
-	if (nf_ct_expect_related(exp_orig) != 0)
+	hook = rcu_dereference(nf_nat_pptp_hook);
+	if (hook && ct->status & IPS_NAT_MASK)
+		hook->exp_gre(exp_orig, exp_reply);
+	if (nf_ct_expect_related(exp_orig, 0) != 0)
 		goto out_put_both;
-	if (nf_ct_expect_related(exp_reply) != 0)
+	if (nf_ct_expect_related(exp_reply, 0) != 0)
 		goto out_unexpect_orig;
 
 	/* Add GRE keymap entries */
@@ -263,7 +248,7 @@ out_unexpect_orig:
 	goto out_put_both;
 }
 
-static inline int
+static int
 pptp_inbound_pkt(struct sk_buff *skb, unsigned int protoff,
 		 struct PptpControlHeader *ctlh,
 		 union pptp_ctrl_union *pptpReq,
@@ -272,12 +257,12 @@ pptp_inbound_pkt(struct sk_buff *skb, unsigned int protoff,
 		 enum ip_conntrack_info ctinfo)
 {
 	struct nf_ct_pptp_master *info = nfct_help_data(ct);
+	const struct nf_nat_pptp_hook *hook;
 	u_int16_t msg;
 	__be16 cid = 0, pcid = 0;
-	typeof(nf_nat_pptp_hook_inbound) nf_nat_pptp_inbound;
 
 	msg = ntohs(ctlh->messageType);
-	pr_debug("inbound control message %s\n", pptp_msg_name[msg]);
+	pr_debug("inbound control message %s\n", pptp_msg_name(msg));
 
 	switch (msg) {
 	case PPTP_START_SESSION_REPLY:
@@ -312,7 +297,7 @@ pptp_inbound_pkt(struct sk_buff *skb, unsigned int protoff,
 		pcid = pptpReq->ocack.peersCallID;
 		if (info->pns_call_id != pcid)
 			goto invalid;
-		pr_debug("%s, CID=%X, PCID=%X\n", pptp_msg_name[msg],
+		pr_debug("%s, CID=%X, PCID=%X\n", pptp_msg_name(msg),
 			 ntohs(cid), ntohs(pcid));
 
 		if (pptpReq->ocack.resultCode == PPTP_OUTCALL_CONNECT) {
@@ -329,7 +314,7 @@ pptp_inbound_pkt(struct sk_buff *skb, unsigned int protoff,
 			goto invalid;
 
 		cid = pptpReq->icreq.callID;
-		pr_debug("%s, CID=%X\n", pptp_msg_name[msg], ntohs(cid));
+		pr_debug("%s, CID=%X\n", pptp_msg_name(msg), ntohs(cid));
 		info->cstate = PPTP_CALL_IN_REQ;
 		info->pac_call_id = cid;
 		break;
@@ -348,7 +333,7 @@ pptp_inbound_pkt(struct sk_buff *skb, unsigned int protoff,
 		if (info->pns_call_id != pcid)
 			goto invalid;
 
-		pr_debug("%s, PCID=%X\n", pptp_msg_name[msg], ntohs(pcid));
+		pr_debug("%s, PCID=%X\n", pptp_msg_name(msg), ntohs(pcid));
 		info->cstate = PPTP_CALL_IN_CONF;
 
 		/* we expect a GRE connection from PAC to PNS */
@@ -358,7 +343,7 @@ pptp_inbound_pkt(struct sk_buff *skb, unsigned int protoff,
 	case PPTP_CALL_DISCONNECT_NOTIFY:
 		/* server confirms disconnect */
 		cid = pptpReq->disc.callID;
-		pr_debug("%s, CID=%X\n", pptp_msg_name[msg], ntohs(cid));
+		pr_debug("%s, CID=%X\n", pptp_msg_name(msg), ntohs(cid));
 		info->cstate = PPTP_CALL_NONE;
 
 		/* untrack this call id, unexpect GRE packets */
@@ -376,22 +361,21 @@ pptp_inbound_pkt(struct sk_buff *skb, unsigned int protoff,
 		goto invalid;
 	}
 
-	nf_nat_pptp_inbound = rcu_dereference(nf_nat_pptp_hook_inbound);
-	if (nf_nat_pptp_inbound && ct->status & IPS_NAT_MASK)
-		return nf_nat_pptp_inbound(skb, ct, ctinfo,
-					   protoff, ctlh, pptpReq);
+	hook = rcu_dereference(nf_nat_pptp_hook);
+	if (hook && ct->status & IPS_NAT_MASK)
+		return hook->inbound(skb, ct, ctinfo, protoff, ctlh, pptpReq);
 	return NF_ACCEPT;
 
 invalid:
 	pr_debug("invalid %s: type=%d cid=%u pcid=%u "
 		 "cstate=%d sstate=%d pns_cid=%u pac_cid=%u\n",
-		 msg <= PPTP_MSG_MAX ? pptp_msg_name[msg] : pptp_msg_name[0],
+		 pptp_msg_name(msg),
 		 msg, ntohs(cid), ntohs(pcid),  info->cstate, info->sstate,
 		 ntohs(info->pns_call_id), ntohs(info->pac_call_id));
 	return NF_ACCEPT;
 }
 
-static inline int
+static int
 pptp_outbound_pkt(struct sk_buff *skb, unsigned int protoff,
 		  struct PptpControlHeader *ctlh,
 		  union pptp_ctrl_union *pptpReq,
@@ -400,12 +384,12 @@ pptp_outbound_pkt(struct sk_buff *skb, unsigned int protoff,
 		  enum ip_conntrack_info ctinfo)
 {
 	struct nf_ct_pptp_master *info = nfct_help_data(ct);
+	const struct nf_nat_pptp_hook *hook;
 	u_int16_t msg;
 	__be16 cid = 0, pcid = 0;
-	typeof(nf_nat_pptp_hook_outbound) nf_nat_pptp_outbound;
 
 	msg = ntohs(ctlh->messageType);
-	pr_debug("outbound control message %s\n", pptp_msg_name[msg]);
+	pr_debug("outbound control message %s\n", pptp_msg_name(msg));
 
 	switch (msg) {
 	case PPTP_START_SESSION_REQUEST:
@@ -427,7 +411,7 @@ pptp_outbound_pkt(struct sk_buff *skb, unsigned int protoff,
 		info->cstate = PPTP_CALL_OUT_REQ;
 		/* track PNS call id */
 		cid = pptpReq->ocreq.callID;
-		pr_debug("%s, CID=%X\n", pptp_msg_name[msg], ntohs(cid));
+		pr_debug("%s, CID=%X\n", pptp_msg_name(msg), ntohs(cid));
 		info->pns_call_id = cid;
 		break;
 
@@ -441,7 +425,7 @@ pptp_outbound_pkt(struct sk_buff *skb, unsigned int protoff,
 		pcid = pptpReq->icack.peersCallID;
 		if (info->pac_call_id != pcid)
 			goto invalid;
-		pr_debug("%s, CID=%X PCID=%X\n", pptp_msg_name[msg],
+		pr_debug("%s, CID=%X PCID=%X\n", pptp_msg_name(msg),
 			 ntohs(cid), ntohs(pcid));
 
 		if (pptpReq->icack.resultCode == PPTP_INCALL_ACCEPT) {
@@ -472,16 +456,15 @@ pptp_outbound_pkt(struct sk_buff *skb, unsigned int protoff,
 		goto invalid;
 	}
 
-	nf_nat_pptp_outbound = rcu_dereference(nf_nat_pptp_hook_outbound);
-	if (nf_nat_pptp_outbound && ct->status & IPS_NAT_MASK)
-		return nf_nat_pptp_outbound(skb, ct, ctinfo,
-					    protoff, ctlh, pptpReq);
+	hook = rcu_dereference(nf_nat_pptp_hook);
+	if (hook && ct->status & IPS_NAT_MASK)
+		return hook->outbound(skb, ct, ctinfo, protoff, ctlh, pptpReq);
 	return NF_ACCEPT;
 
 invalid:
 	pr_debug("invalid %s: type=%d cid=%u pcid=%u "
 		 "cstate=%d sstate=%d pns_cid=%u pac_cid=%u\n",
-		 msg <= PPTP_MSG_MAX ? pptp_msg_name[msg] : pptp_msg_name[0],
+		 pptp_msg_name(msg),
 		 msg, ntohs(cid), ntohs(pcid),  info->cstate, info->sstate,
 		 ntohs(info->pns_call_id), ntohs(info->pac_call_id));
 	return NF_ACCEPT;
@@ -523,13 +506,23 @@ conntrack_pptp_help(struct sk_buff *skb, unsigned int protoff,
 	int ret;
 	u_int16_t msg;
 
+#if IS_ENABLED(CONFIG_NF_NAT)
+	if (!nf_ct_is_confirmed(ct) && (ct->status & IPS_NAT_MASK)) {
+		struct nf_conn_nat *nat = nf_ct_ext_find(ct, NF_CT_EXT_NAT);
+
+		if (!nat && !nf_ct_ext_add(ct, NF_CT_EXT_NAT, GFP_ATOMIC))
+			return NF_DROP;
+	}
+#endif
 	/* don't do any tracking before tcp handshake complete */
 	if (ctinfo != IP_CT_ESTABLISHED && ctinfo != IP_CT_ESTABLISHED_REPLY)
 		return NF_ACCEPT;
 
 	nexthdr_off = protoff;
 	tcph = skb_header_pointer(skb, nexthdr_off, sizeof(_tcph), &_tcph);
-	BUG_ON(!tcph);
+	if (!tcph)
+		return NF_ACCEPT;
+
 	nexthdr_off += tcph->doff * 4;
 	datalen = tcplen - tcph->doff * 4;
 
@@ -596,7 +589,6 @@ static const struct nf_conntrack_expect_policy pptp_exp_policy = {
 static struct nf_conntrack_helper pptp __read_mostly = {
 	.name			= "pptp",
 	.me			= THIS_MODULE,
-	.data_len		= sizeof(struct nf_ct_pptp_master),
 	.tuple.src.l3num	= AF_INET,
 	.tuple.src.u.tcp.port	= cpu_to_be16(PPTP_CONTROL_PORT),
 	.tuple.dst.protonum	= IPPROTO_TCP,
@@ -605,32 +597,16 @@ static struct nf_conntrack_helper pptp __read_mostly = {
 	.expect_policy		= &pptp_exp_policy,
 };
 
-static void nf_conntrack_pptp_net_exit(struct net *net)
-{
-	nf_ct_gre_keymap_flush(net);
-}
-
-static struct pernet_operations nf_conntrack_pptp_net_ops = {
-	.exit = nf_conntrack_pptp_net_exit,
-};
-
 static int __init nf_conntrack_pptp_init(void)
 {
-	int rv;
+	NF_CT_HELPER_BUILD_BUG_ON(sizeof(struct nf_ct_pptp_master));
 
-	rv = nf_conntrack_helper_register(&pptp);
-	if (rv < 0)
-		return rv;
-	rv = register_pernet_subsys(&nf_conntrack_pptp_net_ops);
-	if (rv < 0)
-		nf_conntrack_helper_unregister(&pptp);
-	return rv;
+	return nf_conntrack_helper_register(&pptp);
 }
 
 static void __exit nf_conntrack_pptp_fini(void)
 {
 	nf_conntrack_helper_unregister(&pptp);
-	unregister_pernet_subsys(&nf_conntrack_pptp_net_ops);
 }
 
 module_init(nf_conntrack_pptp_init);

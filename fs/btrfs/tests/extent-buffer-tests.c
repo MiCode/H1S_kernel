@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2013 Fusion IO.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License v2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
 #include <linux/slab.h>
@@ -21,13 +8,14 @@
 #include "../ctree.h"
 #include "../extent_io.h"
 #include "../disk-io.h"
+#include "../accessors.h"
 
-static int test_btrfs_split_item(void)
+static int test_btrfs_split_item(u32 sectorsize, u32 nodesize)
 {
-	struct btrfs_path *path;
-	struct btrfs_root *root;
+	struct btrfs_fs_info *fs_info;
+	struct btrfs_path *path = NULL;
+	struct btrfs_root *root = NULL;
 	struct extent_buffer *eb;
-	struct btrfs_item *item;
 	char *value = "mary had a little lamb";
 	char *split1 = "mary had a little";
 	char *split2 = " lamb";
@@ -38,24 +26,32 @@ static int test_btrfs_split_item(void)
 	u32 value_len = strlen(value);
 	int ret = 0;
 
-	test_msg("Running btrfs_split_item tests\n");
+	test_msg("running btrfs_split_item tests");
 
-	root = btrfs_alloc_dummy_root();
+	fs_info = btrfs_alloc_dummy_fs_info(nodesize, sectorsize);
+	if (!fs_info) {
+		test_std_err(TEST_ALLOC_FS_INFO);
+		return -ENOMEM;
+	}
+
+	root = btrfs_alloc_dummy_root(fs_info);
 	if (IS_ERR(root)) {
-		test_msg("Could not allocate root\n");
-		return PTR_ERR(root);
+		test_std_err(TEST_ALLOC_ROOT);
+		ret = PTR_ERR(root);
+		goto out;
 	}
 
 	path = btrfs_alloc_path();
 	if (!path) {
-		test_msg("Could not allocate path\n");
-		kfree(root);
-		return -ENOMEM;
+		test_std_err(TEST_ALLOC_PATH);
+		ret = -ENOMEM;
+		goto out;
 	}
 
-	path->nodes[0] = eb = alloc_dummy_extent_buffer(0, 4096);
+	eb = alloc_dummy_extent_buffer(fs_info, nodesize);
+	path->nodes[0] = eb;
 	if (!eb) {
-		test_msg("Could not allocate dummy buffer\n");
+		test_std_err(TEST_ALLOC_EXTENT_BUFFER);
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -65,9 +61,11 @@ static int test_btrfs_split_item(void)
 	key.type = BTRFS_EXTENT_CSUM_KEY;
 	key.offset = 0;
 
-	setup_items_for_insert(root, path, &key, &value_len, value_len,
-			       value_len + sizeof(struct btrfs_item), 1);
-	item = btrfs_item_nr(0);
+	/*
+	 * Passing a NULL trans handle is fine here, we have a dummy root eb
+	 * and the tree is a single node (level 0).
+	 */
+	btrfs_setup_item_for_insert(NULL, root, path, &key, value_len);
 	write_extent_buffer(eb, value, btrfs_item_ptr_offset(eb, 0),
 			    value_len);
 
@@ -80,7 +78,7 @@ static int test_btrfs_split_item(void)
 	 */
 	ret = btrfs_split_item(NULL, root, path, &key, 17);
 	if (ret) {
-		test_msg("Split item failed %d\n", ret);
+		test_err("split item failed %d", ret);
 		goto out;
 	}
 
@@ -91,14 +89,13 @@ static int test_btrfs_split_item(void)
 	btrfs_item_key_to_cpu(eb, &key, 0);
 	if (key.objectid != 0 || key.type != BTRFS_EXTENT_CSUM_KEY ||
 	    key.offset != 0) {
-		test_msg("Invalid key at slot 0\n");
+		test_err("invalid key at slot 0");
 		ret = -EINVAL;
 		goto out;
 	}
 
-	item = btrfs_item_nr(0);
-	if (btrfs_item_size(eb, item) != strlen(split1)) {
-		test_msg("Invalid len in the first split\n");
+	if (btrfs_item_size(eb, 0) != strlen(split1)) {
+		test_err("invalid len in the first split");
 		ret = -EINVAL;
 		goto out;
 	}
@@ -106,8 +103,8 @@ static int test_btrfs_split_item(void)
 	read_extent_buffer(eb, buf, btrfs_item_ptr_offset(eb, 0),
 			   strlen(split1));
 	if (memcmp(buf, split1, strlen(split1))) {
-		test_msg("Data in the buffer doesn't match what it should "
-			 "in the first split have='%.*s' want '%s'\n",
+		test_err(
+"data in the buffer doesn't match what it should in the first split have='%.*s' want '%s'",
 			 (int)strlen(split1), buf, split1);
 		ret = -EINVAL;
 		goto out;
@@ -116,14 +113,13 @@ static int test_btrfs_split_item(void)
 	btrfs_item_key_to_cpu(eb, &key, 1);
 	if (key.objectid != 0 || key.type != BTRFS_EXTENT_CSUM_KEY ||
 	    key.offset != 3) {
-		test_msg("Invalid key at slot 1\n");
+		test_err("invalid key at slot 1");
 		ret = -EINVAL;
 		goto out;
 	}
 
-	item = btrfs_item_nr(1);
-	if (btrfs_item_size(eb, item) != strlen(split2)) {
-		test_msg("Invalid len in the second split\n");
+	if (btrfs_item_size(eb, 1) != strlen(split2)) {
+		test_err("invalid len in the second split");
 		ret = -EINVAL;
 		goto out;
 	}
@@ -131,8 +127,8 @@ static int test_btrfs_split_item(void)
 	read_extent_buffer(eb, buf, btrfs_item_ptr_offset(eb, 1),
 			   strlen(split2));
 	if (memcmp(buf, split2, strlen(split2))) {
-		test_msg("Data in the buffer doesn't match what it should "
-			 "in the second split\n");
+		test_err(
+	"data in the buffer doesn't match what it should in the second split");
 		ret = -EINVAL;
 		goto out;
 	}
@@ -141,21 +137,20 @@ static int test_btrfs_split_item(void)
 	/* Do it again so we test memmoving the other items in the leaf */
 	ret = btrfs_split_item(NULL, root, path, &key, 4);
 	if (ret) {
-		test_msg("Second split item failed %d\n", ret);
+		test_err("second split item failed %d", ret);
 		goto out;
 	}
 
 	btrfs_item_key_to_cpu(eb, &key, 0);
 	if (key.objectid != 0 || key.type != BTRFS_EXTENT_CSUM_KEY ||
 	    key.offset != 0) {
-		test_msg("Invalid key at slot 0\n");
+		test_err("invalid key at slot 0");
 		ret = -EINVAL;
 		goto out;
 	}
 
-	item = btrfs_item_nr(0);
-	if (btrfs_item_size(eb, item) != strlen(split3)) {
-		test_msg("Invalid len in the first split\n");
+	if (btrfs_item_size(eb, 0) != strlen(split3)) {
+		test_err("invalid len in the first split");
 		ret = -EINVAL;
 		goto out;
 	}
@@ -163,8 +158,8 @@ static int test_btrfs_split_item(void)
 	read_extent_buffer(eb, buf, btrfs_item_ptr_offset(eb, 0),
 			   strlen(split3));
 	if (memcmp(buf, split3, strlen(split3))) {
-		test_msg("Data in the buffer doesn't match what it should "
-			 "in the third split");
+		test_err(
+	"data in the buffer doesn't match what it should in the third split");
 		ret = -EINVAL;
 		goto out;
 	}
@@ -172,14 +167,13 @@ static int test_btrfs_split_item(void)
 	btrfs_item_key_to_cpu(eb, &key, 1);
 	if (key.objectid != 0 || key.type != BTRFS_EXTENT_CSUM_KEY ||
 	    key.offset != 1) {
-		test_msg("Invalid key at slot 1\n");
+		test_err("invalid key at slot 1");
 		ret = -EINVAL;
 		goto out;
 	}
 
-	item = btrfs_item_nr(1);
-	if (btrfs_item_size(eb, item) != strlen(split4)) {
-		test_msg("Invalid len in the second split\n");
+	if (btrfs_item_size(eb, 1) != strlen(split4)) {
+		test_err("invalid len in the second split");
 		ret = -EINVAL;
 		goto out;
 	}
@@ -187,8 +181,8 @@ static int test_btrfs_split_item(void)
 	read_extent_buffer(eb, buf, btrfs_item_ptr_offset(eb, 1),
 			   strlen(split4));
 	if (memcmp(buf, split4, strlen(split4))) {
-		test_msg("Data in the buffer doesn't match what it should "
-			 "in the fourth split\n");
+		test_err(
+	"data in the buffer doesn't match what it should in the fourth split");
 		ret = -EINVAL;
 		goto out;
 	}
@@ -196,14 +190,13 @@ static int test_btrfs_split_item(void)
 	btrfs_item_key_to_cpu(eb, &key, 2);
 	if (key.objectid != 0 || key.type != BTRFS_EXTENT_CSUM_KEY ||
 	    key.offset != 3) {
-		test_msg("Invalid key at slot 2\n");
+		test_err("invalid key at slot 2");
 		ret = -EINVAL;
 		goto out;
 	}
 
-	item = btrfs_item_nr(2);
-	if (btrfs_item_size(eb, item) != strlen(split2)) {
-		test_msg("Invalid len in the second split\n");
+	if (btrfs_item_size(eb, 2) != strlen(split2)) {
+		test_err("invalid len in the second split");
 		ret = -EINVAL;
 		goto out;
 	}
@@ -211,19 +204,20 @@ static int test_btrfs_split_item(void)
 	read_extent_buffer(eb, buf, btrfs_item_ptr_offset(eb, 2),
 			   strlen(split2));
 	if (memcmp(buf, split2, strlen(split2))) {
-		test_msg("Data in the buffer doesn't match what it should "
-			 "in the last chunk\n");
+		test_err(
+	"data in the buffer doesn't match what it should in the last chunk");
 		ret = -EINVAL;
 		goto out;
 	}
 out:
 	btrfs_free_path(path);
-	kfree(root);
+	btrfs_free_dummy_root(root);
+	btrfs_free_dummy_fs_info(fs_info);
 	return ret;
 }
 
-int btrfs_test_extent_buffer_operations(void)
+int btrfs_test_extent_buffer_operations(u32 sectorsize, u32 nodesize)
 {
-	test_msg("Running extent buffer operation tests");
-	return test_btrfs_split_item();
+	test_msg("running extent buffer operation tests");
+	return test_btrfs_split_item(sectorsize, nodesize);
 }

@@ -1,21 +1,13 @@
-/**
+// SPDX-License-Identifier: GPL-2.0-only
+/*
  * IBM Accelerator Family 'GenWQE'
  *
  * (C) Copyright IBM Corp. 2013
  *
  * Author: Frank Haverkamp <haver@linux.vnet.ibm.com>
  * Author: Joerg-Stephan Vogt <jsvogt@de.ibm.com>
- * Author: Michael Jung <mijung@de.ibm.com>
+ * Author: Michael Jung <mijung@gmx.net>
  * Author: Michael Ruettger <michael@ibmra.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License (version 2 only)
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 /*
@@ -24,7 +16,6 @@
  * debugging, please also see the debugfs interfaces of this driver.
  */
 
-#include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/module.h>
@@ -91,13 +82,6 @@ static ssize_t type_show(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RO(type);
 
-static ssize_t driver_show(struct device *dev, struct device_attribute *attr,
-			   char *buf)
-{
-	return sprintf(buf, "%s\n", DRV_VERS_STRING);
-}
-static DEVICE_ATTR_RO(driver);
-
 static ssize_t tempsens_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
@@ -145,7 +129,7 @@ static ssize_t base_clock_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(base_clock);
 
-/**
+/*
  * curr_bitstream_show() - Show the current bitstream id
  *
  * There is a bug in some old versions of the CPLD which selects the
@@ -172,7 +156,7 @@ static ssize_t curr_bitstream_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(curr_bitstream);
 
-/**
+/*
  * next_bitstream_show() - Show the next activated bitstream
  *
  * IO_SLC_CFGREG_SOFTRESET: This register can only be accessed by the PF.
@@ -223,6 +207,30 @@ static ssize_t next_bitstream_store(struct device *dev,
 }
 static DEVICE_ATTR_RW(next_bitstream);
 
+static ssize_t reload_bitstream_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	int reload;
+	struct genwqe_dev *cd = dev_get_drvdata(dev);
+
+	if (kstrtoint(buf, 0, &reload) < 0)
+		return -EINVAL;
+
+	if (reload == 0x1) {
+		if (cd->card_state == GENWQE_CARD_UNUSED ||
+		    cd->card_state == GENWQE_CARD_USED)
+			cd->card_state = GENWQE_CARD_RELOAD_BITSTREAM;
+		else
+			return -EIO;
+	} else {
+		return -EINVAL;
+	}
+
+	return count;
+}
+static DEVICE_ATTR_WO(reload_bitstream);
+
 /*
  * Create device_attribute structures / params: name, mode, show, store
  * additional flag if valid in VF
@@ -232,18 +240,17 @@ static struct attribute *genwqe_attributes[] = {
 	&dev_attr_next_bitstream.attr,
 	&dev_attr_curr_bitstream.attr,
 	&dev_attr_base_clock.attr,
-	&dev_attr_driver.attr,
 	&dev_attr_type.attr,
 	&dev_attr_version.attr,
 	&dev_attr_appid.attr,
 	&dev_attr_status.attr,
 	&dev_attr_freerunning_timer.attr,
 	&dev_attr_queue_working_time.attr,
+	&dev_attr_reload_bitstream.attr,
 	NULL,
 };
 
 static struct attribute *genwqe_normal_attributes[] = {
-	&dev_attr_driver.attr,
 	&dev_attr_type.attr,
 	&dev_attr_version.attr,
 	&dev_attr_appid.attr,
@@ -253,7 +260,7 @@ static struct attribute *genwqe_normal_attributes[] = {
 	NULL,
 };
 
-/**
+/*
  * genwqe_is_visible() - Determine if sysfs attribute should be visible or not
  *
  * VFs have restricted mmio capabilities, so not all sysfs entries
@@ -263,7 +270,7 @@ static umode_t genwqe_is_visible(struct kobject *kobj,
 				 struct attribute *attr, int n)
 {
 	unsigned int j;
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct genwqe_dev *cd = dev_get_drvdata(dev);
 	umode_t mode = attr->mode;
 

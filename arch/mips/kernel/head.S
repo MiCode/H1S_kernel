@@ -21,7 +21,6 @@
 #include <asm/asmmacro.h>
 #include <asm/irqflags.h>
 #include <asm/regdef.h>
-#include <asm/pgtable-bits.h>
 #include <asm/mipsregs.h>
 #include <asm/stackframe.h>
 
@@ -35,33 +34,12 @@
 	 */
 	.macro	setup_c0_status set clr
 	.set	push
-#ifdef CONFIG_MIPS_MT_SMTC
-	/*
-	 * For SMTC, we need to set privilege and disable interrupts only for
-	 * the current TC, using the TCStatus register.
-	 */
-	mfc0	t0, CP0_TCSTATUS
-	/* Fortunately CU 0 is in the same place in both registers */
-	/* Set TCU0, TMX, TKSU (for later inversion) and IXMT */
-	li	t1, ST0_CU0 | 0x08001c00
-	or	t0, t1
-	/* Clear TKSU, leave IXMT */
-	xori	t0, 0x00001800
-	mtc0	t0, CP0_TCSTATUS
-	_ehb
-	/* We need to leave the global IE bit set, but clear EXL...*/
 	mfc0	t0, CP0_STATUS
-	or	t0, ST0_CU0 | ST0_EXL | ST0_ERL | \set | \clr
-	xor	t0, ST0_EXL | ST0_ERL | \clr
-	mtc0	t0, CP0_STATUS
-#else
-	mfc0	t0, CP0_STATUS
-	or	t0, ST0_CU0|\set|0x1f|\clr
+	or	t0, ST0_KERNEL_CUMASK|\set|0x1f|\clr
 	xor	t0, 0x1f|\clr
 	mtc0	t0, CP0_STATUS
 	.set	noreorder
 	sll	zero,3				# ehb
-#endif
 	.set	pop
 	.endm
 
@@ -99,7 +77,7 @@ EXPORT(_stext)
 	 */
 FEXPORT(__kernel_entry)
 	j	kernel_entry
-#endif
+#endif /* CONFIG_BOOT_RAW */
 
 	__REF
 
@@ -115,24 +93,6 @@ NESTED(kernel_entry, 16, sp)			# kernel entry point
 	jr	t0
 0:
 
-#ifdef CONFIG_MIPS_MT_SMTC
-	/*
-	 * In SMTC kernel, "CLI" is thread-specific, in TCStatus.
-	 * We still need to enable interrupts globally in Status,
-	 * and clear EXL/ERL.
-	 *
-	 * TCContext is used to track interrupt levels under
-	 * service in SMTC kernel. Clear for boot TC before
-	 * allowing any interrupts.
-	 */
-	mtc0	zero, CP0_TCCONTEXT
-
-	mfc0	t0, CP0_STATUS
-	ori	t0, t0, 0xff1f
-	xori	t0, t0, 0x001e
-	mtc0	t0, CP0_STATUS
-#endif /* CONFIG_MIPS_MT_SMTC */
-
 	PTR_LA		t0, __bss_start		# clear .bss
 	LONG_S		zero, (t0)
 	PTR_LA		t1, __bss_stop - LONGSIZE
@@ -147,6 +107,9 @@ NESTED(kernel_entry, 16, sp)			# kernel entry point
 	LONG_S		a3, fw_arg3
 
 	MTC0		zero, CP0_CONTEXT	# clear context register
+#ifdef CONFIG_64BIT
+	MTC0		zero, CP0_XCONTEXT
+#endif
 	PTR_LA		$28, init_thread_union
 	/* Set the SP after an empty pt_regs.  */
 	PTR_LI		sp, _THREAD_SIZE - 32 - PT_SIZE
@@ -155,7 +118,27 @@ NESTED(kernel_entry, 16, sp)			# kernel entry point
 	set_saved_sp	sp, t0, t1
 	PTR_SUBU	sp, 4 * SZREG		# init stack pointer
 
+#ifdef CONFIG_RELOCATABLE
+	/* Copy kernel and apply the relocations */
+	jal		relocate_kernel
+
+	/* Repoint the sp into the new kernel image */
+	PTR_LI		sp, _THREAD_SIZE - 32 - PT_SIZE
+	PTR_ADDU	sp, $28
+	set_saved_sp	sp, t0, t1
+	PTR_SUBU	sp, 4 * SZREG		# init stack pointer
+
+	/*
+	 * relocate_kernel returns the entry point either
+	 * in the relocated kernel or the original if for
+	 * some reason relocation failed - jump there now
+	 * with instruction hazard barrier because of the
+	 * newly sync'd icache.
+	 */
+	jr.hb		v0
+#else  /* !CONFIG_RELOCATABLE */
 	j		start_kernel
+#endif /* !CONFIG_RELOCATABLE */
 	END(kernel_entry)
 
 #ifdef CONFIG_SMP
@@ -164,25 +147,8 @@ NESTED(kernel_entry, 16, sp)			# kernel entry point
  * function after setting up the stack and gp registers.
  */
 NESTED(smp_bootstrap, 16, sp)
-#ifdef CONFIG_MIPS_MT_SMTC
-	/*
-	 * Read-modify-writes of Status must be atomic, and this
-	 * is one case where CLI is invoked without EXL being
-	 * necessarily set. The CLI and setup_c0_status will
-	 * in fact be redundant for all but the first TC of
-	 * each VPE being booted.
-	 */
-	DMT	10	# dmt t2 /* t0, t1 are used by CLI and setup_c0_status() */
-	jal	mips_ihb
-#endif /* CONFIG_MIPS_MT_SMTC */
-	setup_c0_status_sec
 	smp_slave_setup
-#ifdef CONFIG_MIPS_MT_SMTC
-	andi	t2, t2, VPECONTROL_TE
-	beqz	t2, 2f
-	EMT		# emt
-2:
-#endif /* CONFIG_MIPS_MT_SMTC */
+	setup_c0_status_sec
 	j	start_secondary
 	END(smp_bootstrap)
 #endif /* CONFIG_SMP */

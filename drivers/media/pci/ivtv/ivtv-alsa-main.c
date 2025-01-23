@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  ALSA interface to ivtv PCM capture streams
  *
@@ -5,47 +6,24 @@
  *  Copyright (C) 2009  Devin Heitmueller <dheitmueller@kernellabs.com>
  *
  *  Portions of this work were sponsored by ONELAN Limited for the cx18 driver
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
- *  02111-1307  USA
  */
-
-#include <linux/init.h>
-#include <linux/slab.h>
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/device.h>
-#include <linux/spinlock.h>
-
-#include <media/v4l2-device.h>
-
-#include <sound/core.h>
-#include <sound/initval.h>
 
 #include "ivtv-driver.h"
 #include "ivtv-version.h"
 #include "ivtv-alsa.h"
-#include "ivtv-alsa-mixer.h"
 #include "ivtv-alsa-pcm.h"
 
-int ivtv_alsa_debug;
+#include <sound/core.h>
+#include <sound/initval.h>
 
-#define IVTV_DEBUG_ALSA_INFO(fmt, arg...) \
+int ivtv_alsa_debug;
+static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
+
+#define IVTV_DEBUG_ALSA_INFO(__fmt, __arg...) \
 	do { \
 		if (ivtv_alsa_debug & 2) \
-			pr_info("%s: " fmt, "ivtv-alsa", ## arg); \
+			printk(KERN_INFO pr_fmt("%s: alsa:" __fmt),	\
+			       __func__, ##__arg);			\
 	} while (0)
 
 module_param_named(debug, ivtv_alsa_debug, int, 0644);
@@ -54,9 +32,12 @@ MODULE_PARM_DESC(debug,
 		 "\t\t\t  1/0x0001: warning\n"
 		 "\t\t\t  2/0x0002: info\n");
 
+module_param_array(index, int, NULL, 0444);
+MODULE_PARM_DESC(index,
+		 "Index value for IVTV ALSA capture interface(s).\n");
+
 MODULE_AUTHOR("Andy Walls");
 MODULE_DESCRIPTION("CX23415/CX23416 ALSA Interface");
-MODULE_SUPPORTED_DEVICE("CX23415/CX23416 MPEG2 encoder");
 MODULE_LICENSE("GPL");
 
 MODULE_VERSION(IVTV_VERSION);
@@ -65,12 +46,6 @@ static inline
 struct snd_ivtv_card *to_snd_ivtv_card(struct v4l2_device *v4l2_dev)
 {
 	return to_ivtv(v4l2_dev)->alsa;
-}
-
-static inline
-struct snd_ivtv_card *p_to_snd_ivtv_card(struct v4l2_device **v4l2_dev)
-{
-	return container_of(v4l2_dev, struct snd_ivtv_card, v4l2_dev);
 }
 
 static void snd_ivtv_card_free(struct snd_ivtv_card *itvsc)
@@ -118,7 +93,7 @@ static int snd_ivtv_card_set_names(struct snd_ivtv_card *itvsc)
 	struct snd_card *sc = itvsc->sc;
 
 	/* sc->driver is used by alsa-lib's configurator: simple, unique */
-	strlcpy(sc->driver, "CX2341[56]", sizeof(sc->driver));
+	strscpy(sc->driver, "CX2341[56]", sizeof(sc->driver));
 
 	/* sc->shortname is a symlink in /proc/asound: IVTV-M -> cardN */
 	snprintf(sc->shortname,  sizeof(sc->shortname), "IVTV-%d",
@@ -137,7 +112,7 @@ static int snd_ivtv_init(struct v4l2_device *v4l2_dev)
 	struct ivtv *itv = to_ivtv(v4l2_dev);
 	struct snd_card *sc = NULL;
 	struct snd_ivtv_card *itvsc;
-	int ret;
+	int ret, idx;
 
 	/* Numbrs steps from "Writing an ALSA Driver" by Takashi Iwai */
 
@@ -145,11 +120,14 @@ static int snd_ivtv_init(struct v4l2_device *v4l2_dev)
 	/* This is a no-op for us.  We'll use the itv->instance */
 
 	/* (2) Create a card instance */
-	ret = snd_card_create(SNDRV_DEFAULT_IDX1, /* use first available id */
-			      SNDRV_DEFAULT_STR1, /* xid from end of shortname*/
-			      THIS_MODULE, 0, &sc);
+	/* use first available id if not specified otherwise*/
+	idx = index[itv->instance] == -1 ? SNDRV_DEFAULT_IDX1 : index[itv->instance];
+	ret = snd_card_new(&itv->pdev->dev,
+			   idx,
+			   SNDRV_DEFAULT_STR1, /* xid from end of shortname*/
+			   THIS_MODULE, 0, &sc);
 	if (ret) {
-		IVTV_ALSA_ERR("%s: snd_card_create() failed with err %d\n",
+		IVTV_ALSA_ERR("%s: snd_card_new() failed with err %d\n",
 			      __func__, ret);
 		goto err_exit;
 	}
@@ -165,15 +143,7 @@ static int snd_ivtv_init(struct v4l2_device *v4l2_dev)
 	/* (4) Set the driver ID and name strings */
 	snd_ivtv_card_set_names(itvsc);
 
-	/* (5) Create other components: mixer, PCM, & proc files */
-#if 0
-	ret = snd_ivtv_mixer_create(itvsc);
-	if (ret) {
-		IVTV_ALSA_WARN("%s: snd_ivtv_mixer_create() failed with err %d:"
-			       " proceeding anyway\n", __func__, ret);
-	}
-#endif
-
+	/* (5) Create other components: PCM, & proc files */
 	ret = snd_ivtv_pcm_create(itvsc);
 	if (ret) {
 		IVTV_ALSA_ERR("%s: snd_ivtv_pcm_create() failed with err %d\n",
@@ -194,6 +164,9 @@ static int snd_ivtv_init(struct v4l2_device *v4l2_dev)
 			      __func__, ret);
 		goto err_exit_free;
 	}
+
+	IVTV_ALSA_INFO("%s: Instance %d registered as ALSA card %d\n",
+			 __func__, itv->instance, sc->number);
 
 	return 0;
 
@@ -223,9 +196,8 @@ static int ivtv_alsa_load(struct ivtv *itv)
 	}
 
 	s = &itv->streams[IVTV_ENC_STREAM_TYPE_PCM];
-	if (s->vdev == NULL) {
-		IVTV_DEBUG_ALSA_INFO("%s: PCM stream for card is disabled - "
-				     "skipping\n", __func__);
+	if (s->vdev.v4l2_dev == NULL) {
+		IVTV_DEBUG_ALSA_INFO("PCM stream for card is disabled - skipping\n");
 		return 0;
 	}
 
@@ -239,8 +211,7 @@ static int ivtv_alsa_load(struct ivtv *itv)
 		IVTV_ALSA_ERR("%s: failed to create struct snd_ivtv_card\n",
 			      __func__);
 	} else {
-		IVTV_DEBUG_ALSA_INFO("%s: created ivtv ALSA interface instance "
-				     "\n", __func__);
+		IVTV_DEBUG_ALSA_INFO("created ivtv ALSA interface instance\n");
 	}
 	return 0;
 }

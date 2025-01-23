@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Samsung s5h1432 DVB-T demodulator driver
  *
  *  Copyright (C) 2009 Bill Liu <Bill.Liu@Conexant.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/kernel.h>
@@ -24,7 +11,7 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "s5h1432.h"
 
 struct s5h1432_state {
@@ -36,7 +23,7 @@ struct s5h1432_state {
 
 	struct dvb_frontend frontend;
 
-	fe_modulation_t current_modulation;
+	enum fe_modulation current_modulation;
 	unsigned int first_tune:1;
 
 	u32 current_frequency;
@@ -63,8 +50,8 @@ static int s5h1432_writereg(struct s5h1432_state *state,
 	ret = i2c_transfer(state->i2c, &msg, 1);
 
 	if (ret != 1)
-		printk(KERN_ERR "%s: writereg error 0x%02x 0x%02x 0x%04x, "
-		       "ret == %i)\n", __func__, addr, reg, data, ret);
+		printk(KERN_ERR "%s: writereg error 0x%02x 0x%02x 0x%04x, ret == %i)\n",
+		       __func__, addr, reg, data, ret);
 
 	return (ret != 1) ? -1 : 0;
 }
@@ -302,7 +289,7 @@ static int s5h1432_init(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int s5h1432_read_status(struct dvb_frontend *fe, fe_status_t *status)
+static int s5h1432_read_status(struct dvb_frontend *fe, enum fe_status *status)
 {
 	return 0;
 }
@@ -341,7 +328,7 @@ static void s5h1432_release(struct dvb_frontend *fe)
 	kfree(state);
 }
 
-static struct dvb_frontend_ops s5h1432_ops;
+static const struct dvb_frontend_ops s5h1432_ops;
 
 struct dvb_frontend *s5h1432_attach(const struct s5h1432_config *config,
 				    struct i2c_adapter *i2c)
@@ -368,15 +355,15 @@ struct dvb_frontend *s5h1432_attach(const struct s5h1432_config *config,
 
 	return &state->frontend;
 }
-EXPORT_SYMBOL(s5h1432_attach);
+EXPORT_SYMBOL_GPL(s5h1432_attach);
 
-static struct dvb_frontend_ops s5h1432_ops = {
+static const struct dvb_frontend_ops s5h1432_ops = {
 	.delsys = { SYS_DVBT },
 	.info = {
 		 .name = "Samsung s5h1432 DVB-T Frontend",
-		 .frequency_min = 177000000,
-		 .frequency_max = 858000000,
-		 .frequency_stepsize = 166666,
+		 .frequency_min_hz = 177 * MHz,
+		 .frequency_max_hz = 858 * MHz,
+		 .frequency_stepsize_hz = 166666,
 		 .caps = FE_CAN_FEC_1_2 | FE_CAN_FEC_2_3 | FE_CAN_FEC_3_4 |
 		 FE_CAN_FEC_5_6 | FE_CAN_FEC_7_8 | FE_CAN_FEC_AUTO |
 		 FE_CAN_QPSK | FE_CAN_QAM_16 | FE_CAN_QAM_64 | FE_CAN_QAM_AUTO |

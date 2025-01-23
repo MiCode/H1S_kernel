@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for Motorola PCAP2 touchscreen as found in the EZX phone platform.
  *
  *  Copyright (C) 2006 Harald Welte <laforge@openezx.org>
  *  Copyright (C) 2009 Daniel Ribeiro <drwyrm@gmail.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
  */
 
 #include <linux/module.h>
@@ -87,7 +83,7 @@ static void pcap_ts_read_xy(void *data, u16 res[2])
 
 static void pcap_ts_work(struct work_struct *work)
 {
-	struct delayed_work *dw = container_of(work, struct delayed_work, work);
+	struct delayed_work *dw = to_delayed_work(work);
 	struct pcap_ts *pcap_ts = container_of(dw, struct pcap_ts, work);
 	u8 ch[2];
 
@@ -247,7 +243,6 @@ static struct platform_driver pcap_ts_driver = {
 	.remove		= pcap_ts_remove,
 	.driver		= {
 		.name	= "pcap-ts",
-		.owner	= THIS_MODULE,
 		.pm	= PCAP_TS_PM_OPS,
 	},
 };

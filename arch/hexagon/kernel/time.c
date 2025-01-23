@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Time related functions for Hexagon architecture
  *
  * Copyright (c) 2010-2011, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  */
 
 #include <linux/init.h>
@@ -30,8 +17,9 @@
 #include <linux/of_irq.h>
 #include <linux/module.h>
 
-#include <asm/timer-regs.h>
 #include <asm/hexagon_vm.h>
+
+#define TIMER_ENABLE		BIT(0)
 
 /*
  * For the clocksource we need:
@@ -45,6 +33,13 @@
 cycles_t	pcycle_freq_mhz;
 cycles_t	thread_freq_mhz;
 cycles_t	sleep_clk_freq;
+
+/*
+ * 8x50 HDD Specs 5-8.  Simulator co-sim not fixed until
+ * release 1.1, and then it's "adjustable" and probably not defaulted.
+ */
+#define RTOS_TIMER_INT		3
+#define RTOS_TIMER_REGS_ADDR	0xAB000000UL
 
 static struct resource rtos_timer_resources[] = {
 	{
@@ -72,9 +67,9 @@ struct adsp_hw_timer_struct {
 /*  Look for "TCX0" for related constants.  */
 static __iomem struct adsp_hw_timer_struct *rtos_timer;
 
-static cycle_t timer_get_cycles(struct clocksource *cs)
+static u64 timer_get_cycles(struct clocksource *cs)
 {
-	return (cycle_t) __vmgettime();
+	return (u64) __vmgettime();
 }
 
 static struct clocksource hexagon_clocksource = {
@@ -93,22 +88,8 @@ static int set_next_event(unsigned long delta, struct clock_event_device *evt)
 	iowrite32(0, &rtos_timer->clear);
 
 	iowrite32(delta, &rtos_timer->match);
-	iowrite32(1 << TIMER_ENABLE, &rtos_timer->enable);
+	iowrite32(TIMER_ENABLE, &rtos_timer->enable);
 	return 0;
-}
-
-/*
- * Sets the mode (periodic, shutdown, oneshot, etc) of a timer.
- */
-static void set_mode(enum clock_event_mode mode,
-	struct clock_event_device *evt)
-{
-	switch (mode) {
-	case CLOCK_EVT_MODE_SHUTDOWN:
-		/* XXX implement me */
-	default:
-		break;
-	}
 }
 
 #ifdef CONFIG_SMP
@@ -119,13 +100,13 @@ static void broadcast(const struct cpumask *mask)
 }
 #endif
 
+/* XXX Implement set_state_shutdown() */
 static struct clock_event_device hexagon_clockevent_dev = {
 	.name		= "clockevent",
 	.features	= CLOCK_EVT_FEAT_ONESHOT,
 	.rating		= 400,
 	.irq		= RTOS_TIMER_INT,
 	.set_next_event = set_next_event,
-	.set_mode	= set_mode,
 #ifdef CONFIG_SMP
 	.broadcast	= broadcast,
 #endif
@@ -146,7 +127,6 @@ void setup_percpu_clockdev(void)
 
 	dummy_clock_dev->features = CLOCK_EVT_FEAT_DUMMY;
 	dummy_clock_dev->cpumask = cpumask_of(cpu);
-	dummy_clock_dev->mode = CLOCK_EVT_MODE_UNUSED;
 
 	clockevents_register_device(dummy_clock_dev);
 }
@@ -171,13 +151,6 @@ static irqreturn_t timer_interrupt(int irq, void *devid)
 	return IRQ_HANDLED;
 }
 
-/*  This should also be pulled from devtree  */
-static struct irqaction rtos_timer_intdesc = {
-	.handler = timer_interrupt,
-	.flags = IRQF_TIMER | IRQF_TRIGGER_RISING,
-	.name = "rtos_timer"
-};
-
 /*
  * time_init_deferred - called by start_kernel to set up timer/clock source
  *
@@ -191,9 +164,7 @@ void __init time_init_deferred(void)
 {
 	struct resource *resource = NULL;
 	struct clock_event_device *ce_dev = &hexagon_clockevent_dev;
-	struct device_node *dn;
-	struct resource r;
-	int err;
+	unsigned long flag = IRQF_TIMER | IRQF_TRIGGER_RISING;
 
 	ce_dev->cpumask = cpu_all_mask;
 
@@ -217,20 +188,32 @@ void __init time_init_deferred(void)
 	clockevents_calc_mult_shift(ce_dev, sleep_clk_freq, 4);
 
 	ce_dev->max_delta_ns = clockevent_delta2ns(0x7fffffff, ce_dev);
+	ce_dev->max_delta_ticks = 0x7fffffff;
 	ce_dev->min_delta_ns = clockevent_delta2ns(0xf, ce_dev);
+	ce_dev->min_delta_ticks = 0xf;
 
 #ifdef CONFIG_SMP
 	setup_percpu_clockdev();
 #endif
 
 	clockevents_register_device(ce_dev);
-	setup_irq(ce_dev->irq, &rtos_timer_intdesc);
+	if (request_irq(ce_dev->irq, timer_interrupt, flag, "rtos_timer", NULL))
+		pr_err("Failed to register rtos_timer interrupt\n");
 }
 
 void __init time_init(void)
 {
 	late_time_init = time_init_deferred;
 }
+
+void __delay(unsigned long cycles)
+{
+	unsigned long long start = __vmgettime();
+
+	while ((__vmgettime() - start) < cycles)
+		cpu_relax();
+}
+EXPORT_SYMBOL(__delay);
 
 /*
  * This could become parametric or perhaps even computed at run-time,

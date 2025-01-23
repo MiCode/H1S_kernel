@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * drivers/base/power/trace.c
  *
@@ -6,12 +7,15 @@
  * Trace facility for suspend/resume problems, when none of the
  * devices may be working.
  */
+#define pr_fmt(fmt) "PM: " fmt
 
-#include <linux/resume-trace.h>
+#include <linux/pm-trace.h>
 #include <linux/export.h>
 #include <linux/rtc.h>
+#include <linux/suspend.h>
+#include <linux/init.h>
 
-#include <asm/rtc.h>
+#include <linux/mc146818rtc.h>
 
 #include "power.h"
 
@@ -74,6 +78,9 @@
 
 #define DEVSEED (7919)
 
+bool pm_trace_rtc_abused __read_mostly;
+EXPORT_SYMBOL_GPL(pm_trace_rtc_abused);
+
 static unsigned int dev_hash_value;
 
 static int set_magic_time(unsigned int user, unsigned int file, unsigned int device)
@@ -103,7 +110,8 @@ static int set_magic_time(unsigned int user, unsigned int file, unsigned int dev
 	n /= 24;
 	time.tm_min = (n % 20) * 3;
 	n /= 20;
-	set_rtc_time(&time);
+	mc146818_set_time(&time);
+	pm_trace_rtc_abused = true;
 	return n ? -1 : 0;
 }
 
@@ -112,10 +120,12 @@ static unsigned int read_magic_time(void)
 	struct rtc_time time;
 	unsigned int val;
 
-	get_rtc_time(&time);
-	pr_info("RTC time: %2d:%02d:%02d, date: %02d/%02d/%02d\n",
-		time.tm_hour, time.tm_min, time.tm_sec,
-		time.tm_mon + 1, time.tm_mday, time.tm_year % 100);
+	if (mc146818_get_time(&time, 1000) < 0) {
+		pr_err("Unable to read current time from RTC\n");
+		return 0;
+	}
+
+	pr_info("RTC time: %ptRt, date: %ptRd\n", &time, &time);
 	val = time.tm_year;				/* 100 years */
 	if (val > 100)
 		val -= 100;
@@ -154,26 +164,29 @@ EXPORT_SYMBOL(set_trace_device);
  * it's not any guarantee, but it's a high _likelihood_ that
  * the match is valid).
  */
-void generate_resume_trace(const void *tracedata, unsigned int user)
+void generate_pm_trace(const void *tracedata, unsigned int user)
 {
 	unsigned short lineno = *(unsigned short *)tracedata;
 	const char *file = *(const char **)(tracedata + 2);
 	unsigned int user_hash_value, file_hash_value;
 
+	if (!x86_platform.legacy.rtc)
+		return;
+
 	user_hash_value = user % USERHASH;
 	file_hash_value = hash_string(lineno, file, FILEHASH);
 	set_magic_time(user_hash_value, file_hash_value, dev_hash_value);
 }
-EXPORT_SYMBOL(generate_resume_trace);
+EXPORT_SYMBOL(generate_pm_trace);
 
-extern char __tracedata_start, __tracedata_end;
+extern char __tracedata_start[], __tracedata_end[];
 static int show_file_hash(unsigned int value)
 {
 	int match;
 	char *tracedata;
 
 	match = 0;
-	for (tracedata = &__tracedata_start ; tracedata < &__tracedata_end ;
+	for (tracedata = __tracedata_start ; tracedata < __tracedata_end ;
 			tracedata += 2 + sizeof(unsigned long)) {
 		unsigned short lineno = *(unsigned short *)tracedata;
 		const char *file = *(const char **)(tracedata + 2);
@@ -239,16 +252,44 @@ int show_trace_dev_match(char *buf, size_t size)
 	return ret;
 }
 
-static int early_resume_init(void)
+static int
+pm_trace_notify(struct notifier_block *nb, unsigned long mode, void *_unused)
 {
-	hash_value_early_read = read_magic_time();
+	switch (mode) {
+	case PM_POST_HIBERNATION:
+	case PM_POST_SUSPEND:
+		if (pm_trace_rtc_abused) {
+			pm_trace_rtc_abused = false;
+			pr_warn("Possible incorrect RTC due to pm_trace, please use 'ntpdate' or 'rdate' to reset it.\n");
+		}
+		break;
+	default:
+		break;
+	}
 	return 0;
 }
 
-static int late_resume_init(void)
+static struct notifier_block pm_trace_nb = {
+	.notifier_call = pm_trace_notify,
+};
+
+static int __init early_resume_init(void)
+{
+	if (!x86_platform.legacy.rtc)
+		return 0;
+
+	hash_value_early_read = read_magic_time();
+	register_pm_notifier(&pm_trace_nb);
+	return 0;
+}
+
+static int __init late_resume_init(void)
 {
 	unsigned int val = hash_value_early_read;
 	unsigned int user, file, dev;
+
+	if (!x86_platform.legacy.rtc)
+		return 0;
 
 	user = val % USERHASH;
 	val = val / USERHASH;

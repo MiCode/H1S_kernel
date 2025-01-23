@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * OSS compatible sequencer driver
  *
  * Timer control routines
  *
  * Copyright (C) 1998,99 Takashi Iwai <tiwai@suse.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include "seq_oss_timer.h"
@@ -92,7 +79,7 @@ snd_seq_oss_process_timer_event(struct seq_oss_timer *rec, union evrec *ev)
 		case TMR_WAIT_REL:
 			parm += rec->cur_tick;
 			rec->realtime = 0;
-			/* continue to next */
+			fallthrough;
 		case TMR_WAIT_ABS:
 			if (parm == 0) {
 				rec->realtime = 1;
@@ -233,7 +220,6 @@ snd_seq_oss_timer_ioctl(struct seq_oss_timer *timer, unsigned int cmd, int __use
 	int value;
 
 	if (cmd == SNDCTL_SEQ_CTRLRATE) {
-		debug_printk(("ctrl rate\n"));
 		/* if *arg == 0, just return the current rate */
 		if (get_user(value, arg))
 			return -EFAULT;
@@ -248,21 +234,16 @@ snd_seq_oss_timer_ioctl(struct seq_oss_timer *timer, unsigned int cmd, int __use
 
 	switch (cmd) {
 	case SNDCTL_TMR_START:
-		debug_printk(("timer start\n"));
 		return snd_seq_oss_timer_start(timer);
 	case SNDCTL_TMR_STOP:
-		debug_printk(("timer stop\n"));
 		return snd_seq_oss_timer_stop(timer);
 	case SNDCTL_TMR_CONTINUE:
-		debug_printk(("timer continue\n"));
 		return snd_seq_oss_timer_continue(timer);
 	case SNDCTL_TMR_TEMPO:
-		debug_printk(("timer tempo\n"));
 		if (get_user(value, arg))
 			return -EFAULT;
 		return snd_seq_oss_timer_tempo(timer, value);
 	case SNDCTL_TMR_TIMEBASE:
-		debug_printk(("timer timebase\n"));
 		if (get_user(value, arg))
 			return -EFAULT;
 		if (value < MIN_OSS_TIMEBASE)
@@ -276,7 +257,6 @@ snd_seq_oss_timer_ioctl(struct seq_oss_timer *timer, unsigned int cmd, int __use
 	case SNDCTL_TMR_METRONOME:
 	case SNDCTL_TMR_SELECT:
 	case SNDCTL_TMR_SOURCE:
-		debug_printk(("timer XXX\n"));
 		/* not supported */
 		return 0;
 	}

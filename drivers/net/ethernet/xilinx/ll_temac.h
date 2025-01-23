@@ -1,9 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 
 #ifndef XILINX_LL_TEMAC_H
 #define XILINX_LL_TEMAC_H
 
 #include <linux/netdevice.h>
 #include <linux/of.h>
+#include <linux/platform_device.h>
 #include <linux/spinlock.h>
 
 #ifdef CONFIG_PPC_DCR
@@ -20,36 +22,45 @@
 /*  Configuration options */
 
 /*  Accept all incoming packets.
- *  This option defaults to disabled (cleared) */
+ *  This option defaults to disabled (cleared)
+ */
 #define XTE_OPTION_PROMISC                      (1 << 0)
 /*  Jumbo frame support for Tx & Rx.
- *  This option defaults to disabled (cleared) */
+ *  This option defaults to disabled (cleared)
+ */
 #define XTE_OPTION_JUMBO                        (1 << 1)
 /*  VLAN Rx & Tx frame support.
- *  This option defaults to disabled (cleared) */
+ *  This option defaults to disabled (cleared)
+ */
 #define XTE_OPTION_VLAN                         (1 << 2)
 /*  Enable recognition of flow control frames on Rx
- *  This option defaults to enabled (set) */
+ *  This option defaults to enabled (set)
+ */
 #define XTE_OPTION_FLOW_CONTROL                 (1 << 4)
 /*  Strip FCS and PAD from incoming frames.
  *  Note: PAD from VLAN frames is not stripped.
- *  This option defaults to disabled (set) */
+ *  This option defaults to disabled (set)
+ */
 #define XTE_OPTION_FCS_STRIP                    (1 << 5)
 /*  Generate FCS field and add PAD automatically for outgoing frames.
- *  This option defaults to enabled (set) */
+ *  This option defaults to enabled (set)
+ */
 #define XTE_OPTION_FCS_INSERT                   (1 << 6)
 /*  Enable Length/Type error checking for incoming frames. When this option is
-set, the MAC will filter frames that have a mismatched type/length field
-and if XTE_OPTION_REPORT_RXERR is set, the user is notified when these
-types of frames are encountered. When this option is cleared, the MAC will
-allow these types of frames to be received.
-This option defaults to enabled (set) */
+ *  set, the MAC will filter frames that have a mismatched type/length field
+ *  and if XTE_OPTION_REPORT_RXERR is set, the user is notified when these
+ *  types of frames are encountered. When this option is cleared, the MAC will
+ *  allow these types of frames to be received.
+ *  This option defaults to enabled (set)
+ */
 #define XTE_OPTION_LENTYPE_ERR                  (1 << 7)
 /*  Enable the transmitter.
- *  This option defaults to enabled (set) */
+ *  This option defaults to enabled (set)
+ */
 #define XTE_OPTION_TXEN                         (1 << 11)
 /*  Enable the receiver
-*   This option defaults to enabled (set) */
+ *  This option defaults to enabled (set)
+ */
 #define XTE_OPTION_RXEN                         (1 << 12)
 
 /*  Default options set when device is initialized or reset */
@@ -67,18 +78,18 @@ This option defaults to enabled (set) */
 #define TX_TAILDESC_PTR     0x04            /* rw */
 #define TX_CHNL_CTRL        0x05            /* rw */
 /*
- 0:7      24:31       IRQTimeout
- 8:15     16:23       IRQCount
- 16:20    11:15       Reserved
- 21       10          0
- 22       9           UseIntOnEnd
- 23       8           LdIRQCnt
- 24       7           IRQEn
- 25:28    3:6         Reserved
- 29       2           IrqErrEn
- 30       1           IrqDlyEn
- 31       0           IrqCoalEn
-*/
+ *  0:7      24:31       IRQTimeout
+ *  8:15     16:23       IRQCount
+ *  16:20    11:15       Reserved
+ *  21       10          0
+ *  22       9           UseIntOnEnd
+ *  23       8           LdIRQCnt
+ *  24       7           IRQEn
+ *  25:28    3:6         Reserved
+ *  29       2           IrqErrEn
+ *  30       1           IrqDlyEn
+ *  31       0           IrqCoalEn
+ */
 #define CHNL_CTRL_IRQ_IOE       (1 << 9)
 #define CHNL_CTRL_IRQ_EN        (1 << 7)
 #define CHNL_CTRL_IRQ_ERR_EN    (1 << 2)
@@ -86,35 +97,35 @@ This option defaults to enabled (set) */
 #define CHNL_CTRL_IRQ_COAL_EN   (1 << 0)
 #define TX_IRQ_REG          0x06            /* rw */
 /*
-  0:7      24:31       DltTmrValue
- 8:15     16:23       ClscCntrValue
- 16:17    14:15       Reserved
- 18:21    10:13       ClscCnt
- 22:23    8:9         DlyCnt
- 24:28    3::7        Reserved
- 29       2           ErrIrq
- 30       1           DlyIrq
- 31       0           CoalIrq
+ *  0:7      24:31       DltTmrValue
+ *  8:15     16:23       ClscCntrValue
+ *  16:17    14:15       Reserved
+ *  18:21    10:13       ClscCnt
+ *  22:23    8:9         DlyCnt
+ *  24:28    3::7        Reserved
+ *  29       2           ErrIrq
+ *  30       1           DlyIrq
+ *  31       0           CoalIrq
  */
 #define TX_CHNL_STS         0x07            /* r */
 /*
-   0:9      22:31   Reserved
- 10       21      TailPErr
- 11       20      CmpErr
- 12       19      AddrErr
- 13       18      NxtPErr
- 14       17      CurPErr
- 15       16      BsyWr
- 16:23    8:15    Reserved
- 24       7       Error
- 25       6       IOE
- 26       5       SOE
- 27       4       Cmplt
- 28       3       SOP
- 29       2       EOP
- 30       1       EngBusy
- 31       0       Reserved
-*/
+ *  0:9      22:31   Reserved
+ *  10       21      TailPErr
+ *  11       20      CmpErr
+ *  12       19      AddrErr
+ *  13       18      NxtPErr
+ *  14       17      CurPErr
+ *  15       16      BsyWr
+ *  16:23    8:15    Reserved
+ *  24       7       Error
+ *  25       6       IOE
+ *  26       5       SOE
+ *  27       4       Cmplt
+ *  28       3       SOP
+ *  29       2       EOP
+ *  30       1       EngBusy
+ *  31       0       Reserved
+ */
 
 #define RX_NXTDESC_PTR      0x08            /* r */
 #define RX_CURBUF_ADDR      0x09            /* r */
@@ -123,17 +134,17 @@ This option defaults to enabled (set) */
 #define RX_TAILDESC_PTR     0x0c            /* rw */
 #define RX_CHNL_CTRL        0x0d            /* rw */
 /*
- 0:7      24:31       IRQTimeout
- 8:15     16:23       IRQCount
- 16:20    11:15       Reserved
- 21       10          0
- 22       9           UseIntOnEnd
- 23       8           LdIRQCnt
- 24       7           IRQEn
- 25:28    3:6         Reserved
- 29       2           IrqErrEn
- 30       1           IrqDlyEn
- 31       0           IrqCoalEn
+ *  0:7      24:31       IRQTimeout
+ *  8:15     16:23       IRQCount
+ *  16:20    11:15       Reserved
+ *  21       10          0
+ *  22       9           UseIntOnEnd
+ *  23       8           LdIRQCnt
+ *  24       7           IRQEn
+ *  25:28    3:6         Reserved
+ *  29       2           IrqErrEn
+ *  30       1           IrqDlyEn
+ *  31       0           IrqCoalEn
  */
 #define RX_IRQ_REG          0x0e            /* rw */
 #define IRQ_COAL        (1 << 0)
@@ -141,13 +152,13 @@ This option defaults to enabled (set) */
 #define IRQ_ERR         (1 << 2)
 #define IRQ_DMAERR      (1 << 7)            /* this is not documented ??? */
 /*
- 0:7      24:31       DltTmrValue
- 8:15     16:23       ClscCntrValue
- 16:17    14:15       Reserved
- 18:21    10:13       ClscCnt
- 22:23    8:9         DlyCnt
- 24:28    3::7        Reserved
-*/
+ *  0:7      24:31       DltTmrValue
+ *  8:15     16:23       ClscCntrValue
+ *  16:17    14:15       Reserved
+ *  18:21    10:13       ClscCnt
+ *  22:23    8:9         DlyCnt
+ *  24:28    3::7        Reserved
+ */
 #define RX_CHNL_STS         0x0f        /* r */
 #define CHNL_STS_ENGBUSY    (1 << 1)
 #define CHNL_STS_EOP        (1 << 2)
@@ -164,23 +175,23 @@ This option defaults to enabled (set) */
 #define CHNL_STS_CMPERR     (1 << 20)
 #define CHNL_STS_TAILERR    (1 << 21)
 /*
- 0:9      22:31   Reserved
- 10       21      TailPErr
- 11       20      CmpErr
- 12       19      AddrErr
- 13       18      NxtPErr
- 14       17      CurPErr
- 15       16      BsyWr
- 16:23    8:15    Reserved
- 24       7       Error
- 25       6       IOE
- 26       5       SOE
- 27       4       Cmplt
- 28       3       SOP
- 29       2       EOP
- 30       1       EngBusy
- 31       0       Reserved
-*/
+ *  0:9      22:31   Reserved
+ *  10       21      TailPErr
+ *  11       20      CmpErr
+ *  12       19      AddrErr
+ *  13       18      NxtPErr
+ *  14       17      CurPErr
+ *  15       16      BsyWr
+ *  16:23    8:15    Reserved
+ *  24       7       Error
+ *  25       6       IOE
+ *  26       5       SOE
+ *  27       4       Cmplt
+ *  28       3       SOP
+ *  29       2       EOP
+ *  30       1       EngBusy
+ *  31       0       Reserved
+ */
 
 #define DMA_CONTROL_REG             0x10            /* rw */
 #define DMA_CONTROL_RST                 (1 << 0)
@@ -270,7 +281,7 @@ This option defaults to enabled (set) */
 
 #define XTE_TIE_OFFSET			0x000003A4 /* Interrupt enable */
 
-/**  MII Mamagement Control register (MGTCR) */
+/* MII Management Control register (MGTCR) */
 #define XTE_MGTDR_OFFSET		0x000003B0 /* MII data */
 #define XTE_MIIMAI_OFFSET		0x000003B4 /* MII control */
 
@@ -282,7 +293,7 @@ This option defaults to enabled (set) */
 
 #define STS_CTRL_APP0_ERR         (1 << 31)
 #define STS_CTRL_APP0_IRQONEND    (1 << 30)
-/* undoccumented */
+/* undocumented */
 #define STS_CTRL_APP0_STOPONEND   (1 << 29)
 #define STS_CTRL_APP0_CMPLT       (1 << 28)
 #define STS_CTRL_APP0_SOP         (1 << 27)
@@ -332,12 +343,13 @@ struct temac_local {
 	struct device *dev;
 
 	/* Connection to PHY device */
-	struct phy_device *phy_dev;	/* Pointer to PHY device */
 	struct device_node *phy_node;
+	/* For non-device-tree devices */
+	char phy_name[MII_BUS_ID_SIZE + 3];
+	phy_interface_t phy_interface;
 
 	/* MDIO bus data */
 	struct mii_bus *mii_bus;	/* MII bus reference */
-	int mdio_irqs[PHY_MAX_ADDR];	/* IRQs table for MDIO bus */
 
 	/* IO registers, dma functions and IRQs */
 	void __iomem *regs;
@@ -345,8 +357,10 @@ struct temac_local {
 #ifdef CONFIG_PPC_DCR
 	dcr_host_t sdma_dcrs;
 #endif
-	u32 (*dma_in)(struct temac_local *, int);
-	void (*dma_out)(struct temac_local *, int, u32);
+	u32 (*temac_ior)(struct temac_local *lp, int offset);
+	void (*temac_iow)(struct temac_local *lp, int offset, u32 value);
+	u32 (*dma_in)(struct temac_local *lp, int reg);
+	void (*dma_out)(struct temac_local *lp, int reg, u32 value);
 
 	int tx_irq;
 	int rx_irq;
@@ -354,7 +368,10 @@ struct temac_local {
 
 	struct sk_buff **rx_skb;
 	spinlock_t rx_lock;
-	struct mutex indirect_mutex;
+	/* For synchronization of indirect register access.  Must be
+	 * shared mutex between interfaces in same TEMAC block.
+	 */
+	spinlock_t *indirect_lock;
 	u32 options;			/* Current options word */
 	int last_link;
 	unsigned int temac_features;
@@ -362,24 +379,37 @@ struct temac_local {
 	/* Buffer descriptors */
 	struct cdmac_bd *tx_bd_v;
 	dma_addr_t tx_bd_p;
+	u32 tx_bd_num;
 	struct cdmac_bd *rx_bd_v;
 	dma_addr_t rx_bd_p;
+	u32 rx_bd_num;
 	int tx_bd_ci;
-	int tx_bd_next;
 	int tx_bd_tail;
 	int rx_bd_ci;
+	int rx_bd_tail;
+
+	/* DMA channel control setup */
+	u8 coalesce_count_tx;
+	u8 coalesce_delay_tx;
+	u8 coalesce_count_rx;
+	u8 coalesce_delay_rx;
+
+	struct delayed_work restart_work;
 };
 
+/* Wrappers for temac_ior()/temac_iow() function pointers above */
+#define temac_ior(lp, o) ((lp)->temac_ior(lp, o))
+#define temac_iow(lp, o, v) ((lp)->temac_iow(lp, o, v))
+
 /* xilinx_temac.c */
-u32 temac_ior(struct temac_local *lp, int offset);
-void temac_iow(struct temac_local *lp, int offset, u32 value);
 int temac_indirect_busywait(struct temac_local *lp);
 u32 temac_indirect_in32(struct temac_local *lp, int reg);
+u32 temac_indirect_in32_locked(struct temac_local *lp, int reg);
 void temac_indirect_out32(struct temac_local *lp, int reg, u32 value);
-
+void temac_indirect_out32_locked(struct temac_local *lp, int reg, u32 value);
 
 /* xilinx_temac_mdio.c */
-int temac_mdio_setup(struct temac_local *lp, struct device_node *np);
+int temac_mdio_setup(struct temac_local *lp, struct platform_device *pdev);
 void temac_mdio_teardown(struct temac_local *lp);
 
 #endif /* XILINX_LL_TEMAC_H */

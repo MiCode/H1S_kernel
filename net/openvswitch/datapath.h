@@ -1,19 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2007-2012 Nicira, Inc.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of version 2 of the GNU General Public
- * License as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA
+ * Copyright (c) 2007-2014 Nicira, Inc.
  */
 
 #ifndef DATAPATH_H
@@ -25,15 +12,17 @@
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
 #include <linux/u64_stats_sync.h>
+#include <net/ip_tunnels.h>
 
+#include "conntrack.h"
 #include "flow.h"
 #include "flow_table.h"
-#include "vport.h"
+#include "meter.h"
+#include "vport-internal_dev.h"
 
-#define DP_MAX_PORTS           USHRT_MAX
-#define DP_VPORT_HASH_BUCKETS  1024
-
-#define SAMPLE_ACTION_DEPTH 3
+#define DP_MAX_PORTS                USHRT_MAX
+#define DP_VPORT_HASH_BUCKETS       1024
+#define DP_MASKS_REBALANCE_INTERVAL 4000
 
 /**
  * struct dp_stats_percpu - per-cpu packet processing statistics for a given
@@ -49,13 +38,31 @@
  * @n_mask_hit: Number of masks looked up for flow match.
  *   @n_mask_hit / (@n_hit + @n_missed)  will be the average masks looked
  *   up per packet.
+ * @n_cache_hit: The number of received packets that had their mask found using
+ * the mask cache.
  */
 struct dp_stats_percpu {
 	u64 n_hit;
 	u64 n_missed;
 	u64 n_lost;
 	u64 n_mask_hit;
-	struct u64_stats_sync sync;
+	u64 n_cache_hit;
+	struct u64_stats_sync syncp;
+};
+
+/**
+ * struct dp_nlsk_pids - array of netlink portids of for a datapath.
+ *                       This is used when OVS_DP_F_DISPATCH_UPCALL_PER_CPU
+ *                       is enabled and must be protected by rcu.
+ * @rcu: RCU callback head for deferred destruction.
+ * @n_pids: Size of @pids array.
+ * @pids: Array storing the Netlink socket PIDs indexed by CPU ID for packets
+ *       that miss the flow table.
+ */
+struct dp_nlsk_pids {
+	struct rcu_head rcu;
+	u32 n_pids;
+	u32 pids[];
 };
 
 /**
@@ -67,6 +74,9 @@ struct dp_stats_percpu {
  * ovs_mutex and RCU.
  * @stats_percpu: Per-CPU datapath statistics.
  * @net: Reference to net namespace.
+ * @max_headroom: the maximum headroom of all vports in this datapath; it will
+ * be used by all the internal vports in this dp.
+ * @upcall_portids: RCU protected 'struct dp_nlsk_pids'.
  *
  * Context: See the comment on locking at the top of datapath.c for additional
  * locking information.
@@ -84,43 +94,55 @@ struct datapath {
 	/* Stats. */
 	struct dp_stats_percpu __percpu *stats_percpu;
 
-#ifdef CONFIG_NET_NS
 	/* Network namespace ref. */
-	struct net *net;
-#endif
+	possible_net_t net;
 
 	u32 user_features;
+
+	u32 max_headroom;
+
+	/* Switch meters. */
+	struct dp_meter_table meter_tbl;
+
+	struct dp_nlsk_pids __rcu *upcall_portids;
 };
 
 /**
  * struct ovs_skb_cb - OVS data in skb CB
- * @flow: The flow associated with this packet.  May be %NULL if no flow.
- * @pkt_key: The flow information extracted from the packet.  Must be nonnull.
- * @tun_key: Key for the tunnel that encapsulated this packet. NULL if the
- * packet is not being tunneled.
+ * @input_vport: The original vport packet came in on. This value is cached
+ * when a packet is received by OVS.
+ * @mru: The maximum received fragement size; 0 if the packet is not
+ * fragmented.
+ * @acts_origlen: The netlink size of the flow actions applied to this skb.
+ * @cutlen: The number of bytes from the packet end to be removed.
  */
 struct ovs_skb_cb {
-	struct sw_flow		*flow;
-	struct sw_flow_key	*pkt_key;
-	struct ovs_key_ipv4_tunnel  *tun_key;
+	struct vport		*input_vport;
+	u16			mru;
+	u16			acts_origlen;
+	u32			cutlen;
 };
 #define OVS_CB(skb) ((struct ovs_skb_cb *)(skb)->cb)
 
 /**
  * struct dp_upcall - metadata to include with a packet to send to userspace
  * @cmd: One of %OVS_PACKET_CMD_*.
- * @key: Becomes %OVS_PACKET_ATTR_KEY.  Must be nonnull.
  * @userdata: If nonnull, its variable-length value is passed to userspace as
  * %OVS_PACKET_ATTR_USERDATA.
- * @pid: Netlink PID to which packet should be sent.  If @pid is 0 then no
- * packet is sent and the packet is accounted in the datapath's @n_lost
+ * @portid: Netlink portid to which packet should be sent.  If @portid is 0
+ * then no packet is sent and the packet is accounted in the datapath's @n_lost
  * counter.
+ * @egress_tun_info: If nonnull, becomes %OVS_PACKET_ATTR_EGRESS_TUN_KEY.
+ * @mru: If not zero, Maximum received IP fragment size.
  */
 struct dp_upcall_info {
-	u8 cmd;
-	const struct sw_flow_key *key;
+	struct ip_tunnel_info *egress_tun_info;
 	const struct nlattr *userdata;
+	const struct nlattr *actions;
+	int actions_len;
 	u32 portid;
+	u8 cmd;
+	u16 mru;
 };
 
 /**
@@ -131,10 +153,28 @@ struct dp_upcall_info {
 struct ovs_net {
 	struct list_head dps;
 	struct work_struct dp_notify_work;
-	struct vport_net vport_net;
+	struct delayed_work masks_rebalance;
+#if	IS_ENABLED(CONFIG_NETFILTER_CONNCOUNT)
+	struct ovs_ct_limit_info *ct_limit_info;
+#endif
+
+	/* Module reference for configuring conntrack. */
+	bool xt_label;
 };
 
-extern int ovs_net_id;
+/**
+ * enum ovs_pkt_hash_types - hash info to include with a packet
+ * to send to userspace.
+ * @OVS_PACKET_HASH_SW_BIT: indicates hash was computed in software stack.
+ * @OVS_PACKET_HASH_L4_BIT: indicates hash is a canonical 4-tuple hash
+ * over transport ports.
+ */
+enum ovs_pkt_hash_types {
+	OVS_PACKET_HASH_SW_BIT = (1ULL << 32),
+	OVS_PACKET_HASH_L4_BIT = (1ULL << 33),
+};
+
+extern unsigned int ovs_net_id;
 void ovs_lock(void);
 void ovs_unlock(void);
 
@@ -144,13 +184,13 @@ int lockdep_ovsl_is_held(void);
 #define lockdep_ovsl_is_held()	1
 #endif
 
-#define ASSERT_OVSL()		WARN_ON(unlikely(!lockdep_ovsl_is_held()))
+#define ASSERT_OVSL()		WARN_ON(!lockdep_ovsl_is_held())
 #define ovsl_dereference(p)					\
 	rcu_dereference_protected(p, lockdep_ovsl_is_held())
 #define rcu_dereference_ovsl(p)					\
 	rcu_dereference_check(p, lockdep_ovsl_is_held())
 
-static inline struct net *ovs_dp_get_net(struct datapath *dp)
+static inline struct net *ovs_dp_get_net(const struct datapath *dp)
 {
 	return read_pnet(&dp->net);
 }
@@ -180,21 +220,66 @@ static inline struct vport *ovs_vport_ovsl(const struct datapath *dp, int port_n
 	return ovs_lookup_vport(dp, port_no);
 }
 
+/* Must be called with rcu_read_lock. */
+static inline struct datapath *get_dp_rcu(struct net *net, int dp_ifindex)
+{
+	struct net_device *dev = dev_get_by_index_rcu(net, dp_ifindex);
+
+	if (dev) {
+		struct vport *vport = ovs_internal_dev_get_vport(dev);
+
+		if (vport)
+			return vport->dp;
+	}
+
+	return NULL;
+}
+
+/* The caller must hold either ovs_mutex or rcu_read_lock to keep the
+ * returned dp pointer valid.
+ */
+static inline struct datapath *get_dp(struct net *net, int dp_ifindex)
+{
+	struct datapath *dp;
+
+	WARN_ON_ONCE(!rcu_read_lock_held() && !lockdep_ovsl_is_held());
+	rcu_read_lock();
+	dp = get_dp_rcu(net, dp_ifindex);
+	rcu_read_unlock();
+
+	return dp;
+}
+
 extern struct notifier_block ovs_dp_device_notifier;
 extern struct genl_family dp_vport_genl_family;
 
-void ovs_dp_process_received_packet(struct vport *, struct sk_buff *);
+void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key);
 void ovs_dp_detach_port(struct vport *);
 int ovs_dp_upcall(struct datapath *, struct sk_buff *,
-		  const struct dp_upcall_info *);
+		  const struct sw_flow_key *, const struct dp_upcall_info *,
+		  uint32_t cutlen);
 
-struct sk_buff *ovs_vport_cmd_build_info(struct vport *, u32 pid, u32 seq,
-					 u8 cmd);
+u32 ovs_dp_get_upcall_portid(const struct datapath *dp, uint32_t cpu_id);
 
-int ovs_execute_actions(struct datapath *dp, struct sk_buff *skb);
+const char *ovs_dp_name(const struct datapath *dp);
+struct sk_buff *ovs_vport_cmd_build_info(struct vport *vport, struct net *net,
+					 u32 portid, u32 seq, u8 cmd);
+
+int ovs_execute_actions(struct datapath *dp, struct sk_buff *skb,
+			const struct sw_flow_actions *, struct sw_flow_key *);
+
 void ovs_dp_notify_wq(struct work_struct *work);
 
-#define OVS_NLERR(fmt, ...) \
-	pr_info_once("netlink: " fmt, ##__VA_ARGS__)
+int action_fifos_init(void);
+void action_fifos_exit(void);
 
+/* 'KEY' must not have any bits set outside of the 'MASK' */
+#define OVS_MASKED(OLD, KEY, MASK) ((KEY) | ((OLD) & ~(MASK)))
+#define OVS_SET_MASKED(OLD, KEY, MASK) ((OLD) = OVS_MASKED(OLD, KEY, MASK))
+
+#define OVS_NLERR(logging_allowed, fmt, ...)			\
+do {								\
+	if (logging_allowed && net_ratelimit())			\
+		pr_info("netlink: " fmt "\n", ##__VA_ARGS__);	\
+} while (0)
 #endif /* datapath.h */

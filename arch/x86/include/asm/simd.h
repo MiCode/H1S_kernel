@@ -1,5 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 
-#include <asm/i387.h>
+#include <asm/fpu/api.h>
 
 /*
  * may_use_simd - whether it is allowable at this time to issue SIMD

@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Debug support for HID Nintendo Wii / Wii U peripherals
  * Copyright (c) 2011-2013 David Herrmann <dh.herrmann@gmail.com>
  */
 
 /*
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
  */
 
 #include <linux/debugfs.h>
@@ -176,7 +173,6 @@ int wiidebug_init(struct wiimote_data *wdata)
 {
 	struct wiimote_debug *dbg;
 	unsigned long flags;
-	int ret = -ENOMEM;
 
 	dbg = kzalloc(sizeof(*dbg), GFP_KERNEL);
 	if (!dbg)
@@ -186,13 +182,9 @@ int wiidebug_init(struct wiimote_data *wdata)
 
 	dbg->eeprom = debugfs_create_file("eeprom", S_IRUSR,
 		dbg->wdata->hdev->debug_dir, dbg, &wiidebug_eeprom_fops);
-	if (!dbg->eeprom)
-		goto err;
 
 	dbg->drm = debugfs_create_file("drm", S_IRUSR,
 			dbg->wdata->hdev->debug_dir, dbg, &wiidebug_drm_fops);
-	if (!dbg->drm)
-		goto err_drm;
 
 	spin_lock_irqsave(&wdata->state.lock, flags);
 	wdata->debug = dbg;
@@ -200,11 +192,6 @@ int wiidebug_init(struct wiimote_data *wdata)
 
 	return 0;
 
-err_drm:
-	debugfs_remove(dbg->eeprom);
-err:
-	kfree(dbg);
-	return ret;
 }
 
 void wiidebug_deinit(struct wiimote_data *wdata)

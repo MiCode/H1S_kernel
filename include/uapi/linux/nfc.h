@@ -86,6 +86,10 @@
  *	for this event is the application ID (AID).
  * @NFC_CMD_GET_SE: Dump all discovered secure elements from an NFC controller.
  * @NFC_CMD_SE_IO: Send/Receive APDUs to/from the selected secure element.
+ * @NFC_CMD_ACTIVATE_TARGET: Request NFC controller to reactivate target.
+ * @NFC_CMD_VENDOR: Vendor specific command, to be implemented directly
+ *	from the driver in order to support hardware specific operations.
+ * @NFC_CMD_DEACTIVATE_TARGET: Request NFC controller to deactivate target.
  */
 enum nfc_commands {
 	NFC_CMD_UNSPEC,
@@ -116,6 +120,9 @@ enum nfc_commands {
 	NFC_EVENT_SE_TRANSACTION,
 	NFC_CMD_GET_SE,
 	NFC_CMD_SE_IO,
+	NFC_CMD_ACTIVATE_TARGET,
+	NFC_CMD_VENDOR,
+	NFC_CMD_DEACTIVATE_TARGET,
 /* private: internal use only */
 	__NFC_CMD_AFTER_LAST
 };
@@ -150,6 +157,13 @@ enum nfc_commands {
  * @NFC_ATTR_SE_TYPE: Secure element type (UICC or EMBEDDED)
  * @NFC_ATTR_FIRMWARE_DOWNLOAD_STATUS: Firmware download operation status
  * @NFC_ATTR_APDU: Secure element APDU
+ * @NFC_ATTR_TARGET_ISO15693_DSFID: ISO 15693 Data Storage Format Identifier
+ * @NFC_ATTR_TARGET_ISO15693_UID: ISO 15693 Unique Identifier
+ * @NFC_ATTR_SE_PARAMS: Parameters data from an evt_transaction
+ * @NFC_ATTR_VENDOR_ID: NFC manufacturer unique ID, typically an OUI
+ * @NFC_ATTR_VENDOR_SUBCMD: Vendor specific sub command
+ * @NFC_ATTR_VENDOR_DATA: Vendor specific data, to be optionally passed
+ *	to a vendor specific command implementation
  */
 enum nfc_attrs {
 	NFC_ATTR_UNSPEC,
@@ -178,6 +192,12 @@ enum nfc_attrs {
 	NFC_ATTR_SE_AID,
 	NFC_ATTR_FIRMWARE_DOWNLOAD_STATUS,
 	NFC_ATTR_SE_APDU,
+	NFC_ATTR_TARGET_ISO15693_DSFID,
+	NFC_ATTR_TARGET_ISO15693_UID,
+	NFC_ATTR_SE_PARAMS,
+	NFC_ATTR_VENDOR_ID,
+	NFC_ATTR_VENDOR_SUBCMD,
+	NFC_ATTR_VENDOR_DATA,
 /* private: internal use only */
 	__NFC_ATTR_AFTER_LAST
 };
@@ -192,14 +212,19 @@ enum nfc_sdp_attr {
 };
 #define NFC_SDP_ATTR_MAX (__NFC_SDP_ATTR_AFTER_LAST - 1)
 
-#define NFC_DEVICE_NAME_MAXSIZE 8
-#define NFC_NFCID1_MAXSIZE 10
-#define NFC_NFCID2_MAXSIZE 8
-#define NFC_NFCID3_MAXSIZE 10
-#define NFC_SENSB_RES_MAXSIZE 12
-#define NFC_SENSF_RES_MAXSIZE 18
-#define NFC_GB_MAXSIZE        48
-#define NFC_FIRMWARE_NAME_MAXSIZE 32
+#define NFC_DEVICE_NAME_MAXSIZE		8
+#define NFC_NFCID1_MAXSIZE		10
+#define NFC_NFCID2_MAXSIZE		8
+#define NFC_NFCID3_MAXSIZE		10
+#define NFC_SENSB_RES_MAXSIZE		12
+#define NFC_SENSF_RES_MAXSIZE		18
+#define NFC_ATR_REQ_MAXSIZE		64
+#define NFC_ATR_RES_MAXSIZE		64
+#define NFC_ATR_REQ_GB_MAXSIZE		48
+#define NFC_ATR_RES_GB_MAXSIZE		47
+#define NFC_GB_MAXSIZE			48
+#define NFC_FIRMWARE_NAME_MAXSIZE	32
+#define NFC_ISO15693_UID_MAXSIZE	8
 
 /* NFC protocols */
 #define NFC_PROTO_JEWEL		1
@@ -208,8 +233,9 @@ enum nfc_sdp_attr {
 #define NFC_PROTO_ISO14443	4
 #define NFC_PROTO_NFC_DEP	5
 #define NFC_PROTO_ISO14443_B	6
+#define NFC_PROTO_ISO15693	7
 
-#define NFC_PROTO_MAX		7
+#define NFC_PROTO_MAX		8
 
 /* NFC communication modes */
 #define NFC_COMM_ACTIVE  0
@@ -227,6 +253,7 @@ enum nfc_sdp_attr {
 #define NFC_PROTO_ISO14443_MASK	  (1 << NFC_PROTO_ISO14443)
 #define NFC_PROTO_NFC_DEP_MASK	  (1 << NFC_PROTO_NFC_DEP)
 #define NFC_PROTO_ISO14443_B_MASK (1 << NFC_PROTO_ISO14443_B)
+#define NFC_PROTO_ISO15693_MASK	  (1 << NFC_PROTO_ISO15693)
 
 /* NFC Secure Elements */
 #define NFC_SE_UICC     0x1
@@ -236,7 +263,7 @@ enum nfc_sdp_attr {
 #define NFC_SE_ENABLED  0x1
 
 struct sockaddr_nfc {
-	sa_family_t sa_family;
+	__kernel_sa_family_t sa_family;
 	__u32 dev_idx;
 	__u32 target_idx;
 	__u32 nfc_protocol;
@@ -244,14 +271,14 @@ struct sockaddr_nfc {
 
 #define NFC_LLCP_MAX_SERVICE_NAME 63
 struct sockaddr_nfc_llcp {
-	sa_family_t sa_family;
+	__kernel_sa_family_t sa_family;
 	__u32 dev_idx;
 	__u32 target_idx;
 	__u32 nfc_protocol;
 	__u8 dsap; /* Destination SAP, if known */
 	__u8 ssap; /* Source SAP to be bound to */
 	char service_name[NFC_LLCP_MAX_SERVICE_NAME]; /* Service name URI */;
-	size_t service_name_len;
+	__kernel_size_t service_name_len;
 };
 
 /* NFC socket protocols */
@@ -266,11 +293,19 @@ struct sockaddr_nfc_llcp {
  * First byte is the adapter index
  * Second byte contains flags
  *  - 0x01 - Direction (0=RX, 1=TX)
- *  - 0x02-0x80 - Reserved
+ *  - 0x02-0x04 - Payload type (000=LLCP, 001=NCI, 010=HCI, 011=Digital,
+ *                              100=Proprietary)
+ *  - 0x05-0x80 - Reserved
  **/
-#define NFC_LLCP_RAW_HEADER_SIZE	2
-#define NFC_LLCP_DIRECTION_RX		0x00
-#define NFC_LLCP_DIRECTION_TX		0x01
+#define NFC_RAW_HEADER_SIZE	2
+#define NFC_DIRECTION_RX		0x00
+#define NFC_DIRECTION_TX		0x01
+
+#define RAW_PAYLOAD_LLCP 0
+#define RAW_PAYLOAD_NCI	1
+#define RAW_PAYLOAD_HCI	2
+#define RAW_PAYLOAD_DIGITAL	3
+#define RAW_PAYLOAD_PROPRIETARY	4
 
 /* socket option names */
 #define NFC_LLCP_RW		0

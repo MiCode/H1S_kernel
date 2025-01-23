@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/ia64/kernel/machine_kexec.c
  *
@@ -5,9 +6,6 @@
  * Copyright (C) 2005 Hewlett-Packard Development Comapny, L.P.
  * Copyright (C) 2005 Khalid Aziz <khalid.aziz@hp.com>
  * Copyright (C) 2006 Intel Corp, Zou Nan hai <nanhai.zou@intel.com>
- *
- * This source code is licensed under the GNU General Public License,
- * Version 2.  See the file COPYING for more details.
  */
 
 #include <linux/mm.h>
@@ -18,6 +16,7 @@
 #include <linux/numa.h>
 #include <linux/mmzone.h>
 
+#include <asm/efi.h>
 #include <asm/numa.h>
 #include <asm/mmu_context.h>
 #include <asm/setup.h>
@@ -129,7 +128,6 @@ static void ia64_machine_kexec(struct unw_frame_info *info, void *arg)
 	ia64_srlz_d();
 	while (ia64_get_ivr() != IA64_SPURIOUS_INT_VECTOR)
 		ia64_eoi();
-	platform_kernel_launch_event();
 	rnk = (relocate_new_kernel_t)&code_addr;
 	(*rnk)(image->head, image->start, ia64_boot_param,
 		     GRANULEROUNDDOWN((unsigned long) pal_addr));
@@ -145,7 +143,7 @@ void machine_kexec(struct kimage *image)
 
 void arch_crash_save_vmcoreinfo(void)
 {
-#if defined(CONFIG_DISCONTIGMEM) || defined(CONFIG_SPARSEMEM)
+#if defined(CONFIG_SPARSEMEM)
 	VMCOREINFO_SYMBOL(pgdat_list);
 	VMCOREINFO_LENGTH(pgdat_list, MAX_NUMNODES);
 #endif
@@ -156,15 +154,10 @@ void arch_crash_save_vmcoreinfo(void)
 	VMCOREINFO_OFFSET(node_memblk_s, start_paddr);
 	VMCOREINFO_OFFSET(node_memblk_s, size);
 #endif
-#ifdef CONFIG_PGTABLE_3
+#if CONFIG_PGTABLE_LEVELS == 3
 	VMCOREINFO_CONFIG(PGTABLE_3);
-#elif defined(CONFIG_PGTABLE_4)
+#elif CONFIG_PGTABLE_LEVELS == 4
 	VMCOREINFO_CONFIG(PGTABLE_4);
 #endif
-}
-
-unsigned long paddr_vmcoreinfo_note(void)
-{
-	return ia64_tpa((unsigned long)(char *)&vmcoreinfo_note);
 }
 

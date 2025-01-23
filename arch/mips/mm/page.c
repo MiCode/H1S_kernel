@@ -12,7 +12,6 @@
 #include <linux/sched.h>
 #include <linux/smp.h>
 #include <linux/mm.h>
-#include <linux/module.h>
 #include <linux/proc_fs.h>
 
 #include <asm/bugs.h>
@@ -21,13 +20,11 @@
 #include <asm/inst.h>
 #include <asm/io.h>
 #include <asm/page.h>
-#include <asm/pgtable.h>
 #include <asm/prefetch.h>
 #include <asm/bootinfo.h>
 #include <asm/mipsregs.h>
 #include <asm/mmu_context.h>
 #include <asm/cpu.h>
-#include <asm/war.h>
 
 #ifdef CONFIG_SIBYTE_DMA_PAGEOPS
 #include <asm/sibyte/sb1250.h>
@@ -72,6 +69,20 @@ static struct uasm_reloc relocs[5];
 #define cpu_is_r4600_v1_x()	((read_c0_prid() & 0xfffffff0) == 0x00002010)
 #define cpu_is_r4600_v2_x()	((read_c0_prid() & 0xfffffff0) == 0x00002020)
 
+/*
+ * R6 has a limited offset of the pref instruction.
+ * Skip it if the offset is more than 9 bits.
+ */
+#define _uasm_i_pref(a, b, c, d)		\
+do {						\
+	if (cpu_has_mips_r6) {			\
+		if (c <= 0xff && c >= -0x100)	\
+			uasm_i_pref(a, b, c, d);\
+	} else {				\
+		uasm_i_pref(a, b, c, d);	\
+	}					\
+} while(0)
+
 static int pref_bias_clear_store;
 static int pref_bias_copy_load;
 static int pref_bias_copy_store;
@@ -91,7 +102,9 @@ static int cache_line_size;
 static inline void
 pg_addiu(u32 **buf, unsigned int reg1, unsigned int reg2, unsigned int off)
 {
-	if (cpu_has_64bit_gp_regs && DADDI_WAR && r4k_daddiu_bug()) {
+	if (cpu_has_64bit_gp_regs &&
+	    IS_ENABLED(CONFIG_CPU_DADDI_WORKAROUNDS) &&
+	    r4k_daddiu_bug()) {
 		if (off > 0x7fff) {
 			uasm_i_lui(buf, T9, uasm_rel_hi(off));
 			uasm_i_addiu(buf, T9, T9, uasm_rel_lo(off));
@@ -143,6 +156,7 @@ static void set_prefetch_parameters(void)
 		case CPU_R10000:
 		case CPU_R12000:
 		case CPU_R14000:
+		case CPU_R16000:
 			/*
 			 * Those values have been experimentally tuned for an
 			 * Origin 200.
@@ -173,12 +187,29 @@ static void set_prefetch_parameters(void)
 			}
 			break;
 
+		case CPU_LOONGSON64:
+			/* Loongson-3 only support the Pref_Load/Pref_Store. */
+			pref_bias_clear_store = 128;
+			pref_bias_copy_load = 128;
+			pref_bias_copy_store = 128;
+			pref_src_mode = Pref_Load;
+			pref_dst_mode = Pref_Store;
+			break;
+
 		default:
 			pref_bias_clear_store = 128;
 			pref_bias_copy_load = 256;
 			pref_bias_copy_store = 128;
 			pref_src_mode = Pref_LoadStreamed;
-			pref_dst_mode = Pref_PrepareForStore;
+			if (cpu_has_mips_r6)
+				/*
+				 * Bit 30 (Pref_PrepareForStore) has been
+				 * removed from MIPS R6. Use bit 5
+				 * (Pref_StoreStreamed).
+				 */
+				pref_dst_mode = Pref_StoreStreamed;
+			else
+				pref_dst_mode = Pref_PrepareForStore;
 			break;
 		}
 	} else {
@@ -214,20 +245,22 @@ static inline void build_clear_pref(u32 **buf, int off)
 		return;
 
 	if (pref_bias_clear_store) {
-		uasm_i_pref(buf, pref_dst_mode, pref_bias_clear_store + off,
+		_uasm_i_pref(buf, pref_dst_mode, pref_bias_clear_store + off,
 			    A0);
 	} else if (cache_line_size == (half_clear_loop_size << 1)) {
 		if (cpu_has_cache_cdex_s) {
 			uasm_i_cache(buf, Create_Dirty_Excl_SD, off, A0);
 		} else if (cpu_has_cache_cdex_p) {
-			if (R4600_V1_HIT_CACHEOP_WAR && cpu_is_r4600_v1_x()) {
+			if (IS_ENABLED(CONFIG_WAR_R4600_V1_HIT_CACHEOP) &&
+			    cpu_is_r4600_v1_x()) {
 				uasm_i_nop(buf);
 				uasm_i_nop(buf);
 				uasm_i_nop(buf);
 				uasm_i_nop(buf);
 			}
 
-			if (R4600_V2_HIT_CACHEOP_WAR && cpu_is_r4600_v2_x())
+			if (IS_ENABLED(CONFIG_WAR_R4600_V2_HIT_CACHEOP) &&
+			    cpu_is_r4600_v2_x())
 				uasm_i_lw(buf, ZERO, ZERO, AT);
 
 			uasm_i_cache(buf, Create_Dirty_Excl_D, off, A0);
@@ -272,8 +305,8 @@ void build_clear_page(void)
 	else
 		uasm_i_ori(&buf, A2, A0, off);
 
-	if (R4600_V2_HIT_CACHEOP_WAR && cpu_is_r4600_v2_x())
-		uasm_i_lui(&buf, AT, 0xa000);
+	if (IS_ENABLED(CONFIG_WAR_R4600_V2_HIT_CACHEOP) && cpu_is_r4600_v2_x())
+		uasm_i_lui(&buf, AT, uasm_rel_hi(0xa0000000));
 
 	off = cache_line_size ? min(8, pref_bias_clear_store / cache_line_size)
 				* cache_line_size : 0;
@@ -357,7 +390,7 @@ static inline void build_copy_load_pref(u32 **buf, int off)
 		return;
 
 	if (pref_bias_copy_load)
-		uasm_i_pref(buf, pref_src_mode, pref_bias_copy_load + off, A1);
+		_uasm_i_pref(buf, pref_src_mode, pref_bias_copy_load + off, A1);
 }
 
 static inline void build_copy_store_pref(u32 **buf, int off)
@@ -366,20 +399,22 @@ static inline void build_copy_store_pref(u32 **buf, int off)
 		return;
 
 	if (pref_bias_copy_store) {
-		uasm_i_pref(buf, pref_dst_mode, pref_bias_copy_store + off,
+		_uasm_i_pref(buf, pref_dst_mode, pref_bias_copy_store + off,
 			    A0);
 	} else if (cache_line_size == (half_copy_loop_size << 1)) {
 		if (cpu_has_cache_cdex_s) {
 			uasm_i_cache(buf, Create_Dirty_Excl_SD, off, A0);
 		} else if (cpu_has_cache_cdex_p) {
-			if (R4600_V1_HIT_CACHEOP_WAR && cpu_is_r4600_v1_x()) {
+			if (IS_ENABLED(CONFIG_WAR_R4600_V1_HIT_CACHEOP) &&
+			    cpu_is_r4600_v1_x()) {
 				uasm_i_nop(buf);
 				uasm_i_nop(buf);
 				uasm_i_nop(buf);
 				uasm_i_nop(buf);
 			}
 
-			if (R4600_V2_HIT_CACHEOP_WAR && cpu_is_r4600_v2_x())
+			if (IS_ENABLED(CONFIG_WAR_R4600_V2_HIT_CACHEOP) &&
+			    cpu_is_r4600_v2_x())
 				uasm_i_lw(buf, ZERO, ZERO, AT);
 
 			uasm_i_cache(buf, Create_Dirty_Excl_D, off, A0);
@@ -423,8 +458,8 @@ void build_copy_page(void)
 	else
 		uasm_i_ori(&buf, A2, A0, off);
 
-	if (R4600_V2_HIT_CACHEOP_WAR && cpu_is_r4600_v2_x())
-		uasm_i_lui(&buf, AT, 0xa000);
+	if (IS_ENABLED(CONFIG_WAR_R4600_V2_HIT_CACHEOP) && cpu_is_r4600_v2_x())
+		uasm_i_lui(&buf, AT, uasm_rel_hi(0xa0000000));
 
 	off = cache_line_size ? min(8, pref_bias_copy_load / cache_line_size) *
 				cache_line_size : 0;
@@ -592,21 +627,6 @@ struct dmadscr {
 	u64 pad_b;
 } ____cacheline_aligned_in_smp page_descr[DM_NUM_CHANNELS];
 
-void sb1_dma_init(void)
-{
-	int i;
-
-	for (i = 0; i < DM_NUM_CHANNELS; i++) {
-		const u64 base_val = CPHYSADDR((unsigned long)&page_descr[i]) |
-				     V_DM_DSCR_BASE_RINGSZ(1);
-		void *base_reg = IOADDR(A_DM_REGISTER(i, R_DM_DSCR_BASE));
-
-		__raw_writeq(base_val, base_reg);
-		__raw_writeq(base_val | M_DM_DSCR_BASE_RESET, base_reg);
-		__raw_writeq(base_val | M_DM_DSCR_BASE_ENABL, base_reg);
-	}
-}
-
 void clear_page(void *page)
 {
 	u64 to_phys = CPHYSADDR((unsigned long)page);
@@ -630,6 +650,7 @@ void clear_page(void *page)
 		;
 	__raw_readq(IOADDR(A_DM_REGISTER(cpu, R_DM_DSCR_BASE)));
 }
+EXPORT_SYMBOL(clear_page);
 
 void copy_page(void *to, void *from)
 {
@@ -656,5 +677,6 @@ void copy_page(void *to, void *from)
 		;
 	__raw_readq(IOADDR(A_DM_REGISTER(cpu, R_DM_DSCR_BASE)));
 }
+EXPORT_SYMBOL(copy_page);
 
 #endif /* CONFIG_SIBYTE_DMA_PAGEOPS */

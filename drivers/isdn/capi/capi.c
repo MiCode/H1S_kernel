@@ -9,7 +9,9 @@
  *
  */
 
+#include <linux/compiler.h>
 #include <linux/module.h>
+#include <linux/ethtool.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/major.h>
@@ -38,7 +40,9 @@
 #include <linux/isdn/capiutil.h>
 #include <linux/isdn/capicmd.h>
 
-MODULE_DESCRIPTION("CAPI4Linux: Userspace /dev/capi20 interface");
+#include "kcapi.h"
+
+MODULE_DESCRIPTION("CAPI4Linux: kernel CAPI layer and /dev/capi20 interface");
 MODULE_AUTHOR("Carsten Paeth");
 MODULE_LICENSE("GPL");
 
@@ -687,6 +691,9 @@ capi_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos
 	if (!cdev->ap.applid)
 		return -ENODEV;
 
+	if (count < CAPIMSG_BASELEN)
+		return -EINVAL;
+
 	skb = alloc_skb(count, GFP_USER);
 	if (!skb)
 		return -ENOMEM;
@@ -697,7 +704,8 @@ capi_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos
 	}
 	mlen = CAPIMSG_LEN(skb->data);
 	if (CAPIMSG_CMD(skb->data) == CAPI_DATA_B3_REQ) {
-		if ((size_t)(mlen + CAPIMSG_DATALEN(skb->data)) != count) {
+		if (count < CAPI_DATA_B3_REQ_LEN ||
+		    (size_t)(mlen + CAPIMSG_DATALEN(skb->data)) != count) {
 			kfree_skb(skb);
 			return -EINVAL;
 		}
@@ -710,6 +718,10 @@ capi_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos
 	CAPIMSG_SETAPPID(skb->data, cdev->ap.applid);
 
 	if (CAPIMSG_CMD(skb->data) == CAPI_DISCONNECT_B3_RESP) {
+		if (count < CAPI_DISCONNECT_B3_RESP_LEN) {
+			kfree_skb(skb);
+			return -EINVAL;
+		}
 		mutex_lock(&cdev->lock);
 		capincci_free(cdev, CAPIMSG_NCCI(skb->data));
 		mutex_unlock(&cdev->lock);
@@ -724,19 +736,19 @@ capi_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos
 	return count;
 }
 
-static unsigned int
+static __poll_t
 capi_poll(struct file *file, poll_table *wait)
 {
 	struct capidev *cdev = file->private_data;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 
 	if (!cdev->ap.applid)
-		return POLLERR;
+		return EPOLLERR;
 
 	poll_wait(file, &(cdev->recvwait), wait);
-	mask = POLLOUT | POLLWRNORM;
-	if (!skb_queue_empty(&cdev->recvqueue))
-		mask |= POLLIN | POLLRDNORM;
+	mask = EPOLLOUT | EPOLLWRNORM;
+	if (!skb_queue_empty_lockless(&cdev->recvqueue))
+		mask |= EPOLLIN | EPOLLRDNORM;
 	return mask;
 }
 
@@ -941,6 +953,34 @@ capi_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	return ret;
 }
 
+#ifdef CONFIG_COMPAT
+static long
+capi_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	int ret;
+
+	if (cmd == CAPI_MANUFACTURER_CMD) {
+		struct {
+			compat_ulong_t cmd;
+			compat_uptr_t data;
+		} mcmd32;
+
+		if (!capable(CAP_SYS_ADMIN))
+			return -EPERM;
+		if (copy_from_user(&mcmd32, compat_ptr(arg), sizeof(mcmd32)))
+			return -EFAULT;
+
+		mutex_lock(&capi_mutex);
+		ret = capi20_manufacturer(mcmd32.cmd, compat_ptr(mcmd32.data));
+		mutex_unlock(&capi_mutex);
+
+		return ret;
+	}
+
+	return capi_unlocked_ioctl(file, cmd, (unsigned long)compat_ptr(arg));
+}
+#endif
+
 static int capi_open(struct inode *inode, struct file *file)
 {
 	struct capidev *cdev;
@@ -959,7 +999,7 @@ static int capi_open(struct inode *inode, struct file *file)
 	list_add_tail(&cdev->list, &capidev_list);
 	mutex_unlock(&capidev_list_lock);
 
-	return nonseekable_open(inode, file);
+	return stream_open(inode, file);
 }
 
 static int capi_release(struct inode *inode, struct file *file)
@@ -987,6 +1027,9 @@ static const struct file_operations capi_fops =
 	.write		= capi_write,
 	.poll		= capi_poll,
 	.unlocked_ioctl	= capi_unlocked_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl	= capi_compat_ioctl,
+#endif
 	.open		= capi_open,
 	.release	= capi_release,
 };
@@ -1034,13 +1077,13 @@ static void capinc_tty_close(struct tty_struct *tty, struct file *filp)
 	tty_port_close(&mp->port, tty, filp);
 }
 
-static int capinc_tty_write(struct tty_struct *tty,
-			    const unsigned char *buf, int count)
+static ssize_t capinc_tty_write(struct tty_struct *tty, const u8 *buf,
+				size_t count)
 {
 	struct capiminor *mp = tty->driver_data;
 	struct sk_buff *skb;
 
-	pr_debug("capinc_tty_write(count=%d)\n", count);
+	pr_debug("capinc_tty_write(count=%zu)\n", count);
 
 	spin_lock_bh(&mp->outlock);
 	skb = mp->outskb;
@@ -1058,7 +1101,7 @@ static int capinc_tty_write(struct tty_struct *tty,
 	}
 
 	skb_reserve(skb, CAPI_DATA_B3_REQ_LEN);
-	memcpy(skb_put(skb, count), buf, count);
+	skb_put_data(skb, buf, count);
 
 	__skb_queue_tail(&mp->outqueue, skb);
 	mp->outbytes += skb->len;
@@ -1069,7 +1112,7 @@ static int capinc_tty_write(struct tty_struct *tty,
 	return count;
 }
 
-static int capinc_tty_put_char(struct tty_struct *tty, unsigned char ch)
+static int capinc_tty_put_char(struct tty_struct *tty, u8 ch)
 {
 	struct capiminor *mp = tty->driver_data;
 	bool invoke_send = false;
@@ -1082,7 +1125,7 @@ static int capinc_tty_put_char(struct tty_struct *tty, unsigned char ch)
 	skb = mp->outskb;
 	if (skb) {
 		if (skb_tailroom(skb) > 0) {
-			*(skb_put(skb, 1)) = ch;
+			skb_put_u8(skb, ch);
 			goto unlock_out;
 		}
 		mp->outskb = NULL;
@@ -1094,7 +1137,7 @@ static int capinc_tty_put_char(struct tty_struct *tty, unsigned char ch)
 	skb = alloc_skb(CAPI_DATA_B3_REQ_LEN + CAPI_MAX_BLKSIZE, GFP_ATOMIC);
 	if (skb) {
 		skb_reserve(skb, CAPI_DATA_B3_REQ_LEN);
-		*(skb_put(skb, 1)) = ch;
+		skb_put_u8(skb, ch);
 		mp->outskb = skb;
 	} else {
 		printk(KERN_ERR "capinc_put_char: char %u lost\n", ch);
@@ -1115,8 +1158,6 @@ static void capinc_tty_flush_chars(struct tty_struct *tty)
 	struct capiminor *mp = tty->driver_data;
 	struct sk_buff *skb;
 
-	pr_debug("capinc_tty_flush_chars\n");
-
 	spin_lock_bh(&mp->outlock);
 	skb = mp->outskb;
 	if (skb) {
@@ -1132,18 +1173,18 @@ static void capinc_tty_flush_chars(struct tty_struct *tty)
 	handle_minor_recv(mp);
 }
 
-static int capinc_tty_write_room(struct tty_struct *tty)
+static unsigned int capinc_tty_write_room(struct tty_struct *tty)
 {
 	struct capiminor *mp = tty->driver_data;
-	int room;
+	unsigned int room;
 
 	room = CAPINC_MAX_SENDQUEUE-skb_queue_len(&mp->outqueue);
 	room *= CAPI_MAX_BLKSIZE;
-	pr_debug("capinc_tty_write_room = %d\n", room);
+	pr_debug("capinc_tty_write_room = %u\n", room);
 	return room;
 }
 
-static int capinc_tty_chars_in_buffer(struct tty_struct *tty)
+static unsigned int capinc_tty_chars_in_buffer(struct tty_struct *tty)
 {
 	struct capiminor *mp = tty->driver_data;
 
@@ -1154,21 +1195,9 @@ static int capinc_tty_chars_in_buffer(struct tty_struct *tty)
 	return mp->outbytes;
 }
 
-static int capinc_tty_ioctl(struct tty_struct *tty,
-			    unsigned int cmd, unsigned long arg)
-{
-	return -ENOIOCTLCMD;
-}
-
-static void capinc_tty_set_termios(struct tty_struct *tty, struct ktermios *old)
-{
-	pr_debug("capinc_tty_set_termios\n");
-}
-
 static void capinc_tty_throttle(struct tty_struct *tty)
 {
 	struct capiminor *mp = tty->driver_data;
-	pr_debug("capinc_tty_throttle\n");
 	mp->ttyinstop = 1;
 }
 
@@ -1176,7 +1205,6 @@ static void capinc_tty_unthrottle(struct tty_struct *tty)
 {
 	struct capiminor *mp = tty->driver_data;
 
-	pr_debug("capinc_tty_unthrottle\n");
 	mp->ttyinstop = 0;
 	handle_minor_recv(mp);
 }
@@ -1185,7 +1213,6 @@ static void capinc_tty_stop(struct tty_struct *tty)
 {
 	struct capiminor *mp = tty->driver_data;
 
-	pr_debug("capinc_tty_stop\n");
 	mp->ttyoutstop = 1;
 }
 
@@ -1193,7 +1220,6 @@ static void capinc_tty_start(struct tty_struct *tty)
 {
 	struct capiminor *mp = tty->driver_data;
 
-	pr_debug("capinc_tty_start\n");
 	mp->ttyoutstop = 0;
 	handle_minor_send(mp);
 }
@@ -1202,24 +1228,7 @@ static void capinc_tty_hangup(struct tty_struct *tty)
 {
 	struct capiminor *mp = tty->driver_data;
 
-	pr_debug("capinc_tty_hangup\n");
 	tty_port_hangup(&mp->port);
-}
-
-static int capinc_tty_break_ctl(struct tty_struct *tty, int state)
-{
-	pr_debug("capinc_tty_break_ctl(%d)\n", state);
-	return 0;
-}
-
-static void capinc_tty_flush_buffer(struct tty_struct *tty)
-{
-	pr_debug("capinc_tty_flush_buffer\n");
-}
-
-static void capinc_tty_set_ldisc(struct tty_struct *tty)
-{
-	pr_debug("capinc_tty_set_ldisc\n");
 }
 
 static void capinc_tty_send_xchar(struct tty_struct *tty, char ch)
@@ -1235,16 +1244,11 @@ static const struct tty_operations capinc_ops = {
 	.flush_chars = capinc_tty_flush_chars,
 	.write_room = capinc_tty_write_room,
 	.chars_in_buffer = capinc_tty_chars_in_buffer,
-	.ioctl = capinc_tty_ioctl,
-	.set_termios = capinc_tty_set_termios,
 	.throttle = capinc_tty_throttle,
 	.unthrottle = capinc_tty_unthrottle,
 	.stop = capinc_tty_stop,
 	.start = capinc_tty_start,
 	.hangup = capinc_tty_hangup,
-	.break_ctl = capinc_tty_break_ctl,
-	.flush_buffer = capinc_tty_flush_buffer,
-	.set_ldisc = capinc_tty_set_ldisc,
 	.send_xchar = capinc_tty_send_xchar,
 	.install = capinc_tty_install,
 	.cleanup = capinc_tty_cleanup,
@@ -1260,18 +1264,19 @@ static int __init capinc_tty_init(void)
 	if (capi_ttyminors <= 0)
 		capi_ttyminors = CAPINC_NR_PORTS;
 
-	capiminors = kzalloc(sizeof(struct capi_minor *) * capi_ttyminors,
+	capiminors = kcalloc(capi_ttyminors, sizeof(struct capiminor *),
 			     GFP_KERNEL);
 	if (!capiminors)
 		return -ENOMEM;
 
-	drv = alloc_tty_driver(capi_ttyminors);
-	if (!drv) {
+	drv = tty_alloc_driver(capi_ttyminors, TTY_DRIVER_REAL_RAW |
+			TTY_DRIVER_RESET_TERMIOS | TTY_DRIVER_DYNAMIC_DEV);
+	if (IS_ERR(drv)) {
 		kfree(capiminors);
-		return -ENOMEM;
+		return PTR_ERR(drv);
 	}
 	drv->driver_name = "capi_nc";
-	drv->name = "capi";
+	drv->name = "capi!";
 	drv->major = 0;
 	drv->minor_start = 0;
 	drv->type = TTY_DRIVER_TYPE_SERIAL;
@@ -1281,14 +1286,11 @@ static int __init capinc_tty_init(void)
 	drv->init_termios.c_oflag = OPOST | ONLCR;
 	drv->init_termios.c_cflag = B9600 | CS8 | CREAD | HUPCL | CLOCAL;
 	drv->init_termios.c_lflag = 0;
-	drv->flags =
-		TTY_DRIVER_REAL_RAW | TTY_DRIVER_RESET_TERMIOS |
-		TTY_DRIVER_DYNAMIC_DEV;
 	tty_set_operations(drv, &capinc_ops);
 
 	err = tty_register_driver(drv);
 	if (err) {
-		put_tty_driver(drv);
+		tty_driver_kref_put(drv);
 		kfree(capiminors);
 		printk(KERN_ERR "Couldn't register capi_nc driver\n");
 		return err;
@@ -1300,7 +1302,7 @@ static int __init capinc_tty_init(void)
 static void __exit capinc_tty_exit(void)
 {
 	tty_unregister_driver(capinc_tty_driver);
-	put_tty_driver(capinc_tty_driver);
+	tty_driver_kref_put(capinc_tty_driver);
 	kfree(capiminors);
 }
 
@@ -1321,7 +1323,7 @@ static inline void capinc_tty_exit(void) { }
  * /proc/capi/capi20:
  *  minor applid nrecvctlpkt nrecvdatapkt nsendctlpkt nsenddatapkt
  */
-static int capi20_proc_show(struct seq_file *m, void *v)
+static int __maybe_unused capi20_proc_show(struct seq_file *m, void *v)
 {
 	struct capidev *cdev;
 	struct list_head *l;
@@ -1340,24 +1342,11 @@ static int capi20_proc_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static int capi20_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, capi20_proc_show, NULL);
-}
-
-static const struct file_operations capi20_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= capi20_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
 /*
  * /proc/capi/capi20ncci:
  *  applid ncci
  */
-static int capi20ncci_proc_show(struct seq_file *m, void *v)
+static int __maybe_unused capi20ncci_proc_show(struct seq_file *m, void *v)
 {
 	struct capidev *cdev;
 	struct capincci *np;
@@ -1373,23 +1362,10 @@ static int capi20ncci_proc_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static int capi20ncci_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, capi20ncci_proc_show, NULL);
-}
-
-static const struct file_operations capi20ncci_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= capi20ncci_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
 static void __init proc_init(void)
 {
-	proc_create("capi/capi20", 0, NULL, &capi20_proc_fops);
-	proc_create("capi/capi20ncci", 0, NULL, &capi20ncci_proc_fops);
+	proc_create_single("capi/capi20", 0, NULL, capi20_proc_show);
+	proc_create_single("capi/capi20ncci", 0, NULL, capi20ncci_proc_show);
 }
 
 static void __exit proc_exit(void)
@@ -1405,24 +1381,32 @@ static int __init capi_init(void)
 {
 	const char *compileinfo;
 	int major_ret;
+	int ret;
+
+	ret = kcapi_init();
+	if (ret)
+		return ret;
 
 	major_ret = register_chrdev(capi_major, "capi20", &capi_fops);
 	if (major_ret < 0) {
 		printk(KERN_ERR "capi20: unable to get major %d\n", capi_major);
+		kcapi_exit();
 		return major_ret;
 	}
-	capi_class = class_create(THIS_MODULE, "capi");
+	capi_class = class_create("capi");
 	if (IS_ERR(capi_class)) {
 		unregister_chrdev(capi_major, "capi20");
+		kcapi_exit();
 		return PTR_ERR(capi_class);
 	}
 
-	device_create(capi_class, NULL, MKDEV(capi_major, 0), NULL, "capi");
+	device_create(capi_class, NULL, MKDEV(capi_major, 0), NULL, "capi20");
 
 	if (capinc_tty_init() < 0) {
 		device_destroy(capi_class, MKDEV(capi_major, 0));
 		class_destroy(capi_class);
 		unregister_chrdev(capi_major, "capi20");
+		kcapi_exit();
 		return -ENOMEM;
 	}
 
@@ -1448,6 +1432,8 @@ static void __exit capi_exit(void)
 	unregister_chrdev(capi_major, "capi20");
 
 	capinc_tty_exit();
+
+	kcapi_exit();
 }
 
 module_init(capi_init);

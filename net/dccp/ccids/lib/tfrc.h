@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef _TFRC_H_
 #define _TFRC_H_
 /*
@@ -6,11 +7,6 @@
  *  Copyright (c) 2005-6 Ian McDonald <ian.mcdonald@jandi.co.nz>
  *  Copyright (c) 2005   Arnaldo Carvalho de Melo <acme@conectiva.com.br>
  *  Copyright (c) 2003   Nils-Erik Mattsson, Joacim Haggmark, Magnus Erixzon
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
  */
 #include <linux/types.h>
 #include <linux/math64.h>
@@ -21,6 +17,7 @@
 #include "packet_history.h"
 
 #ifdef CONFIG_IP_DCCP_TFRC_DEBUG
+extern bool tfrc_debug;
 #define tfrc_pr_debug(format, a...)	DCCP_PR_DEBUG(tfrc_debug, format, ##a)
 #else
 #define tfrc_pr_debug(format, a...)

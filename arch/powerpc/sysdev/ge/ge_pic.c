@@ -14,12 +14,14 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/irq.h>
+#include <linux/irqdomain.h>
 #include <linux/interrupt.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/spinlock.h>
 
 #include <asm/byteorder.h>
 #include <asm/io.h>
-#include <asm/prom.h>
 #include <asm/irq.h>
 
 #include "ge_pic.h"
@@ -91,7 +93,7 @@ static int gef_pic_cascade_irq;
  * should be masked out.
  */
 
-void gef_pic_cascade(unsigned int irq, struct irq_desc *desc)
+static void gef_pic_cascade(struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 	unsigned int cascade_irq;
@@ -102,7 +104,7 @@ void gef_pic_cascade(unsigned int irq, struct irq_desc *desc)
 	 */
 	cascade_irq = gef_pic_get_irq();
 
-	if (cascade_irq != NO_IRQ)
+	if (cascade_irq)
 		generic_handle_irq(cascade_irq);
 
 	chip->irq_eoi(&desc->irq_data);
@@ -150,7 +152,7 @@ static struct irq_chip gef_pic_chip = {
 };
 
 
-/* When an interrupt is being configured, this call allows some flexibilty
+/* When an interrupt is being configured, this call allows some flexibility
  * in deciding which irq_chip structure is used
  */
 static int gef_pic_host_map(struct irq_domain *h, unsigned int virq,
@@ -206,7 +208,7 @@ void __init gef_pic_init(struct device_node *np)
 
 	/* Map controller */
 	gef_pic_cascade_irq = irq_of_parse_and_map(np, 0);
-	if (gef_pic_cascade_irq == NO_IRQ) {
+	if (!gef_pic_cascade_irq) {
 		printk(KERN_ERR "SBC610: failed to map cascade interrupt");
 		return;
 	}
@@ -223,12 +225,12 @@ void __init gef_pic_init(struct device_node *np)
 
 /*
  * This is called when we receive an interrupt with apparently comes from this
- * chip - check, returning the highest interrupt generated or return NO_IRQ
+ * chip - check, returning the highest interrupt generated or return 0.
  */
 unsigned int gef_pic_get_irq(void)
 {
 	u32 cause, mask, active;
-	unsigned int virq = NO_IRQ;
+	unsigned int virq = 0;
 	int hwirq;
 
 	cause = in_be32(gef_pic_irq_reg_base + GEF_PIC_INTR_STATUS);

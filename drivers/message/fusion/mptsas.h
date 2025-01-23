@@ -107,10 +107,11 @@ struct mptsas_hotplug_event {
 struct fw_event_work {
 	struct list_head 	list;
 	struct delayed_work	 work;
+	int			users;
 	MPT_ADAPTER	*ioc;
 	u32			event;
 	u8			retries;
-	u8			__attribute__((aligned(4))) event_data[1];
+	char			event_data[] __aligned(4);
 };
 
 struct mptsas_discovery_event {

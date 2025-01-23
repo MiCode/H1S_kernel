@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * ACPI helpers for DMA request / controller
  *
@@ -5,10 +6,6 @@
  *
  * Copyright (C) 2013, Intel Corporation
  * Author: Andy Shevchenko <andriy.shevchenko@linux.intel.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __LINUX_ACPI_DMA_H
@@ -16,6 +13,7 @@
 
 #include <linux/list.h>
 #include <linux/device.h>
+#include <linux/err.h>
 #include <linux/dmaengine.h>
 
 /**
@@ -103,12 +101,12 @@ static inline void devm_acpi_dma_controller_free(struct device *dev)
 static inline struct dma_chan *acpi_dma_request_slave_chan_by_index(
 		struct device *dev, size_t index)
 {
-	return NULL;
+	return ERR_PTR(-ENODEV);
 }
 static inline struct dma_chan *acpi_dma_request_slave_chan_by_name(
 		struct device *dev, const char *name)
 {
-	return NULL;
+	return ERR_PTR(-ENODEV);
 }
 
 #define acpi_dma_simple_xlate	NULL

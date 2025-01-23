@@ -1,23 +1,7 @@
-/* -*- mode: c; c-basic-offset: 8; -*-
- *
- * vim: noexpandtab sw=8 ts=8 sts=0:
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
  *
  * Copyright (C) 2005 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
 /* This quorum hack is only here until we transition to some more rational
@@ -81,15 +65,16 @@ static void o2quo_fence_self(void)
 	default:
 		WARN_ON(o2nm_single_cluster->cl_fence_method >=
 			O2NM_FENCE_METHODS);
+		fallthrough;
 	case O2NM_FENCE_RESET:
 		printk(KERN_ERR "*** ocfs2 is very sorry to be fencing this "
 		       "system by restarting ***\n");
 		emergency_restart();
 		break;
-	};
+	}
 }
 
-/* Indicate that a timeout occurred on a hearbeat region write. The
+/* Indicate that a timeout occurred on a heartbeat region write. The
  * other nodes in the cluster may consider us dead at that time so we
  * want to "fence" ourselves so that we don't scribble on the disk
  * after they think they've recovered us. This can't solve all
@@ -108,7 +93,7 @@ static void o2quo_make_decision(struct work_struct *work)
 	int lowest_hb, lowest_reachable = 0, fence = 0;
 	struct o2quo_state *qs = &o2quo_state;
 
-	spin_lock(&qs->qs_lock);
+	spin_lock_bh(&qs->qs_lock);
 
 	lowest_hb = find_first_bit(qs->qs_hb_bm, O2NM_MAX_NODES);
 	if (lowest_hb != O2NM_MAX_NODES)
@@ -160,9 +145,18 @@ static void o2quo_make_decision(struct work_struct *work)
 	}
 
 out:
-	spin_unlock(&qs->qs_lock);
-	if (fence)
+	if (fence) {
+		spin_unlock_bh(&qs->qs_lock);
 		o2quo_fence_self();
+	} else {
+		mlog(ML_NOTICE, "not fencing this node, heartbeating: %d, "
+			"connected: %d, lowest: %d (%sreachable)\n",
+			qs->qs_heartbeating, qs->qs_connected, lowest_hb,
+			lowest_reachable ? "" : "un");
+		spin_unlock_bh(&qs->qs_lock);
+
+	}
+
 }
 
 static void o2quo_set_hold(struct o2quo_state *qs, u8 node)
@@ -202,7 +196,7 @@ void o2quo_hb_up(u8 node)
 {
 	struct o2quo_state *qs = &o2quo_state;
 
-	spin_lock(&qs->qs_lock);
+	spin_lock_bh(&qs->qs_lock);
 
 	qs->qs_heartbeating++;
 	mlog_bug_on_msg(qs->qs_heartbeating == O2NM_MAX_NODES,
@@ -217,7 +211,7 @@ void o2quo_hb_up(u8 node)
 	else
 		o2quo_clear_hold(qs, node);
 
-	spin_unlock(&qs->qs_lock);
+	spin_unlock_bh(&qs->qs_lock);
 }
 
 /* hb going down releases any holds we might have had due to this node from
@@ -226,7 +220,7 @@ void o2quo_hb_down(u8 node)
 {
 	struct o2quo_state *qs = &o2quo_state;
 
-	spin_lock(&qs->qs_lock);
+	spin_lock_bh(&qs->qs_lock);
 
 	qs->qs_heartbeating--;
 	mlog_bug_on_msg(qs->qs_heartbeating < 0,
@@ -239,7 +233,7 @@ void o2quo_hb_down(u8 node)
 
 	o2quo_clear_hold(qs, node);
 
-	spin_unlock(&qs->qs_lock);
+	spin_unlock_bh(&qs->qs_lock);
 }
 
 /* this tells us that we've decided that the node is still heartbeating
@@ -251,14 +245,14 @@ void o2quo_hb_still_up(u8 node)
 {
 	struct o2quo_state *qs = &o2quo_state;
 
-	spin_lock(&qs->qs_lock);
+	spin_lock_bh(&qs->qs_lock);
 
 	mlog(0, "node %u\n", node);
 
 	qs->qs_pending = 1;
 	o2quo_clear_hold(qs, node);
 
-	spin_unlock(&qs->qs_lock);
+	spin_unlock_bh(&qs->qs_lock);
 }
 
 /* This is analogous to hb_up.  as a node's connection comes up we delay the
@@ -270,7 +264,7 @@ void o2quo_conn_up(u8 node)
 {
 	struct o2quo_state *qs = &o2quo_state;
 
-	spin_lock(&qs->qs_lock);
+	spin_lock_bh(&qs->qs_lock);
 
 	qs->qs_connected++;
 	mlog_bug_on_msg(qs->qs_connected == O2NM_MAX_NODES,
@@ -285,7 +279,7 @@ void o2quo_conn_up(u8 node)
 	else
 		o2quo_clear_hold(qs, node);
 
-	spin_unlock(&qs->qs_lock);
+	spin_unlock_bh(&qs->qs_lock);
 }
 
 /* we've decided that we won't ever be connecting to the node again.  if it's
@@ -296,7 +290,7 @@ void o2quo_conn_err(u8 node)
 {
 	struct o2quo_state *qs = &o2quo_state;
 
-	spin_lock(&qs->qs_lock);
+	spin_lock_bh(&qs->qs_lock);
 
 	if (test_bit(node, qs->qs_conn_bm)) {
 		qs->qs_connected--;
@@ -305,14 +299,15 @@ void o2quo_conn_err(u8 node)
 				node, qs->qs_connected);
 
 		clear_bit(node, qs->qs_conn_bm);
+
+		if (test_bit(node, qs->qs_hb_bm))
+			o2quo_set_hold(qs, node);
 	}
 
 	mlog(0, "node %u, %d total\n", node, qs->qs_connected);
 
-	if (test_bit(node, qs->qs_hb_bm))
-		o2quo_set_hold(qs, node);
 
-	spin_unlock(&qs->qs_lock);
+	spin_unlock_bh(&qs->qs_lock);
 }
 
 void o2quo_init(void)

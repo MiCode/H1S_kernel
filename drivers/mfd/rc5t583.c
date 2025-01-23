@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Core driver access RC5T583 power management chip.
  *
@@ -6,24 +7,10 @@
  *
  * Based on code
  *	Copyright (C) 2011 RICOH COMPANY,LTD
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
  */
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/kernel.h>
-#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/err.h>
 #include <linux/slab.h>
@@ -241,29 +228,25 @@ static const struct regmap_config rc5t583_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.volatile_reg = volatile_reg,
-	.max_register = RC5T583_MAX_REGS,
-	.num_reg_defaults_raw = RC5T583_MAX_REGS,
+	.max_register = RC5T583_MAX_REG,
+	.num_reg_defaults_raw = RC5T583_NUM_REGS,
 	.cache_type = REGCACHE_RBTREE,
 };
 
-static int rc5t583_i2c_probe(struct i2c_client *i2c,
-			      const struct i2c_device_id *id)
+static int rc5t583_i2c_probe(struct i2c_client *i2c)
 {
 	struct rc5t583 *rc5t583;
 	struct rc5t583_platform_data *pdata = dev_get_platdata(&i2c->dev);
 	int ret;
-	bool irq_init_success = false;
 
 	if (!pdata) {
 		dev_err(&i2c->dev, "Err: Platform data not found\n");
 		return -EINVAL;
 	}
 
-	rc5t583 = devm_kzalloc(&i2c->dev, sizeof(struct rc5t583), GFP_KERNEL);
-	if (!rc5t583) {
-		dev_err(&i2c->dev, "Memory allocation failed\n");
+	rc5t583 = devm_kzalloc(&i2c->dev, sizeof(*rc5t583), GFP_KERNEL);
+	if (!rc5t583)
 		return -ENOMEM;
-	}
 
 	rc5t583->dev = &i2c->dev;
 	i2c_set_clientdata(i2c, rc5t583);
@@ -284,31 +267,15 @@ static int rc5t583_i2c_probe(struct i2c_client *i2c,
 		/* Still continue with warning, if irq init fails */
 		if (ret)
 			dev_warn(&i2c->dev, "IRQ init failed: %d\n", ret);
-		else
-			irq_init_success = true;
 	}
 
-	ret = mfd_add_devices(rc5t583->dev, -1, rc5t583_subdevs,
-			      ARRAY_SIZE(rc5t583_subdevs), NULL, 0, NULL);
+	ret = devm_mfd_add_devices(rc5t583->dev, -1, rc5t583_subdevs,
+				   ARRAY_SIZE(rc5t583_subdevs), NULL, 0, NULL);
 	if (ret) {
 		dev_err(&i2c->dev, "add mfd devices failed: %d\n", ret);
-		goto err_add_devs;
+		return ret;
 	}
 
-	return 0;
-
-err_add_devs:
-	if (irq_init_success)
-		rc5t583_irq_exit(rc5t583);
-	return ret;
-}
-
-static int  rc5t583_i2c_remove(struct i2c_client *i2c)
-{
-	struct rc5t583 *rc5t583 = i2c_get_clientdata(i2c);
-
-	mfd_remove_devices(rc5t583->dev);
-	rc5t583_irq_exit(rc5t583);
 	return 0;
 }
 
@@ -317,15 +284,11 @@ static const struct i2c_device_id rc5t583_i2c_id[] = {
 	{}
 };
 
-MODULE_DEVICE_TABLE(i2c, rc5t583_i2c_id);
-
 static struct i2c_driver rc5t583_i2c_driver = {
 	.driver = {
 		   .name = "rc5t583",
-		   .owner = THIS_MODULE,
 		   },
 	.probe = rc5t583_i2c_probe,
-	.remove = rc5t583_i2c_remove,
 	.id_table = rc5t583_i2c_id,
 };
 
@@ -334,14 +297,3 @@ static int __init rc5t583_i2c_init(void)
 	return i2c_add_driver(&rc5t583_i2c_driver);
 }
 subsys_initcall(rc5t583_i2c_init);
-
-static void __exit rc5t583_i2c_exit(void)
-{
-	i2c_del_driver(&rc5t583_i2c_driver);
-}
-
-module_exit(rc5t583_i2c_exit);
-
-MODULE_AUTHOR("Laxman Dewangan <ldewangan@nvidia.com>");
-MODULE_DESCRIPTION("RICOH RC5T583 power management system device driver");
-MODULE_LICENSE("GPL v2");

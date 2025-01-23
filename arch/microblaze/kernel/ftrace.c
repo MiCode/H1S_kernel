@@ -22,10 +22,12 @@
 void prepare_ftrace_return(unsigned long *parent, unsigned long self_addr)
 {
 	unsigned long old;
-	int faulted, err;
-	struct ftrace_graph_ent trace;
+	int faulted;
 	unsigned long return_hooker = (unsigned long)
 				&return_to_handler;
+
+	if (unlikely(ftrace_graph_is_dead()))
+		return;
 
 	if (unlikely(atomic_read(&current->tracing_graph_pause)))
 		return;
@@ -60,18 +62,8 @@ void prepare_ftrace_return(unsigned long *parent, unsigned long self_addr)
 		return;
 	}
 
-	err = ftrace_push_return_trace(old, self_addr, &trace.depth, 0);
-	if (err == -EBUSY) {
+	if (function_graph_enter(old, self_addr, 0, NULL))
 		*parent = old;
-		return;
-	}
-
-	trace.func = self_addr;
-	/* Only trace if the calling function expects to */
-	if (!ftrace_graph_entry(&trace)) {
-		current->curr_ret_stack--;
-		*parent = old;
-	}
 }
 #endif /* CONFIG_FUNCTION_GRAPH_TRACER */
 
@@ -169,14 +161,6 @@ int ftrace_make_call(struct dyn_ftrace *rec, unsigned long addr)
 	ret += ftrace_modify_code(rec->ip + 4, bralid);
 #endif /* USE_FTRACE_NOP */
 	return ret;
-}
-
-int __init ftrace_dyn_arch_init(void *data)
-{
-	/* The return code is retured via data */
-	*(unsigned long *)data = 0;
-
-	return 0;
 }
 
 int ftrace_update_ftrace_func(ftrace_func_t func)

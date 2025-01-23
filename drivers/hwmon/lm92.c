@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * lm92 - Hardware monitoring driver
  * Copyright (C) 2005-2008  Jean Delvare <jdelvare@suse.de>
@@ -24,20 +25,6 @@
  * Support could easily be added for the National Semiconductor LM76
  * and Maxim MAX6633 and MAX6634 chips, which are mostly compatible
  * with the LM92.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
@@ -56,6 +43,7 @@
  */
 static const unsigned short normal_i2c[] = { 0x48, 0x49, 0x4a, 0x4b,
 						I2C_CLIENT_END };
+enum chips { lm92, max6635 };
 
 /* The LM92 registers */
 #define LM92_REG_CONFIG			0x01 /* 8-bit, RW */
@@ -78,12 +66,9 @@ static inline int TEMP_FROM_REG(s16 reg)
 	return reg / 8 * 625 / 10;
 }
 
-static inline s16 TEMP_TO_REG(int val)
+static inline s16 TEMP_TO_REG(long val)
 {
-	if (val <= -60000)
-		return -60000 * 10 / 625 * 8;
-	if (val >= 160000)
-		return 160000 * 10 / 625 * 8;
+	val = clamp_val(val, -60000, 160000);
 	return val * 10 / 625 * 8;
 }
 
@@ -93,20 +78,33 @@ static inline u8 ALARMS_FROM_REG(s16 reg)
 	return reg & 0x0007;
 }
 
-/* Driver data (common to all clients) */
-static struct i2c_driver lm92_driver;
+enum temp_index {
+	t_input,
+	t_crit,
+	t_min,
+	t_max,
+	t_hyst,
+	t_num_regs
+};
+
+static const u8 regs[t_num_regs] = {
+	[t_input] = LM92_REG_TEMP,
+	[t_crit] = LM92_REG_TEMP_CRIT,
+	[t_min] = LM92_REG_TEMP_LOW,
+	[t_max] = LM92_REG_TEMP_HIGH,
+	[t_hyst] = LM92_REG_TEMP_HYST,
+};
 
 /* Client data (each client gets its own) */
 struct lm92_data {
-	struct device *hwmon_dev;
+	struct i2c_client *client;
 	struct mutex update_lock;
-	char valid; /* zero until following fields are valid */
+	bool valid; /* false until following fields are valid */
 	unsigned long last_updated; /* in jiffies */
 
 	/* registers values */
-	s16 temp1_input, temp1_crit, temp1_min, temp1_max, temp1_hyst;
+	s16 temp[t_num_regs];	/* index with enum temp_index */
 };
-
 
 /*
  * Sysfs attributes and callback functions
@@ -114,27 +112,21 @@ struct lm92_data {
 
 static struct lm92_data *lm92_update_device(struct device *dev)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm92_data *data = i2c_get_clientdata(client);
+	struct lm92_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
+	int i;
 
 	mutex_lock(&data->update_lock);
 
-	if (time_after(jiffies, data->last_updated + HZ)
-	 || !data->valid) {
+	if (time_after(jiffies, data->last_updated + HZ) ||
+	    !data->valid) {
 		dev_dbg(&client->dev, "Updating lm92 data\n");
-		data->temp1_input = i2c_smbus_read_word_swapped(client,
-				    LM92_REG_TEMP);
-		data->temp1_hyst = i2c_smbus_read_word_swapped(client,
-				    LM92_REG_TEMP_HYST);
-		data->temp1_crit = i2c_smbus_read_word_swapped(client,
-				    LM92_REG_TEMP_CRIT);
-		data->temp1_min = i2c_smbus_read_word_swapped(client,
-				    LM92_REG_TEMP_LOW);
-		data->temp1_max = i2c_smbus_read_word_swapped(client,
-				    LM92_REG_TEMP_HIGH);
-
+		for (i = 0; i < t_num_regs; i++) {
+			data->temp[i] =
+				i2c_smbus_read_word_swapped(client, regs[i]);
+		}
 		data->last_updated = jiffies;
-		data->valid = 1;
+		data->valid = true;
 	}
 
 	mutex_unlock(&data->update_lock);
@@ -142,68 +134,23 @@ static struct lm92_data *lm92_update_device(struct device *dev)
 	return data;
 }
 
-#define show_temp(value) \
-static ssize_t show_##value(struct device *dev, struct device_attribute *attr, \
-			    char *buf) \
-{ \
-	struct lm92_data *data = lm92_update_device(dev); \
-	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->value)); \
-}
-show_temp(temp1_input);
-show_temp(temp1_crit);
-show_temp(temp1_min);
-show_temp(temp1_max);
+static ssize_t temp_show(struct device *dev, struct device_attribute *devattr,
+			 char *buf)
+{
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct lm92_data *data = lm92_update_device(dev);
 
-#define set_temp(value, reg) \
-static ssize_t set_##value(struct device *dev, struct device_attribute *attr, \
-			   const char *buf, \
-	size_t count) \
-{ \
-	struct i2c_client *client = to_i2c_client(dev); \
-	struct lm92_data *data = i2c_get_clientdata(client); \
-	long val; \
-	int err = kstrtol(buf, 10, &val); \
-	if (err) \
-		return err; \
-\
-	mutex_lock(&data->update_lock); \
-	data->value = TEMP_TO_REG(val); \
-	i2c_smbus_write_word_swapped(client, reg, data->value); \
-	mutex_unlock(&data->update_lock); \
-	return count; \
-}
-set_temp(temp1_crit, LM92_REG_TEMP_CRIT);
-set_temp(temp1_min, LM92_REG_TEMP_LOW);
-set_temp(temp1_max, LM92_REG_TEMP_HIGH);
-
-static ssize_t show_temp1_crit_hyst(struct device *dev,
-				    struct device_attribute *attr, char *buf)
-{
-	struct lm92_data *data = lm92_update_device(dev);
-	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp1_crit)
-		       - TEMP_FROM_REG(data->temp1_hyst));
-}
-static ssize_t show_temp1_max_hyst(struct device *dev,
-				   struct device_attribute *attr, char *buf)
-{
-	struct lm92_data *data = lm92_update_device(dev);
-	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp1_max)
-		       - TEMP_FROM_REG(data->temp1_hyst));
-}
-static ssize_t show_temp1_min_hyst(struct device *dev,
-				   struct device_attribute *attr, char *buf)
-{
-	struct lm92_data *data = lm92_update_device(dev);
-	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp1_min)
-		       + TEMP_FROM_REG(data->temp1_hyst));
+	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp[attr->index]));
 }
 
-static ssize_t set_temp1_crit_hyst(struct device *dev,
-				   struct device_attribute *attr,
-				   const char *buf, size_t count)
+static ssize_t temp_store(struct device *dev,
+			  struct device_attribute *devattr, const char *buf,
+			  size_t count)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm92_data *data = i2c_get_clientdata(client);
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct lm92_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
+	int nr = attr->index;
 	long val;
 	int err;
 
@@ -212,44 +159,82 @@ static ssize_t set_temp1_crit_hyst(struct device *dev,
 		return err;
 
 	mutex_lock(&data->update_lock);
-	data->temp1_hyst = TEMP_FROM_REG(data->temp1_crit) - val;
-	i2c_smbus_write_word_swapped(client, LM92_REG_TEMP_HYST,
-				     TEMP_TO_REG(data->temp1_hyst));
+	data->temp[nr] = TEMP_TO_REG(val);
+	i2c_smbus_write_word_swapped(client, regs[nr], data->temp[nr]);
 	mutex_unlock(&data->update_lock);
 	return count;
 }
 
-static ssize_t show_alarms(struct device *dev, struct device_attribute *attr,
+static ssize_t temp_hyst_show(struct device *dev,
+			      struct device_attribute *devattr, char *buf)
+{
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct lm92_data *data = lm92_update_device(dev);
+
+	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp[attr->index])
+		       - TEMP_FROM_REG(data->temp[t_hyst]));
+}
+
+static ssize_t temp1_min_hyst_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct lm92_data *data = lm92_update_device(dev);
+
+	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp[t_min])
+		       + TEMP_FROM_REG(data->temp[t_hyst]));
+}
+
+static ssize_t temp_hyst_store(struct device *dev,
+			       struct device_attribute *devattr,
+			       const char *buf, size_t count)
+{
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct lm92_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
+	long val;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err)
+		return err;
+
+	val = clamp_val(val, -120000, 220000);
+	mutex_lock(&data->update_lock);
+	data->temp[t_hyst] =
+		TEMP_TO_REG(TEMP_FROM_REG(data->temp[attr->index]) - val);
+	i2c_smbus_write_word_swapped(client, LM92_REG_TEMP_HYST,
+				     data->temp[t_hyst]);
+	mutex_unlock(&data->update_lock);
+	return count;
+}
+
+static ssize_t alarms_show(struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
 	struct lm92_data *data = lm92_update_device(dev);
-	return sprintf(buf, "%d\n", ALARMS_FROM_REG(data->temp1_input));
+
+	return sprintf(buf, "%d\n", ALARMS_FROM_REG(data->temp[t_input]));
 }
 
-static ssize_t show_alarm(struct device *dev, struct device_attribute *attr,
+static ssize_t alarm_show(struct device *dev, struct device_attribute *attr,
 			  char *buf)
 {
 	int bitnr = to_sensor_dev_attr(attr)->index;
 	struct lm92_data *data = lm92_update_device(dev);
-	return sprintf(buf, "%d\n", (data->temp1_input >> bitnr) & 1);
+	return sprintf(buf, "%d\n", (data->temp[t_input] >> bitnr) & 1);
 }
 
-static DEVICE_ATTR(temp1_input, S_IRUGO, show_temp1_input, NULL);
-static DEVICE_ATTR(temp1_crit, S_IWUSR | S_IRUGO, show_temp1_crit,
-	set_temp1_crit);
-static DEVICE_ATTR(temp1_crit_hyst, S_IWUSR | S_IRUGO, show_temp1_crit_hyst,
-	set_temp1_crit_hyst);
-static DEVICE_ATTR(temp1_min, S_IWUSR | S_IRUGO, show_temp1_min,
-	set_temp1_min);
-static DEVICE_ATTR(temp1_min_hyst, S_IRUGO, show_temp1_min_hyst, NULL);
-static DEVICE_ATTR(temp1_max, S_IWUSR | S_IRUGO, show_temp1_max,
-	set_temp1_max);
-static DEVICE_ATTR(temp1_max_hyst, S_IRUGO, show_temp1_max_hyst, NULL);
-static DEVICE_ATTR(alarms, S_IRUGO, show_alarms, NULL);
-static SENSOR_DEVICE_ATTR(temp1_crit_alarm, S_IRUGO, show_alarm, NULL, 2);
-static SENSOR_DEVICE_ATTR(temp1_min_alarm, S_IRUGO, show_alarm, NULL, 0);
-static SENSOR_DEVICE_ATTR(temp1_max_alarm, S_IRUGO, show_alarm, NULL, 1);
-
+static SENSOR_DEVICE_ATTR_RO(temp1_input, temp, t_input);
+static SENSOR_DEVICE_ATTR_RW(temp1_crit, temp, t_crit);
+static SENSOR_DEVICE_ATTR_RW(temp1_crit_hyst, temp_hyst, t_crit);
+static SENSOR_DEVICE_ATTR_RW(temp1_min, temp, t_min);
+static DEVICE_ATTR_RO(temp1_min_hyst);
+static SENSOR_DEVICE_ATTR_RW(temp1_max, temp, t_max);
+static SENSOR_DEVICE_ATTR_RO(temp1_max_hyst, temp_hyst, t_max);
+static DEVICE_ATTR_RO(alarms);
+static SENSOR_DEVICE_ATTR_RO(temp1_crit_alarm, alarm, 2);
+static SENSOR_DEVICE_ATTR_RO(temp1_min_alarm, alarm, 0);
+static SENSOR_DEVICE_ATTR_RO(temp1_max_alarm, alarm, 1);
 
 /*
  * Detection and registration
@@ -266,80 +251,21 @@ static void lm92_init_client(struct i2c_client *client)
 					  config & 0xFE);
 }
 
-/*
- * The MAX6635 has no identification register, so we have to use tricks
- * to identify it reliably. This is somewhat slow.
- * Note that we do NOT rely on the 2 MSB of the configuration register
- * always reading 0, as suggested by the datasheet, because it was once
- * reported not to be true.
- */
-static int max6635_check(struct i2c_client *client)
-{
-	u16 temp_low, temp_high, temp_hyst, temp_crit;
-	u8 conf;
-	int i;
-
-	/*
-	 * No manufacturer ID register, so a read from this address will
-	 * always return the last read value.
-	 */
-	temp_low = i2c_smbus_read_word_data(client, LM92_REG_TEMP_LOW);
-	if (i2c_smbus_read_word_data(client, LM92_REG_MAN_ID) != temp_low)
-		return 0;
-	temp_high = i2c_smbus_read_word_data(client, LM92_REG_TEMP_HIGH);
-	if (i2c_smbus_read_word_data(client, LM92_REG_MAN_ID) != temp_high)
-		return 0;
-
-	/* Limits are stored as integer values (signed, 9-bit). */
-	if ((temp_low & 0x7f00) || (temp_high & 0x7f00))
-		return 0;
-	temp_hyst = i2c_smbus_read_word_data(client, LM92_REG_TEMP_HYST);
-	temp_crit = i2c_smbus_read_word_data(client, LM92_REG_TEMP_CRIT);
-	if ((temp_hyst & 0x7f00) || (temp_crit & 0x7f00))
-		return 0;
-
-	/*
-	 * Registers addresses were found to cycle over 16-byte boundaries.
-	 * We don't test all registers with all offsets so as to save some
-	 * reads and time, but this should still be sufficient to dismiss
-	 * non-MAX6635 chips.
-	 */
-	conf = i2c_smbus_read_byte_data(client, LM92_REG_CONFIG);
-	for (i = 16; i < 96; i *= 2) {
-		if (temp_hyst != i2c_smbus_read_word_data(client,
-				 LM92_REG_TEMP_HYST + i - 16)
-		 || temp_crit != i2c_smbus_read_word_data(client,
-				 LM92_REG_TEMP_CRIT + i)
-		 || temp_low != i2c_smbus_read_word_data(client,
-				LM92_REG_TEMP_LOW + i + 16)
-		 || temp_high != i2c_smbus_read_word_data(client,
-				 LM92_REG_TEMP_HIGH + i + 32)
-		 || conf != i2c_smbus_read_byte_data(client,
-			    LM92_REG_CONFIG + i))
-			return 0;
-	}
-
-	return 1;
-}
-
-static struct attribute *lm92_attributes[] = {
-	&dev_attr_temp1_input.attr,
-	&dev_attr_temp1_crit.attr,
-	&dev_attr_temp1_crit_hyst.attr,
-	&dev_attr_temp1_min.attr,
+static struct attribute *lm92_attrs[] = {
+	&sensor_dev_attr_temp1_input.dev_attr.attr,
+	&sensor_dev_attr_temp1_crit.dev_attr.attr,
+	&sensor_dev_attr_temp1_crit_hyst.dev_attr.attr,
+	&sensor_dev_attr_temp1_min.dev_attr.attr,
 	&dev_attr_temp1_min_hyst.attr,
-	&dev_attr_temp1_max.attr,
-	&dev_attr_temp1_max_hyst.attr,
+	&sensor_dev_attr_temp1_max.dev_attr.attr,
+	&sensor_dev_attr_temp1_max_hyst.dev_attr.attr,
 	&dev_attr_alarms.attr,
 	&sensor_dev_attr_temp1_crit_alarm.dev_attr.attr,
 	&sensor_dev_attr_temp1_min_alarm.dev_attr.attr,
 	&sensor_dev_attr_temp1_max_alarm.dev_attr.attr,
 	NULL
 };
-
-static const struct attribute_group lm92_group = {
-	.attrs = lm92_attributes,
-};
+ATTRIBUTE_GROUPS(lm92);
 
 /* Return 0 if detection is successful, -ENODEV otherwise */
 static int lm92_detect(struct i2c_client *new_client,
@@ -358,70 +284,43 @@ static int lm92_detect(struct i2c_client *new_client,
 
 	if ((config & 0xe0) == 0x00 && man_id == 0x0180)
 		pr_info("lm92: Found National Semiconductor LM92 chip\n");
-	else if (max6635_check(new_client))
-		pr_info("lm92: Found Maxim MAX6635 chip\n");
 	else
 		return -ENODEV;
 
-	strlcpy(info->type, "lm92", I2C_NAME_SIZE);
+	strscpy(info->type, "lm92", I2C_NAME_SIZE);
 
 	return 0;
 }
 
-static int lm92_probe(struct i2c_client *new_client,
-		      const struct i2c_device_id *id)
+static int lm92_probe(struct i2c_client *new_client)
 {
+	struct device *hwmon_dev;
 	struct lm92_data *data;
-	int err;
 
 	data = devm_kzalloc(&new_client->dev, sizeof(struct lm92_data),
 			    GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	i2c_set_clientdata(new_client, data);
-	data->valid = 0;
+	data->client = new_client;
 	mutex_init(&data->update_lock);
 
 	/* Initialize the chipset */
 	lm92_init_client(new_client);
 
-	/* Register sysfs hooks */
-	err = sysfs_create_group(&new_client->dev.kobj, &lm92_group);
-	if (err)
-		return err;
-
-	data->hwmon_dev = hwmon_device_register(&new_client->dev);
-	if (IS_ERR(data->hwmon_dev)) {
-		err = PTR_ERR(data->hwmon_dev);
-		goto exit_remove;
-	}
-
-	return 0;
-
-exit_remove:
-	sysfs_remove_group(&new_client->dev.kobj, &lm92_group);
-	return err;
+	hwmon_dev = devm_hwmon_device_register_with_groups(&new_client->dev,
+							   new_client->name,
+							   data, lm92_groups);
+	return PTR_ERR_OR_ZERO(hwmon_dev);
 }
-
-static int lm92_remove(struct i2c_client *client)
-{
-	struct lm92_data *data = i2c_get_clientdata(client);
-
-	hwmon_device_unregister(data->hwmon_dev);
-	sysfs_remove_group(&client->dev.kobj, &lm92_group);
-
-	return 0;
-}
-
 
 /*
  * Module and driver stuff
  */
 
 static const struct i2c_device_id lm92_id[] = {
-	{ "lm92", 0 },
-	/* max6635 could be added here */
+	{ "lm92", lm92 },
+	{ "max6635", max6635 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, lm92_id);
@@ -432,7 +331,6 @@ static struct i2c_driver lm92_driver = {
 		.name	= "lm92",
 	},
 	.probe		= lm92_probe,
-	.remove		= lm92_remove,
 	.id_table	= lm92_id,
 	.detect		= lm92_detect,
 	.address_list	= normal_i2c,

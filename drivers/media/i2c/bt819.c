@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  bt819 - BT819A VideoStream Decoder (Rockwell Part)
  *
@@ -12,20 +13,6 @@
  *
  * This code was modify/ported from the saa7111 driver written
  * by Dave Perks.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
@@ -37,7 +24,7 @@
 #include <linux/slab.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ctrls.h>
-#include <media/bt819.h>
+#include <media/i2c/bt819.h>
 
 MODULE_DESCRIPTION("Brooktree-819 video decoder driver");
 MODULE_AUTHOR("Mike Bernson & Dave Perks");
@@ -168,12 +155,12 @@ static int bt819_init(struct v4l2_subdev *sd)
 		0x0e, 0xb4,	/* 0x0e Chroma Gain (V) msb */
 		0x0f, 0x00,	/* 0x0f Hue control */
 		0x12, 0x04,	/* 0x12 Output Format */
-		0x13, 0x20,	/* 0x13 Vertial Scaling msb 0x00
+		0x13, 0x20,	/* 0x13 Vertical Scaling msb 0x00
 					   chroma comb OFF, line drop scaling, interlace scaling
-					   BUG? Why does turning the chroma comb on fuck up color?
+					   BUG? Why does turning the chroma comb on screw up color?
 					   Bug in the bt819 stepping on my board?
 					*/
-		0x14, 0x00,	/* 0x14 Vertial Scaling lsb */
+		0x14, 0x00,	/* 0x14 Vertical Scaling lsb */
 		0x16, 0x07,	/* 0x16 Video Timing Polarity
 					   ACTIVE=active low
 					   FIELD: high=odd,
@@ -379,18 +366,8 @@ static const struct v4l2_ctrl_ops bt819_ctrl_ops = {
 	.s_ctrl = bt819_s_ctrl,
 };
 
-static const struct v4l2_subdev_core_ops bt819_core_ops = {
-	.g_ext_ctrls = v4l2_subdev_g_ext_ctrls,
-	.try_ext_ctrls = v4l2_subdev_try_ext_ctrls,
-	.s_ext_ctrls = v4l2_subdev_s_ext_ctrls,
-	.g_ctrl = v4l2_subdev_g_ctrl,
-	.s_ctrl = v4l2_subdev_s_ctrl,
-	.queryctrl = v4l2_subdev_queryctrl,
-	.querymenu = v4l2_subdev_querymenu,
-	.s_std = bt819_s_std,
-};
-
 static const struct v4l2_subdev_video_ops bt819_video_ops = {
+	.s_std = bt819_s_std,
 	.s_routing = bt819_s_routing,
 	.s_stream = bt819_s_stream,
 	.querystd = bt819_querystd,
@@ -398,14 +375,12 @@ static const struct v4l2_subdev_video_ops bt819_video_ops = {
 };
 
 static const struct v4l2_subdev_ops bt819_ops = {
-	.core = &bt819_core_ops,
 	.video = &bt819_video_ops,
 };
 
 /* ----------------------------------------------------------------------- */
 
-static int bt819_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int bt819_probe(struct i2c_client *client)
 {
 	int i, ver;
 	struct bt819 *decoder;
@@ -470,14 +445,13 @@ static int bt819_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int bt819_remove(struct i2c_client *client)
+static void bt819_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct bt819 *decoder = to_bt819(sd);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&decoder->hdl);
-	return 0;
 }
 
 /* ----------------------------------------------------------------------- */
@@ -492,7 +466,6 @@ MODULE_DEVICE_TABLE(i2c, bt819_id);
 
 static struct i2c_driver bt819_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "bt819",
 	},
 	.probe		= bt819_probe,

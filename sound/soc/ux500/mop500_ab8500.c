@@ -1,15 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) ST-Ericsson SA 2012
  *
  * Author: Ola Lilja <ola.o.lilja@stericsson.com>,
  *         Kristoffer Karlsson <kristoffer.karlsson@stericsson.com>
  *         for ST-Ericsson.
- *
- * License terms:
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -193,7 +188,7 @@ static struct snd_kcontrol_new mop500_ab8500_ctrls[] = {
 
 static int mop500_ab8500_startup(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 
 	/* Set audio-clock source */
 	return mop500_ab8500_set_mclk(rtd->card->dev,
@@ -202,7 +197,7 @@ static int mop500_ab8500_startup(struct snd_pcm_substream *substream)
 
 static void mop500_ab8500_shutdown(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct device *dev = rtd->card->dev;
 
 	dev_dbg(dev, "%s: Enter\n", __func__);
@@ -217,9 +212,9 @@ static void mop500_ab8500_shutdown(struct snd_pcm_substream *substream)
 static int mop500_ab8500_hw_params(struct snd_pcm_substream *substream,
 			struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *codec_dai = rtd->codec_dai;
-	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
+	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
 	struct device *dev = rtd->card->dev;
 	unsigned int fmt;
 	int channels, ret = 0, driver_mode, slots;
@@ -290,21 +285,9 @@ static int mop500_ab8500_hw_params(struct snd_pcm_substream *substream,
 			SND_SOC_DAIFMT_GATED;
 	}
 
-	ret = snd_soc_dai_set_fmt(codec_dai, fmt);
-	if (ret < 0) {
-		dev_err(dev,
-			"%s: ERROR: snd_soc_dai_set_fmt failed for codec_dai (ret = %d)!\n",
-			__func__, ret);
+	ret = snd_soc_runtime_set_dai_fmt(rtd, fmt);
+	if (ret)
 		return ret;
-	}
-
-	ret = snd_soc_dai_set_fmt(cpu_dai, fmt);
-	if (ret < 0) {
-		dev_err(dev,
-			"%s: ERROR: snd_soc_dai_set_fmt failed for cpu_dai (ret = %d)!\n",
-			__func__, ret);
-		return ret;
-	}
 
 	/* Setup TDM-slots */
 
@@ -353,8 +336,8 @@ static int mop500_ab8500_hw_params(struct snd_pcm_substream *substream,
 
 static int mop500_ab8500_hw_free(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
 
 	mutex_lock(&mop500_ab8500_params_lock);
 	__clear_bit(cpu_dai->id, &mop500_ab8500_usage);
@@ -363,7 +346,7 @@ static int mop500_ab8500_hw_free(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-struct snd_soc_ops mop500_ab8500_ops[] = {
+const struct snd_soc_ops mop500_ab8500_ops[] = {
 	{
 		.hw_params = mop500_ab8500_hw_params,
 		.hw_free = mop500_ab8500_hw_free,
@@ -374,7 +357,7 @@ struct snd_soc_ops mop500_ab8500_ops[] = {
 
 int mop500_ab8500_machine_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_dapm_context *dapm = &rtd->card->dapm;
 	struct device *dev = rtd->card->dev;
 	struct mop500_ab8500_drvdata *drvdata;
 	int ret;
@@ -384,6 +367,10 @@ int mop500_ab8500_machine_init(struct snd_soc_pcm_runtime *rtd)
 	/* Create driver private-data struct */
 	drvdata = devm_kzalloc(dev, sizeof(struct mop500_ab8500_drvdata),
 			GFP_KERNEL);
+
+	if (!drvdata)
+		return -ENOMEM;
+
 	snd_soc_card_set_drvdata(rtd->card, drvdata);
 
 	/* Setup clocks */
@@ -411,7 +398,7 @@ int mop500_ab8500_machine_init(struct snd_soc_pcm_runtime *rtd)
 	drvdata->mclk_sel = MCLK_ULPCLK;
 
 	/* Add controls */
-	ret = snd_soc_add_card_controls(codec->card, mop500_ab8500_ctrls,
+	ret = snd_soc_add_card_controls(rtd->card, mop500_ab8500_ctrls,
 			ARRAY_SIZE(mop500_ab8500_ctrls));
 	if (ret < 0) {
 		pr_err("%s: Failed to add machine-controls (%d)!\n",
@@ -419,23 +406,23 @@ int mop500_ab8500_machine_init(struct snd_soc_pcm_runtime *rtd)
 		return ret;
 	}
 
-	ret = snd_soc_dapm_disable_pin(&codec->dapm, "Earpiece");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "Speaker Left");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "Speaker Right");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "LineOut Left");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "LineOut Right");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "Vibra 1");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "Vibra 2");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "Mic 1");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "Mic 2");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "LineIn Left");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "LineIn Right");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "DMic 1");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "DMic 2");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "DMic 3");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "DMic 4");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "DMic 5");
-	ret |= snd_soc_dapm_disable_pin(&codec->dapm, "DMic 6");
+	ret = snd_soc_dapm_disable_pin(dapm, "Earpiece");
+	ret |= snd_soc_dapm_disable_pin(dapm, "Speaker Left");
+	ret |= snd_soc_dapm_disable_pin(dapm, "Speaker Right");
+	ret |= snd_soc_dapm_disable_pin(dapm, "LineOut Left");
+	ret |= snd_soc_dapm_disable_pin(dapm, "LineOut Right");
+	ret |= snd_soc_dapm_disable_pin(dapm, "Vibra 1");
+	ret |= snd_soc_dapm_disable_pin(dapm, "Vibra 2");
+	ret |= snd_soc_dapm_disable_pin(dapm, "Mic 1");
+	ret |= snd_soc_dapm_disable_pin(dapm, "Mic 2");
+	ret |= snd_soc_dapm_disable_pin(dapm, "LineIn Left");
+	ret |= snd_soc_dapm_disable_pin(dapm, "LineIn Right");
+	ret |= snd_soc_dapm_disable_pin(dapm, "DMic 1");
+	ret |= snd_soc_dapm_disable_pin(dapm, "DMic 2");
+	ret |= snd_soc_dapm_disable_pin(dapm, "DMic 3");
+	ret |= snd_soc_dapm_disable_pin(dapm, "DMic 4");
+	ret |= snd_soc_dapm_disable_pin(dapm, "DMic 5");
+	ret |= snd_soc_dapm_disable_pin(dapm, "DMic 6");
 
 	return ret;
 }
@@ -444,12 +431,9 @@ void mop500_ab8500_remove(struct snd_soc_card *card)
 {
 	struct mop500_ab8500_drvdata *drvdata = snd_soc_card_get_drvdata(card);
 
-	if (drvdata->clk_ptr_sysclk != NULL)
-		clk_put(drvdata->clk_ptr_sysclk);
-	if (drvdata->clk_ptr_ulpclk != NULL)
-		clk_put(drvdata->clk_ptr_ulpclk);
-	if (drvdata->clk_ptr_intclk != NULL)
-		clk_put(drvdata->clk_ptr_intclk);
+	clk_put(drvdata->clk_ptr_sysclk);
+	clk_put(drvdata->clk_ptr_ulpclk);
+	clk_put(drvdata->clk_ptr_intclk);
 
 	snd_soc_card_set_drvdata(card, drvdata);
 }

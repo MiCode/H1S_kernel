@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef CYPRESS_M8_H
 #define CYPRESS_M8_H
 
@@ -23,6 +24,9 @@
 /* Cypress HID->COM RS232 Adapter */
 #define VENDOR_ID_CYPRESS		0x04b4
 #define PRODUCT_ID_CYPHIDCOM		0x5500
+
+/* Simply Automated HID->COM UPB PIM (using Cypress PID 0x5500) */
+#define VENDOR_ID_SAI			0x17dd
 
 /* FRWD Dongle - a GPS sports watch */
 #define VENDOR_ID_FRWD			0x6737

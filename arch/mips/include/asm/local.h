@@ -1,11 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ARCH_MIPS_LOCAL_H
 #define _ARCH_MIPS_LOCAL_H
 
 #include <linux/percpu.h>
 #include <linux/bitops.h>
 #include <linux/atomic.h>
+#include <asm/asm.h>
 #include <asm/cmpxchg.h>
-#include <asm/war.h>
+#include <asm/compiler.h>
 
 typedef struct
 {
@@ -29,31 +31,19 @@ static __inline__ long local_add_return(long i, local_t * l)
 {
 	unsigned long result;
 
-	if (kernel_uses_llsc && R10000_LLSC_WAR) {
+	if (kernel_uses_llsc) {
 		unsigned long temp;
 
 		__asm__ __volatile__(
-		"	.set	mips3					\n"
-		"1:"	__LL	"%1, %2		# local_add_return	\n"
-		"	addu	%0, %1, %3				\n"
-			__SC	"%0, %2					\n"
-		"	beqzl	%0, 1b					\n"
-		"	addu	%0, %1, %3				\n"
-		"	.set	mips0					\n"
-		: "=&r" (result), "=&r" (temp), "=m" (l->a.counter)
-		: "Ir" (i), "m" (l->a.counter)
-		: "memory");
-	} else if (kernel_uses_llsc) {
-		unsigned long temp;
-
-		__asm__ __volatile__(
-		"	.set	mips3					\n"
-		"1:"	__LL	"%1, %2		# local_add_return	\n"
-		"	addu	%0, %1, %3				\n"
-			__SC	"%0, %2					\n"
-		"	beqz	%0, 1b					\n"
-		"	addu	%0, %1, %3				\n"
-		"	.set	mips0					\n"
+		"	.set	push					\n"
+		"	.set	"MIPS_ISA_ARCH_LEVEL"			\n"
+			__SYNC(full, loongson3_war) "                   \n"
+		"1:"	__stringify(LONG_LL)	"	%1, %2		\n"
+			__stringify(LONG_ADDU)	"	%0, %1, %3	\n"
+			__stringify(LONG_SC)	"	%0, %2		\n"
+			__stringify(SC_BEQZ)	"	%0, 1b		\n"
+			__stringify(LONG_ADDU)	"	%0, %1, %3	\n"
+		"	.set	pop					\n"
 		: "=&r" (result), "=&r" (temp), "=m" (l->a.counter)
 		: "Ir" (i), "m" (l->a.counter)
 		: "memory");
@@ -74,31 +64,20 @@ static __inline__ long local_sub_return(long i, local_t * l)
 {
 	unsigned long result;
 
-	if (kernel_uses_llsc && R10000_LLSC_WAR) {
+	if (kernel_uses_llsc) {
 		unsigned long temp;
 
 		__asm__ __volatile__(
-		"	.set	mips3					\n"
-		"1:"	__LL	"%1, %2		# local_sub_return	\n"
-		"	subu	%0, %1, %3				\n"
-			__SC	"%0, %2					\n"
-		"	beqzl	%0, 1b					\n"
-		"	subu	%0, %1, %3				\n"
-		"	.set	mips0					\n"
-		: "=&r" (result), "=&r" (temp), "=m" (l->a.counter)
-		: "Ir" (i), "m" (l->a.counter)
-		: "memory");
-	} else if (kernel_uses_llsc) {
-		unsigned long temp;
-
-		__asm__ __volatile__(
-		"	.set	mips3					\n"
-		"1:"	__LL	"%1, %2		# local_sub_return	\n"
-		"	subu	%0, %1, %3				\n"
-			__SC	"%0, %2					\n"
-		"	beqz	%0, 1b					\n"
-		"	subu	%0, %1, %3				\n"
-		"	.set	mips0					\n"
+		"	.set	push					\n"
+		"	.set	"MIPS_ISA_ARCH_LEVEL"			\n"
+			__SYNC(full, loongson3_war) "                   \n"
+		"1:"	__stringify(LONG_LL)	"	%1, %2		\n"
+			__stringify(LONG_SUBU)	"	%0, %1, %3	\n"
+			__stringify(LONG_SUBU)	"	%0, %1, %3	\n"
+			__stringify(LONG_SC)	"	%0, %2		\n"
+			__stringify(SC_BEQZ)	"	%0, 1b		\n"
+			__stringify(LONG_SUBU)	"	%0, %1, %3	\n"
+		"	.set	pop					\n"
 		: "=&r" (result), "=&r" (temp), "=m" (l->a.counter)
 		: "Ir" (i), "m" (l->a.counter)
 		: "memory");
@@ -115,8 +94,17 @@ static __inline__ long local_sub_return(long i, local_t * l)
 	return result;
 }
 
-#define local_cmpxchg(l, o, n) \
-	((long)cmpxchg_local(&((l)->a.counter), (o), (n)))
+static __inline__ long local_cmpxchg(local_t *l, long old, long new)
+{
+	return cmpxchg_local(&l->a.counter, old, new);
+}
+
+static __inline__ bool local_try_cmpxchg(local_t *l, long *old, long new)
+{
+	return try_cmpxchg_local(&l->a.counter,
+				 (typeof(l->a.counter) *) old, new);
+}
+
 #define local_xchg(l, n) (atomic_long_xchg((&(l)->a), (n)))
 
 /**

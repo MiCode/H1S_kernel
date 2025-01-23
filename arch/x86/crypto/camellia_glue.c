@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Glue Code for assembler optimized version of Camellia
  *
@@ -5,50 +6,30 @@
  *
  * Camellia parts based on code by:
  *  Copyright (C) 2006 NTT (Nippon Telegraph and Telephone Corporation)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307
- * USA
- *
  */
 
-#include <asm/processor.h>
 #include <asm/unaligned.h>
 #include <linux/crypto.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <crypto/algapi.h>
-#include <crypto/lrw.h>
-#include <crypto/xts.h>
-#include <asm/crypto/camellia.h>
-#include <asm/crypto/glue_helper.h>
+
+#include "camellia.h"
+#include "ecb_cbc_helpers.h"
 
 /* regular block cipher functions */
-asmlinkage void __camellia_enc_blk(struct camellia_ctx *ctx, u8 *dst,
-				   const u8 *src, bool xor);
+asmlinkage void __camellia_enc_blk(const void *ctx, u8 *dst, const u8 *src,
+				   bool xor);
 EXPORT_SYMBOL_GPL(__camellia_enc_blk);
-asmlinkage void camellia_dec_blk(struct camellia_ctx *ctx, u8 *dst,
-				 const u8 *src);
+asmlinkage void camellia_dec_blk(const void *ctx, u8 *dst, const u8 *src);
 EXPORT_SYMBOL_GPL(camellia_dec_blk);
 
 /* 2-way parallel cipher functions */
-asmlinkage void __camellia_enc_blk_2way(struct camellia_ctx *ctx, u8 *dst,
-					const u8 *src, bool xor);
+asmlinkage void __camellia_enc_blk_2way(const void *ctx, u8 *dst, const u8 *src,
+					bool xor);
 EXPORT_SYMBOL_GPL(__camellia_enc_blk_2way);
-asmlinkage void camellia_dec_blk_2way(struct camellia_ctx *ctx, u8 *dst,
-				      const u8 *src);
+asmlinkage void camellia_dec_blk_2way(const void *ctx, u8 *dst, const u8 *src);
 EXPORT_SYMBOL_GPL(camellia_dec_blk_2way);
 
 static void camellia_encrypt(struct crypto_tfm *tfm, u8 *dst, const u8 *src)
@@ -1247,12 +1228,10 @@ static void camellia_setup192(const unsigned char *key, u64 *subkey)
 }
 
 int __camellia_setkey(struct camellia_ctx *cctx, const unsigned char *key,
-		      unsigned int key_len, u32 *flags)
+		      unsigned int key_len)
 {
-	if (key_len != 16 && key_len != 24 && key_len != 32) {
-		*flags |= CRYPTO_TFM_RES_BAD_KEY_LEN;
+	if (key_len != 16 && key_len != 24 && key_len != 32)
 		return -EINVAL;
-	}
 
 	cctx->key_length = key_len;
 
@@ -1272,293 +1251,62 @@ int __camellia_setkey(struct camellia_ctx *cctx, const unsigned char *key,
 }
 EXPORT_SYMBOL_GPL(__camellia_setkey);
 
-static int camellia_setkey(struct crypto_tfm *tfm, const u8 *in_key,
+static int camellia_setkey(struct crypto_tfm *tfm, const u8 *key,
 			   unsigned int key_len)
 {
-	return __camellia_setkey(crypto_tfm_ctx(tfm), in_key, key_len,
-				 &tfm->crt_flags);
+	return __camellia_setkey(crypto_tfm_ctx(tfm), key, key_len);
 }
 
-void camellia_decrypt_cbc_2way(void *ctx, u128 *dst, const u128 *src)
+static int camellia_setkey_skcipher(struct crypto_skcipher *tfm, const u8 *key,
+				    unsigned int key_len)
 {
-	u128 iv = *src;
+	return camellia_setkey(&tfm->base, key, key_len);
+}
 
-	camellia_dec_blk_2way(ctx, (u8 *)dst, (u8 *)src);
+void camellia_decrypt_cbc_2way(const void *ctx, u8 *dst, const u8 *src)
+{
+	u8 buf[CAMELLIA_BLOCK_SIZE];
+	const u8 *iv = src;
 
-	u128_xor(&dst[1], &dst[1], &iv);
+	if (dst == src)
+		iv = memcpy(buf, iv, sizeof(buf));
+	camellia_dec_blk_2way(ctx, dst, src);
+	crypto_xor(dst + CAMELLIA_BLOCK_SIZE, iv, CAMELLIA_BLOCK_SIZE);
 }
 EXPORT_SYMBOL_GPL(camellia_decrypt_cbc_2way);
 
-void camellia_crypt_ctr(void *ctx, u128 *dst, const u128 *src, le128 *iv)
+static int ecb_encrypt(struct skcipher_request *req)
 {
-	be128 ctrblk;
-
-	if (dst != src)
-		*dst = *src;
-
-	le128_to_be128(&ctrblk, iv);
-	le128_inc(iv);
-
-	camellia_enc_blk_xor(ctx, (u8 *)dst, (u8 *)&ctrblk);
-}
-EXPORT_SYMBOL_GPL(camellia_crypt_ctr);
-
-void camellia_crypt_ctr_2way(void *ctx, u128 *dst, const u128 *src, le128 *iv)
-{
-	be128 ctrblks[2];
-
-	if (dst != src) {
-		dst[0] = src[0];
-		dst[1] = src[1];
-	}
-
-	le128_to_be128(&ctrblks[0], iv);
-	le128_inc(iv);
-	le128_to_be128(&ctrblks[1], iv);
-	le128_inc(iv);
-
-	camellia_enc_blk_xor_2way(ctx, (u8 *)dst, (u8 *)ctrblks);
-}
-EXPORT_SYMBOL_GPL(camellia_crypt_ctr_2way);
-
-static const struct common_glue_ctx camellia_enc = {
-	.num_funcs = 2,
-	.fpu_blocks_limit = -1,
-
-	.funcs = { {
-		.num_blocks = 2,
-		.fn_u = { .ecb = GLUE_FUNC_CAST(camellia_enc_blk_2way) }
-	}, {
-		.num_blocks = 1,
-		.fn_u = { .ecb = GLUE_FUNC_CAST(camellia_enc_blk) }
-	} }
-};
-
-static const struct common_glue_ctx camellia_ctr = {
-	.num_funcs = 2,
-	.fpu_blocks_limit = -1,
-
-	.funcs = { {
-		.num_blocks = 2,
-		.fn_u = { .ctr = GLUE_CTR_FUNC_CAST(camellia_crypt_ctr_2way) }
-	}, {
-		.num_blocks = 1,
-		.fn_u = { .ctr = GLUE_CTR_FUNC_CAST(camellia_crypt_ctr) }
-	} }
-};
-
-static const struct common_glue_ctx camellia_dec = {
-	.num_funcs = 2,
-	.fpu_blocks_limit = -1,
-
-	.funcs = { {
-		.num_blocks = 2,
-		.fn_u = { .ecb = GLUE_FUNC_CAST(camellia_dec_blk_2way) }
-	}, {
-		.num_blocks = 1,
-		.fn_u = { .ecb = GLUE_FUNC_CAST(camellia_dec_blk) }
-	} }
-};
-
-static const struct common_glue_ctx camellia_dec_cbc = {
-	.num_funcs = 2,
-	.fpu_blocks_limit = -1,
-
-	.funcs = { {
-		.num_blocks = 2,
-		.fn_u = { .cbc = GLUE_CBC_FUNC_CAST(camellia_decrypt_cbc_2way) }
-	}, {
-		.num_blocks = 1,
-		.fn_u = { .cbc = GLUE_CBC_FUNC_CAST(camellia_dec_blk) }
-	} }
-};
-
-static int ecb_encrypt(struct blkcipher_desc *desc, struct scatterlist *dst,
-		       struct scatterlist *src, unsigned int nbytes)
-{
-	return glue_ecb_crypt_128bit(&camellia_enc, desc, dst, src, nbytes);
+	ECB_WALK_START(req, CAMELLIA_BLOCK_SIZE, -1);
+	ECB_BLOCK(2, camellia_enc_blk_2way);
+	ECB_BLOCK(1, camellia_enc_blk);
+	ECB_WALK_END();
 }
 
-static int ecb_decrypt(struct blkcipher_desc *desc, struct scatterlist *dst,
-		       struct scatterlist *src, unsigned int nbytes)
+static int ecb_decrypt(struct skcipher_request *req)
 {
-	return glue_ecb_crypt_128bit(&camellia_dec, desc, dst, src, nbytes);
+	ECB_WALK_START(req, CAMELLIA_BLOCK_SIZE, -1);
+	ECB_BLOCK(2, camellia_dec_blk_2way);
+	ECB_BLOCK(1, camellia_dec_blk);
+	ECB_WALK_END();
 }
 
-static int cbc_encrypt(struct blkcipher_desc *desc, struct scatterlist *dst,
-		       struct scatterlist *src, unsigned int nbytes)
+static int cbc_encrypt(struct skcipher_request *req)
 {
-	return glue_cbc_encrypt_128bit(GLUE_FUNC_CAST(camellia_enc_blk), desc,
-				       dst, src, nbytes);
+	CBC_WALK_START(req, CAMELLIA_BLOCK_SIZE, -1);
+	CBC_ENC_BLOCK(camellia_enc_blk);
+	CBC_WALK_END();
 }
 
-static int cbc_decrypt(struct blkcipher_desc *desc, struct scatterlist *dst,
-		       struct scatterlist *src, unsigned int nbytes)
+static int cbc_decrypt(struct skcipher_request *req)
 {
-	return glue_cbc_decrypt_128bit(&camellia_dec_cbc, desc, dst, src,
-				       nbytes);
+	CBC_WALK_START(req, CAMELLIA_BLOCK_SIZE, -1);
+	CBC_DEC_BLOCK(2, camellia_decrypt_cbc_2way);
+	CBC_DEC_BLOCK(1, camellia_dec_blk);
+	CBC_WALK_END();
 }
 
-static int ctr_crypt(struct blkcipher_desc *desc, struct scatterlist *dst,
-		     struct scatterlist *src, unsigned int nbytes)
-{
-	return glue_ctr_crypt_128bit(&camellia_ctr, desc, dst, src, nbytes);
-}
-
-static void encrypt_callback(void *priv, u8 *srcdst, unsigned int nbytes)
-{
-	const unsigned int bsize = CAMELLIA_BLOCK_SIZE;
-	struct camellia_ctx *ctx = priv;
-	int i;
-
-	while (nbytes >= 2 * bsize) {
-		camellia_enc_blk_2way(ctx, srcdst, srcdst);
-		srcdst += bsize * 2;
-		nbytes -= bsize * 2;
-	}
-
-	for (i = 0; i < nbytes / bsize; i++, srcdst += bsize)
-		camellia_enc_blk(ctx, srcdst, srcdst);
-}
-
-static void decrypt_callback(void *priv, u8 *srcdst, unsigned int nbytes)
-{
-	const unsigned int bsize = CAMELLIA_BLOCK_SIZE;
-	struct camellia_ctx *ctx = priv;
-	int i;
-
-	while (nbytes >= 2 * bsize) {
-		camellia_dec_blk_2way(ctx, srcdst, srcdst);
-		srcdst += bsize * 2;
-		nbytes -= bsize * 2;
-	}
-
-	for (i = 0; i < nbytes / bsize; i++, srcdst += bsize)
-		camellia_dec_blk(ctx, srcdst, srcdst);
-}
-
-int lrw_camellia_setkey(struct crypto_tfm *tfm, const u8 *key,
-			unsigned int keylen)
-{
-	struct camellia_lrw_ctx *ctx = crypto_tfm_ctx(tfm);
-	int err;
-
-	err = __camellia_setkey(&ctx->camellia_ctx, key,
-				keylen - CAMELLIA_BLOCK_SIZE,
-				&tfm->crt_flags);
-	if (err)
-		return err;
-
-	return lrw_init_table(&ctx->lrw_table,
-			      key + keylen - CAMELLIA_BLOCK_SIZE);
-}
-EXPORT_SYMBOL_GPL(lrw_camellia_setkey);
-
-static int lrw_encrypt(struct blkcipher_desc *desc, struct scatterlist *dst,
-		       struct scatterlist *src, unsigned int nbytes)
-{
-	struct camellia_lrw_ctx *ctx = crypto_blkcipher_ctx(desc->tfm);
-	be128 buf[2 * 4];
-	struct lrw_crypt_req req = {
-		.tbuf = buf,
-		.tbuflen = sizeof(buf),
-
-		.table_ctx = &ctx->lrw_table,
-		.crypt_ctx = &ctx->camellia_ctx,
-		.crypt_fn = encrypt_callback,
-	};
-
-	return lrw_crypt(desc, dst, src, nbytes, &req);
-}
-
-static int lrw_decrypt(struct blkcipher_desc *desc, struct scatterlist *dst,
-		       struct scatterlist *src, unsigned int nbytes)
-{
-	struct camellia_lrw_ctx *ctx = crypto_blkcipher_ctx(desc->tfm);
-	be128 buf[2 * 4];
-	struct lrw_crypt_req req = {
-		.tbuf = buf,
-		.tbuflen = sizeof(buf),
-
-		.table_ctx = &ctx->lrw_table,
-		.crypt_ctx = &ctx->camellia_ctx,
-		.crypt_fn = decrypt_callback,
-	};
-
-	return lrw_crypt(desc, dst, src, nbytes, &req);
-}
-
-void lrw_camellia_exit_tfm(struct crypto_tfm *tfm)
-{
-	struct camellia_lrw_ctx *ctx = crypto_tfm_ctx(tfm);
-
-	lrw_free_table(&ctx->lrw_table);
-}
-EXPORT_SYMBOL_GPL(lrw_camellia_exit_tfm);
-
-int xts_camellia_setkey(struct crypto_tfm *tfm, const u8 *key,
-			unsigned int keylen)
-{
-	struct camellia_xts_ctx *ctx = crypto_tfm_ctx(tfm);
-	u32 *flags = &tfm->crt_flags;
-	int err;
-
-	/* key consists of keys of equal size concatenated, therefore
-	 * the length must be even
-	 */
-	if (keylen % 2) {
-		*flags |= CRYPTO_TFM_RES_BAD_KEY_LEN;
-		return -EINVAL;
-	}
-
-	/* first half of xts-key is for crypt */
-	err = __camellia_setkey(&ctx->crypt_ctx, key, keylen / 2, flags);
-	if (err)
-		return err;
-
-	/* second half of xts-key is for tweak */
-	return __camellia_setkey(&ctx->tweak_ctx, key + keylen / 2, keylen / 2,
-				flags);
-}
-EXPORT_SYMBOL_GPL(xts_camellia_setkey);
-
-static int xts_encrypt(struct blkcipher_desc *desc, struct scatterlist *dst,
-		       struct scatterlist *src, unsigned int nbytes)
-{
-	struct camellia_xts_ctx *ctx = crypto_blkcipher_ctx(desc->tfm);
-	be128 buf[2 * 4];
-	struct xts_crypt_req req = {
-		.tbuf = buf,
-		.tbuflen = sizeof(buf),
-
-		.tweak_ctx = &ctx->tweak_ctx,
-		.tweak_fn = XTS_TWEAK_CAST(camellia_enc_blk),
-		.crypt_ctx = &ctx->crypt_ctx,
-		.crypt_fn = encrypt_callback,
-	};
-
-	return xts_crypt(desc, dst, src, nbytes, &req);
-}
-
-static int xts_decrypt(struct blkcipher_desc *desc, struct scatterlist *dst,
-		       struct scatterlist *src, unsigned int nbytes)
-{
-	struct camellia_xts_ctx *ctx = crypto_blkcipher_ctx(desc->tfm);
-	be128 buf[2 * 4];
-	struct xts_crypt_req req = {
-		.tbuf = buf,
-		.tbuflen = sizeof(buf),
-
-		.tweak_ctx = &ctx->tweak_ctx,
-		.tweak_fn = XTS_TWEAK_CAST(camellia_enc_blk),
-		.crypt_ctx = &ctx->crypt_ctx,
-		.crypt_fn = decrypt_callback,
-	};
-
-	return xts_crypt(desc, dst, src, nbytes, &req);
-}
-
-static struct crypto_alg camellia_algs[6] = { {
+static struct crypto_alg camellia_cipher_alg = {
 	.cra_name		= "camellia",
 	.cra_driver_name	= "camellia-asm",
 	.cra_priority		= 200,
@@ -1576,109 +1324,36 @@ static struct crypto_alg camellia_algs[6] = { {
 			.cia_decrypt	 = camellia_decrypt
 		}
 	}
-}, {
-	.cra_name		= "ecb(camellia)",
-	.cra_driver_name	= "ecb-camellia-asm",
-	.cra_priority		= 300,
-	.cra_flags		= CRYPTO_ALG_TYPE_BLKCIPHER,
-	.cra_blocksize		= CAMELLIA_BLOCK_SIZE,
-	.cra_ctxsize		= sizeof(struct camellia_ctx),
-	.cra_alignmask		= 0,
-	.cra_type		= &crypto_blkcipher_type,
-	.cra_module		= THIS_MODULE,
-	.cra_u = {
-		.blkcipher = {
-			.min_keysize	= CAMELLIA_MIN_KEY_SIZE,
-			.max_keysize	= CAMELLIA_MAX_KEY_SIZE,
-			.setkey		= camellia_setkey,
-			.encrypt	= ecb_encrypt,
-			.decrypt	= ecb_decrypt,
-		},
-	},
-}, {
-	.cra_name		= "cbc(camellia)",
-	.cra_driver_name	= "cbc-camellia-asm",
-	.cra_priority		= 300,
-	.cra_flags		= CRYPTO_ALG_TYPE_BLKCIPHER,
-	.cra_blocksize		= CAMELLIA_BLOCK_SIZE,
-	.cra_ctxsize		= sizeof(struct camellia_ctx),
-	.cra_alignmask		= 0,
-	.cra_type		= &crypto_blkcipher_type,
-	.cra_module		= THIS_MODULE,
-	.cra_u = {
-		.blkcipher = {
-			.min_keysize	= CAMELLIA_MIN_KEY_SIZE,
-			.max_keysize	= CAMELLIA_MAX_KEY_SIZE,
-			.ivsize		= CAMELLIA_BLOCK_SIZE,
-			.setkey		= camellia_setkey,
-			.encrypt	= cbc_encrypt,
-			.decrypt	= cbc_decrypt,
-		},
-	},
-}, {
-	.cra_name		= "ctr(camellia)",
-	.cra_driver_name	= "ctr-camellia-asm",
-	.cra_priority		= 300,
-	.cra_flags		= CRYPTO_ALG_TYPE_BLKCIPHER,
-	.cra_blocksize		= 1,
-	.cra_ctxsize		= sizeof(struct camellia_ctx),
-	.cra_alignmask		= 0,
-	.cra_type		= &crypto_blkcipher_type,
-	.cra_module		= THIS_MODULE,
-	.cra_u = {
-		.blkcipher = {
-			.min_keysize	= CAMELLIA_MIN_KEY_SIZE,
-			.max_keysize	= CAMELLIA_MAX_KEY_SIZE,
-			.ivsize		= CAMELLIA_BLOCK_SIZE,
-			.setkey		= camellia_setkey,
-			.encrypt	= ctr_crypt,
-			.decrypt	= ctr_crypt,
-		},
-	},
-}, {
-	.cra_name		= "lrw(camellia)",
-	.cra_driver_name	= "lrw-camellia-asm",
-	.cra_priority		= 300,
-	.cra_flags		= CRYPTO_ALG_TYPE_BLKCIPHER,
-	.cra_blocksize		= CAMELLIA_BLOCK_SIZE,
-	.cra_ctxsize		= sizeof(struct camellia_lrw_ctx),
-	.cra_alignmask		= 0,
-	.cra_type		= &crypto_blkcipher_type,
-	.cra_module		= THIS_MODULE,
-	.cra_exit		= lrw_camellia_exit_tfm,
-	.cra_u = {
-		.blkcipher = {
-			.min_keysize	= CAMELLIA_MIN_KEY_SIZE +
-						CAMELLIA_BLOCK_SIZE,
-			.max_keysize	= CAMELLIA_MAX_KEY_SIZE +
-						CAMELLIA_BLOCK_SIZE,
-			.ivsize		= CAMELLIA_BLOCK_SIZE,
-			.setkey		= lrw_camellia_setkey,
-			.encrypt	= lrw_encrypt,
-			.decrypt	= lrw_decrypt,
-		},
-	},
-}, {
-	.cra_name		= "xts(camellia)",
-	.cra_driver_name	= "xts-camellia-asm",
-	.cra_priority		= 300,
-	.cra_flags		= CRYPTO_ALG_TYPE_BLKCIPHER,
-	.cra_blocksize		= CAMELLIA_BLOCK_SIZE,
-	.cra_ctxsize		= sizeof(struct camellia_xts_ctx),
-	.cra_alignmask		= 0,
-	.cra_type		= &crypto_blkcipher_type,
-	.cra_module		= THIS_MODULE,
-	.cra_u = {
-		.blkcipher = {
-			.min_keysize	= CAMELLIA_MIN_KEY_SIZE * 2,
-			.max_keysize	= CAMELLIA_MAX_KEY_SIZE * 2,
-			.ivsize		= CAMELLIA_BLOCK_SIZE,
-			.setkey		= xts_camellia_setkey,
-			.encrypt	= xts_encrypt,
-			.decrypt	= xts_decrypt,
-		},
-	},
-} };
+};
+
+static struct skcipher_alg camellia_skcipher_algs[] = {
+	{
+		.base.cra_name		= "ecb(camellia)",
+		.base.cra_driver_name	= "ecb-camellia-asm",
+		.base.cra_priority	= 300,
+		.base.cra_blocksize	= CAMELLIA_BLOCK_SIZE,
+		.base.cra_ctxsize	= sizeof(struct camellia_ctx),
+		.base.cra_module	= THIS_MODULE,
+		.min_keysize		= CAMELLIA_MIN_KEY_SIZE,
+		.max_keysize		= CAMELLIA_MAX_KEY_SIZE,
+		.setkey			= camellia_setkey_skcipher,
+		.encrypt		= ecb_encrypt,
+		.decrypt		= ecb_decrypt,
+	}, {
+		.base.cra_name		= "cbc(camellia)",
+		.base.cra_driver_name	= "cbc-camellia-asm",
+		.base.cra_priority	= 300,
+		.base.cra_blocksize	= CAMELLIA_BLOCK_SIZE,
+		.base.cra_ctxsize	= sizeof(struct camellia_ctx),
+		.base.cra_module	= THIS_MODULE,
+		.min_keysize		= CAMELLIA_MIN_KEY_SIZE,
+		.max_keysize		= CAMELLIA_MAX_KEY_SIZE,
+		.ivsize			= CAMELLIA_BLOCK_SIZE,
+		.setkey			= camellia_setkey_skcipher,
+		.encrypt		= cbc_encrypt,
+		.decrypt		= cbc_decrypt,
+	}
+};
 
 static bool is_blacklisted_cpu(void)
 {
@@ -1702,8 +1377,10 @@ static int force;
 module_param(force, int, 0);
 MODULE_PARM_DESC(force, "Force module load, ignore CPU blacklist");
 
-static int __init init(void)
+static int __init camellia_init(void)
 {
+	int err;
+
 	if (!force && is_blacklisted_cpu()) {
 		printk(KERN_INFO
 			"camellia-x86_64: performance on this CPU "
@@ -1712,18 +1389,29 @@ static int __init init(void)
 		return -ENODEV;
 	}
 
-	return crypto_register_algs(camellia_algs, ARRAY_SIZE(camellia_algs));
+	err = crypto_register_alg(&camellia_cipher_alg);
+	if (err)
+		return err;
+
+	err = crypto_register_skciphers(camellia_skcipher_algs,
+					ARRAY_SIZE(camellia_skcipher_algs));
+	if (err)
+		crypto_unregister_alg(&camellia_cipher_alg);
+
+	return err;
 }
 
-static void __exit fini(void)
+static void __exit camellia_fini(void)
 {
-	crypto_unregister_algs(camellia_algs, ARRAY_SIZE(camellia_algs));
+	crypto_unregister_alg(&camellia_cipher_alg);
+	crypto_unregister_skciphers(camellia_skcipher_algs,
+				    ARRAY_SIZE(camellia_skcipher_algs));
 }
 
-module_init(init);
-module_exit(fini);
+module_init(camellia_init);
+module_exit(camellia_fini);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Camellia Cipher Algorithm, asm optimized");
-MODULE_ALIAS("camellia");
-MODULE_ALIAS("camellia-asm");
+MODULE_ALIAS_CRYPTO("camellia");
+MODULE_ALIAS_CRYPTO("camellia-asm");

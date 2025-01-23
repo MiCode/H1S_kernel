@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Driver for the Conexant CX25821 PCIe bridge
  *
  *  Copyright (C) 2009 Conexant Systems Inc.
  *  Authors  <shu.lin@conexant.com>, <hiep.huynh@conexant.com>
  *	Based on SAA713x ALSA driver and CX88 driver
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation, version 2
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -63,8 +50,11 @@ static int devno;
 
 struct cx25821_audio_buffer {
 	unsigned int bpl;
-	struct btcx_riscmem risc;
-	struct videobuf_dmabuf dma;
+	struct cx25821_riscmem risc;
+	void			*vaddr;
+	struct scatterlist	*sglist;
+	int			sglen;
+	unsigned long		nr_pages;
 };
 
 struct cx25821_audio_dev {
@@ -87,8 +77,6 @@ struct cx25821_audio_dev {
 	unsigned int period_size;
 	unsigned int num_periods;
 
-	struct videobuf_dmabuf *dma_risc;
-
 	struct cx25821_audio_buffer *buf;
 
 	struct snd_pcm_substream *substream;
@@ -101,7 +89,7 @@ struct cx25821_audio_dev {
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
-static bool enable[SNDRV_CARDS] = { 1, [1 ... (SNDRV_CARDS - 1)] = 1 };
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
 
 module_param_array(enable, bool, NULL, 0444);
 MODULE_PARM_DESC(enable, "Enable cx25821 soundcard. default enabled.");
@@ -116,14 +104,13 @@ MODULE_PARM_DESC(index, "Index value for cx25821 capture interface(s).");
 MODULE_DESCRIPTION("ALSA driver module for cx25821 based capture cards");
 MODULE_AUTHOR("Hiep Huynh");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("{{Conexant,25821}");	/* "{{Conexant,23881}," */
 
 static unsigned int debug;
 module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "enable debug messages");
 
 /****************************************************************************
-			Module specific funtions
+			Module specific functions
  ****************************************************************************/
 /* Constants taken from cx88-reg.h */
 #define AUD_INT_DN_RISCI1       (1 <<  0)
@@ -142,6 +129,84 @@ MODULE_PARM_DESC(debug, "enable debug messages");
 
 #define PCI_MSK_AUD_EXT   (1 <<  4)
 #define PCI_MSK_AUD_INT   (1 <<  3)
+
+static int cx25821_alsa_dma_init(struct cx25821_audio_dev *chip,
+				 unsigned long nr_pages)
+{
+	struct cx25821_audio_buffer *buf = chip->buf;
+	struct page *pg;
+	int i;
+
+	buf->vaddr = vmalloc_32(nr_pages << PAGE_SHIFT);
+	if (NULL == buf->vaddr) {
+		dprintk(1, "vmalloc_32(%lu pages) failed\n", nr_pages);
+		return -ENOMEM;
+	}
+
+	dprintk(1, "vmalloc is at addr 0x%p, size=%lu\n",
+				buf->vaddr,
+				nr_pages << PAGE_SHIFT);
+
+	memset(buf->vaddr, 0, nr_pages << PAGE_SHIFT);
+	buf->nr_pages = nr_pages;
+
+	buf->sglist = vzalloc(array_size(sizeof(*buf->sglist), buf->nr_pages));
+	if (NULL == buf->sglist)
+		goto vzalloc_err;
+
+	sg_init_table(buf->sglist, buf->nr_pages);
+	for (i = 0; i < buf->nr_pages; i++) {
+		pg = vmalloc_to_page(buf->vaddr + i * PAGE_SIZE);
+		if (NULL == pg)
+			goto vmalloc_to_page_err;
+		sg_set_page(&buf->sglist[i], pg, PAGE_SIZE, 0);
+	}
+	return 0;
+
+vmalloc_to_page_err:
+	vfree(buf->sglist);
+	buf->sglist = NULL;
+vzalloc_err:
+	vfree(buf->vaddr);
+	buf->vaddr = NULL;
+	return -ENOMEM;
+}
+
+static int cx25821_alsa_dma_map(struct cx25821_audio_dev *dev)
+{
+	struct cx25821_audio_buffer *buf = dev->buf;
+
+	buf->sglen = dma_map_sg(&dev->pci->dev, buf->sglist,
+			buf->nr_pages, DMA_FROM_DEVICE);
+
+	if (0 == buf->sglen) {
+		pr_warn("%s: cx25821_alsa_map_sg failed\n", __func__);
+		return -ENOMEM;
+	}
+	return 0;
+}
+
+static int cx25821_alsa_dma_unmap(struct cx25821_audio_dev *dev)
+{
+	struct cx25821_audio_buffer *buf = dev->buf;
+
+	if (!buf->sglen)
+		return 0;
+
+	dma_unmap_sg(&dev->pci->dev, buf->sglist, buf->nr_pages, DMA_FROM_DEVICE);
+	buf->sglen = 0;
+	return 0;
+}
+
+static int cx25821_alsa_dma_free(struct cx25821_audio_buffer *buf)
+{
+	vfree(buf->sglist);
+	buf->sglist = NULL;
+	vfree(buf->vaddr);
+	buf->vaddr = NULL;
+	return 0;
+}
+
 /*
  * BOARD Specific: Sets audio DMA
  */
@@ -330,15 +395,17 @@ out:
 
 static int dsp_buffer_free(struct cx25821_audio_dev *chip)
 {
+	struct cx25821_riscmem *risc = &chip->buf->risc;
+
 	BUG_ON(!chip->dma_size);
 
 	dprintk(2, "Freeing buffer\n");
-	videobuf_dma_unmap(&chip->pci->dev, chip->dma_risc);
-	videobuf_dma_free(chip->dma_risc);
-	btcx_riscmem_free(chip->pci, &chip->buf->risc);
+	cx25821_alsa_dma_unmap(chip);
+	cx25821_alsa_dma_free(chip->buf);
+	dma_free_coherent(&chip->pci->dev, risc->size, risc->cpu, risc->dma);
 	kfree(chip->buf);
 
-	chip->dma_risc = NULL;
+	chip->buf = NULL;
 	chip->dma_size = 0;
 
 	return 0;
@@ -352,7 +419,7 @@ static int dsp_buffer_free(struct cx25821_audio_dev *chip)
  * Digital hardware definition
  */
 #define DEFAULT_FIFO_SIZE	384
-static struct snd_pcm_hardware snd_cx25821_digital_hw = {
+static const struct snd_pcm_hardware snd_cx25821_digital_hw = {
 	.info = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
 		SNDRV_PCM_INFO_BLOCK_TRANSFER | SNDRV_PCM_INFO_MMAP_VALID,
 	.formats = SNDRV_PCM_FMTBIT_S16_LE,
@@ -430,8 +497,6 @@ static int snd_cx25821_hw_params(struct snd_pcm_substream *substream,
 				 struct snd_pcm_hw_params *hw_params)
 {
 	struct cx25821_audio_dev *chip = snd_pcm_substream_chip(substream);
-	struct videobuf_dmabuf *dma;
-
 	struct cx25821_audio_buffer *buf;
 	int ret;
 
@@ -455,19 +520,18 @@ static int snd_cx25821_hw_params(struct snd_pcm_substream *substream,
 		chip->period_size = AUDIO_LINE_SIZE;
 
 	buf->bpl = chip->period_size;
+	chip->buf = buf;
 
-	dma = &buf->dma;
-	videobuf_dma_init(dma);
-	ret = videobuf_dma_init_kernel(dma, PCI_DMA_FROMDEVICE,
+	ret = cx25821_alsa_dma_init(chip,
 			(PAGE_ALIGN(chip->dma_size) >> PAGE_SHIFT));
 	if (ret < 0)
 		goto error;
 
-	ret = videobuf_dma_map(&chip->pci->dev, dma);
+	ret = cx25821_alsa_dma_map(chip);
 	if (ret < 0)
 		goto error;
 
-	ret = cx25821_risc_databuffer_audio(chip->pci, &buf->risc, dma->sglist,
+	ret = cx25821_risc_databuffer_audio(chip->pci, &buf->risc, buf->sglist,
 			chip->period_size, chip->num_periods, 1);
 	if (ret < 0) {
 		pr_info("DEBUG: ERROR after cx25821_risc_databuffer_audio()\n");
@@ -479,16 +543,14 @@ static int snd_cx25821_hw_params(struct snd_pcm_substream *substream,
 	buf->risc.jmp[1] = cpu_to_le32(buf->risc.dma);
 	buf->risc.jmp[2] = cpu_to_le32(0);	/* bits 63-32 */
 
-	chip->buf = buf;
-	chip->dma_risc = dma;
-
-	substream->runtime->dma_area = chip->dma_risc->vaddr;
+	substream->runtime->dma_area = chip->buf->vaddr;
 	substream->runtime->dma_bytes = chip->dma_size;
 	substream->runtime->dma_addr = 0;
 
 	return 0;
 
 error:
+	chip->buf = NULL;
 	kfree(buf);
 	return ret;
 }
@@ -574,10 +636,9 @@ static struct page *snd_cx25821_page(struct snd_pcm_substream *substream,
 /*
  * operators
  */
-static struct snd_pcm_ops snd_cx25821_pcm_ops = {
+static const struct snd_pcm_ops snd_cx25821_pcm_ops = {
 	.open = snd_cx25821_pcm_open,
 	.close = snd_cx25821_close,
-	.ioctl = snd_pcm_lib_ioctl,
 	.hw_params = snd_cx25821_hw_params,
 	.hw_free = snd_cx25821_hw_free,
 	.prepare = snd_cx25821_prepare,
@@ -603,7 +664,7 @@ static int snd_cx25821_pcm(struct cx25821_audio_dev *chip, int device,
 	}
 	pcm->private_data = chip;
 	pcm->info_flags = 0;
-	strcpy(pcm->name, name);
+	strscpy(pcm->name, name, sizeof(pcm->name));
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &snd_cx25821_pcm_ops);
 
 	return 0;
@@ -618,7 +679,7 @@ static int snd_cx25821_pcm(struct cx25821_audio_dev *chip, int device,
  * Only boards with eeprom and byte 1 at eeprom=1 have it
  */
 
-static const struct pci_device_id cx25821_audio_pci_tbl[] = {
+static const struct pci_device_id __maybe_unused cx25821_audio_pci_tbl[] = {
 	{0x14f1, 0x0920, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{0,}
 };
@@ -645,15 +706,16 @@ static int cx25821_audio_initdev(struct cx25821_dev *dev)
 		return -ENOENT;
 	}
 
-	err = snd_card_create(index[devno], id[devno], THIS_MODULE,
-			sizeof(struct cx25821_audio_dev), &card);
+	err = snd_card_new(&dev->pci->dev, index[devno], id[devno],
+			   THIS_MODULE,
+			   sizeof(struct cx25821_audio_dev), &card);
 	if (err < 0) {
 		pr_info("DEBUG ERROR: cannot create snd_card_new in %s\n",
 			__func__);
 		return err;
 	}
 
-	strcpy(card->driver, "cx25821");
+	strscpy(card->driver, "cx25821", sizeof(card->driver));
 
 	/* Card "creation" */
 	chip = card->private_data;
@@ -666,8 +728,8 @@ static int cx25821_audio_initdev(struct cx25821_dev *dev)
 
 	chip->irq = dev->pci->irq;
 
-	err = request_irq(dev->pci->irq, cx25821_irq,
-			  IRQF_SHARED, chip->dev->name, chip);
+	err = devm_request_irq(&dev->pci->dev, dev->pci->irq, cx25821_irq,
+			       IRQF_SHARED, chip->dev->name, chip);
 
 	if (err < 0) {
 		pr_err("ERROR %s: can't get IRQ %d for ALSA\n", chip->dev->name,
@@ -682,12 +744,10 @@ static int cx25821_audio_initdev(struct cx25821_dev *dev)
 		goto error;
 	}
 
-	snd_card_set_dev(card, &chip->pci->dev);
-
-	strcpy(card->shortname, "cx25821");
+	strscpy(card->shortname, "cx25821", sizeof(card->shortname));
 	sprintf(card->longname, "%s at 0x%lx irq %d", chip->dev->name,
 		chip->iobase, chip->irq);
-	strcpy(card->mixername, "CX25821");
+	strscpy(card->mixername, "CX25821", sizeof(card->mixername));
 
 	pr_info("%s/%i: ALSA support for cx25821 boards\n", card->driver,
 		devno);

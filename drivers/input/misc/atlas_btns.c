@@ -1,24 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  atlas_btns.c - Atlas Wallmount Touchscreen ACPI Extras
  *
  *  Copyright (C) 2006 Jaya Kumar
  *  Based on Toshiba ACPI by John Belmonte and ASUS ACPI
  *  This work was sponsored by CIS(M) Sdn Bhd.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -28,7 +14,7 @@
 #include <linux/input.h>
 #include <linux/types.h>
 #include <linux/acpi.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #define ACPI_ATLAS_NAME		"Atlas ACPI"
 #define ACPI_ATLAS_CLASS	"Atlas"
@@ -120,7 +106,7 @@ static int atlas_acpi_button_add(struct acpi_device *device)
 	return err;
 }
 
-static int atlas_acpi_button_remove(struct acpi_device *device)
+static void atlas_acpi_button_remove(struct acpi_device *device)
 {
 	acpi_status status;
 
@@ -130,8 +116,6 @@ static int atlas_acpi_button_remove(struct acpi_device *device)
 		pr_err("error removing addr spc handler\n");
 
 	input_unregister_device(input_dev);
-
-	return 0;
 }
 
 static const struct acpi_device_id atlas_device_ids[] = {

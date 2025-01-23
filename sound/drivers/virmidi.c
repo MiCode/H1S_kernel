@@ -1,22 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Dummy soundcard for virtual rawmidi devices
  *
  *  Copyright (c) 2000 by Takashi Iwai <tiwai@suse.de>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 /*
@@ -57,7 +43,6 @@
 MODULE_AUTHOR("Takashi Iwai <tiwai@suse.de>");
 MODULE_DESCRIPTION("Dummy soundcard for virtual rawmidi devices");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("{{ALSA,Virtual rawmidi device}}");
 
 #define MAX_MIDI_DEVICES	4
 
@@ -90,8 +75,8 @@ static int snd_virmidi_probe(struct platform_device *devptr)
 	int idx, err;
 	int dev = devptr->id;
 
-	err = snd_card_create(index[dev], id[dev], THIS_MODULE,
-			      sizeof(struct snd_card_virmidi), &card);
+	err = snd_devm_card_new(&devptr->dev, index[dev], id[dev], THIS_MODULE,
+				sizeof(struct snd_card_virmidi), &card);
 	if (err < 0)
 		return err;
 	vmidi = card->private_data;
@@ -99,39 +84,29 @@ static int snd_virmidi_probe(struct platform_device *devptr)
 
 	if (midi_devs[dev] > MAX_MIDI_DEVICES) {
 		snd_printk(KERN_WARNING
-			   "too much midi devices for virmidi %d: "
-			   "force to use %d\n", dev, MAX_MIDI_DEVICES);
+			   "too much midi devices for virmidi %d: force to use %d\n",
+			   dev, MAX_MIDI_DEVICES);
 		midi_devs[dev] = MAX_MIDI_DEVICES;
 	}
 	for (idx = 0; idx < midi_devs[dev]; idx++) {
 		struct snd_rawmidi *rmidi;
-		struct snd_virmidi_dev *rdev;
-		if ((err = snd_virmidi_new(card, idx, &rmidi)) < 0)
-			goto __nodev;
-		rdev = rmidi->private_data;
+
+		err = snd_virmidi_new(card, idx, &rmidi);
+		if (err < 0)
+			return err;
 		vmidi->midi[idx] = rmidi;
 		strcpy(rmidi->name, "Virtual Raw MIDI");
-		rdev->seq_mode = SNDRV_VIRMIDI_SEQ_DISPATCH;
 	}
-	
+
 	strcpy(card->driver, "VirMIDI");
 	strcpy(card->shortname, "VirMIDI");
 	sprintf(card->longname, "Virtual MIDI Card %i", dev + 1);
 
-	snd_card_set_dev(card, &devptr->dev);
+	err = snd_card_register(card);
+	if (err)
+		return err;
 
-	if ((err = snd_card_register(card)) == 0) {
-		platform_set_drvdata(devptr, card);
-		return 0;
-	}
-      __nodev:
-	snd_card_free(card);
-	return err;
-}
-
-static int snd_virmidi_remove(struct platform_device *devptr)
-{
-	snd_card_free(platform_get_drvdata(devptr));
+	platform_set_drvdata(devptr, card);
 	return 0;
 }
 
@@ -139,10 +114,8 @@ static int snd_virmidi_remove(struct platform_device *devptr)
 
 static struct platform_driver snd_virmidi_driver = {
 	.probe		= snd_virmidi_probe,
-	.remove		= snd_virmidi_remove,
 	.driver		= {
 		.name	= SND_VIRMIDI_DRIVER,
-		.owner	= THIS_MODULE,
 	},
 };
 
@@ -159,13 +132,15 @@ static int __init alsa_card_virmidi_init(void)
 {
 	int i, cards, err;
 
-	if ((err = platform_driver_register(&snd_virmidi_driver)) < 0)
+	err = platform_driver_register(&snd_virmidi_driver);
+	if (err < 0)
 		return err;
 
 	cards = 0;
 	for (i = 0; i < SNDRV_CARDS; i++) {
 		struct platform_device *device;
-		if (! enable[i])
+
+		if (!enable[i])
 			continue;
 		device = platform_device_register_simple(SND_VIRMIDI_DRIVER,
 							 i, NULL, 0);

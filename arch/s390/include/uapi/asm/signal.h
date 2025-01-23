@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  *  S390 version
  *
@@ -64,30 +65,6 @@ typedef unsigned long sigset_t;
 #define SIGRTMIN        32
 #define SIGRTMAX        _NSIG
 
-/*
- * SA_FLAGS values:
- *
- * SA_ONSTACK indicates that a registered stack_t will be used.
- * SA_RESTART flag to get restarting signals (which were the default long ago)
- * SA_NOCLDSTOP flag to turn off SIGCHLD when children stop.
- * SA_RESETHAND clears the handler when the signal is delivered.
- * SA_NOCLDWAIT flag on SIGCHLD to inhibit zombies.
- * SA_NODEFER prevents the current signal from being masked in the handler.
- *
- * SA_ONESHOT and SA_NOMASK are the historical Linux names for the Single
- * Unix names RESETHAND and NODEFER respectively.
- */
-#define SA_NOCLDSTOP    0x00000001
-#define SA_NOCLDWAIT    0x00000002
-#define SA_SIGINFO      0x00000004
-#define SA_ONSTACK      0x08000000
-#define SA_RESTART      0x10000000
-#define SA_NODEFER      0x40000000
-#define SA_RESETHAND    0x80000000
-
-#define SA_NOMASK       SA_NODEFER
-#define SA_ONESHOT      SA_RESETHAND
-
 #define SA_RESTORER     0x04000000
 
 #define MINSIGSTKSZ     2048
@@ -96,22 +73,31 @@ typedef unsigned long sigset_t;
 #include <asm-generic/signal-defs.h>
 
 #ifndef __KERNEL__
-/* Here we must cater to libcs that poke about in kernel headers.  */
 
+/*
+ * There are two system calls in regard to sigaction, sys_rt_sigaction
+ * and sys_sigaction. Internally the kernel uses the struct old_sigaction
+ * for the older sys_sigaction system call, and the kernel version of the
+ * struct sigaction for the newer sys_rt_sigaction.
+ *
+ * The uapi definition for struct sigaction has made a strange distinction
+ * between 31-bit and 64-bit in the past. For 64-bit the uapi structure
+ * looks like the kernel struct sigaction, but for 31-bit it used to
+ * look like the kernel struct old_sigaction. That practically made the
+ * structure unusable for either system call. To get around this problem
+ * the glibc always had its own definitions for the sigaction structures.
+ *
+ * The current struct sigaction uapi definition below is suitable for the
+ * sys_rt_sigaction system call only.
+ */
 struct sigaction {
         union {
           __sighandler_t _sa_handler;
           void (*_sa_sigaction)(int, struct siginfo *, void *);
         } _u;
-#ifndef __s390x__ /* lovely */
-        sigset_t sa_mask;
-        unsigned long sa_flags;
-        void (*sa_restorer)(void);
-#else  /* __s390x__ */
         unsigned long sa_flags;
         void (*sa_restorer)(void);
 	sigset_t sa_mask;
-#endif /* __s390x__ */
 };
 
 #define sa_handler      _u._sa_handler
@@ -122,7 +108,7 @@ struct sigaction {
 typedef struct sigaltstack {
         void __user *ss_sp;
         int ss_flags;
-        size_t ss_size;
+	__kernel_size_t ss_size;
 } stack_t;
 
 

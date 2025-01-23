@@ -1,25 +1,13 @@
-/* Lexical analysis for genksyms.
-   Copyright 1996, 1997 Linux International.
-
-   New implementation contributed by Richard Henderson <rth@tamu.edu>
-   Based on original work by Bjorn Ekwall <bj0rn@blox.se>
-
-   Taken from Linux modutils 2.4.22.
-
-   This program is free software; you can redistribute it and/or modify it
-   under the terms of the GNU General Public License as published by the
-   Free Software Foundation; either version 2 of the License, or (at your
-   option) any later version.
-
-   This program is distributed in the hope that it will be useful, but
-   WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-   General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software Foundation,
-   Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.  */
-
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/*
+ * Lexical analysis for genksyms.
+ * Copyright 1996, 1997 Linux International.
+ *
+ * New implementation contributed by Richard Henderson <rth@tamu.edu>
+ * Based on original work by Bjorn Ekwall <bj0rn@blox.se>
+ *
+ * Taken from Linux modutils 2.4.22.
+ */
 
 %{
 
@@ -94,7 +82,7 @@ MC_TOKEN		([~%^&*+=|<>/-]=)|(&&)|("||")|(->)|(<<)|(>>)
 
 /* Bring in the keyword recognizer.  */
 
-#include "keywords.hash.c"
+#include "keywords.c"
 
 
 /* Macros to append to our phrase collection list.  */
@@ -129,13 +117,13 @@ int
 yylex(void)
 {
   static enum {
-    ST_NOTSTARTED, ST_NORMAL, ST_ATTRIBUTE, ST_ASM, ST_BRACKET, ST_BRACE,
-    ST_EXPRESSION, ST_TABLE_1, ST_TABLE_2, ST_TABLE_3, ST_TABLE_4,
-    ST_TABLE_5, ST_TABLE_6
+    ST_NOTSTARTED, ST_NORMAL, ST_ATTRIBUTE, ST_ASM, ST_TYPEOF, ST_TYPEOF_1,
+    ST_BRACKET, ST_BRACE, ST_EXPRESSION, ST_STATIC_ASSERT,
   } lexstate = ST_NOTSTARTED;
 
   static int suppress_type_lookup, dont_want_brace_phrase;
   static struct string_list *next_node;
+  static char *source_file;
 
   int token, count = 0;
   struct string_list *cur_node;
@@ -185,10 +173,10 @@ repeat:
 	case IDENT:
 	  APP;
 	  {
-	    const struct resword *r = is_reserved_word(yytext, yyleng);
-	    if (r)
+	    int r = is_reserved_word(yytext, yyleng);
+	    if (r >= 0)
 	      {
-		switch (token = r->token)
+		switch (token = r)
 		  {
 		  case ATTRIBUTE_KEYW:
 		    lexstate = ST_ATTRIBUTE;
@@ -196,6 +184,10 @@ repeat:
 		    goto repeat;
 		  case ASM_KEYW:
 		    lexstate = ST_ASM;
+		    count = 0;
+		    goto repeat;
+		  case TYPEOF_KEYW:
+		    lexstate = ST_TYPEOF;
 		    count = 0;
 		    goto repeat;
 
@@ -208,6 +200,11 @@ repeat:
 
 		  case EXPORT_SYMBOL_KEYW:
 		      goto fini;
+
+		  case STATIC_ASSERT_KEYW:
+		    lexstate = ST_STATIC_ASSERT;
+		    count = 0;
+		    goto repeat;
 		  }
 	      }
 	    if (!suppress_type_lookup)
@@ -237,7 +234,6 @@ repeat:
 	  lexstate = ST_EXPRESSION;
 	  break;
 
-	case DOTS:
 	default:
 	  APP;
 	  break;
@@ -280,6 +276,47 @@ repeat:
 	    }
 	  goto repeat;
 	default:
+	  goto repeat;
+	}
+      break;
+
+    case ST_TYPEOF_1:
+      if (token == IDENT)
+	{
+	  if (is_reserved_word(yytext, yyleng) >= 0
+	      || find_symbol(yytext, SYM_TYPEDEF, 1))
+	    {
+	      yyless(0);
+	      unput('(');
+	      lexstate = ST_NORMAL;
+	      token = TYPEOF_KEYW;
+	      break;
+	    }
+	  _APP("(", 1);
+	}
+	lexstate = ST_TYPEOF;
+	/* FALLTHRU */
+
+    case ST_TYPEOF:
+      switch (token)
+	{
+	case '(':
+	  if ( ++count == 1 )
+	    lexstate = ST_TYPEOF_1;
+	  else
+	    APP;
+	  goto repeat;
+	case ')':
+	  APP;
+	  if (--count == 0)
+	    {
+	      lexstate = ST_NORMAL;
+	      token = TYPEOF_PHRASE;
+	      break;
+	    }
+	  goto repeat;
+	default:
+	  APP;
 	  goto repeat;
 	}
       break;
@@ -367,55 +404,23 @@ repeat:
 	}
       break;
 
-    case ST_TABLE_1:
-      goto repeat;
-
-    case ST_TABLE_2:
-      if (token == IDENT && yyleng == 1 && yytext[0] == 'X')
-	{
-	  token = EXPORT_SYMBOL_KEYW;
-	  lexstate = ST_TABLE_5;
-	  APP;
-	  break;
-	}
-      lexstate = ST_TABLE_6;
-      /* FALLTHRU */
-
-    case ST_TABLE_6:
+    case ST_STATIC_ASSERT:
+      APP;
       switch (token)
 	{
-	case '{': case '[': case '(':
+	case '(':
 	  ++count;
-	  break;
-	case '}': case ']': case ')':
-	  --count;
-	  break;
-	case ',':
-	  if (count == 0)
-	    lexstate = ST_TABLE_2;
-	  break;
-	};
-      goto repeat;
-
-    case ST_TABLE_3:
-      goto repeat;
-
-    case ST_TABLE_4:
-      if (token == ';')
-	lexstate = ST_NORMAL;
-      goto repeat;
-
-    case ST_TABLE_5:
-      switch (token)
-	{
-	case ',':
-	  token = ';';
-	  lexstate = ST_TABLE_2;
-	  APP;
-	  break;
+	  goto repeat;
+	case ')':
+	  if (--count == 0)
+	    {
+	      lexstate = ST_NORMAL;
+	      token = STATIC_ASSERT_PHRASE;
+	      break;
+	    }
+	  goto repeat;
 	default:
-	  APP;
-	  break;
+	  goto repeat;
 	}
       break;
 

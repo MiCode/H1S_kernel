@@ -1,25 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* -*- linux-c -*- *
  *
  * ALSA driver for the digigram lx6464es interface
  *
  * Copyright (c) 2009 Tim Blechmann <tim@klingt.org>
- *
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; see the file COPYING.  If not, write to
- * the Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 02111-1307, USA.
- *
  */
 
 #ifndef LX6464ES_H
@@ -71,13 +55,9 @@ struct lx6464es {
 
 	u8			mac_address[6];
 
-	spinlock_t		lock;        /* interrupt spinlock */
+	struct mutex		lock;        /* interrupt lock */
 	struct mutex            setup_mutex; /* mutex used in hw_params, open
 					      * and close */
-
-	struct tasklet_struct   trigger_tasklet; /* trigger tasklet */
-	struct tasklet_struct   tasklet_capture;
-	struct tasklet_struct   tasklet_playback;
 
 	/* ports */
 	unsigned long		port_plx;	   /* io port (size=256) */
@@ -87,8 +67,9 @@ struct lx6464es {
 						    * size=8K) */
 
 	/* messaging */
-	spinlock_t		msg_lock;          /* message spinlock */
+	struct mutex		msg_lock;          /* message lock */
 	struct lx_rmh           rmh;
+	u32			irqsrc;
 
 	/* configuration */
 	uint			freq_ratio : 2;

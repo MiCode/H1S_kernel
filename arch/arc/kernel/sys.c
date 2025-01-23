@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 
 #include <linux/syscalls.h>
 #include <linux/signal.h>
@@ -6,6 +7,7 @@
 #include <asm/syscalls.h>
 
 #define sys_clone	sys_clone_wrapper
+#define sys_clone3	sys_clone3_wrapper
 
 #undef __SYSCALL
 #define __SYSCALL(nr, call) [nr] = (call),

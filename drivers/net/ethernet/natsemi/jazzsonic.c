@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * jazzsonic.c
  *
@@ -35,9 +36,9 @@
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
+#include <linux/pgtable.h>
 
 #include <asm/bootinfo.h>
-#include <asm/pgtable.h>
 #include <asm/io.h>
 #include <asm/dma.h>
 #include <asm/jazz.h>
@@ -58,14 +59,6 @@ static char jazz_sonic_string[] = "jazzsonic";
 do {									\
 	*((volatile unsigned int *)dev->base_addr+(reg)) = (val);		\
 } while (0)
-
-
-/* use 0 for production, 1 for verification, >1 for debug */
-#ifdef SONIC_DEBUG
-static unsigned int sonic_debug = SONIC_DEBUG;
-#else
-static unsigned int sonic_debug = 1;
-#endif
 
 /*
  * We cannot use station (ethernet) address prefixes to detect the
@@ -110,19 +103,18 @@ static const struct net_device_ops sonic_netdev_ops = {
 	.ndo_get_stats		= sonic_get_stats,
 	.ndo_set_rx_mode	= sonic_multicast_list,
 	.ndo_tx_timeout		= sonic_tx_timeout,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= eth_mac_addr,
 };
 
 static int sonic_probe1(struct net_device *dev)
 {
-	static unsigned version_printed;
 	unsigned int silicon_revision;
 	unsigned int val;
 	struct sonic_local *lp = netdev_priv(dev);
 	int err = -ENODEV;
 	int i;
+	unsigned char addr[ETH_ALEN];
 
 	if (!request_mem_region(dev->base_addr, SONIC_MEM_SIZE, jazz_sonic_string))
 		return -EBUSY;
@@ -133,25 +125,16 @@ static int sonic_probe1(struct net_device *dev)
 	 * the expected location.
 	 */
 	silicon_revision = SONIC_READ(SONIC_SR);
-	if (sonic_debug > 1)
-		printk("SONIC Silicon Revision = 0x%04x\n",silicon_revision);
-
 	i = 0;
 	while (known_revisions[i] != 0xffff &&
 	       known_revisions[i] != silicon_revision)
 		i++;
 
 	if (known_revisions[i] == 0xffff) {
-		printk("SONIC ethernet controller not found (0x%4x)\n",
-		       silicon_revision);
+		pr_info("SONIC ethernet controller not found (0x%4x)\n",
+			silicon_revision);
 		goto out;
 	}
-
-	if (sonic_debug  &&  version_printed++ == 0)
-		printk(version);
-
-	printk(KERN_INFO "%s: Sonic ethernet found at 0x%08lx, ",
-	       dev_name(lp->device), dev->base_addr);
 
 	/*
 	 * Put the sonic into software reset, then
@@ -161,42 +144,16 @@ static int sonic_probe1(struct net_device *dev)
 	SONIC_WRITE(SONIC_CEP,0);
 	for (i=0; i<3; i++) {
 		val = SONIC_READ(SONIC_CAP0-i);
-		dev->dev_addr[i*2] = val;
-		dev->dev_addr[i*2+1] = val >> 8;
+		addr[i*2] = val;
+		addr[i*2+1] = val >> 8;
 	}
-
-	err = -ENOMEM;
-
-	/* Initialize the device structure. */
+	eth_hw_addr_set(dev, addr);
 
 	lp->dma_bitmode = SONIC_BITMODE32;
 
-	/* Allocate the entire chunk of memory for the descriptors.
-           Note that this cannot cross a 64K boundary. */
-	lp->descriptors = dma_alloc_coherent(lp->device,
-					     SIZEOF_SONIC_DESC *
-					     SONIC_BUS_SCALE(lp->dma_bitmode),
-					     &lp->descriptors_laddr,
-					     GFP_KERNEL);
-	if (lp->descriptors == NULL)
+	err = sonic_alloc_descriptors(dev);
+	if (err)
 		goto out;
-
-	/* Now set up the pointers to point to the appropriate places */
-	lp->cda = lp->descriptors;
-	lp->tda = lp->cda + (SIZEOF_SONIC_CDA
-	                     * SONIC_BUS_SCALE(lp->dma_bitmode));
-	lp->rda = lp->tda + (SIZEOF_SONIC_TD * SONIC_NUM_TDS
-	                     * SONIC_BUS_SCALE(lp->dma_bitmode));
-	lp->rra = lp->rda + (SIZEOF_SONIC_RD * SONIC_NUM_RDS
-	                     * SONIC_BUS_SCALE(lp->dma_bitmode));
-
-	lp->cda_laddr = lp->descriptors_laddr;
-	lp->tda_laddr = lp->cda_laddr + (SIZEOF_SONIC_CDA
-	                     * SONIC_BUS_SCALE(lp->dma_bitmode));
-	lp->rda_laddr = lp->tda_laddr + (SIZEOF_SONIC_TD * SONIC_NUM_TDS
-	                     * SONIC_BUS_SCALE(lp->dma_bitmode));
-	lp->rra_laddr = lp->rda_laddr + (SIZEOF_SONIC_RD * SONIC_NUM_RDS
-	                     * SONIC_BUS_SCALE(lp->dma_bitmode));
 
 	dev->netdev_ops = &sonic_netdev_ops;
 	dev->watchdog_timeo = TX_TIMEOUT;
@@ -238,22 +195,26 @@ static int jazz_sonic_probe(struct platform_device *pdev)
 	SET_NETDEV_DEV(dev, &pdev->dev);
 	platform_set_drvdata(pdev, dev);
 
-	netdev_boot_setup_check(dev);
-
 	dev->base_addr = res->start;
 	dev->irq = platform_get_irq(pdev, 0);
 	err = sonic_probe1(dev);
 	if (err)
 		goto out;
+
+	pr_info("SONIC ethernet @%08lx, MAC %pM, IRQ %d\n",
+		dev->base_addr, dev->dev_addr, dev->irq);
+
+	sonic_msg_init(dev);
+
 	err = register_netdev(dev);
 	if (err)
-		goto out1;
-
-	printk("%s: MAC %pM IRQ %d\n", dev->name, dev->dev_addr, dev->irq);
+		goto undo_probe1;
 
 	return 0;
 
-out1:
+undo_probe1:
+	dma_free_coherent(lp->device, SIZEOF_SONIC_DESC * SONIC_BUS_SCALE(lp->dma_bitmode),
+			  lp->descriptors, lp->descriptors_laddr);
 	release_mem_region(dev->base_addr, SONIC_MEM_SIZE);
 out:
 	free_netdev(dev);
@@ -262,8 +223,6 @@ out:
 }
 
 MODULE_DESCRIPTION("Jazz SONIC ethernet driver");
-module_param(sonic_debug, int, 0);
-MODULE_PARM_DESC(sonic_debug, "jazzsonic debug level (1-4)");
 MODULE_ALIAS("platform:jazzsonic");
 
 #include "sonic.c"
@@ -287,7 +246,6 @@ static struct platform_driver jazz_sonic_driver = {
 	.remove	= jazz_sonic_device_remove,
 	.driver	= {
 		.name	= jazz_sonic_string,
-		.owner	= THIS_MODULE,
 	},
 };
 

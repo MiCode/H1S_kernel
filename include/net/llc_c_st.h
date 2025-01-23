@@ -11,6 +11,10 @@
  *
  * See the GNU General Public License for more details.
  */
+
+#include <net/llc_c_ac.h>
+#include <net/llc_c_ev.h>
+
 /* Connection component state management */
 /* connection states */
 #define LLC_CONN_OUT_OF_SVC		 0	/* prior to allocation */
@@ -35,8 +39,8 @@
 struct llc_conn_state_trans {
 	llc_conn_ev_t	   ev;
 	u8		   next_state;
-	llc_conn_ev_qfyr_t *ev_qualifiers;
-	llc_conn_action_t  *ev_actions;
+	const llc_conn_ev_qfyr_t *ev_qualifiers;
+	const llc_conn_action_t  *ev_actions;
 };
 
 struct llc_conn_state {

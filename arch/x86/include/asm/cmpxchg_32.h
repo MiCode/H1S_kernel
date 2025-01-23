@@ -1,48 +1,22 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_CMPXCHG_32_H
 #define _ASM_X86_CMPXCHG_32_H
 
 /*
- * Note: if you use set64_bit(), __cmpxchg64(), or their variants, you
+ * Note: if you use set64_bit(), __cmpxchg64(), or their variants,
  *       you need to test for the feature in boot_cpu_data.
  */
 
-/*
- * CMPXCHG8B only writes to the target if we had the previous
- * value in registers, otherwise it acts as a read and gives us the
- * "new previous" value.  That is why there is a loop.  Preloading
- * EDX:EAX is a performance optimization: in the common case it means
- * we need only one locked operation.
- *
- * A SIMD/3DNOW!/MMX/FPU 64-bit store here would require at the very
- * least an FPU save and/or %cr0.ts manipulation.
- *
- * cmpxchg8b must be used with the lock prefix here to allow the
- * instruction to be executed atomically.  We need to have the reader
- * side to see the coherent 64bit value.
- */
-static inline void set_64bit(volatile u64 *ptr, u64 value)
-{
-	u32 low  = value;
-	u32 high = value >> 32;
-	u64 prev = *ptr;
-
-	asm volatile("\n1:\t"
-		     LOCK_PREFIX "cmpxchg8b %0\n\t"
-		     "jnz 1b"
-		     : "=m" (*ptr), "+A" (prev)
-		     : "b" (low), "c" (high)
-		     : "memory");
-}
-
-#define __HAVE_ARCH_CMPXCHG 1
-
 #ifdef CONFIG_X86_CMPXCHG64
-#define cmpxchg64(ptr, o, n)						\
+#define arch_cmpxchg64(ptr, o, n)					\
 	((__typeof__(*(ptr)))__cmpxchg64((ptr), (unsigned long long)(o), \
 					 (unsigned long long)(n)))
-#define cmpxchg64_local(ptr, o, n)					\
+#define arch_cmpxchg64_local(ptr, o, n)					\
 	((__typeof__(*(ptr)))__cmpxchg64_local((ptr), (unsigned long long)(o), \
 					       (unsigned long long)(n)))
+#define arch_try_cmpxchg64(ptr, po, n)					\
+	__try_cmpxchg64((ptr), (unsigned long long *)(po), \
+			(unsigned long long)(n))
 #endif
 
 static inline u64 __cmpxchg64(volatile u64 *ptr, u64 old, u64 new)
@@ -71,13 +45,31 @@ static inline u64 __cmpxchg64_local(volatile u64 *ptr, u64 old, u64 new)
 	return prev;
 }
 
+static inline bool __try_cmpxchg64(volatile u64 *ptr, u64 *pold, u64 new)
+{
+	bool success;
+	u64 old = *pold;
+	asm volatile(LOCK_PREFIX "cmpxchg8b %[ptr]"
+		     CC_SET(z)
+		     : CC_OUT(z) (success),
+		       [ptr] "+m" (*ptr),
+		       "+A" (old)
+		     : "b" ((u32)new),
+		       "c" ((u32)(new >> 32))
+		     : "memory");
+
+	if (unlikely(!success))
+		*pold = old;
+	return success;
+}
+
 #ifndef CONFIG_X86_CMPXCHG64
 /*
  * Building a kernel capable running on 80386 and 80486. It may be necessary
  * to simulate the cmpxchg8b on the 80386 and 80486 CPU.
  */
 
-#define cmpxchg64(ptr, o, n)					\
+#define arch_cmpxchg64(ptr, o, n)				\
 ({								\
 	__typeof__(*(ptr)) __ret;				\
 	__typeof__(*(ptr)) __old = (o);				\
@@ -94,7 +86,7 @@ static inline u64 __cmpxchg64_local(volatile u64 *ptr, u64 old, u64 new)
 	__ret; })
 
 
-#define cmpxchg64_local(ptr, o, n)				\
+#define arch_cmpxchg64_local(ptr, o, n)				\
 ({								\
 	__typeof__(*(ptr)) __ret;				\
 	__typeof__(*(ptr)) __old = (o);				\
@@ -111,6 +103,6 @@ static inline u64 __cmpxchg64_local(volatile u64 *ptr, u64 old, u64 new)
 
 #endif
 
-#define system_has_cmpxchg_double() cpu_has_cx8
+#define system_has_cmpxchg64()		boot_cpu_has(X86_FEATURE_CX8)
 
 #endif /* _ASM_X86_CMPXCHG_32_H */

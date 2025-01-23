@@ -1,21 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  *  dialog.h -- common declarations for all dialog modules
  *
  *  AUTHOR: Savio Lam (lam836@cs.cuhk.hk)
- *
- *  This program is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public License
- *  as published by the Free Software Foundation; either version 2
- *  of the License, or (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <sys/types.h>
@@ -26,32 +13,10 @@
 #include <string.h>
 #include <stdbool.h>
 
-#ifndef KBUILD_NO_NLS
-# include <libintl.h>
-#else
-# define gettext(Msgid) ((const char *) (Msgid))
-#endif
-
 #ifdef __sun__
 #define CURS_MACROS
 #endif
-#include CURSES_LOC
-
-/*
- * Colors in ncurses 1.9.9e do not work properly since foreground and
- * background colors are OR'd rather than separately masked.  This version
- * of dialog was hacked to work with ncurses 1.9.9e, making it incompatible
- * with standard curses.  The simplest fix (to make this work with standard
- * curses) uses the wbkgdset() function, not used in the original hack.
- * Turn it off if we're building with 1.9.9e, since it just confuses things.
- */
-#if defined(NCURSES_VERSION) && defined(_NEED_WRAP) && !defined(GCC_PRINTFLIKE)
-#define OLD_NCURSES 1
-#undef  wbkgdset
-#define wbkgdset(w,p)		/*nothing */
-#else
-#define OLD_NCURSES 0
-#endif
+#include <ncurses.h>
 
 #define TR(params) _tracef params
 
@@ -170,7 +135,7 @@ char item_tag(void);
 /* item list manipulation for lxdialog use */
 #define MAXITEMSTR 200
 struct dialog_item {
-	char str[MAXITEMSTR];	/* promtp displayed */
+	char str[MAXITEMSTR];	/* prompt displayed */
 	char tag;
 	void *data;	/* pointer to menu item - used by menubox+checklist */
 	int selected;	/* Set to 1 by dialog_*() function if selected. */
@@ -231,27 +196,12 @@ int first_alpha(const char *string, const char *exempt);
 int dialog_yesno(const char *title, const char *prompt, int height, int width);
 int dialog_msgbox(const char *title, const char *prompt, int height,
 		  int width, int pause);
-
-
-typedef void (*update_text_fn)(char *buf, size_t start, size_t end, void
-			       *_data);
-int dialog_textbox(const char *title, char *tbuf, int initial_height,
-		   int initial_width, int *keys, int *_vscroll, int *_hscroll,
-		   update_text_fn update_text, void *data);
+int dialog_textbox(const char *title, const char *tbuf, int initial_height,
+		   int initial_width, int *_vscroll, int *_hscroll,
+		   int (*extra_key_cb)(int, size_t, size_t, void *), void *data);
 int dialog_menu(const char *title, const char *prompt,
 		const void *selected, int *s_scroll);
 int dialog_checklist(const char *title, const char *prompt, int height,
 		     int width, int list_height);
 int dialog_inputbox(const char *title, const char *prompt, int height,
 		    int width, const char *init);
-
-/*
- * This is the base for fictitious keys, which activate
- * the buttons.
- *
- * Mouse-generated keys are the following:
- *   -- the first 32 are used as numbers, in addition to '0'-'9'
- *   -- the lowercase are used to signal mouse-enter events (M_EVENT + 'o')
- *   -- uppercase chars are used to invoke the button (M_EVENT + 'O')
- */
-#define M_EVENT (KEY_MAX+1)

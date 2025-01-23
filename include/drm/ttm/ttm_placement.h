@@ -30,63 +30,72 @@
 
 #ifndef _TTM_PLACEMENT_H_
 #define _TTM_PLACEMENT_H_
+
+#include <linux/types.h>
+
 /*
  * Memory regions for data placement.
+ *
+ * Buffers placed in TTM_PL_SYSTEM are considered under TTMs control and can
+ * be swapped out whenever TTMs thinks it is a good idea.
+ * In cases where drivers would like to use TTM_PL_SYSTEM as a valid
+ * placement they need to be able to handle the issues that arise due to the
+ * above manually.
+ *
+ * For BO's which reside in system memory but for which the accelerator
+ * requires direct access (i.e. their usage needs to be synchronized
+ * between the CPU and accelerator via fences) a new, driver private
+ * placement that can handle such scenarios is a good idea.
  */
 
 #define TTM_PL_SYSTEM           0
 #define TTM_PL_TT               1
 #define TTM_PL_VRAM             2
-#define TTM_PL_PRIV0            3
-#define TTM_PL_PRIV1            4
-#define TTM_PL_PRIV2            5
-#define TTM_PL_PRIV3            6
-#define TTM_PL_PRIV4            7
-#define TTM_PL_PRIV5            8
-#define TTM_PL_SWAPPED          15
-
-#define TTM_PL_FLAG_SYSTEM      (1 << TTM_PL_SYSTEM)
-#define TTM_PL_FLAG_TT          (1 << TTM_PL_TT)
-#define TTM_PL_FLAG_VRAM        (1 << TTM_PL_VRAM)
-#define TTM_PL_FLAG_PRIV0       (1 << TTM_PL_PRIV0)
-#define TTM_PL_FLAG_PRIV1       (1 << TTM_PL_PRIV1)
-#define TTM_PL_FLAG_PRIV2       (1 << TTM_PL_PRIV2)
-#define TTM_PL_FLAG_PRIV3       (1 << TTM_PL_PRIV3)
-#define TTM_PL_FLAG_PRIV4       (1 << TTM_PL_PRIV4)
-#define TTM_PL_FLAG_PRIV5       (1 << TTM_PL_PRIV5)
-#define TTM_PL_FLAG_SWAPPED     (1 << TTM_PL_SWAPPED)
-#define TTM_PL_MASK_MEM         0x0000FFFF
+#define TTM_PL_PRIV             3
 
 /*
- * Other flags that affects data placement.
- * TTM_PL_FLAG_CACHED indicates cache-coherent mappings
- * if available.
- * TTM_PL_FLAG_SHARED means that another application may
- * reference the buffer.
- * TTM_PL_FLAG_NO_EVICT means that the buffer may never
- * be evicted to make room for other buffers.
+ * TTM_PL_FLAG_TOPDOWN requests to be placed from the
+ * top of the memory area, instead of the bottom.
  */
 
-#define TTM_PL_FLAG_CACHED      (1 << 16)
-#define TTM_PL_FLAG_UNCACHED    (1 << 17)
-#define TTM_PL_FLAG_WC          (1 << 18)
-#define TTM_PL_FLAG_SHARED      (1 << 20)
-#define TTM_PL_FLAG_NO_EVICT    (1 << 21)
+#define TTM_PL_FLAG_CONTIGUOUS  (1 << 0)
+#define TTM_PL_FLAG_TOPDOWN     (1 << 1)
 
-#define TTM_PL_MASK_CACHING     (TTM_PL_FLAG_CACHED | \
-				 TTM_PL_FLAG_UNCACHED | \
-				 TTM_PL_FLAG_WC)
+/* For multihop handling */
+#define TTM_PL_FLAG_TEMPORARY   (1 << 2)
 
-#define TTM_PL_MASK_MEMTYPE     (TTM_PL_MASK_MEM | TTM_PL_MASK_CACHING)
-
-/*
- * Access flags to be used for CPU- and GPU- mappings.
- * The idea is that the TTM synchronization mechanism will
- * allow concurrent READ access and exclusive write access.
- * Currently GPU- and CPU accesses are exclusive.
+/**
+ * struct ttm_place
+ *
+ * @fpfn:	first valid page frame number to put the object
+ * @lpfn:	last valid page frame number to put the object
+ * @mem_type:	One of TTM_PL_* where the resource should be allocated from.
+ * @flags:	memory domain and caching flags for the object
+ *
+ * Structure indicating a possible place to put an object.
  */
+struct ttm_place {
+	unsigned	fpfn;
+	unsigned	lpfn;
+	uint32_t	mem_type;
+	uint32_t	flags;
+};
 
-#define TTM_ACCESS_READ         (1 << 0)
-#define TTM_ACCESS_WRITE        (1 << 1)
+/**
+ * struct ttm_placement
+ *
+ * @num_placement:	number of preferred placements
+ * @placement:		preferred placements
+ * @num_busy_placement:	number of preferred placements when need to evict buffer
+ * @busy_placement:	preferred placements when need to evict buffer
+ *
+ * Structure indicating the placement you request for an object.
+ */
+struct ttm_placement {
+	unsigned		num_placement;
+	const struct ttm_place	*placement;
+	unsigned		num_busy_placement;
+	const struct ttm_place	*busy_placement;
+};
 
 #endif

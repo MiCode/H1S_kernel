@@ -1,16 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, version 2, as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  *
  * Copyright SUSE Linux Products GmbH 2010
  *
@@ -18,6 +7,9 @@
  */
 
 /* Real mode helpers */
+
+#include <asm/asm-compat.h>
+#include <asm/feature-fixups.h>
 
 #if defined(CONFIG_PPC_BOOK3S_64)
 
@@ -90,6 +82,15 @@ kvmppc_handler_trampoline_enter:
 	LOAD_GUEST_SEGMENTS
 
 #ifdef CONFIG_PPC_BOOK3S_64
+BEGIN_FTR_SECTION
+	/* Save host FSCR */
+	mfspr	r8, SPRN_FSCR
+	std	r8, HSTATE_HOST_FSCR(r13)
+	/* Set FSCR during guest execution */
+	ld	r9, SVCPU_SHADOW_FSCR(r13)
+	mtspr	SPRN_FSCR, r9
+END_FTR_SECTION_IFSET(CPU_FTR_ARCH_207S)
+
 	/* Some guests may need to have dcbz set to 32 byte length.
 	 *
 	 * Usually we ensure that by patching the guest's instructions
@@ -114,7 +115,7 @@ no_dcbz32_on:
 	PPC_LL	r8, SVCPU_CTR(r3)
 	PPC_LL	r9, SVCPU_LR(r3)
 	lwz	r10, SVCPU_CR(r3)
-	lwz	r11, SVCPU_XER(r3)
+	PPC_LL	r11, SVCPU_XER(r3)
 
 	mtctr	r8
 	mtlr	r9
@@ -147,7 +148,7 @@ no_dcbz32_on:
 	PPC_LL	r9, SVCPU_R9(r3)
 	PPC_LL	r3, (SVCPU_R3)(r3)
 
-	RFI
+	RFI_TO_GUEST
 kvmppc_handler_trampoline_enter_end:
 
 
@@ -158,20 +159,34 @@ kvmppc_handler_trampoline_enter_end:
  *                                                                            *
  *****************************************************************************/
 
-.global kvmppc_handler_trampoline_exit
-kvmppc_handler_trampoline_exit:
-
 .global kvmppc_interrupt_pr
 kvmppc_interrupt_pr:
+	/* 64-bit entry. Register usage at this point:
+	 *
+	 * SPRG_SCRATCH0   = guest R13
+	 * R9              = HSTATE_IN_GUEST
+	 * R12             = (guest CR << 32) | exit handler id
+	 * R13             = PACA
+	 * HSTATE.SCRATCH0 = guest R12
+	 * HSTATE.SCRATCH2 = guest R9
+	 */
+#ifdef CONFIG_PPC64
+	/* Match 32-bit entry */
+	ld	r9,HSTATE_SCRATCH2(r13)
+	rotldi	r12, r12, 32		  /* Flip R12 halves for stw */
+	stw	r12, HSTATE_SCRATCH1(r13) /* CR is now in the low half */
+	srdi	r12, r12, 32		  /* shift trap into low half */
+#endif
 
+.global kvmppc_handler_trampoline_exit
+kvmppc_handler_trampoline_exit:
 	/* Register usage at this point:
 	 *
-	 * SPRG_SCRATCH0  = guest R13
-	 * R12            = exit handler id
-	 * R13            = shadow vcpu (32-bit) or PACA (64-bit)
+	 * SPRG_SCRATCH0   = guest R13
+	 * R12             = exit handler id
+	 * R13             = shadow vcpu (32-bit) or PACA (64-bit)
 	 * HSTATE.SCRATCH0 = guest R12
 	 * HSTATE.SCRATCH1 = guest CR
-	 *
 	 */
 
 	/* Save registers */
@@ -228,7 +243,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_HVMODE)
 	mfctr	r8
 	mflr	r9
 
-	stw	r5, SVCPU_XER(r13)
+	PPC_STL	r5, SVCPU_XER(r13)
 	PPC_STL	r6, SVCPU_FAULT_DAR(r13)
 	stw	r7, SVCPU_FAULT_DSISR(r13)
 	PPC_STL	r8, SVCPU_CTR(r13)
@@ -255,6 +270,10 @@ BEGIN_FTR_SECTION
 	cmpwi	r12, BOOK3S_INTERRUPT_H_EMUL_ASSIST
 	beq-	ld_last_inst
 END_FTR_SECTION_IFSET(CPU_FTR_HVMODE)
+BEGIN_FTR_SECTION
+	cmpwi	r12, BOOK3S_INTERRUPT_FAC_UNAVAIL
+	beq-	ld_last_inst
+END_FTR_SECTION_IFSET(CPU_FTR_ARCH_207S)
 #endif
 
 	b	no_ld_last_inst
@@ -311,6 +330,18 @@ no_ld_last_inst:
 
 no_dcbz32_off:
 
+BEGIN_FTR_SECTION
+	/* Save guest FSCR on a FAC_UNAVAIL interrupt */
+	cmpwi	r12, BOOK3S_INTERRUPT_FAC_UNAVAIL
+	bne+	no_fscr_save
+	mfspr	r7, SPRN_FSCR
+	std	r7, SVCPU_SHADOW_FSCR(r13)
+no_fscr_save:
+	/* Restore host FSCR */
+	ld	r8, HSTATE_HOST_FSCR(r13)
+	mtspr	SPRN_FSCR, r8
+END_FTR_SECTION_IFSET(CPU_FTR_ARCH_207S)
+
 #endif /* CONFIG_PPC_BOOK3S_64 */
 
 	/*
@@ -340,6 +371,19 @@ no_dcbz32_off:
 	 */
 
 	PPC_LL	r6, HSTATE_HOST_MSR(r13)
+#ifdef CONFIG_PPC_TRANSACTIONAL_MEM
+	/*
+	 * We don't want to change MSR[TS] bits via rfi here.
+	 * The actual TM handling logic will be in host with
+	 * recovered DR/IR bits after HSTATE_VMHANDLER.
+	 * And MSR_TM can be enabled in HOST_MSR so rfid may
+	 * not suppress this change and can lead to exception.
+	 * Manually set MSR to prevent TS state change here.
+	 */
+	mfmsr   r7
+	rldicl  r7, r7, 64 - MSR_TS_S_LG, 62
+	rldimi  r6, r7, MSR_TS_S_LG, 63 - MSR_TS_T_LG
+#endif
 	PPC_LL	r8, HSTATE_VMHANDLER(r13)
 
 #ifdef CONFIG_PPC64
@@ -364,5 +408,5 @@ END_FTR_SECTION_IFSET(CPU_FTR_HVMODE)
 	cmpwi	r12, BOOK3S_INTERRUPT_DOORBELL
 	beqa	BOOK3S_INTERRUPT_DOORBELL
 
-	RFI
+	RFI_TO_KERNEL
 kvmppc_handler_trampoline_exit_end:

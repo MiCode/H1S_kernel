@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* 
  * Coda File System, Linux Kernel module
  * 
@@ -11,6 +12,12 @@
 
 #ifndef _LINUX_CODA_FS
 #define _LINUX_CODA_FS
+
+#ifdef pr_fmt
+#undef pr_fmt
+#endif
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/kernel.h>
 #include <linux/param.h>
@@ -39,42 +46,27 @@ extern const struct file_operations coda_ioctl_operations;
 /* operations shared over more than one file */
 int coda_open(struct inode *i, struct file *f);
 int coda_release(struct inode *i, struct file *f);
-int coda_permission(struct inode *inode, int mask);
+int coda_permission(struct mnt_idmap *idmap, struct inode *inode,
+		    int mask);
 int coda_revalidate_inode(struct inode *);
-int coda_getattr(struct vfsmount *, struct dentry *, struct kstat *);
-int coda_setattr(struct dentry *, struct iattr *);
+int coda_getattr(struct mnt_idmap *, const struct path *, struct kstat *,
+		 u32, unsigned int);
+int coda_setattr(struct mnt_idmap *, struct dentry *, struct iattr *);
 
-/* this file:  heloers */
+/* this file:  helpers */
 char *coda_f2s(struct CodaFid *f);
-int coda_isroot(struct inode *i);
 int coda_iscontrol(const char *name, size_t length);
 
+umode_t coda_inode_type(struct coda_vattr *attr);
 void coda_vattr_to_iattr(struct inode *, struct coda_vattr *);
 void coda_iattr_to_vattr(struct iattr *, struct coda_vattr *);
 unsigned short coda_flags_to_cflags(unsigned short);
-
-/* sysctl.h */
-void coda_sysctl_init(void);
-void coda_sysctl_clean(void);
-
-#define CODA_ALLOC(ptr, cast, size) do { \
-    if (size < PAGE_SIZE) \
-        ptr = kzalloc((unsigned long) size, GFP_KERNEL); \
-    else \
-        ptr = (cast)vzalloc((unsigned long) size); \
-    if (!ptr) \
-        printk("kernel malloc returns 0 at %s:%d\n", __FILE__, __LINE__); \
-} while (0)
-
-
-#define CODA_FREE(ptr,size) \
-    do { if (size < PAGE_SIZE) kfree((ptr)); else vfree((ptr)); } while (0)
 
 /* inode to cnode access functions */
 
 static inline struct coda_inode_info *ITOC(struct inode *inode)
 {
-	return list_entry(inode, struct coda_inode_info, vfs_inode);
+	return container_of(inode, struct coda_inode_info, vfs_inode);
 }
 
 static __inline__ struct CodaFid *coda_i2f(struct inode *inode)
@@ -91,6 +83,9 @@ static __inline__ char *coda_i2s(struct inode *inode)
 static __inline__ void coda_flag_inode(struct inode *inode, int flag)
 {
 	struct coda_inode_info *cii = ITOC(inode);
+
+	if (!inode)
+		return;
 
 	spin_lock(&cii->c_lock);
 	cii->c_flags |= flag;

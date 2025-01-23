@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * drivers/rtc/rtc-spear.c
  *
  * Copyright (C) 2010 ST Microelectronics
  * Rajeev Kumar<rajeev-dlh.kumar@st.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/bcd.h>
@@ -153,12 +150,12 @@ static void rtc_wait_not_busy(struct spear_rtc_config *config)
 static irqreturn_t spear_rtc_irq(int irq, void *dev_id)
 {
 	struct spear_rtc_config *config = dev_id;
-	unsigned long flags, events = 0;
+	unsigned long events = 0;
 	unsigned int irq_data;
 
-	spin_lock_irqsave(&config->lock, flags);
+	spin_lock(&config->lock);
 	irq_data = readl(config->ioaddr + STATUS_REG);
-	spin_unlock_irqrestore(&config->lock, flags);
+	spin_unlock(&config->lock);
 
 	if ((irq_data & RTC_INT_MASK)) {
 		spear_rtc_clear_interrupt(config);
@@ -170,18 +167,14 @@ static irqreturn_t spear_rtc_irq(int irq, void *dev_id)
 
 }
 
-static int tm2bcd(struct rtc_time *tm)
+static void tm2bcd(struct rtc_time *tm)
 {
-	if (rtc_valid_tm(tm) != 0)
-		return -EINVAL;
 	tm->tm_sec = bin2bcd(tm->tm_sec);
 	tm->tm_min = bin2bcd(tm->tm_min);
 	tm->tm_hour = bin2bcd(tm->tm_hour);
 	tm->tm_mday = bin2bcd(tm->tm_mday);
 	tm->tm_mon = bin2bcd(tm->tm_mon + 1);
 	tm->tm_year = bin2bcd(tm->tm_year);
-
-	return 0;
 }
 
 static void bcd2tm(struct rtc_time *tm)
@@ -211,8 +204,10 @@ static int spear_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	/* we don't report wday/yday/isdst ... */
 	rtc_wait_not_busy(config);
 
-	time = readl(config->ioaddr + TIME_REG);
-	date = readl(config->ioaddr + DATE_REG);
+	do {
+		time = readl(config->ioaddr + TIME_REG);
+		date = readl(config->ioaddr + DATE_REG);
+	} while (time == readl(config->ioaddr + TIME_REG));
 	tm->tm_sec = (time >> SECOND_SHIFT) & SECOND_MASK;
 	tm->tm_min = (time >> MINUTE_SHIFT) & MIN_MASK;
 	tm->tm_hour = (time >> HOUR_SHIFT) & HOUR_MASK;
@@ -237,8 +232,7 @@ static int spear_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	struct spear_rtc_config *config = dev_get_drvdata(dev);
 	unsigned int time, date;
 
-	if (tm2bcd(tm) < 0)
-		return -EINVAL;
+	tm2bcd(tm);
 
 	rtc_wait_not_busy(config);
 	time = (tm->tm_sec << SECOND_SHIFT) | (tm->tm_min << MINUTE_SHIFT) |
@@ -295,8 +289,7 @@ static int spear_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	unsigned int time, date;
 	int err;
 
-	if (tm2bcd(&alm->time) < 0)
-		return -EINVAL;
+	tm2bcd(&alm->time);
 
 	rtc_wait_not_busy(config);
 
@@ -343,7 +336,7 @@ static int spear_alarm_irq_enable(struct device *dev, unsigned int enabled)
 	return ret;
 }
 
-static struct rtc_class_ops spear_rtc_ops = {
+static const struct rtc_class_ops spear_rtc_ops = {
 	.read_time = spear_rtc_read_time,
 	.set_time = spear_rtc_set_time,
 	.read_alarm = spear_rtc_read_alarm,
@@ -353,29 +346,22 @@ static struct rtc_class_ops spear_rtc_ops = {
 
 static int spear_rtc_probe(struct platform_device *pdev)
 {
-	struct resource *res;
 	struct spear_rtc_config *config;
 	int status = 0;
 	int irq;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		dev_err(&pdev->dev, "no resource defined\n");
-		return -EBUSY;
-	}
-
 	config = devm_kzalloc(&pdev->dev, sizeof(*config), GFP_KERNEL);
-	if (!config) {
-		dev_err(&pdev->dev, "out of memory\n");
+	if (!config)
 		return -ENOMEM;
-	}
+
+	config->rtc = devm_rtc_allocate_device(&pdev->dev);
+	if (IS_ERR(config->rtc))
+		return PTR_ERR(config->rtc);
 
 	/* alarm irqs */
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		dev_err(&pdev->dev, "no update irq?\n");
+	if (irq < 0)
 		return irq;
-	}
 
 	status = devm_request_irq(&pdev->dev, irq, spear_rtc_irq, 0, pdev->name,
 			config);
@@ -385,7 +371,7 @@ static int spear_rtc_probe(struct platform_device *pdev)
 		return status;
 	}
 
-	config->ioaddr = devm_ioremap_resource(&pdev->dev, res);
+	config->ioaddr = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(config->ioaddr))
 		return PTR_ERR(config->ioaddr);
 
@@ -400,16 +386,13 @@ static int spear_rtc_probe(struct platform_device *pdev)
 	spin_lock_init(&config->lock);
 	platform_set_drvdata(pdev, config);
 
-	config->rtc = devm_rtc_device_register(&pdev->dev, pdev->name,
-					&spear_rtc_ops, THIS_MODULE);
-	if (IS_ERR(config->rtc)) {
-		dev_err(&pdev->dev, "can't register RTC device, err %ld\n",
-				PTR_ERR(config->rtc));
-		status = PTR_ERR(config->rtc);
-		goto err_disable_clock;
-	}
+	config->rtc->ops = &spear_rtc_ops;
+	config->rtc->range_min = RTC_TIMESTAMP_BEGIN_0000;
+	config->rtc->range_max = RTC_TIMESTAMP_END_9999;
 
-	config->rtc->uie_unsupported = 1;
+	status = devm_rtc_register_device(config->rtc);
+	if (status)
+		goto err_disable_clock;
 
 	if (!device_can_wakeup(&pdev->dev))
 		device_init_wakeup(&pdev->dev, 1);
@@ -422,15 +405,13 @@ err_disable_clock:
 	return status;
 }
 
-static int spear_rtc_remove(struct platform_device *pdev)
+static void spear_rtc_remove(struct platform_device *pdev)
 {
 	struct spear_rtc_config *config = platform_get_drvdata(pdev);
 
 	spear_rtc_disable_interrupt(config);
 	clk_disable_unprepare(config->clk);
 	device_init_wakeup(&pdev->dev, 0);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -494,7 +475,7 @@ MODULE_DEVICE_TABLE(of, spear_rtc_id_table);
 
 static struct platform_driver spear_rtc_driver = {
 	.probe = spear_rtc_probe,
-	.remove = spear_rtc_remove,
+	.remove_new = spear_rtc_remove,
 	.shutdown = spear_rtc_shutdown,
 	.driver = {
 		.name = "rtc-spear",

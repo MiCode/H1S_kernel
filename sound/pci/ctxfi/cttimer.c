@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * PCM timer handling on ctxfi
- *
- * This source file is released under GPL v2 license (no other versions).
- * See the COPYING file included in the main directory of this source
- * distribution for the license terms and conditions.
  */
 
 #include <linux/slab.h>
@@ -17,7 +14,7 @@
 
 static bool use_system_timer;
 MODULE_PARM_DESC(use_system_timer, "Force to use system-timer");
-module_param(use_system_timer, bool, S_IRUGO);
+module_param(use_system_timer, bool, 0444);
 
 struct ct_timer_ops {
 	void (*init)(struct ct_timer_instance *);
@@ -49,7 +46,7 @@ struct ct_timer {
 	spinlock_t lock;		/* global timer lock (for xfitimer) */
 	spinlock_t list_lock;		/* lock for instance list */
 	struct ct_atc *atc;
-	struct ct_timer_ops *ops;
+	const struct ct_timer_ops *ops;
 	struct list_head instance_head;
 	struct list_head running_head;
 	unsigned int wc;		/* current wallclock */
@@ -63,9 +60,9 @@ struct ct_timer {
  * system-timer-based updates
  */
 
-static void ct_systimer_callback(unsigned long data)
+static void ct_systimer_callback(struct timer_list *t)
 {
-	struct ct_timer_instance *ti = (struct ct_timer_instance *)data;
+	struct ct_timer_instance *ti = from_timer(ti, t, timer);
 	struct snd_pcm_substream *substream = ti->substream;
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct ct_atc_pcm *apcm = ti->apcm;
@@ -93,8 +90,7 @@ static void ct_systimer_callback(unsigned long data)
 
 static void ct_systimer_init(struct ct_timer_instance *ti)
 {
-	setup_timer(&ti->timer, ct_systimer_callback,
-		    (unsigned long)ti);
+	timer_setup(&ti->timer, ct_systimer_callback, 0);
 }
 
 static void ct_systimer_start(struct ct_timer_instance *ti)
@@ -128,7 +124,7 @@ static void ct_systimer_prepare(struct ct_timer_instance *ti)
 
 #define ct_systimer_free	ct_systimer_prepare
 
-static struct ct_timer_ops ct_systimer_ops = {
+static const struct ct_timer_ops ct_systimer_ops = {
 	.init = ct_systimer_init,
 	.free_instance = ct_systimer_free,
 	.prepare = ct_systimer_prepare,
@@ -322,7 +318,7 @@ static void ct_xfitimer_free_global(struct ct_timer *atimer)
 	ct_xfitimer_irq_stop(atimer);
 }
 
-static struct ct_timer_ops ct_xfitimer_ops = {
+static const struct ct_timer_ops ct_xfitimer_ops = {
 	.prepare = ct_xfitimer_prepare,
 	.start = ct_xfitimer_start,
 	.stop = ct_xfitimer_stop,
@@ -421,12 +417,12 @@ struct ct_timer *ct_timer_new(struct ct_atc *atc)
 	atimer->atc = atc;
 	hw = atc->hw;
 	if (!use_system_timer && hw->set_timer_irq) {
-		snd_printd(KERN_INFO "ctxfi: Use xfi-native timer\n");
+		dev_info(atc->card->dev, "Use xfi-native timer\n");
 		atimer->ops = &ct_xfitimer_ops;
 		hw->irq_callback_data = atimer;
 		hw->irq_callback = ct_timer_interrupt;
 	} else {
-		snd_printd(KERN_INFO "ctxfi: Use system timer\n");
+		dev_info(atc->card->dev, "Use system timer\n");
 		atimer->ops = &ct_systimer_ops;
 	}
 	return atimer;

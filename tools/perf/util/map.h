@@ -1,85 +1,127 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __PERF_MAP_H
 #define __PERF_MAP_H
 
+#include <linux/refcount.h>
 #include <linux/compiler.h>
 #include <linux/list.h>
 #include <linux/rbtree.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdbool.h>
-#include "types.h"
-
-enum map_type {
-	MAP__FUNCTION = 0,
-	MAP__VARIABLE,
-};
-
-#define MAP__NR_TYPES (MAP__VARIABLE + 1)
-
-extern const char *map_type__name[MAP__NR_TYPES];
+#include <linux/types.h>
+#include <internal/rc_check.h>
 
 struct dso;
-struct ip_callchain;
-struct ref_reloc_sym;
-struct map_groups;
+struct maps;
 struct machine;
-struct perf_evsel;
 
-struct map {
-	union {
-		struct rb_node	rb_node;
-		struct list_head node;
-	};
+DECLARE_RC_STRUCT(map) {
 	u64			start;
 	u64			end;
-	u8 /* enum map_type */	type;
-	bool			referenced;
-	bool			erange_warned;
-	u32			priv;
+	bool			erange_warned:1;
+	bool			priv:1;
+	u32			prot;
 	u64			pgoff;
-	u32			maj, min; /* only valid for MMAP2 record */
-	u64			ino;      /* only valid for MMAP2 record */
-	u64			ino_generation;/* only valid for MMAP2 record */
+	u64			reloc;
 
 	/* ip -> dso rip */
-	u64			(*map_ip)(struct map *, u64);
+	u64			(*map_ip)(const struct map *, u64);
 	/* dso rip -> ip */
-	u64			(*unmap_ip)(struct map *, u64);
+	u64			(*unmap_ip)(const struct map *, u64);
 
 	struct dso		*dso;
-	struct map_groups	*groups;
+	refcount_t		refcnt;
+	u32			flags;
 };
 
-struct kmap {
-	struct ref_reloc_sym	*ref_reloc_sym;
-	struct map_groups	*kmaps;
-};
+struct kmap;
 
-struct map_groups {
-	struct rb_root	 maps[MAP__NR_TYPES];
-	struct list_head removed_maps[MAP__NR_TYPES];
-	struct machine	 *machine;
-};
+struct kmap *__map__kmap(struct map *map);
+struct kmap *map__kmap(struct map *map);
+struct maps *map__kmaps(struct map *map);
 
-static inline struct kmap *map__kmap(struct map *map)
+/* ip -> dso rip */
+u64 map__dso_map_ip(const struct map *map, u64 ip);
+/* dso rip -> ip */
+u64 map__dso_unmap_ip(const struct map *map, u64 ip);
+/* Returns ip */
+u64 identity__map_ip(const struct map *map __maybe_unused, u64 ip);
+
+static inline struct dso *map__dso(const struct map *map)
 {
-	return (struct kmap *)(map + 1);
+	return RC_CHK_ACCESS(map)->dso;
 }
 
-static inline u64 map__map_ip(struct map *map, u64 ip)
+static inline u64 map__map_ip(const struct map *map, u64 ip)
 {
-	return ip - map->start + map->pgoff;
+	return RC_CHK_ACCESS(map)->map_ip(map, ip);
 }
 
-static inline u64 map__unmap_ip(struct map *map, u64 ip)
+static inline u64 map__unmap_ip(const struct map *map, u64 ip)
 {
-	return ip + map->start - map->pgoff;
+	return RC_CHK_ACCESS(map)->unmap_ip(map, ip);
 }
 
-static inline u64 identity__map_ip(struct map *map __maybe_unused, u64 ip)
+static inline void *map__map_ip_ptr(struct map *map)
 {
-	return ip;
+	return RC_CHK_ACCESS(map)->map_ip;
 }
 
+static inline void* map__unmap_ip_ptr(struct map *map)
+{
+	return RC_CHK_ACCESS(map)->unmap_ip;
+}
+
+static inline u64 map__start(const struct map *map)
+{
+	return RC_CHK_ACCESS(map)->start;
+}
+
+static inline u64 map__end(const struct map *map)
+{
+	return RC_CHK_ACCESS(map)->end;
+}
+
+static inline u64 map__pgoff(const struct map *map)
+{
+	return RC_CHK_ACCESS(map)->pgoff;
+}
+
+static inline u64 map__reloc(const struct map *map)
+{
+	return RC_CHK_ACCESS(map)->reloc;
+}
+
+static inline u32 map__flags(const struct map *map)
+{
+	return RC_CHK_ACCESS(map)->flags;
+}
+
+static inline u32 map__prot(const struct map *map)
+{
+	return RC_CHK_ACCESS(map)->prot;
+}
+
+static inline bool map__priv(const struct map *map)
+{
+	return RC_CHK_ACCESS(map)->priv;
+}
+
+static inline refcount_t *map__refcnt(struct map *map)
+{
+	return &RC_CHK_ACCESS(map)->refcnt;
+}
+
+static inline bool map__erange_warned(struct map *map)
+{
+	return RC_CHK_ACCESS(map)->erange_warned;
+}
+
+static inline size_t map__size(const struct map *map)
+{
+	return map__end(map) - map__start(map);
+}
 
 /* rip/ip <-> addr suitable for passing to `objdump --start-address=` */
 u64 map__rip_2objdump(struct map *map, u64 rip);
@@ -88,108 +130,177 @@ u64 map__rip_2objdump(struct map *map, u64 rip);
 u64 map__objdump_2mem(struct map *map, u64 ip);
 
 struct symbol;
+struct thread;
 
-typedef int (*symbol_filter_t)(struct map *map, struct symbol *sym);
+/* map__for_each_symbol - iterate over the symbols in the given map
+ *
+ * @map: the 'struct map *' in which symbols are iterated
+ * @pos: the 'struct symbol *' to use as a loop cursor
+ * @n: the 'struct rb_node *' to use as a temporary storage
+ * Note: caller must ensure map->dso is not NULL (map is loaded).
+ */
+#define map__for_each_symbol(map, pos, n)	\
+	dso__for_each_symbol(map__dso(map), pos, n)
 
-void map__init(struct map *map, enum map_type type,
+/* map__for_each_symbol_with_name - iterate over the symbols in the given map
+ *                                  that have the given name
+ *
+ * @map: the 'struct map *' in which symbols are iterated
+ * @sym_name: the symbol name
+ * @pos: the 'struct symbol *' to use as a loop cursor
+ * @idx: the cursor index in the symbol names array
+ */
+#define __map__for_each_symbol_by_name(map, sym_name, pos, idx)		\
+	for (pos = map__find_symbol_by_name_idx(map, sym_name, &idx);	\
+	     pos &&						\
+	     !symbol__match_symbol_name(pos->name, sym_name,	\
+					SYMBOL_TAG_INCLUDE__DEFAULT_ONLY); \
+	     pos = dso__next_symbol_by_name(map__dso(map), &idx))
+
+#define map__for_each_symbol_by_name(map, sym_name, pos, idx)	\
+	__map__for_each_symbol_by_name(map, sym_name, (pos), idx)
+
+void map__init(struct map *map,
 	       u64 start, u64 end, u64 pgoff, struct dso *dso);
-struct map *map__new(struct list_head *dsos__list, u64 start, u64 len,
-		     u64 pgoff, u32 pid, u32 d_maj, u32 d_min, u64 ino,
-		     u64 ino_gen,
-		     char *filename, enum map_type type);
-struct map *map__new2(u64 start, struct dso *dso, enum map_type type);
+
+struct dso_id;
+struct build_id;
+
+struct map *map__new(struct machine *machine, u64 start, u64 len,
+		     u64 pgoff, struct dso_id *id, u32 prot, u32 flags,
+		     struct build_id *bid, char *filename, struct thread *thread);
+struct map *map__new2(u64 start, struct dso *dso);
 void map__delete(struct map *map);
 struct map *map__clone(struct map *map);
-int map__overlap(struct map *l, struct map *r);
+
+static inline struct map *map__get(struct map *map)
+{
+	struct map *result;
+
+	if (RC_CHK_GET(result, map))
+		refcount_inc(map__refcnt(map));
+
+	return result;
+}
+
+void map__put(struct map *map);
+
+static inline void __map__zput(struct map **map)
+{
+	map__put(*map);
+	*map = NULL;
+}
+
+#define map__zput(map) __map__zput(&map)
+
 size_t map__fprintf(struct map *map, FILE *fp);
 size_t map__fprintf_dsoname(struct map *map, FILE *fp);
+size_t map__fprintf_dsoname_dsoff(struct map *map, bool print_off, u64 addr, FILE *fp);
+char *map__srcline(struct map *map, u64 addr, struct symbol *sym);
 int map__fprintf_srcline(struct map *map, u64 addr, const char *prefix,
 			 FILE *fp);
 
-int map__load(struct map *map, symbol_filter_t filter);
-struct symbol *map__find_symbol(struct map *map,
-				u64 addr, symbol_filter_t filter);
-struct symbol *map__find_symbol_by_name(struct map *map, const char *name,
-					symbol_filter_t filter);
+int map__load(struct map *map);
+struct symbol *map__find_symbol(struct map *map, u64 addr);
+struct symbol *map__find_symbol_by_name(struct map *map, const char *name);
+struct symbol *map__find_symbol_by_name_idx(struct map *map, const char *name, size_t *idx);
 void map__fixup_start(struct map *map);
 void map__fixup_end(struct map *map);
 
-void map__reloc_vmlinux(struct map *map);
+int map__set_kallsyms_ref_reloc_sym(struct map *map, const char *symbol_name,
+				    u64 addr);
 
-size_t __map_groups__fprintf_maps(struct map_groups *mg,
-				  enum map_type type, int verbose, FILE *fp);
-void maps__insert(struct rb_root *maps, struct map *map);
-void maps__remove(struct rb_root *maps, struct map *map);
-struct map *maps__find(struct rb_root *maps, u64 addr);
-struct map *maps__first(struct rb_root *maps);
-struct map *maps__next(struct map *map);
-void map_groups__init(struct map_groups *mg);
-void map_groups__exit(struct map_groups *mg);
-int map_groups__clone(struct map_groups *mg,
-		      struct map_groups *parent, enum map_type type);
-size_t map_groups__fprintf(struct map_groups *mg, int verbose, FILE *fp);
-size_t map_groups__fprintf_maps(struct map_groups *mg, int verbose, FILE *fp);
+bool __map__is_kernel(const struct map *map);
+bool __map__is_extra_kernel_map(const struct map *map);
+bool __map__is_bpf_prog(const struct map *map);
+bool __map__is_bpf_image(const struct map *map);
+bool __map__is_ool(const struct map *map);
 
-int maps__set_kallsyms_ref_reloc_sym(struct map **maps, const char *symbol_name,
-				     u64 addr);
-
-static inline void map_groups__insert(struct map_groups *mg, struct map *map)
+static inline bool __map__is_kmodule(const struct map *map)
 {
-	maps__insert(&mg->maps[map->type], map);
-	map->groups = mg;
+	return !__map__is_kernel(map) && !__map__is_extra_kernel_map(map) &&
+	       !__map__is_bpf_prog(map) && !__map__is_ool(map) &&
+	       !__map__is_bpf_image(map);
 }
 
-static inline void map_groups__remove(struct map_groups *mg, struct map *map)
+bool map__has_symbols(const struct map *map);
+
+bool map__contains_symbol(const struct map *map, const struct symbol *sym);
+
+#define ENTRY_TRAMPOLINE_NAME "__entry_SYSCALL_64_trampoline"
+
+static inline bool is_entry_trampoline(const char *name)
 {
-	maps__remove(&mg->maps[map->type], map);
+	return !strcmp(name, ENTRY_TRAMPOLINE_NAME);
 }
 
-static inline struct map *map_groups__find(struct map_groups *mg,
-					   enum map_type type, u64 addr)
+static inline bool is_bpf_image(const char *name)
 {
-	return maps__find(&mg->maps[type], addr);
+	return strncmp(name, "bpf_trampoline_", sizeof("bpf_trampoline_") - 1) == 0 ||
+	       strncmp(name, "bpf_dispatcher_", sizeof("bpf_dispatcher_") - 1) == 0;
 }
 
-static inline struct map *map_groups__first(struct map_groups *mg,
-					    enum map_type type)
+static inline int is_anon_memory(const char *filename)
 {
-	return maps__first(&mg->maps[type]);
+	return !strcmp(filename, "//anon") ||
+	       !strncmp(filename, "/dev/zero", sizeof("/dev/zero") - 1) ||
+	       !strncmp(filename, "/anon_hugepage", sizeof("/anon_hugepage") - 1);
 }
 
-static inline struct map *map_groups__next(struct map *map)
+static inline int is_no_dso_memory(const char *filename)
 {
-	return maps__next(map);
+	return !strncmp(filename, "[stack", 6) ||
+	       !strncmp(filename, "/SYSV", 5)  ||
+	       !strcmp(filename, "[heap]");
 }
 
-struct symbol *map_groups__find_symbol(struct map_groups *mg,
-				       enum map_type type, u64 addr,
-				       struct map **mapp,
-				       symbol_filter_t filter);
-
-struct symbol *map_groups__find_symbol_by_name(struct map_groups *mg,
-					       enum map_type type,
-					       const char *name,
-					       struct map **mapp,
-					       symbol_filter_t filter);
-
-struct addr_map_symbol;
-
-int map_groups__find_ams(struct addr_map_symbol *ams, symbol_filter_t filter);
-
-static inline
-struct symbol *map_groups__find_function_by_name(struct map_groups *mg,
-						 const char *name, struct map **mapp,
-						 symbol_filter_t filter)
+static inline void map__set_start(struct map *map, u64 start)
 {
-	return map_groups__find_symbol_by_name(mg, MAP__FUNCTION, name, mapp, filter);
+	RC_CHK_ACCESS(map)->start = start;
 }
 
-int map_groups__fixup_overlappings(struct map_groups *mg, struct map *map,
-				   int verbose, FILE *fp);
+static inline void map__set_end(struct map *map, u64 end)
+{
+	RC_CHK_ACCESS(map)->end = end;
+}
 
-struct map *map_groups__find_by_name(struct map_groups *mg,
-				     enum map_type type, const char *name);
+static inline void map__set_pgoff(struct map *map, u64 pgoff)
+{
+	RC_CHK_ACCESS(map)->pgoff = pgoff;
+}
 
-void map_groups__flush(struct map_groups *mg);
+static inline void map__add_pgoff(struct map *map, u64 inc)
+{
+	RC_CHK_ACCESS(map)->pgoff += inc;
+}
 
+static inline void map__set_reloc(struct map *map, u64 reloc)
+{
+	RC_CHK_ACCESS(map)->reloc = reloc;
+}
+
+static inline void map__set_priv(struct map *map, int priv)
+{
+	RC_CHK_ACCESS(map)->priv = priv;
+}
+
+static inline void map__set_erange_warned(struct map *map, bool erange_warned)
+{
+	RC_CHK_ACCESS(map)->erange_warned = erange_warned;
+}
+
+static inline void map__set_dso(struct map *map, struct dso *dso)
+{
+	RC_CHK_ACCESS(map)->dso = dso;
+}
+
+static inline void map__set_map_ip(struct map *map, u64 (*map_ip)(const struct map *map, u64 ip))
+{
+	RC_CHK_ACCESS(map)->map_ip = map_ip;
+}
+
+static inline void map__set_unmap_ip(struct map *map, u64 (*unmap_ip)(const struct map *map, u64 rip))
+{
+	RC_CHK_ACCESS(map)->unmap_ip = unmap_ip;
+}
 #endif /* __PERF_MAP_H */

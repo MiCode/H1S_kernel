@@ -76,10 +76,10 @@
 #include <linux/delay.h>
 
 
-void pnic2_timer(unsigned long data)
+void pnic2_timer(struct timer_list *t)
 {
-	struct net_device *dev = (struct net_device *)data;
-	struct tulip_private *tp = netdev_priv(dev);
+	struct tulip_private *tp = from_timer(tp, t, timer);
+	struct net_device *dev = tp->dev;
 	void __iomem *ioaddr = tp->base_addr;
 	int next_tick = 60*HZ;
 
@@ -351,7 +351,7 @@ void pnic2_lnk_change(struct net_device *dev, int csr5)
 			del_timer_sync(&tp->timer);
 			pnic2_start_nway(dev);
 			tp->timer.expires = RUN_AT(3*HZ);
-       			add_timer(&tp->timer);
+			add_timer(&tp->timer);
                 }
 
                 return;
@@ -375,7 +375,7 @@ void pnic2_lnk_change(struct net_device *dev, int csr5)
 			del_timer_sync(&tp->timer);
 			pnic2_start_nway(dev);
 			tp->timer.expires = RUN_AT(3*HZ);
-       			add_timer(&tp->timer);
+			add_timer(&tp->timer);
                 }
 
                 return;

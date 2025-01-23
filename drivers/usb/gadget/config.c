@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * usb/gadget/config.c -- simplify building config descriptors
  *
  * Copyright (C) 2003 David Brownell
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/errno.h>
@@ -20,6 +16,7 @@
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
 #include <linux/usb/composite.h>
+#include <linux/usb/otg.h>
 
 /**
  * usb_descriptor_fillbuf - fill buffer with descriptors
@@ -92,7 +89,7 @@ int usb_gadget_config_buf(
 	*cp = *config;
 
 	/* then interface/endpoint/class/vendor/... */
-	len = usb_descriptor_fillbuf(USB_DT_CONFIG_SIZE + (u8*)buf,
+	len = usb_descriptor_fillbuf(USB_DT_CONFIG_SIZE + (u8 *)buf,
 			length - USB_DT_CONFIG_SIZE, desc);
 	if (len < 0)
 		return len;
@@ -162,23 +159,35 @@ EXPORT_SYMBOL_GPL(usb_copy_descriptors);
 int usb_assign_descriptors(struct usb_function *f,
 		struct usb_descriptor_header **fs,
 		struct usb_descriptor_header **hs,
-		struct usb_descriptor_header **ss)
+		struct usb_descriptor_header **ss,
+		struct usb_descriptor_header **ssp)
 {
-	struct usb_gadget *g = f->config->cdev->gadget;
+	/* super-speed-plus descriptor falls back to super-speed one,
+	 * if such a descriptor was provided, thus avoiding a NULL
+	 * pointer dereference if a 5gbps capable gadget is used with
+	 * a 10gbps capable config (device port + cable + host port)
+	 */
+	if (!ssp)
+		ssp = ss;
 
 	if (fs) {
 		f->fs_descriptors = usb_copy_descriptors(fs);
 		if (!f->fs_descriptors)
 			goto err;
 	}
-	if (hs && gadget_is_dualspeed(g)) {
+	if (hs) {
 		f->hs_descriptors = usb_copy_descriptors(hs);
 		if (!f->hs_descriptors)
 			goto err;
 	}
-	if (ss && gadget_is_superspeed(g)) {
+	if (ss) {
 		f->ss_descriptors = usb_copy_descriptors(ss);
 		if (!f->ss_descriptors)
+			goto err;
+	}
+	if (ssp) {
+		f->ssp_descriptors = usb_copy_descriptors(ssp);
+		if (!f->ssp_descriptors)
 			goto err;
 	}
 	return 0;
@@ -191,7 +200,67 @@ EXPORT_SYMBOL_GPL(usb_assign_descriptors);
 void usb_free_all_descriptors(struct usb_function *f)
 {
 	usb_free_descriptors(f->fs_descriptors);
+	f->fs_descriptors = NULL;
 	usb_free_descriptors(f->hs_descriptors);
+	f->hs_descriptors = NULL;
 	usb_free_descriptors(f->ss_descriptors);
+	f->ss_descriptors = NULL;
+	usb_free_descriptors(f->ssp_descriptors);
+	f->ssp_descriptors = NULL;
 }
 EXPORT_SYMBOL_GPL(usb_free_all_descriptors);
+
+struct usb_descriptor_header *usb_otg_descriptor_alloc(
+				struct usb_gadget *gadget)
+{
+	struct usb_descriptor_header *otg_desc;
+	unsigned length = 0;
+
+	if (gadget->otg_caps && (gadget->otg_caps->otg_rev >= 0x0200))
+		length = sizeof(struct usb_otg20_descriptor);
+	else
+		length = sizeof(struct usb_otg_descriptor);
+
+	otg_desc = kzalloc(length, GFP_KERNEL);
+	return otg_desc;
+}
+EXPORT_SYMBOL_GPL(usb_otg_descriptor_alloc);
+
+int usb_otg_descriptor_init(struct usb_gadget *gadget,
+		struct usb_descriptor_header *otg_desc)
+{
+	struct usb_otg_descriptor *otg1x_desc;
+	struct usb_otg20_descriptor *otg20_desc;
+	struct usb_otg_caps *otg_caps = gadget->otg_caps;
+	u8 otg_attributes = 0;
+
+	if (!otg_desc)
+		return -EINVAL;
+
+	if (otg_caps && otg_caps->otg_rev) {
+		if (otg_caps->hnp_support)
+			otg_attributes |= USB_OTG_HNP;
+		if (otg_caps->srp_support)
+			otg_attributes |= USB_OTG_SRP;
+		if (otg_caps->adp_support && (otg_caps->otg_rev >= 0x0200))
+			otg_attributes |= USB_OTG_ADP;
+	} else {
+		otg_attributes = USB_OTG_SRP | USB_OTG_HNP;
+	}
+
+	if (otg_caps && (otg_caps->otg_rev >= 0x0200)) {
+		otg20_desc = (struct usb_otg20_descriptor *)otg_desc;
+		otg20_desc->bLength = sizeof(struct usb_otg20_descriptor);
+		otg20_desc->bDescriptorType = USB_DT_OTG;
+		otg20_desc->bmAttributes = otg_attributes;
+		otg20_desc->bcdOTG = cpu_to_le16(otg_caps->otg_rev);
+	} else {
+		otg1x_desc = (struct usb_otg_descriptor *)otg_desc;
+		otg1x_desc->bLength = sizeof(struct usb_otg_descriptor);
+		otg1x_desc->bDescriptorType = USB_DT_OTG;
+		otg1x_desc->bmAttributes = otg_attributes;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(usb_otg_descriptor_init);

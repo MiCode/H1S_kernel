@@ -4,138 +4,178 @@
  * Copyright (C) 2009 Nokia Corporation
  * Author: Juha Yrjola <juha.yrjola@solidboot.com>
  *
- * Copyright (C) 2013 Pali Rohár <pali.rohar@gmail.com>
+ * Copyright (C) 2013 Pali Rohár <pali@kernel.org>
  *
  * This file is licensed under  the terms of the GNU General Public
  * License version 2. This program is licensed "as is" without any
  * warranty of any kind, whether express or implied.
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/random.h>
 #include <linux/hw_random.h>
-#include <linux/timer.h>
+#include <linux/workqueue.h>
 #include <linux/clk.h>
 #include <linux/err.h>
+#include <linux/io.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 
 #define RNG_RESET			0x01
 #define RNG_GEN_PRNG_HW_INIT		0x02
 #define RNG_GEN_HW			0x08
 
-/* param1: ptr, param2: count, param3: flag */
-static u32 (*omap3_rom_rng_call)(u32, u32, u32);
+struct omap_rom_rng {
+	struct clk *clk;
+	struct device *dev;
+	struct hwrng ops;
+	u32 (*rom_rng_call)(u32 ptr, u32 count, u32 flag);
+};
 
-static struct timer_list idle_timer;
-static int rng_idle;
-static struct clk *rng_clk;
-
-static void omap3_rom_rng_idle(unsigned long data)
+static int omap3_rom_rng_read(struct hwrng *rng, void *data, size_t max, bool w)
 {
+	struct omap_rom_rng *ddata;
+	u32 ptr;
 	int r;
 
-	r = omap3_rom_rng_call(0, 0, RNG_RESET);
-	if (r != 0) {
-		pr_err("reset failed: %d\n", r);
-		return;
+	ddata = (struct omap_rom_rng *)rng->priv;
+
+	r = pm_runtime_get_sync(ddata->dev);
+	if (r < 0) {
+		pm_runtime_put_noidle(ddata->dev);
+
+		return r;
 	}
-	clk_disable_unprepare(rng_clk);
-	rng_idle = 1;
+
+	ptr = virt_to_phys(data);
+	r = ddata->rom_rng_call(ptr, 4, RNG_GEN_HW);
+	if (r != 0)
+		r = -EINVAL;
+	else
+		r = 4;
+
+	pm_runtime_mark_last_busy(ddata->dev);
+	pm_runtime_put_autosuspend(ddata->dev);
+
+	return r;
 }
 
-static int omap3_rom_rng_get_random(void *buf, unsigned int count)
+static int __maybe_unused omap_rom_rng_runtime_suspend(struct device *dev)
 {
-	u32 r;
-	u32 ptr;
+	struct omap_rom_rng *ddata;
+	int r;
 
-	del_timer_sync(&idle_timer);
-	if (rng_idle) {
-		clk_prepare_enable(rng_clk);
-		r = omap3_rom_rng_call(0, 0, RNG_GEN_PRNG_HW_INIT);
-		if (r != 0) {
-			clk_disable_unprepare(rng_clk);
-			pr_err("HW init failed: %d\n", r);
-			return -EIO;
-		}
-		rng_idle = 0;
-	}
+	ddata = dev_get_drvdata(dev);
 
-	ptr = virt_to_phys(buf);
-	r = omap3_rom_rng_call(ptr, count, RNG_GEN_HW);
-	mod_timer(&idle_timer, jiffies + msecs_to_jiffies(500));
+	r = ddata->rom_rng_call(0, 0, RNG_RESET);
 	if (r != 0)
-		return -EINVAL;
+		dev_err(dev, "reset failed: %d\n", r);
+
+	clk_disable_unprepare(ddata->clk);
+
 	return 0;
 }
 
-static int omap3_rom_rng_data_present(struct hwrng *rng, int wait)
+static int __maybe_unused omap_rom_rng_runtime_resume(struct device *dev)
 {
-	return 1;
-}
-
-static int omap3_rom_rng_data_read(struct hwrng *rng, u32 *data)
-{
+	struct omap_rom_rng *ddata;
 	int r;
 
-	r = omap3_rom_rng_get_random(data, 4);
+	ddata = dev_get_drvdata(dev);
+
+	r = clk_prepare_enable(ddata->clk);
 	if (r < 0)
 		return r;
-	return 4;
+
+	r = ddata->rom_rng_call(0, 0, RNG_GEN_PRNG_HW_INIT);
+	if (r != 0) {
+		clk_disable_unprepare(ddata->clk);
+		dev_err(dev, "HW init failed: %d\n", r);
+
+		return -EIO;
+	}
+
+	return 0;
 }
 
-static struct hwrng omap3_rom_rng_ops = {
-	.name		= "omap3-rom",
-	.data_present	= omap3_rom_rng_data_present,
-	.data_read	= omap3_rom_rng_data_read,
-};
+static void omap_rom_rng_finish(void *data)
+{
+	struct omap_rom_rng *ddata = data;
+
+	pm_runtime_dont_use_autosuspend(ddata->dev);
+	pm_runtime_disable(ddata->dev);
+}
 
 static int omap3_rom_rng_probe(struct platform_device *pdev)
 {
-	pr_info("initializing\n");
+	struct omap_rom_rng *ddata;
+	int ret = 0;
 
-	omap3_rom_rng_call = pdev->dev.platform_data;
-	if (!omap3_rom_rng_call) {
-		pr_err("omap3_rom_rng_call is NULL\n");
+	ddata = devm_kzalloc(&pdev->dev, sizeof(*ddata), GFP_KERNEL);
+	if (!ddata)
+		return -ENOMEM;
+
+	ddata->dev = &pdev->dev;
+	ddata->ops.priv = (unsigned long)ddata;
+	ddata->ops.name = "omap3-rom";
+	ddata->ops.read = of_device_get_match_data(&pdev->dev);
+	ddata->ops.quality = 900;
+	if (!ddata->ops.read) {
+		dev_err(&pdev->dev, "missing rom code handler\n");
+
+		return -ENODEV;
+	}
+	dev_set_drvdata(ddata->dev, ddata);
+
+	ddata->rom_rng_call = pdev->dev.platform_data;
+	if (!ddata->rom_rng_call) {
+		dev_err(ddata->dev, "rom_rng_call is NULL\n");
 		return -EINVAL;
 	}
 
-	setup_timer(&idle_timer, omap3_rom_rng_idle, 0);
-	rng_clk = clk_get(&pdev->dev, "ick");
-	if (IS_ERR(rng_clk)) {
-		pr_err("unable to get RNG clock\n");
-		return PTR_ERR(rng_clk);
+	ddata->clk = devm_clk_get(ddata->dev, "ick");
+	if (IS_ERR(ddata->clk)) {
+		dev_err(ddata->dev, "unable to get RNG clock\n");
+		return PTR_ERR(ddata->clk);
 	}
 
-	/* Leave the RNG in reset state. */
-	clk_prepare_enable(rng_clk);
-	omap3_rom_rng_idle(0);
+	pm_runtime_enable(&pdev->dev);
+	pm_runtime_set_autosuspend_delay(&pdev->dev, 500);
+	pm_runtime_use_autosuspend(&pdev->dev);
 
-	return hwrng_register(&omap3_rom_rng_ops);
+	ret = devm_add_action_or_reset(ddata->dev, omap_rom_rng_finish,
+				       ddata);
+	if (ret)
+		return ret;
+
+	return devm_hwrng_register(ddata->dev, &ddata->ops);
 }
 
-static int omap3_rom_rng_remove(struct platform_device *pdev)
-{
-	hwrng_unregister(&omap3_rom_rng_ops);
-	clk_disable_unprepare(rng_clk);
-	clk_put(rng_clk);
-	return 0;
-}
+static const struct of_device_id omap_rom_rng_match[] = {
+	{ .compatible = "nokia,n900-rom-rng", .data = omap3_rom_rng_read, },
+	{ /* sentinel */ },
+};
+MODULE_DEVICE_TABLE(of, omap_rom_rng_match);
+
+static const struct dev_pm_ops omap_rom_rng_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(omap_rom_rng_runtime_suspend,
+				omap_rom_rng_runtime_resume)
+};
 
 static struct platform_driver omap3_rom_rng_driver = {
 	.driver = {
 		.name		= "omap3-rom-rng",
-		.owner		= THIS_MODULE,
+		.of_match_table = omap_rom_rng_match,
+		.pm = &omap_rom_rng_pm_ops,
 	},
 	.probe		= omap3_rom_rng_probe,
-	.remove		= omap3_rom_rng_remove,
 };
 
 module_platform_driver(omap3_rom_rng_driver);
 
 MODULE_ALIAS("platform:omap3-rom-rng");
 MODULE_AUTHOR("Juha Yrjola");
-MODULE_AUTHOR("Pali Rohár <pali.rohar@gmail.com>");
+MODULE_AUTHOR("Pali Rohár <pali@kernel.org>");
 MODULE_LICENSE("GPL");

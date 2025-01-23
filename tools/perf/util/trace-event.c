@@ -1,4 +1,4 @@
-
+// SPDX-License-Identifier: GPL-2.0
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -7,9 +7,12 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <linux/kernel.h>
+#include <linux/err.h>
 #include <traceevent/event-parse.h>
+#include <api/fs/tracing_path.h>
+#include <api/fs/fs.h>
 #include "trace-event.h"
-#include "util.h"
+#include "machine.h"
 
 /*
  * global trace_event object used by trace_event__tp_format
@@ -19,64 +22,97 @@
  * there.
  */
 static struct trace_event tevent;
+static bool tevent_initialized;
 
 int trace_event__init(struct trace_event *t)
 {
-	struct pevent *pevent = pevent_alloc();
+	struct tep_handle *pevent = tep_alloc();
 
 	if (pevent) {
-		t->plugin_list = traceevent_load_plugins(pevent);
+		t->plugin_list = tep_load_plugins(pevent);
 		t->pevent  = pevent;
 	}
 
 	return pevent ? 0 : -1;
 }
 
-void trace_event__cleanup(struct trace_event *t)
+static int trace_event__init2(void)
 {
-	traceevent_unload_plugins(t->plugin_list, t->pevent);
-	pevent_free(t->pevent);
+	int be = tep_is_bigendian();
+	struct tep_handle *pevent;
+
+	if (trace_event__init(&tevent))
+		return -1;
+
+	pevent = tevent.pevent;
+	tep_set_flag(pevent, TEP_NSEC_OUTPUT);
+	tep_set_file_bigendian(pevent, be);
+	tep_set_local_bigendian(pevent, be);
+	tevent_initialized = true;
+	return 0;
 }
 
-static struct event_format*
+int trace_event__register_resolver(struct machine *machine,
+				   tep_func_resolver_t *func)
+{
+	if (!tevent_initialized && trace_event__init2())
+		return -1;
+
+	return tep_set_function_resolver(tevent.pevent, func, machine);
+}
+
+void trace_event__cleanup(struct trace_event *t)
+{
+	tep_unload_plugins(t->plugin_list, t->pevent);
+	tep_free(t->pevent);
+}
+
+/*
+ * Returns pointer with encoded error via <linux/err.h> interface.
+ */
+static struct tep_event*
 tp_format(const char *sys, const char *name)
 {
-	struct pevent *pevent = tevent.pevent;
-	struct event_format *event = NULL;
+	char *tp_dir = get_events_file(sys);
+	struct tep_handle *pevent = tevent.pevent;
+	struct tep_event *event = NULL;
 	char path[PATH_MAX];
 	size_t size;
 	char *data;
+	int err;
 
-	scnprintf(path, PATH_MAX, "%s/%s/%s/format",
-		  tracing_events_path, sys, name);
+	if (!tp_dir)
+		return ERR_PTR(-errno);
 
-	if (filename__read_str(path, &data, &size))
-		return NULL;
+	scnprintf(path, PATH_MAX, "%s/%s/format", tp_dir, name);
+	put_events_file(tp_dir);
 
-	pevent_parse_format(pevent, &event, data, size, sys);
+	err = filename__read_str(path, &data, &size);
+	if (err)
+		return ERR_PTR(err);
+
+	tep_parse_format(pevent, &event, data, size, sys);
 
 	free(data);
 	return event;
 }
 
-struct event_format*
+/*
+ * Returns pointer with encoded error via <linux/err.h> interface.
+ */
+struct tep_event*
 trace_event__tp_format(const char *sys, const char *name)
 {
-	static bool initialized;
-
-	if (!initialized) {
-		int be = traceevent_host_bigendian();
-		struct pevent *pevent;
-
-		if (trace_event__init(&tevent))
-			return NULL;
-
-		pevent = tevent.pevent;
-		pevent_set_flag(pevent, PEVENT_NSEC_OUTPUT);
-		pevent_set_file_bigendian(pevent, be);
-		pevent_set_host_bigendian(pevent, be);
-		initialized = true;
-	}
+	if (!tevent_initialized && trace_event__init2())
+		return ERR_PTR(-ENOMEM);
 
 	return tp_format(sys, name);
+}
+
+struct tep_event *trace_event__tp_format_id(int id)
+{
+	if (!tevent_initialized && trace_event__init2())
+		return ERR_PTR(-ENOMEM);
+
+	return tep_find_event(tevent.pevent, id);
 }

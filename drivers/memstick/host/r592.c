@@ -1,10 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2010 - Maxim Levitsky
  * driver for Ricoh memstick readers
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -47,12 +44,10 @@ static const char *tpc_names[] = {
  * memstick_debug_get_tpc_name - debug helper that returns string for
  * a TPC number
  */
-const char *memstick_debug_get_tpc_name(int tpc)
+static __maybe_unused const char *memstick_debug_get_tpc_name(int tpc)
 {
 	return tpc_names[tpc-1];
 }
-EXPORT_SYMBOL(memstick_debug_get_tpc_name);
-
 
 /* Read a register*/
 static inline u32 r592_read_reg(struct r592_device *dev, int address)
@@ -188,6 +183,7 @@ static void r592_host_reset(struct r592_device *dev)
 	r592_set_mode(dev, dev->parallel_mode);
 }
 
+#ifdef CONFIG_PM_SLEEP
 /* Disable all hardware interrupts */
 static void r592_clear_interrupts(struct r592_device *dev)
 {
@@ -195,6 +191,7 @@ static void r592_clear_interrupts(struct r592_device *dev)
 	r592_clear_reg_mask(dev, R592_REG_MSC, IRQ_ALL_ACK_MASK);
 	r592_clear_reg_mask(dev, R592_REG_MSC, IRQ_ALL_EN_MASK);
 }
+#endif
 
 /* Tests if there is an CRC error */
 static int r592_test_io_error(struct r592_device *dev)
@@ -294,10 +291,9 @@ static int r592_transfer_fifo_dma(struct r592_device *dev)
 
 	/* TODO: hidden assumption about nenth beeing always 1 */
 	sg_count = dma_map_sg(&dev->pci_dev->dev, &dev->req->sg, 1, is_write ?
-		PCI_DMA_TODEVICE : PCI_DMA_FROMDEVICE);
+			      DMA_TO_DEVICE : DMA_FROM_DEVICE);
 
-	if (sg_count != 1 ||
-			(sg_dma_len(&dev->req->sg) < dev->req->sg.length)) {
+	if (sg_count != 1 || sg_dma_len(&dev->req->sg) < R592_LFIFO_SIZE) {
 		message("problem in dma_map_sg");
 		return -EIO;
 	}
@@ -312,8 +308,7 @@ static int r592_transfer_fifo_dma(struct r592_device *dev)
 	}
 
 	dma_unmap_sg(&dev->pci_dev->dev, &dev->req->sg, 1, is_write ?
-		PCI_DMA_TODEVICE : PCI_DMA_FROMDEVICE);
-
+		     DMA_TO_DEVICE : DMA_FROM_DEVICE);
 
 	return dev->dma_error;
 }
@@ -361,13 +356,15 @@ static void r592_write_fifo_pio(struct r592_device *dev,
 /* Flushes the temporary FIFO used to make aligned DWORD writes */
 static void r592_flush_fifo_write(struct r592_device *dev)
 {
+	int ret;
 	u8 buffer[4] = { 0 };
-	int len;
 
 	if (kfifo_is_empty(&dev->pio_fifo))
 		return;
 
-	len = kfifo_out(&dev->pio_fifo, buffer, 4);
+	ret = kfifo_out(&dev->pio_fifo, buffer, 4);
+	/* intentionally ignore __must_check return code */
+	(void)ret;
 	r592_write_reg_raw_be(dev, R592_FIFO_PIO, *(u32 *)buffer);
 }
 
@@ -615,9 +612,9 @@ static void r592_update_card_detect(struct r592_device *dev)
 }
 
 /* Timer routine that fires 1 second after last card detection event, */
-static void r592_detect_timer(long unsigned int data)
+static void r592_detect_timer(struct timer_list *t)
 {
-	struct r592_device *dev = (struct r592_device *)data;
+	struct r592_device *dev = from_timer(dev, t, detect_timer);
 	r592_update_card_detect(dev);
 	memstick_detect_change(dev->host);
 }
@@ -752,7 +749,7 @@ static int r592_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto error2;
 
 	pci_set_master(pdev);
-	error = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+	error = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
 	if (error)
 		goto error3;
 
@@ -761,16 +758,17 @@ static int r592_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto error3;
 
 	dev->mmio = pci_ioremap_bar(pdev, 0);
-	if (!dev->mmio)
+	if (!dev->mmio) {
+		error = -ENOMEM;
 		goto error4;
+	}
 
 	dev->irq = pdev->irq;
 	spin_lock_init(&dev->irq_lock);
 	spin_lock_init(&dev->io_thread_lock);
 	init_completion(&dev->dma_done);
 	INIT_KFIFO(dev->pio_fifo);
-	setup_timer(&dev->detect_timer,
-		r592_detect_timer, (long unsigned int)dev);
+	timer_setup(&dev->detect_timer, r592_detect_timer, 0);
 
 	/* Host initialization */
 	host->caps = MEMSTICK_CAP_PAR4;
@@ -785,16 +783,18 @@ static int r592_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	/* This is just a precation, so don't fail */
-	dev->dummy_dma_page = pci_alloc_consistent(pdev, PAGE_SIZE,
-		&dev->dummy_dma_page_physical_address);
+	dev->dummy_dma_page = dma_alloc_coherent(&pdev->dev, PAGE_SIZE,
+		&dev->dummy_dma_page_physical_address, GFP_KERNEL);
 	r592_stop_dma(dev , 0);
 
-	if (request_irq(dev->irq, &r592_irq, IRQF_SHARED,
-			  DRV_NAME, dev))
+	error = request_irq(dev->irq, &r592_irq, IRQF_SHARED,
+			  DRV_NAME, dev);
+	if (error)
 		goto error6;
 
 	r592_update_card_detect(dev);
-	if (memstick_add_host(host))
+	error = memstick_add_host(host);
+	if (error)
 		goto error7;
 
 	message("driver successfully loaded");
@@ -803,7 +803,7 @@ error7:
 	free_irq(dev->irq, dev);
 error6:
 	if (dev->dummy_dma_page)
-		pci_free_consistent(pdev, PAGE_SIZE, dev->dummy_dma_page,
+		dma_free_coherent(&pdev->dev, PAGE_SIZE, dev->dummy_dma_page,
 			dev->dummy_dma_page_physical_address);
 
 	kthread_stop(dev->io_thread);
@@ -827,7 +827,7 @@ static void r592_remove(struct pci_dev *pdev)
 	/* Stop the processing thread.
 	That ensures that we won't take any more requests */
 	kthread_stop(dev->io_thread);
-
+	del_timer_sync(&dev->detect_timer);
 	r592_enable_device(dev, false);
 
 	while (!error && dev->req) {
@@ -836,22 +836,21 @@ static void r592_remove(struct pci_dev *pdev)
 	}
 	memstick_remove_host(dev->host);
 
+	if (dev->dummy_dma_page)
+		dma_free_coherent(&pdev->dev, PAGE_SIZE, dev->dummy_dma_page,
+			dev->dummy_dma_page_physical_address);
+
 	free_irq(dev->irq, dev);
 	iounmap(dev->mmio);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
 	memstick_free_host(dev->host);
-
-	if (dev->dummy_dma_page)
-		pci_free_consistent(pdev, PAGE_SIZE, dev->dummy_dma_page,
-			dev->dummy_dma_page_physical_address);
 }
 
 #ifdef CONFIG_PM_SLEEP
 static int r592_suspend(struct device *core_dev)
 {
-	struct pci_dev *pdev = to_pci_dev(core_dev);
-	struct r592_device *dev = pci_get_drvdata(pdev);
+	struct r592_device *dev = dev_get_drvdata(core_dev);
 
 	r592_clear_interrupts(dev);
 	memstick_suspend_host(dev->host);
@@ -861,8 +860,7 @@ static int r592_suspend(struct device *core_dev)
 
 static int r592_resume(struct device *core_dev)
 {
-	struct pci_dev *pdev = to_pci_dev(core_dev);
-	struct r592_device *dev = pci_get_drvdata(pdev);
+	struct r592_device *dev = dev_get_drvdata(core_dev);
 
 	r592_clear_interrupts(dev);
 	r592_enable_device(dev, false);
@@ -876,7 +874,7 @@ static SIMPLE_DEV_PM_OPS(r592_pm_ops, r592_suspend, r592_resume);
 
 MODULE_DEVICE_TABLE(pci, r592_pci_id_tbl);
 
-static struct pci_driver r852_pci_driver = {
+static struct pci_driver r592_pci_driver = {
 	.name		= DRV_NAME,
 	.id_table	= r592_pci_id_tbl,
 	.probe		= r592_probe,
@@ -884,7 +882,7 @@ static struct pci_driver r852_pci_driver = {
 	.driver.pm	= &r592_pm_ops,
 };
 
-module_pci_driver(r852_pci_driver);
+module_pci_driver(r592_pci_driver);
 
 module_param_named(enable_dma, r592_enable_dma, bool, S_IRUGO);
 MODULE_PARM_DESC(enable_dma, "Enable usage of the DMA (default)");

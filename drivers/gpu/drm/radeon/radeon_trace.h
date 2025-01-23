@@ -1,15 +1,15 @@
+/* SPDX-License-Identifier: MIT */
 #if !defined(_RADEON_TRACE_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _RADEON_TRACE_H_
 
 #include <linux/stringify.h>
-#include <linux/types.h>
 #include <linux/tracepoint.h>
+#include <linux/types.h>
 
-#include <drm/drmP.h>
+#include <drm/drm_file.h>
 
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM radeon
-#define TRACE_SYSTEM_STRING __stringify(TRACE_SYSTEM)
 #define TRACE_INCLUDE_FILE radeon_trace
 
 TRACE_EVENT(radeon_bo_create,
@@ -22,7 +22,7 @@ TRACE_EVENT(radeon_bo_create,
 
 	    TP_fast_assign(
 			   __entry->bo = bo;
-			   __entry->pages = bo->tbo.num_pages;
+			   __entry->pages = PFN_UP(bo->tbo.resource->size);
 			   ),
 	    TP_printk("bo=%p, pages=%u", __entry->bo, __entry->pages)
 );
@@ -38,7 +38,7 @@ TRACE_EVENT(radeon_cs,
 
 	    TP_fast_assign(
 			   __entry->ring = p->ring;
-			   __entry->dw = p->chunks[p->chunk_ib_idx].length_dw;
+			   __entry->dw = p->chunk_ib->length_dw;
 			   __entry->fences = radeon_fence_count_emitted(
 				p->rdev, p->ring);
 			   ),
@@ -72,8 +72,8 @@ TRACE_EVENT(radeon_vm_bo_update,
 			     ),
 
 	    TP_fast_assign(
-			   __entry->soffset = bo_va->soffset;
-			   __entry->eoffset = bo_va->eoffset;
+			   __entry->soffset = bo_va->it.start;
+			   __entry->eoffset = bo_va->it.last + 1;
 			   __entry->flags = bo_va->flags;
 			   ),
 	    TP_printk("soffs=%010llx, eoffs=%010llx, flags=%08x",
@@ -102,6 +102,24 @@ TRACE_EVENT(radeon_vm_set_page,
 	    TP_printk("pe=%010Lx, addr=%010Lx, incr=%u, flags=%08x, count=%u",
 		      __entry->pe, __entry->addr, __entry->incr,
 		      __entry->flags, __entry->count)
+);
+
+TRACE_EVENT(radeon_vm_flush,
+	    TP_PROTO(uint64_t pd_addr, unsigned ring, unsigned id),
+	    TP_ARGS(pd_addr, ring, id),
+	    TP_STRUCT__entry(
+			     __field(u64, pd_addr)
+			     __field(u32, ring)
+			     __field(u32, id)
+			     ),
+
+	    TP_fast_assign(
+			   __entry->pd_addr = pd_addr;
+			   __entry->ring = ring;
+			   __entry->id = id;
+			   ),
+	    TP_printk("pd_addr=%010Lx, ring=%u, id=%u",
+		      __entry->pd_addr, __entry->ring, __entry->id)
 );
 
 DECLARE_EVENT_CLASS(radeon_fence_request,
@@ -187,5 +205,5 @@ DEFINE_EVENT(radeon_semaphore_request, radeon_semaphore_wait,
 
 /* This part must be outside protection */
 #undef TRACE_INCLUDE_PATH
-#define TRACE_INCLUDE_PATH .
+#define TRACE_INCLUDE_PATH ../../drivers/gpu/drm/radeon
 #include <trace/define_trace.h>

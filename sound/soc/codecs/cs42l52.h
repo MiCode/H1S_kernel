@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * cs42l52.h -- CS42L52 ALSA SoC audio driver
  *
@@ -5,11 +6,6 @@
  *
  * Author: Georgi Vlaev <joe@nucleusys.com>
  * Author: Brian Austin <brian.austin@cirrus.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #ifndef __CS42L52_H__
@@ -37,7 +33,7 @@
 #define CS42L52_CHIP_REV_A0			0x00
 #define CS42L52_CHIP_REV_A1			0x01
 #define CS42L52_CHIP_REV_B0			0x02
-#define CS42L52_CHIP_REV_MASK			0x03
+#define CS42L52_CHIP_REV_MASK			0x07
 
 #define CS42L52_PWRCTL1				0x02
 #define CS42L52_PWRCTL1_PDN_ALL			0x9F

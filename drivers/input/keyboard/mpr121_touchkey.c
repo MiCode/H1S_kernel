@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Touchkey driver for Freescale MPR121 Controllor
  *
@@ -5,21 +6,18 @@
  * Author: Zhang Jiejing <jiejing.zhang@freescale.com>
  *
  * Based on mcs_touchkey.c
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
-#include <linux/module.h>
-#include <linux/input.h>
-#include <linux/i2c.h>
-#include <linux/slab.h>
-#include <linux/delay.h>
 #include <linux/bitops.h>
+#include <linux/delay.h>
+#include <linux/i2c.h>
+#include <linux/input.h>
 #include <linux/interrupt.h>
-#include <linux/i2c/mpr121_touchkey.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/property.h>
+#include <linux/regulator/consumer.h>
+#include <linux/slab.h>
 
 /* Register definitions */
 #define ELE_TOUCH_STATUS_0_ADDR	0x0
@@ -56,13 +54,15 @@
 /* MPR121 has 12 keys */
 #define MPR121_MAX_KEY_COUNT		12
 
+#define MPR121_MIN_POLL_INTERVAL	10
+#define MPR121_MAX_POLL_INTERVAL	200
+
 struct mpr121_touchkey {
 	struct i2c_client	*client;
 	struct input_dev	*input_dev;
-	unsigned int		key_val;
 	unsigned int		statusbits;
 	unsigned int		keycount;
-	u16			keycodes[MPR121_MAX_KEY_COUNT];
+	u32			keycodes[MPR121_MAX_KEY_COUNT];
 };
 
 struct mpr121_init_register {
@@ -82,49 +82,95 @@ static const struct mpr121_init_register init_reg_table[] = {
 	{ AUTO_CONFIG_CTRL_ADDR, 0x0b },
 };
 
-static irqreturn_t mpr_touchkey_interrupt(int irq, void *dev_id)
+static void mpr121_vdd_supply_disable(void *data)
 {
-	struct mpr121_touchkey *mpr121 = dev_id;
-	struct i2c_client *client = mpr121->client;
+	struct regulator *vdd_supply = data;
+
+	regulator_disable(vdd_supply);
+}
+
+static struct regulator *mpr121_vdd_supply_init(struct device *dev)
+{
+	struct regulator *vdd_supply;
+	int err;
+
+	vdd_supply = devm_regulator_get(dev, "vdd");
+	if (IS_ERR(vdd_supply)) {
+		dev_err(dev, "failed to get vdd regulator: %ld\n",
+			PTR_ERR(vdd_supply));
+		return vdd_supply;
+	}
+
+	err = regulator_enable(vdd_supply);
+	if (err) {
+		dev_err(dev, "failed to enable vdd regulator: %d\n", err);
+		return ERR_PTR(err);
+	}
+
+	err = devm_add_action_or_reset(dev, mpr121_vdd_supply_disable,
+				       vdd_supply);
+	if (err) {
+		dev_err(dev, "failed to add disable regulator action: %d\n",
+			err);
+		return ERR_PTR(err);
+	}
+
+	return vdd_supply;
+}
+
+static void mpr_touchkey_report(struct input_dev *dev)
+{
+	struct mpr121_touchkey *mpr121 = input_get_drvdata(dev);
 	struct input_dev *input = mpr121->input_dev;
-	unsigned int key_num, key_val, pressed;
+	struct i2c_client *client = mpr121->client;
+	unsigned long bit_changed;
+	unsigned int key_num;
 	int reg;
 
 	reg = i2c_smbus_read_byte_data(client, ELE_TOUCH_STATUS_1_ADDR);
 	if (reg < 0) {
 		dev_err(&client->dev, "i2c read error [%d]\n", reg);
-		goto out;
+		return;
 	}
 
 	reg <<= 8;
 	reg |= i2c_smbus_read_byte_data(client, ELE_TOUCH_STATUS_0_ADDR);
 	if (reg < 0) {
 		dev_err(&client->dev, "i2c read error [%d]\n", reg);
-		goto out;
+		return;
 	}
 
 	reg &= TOUCH_STATUS_MASK;
 	/* use old press bit to figure out which bit changed */
-	key_num = ffs(reg ^ mpr121->statusbits) - 1;
-	pressed = reg & (1 << key_num);
+	bit_changed = reg ^ mpr121->statusbits;
 	mpr121->statusbits = reg;
+	for_each_set_bit(key_num, &bit_changed, mpr121->keycount) {
+		unsigned int key_val, pressed;
 
-	key_val = mpr121->keycodes[key_num];
+		pressed = reg & BIT(key_num);
+		key_val = mpr121->keycodes[key_num];
 
-	input_event(input, EV_MSC, MSC_SCAN, key_num);
-	input_report_key(input, key_val, pressed);
+		input_event(input, EV_MSC, MSC_SCAN, key_num);
+		input_report_key(input, key_val, pressed);
+
+		dev_dbg(&client->dev, "key %d %d %s\n", key_num, key_val,
+			pressed ? "pressed" : "released");
+
+	}
 	input_sync(input);
+}
 
-	dev_dbg(&client->dev, "key %d %d %s\n", key_num, key_val,
-		pressed ? "pressed" : "released");
+static irqreturn_t mpr_touchkey_interrupt(int irq, void *dev_id)
+{
+	struct mpr121_touchkey *mpr121 = dev_id;
 
-out:
+	mpr_touchkey_report(mpr121->input_dev);
+
 	return IRQ_HANDLED;
 }
 
-static int mpr121_phys_init(const struct mpr121_platform_data *pdata,
-				      struct mpr121_touchkey *mpr121,
-				      struct i2c_client *client)
+static int mpr121_phys_init(struct mpr121_touchkey *mpr121,
+			    struct i2c_client *client, int vdd_uv)
 {
 	const struct mpr121_init_register *reg;
 	unsigned char usl, lsl, tl, eleconf;
@@ -154,9 +200,9 @@ static int mpr121_phys_init(const struct mpr121_platform_data *pdata,
 	/*
 	 * Capacitance on sensing input varies and needs to be compensated.
 	 * The internal MPR121-auto-configuration can do this if it's
-	 * registers are set properly (based on pdata->vdd_uv).
+	 * registers are set properly (based on vdd_uv).
 	 */
-	vdd = pdata->vdd_uv / 1000;
+	vdd = vdd_uv / 1000;
 	usl = ((vdd - 700) * 256) / vdd;
 	lsl = (usl * 65) / 100;
 	tl = (usl * 90) / 100;
@@ -184,106 +230,116 @@ err_i2c_write:
 	return ret;
 }
 
-static int mpr_touchkey_probe(struct i2c_client *client,
-			      const struct i2c_device_id *id)
+static int mpr_touchkey_probe(struct i2c_client *client)
 {
-	const struct mpr121_platform_data *pdata =
-			dev_get_platdata(&client->dev);
+	struct device *dev = &client->dev;
+	struct regulator *vdd_supply;
+	int vdd_uv;
 	struct mpr121_touchkey *mpr121;
 	struct input_dev *input_dev;
+	u32 poll_interval = 0;
 	int error;
 	int i;
 
-	if (!pdata) {
-		dev_err(&client->dev, "no platform data defined\n");
-		return -EINVAL;
-	}
+	vdd_supply = mpr121_vdd_supply_init(dev);
+	if (IS_ERR(vdd_supply))
+		return PTR_ERR(vdd_supply);
 
-	if (!pdata->keymap || !pdata->keymap_size) {
-		dev_err(&client->dev, "missing keymap data\n");
-		return -EINVAL;
-	}
+	vdd_uv = regulator_get_voltage(vdd_supply);
 
-	if (pdata->keymap_size > MPR121_MAX_KEY_COUNT) {
-		dev_err(&client->dev, "too many keys defined\n");
-		return -EINVAL;
-	}
+	mpr121 = devm_kzalloc(dev, sizeof(*mpr121), GFP_KERNEL);
+	if (!mpr121)
+		return -ENOMEM;
 
-	if (!client->irq) {
-		dev_err(&client->dev, "irq number should not be zero\n");
-		return -EINVAL;
-	}
-
-	mpr121 = kzalloc(sizeof(struct mpr121_touchkey), GFP_KERNEL);
-	input_dev = input_allocate_device();
-	if (!mpr121 || !input_dev) {
-		dev_err(&client->dev, "Failed to allocate memory\n");
-		error = -ENOMEM;
-		goto err_free_mem;
-	}
+	input_dev = devm_input_allocate_device(dev);
+	if (!input_dev)
+		return -ENOMEM;
 
 	mpr121->client = client;
 	mpr121->input_dev = input_dev;
-	mpr121->keycount = pdata->keymap_size;
+	mpr121->keycount = device_property_count_u32(dev, "linux,keycodes");
+	if (mpr121->keycount > MPR121_MAX_KEY_COUNT) {
+		dev_err(dev, "too many keys defined (%d)\n", mpr121->keycount);
+		return -EINVAL;
+	}
+
+	error = device_property_read_u32_array(dev, "linux,keycodes",
+					       mpr121->keycodes,
+					       mpr121->keycount);
+	if (error) {
+		dev_err(dev,
+			"failed to read linux,keycode property: %d\n", error);
+		return error;
+	}
 
 	input_dev->name = "Freescale MPR121 Touchkey";
 	input_dev->id.bustype = BUS_I2C;
-	input_dev->dev.parent = &client->dev;
-	input_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_REP);
+	input_dev->dev.parent = dev;
+	if (device_property_read_bool(dev, "autorepeat"))
+		__set_bit(EV_REP, input_dev->evbit);
+	input_set_capability(input_dev, EV_MSC, MSC_SCAN);
+	input_set_drvdata(input_dev, mpr121);
 
 	input_dev->keycode = mpr121->keycodes;
 	input_dev->keycodesize = sizeof(mpr121->keycodes[0]);
 	input_dev->keycodemax = mpr121->keycount;
 
-	for (i = 0; i < pdata->keymap_size; i++) {
-		input_set_capability(input_dev, EV_KEY, pdata->keymap[i]);
-		mpr121->keycodes[i] = pdata->keymap[i];
+	for (i = 0; i < mpr121->keycount; i++)
+		input_set_capability(input_dev, EV_KEY, mpr121->keycodes[i]);
+
+	error = mpr121_phys_init(mpr121, client, vdd_uv);
+	if (error) {
+		dev_err(dev, "Failed to init register\n");
+		return error;
 	}
 
-	error = mpr121_phys_init(pdata, mpr121, client);
-	if (error) {
-		dev_err(&client->dev, "Failed to init register\n");
-		goto err_free_mem;
-	}
+	device_property_read_u32(dev, "poll-interval", &poll_interval);
 
-	error = request_threaded_irq(client->irq, NULL,
-				     mpr_touchkey_interrupt,
-				     IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
-				     client->dev.driver->name, mpr121);
-	if (error) {
-		dev_err(&client->dev, "Failed to register interrupt\n");
-		goto err_free_mem;
+	if (client->irq) {
+		error = devm_request_threaded_irq(dev, client->irq, NULL,
+						  mpr_touchkey_interrupt,
+						  IRQF_TRIGGER_FALLING |
+						  IRQF_ONESHOT,
+						  dev->driver->name, mpr121);
+		if (error) {
+			dev_err(dev, "Failed to register interrupt\n");
+			return error;
+		}
+	} else if (poll_interval) {
+		if (poll_interval < MPR121_MIN_POLL_INTERVAL)
+			return -EINVAL;
+
+		if (poll_interval > MPR121_MAX_POLL_INTERVAL)
+			return -EINVAL;
+
+		error = input_setup_polling(input_dev, mpr_touchkey_report);
+		if (error) {
+			dev_err(dev, "Failed to setup polling\n");
+			return error;
+		}
+
+		input_set_poll_interval(input_dev, poll_interval);
+		input_set_min_poll_interval(input_dev,
+					    MPR121_MIN_POLL_INTERVAL);
+		input_set_max_poll_interval(input_dev,
+					    MPR121_MAX_POLL_INTERVAL);
+	} else {
+		dev_err(dev,
+			"invalid IRQ number and polling not configured\n");
+		return -EINVAL;
 	}
 
 	error = input_register_device(input_dev);
 	if (error)
-		goto err_free_irq;
+		return error;
 
 	i2c_set_clientdata(client, mpr121);
-	device_init_wakeup(&client->dev, pdata->wakeup);
-
-	return 0;
-
-err_free_irq:
-	free_irq(client->irq, mpr121);
-err_free_mem:
-	input_free_device(input_dev);
-	kfree(mpr121);
-	return error;
-}
-
-static int mpr_touchkey_remove(struct i2c_client *client)
-{
-	struct mpr121_touchkey *mpr121 = i2c_get_clientdata(client);
-
-	free_irq(client->irq, mpr121);
-	input_unregister_device(mpr121->input_dev);
-	kfree(mpr121);
+	device_init_wakeup(dev,
+			device_property_read_bool(dev, "wakeup-source"));
 
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int mpr_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
@@ -309,9 +365,8 @@ static int mpr_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(mpr121_touchkey_pm_ops, mpr_suspend, mpr_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(mpr121_touchkey_pm_ops, mpr_suspend, mpr_resume);
 
 static const struct i2c_device_id mpr121_id[] = {
 	{ "mpr121_touchkey", 0 },
@@ -319,15 +374,22 @@ static const struct i2c_device_id mpr121_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, mpr121_id);
 
+#ifdef CONFIG_OF
+static const struct of_device_id mpr121_touchkey_dt_match_table[] = {
+	{ .compatible = "fsl,mpr121-touchkey" },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, mpr121_touchkey_dt_match_table);
+#endif
+
 static struct i2c_driver mpr_touchkey_driver = {
 	.driver = {
 		.name	= "mpr121",
-		.owner	= THIS_MODULE,
-		.pm	= &mpr121_touchkey_pm_ops,
+		.pm	= pm_sleep_ptr(&mpr121_touchkey_pm_ops),
+		.of_match_table = of_match_ptr(mpr121_touchkey_dt_match_table),
 	},
 	.id_table	= mpr121_id,
 	.probe		= mpr_touchkey_probe,
-	.remove		= mpr_touchkey_remove,
 };
 
 module_i2c_driver(mpr_touchkey_driver);

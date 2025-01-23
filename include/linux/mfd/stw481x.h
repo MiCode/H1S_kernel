@@ -1,10 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2011 ST-Ericsson SA
  * Written on behalf of Linaro for ST-Ericsson
  *
  * Author: Linus Walleij <linus.walleij@linaro.org>
- *
- * License terms: GNU General Public License (GPL) version 2
  */
 #ifndef MFD_STW481X_H
 #define MFD_STW481X_H
@@ -41,15 +40,11 @@
 
 /**
  * struct stw481x - state holder for the Stw481x drivers
- * @mutex: mutex to serialize I2C accesses
  * @i2c_client: corresponding I2C client
- * @regulator: regulator device for regulator children
  * @map: regmap handle to access device registers
  */
 struct stw481x {
-	struct mutex		lock;
 	struct i2c_client	*client;
-	struct regulator_dev	*vmmc_regulator;
 	struct regmap		*map;
 };
 

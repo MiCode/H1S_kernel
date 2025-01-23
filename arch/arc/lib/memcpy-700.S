@@ -1,14 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
-#include <asm/linkage.h>
+#include <linux/linkage.h>
 
-ARC_ENTRY memcpy
+ENTRY_CFI(memcpy)
 	or	r3,r0,r1
 	asl_s	r3,r3,30
 	mov_s	r5,r0
@@ -63,4 +60,4 @@ ARC_ENTRY memcpy
 .Lendbloop:
 	j_s.d	[blink]
 	stb	r12,[r5,0]
-ARC_EXIT memcpy
+END_CFI(memcpy)

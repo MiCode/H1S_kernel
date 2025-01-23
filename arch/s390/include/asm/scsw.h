@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  Helper functions for scsw access.
  *
@@ -96,7 +97,8 @@ struct tm_scsw {
 	u32 dstat:8;
 	u32 cstat:8;
 	u32 fcxs:8;
-	u32 schxs:8;
+	u32 ifob:1;
+	u32 sesq:7;
 } __attribute__ ((packed));
 
 /**
@@ -177,6 +179,9 @@ union scsw {
 #define SCHN_STAT_INTF_CTRL_CHK	 0x02
 #define SCHN_STAT_CHAIN_CHECK	 0x01
 
+#define SCSW_SESQ_DEV_NOFCX	 3
+#define SCSW_SESQ_PATH_NOFCX	 4
+
 /*
  * architectured values for first sense byte
  */
@@ -209,6 +214,11 @@ union scsw {
 #define SNS2_FIRST_LOG_ERR	0x20
 #define SNS2_ENV_DATA_PRESENT	0x10
 #define SNS2_INPRECISE_END	0x04
+
+/*
+ * architectured values for PPRC errors
+ */
+#define SNS7_INVALID_ON_SEC	0x0e
 
 /**
  * scsw_is_tm - check for transport mode scsw
@@ -385,10 +395,10 @@ static inline int scsw_cmd_is_valid_key(union scsw *scsw)
 }
 
 /**
- * scsw_cmd_is_valid_sctl - check fctl field validity
+ * scsw_cmd_is_valid_sctl - check sctl field validity
  * @scsw: pointer to scsw
  *
- * Return non-zero if the fctl field of the specified command mode scsw is
+ * Return non-zero if the sctl field of the specified command mode scsw is
  * valid, zero otherwise.
  */
 static inline int scsw_cmd_is_valid_sctl(union scsw *scsw)
@@ -503,9 +513,21 @@ static inline int scsw_cmd_is_valid_zcc(union scsw *scsw)
  */
 static inline int scsw_cmd_is_valid_ectl(union scsw *scsw)
 {
-	return (scsw->cmd.stctl & SCSW_STCTL_STATUS_PEND) &&
-	       !(scsw->cmd.stctl & SCSW_STCTL_INTER_STATUS) &&
-	       (scsw->cmd.stctl & SCSW_STCTL_ALERT_STATUS);
+	/* Must be status pending. */
+	if (!(scsw->cmd.stctl & SCSW_STCTL_STATUS_PEND))
+		return 0;
+
+	/* Must have alert status. */
+	if (!(scsw->cmd.stctl & SCSW_STCTL_ALERT_STATUS))
+		return 0;
+
+	/* Must be alone or together with primary, secondary or both,
+	 * => no intermediate status.
+	 */
+	if (scsw->cmd.stctl & SCSW_STCTL_INTER_STATUS)
+		return 0;
+
+	return 1;
 }
 
 /**
@@ -517,11 +539,25 @@ static inline int scsw_cmd_is_valid_ectl(union scsw *scsw)
  */
 static inline int scsw_cmd_is_valid_pno(union scsw *scsw)
 {
-	return (scsw->cmd.fctl != 0) &&
-	       (scsw->cmd.stctl & SCSW_STCTL_STATUS_PEND) &&
-	       (!(scsw->cmd.stctl & SCSW_STCTL_INTER_STATUS) ||
-		 ((scsw->cmd.stctl & SCSW_STCTL_INTER_STATUS) &&
-		  (scsw->cmd.actl & SCSW_ACTL_SUSPENDED)));
+	/* Must indicate at least one I/O function. */
+	if (!scsw->cmd.fctl)
+		return 0;
+
+	/* Must be status pending. */
+	if (!(scsw->cmd.stctl & SCSW_STCTL_STATUS_PEND))
+		return 0;
+
+	/* Can be status pending alone, or with any combination of primary,
+	 * secondary and alert => no intermediate status.
+	 */
+	if (!(scsw->cmd.stctl & SCSW_STCTL_INTER_STATUS))
+		return 1;
+
+	/* If intermediate, must be suspended. */
+	if (scsw->cmd.actl & SCSW_ACTL_SUSPENDED)
+		return 1;
+
+	return 0;
 }
 
 /**
@@ -671,9 +707,21 @@ static inline int scsw_tm_is_valid_q(union scsw *scsw)
  */
 static inline int scsw_tm_is_valid_ectl(union scsw *scsw)
 {
-	return (scsw->tm.stctl & SCSW_STCTL_STATUS_PEND) &&
-	       !(scsw->tm.stctl & SCSW_STCTL_INTER_STATUS) &&
-	       (scsw->tm.stctl & SCSW_STCTL_ALERT_STATUS);
+	/* Must be status pending. */
+	if (!(scsw->tm.stctl & SCSW_STCTL_STATUS_PEND))
+		return 0;
+
+	/* Must have alert status. */
+	if (!(scsw->tm.stctl & SCSW_STCTL_ALERT_STATUS))
+		return 0;
+
+	/* Must be alone or together with primary, secondary or both,
+	 * => no intermediate status.
+	 */
+	if (scsw->tm.stctl & SCSW_STCTL_INTER_STATUS)
+		return 0;
+
+	return 1;
 }
 
 /**
@@ -685,11 +733,25 @@ static inline int scsw_tm_is_valid_ectl(union scsw *scsw)
  */
 static inline int scsw_tm_is_valid_pno(union scsw *scsw)
 {
-	return (scsw->tm.fctl != 0) &&
-	       (scsw->tm.stctl & SCSW_STCTL_STATUS_PEND) &&
-	       (!(scsw->tm.stctl & SCSW_STCTL_INTER_STATUS) ||
-		 ((scsw->tm.stctl & SCSW_STCTL_INTER_STATUS) &&
-		  (scsw->tm.actl & SCSW_ACTL_SUSPENDED)));
+	/* Must indicate at least one I/O function. */
+	if (!scsw->tm.fctl)
+		return 0;
+
+	/* Must be status pending. */
+	if (!(scsw->tm.stctl & SCSW_STCTL_STATUS_PEND))
+		return 0;
+
+	/* Can be status pending alone, or with any combination of primary,
+	 * secondary and alert => no intermediate status.
+	 */
+	if (!(scsw->tm.stctl & SCSW_STCTL_INTER_STATUS))
+		return 1;
+
+	/* If intermediate, must be suspended. */
+	if (scsw->tm.actl & SCSW_ACTL_SUSPENDED)
+		return 1;
+
+	return 0;
 }
 
 /**

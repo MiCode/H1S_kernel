@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Copyright (C) 2012 Freescale Semiconductor, Inc.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
+#include <linux/export.h>
 #include <linux/threads.h>
 #include <asm/epapr_hcalls.h>
 #include <asm/reg.h>
@@ -20,12 +17,17 @@
 #ifndef CONFIG_PPC64
 /* epapr_ev_idle() was derived from e500_idle() */
 _GLOBAL(epapr_ev_idle)
-	CURRENT_THREAD_INFO(r3, r1)
-	PPC_LL	r4, TI_LOCAL_FLAGS(r3)	/* set napping bit */
+	PPC_LL	r4, TI_LOCAL_FLAGS(r2)	/* set napping bit */
 	ori	r4, r4,_TLF_NAPPING	/* so when we take an exception */
-	PPC_STL	r4, TI_LOCAL_FLAGS(r3)	/* it will return to our caller */
+	PPC_STL	r4, TI_LOCAL_FLAGS(r2)	/* it will return to our caller */
 
+#ifdef CONFIG_BOOKE_OR_40x
 	wrteei	1
+#else
+	mfmsr	r4
+	ori	r4, r4, MSR_EE
+	mtmsr	r4
+#endif
 
 idle_loop:
 	LOAD_REG_IMMEDIATE(r11, EV_HCALL_TOKEN(EV_IDLE))
@@ -53,3 +55,4 @@ epapr_hypercall_start:
 	nop
 	nop
 	blr
+EXPORT_SYMBOL(epapr_hypercall_start)

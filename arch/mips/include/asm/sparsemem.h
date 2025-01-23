@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _MIPS_SPARSEMEM_H
 #define _MIPS_SPARSEMEM_H
 #ifdef CONFIG_SPARSEMEM
@@ -11,7 +12,7 @@
 #else
 # define SECTION_SIZE_BITS	28
 #endif
-#define MAX_PHYSMEM_BITS	35
+#define MAX_PHYSMEM_BITS	48
 
 #endif /* CONFIG_SPARSEMEM */
 #endif /* _MIPS_SPARSEMEM_H */

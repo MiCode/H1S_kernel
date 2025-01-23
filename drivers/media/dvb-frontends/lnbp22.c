@@ -1,28 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * lnbp22.h - driver for lnb supply and control ic lnbp22
  *
  * Copyright (C) 2006 Dominik Kuhlen
  * Based on lnbp21 driver
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
- * Or, point your browser to http://www.gnu.org/copyleft/gpl.html
- *
- *
- * the project's page is at http://www.linuxtv.org
+ * the project's page is at https://linuxtv.org
  */
 #include <linux/delay.h>
 #include <linux/errno.h>
@@ -33,7 +16,7 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "lnbp22.h"
 
 static int debug;
@@ -48,7 +31,8 @@ struct lnbp22 {
 	struct i2c_adapter *i2c;
 };
 
-static int lnbp22_set_voltage(struct dvb_frontend *fe, fe_sec_voltage_t voltage)
+static int lnbp22_set_voltage(struct dvb_frontend *fe,
+			      enum fe_sec_voltage voltage)
 {
 	struct lnbp22 *lnbp22 = (struct lnbp22 *)fe->sec_priv;
 	struct i2c_msg msg = {
@@ -141,7 +125,7 @@ struct dvb_frontend *lnbp22_attach(struct dvb_frontend *fe,
 
 	return fe;
 }
-EXPORT_SYMBOL(lnbp22_attach);
+EXPORT_SYMBOL_GPL(lnbp22_attach);
 
 MODULE_DESCRIPTION("Driver for lnb supply and control ic lnbp22");
 MODULE_AUTHOR("Dominik Kuhlen");

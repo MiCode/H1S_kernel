@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * arch/arm/mach-ep93xx/edb93xx.c
  * Cirrus Logic EDB93xx Development Board support.
@@ -17,27 +18,21 @@
  * EDB9312
  * Copyright (C) 2006 Infosys Technologies Limited
  *                    Toufeeq Hussain <toufeeq_hussain@infosys.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or (at
- * your option) any later version.
  */
 
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
-#include <linux/gpio.h>
 #include <linux/i2c.h>
-#include <linux/i2c-gpio.h>
 #include <linux/spi/spi.h>
+#include <linux/gpio/machine.h>
 
 #include <sound/cs4271.h>
 
-#include <mach/hardware.h>
+#include "hardware.h"
 #include <linux/platform_data/video-ep93xx.h>
 #include <linux/platform_data/spi-ep93xx.h>
-#include <mach/gpio-ep93xx.h>
+#include "gpio-ep93xx.h"
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
@@ -62,14 +57,6 @@ static struct ep93xx_eth_data __initdata edb93xx_eth_data = {
 /*************************************************************************
  * EDB93xx i2c peripheral handling
  *************************************************************************/
-static struct i2c_gpio_platform_data __initdata edb93xx_i2c_gpio_data = {
-	.sda_pin		= EP93XX_GPIO_LINE_EEDAT,
-	.sda_is_open_drain	= 0,
-	.scl_pin		= EP93XX_GPIO_LINE_EECLK,
-	.scl_is_open_drain	= 0,
-	.udelay			= 0,	/* default to 100 kHz */
-	.timeout		= 0,	/* default to 100 ms */
-};
 
 static struct i2c_board_info __initdata edb93xxa_i2c_board_info[] = {
 	{
@@ -87,13 +74,11 @@ static void __init edb93xx_register_i2c(void)
 {
 	if (machine_is_edb9302a() || machine_is_edb9307a() ||
 	    machine_is_edb9315a()) {
-		ep93xx_register_i2c(&edb93xx_i2c_gpio_data,
-				    edb93xxa_i2c_board_info,
+		ep93xx_register_i2c(edb93xxa_i2c_board_info,
 				    ARRAY_SIZE(edb93xxa_i2c_board_info));
 	} else if (machine_is_edb9302() || machine_is_edb9307()
 		|| machine_is_edb9312() || machine_is_edb9315()) {
-		ep93xx_register_i2c(&edb93xx_i2c_gpio_data,
-				    edb93xx_i2c_board_info,
+		ep93xx_register_i2c(edb93xx_i2c_board_info,
 				    ARRAY_SIZE(edb93xx_i2c_board_info));
 	}
 }
@@ -106,33 +91,10 @@ static struct cs4271_platform_data edb93xx_cs4271_data = {
 	.gpio_nreset	= -EINVAL,	/* filled in later */
 };
 
-static int edb93xx_cs4271_hw_setup(struct spi_device *spi)
-{
-	return gpio_request_one(EP93XX_GPIO_LINE_EGPIO6,
-				GPIOF_OUT_INIT_HIGH, spi->modalias);
-}
-
-static void edb93xx_cs4271_hw_cleanup(struct spi_device *spi)
-{
-	gpio_free(EP93XX_GPIO_LINE_EGPIO6);
-}
-
-static void edb93xx_cs4271_hw_cs_control(struct spi_device *spi, int value)
-{
-	gpio_set_value(EP93XX_GPIO_LINE_EGPIO6, value);
-}
-
-static struct ep93xx_spi_chip_ops edb93xx_cs4271_hw = {
-	.setup		= edb93xx_cs4271_hw_setup,
-	.cleanup	= edb93xx_cs4271_hw_cleanup,
-	.cs_control	= edb93xx_cs4271_hw_cs_control,
-};
-
 static struct spi_board_info edb93xx_spi_board_info[] __initdata = {
 	{
 		.modalias		= "cs4271",
 		.platform_data		= &edb93xx_cs4271_data,
-		.controller_data	= &edb93xx_cs4271_hw,
 		.max_speed_hz		= 6000000,
 		.bus_num		= 0,
 		.chip_select		= 0,
@@ -140,8 +102,16 @@ static struct spi_board_info edb93xx_spi_board_info[] __initdata = {
 	},
 };
 
+static struct gpiod_lookup_table edb93xx_spi_cs_gpio_table = {
+	.dev_id = "spi0",
+	.table = {
+		GPIO_LOOKUP("A", 6, "cs", GPIO_ACTIVE_LOW),
+		{ },
+	},
+};
+
 static struct ep93xx_spi_info edb93xx_spi_info __initdata = {
-	.num_chipselect	= ARRAY_SIZE(edb93xx_spi_board_info),
+	/* Intentionally left blank */
 };
 
 static void __init edb93xx_register_spi(void)
@@ -153,6 +123,7 @@ static void __init edb93xx_register_spi(void)
 	else if (machine_is_edb9315a())
 		edb93xx_cs4271_data.gpio_nreset = EP93XX_GPIO_LINE_EGPIO14;
 
+	gpiod_add_lookup_table(&edb93xx_spi_cs_gpio_table);
 	ep93xx_register_spi(&edb93xx_spi_info, edb93xx_spi_board_info,
 			    ARRAY_SIZE(edb93xx_spi_board_info));
 }
@@ -205,8 +176,6 @@ static void __init edb93xx_register_pwm(void)
  * EDB93xx framebuffer
  *************************************************************************/
 static struct ep93xxfb_mach_info __initdata edb93xxfb_info = {
-	.num_modes	= EP93XXFB_USE_MODEDB,
-	.bpp		= 16,
 	.flags		= 0,
 };
 
@@ -266,6 +235,7 @@ static void __init edb93xx_init_machine(void)
 	edb93xx_register_pwm();
 	edb93xx_register_fb();
 	edb93xx_register_ide();
+	ep93xx_register_adc();
 }
 
 
@@ -273,11 +243,11 @@ static void __init edb93xx_init_machine(void)
 MACHINE_START(EDB9301, "Cirrus Logic EDB9301 Evaluation Board")
 	/* Maintainer: H Hartley Sweeten <hsweeten@visionengravers.com> */
 	.atag_offset	= 0x100,
+	.nr_irqs	= NR_EP93XX_IRQS,
 	.map_io		= ep93xx_map_io,
 	.init_irq	= ep93xx_init_irq,
 	.init_time	= ep93xx_timer_init,
 	.init_machine	= edb93xx_init_machine,
-	.init_late	= ep93xx_init_late,
 	.restart	= ep93xx_restart,
 MACHINE_END
 #endif
@@ -286,11 +256,11 @@ MACHINE_END
 MACHINE_START(EDB9302, "Cirrus Logic EDB9302 Evaluation Board")
 	/* Maintainer: George Kashperko <george@chas.com.ua> */
 	.atag_offset	= 0x100,
+	.nr_irqs	= NR_EP93XX_IRQS,
 	.map_io		= ep93xx_map_io,
 	.init_irq	= ep93xx_init_irq,
 	.init_time	= ep93xx_timer_init,
 	.init_machine	= edb93xx_init_machine,
-	.init_late	= ep93xx_init_late,
 	.restart	= ep93xx_restart,
 MACHINE_END
 #endif
@@ -299,11 +269,11 @@ MACHINE_END
 MACHINE_START(EDB9302A, "Cirrus Logic EDB9302A Evaluation Board")
 	/* Maintainer: Lennert Buytenhek <buytenh@wantstofly.org> */
 	.atag_offset	= 0x100,
+	.nr_irqs	= NR_EP93XX_IRQS,
 	.map_io		= ep93xx_map_io,
 	.init_irq	= ep93xx_init_irq,
 	.init_time	= ep93xx_timer_init,
 	.init_machine	= edb93xx_init_machine,
-	.init_late	= ep93xx_init_late,
 	.restart	= ep93xx_restart,
 MACHINE_END
 #endif
@@ -312,11 +282,11 @@ MACHINE_END
 MACHINE_START(EDB9307, "Cirrus Logic EDB9307 Evaluation Board")
 	/* Maintainer: Herbert Valerio Riedel <hvr@gnu.org> */
 	.atag_offset	= 0x100,
+	.nr_irqs	= NR_EP93XX_IRQS,
 	.map_io		= ep93xx_map_io,
 	.init_irq	= ep93xx_init_irq,
 	.init_time	= ep93xx_timer_init,
 	.init_machine	= edb93xx_init_machine,
-	.init_late	= ep93xx_init_late,
 	.restart	= ep93xx_restart,
 MACHINE_END
 #endif
@@ -325,11 +295,11 @@ MACHINE_END
 MACHINE_START(EDB9307A, "Cirrus Logic EDB9307A Evaluation Board")
 	/* Maintainer: H Hartley Sweeten <hsweeten@visionengravers.com> */
 	.atag_offset	= 0x100,
+	.nr_irqs	= NR_EP93XX_IRQS,
 	.map_io		= ep93xx_map_io,
 	.init_irq	= ep93xx_init_irq,
 	.init_time	= ep93xx_timer_init,
 	.init_machine	= edb93xx_init_machine,
-	.init_late	= ep93xx_init_late,
 	.restart	= ep93xx_restart,
 MACHINE_END
 #endif
@@ -338,11 +308,11 @@ MACHINE_END
 MACHINE_START(EDB9312, "Cirrus Logic EDB9312 Evaluation Board")
 	/* Maintainer: Toufeeq Hussain <toufeeq_hussain@infosys.com> */
 	.atag_offset	= 0x100,
+	.nr_irqs	= NR_EP93XX_IRQS,
 	.map_io		= ep93xx_map_io,
 	.init_irq	= ep93xx_init_irq,
 	.init_time	= ep93xx_timer_init,
 	.init_machine	= edb93xx_init_machine,
-	.init_late	= ep93xx_init_late,
 	.restart	= ep93xx_restart,
 MACHINE_END
 #endif
@@ -351,11 +321,11 @@ MACHINE_END
 MACHINE_START(EDB9315, "Cirrus Logic EDB9315 Evaluation Board")
 	/* Maintainer: Lennert Buytenhek <buytenh@wantstofly.org> */
 	.atag_offset	= 0x100,
+	.nr_irqs	= NR_EP93XX_IRQS,
 	.map_io		= ep93xx_map_io,
 	.init_irq	= ep93xx_init_irq,
 	.init_time	= ep93xx_timer_init,
 	.init_machine	= edb93xx_init_machine,
-	.init_late	= ep93xx_init_late,
 	.restart	= ep93xx_restart,
 MACHINE_END
 #endif
@@ -364,11 +334,11 @@ MACHINE_END
 MACHINE_START(EDB9315A, "Cirrus Logic EDB9315A Evaluation Board")
 	/* Maintainer: Lennert Buytenhek <buytenh@wantstofly.org> */
 	.atag_offset	= 0x100,
+	.nr_irqs	= NR_EP93XX_IRQS,
 	.map_io		= ep93xx_map_io,
 	.init_irq	= ep93xx_init_irq,
 	.init_time	= ep93xx_timer_init,
 	.init_machine	= edb93xx_init_machine,
-	.init_late	= ep93xx_init_late,
 	.restart	= ep93xx_restart,
 MACHINE_END
 #endif

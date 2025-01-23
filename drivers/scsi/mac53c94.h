@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * mac53c94.h: definitions for the driver for the 53c94 SCSI bus adaptor
  * found on Power Macintosh computers, controlling the external SCSI chain.
@@ -210,5 +211,16 @@ struct mac53c94_regs {
 #define CF4_EAN		0x04
 #define CF4_TEST	0x02
 #define CF4_BBTE	0x01
+
+struct mac53c94_cmd_priv {
+	int this_residual;
+	int status;
+	int message;
+};
+
+static inline struct mac53c94_cmd_priv *mac53c94_priv(struct scsi_cmnd *cmd)
+{
+	return scsi_cmd_priv(cmd);
+}
 
 #endif /* _MAC53C94_H */

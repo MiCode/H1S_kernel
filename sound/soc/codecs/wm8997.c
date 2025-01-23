@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * wm8997.c  --  WM8997 ALSA SoC Audio driver
  *
  * Copyright 2012 Wolfson Microelectronics plc
  *
  * Author: Charles Keepax <ckeepax@opensource.wolfsonmicro.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -40,7 +37,7 @@ struct wm8997_priv {
 static DECLARE_TLV_DB_SCALE(ana_tlv, 0, 100, 0);
 static DECLARE_TLV_DB_SCALE(eq_tlv, -1200, 100, 0);
 static DECLARE_TLV_DB_SCALE(digital_tlv, -6400, 50, 0);
-static DECLARE_TLV_DB_SCALE(noise_tlv, 0, 600, 0);
+static DECLARE_TLV_DB_SCALE(noise_tlv, -13200, 600, 0);
 static DECLARE_TLV_DB_SCALE(ng_tlv, -10200, 600, 0);
 
 static const struct reg_default wm8997_sysclk_reva_patch[] = {
@@ -84,9 +81,9 @@ static const struct reg_default wm8997_sysclk_reva_patch[] = {
 static int wm8997_sysclk_ev(struct snd_soc_dapm_widget *w,
 			    struct snd_kcontrol *kcontrol, int event)
 {
-	struct snd_soc_codec *codec = w->codec;
-	struct arizona *arizona = dev_get_drvdata(codec->dev->parent);
-	struct regmap *regmap = codec->control_data;
+	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+	struct arizona *arizona = dev_get_drvdata(component->dev->parent);
+	struct regmap *regmap = arizona->regmap;
 	const struct reg_default *patch = NULL;
 	int i, patch_size;
 
@@ -106,14 +103,19 @@ static int wm8997_sysclk_ev(struct snd_soc_dapm_widget *w,
 				regmap_write_async(regmap, patch[i].reg,
 						   patch[i].def);
 		break;
-	default:
+	case SND_SOC_DAPM_PRE_PMD:
 		break;
+	case SND_SOC_DAPM_PRE_PMU:
+	case SND_SOC_DAPM_POST_PMD:
+		return arizona_clk_ev(w, kcontrol, event);
+	default:
+		return 0;
 	}
 
-	return 0;
+	return arizona_dvfs_sysclk_ev(w, kcontrol, event);
 }
 
-static const char *wm8997_osr_text[] = {
+static const char * const wm8997_osr_text[] = {
 	"Low power", "Normal", "High performance",
 };
 
@@ -123,10 +125,12 @@ static const unsigned int wm8997_osr_val[] = {
 
 static const struct soc_enum wm8997_hpout_osr[] = {
 	SOC_VALUE_ENUM_SINGLE(ARIZONA_OUTPUT_PATH_CONFIG_1L,
-			      ARIZONA_OUT1_OSR_SHIFT, 0x7, 3,
+			      ARIZONA_OUT1_OSR_SHIFT, 0x7,
+			      ARRAY_SIZE(wm8997_osr_text),
 			      wm8997_osr_text, wm8997_osr_val),
 	SOC_VALUE_ENUM_SINGLE(ARIZONA_OUTPUT_PATH_CONFIG_3L,
-			      ARIZONA_OUT3_OSR_SHIFT, 0x7, 3,
+			      ARIZONA_OUT3_OSR_SHIFT, 0x7,
+			      ARRAY_SIZE(wm8997_osr_text),
 			      wm8997_osr_text, wm8997_osr_val),
 };
 
@@ -170,15 +174,7 @@ ARIZONA_MIXER_CONTROLS("EQ2", ARIZONA_EQ2MIX_INPUT_1_SOURCE),
 ARIZONA_MIXER_CONTROLS("EQ3", ARIZONA_EQ3MIX_INPUT_1_SOURCE),
 ARIZONA_MIXER_CONTROLS("EQ4", ARIZONA_EQ4MIX_INPUT_1_SOURCE),
 
-SND_SOC_BYTES_MASK("EQ1 Coefficients", ARIZONA_EQ1_1, 21,
-		   ARIZONA_EQ1_ENA_MASK),
-SND_SOC_BYTES_MASK("EQ2 Coefficients", ARIZONA_EQ2_1, 21,
-		   ARIZONA_EQ2_ENA_MASK),
-SND_SOC_BYTES_MASK("EQ3 Coefficients", ARIZONA_EQ3_1, 21,
-		   ARIZONA_EQ3_ENA_MASK),
-SND_SOC_BYTES_MASK("EQ4 Coefficients", ARIZONA_EQ4_1, 21,
-		   ARIZONA_EQ4_ENA_MASK),
-
+ARIZONA_EQ_CONTROL("EQ1 Coefficients", ARIZONA_EQ1_2),
 SOC_SINGLE_TLV("EQ1 B1 Volume", ARIZONA_EQ1_1, ARIZONA_EQ1_B1_GAIN_SHIFT,
 	       24, 0, eq_tlv),
 SOC_SINGLE_TLV("EQ1 B2 Volume", ARIZONA_EQ1_1, ARIZONA_EQ1_B2_GAIN_SHIFT,
@@ -190,6 +186,7 @@ SOC_SINGLE_TLV("EQ1 B4 Volume", ARIZONA_EQ1_2, ARIZONA_EQ1_B4_GAIN_SHIFT,
 SOC_SINGLE_TLV("EQ1 B5 Volume", ARIZONA_EQ1_2, ARIZONA_EQ1_B5_GAIN_SHIFT,
 	       24, 0, eq_tlv),
 
+ARIZONA_EQ_CONTROL("EQ2 Coefficients", ARIZONA_EQ2_2),
 SOC_SINGLE_TLV("EQ2 B1 Volume", ARIZONA_EQ2_1, ARIZONA_EQ2_B1_GAIN_SHIFT,
 	       24, 0, eq_tlv),
 SOC_SINGLE_TLV("EQ2 B2 Volume", ARIZONA_EQ2_1, ARIZONA_EQ2_B2_GAIN_SHIFT,
@@ -201,6 +198,7 @@ SOC_SINGLE_TLV("EQ2 B4 Volume", ARIZONA_EQ2_2, ARIZONA_EQ2_B4_GAIN_SHIFT,
 SOC_SINGLE_TLV("EQ2 B5 Volume", ARIZONA_EQ2_2, ARIZONA_EQ2_B5_GAIN_SHIFT,
 	       24, 0, eq_tlv),
 
+ARIZONA_EQ_CONTROL("EQ3 Coefficients", ARIZONA_EQ3_2),
 SOC_SINGLE_TLV("EQ3 B1 Volume", ARIZONA_EQ3_1, ARIZONA_EQ3_B1_GAIN_SHIFT,
 	       24, 0, eq_tlv),
 SOC_SINGLE_TLV("EQ3 B2 Volume", ARIZONA_EQ3_1, ARIZONA_EQ3_B2_GAIN_SHIFT,
@@ -212,6 +210,7 @@ SOC_SINGLE_TLV("EQ3 B4 Volume", ARIZONA_EQ3_2, ARIZONA_EQ3_B4_GAIN_SHIFT,
 SOC_SINGLE_TLV("EQ3 B5 Volume", ARIZONA_EQ3_2, ARIZONA_EQ3_B5_GAIN_SHIFT,
 	       24, 0, eq_tlv),
 
+ARIZONA_EQ_CONTROL("EQ4 Coefficients", ARIZONA_EQ4_2),
 SOC_SINGLE_TLV("EQ4 B1 Volume", ARIZONA_EQ4_1, ARIZONA_EQ4_B1_GAIN_SHIFT,
 	       24, 0, eq_tlv),
 SOC_SINGLE_TLV("EQ4 B2 Volume", ARIZONA_EQ4_1, ARIZONA_EQ4_B2_GAIN_SHIFT,
@@ -239,13 +238,13 @@ SOC_ENUM("LHPF2 Mode", arizona_lhpf2_mode),
 SOC_ENUM("LHPF3 Mode", arizona_lhpf3_mode),
 SOC_ENUM("LHPF4 Mode", arizona_lhpf4_mode),
 
-SND_SOC_BYTES("LHPF1 Coefficients", ARIZONA_HPLPF1_2, 1),
-SND_SOC_BYTES("LHPF2 Coefficients", ARIZONA_HPLPF2_2, 1),
-SND_SOC_BYTES("LHPF3 Coefficients", ARIZONA_HPLPF3_2, 1),
-SND_SOC_BYTES("LHPF4 Coefficients", ARIZONA_HPLPF4_2, 1),
+ARIZONA_LHPF_CONTROL("LHPF1 Coefficients", ARIZONA_HPLPF1_2),
+ARIZONA_LHPF_CONTROL("LHPF2 Coefficients", ARIZONA_HPLPF2_2),
+ARIZONA_LHPF_CONTROL("LHPF3 Coefficients", ARIZONA_HPLPF3_2),
+ARIZONA_LHPF_CONTROL("LHPF4 Coefficients", ARIZONA_HPLPF4_2),
 
-SOC_VALUE_ENUM("ISRC1 FSL", arizona_isrc_fsl[0]),
-SOC_VALUE_ENUM("ISRC2 FSL", arizona_isrc_fsl[1]),
+SOC_ENUM("ISRC1 FSL", arizona_isrc_fsl[0]),
+SOC_ENUM("ISRC2 FSL", arizona_isrc_fsl[1]),
 
 ARIZONA_MIXER_CONTROLS("Mic", ARIZONA_MICMIX_INPUT_1_SOURCE),
 ARIZONA_MIXER_CONTROLS("Noise", ARIZONA_NOISEMIX_INPUT_1_SOURCE),
@@ -285,8 +284,8 @@ SOC_DOUBLE_R_TLV("SPKDAT1 Digital Volume", ARIZONA_DAC_DIGITAL_VOLUME_5L,
 		 ARIZONA_DAC_DIGITAL_VOLUME_5R, ARIZONA_OUT5L_VOL_SHIFT,
 		 0xbf, 0, digital_tlv),
 
-SOC_VALUE_ENUM("HPOUT1 OSR", wm8997_hpout_osr[0]),
-SOC_VALUE_ENUM("EPOUT OSR", wm8997_hpout_osr[1]),
+SOC_ENUM("HPOUT1 OSR", wm8997_hpout_osr[0]),
+SOC_ENUM("EPOUT OSR", wm8997_hpout_osr[1]),
 
 SOC_ENUM("Output Ramp Up", arizona_out_vi_ramp),
 SOC_ENUM("Output Ramp Down", arizona_out_vd_ramp),
@@ -404,13 +403,16 @@ static const struct soc_enum wm8997_aec_loopback =
 			      wm8997_aec_loopback_values);
 
 static const struct snd_kcontrol_new wm8997_aec_loopback_mux =
-	SOC_DAPM_VALUE_ENUM("AEC Loopback", wm8997_aec_loopback);
+	SOC_DAPM_ENUM("AEC Loopback", wm8997_aec_loopback);
 
 static const struct snd_soc_dapm_widget wm8997_dapm_widgets[] = {
 SND_SOC_DAPM_SUPPLY("SYSCLK", ARIZONA_SYSTEM_CLOCK_1, ARIZONA_SYSCLK_ENA_SHIFT,
-		    0, wm8997_sysclk_ev, SND_SOC_DAPM_POST_PMU),
+		    0, wm8997_sysclk_ev,
+		    SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD |
+		    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 SND_SOC_DAPM_SUPPLY("ASYNCCLK", ARIZONA_ASYNC_CLOCK_1,
-		    ARIZONA_ASYNC_CLK_ENA_SHIFT, 0, NULL, 0),
+		    ARIZONA_ASYNC_CLK_ENA_SHIFT, 0, arizona_clk_ev,
+		    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 SND_SOC_DAPM_SUPPLY("OPCLK", ARIZONA_OUTPUT_SYSTEM_CLOCK,
 		    ARIZONA_OPCLK_ENA_SHIFT, 0, NULL, 0),
 SND_SOC_DAPM_SUPPLY("ASYNCOPCLK", ARIZONA_OUTPUT_ASYNC_CLOCK,
@@ -511,111 +513,113 @@ SND_SOC_DAPM_PGA("ISRC2DEC2", ARIZONA_ISRC_2_CTRL_3,
 
 SND_SOC_DAPM_AIF_OUT("AIF1TX1", NULL, 0,
 		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX1_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("AIF1TX2", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("AIF1TX2", NULL, 1,
 		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX2_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("AIF1TX3", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("AIF1TX3", NULL, 2,
 		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX3_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("AIF1TX4", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("AIF1TX4", NULL, 3,
 		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX4_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("AIF1TX5", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("AIF1TX5", NULL, 4,
 		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX5_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("AIF1TX6", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("AIF1TX6", NULL, 5,
 		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX6_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("AIF1TX7", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("AIF1TX7", NULL, 6,
 		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX7_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("AIF1TX8", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("AIF1TX8", NULL, 7,
 		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX8_ENA_SHIFT, 0),
 
 SND_SOC_DAPM_AIF_IN("AIF1RX1", NULL, 0,
 		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX1_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("AIF1RX2", NULL, 0,
+SND_SOC_DAPM_AIF_IN("AIF1RX2", NULL, 1,
 		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX2_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("AIF1RX3", NULL, 0,
+SND_SOC_DAPM_AIF_IN("AIF1RX3", NULL, 2,
 		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX3_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("AIF1RX4", NULL, 0,
+SND_SOC_DAPM_AIF_IN("AIF1RX4", NULL, 3,
 		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX4_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("AIF1RX5", NULL, 0,
+SND_SOC_DAPM_AIF_IN("AIF1RX5", NULL, 4,
 		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX5_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("AIF1RX6", NULL, 0,
+SND_SOC_DAPM_AIF_IN("AIF1RX6", NULL, 5,
 		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX6_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("AIF1RX7", NULL, 0,
+SND_SOC_DAPM_AIF_IN("AIF1RX7", NULL, 6,
 		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX7_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("AIF1RX8", NULL, 0,
+SND_SOC_DAPM_AIF_IN("AIF1RX8", NULL, 7,
 		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX8_ENA_SHIFT, 0),
 
 SND_SOC_DAPM_AIF_OUT("AIF2TX1", NULL, 0,
 		     ARIZONA_AIF2_TX_ENABLES, ARIZONA_AIF2TX1_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("AIF2TX2", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("AIF2TX2", NULL, 1,
 		     ARIZONA_AIF2_TX_ENABLES, ARIZONA_AIF2TX2_ENA_SHIFT, 0),
 
 SND_SOC_DAPM_AIF_IN("AIF2RX1", NULL, 0,
 		    ARIZONA_AIF2_RX_ENABLES, ARIZONA_AIF2RX1_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("AIF2RX2", NULL, 0,
+SND_SOC_DAPM_AIF_IN("AIF2RX2", NULL, 1,
 		    ARIZONA_AIF2_RX_ENABLES, ARIZONA_AIF2RX2_ENA_SHIFT, 0),
 
 SND_SOC_DAPM_AIF_OUT("SLIMTX1", NULL, 0,
 		     ARIZONA_SLIMBUS_TX_CHANNEL_ENABLE,
 		     ARIZONA_SLIMTX1_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("SLIMTX2", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("SLIMTX2", NULL, 1,
 		     ARIZONA_SLIMBUS_TX_CHANNEL_ENABLE,
 		     ARIZONA_SLIMTX2_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("SLIMTX3", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("SLIMTX3", NULL, 2,
 		     ARIZONA_SLIMBUS_TX_CHANNEL_ENABLE,
 		     ARIZONA_SLIMTX3_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("SLIMTX4", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("SLIMTX4", NULL, 3,
 		     ARIZONA_SLIMBUS_TX_CHANNEL_ENABLE,
 		     ARIZONA_SLIMTX4_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("SLIMTX5", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("SLIMTX5", NULL, 4,
 		     ARIZONA_SLIMBUS_TX_CHANNEL_ENABLE,
 		     ARIZONA_SLIMTX5_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("SLIMTX6", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("SLIMTX6", NULL, 5,
 		     ARIZONA_SLIMBUS_TX_CHANNEL_ENABLE,
 		     ARIZONA_SLIMTX6_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("SLIMTX7", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("SLIMTX7", NULL, 6,
 		     ARIZONA_SLIMBUS_TX_CHANNEL_ENABLE,
 		     ARIZONA_SLIMTX7_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_OUT("SLIMTX8", NULL, 0,
+SND_SOC_DAPM_AIF_OUT("SLIMTX8", NULL, 7,
 		     ARIZONA_SLIMBUS_TX_CHANNEL_ENABLE,
 		     ARIZONA_SLIMTX8_ENA_SHIFT, 0),
 
 SND_SOC_DAPM_AIF_IN("SLIMRX1", NULL, 0,
 		    ARIZONA_SLIMBUS_RX_CHANNEL_ENABLE,
 		    ARIZONA_SLIMRX1_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("SLIMRX2", NULL, 0,
+SND_SOC_DAPM_AIF_IN("SLIMRX2", NULL, 1,
 		    ARIZONA_SLIMBUS_RX_CHANNEL_ENABLE,
 		    ARIZONA_SLIMRX2_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("SLIMRX3", NULL, 0,
+SND_SOC_DAPM_AIF_IN("SLIMRX3", NULL, 2,
 		    ARIZONA_SLIMBUS_RX_CHANNEL_ENABLE,
 		    ARIZONA_SLIMRX3_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("SLIMRX4", NULL, 0,
+SND_SOC_DAPM_AIF_IN("SLIMRX4", NULL, 3,
 		    ARIZONA_SLIMBUS_RX_CHANNEL_ENABLE,
 		    ARIZONA_SLIMRX4_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("SLIMRX5", NULL, 0,
+SND_SOC_DAPM_AIF_IN("SLIMRX5", NULL, 4,
 		    ARIZONA_SLIMBUS_RX_CHANNEL_ENABLE,
 		    ARIZONA_SLIMRX5_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("SLIMRX6", NULL, 0,
+SND_SOC_DAPM_AIF_IN("SLIMRX6", NULL, 5,
 		    ARIZONA_SLIMBUS_RX_CHANNEL_ENABLE,
 		    ARIZONA_SLIMRX6_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("SLIMRX7", NULL, 0,
+SND_SOC_DAPM_AIF_IN("SLIMRX7", NULL, 6,
 		    ARIZONA_SLIMBUS_RX_CHANNEL_ENABLE,
 		    ARIZONA_SLIMRX7_ENA_SHIFT, 0),
-SND_SOC_DAPM_AIF_IN("SLIMRX8", NULL, 0,
+SND_SOC_DAPM_AIF_IN("SLIMRX8", NULL, 7,
 		    ARIZONA_SLIMBUS_RX_CHANNEL_ENABLE,
 		    ARIZONA_SLIMRX8_ENA_SHIFT, 0),
 
-SND_SOC_DAPM_VALUE_MUX("AEC Loopback", ARIZONA_DAC_AEC_CONTROL_1,
-		       ARIZONA_AEC_LOOPBACK_ENA_SHIFT, 0,
-		       &wm8997_aec_loopback_mux),
+SND_SOC_DAPM_MUX("AEC Loopback", ARIZONA_DAC_AEC_CONTROL_1,
+		 ARIZONA_AEC_LOOPBACK_ENA_SHIFT, 0, &wm8997_aec_loopback_mux),
 
 SND_SOC_DAPM_PGA_E("OUT1L", SND_SOC_NOPM,
 		   ARIZONA_OUT1L_ENA_SHIFT, 0, NULL, 0, arizona_hp_ev,
-		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMU),
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
 SND_SOC_DAPM_PGA_E("OUT1R", SND_SOC_NOPM,
 		   ARIZONA_OUT1R_ENA_SHIFT, 0, NULL, 0, arizona_hp_ev,
-		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMU),
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
 SND_SOC_DAPM_PGA_E("OUT3L", ARIZONA_OUTPUT_ENABLES_1,
 		   ARIZONA_OUT3L_ENA_SHIFT, 0, NULL, 0, arizona_out_ev,
-		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMU),
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
 SND_SOC_DAPM_PGA_E("OUT5L", ARIZONA_OUTPUT_ENABLES_1,
 		   ARIZONA_OUT5L_ENA_SHIFT, 0, NULL, 0, arizona_out_ev,
 		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMU),
@@ -919,10 +923,10 @@ static const struct snd_soc_dapm_route wm8997_dapm_routes[] = {
 	{ "MICSUPP", NULL, "SYSCLK" },
 };
 
-static int wm8997_set_fll(struct snd_soc_codec *codec, int fll_id, int source,
-			  unsigned int Fref, unsigned int Fout)
+static int wm8997_set_fll(struct snd_soc_component *component, int fll_id,
+			  int source, unsigned int Fref, unsigned int Fout)
 {
-	struct wm8997_priv *wm8997 = snd_soc_codec_get_drvdata(codec);
+	struct wm8997_priv *wm8997 = snd_soc_component_get_drvdata(component);
 
 	switch (fll_id) {
 	case WM8997_FLL1:
@@ -940,7 +944,7 @@ static int wm8997_set_fll(struct snd_soc_codec *codec, int fll_id, int source,
 	}
 }
 
-#define WM8997_RATES SNDRV_PCM_RATE_8000_192000
+#define WM8997_RATES SNDRV_PCM_RATE_KNOT
 
 #define WM8997_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S20_3LE |\
 			SNDRV_PCM_FMTBIT_S24_LE | SNDRV_PCM_FMTBIT_S32_LE)
@@ -965,7 +969,8 @@ static struct snd_soc_dai_driver wm8997_dai[] = {
 			 .formats = WM8997_FORMATS,
 		 },
 		.ops = &arizona_dai_ops,
-		.symmetric_rates = 1,
+		.symmetric_rate = 1,
+		.symmetric_sample_bits = 1,
 	},
 	{
 		.name = "wm8997-aif2",
@@ -986,7 +991,8 @@ static struct snd_soc_dai_driver wm8997_dai[] = {
 			 .formats = WM8997_FORMATS,
 		 },
 		.ops = &arizona_dai_ops,
-		.symmetric_rates = 1,
+		.symmetric_rate = 1,
+		.symmetric_sample_bits = 1,
 	},
 	{
 		.name = "wm8997-slim1",
@@ -1047,33 +1053,31 @@ static struct snd_soc_dai_driver wm8997_dai[] = {
 	},
 };
 
-static int wm8997_codec_probe(struct snd_soc_codec *codec)
+static int wm8997_component_probe(struct snd_soc_component *component)
 {
-	struct wm8997_priv *priv = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct wm8997_priv *priv = snd_soc_component_get_drvdata(component);
+	struct arizona *arizona = priv->core.arizona;
 	int ret;
 
-	codec->control_data = priv->core.arizona->regmap;
+	snd_soc_component_init_regmap(component, arizona->regmap);
 
-	ret = snd_soc_codec_set_cache_io(codec, 32, 16, SND_SOC_REGMAP);
-	if (ret != 0)
+	ret = arizona_init_spk(component);
+	if (ret < 0)
 		return ret;
 
-	arizona_init_spk(codec);
+	snd_soc_component_disable_pin(component, "HAPTICS");
 
-	snd_soc_dapm_disable_pin(&codec->dapm, "HAPTICS");
-
-	priv->core.arizona->dapm = &codec->dapm;
+	priv->core.arizona->dapm = dapm;
 
 	return 0;
 }
 
-static int wm8997_codec_remove(struct snd_soc_codec *codec)
+static void wm8997_component_remove(struct snd_soc_component *component)
 {
-	struct wm8997_priv *priv = snd_soc_codec_get_drvdata(codec);
+	struct wm8997_priv *priv = snd_soc_component_get_drvdata(component);
 
 	priv->core.arizona->dapm = NULL;
-
-	return 0;
 }
 
 #define WM8997_DIG_VU 0x0200
@@ -1087,28 +1091,27 @@ static unsigned int wm8997_digital_vu[] = {
 	ARIZONA_DAC_DIGITAL_VOLUME_5R,
 };
 
-static struct snd_soc_codec_driver soc_codec_dev_wm8997 = {
-	.probe = wm8997_codec_probe,
-	.remove = wm8997_codec_remove,
-
-	.idle_bias_off = true,
-
-	.set_sysclk = arizona_set_sysclk,
-	.set_pll = wm8997_set_fll,
-
-	.controls = wm8997_snd_controls,
-	.num_controls = ARRAY_SIZE(wm8997_snd_controls),
-	.dapm_widgets = wm8997_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(wm8997_dapm_widgets),
-	.dapm_routes = wm8997_dapm_routes,
-	.num_dapm_routes = ARRAY_SIZE(wm8997_dapm_routes),
+static const struct snd_soc_component_driver soc_component_dev_wm8997 = {
+	.probe			= wm8997_component_probe,
+	.remove			= wm8997_component_remove,
+	.set_sysclk		= arizona_set_sysclk,
+	.set_pll		= wm8997_set_fll,
+	.set_jack		= arizona_jack_set_jack,
+	.controls		= wm8997_snd_controls,
+	.num_controls		= ARRAY_SIZE(wm8997_snd_controls),
+	.dapm_widgets		= wm8997_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(wm8997_dapm_widgets),
+	.dapm_routes		= wm8997_dapm_routes,
+	.num_dapm_routes	= ARRAY_SIZE(wm8997_dapm_routes),
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
 };
 
 static int wm8997_probe(struct platform_device *pdev)
 {
 	struct arizona *arizona = dev_get_drvdata(pdev->dev.parent);
 	struct wm8997_priv *wm8997;
-	int i;
+	int i, ret;
 
 	wm8997 = devm_kzalloc(&pdev->dev, sizeof(struct wm8997_priv),
 			      GFP_KERNEL);
@@ -1116,8 +1119,23 @@ static int wm8997_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, wm8997);
 
+	if (IS_ENABLED(CONFIG_OF)) {
+		if (!dev_get_platdata(arizona->dev)) {
+			ret = arizona_of_get_audio_pdata(arizona);
+			if (ret < 0)
+				return ret;
+		}
+	}
+
 	wm8997->core.arizona = arizona;
 	wm8997->core.num_inputs = 4;
+
+	arizona_init_dvfs(&wm8997->core);
+
+	/* This may return -EPROBE_DEFER, so do this early on */
+	ret = arizona_jack_codec_dev_probe(&wm8997->core, &pdev->dev);
+	if (ret)
+		return ret;
 
 	for (i = 0; i < ARRAY_SIZE(wm8997->fll); i++)
 		wm8997->fll[i].vco_mult = 1;
@@ -1146,25 +1164,53 @@ static int wm8997_probe(struct platform_device *pdev)
 	pm_runtime_enable(&pdev->dev);
 	pm_runtime_idle(&pdev->dev);
 
-	return snd_soc_register_codec(&pdev->dev, &soc_codec_dev_wm8997,
-				      wm8997_dai, ARRAY_SIZE(wm8997_dai));
+	arizona_init_common(arizona);
+
+	ret = arizona_init_vol_limit(arizona);
+	if (ret < 0)
+		goto err_jack_codec_dev;
+	ret = arizona_init_spk_irqs(arizona);
+	if (ret < 0)
+		goto err_jack_codec_dev;
+
+	ret = devm_snd_soc_register_component(&pdev->dev,
+					      &soc_component_dev_wm8997,
+					      wm8997_dai,
+					      ARRAY_SIZE(wm8997_dai));
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Failed to register component: %d\n", ret);
+		goto err_spk_irqs;
+	}
+
+	return ret;
+
+err_spk_irqs:
+	arizona_free_spk_irqs(arizona);
+err_jack_codec_dev:
+	pm_runtime_disable(&pdev->dev);
+	arizona_jack_codec_dev_remove(&wm8997->core);
+
+	return ret;
 }
 
-static int wm8997_remove(struct platform_device *pdev)
+static void wm8997_remove(struct platform_device *pdev)
 {
-	snd_soc_unregister_codec(&pdev->dev);
+	struct wm8997_priv *wm8997 = platform_get_drvdata(pdev);
+	struct arizona *arizona = wm8997->core.arizona;
+
 	pm_runtime_disable(&pdev->dev);
 
-	return 0;
+	arizona_free_spk_irqs(arizona);
+
+	arizona_jack_codec_dev_remove(&wm8997->core);
 }
 
 static struct platform_driver wm8997_codec_driver = {
 	.driver = {
 		.name = "wm8997-codec",
-		.owner = THIS_MODULE,
 	},
 	.probe = wm8997_probe,
-	.remove = wm8997_remove,
+	.remove_new = wm8997_remove,
 };
 
 module_platform_driver(wm8997_codec_driver);

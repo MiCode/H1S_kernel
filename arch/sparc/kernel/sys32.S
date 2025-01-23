@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * sys32.S: I-cache tricks for 32-bit compatibility layer simple
  *          conversions.
@@ -11,43 +12,6 @@
 /* NOTE: call as jump breaks return stack, we have to avoid that */
 
 	.text
-
-#define SIGN1(STUB,SYSCALL,REG1) \
-	.align	32; \
-	.globl	STUB; \
-STUB:	sethi	%hi(SYSCALL), %g1; \
-	jmpl	%g1 + %lo(SYSCALL), %g0; \
-	sra	REG1, 0, REG1
-
-#define SIGN2(STUB,SYSCALL,REG1,REG2) \
-	.align	32; \
-	.globl	STUB; \
-STUB:	sethi	%hi(SYSCALL), %g1; \
-	sra	REG1, 0, REG1; \
-	jmpl	%g1 + %lo(SYSCALL), %g0; \
-	sra	REG2, 0, REG2
-
-#define SIGN3(STUB,SYSCALL,REG1,REG2,REG3) \
-	.align	32; \
-	.globl	STUB; \
-STUB:	sra	REG1, 0, REG1; \
-	sethi	%hi(SYSCALL), %g1; \
-	sra	REG2, 0, REG2; \
-	jmpl	%g1 + %lo(SYSCALL), %g0; \
-	sra	REG3, 0, REG3
-
-SIGN1(sys32_readahead, compat_sys_readahead, %o0)
-SIGN2(sys32_fadvise64, compat_sys_fadvise64, %o0, %o4)
-SIGN2(sys32_fadvise64_64, compat_sys_fadvise64_64, %o0, %o5)
-SIGN1(sys32_clock_nanosleep, compat_sys_clock_nanosleep, %o1)
-SIGN1(sys32_timer_settime, compat_sys_timer_settime, %o1)
-SIGN1(sys32_io_submit, compat_sys_io_submit, %o1)
-SIGN1(sys32_mq_open, compat_sys_mq_open, %o1)
-SIGN1(sys32_select, compat_sys_select, %o0)
-SIGN3(sys32_futex, compat_sys_futex, %o1, %o2, %o5)
-SIGN1(sys32_recvfrom, compat_sys_recvfrom, %o0)
-SIGN1(sys32_recvmsg, compat_sys_recvmsg, %o0)
-SIGN1(sys32_sendmsg, compat_sys_sendmsg, %o0)
 
 	.globl		sys32_mmap2
 sys32_mmap2:
@@ -193,22 +157,22 @@ do_sys_shutdown: /* sys_shutdown(int, int) */
 	nop
 	nop
 	nop
-do_sys_setsockopt: /* compat_sys_setsockopt(int, int, int, char *, int) */
+do_sys_setsockopt: /* sys_setsockopt(int, int, int, char *, int) */
 47:	ldswa		[%o1 + 0x0] %asi, %o0
-	sethi		%hi(compat_sys_setsockopt), %g1
+	sethi		%hi(sys_setsockopt), %g1
 48:	ldswa		[%o1 + 0x8] %asi, %o2
 49:	lduwa		[%o1 + 0xc] %asi, %o3
 50:	ldswa		[%o1 + 0x10] %asi, %o4
-	jmpl		%g1 + %lo(compat_sys_setsockopt), %g0
+	jmpl		%g1 + %lo(sys_setsockopt), %g0
 51:	 ldswa		[%o1 + 0x4] %asi, %o1
 	nop
-do_sys_getsockopt: /* compat_sys_getsockopt(int, int, int, u32, u32) */
+do_sys_getsockopt: /* sys_getsockopt(int, int, int, u32, u32) */
 52:	ldswa		[%o1 + 0x0] %asi, %o0
-	sethi		%hi(compat_sys_getsockopt), %g1
+	sethi		%hi(sys_getsockopt), %g1
 53:	ldswa		[%o1 + 0x8] %asi, %o2
 54:	lduwa		[%o1 + 0xc] %asi, %o3
 55:	lduwa		[%o1 + 0x10] %asi, %o4
-	jmpl		%g1 + %lo(compat_sys_getsockopt), %g0
+	jmpl		%g1 + %lo(sys_getsockopt), %g0
 56:	 ldswa		[%o1 + 0x4] %asi, %o1
 	nop
 do_sys_sendmsg: /* compat_sys_sendmsg(int, struct compat_msghdr *, unsigned int) */

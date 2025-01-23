@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * DRA7xx Clock domains framework
  *
@@ -14,10 +15,6 @@
  * with the public linux-omap@vger.kernel.org mailing list and the
  * authors above to ensure that the autogeneration scripts are kept
  * up-to-date with the file contents.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -331,7 +328,7 @@ static struct clockdomain l4per2_7xx_clkdm = {
 	.dep_bit	  = DRA7XX_L4PER2_STATDEP_SHIFT,
 	.wkdep_srcs	  = l4per2_wkup_sleep_deps,
 	.sleepdep_srcs	  = l4per2_wkup_sleep_deps,
-	.flags		  = CLKDM_CAN_HWSUP_SWSUP,
+	.flags		  = CLKDM_CAN_SWSUP,
 };
 
 static struct clockdomain mpu0_7xx_clkdm = {
@@ -409,7 +406,7 @@ static struct clockdomain l4sec_7xx_clkdm = {
 	.dep_bit	  = DRA7XX_L4SEC_STATDEP_SHIFT,
 	.wkdep_srcs	  = l4sec_wkup_sleep_deps,
 	.sleepdep_srcs	  = l4sec_wkup_sleep_deps,
-	.flags		  = CLKDM_CAN_HWSUP_SWSUP,
+	.flags		  = CLKDM_CAN_SWSUP,
 };
 
 static struct clockdomain l3main1_7xx_clkdm = {
@@ -461,7 +458,7 @@ static struct clockdomain ipu_7xx_clkdm = {
 	.cm_inst	  = DRA7XX_CM_CORE_AON_IPU_INST,
 	.clkdm_offs	  = DRA7XX_CM_CORE_AON_IPU_IPU_CDOFFS,
 	.dep_bit	  = DRA7XX_IPU_STATDEP_SHIFT,
-	.flags		  = CLKDM_CAN_HWSUP_SWSUP,
+	.flags		  = CLKDM_CAN_SWSUP,
 };
 
 static struct clockdomain mpu1_7xx_clkdm = {
@@ -524,7 +521,7 @@ static struct clockdomain pcie_7xx_clkdm = {
 	.dep_bit	  = DRA7XX_PCIE_STATDEP_SHIFT,
 	.wkdep_srcs	  = pcie_wkup_sleep_deps,
 	.sleepdep_srcs	  = pcie_wkup_sleep_deps,
-	.flags		  = CLKDM_CAN_HWSUP_SWSUP,
+	.flags		  = CLKDM_CAN_SWSUP,
 };
 
 static struct clockdomain atl_7xx_clkdm = {
@@ -609,7 +606,7 @@ static struct clockdomain cam_7xx_clkdm = {
 	.dep_bit	  = DRA7XX_CAM_STATDEP_SHIFT,
 	.wkdep_srcs	  = cam_wkup_sleep_deps,
 	.sleepdep_srcs	  = cam_wkup_sleep_deps,
-	.flags		  = CLKDM_CAN_HWSUP_SWSUP,
+	.flags		  = CLKDM_CAN_SWSUP,
 };
 
 static struct clockdomain l4per_7xx_clkdm = {

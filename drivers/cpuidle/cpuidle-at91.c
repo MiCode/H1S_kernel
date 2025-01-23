@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * based on arch/arm/mach-kirkwood/cpuidle.c
  *
  * CPU idle support for AT91 SoC
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  *
  * The cpu idle uses wait-for-interrupt and RAM self refresh in order
  * to implement two idle states -
@@ -19,7 +16,6 @@
 #include <linux/cpuidle.h>
 #include <linux/io.h>
 #include <linux/export.h>
-#include <asm/proc-fns.h>
 #include <asm/cpuidle.h>
 
 #define AT91_MAX_STATES	2
@@ -43,7 +39,6 @@ static struct cpuidle_driver at91_idle_driver = {
 		.enter			= at91_enter_idle,
 		.exit_latency		= 10,
 		.target_residency	= 10000,
-		.flags			= CPUIDLE_FLAG_TIME_VALID,
 		.name			= "RAM_SR",
 		.desc			= "WFI and DDR Self Refresh",
 	},
@@ -61,9 +56,7 @@ static int at91_cpuidle_probe(struct platform_device *dev)
 static struct platform_driver at91_cpuidle_driver = {
 	.driver = {
 		.name = "cpuidle-at91",
-		.owner = THIS_MODULE,
 	},
 	.probe = at91_cpuidle_probe,
 };
-
-module_platform_driver(at91_cpuidle_driver);
+builtin_platform_driver(at91_cpuidle_driver);

@@ -1,34 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of wl1271
  *
  * Copyright (C) 2009-2010 Nokia Corporation
  *
  * Contact: Luciano Coelho <luciano.coelho@nokia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include <linux/ieee80211.h>
+#include <linux/pm_runtime.h>
 
 #include "wlcore.h"
 #include "debug.h"
 #include "cmd.h"
 #include "scan.h"
 #include "acx.h"
-#include "ps.h"
 #include "tx.h"
 
 void wl1271_scan_complete_work(struct work_struct *work)
@@ -36,9 +22,12 @@ void wl1271_scan_complete_work(struct work_struct *work)
 	struct delayed_work *dwork;
 	struct wl1271 *wl;
 	struct wl12xx_vif *wlvif;
+	struct cfg80211_scan_info info = {
+		.aborted = false,
+	};
 	int ret;
 
-	dwork = container_of(work, struct delayed_work, work);
+	dwork = to_delayed_work(work);
 	wl = container_of(dwork, struct wl1271, scan_complete_work);
 
 	wl1271_debug(DEBUG_SCAN, "Scanning complete");
@@ -64,7 +53,7 @@ void wl1271_scan_complete_work(struct work_struct *work)
 	wl->scan.req = NULL;
 	wl->scan_wlvif = NULL;
 
-	ret = wl1271_ps_elp_wakeup(wl);
+	ret = pm_runtime_resume_and_get(wl->dev);
 	if (ret < 0)
 		goto out;
 
@@ -73,8 +62,6 @@ void wl1271_scan_complete_work(struct work_struct *work)
 		wl1271_cmd_build_ap_probe_req(wl, wlvif, wlvif->probereq);
 	}
 
-	wl1271_ps_elp_sleep(wl);
-
 	if (wl->scan.failed) {
 		wl1271_info("Scan completed due to error.");
 		wl12xx_queue_recovery_work(wl);
@@ -82,7 +69,10 @@ void wl1271_scan_complete_work(struct work_struct *work)
 
 	wlcore_cmd_regdomain_config_locked(wl);
 
-	ieee80211_scan_completed(wl->hw, false);
+	pm_runtime_mark_last_busy(wl->dev);
+	pm_runtime_put_autosuspend(wl->dev);
+
+	ieee80211_scan_completed(wl->hw, &info);
 
 out:
 	mutex_unlock(&wl->mutex);
@@ -164,7 +154,7 @@ wlcore_scan_get_channels(struct wl1271 *wl,
 		struct conf_sched_scan_settings *c = &wl->conf.sched_scan;
 		u32 delta_per_probe;
 
-		if (band == IEEE80211_BAND_5GHZ)
+		if (band == NL80211_BAND_5GHZ)
 			delta_per_probe = c->dwell_time_delta_per_probe_5;
 		else
 			delta_per_probe = c->dwell_time_delta_per_probe;
@@ -215,7 +205,7 @@ wlcore_scan_get_channels(struct wl1271 *wl,
 			channels[j].channel = req_channels[i]->hw_value;
 
 			if (n_pactive_ch &&
-			    (band == IEEE80211_BAND_2GHZ) &&
+			    (band == NL80211_BAND_2GHZ) &&
 			    (channels[j].channel >= 12) &&
 			    (channels[j].channel <= 14) &&
 			    (flags & IEEE80211_CHAN_NO_IR) &&
@@ -266,7 +256,7 @@ wlcore_set_scan_chan_params(struct wl1271 *wl,
 					 n_channels,
 					 n_ssids,
 					 cfg->channels_2,
-					 IEEE80211_BAND_2GHZ,
+					 NL80211_BAND_2GHZ,
 					 false, true, 0,
 					 MAX_CHANNELS_2GHZ,
 					 &n_pactive_ch,
@@ -277,7 +267,7 @@ wlcore_set_scan_chan_params(struct wl1271 *wl,
 					 n_channels,
 					 n_ssids,
 					 cfg->channels_2,
-					 IEEE80211_BAND_2GHZ,
+					 NL80211_BAND_2GHZ,
 					 false, false,
 					 cfg->passive[0],
 					 MAX_CHANNELS_2GHZ,
@@ -289,7 +279,7 @@ wlcore_set_scan_chan_params(struct wl1271 *wl,
 					 n_channels,
 					 n_ssids,
 					 cfg->channels_5,
-					 IEEE80211_BAND_5GHZ,
+					 NL80211_BAND_5GHZ,
 					 false, true, 0,
 					 wl->max_channels_5,
 					 &n_pactive_ch,
@@ -300,7 +290,7 @@ wlcore_set_scan_chan_params(struct wl1271 *wl,
 					 n_channels,
 					 n_ssids,
 					 cfg->channels_5,
-					 IEEE80211_BAND_5GHZ,
+					 NL80211_BAND_5GHZ,
 					 true, true,
 					 cfg->passive[1],
 					 wl->max_channels_5,
@@ -312,7 +302,7 @@ wlcore_set_scan_chan_params(struct wl1271 *wl,
 					 n_channels,
 					 n_ssids,
 					 cfg->channels_5,
-					 IEEE80211_BAND_5GHZ,
+					 NL80211_BAND_5GHZ,
 					 false, false,
 					 cfg->passive[1] + cfg->dfs,
 					 wl->max_channels_5,

@@ -1,19 +1,21 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* x86-specific clocksource additions */
 
 #ifndef _ASM_X86_CLOCKSOURCE_H
 #define _ASM_X86_CLOCKSOURCE_H
 
-#ifdef CONFIG_X86_64
+#include <asm/vdso/clocksource.h>
 
-#define VCLOCK_NONE 0  /* No vDSO clock available.	*/
-#define VCLOCK_TSC  1  /* vDSO should use vread_tsc.	*/
-#define VCLOCK_HPET 2  /* vDSO should use vread_hpet.	*/
-#define VCLOCK_PVCLOCK 3 /* vDSO should use vread_pvclock. */
+extern unsigned int vclocks_used;
 
-struct arch_clocksource_data {
-	int vclock_mode;
-};
+static inline bool vclock_was_used(int vclock)
+{
+	return READ_ONCE(vclocks_used) & (1U << vclock);
+}
 
-#endif /* CONFIG_X86_64 */
+static inline void vclocks_set_used(unsigned int which)
+{
+	WRITE_ONCE(vclocks_used, READ_ONCE(vclocks_used) | (1 << which));
+}
 
 #endif /* _ASM_X86_CLOCKSOURCE_H */

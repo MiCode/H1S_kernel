@@ -1,15 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
- * linux/sound/soc/samsung/i2s-regs.h
- *
  * Copyright (c) 2011 Samsung Electronics Co., Ltd.
  *		http://www.samsung.com
  *
  * Samsung I2S driver's register header
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #ifndef __SND_SOC_SAMSUNG_I2S_REGS_H
@@ -33,8 +27,9 @@
 #define I2SLVL3ADDR	0x3c
 #define I2SSTR1		0x40
 #define I2SVER		0x44
-#define I2SFIC2		0x48
+#define I2SFIC1		0x48
 #define I2STDM		0x4c
+#define I2SFSTA		0x50
 
 #define CON_RSTCLR		(1 << 31)
 #define CON_FRXOFSTATUS		(1 << 26)
@@ -64,11 +59,12 @@
 #define CON_RXDMA_ACTIVE	(1 << 1)
 #define CON_ACTIVE		(1 << 0)
 
-#define MOD_OPCLK_CDCLK_OUT	(0 << 30)
-#define MOD_OPCLK_CDCLK_IN	(1 << 30)
-#define MOD_OPCLK_BCLK_OUT	(2 << 30)
-#define MOD_OPCLK_PCLK		(3 << 30)
-#define MOD_OPCLK_MASK		(3 << 30)
+#define MOD_OPCLK_SHIFT		30
+#define MOD_OPCLK_CDCLK_OUT	(0 << MOD_OPCLK_SHIFT)
+#define MOD_OPCLK_CDCLK_IN	(1 << MOD_OPCLK_SHIFT)
+#define MOD_OPCLK_BCLK_OUT	(2 << MOD_OPCLK_SHIFT)
+#define MOD_OPCLK_PCLK		(3 << MOD_OPCLK_SHIFT)
+#define MOD_OPCLK_MASK		(3 << MOD_OPCLK_SHIFT)
 #define MOD_TXS_IDMA		(1 << 28) /* Sec_TXFIFO use I-DMA */
 
 #define MOD_BLCS_SHIFT		26
@@ -93,8 +89,6 @@
 #define MOD_BLC_24BIT		(2 << 13)
 #define MOD_BLC_MASK		(3 << 13)
 
-#define MOD_IMS_SYSMUX		(1 << 10)
-#define MOD_SLAVE		(1 << 11)
 #define MOD_TXONLY		(0 << 8)
 #define MOD_RXONLY		(1 << 8)
 #define MOD_TXRX		(2 << 8)
@@ -132,9 +126,13 @@
 #define EXYNOS5420_MOD_BCLK_256FS	8
 #define EXYNOS5420_MOD_BCLK_MASK	0xf
 
-#define MOD_CDCLKCON		(1 << 12)
+#define EXYNOS7_MOD_RCLK_64FS	4
+#define EXYNOS7_MOD_RCLK_128FS	5
+#define EXYNOS7_MOD_RCLK_96FS	6
+#define EXYNOS7_MOD_RCLK_192FS	7
 
 #define PSR_PSREN		(1 << 15)
+#define PSR_PSVAL(x)		((((x) - 1) << 8) & 0x3f00)
 
 #define FIC_TX2COUNT(x)		(((x) >>  24) & 0xf)
 #define FIC_TX1COUNT(x)		(((x) >>  16) & 0xf)
@@ -158,5 +156,3 @@
 #define I2SSIZE_SHIFT		(16)
 
 #endif /* __SND_SOC_SAMSUNG_I2S_REGS_H */
-
-

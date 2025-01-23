@@ -52,17 +52,12 @@
 #include <string.h>
 #include <sysexits.h>
 
-#ifdef __linux__
 #include "../queue.h"
-#else
-#include <sys/queue.h>
-#endif
 
 #include "aicasm.h"
 #include "aicasm_symbol.h"
 #include "aicasm_insformat.h"
 
-int yylineno;
 char *yyfilename;
 char stock_prefix[] = "aic_";
 char *prefix = stock_prefix;

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef US122L_H
 #define US122L_H
 
@@ -10,12 +11,14 @@ struct us122l {
 
 	struct mutex		mutex;
 	struct file		*first;
-	unsigned		second_periods_polled;
+	unsigned int		second_periods_polled;
 	struct file		*master;
 	struct file		*slave;
 	struct list_head	midi_list;
 
 	atomic_t		mmap_count;
+
+	bool			is_us144;
 };
 
 

@@ -1,37 +1,26 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
  *
  * Parts of this file are based on Ralink's 2.6.21 BSP
  *
  * Copyright (C) 2008-2011 Gabor Juhos <juhosg@openwrt.org>
  * Copyright (C) 2008 Imre Kaloz <kaloz@openwrt.org>
- * Copyright (C) 2013 John Crispin <blogic@openwrt.org>
+ * Copyright (C) 2013 John Crispin <john@phrozen.org>
  */
 
 #ifndef _RT305X_REGS_H_
 #define _RT305X_REGS_H_
 
-enum rt305x_soc_type {
-	RT305X_SOC_UNKNOWN = 0,
-	RT305X_SOC_RT3050,
-	RT305X_SOC_RT3052,
-	RT305X_SOC_RT3350,
-	RT305X_SOC_RT3352,
-	RT305X_SOC_RT5350,
-};
-
-extern enum rt305x_soc_type rt305x_soc;
+extern enum ralink_soc_type ralink_soc;
 
 static inline int soc_is_rt3050(void)
 {
-	return rt305x_soc == RT305X_SOC_RT3050;
+	return ralink_soc == RT305X_SOC_RT3050;
 }
 
 static inline int soc_is_rt3052(void)
 {
-	return rt305x_soc == RT305X_SOC_RT3052;
+	return ralink_soc == RT305X_SOC_RT3052;
 }
 
 static inline int soc_is_rt305x(void)
@@ -41,20 +30,21 @@ static inline int soc_is_rt305x(void)
 
 static inline int soc_is_rt3350(void)
 {
-	return rt305x_soc == RT305X_SOC_RT3350;
+	return ralink_soc == RT305X_SOC_RT3350;
 }
 
 static inline int soc_is_rt3352(void)
 {
-	return rt305x_soc == RT305X_SOC_RT3352;
+	return ralink_soc == RT305X_SOC_RT3352;
 }
 
 static inline int soc_is_rt5350(void)
 {
-	return rt305x_soc == RT305X_SOC_RT5350;
+	return ralink_soc == RT305X_SOC_RT5350;
 }
 
-#define RT305X_SYSC_BASE		0x10000000
+#define IOMEM(x)			((void __iomem *)(KSEG1ADDR(x)))
+#define RT305X_SYSC_BASE		IOMEM(0x10000000)
 
 #define SYSC_REG_CHIP_NAME0		0x00
 #define SYSC_REG_CHIP_NAME1		0x04
@@ -77,25 +67,8 @@ static inline int soc_is_rt5350(void)
 #define CHIP_ID_ID_SHIFT		8
 #define CHIP_ID_REV_MASK		0xff
 
-#define RT305X_SYSCFG_CPUCLK_SHIFT		18
-#define RT305X_SYSCFG_CPUCLK_MASK		0x1
-#define RT305X_SYSCFG_CPUCLK_LOW		0x0
-#define RT305X_SYSCFG_CPUCLK_HIGH		0x1
-
 #define RT305X_SYSCFG_SRAM_CS0_MODE_SHIFT	2
-#define RT305X_SYSCFG_CPUCLK_MASK		0x1
 #define RT305X_SYSCFG_SRAM_CS0_MODE_WDT		0x1
-
-#define RT3352_SYSCFG0_CPUCLK_SHIFT	8
-#define RT3352_SYSCFG0_CPUCLK_MASK	0x1
-#define RT3352_SYSCFG0_CPUCLK_LOW	0x0
-#define RT3352_SYSCFG0_CPUCLK_HIGH	0x1
-
-#define RT5350_SYSCFG0_CPUCLK_SHIFT	8
-#define RT5350_SYSCFG0_CPUCLK_MASK	0x3
-#define RT5350_SYSCFG0_CPUCLK_360	0x0
-#define RT5350_SYSCFG0_CPUCLK_320	0x2
-#define RT5350_SYSCFG0_CPUCLK_300	0x3
 
 #define RT5350_SYSCFG0_DRAM_SIZE_SHIFT  12
 #define RT5350_SYSCFG0_DRAM_SIZE_MASK   7
@@ -125,34 +98,11 @@ static inline int soc_is_rt5350(void)
 #define RT305X_GPIO_GE0_TXD0		40
 #define RT305X_GPIO_GE0_RXCLK		51
 
-#define RT305X_GPIO_MODE_I2C		BIT(0)
-#define RT305X_GPIO_MODE_SPI		BIT(1)
-#define RT305X_GPIO_MODE_UART0_SHIFT	2
-#define RT305X_GPIO_MODE_UART0_MASK	0x7
-#define RT305X_GPIO_MODE_UART0(x)	((x) << RT305X_GPIO_MODE_UART0_SHIFT)
-#define RT305X_GPIO_MODE_UARTF		0x0
-#define RT305X_GPIO_MODE_PCM_UARTF	0x1
-#define RT305X_GPIO_MODE_PCM_I2S	0x2
-#define RT305X_GPIO_MODE_I2S_UARTF	0x3
-#define RT305X_GPIO_MODE_PCM_GPIO	0x4
-#define RT305X_GPIO_MODE_GPIO_UARTF	0x5
-#define RT305X_GPIO_MODE_GPIO_I2S	0x6
-#define RT305X_GPIO_MODE_GPIO		0x7
-#define RT305X_GPIO_MODE_UART1		BIT(5)
-#define RT305X_GPIO_MODE_JTAG		BIT(6)
-#define RT305X_GPIO_MODE_MDIO		BIT(7)
-#define RT305X_GPIO_MODE_SDRAM		BIT(8)
-#define RT305X_GPIO_MODE_RGMII		BIT(9)
-
 #define RT3352_SYSC_REG_SYSCFG0		0x010
 #define RT3352_SYSC_REG_SYSCFG1         0x014
-#define RT3352_SYSC_REG_CLKCFG1         0x030
 #define RT3352_SYSC_REG_RSTCTRL         0x034
 #define RT3352_SYSC_REG_USB_PS          0x05c
 
-#define RT3352_CLKCFG0_XTAL_SEL		BIT(20)
-#define RT3352_CLKCFG1_UPHY0_CLK_EN	BIT(18)
-#define RT3352_CLKCFG1_UPHY1_CLK_EN	BIT(20)
 #define RT3352_RSTCTRL_UHST		BIT(22)
 #define RT3352_RSTCTRL_UDEV		BIT(25)
 #define RT3352_SYSCFG1_USB0_HOST_MODE	BIT(10)

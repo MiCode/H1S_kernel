@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Linux driver for digital TV devices equipped with B2C2 FlexcopII(b)/III
  * flexcop-reg.h - register abstraction for FlexCopII, FlexCopIIb and FlexCopIII
@@ -24,6 +25,7 @@ typedef enum {
 	FC_SKY_REV26,
 	FC_SKY_REV27,
 	FC_SKY_REV28,
+	FC_SKYS2_REV33,
 } flexcop_device_type_t;
 
 typedef enum {

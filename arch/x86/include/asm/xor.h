@@ -1,20 +1,9 @@
-#ifdef CONFIG_KMEMCHECK
-/* kmemcheck doesn't handle MMX/SSE/SSE2 instructions */
-# include <asm-generic/xor.h>
-#elif !defined(_ASM_X86_XOR_H)
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+#ifndef _ASM_X86_XOR_H
 #define _ASM_X86_XOR_H
 
 /*
  * Optimized RAID-5 checksumming functions for SSE.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * You should have received a copy of the GNU General Public License
- * (for example /usr/src/linux/COPYING); if not, write to the Free
- * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 /*
@@ -36,7 +25,7 @@
  * no advantages to be gotten from x86-64 here anyways.
  */
 
-#include <asm/i387.h>
+#include <asm/fpu/api.h>
 
 #ifdef CONFIG_X86_32
 /* reduce register pressure */
@@ -68,7 +57,8 @@
 					op(i + 3, 3)
 
 static void
-xor_sse_2(unsigned long bytes, unsigned long *p1, unsigned long *p2)
+xor_sse_2(unsigned long bytes, unsigned long * __restrict p1,
+	  const unsigned long * __restrict p2)
 {
 	unsigned long lines = bytes >> 8;
 
@@ -119,7 +109,8 @@ xor_sse_2(unsigned long bytes, unsigned long *p1, unsigned long *p2)
 }
 
 static void
-xor_sse_2_pf64(unsigned long bytes, unsigned long *p1, unsigned long *p2)
+xor_sse_2_pf64(unsigned long bytes, unsigned long * __restrict p1,
+	       const unsigned long * __restrict p2)
 {
 	unsigned long lines = bytes >> 8;
 
@@ -153,8 +144,9 @@ xor_sse_2_pf64(unsigned long bytes, unsigned long *p1, unsigned long *p2)
 }
 
 static void
-xor_sse_3(unsigned long bytes, unsigned long *p1, unsigned long *p2,
-	  unsigned long *p3)
+xor_sse_3(unsigned long bytes, unsigned long * __restrict p1,
+	  const unsigned long * __restrict p2,
+	  const unsigned long * __restrict p3)
 {
 	unsigned long lines = bytes >> 8;
 
@@ -212,8 +204,9 @@ xor_sse_3(unsigned long bytes, unsigned long *p1, unsigned long *p2,
 }
 
 static void
-xor_sse_3_pf64(unsigned long bytes, unsigned long *p1, unsigned long *p2,
-	       unsigned long *p3)
+xor_sse_3_pf64(unsigned long bytes, unsigned long * __restrict p1,
+	       const unsigned long * __restrict p2,
+	       const unsigned long * __restrict p3)
 {
 	unsigned long lines = bytes >> 8;
 
@@ -249,8 +242,10 @@ xor_sse_3_pf64(unsigned long bytes, unsigned long *p1, unsigned long *p2,
 }
 
 static void
-xor_sse_4(unsigned long bytes, unsigned long *p1, unsigned long *p2,
-	  unsigned long *p3, unsigned long *p4)
+xor_sse_4(unsigned long bytes, unsigned long * __restrict p1,
+	  const unsigned long * __restrict p2,
+	  const unsigned long * __restrict p3,
+	  const unsigned long * __restrict p4)
 {
 	unsigned long lines = bytes >> 8;
 
@@ -315,8 +310,10 @@ xor_sse_4(unsigned long bytes, unsigned long *p1, unsigned long *p2,
 }
 
 static void
-xor_sse_4_pf64(unsigned long bytes, unsigned long *p1, unsigned long *p2,
-	       unsigned long *p3, unsigned long *p4)
+xor_sse_4_pf64(unsigned long bytes, unsigned long * __restrict p1,
+	       const unsigned long * __restrict p2,
+	       const unsigned long * __restrict p3,
+	       const unsigned long * __restrict p4)
 {
 	unsigned long lines = bytes >> 8;
 
@@ -354,8 +351,11 @@ xor_sse_4_pf64(unsigned long bytes, unsigned long *p1, unsigned long *p2,
 }
 
 static void
-xor_sse_5(unsigned long bytes, unsigned long *p1, unsigned long *p2,
-	  unsigned long *p3, unsigned long *p4, unsigned long *p5)
+xor_sse_5(unsigned long bytes, unsigned long * __restrict p1,
+	  const unsigned long * __restrict p2,
+	  const unsigned long * __restrict p3,
+	  const unsigned long * __restrict p4,
+	  const unsigned long * __restrict p5)
 {
 	unsigned long lines = bytes >> 8;
 
@@ -427,8 +427,11 @@ xor_sse_5(unsigned long bytes, unsigned long *p1, unsigned long *p2,
 }
 
 static void
-xor_sse_5_pf64(unsigned long bytes, unsigned long *p1, unsigned long *p2,
-	       unsigned long *p3, unsigned long *p4, unsigned long *p5)
+xor_sse_5_pf64(unsigned long bytes, unsigned long * __restrict p1,
+	       const unsigned long * __restrict p2,
+	       const unsigned long * __restrict p3,
+	       const unsigned long * __restrict p4,
+	       const unsigned long * __restrict p5)
 {
 	unsigned long lines = bytes >> 8;
 

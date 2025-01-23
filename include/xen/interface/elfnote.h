@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /******************************************************************************
  * elfnote.h
  *
@@ -18,12 +19,13 @@
  *
  * LEGACY indicated the fields in the legacy __xen_guest string which
  * this a note type replaces.
+ *
+ * String values (for non-legacy) are NULL terminated ASCII, also known
+ * as ASCIZ type.
  */
 
 /*
  * NAME=VALUE pair (string).
- *
- * LEGACY: FEATURES and PAE
  */
 #define XEN_ELFNOTE_INFO           0
 
@@ -137,8 +139,28 @@
 
 /*
  * Whether or not the guest supports cooperative suspend cancellation.
+ * This is a numeric value.
+ *
+ * Default is 0
  */
 #define XEN_ELFNOTE_SUSPEND_CANCEL 14
+
+/*
+ * The (non-default) location the initial phys-to-machine map should be
+ * placed at by the hypervisor (Dom0) or the tools (DomU).
+ * The kernel must be prepared for this mapping to be established using
+ * large pages, despite such otherwise not being available to guests.
+ * The kernel must also be able to handle the page table pages used for
+ * this mapping not being accessible through the initial mapping.
+ * (Only x86-64 supports this at present.)
+ */
+#define XEN_ELFNOTE_INIT_P2M      15
+
+/*
+ * Whether or not the guest can deal with being passed an initrd not
+ * mapped through its initial page tables.
+ */
+#define XEN_ELFNOTE_MOD_START_PFN 16
 
 /*
  * The features supported by this kernel (numeric).
@@ -153,14 +175,19 @@
  */
 #define XEN_ELFNOTE_SUPPORTED_FEATURES 17
 
-#endif /* __XEN_PUBLIC_ELFNOTE_H__ */
+/*
+ * Physical entry point into the kernel.
+ *
+ * 32bit entry point into the kernel. When requested to launch the
+ * guest kernel in a HVM container, Xen will use this entry point to
+ * launch the guest in 32bit protected mode with paging disabled.
+ * Ignored otherwise.
+ */
+#define XEN_ELFNOTE_PHYS32_ENTRY 18
 
 /*
- * Local variables:
- * mode: C
- * c-set-style: "BSD"
- * c-basic-offset: 4
- * tab-width: 4
- * indent-tabs-mode: nil
- * End:
+ * The number of the highest elfnote defined.
  */
+#define XEN_ELFNOTE_MAX XEN_ELFNOTE_PHYS32_ENTRY
+
+#endif /* __XEN_PUBLIC_ELFNOTE_H__ */

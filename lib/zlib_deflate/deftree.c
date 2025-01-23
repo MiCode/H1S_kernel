@@ -35,6 +35,7 @@
 /* #include "deflate.h" */
 
 #include <linux/zutil.h>
+#include <linux/bitrev.h>
 #include "defutil.h"
 
 #ifdef DEBUG_ZLIB
@@ -73,11 +74,6 @@ static const uch bl_order[BL_CODES]
    = {16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15};
 /* The lengths of the bit length codes are sent in order of decreasing
  * probability, to avoid transmitting the lengths for unused bit length codes.
- */
-
-#define Buf_size (8 * 2*sizeof(char))
-/* Number of bits used within bi_buf. (bi_buf might be implemented on
- * more than 16 bits on some systems.)
  */
 
 /* ===========================================================================
@@ -146,8 +142,6 @@ static void send_all_trees (deflate_state *s, int lcodes, int dcodes,
 static void compress_block (deflate_state *s, ct_data *ltree,
                            ct_data *dtree);
 static void set_data_type  (deflate_state *s);
-static unsigned bi_reverse (unsigned value, int length);
-static void bi_windup      (deflate_state *s);
 static void bi_flush       (deflate_state *s);
 static void copy_block     (deflate_state *s, char *buf, unsigned len,
                            int header);
@@ -168,54 +162,6 @@ static void copy_block     (deflate_state *s, char *buf, unsigned len,
  * must not have side effects. dist_code[256] and dist_code[257] are never
  * used.
  */
-
-/* ===========================================================================
- * Send a value on a given number of bits.
- * IN assertion: length <= 16 and value fits in length bits.
- */
-#ifdef DEBUG_ZLIB
-static void send_bits      (deflate_state *s, int value, int length);
-
-static void send_bits(
-	deflate_state *s,
-	int value,  /* value to send */
-	int length  /* number of bits */
-)
-{
-    Tracevv((stderr," l %2d v %4x ", length, value));
-    Assert(length > 0 && length <= 15, "invalid length");
-    s->bits_sent += (ulg)length;
-
-    /* If not enough room in bi_buf, use (valid) bits from bi_buf and
-     * (16 - bi_valid) bits from value, leaving (width - (16-bi_valid))
-     * unused bits in value.
-     */
-    if (s->bi_valid > (int)Buf_size - length) {
-        s->bi_buf |= (value << s->bi_valid);
-        put_short(s, s->bi_buf);
-        s->bi_buf = (ush)value >> (Buf_size - s->bi_valid);
-        s->bi_valid += length - Buf_size;
-    } else {
-        s->bi_buf |= value << s->bi_valid;
-        s->bi_valid += length;
-    }
-}
-#else /* !DEBUG_ZLIB */
-
-#define send_bits(s, value, length) \
-{ int len = length;\
-  if (s->bi_valid > (int)Buf_size - len) {\
-    int val = value;\
-    s->bi_buf |= (val << s->bi_valid);\
-    put_short(s, s->bi_buf);\
-    s->bi_buf = (ush)val >> (Buf_size - s->bi_valid);\
-    s->bi_valid += len - Buf_size;\
-  } else {\
-    s->bi_buf |= (value) << s->bi_valid;\
-    s->bi_valid += len;\
-  }\
-}
-#endif /* DEBUG_ZLIB */
 
 /* ===========================================================================
  * Initialize the various 'constant' tables. In a multi-threaded environment,
@@ -284,7 +230,7 @@ static void tr_static_init(void)
     /* The static distance tree is trivial: */
     for (n = 0; n < D_CODES; n++) {
         static_dtree[n].Len = 5;
-        static_dtree[n].Code = bi_reverse((unsigned)n, 5);
+        static_dtree[n].Code = bitrev32((u32)n) >> (32 - 5);
     }
     static_init_done = 1;
 }
@@ -520,7 +466,7 @@ static void gen_codes(
         int len = tree[n].Len;
         if (len == 0) continue;
         /* Now reverse the bits */
-        tree[n].Code = bi_reverse(next_code[len]++, len);
+        tree[n].Code = bitrev32((u32)(next_code[len]++)) >> (32 - len);
 
         Tracecv(tree != static_ltree, (stderr,"\nn %3d %c l %2d c %4x (%x) ",
              n, (isgraph(n) ? n : ' '), len, tree[n].Code, next_code[len]-1));

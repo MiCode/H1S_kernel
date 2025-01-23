@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_ALPHA_ELF_H
 #define __ASM_ALPHA_ELF_H
 
@@ -118,12 +119,6 @@ extern void dump_elf_thread(elf_greg_t *dest, struct pt_regs *pt,
 extern int dump_elf_task(elf_greg_t *dest, struct task_struct *task);
 #define ELF_CORE_COPY_TASK_REGS(TASK, DEST) \
 	dump_elf_task(*(DEST), TASK)
-
-/* Similar, but for the FP registers.  */
-
-extern int dump_elf_task_fp(elf_fpreg_t *dest, struct task_struct *task);
-#define ELF_CORE_COPY_FPREGS(TASK, DEST) \
-	dump_elf_task_fp(*(DEST), TASK)
 
 /* This yields a mask that user programs can use to figure out what
    instruction set this CPU supports.  This is trivial on Alpha, 

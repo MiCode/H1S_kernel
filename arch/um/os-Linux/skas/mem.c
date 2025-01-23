@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2002 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
- * Licensed under the GPL
  */
 
 #include <stddef.h>
@@ -12,14 +12,13 @@
 #include <as-layout.h>
 #include <mm_id.h>
 #include <os.h>
-#include <proc_mm.h>
 #include <ptrace_user.h>
 #include <registers.h>
 #include <skas.h>
 #include <sysdep/ptrace.h>
 #include <sysdep/stub.h>
 
-extern unsigned long batch_syscall_stub, __syscall_stub_start;
+extern char batch_syscall_stub[], __syscall_stub_start[];
 
 extern void wait_stub_done(int pid);
 
@@ -39,14 +38,14 @@ static int __init init_syscall_regs(void)
 {
 	get_safe_registers(syscall_regs, NULL);
 	syscall_regs[REGS_IP_INDEX] = STUB_CODE +
-		((unsigned long) &batch_syscall_stub -
-		 (unsigned long) &__syscall_stub_start);
+		((unsigned long) batch_syscall_stub -
+		 (unsigned long) __syscall_stub_start);
+	syscall_regs[REGS_SP_INDEX] = STUB_DATA;
+
 	return 0;
 }
 
 __initcall(init_syscall_regs);
-
-extern int proc_mm;
 
 static inline long do_syscall_stub(struct mm_id * mm_idp, void **addr)
 {
@@ -56,17 +55,13 @@ static inline long do_syscall_stub(struct mm_id * mm_idp, void **addr)
 	unsigned long * syscall;
 	int err, pid = mm_idp->u.pid;
 
-	if (proc_mm)
-		/* FIXME: Need to look up userspace_pid by cpu */
-		pid = userspace_pid[0];
-
 	n = ptrace_setregs(pid, syscall_regs);
 	if (n < 0) {
 		printk(UM_KERN_ERR "Registers - \n");
 		for (i = 0; i < MAX_REG_NR; i++)
 			printk(UM_KERN_ERR "\t%d\t0x%lx\n", i, syscall_regs[i]);
-		panic("do_syscall_stub : PTRACE_SETREGS failed, errno = %d\n",
-		      -n);
+		panic("%s : PTRACE_SETREGS failed, errno = %d\n",
+		      __func__, -n);
 	}
 
 	err = ptrace(PTRACE_CONT, pid, 0, 0);
@@ -86,20 +81,17 @@ static inline long do_syscall_stub(struct mm_id * mm_idp, void **addr)
 	offset = *((unsigned long *) mm_idp->stack + 1);
 	if (offset) {
 		data = (unsigned long *)(mm_idp->stack + offset - STUB_DATA);
-		printk(UM_KERN_ERR "do_syscall_stub : ret = %ld, offset = %ld, "
-		       "data = %p\n", ret, offset, data);
+		printk(UM_KERN_ERR "%s : ret = %ld, offset = %ld, data = %p\n",
+		       __func__, ret, offset, data);
 		syscall = (unsigned long *)((unsigned long)data + data[0]);
-		printk(UM_KERN_ERR "do_syscall_stub: syscall %ld failed, "
-		       "return value = 0x%lx, expected return value = 0x%lx\n",
-		       syscall[0], ret, syscall[7]);
-		printk(UM_KERN_ERR "    syscall parameters: "
-		       "0x%lx 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx\n",
+		printk(UM_KERN_ERR "%s: syscall %ld failed, return value = 0x%lx, expected return value = 0x%lx\n",
+		       __func__, syscall[0], ret, syscall[7]);
+		printk(UM_KERN_ERR "    syscall parameters: 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx\n",
 		       syscall[1], syscall[2], syscall[3],
 		       syscall[4], syscall[5], syscall[6]);
 		for (n = 1; n < data[0]/sizeof(long); n++) {
 			if (n == 1)
-				printk(UM_KERN_ERR "    additional syscall "
-				       "data:");
+				printk(UM_KERN_ERR "    additional syscall data:");
 			if (n % 4 == 1)
 				printk("\n" UM_KERN_ERR "      ");
 			printk("  0x%lx", data[n]);
@@ -178,38 +170,12 @@ int map(struct mm_id * mm_idp, unsigned long virt, unsigned long len, int prot,
 	int phys_fd, unsigned long long offset, int done, void **data)
 {
 	int ret;
+	unsigned long args[] = { virt, len, prot,
+				 MAP_SHARED | MAP_FIXED, phys_fd,
+				 MMAP_OFFSET(offset) };
 
-	if (proc_mm) {
-		struct proc_mm_op map;
-		int fd = mm_idp->u.mm_fd;
-
-		map = ((struct proc_mm_op) { .op	= MM_MMAP,
-				       .u		=
-				       { .mmap	=
-					 { .addr	= virt,
-					   .len	= len,
-					   .prot	= prot,
-					   .flags	= MAP_SHARED |
-					   MAP_FIXED,
-					   .fd	= phys_fd,
-					   .offset= offset
-					 } } } );
-		CATCH_EINTR(ret = write(fd, &map, sizeof(map)));
-		if (ret != sizeof(map)) {
-			ret = -errno;
-			printk(UM_KERN_ERR "map : /proc/mm map failed, "
-			       "err = %d\n", -ret);
-		}
-		else ret = 0;
-	}
-	else {
-		unsigned long args[] = { virt, len, prot,
-					 MAP_SHARED | MAP_FIXED, phys_fd,
-					 MMAP_OFFSET(offset) };
-
-		ret = run_syscall_stub(mm_idp, STUB_MMAP_NR, args, virt,
-				       data, done);
-	}
+	ret = run_syscall_stub(mm_idp, STUB_MMAP_NR, args, virt,
+			       data, done);
 
 	return ret;
 }
@@ -218,32 +184,11 @@ int unmap(struct mm_id * mm_idp, unsigned long addr, unsigned long len,
 	  int done, void **data)
 {
 	int ret;
+	unsigned long args[] = { (unsigned long) addr, len, 0, 0, 0,
+				 0 };
 
-	if (proc_mm) {
-		struct proc_mm_op unmap;
-		int fd = mm_idp->u.mm_fd;
-
-		unmap = ((struct proc_mm_op) { .op	= MM_MUNMAP,
-					 .u	=
-					 { .munmap	=
-					   { .addr	=
-					     (unsigned long) addr,
-					     .len		= len } } } );
-		CATCH_EINTR(ret = write(fd, &unmap, sizeof(unmap)));
-		if (ret != sizeof(unmap)) {
-			ret = -errno;
-			printk(UM_KERN_ERR "unmap - proc_mm write returned "
-			       "%d\n", ret);
-		}
-		else ret = 0;
-	}
-	else {
-		unsigned long args[] = { (unsigned long) addr, len, 0, 0, 0,
-					 0 };
-
-		ret = run_syscall_stub(mm_idp, __NR_munmap, args, 0,
-				       data, done);
-	}
+	ret = run_syscall_stub(mm_idp, __NR_munmap, args, 0,
+			       data, done);
 
 	return ret;
 }
@@ -251,33 +196,11 @@ int unmap(struct mm_id * mm_idp, unsigned long addr, unsigned long len,
 int protect(struct mm_id * mm_idp, unsigned long addr, unsigned long len,
 	    unsigned int prot, int done, void **data)
 {
-	struct proc_mm_op protect;
 	int ret;
+	unsigned long args[] = { addr, len, prot, 0, 0, 0 };
 
-	if (proc_mm) {
-		int fd = mm_idp->u.mm_fd;
-
-		protect = ((struct proc_mm_op) { .op	= MM_MPROTECT,
-					   .u	=
-					   { .mprotect	=
-					     { .addr	=
-					       (unsigned long) addr,
-					       .len	= len,
-					       .prot	= prot } } } );
-
-		CATCH_EINTR(ret = write(fd, &protect, sizeof(protect)));
-		if (ret != sizeof(protect)) {
-			ret = -errno;
-			printk(UM_KERN_ERR "protect failed, err = %d", -ret);
-		}
-		else ret = 0;
-	}
-	else {
-		unsigned long args[] = { addr, len, prot, 0, 0, 0 };
-
-		ret = run_syscall_stub(mm_idp, __NR_mprotect, args, 0,
-				       data, done);
-	}
+	ret = run_syscall_stub(mm_idp, __NR_mprotect, args, 0,
+			       data, done);
 
 	return ret;
 }

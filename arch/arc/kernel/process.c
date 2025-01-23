@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * Amit Bhor, Kanika Nema: Codito Technologies 2004
  */
@@ -11,6 +8,9 @@
 #include <linux/errno.h>
 #include <linux/module.h>
 #include <linux/sched.h>
+#include <linux/sched/task.h>
+#include <linux/sched/task_stack.h>
+
 #include <linux/mm.h>
 #include <linux/fs.h>
 #include <linux/unistd.h>
@@ -19,6 +19,8 @@
 #include <linux/syscalls.h>
 #include <linux/elf.h>
 #include <linux/tick.h>
+
+#include <asm/fpu.h>
 
 SYSCALL_DEFINE1(arc_settls, void *, user_tls_data_ptr)
 {
@@ -41,24 +43,107 @@ SYSCALL_DEFINE0(arc_gettls)
 	return task_thread_info(current)->thr_ptr;
 }
 
+SYSCALL_DEFINE3(arc_usr_cmpxchg, int __user *, uaddr, int, expected, int, new)
+{
+	struct pt_regs *regs = current_pt_regs();
+	u32 uval;
+	int ret;
+
+	/*
+	 * This is only for old cores lacking LLOCK/SCOND, which by definition
+	 * can't possibly be SMP. Thus doesn't need to be SMP safe.
+	 * And this also helps reduce the overhead for serializing in
+	 * the UP case
+	 */
+	WARN_ON_ONCE(IS_ENABLED(CONFIG_SMP));
+
+	/* Z indicates to userspace if operation succeeded */
+	regs->status32 &= ~STATUS_Z_MASK;
+
+	ret = access_ok(uaddr, sizeof(*uaddr));
+	if (!ret)
+		 goto fail;
+
+again:
+	preempt_disable();
+
+	ret = __get_user(uval, uaddr);
+	if (ret)
+		 goto fault;
+
+	if (uval != expected)
+		 goto out;
+
+	ret = __put_user(new, uaddr);
+	if (ret)
+		 goto fault;
+
+	regs->status32 |= STATUS_Z_MASK;
+
+out:
+	preempt_enable();
+	return uval;
+
+fault:
+	preempt_enable();
+
+	if (unlikely(ret != -EFAULT))
+		 goto fail;
+
+	mmap_read_lock(current->mm);
+	ret = fixup_user_fault(current->mm, (unsigned long) uaddr,
+			       FAULT_FLAG_WRITE, NULL);
+	mmap_read_unlock(current->mm);
+
+	if (likely(!ret))
+		 goto again;
+
+fail:
+	force_sig(SIGSEGV);
+	return ret;
+}
+
+#ifdef CONFIG_ISA_ARCV2
+
 void arch_cpu_idle(void)
 {
-	/* sleep, but enable all interrupts before committing */
-	__asm__("sleep 0x3");
+	/* Re-enable interrupts <= default irq priority before committing SLEEP */
+	const unsigned int arg = 0x10 | ARCV2_IRQ_DEF_PRIO;
+
+	__asm__ __volatile__(
+		"sleep %0	\n"
+		:
+		:"I"(arg)); /* can't be "r" has to be embedded const */
+
+	raw_local_irq_disable();
 }
+
+#else	/* ARC700 */
+
+void arch_cpu_idle(void)
+{
+	/* sleep, but enable both set E1/E2 (levels of interrupts) before committing */
+	__asm__ __volatile__("sleep 0x3	\n");
+	raw_local_irq_disable();
+}
+
+#endif
 
 asmlinkage void ret_from_fork(void);
 
-/* Layout of Child kernel mode stack as setup at the end of this function is
+/*
+ * Copy architecture-specific thread state
+ *
+ * Layout of Child kernel mode stack as setup at the end of this function is
  *
  * |     ...        |
  * |     ...        |
  * |    unused      |
  * |                |
  * ------------------
- * |     r25        |   <==== top of Stack (thread.ksp)
+ * |     r25        |   <==== top of Stack (thread_info.ksp)
  * ~                ~
- * |    --to--      |   (CALLEE Regs of user mode)
+ * |    --to--      |   (CALLEE Regs of kernel mode)
  * |     r13        |
  * ------------------
  * |     fp         |
@@ -77,13 +162,13 @@ asmlinkage void ret_from_fork(void);
  * |      SP        |
  * |    orig_r0     |
  * |    event/ECR   |
- * |    user_r25    |
  * ------------------  <===== END of PAGE
  */
-int copy_thread(unsigned long clone_flags,
-		unsigned long usp, unsigned long arg,
-		struct task_struct *p)
+int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 {
+	unsigned long clone_flags = args->flags;
+	unsigned long usp = args->stack;
+	unsigned long tls = args->tls;
 	struct pt_regs *c_regs;        /* child's pt_regs */
 	unsigned long *childksp;       /* to unwind out of __switch_to() */
 	struct callee_regs *c_callee;  /* child's callee regs */
@@ -96,24 +181,24 @@ int copy_thread(unsigned long clone_flags,
 	c_callee = ((struct callee_regs *)childksp) - 1;
 
 	/*
-	 * __switch_to() uses thread.ksp to start unwinding stack
+	 * __switch_to() uses thread_info.ksp to start unwinding stack
 	 * For kernel threads we don't need to create callee regs, the
 	 * stack layout nevertheless needs to remain the same.
 	 * Also, since __switch_to anyways unwinds callee regs, we use
 	 * this to populate kernel thread entry-pt/args into callee regs,
 	 * so that ret_from_kernel_thread() becomes simpler.
 	 */
-	p->thread.ksp = (unsigned long)c_callee;	/* THREAD_KSP */
+	task_thread_info(p)->ksp = (unsigned long)c_callee;	/* THREAD_INFO_KSP */
 
 	/* __switch_to expects FP(0), BLINK(return addr) at top */
 	childksp[0] = 0;			/* fp */
 	childksp[1] = (unsigned long)ret_from_fork; /* blink */
 
-	if (unlikely(p->flags & PF_KTHREAD)) {
+	if (unlikely(args->fn)) {
 		memset(c_regs, 0, sizeof(struct pt_regs));
 
-		c_callee->r13 = arg; /* argument to kernel thread */
-		c_callee->r14 = usp;  /* function */
+		c_callee->r13 = (unsigned long)args->fn_arg;
+		c_callee->r14 = (unsigned long)args->fn;
 
 		return 0;
 	}
@@ -140,14 +225,46 @@ int copy_thread(unsigned long clone_flags,
 		 * set task's userland tls data ptr from 4th arg
 		 * clone C-lib call is difft from clone sys-call
 		 */
-		task_thread_info(p)->thr_ptr = regs->r3;
+		task_thread_info(p)->thr_ptr = tls;
 	} else {
 		/* Normal fork case: set parent's TLS ptr in child */
 		task_thread_info(p)->thr_ptr =
 		task_thread_info(current)->thr_ptr;
 	}
 
+
+	/*
+	 * setup usermode thread pointer #1:
+	 * when child is picked by scheduler, __switch_to() uses @c_callee to
+	 * populate usermode callee regs: this works (despite being in a kernel
+	 * function) since special return path for child @ret_from_fork()
+	 * ensures those regs are not clobbered all the way to RTIE to usermode
+	 */
+	c_callee->r25 = task_thread_info(p)->thr_ptr;
+
 	return 0;
+}
+
+/*
+ * Do necessary setup to start up a new user task
+ */
+void start_thread(struct pt_regs *regs, unsigned long pc, unsigned long usp)
+{
+	regs->sp = usp;
+	regs->ret = pc;
+
+	/*
+	 * [U]ser Mode bit set
+	 * [L] ZOL loop inhibited to begin with - cleared by a LP insn
+	 * Interrupts enabled
+	 */
+	regs->status32 = STATUS_U_MASK | STATUS_L_MASK | ISA_INIT_STATUS_BITS;
+
+	fpu_init_task(regs);
+
+	/* bogus seed values for debugging */
+	regs->lp_start = 0x10;
+	regs->lp_end = 0x80;
 }
 
 /*
@@ -157,52 +274,20 @@ void flush_thread(void)
 {
 }
 
-/*
- * Free any architecture-specific thread data structures, etc.
- */
-void exit_thread(void)
-{
-}
-
-int dump_fpu(struct pt_regs *regs, elf_fpregset_t *fpu)
-{
-	return 0;
-}
-
-/*
- * API: expected by schedular Code: If thread is sleeping where is that.
- * What is this good for? it will be always the scheduler or ret_from_fork.
- * So we hard code that anyways.
- */
-unsigned long thread_saved_pc(struct task_struct *t)
-{
-	struct pt_regs *regs = task_pt_regs(t);
-	unsigned long blink = 0;
-
-	/*
-	 * If the thread being queried for in not itself calling this, then it
-	 * implies it is not executing, which in turn implies it is sleeping,
-	 * which in turn implies it got switched OUT by the schedular.
-	 * In that case, it's kernel mode blink can reliably retrieved as per
-	 * the picture above (right above pt_regs).
-	 */
-	if (t != current && t->state != TASK_RUNNING)
-		blink = *((unsigned int *)regs - 1);
-
-	return blink;
-}
-
 int elf_check_arch(const struct elf32_hdr *x)
 {
 	unsigned int eflags;
 
-	if (x->e_machine != EM_ARCOMPACT)
+	if (x->e_machine != EM_ARC_INUSE) {
+		pr_err("ELF not built for %s ISA\n",
+			is_isa_arcompact() ? "ARCompact":"ARCv2");
 		return 0;
+	}
 
 	eflags = x->e_flags;
-	if ((eflags & EF_ARC_OSABI_MSK) < EF_ARC_OSABI_CURRENT) {
+	if ((eflags & EF_ARC_OSABI_MSK) != EF_ARC_OSABI_CURRENT) {
 		pr_err("ABI mismatch - you need newer toolchain\n");
-		force_sigsegv(SIGSEGV, current);
+		force_fatal_sig(SIGSEGV);
 		return 0;
 	}
 

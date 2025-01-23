@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *  Driver for CLPS711x serial ports
  *
@@ -5,16 +6,7 @@
  *
  *  Copyright 1999 ARM Limited
  *  Copyright (C) 2000 Deep Blue Solutions Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
-
-#if defined(CONFIG_SERIAL_CLPS711X_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
-#define SUPPORT_SYSRQ
-#endif
 
 #include <linux/module.h>
 #include <linux/device.h>
@@ -32,6 +24,8 @@
 
 #include <linux/mfd/syscon.h>
 #include <linux/mfd/syscon/clps711x.h>
+
+#include "serial_mctrl_gpio.h"
 
 #define UART_CLPS711X_DEVNAME	"ttyCL"
 #define UART_CLPS711X_NR	2
@@ -62,7 +56,7 @@ struct clps711x_port {
 	unsigned int		tx_enabled;
 	int			rx_irq;
 	struct regmap		*syscon;
-	bool			use_ms;
+	struct mctrl_gpios	*gpios;
 };
 
 static struct uart_driver clps711x_uart = {
@@ -98,8 +92,9 @@ static irqreturn_t uart_clps711x_int_rx(int irq, void *dev_id)
 {
 	struct uart_port *port = dev_id;
 	struct clps711x_port *s = dev_get_drvdata(port->dev);
-	unsigned int status, flg;
+	unsigned int status;
 	u16 ch;
+	u8 flg;
 
 	for (;;) {
 		u32 sysflg = 0;
@@ -172,8 +167,7 @@ static irqreturn_t uart_clps711x_int_tx(int irq, void *dev_id)
 		u32 sysflg = 0;
 
 		writew(xmit->buf[xmit->tail], port->membase + UARTDR_OFFSET);
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		port->icount.tx++;
+		uart_xmit_advance(port, 1);
 
 		regmap_read(s->syscon, SYSFLG_OFFSET, &sysflg);
 		if (sysflg & SYSFLG_UTXFF)
@@ -198,28 +192,17 @@ static unsigned int uart_clps711x_tx_empty(struct uart_port *port)
 
 static unsigned int uart_clps711x_get_mctrl(struct uart_port *port)
 {
+	unsigned int result = TIOCM_DSR | TIOCM_CTS | TIOCM_CAR;
 	struct clps711x_port *s = dev_get_drvdata(port->dev);
-	unsigned int result = 0;
 
-	if (s->use_ms) {
-		u32 sysflg = 0;
-
-		regmap_read(s->syscon, SYSFLG_OFFSET, &sysflg);
-		if (sysflg & SYSFLG1_DCD)
-			result |= TIOCM_CAR;
-		if (sysflg & SYSFLG1_DSR)
-			result |= TIOCM_DSR;
-		if (sysflg & SYSFLG1_CTS)
-			result |= TIOCM_CTS;
-	} else
-		result = TIOCM_DSR | TIOCM_CTS | TIOCM_CAR;
-
-	return result;
+	return mctrl_gpio_get(s->gpios, &result);
 }
 
 static void uart_clps711x_set_mctrl(struct uart_port *port, unsigned int mctrl)
 {
-	/* Do nothing */
+	struct clps711x_port *s = dev_get_drvdata(port->dev);
+
+	mctrl_gpio_set(s->gpios, mctrl);
 }
 
 static void uart_clps711x_break_ctl(struct uart_port *port, int break_state)
@@ -234,13 +217,14 @@ static void uart_clps711x_break_ctl(struct uart_port *port, int break_state)
 	writel(ubrlcr, port->membase + UBRLCR_OFFSET);
 }
 
-static void uart_clps711x_set_ldisc(struct uart_port *port, int ld)
+static void uart_clps711x_set_ldisc(struct uart_port *port,
+				    struct ktermios *termios)
 {
 	if (!port->line) {
 		struct clps711x_port *s = dev_get_drvdata(port->dev);
 
 		regmap_update_bits(s->syscon, SYSCON_OFFSET, SYSCON1_SIREN,
-				   (ld == N_IRDA) ? SYSCON1_SIREN : 0);
+				   (termios->c_line == N_IRDA) ? SYSCON1_SIREN : 0);
 	}
 }
 
@@ -267,7 +251,7 @@ static void uart_clps711x_shutdown(struct uart_port *port)
 
 static void uart_clps711x_set_termios(struct uart_port *port,
 				      struct ktermios *termios,
-				      struct ktermios *old)
+				      const struct ktermios *old)
 {
 	u32 ubrlcr;
 	unsigned int baud, quot;
@@ -352,7 +336,6 @@ static const struct uart_ops uart_clps711x_ops = {
 	.stop_tx	= uart_clps711x_stop_tx,
 	.start_tx	= uart_clps711x_start_tx,
 	.stop_rx	= uart_clps711x_nop_void,
-	.enable_ms	= uart_clps711x_nop_void,
 	.break_ctl	= uart_clps711x_break_ctl,
 	.set_ldisc	= uart_clps711x_set_ldisc,
 	.startup	= uart_clps711x_startup,
@@ -365,11 +348,12 @@ static const struct uart_ops uart_clps711x_ops = {
 };
 
 #ifdef CONFIG_SERIAL_CLPS711X_CONSOLE
-static void uart_clps711x_console_putchar(struct uart_port *port, int ch)
+static void uart_clps711x_console_putchar(struct uart_port *port, unsigned char ch)
 {
 	struct clps711x_port *s = dev_get_drvdata(port->dev);
 	u32 sysflg = 0;
 
+	/* Wait for FIFO is not full */
 	do {
 		regmap_read(s->syscon, SYSFLG_OFFSET, &sysflg);
 	} while (sysflg & SYSFLG_UTXFF);
@@ -454,13 +438,10 @@ static struct console clps711x_console = {
 static int uart_clps711x_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
-	int ret, index = np ? of_alias_get_id(np, "serial") : pdev->id;
 	struct clps711x_port *s;
 	struct resource *res;
 	struct clk *uart_clk;
-
-	if (index < 0 || index >= UART_CLPS711X_NR)
-		return -EINVAL;
+	int irq, ret;
 
 	s = devm_kzalloc(&pdev->dev, sizeof(*s), GFP_KERNEL);
 	if (!s)
@@ -470,48 +451,39 @@ static int uart_clps711x_probe(struct platform_device *pdev)
 	if (IS_ERR(uart_clk))
 		return PTR_ERR(uart_clk);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	s->port.membase = devm_ioremap_resource(&pdev->dev, res);
+	s->port.membase = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(s->port.membase))
 		return PTR_ERR(s->port.membase);
 
-	s->port.irq = platform_get_irq(pdev, 0);
-	if (IS_ERR_VALUE(s->port.irq))
-		return s->port.irq;
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0)
+		return irq;
+	s->port.irq = irq;
 
 	s->rx_irq = platform_get_irq(pdev, 1);
-	if (IS_ERR_VALUE(s->rx_irq))
+	if (s->rx_irq < 0)
 		return s->rx_irq;
 
-	if (!np) {
-		char syscon_name[9];
+	s->syscon = syscon_regmap_lookup_by_phandle(np, "syscon");
+	if (IS_ERR(s->syscon))
+		return PTR_ERR(s->syscon);
 
-		sprintf(syscon_name, "syscon.%i", index + 1);
-		s->syscon = syscon_regmap_lookup_by_pdevname(syscon_name);
-		if (IS_ERR(s->syscon))
-			return PTR_ERR(s->syscon);
-
-		s->use_ms = !index;
-	} else {
-		s->syscon = syscon_regmap_lookup_by_phandle(np, "syscon");
-		if (IS_ERR(s->syscon))
-			return PTR_ERR(s->syscon);
-
-		if (!index)
-			s->use_ms = of_property_read_bool(np, "uart-use-ms");
-	}
-
-	s->port.line		= index;
+	s->port.line		= of_alias_get_id(np, "serial");
 	s->port.dev		= &pdev->dev;
 	s->port.iotype		= UPIO_MEM32;
 	s->port.mapbase		= res->start;
 	s->port.type		= PORT_CLPS711X;
 	s->port.fifosize	= 16;
+	s->port.has_sysrq	= IS_ENABLED(CONFIG_SERIAL_CLPS711X_CONSOLE);
 	s->port.flags		= UPF_SKIP_TEST | UPF_FIXED_TYPE;
 	s->port.uartclk		= clk_get_rate(uart_clk);
 	s->port.ops		= &uart_clps711x_ops;
 
 	platform_set_drvdata(pdev, s);
+
+	s->gpios = mctrl_gpio_init_noauto(&pdev->dev, 0);
+	if (IS_ERR(s->gpios))
+	    return PTR_ERR(s->gpios);
 
 	ret = uart_add_one_port(&clps711x_uart, &s->port);
 	if (ret)
@@ -542,11 +514,13 @@ static int uart_clps711x_remove(struct platform_device *pdev)
 {
 	struct clps711x_port *s = platform_get_drvdata(pdev);
 
-	return uart_remove_one_port(&clps711x_uart, &s->port);
+	uart_remove_one_port(&clps711x_uart, &s->port);
+
+	return 0;
 }
 
 static const struct of_device_id __maybe_unused clps711x_uart_dt_ids[] = {
-	{ .compatible = "cirrus,clps711x-uart", },
+	{ .compatible = "cirrus,ep7209-uart", },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, clps711x_uart_dt_ids);
@@ -554,7 +528,6 @@ MODULE_DEVICE_TABLE(of, clps711x_uart_dt_ids);
 static struct platform_driver clps711x_uart_platform = {
 	.driver = {
 		.name		= "clps711x-uart",
-		.owner		= THIS_MODULE,
 		.of_match_table	= of_match_ptr(clps711x_uart_dt_ids),
 	},
 	.probe	= uart_clps711x_probe,

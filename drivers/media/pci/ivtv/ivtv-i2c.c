@@ -1,21 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
     I2C functions
     Copyright (C) 2003-2004  Kevin Thayer <nufan_wfk at yahoo.com>
     Copyright (C) 2005-2007  Hans Verkuil <hverkuil@xs4all.nl>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 /*
@@ -63,7 +51,7 @@
 #include "ivtv-cards.h"
 #include "ivtv-gpio.h"
 #include "ivtv-i2c.h"
-#include <media/cx25840.h>
+#include <media/drv-intf/cx25840.h>
 
 /* i2c implementation for cx23415/6 chip, ivtv project.
  * Author: Kevin Thayer (nufan_wfk at yahoo.com)
@@ -76,28 +64,28 @@
 
 #define IVTV_CS53L32A_I2C_ADDR		0x11
 #define IVTV_M52790_I2C_ADDR		0x48
-#define IVTV_CX25840_I2C_ADDR 		0x44
-#define IVTV_SAA7115_I2C_ADDR 		0x21
-#define IVTV_SAA7127_I2C_ADDR 		0x44
-#define IVTV_SAA717x_I2C_ADDR 		0x21
-#define IVTV_MSP3400_I2C_ADDR 		0x40
-#define IVTV_HAUPPAUGE_I2C_ADDR 	0x50
-#define IVTV_WM8739_I2C_ADDR 		0x1a
+#define IVTV_CX25840_I2C_ADDR		0x44
+#define IVTV_SAA7115_I2C_ADDR		0x21
+#define IVTV_SAA7127_I2C_ADDR		0x44
+#define IVTV_SAA717x_I2C_ADDR		0x21
+#define IVTV_MSP3400_I2C_ADDR		0x40
+#define IVTV_HAUPPAUGE_I2C_ADDR		0x50
+#define IVTV_WM8739_I2C_ADDR		0x1a
 #define IVTV_WM8775_I2C_ADDR		0x1b
 #define IVTV_TEA5767_I2C_ADDR		0x60
-#define IVTV_UPD64031A_I2C_ADDR 	0x12
-#define IVTV_UPD64083_I2C_ADDR 		0x5c
-#define IVTV_VP27SMPX_I2C_ADDR      	0x5b
-#define IVTV_M52790_I2C_ADDR      	0x48
+#define IVTV_UPD64031A_I2C_ADDR		0x12
+#define IVTV_UPD64083_I2C_ADDR		0x5c
+#define IVTV_VP27SMPX_I2C_ADDR		0x5b
+#define IVTV_M52790_I2C_ADDR		0x48
 #define IVTV_AVERMEDIA_IR_RX_I2C_ADDR	0x40
-#define IVTV_HAUP_EXT_IR_RX_I2C_ADDR 	0x1a
-#define IVTV_HAUP_INT_IR_RX_I2C_ADDR 	0x18
+#define IVTV_HAUP_EXT_IR_RX_I2C_ADDR	0x1a
+#define IVTV_HAUP_INT_IR_RX_I2C_ADDR	0x18
 #define IVTV_Z8F0811_IR_TX_I2C_ADDR	0x70
 #define IVTV_Z8F0811_IR_RX_I2C_ADDR	0x71
 #define IVTV_ADAPTEC_IR_ADDR		0x6b
 
 /* This array should match the IVTV_HW_ defines */
-static const u8 hw_addrs[] = {
+static const u8 hw_addrs[IVTV_HW_MAX_BITS] = {
 	IVTV_CX25840_I2C_ADDR,
 	IVTV_SAA7115_I2C_ADDR,
 	IVTV_SAA7127_I2C_ADDR,
@@ -117,13 +105,12 @@ static const u8 hw_addrs[] = {
 	IVTV_AVERMEDIA_IR_RX_I2C_ADDR,	/* IVTV_HW_I2C_IR_RX_AVER */
 	IVTV_HAUP_EXT_IR_RX_I2C_ADDR,	/* IVTV_HW_I2C_IR_RX_HAUP_EXT */
 	IVTV_HAUP_INT_IR_RX_I2C_ADDR,	/* IVTV_HW_I2C_IR_RX_HAUP_INT */
-	IVTV_Z8F0811_IR_TX_I2C_ADDR,	/* IVTV_HW_Z8F0811_IR_TX_HAUP */
-	IVTV_Z8F0811_IR_RX_I2C_ADDR,	/* IVTV_HW_Z8F0811_IR_RX_HAUP */
+	IVTV_Z8F0811_IR_RX_I2C_ADDR,	/* IVTV_HW_Z8F0811_IR_HAUP */
 	IVTV_ADAPTEC_IR_ADDR,		/* IVTV_HW_I2C_IR_RX_ADAPTEC */
 };
 
 /* This array should match the IVTV_HW_ defines */
-static const char * const hw_devicenames[] = {
+static const char * const hw_devicenames[IVTV_HW_MAX_BITS] = {
 	"cx25840",
 	"saa7115",
 	"saa7127_auto",	/* saa7127 or saa7129 */
@@ -143,12 +130,12 @@ static const char * const hw_devicenames[] = {
 	"ir_video",		/* IVTV_HW_I2C_IR_RX_AVER */
 	"ir_video",		/* IVTV_HW_I2C_IR_RX_HAUP_EXT */
 	"ir_video",		/* IVTV_HW_I2C_IR_RX_HAUP_INT */
-	"ir_tx_z8f0811_haup",	/* IVTV_HW_Z8F0811_IR_TX_HAUP */
-	"ir_rx_z8f0811_haup",	/* IVTV_HW_Z8F0811_IR_RX_HAUP */
+	"ir_z8f0811_haup",	/* IVTV_HW_Z8F0811_IR_HAUP */
 	"ir_video",		/* IVTV_HW_I2C_IR_RX_ADAPTEC */
 };
 
-static int get_key_adaptec(struct IR_i2c *ir, u32 *ir_key, u32 *ir_raw)
+static int get_key_adaptec(struct IR_i2c *ir, enum rc_proto *protocol,
+			   u32 *scancode, u8 *toggle)
 {
 	unsigned char keybuf[4];
 
@@ -167,9 +154,9 @@ static int get_key_adaptec(struct IR_i2c *ir, u32 *ir_key, u32 *ir_raw)
 	keybuf[2] &= 0x7f;
 	keybuf[3] |= 0x80;
 
-	*ir_key = keybuf[3] | keybuf[2] << 8 | keybuf[1] << 16 |keybuf[0] << 24;
-	*ir_raw = *ir_key;
-
+	*protocol = RC_PROTO_UNKNOWN;
+	*scancode = keybuf[3] | keybuf[2] << 8 | keybuf[1] << 16 |keybuf[0] << 24;
+	*toggle = 0;
 	return 1;
 }
 
@@ -180,18 +167,8 @@ static int ivtv_i2c_new_ir(struct ivtv *itv, u32 hw, const char *type, u8 addr)
 	struct IR_i2c_init_data *init_data = &itv->ir_i2c_init_data;
 	unsigned short addr_list[2] = { addr, I2C_CLIENT_END };
 
-	/* Only allow one IR transmitter to be registered per board */
-	if (hw & IVTV_HW_IR_TX_ANY) {
-		if (itv->hw_flags & IVTV_HW_IR_TX_ANY)
-			return -1;
-		memset(&info, 0, sizeof(struct i2c_board_info));
-		strlcpy(info.type, type, I2C_NAME_SIZE);
-		return i2c_new_probed_device(adap, &info, addr_list, NULL)
-							   == NULL ? -1 : 0;
-	}
-
 	/* Only allow one IR receiver to be registered per board */
-	if (itv->hw_flags & IVTV_HW_IR_RX_ANY)
+	if (itv->hw_flags & IVTV_HW_IR_ANY)
 		return -1;
 
 	/* Our default information for ir-kbd-i2c.c to use */
@@ -200,21 +177,22 @@ static int ivtv_i2c_new_ir(struct ivtv *itv, u32 hw, const char *type, u8 addr)
 		init_data->ir_codes = RC_MAP_AVERMEDIA_CARDBUS;
 		init_data->internal_get_key_func =
 					IR_KBD_GET_KEY_AVERMEDIA_CARDBUS;
-		init_data->type = RC_BIT_OTHER;
+		init_data->type = RC_PROTO_BIT_OTHER;
 		init_data->name = "AVerMedia AVerTV card";
 		break;
 	case IVTV_HW_I2C_IR_RX_HAUP_EXT:
 	case IVTV_HW_I2C_IR_RX_HAUP_INT:
 		init_data->ir_codes = RC_MAP_HAUPPAUGE;
 		init_data->internal_get_key_func = IR_KBD_GET_KEY_HAUP;
-		init_data->type = RC_BIT_RC5;
+		init_data->type = RC_PROTO_BIT_RC5;
 		init_data->name = itv->card_name;
 		break;
-	case IVTV_HW_Z8F0811_IR_RX_HAUP:
+	case IVTV_HW_Z8F0811_IR_HAUP:
 		/* Default to grey remote */
 		init_data->ir_codes = RC_MAP_HAUPPAUGE;
 		init_data->internal_get_key_func = IR_KBD_GET_KEY_HAUP_XVR;
-		init_data->type = RC_BIT_RC5;
+		init_data->type = RC_PROTO_BIT_RC5 | RC_PROTO_BIT_RC6_MCE |
+							RC_PROTO_BIT_RC6_6A_32;
 		init_data->name = itv->card_name;
 		break;
 	case IVTV_HW_I2C_IR_RX_ADAPTEC:
@@ -222,20 +200,20 @@ static int ivtv_i2c_new_ir(struct ivtv *itv, u32 hw, const char *type, u8 addr)
 		init_data->name = itv->card_name;
 		/* FIXME: The protocol and RC_MAP needs to be corrected */
 		init_data->ir_codes = RC_MAP_EMPTY;
-		init_data->type = RC_BIT_UNKNOWN;
+		init_data->type = RC_PROTO_BIT_UNKNOWN;
 		break;
 	}
 
 	memset(&info, 0, sizeof(struct i2c_board_info));
 	info.platform_data = init_data;
-	strlcpy(info.type, type, I2C_NAME_SIZE);
+	strscpy(info.type, type, I2C_NAME_SIZE);
 
-	return i2c_new_probed_device(adap, &info, addr_list, NULL) == NULL ?
+	return IS_ERR(i2c_new_scanned_device(adap, &info, addr_list, NULL)) ?
 	       -1 : 0;
 }
 
 /* Instantiate the IR receiver device using probing -- undesirable */
-struct i2c_client *ivtv_i2c_new_ir_legacy(struct ivtv *itv)
+void ivtv_i2c_new_ir_legacy(struct ivtv *itv)
 {
 	struct i2c_board_info info;
 	/*
@@ -249,23 +227,29 @@ struct i2c_client *ivtv_i2c_new_ir_legacy(struct ivtv *itv)
 	 * allocations, so this function must be called after all other i2c
 	 * devices we care about are registered.
 	 */
-	const unsigned short addr_list[] = {
+	static const unsigned short addr_list[] = {
 		0x1a,	/* Hauppauge IR external - collides with WM8739 */
 		0x18,	/* Hauppauge IR internal */
 		I2C_CLIENT_END
 	};
 
 	memset(&info, 0, sizeof(struct i2c_board_info));
-	strlcpy(info.type, "ir_video", I2C_NAME_SIZE);
-	return i2c_new_probed_device(&itv->i2c_adap, &info, addr_list, NULL);
+	strscpy(info.type, "ir_video", I2C_NAME_SIZE);
+	i2c_new_scanned_device(&itv->i2c_adap, &info, addr_list, NULL);
 }
 
 int ivtv_i2c_register(struct ivtv *itv, unsigned idx)
 {
-	struct v4l2_subdev *sd;
 	struct i2c_adapter *adap = &itv->i2c_adap;
-	const char *type = hw_devicenames[idx];
-	u32 hw = 1 << idx;
+	struct v4l2_subdev *sd;
+	const char *type;
+	u32 hw;
+
+	if (idx >= IVTV_HW_MAX_BITS)
+		return -ENODEV;
+
+	type = hw_devicenames[idx];
+	hw = 1 << idx;
 
 	if (hw == IVTV_HW_TUNER) {
 		/* special tuner handling */
@@ -303,6 +287,7 @@ int ivtv_i2c_register(struct ivtv *itv, unsigned idx)
 			.platform_data = &pdata,
 		};
 
+		memset(&pdata, 0, sizeof(pdata));
 		pdata.pvr150_workaround = itv->pvr150_workaround;
 		sd = v4l2_i2c_new_subdev_board(&itv->v4l2_dev, adap,
 				&cx25840_info, NULL);
@@ -624,13 +609,13 @@ static u32 ivtv_functionality(struct i2c_adapter *adap)
 	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL;
 }
 
-static struct i2c_algorithm ivtv_algo = {
+static const struct i2c_algorithm ivtv_algo = {
 	.master_xfer   = ivtv_xfer,
 	.functionality = ivtv_functionality,
 };
 
 /* template for our-bit banger */
-static struct i2c_adapter ivtv_i2c_adap_hw_template = {
+static const struct i2c_adapter ivtv_i2c_adap_hw_template = {
 	.name = "ivtv i2c driver",
 	.algo = &ivtv_algo,
 	.algo_data = NULL,			/* filled from template */
@@ -680,7 +665,7 @@ static int ivtv_getsda_old(void *data)
 }
 
 /* template for i2c-bit-algo */
-static struct i2c_adapter ivtv_i2c_adap_template = {
+static const struct i2c_adapter ivtv_i2c_adap_template = {
 	.name = "ivtv i2c driver",
 	.algo = NULL,                   /* set by i2c-algo-bit */
 	.algo_data = NULL,              /* filled from template */
@@ -698,7 +683,7 @@ static const struct i2c_algo_bit_data ivtv_i2c_algo_template = {
 	.timeout	= IVTV_ALGO_BIT_TIMEOUT * HZ,         /* jiffies */
 };
 
-static struct i2c_client ivtv_i2c_client_template = {
+static const struct i2c_client ivtv_i2c_client_template = {
 	.name = "ivtv internal",
 };
 

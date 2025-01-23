@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/drivers/mmc/core/bus.c
  *
  *  Copyright (C) 2003 Russell King, All Rights Reserved.
  *  Copyright (C) 2007 Pierre Ossman
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  *  MMC card bus driver model
  */
@@ -16,12 +13,16 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/stat.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
+#include <linux/sysfs.h>
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
 
 #include "core.h"
+#include "card.h"
+#include "host.h"
 #include "sdio_cis.h"
 #include "bus.h"
 
@@ -34,13 +35,13 @@ static ssize_t type_show(struct device *dev,
 
 	switch (card->type) {
 	case MMC_TYPE_MMC:
-		return sprintf(buf, "MMC\n");
+		return sysfs_emit(buf, "MMC\n");
 	case MMC_TYPE_SD:
-		return sprintf(buf, "SD\n");
+		return sysfs_emit(buf, "SD\n");
 	case MMC_TYPE_SDIO:
-		return sprintf(buf, "SDIO\n");
+		return sysfs_emit(buf, "SDIO\n");
 	case MMC_TYPE_SD_COMBO:
-		return sprintf(buf, "SDcombo\n");
+		return sysfs_emit(buf, "SDcombo\n");
 	default:
 		return -EFAULT;
 	}
@@ -53,21 +54,12 @@ static struct attribute *mmc_dev_attrs[] = {
 };
 ATTRIBUTE_GROUPS(mmc_dev);
 
-/*
- * This currently matches any MMC driver to any MMC card - drivers
- * themselves make the decision whether to drive this card in their
- * probe method.
- */
-static int mmc_bus_match(struct device *dev, struct device_driver *drv)
-{
-	return 1;
-}
-
 static int
-mmc_bus_uevent(struct device *dev, struct kobj_uevent_env *env)
+mmc_bus_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct mmc_card *card = mmc_dev_to_card(dev);
+	const struct mmc_card *card = mmc_dev_to_card(dev);
 	const char *type;
+	unsigned int i;
 	int retval = 0;
 
 	switch (card->type) {
@@ -93,6 +85,31 @@ mmc_bus_uevent(struct device *dev, struct kobj_uevent_env *env)
 			return retval;
 	}
 
+	if (mmc_card_sdio(card) || mmc_card_sd_combo(card)) {
+		retval = add_uevent_var(env, "SDIO_ID=%04X:%04X",
+					card->cis.vendor, card->cis.device);
+		if (retval)
+			return retval;
+
+		retval = add_uevent_var(env, "SDIO_REVISION=%u.%u",
+					card->major_rev, card->minor_rev);
+		if (retval)
+			return retval;
+
+		for (i = 0; i < card->num_info; i++) {
+			retval = add_uevent_var(env, "SDIO_INFO%u=%s", i+1, card->info[i]);
+			if (retval)
+				return retval;
+		}
+	}
+
+	/*
+	 * SDIO (non-combo) cards are not handled by mmc_block driver and do not
+	 * have accessible CID register which used by mmc_card_name() function.
+	 */
+	if (mmc_card_sdio(card))
+		return 0;
+
 	retval = add_uevent_var(env, "MMC_NAME=%s", mmc_card_name(card));
 	if (retval)
 		return retval;
@@ -114,14 +131,12 @@ static int mmc_bus_probe(struct device *dev)
 	return drv->probe(card);
 }
 
-static int mmc_bus_remove(struct device *dev)
+static void mmc_bus_remove(struct device *dev)
 {
 	struct mmc_driver *drv = to_mmc_driver(dev->driver);
 	struct mmc_card *card = mmc_dev_to_card(dev);
 
 	drv->remove(card);
-
-	return 0;
 }
 
 static void mmc_bus_shutdown(struct device *dev)
@@ -145,24 +160,23 @@ static void mmc_bus_shutdown(struct device *dev)
 #ifdef CONFIG_PM_SLEEP
 static int mmc_bus_suspend(struct device *dev)
 {
-	struct mmc_driver *drv = to_mmc_driver(dev->driver);
 	struct mmc_card *card = mmc_dev_to_card(dev);
 	struct mmc_host *host = card->host;
 	int ret;
 
-	if (dev->driver && drv->suspend) {
-		ret = drv->suspend(card);
-		if (ret)
-			return ret;
-	}
+	ret = pm_generic_suspend(dev);
+	if (ret)
+		return ret;
 
 	ret = host->bus_ops->suspend(host);
+	if (ret)
+		pm_generic_resume(dev);
+
 	return ret;
 }
 
 static int mmc_bus_resume(struct device *dev)
 {
-	struct mmc_driver *drv = to_mmc_driver(dev->driver);
 	struct mmc_card *card = mmc_dev_to_card(dev);
 	struct mmc_host *host = card->host;
 	int ret;
@@ -172,56 +186,37 @@ static int mmc_bus_resume(struct device *dev)
 		pr_warn("%s: error %d during resume (card was removed?)\n",
 			mmc_hostname(host), ret);
 
-	if (dev->driver && drv->resume)
-		ret = drv->resume(card);
-
+	ret = pm_generic_resume(dev);
 	return ret;
 }
 #endif
 
-#ifdef CONFIG_PM_RUNTIME
-
+#ifdef CONFIG_PM
 static int mmc_runtime_suspend(struct device *dev)
 {
 	struct mmc_card *card = mmc_dev_to_card(dev);
 	struct mmc_host *host = card->host;
-	int ret = 0;
 
-	if (host->bus_ops->runtime_suspend)
-		ret = host->bus_ops->runtime_suspend(host);
-
-	return ret;
+	return host->bus_ops->runtime_suspend(host);
 }
 
 static int mmc_runtime_resume(struct device *dev)
 {
 	struct mmc_card *card = mmc_dev_to_card(dev);
 	struct mmc_host *host = card->host;
-	int ret = 0;
 
-	if (host->bus_ops->runtime_resume)
-		ret = host->bus_ops->runtime_resume(host);
-
-	return ret;
+	return host->bus_ops->runtime_resume(host);
 }
-
-static int mmc_runtime_idle(struct device *dev)
-{
-	return 0;
-}
-
-#endif /* !CONFIG_PM_RUNTIME */
+#endif /* !CONFIG_PM */
 
 static const struct dev_pm_ops mmc_bus_pm_ops = {
-	SET_RUNTIME_PM_OPS(mmc_runtime_suspend, mmc_runtime_resume,
-			mmc_runtime_idle)
+	SET_RUNTIME_PM_OPS(mmc_runtime_suspend, mmc_runtime_resume, NULL)
 	SET_SYSTEM_SLEEP_PM_OPS(mmc_bus_suspend, mmc_bus_resume)
 };
 
 static struct bus_type mmc_bus_type = {
 	.name		= "mmc",
 	.dev_groups	= mmc_dev_groups,
-	.match		= mmc_bus_match,
 	.uevent		= mmc_bus_uevent,
 	.probe		= mmc_bus_probe,
 	.remove		= mmc_bus_remove,
@@ -315,6 +310,9 @@ int mmc_add_card(struct mmc_card *card)
 
 
 	dev_set_name(&card->dev, "%s:%04x", mmc_hostname(card->host), card->rca);
+	dev_set_removable(&card->dev,
+			  mmc_card_is_removable(card->host) ?
+			  DEVICE_REMOVABLE : DEVICE_FIXED);
 
 	switch (card->type) {
 	case MMC_TYPE_MMC:
@@ -349,23 +347,25 @@ int mmc_add_card(struct mmc_card *card)
 	if (mmc_host_is_spi(card->host)) {
 		pr_info("%s: new %s%s%s card on SPI\n",
 			mmc_hostname(card->host),
-			mmc_card_highspeed(card) ? "high speed " : "",
-			mmc_card_ddr_mode(card) ? "DDR " : "",
+			mmc_card_hs(card) ? "high speed " : "",
+			mmc_card_ddr52(card) ? "DDR " : "",
 			type);
 	} else {
-		pr_info("%s: new %s%s%s%s%s card at address %04x\n",
+		pr_info("%s: new %s%s%s%s%s%s card at address %04x\n",
 			mmc_hostname(card->host),
 			mmc_card_uhs(card) ? "ultra high speed " :
-			(mmc_card_highspeed(card) ? "high speed " : ""),
+			(mmc_card_hs(card) ? "high speed " : ""),
+			mmc_card_hs400(card) ? "HS400 " :
 			(mmc_card_hs200(card) ? "HS200 " : ""),
-			mmc_card_ddr_mode(card) ? "DDR " : "",
+			mmc_card_hs400es(card) ? "Enhanced strobe " : "",
+			mmc_card_ddr52(card) ? "DDR " : "",
 			uhs_bus_speed_mode, type, card->rca);
 	}
 
-#ifdef CONFIG_DEBUG_FS
 	mmc_add_card_debugfs(card);
-#endif
-	mmc_init_context_info(card->host);
+	card->dev.of_node = mmc_of_find_child_device(card->host, 0);
+
+	device_enable_async_suspend(&card->dev);
 
 	ret = device_add(&card->dev);
 	if (ret)
@@ -382,9 +382,9 @@ int mmc_add_card(struct mmc_card *card)
  */
 void mmc_remove_card(struct mmc_card *card)
 {
-#ifdef CONFIG_DEBUG_FS
+	struct mmc_host *host = card->host;
+
 	mmc_remove_card_debugfs(card);
-#endif
 
 	if (mmc_card_present(card)) {
 		if (mmc_host_is_spi(card->host)) {
@@ -395,8 +395,13 @@ void mmc_remove_card(struct mmc_card *card)
 				mmc_hostname(card->host), card->rca);
 		}
 		device_del(&card->dev);
+		of_node_put(card->dev.of_node);
+	}
+
+	if (host->cqe_enabled) {
+		host->cqe_ops->cqe_disable(host);
+		host->cqe_enabled = false;
 	}
 
 	put_device(&card->dev);
 }
-

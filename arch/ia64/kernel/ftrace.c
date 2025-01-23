@@ -97,20 +97,18 @@ ftrace_modify_code(unsigned long ip, unsigned char *old_code,
 	unsigned char replaced[MCOUNT_INSN_SIZE];
 
 	/*
-	 * Note: Due to modules and __init, code can
-	 *  disappear and change, we need to protect against faulting
-	 *  as well as code changing. We do this by using the
-	 *  probe_kernel_* functions.
-	 *
-	 * No real locking needed, this code is run through
-	 * kstop_machine, or before SMP starts.
+	 * Note:
+	 * We are paranoid about modifying text, as if a bug was to happen, it
+	 * could cause us to read or write to someplace that could cause harm.
+	 * Carefully read and modify the code with probe_kernel_*(), and make
+	 * sure what we read is what we expected it to be before modifying it.
 	 */
 
 	if (!do_check)
 		goto skip_check;
 
 	/* read the text we want to modify */
-	if (probe_kernel_read(replaced, (void *)ip, MCOUNT_INSN_SIZE))
+	if (copy_from_kernel_nofault(replaced, (void *)ip, MCOUNT_INSN_SIZE))
 		return -EFAULT;
 
 	/* Make sure it is what we expect it to be */
@@ -119,7 +117,7 @@ ftrace_modify_code(unsigned long ip, unsigned char *old_code,
 
 skip_check:
 	/* replace the text with the new text */
-	if (probe_kernel_write(((void *)ip), new_code, MCOUNT_INSN_SIZE))
+	if (copy_to_kernel_nofault(((void *)ip), new_code, MCOUNT_INSN_SIZE))
 		return -EPERM;
 	flush_icache_range(ip, ip + MCOUNT_INSN_SIZE);
 
@@ -131,7 +129,7 @@ static int ftrace_make_nop_check(struct dyn_ftrace *rec, unsigned long addr)
 	unsigned char __attribute__((aligned(8))) replaced[MCOUNT_INSN_SIZE];
 	unsigned long ip = rec->ip;
 
-	if (probe_kernel_read(replaced, (void *)ip, MCOUNT_INSN_SIZE))
+	if (copy_from_kernel_nofault(replaced, (void *)ip, MCOUNT_INSN_SIZE))
 		return -EFAULT;
 	if (rec->flags & FTRACE_FL_CONVERTED) {
 		struct ftrace_call_insn *call_insn, *tmp_call;
@@ -194,13 +192,5 @@ int ftrace_update_ftrace_func(ftrace_func_t func)
 	ia64_patch_imm64(addr + 2, ip);
 
 	flush_icache_range(addr, addr + 16);
-	return 0;
-}
-
-/* run from kstop_machine */
-int __init ftrace_dyn_arch_init(void *data)
-{
-	*(unsigned long *)data = 0;
-
 	return 0;
 }

@@ -1,11 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	IPV6 GSO/GRO offload support
  *	Linux INET6 implementation
- *
- *	This program is free software; you can redistribute it and/or
- *      modify it under the terms of the GNU General Public License
- *      as published by the Free Software Foundation; either version
- *      2 of the License, or (at your option) any later version.
  *
  *      IPV6 Extension Header GSO/GRO support
  */
@@ -25,17 +21,17 @@ int __init ipv6_exthdrs_offload_init(void)
 	int ret;
 
 	ret = inet6_add_offload(&rthdr_offload, IPPROTO_ROUTING);
-	if (!ret)
+	if (ret)
 		goto out;
 
 	ret = inet6_add_offload(&dstopt_offload, IPPROTO_DSTOPTS);
-	if (!ret)
+	if (ret)
 		goto out_rt;
 
 out:
 	return ret;
 
 out_rt:
-	inet_del_offload(&rthdr_offload, IPPROTO_ROUTING);
+	inet6_del_offload(&rthdr_offload, IPPROTO_ROUTING);
 	goto out;
 }

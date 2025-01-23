@@ -16,11 +16,6 @@
 #ifndef __ARCH_ARM_MACH_OMAP2_CONTROL_H
 #define __ARCH_ARM_MACH_OMAP2_CONTROL_H
 
-#include "ctrl_module_core_44xx.h"
-#include "ctrl_module_wkup_44xx.h"
-#include "ctrl_module_pad_core_44xx.h"
-#include "ctrl_module_pad_wkup_44xx.h"
-
 #include "am33xx.h"
 
 #ifndef __ASSEMBLY__
@@ -58,6 +53,7 @@
 #define OMAP343X_CONTROL_GENERAL_WKUP	0xa60
 
 /* TI81XX spefic control submodules */
+#define TI81XX_CONTROL_DEVBOOT		0x040
 #define TI81XX_CONTROL_DEVCONF		0x600
 
 /* Control register offsets - read/write with omap_ctrl_{read,write}{bwl}() */
@@ -199,6 +195,7 @@
 #define OMAP44XX_CONTROL_FUSE_MPU_OPP100	0x243
 #define OMAP44XX_CONTROL_FUSE_MPU_OPPTURBO	0x246
 #define OMAP44XX_CONTROL_FUSE_MPU_OPPNITRO	0x249
+#define OMAP44XX_CONTROL_FUSE_MPU_OPPNITROSB	0x24C
 #define OMAP44XX_CONTROL_FUSE_CORE_OPP50	0x254
 #define OMAP44XX_CONTROL_FUSE_CORE_OPP100	0x257
 #define OMAP44XX_CONTROL_FUSE_CORE_OPP100OV	0x25A
@@ -235,6 +232,9 @@
 #define OMAP343X_PADCONF_ETK_D15	OMAP343X_PADCONF_ETK(17)
 
 /* 34xx GENERAL_WKUP register offsets */
+#define OMAP34XX_CONTROL_WKUP_CTRL	(OMAP343X_CONTROL_GENERAL_WKUP - 0x4)
+#define OMAP36XX_GPIO_IO_PWRDNZ		BIT(6)
+
 #define OMAP343X_CONTROL_WKUP_DEBOBSMUX(i) (OMAP343X_CONTROL_GENERAL_WKUP + \
 						0x008 + (i))
 #define OMAP343X_CONTROL_WKUP_DEBOBS0 (OMAP343X_CONTROL_GENERAL_WKUP + 0x008)
@@ -251,12 +251,52 @@
 #define OMAP3_PADCONF_SAD2D_MSTANDBY   0x250
 #define OMAP3_PADCONF_SAD2D_IDLEACK    0x254
 
+/* TI81XX CONTROL_DEVBOOT register offsets */
+#define TI81XX_CONTROL_STATUS		(TI81XX_CONTROL_DEVBOOT + 0x000)
+
 /* TI81XX CONTROL_DEVCONF register offsets */
 #define TI81XX_CONTROL_DEVICE_ID	(TI81XX_CONTROL_DEVCONF + 0x000)
+
+/* OMAP4 CONTROL MODULE */
+#define OMAP4_CTRL_MODULE_PAD_WKUP			0x4a31e000
+#define OMAP4_CTRL_MODULE_PAD_WKUP_CONTROL_I2C_2	0x0604
+#define OMAP4_CTRL_MODULE_CORE_STATUS			0x02c4
+#define OMAP4_CTRL_MODULE_CORE_STD_FUSE_PROD_ID_1	0x0218
+#define OMAP4_CTRL_MODULE_CORE_DSP_BOOTADDR		0x0304
+#define OMAP4_CTRL_MODULE_PAD_CORE_CONTROL_DSIPHY	0x0618
+#define OMAP4_CTRL_MODULE_PAD_CORE_CONTROL_CAMERA_RX	0x0608
+
+/* OMAP4 CONTROL_DSIPHY */
+#define OMAP4_DSI2_LANEENABLE_SHIFT			29
+#define OMAP4_DSI2_LANEENABLE_MASK			(0x7 << 29)
+#define OMAP4_DSI1_LANEENABLE_SHIFT			24
+#define OMAP4_DSI1_LANEENABLE_MASK			(0x1f << 24)
+#define OMAP4_DSI1_PIPD_SHIFT				19
+#define OMAP4_DSI1_PIPD_MASK				(0x1f << 19)
+#define OMAP4_DSI2_PIPD_SHIFT				14
+#define OMAP4_DSI2_PIPD_MASK				(0x1f << 14)
+
+/* OMAP4 CONTROL_CAMERA_RX */
+#define OMAP4_CAMERARX_CSI21_LANEENABLE_SHIFT		24
+#define OMAP4_CAMERARX_CSI21_LANEENABLE_MASK		(0x1f << 24)
+#define OMAP4_CAMERARX_CSI22_LANEENABLE_SHIFT		29
+#define OMAP4_CAMERARX_CSI22_LANEENABLE_MASK		(0x3 << 29)
+#define OMAP4_CAMERARX_CSI22_CTRLCLKEN_SHIFT		21
+#define OMAP4_CAMERARX_CSI22_CTRLCLKEN_MASK		(1 << 21)
+#define OMAP4_CAMERARX_CSI22_CAMMODE_SHIFT		19
+#define OMAP4_CAMERARX_CSI22_CAMMODE_MASK		(0x3 << 19)
+#define OMAP4_CAMERARX_CSI21_CTRLCLKEN_SHIFT		18
+#define OMAP4_CAMERARX_CSI21_CTRLCLKEN_MASK		(1 << 18)
+#define OMAP4_CAMERARX_CSI21_CAMMODE_SHIFT		16
+#define OMAP4_CAMERARX_CSI21_CAMMODE_MASK		(0x3 << 16)
 
 /* OMAP54XX CONTROL STATUS register */
 #define OMAP5XXX_CONTROL_STATUS                0x134
 #define OMAP5_DEVICETYPE_MASK          (0x7 << 6)
+
+/* DRA7XX CONTROL CORE BOOTSTRAP */
+#define DRA7_CTRL_CORE_BOOTSTRAP	0x6c4
+#define DRA7_SPEEDSELECT_MASK		(0x3 << 8)
 
 /*
  * REVISIT: This list of registers is not comprehensive - there are more
@@ -370,6 +410,67 @@
 #define AM33XX_DEV_FEATURE		0x604
 #define AM33XX_SGX_MASK			BIT(29)
 
+/* Additional AM33XX/AM43XX CONTROL registers */
+#define AM33XX_CONTROL_SYSCONFIG_OFFSET			0x0010
+#define AM33XX_CONTROL_STATUS_OFFSET			0x0040
+#define AM43XX_CONTROL_MPU_L2_CTRL_OFFSET		0x01e0
+#define AM33XX_CONTROL_CORTEX_VBBLDO_CTRL_OFFSET	0x041c
+#define AM33XX_CONTROL_CORE_SLDO_CTRL_OFFSET		0x0428
+#define AM33XX_CONTROL_MPU_SLDO_CTRL_OFFSET		0x042c
+#define AM33XX_CONTROL_CLK32KDIVRATIO_CTRL_OFFSET	0x0444
+#define AM33XX_CONTROL_BANDGAP_CTRL_OFFSET		0x0448
+#define AM33XX_CONTROL_BANDGAP_TRIM_OFFSET		0x044c
+#define AM33XX_CONTROL_PLL_CLKINPULOW_CTRL_OFFSET	0x0458
+#define AM33XX_CONTROL_MOSC_CTRL_OFFSET			0x0468
+#define AM33XX_CONTROL_RCOSC_CTRL_OFFSET		0x046c
+#define AM33XX_CONTROL_DEEPSLEEP_CTRL_OFFSET		0x0470
+#define AM43XX_CONTROL_DISPLAY_PLL_SEL_OFFSET		0x0534
+#define AM33XX_CONTROL_INIT_PRIORITY_0_OFFSET		0x0608
+#define AM33XX_CONTROL_INIT_PRIORITY_1_OFFSET		0x060c
+#define AM33XX_CONTROL_MMU_CFG_OFFSET			0x0610
+#define AM33XX_CONTROL_TPTC_CFG_OFFSET			0x0614
+#define AM33XX_CONTROL_USB_CTRL0_OFFSET			0x0620
+#define AM33XX_CONTROL_USB_CTRL1_OFFSET			0x0628
+#define AM33XX_CONTROL_USB_WKUP_CTRL_OFFSET		0x0648
+#define AM43XX_CONTROL_USB_CTRL2_OFFSET			0x064c
+#define AM43XX_CONTROL_GMII_SEL_OFFSET			0x0650
+#define AM43XX_CONTROL_MPUSS_CTRL_OFFSET		0x0654
+#define AM43XX_CONTROL_TIMER_CASCADE_CTRL_OFFSET	0x0658
+#define AM43XX_CONTROL_PWMSS_CTRL_OFFSET		0x0664
+#define AM33XX_CONTROL_MREQPRIO_0_OFFSET		0x0670
+#define AM33XX_CONTROL_MREQPRIO_1_OFFSET		0x0674
+#define AM33XX_CONTROL_HW_EVENT_SEL_GRP1_OFFSET		0x0690
+#define AM33XX_CONTROL_HW_EVENT_SEL_GRP2_OFFSET		0x0694
+#define AM33XX_CONTROL_HW_EVENT_SEL_GRP3_OFFSET		0x0698
+#define AM33XX_CONTROL_HW_EVENT_SEL_GRP4_OFFSET		0x069c
+#define AM33XX_CONTROL_SMRT_CTRL_OFFSET			0x06a0
+#define AM33XX_CONTROL_MPUSS_HW_DEBUG_SEL_OFFSET	0x06a4
+#define AM43XX_CONTROL_CQDETECT_STS_OFFSET		0x0e00
+#define AM43XX_CONTROL_CQDETECT_STS2_OFFSET		0x0e08
+#define AM43XX_CONTROL_VTP_CTRL_OFFSET			0x0e0c
+#define AM33XX_CONTROL_VREF_CTRL_OFFSET			0x0e14
+#define AM33XX_CONTROL_TPCC_EVT_MUX_0_3_OFFSET		0x0f90
+#define AM33XX_CONTROL_TPCC_EVT_MUX_4_7_OFFSET		0x0f94
+#define AM33XX_CONTROL_TPCC_EVT_MUX_8_11_OFFSET		0x0f98
+#define AM33XX_CONTROL_TPCC_EVT_MUX_12_15_OFFSET	0x0f9c
+#define AM33XX_CONTROL_TPCC_EVT_MUX_16_19_OFFSET	0x0fa0
+#define AM33XX_CONTROL_TPCC_EVT_MUX_20_23_OFFSET	0x0fa4
+#define AM33XX_CONTROL_TPCC_EVT_MUX_24_27_OFFSET	0x0fa8
+#define AM33XX_CONTROL_TPCC_EVT_MUX_28_31_OFFSET	0x0fac
+#define AM33XX_CONTROL_TPCC_EVT_MUX_32_35_OFFSET	0x0fb0
+#define AM33XX_CONTROL_TPCC_EVT_MUX_36_39_OFFSET	0x0fb4
+#define AM33XX_CONTROL_TPCC_EVT_MUX_40_43_OFFSET	0x0fb8
+#define AM33XX_CONTROL_TPCC_EVT_MUX_44_47_OFFSET	0x0fbc
+#define AM33XX_CONTROL_TPCC_EVT_MUX_48_51_OFFSET	0x0fc0
+#define AM33XX_CONTROL_TPCC_EVT_MUX_52_55_OFFSET	0x0fc4
+#define AM33XX_CONTROL_TPCC_EVT_MUX_56_59_OFFSET	0x0fc8
+#define AM33XX_CONTROL_TPCC_EVT_MUX_60_63_OFFSET	0x0fcc
+#define AM33XX_CONTROL_TIMER_EVT_CAPT_OFFSET		0x0fd0
+#define AM33XX_CONTROL_ECAP_EVT_CAPT_OFFSET		0x0fd4
+#define AM33XX_CONTROL_ADC_EVT_CAPT_OFFSET		0x0fd8
+#define AM43XX_CONTROL_ADC1_EVT_CAPT_OFFSET		0x0fdc
+#define AM33XX_CONTROL_RESET_ISO_OFFSET			0x1000
+
 /* CONTROL OMAP STATUS register to identify OMAP3 features */
 #define OMAP3_CONTROL_OMAP_STATUS	0x044c
 
@@ -404,18 +505,13 @@
 
 #ifndef __ASSEMBLY__
 #ifdef CONFIG_ARCH_OMAP2PLUS
-extern void __iomem *omap_ctrl_base_get(void);
 extern u8 omap_ctrl_readb(u16 offset);
 extern u16 omap_ctrl_readw(u16 offset);
 extern u32 omap_ctrl_readl(u16 offset);
-extern u32 omap4_ctrl_pad_readl(u16 offset);
 extern void omap_ctrl_writeb(u8 val, u16 offset);
 extern void omap_ctrl_writew(u16 val, u16 offset);
 extern void omap_ctrl_writel(u32 val, u16 offset);
-extern void omap4_ctrl_pad_writel(u32 val, u16 offset);
 
-extern void omap3_save_scratchpad_contents(void);
-extern void omap3_clear_scratchpad_contents(void);
 extern void omap3_restore(void);
 extern void omap3_restore_es3(void);
 extern void omap3_restore_3630(void);
@@ -423,15 +519,12 @@ extern u32 omap3_arm_context[128];
 extern void omap3_control_save_context(void);
 extern void omap3_control_restore_context(void);
 extern void omap3_ctrl_write_boot_mode(u8 bootmode);
-extern void omap_ctrl_write_dsp_boot_addr(u32 bootaddr);
-extern void omap_ctrl_write_dsp_boot_mode(u8 bootmode);
 extern void omap3630_ctrl_disable_rta(void);
 extern int omap3_ctrl_save_padconf(void);
-extern void omap3_ctrl_set_iva_bootmode_idle(void);
-extern void omap2_set_globals_control(void __iomem *ctrl,
-				      void __iomem *ctrl_pad);
+void omap3_ctrl_init(void);
+int omap2_control_base_init(void);
+int omap_control_init(void);
 #else
-#define omap_ctrl_base_get()		0
 #define omap_ctrl_readb(x)		0
 #define omap_ctrl_readw(x)		0
 #define omap_ctrl_readl(x)		0

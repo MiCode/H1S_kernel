@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/init.h>
 #include <linux/pci.h>
 #include <asm/mips-boards/piix4.h>
@@ -12,7 +13,7 @@
 static char pci_irq[5] = {
 };
 
-static char irq_tab[][5] __initdata = {
+static char irq_tab[][5] = {
 	/*	INTA	INTB	INTC	INTD */
 	{0,	0,	0,	0,	0 },	/*  0: GT64120 PCI bridge */
 	{0,	0,	0,	0,	0 },	/*  1: Unused */
@@ -38,7 +39,7 @@ static char irq_tab[][5] __initdata = {
 	{0,	PCID,	PCIA,	PCIB,	PCIC }	/* 21: PCI Slot 4 */
 };
 
-int __init pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
+int pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	int virq;
 	virq = irq_tab[slot][pin];
@@ -51,10 +52,24 @@ int pcibios_plat_dev_init(struct pci_dev *dev)
 	return 0;
 }
 
+static void malta_piix_func3_base_fixup(struct pci_dev *dev)
+{
+	/* Set a sane PM I/O base address */
+	pci_write_config_word(dev, PIIX4_FUNC3_PMBA, 0x1000);
+
+	/* Enable access to the PM I/O region */
+	pci_write_config_byte(dev, PIIX4_FUNC3_PMREGMISC,
+			      PIIX4_FUNC3_PMREGMISC_EN);
+}
+
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82371AB_3,
+			malta_piix_func3_base_fixup);
+
 static void malta_piix_func0_fixup(struct pci_dev *pdev)
 {
 	unsigned char reg_val;
 	u32 reg_val32;
+	u16 reg_val16;
 	/* PIIX PIRQC[A:D] irq mappings */
 	static int piixirqmap[PIIX4_FUNC0_PIRQRC_IRQ_ROUTING_MAX] = {
 		0,  0,	0,  3,
@@ -94,6 +109,11 @@ static void malta_piix_func0_fixup(struct pci_dev *pdev)
 	pci_read_config_byte(pdev, PIIX4_FUNC0_SERIRQC, &reg_val);
 	reg_val |= PIIX4_FUNC0_SERIRQC_EN | PIIX4_FUNC0_SERIRQC_CONT;
 	pci_write_config_byte(pdev, PIIX4_FUNC0_SERIRQC, reg_val);
+
+	/* Enable response to special cycles */
+	pci_read_config_word(pdev, PCI_COMMAND, &reg_val16);
+	pci_write_config_word(pdev, PCI_COMMAND,
+			      reg_val16 | PCI_COMMAND_SPECIAL);
 }
 
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82371AB_0,

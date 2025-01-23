@@ -1,20 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _INCLUDE_GUARD_i82092aa_H_
 #define _INCLUDE_GUARD_i82092aa_H_
 
 #include <linux/interrupt.h>
-
-/* Debuging defines */
-#ifdef NOTRACE
-#define enter(x)   printk("Enter: %s, %s line %i\n",x,__FILE__,__LINE__)
-#define leave(x)   printk("Leave: %s, %s line %i\n",x,__FILE__,__LINE__)
-#define dprintk(fmt, args...) printk(fmt , ## args)
-#else
-#define enter(x)   do {} while (0)
-#define leave(x)   do {} while (0)
-#define dprintk(fmt, args...) do {} while (0)
-#endif
-
-
 
 /* prototypes */
 

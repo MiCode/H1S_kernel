@@ -1,78 +1,71 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Serial Attached SCSI (SAS) Event processing
  *
  * Copyright (C) 2005 Adaptec, Inc.  All rights reserved.
  * Copyright (C) 2005 Luben Tuikov <luben_tuikov@adaptec.com>
- *
- * This file is licensed under GPLv2.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of the
- * License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
  */
 
 #include <linux/export.h>
 #include <scsi/scsi_host.h>
 #include "sas_internal.h"
-#include "sas_dump.h"
 
-void sas_queue_work(struct sas_ha_struct *ha, struct sas_work *sw)
+bool sas_queue_work(struct sas_ha_struct *ha, struct sas_work *sw)
 {
 	if (!test_bit(SAS_HA_REGISTERED, &ha->state))
-		return;
+		return false;
 
 	if (test_bit(SAS_HA_DRAINING, &ha->state)) {
 		/* add it to the defer list, if not already pending */
 		if (list_empty(&sw->drain_node))
-			list_add(&sw->drain_node, &ha->defer_q);
-	} else
-		scsi_queue_work(ha->core.shost, &sw->work);
+			list_add_tail(&sw->drain_node, &ha->defer_q);
+		return true;
+	}
+
+	return queue_work(ha->event_q, &sw->work);
 }
 
-static void sas_queue_event(int event, unsigned long *pending,
-			    struct sas_work *work,
+static bool sas_queue_event(int event, struct sas_work *work,
 			    struct sas_ha_struct *ha)
 {
-	if (!test_and_set_bit(event, pending)) {
-		unsigned long flags;
+	unsigned long flags;
+	bool rc;
 
-		spin_lock_irqsave(&ha->lock, flags);
-		sas_queue_work(ha, work);
-		spin_unlock_irqrestore(&ha->lock, flags);
-	}
+	spin_lock_irqsave(&ha->lock, flags);
+	rc = sas_queue_work(ha, work);
+	spin_unlock_irqrestore(&ha->lock, flags);
+
+	return rc;
 }
 
+void sas_queue_deferred_work(struct sas_ha_struct *ha)
+{
+	struct sas_work *sw, *_sw;
+
+	spin_lock_irq(&ha->lock);
+	list_for_each_entry_safe(sw, _sw, &ha->defer_q, drain_node) {
+		list_del_init(&sw->drain_node);
+
+		if (!sas_queue_work(ha, sw)) {
+			pm_runtime_put(ha->dev);
+			sas_free_event(to_asd_sas_event(&sw->work));
+		}
+	}
+	spin_unlock_irq(&ha->lock);
+}
 
 void __sas_drain_work(struct sas_ha_struct *ha)
 {
-	struct workqueue_struct *wq = ha->core.shost->work_q;
-	struct sas_work *sw, *_sw;
-
 	set_bit(SAS_HA_DRAINING, &ha->state);
 	/* flush submitters */
 	spin_lock_irq(&ha->lock);
 	spin_unlock_irq(&ha->lock);
 
-	drain_workqueue(wq);
+	drain_workqueue(ha->event_q);
+	drain_workqueue(ha->disco_q);
 
-	spin_lock_irq(&ha->lock);
 	clear_bit(SAS_HA_DRAINING, &ha->state);
-	list_for_each_entry_safe(sw, _sw, &ha->defer_q, drain_node) {
-		list_del_init(&sw->drain_node);
-		sas_queue_work(ha, sw);
-	}
-	spin_unlock_irq(&ha->lock);
+	sas_queue_deferred_work(ha);
 }
 
 int sas_drain_work(struct sas_ha_struct *ha)
@@ -107,59 +100,117 @@ void sas_enable_revalidation(struct sas_ha_struct *ha)
 		struct asd_sas_port *port = ha->sas_port[i];
 		const int ev = DISCE_REVALIDATE_DOMAIN;
 		struct sas_discovery *d = &port->disc;
+		struct asd_sas_phy *sas_phy;
 
 		if (!test_and_clear_bit(ev, &d->pending))
 			continue;
 
-		sas_queue_event(ev, &d->pending, &d->disc_work[ev].work, ha);
+		spin_lock(&port->phy_list_lock);
+		if (list_empty(&port->phy_list)) {
+			spin_unlock(&port->phy_list_lock);
+			continue;
+		}
+
+		sas_phy = container_of(port->phy_list.next, struct asd_sas_phy,
+				port_phy_el);
+		spin_unlock(&port->phy_list_lock);
+		sas_notify_port_event(sas_phy,
+				PORTE_BROADCAST_RCVD, GFP_KERNEL);
 	}
 	mutex_unlock(&ha->disco_mutex);
 }
 
-static void notify_ha_event(struct sas_ha_struct *sas_ha, enum ha_event event)
-{
-	BUG_ON(event >= HA_NUM_EVENTS);
 
-	sas_queue_event(event, &sas_ha->pending,
-			&sas_ha->ha_events[event].work, sas_ha);
+static void sas_port_event_worker(struct work_struct *work)
+{
+	struct asd_sas_event *ev = to_asd_sas_event(work);
+	struct asd_sas_phy *phy = ev->phy;
+	struct sas_ha_struct *ha = phy->ha;
+
+	sas_port_event_fns[ev->event](work);
+	pm_runtime_put(ha->dev);
+	sas_free_event(ev);
 }
 
-static void notify_port_event(struct asd_sas_phy *phy, enum port_event event)
+static void sas_phy_event_worker(struct work_struct *work)
+{
+	struct asd_sas_event *ev = to_asd_sas_event(work);
+	struct asd_sas_phy *phy = ev->phy;
+	struct sas_ha_struct *ha = phy->ha;
+
+	sas_phy_event_fns[ev->event](work);
+	pm_runtime_put(ha->dev);
+	sas_free_event(ev);
+}
+
+/* defer works of new phys during suspend */
+static bool sas_defer_event(struct asd_sas_phy *phy, struct asd_sas_event *ev)
 {
 	struct sas_ha_struct *ha = phy->ha;
+	unsigned long flags;
+	bool deferred = false;
+
+	spin_lock_irqsave(&ha->lock, flags);
+	if (test_bit(SAS_HA_RESUMING, &ha->state) && !phy->suspended) {
+		struct sas_work *sw = &ev->work;
+
+		list_add_tail(&sw->drain_node, &ha->defer_q);
+		deferred = true;
+	}
+	spin_unlock_irqrestore(&ha->lock, flags);
+	return deferred;
+}
+
+void sas_notify_port_event(struct asd_sas_phy *phy, enum port_event event,
+			   gfp_t gfp_flags)
+{
+	struct sas_ha_struct *ha = phy->ha;
+	struct asd_sas_event *ev;
 
 	BUG_ON(event >= PORT_NUM_EVENTS);
 
-	sas_queue_event(event, &phy->port_events_pending,
-			&phy->port_events[event].work, ha);
-}
+	ev = sas_alloc_event(phy, gfp_flags);
+	if (!ev)
+		return;
 
-void sas_notify_phy_event(struct asd_sas_phy *phy, enum phy_event event)
+	/* Call pm_runtime_put() with pairs in sas_port_event_worker() */
+	pm_runtime_get_noresume(ha->dev);
+
+	INIT_SAS_EVENT(ev, sas_port_event_worker, phy, event);
+
+	if (sas_defer_event(phy, ev))
+		return;
+
+	if (!sas_queue_event(event, &ev->work, ha)) {
+		pm_runtime_put(ha->dev);
+		sas_free_event(ev);
+	}
+}
+EXPORT_SYMBOL_GPL(sas_notify_port_event);
+
+void sas_notify_phy_event(struct asd_sas_phy *phy, enum phy_event event,
+			  gfp_t gfp_flags)
 {
 	struct sas_ha_struct *ha = phy->ha;
+	struct asd_sas_event *ev;
 
 	BUG_ON(event >= PHY_NUM_EVENTS);
 
-	sas_queue_event(event, &phy->phy_events_pending,
-			&phy->phy_events[event].work, ha);
-}
+	ev = sas_alloc_event(phy, gfp_flags);
+	if (!ev)
+		return;
 
-int sas_init_events(struct sas_ha_struct *sas_ha)
-{
-	static const work_func_t sas_ha_event_fns[HA_NUM_EVENTS] = {
-		[HAE_RESET] = sas_hae_reset,
-	};
+	/* Call pm_runtime_put() with pairs in sas_phy_event_worker() */
+	pm_runtime_get_noresume(ha->dev);
 
-	int i;
+	INIT_SAS_EVENT(ev, sas_phy_event_worker, phy, event);
 
-	for (i = 0; i < HA_NUM_EVENTS; i++) {
-		INIT_SAS_WORK(&sas_ha->ha_events[i].work, sas_ha_event_fns[i]);
-		sas_ha->ha_events[i].ha = sas_ha;
+	if (sas_defer_event(phy, ev))
+		return;
+
+	if (!sas_queue_event(event, &ev->work, ha)) {
+		pm_runtime_put(ha->dev);
+		sas_free_event(ev);
 	}
-
-	sas_ha->notify_ha_event = notify_ha_event;
-	sas_ha->notify_port_event = notify_port_event;
-	sas_ha->notify_phy_event = sas_notify_phy_event;
-
-	return 0;
 }
+EXPORT_SYMBOL_GPL(sas_notify_phy_event);

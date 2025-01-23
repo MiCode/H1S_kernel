@@ -1,23 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Driver for generic MPU-401 boards (UART mode only)
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>
  *  Copyright (c) 2004 by Castet Matthieu <castet.matthieu@free.fr>
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <linux/init.h>
@@ -53,9 +38,9 @@ MODULE_PARM_DESC(enable, "Enable MPU-401 device.");
 module_param_array(pnp, bool, NULL, 0444);
 MODULE_PARM_DESC(pnp, "PnP detection for MPU-401 device.");
 #endif
-module_param_array(port, long, NULL, 0444);
+module_param_hw_array(port, long, ioport, NULL, 0444);
 MODULE_PARM_DESC(port, "Port # for MPU-401 device.");
-module_param_array(irq, int, NULL, 0444);
+module_param_hw_array(irq, int, irq, NULL, 0444);
 MODULE_PARM_DESC(irq, "IRQ # for MPU-401 device.");
 module_param_array(uart_enter, bool, NULL, 0444);
 MODULE_PARM_DESC(uart_enter, "Issue UART_ENTER command at open.");
@@ -64,7 +49,8 @@ static struct platform_device *platform_devices[SNDRV_CARDS];
 static int pnp_registered;
 static unsigned int snd_mpu401_devices;
 
-static int snd_mpu401_create(int dev, struct snd_card **rcard)
+static int snd_mpu401_create(struct device *devptr, int dev,
+			     struct snd_card **rcard)
 {
 	struct snd_card *card;
 	int err;
@@ -73,7 +59,8 @@ static int snd_mpu401_create(int dev, struct snd_card **rcard)
 		snd_printk(KERN_ERR "the uart_enter option is obsolete; remove it\n");
 
 	*rcard = NULL;
-	err = snd_card_create(index[dev], id[dev], THIS_MODULE, 0, &card);
+	err = snd_devm_card_new(devptr, index[dev], id[dev], THIS_MODULE,
+				0, &card);
 	if (err < 0)
 		return err;
 	strcpy(card->driver, "MPU-401 UART");
@@ -89,15 +76,11 @@ static int snd_mpu401_create(int dev, struct snd_card **rcard)
 				  irq[dev], NULL);
 	if (err < 0) {
 		printk(KERN_ERR "MPU401 not detected at 0x%lx\n", port[dev]);
-		goto _err;
+		return err;
 	}
 
 	*rcard = card;
 	return 0;
-
- _err:
-	snd_card_free(card);
-	return err;
 }
 
 static int snd_mpu401_probe(struct platform_device *devptr)
@@ -114,21 +97,13 @@ static int snd_mpu401_probe(struct platform_device *devptr)
 		snd_printk(KERN_ERR "specify or disable IRQ\n");
 		return -EINVAL;
 	}
-	err = snd_mpu401_create(dev, &card);
+	err = snd_mpu401_create(&devptr->dev, dev, &card);
 	if (err < 0)
 		return err;
-	snd_card_set_dev(card, &devptr->dev);
-	if ((err = snd_card_register(card)) < 0) {
-		snd_card_free(card);
+	err = snd_card_register(card);
+	if (err < 0)
 		return err;
-	}
 	platform_set_drvdata(devptr, card);
-	return 0;
-}
-
-static int snd_mpu401_remove(struct platform_device *devptr)
-{
-	snd_card_free(platform_get_drvdata(devptr));
 	return 0;
 }
 
@@ -136,10 +111,8 @@ static int snd_mpu401_remove(struct platform_device *devptr)
 
 static struct platform_driver snd_mpu401_driver = {
 	.probe		= snd_mpu401_probe,
-	.remove		= snd_mpu401_remove,
 	.driver		= {
 		.name	= SND_MPU401_DRIVER,
-		.owner	= THIS_MODULE,
 	},
 };
 
@@ -148,7 +121,7 @@ static struct platform_driver snd_mpu401_driver = {
 
 #define IO_EXTENT 2
 
-static struct pnp_device_id snd_mpu401_pnpids[] = {
+static const struct pnp_device_id snd_mpu401_pnpids[] = {
 	{ .id = "PNPb006" },
 	{ .id = "" }
 };
@@ -194,14 +167,12 @@ static int snd_mpu401_pnp_probe(struct pnp_dev *pnp_dev,
 		err = snd_mpu401_pnp(dev, pnp_dev, id);
 		if (err < 0)
 			return err;
-		err = snd_mpu401_create(dev, &card);
+		err = snd_mpu401_create(&pnp_dev->dev, dev, &card);
 		if (err < 0)
 			return err;
-		if ((err = snd_card_register(card)) < 0) {
-			snd_card_free(card);
+		err = snd_card_register(card);
+		if (err < 0)
 			return err;
-		}
-		snd_card_set_dev(card, &pnp_dev->dev);
 		pnp_set_drvdata(pnp_dev, card);
 		snd_mpu401_devices++;
 		++dev;
@@ -210,19 +181,10 @@ static int snd_mpu401_pnp_probe(struct pnp_dev *pnp_dev,
 	return -ENODEV;
 }
 
-static void snd_mpu401_pnp_remove(struct pnp_dev *dev)
-{
-	struct snd_card *card = (struct snd_card *) pnp_get_drvdata(dev);
-
-	snd_card_disconnect(card);
-	snd_card_free_when_closed(card);
-}
-
 static struct pnp_driver snd_mpu401_pnp_driver = {
 	.name = "mpu401",
 	.id_table = snd_mpu401_pnpids,
 	.probe = snd_mpu401_pnp_probe,
-	.remove = snd_mpu401_pnp_remove,
 };
 #else
 static struct pnp_driver snd_mpu401_pnp_driver;
@@ -243,7 +205,8 @@ static int __init alsa_card_mpu401_init(void)
 {
 	int i, err;
 
-	if ((err = platform_driver_register(&snd_mpu401_driver)) < 0)
+	err = platform_driver_register(&snd_mpu401_driver);
+	if (err < 0)
 		return err;
 
 	for (i = 0; i < SNDRV_CARDS; i++) {

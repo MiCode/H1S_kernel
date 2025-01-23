@@ -1,5 +1,8 @@
-#include "cache.h"
+// SPDX-License-Identifier: GPL-2.0
 #include "levenshtein.h"
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
 
 /*
  * This function implements the Damerau-Levenshtein algorithm to
@@ -27,7 +30,7 @@
  *
  * It does so by calculating the costs of the path ending in characters
  * i (in string1) and j (in string2), respectively, given that the last
- * operation is a substition, a swap, a deletion, or an insertion.
+ * operation is a substitution, a swap, a deletion, or an insertion.
  *
  * This implementation allows the costs to be weighted:
  *

@@ -1,33 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  *
  * Copyright (C) IBM Corporation, 2012
  *
  * Author: Anton Blanchard <anton@au.ibm.com>
  */
 
+#include <linux/export.h>
 #include <asm/ppc_asm.h>
+#include <asm/linkage.h>
 #include <asm/asm-offsets.h>
 
-	.section	".toc","aw"
-PPC64_CACHES:
-	.tc		ppc64_caches[TC],ppc64_caches
-	.section	".text"
-
 /**
- * __clear_user: - Zero a block of memory in user space, with less checking.
+ * __arch_clear_user: - Zero a block of memory in user space, with less checking.
  * @to:   Destination address, in user space.
  * @n:    Number of bytes to zero.
  *
@@ -40,26 +25,17 @@ PPC64_CACHES:
 
 	.macro err1
 100:
-	.section __ex_table,"a"
-	.align 3
-	.llong 100b,.Ldo_err1
-	.previous
+	EX_TABLE(100b,.Ldo_err1)
 	.endm
 
 	.macro err2
 200:
-	.section __ex_table,"a"
-	.align 3
-	.llong 200b,.Ldo_err2
-	.previous
+	EX_TABLE(200b,.Ldo_err2)
 	.endm
 
 	.macro err3
 300:
-	.section __ex_table,"a"
-	.align 3
-	.llong 300b,.Ldo_err3
-	.previous
+	EX_TABLE(300b,.Ldo_err3)
 	.endm
 
 .Ldo_err1:
@@ -77,7 +53,7 @@ err3;	stb	r0,0(r3)
 	mr	r3,r4
 	blr
 
-_GLOBAL(__clear_user)
+_GLOBAL_TOC(__arch_clear_user)
 	cmpdi	r4,32
 	neg	r6,r3
 	li	r0,0
@@ -152,16 +128,16 @@ err1;	stb	r0,0(r3)
 	blr
 
 .Llong_clear:
-	ld	r5,PPC64_CACHES@toc(r2)
+	LOAD_REG_ADDR(r5, ppc64_caches)
 
 	bf	cr7*4+0,11f
 err2;	std	r0,0(r3)
 	addi	r3,r3,8
 	addi	r4,r4,-8
 
-	/* Destination is 16 byte aligned, need to get it cacheline aligned */
-11:	lwz	r7,DCACHEL1LOGLINESIZE(r5)
-	lwz	r9,DCACHEL1LINESIZE(r5)
+	/* Destination is 16 byte aligned, need to get it cache block aligned */
+11:	lwz	r7,DCACHEL1LOGBLOCKSIZE(r5)
+	lwz	r9,DCACHEL1BLOCKSIZE(r5)
 
 	/*
 	 * With worst case alignment the long clear loop takes a minimum
@@ -191,7 +167,7 @@ err1;	std	r0,8(r3)
 	mtctr	r6
 	mr	r8,r3
 14:
-err1;	dcbz	r0,r3
+err1;	dcbz	0,r3
 	add	r3,r3,r9
 	bdnz	14b
 
@@ -200,3 +176,4 @@ err1;	dcbz	r0,r3
 	cmpdi	r4,32
 	blt	.Lshort_clear
 	b	.Lmedium_clear
+EXPORT_SYMBOL(__arch_clear_user)

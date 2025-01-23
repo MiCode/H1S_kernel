@@ -1,23 +1,18 @@
+/* SPDX-License-Identifier: GPL-1.0+ */
 /*
  * Renesas USB driver
  *
  * Copyright (C) 2011 Renesas Solutions Corp.
+ * Copyright (C) 2019 Renesas Electronics Corporation
  * Kuninori Morimoto <kuninori.morimoto.gx@renesas.com>
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
  */
 #ifndef RENESAS_USB_DRIVER_H
 #define RENESAS_USB_DRIVER_H
 
+#include <linux/clk.h>
+#include <linux/extcon.h>
 #include <linux/platform_device.h>
+#include <linux/reset.h>
 #include <linux/usb/renesas_usbhs.h>
 
 struct usbhs_priv;
@@ -102,14 +97,22 @@ struct usbhs_priv;
 #define DEVADD8		0x00E0
 #define DEVADD9		0x00E2
 #define DEVADDA		0x00E4
+#define D2FIFOSEL	0x00F0	/* for R-Car Gen2 */
+#define D2FIFOCTR	0x00F2	/* for R-Car Gen2 */
+#define D3FIFOSEL	0x00F4	/* for R-Car Gen2 */
+#define D3FIFOCTR	0x00F6	/* for R-Car Gen2 */
+#define SUSPMODE	0x0102	/* for RZ/A */
 
 /* SYSCFG */
 #define SCKE	(1 << 10)	/* USB Module Clock Enable */
+#define CNEN	(1 << 8)	/* Single-ended receiver operation Enable */
 #define HSE	(1 << 7)	/* High-Speed Operation Enable */
 #define DCFM	(1 << 6)	/* Controller Function Select */
 #define DRPD	(1 << 5)	/* D+ Line/D- Line Resistance Control */
 #define DPRPU	(1 << 4)	/* D+ Line Resistance Control */
 #define USBE	(1 << 0)	/* USB Module Operation Enable */
+#define UCKSEL	(1 << 2)	/* Clock Select for RZ/A1 */
+#define UPLLE	(1 << 1)	/* USB PLL Enable for RZ/A1 */
 
 /* DVSTCTR */
 #define EXTLP	(1 << 10)	/* Controls the EXTLP pin output state */
@@ -158,11 +161,12 @@ struct usbhs_priv;
 #define VBSTS	(1 << 7)	/* VBUS_0 and VBUSIN_0 Input Status */
 #define VALID	(1 << 3)	/* USB Request Receive */
 
-#define DVSQ_MASK		(0x3 << 4)	/* Device State */
+#define DVSQ_MASK		(0x7 << 4)	/* Device State */
 #define  POWER_STATE		(0 << 4)
 #define  DEFAULT_STATE		(1 << 4)
 #define  ADDRESS_STATE		(2 << 4)
 #define  CONFIGURATION_STATE	(3 << 4)
+#define  SUSPENDED_STATE	(4 << 4)
 
 #define CTSQ_MASK		(0x7)	/* Control Transfer Stage */
 #define  IDLE_SETUP_STAGE	0	/* Idle stage or setup stage */
@@ -188,6 +192,7 @@ struct usbhs_priv;
 #define TYPE_BULK	(1 << 14)
 #define TYPE_INT	(2 << 14)
 #define TYPE_ISO	(3 << 14)
+#define BFRE		(1 << 10)	/* BRDY Interrupt Operation Spec. */
 #define DBLB		(1 << 9)	/* Double Buffer Mode */
 #define SHTNAK		(1 << 7)	/* Pipe Disable in Transfer End */
 #define DIR_OUT		(1 << 4)	/* Transfer Direction */
@@ -207,10 +212,12 @@ struct usbhs_priv;
 /* DCPCTR */
 #define BSTS		(1 << 15)	/* Buffer Status */
 #define SUREQ		(1 << 14)	/* Sending SETUP Token */
+#define INBUFM		(1 << 14)	/* (PIPEnCTR) Transfer Buffer Monitor */
 #define CSSTS		(1 << 12)	/* CSSTS Status */
 #define	ACLRM		(1 << 9)	/* Buffer Auto-Clear Mode */
 #define SQCLR		(1 << 8)	/* Toggle Bit Clear */
 #define SQSET		(1 << 7)	/* Toggle Bit Set */
+#define SQMON		(1 << 6)	/* Toggle Bit Check */
 #define PBUSY		(1 << 5)	/* Pipe Busy */
 #define PID_MASK	(0x3)		/* Response PID */
 #define  PID_NAK	0
@@ -235,6 +242,9 @@ struct usbhs_priv;
 #define USBSPD_SPEED_FULL	0x2
 #define USBSPD_SPEED_HIGH	0x3
 
+/* SUSPMODE */
+#define SUSPM		(1 << 14)	/* SuspendM Control */
+
 /*
  *		struct
  */
@@ -242,17 +252,16 @@ struct usbhs_priv {
 
 	void __iomem *base;
 	unsigned int irq;
-	unsigned long irqflags;
 
-	struct renesas_usbhs_platform_callback	pfunc;
+	const struct renesas_usbhs_platform_callback *pfunc;
 	struct renesas_usbhs_driver_param	dparam;
 
 	struct delayed_work notify_hotplug_work;
 	struct platform_device *pdev;
 
-	spinlock_t		lock;
+	struct extcon_dev *edev;
 
-	u32 flags;
+	spinlock_t		lock;
 
 	/*
 	 * module control
@@ -268,6 +277,10 @@ struct usbhs_priv {
 	 * fifo control
 	 */
 	struct usbhs_fifo_info fifo_info;
+
+	struct phy *phy;
+	struct reset_control *rsts;
+	struct clk *clks[2];
 };
 
 /*
@@ -279,6 +292,8 @@ void usbhs_bset(struct usbhs_priv *priv, u32 reg, u16 mask, u16 data);
 
 #define usbhs_lock(p, f) spin_lock_irqsave(usbhs_priv_to_lock(p), f)
 #define usbhs_unlock(p, f) spin_unlock_irqrestore(usbhs_priv_to_lock(p), f)
+
+int usbhs_get_id_as_gadget(struct platform_device *pdev);
 
 /*
  * sysconfig
@@ -301,6 +316,7 @@ void usbhs_bus_send_sof_enable(struct usbhs_priv *priv);
 void usbhs_bus_send_reset(struct usbhs_priv *priv);
 int usbhs_bus_get_speed(struct usbhs_priv *priv);
 int usbhs_vbus_ctrl(struct usbhs_priv *priv, int enable);
+int usbhsc_schedule_notify_hotplug(struct platform_device *pdev);
 
 /*
  * frame
@@ -312,6 +328,11 @@ int usbhs_frame_get_num(struct usbhs_priv *priv);
  */
 int usbhs_set_device_config(struct usbhs_priv *priv, int devnum, u16 upphub,
 			   u16 hubport, u16 speed);
+
+/*
+ * interrupt functions
+ */
+void usbhs_xxxsts_clear(struct usbhs_priv *priv, u16 sts_reg, u16 bit);
 
 /*
  * data

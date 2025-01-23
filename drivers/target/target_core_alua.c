@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*******************************************************************************
  * Filename:  target_core_alua.c
  *
@@ -7,47 +8,36 @@
  *
  * Nicholas A. Bellinger <nab@kernel.org>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
- *
  ******************************************************************************/
 
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/configfs.h>
+#include <linux/delay.h>
 #include <linux/export.h>
+#include <linux/fcntl.h>
 #include <linux/file.h>
-#include <scsi/scsi.h>
-#include <scsi/scsi_cmnd.h>
+#include <linux/fs.h>
+#include <scsi/scsi_proto.h>
 #include <asm/unaligned.h>
 
 #include <target/target_core_base.h>
 #include <target/target_core_backend.h>
 #include <target/target_core_fabric.h>
-#include <target/target_core_configfs.h>
 
 #include "target_core_internal.h"
 #include "target_core_alua.h"
 #include "target_core_ua.h"
 
 static sense_reason_t core_alua_check_transition(int state, int valid,
-						 int *primary);
+						 int *primary, int explicit);
 static int core_alua_set_tg_pt_secondary_state(
-		struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem,
-		struct se_port *port, int explicit, int offline);
+		struct se_lun *lun, int explicit, int offline);
 
 static char *core_alua_dump_state(int state);
+
+static void __target_attach_tg_pt_gp(struct se_lun *lun,
+		struct t10_alua_tg_pt_gp *tg_pt_gp);
 
 static u16 alua_lu_gps_counter;
 static u32 alua_lu_gps_count;
@@ -133,7 +123,7 @@ target_emulate_report_referrals(struct se_cmd *cmd)
 
 	transport_kunmap_data_sg(cmd);
 
-	target_complete_cmd(cmd, GOOD);
+	target_complete_cmd(cmd, SAM_STAT_GOOD);
 	return 0;
 }
 
@@ -146,9 +136,8 @@ sense_reason_t
 target_emulate_report_target_port_groups(struct se_cmd *cmd)
 {
 	struct se_device *dev = cmd->se_dev;
-	struct se_port *port;
 	struct t10_alua_tg_pt_gp *tg_pt_gp;
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem;
+	struct se_lun *lun;
 	unsigned char *buf;
 	u32 rd_len = 0, off;
 	int ext_hdr = (cmd->t_task_cdb[1] & 0x20);
@@ -175,6 +164,9 @@ target_emulate_report_target_port_groups(struct se_cmd *cmd)
 	spin_lock(&dev->t10_alua.tg_pt_gps_lock);
 	list_for_each_entry(tg_pt_gp, &dev->t10_alua.tg_pt_gps_list,
 			tg_pt_gp_list) {
+		/* Skip empty port groups */
+		if (!tg_pt_gp->tg_pt_gp_members)
+			continue;
 		/*
 		 * Check if the Target port group and Target port descriptor list
 		 * based on tg_pt_gp_members count will fit into the response payload.
@@ -195,8 +187,7 @@ target_emulate_report_target_port_groups(struct se_cmd *cmd)
 		/*
 		 * Set the ASYMMETRIC ACCESS State
 		 */
-		buf[off++] |= (atomic_read(
-			&tg_pt_gp->tg_pt_gp_alua_access_state) & 0xff);
+		buf[off++] |= tg_pt_gp->tg_pt_gp_alua_access_state & 0xff;
 		/*
 		 * Set supported ASYMMETRIC ACCESS State bits
 		 */
@@ -204,8 +195,8 @@ target_emulate_report_target_port_groups(struct se_cmd *cmd)
 		/*
 		 * TARGET PORT GROUP
 		 */
-		buf[off++] = ((tg_pt_gp->tg_pt_gp_id >> 8) & 0xff);
-		buf[off++] = (tg_pt_gp->tg_pt_gp_id & 0xff);
+		put_unaligned_be16(tg_pt_gp->tg_pt_gp_id, &buf[off]);
+		off += 2;
 
 		off++; /* Skip over Reserved */
 		/*
@@ -223,9 +214,8 @@ target_emulate_report_target_port_groups(struct se_cmd *cmd)
 		rd_len += 8;
 
 		spin_lock(&tg_pt_gp->tg_pt_gp_lock);
-		list_for_each_entry(tg_pt_gp_mem, &tg_pt_gp->tg_pt_gp_mem_list,
-				tg_pt_gp_mem_list) {
-			port = tg_pt_gp_mem->tg_pt;
+		list_for_each_entry(lun, &tg_pt_gp->tg_pt_gp_lun_list,
+				lun_tg_pt_gp_link) {
 			/*
 			 * Start Target Port descriptor format
 			 *
@@ -235,8 +225,8 @@ target_emulate_report_target_port_groups(struct se_cmd *cmd)
 			/*
 			 * Set RELATIVE TARGET PORT IDENTIFIER
 			 */
-			buf[off++] = ((port->sep_rtpi >> 8) & 0xff);
-			buf[off++] = (port->sep_rtpi & 0xff);
+			put_unaligned_be16(lun->lun_tpg->tpg_rtpi, &buf[off]);
+			off += 2;
 			rd_len += 4;
 		}
 		spin_unlock(&tg_pt_gp->tg_pt_gp_lock);
@@ -260,19 +250,15 @@ target_emulate_report_target_port_groups(struct se_cmd *cmd)
 		 * this CDB was received upon to determine this value individually
 		 * for ALUA target port group.
 		 */
-		port = cmd->se_lun->lun_sep;
-		tg_pt_gp_mem = port->sep_alua_tg_pt_gp_mem;
-		if (tg_pt_gp_mem) {
-			spin_lock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
-			tg_pt_gp = tg_pt_gp_mem->tg_pt_gp;
-			if (tg_pt_gp)
-				buf[5] = tg_pt_gp->tg_pt_gp_implicit_trans_secs;
-			spin_unlock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
-		}
+		rcu_read_lock();
+		tg_pt_gp = rcu_dereference(cmd->se_lun->lun_tg_pt_gp);
+		if (tg_pt_gp)
+			buf[5] = tg_pt_gp->tg_pt_gp_implicit_trans_secs;
+		rcu_read_unlock();
 	}
 	transport_kunmap_data_sg(cmd);
 
-	target_complete_cmd(cmd, GOOD);
+	target_complete_cmd_with_length(cmd, SAM_STAT_GOOD, rd_len + 4);
 	return 0;
 }
 
@@ -285,19 +271,15 @@ sense_reason_t
 target_emulate_set_target_port_groups(struct se_cmd *cmd)
 {
 	struct se_device *dev = cmd->se_dev;
-	struct se_port *port, *l_port = cmd->se_lun->lun_sep;
+	struct se_lun *l_lun = cmd->se_lun;
 	struct se_node_acl *nacl = cmd->se_sess->se_node_acl;
 	struct t10_alua_tg_pt_gp *tg_pt_gp = NULL, *l_tg_pt_gp;
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem, *l_tg_pt_gp_mem;
 	unsigned char *buf;
 	unsigned char *ptr;
 	sense_reason_t rc = TCM_NO_SENSE;
 	u32 len = 4; /* Skip over RESERVED area in header */
 	int alua_access_state, primary = 0, valid_states;
 	u16 tg_pt_id, rtpi;
-
-	if (!l_port)
-		return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 
 	if (cmd->data_length < 4) {
 		pr_warn("SET TARGET PORT GROUPS parameter list length %u too"
@@ -313,29 +295,24 @@ target_emulate_set_target_port_groups(struct se_cmd *cmd)
 	 * Determine if explicit ALUA via SET_TARGET_PORT_GROUPS is allowed
 	 * for the local tg_pt_gp.
 	 */
-	l_tg_pt_gp_mem = l_port->sep_alua_tg_pt_gp_mem;
-	if (!l_tg_pt_gp_mem) {
-		pr_err("Unable to access l_port->sep_alua_tg_pt_gp_mem\n");
-		rc = TCM_UNSUPPORTED_SCSI_OPCODE;
-		goto out;
-	}
-	spin_lock(&l_tg_pt_gp_mem->tg_pt_gp_mem_lock);
-	l_tg_pt_gp = l_tg_pt_gp_mem->tg_pt_gp;
+	rcu_read_lock();
+	l_tg_pt_gp = rcu_dereference(l_lun->lun_tg_pt_gp);
 	if (!l_tg_pt_gp) {
-		spin_unlock(&l_tg_pt_gp_mem->tg_pt_gp_mem_lock);
-		pr_err("Unable to access *l_tg_pt_gp_mem->tg_pt_gp\n");
+		rcu_read_unlock();
+		pr_err("Unable to access l_lun->tg_pt_gp\n");
 		rc = TCM_UNSUPPORTED_SCSI_OPCODE;
 		goto out;
 	}
-	spin_unlock(&l_tg_pt_gp_mem->tg_pt_gp_mem_lock);
 
 	if (!(l_tg_pt_gp->tg_pt_gp_alua_access_type & TPGS_EXPLICIT_ALUA)) {
+		rcu_read_unlock();
 		pr_debug("Unable to process SET_TARGET_PORT_GROUPS"
 				" while TPGS_EXPLICIT_ALUA is disabled\n");
 		rc = TCM_UNSUPPORTED_SCSI_OPCODE;
 		goto out;
 	}
 	valid_states = l_tg_pt_gp->tg_pt_gp_alua_supported_states;
+	rcu_read_unlock();
 
 	ptr = &buf[4]; /* Skip over RESERVED area in header */
 
@@ -347,8 +324,8 @@ target_emulate_set_target_port_groups(struct se_cmd *cmd)
 		 * the state is a primary or secondary target port asymmetric
 		 * access state.
 		 */
-		rc = core_alua_check_transition(alua_access_state,
-						valid_states, &primary);
+		rc = core_alua_check_transition(alua_access_state, valid_states,
+						&primary, 1);
 		if (rc) {
 			/*
 			 * If the SET TARGET PORT GROUPS attempts to establish
@@ -392,26 +369,26 @@ target_emulate_set_target_port_groups(struct se_cmd *cmd)
 				if (tg_pt_id != tg_pt_gp->tg_pt_gp_id)
 					continue;
 
-				atomic_inc(&tg_pt_gp->tg_pt_gp_ref_cnt);
-				smp_mb__after_atomic_inc();
+				atomic_inc_mb(&tg_pt_gp->tg_pt_gp_ref_cnt);
 
 				spin_unlock(&dev->t10_alua.tg_pt_gps_lock);
 
 				if (!core_alua_do_port_transition(tg_pt_gp,
-						dev, l_port, nacl,
+						dev, l_lun, nacl,
 						alua_access_state, 1))
 					found = true;
 
 				spin_lock(&dev->t10_alua.tg_pt_gps_lock);
-				atomic_dec(&tg_pt_gp->tg_pt_gp_ref_cnt);
-				smp_mb__after_atomic_dec();
+				atomic_dec_mb(&tg_pt_gp->tg_pt_gp_ref_cnt);
 				break;
 			}
 			spin_unlock(&dev->t10_alua.tg_pt_gps_lock);
 		} else {
+			struct se_lun *lun;
+
 			/*
 			 * Extract the RELATIVE TARGET PORT IDENTIFIER to identify
-			 * the Target Port in question for the the incoming
+			 * the Target Port in question for the incoming
 			 * SET_TARGET_PORT_GROUPS op.
 			 */
 			rtpi = get_unaligned_be16(ptr + 2);
@@ -420,17 +397,16 @@ target_emulate_set_target_port_groups(struct se_cmd *cmd)
 			 * for the struct se_device storage object.
 			 */
 			spin_lock(&dev->se_port_lock);
-			list_for_each_entry(port, &dev->dev_sep_list,
-							sep_list) {
-				if (port->sep_rtpi != rtpi)
+			list_for_each_entry(lun, &dev->dev_sep_list,
+							lun_dev_link) {
+				if (lun->lun_tpg->tpg_rtpi != rtpi)
 					continue;
 
-				tg_pt_gp_mem = port->sep_alua_tg_pt_gp_mem;
-
+				// XXX: racy unlock
 				spin_unlock(&dev->se_port_lock);
 
 				if (!core_alua_set_tg_pt_secondary_state(
-						tg_pt_gp_mem, port, 1, 1))
+						lun, 1, 1))
 					found = true;
 
 				spin_lock(&dev->se_port_lock);
@@ -451,15 +427,14 @@ target_emulate_set_target_port_groups(struct se_cmd *cmd)
 out:
 	transport_kunmap_data_sg(cmd);
 	if (!rc)
-		target_complete_cmd(cmd, GOOD);
+		target_complete_cmd(cmd, SAM_STAT_GOOD);
 	return rc;
 }
 
-static inline int core_alua_state_nonoptimized(
+static inline void core_alua_state_nonoptimized(
 	struct se_cmd *cmd,
 	unsigned char *cdb,
-	int nonop_delay_msecs,
-	u8 *alua_ascq)
+	int nonop_delay_msecs)
 {
 	/*
 	 * Set SCF_ALUA_NON_OPTIMIZED here, this value will be checked
@@ -468,13 +443,11 @@ static inline int core_alua_state_nonoptimized(
 	 */
 	cmd->se_cmd_flags |= SCF_ALUA_NON_OPTIMIZED;
 	cmd->alua_nonop_delay = nonop_delay_msecs;
-	return 0;
 }
 
-static inline int core_alua_state_lba_dependent(
+static inline sense_reason_t core_alua_state_lba_dependent(
 	struct se_cmd *cmd,
-	struct t10_alua_tg_pt_gp *tg_pt_gp,
-	u8 *alua_ascq)
+	u16 tg_pt_gp_id)
 {
 	struct se_device *dev = cmd->se_dev;
 	u64 segment_size, segment_mult, sectors, lba;
@@ -500,7 +473,7 @@ static inline int core_alua_state_lba_dependent(
 
 			if (segment_mult) {
 				u64 tmp = lba;
-				start_lba = sector_div(tmp, segment_size * segment_mult);
+				start_lba = do_div(tmp, segment_size * segment_mult);
 
 				last_lba = first_lba + segment_size - 1;
 				if (start_lba >= first_lba &&
@@ -520,23 +493,19 @@ static inline int core_alua_state_lba_dependent(
 		}
 		if (!cur_map) {
 			spin_unlock(&dev->t10_alua.lba_map_lock);
-			*alua_ascq = ASCQ_04H_ALUA_TG_PT_UNAVAILABLE;
-			return 1;
+			return TCM_ALUA_TG_PT_UNAVAILABLE;
 		}
 		list_for_each_entry(map_mem, &cur_map->lba_map_mem_list,
 				    lba_map_mem_list) {
-			if (map_mem->lba_map_mem_alua_pg_id !=
-			    tg_pt_gp->tg_pt_gp_id)
+			if (map_mem->lba_map_mem_alua_pg_id != tg_pt_gp_id)
 				continue;
 			switch(map_mem->lba_map_mem_alua_state) {
 			case ALUA_ACCESS_STATE_STANDBY:
 				spin_unlock(&dev->t10_alua.lba_map_lock);
-				*alua_ascq = ASCQ_04H_ALUA_TG_PT_STANDBY;
-				return 1;
+				return TCM_ALUA_TG_PT_STANDBY;
 			case ALUA_ACCESS_STATE_UNAVAILABLE:
 				spin_unlock(&dev->t10_alua.lba_map_lock);
-				*alua_ascq = ASCQ_04H_ALUA_TG_PT_UNAVAILABLE;
-				return 1;
+				return TCM_ALUA_TG_PT_UNAVAILABLE;
 			default:
 				break;
 			}
@@ -546,10 +515,9 @@ static inline int core_alua_state_lba_dependent(
 	return 0;
 }
 
-static inline int core_alua_state_standby(
+static inline sense_reason_t core_alua_state_standby(
 	struct se_cmd *cmd,
-	unsigned char *cdb,
-	u8 *alua_ascq)
+	unsigned char *cdb)
 {
 	/*
 	 * Allowed CDBs for ALUA_ACCESS_STATE_STANDBY as defined by
@@ -564,22 +532,28 @@ static inline int core_alua_state_standby(
 	case REPORT_LUNS:
 	case RECEIVE_DIAGNOSTIC:
 	case SEND_DIAGNOSTIC:
+	case READ_CAPACITY:
 		return 0;
+	case SERVICE_ACTION_IN_16:
+		switch (cdb[1] & 0x1f) {
+		case SAI_READ_CAPACITY_16:
+			return 0;
+		default:
+			return TCM_ALUA_TG_PT_STANDBY;
+		}
 	case MAINTENANCE_IN:
 		switch (cdb[1] & 0x1f) {
 		case MI_REPORT_TARGET_PGS:
 			return 0;
 		default:
-			*alua_ascq = ASCQ_04H_ALUA_TG_PT_STANDBY;
-			return 1;
+			return TCM_ALUA_TG_PT_STANDBY;
 		}
 	case MAINTENANCE_OUT:
 		switch (cdb[1]) {
 		case MO_SET_TARGET_PGS:
 			return 0;
 		default:
-			*alua_ascq = ASCQ_04H_ALUA_TG_PT_STANDBY;
-			return 1;
+			return TCM_ALUA_TG_PT_STANDBY;
 		}
 	case REQUEST_SENSE:
 	case PERSISTENT_RESERVE_IN:
@@ -588,17 +562,15 @@ static inline int core_alua_state_standby(
 	case WRITE_BUFFER:
 		return 0;
 	default:
-		*alua_ascq = ASCQ_04H_ALUA_TG_PT_STANDBY;
-		return 1;
+		return TCM_ALUA_TG_PT_STANDBY;
 	}
 
 	return 0;
 }
 
-static inline int core_alua_state_unavailable(
+static inline sense_reason_t core_alua_state_unavailable(
 	struct se_cmd *cmd,
-	unsigned char *cdb,
-	u8 *alua_ascq)
+	unsigned char *cdb)
 {
 	/*
 	 * Allowed CDBs for ALUA_ACCESS_STATE_UNAVAILABLE as defined by
@@ -613,33 +585,29 @@ static inline int core_alua_state_unavailable(
 		case MI_REPORT_TARGET_PGS:
 			return 0;
 		default:
-			*alua_ascq = ASCQ_04H_ALUA_TG_PT_UNAVAILABLE;
-			return 1;
+			return TCM_ALUA_TG_PT_UNAVAILABLE;
 		}
 	case MAINTENANCE_OUT:
 		switch (cdb[1]) {
 		case MO_SET_TARGET_PGS:
 			return 0;
 		default:
-			*alua_ascq = ASCQ_04H_ALUA_TG_PT_UNAVAILABLE;
-			return 1;
+			return TCM_ALUA_TG_PT_UNAVAILABLE;
 		}
 	case REQUEST_SENSE:
 	case READ_BUFFER:
 	case WRITE_BUFFER:
 		return 0;
 	default:
-		*alua_ascq = ASCQ_04H_ALUA_TG_PT_UNAVAILABLE;
-		return 1;
+		return TCM_ALUA_TG_PT_UNAVAILABLE;
 	}
 
 	return 0;
 }
 
-static inline int core_alua_state_transition(
+static inline sense_reason_t core_alua_state_transition(
 	struct se_cmd *cmd,
-	unsigned char *cdb,
-	u8 *alua_ascq)
+	unsigned char *cdb)
 {
 	/*
 	 * Allowed CDBs for ALUA_ACCESS_STATE_TRANSITION as defined by
@@ -654,16 +622,14 @@ static inline int core_alua_state_transition(
 		case MI_REPORT_TARGET_PGS:
 			return 0;
 		default:
-			*alua_ascq = ASCQ_04H_ALUA_STATE_TRANSITION;
-			return 1;
+			return TCM_ALUA_STATE_TRANSITION;
 		}
 	case REQUEST_SENSE:
 	case READ_BUFFER:
 	case WRITE_BUFFER:
 		return 0;
 	default:
-		*alua_ascq = ASCQ_04H_ALUA_STATE_TRANSITION;
-		return 1;
+		return TCM_ALUA_STATE_TRANSITION;
 	}
 
 	return 0;
@@ -680,46 +646,36 @@ target_alua_state_check(struct se_cmd *cmd)
 	struct se_device *dev = cmd->se_dev;
 	unsigned char *cdb = cmd->t_task_cdb;
 	struct se_lun *lun = cmd->se_lun;
-	struct se_port *port = lun->lun_sep;
 	struct t10_alua_tg_pt_gp *tg_pt_gp;
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem;
 	int out_alua_state, nonop_delay_msecs;
-	u8 alua_ascq;
-	int ret;
+	u16 tg_pt_gp_id;
+	sense_reason_t rc = TCM_NO_SENSE;
 
 	if (dev->se_hba->hba_flags & HBA_FLAGS_INTERNAL_USE)
 		return 0;
-	if (dev->transport->transport_type == TRANSPORT_PLUGIN_PHBA_PDEV)
+	if (dev->transport_flags & TRANSPORT_FLAG_PASSTHROUGH_ALUA)
 		return 0;
 
-	if (!port)
-		return 0;
 	/*
 	 * First, check for a struct se_port specific secondary ALUA target port
 	 * access state: OFFLINE
 	 */
-	if (atomic_read(&port->sep_tg_pt_secondary_offline)) {
+	if (atomic_read(&lun->lun_tg_pt_secondary_offline)) {
 		pr_debug("ALUA: Got secondary offline status for local"
 				" target port\n");
-		alua_ascq = ASCQ_04H_ALUA_OFFLINE;
-		ret = 1;
-		goto out;
+		return TCM_ALUA_OFFLINE;
 	}
-	 /*
-	 * Second, obtain the struct t10_alua_tg_pt_gp_member pointer to the
-	 * ALUA target port group, to obtain current ALUA access state.
-	 * Otherwise look for the underlying struct se_device association with
-	 * a ALUA logical unit group.
-	 */
-	tg_pt_gp_mem = port->sep_alua_tg_pt_gp_mem;
-	if (!tg_pt_gp_mem)
+	rcu_read_lock();
+	tg_pt_gp = rcu_dereference(lun->lun_tg_pt_gp);
+	if (!tg_pt_gp) {
+		rcu_read_unlock();
 		return 0;
+	}
 
-	spin_lock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
-	tg_pt_gp = tg_pt_gp_mem->tg_pt_gp;
-	out_alua_state = atomic_read(&tg_pt_gp->tg_pt_gp_alua_access_state);
+	out_alua_state = tg_pt_gp->tg_pt_gp_alua_access_state;
 	nonop_delay_msecs = tg_pt_gp->tg_pt_gp_nonop_delay_msecs;
-	spin_unlock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
+	tg_pt_gp_id = tg_pt_gp->tg_pt_gp_id;
+	rcu_read_unlock();
 	/*
 	 * Process ALUA_ACCESS_STATE_ACTIVE_OPTIMIZED in a separate conditional
 	 * statement so the compiler knows explicitly to check this case first.
@@ -731,57 +687,45 @@ target_alua_state_check(struct se_cmd *cmd)
 
 	switch (out_alua_state) {
 	case ALUA_ACCESS_STATE_ACTIVE_NON_OPTIMIZED:
-		ret = core_alua_state_nonoptimized(cmd, cdb,
-					nonop_delay_msecs, &alua_ascq);
+		core_alua_state_nonoptimized(cmd, cdb, nonop_delay_msecs);
 		break;
 	case ALUA_ACCESS_STATE_STANDBY:
-		ret = core_alua_state_standby(cmd, cdb, &alua_ascq);
+		rc = core_alua_state_standby(cmd, cdb);
 		break;
 	case ALUA_ACCESS_STATE_UNAVAILABLE:
-		ret = core_alua_state_unavailable(cmd, cdb, &alua_ascq);
+		rc = core_alua_state_unavailable(cmd, cdb);
 		break;
 	case ALUA_ACCESS_STATE_TRANSITION:
-		ret = core_alua_state_transition(cmd, cdb, &alua_ascq);
+		rc = core_alua_state_transition(cmd, cdb);
 		break;
 	case ALUA_ACCESS_STATE_LBA_DEPENDENT:
-		ret = core_alua_state_lba_dependent(cmd, tg_pt_gp, &alua_ascq);
+		rc = core_alua_state_lba_dependent(cmd, tg_pt_gp_id);
 		break;
 	/*
 	 * OFFLINE is a secondary ALUA target port group access state, that is
-	 * handled above with struct se_port->sep_tg_pt_secondary_offline=1
+	 * handled above with struct se_lun->lun_tg_pt_secondary_offline=1
 	 */
 	case ALUA_ACCESS_STATE_OFFLINE:
 	default:
 		pr_err("Unknown ALUA access state: 0x%02x\n",
 				out_alua_state);
-		return TCM_INVALID_CDB_FIELD;
+		rc = TCM_INVALID_CDB_FIELD;
 	}
 
-out:
-	if (ret > 0) {
-		/*
-		 * Set SCSI additional sense code (ASC) to 'LUN Not Accessible';
-		 * The ALUA additional sense code qualifier (ASCQ) is determined
-		 * by the ALUA primary or secondary access state..
-		 */
+	if (rc && rc != TCM_INVALID_CDB_FIELD) {
 		pr_debug("[%s]: ALUA TG Port not available, "
-			"SenseKey: NOT_READY, ASC/ASCQ: "
-			"0x04/0x%02x\n",
-			cmd->se_tfo->get_fabric_name(), alua_ascq);
-
-		cmd->scsi_asc = 0x04;
-		cmd->scsi_ascq = alua_ascq;
-		return TCM_CHECK_CONDITION_NOT_READY;
+			"SenseKey: NOT_READY, ASC/rc: 0x04/%d\n",
+			cmd->se_tfo->fabric_name, rc);
 	}
 
-	return 0;
+	return rc;
 }
 
 /*
  * Check implicit and explicit ALUA state change request.
  */
 static sense_reason_t
-core_alua_check_transition(int state, int valid, int *primary)
+core_alua_check_transition(int state, int valid, int *primary, int explicit)
 {
 	/*
 	 * OPTIMIZED, NON-OPTIMIZED, STANDBY and UNAVAILABLE are
@@ -823,11 +767,14 @@ core_alua_check_transition(int state, int valid, int *primary)
 		*primary = 0;
 		break;
 	case ALUA_ACCESS_STATE_TRANSITION:
-		/*
-		 * Transitioning is set internally, and
-		 * cannot be selected manually.
-		 */
-		goto not_supported;
+		if (!(valid & ALUA_T_SUP) || explicit)
+			/*
+			 * Transitioning is set internally and by tcmu daemon,
+			 * and cannot be selected through a STPG.
+			 */
+			goto not_supported;
+		*primary = 0;
+		break;
 	default:
 		pr_err("Unknown ALUA access state: 0x%02x\n", state);
 		return TCM_INVALID_PARAMETER_LIST;
@@ -890,8 +837,6 @@ int core_alua_check_nonop_delay(
 {
 	if (!(cmd->se_cmd_flags & SCF_ALUA_NON_OPTIMIZED))
 		return 0;
-	if (in_interrupt())
-		return 0;
 	/*
 	 * The ALUA Active/NonOptimized access state delay can be disabled
 	 * in via configfs with a value of zero
@@ -907,39 +852,35 @@ int core_alua_check_nonop_delay(
 }
 EXPORT_SYMBOL(core_alua_check_nonop_delay);
 
-/*
- * Called with tg_pt_gp->tg_pt_gp_md_mutex or tg_pt_gp_mem->sep_tg_pt_md_mutex
- *
- */
 static int core_alua_write_tpg_metadata(
 	const char *path,
 	unsigned char *md_buf,
 	u32 md_buf_len)
 {
 	struct file *file = filp_open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+	loff_t pos = 0;
 	int ret;
 
 	if (IS_ERR(file)) {
 		pr_err("filp_open(%s) for ALUA metadata failed\n", path);
 		return -ENODEV;
 	}
-	ret = kernel_write(file, md_buf, md_buf_len, 0);
+	ret = kernel_write(file, md_buf, md_buf_len, &pos);
 	if (ret < 0)
 		pr_err("Error writing ALUA metadata file: %s\n", path);
 	fput(file);
 	return (ret < 0) ? -EIO : 0;
 }
 
-/*
- * Called with tg_pt_gp->tg_pt_gp_md_mutex held
- */
 static int core_alua_update_tpg_primary_metadata(
 	struct t10_alua_tg_pt_gp *tg_pt_gp)
 {
 	unsigned char *md_buf;
 	struct t10_wwn *wwn = &tg_pt_gp->tg_pt_gp_dev->t10_wwn;
-	char path[ALUA_METADATA_PATH_LEN];
+	char *path;
 	int len, rc;
+
+	lockdep_assert_held(&tg_pt_gp->tg_pt_gp_transition_mutex);
 
 	md_buf = kzalloc(ALUA_MD_BUF_LEN, GFP_KERNEL);
 	if (!md_buf) {
@@ -947,41 +888,35 @@ static int core_alua_update_tpg_primary_metadata(
 		return -ENOMEM;
 	}
 
-	memset(path, 0, ALUA_METADATA_PATH_LEN);
-
 	len = snprintf(md_buf, ALUA_MD_BUF_LEN,
 			"tg_pt_gp_id=%hu\n"
 			"alua_access_state=0x%02x\n"
 			"alua_access_status=0x%02x\n",
 			tg_pt_gp->tg_pt_gp_id,
-			tg_pt_gp->tg_pt_gp_alua_pending_state,
+			tg_pt_gp->tg_pt_gp_alua_access_state,
 			tg_pt_gp->tg_pt_gp_alua_access_status);
 
-	snprintf(path, ALUA_METADATA_PATH_LEN,
-		"/var/target/alua/tpgs_%s/%s", &wwn->unit_serial[0],
-		config_item_name(&tg_pt_gp->tg_pt_gp_group.cg_item));
-
-	rc = core_alua_write_tpg_metadata(path, md_buf, len);
+	rc = -ENOMEM;
+	path = kasprintf(GFP_KERNEL, "%s/alua/tpgs_%s/%s", db_root,
+			&wwn->unit_serial[0],
+			config_item_name(&tg_pt_gp->tg_pt_gp_group.cg_item));
+	if (path) {
+		rc = core_alua_write_tpg_metadata(path, md_buf, len);
+		kfree(path);
+	}
 	kfree(md_buf);
 	return rc;
 }
 
-static void core_alua_do_transition_tg_pt_work(struct work_struct *work)
+static void core_alua_queue_state_change_ua(struct t10_alua_tg_pt_gp *tg_pt_gp)
 {
-	struct t10_alua_tg_pt_gp *tg_pt_gp = container_of(work,
-		struct t10_alua_tg_pt_gp, tg_pt_gp_transition_work.work);
-	struct se_device *dev = tg_pt_gp->tg_pt_gp_dev;
 	struct se_dev_entry *se_deve;
+	struct se_lun *lun;
 	struct se_lun_acl *lacl;
-	struct se_port *port;
-	struct t10_alua_tg_pt_gp_member *mem;
-	bool explicit = (tg_pt_gp->tg_pt_gp_alua_access_status ==
-			 ALUA_STATUS_ALTERED_BY_EXPLICIT_STPG);
 
 	spin_lock(&tg_pt_gp->tg_pt_gp_lock);
-	list_for_each_entry(mem, &tg_pt_gp->tg_pt_gp_mem_list,
-				tg_pt_gp_mem_list) {
-		port = mem->tg_pt;
+	list_for_each_entry(lun, &tg_pt_gp->tg_pt_gp_lun_list,
+				lun_tg_pt_gp_link) {
 		/*
 		 * After an implicit target port asymmetric access state
 		 * change, a device server shall establish a unit attention
@@ -996,40 +931,96 @@ static void core_alua_do_transition_tg_pt_work(struct work_struct *work)
 		 * every I_T nexus other than the I_T nexus on which the SET
 		 * TARGET PORT GROUPS command
 		 */
-		atomic_inc(&mem->tg_pt_gp_mem_ref_cnt);
-		smp_mb__after_atomic_inc();
+		if (!percpu_ref_tryget_live(&lun->lun_ref))
+			continue;
 		spin_unlock(&tg_pt_gp->tg_pt_gp_lock);
 
-		spin_lock_bh(&port->sep_alua_lock);
-		list_for_each_entry(se_deve, &port->sep_alua_list,
-					alua_port_list) {
+		spin_lock(&lun->lun_deve_lock);
+		list_for_each_entry(se_deve, &lun->lun_deve_list, lun_link) {
 			lacl = se_deve->se_lun_acl;
+
+			/*
+			 * spc4r37 p.242:
+			 * After an explicit target port asymmetric access
+			 * state change, a device server shall establish a
+			 * unit attention condition with the additional sense
+			 * code set to ASYMMETRIC ACCESS STATE CHANGED for
+			 * the initiator port associated with every I_T nexus
+			 * other than the I_T nexus on which the SET TARGET
+			 * PORT GROUPS command was received.
+			 */
+			if ((tg_pt_gp->tg_pt_gp_alua_access_status ==
+			     ALUA_STATUS_ALTERED_BY_EXPLICIT_STPG) &&
+			   (tg_pt_gp->tg_pt_gp_alua_lun != NULL) &&
+			    (tg_pt_gp->tg_pt_gp_alua_lun == lun))
+				continue;
+
 			/*
 			 * se_deve->se_lun_acl pointer may be NULL for a
 			 * entry created without explicit Node+MappedLUN ACLs
 			 */
-			if (!lacl)
+			if (lacl && (tg_pt_gp->tg_pt_gp_alua_nacl != NULL) &&
+			    (tg_pt_gp->tg_pt_gp_alua_nacl == lacl->se_lun_nacl))
 				continue;
 
-			if ((tg_pt_gp->tg_pt_gp_alua_access_status ==
-			     ALUA_STATUS_ALTERED_BY_EXPLICIT_STPG) &&
-			   (tg_pt_gp->tg_pt_gp_alua_nacl != NULL) &&
-			    (tg_pt_gp->tg_pt_gp_alua_nacl == lacl->se_lun_nacl) &&
-			   (tg_pt_gp->tg_pt_gp_alua_port != NULL) &&
-			    (tg_pt_gp->tg_pt_gp_alua_port == port))
-				continue;
-
-			core_scsi3_ua_allocate(lacl->se_lun_nacl,
-				se_deve->mapped_lun, 0x2A,
+			core_scsi3_ua_allocate(se_deve, 0x2A,
 				ASCQ_2AH_ASYMMETRIC_ACCESS_STATE_CHANGED);
 		}
-		spin_unlock_bh(&port->sep_alua_lock);
+		spin_unlock(&lun->lun_deve_lock);
 
 		spin_lock(&tg_pt_gp->tg_pt_gp_lock);
-		atomic_dec(&mem->tg_pt_gp_mem_ref_cnt);
-		smp_mb__after_atomic_dec();
+		percpu_ref_put(&lun->lun_ref);
 	}
 	spin_unlock(&tg_pt_gp->tg_pt_gp_lock);
+}
+
+static int core_alua_do_transition_tg_pt(
+	struct t10_alua_tg_pt_gp *tg_pt_gp,
+	int new_state,
+	int explicit)
+{
+	int prev_state;
+
+	mutex_lock(&tg_pt_gp->tg_pt_gp_transition_mutex);
+	/* Nothing to be done here */
+	if (tg_pt_gp->tg_pt_gp_alua_access_state == new_state) {
+		mutex_unlock(&tg_pt_gp->tg_pt_gp_transition_mutex);
+		return 0;
+	}
+
+	if (explicit && new_state == ALUA_ACCESS_STATE_TRANSITION) {
+		mutex_unlock(&tg_pt_gp->tg_pt_gp_transition_mutex);
+		return -EAGAIN;
+	}
+
+	/*
+	 * Save the old primary ALUA access state, and set the current state
+	 * to ALUA_ACCESS_STATE_TRANSITION.
+	 */
+	prev_state = tg_pt_gp->tg_pt_gp_alua_access_state;
+	tg_pt_gp->tg_pt_gp_alua_access_state = ALUA_ACCESS_STATE_TRANSITION;
+	tg_pt_gp->tg_pt_gp_alua_access_status = (explicit) ?
+				ALUA_STATUS_ALTERED_BY_EXPLICIT_STPG :
+				ALUA_STATUS_ALTERED_BY_IMPLICIT_ALUA;
+
+	core_alua_queue_state_change_ua(tg_pt_gp);
+
+	if (new_state == ALUA_ACCESS_STATE_TRANSITION) {
+		mutex_unlock(&tg_pt_gp->tg_pt_gp_transition_mutex);
+		return 0;
+	}
+
+	/*
+	 * Check for the optional ALUA primary state transition delay
+	 */
+	if (tg_pt_gp->tg_pt_gp_trans_delay_msecs != 0)
+		msleep_interruptible(tg_pt_gp->tg_pt_gp_trans_delay_msecs);
+
+	/*
+	 * Set the current primary ALUA access state to the requested new state
+	 */
+	tg_pt_gp->tg_pt_gp_alua_access_state = new_state;
+
 	/*
 	 * Update the ALUA metadata buf that has been allocated in
 	 * core_alua_do_port_transition(), this metadata will be written
@@ -1043,111 +1034,26 @@ static void core_alua_do_transition_tg_pt_work(struct work_struct *work)
 	 * struct file does NOT affect the actual ALUA transition.
 	 */
 	if (tg_pt_gp->tg_pt_gp_write_metadata) {
-		mutex_lock(&tg_pt_gp->tg_pt_gp_md_mutex);
 		core_alua_update_tpg_primary_metadata(tg_pt_gp);
-		mutex_unlock(&tg_pt_gp->tg_pt_gp_md_mutex);
 	}
-	/*
-	 * Set the current primary ALUA access state to the requested new state
-	 */
-	atomic_set(&tg_pt_gp->tg_pt_gp_alua_access_state,
-		   tg_pt_gp->tg_pt_gp_alua_pending_state);
 
 	pr_debug("Successful %s ALUA transition TG PT Group: %s ID: %hu"
 		" from primary access state %s to %s\n", (explicit) ? "explicit" :
 		"implicit", config_item_name(&tg_pt_gp->tg_pt_gp_group.cg_item),
 		tg_pt_gp->tg_pt_gp_id,
-		core_alua_dump_state(tg_pt_gp->tg_pt_gp_alua_previous_state),
-		core_alua_dump_state(tg_pt_gp->tg_pt_gp_alua_pending_state));
-	spin_lock(&dev->t10_alua.tg_pt_gps_lock);
-	atomic_dec(&tg_pt_gp->tg_pt_gp_ref_cnt);
-	smp_mb__after_atomic_dec();
-	spin_unlock(&dev->t10_alua.tg_pt_gps_lock);
+		core_alua_dump_state(prev_state),
+		core_alua_dump_state(new_state));
 
-	if (tg_pt_gp->tg_pt_gp_transition_complete)
-		complete(tg_pt_gp->tg_pt_gp_transition_complete);
-}
+	core_alua_queue_state_change_ua(tg_pt_gp);
 
-static int core_alua_do_transition_tg_pt(
-	struct t10_alua_tg_pt_gp *tg_pt_gp,
-	int new_state,
-	int explicit)
-{
-	struct se_device *dev = tg_pt_gp->tg_pt_gp_dev;
-	DECLARE_COMPLETION_ONSTACK(wait);
-
-	/* Nothing to be done here */
-	if (atomic_read(&tg_pt_gp->tg_pt_gp_alua_access_state) == new_state)
-		return 0;
-
-	if (new_state == ALUA_ACCESS_STATE_TRANSITION)
-		return -EAGAIN;
-
-	/*
-	 * Flush any pending transitions
-	 */
-	if (!explicit && tg_pt_gp->tg_pt_gp_implicit_trans_secs &&
-	    atomic_read(&tg_pt_gp->tg_pt_gp_alua_access_state) ==
-	    ALUA_ACCESS_STATE_TRANSITION) {
-		/* Just in case */
-		tg_pt_gp->tg_pt_gp_alua_pending_state = new_state;
-		tg_pt_gp->tg_pt_gp_transition_complete = &wait;
-		flush_delayed_work(&tg_pt_gp->tg_pt_gp_transition_work);
-		wait_for_completion(&wait);
-		tg_pt_gp->tg_pt_gp_transition_complete = NULL;
-		return 0;
-	}
-
-	/*
-	 * Save the old primary ALUA access state, and set the current state
-	 * to ALUA_ACCESS_STATE_TRANSITION.
-	 */
-	tg_pt_gp->tg_pt_gp_alua_previous_state =
-		atomic_read(&tg_pt_gp->tg_pt_gp_alua_access_state);
-	tg_pt_gp->tg_pt_gp_alua_pending_state = new_state;
-
-	atomic_set(&tg_pt_gp->tg_pt_gp_alua_access_state,
-			ALUA_ACCESS_STATE_TRANSITION);
-	tg_pt_gp->tg_pt_gp_alua_access_status = (explicit) ?
-				ALUA_STATUS_ALTERED_BY_EXPLICIT_STPG :
-				ALUA_STATUS_ALTERED_BY_IMPLICIT_ALUA;
-
-	/*
-	 * Check for the optional ALUA primary state transition delay
-	 */
-	if (tg_pt_gp->tg_pt_gp_trans_delay_msecs != 0)
-		msleep_interruptible(tg_pt_gp->tg_pt_gp_trans_delay_msecs);
-
-	/*
-	 * Take a reference for workqueue item
-	 */
-	spin_lock(&dev->t10_alua.tg_pt_gps_lock);
-	atomic_inc(&tg_pt_gp->tg_pt_gp_ref_cnt);
-	smp_mb__after_atomic_inc();
-	spin_unlock(&dev->t10_alua.tg_pt_gps_lock);
-
-	if (!explicit && tg_pt_gp->tg_pt_gp_implicit_trans_secs) {
-		unsigned long transition_tmo;
-
-		transition_tmo = tg_pt_gp->tg_pt_gp_implicit_trans_secs * HZ;
-		queue_delayed_work(tg_pt_gp->tg_pt_gp_dev->tmr_wq,
-				   &tg_pt_gp->tg_pt_gp_transition_work,
-				   transition_tmo);
-	} else {
-		tg_pt_gp->tg_pt_gp_transition_complete = &wait;
-		queue_delayed_work(tg_pt_gp->tg_pt_gp_dev->tmr_wq,
-				   &tg_pt_gp->tg_pt_gp_transition_work, 0);
-		wait_for_completion(&wait);
-		tg_pt_gp->tg_pt_gp_transition_complete = NULL;
-	}
-
+	mutex_unlock(&tg_pt_gp->tg_pt_gp_transition_mutex);
 	return 0;
 }
 
 int core_alua_do_port_transition(
 	struct t10_alua_tg_pt_gp *l_tg_pt_gp,
 	struct se_device *l_dev,
-	struct se_port *l_port,
+	struct se_lun *l_lun,
 	struct se_node_acl *l_nacl,
 	int new_state,
 	int explicit)
@@ -1158,15 +1064,18 @@ int core_alua_do_port_transition(
 	struct t10_alua_tg_pt_gp *tg_pt_gp;
 	int primary, valid_states, rc = 0;
 
+	if (l_dev->transport_flags & TRANSPORT_FLAG_PASSTHROUGH_ALUA)
+		return -ENODEV;
+
 	valid_states = l_tg_pt_gp->tg_pt_gp_alua_supported_states;
-	if (core_alua_check_transition(new_state, valid_states, &primary) != 0)
+	if (core_alua_check_transition(new_state, valid_states, &primary,
+				       explicit) != 0)
 		return -EINVAL;
 
 	local_lu_gp_mem = l_dev->dev_alua_lu_gp_mem;
 	spin_lock(&local_lu_gp_mem->lu_gp_mem_lock);
 	lu_gp = local_lu_gp_mem->lu_gp;
 	atomic_inc(&lu_gp->lu_gp_ref_cnt);
-	smp_mb__after_atomic_inc();
 	spin_unlock(&local_lu_gp_mem->lu_gp_mem_lock);
 	/*
 	 * For storage objects that are members of the 'default_lu_gp',
@@ -1178,12 +1087,11 @@ int core_alua_do_port_transition(
 		 * core_alua_do_transition_tg_pt() will always return
 		 * success.
 		 */
-		l_tg_pt_gp->tg_pt_gp_alua_port = l_port;
+		l_tg_pt_gp->tg_pt_gp_alua_lun = l_lun;
 		l_tg_pt_gp->tg_pt_gp_alua_nacl = l_nacl;
 		rc = core_alua_do_transition_tg_pt(l_tg_pt_gp,
 						   new_state, explicit);
-		atomic_dec(&lu_gp->lu_gp_ref_cnt);
-		smp_mb__after_atomic_dec();
+		atomic_dec_mb(&lu_gp->lu_gp_ref_cnt);
 		return rc;
 	}
 	/*
@@ -1196,8 +1104,7 @@ int core_alua_do_port_transition(
 				lu_gp_mem_list) {
 
 		dev = lu_gp_mem->lu_gp_mem_dev;
-		atomic_inc(&lu_gp_mem->lu_gp_mem_ref_cnt);
-		smp_mb__after_atomic_inc();
+		atomic_inc_mb(&lu_gp_mem->lu_gp_mem_ref_cnt);
 		spin_unlock(&lu_gp->lu_gp_lock);
 
 		spin_lock(&dev->t10_alua.tg_pt_gps_lock);
@@ -1219,14 +1126,13 @@ int core_alua_do_port_transition(
 				continue;
 
 			if (l_tg_pt_gp == tg_pt_gp) {
-				tg_pt_gp->tg_pt_gp_alua_port = l_port;
+				tg_pt_gp->tg_pt_gp_alua_lun = l_lun;
 				tg_pt_gp->tg_pt_gp_alua_nacl = l_nacl;
 			} else {
-				tg_pt_gp->tg_pt_gp_alua_port = NULL;
+				tg_pt_gp->tg_pt_gp_alua_lun = NULL;
 				tg_pt_gp->tg_pt_gp_alua_nacl = NULL;
 			}
-			atomic_inc(&tg_pt_gp->tg_pt_gp_ref_cnt);
-			smp_mb__after_atomic_inc();
+			atomic_inc_mb(&tg_pt_gp->tg_pt_gp_ref_cnt);
 			spin_unlock(&dev->t10_alua.tg_pt_gps_lock);
 			/*
 			 * core_alua_do_transition_tg_pt() will always return
@@ -1236,16 +1142,14 @@ int core_alua_do_port_transition(
 					new_state, explicit);
 
 			spin_lock(&dev->t10_alua.tg_pt_gps_lock);
-			atomic_dec(&tg_pt_gp->tg_pt_gp_ref_cnt);
-			smp_mb__after_atomic_dec();
+			atomic_dec_mb(&tg_pt_gp->tg_pt_gp_ref_cnt);
 			if (rc)
 				break;
 		}
 		spin_unlock(&dev->t10_alua.tg_pt_gps_lock);
 
 		spin_lock(&lu_gp->lu_gp_lock);
-		atomic_dec(&lu_gp_mem->lu_gp_mem_ref_cnt);
-		smp_mb__after_atomic_dec();
+		atomic_dec_mb(&lu_gp_mem->lu_gp_mem_ref_cnt);
 	}
 	spin_unlock(&lu_gp->lu_gp_lock);
 
@@ -1258,67 +1162,69 @@ int core_alua_do_port_transition(
 			 core_alua_dump_state(new_state));
 	}
 
-	atomic_dec(&lu_gp->lu_gp_ref_cnt);
-	smp_mb__after_atomic_dec();
+	atomic_dec_mb(&lu_gp->lu_gp_ref_cnt);
 	return rc;
 }
 
-/*
- * Called with tg_pt_gp_mem->sep_tg_pt_md_mutex held
- */
-static int core_alua_update_tpg_secondary_metadata(
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem,
-	struct se_port *port)
+static int core_alua_update_tpg_secondary_metadata(struct se_lun *lun)
 {
+	struct se_portal_group *se_tpg = lun->lun_tpg;
 	unsigned char *md_buf;
-	struct se_portal_group *se_tpg = port->sep_tpg;
-	char path[ALUA_METADATA_PATH_LEN], wwn[ALUA_SECONDARY_METADATA_WWN_LEN];
+	char *path;
 	int len, rc;
+
+	mutex_lock(&lun->lun_tg_pt_md_mutex);
 
 	md_buf = kzalloc(ALUA_MD_BUF_LEN, GFP_KERNEL);
 	if (!md_buf) {
 		pr_err("Unable to allocate buf for ALUA metadata\n");
-		return -ENOMEM;
+		rc = -ENOMEM;
+		goto out_unlock;
 	}
-
-	memset(path, 0, ALUA_METADATA_PATH_LEN);
-	memset(wwn, 0, ALUA_SECONDARY_METADATA_WWN_LEN);
-
-	len = snprintf(wwn, ALUA_SECONDARY_METADATA_WWN_LEN, "%s",
-			se_tpg->se_tpg_tfo->tpg_get_wwn(se_tpg));
-
-	if (se_tpg->se_tpg_tfo->tpg_get_tag != NULL)
-		snprintf(wwn+len, ALUA_SECONDARY_METADATA_WWN_LEN-len, "+%hu",
-				se_tpg->se_tpg_tfo->tpg_get_tag(se_tpg));
 
 	len = snprintf(md_buf, ALUA_MD_BUF_LEN, "alua_tg_pt_offline=%d\n"
 			"alua_tg_pt_status=0x%02x\n",
-			atomic_read(&port->sep_tg_pt_secondary_offline),
-			port->sep_tg_pt_secondary_stat);
+			atomic_read(&lun->lun_tg_pt_secondary_offline),
+			lun->lun_tg_pt_secondary_stat);
 
-	snprintf(path, ALUA_METADATA_PATH_LEN, "/var/target/alua/%s/%s/lun_%u",
-			se_tpg->se_tpg_tfo->get_fabric_name(), wwn,
-			port->sep_lun->unpacked_lun);
+	if (se_tpg->se_tpg_tfo->tpg_get_tag != NULL) {
+		path = kasprintf(GFP_KERNEL, "%s/alua/%s/%s+%hu/lun_%llu",
+				db_root, se_tpg->se_tpg_tfo->fabric_name,
+				se_tpg->se_tpg_tfo->tpg_get_wwn(se_tpg),
+				se_tpg->se_tpg_tfo->tpg_get_tag(se_tpg),
+				lun->unpacked_lun);
+	} else {
+		path = kasprintf(GFP_KERNEL, "%s/alua/%s/%s/lun_%llu",
+				db_root, se_tpg->se_tpg_tfo->fabric_name,
+				se_tpg->se_tpg_tfo->tpg_get_wwn(se_tpg),
+				lun->unpacked_lun);
+	}
+	if (!path) {
+		rc = -ENOMEM;
+		goto out_free;
+	}
 
 	rc = core_alua_write_tpg_metadata(path, md_buf, len);
+	kfree(path);
+out_free:
 	kfree(md_buf);
-
+out_unlock:
+	mutex_unlock(&lun->lun_tg_pt_md_mutex);
 	return rc;
 }
 
 static int core_alua_set_tg_pt_secondary_state(
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem,
-	struct se_port *port,
+	struct se_lun *lun,
 	int explicit,
 	int offline)
 {
 	struct t10_alua_tg_pt_gp *tg_pt_gp;
 	int trans_delay_msecs;
 
-	spin_lock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
-	tg_pt_gp = tg_pt_gp_mem->tg_pt_gp;
+	rcu_read_lock();
+	tg_pt_gp = rcu_dereference(lun->lun_tg_pt_gp);
 	if (!tg_pt_gp) {
-		spin_unlock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
+		rcu_read_unlock();
 		pr_err("Unable to complete secondary state"
 				" transition\n");
 		return -EINVAL;
@@ -1326,14 +1232,14 @@ static int core_alua_set_tg_pt_secondary_state(
 	trans_delay_msecs = tg_pt_gp->tg_pt_gp_trans_delay_msecs;
 	/*
 	 * Set the secondary ALUA target port access state to OFFLINE
-	 * or release the previously secondary state for struct se_port
+	 * or release the previously secondary state for struct se_lun
 	 */
 	if (offline)
-		atomic_set(&port->sep_tg_pt_secondary_offline, 1);
+		atomic_set(&lun->lun_tg_pt_secondary_offline, 1);
 	else
-		atomic_set(&port->sep_tg_pt_secondary_offline, 0);
+		atomic_set(&lun->lun_tg_pt_secondary_offline, 0);
 
-	port->sep_tg_pt_secondary_stat = (explicit) ?
+	lun->lun_tg_pt_secondary_stat = (explicit) ?
 			ALUA_STATUS_ALTERED_BY_EXPLICIT_STPG :
 			ALUA_STATUS_ALTERED_BY_IMPLICIT_ALUA;
 
@@ -1342,7 +1248,7 @@ static int core_alua_set_tg_pt_secondary_state(
 		"implicit", config_item_name(&tg_pt_gp->tg_pt_gp_group.cg_item),
 		tg_pt_gp->tg_pt_gp_id, (offline) ? "OFFLINE" : "ONLINE");
 
-	spin_unlock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
+	rcu_read_unlock();
 	/*
 	 * Do the optional transition delay after we set the secondary
 	 * ALUA access state.
@@ -1353,11 +1259,8 @@ static int core_alua_set_tg_pt_secondary_state(
 	 * See if we need to update the ALUA fabric port metadata for
 	 * secondary state and status
 	 */
-	if (port->sep_tg_pt_secondary_write_md) {
-		mutex_lock(&port->sep_tg_pt_md_mutex);
-		core_alua_update_tpg_secondary_metadata(tg_pt_gp_mem, port);
-		mutex_unlock(&port->sep_tg_pt_md_mutex);
-	}
+	if (lun->lun_tg_pt_secondary_write_md)
+		core_alua_update_tpg_secondary_metadata(lun);
 
 	return 0;
 }
@@ -1711,15 +1614,13 @@ struct t10_alua_tg_pt_gp *core_alua_allocate_tg_pt_gp(struct se_device *dev,
 		return NULL;
 	}
 	INIT_LIST_HEAD(&tg_pt_gp->tg_pt_gp_list);
-	INIT_LIST_HEAD(&tg_pt_gp->tg_pt_gp_mem_list);
-	mutex_init(&tg_pt_gp->tg_pt_gp_md_mutex);
+	INIT_LIST_HEAD(&tg_pt_gp->tg_pt_gp_lun_list);
+	mutex_init(&tg_pt_gp->tg_pt_gp_transition_mutex);
 	spin_lock_init(&tg_pt_gp->tg_pt_gp_lock);
 	atomic_set(&tg_pt_gp->tg_pt_gp_ref_cnt, 0);
-	INIT_DELAYED_WORK(&tg_pt_gp->tg_pt_gp_transition_work,
-			  core_alua_do_transition_tg_pt_work);
 	tg_pt_gp->tg_pt_gp_dev = dev;
-	atomic_set(&tg_pt_gp->tg_pt_gp_alua_access_state,
-		ALUA_ACCESS_STATE_ACTIVE_OPTIMIZED);
+	tg_pt_gp->tg_pt_gp_alua_access_state =
+			ALUA_ACCESS_STATE_ACTIVE_OPTIMIZED;
 	/*
 	 * Enable both explicit and implicit ALUA support by default
 	 */
@@ -1775,7 +1676,6 @@ int core_alua_set_tg_pt_gp_id(
 		pr_err("Maximum ALUA alua_tg_pt_gps_count:"
 			" 0x0000ffff reached\n");
 		spin_unlock(&dev->t10_alua.tg_pt_gps_lock);
-		kmem_cache_free(t10_alua_tg_pt_gp_cache, tg_pt_gp);
 		return -ENOSPC;
 	}
 again:
@@ -1805,32 +1705,11 @@ again:
 	return 0;
 }
 
-struct t10_alua_tg_pt_gp_member *core_alua_allocate_tg_pt_gp_mem(
-	struct se_port *port)
-{
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem;
-
-	tg_pt_gp_mem = kmem_cache_zalloc(t10_alua_tg_pt_gp_mem_cache,
-				GFP_KERNEL);
-	if (!tg_pt_gp_mem) {
-		pr_err("Unable to allocate struct t10_alua_tg_pt_gp_member\n");
-		return ERR_PTR(-ENOMEM);
-	}
-	INIT_LIST_HEAD(&tg_pt_gp_mem->tg_pt_gp_mem_list);
-	spin_lock_init(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
-	atomic_set(&tg_pt_gp_mem->tg_pt_gp_mem_ref_cnt, 0);
-
-	tg_pt_gp_mem->tg_pt = port;
-	port->sep_alua_tg_pt_gp_mem = tg_pt_gp_mem;
-
-	return tg_pt_gp_mem;
-}
-
 void core_alua_free_tg_pt_gp(
 	struct t10_alua_tg_pt_gp *tg_pt_gp)
 {
 	struct se_device *dev = tg_pt_gp->tg_pt_gp_dev;
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem, *tg_pt_gp_mem_tmp;
+	struct se_lun *lun, *next;
 
 	/*
 	 * Once we have reached this point, config_item_put() has already
@@ -1841,11 +1720,11 @@ void core_alua_free_tg_pt_gp(
 	 * can be made while we are releasing struct t10_alua_tg_pt_gp.
 	 */
 	spin_lock(&dev->t10_alua.tg_pt_gps_lock);
-	list_del(&tg_pt_gp->tg_pt_gp_list);
-	dev->t10_alua.alua_tg_pt_gps_counter--;
+	if (tg_pt_gp->tg_pt_gp_valid_id) {
+		list_del(&tg_pt_gp->tg_pt_gp_list);
+		dev->t10_alua.alua_tg_pt_gps_count--;
+	}
 	spin_unlock(&dev->t10_alua.tg_pt_gps_lock);
-
-	flush_delayed_work(&tg_pt_gp->tg_pt_gp_transition_work);
 
 	/*
 	 * Allow a struct t10_alua_tg_pt_gp_member * referenced by
@@ -1861,65 +1740,31 @@ void core_alua_free_tg_pt_gp(
 	 * struct se_port.
 	 */
 	spin_lock(&tg_pt_gp->tg_pt_gp_lock);
-	list_for_each_entry_safe(tg_pt_gp_mem, tg_pt_gp_mem_tmp,
-			&tg_pt_gp->tg_pt_gp_mem_list, tg_pt_gp_mem_list) {
-		if (tg_pt_gp_mem->tg_pt_gp_assoc) {
-			list_del(&tg_pt_gp_mem->tg_pt_gp_mem_list);
-			tg_pt_gp->tg_pt_gp_members--;
-			tg_pt_gp_mem->tg_pt_gp_assoc = 0;
-		}
+	list_for_each_entry_safe(lun, next,
+			&tg_pt_gp->tg_pt_gp_lun_list, lun_tg_pt_gp_link) {
+		list_del_init(&lun->lun_tg_pt_gp_link);
+		tg_pt_gp->tg_pt_gp_members--;
+
 		spin_unlock(&tg_pt_gp->tg_pt_gp_lock);
 		/*
-		 * tg_pt_gp_mem is associated with a single
-		 * se_port->sep_alua_tg_pt_gp_mem, and is released via
-		 * core_alua_free_tg_pt_gp_mem().
-		 *
 		 * If the passed tg_pt_gp does NOT match the default_tg_pt_gp,
 		 * assume we want to re-associate a given tg_pt_gp_mem with
 		 * default_tg_pt_gp.
 		 */
-		spin_lock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
+		spin_lock(&lun->lun_tg_pt_gp_lock);
 		if (tg_pt_gp != dev->t10_alua.default_tg_pt_gp) {
-			__core_alua_attach_tg_pt_gp_mem(tg_pt_gp_mem,
+			__target_attach_tg_pt_gp(lun,
 					dev->t10_alua.default_tg_pt_gp);
 		} else
-			tg_pt_gp_mem->tg_pt_gp = NULL;
-		spin_unlock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
+			rcu_assign_pointer(lun->lun_tg_pt_gp, NULL);
+		spin_unlock(&lun->lun_tg_pt_gp_lock);
 
 		spin_lock(&tg_pt_gp->tg_pt_gp_lock);
 	}
 	spin_unlock(&tg_pt_gp->tg_pt_gp_lock);
 
+	synchronize_rcu();
 	kmem_cache_free(t10_alua_tg_pt_gp_cache, tg_pt_gp);
-}
-
-void core_alua_free_tg_pt_gp_mem(struct se_port *port)
-{
-	struct t10_alua_tg_pt_gp *tg_pt_gp;
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem;
-
-	tg_pt_gp_mem = port->sep_alua_tg_pt_gp_mem;
-	if (!tg_pt_gp_mem)
-		return;
-
-	while (atomic_read(&tg_pt_gp_mem->tg_pt_gp_mem_ref_cnt))
-		cpu_relax();
-
-	spin_lock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
-	tg_pt_gp = tg_pt_gp_mem->tg_pt_gp;
-	if (tg_pt_gp) {
-		spin_lock(&tg_pt_gp->tg_pt_gp_lock);
-		if (tg_pt_gp_mem->tg_pt_gp_assoc) {
-			list_del(&tg_pt_gp_mem->tg_pt_gp_mem_list);
-			tg_pt_gp->tg_pt_gp_members--;
-			tg_pt_gp_mem->tg_pt_gp_assoc = 0;
-		}
-		spin_unlock(&tg_pt_gp->tg_pt_gp_lock);
-		tg_pt_gp_mem->tg_pt_gp = NULL;
-	}
-	spin_unlock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
-
-	kmem_cache_free(t10_alua_tg_pt_gp_mem_cache, tg_pt_gp_mem);
 }
 
 static struct t10_alua_tg_pt_gp *core_alua_get_tg_pt_gp_by_name(
@@ -1955,50 +1800,79 @@ static void core_alua_put_tg_pt_gp_from_name(
 	spin_unlock(&dev->t10_alua.tg_pt_gps_lock);
 }
 
-/*
- * Called with struct t10_alua_tg_pt_gp_member->tg_pt_gp_mem_lock held
- */
-void __core_alua_attach_tg_pt_gp_mem(
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem,
-	struct t10_alua_tg_pt_gp *tg_pt_gp)
+static void __target_attach_tg_pt_gp(struct se_lun *lun,
+		struct t10_alua_tg_pt_gp *tg_pt_gp)
 {
+	struct se_dev_entry *se_deve;
+
+	assert_spin_locked(&lun->lun_tg_pt_gp_lock);
+
 	spin_lock(&tg_pt_gp->tg_pt_gp_lock);
-	tg_pt_gp_mem->tg_pt_gp = tg_pt_gp;
-	tg_pt_gp_mem->tg_pt_gp_assoc = 1;
-	list_add_tail(&tg_pt_gp_mem->tg_pt_gp_mem_list,
-			&tg_pt_gp->tg_pt_gp_mem_list);
+	rcu_assign_pointer(lun->lun_tg_pt_gp, tg_pt_gp);
+	list_add_tail(&lun->lun_tg_pt_gp_link, &tg_pt_gp->tg_pt_gp_lun_list);
 	tg_pt_gp->tg_pt_gp_members++;
+	spin_lock(&lun->lun_deve_lock);
+	list_for_each_entry(se_deve, &lun->lun_deve_list, lun_link)
+		core_scsi3_ua_allocate(se_deve, 0x3f,
+				       ASCQ_3FH_INQUIRY_DATA_HAS_CHANGED);
+	spin_unlock(&lun->lun_deve_lock);
 	spin_unlock(&tg_pt_gp->tg_pt_gp_lock);
 }
 
-/*
- * Called with struct t10_alua_tg_pt_gp_member->tg_pt_gp_mem_lock held
- */
-static void __core_alua_drop_tg_pt_gp_mem(
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem,
-	struct t10_alua_tg_pt_gp *tg_pt_gp)
+void target_attach_tg_pt_gp(struct se_lun *lun,
+		struct t10_alua_tg_pt_gp *tg_pt_gp)
 {
+	spin_lock(&lun->lun_tg_pt_gp_lock);
+	__target_attach_tg_pt_gp(lun, tg_pt_gp);
+	spin_unlock(&lun->lun_tg_pt_gp_lock);
+	synchronize_rcu();
+}
+
+static void __target_detach_tg_pt_gp(struct se_lun *lun,
+		struct t10_alua_tg_pt_gp *tg_pt_gp)
+{
+	assert_spin_locked(&lun->lun_tg_pt_gp_lock);
+
 	spin_lock(&tg_pt_gp->tg_pt_gp_lock);
-	list_del(&tg_pt_gp_mem->tg_pt_gp_mem_list);
-	tg_pt_gp_mem->tg_pt_gp = NULL;
-	tg_pt_gp_mem->tg_pt_gp_assoc = 0;
+	list_del_init(&lun->lun_tg_pt_gp_link);
 	tg_pt_gp->tg_pt_gp_members--;
 	spin_unlock(&tg_pt_gp->tg_pt_gp_lock);
 }
 
-ssize_t core_alua_show_tg_pt_gp_info(struct se_port *port, char *page)
+void target_detach_tg_pt_gp(struct se_lun *lun)
+{
+	struct t10_alua_tg_pt_gp *tg_pt_gp;
+
+	spin_lock(&lun->lun_tg_pt_gp_lock);
+	tg_pt_gp = rcu_dereference_check(lun->lun_tg_pt_gp,
+				lockdep_is_held(&lun->lun_tg_pt_gp_lock));
+	if (tg_pt_gp) {
+		__target_detach_tg_pt_gp(lun, tg_pt_gp);
+		rcu_assign_pointer(lun->lun_tg_pt_gp, NULL);
+	}
+	spin_unlock(&lun->lun_tg_pt_gp_lock);
+	synchronize_rcu();
+}
+
+static void target_swap_tg_pt_gp(struct se_lun *lun,
+				 struct t10_alua_tg_pt_gp *old_tg_pt_gp,
+				 struct t10_alua_tg_pt_gp *new_tg_pt_gp)
+{
+	assert_spin_locked(&lun->lun_tg_pt_gp_lock);
+
+	if (old_tg_pt_gp)
+		__target_detach_tg_pt_gp(lun, old_tg_pt_gp);
+	__target_attach_tg_pt_gp(lun, new_tg_pt_gp);
+}
+
+ssize_t core_alua_show_tg_pt_gp_info(struct se_lun *lun, char *page)
 {
 	struct config_item *tg_pt_ci;
 	struct t10_alua_tg_pt_gp *tg_pt_gp;
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem;
 	ssize_t len = 0;
 
-	tg_pt_gp_mem = port->sep_alua_tg_pt_gp_mem;
-	if (!tg_pt_gp_mem)
-		return len;
-
-	spin_lock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
-	tg_pt_gp = tg_pt_gp_mem->tg_pt_gp;
+	rcu_read_lock();
+	tg_pt_gp = rcu_dereference(lun->lun_tg_pt_gp);
 	if (tg_pt_gp) {
 		tg_pt_ci = &tg_pt_gp->tg_pt_gp_group.cg_item;
 		len += sprintf(page, "TG Port Alias: %s\nTG Port Group ID:"
@@ -2006,38 +1880,37 @@ ssize_t core_alua_show_tg_pt_gp_info(struct se_port *port, char *page)
 			"Primary Access Status: %s\nTG Port Secondary Access"
 			" State: %s\nTG Port Secondary Access Status: %s\n",
 			config_item_name(tg_pt_ci), tg_pt_gp->tg_pt_gp_id,
-			core_alua_dump_state(atomic_read(
-					&tg_pt_gp->tg_pt_gp_alua_access_state)),
+			core_alua_dump_state(
+				tg_pt_gp->tg_pt_gp_alua_access_state),
 			core_alua_dump_status(
 				tg_pt_gp->tg_pt_gp_alua_access_status),
-			(atomic_read(&port->sep_tg_pt_secondary_offline)) ?
+			atomic_read(&lun->lun_tg_pt_secondary_offline) ?
 			"Offline" : "None",
-			core_alua_dump_status(port->sep_tg_pt_secondary_stat));
+			core_alua_dump_status(lun->lun_tg_pt_secondary_stat));
 	}
-	spin_unlock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
+	rcu_read_unlock();
 
 	return len;
 }
 
 ssize_t core_alua_store_tg_pt_gp_info(
-	struct se_port *port,
+	struct se_lun *lun,
 	const char *page,
 	size_t count)
 {
-	struct se_portal_group *tpg;
-	struct se_lun *lun;
-	struct se_device *dev = port->sep_lun->lun_se_dev;
+	struct se_portal_group *tpg = lun->lun_tpg;
+	/*
+	 * rcu_dereference_raw protected by se_lun->lun_group symlink
+	 * reference to se_device->dev_group.
+	 */
+	struct se_device *dev = rcu_dereference_raw(lun->lun_se_dev);
 	struct t10_alua_tg_pt_gp *tg_pt_gp = NULL, *tg_pt_gp_new = NULL;
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem;
 	unsigned char buf[TG_PT_GROUP_NAME_BUF];
 	int move = 0;
 
-	tpg = port->sep_tpg;
-	lun = port->sep_lun;
-
-	tg_pt_gp_mem = port->sep_alua_tg_pt_gp_mem;
-	if (!tg_pt_gp_mem)
-		return 0;
+	if (dev->transport_flags & TRANSPORT_FLAG_PASSTHROUGH_ALUA ||
+	    (dev->se_hba->hba_flags & HBA_FLAGS_INTERNAL_USE))
+		return -ENODEV;
 
 	if (count > TG_PT_GROUP_NAME_BUF) {
 		pr_err("ALUA Target Port Group alias too large!\n");
@@ -2061,8 +1934,9 @@ ssize_t core_alua_store_tg_pt_gp_info(
 			return -ENODEV;
 	}
 
-	spin_lock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
-	tg_pt_gp = tg_pt_gp_mem->tg_pt_gp;
+	spin_lock(&lun->lun_tg_pt_gp_lock);
+	tg_pt_gp = rcu_dereference_check(lun->lun_tg_pt_gp,
+				lockdep_is_held(&lun->lun_tg_pt_gp_lock));
 	if (tg_pt_gp) {
 		/*
 		 * Clearing an existing tg_pt_gp association, and replacing
@@ -2080,24 +1954,17 @@ ssize_t core_alua_store_tg_pt_gp_info(
 					&tg_pt_gp->tg_pt_gp_group.cg_item),
 				tg_pt_gp->tg_pt_gp_id);
 
-			__core_alua_drop_tg_pt_gp_mem(tg_pt_gp_mem, tg_pt_gp);
-			__core_alua_attach_tg_pt_gp_mem(tg_pt_gp_mem,
+			target_swap_tg_pt_gp(lun, tg_pt_gp,
 					dev->t10_alua.default_tg_pt_gp);
-			spin_unlock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
+			spin_unlock(&lun->lun_tg_pt_gp_lock);
 
-			return count;
+			goto sync_rcu;
 		}
-		/*
-		 * Removing existing association of tg_pt_gp_mem with tg_pt_gp
-		 */
-		__core_alua_drop_tg_pt_gp_mem(tg_pt_gp_mem, tg_pt_gp);
 		move = 1;
 	}
-	/*
-	 * Associate tg_pt_gp_mem with tg_pt_gp_new.
-	 */
-	__core_alua_attach_tg_pt_gp_mem(tg_pt_gp_mem, tg_pt_gp_new);
-	spin_unlock(&tg_pt_gp_mem->tg_pt_gp_mem_lock);
+
+	target_swap_tg_pt_gp(lun, tg_pt_gp, tg_pt_gp_new);
+	spin_unlock(&lun->lun_tg_pt_gp_lock);
 	pr_debug("Target_Core_ConfigFS: %s %s/tpgt_%hu/%s to ALUA"
 		" Target Port Group: alua/%s, ID: %hu\n", (move) ?
 		"Moving" : "Adding", tpg->se_tpg_tfo->tpg_get_wwn(tpg),
@@ -2107,6 +1974,8 @@ ssize_t core_alua_store_tg_pt_gp_info(
 		tg_pt_gp_new->tg_pt_gp_id);
 
 	core_alua_put_tg_pt_gp_from_name(tg_pt_gp_new);
+sync_rcu:
+	synchronize_rcu();
 	return count;
 }
 
@@ -2280,11 +2149,8 @@ ssize_t core_alua_store_preferred_bit(
 
 ssize_t core_alua_show_offline_bit(struct se_lun *lun, char *page)
 {
-	if (!lun->lun_sep)
-		return -ENODEV;
-
 	return sprintf(page, "%d\n",
-		atomic_read(&lun->lun_sep->sep_tg_pt_secondary_offline));
+		atomic_read(&lun->lun_tg_pt_secondary_offline));
 }
 
 ssize_t core_alua_store_offline_bit(
@@ -2292,11 +2158,16 @@ ssize_t core_alua_store_offline_bit(
 	const char *page,
 	size_t count)
 {
-	struct t10_alua_tg_pt_gp_member *tg_pt_gp_mem;
+	/*
+	 * rcu_dereference_raw protected by se_lun->lun_group symlink
+	 * reference to se_device->dev_group.
+	 */
+	struct se_device *dev = rcu_dereference_raw(lun->lun_se_dev);
 	unsigned long tmp;
 	int ret;
 
-	if (!lun->lun_sep)
+	if (dev->transport_flags & TRANSPORT_FLAG_PASSTHROUGH_ALUA ||
+	    (dev->se_hba->hba_flags & HBA_FLAGS_INTERNAL_USE))
 		return -ENODEV;
 
 	ret = kstrtoul(page, 0, &tmp);
@@ -2309,14 +2180,8 @@ ssize_t core_alua_store_offline_bit(
 				tmp);
 		return -EINVAL;
 	}
-	tg_pt_gp_mem = lun->lun_sep->sep_alua_tg_pt_gp_mem;
-	if (!tg_pt_gp_mem) {
-		pr_err("Unable to locate *tg_pt_gp_mem\n");
-		return -EINVAL;
-	}
 
-	ret = core_alua_set_tg_pt_secondary_state(tg_pt_gp_mem,
-			lun->lun_sep, 0, (int)tmp);
+	ret = core_alua_set_tg_pt_secondary_state(lun, 0, (int)tmp);
 	if (ret < 0)
 		return -EINVAL;
 
@@ -2327,7 +2192,7 @@ ssize_t core_alua_show_secondary_status(
 	struct se_lun *lun,
 	char *page)
 {
-	return sprintf(page, "%d\n", lun->lun_sep->sep_tg_pt_secondary_stat);
+	return sprintf(page, "%d\n", lun->lun_tg_pt_secondary_stat);
 }
 
 ssize_t core_alua_store_secondary_status(
@@ -2350,7 +2215,7 @@ ssize_t core_alua_store_secondary_status(
 				tmp);
 		return -EINVAL;
 	}
-	lun->lun_sep->sep_tg_pt_secondary_stat = (int)tmp;
+	lun->lun_tg_pt_secondary_stat = (int)tmp;
 
 	return count;
 }
@@ -2359,8 +2224,7 @@ ssize_t core_alua_show_secondary_write_metadata(
 	struct se_lun *lun,
 	char *page)
 {
-	return sprintf(page, "%d\n",
-			lun->lun_sep->sep_tg_pt_secondary_write_md);
+	return sprintf(page, "%d\n", lun->lun_tg_pt_secondary_write_md);
 }
 
 ssize_t core_alua_store_secondary_write_metadata(
@@ -2381,14 +2245,15 @@ ssize_t core_alua_store_secondary_write_metadata(
 				" %lu\n", tmp);
 		return -EINVAL;
 	}
-	lun->lun_sep->sep_tg_pt_secondary_write_md = (int)tmp;
+	lun->lun_tg_pt_secondary_write_md = (int)tmp;
 
 	return count;
 }
 
 int core_setup_alua(struct se_device *dev)
 {
-	if (dev->transport->transport_type != TRANSPORT_PLUGIN_PHBA_PDEV &&
+	if (!(dev->transport_flags &
+	     TRANSPORT_FLAG_PASSTHROUGH_ALUA) &&
 	    !(dev->se_hba->hba_flags & HBA_FLAGS_INTERNAL_USE)) {
 		struct t10_alua_lu_gp_member *lu_gp_mem;
 

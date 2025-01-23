@@ -1,23 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*******************************************************************************
   MAC 10/100 Header File
 
   Copyright (C) 2007-2009  STMicroelectronics Ltd
 
-  This program is free software; you can redistribute it and/or modify it
-  under the terms and conditions of the GNU General Public License,
-  version 2, as published by the Free Software Foundation.
-
-  This program is distributed in the hope it will be useful, but WITHOUT
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
-  more details.
-
-  You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc.,
-  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
-
-  The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
 
   Author: Giuseppe Cavallaro <peppe.cavallaro@st.com>
 *******************************************************************************/
@@ -70,7 +56,7 @@
 #define MAC_CONTROL_TE		0x00000008	/* Transmitter Enable */
 #define MAC_CONTROL_RE		0x00000004	/* Receiver Enable */
 
-#define MAC_CORE_INIT (MAC_CONTROL_HBD | MAC_CONTROL_ASTP)
+#define MAC_CORE_INIT (MAC_CONTROL_HBD)
 
 /* MAC FLOW CTRL defines */
 #define MAC_FLOW_CTRL_PT_MASK	0xffff0000	/* Pause Time Mask */
@@ -95,7 +81,6 @@
 #define DMA_BUS_MODE_DSL_MASK	0x0000007c	/* Descriptor Skip Length */
 #define DMA_BUS_MODE_DSL_SHIFT	2	/*   (in DWORDS)      */
 #define DMA_BUS_MODE_BAR_BUS	0x00000002	/* Bar-Bus Arbitration */
-#define DMA_BUS_MODE_SFT_RESET	0x00000001	/* Software Reset */
 #define DMA_BUS_MODE_DEFAULT	0x00000000
 
 /* DMA Control register defines */

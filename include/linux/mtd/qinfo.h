@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __LINUX_MTD_QINFO_H
 #define __LINUX_MTD_QINFO_H
 
@@ -14,7 +15,7 @@
  * @DevId - Chip Device ID
  * @qinfo - pointer to qinfo records describing the chip
  * @numchips - number of chips including virual RWW partitions
- * @chipshift - Chip/partiton size 2^chipshift
+ * @chipshift - Chip/partition size 2^chipshift
  * @chips - per-chip data structure
  */
 struct lpddr_private {
@@ -23,7 +24,7 @@ struct lpddr_private {
 	struct qinfo_chip *qinfo;
 	int numchips;
 	unsigned long chipshift;
-	struct flchip chips[0];
+	struct flchip chips[];
 };
 
 /* qinfo_query_info structure contains request information for

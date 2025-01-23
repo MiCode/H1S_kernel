@@ -1,8 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright IBM Corp. 2005, 2011
  *
  * Author(s): Rolf Adelsberger,
- *	      Heiko Carstens <heiko.carstens@de.ibm.com>
  *	      Michael Holzheu <holzheu@linux.vnet.ibm.com>
  */
 
@@ -13,20 +13,25 @@
 #include <linux/reboot.h>
 #include <linux/ftrace.h>
 #include <linux/debug_locks.h>
-#include <linux/suspend.h>
+#include <asm/pfault.h>
 #include <asm/cio.h>
 #include <asm/setup.h>
-#include <asm/pgtable.h>
-#include <asm/pgalloc.h>
 #include <asm/smp.h>
-#include <asm/reset.h>
 #include <asm/ipl.h>
 #include <asm/diag.h>
 #include <asm/elf.h>
 #include <asm/asm-offsets.h>
+#include <asm/cacheflush.h>
+#include <asm/abs_lowcore.h>
 #include <asm/os_info.h>
+#include <asm/set_memory.h>
+#include <asm/stacktrace.h>
+#include <asm/switch_to.h>
+#include <asm/nmi.h>
+#include <asm/sclp.h>
 
-typedef void (*relocate_kernel_t)(kimage_entry_t *, unsigned long);
+typedef void (*relocate_kernel_t)(unsigned long, unsigned long, unsigned long);
+typedef int (*purgatory_t)(int);
 
 extern const unsigned char relocate_kernel[];
 extern const unsigned long long relocate_kernel_len;
@@ -34,138 +39,137 @@ extern const unsigned long long relocate_kernel_len;
 #ifdef CONFIG_CRASH_DUMP
 
 /*
- * Create ELF notes for one CPU
+ * Reset the system, copy boot CPU registers to absolute zero,
+ * and jump to the kdump image
  */
-static void add_elf_notes(int cpu)
+static void __do_machine_kdump(void *data)
 {
-	struct save_area *sa = (void *) 4608 + store_prefix();
-	void *ptr;
+	struct kimage *image = data;
+	purgatory_t purgatory;
+	unsigned long prefix;
 
-	memcpy((void *) (4608UL + sa->pref_reg), sa, sizeof(*sa));
-	ptr = (u64 *) per_cpu_ptr(crash_notes, cpu);
-	ptr = fill_cpu_elf_notes(ptr, sa);
-	memset(ptr, 0, sizeof(struct elf_note));
+	purgatory = (purgatory_t)image->start;
+
+	/* store_status() saved the prefix register to lowcore */
+	prefix = (unsigned long) S390_lowcore.prefixreg_save_area;
+
+	/* Now do the reset  */
+	s390_reset_system();
+
+	/*
+	 * Copy dump CPU store status info to absolute zero.
+	 * This need to be done *after* s390_reset_system set the
+	 * prefix register of this CPU to zero
+	 */
+	memcpy(absolute_pointer(__LC_FPREGS_SAVE_AREA),
+	       phys_to_virt(prefix + __LC_FPREGS_SAVE_AREA), 512);
+
+	call_nodat(1, int, purgatory, int, 1);
+
+	/* Die if kdump returns */
+	disabled_wait();
 }
 
 /*
- * Initialize CPU ELF notes
+ * Start kdump: create a LGR log entry, store status of all CPUs and
+ * branch to __do_machine_kdump.
  */
-static void setup_regs(void)
+static noinline void __machine_kdump(void *image)
 {
-	unsigned long sa = S390_lowcore.prefixreg_save_area + SAVE_AREA_BASE;
-	int cpu, this_cpu;
+	struct mcesa *mcesa;
+	union ctlreg2 cr2_old, cr2_new;
+	int this_cpu, cpu;
 
+	lgr_info_log();
+	/* Get status of the other CPUs */
 	this_cpu = smp_find_processor_id(stap());
-	add_elf_notes(this_cpu);
 	for_each_online_cpu(cpu) {
 		if (cpu == this_cpu)
 			continue;
 		if (smp_store_status(cpu))
 			continue;
-		add_elf_notes(cpu);
 	}
-	/* Copy dump CPU store status info to absolute zero */
-	memcpy((void *) SAVE_AREA_BASE, (void *) sa, sizeof(struct save_area));
-}
-
-/*
- * PM notifier callback for kdump
- */
-static int machine_kdump_pm_cb(struct notifier_block *nb, unsigned long action,
-			       void *ptr)
-{
-	switch (action) {
-	case PM_SUSPEND_PREPARE:
-	case PM_HIBERNATION_PREPARE:
-		if (crashk_res.start)
-			crash_map_reserved_pages();
-		break;
-	case PM_POST_SUSPEND:
-	case PM_POST_HIBERNATION:
-		if (crashk_res.start)
-			crash_unmap_reserved_pages();
-		break;
-	default:
-		return NOTIFY_DONE;
+	/* Store status of the boot CPU */
+	mcesa = __va(S390_lowcore.mcesad & MCESA_ORIGIN_MASK);
+	if (MACHINE_HAS_VX)
+		save_vx_regs((__vector128 *) mcesa->vector_save_area);
+	if (MACHINE_HAS_GS) {
+		__ctl_store(cr2_old.val, 2, 2);
+		cr2_new = cr2_old;
+		cr2_new.gse = 1;
+		__ctl_load(cr2_new.val, 2, 2);
+		save_gs_cb((struct gs_cb *) mcesa->guarded_storage_save_area);
+		__ctl_load(cr2_old.val, 2, 2);
 	}
-	return NOTIFY_OK;
+	/*
+	 * To create a good backchain for this CPU in the dump store_status
+	 * is passed the address of a function. The address is saved into
+	 * the PSW save area of the boot CPU and the function is invoked as
+	 * a tail call of store_status. The backchain in the dump will look
+	 * like this:
+	 *   restart_int_handler ->  __machine_kexec -> __do_machine_kdump
+	 * The call to store_status() will not return.
+	 */
+	store_status(__do_machine_kdump, image);
 }
 
-static int __init machine_kdump_pm_init(void)
-{
-	pm_notifier(machine_kdump_pm_cb, 0);
-	return 0;
-}
-arch_initcall(machine_kdump_pm_init);
-#endif
-
-/*
- * Start kdump: We expect here that a store status has been done on our CPU
- */
-static void __do_machine_kdump(void *image)
-{
-#ifdef CONFIG_CRASH_DUMP
-	int (*start_kdump)(int) = (void *)((struct kimage *) image)->start;
-
-	setup_regs();
-	__load_psw_mask(PSW_MASK_BASE | PSW_DEFAULT_KEY | PSW_MASK_EA | PSW_MASK_BA);
-	start_kdump(1);
-#endif
-}
+#endif /* CONFIG_CRASH_DUMP */
 
 /*
  * Check if kdump checksums are valid: We call purgatory with parameter "0"
  */
-static int kdump_csum_valid(struct kimage *image)
+static bool kdump_csum_valid(struct kimage *image)
 {
 #ifdef CONFIG_CRASH_DUMP
-	int (*start_kdump)(int) = (void *)image->start;
+	purgatory_t purgatory = (purgatory_t)image->start;
 	int rc;
 
-	__arch_local_irq_stnsm(0xfb); /* disable DAT */
-	rc = start_kdump(0);
-	__arch_local_irq_stosm(0x04); /* enable DAT */
-	return rc ? 0 : -EINVAL;
+	rc = call_nodat(1, int, purgatory, int, 0);
+	return rc == 0;
 #else
-	return -EINVAL;
+	return false;
 #endif
 }
 
-/*
- * Map or unmap crashkernel memory
- */
-static void crash_map_pages(int enable)
-{
-	unsigned long size = resource_size(&crashk_res);
+#ifdef CONFIG_CRASH_DUMP
 
-	BUG_ON(crashk_res.start % KEXEC_CRASH_MEM_ALIGN ||
-	       size % KEXEC_CRASH_MEM_ALIGN);
-	if (enable)
-		vmem_add_mapping(crashk_res.start, size);
-	else {
-		vmem_remove_mapping(crashk_res.start, size);
-		if (size)
-			os_info_crashkernel_add(crashk_res.start, size);
-		else
-			os_info_crashkernel_add(0, 0);
-	}
+void crash_free_reserved_phys_range(unsigned long begin, unsigned long end)
+{
+	unsigned long addr, size;
+
+	for (addr = begin; addr < end; addr += PAGE_SIZE)
+		free_reserved_page(pfn_to_page(addr >> PAGE_SHIFT));
+	size = begin - crashk_res.start;
+	if (size)
+		os_info_crashkernel_add(crashk_res.start, size);
+	else
+		os_info_crashkernel_add(0, 0);
 }
 
-/*
- * Map crashkernel memory
- */
-void crash_map_reserved_pages(void)
+static void crash_protect_pages(int protect)
 {
-	crash_map_pages(1);
+	unsigned long size;
+
+	if (!crashk_res.end)
+		return;
+	size = resource_size(&crashk_res);
+	if (protect)
+		set_memory_ro(crashk_res.start, size >> PAGE_SHIFT);
+	else
+		set_memory_rw(crashk_res.start, size >> PAGE_SHIFT);
 }
 
-/*
- * Unmap crashkernel memory
- */
-void crash_unmap_reserved_pages(void)
+void arch_kexec_protect_crashkres(void)
 {
-	crash_map_pages(0);
+	crash_protect_pages(1);
 }
+
+void arch_kexec_unprotect_crashkres(void)
+{
+	crash_protect_pages(0);
+}
+
+#endif
 
 /*
  * Give back memory to hypervisor before new kdump is loaded
@@ -186,10 +190,6 @@ int machine_kexec_prepare(struct kimage *image)
 {
 	void *reboot_code_buffer;
 
-	/* Can't replace kernel image since it is read-only. */
-	if (ipl_flags & IPL_NSS_VALID)
-		return -EOPNOTSUPP;
-
 	if (image->type == KEXEC_TYPE_CRASH)
 		return machine_kexec_prepare_kdump();
 
@@ -198,7 +198,7 @@ int machine_kexec_prepare(struct kimage *image)
 		return -EINVAL;
 
 	/* Get the destination where the assembler code should be copied to.*/
-	reboot_code_buffer = (void *) page_to_phys(image->control_code_page);
+	reboot_code_buffer = page_to_virt(image->control_code_page);
 
 	/* Then copy it */
 	memcpy(reboot_code_buffer, relocate_kernel, relocate_kernel_len);
@@ -211,9 +211,17 @@ void machine_kexec_cleanup(struct kimage *image)
 
 void arch_crash_save_vmcoreinfo(void)
 {
+	struct lowcore *abs_lc;
+
 	VMCOREINFO_SYMBOL(lowcore_ptr);
 	VMCOREINFO_SYMBOL(high_memory);
 	VMCOREINFO_LENGTH(lowcore_ptr, NR_CPUS);
+	vmcoreinfo_append_str("SAMODE31=%lx\n", (unsigned long)__samode31);
+	vmcoreinfo_append_str("EAMODE31=%lx\n", (unsigned long)__eamode31);
+	vmcoreinfo_append_str("KERNELOFFSET=%lx\n", kaslr_offset());
+	abs_lc = get_abs_lowcore();
+	abs_lc->vmcore_info = paddr_vmcoreinfo_note();
+	put_abs_lowcore(abs_lc);
 }
 
 void machine_shutdown(void)
@@ -222,6 +230,7 @@ void machine_shutdown(void)
 
 void machine_crash_shutdown(struct pt_regs *regs)
 {
+	set_os_info_reipl_block();
 }
 
 /*
@@ -229,13 +238,23 @@ void machine_crash_shutdown(struct pt_regs *regs)
  */
 static void __do_machine_kexec(void *data)
 {
-	relocate_kernel_t data_mover;
+	unsigned long data_mover, entry, diag308_subcode;
 	struct kimage *image = data;
 
-	data_mover = (relocate_kernel_t) page_to_phys(image->control_code_page);
+	data_mover = page_to_phys(image->control_code_page);
+	entry = virt_to_phys(&image->head);
+	diag308_subcode = DIAG308_CLEAR_RESET;
+	if (sclp.has_iplcc)
+		diag308_subcode |= DIAG308_FLAG_EI;
+	s390_reset_system();
 
-	/* Call the moving routine */
-	(*data_mover)(&image->head, image->start);
+	call_nodat(3, void, (relocate_kernel_t)data_mover,
+		   unsigned long, entry,
+		   unsigned long, image->start,
+		   unsigned long, diag308_subcode);
+
+	/* Die if kexec returns */
+	disabled_wait();
 }
 
 /*
@@ -243,19 +262,14 @@ static void __do_machine_kexec(void *data)
  */
 static void __machine_kexec(void *data)
 {
-	struct kimage *image = data;
-
-	__arch_local_irq_stosm(0x04); /* enable DAT */
 	pfault_fini();
 	tracing_off();
 	debug_locks_off();
-	if (image->type == KEXEC_TYPE_CRASH) {
-		lgr_info_log();
-		s390_reset_system(__do_machine_kdump, data);
-	} else {
-		s390_reset_system(__do_machine_kexec, data);
-	}
-	disabled_wait((unsigned long) __builtin_return_address(0));
+#ifdef CONFIG_CRASH_DUMP
+	if (((struct kimage *) data)->type == KEXEC_TYPE_CRASH)
+		__machine_kdump(data);
+#endif
+	__do_machine_kexec(data);
 }
 
 /*

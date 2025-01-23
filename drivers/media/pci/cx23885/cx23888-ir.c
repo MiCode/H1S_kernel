@@ -1,25 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Driver for the Conexant CX23885/7/8 PCIe bridge
  *
  *  CX23888 Integrated Consumer Infrared Controller
  *
  *  Copyright (C) 2009  Andy Walls <awalls@md.metrocast.net>
- *
- *  This program is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public License
- *  as published by the Free Software Foundation; either version 2
- *  of the License, or (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- *  02110-1301, USA.
  */
+
+#include "cx23885.h"
+#include "cx23888-ir.h"
 
 #include <linux/kfifo.h>
 #include <linux/slab.h>
@@ -27,14 +16,11 @@
 #include <media/v4l2-device.h>
 #include <media/rc-core.h>
 
-#include "cx23885.h"
-#include "cx23888-ir.h"
-
 static unsigned int ir_888_debug;
 module_param(ir_888_debug, int, 0644);
 MODULE_PARM_DESC(ir_888_debug, "enable debug messages [CX23888 IR controller]");
 
-#define CX23888_IR_REG_BASE 	0x170000
+#define CX23888_IR_REG_BASE	0x170000
 /*
  * These CX23888 register offsets have a straightforward one to one mapping
  * to the CX23885 register offsets of 0x200 through 0x218
@@ -175,7 +161,7 @@ static inline int cx23888_ir_and_or4(struct cx23885_dev *dev, u32 addr,
  * Rx and Tx Clock Divider register computations
  *
  * Note the largest clock divider value of 0xffff corresponds to:
- * 	(0xffff + 1) * 1000 / 108/2 MHz = 1,213,629.629... ns
+ *	(0xffff + 1) * 1000 / 108/2 MHz = 1,213,629.629... ns
  * which fits in 21 bits, so we'll use unsigned int for time arguments.
  */
 static inline u16 count_to_clock_divider(unsigned int d)
@@ -189,19 +175,6 @@ static inline u16 count_to_clock_divider(unsigned int d)
 	return (u16) d;
 }
 
-static inline u16 ns_to_clock_divider(unsigned int ns)
-{
-	return count_to_clock_divider(
-		DIV_ROUND_CLOSEST(CX23888_IR_REFCLK_FREQ / 1000000 * ns, 1000));
-}
-
-static inline unsigned int clock_divider_to_ns(unsigned int divider)
-{
-	/* Period of the Rx or Tx clock in ns */
-	return DIV_ROUND_CLOSEST((divider + 1) * 1000,
-				 CX23888_IR_REFCLK_FREQ / 1000000);
-}
-
 static inline u16 carrier_freq_to_clock_divider(unsigned int freq)
 {
 	return count_to_clock_divider(
@@ -211,13 +184,6 @@ static inline u16 carrier_freq_to_clock_divider(unsigned int freq)
 static inline unsigned int clock_divider_to_carrier_freq(unsigned int divider)
 {
 	return DIV_ROUND_CLOSEST(CX23888_IR_REFCLK_FREQ, (divider + 1) * 16);
-}
-
-static inline u16 freq_to_clock_divider(unsigned int freq,
-					unsigned int rollovers)
-{
-	return count_to_clock_divider(
-		   DIV_ROUND_CLOSEST(CX23888_IR_REFCLK_FREQ, freq * rollovers));
 }
 
 static inline unsigned int clock_divider_to_freq(unsigned int divider,
@@ -231,7 +197,7 @@ static inline unsigned int clock_divider_to_freq(unsigned int divider,
  * Low Pass Filter register calculations
  *
  * Note the largest count value of 0xffff corresponds to:
- * 	0xffff * 1000 / 108/2 MHz = 1,213,611.11... ns
+ *	0xffff * 1000 / 108/2 MHz = 1,213,611.11... ns
  * which fits in 21 bits, so we'll use unsigned int for time arguments.
  */
 static inline u16 count_to_lpf_count(unsigned int d)
@@ -263,13 +229,13 @@ static inline unsigned int lpf_count_to_us(unsigned int count)
 }
 
 /*
- * FIFO register pulse width count compuations
+ * FIFO register pulse width count computations
  */
 static u32 clock_divider_to_resolution(u16 divider)
 {
 	/*
 	 * Resolution is the duration of 1 tick of the readable portion of
-	 * of the pulse width counter as read from the FIFO.  The two lsb's are
+	 * the pulse width counter as read from the FIFO.  The two lsb's are
 	 * not readable, hence the << 2.  This function returns ns.
 	 */
 	return DIV_ROUND_CLOSEST((1 << 2)  * ((u32) divider + 1) * 1000,
@@ -553,7 +519,7 @@ static int cx23888_ir_irq_handler(struct v4l2_subdev *sd, u32 status,
 	ror = stats & STATS_ROR; /* Rx FIFO Over Run */
 
 	tse = irqen & IRQEN_TSE; /* Tx FIFO Service Request IRQ Enable */
-	rse = irqen & IRQEN_RSE; /* Rx FIFO Service Reuqest IRQ Enable */
+	rse = irqen & IRQEN_RSE; /* Rx FIFO Service Request IRQ Enable */
 	rte = irqen & IRQEN_RTE; /* Rx Pulse Width Timer Time Out IRQ Enable */
 	roe = irqen & IRQEN_ROE; /* Rx FIFO Over Run IRQ Enable */
 
@@ -643,7 +609,7 @@ static int cx23888_ir_irq_handler(struct v4l2_subdev *sd, u32 status,
 		events |= V4L2_SUBDEV_IR_RX_END_OF_RX_DETECTED;
 	}
 	if (v) {
-		/* Clear STATS_ROR & STATS_RTO as needed by reseting hardware */
+		/* Clear STATS_ROR & STATS_RTO as needed by resetting hardware */
 		cx23888_ir_write4(dev, CX23888_IR_CNTRL_REG, cntrl & ~v);
 		cx23888_ir_write4(dev, CX23888_IR_CNTRL_REG, cntrl);
 		*handled = true;
@@ -697,14 +663,12 @@ static int cx23888_ir_rx_read(struct v4l2_subdev *sd, u8 *buf, size_t count,
 		}
 
 		v = (unsigned) pulse_width_count_to_ns(
-				  (u16) (p->hw_fifo_data & FIFO_RXTX), divider);
+				  (u16)(p->hw_fifo_data & FIFO_RXTX), divider) / 1000;
 		if (v > IR_MAX_DURATION)
 			v = IR_MAX_DURATION;
 
-		init_ir_raw_event(&p->ir_core_data);
-		p->ir_core_data.pulse = u;
-		p->ir_core_data.duration = v;
-		p->ir_core_data.timeout = w;
+		p->ir_core_data = (struct ir_raw_event)
+			{ .pulse = u, .duration = v, .timeout = w };
 
 		v4l2_dbg(2, ir_888_debug, sd, "rx read: %10u ns  %s  %s\n",
 			 v, u ? "mark" : "space", w ? "(timed out)" : "");
@@ -1020,8 +984,8 @@ static int cx23888_ir_log_status(struct v4l2_subdev *sd)
 			j = 0;
 			break;
 		}
-		v4l2_info(sd, "\tNext carrier edge window:          16 clocks "
-			  "-%1d/+%1d, %u to %u Hz\n", i, j,
+		v4l2_info(sd, "\tNext carrier edge window:	    16 clocks -%1d/+%1d, %u to %u Hz\n",
+			  i, j,
 			  clock_divider_to_freq(rxclk, 16 + j),
 			  clock_divider_to_freq(rxclk, 16 - i));
 	}
@@ -1031,8 +995,7 @@ static int cx23888_ir_log_status(struct v4l2_subdev *sd)
 	v4l2_info(sd, "\tLow pass filter:                   %s\n",
 		  filtr ? "enabled" : "disabled");
 	if (filtr)
-		v4l2_info(sd, "\tMin acceptable pulse width (LPF):  %u us, "
-			  "%u ns\n",
+		v4l2_info(sd, "\tMin acceptable pulse width (LPF):  %u us, %u ns\n",
 			  lpf_count_to_us(filtr),
 			  lpf_count_to_ns(filtr));
 	v4l2_info(sd, "\tPulse width timer timed-out:       %s\n",
@@ -1184,8 +1147,11 @@ int cx23888_ir_probe(struct cx23885_dev *dev)
 		return -ENOMEM;
 
 	spin_lock_init(&state->rx_kfifo_lock);
-	if (kfifo_alloc(&state->rx_kfifo, CX23888_IR_RX_KFIFO_SIZE, GFP_KERNEL))
+	if (kfifo_alloc(&state->rx_kfifo, CX23888_IR_RX_KFIFO_SIZE,
+			GFP_KERNEL)) {
+		kfree(state);
 		return -ENOMEM;
+	}
 
 	state->dev = dev;
 	sd = &state->sd;

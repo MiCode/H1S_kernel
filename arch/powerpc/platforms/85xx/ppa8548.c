@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * ppa8548 setup and early boot code.
  *
@@ -7,11 +8,6 @@
  *
  * Based on the SBC8548 support - Copyright 2007 Wind River Systems Inc.
  * Based on the MPC8548CDS support - Copyright 2005 Freescale Inc.
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/stddef.h>
@@ -59,7 +55,7 @@ static void ppa8548_show_cpuinfo(struct seq_file *m)
 	seq_printf(m, "PLL setting\t: 0x%x\n", ((phid1 >> 24) & 0x3f));
 }
 
-static struct of_device_id __initdata of_bus_ids[] = {
+static const struct of_device_id of_bus_ids[] __initconst = {
 	{ .name = "soc", },
 	{ .type = "soc", },
 	{ .compatible = "simple-bus", },
@@ -76,24 +72,12 @@ static int __init declare_of_platform_devices(void)
 }
 machine_device_initcall(ppa8548, declare_of_platform_devices);
 
-/*
- * Called very early, device-tree isn't unflattened
- */
-static int __init ppa8548_probe(void)
-{
-	unsigned long root = of_get_flat_dt_root();
-
-	return of_flat_dt_is_compatible(root, "ppa8548");
-}
-
 define_machine(ppa8548) {
 	.name		= "ppa8548",
-	.probe		= ppa8548_probe,
+	.compatible	= "ppa8548",
 	.setup_arch	= ppa8548_setup_arch,
 	.init_IRQ	= ppa8548_pic_init,
 	.show_cpuinfo	= ppa8548_show_cpuinfo,
 	.get_irq	= mpic_get_irq,
-	.restart	= fsl_rstcr_restart,
-	.calibrate_decr = generic_calibrate_decr,
 	.progress	= udbg_progress,
 };

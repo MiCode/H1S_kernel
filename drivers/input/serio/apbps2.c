@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2013 Aeroflex Gaisler
  *
@@ -10,19 +11,14 @@
  * See "Documentation/devicetree/bindings/input/ps2keyb-mouse-apbps2.txt" for
  * information on open firmware properties.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
  * Contributors: Daniel Hellstrom <daniel@gaisler.com>
  */
 #include <linux/platform_device.h>
-#include <linux/of_device.h>
 #include <linux/module.h>
 #include <linux/serio.h>
 #include <linux/errno.h>
 #include <linux/interrupt.h>
+#include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/device.h>
 #include <linux/delay.h>
@@ -55,7 +51,7 @@ struct apbps2_regs {
 
 struct apbps2_priv {
 	struct serio		*io;
-	struct apbps2_regs	*regs;
+	struct apbps2_regs	__iomem *regs;
 };
 
 static int apbps2_idx;
@@ -107,7 +103,6 @@ static int apbps2_open(struct serio *io)
 {
 	struct apbps2_priv *priv = io->port_data;
 	int limit;
-	unsigned long tmp;
 
 	/* clear error flags */
 	iowrite32be(0, &priv->regs->status);
@@ -115,7 +110,7 @@ static int apbps2_open(struct serio *io)
 	/* Clear old data if available (unlikely) */
 	limit = 1024;
 	while ((ioread32be(&priv->regs->status) & APBPS2_STATUS_DR) && --limit)
-		tmp = ioread32be(&priv->regs->data);
+		ioread32be(&priv->regs->data);
 
 	/* Enable reciever and it's interrupt */
 	iowrite32be(APBPS2_CTRL_RE | APBPS2_CTRL_RI, &priv->regs->ctrl);
@@ -137,7 +132,6 @@ static int apbps2_of_probe(struct platform_device *ofdev)
 	struct apbps2_priv *priv;
 	int irq, err;
 	u32 freq_hz;
-	struct resource *res;
 
 	priv = devm_kzalloc(&ofdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv) {
@@ -146,8 +140,7 @@ static int apbps2_of_probe(struct platform_device *ofdev)
 	}
 
 	/* Find Device Address */
-	res = platform_get_resource(ofdev, IORESOURCE_MEM, 0);
-	priv->regs = devm_ioremap_resource(&ofdev->dev, res);
+	priv->regs = devm_platform_get_and_ioremap_resource(ofdev, 0, NULL);
 	if (IS_ERR(priv->regs))
 		return PTR_ERR(priv->regs);
 
@@ -181,7 +174,7 @@ static int apbps2_of_probe(struct platform_device *ofdev)
 	priv->io->close = apbps2_close;
 	priv->io->write = apbps2_write;
 	priv->io->port_data = priv;
-	strlcpy(priv->io->name, "APBPS2 PS/2", sizeof(priv->io->name));
+	strscpy(priv->io->name, "APBPS2 PS/2", sizeof(priv->io->name));
 	snprintf(priv->io->phys, sizeof(priv->io->phys),
 		 "apbps2_%d", apbps2_idx++);
 
@@ -203,7 +196,7 @@ static int apbps2_of_remove(struct platform_device *of_dev)
 	return 0;
 }
 
-static struct of_device_id apbps2_of_match[] = {
+static const struct of_device_id apbps2_of_match[] = {
 	{ .name = "GAISLER_APBPS2", },
 	{ .name = "01_060", },
 	{}
@@ -214,7 +207,6 @@ MODULE_DEVICE_TABLE(of, apbps2_of_match);
 static struct platform_driver apbps2_of_driver = {
 	.driver = {
 		.name = "grlib-apbps2",
-		.owner = THIS_MODULE,
 		.of_match_table = apbps2_of_match,
 	},
 	.probe = apbps2_of_probe,

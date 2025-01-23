@@ -1,18 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 /*
@@ -20,7 +7,7 @@
  */
 
 
-#include <asm/io.h>
+#include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/pm.h>
 #include <linux/init.h>
@@ -40,7 +27,7 @@
 static int cs46xx_dsp_async_init (struct snd_cs46xx *chip,
 				  struct dsp_scb_descriptor * fg_entry);
 
-static enum wide_opcode wide_opcodes[] = { 
+static const enum wide_opcode wide_opcodes[] = {
 	WIDE_FOR_BEGIN_LOOP,
 	WIDE_FOR_BEGIN_LOOP2,
 	WIDE_COND_GOTO_ADDR,
@@ -85,12 +72,15 @@ static int shadow_and_reallocate_code (struct snd_cs46xx * chip, u32 * data, u32
 						address  = (hival & 0x00FFF) << 5;
 						address |=  loval >> 15;
             
-						snd_printdd("handle_wideop[1]: %05x:%05x addr %04x\n",hival,loval,address);
+						dev_dbg(chip->card->dev,
+							"handle_wideop[1]: %05x:%05x addr %04x\n",
+							hival, loval, address);
             
 						if ( !(address & 0x8000) ) {
 							address += (ins->code.offset / 2) - overlay_begin_address;
 						} else {
-							snd_printdd("handle_wideop[1]: ROM symbol not reallocated\n");
+							dev_dbg(chip->card->dev,
+								"handle_wideop[1]: ROM symbol not reallocated\n");
 						}
             
 						hival &= 0xFF000;
@@ -102,8 +92,10 @@ static int shadow_and_reallocate_code (struct snd_cs46xx * chip, u32 * data, u32
 						address  = (hival & 0x00FFF) << 5;
 						address |=  loval >> 15;
             
-						snd_printdd("handle_wideop:[2] %05x:%05x addr %04x\n",hival,loval,address);            
-						nreallocated ++;
+						dev_dbg(chip->card->dev,
+							"handle_wideop:[2] %05x:%05x addr %04x\n",
+							hival, loval, address);
+						nreallocated++;
 					} /* wide_opcodes[j] == wide_op */
 				} /* for */
 			} /* mod_type == 0 ... */
@@ -113,7 +105,8 @@ static int shadow_and_reallocate_code (struct snd_cs46xx * chip, u32 * data, u32
 		ins->code.data[ins->code.size++] = hival;
 	}
 
-	snd_printdd("dsp_spos: %d instructions reallocated\n",nreallocated);
+	dev_dbg(chip->card->dev,
+		"dsp_spos: %d instructions reallocated\n", nreallocated);
 	return nreallocated;
 }
 
@@ -157,7 +150,8 @@ static int add_symbols (struct snd_cs46xx * chip, struct dsp_module_desc * modul
 
 	for (i = 0;i < module->symbol_table.nsymbols; ++i) {
 		if (ins->symbol_table.nsymbols == (DSP_MAX_SYMBOLS - 1)) {
-			snd_printk(KERN_ERR "dsp_spos: symbol table is full\n");
+			dev_err(chip->card->dev,
+				"dsp_spos: symbol table is full\n");
 			return -ENOMEM;
 		}
 
@@ -176,8 +170,11 @@ static int add_symbols (struct snd_cs46xx * chip, struct dsp_module_desc * modul
 
 			ins->symbol_table.nsymbols++;
 		} else {
-          /* if (0) printk ("dsp_spos: symbol <%s> duplicated, probably nothing wrong with that (Cirrus?)\n",
-                             module->symbol_table.symbols[i].symbol_name); */
+#if 0
+			dev_dbg(chip->card->dev,
+				"dsp_spos: symbol <%s> duplicated, probably nothing wrong with that (Cirrus?)\n",
+				module->symbol_table.symbols[i].symbol_name); */
+#endif
 		}
 	}
 
@@ -192,14 +189,15 @@ add_symbol (struct snd_cs46xx * chip, char * symbol_name, u32 address, int type)
 	int index;
 
 	if (ins->symbol_table.nsymbols == (DSP_MAX_SYMBOLS - 1)) {
-		snd_printk(KERN_ERR "dsp_spos: symbol table is full\n");
+		dev_err(chip->card->dev, "dsp_spos: symbol table is full\n");
 		return NULL;
 	}
   
 	if (cs46xx_dsp_lookup_symbol(chip,
 				     symbol_name,
 				     type) != NULL) {
-		snd_printk(KERN_ERR "dsp_spos: symbol <%s> duplicated\n", symbol_name);
+		dev_err(chip->card->dev,
+			"dsp_spos: symbol <%s> duplicated\n", symbol_name);
 		return NULL;
 	}
 
@@ -229,10 +227,13 @@ struct dsp_spos_instance *cs46xx_dsp_spos_create (struct snd_cs46xx * chip)
 		return NULL;
 
 	/* better to use vmalloc for this big table */
-	ins->symbol_table.symbols = vmalloc(sizeof(struct dsp_symbol_entry) *
-					    DSP_MAX_SYMBOLS);
+	ins->symbol_table.symbols =
+		vmalloc(array_size(DSP_MAX_SYMBOLS,
+				   sizeof(struct dsp_symbol_entry)));
 	ins->code.data = kmalloc(DSP_CODE_BYTE_SIZE, GFP_KERNEL);
-	ins->modules = kmalloc(sizeof(struct dsp_module_desc) * DSP_MAX_MODULES, GFP_KERNEL);
+	ins->modules = kmalloc_array(DSP_MAX_MODULES,
+				     sizeof(struct dsp_module_desc),
+				     GFP_KERNEL);
 	if (!ins->symbol_table.symbols || !ins->code.data || !ins->modules) {
 		cs46xx_dsp_spos_destroy(chip);
 		goto error;
@@ -305,19 +306,20 @@ static int dsp_load_parameter(struct snd_cs46xx *chip,
 	u32 doffset, dsize;
 
 	if (!parameter) {
-		snd_printdd("dsp_spos: module got no parameter segment\n");
+		dev_dbg(chip->card->dev,
+			"dsp_spos: module got no parameter segment\n");
 		return 0;
 	}
 
 	doffset = (parameter->offset * 4 + DSP_PARAMETER_BYTE_OFFSET);
 	dsize   = parameter->size * 4;
 
-	snd_printdd("dsp_spos: "
-		    "downloading parameter data to chip (%08x-%08x)\n",
+	dev_dbg(chip->card->dev,
+		"dsp_spos: downloading parameter data to chip (%08x-%08x)\n",
 		    doffset,doffset + dsize);
 	if (snd_cs46xx_download (chip, parameter->data, doffset, dsize)) {
-		snd_printk(KERN_ERR "dsp_spos: "
-			   "failed to download parameter data to DSP\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: failed to download parameter data to DSP\n");
 		return -EINVAL;
 	}
 	return 0;
@@ -329,18 +331,21 @@ static int dsp_load_sample(struct snd_cs46xx *chip,
 	u32 doffset, dsize;
 
 	if (!sample) {
-		snd_printdd("dsp_spos: module got no sample segment\n");
+		dev_dbg(chip->card->dev,
+			"dsp_spos: module got no sample segment\n");
 		return 0;
 	}
 
 	doffset = (sample->offset * 4  + DSP_SAMPLE_BYTE_OFFSET);
 	dsize   =  sample->size * 4;
 
-	snd_printdd("dsp_spos: downloading sample data to chip (%08x-%08x)\n",
+	dev_dbg(chip->card->dev,
+		"dsp_spos: downloading sample data to chip (%08x-%08x)\n",
 		    doffset,doffset + dsize);
 
 	if (snd_cs46xx_download (chip,sample->data,doffset,dsize)) {
-		snd_printk(KERN_ERR "dsp_spos: failed to sample data to DSP\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: failed to sample data to DSP\n");
 		return -EINVAL;
 	}
 	return 0;
@@ -354,14 +359,16 @@ int cs46xx_dsp_load_module (struct snd_cs46xx * chip, struct dsp_module_desc * m
 	int err;
 
 	if (ins->nmodules == DSP_MAX_MODULES - 1) {
-		snd_printk(KERN_ERR "dsp_spos: to many modules loaded into DSP\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: to many modules loaded into DSP\n");
 		return -ENOMEM;
 	}
 
-	snd_printdd("dsp_spos: loading module %s into DSP\n", module->module_name);
+	dev_dbg(chip->card->dev,
+		"dsp_spos: loading module %s into DSP\n", module->module_name);
   
 	if (ins->nmodules == 0) {
-		snd_printdd("dsp_spos: clearing parameter area\n");
+		dev_dbg(chip->card->dev, "dsp_spos: clearing parameter area\n");
 		snd_cs46xx_clear_BA1(chip, DSP_PARAMETER_BYTE_OFFSET, DSP_PARAMETER_BYTE_SIZE);
 	}
   
@@ -371,7 +378,7 @@ int cs46xx_dsp_load_module (struct snd_cs46xx * chip, struct dsp_module_desc * m
 		return err;
 
 	if (ins->nmodules == 0) {
-		snd_printdd("dsp_spos: clearing sample area\n");
+		dev_dbg(chip->card->dev, "dsp_spos: clearing sample area\n");
 		snd_cs46xx_clear_BA1(chip, DSP_SAMPLE_BYTE_OFFSET, DSP_SAMPLE_BYTE_SIZE);
 	}
 
@@ -381,15 +388,17 @@ int cs46xx_dsp_load_module (struct snd_cs46xx * chip, struct dsp_module_desc * m
 		return err;
 
 	if (ins->nmodules == 0) {
-		snd_printdd("dsp_spos: clearing code area\n");
+		dev_dbg(chip->card->dev, "dsp_spos: clearing code area\n");
 		snd_cs46xx_clear_BA1(chip, DSP_CODE_BYTE_OFFSET, DSP_CODE_BYTE_SIZE);
 	}
 
 	if (code == NULL) {
-		snd_printdd("dsp_spos: module got no code segment\n");
+		dev_dbg(chip->card->dev,
+			"dsp_spos: module got no code segment\n");
 	} else {
 		if (ins->code.offset + code->size > DSP_CODE_BYTE_SIZE) {
-			snd_printk(KERN_ERR "dsp_spos: no space available in DSP\n");
+			dev_err(chip->card->dev,
+				"dsp_spos: no space available in DSP\n");
 			return -ENOMEM;
 		}
 
@@ -401,19 +410,22 @@ int cs46xx_dsp_load_module (struct snd_cs46xx * chip, struct dsp_module_desc * m
 		if (snd_BUG_ON(!module->symbol_table.symbols))
 			return -ENOMEM;
 		if (add_symbols(chip,module)) {
-			snd_printk(KERN_ERR "dsp_spos: failed to load symbol table\n");
+			dev_err(chip->card->dev,
+				"dsp_spos: failed to load symbol table\n");
 			return -ENOMEM;
 		}
     
 		doffset = (code->offset * 4 + ins->code.offset * 4 + DSP_CODE_BYTE_OFFSET);
 		dsize   = code->size * 4;
-		snd_printdd("dsp_spos: downloading code to chip (%08x-%08x)\n",
+		dev_dbg(chip->card->dev,
+			"dsp_spos: downloading code to chip (%08x-%08x)\n",
 			    doffset,doffset + dsize);   
 
 		module->nfixups = shadow_and_reallocate_code(chip,code->data,code->size,module->overlay_begin_address);
 
 		if (snd_cs46xx_download (chip,(ins->code.data + ins->code.offset),doffset,dsize)) {
-			snd_printk(KERN_ERR "dsp_spos: failed to download code to DSP\n");
+			dev_err(chip->card->dev,
+				"dsp_spos: failed to download code to DSP\n");
 			return -EINVAL;
 		}
 
@@ -447,7 +459,7 @@ cs46xx_dsp_lookup_symbol (struct snd_cs46xx * chip, char * symbol_name, int symb
 	}
 
 #if 0
-	printk ("dsp_spos: symbol <%s> type %02x not found\n",
+	dev_err(chip->card->dev, "dsp_spos: symbol <%s> type %02x not found\n",
 		symbol_name,symbol_type);
 #endif
 
@@ -455,7 +467,7 @@ cs46xx_dsp_lookup_symbol (struct snd_cs46xx * chip, char * symbol_name, int symb
 }
 
 
-#ifdef CONFIG_PROC_FS
+#ifdef CONFIG_SND_PROC_FS
 static struct dsp_symbol_entry *
 cs46xx_dsp_lookup_symbol_addr (struct snd_cs46xx * chip, u32 address, int symbol_type)
 {
@@ -605,7 +617,8 @@ static void cs46xx_dsp_proc_parameter_dump_read (struct snd_info_entry *entry,
 			col = 0;
 		}
 
-		if ( (symbol = cs46xx_dsp_lookup_symbol_addr (chip,i / sizeof(u32), SYMBOL_PARAMETER)) != NULL) {
+		symbol = cs46xx_dsp_lookup_symbol_addr(chip, i / sizeof(u32), SYMBOL_PARAMETER);
+		if (symbol) {
 			col = 0;
 			snd_iprintf (buffer,"\n%s:\n",symbol->symbol_name);
 		}
@@ -774,92 +787,49 @@ int cs46xx_dsp_proc_init (struct snd_card *card, struct snd_cs46xx *chip)
 
 	ins->snd_card = card;
 
-	if ((entry = snd_info_create_card_entry(card, "dsp", card->proc_root)) != NULL) {
-		entry->content = SNDRV_INFO_CONTENT_TEXT;
-		entry->mode = S_IFDIR | S_IRUGO | S_IXUGO;
-      
-		if (snd_info_register(entry) < 0) {
-			snd_info_free_entry(entry);
-			entry = NULL;
-		}
-	}
-
+	entry = snd_info_create_card_entry(card, "dsp", card->proc_root);
+	if (entry)
+		entry->mode = S_IFDIR | 0555;
 	ins->proc_dsp_dir = entry;
 
 	if (!ins->proc_dsp_dir)
 		return -ENOMEM;
 
-	if ((entry = snd_info_create_card_entry(card, "spos_symbols", ins->proc_dsp_dir)) != NULL) {
-		entry->content = SNDRV_INFO_CONTENT_TEXT;
-		entry->private_data = chip;
-		entry->mode = S_IFREG | S_IRUGO | S_IWUSR;
-		entry->c.text.read = cs46xx_dsp_proc_symbol_table_read;
-		if (snd_info_register(entry) < 0) {
-			snd_info_free_entry(entry);
-			entry = NULL;
-		}
-	}
-	ins->proc_sym_info_entry = entry;
+	entry = snd_info_create_card_entry(card, "spos_symbols",
+					   ins->proc_dsp_dir);
+	if (entry)
+		snd_info_set_text_ops(entry, chip,
+				      cs46xx_dsp_proc_symbol_table_read);
     
-	if ((entry = snd_info_create_card_entry(card, "spos_modules", ins->proc_dsp_dir)) != NULL) {
-		entry->content = SNDRV_INFO_CONTENT_TEXT;
-		entry->private_data = chip;
-		entry->mode = S_IFREG | S_IRUGO | S_IWUSR;
-		entry->c.text.read = cs46xx_dsp_proc_modules_read;
-		if (snd_info_register(entry) < 0) {
-			snd_info_free_entry(entry);
-			entry = NULL;
-		}
-	}
-	ins->proc_modules_info_entry = entry;
+	entry = snd_info_create_card_entry(card, "spos_modules",
+					   ins->proc_dsp_dir);
+	if (entry)
+		snd_info_set_text_ops(entry, chip,
+				      cs46xx_dsp_proc_modules_read);
 
-	if ((entry = snd_info_create_card_entry(card, "parameter", ins->proc_dsp_dir)) != NULL) {
-		entry->content = SNDRV_INFO_CONTENT_TEXT;
-		entry->private_data = chip;
-		entry->mode = S_IFREG | S_IRUGO | S_IWUSR;
-		entry->c.text.read = cs46xx_dsp_proc_parameter_dump_read;
-		if (snd_info_register(entry) < 0) {
-			snd_info_free_entry(entry);
-			entry = NULL;
-		}
-	}
-	ins->proc_parameter_dump_info_entry = entry;
+	entry = snd_info_create_card_entry(card, "parameter",
+					   ins->proc_dsp_dir);
+	if (entry)
+		snd_info_set_text_ops(entry, chip,
+				      cs46xx_dsp_proc_parameter_dump_read);
 
-	if ((entry = snd_info_create_card_entry(card, "sample", ins->proc_dsp_dir)) != NULL) {
-		entry->content = SNDRV_INFO_CONTENT_TEXT;
-		entry->private_data = chip;
-		entry->mode = S_IFREG | S_IRUGO | S_IWUSR;
-		entry->c.text.read = cs46xx_dsp_proc_sample_dump_read;
-		if (snd_info_register(entry) < 0) {
-			snd_info_free_entry(entry);
-			entry = NULL;
-		}
-	}
-	ins->proc_sample_dump_info_entry = entry;
+	entry = snd_info_create_card_entry(card, "sample",
+					   ins->proc_dsp_dir);
+	if (entry)
+		snd_info_set_text_ops(entry, chip,
+				      cs46xx_dsp_proc_sample_dump_read);
 
-	if ((entry = snd_info_create_card_entry(card, "task_tree", ins->proc_dsp_dir)) != NULL) {
-		entry->content = SNDRV_INFO_CONTENT_TEXT;
-		entry->private_data = chip;
-		entry->mode = S_IFREG | S_IRUGO | S_IWUSR;
-		entry->c.text.read = cs46xx_dsp_proc_task_tree_read;
-		if (snd_info_register(entry) < 0) {
-			snd_info_free_entry(entry);
-			entry = NULL;
-		}
-	}
-	ins->proc_task_info_entry = entry;
+	entry = snd_info_create_card_entry(card, "task_tree",
+					   ins->proc_dsp_dir);
+	if (entry)
+		snd_info_set_text_ops(entry, chip,
+				      cs46xx_dsp_proc_task_tree_read);
 
-	if ((entry = snd_info_create_card_entry(card, "scb_info", ins->proc_dsp_dir)) != NULL) {
-		entry->content = SNDRV_INFO_CONTENT_TEXT;
-		entry->private_data = chip;
-		entry->mode = S_IFREG | S_IRUGO | S_IWUSR;
-		entry->c.text.read = cs46xx_dsp_proc_scb_read;
-		if (snd_info_register(entry) < 0) {
-			snd_info_free_entry(entry);
-			entry = NULL;
-		}
-	}
-	ins->proc_scb_info_entry = entry;
+	entry = snd_info_create_card_entry(card, "scb_info",
+					   ins->proc_dsp_dir);
+	if (entry)
+		snd_info_set_text_ops(entry, chip,
+				      cs46xx_dsp_proc_scb_read);
 
 	mutex_lock(&chip->spos_mutex);
 	/* register/update SCB's entries on proc */
@@ -878,23 +848,8 @@ int cs46xx_dsp_proc_done (struct snd_cs46xx *chip)
 	struct dsp_spos_instance * ins = chip->dsp_spos_instance;
 	int i;
 
-	snd_info_free_entry(ins->proc_sym_info_entry);
-	ins->proc_sym_info_entry = NULL;
-
-	snd_info_free_entry(ins->proc_modules_info_entry);
-	ins->proc_modules_info_entry = NULL;
-
-	snd_info_free_entry(ins->proc_parameter_dump_info_entry);
-	ins->proc_parameter_dump_info_entry = NULL;
-
-	snd_info_free_entry(ins->proc_sample_dump_info_entry);
-	ins->proc_sample_dump_info_entry = NULL;
-
-	snd_info_free_entry(ins->proc_scb_info_entry);
-	ins->proc_scb_info_entry = NULL;
-
-	snd_info_free_entry(ins->proc_task_info_entry);
-	ins->proc_task_info_entry = NULL;
+	if (!ins)
+		return 0;
 
 	mutex_lock(&chip->spos_mutex);
 	for (i = 0; i < ins->nscb; ++i) {
@@ -908,9 +863,8 @@ int cs46xx_dsp_proc_done (struct snd_cs46xx *chip)
 
 	return 0;
 }
-#endif /* CONFIG_PROC_FS */
+#endif /* CONFIG_SND_PROC_FS */
 
-static int debug_tree;
 static void _dsp_create_task_tree (struct snd_cs46xx *chip, u32 * task_data,
 				   u32  dest, int size)
 {
@@ -919,13 +873,13 @@ static void _dsp_create_task_tree (struct snd_cs46xx *chip, u32 * task_data,
 	int i;
 
 	for (i = 0; i < size; ++i) {
-		if (debug_tree) printk ("addr %p, val %08x\n",spdst,task_data[i]);
+		dev_dbg(chip->card->dev, "addr %p, val %08x\n",
+			spdst, task_data[i]);
 		writel(task_data[i],spdst);
 		spdst += sizeof(u32);
 	}
 }
 
-static int debug_scb;
 static void _dsp_create_scb (struct snd_cs46xx *chip, u32 * scb_data, u32 dest)
 {
 	void __iomem *spdst = chip->region.idx[1].remap_addr + 
@@ -933,7 +887,8 @@ static void _dsp_create_scb (struct snd_cs46xx *chip, u32 * scb_data, u32 dest)
 	int i;
 
 	for (i = 0; i < 0x10; ++i) {
-		if (debug_scb) printk ("addr %p, val %08x\n",spdst,scb_data[i]);
+		dev_dbg(chip->card->dev, "addr %p, val %08x\n",
+			spdst, scb_data[i]);
 		writel(scb_data[i],spdst);
 		spdst += sizeof(u32);
 	}
@@ -960,7 +915,8 @@ static struct dsp_scb_descriptor * _map_scb (struct snd_cs46xx *chip, char * nam
 	int index;
 
 	if (ins->nscb == DSP_MAX_SCB_DESC - 1) {
-		snd_printk(KERN_ERR "dsp_spos: got no place for other SCB\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: got no place for other SCB\n");
 		return NULL;
 	}
 
@@ -991,7 +947,8 @@ _map_task_tree (struct snd_cs46xx *chip, char * name, u32 dest, u32 size)
 	struct dsp_task_descriptor * desc = NULL;
 
 	if (ins->ntask == DSP_MAX_TASK_DESC - 1) {
-		snd_printk(KERN_ERR "dsp_spos: got no place for other TASK\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: got no place for other TASK\n");
 		return NULL;
 	}
 
@@ -1031,7 +988,7 @@ cs46xx_dsp_create_scb (struct snd_cs46xx *chip, char * name, u32 * scb_data, u32
 		desc->data = scb_data;
 		_dsp_create_scb(chip,scb_data,dest);
 	} else {
-		snd_printk(KERN_ERR "dsp_spos: failed to map SCB\n");
+		dev_err(chip->card->dev, "dsp_spos: failed to map SCB\n");
 #ifdef CONFIG_PM_SLEEP
 		kfree(scb_data);
 #endif
@@ -1052,7 +1009,7 @@ cs46xx_dsp_create_task_tree (struct snd_cs46xx *chip, char * name, u32 * task_da
 		desc->data = task_data;
 		_dsp_create_task_tree(chip,task_data,dest,size);
 	} else {
-		snd_printk(KERN_ERR "dsp_spos: failed to map TASK\n");
+		dev_err(chip->card->dev, "dsp_spos: failed to map TASK\n");
 	}
 
 	return desc;
@@ -1082,7 +1039,7 @@ int cs46xx_dsp_scb_and_task_init (struct snd_cs46xx *chip)
 	
 	int fifo_addr, fifo_span, valid_slots;
 
-	static struct dsp_spos_control_block sposcb = {
+	static const struct dsp_spos_control_block sposcb = {
 		/* 0 */ HFG_TREE_SCB,HFG_STACK,
 		/* 1 */ SPOSCB_ADDR,BG_TREE_SCB_ADDR,
 		/* 2 */ DSP_SPOS_DC,0,
@@ -1105,31 +1062,36 @@ int cs46xx_dsp_scb_and_task_init (struct snd_cs46xx *chip)
 
 	null_algorithm  = cs46xx_dsp_lookup_symbol(chip, "NULLALGORITHM", SYMBOL_CODE);
 	if (null_algorithm == NULL) {
-		snd_printk(KERN_ERR "dsp_spos: symbol NULLALGORITHM not found\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: symbol NULLALGORITHM not found\n");
 		return -EIO;
 	}
 
 	fg_task_tree_header_code = cs46xx_dsp_lookup_symbol(chip, "FGTASKTREEHEADERCODE", SYMBOL_CODE);  
 	if (fg_task_tree_header_code == NULL) {
-		snd_printk(KERN_ERR "dsp_spos: symbol FGTASKTREEHEADERCODE not found\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: symbol FGTASKTREEHEADERCODE not found\n");
 		return -EIO;
 	}
 
 	task_tree_header_code = cs46xx_dsp_lookup_symbol(chip, "TASKTREEHEADERCODE", SYMBOL_CODE);  
 	if (task_tree_header_code == NULL) {
-		snd_printk(KERN_ERR "dsp_spos: symbol TASKTREEHEADERCODE not found\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: symbol TASKTREEHEADERCODE not found\n");
 		return -EIO;
 	}
   
 	task_tree_thread = cs46xx_dsp_lookup_symbol(chip, "TASKTREETHREAD", SYMBOL_CODE);
 	if (task_tree_thread == NULL) {
-		snd_printk(KERN_ERR "dsp_spos: symbol TASKTREETHREAD not found\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: symbol TASKTREETHREAD not found\n");
 		return -EIO;
 	}
 
 	magic_snoop_task = cs46xx_dsp_lookup_symbol(chip, "MAGICSNOOPTASK", SYMBOL_CODE);
 	if (magic_snoop_task == NULL) {
-		snd_printk(KERN_ERR "dsp_spos: symbol MAGICSNOOPTASK not found\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: symbol MAGICSNOOPTASK not found\n");
 		return -EIO;
 	}
   
@@ -1413,7 +1375,7 @@ int cs46xx_dsp_scb_and_task_init (struct snd_cs46xx *chip)
 	
 	if (chip->nr_ac97_codecs == 2) {
 		/* create CODEC tasklet for rear Center/LFE output 
-		   slot 6 and 9 on seconadry CODEC */
+		   slot 6 and 9 on secondary CODEC */
 		clfe_codec_out_scb = cs46xx_dsp_create_codec_out_scb(chip,"CodecOutSCB_CLFE",0x0030,0x0030,
 								     CLFE_MIXER_SCB_ADDR,
 								     CLFE_CODEC_SCB_ADDR,
@@ -1476,7 +1438,7 @@ int cs46xx_dsp_scb_and_task_init (struct snd_cs46xx *chip)
 	return 0;
 
  _fail_end:
-	snd_printk(KERN_ERR "dsp_spos: failed to setup SCB's in DSP\n");
+	dev_err(chip->card->dev, "dsp_spos: failed to setup SCB's in DSP\n");
 	return -EINVAL;
 }
 
@@ -1491,18 +1453,21 @@ static int cs46xx_dsp_async_init (struct snd_cs46xx *chip,
 
 	s16_async_codec_input_task = cs46xx_dsp_lookup_symbol(chip, "S16_ASYNCCODECINPUTTASK", SYMBOL_CODE);
 	if (s16_async_codec_input_task == NULL) {
-		snd_printk(KERN_ERR "dsp_spos: symbol S16_ASYNCCODECINPUTTASK not found\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: symbol S16_ASYNCCODECINPUTTASK not found\n");
 		return -EIO;
 	}
 	spdifo_task = cs46xx_dsp_lookup_symbol(chip, "SPDIFOTASK", SYMBOL_CODE);
 	if (spdifo_task == NULL) {
-		snd_printk(KERN_ERR "dsp_spos: symbol SPDIFOTASK not found\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: symbol SPDIFOTASK not found\n");
 		return -EIO;
 	}
 
 	spdifi_task = cs46xx_dsp_lookup_symbol(chip, "SPDIFITASK", SYMBOL_CODE);
 	if (spdifi_task == NULL) {
-		snd_printk(KERN_ERR "dsp_spos: symbol SPDIFITASK not found\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: symbol SPDIFITASK not found\n");
 		return -EIO;
 	}
 
@@ -1883,7 +1848,8 @@ int cs46xx_poke_via_dsp (struct snd_cs46xx *chip, u32 address, u32 data)
 	}
 
 	if (i == 25) {
-		snd_printk(KERN_ERR "dsp_spos: SPIOWriteTask not responding\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: SPIOWriteTask not responding\n");
 		return -EBUSY;
 	}
 

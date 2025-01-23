@@ -1,8 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2013 QLogic Corporation
- *
- * See LICENSE.qla2xxx for copyright and licensing details.
+ * Copyright (c)  2003-2014 QLogic Corporation
  */
 
 #ifndef __QLA_NX2_H
@@ -23,10 +22,6 @@
 #define MD_MIU_TEST_AGT_WRDATA_HI		0x410000A4
 #define MD_MIU_TEST_AGT_WRDATA_ULO		0x410000B0
 #define MD_MIU_TEST_AGT_WRDATA_UHI		0x410000B4
-#define MD_MIU_TEST_AGT_RDDATA_LO		0x410000A8
-#define MD_MIU_TEST_AGT_RDDATA_HI		0x410000AC
-#define MD_MIU_TEST_AGT_RDDATA_ULO		0x410000B8
-#define MD_MIU_TEST_AGT_RDDATA_UHI		0x410000BC
 
 /* MIU_TEST_AGT_CTRL flags. work for SIU as well */
 #define MIU_TA_CTL_WRITE_ENABLE	(MIU_TA_CTL_WRITE | MIU_TA_CTL_ENABLE)
@@ -58,8 +53,10 @@
 #define QLA8044_PCI_QDR_NET_MAX		((unsigned long)0x043fffff)
 
 /*  PCI Windowing for DDR regions.  */
-#define QLA8044_ADDR_IN_RANGE(addr, low, high)		\
-	(((addr) <= (high)) && ((addr) >= (low)))
+static inline bool addr_in_range(u64 addr, u64 low, u64 high)
+{
+	return addr <= high && addr >= low;
+}
 
 /* Indirectly Mapped Registers */
 #define QLA8044_FLASH_SPI_STATUS	0x2808E010
@@ -133,6 +130,7 @@
 #define QLA8044_LINK_SPEED(f)		(0x36E0+(((f) >> 2) * 4))
 #define QLA8044_MAX_LINK_SPEED(f)       (0x36F0+(((f) / 4) * 4))
 #define QLA8044_LINK_SPEED_FACTOR	10
+#define QLA8044_FUN7_ACTIVE_INDEX	0x80
 
 /* FLASH API Defines */
 #define QLA8044_FLASH_MAX_WAIT_USEC	100
@@ -431,6 +429,50 @@ struct qla8044_minidump_entry_pollrd {
 	uint32_t rsvd_1;
 } __packed;
 
+struct qla8044_minidump_entry_rddfe {
+	struct qla8044_minidump_entry_hdr h;
+	uint32_t addr_1;
+	uint32_t value;
+	uint8_t stride;
+	uint8_t stride2;
+	uint16_t count;
+	uint32_t poll;
+	uint32_t mask;
+	uint32_t modify_mask;
+	uint32_t data_size;
+	uint32_t rsvd;
+
+} __packed;
+
+struct qla8044_minidump_entry_rdmdio {
+	struct qla8044_minidump_entry_hdr h;
+
+	uint32_t addr_1;
+	uint32_t addr_2;
+	uint32_t value_1;
+	uint8_t stride_1;
+	uint8_t stride_2;
+	uint16_t count;
+	uint32_t poll;
+	uint32_t mask;
+	uint32_t value_2;
+	uint32_t data_size;
+
+} __packed;
+
+struct qla8044_minidump_entry_pollwr {
+	struct qla8044_minidump_entry_hdr h;
+	uint32_t addr_1;
+	uint32_t addr_2;
+	uint32_t value_1;
+	uint32_t value_2;
+	uint32_t poll;
+	uint32_t mask;
+	uint32_t data_size;
+	uint32_t rsvd;
+
+}  __packed;
+
 /* RDMUX2 Entry */
 struct qla8044_minidump_entry_rdmux2 {
 	struct qla8044_minidump_entry_hdr h;
@@ -488,23 +530,6 @@ enum qla_regs {
 #define CRB_CMDPEG_CHECK_RETRY_COUNT    60
 #define CRB_CMDPEG_CHECK_DELAY          500
 
-static const uint32_t qla8044_reg_tbl[] = {
-	QLA8044_PEG_HALT_STATUS1,
-	QLA8044_PEG_HALT_STATUS2,
-	QLA8044_PEG_ALIVE_COUNTER,
-	QLA8044_CRB_DRV_ACTIVE,
-	QLA8044_CRB_DEV_STATE,
-	QLA8044_CRB_DRV_STATE,
-	QLA8044_CRB_DRV_SCRATCH,
-	QLA8044_CRB_DEV_PART_INFO1,
-	QLA8044_CRB_IDC_VER_MAJOR,
-	QLA8044_FW_VER_MAJOR,
-	QLA8044_FW_VER_MINOR,
-	QLA8044_FW_VER_SUB,
-	QLA8044_CMDPEG_STATE,
-	QLA8044_ASIC_TEMP,
-};
-
 /* MiniDump Structures */
 
 /* Driver_code is for driver to write some info about the entry
@@ -516,6 +541,9 @@ static const uint32_t qla8044_reg_tbl[] = {
 #define QLA8044_DBG_RSVD_ARRAY_LEN              8
 #define QLA8044_DBG_OCM_WNDREG_ARRAY_LEN        16
 #define QLA8044_SS_PCI_INDEX                    0
+#define QLA8044_RDDFE          38
+#define QLA8044_RDMDIO         39
+#define QLA8044_POLLWR         40
 
 struct qla8044_minidump_template_hdr {
 	uint32_t entry_type;

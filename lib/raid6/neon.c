@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/lib/raid6/neon.c - RAID6 syndrome calculation using ARM NEON intrinsics
  *
  * Copyright (C) 2013 Linaro Ltd <ard.biesheuvel@linaro.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/raid/pq.h>
@@ -40,8 +37,20 @@
 					(unsigned long)bytes, ptrs);	\
 		kernel_neon_end();					\
 	}								\
+	static void raid6_neon ## _n ## _xor_syndrome(int disks,	\
+					int start, int stop, 		\
+					size_t bytes, void **ptrs)	\
+	{								\
+		void raid6_neon ## _n  ## _xor_syndrome_real(int,	\
+				int, int, unsigned long, void**);	\
+		kernel_neon_begin();					\
+		raid6_neon ## _n ## _xor_syndrome_real(disks,		\
+			start, stop, (unsigned long)bytes, ptrs);	\
+		kernel_neon_end();					\
+	}								\
 	struct raid6_calls const raid6_neonx ## _n = {			\
 		raid6_neon ## _n ## _gen_syndrome,			\
+		raid6_neon ## _n ## _xor_syndrome,			\
 		raid6_have_neon,					\
 		"neonx" #_n,						\
 		0							\

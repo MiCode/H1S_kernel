@@ -194,11 +194,11 @@ static ssize_t write_hw(struct file *file, struct kobject *kobj,
 	int length = min(sizeof(struct atto_ioctl), count);
 
 	if (!a->local_atto_ioctl) {
-		a->local_atto_ioctl = kzalloc(sizeof(struct atto_ioctl),
+		a->local_atto_ioctl = kmalloc(sizeof(struct atto_ioctl),
 					      GFP_KERNEL);
 		if (a->local_atto_ioctl == NULL) {
 			esas2r_log(ESAS2R_LOG_WARN,
-				   "write_hw kzalloc failed for %d bytes",
+				   "write_hw kzalloc failed for %zu bytes",
 				   sizeof(struct atto_ioctl));
 			return -ENOMEM;
 		}
@@ -231,11 +231,10 @@ struct bin_attribute bin_attr_default_nvram = {
 	.write	= NULL
 };
 
-static struct scsi_host_template driver_template = {
+static const struct scsi_host_template driver_template = {
 	.module				= THIS_MODULE,
 	.show_info			= esas2r_show_info,
 	.name				= ESAS2R_LONGNAME,
-	.release			= esas2r_release,
 	.info				= esas2r_info,
 	.ioctl				= esas2r_ioctl,
 	.queuecommand			= esas2r_queuecommand,
@@ -246,19 +245,11 @@ static struct scsi_host_template driver_template = {
 	.eh_target_reset_handler	= esas2r_target_reset,
 	.can_queue			= 128,
 	.this_id			= -1,
-	.sg_tablesize			= SCSI_MAX_SG_SEGMENTS,
+	.sg_tablesize			= SG_CHUNK_SIZE,
 	.cmd_per_lun			=
 		ESAS2R_DEFAULT_CMD_PER_LUN,
-	.present			= 0,
-	.unchecked_isa_dma		= 0,
-	.use_clustering			= ENABLE_CLUSTERING,
-	.emulated			= 0,
 	.proc_name			= ESAS2R_DRVR_NAME,
-	.slave_configure		= esas2r_slave_configure,
-	.slave_alloc			= esas2r_slave_alloc,
-	.slave_destroy			= esas2r_slave_destroy,
-	.change_queue_depth		= esas2r_change_queue_depth,
-	.change_queue_type		= esas2r_change_queue_type,
+	.change_queue_depth		= scsi_change_queue_depth,
 	.max_sectors			= 0xFFFF,
 };
 
@@ -275,7 +266,7 @@ module_param(num_sg_lists, int, 0);
 MODULE_PARM_DESC(num_sg_lists,
 		 "Number of scatter/gather lists.  Default 1024.");
 
-int sg_tablesize = SCSI_MAX_SG_SEGMENTS;
+int sg_tablesize = SG_CHUNK_SIZE;
 module_param(sg_tablesize, int, 0);
 MODULE_PARM_DESC(sg_tablesize,
 		 "Maximum number of entries in a scatter/gather table.");
@@ -288,7 +279,7 @@ MODULE_PARM_DESC(num_requests,
 int num_ae_requests = 4;
 module_param(num_ae_requests, int, 0);
 MODULE_PARM_DESC(num_ae_requests,
-		 "Number of VDA asynchromous event requests.  Default 4.");
+		 "Number of VDA asynchronous event requests.  Default 4.");
 
 int cmd_per_lun = ESAS2R_DEFAULT_CMD_PER_LUN;
 module_param(cmd_per_lun, int, 0);
@@ -313,7 +304,7 @@ MODULE_PARM_DESC(interrupt_mode,
 		 "Defines the interrupt mode to use.  0 for legacy"
 		 ", 1 for MSI.  Default is MSI (1).");
 
-static struct pci_device_id
+static const struct pci_device_id
 	esas2r_pci_table[] = {
 	{ ATTO_VENDOR_ID, 0x0049,	  ATTO_VENDOR_ID, 0x0049,
 	  0,
@@ -352,8 +343,7 @@ static struct pci_driver
 	.id_table	= esas2r_pci_table,
 	.probe		= esas2r_probe,
 	.remove		= esas2r_remove,
-	.suspend	= esas2r_suspend,
-	.resume		= esas2r_resume,
+	.driver.pm	= &esas2r_pm_ops,
 };
 
 static int esas2r_probe(struct pci_dev *pcid,
@@ -390,7 +380,7 @@ static int esas2r_probe(struct pci_dev *pcid,
 	esas2r_log_dev(ESAS2R_LOG_INFO, &(pcid->dev),
 		       "pci_enable_device() OK");
 	esas2r_log_dev(ESAS2R_LOG_INFO, &(pcid->dev),
-		       "after pci_device_enable() enable_cnt: %d",
+		       "after pci_enable_device() enable_cnt: %d",
 		       pcid->enable_cnt.counter);
 
 	host = scsi_host_alloc(&driver_template, host_alloc_size);
@@ -524,44 +514,16 @@ static int esas2r_probe(struct pci_dev *pcid,
 
 static void esas2r_remove(struct pci_dev *pdev)
 {
-	struct Scsi_Host *host;
-	int index;
-
-	if (pdev == NULL) {
-		esas2r_log(ESAS2R_LOG_WARN, "esas2r_remove pdev==NULL");
-		return;
-	}
-
-	host = pci_get_drvdata(pdev);
-
-	if (host == NULL) {
-		/*
-		 * this can happen if pci_set_drvdata was already called
-		 * to clear the host pointer.  if this is the case, we
-		 * are okay; this channel has already been cleaned up.
-		 */
-
-		return;
-	}
+	struct Scsi_Host *host = pci_get_drvdata(pdev);
+	struct esas2r_adapter *a = (struct esas2r_adapter *)host->hostdata;
 
 	esas2r_log_dev(ESAS2R_LOG_INFO, &(pdev->dev),
 		       "esas2r_remove(%p) called; "
 		       "host:%p", pdev,
 		       host);
 
-	index = esas2r_cleanup(host);
-
-	if (index < 0)
-		esas2r_log_dev(ESAS2R_LOG_WARN, &(pdev->dev),
-			       "unknown host in %s",
-			       __func__);
-
+	esas2r_kill_adapter(a->index);
 	found_adapters--;
-
-	/* if this was the last adapter, clean up the rest of the driver */
-
-	if (found_adapters == 0)
-		esas2r_cleanup(NULL);
 }
 
 static int __init esas2r_init(void)
@@ -642,36 +604,21 @@ static int __init esas2r_init(void)
 	for (i = 0; i < MAX_ADAPTERS; i++)
 		esas2r_adapters[i] = NULL;
 
-	/* initialize */
-
-	driver_template.module = THIS_MODULE;
-
-	if (pci_register_driver(&esas2r_pci_driver) != 0)
-		esas2r_log(ESAS2R_LOG_CRIT, "pci_register_driver FAILED");
-	else
-		esas2r_log(ESAS2R_LOG_INFO, "pci_register_driver() OK");
-
-	if (!found_adapters) {
-		pci_unregister_driver(&esas2r_pci_driver);
-		esas2r_cleanup(NULL);
-
-		esas2r_log(ESAS2R_LOG_CRIT,
-			   "driver will not be loaded because no ATTO "
-			   "%s devices were found",
-			   ESAS2R_DRVR_NAME);
-		return -1;
-	} else {
-		esas2r_log(ESAS2R_LOG_INFO, "found %d adapters",
-			   found_adapters);
-	}
-
-	return 0;
+	return pci_register_driver(&esas2r_pci_driver);
 }
 
 /* Handle ioctl calls to "/proc/scsi/esas2r/ATTOnode" */
 static const struct file_operations esas2r_proc_fops = {
-	.compat_ioctl	= esas2r_proc_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
 	.unlocked_ioctl = esas2r_proc_ioctl,
+};
+
+static const struct proc_ops esas2r_proc_ops = {
+	.proc_lseek		= default_llseek,
+	.proc_ioctl		= esas2r_proc_ioctl,
+#ifdef CONFIG_COMPAT
+	.proc_compat_ioctl	= compat_ptr_ioctl,
+#endif
 };
 
 static struct Scsi_Host *esas2r_proc_host;
@@ -680,7 +627,7 @@ static int esas2r_proc_major;
 long esas2r_proc_ioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 {
 	return esas2r_ioctl_handler(esas2r_proc_host->hostdata,
-				    (int)cmd, (void __user *)arg);
+				    cmd, (void __user *)arg);
 }
 
 static void __exit esas2r_exit(void)
@@ -688,10 +635,13 @@ static void __exit esas2r_exit(void)
 	esas2r_log(ESAS2R_LOG_INFO, "%s called", __func__);
 
 	if (esas2r_proc_major > 0) {
+		struct proc_dir_entry *proc_dir;
+
 		esas2r_log(ESAS2R_LOG_INFO, "unregister proc");
 
-		remove_proc_entry(ATTONODE_NAME,
-				  esas2r_proc_host->hostt->proc_dir);
+		proc_dir = scsi_template_proc_dir(esas2r_proc_host->hostt);
+		if (proc_dir)
+			remove_proc_entry(ATTONODE_NAME, proc_dir);
 		unregister_chrdev(esas2r_proc_major, ESAS2R_DRVR_NAME);
 
 		esas2r_proc_major = 0;
@@ -752,21 +702,9 @@ int esas2r_show_info(struct seq_file *m, struct Scsi_Host *sh)
 	if (dev_count == 0)
 		seq_puts(m, "none\n");
 
-	seq_puts(m, "\n");
+	seq_putc(m, '\n');
 	return 0;
 
-}
-
-int esas2r_release(struct Scsi_Host *sh)
-{
-	esas2r_log_dev(ESAS2R_LOG_INFO, &(sh->shost_gendev),
-		       "esas2r_release() called");
-
-	esas2r_cleanup(sh);
-	if (sh->irq)
-		free_irq(sh->irq, NULL);
-	scsi_unregister(sh);
-	return 0;
 }
 
 const char *esas2r_info(struct Scsi_Host *sh)
@@ -793,11 +731,13 @@ const char *esas2r_info(struct Scsi_Host *sh)
 			       esas2r_proc_major);
 
 		if (esas2r_proc_major > 0) {
-			struct proc_dir_entry *pde;
+			struct proc_dir_entry *proc_dir;
+			struct proc_dir_entry *pde = NULL;
 
-			pde = proc_create(ATTONODE_NAME, 0,
-					  sh->hostt->proc_dir,
-					  &esas2r_proc_fops);
+			proc_dir = scsi_template_proc_dir(sh->hostt);
+			if (proc_dir)
+				pde = proc_create(ATTONODE_NAME, 0, proc_dir,
+						  &esas2r_proc_ops);
 
 			if (!pde) {
 				esas2r_log_dev(ESAS2R_LOG_WARN,
@@ -891,7 +831,7 @@ int esas2r_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmd)
 
 	if (unlikely(test_bit(AF_DEGRADED_MODE, &a->flags))) {
 		cmd->result = DID_NO_CONNECT << 16;
-		cmd->scsi_done(cmd);
+		scsi_done(cmd);
 		return 0;
 	}
 
@@ -956,15 +896,11 @@ static void complete_task_management_request(struct esas2r_adapter *a,
 	esas2r_free_request(a, rq);
 }
 
-/**
+/*
  * Searches the specified queue for the specified queue for the command
  * to abort.
  *
- * @param [in] a
- * @param [in] abort_request
- * @param [in] cmd
- * t
- * @return 0 on failure, 1 if command was not found, 2 if command was found
+ * Return 0 on failure, 1 if command was not found, 2 if command was found
  */
 static int esas2r_check_active_queue(struct esas2r_adapter *a,
 				     struct esas2r_request **abort_request,
@@ -1055,9 +991,9 @@ int esas2r_eh_abort(struct scsi_cmnd *cmd)
 
 		scsi_set_resid(cmd, 0);
 
-		cmd->scsi_done(cmd);
+		scsi_done(cmd);
 
-		return 0;
+		return SUCCESS;
 	}
 
 	spin_lock_irqsave(&a->queue_lock, flags);
@@ -1121,7 +1057,7 @@ check_active_queue:
 
 	scsi_set_resid(cmd, 0);
 
-	cmd->scsi_done(cmd);
+	scsi_done(cmd);
 
 	return SUCCESS;
 }
@@ -1190,7 +1126,7 @@ retry:
 		} else {
 			esas2r_log(ESAS2R_LOG_CRIT,
 				   "unable to allocate a request for a "
-				   "device reset (%d:%d)!",
+				   "device reset (%d:%llu)!",
 				   cmd->device->id,
 				   cmd->device->lun);
 		}
@@ -1257,60 +1193,6 @@ int esas2r_target_reset(struct scsi_cmnd *cmd)
 	esas2r_log(ESAS2R_LOG_INFO, "target_reset (%p)", cmd);
 
 	return esas2r_dev_targ_reset(cmd, true);
-}
-
-int esas2r_change_queue_depth(struct scsi_device *dev, int depth, int reason)
-{
-	esas2r_log(ESAS2R_LOG_INFO, "change_queue_depth %p, %d", dev, depth);
-
-	scsi_adjust_queue_depth(dev, scsi_get_tag_type(dev), depth);
-
-	return dev->queue_depth;
-}
-
-int esas2r_change_queue_type(struct scsi_device *dev, int type)
-{
-	esas2r_log(ESAS2R_LOG_INFO, "change_queue_type %p, %d", dev, type);
-
-	if (dev->tagged_supported) {
-		scsi_set_tag_type(dev, type);
-
-		if (type)
-			scsi_activate_tcq(dev, dev->queue_depth);
-		else
-			scsi_deactivate_tcq(dev, dev->queue_depth);
-	} else {
-		type = 0;
-	}
-
-	return type;
-}
-
-int esas2r_slave_alloc(struct scsi_device *dev)
-{
-	return 0;
-}
-
-int esas2r_slave_configure(struct scsi_device *dev)
-{
-	esas2r_log_dev(ESAS2R_LOG_INFO, &(dev->sdev_gendev),
-		       "esas2r_slave_configure()");
-
-	if (dev->tagged_supported) {
-		scsi_set_tag_type(dev, MSG_SIMPLE_TAG);
-		scsi_activate_tcq(dev, cmd_per_lun);
-	} else {
-		scsi_set_tag_type(dev, 0);
-		scsi_deactivate_tcq(dev, cmd_per_lun);
-	}
-
-	return 0;
-}
-
-void esas2r_slave_destroy(struct scsi_device *dev)
-{
-	esas2r_log_dev(ESAS2R_LOG_INFO, &(dev->sdev_gendev),
-		       "esas2r_slave_destroy()");
 }
 
 void esas2r_log_request_failure(struct esas2r_adapter *a,
@@ -1646,7 +1528,7 @@ void esas2r_complete_request_cb(struct esas2r_adapter *a,
 
 		rq->cmd->result =
 			((esas2r_req_status_to_error(rq->req_stat) << 16)
-			 | (rq->func_rsp.scsi_rsp.scsi_stat & STATUS_MASK));
+			 | rq->func_rsp.scsi_rsp.scsi_stat);
 
 		if (rq->req_stat == RS_UNDERRUN)
 			scsi_set_resid(rq->cmd,
@@ -1656,7 +1538,7 @@ void esas2r_complete_request_cb(struct esas2r_adapter *a,
 			scsi_set_resid(rq->cmd, 0);
 	}
 
-	rq->cmd->scsi_done(rq->cmd);
+	scsi_done(rq->cmd);
 
 	esas2r_free_request(a, rq);
 }
@@ -1689,23 +1571,21 @@ void esas2r_adapter_tasklet(unsigned long context)
 	}
 }
 
-static void esas2r_timer_callback(unsigned long context);
+static void esas2r_timer_callback(struct timer_list *t);
 
 void esas2r_kickoff_timer(struct esas2r_adapter *a)
 {
-	init_timer(&a->timer);
+	timer_setup(&a->timer, esas2r_timer_callback, 0);
 
-	a->timer.function = esas2r_timer_callback;
-	a->timer.data = (unsigned long)a;
 	a->timer.expires = jiffies +
 			   msecs_to_jiffies(100);
 
 	add_timer(&a->timer);
 }
 
-static void esas2r_timer_callback(unsigned long context)
+static void esas2r_timer_callback(struct timer_list *t)
 {
-	struct esas2r_adapter *a = (struct esas2r_adapter *)context;
+	struct esas2r_adapter *a = from_timer(a, t, timer);
 
 	set_bit(AF2_TIMER_TICK, &a->flags2);
 

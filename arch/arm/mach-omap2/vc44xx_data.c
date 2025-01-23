@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMAP4 Voltage Controller (VC) data
  *
@@ -9,10 +10,6 @@
  * Copyright (C) 2008, 2011 Nokia Corporation
  * Kalle Jokiniemi
  * Paul Walmsley
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #include <linux/io.h>
 #include <linux/err.h>
@@ -42,6 +39,7 @@ static const struct omap_vc_common omap4_vc_common = {
 	.cmd_ret_shift = OMAP4430_RET_SHIFT,
 	.cmd_off_shift = OMAP4430_OFF_SHIFT,
 	.i2c_cfg_reg = OMAP4_PRM_VC_CFG_I2C_MODE_OFFSET,
+	.i2c_cfg_clear_mask = OMAP4430_SRMODEEN_MASK | OMAP4430_HSMODEEN_MASK,
 	.i2c_cfg_hsen_mask = OMAP4430_HSMODEEN_MASK,
 	.i2c_mcode_mask	 = OMAP4430_HSMCODE_MASK,
 };

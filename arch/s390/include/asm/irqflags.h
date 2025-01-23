@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *    Copyright IBM Corp. 2006, 2010
  *    Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>
@@ -7,6 +8,8 @@
 #define __ASM_IRQFLAGS_H
 
 #include <linux/types.h>
+
+#define ARCH_IRQ_ENABLED	(3UL << (BITS_PER_LONG - 8))
 
 /* store then OR system mask. */
 #define __arch_local_irq_stosm(__or)					\
@@ -29,42 +32,45 @@
 })
 
 /* set system mask. */
-static inline notrace void __arch_local_irq_ssm(unsigned long flags)
+static __always_inline void __arch_local_irq_ssm(unsigned long flags)
 {
 	asm volatile("ssm   %0" : : "Q" (flags) : "memory");
 }
 
-static inline notrace unsigned long arch_local_save_flags(void)
+static __always_inline unsigned long arch_local_save_flags(void)
 {
-	return __arch_local_irq_stosm(0x00);
+	return __arch_local_irq_stnsm(0xff);
 }
 
-static inline notrace unsigned long arch_local_irq_save(void)
+static __always_inline unsigned long arch_local_irq_save(void)
 {
 	return __arch_local_irq_stnsm(0xfc);
 }
 
-static inline notrace void arch_local_irq_disable(void)
+static __always_inline void arch_local_irq_disable(void)
 {
 	arch_local_irq_save();
 }
 
-static inline notrace void arch_local_irq_enable(void)
+static __always_inline void arch_local_irq_enable(void)
 {
 	__arch_local_irq_stosm(0x03);
 }
 
-static inline notrace void arch_local_irq_restore(unsigned long flags)
+/* This only restores external and I/O interrupt state */
+static __always_inline void arch_local_irq_restore(unsigned long flags)
 {
-	__arch_local_irq_ssm(flags);
+	/* only disabled->disabled and disabled->enabled is valid */
+	if (flags & ARCH_IRQ_ENABLED)
+		arch_local_irq_enable();
 }
 
-static inline notrace bool arch_irqs_disabled_flags(unsigned long flags)
+static __always_inline bool arch_irqs_disabled_flags(unsigned long flags)
 {
-	return !(flags & (3UL << (BITS_PER_LONG - 8)));
+	return !(flags & ARCH_IRQ_ENABLED);
 }
 
-static inline notrace bool arch_irqs_disabled(void)
+static __always_inline bool arch_irqs_disabled(void)
 {
 	return arch_irqs_disabled_flags(arch_local_save_flags());
 }

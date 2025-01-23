@@ -1,19 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * lms501kf03 TFT LCD panel driver.
  *
  * Copyright (c) 2012 Samsung Electronics Co., Ltd.
  * Author: Jingoo Han  <jg1.han@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
  */
 
 #include <linux/backlight.h>
 #include <linux/delay.h>
 #include <linux/fb.h>
-#include <linux/gpio.h>
 #include <linux/lcd.h>
 #include <linux/module.h>
 #include <linux/spi/spi.h>
@@ -91,14 +86,6 @@ static const unsigned char seq_rgb_gamma[] = {
 	0x6a, 0x73, 0x7a, 0x82, 0x8a, 0x91, 0x98, 0xa1, 0xa8, 0xb0,
 	0xb7, 0xc1, 0xc9, 0xcf, 0xd9, 0xe3, 0xea, 0xf4, 0xff, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-};
-
-static const unsigned char seq_up_dn[] = {
-	0x36, 0x10,
-};
-
-static const unsigned char seq_sleep_in[] = {
-	0x10,
 };
 
 static const unsigned char seq_sleep_out[] = {
@@ -232,18 +219,18 @@ static int lms501kf03_power_on(struct lms501kf03 *lcd)
 	if (!pd->power_on) {
 		dev_err(lcd->dev, "power_on is NULL.\n");
 		return -EINVAL;
-	} else {
-		pd->power_on(lcd->ld, 1);
-		msleep(pd->power_on_delay);
 	}
+
+	pd->power_on(lcd->ld, 1);
+	msleep(pd->power_on_delay);
 
 	if (!pd->reset) {
 		dev_err(lcd->dev, "reset is NULL.\n");
 		return -EINVAL;
-	} else {
-		pd->reset(lcd->ld);
-		msleep(pd->reset_delay);
 	}
+
+	pd->reset(lcd->ld);
+	msleep(pd->reset_delay);
 
 	ret = lms501kf03_ldi_init(lcd);
 	if (ret) {
@@ -377,12 +364,11 @@ static int lms501kf03_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int lms501kf03_remove(struct spi_device *spi)
+static void lms501kf03_remove(struct spi_device *spi)
 {
 	struct lms501kf03 *lcd = spi_get_drvdata(spi);
 
 	lms501kf03_power(lcd, FB_BLANK_POWERDOWN);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -422,7 +408,6 @@ static void lms501kf03_shutdown(struct spi_device *spi)
 static struct spi_driver lms501kf03_driver = {
 	.driver = {
 		.name	= "lms501kf03",
-		.owner	= THIS_MODULE,
 		.pm	= &lms501kf03_pm_ops,
 	},
 	.probe		= lms501kf03_probe,

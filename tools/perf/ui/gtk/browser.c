@@ -1,10 +1,9 @@
-#include "../evlist.h"
-#include "../cache.h"
+// SPDX-License-Identifier: GPL-2.0
+#include "gtk.h"
 #include "../evsel.h"
 #include "../sort.h"
 #include "../hist.h"
 #include "../helpline.h"
-#include "gtk.h"
 
 #include <signal.h>
 

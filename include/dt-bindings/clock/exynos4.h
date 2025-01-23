@@ -1,13 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2013 Samsung Electronics Co., Ltd.
- * Author: Andrzej Haja <a.hajda@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Author: Andrzej Hajda <a.hajda@samsung.com>
  *
  * Device Tree binding constants for Exynos4 clock controller.
-*/
+ */
 
 #ifndef _DT_BINDINGS_CLOCK_EXYNOS_4_H
 #define _DT_BINDINGS_CLOCK_EXYNOS_4_H
@@ -33,6 +30,12 @@
 #define CLK_MOUT_MPLL_USER_C	18 /* Exynos4x12 only */
 #define CLK_MOUT_CORE		19
 #define CLK_MOUT_APLL		20
+#define CLK_SCLK_HDMIPHY	22
+#define CLK_OUT_DMC		23
+#define CLK_OUT_TOP		24
+#define CLK_OUT_LEFTBUS		25
+#define CLK_OUT_RIGHTBUS	26
+#define CLK_OUT_CPU		27
 
 /* gate for special clocks (sclk) */
 #define CLK_SCLK_FIMC0		128
@@ -87,6 +90,7 @@
 #define CLK_SCLK_FIMG2D		177
 
 /* gate clocks */
+#define CLK_SSS			255
 #define CLK_FIMC0		256
 #define CLK_FIMC1		257
 #define CLK_FIMC2		258
@@ -109,11 +113,11 @@
 #define CLK_SMMU_MFCR		275
 #define CLK_G3D			276
 #define CLK_G2D			277
-#define CLK_ROTATOR		278 /* Exynos4210 only */
-#define CLK_MDMA		279 /* Exynos4210 only */
-#define CLK_SMMU_G2D		280 /* Exynos4210 only */
-#define CLK_SMMU_ROTATOR	281 /* Exynos4210 only */
-#define CLK_SMMU_MDMA		282 /* Exynos4210 only */
+#define CLK_ROTATOR		278
+#define CLK_MDMA		279
+#define CLK_SMMU_G2D		280
+#define CLK_SMMU_ROTATOR	281
+#define CLK_SMMU_MDMA		282
 #define CLK_FIMD0		283
 #define CLK_MIE0		284
 #define CLK_MDNIE0		285 /* Exynos4412 only */
@@ -181,35 +185,9 @@
 #define CLK_KEYIF		347
 #define CLK_AUDSS		348
 #define CLK_MIPI_HSI		349 /* Exynos4210 only */
-#define CLK_MDMA2		350 /* Exynos4210 only */
 #define CLK_PIXELASYNCM0	351
 #define CLK_PIXELASYNCM1	352
-#define CLK_FIMC_LITE0		353 /* Exynos4x12 only */
-#define CLK_FIMC_LITE1		354 /* Exynos4x12 only */
-#define CLK_PPMUISPX		355 /* Exynos4x12 only */
-#define CLK_PPMUISPMX		356 /* Exynos4x12 only */
-#define CLK_FIMC_ISP		357 /* Exynos4x12 only */
-#define CLK_FIMC_DRC		358 /* Exynos4x12 only */
-#define CLK_FIMC_FD		359 /* Exynos4x12 only */
-#define CLK_MCUISP		360 /* Exynos4x12 only */
-#define CLK_GICISP		361 /* Exynos4x12 only */
-#define CLK_SMMU_ISP		362 /* Exynos4x12 only */
-#define CLK_SMMU_DRC		363 /* Exynos4x12 only */
-#define CLK_SMMU_FD		364 /* Exynos4x12 only */
-#define CLK_SMMU_LITE0		365 /* Exynos4x12 only */
-#define CLK_SMMU_LITE1		366 /* Exynos4x12 only */
-#define CLK_MCUCTL_ISP		367 /* Exynos4x12 only */
-#define CLK_MPWM_ISP		368 /* Exynos4x12 only */
-#define CLK_I2C0_ISP		369 /* Exynos4x12 only */
-#define CLK_I2C1_ISP		370 /* Exynos4x12 only */
-#define CLK_MTCADC_ISP		371 /* Exynos4x12 only */
-#define CLK_PWM_ISP		372 /* Exynos4x12 only */
-#define CLK_WDT_ISP		373 /* Exynos4x12 only */
-#define CLK_UART_ISP		374 /* Exynos4x12 only */
-#define CLK_ASYNCAXIM		375 /* Exynos4x12 only */
-#define CLK_SMMU_ISPCX		376 /* Exynos4x12 only */
-#define CLK_SPI0_ISP		377 /* Exynos4x12 only */
-#define CLK_SPI1_ISP		378 /* Exynos4x12 only */
+#define CLK_ASYNC_G3D		353 /* Exynos4x12 only */
 #define CLK_PWM_ISP_SCLK	379 /* Exynos4x12 only */
 #define CLK_SPI0_ISP_SCLK	380 /* Exynos4x12 only */
 #define CLK_SPI1_ISP_SCLK	381 /* Exynos4x12 only */
@@ -229,16 +207,69 @@
 #define CLK_MOUT_G3D1		393
 #define CLK_MOUT_G3D		394
 #define CLK_ACLK400_MCUISP	395 /* Exynos4x12 only */
+#define CLK_MOUT_HDMI		396
+#define CLK_MOUT_MIXER		397
+#define CLK_MOUT_VPLLSRC	398
+
+/* gate clocks - ppmu */
+#define CLK_PPMULEFT		400
+#define CLK_PPMURIGHT		401
+#define CLK_PPMUCAMIF		402
+#define CLK_PPMUTV		403
+#define CLK_PPMUMFC_L		404
+#define CLK_PPMUMFC_R		405
+#define CLK_PPMUG3D		406
+#define CLK_PPMUIMAGE		407
+#define CLK_PPMULCD0		408
+#define CLK_PPMULCD1		409 /* Exynos4210 only */
+#define CLK_PPMUFILE		410
+#define CLK_PPMUGPS		411
+#define CLK_PPMUDMC0		412
+#define CLK_PPMUDMC1		413
+#define CLK_PPMUCPU		414
+#define CLK_PPMUACP		415
 
 /* div clocks */
-#define CLK_DIV_ISP0		450 /* Exynos4x12 only */
-#define CLK_DIV_ISP1		451 /* Exynos4x12 only */
-#define CLK_DIV_MCUISP0		452 /* Exynos4x12 only */
-#define CLK_DIV_MCUISP1		453 /* Exynos4x12 only */
 #define CLK_DIV_ACLK200		454 /* Exynos4x12 only */
 #define CLK_DIV_ACLK400_MCUISP	455 /* Exynos4x12 only */
+#define CLK_DIV_ACP		456
+#define CLK_DIV_DMC		457
+#define CLK_DIV_C2C		458 /* Exynos4x12 only */
+#define CLK_DIV_GDL		459
+#define CLK_DIV_GDR		460
+#define CLK_DIV_CORE2		461
 
-/* must be greater than maximal clock id */
-#define CLK_NR_CLKS		456
+/* Exynos4x12 ISP clocks */
+#define CLK_ISP_FIMC_ISP		 1
+#define CLK_ISP_FIMC_DRC		 2
+#define CLK_ISP_FIMC_FD			 3
+#define CLK_ISP_FIMC_LITE0		 4
+#define CLK_ISP_FIMC_LITE1		 5
+#define CLK_ISP_MCUISP			 6
+#define CLK_ISP_GICISP			 7
+#define CLK_ISP_SMMU_ISP		 8
+#define CLK_ISP_SMMU_DRC		 9
+#define CLK_ISP_SMMU_FD			10
+#define CLK_ISP_SMMU_LITE0		11
+#define CLK_ISP_SMMU_LITE1		12
+#define CLK_ISP_PPMUISPMX		13
+#define CLK_ISP_PPMUISPX		14
+#define CLK_ISP_MCUCTL_ISP		15
+#define CLK_ISP_MPWM_ISP		16
+#define CLK_ISP_I2C0_ISP		17
+#define CLK_ISP_I2C1_ISP		18
+#define CLK_ISP_MTCADC_ISP		19
+#define CLK_ISP_PWM_ISP			20
+#define CLK_ISP_WDT_ISP			21
+#define CLK_ISP_UART_ISP		22
+#define CLK_ISP_ASYNCAXIM		23
+#define CLK_ISP_SMMU_ISPCX		24
+#define CLK_ISP_SPI0_ISP		25
+#define CLK_ISP_SPI1_ISP		26
+
+#define CLK_ISP_DIV_ISP0		27
+#define CLK_ISP_DIV_ISP1		28
+#define CLK_ISP_DIV_MCUISP0		29
+#define CLK_ISP_DIV_MCUISP1		30
 
 #endif /* _DT_BINDINGS_CLOCK_EXYNOS_4_H */

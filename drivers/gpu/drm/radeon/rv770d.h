@@ -387,6 +387,7 @@
 #define UVD_UDEC_TILING_CONFIG                          0xef40
 #define UVD_UDEC_DB_TILING_CONFIG                       0xef44
 #define UVD_UDEC_DBW_TILING_CONFIG                      0xef48
+#define UVD_NO_OP					0xeffc
 
 #define	GC_USER_SHADER_PIPE_CONFIG			0x8954
 #define		INACTIVE_QD_PIPES(x)				((x) << 8)
@@ -989,6 +990,9 @@
 			 ((n) & 0x3FFF) << 16)
 
 /* UVD */
+#define UVD_SEMA_ADDR_LOW				0xef00
+#define UVD_SEMA_ADDR_HIGH				0xef04
+#define UVD_SEMA_CMD					0xef08
 #define UVD_GPCOM_VCPU_CMD				0xef0c
 #define UVD_GPCOM_VCPU_DATA0				0xef10
 #define UVD_GPCOM_VCPU_DATA1				0xef14

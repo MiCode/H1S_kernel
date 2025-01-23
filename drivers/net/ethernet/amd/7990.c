@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * 7990.c -- LANCE ethernet IC generic routines.
  * This is an attempt to separate out the bits of various ethernet
@@ -27,6 +28,7 @@
 #include <linux/route.h>
 #include <linux/string.h>
 #include <linux/skbuff.h>
+#include <linux/pgtable.h>
 #include <asm/irq.h>
 /* Used for the temporal inet entries and routing */
 #include <linux/socket.h>
@@ -34,7 +36,6 @@
 
 #include <asm/io.h>
 #include <asm/dma.h>
-#include <asm/pgtable.h>
 #ifdef CONFIG_HP300
 #include <asm/blinken.h>
 #endif
@@ -45,14 +46,14 @@
 #define WRITERDP(lp, x)	out_be16(lp->base + LANCE_RDP, (x))
 #define READRDP(lp)	in_be16(lp->base + LANCE_RDP)
 
-#if defined(CONFIG_HPLANCE) || defined(CONFIG_HPLANCE_MODULE)
+#if IS_ENABLED(CONFIG_HPLANCE)
 #include "hplance.h"
 
 #undef WRITERAP
 #undef WRITERDP
 #undef READRDP
 
-#if defined(CONFIG_MVME147_NET) || defined(CONFIG_MVME147_NET_MODULE)
+#if IS_ENABLED(CONFIG_MVME147_NET)
 
 /* Lossage Factor Nine, Mr Sulu. */
 #define WRITERAP(lp, x)	(lp->writerap(lp, x))
@@ -86,7 +87,7 @@ static inline __u16 READRDP(struct lance_private *lp)
 }
 
 #endif
-#endif /* CONFIG_HPLANCE || CONFIG_HPLANCE_MODULE */
+#endif /* IS_ENABLED(CONFIG_HPLANCE) */
 
 /* debugging output macros, various flavours */
 /* #define TEST_HITS */
@@ -260,7 +261,7 @@ static int lance_reset(struct net_device *dev)
 
 	load_csrs(lp);
 	lance_init_ring(dev);
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	netif_trans_update(dev); /* prevent tx timeout */
 	status = init_restart_lance(lp);
 #ifdef DEBUG_DRIVER
 	printk("Lance restart=%d\n", status);
@@ -526,16 +527,16 @@ int lance_close(struct net_device *dev)
 }
 EXPORT_SYMBOL_GPL(lance_close);
 
-void lance_tx_timeout(struct net_device *dev)
+void lance_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	printk("lance_tx_timeout\n");
 	lance_reset(dev);
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	netif_trans_update(dev); /* prevent tx timeout */
 	netif_wake_queue(dev);
 }
 EXPORT_SYMBOL_GPL(lance_tx_timeout);
 
-int lance_start_xmit(struct sk_buff *skb, struct net_device *dev)
+netdev_tx_t lance_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct lance_private *lp = netdev_priv(dev);
 	volatile struct lance_init_block *ib = lp->init_block;
@@ -543,10 +544,12 @@ int lance_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	static int outs;
 	unsigned long flags;
 
-	if (!TX_BUFFS_AVAIL)
-		return NETDEV_TX_LOCKED;
-
 	netif_stop_queue(dev);
+
+	if (!TX_BUFFS_AVAIL) {
+		dev_consume_skb_any(skb);
+		return NETDEV_TX_OK;
+	}
 
 	skblen = skb->len;
 
@@ -578,7 +581,7 @@ int lance_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	outs++;
 	/* Kick the lance: transmit now */
 	WRITERDP(lp, LE_C0_INEA | LE_C0_TDMD);
-	dev_kfree_skb(skb);
+	dev_consume_skb_any(skb);
 
 	spin_lock_irqsave(&lp->devlock, flags);
 	if (TX_BUFFS_AVAIL)
@@ -661,6 +664,7 @@ void lance_poll(struct net_device *dev)
 	spin_unlock(&lp->devlock);
 	lance_interrupt(dev->irq, dev);
 }
+EXPORT_SYMBOL_GPL(lance_poll);
 #endif
 
 MODULE_LICENSE("GPL");

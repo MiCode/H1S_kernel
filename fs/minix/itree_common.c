@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* Generic part */
 
 typedef struct {
@@ -74,6 +75,7 @@ static int alloc_branch(struct inode *inode,
 	int n = 0;
 	int i;
 	int parent = minix_new_block(inode);
+	int err = -ENOSPC;
 
 	branch[0].key = cpu_to_block(parent);
 	if (parent) for (n = 1; n < num; n++) {
@@ -84,6 +86,11 @@ static int alloc_branch(struct inode *inode,
 			break;
 		branch[n].key = cpu_to_block(nr);
 		bh = sb_getblk(inode->i_sb, parent);
+		if (!bh) {
+			minix_free_block(inode, nr);
+			err = -ENOMEM;
+			break;
+		}
 		lock_buffer(bh);
 		memset(bh->b_data, 0, bh->b_size);
 		branch[n].bh = bh;
@@ -102,7 +109,7 @@ static int alloc_branch(struct inode *inode,
 		bforget(branch[i].bh);
 	for (i = 0; i < n; i++)
 		minix_free_block(inode, block_to_cpu(branch[i].key));
-	return -ENOSPC;
+	return err;
 }
 
 static inline int splice_branch(struct inode *inode,
@@ -124,7 +131,7 @@ static inline int splice_branch(struct inode *inode,
 
 	/* We are done with atomic stuff, now do the rest of housekeeping */
 
-	inode->i_ctime = CURRENT_TIME_SEC;
+	inode_set_ctime_current(inode);
 
 	/* had we spliced it onto indirect block? */
 	if (where->bh)
@@ -142,7 +149,7 @@ changed:
 	return -EAGAIN;
 }
 
-static inline int get_block(struct inode * inode, sector_t block,
+static int get_block(struct inode * inode, sector_t block,
 			struct buffer_head *bh, int create)
 {
 	int err = -EIO;
@@ -343,7 +350,7 @@ do_indirects:
 		}
 		first_whole++;
 	}
-	inode->i_mtime = inode->i_ctime = CURRENT_TIME_SEC;
+	inode->i_mtime = inode_set_ctime_current(inode);
 	mark_inode_dirty(inode);
 }
 

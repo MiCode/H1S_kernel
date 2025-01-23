@@ -39,7 +39,10 @@
 #include <linux/mlx4/cmd.h>
 #include <linux/gfp.h>
 #include <rdma/ib_pma.h>
+#include <linux/ip.h>
+#include <net/ipv6.h>
 
+#include <linux/mlx4/driver.h>
 #include "mlx4_ib.h"
 
 enum {
@@ -85,15 +88,15 @@ struct mlx4_rcv_tunnel_mad {
 	struct ib_mad mad;
 } __packed;
 
-static void handle_client_rereg_event(struct mlx4_ib_dev *dev, u8 port_num);
-static void handle_lid_change_event(struct mlx4_ib_dev *dev, u8 port_num);
+static void handle_client_rereg_event(struct mlx4_ib_dev *dev, u32 port_num);
+static void handle_lid_change_event(struct mlx4_ib_dev *dev, u32 port_num);
 static void __propagate_pkey_ev(struct mlx4_ib_dev *dev, int port_num,
 				int block, u32 change_bitmap);
 
 __be64 mlx4_ib_gen_node_guid(void)
 {
 #define NODE_GUID_HI	((u64) (((u64)IB_OPENIB_OUI) << 40))
-	return cpu_to_be64(NODE_GUID_HI | prandom_u32());
+	return cpu_to_be64(NODE_GUID_HI | get_random_u32());
 }
 
 __be64 mlx4_ib_get_new_demux_tid(struct mlx4_ib_demux_ctx *ctx)
@@ -103,8 +106,9 @@ __be64 mlx4_ib_get_new_demux_tid(struct mlx4_ib_demux_ctx *ctx)
 }
 
 int mlx4_MAD_IFC(struct mlx4_ib_dev *dev, int mad_ifc_flags,
-		 int port, struct ib_wc *in_wc, struct ib_grh *in_grh,
-		 void *in_mad, void *response_mad)
+		 int port, const struct ib_wc *in_wc,
+		 const struct ib_grh *in_grh,
+		 const void *in_mad, void *response_mad)
 {
 	struct mlx4_cmd_mailbox *inmailbox, *outmailbox;
 	void *inbox;
@@ -165,7 +169,7 @@ int mlx4_MAD_IFC(struct mlx4_ib_dev *dev, int mad_ifc_flags,
 
 		op_modifier |= 0x4;
 
-		in_modifier |= in_wc->slid << 16;
+		in_modifier |= ib_lid_cpu16(in_wc->slid) << 16;
 	}
 
 	err = mlx4_cmd_box(dev->dev, inmailbox->dma, outmailbox->dma, in_modifier,
@@ -182,28 +186,29 @@ int mlx4_MAD_IFC(struct mlx4_ib_dev *dev, int mad_ifc_flags,
 	return err;
 }
 
-static void update_sm_ah(struct mlx4_ib_dev *dev, u8 port_num, u16 lid, u8 sl)
+static void update_sm_ah(struct mlx4_ib_dev *dev, u32 port_num, u16 lid, u8 sl)
 {
 	struct ib_ah *new_ah;
-	struct ib_ah_attr ah_attr;
+	struct rdma_ah_attr ah_attr;
 	unsigned long flags;
 
 	if (!dev->send_agent[port_num - 1][0])
 		return;
 
 	memset(&ah_attr, 0, sizeof ah_attr);
-	ah_attr.dlid     = lid;
-	ah_attr.sl       = sl;
-	ah_attr.port_num = port_num;
+	ah_attr.type = rdma_ah_find_type(&dev->ib_dev, port_num);
+	rdma_ah_set_dlid(&ah_attr, lid);
+	rdma_ah_set_sl(&ah_attr, sl);
+	rdma_ah_set_port_num(&ah_attr, port_num);
 
-	new_ah = ib_create_ah(dev->send_agent[port_num - 1][0]->qp->pd,
-			      &ah_attr);
+	new_ah = rdma_create_ah(dev->send_agent[port_num - 1][0]->qp->pd,
+				&ah_attr, 0);
 	if (IS_ERR(new_ah))
 		return;
 
 	spin_lock_irqsave(&dev->sm_lock, flags);
 	if (dev->sm_ah[port_num - 1])
-		ib_destroy_ah(dev->sm_ah[port_num - 1]);
+		rdma_destroy_ah(dev->sm_ah[port_num - 1], 0);
 	dev->sm_ah[port_num - 1] = new_ah;
 	spin_unlock_irqrestore(&dev->sm_lock, flags);
 }
@@ -212,8 +217,8 @@ static void update_sm_ah(struct mlx4_ib_dev *dev, u8 port_num, u16 lid, u8 sl)
  * Snoop SM MADs for port info, GUID info, and  P_Key table sets, so we can
  * synthesize LID change, Client-Rereg, GID change, and P_Key change events.
  */
-static void smp_snoop(struct ib_device *ibdev, u8 port_num, struct ib_mad *mad,
-		      u16 prev_lid)
+static void smp_snoop(struct ib_device *ibdev, u32 port_num,
+		      const struct ib_mad *mad, u16 prev_lid)
 {
 	struct ib_port_info *pinfo;
 	u16 lid;
@@ -228,6 +233,8 @@ static void smp_snoop(struct ib_device *ibdev, u8 port_num, struct ib_mad *mad,
 	    mad->mad_hdr.method == IB_MGMT_METHOD_SET)
 		switch (mad->mad_hdr.attr_id) {
 		case IB_SMP_ATTR_PORT_INFO:
+			if (dev->dev->caps.flags & MLX4_DEV_CAP_FLAG_PORT_MNG_CHG_EV)
+				return;
 			pinfo = (struct ib_port_info *) ((struct ib_smp *) mad)->data;
 			lid = be16_to_cpu(pinfo->lid);
 
@@ -243,6 +250,8 @@ static void smp_snoop(struct ib_device *ibdev, u8 port_num, struct ib_mad *mad,
 			break;
 
 		case IB_SMP_ATTR_PKEY_TABLE:
+			if (dev->dev->caps.flags & MLX4_DEV_CAP_FLAG_PORT_MNG_CHG_EV)
+				return;
 			if (!mlx4_is_mfunc(dev->dev)) {
 				mlx4_ib_dispatch_event(dev, port_num,
 						       IB_EVENT_PKEY_CHANGE);
@@ -265,7 +274,7 @@ static void smp_snoop(struct ib_device *ibdev, u8 port_num, struct ib_mad *mad,
 						be16_to_cpu(base[i]);
 				}
 			}
-			pr_debug("PKEY Change event: port=%d, "
+			pr_debug("PKEY Change event: port=%u, "
 				 "block=0x%x, change_bitmap=0x%x\n",
 				 port_num, bn, pkey_change_bitmap);
 
@@ -279,6 +288,8 @@ static void smp_snoop(struct ib_device *ibdev, u8 port_num, struct ib_mad *mad,
 			break;
 
 		case IB_SMP_ATTR_GUID_INFO:
+			if (dev->dev->caps.flags & MLX4_DEV_CAP_FLAG_PORT_MNG_CHG_EV)
+				return;
 			/* paravirtualized master's guid is guid 0 -- does not change */
 			if (!mlx4_is_master(dev->dev))
 				mlx4_ib_dispatch_event(dev, port_num,
@@ -291,6 +302,26 @@ static void smp_snoop(struct ib_device *ibdev, u8 port_num, struct ib_mad *mad,
 								    (u8 *)(&((struct ib_smp *)mad)->data));
 				mlx4_ib_notify_slaves_on_guid_change(dev, bn, port_num,
 								     (u8 *)(&((struct ib_smp *)mad)->data));
+			}
+			break;
+
+		case IB_SMP_ATTR_SL_TO_VL_TABLE:
+			/* cache sl to vl mapping changes for use in
+			 * filling QP1 LRH VL field when sending packets
+			 */
+			if (dev->dev->caps.flags & MLX4_DEV_CAP_FLAG_PORT_MNG_CHG_EV &&
+			    dev->dev->caps.flags2 & MLX4_DEV_CAP_FLAG2_SL_TO_VL_CHANGE_EVENT)
+				return;
+			if (!mlx4_is_slave(dev->dev)) {
+				union sl2vl_tbl_to_u64 sl2vl64;
+				int jj;
+
+				for (jj = 0; jj < 8; jj++) {
+					sl2vl64.sl8[jj] = ((struct ib_smp *)mad)->data[jj];
+					pr_debug("port %u, sl2vl[%d] = %02x\n",
+						 port_num, jj, sl2vl64.sl8[jj]);
+				}
+				atomic64_set(&dev->sl2vl[port_num - 1], sl2vl64.sl64);
 			}
 			break;
 
@@ -343,12 +374,14 @@ static void node_desc_override(struct ib_device *dev,
 	    mad->mad_hdr.method == IB_MGMT_METHOD_GET_RESP &&
 	    mad->mad_hdr.attr_id == IB_SMP_ATTR_NODE_DESC) {
 		spin_lock_irqsave(&to_mdev(dev)->sm_lock, flags);
-		memcpy(((struct ib_smp *) mad)->data, dev->node_desc, 64);
+		memcpy(((struct ib_smp *) mad)->data, dev->node_desc,
+		       IB_DEVICE_NODE_DESC_MAX);
 		spin_unlock_irqrestore(&to_mdev(dev)->sm_lock, flags);
 	}
 }
 
-static void forward_trap(struct mlx4_ib_dev *dev, u8 port_num, struct ib_mad *mad)
+static void forward_trap(struct mlx4_ib_dev *dev, u32 port_num,
+			 const struct ib_mad *mad)
 {
 	int qpn = mad->mad_hdr.mgmt_class != IB_MGMT_CLASS_SUBN_LID_ROUTED;
 	struct ib_mad_send_buf *send_buf;
@@ -358,7 +391,8 @@ static void forward_trap(struct mlx4_ib_dev *dev, u8 port_num, struct ib_mad *ma
 
 	if (agent) {
 		send_buf = ib_create_send_mad(agent, qpn, 0, 0, IB_MGMT_MAD_HDR,
-					      IB_MGMT_MAD_DATA, GFP_ATOMIC);
+					      IB_MGMT_MAD_DATA, GFP_ATOMIC,
+					      IB_MGMT_BASE_VERSION);
 		if (IS_ERR(send_buf))
 			return;
 		/*
@@ -396,7 +430,7 @@ static int mlx4_ib_demux_sa_handler(struct ib_device *ibdev, int port, int slave
 	return ret;
 }
 
-int mlx4_ib_find_real_gid(struct ib_device *ibdev, u8 port, __be64 guid)
+int mlx4_ib_find_real_gid(struct ib_device *ibdev, u32 port, __be64 guid)
 {
 	struct mlx4_ib_dev *dev = to_mdev(ibdev);
 	int i;
@@ -410,7 +444,7 @@ int mlx4_ib_find_real_gid(struct ib_device *ibdev, u8 port, __be64 guid)
 
 
 static int find_slave_port_pkey_ix(struct mlx4_ib_dev *dev, int slave,
-				   u8 port, u16 pkey, u16 *ix)
+				   u32 port, u16 pkey, u16 *ix)
 {
 	int i, ret;
 	u8 unassigned_pkey_ix, pkey_ix, partial_ix = 0xFF;
@@ -450,16 +484,41 @@ static int find_slave_port_pkey_ix(struct mlx4_ib_dev *dev, int slave,
 	return -EINVAL;
 }
 
-int mlx4_ib_send_to_slave(struct mlx4_ib_dev *dev, int slave, u8 port,
+static int get_gids_from_l3_hdr(struct ib_grh *grh, union ib_gid *sgid,
+				union ib_gid *dgid)
+{
+	int version = ib_get_rdma_header_version((const union rdma_network_hdr *)grh);
+	enum rdma_network_type net_type;
+
+	if (version == 4)
+		net_type = RDMA_NETWORK_IPV4;
+	else if (version == 6)
+		net_type = RDMA_NETWORK_IPV6;
+	else
+		return -EINVAL;
+
+	return ib_get_gids_from_rdma_hdr((union rdma_network_hdr *)grh, net_type,
+					 sgid, dgid);
+}
+
+static int is_proxy_qp0(struct mlx4_ib_dev *dev, int qpn, int slave)
+{
+	int proxy_start = dev->dev->phys_caps.base_proxy_sqpn + 8 * slave;
+
+	return (qpn >= proxy_start && qpn <= proxy_start + 1);
+}
+
+int mlx4_ib_send_to_slave(struct mlx4_ib_dev *dev, int slave, u32 port,
 			  enum ib_qp_type dest_qpt, struct ib_wc *wc,
 			  struct ib_grh *grh, struct ib_mad *mad)
 {
 	struct ib_sge list;
-	struct ib_send_wr wr, *bad_wr;
+	struct ib_ud_wr wr;
+	const struct ib_send_wr *bad_wr;
 	struct mlx4_ib_demux_pv_ctx *tun_ctx;
 	struct mlx4_ib_demux_pv_qp *tun_qp;
 	struct mlx4_rcv_tunnel_mad *tun_mad;
-	struct ib_ah_attr attr;
+	struct rdma_ah_attr attr;
 	struct ib_ah *ah;
 	struct ib_qp *src_qp = NULL;
 	unsigned tun_tx_ix = 0;
@@ -467,19 +526,18 @@ int mlx4_ib_send_to_slave(struct mlx4_ib_dev *dev, int slave, u8 port,
 	int ret = 0;
 	u16 tun_pkey_ix;
 	u16 cached_pkey;
+	u8 is_eth = dev->dev->caps.port_type[port] == MLX4_PORT_TYPE_ETH;
 
-	if (dest_qpt > IB_QPT_GSI)
+	if (dest_qpt > IB_QPT_GSI) {
+		pr_debug("dest_qpt (%d) > IB_QPT_GSI\n", dest_qpt);
 		return -EINVAL;
+	}
 
 	tun_ctx = dev->sriov.demux[port-1].tun[slave];
 
 	/* check if proxy qp created */
 	if (!tun_ctx || tun_ctx->state != DEMUX_PV_STATE_ACTIVE)
 		return -EAGAIN;
-
-	/* QP0 forwarding only for Dom0 */
-	if (!dest_qpt && (mlx4_master_func_num(dev->dev) != slave))
-		return -EINVAL;
 
 	if (!dest_qpt)
 		tun_qp = &tun_ctx->qp[0];
@@ -490,12 +548,20 @@ int mlx4_ib_send_to_slave(struct mlx4_ib_dev *dev, int slave, u8 port,
 	if (dest_qpt) {
 		u16 pkey_ix;
 		ret = ib_get_cached_pkey(&dev->ib_dev, port, wc->pkey_index, &cached_pkey);
-		if (ret)
+		if (ret) {
+			pr_debug("unable to get %s cached pkey for index %d, ret %d\n",
+				 is_proxy_qp0(dev, wc->src_qp, slave) ? "SMI" : "GSI",
+				 wc->pkey_index, ret);
 			return -EINVAL;
+		}
 
 		ret = find_slave_port_pkey_ix(dev, slave, port, cached_pkey, &pkey_ix);
-		if (ret)
+		if (ret) {
+			pr_debug("unable to get %s pkey ix for pkey 0x%x, ret %d\n",
+				 is_proxy_qp0(dev, wc->src_qp, slave) ? "SMI" : "GSI",
+				 cached_pkey, ret);
 			return -EINVAL;
+		}
 		tun_pkey_ix = pkey_ix;
 	} else
 		tun_pkey_ix = dev->pkeys.virt2phys_pkey[slave][port - 1][0];
@@ -508,8 +574,18 @@ int mlx4_ib_send_to_slave(struct mlx4_ib_dev *dev, int slave, u8 port,
 	/* create ah. Just need an empty one with the port num for the post send.
 	 * The driver will set the force loopback bit in post_send */
 	memset(&attr, 0, sizeof attr);
-	attr.port_num = port;
-	ah = ib_create_ah(tun_ctx->pd, &attr);
+	attr.type = rdma_ah_find_type(&dev->ib_dev, port);
+
+	rdma_ah_set_port_num(&attr, port);
+	if (is_eth) {
+		union ib_gid sgid;
+		union ib_gid dgid;
+
+		if (get_gids_from_l3_hdr(grh, &sgid, &dgid))
+			return -EINVAL;
+		rdma_ah_set_grh(&attr, &dgid, 0, 0, 0, 0);
+	}
+	ah = rdma_create_ah(tun_ctx->pd, &attr, 0);
 	if (IS_ERR(ah))
 		return -ENOMEM;
 
@@ -522,11 +598,11 @@ int mlx4_ib_send_to_slave(struct mlx4_ib_dev *dev, int slave, u8 port,
 		tun_tx_ix = (++tun_qp->tx_ix_head) & (MLX4_NUM_TUNNEL_BUFS - 1);
 	spin_unlock(&tun_qp->tx_lock);
 	if (ret)
-		goto out;
+		goto end;
 
 	tun_mad = (struct mlx4_rcv_tunnel_mad *) (tun_qp->tx_ring[tun_tx_ix].buf.addr);
 	if (tun_qp->tx_ring[tun_tx_ix].ah)
-		ib_destroy_ah(tun_qp->tx_ring[tun_tx_ix].ah);
+		rdma_destroy_ah(tun_qp->tx_ring[tun_tx_ix].ah, 0);
 	tun_qp->tx_ring[tun_tx_ix].ah = ah;
 	ib_dma_sync_single_for_cpu(&dev->ib_dev,
 				   tun_qp->tx_ring[tun_tx_ix].buf.map,
@@ -540,10 +616,35 @@ int mlx4_ib_send_to_slave(struct mlx4_ib_dev *dev, int slave, u8 port,
 
 	/* adjust tunnel data */
 	tun_mad->hdr.pkey_index = cpu_to_be16(tun_pkey_ix);
-	tun_mad->hdr.sl_vid = cpu_to_be16(((u16)(wc->sl)) << 12);
-	tun_mad->hdr.slid_mac_47_32 = cpu_to_be16(wc->slid);
 	tun_mad->hdr.flags_src_qp = cpu_to_be32(wc->src_qp & 0xFFFFFF);
 	tun_mad->hdr.g_ml_path = (grh && (wc->wc_flags & IB_WC_GRH)) ? 0x80 : 0;
+
+	if (is_eth) {
+		u16 vlan = 0;
+		if (mlx4_get_slave_default_vlan(dev->dev, port, slave, &vlan,
+						NULL)) {
+			/* VST mode */
+			if (vlan != wc->vlan_id)
+				/* Packet vlan is not the VST-assigned vlan.
+				 * Drop the packet.
+				 */
+				goto out;
+			 else
+				/* Remove the vlan tag before forwarding
+				 * the packet to the VF.
+				 */
+				vlan = 0xffff;
+		} else {
+			vlan = wc->vlan_id;
+		}
+
+		tun_mad->hdr.sl_vid = cpu_to_be16(vlan);
+		memcpy((char *)&tun_mad->hdr.mac_31_0, &(wc->smac[0]), 4);
+		memcpy((char *)&tun_mad->hdr.slid_mac_47_32, &(wc->smac[4]), 2);
+	} else {
+		tun_mad->hdr.sl_vid = cpu_to_be16(((u16)(wc->sl)) << 12);
+		tun_mad->hdr.slid_mac_47_32 = ib_lid_be16(wc->slid);
+	}
 
 	ib_dma_sync_single_for_device(&dev->ib_dev,
 				      tun_qp->tx_ring[tun_tx_ix].buf.map,
@@ -552,34 +653,91 @@ int mlx4_ib_send_to_slave(struct mlx4_ib_dev *dev, int slave, u8 port,
 
 	list.addr = tun_qp->tx_ring[tun_tx_ix].buf.map;
 	list.length = sizeof (struct mlx4_rcv_tunnel_mad);
-	list.lkey = tun_ctx->mr->lkey;
+	list.lkey = tun_ctx->pd->local_dma_lkey;
 
-	wr.wr.ud.ah = ah;
-	wr.wr.ud.port_num = port;
-	wr.wr.ud.remote_qkey = IB_QP_SET_QKEY;
-	wr.wr.ud.remote_qpn = dqpn;
-	wr.next = NULL;
-	wr.wr_id = ((u64) tun_tx_ix) | MLX4_TUN_SET_WRID_QPN(dest_qpt);
-	wr.sg_list = &list;
-	wr.num_sge = 1;
-	wr.opcode = IB_WR_SEND;
-	wr.send_flags = IB_SEND_SIGNALED;
+	wr.ah = ah;
+	wr.port_num = port;
+	wr.remote_qkey = IB_QP_SET_QKEY;
+	wr.remote_qpn = dqpn;
+	wr.wr.next = NULL;
+	wr.wr.wr_id = ((u64) tun_tx_ix) | MLX4_TUN_SET_WRID_QPN(dest_qpt);
+	wr.wr.sg_list = &list;
+	wr.wr.num_sge = 1;
+	wr.wr.opcode = IB_WR_SEND;
+	wr.wr.send_flags = IB_SEND_SIGNALED;
 
-	ret = ib_post_send(src_qp, &wr, &bad_wr);
-out:
-	if (ret)
-		ib_destroy_ah(ah);
+	ret = ib_post_send(src_qp, &wr.wr, &bad_wr);
+	if (!ret)
+		return 0;
+ out:
+	spin_lock(&tun_qp->tx_lock);
+	tun_qp->tx_ix_tail++;
+	spin_unlock(&tun_qp->tx_lock);
+	tun_qp->tx_ring[tun_tx_ix].ah = NULL;
+end:
+	rdma_destroy_ah(ah, 0);
 	return ret;
 }
 
-static int mlx4_ib_demux_mad(struct ib_device *ibdev, u8 port,
+static int mlx4_ib_demux_mad(struct ib_device *ibdev, u32 port,
 			struct ib_wc *wc, struct ib_grh *grh,
 			struct ib_mad *mad)
 {
 	struct mlx4_ib_dev *dev = to_mdev(ibdev);
-	int err;
-	int slave;
+	int err, other_port;
+	int slave = -1;
 	u8 *slave_id;
+	int is_eth = 0;
+
+	if (rdma_port_get_link_layer(ibdev, port) == IB_LINK_LAYER_INFINIBAND)
+		is_eth = 0;
+	else
+		is_eth = 1;
+
+	if (is_eth) {
+		union ib_gid dgid;
+		union ib_gid sgid;
+
+		if (get_gids_from_l3_hdr(grh, &sgid, &dgid))
+			return -EINVAL;
+		if (!(wc->wc_flags & IB_WC_GRH)) {
+			mlx4_ib_warn(ibdev, "RoCE grh not present.\n");
+			return -EINVAL;
+		}
+		if (mad->mad_hdr.mgmt_class != IB_MGMT_CLASS_CM) {
+			mlx4_ib_warn(ibdev, "RoCE mgmt class is not CM\n");
+			return -EINVAL;
+		}
+		err = mlx4_get_slave_from_roce_gid(dev->dev, port, dgid.raw, &slave);
+		if (err && mlx4_is_mf_bonded(dev->dev)) {
+			other_port = (port == 1) ? 2 : 1;
+			err = mlx4_get_slave_from_roce_gid(dev->dev, other_port, dgid.raw, &slave);
+			if (!err) {
+				port = other_port;
+				pr_debug("resolved slave %d from gid %pI6 wire port %d other %d\n",
+					 slave, grh->dgid.raw, port, other_port);
+			}
+		}
+		if (err) {
+			mlx4_ib_warn(ibdev, "failed matching grh\n");
+			return -ENOENT;
+		}
+		if (slave >= dev->dev->caps.sqp_demux) {
+			mlx4_ib_warn(ibdev, "slave id: %d is bigger than allowed:%d\n",
+				     slave, dev->dev->caps.sqp_demux);
+			return -ENOENT;
+		}
+
+		if (mlx4_ib_demux_cm_handler(ibdev, port, NULL, mad))
+			return 0;
+
+		err = mlx4_ib_send_to_slave(dev, slave, port, wc->qp->qp_type, wc, grh, mad);
+		if (err)
+			pr_debug("failed sending %s to slave %d via tunnel qp (%d)\n",
+				 is_proxy_qp0(dev, wc->src_qp, slave) ? "SMI" : "GSI",
+				 slave, err);
+		return 0;
+	}
 
 	/* Initially assume that this mad is for us */
 	slave = mlx4_master_func_num(dev->dev);
@@ -594,14 +752,37 @@ static int mlx4_ib_demux_mad(struct ib_device *ibdev, u8 port,
 
 	/* If a grh is present, we demux according to it */
 	if (wc->wc_flags & IB_WC_GRH) {
-		slave = mlx4_ib_find_real_gid(ibdev, port, grh->dgid.global.interface_id);
-		if (slave < 0) {
-			mlx4_ib_warn(ibdev, "failed matching grh\n");
-			return -ENOENT;
+		if (grh->dgid.global.interface_id ==
+			cpu_to_be64(IB_SA_WELL_KNOWN_GUID) &&
+		    grh->dgid.global.subnet_prefix == cpu_to_be64(
+			atomic64_read(&dev->sriov.demux[port - 1].subnet_prefix))) {
+			slave = 0;
+		} else {
+			slave = mlx4_ib_find_real_gid(ibdev, port,
+						      grh->dgid.global.interface_id);
+			if (slave < 0) {
+				mlx4_ib_warn(ibdev, "failed matching grh\n");
+				return -ENOENT;
+			}
 		}
 	}
 	/* Class-specific handling */
 	switch (mad->mad_hdr.mgmt_class) {
+	case IB_MGMT_CLASS_SUBN_LID_ROUTED:
+	case IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE:
+		/* 255 indicates the dom0 */
+		if (slave != 255 && slave != mlx4_master_func_num(dev->dev)) {
+			if (!mlx4_vf_smi_enabled(dev->dev, slave, port))
+				return -EPERM;
+			/* for a VF. drop unsolicited MADs */
+			if (!(mad->mad_hdr.method & IB_MGMT_METHOD_RESP)) {
+				mlx4_ib_warn(ibdev, "demux QP0. rejecting unsolicited mad for slave %d class 0x%x, method 0x%x\n",
+					     slave, mad->mad_hdr.mgmt_class,
+					     mad->mad_hdr.method);
+				return -EINVAL;
+			}
+		}
+		break;
 	case IB_MGMT_CLASS_SUBN_ADM:
 		if (mlx4_ib_demux_sa_handler(ibdev, port, slave,
 					     (struct ib_sa_mad *) mad))
@@ -632,39 +813,21 @@ static int mlx4_ib_demux_mad(struct ib_device *ibdev, u8 port,
 
 	err = mlx4_ib_send_to_slave(dev, slave, port, wc->qp->qp_type, wc, grh, mad);
 	if (err)
-		pr_debug("failed sending to slave %d via tunnel qp (%d)\n",
+		pr_debug("failed sending %s to slave %d via tunnel qp (%d)\n",
+			 is_proxy_qp0(dev, wc->src_qp, slave) ? "SMI" : "GSI",
 			 slave, err);
 	return 0;
 }
 
-static int ib_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
-			struct ib_wc *in_wc, struct ib_grh *in_grh,
-			struct ib_mad *in_mad, struct ib_mad *out_mad)
+static int ib_process_mad(struct ib_device *ibdev, int mad_flags, u32 port_num,
+			const struct ib_wc *in_wc, const struct ib_grh *in_grh,
+			const struct ib_mad *in_mad, struct ib_mad *out_mad)
 {
 	u16 slid, prev_lid = 0;
 	int err;
 	struct ib_port_attr pattr;
 
-	if (in_wc && in_wc->qp->qp_num) {
-		pr_debug("received MAD: slid:%d sqpn:%d "
-			"dlid_bits:%d dqpn:%d wc_flags:0x%x, cls %x, mtd %x, atr %x\n",
-			in_wc->slid, in_wc->src_qp,
-			in_wc->dlid_path_bits,
-			in_wc->qp->qp_num,
-			in_wc->wc_flags,
-			in_mad->mad_hdr.mgmt_class, in_mad->mad_hdr.method,
-			be16_to_cpu(in_mad->mad_hdr.attr_id));
-		if (in_wc->wc_flags & IB_WC_GRH) {
-			pr_debug("sgid_hi:0x%016llx sgid_lo:0x%016llx\n",
-				 be64_to_cpu(in_grh->sgid.global.subnet_prefix),
-				 be64_to_cpu(in_grh->sgid.global.interface_id));
-			pr_debug("dgid_hi:0x%016llx dgid_lo:0x%016llx\n",
-				 be64_to_cpu(in_grh->dgid.global.subnet_prefix),
-				 be64_to_cpu(in_grh->dgid.global.interface_id));
-		}
-	}
-
-	slid = in_wc ? in_wc->slid : be16_to_cpu(IB_LID_PERMISSIVE);
+	slid = in_wc ? ib_lid_cpu16(in_wc->slid) : be16_to_cpu(IB_LID_PERMISSIVE);
 
 	if (in_mad->mad_hdr.method == IB_MGMT_METHOD_TRAP && slid == 0) {
 		forward_trap(to_mdev(ibdev), port_num, in_mad);
@@ -698,7 +861,7 @@ static int ib_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
 	    in_mad->mad_hdr.method == IB_MGMT_METHOD_SET &&
 	    in_mad->mad_hdr.attr_id == IB_SMP_ATTR_PORT_INFO &&
 	    !ib_query_port(ibdev, port_num, &pattr))
-		prev_lid = pattr.lid;
+		prev_lid = ib_lid_cpu16(pattr.lid);
 
 	err = mlx4_MAD_IFC(to_mdev(ibdev),
 			   (mad_flags & IB_MAD_IGNORE_MKEY ? MLX4_MAD_IFC_IGNORE_MKEY : 0) |
@@ -709,8 +872,7 @@ static int ib_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
 		return IB_MAD_RESULT_FAILURE;
 
 	if (!out_mad->mad_hdr.status) {
-		if (!(to_mdev(ibdev)->dev->caps.flags & MLX4_DEV_CAP_FLAG_PORT_MNG_CHG_EV))
-			smp_snoop(ibdev, port_num, in_mad, prev_lid);
+		smp_snoop(ibdev, port_num, in_mad, prev_lid);
 		/* slaves get node desc from FW */
 		if (!mlx4_is_slave(to_mdev(ibdev)->dev))
 			node_desc_override(ibdev, out_mad);
@@ -727,44 +889,88 @@ static int ib_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
 	return IB_MAD_RESULT_SUCCESS | IB_MAD_RESULT_REPLY;
 }
 
-static void edit_counter(struct mlx4_counter *cnt,
-					struct ib_pma_portcounters *pma_cnt)
+static void edit_counter(struct mlx4_counter *cnt, void *counters,
+			 __be16 attr_id)
 {
-	pma_cnt->port_xmit_data = cpu_to_be32((be64_to_cpu(cnt->tx_bytes)>>2));
-	pma_cnt->port_rcv_data  = cpu_to_be32((be64_to_cpu(cnt->rx_bytes)>>2));
-	pma_cnt->port_xmit_packets = cpu_to_be32(be64_to_cpu(cnt->tx_frames));
-	pma_cnt->port_rcv_packets  = cpu_to_be32(be64_to_cpu(cnt->rx_frames));
+	switch (attr_id) {
+	case IB_PMA_PORT_COUNTERS:
+	{
+		struct ib_pma_portcounters *pma_cnt =
+			(struct ib_pma_portcounters *)counters;
+
+		ASSIGN_32BIT_COUNTER(pma_cnt->port_xmit_data,
+				     (be64_to_cpu(cnt->tx_bytes) >> 2));
+		ASSIGN_32BIT_COUNTER(pma_cnt->port_rcv_data,
+				     (be64_to_cpu(cnt->rx_bytes) >> 2));
+		ASSIGN_32BIT_COUNTER(pma_cnt->port_xmit_packets,
+				     be64_to_cpu(cnt->tx_frames));
+		ASSIGN_32BIT_COUNTER(pma_cnt->port_rcv_packets,
+				     be64_to_cpu(cnt->rx_frames));
+		break;
+	}
+	case IB_PMA_PORT_COUNTERS_EXT:
+	{
+		struct ib_pma_portcounters_ext *pma_cnt_ext =
+			(struct ib_pma_portcounters_ext *)counters;
+
+		pma_cnt_ext->port_xmit_data =
+			cpu_to_be64(be64_to_cpu(cnt->tx_bytes) >> 2);
+		pma_cnt_ext->port_rcv_data =
+			cpu_to_be64(be64_to_cpu(cnt->rx_bytes) >> 2);
+		pma_cnt_ext->port_xmit_packets = cnt->tx_frames;
+		pma_cnt_ext->port_rcv_packets = cnt->rx_frames;
+		break;
+	}
+	}
 }
 
-static int iboe_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
-			struct ib_wc *in_wc, struct ib_grh *in_grh,
-			struct ib_mad *in_mad, struct ib_mad *out_mad)
+static int iboe_process_mad_port_info(void *out_mad)
 {
-	struct mlx4_cmd_mailbox *mailbox;
+	struct ib_class_port_info cpi = {};
+
+	cpi.capability_mask = IB_PMA_CLASS_CAP_EXT_WIDTH;
+	memcpy(out_mad, &cpi, sizeof(cpi));
+	return IB_MAD_RESULT_SUCCESS | IB_MAD_RESULT_REPLY;
+}
+
+static int iboe_process_mad(struct ib_device *ibdev, int mad_flags,
+			    u32 port_num, const struct ib_wc *in_wc,
+			    const struct ib_grh *in_grh,
+			    const struct ib_mad *in_mad, struct ib_mad *out_mad)
+{
+	struct mlx4_counter counter_stats;
 	struct mlx4_ib_dev *dev = to_mdev(ibdev);
-	int err;
-	u32 inmod = dev->counters[port_num - 1] & 0xffff;
-	u8 mode;
+	struct counter_index *tmp_counter;
+	int err = IB_MAD_RESULT_FAILURE, stats_avail = 0;
 
 	if (in_mad->mad_hdr.mgmt_class != IB_MGMT_CLASS_PERF_MGMT)
 		return -EINVAL;
 
-	mailbox = mlx4_alloc_cmd_mailbox(dev->dev);
-	if (IS_ERR(mailbox))
-		return IB_MAD_RESULT_FAILURE;
+	if (in_mad->mad_hdr.attr_id == IB_PMA_CLASS_PORT_INFO)
+		return iboe_process_mad_port_info((void *)(out_mad->data + 40));
 
-	err = mlx4_cmd_box(dev->dev, 0, mailbox->dma, inmod, 0,
-			   MLX4_CMD_QUERY_IF_STAT, MLX4_CMD_TIME_CLASS_C,
-			   MLX4_CMD_WRAPPED);
-	if (err)
-		err = IB_MAD_RESULT_FAILURE;
-	else {
-		memset(out_mad->data, 0, sizeof out_mad->data);
-		mode = ((struct mlx4_counter *)mailbox->buf)->counter_mode;
-		switch (mode & 0xf) {
+	memset(&counter_stats, 0, sizeof(counter_stats));
+	mutex_lock(&dev->counters_table[port_num - 1].mutex);
+	list_for_each_entry(tmp_counter,
+			    &dev->counters_table[port_num - 1].counters_list,
+			    list) {
+		err = mlx4_get_counter_stats(dev->dev,
+					     tmp_counter->index,
+					     &counter_stats, 0);
+		if (err) {
+			err = IB_MAD_RESULT_FAILURE;
+			stats_avail = 0;
+			break;
+		}
+		stats_avail = 1;
+	}
+	mutex_unlock(&dev->counters_table[port_num - 1].mutex);
+	if (stats_avail) {
+		switch (counter_stats.counter_mode & 0xf) {
 		case 0:
-			edit_counter(mailbox->buf,
-						(void *)(out_mad->data + 40));
+			edit_counter(&counter_stats,
+				     (void *)(out_mad->data + 40),
+				     in_mad->mad_hdr.attr_id);
 			err = IB_MAD_RESULT_SUCCESS | IB_MAD_RESULT_REPLY;
 			break;
 		default:
@@ -772,32 +978,45 @@ static int iboe_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
 		}
 	}
 
-	mlx4_free_cmd_mailbox(dev->dev, mailbox);
-
 	return err;
 }
 
-int mlx4_ib_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
-			struct ib_wc *in_wc, struct ib_grh *in_grh,
-			struct ib_mad *in_mad, struct ib_mad *out_mad)
+int mlx4_ib_process_mad(struct ib_device *ibdev, int mad_flags, u32 port_num,
+			const struct ib_wc *in_wc, const struct ib_grh *in_grh,
+			const struct ib_mad *in, struct ib_mad *out,
+			size_t *out_mad_size, u16 *out_mad_pkey_index)
 {
-	switch (rdma_port_get_link_layer(ibdev, port_num)) {
-	case IB_LINK_LAYER_INFINIBAND:
-		return ib_process_mad(ibdev, mad_flags, port_num, in_wc,
-				      in_grh, in_mad, out_mad);
-	case IB_LINK_LAYER_ETHERNET:
-		return iboe_process_mad(ibdev, mad_flags, port_num, in_wc,
-					  in_grh, in_mad, out_mad);
-	default:
-		return -EINVAL;
+	struct mlx4_ib_dev *dev = to_mdev(ibdev);
+	enum rdma_link_layer link = rdma_port_get_link_layer(ibdev, port_num);
+
+	/* iboe_process_mad() which uses the HCA flow-counters to implement IB PMA
+	 * queries, should be called only by VFs and for that specific purpose
+	 */
+	if (link == IB_LINK_LAYER_INFINIBAND) {
+		if (mlx4_is_slave(dev->dev) &&
+		    (in->mad_hdr.mgmt_class == IB_MGMT_CLASS_PERF_MGMT &&
+		     (in->mad_hdr.attr_id == IB_PMA_PORT_COUNTERS ||
+		      in->mad_hdr.attr_id == IB_PMA_PORT_COUNTERS_EXT ||
+		      in->mad_hdr.attr_id == IB_PMA_CLASS_PORT_INFO)))
+			return iboe_process_mad(ibdev, mad_flags, port_num,
+						in_wc, in_grh, in, out);
+
+		return ib_process_mad(ibdev, mad_flags, port_num, in_wc, in_grh,
+				      in, out);
 	}
+
+	if (link == IB_LINK_LAYER_ETHERNET)
+		return iboe_process_mad(ibdev, mad_flags, port_num, in_wc,
+					in_grh, in, out);
+
+	return -EINVAL;
 }
 
 static void send_handler(struct ib_mad_agent *agent,
 			 struct ib_mad_send_wc *mad_send_wc)
 {
 	if (mad_send_wc->send_buf->context[0])
-		ib_destroy_ah(mad_send_wc->send_buf->context[0]);
+		rdma_destroy_ah(mad_send_wc->send_buf->context[0], 0);
 	ib_free_send_mad(mad_send_wc->send_buf);
 }
 
@@ -815,7 +1034,7 @@ int mlx4_ib_mad_init(struct mlx4_ib_dev *dev)
 				agent = ib_register_mad_agent(&dev->ib_dev, p + 1,
 							      q ? IB_QPT_GSI : IB_QPT_SMI,
 							      NULL, 0, send_handler,
-							      NULL, NULL);
+							      NULL, NULL, 0);
 				if (IS_ERR(agent)) {
 					ret = PTR_ERR(agent);
 					goto err;
@@ -852,11 +1071,11 @@ void mlx4_ib_mad_cleanup(struct mlx4_ib_dev *dev)
 		}
 
 		if (dev->sm_ah[p])
-			ib_destroy_ah(dev->sm_ah[p]);
+			rdma_destroy_ah(dev->sm_ah[p], 0);
 	}
 }
 
-static void handle_lid_change_event(struct mlx4_ib_dev *dev, u8 port_num)
+static void handle_lid_change_event(struct mlx4_ib_dev *dev, u32 port_num)
 {
 	mlx4_ib_dispatch_event(dev, port_num, IB_EVENT_LID_CHANGE);
 
@@ -865,7 +1084,7 @@ static void handle_lid_change_event(struct mlx4_ib_dev *dev, u8 port_num)
 					    MLX4_EQ_PORT_INFO_LID_CHANGE_MASK);
 }
 
-static void handle_client_rereg_event(struct mlx4_ib_dev *dev, u8 port_num)
+static void handle_client_rereg_event(struct mlx4_ib_dev *dev, u32 port_num)
 {
 	/* re-configure the alias-guid and mcg's */
 	if (mlx4_is_master(dev->dev)) {
@@ -877,6 +1096,23 @@ static void handle_client_rereg_event(struct mlx4_ib_dev *dev, u8 port_num)
 						    MLX4_EQ_PORT_INFO_CLIENT_REREG_MASK);
 		}
 	}
+
+	/* Update the sl to vl table from inside client rereg
+	 * only if in secure-host mode (snooping is not possible)
+	 * and the sl-to-vl change event is not generated by FW.
+	 */
+	if (!mlx4_is_slave(dev->dev) &&
+	    dev->dev->flags & MLX4_FLAG_SECURE_HOST &&
+	    !(dev->dev->caps.flags2 & MLX4_DEV_CAP_FLAG2_SL_TO_VL_CHANGE_EVENT)) {
+		if (mlx4_is_master(dev->dev))
+			/* already in work queue from mlx4_ib_event queueing
+			 * mlx4_handle_port_mgmt_change_event, which calls
+			 * this procedure. Therefore, call sl2vl_update directly.
+			 */
+			mlx4_ib_sl2vl_update(dev, port_num);
+		else
+			mlx4_sched_ib_sl2vl_update_work(dev, port_num);
+	}
 	mlx4_ib_dispatch_event(dev, port_num, IB_EVENT_CLIENT_REREGISTER);
 }
 
@@ -887,7 +1123,7 @@ static void propagate_pkey_ev(struct mlx4_ib_dev *dev, int port_num,
 			    GET_MASK_FROM_EQE(eqe));
 }
 
-static void handle_slaves_guid_change(struct mlx4_ib_dev *dev, u8 port_num,
+static void handle_slaves_guid_change(struct mlx4_ib_dev *dev, u32 port_num,
 				      u32 guid_tbl_blk_num, u32 change_bitmap)
 {
 	struct ib_smp *in_mad  = NULL;
@@ -899,10 +1135,8 @@ static void handle_slaves_guid_change(struct mlx4_ib_dev *dev, u8 port_num,
 
 	in_mad  = kmalloc(sizeof *in_mad, GFP_KERNEL);
 	out_mad = kmalloc(sizeof *out_mad, GFP_KERNEL);
-	if (!in_mad || !out_mad) {
-		mlx4_ib_warn(&dev->ib_dev, "failed to allocate memory for guid info mads\n");
+	if (!in_mad || !out_mad)
 		goto out;
-	}
 
 	guid_tbl_blk_num  *= 4;
 
@@ -945,7 +1179,7 @@ void handle_port_mgmt_change_event(struct work_struct *work)
 	struct ib_event_work *ew = container_of(work, struct ib_event_work, work);
 	struct mlx4_ib_dev *dev = ew->ib_dev;
 	struct mlx4_eqe *eqe = &(ew->ib_eqe);
-	u8 port = eqe->event.port_mgmt_change.port;
+	u32 port = eqe->event.port_mgmt_change.port;
 	u32 changed_attr;
 	u32 tbl_block;
 	u32 change_bitmap;
@@ -968,6 +1202,27 @@ void handle_port_mgmt_change_event(struct work_struct *work)
 
 		/* Generate GUID changed event */
 		if (changed_attr & MLX4_EQ_PORT_INFO_GID_PFX_CHANGE_MASK) {
+			if (mlx4_is_master(dev->dev)) {
+				union ib_gid gid;
+				int err = 0;
+
+				if (!eqe->event.port_mgmt_change.params.port_info.gid_prefix)
+					err = __mlx4_ib_query_gid(&dev->ib_dev, port, 0, &gid, 1);
+				else
+					gid.global.subnet_prefix =
+						eqe->event.port_mgmt_change.params.port_info.gid_prefix;
+				if (err) {
+					pr_warn("Could not change QP1 subnet prefix for port %d: query_gid error (%d)\n",
+						port, err);
+				} else {
+					pr_debug("Changing QP1 subnet prefix for port %d. old=0x%llx. new=0x%llx\n",
+						 port,
+						 (u64)atomic64_read(&dev->sriov.demux[port - 1].subnet_prefix),
+						 be64_to_cpu(gid.global.subnet_prefix));
+					atomic64_set(&dev->sriov.demux[port - 1].subnet_prefix,
+						     be64_to_cpu(gid.global.subnet_prefix));
+				}
+			}
 			mlx4_ib_dispatch_event(dev, port, IB_EVENT_GID_CHANGE);
 			/*if master, notify all slaves*/
 			if (mlx4_is_master(dev->dev))
@@ -995,6 +1250,24 @@ void handle_port_mgmt_change_event(struct work_struct *work)
 			handle_slaves_guid_change(dev, port, tbl_block, change_bitmap);
 		}
 		break;
+
+	case MLX4_DEV_PMC_SUBTYPE_SL_TO_VL_MAP:
+		/* cache sl to vl mapping changes for use in
+		 * filling QP1 LRH VL field when sending packets
+		 */
+		if (!mlx4_is_slave(dev->dev)) {
+			union sl2vl_tbl_to_u64 sl2vl64;
+			int jj;
+
+			for (jj = 0; jj < 8; jj++) {
+				sl2vl64.sl8[jj] =
+					eqe->event.port_mgmt_change.params.sl2vl_tbl_change_info.sl2vl_table[jj];
+				pr_debug("port %u, sl2vl[%d] = %02x\n",
+					 port, jj, sl2vl64.sl8[jj]);
+			}
+			atomic64_set(&dev->sl2vl[port - 1], sl2vl64.sl64);
+		}
+		break;
 	default:
 		pr_warn("Unsupported subtype 0x%x for "
 			"Port Management Change event\n", eqe->subtype);
@@ -1003,7 +1276,7 @@ void handle_port_mgmt_change_event(struct work_struct *work)
 	kfree(ew);
 }
 
-void mlx4_ib_dispatch_event(struct mlx4_ib_dev *dev, u8 port_num,
+void mlx4_ib_dispatch_event(struct mlx4_ib_dev *dev, u32 port_num,
 			    enum ib_event_type type)
 {
 	struct ib_event event;
@@ -1026,12 +1299,25 @@ static void mlx4_ib_tunnel_comp_handler(struct ib_cq *cq, void *arg)
 	spin_unlock_irqrestore(&dev->sriov.going_down_lock, flags);
 }
 
+static void mlx4_ib_wire_comp_handler(struct ib_cq *cq, void *arg)
+{
+	unsigned long flags;
+	struct mlx4_ib_demux_pv_ctx *ctx = cq->cq_context;
+	struct mlx4_ib_dev *dev = to_mdev(ctx->ib_dev);
+
+	spin_lock_irqsave(&dev->sriov.going_down_lock, flags);
+	if (!dev->sriov.is_going_down && ctx->state == DEMUX_PV_STATE_ACTIVE)
+		queue_work(ctx->wi_wq, &ctx->work);
+	spin_unlock_irqrestore(&dev->sriov.going_down_lock, flags);
+}
+
 static int mlx4_ib_post_pv_qp_buf(struct mlx4_ib_demux_pv_ctx *ctx,
 				  struct mlx4_ib_demux_pv_qp *tun_qp,
 				  int index)
 {
 	struct ib_sge sg_list;
-	struct ib_recv_wr recv_wr, *bad_recv_wr;
+	struct ib_recv_wr recv_wr;
+	const struct ib_recv_wr *bad_recv_wr;
 	int size;
 
 	size = (tun_qp->qp->qp_type == IB_QPT_UD) ?
@@ -1039,7 +1325,7 @@ static int mlx4_ib_post_pv_qp_buf(struct mlx4_ib_demux_pv_ctx *ctx,
 
 	sg_list.addr = tun_qp->ring[index].map;
 	sg_list.length = size;
-	sg_list.lkey = ctx->mr->lkey;
+	sg_list.lkey = ctx->pd->local_dma_lkey;
 
 	recv_wr.next = NULL;
 	recv_wr.sg_list = &sg_list;
@@ -1067,41 +1353,29 @@ static int mlx4_ib_multiplex_sa_handler(struct ib_device *ibdev, int port,
 	return ret;
 }
 
-static int is_proxy_qp0(struct mlx4_ib_dev *dev, int qpn, int slave)
-{
-	int proxy_start = dev->dev->phys_caps.base_proxy_sqpn + 8 * slave;
-
-	return (qpn >= proxy_start && qpn <= proxy_start + 1);
-}
-
-
-int mlx4_ib_send_to_wire(struct mlx4_ib_dev *dev, int slave, u8 port,
-			 enum ib_qp_type dest_qpt, u16 pkey_index, u32 remote_qpn,
-			 u32 qkey, struct ib_ah_attr *attr, struct ib_mad *mad)
+int mlx4_ib_send_to_wire(struct mlx4_ib_dev *dev, int slave, u32 port,
+			 enum ib_qp_type dest_qpt, u16 pkey_index,
+			 u32 remote_qpn, u32 qkey, struct rdma_ah_attr *attr,
+			 u8 *s_mac, u16 vlan_id, struct ib_mad *mad)
 {
 	struct ib_sge list;
-	struct ib_send_wr wr, *bad_wr;
+	struct ib_ud_wr wr;
+	const struct ib_send_wr *bad_wr;
 	struct mlx4_ib_demux_pv_ctx *sqp_ctx;
 	struct mlx4_ib_demux_pv_qp *sqp;
 	struct mlx4_mad_snd_buf *sqp_mad;
 	struct ib_ah *ah;
 	struct ib_qp *send_qp = NULL;
 	unsigned wire_tx_ix = 0;
-	int ret = 0;
 	u16 wire_pkey_ix;
 	int src_qpnum;
-	u8 sgid_index;
-
+	int ret;
 
 	sqp_ctx = dev->sriov.sqps[port-1];
 
 	/* check if proxy qp created */
 	if (!sqp_ctx || sqp_ctx->state != DEMUX_PV_STATE_ACTIVE)
 		return -EAGAIN;
-
-	/* QP0 forwarding only for Dom0 */
-	if (dest_qpt == IB_QPT_SMI && (mlx4_master_func_num(dev->dev) != slave))
-		return -EINVAL;
 
 	if (dest_qpt == IB_QPT_SMI) {
 		src_qpnum = 0;
@@ -1115,29 +1389,32 @@ int mlx4_ib_send_to_wire(struct mlx4_ib_dev *dev, int slave, u8 port,
 
 	send_qp = sqp->qp;
 
-	/* create ah */
-	sgid_index = attr->grh.sgid_index;
-	attr->grh.sgid_index = 0;
-	ah = ib_create_ah(sqp_ctx->pd, attr);
-	if (IS_ERR(ah))
+	ah = rdma_zalloc_drv_obj(sqp_ctx->pd->device, ib_ah);
+	if (!ah)
 		return -ENOMEM;
-	attr->grh.sgid_index = sgid_index;
-	to_mah(ah)->av.ib.gid_index = sgid_index;
-	/* get rid of force-loopback bit */
-	to_mah(ah)->av.ib.port_pd &= cpu_to_be32(0x7FFFFFFF);
+
+	ah->device = sqp_ctx->pd->device;
+	ah->pd = sqp_ctx->pd;
+
+	/* create ah */
+	ret = mlx4_ib_create_ah_slave(ah, attr,
+				      rdma_ah_retrieve_grh(attr)->sgid_index,
+				      s_mac, vlan_id);
+	if (ret)
+		goto out;
+
 	spin_lock(&sqp->tx_lock);
 	if (sqp->tx_ix_head - sqp->tx_ix_tail >=
-	    (MLX4_NUM_TUNNEL_BUFS - 1))
+	    (MLX4_NUM_WIRE_BUFS - 1))
 		ret = -EAGAIN;
 	else
-		wire_tx_ix = (++sqp->tx_ix_head) & (MLX4_NUM_TUNNEL_BUFS - 1);
+		wire_tx_ix = (++sqp->tx_ix_head) & (MLX4_NUM_WIRE_BUFS - 1);
 	spin_unlock(&sqp->tx_lock);
 	if (ret)
 		goto out;
 
 	sqp_mad = (struct mlx4_mad_snd_buf *) (sqp->tx_ring[wire_tx_ix].buf.addr);
-	if (sqp->tx_ring[wire_tx_ix].ah)
-		ib_destroy_ah(sqp->tx_ring[wire_tx_ix].ah);
+	kfree(sqp->tx_ring[wire_tx_ix].ah);
 	sqp->tx_ring[wire_tx_ix].ah = ah;
 	ib_dma_sync_single_for_cpu(&dev->ib_dev,
 				   sqp->tx_ring[wire_tx_ix].buf.map,
@@ -1153,25 +1430,48 @@ int mlx4_ib_send_to_wire(struct mlx4_ib_dev *dev, int slave, u8 port,
 
 	list.addr = sqp->tx_ring[wire_tx_ix].buf.map;
 	list.length = sizeof (struct mlx4_mad_snd_buf);
-	list.lkey = sqp_ctx->mr->lkey;
+	list.lkey = sqp_ctx->pd->local_dma_lkey;
 
-	wr.wr.ud.ah = ah;
-	wr.wr.ud.port_num = port;
-	wr.wr.ud.pkey_index = wire_pkey_ix;
-	wr.wr.ud.remote_qkey = qkey;
-	wr.wr.ud.remote_qpn = remote_qpn;
-	wr.next = NULL;
-	wr.wr_id = ((u64) wire_tx_ix) | MLX4_TUN_SET_WRID_QPN(src_qpnum);
-	wr.sg_list = &list;
-	wr.num_sge = 1;
-	wr.opcode = IB_WR_SEND;
-	wr.send_flags = IB_SEND_SIGNALED;
+	wr.ah = ah;
+	wr.port_num = port;
+	wr.pkey_index = wire_pkey_ix;
+	wr.remote_qkey = qkey;
+	wr.remote_qpn = remote_qpn;
+	wr.wr.next = NULL;
+	wr.wr.wr_id = ((u64) wire_tx_ix) | MLX4_TUN_SET_WRID_QPN(src_qpnum);
+	wr.wr.sg_list = &list;
+	wr.wr.num_sge = 1;
+	wr.wr.opcode = IB_WR_SEND;
+	wr.wr.send_flags = IB_SEND_SIGNALED;
 
-	ret = ib_post_send(send_qp, &wr, &bad_wr);
+	ret = ib_post_send(send_qp, &wr.wr, &bad_wr);
+	if (!ret)
+		return 0;
+
+	spin_lock(&sqp->tx_lock);
+	sqp->tx_ix_tail++;
+	spin_unlock(&sqp->tx_lock);
+	sqp->tx_ring[wire_tx_ix].ah = NULL;
 out:
-	if (ret)
-		ib_destroy_ah(ah);
+	kfree(ah);
 	return ret;
+}
+
+static int get_slave_base_gid_ix(struct mlx4_ib_dev *dev, int slave, int port)
+{
+	if (rdma_port_get_link_layer(&dev->ib_dev, port) == IB_LINK_LAYER_INFINIBAND)
+		return slave;
+	return mlx4_get_base_gid_ix(dev->dev, slave, port);
+}
+
+static void fill_in_real_sgid_index(struct mlx4_ib_dev *dev, int slave, int port,
+				    struct rdma_ah_attr *ah_attr)
+{
+	struct ib_global_route *grh = rdma_ah_retrieve_grh(ah_attr);
+	if (rdma_port_get_link_layer(&dev->ib_dev, port) == IB_LINK_LAYER_INFINIBAND)
+		grh->sgid_index = slave;
+	else
+		grh->sgid_index += get_slave_base_gid_ix(dev, slave, port);
 }
 
 static void mlx4_ib_multiplex_mad(struct mlx4_ib_demux_pv_ctx *ctx, struct ib_wc *wc)
@@ -1181,9 +1481,14 @@ static void mlx4_ib_multiplex_mad(struct mlx4_ib_demux_pv_ctx *ctx, struct ib_wc
 	int wr_ix = wc->wr_id & (MLX4_NUM_TUNNEL_BUFS - 1);
 	struct mlx4_tunnel_mad *tunnel = tun_qp->ring[wr_ix].addr;
 	struct mlx4_ib_ah ah;
-	struct ib_ah_attr ah_attr;
+	struct rdma_ah_attr ah_attr;
 	u8 *slave_id;
 	int slave;
+	int port;
+	u16 vlan_id;
+	u8 qos;
+	u8 *dmac;
+	int sts;
 
 	/* Get slave that sent this packet */
 	if (wc->src_qp < dev->dev->phys_caps.base_proxy_sqpn ||
@@ -1197,11 +1502,6 @@ static void mlx4_ib_multiplex_mad(struct mlx4_ib_demux_pv_ctx *ctx, struct ib_wc
 	if (slave != ctx->slave) {
 		mlx4_ib_warn(ctx->ib_dev, "can't multiplex bad sqp:%d: "
 			     "belongs to another slave\n", wc->src_qp);
-		return;
-	}
-	if (slave != mlx4_master_func_num(dev->dev) && !(wc->src_qp & 0x2)) {
-		mlx4_ib_warn(ctx->ib_dev, "can't multiplex bad sqp:%d: "
-			     "non-master trying to send QP0 packets\n", wc->src_qp);
 		return;
 	}
 
@@ -1225,12 +1525,19 @@ static void mlx4_ib_multiplex_mad(struct mlx4_ib_demux_pv_ctx *ctx, struct ib_wc
 			return;
 		} else
 			*slave_id = slave;
+		break;
 	default:
 		/* nothing */;
 	}
 
 	/* Class-specific handling */
 	switch (tunnel->mad.mad_hdr.mgmt_class) {
+	case IB_MGMT_CLASS_SUBN_LID_ROUTED:
+	case IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE:
+		if (slave != mlx4_master_func_num(dev->dev) &&
+		    !mlx4_vf_smi_enabled(dev->dev, slave, ctx->port))
+			return;
+		break;
 	case IB_MGMT_CLASS_SUBN_ADM:
 		if (mlx4_ib_multiplex_sa_handler(ctx->ib_dev, ctx->port, slave,
 			      (struct ib_sa_mad *) &tunnel->mad))
@@ -1259,21 +1566,37 @@ static void mlx4_ib_multiplex_mad(struct mlx4_ib_demux_pv_ctx *ctx, struct ib_wc
 	 * stadard address handle by decoding the tunnelled mlx4_ah fields */
 	memcpy(&ah.av, &tunnel->hdr.av, sizeof (struct mlx4_av));
 	ah.ibah.device = ctx->ib_dev;
-	mlx4_ib_query_ah(&ah.ibah, &ah_attr);
-	if ((ah_attr.ah_flags & IB_AH_GRH) &&
-	    (ah_attr.grh.sgid_index != slave)) {
-		mlx4_ib_warn(ctx->ib_dev, "slave:%d accessed invalid sgid_index:%d\n",
-			     slave, ah_attr.grh.sgid_index);
-		return;
-	}
 
-	mlx4_ib_send_to_wire(dev, slave, ctx->port,
-			     is_proxy_qp0(dev, wc->src_qp, slave) ?
-			     IB_QPT_SMI : IB_QPT_GSI,
-			     be16_to_cpu(tunnel->hdr.pkey_index),
-			     be32_to_cpu(tunnel->hdr.remote_qpn),
-			     be32_to_cpu(tunnel->hdr.qkey),
-			     &ah_attr, &tunnel->mad);
+	port = be32_to_cpu(ah.av.ib.port_pd) >> 24;
+	port = mlx4_slave_convert_port(dev->dev, slave, port);
+	if (port < 0)
+		return;
+	ah.av.ib.port_pd = cpu_to_be32(port << 24 | (be32_to_cpu(ah.av.ib.port_pd) & 0xffffff));
+	ah.ibah.type = rdma_ah_find_type(&dev->ib_dev, port);
+
+	mlx4_ib_query_ah(&ah.ibah, &ah_attr);
+	if (rdma_ah_get_ah_flags(&ah_attr) & IB_AH_GRH)
+		fill_in_real_sgid_index(dev, slave, ctx->port, &ah_attr);
+	dmac = rdma_ah_retrieve_dmac(&ah_attr);
+	if (dmac)
+		memcpy(dmac, tunnel->hdr.mac, ETH_ALEN);
+	vlan_id = be16_to_cpu(tunnel->hdr.vlan);
+	/* if slave have default vlan use it */
+	if (mlx4_get_slave_default_vlan(dev->dev, ctx->port, slave,
+					&vlan_id, &qos))
+		rdma_ah_set_sl(&ah_attr, qos);
+
+	sts = mlx4_ib_send_to_wire(dev, slave, ctx->port,
+				   is_proxy_qp0(dev, wc->src_qp, slave) ?
+				   IB_QPT_SMI : IB_QPT_GSI,
+				   be16_to_cpu(tunnel->hdr.pkey_index),
+				   be32_to_cpu(tunnel->hdr.remote_qpn),
+				   be32_to_cpu(tunnel->hdr.qkey),
+				   &ah_attr, wc->smac, vlan_id, &tunnel->mad);
+	if (sts)
+		pr_debug("failed sending %s to wire on behalf of slave %d (%d)\n",
+			 is_proxy_qp0(dev, wc->src_qp, slave) ? "SMI" : "GSI",
+			 slave, sts);
 }
 
 static int mlx4_ib_alloc_pv_bufs(struct mlx4_ib_demux_pv_ctx *ctx,
@@ -1282,18 +1605,20 @@ static int mlx4_ib_alloc_pv_bufs(struct mlx4_ib_demux_pv_ctx *ctx,
 	int i;
 	struct mlx4_ib_demux_pv_qp *tun_qp;
 	int rx_buf_size, tx_buf_size;
+	const int nmbr_bufs = is_tun ? MLX4_NUM_TUNNEL_BUFS : MLX4_NUM_WIRE_BUFS;
 
 	if (qp_type > IB_QPT_GSI)
 		return -EINVAL;
 
 	tun_qp = &ctx->qp[qp_type];
 
-	tun_qp->ring = kzalloc(sizeof (struct mlx4_ib_buf) * MLX4_NUM_TUNNEL_BUFS,
+	tun_qp->ring = kcalloc(nmbr_bufs,
+			       sizeof(struct mlx4_ib_buf),
 			       GFP_KERNEL);
 	if (!tun_qp->ring)
 		return -ENOMEM;
 
-	tun_qp->tx_ring = kcalloc(MLX4_NUM_TUNNEL_BUFS,
+	tun_qp->tx_ring = kcalloc(nmbr_bufs,
 				  sizeof (struct mlx4_ib_tun_tx_buf),
 				  GFP_KERNEL);
 	if (!tun_qp->tx_ring) {
@@ -1310,7 +1635,7 @@ static int mlx4_ib_alloc_pv_bufs(struct mlx4_ib_demux_pv_ctx *ctx,
 		tx_buf_size = sizeof (struct mlx4_mad_snd_buf);
 	}
 
-	for (i = 0; i < MLX4_NUM_TUNNEL_BUFS; i++) {
+	for (i = 0; i < nmbr_bufs; i++) {
 		tun_qp->ring[i].addr = kmalloc(rx_buf_size, GFP_KERNEL);
 		if (!tun_qp->ring[i].addr)
 			goto err;
@@ -1318,9 +1643,13 @@ static int mlx4_ib_alloc_pv_bufs(struct mlx4_ib_demux_pv_ctx *ctx,
 							tun_qp->ring[i].addr,
 							rx_buf_size,
 							DMA_FROM_DEVICE);
+		if (ib_dma_mapping_error(ctx->ib_dev, tun_qp->ring[i].map)) {
+			kfree(tun_qp->ring[i].addr);
+			goto err;
+		}
 	}
 
-	for (i = 0; i < MLX4_NUM_TUNNEL_BUFS; i++) {
+	for (i = 0; i < nmbr_bufs; i++) {
 		tun_qp->tx_ring[i].buf.addr =
 			kmalloc(tx_buf_size, GFP_KERNEL);
 		if (!tun_qp->tx_ring[i].buf.addr)
@@ -1330,6 +1659,11 @@ static int mlx4_ib_alloc_pv_bufs(struct mlx4_ib_demux_pv_ctx *ctx,
 					  tun_qp->tx_ring[i].buf.addr,
 					  tx_buf_size,
 					  DMA_TO_DEVICE);
+		if (ib_dma_mapping_error(ctx->ib_dev,
+					 tun_qp->tx_ring[i].buf.map)) {
+			kfree(tun_qp->tx_ring[i].buf.addr);
+			goto tx_err;
+		}
 		tun_qp->tx_ring[i].ah = NULL;
 	}
 	spin_lock_init(&tun_qp->tx_lock);
@@ -1346,9 +1680,7 @@ tx_err:
 				    tx_buf_size, DMA_TO_DEVICE);
 		kfree(tun_qp->tx_ring[i].buf.addr);
 	}
-	kfree(tun_qp->tx_ring);
-	tun_qp->tx_ring = NULL;
-	i = MLX4_NUM_TUNNEL_BUFS;
+	i = nmbr_bufs;
 err:
 	while (i > 0) {
 		--i;
@@ -1356,6 +1688,8 @@ err:
 				    rx_buf_size, DMA_FROM_DEVICE);
 		kfree(tun_qp->ring[i].addr);
 	}
+	kfree(tun_qp->tx_ring);
+	tun_qp->tx_ring = NULL;
 	kfree(tun_qp->ring);
 	tun_qp->ring = NULL;
 	return -ENOMEM;
@@ -1367,6 +1701,7 @@ static void mlx4_ib_free_pv_qp_bufs(struct mlx4_ib_demux_pv_ctx *ctx,
 	int i;
 	struct mlx4_ib_demux_pv_qp *tun_qp;
 	int rx_buf_size, tx_buf_size;
+	const int nmbr_bufs = is_tun ? MLX4_NUM_TUNNEL_BUFS : MLX4_NUM_WIRE_BUFS;
 
 	if (qp_type > IB_QPT_GSI)
 		return;
@@ -1381,18 +1716,18 @@ static void mlx4_ib_free_pv_qp_bufs(struct mlx4_ib_demux_pv_ctx *ctx,
 	}
 
 
-	for (i = 0; i < MLX4_NUM_TUNNEL_BUFS; i++) {
+	for (i = 0; i < nmbr_bufs; i++) {
 		ib_dma_unmap_single(ctx->ib_dev, tun_qp->ring[i].map,
 				    rx_buf_size, DMA_FROM_DEVICE);
 		kfree(tun_qp->ring[i].addr);
 	}
 
-	for (i = 0; i < MLX4_NUM_TUNNEL_BUFS; i++) {
+	for (i = 0; i < nmbr_bufs; i++) {
 		ib_dma_unmap_single(ctx->ib_dev, tun_qp->tx_ring[i].buf.map,
 				    tx_buf_size, DMA_TO_DEVICE);
 		kfree(tun_qp->tx_ring[i].buf.addr);
 		if (tun_qp->tx_ring[i].ah)
-			ib_destroy_ah(tun_qp->tx_ring[i].ah);
+			rdma_destroy_ah(tun_qp->tx_ring[i].ah, 0);
 	}
 	kfree(tun_qp->tx_ring);
 	kfree(tun_qp->ring);
@@ -1421,11 +1756,8 @@ static void mlx4_ib_tunnel_comp_worker(struct work_struct *work)
 					       "buf:%lld\n", wc.wr_id);
 				break;
 			case IB_WC_SEND:
-				pr_debug("received tunnel send completion:"
-					 "wrid=0x%llx, status=0x%x\n",
-					 wc.wr_id, wc.status);
-				ib_destroy_ah(tun_qp->tx_ring[wc.wr_id &
-					      (MLX4_NUM_TUNNEL_BUFS - 1)].ah);
+				rdma_destroy_ah(tun_qp->tx_ring[wc.wr_id &
+					      (MLX4_NUM_TUNNEL_BUFS - 1)].ah, 0);
 				tun_qp->tx_ring[wc.wr_id & (MLX4_NUM_TUNNEL_BUFS - 1)].ah
 					= NULL;
 				spin_lock(&tun_qp->tx_lock);
@@ -1441,8 +1773,8 @@ static void mlx4_ib_tunnel_comp_worker(struct work_struct *work)
 				 " status = %d, wrid = 0x%llx\n",
 				 ctx->slave, wc.status, wc.wr_id);
 			if (!MLX4_TUN_IS_RECV(wc.wr_id)) {
-				ib_destroy_ah(tun_qp->tx_ring[wc.wr_id &
-					      (MLX4_NUM_TUNNEL_BUFS - 1)].ah);
+				rdma_destroy_ah(tun_qp->tx_ring[wc.wr_id &
+					      (MLX4_NUM_TUNNEL_BUFS - 1)].ah, 0);
 				tun_qp->tx_ring[wc.wr_id & (MLX4_NUM_TUNNEL_BUFS - 1)].ah
 					= NULL;
 				spin_lock(&tun_qp->tx_lock);
@@ -1470,6 +1802,7 @@ static int create_pv_sqp(struct mlx4_ib_demux_pv_ctx *ctx,
 	struct mlx4_ib_qp_tunnel_init_attr qp_init_attr;
 	struct ib_qp_attr attr;
 	int qp_attr_mask_INIT;
+	const int nmbr_bufs = create_tun ? MLX4_NUM_TUNNEL_BUFS : MLX4_NUM_WIRE_BUFS;
 
 	if (qp_type > IB_QPT_GSI)
 		return -EINVAL;
@@ -1480,8 +1813,8 @@ static int create_pv_sqp(struct mlx4_ib_demux_pv_ctx *ctx,
 	qp_init_attr.init_attr.send_cq = ctx->cq;
 	qp_init_attr.init_attr.recv_cq = ctx->cq;
 	qp_init_attr.init_attr.sq_sig_type = IB_SIGNAL_ALL_WR;
-	qp_init_attr.init_attr.cap.max_send_wr = MLX4_NUM_TUNNEL_BUFS;
-	qp_init_attr.init_attr.cap.max_recv_wr = MLX4_NUM_TUNNEL_BUFS;
+	qp_init_attr.init_attr.cap.max_send_wr = nmbr_bufs;
+	qp_init_attr.init_attr.cap.max_recv_wr = nmbr_bufs;
 	qp_init_attr.init_attr.cap.max_send_sge = 1;
 	qp_init_attr.init_attr.cap.max_recv_sge = 1;
 	if (create_tun) {
@@ -1543,7 +1876,7 @@ static int create_pv_sqp(struct mlx4_ib_demux_pv_ctx *ctx,
 		goto err_qp;
 	}
 
-	for (i = 0; i < MLX4_NUM_TUNNEL_BUFS; i++) {
+	for (i = 0; i < nmbr_bufs; i++) {
 		ret = mlx4_ib_post_pv_qp_buf(ctx, tun_qp, i);
 		if (ret) {
 			pr_err(" mlx4_ib_post_pv_buf error"
@@ -1578,9 +1911,9 @@ static void mlx4_ib_sqp_comp_worker(struct work_struct *work)
 		if (wc.status == IB_WC_SUCCESS) {
 			switch (wc.opcode) {
 			case IB_WC_SEND:
-				ib_destroy_ah(sqp->tx_ring[wc.wr_id &
-					      (MLX4_NUM_TUNNEL_BUFS - 1)].ah);
-				sqp->tx_ring[wc.wr_id & (MLX4_NUM_TUNNEL_BUFS - 1)].ah
+				kfree(sqp->tx_ring[wc.wr_id &
+				      (MLX4_NUM_WIRE_BUFS - 1)].ah);
+				sqp->tx_ring[wc.wr_id & (MLX4_NUM_WIRE_BUFS - 1)].ah
 					= NULL;
 				spin_lock(&sqp->tx_lock);
 				sqp->tx_ix_tail++;
@@ -1589,18 +1922,17 @@ static void mlx4_ib_sqp_comp_worker(struct work_struct *work)
 			case IB_WC_RECV:
 				mad = (struct ib_mad *) &(((struct mlx4_mad_rcv_buf *)
 						(sqp->ring[wc.wr_id &
-						(MLX4_NUM_TUNNEL_BUFS - 1)].addr))->payload);
+						(MLX4_NUM_WIRE_BUFS - 1)].addr))->payload);
 				grh = &(((struct mlx4_mad_rcv_buf *)
 						(sqp->ring[wc.wr_id &
-						(MLX4_NUM_TUNNEL_BUFS - 1)].addr))->grh);
+						(MLX4_NUM_WIRE_BUFS - 1)].addr))->grh);
 				mlx4_ib_demux_mad(ctx->ib_dev, ctx->port, &wc, grh, mad);
 				if (mlx4_ib_post_pv_qp_buf(ctx, sqp, wc.wr_id &
-							   (MLX4_NUM_TUNNEL_BUFS - 1)))
+							   (MLX4_NUM_WIRE_BUFS - 1)))
 					pr_err("Failed reposting SQP "
 					       "buf:%lld\n", wc.wr_id);
 				break;
 			default:
-				BUG_ON(1);
 				break;
 			}
 		} else  {
@@ -1608,9 +1940,9 @@ static void mlx4_ib_sqp_comp_worker(struct work_struct *work)
 				 " status = %d, wrid = 0x%llx\n",
 				 ctx->slave, wc.status, wc.wr_id);
 			if (!MLX4_TUN_IS_RECV(wc.wr_id)) {
-				ib_destroy_ah(sqp->tx_ring[wc.wr_id &
-					      (MLX4_NUM_TUNNEL_BUFS - 1)].ah);
-				sqp->tx_ring[wc.wr_id & (MLX4_NUM_TUNNEL_BUFS - 1)].ah
+				kfree(sqp->tx_ring[wc.wr_id &
+				      (MLX4_NUM_WIRE_BUFS - 1)].ah);
+				sqp->tx_ring[wc.wr_id & (MLX4_NUM_WIRE_BUFS - 1)].ah
 					= NULL;
 				spin_lock(&sqp->tx_lock);
 				sqp->tx_ix_tail++;
@@ -1627,11 +1959,8 @@ static int alloc_pv_object(struct mlx4_ib_dev *dev, int slave, int port,
 
 	*ret_ctx = NULL;
 	ctx = kzalloc(sizeof (struct mlx4_ib_demux_pv_ctx), GFP_KERNEL);
-	if (!ctx) {
-		pr_err("failed allocating pv resource context "
-		       "for port %d, slave %d\n", port, slave);
+	if (!ctx)
 		return -ENOMEM;
-	}
 
 	ctx->ib_dev = &dev->ib_dev;
 	ctx->port = port;
@@ -1652,14 +1981,16 @@ static int create_pv_resources(struct ib_device *ibdev, int slave, int port,
 			       int create_tun, struct mlx4_ib_demux_pv_ctx *ctx)
 {
 	int ret, cq_size;
+	struct ib_cq_init_attr cq_attr = {};
+	const int nmbr_bufs = create_tun ? MLX4_NUM_TUNNEL_BUFS : MLX4_NUM_WIRE_BUFS;
 
 	if (ctx->state != DEMUX_PV_STATE_DOWN)
 		return -EEXIST;
 
 	ctx->state = DEMUX_PV_STATE_STARTING;
-	/* have QP0 only on port owner, and only if link layer is IB */
-	if (ctx->slave == mlx4_master_func_num(to_mdev(ctx->ib_dev)->dev) &&
-	    rdma_port_get_link_layer(ibdev, ctx->port) == IB_LINK_LAYER_INFINIBAND)
+	/* have QP0 only if link layer is IB */
+	if (rdma_port_get_link_layer(ibdev, ctx->port) ==
+	    IB_LINK_LAYER_INFINIBAND)
 		ctx->has_smi = 1;
 
 	if (ctx->has_smi) {
@@ -1676,30 +2007,25 @@ static int create_pv_resources(struct ib_device *ibdev, int slave, int port,
 		goto err_out_qp0;
 	}
 
-	cq_size = 2 * MLX4_NUM_TUNNEL_BUFS;
+	cq_size = 2 * nmbr_bufs;
 	if (ctx->has_smi)
 		cq_size *= 2;
 
-	ctx->cq = ib_create_cq(ctx->ib_dev, mlx4_ib_tunnel_comp_handler,
-			       NULL, ctx, cq_size, 0);
+	cq_attr.cqe = cq_size;
+	ctx->cq = ib_create_cq(ctx->ib_dev,
+			       create_tun ? mlx4_ib_tunnel_comp_handler : mlx4_ib_wire_comp_handler,
+			       NULL, ctx, &cq_attr);
 	if (IS_ERR(ctx->cq)) {
 		ret = PTR_ERR(ctx->cq);
 		pr_err("Couldn't create tunnel CQ (%d)\n", ret);
 		goto err_buf;
 	}
 
-	ctx->pd = ib_alloc_pd(ctx->ib_dev);
+	ctx->pd = ib_alloc_pd(ctx->ib_dev, 0);
 	if (IS_ERR(ctx->pd)) {
 		ret = PTR_ERR(ctx->pd);
 		pr_err("Couldn't create tunnel PD (%d)\n", ret);
 		goto err_cq;
-	}
-
-	ctx->mr = ib_get_dma_mr(ctx->pd, IB_ACCESS_LOCAL_WRITE);
-	if (IS_ERR(ctx->mr)) {
-		ret = PTR_ERR(ctx->mr);
-		pr_err("Couldn't get tunnel DMA MR (%d)\n", ret);
-		goto err_pd;
 	}
 
 	if (ctx->has_smi) {
@@ -1707,7 +2033,7 @@ static int create_pv_resources(struct ib_device *ibdev, int slave, int port,
 		if (ret) {
 			pr_err("Couldn't create %s QP0 (%d)\n",
 			       create_tun ? "tunnel for" : "",  ret);
-			goto err_mr;
+			goto err_pd;
 		}
 	}
 
@@ -1724,6 +2050,7 @@ static int create_pv_resources(struct ib_device *ibdev, int slave, int port,
 		INIT_WORK(&ctx->work, mlx4_ib_sqp_comp_worker);
 
 	ctx->wq = to_mdev(ibdev)->sriov.demux[port - 1].wq;
+	ctx->wi_wq = to_mdev(ibdev)->sriov.demux[port - 1].wi_wq;
 
 	ret = ib_req_notify_cq(ctx->cq, IB_CQ_NEXT_COMP);
 	if (ret) {
@@ -1743,10 +2070,6 @@ err_qp0:
 	if (ctx->has_smi)
 		ib_destroy_qp(ctx->qp[0].qp);
 	ctx->qp[0].qp = NULL;
-
-err_mr:
-	ib_dereg_mr(ctx->mr);
-	ctx->mr = NULL;
 
 err_pd:
 	ib_dealloc_pd(ctx->pd);
@@ -1784,8 +2107,6 @@ static void destroy_pv_resources(struct mlx4_ib_dev *dev, int slave, int port,
 		ib_destroy_qp(ctx->qp[1].qp);
 		ctx->qp[1].qp = NULL;
 		mlx4_ib_free_pv_qp_bufs(ctx, IB_QPT_GSI, 1);
-		ib_dereg_mr(ctx->mr);
-		ctx->mr = NULL;
 		ib_dealloc_pd(ctx->pd);
 		ctx->pd = NULL;
 		ib_destroy_cq(ctx->cq);
@@ -1850,7 +2171,16 @@ static int mlx4_ib_alloc_demux_ctx(struct mlx4_ib_dev *dev,
 	ctx->port = port;
 	ctx->ib_dev = &dev->ib_dev;
 
-	for (i = 0; i < dev->dev->caps.sqp_demux; i++) {
+	for (i = 0;
+	     i < min(dev->dev->caps.sqp_demux,
+	     (u16)(dev->dev->persist->num_vfs + 1));
+	     i++) {
+		struct mlx4_active_ports actv_ports =
+			mlx4_get_active_ports(dev->dev, i);
+
+		if (!test_bit(port - 1, actv_ports.ports))
+			continue;
+
 		ret = alloc_pv_object(dev, i, port, &ctx->tun[i]);
 		if (ret) {
 			ret = -ENOMEM;
@@ -1864,16 +2194,24 @@ static int mlx4_ib_alloc_demux_ctx(struct mlx4_ib_dev *dev,
 		goto err_mcg;
 	}
 
-	snprintf(name, sizeof name, "mlx4_ibt%d", port);
-	ctx->wq = create_singlethread_workqueue(name);
+	snprintf(name, sizeof(name), "mlx4_ibt%d", port);
+	ctx->wq = alloc_ordered_workqueue(name, WQ_MEM_RECLAIM);
 	if (!ctx->wq) {
 		pr_err("Failed to create tunnelling WQ for port %d\n", port);
 		ret = -ENOMEM;
 		goto err_wq;
 	}
 
-	snprintf(name, sizeof name, "mlx4_ibud%d", port);
-	ctx->ud_wq = create_singlethread_workqueue(name);
+	snprintf(name, sizeof(name), "mlx4_ibwi%d", port);
+	ctx->wi_wq = alloc_ordered_workqueue(name, WQ_MEM_RECLAIM);
+	if (!ctx->wi_wq) {
+		pr_err("Failed to create wire WQ for port %d\n", port);
+		ret = -ENOMEM;
+		goto err_wiwq;
+	}
+
+	snprintf(name, sizeof(name), "mlx4_ibud%d", port);
+	ctx->ud_wq = alloc_ordered_workqueue(name, WQ_MEM_RECLAIM);
 	if (!ctx->ud_wq) {
 		pr_err("Failed to create up/down WQ for port %d\n", port);
 		ret = -ENOMEM;
@@ -1883,6 +2221,10 @@ static int mlx4_ib_alloc_demux_ctx(struct mlx4_ib_dev *dev,
 	return 0;
 
 err_udwq:
+	destroy_workqueue(ctx->wi_wq);
+	ctx->wi_wq = NULL;
+
+err_wiwq:
 	destroy_workqueue(ctx->wq);
 	ctx->wq = NULL;
 
@@ -1909,8 +2251,6 @@ static void mlx4_ib_free_sqp_ctx(struct mlx4_ib_demux_pv_ctx *sqp_ctx)
 		ib_destroy_qp(sqp_ctx->qp[1].qp);
 		sqp_ctx->qp[1].qp = NULL;
 		mlx4_ib_free_pv_qp_bufs(sqp_ctx, IB_QPT_GSI, 0);
-		ib_dereg_mr(sqp_ctx->mr);
-		sqp_ctx->mr = NULL;
 		ib_dealloc_pd(sqp_ctx->pd);
 		sqp_ctx->pd = NULL;
 		ib_destroy_cq(sqp_ctx->cq);
@@ -1932,12 +2272,14 @@ static void mlx4_ib_free_demux_ctx(struct mlx4_ib_demux_ctx *ctx)
 				ctx->tun[i]->state = DEMUX_PV_STATE_DOWNING;
 		}
 		flush_workqueue(ctx->wq);
+		flush_workqueue(ctx->wi_wq);
 		for (i = 0; i < dev->dev->caps.sqp_demux; i++) {
 			destroy_pv_resources(dev, i, ctx->port, ctx->tun[i], 0);
 			free_pv_object(dev, i, ctx->port);
 		}
 		kfree(ctx->tun);
 		destroy_workqueue(ctx->ud_wq);
+		destroy_workqueue(ctx->wi_wq);
 		destroy_workqueue(ctx->wq);
 	}
 }
@@ -1999,6 +2341,8 @@ int mlx4_ib_init_sriov(struct mlx4_ib_dev *dev)
 		if (err)
 			goto demux_err;
 		dev->sriov.demux[i].guid_cache[0] = gid.global.interface_id;
+		atomic64_set(&dev->sriov.demux[i].subnet_prefix,
+			     be64_to_cpu(gid.global.subnet_prefix));
 		err = alloc_pv_object(dev, mlx4_master_func_num(dev->dev), i + 1,
 				      &dev->sriov.sqps[i]);
 		if (err)

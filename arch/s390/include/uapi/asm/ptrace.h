@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  *  S390 version
  *    Copyright IBM Corp. 1999, 2000
@@ -6,6 +7,8 @@
 
 #ifndef _UAPI_S390_PTRACE_H
 #define _UAPI_S390_PTRACE_H
+
+#include <linux/const.h>
 
 /*
  * Offsets in the user_regs_struct. They are used for the ptrace
@@ -161,7 +164,65 @@
 #define GPR_SIZE	8
 #define CR_SIZE		8
 
-#define STACK_FRAME_OVERHEAD    160      /* size of minimum stack frame */
+#define STACK_FRAME_OVERHEAD	160	 /* size of minimum stack frame */
+
+#endif /* __s390x__ */
+
+#ifndef __s390x__
+
+#define PSW_MASK_PER		_AC(0x40000000, UL)
+#define PSW_MASK_DAT		_AC(0x04000000, UL)
+#define PSW_MASK_IO		_AC(0x02000000, UL)
+#define PSW_MASK_EXT		_AC(0x01000000, UL)
+#define PSW_MASK_KEY		_AC(0x00F00000, UL)
+#define PSW_MASK_BASE		_AC(0x00080000, UL)	/* always one */
+#define PSW_MASK_MCHECK		_AC(0x00040000, UL)
+#define PSW_MASK_WAIT		_AC(0x00020000, UL)
+#define PSW_MASK_PSTATE		_AC(0x00010000, UL)
+#define PSW_MASK_ASC		_AC(0x0000C000, UL)
+#define PSW_MASK_CC		_AC(0x00003000, UL)
+#define PSW_MASK_PM		_AC(0x00000F00, UL)
+#define PSW_MASK_RI		_AC(0x00000000, UL)
+#define PSW_MASK_EA		_AC(0x00000000, UL)
+#define PSW_MASK_BA		_AC(0x00000000, UL)
+
+#define PSW_MASK_USER		_AC(0x0000FF00, UL)
+
+#define PSW_ADDR_AMODE		_AC(0x80000000, UL)
+#define PSW_ADDR_INSN		_AC(0x7FFFFFFF, UL)
+
+#define PSW_ASC_PRIMARY		_AC(0x00000000, UL)
+#define PSW_ASC_ACCREG		_AC(0x00004000, UL)
+#define PSW_ASC_SECONDARY	_AC(0x00008000, UL)
+#define PSW_ASC_HOME		_AC(0x0000C000, UL)
+
+#else /* __s390x__ */
+
+#define PSW_MASK_PER		_AC(0x4000000000000000, UL)
+#define PSW_MASK_DAT		_AC(0x0400000000000000, UL)
+#define PSW_MASK_IO		_AC(0x0200000000000000, UL)
+#define PSW_MASK_EXT		_AC(0x0100000000000000, UL)
+#define PSW_MASK_BASE		_AC(0x0000000000000000, UL)
+#define PSW_MASK_KEY		_AC(0x00F0000000000000, UL)
+#define PSW_MASK_MCHECK		_AC(0x0004000000000000, UL)
+#define PSW_MASK_WAIT		_AC(0x0002000000000000, UL)
+#define PSW_MASK_PSTATE		_AC(0x0001000000000000, UL)
+#define PSW_MASK_ASC		_AC(0x0000C00000000000, UL)
+#define PSW_MASK_CC		_AC(0x0000300000000000, UL)
+#define PSW_MASK_PM		_AC(0x00000F0000000000, UL)
+#define PSW_MASK_RI		_AC(0x0000008000000000, UL)
+#define PSW_MASK_EA		_AC(0x0000000100000000, UL)
+#define PSW_MASK_BA		_AC(0x0000000080000000, UL)
+
+#define PSW_MASK_USER		_AC(0x0000FF0180000000, UL)
+
+#define PSW_ADDR_AMODE		_AC(0x0000000000000000, UL)
+#define PSW_ADDR_INSN		_AC(0xFFFFFFFFFFFFFFFF, UL)
+
+#define PSW_ASC_PRIMARY		_AC(0x0000000000000000, UL)
+#define PSW_ASC_ACCREG		_AC(0x0000400000000000, UL)
+#define PSW_ASC_SECONDARY	_AC(0x0000800000000000, UL)
+#define PSW_ASC_HOME		_AC(0x0000C00000000000, UL)
 
 #endif /* __s390x__ */
 
@@ -178,17 +239,17 @@
 #define ACR_SIZE	4
 
 
-#define PTRACE_OLDSETOPTIONS         21
-
+#define PTRACE_OLDSETOPTIONS		21
+#define PTRACE_SYSEMU			31
+#define PTRACE_SYSEMU_SINGLESTEP	32
 #ifndef __ASSEMBLY__
 #include <linux/stddef.h>
 #include <linux/types.h>
 
-typedef union
-{
-	float   f;
-	double  d;
-        __u64   ui;
+typedef union {
+	float	f;
+	double	d;
+	__u64	ui;
 	struct
 	{
 		__u32 hi;
@@ -196,93 +257,27 @@ typedef union
 	} fp;
 } freg_t;
 
-typedef struct
-{
-	__u32   fpc;
+typedef struct {
+	__u32	fpc;
 	__u32	pad;
-	freg_t  fprs[NUM_FPRS];              
+	freg_t	fprs[NUM_FPRS];
 } s390_fp_regs;
 
-#define FPC_EXCEPTION_MASK      0xF8000000
-#define FPC_FLAGS_MASK          0x00F80000
-#define FPC_DXC_MASK            0x0000FF00
-#define FPC_RM_MASK             0x00000003
+#define FPC_EXCEPTION_MASK	0xF8000000
+#define FPC_FLAGS_MASK		0x00F80000
+#define FPC_DXC_MASK		0x0000FF00
+#define FPC_RM_MASK		0x00000003
 
 /* this typedef defines how a Program Status Word looks like */
-typedef struct 
-{
-        unsigned long mask;
-        unsigned long addr;
+typedef struct {
+	unsigned long mask;
+	unsigned long addr;
 } __attribute__ ((aligned(8))) psw_t;
-
-#ifndef __s390x__
-
-#define PSW_MASK_PER		0x40000000UL
-#define PSW_MASK_DAT		0x04000000UL
-#define PSW_MASK_IO		0x02000000UL
-#define PSW_MASK_EXT		0x01000000UL
-#define PSW_MASK_KEY		0x00F00000UL
-#define PSW_MASK_BASE		0x00080000UL	/* always one */
-#define PSW_MASK_MCHECK		0x00040000UL
-#define PSW_MASK_WAIT		0x00020000UL
-#define PSW_MASK_PSTATE		0x00010000UL
-#define PSW_MASK_ASC		0x0000C000UL
-#define PSW_MASK_CC		0x00003000UL
-#define PSW_MASK_PM		0x00000F00UL
-#define PSW_MASK_RI		0x00000000UL
-#define PSW_MASK_EA		0x00000000UL
-#define PSW_MASK_BA		0x00000000UL
-
-#define PSW_MASK_USER		0x0000FF00UL
-
-#define PSW_ADDR_AMODE		0x80000000UL
-#define PSW_ADDR_INSN		0x7FFFFFFFUL
-
-#define PSW_DEFAULT_KEY		(((unsigned long) PAGE_DEFAULT_ACC) << 20)
-
-#define PSW_ASC_PRIMARY		0x00000000UL
-#define PSW_ASC_ACCREG		0x00004000UL
-#define PSW_ASC_SECONDARY	0x00008000UL
-#define PSW_ASC_HOME		0x0000C000UL
-
-#else /* __s390x__ */
-
-#define PSW_MASK_PER		0x4000000000000000UL
-#define PSW_MASK_DAT		0x0400000000000000UL
-#define PSW_MASK_IO		0x0200000000000000UL
-#define PSW_MASK_EXT		0x0100000000000000UL
-#define PSW_MASK_BASE		0x0000000000000000UL
-#define PSW_MASK_KEY		0x00F0000000000000UL
-#define PSW_MASK_MCHECK		0x0004000000000000UL
-#define PSW_MASK_WAIT		0x0002000000000000UL
-#define PSW_MASK_PSTATE		0x0001000000000000UL
-#define PSW_MASK_ASC		0x0000C00000000000UL
-#define PSW_MASK_CC		0x0000300000000000UL
-#define PSW_MASK_PM		0x00000F0000000000UL
-#define PSW_MASK_RI		0x0000008000000000UL
-#define PSW_MASK_EA		0x0000000100000000UL
-#define PSW_MASK_BA		0x0000000080000000UL
-
-#define PSW_MASK_USER		0x0000FF0180000000UL
-
-#define PSW_ADDR_AMODE		0x0000000000000000UL
-#define PSW_ADDR_INSN		0xFFFFFFFFFFFFFFFFUL
-
-#define PSW_DEFAULT_KEY		(((unsigned long) PAGE_DEFAULT_ACC) << 52)
-
-#define PSW_ASC_PRIMARY		0x0000000000000000UL
-#define PSW_ASC_ACCREG		0x0000400000000000UL
-#define PSW_ASC_SECONDARY	0x0000800000000000UL
-#define PSW_ASC_HOME		0x0000C00000000000UL
-
-#endif /* __s390x__ */
-
 
 /*
  * The s390_regs structure is used to define the elf_gregset_t.
  */
-typedef struct
-{
+typedef struct {
 	psw_t psw;
 	unsigned long gprs[NUM_GPRS];
 	unsigned int  acrs[NUM_ACRS];
@@ -290,24 +285,32 @@ typedef struct
 } s390_regs;
 
 /*
+ * The user_pt_regs structure exports the beginning of
+ * the in-kernel pt_regs structure to user space.
+ */
+typedef struct {
+	unsigned long args[1];
+	psw_t psw;
+	unsigned long gprs[NUM_GPRS];
+} user_pt_regs;
+
+/*
  * Now for the user space program event recording (trace) definitions.
  * The following structures are used only for the ptrace interface, don't
  * touch or even look at it if you don't want to modify the user-space
  * ptrace interface. In particular stay away from it for in-kernel PER.
  */
-typedef struct
-{
+typedef struct {
 	unsigned long cr[NUM_CR_WORDS];
 } per_cr_words;
 
 #define PER_EM_MASK 0xE8000000UL
 
-typedef	struct
-{
+typedef struct {
 #ifdef __s390x__
-	unsigned                       : 32;
+	unsigned		       : 32;
 #endif /* __s390x__ */
-	unsigned em_branching          : 1;
+	unsigned em_branching	       : 1;
 	unsigned em_instruction_fetch  : 1;
 	/*
 	 * Switching on storage alteration automatically fixes
@@ -316,56 +319,53 @@ typedef	struct
 	unsigned em_storage_alteration : 1;
 	unsigned em_gpr_alt_unused     : 1;
 	unsigned em_store_real_address : 1;
-	unsigned                       : 3;
+	unsigned		       : 3;
 	unsigned branch_addr_ctl       : 1;
-	unsigned                       : 1;
+	unsigned		       : 1;
 	unsigned storage_alt_space_ctl : 1;
-	unsigned                       : 21;
+	unsigned		       : 21;
 	unsigned long starting_addr;
 	unsigned long ending_addr;
 } per_cr_bits;
 
-typedef struct
-{
+typedef struct {
 	unsigned short perc_atmid;
 	unsigned long address;
 	unsigned char access_id;
 } per_lowcore_words;
 
-typedef struct
-{
-	unsigned perc_branching          : 1;
+typedef struct {
+	unsigned perc_branching		 : 1;
 	unsigned perc_instruction_fetch  : 1;
 	unsigned perc_storage_alteration : 1;
-	unsigned perc_gpr_alt_unused     : 1;
+	unsigned perc_gpr_alt_unused	 : 1;
 	unsigned perc_store_real_address : 1;
-	unsigned                         : 3;
-	unsigned atmid_psw_bit_31        : 1;
-	unsigned atmid_validity_bit      : 1;
-	unsigned atmid_psw_bit_32        : 1;
-	unsigned atmid_psw_bit_5         : 1;
-	unsigned atmid_psw_bit_16        : 1;
-	unsigned atmid_psw_bit_17        : 1;
-	unsigned si                      : 2;
+	unsigned			 : 3;
+	unsigned atmid_psw_bit_31	 : 1;
+	unsigned atmid_validity_bit	 : 1;
+	unsigned atmid_psw_bit_32	 : 1;
+	unsigned atmid_psw_bit_5	 : 1;
+	unsigned atmid_psw_bit_16	 : 1;
+	unsigned atmid_psw_bit_17	 : 1;
+	unsigned si			 : 2;
 	unsigned long address;
-	unsigned                         : 4;
-	unsigned access_id               : 4;
+	unsigned			 : 4;
+	unsigned access_id		 : 4;
 } per_lowcore_bits;
 
-typedef struct
-{
+typedef struct {
 	union {
 		per_cr_words   words;
 		per_cr_bits    bits;
 	} control_regs;
 	/*
-	 * Use these flags instead of setting em_instruction_fetch
-	 * directly they are used so that single stepping can be
-	 * switched on & off while not affecting other tracing
+	 * The single_step and instruction_fetch bits are obsolete,
+	 * the kernel always sets them to zero. To enable single
+	 * stepping use ptrace(PTRACE_SINGLESTEP) instead.
 	 */
-	unsigned  single_step       : 1;
+	unsigned  single_step	    : 1;
 	unsigned  instruction_fetch : 1;
-	unsigned                    : 30;
+	unsigned		    : 30;
 	/*
 	 * These addresses are copied into cr10 & cr11 if single
 	 * stepping is switched off
@@ -375,11 +375,10 @@ typedef struct
 	union {
 		per_lowcore_words words;
 		per_lowcore_bits  bits;
-	} lowcore; 
+	} lowcore;
 } per_struct;
 
-typedef struct
-{
+typedef struct {
 	unsigned int  len;
 	unsigned long kernel_addr;
 	unsigned long process_addr;
@@ -389,12 +388,12 @@ typedef struct
  * S/390 specific non posix ptrace requests. I chose unusual values so
  * they are unlikely to clash with future ptrace definitions.
  */
-#define PTRACE_PEEKUSR_AREA           0x5000
-#define PTRACE_POKEUSR_AREA           0x5001
+#define PTRACE_PEEKUSR_AREA	      0x5000
+#define PTRACE_POKEUSR_AREA	      0x5001
 #define PTRACE_PEEKTEXT_AREA	      0x5002
 #define PTRACE_PEEKDATA_AREA	      0x5003
 #define PTRACE_POKETEXT_AREA	      0x5004
-#define PTRACE_POKEDATA_AREA 	      0x5005
+#define PTRACE_POKEDATA_AREA	      0x5005
 #define PTRACE_GET_LAST_BREAK	      0x5006
 #define PTRACE_PEEK_SYSTEM_CALL       0x5007
 #define PTRACE_POKE_SYSTEM_CALL	      0x5008
@@ -403,24 +402,28 @@ typedef struct
 #define PTRACE_TE_ABORT_RAND	      0x5011
 
 /*
+ * The numbers chosen here are somewhat arbitrary but absolutely MUST
+ * not overlap with any of the number assigned in <linux/ptrace.h>.
+ */
+#define PTRACE_SINGLEBLOCK	12	/* resume execution until next branch */
+
+/*
  * PT_PROT definition is loosely based on hppa bsd definition in
  * gdb/hppab-nat.c
  */
-#define PTRACE_PROT                       21
+#define PTRACE_PROT			  21
 
-typedef enum
-{
+typedef enum {
 	ptprot_set_access_watchpoint,
 	ptprot_set_write_watchpoint,
 	ptprot_disable_watchpoint
 } ptprot_flags;
 
-typedef struct
-{
+typedef struct {
 	unsigned long lowaddr;
 	unsigned long hiaddr;
 	ptprot_flags prot;
-} ptprot_area;                     
+} ptprot_area;
 
 /* Sequence of bytes for breakpoint illegal instruction.  */
 #define S390_BREAKPOINT     {0x0,0x1}
@@ -432,8 +435,7 @@ typedef struct
  * The user_regs_struct defines the way the user registers are
  * store on the stack for signal handling.
  */
-struct user_regs_struct
-{
+struct user_regs_struct {
 	psw_t psw;
 	unsigned long gprs[NUM_GPRS];
 	unsigned int  acrs[NUM_ACRS];

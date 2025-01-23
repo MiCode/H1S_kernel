@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Common Twofish algorithm parts shared between the c and assembler
  * implementations
@@ -13,21 +14,6 @@
  * code and thus put it in the public domain. The subsequent authors
  * have put this under the GNU General Public License.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307
- * USA
- *
  * This code is a "clean room" implementation, written from the paper
  * _Twofish: A 128-Bit Block Cipher_ by Bruce Schneier, John Kelsey,
  * Doug Whiting, David Wagner, Chris Hall, and Niels Ferguson, available
@@ -39,9 +25,9 @@
  * Third Edition.
  */
 
+#include <crypto/algapi.h>
 #include <crypto/twofish.h>
 #include <linux/bitops.h>
-#include <linux/crypto.h>
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -312,7 +298,7 @@ static const u32 mds[4][256] = {
  * multiplication is inefficient without hardware support.  To multiply
  * faster, I make use of the fact x is a generator for the nonzero elements,
  * so that every element p of GF(2)[x]/w(x) is either 0 or equal to (x)^n for
- * some n in 0..254.  Note that that caret is exponentiation in GF(2^8),
+ * some n in 0..254.  Note that caret is exponentiation in GF(2^8),
  * *not* polynomial notation.  So if I want to compute pq where p and q are
  * in GF(2^8), I can just say:
  *    1. if p=0 or q=0 then pq=0
@@ -581,7 +567,7 @@ static const u8 calc_sb_tbl[512] = {
 
 /* Perform the key setup. */
 int __twofish_setkey(struct twofish_ctx *ctx, const u8 *key,
-		     unsigned int key_len, u32 *flags)
+		     unsigned int key_len)
 {
 	int i, j, k;
 
@@ -598,10 +584,7 @@ int __twofish_setkey(struct twofish_ctx *ctx, const u8 *key,
 
 	/* Check key length. */
 	if (key_len % 8)
-	{
-		*flags |= CRYPTO_TFM_RES_BAD_KEY_LEN;
 		return -EINVAL; /* unsupported key length */
-	}
 
 	/* Compute the first two words of the S vector.  The magic numbers are
 	 * the entries of the RS matrix, preprocessed through poly_to_exp. The
@@ -702,8 +685,7 @@ EXPORT_SYMBOL_GPL(__twofish_setkey);
 
 int twofish_setkey(struct crypto_tfm *tfm, const u8 *key, unsigned int key_len)
 {
-	return __twofish_setkey(crypto_tfm_ctx(tfm), key, key_len,
-				&tfm->crt_flags);
+	return __twofish_setkey(crypto_tfm_ctx(tfm), key, key_len);
 }
 EXPORT_SYMBOL_GPL(twofish_setkey);
 

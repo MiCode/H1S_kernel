@@ -1,13 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * supply.h  --  Power Supply Driver for Wolfson WM8350 PMIC
  *
  * Copyright 2007 Wolfson Microelectronics PLC
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #ifndef __LINUX_MFD_WM8350_SUPPLY_H_
@@ -123,9 +118,9 @@ struct wm8350_charger_policy {
 
 struct wm8350_power {
 	struct platform_device *pdev;
-	struct power_supply battery;
-	struct power_supply usb;
-	struct power_supply ac;
+	struct power_supply *battery;
+	struct power_supply *usb;
+	struct power_supply *ac;
 	struct wm8350_charger_policy *policy;
 
 	int rev_g_coeff;

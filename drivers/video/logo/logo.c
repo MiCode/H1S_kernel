@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 
 /*
  *  Linux logo to be displayed on boot
@@ -21,15 +22,30 @@ static bool nologo;
 module_param(nologo, bool, 0);
 MODULE_PARM_DESC(nologo, "Disables startup logo");
 
-/* logo's are marked __initdata. Use __init_refok to tell
+/*
+ * Logos are located in the initdata, and will be freed in kernel_init.
+ * Use late_init to mark the logos as freed to prevent any further use.
+ */
+
+static bool logos_freed;
+
+static int __init fb_logo_late_init(void)
+{
+	logos_freed = true;
+	return 0;
+}
+
+late_initcall_sync(fb_logo_late_init);
+
+/* logo's are marked __initdata. Use __ref to tell
  * modpost that it is intended that this function uses data
  * marked __initdata.
  */
-const struct linux_logo * __init_refok fb_find_logo(int depth)
+const struct linux_logo * __ref fb_find_logo(int depth)
 {
 	const struct linux_logo *logo = NULL;
 
-	if (nologo)
+	if (nologo || logos_freed)
 		return NULL;
 
 	if (depth >= 1) {
@@ -48,10 +64,6 @@ const struct linux_logo * __init_refok fb_find_logo(int depth)
 		/* Generic Linux logo */
 		logo = &logo_linux_vga16;
 #endif
-#ifdef CONFIG_LOGO_BLACKFIN_VGA16
-		/* Blackfin processor logo */
-		logo = &logo_blackfin_vga16;
-#endif
 #ifdef CONFIG_LOGO_SUPERH_VGA16
 		/* SuperH Linux logo */
 		logo = &logo_superh_vga16;
@@ -62,10 +74,6 @@ const struct linux_logo * __init_refok fb_find_logo(int depth)
 #ifdef CONFIG_LOGO_LINUX_CLUT224
 		/* Generic Linux logo */
 		logo = &logo_linux_clut224;
-#endif
-#ifdef CONFIG_LOGO_BLACKFIN_CLUT224
-		/* Blackfin Linux logo */
-		logo = &logo_blackfin_clut224;
 #endif
 #ifdef CONFIG_LOGO_DEC_CLUT224
 		/* DEC Linux logo on MIPS/MIPS64 or ALPHA */
@@ -81,7 +89,7 @@ const struct linux_logo * __init_refok fb_find_logo(int depth)
 		logo = &logo_parisc_clut224;
 #endif
 #ifdef CONFIG_LOGO_SGI_CLUT224
-		/* SGI Linux logo on MIPS/MIPS64 and VISWS */
+		/* SGI Linux logo on MIPS/MIPS64 */
 		logo = &logo_sgi_clut224;
 #endif
 #ifdef CONFIG_LOGO_SUN_CLUT224
@@ -91,10 +99,6 @@ const struct linux_logo * __init_refok fb_find_logo(int depth)
 #ifdef CONFIG_LOGO_SUPERH_CLUT224
 		/* SuperH Linux logo */
 		logo = &logo_superh_clut224;
-#endif
-#ifdef CONFIG_LOGO_M32R_CLUT224
-		/* M32R Linux logo */
-		logo = &logo_m32r_clut224;
 #endif
 	}
 	return logo;

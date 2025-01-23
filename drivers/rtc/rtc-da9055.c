@@ -1,15 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Real time clock driver for DA9055
  *
  * Copyright(c) 2012 Dialog Semiconductor Ltd.
  *
  * Author: Dajun Dajun Chen <dajun.chen@diasemi.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
  */
 
 #include <linux/module.h>
@@ -74,6 +69,7 @@ static int da9055_read_alarm(struct da9055 *da9055, struct rtc_time *rtc_tm)
 	rtc_tm->tm_mday = v[2] & DA9055_RTC_ALM_DAY;
 	rtc_tm->tm_hour = v[1] & DA9055_RTC_ALM_HOUR;
 	rtc_tm->tm_min  = v[0] & DA9055_RTC_ALM_MIN;
+	rtc_tm->tm_sec = 0;
 
 	return rtc_valid_tm(rtc_tm);
 }
@@ -157,7 +153,7 @@ static int da9055_rtc_read_time(struct device *dev, struct rtc_time *rtc_tm)
 	rtc_tm->tm_min  = v[1] & DA9055_RTC_MIN;
 	rtc_tm->tm_sec  = v[0] & DA9055_RTC_SEC;
 
-	return rtc_valid_tm(rtc_tm);
+	return 0;
 }
 
 static int da9055_rtc_set_time(struct device *dev, struct rtc_time *tm)
@@ -302,7 +298,9 @@ static int da9055_rtc_probe(struct platform_device *pdev)
 	}
 
 	alm_irq = platform_get_irq_byname(pdev, "ALM");
-	alm_irq = regmap_irq_get_virq(rtc->da9055->irq_data, alm_irq);
+	if (alm_irq < 0)
+		return alm_irq;
+
 	ret = devm_request_threaded_irq(&pdev->dev, alm_irq, NULL,
 					da9055_rtc_alm_irq,
 					IRQF_TRIGGER_HIGH | IRQF_ONESHOT,
@@ -389,7 +387,6 @@ static struct platform_driver da9055_rtc_driver = {
 	.probe  = da9055_rtc_probe,
 	.driver = {
 		.name   = "da9055-rtc",
-		.owner  = THIS_MODULE,
 		.pm = &da9055_rtc_pm_ops,
 	},
 };

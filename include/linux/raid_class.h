@@ -1,9 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * raid_class.h - a generic raid visualisation class
  *
  * Copyright (c) 2005 - James Bottomley <James.Bottomley@steeleye.com>
- *
- * This file is licensed under GPLv2
  */
 #include <linux/transport_class.h>
 
@@ -12,7 +11,7 @@ struct raid_template {
 };
 
 struct raid_function_template {
-	void *cookie;
+	const void *cookie;
 	int (*is_raid)(struct device *);
 	void (*get_resync)(struct device *);
 	void (*get_state)(struct device *);
@@ -38,6 +37,7 @@ enum raid_level {
 	RAID_LEVEL_5,
 	RAID_LEVEL_50,
 	RAID_LEVEL_6,
+	RAID_LEVEL_JBOD,
 };
 
 struct raid_data {
@@ -77,7 +77,3 @@ DEFINE_RAID_ATTRIBUTE(enum raid_state, state)
 	
 struct raid_template *raid_class_attach(struct raid_function_template *);
 void raid_class_release(struct raid_template *);
-
-int __must_check raid_component_add(struct raid_template *, struct device *,
-				    struct device *);
-

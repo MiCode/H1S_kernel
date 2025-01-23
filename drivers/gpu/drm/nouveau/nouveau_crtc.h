@@ -26,17 +26,21 @@
 
 #ifndef __NOUVEAU_CRTC_H__
 #define __NOUVEAU_CRTC_H__
+#include <drm/drm_crtc.h>
+
+#include <nvif/head.h>
+#include <nvif/event.h>
 
 struct nouveau_crtc {
 	struct drm_crtc base;
 
+	struct nvif_head head;
 	int index;
+	struct nvif_event vblank;
 
 	uint32_t dpms_saved_fp_control;
 	uint32_t fp_users;
 	int saturation;
-	int color_vibrance;
-	int vibrant_hue;
 	int sharpness;
 	int last_dpms;
 
@@ -46,12 +50,11 @@ struct nouveau_crtc {
 		int cpp;
 		bool blanked;
 		uint32_t offset;
-		uint32_t tile_flags;
+		uint32_t handle;
 	} fb;
 
 	struct {
 		struct nouveau_bo *nvbo;
-		bool visible;
 		uint32_t offset;
 		void (*set_offset)(struct nouveau_crtc *, uint32_t offset);
 		void (*set_pos)(struct nouveau_crtc *, int x, int y);
@@ -60,21 +63,16 @@ struct nouveau_crtc {
 	} cursor;
 
 	struct {
-		struct nouveau_bo *nvbo;
-		uint16_t r[256];
-		uint16_t g[256];
-		uint16_t b[256];
 		int depth;
 	} lut;
 
-	int (*set_dither)(struct nouveau_crtc *crtc, bool update);
-	int (*set_scale)(struct nouveau_crtc *crtc, bool update);
-	int (*set_color_vibrance)(struct nouveau_crtc *crtc, bool update);
+	void (*save)(struct drm_crtc *crtc);
+	void (*restore)(struct drm_crtc *crtc);
 };
 
 static inline struct nouveau_crtc *nouveau_crtc(struct drm_crtc *crtc)
 {
-	return container_of(crtc, struct nouveau_crtc, base);
+	return crtc ? container_of(crtc, struct nouveau_crtc, base) : NULL;
 }
 
 static inline struct drm_crtc *to_drm_crtc(struct nouveau_crtc *crtc)

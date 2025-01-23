@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Faraday FTMAC100 10/100 Ethernet
  *
  * (C) Copyright 2009-2011 Faraday Technology
  * Po-Yu Chuang <ratbert@faraday-tech.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
@@ -24,24 +11,26 @@
 #include <linux/dma-mapping.h>
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
+#include <linux/if_ether.h>
+#include <linux/if_vlan.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/mii.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/netdevice.h>
 #include <linux/platform_device.h>
 
 #include "ftmac100.h"
 
 #define DRV_NAME	"ftmac100"
-#define DRV_VERSION	"0.2"
 
 #define RX_QUEUE_ENTRIES	128	/* must be power of 2 */
 #define TX_QUEUE_ENTRIES	16	/* must be power of 2 */
 
-#define MAX_PKT_SIZE		1518
 #define RX_BUF_SIZE		2044	/* must be smaller than 0x7ff */
+#define MAX_PKT_SIZE		RX_BUF_SIZE /* multi-segment not supported */
 
 #if MAX_PKT_SIZE > 0x7ff
 #error invalid MAX_PKT_SIZE
@@ -160,6 +149,40 @@ static void ftmac100_set_mac(struct ftmac100 *priv, const unsigned char *mac)
 	iowrite32(laddr, priv->base + FTMAC100_OFFSET_MAC_LADR);
 }
 
+static void ftmac100_setup_mc_ht(struct ftmac100 *priv)
+{
+	struct netdev_hw_addr *ha;
+	u64 maht = 0; /* Multicast Address Hash Table */
+
+	netdev_for_each_mc_addr(ha, priv->netdev) {
+		u32 hash = ether_crc(ETH_ALEN, ha->addr) >> 26;
+
+		maht |= BIT_ULL(hash);
+	}
+
+	iowrite32(lower_32_bits(maht), priv->base + FTMAC100_OFFSET_MAHT0);
+	iowrite32(upper_32_bits(maht), priv->base + FTMAC100_OFFSET_MAHT1);
+}
+
+static void ftmac100_set_rx_bits(struct ftmac100 *priv, unsigned int *maccr)
+{
+	struct net_device *netdev = priv->netdev;
+
+	/* Clear all */
+	*maccr &= ~(FTMAC100_MACCR_RCV_ALL | FTMAC100_MACCR_RX_MULTIPKT |
+		   FTMAC100_MACCR_HT_MULTI_EN);
+
+	/* Set the requested bits */
+	if (netdev->flags & IFF_PROMISC)
+		*maccr |= FTMAC100_MACCR_RCV_ALL;
+	if (netdev->flags & IFF_ALLMULTI)
+		*maccr |= FTMAC100_MACCR_RX_MULTIPKT;
+	else if (netdev_mc_count(netdev)) {
+		*maccr |= FTMAC100_MACCR_HT_MULTI_EN;
+		ftmac100_setup_mc_ht(priv);
+	}
+}
+
 #define MACCR_ENABLE_ALL	(FTMAC100_MACCR_XMT_EN	| \
 				 FTMAC100_MACCR_RCV_EN	| \
 				 FTMAC100_MACCR_XDMA_EN	| \
@@ -172,6 +195,7 @@ static void ftmac100_set_mac(struct ftmac100 *priv, const unsigned char *mac)
 static int ftmac100_start_hw(struct ftmac100 *priv)
 {
 	struct net_device *netdev = priv->netdev;
+	unsigned int maccr = MACCR_ENABLE_ALL;
 
 	if (ftmac100_reset(priv))
 		return -EIO;
@@ -188,7 +212,13 @@ static int ftmac100_start_hw(struct ftmac100 *priv)
 
 	ftmac100_set_mac(priv, netdev->dev_addr);
 
-	iowrite32(MACCR_ENABLE_ALL, priv->base + FTMAC100_OFFSET_MACCR);
+	 /* See ftmac100_change_mtu() */
+	if (netdev->mtu > ETH_DATA_LEN)
+		maccr |= FTMAC100_MACCR_RX_FTL;
+
+	ftmac100_set_rx_bits(priv, &maccr);
+
+	iowrite32(maccr, priv->base + FTMAC100_OFFSET_MACCR);
 	return 0;
 }
 
@@ -229,11 +259,6 @@ static bool ftmac100_rxdes_rx_error(struct ftmac100_rxdes *rxdes)
 static bool ftmac100_rxdes_crc_error(struct ftmac100_rxdes *rxdes)
 {
 	return rxdes->rxdes0 & cpu_to_le32(FTMAC100_RXDES0_CRC_ERR);
-}
-
-static bool ftmac100_rxdes_frame_too_long(struct ftmac100_rxdes *rxdes)
-{
-	return rxdes->rxdes0 & cpu_to_le32(FTMAC100_RXDES0_FTL);
 }
 
 static bool ftmac100_rxdes_runt(struct ftmac100_rxdes *rxdes)
@@ -350,13 +375,7 @@ static bool ftmac100_rx_packet_error(struct ftmac100 *priv,
 		error = true;
 	}
 
-	if (unlikely(ftmac100_rxdes_frame_too_long(rxdes))) {
-		if (net_ratelimit())
-			netdev_info(netdev, "rx frame too long\n");
-
-		netdev->stats.rx_length_errors++;
-		error = true;
-	} else if (unlikely(ftmac100_rxdes_runt(rxdes))) {
+	if (unlikely(ftmac100_rxdes_runt(rxdes))) {
 		if (net_ratelimit())
 			netdev_info(netdev, "rx runt\n");
 
@@ -369,6 +388,11 @@ static bool ftmac100_rx_packet_error(struct ftmac100 *priv,
 		netdev->stats.rx_length_errors++;
 		error = true;
 	}
+	/*
+	 * FTMAC100_RXDES0_FTL is not an error, it just indicates that the
+	 * frame is longer than 1518 octets. Receiving these is possible when
+	 * we told the hardware not to drop them, via FTMAC100_MACCR_RX_FTL.
+	 */
 
 	return error;
 }
@@ -402,6 +426,7 @@ static bool ftmac100_rx_packet(struct ftmac100 *priv, int *processed)
 	struct page *page;
 	dma_addr_t map;
 	int length;
+	bool ret;
 
 	rxdes = ftmac100_rx_locate_first_segment(priv);
 	if (!rxdes)
@@ -412,12 +437,13 @@ static bool ftmac100_rx_packet(struct ftmac100 *priv, int *processed)
 		return true;
 	}
 
-	/*
-	 * It is impossible to get multi-segment packets
-	 * because we always provide big enough receive buffers.
-	 */
-	if (unlikely(!ftmac100_rxdes_last_segment(rxdes)))
-		BUG();
+	/* We don't support multi-segment packets for now, so drop them. */
+	ret = ftmac100_rxdes_last_segment(rxdes);
+	if (unlikely(!ret)) {
+		netdev->stats.rx_length_errors++;
+		ftmac100_rx_drop_packet(priv);
+		return true;
+	}
 
 	/* start processing */
 	skb = netdev_alloc_skb_ip_align(netdev, 128);
@@ -632,8 +658,8 @@ static void ftmac100_tx_complete(struct ftmac100 *priv)
 		;
 }
 
-static int ftmac100_xmit(struct ftmac100 *priv, struct sk_buff *skb,
-			 dma_addr_t map)
+static netdev_tx_t ftmac100_xmit(struct ftmac100 *priv, struct sk_buff *skb,
+				 dma_addr_t map)
 {
 	struct net_device *netdev = priv->netdev;
 	struct ftmac100_txdes *txdes;
@@ -732,10 +758,9 @@ static int ftmac100_alloc_buffers(struct ftmac100 *priv)
 {
 	int i;
 
-	priv->descs = dma_zalloc_coherent(priv->dev,
-					  sizeof(struct ftmac100_descs),
-					  &priv->descs_dma_addr,
-					  GFP_KERNEL);
+	priv->descs = dma_alloc_coherent(priv->dev,
+					 sizeof(struct ftmac100_descs),
+					 &priv->descs_dma_addr, GFP_KERNEL);
 	if (!priv->descs)
 		return -ENOMEM;
 
@@ -820,21 +845,25 @@ static void ftmac100_mdio_write(struct net_device *netdev, int phy_id, int reg,
 static void ftmac100_get_drvinfo(struct net_device *netdev,
 				 struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, dev_name(&netdev->dev), sizeof(info->bus_info));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->bus_info, dev_name(&netdev->dev), sizeof(info->bus_info));
 }
 
-static int ftmac100_get_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+static int ftmac100_get_link_ksettings(struct net_device *netdev,
+				       struct ethtool_link_ksettings *cmd)
 {
 	struct ftmac100 *priv = netdev_priv(netdev);
-	return mii_ethtool_gset(&priv->mii, cmd);
+
+	mii_ethtool_get_link_ksettings(&priv->mii, cmd);
+
+	return 0;
 }
 
-static int ftmac100_set_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+static int ftmac100_set_link_ksettings(struct net_device *netdev,
+				       const struct ethtool_link_ksettings *cmd)
 {
 	struct ftmac100 *priv = netdev_priv(netdev);
-	return mii_ethtool_sset(&priv->mii, cmd);
+	return mii_ethtool_set_link_ksettings(&priv->mii, cmd);
 }
 
 static int ftmac100_nway_reset(struct net_device *netdev)
@@ -850,11 +879,11 @@ static u32 ftmac100_get_link(struct net_device *netdev)
 }
 
 static const struct ethtool_ops ftmac100_ethtool_ops = {
-	.set_settings		= ftmac100_set_settings,
-	.get_settings		= ftmac100_get_settings,
 	.get_drvinfo		= ftmac100_get_drvinfo,
 	.nway_reset		= ftmac100_nway_reset,
 	.get_link		= ftmac100_get_link,
+	.get_link_ksettings	= ftmac100_get_link_ksettings,
+	.set_link_ksettings	= ftmac100_set_link_ksettings,
 };
 
 /******************************************************************************
@@ -865,11 +894,10 @@ static irqreturn_t ftmac100_interrupt(int irq, void *dev_id)
 	struct net_device *netdev = dev_id;
 	struct ftmac100 *priv = netdev_priv(netdev);
 
-	if (likely(netif_running(netdev))) {
-		/* Disable interrupts for polling */
-		ftmac100_disable_all_int(priv);
+	/* Disable interrupts for polling */
+	ftmac100_disable_all_int(priv);
+	if (likely(netif_running(netdev)))
 		napi_schedule(&priv->napi);
-	}
 
 	return IRQ_HANDLED;
 }
@@ -1009,7 +1037,8 @@ static int ftmac100_stop(struct net_device *netdev)
 	return 0;
 }
 
-static int ftmac100_hard_start_xmit(struct sk_buff *skb, struct net_device *netdev)
+static netdev_tx_t
+ftmac100_hard_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct ftmac100 *priv = netdev_priv(netdev);
 	dma_addr_t map;
@@ -1046,13 +1075,46 @@ static int ftmac100_do_ioctl(struct net_device *netdev, struct ifreq *ifr, int c
 	return generic_mii_ioctl(&priv->mii, data, cmd, NULL);
 }
 
+static int ftmac100_change_mtu(struct net_device *netdev, int mtu)
+{
+	struct ftmac100 *priv = netdev_priv(netdev);
+	unsigned int maccr;
+
+	maccr = ioread32(priv->base + FTMAC100_OFFSET_MACCR);
+	if (mtu > ETH_DATA_LEN) {
+		/* process long packets in the driver */
+		maccr |= FTMAC100_MACCR_RX_FTL;
+	} else {
+		/* Let the controller drop incoming packets greater
+		 * than 1518 (that is 1500 + 14 Ethernet + 4 FCS).
+		 */
+		maccr &= ~FTMAC100_MACCR_RX_FTL;
+	}
+	iowrite32(maccr, priv->base + FTMAC100_OFFSET_MACCR);
+
+	netdev->mtu = mtu;
+
+	return 0;
+}
+
+static void ftmac100_set_rx_mode(struct net_device *netdev)
+{
+	struct ftmac100 *priv = netdev_priv(netdev);
+	unsigned int maccr = ioread32(priv->base + FTMAC100_OFFSET_MACCR);
+
+	ftmac100_set_rx_bits(priv, &maccr);
+	iowrite32(maccr, priv->base + FTMAC100_OFFSET_MACCR);
+}
+
 static const struct net_device_ops ftmac100_netdev_ops = {
 	.ndo_open		= ftmac100_open,
 	.ndo_stop		= ftmac100_stop,
 	.ndo_start_xmit		= ftmac100_hard_start_xmit,
 	.ndo_set_mac_address	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_do_ioctl		= ftmac100_do_ioctl,
+	.ndo_eth_ioctl		= ftmac100_do_ioctl,
+	.ndo_change_mtu		= ftmac100_change_mtu,
+	.ndo_set_rx_mode	= ftmac100_set_rx_mode,
 };
 
 /******************************************************************************
@@ -1065,9 +1127,6 @@ static int ftmac100_probe(struct platform_device *pdev)
 	struct net_device *netdev;
 	struct ftmac100 *priv;
 	int err;
-
-	if (!pdev)
-		return -ENODEV;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res)
@@ -1085,8 +1144,13 @@ static int ftmac100_probe(struct platform_device *pdev)
 	}
 
 	SET_NETDEV_DEV(netdev, &pdev->dev);
-	SET_ETHTOOL_OPS(netdev, &ftmac100_ethtool_ops);
+	netdev->ethtool_ops = &ftmac100_ethtool_ops;
 	netdev->netdev_ops = &ftmac100_netdev_ops;
+	netdev->max_mtu = MAX_PKT_SIZE - VLAN_ETH_HLEN;
+
+	err = platform_get_ethdev_address(&pdev->dev, netdev);
+	if (err == -EPROBE_DEFER)
+		goto defer_get_mac;
 
 	platform_set_drvdata(pdev, netdev);
 
@@ -1098,7 +1162,7 @@ static int ftmac100_probe(struct platform_device *pdev)
 	spin_lock_init(&priv->tx_lock);
 
 	/* initialize NAPI */
-	netif_napi_add(netdev, &priv->napi, ftmac100_poll, 64);
+	netif_napi_add(netdev, &priv->napi, ftmac100_poll);
 
 	/* map io memory */
 	priv->res = request_mem_region(res->start, resource_size(res),
@@ -1149,12 +1213,13 @@ err_ioremap:
 	release_resource(priv->res);
 err_req_mem:
 	netif_napi_del(&priv->napi);
+defer_get_mac:
 	free_netdev(netdev);
 err_alloc_etherdev:
 	return err;
 }
 
-static int __exit ftmac100_remove(struct platform_device *pdev)
+static int ftmac100_remove(struct platform_device *pdev)
 {
 	struct net_device *netdev;
 	struct ftmac100 *priv;
@@ -1172,32 +1237,26 @@ static int __exit ftmac100_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static const struct of_device_id ftmac100_of_ids[] = {
+	{ .compatible = "andestech,atmac100" },
+	{ }
+};
+
 static struct platform_driver ftmac100_driver = {
 	.probe		= ftmac100_probe,
-	.remove		= __exit_p(ftmac100_remove),
+	.remove		= ftmac100_remove,
 	.driver		= {
 		.name	= DRV_NAME,
-		.owner	= THIS_MODULE,
+		.of_match_table = ftmac100_of_ids
 	},
 };
 
 /******************************************************************************
  * initialization / finalization
  *****************************************************************************/
-static int __init ftmac100_init(void)
-{
-	pr_info("Loading version " DRV_VERSION " ...\n");
-	return platform_driver_register(&ftmac100_driver);
-}
-
-static void __exit ftmac100_exit(void)
-{
-	platform_driver_unregister(&ftmac100_driver);
-}
-
-module_init(ftmac100_init);
-module_exit(ftmac100_exit);
+module_platform_driver(ftmac100_driver);
 
 MODULE_AUTHOR("Po-Yu Chuang <ratbert@faraday-tech.com>");
 MODULE_DESCRIPTION("FTMAC100 driver");
 MODULE_LICENSE("GPL");
+MODULE_DEVICE_TABLE(of, ftmac100_of_ids);

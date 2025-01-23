@@ -1,28 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *  Samsung s5h1432 VSB/QAM demodulator driver
  *
  *  Copyright (C) 2009 Bill Liu <Bill.Liu@Conexant.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  */
 
 #ifndef __S5H1432_H__
 #define __S5H1432_H__
 
-#include <linux/kconfig.h>
 #include <linux/dvb/frontend.h>
 
 #define S5H1432_I2C_TOP_ADDR (0x02 >> 1)
@@ -47,10 +32,10 @@ struct s5h1432_config {
 	u8 gpio;
 
 	/* MPEG signal timing */
-#define S5H1432_MPEGTIMING_CONTINOUS_INVERTING_CLOCK       0
-#define S5H1432_MPEGTIMING_CONTINOUS_NONINVERTING_CLOCK    1
-#define S5H1432_MPEGTIMING_NONCONTINOUS_INVERTING_CLOCK    2
-#define S5H1432_MPEGTIMING_NONCONTINOUS_NONINVERTING_CLOCK 3
+#define S5H1432_MPEGTIMING_CONTINUOUS_INVERTING_CLOCK       0
+#define S5H1432_MPEGTIMING_CONTINUOUS_NONINVERTING_CLOCK    1
+#define S5H1432_MPEGTIMING_NONCONTINUOUS_INVERTING_CLOCK    2
+#define S5H1432_MPEGTIMING_NONCONTINUOUS_NONINVERTING_CLOCK 3
 	u16 mpeg_timing;
 
 	/* IF Freq for QAM and VSB in KHz */
@@ -75,7 +60,7 @@ struct s5h1432_config {
 	u8 status_mode;
 };
 
-#if IS_ENABLED(CONFIG_DVB_S5H1432)
+#if IS_REACHABLE(CONFIG_DVB_S5H1432)
 extern struct dvb_frontend *s5h1432_attach(const struct s5h1432_config *config,
 					   struct i2c_adapter *i2c);
 #else

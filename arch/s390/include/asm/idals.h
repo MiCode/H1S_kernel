@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* 
  * Author(s)......: Holger Smolinski <Holger.Smolinski@de.ibm.com>
  *		    Martin Schwidefsky <schwidefsky@de.ibm.com>
@@ -17,14 +18,13 @@
 #include <linux/types.h>
 #include <linux/slab.h>
 #include <asm/cio.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
-#ifdef CONFIG_64BIT
 #define IDA_SIZE_LOG 12 /* 11 for 2k , 12 for 4k */
-#else
-#define IDA_SIZE_LOG 11 /* 11 for 2k , 12 for 4k */
-#endif
 #define IDA_BLOCK_SIZE (1L<<IDA_SIZE_LOG)
+
+#define IDA_2K_SIZE_LOG 11
+#define IDA_2K_BLOCK_SIZE (1L << IDA_2K_SIZE_LOG)
 
 /*
  * Test if an address/length pair needs an idal list.
@@ -32,11 +32,7 @@
 static inline int
 idal_is_needed(void *vaddr, unsigned int length)
 {
-#ifdef CONFIG_64BIT
 	return ((__pa(vaddr) + length - 1) >> 31) != 0;
-#else
-	return 0;
-#endif
 }
 
 
@@ -47,6 +43,15 @@ static inline unsigned int idal_nr_words(void *vaddr, unsigned int length)
 {
 	return ((__pa(vaddr) & (IDA_BLOCK_SIZE-1)) + length +
 		(IDA_BLOCK_SIZE-1)) >> IDA_SIZE_LOG;
+}
+
+/*
+ * Return the number of 2K IDA words needed for an address/length pair.
+ */
+static inline unsigned int idal_2k_nr_words(void *vaddr, unsigned int length)
+{
+	return ((__pa(vaddr) & (IDA_2K_BLOCK_SIZE - 1)) + length +
+		(IDA_2K_BLOCK_SIZE - 1)) >> IDA_2K_SIZE_LOG;
 }
 
 /*
@@ -77,7 +82,6 @@ static inline unsigned long *idal_create_words(unsigned long *idaws,
 static inline int
 set_normalized_cda(struct ccw1 * ccw, void *vaddr)
 {
-#ifdef CONFIG_64BIT
 	unsigned int nridaws;
 	unsigned long *idal;
 
@@ -93,7 +97,6 @@ set_normalized_cda(struct ccw1 * ccw, void *vaddr)
 		ccw->flags |= CCW_FLAG_IDA;
 		vaddr = idal;
 	}
-#endif
 	ccw->cda = (__u32)(unsigned long) vaddr;
 	return 0;
 }
@@ -104,12 +107,10 @@ set_normalized_cda(struct ccw1 * ccw, void *vaddr)
 static inline void
 clear_normalized_cda(struct ccw1 * ccw)
 {
-#ifdef CONFIG_64BIT
 	if (ccw->flags & CCW_FLAG_IDA) {
 		kfree((void *)(unsigned long) ccw->cda);
 		ccw->flags &= ~CCW_FLAG_IDA;
 	}
-#endif
 	ccw->cda = 0;
 }
 
@@ -119,7 +120,7 @@ clear_normalized_cda(struct ccw1 * ccw)
 struct idal_buffer {
 	size_t size;
 	size_t page_order;
-	void *data[0];
+	void *data[];
 };
 
 /*
@@ -133,8 +134,7 @@ idal_buffer_alloc(size_t size, int page_order)
 
 	nr_ptrs = (size + IDA_BLOCK_SIZE - 1) >> IDA_SIZE_LOG;
 	nr_chunks = (4096 << page_order) >> IDA_SIZE_LOG;
-	ib = kmalloc(sizeof(struct idal_buffer) + nr_ptrs*sizeof(void *),
-		     GFP_DMA | GFP_KERNEL);
+	ib = kmalloc(struct_size(ib, data, nr_ptrs), GFP_DMA | GFP_KERNEL);
 	if (ib == NULL)
 		return ERR_PTR(-ENOMEM);
 	ib->size = size;
@@ -181,12 +181,8 @@ idal_buffer_free(struct idal_buffer *ib)
 static inline int
 __idal_buffer_is_needed(struct idal_buffer *ib)
 {
-#ifdef CONFIG_64BIT
 	return ib->size > (4096ul << ib->page_order) ||
 		idal_is_needed(ib->data[0], ib->size);
-#else
-	return ib->size > (4096ul << ib->page_order);
-#endif
 }
 
 /*

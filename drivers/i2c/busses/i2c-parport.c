@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* ------------------------------------------------------------------------ *
  * i2c-parport.c I2C bus over parallel port                                 *
  * ------------------------------------------------------------------------ *
@@ -9,20 +10,9 @@
    Frodo Looijaard <frodol@dds.nl>
    Kyösti Mälkki <kmalkki@cc.hut.fi>
 
-   This program is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 2 of the License, or
-   (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  * ------------------------------------------------------------------------ */
+
+#define pr_fmt(fmt) "i2c-parport: " fmt
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -35,7 +25,90 @@
 #include <linux/slab.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
-#include "i2c-parport.h"
+
+#define PORT_DATA	0
+#define PORT_STAT	1
+#define PORT_CTRL	2
+
+struct lineop {
+	u8 val;
+	u8 port;
+	u8 inverted;
+};
+
+struct adapter_parm {
+	struct lineop setsda;
+	struct lineop setscl;
+	struct lineop getsda;
+	struct lineop getscl;
+	struct lineop init;
+	unsigned int smbus_alert:1;
+};
+
+static const struct adapter_parm adapter_parm[] = {
+	/* type 0: Philips adapter */
+	{
+		.setsda	= { 0x80, PORT_DATA, 1 },
+		.setscl	= { 0x08, PORT_CTRL, 0 },
+		.getsda	= { 0x80, PORT_STAT, 0 },
+		.getscl	= { 0x08, PORT_STAT, 0 },
+	},
+	/* type 1: home brew teletext adapter */
+	{
+		.setsda	= { 0x02, PORT_DATA, 0 },
+		.setscl	= { 0x01, PORT_DATA, 0 },
+		.getsda	= { 0x80, PORT_STAT, 1 },
+	},
+	/* type 2: Velleman K8000 adapter */
+	{
+		.setsda	= { 0x02, PORT_CTRL, 1 },
+		.setscl	= { 0x08, PORT_CTRL, 1 },
+		.getsda	= { 0x10, PORT_STAT, 0 },
+	},
+	/* type 3: ELV adapter */
+	{
+		.setsda	= { 0x02, PORT_DATA, 1 },
+		.setscl	= { 0x01, PORT_DATA, 1 },
+		.getsda	= { 0x40, PORT_STAT, 1 },
+		.getscl	= { 0x08, PORT_STAT, 1 },
+	},
+	/* type 4: ADM1032 evaluation board */
+	{
+		.setsda	= { 0x02, PORT_DATA, 1 },
+		.setscl	= { 0x01, PORT_DATA, 1 },
+		.getsda	= { 0x10, PORT_STAT, 1 },
+		.init	= { 0xf0, PORT_DATA, 0 },
+		.smbus_alert = 1,
+	},
+	/* type 5: ADM1025, ADM1030 and ADM1031 evaluation boards */
+	{
+		.setsda	= { 0x02, PORT_DATA, 1 },
+		.setscl	= { 0x01, PORT_DATA, 1 },
+		.getsda	= { 0x10, PORT_STAT, 1 },
+	},
+	/* type 6: Barco LPT->DVI (K5800236) adapter */
+	{
+		.setsda	= { 0x02, PORT_DATA, 1 },
+		.setscl	= { 0x01, PORT_DATA, 1 },
+		.getsda	= { 0x20, PORT_STAT, 0 },
+		.getscl	= { 0x40, PORT_STAT, 0 },
+		.init	= { 0xfc, PORT_DATA, 0 },
+	},
+	/* type 7: One For All JP1 parallel port adapter */
+	{
+		.setsda	= { 0x01, PORT_DATA, 0 },
+		.setscl	= { 0x02, PORT_DATA, 0 },
+		.getsda	= { 0x80, PORT_STAT, 1 },
+		.init	= { 0x04, PORT_DATA, 1 },
+	},
+	/* type 8: VCT-jig */
+	{
+		.setsda	= { 0x04, PORT_DATA, 1 },
+		.setscl	= { 0x01, PORT_DATA, 1 },
+		.getsda	= { 0x40, PORT_STAT, 0 },
+		.getscl	= { 0x80, PORT_STAT, 1 },
+	},
+};
 
 /* ----- Device list ------------------------------------------------------ */
 
@@ -50,6 +123,30 @@ struct i2c_par {
 
 static LIST_HEAD(adapter_list);
 static DEFINE_MUTEX(adapter_list_lock);
+
+#define MAX_DEVICE 4
+static int parport[MAX_DEVICE] = {0, -1, -1, -1};
+module_param_array(parport, int, NULL, 0);
+MODULE_PARM_DESC(parport,
+		 "List of parallel ports to bind to, by index.\n"
+		 " At most " __stringify(MAX_DEVICE) " devices are supported.\n"
+		 " Default is one device connected to parport0.\n"
+);
+
+static int type = -1;
+module_param(type, int, 0);
+MODULE_PARM_DESC(type,
+	"Type of adapter:\n"
+	" 0 = Philips adapter\n"
+	" 1 = home brew teletext adapter\n"
+	" 2 = Velleman K8000 adapter\n"
+	" 3 = ELV adapter\n"
+	" 4 = ADM1032 evaluation board\n"
+	" 5 = ADM1025, ADM1030 and ADM1031 evaluation boards\n"
+	" 6 = Barco LPT->DVI (K5800236) adapter\n"
+	" 7 = One For All JP1 parallel port adapter\n"
+	" 8 = VCT-jig\n"
+);
 
 /* ----- Low-level parallel port access ----------------------------------- */
 
@@ -167,26 +264,51 @@ static void i2c_parport_irq(void *data)
 static void i2c_parport_attach(struct parport *port)
 {
 	struct i2c_par *adapter;
+	int i;
+	struct pardev_cb i2c_parport_cb;
 
-	adapter = kzalloc(sizeof(struct i2c_par), GFP_KERNEL);
-	if (adapter == NULL) {
-		printk(KERN_ERR "i2c-parport: Failed to kzalloc\n");
+	if (type < 0) {
+		pr_warn("adapter type unspecified\n");
 		return;
 	}
 
-	pr_debug("i2c-parport: attaching to %s\n", port->name);
+	if (type >= ARRAY_SIZE(adapter_parm)) {
+		pr_warn("invalid type (%d)\n", type);
+		return;
+	}
+
+	for (i = 0; i < MAX_DEVICE; i++) {
+		if (parport[i] == -1)
+			continue;
+		if (port->number == parport[i])
+			break;
+	}
+	if (i == MAX_DEVICE) {
+		pr_debug("Not using parport%d.\n", port->number);
+		return;
+	}
+
+	adapter = kzalloc(sizeof(struct i2c_par), GFP_KERNEL);
+	if (!adapter)
+		return;
+	memset(&i2c_parport_cb, 0, sizeof(i2c_parport_cb));
+	i2c_parport_cb.flags = PARPORT_FLAG_EXCL;
+	i2c_parport_cb.irq_func = i2c_parport_irq;
+	i2c_parport_cb.private = adapter;
+
+	pr_debug("attaching to %s\n", port->name);
 	parport_disable_irq(port);
-	adapter->pdev = parport_register_device(port, "i2c-parport",
-		NULL, NULL, i2c_parport_irq, PARPORT_FLAG_EXCL, adapter);
+	adapter->pdev = parport_register_dev_model(port, "i2c-parport",
+						   &i2c_parport_cb, i);
 	if (!adapter->pdev) {
-		printk(KERN_ERR "i2c-parport: Unable to register with parport\n");
+		pr_err("Unable to register with parport\n");
 		goto err_free;
 	}
 
 	/* Fill the rest of the structure */
 	adapter->adapter.owner = THIS_MODULE;
 	adapter->adapter.class = I2C_CLASS_HWMON;
-	strlcpy(adapter->adapter.name, "Parallel port adapter",
+	strscpy(adapter->adapter.name, "Parallel port adapter",
 		sizeof(adapter->adapter.name));
 	adapter->algo_data = parport_algo_data;
 	/* Slow down if we can't sense SCL */
@@ -199,7 +321,8 @@ static void i2c_parport_attach(struct parport *port)
 	adapter->adapter.dev.parent = port->physport->dev;
 
 	if (parport_claim_or_block(adapter->pdev) < 0) {
-		printk(KERN_ERR "i2c-parport: Could not claim parallel port\n");
+		dev_err(&adapter->pdev->dev,
+			"Could not claim parallel port\n");
 		goto err_unregister;
 	}
 
@@ -214,20 +337,23 @@ static void i2c_parport_attach(struct parport *port)
 	}
 
 	if (i2c_bit_add_bus(&adapter->adapter) < 0) {
-		printk(KERN_ERR "i2c-parport: Unable to register with I2C\n");
+		dev_err(&adapter->pdev->dev, "Unable to register with I2C\n");
 		goto err_unregister;
 	}
 
 	/* Setup SMBus alert if supported */
 	if (adapter_parm[type].smbus_alert) {
-		adapter->alert_data.alert_edge_triggered = 1;
-		adapter->ara = i2c_setup_smbus_alert(&adapter->adapter,
-						     &adapter->alert_data);
-		if (adapter->ara)
+		struct i2c_client *ara;
+
+		ara = i2c_new_smbus_alert_device(&adapter->adapter,
+						 &adapter->alert_data);
+		if (!IS_ERR(ara)) {
+			adapter->ara = ara;
 			parport_enable_irq(port);
-		else
-			printk(KERN_WARNING "i2c-parport: Failed to register "
-			       "ARA client\n");
+		} else {
+			dev_warn(&adapter->pdev->dev,
+				 "Failed to register ARA client\n");
+		}
 	}
 
 	/* Add the new adapter to the list */
@@ -271,36 +397,13 @@ static void i2c_parport_detach(struct parport *port)
 }
 
 static struct parport_driver i2c_parport_driver = {
-	.name	= "i2c-parport",
-	.attach	= i2c_parport_attach,
-	.detach	= i2c_parport_detach,
+	.name = "i2c-parport",
+	.match_port = i2c_parport_attach,
+	.detach = i2c_parport_detach,
+	.devmodel = true,
 };
-
-/* ----- Module loading, unloading and information ------------------------ */
-
-static int __init i2c_parport_init(void)
-{
-	if (type < 0) {
-		printk(KERN_WARNING "i2c-parport: adapter type unspecified\n");
-		return -ENODEV;
-	}
-
-	if (type >= ARRAY_SIZE(adapter_parm)) {
-		printk(KERN_WARNING "i2c-parport: invalid type (%d)\n", type);
-		return -ENODEV;
-	}
-
-	return parport_register_driver(&i2c_parport_driver);
-}
-
-static void __exit i2c_parport_exit(void)
-{
-	parport_unregister_driver(&i2c_parport_driver);
-}
+module_parport_driver(i2c_parport_driver);
 
 MODULE_AUTHOR("Jean Delvare <jdelvare@suse.de>");
 MODULE_DESCRIPTION("I2C bus over parallel port");
 MODULE_LICENSE("GPL");
-
-module_init(i2c_parport_init);
-module_exit(i2c_parport_exit);

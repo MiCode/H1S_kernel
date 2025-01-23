@@ -15,6 +15,16 @@
 #include "inffast.h"
 #include "infutil.h"
 
+/* architecture-specific bits */
+#ifdef CONFIG_ZLIB_DFLTCC
+#  include "../zlib_dfltcc/dfltcc_inflate.h"
+#else
+#define INFLATE_RESET_HOOK(strm) do {} while (0)
+#define INFLATE_TYPEDO_HOOK(strm, flush) do {} while (0)
+#define INFLATE_NEED_UPDATEWINDOW(strm) 1
+#define INFLATE_NEED_CHECKSUM(strm) 1
+#endif
+
 int zlib_inflate_workspacesize(void)
 {
     return sizeof(struct inflate_workspace);
@@ -42,23 +52,9 @@ int zlib_inflateReset(z_streamp strm)
     state->write = 0;
     state->whave = 0;
 
+    INFLATE_RESET_HOOK(strm);
     return Z_OK;
 }
-
-#if 0
-int zlib_inflatePrime(z_streamp strm, int bits, int value)
-{
-    struct inflate_state *state;
-
-    if (strm == NULL || strm->state == NULL) return Z_STREAM_ERROR;
-    state = (struct inflate_state *)strm->state;
-    if (bits > 16 || state->bits + bits > 32) return Z_STREAM_ERROR;
-    value &= (1L << bits) - 1;
-    state->hold += value << state->bits;
-    state->bits += bits;
-    return Z_OK;
-}
-#endif
 
 int zlib_inflateInit2(z_streamp strm, int windowBits)
 {
@@ -81,7 +77,15 @@ int zlib_inflateInit2(z_streamp strm, int windowBits)
         return Z_STREAM_ERROR;
     }
     state->wbits = (unsigned)windowBits;
+#ifdef CONFIG_ZLIB_DFLTCC
+    /*
+     * DFLTCC requires the window to be page aligned.
+     * Thus, we overallocate and take the aligned portion of the buffer.
+     */
+    state->window = PTR_ALIGN(&WS(strm)->working_window[0], PAGE_SIZE);
+#else
     state->window = &WS(strm)->working_window[0];
+#endif
 
     return zlib_inflateReset(strm);
 }
@@ -242,11 +246,6 @@ static int zlib_inflateSyncPacket(z_streamp strm)
         bits -= bits & 7; \
     } while (0)
 
-/* Reverse the bytes in a 32-bit value */
-#define REVERSE(q) \
-    ((((q) >> 24) & 0xff) + (((q) >> 8) & 0xff00) + \
-     (((q) & 0xff00) << 8) + (((q) & 0xff) << 24))
-
 /*
    inflate() uses a state machine to process as much input data and generate as
    much output data as possible before returning.  The state machine is
@@ -397,6 +396,7 @@ int zlib_inflate(z_streamp strm, int flush)
             strm->adler = state->check = REVERSE(hold);
             INITBITS();
             state->mode = DICT;
+	    fallthrough;
         case DICT:
             if (state->havedict == 0) {
                 RESTORE();
@@ -404,9 +404,12 @@ int zlib_inflate(z_streamp strm, int flush)
             }
             strm->adler = state->check = zlib_adler32(0L, NULL, 0);
             state->mode = TYPE;
+	    fallthrough;
         case TYPE:
             if (flush == Z_BLOCK) goto inf_leave;
+	    fallthrough;
         case TYPEDO:
+            INFLATE_TYPEDO_HOOK(strm, flush);
             if (state->last) {
                 BYTEBITS();
                 state->mode = CHECK;
@@ -443,6 +446,7 @@ int zlib_inflate(z_streamp strm, int flush)
             state->length = (unsigned)hold & 0xffff;
             INITBITS();
             state->mode = COPY;
+	    fallthrough;
         case COPY:
             copy = state->length;
             if (copy) {
@@ -476,6 +480,7 @@ int zlib_inflate(z_streamp strm, int flush)
 #endif
             state->have = 0;
             state->mode = LENLENS;
+	    fallthrough;
         case LENLENS:
             while (state->have < state->ncode) {
                 NEEDBITS(3);
@@ -496,6 +501,7 @@ int zlib_inflate(z_streamp strm, int flush)
             }
             state->have = 0;
             state->mode = CODELENS;
+	    fallthrough;
         case CODELENS:
             while (state->have < state->nlen + state->ndist) {
                 for (;;) {
@@ -569,6 +575,7 @@ int zlib_inflate(z_streamp strm, int flush)
                 break;
             }
             state->mode = LEN;
+	    fallthrough;
         case LEN:
             if (have >= 6 && left >= 258) {
                 RESTORE();
@@ -608,6 +615,7 @@ int zlib_inflate(z_streamp strm, int flush)
             }
             state->extra = (unsigned)(this.op) & 15;
             state->mode = LENEXT;
+	    fallthrough;
         case LENEXT:
             if (state->extra) {
                 NEEDBITS(state->extra);
@@ -615,6 +623,7 @@ int zlib_inflate(z_streamp strm, int flush)
                 DROPBITS(state->extra);
             }
             state->mode = DIST;
+	    fallthrough;
         case DIST:
             for (;;) {
                 this = state->distcode[BITS(state->distbits)];
@@ -640,6 +649,7 @@ int zlib_inflate(z_streamp strm, int flush)
             state->offset = (unsigned)this.val;
             state->extra = (unsigned)(this.op) & 15;
             state->mode = DISTEXT;
+	    fallthrough;
         case DISTEXT:
             if (state->extra) {
                 NEEDBITS(state->extra);
@@ -659,6 +669,7 @@ int zlib_inflate(z_streamp strm, int flush)
                 break;
             }
             state->mode = MATCH;
+	    fallthrough;
         case MATCH:
             if (left == 0) goto inf_leave;
             copy = out - left;
@@ -696,7 +707,7 @@ int zlib_inflate(z_streamp strm, int flush)
                 out -= left;
                 strm->total_out += out;
                 state->total += out;
-                if (out)
+                if (INFLATE_NEED_CHECKSUM(strm) && out)
                     strm->adler = state->check =
                         UPDATE(state->check, put - out, out);
                 out = left;
@@ -709,6 +720,7 @@ int zlib_inflate(z_streamp strm, int flush)
                 INITBITS();
             }
             state->mode = DONE;
+	    fallthrough;
         case DONE:
             ret = Z_STREAM_END;
             goto inf_leave;
@@ -729,7 +741,8 @@ int zlib_inflate(z_streamp strm, int flush)
      */
   inf_leave:
     RESTORE();
-    if (state->wsize || (state->mode < CHECK && out != strm->avail_out))
+    if (INFLATE_NEED_UPDATEWINDOW(strm) &&
+            (state->wsize || (state->mode < CHECK && out != strm->avail_out)))
         zlib_updatewindow(strm, out);
 
     in -= strm->avail_in;
@@ -737,7 +750,7 @@ int zlib_inflate(z_streamp strm, int flush)
     strm->total_in += in;
     strm->total_out += out;
     state->total += out;
-    if (state->wrap && out)
+    if (INFLATE_NEED_CHECKSUM(strm) && state->wrap && out)
         strm->adler = state->check =
             UPDATE(state->check, strm->next_out - out, out);
 
@@ -760,123 +773,6 @@ int zlib_inflateEnd(z_streamp strm)
         return Z_STREAM_ERROR;
     return Z_OK;
 }
-
-#if 0
-int zlib_inflateSetDictionary(z_streamp strm, const Byte *dictionary,
-        uInt dictLength)
-{
-    struct inflate_state *state;
-    unsigned long id;
-
-    /* check state */
-    if (strm == NULL || strm->state == NULL) return Z_STREAM_ERROR;
-    state = (struct inflate_state *)strm->state;
-    if (state->wrap != 0 && state->mode != DICT)
-        return Z_STREAM_ERROR;
-
-    /* check for correct dictionary id */
-    if (state->mode == DICT) {
-        id = zlib_adler32(0L, NULL, 0);
-        id = zlib_adler32(id, dictionary, dictLength);
-        if (id != state->check)
-            return Z_DATA_ERROR;
-    }
-
-    /* copy dictionary to window */
-    zlib_updatewindow(strm, strm->avail_out);
-
-    if (dictLength > state->wsize) {
-        memcpy(state->window, dictionary + dictLength - state->wsize,
-                state->wsize);
-        state->whave = state->wsize;
-    }
-    else {
-        memcpy(state->window + state->wsize - dictLength, dictionary,
-                dictLength);
-        state->whave = dictLength;
-    }
-    state->havedict = 1;
-    return Z_OK;
-}
-#endif
-
-#if 0
-/*
-   Search buf[0..len-1] for the pattern: 0, 0, 0xff, 0xff.  Return when found
-   or when out of input.  When called, *have is the number of pattern bytes
-   found in order so far, in 0..3.  On return *have is updated to the new
-   state.  If on return *have equals four, then the pattern was found and the
-   return value is how many bytes were read including the last byte of the
-   pattern.  If *have is less than four, then the pattern has not been found
-   yet and the return value is len.  In the latter case, zlib_syncsearch() can be
-   called again with more data and the *have state.  *have is initialized to
-   zero for the first call.
- */
-static unsigned zlib_syncsearch(unsigned *have, unsigned char *buf,
-        unsigned len)
-{
-    unsigned got;
-    unsigned next;
-
-    got = *have;
-    next = 0;
-    while (next < len && got < 4) {
-        if ((int)(buf[next]) == (got < 2 ? 0 : 0xff))
-            got++;
-        else if (buf[next])
-            got = 0;
-        else
-            got = 4 - got;
-        next++;
-    }
-    *have = got;
-    return next;
-}
-#endif
-
-#if 0
-int zlib_inflateSync(z_streamp strm)
-{
-    unsigned len;               /* number of bytes to look at or looked at */
-    unsigned long in, out;      /* temporary to save total_in and total_out */
-    unsigned char buf[4];       /* to restore bit buffer to byte string */
-    struct inflate_state *state;
-
-    /* check parameters */
-    if (strm == NULL || strm->state == NULL) return Z_STREAM_ERROR;
-    state = (struct inflate_state *)strm->state;
-    if (strm->avail_in == 0 && state->bits < 8) return Z_BUF_ERROR;
-
-    /* if first time, start search in bit buffer */
-    if (state->mode != SYNC) {
-        state->mode = SYNC;
-        state->hold <<= state->bits & 7;
-        state->bits -= state->bits & 7;
-        len = 0;
-        while (state->bits >= 8) {
-            buf[len++] = (unsigned char)(state->hold);
-            state->hold >>= 8;
-            state->bits -= 8;
-        }
-        state->have = 0;
-        zlib_syncsearch(&(state->have), buf, len);
-    }
-
-    /* search available input */
-    len = zlib_syncsearch(&(state->have), strm->next_in, strm->avail_in);
-    strm->avail_in -= len;
-    strm->next_in += len;
-    strm->total_in += len;
-
-    /* return no joy or set up to restart inflate() on a new block */
-    if (state->have != 4) return Z_DATA_ERROR;
-    in = strm->total_in;  out = strm->total_out;
-    zlib_inflateReset(strm);
-    strm->total_in = in;  strm->total_out = out;
-    state->mode = TYPE;
-    return Z_OK;
-}
-#endif
 
 /*
  * This subroutine adds the data at next_in/avail_in to the output history

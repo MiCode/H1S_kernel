@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * drivers/i2c/busses/i2c-ibm_iic.c
  *
@@ -23,12 +24,6 @@
  *
  *   	With some changes from Kyösti Mälkki <kmalkki@cc.hut.fi>
  *	and even Frodo Looijaard <frodol@dds.nl>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
- *
  */
 
 #include <linux/module.h>
@@ -37,12 +32,15 @@
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
+#include <linux/sched/signal.h>
+
 #include <asm/irq.h>
 #include <linux/io.h>
 #include <linux/i2c.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 
 #include "i2c-ibm_iic.h"
 
@@ -99,7 +97,7 @@ static void dump_iic_regs(const char* header, struct ibm_iic_private* dev)
 #endif
 
 /* Bus timings (in ns) for bit-banging */
-static struct i2c_timings {
+static struct ibm_iic_timings {
 	unsigned int hd_sta;
 	unsigned int su_sto;
 	unsigned int low;
@@ -241,7 +239,7 @@ static int iic_dc_wait(volatile struct iic_regs __iomem *iic, u8 mask)
 static int iic_smbus_quick(struct ibm_iic_private* dev, const struct i2c_msg* p)
 {
 	volatile struct iic_regs __iomem *iic = dev->vaddr;
-	const struct i2c_timings* t = &timings[dev->fast_mode ? 1 : 0];
+	const struct ibm_iic_timings *t = &timings[dev->fast_mode ? 1 : 0];
 	u8 mask, v, sda;
 	int i, res;
 
@@ -269,7 +267,7 @@ static int iic_smbus_quick(struct ibm_iic_private* dev, const struct i2c_msg* p)
 	ndelay(t->hd_sta);
 
 	/* Send address */
-	v = (u8)((p->addr << 1) | ((p->flags & I2C_M_RD) ? 1 : 0));
+	v = i2c_8bit_addr_from_msg(p);
 	for (i = 0, mask = 0x80; i < 8; ++i, mask >>= 1){
 		out_8(&iic->directcntl, sda);
 		ndelay(t->low / 2);
@@ -435,7 +433,7 @@ static int iic_wait_for_tc(struct ibm_iic_private* dev){
 				break;
 			}
 
-			if (unlikely(signal_pending(current))){
+			if (signal_pending(current)){
 				DBG("%d: poll interrupted\n", dev->idx);
 				ret = -ERESTARTSYS;
 				break;
@@ -558,9 +556,6 @@ static int iic_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 	int i, ret = 0;
 
 	DBG2("%d: iic_xfer, %d msg(s)\n", dev->idx, num);
-
-	if (!num)
-		return 0;
 
 	/* Check the sanity of the passed messages.
 	 * Uhh, generic i2c layer is more suitable place for such code...
@@ -700,10 +695,8 @@ static int iic_probe(struct platform_device *ofdev)
 	int ret;
 
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
-	if (!dev) {
-		dev_err(&ofdev->dev, "failed to allocate device data\n");
+	if (!dev)
 		return -ENOMEM;
-	}
 
 	platform_set_drvdata(ofdev, dev);
 
@@ -744,17 +737,15 @@ static int iic_probe(struct platform_device *ofdev)
 	adap = &dev->adap;
 	adap->dev.parent = &ofdev->dev;
 	adap->dev.of_node = of_node_get(np);
-	strlcpy(adap->name, "IBM IIC", sizeof(adap->name));
+	strscpy(adap->name, "IBM IIC", sizeof(adap->name));
 	i2c_set_adapdata(adap, dev);
 	adap->class = I2C_CLASS_HWMON | I2C_CLASS_SPD;
 	adap->algo = &iic_algo;
 	adap->timeout = HZ;
 
 	ret = i2c_add_adapter(adap);
-	if (ret  < 0) {
-		dev_err(&ofdev->dev, "failed to register i2c adapter\n");
+	if (ret  < 0)
 		goto error_cleanup;
-	}
 
 	dev_info(&ofdev->dev, "using %s mode\n",
 		 dev->fast_mode ? "fast (400 kHz)" : "standard (100 kHz)");
@@ -777,7 +768,7 @@ error_cleanup:
 /*
  * Cleanup initialized IIC interface
  */
-static int iic_remove(struct platform_device *ofdev)
+static void iic_remove(struct platform_device *ofdev)
 {
 	struct ibm_iic_private *dev = platform_get_drvdata(ofdev);
 
@@ -790,23 +781,21 @@ static int iic_remove(struct platform_device *ofdev)
 
 	iounmap(dev->vaddr);
 	kfree(dev);
-
-	return 0;
 }
 
 static const struct of_device_id ibm_iic_match[] = {
 	{ .compatible = "ibm,iic", },
 	{}
 };
+MODULE_DEVICE_TABLE(of, ibm_iic_match);
 
 static struct platform_driver ibm_iic_driver = {
 	.driver = {
 		.name = "ibm-iic",
-		.owner = THIS_MODULE,
 		.of_match_table = ibm_iic_match,
 	},
 	.probe	= iic_probe,
-	.remove	= iic_remove,
+	.remove_new = iic_remove,
 };
 
 module_platform_driver(ibm_iic_driver);

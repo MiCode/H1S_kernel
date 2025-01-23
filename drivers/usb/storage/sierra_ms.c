@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <scsi/scsi.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_cmnd.h>
@@ -89,7 +90,7 @@ static void debug_swoc(const struct device *dev, struct swoc_info *swocInfo)
 }
 
 
-static ssize_t show_truinst(struct device *dev, struct device_attribute *attr,
+static ssize_t truinst_show(struct device *dev, struct device_attribute *attr,
 			char *buf)
 {
 	struct swoc_info *swocInfo;
@@ -121,21 +122,15 @@ static ssize_t show_truinst(struct device *dev, struct device_attribute *attr,
 	}
 	return result;
 }
-static DEVICE_ATTR(truinst, S_IRUGO, show_truinst, NULL);
+static DEVICE_ATTR_RO(truinst);
 
 int sierra_ms_init(struct us_data *us)
 {
 	int result, retries;
 	struct swoc_info *swocInfo;
 	struct usb_device *udev;
-	struct Scsi_Host *sh;
 
-	retries = 3;
-	result = 0;
 	udev = us->pusb_dev;
-
-	sh = us_to_host(us);
-	scsi_get_host_dev(sh);
 
 	/* Force Modem mode */
 	if (swi_tru_install == TRU_FORCE_MODEM) {
@@ -177,7 +172,8 @@ int sierra_ms_init(struct us_data *us)
 
 		debug_swoc(&us->pusb_dev->dev, swocInfo);
 
-		/* If there is not Linux software on the TRU-Install device
+		/*
+		 * If there is not Linux software on the TRU-Install device
 		 * then switch to modem mode
 		 */
 		if (!containsFullLinuxPackage(swocInfo)) {
@@ -192,8 +188,6 @@ int sierra_ms_init(struct us_data *us)
 		kfree(swocInfo);
 	}
 complete:
-	result = device_create_file(&us->pusb_intf->dev, &dev_attr_truinst);
-
-	return 0;
+	return device_create_file(&us->pusb_intf->dev, &dev_attr_truinst);
 }
 

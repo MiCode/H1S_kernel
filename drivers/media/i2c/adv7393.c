@@ -31,7 +31,7 @@
 #include <linux/videodev2.h>
 #include <linux/uaccess.h>
 
-#include <media/adv7393.h>
+#include <media/i2c/adv7393.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ctrls.h>
 
@@ -103,7 +103,7 @@ static const u8 adv7393_init_reg_val[] = {
 };
 
 /*
- * 			    2^32
+ *			    2^32
  * FSC(reg) =  FSC (HZ) * --------
  *			  27000000
  */
@@ -306,13 +306,6 @@ static const struct v4l2_ctrl_ops adv7393_ctrl_ops = {
 
 static const struct v4l2_subdev_core_ops adv7393_core_ops = {
 	.log_status = adv7393_log_status,
-	.g_ext_ctrls = v4l2_subdev_g_ext_ctrls,
-	.try_ext_ctrls = v4l2_subdev_try_ext_ctrls,
-	.s_ext_ctrls = v4l2_subdev_s_ext_ctrls,
-	.g_ctrl = v4l2_subdev_g_ctrl,
-	.s_ctrl = v4l2_subdev_s_ctrl,
-	.queryctrl = v4l2_subdev_queryctrl,
-	.querymenu = v4l2_subdev_querymenu,
 };
 
 static int adv7393_s_std_output(struct v4l2_subdev *sd, v4l2_std_id std)
@@ -388,8 +381,7 @@ static int adv7393_initialize(struct v4l2_subdev *sd)
 	return err;
 }
 
-static int adv7393_probe(struct i2c_client *client,
-				const struct i2c_device_id *id)
+static int adv7393_probe(struct i2c_client *client)
 {
 	struct adv7393_state *state;
 	int err;
@@ -444,15 +436,13 @@ static int adv7393_probe(struct i2c_client *client,
 	return err;
 }
 
-static int adv7393_remove(struct i2c_client *client)
+static void adv7393_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct adv7393_state *state = to_state(sd);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&state->hdl);
-
-	return 0;
 }
 
 static const struct i2c_device_id adv7393_id[] = {
@@ -463,7 +453,6 @@ MODULE_DEVICE_TABLE(i2c, adv7393_id);
 
 static struct i2c_driver adv7393_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "adv7393",
 	},
 	.probe		= adv7393_probe,

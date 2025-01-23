@@ -1,17 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * xen-acpi-pad.c - Xen pad interface
  *
  * Copyright (c) 2012, Intel Corporation.
  *    Author: Liu, Jinsong <jinsong.liu@intel.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -19,6 +11,7 @@
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/acpi.h>
+#include <xen/xen.h>
 #include <xen/interface/version.h>
 #include <xen/xen-ops.h>
 #include <asm/xen/hypercall.h>
@@ -36,7 +29,7 @@ static int xen_acpi_pad_idle_cpus(unsigned int idle_nums)
 	op.u.core_parking.type = XEN_CORE_PARKING_SET;
 	op.u.core_parking.idle_nums = idle_nums;
 
-	return HYPERVISOR_dom0_op(&op);
+	return HYPERVISOR_platform_op(&op);
 }
 
 static int xen_acpi_pad_idle_cpus_num(void)
@@ -46,7 +39,7 @@ static int xen_acpi_pad_idle_cpus_num(void)
 	op.cmd = XENPF_core_parking;
 	op.u.core_parking.type = XEN_CORE_PARKING_GET;
 
-	return HYPERVISOR_dom0_op(&op)
+	return HYPERVISOR_platform_op(&op)
 	       ?: op.u.core_parking.idle_nums;
 }
 
@@ -77,27 +70,14 @@ static int acpi_pad_pur(acpi_handle handle)
 	return num;
 }
 
-/* Notify firmware how many CPUs are idle */
-static void acpi_pad_ost(acpi_handle handle, int stat,
-	uint32_t idle_nums)
-{
-	union acpi_object params[3] = {
-		{.type = ACPI_TYPE_INTEGER,},
-		{.type = ACPI_TYPE_INTEGER,},
-		{.type = ACPI_TYPE_BUFFER,},
-	};
-	struct acpi_object_list arg_list = {3, params};
-
-	params[0].integer.value = ACPI_PROCESSOR_AGGREGATOR_NOTIFY;
-	params[1].integer.value =  stat;
-	params[2].buffer.length = 4;
-	params[2].buffer.pointer = (void *)&idle_nums;
-	acpi_evaluate_object(handle, "_OST", &arg_list, NULL);
-}
-
 static void acpi_pad_handle_notify(acpi_handle handle)
 {
 	int idle_nums;
+	struct acpi_buffer param = {
+		.length = 4,
+		.pointer = (void *)&idle_nums,
+	};
+
 
 	mutex_lock(&xen_cpu_lock);
 	idle_nums = acpi_pad_pur(handle);
@@ -109,7 +89,8 @@ static void acpi_pad_handle_notify(acpi_handle handle)
 	idle_nums = xen_acpi_pad_idle_cpus(idle_nums)
 		    ?: xen_acpi_pad_idle_cpus_num();
 	if (idle_nums >= 0)
-		acpi_pad_ost(handle, 0, idle_nums);
+		acpi_evaluate_ost(handle, ACPI_PROCESSOR_AGGREGATOR_NOTIFY,
+				  0, &param);
 	mutex_unlock(&xen_cpu_lock);
 }
 
@@ -141,7 +122,7 @@ static int acpi_pad_add(struct acpi_device *device)
 	return 0;
 }
 
-static int acpi_pad_remove(struct acpi_device *device)
+static void acpi_pad_remove(struct acpi_device *device)
 {
 	mutex_lock(&xen_cpu_lock);
 	xen_acpi_pad_idle_cpus(0);
@@ -149,7 +130,6 @@ static int acpi_pad_remove(struct acpi_device *device)
 
 	acpi_remove_notify_handler(device->handle,
 		ACPI_DEVICE_NOTIFY, acpi_pad_notify);
-	return 0;
 }
 
 static const struct acpi_device_id pad_device_ids[] = {

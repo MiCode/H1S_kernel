@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /* audit.h -- Auditing support
  *
  * Copyright 2003-2004 Red Hat Inc., Durham, North Carolina.
@@ -47,7 +48,7 @@
  * 2500 - 2999 future user space (maybe integrity labels and related events)
  *
  * Messages from 1000-1199 are bi-directional. 1200-1299 & 2100 - 2999 are
- * exclusively user space. 1300-2099 is kernel --> user space 
+ * exclusively user space. 1300-2099 is kernel --> user space
  * communication.
  */
 #define AUDIT_GET		1000	/* Get status */
@@ -70,7 +71,6 @@
 #define AUDIT_TTY_SET		1017	/* Set TTY auditing status */
 #define AUDIT_SET_FEATURE	1018	/* Turn an audit feature on or off */
 #define AUDIT_GET_FEATURE	1019	/* Get which features are enabled */
-#define AUDIT_FEATURE_CHANGE	1020	/* audit log listing feature changes */
 
 #define AUDIT_FIRST_USER_MSG	1100	/* Userspace messages mostly uninteresting to kernel */
 #define AUDIT_USER_AVC		1107	/* We filter this differently */
@@ -78,7 +78,7 @@
 #define AUDIT_LAST_USER_MSG	1199
 #define AUDIT_FIRST_USER_MSG2	2100	/* More user space messages */
 #define AUDIT_LAST_USER_MSG2	2999
- 
+
 #define AUDIT_DAEMON_START      1200    /* Daemon startup record */
 #define AUDIT_DAEMON_END        1201    /* Daemon normal stop record */
 #define AUDIT_DAEMON_ABORT      1202    /* Daemon error stop record */
@@ -109,6 +109,19 @@
 #define AUDIT_NETFILTER_PKT	1324	/* Packets traversing netfilter chains */
 #define AUDIT_NETFILTER_CFG	1325	/* Netfilter chain modifications */
 #define AUDIT_SECCOMP		1326	/* Secure Computing event */
+#define AUDIT_PROCTITLE		1327	/* Proctitle emit event */
+#define AUDIT_FEATURE_CHANGE	1328	/* audit log listing feature changes */
+#define AUDIT_REPLACE		1329	/* Replace auditd if this packet unanswerd */
+#define AUDIT_KERN_MODULE	1330	/* Kernel Module events */
+#define AUDIT_FANOTIFY		1331	/* Fanotify access decision */
+#define AUDIT_TIME_INJOFFSET	1332	/* Timekeeping offset injected */
+#define AUDIT_TIME_ADJNTPVAL	1333	/* NTP value adjustment */
+#define AUDIT_BPF		1334	/* BPF subsystem */
+#define AUDIT_EVENT_LISTENER	1335	/* Task joined multicast read socket */
+#define AUDIT_URINGOP		1336	/* io_uring operation */
+#define AUDIT_OPENAT2		1337	/* Record showing openat2 how args */
+#define AUDIT_DM_CTRL		1338	/* Device Mapper target control */
+#define AUDIT_DM_EVENT		1339	/* Device Mapper events */
 
 #define AUDIT_AVC		1400	/* SE Linux avc denial or grant */
 #define AUDIT_SELINUX_ERR	1401	/* Internal SE Linux Errors */
@@ -128,18 +141,23 @@
 #define AUDIT_MAC_IPSEC_EVENT	1415	/* Audit an IPSec event */
 #define AUDIT_MAC_UNLBL_STCADD	1416	/* NetLabel: add a static label */
 #define AUDIT_MAC_UNLBL_STCDEL	1417	/* NetLabel: del a static label */
+#define AUDIT_MAC_CALIPSO_ADD	1418	/* NetLabel: add CALIPSO DOI entry */
+#define AUDIT_MAC_CALIPSO_DEL	1419	/* NetLabel: del CALIPSO DOI entry */
 
 #define AUDIT_FIRST_KERN_ANOM_MSG   1700
 #define AUDIT_LAST_KERN_ANOM_MSG    1799
 #define AUDIT_ANOM_PROMISCUOUS      1700 /* Device changed promiscuous mode */
 #define AUDIT_ANOM_ABEND            1701 /* Process ended abnormally */
 #define AUDIT_ANOM_LINK		    1702 /* Suspicious use of file links */
+#define AUDIT_ANOM_CREAT	    1703 /* Suspicious file creation */
 #define AUDIT_INTEGRITY_DATA	    1800 /* Data integrity verification */
 #define AUDIT_INTEGRITY_METADATA    1801 /* Metadata integrity verification */
 #define AUDIT_INTEGRITY_STATUS	    1802 /* Integrity enable status */
 #define AUDIT_INTEGRITY_HASH	    1803 /* Integrity HASH type */
 #define AUDIT_INTEGRITY_PCR	    1804 /* PCR invalidation msgs */
 #define AUDIT_INTEGRITY_RULE	    1805 /* policy rule */
+#define AUDIT_INTEGRITY_EVM_XATTR   1806 /* New EVM-covered xattr */
+#define AUDIT_INTEGRITY_POLICY_RULE 1807 /* IMA policy rules */
 
 #define AUDIT_KERNEL		2000	/* Asynchronous audit record. NOT A REQUEST. */
 
@@ -149,9 +167,12 @@
 #define AUDIT_FILTER_ENTRY	0x02	/* Apply rule at syscall entry */
 #define AUDIT_FILTER_WATCH	0x03	/* Apply rule to file system watches */
 #define AUDIT_FILTER_EXIT	0x04	/* Apply rule at syscall exit */
-#define AUDIT_FILTER_TYPE	0x05	/* Apply rule at audit_log_start */
+#define AUDIT_FILTER_EXCLUDE	0x05	/* Apply rule before record creation */
+#define AUDIT_FILTER_TYPE	AUDIT_FILTER_EXCLUDE /* obsolete misleading naming */
+#define AUDIT_FILTER_FS		0x06	/* Apply rule at __audit_inode_child */
+#define AUDIT_FILTER_URING_EXIT	0x07	/* Apply rule at io_uring op exit */
 
-#define AUDIT_NR_FILTERS	6
+#define AUDIT_NR_FILTERS	8
 
 #define AUDIT_FILTER_PREPEND	0x10	/* Prepend to front of list */
 
@@ -166,7 +187,7 @@
 #define AUDIT_MAX_KEY_LEN  256
 #define AUDIT_BITMASK_SIZE 64
 #define AUDIT_WORD(nr) ((__u32)((nr)/32))
-#define AUDIT_BIT(nr)  (1 << ((nr) - AUDIT_WORD(nr)*32))
+#define AUDIT_BIT(nr)  (1U << ((nr) - AUDIT_WORD(nr)*32))
 
 #define AUDIT_SYSCALL_CLASSES 16
 #define AUDIT_CLASS_DIR_WRITE 0
@@ -250,6 +271,8 @@
 #define AUDIT_OBJ_LEV_LOW	22
 #define AUDIT_OBJ_LEV_HIGH	23
 #define AUDIT_LOGINUID_SET	24
+#define AUDIT_SESSIONID	25	/* Session ID */
+#define AUDIT_FSTYPE	26	/* FileSystem Type */
 
 				/* These are ONLY useful when checking
 				 * at syscall exit time (AUDIT_AT_EXIT). */
@@ -265,6 +288,8 @@
 #define AUDIT_OBJ_UID	109
 #define AUDIT_OBJ_GID	110
 #define AUDIT_FIELD_COMPARE	111
+#define AUDIT_EXE	112
+#define AUDIT_SADDR_FAM	113
 
 #define AUDIT_ARG0      200
 #define AUDIT_ARG1      (AUDIT_ARG0+1)
@@ -313,44 +338,93 @@ enum {
 };
 
 /* Status symbols */
-				/* Mask values */
-#define AUDIT_STATUS_ENABLED		0x0001
-#define AUDIT_STATUS_FAILURE		0x0002
-#define AUDIT_STATUS_PID		0x0004
+						/* Mask values */
+#define AUDIT_STATUS_ENABLED			0x0001
+#define AUDIT_STATUS_FAILURE			0x0002
+#define AUDIT_STATUS_PID			0x0004
 #define AUDIT_STATUS_RATE_LIMIT		0x0008
-#define AUDIT_STATUS_BACKLOG_LIMIT	0x0010
-#define AUDIT_STATUS_BACKLOG_WAIT_TIME	0x0020
+#define AUDIT_STATUS_BACKLOG_LIMIT		0x0010
+#define AUDIT_STATUS_BACKLOG_WAIT_TIME		0x0020
+#define AUDIT_STATUS_LOST			0x0040
+#define AUDIT_STATUS_BACKLOG_WAIT_TIME_ACTUAL	0x0080
 
-#define AUDIT_VERSION_BACKLOG_LIMIT	1
-#define AUDIT_VERSION_BACKLOG_WAIT_TIME	2
-#define AUDIT_VERSION_LATEST AUDIT_VERSION_BACKLOG_WAIT_TIME
+#define AUDIT_FEATURE_BITMAP_BACKLOG_LIMIT	0x00000001
+#define AUDIT_FEATURE_BITMAP_BACKLOG_WAIT_TIME	0x00000002
+#define AUDIT_FEATURE_BITMAP_EXECUTABLE_PATH	0x00000004
+#define AUDIT_FEATURE_BITMAP_EXCLUDE_EXTEND	0x00000008
+#define AUDIT_FEATURE_BITMAP_SESSIONID_FILTER	0x00000010
+#define AUDIT_FEATURE_BITMAP_LOST_RESET		0x00000020
+#define AUDIT_FEATURE_BITMAP_FILTER_FS		0x00000040
+
+#define AUDIT_FEATURE_BITMAP_ALL (AUDIT_FEATURE_BITMAP_BACKLOG_LIMIT | \
+				  AUDIT_FEATURE_BITMAP_BACKLOG_WAIT_TIME | \
+				  AUDIT_FEATURE_BITMAP_EXECUTABLE_PATH | \
+				  AUDIT_FEATURE_BITMAP_EXCLUDE_EXTEND | \
+				  AUDIT_FEATURE_BITMAP_SESSIONID_FILTER | \
+				  AUDIT_FEATURE_BITMAP_LOST_RESET | \
+				  AUDIT_FEATURE_BITMAP_FILTER_FS)
+
+/* deprecated: AUDIT_VERSION_* */
+#define AUDIT_VERSION_LATEST 		AUDIT_FEATURE_BITMAP_ALL
+#define AUDIT_VERSION_BACKLOG_LIMIT	AUDIT_FEATURE_BITMAP_BACKLOG_LIMIT
+#define AUDIT_VERSION_BACKLOG_WAIT_TIME	AUDIT_FEATURE_BITMAP_BACKLOG_WAIT_TIME
 
 				/* Failure-to-log actions */
 #define AUDIT_FAIL_SILENT	0
 #define AUDIT_FAIL_PRINTK	1
 #define AUDIT_FAIL_PANIC	2
 
+/*
+ * These bits disambiguate different calling conventions that share an
+ * ELF machine type, bitness, and endianness
+ */
+#define __AUDIT_ARCH_CONVENTION_MASK 0x30000000
+#define __AUDIT_ARCH_CONVENTION_MIPS64_N32 0x20000000
+
 /* distinguish syscall tables */
 #define __AUDIT_ARCH_64BIT 0x80000000
 #define __AUDIT_ARCH_LE	   0x40000000
+
+#define AUDIT_ARCH_AARCH64	(EM_AARCH64|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)
 #define AUDIT_ARCH_ALPHA	(EM_ALPHA|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)
+#define AUDIT_ARCH_ARCOMPACT	(EM_ARCOMPACT|__AUDIT_ARCH_LE)
+#define AUDIT_ARCH_ARCOMPACTBE	(EM_ARCOMPACT)
+#define AUDIT_ARCH_ARCV2	(EM_ARCV2|__AUDIT_ARCH_LE)
+#define AUDIT_ARCH_ARCV2BE	(EM_ARCV2)
 #define AUDIT_ARCH_ARM		(EM_ARM|__AUDIT_ARCH_LE)
 #define AUDIT_ARCH_ARMEB	(EM_ARM)
+#define AUDIT_ARCH_C6X		(EM_TI_C6000|__AUDIT_ARCH_LE)
+#define AUDIT_ARCH_C6XBE	(EM_TI_C6000)
 #define AUDIT_ARCH_CRIS		(EM_CRIS|__AUDIT_ARCH_LE)
+#define AUDIT_ARCH_CSKY		(EM_CSKY|__AUDIT_ARCH_LE)
 #define AUDIT_ARCH_FRV		(EM_FRV)
+#define AUDIT_ARCH_H8300	(EM_H8_300)
+#define AUDIT_ARCH_HEXAGON	(EM_HEXAGON)
 #define AUDIT_ARCH_I386		(EM_386|__AUDIT_ARCH_LE)
 #define AUDIT_ARCH_IA64		(EM_IA_64|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)
 #define AUDIT_ARCH_M32R		(EM_M32R)
 #define AUDIT_ARCH_M68K		(EM_68K)
+#define AUDIT_ARCH_MICROBLAZE	(EM_MICROBLAZE)
 #define AUDIT_ARCH_MIPS		(EM_MIPS)
 #define AUDIT_ARCH_MIPSEL	(EM_MIPS|__AUDIT_ARCH_LE)
 #define AUDIT_ARCH_MIPS64	(EM_MIPS|__AUDIT_ARCH_64BIT)
+#define AUDIT_ARCH_MIPS64N32	(EM_MIPS|__AUDIT_ARCH_64BIT|\
+				 __AUDIT_ARCH_CONVENTION_MIPS64_N32)
 #define AUDIT_ARCH_MIPSEL64	(EM_MIPS|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)
+#define AUDIT_ARCH_MIPSEL64N32	(EM_MIPS|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE|\
+				 __AUDIT_ARCH_CONVENTION_MIPS64_N32)
+#define AUDIT_ARCH_NDS32	(EM_NDS32|__AUDIT_ARCH_LE)
+#define AUDIT_ARCH_NDS32BE	(EM_NDS32)
+#define AUDIT_ARCH_NIOS2	(EM_ALTERA_NIOS2|__AUDIT_ARCH_LE)
 #define AUDIT_ARCH_OPENRISC	(EM_OPENRISC)
 #define AUDIT_ARCH_PARISC	(EM_PARISC)
 #define AUDIT_ARCH_PARISC64	(EM_PARISC|__AUDIT_ARCH_64BIT)
 #define AUDIT_ARCH_PPC		(EM_PPC)
+/* do not define AUDIT_ARCH_PPCLE since it is not supported by audit */
 #define AUDIT_ARCH_PPC64	(EM_PPC64|__AUDIT_ARCH_64BIT)
+#define AUDIT_ARCH_PPC64LE	(EM_PPC64|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)
+#define AUDIT_ARCH_RISCV32	(EM_RISCV|__AUDIT_ARCH_LE)
+#define AUDIT_ARCH_RISCV64	(EM_RISCV|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)
 #define AUDIT_ARCH_S390		(EM_S390)
 #define AUDIT_ARCH_S390X	(EM_S390|__AUDIT_ARCH_64BIT)
 #define AUDIT_ARCH_SH		(EM_SH)
@@ -359,7 +433,14 @@ enum {
 #define AUDIT_ARCH_SHEL64	(EM_SH|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)
 #define AUDIT_ARCH_SPARC	(EM_SPARC)
 #define AUDIT_ARCH_SPARC64	(EM_SPARCV9|__AUDIT_ARCH_64BIT)
+#define AUDIT_ARCH_TILEGX	(EM_TILEGX|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)
+#define AUDIT_ARCH_TILEGX32	(EM_TILEGX|__AUDIT_ARCH_LE)
+#define AUDIT_ARCH_TILEPRO	(EM_TILEPRO|__AUDIT_ARCH_LE)
+#define AUDIT_ARCH_UNICORE	(EM_UNICORE|__AUDIT_ARCH_LE)
 #define AUDIT_ARCH_X86_64	(EM_X86_64|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)
+#define AUDIT_ARCH_XTENSA	(EM_XTENSA)
+#define AUDIT_ARCH_LOONGARCH32	(EM_LOONGARCH|__AUDIT_ARCH_LE)
+#define AUDIT_ARCH_LOONGARCH64	(EM_LOONGARCH|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)
 
 #define AUDIT_PERM_EXEC		1
 #define AUDIT_PERM_WRITE	2
@@ -372,6 +453,14 @@ enum {
  */
 #define AUDIT_MESSAGE_TEXT_MAX	8560
 
+/* Multicast Netlink socket groups (default up to 32) */
+enum audit_nlgrps {
+	AUDIT_NLGRP_NONE,	/* Group 0 not used */
+	AUDIT_NLGRP_READLOG,	/* "best effort" read only socket */
+	__AUDIT_NLGRP_MAX
+};
+#define AUDIT_NLGRP_MAX                (__AUDIT_NLGRP_MAX - 1)
+
 struct audit_status {
 	__u32		mask;		/* Bit mask for valid entries */
 	__u32		enabled;	/* 1 = enabled, 0 = disabled */
@@ -381,8 +470,14 @@ struct audit_status {
 	__u32		backlog_limit;	/* waiting messages limit */
 	__u32		lost;		/* messages lost */
 	__u32		backlog;	/* messages waiting in queue */
-	__u32		version;	/* audit api version number */
+	union {
+		__u32	version;	/* deprecated: audit api version num */
+		__u32	feature_bitmap;	/* bitmap of kernel audit features */
+	};
 	__u32		backlog_wait_time;/* message queue wait timeout */
+	__u32           backlog_wait_time_actual;/* time spent waiting while
+						  * message limit exceeded
+						  */
 };
 
 struct audit_features {
@@ -406,6 +501,7 @@ struct audit_tty_status {
 };
 
 #define AUDIT_UID_UNSET (unsigned int)-1
+#define AUDIT_SID_UNSET ((unsigned int)-1)
 
 /* audit_rule_data supports filter rules with both integer and string
  * fields.  It corresponds with AUDIT_ADD_RULE, AUDIT_DEL_RULE and
@@ -420,20 +516,7 @@ struct audit_rule_data {
 	__u32		values[AUDIT_MAX_FIELDS];
 	__u32		fieldflags[AUDIT_MAX_FIELDS];
 	__u32		buflen;	/* total length of string fields */
-	char		buf[0];	/* string fields buffer */
-};
-
-/* audit_rule is supported to maintain backward compatibility with
- * userspace.  It supports integer fields only and corresponds to
- * AUDIT_ADD, AUDIT_DEL and AUDIT_LIST requests.
- */
-struct audit_rule {		/* for AUDIT_LIST, AUDIT_ADD, and AUDIT_DEL */
-	__u32		flags;	/* AUDIT_PER_{TASK,CALL}, AUDIT_PREPEND */
-	__u32		action;	/* AUDIT_NEVER, AUDIT_POSSIBLE, AUDIT_ALWAYS */
-	__u32		field_count;
-	__u32		mask[AUDIT_BITMASK_SIZE];
-	__u32		fields[AUDIT_MAX_FIELDS];
-	__u32		values[AUDIT_MAX_FIELDS];
+	char		buf[];	/* string fields buffer */
 };
 
 #endif /* _UAPI_LINUX_AUDIT_H_ */

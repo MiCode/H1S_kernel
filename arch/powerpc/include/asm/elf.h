@@ -1,10 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * ELF register definitions..
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 #ifndef _ASM_POWERPC_ELF_H
 #define _ASM_POWERPC_ELF_H
@@ -23,13 +19,13 @@
 #define CORE_DUMP_USE_REGSET
 #define ELF_EXEC_PAGESIZE	PAGE_SIZE
 
-/* This is the location that an ET_DYN program is loaded if exec'ed.  Typical
-   use of this is to invoke "./ld.so someprog" to test out a new version of
-   the loader.  We need to make sure that it is out of the way of the program
-   that it will "exec", and that there is sufficient room for the brk.  */
-
-extern unsigned long randomize_et_dyn(unsigned long base);
-#define ELF_ET_DYN_BASE		(randomize_et_dyn(0x20000000))
+/*
+ * This is the base location for PIE (ET_DYN with INTERP) loads. On
+ * 64-bit, this is raised to 4GB to leave the entire 32-bit address
+ * space open for things that want to use the area for 32-bit pointers.
+ */
+#define ELF_ET_DYN_BASE		(is_32bit_task() ? 0x000400000UL : \
+						   0x100000000UL)
 
 #define ELF_CORE_EFLAGS (is_elf2_task() ? 2 : 0)
 
@@ -56,8 +52,6 @@ static inline void ppc_elf_core_copy_regs(elf_gregset_t elf_regs,
 	PPC_ELF_CORE_COPY_REGS(elf_regs, regs);
 }
 #define ELF_CORE_COPY_REGS(gregs, regs) ppc_elf_core_copy_regs(gregs, regs);
-
-typedef elf_vrregset_t elf_fpxregset_t;
 
 /* ELF_HWCAP yields a mask that user programs can use to figure out what
    instruction set this cpu supports.  This could be done in userspace,
@@ -90,6 +84,8 @@ typedef elf_vrregset_t elf_fpxregset_t;
 do {								\
 	if (((ex).e_flags & 0x3) == 2)				\
 		set_thread_flag(TIF_ELF2ABI);			\
+	else							\
+		clear_thread_flag(TIF_ELF2ABI);			\
 	if ((ex).e_ident[EI_CLASS] == ELFCLASS32)		\
 		set_thread_flag(TIF_32BIT);			\
 	else							\
@@ -127,10 +123,6 @@ extern int arch_setup_additional_pages(struct linux_binprm *bprm,
 	(0x7ff >> (PAGE_SHIFT - 12)) : \
 	(0x3ffff >> (PAGE_SHIFT - 12)))
 
-extern unsigned long arch_randomize_brk(struct mm_struct *mm);
-#define arch_randomize_brk arch_randomize_brk
-
-
 #ifdef CONFIG_SPU_BASE
 /* Notes used in ET_CORE. Note name is "SPU/<fd>/<filename>". */
 #define NT_SPU		1
@@ -138,5 +130,68 @@ extern unsigned long arch_randomize_brk(struct mm_struct *mm);
 #define ARCH_HAVE_EXTRA_ELF_NOTES
 
 #endif /* CONFIG_SPU_BASE */
+
+#ifdef CONFIG_PPC64
+
+#define get_cache_geometry(level) \
+	(ppc64_caches.level.assoc << 16 | ppc64_caches.level.line_size)
+
+#define ARCH_DLINFO_CACHE_GEOMETRY					\
+	NEW_AUX_ENT(AT_L1I_CACHESIZE, ppc64_caches.l1i.size);		\
+	NEW_AUX_ENT(AT_L1I_CACHEGEOMETRY, get_cache_geometry(l1i));	\
+	NEW_AUX_ENT(AT_L1D_CACHESIZE, ppc64_caches.l1d.size);		\
+	NEW_AUX_ENT(AT_L1D_CACHEGEOMETRY, get_cache_geometry(l1d));	\
+	NEW_AUX_ENT(AT_L2_CACHESIZE, ppc64_caches.l2.size);		\
+	NEW_AUX_ENT(AT_L2_CACHEGEOMETRY, get_cache_geometry(l2));	\
+	NEW_AUX_ENT(AT_L3_CACHESIZE, ppc64_caches.l3.size);		\
+	NEW_AUX_ENT(AT_L3_CACHEGEOMETRY, get_cache_geometry(l3))
+
+#else
+#define ARCH_DLINFO_CACHE_GEOMETRY
+#endif
+
+/*
+ * The requirements here are:
+ * - keep the final alignment of sp (sp & 0xf)
+ * - make sure the 32-bit value at the first 16 byte aligned position of
+ *   AUXV is greater than 16 for glibc compatibility.
+ *   AT_IGNOREPPC is used for that.
+ * - for compatibility with glibc ARCH_DLINFO must always be defined on PPC,
+ *   even if DLINFO_ARCH_ITEMS goes to zero or is undefined.
+ * update AT_VECTOR_SIZE_ARCH if the number of NEW_AUX_ENT entries changes
+ */
+#define COMMON_ARCH_DLINFO						\
+do {									\
+	/* Handle glibc compatibility. */				\
+	NEW_AUX_ENT(AT_IGNOREPPC, AT_IGNOREPPC);			\
+	NEW_AUX_ENT(AT_IGNOREPPC, AT_IGNOREPPC);			\
+	/* Cache size items */						\
+	NEW_AUX_ENT(AT_DCACHEBSIZE, dcache_bsize);			\
+	NEW_AUX_ENT(AT_ICACHEBSIZE, icache_bsize);			\
+	NEW_AUX_ENT(AT_UCACHEBSIZE, 0);					\
+	VDSO_AUX_ENT(AT_SYSINFO_EHDR, (unsigned long)current->mm->context.vdso);\
+	ARCH_DLINFO_CACHE_GEOMETRY;					\
+} while (0)
+
+#define ARCH_DLINFO							\
+do {									\
+	COMMON_ARCH_DLINFO;						\
+	NEW_AUX_ENT(AT_MINSIGSTKSZ, get_min_sigframe_size());		\
+} while (0)
+
+#define COMPAT_ARCH_DLINFO						\
+do {									\
+	COMMON_ARCH_DLINFO;						\
+	NEW_AUX_ENT(AT_MINSIGSTKSZ, get_min_sigframe_size_compat());	\
+} while (0)
+
+/* Relocate the kernel image to @final_address */
+void relocate(unsigned long final_address);
+
+struct func_desc {
+	unsigned long addr;
+	unsigned long toc;
+	unsigned long env;
+};
 
 #endif /* _ASM_POWERPC_ELF_H */

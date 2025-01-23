@@ -1,28 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
     gpio functions.
     Merging GPIO support into driver:
     Copyright (C) 2004  Chris Kennedy <c@groovy.org>
     Copyright (C) 2005-2007  Hans Verkuil <hverkuil@xs4all.nl>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include "ivtv-driver.h"
 #include "ivtv-cards.h"
 #include "ivtv-gpio.h"
-#include "tuner-xc2028.h"
+#include "xc2028.h"
 #include <media/tuner.h>
 #include <media/v4l2-ctrls.h>
 
@@ -313,13 +301,6 @@ static const struct v4l2_ctrl_ops gpio_ctrl_ops = {
 
 static const struct v4l2_subdev_core_ops subdev_core_ops = {
 	.log_status = subdev_log_status,
-	.g_ext_ctrls = v4l2_subdev_g_ext_ctrls,
-	.try_ext_ctrls = v4l2_subdev_try_ext_ctrls,
-	.s_ext_ctrls = v4l2_subdev_s_ext_ctrls,
-	.g_ctrl = v4l2_subdev_g_ctrl,
-	.s_ctrl = v4l2_subdev_s_ctrl,
-	.queryctrl = v4l2_subdev_queryctrl,
-	.querymenu = v4l2_subdev_querymenu,
 };
 
 static const struct v4l2_subdev_tuner_ops subdev_tuner_ops = {

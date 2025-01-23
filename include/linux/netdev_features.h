@@ -1,16 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Network device features.
- *
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 #ifndef _LINUX_NETDEV_FEATURES_H
 #define _LINUX_NETDEV_FEATURES_H
 
 #include <linux/types.h>
+#include <linux/bitops.h>
+#include <asm/byteorder.h>
 
 typedef u64 netdev_features_t;
 
@@ -36,21 +33,32 @@ enum {
 	/**/NETIF_F_GSO_SHIFT,		/* keep the order of SKB_GSO_* bits */
 	NETIF_F_TSO_BIT			/* ... TCPv4 segmentation */
 		= NETIF_F_GSO_SHIFT,
-	NETIF_F_UFO_BIT,		/* ... UDPv4 fragmentation */
 	NETIF_F_GSO_ROBUST_BIT,		/* ... ->SKB_GSO_DODGY */
 	NETIF_F_TSO_ECN_BIT,		/* ... TCP ECN support */
+	NETIF_F_TSO_MANGLEID_BIT,	/* ... IPV4 ID mangling allowed */
 	NETIF_F_TSO6_BIT,		/* ... TCPv6 segmentation */
 	NETIF_F_FSO_BIT,		/* ... FCoE segmentation */
 	NETIF_F_GSO_GRE_BIT,		/* ... GRE with TSO */
-	NETIF_F_GSO_IPIP_BIT,		/* ... IPIP tunnel with TSO */
-	NETIF_F_GSO_SIT_BIT,		/* ... SIT tunnel with TSO */
+	NETIF_F_GSO_GRE_CSUM_BIT,	/* ... GRE with csum with TSO */
+	NETIF_F_GSO_IPXIP4_BIT,		/* ... IP4 or IP6 over IP4 with TSO */
+	NETIF_F_GSO_IPXIP6_BIT,		/* ... IP4 or IP6 over IP6 with TSO */
 	NETIF_F_GSO_UDP_TUNNEL_BIT,	/* ... UDP TUNNEL with TSO */
-	NETIF_F_GSO_MPLS_BIT,		/* ... MPLS segmentation */
+	NETIF_F_GSO_UDP_TUNNEL_CSUM_BIT,/* ... UDP TUNNEL with TSO & CSUM */
+	NETIF_F_GSO_PARTIAL_BIT,	/* ... Only segment inner-most L4
+					 *     in hardware and all other
+					 *     headers in software.
+					 */
+	NETIF_F_GSO_TUNNEL_REMCSUM_BIT, /* ... TUNNEL with TSO & REMCSUM */
+	NETIF_F_GSO_SCTP_BIT,		/* ... SCTP fragmentation */
+	NETIF_F_GSO_ESP_BIT,		/* ... ESP with TSO */
+	NETIF_F_GSO_UDP_BIT,		/* ... UFO, deprecated except tuntap */
+	NETIF_F_GSO_UDP_L4_BIT,		/* ... UDP payload GSO (not UFO) */
+	NETIF_F_GSO_FRAGLIST_BIT,		/* ... Fraglist GSO */
 	/**/NETIF_F_GSO_LAST =		/* last bit, see GSO_MASK */
-		NETIF_F_GSO_MPLS_BIT,
+		NETIF_F_GSO_FRAGLIST_BIT,
 
 	NETIF_F_FCOE_CRC_BIT,		/* FCoE CRC32 */
-	NETIF_F_SCTP_CSUM_BIT,		/* SCTP checksum offload */
+	NETIF_F_SCTP_CRC_BIT,		/* SCTP checksum offload */
 	NETIF_F_FCOE_MTU_BIT,		/* Supports max FCoE MTU, 2158 bytes*/
 	NETIF_F_NTUPLE_BIT,		/* N-tuple filters supported */
 	NETIF_F_RXHASH_BIT,		/* Receive hashing offload */
@@ -64,11 +72,30 @@ enum {
 	NETIF_F_HW_VLAN_STAG_FILTER_BIT,/* Receive filtering on VLAN STAGs */
 	NETIF_F_HW_L2FW_DOFFLOAD_BIT,	/* Allow L2 Forwarding in Hardware */
 
+	NETIF_F_HW_TC_BIT,		/* Offload TC infrastructure */
+	NETIF_F_HW_ESP_BIT,		/* Hardware ESP transformation offload */
+	NETIF_F_HW_ESP_TX_CSUM_BIT,	/* ESP with TX checksum offload */
+	NETIF_F_RX_UDP_TUNNEL_PORT_BIT, /* Offload of RX port for UDP tunnels */
+	NETIF_F_HW_TLS_TX_BIT,		/* Hardware TLS TX offload */
+	NETIF_F_HW_TLS_RX_BIT,		/* Hardware TLS RX offload */
+
+	NETIF_F_GRO_HW_BIT,		/* Hardware Generic receive offload */
+	NETIF_F_HW_TLS_RECORD_BIT,	/* Offload TLS record */
+	NETIF_F_GRO_FRAGLIST_BIT,	/* Fraglist GRO */
+
+	NETIF_F_HW_MACSEC_BIT,		/* Offload MACsec operations */
+	NETIF_F_GRO_UDP_FWD_BIT,	/* Allow UDP GRO for forwarding */
+
+	NETIF_F_HW_HSR_TAG_INS_BIT,	/* Offload HSR tag insertion */
+	NETIF_F_HW_HSR_TAG_RM_BIT,	/* Offload HSR tag removal */
+	NETIF_F_HW_HSR_FWD_BIT,		/* Offload HSR forwarding */
+	NETIF_F_HW_HSR_DUP_BIT,		/* Offload HSR duplication */
+
 	/*
 	 * Add your fresh new feature above and remember to update
-	 * netdev_features_strings[] in net/core/ethtool.c and maybe
+	 * netdev_features_strings[] in net/ethtool/common.c and maybe
 	 * some feature mask #defines below. Please also describe it
-	 * in Documentation/networking/netdev-features.txt.
+	 * in Documentation/networking/netdev-features.rst.
 	 */
 
 	/**/NETDEV_FEATURE_COUNT
@@ -83,6 +110,7 @@ enum {
 #define NETIF_F_FRAGLIST	__NETIF_F(FRAGLIST)
 #define NETIF_F_FSO		__NETIF_F(FSO)
 #define NETIF_F_GRO		__NETIF_F(GRO)
+#define NETIF_F_GRO_HW		__NETIF_F(GRO_HW)
 #define NETIF_F_GSO		__NETIF_F(GSO)
 #define NETIF_F_GSO_ROBUST	__NETIF_F(GSO_ROBUST)
 #define NETIF_F_HIGHDMA		__NETIF_F(HIGHDMA)
@@ -100,24 +128,67 @@ enum {
 #define NETIF_F_NTUPLE		__NETIF_F(NTUPLE)
 #define NETIF_F_RXCSUM		__NETIF_F(RXCSUM)
 #define NETIF_F_RXHASH		__NETIF_F(RXHASH)
-#define NETIF_F_SCTP_CSUM	__NETIF_F(SCTP_CSUM)
+#define NETIF_F_SCTP_CRC	__NETIF_F(SCTP_CRC)
 #define NETIF_F_SG		__NETIF_F(SG)
 #define NETIF_F_TSO6		__NETIF_F(TSO6)
 #define NETIF_F_TSO_ECN		__NETIF_F(TSO_ECN)
 #define NETIF_F_TSO		__NETIF_F(TSO)
-#define NETIF_F_UFO		__NETIF_F(UFO)
 #define NETIF_F_VLAN_CHALLENGED	__NETIF_F(VLAN_CHALLENGED)
 #define NETIF_F_RXFCS		__NETIF_F(RXFCS)
 #define NETIF_F_RXALL		__NETIF_F(RXALL)
 #define NETIF_F_GSO_GRE		__NETIF_F(GSO_GRE)
-#define NETIF_F_GSO_IPIP	__NETIF_F(GSO_IPIP)
-#define NETIF_F_GSO_SIT		__NETIF_F(GSO_SIT)
+#define NETIF_F_GSO_GRE_CSUM	__NETIF_F(GSO_GRE_CSUM)
+#define NETIF_F_GSO_IPXIP4	__NETIF_F(GSO_IPXIP4)
+#define NETIF_F_GSO_IPXIP6	__NETIF_F(GSO_IPXIP6)
 #define NETIF_F_GSO_UDP_TUNNEL	__NETIF_F(GSO_UDP_TUNNEL)
-#define NETIF_F_GSO_MPLS	__NETIF_F(GSO_MPLS)
+#define NETIF_F_GSO_UDP_TUNNEL_CSUM __NETIF_F(GSO_UDP_TUNNEL_CSUM)
+#define NETIF_F_TSO_MANGLEID	__NETIF_F(TSO_MANGLEID)
+#define NETIF_F_GSO_PARTIAL	 __NETIF_F(GSO_PARTIAL)
+#define NETIF_F_GSO_TUNNEL_REMCSUM __NETIF_F(GSO_TUNNEL_REMCSUM)
+#define NETIF_F_GSO_SCTP	__NETIF_F(GSO_SCTP)
+#define NETIF_F_GSO_ESP		__NETIF_F(GSO_ESP)
+#define NETIF_F_GSO_UDP		__NETIF_F(GSO_UDP)
 #define NETIF_F_HW_VLAN_STAG_FILTER __NETIF_F(HW_VLAN_STAG_FILTER)
 #define NETIF_F_HW_VLAN_STAG_RX	__NETIF_F(HW_VLAN_STAG_RX)
 #define NETIF_F_HW_VLAN_STAG_TX	__NETIF_F(HW_VLAN_STAG_TX)
 #define NETIF_F_HW_L2FW_DOFFLOAD	__NETIF_F(HW_L2FW_DOFFLOAD)
+#define NETIF_F_HW_TC		__NETIF_F(HW_TC)
+#define NETIF_F_HW_ESP		__NETIF_F(HW_ESP)
+#define NETIF_F_HW_ESP_TX_CSUM	__NETIF_F(HW_ESP_TX_CSUM)
+#define	NETIF_F_RX_UDP_TUNNEL_PORT  __NETIF_F(RX_UDP_TUNNEL_PORT)
+#define NETIF_F_HW_TLS_RECORD	__NETIF_F(HW_TLS_RECORD)
+#define NETIF_F_GSO_UDP_L4	__NETIF_F(GSO_UDP_L4)
+#define NETIF_F_HW_TLS_TX	__NETIF_F(HW_TLS_TX)
+#define NETIF_F_HW_TLS_RX	__NETIF_F(HW_TLS_RX)
+#define NETIF_F_GRO_FRAGLIST	__NETIF_F(GRO_FRAGLIST)
+#define NETIF_F_GSO_FRAGLIST	__NETIF_F(GSO_FRAGLIST)
+#define NETIF_F_HW_MACSEC	__NETIF_F(HW_MACSEC)
+#define NETIF_F_GRO_UDP_FWD	__NETIF_F(GRO_UDP_FWD)
+#define NETIF_F_HW_HSR_TAG_INS	__NETIF_F(HW_HSR_TAG_INS)
+#define NETIF_F_HW_HSR_TAG_RM	__NETIF_F(HW_HSR_TAG_RM)
+#define NETIF_F_HW_HSR_FWD	__NETIF_F(HW_HSR_FWD)
+#define NETIF_F_HW_HSR_DUP	__NETIF_F(HW_HSR_DUP)
+
+/* Finds the next feature with the highest number of the range of start-1 till 0.
+ */
+static inline int find_next_netdev_feature(u64 feature, unsigned long start)
+{
+	/* like BITMAP_LAST_WORD_MASK() for u64
+	 * this sets the most significant 64 - start to 0.
+	 */
+	feature &= ~0ULL >> (-start & ((sizeof(feature) * 8) - 1));
+
+	return fls64(feature) - 1;
+}
+
+/* This goes for the MSB to the LSB through the set feature bits,
+ * mask_addr should be a u64 and bit an int
+ */
+#define for_each_netdev_feature(mask_addr, bit)				\
+	for ((bit) = find_next_netdev_feature((mask_addr),		\
+					      NETDEV_FEATURE_COUNT);	\
+	     (bit) >= 0;						\
+	     (bit) = find_next_netdev_feature((mask_addr), (bit)))
 
 /* Features valid for ethtool to change */
 /* = all defined minus driver/device-class-related */
@@ -133,19 +204,22 @@ enum {
 #define NETIF_F_GSO_MASK	(__NETIF_F_BIT(NETIF_F_GSO_LAST + 1) - \
 		__NETIF_F_BIT(NETIF_F_GSO_SHIFT))
 
-/* List of features with software fallbacks. */
-#define NETIF_F_GSO_SOFTWARE	(NETIF_F_TSO | NETIF_F_TSO_ECN | \
-				 NETIF_F_TSO6 | NETIF_F_UFO)
+/* List of IP checksum features. Note that NETIF_F_HW_CSUM should not be
+ * set in features when NETIF_F_IP_CSUM or NETIF_F_IPV6_CSUM are set--
+ * this would be contradictory
+ */
+#define NETIF_F_CSUM_MASK	(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM | \
+				 NETIF_F_HW_CSUM)
 
-#define NETIF_F_GEN_CSUM	NETIF_F_HW_CSUM
-#define NETIF_F_V4_CSUM		(NETIF_F_GEN_CSUM | NETIF_F_IP_CSUM)
-#define NETIF_F_V6_CSUM		(NETIF_F_GEN_CSUM | NETIF_F_IPV6_CSUM)
-#define NETIF_F_ALL_CSUM	(NETIF_F_V4_CSUM | NETIF_F_V6_CSUM)
-
-#define NETIF_F_ALL_TSO 	(NETIF_F_TSO | NETIF_F_TSO6 | NETIF_F_TSO_ECN)
+#define NETIF_F_ALL_TSO 	(NETIF_F_TSO | NETIF_F_TSO6 | \
+				 NETIF_F_TSO_ECN | NETIF_F_TSO_MANGLEID)
 
 #define NETIF_F_ALL_FCOE	(NETIF_F_FCOE_CRC | NETIF_F_FCOE_MTU | \
 				 NETIF_F_FSO)
+
+/* List of features with software fallbacks. */
+#define NETIF_F_GSO_SOFTWARE	(NETIF_F_ALL_TSO | NETIF_F_GSO_SCTP |	     \
+				 NETIF_F_GSO_UDP_L4 | NETIF_F_GSO_FRAGLIST)
 
 /*
  * If one device supports one of these features, then enable them
@@ -154,13 +228,37 @@ enum {
 #define NETIF_F_ONE_FOR_ALL	(NETIF_F_GSO_SOFTWARE | NETIF_F_GSO_ROBUST | \
 				 NETIF_F_SG | NETIF_F_HIGHDMA |		\
 				 NETIF_F_FRAGLIST | NETIF_F_VLAN_CHALLENGED)
+
 /*
  * If one device doesn't support one of these features, then disable it
  * for all in netdev_increment_features.
  */
 #define NETIF_F_ALL_FOR_ALL	(NETIF_F_NOCACHE_COPY | NETIF_F_FSO)
 
+/*
+ * If upper/master device has these features disabled, they must be disabled
+ * on all lower/slave devices as well.
+ */
+#define NETIF_F_UPPER_DISABLES	NETIF_F_LRO
+
 /* changeable features with no special hardware requirements */
 #define NETIF_F_SOFT_FEATURES	(NETIF_F_GSO | NETIF_F_GRO)
+
+/* Changeable features with no special hardware requirements that defaults to off. */
+#define NETIF_F_SOFT_FEATURES_OFF	(NETIF_F_GRO_FRAGLIST | NETIF_F_GRO_UDP_FWD)
+
+#define NETIF_F_VLAN_FEATURES	(NETIF_F_HW_VLAN_CTAG_FILTER | \
+				 NETIF_F_HW_VLAN_CTAG_RX | \
+				 NETIF_F_HW_VLAN_CTAG_TX | \
+				 NETIF_F_HW_VLAN_STAG_FILTER | \
+				 NETIF_F_HW_VLAN_STAG_RX | \
+				 NETIF_F_HW_VLAN_STAG_TX)
+
+#define NETIF_F_GSO_ENCAP_ALL	(NETIF_F_GSO_GRE |			\
+				 NETIF_F_GSO_GRE_CSUM |			\
+				 NETIF_F_GSO_IPXIP4 |			\
+				 NETIF_F_GSO_IPXIP6 |			\
+				 NETIF_F_GSO_UDP_TUNNEL |		\
+				 NETIF_F_GSO_UDP_TUNNEL_CSUM)
 
 #endif	/* _LINUX_NETDEV_FEATURES_H */

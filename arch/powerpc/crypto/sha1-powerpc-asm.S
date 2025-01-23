@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * SHA-1 implementation for PowerPC.
  *
@@ -6,6 +7,16 @@
 
 #include <asm/ppc_asm.h>
 #include <asm/asm-offsets.h>
+#include <asm/asm-compat.h>
+
+#ifdef __BIG_ENDIAN__
+#define LWZ(rt, d, ra)	\
+	lwz	rt,d(ra)
+#else
+#define LWZ(rt, d, ra)	\
+	li	rt,d;	\
+	lwbrx	rt,rt,ra
+#endif
 
 /*
  * We roll the registers for T, A, B, C, D, E around on each
@@ -23,7 +34,7 @@
 #define W(t)	(((t)%16)+16)
 
 #define LOADW(t)				\
-	lwz	W(t),(t)*4(r4)
+	LWZ(W(t),(t)*4,r4)
 
 #define STEPD0_LOAD(t)				\
 	andc	r0,RD(t),RB(t);		\
@@ -33,7 +44,7 @@
 	add	r0,RE(t),r15;			\
 	add	RT(t),RT(t),r6;		\
 	add	r14,r0,W(t);			\
-	lwz	W((t)+4),((t)+4)*4(r4);	\
+	LWZ(W((t)+4),((t)+4)*4,r4);	\
 	rotlwi	RB(t),RB(t),30;			\
 	add	RT(t),RT(t),r14
 
@@ -114,8 +125,7 @@
 
 _GLOBAL(powerpc_sha_transform)
 	PPC_STLU r1,-INT_FRAME_SIZE(r1)
-	SAVE_8GPRS(14, r1)
-	SAVE_10GPRS(22, r1)
+	SAVE_GPRS(14, 31, r1)
 
 	/* Load up A - E */
 	lwz	RA(0),0(r3)	/* A */
@@ -173,7 +183,6 @@ _GLOBAL(powerpc_sha_transform)
 	stw	RD(0),12(r3)
 	stw	RE(0),16(r3)
 
-	REST_8GPRS(14, r1)
-	REST_10GPRS(22, r1)
+	REST_GPRS(14, 31, r1)
 	addi	r1,r1,INT_FRAME_SIZE
 	blr

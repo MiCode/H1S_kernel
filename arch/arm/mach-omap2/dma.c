@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMAP2+ DMA driver
  *
@@ -12,13 +13,9 @@
  * Copyright (C) 2009 Texas Instruments
  * Added OMAP4 support - Santosh Shilimkar <santosh.shilimkar@ti.com>
  *
- * Copyright (C) 2010 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2010 Texas Instruments Incorporated - https://www.ti.com/
  * Converted DMA library into platform driver
  *	- G, Manjunath Kondaiah <manjugk@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/err.h>
@@ -28,117 +25,62 @@
 #include <linux/init.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
+#include <linux/dmaengine.h>
 #include <linux/of.h>
 #include <linux/omap-dma.h>
 
 #include "soc.h"
-#include "omap_hwmod.h"
-#include "omap_device.h"
+#include "common.h"
 
-#define OMAP2_DMA_STRIDE	0x60
-
-static u32 errata;
-static u8 dma_stride;
-
-static struct omap_dma_dev_attr *d;
-
-static enum omap_reg_offsets dma_common_ch_start, dma_common_ch_end;
-
-static u16 reg_map[] = {
-	[REVISION]		= 0x00,
-	[GCR]			= 0x78,
-	[IRQSTATUS_L0]		= 0x08,
-	[IRQSTATUS_L1]		= 0x0c,
-	[IRQSTATUS_L2]		= 0x10,
-	[IRQSTATUS_L3]		= 0x14,
-	[IRQENABLE_L0]		= 0x18,
-	[IRQENABLE_L1]		= 0x1c,
-	[IRQENABLE_L2]		= 0x20,
-	[IRQENABLE_L3]		= 0x24,
-	[SYSSTATUS]		= 0x28,
-	[OCP_SYSCONFIG]		= 0x2c,
-	[CAPS_0]		= 0x64,
-	[CAPS_2]		= 0x6c,
-	[CAPS_3]		= 0x70,
-	[CAPS_4]		= 0x74,
+static const struct omap_dma_reg reg_map[] = {
+	[REVISION]	= { 0x0000, 0x00, OMAP_DMA_REG_32BIT },
+	[GCR]		= { 0x0078, 0x00, OMAP_DMA_REG_32BIT },
+	[IRQSTATUS_L0]	= { 0x0008, 0x00, OMAP_DMA_REG_32BIT },
+	[IRQSTATUS_L1]	= { 0x000c, 0x00, OMAP_DMA_REG_32BIT },
+	[IRQSTATUS_L2]	= { 0x0010, 0x00, OMAP_DMA_REG_32BIT },
+	[IRQSTATUS_L3]	= { 0x0014, 0x00, OMAP_DMA_REG_32BIT },
+	[IRQENABLE_L0]	= { 0x0018, 0x00, OMAP_DMA_REG_32BIT },
+	[IRQENABLE_L1]	= { 0x001c, 0x00, OMAP_DMA_REG_32BIT },
+	[IRQENABLE_L2]	= { 0x0020, 0x00, OMAP_DMA_REG_32BIT },
+	[IRQENABLE_L3]	= { 0x0024, 0x00, OMAP_DMA_REG_32BIT },
+	[SYSSTATUS]	= { 0x0028, 0x00, OMAP_DMA_REG_32BIT },
+	[OCP_SYSCONFIG]	= { 0x002c, 0x00, OMAP_DMA_REG_32BIT },
+	[CAPS_0]	= { 0x0064, 0x00, OMAP_DMA_REG_32BIT },
+	[CAPS_2]	= { 0x006c, 0x00, OMAP_DMA_REG_32BIT },
+	[CAPS_3]	= { 0x0070, 0x00, OMAP_DMA_REG_32BIT },
+	[CAPS_4]	= { 0x0074, 0x00, OMAP_DMA_REG_32BIT },
 
 	/* Common register offsets */
-	[CCR]			= 0x80,
-	[CLNK_CTRL]		= 0x84,
-	[CICR]			= 0x88,
-	[CSR]			= 0x8c,
-	[CSDP]			= 0x90,
-	[CEN]			= 0x94,
-	[CFN]			= 0x98,
-	[CSEI]			= 0xa4,
-	[CSFI]			= 0xa8,
-	[CDEI]			= 0xac,
-	[CDFI]			= 0xb0,
-	[CSAC]			= 0xb4,
-	[CDAC]			= 0xb8,
+	[CCR]		= { 0x0080, 0x60, OMAP_DMA_REG_32BIT },
+	[CLNK_CTRL]	= { 0x0084, 0x60, OMAP_DMA_REG_32BIT },
+	[CICR]		= { 0x0088, 0x60, OMAP_DMA_REG_32BIT },
+	[CSR]		= { 0x008c, 0x60, OMAP_DMA_REG_32BIT },
+	[CSDP]		= { 0x0090, 0x60, OMAP_DMA_REG_32BIT },
+	[CEN]		= { 0x0094, 0x60, OMAP_DMA_REG_32BIT },
+	[CFN]		= { 0x0098, 0x60, OMAP_DMA_REG_32BIT },
+	[CSEI]		= { 0x00a4, 0x60, OMAP_DMA_REG_32BIT },
+	[CSFI]		= { 0x00a8, 0x60, OMAP_DMA_REG_32BIT },
+	[CDEI]		= { 0x00ac, 0x60, OMAP_DMA_REG_32BIT },
+	[CDFI]		= { 0x00b0, 0x60, OMAP_DMA_REG_32BIT },
+	[CSAC]		= { 0x00b4, 0x60, OMAP_DMA_REG_32BIT },
+	[CDAC]		= { 0x00b8, 0x60, OMAP_DMA_REG_32BIT },
 
 	/* Channel specific register offsets */
-	[CSSA]			= 0x9c,
-	[CDSA]			= 0xa0,
-	[CCEN]			= 0xbc,
-	[CCFN]			= 0xc0,
-	[COLOR]			= 0xc4,
+	[CSSA]		= { 0x009c, 0x60, OMAP_DMA_REG_32BIT },
+	[CDSA]		= { 0x00a0, 0x60, OMAP_DMA_REG_32BIT },
+	[CCEN]		= { 0x00bc, 0x60, OMAP_DMA_REG_32BIT },
+	[CCFN]		= { 0x00c0, 0x60, OMAP_DMA_REG_32BIT },
+	[COLOR]		= { 0x00c4, 0x60, OMAP_DMA_REG_32BIT },
 
 	/* OMAP4 specific registers */
-	[CDP]			= 0xd0,
-	[CNDP]			= 0xd4,
-	[CCDN]			= 0xd8,
+	[CDP]		= { 0x00d0, 0x60, OMAP_DMA_REG_32BIT },
+	[CNDP]		= { 0x00d4, 0x60, OMAP_DMA_REG_32BIT },
+	[CCDN]		= { 0x00d8, 0x60, OMAP_DMA_REG_32BIT },
 };
 
-static void __iomem *dma_base;
-static inline void dma_write(u32 val, int reg, int lch)
+static unsigned configure_dma_errata(void)
 {
-	u8  stride;
-	u32 offset;
-
-	stride = (reg >= dma_common_ch_start) ? dma_stride : 0;
-	offset = reg_map[reg] + (stride * lch);
-	__raw_writel(val, dma_base + offset);
-}
-
-static inline u32 dma_read(int reg, int lch)
-{
-	u8 stride;
-	u32 offset, val;
-
-	stride = (reg >= dma_common_ch_start) ? dma_stride : 0;
-	offset = reg_map[reg] + (stride * lch);
-	val = __raw_readl(dma_base + offset);
-	return val;
-}
-
-static inline void omap2_disable_irq_lch(int lch)
-{
-	u32 val;
-
-	val = dma_read(IRQENABLE_L0, lch);
-	val &= ~(1 << lch);
-	dma_write(val, IRQENABLE_L0, lch);
-}
-
-static void omap2_clear_dma(int lch)
-{
-	int i = dma_common_ch_start;
-
-	for (; i <= dma_common_ch_end; i += 1)
-		dma_write(0, i, lch);
-}
-
-static void omap2_show_dma_caps(void)
-{
-	u8 revision = dma_read(REVISION, 0) & 0xff;
-	printk(KERN_INFO "OMAP DMA hardware revision %d.%d\n",
-				revision >> 4, revision & 0xf);
-	return;
-}
-
-static u32 configure_dma_errata(void)
-{
+	unsigned errata = 0;
 
 	/*
 	 * Errata applicable for OMAP2430ES1.0 and all omap2420
@@ -220,98 +162,45 @@ static u32 configure_dma_errata(void)
 	return errata;
 }
 
-/* One time initializations */
-static int __init omap2_system_dma_init_dev(struct omap_hwmod *oh, void *unused)
-{
-	struct platform_device			*pdev;
-	struct omap_system_dma_plat_info	*p;
-	struct resource				*mem;
-	char					*name = "omap_dma_system";
-
-	dma_stride		= OMAP2_DMA_STRIDE;
-	dma_common_ch_start	= CSDP;
-
-	p = kzalloc(sizeof(struct omap_system_dma_plat_info), GFP_KERNEL);
-	if (!p) {
-		pr_err("%s: Unable to allocate pdata for %s:%s\n",
-			__func__, name, oh->name);
-		return -ENOMEM;
-	}
-
-	p->dma_attr		= (struct omap_dma_dev_attr *)oh->dev_attr;
-	p->disable_irq_lch	= omap2_disable_irq_lch;
-	p->show_dma_caps	= omap2_show_dma_caps;
-	p->clear_dma		= omap2_clear_dma;
-	p->dma_write		= dma_write;
-	p->dma_read		= dma_read;
-
-	p->clear_lch_regs	= NULL;
-
-	p->errata		= configure_dma_errata();
-
-	pdev = omap_device_build(name, 0, oh, p, sizeof(*p));
-	kfree(p);
-	if (IS_ERR(pdev)) {
-		pr_err("%s: Can't build omap_device for %s:%s.\n",
-			__func__, name, oh->name);
-		return PTR_ERR(pdev);
-	}
-
-	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!mem) {
-		dev_err(&pdev->dev, "%s: no mem resource\n", __func__);
-		return -EINVAL;
-	}
-	dma_base = ioremap(mem->start, resource_size(mem));
-	if (!dma_base) {
-		dev_err(&pdev->dev, "%s: ioremap fail\n", __func__);
-		return -ENOMEM;
-	}
-
-	d = oh->dev_attr;
-	d->chan = kzalloc(sizeof(struct omap_dma_lch) *
-					(d->lch_count), GFP_KERNEL);
-
-	if (!d->chan) {
-		dev_err(&pdev->dev, "%s: kzalloc fail\n", __func__);
-		return -ENOMEM;
-	}
-
-	if (cpu_is_omap34xx() && (omap_type() != OMAP2_DEVICE_TYPE_GP))
-		d->dev_caps |= HS_CHANNELS_RESERVED;
-
-	/* Check the capabilities register for descriptor loading feature */
-	if (dma_read(CAPS_0, 0) & DMA_HAS_DESCRIPTOR_CAPS)
-		dma_common_ch_end = CCDN;
-	else
-		dma_common_ch_end = CCFN;
-
-	return 0;
-}
-
-static const struct platform_device_info omap_dma_dev_info = {
-	.name = "omap-dma-engine",
-	.id = -1,
-	.dma_mask = DMA_BIT_MASK(32),
+static const struct dma_slave_map omap24xx_sdma_dt_map[] = {
+	/* external DMA requests when tusb6010 is used */
+	{ "musb-hdrc.1.auto", "dmareq0", SDMA_FILTER_PARAM(2) },
+	{ "musb-hdrc.1.auto", "dmareq1", SDMA_FILTER_PARAM(3) },
+	{ "musb-hdrc.1.auto", "dmareq2", SDMA_FILTER_PARAM(14) }, /* OMAP2420 only */
+	{ "musb-hdrc.1.auto", "dmareq3", SDMA_FILTER_PARAM(15) }, /* OMAP2420 only */
+	{ "musb-hdrc.1.auto", "dmareq4", SDMA_FILTER_PARAM(16) }, /* OMAP2420 only */
+	{ "musb-hdrc.1.auto", "dmareq5", SDMA_FILTER_PARAM(64) }, /* OMAP2420 only */
 };
 
+static struct omap_dma_dev_attr dma_attr = {
+	.dev_caps = RESERVE_CHANNEL | DMA_LINKED_LCH | GLOBAL_PRIORITY |
+		    IS_CSSA_32 | IS_CDSA_32,
+	.lch_count = 32,
+};
+
+struct omap_system_dma_plat_info dma_plat_info = {
+	.reg_map	= reg_map,
+	.channel_stride	= 0x60,
+	.dma_attr	= &dma_attr,
+};
+
+/* One time initializations */
 static int __init omap2_system_dma_init(void)
 {
-	struct platform_device *pdev;
-	int res;
+	dma_plat_info.errata = configure_dma_errata();
 
-	res = omap_hwmod_for_each_by_class("dma",
-			omap2_system_dma_init_dev, NULL);
-	if (res)
-		return res;
+	if (soc_is_omap24xx()) {
+		/* DMA slave map for drivers not yet converted to DT */
+		dma_plat_info.slave_map = omap24xx_sdma_dt_map;
+		dma_plat_info.slavecnt = ARRAY_SIZE(omap24xx_sdma_dt_map);
+	}
 
-	if (of_have_populated_dt())
-		return res;
+	if (!soc_is_omap242x())
+		dma_attr.dev_caps |= IS_RW_PRIORITY;
 
-	pdev = platform_device_register_full(&omap_dma_dev_info);
-	if (IS_ERR(pdev))
-		return PTR_ERR(pdev);
+	if (soc_is_omap34xx() && (omap_type() != OMAP2_DEVICE_TYPE_GP))
+		dma_attr.dev_caps |= HS_CHANNELS_RESERVED;
 
-	return res;
+	return 0;
 }
 omap_arch_initcall(omap2_system_dma_init);

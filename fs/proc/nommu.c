@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* nommu.c: mmu-less memory info files
  *
  * Copyright (C) 2004 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 #include <linux/init.h>
@@ -25,8 +21,6 @@
 #include <linux/seq_file.h>
 #include <linux/hugetlb.h>
 #include <linux/vmalloc.h>
-#include <asm/uaccess.h>
-#include <asm/pgtable.h>
 #include <asm/tlb.h>
 #include <asm/div64.h>
 #include "internal.h"
@@ -64,7 +58,7 @@ static int nommu_region_show(struct seq_file *m, struct vm_region *region)
 
 	if (file) {
 		seq_pad(m, ' ');
-		seq_path(m, &file->f_path, "");
+		seq_file_path(m, file, "");
 	}
 
 	seq_putc(m, '\n');
@@ -113,21 +107,9 @@ static const struct seq_operations proc_nommu_region_list_seqop = {
 	.show	= nommu_region_list_show
 };
 
-static int proc_nommu_region_list_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &proc_nommu_region_list_seqop);
-}
-
-static const struct file_operations proc_nommu_region_list_operations = {
-	.open    = proc_nommu_region_list_open,
-	.read    = seq_read,
-	.llseek  = seq_lseek,
-	.release = seq_release,
-};
-
 static int __init proc_nommu_init(void)
 {
-	proc_create("maps", S_IRUGO, NULL, &proc_nommu_region_list_operations);
+	proc_create_seq("maps", S_IRUGO, NULL, &proc_nommu_region_list_seqop);
 	return 0;
 }
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Compaq Hot Plug Controller Driver
  *
@@ -6,21 +7,6 @@
  * Copyright (C) 2001 IBM Corp.
  *
  * All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or (at
- * your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
- * NON INFRINGEMENT.  See the GNU General Public License for more
- * details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * Send feedback to <greg@kroah.com>
  *
@@ -39,7 +25,7 @@
 #include "cpqphp.h"
 
 static DEFINE_MUTEX(cpqphp_mutex);
-static int show_ctrl (struct controller *ctrl, char *buf)
+static int show_ctrl(struct controller *ctrl, char *buf)
 {
 	char *out = buf;
 	int index;
@@ -77,9 +63,9 @@ static int show_ctrl (struct controller *ctrl, char *buf)
 	return out - buf;
 }
 
-static int show_dev (struct controller *ctrl, char *buf)
+static int show_dev(struct controller *ctrl, char *buf)
 {
-	char * out = buf;
+	char *out = buf;
 	int index;
 	struct pci_resource *res;
 	struct pci_func *new_slot;
@@ -119,7 +105,7 @@ static int show_dev (struct controller *ctrl, char *buf)
 			out += sprintf(out, "start = %8.8x, length = %8.8x\n", res->base, res->length);
 			res = res->next;
 		}
-		slot=slot->next;
+		slot = slot->next;
 	}
 
 	return out - buf;
@@ -216,8 +202,7 @@ void cpqhp_create_debugfs_files(struct controller *ctrl)
 
 void cpqhp_remove_debugfs_files(struct controller *ctrl)
 {
-	if (ctrl->dentry)
-		debugfs_remove(ctrl->dentry);
+	debugfs_remove(ctrl->dentry);
 	ctrl->dentry = NULL;
 }
 

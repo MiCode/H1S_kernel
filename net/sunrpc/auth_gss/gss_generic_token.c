@@ -38,7 +38,7 @@
 #include <linux/sunrpc/gss_asn1.h>
 
 
-#ifdef RPC_DEBUG
+#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
 # define RPCDBG_FACILITY        RPCDBG_AUTH
 #endif
 
@@ -222,13 +222,10 @@ g_verify_token_header(struct xdr_netobj *mech, int *body_size,
 	if (ret)
 		return ret;
 
-	if (!ret) {
-		*buf_in = buf;
-		*body_size = toksize;
-	}
+	*buf_in = buf;
+	*body_size = toksize;
 
 	return ret;
 }
 
 EXPORT_SYMBOL_GPL(g_verify_token_header);
-

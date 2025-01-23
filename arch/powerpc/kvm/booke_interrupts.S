@@ -1,16 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, version 2, as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  *
  * Copyright IBM Corp. 2007
  * Copyright 2011 Freescale Semiconductor, Inc.
@@ -21,7 +10,6 @@
 #include <asm/ppc_asm.h>
 #include <asm/kvm_asm.h>
 #include <asm/reg.h>
-#include <asm/mmu-44x.h>
 #include <asm/page.h>
 #include <asm/asm-offsets.h>
 
@@ -235,7 +223,7 @@ _GLOBAL(kvmppc_resume_host)
 	lwz	r3, VCPU_HOST_PID(r4)
 	mtspr	SPRN_PID, r3
 
-#ifdef CONFIG_FSL_BOOKE
+#ifdef CONFIG_PPC_85xx
 	/* we cheat and know that Linux doesn't use PID1 which is always 0 */
 	lis	r3, 0
 	mtspr	SPRN_PID1, r3
@@ -249,7 +237,7 @@ _GLOBAL(kvmppc_resume_host)
 	/* Switch to kernel stack and jump to handler. */
 	LOAD_REG_ADDR(r3, kvmppc_handle_exit)
 	mtctr	r3
-	lwz	r3, HOST_RUN(r1)
+	mr	r3, r4
 	lwz	r2, HOST_R2(r1)
 	mr	r14, r4 /* Save vcpu pointer. */
 
@@ -349,15 +337,14 @@ heavyweight_exit:
 
 
 /* Registers:
- *  r3: kvm_run pointer
- *  r4: vcpu pointer
+ *  r3: vcpu pointer
  */
 _GLOBAL(__kvmppc_vcpu_run)
 	stwu	r1, -HOST_STACK_SIZE(r1)
-	stw	r1, VCPU_HOST_STACK(r4)	/* Save stack pointer to vcpu. */
+	stw	r1, VCPU_HOST_STACK(r3)	/* Save stack pointer to vcpu. */
 
 	/* Save host state to stack. */
-	stw	r3, HOST_RUN(r1)
+	mr	r4, r3
 	mflr	r3
 	stw	r3, HOST_STACK_LR(r1)
 	mfcr	r5
@@ -419,13 +406,9 @@ lightweight_exit:
 	lwz	r3, VCPU_SHADOW_PID(r4)
 	mtspr	SPRN_PID, r3
 
-#ifdef CONFIG_FSL_BOOKE
+#ifdef CONFIG_PPC_85xx
 	lwz	r3, VCPU_SHADOW_PID1(r4)
 	mtspr	SPRN_PID1, r3
-#endif
-
-#ifdef CONFIG_44x
-	iccci	0, 0 /* XXX hack */
 #endif
 
 	/* Load some guest volatiles. */

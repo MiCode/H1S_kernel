@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * hdlcdrv.h  -- HDLC packet radio network driver.
  * The Linux soundcard driver for 1200 baud and 9600 baud packet radio
@@ -78,7 +79,7 @@ struct hdlcdrv_ops {
 	 */
 	int (*open)(struct net_device *);
 	int (*close)(struct net_device *);
-	int (*ioctl)(struct net_device *, struct ifreq *, 
+	int (*ioctl)(struct net_device *, void __user *,
 		     struct hdlcdrv_ioctl *, int);
 };
 

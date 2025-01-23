@@ -1,24 +1,32 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* Large capacity key type
  *
+ * Copyright (C) 2017-2020 Jason A. Donenfeld <Jason@zx2c4.com>. All Rights Reserved.
  * Copyright (C) 2013 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public Licence
- * as published by the Free Software Foundation; either version
- * 2 of the Licence, or (at your option) any later version.
  */
 
-#include <linux/module.h>
+#define pr_fmt(fmt) "big_key: "fmt
 #include <linux/init.h>
 #include <linux/seq_file.h>
 #include <linux/file.h>
 #include <linux/shmem_fs.h>
 #include <linux/err.h>
+#include <linux/random.h>
 #include <keys/user-type.h>
 #include <keys/big_key-type.h>
+#include <crypto/chacha20poly1305.h>
 
-MODULE_LICENSE("GPL");
+/*
+ * Layout of key payload words.
+ */
+struct big_key_payload {
+	u8 *data;
+	struct path path;
+	size_t length;
+};
+#define to_big_key_payload(payload)			\
+	(struct big_key_payload *)((payload).data)
 
 /*
  * If the data is under this limit, there's no point creating a shm file to
@@ -33,81 +41,121 @@ MODULE_LICENSE("GPL");
  */
 struct key_type key_type_big_key = {
 	.name			= "big_key",
-	.def_lookup_type	= KEYRING_SEARCH_LOOKUP_DIRECT,
-	.instantiate		= big_key_instantiate,
-	.match			= user_match,
+	.preparse		= big_key_preparse,
+	.free_preparse		= big_key_free_preparse,
+	.instantiate		= generic_key_instantiate,
 	.revoke			= big_key_revoke,
 	.destroy		= big_key_destroy,
 	.describe		= big_key_describe,
 	.read			= big_key_read,
+	.update			= big_key_update,
 };
 
 /*
- * Instantiate a big key
+ * Preparse a big key
  */
-int big_key_instantiate(struct key *key, struct key_preparsed_payload *prep)
+int big_key_preparse(struct key_preparsed_payload *prep)
 {
-	struct path *path = (struct path *)&key->payload.data2;
+	struct big_key_payload *payload = to_big_key_payload(prep->payload);
 	struct file *file;
+	u8 *buf, *enckey;
 	ssize_t written;
 	size_t datalen = prep->datalen;
+	size_t enclen = datalen + CHACHA20POLY1305_AUTHTAG_SIZE;
 	int ret;
 
-	ret = -EINVAL;
+	BUILD_BUG_ON(sizeof(*payload) != sizeof(prep->payload.data));
+
 	if (datalen <= 0 || datalen > 1024 * 1024 || !prep->data)
-		goto error;
+		return -EINVAL;
 
 	/* Set an arbitrary quota */
-	ret = key_payload_reserve(key, 16);
-	if (ret < 0)
-		goto error;
+	prep->quotalen = 16;
 
-	key->type_data.x[1] = datalen;
+	payload->length = datalen;
 
 	if (datalen > BIG_KEY_FILE_THRESHOLD) {
 		/* Create a shmem file to store the data in.  This will permit the data
 		 * to be swapped out if needed.
 		 *
-		 * TODO: Encrypt the stored data with a temporary key.
+		 * File content is stored encrypted with randomly generated key.
+		 * Since the key is random for each file, we can set the nonce
+		 * to zero, provided we never define a ->update() call.
 		 */
-		file = shmem_kernel_file_setup("", datalen, 0);
+		loff_t pos = 0;
+
+		buf = kvmalloc(enclen, GFP_KERNEL);
+		if (!buf)
+			return -ENOMEM;
+
+		/* generate random key */
+		enckey = kmalloc(CHACHA20POLY1305_KEY_SIZE, GFP_KERNEL);
+		if (!enckey) {
+			ret = -ENOMEM;
+			goto error;
+		}
+		ret = get_random_bytes_wait(enckey, CHACHA20POLY1305_KEY_SIZE);
+		if (unlikely(ret))
+			goto err_enckey;
+
+		/* encrypt data */
+		chacha20poly1305_encrypt(buf, prep->data, datalen, NULL, 0,
+					 0, enckey);
+
+		/* save aligned data to file */
+		file = shmem_kernel_file_setup("", enclen, 0);
 		if (IS_ERR(file)) {
 			ret = PTR_ERR(file);
-			goto err_quota;
+			goto err_enckey;
 		}
 
-		written = kernel_write(file, prep->data, prep->datalen, 0);
-		if (written != datalen) {
+		written = kernel_write(file, buf, enclen, &pos);
+		if (written != enclen) {
 			ret = written;
 			if (written >= 0)
-				ret = -ENOMEM;
+				ret = -EIO;
 			goto err_fput;
 		}
 
 		/* Pin the mount and dentry to the key so that we can open it again
 		 * later
 		 */
-		*path = file->f_path;
-		path_get(path);
+		payload->data = enckey;
+		payload->path = file->f_path;
+		path_get(&payload->path);
 		fput(file);
+		kvfree_sensitive(buf, enclen);
 	} else {
 		/* Just store the data in a buffer */
 		void *data = kmalloc(datalen, GFP_KERNEL);
-		if (!data) {
-			ret = -ENOMEM;
-			goto err_quota;
-		}
 
-		key->payload.data = memcpy(data, prep->data, prep->datalen);
+		if (!data)
+			return -ENOMEM;
+
+		payload->data = data;
+		memcpy(data, prep->data, prep->datalen);
 	}
 	return 0;
 
 err_fput:
 	fput(file);
-err_quota:
-	key_payload_reserve(key, 0);
+err_enckey:
+	kfree_sensitive(enckey);
 error:
+	kvfree_sensitive(buf, enclen);
 	return ret;
+}
+
+/*
+ * Clear preparsement.
+ */
+void big_key_free_preparse(struct key_preparsed_payload *prep)
+{
+	struct big_key_payload *payload = to_big_key_payload(prep->payload);
+
+	if (prep->datalen > BIG_KEY_FILE_THRESHOLD)
+		path_put(&payload->path);
+	kfree_sensitive(payload->data);
 }
 
 /*
@@ -116,12 +164,12 @@ error:
  */
 void big_key_revoke(struct key *key)
 {
-	struct path *path = (struct path *)&key->payload.data2;
+	struct big_key_payload *payload = to_big_key_payload(key->payload);
 
 	/* clear the quota */
 	key_payload_reserve(key, 0);
-	if (key_is_instantiated(key) && key->type_data.x[1] > BIG_KEY_FILE_THRESHOLD)
-		vfs_truncate(path, 0);
+	if (key_is_positive(key) && payload->length > BIG_KEY_FILE_THRESHOLD)
+		vfs_truncate(&payload->path, 0);
 }
 
 /*
@@ -129,15 +177,32 @@ void big_key_revoke(struct key *key)
  */
 void big_key_destroy(struct key *key)
 {
-	if (key->type_data.x[1] > BIG_KEY_FILE_THRESHOLD) {
-		struct path *path = (struct path *)&key->payload.data2;
-		path_put(path);
-		path->mnt = NULL;
-		path->dentry = NULL;
-	} else {
-		kfree(key->payload.data);
-		key->payload.data = NULL;
+	struct big_key_payload *payload = to_big_key_payload(key->payload);
+
+	if (payload->length > BIG_KEY_FILE_THRESHOLD) {
+		path_put(&payload->path);
+		payload->path.mnt = NULL;
+		payload->path.dentry = NULL;
 	}
+	kfree_sensitive(payload->data);
+	payload->data = NULL;
+}
+
+/*
+ * Update a big key
+ */
+int big_key_update(struct key *key, struct key_preparsed_payload *prep)
+{
+	int ret;
+
+	ret = key_payload_reserve(key, prep->datalen);
+	if (ret < 0)
+		return ret;
+
+	if (key_is_positive(key))
+		big_key_destroy(key);
+
+	return generic_key_instantiate(key, prep);
 }
 
 /*
@@ -145,63 +210,81 @@ void big_key_destroy(struct key *key)
  */
 void big_key_describe(const struct key *key, struct seq_file *m)
 {
-	unsigned long datalen = key->type_data.x[1];
+	struct big_key_payload *payload = to_big_key_payload(key->payload);
 
 	seq_puts(m, key->description);
 
-	if (key_is_instantiated(key))
-		seq_printf(m, ": %lu [%s]",
-			   datalen,
-			   datalen > BIG_KEY_FILE_THRESHOLD ? "file" : "buff");
+	if (key_is_positive(key))
+		seq_printf(m, ": %zu [%s]",
+			   payload->length,
+			   payload->length > BIG_KEY_FILE_THRESHOLD ? "file" : "buff");
 }
 
 /*
  * read the key data
  * - the key's semaphore is read-locked
  */
-long big_key_read(const struct key *key, char __user *buffer, size_t buflen)
+long big_key_read(const struct key *key, char *buffer, size_t buflen)
 {
-	unsigned long datalen = key->type_data.x[1];
+	struct big_key_payload *payload = to_big_key_payload(key->payload);
+	size_t datalen = payload->length;
 	long ret;
 
 	if (!buffer || buflen < datalen)
 		return datalen;
 
 	if (datalen > BIG_KEY_FILE_THRESHOLD) {
-		struct path *path = (struct path *)&key->payload.data2;
 		struct file *file;
-		loff_t pos;
+		u8 *buf, *enckey = payload->data;
+		size_t enclen = datalen + CHACHA20POLY1305_AUTHTAG_SIZE;
+		loff_t pos = 0;
 
-		file = dentry_open(path, O_RDONLY, current_cred());
-		if (IS_ERR(file))
-			return PTR_ERR(file);
+		buf = kvmalloc(enclen, GFP_KERNEL);
+		if (!buf)
+			return -ENOMEM;
 
-		pos = 0;
-		ret = vfs_read(file, buffer, datalen, &pos);
+		file = dentry_open(&payload->path, O_RDONLY, current_cred());
+		if (IS_ERR(file)) {
+			ret = PTR_ERR(file);
+			goto error;
+		}
+
+		/* read file to kernel and decrypt */
+		ret = kernel_read(file, buf, enclen, &pos);
+		if (ret != enclen) {
+			if (ret >= 0)
+				ret = -EIO;
+			goto err_fput;
+		}
+
+		ret = chacha20poly1305_decrypt(buf, buf, enclen, NULL, 0, 0,
+					       enckey) ? 0 : -EBADMSG;
+		if (unlikely(ret))
+			goto err_fput;
+
+		ret = datalen;
+
+		/* copy out decrypted data */
+		memcpy(buffer, buf, datalen);
+
+err_fput:
 		fput(file);
-		if (ret >= 0 && ret != datalen)
-			ret = -EIO;
+error:
+		kvfree_sensitive(buf, enclen);
 	} else {
 		ret = datalen;
-		if (copy_to_user(buffer, key->payload.data, datalen) != 0)
-			ret = -EFAULT;
+		memcpy(buffer, payload->data, datalen);
 	}
 
 	return ret;
 }
 
 /*
- * Module stuff
+ * Register key type
  */
 static int __init big_key_init(void)
 {
 	return register_key_type(&key_type_big_key);
 }
 
-static void __exit big_key_cleanup(void)
-{
-	unregister_key_type(&key_type_big_key);
-}
-
-module_init(big_key_init);
-module_exit(big_key_cleanup);
+late_initcall(big_key_init);

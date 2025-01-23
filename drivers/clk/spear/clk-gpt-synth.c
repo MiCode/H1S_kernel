@@ -1,10 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2012 ST Microelectronics
- * Viresh Kumar <viresh.linux@gmail.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
+ * Viresh Kumar <vireshk@kernel.org>
  *
  * General Purpose Timer Synthesizer clock implementation
  */
@@ -105,7 +102,7 @@ static int clk_gpt_set_rate(struct clk_hw *hw, unsigned long drate,
 	return 0;
 }
 
-static struct clk_ops clk_gpt_ops = {
+static const struct clk_ops clk_gpt_ops = {
 	.recalc_rate = clk_gpt_recalc_rate,
 	.round_rate = clk_gpt_round_rate,
 	.set_rate = clk_gpt_set_rate,
@@ -120,15 +117,13 @@ struct clk *clk_register_gpt(const char *name, const char *parent_name, unsigned
 	struct clk *clk;
 
 	if (!name || !parent_name || !reg || !rtbl || !rtbl_cnt) {
-		pr_err("Invalid arguments passed");
+		pr_err("Invalid arguments passed\n");
 		return ERR_PTR(-EINVAL);
 	}
 
 	gpt = kzalloc(sizeof(*gpt), GFP_KERNEL);
-	if (!gpt) {
-		pr_err("could not allocate gpt clk\n");
+	if (!gpt)
 		return ERR_PTR(-ENOMEM);
-	}
 
 	/* struct clk_gpt assignments */
 	gpt->reg = reg;

@@ -1,11 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Linux-DVB Driver for DiBcom's DiB0070 base-band RF Tuner.
  *
  * Copyright (C) 2005-7 DiBcom (http://www.dibcom.fr/)
- *
- * This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License as
- *	published by the Free Software Foundation, version 2.
  */
 #ifndef DIB0070_H
 #define DIB0070_H
@@ -48,7 +45,7 @@ struct dib0070_config {
 	u8 vga_filter;
 };
 
-#if IS_ENABLED(CONFIG_DVB_TUNER_DIB0070)
+#if IS_REACHABLE(CONFIG_DVB_TUNER_DIB0070)
 extern struct dvb_frontend *dib0070_attach(struct dvb_frontend *fe, struct i2c_adapter *i2c, struct dib0070_config *cfg);
 extern u16 dib0070_wbd_offset(struct dvb_frontend *);
 extern void dib0070_ctrl_agc_filter(struct dvb_frontend *, u8 open);

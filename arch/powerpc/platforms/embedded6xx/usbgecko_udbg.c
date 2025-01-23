@@ -1,21 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * arch/powerpc/platforms/embedded6xx/usbgecko_udbg.c
  *
  * udbg serial input/output routines for the USB Gecko adapter.
  * Copyright (C) 2008-2009 The GameCube Linux Team
  * Copyright (C) 2008,2009 Albert Herranz
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
  */
+
+#include <linux/of_address.h>
 
 #include <mm/mmu_decl.h>
 
 #include <asm/io.h>
-#include <asm/prom.h>
 #include <asm/udbg.h>
 #include <asm/fixmap.h>
 
@@ -169,7 +165,7 @@ static int ug_getc(void)
 /*
  * Transmits a character.
  */
-void ug_udbg_putc(char ch)
+static void ug_udbg_putc(char ch)
 {
 	ug_putc(ch);
 }
@@ -197,27 +193,9 @@ static int ug_udbg_getc_poll(void)
 }
 
 /*
- * Retrieves and prepares the virtual address needed to access the hardware.
- */
-static void __iomem *ug_udbg_setup_exi_io_base(struct device_node *np)
-{
-	void __iomem *exi_io_base = NULL;
-	phys_addr_t paddr;
-	const unsigned int *reg;
-
-	reg = of_get_property(np, "reg", NULL);
-	if (reg) {
-		paddr = of_translate_address(np, reg);
-		if (paddr)
-			exi_io_base = ioremap(paddr, reg[1]);
-	}
-	return exi_io_base;
-}
-
-/*
  * Checks if a USB Gecko adapter is inserted in any memory card slot.
  */
-static void __iomem *ug_udbg_probe(void __iomem *exi_io_base)
+static void __iomem *__init ug_udbg_probe(void __iomem *exi_io_base)
 {
 	int i;
 
@@ -247,10 +225,10 @@ void __init ug_udbg_init(void)
 	np = of_find_compatible_node(NULL, NULL, "nintendo,flipper-exi");
 	if (!np) {
 		udbg_printf("%s: EXI node not found\n", __func__);
-		goto done;
+		goto out;
 	}
 
-	exi_io_base = ug_udbg_setup_exi_io_base(np);
+	exi_io_base = of_iomap(np, 0);
 	if (!exi_io_base) {
 		udbg_printf("%s: failed to setup EXI io base\n", __func__);
 		goto done;
@@ -267,8 +245,8 @@ void __init ug_udbg_init(void)
 	}
 
 done:
-	if (np)
-		of_node_put(np);
+	of_node_put(np);
+out:
 	return;
 }
 

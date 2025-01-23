@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * fixed.c
  *
@@ -8,11 +9,6 @@
  * Copyright (c) 2009 Nokia Corporation
  * Roger Quadros <ext-roger.quadros@nokia.com>
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of the
- * License, or (at your option) any later version.
- *
  * This is useful for systems with mixed controllable and
  * non-controllable regulators, as well as for allowing testing on
  * systems with no controllable regulators.
@@ -22,35 +18,113 @@
 #include <linux/mutex.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/pm_domain.h>
+#include <linux/pm_opp.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/fixed.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/slab.h>
 #include <linux/of.h>
-#include <linux/of_gpio.h>
 #include <linux/regulator/of_regulator.h>
+#ifdef QTI_FIXED_REGULATOR
+#include <linux/regulator/debug-regulator.h>
+#include <linux/regulator/proxy-consumer.h>
+#endif
 #include <linux/regulator/machine.h>
+#include <linux/clk.h>
+
 
 struct fixed_voltage_data {
 	struct regulator_desc desc;
 	struct regulator_dev *dev;
+
+	struct clk *enable_clock;
+	unsigned int enable_counter;
+	int performance_state;
 };
+
+struct fixed_dev_type {
+	bool has_enable_clock;
+	bool has_performance_state;
+};
+
+static int reg_clock_enable(struct regulator_dev *rdev)
+{
+	struct fixed_voltage_data *priv = rdev_get_drvdata(rdev);
+	int ret = 0;
+
+	ret = clk_prepare_enable(priv->enable_clock);
+	if (ret)
+		return ret;
+
+	priv->enable_counter++;
+
+	return ret;
+}
+
+static int reg_clock_disable(struct regulator_dev *rdev)
+{
+	struct fixed_voltage_data *priv = rdev_get_drvdata(rdev);
+
+	clk_disable_unprepare(priv->enable_clock);
+	priv->enable_counter--;
+
+	return 0;
+}
+
+static int reg_domain_enable(struct regulator_dev *rdev)
+{
+	struct fixed_voltage_data *priv = rdev_get_drvdata(rdev);
+	struct device *dev = rdev->dev.parent;
+	int ret;
+
+	ret = dev_pm_genpd_set_performance_state(dev, priv->performance_state);
+	if (ret)
+		return ret;
+
+	priv->enable_counter++;
+
+	return ret;
+}
+
+static int reg_domain_disable(struct regulator_dev *rdev)
+{
+	struct fixed_voltage_data *priv = rdev_get_drvdata(rdev);
+	struct device *dev = rdev->dev.parent;
+	int ret;
+
+	ret = dev_pm_genpd_set_performance_state(dev, 0);
+	if (ret)
+		return ret;
+
+	priv->enable_counter--;
+
+	return 0;
+}
+
+static int reg_is_enabled(struct regulator_dev *rdev)
+{
+	struct fixed_voltage_data *priv = rdev_get_drvdata(rdev);
+
+	return priv->enable_counter > 0;
+}
 
 
 /**
  * of_get_fixed_voltage_config - extract fixed_voltage_config structure info
  * @dev: device requesting for fixed_voltage_config
+ * @desc: regulator description
  *
  * Populates fixed_voltage_config structure by extracting data from device
  * tree node, returns a pointer to the populated structure of NULL if memory
  * alloc fails.
  */
 static struct fixed_voltage_config *
-of_get_fixed_voltage_config(struct device *dev)
+of_get_fixed_voltage_config(struct device *dev,
+			    const struct regulator_desc *desc)
 {
 	struct fixed_voltage_config *config;
 	struct device_node *np = dev->of_node;
-	const __be32 *delay;
 	struct regulator_init_data *init_data;
 
 	config = devm_kzalloc(dev, sizeof(struct fixed_voltage_config),
@@ -58,7 +132,7 @@ of_get_fixed_voltage_config(struct device *dev)
 	if (!config)
 		return ERR_PTR(-ENOMEM);
 
-	config->init_data = of_get_regulator_init_data(dev, dev->of_node);
+	config->init_data = of_get_regulator_init_data(dev, dev->of_node, desc);
 	if (!config->init_data)
 		return ERR_PTR(-EINVAL);
 
@@ -77,48 +151,66 @@ of_get_fixed_voltage_config(struct device *dev)
 	if (init_data->constraints.boot_on)
 		config->enabled_at_boot = true;
 
-	config->gpio = of_get_named_gpio(np, "gpio", 0);
-	/*
-	 * of_get_named_gpio() currently returns ENODEV rather than
-	 * EPROBE_DEFER. This code attempts to be compatible with both
-	 * for now; the ENODEV check can be removed once the API is fixed.
-	 * of_get_named_gpio() doesn't differentiate between a missing
-	 * property (which would be fine here, since the GPIO is optional)
-	 * and some other error. Patches have been posted for both issues.
-	 * Once they are check in, we should replace this with:
-	 * if (config->gpio < 0 && config->gpio != -ENOENT)
-	 */
-	if ((config->gpio == -ENODEV) || (config->gpio == -EPROBE_DEFER))
-		return ERR_PTR(-EPROBE_DEFER);
+	of_property_read_u32(np, "startup-delay-us", &config->startup_delay);
+	of_property_read_u32(np, "off-on-delay-us", &config->off_on_delay);
 
-	delay = of_get_property(np, "startup-delay-us", NULL);
-	if (delay)
-		config->startup_delay = be32_to_cpu(*delay);
-
-	if (of_find_property(np, "enable-active-high", NULL))
-		config->enable_high = true;
-
-	if (of_find_property(np, "gpio-open-drain", NULL))
-		config->gpio_is_open_drain = true;
-
-	if (of_find_property(np, "vin-supply", NULL))
+	if (of_property_present(np, "vin-supply"))
 		config->input_supply = "vin";
 
 	return config;
 }
 
-static struct regulator_ops fixed_voltage_ops = {
+static const struct regulator_ops fixed_voltage_ops = {
 };
+
+static const struct regulator_ops fixed_voltage_clkenabled_ops = {
+	.enable = reg_clock_enable,
+	.disable = reg_clock_disable,
+	.is_enabled = reg_is_enabled,
+};
+
+static const struct regulator_ops fixed_voltage_domain_ops = {
+	.enable = reg_domain_enable,
+	.disable = reg_domain_disable,
+	.is_enabled = reg_is_enabled,
+};
+
+#ifdef QTI_FIXED_REGULATOR
+static void qti_reg_fixed_voltage_init(struct device *dev,
+				       struct regulator_dev *rdev)
+{
+	int ret;
+
+	ret = devm_regulator_proxy_consumer_register(dev, dev->of_node);
+	if (ret)
+		dev_err(dev, "failed to register proxy consumer, ret=%d\n",
+			ret);
+
+	ret = devm_regulator_debug_register(dev, rdev);
+	if (ret)
+		dev_err(dev, "failed to register debug regulator, ret=%d\n",
+			ret);
+}
+#endif
 
 static int reg_fixed_voltage_probe(struct platform_device *pdev)
 {
+	struct device *dev = &pdev->dev;
 	struct fixed_voltage_config *config;
 	struct fixed_voltage_data *drvdata;
+	const struct fixed_dev_type *drvtype = of_device_get_match_data(dev);
 	struct regulator_config cfg = { };
+	enum gpiod_flags gflags;
 	int ret;
 
+	drvdata = devm_kzalloc(&pdev->dev, sizeof(struct fixed_voltage_data),
+			       GFP_KERNEL);
+	if (!drvdata)
+		return -ENOMEM;
+
 	if (pdev->dev.of_node) {
-		config = of_get_fixed_voltage_config(&pdev->dev);
+		config = of_get_fixed_voltage_config(&pdev->dev,
+						     &drvdata->desc);
 		if (IS_ERR(config))
 			return PTR_ERR(config);
 	} else {
@@ -128,35 +220,45 @@ static int reg_fixed_voltage_probe(struct platform_device *pdev)
 	if (!config)
 		return -ENOMEM;
 
-	drvdata = devm_kzalloc(&pdev->dev, sizeof(struct fixed_voltage_data),
-			       GFP_KERNEL);
-	if (drvdata == NULL) {
-		dev_err(&pdev->dev, "Failed to allocate device data\n");
-		ret = -ENOMEM;
-		goto err;
-	}
-
-	drvdata->desc.name = kstrdup(config->supply_name, GFP_KERNEL);
+	drvdata->desc.name = devm_kstrdup(&pdev->dev,
+					  config->supply_name,
+					  GFP_KERNEL);
 	if (drvdata->desc.name == NULL) {
 		dev_err(&pdev->dev, "Failed to allocate supply name\n");
-		ret = -ENOMEM;
-		goto err;
+		return -ENOMEM;
 	}
 	drvdata->desc.type = REGULATOR_VOLTAGE;
 	drvdata->desc.owner = THIS_MODULE;
-	drvdata->desc.ops = &fixed_voltage_ops;
+
+	if (drvtype && drvtype->has_enable_clock) {
+		drvdata->desc.ops = &fixed_voltage_clkenabled_ops;
+
+		drvdata->enable_clock = devm_clk_get(dev, NULL);
+		if (IS_ERR(drvdata->enable_clock)) {
+			dev_err(dev, "Can't get enable-clock from devicetree\n");
+			return PTR_ERR(drvdata->enable_clock);
+		}
+	} else if (drvtype && drvtype->has_performance_state) {
+		drvdata->desc.ops = &fixed_voltage_domain_ops;
+
+		drvdata->performance_state = of_get_required_opp_performance_state(dev->of_node, 0);
+		if (drvdata->performance_state < 0) {
+			dev_err(dev, "Can't get performance state from devicetree\n");
+			return drvdata->performance_state;
+		}
+	} else {
+		drvdata->desc.ops = &fixed_voltage_ops;
+	}
 
 	drvdata->desc.enable_time = config->startup_delay;
+	drvdata->desc.off_on_delay = config->off_on_delay;
 
 	if (config->input_supply) {
-		drvdata->desc.supply_name = kstrdup(config->input_supply,
-							GFP_KERNEL);
-		if (!drvdata->desc.supply_name) {
-			dev_err(&pdev->dev,
-				"Failed to allocate input supply\n");
-			ret = -ENOMEM;
-			goto err_name;
-		}
+		drvdata->desc.supply_name = devm_kstrdup(&pdev->dev,
+					    config->input_supply,
+					    GFP_KERNEL);
+		if (!drvdata->desc.supply_name)
+			return -ENOMEM;
 	}
 
 	if (config->microvolts)
@@ -164,75 +266,111 @@ static int reg_fixed_voltage_probe(struct platform_device *pdev)
 
 	drvdata->desc.fixed_uV = config->microvolts;
 
-	if (config->gpio >= 0)
-		cfg.ena_gpio = config->gpio;
-	cfg.ena_gpio_invert = !config->enable_high;
-	if (config->enabled_at_boot) {
-		if (config->enable_high)
-			cfg.ena_gpio_flags |= GPIOF_OUT_INIT_HIGH;
-		else
-			cfg.ena_gpio_flags |= GPIOF_OUT_INIT_LOW;
-	} else {
-		if (config->enable_high)
-			cfg.ena_gpio_flags |= GPIOF_OUT_INIT_LOW;
-		else
-			cfg.ena_gpio_flags |= GPIOF_OUT_INIT_HIGH;
-	}
-	if (config->gpio_is_open_drain)
-		cfg.ena_gpio_flags |= GPIOF_OPEN_DRAIN;
+	/*
+	 * The signal will be inverted by the GPIO core if flagged so in the
+	 * descriptor.
+	 */
+	if (config->enabled_at_boot)
+		gflags = GPIOD_OUT_HIGH;
+	else
+		gflags = GPIOD_OUT_LOW;
+
+	/*
+	 * Some fixed regulators share the enable line between two
+	 * regulators which makes it necessary to get a handle on the
+	 * same descriptor for two different consumers. This will get
+	 * the GPIO descriptor, but only the first call will initialize
+	 * it so any flags such as inversion or open drain will only
+	 * be set up by the first caller and assumed identical on the
+	 * next caller.
+	 *
+	 * FIXME: find a better way to deal with this.
+	 */
+	gflags |= GPIOD_FLAGS_BIT_NONEXCLUSIVE;
+
+	/*
+	 * Do not use devm* here: the regulator core takes over the
+	 * lifecycle management of the GPIO descriptor.
+	 */
+	cfg.ena_gpiod = gpiod_get_optional(&pdev->dev, NULL, gflags);
+	if (IS_ERR(cfg.ena_gpiod))
+		return dev_err_probe(&pdev->dev, PTR_ERR(cfg.ena_gpiod),
+				     "can't get GPIO\n");
 
 	cfg.dev = &pdev->dev;
 	cfg.init_data = config->init_data;
 	cfg.driver_data = drvdata;
 	cfg.of_node = pdev->dev.of_node;
 
-	drvdata->dev = regulator_register(&drvdata->desc, &cfg);
+	drvdata->dev = devm_regulator_register(&pdev->dev, &drvdata->desc,
+					       &cfg);
 	if (IS_ERR(drvdata->dev)) {
-		ret = PTR_ERR(drvdata->dev);
-		dev_err(&pdev->dev, "Failed to register regulator: %d\n", ret);
-		goto err_input;
+		ret = dev_err_probe(&pdev->dev, PTR_ERR(drvdata->dev),
+				    "Failed to register regulator: %ld\n",
+				    PTR_ERR(drvdata->dev));
+		return ret;
 	}
 
 	platform_set_drvdata(pdev, drvdata);
+
+#ifdef QTI_FIXED_REGULATOR
+	qti_reg_fixed_voltage_init(dev, drvdata->dev);
+#endif
 
 	dev_dbg(&pdev->dev, "%s supplying %duV\n", drvdata->desc.name,
 		drvdata->desc.fixed_uV);
 
 	return 0;
-
-err_input:
-	kfree(drvdata->desc.supply_name);
-err_name:
-	kfree(drvdata->desc.name);
-err:
-	return ret;
-}
-
-static int reg_fixed_voltage_remove(struct platform_device *pdev)
-{
-	struct fixed_voltage_data *drvdata = platform_get_drvdata(pdev);
-
-	regulator_unregister(drvdata->dev);
-	kfree(drvdata->desc.supply_name);
-	kfree(drvdata->desc.name);
-
-	return 0;
 }
 
 #if defined(CONFIG_OF)
+static const struct fixed_dev_type fixed_voltage_data = {
+	.has_enable_clock = false,
+};
+
+static const struct fixed_dev_type fixed_clkenable_data = {
+	.has_enable_clock = true,
+};
+
+static const struct fixed_dev_type fixed_domain_data = {
+	.has_performance_state = true,
+};
+
 static const struct of_device_id fixed_of_match[] = {
-	{ .compatible = "regulator-fixed", },
-	{},
+#ifdef QTI_FIXED_REGULATOR
+	{
+		.compatible = "qti-regulator-fixed",
+		.data = &fixed_voltage_data,
+	},
+#endif
+	{
+		.compatible = "regulator-fixed",
+		.data = &fixed_voltage_data,
+	},
+	{
+		.compatible = "regulator-fixed-clock",
+		.data = &fixed_clkenable_data,
+	},
+	{
+		.compatible = "regulator-fixed-domain",
+		.data = &fixed_domain_data,
+	},
+	{
+	},
 };
 MODULE_DEVICE_TABLE(of, fixed_of_match);
 #endif
 
 static struct platform_driver regulator_fixed_voltage_driver = {
 	.probe		= reg_fixed_voltage_probe,
-	.remove		= reg_fixed_voltage_remove,
 	.driver		= {
+#ifdef QTI_FIXED_REGULATOR
+		.name		= "qti-reg-fixed-voltage",
+		.sync_state	= regulator_proxy_consumer_sync_state,
+#else
 		.name		= "reg-fixed-voltage",
-		.owner		= THIS_MODULE,
+#endif
+		.probe_type	= PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = of_match_ptr(fixed_of_match),
 	},
 };

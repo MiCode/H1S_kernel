@@ -1,22 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Abilis Systems TB10x pin control driver
  *
  * Copyright (C) Abilis Systems 2012
  *
  * Author: Christian Ruppert <christian.ruppert@abilis.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <linux/stringify.h>
@@ -483,22 +471,22 @@ struct tb10x_port {
  * @base: register set base address.
  * @pingroups: pointer to an array of the pin groups this driver manages.
  * @pinfuncgrpcnt: number of pingroups in @pingroups.
- * @pinfuncs: pointer to an array of pin functions this driver manages.
  * @pinfuncnt: number of pin functions in @pinfuncs.
  * @mutex: mutex for exclusive access to a pin controller's state.
  * @ports: current state of each port.
  * @gpios: Indicates if a given pin is currently used as GPIO (1) or not (0).
+ * @pinfuncs: flexible array of pin functions this driver manages.
  */
 struct tb10x_pinctrl {
 	struct pinctrl_dev *pctl;
 	void *base;
 	const struct tb10x_pinfuncgrp *pingroups;
 	unsigned int pinfuncgrpcnt;
-	struct tb10x_of_pinfunc *pinfuncs;
 	unsigned int pinfuncnt;
 	struct mutex mutex;
 	struct tb10x_port ports[TB10X_PORTS];
 	DECLARE_BITMAP(gpios, MAX_PIN + 1);
+	struct tb10x_of_pinfunc pinfuncs[];
 };
 
 static inline void tb10x_pinctrl_set_config(struct tb10x_pinctrl *state,
@@ -557,8 +545,8 @@ static int tb10x_dt_node_to_map(struct pinctrl_dev *pctl,
 	int ret = 0;
 
 	if (of_property_read_string(np_config, "abilis,function", &string)) {
-		pr_err("%s: No abilis,function property in device tree.\n",
-			np_config->full_name);
+		pr_err("%pOF: No abilis,function property in device tree.\n",
+			np_config);
 		return -EINVAL;
 	}
 
@@ -577,12 +565,12 @@ out:
 	return ret;
 }
 
-static struct pinctrl_ops tb10x_pinctrl_ops = {
+static const struct pinctrl_ops tb10x_pinctrl_ops = {
 	.get_groups_count = tb10x_get_groups_count,
 	.get_group_name   = tb10x_get_group_name,
 	.get_group_pins   = tb10x_get_group_pins,
 	.dt_node_to_map   = tb10x_dt_node_to_map,
-	.dt_free_map      = pinctrl_utils_dt_free_map,
+	.dt_free_map      = pinctrl_utils_free_map,
 };
 
 static int tb10x_get_functions_count(struct pinctrl_dev *pctl)
@@ -629,9 +617,8 @@ static int tb10x_gpio_request_enable(struct pinctrl_dev *pctl,
 	 */
 	for (i = 0; i < state->pinfuncgrpcnt; i++) {
 		const struct tb10x_pinfuncgrp *pfg = &state->pingroups[i];
-		unsigned int port = pfg->port;
 		unsigned int mode = pfg->mode;
-		int j;
+		int j, port = pfg->port;
 
 		/*
 		 * Skip pin groups which are always mapped and don't need
@@ -698,7 +685,7 @@ static void tb10x_gpio_disable_free(struct pinctrl_dev *pctl,
 	mutex_unlock(&state->mutex);
 }
 
-static int tb10x_pctl_enable(struct pinctrl_dev *pctl,
+static int tb10x_pctl_set_mux(struct pinctrl_dev *pctl,
 			unsigned func_selector, unsigned group_selector)
 {
 	struct tb10x_pinctrl *state = pinctrl_dev_get_drvdata(pctl);
@@ -739,30 +726,13 @@ static int tb10x_pctl_enable(struct pinctrl_dev *pctl,
 	return 0;
 }
 
-static void tb10x_pctl_disable(struct pinctrl_dev *pctl,
-			unsigned func_selector, unsigned group_selector)
-{
-	struct tb10x_pinctrl *state = pinctrl_dev_get_drvdata(pctl);
-	const struct tb10x_pinfuncgrp *grp = &state->pingroups[group_selector];
-
-	if (grp->port < 0)
-		return;
-
-	mutex_lock(&state->mutex);
-
-	state->ports[grp->port].count--;
-
-	mutex_unlock(&state->mutex);
-}
-
-static struct pinmux_ops tb10x_pinmux_ops = {
+static const struct pinmux_ops tb10x_pinmux_ops = {
 	.get_functions_count = tb10x_get_functions_count,
 	.get_function_name = tb10x_get_function_name,
 	.get_function_groups = tb10x_get_function_groups,
 	.gpio_request_enable = tb10x_gpio_request_enable,
 	.gpio_disable_free = tb10x_gpio_disable_free,
-	.enable = tb10x_pctl_enable,
-	.disable = tb10x_pctl_disable,
+	.set_mux = tb10x_pctl_set_mux,
 };
 
 static struct pinctrl_desc tb10x_pindesc = {
@@ -777,7 +747,6 @@ static struct pinctrl_desc tb10x_pindesc = {
 static int tb10x_pinctrl_probe(struct platform_device *pdev)
 {
 	int ret = -EINVAL;
-	struct resource *mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	struct device *dev = &pdev->dev;
 	struct device_node *of_node = dev->of_node;
 	struct device_node *child;
@@ -789,23 +758,16 @@ static int tb10x_pinctrl_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	if (!mem) {
-		dev_err(dev, "No memory resource defined.\n");
-		return -EINVAL;
-	}
-
-	state = devm_kzalloc(dev, sizeof(struct tb10x_pinctrl) +
-					of_get_child_count(of_node)
-					* sizeof(struct tb10x_of_pinfunc),
-				GFP_KERNEL);
+	state = devm_kzalloc(dev, struct_size(state, pinfuncs,
+					      of_get_child_count(of_node)),
+			     GFP_KERNEL);
 	if (!state)
 		return -ENOMEM;
 
 	platform_set_drvdata(pdev, state);
-	state->pinfuncs = (struct tb10x_of_pinfunc *)(state + 1);
 	mutex_init(&state->mutex);
 
-	state->base = devm_ioremap_resource(dev, mem);
+	state->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(state->base)) {
 		ret = PTR_ERR(state->base);
 		goto fail;
@@ -828,10 +790,10 @@ static int tb10x_pinctrl_probe(struct platform_device *pdev)
 		}
 	}
 
-	state->pctl = pinctrl_register(&tb10x_pindesc, dev, state);
-	if (!state->pctl) {
+	state->pctl = devm_pinctrl_register(dev, &tb10x_pindesc, state);
+	if (IS_ERR(state->pctl)) {
 		dev_err(dev, "could not register TB10x pin driver\n");
-		ret = -EINVAL;
+		ret = PTR_ERR(state->pctl);
 		goto fail;
 	}
 
@@ -846,7 +808,6 @@ static int tb10x_pinctrl_remove(struct platform_device *pdev)
 {
 	struct tb10x_pinctrl *state = platform_get_drvdata(pdev);
 
-	pinctrl_unregister(state->pctl);
 	mutex_destroy(&state->mutex);
 
 	return 0;
@@ -865,7 +826,6 @@ static struct platform_driver tb10x_pinctrl_pdrv = {
 	.driver  = {
 		.name  = "tb10x_pinctrl",
 		.of_match_table = of_match_ptr(tb10x_pinctrl_dt_ids),
-		.owner = THIS_MODULE
 	}
 };
 

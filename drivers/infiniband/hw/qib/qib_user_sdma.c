@@ -50,7 +50,18 @@
 /* expected size of headers (for dma_pool) */
 #define QIB_USER_SDMA_EXP_HEADER_LENGTH 64
 /* attempt to drain the queue for 5secs */
-#define QIB_USER_SDMA_DRAIN_TIMEOUT 500
+#define QIB_USER_SDMA_DRAIN_TIMEOUT 250
+
+/*
+ * track how many times a process open this driver.
+ */
+static struct rb_root qib_user_sdma_rb_root = RB_ROOT;
+
+struct qib_user_sdma_rb_node {
+	struct rb_node node;
+	int refcount;
+	pid_t pid;
+};
 
 struct qib_user_sdma_pkt {
 	struct list_head list;  /* list element */
@@ -120,15 +131,60 @@ struct qib_user_sdma_queue {
 	/* dma page table */
 	struct rb_root dma_pages_root;
 
+	struct qib_user_sdma_rb_node *sdma_rb_node;
+
 	/* protect everything above... */
 	struct mutex lock;
 };
+
+static struct qib_user_sdma_rb_node *
+qib_user_sdma_rb_search(struct rb_root *root, pid_t pid)
+{
+	struct qib_user_sdma_rb_node *sdma_rb_node;
+	struct rb_node *node = root->rb_node;
+
+	while (node) {
+		sdma_rb_node = rb_entry(node, struct qib_user_sdma_rb_node,
+					node);
+		if (pid < sdma_rb_node->pid)
+			node = node->rb_left;
+		else if (pid > sdma_rb_node->pid)
+			node = node->rb_right;
+		else
+			return sdma_rb_node;
+	}
+	return NULL;
+}
+
+static int
+qib_user_sdma_rb_insert(struct rb_root *root, struct qib_user_sdma_rb_node *new)
+{
+	struct rb_node **node = &(root->rb_node);
+	struct rb_node *parent = NULL;
+	struct qib_user_sdma_rb_node *got;
+
+	while (*node) {
+		got = rb_entry(*node, struct qib_user_sdma_rb_node, node);
+		parent = *node;
+		if (new->pid < got->pid)
+			node = &((*node)->rb_left);
+		else if (new->pid > got->pid)
+			node = &((*node)->rb_right);
+		else
+			return 0;
+	}
+
+	rb_link_node(&new->node, parent, node);
+	rb_insert_color(&new->node, root);
+	return 1;
+}
 
 struct qib_user_sdma_queue *
 qib_user_sdma_queue_create(struct device *dev, int unit, int ctxt, int sctxt)
 {
 	struct qib_user_sdma_queue *pq =
 		kmalloc(sizeof(struct qib_user_sdma_queue), GFP_KERNEL);
+	struct qib_user_sdma_rb_node *sdma_rb_node;
 
 	if (!pq)
 		goto done;
@@ -138,6 +194,7 @@ qib_user_sdma_queue_create(struct device *dev, int unit, int ctxt, int sctxt)
 	pq->num_pending = 0;
 	pq->num_sending = 0;
 	pq->added = 0;
+	pq->sdma_rb_node = NULL;
 
 	INIT_LIST_HEAD(&pq->sent);
 	spin_lock_init(&pq->sent_lock);
@@ -163,8 +220,27 @@ qib_user_sdma_queue_create(struct device *dev, int unit, int ctxt, int sctxt)
 
 	pq->dma_pages_root = RB_ROOT;
 
+	sdma_rb_node = qib_user_sdma_rb_search(&qib_user_sdma_rb_root,
+					current->pid);
+	if (sdma_rb_node) {
+		sdma_rb_node->refcount++;
+	} else {
+		sdma_rb_node = kmalloc(sizeof(
+			struct qib_user_sdma_rb_node), GFP_KERNEL);
+		if (!sdma_rb_node)
+			goto err_rb;
+
+		sdma_rb_node->refcount = 1;
+		sdma_rb_node->pid = current->pid;
+
+		qib_user_sdma_rb_insert(&qib_user_sdma_rb_root, sdma_rb_node);
+	}
+	pq->sdma_rb_node = sdma_rb_node;
+
 	goto done;
 
+err_rb:
+	dma_pool_destroy(pq->header_cache);
 err_slab:
 	kmem_cache_destroy(pq->pkt_slab);
 err_kfree:
@@ -241,10 +317,9 @@ static int qib_user_sdma_page_to_frags(const struct qib_devdata *dd,
 		 * the caller can ignore this page.
 		 */
 		if (put) {
-			put_page(page);
+			unpin_user_page(page);
 		} else {
 			/* coalesce case */
-			kunmap(page);
 			__free_page(page);
 		}
 		ret = -ENOMEM;
@@ -496,7 +571,7 @@ static int qib_user_sdma_coalesce(const struct qib_devdata *dd,
 		goto done;
 	}
 
-	mpage = kmap(page);
+	mpage = page_address(page);
 	mpage_save = mpage;
 	for (i = 0; i < niov; i++) {
 		int cfur;
@@ -505,7 +580,7 @@ static int qib_user_sdma_coalesce(const struct qib_devdata *dd,
 				      iov[i].iov_base, iov[i].iov_len);
 		if (cfur) {
 			ret = -EFAULT;
-			goto free_unmap;
+			goto page_free;
 		}
 
 		mpage += iov[i].iov_len;
@@ -516,8 +591,7 @@ static int qib_user_sdma_coalesce(const struct qib_devdata *dd,
 			page, 0, 0, len, mpage_save);
 	goto done;
 
-free_unmap:
-	kunmap(page);
+page_free:
 	__free_page(page);
 done:
 	return ret;
@@ -526,7 +600,7 @@ done:
 /*
  * How many pages in this iovec element?
  */
-static int qib_user_sdma_num_pages(const struct iovec *iov)
+static size_t qib_user_sdma_num_pages(const struct iovec *iov)
 {
 	const unsigned long addr  = (unsigned long) iov->iov_base;
 	const unsigned long  len  = iov->iov_len;
@@ -551,11 +625,8 @@ static void qib_user_sdma_free_pkt_frag(struct device *dev,
 				       pkt->addr[i].dma_length,
 				       DMA_TO_DEVICE);
 
-		if (pkt->addr[i].kvaddr)
-			kunmap(pkt->addr[i].page);
-
 		if (pkt->addr[i].put_page)
-			put_page(pkt->addr[i].page);
+			unpin_user_page(pkt->addr[i].page);
 		else
 			__free_page(pkt->addr[i].page);
 	} else if (pkt->addr[i].kvaddr) {
@@ -582,7 +653,7 @@ static void qib_user_sdma_free_pkt_frag(struct device *dev,
 static int qib_user_sdma_pin_pages(const struct qib_devdata *dd,
 				   struct qib_user_sdma_queue *pq,
 				   struct qib_user_sdma_pkt *pkt,
-				   unsigned long addr, int tlen, int npages)
+				   unsigned long addr, int tlen, size_t npages)
 {
 	struct page *pages[8];
 	int i, j;
@@ -594,7 +665,7 @@ static int qib_user_sdma_pin_pages(const struct qib_devdata *dd,
 		else
 			j = npages;
 
-		ret = get_user_pages_fast(addr, j, 0, pages);
+		ret = pin_user_pages_fast(addr, j, FOLL_LONGTERM, pages);
 		if (ret != j) {
 			i = 0;
 			j = ret;
@@ -630,7 +701,7 @@ static int qib_user_sdma_pin_pages(const struct qib_devdata *dd,
 	/* if error, return all pages not managed by pkt */
 free_pages:
 	while (i < j)
-		put_page(pages[i++]);
+		unpin_user_page(pages[i++]);
 
 done:
 	return ret;
@@ -646,7 +717,7 @@ static int qib_user_sdma_pin_pkt(const struct qib_devdata *dd,
 	unsigned long idx;
 
 	for (idx = 0; idx < niov; idx++) {
-		const int npages = qib_user_sdma_num_pages(iov + idx);
+		const size_t npages = qib_user_sdma_num_pages(iov + idx);
 		const unsigned long addr = (unsigned long) iov[idx].iov_base;
 
 		ret = qib_user_sdma_pin_pages(dd, pq, pkt, addr,
@@ -748,8 +819,8 @@ static int qib_user_sdma_queue_pkts(const struct qib_devdata *dd,
 		unsigned pktnw;
 		unsigned pktnwc;
 		int nfrags = 0;
-		int npages = 0;
-		int bytes_togo = 0;
+		size_t npages = 0;
+		size_t bytes_togo = 0;
 		int tiddma = 0;
 		int cfur;
 
@@ -775,7 +846,7 @@ static int qib_user_sdma_queue_pkts(const struct qib_devdata *dd,
 		}
 
 		/*
-		 * This assignment is a bit strange.  it's because the
+		 * This assignment is a bit strange.  it's because
 		 * the pbc counts the number of 32 bit words in the full
 		 * packet _except_ the first word of the pbc itself...
 		 */
@@ -809,7 +880,11 @@ static int qib_user_sdma_queue_pkts(const struct qib_devdata *dd,
 
 			npages += qib_user_sdma_num_pages(&iov[idx]);
 
-			bytes_togo += slen;
+			if (check_add_overflow(bytes_togo, slen, &bytes_togo) ||
+			    bytes_togo > type_max(typeof(pkt->bytes_togo))) {
+				ret = -EINVAL;
+				goto free_pbc;
+			}
 			pktnwc += slen >> 2;
 			idx++;
 			nfrags++;
@@ -828,10 +903,10 @@ static int qib_user_sdma_queue_pkts(const struct qib_devdata *dd,
 		}
 
 		if (frag_size) {
-			int pktsize, tidsmsize, n;
+			size_t tidsmsize, n, pktsize, sz, addrlimit;
 
 			n = npages*((2*PAGE_SIZE/frag_size)+1);
-			pktsize = sizeof(*pkt) + sizeof(pkt->addr[0])*n;
+			pktsize = struct_size(pkt, addr, n);
 
 			/*
 			 * Determine if this is tid-sdma or just sdma.
@@ -846,17 +921,28 @@ static int qib_user_sdma_queue_pkts(const struct qib_devdata *dd,
 			else
 				tidsmsize = 0;
 
-			pkt = kmalloc(pktsize+tidsmsize, GFP_KERNEL);
+			if (check_add_overflow(pktsize, tidsmsize, &sz)) {
+				ret = -EINVAL;
+				goto free_pbc;
+			}
+			pkt = kmalloc(sz, GFP_KERNEL);
 			if (!pkt) {
 				ret = -ENOMEM;
 				goto free_pbc;
 			}
 			pkt->largepkt = 1;
 			pkt->frag_size = frag_size;
-			pkt->addrlimit = n + ARRAY_SIZE(pkt->addr);
+			if (check_add_overflow(n, ARRAY_SIZE(pkt->addr),
+					       &addrlimit) ||
+			    addrlimit > type_max(typeof(pkt->addrlimit))) {
+				ret = -EINVAL;
+				goto free_pkt;
+			}
+			pkt->addrlimit = addrlimit;
 
 			if (tiddma) {
 				char *tidsm = (char *)pkt + pktsize;
+
 				cfur = copy_from_user(tidsm,
 					iov[idx].iov_base, tidsmsize);
 				if (cfur) {
@@ -1020,8 +1106,13 @@ void qib_user_sdma_queue_destroy(struct qib_user_sdma_queue *pq)
 	if (!pq)
 		return;
 
-	kmem_cache_destroy(pq->pkt_slab);
+	pq->sdma_rb_node->refcount--;
+	if (pq->sdma_rb_node->refcount == 0) {
+		rb_erase(&pq->sdma_rb_node->node, &qib_user_sdma_rb_root);
+		kfree(pq->sdma_rb_node);
+	}
 	dma_pool_destroy(pq->header_cache);
+	kmem_cache_destroy(pq->pkt_slab);
 	kfree(pq);
 }
 
@@ -1058,7 +1149,7 @@ void qib_user_sdma_queue_drain(struct qib_pportdata *ppd,
 		qib_user_sdma_hwqueue_clean(ppd);
 		qib_user_sdma_queue_clean(ppd, pq);
 		mutex_unlock(&pq->lock);
-		msleep(10);
+		msleep(20);
 	}
 
 	if (pq->num_pending || pq->num_sending) {
@@ -1232,8 +1323,6 @@ retry:
 
 	if (nfree && !list_empty(pktlist))
 		goto retry;
-
-	return;
 }
 
 /* pq->lock must be held, get packets on the wire... */
@@ -1241,26 +1330,52 @@ static int qib_user_sdma_push_pkts(struct qib_pportdata *ppd,
 				 struct qib_user_sdma_queue *pq,
 				 struct list_head *pktlist, int count)
 {
-	int ret = 0;
 	unsigned long flags;
 
 	if (unlikely(!(ppd->lflags & QIBL_LINKACTIVE)))
 		return -ECOMM;
 
-	spin_lock_irqsave(&ppd->sdma_lock, flags);
-
-	if (unlikely(!__qib_sdma_running(ppd))) {
-		ret = -ECOMM;
-		goto unlock;
+	/* non-blocking mode */
+	if (pq->sdma_rb_node->refcount > 1) {
+		spin_lock_irqsave(&ppd->sdma_lock, flags);
+		if (unlikely(!__qib_sdma_running(ppd))) {
+			spin_unlock_irqrestore(&ppd->sdma_lock, flags);
+			return -ECOMM;
+		}
+		pq->num_pending += count;
+		list_splice_tail_init(pktlist, &ppd->sdma_userpending);
+		qib_user_sdma_send_desc(ppd, &ppd->sdma_userpending);
+		spin_unlock_irqrestore(&ppd->sdma_lock, flags);
+		return 0;
 	}
 
-	pq->num_pending += count;
-	list_splice_tail_init(pktlist, &ppd->sdma_userpending);
-	qib_user_sdma_send_desc(ppd, &ppd->sdma_userpending);
+	/* In this case, descriptors from this process are not
+	 * linked to ppd pending queue, interrupt handler
+	 * won't update this process, it is OK to directly
+	 * modify without sdma lock.
+	 */
 
-unlock:
-	spin_unlock_irqrestore(&ppd->sdma_lock, flags);
-	return ret;
+
+	pq->num_pending += count;
+	/*
+	 * Blocking mode for single rail process, we must
+	 * release/regain sdma_lock to give other process
+	 * chance to make progress. This is important for
+	 * performance.
+	 */
+	do {
+		spin_lock_irqsave(&ppd->sdma_lock, flags);
+		if (unlikely(!__qib_sdma_running(ppd))) {
+			spin_unlock_irqrestore(&ppd->sdma_lock, flags);
+			return -ECOMM;
+		}
+		qib_user_sdma_send_desc(ppd, pktlist);
+		if (!list_empty(pktlist))
+			qib_sdma_make_progress(ppd);
+		spin_unlock_irqrestore(&ppd->sdma_lock, flags);
+	} while (!list_empty(pktlist));
+
+	return 0;
 }
 
 int qib_user_sdma_writev(struct qib_ctxtdata *rcd,
@@ -1290,7 +1405,7 @@ int qib_user_sdma_writev(struct qib_ctxtdata *rcd,
 		qib_user_sdma_queue_clean(ppd, pq);
 
 	while (dim) {
-		int mxp = 8;
+		int mxp = 1;
 		int ndesc = 0;
 
 		ret = qib_user_sdma_queue_pkts(dd, ppd, pq,

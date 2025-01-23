@@ -1,28 +1,23 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Power Management and GPIO expander driver for MPC8349E-mITX-compatible MCU
  *
  * Copyright (c) 2008  MontaVista Software, Inc.
  *
  * Author: Anton Vorontsov <avorontsov@ru.mvista.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/kernel.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/mutex.h>
 #include <linux/i2c.h>
-#include <linux/gpio.h>
-#include <linux/of.h>
-#include <linux/of_gpio.h>
+#include <linux/gpio/driver.h>
 #include <linux/slab.h>
 #include <linux/kthread.h>
+#include <linux/property.h>
 #include <linux/reboot.h>
-#include <asm/prom.h>
 #include <asm/machdep.h>
 
 /*
@@ -84,7 +79,7 @@ static ssize_t show_status(struct device *d,
 
 	return sprintf(buf, "%02x\n", ret);
 }
-static DEVICE_ATTR(status, S_IRUGO, show_status, NULL);
+static DEVICE_ATTR(status, 0444, show_status, NULL);
 
 static void mcu_power_off(void)
 {
@@ -99,7 +94,7 @@ static void mcu_power_off(void)
 
 static void mcu_gpio_set(struct gpio_chip *gc, unsigned int gpio, int val)
 {
-	struct mcu *mcu = container_of(gc, struct mcu, gc);
+	struct mcu *mcu = gpiochip_get_data(gc);
 	u8 bit = 1 << (4 + gpio);
 
 	mutex_lock(&mcu->lock);
@@ -120,31 +115,28 @@ static int mcu_gpio_dir_out(struct gpio_chip *gc, unsigned int gpio, int val)
 
 static int mcu_gpiochip_add(struct mcu *mcu)
 {
-	struct device_node *np;
+	struct device *dev = &mcu->client->dev;
 	struct gpio_chip *gc = &mcu->gc;
 
-	np = of_find_compatible_node(NULL, NULL, "fsl,mcu-mpc8349emitx");
-	if (!np)
-		return -ENODEV;
-
 	gc->owner = THIS_MODULE;
-	gc->label = np->full_name;
+	gc->label = kasprintf(GFP_KERNEL, "%pfw", dev_fwnode(dev));
 	gc->can_sleep = 1;
 	gc->ngpio = MCU_NUM_GPIO;
 	gc->base = -1;
 	gc->set = mcu_gpio_set;
 	gc->direction_output = mcu_gpio_dir_out;
-	gc->of_node = np;
+	gc->parent = dev;
 
-	return gpiochip_add(gc);
+	return gpiochip_add_data(gc, mcu);
 }
 
-static int mcu_gpiochip_remove(struct mcu *mcu)
+static void mcu_gpiochip_remove(struct mcu *mcu)
 {
-	return gpiochip_remove(&mcu->gc);
+	kfree(mcu->gc.label);
+	gpiochip_remove(&mcu->gc);
 }
 
-static int mcu_probe(struct i2c_client *client, const struct i2c_device_id *id)
+static int mcu_probe(struct i2c_client *client)
 {
 	struct mcu *mcu;
 	int ret;
@@ -166,10 +158,10 @@ static int mcu_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	if (ret)
 		goto err;
 
-	/* XXX: this is potentially racy, but there is no lock for ppc_md */
-	if (!ppc_md.power_off) {
+	/* XXX: this is potentially racy, but there is no lock for pm_power_off */
+	if (!pm_power_off) {
 		glob_mcu = mcu;
-		ppc_md.power_off = mcu_power_off;
+		pm_power_off = mcu_power_off;
 		dev_info(&client->dev, "will provide power-off service\n");
 	}
 
@@ -186,25 +178,21 @@ err:
 	return ret;
 }
 
-static int mcu_remove(struct i2c_client *client)
+static void mcu_remove(struct i2c_client *client)
 {
 	struct mcu *mcu = i2c_get_clientdata(client);
-	int ret;
 
 	kthread_stop(shutdown_thread);
 
 	device_remove_file(&client->dev, &dev_attr_status);
 
 	if (glob_mcu == mcu) {
-		ppc_md.power_off = NULL;
+		pm_power_off = NULL;
 		glob_mcu = NULL;
 	}
 
-	ret = mcu_gpiochip_remove(mcu);
-	if (ret)
-		return ret;
+	mcu_gpiochip_remove(mcu);
 	kfree(mcu);
-	return 0;
 }
 
 static const struct i2c_device_id mcu_ids[] = {
@@ -213,7 +201,7 @@ static const struct i2c_device_id mcu_ids[] = {
 };
 MODULE_DEVICE_TABLE(i2c, mcu_ids);
 
-static struct of_device_id mcu_of_match_table[] = {
+static const struct of_device_id mcu_of_match_table[] = {
 	{ .compatible = "fsl,mcu-mpc8349emitx", },
 	{ },
 };
@@ -221,7 +209,6 @@ static struct of_device_id mcu_of_match_table[] = {
 static struct i2c_driver mcu_driver = {
 	.driver = {
 		.name = "mcu-mpc8349emitx",
-		.owner = THIS_MODULE,
 		.of_match_table = mcu_of_match_table,
 	},
 	.probe = mcu_probe,

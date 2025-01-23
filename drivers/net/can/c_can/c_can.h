@@ -59,11 +59,13 @@ enum reg {
 	C_CAN_NEWDAT2_REG,
 	C_CAN_INTPND1_REG,
 	C_CAN_INTPND2_REG,
+	C_CAN_INTPND3_REG,
 	C_CAN_MSGVAL1_REG,
 	C_CAN_MSGVAL2_REG,
+	C_CAN_FUNCTION_REG,
 };
 
-static const u16 reg_map_c_can[] = {
+static const u16 __maybe_unused reg_map_c_can[] = {
 	[C_CAN_CTRL_REG]	= 0x00,
 	[C_CAN_STS_REG]		= 0x02,
 	[C_CAN_ERR_CNT_REG]	= 0x04,
@@ -103,7 +105,7 @@ static const u16 reg_map_c_can[] = {
 	[C_CAN_MSGVAL2_REG]	= 0xB2,
 };
 
-static const u16 reg_map_d_can[] = {
+static const u16 __maybe_unused reg_map_d_can[] = {
 	[C_CAN_CTRL_REG]	= 0x00,
 	[C_CAN_CTRL_EX_REG]	= 0x02,
 	[C_CAN_STS_REG]		= 0x04,
@@ -112,12 +114,14 @@ static const u16 reg_map_d_can[] = {
 	[C_CAN_BRPEXT_REG]	= 0x0E,
 	[C_CAN_INT_REG]		= 0x10,
 	[C_CAN_TEST_REG]	= 0x14,
+	[C_CAN_FUNCTION_REG]	= 0x18,
 	[C_CAN_TXRQST1_REG]	= 0x88,
 	[C_CAN_TXRQST2_REG]	= 0x8A,
 	[C_CAN_NEWDAT1_REG]	= 0x9C,
 	[C_CAN_NEWDAT2_REG]	= 0x9E,
 	[C_CAN_INTPND1_REG]	= 0xB0,
 	[C_CAN_INTPND2_REG]	= 0xB2,
+	[C_CAN_INTPND3_REG]	= 0xB4,
 	[C_CAN_MSGVAL1_REG]	= 0xC4,
 	[C_CAN_MSGVAL2_REG]	= 0xC6,
 	[C_CAN_IF1_COMREQ_REG]	= 0x100,
@@ -145,9 +149,38 @@ static const u16 reg_map_d_can[] = {
 };
 
 enum c_can_dev_id {
-	BOSCH_C_CAN_PLATFORM,
 	BOSCH_C_CAN,
 	BOSCH_D_CAN,
+};
+
+struct raminit_bits {
+	u8 start;
+	u8 done;
+};
+
+struct c_can_driver_data {
+	enum c_can_dev_id id;
+	unsigned int msg_obj_num;
+
+	/* RAMINIT register description. Optional. */
+	const struct raminit_bits *raminit_bits; /* Array of START/DONE bit positions */
+	u8 raminit_num;		/* Number of CAN instances on the SoC */
+	bool raminit_pulse;	/* If set, sets and clears START bit (pulse) */
+};
+
+/* Out of band RAMINIT register access via syscon regmap */
+struct c_can_raminit {
+	struct regmap *syscon;	/* for raminit ctrl. reg. access */
+	unsigned int reg;	/* register index within syscon */
+	struct raminit_bits bits;
+	bool needs_pulse;
+};
+
+/* c_can tx ring structure */
+struct c_can_tx_ring {
+	unsigned int head;
+	unsigned int tail;
+	unsigned int obj_num;
 };
 
 /* c_can private data structure */
@@ -156,25 +189,31 @@ struct c_can_priv {
 	struct napi_struct napi;
 	struct net_device *dev;
 	struct device *device;
-	int tx_object;
-	int current_status;
+	unsigned int msg_obj_num;
+	unsigned int msg_obj_rx_num;
+	unsigned int msg_obj_tx_num;
+	unsigned int msg_obj_rx_first;
+	unsigned int msg_obj_rx_last;
+	unsigned int msg_obj_tx_first;
+	unsigned int msg_obj_tx_last;
+	u32 msg_obj_rx_mask;
+	atomic_t sie_pending;
+	unsigned long tx_dir;
 	int last_status;
-	u16 (*read_reg) (struct c_can_priv *priv, enum reg index);
-	void (*write_reg) (struct c_can_priv *priv, enum reg index, u16 val);
+	struct c_can_tx_ring tx;
+	u16 (*read_reg)(const struct c_can_priv *priv, enum reg index);
+	void (*write_reg)(const struct c_can_priv *priv, enum reg index, u16 val);
+	u32 (*read_reg32)(const struct c_can_priv *priv, enum reg index);
+	void (*write_reg32)(const struct c_can_priv *priv, enum reg index, u32 val);
 	void __iomem *base;
 	const u16 *regs;
-	unsigned long irq_flags; /* for request_irq() */
-	unsigned int tx_next;
-	unsigned int tx_echo;
-	void *priv;		/* for board-specific data */
-	u16 irqstatus;
 	enum c_can_dev_id type;
-	u32 __iomem *raminit_ctrlreg;
-	unsigned int instance;
-	void (*raminit) (const struct c_can_priv *priv, bool enable);
+	struct c_can_raminit raminit_sys;	/* RAMINIT via syscon regmap */
+	void (*raminit)(const struct c_can_priv *priv, bool enable);
+	u32 comm_rcv_high;
 };
 
-struct net_device *alloc_c_can_dev(void);
+struct net_device *alloc_c_can_dev(int msg_obj_num);
 void free_c_can_dev(struct net_device *dev);
 int register_c_can_dev(struct net_device *dev);
 void unregister_c_can_dev(struct net_device *dev);
@@ -183,5 +222,35 @@ void unregister_c_can_dev(struct net_device *dev);
 int c_can_power_up(struct net_device *dev);
 int c_can_power_down(struct net_device *dev);
 #endif
+
+extern const struct ethtool_ops c_can_ethtool_ops;
+
+static inline u8 c_can_get_tx_head(const struct c_can_tx_ring *ring)
+{
+	return ring->head & (ring->obj_num - 1);
+}
+
+static inline u8 c_can_get_tx_tail(const struct c_can_tx_ring *ring)
+{
+	return ring->tail & (ring->obj_num - 1);
+}
+
+static inline u8 c_can_get_tx_free(const struct c_can_priv *priv,
+				   const struct c_can_tx_ring *ring)
+{
+	u8 head = c_can_get_tx_head(ring);
+	u8 tail = c_can_get_tx_tail(ring);
+
+	if (priv->type == BOSCH_D_CAN)
+		return ring->obj_num - (ring->head - ring->tail);
+
+	/* This is not a FIFO. C/D_CAN sends out the buffers
+	 * prioritized. The lowest buffer number wins.
+	 */
+	if (head < tail)
+		return 0;
+
+	return ring->obj_num - head;
+}
 
 #endif /* C_CAN_H */

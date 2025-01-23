@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *  cx18 driver internal defines and structures
  *
@@ -5,21 +6,6 @@
  *
  *  Copyright (C) 2007  Hans Verkuil <hverkuil@xs4all.nl>
  *  Copyright (C) 2008  Andy Walls <awalls@md.metrocast.net>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
- *  02111-1307  USA
  */
 
 #ifndef CX18_DRIVER_H
@@ -29,7 +15,7 @@
 #include <linux/moduleparam.h>
 #include <linux/init.h>
 #include <linux/delay.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/fs.h>
 #include <linux/pci.h>
 #include <linux/interrupt.h>
@@ -49,22 +35,21 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-fh.h>
 #include <media/tuner.h>
-#include <media/ir-kbd-i2c.h>
+#include <media/i2c/ir-kbd-i2c.h>
 #include "cx18-mailbox.h"
 #include "cx18-av-core.h"
 #include "cx23418.h"
 
 /* DVB */
-#include "demux.h"
-#include "dmxdev.h"
-#include "dvb_demux.h"
-#include "dvb_frontend.h"
-#include "dvb_net.h"
-#include "dvbdev.h"
+#include <media/demux.h>
+#include <media/dmxdev.h>
+#include <media/dvb_demux.h>
+#include <media/dvb_frontend.h>
+#include <media/dvb_net.h>
+#include <media/dvbdev.h>
 
-/* Videobuf / YUV support */
-#include <media/videobuf-core.h>
-#include <media/videobuf-vmalloc.h>
+/* vb2 YUV support */
+#include <media/videobuf2-vmalloc.h>
 
 #ifndef CONFIG_PCI
 #  error "This driver requires kernel PCI support."
@@ -80,8 +65,8 @@
 /* Supported cards */
 #define CX18_CARD_HVR_1600_ESMT	      0	/* Hauppauge HVR 1600 (ESMT memory) */
 #define CX18_CARD_HVR_1600_SAMSUNG    1	/* Hauppauge HVR 1600 (Samsung memory) */
-#define CX18_CARD_COMPRO_H900 	      2	/* Compro VideoMate H900 */
-#define CX18_CARD_YUAN_MPC718 	      3	/* Yuan MPC718 */
+#define CX18_CARD_COMPRO_H900	      2	/* Compro VideoMate H900 */
+#define CX18_CARD_YUAN_MPC718	      3	/* Yuan MPC718 */
 #define CX18_CARD_CNXT_RAPTOR_PAL     4	/* Conexant Raptor PAL */
 #define CX18_CARD_TOSHIBA_QOSMIO_DVBT 5 /* Toshiba Qosmio Interal DVB-T/Analog*/
 #define CX18_CARD_LEADTEK_PVR2100     6 /* Leadtek WinFast PVR2100 */
@@ -104,9 +89,9 @@
 #define PCI_DEVICE_ID_CX23418 0x5b7a
 
 /* subsystem vendor ID */
-#define CX18_PCI_ID_HAUPPAUGE 		0x0070
-#define CX18_PCI_ID_COMPRO 		0x185b
-#define CX18_PCI_ID_YUAN 		0x12ab
+#define CX18_PCI_ID_HAUPPAUGE		0x0070
+#define CX18_PCI_ID_COMPRO		0x185b
+#define CX18_PCI_ID_YUAN		0x12ab
 #define CX18_PCI_ID_CONEXANT		0x14f1
 #define CX18_PCI_ID_TOSHIBA		0x1179
 #define CX18_PCI_ID_LEADTEK		0x107D
@@ -265,7 +250,7 @@ struct cx18_options {
 #define CX18_F_M_NEED_SWAP  0	/* mdl buffer data must be endianness swapped */
 
 /* per-stream, s_flags */
-#define CX18_F_S_CLAIMED 	3	/* this stream is claimed */
+#define CX18_F_S_CLAIMED	3	/* this stream is claimed */
 #define CX18_F_S_STREAMING      4	/* the fw is decoding/encoding this stream */
 #define CX18_F_S_INTERNAL_USE	5	/* this stream is used internally (sliced VBI processing) */
 #define CX18_F_S_STREAMOFF	7	/* signal end of stream EOS */
@@ -273,12 +258,12 @@ struct cx18_options {
 #define CX18_F_S_STOPPING	9	/* telling the fw to stop capturing */
 
 /* per-cx18, i_flags */
-#define CX18_F_I_LOADED_FW		0 	/* Loaded firmware 1st time */
-#define CX18_F_I_EOS			4 	/* End of encoder stream */
-#define CX18_F_I_RADIO_USER		5 	/* radio tuner is selected */
-#define CX18_F_I_ENC_PAUSED		13 	/* the encoder is paused */
-#define CX18_F_I_INITED			21 	/* set after first open */
-#define CX18_F_I_FAILED			22 	/* set if first open failed */
+#define CX18_F_I_LOADED_FW		0	/* Loaded firmware 1st time */
+#define CX18_F_I_EOS			4	/* End of encoder stream */
+#define CX18_F_I_RADIO_USER		5	/* radio tuner is selected */
+#define CX18_F_I_ENC_PAUSED		13	/* the encoder is paused */
+#define CX18_F_I_INITED			21	/* set after first open */
+#define CX18_F_I_FAILED			22	/* set if first open failed */
 
 /* These are the VBI types as they appear in the embedded VBI private packets. */
 #define CX18_SLICED_TYPE_TELETEXT_B     (1)
@@ -290,13 +275,21 @@ struct cx18_options {
  * list_entry_is_past_end - check if a previous loop cursor is off list end
  * @pos:	the type * previously used as a loop cursor.
  * @head:	the head for your list.
- * @member:	the name of the list_struct within the struct.
+ * @member:	the name of the list_head within the struct.
  *
  * Check if the entry's list_head is the head of the list, thus it's not a
  * real entry but was the loop cursor that walked past the end
  */
 #define list_entry_is_past_end(pos, head, member) \
 	(&pos->member == (head))
+
+struct cx18_vb2_buffer {
+	/* Common video buffer sub-system struct */
+	struct vb2_v4l2_buffer vb;
+	struct list_head list;
+	v4l2_std_id tvnorm; /* selected tv norm */
+	u32 bytes_used;
+};
 
 struct cx18_buffer {
 	struct list_head list;
@@ -373,12 +366,13 @@ struct cx18_in_work_order {
 struct cx18_stream {
 	/* These first five fields are always set, even if the stream
 	   is not actually created. */
-	struct video_device *video_dev;	/* NULL when stream not created */
+	struct video_device video_dev;	/* v4l2_dev is NULL when stream not created */
 	struct cx18_dvb *dvb;		/* DVB / Digital Transport */
-	struct cx18 *cx; 		/* for ease of use */
+	struct cx18 *cx;		/* for ease of use */
 	const char *name;		/* name of the stream */
 	int type;			/* stream type */
 	u32 handle;			/* task handle */
+	u32 v4l2_dev_caps;		/* device capabilities */
 	unsigned int mdl_base_idx;
 
 	u32 id;
@@ -408,20 +402,14 @@ struct cx18_stream {
 	/* Videobuf for YUV video */
 	u32 pixelformat;
 	u32 vb_bytes_per_frame;
+	u32 vb_bytes_per_line;
 	struct list_head vb_capture;    /* video capture queue */
 	spinlock_t vb_lock;
 	struct timer_list vb_timeout;
+	u32 sequence;
 
-	struct videobuf_queue vbuf_q;
-	spinlock_t vbuf_q_lock; /* Protect vbuf_q */
+	struct vb2_queue vidq;
 	enum v4l2_buf_type vb_type;
-};
-
-struct cx18_videobuf_buffer {
-	/* Common video buffer sub-system struct */
-	struct videobuf_buffer vb;
-	v4l2_std_id tvnorm; /* selected tv norm */
-	u32 bytes_used;
 };
 
 struct cx18_open_id {
@@ -490,9 +478,9 @@ struct cx18_card;
  *  (1/15.625 kHz) * 2 * 13.5 MHz = 1728 samples/line =
  *  4 bytes SAV + 280 bytes anc data + 4 bytes SAV + 1440 active samples
  */
-static const u32 vbi_active_samples = 1444; /* 4 byte SAV + 720 Y + 720 U/V */
-static const u32 vbi_hblank_samples_60Hz = 272; /* 4 byte EAV + 268 anc/fill */
-static const u32 vbi_hblank_samples_50Hz = 284; /* 4 byte EAV + 280 anc/fill */
+#define VBI_ACTIVE_SAMPLES	1444 /* 4 byte SAV + 720 Y + 720 U/V */
+#define VBI_HBLANK_SAMPLES_60HZ	272 /* 4 byte EAV + 268 anc/fill */
+#define VBI_HBLANK_SAMPLES_50HZ	284 /* 4 byte EAV + 280 anc/fill */
 
 #define CX18_VBI_FRAMES 32
 
@@ -528,14 +516,14 @@ struct vbi_info {
 	 * into the MPEG PS stream.
 	 *
 	 * In each sliced_mpeg_data[] buffer is:
-	 * 	16 byte MPEG-2 PS Program Pack Header
-	 * 	16 byte MPEG-2 Private Stream 1 PES Header
-	 * 	 4 byte magic number: "itv0" or "ITV0"
-	 * 	 4 byte first  field line mask, if "itv0"
-	 * 	 4 byte second field line mask, if "itv0"
-	 * 	36 lines, if "ITV0"; or <36 lines, if "itv0"; of sliced VBI data
+	 *	16 byte MPEG-2 PS Program Pack Header
+	 *	16 byte MPEG-2 Private Stream 1 PES Header
+	 *	 4 byte magic number: "itv0" or "ITV0"
+	 *	 4 byte first  field line mask, if "itv0"
+	 *	 4 byte second field line mask, if "itv0"
+	 *	36 lines, if "ITV0"; or <36 lines, if "itv0"; of sliced VBI data
 	 *
-	 * 	Each line in the payload is
+	 *	Each line in the payload is
 	 *	 1 byte line header derived from the SDID (WSS, CC, VPS, etc.)
 	 *	42 bytes of line data
 	 *
@@ -586,7 +574,7 @@ struct cx18 {
 	u8 nof_inputs;		/* number of video inputs */
 	u8 nof_audio_inputs;	/* number of audio inputs */
 	u32 v4l2_cap;		/* V4L2 capabilities of card */
-	u32 hw_flags; 		/* Hardware description of the board */
+	u32 hw_flags;		/* Hardware description of the board */
 	unsigned int free_mdl_idx;
 	struct cx18_scb __iomem *scb; /* pointer to SCB */
 	struct mutex epu2apu_mb_lock; /* protect driver to chip mailbox in SCB*/
@@ -605,10 +593,10 @@ struct cx18 {
 	u32 dualwatch_stereo_mode;
 
 	struct mutex serialize_lock;    /* mutex used to serialize open/close/start/stop/ioctl operations */
-	struct cx18_options options; 	/* User options */
+	struct cx18_options options;	/* User options */
 	int stream_buffers[CX18_MAX_STREAMS]; /* # of buffers for each stream */
 	int stream_buf_size[CX18_MAX_STREAMS]; /* Stream buffer size */
-	struct cx18_stream streams[CX18_MAX_STREAMS]; 	/* Stream data */
+	struct cx18_stream streams[CX18_MAX_STREAMS];	/* Stream data */
 	struct snd_cx18_card *alsa; /* ALSA interface for PCM capture stream */
 	void (*pcm_announce_callback)(struct snd_cx18_card *card, u8 *pcm_data,
 				      size_t num_bytes);
@@ -705,11 +693,7 @@ static inline int cx18_raw_vbi(const struct cx18 *cx)
 /* Call the specified callback for all subdevs with a grp_id bit matching the
  * mask in hw (if 0, then match them all). Ignore any errors. */
 #define cx18_call_hw(cx, hw, o, f, args...)				\
-	do {								\
-		struct v4l2_subdev *__sd;				\
-		__v4l2_device_call_subdevs_p(&(cx)->v4l2_dev, __sd,	\
-			!(hw) || (__sd->grp_id & (hw)), o, f , ##args);	\
-	} while (0)
+	v4l2_device_mask_call_all(&(cx)->v4l2_dev, hw, o, f, ##args)
 
 #define cx18_call_all(cx, o, f, args...) cx18_call_hw(cx, 0, o, f , ##args)
 
@@ -717,12 +701,7 @@ static inline int cx18_raw_vbi(const struct cx18 *cx)
  * mask in hw (if 0, then match them all). If the callback returns an error
  * other than 0 or -ENOIOCTLCMD, then return with that error code. */
 #define cx18_call_hw_err(cx, hw, o, f, args...)				\
-({									\
-	struct v4l2_subdev *__sd;					\
-	__v4l2_device_call_subdevs_until_err_p(&(cx)->v4l2_dev,		\
-			__sd, !(hw) || (__sd->grp_id & (hw)), o, f,	\
-			##args);					\
-})
+	v4l2_device_mask_call_until_err(&(cx)->v4l2_dev, hw, o, f, ##args)
 
 #define cx18_call_all_err(cx, o, f, args...) \
 	cx18_call_hw_err(cx, 0, o, f , ##args)

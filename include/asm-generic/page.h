@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_GENERIC_PAGE_H
 #define __ASM_GENERIC_PAGE_H
 /*
@@ -6,7 +7,7 @@
  */
 
 #ifdef CONFIG_MMU
-#error need to prove a real asm/page.h
+#error need to provide a real asm/page.h
 #endif
 
 
@@ -23,9 +24,6 @@
 #include <asm/setup.h>
 
 #ifndef __ASSEMBLY__
-
-#define get_user_page(vaddr)		__get_free_page(GFP_KERNEL)
-#define free_user_page(page, addr)	free_page(addr)
 
 #define clear_page(page)	memset((page), 0, PAGE_SIZE)
 #define copy_page(to,from)	memcpy((to), (from), PAGE_SIZE)
@@ -65,11 +63,7 @@ extern unsigned long memory_end;
 
 #endif /* !__ASSEMBLY__ */
 
-#ifdef CONFIG_KERNEL_RAM_BASE_ADDRESS
-#define PAGE_OFFSET		(CONFIG_KERNEL_RAM_BASE_ADDRESS)
-#else
 #define PAGE_OFFSET		(0)
-#endif
 
 #ifndef ARCH_PFN_OFFSET
 #define ARCH_PFN_OFFSET		(PAGE_OFFSET >> PAGE_SHIFT)
@@ -80,8 +74,16 @@ extern unsigned long memory_end;
 #define __va(x) ((void *)((unsigned long) (x)))
 #define __pa(x) ((unsigned long) (x))
 
-#define virt_to_pfn(kaddr)	(__pa(kaddr) >> PAGE_SHIFT)
-#define pfn_to_virt(pfn)	__va((pfn) << PAGE_SHIFT)
+static inline unsigned long virt_to_pfn(const void *kaddr)
+{
+	return __pa(kaddr) >> PAGE_SHIFT;
+}
+#define virt_to_pfn virt_to_pfn
+static inline void *pfn_to_virt(unsigned long pfn)
+{
+	return __va(pfn) << PAGE_SHIFT;
+}
+#define pfn_to_virt pfn_to_virt
 
 #define virt_to_page(addr)	pfn_to_page(virt_to_pfn(addr))
 #define page_to_virt(page)	pfn_to_virt(page_to_pfn(page))
@@ -89,8 +91,6 @@ extern unsigned long memory_end;
 #ifndef page_to_phys
 #define page_to_phys(page)      ((dma_addr_t)page_to_pfn(page) << PAGE_SHIFT)
 #endif
-
-#define pfn_valid(pfn)		((pfn) >= ARCH_PFN_OFFSET && ((pfn) - ARCH_PFN_OFFSET) < max_mapnr)
 
 #define	virt_addr_valid(kaddr)	(((void *)(kaddr) >= (void *)PAGE_OFFSET) && \
 				((void *)(kaddr) < (void *)memory_end))

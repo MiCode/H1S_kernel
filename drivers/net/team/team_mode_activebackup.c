@@ -1,11 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * drivers/net/team/team_mode_activebackup.c - Active-backup mode for team
  * Copyright (c) 2011 Jiri Pirko <jpirko@redhat.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -61,14 +57,13 @@ static void ab_port_leave(struct team *team, struct team_port *port)
 	}
 }
 
-static int ab_active_port_init(struct team *team,
-			       struct team_option_inst_info *info)
+static void ab_active_port_init(struct team *team,
+				struct team_option_inst_info *info)
 {
 	ab_priv(team)->ap_opt_inst_info = info;
-	return 0;
 }
 
-static int ab_active_port_get(struct team *team, struct team_gsetter_ctx *ctx)
+static void ab_active_port_get(struct team *team, struct team_gsetter_ctx *ctx)
 {
 	struct team_port *active_port;
 
@@ -78,7 +73,6 @@ static int ab_active_port_get(struct team *team, struct team_gsetter_ctx *ctx)
 		ctx->data.u32_val = active_port->dev->ifindex;
 	else
 		ctx->data.u32_val = 0;
-	return 0;
 }
 
 static int ab_active_port_set(struct team *team, struct team_gsetter_ctx *ctx)
@@ -127,6 +121,7 @@ static const struct team_mode ab_mode = {
 	.owner		= THIS_MODULE,
 	.priv_size	= sizeof(struct ab_priv),
 	.ops		= &ab_mode_ops,
+	.lag_tx_type	= NETDEV_LAG_TX_TYPE_ACTIVEBACKUP,
 };
 
 static int __init ab_init_module(void)
@@ -145,4 +140,4 @@ module_exit(ab_cleanup_module);
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Jiri Pirko <jpirko@redhat.com>");
 MODULE_DESCRIPTION("Active-backup mode for team");
-MODULE_ALIAS("team-mode-activebackup");
+MODULE_ALIAS_TEAM_MODE("activebackup");

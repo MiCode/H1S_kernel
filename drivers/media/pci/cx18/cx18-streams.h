@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *  cx18 init/start/stop/exit stream functions
  *
@@ -5,21 +6,6 @@
  *
  *  Copyright (C) 2007  Hans Verkuil <hverkuil@xs4all.nl>
  *  Copyright (C) 2008  Andy Walls <awalls@md.metrocast.net>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
- *  02111-1307  USA
  */
 
 u32 cx18_find_handle(struct cx18 *cx);
@@ -33,7 +19,7 @@ void cx18_stream_rotate_idx_mdls(struct cx18 *cx);
 
 static inline bool cx18_stream_enabled(struct cx18_stream *s)
 {
-	return s->video_dev ||
+	return s->video_dev.v4l2_dev ||
 	       (s->dvb && s->dvb->enabled) ||
 	       (s->type == CX18_ENC_STREAM_TYPE_IDX &&
 		s->cx->stream_buffers[CX18_ENC_STREAM_TYPE_IDX] != 0);

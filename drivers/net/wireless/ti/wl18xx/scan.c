@@ -1,22 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of wl18xx
  *
  * Copyright (C) 2012 Texas Instruments. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include <linux/ieee80211.h>
@@ -51,7 +37,11 @@ static int wl18xx_scan_send(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 		goto out;
 	}
 
-	cmd->role_id = wlvif->role_id;
+	/* scan on the dev role if the regular one is not started */
+	if (wlcore_is_p2p_mgmt(wlvif))
+		cmd->role_id = wlvif->dev_role_id;
+	else
+		cmd->role_id = wlvif->role_id;
 
 	if (WARN_ON(cmd->role_id == WL12XX_INVALID_ROLE_ID)) {
 		ret = -EINVAL;
@@ -106,13 +96,15 @@ static int wl18xx_scan_send(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 
 	/* TODO: per-band ies? */
 	if (cmd->active[0]) {
-		u8 band = IEEE80211_BAND_2GHZ;
+		u8 band = NL80211_BAND_2GHZ;
 		ret = wl12xx_cmd_build_probe_req(wl, wlvif,
 				 cmd->role_id, band,
 				 req->ssids ? req->ssids[0].ssid : NULL,
 				 req->ssids ? req->ssids[0].ssid_len : 0,
 				 req->ie,
 				 req->ie_len,
+				 NULL,
+				 0,
 				 false);
 		if (ret < 0) {
 			wl1271_error("2.4GHz PROBE request template failed");
@@ -121,13 +113,15 @@ static int wl18xx_scan_send(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 	}
 
 	if (cmd->active[1] || cmd->dfs) {
-		u8 band = IEEE80211_BAND_5GHZ;
+		u8 band = NL80211_BAND_5GHZ;
 		ret = wl12xx_cmd_build_probe_req(wl, wlvif,
 				 cmd->role_id, band,
 				 req->ssids ? req->ssids[0].ssid : NULL,
 				 req->ssids ? req->ssids[0].ssid_len : 0,
 				 req->ie,
 				 req->ie_len,
+				 NULL,
+				 0,
 				 false);
 		if (ret < 0) {
 			wl1271_error("5GHz PROBE request template failed");
@@ -161,7 +155,7 @@ static
 int wl18xx_scan_sched_scan_config(struct wl1271 *wl,
 				  struct wl12xx_vif *wlvif,
 				  struct cfg80211_sched_scan_request *req,
-				  struct ieee80211_sched_scan_ies *ies)
+				  struct ieee80211_scan_ies *ies)
 {
 	struct wl18xx_cmd_scan_params *cmd;
 	struct wlcore_scan_channels *cmd_channels = NULL;
@@ -219,9 +213,22 @@ int wl18xx_scan_sched_scan_config(struct wl1271 *wl,
 				    SCAN_TYPE_PERIODIC);
 	wl18xx_adjust_channels(cmd, cmd_channels);
 
-	cmd->short_cycles_sec = 0;
-	cmd->long_cycles_sec = cpu_to_le16(req->interval);
-	cmd->short_cycles_count = 0;
+	if (c->num_short_intervals && c->long_interval &&
+	    c->long_interval > req->scan_plans[0].interval * MSEC_PER_SEC) {
+		cmd->short_cycles_msec =
+			cpu_to_le16(req->scan_plans[0].interval * MSEC_PER_SEC);
+		cmd->long_cycles_msec = cpu_to_le16(c->long_interval);
+		cmd->short_cycles_count = c->num_short_intervals;
+	} else {
+		cmd->short_cycles_msec = 0;
+		cmd->long_cycles_msec =
+			cpu_to_le16(req->scan_plans[0].interval * MSEC_PER_SEC);
+		cmd->short_cycles_count = 0;
+	}
+	wl1271_debug(DEBUG_SCAN, "short_interval: %d, long_interval: %d, num_short: %d",
+		     le16_to_cpu(cmd->short_cycles_msec),
+		     le16_to_cpu(cmd->long_cycles_msec),
+		     cmd->short_cycles_count);
 
 	cmd->total_cycles = 0;
 
@@ -232,13 +239,15 @@ int wl18xx_scan_sched_scan_config(struct wl1271 *wl,
 	cmd->terminate_on_report = 0;
 
 	if (cmd->active[0]) {
-		u8 band = IEEE80211_BAND_2GHZ;
+		u8 band = NL80211_BAND_2GHZ;
 		ret = wl12xx_cmd_build_probe_req(wl, wlvif,
 				 cmd->role_id, band,
 				 req->ssids ? req->ssids[0].ssid : NULL,
 				 req->ssids ? req->ssids[0].ssid_len : 0,
-				 ies->ie[band],
+				 ies->ies[band],
 				 ies->len[band],
+				 ies->common_ies,
+				 ies->common_ie_len,
 				 true);
 		if (ret < 0) {
 			wl1271_error("2.4GHz PROBE request template failed");
@@ -247,13 +256,15 @@ int wl18xx_scan_sched_scan_config(struct wl1271 *wl,
 	}
 
 	if (cmd->active[1] || cmd->dfs) {
-		u8 band = IEEE80211_BAND_5GHZ;
+		u8 band = NL80211_BAND_5GHZ;
 		ret = wl12xx_cmd_build_probe_req(wl, wlvif,
 				 cmd->role_id, band,
 				 req->ssids ? req->ssids[0].ssid : NULL,
 				 req->ssids ? req->ssids[0].ssid_len : 0,
-				 ies->ie[band],
+				 ies->ies[band],
 				 ies->len[band],
+				 ies->common_ies,
+				 ies->common_ie_len,
 				 true);
 		if (ret < 0) {
 			wl1271_error("5GHz PROBE request template failed");
@@ -277,7 +288,7 @@ out:
 
 int wl18xx_sched_scan_start(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 			    struct cfg80211_sched_scan_request *req,
-			    struct ieee80211_sched_scan_ies *ies)
+			    struct ieee80211_scan_ies *ies)
 {
 	return wl18xx_scan_sched_scan_config(wl, wlvif, req, ies);
 }

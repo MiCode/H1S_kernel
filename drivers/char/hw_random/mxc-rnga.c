@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * RNG driver for Freescale RNGA
  *
@@ -6,26 +7,17 @@
  */
 
 /*
- * The code contained herein is licensed under the GNU General Public
- * License. You may obtain a copy of the GNU General Public License
- * Version 2 or later at the following locations:
- *
- * http://www.opensource.org/licenses/gpl-license.html
- * http://www.gnu.org/copyleft/gpl.html
  *
  * This driver is based on other RNG drivers.
  */
 
-#include <linux/module.h>
-#include <linux/init.h>
-#include <linux/kernel.h>
 #include <linux/clk.h>
-#include <linux/err.h>
-#include <linux/ioport.h>
-#include <linux/platform_device.h>
-#include <linux/hw_random.h>
 #include <linux/delay.h>
+#include <linux/hw_random.h>
 #include <linux/io.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 
 /* RNGA Registers */
 #define RNGA_CONTROL			0x00
@@ -141,35 +133,31 @@ static void mxc_rnga_cleanup(struct hwrng *rng)
 
 static int __init mxc_rnga_probe(struct platform_device *pdev)
 {
-	int err = -ENODEV;
-	struct resource *res;
+	int err;
 	struct mxc_rng *mxc_rng;
 
-	mxc_rng = devm_kzalloc(&pdev->dev, sizeof(struct mxc_rng),
-					GFP_KERNEL);
+	mxc_rng = devm_kzalloc(&pdev->dev, sizeof(*mxc_rng), GFP_KERNEL);
 	if (!mxc_rng)
 		return -ENOMEM;
 
 	mxc_rng->dev = &pdev->dev;
 	mxc_rng->rng.name = "mxc-rnga";
 	mxc_rng->rng.init = mxc_rnga_init;
-	mxc_rng->rng.cleanup = mxc_rnga_cleanup,
-	mxc_rng->rng.data_present = mxc_rnga_data_present,
-	mxc_rng->rng.data_read = mxc_rnga_data_read,
+	mxc_rng->rng.cleanup = mxc_rnga_cleanup;
+	mxc_rng->rng.data_present = mxc_rnga_data_present;
+	mxc_rng->rng.data_read = mxc_rnga_data_read;
 
 	mxc_rng->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(mxc_rng->clk)) {
 		dev_err(&pdev->dev, "Could not get rng_clk!\n");
-		err = PTR_ERR(mxc_rng->clk);
-		goto out;
+		return PTR_ERR(mxc_rng->clk);
 	}
 
 	err = clk_prepare_enable(mxc_rng->clk);
 	if (err)
-		goto out;
+		return err;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	mxc_rng->mem = devm_ioremap_resource(&pdev->dev, res);
+	mxc_rng->mem = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(mxc_rng->mem)) {
 		err = PTR_ERR(mxc_rng->mem);
 		goto err_ioremap;
@@ -181,14 +169,10 @@ static int __init mxc_rnga_probe(struct platform_device *pdev)
 		goto err_ioremap;
 	}
 
-	dev_info(&pdev->dev, "MXC RNGA Registered.\n");
-
 	return 0;
 
 err_ioremap:
 	clk_disable_unprepare(mxc_rng->clk);
-
-out:
 	return err;
 }
 
@@ -203,11 +187,18 @@ static int __exit mxc_rnga_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static const struct of_device_id mxc_rnga_of_match[] = {
+	{ .compatible = "fsl,imx21-rnga", },
+	{ .compatible = "fsl,imx31-rnga", },
+	{ /* sentinel */ },
+};
+MODULE_DEVICE_TABLE(of, mxc_rnga_of_match);
+
 static struct platform_driver mxc_rnga_driver = {
 	.driver = {
-		   .name = "mxc_rnga",
-		   .owner = THIS_MODULE,
-		   },
+		.name = "mxc_rnga",
+		.of_match_table = mxc_rnga_of_match,
+	},
 	.remove = __exit_p(mxc_rnga_remove),
 };
 

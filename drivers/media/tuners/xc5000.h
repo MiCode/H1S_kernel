@@ -1,28 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *  Driver for Xceive XC5000 "QAM/8VSB single chip tuner"
  *
  *  Copyright (c) 2007 Steven Toth <stoth@linuxtv.org>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #ifndef __XC5000_H__
 #define __XC5000_H__
 
-#include <linux/kconfig.h>
 #include <linux/firmware.h>
 
 struct dvb_frontend;
@@ -36,6 +21,7 @@ struct xc5000_config {
 	u32  if_khz;
 	u8   radio_input;
 	u16  xtal_khz;
+	u16  output_amp;
 
 	int chip_id;
 };
@@ -57,7 +43,7 @@ struct xc5000_config {
  * it's passed back to a bridge during tuner_callback().
  */
 
-#if IS_ENABLED(CONFIG_MEDIA_TUNER_XC5000)
+#if IS_REACHABLE(CONFIG_MEDIA_TUNER_XC5000)
 extern struct dvb_frontend *xc5000_attach(struct dvb_frontend *fe,
 					  struct i2c_adapter *i2c,
 					  const struct xc5000_config *cfg);

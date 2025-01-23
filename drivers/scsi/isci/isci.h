@@ -498,23 +498,21 @@ struct sci_timer {
 };
 
 static inline
-void sci_init_timer(struct sci_timer *tmr, void (*fn)(unsigned long))
+void sci_init_timer(struct sci_timer *tmr, void (*fn)(struct timer_list *t))
 {
-	tmr->timer.function = fn;
-	tmr->timer.data = (unsigned long) tmr;
-	tmr->cancel = 0;
-	init_timer(&tmr->timer);
+	tmr->cancel = false;
+	timer_setup(&tmr->timer, fn, 0);
 }
 
 static inline void sci_mod_timer(struct sci_timer *tmr, unsigned long msec)
 {
-	tmr->cancel = 0;
+	tmr->cancel = false;
 	mod_timer(&tmr->timer, jiffies + msecs_to_jiffies(msec));
 }
 
 static inline void sci_del_timer(struct sci_timer *tmr)
 {
-	tmr->cancel = 1;
+	tmr->cancel = true;
 	del_timer(&tmr->timer);
 }
 

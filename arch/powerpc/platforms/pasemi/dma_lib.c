@@ -1,20 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2006-2007 PA Semi, Inc
  *
  * Common functions for DMA access on PA Semi PWRficient
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <linux/kernel.h>
@@ -22,6 +10,8 @@
 #include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/sched.h>
 
 #include <asm/pasemi_dma.h>
@@ -262,8 +252,6 @@ int pasemi_dma_alloc_ring(struct pasemi_dmachan *chan, int ring_size)
 	if (!chan->ring_virt)
 		return -ENOMEM;
 
-	memset(chan->ring_virt, 0, ring_size * sizeof(u64));
-
 	return 0;
 }
 EXPORT_SYMBOL(pasemi_dma_alloc_ring);
@@ -389,7 +377,7 @@ int pasemi_dma_alloc_flag(void)
 	int bit;
 
 retry:
-	bit = find_next_bit(flags_free, MAX_FLAGS, 0);
+	bit = find_first_bit(flags_free, MAX_FLAGS);
 	if (bit >= MAX_FLAGS)
 		return -ENOSPC;
 	if (!test_and_clear_bit(bit, flags_free))
@@ -454,7 +442,7 @@ int pasemi_dma_alloc_fun(void)
 	int bit;
 
 retry:
-	bit = find_next_bit(fun_free, MAX_FLAGS, 0);
+	bit = find_first_bit(fun_free, MAX_FLAGS);
 	if (bit >= MAX_FLAGS)
 		return -ENOSPC;
 	if (!test_and_clear_bit(bit, fun_free))
@@ -531,7 +519,7 @@ int pasemi_dma_init(void)
 	iob_pdev = pci_get_device(PCI_VENDOR_ID_PASEMI, 0xa001, NULL);
 	if (!iob_pdev) {
 		BUG();
-		printk(KERN_WARNING "Can't find I/O Bridge\n");
+		pr_warn("Can't find I/O Bridge\n");
 		err = -ENODEV;
 		goto out;
 	}
@@ -540,7 +528,7 @@ int pasemi_dma_init(void)
 	dma_pdev = pci_get_device(PCI_VENDOR_ID_PASEMI, 0xa007, NULL);
 	if (!dma_pdev) {
 		BUG();
-		printk(KERN_WARNING "Can't find DMA controller\n");
+		pr_warn("Can't find DMA controller\n");
 		err = -ENODEV;
 		goto out;
 	}
@@ -576,7 +564,7 @@ int pasemi_dma_init(void)
 		res.start = 0xfd800000;
 		res.end = res.start + 0x1000;
 	}
-	dma_status = __ioremap(res.start, resource_size(&res), 0);
+	dma_status = ioremap_cache(res.start, resource_size(&res));
 	pci_dev_put(iob_pdev);
 
 	for (i = 0; i < MAX_TXCH; i++)
@@ -589,7 +577,7 @@ int pasemi_dma_init(void)
 	pasemi_write_dma_reg(PAS_DMA_COM_RXCMD, 0);
 	while (pasemi_read_dma_reg(PAS_DMA_COM_RXSTA) & 1) {
 		if (time_after(jiffies, timeout)) {
-			pr_warning("Warning: Could not disable RX section\n");
+			pr_warn("Warning: Could not disable RX section\n");
 			break;
 		}
 	}
@@ -598,7 +586,7 @@ int pasemi_dma_init(void)
 	pasemi_write_dma_reg(PAS_DMA_COM_TXCMD, 0);
 	while (pasemi_read_dma_reg(PAS_DMA_COM_TXSTA) & 1) {
 		if (time_after(jiffies, timeout)) {
-			pr_warning("Warning: Could not disable TX section\n");
+			pr_warn("Warning: Could not disable TX section\n");
 			break;
 		}
 	}
@@ -623,7 +611,7 @@ int pasemi_dma_init(void)
 	pasemi_write_dma_reg(PAS_DMA_TXF_CFLG0, 0xffffffff);
 	pasemi_write_dma_reg(PAS_DMA_TXF_CFLG1, 0xffffffff);
 
-	printk(KERN_INFO "PA Semi PWRficient DMA library initialized "
+	pr_info("PA Semi PWRficient DMA library initialized "
 		"(%d tx, %d rx channels)\n", num_txch, num_rxch);
 
 out:

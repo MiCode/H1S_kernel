@@ -1,5 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef ISCSI_SEQ_AND_PDU_LIST_H
 #define ISCSI_SEQ_AND_PDU_LIST_H
+
+#include <linux/types.h>
+#include <linux/cache.h>
 
 /* struct iscsi_pdu->status */
 #define DATAOUT_PDU_SENT			1
@@ -78,9 +82,11 @@ struct iscsi_seq {
 	u32		xfer_len;
 } ____cacheline_aligned;
 
-extern int iscsit_build_pdu_and_seq_lists(struct iscsi_cmd *, u32);
-extern struct iscsi_pdu *iscsit_get_pdu_holder(struct iscsi_cmd *, u32, u32);
-extern struct iscsi_pdu *iscsit_get_pdu_holder_for_seq(struct iscsi_cmd *, struct iscsi_seq *);
-extern struct iscsi_seq *iscsit_get_seq_holder(struct iscsi_cmd *, u32, u32);
+struct iscsit_cmd;
+
+extern int iscsit_build_pdu_and_seq_lists(struct iscsit_cmd *, u32);
+extern struct iscsi_pdu *iscsit_get_pdu_holder(struct iscsit_cmd *, u32, u32);
+extern struct iscsi_pdu *iscsit_get_pdu_holder_for_seq(struct iscsit_cmd *, struct iscsi_seq *);
+extern struct iscsi_seq *iscsit_get_seq_holder(struct iscsit_cmd *, u32, u32);
 
 #endif /* ISCSI_SEQ_AND_PDU_LIST_H */

@@ -1,8 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <inttypes.h>
 
 #include "gtk.h"
 #include "../progress.h"
-#include "util.h"
 
 static GtkWidget *dialog;
 static GtkWidget *progress;

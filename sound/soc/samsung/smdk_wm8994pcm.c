@@ -1,21 +1,14 @@
-/*
- *  sound/soc/samsung/smdk_wm8994pcm.c
- *
- *  Copyright (c) 2011 Samsung Electronics Co., Ltd
- *		http://www.samsung.com
- *
- *  This program is free software; you can redistribute  it and/or  modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- */
+// SPDX-License-Identifier: GPL-2.0+
+//
+// Copyright (c) 2011 Samsung Electronics Co., Ltd
+//		http://www.samsung.com
+
 #include <linux/module.h>
 #include <sound/soc.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 
 #include "../codecs/wm8994.h"
-#include "dma.h"
 #include "pcm.h"
 
 /*
@@ -50,9 +43,9 @@
 static int smdk_wm8994_pcm_hw_params(struct snd_pcm_substream *substream,
 			      struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *codec_dai = rtd->codec_dai;
-	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
+	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
 	unsigned long mclk_freq;
 	int rfs, ret;
 
@@ -67,20 +60,6 @@ static int smdk_wm8994_pcm_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	mclk_freq = params_rate(params) * rfs;
-
-	/* Set the codec DAI configuration */
-	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_DSP_B
-				| SND_SOC_DAIFMT_IB_NF
-				| SND_SOC_DAIFMT_CBS_CFS);
-	if (ret < 0)
-		return ret;
-
-	/* Set the cpu DAI configuration */
-	ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_DSP_B
-				| SND_SOC_DAIFMT_IB_NF
-				| SND_SOC_DAIFMT_CBS_CFS);
-	if (ret < 0)
-		return ret;
 
 	ret = snd_soc_dai_set_sysclk(codec_dai, WM8994_SYSCLK_FLL1,
 					mclk_freq, SND_SOC_CLOCK_IN);
@@ -106,19 +85,23 @@ static int smdk_wm8994_pcm_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static struct snd_soc_ops smdk_wm8994_pcm_ops = {
+static const struct snd_soc_ops smdk_wm8994_pcm_ops = {
 	.hw_params = smdk_wm8994_pcm_hw_params,
 };
+
+SND_SOC_DAILINK_DEFS(paif_pcm,
+	DAILINK_COMP_ARRAY(COMP_CPU("samsung-pcm.0")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("wm8994-codec", "wm8994-aif1")),
+	DAILINK_COMP_ARRAY(COMP_PLATFORM("samsung-pcm.0")));
 
 static struct snd_soc_dai_link smdk_dai[] = {
 	{
 		.name = "WM8994 PAIF PCM",
 		.stream_name = "Primary PCM",
-		.cpu_dai_name = "samsung-pcm.0",
-		.codec_dai_name = "wm8994-aif1",
-		.platform_name = "samsung-pcm.0",
-		.codec_name = "wm8994-codec",
+		.dai_fmt = SND_SOC_DAIFMT_DSP_B | SND_SOC_DAIFMT_IB_NF |
+			   SND_SOC_DAIFMT_CBS_CFS,
 		.ops = &smdk_wm8994_pcm_ops,
+		SND_SOC_DAILINK_REG(paif_pcm),
 	},
 };
 
@@ -134,28 +117,18 @@ static int snd_smdk_probe(struct platform_device *pdev)
 	int ret = 0;
 
 	smdk_pcm.dev = &pdev->dev;
-	ret = snd_soc_register_card(&smdk_pcm);
-	if (ret) {
-		dev_err(&pdev->dev, "snd_soc_register_card failed %d\n", ret);
-		return ret;
-	}
+	ret = devm_snd_soc_register_card(&pdev->dev, &smdk_pcm);
+	if (ret)
+		dev_err_probe(&pdev->dev, ret, "snd_soc_register_card failed\n");
 
-	return 0;
-}
-
-static int snd_smdk_remove(struct platform_device *pdev)
-{
-	snd_soc_unregister_card(&smdk_pcm);
-	return 0;
+	return ret;
 }
 
 static struct platform_driver snd_smdk_driver = {
 	.driver = {
-		.owner = THIS_MODULE,
 		.name = "samsung-smdk-pcm",
 	},
 	.probe = snd_smdk_probe,
-	.remove = snd_smdk_remove,
 };
 
 module_platform_driver(snd_smdk_driver);

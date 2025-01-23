@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/fs/nfs/file.c
  *
@@ -26,27 +27,23 @@
 #include <linux/nfs_mount.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
-#include <linux/aio.h>
 #include <linux/gfp.h>
 #include <linux/swap.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
+#include <linux/filelock.h>
 
 #include "delegation.h"
 #include "internal.h"
 #include "iostat.h"
 #include "fscache.h"
+#include "pnfs.h"
 
 #include "nfstrace.h"
 
 #define NFSDBG_FACILITY		NFSDBG_FILE
 
 static const struct vm_operations_struct nfs_file_vm_ops;
-
-/* Hack for future NFS swap support */
-#ifndef IS_SWAPFILE
-# define IS_SWAPFILE(inode)	(0)
-#endif
 
 int nfs_check_flags(int flags)
 {
@@ -73,6 +70,8 @@ nfs_file_open(struct inode *inode, struct file *filp)
 		return res;
 
 	res = nfs_open(inode, filp);
+	if (res == 0)
+		filp->f_mode |= FMODE_CAN_ODIRECT;
 	return res;
 }
 
@@ -82,14 +81,16 @@ nfs_file_release(struct inode *inode, struct file *filp)
 	dprintk("NFS: release(%pD2)\n", filp);
 
 	nfs_inc_stats(inode, NFSIOS_VFSRELEASE);
-	return nfs_release(inode, filp);
+	nfs_file_clear_open_context(filp);
+	nfs_fscache_release_file(inode, filp);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(nfs_file_release);
 
 /**
- * nfs_revalidate_size - Revalidate the file size
- * @inode - pointer to inode struct
- * @file - pointer to struct file
+ * nfs_revalidate_file_size - Revalidate the file size
+ * @inode: pointer to inode struct
+ * @filp: pointer to struct file
  *
  * Revalidates the file length. This is basically a wrapper around
  * nfs_revalidate_inode() that takes into account the fact that we may
@@ -100,18 +101,11 @@ EXPORT_SYMBOL_GPL(nfs_file_release);
 static int nfs_revalidate_file_size(struct inode *inode, struct file *filp)
 {
 	struct nfs_server *server = NFS_SERVER(inode);
-	struct nfs_inode *nfsi = NFS_I(inode);
-
-	if (nfs_have_delegated_attributes(inode))
-		goto out_noreval;
 
 	if (filp->f_flags & O_DIRECT)
 		goto force_reval;
-	if (nfsi->cache_validity & NFS_INO_REVAL_PAGECACHE)
+	if (nfs_check_cache_invalid(inode, NFS_INO_INVALID_SIZE))
 		goto force_reval;
-	if (nfs_attribute_timeout(inode))
-		goto force_reval;
-out_noreval:
 	return 0;
 force_reval:
 	return __nfs_revalidate_inode(server, inode);
@@ -141,10 +135,11 @@ EXPORT_SYMBOL_GPL(nfs_file_llseek);
 /*
  * Flush all dirty pages, and check for write errors.
  */
-int
+static int
 nfs_file_flush(struct file *file, fl_owner_t id)
 {
 	struct inode	*inode = file_inode(file);
+	errseq_t since;
 
 	dprintk("NFS: flush(%pD2)\n", file);
 
@@ -152,65 +147,60 @@ nfs_file_flush(struct file *file, fl_owner_t id)
 	if ((file->f_mode & FMODE_WRITE) == 0)
 		return 0;
 
-	/*
-	 * If we're holding a write delegation, then just start the i/o
-	 * but don't wait for completion (or send a commit).
-	 */
-	if (NFS_PROTO(inode)->have_delegation(inode, FMODE_WRITE))
-		return filemap_fdatawrite(file->f_mapping);
-
 	/* Flush writes to the server and return any errors */
-	return vfs_fsync(file, 0);
+	since = filemap_sample_wb_err(file->f_mapping);
+	nfs_wb_all(inode);
+	return filemap_check_wb_err(file->f_mapping, since);
 }
-EXPORT_SYMBOL_GPL(nfs_file_flush);
 
 ssize_t
-nfs_file_read(struct kiocb *iocb, const struct iovec *iov,
-		unsigned long nr_segs, loff_t pos)
+nfs_file_read(struct kiocb *iocb, struct iov_iter *to)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
 	ssize_t result;
 
-	if (iocb->ki_filp->f_flags & O_DIRECT)
-		return nfs_file_direct_read(iocb, iov, nr_segs, pos, true);
+	if (iocb->ki_flags & IOCB_DIRECT)
+		return nfs_file_direct_read(iocb, to, false);
 
-	dprintk("NFS: read(%pD2, %lu@%lu)\n",
+	dprintk("NFS: read(%pD2, %zu@%lu)\n",
 		iocb->ki_filp,
-		(unsigned long) iov_length(iov, nr_segs), (unsigned long) pos);
+		iov_iter_count(to), (unsigned long) iocb->ki_pos);
 
+	nfs_start_io_read(inode);
 	result = nfs_revalidate_mapping(inode, iocb->ki_filp->f_mapping);
 	if (!result) {
-		result = generic_file_aio_read(iocb, iov, nr_segs, pos);
+		result = generic_file_read_iter(iocb, to);
 		if (result > 0)
 			nfs_add_stats(inode, NFSIOS_NORMALREADBYTES, result);
 	}
+	nfs_end_io_read(inode);
 	return result;
 }
 EXPORT_SYMBOL_GPL(nfs_file_read);
 
 ssize_t
-nfs_file_splice_read(struct file *filp, loff_t *ppos,
-		     struct pipe_inode_info *pipe, size_t count,
-		     unsigned int flags)
+nfs_file_splice_read(struct file *in, loff_t *ppos, struct pipe_inode_info *pipe,
+		     size_t len, unsigned int flags)
 {
-	struct inode *inode = file_inode(filp);
-	ssize_t res;
+	struct inode *inode = file_inode(in);
+	ssize_t result;
 
-	dprintk("NFS: splice_read(%pD2, %lu@%Lu)\n",
-		filp, (unsigned long) count, (unsigned long long) *ppos);
+	dprintk("NFS: splice_read(%pD2, %zu@%llu)\n", in, len, *ppos);
 
-	res = nfs_revalidate_mapping(inode, filp->f_mapping);
-	if (!res) {
-		res = generic_file_splice_read(filp, ppos, pipe, count, flags);
-		if (res > 0)
-			nfs_add_stats(inode, NFSIOS_NORMALREADBYTES, res);
+	nfs_start_io_read(inode);
+	result = nfs_revalidate_mapping(inode, in->f_mapping);
+	if (!result) {
+		result = filemap_splice_read(in, ppos, pipe, len, flags);
+		if (result > 0)
+			nfs_add_stats(inode, NFSIOS_NORMALREADBYTES, result);
 	}
-	return res;
+	nfs_end_io_read(inode);
+	return result;
 }
 EXPORT_SYMBOL_GPL(nfs_file_splice_read);
 
 int
-nfs_file_mmap(struct file * file, struct vm_area_struct * vma)
+nfs_file_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct inode *inode = file_inode(file);
 	int	status;
@@ -233,78 +223,65 @@ EXPORT_SYMBOL_GPL(nfs_file_mmap);
  * Flush any dirty pages for this process, and check for write errors.
  * The return status from this call provides a reliable indication of
  * whether any write errors occurred for this process.
- *
- * Notice that it clears the NFS_CONTEXT_ERROR_WRITE before synching to
- * disk, but it retrieves and clears ctx->error after synching, despite
- * the two being set at the same time in nfs_context_set_write_error().
- * This is because the former is used to notify the _next_ call to
- * nfs_file_write() that a write error occurred, and hence cause it to
- * fall back to doing a synchronous write.
  */
-int
-nfs_file_fsync_commit(struct file *file, loff_t start, loff_t end, int datasync)
+static int
+nfs_file_fsync_commit(struct file *file, int datasync)
 {
-	struct nfs_open_context *ctx = nfs_file_open_context(file);
 	struct inode *inode = file_inode(file);
-	int have_error, do_resend, status;
-	int ret = 0;
+	int ret, ret2;
 
 	dprintk("NFS: fsync file(%pD2) datasync %d\n", file, datasync);
 
 	nfs_inc_stats(inode, NFSIOS_VFSFSYNC);
-	do_resend = test_and_clear_bit(NFS_CONTEXT_RESEND_WRITES, &ctx->flags);
-	have_error = test_and_clear_bit(NFS_CONTEXT_ERROR_WRITE, &ctx->flags);
-	status = nfs_commit_inode(inode, FLUSH_SYNC);
-	have_error |= test_bit(NFS_CONTEXT_ERROR_WRITE, &ctx->flags);
-	if (have_error) {
-		ret = xchg(&ctx->error, 0);
-		if (ret)
-			goto out;
-	}
-	if (status < 0) {
-		ret = status;
-		goto out;
-	}
-	do_resend |= test_bit(NFS_CONTEXT_RESEND_WRITES, &ctx->flags);
-	if (do_resend)
-		ret = -EAGAIN;
-out:
+	ret = nfs_commit_inode(inode, FLUSH_SYNC);
+	ret2 = file_check_and_advance_wb_err(file);
+	if (ret2 < 0)
+		return ret2;
 	return ret;
 }
-EXPORT_SYMBOL_GPL(nfs_file_fsync_commit);
 
-static int
+int
 nfs_file_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
-	int ret;
 	struct inode *inode = file_inode(file);
+	struct nfs_inode *nfsi = NFS_I(inode);
+	long save_nredirtied = atomic_long_read(&nfsi->redirtied_pages);
+	long nredirtied;
+	int ret;
 
 	trace_nfs_fsync_enter(inode);
 
-	do {
-		ret = filemap_write_and_wait_range(inode->i_mapping, start, end);
+	for (;;) {
+		ret = file_write_and_wait_range(file, start, end);
 		if (ret != 0)
 			break;
-		mutex_lock(&inode->i_mutex);
-		ret = nfs_file_fsync_commit(file, start, end, datasync);
-		mutex_unlock(&inode->i_mutex);
-		/*
-		 * If nfs_file_fsync_commit detected a server reboot, then
-		 * resend all dirty pages that might have been covered by
-		 * the NFS_CONTEXT_RESEND_WRITES flag
-		 */
-		start = 0;
-		end = LLONG_MAX;
-	} while (ret == -EAGAIN);
+		ret = nfs_file_fsync_commit(file, datasync);
+		if (ret != 0)
+			break;
+		ret = pnfs_sync_inode(inode, !!datasync);
+		if (ret != 0)
+			break;
+		nredirtied = atomic_long_read(&nfsi->redirtied_pages);
+		if (nredirtied == save_nredirtied)
+			break;
+		save_nredirtied = nredirtied;
+	}
 
 	trace_nfs_fsync_exit(inode, ret);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(nfs_file_fsync);
 
 /*
  * Decide whether a read/modify/write cycle may be more efficient
  * then a modify/write/read cycle when writing to a page in the
  * page cache.
+ *
+ * Some pNFS layout drivers can only read/write at a certain block
+ * granularity like all block devices and therefore we must perform
+ * read/modify/write whenever a page hasn't read yet and the data
+ * to be written there is not aligned to a block boundary and/or
+ * smaller than the block size.
  *
  * The modify/write/read cycle may occur if a page is read before
  * being completely filled by the writer.  In this situation, the
@@ -321,20 +298,33 @@ nfs_file_fsync(struct file *file, loff_t start, loff_t end, int datasync)
  * and that the new data won't completely replace the old data in
  * that range of the file.
  */
-static int nfs_want_read_modify_write(struct file *file, struct page *page,
-			loff_t pos, unsigned len)
+static bool nfs_folio_is_full_write(struct folio *folio, loff_t pos,
+				    unsigned int len)
 {
-	unsigned int pglen = nfs_page_length(page);
-	unsigned int offset = pos & (PAGE_CACHE_SIZE - 1);
+	unsigned int pglen = nfs_folio_length(folio);
+	unsigned int offset = offset_in_folio(folio, pos);
 	unsigned int end = offset + len;
 
-	if ((file->f_mode & FMODE_READ) &&	/* open for read? */
-	    !PageUptodate(page) &&		/* Uptodate? */
-	    !PagePrivate(page) &&		/* i/o request already? */
-	    pglen &&				/* valid bytes of file? */
-	    (end < pglen || offset))		/* replace all valid bytes? */
-		return 1;
-	return 0;
+	return !pglen || (end >= pglen && !offset);
+}
+
+static bool nfs_want_read_modify_write(struct file *file, struct folio *folio,
+				       loff_t pos, unsigned int len)
+{
+	/*
+	 * Up-to-date pages, those with ongoing or full-page write
+	 * don't need read/modify/write
+	 */
+	if (folio_test_uptodate(folio) || folio_test_private(folio) ||
+	    nfs_folio_is_full_write(folio, pos, len))
+		return false;
+
+	if (pnfs_ld_read_whole_page(file_inode(file)))
+		return true;
+	/* Open for reading too? */
+	if (file->f_mode & FMODE_READ)
+		return true;
+	return false;
 }
 
 /*
@@ -346,41 +336,32 @@ static int nfs_want_read_modify_write(struct file *file, struct page *page,
  * increment the page use counts until he is done with the page.
  */
 static int nfs_write_begin(struct file *file, struct address_space *mapping,
-			loff_t pos, unsigned len, unsigned flags,
-			struct page **pagep, void **fsdata)
+			   loff_t pos, unsigned len, struct page **pagep,
+			   void **fsdata)
 {
-	int ret;
-	pgoff_t index = pos >> PAGE_CACHE_SHIFT;
-	struct page *page;
+	struct folio *folio;
 	int once_thru = 0;
+	int ret;
 
 	dfprintk(PAGECACHE, "NFS: write_begin(%pD2(%lu), %u@%lld)\n",
 		file, mapping->host->i_ino, len, (long long) pos);
 
 start:
-	/*
-	 * Prevent starvation issues if someone is doing a consistency
-	 * sync-to-disk
-	 */
-	ret = wait_on_bit(&NFS_I(mapping->host)->flags, NFS_INO_FLUSHING,
-			nfs_wait_bit_killable, TASK_KILLABLE);
-	if (ret)
-		return ret;
+	folio = __filemap_get_folio(mapping, pos >> PAGE_SHIFT, FGP_WRITEBEGIN,
+				    mapping_gfp_mask(mapping));
+	if (IS_ERR(folio))
+		return PTR_ERR(folio);
+	*pagep = &folio->page;
 
-	page = grab_cache_page_write_begin(mapping, index, flags);
-	if (!page)
-		return -ENOMEM;
-	*pagep = page;
-
-	ret = nfs_flush_incompatible(file, page);
+	ret = nfs_flush_incompatible(file, folio);
 	if (ret) {
-		unlock_page(page);
-		page_cache_release(page);
+		folio_unlock(folio);
+		folio_put(folio);
 	} else if (!once_thru &&
-		   nfs_want_read_modify_write(file, page, pos, len)) {
+		   nfs_want_read_modify_write(file, folio, pos, len)) {
 		once_thru = 1;
-		ret = nfs_readpage(file, page);
-		page_cache_release(page);
+		ret = nfs_read_folio(file, folio);
+		folio_put(folio);
 		if (!ret)
 			goto start;
 	}
@@ -388,11 +369,12 @@ start:
 }
 
 static int nfs_write_end(struct file *file, struct address_space *mapping,
-			loff_t pos, unsigned len, unsigned copied,
-			struct page *page, void *fsdata)
+			 loff_t pos, unsigned len, unsigned copied,
+			 struct page *page, void *fsdata)
 {
-	unsigned offset = pos & (PAGE_CACHE_SIZE - 1);
 	struct nfs_open_context *ctx = nfs_file_open_context(file);
+	struct folio *folio = page_folio(page);
+	unsigned offset = offset_in_folio(folio, pos);
 	int status;
 
 	dfprintk(PAGECACHE, "NFS: write_end(%pD2(%lu), %u@%lld)\n",
@@ -402,36 +384,33 @@ static int nfs_write_end(struct file *file, struct address_space *mapping,
 	 * Zero any uninitialised parts of the page, and then mark the page
 	 * as up to date if it turns out that we're extending the file.
 	 */
-	if (!PageUptodate(page)) {
-		unsigned pglen = nfs_page_length(page);
-		unsigned end = offset + len;
+	if (!folio_test_uptodate(folio)) {
+		size_t fsize = folio_size(folio);
+		unsigned pglen = nfs_folio_length(folio);
+		unsigned end = offset + copied;
 
 		if (pglen == 0) {
-			zero_user_segments(page, 0, offset,
-					end, PAGE_CACHE_SIZE);
-			SetPageUptodate(page);
+			folio_zero_segments(folio, 0, offset, end, fsize);
+			folio_mark_uptodate(folio);
 		} else if (end >= pglen) {
-			zero_user_segment(page, end, PAGE_CACHE_SIZE);
+			folio_zero_segment(folio, end, fsize);
 			if (offset == 0)
-				SetPageUptodate(page);
+				folio_mark_uptodate(folio);
 		} else
-			zero_user_segment(page, pglen, PAGE_CACHE_SIZE);
+			folio_zero_segment(folio, pglen, fsize);
 	}
 
-	status = nfs_updatepage(file, page, offset, copied);
+	status = nfs_update_folio(file, folio, offset, copied);
 
-	unlock_page(page);
-	page_cache_release(page);
+	folio_unlock(folio);
+	folio_put(folio);
 
 	if (status < 0)
 		return status;
 	NFS_I(mapping->host)->write_io += copied;
 
-	if (nfs_ctx_key_to_expire(ctx)) {
-		status = nfs_wb_all(mapping->host);
-		if (status < 0)
-			return status;
-	}
+	if (nfs_ctx_key_to_expire(ctx, mapping->host))
+		nfs_wb_all(mapping->host);
 
 	return copied;
 }
@@ -443,76 +422,65 @@ static int nfs_write_end(struct file *file, struct address_space *mapping,
  * - Called if either PG_private or PG_fscache is set on the page
  * - Caller holds page lock
  */
-static void nfs_invalidate_page(struct page *page, unsigned int offset,
-				unsigned int length)
+static void nfs_invalidate_folio(struct folio *folio, size_t offset,
+				size_t length)
 {
-	dfprintk(PAGECACHE, "NFS: invalidate_page(%p, %u, %u)\n",
-		 page, offset, length);
+	struct inode *inode = folio_file_mapping(folio)->host;
+	dfprintk(PAGECACHE, "NFS: invalidate_folio(%lu, %zu, %zu)\n",
+		 folio->index, offset, length);
 
-	if (offset != 0 || length < PAGE_CACHE_SIZE)
+	if (offset != 0 || length < folio_size(folio))
 		return;
 	/* Cancel any unstarted writes on this page */
-	nfs_wb_page_cancel(page_file_mapping(page)->host, page);
-
-	nfs_fscache_invalidate_page(page, page->mapping->host);
+	nfs_wb_folio_cancel(inode, folio);
+	folio_wait_fscache(folio);
+	trace_nfs_invalidate_folio(inode, folio);
 }
 
 /*
- * Attempt to release the private state associated with a page
- * - Called if either PG_private or PG_fscache is set on the page
- * - Caller holds page lock
- * - Return true (may release page) or false (may not)
+ * Attempt to release the private state associated with a folio
+ * - Called if either private or fscache flags are set on the folio
+ * - Caller holds folio lock
+ * - Return true (may release folio) or false (may not)
  */
-static int nfs_release_page(struct page *page, gfp_t gfp)
+static bool nfs_release_folio(struct folio *folio, gfp_t gfp)
 {
-	struct address_space *mapping = page->mapping;
+	dfprintk(PAGECACHE, "NFS: release_folio(%p)\n", folio);
 
-	dfprintk(PAGECACHE, "NFS: release_page(%p)\n", page);
-
-	/* Only do I/O if gfp is a superset of GFP_KERNEL, and we're not
-	 * doing this memory reclaim for a fs-related allocation.
-	 */
-	if (mapping && (gfp & GFP_KERNEL) == GFP_KERNEL &&
-	    !(current->flags & PF_FSTRANS)) {
-		int how = FLUSH_SYNC;
-
-		/* Don't let kswapd deadlock waiting for OOM RPC calls */
-		if (current_is_kswapd())
-			how = 0;
-		nfs_commit_inode(mapping->host, how);
+	/* If the private flag is set, then the folio is not freeable */
+	if (folio_test_private(folio)) {
+		if ((current_gfp_context(gfp) & GFP_KERNEL) != GFP_KERNEL ||
+		    current_is_kswapd())
+			return false;
+		if (nfs_wb_folio(folio_file_mapping(folio)->host, folio) < 0)
+			return false;
 	}
-	/* If PagePrivate() is set, then the page is not freeable */
-	if (PagePrivate(page))
-		return 0;
-	return nfs_fscache_release_page(page, gfp);
+	return nfs_fscache_release_folio(folio, gfp);
 }
 
-static void nfs_check_dirty_writeback(struct page *page,
+static void nfs_check_dirty_writeback(struct folio *folio,
 				bool *dirty, bool *writeback)
 {
 	struct nfs_inode *nfsi;
-	struct address_space *mapping = page_file_mapping(page);
-
-	if (!mapping || PageSwapCache(page))
-		return;
+	struct address_space *mapping = folio->mapping;
 
 	/*
-	 * Check if an unstable page is currently being committed and
-	 * if so, have the VM treat it as if the page is under writeback
-	 * so it will not block due to pages that will shortly be freeable.
+	 * Check if an unstable folio is currently being committed and
+	 * if so, have the VM treat it as if the folio is under writeback
+	 * so it will not block due to folios that will shortly be freeable.
 	 */
 	nfsi = NFS_I(mapping->host);
-	if (test_bit(NFS_INO_COMMIT, &nfsi->flags)) {
+	if (atomic_read(&nfsi->commit_info.rpcs_out)) {
 		*writeback = true;
 		return;
 	}
 
 	/*
-	 * If PagePrivate() is set, then the page is not freeable and as the
-	 * inode is not being committed, it's not going to be cleaned in the
-	 * near future so treat it as dirty
+	 * If the private flag is set, then the folio is not freeable
+	 * and as the inode is not being committed, it's not going to
+	 * be cleaned in the near future so treat it as dirty
 	 */
-	if (PagePrivate(page))
+	if (folio_test_private(folio))
 		*dirty = true;
 }
 
@@ -524,51 +492,85 @@ static void nfs_check_dirty_writeback(struct page *page,
  * - Caller holds page lock
  * - Return 0 if successful, -error otherwise
  */
-static int nfs_launder_page(struct page *page)
+static int nfs_launder_folio(struct folio *folio)
 {
-	struct inode *inode = page_file_mapping(page)->host;
-	struct nfs_inode *nfsi = NFS_I(inode);
+	struct inode *inode = folio->mapping->host;
+	int ret;
 
-	dfprintk(PAGECACHE, "NFS: launder_page(%ld, %llu)\n",
-		inode->i_ino, (long long)page_offset(page));
+	dfprintk(PAGECACHE, "NFS: launder_folio(%ld, %llu)\n",
+		inode->i_ino, folio_pos(folio));
 
-	nfs_fscache_wait_on_page_write(nfsi, page);
-	return nfs_wb_page(inode, page);
+	folio_wait_fscache(folio);
+	ret = nfs_wb_folio(inode, folio);
+	trace_nfs_launder_folio_done(inode, folio, ret);
+	return ret;
 }
 
-#ifdef CONFIG_NFS_SWAP
 static int nfs_swap_activate(struct swap_info_struct *sis, struct file *file,
 						sector_t *span)
 {
+	unsigned long blocks;
+	long long isize;
+	int ret;
+	struct inode *inode = file_inode(file);
+	struct rpc_clnt *clnt = NFS_CLIENT(inode);
+	struct nfs_client *cl = NFS_SERVER(inode)->nfs_client;
+
+	spin_lock(&inode->i_lock);
+	blocks = inode->i_blocks;
+	isize = inode->i_size;
+	spin_unlock(&inode->i_lock);
+	if (blocks*512 < isize) {
+		pr_warn("swap activate: swapfile has holes\n");
+		return -EINVAL;
+	}
+
+	ret = rpc_clnt_swap_activate(clnt);
+	if (ret)
+		return ret;
+	ret = add_swap_extent(sis, 0, sis->max, 0);
+	if (ret < 0) {
+		rpc_clnt_swap_deactivate(clnt);
+		return ret;
+	}
+
 	*span = sis->pages;
-	return xs_swapper(NFS_CLIENT(file->f_mapping->host)->cl_xprt, 1);
+
+	if (cl->rpc_ops->enable_swap)
+		cl->rpc_ops->enable_swap(inode);
+
+	sis->flags |= SWP_FS_OPS;
+	return ret;
 }
 
 static void nfs_swap_deactivate(struct file *file)
 {
-	xs_swapper(NFS_CLIENT(file->f_mapping->host)->cl_xprt, 0);
+	struct inode *inode = file_inode(file);
+	struct rpc_clnt *clnt = NFS_CLIENT(inode);
+	struct nfs_client *cl = NFS_SERVER(inode)->nfs_client;
+
+	rpc_clnt_swap_deactivate(clnt);
+	if (cl->rpc_ops->disable_swap)
+		cl->rpc_ops->disable_swap(file_inode(file));
 }
-#endif
 
 const struct address_space_operations nfs_file_aops = {
-	.readpage = nfs_readpage,
-	.readpages = nfs_readpages,
-	.set_page_dirty = __set_page_dirty_nobuffers,
+	.read_folio = nfs_read_folio,
+	.readahead = nfs_readahead,
+	.dirty_folio = filemap_dirty_folio,
 	.writepage = nfs_writepage,
 	.writepages = nfs_writepages,
 	.write_begin = nfs_write_begin,
 	.write_end = nfs_write_end,
-	.invalidatepage = nfs_invalidate_page,
-	.releasepage = nfs_release_page,
-	.direct_IO = nfs_direct_IO,
-	.migratepage = nfs_migrate_page,
-	.launder_page = nfs_launder_page,
+	.invalidate_folio = nfs_invalidate_folio,
+	.release_folio = nfs_release_folio,
+	.migrate_folio = nfs_migrate_folio,
+	.launder_folio = nfs_launder_folio,
 	.is_dirty_writeback = nfs_check_dirty_writeback,
 	.error_remove_page = generic_error_remove_page,
-#ifdef CONFIG_NFS_SWAP
 	.swap_activate = nfs_swap_activate,
 	.swap_deactivate = nfs_swap_deactivate,
-#endif
+	.swap_rw = nfs_swap_rw,
 };
 
 /*
@@ -576,149 +578,143 @@ const struct address_space_operations nfs_file_aops = {
  * writable, implying that someone is about to modify the page through a
  * shared-writable mapping
  */
-static int nfs_vm_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
+static vm_fault_t nfs_vm_page_mkwrite(struct vm_fault *vmf)
 {
-	struct page *page = vmf->page;
-	struct file *filp = vma->vm_file;
+	struct file *filp = vmf->vma->vm_file;
 	struct inode *inode = file_inode(filp);
 	unsigned pagelen;
-	int ret = VM_FAULT_NOPAGE;
+	vm_fault_t ret = VM_FAULT_NOPAGE;
 	struct address_space *mapping;
+	struct folio *folio = page_folio(vmf->page);
 
 	dfprintk(PAGECACHE, "NFS: vm_page_mkwrite(%pD2(%lu), offset %lld)\n",
-		filp, filp->f_mapping->host->i_ino,
-		(long long)page_offset(page));
+		 filp, filp->f_mapping->host->i_ino,
+		 (long long)folio_file_pos(folio));
+
+	sb_start_pagefault(inode->i_sb);
 
 	/* make sure the cache has finished storing the page */
-	nfs_fscache_wait_on_page_write(NFS_I(inode), page);
+	if (folio_test_fscache(folio) &&
+	    folio_wait_fscache_killable(folio) < 0) {
+		ret = VM_FAULT_RETRY;
+		goto out;
+	}
 
-	lock_page(page);
-	mapping = page_file_mapping(page);
+	wait_on_bit_action(&NFS_I(inode)->flags, NFS_INO_INVALIDATING,
+			   nfs_wait_bit_killable,
+			   TASK_KILLABLE|TASK_FREEZABLE_UNSAFE);
+
+	folio_lock(folio);
+	mapping = folio_file_mapping(folio);
 	if (mapping != inode->i_mapping)
 		goto out_unlock;
 
-	wait_on_page_writeback(page);
+	folio_wait_writeback(folio);
 
-	pagelen = nfs_page_length(page);
+	pagelen = nfs_folio_length(folio);
 	if (pagelen == 0)
 		goto out_unlock;
 
 	ret = VM_FAULT_LOCKED;
-	if (nfs_flush_incompatible(filp, page) == 0 &&
-	    nfs_updatepage(filp, page, 0, pagelen) == 0)
+	if (nfs_flush_incompatible(filp, folio) == 0 &&
+	    nfs_update_folio(filp, folio, 0, pagelen) == 0)
 		goto out;
 
 	ret = VM_FAULT_SIGBUS;
 out_unlock:
-	unlock_page(page);
+	folio_unlock(folio);
 out:
+	sb_end_pagefault(inode->i_sb);
 	return ret;
 }
 
 static const struct vm_operations_struct nfs_file_vm_ops = {
 	.fault = filemap_fault,
+	.map_pages = filemap_map_pages,
 	.page_mkwrite = nfs_vm_page_mkwrite,
-	.remap_pages = generic_file_remap_pages,
 };
 
-static int nfs_need_sync_write(struct file *filp, struct inode *inode)
-{
-	struct nfs_open_context *ctx;
-
-	if (IS_SYNC(inode) || (filp->f_flags & O_DSYNC))
-		return 1;
-	ctx = nfs_file_open_context(filp);
-	if (test_bit(NFS_CONTEXT_ERROR_WRITE, &ctx->flags) ||
-	    nfs_ctx_key_to_expire(ctx))
-		return 1;
-	return 0;
-}
-
-ssize_t nfs_file_write(struct kiocb *iocb, const struct iovec *iov,
-		       unsigned long nr_segs, loff_t pos)
+ssize_t nfs_file_write(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct file *file = iocb->ki_filp;
 	struct inode *inode = file_inode(file);
-	unsigned long written = 0;
-	ssize_t result;
-	size_t count = iov_length(iov, nr_segs);
+	unsigned int mntflags = NFS_SERVER(inode)->flags;
+	ssize_t result, written;
+	errseq_t since;
+	int error;
 
 	result = nfs_key_timeout_notify(file, inode);
 	if (result)
 		return result;
 
-	if (file->f_flags & O_DIRECT)
-		return nfs_file_direct_write(iocb, iov, nr_segs, pos, true);
+	if (iocb->ki_flags & IOCB_DIRECT)
+		return nfs_file_direct_write(iocb, from, false);
 
-	dprintk("NFS: write(%pD2, %lu@%Ld)\n",
-		file, (unsigned long) count, (long long) pos);
+	dprintk("NFS: write(%pD2, %zu@%Ld)\n",
+		file, iov_iter_count(from), (long long) iocb->ki_pos);
 
-	result = -EBUSY;
 	if (IS_SWAPFILE(inode))
 		goto out_swapfile;
 	/*
 	 * O_APPEND implies that we must revalidate the file length.
 	 */
-	if (file->f_flags & O_APPEND) {
+	if (iocb->ki_flags & IOCB_APPEND || iocb->ki_pos > i_size_read(inode)) {
 		result = nfs_revalidate_file_size(inode, file);
 		if (result)
-			goto out;
+			return result;
 	}
 
-	result = count;
-	if (!count)
+	nfs_clear_invalid_mapping(file->f_mapping);
+
+	since = filemap_sample_wb_err(file->f_mapping);
+	nfs_start_io_write(inode);
+	result = generic_write_checks(iocb, from);
+	if (result > 0)
+		result = generic_perform_write(iocb, from);
+	nfs_end_io_write(inode);
+	if (result <= 0)
 		goto out;
 
-	result = generic_file_aio_write(iocb, iov, nr_segs, pos);
-	if (result > 0)
-		written = result;
+	written = result;
+	nfs_add_stats(inode, NFSIOS_NORMALWRITTENBYTES, written);
 
-	/* Return error values for O_DSYNC and IS_SYNC() */
-	if (result >= 0 && nfs_need_sync_write(file, inode)) {
-		int err = vfs_fsync(file, 0);
-		if (err < 0)
-			result = err;
+	if (mntflags & NFS_MOUNT_WRITE_EAGER) {
+		result = filemap_fdatawrite_range(file->f_mapping,
+						  iocb->ki_pos - written,
+						  iocb->ki_pos - 1);
+		if (result < 0)
+			goto out;
 	}
-	if (result > 0)
-		nfs_add_stats(inode, NFSIOS_NORMALWRITTENBYTES, written);
+	if (mntflags & NFS_MOUNT_WRITE_WAIT) {
+		filemap_fdatawait_range(file->f_mapping,
+					iocb->ki_pos - written,
+					iocb->ki_pos - 1);
+	}
+	result = generic_write_sync(iocb, written);
+	if (result < 0)
+		return result;
+
 out:
+	/* Return error values */
+	error = filemap_check_wb_err(file->f_mapping, since);
+	switch (error) {
+	default:
+		break;
+	case -EDQUOT:
+	case -EFBIG:
+	case -ENOSPC:
+		nfs_wb_all(inode);
+		error = file_check_and_advance_wb_err(file);
+		if (error < 0)
+			result = error;
+	}
 	return result;
 
 out_swapfile:
 	printk(KERN_INFO "NFS: attempt to write to active swap file!\n");
-	goto out;
+	return -ETXTBSY;
 }
 EXPORT_SYMBOL_GPL(nfs_file_write);
-
-ssize_t nfs_file_splice_write(struct pipe_inode_info *pipe,
-			      struct file *filp, loff_t *ppos,
-			      size_t count, unsigned int flags)
-{
-	struct inode *inode = file_inode(filp);
-	unsigned long written = 0;
-	ssize_t ret;
-
-	dprintk("NFS splice_write(%pD2, %lu@%llu)\n",
-		filp, (unsigned long) count, (unsigned long long) *ppos);
-
-	/*
-	 * The combination of splice and an O_APPEND destination is disallowed.
-	 */
-
-	ret = generic_file_splice_write(pipe, filp, ppos, count, flags);
-	if (ret > 0)
-		written = ret;
-
-	if (ret >= 0 && nfs_need_sync_write(filp, inode)) {
-		int err = vfs_fsync(filp, 0);
-		if (err < 0)
-			ret = err;
-	}
-	if (ret > 0)
-		nfs_add_stats(inode, NFSIOS_NORMALWRITTENBYTES, written);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(nfs_file_splice_write);
 
 static int
 do_getlk(struct file *filp, int cmd, struct file_lock *fl, int is_local)
@@ -749,22 +745,6 @@ out_noconflict:
 	goto out;
 }
 
-static int do_vfs_lock(struct file *file, struct file_lock *fl)
-{
-	int res = 0;
-	switch (fl->fl_flags & (FL_POSIX|FL_FLOCK)) {
-		case FL_POSIX:
-			res = posix_lock_file_wait(file, fl);
-			break;
-		case FL_FLOCK:
-			res = flock_lock_file_wait(file, fl);
-			break;
-		default:
-			BUG();
-	}
-	return res;
-}
-
 static int
 do_unlk(struct file *filp, int cmd, struct file_lock *fl, int is_local)
 {
@@ -776,20 +756,20 @@ do_unlk(struct file *filp, int cmd, struct file_lock *fl, int is_local)
 	 * Flush all pending writes before doing anything
 	 * with locks..
 	 */
-	nfs_sync_mapping(filp->f_mapping);
+	nfs_wb_all(inode);
 
 	l_ctx = nfs_get_lock_context(nfs_file_open_context(filp));
 	if (!IS_ERR(l_ctx)) {
-		status = nfs_iocounter_wait(&l_ctx->io_count);
+		status = nfs_iocounter_wait(l_ctx);
 		nfs_put_lock_context(l_ctx);
-		if (status < 0)
+		/*  NOTE: special case
+		 * 	If we're signalled while cleaning up locks on process exit, we
+		 * 	still need to complete the unlock.
+		 */
+		if (status < 0 && !(fl->fl_flags & FL_CLOSE))
 			return status;
 	}
 
-	/* NOTE: special case
-	 * 	If we're signalled while cleaning up locks on process exit, we
-	 * 	still need to complete the unlock.
-	 */
 	/*
 	 * Use local locking if mounted with "-onolock" or with appropriate
 	 * "-olocal_lock="
@@ -797,13 +777,8 @@ do_unlk(struct file *filp, int cmd, struct file_lock *fl, int is_local)
 	if (!is_local)
 		status = NFS_PROTO(inode)->lock(filp, cmd, fl);
 	else
-		status = do_vfs_lock(filp, fl);
+		status = locks_lock_file_wait(filp, fl);
 	return status;
-}
-
-static int
-is_time_granular(struct timespec *ts) {
-	return ((ts->tv_sec == 0) && (ts->tv_nsec <= 1000));
 }
 
 static int
@@ -827,23 +802,22 @@ do_setlk(struct file *filp, int cmd, struct file_lock *fl, int is_local)
 	if (!is_local)
 		status = NFS_PROTO(inode)->lock(filp, cmd, fl);
 	else
-		status = do_vfs_lock(filp, fl);
+		status = locks_lock_file_wait(filp, fl);
 	if (status < 0)
 		goto out;
 
 	/*
-	 * Revalidate the cache if the server has time stamps granular
-	 * enough to detect subsecond changes.  Otherwise, clear the
-	 * cache to prevent missing any changes.
+	 * Invalidate cache to prevent missing any changes.  If
+	 * the file is mapped, clear the page cache as well so
+	 * those mappings will be loaded.
 	 *
 	 * This makes locking act as a cache coherency point.
 	 */
 	nfs_sync_mapping(filp->f_mapping);
 	if (!NFS_PROTO(inode)->have_delegation(inode, FMODE_READ)) {
-		if (is_time_granular(&NFS_SERVER(inode)->time_delta))
-			__nfs_revalidate_inode(NFS_SERVER(inode), inode);
-		else
-			nfs_zap_caches(inode);
+		nfs_zap_caches(inode);
+		if (mapping_mapped(filp->f_mapping))
+			nfs_revalidate_mapping(inode, filp->f_mapping);
 	}
 out:
 	return status;
@@ -864,9 +838,8 @@ int nfs_lock(struct file *filp, int cmd, struct file_lock *fl)
 
 	nfs_inc_stats(inode, NFSIOS_VFSLOCK);
 
-	/* No mandatory locks over NFS */
-	if (__mandatory_lock(inode) && fl->fl_type != F_UNLCK)
-		goto out_err;
+	if (fl->fl_flags & FL_RECLAIM)
+		return -ENOGRACE;
 
 	if (NFS_SERVER(inode)->flags & NFS_MOUNT_LOCAL_FCNTL)
 		is_local = 1;
@@ -902,46 +875,20 @@ int nfs_flock(struct file *filp, int cmd, struct file_lock *fl)
 	if (!(fl->fl_flags & FL_FLOCK))
 		return -ENOLCK;
 
-	/*
-	 * The NFSv4 protocol doesn't support LOCK_MAND, which is not part of
-	 * any standard. In principle we might be able to support LOCK_MAND
-	 * on NFSv2/3 since NLMv3/4 support DOS share modes, but for now the
-	 * NFS code is not set up for it.
-	 */
-	if (fl->fl_type & LOCK_MAND)
-		return -EINVAL;
-
 	if (NFS_SERVER(inode)->flags & NFS_MOUNT_LOCAL_FLOCK)
 		is_local = 1;
 
 	/* We're simulating flock() locks using posix locks on the server */
-	fl->fl_owner = (fl_owner_t)filp;
-	fl->fl_start = 0;
-	fl->fl_end = OFFSET_MAX;
-
 	if (fl->fl_type == F_UNLCK)
 		return do_unlk(filp, cmd, fl, is_local);
 	return do_setlk(filp, cmd, fl, is_local);
 }
 EXPORT_SYMBOL_GPL(nfs_flock);
 
-/*
- * There is no protocol support for leases, so we have no way to implement
- * them correctly in the face of opens by other clients.
- */
-int nfs_setlease(struct file *file, long arg, struct file_lock **fl)
-{
-	dprintk("NFS: setlease(%pD2, arg=%ld)\n", file, arg);
-	return -EINVAL;
-}
-EXPORT_SYMBOL_GPL(nfs_setlease);
-
 const struct file_operations nfs_file_operations = {
 	.llseek		= nfs_file_llseek,
-	.read		= do_sync_read,
-	.write		= do_sync_write,
-	.aio_read	= nfs_file_read,
-	.aio_write	= nfs_file_write,
+	.read_iter	= nfs_file_read,
+	.write_iter	= nfs_file_write,
 	.mmap		= nfs_file_mmap,
 	.open		= nfs_file_open,
 	.flush		= nfs_file_flush,
@@ -950,8 +897,8 @@ const struct file_operations nfs_file_operations = {
 	.lock		= nfs_lock,
 	.flock		= nfs_flock,
 	.splice_read	= nfs_file_splice_read,
-	.splice_write	= nfs_file_splice_write,
+	.splice_write	= iter_file_splice_write,
 	.check_flags	= nfs_check_flags,
-	.setlease	= nfs_setlease,
+	.setlease	= simple_nosetlease,
 };
 EXPORT_SYMBOL_GPL(nfs_file_operations);

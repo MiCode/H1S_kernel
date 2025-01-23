@@ -1,25 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef __SOUND_AK4114_H
 #define __SOUND_AK4114_H
 
 /*
  *  Routines for Asahi Kasei AK4114
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>,
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 /* AK4114 registers */
@@ -163,22 +148,28 @@
 typedef void (ak4114_write_t)(void *private_data, unsigned char addr, unsigned char data);
 typedef unsigned char (ak4114_read_t)(void *private_data, unsigned char addr);
 
+enum {
+	AK4114_PARITY_ERRORS,
+	AK4114_V_BIT_ERRORS,
+	AK4114_QCRC_ERRORS,
+	AK4114_CCRC_ERRORS,
+	AK4114_NUM_ERRORS
+};
+
 struct ak4114 {
 	struct snd_card *card;
 	ak4114_write_t * write;
 	ak4114_read_t * read;
 	void * private_data;
-	unsigned int init: 1;
+	atomic_t wq_processing;
+	struct mutex reinit_mutex;
 	spinlock_t lock;
 	unsigned char regmap[6];
 	unsigned char txcsb[5];
 	struct snd_kcontrol *kctls[AK4114_CONTROLS];
 	struct snd_pcm_substream *playback_substream;
 	struct snd_pcm_substream *capture_substream;
-	unsigned long parity_errors;
-	unsigned long v_bit_errors;
-	unsigned long qcrc_errors;
-	unsigned long ccrc_errors;
+	unsigned long errors[AK4114_NUM_ERRORS];
 	unsigned char rcs0;
 	unsigned char rcs1;
 	struct delayed_work work;
@@ -198,6 +189,14 @@ int snd_ak4114_build(struct ak4114 *ak4114,
                      struct snd_pcm_substream *capture_substream);
 int snd_ak4114_external_rate(struct ak4114 *ak4114);
 int snd_ak4114_check_rate_and_errors(struct ak4114 *ak4114, unsigned int flags);
+
+#ifdef CONFIG_PM
+void snd_ak4114_suspend(struct ak4114 *chip);
+void snd_ak4114_resume(struct ak4114 *chip);
+#else
+static inline void snd_ak4114_suspend(struct ak4114 *chip) {}
+static inline void snd_ak4114_resume(struct ak4114 *chip) {}
+#endif
 
 #endif /* __SOUND_AK4114_H */
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/errno.h>
 #include <linux/numa.h>
 #include <linux/slab.h>
@@ -10,7 +11,7 @@
 #include <linux/module.h>
 #include <linux/device-mapper.h>
 
-#include "dm.h"
+#include "dm-core.h"
 #include "dm-stats.h"
 
 #define DM_MSG_PREFIX "stats"
@@ -29,33 +30,40 @@ struct dm_stat_percpu {
 	unsigned long long io_ticks[2];
 	unsigned long long io_ticks_total;
 	unsigned long long time_in_queue;
+	unsigned long long *histogram;
 };
 
 struct dm_stat_shared {
 	atomic_t in_flight[2];
-	unsigned long stamp;
+	unsigned long long stamp;
 	struct dm_stat_percpu tmp;
 };
 
 struct dm_stat {
 	struct list_head list_entry;
 	int id;
+	unsigned int stat_flags;
 	size_t n_entries;
 	sector_t start;
 	sector_t end;
 	sector_t step;
+	unsigned int n_histogram_entries;
+	unsigned long long *histogram_boundaries;
 	const char *program_id;
 	const char *aux_data;
 	struct rcu_head rcu_head;
 	size_t shared_alloc_size;
 	size_t percpu_alloc_size;
+	size_t histogram_alloc_size;
 	struct dm_stat_percpu *stat_percpu[NR_CPUS];
-	struct dm_stat_shared stat_shared[0];
+	struct dm_stat_shared stat_shared[];
 };
+
+#define STAT_PRECISE_TIMESTAMPS		1
 
 struct dm_stats_last_position {
 	sector_t last_sector;
-	unsigned last_rw;
+	unsigned int last_rw;
 };
 
 /*
@@ -77,7 +85,7 @@ static bool __check_shared_memory(size_t alloc_size)
 	a = shared_memory_amount + alloc_size;
 	if (a < shared_memory_amount)
 		return false;
-	if (a >> PAGE_SHIFT > totalram_pages / DM_STATS_MEMORY_FACTOR)
+	if (a >> PAGE_SHIFT > totalram_pages() / DM_STATS_MEMORY_FACTOR)
 		return false;
 #ifdef CONFIG_MMU
 	if (a > (VMALLOC_END - VMALLOC_START) / DM_STATS_VMALLOC_FACTOR)
@@ -139,12 +147,7 @@ static void *dm_kvzalloc(size_t alloc_size, int node)
 	if (!claim_shared_memory(alloc_size))
 		return NULL;
 
-	if (alloc_size <= KMALLOC_MAX_SIZE) {
-		p = kzalloc_node(alloc_size, GFP_KERNEL | __GFP_NORETRY | __GFP_NOMEMALLOC | __GFP_NOWARN, node);
-		if (p)
-			return p;
-	}
-	p = vzalloc_node(alloc_size, node);
+	p = kvzalloc_node(alloc_size, GFP_KERNEL | __GFP_NOMEMALLOC, node);
 	if (p)
 		return p;
 
@@ -160,10 +163,7 @@ static void dm_kvfree(void *ptr, size_t alloc_size)
 
 	free_shared_memory(alloc_size);
 
-	if (is_vmalloc_addr(ptr))
-		vfree(ptr);
-	else
-		kfree(ptr);
+	kvfree(ptr);
 }
 
 static void dm_stat_free(struct rcu_head *head)
@@ -171,10 +171,14 @@ static void dm_stat_free(struct rcu_head *head)
 	int cpu;
 	struct dm_stat *s = container_of(head, struct dm_stat, rcu_head);
 
+	kfree(s->histogram_boundaries);
 	kfree(s->program_id);
 	kfree(s->aux_data);
-	for_each_possible_cpu(cpu)
+	for_each_possible_cpu(cpu) {
+		dm_kvfree(s->stat_percpu[cpu][0].histogram, s->histogram_alloc_size);
 		dm_kvfree(s->stat_percpu[cpu], s->percpu_alloc_size);
+	}
+	dm_kvfree(s->stat_shared[0].tmp.histogram, s->histogram_alloc_size);
 	dm_kvfree(s, s->shared_alloc_size);
 }
 
@@ -184,19 +188,25 @@ static int dm_stat_in_flight(struct dm_stat_shared *shared)
 	       atomic_read(&shared->in_flight[WRITE]);
 }
 
-void dm_stats_init(struct dm_stats *stats)
+int dm_stats_init(struct dm_stats *stats)
 {
 	int cpu;
 	struct dm_stats_last_position *last;
 
 	mutex_init(&stats->mutex);
 	INIT_LIST_HEAD(&stats->list);
+	stats->precise_timestamps = false;
 	stats->last = alloc_percpu(struct dm_stats_last_position);
+	if (!stats->last)
+		return -ENOMEM;
+
 	for_each_possible_cpu(cpu) {
 		last = per_cpu_ptr(stats->last, cpu);
 		last->last_sector = (sector_t)ULLONG_MAX;
 		last->last_rw = UINT_MAX;
 	}
+
+	return 0;
 }
 
 void dm_stats_cleanup(struct dm_stats *stats)
@@ -220,14 +230,35 @@ void dm_stats_cleanup(struct dm_stats *stats)
 				       atomic_read(&shared->in_flight[READ]),
 				       atomic_read(&shared->in_flight[WRITE]));
 			}
+			cond_resched();
 		}
 		dm_stat_free(&s->rcu_head);
 	}
 	free_percpu(stats->last);
+	mutex_destroy(&stats->mutex);
+}
+
+static void dm_stats_recalc_precise_timestamps(struct dm_stats *stats)
+{
+	struct list_head *l;
+	struct dm_stat *tmp_s;
+	bool precise_timestamps = false;
+
+	list_for_each(l, &stats->list) {
+		tmp_s = container_of(l, struct dm_stat, list_entry);
+		if (tmp_s->stat_flags & STAT_PRECISE_TIMESTAMPS) {
+			precise_timestamps = true;
+			break;
+		}
+	}
+	stats->precise_timestamps = precise_timestamps;
 }
 
 static int dm_stats_create(struct dm_stats *stats, sector_t start, sector_t end,
-			   sector_t step, const char *program_id, const char *aux_data,
+			   sector_t step, unsigned int stat_flags,
+			   unsigned int n_histogram_entries,
+			   unsigned long long *histogram_boundaries,
+			   const char *program_id, const char *aux_data,
 			   void (*suspend_callback)(struct mapped_device *),
 			   void (*resume_callback)(struct mapped_device *),
 			   struct mapped_device *md)
@@ -238,6 +269,7 @@ static int dm_stats_create(struct dm_stats *stats, sector_t start, sector_t end,
 	size_t ni;
 	size_t shared_alloc_size;
 	size_t percpu_alloc_size;
+	size_t histogram_alloc_size;
 	struct dm_stat_percpu *p;
 	int cpu;
 	int ret_id;
@@ -253,7 +285,7 @@ static int dm_stats_create(struct dm_stats *stats, sector_t start, sector_t end,
 	if (n_entries != (size_t)n_entries || !(size_t)(n_entries + 1))
 		return -EOVERFLOW;
 
-	shared_alloc_size = sizeof(struct dm_stat) + (size_t)n_entries * sizeof(struct dm_stat_shared);
+	shared_alloc_size = struct_size(s, stat_shared, n_entries);
 	if ((shared_alloc_size - sizeof(struct dm_stat)) / sizeof(struct dm_stat_shared) != n_entries)
 		return -EOVERFLOW;
 
@@ -261,19 +293,34 @@ static int dm_stats_create(struct dm_stats *stats, sector_t start, sector_t end,
 	if (percpu_alloc_size / sizeof(struct dm_stat_percpu) != n_entries)
 		return -EOVERFLOW;
 
-	if (!check_shared_memory(shared_alloc_size + num_possible_cpus() * percpu_alloc_size))
+	histogram_alloc_size = (n_histogram_entries + 1) * (size_t)n_entries * sizeof(unsigned long long);
+	if (histogram_alloc_size / (n_histogram_entries + 1) != (size_t)n_entries * sizeof(unsigned long long))
+		return -EOVERFLOW;
+
+	if (!check_shared_memory(shared_alloc_size + histogram_alloc_size +
+				 num_possible_cpus() * (percpu_alloc_size + histogram_alloc_size)))
 		return -ENOMEM;
 
 	s = dm_kvzalloc(shared_alloc_size, NUMA_NO_NODE);
 	if (!s)
 		return -ENOMEM;
 
+	s->stat_flags = stat_flags;
 	s->n_entries = n_entries;
 	s->start = start;
 	s->end = end;
 	s->step = step;
 	s->shared_alloc_size = shared_alloc_size;
 	s->percpu_alloc_size = percpu_alloc_size;
+	s->histogram_alloc_size = histogram_alloc_size;
+
+	s->n_histogram_entries = n_histogram_entries;
+	s->histogram_boundaries = kmemdup(histogram_boundaries,
+					  s->n_histogram_entries * sizeof(unsigned long long), GFP_KERNEL);
+	if (!s->histogram_boundaries) {
+		r = -ENOMEM;
+		goto out;
+	}
 
 	s->program_id = kstrdup(program_id, GFP_KERNEL);
 	if (!s->program_id) {
@@ -289,6 +336,22 @@ static int dm_stats_create(struct dm_stats *stats, sector_t start, sector_t end,
 	for (ni = 0; ni < n_entries; ni++) {
 		atomic_set(&s->stat_shared[ni].in_flight[READ], 0);
 		atomic_set(&s->stat_shared[ni].in_flight[WRITE], 0);
+		cond_resched();
+	}
+
+	if (s->n_histogram_entries) {
+		unsigned long long *hi;
+
+		hi = dm_kvzalloc(s->histogram_alloc_size, NUMA_NO_NODE);
+		if (!hi) {
+			r = -ENOMEM;
+			goto out;
+		}
+		for (ni = 0; ni < n_entries; ni++) {
+			s->stat_shared[ni].tmp.histogram = hi;
+			hi += s->n_histogram_entries + 1;
+			cond_resched();
+		}
 	}
 
 	for_each_possible_cpu(cpu) {
@@ -298,6 +361,20 @@ static int dm_stats_create(struct dm_stats *stats, sector_t start, sector_t end,
 			goto out;
 		}
 		s->stat_percpu[cpu] = p;
+		if (s->n_histogram_entries) {
+			unsigned long long *hi;
+
+			hi = dm_kvzalloc(s->histogram_alloc_size, cpu_to_node(cpu));
+			if (!hi) {
+				r = -ENOMEM;
+				goto out;
+			}
+			for (ni = 0; ni < n_entries; ni++) {
+				p[ni].histogram = hi;
+				hi += s->n_histogram_entries + 1;
+				cond_resched();
+			}
+		}
 	}
 
 	/*
@@ -327,6 +404,12 @@ static int dm_stats_create(struct dm_stats *stats, sector_t start, sector_t end,
 	}
 	ret_id = s->id;
 	list_add_tail_rcu(&s->list_entry, l);
+
+	dm_stats_recalc_precise_timestamps(stats);
+
+	if (!static_key_enabled(&stats_enabled.key))
+		static_branch_enable(&stats_enabled);
+
 	mutex_unlock(&stats->mutex);
 
 	resume_callback(md);
@@ -369,31 +452,36 @@ static int dm_stats_delete(struct dm_stats *stats, int id)
 	}
 
 	list_del_rcu(&s->list_entry);
+
+	dm_stats_recalc_precise_timestamps(stats);
+
 	mutex_unlock(&stats->mutex);
 
 	/*
 	 * vfree can't be called from RCU callback
 	 */
 	for_each_possible_cpu(cpu)
-		if (is_vmalloc_addr(s->stat_percpu))
+		if (is_vmalloc_addr(s->stat_percpu) ||
+		    is_vmalloc_addr(s->stat_percpu[cpu][0].histogram))
 			goto do_sync_free;
-	if (is_vmalloc_addr(s)) {
+	if (is_vmalloc_addr(s) ||
+	    is_vmalloc_addr(s->stat_shared[0].tmp.histogram)) {
 do_sync_free:
 		synchronize_rcu_expedited();
 		dm_stat_free(&s->rcu_head);
 	} else {
-		ACCESS_ONCE(dm_stat_need_rcu_barrier) = 1;
+		WRITE_ONCE(dm_stat_need_rcu_barrier, 1);
 		call_rcu(&s->rcu_head, dm_stat_free);
 	}
 	return 0;
 }
 
 static int dm_stats_list(struct dm_stats *stats, const char *program,
-			 char *result, unsigned maxlen)
+			 char *result, unsigned int maxlen)
 {
 	struct dm_stat *s;
 	sector_t len;
-	unsigned sz = 0;
+	unsigned int sz = 0;
 
 	/*
 	 * Output format:
@@ -404,33 +492,53 @@ static int dm_stats_list(struct dm_stats *stats, const char *program,
 	list_for_each_entry(s, &stats->list, list_entry) {
 		if (!program || !strcmp(program, s->program_id)) {
 			len = s->end - s->start;
-			DMEMIT("%d: %llu+%llu %llu %s %s\n", s->id,
+			DMEMIT("%d: %llu+%llu %llu %s %s", s->id,
 				(unsigned long long)s->start,
 				(unsigned long long)len,
 				(unsigned long long)s->step,
 				s->program_id,
 				s->aux_data);
+			if (s->stat_flags & STAT_PRECISE_TIMESTAMPS)
+				DMEMIT(" precise_timestamps");
+			if (s->n_histogram_entries) {
+				unsigned int i;
+
+				DMEMIT(" histogram:");
+				for (i = 0; i < s->n_histogram_entries; i++) {
+					if (i)
+						DMEMIT(",");
+					DMEMIT("%llu", s->histogram_boundaries[i]);
+				}
+			}
+			DMEMIT("\n");
 		}
+		cond_resched();
 	}
 	mutex_unlock(&stats->mutex);
 
 	return 1;
 }
 
-static void dm_stat_round(struct dm_stat_shared *shared, struct dm_stat_percpu *p)
+static void dm_stat_round(struct dm_stat *s, struct dm_stat_shared *shared,
+			  struct dm_stat_percpu *p)
 {
 	/*
 	 * This is racy, but so is part_round_stats_single.
 	 */
-	unsigned long now = jiffies;
-	unsigned in_flight_read;
-	unsigned in_flight_write;
-	unsigned long difference = now - shared->stamp;
+	unsigned long long now, difference;
+	unsigned int in_flight_read, in_flight_write;
 
+	if (likely(!(s->stat_flags & STAT_PRECISE_TIMESTAMPS)))
+		now = jiffies;
+	else
+		now = ktime_to_ns(ktime_get());
+
+	difference = now - shared->stamp;
 	if (!difference)
 		return;
-	in_flight_read = (unsigned)atomic_read(&shared->in_flight[READ]);
-	in_flight_write = (unsigned)atomic_read(&shared->in_flight[WRITE]);
+
+	in_flight_read = (unsigned int)atomic_read(&shared->in_flight[READ]);
+	in_flight_write = (unsigned int)atomic_read(&shared->in_flight[WRITE]);
 	if (in_flight_read)
 		p->io_ticks[READ] += difference;
 	if (in_flight_write)
@@ -443,10 +551,10 @@ static void dm_stat_round(struct dm_stat_shared *shared, struct dm_stat_percpu *
 }
 
 static void dm_stat_for_entry(struct dm_stat *s, size_t entry,
-			      unsigned long bi_rw, sector_t len, bool merged,
-			      bool end, unsigned long duration)
+			      int idx, sector_t len,
+			      struct dm_stats_aux *stats_aux, bool end,
+			      unsigned long duration_jiffies)
 {
-	unsigned long idx = bi_rw & REQ_WRITE;
 	struct dm_stat_shared *shared = &s->stat_shared[entry];
 	struct dm_stat_percpu *p;
 
@@ -467,6 +575,7 @@ static void dm_stat_for_entry(struct dm_stat *s, size_t entry,
 	 */
 #if BITS_PER_LONG == 32
 	unsigned long flags;
+
 	local_irq_save(flags);
 #else
 	preempt_disable();
@@ -474,15 +583,36 @@ static void dm_stat_for_entry(struct dm_stat *s, size_t entry,
 	p = &s->stat_percpu[smp_processor_id()][entry];
 
 	if (!end) {
-		dm_stat_round(shared, p);
+		dm_stat_round(s, shared, p);
 		atomic_inc(&shared->in_flight[idx]);
 	} else {
-		dm_stat_round(shared, p);
+		unsigned long long duration;
+
+		dm_stat_round(s, shared, p);
 		atomic_dec(&shared->in_flight[idx]);
 		p->sectors[idx] += len;
 		p->ios[idx] += 1;
-		p->merges[idx] += merged;
-		p->ticks[idx] += duration;
+		p->merges[idx] += stats_aux->merged;
+		if (!(s->stat_flags & STAT_PRECISE_TIMESTAMPS)) {
+			p->ticks[idx] += duration_jiffies;
+			duration = jiffies_to_msecs(duration_jiffies);
+		} else {
+			p->ticks[idx] += stats_aux->duration_ns;
+			duration = stats_aux->duration_ns;
+		}
+		if (s->n_histogram_entries) {
+			unsigned int lo = 0, hi = s->n_histogram_entries + 1;
+
+			while (lo + 1 < hi) {
+				unsigned int mid = (lo + hi) / 2;
+
+				if (s->histogram_boundaries[mid - 1] > duration)
+					hi = mid;
+				else
+					lo = mid;
+			}
+			p->histogram[lo]++;
+		}
 	}
 
 #if BITS_PER_LONG == 32
@@ -492,9 +622,9 @@ static void dm_stat_for_entry(struct dm_stat *s, size_t entry,
 #endif
 }
 
-static void __dm_stat_bio(struct dm_stat *s, unsigned long bi_rw,
+static void __dm_stat_bio(struct dm_stat *s, int bi_rw,
 			  sector_t bi_sector, sector_t end_sector,
-			  bool end, unsigned long duration,
+			  bool end, unsigned long duration_jiffies,
 			  struct dm_stats_aux *stats_aux)
 {
 	sector_t rel_sector, offset, todo, fragment_len;
@@ -523,7 +653,7 @@ static void __dm_stat_bio(struct dm_stat *s, unsigned long bi_rw,
 		if (fragment_len > s->step - offset)
 			fragment_len = s->step - offset;
 		dm_stat_for_entry(s, entry, bi_rw, fragment_len,
-				  stats_aux->merged, end, duration);
+				  stats_aux, end, duration_jiffies);
 		todo -= fragment_len;
 		entry++;
 		offset = 0;
@@ -531,12 +661,15 @@ static void __dm_stat_bio(struct dm_stat *s, unsigned long bi_rw,
 }
 
 void dm_stats_account_io(struct dm_stats *stats, unsigned long bi_rw,
-			 sector_t bi_sector, unsigned bi_sectors, bool end,
-			 unsigned long duration, struct dm_stats_aux *stats_aux)
+			 sector_t bi_sector, unsigned int bi_sectors, bool end,
+			 unsigned long start_time,
+			 struct dm_stats_aux *stats_aux)
 {
 	struct dm_stat *s;
 	sector_t end_sector;
 	struct dm_stats_last_position *last;
+	bool got_precise_time;
+	unsigned long duration_jiffies = 0;
 
 	if (unlikely(!bi_sectors))
 		return;
@@ -548,20 +681,29 @@ void dm_stats_account_io(struct dm_stats *stats, unsigned long bi_rw,
 		 * A race condition can at worst result in the merged flag being
 		 * misrepresented, so we don't have to disable preemption here.
 		 */
-		last = __this_cpu_ptr(stats->last);
+		last = raw_cpu_ptr(stats->last);
 		stats_aux->merged =
-			(bi_sector == (ACCESS_ONCE(last->last_sector) &&
-				       ((bi_rw & (REQ_WRITE | REQ_DISCARD)) ==
-					(ACCESS_ONCE(last->last_rw) & (REQ_WRITE | REQ_DISCARD)))
+			(bi_sector == (READ_ONCE(last->last_sector) &&
+				       ((bi_rw == WRITE) ==
+					(READ_ONCE(last->last_rw) == WRITE))
 				       ));
-		ACCESS_ONCE(last->last_sector) = end_sector;
-		ACCESS_ONCE(last->last_rw) = bi_rw;
-	}
+		WRITE_ONCE(last->last_sector, end_sector);
+		WRITE_ONCE(last->last_rw, bi_rw);
+	} else
+		duration_jiffies = jiffies - start_time;
 
 	rcu_read_lock();
 
-	list_for_each_entry_rcu(s, &stats->list, list_entry)
-		__dm_stat_bio(s, bi_rw, bi_sector, end_sector, end, duration, stats_aux);
+	got_precise_time = false;
+	list_for_each_entry_rcu(s, &stats->list, list_entry) {
+		if (s->stat_flags & STAT_PRECISE_TIMESTAMPS && !got_precise_time) {
+			/* start (!end) duration_ns is set by DM core's alloc_io() */
+			if (end)
+				stats_aux->duration_ns = ktime_to_ns(ktime_get()) - stats_aux->duration_ns;
+			got_precise_time = true;
+		}
+		__dm_stat_bio(s, bi_rw, bi_sector, end_sector, end, duration_jiffies, stats_aux);
+	}
 
 	rcu_read_unlock();
 }
@@ -574,24 +716,45 @@ static void __dm_stat_init_temporary_percpu_totals(struct dm_stat_shared *shared
 
 	local_irq_disable();
 	p = &s->stat_percpu[smp_processor_id()][x];
-	dm_stat_round(shared, p);
+	dm_stat_round(s, shared, p);
 	local_irq_enable();
 
-	memset(&shared->tmp, 0, sizeof(shared->tmp));
+	shared->tmp.sectors[READ] = 0;
+	shared->tmp.sectors[WRITE] = 0;
+	shared->tmp.ios[READ] = 0;
+	shared->tmp.ios[WRITE] = 0;
+	shared->tmp.merges[READ] = 0;
+	shared->tmp.merges[WRITE] = 0;
+	shared->tmp.ticks[READ] = 0;
+	shared->tmp.ticks[WRITE] = 0;
+	shared->tmp.io_ticks[READ] = 0;
+	shared->tmp.io_ticks[WRITE] = 0;
+	shared->tmp.io_ticks_total = 0;
+	shared->tmp.time_in_queue = 0;
+
+	if (s->n_histogram_entries)
+		memset(shared->tmp.histogram, 0, (s->n_histogram_entries + 1) * sizeof(unsigned long long));
+
 	for_each_possible_cpu(cpu) {
 		p = &s->stat_percpu[cpu][x];
-		shared->tmp.sectors[READ] += ACCESS_ONCE(p->sectors[READ]);
-		shared->tmp.sectors[WRITE] += ACCESS_ONCE(p->sectors[WRITE]);
-		shared->tmp.ios[READ] += ACCESS_ONCE(p->ios[READ]);
-		shared->tmp.ios[WRITE] += ACCESS_ONCE(p->ios[WRITE]);
-		shared->tmp.merges[READ] += ACCESS_ONCE(p->merges[READ]);
-		shared->tmp.merges[WRITE] += ACCESS_ONCE(p->merges[WRITE]);
-		shared->tmp.ticks[READ] += ACCESS_ONCE(p->ticks[READ]);
-		shared->tmp.ticks[WRITE] += ACCESS_ONCE(p->ticks[WRITE]);
-		shared->tmp.io_ticks[READ] += ACCESS_ONCE(p->io_ticks[READ]);
-		shared->tmp.io_ticks[WRITE] += ACCESS_ONCE(p->io_ticks[WRITE]);
-		shared->tmp.io_ticks_total += ACCESS_ONCE(p->io_ticks_total);
-		shared->tmp.time_in_queue += ACCESS_ONCE(p->time_in_queue);
+		shared->tmp.sectors[READ] += READ_ONCE(p->sectors[READ]);
+		shared->tmp.sectors[WRITE] += READ_ONCE(p->sectors[WRITE]);
+		shared->tmp.ios[READ] += READ_ONCE(p->ios[READ]);
+		shared->tmp.ios[WRITE] += READ_ONCE(p->ios[WRITE]);
+		shared->tmp.merges[READ] += READ_ONCE(p->merges[READ]);
+		shared->tmp.merges[WRITE] += READ_ONCE(p->merges[WRITE]);
+		shared->tmp.ticks[READ] += READ_ONCE(p->ticks[READ]);
+		shared->tmp.ticks[WRITE] += READ_ONCE(p->ticks[WRITE]);
+		shared->tmp.io_ticks[READ] += READ_ONCE(p->io_ticks[READ]);
+		shared->tmp.io_ticks[WRITE] += READ_ONCE(p->io_ticks[WRITE]);
+		shared->tmp.io_ticks_total += READ_ONCE(p->io_ticks_total);
+		shared->tmp.time_in_queue += READ_ONCE(p->time_in_queue);
+		if (s->n_histogram_entries) {
+			unsigned int i;
+
+			for (i = 0; i < s->n_histogram_entries + 1; i++)
+				shared->tmp.histogram[i] += READ_ONCE(p->histogram[i]);
+		}
 	}
 }
 
@@ -621,6 +784,17 @@ static void __dm_stat_clear(struct dm_stat *s, size_t idx_start, size_t idx_end,
 		p->io_ticks_total -= shared->tmp.io_ticks_total;
 		p->time_in_queue -= shared->tmp.time_in_queue;
 		local_irq_enable();
+		if (s->n_histogram_entries) {
+			unsigned int i;
+
+			for (i = 0; i < s->n_histogram_entries + 1; i++) {
+				local_irq_disable();
+				p = &s->stat_percpu[smp_processor_id()][x];
+				p->histogram[i] -= shared->tmp.histogram[i];
+				local_irq_enable();
+			}
+		}
+		cond_resched();
 	}
 }
 
@@ -646,11 +820,15 @@ static int dm_stats_clear(struct dm_stats *stats, int id)
 /*
  * This is like jiffies_to_msec, but works for 64-bit values.
  */
-static unsigned long long dm_jiffies_to_msec64(unsigned long long j)
+static unsigned long long dm_jiffies_to_msec64(struct dm_stat *s, unsigned long long j)
 {
-	unsigned long long result = 0;
-	unsigned mult;
+	unsigned long long result;
+	unsigned int mult;
 
+	if (s->stat_flags & STAT_PRECISE_TIMESTAMPS)
+		return j;
+
+	result = 0;
 	if (j)
 		result = jiffies_to_msecs(j & 0x3fffff);
 	if (j >= 1 << 22) {
@@ -665,9 +843,9 @@ static unsigned long long dm_jiffies_to_msec64(unsigned long long j)
 
 static int dm_stats_print(struct dm_stats *stats, int id,
 			  size_t idx_start, size_t idx_len,
-			  bool clear, char *result, unsigned maxlen)
+			  bool clear, char *result, unsigned int maxlen)
 {
-	unsigned sz = 0;
+	unsigned int sz = 0;
 	struct dm_stat *s;
 	size_t x;
 	sector_t start, end, step;
@@ -706,25 +884,34 @@ static int dm_stats_print(struct dm_stats *stats, int id,
 
 		__dm_stat_init_temporary_percpu_totals(shared, s, x);
 
-		DMEMIT("%llu+%llu %llu %llu %llu %llu %llu %llu %llu %llu %d %llu %llu %llu %llu\n",
+		DMEMIT("%llu+%llu %llu %llu %llu %llu %llu %llu %llu %llu %d %llu %llu %llu %llu",
 		       (unsigned long long)start,
 		       (unsigned long long)step,
 		       shared->tmp.ios[READ],
 		       shared->tmp.merges[READ],
 		       shared->tmp.sectors[READ],
-		       dm_jiffies_to_msec64(shared->tmp.ticks[READ]),
+		       dm_jiffies_to_msec64(s, shared->tmp.ticks[READ]),
 		       shared->tmp.ios[WRITE],
 		       shared->tmp.merges[WRITE],
 		       shared->tmp.sectors[WRITE],
-		       dm_jiffies_to_msec64(shared->tmp.ticks[WRITE]),
+		       dm_jiffies_to_msec64(s, shared->tmp.ticks[WRITE]),
 		       dm_stat_in_flight(shared),
-		       dm_jiffies_to_msec64(shared->tmp.io_ticks_total),
-		       dm_jiffies_to_msec64(shared->tmp.time_in_queue),
-		       dm_jiffies_to_msec64(shared->tmp.io_ticks[READ]),
-		       dm_jiffies_to_msec64(shared->tmp.io_ticks[WRITE]));
+		       dm_jiffies_to_msec64(s, shared->tmp.io_ticks_total),
+		       dm_jiffies_to_msec64(s, shared->tmp.time_in_queue),
+		       dm_jiffies_to_msec64(s, shared->tmp.io_ticks[READ]),
+		       dm_jiffies_to_msec64(s, shared->tmp.io_ticks[WRITE]));
+		if (s->n_histogram_entries) {
+			unsigned int i;
+
+			for (i = 0; i < s->n_histogram_entries + 1; i++)
+				DMEMIT("%s%llu", !i ? " " : ":", shared->tmp.histogram[i]);
+		}
+		DMEMIT("\n");
 
 		if (unlikely(sz + 1 >= maxlen))
 			goto buffer_overflow;
+
+		cond_resched();
 	}
 
 	if (clear)
@@ -763,55 +950,136 @@ static int dm_stats_set_aux(struct dm_stats *stats, int id, const char *aux_data
 	return 0;
 }
 
-static int message_stats_create(struct mapped_device *md,
-				unsigned argc, char **argv,
-				char *result, unsigned maxlen)
+static int parse_histogram(const char *h, unsigned int *n_histogram_entries,
+			   unsigned long long **histogram_boundaries)
 {
+	const char *q;
+	unsigned int n;
+	unsigned long long last;
+
+	*n_histogram_entries = 1;
+	for (q = h; *q; q++)
+		if (*q == ',')
+			(*n_histogram_entries)++;
+
+	*histogram_boundaries = kmalloc_array(*n_histogram_entries,
+					      sizeof(unsigned long long),
+					      GFP_KERNEL);
+	if (!*histogram_boundaries)
+		return -ENOMEM;
+
+	n = 0;
+	last = 0;
+	while (1) {
+		unsigned long long hi;
+		int s;
+		char ch;
+
+		s = sscanf(h, "%llu%c", &hi, &ch);
+		if (!s || (s == 2 && ch != ','))
+			return -EINVAL;
+		if (hi <= last)
+			return -EINVAL;
+		last = hi;
+		(*histogram_boundaries)[n] = hi;
+		if (s == 1)
+			return 0;
+		h = strchr(h, ',') + 1;
+		n++;
+	}
+}
+
+static int message_stats_create(struct mapped_device *md,
+				unsigned int argc, char **argv,
+				char *result, unsigned int maxlen)
+{
+	int r;
 	int id;
 	char dummy;
 	unsigned long long start, end, len, step;
-	unsigned divisor;
+	unsigned int divisor;
 	const char *program_id, *aux_data;
+	unsigned int stat_flags = 0;
+	unsigned int n_histogram_entries = 0;
+	unsigned long long *histogram_boundaries = NULL;
+	struct dm_arg_set as, as_backup;
+	const char *a;
+	unsigned int feature_args;
 
 	/*
 	 * Input format:
-	 *   <range> <step> [<program_id> [<aux_data>]]
+	 *   <range> <step> [<extra_parameters> <parameters>] [<program_id> [<aux_data>]]
 	 */
 
-	if (argc < 3 || argc > 5)
-		return -EINVAL;
+	if (argc < 3)
+		goto ret_einval;
 
-	if (!strcmp(argv[1], "-")) {
+	as.argc = argc;
+	as.argv = argv;
+	dm_consume_args(&as, 1);
+
+	a = dm_shift_arg(&as);
+	if (!strcmp(a, "-")) {
 		start = 0;
 		len = dm_get_size(md);
 		if (!len)
 			len = 1;
-	} else if (sscanf(argv[1], "%llu+%llu%c", &start, &len, &dummy) != 2 ||
+	} else if (sscanf(a, "%llu+%llu%c", &start, &len, &dummy) != 2 ||
 		   start != (sector_t)start || len != (sector_t)len)
-		return -EINVAL;
+		goto ret_einval;
 
 	end = start + len;
 	if (start >= end)
-		return -EINVAL;
+		goto ret_einval;
 
-	if (sscanf(argv[2], "/%u%c", &divisor, &dummy) == 1) {
+	a = dm_shift_arg(&as);
+	if (sscanf(a, "/%u%c", &divisor, &dummy) == 1) {
+		if (!divisor)
+			return -EINVAL;
 		step = end - start;
 		if (do_div(step, divisor))
 			step++;
 		if (!step)
 			step = 1;
-	} else if (sscanf(argv[2], "%llu%c", &step, &dummy) != 1 ||
+	} else if (sscanf(a, "%llu%c", &step, &dummy) != 1 ||
 		   step != (sector_t)step || !step)
-		return -EINVAL;
+		goto ret_einval;
+
+	as_backup = as;
+	a = dm_shift_arg(&as);
+	if (a && sscanf(a, "%u%c", &feature_args, &dummy) == 1) {
+		while (feature_args--) {
+			a = dm_shift_arg(&as);
+			if (!a)
+				goto ret_einval;
+			if (!strcasecmp(a, "precise_timestamps"))
+				stat_flags |= STAT_PRECISE_TIMESTAMPS;
+			else if (!strncasecmp(a, "histogram:", 10)) {
+				if (n_histogram_entries)
+					goto ret_einval;
+				r = parse_histogram(a + 10, &n_histogram_entries, &histogram_boundaries);
+				if (r)
+					goto ret;
+			} else
+				goto ret_einval;
+		}
+	} else {
+		as = as_backup;
+	}
 
 	program_id = "-";
 	aux_data = "-";
 
-	if (argc > 3)
-		program_id = argv[3];
+	a = dm_shift_arg(&as);
+	if (a)
+		program_id = a;
 
-	if (argc > 4)
-		aux_data = argv[4];
+	a = dm_shift_arg(&as);
+	if (a)
+		aux_data = a;
+
+	if (as.argc)
+		goto ret_einval;
 
 	/*
 	 * If a buffer overflow happens after we created the region,
@@ -820,21 +1088,33 @@ static int message_stats_create(struct mapped_device *md,
 	 * leaked).  So we must detect buffer overflow in advance.
 	 */
 	snprintf(result, maxlen, "%d", INT_MAX);
-	if (dm_message_test_buffer_overflow(result, maxlen))
-		return 1;
+	if (dm_message_test_buffer_overflow(result, maxlen)) {
+		r = 1;
+		goto ret;
+	}
 
-	id = dm_stats_create(dm_get_stats(md), start, end, step, program_id, aux_data,
-			     dm_internal_suspend, dm_internal_resume, md);
-	if (id < 0)
-		return id;
+	id = dm_stats_create(dm_get_stats(md), start, end, step, stat_flags,
+			     n_histogram_entries, histogram_boundaries, program_id, aux_data,
+			     dm_internal_suspend_fast, dm_internal_resume_fast, md);
+	if (id < 0) {
+		r = id;
+		goto ret;
+	}
 
 	snprintf(result, maxlen, "%d", id);
 
-	return 1;
+	r = 1;
+	goto ret;
+
+ret_einval:
+	r = -EINVAL;
+ret:
+	kfree(histogram_boundaries);
+	return r;
 }
 
 static int message_stats_delete(struct mapped_device *md,
-				unsigned argc, char **argv)
+				unsigned int argc, char **argv)
 {
 	int id;
 	char dummy;
@@ -849,7 +1129,7 @@ static int message_stats_delete(struct mapped_device *md,
 }
 
 static int message_stats_clear(struct mapped_device *md,
-			       unsigned argc, char **argv)
+			       unsigned int argc, char **argv)
 {
 	int id;
 	char dummy;
@@ -864,8 +1144,8 @@ static int message_stats_clear(struct mapped_device *md,
 }
 
 static int message_stats_list(struct mapped_device *md,
-			      unsigned argc, char **argv,
-			      char *result, unsigned maxlen)
+			      unsigned int argc, char **argv,
+			      char *result, unsigned int maxlen)
 {
 	int r;
 	const char *program = NULL;
@@ -887,8 +1167,8 @@ static int message_stats_list(struct mapped_device *md,
 }
 
 static int message_stats_print(struct mapped_device *md,
-			       unsigned argc, char **argv, bool clear,
-			       char *result, unsigned maxlen)
+			       unsigned int argc, char **argv, bool clear,
+			       char *result, unsigned int maxlen)
 {
 	int id;
 	char dummy;
@@ -914,7 +1194,7 @@ static int message_stats_print(struct mapped_device *md,
 }
 
 static int message_stats_set_aux(struct mapped_device *md,
-				 unsigned argc, char **argv)
+				 unsigned int argc, char **argv)
 {
 	int id;
 	char dummy;
@@ -928,15 +1208,10 @@ static int message_stats_set_aux(struct mapped_device *md,
 	return dm_stats_set_aux(dm_get_stats(md), id, argv[2]);
 }
 
-int dm_stats_message(struct mapped_device *md, unsigned argc, char **argv,
-		     char *result, unsigned maxlen)
+int dm_stats_message(struct mapped_device *md, unsigned int argc, char **argv,
+		     char *result, unsigned int maxlen)
 {
 	int r;
-
-	if (dm_request_based(md)) {
-		DMWARN("Statistics are only supported for bio-based devices");
-		return -EOPNOTSUPP;
-	}
 
 	/* All messages here must start with '@' */
 	if (!strcasecmp(argv[0], "@stats_create"))
@@ -957,7 +1232,7 @@ int dm_stats_message(struct mapped_device *md, unsigned argc, char **argv,
 		return 2; /* this wasn't a stats message */
 
 	if (r == -EINVAL)
-		DMWARN("Invalid parameters for message %s", argv[0]);
+		DMCRIT("Invalid parameters for message %s", argv[0]);
 
 	return r;
 }
@@ -977,5 +1252,5 @@ void dm_statistics_exit(void)
 		DMCRIT("shared_memory_amount leaked: %lu", shared_memory_amount);
 }
 
-module_param_named(stats_current_allocated_bytes, shared_memory_amount, ulong, S_IRUGO);
+module_param_named(stats_current_allocated_bytes, shared_memory_amount, ulong, 0444);
 MODULE_PARM_DESC(stats_current_allocated_bytes, "Memory currently used by statistics");

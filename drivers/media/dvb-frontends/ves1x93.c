@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
     Driver for VES1893 and VES1993 QPSK Demodulators
 
@@ -6,20 +7,6 @@
     Copyright (C) 2002 Dennis Noermann <dennis.noermann@noernet.de>
     Copyright (C) 2002-2003 Andreas Oberritter <obi@linuxtv.org>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 */
 
@@ -30,7 +17,7 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "ves1x93.h"
 
 
@@ -41,7 +28,7 @@ struct ves1x93_state {
 	struct dvb_frontend frontend;
 
 	/* previous uncorrected block counter */
-	fe_spectral_inversion_t inversion;
+	enum fe_spectral_inversion inversion;
 	u8 *init_1x93_tab;
 	u8 *init_1x93_wtab;
 	u8 tab_size;
@@ -130,7 +117,8 @@ static int ves1x93_clr_bit (struct ves1x93_state* state)
 	return 0;
 }
 
-static int ves1x93_set_inversion (struct ves1x93_state* state, fe_spectral_inversion_t inversion)
+static int ves1x93_set_inversion(struct ves1x93_state *state,
+				 enum fe_spectral_inversion inversion)
 {
 	u8 val;
 
@@ -156,7 +144,7 @@ static int ves1x93_set_inversion (struct ves1x93_state* state, fe_spectral_inver
 	return ves1x93_writereg (state, 0x0c, (state->init_1x93_tab[0x0c] & 0x3f) | val);
 }
 
-static int ves1x93_set_fec (struct ves1x93_state* state, fe_code_rate_t fec)
+static int ves1x93_set_fec(struct ves1x93_state *state, enum fe_code_rate fec)
 {
 	if (fec == FEC_AUTO)
 		return ves1x93_writereg (state, 0x0d, 0x08);
@@ -166,7 +154,7 @@ static int ves1x93_set_fec (struct ves1x93_state* state, fe_code_rate_t fec)
 		return ves1x93_writereg (state, 0x0d, fec - FEC_1_2);
 }
 
-static fe_code_rate_t ves1x93_get_fec (struct ves1x93_state* state)
+static enum fe_code_rate ves1x93_get_fec(struct ves1x93_state *state)
 {
 	return FEC_1_2 + ((ves1x93_readreg (state, 0x0d) >> 4) & 0x7);
 }
@@ -281,7 +269,8 @@ static int ves1x93_init (struct dvb_frontend* fe)
 	return 0;
 }
 
-static int ves1x93_set_voltage (struct dvb_frontend* fe, fe_sec_voltage_t voltage)
+static int ves1x93_set_voltage(struct dvb_frontend *fe,
+			       enum fe_sec_voltage voltage)
 {
 	struct ves1x93_state* state = fe->demodulator_priv;
 
@@ -297,7 +286,8 @@ static int ves1x93_set_voltage (struct dvb_frontend* fe, fe_sec_voltage_t voltag
 	}
 }
 
-static int ves1x93_read_status(struct dvb_frontend* fe, fe_status_t* status)
+static int ves1x93_read_status(struct dvb_frontend *fe,
+			       enum fe_status *status)
 {
 	struct ves1x93_state* state = fe->demodulator_priv;
 
@@ -403,9 +393,9 @@ static int ves1x93_set_frontend(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int ves1x93_get_frontend(struct dvb_frontend *fe)
+static int ves1x93_get_frontend(struct dvb_frontend *fe,
+				struct dtv_frontend_properties *p)
 {
-	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
 	struct ves1x93_state* state = fe->demodulator_priv;
 	int afc;
 
@@ -451,7 +441,7 @@ static int ves1x93_i2c_gate_ctrl(struct dvb_frontend* fe, int enable)
 	}
 }
 
-static struct dvb_frontend_ops ves1x93_ops;
+static const struct dvb_frontend_ops ves1x93_ops;
 
 struct dvb_frontend* ves1x93_attach(const struct ves1x93_config* config,
 				    struct i2c_adapter* i2c)
@@ -509,14 +499,14 @@ error:
 	return NULL;
 }
 
-static struct dvb_frontend_ops ves1x93_ops = {
+static const struct dvb_frontend_ops ves1x93_ops = {
 	.delsys = { SYS_DVBS },
 	.info = {
 		.name			= "VLSI VES1x93 DVB-S",
-		.frequency_min		= 950000,
-		.frequency_max		= 2150000,
-		.frequency_stepsize	= 125,		 /* kHz for QPSK frontends */
-		.frequency_tolerance	= 29500,
+		.frequency_min_hz	=   950 * MHz,
+		.frequency_max_hz	=  2150 * MHz,
+		.frequency_stepsize_hz	=   125 * kHz,
+		.frequency_tolerance_hz	= 29500 * kHz,
 		.symbol_rate_min	= 1000000,
 		.symbol_rate_max	= 45000000,
 	/*	.symbol_rate_tolerance	=	???,*/
@@ -550,4 +540,4 @@ MODULE_DESCRIPTION("VLSI VES1x93 DVB-S Demodulator driver");
 MODULE_AUTHOR("Ralph Metzler");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(ves1x93_attach);
+EXPORT_SYMBOL_GPL(ves1x93_attach);

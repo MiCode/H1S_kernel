@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * mm/balloon_compaction.c
  *
@@ -10,114 +11,183 @@
 #include <linux/export.h>
 #include <linux/balloon_compaction.h>
 
-/*
- * balloon_devinfo_alloc - allocates a balloon device information descriptor.
- * @balloon_dev_descriptor: pointer to reference the balloon device which
- *                          this struct balloon_dev_info will be servicing.
- *
- * Driver must call it to properly allocate and initialize an instance of
- * struct balloon_dev_info which will be used to reference a balloon device
- * as well as to keep track of the balloon device page list.
- */
-struct balloon_dev_info *balloon_devinfo_alloc(void *balloon_dev_descriptor)
+static void balloon_page_enqueue_one(struct balloon_dev_info *b_dev_info,
+				     struct page *page)
 {
-	struct balloon_dev_info *b_dev_info;
-	b_dev_info = kmalloc(sizeof(*b_dev_info), GFP_KERNEL);
-	if (!b_dev_info)
-		return ERR_PTR(-ENOMEM);
-
-	b_dev_info->balloon_device = balloon_dev_descriptor;
-	b_dev_info->mapping = NULL;
-	b_dev_info->isolated_pages = 0;
-	spin_lock_init(&b_dev_info->pages_lock);
-	INIT_LIST_HEAD(&b_dev_info->pages);
-
-	return b_dev_info;
-}
-EXPORT_SYMBOL_GPL(balloon_devinfo_alloc);
-
-/*
- * balloon_page_enqueue - allocates a new page and inserts it into the balloon
- *			  page list.
- * @b_dev_info: balloon device decriptor where we will insert a new page to
- *
- * Driver must call it to properly allocate a new enlisted balloon page
- * before definetively removing it from the guest system.
- * This function returns the page address for the recently enqueued page or
- * NULL in the case we fail to allocate a new page this turn.
- */
-struct page *balloon_page_enqueue(struct balloon_dev_info *b_dev_info)
-{
-	unsigned long flags;
-	struct page *page = alloc_page(balloon_mapping_gfp_mask() |
-					__GFP_NOMEMALLOC | __GFP_NORETRY);
-	if (!page)
-		return NULL;
-
 	/*
 	 * Block others from accessing the 'page' when we get around to
 	 * establishing additional references. We should be the only one
-	 * holding a reference to the 'page' at this point.
+	 * holding a reference to the 'page' at this point. If we are not, then
+	 * memory corruption is possible and we should stop execution.
 	 */
 	BUG_ON(!trylock_page(page));
-	spin_lock_irqsave(&b_dev_info->pages_lock, flags);
-	balloon_page_insert(page, b_dev_info->mapping, &b_dev_info->pages);
-	spin_unlock_irqrestore(&b_dev_info->pages_lock, flags);
+	balloon_page_insert(b_dev_info, page);
 	unlock_page(page);
+	__count_vm_event(BALLOON_INFLATE);
+}
+
+/**
+ * balloon_page_list_enqueue() - inserts a list of pages into the balloon page
+ *				 list.
+ * @b_dev_info: balloon device descriptor where we will insert a new page to
+ * @pages: pages to enqueue - allocated using balloon_page_alloc.
+ *
+ * Driver must call this function to properly enqueue balloon pages before
+ * definitively removing them from the guest system.
+ *
+ * Return: number of pages that were enqueued.
+ */
+size_t balloon_page_list_enqueue(struct balloon_dev_info *b_dev_info,
+				 struct list_head *pages)
+{
+	struct page *page, *tmp;
+	unsigned long flags;
+	size_t n_pages = 0;
+
+	spin_lock_irqsave(&b_dev_info->pages_lock, flags);
+	list_for_each_entry_safe(page, tmp, pages, lru) {
+		list_del(&page->lru);
+		balloon_page_enqueue_one(b_dev_info, page);
+		n_pages++;
+	}
+	spin_unlock_irqrestore(&b_dev_info->pages_lock, flags);
+	return n_pages;
+}
+EXPORT_SYMBOL_GPL(balloon_page_list_enqueue);
+
+/**
+ * balloon_page_list_dequeue() - removes pages from balloon's page list and
+ *				 returns a list of the pages.
+ * @b_dev_info: balloon device descriptor where we will grab a page from.
+ * @pages: pointer to the list of pages that would be returned to the caller.
+ * @n_req_pages: number of requested pages.
+ *
+ * Driver must call this function to properly de-allocate a previous enlisted
+ * balloon pages before definitively releasing it back to the guest system.
+ * This function tries to remove @n_req_pages from the ballooned pages and
+ * return them to the caller in the @pages list.
+ *
+ * Note that this function may fail to dequeue some pages even if the balloon
+ * isn't empty - since the page list can be temporarily empty due to compaction
+ * of isolated pages.
+ *
+ * Return: number of pages that were added to the @pages list.
+ */
+size_t balloon_page_list_dequeue(struct balloon_dev_info *b_dev_info,
+				 struct list_head *pages, size_t n_req_pages)
+{
+	struct page *page, *tmp;
+	unsigned long flags;
+	size_t n_pages = 0;
+
+	spin_lock_irqsave(&b_dev_info->pages_lock, flags);
+	list_for_each_entry_safe(page, tmp, &b_dev_info->pages, lru) {
+		if (n_pages == n_req_pages)
+			break;
+
+		/*
+		 * Block others from accessing the 'page' while we get around to
+		 * establishing additional references and preparing the 'page'
+		 * to be released by the balloon driver.
+		 */
+		if (!trylock_page(page))
+			continue;
+
+		if (IS_ENABLED(CONFIG_BALLOON_COMPACTION) &&
+		    PageIsolated(page)) {
+			/* raced with isolation */
+			unlock_page(page);
+			continue;
+		}
+		balloon_page_delete(page);
+		__count_vm_event(BALLOON_DEFLATE);
+		list_add(&page->lru, pages);
+		unlock_page(page);
+		n_pages++;
+	}
+	spin_unlock_irqrestore(&b_dev_info->pages_lock, flags);
+
+	return n_pages;
+}
+EXPORT_SYMBOL_GPL(balloon_page_list_dequeue);
+
+/*
+ * balloon_page_alloc - allocates a new page for insertion into the balloon
+ *			page list.
+ *
+ * Driver must call this function to properly allocate a new balloon page.
+ * Driver must call balloon_page_enqueue before definitively removing the page
+ * from the guest system.
+ *
+ * Return: struct page for the allocated page or NULL on allocation failure.
+ */
+struct page *balloon_page_alloc(void)
+{
+	struct page *page = alloc_page(balloon_mapping_gfp_mask() |
+				       __GFP_NOMEMALLOC | __GFP_NORETRY |
+				       __GFP_NOWARN);
 	return page;
+}
+EXPORT_SYMBOL_GPL(balloon_page_alloc);
+
+/*
+ * balloon_page_enqueue - inserts a new page into the balloon page list.
+ *
+ * @b_dev_info: balloon device descriptor where we will insert a new page
+ * @page: new page to enqueue - allocated using balloon_page_alloc.
+ *
+ * Drivers must call this function to properly enqueue a new allocated balloon
+ * page before definitively removing the page from the guest system.
+ *
+ * Drivers must not call balloon_page_enqueue on pages that have been pushed to
+ * a list with balloon_page_push before removing them with balloon_page_pop. To
+ * enqueue a list of pages, use balloon_page_list_enqueue instead.
+ */
+void balloon_page_enqueue(struct balloon_dev_info *b_dev_info,
+			  struct page *page)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&b_dev_info->pages_lock, flags);
+	balloon_page_enqueue_one(b_dev_info, page);
+	spin_unlock_irqrestore(&b_dev_info->pages_lock, flags);
 }
 EXPORT_SYMBOL_GPL(balloon_page_enqueue);
 
 /*
  * balloon_page_dequeue - removes a page from balloon's page list and returns
- *			  the its address to allow the driver release the page.
- * @b_dev_info: balloon device decriptor where we will grab a page from.
+ *			  its address to allow the driver to release the page.
+ * @b_dev_info: balloon device descriptor where we will grab a page from.
  *
- * Driver must call it to properly de-allocate a previous enlisted balloon page
- * before definetively releasing it back to the guest system.
- * This function returns the page address for the recently dequeued page or
- * NULL in the case we find balloon's page list temporarily empty due to
- * compaction isolated pages.
+ * Driver must call this function to properly dequeue a previously enqueued page
+ * before definitively releasing it back to the guest system.
+ *
+ * Caller must perform its own accounting to ensure that this
+ * function is called only if some pages are actually enqueued.
+ *
+ * Note that this function may fail to dequeue some pages even if there are
+ * some enqueued pages - since the page list can be temporarily empty due to
+ * the compaction of isolated pages.
+ *
+ * TODO: remove the caller accounting requirements, and allow caller to wait
+ * until all pages can be dequeued.
+ *
+ * Return: struct page for the dequeued page, or NULL if no page was dequeued.
  */
 struct page *balloon_page_dequeue(struct balloon_dev_info *b_dev_info)
 {
-	struct page *page, *tmp;
 	unsigned long flags;
-	bool dequeued_page;
+	LIST_HEAD(pages);
+	int n_pages;
 
-	dequeued_page = false;
-	list_for_each_entry_safe(page, tmp, &b_dev_info->pages, lru) {
-		/*
-		 * Block others from accessing the 'page' while we get around
-		 * establishing additional references and preparing the 'page'
-		 * to be released by the balloon driver.
-		 */
-		if (trylock_page(page)) {
-			spin_lock_irqsave(&b_dev_info->pages_lock, flags);
-			/*
-			 * Raise the page refcount here to prevent any wrong
-			 * attempt to isolate this page, in case of coliding
-			 * with balloon_page_isolate() just after we release
-			 * the page lock.
-			 *
-			 * balloon_page_free() will take care of dropping
-			 * this extra refcount later.
-			 */
-			get_page(page);
-			balloon_page_delete(page);
-			spin_unlock_irqrestore(&b_dev_info->pages_lock, flags);
-			unlock_page(page);
-			dequeued_page = true;
-			break;
-		}
-	}
+	n_pages = balloon_page_list_dequeue(b_dev_info, &pages, 1);
 
-	if (!dequeued_page) {
+	if (n_pages != 1) {
 		/*
 		 * If we are unable to dequeue a balloon page because the page
-		 * list is empty and there is no isolated pages, then something
+		 * list is empty and there are no isolated pages, then something
 		 * went out of track and some balloon pages are lost.
-		 * BUG() here, otherwise the balloon driver may get stuck into
+		 * BUG() here, otherwise the balloon driver may get stuck in
 		 * an infinite loop while attempting to release all its pages.
 		 */
 		spin_lock_irqsave(&b_dev_info->pages_lock, flags);
@@ -125,178 +195,64 @@ struct page *balloon_page_dequeue(struct balloon_dev_info *b_dev_info)
 			     !b_dev_info->isolated_pages))
 			BUG();
 		spin_unlock_irqrestore(&b_dev_info->pages_lock, flags);
-		page = NULL;
+		return NULL;
 	}
-	return page;
+	return list_first_entry(&pages, struct page, lru);
 }
 EXPORT_SYMBOL_GPL(balloon_page_dequeue);
 
 #ifdef CONFIG_BALLOON_COMPACTION
-/*
- * balloon_mapping_alloc - allocates a special ->mapping for ballooned pages.
- * @b_dev_info: holds the balloon device information descriptor.
- * @a_ops: balloon_mapping address_space_operations descriptor.
- *
- * Driver must call it to properly allocate and initialize an instance of
- * struct address_space which will be used as the special page->mapping for
- * balloon device enlisted page instances.
- */
-struct address_space *balloon_mapping_alloc(struct balloon_dev_info *b_dev_info,
-				const struct address_space_operations *a_ops)
+
+static bool balloon_page_isolate(struct page *page, isolate_mode_t mode)
+
 {
-	struct address_space *mapping;
-
-	mapping = kmalloc(sizeof(*mapping), GFP_KERNEL);
-	if (!mapping)
-		return ERR_PTR(-ENOMEM);
-
-	/*
-	 * Give a clean 'zeroed' status to all elements of this special
-	 * balloon page->mapping struct address_space instance.
-	 */
-	address_space_init_once(mapping);
-
-	/*
-	 * Set mapping->flags appropriately, to allow balloon pages
-	 * ->mapping identification.
-	 */
-	mapping_set_balloon(mapping);
-	mapping_set_gfp_mask(mapping, balloon_mapping_gfp_mask());
-
-	/* balloon's page->mapping->a_ops callback descriptor */
-	mapping->a_ops = a_ops;
-
-	/*
-	 * Establish a pointer reference back to the balloon device descriptor
-	 * this particular page->mapping will be servicing.
-	 * This is used by compaction / migration procedures to identify and
-	 * access the balloon device pageset while isolating / migrating pages.
-	 *
-	 * As some balloon drivers can register multiple balloon devices
-	 * for a single guest, this also helps compaction / migration to
-	 * properly deal with multiple balloon pagesets, when required.
-	 */
-	mapping->private_data = b_dev_info;
-	b_dev_info->mapping = mapping;
-
-	return mapping;
-}
-EXPORT_SYMBOL_GPL(balloon_mapping_alloc);
-
-static inline void __isolate_balloon_page(struct page *page)
-{
-	struct balloon_dev_info *b_dev_info = page->mapping->private_data;
+	struct balloon_dev_info *b_dev_info = balloon_page_device(page);
 	unsigned long flags;
+
 	spin_lock_irqsave(&b_dev_info->pages_lock, flags);
 	list_del(&page->lru);
 	b_dev_info->isolated_pages++;
 	spin_unlock_irqrestore(&b_dev_info->pages_lock, flags);
+
+	return true;
 }
 
-static inline void __putback_balloon_page(struct page *page)
+static void balloon_page_putback(struct page *page)
 {
-	struct balloon_dev_info *b_dev_info = page->mapping->private_data;
+	struct balloon_dev_info *b_dev_info = balloon_page_device(page);
 	unsigned long flags;
+
 	spin_lock_irqsave(&b_dev_info->pages_lock, flags);
 	list_add(&page->lru, &b_dev_info->pages);
 	b_dev_info->isolated_pages--;
 	spin_unlock_irqrestore(&b_dev_info->pages_lock, flags);
 }
 
-static inline int __migrate_balloon_page(struct address_space *mapping,
-		struct page *newpage, struct page *page, enum migrate_mode mode)
-{
-	return page->mapping->a_ops->migratepage(mapping, newpage, page, mode);
-}
-
-/* __isolate_lru_page() counterpart for a ballooned page */
-bool balloon_page_isolate(struct page *page)
-{
-	/*
-	 * Avoid burning cycles with pages that are yet under __free_pages(),
-	 * or just got freed under us.
-	 *
-	 * In case we 'win' a race for a balloon page being freed under us and
-	 * raise its refcount preventing __free_pages() from doing its job
-	 * the put_page() at the end of this block will take care of
-	 * release this page, thus avoiding a nasty leakage.
-	 */
-	if (likely(get_page_unless_zero(page))) {
-		/*
-		 * As balloon pages are not isolated from LRU lists, concurrent
-		 * compaction threads can race against page migration functions
-		 * as well as race against the balloon driver releasing a page.
-		 *
-		 * In order to avoid having an already isolated balloon page
-		 * being (wrongly) re-isolated while it is under migration,
-		 * or to avoid attempting to isolate pages being released by
-		 * the balloon driver, lets be sure we have the page lock
-		 * before proceeding with the balloon page isolation steps.
-		 */
-		if (likely(trylock_page(page))) {
-			/*
-			 * A ballooned page, by default, has just one refcount.
-			 * Prevent concurrent compaction threads from isolating
-			 * an already isolated balloon page by refcount check.
-			 */
-			if (__is_movable_balloon_page(page) &&
-			    page_count(page) == 2) {
-				__isolate_balloon_page(page);
-				unlock_page(page);
-				return true;
-			}
-			unlock_page(page);
-		}
-		put_page(page);
-	}
-	return false;
-}
-
-/* putback_lru_page() counterpart for a ballooned page */
-void balloon_page_putback(struct page *page)
-{
-	/*
-	 * 'lock_page()' stabilizes the page and prevents races against
-	 * concurrent isolation threads attempting to re-isolate it.
-	 */
-	lock_page(page);
-
-	if (__is_movable_balloon_page(page)) {
-		__putback_balloon_page(page);
-		/* drop the extra ref count taken for page isolation */
-		put_page(page);
-	} else {
-		WARN_ON(1);
-		dump_page(page, "not movable balloon page");
-	}
-	unlock_page(page);
-}
-
 /* move_to_new_page() counterpart for a ballooned page */
-int balloon_page_migrate(struct page *newpage,
-			 struct page *page, enum migrate_mode mode)
+static int balloon_page_migrate(struct page *newpage, struct page *page,
+		enum migrate_mode mode)
 {
-	struct address_space *mapping;
-	int rc = -EAGAIN;
+	struct balloon_dev_info *balloon = balloon_page_device(page);
 
 	/*
-	 * Block others from accessing the 'newpage' when we get around to
-	 * establishing additional references. We should be the only one
-	 * holding a reference to the 'newpage' at this point.
+	 * We can not easily support the no copy case here so ignore it as it
+	 * is unlikely to be used with balloon pages. See include/linux/hmm.h
+	 * for a user of the MIGRATE_SYNC_NO_COPY mode.
 	 */
-	BUG_ON(!trylock_page(newpage));
+	if (mode == MIGRATE_SYNC_NO_COPY)
+		return -EINVAL;
 
-	if (WARN_ON(!__is_movable_balloon_page(page))) {
-		dump_page(page, "not movable balloon page");
-		unlock_page(newpage);
-		return rc;
-	}
+	VM_BUG_ON_PAGE(!PageLocked(page), page);
+	VM_BUG_ON_PAGE(!PageLocked(newpage), newpage);
 
-	mapping = page->mapping;
-	if (mapping)
-		rc = __migrate_balloon_page(mapping, newpage, page, mode);
-
-	unlock_page(newpage);
-	return rc;
+	return balloon->migratepage(balloon, newpage, page, mode);
 }
+
+const struct movable_operations balloon_mops = {
+	.migrate_page = balloon_page_migrate,
+	.isolate_page = balloon_page_isolate,
+	.putback_page = balloon_page_putback,
+};
+EXPORT_SYMBOL_GPL(balloon_mops);
+
 #endif /* CONFIG_BALLOON_COMPACTION */

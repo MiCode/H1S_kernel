@@ -1,13 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #include <linux/reiserfs_xattr.h>
 #include <linux/init.h>
 #include <linux/list.h>
 #include <linux/rwsem.h>
+#include <linux/xattr.h>
 
 struct inode;
 struct dentry;
 struct iattr;
 struct super_block;
-struct nameidata;
 
 int reiserfs_xattr_register_handlers(void) __init;
 void reiserfs_xattr_unregister_handlers(void);
@@ -15,16 +16,12 @@ int reiserfs_xattr_init(struct super_block *sb, int mount_flags);
 int reiserfs_lookup_privroot(struct super_block *sb);
 int reiserfs_delete_xattrs(struct inode *inode);
 int reiserfs_chown_xattrs(struct inode *inode, struct iattr *attrs);
-int reiserfs_permission(struct inode *inode, int mask);
+int reiserfs_permission(struct mnt_idmap *idmap,
+			struct inode *inode, int mask);
 
 #ifdef CONFIG_REISERFS_FS_XATTR
 #define has_xattr_dir(inode) (REISERFS_I(inode)->i_flags & i_has_xattr_dir)
-ssize_t reiserfs_getxattr(struct dentry *dentry, const char *name,
-			  void *buffer, size_t size);
-int reiserfs_setxattr(struct dentry *dentry, const char *name,
-		      const void *value, size_t size, int flags);
 ssize_t reiserfs_listxattr(struct dentry *dentry, char *buffer, size_t size);
-int reiserfs_removexattr(struct dentry *dentry, const char *name);
 
 int reiserfs_xattr_get(struct inode *, const char *, void *, size_t);
 int reiserfs_xattr_set(struct inode *, const char *, const void *, size_t, int);
@@ -47,7 +44,7 @@ void reiserfs_security_free(struct reiserfs_security_handle *sec);
 
 static inline int reiserfs_xattrs_initialized(struct super_block *sb)
 {
-	return REISERFS_SB(sb)->priv_root != NULL;
+	return REISERFS_SB(sb)->priv_root && REISERFS_SB(sb)->xattr_root;
 }
 
 #define xattr_size(size) ((size) + sizeof(struct reiserfs_xattr_header))
@@ -61,7 +58,8 @@ static inline loff_t reiserfs_xattr_nblocks(struct inode *inode, loff_t size)
 	return ret;
 }
 
-/* We may have to create up to 3 objects: xattr root, xattr dir, xattr file.
+/*
+ * We may have to create up to 3 objects: xattr root, xattr dir, xattr file.
  * Let's try to be smart about it.
  * xattr root: We cache it. If it's not cached, we may need to create it.
  * xattr dir: If anything has been loaded for this inode, we can set a flag
@@ -78,7 +76,7 @@ static inline size_t reiserfs_xattr_jcreate_nblocks(struct inode *inode)
 
 	if ((REISERFS_I(inode)->i_flags & i_has_xattr_dir) == 0) {
 		nblocks += JOURNAL_BLOCKS_PER_OBJECT(inode->i_sb);
-		if (!REISERFS_SB(inode->i_sb)->xattr_root->d_inode)
+		if (d_really_is_negative(REISERFS_SB(inode->i_sb)->xattr_root))
 			nblocks += JOURNAL_BLOCKS_PER_OBJECT(inode->i_sb);
 	}
 
@@ -92,10 +90,7 @@ static inline void reiserfs_init_xattr_rwsem(struct inode *inode)
 
 #else
 
-#define reiserfs_getxattr NULL
-#define reiserfs_setxattr NULL
 #define reiserfs_listxattr NULL
-#define reiserfs_removexattr NULL
 
 static inline void reiserfs_init_xattr_rwsem(struct inode *inode)
 {

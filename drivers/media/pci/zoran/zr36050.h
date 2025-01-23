@@ -1,27 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Zoran ZR36050 basic configuration functions - header file
  *
  * Copyright (C) 2001 Wolfgang Scherr <scherr@net4you.at>
- *
- * $Id: zr36050.h,v 1.1.2.2 2003/01/14 21:18:22 rbultje Exp $
- *
- * ------------------------------------------------------------------------
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
- * ------------------------------------------------------------------------
  */
 
 #ifndef ZR36050_H
@@ -89,10 +70,10 @@ struct zr36050 {
 #define ZR050_ACT_MH              0x01b
 #define ZR050_ACT_ML              0x01c
 #define ZR050_ACT_LO              0x01d
-#define ZR050_ACV_TRUN_HI         0x01e
-#define ZR050_ACV_TRUN_MH         0x01f
-#define ZR050_ACV_TRUN_ML         0x020
-#define ZR050_ACV_TRUN_LO         0x021
+#define ZR050_ACV_TURN_HI         0x01e
+#define ZR050_ACV_TURN_MH         0x01f
+#define ZR050_ACV_TURN_ML         0x020
+#define ZR050_ACV_TURN_LO         0x021
 #define ZR050_STATUS_0            0x02e
 #define ZR050_STATUS_1            0x02f
 
@@ -126,7 +107,6 @@ struct zr36050 {
 /* zr36050 mode register bits */
 
 #define ZR050_MO_COMP                0x80
-#define ZR050_MO_COMP                0x80
 #define ZR050_MO_ATP                 0x40
 #define ZR050_MO_PASS2               0x20
 #define ZR050_MO_TLM                 0x10
@@ -149,7 +129,6 @@ struct zr36050 {
 #define ZR050_OP_NSCN_7              0xC0
 #define ZR050_OP_NSCN_8              0xE0
 #define ZR050_OP_OVF                 0x10
-
 
 /* zr36050 markers-enable register bits */
 
@@ -181,4 +160,6 @@ struct zr36050 {
 #define ZR050_U_COMPONENT         1
 #define ZR050_V_COMPONENT         2
 
+int zr36050_init_module(void);
+void zr36050_cleanup_module(void);
 #endif				/*fndef ZR36050_H */

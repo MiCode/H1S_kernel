@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2000 Hewlett-Packard Co
  * Copyright (C) 2000 David Mosberger-Tang <davidm@hpl.hp.com>
@@ -11,9 +12,10 @@
  *
  * For more details on the theory behind these algorithms, see "IA-64
  * and Elementary Functions" by Peter Markstein; HP Professional Books
- * (http://www.hp.com/go/retailbooks/)
+ * (http://www.goodreads.com/book/show/2019887.Ia_64_and_Elementary_Functions)
  */
 
+#include <linux/export.h>
 #include <asm/asmmacro.h>
 
 #ifdef MODULO
@@ -81,3 +83,4 @@ GLOBAL_ENTRY(NAME)
 	getf.sig r8 = f6		// transfer result to result register
 	br.ret.sptk.many rp
 END(NAME)
+EXPORT_SYMBOL(NAME)

@@ -1,16 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * kirkwood.h
  *
  * (c) 2010 Arnaud Patard <apatard@mandriva.com>
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
  */
 
 #ifndef _KIRKWOOD_AUDIO_H
 #define _KIRKWOOD_AUDIO_H
+
+#define DRV_NAME	"mvebu-audio"
 
 #define KIRKWOOD_RECORD_WIN			0
 #define KIRKWOOD_PLAYBACK_WIN			1
@@ -37,6 +35,9 @@
 #define KIRKWOOD_RECCTL_SIZE_20		(2<<0)
 #define KIRKWOOD_RECCTL_SIZE_24		(1<<0)
 #define KIRKWOOD_RECCTL_SIZE_32		(0<<0)
+
+#define KIRKWOOD_RECCTL_ENABLE_MASK		(KIRKWOOD_RECCTL_SPDIF_EN | \
+						 KIRKWOOD_RECCTL_I2S_EN)
 
 #define KIRKWOOD_REC_BUF_ADDR			0x1004
 #define KIRKWOOD_REC_BUF_SIZE			0x1008
@@ -121,15 +122,17 @@
 
 /* Theses values come from the marvell alsa driver */
 /* need to find where they come from               */
-#define KIRKWOOD_SND_MIN_PERIODS		8
+#define KIRKWOOD_SND_MIN_PERIODS		2
 #define KIRKWOOD_SND_MAX_PERIODS		16
-#define KIRKWOOD_SND_MIN_PERIOD_BYTES		0x800
+#define KIRKWOOD_SND_MIN_PERIOD_BYTES		256
 #define KIRKWOOD_SND_MAX_PERIOD_BYTES		0x8000
 #define KIRKWOOD_SND_MAX_BUFFER_BYTES		(KIRKWOOD_SND_MAX_PERIOD_BYTES \
 						 * KIRKWOOD_SND_MAX_PERIODS)
 
 struct kirkwood_dma_data {
 	void __iomem *io;
+	void __iomem *pll_config;
+	void __iomem *soc_control;
 	struct clk *clk;
 	struct clk *extclk;
 	uint32_t ctl_play;
@@ -140,6 +143,6 @@ struct kirkwood_dma_data {
 	int burst;
 };
 
-extern struct snd_soc_platform_driver kirkwood_soc_platform;
+extern const struct snd_soc_component_driver kirkwood_soc_component;
 
 #endif

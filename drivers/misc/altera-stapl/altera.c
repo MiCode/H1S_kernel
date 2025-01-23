@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * altera.c
  *
@@ -6,21 +7,6 @@
  * Copyright (C) Altera Corporation 1998-2001
  * Copyright (C) 2010,2011 NetUP Inc.
  * Copyright (C) 2010,2011 Igor M. Liplianin <liplianin@netup.ru>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <asm/unaligned.h>
@@ -304,13 +290,13 @@ static int altera_execute(struct altera_state *astate,
 	if (sym_count <= 0)
 		goto exit_done;
 
-	vars = kzalloc(sym_count * sizeof(long), GFP_KERNEL);
+	vars = kcalloc(sym_count, sizeof(long), GFP_KERNEL);
 
 	if (vars == NULL)
 		status = -ENOMEM;
 
 	if (status == 0) {
-		var_size = kzalloc(sym_count * sizeof(s32), GFP_KERNEL);
+		var_size = kcalloc(sym_count, sizeof(s32), GFP_KERNEL);
 
 		if (var_size == NULL)
 			status = -ENOMEM;
@@ -454,7 +440,7 @@ exit_done:
 
 				name = &p[str_table + name_id];
 
-				if (strnicmp(aconf->action, name, strlen(name)) == 0) {
+				if (strncasecmp(aconf->action, name, strlen(name)) == 0) {
 					action_found = 1;
 					current_proc =
 						get_unaligned_be32(&p[action_table +
@@ -544,11 +530,8 @@ exit_done:
 			}
 			break;
 		case OP_SWP:
-			if (altera_check_stack(stack_ptr, 2, &status)) {
-				long_tmp = stack[stack_ptr - 2];
-				stack[stack_ptr - 2] = stack[stack_ptr - 1];
-				stack[stack_ptr - 1] = long_tmp;
-			}
+			if (altera_check_stack(stack_ptr, 2, &status))
+				swap(stack[stack_ptr - 2], stack[stack_ptr - 1]);
 			break;
 		case OP_ADD:
 			if (altera_check_stack(stack_ptr, 2, &status)) {
@@ -926,34 +909,22 @@ exit_done:
 			 */
 
 			/* SWP  */
-			if (altera_check_stack(stack_ptr, 2, &status)) {
-				long_tmp = stack[stack_ptr - 2];
-				stack[stack_ptr - 2] = stack[stack_ptr - 1];
-				stack[stack_ptr - 1] = long_tmp;
-			}
+			if (altera_check_stack(stack_ptr, 2, &status))
+				swap(stack[stack_ptr - 2], stack[stack_ptr - 1]);
 
 			/* SWPN 7 */
 			index = 7 + 1;
-			if (altera_check_stack(stack_ptr, index, &status)) {
-				long_tmp = stack[stack_ptr - index];
-				stack[stack_ptr - index] = stack[stack_ptr - 1];
-				stack[stack_ptr - 1] = long_tmp;
-			}
+			if (altera_check_stack(stack_ptr, index, &status))
+				swap(stack[stack_ptr - index], stack[stack_ptr - 1]);
 
 			/* SWP  */
-			if (altera_check_stack(stack_ptr, 2, &status)) {
-				long_tmp = stack[stack_ptr - 2];
-				stack[stack_ptr - 2] = stack[stack_ptr - 1];
-				stack[stack_ptr - 1] = long_tmp;
-			}
+			if (altera_check_stack(stack_ptr, 2, &status))
+				swap(stack[stack_ptr - 2], stack[stack_ptr - 1]);
 
 			/* SWPN 6 */
 			index = 6 + 1;
-			if (altera_check_stack(stack_ptr, index, &status)) {
-				long_tmp = stack[stack_ptr - index];
-				stack[stack_ptr - index] = stack[stack_ptr - 1];
-				stack[stack_ptr - 1] = long_tmp;
-			}
+			if (altera_check_stack(stack_ptr, index, &status))
+				swap(stack[stack_ptr - index], stack[stack_ptr - 1]);
 
 			/* DUPN 8 */
 			index = 8 + 1;
@@ -964,18 +935,12 @@ exit_done:
 
 			/* SWPN 2 */
 			index = 2 + 1;
-			if (altera_check_stack(stack_ptr, index, &status)) {
-				long_tmp = stack[stack_ptr - index];
-				stack[stack_ptr - index] = stack[stack_ptr - 1];
-				stack[stack_ptr - 1] = long_tmp;
-			}
+			if (altera_check_stack(stack_ptr, index, &status))
+				swap(stack[stack_ptr - index], stack[stack_ptr - 1]);
 
 			/* SWP  */
-			if (altera_check_stack(stack_ptr, 2, &status)) {
-				long_tmp = stack[stack_ptr - 2];
-				stack[stack_ptr - 2] = stack[stack_ptr - 1];
-				stack[stack_ptr - 1] = long_tmp;
-			}
+			if (altera_check_stack(stack_ptr, 2, &status))
+				swap(stack[stack_ptr - 2], stack[stack_ptr - 1]);
 
 			/* DUPN 6 */
 			index = 6 + 1;
@@ -1049,7 +1014,7 @@ exit_done:
 			 * ...argument 0 is string ID
 			 */
 			count = strlen(msg_buff);
-			strlcpy(&msg_buff[count],
+			strscpy(&msg_buff[count],
 				&p[str_table + args[0]],
 				ALTERA_MESSAGE_LENGTH - count);
 			break;
@@ -1089,11 +1054,8 @@ exit_done:
 			 * to swap with top element
 			 */
 			index = (args[0]) + 1;
-			if (altera_check_stack(stack_ptr, index, &status)) {
-				long_tmp = stack[stack_ptr - index];
-				stack[stack_ptr - index] = stack[stack_ptr - 1];
-				stack[stack_ptr - 1] = long_tmp;
-			}
+			if (altera_check_stack(stack_ptr, index, &status))
+				swap(stack[stack_ptr - index], stack[stack_ptr - 1]);
 			break;
 		case OP_DUPN:
 			/*
@@ -1136,7 +1098,7 @@ exit_done:
 				/* Allocate a writable buffer for this array */
 				count = var_size[variable_id];
 				long_tmp = vars[variable_id];
-				longptr_tmp = kzalloc(count * sizeof(long),
+				longptr_tmp = kcalloc(count, sizeof(long),
 								GFP_KERNEL);
 				vars[variable_id] = (long)longptr_tmp;
 
@@ -2126,8 +2088,8 @@ exit_done:
 	return status;
 }
 
-static int altera_get_note(u8 *p, s32 program_size,
-			s32 *offset, char *key, char *value, int length)
+static int altera_get_note(u8 *p, s32 program_size, s32 *offset,
+			   char *key, char *value, int keylen, int vallen)
 /*
  * Gets key and value of NOTE fields in the JBC file.
  * Can be called in two modes:  if offset pointer is NULL,
@@ -2176,8 +2138,7 @@ static int altera_get_note(u8 *p, s32 program_size,
 			key_ptr = &p[note_strings +
 					get_unaligned_be32(
 					&p[note_table + (8 * i)])];
-			if ((strnicmp(key, key_ptr, strlen(key_ptr)) == 0) &&
-						(key != NULL)) {
+			if (key && !strncasecmp(key, key_ptr, strlen(key_ptr))) {
 				status = 0;
 
 				value_ptr = &p[note_strings +
@@ -2185,7 +2146,7 @@ static int altera_get_note(u8 *p, s32 program_size,
 						&p[note_table + (8 * i) + 4])];
 
 				if (value != NULL)
-					strlcpy(value, value_ptr, length);
+					strscpy(value, value_ptr, vallen);
 
 			}
 		}
@@ -2201,16 +2162,16 @@ static int altera_get_note(u8 *p, s32 program_size,
 			status = 0;
 
 			if (key != NULL)
-				strlcpy(key, &p[note_strings +
+				strscpy(key, &p[note_strings +
 						get_unaligned_be32(
 						&p[note_table + (8 * i)])],
-					length);
+					keylen);
 
 			if (value != NULL)
-				strlcpy(value, &p[note_strings +
+				strscpy(value, &p[note_strings +
 						get_unaligned_be32(
 						&p[note_table + (8 * i) + 4])],
-					length);
+					vallen);
 
 			*offset = i + 1;
 		}
@@ -2278,11 +2239,6 @@ static int altera_check_crc(u8 *p, s32 program_size)
 		case -EILSEQ:
 			printk(KERN_ERR "%s: CRC mismatch: expected %04x, "
 				"actual %04x\n", __func__, local_expected,
-				local_actual);
-			break;
-		case -ENODATA:
-			printk(KERN_ERR "%s: expected CRC not found, "
-				"actual CRC = %04x\n", __func__,
 				local_actual);
 			break;
 		case -EIO:
@@ -2451,7 +2407,11 @@ int altera_init(struct altera_config *config, const struct firmware *fw)
 
 	astate->config = config;
 	if (!astate->config->jtag_io) {
-		dprintk(KERN_INFO "%s: using byteblaster!\n", __func__);
+		if (!IS_ENABLED(CONFIG_HAS_IOPORT)) {
+			retval = -ENODEV;
+			goto free_state;
+		}
+		dprintk("%s: using byteblaster!\n", __func__);
 		astate->config->jtag_io = netup_jtag_io_lpt;
 	}
 
@@ -2464,7 +2424,7 @@ int altera_init(struct altera_config *config, const struct firmware *fw)
 			__func__, (format_version == 2) ? "Jam STAPL" :
 						"pre-standardized Jam 1.1");
 		while (altera_get_note((u8 *)fw->data, fw->size,
-					&offset, key, value, 256) == 0)
+					&offset, key, value, 32, 256) == 0)
 			printk(KERN_INFO "%s: NOTE \"%s\" = \"%s\"\n",
 					__func__, key, value);
 	}
@@ -2525,7 +2485,7 @@ int altera_init(struct altera_config *config, const struct firmware *fw)
 
 	} else if (exec_result)
 		printk(KERN_ERR "%s: error %d\n", __func__, exec_result);
-
+free_state:
 	kfree(astate);
 free_value:
 	kfree(value);

@@ -1,45 +1,9 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /*******************************************************************************
  *
  * Module Name: rsaddr - Address resource descriptors (16/32/64)
  *
  ******************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2013, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -74,7 +38,7 @@ struct acpi_rsconvert_info acpi_rs_convert_address16[5] = {
 	 * Address Translation Offset
 	 * Address Length
 	 */
-	{ACPI_RSC_MOVE16, ACPI_RS_OFFSET(data.address16.granularity),
+	{ACPI_RSC_MOVE16, ACPI_RS_OFFSET(data.address16.address.granularity),
 	 AML_OFFSET(address16.granularity),
 	 5},
 
@@ -112,7 +76,7 @@ struct acpi_rsconvert_info acpi_rs_convert_address32[5] = {
 	 * Address Translation Offset
 	 * Address Length
 	 */
-	{ACPI_RSC_MOVE32, ACPI_RS_OFFSET(data.address32.granularity),
+	{ACPI_RSC_MOVE32, ACPI_RS_OFFSET(data.address32.address.granularity),
 	 AML_OFFSET(address32.granularity),
 	 5},
 
@@ -150,7 +114,7 @@ struct acpi_rsconvert_info acpi_rs_convert_address64[5] = {
 	 * Address Translation Offset
 	 * Address Length
 	 */
-	{ACPI_RSC_MOVE64, ACPI_RS_OFFSET(data.address64.granularity),
+	{ACPI_RSC_MOVE64, ACPI_RS_OFFSET(data.address64.address.granularity),
 	 AML_OFFSET(address64.granularity),
 	 5},
 
@@ -194,7 +158,8 @@ struct acpi_rsconvert_info acpi_rs_convert_ext_address64[5] = {
 	 * Address Length
 	 * Type-Specific Attribute
 	 */
-	{ACPI_RSC_MOVE64, ACPI_RS_OFFSET(data.ext_address64.granularity),
+	{ACPI_RSC_MOVE64,
+	 ACPI_RS_OFFSET(data.ext_address64.address.granularity),
 	 AML_OFFSET(ext_address64.granularity),
 	 6}
 };
@@ -307,12 +272,17 @@ u8
 acpi_rs_get_address_common(struct acpi_resource *resource,
 			   union aml_resource *aml)
 {
+	struct aml_resource_address address;
+
 	ACPI_FUNCTION_ENTRY();
+
+	/* Avoid undefined behavior: member access within misaligned address */
+
+	memcpy(&address, aml, sizeof(address));
 
 	/* Validate the Resource Type */
 
-	if ((aml->address.resource_type > 2)
-	    && (aml->address.resource_type < 0xC0)) {
+	if ((address.resource_type > 2) && (address.resource_type < 0xC0)) {
 		return (FALSE);
 	}
 
@@ -333,7 +303,7 @@ acpi_rs_get_address_common(struct acpi_resource *resource,
 		/* Generic resource type, just grab the type_specific byte */
 
 		resource->data.address.info.type_specific =
-		    aml->address.specific_flags;
+		    address.specific_flags;
 	}
 
 	return (TRUE);

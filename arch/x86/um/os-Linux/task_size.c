@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
@@ -109,7 +110,7 @@ unsigned long os_get_top_address(void)
 		exit(1);
 	}
 
-	printf("0x%x\n", bottom << UM_KERN_PAGE_SHIFT);
+	printf("0x%lx\n", bottom << UM_KERN_PAGE_SHIFT);
 	printf("Locating the top of the address space ... ");
 	fflush(stdout);
 
@@ -134,7 +135,7 @@ out:
 		exit(1);
 	}
 	top <<= UM_KERN_PAGE_SHIFT;
-	printf("0x%x\n", top);
+	printf("0x%lx\n", top);
 
 	return top;
 }
@@ -144,7 +145,7 @@ out:
 unsigned long os_get_top_address(void)
 {
 	/* The old value of CONFIG_TOP_ADDR */
-	return 0x7fc0000000;
+	return 0x7fc0002000;
 }
 
 #endif

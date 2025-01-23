@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  i8042 keyboard and mouse controller driver for Linux
  *
  *  Copyright (c) 1999-2004 Vojtech Pavlik
  */
 
-/*
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -24,6 +20,8 @@
 #include <linux/platform_device.h>
 #include <linux/i8042.h>
 #include <linux/slab.h>
+#include <linux/suspend.h>
+#include <linux/property.h>
 
 #include <asm/io.h>
 
@@ -47,9 +45,43 @@ static bool i8042_unlock;
 module_param_named(unlock, i8042_unlock, bool, 0);
 MODULE_PARM_DESC(unlock, "Ignore keyboard lock.");
 
-static bool i8042_reset;
-module_param_named(reset, i8042_reset, bool, 0);
-MODULE_PARM_DESC(reset, "Reset controller during init and cleanup.");
+static bool i8042_probe_defer;
+module_param_named(probe_defer, i8042_probe_defer, bool, 0);
+MODULE_PARM_DESC(probe_defer, "Allow deferred probing.");
+
+enum i8042_controller_reset_mode {
+	I8042_RESET_NEVER,
+	I8042_RESET_ALWAYS,
+	I8042_RESET_ON_S2RAM,
+#define I8042_RESET_DEFAULT	I8042_RESET_ON_S2RAM
+};
+static enum i8042_controller_reset_mode i8042_reset = I8042_RESET_DEFAULT;
+static int i8042_set_reset(const char *val, const struct kernel_param *kp)
+{
+	enum i8042_controller_reset_mode *arg = kp->arg;
+	int error;
+	bool reset;
+
+	if (val) {
+		error = kstrtobool(val, &reset);
+		if (error)
+			return error;
+	} else {
+		reset = true;
+	}
+
+	*arg = reset ? I8042_RESET_ALWAYS : I8042_RESET_NEVER;
+	return 0;
+}
+
+static const struct kernel_param_ops param_ops_reset_param = {
+	.flags = KERNEL_PARAM_OPS_FL_NOARG,
+	.set = i8042_set_reset,
+};
+#define param_check_reset_param(name, p)	\
+	__param_check(name, p, enum i8042_controller_reset_mode)
+module_param_named(reset, i8042_reset, reset_param, 0);
+MODULE_PARM_DESC(reset, "Reset controller on resume, cleanup or both");
 
 static bool i8042_direct;
 module_param_named(direct, i8042_direct, bool, 0);
@@ -66,6 +98,10 @@ MODULE_PARM_DESC(noloop, "Disable the AUX Loopback command while probing for the
 static bool i8042_notimeout;
 module_param_named(notimeout, i8042_notimeout, bool, 0);
 MODULE_PARM_DESC(notimeout, "Ignore timeouts signalled by i8042");
+
+static bool i8042_kbdreset;
+module_param_named(kbdreset, i8042_kbdreset, bool, 0);
+MODULE_PARM_DESC(kbdreset, "Reset device connected to KBD port");
 
 #ifdef CONFIG_X86
 static bool i8042_dritek;
@@ -84,9 +120,17 @@ MODULE_PARM_DESC(nopnp, "Do not use PNP to detect controller settings");
 static bool i8042_debug;
 module_param_named(debug, i8042_debug, bool, 0600);
 MODULE_PARM_DESC(debug, "Turn i8042 debugging mode on and off");
+
+static bool i8042_unmask_kbd_data;
+module_param_named(unmask_kbd_data, i8042_unmask_kbd_data, bool, 0600);
+MODULE_PARM_DESC(unmask_kbd_data, "Unconditional enable (may reveal sensitive data) of normally sanitize-filtered kbd data traffic debug log [pre-condition: i8042.debug=1 enabled]");
 #endif
 
+static bool i8042_present;
 static bool i8042_bypass_aux_irq_test;
+static char i8042_kbd_firmware_id[128];
+static char i8042_aux_firmware_id[128];
+static struct fwnode_handle *i8042_kbd_fwnode;
 
 #include "i8042.h"
 
@@ -99,7 +143,7 @@ static DEFINE_SPINLOCK(i8042_lock);
 /*
  * Writers to AUX and KBD ports as well as users issuing i8042_command
  * directly should acquire i8042_mutex (by means of calling
- * i8042_lock_chip() and i8042_unlock_ship() helpers) to ensure that
+ * i8042_lock_chip() and i8042_unlock_chip() helpers) to ensure that
  * they do not disturb each other (unfortunately in many i8042
  * implementations write to one of the ports will immediately abort
  * command that is being processed by another port).
@@ -110,6 +154,7 @@ struct i8042_port {
 	struct serio *serio;
 	int irq;
 	bool exists;
+	bool driver_bound;
 	signed char mux;
 };
 
@@ -127,6 +172,7 @@ static bool i8042_kbd_irq_registered;
 static bool i8042_aux_irq_registered;
 static unsigned char i8042_suppress_kbd_ack;
 static struct platform_device *i8042_platform_device;
+static struct notifier_block i8042_kbd_bind_notifier_block;
 
 static irqreturn_t i8042_interrupt(int irq, void *dev_id);
 static bool (*i8042_platform_filter)(unsigned char data, unsigned char str,
@@ -269,8 +315,10 @@ static int __i8042_command(unsigned char *param, int command)
 
 	for (i = 0; i < ((command >> 12) & 0xf); i++) {
 		error = i8042_wait_write();
-		if (error)
+		if (error) {
+			dbg("     -- i8042 (wait write timeout)\n");
 			return error;
+		}
 		dbg("%02x -> i8042 (parameter)\n", param[i]);
 		i8042_write_data(param[i]);
 	}
@@ -278,7 +326,7 @@ static int __i8042_command(unsigned char *param, int command)
 	for (i = 0; i < ((command >> 8) & 0xf); i++) {
 		error = i8042_wait_read();
 		if (error) {
-			dbg("     -- i8042 (timeout)\n");
+			dbg("     -- i8042 (wait read timeout)\n");
 			return error;
 		}
 
@@ -299,6 +347,9 @@ int i8042_command(unsigned char *param, int command)
 {
 	unsigned long flags;
 	int retval;
+
+	if (!i8042_present)
+		return -1;
 
 	spin_lock_irqsave(&i8042_lock, flags);
 	retval = __i8042_command(param, command);
@@ -344,7 +395,7 @@ static int i8042_aux_write(struct serio *serio, unsigned char c)
 
 
 /*
- * i8042_aux_close attempts to clear AUX or KBD port state by disabling
+ * i8042_port_close attempts to clear AUX or KBD port state by disabling
  * and then re-enabling it.
  */
 
@@ -391,8 +442,24 @@ static int i8042_start(struct serio *serio)
 {
 	struct i8042_port *port = serio->port_data;
 
+	device_set_wakeup_capable(&serio->dev, true);
+
+	/*
+	 * On platforms using suspend-to-idle, allow the keyboard to
+	 * wake up the system from sleep by enabling keyboard wakeups
+	 * by default.  This is consistent with keyboard wakeup
+	 * behavior on many platforms using suspend-to-RAM (ACPI S3)
+	 * by default.
+	 */
+	if (pm_suspend_default_s2idle() &&
+	    serio == i8042_ports[I8042_KBD_PORT_NO].serio) {
+		device_set_wakeup_enable(&serio->dev, true);
+	}
+
+	spin_lock_irq(&i8042_lock);
 	port->exists = true;
-	mb();
+	spin_unlock_irq(&i8042_lock);
+
 	return 0;
 }
 
@@ -405,16 +472,20 @@ static void i8042_stop(struct serio *serio)
 {
 	struct i8042_port *port = serio->port_data;
 
+	spin_lock_irq(&i8042_lock);
 	port->exists = false;
+	port->serio = NULL;
+	spin_unlock_irq(&i8042_lock);
 
 	/*
+	 * We need to make sure that interrupt handler finishes using
+	 * our serio port before we return from this function.
 	 * We synchronize with both AUX and KBD IRQs because there is
 	 * a (very unlikely) chance that AUX IRQ is raised for KBD port
 	 * and vice versa.
 	 */
 	synchronize_irq(I8042_AUX_IRQ);
 	synchronize_irq(I8042_KBD_IRQ);
-	port->serio = NULL;
 }
 
 /*
@@ -499,7 +570,7 @@ static irqreturn_t i8042_interrupt(int irq, void *dev_id)
 						str = last_str;
 						break;
 					}
-					/* fall through - report timeout */
+					fallthrough;	/* report timeout */
 				case 0xfc:
 				case 0xfd:
 				case 0xfe: dfl = SERIO_TIMEOUT; data = 0xfe; break;
@@ -522,16 +593,16 @@ static irqreturn_t i8042_interrupt(int irq, void *dev_id)
 	port = &i8042_ports[port_no];
 	serio = port->exists ? port->serio : NULL;
 
-	dbg("%02x <- i8042 (interrupt, %d, %d%s%s)\n",
-	    data, port_no, irq,
-	    dfl & SERIO_PARITY ? ", bad parity" : "",
-	    dfl & SERIO_TIMEOUT ? ", timeout" : "");
+	filter_dbg(port->driver_bound, data, "<- i8042 (interrupt, %d, %d%s%s)\n",
+		   port_no, irq,
+		   dfl & SERIO_PARITY ? ", bad parity" : "",
+		   dfl & SERIO_TIMEOUT ? ", timeout" : "");
 
 	filtered = i8042_filter(data, str, serio);
 
 	spin_unlock_irqrestore(&i8042_lock, flags);
 
-	if (likely(port->exists && !filtered))
+	if (likely(serio && !filtered))
 		serio_interrupt(serio, data, dfl);
 
  out:
@@ -644,7 +715,7 @@ static int i8042_set_mux_mode(bool multiplex, unsigned char *mux_version)
  * LCS/Telegraphics.
  */
 
-static int __init i8042_check_mux(void)
+static int i8042_check_mux(void)
 {
 	unsigned char mux_version;
 
@@ -673,10 +744,10 @@ static int __init i8042_check_mux(void)
 /*
  * The following is used to test AUX IRQ delivery.
  */
-static struct completion i8042_aux_irq_delivered __initdata;
-static bool i8042_irq_being_tested __initdata;
+static struct completion i8042_aux_irq_delivered;
+static bool i8042_irq_being_tested;
 
-static irqreturn_t __init i8042_aux_test_irq(int irq, void *dev_id)
+static irqreturn_t i8042_aux_test_irq(int irq, void *dev_id)
 {
 	unsigned long flags;
 	unsigned char str, data;
@@ -703,7 +774,7 @@ static irqreturn_t __init i8042_aux_test_irq(int irq, void *dev_id)
  * verifies success by readinng CTR. Used when testing for presence of AUX
  * port.
  */
-static int __init i8042_toggle_aux(bool on)
+static int i8042_toggle_aux(bool on)
 {
 	unsigned char param;
 	int i;
@@ -731,7 +802,7 @@ static int __init i8042_toggle_aux(bool on)
  * the presence of an AUX interface.
  */
 
-static int __init i8042_check_aux(void)
+static int i8042_check_aux(void)
 {
 	int retval = -1;
 	bool irq_registered = false;
@@ -786,6 +857,16 @@ static int __init i8042_check_aux(void)
 
 	if (i8042_toggle_aux(true))
 		return -1;
+
+/*
+ * Reset keyboard (needed on some laptops to successfully detect
+ * touchpad, e.g., some Gigabyte laptop models with Elantech
+ * touchpads).
+ */
+	if (i8042_kbdreset) {
+		pr_warn("Attempting to reset device connected to KBD port\n");
+		i8042_kbd_write(NULL, (unsigned char) 0xff);
+	}
 
 /*
  * Test AUX IRQ delivery to make sure BIOS did not grab the IRQ and
@@ -855,7 +936,7 @@ static int __init i8042_check_aux(void)
 static int i8042_controller_check(void)
 {
 	if (i8042_flush()) {
-		pr_err("No controller found\n");
+		pr_info("No controller found\n");
 		return -ENODEV;
 	}
 
@@ -902,7 +983,7 @@ static int i8042_controller_selftest(void)
 }
 
 /*
- * i8042_controller init initializes the i8042 controller, and,
+ * i8042_controller_init initializes the i8042 controller, and,
  * most importantly, sets it into non-xlated mode if that's
  * desired.
  */
@@ -928,7 +1009,7 @@ static int i8042_controller_init(void)
 
 		if (i8042_command(&ctr[n++ % 2], I8042_CMD_CTL_RCTR)) {
 			pr_err("Can't read CTR while initializing i8042\n");
-			return -EIO;
+			return i8042_probe_defer ? -EPROBE_DEFER : -EIO;
 		}
 
 	} while (n < 2 || ctr[0] != ctr[1]);
@@ -996,7 +1077,7 @@ static int i8042_controller_init(void)
  * Reset the controller and reset CRT to the original value set by BIOS.
  */
 
-static void i8042_controller_reset(bool force_reset)
+static void i8042_controller_reset(bool s2r_wants_reset)
 {
 	i8042_flush();
 
@@ -1021,8 +1102,10 @@ static void i8042_controller_reset(bool force_reset)
  * Reset the controller if requested.
  */
 
-	if (i8042_reset || force_reset)
+	if (i8042_reset == I8042_RESET_ALWAYS ||
+	    (i8042_reset == I8042_RESET_ON_S2RAM && s2r_wants_reset)) {
 		i8042_controller_selftest();
+	}
 
 /*
  * Restore the original control register setting.
@@ -1087,7 +1170,7 @@ static void i8042_dritek_enable(void)
  * before suspending.
  */
 
-static int i8042_controller_resume(bool force_reset)
+static int i8042_controller_resume(bool s2r_wants_reset)
 {
 	int error;
 
@@ -1095,7 +1178,8 @@ static int i8042_controller_resume(bool force_reset)
 	if (error)
 		return error;
 
-	if (i8042_reset || force_reset) {
+	if (i8042_reset == I8042_RESET_ALWAYS ||
+	    (i8042_reset == I8042_RESET_ON_S2RAM && s2r_wants_reset)) {
 		error = i8042_controller_selftest();
 		if (error)
 			return error;
@@ -1146,19 +1230,58 @@ static int i8042_controller_resume(bool force_reset)
 
 static int i8042_pm_suspend(struct device *dev)
 {
-	i8042_controller_reset(true);
+	int i;
+
+	if (pm_suspend_via_firmware())
+		i8042_controller_reset(true);
+
+	/* Set up serio interrupts for system wakeup. */
+	for (i = 0; i < I8042_NUM_PORTS; i++) {
+		struct serio *serio = i8042_ports[i].serio;
+
+		if (serio && device_may_wakeup(&serio->dev))
+			enable_irq_wake(i8042_ports[i].irq);
+	}
+
+	return 0;
+}
+
+static int i8042_pm_resume_noirq(struct device *dev)
+{
+	if (!pm_resume_via_firmware())
+		i8042_interrupt(0, NULL);
 
 	return 0;
 }
 
 static int i8042_pm_resume(struct device *dev)
 {
+	bool want_reset;
+	int i;
+
+	for (i = 0; i < I8042_NUM_PORTS; i++) {
+		struct serio *serio = i8042_ports[i].serio;
+
+		if (serio && device_may_wakeup(&serio->dev))
+			disable_irq_wake(i8042_ports[i].irq);
+	}
+
 	/*
-	 * On resume from S2R we always try to reset the controller
-	 * to bring it in a sane state. (In case of S2D we expect
-	 * BIOS to reset the controller for us.)
+	 * If platform firmware was not going to be involved in suspend, we did
+	 * not restore the controller state to whatever it had been at boot
+	 * time, so we do not need to do anything.
 	 */
-	return i8042_controller_resume(true);
+	if (!pm_suspend_via_firmware())
+		return 0;
+
+	/*
+	 * We only need to reset the controller if we are resuming after handing
+	 * off control to the platform firmware, otherwise we can simply restore
+	 * the mode.
+	 */
+	want_reset = pm_resume_via_firmware();
+
+	return i8042_controller_resume(want_reset);
 }
 
 static int i8042_pm_thaw(struct device *dev)
@@ -1182,6 +1305,7 @@ static int i8042_pm_restore(struct device *dev)
 
 static const struct dev_pm_ops i8042_pm_ops = {
 	.suspend	= i8042_pm_suspend,
+	.resume_noirq	= i8042_pm_resume_noirq,
 	.resume		= i8042_pm_resume,
 	.thaw		= i8042_pm_thaw,
 	.poweroff	= i8042_pm_reset,
@@ -1200,7 +1324,7 @@ static void i8042_shutdown(struct platform_device *dev)
 	i8042_controller_reset(false);
 }
 
-static int __init i8042_create_kbd_port(void)
+static int i8042_create_kbd_port(void)
 {
 	struct serio *serio;
 	struct i8042_port *port = &i8042_ports[I8042_KBD_PORT_NO];
@@ -1214,10 +1338,14 @@ static int __init i8042_create_kbd_port(void)
 	serio->start		= i8042_start;
 	serio->stop		= i8042_stop;
 	serio->close		= i8042_port_close;
+	serio->ps2_cmd_mutex	= &i8042_mutex;
 	serio->port_data	= port;
 	serio->dev.parent	= &i8042_platform_device->dev;
-	strlcpy(serio->name, "i8042 KBD port", sizeof(serio->name));
-	strlcpy(serio->phys, I8042_KBD_PHYS_DESC, sizeof(serio->phys));
+	strscpy(serio->name, "i8042 KBD port", sizeof(serio->name));
+	strscpy(serio->phys, I8042_KBD_PHYS_DESC, sizeof(serio->phys));
+	strscpy(serio->firmware_id, i8042_kbd_firmware_id,
+		sizeof(serio->firmware_id));
+	set_primary_fwnode(&serio->dev, i8042_kbd_fwnode);
 
 	port->serio = serio;
 	port->irq = I8042_KBD_IRQ;
@@ -1225,7 +1353,7 @@ static int __init i8042_create_kbd_port(void)
 	return 0;
 }
 
-static int __init i8042_create_aux_port(int idx)
+static int i8042_create_aux_port(int idx)
 {
 	struct serio *serio;
 	int port_no = idx < 0 ? I8042_AUX_PORT_NO : I8042_MUX_PORT_NO + idx;
@@ -1239,15 +1367,20 @@ static int __init i8042_create_aux_port(int idx)
 	serio->write		= i8042_aux_write;
 	serio->start		= i8042_start;
 	serio->stop		= i8042_stop;
+	serio->ps2_cmd_mutex	= &i8042_mutex;
 	serio->port_data	= port;
 	serio->dev.parent	= &i8042_platform_device->dev;
 	if (idx < 0) {
-		strlcpy(serio->name, "i8042 AUX port", sizeof(serio->name));
-		strlcpy(serio->phys, I8042_AUX_PHYS_DESC, sizeof(serio->phys));
+		strscpy(serio->name, "i8042 AUX port", sizeof(serio->name));
+		strscpy(serio->phys, I8042_AUX_PHYS_DESC, sizeof(serio->phys));
+		strscpy(serio->firmware_id, i8042_aux_firmware_id,
+			sizeof(serio->firmware_id));
 		serio->close = i8042_port_close;
 	} else {
 		snprintf(serio->name, sizeof(serio->name), "i8042 AUX%d port", idx);
 		snprintf(serio->phys, sizeof(serio->phys), I8042_MUX_PHYS_DESC, idx + 1);
+		strscpy(serio->firmware_id, i8042_aux_firmware_id,
+			sizeof(serio->firmware_id));
 	}
 
 	port->serio = serio;
@@ -1257,13 +1390,13 @@ static int __init i8042_create_aux_port(int idx)
 	return 0;
 }
 
-static void __init i8042_free_kbd_port(void)
+static void i8042_free_kbd_port(void)
 {
 	kfree(i8042_ports[I8042_KBD_PORT_NO].serio);
 	i8042_ports[I8042_KBD_PORT_NO].serio = NULL;
 }
 
-static void __init i8042_free_aux_ports(void)
+static void i8042_free_aux_ports(void)
 {
 	int i;
 
@@ -1273,19 +1406,22 @@ static void __init i8042_free_aux_ports(void)
 	}
 }
 
-static void __init i8042_register_ports(void)
+static void i8042_register_ports(void)
 {
 	int i;
 
 	for (i = 0; i < I8042_NUM_PORTS; i++) {
-		if (i8042_ports[i].serio) {
-			printk(KERN_INFO "serio: %s at %#lx,%#lx irq %d\n",
-				i8042_ports[i].serio->name,
-				(unsigned long) I8042_DATA_REG,
-				(unsigned long) I8042_COMMAND_REG,
-				i8042_ports[i].irq);
-			serio_register_port(i8042_ports[i].serio);
-		}
+		struct serio *serio = i8042_ports[i].serio;
+
+		if (!serio)
+			continue;
+
+		printk(KERN_INFO "serio: %s at %#lx,%#lx irq %d\n",
+			serio->name,
+			(unsigned long) I8042_DATA_REG,
+			(unsigned long) I8042_COMMAND_REG,
+			i8042_ports[i].irq);
+		serio_register_port(serio);
 	}
 }
 
@@ -1301,21 +1437,6 @@ static void i8042_unregister_ports(void)
 	}
 }
 
-/*
- * Checks whether port belongs to i8042 controller.
- */
-bool i8042_check_port_owner(const struct serio *port)
-{
-	int i;
-
-	for (i = 0; i < I8042_NUM_PORTS; i++)
-		if (i8042_ports[i].serio == port)
-			return true;
-
-	return false;
-}
-EXPORT_SYMBOL(i8042_check_port_owner);
-
 static void i8042_free_irqs(void)
 {
 	if (i8042_aux_irq_registered)
@@ -1326,7 +1447,7 @@ static void i8042_free_irqs(void)
 	i8042_aux_irq_registered = i8042_kbd_irq_registered = false;
 }
 
-static int __init i8042_setup_aux(void)
+static int i8042_setup_aux(void)
 {
 	int (*aux_enable)(void);
 	int error;
@@ -1354,7 +1475,8 @@ static int __init i8042_setup_aux(void)
 	if (error)
 		goto err_free_ports;
 
-	if (aux_enable())
+	error = aux_enable();
+	if (error)
 		goto err_free_irq;
 
 	i8042_aux_irq_registered = true;
@@ -1367,7 +1489,7 @@ static int __init i8042_setup_aux(void)
 	return error;
 }
 
-static int __init i8042_setup_kbd(void)
+static int i8042_setup_kbd(void)
 {
 	int error;
 
@@ -1394,13 +1516,34 @@ static int __init i8042_setup_kbd(void)
 	return error;
 }
 
-static int __init i8042_probe(struct platform_device *dev)
+static int i8042_kbd_bind_notifier(struct notifier_block *nb,
+				   unsigned long action, void *data)
+{
+	struct device *dev = data;
+	struct serio *serio = to_serio_port(dev);
+	struct i8042_port *port = serio->port_data;
+
+	if (serio != i8042_ports[I8042_KBD_PORT_NO].serio)
+		return 0;
+
+	switch (action) {
+	case BUS_NOTIFY_BOUND_DRIVER:
+		port->driver_bound = true;
+		break;
+
+	case BUS_NOTIFY_UNBIND_DRIVER:
+		port->driver_bound = false;
+		break;
+	}
+
+	return 0;
+}
+
+static int i8042_probe(struct platform_device *dev)
 {
 	int error;
 
-	i8042_platform_device = dev;
-
-	if (i8042_reset) {
+	if (i8042_reset == I8042_RESET_ALWAYS) {
 		error = i8042_controller_selftest();
 		if (error)
 			return error;
@@ -1437,7 +1580,6 @@ static int __init i8042_probe(struct platform_device *dev)
 	i8042_free_aux_ports();	/* in case KBD failed but AUX not */
 	i8042_free_irqs();
 	i8042_controller_reset(false);
-	i8042_platform_device = NULL;
 
 	return error;
 }
@@ -1447,7 +1589,6 @@ static int i8042_remove(struct platform_device *dev)
 	i8042_unregister_ports();
 	i8042_free_irqs();
 	i8042_controller_reset(false);
-	i8042_platform_device = NULL;
 
 	return 0;
 }
@@ -1455,40 +1596,59 @@ static int i8042_remove(struct platform_device *dev)
 static struct platform_driver i8042_driver = {
 	.driver		= {
 		.name	= "i8042",
-		.owner	= THIS_MODULE,
 #ifdef CONFIG_PM
 		.pm	= &i8042_pm_ops,
 #endif
 	},
+	.probe		= i8042_probe,
 	.remove		= i8042_remove,
 	.shutdown	= i8042_shutdown,
 };
 
+static struct notifier_block i8042_kbd_bind_notifier_block = {
+	.notifier_call = i8042_kbd_bind_notifier,
+};
+
 static int __init i8042_init(void)
 {
-	struct platform_device *pdev;
 	int err;
 
 	dbg_init();
 
 	err = i8042_platform_init();
 	if (err)
-		return err;
+		return (err == -ENODEV) ? 0 : err;
 
 	err = i8042_controller_check();
 	if (err)
 		goto err_platform_exit;
 
-	pdev = platform_create_bundle(&i8042_driver, i8042_probe, NULL, 0, NULL, 0);
-	if (IS_ERR(pdev)) {
-		err = PTR_ERR(pdev);
+	/* Set this before creating the dev to allow i8042_command to work right away */
+	i8042_present = true;
+
+	err = platform_driver_register(&i8042_driver);
+	if (err)
 		goto err_platform_exit;
+
+	i8042_platform_device = platform_device_alloc("i8042", -1);
+	if (!i8042_platform_device) {
+		err = -ENOMEM;
+		goto err_unregister_driver;
 	}
 
+	err = platform_device_add(i8042_platform_device);
+	if (err)
+		goto err_free_device;
+
+	bus_register_notifier(&serio_bus, &i8042_kbd_bind_notifier_block);
 	panic_blink = i8042_panic_blink;
 
 	return 0;
 
+err_free_device:
+	platform_device_put(i8042_platform_device);
+err_unregister_driver:
+	platform_driver_unregister(&i8042_driver);
  err_platform_exit:
 	i8042_platform_exit();
 	return err;
@@ -1496,10 +1656,14 @@ static int __init i8042_init(void)
 
 static void __exit i8042_exit(void)
 {
+	if (!i8042_present)
+		return;
+
 	platform_device_unregister(i8042_platform_device);
 	platform_driver_unregister(&i8042_driver);
 	i8042_platform_exit();
 
+	bus_unregister_notifier(&serio_bus, &i8042_kbd_bind_notifier_block);
 	panic_blink = NULL;
 }
 

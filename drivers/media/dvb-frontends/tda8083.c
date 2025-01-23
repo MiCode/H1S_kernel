@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
     Driver for Philips TDA8083 based QPSK Demodulator
 
@@ -8,19 +9,6 @@
     adoption to the new DVB frontend API and diagnostic ioctl's
     by Holger Waechtler <holger@convergence.de>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 */
 
@@ -30,7 +18,7 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/jiffies.h>
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "tda8083.h"
 
 
@@ -97,7 +85,8 @@ static inline u8 tda8083_readreg (struct tda8083_state* state, u8 reg)
 	return val;
 }
 
-static int tda8083_set_inversion (struct tda8083_state* state, fe_spectral_inversion_t inversion)
+static int tda8083_set_inversion(struct tda8083_state *state,
+				 enum fe_spectral_inversion inversion)
 {
 	/*  XXX FIXME: implement other modes than FEC_AUTO */
 	if (inversion == INVERSION_AUTO)
@@ -106,7 +95,7 @@ static int tda8083_set_inversion (struct tda8083_state* state, fe_spectral_inver
 	return -EINVAL;
 }
 
-static int tda8083_set_fec (struct tda8083_state* state, fe_code_rate_t fec)
+static int tda8083_set_fec(struct tda8083_state *state, enum fe_code_rate fec)
 {
 	if (fec == FEC_AUTO)
 		return tda8083_writereg (state, 0x07, 0xff);
@@ -117,11 +106,13 @@ static int tda8083_set_fec (struct tda8083_state* state, fe_code_rate_t fec)
 	return -EINVAL;
 }
 
-static fe_code_rate_t tda8083_get_fec (struct tda8083_state* state)
+static enum fe_code_rate tda8083_get_fec(struct tda8083_state *state)
 {
 	u8 index;
-	static fe_code_rate_t fec_tab [] = { FEC_8_9, FEC_1_2, FEC_2_3, FEC_3_4,
-				       FEC_4_5, FEC_5_6, FEC_6_7, FEC_7_8 };
+	static enum fe_code_rate fec_tab[] = {
+		FEC_8_9, FEC_1_2, FEC_2_3, FEC_3_4,
+		FEC_4_5, FEC_5_6, FEC_6_7, FEC_7_8
+	};
 
 	index = tda8083_readreg(state, 0x0e) & 0x07;
 
@@ -171,14 +162,15 @@ static void tda8083_wait_diseqc_fifo (struct tda8083_state* state, int timeout)
 {
 	unsigned long start = jiffies;
 
-	while (jiffies - start < timeout &&
+	while (time_is_after_jiffies(start + timeout) &&
 	       !(tda8083_readreg(state, 0x02) & 0x80))
 	{
 		msleep(50);
 	}
 }
 
-static int tda8083_set_tone (struct tda8083_state* state, fe_sec_tone_mode_t tone)
+static int tda8083_set_tone(struct tda8083_state *state,
+			    enum fe_sec_tone_mode tone)
 {
 	tda8083_writereg (state, 0x26, 0xf1);
 
@@ -192,7 +184,8 @@ static int tda8083_set_tone (struct tda8083_state* state, fe_sec_tone_mode_t ton
 	}
 }
 
-static int tda8083_set_voltage (struct tda8083_state* state, fe_sec_voltage_t voltage)
+static int tda8083_set_voltage(struct tda8083_state *state,
+			       enum fe_sec_voltage voltage)
 {
 	switch (voltage) {
 	case SEC_VOLTAGE_13:
@@ -204,7 +197,8 @@ static int tda8083_set_voltage (struct tda8083_state* state, fe_sec_voltage_t vo
 	}
 }
 
-static int tda8083_send_diseqc_burst (struct tda8083_state* state, fe_sec_mini_cmd_t burst)
+static int tda8083_send_diseqc_burst(struct tda8083_state *state,
+				     enum fe_sec_mini_cmd burst)
 {
 	switch (burst) {
 	case SEC_MINI_A:
@@ -222,8 +216,8 @@ static int tda8083_send_diseqc_burst (struct tda8083_state* state, fe_sec_mini_c
 	return 0;
 }
 
-static int tda8083_send_diseqc_msg (struct dvb_frontend* fe,
-				    struct dvb_diseqc_master_cmd *m)
+static int tda8083_send_diseqc_msg(struct dvb_frontend *fe,
+				   struct dvb_diseqc_master_cmd *m)
 {
 	struct tda8083_state* state = fe->demodulator_priv;
 	int i;
@@ -240,7 +234,8 @@ static int tda8083_send_diseqc_msg (struct dvb_frontend* fe,
 	return 0;
 }
 
-static int tda8083_read_status(struct dvb_frontend* fe, fe_status_t* status)
+static int tda8083_read_status(struct dvb_frontend *fe,
+			       enum fe_status *status)
 {
 	struct tda8083_state* state = fe->demodulator_priv;
 
@@ -335,9 +330,9 @@ static int tda8083_set_frontend(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int tda8083_get_frontend(struct dvb_frontend *fe)
+static int tda8083_get_frontend(struct dvb_frontend *fe,
+				struct dtv_frontend_properties *p)
 {
-	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
 	struct tda8083_state* state = fe->demodulator_priv;
 
 	/*  FIXME: get symbolrate & frequency offset...*/
@@ -372,7 +367,8 @@ static int tda8083_init(struct dvb_frontend* fe)
 	return 0;
 }
 
-static int tda8083_diseqc_send_burst(struct dvb_frontend* fe, fe_sec_mini_cmd_t burst)
+static int tda8083_diseqc_send_burst(struct dvb_frontend *fe,
+				     enum fe_sec_mini_cmd burst)
 {
 	struct tda8083_state* state = fe->demodulator_priv;
 
@@ -383,7 +379,8 @@ static int tda8083_diseqc_send_burst(struct dvb_frontend* fe, fe_sec_mini_cmd_t 
 	return 0;
 }
 
-static int tda8083_diseqc_set_tone(struct dvb_frontend* fe, fe_sec_tone_mode_t tone)
+static int tda8083_diseqc_set_tone(struct dvb_frontend *fe,
+				   enum fe_sec_tone_mode tone)
 {
 	struct tda8083_state* state = fe->demodulator_priv;
 
@@ -394,7 +391,8 @@ static int tda8083_diseqc_set_tone(struct dvb_frontend* fe, fe_sec_tone_mode_t t
 	return 0;
 }
 
-static int tda8083_diseqc_set_voltage(struct dvb_frontend* fe, fe_sec_voltage_t voltage)
+static int tda8083_diseqc_set_voltage(struct dvb_frontend *fe,
+				      enum fe_sec_voltage voltage)
 {
 	struct tda8083_state* state = fe->demodulator_priv;
 
@@ -411,7 +409,7 @@ static void tda8083_release(struct dvb_frontend* fe)
 	kfree(state);
 }
 
-static struct dvb_frontend_ops tda8083_ops;
+static const struct dvb_frontend_ops tda8083_ops;
 
 struct dvb_frontend* tda8083_attach(const struct tda8083_config* config,
 				    struct i2c_adapter* i2c)
@@ -439,14 +437,13 @@ error:
 	return NULL;
 }
 
-static struct dvb_frontend_ops tda8083_ops = {
+static const struct dvb_frontend_ops tda8083_ops = {
 	.delsys = { SYS_DVBS },
 	.info = {
 		.name			= "Philips TDA8083 DVB-S",
-		.frequency_min		= 920000,     /* TDA8060 */
-		.frequency_max		= 2200000,    /* TDA8060 */
-		.frequency_stepsize	= 125,   /* kHz for QPSK frontends */
-	/*      .frequency_tolerance	= ???,*/
+		.frequency_min_hz	=  920 * MHz,     /* TDA8060 */
+		.frequency_max_hz	= 2200 * MHz,    /* TDA8060 */
+		.frequency_stepsize_hz	=  125 * kHz,
 		.symbol_rate_min	= 12000000,
 		.symbol_rate_max	= 30000000,
 	/*      .symbol_rate_tolerance	= ???,*/
@@ -484,4 +481,4 @@ MODULE_DESCRIPTION("Philips TDA8083 DVB-S Demodulator");
 MODULE_AUTHOR("Ralph Metzler, Holger Waechtler");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(tda8083_attach);
+EXPORT_SYMBOL_GPL(tda8083_attach);

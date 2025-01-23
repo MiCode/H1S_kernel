@@ -1,32 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* IEEE754 floating point arithmetic
  * double precision square root
  */
 /*
  * MIPS floating point support
  * Copyright (C) 1994-2000 Algorithmics Ltd.
- *
- * ########################################################################
- *
- *  This program is free software; you can distribute it and/or modify it
- *  under the terms of the GNU General Public License (Version 2) as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope it will be useful, but WITHOUT
- *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- *  for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
- *
- * ########################################################################
  */
-
 
 #include "ieee754dp.h"
 
-static const unsigned table[] = {
+static const unsigned int table[] = {
 	0, 1204, 3062, 5746, 9193, 13348, 18162, 23592,
 	29598, 36145, 43202, 50740, 58733, 67158, 75992,
 	85215, 83599, 71378, 60428, 50647, 41945, 34246,
@@ -34,44 +17,47 @@ static const unsigned table[] = {
 	1742, 661, 130
 };
 
-ieee754dp ieee754dp_sqrt(ieee754dp x)
+union ieee754dp ieee754dp_sqrt(union ieee754dp x)
 {
 	struct _ieee754_csr oldcsr;
-	ieee754dp y, z, t;
-	unsigned scalx, yh;
+	union ieee754dp y, z, t;
+	unsigned int scalx, yh;
 	COMPXDP;
 
 	EXPLODEXDP;
-	CLEARCX;
+	ieee754_clearcx();
 	FLUSHXDP;
 
 	/* x == INF or NAN? */
 	switch (xc) {
+	case IEEE754_CLASS_SNAN:
+		return ieee754dp_nanxcpt(x);
+
 	case IEEE754_CLASS_QNAN:
 		/* sqrt(Nan) = Nan */
-		return ieee754dp_nanxcpt(x, "sqrt");
-	case IEEE754_CLASS_SNAN:
-		SETCX(IEEE754_INVALID_OPERATION);
-		return ieee754dp_nanxcpt(ieee754dp_indef(), "sqrt");
+		return x;
+
 	case IEEE754_CLASS_ZERO:
 		/* sqrt(0) = 0 */
 		return x;
+
 	case IEEE754_CLASS_INF:
 		if (xs) {
 			/* sqrt(-Inf) = Nan */
-			SETCX(IEEE754_INVALID_OPERATION);
-			return ieee754dp_nanxcpt(ieee754dp_indef(), "sqrt");
+			ieee754_setcx(IEEE754_INVALID_OPERATION);
+			return ieee754dp_indef();
 		}
 		/* sqrt(+Inf) = Inf */
 		return x;
+
 	case IEEE754_CLASS_DNORM:
 		DPDNORMX;
-		/* fall through */
+		fallthrough;
 	case IEEE754_CLASS_NORM:
 		if (xs) {
 			/* sqrt(-x) = Nan */
-			SETCX(IEEE754_INVALID_OPERATION);
-			return ieee754dp_nanxcpt(ieee754dp_indef(), "sqrt");
+			ieee754_setcx(IEEE754_INVALID_OPERATION);
+			return ieee754dp_indef();
 		}
 		break;
 	}
@@ -80,7 +66,7 @@ ieee754dp ieee754dp_sqrt(ieee754dp x)
 	oldcsr = ieee754_csr;
 	ieee754_csr.mx &= ~IEEE754_INEXACT;
 	ieee754_csr.sx &= ~IEEE754_INEXACT;
-	ieee754_csr.rm = IEEE754_RN;
+	ieee754_csr.rm = FPU_CSR_RN;
 
 	/* adjust exponent to prevent overflow */
 	scalx = 0;
@@ -92,7 +78,8 @@ ieee754dp ieee754dp_sqrt(ieee754dp x)
 		scalx -= 256;
 	}
 
-	y = x = builddp(0, xe + DP_EBIAS, xm & ~DP_HIDDEN_BIT);
+	x = builddp(0, xe + DP_EBIAS, xm & ~DP_HIDDEN_BIT);
+	y = x;
 
 	/* magic initial approximation to almost 8 sig. bits */
 	yh = y.bits >> 32;
@@ -109,20 +96,21 @@ ieee754dp ieee754dp_sqrt(ieee754dp x)
 
 	/* triple to almost 56 sig. bits: y ~= sqrt(x) to within 1 ulp */
 	/* t=y*y; z=t;	pt[n0]+=0x00100000; t+=z; z=(x-z)*y; */
-	z = t = ieee754dp_mul(y, y);
-	t.parts.bexp += 0x001;
+	t = ieee754dp_mul(y, y);
+	z = t;
+	t.bexp += 0x001;
 	t = ieee754dp_add(t, z);
 	z = ieee754dp_mul(ieee754dp_sub(x, z), y);
 
 	/* t=z/(t+x) ;	pt[n0]+=0x00100000; y+=t; */
 	t = ieee754dp_div(z, ieee754dp_add(t, x));
-	t.parts.bexp += 0x001;
+	t.bexp += 0x001;
 	y = ieee754dp_add(y, t);
 
 	/* twiddle last bit to force y correctly rounded */
 
 	/* set RZ, clear INEX flag */
-	ieee754_csr.rm = IEEE754_RZ;
+	ieee754_csr.rm = FPU_CSR_RZ;
 	ieee754_csr.sx &= ~IEEE754_INEXACT;
 
 	/* t=x/y; ...chopped quotient, possibly inexact */
@@ -139,10 +127,10 @@ ieee754dp ieee754dp_sqrt(ieee754dp x)
 		oldcsr.sx |= IEEE754_INEXACT;
 
 		switch (oldcsr.rm) {
-		case IEEE754_RP:
+		case FPU_CSR_RU:
 			y.bits += 1;
-			/* drop through */
-		case IEEE754_RN:
+			fallthrough;
+		case FPU_CSR_RN:
 			t.bits += 1;
 			break;
 		}
@@ -155,7 +143,7 @@ ieee754dp ieee754dp_sqrt(ieee754dp x)
 	}
 
 	/* py[n0]=py[n0]+scalx; ...scale back y */
-	y.parts.bexp += scalx;
+	y.bexp += scalx;
 
 	/* restore rounding mode, possibly set inexact */
 	ieee754_csr = oldcsr;

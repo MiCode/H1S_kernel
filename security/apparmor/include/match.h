@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * AppArmor security module
  *
@@ -5,11 +6,6 @@
  *
  * Copyright (C) 1998-2008 Novell/SUSE
  * Copyright 2009-2012 Canonical Ltd.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation, version 2 of the
- * License.
  */
 
 #ifndef __AA_MATCH_H
@@ -40,6 +36,11 @@
  */
 
 #define YYTH_MAGIC	0x1B5E783D
+#define YYTH_FLAG_DIFF_ENCODE	1
+#define YYTH_FLAG_OOB_TRANS	2
+#define YYTH_FLAGS (YYTH_FLAG_DIFF_ENCODE | YYTH_FLAG_OOB_TRANS)
+
+#define MAX_OOB_SUPPORTED	1
 
 struct table_set_header {
 	u32 th_magic;		/* YYTH_MAGIC */
@@ -62,6 +63,7 @@ struct table_set_header {
 #define YYTD_ID_ACCEPT2 6
 #define YYTD_ID_NXT	7
 #define YYTD_ID_TSIZE	8
+#define YYTD_ID_MAX	8
 
 #define YYTD_DATA8	1
 #define YYTD_DATA16	2
@@ -96,16 +98,20 @@ struct table_header {
 struct aa_dfa {
 	struct kref count;
 	u16 flags;
+	u32 max_oob;
 	struct table_header *tables[YYTD_ID_TSIZE];
 };
 
+extern struct aa_dfa *nulldfa;
+extern struct aa_dfa *stacksplitdfa;
+
 #define byte_to_byte(X) (X)
 
-#define UNPACK_ARRAY(TABLE, BLOB, LEN, TYPE, NTOHX) \
+#define UNPACK_ARRAY(TABLE, BLOB, LEN, TTYPE, BTYPE, NTOHX)	\
 	do { \
 		typeof(LEN) __i; \
-		TYPE *__t = (TYPE *) TABLE; \
-		TYPE *__b = (TYPE *) BLOB; \
+		TTYPE *__t = (TTYPE *) TABLE; \
+		BTYPE *__b = (BTYPE *) BLOB; \
 		for (__i = 0; __i < LEN; __i++) { \
 			__t[__i] = NTOHX(__b[__i]); \
 		} \
@@ -116,15 +122,57 @@ static inline size_t table_size(size_t len, size_t el_size)
 	return ALIGN(sizeof(struct table_header) + len * el_size, 8);
 }
 
+int aa_setup_dfa_engine(void);
+void aa_teardown_dfa_engine(void);
+
+#define aa_state_t unsigned int
+
 struct aa_dfa *aa_dfa_unpack(void *blob, size_t size, int flags);
-unsigned int aa_dfa_match_len(struct aa_dfa *dfa, unsigned int start,
-			      const char *str, int len);
-unsigned int aa_dfa_match(struct aa_dfa *dfa, unsigned int start,
-			  const char *str);
-unsigned int aa_dfa_next(struct aa_dfa *dfa, unsigned int state,
-			 const char c);
+aa_state_t aa_dfa_match_len(struct aa_dfa *dfa, aa_state_t start,
+			    const char *str, int len);
+aa_state_t aa_dfa_match(struct aa_dfa *dfa, aa_state_t start,
+			const char *str);
+aa_state_t aa_dfa_next(struct aa_dfa *dfa, aa_state_t state, const char c);
+aa_state_t aa_dfa_outofband_transition(struct aa_dfa *dfa, aa_state_t state);
+aa_state_t aa_dfa_match_until(struct aa_dfa *dfa, aa_state_t start,
+			      const char *str, const char **retpos);
+aa_state_t aa_dfa_matchn_until(struct aa_dfa *dfa, aa_state_t start,
+			       const char *str, int n, const char **retpos);
 
 void aa_dfa_free_kref(struct kref *kref);
+
+#define WB_HISTORY_SIZE 24
+struct match_workbuf {
+	unsigned int count;
+	unsigned int pos;
+	unsigned int len;
+	unsigned int size;	/* power of 2, same as history size */
+	unsigned int history[WB_HISTORY_SIZE];
+};
+#define DEFINE_MATCH_WB(N)		\
+struct match_workbuf N = {		\
+	.count = 0,			\
+	.pos = 0,			\
+	.len = 0,			\
+}
+
+aa_state_t aa_dfa_leftmatch(struct aa_dfa *dfa, aa_state_t start,
+			    const char *str, unsigned int *count);
+
+/**
+ * aa_get_dfa - increment refcount on dfa @p
+ * @dfa: dfa  (MAYBE NULL)
+ *
+ * Returns: pointer to @dfa if @dfa is NULL will return NULL
+ * Requires: @dfa must be held with valid refcount when called
+ */
+static inline struct aa_dfa *aa_get_dfa(struct aa_dfa *dfa)
+{
+	if (dfa)
+		kref_get(&(dfa->count));
+
+	return dfa;
+}
 
 /**
  * aa_put_dfa - put a dfa refcount
@@ -137,5 +185,12 @@ static inline void aa_put_dfa(struct aa_dfa *dfa)
 	if (dfa)
 		kref_put(&dfa->count, aa_dfa_free_kref);
 }
+
+#define MATCH_FLAG_DIFF_ENCODE 0x80000000
+#define MARK_DIFF_ENCODE 0x40000000
+#define MATCH_FLAG_OOB_TRANSITION 0x20000000
+#define MATCH_FLAGS_MASK 0xff000000
+#define MATCH_FLAGS_VALID (MATCH_FLAG_DIFF_ENCODE | MATCH_FLAG_OOB_TRANSITION)
+#define MATCH_FLAGS_INVALID (MATCH_FLAGS_MASK & ~MATCH_FLAGS_VALID)
 
 #endif /* __AA_MATCH_H */

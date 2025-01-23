@@ -1,30 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * drxd.h: DRXD DVB-T demodulator driver
  *
  * Copyright (C) 2005-2007 Micronas
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 only, as published by the Free Software Foundation.
- *
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA
- * Or, point your browser to http://www.gnu.org/copyleft/gpl.html
  */
 
 #ifndef _DRXD_H_
 #define _DRXD_H_
 
-#include <linux/kconfig.h>
 #include <linux/types.h>
 #include <linux/i2c.h>
 
@@ -52,7 +35,7 @@ struct drxd_config {
 	 s16(*osc_deviation) (void *priv, s16 dev, int flag);
 };
 
-#if IS_ENABLED(CONFIG_DVB_DRXD)
+#if IS_REACHABLE(CONFIG_DVB_DRXD)
 extern
 struct dvb_frontend *drxd_attach(const struct drxd_config *config,
 				 void *priv, struct i2c_adapter *i2c,
@@ -69,5 +52,4 @@ struct dvb_frontend *drxd_attach(const struct drxd_config *config,
 }
 #endif
 
-extern int drxd_config_i2c(struct dvb_frontend *, int);
 #endif

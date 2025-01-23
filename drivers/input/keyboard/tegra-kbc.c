@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Keyboard class input driver for the NVIDIA Tegra SoC internal matrix
  * keyboard controller
  *
  * Copyright (c) 2009-2011, NVIDIA Corporation.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
 #include <linux/kernel.h>
@@ -251,9 +238,9 @@ static void tegra_kbc_set_fifo_interrupt(struct tegra_kbc *kbc, bool enable)
 	writel(val, kbc->mmio + KBC_CONTROL_0);
 }
 
-static void tegra_kbc_keypress_timer(unsigned long data)
+static void tegra_kbc_keypress_timer(struct timer_list *t)
 {
-	struct tegra_kbc *kbc = (struct tegra_kbc *)data;
+	struct tegra_kbc *kbc = from_timer(kbc, t, timer);
 	unsigned long flags;
 	u32 val;
 	unsigned int i;
@@ -370,13 +357,16 @@ static int tegra_kbc_start(struct tegra_kbc *kbc)
 {
 	unsigned int debounce_cnt;
 	u32 val = 0;
+	int ret;
 
-	clk_prepare_enable(kbc->clk);
+	ret = clk_prepare_enable(kbc->clk);
+	if (ret)
+		return ret;
 
 	/* Reset the KBC controller to clear all previous status.*/
 	reset_control_assert(kbc->rst);
 	udelay(100);
-	reset_control_assert(kbc->rst);
+	reset_control_deassert(kbc->rst);
 	udelay(100);
 
 	tegra_kbc_config_pins(kbc);
@@ -514,10 +504,10 @@ static int tegra_kbc_parse_dt(struct tegra_kbc *kbc)
 	if (!of_property_read_u32(np, "nvidia,repeat-delay-ms", &prop))
 		kbc->repeat_cnt = prop;
 
-	if (of_find_property(np, "nvidia,needs-ghost-filter", NULL))
-		kbc->use_ghost_filter = true;
+	kbc->use_ghost_filter = of_property_present(np, "nvidia,needs-ghost-filter");
 
-	if (of_find_property(np, "nvidia,wakeup-source", NULL))
+	if (of_property_read_bool(np, "wakeup-source") ||
+	    of_property_read_bool(np, "nvidia,wakeup-source")) /* legacy */
 		kbc->wakeup = true;
 
 	if (!of_get_property(np, "nvidia,kbc-row-pins", &proplen)) {
@@ -551,7 +541,7 @@ static int tegra_kbc_parse_dt(struct tegra_kbc *kbc)
 
 	if (!num_rows || !num_cols || ((num_rows + num_cols) > KBC_MAX_GPIO)) {
 		dev_err(kbc->dev,
-			"keypad rows/columns not porperly specified\n");
+			"keypad rows/columns not properly specified\n");
 		return -EINVAL;
 	}
 
@@ -607,7 +597,6 @@ MODULE_DEVICE_TABLE(of, tegra_kbc_of_match);
 static int tegra_kbc_probe(struct platform_device *pdev)
 {
 	struct tegra_kbc *kbc;
-	struct resource *res;
 	int err;
 	int num_rows = 0;
 	unsigned int debounce_cnt;
@@ -640,10 +629,8 @@ static int tegra_kbc_probe(struct platform_device *pdev)
 		return -EINVAL;
 
 	kbc->irq = platform_get_irq(pdev, 0);
-	if (kbc->irq < 0) {
-		dev_err(&pdev->dev, "failed to get keyboard IRQ\n");
+	if (kbc->irq < 0)
 		return -ENXIO;
-	}
 
 	kbc->idev = devm_input_allocate_device(&pdev->dev);
 	if (!kbc->idev) {
@@ -651,10 +638,9 @@ static int tegra_kbc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	setup_timer(&kbc->timer, tegra_kbc_keypress_timer, (unsigned long)kbc);
+	timer_setup(&kbc->timer, tegra_kbc_keypress_timer, 0);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	kbc->mmio = devm_ioremap_resource(&pdev->dev, res);
+	kbc->mmio = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(kbc->mmio))
 		return PTR_ERR(kbc->mmio);
 
@@ -705,13 +691,12 @@ static int tegra_kbc_probe(struct platform_device *pdev)
 	input_set_drvdata(kbc->idev, kbc);
 
 	err = devm_request_irq(&pdev->dev, kbc->irq, tegra_kbc_isr,
-			  IRQF_NO_SUSPEND | IRQF_TRIGGER_HIGH, pdev->name, kbc);
+			       IRQF_TRIGGER_HIGH | IRQF_NO_AUTOEN,
+			       pdev->name, kbc);
 	if (err) {
 		dev_err(&pdev->dev, "failed to request keyboard IRQ\n");
 		return err;
 	}
-
-	disable_irq(kbc->irq);
 
 	err = input_register_device(kbc->idev);
 	if (err) {
@@ -725,7 +710,6 @@ static int tegra_kbc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static void tegra_kbc_set_keypress_interrupt(struct tegra_kbc *kbc, bool enable)
 {
 	u32 val;
@@ -767,7 +751,7 @@ static int tegra_kbc_suspend(struct device *dev)
 		enable_irq(kbc->irq);
 		enable_irq_wake(kbc->irq);
 	} else {
-		if (kbc->idev->users)
+		if (input_device_enabled(kbc->idev))
 			tegra_kbc_stop(kbc);
 	}
 	mutex_unlock(&kbc->idev->mutex);
@@ -807,23 +791,22 @@ static int tegra_kbc_resume(struct device *dev)
 			input_sync(kbc->idev);
 		}
 	} else {
-		if (kbc->idev->users)
+		if (input_device_enabled(kbc->idev))
 			err = tegra_kbc_start(kbc);
 	}
 	mutex_unlock(&kbc->idev->mutex);
 
 	return err;
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(tegra_kbc_pm_ops, tegra_kbc_suspend, tegra_kbc_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(tegra_kbc_pm_ops,
+				tegra_kbc_suspend, tegra_kbc_resume);
 
 static struct platform_driver tegra_kbc_driver = {
 	.probe		= tegra_kbc_probe,
 	.driver	= {
 		.name	= "tegra-kbc",
-		.owner  = THIS_MODULE,
-		.pm	= &tegra_kbc_pm_ops,
+		.pm	= pm_sleep_ptr(&tegra_kbc_pm_ops),
 		.of_match_table = tegra_kbc_of_match,
 	},
 };

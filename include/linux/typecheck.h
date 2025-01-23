@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef TYPECHECK_H_INCLUDED
 #define TYPECHECK_H_INCLUDED
 
@@ -19,6 +20,15 @@
 #define typecheck_fn(type,function) \
 ({	typeof(type) __tmp = function; \
 	(void)__tmp; \
+})
+
+/*
+ * Check at compile time that something is a pointer type.
+ */
+#define typecheck_pointer(x) \
+({	typeof(x) __dummy; \
+	(void)sizeof(*__dummy); \
+	1; \
 })
 
 #endif		/* TYPECHECK_H_INCLUDED */

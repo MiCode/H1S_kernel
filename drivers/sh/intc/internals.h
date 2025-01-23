@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #include <linux/sh_intc.h>
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
@@ -99,15 +100,7 @@ static inline struct intc_desc_int *get_intc_desc(unsigned int irq)
  */
 static inline void activate_irq(int irq)
 {
-#ifdef CONFIG_ARM
-	/* ARM requires an extra step to clear IRQ_NOREQUEST, which it
-	 * sets on behalf of every irq_chip.  Also sets IRQ_NOPROBE.
-	 */
-	set_irq_flags(irq, IRQF_VALID);
-#else
-	/* same effect on other architectures */
-	irq_set_noprobe(irq);
-#endif
+	irq_modify_status(irq, IRQ_NOREQUEST, IRQ_NOPROBE);
 }
 
 static inline int intc_handle_int_cmp(const void *a, const void *b)

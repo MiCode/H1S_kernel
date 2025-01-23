@@ -31,7 +31,6 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/map.h>
 #include <linux/mtd/partitions.h>
@@ -72,7 +71,7 @@ static int vr_nor_init_partitions(struct vr_nor_mtd *p)
 {
 	/* register the flash bank */
 	/* partition the flash bank */
-	return mtd_device_parse_register(p->info, NULL, NULL, NULL, 0);
+	return mtd_device_register(p->info, NULL, 0);
 }
 
 static void vr_nor_destroy_mtd_setup(struct vr_nor_mtd *p)
@@ -91,7 +90,7 @@ static int vr_nor_mtd_setup(struct vr_nor_mtd *p)
 	if (!p->info)
 		return -ENODEV;
 
-	p->info->owner = THIS_MODULE;
+	p->info->dev.parent = &p->dev->dev;
 
 	return 0;
 }
@@ -134,7 +133,7 @@ static int vr_nor_init_maps(struct vr_nor_mtd *p)
 	if (win_len < (CS0_START + CS0_SIZE))
 		return -ENXIO;
 
-	p->csr_base = ioremap_nocache(csr_phys, csr_len);
+	p->csr_base = ioremap(csr_phys, csr_len);
 	if (!p->csr_base)
 		return -ENOMEM;
 
@@ -153,7 +152,7 @@ static int vr_nor_init_maps(struct vr_nor_mtd *p)
 	p->map.bankwidth = (exp_timing_cs0 & TIMING_BYTE_EN) ? 1 : 2;
 	p->map.phys = win_phys + CS0_START;
 	p->map.size = CS0_SIZE;
-	p->map.virt = ioremap_nocache(p->map.phys, p->map.size);
+	p->map.virt = ioremap(p->map.phys, p->map.size);
 	if (!p->map.virt) {
 		err = -ENOMEM;
 		goto release;
@@ -171,7 +170,7 @@ static int vr_nor_init_maps(struct vr_nor_mtd *p)
 	return err;
 }
 
-static struct pci_device_id vr_nor_pci_ids[] = {
+static const struct pci_device_id vr_nor_pci_ids[] = {
 	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x500D)},
 	{0,}
 };

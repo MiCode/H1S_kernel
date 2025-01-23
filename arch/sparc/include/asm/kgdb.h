@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SPARC_KGDB_H
 #define _SPARC_KGDB_H
 
@@ -30,7 +31,10 @@ enum regnames {
 #define NUMREGBYTES		((GDB_Y + 1) * 8)
 #endif
 
-extern void arch_kgdb_breakpoint(void);
+struct pt_regs;
+asmlinkage void kgdb_trap(unsigned long trap_level, struct pt_regs *regs);
+
+void arch_kgdb_breakpoint(void);
 
 #define BREAK_INSTR_SIZE	4
 #define CACHE_FLUSH_IS_SAFE	1

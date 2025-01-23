@@ -61,10 +61,10 @@ MODULE_ALIAS("arusb_lnx");
  * Note:
  *
  * Always update our wiki's device list (located at:
- * http://wireless.kernel.org/en/users/Drivers/ar9170/devices ),
+ * https://wireless.wiki.kernel.org/en/users/Drivers/ar9170/devices ),
  * whenever you add a new device.
  */
-static struct usb_device_id carl9170_usb_ids[] = {
+static const struct usb_device_id carl9170_usb_ids[] = {
 	/* Atheros 9170 */
 	{ USB_DEVICE(0x0cf3, 0x9170) },
 	/* Atheros TG121N */
@@ -127,6 +127,8 @@ static struct usb_device_id carl9170_usb_ids[] = {
 	{}
 };
 MODULE_DEVICE_TABLE(usb, carl9170_usb_ids);
+
+static struct usb_driver carl9170_driver;
 
 static void carl9170_usb_submit_data_urb(struct ar9170 *ar)
 {
@@ -375,9 +377,9 @@ void carl9170_usb_handle_tx_err(struct ar9170 *ar)
 	}
 }
 
-static void carl9170_usb_tasklet(unsigned long data)
+static void carl9170_usb_tasklet(struct tasklet_struct *t)
 {
-	struct ar9170 *ar = (struct ar9170 *) data;
+	struct ar9170 *ar = from_tasklet(ar, t, usb_tasklet);
 
 	if (!IS_INITIALIZED(ar))
 		return;
@@ -621,9 +623,16 @@ int __carl9170_exec_cmd(struct ar9170 *ar, struct carl9170_cmd *cmd,
 		goto err_free;
 	}
 
-	usb_fill_int_urb(urb, ar->udev, usb_sndintpipe(ar->udev,
-		AR9170_USB_EP_CMD), cmd, cmd->hdr.len + 4,
-		carl9170_usb_cmd_complete, ar, 1);
+	if (ar->usb_ep_cmd_is_bulk)
+		usb_fill_bulk_urb(urb, ar->udev,
+				  usb_sndbulkpipe(ar->udev, AR9170_USB_EP_CMD),
+				  cmd, cmd->hdr.len + 4,
+				  carl9170_usb_cmd_complete, ar);
+	else
+		usb_fill_int_urb(urb, ar->udev,
+				 usb_sndintpipe(ar->udev, AR9170_USB_EP_CMD),
+				 cmd, cmd->hdr.len + 4,
+				 carl9170_usb_cmd_complete, ar, 1);
 
 	if (free_buf)
 		urb->transfer_flags |= URB_FREE_BUFFER;
@@ -644,6 +653,7 @@ int carl9170_exec_cmd(struct ar9170 *ar, const enum carl9170_cmd_oids cmd,
 	unsigned int plen, void *payload, unsigned int outlen, void *out)
 {
 	int err = -ENOMEM;
+	unsigned long time_left;
 
 	if (!IS_ACCEPTING_CMD(ar))
 		return -EIO;
@@ -662,11 +672,12 @@ int carl9170_exec_cmd(struct ar9170 *ar, const enum carl9170_cmd_oids cmd,
 	ar->readlen = outlen;
 	spin_unlock_bh(&ar->cmd_lock);
 
+	reinit_completion(&ar->cmd_wait);
 	err = __carl9170_exec_cmd(ar, &ar->cmd, false);
 
 	if (!(cmd & CARL9170_CMD_ASYNC_FLAG)) {
-		err = wait_for_completion_timeout(&ar->cmd_wait, HZ);
-		if (err == 0) {
+		time_left = wait_for_completion_timeout(&ar->cmd_wait, HZ);
+		if (time_left == 0) {
 			err = -ETIMEDOUT;
 			goto err_unbuf;
 		}
@@ -770,10 +781,7 @@ void carl9170_usb_stop(struct ar9170 *ar)
 	spin_lock_bh(&ar->cmd_lock);
 	ar->readlen = 0;
 	spin_unlock_bh(&ar->cmd_lock);
-	complete_all(&ar->cmd_wait);
-
-	/* This is required to prevent an early completion on _start */
-	reinit_completion(&ar->cmd_wait);
+	complete(&ar->cmd_wait);
 
 	/*
 	 * Note:
@@ -960,32 +968,28 @@ err_out:
 
 static void carl9170_usb_firmware_failed(struct ar9170 *ar)
 {
-	struct device *parent = ar->udev->dev.parent;
-	struct usb_device *udev;
-
-	/*
-	 * Store a copy of the usb_device pointer locally.
-	 * This is because device_release_driver initiates
-	 * carl9170_usb_disconnect, which in turn frees our
-	 * driver context (ar).
+	/* Store a copies of the usb_interface and usb_device pointer locally.
+	 * This is because release_driver initiates carl9170_usb_disconnect,
+	 * which in turn frees our driver context (ar).
 	 */
-	udev = ar->udev;
+	struct usb_interface *intf = ar->intf;
+	struct usb_device *udev = ar->udev;
 
 	complete(&ar->fw_load_wait);
+	/* at this point 'ar' could be already freed. Don't use it anymore */
+	ar = NULL;
 
 	/* unbind anything failed */
-	if (parent)
-		device_lock(parent);
+	usb_lock_device(udev);
+	usb_driver_release_interface(&carl9170_driver, intf);
+	usb_unlock_device(udev);
 
-	device_release_driver(&udev->dev);
-	if (parent)
-		device_unlock(parent);
-
-	usb_put_dev(udev);
+	usb_put_intf(intf);
 }
 
 static void carl9170_usb_firmware_finish(struct ar9170 *ar)
 {
+	struct usb_interface *intf = ar->intf;
 	int err;
 
 	err = carl9170_parse_firmware(ar);
@@ -1003,7 +1007,7 @@ static void carl9170_usb_firmware_finish(struct ar9170 *ar)
 		goto err_unrx;
 
 	complete(&ar->fw_load_wait);
-	usb_put_dev(ar->udev);
+	usb_put_intf(intf);
 	return;
 
 err_unrx:
@@ -1032,9 +1036,10 @@ static void carl9170_usb_firmware_step2(const struct firmware *fw,
 static int carl9170_usb_probe(struct usb_interface *intf,
 			      const struct usb_device_id *id)
 {
+	struct usb_endpoint_descriptor *ep;
 	struct ar9170 *ar;
 	struct usb_device *udev;
-	int err;
+	int i, err;
 
 	err = usb_reset_device(interface_to_usbdev(intf));
 	if (err)
@@ -1045,10 +1050,24 @@ static int carl9170_usb_probe(struct usb_interface *intf,
 		return PTR_ERR(ar);
 
 	udev = interface_to_usbdev(intf);
-	usb_get_dev(udev);
 	ar->udev = udev;
 	ar->intf = intf;
 	ar->features = id->driver_info;
+
+	/* We need to remember the type of endpoint 4 because it differs
+	 * between high- and full-speed configuration. The high-speed
+	 * configuration specifies it as interrupt and the full-speed
+	 * configuration as bulk endpoint. This information is required
+	 * later when sending urbs to that endpoint.
+	 */
+	for (i = 0; i < intf->cur_altsetting->desc.bNumEndpoints; ++i) {
+		ep = &intf->cur_altsetting->endpoint[i].desc;
+
+		if (usb_endpoint_num(ep) == AR9170_USB_EP_CMD &&
+		    usb_endpoint_dir_out(ep) &&
+		    usb_endpoint_type(ep) == USB_ENDPOINT_XFER_BULK)
+			ar->usb_ep_cmd_is_bulk = true;
+	}
 
 	usb_set_intfdata(intf, ar);
 	SET_IEEE80211_DEV(ar->hw, &intf->dev);
@@ -1063,8 +1082,7 @@ static int carl9170_usb_probe(struct usb_interface *intf,
 	init_completion(&ar->cmd_wait);
 	init_completion(&ar->fw_boot_wait);
 	init_completion(&ar->fw_load_wait);
-	tasklet_init(&ar->usb_tasklet, carl9170_usb_tasklet,
-		     (unsigned long)ar);
+	tasklet_setup(&ar->usb_tasklet, carl9170_usb_tasklet);
 
 	atomic_set(&ar->tx_cmd_urbs, 0);
 	atomic_set(&ar->tx_anch_urbs, 0);
@@ -1072,23 +1090,26 @@ static int carl9170_usb_probe(struct usb_interface *intf,
 	atomic_set(&ar->rx_anch_urbs, 0);
 	atomic_set(&ar->rx_pool_urbs, 0);
 
-	usb_get_dev(ar->udev);
+	usb_get_intf(intf);
 
 	carl9170_set_state(ar, CARL9170_STOPPED);
 
-	return request_firmware_nowait(THIS_MODULE, 1, CARL9170FW_NAME,
+	err = request_firmware_nowait(THIS_MODULE, 1, CARL9170FW_NAME,
 		&ar->udev->dev, GFP_KERNEL, ar, carl9170_usb_firmware_step2);
+	if (err) {
+		usb_put_intf(intf);
+		carl9170_free(ar);
+	}
+	return err;
 }
 
 static void carl9170_usb_disconnect(struct usb_interface *intf)
 {
 	struct ar9170 *ar = usb_get_intfdata(intf);
-	struct usb_device *udev;
 
 	if (WARN_ON(!ar))
 		return;
 
-	udev = ar->udev;
 	wait_for_completion(&ar->fw_load_wait);
 
 	if (IS_INITIALIZED(ar)) {
@@ -1103,7 +1124,6 @@ static void carl9170_usb_disconnect(struct usb_interface *intf)
 
 	carl9170_release_firmware(ar);
 	carl9170_free(ar);
-	usb_put_dev(udev);
 }
 
 #ifdef CONFIG_PM

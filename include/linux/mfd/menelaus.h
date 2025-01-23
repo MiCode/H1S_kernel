@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Functions to access Menelaus power management chip
  */
@@ -24,7 +25,6 @@ extern int menelaus_set_vaux(unsigned int mV);
 extern int menelaus_set_vdcdc(int dcdc, unsigned int mV);
 extern int menelaus_set_slot_sel(int enable);
 extern int menelaus_get_slot_pin_states(void);
-extern int menelaus_set_vcore_sw(unsigned int mV);
 extern int menelaus_set_vcore_hw(unsigned int roof_mV, unsigned int floor_mV);
 
 #define EN_VPLL_SLEEP	(1 << 7)
@@ -37,11 +37,5 @@ extern int menelaus_set_vcore_hw(unsigned int roof_mV, unsigned int floor_mV);
 #define EN_VC_SLEEP	(1 << 0)
 
 extern int menelaus_set_regulator_sleep(int enable, u32 val);
-
-#if defined(CONFIG_ARCH_OMAP2) && defined(CONFIG_MENELAUS)
-#define omap_has_menelaus()	1
-#else
-#define omap_has_menelaus()	0
-#endif
 
 #endif

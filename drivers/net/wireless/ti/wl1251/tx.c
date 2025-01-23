@@ -1,23 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of wl1251
  *
  * Copyright (c) 1998-2007 Texas Instruments Incorporated
  * Copyright (C) 2008 Nokia Corporation
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include <linux/kernel.h>
@@ -161,8 +147,7 @@ static int wl1251_tx_fill_hdr(struct wl1251 *wl, struct sk_buff *skb,
 		return id;
 
 	fc = *(u16 *)skb->data;
-	tx_hdr = (struct tx_double_buffer_desc *) skb_push(skb,
-							   sizeof(*tx_hdr));
+	tx_hdr = skb_push(skb, sizeof(*tx_hdr));
 
 	tx_hdr->length = cpu_to_le16(skb->len - sizeof(*tx_hdr));
 	rate = ieee80211_get_tx_rate(wl->hw, control);
@@ -222,10 +207,8 @@ static int wl1251_tx_send_packet(struct wl1251 *wl, struct sk_buff *skb,
 			struct sk_buff *newskb = skb_copy_expand(skb, 0, 3,
 								 GFP_KERNEL);
 
-			if (unlikely(newskb == NULL)) {
-				wl1251_error("Can't allocate skb!");
+			if (unlikely(newskb == NULL))
 				return -EINVAL;
-			}
 
 			tx_hdr = (struct tx_double_buffer_desc *) newskb->data;
 
@@ -460,19 +443,25 @@ static void wl1251_tx_packet_cb(struct wl1251 *wl,
 void wl1251_tx_complete(struct wl1251 *wl)
 {
 	int i, result_index, num_complete = 0, queue_len;
-	struct tx_result result[FW_TX_CMPLT_BLOCK_SIZE], *result_ptr;
+	struct tx_result *result, *result_ptr;
 	unsigned long flags;
 
 	if (unlikely(wl->state != WL1251_STATE_ON))
 		return;
 
+	result = kmalloc_array(FW_TX_CMPLT_BLOCK_SIZE, sizeof(*result), GFP_KERNEL);
+	if (!result) {
+		wl1251_error("can not allocate result buffer");
+		return;
+	}
+
 	/* First we read the result */
-	wl1251_mem_read(wl, wl->data_path->tx_complete_addr,
-			    result, sizeof(result));
+	wl1251_mem_read(wl, wl->data_path->tx_complete_addr, result,
+			FW_TX_CMPLT_BLOCK_SIZE * sizeof(*result));
 
 	result_index = wl->next_tx_complete;
 
-	for (i = 0; i < ARRAY_SIZE(result); i++) {
+	for (i = 0; i < FW_TX_CMPLT_BLOCK_SIZE; i++) {
 		result_ptr = &result[result_index];
 
 		if (result_ptr->done_1 == 1 &&
@@ -555,6 +544,7 @@ void wl1251_tx_complete(struct wl1251 *wl)
 
 	}
 
+	kfree(result);
 	wl->next_tx_complete = result_index;
 }
 

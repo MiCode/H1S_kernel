@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*****************************************************************************
  *
  * Copyright (C) 2008 Cedric Bregardis <cedric.bregardis@free.fr> and
  * Jean-Christian Hassler <jhassler@free.fr>
  *
  * This file is part of the Audiowerk2 ALSA driver
- *
- * The Audiowerk2 ALSA driver is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2.
- *
- * The Audiowerk2 ALSA driver is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with the Audiowerk2 ALSA driver; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301,
- * USA.
  *
  *****************************************************************************/
 
@@ -27,7 +14,7 @@
 #include <linux/pci.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
-#include <asm/io.h>
+#include <linux/io.h>
 #include <sound/core.h>
 #include <sound/initval.h>
 #include <sound/pcm.h>
@@ -204,8 +191,7 @@ void snd_aw2_saa7146_pcm_init_playback(struct snd_aw2_saa7146 *chip,
 		/* Define upper limit for DMA access */
 		WRITEREG(dma_addr + buffer_size, ProtA1_out);
 	} else {
-		printk(KERN_ERR
-		       "aw2: snd_aw2_saa7146_pcm_init_playback: "
+		pr_err("aw2: snd_aw2_saa7146_pcm_init_playback: "
 		       "Substream number is not 0 or 1 -> not managed\n");
 	}
 }
@@ -251,8 +237,7 @@ void snd_aw2_saa7146_pcm_init_capture(struct snd_aw2_saa7146 *chip,
 		/* Define upper limit for DMA access  */
 		WRITEREG(dma_addr + buffer_size, ProtA1_in);
 	} else {
-		printk(KERN_ERR
-		       "aw2: snd_aw2_saa7146_pcm_init_capture: "
+		pr_err("aw2: snd_aw2_saa7146_pcm_init_capture: "
 		       "Substream number is not 0 -> not managed\n");
 	}
 }
@@ -345,7 +330,7 @@ void snd_aw2_saa7146_pcm_trigger_stop_capture(struct snd_aw2_saa7146 *chip,
 irqreturn_t snd_aw2_saa7146_interrupt(int irq, void *dev_id)
 {
 	unsigned int isr;
-	unsigned int iicsta;
+	__always_unused unsigned int iicsta;
 	struct snd_aw2_saa7146 *chip = dev_id;
 
 	isr = READREG(ISR);

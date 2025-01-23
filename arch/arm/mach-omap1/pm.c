@@ -52,28 +52,27 @@
 #include <asm/mach/time.h>
 #include <asm/mach/irq.h>
 
-#include <mach/tc.h>
-#include <mach/mux.h>
+#include <linux/soc/ti/omap1-io.h>
+#include "tc.h"
 #include <linux/omap-dma.h>
-#include <plat/dmtimer.h>
+#include <clocksource/timer-ti-dm.h>
 
-#include <mach/irqs.h>
-
+#include "hardware.h"
+#include "mux.h"
+#include "irqs.h"
 #include "iomap.h"
 #include "clock.h"
 #include "pm.h"
+#include "soc.h"
 #include "sram.h"
 
 static unsigned int arm_sleep_save[ARM_SLEEP_SAVE_SIZE];
 static unsigned short dsp_sleep_save[DSP_SLEEP_SAVE_SIZE];
 static unsigned short ulpd_sleep_save[ULPD_SLEEP_SAVE_SIZE];
-static unsigned int mpui7xx_sleep_save[MPUI7XX_SLEEP_SAVE_SIZE];
 static unsigned int mpui1510_sleep_save[MPUI1510_SLEEP_SAVE_SIZE];
 static unsigned int mpui1610_sleep_save[MPUI1610_SLEEP_SAVE_SIZE];
 
-#ifdef CONFIG_OMAP_32K_TIMER
-
-static unsigned short enable_dyn_sleep = 1;
+static unsigned short enable_dyn_sleep;
 
 static ssize_t idle_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 char *buf)
@@ -86,8 +85,9 @@ static ssize_t idle_store(struct kobject *kobj, struct kobj_attribute *attr,
 {
 	unsigned short value;
 	if (sscanf(buf, "%hu", &value) != 1 ||
-	    (value != 0 && value != 1)) {
-		printk(KERN_ERR "idle_sleep_store: Invalid value\n");
+	    (value != 0 && value != 1) ||
+	    (value != 0 && !IS_ENABLED(CONFIG_OMAP_32K_TIMER))) {
+		pr_err("idle_sleep_store: Invalid value\n");
 		return -EINVAL;
 	}
 	enable_dyn_sleep = value;
@@ -97,7 +97,6 @@ static ssize_t idle_store(struct kobject *kobj, struct kobj_attribute *attr,
 static struct kobj_attribute sleep_while_idle_attr =
 	__ATTR(sleep_while_idle, 0644, idle_show, idle_store);
 
-#endif
 
 static void (*omap_sram_suspend)(unsigned long r0, unsigned long r1) = NULL;
 
@@ -111,27 +110,11 @@ void omap1_pm_idle(void)
 {
 	extern __u32 arm_idlect1_mask;
 	__u32 use_idlect1 = arm_idlect1_mask;
-	int do_sleep = 0;
 
 	local_fiq_disable();
 
 #if defined(CONFIG_OMAP_MPU_TIMER) && !defined(CONFIG_OMAP_DM_TIMER)
-#warning Enable 32kHz OS timer in order to allow sleep states in idle
 	use_idlect1 = use_idlect1 & ~(1 << 9);
-#else
-
-	while (enable_dyn_sleep) {
-
-#ifdef CONFIG_CBUS_TAHVO_USB
-		extern int vbus_active;
-		/* Clock requirements? */
-		if (vbus_active)
-			break;
-#endif
-		do_sleep = 1;
-		break;
-	}
-
 #endif
 
 #ifdef CONFIG_OMAP_DM_TIMER
@@ -141,10 +124,12 @@ void omap1_pm_idle(void)
 	if (omap_dma_running())
 		use_idlect1 &= ~(1 << 6);
 
-	/* We should be able to remove the do_sleep variable and multiple
+	/*
+	 * We should be able to remove the do_sleep variable and multiple
 	 * tests above as soon as drivers, timer and DMA code have been fixed.
-	 * Even the sleep block count should become obsolete. */
-	if ((use_idlect1 != ~0) || !do_sleep) {
+	 * Even the sleep block count should become obsolete.
+	 */
+	if ((use_idlect1 != ~0) || !enable_dyn_sleep) {
 
 		__u32 saved_idlect1 = omap_readl(ARM_IDLECT1);
 		if (cpu_is_omap15xx())
@@ -180,10 +165,7 @@ static void omap_pm_wakeup_setup(void)
 	 * drivers must still separately call omap_set_gpio_wakeup() to
 	 * wake up to a GPIO interrupt.
 	 */
-	if (cpu_is_omap7xx())
-		level1_wake = OMAP_IRQ_BIT(INT_7XX_GPIO_BANK1) |
-			OMAP_IRQ_BIT(INT_7XX_IH2_IRQ);
-	else if (cpu_is_omap15xx())
+	if (cpu_is_omap15xx())
 		level1_wake = OMAP_IRQ_BIT(INT_GPIO_BANK1) |
 			OMAP_IRQ_BIT(INT_1510_IH2_IRQ);
 	else if (cpu_is_omap16xx())
@@ -192,12 +174,7 @@ static void omap_pm_wakeup_setup(void)
 
 	omap_writel(~level1_wake, OMAP_IH1_MIR);
 
-	if (cpu_is_omap7xx()) {
-		omap_writel(~level2_wake, OMAP_IH2_0_MIR);
-		omap_writel(~(OMAP_IRQ_BIT(INT_7XX_WAKE_UP_REQ) |
-				OMAP_IRQ_BIT(INT_7XX_MPUIO_KEYPAD)),
-				OMAP_IH2_1_MIR);
-	} else if (cpu_is_omap15xx()) {
+	if (cpu_is_omap15xx()) {
 		level2_wake |= OMAP_IRQ_BIT(INT_KEYBOARD);
 		omap_writel(~level2_wake,  OMAP_IH2_MIR);
 	} else if (cpu_is_omap16xx()) {
@@ -250,17 +227,7 @@ void omap1_pm_suspend(void)
 	 * Save interrupt, MPUI, ARM and UPLD control registers.
 	 */
 
-	if (cpu_is_omap7xx()) {
-		MPUI7XX_SAVE(OMAP_IH1_MIR);
-		MPUI7XX_SAVE(OMAP_IH2_0_MIR);
-		MPUI7XX_SAVE(OMAP_IH2_1_MIR);
-		MPUI7XX_SAVE(MPUI_CTRL);
-		MPUI7XX_SAVE(MPUI_DSP_BOOT_CONFIG);
-		MPUI7XX_SAVE(MPUI_DSP_API_CONFIG);
-		MPUI7XX_SAVE(EMIFS_CONFIG);
-		MPUI7XX_SAVE(EMIFF_SDRAM_CONFIG);
-
-	} else if (cpu_is_omap15xx()) {
+	if (cpu_is_omap15xx()) {
 		MPUI1510_SAVE(OMAP_IH1_MIR);
 		MPUI1510_SAVE(OMAP_IH2_MIR);
 		MPUI1510_SAVE(MPUI_CTRL);
@@ -302,9 +269,8 @@ void omap1_pm_suspend(void)
 	/* stop DSP */
 	omap_writew(omap_readw(ARM_RSTCT1) & ~(1 << DSP_EN), ARM_RSTCT1);
 
-		/* shut down dsp_ck */
-	if (!cpu_is_omap7xx())
-		omap_writew(omap_readw(ARM_CKCTL) & ~(1 << EN_DSPCK), ARM_CKCTL);
+	/* shut down dsp_ck */
+	omap_writew(omap_readw(ARM_CKCTL) & ~(1 << EN_DSPCK), ARM_CKCTL);
 
 	/* temporarily enabling api_ck to access DSP registers */
 	omap_writew(omap_readw(ARM_IDLECT2) | 1 << EN_APICK, ARM_IDLECT2);
@@ -380,13 +346,7 @@ void omap1_pm_suspend(void)
 	ULPD_RESTORE(ULPD_CLOCK_CTRL);
 	ULPD_RESTORE(ULPD_STATUS_REQ);
 
-	if (cpu_is_omap7xx()) {
-		MPUI7XX_RESTORE(EMIFS_CONFIG);
-		MPUI7XX_RESTORE(EMIFF_SDRAM_CONFIG);
-		MPUI7XX_RESTORE(OMAP_IH1_MIR);
-		MPUI7XX_RESTORE(OMAP_IH2_0_MIR);
-		MPUI7XX_RESTORE(OMAP_IH2_1_MIR);
-	} else if (cpu_is_omap15xx()) {
+	if (cpu_is_omap15xx()) {
 		MPUI1510_RESTORE(MPUI_CTRL);
 		MPUI1510_RESTORE(MPUI_DSP_BOOT_CONFIG);
 		MPUI1510_RESTORE(MPUI_DSP_API_CONFIG);
@@ -447,14 +407,7 @@ static int omap_pm_debug_show(struct seq_file *m, void *v)
 	ULPD_SAVE(ULPD_DPLL_CTRL);
 	ULPD_SAVE(ULPD_POWER_CTRL);
 
-	if (cpu_is_omap7xx()) {
-		MPUI7XX_SAVE(MPUI_CTRL);
-		MPUI7XX_SAVE(MPUI_DSP_STATUS);
-		MPUI7XX_SAVE(MPUI_DSP_BOOT_CONFIG);
-		MPUI7XX_SAVE(MPUI_DSP_API_CONFIG);
-		MPUI7XX_SAVE(EMIFF_SDRAM_CONFIG);
-		MPUI7XX_SAVE(EMIFS_CONFIG);
-	} else if (cpu_is_omap15xx()) {
+	if (cpu_is_omap15xx()) {
 		MPUI1510_SAVE(MPUI_CTRL);
 		MPUI1510_SAVE(MPUI_DSP_STATUS);
 		MPUI1510_SAVE(MPUI_DSP_BOOT_CONFIG);
@@ -500,21 +453,7 @@ static int omap_pm_debug_show(struct seq_file *m, void *v)
 		   ULPD_SHOW(ULPD_STATUS_REQ),
 		   ULPD_SHOW(ULPD_POWER_CTRL));
 
-	if (cpu_is_omap7xx()) {
-		seq_printf(m,
-			   "MPUI7XX_CTRL_REG	     0x%-8x \n"
-			   "MPUI7XX_DSP_STATUS_REG:      0x%-8x \n"
-			   "MPUI7XX_DSP_BOOT_CONFIG_REG: 0x%-8x \n"
-			   "MPUI7XX_DSP_API_CONFIG_REG:  0x%-8x \n"
-			   "MPUI7XX_SDRAM_CONFIG_REG:    0x%-8x \n"
-			   "MPUI7XX_EMIFS_CONFIG_REG:    0x%-8x \n",
-			   MPUI7XX_SHOW(MPUI_CTRL),
-			   MPUI7XX_SHOW(MPUI_DSP_STATUS),
-			   MPUI7XX_SHOW(MPUI_DSP_BOOT_CONFIG),
-			   MPUI7XX_SHOW(MPUI_DSP_API_CONFIG),
-			   MPUI7XX_SHOW(EMIFF_SDRAM_CONFIG),
-			   MPUI7XX_SHOW(EMIFS_CONFIG));
-	} else if (cpu_is_omap15xx()) {
+	if (cpu_is_omap15xx()) {
 		seq_printf(m,
 			   "MPUI1510_CTRL_REG             0x%-8x \n"
 			   "MPUI1510_DSP_STATUS_REG:      0x%-8x \n"
@@ -547,29 +486,15 @@ static int omap_pm_debug_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static int omap_pm_debug_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, omap_pm_debug_show,
-				&inode->i_private);
-}
-
-static const struct file_operations omap_pm_debug_fops = {
-	.open		= omap_pm_debug_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(omap_pm_debug);
 
 static void omap_pm_init_debugfs(void)
 {
 	struct dentry *d;
 
 	d = debugfs_create_dir("pm_debug", NULL);
-	if (!d)
-		return;
-
-	(void) debugfs_create_file("omap_pm", S_IWUSR | S_IRUGO,
-					d, NULL, &omap_pm_debug_fops);
+	debugfs_create_file("omap_pm", S_IWUSR | S_IRUGO, d, NULL,
+			    &omap_pm_debug_fops);
 }
 
 #endif /* CONFIG_DEBUG_FS */
@@ -596,7 +521,6 @@ static int omap_pm_enter(suspend_state_t state)
 {
 	switch (state)
 	{
-	case PM_SUSPEND_STANDBY:
 	case PM_SUSPEND_MEM:
 		omap1_pm_suspend();
 		break;
@@ -626,11 +550,6 @@ static irqreturn_t omap_wakeup_interrupt(int irq, void *dev)
 	return IRQ_HANDLED;
 }
 
-static struct irqaction omap_wakeup_irq = {
-	.name		= "peripheral wakeup",
-	.handler	= omap_wakeup_interrupt
-};
-
 
 
 static const struct platform_suspend_ops omap_pm_ops = {
@@ -642,25 +561,33 @@ static const struct platform_suspend_ops omap_pm_ops = {
 
 static int __init omap_pm_init(void)
 {
-
-#ifdef CONFIG_OMAP_32K_TIMER
-	int error;
-#endif
+	int error = 0;
+	int irq;
 
 	if (!cpu_class_is_omap1())
 		return -ENODEV;
 
-	printk("Power Management for TI OMAP.\n");
+	pr_info("Power Management for TI OMAP.\n");
+
+	if (!IS_ENABLED(CONFIG_OMAP_32K_TIMER))
+		pr_info("OMAP1 PM: sleep states in idle disabled due to no 32KiHz timer\n");
+
+	if (!IS_ENABLED(CONFIG_OMAP_DM_TIMER))
+		pr_info("OMAP1 PM: sleep states in idle disabled due to no DMTIMER support\n");
+
+	if (IS_ENABLED(CONFIG_OMAP_32K_TIMER) &&
+	    IS_ENABLED(CONFIG_OMAP_DM_TIMER)) {
+		/* OMAP16xx only */
+		pr_info("OMAP1 PM: sleep states in idle enabled\n");
+		enable_dyn_sleep = 1;
+	}
 
 	/*
 	 * We copy the assembler sleep/wakeup routines to SRAM.
 	 * These routines need to be in SRAM as that's the only
 	 * memory the MPU can see when it wakes up.
 	 */
-	if (cpu_is_omap7xx()) {
-		omap_sram_suspend = omap_sram_push(omap7xx_cpu_suspend,
-						   omap7xx_cpu_suspend_sz);
-	} else if (cpu_is_omap15xx()) {
+	if (cpu_is_omap15xx()) {
 		omap_sram_suspend = omap_sram_push(omap1510_cpu_suspend,
 						   omap1510_cpu_suspend_sz);
 	} else if (cpu_is_omap16xx()) {
@@ -675,10 +602,15 @@ static int __init omap_pm_init(void)
 
 	arm_pm_idle = omap1_pm_idle;
 
-	if (cpu_is_omap7xx())
-		setup_irq(INT_7XX_WAKE_UP_REQ, &omap_wakeup_irq);
-	else if (cpu_is_omap16xx())
-		setup_irq(INT_1610_WAKE_UP_REQ, &omap_wakeup_irq);
+	if (cpu_is_omap16xx())
+		irq = INT_1610_WAKE_UP_REQ;
+	else
+		irq = -1;
+
+	if (irq >= 0) {
+		if (request_irq(irq, omap_wakeup_interrupt, 0, "peripheral wakeup", NULL))
+			pr_err("Failed to request irq %d (peripheral wakeup)\n", irq);
+	}
 
 	/* Program new power ramp-up time
 	 * (0 for most boards since we don't lower voltage when in deep sleep)
@@ -689,9 +621,7 @@ static int __init omap_pm_init(void)
 	omap_writew(ULPD_POWER_CTRL_REG_VAL, ULPD_POWER_CTRL);
 
 	/* Configure IDLECT3 */
-	if (cpu_is_omap7xx())
-		omap_writel(OMAP7XX_IDLECT3_VAL, OMAP7XX_IDLECT3);
-	else if (cpu_is_omap16xx())
+	if (cpu_is_omap16xx())
 		omap_writel(OMAP1610_IDLECT3_VAL, OMAP1610_IDLECT3);
 
 	suspend_set_ops(&omap_pm_ops);
@@ -700,17 +630,15 @@ static int __init omap_pm_init(void)
 	omap_pm_init_debugfs();
 #endif
 
-#ifdef CONFIG_OMAP_32K_TIMER
 	error = sysfs_create_file(power_kobj, &sleep_while_idle_attr.attr);
 	if (error)
-		printk(KERN_ERR "sysfs_create_file failed: %d\n", error);
-#endif
+		pr_err("sysfs_create_file failed: %d\n", error);
 
 	if (cpu_is_omap16xx()) {
 		/* configure LOW_PWR pin */
 		omap_cfg_reg(T20_1610_LOW_PWR);
 	}
 
-	return 0;
+	return error;
 }
 __initcall(omap_pm_init);

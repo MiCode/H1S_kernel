@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
 * alc5632.c  --  ALC5632 ALSA SoC Audio Codec
 *
@@ -9,10 +10,6 @@
 *           Marc Dietrich <marvin24@gmx.de>
 *
 * Based on alc5623.c by Arnaud Patard
-*
-* This program is free software; you can redistribute it and/or modify
-* it under the terms of the GNU General Public License version 2 as
-* published by the Free Software Foundation.
 */
 
 #include <linux/module.h>
@@ -35,7 +32,7 @@
 /*
  * ALC5632 register cache
  */
-static struct reg_default  alc5632_reg_defaults[] = {
+static const struct reg_default alc5632_reg_defaults[] = {
 	{   2, 0x8080 },	/* R2   - Speaker Output Volume */
 	{   4, 0x8080 },	/* R4   - Headphone Output Volume */
 	{   6, 0x8080 },	/* R6   - AUXOUT Volume */
@@ -116,18 +113,20 @@ static inline int alc5632_reset(struct regmap *map)
 static int amp_mixer_event(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
+	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+
 	/* to power-on/off class-d amp generators/speaker */
 	/* need to write to 'index-46h' register :        */
 	/* so write index num (here 0x46) to reg 0x6a     */
 	/* and then 0xffff/0 to reg 0x6c                  */
-	snd_soc_write(w->codec, ALC5632_HID_CTRL_INDEX, 0x46);
+	snd_soc_component_write(component, ALC5632_HID_CTRL_INDEX, 0x46);
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		snd_soc_write(w->codec, ALC5632_HID_CTRL_DATA, 0xFFFF);
+		snd_soc_component_write(component, ALC5632_HID_CTRL_DATA, 0xFFFF);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
-		snd_soc_write(w->codec, ALC5632_HID_CTRL_DATA, 0);
+		snd_soc_component_write(component, ALC5632_HID_CTRL_DATA, 0);
 		break;
 	}
 
@@ -144,11 +143,10 @@ static const DECLARE_TLV_DB_SCALE(vol_tlv, -3450, 150, 0);
 static const DECLARE_TLV_DB_SCALE(hp_tlv, -4650, 150, 0);
 /* -16.5db min scale, 1.5db steps, no mute */
 static const DECLARE_TLV_DB_SCALE(adc_rec_tlv, -1650, 150, 0);
-static const unsigned int boost_tlv[] = {
-	TLV_DB_RANGE_HEAD(2),
+static const DECLARE_TLV_DB_RANGE(boost_tlv,
 	0, 1, TLV_DB_SCALE_ITEM(0, 2000, 0),
-	1, 3, TLV_DB_SCALE_ITEM(2000, 1000, 0),
-};
+	1, 3, TLV_DB_SCALE_ITEM(2000, 1000, 0)
+);
 /* 0db min scale, 6 db steps, no mute */
 static const DECLARE_TLV_DB_SCALE(dig_tlv, 0, 600, 0);
 /* 0db min scalem 0.75db steps, no mute */
@@ -293,51 +291,59 @@ static const char * const alc5632_i2s_out_sel[] = {
 		"ADC LR", "Voice Stereo Digital"};
 
 /* auxout output mux */
-static const struct soc_enum alc5632_aux_out_input_enum =
-SOC_ENUM_SINGLE(ALC5632_OUTPUT_MIXER_CTRL, 6, 4, alc5632_aux_out_input_sel);
+static SOC_ENUM_SINGLE_DECL(alc5632_aux_out_input_enum,
+			    ALC5632_OUTPUT_MIXER_CTRL, 6,
+			    alc5632_aux_out_input_sel);
 static const struct snd_kcontrol_new alc5632_auxout_mux_controls =
 SOC_DAPM_ENUM("AuxOut Mux", alc5632_aux_out_input_enum);
 
 /* speaker output mux */
-static const struct soc_enum alc5632_spkout_input_enum =
-SOC_ENUM_SINGLE(ALC5632_OUTPUT_MIXER_CTRL, 10, 4, alc5632_spkout_input_sel);
+static SOC_ENUM_SINGLE_DECL(alc5632_spkout_input_enum,
+			    ALC5632_OUTPUT_MIXER_CTRL, 10,
+			    alc5632_spkout_input_sel);
 static const struct snd_kcontrol_new alc5632_spkout_mux_controls =
 SOC_DAPM_ENUM("SpeakerOut Mux", alc5632_spkout_input_enum);
 
 /* headphone left output mux */
-static const struct soc_enum alc5632_hpl_out_input_enum =
-SOC_ENUM_SINGLE(ALC5632_OUTPUT_MIXER_CTRL, 9, 2, alc5632_hpl_out_input_sel);
+static SOC_ENUM_SINGLE_DECL(alc5632_hpl_out_input_enum,
+			    ALC5632_OUTPUT_MIXER_CTRL, 9,
+			    alc5632_hpl_out_input_sel);
 static const struct snd_kcontrol_new alc5632_hpl_out_mux_controls =
 SOC_DAPM_ENUM("Left Headphone Mux", alc5632_hpl_out_input_enum);
 
 /* headphone right output mux */
-static const struct soc_enum alc5632_hpr_out_input_enum =
-SOC_ENUM_SINGLE(ALC5632_OUTPUT_MIXER_CTRL, 8, 2, alc5632_hpr_out_input_sel);
+static SOC_ENUM_SINGLE_DECL(alc5632_hpr_out_input_enum,
+			    ALC5632_OUTPUT_MIXER_CTRL, 8,
+			    alc5632_hpr_out_input_sel);
 static const struct snd_kcontrol_new alc5632_hpr_out_mux_controls =
 SOC_DAPM_ENUM("Right Headphone Mux", alc5632_hpr_out_input_enum);
 
 /* speaker output N select */
-static const struct soc_enum alc5632_spk_n_sour_enum =
-SOC_ENUM_SINGLE(ALC5632_OUTPUT_MIXER_CTRL, 14, 4, alc5632_spk_n_sour_sel);
+static SOC_ENUM_SINGLE_DECL(alc5632_spk_n_sour_enum,
+			    ALC5632_OUTPUT_MIXER_CTRL, 14,
+			    alc5632_spk_n_sour_sel);
 static const struct snd_kcontrol_new alc5632_spkoutn_mux_controls =
 SOC_DAPM_ENUM("SpeakerOut N Mux", alc5632_spk_n_sour_enum);
 
 /* speaker amplifier */
 static const char *alc5632_amp_names[] = {"AB Amp", "D Amp"};
-static const struct soc_enum alc5632_amp_enum =
-	SOC_ENUM_SINGLE(ALC5632_OUTPUT_MIXER_CTRL, 13, 2, alc5632_amp_names);
+static SOC_ENUM_SINGLE_DECL(alc5632_amp_enum,
+			    ALC5632_OUTPUT_MIXER_CTRL, 13,
+			    alc5632_amp_names);
 static const struct snd_kcontrol_new alc5632_amp_mux_controls =
 	SOC_DAPM_ENUM("AB-D Amp Mux", alc5632_amp_enum);
 
 /* ADC output select */
-static const struct soc_enum alc5632_adcr_func_enum =
-	SOC_ENUM_SINGLE(ALC5632_DAC_FUNC_SELECT, 5, 2, alc5632_adcr_func_sel);
+static SOC_ENUM_SINGLE_DECL(alc5632_adcr_func_enum,
+			    ALC5632_DAC_FUNC_SELECT, 5,
+			    alc5632_adcr_func_sel);
 static const struct snd_kcontrol_new alc5632_adcr_func_controls =
 	SOC_DAPM_ENUM("ADCR Mux", alc5632_adcr_func_enum);
 
 /* I2S out select */
-static const struct soc_enum alc5632_i2s_out_enum =
-	SOC_ENUM_SINGLE(ALC5632_I2S_OUT_CTL, 5, 2, alc5632_i2s_out_sel);
+static SOC_ENUM_SINGLE_DECL(alc5632_i2s_out_enum,
+			    ALC5632_I2S_OUT_CTL, 5,
+			    alc5632_i2s_out_sel);
 static const struct snd_kcontrol_new alc5632_i2s_out_controls =
 	SOC_DAPM_ENUM("I2SOut Mux", alc5632_i2s_out_enum);
 
@@ -672,7 +678,7 @@ static int alc5632_set_dai_pll(struct snd_soc_dai *codec_dai, int pll_id,
 		int source, unsigned int freq_in, unsigned int freq_out)
 {
 	int i;
-	struct snd_soc_codec *codec = codec_dai->codec;
+	struct snd_soc_component *component = codec_dai->component;
 	int gbl_clk = 0, pll_div = 0;
 	u16 reg;
 
@@ -680,15 +686,15 @@ static int alc5632_set_dai_pll(struct snd_soc_dai *codec_dai, int pll_id,
 		return -EINVAL;
 
 	/* Disable PLL power */
-	snd_soc_update_bits(codec, ALC5632_PWR_MANAG_ADD2,
+	snd_soc_component_update_bits(component, ALC5632_PWR_MANAG_ADD2,
 				ALC5632_PWR_ADD2_PLL1,
 				0);
-	snd_soc_update_bits(codec, ALC5632_PWR_MANAG_ADD2,
+	snd_soc_component_update_bits(component, ALC5632_PWR_MANAG_ADD2,
 				ALC5632_PWR_ADD2_PLL2,
 				0);
 
 	/* pll is not used in slave mode */
-	reg = snd_soc_read(codec, ALC5632_DAI_CONTROL);
+	reg = snd_soc_component_read(component, ALC5632_DAI_CONTROL);
 	if (reg & ALC5632_DAI_SDP_SLAVE_MODE)
 		return 0;
 
@@ -736,19 +742,19 @@ static int alc5632_set_dai_pll(struct snd_soc_dai *codec_dai, int pll_id,
 		return -EINVAL;
 
 	/* choose MCLK/BCLK/VBCLK */
-	snd_soc_write(codec, ALC5632_GPCR2, gbl_clk);
+	snd_soc_component_write(component, ALC5632_GPCR2, gbl_clk);
 	/* choose PLL1 clock rate */
-	snd_soc_write(codec, ALC5632_PLL1_CTRL, pll_div);
+	snd_soc_component_write(component, ALC5632_PLL1_CTRL, pll_div);
 	/* enable PLL1 */
-	snd_soc_update_bits(codec, ALC5632_PWR_MANAG_ADD2,
+	snd_soc_component_update_bits(component, ALC5632_PWR_MANAG_ADD2,
 				ALC5632_PWR_ADD2_PLL1,
 				ALC5632_PWR_ADD2_PLL1);
 	/* enable PLL2 */
-	snd_soc_update_bits(codec, ALC5632_PWR_MANAG_ADD2,
+	snd_soc_component_update_bits(component, ALC5632_PWR_MANAG_ADD2,
 				ALC5632_PWR_ADD2_PLL2,
 				ALC5632_PWR_ADD2_PLL2);
 	/* use PLL1 as main SYSCLK */
-	snd_soc_update_bits(codec, ALC5632_GPCR1,
+	snd_soc_component_update_bits(component, ALC5632_GPCR1,
 			ALC5632_GPCR1_CLK_SYS_SRC_SEL_PLL1,
 			ALC5632_GPCR1_CLK_SYS_SRC_SEL_PLL1);
 
@@ -766,9 +772,9 @@ static const struct _coeff_div coeff_div[] = {
 	{512*1, 0x3075},
 };
 
-static int get_coeff(struct snd_soc_codec *codec, int rate)
+static int get_coeff(struct snd_soc_component *component, int rate)
 {
-	struct alc5632_priv *alc5632 = snd_soc_codec_get_drvdata(codec);
+	struct alc5632_priv *alc5632 = snd_soc_component_get_drvdata(component);
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(coeff_div); i++) {
@@ -784,8 +790,8 @@ static int get_coeff(struct snd_soc_codec *codec, int rate)
 static int alc5632_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 		int clk_id, unsigned int freq, int dir)
 {
-	struct snd_soc_codec *codec = codec_dai->codec;
-	struct alc5632_priv *alc5632 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = codec_dai->component;
+	struct alc5632_priv *alc5632 = snd_soc_component_get_drvdata(component);
 
 	switch (freq) {
 	case  4096000:
@@ -806,15 +812,15 @@ static int alc5632_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 static int alc5632_set_dai_fmt(struct snd_soc_dai *codec_dai,
 		unsigned int fmt)
 {
-	struct snd_soc_codec *codec = codec_dai->codec;
+	struct snd_soc_component *component = codec_dai->component;
 	u16 iface = 0;
 
-	/* set master/slave audio interface */
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	/* set audio interface clocking */
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_CBP_CFP:
 		iface = ALC5632_DAI_SDP_MASTER_MODE;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		iface = ALC5632_DAI_SDP_SLAVE_MODE;
 		break;
 	default:
@@ -855,17 +861,17 @@ static int alc5632_set_dai_fmt(struct snd_soc_dai *codec_dai,
 		return -EINVAL;
 	}
 
-	return snd_soc_write(codec, ALC5632_DAI_CONTROL, iface);
+	return snd_soc_component_write(component, ALC5632_DAI_CONTROL, iface);
 }
 
 static int alc5632_pcm_hw_params(struct snd_pcm_substream *substream,
 		struct snd_pcm_hw_params *params, struct snd_soc_dai *dai)
 {
-	struct snd_soc_codec *codec = dai->codec;
+	struct snd_soc_component *component = dai->component;
 	int coeff, rate;
 	u16 iface;
 
-	iface = snd_soc_read(codec, ALC5632_DAI_CONTROL);
+	iface = snd_soc_component_read(component, ALC5632_DAI_CONTROL);
 	iface &= ~ALC5632_DAI_I2S_DL_MASK;
 
 	/* bit size */
@@ -884,29 +890,29 @@ static int alc5632_pcm_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	/* set iface & srate */
-	snd_soc_write(codec, ALC5632_DAI_CONTROL, iface);
+	snd_soc_component_write(component, ALC5632_DAI_CONTROL, iface);
 	rate = params_rate(params);
-	coeff = get_coeff(codec, rate);
+	coeff = get_coeff(component, rate);
 	if (coeff < 0)
 		return -EINVAL;
 
 	coeff = coeff_div[coeff].regvalue;
-	snd_soc_write(codec, ALC5632_DAC_CLK_CTRL1, coeff);
+	snd_soc_component_write(component, ALC5632_DAC_CLK_CTRL1, coeff);
 
 	return 0;
 }
 
-static int alc5632_mute(struct snd_soc_dai *dai, int mute)
+static int alc5632_mute(struct snd_soc_dai *dai, int mute, int direction)
 {
-	struct snd_soc_codec *codec = dai->codec;
+	struct snd_soc_component *component = dai->component;
 	u16 hp_mute = ALC5632_MISC_HP_DEPOP_MUTE_L
 						|ALC5632_MISC_HP_DEPOP_MUTE_R;
-	u16 mute_reg = snd_soc_read(codec, ALC5632_MISC_CTRL) & ~hp_mute;
+	u16 mute_reg = snd_soc_component_read(component, ALC5632_MISC_CTRL) & ~hp_mute;
 
 	if (mute)
 		mute_reg |= hp_mute;
 
-	return snd_soc_write(codec, ALC5632_MISC_CTRL, mute_reg);
+	return snd_soc_component_write(component, ALC5632_MISC_CTRL, mute_reg);
 }
 
 #define ALC5632_ADD2_POWER_EN (ALC5632_PWR_ADD2_VREF)
@@ -920,77 +926,76 @@ static int alc5632_mute(struct snd_soc_dai *dai, int mute)
 		| ALC5632_PWR_ADD1_HP_OUT_ENH_AMP \
 		| ALC5632_PWR_ADD1_MAIN_BIAS)
 
-static void enable_power_depop(struct snd_soc_codec *codec)
+static void enable_power_depop(struct snd_soc_component *component)
 {
-	snd_soc_update_bits(codec, ALC5632_PWR_MANAG_ADD1,
+	snd_soc_component_update_bits(component, ALC5632_PWR_MANAG_ADD1,
 				ALC5632_PWR_ADD1_SOFTGEN_EN,
 				ALC5632_PWR_ADD1_SOFTGEN_EN);
 
-	snd_soc_update_bits(codec, ALC5632_PWR_MANAG_ADD3,
+	snd_soc_component_update_bits(component, ALC5632_PWR_MANAG_ADD3,
 				ALC5632_ADD3_POWER_EN,
 				ALC5632_ADD3_POWER_EN);
 
-	snd_soc_update_bits(codec, ALC5632_MISC_CTRL,
+	snd_soc_component_update_bits(component, ALC5632_MISC_CTRL,
 				ALC5632_MISC_HP_DEPOP_MODE2_EN,
 				ALC5632_MISC_HP_DEPOP_MODE2_EN);
 
 	/* "normal" mode: 0 @ 26 */
 	/* set all PR0-7 mixers to 0 */
-	snd_soc_update_bits(codec, ALC5632_PWR_DOWN_CTRL_STATUS,
+	snd_soc_component_update_bits(component, ALC5632_PWR_DOWN_CTRL_STATUS,
 				ALC5632_PWR_DOWN_CTRL_STATUS_MASK,
 				0);
 
 	msleep(500);
 
-	snd_soc_update_bits(codec, ALC5632_PWR_MANAG_ADD2,
+	snd_soc_component_update_bits(component, ALC5632_PWR_MANAG_ADD2,
 				ALC5632_ADD2_POWER_EN,
 				ALC5632_ADD2_POWER_EN);
 
-	snd_soc_update_bits(codec, ALC5632_PWR_MANAG_ADD1,
+	snd_soc_component_update_bits(component, ALC5632_PWR_MANAG_ADD1,
 				ALC5632_ADD1_POWER_EN,
 				ALC5632_ADD1_POWER_EN);
 
 	/* disable HP Depop2 */
-	snd_soc_update_bits(codec, ALC5632_MISC_CTRL,
+	snd_soc_component_update_bits(component, ALC5632_MISC_CTRL,
 				ALC5632_MISC_HP_DEPOP_MODE2_EN,
 				0);
 
 }
 
-static int alc5632_set_bias_level(struct snd_soc_codec *codec,
+static int alc5632_set_bias_level(struct snd_soc_component *component,
 				      enum snd_soc_bias_level level)
 {
 	switch (level) {
 	case SND_SOC_BIAS_ON:
-		enable_power_depop(codec);
+		enable_power_depop(component);
 		break;
 	case SND_SOC_BIAS_PREPARE:
 		break;
 	case SND_SOC_BIAS_STANDBY:
 		/* everything off except vref/vmid, */
-		snd_soc_update_bits(codec, ALC5632_PWR_MANAG_ADD1,
+		snd_soc_component_update_bits(component, ALC5632_PWR_MANAG_ADD1,
 				ALC5632_PWR_MANAG_ADD1_MASK,
 				ALC5632_PWR_ADD1_MAIN_BIAS);
-		snd_soc_update_bits(codec, ALC5632_PWR_MANAG_ADD2,
+		snd_soc_component_update_bits(component, ALC5632_PWR_MANAG_ADD2,
 				ALC5632_PWR_MANAG_ADD2_MASK,
 				ALC5632_PWR_ADD2_VREF);
 		/* "normal" mode: 0 @ 26 */
-		snd_soc_update_bits(codec, ALC5632_PWR_DOWN_CTRL_STATUS,
+		snd_soc_component_update_bits(component, ALC5632_PWR_DOWN_CTRL_STATUS,
 				ALC5632_PWR_DOWN_CTRL_STATUS_MASK,
 				0xffff ^ (ALC5632_PWR_VREF_PR3
 				| ALC5632_PWR_VREF_PR2));
 		break;
 	case SND_SOC_BIAS_OFF:
 		/* everything off, dac mute, inactive */
-		snd_soc_update_bits(codec, ALC5632_PWR_MANAG_ADD2,
+		snd_soc_component_update_bits(component, ALC5632_PWR_MANAG_ADD2,
 				ALC5632_PWR_MANAG_ADD2_MASK, 0);
-		snd_soc_update_bits(codec, ALC5632_PWR_MANAG_ADD3,
+		snd_soc_component_update_bits(component, ALC5632_PWR_MANAG_ADD3,
 				ALC5632_PWR_MANAG_ADD3_MASK, 0);
-		snd_soc_update_bits(codec, ALC5632_PWR_MANAG_ADD1,
+		snd_soc_component_update_bits(component, ALC5632_PWR_MANAG_ADD1,
 				ALC5632_PWR_MANAG_ADD1_MASK, 0);
 		break;
 	}
-	codec->dapm.bias_level = level;
 	return 0;
 }
 
@@ -1000,10 +1005,11 @@ static int alc5632_set_bias_level(struct snd_soc_codec *codec,
 
 static const struct snd_soc_dai_ops alc5632_dai_ops = {
 		.hw_params = alc5632_pcm_hw_params,
-		.digital_mute = alc5632_mute,
+		.mute_stream = alc5632_mute,
 		.set_fmt = alc5632_set_dai_fmt,
 		.set_sysclk = alc5632_set_dai_sysclk,
 		.set_pll = alc5632_set_dai_pll,
+		.no_capture_mute = 1,
 };
 
 static struct snd_soc_dai_driver alc5632_dai = {
@@ -1026,80 +1032,55 @@ static struct snd_soc_dai_driver alc5632_dai = {
 		.formats = ALC5632_FORMATS,},
 
 	.ops = &alc5632_dai_ops,
-	.symmetric_rates = 1,
+	.symmetric_rate = 1,
 };
 
 #ifdef CONFIG_PM
-static int alc5632_suspend(struct snd_soc_codec *codec)
+static int alc5632_resume(struct snd_soc_component *component)
 {
-	alc5632_set_bias_level(codec, SND_SOC_BIAS_OFF);
-	return 0;
-}
-
-static int alc5632_resume(struct snd_soc_codec *codec)
-{
-	struct alc5632_priv *alc5632 = snd_soc_codec_get_drvdata(codec);
+	struct alc5632_priv *alc5632 = snd_soc_component_get_drvdata(component);
 
 	regcache_sync(alc5632->regmap);
 
-	alc5632_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
 	return 0;
 }
 #else
-#define	alc5632_suspend	NULL
 #define	alc5632_resume	NULL
 #endif
 
-static int alc5632_probe(struct snd_soc_codec *codec)
+static int alc5632_probe(struct snd_soc_component *component)
 {
-	struct alc5632_priv *alc5632 = snd_soc_codec_get_drvdata(codec);
-	int ret;
-
-	codec->control_data = alc5632->regmap;
-
-	ret = snd_soc_codec_set_cache_io(codec, 8, 16, SND_SOC_REGMAP);
-	if (ret != 0) {
-		dev_err(codec->dev, "Failed to set cache I/O: %d\n", ret);
-		return ret;
-	}
-
-	/* power on device  */
-	alc5632_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
+	struct alc5632_priv *alc5632 = snd_soc_component_get_drvdata(component);
 
 	switch (alc5632->id) {
 	case 0x5c:
-		snd_soc_add_codec_controls(codec, alc5632_vol_snd_controls,
+		snd_soc_add_component_controls(component, alc5632_vol_snd_controls,
 			ARRAY_SIZE(alc5632_vol_snd_controls));
 		break;
 	default:
 		return -EINVAL;
 	}
 
-	return ret;
-}
-
-/* power down chip */
-static int alc5632_remove(struct snd_soc_codec *codec)
-{
-	alc5632_set_bias_level(codec, SND_SOC_BIAS_OFF);
 	return 0;
 }
 
-static struct snd_soc_codec_driver soc_codec_device_alc5632 = {
-	.probe = alc5632_probe,
-	.remove = alc5632_remove,
-	.suspend = alc5632_suspend,
-	.resume = alc5632_resume,
-	.set_bias_level = alc5632_set_bias_level,
-	.controls = alc5632_snd_controls,
-	.num_controls = ARRAY_SIZE(alc5632_snd_controls),
-	.dapm_widgets = alc5632_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(alc5632_dapm_widgets),
-	.dapm_routes = alc5632_dapm_routes,
-	.num_dapm_routes = ARRAY_SIZE(alc5632_dapm_routes),
+static const struct snd_soc_component_driver soc_component_device_alc5632 = {
+	.probe			= alc5632_probe,
+	.resume			= alc5632_resume,
+	.set_bias_level		= alc5632_set_bias_level,
+	.controls		= alc5632_snd_controls,
+	.num_controls		= ARRAY_SIZE(alc5632_snd_controls),
+	.dapm_widgets		= alc5632_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(alc5632_dapm_widgets),
+	.dapm_routes		= alc5632_dapm_routes,
+	.num_dapm_routes	= ARRAY_SIZE(alc5632_dapm_routes),
+	.suspend_bias_off	= 1,
+	.idle_bias_on		= 1,
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
 };
 
-static struct regmap_config alc5632_regmap = {
+static const struct regmap_config alc5632_regmap = {
 	.reg_bits = 8,
 	.val_bits = 16,
 
@@ -1110,18 +1091,24 @@ static struct regmap_config alc5632_regmap = {
 	.cache_type = REGCACHE_RBTREE,
 };
 
+static const struct i2c_device_id alc5632_i2c_table[] = {
+	{"alc5632", 0x5c},
+	{}
+};
+MODULE_DEVICE_TABLE(i2c, alc5632_i2c_table);
+
 /*
  * alc5632 2 wire address is determined by A1 pin
  * state during powerup.
  *    low  = 0x1a
  *    high = 0x1b
  */
-static int alc5632_i2c_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static int alc5632_i2c_probe(struct i2c_client *client)
 {
 	struct alc5632_priv *alc5632;
 	int ret, ret1, ret2;
 	unsigned int vid1, vid2;
+	const struct i2c_device_id *id;
 
 	alc5632 = devm_kzalloc(&client->dev,
 			 sizeof(struct alc5632_priv), GFP_KERNEL);
@@ -1147,6 +1134,8 @@ static int alc5632_i2c_probe(struct i2c_client *client,
 
 	vid2 >>= 8;
 
+	id = i2c_match_id(alc5632_i2c_table, client);
+
 	if ((vid1 != 0x10EC) || (vid2 != id->driver_data)) {
 		dev_err(&client->dev,
 		"Device is not a ALC5632: VID1=0x%x, VID2=0x%x\n", vid1, vid2);
@@ -1168,37 +1157,32 @@ static int alc5632_i2c_probe(struct i2c_client *client,
 		return -EINVAL;
 	}
 
-	ret = snd_soc_register_codec(&client->dev,
-		&soc_codec_device_alc5632, &alc5632_dai, 1);
+	ret = devm_snd_soc_register_component(&client->dev,
+		&soc_component_device_alc5632, &alc5632_dai, 1);
 
 	if (ret < 0) {
-		dev_err(&client->dev, "Failed to register codec: %d\n", ret);
+		dev_err(&client->dev, "Failed to register component: %d\n", ret);
 		return ret;
 	}
 
 	return ret;
 }
 
-static int alc5632_i2c_remove(struct i2c_client *client)
-{
-	snd_soc_unregister_codec(&client->dev);
-	return 0;
-}
-
-static const struct i2c_device_id alc5632_i2c_table[] = {
-	{"alc5632", 0x5c},
-	{}
+#ifdef CONFIG_OF
+static const struct of_device_id alc5632_of_match[] = {
+	{ .compatible = "realtek,alc5632", },
+	{ }
 };
-MODULE_DEVICE_TABLE(i2c, alc5632_i2c_table);
+MODULE_DEVICE_TABLE(of, alc5632_of_match);
+#endif
 
 /* i2c codec control layer */
 static struct i2c_driver alc5632_i2c_driver = {
 	.driver = {
 		.name = "alc5632",
-		.owner = THIS_MODULE,
+		.of_match_table = of_match_ptr(alc5632_of_match),
 	},
 	.probe = alc5632_i2c_probe,
-	.remove =  alc5632_i2c_remove,
 	.id_table = alc5632_i2c_table,
 };
 

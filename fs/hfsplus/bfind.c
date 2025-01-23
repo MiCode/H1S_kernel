@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/hfsplus/bfind.c
  *
@@ -118,9 +119,7 @@ int __hfs_brec_find(struct hfs_bnode *bnode, struct hfs_find_data *fd,
 	int b, e;
 	int res;
 
-	if (!rec_found)
-		BUG();
-
+	BUG_ON(!rec_found);
 	b = 0;
 	e = bnode->num_recs - 1;
 	res = -ENOENT;

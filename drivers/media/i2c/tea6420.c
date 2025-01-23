@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
  /*
     tea6420 - i2c-driver for the tea6420 by SGS Thomson
 
@@ -9,22 +10,9 @@
     It is cascadable, i.e. it can be found at the addresses 0x98
     and 0x9a on the i2c-bus.
 
-    For detailed informations download the specifications directly
+    For detailed information download the specifications directly
     from SGS Thomson at http://www.st.com
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
   */
 
 
@@ -99,8 +87,7 @@ static const struct v4l2_subdev_ops tea6420_ops = {
 	.audio = &tea6420_audio_ops,
 };
 
-static int tea6420_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int tea6420_probe(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd;
 	int err, i;
@@ -128,12 +115,11 @@ static int tea6420_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int tea6420_remove(struct i2c_client *client)
+static void tea6420_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
-	return 0;
 }
 
 static const struct i2c_device_id tea6420_id[] = {
@@ -144,7 +130,6 @@ MODULE_DEVICE_TABLE(i2c, tea6420_id);
 
 static struct i2c_driver tea6420_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "tea6420",
 	},
 	.probe		= tea6420_probe,

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Timer subsystem related configuration options
 #
@@ -12,31 +13,22 @@ config CLOCKSOURCE_WATCHDOG
 config ARCH_CLOCKSOURCE_DATA
 	bool
 
+# Architecture has extra clocksource init called from registration
+config ARCH_CLOCKSOURCE_INIT
+	bool
+
+# Clocksources require validation of the clocksource against the last
+# cycle update - x86/TSC misfeature
+config CLOCKSOURCE_VALIDATE_LAST_CYCLE
+	bool
+
 # Timekeeping vsyscall support
 config GENERIC_TIME_VSYSCALL
 	bool
 
-# Timekeeping vsyscall support
-config GENERIC_TIME_VSYSCALL_OLD
-	bool
-
-# ktime_t scalar 64bit nsec representation
-config KTIME_SCALAR
-	bool
-
-# Old style timekeeping
-config ARCH_USES_GETTIMEOFFSET
-	bool
-
 # The generic clock events infrastructure
 config GENERIC_CLOCKEVENTS
-	bool
-
-# Migration helper. Builds, but does not invoke
-config GENERIC_CLOCKEVENTS_BUILD
-	bool
-	default y
-	depends on GENERIC_CLOCKEVENTS
+	def_bool !LEGACY_TIMER_TICK
 
 # Architecture can handle broadcast in a driver-agnostic way
 config ARCH_HAS_TICK_BROADCAST
@@ -56,18 +48,51 @@ config GENERIC_CLOCKEVENTS_MIN_ADJUST
 config GENERIC_CMOS_UPDATE
 	bool
 
+# Select to handle posix CPU timers from task_work
+# and not from the timer interrupt context
+config HAVE_POSIX_CPU_TIMERS_TASK_WORK
+	bool
+
+config POSIX_CPU_TIMERS_TASK_WORK
+	bool
+	default y if POSIX_TIMERS && HAVE_POSIX_CPU_TIMERS_TASK_WORK
+
+config LEGACY_TIMER_TICK
+	bool
+	help
+	  The legacy timer tick helper is used by platforms that
+	  lack support for the generic clockevent framework.
+	  New platforms should use generic clockevents instead.
+
+config TIME_KUNIT_TEST
+	tristate "KUnit test for kernel/time functions" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Enable this option to test RTC library functions.
+
+	  If unsure, say N.
+
+config CONTEXT_TRACKING
+	bool
+
+config CONTEXT_TRACKING_IDLE
+	bool
+	select CONTEXT_TRACKING
+	help
+	  Tracks idle state on behalf of RCU.
+
 if GENERIC_CLOCKEVENTS
 menu "Timers subsystem"
 
 # Core internal switch. Selected by NO_HZ_COMMON / HIGH_RES_TIMERS. This is
 # only related to the tick functionality. Oneshot clockevent devices
-# are supported independ of this.
+# are supported independent of this.
 config TICK_ONESHOT
 	bool
 
 config NO_HZ_COMMON
 	bool
-	depends on !ARCH_USES_GETTIMEOFFSET && GENERIC_CLOCKEVENTS
 	select TICK_ONESHOT
 
 choice
@@ -82,7 +107,6 @@ config HZ_PERIODIC
 
 config NO_HZ_IDLE
 	bool "Idle dynticks system (tickless idle)"
-	depends on !ARCH_USES_GETTIMEOFFSET && GENERIC_CLOCKEVENTS
 	select NO_HZ_COMMON
 	help
 	  This option enables a tickless idle system: timer interrupts
@@ -94,18 +118,16 @@ config NO_HZ_IDLE
 config NO_HZ_FULL
 	bool "Full dynticks system (tickless)"
 	# NO_HZ_COMMON dependency
-	depends on !ARCH_USES_GETTIMEOFFSET && GENERIC_CLOCKEVENTS
 	# We need at least one periodic CPU for timekeeping
 	depends on SMP
-	# RCU_USER_QS dependency
-	depends on HAVE_CONTEXT_TRACKING
+	depends on HAVE_CONTEXT_TRACKING_USER
 	# VIRT_CPU_ACCOUNTING_GEN dependency
 	depends on HAVE_VIRT_CPU_ACCOUNTING_GEN
 	select NO_HZ_COMMON
-	select RCU_USER_QS
 	select RCU_NOCB_CPU
 	select VIRT_CPU_ACCOUNTING_GEN
 	select IRQ_WORK
+	select CPU_ISOLATION
 	help
 	 Adaptively try to shutdown the tick whenever possible, even when
 	 the CPU is running tasks. Typically this requires running a single
@@ -113,79 +135,54 @@ config NO_HZ_FULL
 	 the task mostly runs in userspace and has few kernel activity.
 
 	 You need to fill up the nohz_full boot parameter with the
-	 desired range of dynticks CPUs.
+	 desired range of dynticks CPUs to use it. This is implemented at
+	 the expense of some overhead in user <-> kernel transitions:
+	 syscalls, exceptions and interrupts.
 
-	 This is implemented at the expense of some overhead in user <-> kernel
-	 transitions: syscalls, exceptions and interrupts. Even when it's
-	 dynamically off.
+	 By default, without passing the nohz_full parameter, this behaves just
+	 like NO_HZ_IDLE.
 
-	 Say N.
+	 If you're a distro say Y.
 
 endchoice
 
-config NO_HZ_FULL_ALL
-       bool "Full dynticks system on all CPUs by default"
-       depends on NO_HZ_FULL
-       help
-         If the user doesn't pass the nohz_full boot option to
-	 define the range of full dynticks CPUs, consider that all
-	 CPUs in the system are full dynticks by default.
-	 Note the boot CPU will still be kept outside the range to
-	 handle the timekeeping duty.
-
-config NO_HZ_FULL_SYSIDLE
-	bool "Detect full-system idle state for full dynticks system"
-	depends on NO_HZ_FULL
-	default n
+config CONTEXT_TRACKING_USER
+	bool
+	depends on HAVE_CONTEXT_TRACKING_USER
+	select CONTEXT_TRACKING
 	help
-	 At least one CPU must keep the scheduling-clock tick running for
-	 timekeeping purposes whenever there is a non-idle CPU, where
-	 "non-idle" also includes dynticks CPUs as long as they are
-	 running non-idle tasks.  Because the underlying adaptive-tick
-	 support cannot distinguish between all CPUs being idle and
-	 all CPUs each running a single task in dynticks mode, the
-	 underlying support simply ensures that there is always a CPU
-	 handling the scheduling-clock tick, whether or not all CPUs
-	 are idle.  This Kconfig option enables scalable detection of
-	 the all-CPUs-idle state, thus allowing the scheduling-clock
-	 tick to be disabled when all CPUs are idle.  Note that scalable
-	 detection of the all-CPUs-idle state means that larger systems
-	 will be slower to declare the all-CPUs-idle state.
+	  Track transitions between kernel and user on behalf of RCU and
+	  tickless cputime accounting. The former case relies on context
+	  tracking to enter/exit RCU extended quiescent states.
 
-	 Say Y if you would like to help debug all-CPUs-idle detection.
-
-	 Say N if you are unsure.
-
-config NO_HZ_FULL_SYSIDLE_SMALL
-	int "Number of CPUs above which large-system approach is used"
-	depends on NO_HZ_FULL_SYSIDLE
-	range 1 NR_CPUS
-	default 8
+config CONTEXT_TRACKING_USER_FORCE
+	bool "Force user context tracking"
+	depends on CONTEXT_TRACKING_USER
+	default y if !NO_HZ_FULL
 	help
-	 The full-system idle detection mechanism takes a lazy approach
-	 on large systems, as is required to attain decent scalability.
-	 However, on smaller systems, scalability is not anywhere near as
-	 large a concern as is energy efficiency.  The sysidle subsystem
-	 therefore uses a fast but non-scalable algorithm for small
-	 systems and a lazier but scalable algorithm for large systems.
-	 This Kconfig parameter defines the number of CPUs in the largest
-	 system that will be considered to be "small".
+	  The major pre-requirement for full dynticks to work is to
+	  support the user context tracking subsystem. But there are also
+	  other dependencies to provide in order to make the full
+	  dynticks working.
 
-	 The default value will be fine in most cases.	Battery-powered
-	 systems that (1) enable NO_HZ_FULL_SYSIDLE, (2) have larger
-	 numbers of CPUs, and (3) are suffering from battery-lifetime
-	 problems due to long sysidle latencies might wish to experiment
-	 with larger values for this Kconfig parameter.  On the other
-	 hand, they might be even better served by disabling NO_HZ_FULL
-	 entirely, given that NO_HZ_FULL is intended for HPC and
-	 real-time workloads that at present do not tend to be run on
-	 battery-powered systems.
+	  This option stands for testing when an arch implements the
+	  user context tracking backend but doesn't yet fulfill all the
+	  requirements to make the full dynticks feature working.
+	  Without the full dynticks, there is no way to test the support
+	  for user context tracking and the subsystems that rely on it: RCU
+	  userspace extended quiescent state and tickless cputime
+	  accounting. This option copes with the absence of the full
+	  dynticks subsystem by forcing the user context tracking on all
+	  CPUs in the system.
 
-	 Take the default if you are unsure.
+	  Say Y only if you're working on the development of an
+	  architecture backend for the user context tracking.
+
+	  Say N otherwise, this option brings an overhead that you
+	  don't want in production.
 
 config NO_HZ
 	bool "Old Idle dynticks config"
-	depends on !ARCH_USES_GETTIMEOFFSET && GENERIC_CLOCKEVENTS
 	help
 	  This is the old config entry that enables dynticks idle.
 	  We keep it around for a little while to enforce backward
@@ -193,12 +190,24 @@ config NO_HZ
 
 config HIGH_RES_TIMERS
 	bool "High Resolution Timer Support"
-	depends on !ARCH_USES_GETTIMEOFFSET && GENERIC_CLOCKEVENTS
 	select TICK_ONESHOT
 	help
 	  This option enables high resolution timer support. If your
 	  hardware is not capable then this option only increases
 	  the size of the kernel image.
+
+config CLOCKSOURCE_WATCHDOG_MAX_SKEW_US
+	int "Clocksource watchdog maximum allowable skew (in μs)"
+	depends on CLOCKSOURCE_WATCHDOG
+	range 50 1000
+	default 125
+	help
+	  Specify the maximum amount of allowable watchdog skew in
+	  microseconds before reporting the clocksource to be unstable.
+	  The default is based on a half-second clocksource watchdog
+	  interval and NTP's maximum frequency drift of 500 parts
+	  per million.	If the clocksource is good enough for NTP,
+	  it is good enough for the clocksource watchdog!
 
 endmenu
 endif

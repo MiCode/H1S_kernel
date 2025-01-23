@@ -1,10 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * CUSE: Character device in Userspace
  *
  * Copyright (C) 2008-2009  SUSE Linux Products GmbH
  * Copyright (C) 2008-2009  Tejun Heo <tj@kernel.org>
- *
- * This file is released under the GPLv2.
  *
  * CUSE enables character devices to be implemented from userland much
  * like FUSE allows filesystems.  On initialization /dev/cuse is
@@ -33,12 +32,13 @@
  * closed.
  */
 
+#define pr_fmt(fmt) "CUSE: " fmt
+
 #include <linux/fuse.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/aio.h>
 #include <linux/kdev_t.h>
 #include <linux/kthread.h>
 #include <linux/list.h>
@@ -48,6 +48,8 @@
 #include <linux/slab.h>
 #include <linux/stat.h>
 #include <linux/module.h>
+#include <linux/uio.h>
+#include <linux/user_namespace.h>
 
 #include "fuse_i.h"
 
@@ -55,6 +57,7 @@
 
 struct cuse_conn {
 	struct list_head	list;	/* linked on cuse_conntbl */
+	struct fuse_mount	fm;	/* Dummy mount referencing fc */
 	struct fuse_conn	fc;	/* fuse connection */
 	struct cdev		*cdev;	/* associated character device */
 	struct device		*dev;	/* device representing @cdev */
@@ -88,28 +91,24 @@ static struct list_head *cuse_conntbl_head(dev_t devt)
  * FUSE file.
  */
 
-static ssize_t cuse_read(struct file *file, char __user *buf, size_t count,
-			 loff_t *ppos)
+static ssize_t cuse_read_iter(struct kiocb *kiocb, struct iov_iter *to)
 {
+	struct fuse_io_priv io = FUSE_IO_PRIV_SYNC(kiocb);
 	loff_t pos = 0;
-	struct iovec iov = { .iov_base = buf, .iov_len = count };
-	struct fuse_io_priv io = { .async = 0, .file = file };
 
-	return fuse_direct_io(&io, &iov, 1, count, &pos, 0);
+	return fuse_direct_io(&io, to, &pos, FUSE_DIO_CUSE);
 }
 
-static ssize_t cuse_write(struct file *file, const char __user *buf,
-			  size_t count, loff_t *ppos)
+static ssize_t cuse_write_iter(struct kiocb *kiocb, struct iov_iter *from)
 {
+	struct fuse_io_priv io = FUSE_IO_PRIV_SYNC(kiocb);
 	loff_t pos = 0;
-	struct iovec iov = { .iov_base = (void __user *)buf, .iov_len = count };
-	struct fuse_io_priv io = { .async = 0, .file = file };
-
 	/*
 	 * No locking or generic_write_checks(), the server is
 	 * responsible for locking and sanity checks.
 	 */
-	return fuse_direct_io(&io, &iov, 1, count, &pos, 1);
+	return fuse_direct_io(&io, from, &pos,
+			      FUSE_DIO_WRITE | FUSE_DIO_CUSE);
 }
 
 static int cuse_open(struct inode *inode, struct file *file)
@@ -136,7 +135,7 @@ static int cuse_open(struct inode *inode, struct file *file)
 	 * Generic permission check is already done against the chrdev
 	 * file, proceed to open.
 	 */
-	rc = fuse_do_open(&cc->fc, 0, file, 0);
+	rc = fuse_do_open(&cc->fm, 0, file, 0);
 	if (rc)
 		fuse_conn_put(&cc->fc);
 	return rc;
@@ -145,10 +144,10 @@ static int cuse_open(struct inode *inode, struct file *file)
 static int cuse_release(struct inode *inode, struct file *file)
 {
 	struct fuse_file *ff = file->private_data;
-	struct fuse_conn *fc = ff->fc;
+	struct fuse_mount *fm = ff->fm;
 
-	fuse_sync_release(ff, file->f_flags);
-	fuse_conn_put(fc);
+	fuse_sync_release(NULL, ff, file->f_flags);
+	fuse_conn_put(fm->fc);
 
 	return 0;
 }
@@ -157,7 +156,7 @@ static long cuse_file_ioctl(struct file *file, unsigned int cmd,
 			    unsigned long arg)
 {
 	struct fuse_file *ff = file->private_data;
-	struct cuse_conn *cc = fc_to_cc(ff->fc);
+	struct cuse_conn *cc = fc_to_cc(ff->fm->fc);
 	unsigned int flags = 0;
 
 	if (cc->unrestricted_ioctl)
@@ -170,7 +169,7 @@ static long cuse_file_compat_ioctl(struct file *file, unsigned int cmd,
 				   unsigned long arg)
 {
 	struct fuse_file *ff = file->private_data;
-	struct cuse_conn *cc = fc_to_cc(ff->fc);
+	struct cuse_conn *cc = fc_to_cc(ff->fm->fc);
 	unsigned int flags = FUSE_IOCTL_COMPAT;
 
 	if (cc->unrestricted_ioctl)
@@ -181,8 +180,8 @@ static long cuse_file_compat_ioctl(struct file *file, unsigned int cmd,
 
 static const struct file_operations cuse_frontend_fops = {
 	.owner			= THIS_MODULE,
-	.read			= cuse_read,
-	.write			= cuse_write,
+	.read_iter		= cuse_read_iter,
+	.write_iter		= cuse_write_iter,
 	.open			= cuse_open,
 	.release		= cuse_release,
 	.unlocked_ioctl		= cuse_file_ioctl,
@@ -227,7 +226,7 @@ static int cuse_parse_one(char **pp, char *end, char **keyp, char **valp)
 		return 0;
 
 	if (end[-1] != '\0') {
-		printk(KERN_ERR "CUSE: info not properly terminated\n");
+		pr_err("info not properly terminated\n");
 		return -EINVAL;
 	}
 
@@ -244,7 +243,7 @@ static int cuse_parse_one(char **pp, char *end, char **keyp, char **valp)
 		key = strstrip(key);
 
 	if (!strlen(key)) {
-		printk(KERN_ERR "CUSE: zero length info key specified\n");
+		pr_err("zero length info key specified\n");
 		return -EINVAL;
 	}
 
@@ -257,7 +256,7 @@ static int cuse_parse_one(char **pp, char *end, char **keyp, char **valp)
 }
 
 /**
- * cuse_parse_dev_info - parse device info
+ * cuse_parse_devinfo - parse device info
  * @p: device info string
  * @len: length of device info string
  * @devinfo: out parameter for parsed device info
@@ -272,7 +271,7 @@ static int cuse_parse_one(char **pp, char *end, char **keyp, char **valp)
 static int cuse_parse_devinfo(char *p, size_t len, struct cuse_devinfo *devinfo)
 {
 	char *end = p + len;
-	char *uninitialized_var(key), *uninitialized_var(val);
+	char *key, *val;
 	int rc;
 
 	while (true) {
@@ -284,12 +283,11 @@ static int cuse_parse_devinfo(char *p, size_t len, struct cuse_devinfo *devinfo)
 		if (strcmp(key, "DEVNAME") == 0)
 			devinfo->name = val;
 		else
-			printk(KERN_WARNING "CUSE: unknown device info \"%s\"\n",
-			       key);
+			pr_warn("unknown device info \"%s\"\n", key);
 	}
 
 	if (!devinfo->name || !strlen(devinfo->name)) {
-		printk(KERN_ERR "CUSE: DEVNAME unspecified\n");
+		pr_err("DEVNAME unspecified\n");
 		return -EINVAL;
 	}
 
@@ -301,6 +299,14 @@ static void cuse_gendev_release(struct device *dev)
 	kfree(dev);
 }
 
+struct cuse_init_args {
+	struct fuse_args_pages ap;
+	struct cuse_init_in in;
+	struct cuse_init_out out;
+	struct page *page;
+	struct fuse_page_desc desc;
+};
+
 /**
  * cuse_process_init_reply - finish initializing CUSE channel
  *
@@ -308,21 +314,23 @@ static void cuse_gendev_release(struct device *dev)
  * required data structures for it.  Please read the comment at the
  * top of this file for high level overview.
  */
-static void cuse_process_init_reply(struct fuse_conn *fc, struct fuse_req *req)
+static void cuse_process_init_reply(struct fuse_mount *fm,
+				    struct fuse_args *args, int error)
 {
+	struct fuse_conn *fc = fm->fc;
+	struct cuse_init_args *ia = container_of(args, typeof(*ia), ap.args);
+	struct fuse_args_pages *ap = &ia->ap;
 	struct cuse_conn *cc = fc_to_cc(fc), *pos;
-	struct cuse_init_out *arg = req->out.args[0].value;
-	struct page *page = req->pages[0];
+	struct cuse_init_out *arg = &ia->out;
+	struct page *page = ap->pages[0];
 	struct cuse_devinfo devinfo = { };
 	struct device *dev;
 	struct cdev *cdev;
 	dev_t devt;
 	int rc, i;
 
-	if (req->out.h.error ||
-	    arg->major != FUSE_KERNEL_VERSION || arg->minor < 11) {
+	if (error || arg->major != FUSE_KERNEL_VERSION || arg->minor < 11)
 		goto err;
-	}
 
 	fc->minor = arg->minor;
 	fc->max_read = max_t(unsigned, arg->max_read, 4096);
@@ -331,7 +339,7 @@ static void cuse_process_init_reply(struct fuse_conn *fc, struct fuse_req *req)
 	/* parse init reply */
 	cc->unrestricted_ioctl = arg->flags & CUSE_UNRESTRICTED_IOCTL;
 
-	rc = cuse_parse_devinfo(page_address(page), req->out.args[1].size,
+	rc = cuse_parse_devinfo(page_address(page), ap->args.out_args[1].size,
 				&devinfo);
 	if (rc)
 		goto err;
@@ -343,7 +351,7 @@ static void cuse_process_init_reply(struct fuse_conn *fc, struct fuse_req *req)
 	else
 		rc = register_chrdev_region(devt, 1, devinfo.name);
 	if (rc) {
-		printk(KERN_ERR "CUSE: failed to register chrdev region\n");
+		pr_err("failed to register chrdev region\n");
 		goto err;
 	}
 
@@ -398,7 +406,7 @@ static void cuse_process_init_reply(struct fuse_conn *fc, struct fuse_req *req)
 	dev_set_uevent_suppress(dev, 0);
 	kobject_uevent(&dev->kobj, KOBJ_ADD);
 out:
-	kfree(arg);
+	kfree(ia);
 	__free_page(page);
 	return;
 
@@ -410,62 +418,56 @@ err_unlock:
 err_region:
 	unregister_chrdev_region(devt, 1);
 err:
-	fuse_conn_kill(fc);
+	fuse_abort_conn(fc);
 	goto out;
 }
 
 static int cuse_send_init(struct cuse_conn *cc)
 {
 	int rc;
-	struct fuse_req *req;
 	struct page *page;
-	struct fuse_conn *fc = &cc->fc;
-	struct cuse_init_in *arg;
-	void *outarg;
+	struct fuse_mount *fm = &cc->fm;
+	struct cuse_init_args *ia;
+	struct fuse_args_pages *ap;
 
 	BUILD_BUG_ON(CUSE_INIT_INFO_MAX > PAGE_SIZE);
-
-	req = fuse_get_req_for_background(fc, 1);
-	if (IS_ERR(req)) {
-		rc = PTR_ERR(req);
-		goto err;
-	}
 
 	rc = -ENOMEM;
 	page = alloc_page(GFP_KERNEL | __GFP_ZERO);
 	if (!page)
-		goto err_put_req;
+		goto err;
 
-	outarg = kzalloc(sizeof(struct cuse_init_out), GFP_KERNEL);
-	if (!outarg)
+	ia = kzalloc(sizeof(*ia), GFP_KERNEL);
+	if (!ia)
 		goto err_free_page;
 
-	arg = &req->misc.cuse_init_in;
-	arg->major = FUSE_KERNEL_VERSION;
-	arg->minor = FUSE_KERNEL_MINOR_VERSION;
-	arg->flags |= CUSE_UNRESTRICTED_IOCTL;
-	req->in.h.opcode = CUSE_INIT;
-	req->in.numargs = 1;
-	req->in.args[0].size = sizeof(struct cuse_init_in);
-	req->in.args[0].value = arg;
-	req->out.numargs = 2;
-	req->out.args[0].size = sizeof(struct cuse_init_out);
-	req->out.args[0].value = outarg;
-	req->out.args[1].size = CUSE_INIT_INFO_MAX;
-	req->out.argvar = 1;
-	req->out.argpages = 1;
-	req->pages[0] = page;
-	req->page_descs[0].length = req->out.args[1].size;
-	req->num_pages = 1;
-	req->end = cuse_process_init_reply;
-	fuse_request_send_background(fc, req);
+	ap = &ia->ap;
+	ia->in.major = FUSE_KERNEL_VERSION;
+	ia->in.minor = FUSE_KERNEL_MINOR_VERSION;
+	ia->in.flags |= CUSE_UNRESTRICTED_IOCTL;
+	ap->args.opcode = CUSE_INIT;
+	ap->args.in_numargs = 1;
+	ap->args.in_args[0].size = sizeof(ia->in);
+	ap->args.in_args[0].value = &ia->in;
+	ap->args.out_numargs = 2;
+	ap->args.out_args[0].size = sizeof(ia->out);
+	ap->args.out_args[0].value = &ia->out;
+	ap->args.out_args[1].size = CUSE_INIT_INFO_MAX;
+	ap->args.out_argvar = true;
+	ap->args.out_pages = true;
+	ap->num_pages = 1;
+	ap->pages = &ia->page;
+	ap->descs = &ia->desc;
+	ia->page = page;
+	ia->desc.length = ap->args.out_args[1].size;
+	ap->args.end = cuse_process_init_reply;
 
-	return 0;
-
+	rc = fuse_simple_background(fm, &ap->args, GFP_KERNEL);
+	if (rc) {
+		kfree(ia);
 err_free_page:
-	__free_page(page);
-err_put_req:
-	fuse_put_request(fc, req);
+		__free_page(page);
+	}
 err:
 	return rc;
 }
@@ -493,6 +495,7 @@ static void cuse_fc_release(struct fuse_conn *fc)
  */
 static int cuse_channel_open(struct inode *inode, struct file *file)
 {
+	struct fuse_dev *fud;
 	struct cuse_conn *cc;
 	int rc;
 
@@ -501,19 +504,28 @@ static int cuse_channel_open(struct inode *inode, struct file *file)
 	if (!cc)
 		return -ENOMEM;
 
-	fuse_conn_init(&cc->fc);
+	/*
+	 * Limit the cuse channel to requests that can
+	 * be represented in file->f_cred->user_ns.
+	 */
+	fuse_conn_init(&cc->fc, &cc->fm, file->f_cred->user_ns,
+		       &fuse_dev_fiq_ops, NULL);
+
+	cc->fc.release = cuse_fc_release;
+	fud = fuse_dev_alloc_install(&cc->fc);
+	fuse_conn_put(&cc->fc);
+	if (!fud)
+		return -ENOMEM;
 
 	INIT_LIST_HEAD(&cc->list);
-	cc->fc.release = cuse_fc_release;
 
-	cc->fc.connected = 1;
 	cc->fc.initialized = 1;
 	rc = cuse_send_init(cc);
 	if (rc) {
-		fuse_conn_put(&cc->fc);
+		fuse_dev_free(fud);
 		return rc;
 	}
-	file->private_data = &cc->fc;	/* channel owns base reference to cc */
+	file->private_data = fud;
 
 	return 0;
 }
@@ -531,8 +543,8 @@ static int cuse_channel_open(struct inode *inode, struct file *file)
  */
 static int cuse_channel_release(struct inode *inode, struct file *file)
 {
-	struct cuse_conn *cc = fc_to_cc(file->private_data);
-	int rc;
+	struct fuse_dev *fud = file->private_data;
+	struct cuse_conn *cc = fc_to_cc(fud->fc);
 
 	/* remove from the conntbl, no more access from this point on */
 	mutex_lock(&cuse_lock);
@@ -547,9 +559,7 @@ static int cuse_channel_release(struct inode *inode, struct file *file)
 		cdev_del(cc->cdev);
 	}
 
-	rc = fuse_dev_release(inode, file);	/* puts the base reference */
-
-	return rc;
+	return fuse_dev_release(inode, file);
 }
 
 static struct file_operations cuse_channel_fops; /* initialized during init */
@@ -568,7 +578,7 @@ static ssize_t cuse_class_waiting_show(struct device *dev,
 
 	return sprintf(buf, "%d\n", atomic_read(&cc->fc.num_waiting));
 }
-static DEVICE_ATTR(waiting, S_IFREG | 0400, cuse_class_waiting_show, NULL);
+static DEVICE_ATTR(waiting, 0400, cuse_class_waiting_show, NULL);
 
 static ssize_t cuse_class_abort_store(struct device *dev,
 				      struct device_attribute *attr,
@@ -579,7 +589,7 @@ static ssize_t cuse_class_abort_store(struct device *dev,
 	fuse_abort_conn(&cc->fc);
 	return count;
 }
-static DEVICE_ATTR(abort, S_IFREG | 0200, NULL, cuse_class_abort_store);
+static DEVICE_ATTR(abort, 0200, NULL, cuse_class_abort_store);
 
 static struct attribute *cuse_class_dev_attrs[] = {
 	&dev_attr_waiting.attr,
@@ -610,8 +620,10 @@ static int __init cuse_init(void)
 	cuse_channel_fops.owner		= THIS_MODULE;
 	cuse_channel_fops.open		= cuse_channel_open;
 	cuse_channel_fops.release	= cuse_channel_release;
+	/* CUSE is not prepared for FUSE_DEV_IOC_CLONE */
+	cuse_channel_fops.unlocked_ioctl	= NULL;
 
-	cuse_class = class_create(THIS_MODULE, "cuse");
+	cuse_class = class_create("cuse");
 	if (IS_ERR(cuse_class))
 		return PTR_ERR(cuse_class);
 

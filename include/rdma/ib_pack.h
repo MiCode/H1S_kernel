@@ -1,33 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
 /*
  * Copyright (c) 2004 Topspin Corporation.  All rights reserved.
- *
- * This software is available to you under a choice of one of two
- * licenses.  You may choose to be licensed under the terms of the GNU
- * General Public License (GPL) Version 2, available from the file
- * COPYING in the main directory of this source tree, or the
- * OpenIB.org BSD license below:
- *
- *     Redistribution and use in source and binary forms, with or
- *     without modification, are permitted provided that the following
- *     conditions are met:
- *
- *      - Redistributions of source code must retain the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer.
- *
- *      - Redistributions in binary form must reproduce the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer in the documentation and/or other materials
- *        provided with the distribution.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
  */
 
 #ifndef IB_PACK_H
@@ -37,12 +10,17 @@
 #include <uapi/linux/if_ether.h>
 
 enum {
-	IB_LRH_BYTES  = 8,
-	IB_ETH_BYTES  = 14,
-	IB_VLAN_BYTES = 4,
-	IB_GRH_BYTES  = 40,
-	IB_BTH_BYTES  = 12,
-	IB_DETH_BYTES = 8
+	IB_LRH_BYTES		= 8,
+	IB_ETH_BYTES		= 14,
+	IB_VLAN_BYTES		= 4,
+	IB_GRH_BYTES		= 40,
+	IB_IP4_BYTES		= 20,
+	IB_UDP_BYTES		= 8,
+	IB_BTH_BYTES		= 12,
+	IB_DETH_BYTES		= 8,
+	IB_EXT_ATOMICETH_BYTES	= 28,
+	IB_EXT_XRC_BYTES	= 4,
+	IB_ICRC_BYTES		= 4
 };
 
 struct ib_field {
@@ -76,6 +54,10 @@ enum {
 	IB_OPCODE_UC                                = 0x20,
 	IB_OPCODE_RD                                = 0x40,
 	IB_OPCODE_UD                                = 0x60,
+	/* per IBTA 1.3 vol 1 Table 38, A10.3.2 */
+	IB_OPCODE_CNP                               = 0x80,
+	/* Manufacturer specific */
+	IB_OPCODE_MSP                               = 0xe0,
 
 	/* operations -- just used to define real constants */
 	IB_OPCODE_SEND_FIRST                        = 0x00,
@@ -99,6 +81,11 @@ enum {
 	IB_OPCODE_ATOMIC_ACKNOWLEDGE                = 0x12,
 	IB_OPCODE_COMPARE_SWAP                      = 0x13,
 	IB_OPCODE_FETCH_ADD                         = 0x14,
+	/* opcode 0x15 is reserved */
+	IB_OPCODE_SEND_LAST_WITH_INVALIDATE         = 0x16,
+	IB_OPCODE_SEND_ONLY_WITH_INVALIDATE         = 0x17,
+	IB_OPCODE_FLUSH                             = 0x1C,
+	IB_OPCODE_ATOMIC_WRITE                      = 0x1D,
 
 	/* real constants follow -- see comment about above IB_OPCODE()
 	   macro for more details */
@@ -125,6 +112,10 @@ enum {
 	IB_OPCODE(RC, ATOMIC_ACKNOWLEDGE),
 	IB_OPCODE(RC, COMPARE_SWAP),
 	IB_OPCODE(RC, FETCH_ADD),
+	IB_OPCODE(RC, SEND_LAST_WITH_INVALIDATE),
+	IB_OPCODE(RC, SEND_ONLY_WITH_INVALIDATE),
+	IB_OPCODE(RC, FLUSH),
+	IB_OPCODE(RC, ATOMIC_WRITE),
 
 	/* UC */
 	IB_OPCODE(UC, SEND_FIRST),
@@ -162,6 +153,7 @@ enum {
 	IB_OPCODE(RD, ATOMIC_ACKNOWLEDGE),
 	IB_OPCODE(RD, COMPARE_SWAP),
 	IB_OPCODE(RD, FETCH_ADD),
+	IB_OPCODE(RD, FLUSH),
 
 	/* UD */
 	IB_OPCODE(UD, SEND_ONLY),
@@ -221,6 +213,27 @@ struct ib_unpacked_eth {
 	__be16	type;
 };
 
+struct ib_unpacked_ip4 {
+	u8	ver;
+	u8	hdr_len;
+	u8	tos;
+	__be16	tot_len;
+	__be16	id;
+	__be16	frag_off;
+	u8	ttl;
+	u8	protocol;
+	__sum16	check;
+	__be32	saddr;
+	__be32	daddr;
+};
+
+struct ib_unpacked_udp {
+	__be16	sport;
+	__be16	dport;
+	__be16	length;
+	__be16	csum;
+};
+
 struct ib_unpacked_vlan {
 	__be16  tag;
 	__be16  type;
@@ -235,6 +248,10 @@ struct ib_ud_header {
 	struct ib_unpacked_vlan vlan;
 	int			grh_present;
 	struct ib_unpacked_grh	grh;
+	int			ipv4_present;
+	struct ib_unpacked_ip4	ip4;
+	int			udp_present;
+	struct ib_unpacked_udp	udp;
 	struct ib_unpacked_bth	bth;
 	struct ib_unpacked_deth deth;
 	int			immediate_present;
@@ -251,13 +268,17 @@ void ib_unpack(const struct ib_field        *desc,
 	       void                         *buf,
 	       void                         *structure);
 
-void ib_ud_header_init(int		    payload_bytes,
-		       int		    lrh_present,
-		       int		    eth_present,
-		       int		    vlan_present,
-		       int		    grh_present,
-		       int		    immediate_present,
-		       struct ib_ud_header *header);
+__sum16 ib_ud_ip4_csum(struct ib_ud_header *header);
+
+int ib_ud_header_init(int		    payload_bytes,
+		      int		    lrh_present,
+		      int		    eth_present,
+		      int		    vlan_present,
+		      int		    grh_present,
+		      int		    ip_version,
+		      int		    udp_present,
+		      int		    immediate_present,
+		      struct ib_ud_header *header);
 
 int ib_ud_header_pack(struct ib_ud_header *header,
 		      void                *buf);

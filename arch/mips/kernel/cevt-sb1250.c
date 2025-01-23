@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2000, 2001 Broadcom Corporation
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 #include <linux/clockchips.h>
 #include <linux/interrupt.h>
@@ -38,8 +25,20 @@
  * The general purpose timer ticks at 1MHz independent if
  * the rest of the system
  */
-static void sibyte_set_mode(enum clock_event_mode mode,
-			   struct clock_event_device *evt)
+
+static int sibyte_shutdown(struct clock_event_device *evt)
+{
+	void __iomem *cfg;
+
+	cfg = IOADDR(A_SCD_TIMER_REGISTER(smp_processor_id(), R_SCD_TIMER_CFG));
+
+	/* Stop the timer until we actually program a shot */
+	__raw_writeq(0, cfg);
+
+	return 0;
+}
+
+static int sibyte_set_periodic(struct clock_event_device *evt)
 {
 	unsigned int cpu = smp_processor_id();
 	void __iomem *cfg, *init;
@@ -47,24 +46,11 @@ static void sibyte_set_mode(enum clock_event_mode mode,
 	cfg = IOADDR(A_SCD_TIMER_REGISTER(cpu, R_SCD_TIMER_CFG));
 	init = IOADDR(A_SCD_TIMER_REGISTER(cpu, R_SCD_TIMER_INIT));
 
-	switch (mode) {
-	case CLOCK_EVT_MODE_PERIODIC:
-		__raw_writeq(0, cfg);
-		__raw_writeq((V_SCD_TIMER_FREQ / HZ) - 1, init);
-		__raw_writeq(M_SCD_TIMER_ENABLE | M_SCD_TIMER_MODE_CONTINUOUS,
-			     cfg);
-		break;
+	__raw_writeq(0, cfg);
+	__raw_writeq((V_SCD_TIMER_FREQ / HZ) - 1, init);
+	__raw_writeq(M_SCD_TIMER_ENABLE | M_SCD_TIMER_MODE_CONTINUOUS, cfg);
 
-	case CLOCK_EVT_MODE_ONESHOT:
-		/* Stop the timer until we actually program a shot */
-	case CLOCK_EVT_MODE_SHUTDOWN:
-		__raw_writeq(0, cfg);
-		break;
-
-	case CLOCK_EVT_MODE_UNUSED:	/* shuddup gcc */
-	case CLOCK_EVT_MODE_RESUME:
-		;
-	}
+	return 0;
 }
 
 static int sibyte_next_event(unsigned long delta, struct clock_event_device *cd)
@@ -89,7 +75,7 @@ static irqreturn_t sibyte_counter_handler(int irq, void *dev_id)
 	void __iomem *cfg;
 	unsigned long tmode;
 
-	if (cd->mode == CLOCK_EVT_MODE_PERIODIC)
+	if (clockevent_state_periodic(cd))
 		tmode = M_SCD_TIMER_ENABLE | M_SCD_TIMER_MODE_CONTINUOUS;
 	else
 		tmode = 0;
@@ -104,16 +90,15 @@ static irqreturn_t sibyte_counter_handler(int irq, void *dev_id)
 }
 
 static DEFINE_PER_CPU(struct clock_event_device, sibyte_hpt_clockevent);
-static DEFINE_PER_CPU(struct irqaction, sibyte_hpt_irqaction);
 static DEFINE_PER_CPU(char [18], sibyte_hpt_name);
 
 void sb1250_clockevent_init(void)
 {
 	unsigned int cpu = smp_processor_id();
 	unsigned int irq = K_INT_TIMER_0 + cpu;
-	struct irqaction *action = &per_cpu(sibyte_hpt_irqaction, cpu);
 	struct clock_event_device *cd = &per_cpu(sibyte_hpt_clockevent, cpu);
 	unsigned char *name = per_cpu(sibyte_hpt_name, cpu);
+	unsigned long flags = IRQF_PERCPU | IRQF_TIMER;
 
 	/* Only have 4 general purpose timers, and we use last one as hpt */
 	BUG_ON(cpu > 2);
@@ -124,12 +109,16 @@ void sb1250_clockevent_init(void)
 				  CLOCK_EVT_FEAT_ONESHOT;
 	clockevent_set_clock(cd, V_SCD_TIMER_FREQ);
 	cd->max_delta_ns	= clockevent_delta2ns(0x7fffff, cd);
+	cd->max_delta_ticks	= 0x7fffff;
 	cd->min_delta_ns	= clockevent_delta2ns(2, cd);
+	cd->min_delta_ticks	= 2;
 	cd->rating		= 200;
 	cd->irq			= irq;
 	cd->cpumask		= cpumask_of(cpu);
 	cd->set_next_event	= sibyte_next_event;
-	cd->set_mode		= sibyte_set_mode;
+	cd->set_state_shutdown	= sibyte_shutdown;
+	cd->set_state_periodic	= sibyte_set_periodic;
+	cd->set_state_oneshot	= sibyte_shutdown;
 	clockevents_register_device(cd);
 
 	sb1250_mask_irq(cpu, irq);
@@ -143,11 +132,7 @@ void sb1250_clockevent_init(void)
 
 	sb1250_unmask_irq(cpu, irq);
 
-	action->handler = sibyte_counter_handler;
-	action->flags	= IRQF_PERCPU | IRQF_TIMER;
-	action->name	= name;
-	action->dev_id	= cd;
-
 	irq_set_affinity(irq, cpumask_of(cpu));
-	setup_irq(irq, action);
+	if (request_irq(irq, sibyte_counter_handler, flags, name, cd))
+		pr_err("Failed to request irq %d (%s)\n", irq, name);
 }

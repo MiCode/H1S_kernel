@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Core driver interface to access RICOH_RC5T583 power management chip.
  *
@@ -6,19 +7,6 @@
  *
  * Based on code
  *      Copyright (C) 2011 RICOH COMPANY,LTD
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
  */
 
 #ifndef __LINUX_MFD_RC5T583_H
@@ -27,8 +15,6 @@
 #include <linux/mutex.h>
 #include <linux/types.h>
 #include <linux/regmap.h>
-
-#define RC5T583_MAX_REGS		0xF8
 
 /* Maximum number of main interrupts */
 #define MAX_MAIN_INTERRUPT		5
@@ -168,6 +154,9 @@
 #define RC5T583_RTC_AY_DAY	0xF2
 #define RC5T583_RTC_AY_MONTH 0xF3
 #define RC5T583_RTC_AY_YEAR	0xF4
+
+#define RC5T583_MAX_REG		0xF7
+#define RC5T583_NUM_REGS	(RC5T583_MAX_REG + 1)
 
 /* RICOH_RC5T583 IRQ definitions */
 enum {

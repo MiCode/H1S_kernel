@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * APEI Error Record Serialization Table support
  *
@@ -9,19 +10,6 @@
  *
  * Copyright 2010 Intel Corp.
  *   Author: Huang Ying <ying.huang@intel.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version
- * 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/kernel.h>
@@ -35,6 +23,8 @@
 #include <linux/nmi.h>
 #include <linux/hardirq.h>
 #include <linux/pstore.h>
+#include <linux/vmalloc.h>
+#include <linux/mm.h> /* kvfree() */
 #include <acpi/apei.h>
 
 #include "apei-internal.h"
@@ -64,7 +54,7 @@ EXPORT_SYMBOL_GPL(erst_disable);
 
 static struct acpi_table_erst *erst_tab;
 
-/* ERST Error Log Address Range atrributes */
+/* ERST Error Log Address Range attributes */
 #define ERST_RANGE_RESERVED	0x0001
 #define ERST_RANGE_NVRAM	0x0002
 #define ERST_RANGE_SLOW		0x0004
@@ -515,7 +505,7 @@ retry:
 	if (i < erst_record_id_cache.len)
 		goto retry;
 	if (erst_record_id_cache.len >= erst_record_id_cache.size) {
-		int new_size, alloc_size;
+		int new_size;
 		u64 *new_entries;
 
 		new_size = erst_record_id_cache.size * 2;
@@ -526,19 +516,13 @@ retry:
 				pr_warn(FW_WARN "too many record IDs!\n");
 			return 0;
 		}
-		alloc_size = new_size * sizeof(entries[0]);
-		if (alloc_size < PAGE_SIZE)
-			new_entries = kmalloc(alloc_size, GFP_KERNEL);
-		else
-			new_entries = vmalloc(alloc_size);
+		new_entries = kvmalloc_array(new_size, sizeof(entries[0]),
+					     GFP_KERNEL);
 		if (!new_entries)
 			return -ENOMEM;
 		memcpy(new_entries, entries,
 		       erst_record_id_cache.len * sizeof(entries[0]));
-		if (erst_record_id_cache.size < PAGE_SIZE)
-			kfree(entries);
-		else
-			vfree(entries);
+		kvfree(entries);
 		erst_record_id_cache.entries = entries = new_entries;
 		erst_record_id_cache.size = new_size;
 	}
@@ -704,7 +688,7 @@ static int __erst_read_from_storage(u64 record_id, u64 offset)
 			break;
 		if (erst_timedout(&timeout, SPIN_UNIT))
 			return -EIO;
-	};
+	}
 	rc = apei_exec_run(&ctx, ACPI_ERST_GET_COMMAND_STATUS);
 	if (rc)
 		return rc;
@@ -872,6 +856,74 @@ ssize_t erst_read(u64 record_id, struct cper_record_header *record,
 }
 EXPORT_SYMBOL_GPL(erst_read);
 
+static void erst_clear_cache(u64 record_id)
+{
+	int i;
+	u64 *entries;
+
+	mutex_lock(&erst_record_id_cache.lock);
+
+	entries = erst_record_id_cache.entries;
+	for (i = 0; i < erst_record_id_cache.len; i++) {
+		if (entries[i] == record_id)
+			entries[i] = APEI_ERST_INVALID_RECORD_ID;
+	}
+	__erst_record_id_cache_compact();
+
+	mutex_unlock(&erst_record_id_cache.lock);
+}
+
+ssize_t erst_read_record(u64 record_id, struct cper_record_header *record,
+		size_t buflen, size_t recordlen, const guid_t *creatorid)
+{
+	ssize_t len;
+
+	/*
+	 * if creatorid is NULL, read any record for erst-dbg module
+	 */
+	if (creatorid == NULL) {
+		len = erst_read(record_id, record, buflen);
+		if (len == -ENOENT)
+			erst_clear_cache(record_id);
+
+		return len;
+	}
+
+	len = erst_read(record_id, record, buflen);
+	/*
+	 * if erst_read return value is -ENOENT skip to next record_id,
+	 * and clear the record_id cache.
+	 */
+	if (len == -ENOENT) {
+		erst_clear_cache(record_id);
+		goto out;
+	}
+
+	if (len < 0)
+		goto out;
+
+	/*
+	 * if erst_read return value is less than record head length,
+	 * consider it as -EIO, and clear the record_id cache.
+	 */
+	if (len < recordlen) {
+		len = -EIO;
+		erst_clear_cache(record_id);
+		goto out;
+	}
+
+	/*
+	 * if creatorid is not wanted, consider it as not found,
+	 * for skipping to next record_id.
+	 */
+	if (!guid_equal(&record->creator_id, creatorid))
+		len = -ENOENT;
+
+out:
+	return len;
+}
+EXPORT_SYMBOL_GPL(erst_read_record);
+
 int erst_clear(u64 record_id)
 {
 	int rc, i;
@@ -907,7 +959,7 @@ EXPORT_SYMBOL_GPL(erst_clear);
 static int __init setup_erst_disable(char *str)
 {
 	erst_disable = 1;
-	return 0;
+	return 1;
 }
 
 __setup("erst_disable", setup_erst_disable);
@@ -930,19 +982,14 @@ static int erst_check_table(struct acpi_table_erst *erst_tab)
 
 static int erst_open_pstore(struct pstore_info *psi);
 static int erst_close_pstore(struct pstore_info *psi);
-static ssize_t erst_reader(u64 *id, enum pstore_type_id *type, int *count,
-			   struct timespec *time, char **buf,
-			   bool *compressed, struct pstore_info *psi);
-static int erst_writer(enum pstore_type_id type, enum kmsg_dump_reason reason,
-		       u64 *id, unsigned int part, int count, bool compressed,
-		       size_t size, struct pstore_info *psi);
-static int erst_clearer(enum pstore_type_id type, u64 id, int count,
-			struct timespec time, struct pstore_info *psi);
+static ssize_t erst_reader(struct pstore_record *record);
+static int erst_writer(struct pstore_record *record);
+static int erst_clearer(struct pstore_record *record);
 
 static struct pstore_info erst_info = {
 	.owner		= THIS_MODULE,
 	.name		= "erst",
-	.flags		= PSTORE_FLAGS_FRAGILE,
+	.flags		= PSTORE_FLAGS_DMESG,
 	.open		= erst_open_pstore,
 	.close		= erst_close_pstore,
 	.read		= erst_reader,
@@ -951,17 +998,17 @@ static struct pstore_info erst_info = {
 };
 
 #define CPER_CREATOR_PSTORE						\
-	UUID_LE(0x75a574e3, 0x5052, 0x4b29, 0x8a, 0x8e, 0xbe, 0x2c,	\
-		0x64, 0x90, 0xb8, 0x9d)
+	GUID_INIT(0x75a574e3, 0x5052, 0x4b29, 0x8a, 0x8e, 0xbe, 0x2c,	\
+		  0x64, 0x90, 0xb8, 0x9d)
 #define CPER_SECTION_TYPE_DMESG						\
-	UUID_LE(0xc197e04e, 0xd545, 0x4a70, 0x9c, 0x17, 0xa5, 0x54,	\
-		0x94, 0x19, 0xeb, 0x12)
+	GUID_INIT(0xc197e04e, 0xd545, 0x4a70, 0x9c, 0x17, 0xa5, 0x54,	\
+		  0x94, 0x19, 0xeb, 0x12)
 #define CPER_SECTION_TYPE_DMESG_Z					\
-	UUID_LE(0x4f118707, 0x04dd, 0x4055, 0xb5, 0xdd, 0x95, 0x6d,	\
-		0x34, 0xdd, 0xfa, 0xc6)
+	GUID_INIT(0x4f118707, 0x04dd, 0x4055, 0xb5, 0xdd, 0x95, 0x6d,	\
+		  0x34, 0xdd, 0xfa, 0xc6)
 #define CPER_SECTION_TYPE_MCE						\
-	UUID_LE(0xfe08ffbe, 0x95e4, 0x4be7, 0xbc, 0x73, 0x40, 0x96,	\
-		0x04, 0x4a, 0x38, 0xfc)
+	GUID_INIT(0xfe08ffbe, 0x95e4, 0x4be7, 0xbc, 0x73, 0x40, 0x96,	\
+		  0x04, 0x4a, 0x38, 0xfc)
 
 struct cper_pstore_record {
 	struct cper_record_header hdr;
@@ -973,14 +1020,10 @@ static int reader_pos;
 
 static int erst_open_pstore(struct pstore_info *psi)
 {
-	int rc;
-
 	if (erst_disable)
 		return -ENODEV;
 
-	rc = erst_get_record_id_begin(&reader_pos);
-
-	return rc;
+	return erst_get_record_id_begin(&reader_pos);
 }
 
 static int erst_close_pstore(struct pstore_info *psi)
@@ -990,9 +1033,7 @@ static int erst_close_pstore(struct pstore_info *psi)
 	return 0;
 }
 
-static ssize_t erst_reader(u64 *id, enum pstore_type_id *type, int *count,
-			   struct timespec *time, char **buf,
-			   bool *compressed, struct pstore_info *psi)
+static ssize_t erst_reader(struct pstore_record *record)
 {
 	int rc;
 	ssize_t len = 0;
@@ -1019,52 +1060,45 @@ skip:
 		goto out;
 	}
 
-	len = erst_read(record_id, &rcd->hdr, rcd_len);
+	len = erst_read_record(record_id, &rcd->hdr, rcd_len, sizeof(*rcd),
+			&CPER_CREATOR_PSTORE);
 	/* The record may be cleared by others, try read next record */
 	if (len == -ENOENT)
 		goto skip;
-	else if (len < sizeof(*rcd)) {
-		rc = -EIO;
+	else if (len < 0)
 		goto out;
-	}
-	if (uuid_le_cmp(rcd->hdr.creator_id, CPER_CREATOR_PSTORE) != 0)
-		goto skip;
 
-	*buf = kmalloc(len, GFP_KERNEL);
-	if (*buf == NULL) {
+	record->buf = kmalloc(len, GFP_KERNEL);
+	if (record->buf == NULL) {
 		rc = -ENOMEM;
 		goto out;
 	}
-	memcpy(*buf, rcd->data, len - sizeof(*rcd));
-	*id = record_id;
-	*compressed = false;
-	if (uuid_le_cmp(rcd->sec_hdr.section_type,
-			CPER_SECTION_TYPE_DMESG_Z) == 0) {
-		*type = PSTORE_TYPE_DMESG;
-		*compressed = true;
-	} else if (uuid_le_cmp(rcd->sec_hdr.section_type,
-			CPER_SECTION_TYPE_DMESG) == 0)
-		*type = PSTORE_TYPE_DMESG;
-	else if (uuid_le_cmp(rcd->sec_hdr.section_type,
-			     CPER_SECTION_TYPE_MCE) == 0)
-		*type = PSTORE_TYPE_MCE;
+	memcpy(record->buf, rcd->data, len - sizeof(*rcd));
+	record->id = record_id;
+	record->compressed = false;
+	record->ecc_notice_size = 0;
+	if (guid_equal(&rcd->sec_hdr.section_type, &CPER_SECTION_TYPE_DMESG_Z)) {
+		record->type = PSTORE_TYPE_DMESG;
+		record->compressed = true;
+	} else if (guid_equal(&rcd->sec_hdr.section_type, &CPER_SECTION_TYPE_DMESG))
+		record->type = PSTORE_TYPE_DMESG;
+	else if (guid_equal(&rcd->sec_hdr.section_type, &CPER_SECTION_TYPE_MCE))
+		record->type = PSTORE_TYPE_MCE;
 	else
-		*type = PSTORE_TYPE_UNKNOWN;
+		record->type = PSTORE_TYPE_MAX;
 
 	if (rcd->hdr.validation_bits & CPER_VALID_TIMESTAMP)
-		time->tv_sec = rcd->hdr.timestamp;
+		record->time.tv_sec = rcd->hdr.timestamp;
 	else
-		time->tv_sec = 0;
-	time->tv_nsec = 0;
+		record->time.tv_sec = 0;
+	record->time.tv_nsec = 0;
 
 out:
 	kfree(rcd);
 	return (rc < 0) ? rc : (len - sizeof(*rcd));
 }
 
-static int erst_writer(enum pstore_type_id type, enum kmsg_dump_reason reason,
-		       u64 *id, unsigned int part, int count, bool compressed,
-		       size_t size, struct pstore_info *psi)
+static int erst_writer(struct pstore_record *record)
 {
 	struct cper_pstore_record *rcd = (struct cper_pstore_record *)
 					(erst_info.buf - sizeof(*rcd));
@@ -1078,22 +1112,22 @@ static int erst_writer(enum pstore_type_id type, enum kmsg_dump_reason reason,
 	rcd->hdr.error_severity = CPER_SEV_FATAL;
 	/* timestamp valid. platform_id, partition_id are invalid */
 	rcd->hdr.validation_bits = CPER_VALID_TIMESTAMP;
-	rcd->hdr.timestamp = get_seconds();
-	rcd->hdr.record_length = sizeof(*rcd) + size;
+	rcd->hdr.timestamp = ktime_get_real_seconds();
+	rcd->hdr.record_length = sizeof(*rcd) + record->size;
 	rcd->hdr.creator_id = CPER_CREATOR_PSTORE;
 	rcd->hdr.notification_type = CPER_NOTIFY_MCE;
 	rcd->hdr.record_id = cper_next_record_id();
 	rcd->hdr.flags = CPER_HW_ERROR_FLAGS_PREVERR;
 
 	rcd->sec_hdr.section_offset = sizeof(*rcd);
-	rcd->sec_hdr.section_length = size;
+	rcd->sec_hdr.section_length = record->size;
 	rcd->sec_hdr.revision = CPER_SEC_REV;
 	/* fru_id and fru_text is invalid */
 	rcd->sec_hdr.validation_bits = 0;
 	rcd->sec_hdr.flags = CPER_SEC_PRIMARY;
-	switch (type) {
+	switch (record->type) {
 	case PSTORE_TYPE_DMESG:
-		if (compressed)
+		if (record->compressed)
 			rcd->sec_hdr.section_type = CPER_SECTION_TYPE_DMESG_Z;
 		else
 			rcd->sec_hdr.section_type = CPER_SECTION_TYPE_DMESG;
@@ -1107,15 +1141,14 @@ static int erst_writer(enum pstore_type_id type, enum kmsg_dump_reason reason,
 	rcd->sec_hdr.section_severity = CPER_SEV_FATAL;
 
 	ret = erst_write(&rcd->hdr);
-	*id = rcd->hdr.record_id;
+	record->id = rcd->hdr.record_id;
 
 	return ret;
 }
 
-static int erst_clearer(enum pstore_type_id type, u64 id, int count,
-			struct timespec time, struct pstore_info *psi)
+static int erst_clearer(struct pstore_record *record)
 {
-	return erst_clear(id);
+	return erst_clear(record->id);
 }
 
 static int __init erst_init(void)
@@ -1150,7 +1183,7 @@ static int __init erst_init(void)
 	rc = erst_check_table(erst_tab);
 	if (rc) {
 		pr_err(FW_BUG "ERST table is invalid.\n");
-		goto err;
+		goto err_put_erst_tab;
 	}
 
 	apei_resources_init(&erst_resources);
@@ -1193,7 +1226,6 @@ static int __init erst_init(void)
 	"Error Record Serialization Table (ERST) support is initialized.\n");
 
 	buf = kmalloc(erst_erange.size, GFP_KERNEL);
-	spin_lock_init(&erst_info.buf_lock);
 	if (buf) {
 		erst_info.buf = buf + sizeof(struct cper_pstore_record);
 		erst_info.bufsize = erst_erange.size -
@@ -1212,6 +1244,9 @@ static int __init erst_init(void)
 		"Failed to allocate %lld bytes for persistent store error log.\n",
 		erst_erange.size);
 
+	/* Cleanup ERST Resources */
+	apei_resources_fini(&erst_resources);
+
 	return 0;
 
 err_release_erange:
@@ -1222,6 +1257,8 @@ err_release:
 	apei_resources_release(&erst_resources);
 err_fini:
 	apei_resources_fini(&erst_resources);
+err_put_erst_tab:
+	acpi_put_table((struct acpi_table_header *)erst_tab);
 err:
 	erst_disable = 1;
 	return rc;

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * MT regs definitions, follows on from mipsregs.h
  * Copyright (C) 2004 - 2005 MIPS Technologies, Inc.  All rights reserved.
@@ -8,7 +9,6 @@
 #define _ASM_MIPSMTREGS_H
 
 #include <asm/mipsregs.h>
-#include <asm/war.h>
 
 #ifndef __ASSEMBLY__
 
@@ -35,6 +35,8 @@
 #define write_c0_tcstatus(val)		__write_32bit_c0_register($2, 1, val)
 
 #define read_c0_tcbind()		__read_32bit_c0_register($2, 2)
+
+#define write_c0_tchalt(val)		__write_32bit_c0_register($2, 4, val)
 
 #define read_c0_tccontext()		__read_32bit_c0_register($2, 5)
 #define write_c0_tccontext(val)		__write_32bit_c0_register($2, 5, val)
@@ -176,6 +178,17 @@
 
 #ifndef __ASSEMBLY__
 
+static inline unsigned core_nvpes(void)
+{
+	unsigned conf0;
+
+	if (!cpu_has_mipsmt)
+		return 1;
+
+	conf0 = read_c0_mvpconf0();
+	return ((conf0 & MVPCONF0_PVPE) >> MVPCONF0_PVPE_SHIFT) + 1;
+}
+
 static inline unsigned int dvpe(void)
 {
 	int res = 0;
@@ -241,12 +254,12 @@ static inline unsigned int dmt(void)
 static inline void __raw_emt(void)
 {
 	__asm__ __volatile__(
+	"	.set	push						\n"
 	"	.set	noreorder					\n"
 	"	.set	mips32r2					\n"
 	"	.word	0x41600be1			# emt		\n"
 	"	ehb							\n"
-	"	.set	mips0						\n"
-	"	.set	reorder");
+	"	.set	pop");
 }
 
 /* enable multi-threaded execution if previous suggested it should be.
@@ -263,9 +276,10 @@ static inline void emt(int previous)
 static inline void ehb(void)
 {
 	__asm__ __volatile__(
+	"	.set	push					\n"
 	"	.set	mips32r2				\n"
 	"	ehb						\n"
-	"	.set	mips0					\n");
+	"	.set	pop					\n");
 }
 
 #define mftc0(rt,sel)							\

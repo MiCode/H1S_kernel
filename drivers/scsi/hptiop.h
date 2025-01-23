@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * HighPoint RR3xxx/4xxx controller driver for Linux
- * Copyright (C) 2006-2012 HighPoint Technologies, Inc. All Rights Reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (C) 2006-2015 HighPoint Technologies, Inc. All Rights Reserved.
  *
  * Please report bugs/comments/suggestions to linux@highpoint-tech.com
  *
@@ -236,7 +228,7 @@ struct hpt_iop_request_scsi_command {
 	u8     pad1;
 	u8     cdb[16];
 	__le32 dataxfer_length;
-	struct hpt_iopsg sg_list[1];
+	struct hpt_iopsg sg_list[];
 };
 
 struct hpt_iop_request_ioctl_command {
@@ -245,7 +237,7 @@ struct hpt_iop_request_ioctl_command {
 	__le32 inbuf_size;
 	__le32 outbuf_size;
 	__le32 bytes_returned;
-	u8     buf[1];
+	u8     buf[];
 	/* out data should be put at buf[(inbuf_size+3)&~3] */
 };
 
@@ -259,13 +251,13 @@ struct hptiop_request {
 	int                   index;
 };
 
-struct hpt_scsi_pointer {
+struct hpt_cmd_priv {
 	int mapped;
 	int sgcnt;
 	dma_addr_t dma_handle;
 };
 
-#define HPT_SCP(scp) ((struct hpt_scsi_pointer *)&(scp)->SCp)
+#define HPT_SCP(scp) ((struct hpt_cmd_priv *)scsi_cmd_priv(scp))
 
 enum hptiop_family {
 	UNKNOWN_BASED_IOP,
@@ -327,8 +319,8 @@ struct hptiop_hba {
 	struct hptiop_request reqs[HPTIOP_MAX_REQUESTS];
 
 	/* used to free allocated dma area */
-	void        *dma_coherent;
-	dma_addr_t  dma_coherent_handle;
+	void        *dma_coherent[HPTIOP_MAX_REQUESTS];
+	dma_addr_t  dma_coherent_handle[HPTIOP_MAX_REQUESTS];
 
 	atomic_t    reset_count;
 	atomic_t    resetting;

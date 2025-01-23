@@ -25,18 +25,20 @@
  *          Alex Deucher
  *          Jerome Glisse
  */
+
 #include <linux/seq_file.h>
 #include <linux/slab.h>
-#include <drm/drmP.h>
-#include "rv515d.h"
+
+#include <drm/drm_device.h>
+#include <drm/drm_file.h>
+
+#include "atom.h"
 #include "radeon.h"
 #include "radeon_asic.h"
-#include "atom.h"
 #include "rv515_reg_safe.h"
+#include "rv515d.h"
 
 /* This files gather functions specifics to: rv515 */
-static int rv515_debugfs_pipes_info_init(struct radeon_device *rdev);
-static int rv515_debugfs_ga_info_init(struct radeon_device *rdev);
 static void rv515_gpu_init(struct radeon_device *rdev);
 int rv515_mc_wait_for_idle(struct radeon_device *rdev);
 
@@ -45,19 +47,6 @@ static const u32 crtc_offsets[2] =
 	0,
 	AVIVO_D2CRTC_H_TOTAL - AVIVO_D1CRTC_H_TOTAL
 };
-
-void rv515_debugfs(struct radeon_device *rdev)
-{
-	if (r100_debugfs_rbbm_init(rdev)) {
-		DRM_ERROR("Failed to register debugfs file for RBBM !\n");
-	}
-	if (rv515_debugfs_pipes_info_init(rdev)) {
-		DRM_ERROR("Failed to register debugfs file for pipes !\n");
-	}
-	if (rv515_debugfs_ga_info_init(rdev)) {
-		DRM_ERROR("Failed to register debugfs file for pipes !\n");
-	}
-}
 
 void rv515_ring_start(struct radeon_device *rdev, struct radeon_ring *ring)
 {
@@ -124,7 +113,7 @@ void rv515_ring_start(struct radeon_device *rdev, struct radeon_ring *ring)
 	radeon_ring_write(ring, GEOMETRY_ROUND_NEAREST | COLOR_ROUND_NEAREST);
 	radeon_ring_write(ring, PACKET0(0x20C8, 0));
 	radeon_ring_write(ring, 0);
-	radeon_ring_unlock_commit(rdev, ring);
+	radeon_ring_unlock_commit(rdev, ring, false);
 }
 
 int rv515_mc_wait_for_idle(struct radeon_device *rdev)
@@ -138,7 +127,7 @@ int rv515_mc_wait_for_idle(struct radeon_device *rdev)
 		if (tmp & MC_STATUS_IDLE) {
 			return 0;
 		}
-		DRM_UDELAY(1);
+		udelay(1);
 	}
 	return -1;
 }
@@ -154,8 +143,7 @@ static void rv515_gpu_init(struct radeon_device *rdev)
 	unsigned pipe_select_current, gb_pipe_select, tmp;
 
 	if (r100_gui_wait_for_idle(rdev)) {
-		printk(KERN_WARNING "Failed to wait GUI idle while "
-		       "resetting GPU. Bad things might happen.\n");
+		pr_warn("Failed to wait GUI idle while resetting GPU. Bad things might happen.\n");
 	}
 	rv515_vga_render_disable(rdev);
 	r420_pipes_init(rdev);
@@ -166,12 +154,10 @@ static void rv515_gpu_init(struct radeon_device *rdev)
 	      (((gb_pipe_select >> 8) & 0xF) << 4);
 	WREG32_PLL(0x000D, tmp);
 	if (r100_gui_wait_for_idle(rdev)) {
-		printk(KERN_WARNING "Failed to wait GUI idle while "
-		       "resetting GPU. Bad things might happen.\n");
+		pr_warn("Failed to wait GUI idle while resetting GPU. Bad things might happen.\n");
 	}
 	if (rv515_mc_wait_for_idle(rdev)) {
-		printk(KERN_WARNING "Failed to wait MC idle while "
-		       "programming pipes. Bad things might happen.\n");
+		pr_warn("Failed to wait MC idle while programming pipes. Bad things might happen.\n");
 	}
 }
 
@@ -233,11 +219,9 @@ void rv515_mc_wreg(struct radeon_device *rdev, uint32_t reg, uint32_t v)
 }
 
 #if defined(CONFIG_DEBUG_FS)
-static int rv515_debugfs_pipes_info(struct seq_file *m, void *data)
+static int rv515_debugfs_pipes_info_show(struct seq_file *m, void *unused)
 {
-	struct drm_info_node *node = (struct drm_info_node *) m->private;
-	struct drm_device *dev = node->minor->dev;
-	struct radeon_device *rdev = dev->dev_private;
+	struct radeon_device *rdev = m->private;
 	uint32_t tmp;
 
 	tmp = RREG32(GB_PIPE_SELECT);
@@ -251,11 +235,9 @@ static int rv515_debugfs_pipes_info(struct seq_file *m, void *data)
 	return 0;
 }
 
-static int rv515_debugfs_ga_info(struct seq_file *m, void *data)
+static int rv515_debugfs_ga_info_show(struct seq_file *m, void *unused)
 {
-	struct drm_info_node *node = (struct drm_info_node *) m->private;
-	struct drm_device *dev = node->minor->dev;
-	struct radeon_device *rdev = dev->dev_private;
+	struct radeon_device *rdev = m->private;
 	uint32_t tmp;
 
 	tmp = RREG32(0x2140);
@@ -266,31 +248,21 @@ static int rv515_debugfs_ga_info(struct seq_file *m, void *data)
 	return 0;
 }
 
-static struct drm_info_list rv515_pipes_info_list[] = {
-	{"rv515_pipes_info", rv515_debugfs_pipes_info, 0, NULL},
-};
-
-static struct drm_info_list rv515_ga_info_list[] = {
-	{"rv515_ga_info", rv515_debugfs_ga_info, 0, NULL},
-};
+DEFINE_SHOW_ATTRIBUTE(rv515_debugfs_pipes_info);
+DEFINE_SHOW_ATTRIBUTE(rv515_debugfs_ga_info);
 #endif
 
-static int rv515_debugfs_pipes_info_init(struct radeon_device *rdev)
+void rv515_debugfs(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
-	return radeon_debugfs_add_files(rdev, rv515_pipes_info_list, 1);
-#else
-	return 0;
-#endif
-}
+	struct dentry *root = rdev->ddev->primary->debugfs_root;
 
-static int rv515_debugfs_ga_info_init(struct radeon_device *rdev)
-{
-#if defined(CONFIG_DEBUG_FS)
-	return radeon_debugfs_add_files(rdev, rv515_ga_info_list, 1);
-#else
-	return 0;
+	debugfs_create_file("rv515_pipes_info", 0444, root, rdev,
+			    &rv515_debugfs_pipes_info_fops);
+	debugfs_create_file("rv515_ga_info", 0444, root, rdev,
+			    &rv515_debugfs_ga_info_fops);
 #endif
+	r100_debugfs_rbbm_init(rdev);
 }
 
 void rv515_mc_stop(struct radeon_device *rdev, struct rv515_mc_save *save)
@@ -406,8 +378,9 @@ void rv515_mc_resume(struct radeon_device *rdev, struct rv515_mc_save *save)
 	for (i = 0; i < rdev->num_crtc; i++) {
 		if (save->crtc_enabled[i]) {
 			tmp = RREG32(AVIVO_D1MODE_MASTER_UPDATE_MODE + crtc_offsets[i]);
-			if ((tmp & 0x3) != 0) {
-				tmp &= ~0x3;
+			if ((tmp & 0x7) != 3) {
+				tmp &= ~0x7;
+				tmp |= 0x3;
 				WREG32(AVIVO_D1MODE_MASTER_UPDATE_MODE + crtc_offsets[i], tmp);
 			}
 			tmp = RREG32(AVIVO_D1GRPH_UPDATE + crtc_offsets[i]);
@@ -586,8 +559,6 @@ int rv515_resume(struct radeon_device *rdev)
 	/* Initialize surface registers */
 	radeon_surface_init(rdev);
 
-	radeon_pm_resume(rdev);
-
 	rdev->accel_working = true;
 	r =  rv515_startup(rdev);
 	if (r) {
@@ -677,9 +648,7 @@ int rv515_init(struct radeon_device *rdev)
 	rv515_mc_init(rdev);
 	rv515_debugfs(rdev);
 	/* Fence driver */
-	r = radeon_fence_driver_init(rdev);
-	if (r)
-		return r;
+	radeon_fence_driver_init(rdev);
 	/* Memory manager */
 	r = radeon_bo_init(rdev);
 	if (r)
@@ -1277,6 +1246,9 @@ void rv515_bandwidth_update(struct radeon_device *rdev)
 	uint32_t tmp;
 	struct drm_display_mode *mode0 = NULL;
 	struct drm_display_mode *mode1 = NULL;
+
+	if (!rdev->mode_info.mode_config_initialized)
+		return;
 
 	radeon_update_display_priority(rdev);
 

@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * GE watchdog userspace interface
  *
  * Author:  Martyn Welch <martyn.welch@ge.com>
  *
  * Copyright 2008 GE Intelligent Platforms Embedded Systems, Inc.
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  *
  * Based on: mv64x60_wdt.c (MV64X60 watchdog userspace interface)
  *   Author: James Chapman <jchapman@katalix.com>
@@ -35,7 +31,7 @@
 #include <linux/fs.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/io.h>
 #include <linux/uaccess.h>
 
@@ -205,7 +201,7 @@ static long gef_wdt_ioctl(struct file *file, unsigned int cmd,
 		if (get_user(timeout, (int __user *)argp))
 			return -EFAULT;
 		gef_wdt_set_timeout(timeout);
-		/* Fall through */
+		fallthrough;
 
 	case WDIOC_GETTIMEOUT:
 		if (put_user(gef_wdt_timeout, (int __user *)argp))
@@ -229,7 +225,7 @@ static int gef_wdt_open(struct inode *inode, struct file *file)
 
 	gef_wdt_handler_enable();
 
-	return nonseekable_open(inode, file);
+	return stream_open(inode, file);
 }
 
 static int gef_wdt_release(struct inode *inode, struct file *file)
@@ -252,6 +248,7 @@ static const struct file_operations gef_wdt_fops = {
 	.llseek = no_llseek,
 	.write = gef_wdt_write,
 	.unlocked_ioctl = gef_wdt_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
 	.open = gef_wdt_open,
 	.release = gef_wdt_release,
 };
@@ -286,15 +283,13 @@ static int gef_wdt_probe(struct platform_device *dev)
 	return misc_register(&gef_wdt_miscdev);
 }
 
-static int gef_wdt_remove(struct platform_device *dev)
+static void gef_wdt_remove(struct platform_device *dev)
 {
 	misc_deregister(&gef_wdt_miscdev);
 
 	gef_wdt_handler_disable();
 
 	iounmap(gef_wdt_regs);
-
-	return 0;
 }
 
 static const struct of_device_id gef_wdt_ids[] = {
@@ -303,15 +298,15 @@ static const struct of_device_id gef_wdt_ids[] = {
 	},
 	{},
 };
+MODULE_DEVICE_TABLE(of, gef_wdt_ids);
 
 static struct platform_driver gef_wdt_driver = {
 	.driver = {
 		.name = "gef_wdt",
-		.owner = THIS_MODULE,
 		.of_match_table = gef_wdt_ids,
 	},
 	.probe		= gef_wdt_probe,
-	.remove		= gef_wdt_remove,
+	.remove_new	= gef_wdt_remove,
 };
 
 static int __init gef_wdt_init(void)

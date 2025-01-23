@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * cs_internal.h -- definitions internal to the PCMCIA core modules
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * The initial developer of the original code is David A. Hinds
  * <dahinds@users.sourceforge.net>.  Portions created by David A. Hinds
@@ -11,7 +8,6 @@
  *
  * (C) 1999		David A. Hinds
  * (C) 2003 - 2010	Dominik Brodowski
- *
  *
  * This file contains definitions _only_ needed by the PCMCIA core modules.
  * It must not be included by PCMCIA socket drivers or by PCMCIA device
@@ -44,7 +40,7 @@ struct cis_cache_entry {
 	unsigned int		addr;
 	unsigned int		len;
 	unsigned int		attr;
-	unsigned char		cache[0];
+	unsigned char		cache[];
 };
 
 struct pccard_resource_ops {
@@ -70,6 +66,7 @@ struct pccard_resource_ops {
 /* Flags in socket state */
 #define SOCKET_PRESENT		0x0008
 #define SOCKET_INUSE		0x0010
+#define SOCKET_IN_RESUME	0x0040
 #define SOCKET_SUSPEND		0x0080
 #define SOCKET_WIN_REQ(i)	(0x0100<<(i))
 #define SOCKET_CARDBUS		0x8000
@@ -80,9 +77,9 @@ struct pccard_resource_ops {
  * Stuff internal to module "pcmcia_rsrc":
  */
 extern int static_init(struct pcmcia_socket *s);
-extern struct resource *pcmcia_make_resource(unsigned long start,
-					unsigned long end,
-					int flags, const char *name);
+extern struct resource *pcmcia_make_resource(resource_size_t start,
+					resource_size_t end,
+					unsigned long flags, const char *name);
 
 /*
  * Stuff internal to module "pcmcia_core":
@@ -152,7 +149,7 @@ void pcmcia_cleanup_irq(struct pcmcia_socket *s);
 int pcmcia_setup_irq(struct pcmcia_device *p_dev);
 
 /* cistpl.c */
-extern struct bin_attribute pccard_cis_attr;
+extern const struct bin_attribute pccard_cis_attr;
 
 int pcmcia_read_cis_mem(struct pcmcia_socket *s, int attr,
 			u_int addr, u_int len, void *ptr);
@@ -166,12 +163,6 @@ int pcmcia_replace_cis(struct pcmcia_socket *s,
 		       const u8 *data, const size_t len);
 int pccard_validate_cis(struct pcmcia_socket *s, unsigned int *count);
 int verify_cis_cache(struct pcmcia_socket *s);
-
-int pccard_loop_tuple(struct pcmcia_socket *s, unsigned int function,
-		      cisdata_t code, cisparse_t *parse, void *priv_data,
-		      int (*loop_tuple) (tuple_t *tuple,
-					 cisparse_t *parse,
-					 void *priv_data));
 
 int pccard_get_first_tuple(struct pcmcia_socket *s, unsigned int function,
 			tuple_t *tuple);

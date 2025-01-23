@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Dynamic queue limits (dql) - Definitions
  *
@@ -37,6 +38,8 @@
 
 #ifdef __KERNEL__
 
+#include <asm/bug.h>
+
 struct dql {
 	/* Fields accessed in enqueue path (dql_queued) */
 	unsigned int	num_queued;		/* Total ever queued */
@@ -73,14 +76,22 @@ static inline void dql_queued(struct dql *dql, unsigned int count)
 {
 	BUG_ON(count > DQL_MAX_OBJECT);
 
-	dql->num_queued += count;
 	dql->last_obj_cnt = count;
+
+	/* We want to force a write first, so that cpu do not attempt
+	 * to get cache line containing last_obj_cnt, num_queued, adj_limit
+	 * in Shared state, but directly does a Request For Ownership
+	 * It is only a hint, we use barrier() only.
+	 */
+	barrier();
+
+	dql->num_queued += count;
 }
 
 /* Returns how many objects can be queued, < 0 indicates over limit. */
 static inline int dql_avail(const struct dql *dql)
 {
-	return dql->adj_limit - dql->num_queued;
+	return READ_ONCE(dql->adj_limit) - READ_ONCE(dql->num_queued);
 }
 
 /* Record number of completed objects and recalculate the limit. */
@@ -90,7 +101,7 @@ void dql_completed(struct dql *dql, unsigned int count);
 void dql_reset(struct dql *dql);
 
 /* Initialize dql state */
-int dql_init(struct dql *dql, unsigned hold_time);
+void dql_init(struct dql *dql, unsigned int hold_time);
 
 #endif /* _KERNEL_ */
 

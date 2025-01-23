@@ -1,14 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * TI OMAP4 ISS V4L2 Driver - ISP IPIPE module
  *
  * Copyright (C) 2012 Texas Instruments, Inc.
  *
  * Author: Sergio Aguirre <sergio.a.aguirre@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #ifndef OMAP4_ISS_IPIPE_H
@@ -21,7 +17,7 @@ enum ipipe_input_entity {
 	IPIPE_INPUT_IPIPEIF,
 };
 
-#define IPIPE_OUTPUT_VP		(1 << 0)
+#define IPIPE_OUTPUT_VP				BIT(0)
 
 /* Sink and source IPIPE pads */
 #define IPIPE_PAD_SINK				0
@@ -58,7 +54,7 @@ struct iss_ipipe_device {
 struct iss_device;
 
 int omap4iss_ipipe_register_entities(struct iss_ipipe_device *ipipe,
-	struct v4l2_device *vdev);
+				     struct v4l2_device *vdev);
 void omap4iss_ipipe_unregister_entities(struct iss_ipipe_device *ipipe);
 
 int omap4iss_ipipe_init(struct iss_device *iss);

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Low-level task switching. This is based on information published in
  * the Processor Abstraction Layer and the System Abstraction Layer
@@ -30,16 +31,8 @@ extern struct task_struct *ia64_switch_to (void *next_task);
 extern void ia64_save_extra (struct task_struct *task);
 extern void ia64_load_extra (struct task_struct *task);
 
-#ifdef CONFIG_PERFMON
-  DECLARE_PER_CPU(unsigned long, pfm_syst_info);
-# define PERFMON_IS_SYSWIDE() (__get_cpu_var(pfm_syst_info) & 0x1)
-#else
-# define PERFMON_IS_SYSWIDE() (0)
-#endif
-
 #define IA64_HAS_EXTRA_STATE(t)							\
-	((t)->thread.flags & (IA64_THREAD_DBG_VALID|IA64_THREAD_PM_VALID)	\
-	 || PERFMON_IS_SYSWIDE())
+	((t)->thread.flags & (IA64_THREAD_DBG_VALID|IA64_THREAD_PM_VALID))
 
 #define __switch_to(prev,next,last) do {							 \
 	if (IA64_HAS_EXTRA_STATE(prev))								 \
@@ -68,7 +61,6 @@ extern void ia64_load_extra (struct task_struct *task);
 	if (unlikely((current->thread.flags & IA64_THREAD_MIGRATION) &&	       \
 		     (task_cpu(current) !=				       \
 		      		      task_thread_info(current)->last_cpu))) { \
-		platform_migrate(current);				       \
 		task_thread_info(current)->last_cpu = task_cpu(current);       \
 	}								       \
 } while (0)

@@ -1,10 +1,8 @@
-menu "Kernel hacking"
-
-source "lib/Kconfig.debug"
+# SPDX-License-Identifier: GPL-2.0
 
 config DEBUG_TLB_SANITY
 	bool "Debug TLB sanity"
-	depends on DEBUG_KERNEL
+	depends on DEBUG_KERNEL && MMU
 	help
 	  Enable this to turn on TLB sanity check on each entry to userspace.
 	  This check can spot missing TLB invalidation/wrong PTE permissions/
@@ -14,7 +12,7 @@ config DEBUG_TLB_SANITY
 
 config LD_NO_RELAX
 	bool "Disable linker relaxation"
-	default n
+	default y
 	help
 	  Enable this function to disable link-time optimizations.
 	  The default linker behavior is to combine identical literal
@@ -34,4 +32,17 @@ config S32C1I_SELFTEST
 
 	  Say 'N' on stable hardware.
 
-endmenu
+config PRINT_STACK_DEPTH
+	int "Stack depth to print" if DEBUG_KERNEL
+	default 64
+	help
+	  This option allows you to set the stack depth that the kernel
+	  prints in stack traces.
+
+config PRINT_USER_CODE_ON_UNHANDLED_EXCEPTION
+	bool "Dump user code around unhandled exception address"
+	help
+	  Enable this option to display user code around PC of the unhandled
+	  exception (starting at address aligned on 16 byte boundary).
+	  This may simplify finding faulting code in the absence of other
+	  debug facilities.

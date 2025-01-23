@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * System monitoring driver for DA9052 PMICs.
  *
  * Copyright(c) 2012 Dialog Semiconductor Ltd.
  *
  * Author: Anthony Olech <Anthony.Olech@diasemi.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  *
  */
 
@@ -31,7 +27,6 @@
 struct da9052_wdt_data {
 	struct watchdog_device wdt;
 	struct da9052 *da9052;
-	struct kref kref;
 	unsigned long jpast;
 };
 
@@ -50,10 +45,6 @@ static const struct {
 	{ 7, 131 },
 };
 
-
-static void da9052_wdt_release_resources(struct kref *r)
-{
-}
 
 static int da9052_wdt_set_timeout(struct watchdog_device *wdt_dev,
 				  unsigned int timeout)
@@ -104,20 +95,6 @@ static int da9052_wdt_set_timeout(struct watchdog_device *wdt_dev,
 	return 0;
 }
 
-static void da9052_wdt_ref(struct watchdog_device *wdt_dev)
-{
-	struct da9052_wdt_data *driver_data = watchdog_get_drvdata(wdt_dev);
-
-	kref_get(&driver_data->kref);
-}
-
-static void da9052_wdt_unref(struct watchdog_device *wdt_dev)
-{
-	struct da9052_wdt_data *driver_data = watchdog_get_drvdata(wdt_dev);
-
-	kref_put(&driver_data->kref, da9052_wdt_release_resources);
-}
-
 static int da9052_wdt_start(struct watchdog_device *wdt_dev)
 {
 	return da9052_wdt_set_timeout(wdt_dev, wdt_dev->timeout);
@@ -147,19 +124,17 @@ static int da9052_wdt_ping(struct watchdog_device *wdt_dev)
 	ret = da9052_reg_update(da9052, DA9052_CONTROL_D_REG,
 				DA9052_CONTROLD_WATCHDOG, 1 << 7);
 	if (ret < 0)
-		goto err_strobe;
+		return ret;
 
 	/*
 	 * FIXME: Reset the watchdog core, in general PMIC
 	 * is supposed to do this
 	 */
-	ret = da9052_reg_update(da9052, DA9052_CONTROL_D_REG,
-				DA9052_CONTROLD_WATCHDOG, 0 << 7);
-err_strobe:
-	return ret;
+	return da9052_reg_update(da9052, DA9052_CONTROL_D_REG,
+				 DA9052_CONTROLD_WATCHDOG, 0 << 7);
 }
 
-static struct watchdog_info da9052_wdt_info = {
+static const struct watchdog_info da9052_wdt_info = {
 	.options	= WDIOF_SETTIMEOUT | WDIOF_KEEPALIVEPING,
 	.identity	= "DA9052 Watchdog",
 };
@@ -170,25 +145,20 @@ static const struct watchdog_ops da9052_wdt_ops = {
 	.stop = da9052_wdt_stop,
 	.ping = da9052_wdt_ping,
 	.set_timeout = da9052_wdt_set_timeout,
-	.ref = da9052_wdt_ref,
-	.unref = da9052_wdt_unref,
 };
 
 
 static int da9052_wdt_probe(struct platform_device *pdev)
 {
-	struct da9052 *da9052 = dev_get_drvdata(pdev->dev.parent);
+	struct device *dev = &pdev->dev;
+	struct da9052 *da9052 = dev_get_drvdata(dev->parent);
 	struct da9052_wdt_data *driver_data;
 	struct watchdog_device *da9052_wdt;
 	int ret;
 
-	driver_data = devm_kzalloc(&pdev->dev, sizeof(*driver_data),
-				   GFP_KERNEL);
-	if (!driver_data) {
-		dev_err(da9052->dev, "Unable to alloacate watchdog device\n");
-		ret = -ENOMEM;
-		goto err;
-	}
+	driver_data = devm_kzalloc(dev, sizeof(*driver_data), GFP_KERNEL);
+	if (!driver_data)
+		return -ENOMEM;
 	driver_data->da9052 = da9052;
 
 	da9052_wdt = &driver_data->wdt;
@@ -196,43 +166,21 @@ static int da9052_wdt_probe(struct platform_device *pdev)
 	da9052_wdt->timeout = DA9052_DEF_TIMEOUT;
 	da9052_wdt->info = &da9052_wdt_info;
 	da9052_wdt->ops = &da9052_wdt_ops;
+	da9052_wdt->parent = dev;
 	watchdog_set_drvdata(da9052_wdt, driver_data);
-
-	kref_init(&driver_data->kref);
 
 	ret = da9052_reg_update(da9052, DA9052_CONTROL_D_REG,
 				DA9052_CONTROLD_TWDSCALE, 0);
 	if (ret < 0) {
-		dev_err(&pdev->dev, "Failed to disable watchdog bits, %d\n",
-			ret);
-		goto err;
+		dev_err(dev, "Failed to disable watchdog bits, %d\n", ret);
+		return ret;
 	}
 
-	ret = watchdog_register_device(&driver_data->wdt);
-	if (ret != 0) {
-		dev_err(da9052->dev, "watchdog_register_device() failed: %d\n",
-			ret);
-		goto err;
-	}
-
-	platform_set_drvdata(pdev, driver_data);
-err:
-	return ret;
-}
-
-static int da9052_wdt_remove(struct platform_device *pdev)
-{
-	struct da9052_wdt_data *driver_data = platform_get_drvdata(pdev);
-
-	watchdog_unregister_device(&driver_data->wdt);
-	kref_put(&driver_data->kref, da9052_wdt_release_resources);
-
-	return 0;
+	return devm_watchdog_register_device(dev, &driver_data->wdt);
 }
 
 static struct platform_driver da9052_wdt_driver = {
 	.probe = da9052_wdt_probe,
-	.remove = da9052_wdt_remove,
 	.driver = {
 		.name	= "da9052-watchdog",
 	},

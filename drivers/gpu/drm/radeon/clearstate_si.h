@@ -21,8 +21,9 @@
  *
  */
 
-static const u32 si_SECT_CONTEXT_def_1[] =
-{
+#include "clearstate_defs.h"
+
+static const u32 si_SECT_CONTEXT_def_1[] = {
     0x00000000, // DB_RENDER_CONTROL
     0x00000000, // DB_COUNT_CONTROL
     0x00000000, // DB_DEPTH_VIEW
@@ -933,9 +934,9 @@ static const struct cs_extent_def si_SECT_CONTEXT_defs[] =
     {si_SECT_CONTEXT_def_5, 0x0000a2a1, 1 },
     {si_SECT_CONTEXT_def_6, 0x0000a2a3, 1 },
     {si_SECT_CONTEXT_def_7, 0x0000a2a5, 233 },
-    { 0, 0, 0 }
+    { NULL, 0, 0 }
 };
 static const struct cs_section_def si_cs_data[] = {
     { si_SECT_CONTEXT_defs, SECT_CONTEXT },
-    { 0, SECT_NONE }
+    { NULL, SECT_NONE }
 };

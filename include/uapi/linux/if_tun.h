@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /*
  *  Universal TUN/TAP device driver.
  *  Copyright (C) 1999-2000 Maxim Krasnyansky <max_mk@yahoo.com>
@@ -22,20 +23,10 @@
 
 /* Read queue size */
 #define TUN_READQ_SIZE	500
-
-/* TUN device flags */
-#define TUN_TUN_DEV 	0x0001	
-#define TUN_TAP_DEV	0x0002
+/* TUN device type flags: deprecated. Use IFF_TUN/IFF_TAP instead. */
+#define TUN_TUN_DEV 	IFF_TUN
+#define TUN_TAP_DEV	IFF_TAP
 #define TUN_TYPE_MASK   0x000f
-
-#define TUN_FASYNC	0x0010
-#define TUN_NOCHECKSUM	0x0020
-#define TUN_NO_PI	0x0040
-/* This flag has no real effect */
-#define TUN_ONE_QUEUE	0x0080
-#define TUN_PERSIST 	0x0100	
-#define TUN_VNET_HDR 	0x0200
-#define TUN_TAP_MQ      0x0400
 
 /* Ioctl defines */
 #define TUNSETNOCSUM  _IOW('T', 200, int) 
@@ -58,10 +49,26 @@
 #define TUNSETQUEUE  _IOW('T', 217, int)
 #define TUNSETIFINDEX	_IOW('T', 218, unsigned int)
 #define TUNGETFILTER _IOR('T', 219, struct sock_fprog)
+#define TUNSETVNETLE _IOW('T', 220, int)
+#define TUNGETVNETLE _IOR('T', 221, int)
+/* The TUNSETVNETBE and TUNGETVNETBE ioctls are for cross-endian support on
+ * little-endian hosts. Not all kernel configurations support them, but all
+ * configurations that support SET also support GET.
+ */
+#define TUNSETVNETBE _IOW('T', 222, int)
+#define TUNGETVNETBE _IOR('T', 223, int)
+#define TUNSETSTEERINGEBPF _IOR('T', 224, int)
+#define TUNSETFILTEREBPF _IOR('T', 225, int)
+#define TUNSETCARRIER _IOW('T', 226, int)
+#define TUNGETDEVNETNS _IO('T', 227)
 
 /* TUNSETIFF ifr flags */
 #define IFF_TUN		0x0001
 #define IFF_TAP		0x0002
+#define IFF_NAPI	0x0010
+#define IFF_NAPI_FRAGS	0x0020
+/* Used in TUNSETIFF to bring up tun/tap without carrier */
+#define IFF_NO_CARRIER	0x0040
 #define IFF_NO_PI	0x1000
 /* This flag has no real effect */
 #define IFF_ONE_QUEUE	0x2000
@@ -83,6 +90,8 @@
 #define TUN_F_TSO6	0x04	/* I can handle TSO for IPv6 packets */
 #define TUN_F_TSO_ECN	0x08	/* I can handle TSO with ECN bits. */
 #define TUN_F_UFO	0x10	/* I can handle UFO packets */
+#define TUN_F_USO4	0x20	/* I can handle USO for IPv4 packets */
+#define TUN_F_USO6	0x40	/* I can handle USO for IPv6 packets */
 
 /* Protocol info prepended to the packets (when IFF_NO_PI is not set) */
 #define TUN_PKT_STRIP	0x0001
@@ -103,7 +112,7 @@ struct tun_pi {
 struct tun_filter {
 	__u16  flags; /* TUN_FLT_ flags see above */
 	__u16  count; /* Number of addresses */
-	__u8   addr[0][ETH_ALEN];
+	__u8   addr[][ETH_ALEN];
 };
 
 #endif /* _UAPI__IF_TUN_H */

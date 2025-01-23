@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Roccat Isku driver for Linux
  *
@@ -5,10 +6,6 @@
  */
 
 /*
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
  */
 
 /*
@@ -25,8 +22,6 @@
 #include "hid-ids.h"
 #include "hid-roccat-common.h"
 #include "hid-roccat-isku.h"
-
-static struct class *isku_class;
 
 static void isku_profile_activated(struct isku_device *isku, uint new_profile)
 {
@@ -121,8 +116,7 @@ static ssize_t isku_sysfs_read(struct file *fp, struct kobject *kobj,
 		char *buf, loff_t off, size_t count,
 		size_t real_size, uint command)
 {
-	struct device *dev =
-			container_of(kobj, struct device, kobj)->parent->parent;
+	struct device *dev = kobj_to_dev(kobj)->parent->parent;
 	struct isku_device *isku = hid_get_drvdata(dev_get_drvdata(dev));
 	struct usb_device *usb_dev = interface_to_usbdev(to_usb_interface(dev));
 	int retval;
@@ -144,8 +138,7 @@ static ssize_t isku_sysfs_write(struct file *fp, struct kobject *kobj,
 		void const *buf, loff_t off, size_t count,
 		size_t real_size, uint command)
 {
-	struct device *dev =
-			container_of(kobj, struct device, kobj)->parent->parent;
+	struct device *dev = kobj_to_dev(kobj)->parent->parent;
 	struct isku_device *isku = hid_get_drvdata(dev_get_drvdata(dev));
 	struct usb_device *usb_dev = interface_to_usbdev(to_usb_interface(dev));
 	int retval;
@@ -253,6 +246,11 @@ static const struct attribute_group *isku_groups[] = {
 	NULL,
 };
 
+static const struct class isku_class = {
+	.name = "isku",
+	.dev_groups = isku_groups,
+};
+
 static int isku_init_isku_device_struct(struct usb_device *usb_dev,
 		struct isku_device *isku)
 {
@@ -294,7 +292,7 @@ static int isku_init_specials(struct hid_device *hdev)
 		goto exit_free;
 	}
 
-	retval = roccat_connect(isku_class, hdev,
+	retval = roccat_connect(&isku_class, hdev,
 			sizeof(struct isku_roccat_report));
 	if (retval < 0) {
 		hid_err(hdev, "couldn't init char dev\n");
@@ -328,6 +326,9 @@ static int isku_probe(struct hid_device *hdev,
 		const struct hid_device_id *id)
 {
 	int retval;
+
+	if (!hid_is_usb(hdev))
+		return -EINVAL;
 
 	retval = hid_parse(hdev);
 	if (retval) {
@@ -437,21 +438,21 @@ static struct hid_driver isku_driver = {
 static int __init isku_init(void)
 {
 	int retval;
-	isku_class = class_create(THIS_MODULE, "isku");
-	if (IS_ERR(isku_class))
-		return PTR_ERR(isku_class);
-	isku_class->dev_groups = isku_groups;
+
+	retval = class_register(&isku_class);
+	if (retval)
+		return retval;
 
 	retval = hid_register_driver(&isku_driver);
 	if (retval)
-		class_destroy(isku_class);
+		class_unregister(&isku_class);
 	return retval;
 }
 
 static void __exit isku_exit(void)
 {
 	hid_unregister_driver(&isku_driver);
-	class_destroy(isku_class);
+	class_unregister(&isku_class);
 }
 
 module_init(isku_init);

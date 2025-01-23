@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  cx18 functions to query card hardware
  *
@@ -5,28 +6,13 @@
  *
  *  Copyright (C) 2007  Hans Verkuil <hverkuil@xs4all.nl>
  *  Copyright (C) 2008  Andy Walls <awalls@md.metrocast.net>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
- *  02111-1307  USA
  */
 
 #include "cx18-driver.h"
 #include "cx18-cards.h"
 #include "cx18-av-core.h"
 #include "cx18-i2c.h"
-#include <media/cs5345.h>
+#include <media/i2c/cs5345.h>
 
 #define V4L2_STD_PAL_SECAM (V4L2_STD_PAL|V4L2_STD_SECAM)
 
@@ -49,7 +35,7 @@ static struct cx18_card_tuner_i2c cx18_i2c_nxp = {
 	.tv    = { 0x61, 0x60, I2C_CLIENT_END },
 };
 
-/* Please add new PCI IDs to: http://pci-ids.ucw.cz/
+/* Please add new PCI IDs to: https://pci-ids.ucw.cz/
    This keeps the PCI ID database up to date. Note that the entries
    must be added under vendor 0x4444 (Conexant) as subsystem IDs.
    New vendor IDs should still be added to the vendor ID list. */
@@ -259,7 +245,7 @@ static const struct cx18_card cx18_card_mpc718 = {
 	.type = CX18_CARD_YUAN_MPC718,
 	.name = "Yuan MPC718 MiniPCI DVB-T/Analog",
 	.comment = "Experimenters needed for device to work well.\n"
-		  "\tTo help, mail the ivtv-devel list (www.ivtvdriver.org).\n",
+		  "\tTo help, mail the linux-media list (www.linuxtv.org).\n",
 	.v4l2_capabilities = CX18_CAP_ENCODER,
 	.hw_audio_ctrl = CX18_HW_418_AV,
 	.hw_muxer = CX18_HW_GPIO_MUX,
@@ -319,7 +305,7 @@ static const struct cx18_card cx18_card_gotview_dvd3 = {
 	.type = CX18_CARD_GOTVIEW_PCI_DVD3,
 	.name = "GoTView PCI DVD3 Hybrid",
 	.comment = "Experimenters needed for device to work well.\n"
-		  "\tTo help, mail the ivtv-devel list (www.ivtvdriver.org).\n",
+		  "\tTo help, mail the linux-media list (www.linuxtv.org).\n",
 	.v4l2_capabilities = CX18_CAP_ENCODER,
 	.hw_audio_ctrl = CX18_HW_418_AV,
 	.hw_muxer = CX18_HW_GPIO_MUX,
@@ -393,7 +379,7 @@ static const struct cx18_card cx18_card_cnxt_raptor_pal = {
 		{ CX18_CARD_INPUT_COMPOSITE2, 2, CX18_AV_COMPOSITE6 },
 	},
 	.audio_inputs = {
-		{ CX18_CARD_INPUT_AUD_TUNER, CX18_AV_AUDIO5, 	    0 },
+		{ CX18_CARD_INPUT_AUD_TUNER, CX18_AV_AUDIO5,	    0 },
 		{ CX18_CARD_INPUT_LINE_IN1,  CX18_AV_AUDIO_SERIAL1, 1 },
 		{ CX18_CARD_INPUT_LINE_IN2,  CX18_AV_AUDIO_SERIAL2, 1 },
 	},
@@ -433,7 +419,7 @@ static const struct cx18_card cx18_card_toshiba_qosmio_dvbt = {
 	.type = CX18_CARD_TOSHIBA_QOSMIO_DVBT,
 	.name = "Toshiba Qosmio DVB-T/Analog",
 	.comment = "Experimenters and photos needed for device to work well.\n"
-		  "\tTo help, mail the ivtv-devel list (www.ivtvdriver.org).\n",
+		  "\tTo help, mail the linux-media list (www.linuxtv.org).\n",
 	.v4l2_capabilities = CX18_CAP_ENCODER,
 	.hw_audio_ctrl = CX18_HW_418_AV,
 	.hw_all = CX18_HW_418_AV | CX18_HW_TUNER | CX18_HW_GPIO_RESET_CTRL,
@@ -444,7 +430,7 @@ static const struct cx18_card cx18_card_toshiba_qosmio_dvbt = {
 		{ CX18_CARD_INPUT_COMPOSITE1, 1, CX18_AV_COMPOSITE1 },
 	},
 	.audio_inputs = {
-		{ CX18_CARD_INPUT_AUD_TUNER, CX18_AV_AUDIO5, 	    0 },
+		{ CX18_CARD_INPUT_AUD_TUNER, CX18_AV_AUDIO5,	    0 },
 		{ CX18_CARD_INPUT_LINE_IN1,  CX18_AV_AUDIO_SERIAL1, 1 },
 	},
 	.tuners = {
@@ -476,7 +462,7 @@ static const struct cx18_card cx18_card_leadtek_pvr2100 = {
 	.type = CX18_CARD_LEADTEK_PVR2100,
 	.name = "Leadtek WinFast PVR2100",
 	.comment = "Experimenters and photos needed for device to work well.\n"
-		  "\tTo help, mail the ivtv-devel list (www.ivtvdriver.org).\n",
+		  "\tTo help, mail the linux-media list (www.linuxtv.org).\n",
 	.v4l2_capabilities = CX18_CAP_ENCODER,
 	.hw_audio_ctrl = CX18_HW_418_AV,
 	.hw_muxer = CX18_HW_GPIO_MUX,
@@ -490,7 +476,7 @@ static const struct cx18_card cx18_card_leadtek_pvr2100 = {
 		{ CX18_CARD_INPUT_COMPONENT1, 1, CX18_AV_COMPONENT1 },
 	},
 	.audio_inputs = {
-		{ CX18_CARD_INPUT_AUD_TUNER, CX18_AV_AUDIO5, 	    0 },
+		{ CX18_CARD_INPUT_AUD_TUNER, CX18_AV_AUDIO5,	    0 },
 		{ CX18_CARD_INPUT_LINE_IN1,  CX18_AV_AUDIO_SERIAL1, 1 },
 	},
 	.tuners = {
@@ -543,7 +529,7 @@ static const struct cx18_card cx18_card_leadtek_dvr3100h = {
 		{ CX18_CARD_INPUT_COMPONENT1, 1, CX18_AV_COMPONENT1 },
 	},
 	.audio_inputs = {
-		{ CX18_CARD_INPUT_AUD_TUNER, CX18_AV_AUDIO5, 	    0 },
+		{ CX18_CARD_INPUT_AUD_TUNER, CX18_AV_AUDIO5,	    0 },
 		{ CX18_CARD_INPUT_LINE_IN1,  CX18_AV_AUDIO_SERIAL1, 1 },
 	},
 	.tuners = {
@@ -607,8 +593,8 @@ int cx18_get_input(struct cx18 *cx, u16 index, struct v4l2_input *input)
 	if (index >= cx->nof_inputs)
 		return -EINVAL;
 	input->index = index;
-	strlcpy(input->name, input_strs[card_input->video_type - 1],
-			sizeof(input->name));
+	strscpy(input->name, input_strs[card_input->video_type - 1],
+		sizeof(input->name));
 	input->type = (card_input->video_type == CX18_CARD_INPUT_VID_TUNER ?
 			V4L2_INPUT_TYPE_TUNER : V4L2_INPUT_TYPE_CAMERA);
 	input->audioset = (1 << cx->nof_audio_inputs) - 1;
@@ -630,8 +616,8 @@ int cx18_get_audio_input(struct cx18 *cx, u16 index, struct v4l2_audio *audio)
 	memset(audio, 0, sizeof(*audio));
 	if (index >= cx->nof_audio_inputs)
 		return -EINVAL;
-	strlcpy(audio->name, input_strs[aud_input->audio_type - 1],
-			sizeof(audio->name));
+	strscpy(audio->name, input_strs[aud_input->audio_type - 1],
+		sizeof(audio->name));
 	audio->index = index;
 	audio->capability = V4L2_AUDCAP_STEREO;
 	return 0;

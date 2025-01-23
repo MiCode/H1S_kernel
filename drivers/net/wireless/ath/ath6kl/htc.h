@@ -153,12 +153,19 @@
  * implementations.
  */
 struct htc_frame_hdr {
-	u8 eid;
-	u8 flags;
+	struct_group_tagged(htc_frame_look_ahead, header,
+		union {
+			struct {
+				u8 eid;
+				u8 flags;
 
-	/* length of data (including trailer) that follows the header */
-	__le16 payld_len;
+				/* length of data (including trailer) that follows the header */
+				__le16 payld_len;
 
+			};
+			u32 word;
+		};
+	);
 	/* end of 4-byte lookahead */
 
 	u8 ctrl[2];
@@ -427,7 +434,7 @@ struct htc_endpoint_credit_dist {
 };
 
 /*
- * credit distibution code that is passed into the distrbution function,
+ * credit distribution code that is passed into the distribution function,
  * there are mandatory and optional codes that must be handled
  */
 enum htc_credit_dist_reason {

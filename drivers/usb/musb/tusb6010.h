@@ -1,30 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Definitions for TUSB6010 USB 2.0 OTG Dual Role controller
  *
  * Copyright (C) 2006 Nokia Corporation
  * Tony Lindgren <tony@atomide.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __TUSB6010_H__
 #define __TUSB6010_H__
-
-extern u8 tusb_get_revision(struct musb *musb);
-
-#ifdef CONFIG_USB_TUSB6010
-#define musb_in_tusb()			1
-#else
-#define musb_in_tusb()			0
-#endif
-
-#ifdef CONFIG_USB_TUSB_OMAP_DMA
-#define tusb_dma_omap()			1
-#else
-#define tusb_dma_omap()			0
-#endif
 
 /* VLYNQ control register. 32-bit at offset 0x000 */
 #define TUSB_VLYNQ_CTRL			0x004

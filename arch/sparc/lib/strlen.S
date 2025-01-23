@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* strlen.S: Sparc optimized strlen code
  * Hand optimized from GNU libc's strlen
  * Copyright (C) 1991,1996 Free Software Foundation
@@ -5,6 +6,7 @@
  * Copyright (C) 1996, 1997 Jakub Jelinek (jj@sunsite.mff.cuni.cz)
  */
 
+#include <linux/export.h>
 #include <linux/linkage.h>
 #include <asm/asm.h>
 
@@ -78,3 +80,4 @@ ENTRY(strlen)
 	retl
 	 mov	2, %o0
 ENDPROC(strlen)
+EXPORT_SYMBOL(strlen)

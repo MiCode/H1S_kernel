@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * linux/include/linux/lockd/debug.h
  *
@@ -9,26 +10,18 @@
 #ifndef LINUX_LOCKD_DEBUG_H
 #define LINUX_LOCKD_DEBUG_H
 
-#ifdef __KERNEL__
-
 #include <linux/sunrpc/debug.h>
 
 /*
  * Enable lockd debugging.
  * Requires RPC_DEBUG.
  */
-#ifdef RPC_DEBUG
-# define LOCKD_DEBUG		1
-#endif
-
 #undef ifdebug
-#if defined(RPC_DEBUG) && defined(LOCKD_DEBUG)
+#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
 # define ifdebug(flag)		if (unlikely(nlm_debug & NLMDBG_##flag))
 #else
 # define ifdebug(flag)		if (0)
 #endif
-
-#endif /* __KERNEL__ */
 
 /*
  * Debug flags

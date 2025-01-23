@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SMU_H
 #define _SMU_H
 
@@ -107,7 +108,7 @@
  /*
   * i2c commands
   *
-  * To issue an i2c command, first is to send a parameter block to the
+  * To issue an i2c command, first is to send a parameter block to
   * the SMU. This is a command of type 0x9a with 9 bytes of header
   * eventually followed by data for a write:
   *
@@ -154,7 +155,7 @@
   *
   * The Darwin I2C driver is less subtle though. On any non-success status
   * from the response command, it waits 5ms and tries again up to 20 times,
-  * it doesn't differenciate between fatal errors or "busy" status.
+  * it doesn't differentiate between fatal errors or "busy" status.
   *
   * This driver provides an asynchronous paramblock based i2c command
   * interface to be used either directly by low level code or by a higher
@@ -185,7 +186,7 @@
  *  x = processor mask
  *  y = op. point index
  *  z = processor freq. step index
- * I haven't yet decyphered result codes
+ * I haven't yet deciphered result codes
  *
  */
 #define SMU_CMD_POWER_COMMAND			0xaa
@@ -455,7 +456,7 @@ extern void smu_poll(void);
 /*
  * Init routine, presence check....
  */
-extern int smu_init(void);
+int __init smu_init(void);
 extern int smu_present(void);
 struct platform_device;
 extern struct platform_device *smu_get_ofdev(void);
@@ -471,14 +472,7 @@ extern int smu_get_rtc_time(struct rtc_time *time, int spinwait);
 extern int smu_set_rtc_time(struct rtc_time *time, int spinwait);
 
 /*
- * SMU command buffer absolute address, exported by pmac_setup,
- * this is allocated very early during boot.
- */
-extern unsigned long smu_cmdbuf_abs;
-
-
-/*
- * Kenrel asynchronous i2c interface
+ * Kernel asynchronous i2c interface
  */
 
 #define SMU_I2C_READ_MAX	0x1d

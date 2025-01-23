@@ -1,32 +1,24 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright Â© 2006-2011 Intel Corporation
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
  *
  * Authors:
  *	Eric Anholt <eric@anholt.net>
  */
 
+#include <linux/delay.h>
 #include <linux/i2c.h>
 
-#include <drm/drmP.h>
+#include <drm/drm_modeset_helper.h>
+#include <drm/drm_modeset_helper_vtables.h>
+
 #include "framebuffer.h"
+#include "gem.h"
+#include "gma_display.h"
+#include "power.h"
 #include "psb_drv.h"
 #include "psb_intel_drv.h"
 #include "psb_intel_reg.h"
-#include "gma_display.h"
-#include "power.h"
 
 #define INTEL_LIMIT_I9XX_SDVO_DAC   0
 #define INTEL_LIMIT_I9XX_LVDS	    1
@@ -81,7 +73,7 @@ static void psb_intel_clock(int refclk, struct gma_clock_t *clock)
 	clock->dot = clock->vco / clock->p;
 }
 
-/**
+/*
  * Return the pipe currently connected to the panel fitter,
  * or -1 if the panel fitter is not present or not in use
  */
@@ -105,9 +97,9 @@ static int psb_intel_crtc_mode_set(struct drm_crtc *crtc,
 			       struct drm_framebuffer *old_fb)
 {
 	struct drm_device *dev = crtc->dev;
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	struct gma_crtc *gma_crtc = to_gma_crtc(crtc);
-	struct drm_crtc_helper_funcs *crtc_funcs = crtc->helper_private;
+	const struct drm_crtc_helper_funcs *crtc_funcs = crtc->helper_private;
 	int pipe = gma_crtc->pipe;
 	const struct psb_offset *map = &dev_priv->regmap[pipe];
 	int refclk;
@@ -115,17 +107,18 @@ static int psb_intel_crtc_mode_set(struct drm_crtc *crtc,
 	u32 dpll = 0, fp = 0, dspcntr, pipeconf;
 	bool ok, is_sdvo = false;
 	bool is_lvds = false, is_tv = false;
-	struct drm_mode_config *mode_config = &dev->mode_config;
+	struct drm_connector_list_iter conn_iter;
 	struct drm_connector *connector;
 	const struct gma_limit_t *limit;
 
 	/* No scan out no play */
-	if (crtc->fb == NULL) {
+	if (crtc->primary->fb == NULL) {
 		crtc_funcs->mode_set_base(crtc, x, y, old_fb);
 		return 0;
 	}
 
-	list_for_each_entry(connector, &mode_config->connector_list, head) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		struct gma_encoder *gma_encoder = gma_attached_encoder(connector);
 
 		if (!connector->encoder
@@ -143,7 +136,10 @@ static int psb_intel_crtc_mode_set(struct drm_crtc *crtc,
 			is_tv = true;
 			break;
 		}
+
+		break;
 	}
+	drm_connector_list_iter_end(&conn_iter);
 
 	refclk = 96000;
 
@@ -308,7 +304,7 @@ static int psb_intel_crtc_clock_get(struct drm_device *dev,
 				struct drm_crtc *crtc)
 {
 	struct gma_crtc *gma_crtc = to_gma_crtc(crtc);
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	int pipe = gma_crtc->pipe;
 	const struct psb_offset *map = &dev_priv->regmap[pipe];
 	u32 dpll;
@@ -390,7 +386,7 @@ struct drm_display_mode *psb_intel_crtc_mode_get(struct drm_device *dev,
 	int hsync;
 	int vtot;
 	int vsync;
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	struct psb_pipe *p = &dev_priv->regs.pipe[pipe];
 	const struct psb_offset *map = &dev_priv->regmap[pipe];
 
@@ -429,22 +425,11 @@ struct drm_display_mode *psb_intel_crtc_mode_get(struct drm_device *dev,
 
 const struct drm_crtc_helper_funcs psb_intel_helper_funcs = {
 	.dpms = gma_crtc_dpms,
-	.mode_fixup = gma_crtc_mode_fixup,
 	.mode_set = psb_intel_crtc_mode_set,
 	.mode_set_base = gma_pipe_set_base,
 	.prepare = gma_crtc_prepare,
 	.commit = gma_crtc_commit,
 	.disable = gma_crtc_disable,
-};
-
-const struct drm_crtc_funcs psb_intel_crtc_funcs = {
-	.save = gma_crtc_save,
-	.restore = gma_crtc_restore,
-	.cursor_set = gma_crtc_cursor_set,
-	.cursor_move = gma_crtc_cursor_move,
-	.gamma_set = gma_crtc_gamma_set,
-	.set_config = gma_crtc_set_config,
-	.destroy = gma_crtc_destroy,
 };
 
 const struct gma_clock_funcs psb_clock_funcs = {
@@ -460,25 +445,24 @@ const struct gma_clock_funcs psb_clock_funcs = {
 static void psb_intel_cursor_init(struct drm_device *dev,
 				  struct gma_crtc *gma_crtc)
 {
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	u32 control[3] = { CURACNTR, CURBCNTR, CURCCNTR };
 	u32 base[3] = { CURABASE, CURBBASE, CURCBASE };
-	struct gtt_range *cursor_gt;
+	struct psb_gem_object *cursor_pobj;
 
 	if (dev_priv->ops->cursor_needs_phys) {
 		/* Allocate 4 pages of stolen mem for a hardware cursor. That
 		 * is enough for the 64 x 64 ARGB cursors we support.
 		 */
-		cursor_gt = psb_gtt_alloc_range(dev, 4 * PAGE_SIZE, "cursor", 1);
-		if (!cursor_gt) {
-			gma_crtc->cursor_gt = NULL;
+		cursor_pobj = psb_gem_create(dev, 4 * PAGE_SIZE, "cursor", true, PAGE_SIZE);
+		if (IS_ERR(cursor_pobj)) {
+			gma_crtc->cursor_pobj = NULL;
 			goto out;
 		}
-		gma_crtc->cursor_gt = cursor_gt;
-		gma_crtc->cursor_addr = dev_priv->stolen_base +
-							cursor_gt->offset;
+		gma_crtc->cursor_pobj = cursor_pobj;
+		gma_crtc->cursor_addr = dev_priv->stolen_base + cursor_pobj->offset;
 	} else {
-		gma_crtc->cursor_gt = NULL;
+		gma_crtc->cursor_pobj = NULL;
 	}
 
 out:
@@ -489,10 +473,9 @@ out:
 void psb_intel_crtc_init(struct drm_device *dev, int pipe,
 		     struct psb_intel_mode_device *mode_dev)
 {
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	struct gma_crtc *gma_crtc;
 	int i;
-	uint16_t *r_base, *g_base, *b_base;
 
 	/* We allocate a extra array of drm_connector pointers
 	 * for fbdev after the crtc */
@@ -510,8 +493,7 @@ void psb_intel_crtc_init(struct drm_device *dev, int pipe,
 		return;
 	}
 
-	/* Set the CRTC operations from the chip specific data */
-	drm_crtc_init(dev, &gma_crtc->base, dev_priv->ops->crtc_funcs);
+	drm_crtc_init(dev, &gma_crtc->base, &gma_crtc_funcs);
 
 	/* Set the CRTC clock functions from chip specific data */
 	gma_crtc->clock_funcs = dev_priv->ops->clock_funcs;
@@ -520,19 +502,8 @@ void psb_intel_crtc_init(struct drm_device *dev, int pipe,
 	gma_crtc->pipe = pipe;
 	gma_crtc->plane = pipe;
 
-	r_base = gma_crtc->base.gamma_store;
-	g_base = r_base + 256;
-	b_base = g_base + 256;
-	for (i = 0; i < 256; i++) {
-		gma_crtc->lut_r[i] = i;
-		gma_crtc->lut_g[i] = i;
-		gma_crtc->lut_b[i] = i;
-		r_base[i] = i << 8;
-		g_base[i] = i << 8;
-		b_base[i] = i << 8;
-
+	for (i = 0; i < 256; i++)
 		gma_crtc->lut_adj[i] = 0;
-	}
 
 	gma_crtc->mode_dev = mode_dev;
 	gma_crtc->cursor_addr = 0;
@@ -554,57 +525,34 @@ void psb_intel_crtc_init(struct drm_device *dev, int pipe,
 	gma_crtc->active = true;
 }
 
-int psb_intel_get_pipe_from_crtc_id(struct drm_device *dev, void *data,
-				struct drm_file *file_priv)
-{
-	struct drm_psb_private *dev_priv = dev->dev_private;
-	struct drm_psb_get_pipe_from_crtc_id_arg *pipe_from_crtc_id = data;
-	struct drm_mode_object *drmmode_obj;
-	struct gma_crtc *crtc;
-
-	if (!dev_priv) {
-		dev_err(dev->dev, "called with no initialization\n");
-		return -EINVAL;
-	}
-
-	drmmode_obj = drm_mode_object_find(dev, pipe_from_crtc_id->crtc_id,
-			DRM_MODE_OBJECT_CRTC);
-
-	if (!drmmode_obj) {
-		dev_err(dev->dev, "no such CRTC id\n");
-		return -ENOENT;
-	}
-
-	crtc = to_gma_crtc(obj_to_crtc(drmmode_obj));
-	pipe_from_crtc_id->pipe = crtc->pipe;
-
-	return 0;
-}
-
 struct drm_crtc *psb_intel_get_crtc_from_pipe(struct drm_device *dev, int pipe)
 {
-	struct drm_crtc *crtc = NULL;
+	struct drm_crtc *crtc;
 
 	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
 		struct gma_crtc *gma_crtc = to_gma_crtc(crtc);
+
 		if (gma_crtc->pipe == pipe)
-			break;
+			return crtc;
 	}
-	return crtc;
+	return NULL;
 }
 
 int gma_connector_clones(struct drm_device *dev, int type_mask)
 {
-	int index_mask = 0;
+	struct drm_connector_list_iter conn_iter;
 	struct drm_connector *connector;
+	int index_mask = 0;
 	int entry = 0;
 
-	list_for_each_entry(connector, &dev->mode_config.connector_list,
-			    head) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		struct gma_encoder *gma_encoder = gma_attached_encoder(connector);
 		if (type_mask & (1 << gma_encoder->type))
 			index_mask |= (1 << entry);
 		entry++;
 	}
+	drm_connector_list_iter_end(&conn_iter);
+
 	return index_mask;
 }

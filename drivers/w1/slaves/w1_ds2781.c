@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * 1-Wire implementation for the ds2781 chip
  *
  * Author: Renata Sayakhova <renata@oktetlabs.ru>
  *
  * Based on w1-ds2780 driver
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #include <linux/kernel.h>
@@ -17,12 +13,12 @@
 #include <linux/types.h>
 #include <linux/platform_device.h>
 #include <linux/mutex.h>
-#include <linux/idr.h>
 
-#include "../w1.h"
-#include "../w1_int.h"
-#include "../w1_family.h"
+#include <linux/w1.h>
+
 #include "w1_ds2781.h"
+
+#define W1_FAMILY_DS2781	0x3D
 
 static int w1_ds2781_do_io(struct device *dev, char *buf, int addr,
 			size_t count, int io)
@@ -91,7 +87,8 @@ static ssize_t w1_slave_read(struct file *filp, struct kobject *kobj,
 			     struct bin_attribute *bin_attr, char *buf,
 			     loff_t off, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
+
 	return w1_ds2781_io(dev, buf, off, count, 0);
 }
 
@@ -111,25 +108,14 @@ static const struct attribute_group *w1_ds2781_groups[] = {
 	NULL,
 };
 
-static DEFINE_IDA(bat_ida);
-
 static int w1_ds2781_add_slave(struct w1_slave *sl)
 {
 	int ret;
-	int id;
 	struct platform_device *pdev;
 
-	id = ida_simple_get(&bat_ida, 0, 0, GFP_KERNEL);
-	if (id < 0) {
-		ret = id;
-		goto noid;
-	}
-
-	pdev = platform_device_alloc("ds2781-battery", id);
-	if (!pdev) {
-		ret = -ENOMEM;
-		goto pdev_alloc_failed;
-	}
+	pdev = platform_device_alloc("ds2781-battery", PLATFORM_DEVID_AUTO);
+	if (!pdev)
+		return -ENOMEM;
 	pdev->dev.parent = &sl->dev;
 
 	ret = platform_device_add(pdev);
@@ -142,22 +128,18 @@ static int w1_ds2781_add_slave(struct w1_slave *sl)
 
 pdev_add_failed:
 	platform_device_put(pdev);
-pdev_alloc_failed:
-	ida_simple_remove(&bat_ida, id);
-noid:
+
 	return ret;
 }
 
 static void w1_ds2781_remove_slave(struct w1_slave *sl)
 {
 	struct platform_device *pdev = dev_get_drvdata(&sl->dev);
-	int id = pdev->id;
 
 	platform_device_unregister(pdev);
-	ida_simple_remove(&bat_ida, id);
 }
 
-static struct w1_family_ops w1_ds2781_fops = {
+static const struct w1_family_ops w1_ds2781_fops = {
 	.add_slave    = w1_ds2781_add_slave,
 	.remove_slave = w1_ds2781_remove_slave,
 	.groups       = w1_ds2781_groups,
@@ -167,23 +149,9 @@ static struct w1_family w1_ds2781_family = {
 	.fid = W1_FAMILY_DS2781,
 	.fops = &w1_ds2781_fops,
 };
+module_w1_family(w1_ds2781_family);
 
-static int __init w1_ds2781_init(void)
-{
-	ida_init(&bat_ida);
-	return w1_register_family(&w1_ds2781_family);
-}
-
-static void __exit w1_ds2781_exit(void)
-{
-	w1_unregister_family(&w1_ds2781_family);
-	ida_destroy(&bat_ida);
-}
-
-module_init(w1_ds2781_init);
-module_exit(w1_ds2781_exit);
-
-MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Renata Sayakhova <renata@oktetlabs.ru>");
 MODULE_DESCRIPTION("1-wire Driver for Maxim/Dallas DS2781 Stand-Alone Fuel Gauge IC");
+MODULE_LICENSE("GPL");
 MODULE_ALIAS("w1-family-" __stringify(W1_FAMILY_DS2781));

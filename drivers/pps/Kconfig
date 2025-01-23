@@ -1,12 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # PPS support configuration
 #
 
-menu "PPS support"
-
-config PPS
+menuconfig PPS
 	tristate "PPS support"
-	---help---
+	help
 	  PPS (Pulse Per Second) is a special pulse provided by some GPS
 	  antennae. Userland can use it to get a high-precision time
 	  reference.
@@ -20,6 +19,7 @@ config PPS
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pps_core.ko.
+
 if PPS
 
 config PPS_DEBUG
@@ -31,17 +31,15 @@ config PPS_DEBUG
 
 config NTP_PPS
 	bool "PPS kernel consumer support"
-	depends on !NO_HZ
+	depends on !NO_HZ_COMMON
 	help
 	  This option adds support for direct in-kernel time
 	  synchronization using an external PPS signal.
 
 	  It doesn't work on tickless systems at the moment.
 
-endif
+source "drivers/pps/clients/Kconfig"
 
-source drivers/pps/clients/Kconfig
+source "drivers/pps/generators/Kconfig"
 
-source drivers/pps/generators/Kconfig
-
-endmenu
+endif # PPS

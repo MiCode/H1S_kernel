@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* Primary function overlay window definitions
  * and service functions used by LPDDR chips
  */
@@ -18,7 +19,7 @@
 /* Identification info for LPDDR chip */
 #define PFOW_MANUFACTURER_ID			0x0020
 #define PFOW_DEVICE_ID				0x0022
-/* Address in PFOW where prog buffer can can be found */
+/* Address in PFOW where prog buffer can be found */
 #define PFOW_PROGRAM_BUFFER_OFFSET		0x0040
 /* Size of program buffer in words */
 #define PFOW_PROGRAM_BUFFER_SIZE		0x0042
@@ -101,9 +102,6 @@ static inline void send_pfow_command(struct map_info *map,
 				unsigned long len, map_word *datum)
 {
 	int bits_per_chip = map_bankwidth(map) * 8;
-	int chipnum;
-	struct lpddr_private *lpddr = map->fldrv_priv;
-	chipnum = adr >> lpddr->chipshift;
 
 	map_write(map, CMD(cmd_code), map->pfow_base + PFOW_COMMAND_CODE);
 	map_write(map, CMD(adr & ((1<<bits_per_chip) - 1)),
@@ -122,38 +120,5 @@ static inline void send_pfow_command(struct map_info *map,
 	/* Command execution start */
 	map_write(map, CMD(LPDDR_START_EXECUTION),
 			map->pfow_base + PFOW_COMMAND_EXECUTE);
-}
-
-static inline void print_drs_error(unsigned dsr)
-{
-	int prog_status = (dsr & DSR_RPS) >> 8;
-
-	if (!(dsr & DSR_AVAILABLE))
-		printk(KERN_NOTICE"DSR.15: (0) Device not Available\n");
-	if (prog_status & 0x03)
-		printk(KERN_NOTICE"DSR.9,8: (11) Attempt to program invalid "
-						"half with 41h command\n");
-	else if (prog_status & 0x02)
-		printk(KERN_NOTICE"DSR.9,8: (10) Object Mode Program attempt "
-					"in region with Control Mode data\n");
-	else if (prog_status &  0x01)
-		printk(KERN_NOTICE"DSR.9,8: (01) Program attempt in region "
-						"with Object Mode data\n");
-	if (!(dsr & DSR_READY_STATUS))
-		printk(KERN_NOTICE"DSR.7: (0) Device is Busy\n");
-	if (dsr & DSR_ESS)
-		printk(KERN_NOTICE"DSR.6: (1) Erase Suspended\n");
-	if (dsr & DSR_ERASE_STATUS)
-		printk(KERN_NOTICE"DSR.5: (1) Erase/Blank check error\n");
-	if (dsr & DSR_PROGRAM_STATUS)
-		printk(KERN_NOTICE"DSR.4: (1) Program Error\n");
-	if (dsr & DSR_VPPS)
-		printk(KERN_NOTICE"DSR.3: (1) Vpp low detect, operation "
-					"aborted\n");
-	if (dsr & DSR_PSS)
-		printk(KERN_NOTICE"DSR.2: (1) Program suspended\n");
-	if (dsr & DSR_DPS)
-		printk(KERN_NOTICE"DSR.1: (1) Aborted Erase/Program attempt "
-					"on locked block\n");
 }
 #endif /* __LINUX_MTD_PFOW_H */

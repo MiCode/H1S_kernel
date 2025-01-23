@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Input driver for slidebars on some Lenovo IdeaPad laptops
  *
  * Copyright (C) 2013 Andrey Moiseev <o2g.org.ru@gmail.com>
  *
  * Reverse-engineered from Lenovo SlideNav software (SBarHook.dll).
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
  *
  * Trademarks are the property of their respective owners.
  */
@@ -272,7 +268,6 @@ static int ideapad_remove(struct platform_device *pdev)
 static struct platform_driver slidebar_drv = {
 	.driver = {
 		.name = "ideapad_slidebar",
-		.owner = THIS_MODULE,
 	},
 	.remove = ideapad_remove,
 };

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_PERCPU_COUNTER_H
 #define _LINUX_PERCPU_COUNTER_H
 /*
@@ -13,6 +14,9 @@
 #include <linux/percpu.h>
 #include <linux/types.h>
 
+/* percpu_counter batch for local add or sub */
+#define PERCPU_COUNTER_LOCAL_BATCH	INT_MAX
+
 #ifdef CONFIG_SMP
 
 struct percpu_counter {
@@ -26,25 +30,59 @@ struct percpu_counter {
 
 extern int percpu_counter_batch;
 
-int __percpu_counter_init(struct percpu_counter *fbc, s64 amount,
-			  struct lock_class_key *key);
+int __percpu_counter_init_many(struct percpu_counter *fbc, s64 amount,
+			       gfp_t gfp, u32 nr_counters,
+			       struct lock_class_key *key);
 
-#define percpu_counter_init(fbc, value)					\
+#define percpu_counter_init_many(fbc, value, gfp, nr_counters)		\
 	({								\
 		static struct lock_class_key __key;			\
 									\
-		__percpu_counter_init(fbc, value, &__key);		\
+		__percpu_counter_init_many(fbc, value, gfp, nr_counters,\
+					   &__key);			\
 	})
 
-void percpu_counter_destroy(struct percpu_counter *fbc);
+
+#define percpu_counter_init(fbc, value, gfp)				\
+	percpu_counter_init_many(fbc, value, gfp, 1)
+
+void percpu_counter_destroy_many(struct percpu_counter *fbc, u32 nr_counters);
+static inline void percpu_counter_destroy(struct percpu_counter *fbc)
+{
+	percpu_counter_destroy_many(fbc, 1);
+}
+
 void percpu_counter_set(struct percpu_counter *fbc, s64 amount);
-void __percpu_counter_add(struct percpu_counter *fbc, s64 amount, s32 batch);
+void percpu_counter_add_batch(struct percpu_counter *fbc, s64 amount,
+			      s32 batch);
 s64 __percpu_counter_sum(struct percpu_counter *fbc);
-int percpu_counter_compare(struct percpu_counter *fbc, s64 rhs);
+int __percpu_counter_compare(struct percpu_counter *fbc, s64 rhs, s32 batch);
+void percpu_counter_sync(struct percpu_counter *fbc);
+
+static inline int percpu_counter_compare(struct percpu_counter *fbc, s64 rhs)
+{
+	return __percpu_counter_compare(fbc, rhs, percpu_counter_batch);
+}
 
 static inline void percpu_counter_add(struct percpu_counter *fbc, s64 amount)
 {
-	__percpu_counter_add(fbc, amount, percpu_counter_batch);
+	percpu_counter_add_batch(fbc, amount, percpu_counter_batch);
+}
+
+/*
+ * With percpu_counter_add_local() and percpu_counter_sub_local(), counts
+ * are accumulated in local per cpu counter and not in fbc->count until
+ * local count overflows PERCPU_COUNTER_LOCAL_BATCH. This makes counter
+ * write efficient.
+ * But percpu_counter_sum(), instead of percpu_counter_read(), needs to be
+ * used to add up the counts from each CPU to account for all the local
+ * counts. So percpu_counter_add_local() and percpu_counter_sub_local()
+ * should be used when a counter is updated frequently and read rarely.
+ */
+static inline void
+percpu_counter_add_local(struct percpu_counter *fbc, s64 amount)
+{
+	percpu_counter_add_batch(fbc, amount, PERCPU_COUNTER_LOCAL_BATCH);
 }
 
 static inline s64 percpu_counter_sum_positive(struct percpu_counter *fbc)
@@ -70,15 +108,15 @@ static inline s64 percpu_counter_read(struct percpu_counter *fbc)
  */
 static inline s64 percpu_counter_read_positive(struct percpu_counter *fbc)
 {
-	s64 ret = fbc->count;
+	/* Prevent reloads of fbc->count */
+	s64 ret = READ_ONCE(fbc->count);
 
-	barrier();		/* Prevent reloads of fbc->count */
 	if (ret >= 0)
 		return ret;
 	return 0;
 }
 
-static inline int percpu_counter_initialized(struct percpu_counter *fbc)
+static inline bool percpu_counter_initialized(struct percpu_counter *fbc)
 {
 	return (fbc->counters != NULL);
 }
@@ -89,10 +127,27 @@ struct percpu_counter {
 	s64 count;
 };
 
-static inline int percpu_counter_init(struct percpu_counter *fbc, s64 amount)
+static inline int percpu_counter_init_many(struct percpu_counter *fbc,
+					   s64 amount, gfp_t gfp,
+					   u32 nr_counters)
 {
-	fbc->count = amount;
+	u32 i;
+
+	for (i = 0; i < nr_counters; i++)
+		fbc[i].count = amount;
+
 	return 0;
+}
+
+static inline int percpu_counter_init(struct percpu_counter *fbc, s64 amount,
+				      gfp_t gfp)
+{
+	return percpu_counter_init_many(fbc, amount, gfp, 1);
+}
+
+static inline void percpu_counter_destroy_many(struct percpu_counter *fbc,
+					       u32 nr_counters)
+{
 }
 
 static inline void percpu_counter_destroy(struct percpu_counter *fbc)
@@ -114,16 +169,31 @@ static inline int percpu_counter_compare(struct percpu_counter *fbc, s64 rhs)
 		return 0;
 }
 
-static inline void
-percpu_counter_add(struct percpu_counter *fbc, s64 amount)
+static inline int
+__percpu_counter_compare(struct percpu_counter *fbc, s64 rhs, s32 batch)
 {
-	preempt_disable();
-	fbc->count += amount;
-	preempt_enable();
+	return percpu_counter_compare(fbc, rhs);
 }
 
 static inline void
-__percpu_counter_add(struct percpu_counter *fbc, s64 amount, s32 batch)
+percpu_counter_add(struct percpu_counter *fbc, s64 amount)
+{
+	unsigned long flags;
+
+	local_irq_save(flags);
+	fbc->count += amount;
+	local_irq_restore(flags);
+}
+
+/* non-SMP percpu_counter_add_local is the same with percpu_counter_add */
+static inline void
+percpu_counter_add_local(struct percpu_counter *fbc, s64 amount)
+{
+	percpu_counter_add(fbc, amount);
+}
+
+static inline void
+percpu_counter_add_batch(struct percpu_counter *fbc, s64 amount, s32 batch)
 {
 	percpu_counter_add(fbc, amount);
 }
@@ -152,11 +222,14 @@ static inline s64 percpu_counter_sum(struct percpu_counter *fbc)
 	return percpu_counter_read(fbc);
 }
 
-static inline int percpu_counter_initialized(struct percpu_counter *fbc)
+static inline bool percpu_counter_initialized(struct percpu_counter *fbc)
 {
-	return 1;
+	return true;
 }
 
+static inline void percpu_counter_sync(struct percpu_counter *fbc)
+{
+}
 #endif	/* CONFIG_SMP */
 
 static inline void percpu_counter_inc(struct percpu_counter *fbc)
@@ -172,6 +245,12 @@ static inline void percpu_counter_dec(struct percpu_counter *fbc)
 static inline void percpu_counter_sub(struct percpu_counter *fbc, s64 amount)
 {
 	percpu_counter_add(fbc, -amount);
+}
+
+static inline void
+percpu_counter_sub_local(struct percpu_counter *fbc, s64 amount)
+{
+	percpu_counter_add_local(fbc, -amount);
 }
 
 #endif /* _LINUX_PERCPU_COUNTER_H */

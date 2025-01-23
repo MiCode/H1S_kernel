@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
@@ -14,9 +15,12 @@
 /*
  * We don't use int-l64.h for the kernel anymore but still use it for
  * userspace to avoid code changes.
+ *
+ * However, some user programs (e.g. perf) may not want this. They can
+ * flag __SANE_USERSPACE_TYPES__ to get int-ll64.h here.
  */
 #ifndef __KERNEL__
-# if _MIPS_SZLONG == 64
+# if _MIPS_SZLONG == 64 && !defined(__SANE_USERSPACE_TYPES__)
 #  include <asm-generic/int-l64.h>
 # else
 #  include <asm-generic/int-ll64.h>

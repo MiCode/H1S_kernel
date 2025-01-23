@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Common code to handle map devices which are simple RAM
- * (C) 2000 Red Hat. GPL'd.
+ * (C) 2000 Red Hat.
  */
 
 #include <linux/module.h>
@@ -20,8 +21,9 @@ static int mapram_write (struct mtd_info *, loff_t, size_t, size_t *, const u_ch
 static int mapram_erase (struct mtd_info *, struct erase_info *);
 static void mapram_nop (struct mtd_info *);
 static struct mtd_info *map_ram_probe(struct map_info *map);
-static unsigned long mapram_unmapped_area(struct mtd_info *, unsigned long,
-					  unsigned long, unsigned long);
+static int mapram_point (struct mtd_info *mtd, loff_t from, size_t len,
+			 size_t *retlen, void **virt, resource_size_t *phys);
+static int mapram_unpoint(struct mtd_info *mtd, loff_t from, size_t len);
 
 
 static struct mtd_chip_driver mapram_chipdrv = {
@@ -65,10 +67,12 @@ static struct mtd_info *map_ram_probe(struct map_info *map)
 	mtd->type = MTD_RAM;
 	mtd->size = map->size;
 	mtd->_erase = mapram_erase;
-	mtd->_get_unmapped_area = mapram_unmapped_area;
 	mtd->_read = mapram_read;
 	mtd->_write = mapram_write;
+	mtd->_panic_write = mapram_write;
+	mtd->_point = mapram_point;
 	mtd->_sync = mapram_nop;
+	mtd->_unpoint = mapram_unpoint;
 	mtd->flags = MTD_CAP_RAM;
 	mtd->writesize = 1;
 
@@ -80,19 +84,23 @@ static struct mtd_info *map_ram_probe(struct map_info *map)
 	return mtd;
 }
 
-
-/*
- * Allow NOMMU mmap() to directly map the device (if not NULL)
- * - return the address to which the offset maps
- * - return -ENOSYS to indicate refusal to do the mapping
- */
-static unsigned long mapram_unmapped_area(struct mtd_info *mtd,
-					  unsigned long len,
-					  unsigned long offset,
-					  unsigned long flags)
+static int mapram_point(struct mtd_info *mtd, loff_t from, size_t len,
+			size_t *retlen, void **virt, resource_size_t *phys)
 {
 	struct map_info *map = mtd->priv;
-	return (unsigned long) map->virt + offset;
+
+	if (!map->virt)
+		return -EINVAL;
+	*virt = map->virt + from;
+	if (phys)
+		*phys = map->phys + from;
+	*retlen = len;
+	return 0;
+}
+
+static int mapram_unpoint(struct mtd_info *mtd, loff_t from, size_t len)
+{
+	return 0;
 }
 
 static int mapram_read (struct mtd_info *mtd, loff_t from, size_t len, size_t *retlen, u_char *buf)
@@ -124,8 +132,6 @@ static int mapram_erase (struct mtd_info *mtd, struct erase_info *instr)
 	allff = map_word_ff(map);
 	for (i=0; i<instr->len; i += map_bankwidth(map))
 		map_write(map, allff, instr->addr + i);
-	instr->state = MTD_ERASE_DONE;
-	mtd_erase_callback(instr);
 	return 0;
 }
 

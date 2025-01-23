@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* Glue code for MD5 hashing optimized for sparc64 crypto opcodes.
  *
  * This is based largely upon arch/x86/crypto/sha1_ssse3_glue.c
@@ -17,7 +18,6 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mm.h>
-#include <linux/cryptohash.h>
 #include <linux/types.h>
 #include <crypto/md5.h>
 
@@ -33,10 +33,11 @@ static int md5_sparc64_init(struct shash_desc *desc)
 {
 	struct md5_state *mctx = shash_desc_ctx(desc);
 
-	mctx->hash[0] = cpu_to_le32(0x67452301);
-	mctx->hash[1] = cpu_to_le32(0xefcdab89);
-	mctx->hash[2] = cpu_to_le32(0x98badcfe);
-	mctx->hash[3] = cpu_to_le32(0x10325476);
+	mctx->hash[0] = MD5_H0;
+	mctx->hash[1] = MD5_H1;
+	mctx->hash[2] = MD5_H2;
+	mctx->hash[3] = MD5_H3;
+	le32_to_cpu_array(mctx->hash, 4);
 	mctx->byte_count = 0;
 
 	return 0;
@@ -144,7 +145,6 @@ static struct shash_alg alg = {
 		.cra_name	=	"md5",
 		.cra_driver_name=	"md5-sparc64",
 		.cra_priority	=	SPARC_CR_OPCODE_PRIORITY,
-		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize	=	MD5_HMAC_BLOCK_SIZE,
 		.cra_module	=	THIS_MODULE,
 	}
@@ -183,8 +183,8 @@ module_init(md5_sparc64_mod_init);
 module_exit(md5_sparc64_mod_fini);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("MD5 Secure Hash Algorithm, sparc64 md5 opcode accelerated");
+MODULE_DESCRIPTION("MD5 Message Digest Algorithm, sparc64 md5 opcode accelerated");
 
-MODULE_ALIAS("md5");
+MODULE_ALIAS_CRYPTO("md5");
 
 #include "crop_devid.c"

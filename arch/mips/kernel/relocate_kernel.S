@@ -1,9 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * relocate_kernel.S for kexec
  * Created by <nschichan@corp.free.fr> on Thu Oct 12 17:49:57 2006
- *
- * This source code is licensed under the GNU General Public License,
- * Version 2.  See the file COPYING for more details.
  */
 
 #include <asm/asm.h>
@@ -12,6 +10,8 @@
 #include <asm/mipsregs.h>
 #include <asm/stackframe.h>
 #include <asm/addrspace.h>
+
+#include <kernel-entry-init.h>
 
 LEAF(relocate_new_kernel)
 	PTR_L a0,	arg0
@@ -24,7 +24,7 @@ LEAF(relocate_new_kernel)
 
 process_entry:
 	PTR_L		s2, (s0)
-	PTR_ADD		s0, s0, SZREG
+	PTR_ADDIU	s0, s0, SZREG
 
 	/*
 	 * In case of a kdump/crash kernel, the indirection page is not
@@ -61,9 +61,9 @@ copy_word:
 	/* copy page word by word */
 	REG_L		s5, (s2)
 	REG_S		s5, (s4)
-	PTR_ADD		s4, s4, SZREG
-	PTR_ADD		s2, s2, SZREG
-	LONG_SUB	s6, s6, 1
+	PTR_ADDIU	s4, s4, SZREG
+	PTR_ADDIU	s2, s2, SZREG
+	LONG_ADDIU	s6, s6, -1
 	beq		s6, zero, process_entry
 	b		copy_word
 	b		process_entry
@@ -85,7 +85,7 @@ done:
 
 #ifdef CONFIG_CPU_CAVIUM_OCTEON
 	/* We need to flush I-cache before jumping to new kernel.
-	 * Unfortunatelly, this code is cpu-specific.
+	 * Unfortunately, this code is cpu-specific.
 	 */
 	.set push
 	.set noreorder
@@ -127,11 +127,8 @@ LEAF(kexec_smp_wait)
 1:	LONG_L		s0, (t0)
 	bne		s0, zero,1b
 
-#ifdef CONFIG_CPU_CAVIUM_OCTEON
-	.set push
-	.set noreorder
-	synci		0($0)
-	.set pop
+#ifdef USE_KEXEC_SMP_WAIT_FINAL
+	kexec_smp_wait_final
 #else
 	sync
 #endif
@@ -145,15 +142,14 @@ LEAF(kexec_smp_wait)
 #endif
 
 /* All parameters to new kernel are passed in registers a0-a3.
- * kexec_args[0..3] are uses to prepare register values.
+ * kexec_args[0..3] are used to prepare register values.
  */
 
-kexec_args:
-	EXPORT(kexec_args)
-arg0:	PTR		0x0
-arg1:	PTR		0x0
-arg2:	PTR		0x0
-arg3:	PTR		0x0
+EXPORT(kexec_args)
+arg0:	PTR_WD		0x0
+arg1:	PTR_WD		0x0
+arg2:	PTR_WD		0x0
+arg3:	PTR_WD		0x0
 	.size	kexec_args,PTRSIZE*4
 
 #ifdef CONFIG_SMP
@@ -162,31 +158,27 @@ arg3:	PTR		0x0
  * their registers a0-a3. secondary_kexec_args[0..3] are used
  * to prepare register values.
  */
-secondary_kexec_args:
-	EXPORT(secondary_kexec_args)
-s_arg0: PTR		0x0
-s_arg1: PTR		0x0
-s_arg2: PTR		0x0
-s_arg3: PTR		0x0
+EXPORT(secondary_kexec_args)
+s_arg0: PTR_WD		0x0
+s_arg1: PTR_WD		0x0
+s_arg2: PTR_WD		0x0
+s_arg3: PTR_WD		0x0
 	.size	secondary_kexec_args,PTRSIZE*4
 kexec_flag:
 	LONG		0x1
 
 #endif
 
-kexec_start_address:
-	EXPORT(kexec_start_address)
-	PTR		0x0
+EXPORT(kexec_start_address)
+	PTR_WD		0x0
 	.size		kexec_start_address, PTRSIZE
 
-kexec_indirection_page:
-	EXPORT(kexec_indirection_page)
-	PTR		0
+EXPORT(kexec_indirection_page)
+	PTR_WD		0
 	.size		kexec_indirection_page, PTRSIZE
 
 relocate_new_kernel_end:
 
-relocate_new_kernel_size:
-	EXPORT(relocate_new_kernel_size)
-	PTR		relocate_new_kernel_end - relocate_new_kernel
+EXPORT(relocate_new_kernel_size)
+	PTR_WD		relocate_new_kernel_end - relocate_new_kernel
 	.size		relocate_new_kernel_size, PTRSIZE

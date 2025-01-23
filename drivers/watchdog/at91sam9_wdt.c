@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Watchdog driver for Atmel AT91SAM9x processors.
  *
  * Copyright (C) 2008 Renaud CERRATO r.cerrato@til-technologies.fr
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 /*
@@ -17,6 +14,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/clk.h>
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -40,9 +38,9 @@
 #define DRV_NAME "AT91SAM9 Watchdog"
 
 #define wdt_read(wdt, field) \
-	__raw_readl((wdt)->base + (field))
+	readl_relaxed((wdt)->base + (field))
 #define wdt_write(wtd, field, val) \
-	__raw_writel((val), (wdt)->base + (field))
+	writel_relaxed((val), (wdt)->base + (field))
 
 /* AT91SAM9 watchdog runs a 12bit counter @ 256Hz,
  * use this to convert a watchdog
@@ -90,6 +88,7 @@ struct at91wdt {
 	unsigned long heartbeat;	/* WDT heartbeat in jiffies */
 	bool nowayout;
 	unsigned int irq;
+	struct clk *sclk;
 };
 
 /* ......................................................................... */
@@ -118,9 +117,9 @@ static inline void at91_wdt_reset(struct at91wdt *wdt)
 /*
  * Timer tick
  */
-static void at91_ping(unsigned long data)
+static void at91_ping(struct timer_list *t)
 {
-	struct at91wdt *wdt = (struct at91wdt *)data;
+	struct at91wdt *wdt = from_timer(wdt, t, timer);
 	if (time_before(jiffies, wdt->next_heartbeat) ||
 	    !watchdog_active(&wdt->wdd)) {
 		at91_wdt_reset(wdt);
@@ -207,9 +206,9 @@ static int at91_wdt_init(struct platform_device *pdev, struct at91wdt *wdt)
 			 "min heartbeat and max heartbeat might be too close for the system to handle it correctly\n");
 
 	if ((tmp & AT91_WDT_WDFIEN) && wdt->irq) {
-		err = request_irq(wdt->irq, wdt_interrupt,
-				  IRQF_SHARED | IRQF_IRQPOLL,
-				  pdev->name, wdt);
+		err = devm_request_irq(dev, wdt->irq, wdt_interrupt,
+				       IRQF_SHARED | IRQF_IRQPOLL | IRQF_NO_SUSPEND,
+				       pdev->name, wdt);
 		if (err)
 			return err;
 	}
@@ -219,7 +218,7 @@ static int at91_wdt_init(struct platform_device *pdev, struct at91wdt *wdt)
 			 "watchdog already configured differently (mr = %x expecting %x)\n",
 			 tmp & wdt->mr_mask, wdt->mr & wdt->mr_mask);
 
-	setup_timer(&wdt->timer, at91_ping, (unsigned long)wdt);
+	timer_setup(&wdt->timer, at91_ping, 0);
 
 	/*
 	 * Use min_heartbeat the first time to avoid spurious watchdog reset:
@@ -327,7 +326,6 @@ static inline int of_at91wdt_init(struct device_node *np, struct at91wdt *wdt)
 
 static int __init at91wdt_probe(struct platform_device *pdev)
 {
-	struct resource	*r;
 	int err;
 	struct at91wdt *wdt;
 
@@ -346,20 +344,29 @@ static int __init at91wdt_probe(struct platform_device *pdev)
 	wdt->wdd.min_timeout = 1;
 	wdt->wdd.max_timeout = 0xFFFF;
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	wdt->base = devm_ioremap_resource(&pdev->dev, r);
+	wdt->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(wdt->base))
 		return PTR_ERR(wdt->base);
+
+	wdt->sclk = devm_clk_get(&pdev->dev, NULL);
+	if (IS_ERR(wdt->sclk))
+		return PTR_ERR(wdt->sclk);
+
+	err = clk_prepare_enable(wdt->sclk);
+	if (err) {
+		dev_err(&pdev->dev, "Could not enable slow clock\n");
+		return err;
+	}
 
 	if (pdev->dev.of_node) {
 		err = of_at91wdt_init(pdev->dev.of_node, wdt);
 		if (err)
-			return err;
+			goto err_clk;
 	}
 
 	err = at91_wdt_init(pdev, wdt);
 	if (err)
-		return err;
+		goto err_clk;
 
 	platform_set_drvdata(pdev, wdt);
 
@@ -367,6 +374,11 @@ static int __init at91wdt_probe(struct platform_device *pdev)
 		wdt->wdd.timeout, wdt->nowayout);
 
 	return 0;
+
+err_clk:
+	clk_disable_unprepare(wdt->sclk);
+
+	return err;
 }
 
 static int __exit at91wdt_remove(struct platform_device *pdev)
@@ -376,6 +388,7 @@ static int __exit at91wdt_remove(struct platform_device *pdev)
 
 	pr_warn("I quit now, hardware will probably reboot!\n");
 	del_timer(&wdt->timer);
+	clk_disable_unprepare(wdt->sclk);
 
 	return 0;
 }
@@ -393,7 +406,6 @@ static struct platform_driver at91wdt_driver = {
 	.remove		= __exit_p(at91wdt_remove),
 	.driver		= {
 		.name	= "at91_wdt",
-		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(at91_wdt_dt_ids),
 	},
 };

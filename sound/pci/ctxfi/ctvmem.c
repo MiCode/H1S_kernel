@@ -1,9 +1,6 @@
-/**
+// SPDX-License-Identifier: GPL-2.0-only
+/*
  * Copyright (C) 2008, Creative Technology Ltd. All Rights Reserved.
- *
- * This source file is released under GPL v2 license (no other versions).
- * See the COPYING file included in the main directory of this source
- * distribution for the license terms and conditions.
  *
  * @File    ctvmem.c
  *
@@ -16,6 +13,7 @@
  */
 
 #include "ctvmem.h"
+#include "ctatc.h"
 #include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/io.h>
@@ -29,15 +27,15 @@
  * @size must be page aligned.
  * */
 static struct ct_vm_block *
-get_vm_block(struct ct_vm *vm, unsigned int size)
+get_vm_block(struct ct_vm *vm, unsigned int size, struct ct_atc *atc)
 {
 	struct ct_vm_block *block = NULL, *entry;
 	struct list_head *pos;
 
 	size = CT_PAGE_ALIGN(size);
 	if (size > vm->size) {
-		printk(KERN_ERR "ctxfi: Fail! No sufficient device virtual "
-				  "memory space available!\n");
+		dev_err(atc->card->dev,
+			"Fail! No sufficient device virtual memory space available!\n");
 		return NULL;
 	}
 
@@ -129,11 +127,12 @@ ct_vm_map(struct ct_vm *vm, struct snd_pcm_substream *substream, int size)
 	unsigned int pte_start;
 	unsigned i, pages;
 	unsigned long *ptp;
+	struct ct_atc *atc = snd_pcm_substream_chip(substream);
 
-	block = get_vm_block(vm, size);
+	block = get_vm_block(vm, size, atc);
 	if (block == NULL) {
-		printk(KERN_ERR "ctxfi: No virtual memory block that is big "
-				  "enough to allocate!\n");
+		dev_err(atc->card->dev,
+			"No virtual memory block that is big enough to allocate!\n");
 		return NULL;
 	}
 
@@ -164,11 +163,7 @@ static void ct_vm_unmap(struct ct_vm *vm, struct ct_vm_block *block)
 static dma_addr_t
 ct_get_ptp_phys(struct ct_vm *vm, int index)
 {
-	dma_addr_t addr;
-
-	addr = (index >= CT_PTP_NUM) ? ~0UL : vm->ptp[index].addr;
-
-	return addr;
+	return (index >= CT_PTP_NUM) ? ~0UL : vm->ptp[index].addr;
 }
 
 int ct_vm_create(struct ct_vm **rvm, struct pci_dev *pci)
@@ -188,7 +183,7 @@ int ct_vm_create(struct ct_vm **rvm, struct pci_dev *pci)
 	/* Allocate page table pages */
 	for (i = 0; i < CT_PTP_NUM; i++) {
 		err = snd_dma_alloc_pages(SNDRV_DMA_TYPE_DEV,
-					  snd_dma_pci_data(pci),
+					  &pci->dev,
 					  PAGE_SIZE, &vm->ptp[i]);
 		if (err < 0)
 			break;

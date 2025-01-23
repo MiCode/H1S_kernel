@@ -257,7 +257,7 @@ typedef enum {
 } MPT_DRIVER_CLASS;
 
 struct mpt_pci_driver{
-	int  (*probe) (struct pci_dev *dev, const struct pci_device_id *id);
+	int  (*probe) (struct pci_dev *dev);
 	void (*remove) (struct pci_dev *dev);
 };
 
@@ -274,7 +274,7 @@ typedef union _MPT_FRAME_TRACKER {
 	} linkage;
 	/*
 	 * NOTE: When request frames are free, on the linkage structure
-	 * contets are valid.  All other values are invalid.
+	 * contents are valid.  All other values are invalid.
 	 * In particular, do NOT reply on offset [2]
 	 * (in words) being the * message context.
 	 * The message context must be reset (computed via base address
@@ -405,7 +405,7 @@ typedef struct _VirtTarget {
 typedef struct _VirtDevice {
 	VirtTarget		*vtarget;
 	u8			 configured_lun;
-	int			 lun;
+	u64			 lun;
 } VirtDevice;
 
 /*
@@ -605,7 +605,7 @@ typedef struct _MPT_ADAPTER
 	int			 id;		/* Unique adapter id N {0,1,2,...} */
 	int			 pci_irq;	/* This irq           */
 	char			 name[MPT_NAME_LENGTH];	/* "iocN"             */
-	char			 prod_name[MPT_NAME_LENGTH];	/* "LSIFC9x9"         */
+	const char		 *prod_name;	/* "LSIFC9x9"         */
 #ifdef CONFIG_FUSION_LOGGING
 	/* used in mpt_display_event_info */
 	char			 evStr[EVENT_DESCR_STR_SZ];
@@ -671,7 +671,6 @@ typedef struct _MPT_ADAPTER
 	u8			*HostPageBuffer; /* SAS - host page buffer support */
 	u32			HostPageBuffer_sz;
 	dma_addr_t		HostPageBuffer_dma;
-	int			 mtrr_reg;
 	struct pci_dev		*pcidev;	/* struct pci_dev pointer */
 	int			bars;		/* bitmask of BAR's that must be configured */
 	int			msi_enable;
@@ -758,7 +757,6 @@ typedef struct _MPT_ADAPTER
 	u8			 wait_on_reset_completion;
 	MPT_SCHEDULE_TARGET_RESET schedule_target_reset;
 	MPT_FLUSH_RUNNING_CMDS schedule_dead_ioc_flush_running_cmds;
-	struct work_struct	 sas_persist_task;
 
 	struct work_struct	 fc_setup_reset_work;
 	struct list_head	 fc_rports;
@@ -946,7 +944,7 @@ extern int	mpt_raid_phys_disk_get_num_paths(MPT_ADAPTER *ioc,
 		u8 phys_disk_num);
 extern int	 mpt_set_taskmgmt_in_progress_flag(MPT_ADAPTER *ioc);
 extern void	 mpt_clear_taskmgmt_in_progress_flag(MPT_ADAPTER *ioc);
-extern void     mpt_halt_firmware(MPT_ADAPTER *ioc);
+extern void __noreturn mpt_halt_firmware(MPT_ADAPTER *ioc);
 
 
 /*

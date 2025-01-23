@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * OpenRISC fault.c
  *
@@ -8,34 +9,30 @@
  * Modifications for the OpenRISC architecture:
  * Copyright (C) 2003 Matjaz Breskvar <phoenix@bsemi.com>
  * Copyright (C) 2010-2011 Jonas Bonn <jonas@southpole.se>
- *
- *      This program is free software; you can redistribute it and/or
- *      modify it under the terms of the GNU General Public License
- *      as published by the Free Software Foundation; either version
- *      2 of the License, or (at your option) any later version.
  */
 
 #include <linux/mm.h>
 #include <linux/interrupt.h>
-#include <linux/module.h>
-#include <linux/sched.h>
+#include <linux/extable.h>
+#include <linux/sched/signal.h>
+#include <linux/perf_event.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
+#include <asm/bug.h>
+#include <asm/mmu_context.h>
 #include <asm/siginfo.h>
 #include <asm/signal.h>
 
 #define NUM_TLB_ENTRIES 64
 #define TLB_OFFSET(add) (((add) >> PAGE_SHIFT) & (NUM_TLB_ENTRIES-1))
 
-unsigned long pte_misses;	/* updated by do_page_fault() */
-unsigned long pte_errors;	/* updated by do_page_fault() */
-
 /* __PHX__ :: - check the vmalloc_fault in do_page_fault()
- *            - also look into include/asm-or32/mmu_context.h
+ *            - also look into include/asm/mmu_context.h
  */
-volatile pgd_t *current_pgd;
+volatile pgd_t *current_pgd[NR_CPUS];
 
-extern void die(char *, struct pt_regs *, long);
+asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long address,
+			      unsigned long vector, int write_acc);
 
 /*
  * This routine handles page faults.  It determines the address,
@@ -52,9 +49,9 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long address,
 	struct task_struct *tsk;
 	struct mm_struct *mm;
 	struct vm_area_struct *vma;
-	siginfo_t info;
-	int fault;
-	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+	int si_code;
+	vm_fault_t fault;
+	unsigned int flags = FAULT_FLAG_DEFAULT;
 
 	tsk = current;
 
@@ -97,7 +94,7 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long address,
 	}
 
 	mm = tsk->mm;
-	info.si_code = SEGV_MAPERR;
+	si_code = SEGV_MAPERR;
 
 	/*
 	 * If we're in an interrupt or have no user
@@ -107,8 +104,10 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long address,
 	if (in_interrupt() || !mm)
 		goto no_context;
 
+	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
+
 retry:
-	down_read(&mm->mmap_sem);
+	mmap_read_lock(mm);
 	vma = find_vma(mm, address);
 
 	if (!vma)
@@ -130,8 +129,9 @@ retry:
 		if (address + PAGE_SIZE < regs->sp)
 			goto bad_area;
 	}
-	if (expand_stack(vma, address))
-		goto bad_area;
+	vma = expand_stack(mm, address);
+	if (!vma)
+		goto bad_area_nosemaphore;
 
 	/*
 	 * Ok, we have a good vm_area for this memory access, so
@@ -139,7 +139,7 @@ retry:
 	 */
 
 good_area:
-	info.si_code = SEGV_ACCERR;
+	si_code = SEGV_ACCERR;
 
 	/* first do some preliminary protection checks */
 
@@ -163,39 +163,41 @@ good_area:
 	 * the fault.
 	 */
 
-	fault = handle_mm_fault(mm, vma, address, flags);
+	fault = handle_mm_fault(vma, address, flags, regs);
 
-	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
+	if (fault_signal_pending(fault, regs)) {
+		if (!user_mode(regs))
+			goto no_context;
+		return;
+	}
+
+	/* The fault is fully completed (including releasing mmap lock) */
+	if (fault & VM_FAULT_COMPLETED)
 		return;
 
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
+		else if (fault & VM_FAULT_SIGSEGV)
+			goto bad_area;
 		else if (fault & VM_FAULT_SIGBUS)
 			goto do_sigbus;
 		BUG();
 	}
 
-	if (flags & FAULT_FLAG_ALLOW_RETRY) {
-		/*RGD modeled on Cris */
-		if (fault & VM_FAULT_MAJOR)
-			tsk->maj_flt++;
-		else
-			tsk->min_flt++;
-		if (fault & VM_FAULT_RETRY) {
-			flags &= ~FAULT_FLAG_ALLOW_RETRY;
-			flags |= FAULT_FLAG_TRIED;
+	/*RGD modeled on Cris */
+	if (fault & VM_FAULT_RETRY) {
+		flags |= FAULT_FLAG_TRIED;
 
-			 /* No need to up_read(&mm->mmap_sem) as we would
-			 * have already released it in __lock_page_or_retry
-			 * in mm/filemap.c.
-			 */
+		/* No need to mmap_read_unlock(mm) as we would
+		 * have already released it in __lock_page_or_retry
+		 * in mm/filemap.c.
+		 */
 
-			goto retry;
-		}
+		goto retry;
 	}
 
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 	return;
 
 	/*
@@ -204,18 +206,14 @@ good_area:
 	 */
 
 bad_area:
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 
 bad_area_nosemaphore:
 
 	/* User mode accesses just cause a SIGSEGV */
 
 	if (user_mode(regs)) {
-		info.si_signo = SIGSEGV;
-		info.si_errno = 0;
-		/* info.si_code has been set above */
-		info.si_addr = (void *)address;
-		force_sig_info(SIGSEGV, &info, tsk);
+		force_sig_fault(SIGSEGV, si_code, (void __user *)address);
 		return;
 	}
 
@@ -232,8 +230,6 @@ no_context:
 
 	{
 		const struct exception_table_entry *entry;
-
-		__asm__ __volatile__("l.nop 42");
 
 		if ((entry = search_exception_tables(regs->pc)) != NULL) {
 			/* Adjust the instruction pointer in the stackframe */
@@ -256,35 +252,26 @@ no_context:
 
 	die("Oops", regs, write_acc);
 
-	do_exit(SIGKILL);
-
 	/*
 	 * We ran out of memory, or some other thing happened to us that made
 	 * us unable to handle the page fault gracefully.
 	 */
 
 out_of_memory:
-	__asm__ __volatile__("l.nop 42");
-	__asm__ __volatile__("l.nop 1");
-
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 	if (!user_mode(regs))
 		goto no_context;
 	pagefault_out_of_memory();
 	return;
 
 do_sigbus:
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 
 	/*
 	 * Send a sigbus, regardless of whether we were in kernel
 	 * or user mode.
 	 */
-	info.si_signo = SIGBUS;
-	info.si_errno = 0;
-	info.si_code = BUS_ADRERR;
-	info.si_addr = (void *)address;
-	force_sig_info(SIGBUS, &info, tsk);
+	force_sig_fault(SIGBUS, BUS_ADRERR, (void __user *)address);
 
 	/* Kernel mode? Handle exceptions or die */
 	if (!user_mode(regs))
@@ -306,6 +293,7 @@ vmalloc_fault:
 
 		int offset = pgd_index(address);
 		pgd_t *pgd, *pgd_k;
+		p4d_t *p4d, *p4d_k;
 		pud_t *pud, *pud_k;
 		pmd_t *pmd, *pmd_k;
 		pte_t *pte_k;
@@ -317,7 +305,7 @@ vmalloc_fault:
 
 		phx_mmu("vmalloc_fault");
 */
-		pgd = (pgd_t *)current_pgd + offset;
+		pgd = (pgd_t *)current_pgd[smp_processor_id()] + offset;
 		pgd_k = init_mm.pgd + offset;
 
 		/* Since we're two-level, we don't need to do both
@@ -332,8 +320,13 @@ vmalloc_fault:
 		 * it exists.
 		 */
 
-		pud = pud_offset(pgd, address);
-		pud_k = pud_offset(pgd_k, address);
+		p4d = p4d_offset(pgd, address);
+		p4d_k = p4d_offset(pgd_k, address);
+		if (!p4d_present(*p4d_k))
+			goto no_context;
+
+		pud = pud_offset(p4d, address);
+		pud_k = pud_offset(p4d_k, address);
 		if (!pud_present(*pud_k))
 			goto no_context;
 

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2013, The Linux Foundation. All rights reserved.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #ifndef _DT_BINDINGS_CLK_MSM_GCC_8974_H
@@ -316,5 +308,12 @@
 #define GCC_CE2_CLK_SLEEP_ENA					299
 #define GCC_CE2_AXI_CLK_SLEEP_ENA				300
 #define GCC_CE2_AHB_CLK_SLEEP_ENA				301
+#define GPLL4							302
+#define GPLL4_VOTE						303
+#define GCC_SDCC1_CDCCAL_SLEEP_CLK				304
+#define GCC_SDCC1_CDCCAL_FF_CLK					305
+
+/* gdscs */
+#define USB_HS_HSIC_GDSC					0
 
 #endif

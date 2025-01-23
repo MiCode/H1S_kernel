@@ -1,16 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * lis3lv02d_spi - SPI glue layer for lis3lv02d
  *
  * Copyright (c) 2009 Daniel Mack <daniel@caiaq.de>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  publishhed by the Free Software Foundation.
  */
 
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/err.h>
 #include <linux/input.h>
 #include <linux/interrupt.h>
@@ -62,7 +58,7 @@ static union axis_conversion lis3lv02d_axis_normal =
 	{ .as_array = { 1, 2, 3 } };
 
 #ifdef CONFIG_OF
-static struct of_device_id lis302dl_spi_dt_ids[] = {
+static const struct of_device_id lis302dl_spi_dt_ids[] = {
 	{ .compatible = "st,lis302dl-spi" },
 	{}
 };
@@ -100,13 +96,13 @@ static int lis302dl_spi_probe(struct spi_device *spi)
 	return lis3lv02d_init_device(&lis3_dev);
 }
 
-static int lis302dl_spi_remove(struct spi_device *spi)
+static void lis302dl_spi_remove(struct spi_device *spi)
 {
 	struct lis3lv02d *lis3 = spi_get_drvdata(spi);
 	lis3lv02d_joystick_disable(lis3);
 	lis3lv02d_poweroff(lis3);
 
-	return lis3lv02d_remove_fs(&lis3_dev);
+	lis3lv02d_remove_fs(&lis3_dev);
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -139,7 +135,6 @@ static SIMPLE_DEV_PM_OPS(lis3lv02d_spi_pm, lis3lv02d_spi_suspend,
 static struct spi_driver lis302dl_spi_driver = {
 	.driver	 = {
 		.name   = DRV_NAME,
-		.owner  = THIS_MODULE,
 		.pm	= &lis3lv02d_spi_pm,
 		.of_match_table = of_match_ptr(lis302dl_spi_dt_ids),
 	},

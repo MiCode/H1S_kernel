@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for	DEC VSXXX-AA mouse (hockey-puck mouse, ball or two rollers)
  *		DEC VSXXX-GA mouse (rectangular mouse, with ball)
@@ -9,22 +10,6 @@
  * by	Karsten Merker <merker@linuxtag.org>
  * and	Maciej W. Rozycki <macro@ds2.pg.gda.pl>
  * Later on, I had access to the device's documentation (referenced below).
- */
-
-/*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 /*
@@ -128,7 +113,7 @@ static void vsxxxaa_drop_bytes(struct vsxxxaa *mouse, int num)
 	if (num >= mouse->count) {
 		mouse->count = 0;
 	} else {
-		memmove(mouse->buf, mouse->buf + num - 1, BUFLEN - num);
+		memmove(mouse->buf, mouse->buf + num, BUFLEN - num);
 		mouse->count -= num;
 	}
 }
@@ -150,12 +135,12 @@ static void vsxxxaa_detection_done(struct vsxxxaa *mouse)
 {
 	switch (mouse->type) {
 	case 0x02:
-		strlcpy(mouse->name, "DEC VSXXX-AA/-GA mouse",
+		strscpy(mouse->name, "DEC VSXXX-AA/-GA mouse",
 			sizeof(mouse->name));
 		break;
 
 	case 0x04:
-		strlcpy(mouse->name, "DEC VSXXX-AB digitizer",
+		strscpy(mouse->name, "DEC VSXXX-AB digitizer",
 			sizeof(mouse->name));
 		break;
 

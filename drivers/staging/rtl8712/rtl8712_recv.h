@@ -1,19 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2010 Realtek Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
  *
  * Modifications for inclusion into the Linux staging tree are
  * Copyright(c) 2010 Larry Finger. All rights reserved.
@@ -50,33 +38,35 @@
 #define REORDER_WAIT_TIME	30 /* (ms)*/
 
 struct recv_stat {
-	unsigned int rxdw0;
-	unsigned int rxdw1;
-	unsigned int rxdw2;
-	unsigned int rxdw3;
-	unsigned int rxdw4;
-	unsigned int rxdw5;
+	__le32 rxdw0;
+	__le32 rxdw1;
+	__le32 rxdw2;
+	__le32 rxdw3;
+	__le32 rxdw4;
+	__le32 rxdw5;
 };
 
 struct phy_cck_rx_status {
 	/* For CCK rate descriptor. This is a unsigned 8:1 variable.
 	 * LSB bit present 0.5. And MSB 7 bts present a signed value.
-	 * Range from -64~+63.5. */
+	 * Range from -64~+63.5.
+	 */
 	u8	adc_pwdb_X[4];
 	u8	sq_rpt;
 	u8	cck_agc_rpt;
 };
 
 struct phy_stat {
-	unsigned int phydw0;
-	unsigned int phydw1;
-	unsigned int phydw2;
-	unsigned int phydw3;
-	unsigned int phydw4;
-	unsigned int phydw5;
-	unsigned int phydw6;
-	unsigned int phydw7;
+	__le32 phydw0;
+	__le32 phydw1;
+	__le32 phydw2;
+	__le32 phydw3;
+	__le32 phydw4;
+	__le32 phydw5;
+	__le32 phydw6;
+	__le32 phydw7;
 };
+
 #define PHY_STAT_GAIN_TRSW_SHT 0
 #define PHY_STAT_PWDB_ALL_SHT 4
 #define PHY_STAT_CFOSHO_SHT 5
@@ -95,7 +85,6 @@ union recvstat {
 	unsigned int value[RXDESC_SIZE>>2];
 };
 
-
 struct recv_buf {
 	struct list_head list;
 	spinlock_t recvbuf_lock;
@@ -103,7 +92,6 @@ struct recv_buf {
 	struct _adapter  *adapter;
 	struct urb *purb;
 	_pkt *pskb;
-	u8 reuse;
 	u8  irp_pending;
 	u32  transfer_len;
 	uint  len;
@@ -116,13 +104,13 @@ struct recv_buf {
 };
 
 /*
-	head  ----->
-		data  ----->
-			payload
-		tail  ----->
-	end   ----->
-	len = (unsigned int )(tail - data);
-*/
+ *	head  ----->
+ *		data  ----->
+ *			payload
+ *		tail  ----->
+ *	end   ----->
+ *	len = (unsigned int )(tail - data);
+ */
 struct recv_frame_hdr {
 	struct list_head list;
 	_pkt	*pkt;
@@ -148,7 +136,7 @@ union recv_frame {
 	} u;
 };
 
-int r8712_init_recvbuf(struct _adapter *padapter, struct recv_buf *precvbuf);
+void r8712_init_recvbuf(struct _adapter *padapter, struct recv_buf *precvbuf);
 void r8712_rxcmd_event_hdl(struct _adapter *padapter, void *prxcmdbuf);
 s32 r8712_signal_scale_mapping(s32 cur_sig);
 void r8712_reordering_ctrl_timeout_handler(void *pcontext);

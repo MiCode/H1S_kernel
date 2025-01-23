@@ -1,12 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Basic assembly code to read BHRB entries
  *
  * Copyright 2013 Anshuman Khandual, IBM Corporation.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 #include <asm/ppc_asm.h>
 #include <asm/ppc-opcode.h>
@@ -25,7 +21,7 @@
 _GLOBAL(read_bhrb)
 	cmpldi	r3,31
 	bgt	1f
-	ld	r4,bhrb_table@got(r2)
+	LOAD_REG_ADDR(r4, bhrb_table)
 	sldi	r3,r3,3
 	add	r3,r4,r3
 	mtctr	r3

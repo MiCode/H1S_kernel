@@ -1,21 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * PS3 Logical Performance Monitor.
  *
  *  Copyright (C) 2007 Sony Computer Entertainment Inc.
  *  Copyright 2007 Sony Corp.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; version 2 of the License.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/slab.h>
@@ -105,7 +93,7 @@ struct ps3_lpm_shadow_regs {
  * @open: An atomic variable indicating the lpm driver has been opened.
  * @rights: The lpm rigths granted by the system policy module.  A logical
  *  OR of enum ps3_lpm_rights.
- * @node_id: The node id of a BE prosessor whose performance monitor this
+ * @node_id: The node id of a BE processor whose performance monitor this
  *  lpar has the right to use.
  * @pu_id: The lv1 id of the logical PU.
  * @lpm_id: The lv1 id of this lpm instance.
@@ -412,7 +400,7 @@ u32 ps3_read_pm(u32 cpu, enum pm_reg_name reg)
 		result = lv1_set_lpm_interval(lpm_priv->lpm_id, 0, 0, &val);
 		if (result) {
 			val = 0;
-			dev_dbg(sbd_core(), "%s:%u: lv1 set_inteval failed: "
+			dev_dbg(sbd_core(), "%s:%u: lv1 set_interval failed: "
 				"reg %u, %s\n", __func__, __LINE__, reg,
 				ps3_result(result));
 		}
@@ -901,7 +889,7 @@ void ps3_disable_pm(u32 cpu)
 	result = lv1_stop_lpm(lpm_priv->lpm_id, &tmp);
 
 	if (result) {
-		if(result != LV1_WRONG_STATE)
+		if (result != LV1_WRONG_STATE)
 			dev_err(sbd_core(), "%s:%u: lv1_stop_lpm failed: %s\n",
 				__func__, __LINE__, ps3_result(result));
 		return;
@@ -1078,7 +1066,7 @@ EXPORT_SYMBOL_GPL(ps3_disable_pm_interrupts);
  *  instance, specified by one of enum ps3_lpm_tb_type.
  * @tb_cache: Optional user supplied buffer to use as the trace buffer cache.
  *  If NULL, the driver will allocate and manage an internal buffer.
- *  Unused when when @tb_type is PS3_LPM_TB_TYPE_NONE.
+ *  Unused when @tb_type is PS3_LPM_TB_TYPE_NONE.
  * @tb_cache_size: The size in bytes of the user supplied @tb_cache buffer.
  *  Unused when @tb_cache is NULL or @tb_type is PS3_LPM_TB_TYPE_NONE.
  */
@@ -1108,8 +1096,8 @@ int ps3_lpm_open(enum ps3_lpm_tb_type tb_type, void *tb_cache,
 		lpm_priv->tb_cache_internal = NULL;
 		lpm_priv->tb_cache = NULL;
 	} else if (tb_cache) {
-		if (tb_cache != (void *)_ALIGN_UP((unsigned long)tb_cache, 128)
-			|| tb_cache_size != _ALIGN_UP(tb_cache_size, 128)) {
+		if (tb_cache != (void *)ALIGN((unsigned long)tb_cache, 128)
+			|| tb_cache_size != ALIGN(tb_cache_size, 128)) {
 			dev_err(sbd_core(), "%s:%u: unaligned tb_cache\n",
 				__func__, __LINE__);
 			result = -EINVAL;
@@ -1123,12 +1111,10 @@ int ps3_lpm_open(enum ps3_lpm_tb_type tb_type, void *tb_cache,
 		lpm_priv->tb_cache_internal = kzalloc(
 			lpm_priv->tb_cache_size + 127, GFP_KERNEL);
 		if (!lpm_priv->tb_cache_internal) {
-			dev_err(sbd_core(), "%s:%u: alloc internal tb_cache "
-				"failed\n", __func__, __LINE__);
 			result = -ENOMEM;
 			goto fail_malloc;
 		}
-		lpm_priv->tb_cache = (void *)_ALIGN_UP(
+		lpm_priv->tb_cache = (void *)ALIGN(
 			(unsigned long)lpm_priv->tb_cache_internal, 128);
 	}
 
@@ -1210,7 +1196,7 @@ static int ps3_lpm_probe(struct ps3_system_bus_device *dev)
 	return 0;
 }
 
-static int ps3_lpm_remove(struct ps3_system_bus_device *dev)
+static void ps3_lpm_remove(struct ps3_system_bus_device *dev)
 {
 	dev_dbg(&dev->core, " -> %s:%u:\n", __func__, __LINE__);
 
@@ -1220,7 +1206,6 @@ static int ps3_lpm_remove(struct ps3_system_bus_device *dev)
 	lpm_priv = NULL;
 
 	dev_info(&dev->core, " <- %s:%u:\n", __func__, __LINE__);
-	return 0;
 }
 
 static struct ps3_system_bus_driver ps3_lpm_driver = {

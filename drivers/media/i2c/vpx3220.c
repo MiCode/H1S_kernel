@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * vpx3220a, vpx3216b & vpx3214c video decoder driver version 0.0.1
  *
  * Copyright (C) 2001 Laurent Pinchart <lpinchart@freegates.be>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
@@ -23,7 +10,7 @@
 #include <linux/delay.h>
 #include <linux/types.h>
 #include <linux/slab.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/i2c.h>
 #include <linux/videodev2.h>
 #include <media/v4l2-device.h>
@@ -124,7 +111,7 @@ static int vpx3220_fp_write(struct v4l2_subdev *sd, u8 fpaddr, u16 data)
 	return 0;
 }
 
-static u16 vpx3220_fp_read(struct v4l2_subdev *sd, u16 fpaddr)
+static int vpx3220_fp_read(struct v4l2_subdev *sd, u16 fpaddr)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	s16 data;
@@ -205,7 +192,7 @@ static const unsigned short init_pal[] = {
 				 * skipped by the VFE) */
 	0x8b, 16,		/* Horizontal begin */
 	0x8c, 768,		/* Horizontal length */
-	0x8d, 784, 		/* Number of pixels
+	0x8d, 784,		/* Number of pixels
 				 * Must be >= Horizontal begin + Horizontal length */
 	0x8f, 0xc00,		/* Disable window 2 */
 	0xf0, 0x77,		/* 13.5 MHz transport, Forced
@@ -388,7 +375,7 @@ static int vpx3220_s_routing(struct v4l2_subdev *sd,
 		 input = 1: COMPOSITE  input
 		 input = 2: SVHS       input  */
 
-	const int input_vals[3][2] = {
+	static const int input_vals[3][2] = {
 		{0x0c, 0},
 		{0x0d, 0},
 		{0x0e, 1}
@@ -450,17 +437,10 @@ static const struct v4l2_ctrl_ops vpx3220_ctrl_ops = {
 
 static const struct v4l2_subdev_core_ops vpx3220_core_ops = {
 	.init = vpx3220_init,
-	.g_ext_ctrls = v4l2_subdev_g_ext_ctrls,
-	.try_ext_ctrls = v4l2_subdev_try_ext_ctrls,
-	.s_ext_ctrls = v4l2_subdev_s_ext_ctrls,
-	.g_ctrl = v4l2_subdev_g_ctrl,
-	.s_ctrl = v4l2_subdev_s_ctrl,
-	.queryctrl = v4l2_subdev_queryctrl,
-	.querymenu = v4l2_subdev_querymenu,
-	.s_std = vpx3220_s_std,
 };
 
 static const struct v4l2_subdev_video_ops vpx3220_video_ops = {
+	.s_std = vpx3220_s_std,
 	.s_routing = vpx3220_s_routing,
 	.s_stream = vpx3220_s_stream,
 	.querystd = vpx3220_querystd,
@@ -476,8 +456,7 @@ static const struct v4l2_subdev_ops vpx3220_ops = {
  * Client management code
  */
 
-static int vpx3220_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int vpx3220_probe(struct i2c_client *client)
 {
 	struct vpx3220 *decoder;
 	struct v4l2_subdev *sd;
@@ -546,15 +525,13 @@ static int vpx3220_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int vpx3220_remove(struct i2c_client *client)
+static void vpx3220_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct vpx3220 *decoder = to_vpx3220(sd);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&decoder->hdl);
-
-	return 0;
 }
 
 static const struct i2c_device_id vpx3220_id[] = {
@@ -567,7 +544,6 @@ MODULE_DEVICE_TABLE(i2c, vpx3220_id);
 
 static struct i2c_driver vpx3220_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "vpx3220",
 	},
 	.probe		= vpx3220_probe,

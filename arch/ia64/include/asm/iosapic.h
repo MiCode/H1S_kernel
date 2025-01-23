@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_IA64_IOSAPIC_H
 #define __ASM_IA64_IOSAPIC_H
 
@@ -51,18 +52,12 @@
 
 #ifndef __ASSEMBLY__
 
-#ifdef CONFIG_IOSAPIC
-
 #define NR_IOSAPICS			256
 
-#ifdef CONFIG_PARAVIRT_GUEST
-#include <asm/paravirt.h>
-#else
 #define iosapic_pcat_compat_init	ia64_native_iosapic_pcat_compat_init
 #define __iosapic_read			__ia64_native_iosapic_read
 #define __iosapic_write			__ia64_native_iosapic_write
 #define iosapic_get_irq_chip		ia64_native_iosapic_get_irq_chip
-#endif
 
 extern void __init ia64_native_iosapic_pcat_compat_init(void);
 extern struct irq_chip *ia64_native_iosapic_get_irq_chip(unsigned long trigger);
@@ -105,16 +100,6 @@ extern int __init iosapic_register_platform_intr (u32 int_type,
 
 #ifdef CONFIG_NUMA
 extern void map_iosapic_to_node (unsigned int, int);
-#endif
-#else
-#define iosapic_system_init(pcat_compat)			do { } while (0)
-#define iosapic_init(address,gsi_base)				(-EINVAL)
-#define iosapic_remove(gsi_base)				(-ENODEV)
-#define iosapic_register_intr(gsi,polarity,trigger)		(gsi)
-#define iosapic_unregister_intr(irq)				do { } while (0)
-#define iosapic_override_isa_irq(isa_irq,gsi,polarity,trigger)	do { } while (0)
-#define iosapic_register_platform_intr(type,gsi,pmi,eid,id, \
-	polarity,trigger)					(gsi)
 #endif
 
 # endif /* !__ASSEMBLY__ */

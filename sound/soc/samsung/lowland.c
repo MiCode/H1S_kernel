@@ -1,13 +1,8 @@
-/*
- * Lowland audio support
- *
- * Copyright 2011 Wolfson Microelectronics
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
- */
+// SPDX-License-Identifier: GPL-2.0+
+//
+// Lowland audio support
+//
+// Copyright 2011 Wolfson Microelectronics
 
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
@@ -27,20 +22,24 @@ static struct snd_soc_jack lowland_headset;
 static struct snd_soc_jack_pin lowland_headset_pins[] = {
 	{
 		.pin = "Headphone",
-		.mask = SND_JACK_HEADPHONE | SND_JACK_LINEOUT,
+		.mask = SND_JACK_HEADPHONE,
 	},
 	{
 		.pin = "Headset Mic",
 		.mask = SND_JACK_MICROPHONE,
 	},
+	{
+		.pin = "Line Out",
+		.mask = SND_JACK_LINEOUT,
+	},
 };
 
 static int lowland_wm5100_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_component *component = asoc_rtd_to_codec(rtd, 0)->component;
 	int ret;
 
-	ret = snd_soc_codec_set_sysclk(codec, WM5100_CLK_SYSCLK,
+	ret = snd_soc_component_set_sysclk(component, WM5100_CLK_SYSCLK,
 				       WM5100_CLKSRC_MCLK1, MCLK1_RATE,
 				       SND_SOC_CLOCK_IN);
 	if (ret < 0) {
@@ -49,39 +48,34 @@ static int lowland_wm5100_init(struct snd_soc_pcm_runtime *rtd)
 	}
 
 	/* Clock OPCLK, used by the other audio components. */
-	ret = snd_soc_codec_set_sysclk(codec, WM5100_CLK_OPCLK, 0,
+	ret = snd_soc_component_set_sysclk(component, WM5100_CLK_OPCLK, 0,
 				       CLKOUT_RATE, 0);
 	if (ret < 0) {
 		pr_err("Failed to set OPCLK rate: %d\n", ret);
 		return ret;
 	}
 
-	ret = snd_soc_jack_new(codec, "Headset",
-			       SND_JACK_LINEOUT | SND_JACK_HEADSET |
-			       SND_JACK_BTN_0,
-			       &lowland_headset);
+	ret = snd_soc_card_jack_new_pins(rtd->card, "Headset",
+					 SND_JACK_LINEOUT | SND_JACK_HEADSET |
+					 SND_JACK_BTN_0,
+					 &lowland_headset, lowland_headset_pins,
+					 ARRAY_SIZE(lowland_headset_pins));
 	if (ret)
 		return ret;
 
-	ret = snd_soc_jack_add_pins(&lowland_headset,
-				    ARRAY_SIZE(lowland_headset_pins),
-				    lowland_headset_pins);
-	if (ret)
-		return ret;
-
-	wm5100_detect(codec, &lowland_headset);
+	wm5100_detect(component, &lowland_headset);
 
 	return 0;
 }
 
 static int lowland_wm9081_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_component *component = asoc_rtd_to_codec(rtd, 0)->component;
 
-	snd_soc_dapm_nc_pin(&codec->dapm, "LINEOUT");
+	snd_soc_dapm_nc_pin(&rtd->card->dapm, "LINEOUT");
 
 	/* At any time the WM9081 is active it will have this clock */
-	return snd_soc_codec_set_sysclk(codec, WM9081_SYSCLK_MCLK, 0,
+	return snd_soc_component_set_sysclk(component, WM9081_SYSCLK_MCLK, 0,
 					CLKOUT_RATE, 0);
 }
 
@@ -93,45 +87,52 @@ static const struct snd_soc_pcm_stream sub_params = {
 	.channels_max = 2,
 };
 
+SND_SOC_DAILINK_DEFS(cpu,
+	DAILINK_COMP_ARRAY(COMP_CPU("samsung-i2s.0")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("wm5100.1-001a", "wm5100-aif1")),
+	DAILINK_COMP_ARRAY(COMP_PLATFORM("samsung-i2s.0")));
+
+SND_SOC_DAILINK_DEFS(baseband,
+	DAILINK_COMP_ARRAY(COMP_CPU("wm5100-aif2")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("wm1250-ev1.1-0027", "wm1250-ev1")));
+
+SND_SOC_DAILINK_DEFS(speaker,
+	DAILINK_COMP_ARRAY(COMP_CPU("wm5100-aif3")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("wm9081.1-006c", "wm9081-hifi")));
+
 static struct snd_soc_dai_link lowland_dai[] = {
 	{
 		.name = "CPU",
 		.stream_name = "CPU",
-		.cpu_dai_name = "samsung-i2s.0",
-		.codec_dai_name = "wm5100-aif1",
-		.platform_name = "samsung-i2s.0",
-		.codec_name = "wm5100.1-001a",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 				SND_SOC_DAIFMT_CBM_CFM,
 		.init = lowland_wm5100_init,
+		SND_SOC_DAILINK_REG(cpu),
 	},
 	{
 		.name = "Baseband",
 		.stream_name = "Baseband",
-		.cpu_dai_name = "wm5100-aif2",
-		.codec_dai_name = "wm1250-ev1",
-		.codec_name = "wm1250-ev1.1-0027",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 				SND_SOC_DAIFMT_CBM_CFM,
 		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(baseband),
 	},
 	{
 		.name = "Sub Speaker",
 		.stream_name = "Sub Speaker",
-		.cpu_dai_name = "wm5100-aif3",
-		.codec_dai_name = "wm9081-hifi",
-		.codec_name = "wm9081.1-006c",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 				SND_SOC_DAIFMT_CBM_CFM,
 		.ignore_suspend = 1,
-		.params = &sub_params,
+		.c2c_params = &sub_params,
+		.num_c2c_params = 1,
 		.init = lowland_wm9081_init,
+		SND_SOC_DAILINK_REG(speaker),
 	},
 };
 
 static struct snd_soc_codec_conf lowland_codec_conf[] = {
 	{
-		.dev_name = "wm9081.1-006c",
+		.dlc = COMP_CODEC_CONF("wm9081.1-006c"),
 		.name_prefix = "Sub",
 	},
 };
@@ -143,11 +144,13 @@ static const struct snd_kcontrol_new controls[] = {
 	SOC_DAPM_PIN_SWITCH("WM1250 Input"),
 	SOC_DAPM_PIN_SWITCH("WM1250 Output"),
 	SOC_DAPM_PIN_SWITCH("Headphone"),
+	SOC_DAPM_PIN_SWITCH("Line Out"),
 };
 
-static struct snd_soc_dapm_widget widgets[] = {
+static const struct snd_soc_dapm_widget widgets[] = {
 	SND_SOC_DAPM_HP("Headphone", NULL),
 	SND_SOC_DAPM_MIC("Headset Mic", NULL),
+	SND_SOC_DAPM_LINE("Line Out", NULL),
 
 	SND_SOC_DAPM_SPK("Main Speaker", NULL),
 
@@ -155,7 +158,7 @@ static struct snd_soc_dapm_widget widgets[] = {
 	SND_SOC_DAPM_MIC("Main DMIC", NULL),
 };
 
-static struct snd_soc_dapm_route audio_paths[] = {
+static const struct snd_soc_dapm_route audio_paths[] = {
 	{ "Sub IN1", NULL, "HPOUT2L" },
 	{ "Sub IN2", NULL, "HPOUT2R" },
 
@@ -187,33 +190,19 @@ static int lowland_probe(struct platform_device *pdev)
 
 	card->dev = &pdev->dev;
 
-	ret = snd_soc_register_card(card);
-	if (ret) {
-		dev_err(&pdev->dev, "snd_soc_register_card() failed: %d\n",
-			ret);
-		return ret;
-	}
+	ret = devm_snd_soc_register_card(&pdev->dev, card);
+	if (ret)
+		dev_err_probe(&pdev->dev, ret, "snd_soc_register_card() failed\n");
 
-	return 0;
-}
-
-static int lowland_remove(struct platform_device *pdev)
-{
-	struct snd_soc_card *card = platform_get_drvdata(pdev);
-
-	snd_soc_unregister_card(card);
-
-	return 0;
+	return ret;
 }
 
 static struct platform_driver lowland_driver = {
 	.driver = {
 		.name = "lowland",
-		.owner = THIS_MODULE,
 		.pm = &snd_soc_pm_ops,
 	},
 	.probe = lowland_probe,
-	.remove = lowland_remove,
 };
 
 module_platform_driver(lowland_driver);

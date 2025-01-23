@@ -1,180 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of wl1271
  *
  * Copyright (C) 2008-2009 Nokia Corporation
  *
  * Contact: Luciano Coelho <luciano.coelho@nokia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include "ps.h"
 #include "io.h"
 #include "tx.h"
 #include "debug.h"
-
-#define WL1271_WAKEUP_TIMEOUT 500
-
-#define ELP_ENTRY_DELAY  30
-#define ELP_ENTRY_DELAY_FORCE_PS  5
-
-void wl1271_elp_work(struct work_struct *work)
-{
-	struct delayed_work *dwork;
-	struct wl1271 *wl;
-	struct wl12xx_vif *wlvif;
-	int ret;
-
-	dwork = container_of(work, struct delayed_work, work);
-	wl = container_of(dwork, struct wl1271, elp_work);
-
-	wl1271_debug(DEBUG_PSM, "elp work");
-
-	mutex_lock(&wl->mutex);
-
-	if (unlikely(wl->state != WLCORE_STATE_ON))
-		goto out;
-
-	/* our work might have been already cancelled */
-	if (unlikely(!test_bit(WL1271_FLAG_ELP_REQUESTED, &wl->flags)))
-		goto out;
-
-	if (test_bit(WL1271_FLAG_IN_ELP, &wl->flags))
-		goto out;
-
-	wl12xx_for_each_wlvif(wl, wlvif) {
-		if (wlvif->bss_type == BSS_TYPE_AP_BSS)
-			goto out;
-
-		if (!test_bit(WLVIF_FLAG_IN_PS, &wlvif->flags) &&
-		    test_bit(WLVIF_FLAG_IN_USE, &wlvif->flags))
-			goto out;
-	}
-
-	wl1271_debug(DEBUG_PSM, "chip to elp");
-	ret = wlcore_raw_write32(wl, HW_ACCESS_ELP_CTRL_REG, ELPCTRL_SLEEP);
-	if (ret < 0) {
-		wl12xx_queue_recovery_work(wl);
-		goto out;
-	}
-
-	set_bit(WL1271_FLAG_IN_ELP, &wl->flags);
-
-out:
-	mutex_unlock(&wl->mutex);
-}
-
-/* Routines to toggle sleep mode while in ELP */
-void wl1271_ps_elp_sleep(struct wl1271 *wl)
-{
-	struct wl12xx_vif *wlvif;
-	u32 timeout;
-
-	/* We do not enter elp sleep in PLT mode */
-	if (wl->plt)
-		return;
-
-	if (wl->sleep_auth != WL1271_PSM_ELP)
-		return;
-
-	/* we shouldn't get consecutive sleep requests */
-	if (WARN_ON(test_and_set_bit(WL1271_FLAG_ELP_REQUESTED, &wl->flags)))
-		return;
-
-	wl12xx_for_each_wlvif(wl, wlvif) {
-		if (wlvif->bss_type == BSS_TYPE_AP_BSS)
-			return;
-
-		if (!test_bit(WLVIF_FLAG_IN_PS, &wlvif->flags) &&
-		    test_bit(WLVIF_FLAG_IN_USE, &wlvif->flags))
-			return;
-	}
-
-	timeout = wl->conf.conn.forced_ps ?
-			ELP_ENTRY_DELAY_FORCE_PS : ELP_ENTRY_DELAY;
-	ieee80211_queue_delayed_work(wl->hw, &wl->elp_work,
-				     msecs_to_jiffies(timeout));
-}
-
-int wl1271_ps_elp_wakeup(struct wl1271 *wl)
-{
-	DECLARE_COMPLETION_ONSTACK(compl);
-	unsigned long flags;
-	int ret;
-	unsigned long start_time = jiffies;
-	bool pending = false;
-
-	/*
-	 * we might try to wake up even if we didn't go to sleep
-	 * before (e.g. on boot)
-	 */
-	if (!test_and_clear_bit(WL1271_FLAG_ELP_REQUESTED, &wl->flags))
-		return 0;
-
-	/* don't cancel_sync as it might contend for a mutex and deadlock */
-	cancel_delayed_work(&wl->elp_work);
-
-	if (!test_bit(WL1271_FLAG_IN_ELP, &wl->flags))
-		return 0;
-
-	wl1271_debug(DEBUG_PSM, "waking up chip from elp");
-
-	/*
-	 * The spinlock is required here to synchronize both the work and
-	 * the completion variable in one entity.
-	 */
-	spin_lock_irqsave(&wl->wl_lock, flags);
-	if (test_bit(WL1271_FLAG_IRQ_RUNNING, &wl->flags))
-		pending = true;
-	else
-		wl->elp_compl = &compl;
-	spin_unlock_irqrestore(&wl->wl_lock, flags);
-
-	ret = wlcore_raw_write32(wl, HW_ACCESS_ELP_CTRL_REG, ELPCTRL_WAKE_UP);
-	if (ret < 0) {
-		wl12xx_queue_recovery_work(wl);
-		goto err;
-	}
-
-	if (!pending) {
-		ret = wait_for_completion_timeout(
-			&compl, msecs_to_jiffies(WL1271_WAKEUP_TIMEOUT));
-		if (ret == 0) {
-			wl1271_error("ELP wakeup timeout!");
-			wl12xx_queue_recovery_work(wl);
-			ret = -ETIMEDOUT;
-			goto err;
-		}
-	}
-
-	clear_bit(WL1271_FLAG_IN_ELP, &wl->flags);
-
-	wl1271_debug(DEBUG_PSM, "wakeup time: %u ms",
-		     jiffies_to_msecs(jiffies - start_time));
-	goto out;
-
-err:
-	spin_lock_irqsave(&wl->wl_lock, flags);
-	wl->elp_compl = NULL;
-	spin_unlock_irqrestore(&wl->wl_lock, flags);
-	return ret;
-
-out:
-	return 0;
-}
 
 int wl1271_ps_set_mode(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 		       enum wl1271_cmd_ps_mode mode)
@@ -206,7 +42,7 @@ int wl1271_ps_set_mode(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 		 * enable beacon early termination.
 		 * Not relevant for 5GHz and for high rates.
 		 */
-		if ((wlvif->band == IEEE80211_BAND_2GHZ) &&
+		if ((wlvif->band == NL80211_BAND_2GHZ) &&
 		    (wlvif->basic_rate < CONF_HW_BIT_RATE_9MBPS)) {
 			ret = wl1271_acx_bet_enable(wl, wlvif, true);
 			if (ret < 0)
@@ -217,7 +53,7 @@ int wl1271_ps_set_mode(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 		wl1271_debug(DEBUG_PSM, "leaving psm");
 
 		/* disable beacon early termination */
-		if ((wlvif->band == IEEE80211_BAND_2GHZ) &&
+		if ((wlvif->band == NL80211_BAND_2GHZ) &&
 		    (wlvif->basic_rate < CONF_HW_BIT_RATE_9MBPS)) {
 			ret = wl1271_acx_bet_enable(wl, wlvif, false);
 			if (ret < 0)
@@ -280,7 +116,11 @@ void wl12xx_ps_link_start(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 	struct ieee80211_sta *sta;
 	struct ieee80211_vif *vif = wl12xx_wlvif_to_vif(wlvif);
 
-	if (test_bit(hlid, &wl->ap_ps_map))
+	if (WARN_ON_ONCE(wlvif->bss_type != BSS_TYPE_AP_BSS))
+		return;
+
+	if (!test_bit(hlid, wlvif->ap.sta_hlid_map) ||
+	    test_bit(hlid, &wl->ap_ps_map))
 		return;
 
 	wl1271_debug(DEBUG_PSM, "start mac80211 PSM on hlid %d pkts %d "

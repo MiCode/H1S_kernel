@@ -30,9 +30,8 @@
 #include <linux/pci.h>
 #include <linux/pci_ids.h>
 #include <linux/edac.h>
-#include "edac_core.h"
+#include "edac_module.h"
 
-#define	E7XXX_REVISION " Ver: 2.0.2"
 #define	EDAC_MOD_STR	"e7xxx_edac"
 
 #define e7xxx_printk(level, fmt, arg...) \
@@ -226,7 +225,7 @@ static void process_ce(struct mem_ctl_info *mci, struct e7xxx_error_info *info)
 static void process_ce_no_info(struct mem_ctl_info *mci)
 {
 	edac_dbg(3, "\n");
-	edac_mc_handle_error(HW_EVENT_ERR_UNCORRECTED, mci, 1, 0, 0, 0, -1, -1, -1,
+	edac_mc_handle_error(HW_EVENT_ERR_CORRECTED, mci, 1, 0, 0, 0, -1, -1, -1,
 			     "e7xxx CE log register overflow", "");
 }
 
@@ -334,7 +333,6 @@ static void e7xxx_check(struct mem_ctl_info *mci)
 {
 	struct e7xxx_error_info info;
 
-	edac_dbg(3, "\n");
 	e7xxx_get_error_info(mci, &info);
 	e7xxx_process_error_info(mci, &info, 1);
 }
@@ -458,7 +456,6 @@ static int e7xxx_probe1(struct pci_dev *pdev, int dev_idx)
 		EDAC_FLAG_S4ECD4ED;
 	/* FIXME - what if different memory types are in different csrows? */
 	mci->mod_name = EDAC_MOD_STR;
-	mci->mod_ver = E7XXX_REVISION;
 	mci->pdev = &pdev->dev;
 	edac_dbg(3, "init pvt\n");
 	pvt = (struct e7xxx_pvt *)mci->pvt_info;
@@ -599,8 +596,7 @@ module_init(e7xxx_init);
 module_exit(e7xxx_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Linux Networx (http://lnxi.com) Thayne Harbaugh et al\n"
-		"Based on.work by Dan Hollis et al");
+MODULE_AUTHOR("Linux Networx (http://lnxi.com) Thayne Harbaugh et al");
 MODULE_DESCRIPTION("MC support for Intel e7xxx memory controllers");
 module_param(edac_op_state, int, 0444);
 MODULE_PARM_DESC(edac_op_state, "EDAC Error Reporting state: 0=Poll,1=NMI");

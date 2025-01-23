@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /*
  * OpenRISC Linux
  *
@@ -28,6 +29,10 @@ struct user_regs_struct {
 	unsigned long gpr[32];
 	unsigned long pc;
 	unsigned long sr;
+};
+
+struct __or1k_fpu_state {
+	unsigned long fpcsr;
 };
 #endif
 

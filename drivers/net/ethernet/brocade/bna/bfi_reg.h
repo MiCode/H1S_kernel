@@ -1,23 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Linux network driver for Brocade Converged Network Adapter.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License (GPL) Version 2 as
- * published by the Free Software Foundation
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
+ * Linux network driver for QLogic BR-series Converged Network Adapter.
  */
 /*
- * Copyright (c) 2005-2011 Brocade Communications Systems, Inc.
+ * Copyright (c) 2005-2014 Brocade Communications Systems, Inc.
+ * Copyright (c) 2014-2015 QLogic Corporation
  * All rights reserved
- * www.brocade.com
+ * www.qlogic.com
  */
 
 /*
- * bfi_reg.h ASIC register defines for all Brocade adapter ASICs
+ * bfi_reg.h ASIC register defines for all QLogic BR-series adapter ASICs
  */
 
 #ifndef __BFI_REG_H__
@@ -221,7 +214,7 @@ enum {
 #define __PMM_1T_RESET_P		0x00000001
 #define PMM_1T_RESET_REG_P1		0x00023c1c
 
-/* Brocade 1860 Adapter specific defines */
+/* QLogic BR-series 1860 Adapter specific defines */
 #define CT2_PCI_CPQ_BASE		0x00030000
 #define CT2_PCI_APP_BASE		0x00030100
 #define CT2_PCI_ETH_BASE		0x00030400
@@ -264,7 +257,7 @@ enum {
 #define CT2_HOSTFN_MSIX_VT_INDEX_MBOX_ERR	(CT2_PCI_APP_BASE + 0x38)
 
 /*
- * Brocade 1860 adapter CPQ block registers
+ * QLogic BR-series 1860 adapter CPQ block registers
  */
 #define CT2_HOSTFN_LPU0_MBOX0		(CT2_PCI_CPQ_BASE + 0x00)
 #define CT2_HOSTFN_LPU1_MBOX0		(CT2_PCI_CPQ_BASE + 0x20)

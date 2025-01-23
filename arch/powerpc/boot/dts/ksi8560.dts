@@ -14,6 +14,8 @@
 
 /dts-v1/;
 
+/include/ "fsl/e500v1_power_isa.dtsi"
+
 / {
 	model = "KSI8560";
 	compatible = "emerson,KSI8560";
@@ -339,6 +341,6 @@
 
 
 	chosen {
-		linux,stdout-path = "/soc/cpm/serial@91a00";
+		stdout-path = "/soc/cpm/serial@91a00";
 	};
 };

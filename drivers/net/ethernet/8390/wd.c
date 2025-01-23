@@ -1,12 +1,10 @@
+// SPDX-License-Identifier: GPL-1.0+
 /* wd.c: A WD80x3 ethernet driver for linux. */
 /*
 	Written 1993-94 by Donald Becker.
 
 	Copyright 1993 United States Government as represented by the
 	Director, National Security Agency.
-
-	This software may be used and distributed according to the terms
-	of the GNU General Public License, incorporated herein by reference.
 
 	The author may be reached as becker@scyld.com, or C/O
 	Scyld Computing Corporation
@@ -37,6 +35,7 @@ static const char version[] =
 #include <linux/delay.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
+#include <net/Space.h>
 
 #include <asm/io.h>
 
@@ -156,7 +155,6 @@ static const struct net_device_ops wd_netdev_ops = {
 	.ndo_set_rx_mode	= ei_set_multicast_list,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address 	= eth_mac_addr,
-	.ndo_change_mtu		= eth_change_mtu,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller 	= ei_poll,
 #endif
@@ -169,6 +167,7 @@ static int __init wd_probe1(struct net_device *dev, int ioaddr)
 	int checksum = 0;
 	int ancient = 0;			/* An old card without config registers. */
 	int word16 = 0;				/* 0 = 8 bit, 1 = 16 bit */
+	u8 addr[ETH_ALEN];
 	const char *model_name;
 	static unsigned version_printed;
 	struct ei_device *ei_local = netdev_priv(dev);
@@ -192,7 +191,8 @@ static int __init wd_probe1(struct net_device *dev, int ioaddr)
 		netdev_info(dev, version);
 
 	for (i = 0; i < 6; i++)
-		dev->dev_addr[i] = inb(ioaddr + 8 + i);
+		addr[i] = inb(ioaddr + 8 + i);
+	eth_hw_addr_set(dev, addr);
 
 	netdev_info(dev, "WD80x3 at %#3x, %pM", ioaddr, dev->dev_addr);
 
@@ -300,7 +300,7 @@ static int __init wd_probe1(struct net_device *dev, int ioaddr)
 
 			outb_p(0x00, nic_addr+EN0_IMR);	/* Mask all intrs. again. */
 
-			if (netif_msg_drv(ei_local))
+			if (wd_msg_enable & NETIF_MSG_PROBE)
 				pr_cont(" autoirq is %d", dev->irq);
 			if (dev->irq < 2)
 				dev->irq = word16 ? 10 : 5;
@@ -504,11 +504,11 @@ static int irq[MAX_WD_CARDS];
 static int mem[MAX_WD_CARDS];
 static int mem_end[MAX_WD_CARDS];	/* for non std. mem size */
 
-module_param_array(io, int, NULL, 0);
-module_param_array(irq, int, NULL, 0);
-module_param_array(mem, int, NULL, 0);
-module_param_array(mem_end, int, NULL, 0);
-module_param_named(msg_enable, wd_msg_enable, uint, (S_IRUSR|S_IRGRP|S_IROTH));
+module_param_hw_array(io, int, ioport, NULL, 0);
+module_param_hw_array(irq, int, irq, NULL, 0);
+module_param_hw_array(mem, int, iomem, NULL, 0);
+module_param_hw_array(mem_end, int, iomem, NULL, 0);
+module_param_named(msg_enable, wd_msg_enable, uint, 0444);
 MODULE_PARM_DESC(io, "I/O base address(es)");
 MODULE_PARM_DESC(irq, "IRQ number(s) (ignored for PureData boards)");
 MODULE_PARM_DESC(mem, "memory base address(es)(ignored for PureData boards)");
@@ -520,7 +520,7 @@ MODULE_LICENSE("GPL");
 /* This is set up so that only a single autoprobe takes place per call.
 ISA device autoprobes on a running machine are not recommended. */
 
-int __init init_module(void)
+static int __init wd_init_module(void)
 {
 	struct net_device *dev;
 	int this_dev, found = 0;
@@ -549,6 +549,7 @@ int __init init_module(void)
 		return 0;
 	return -ENXIO;
 }
+module_init(wd_init_module);
 
 static void cleanup_card(struct net_device *dev)
 {
@@ -557,8 +558,7 @@ static void cleanup_card(struct net_device *dev)
 	iounmap(ei_status.mem);
 }
 
-void __exit
-cleanup_module(void)
+static void __exit wd_cleanup_module(void)
 {
 	int this_dev;
 
@@ -571,4 +571,5 @@ cleanup_module(void)
 		}
 	}
 }
+module_exit(wd_cleanup_module);
 #endif /* MODULE */

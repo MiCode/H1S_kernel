@@ -1,11 +1,8 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0
+ *
  * include/asm-sh/cpu-sh2/cache.h
  *
  * Copyright (C) 2003 Paul Mundt
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #ifndef __ASM_CPU_SH2_CACHE_H
 #define __ASM_CPU_SH2_CACHE_H
@@ -18,7 +15,7 @@
 #define SH_CACHE_ASSOC		8
 
 #if defined(CONFIG_CPU_SUBTYPE_SH7619)
-#define CCR		0xffffffec
+#define SH_CCR		0xffffffec
 
 #define CCR_CACHE_CE	0x01	/* Cache enable */
 #define CCR_CACHE_WT	0x02    /* CCR[bit1=1,bit2=1] */

@@ -1,19 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2008-2009 Cisco Systems, Inc.  All rights reserved.
  * Copyright (c) 2007-2008 Intel Corporation.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
  *
  * Maintained at www.Open-FCoE.org
  */
@@ -26,6 +14,7 @@
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
 #include <linux/workqueue.h>
+#include <linux/local_lock.h>
 #include <linux/random.h>
 #include <scsi/fc/fc_fcoe.h>
 #include <scsi/libfc.h>
@@ -43,7 +32,7 @@
  * FIP tunable parameters.
  */
 #define FCOE_CTLR_START_DELAY	2000	/* mS after first adv. to choose FCF */
-#define FCOE_CTRL_SOL_TOV	2000	/* min. solicitation interval (mS) */
+#define FCOE_CTLR_SOL_TOV	2000	/* min. solicitation interval (mS) */
 #define FCOE_CTLR_FCF_LIMIT	20	/* max. number of FCF entries */
 #define FCOE_CTLR_VN2VN_LOGIN_LIMIT 3	/* max. VN2VN rport login retries */
 
@@ -78,10 +67,12 @@ enum fip_state {
  * The mode is the state that is to be entered after link up.
  * It must not change after fcoe_ctlr_init() sets it.
  */
-#define FIP_MODE_AUTO		FIP_ST_AUTO
-#define FIP_MODE_NON_FIP	FIP_ST_NON_FIP
-#define FIP_MODE_FABRIC		FIP_ST_ENABLED
-#define FIP_MODE_VN2VN		FIP_ST_VNMP_START
+enum fip_mode {
+	FIP_MODE_AUTO,
+	FIP_MODE_NON_FIP,
+	FIP_MODE_FABRIC,
+	FIP_MODE_VN2VN,
+};
 
 /**
  * struct fcoe_ctlr - FCoE Controller and FIP state
@@ -108,8 +99,10 @@ enum fip_state {
  * @flogi_req_send: send of FLOGI requested
  * @flogi_count:   number of FLOGI attempts in AUTO mode.
  * @map_dest:	   use the FC_MAP mode for destination MAC addresses.
+ * @fip_resp:	   start FIP VLAN discovery responder
  * @spma:	   supports SPMA server-provided MACs mode
  * @probe_tries:   number of FC_IDs probed
+ * @priority:      DCBx FCoE APP priority
  * @dest_addr:	   MAC address of the selected FC forwarder.
  * @ctl_src_addr:  the native MAC address of our local port.
  * @send:	   LLD-supplied function to handle sending FIP Ethernet frames
@@ -124,7 +117,7 @@ enum fip_state {
  */
 struct fcoe_ctlr {
 	enum fip_state state;
-	enum fip_state mode;
+	enum fip_mode mode;
 	struct fc_lport *lp;
 	struct fcoe_fcf *sel_fcf;
 	struct list_head fcfs;
@@ -147,7 +140,8 @@ struct fcoe_ctlr {
 	u16 flogi_oxid;
 	u8 flogi_req_send;
 	u8 flogi_count;
-	u8 map_dest;
+	bool map_dest;
+	bool fip_resp;
 	u8 spma;
 	u8 probe_tries;
 	u8 priority;
@@ -236,6 +230,7 @@ struct fcoe_fcf {
  * @vn_mac:	VN_Node assigned MAC address for data
  */
 struct fcoe_rport {
+	struct fc_rport_priv rdata;
 	unsigned long time;
 	u16 fcoe_len;
 	u16 flags;
@@ -245,7 +240,7 @@ struct fcoe_rport {
 };
 
 /* FIP API functions */
-void fcoe_ctlr_init(struct fcoe_ctlr *, enum fip_state);
+void fcoe_ctlr_init(struct fcoe_ctlr *, enum fip_mode);
 void fcoe_ctlr_destroy(struct fcoe_ctlr *);
 void fcoe_ctlr_link_up(struct fcoe_ctlr *);
 int fcoe_ctlr_link_down(struct fcoe_ctlr *);
@@ -255,7 +250,8 @@ int fcoe_ctlr_recv_flogi(struct fcoe_ctlr *, struct fc_lport *,
 			 struct fc_frame *);
 
 /* libfcoe funcs */
-u64 fcoe_wwn_from_mac(unsigned char mac[], unsigned int, unsigned int);
+u64 fcoe_wwn_from_mac(unsigned char mac[ETH_ALEN], unsigned int scheme,
+		      unsigned int port);
 int fcoe_libfc_config(struct fc_lport *, struct fcoe_ctlr *,
 		      const struct libfc_function_template *, int init_fcp);
 u32 fcoe_fc_crc(struct fc_frame *fp);
@@ -311,7 +307,7 @@ struct fcoe_transport {
 	struct list_head list;
 	bool (*match) (struct net_device *device);
 	int (*alloc) (struct net_device *device);
-	int (*create) (struct net_device *device, enum fip_state fip_mode);
+	int (*create) (struct net_device *device, enum fip_mode fip_mode);
 	int (*destroy) (struct net_device *device);
 	int (*enable) (struct net_device *device);
 	int (*disable) (struct net_device *device);
@@ -319,17 +315,20 @@ struct fcoe_transport {
 
 /**
  * struct fcoe_percpu_s - The context for FCoE receive thread(s)
- * @thread:	    The thread context
+ * @kthread:	    The thread context (used by bnx2fc)
+ * @work:	    The work item (used by fcoe)
  * @fcoe_rx_list:   The queue of pending packets to process
  * @page:	    The memory page for calculating frame trailer CRCs
  * @crc_eof_offset: The offset into the CRC page pointing to available
  *		    memory for a new trailer
  */
 struct fcoe_percpu_s {
-	struct task_struct *thread;
+	struct task_struct *kthread;
+	struct work_struct work;
 	struct sk_buff_head fcoe_rx_list;
 	struct page *crc_eof_page;
 	int crc_eof_offset;
+	local_lock_t lock;
 };
 
 /**
@@ -375,7 +374,7 @@ static inline struct net_device *fcoe_get_netdev(const struct fc_lport *lport)
 
 void fcoe_clean_pending_queue(struct fc_lport *);
 void fcoe_check_wait_queue(struct fc_lport *lport, struct sk_buff *skb);
-void fcoe_queue_timer(ulong lport);
+void fcoe_queue_timer(struct timer_list *t);
 int fcoe_get_paged_crc_eof(struct sk_buff *skb, int tlen,
 			   struct fcoe_percpu_s *fps);
 
@@ -398,10 +397,8 @@ int fcoe_transport_attach(struct fcoe_transport *ft);
 int fcoe_transport_detach(struct fcoe_transport *ft);
 
 /* sysfs store handler for ctrl_control interface */
-ssize_t fcoe_ctlr_create_store(struct bus_type *bus,
-			       const char *buf, size_t count);
-ssize_t fcoe_ctlr_destroy_store(struct bus_type *bus,
-				const char *buf, size_t count);
+ssize_t fcoe_ctlr_create_store(const char *buf, size_t count);
+ssize_t fcoe_ctlr_destroy_store(const char *buf, size_t count);
 
 #endif /* _LIBFCOE_H */
 

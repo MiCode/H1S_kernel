@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  linux/arch/powerpc/platforms/cell/cell_setup.c
  *
@@ -6,11 +7,6 @@
  *  Modified by Cort Dougan (cort@cs.nmt.edu)
  *  Modified by PPC64 Team, IBM Corp
  *  Modified by Cell Team, IBM Deutschland Entwicklung GmbH
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 #undef DEBUG
 
@@ -31,12 +27,11 @@
 #include <linux/mutex.h>
 #include <linux/memory_hotplug.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
 
 #include <asm/mmu.h>
 #include <asm/processor.h>
 #include <asm/io.h>
-#include <asm/pgtable.h>
-#include <asm/prom.h>
 #include <asm/rtas.h>
 #include <asm/pci-bridge.h>
 #include <asm/iommu.h>
@@ -54,6 +49,7 @@
 #include <asm/cell-regs.h>
 #include <asm/io-workarounds.h>
 
+#include "cell.h"
 #include "interrupt.h"
 #include "pervasive.h"
 #include "ras.h"
@@ -126,9 +122,11 @@ static int cell_setup_phb(struct pci_controller *phb)
 	if (rc)
 		return rc;
 
+	phb->controller_ops = cell_pci_controller_ops;
+
 	np = phb->dn;
 	model = of_get_property(np, "model", NULL);
-	if (model == NULL || strcmp(np->name, "pci"))
+	if (model == NULL || !of_node_name_eq(np, "pci"))
 		return 0;
 
 	/* Setup workarounds for spider */
@@ -165,11 +163,12 @@ static int __init cell_publish_devices(void)
 	 * platform devices for the PCI host bridges
 	 */
 	for_each_child_of_node(root, np) {
-		if (np->type == NULL || (strcmp(np->type, "pci") != 0 &&
-					 strcmp(np->type, "pciex") != 0))
+		if (!of_node_is_type(np, "pci") && !of_node_is_type(np, "pciex"))
 			continue;
 		of_platform_device_create(np, NULL, NULL);
 	}
+
+	of_node_put(root);
 
 	/* There is no device for the MIC memory controller, thus we create
 	 * a platform device for it to attach the EDAC driver to.
@@ -189,8 +188,7 @@ static void __init mpic_init_IRQ(void)
 	struct device_node *dn;
 	struct mpic *mpic;
 
-	for (dn = NULL;
-	     (dn = of_find_node_by_name(dn, "interrupt-controller"));) {
+	for_each_node_by_name(dn, "interrupt-controller") {
 		if (!of_device_is_compatible(dn, "CBEA,platform-open-pic"))
 			continue;
 
@@ -243,22 +241,17 @@ static void __init cell_setup_arch(void)
 	init_pci_config_tokens();
 
 	cbe_pervasive_init();
-#ifdef CONFIG_DUMMY_CONSOLE
-	conswitchp = &dummy_con;
-#endif
 
 	mmio_nvram_init();
 }
 
 static int __init cell_probe(void)
 {
-	unsigned long root = of_get_flat_dt_root();
-
-	if (!of_flat_dt_is_compatible(root, "IBM,CBEA") &&
-	    !of_flat_dt_is_compatible(root, "IBM,CPBW-1.0"))
+	if (!of_machine_is_compatible("IBM,CBEA") &&
+	    !of_machine_is_compatible("IBM,CPBW-1.0"))
 		return 0;
 
-	hpte_init_native();
+	pm_power_off = rtas_power_off;
 
 	return 1;
 }
@@ -269,13 +262,13 @@ define_machine(cell) {
 	.setup_arch		= cell_setup_arch,
 	.show_cpuinfo		= cell_show_cpuinfo,
 	.restart		= rtas_restart,
-	.power_off		= rtas_power_off,
 	.halt			= rtas_halt,
 	.get_boot_time		= rtas_get_boot_time,
 	.get_rtc_time		= rtas_get_rtc_time,
 	.set_rtc_time		= rtas_set_rtc_time,
-	.calibrate_decr		= generic_calibrate_decr,
 	.progress		= cell_progress,
 	.init_IRQ       	= cell_init_irq,
 	.pci_setup_phb		= cell_setup_phb,
 };
+
+struct pci_controller_ops cell_pci_controller_ops;

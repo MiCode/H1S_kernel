@@ -1,8 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * QLogic iSCSI HBA Driver
  * Copyright (c) 2011-2013 QLogic Corporation
- *
- * See LICENSE.qla4xxx for copyright and licensing details.
  */
 
 #include "ql4_def.h"
@@ -517,7 +516,7 @@ static int qla4_83xx_wait_for_loopback_config_comp(struct scsi_qla_host *ha,
 						(ha->idc_extend_tmo * HZ))) {
 				ha->notify_idc_comp = 0;
 				ha->notify_link_up_comp = 0;
-				ql4_printk(KERN_WARNING, ha, "%s: IDC Complete notification not received",
+				ql4_printk(KERN_WARNING, ha, "%s: Aborting: IDC Complete notification not received",
 					   __func__);
 				status = QLA_ERROR;
 				goto exit_wait;
@@ -538,7 +537,7 @@ static int qla4_83xx_wait_for_loopback_config_comp(struct scsi_qla_host *ha,
 		if (!wait_for_completion_timeout(&ha->link_up_comp,
 						 (IDC_COMP_TOV * HZ))) {
 			ha->notify_link_up_comp = 0;
-			ql4_printk(KERN_WARNING, ha, "%s: LINK UP notification not received",
+			ql4_printk(KERN_WARNING, ha, "%s: Aborting: LINK UP notification not received",
 				   __func__);
 			status = QLA_ERROR;
 			goto exit_wait;
@@ -571,7 +570,7 @@ static int qla4_83xx_pre_loopback_config(struct scsi_qla_host *ha,
 
 	if ((config & ENABLE_INTERNAL_LOOPBACK) ||
 	    (config & ENABLE_EXTERNAL_LOOPBACK)) {
-		ql4_printk(KERN_INFO, ha, "%s: Loopback diagnostics already in progress. Invalid requiest\n",
+		ql4_printk(KERN_INFO, ha, "%s: Loopback diagnostics already in progress. Invalid request\n",
 			   __func__);
 		goto exit_pre_loopback_config;
 	}
@@ -805,7 +804,7 @@ static int qla4xxx_execute_diag_test(struct bsg_job *bsg_job)
 
 /**
  * qla4xxx_process_vendor_specific - handle vendor specific bsg request
- * @job: iscsi_bsg_job to handle
+ * @bsg_job: iscsi_bsg_job to handle
  **/
 int qla4xxx_process_vendor_specific(struct bsg_job *bsg_job)
 {
@@ -852,7 +851,7 @@ int qla4xxx_process_vendor_specific(struct bsg_job *bsg_job)
 
 /**
  * qla4xxx_bsg_request - handle bsg request from ISCSI transport
- * @job: iscsi_bsg_job to handle
+ * @bsg_job: iscsi_bsg_job to handle
  */
 int qla4xxx_bsg_request(struct bsg_job *bsg_job)
 {

@@ -1,17 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Copyright (C) 2011 Dmitry Eremin-Solenikov
  *  Copyright (C) 2002 - 2005 Benjamin Herrenschmidt <benh@kernel.crashing.org>
  *  and                       Markus Demleitner <msdemlei@cl.uni-heidelberg.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * This driver adds basic cpufreq support for SMU & 970FX based G5 Macs,
  * that is iMac G5 and latest single CPU desktop.
  */
 
 #undef DEBUG
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 #include <linux/types.h>
@@ -24,7 +23,7 @@
 #include <linux/completion.h>
 #include <linux/mutex.h>
 #include <linux/time.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 
 #define DBG(fmt...) pr_debug(fmt)
 
@@ -59,9 +58,9 @@
 #define CPUFREQ_LOW                   1
 
 static struct cpufreq_frequency_table maple_cpu_freqs[] = {
-	{CPUFREQ_HIGH,		0},
-	{CPUFREQ_LOW,		0},
-	{0,			CPUFREQ_TABLE_END},
+	{0, CPUFREQ_HIGH,		0},
+	{0, CPUFREQ_LOW,		0},
+	{0, 0,				CPUFREQ_TABLE_END},
 };
 
 /* Power mode data is an array of the 32 bits PCR values to use for
@@ -141,7 +140,8 @@ static unsigned int maple_cpufreq_get_speed(unsigned int cpu)
 
 static int maple_cpufreq_cpu_init(struct cpufreq_policy *policy)
 {
-	return cpufreq_generic_init(policy, maple_cpu_freqs, 12000);
+	cpufreq_generic_init(policy, maple_cpu_freqs, 12000);
+	return 0;
 }
 
 static struct cpufreq_driver maple_cpufreq_driver = {
@@ -174,7 +174,7 @@ static int __init maple_cpufreq_init(void)
 	/* Get first CPU node */
 	cpunode = of_cpu_device_node_get(0);
 	if (cpunode == NULL) {
-		printk(KERN_ERR "cpufreq: Can't find any CPU 0 node\n");
+		pr_err("Can't find any CPU 0 node\n");
 		goto bail_noprops;
 	}
 
@@ -182,8 +182,7 @@ static int __init maple_cpufreq_init(void)
 	/* we actually don't care on which CPU to access PVR */
 	pvr_hi = PVR_VER(mfspr(SPRN_PVR));
 	if (pvr_hi != 0x3c && pvr_hi != 0x44) {
-		printk(KERN_ERR "cpufreq: Unsupported CPU version (%x)\n",
-				pvr_hi);
+		pr_err("Unsupported CPU version (%x)\n", pvr_hi);
 		goto bail_noprops;
 	}
 
@@ -209,7 +208,7 @@ static int __init maple_cpufreq_init(void)
 	 */
 	valp = of_get_property(cpunode, "clock-frequency", NULL);
 	if (!valp)
-		return -ENODEV;
+		goto bail_noprops;
 	max_freq = (*valp)/1000;
 	maple_cpu_freqs[0].frequency = max_freq;
 	maple_cpu_freqs[1].frequency = max_freq/2;
@@ -222,17 +221,13 @@ static int __init maple_cpufreq_init(void)
 	maple_pmode_cur = -1;
 	maple_scom_switch_freq(maple_scom_query_freq());
 
-	printk(KERN_INFO "Registering Maple CPU frequency driver\n");
-	printk(KERN_INFO "Low: %d Mhz, High: %d Mhz, Cur: %d MHz\n",
+	pr_info("Registering Maple CPU frequency driver\n");
+	pr_info("Low: %d Mhz, High: %d Mhz, Cur: %d MHz\n",
 		maple_cpu_freqs[1].frequency/1000,
 		maple_cpu_freqs[0].frequency/1000,
 		maple_cpu_freqs[maple_pmode_cur].frequency/1000);
 
 	rc = cpufreq_register_driver(&maple_cpufreq_driver);
-
-	of_node_put(cpunode);
-
-	return rc;
 
 bail_noprops:
 	of_node_put(cpunode);

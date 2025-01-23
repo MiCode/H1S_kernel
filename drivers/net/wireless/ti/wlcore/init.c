@@ -1,24 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of wl1271
  *
  * Copyright (C) 2009 Nokia Corporation
  *
  * Contact: Luciano Coelho <luciano.coelho@nokia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include <linux/kernel.h>
@@ -287,8 +273,8 @@ static int wl1271_init_sta_beacon_filter(struct wl1271 *wl,
 	if (ret < 0)
 		return ret;
 
-	/* enable beacon filtering */
-	ret = wl1271_acx_beacon_filter_opt(wl, wlvif, true);
+	/* disable beacon filtering until we get the first beacon */
+	ret = wl1271_acx_beacon_filter_opt(wl, wlvif, false);
 	if (ret < 0)
 		return ret;
 
@@ -348,7 +334,7 @@ static int wl12xx_init_fwlog(struct wl1271 *wl)
 }
 
 /* generic sta initialization (non vif-specific) */
-static int wl1271_sta_hw_init(struct wl1271 *wl, struct wl12xx_vif *wlvif)
+int wl1271_sta_hw_init(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 {
 	int ret;
 
@@ -389,6 +375,11 @@ static int wl1271_ap_hw_init(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 	int ret;
 
 	ret = wl1271_init_ap_rates(wl, wlvif);
+	if (ret < 0)
+		return ret;
+
+	/* configure AP sleep, if enabled */
+	ret = wlcore_hw_ap_sleep(wl);
 	if (ret < 0)
 		return ret;
 
@@ -462,7 +453,7 @@ int wl1271_init_ap_rates(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 	 * If the basic rates contain OFDM rates, use OFDM only
 	 * rates for unicast TX as well. Else use all supported rates.
 	 */
-	if ((wlvif->basic_rate_set & CONF_TX_OFDM_RATES))
+	if (wl->ofdm_only_ap && (wlvif->basic_rate_set & CONF_TX_OFDM_RATES))
 		supported_rates = CONF_TX_OFDM_RATES;
 	else
 		supported_rates = CONF_TX_ENABLED_RATES;
@@ -539,7 +530,7 @@ static int wl12xx_init_sta_role(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 	return 0;
 }
 
-/* vif-specific intialization */
+/* vif-specific initialization */
 static int wl12xx_init_ap_role(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 {
 	int ret;
@@ -552,6 +543,11 @@ static int wl12xx_init_ap_role(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 	ret = wl1271_acx_tx_power(wl, wlvif, wlvif->power_level);
 	if (ret < 0)
 		return ret;
+
+	if (wl->radar_debug_mode)
+		wlcore_cmd_generic_cfg(wl, wlvif,
+				       WLCORE_CFG_FEATURE_RADAR_DEBUG,
+				       wl->radar_debug_mode, 0);
 
 	return 0;
 }
@@ -567,8 +563,7 @@ int wl1271_init_vif_specific(struct wl1271 *wl, struct ieee80211_vif *vif)
 	/* consider all existing roles before configuring psm. */
 
 	if (wl->ap_count == 0 && is_ap) { /* first AP */
-		/* Configure for power always on */
-		ret = wl1271_acx_sleep_auth(wl, WL1271_PSM_CAM);
+		ret = wl1271_acx_sleep_auth(wl, WL1271_PSM_ELP);
 		if (ret < 0)
 			return ret;
 

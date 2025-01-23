@@ -46,6 +46,7 @@
 #include <asm/machdep.h>
 #include <asm/hwtest.h>
 #include <asm/io.h>
+#include <asm/config.h>
 
 u_long atari_mch_cookie;
 EXPORT_SYMBOL(atari_mch_cookie);
@@ -77,13 +78,9 @@ static void atari_heartbeat(int on);
 #endif
 
 /* atari specific timer functions (in time.c) */
-extern void atari_sched_init(irq_handler_t);
-extern u32 atari_gettimeoffset(void);
+extern void atari_sched_init(void);
 extern int atari_mste_hwclk (int, struct rtc_time *);
 extern int atari_tt_hwclk (int, struct rtc_time *);
-extern int atari_mste_set_clock_mmss (unsigned long);
-extern int atari_tt_set_clock_mmss (unsigned long);
-
 
 /* ++roman: This is a more elaborate test for an SCC chip, since the plain
  * Medusa board generates DTACK at the SCC's standard addresses, but a SCC
@@ -151,7 +148,7 @@ int __init atari_parse_bootinfo(const struct bi_record *record)
 /* Parse the Atari-specific switches= option. */
 static int __init atari_switches_setup(char *str)
 {
-	char switches[strlen(str) + 1];
+	char switches[COMMAND_LINE_SIZE];
 	char *p;
 	int ovsc_shift;
 	char *args = switches;
@@ -208,10 +205,8 @@ void __init config_atari(void)
 	mach_init_IRQ        = atari_init_IRQ;
 	mach_get_model	 = atari_get_model;
 	mach_get_hardware_list = atari_get_hardware_list;
-	arch_gettimeoffset   = atari_gettimeoffset;
 	mach_reset           = atari_reset;
-	mach_max_dma_address = 0xffffff;
-#if defined(CONFIG_INPUT_M68K_BEEP) || defined(CONFIG_INPUT_M68K_BEEP_MODULE)
+#if IS_ENABLED(CONFIG_INPUT_M68K_BEEP)
 	mach_beep          = atari_mksound;
 #endif
 #ifdef CONFIG_HEARTBEAT
@@ -234,44 +229,44 @@ void __init config_atari(void)
 	 * Determine hardware present
 	 */
 
-	printk("Atari hardware found: ");
+	pr_info("Atari hardware found:");
 	if (MACH_IS_MEDUSA) {
 		/* There's no Atari video hardware on the Medusa, but all the
 		 * addresses below generate a DTACK so no bus error occurs! */
 	} else if (hwreg_present(f030_xreg)) {
 		ATARIHW_SET(VIDEL_SHIFTER);
-		printk("VIDEL ");
+		pr_cont(" VIDEL");
 		/* This is a temporary hack: If there is Falcon video
 		 * hardware, we assume that the ST-DMA serves SCSI instead of
 		 * ACSI. In the future, there should be a better method for
 		 * this...
 		 */
 		ATARIHW_SET(ST_SCSI);
-		printk("STDMA-SCSI ");
+		pr_cont(" STDMA-SCSI");
 	} else if (hwreg_present(tt_palette)) {
 		ATARIHW_SET(TT_SHIFTER);
-		printk("TT_SHIFTER ");
-	} else if (hwreg_present(&shifter.bas_hi)) {
-		if (hwreg_present(&shifter.bas_lo) &&
-		    (shifter.bas_lo = 0x0aau, shifter.bas_lo == 0x0aau)) {
+		pr_cont(" TT_SHIFTER");
+	} else if (hwreg_present(&shifter_st.bas_hi)) {
+		if (hwreg_present(&shifter_st.bas_lo) &&
+		    (shifter_st.bas_lo = 0x0aau, shifter_st.bas_lo == 0x0aau)) {
 			ATARIHW_SET(EXTD_SHIFTER);
-			printk("EXTD_SHIFTER ");
+			pr_cont(" EXTD_SHIFTER");
 		} else {
 			ATARIHW_SET(STND_SHIFTER);
-			printk("STND_SHIFTER ");
+			pr_cont(" STND_SHIFTER");
 		}
 	}
 	if (hwreg_present(&st_mfp.par_dt_reg)) {
 		ATARIHW_SET(ST_MFP);
-		printk("ST_MFP ");
+		pr_cont(" ST_MFP");
 	}
 	if (hwreg_present(&tt_mfp.par_dt_reg)) {
 		ATARIHW_SET(TT_MFP);
-		printk("TT_MFP ");
+		pr_cont(" TT_MFP");
 	}
 	if (hwreg_present(&tt_scsi_dma.dma_addr_hi)) {
 		ATARIHW_SET(SCSI_DMA);
-		printk("TT_SCSI_DMA ");
+		pr_cont(" TT_SCSI_DMA");
 	}
 	/*
 	 * The ST-DMA address registers aren't readable
@@ -284,27 +279,27 @@ void __init config_atari(void)
 	     (st_dma.dma_vhi = 0xaa) && (st_dma.dma_hi = 0x55) &&
 	     st_dma.dma_vhi == 0xaa && st_dma.dma_hi == 0x55)) {
 		ATARIHW_SET(EXTD_DMA);
-		printk("EXTD_DMA ");
+		pr_cont(" EXTD_DMA");
 	}
 	if (hwreg_present(&tt_scsi.scsi_data)) {
 		ATARIHW_SET(TT_SCSI);
-		printk("TT_SCSI ");
+		pr_cont(" TT_SCSI");
 	}
 	if (hwreg_present(&sound_ym.rd_data_reg_sel)) {
 		ATARIHW_SET(YM_2149);
-		printk("YM2149 ");
+		pr_cont(" YM2149");
 	}
 	if (!MACH_IS_MEDUSA && hwreg_present(&tt_dmasnd.ctrl)) {
 		ATARIHW_SET(PCM_8BIT);
-		printk("PCM ");
+		pr_cont(" PCM");
 	}
 	if (hwreg_present(&falcon_codec.unused5)) {
 		ATARIHW_SET(CODEC);
-		printk("CODEC ");
+		pr_cont(" CODEC");
 	}
 	if (hwreg_present(&dsp56k_host_interface.icr)) {
 		ATARIHW_SET(DSP56K);
-		printk("DSP56K ");
+		pr_cont(" DSP56K");
 	}
 	if (hwreg_present(&tt_scc_dma.dma_ctrl) &&
 #if 0
@@ -316,33 +311,33 @@ void __init config_atari(void)
 #endif
 	    ) {
 		ATARIHW_SET(SCC_DMA);
-		printk("SCC_DMA ");
+		pr_cont(" SCC_DMA");
 	}
 	if (scc_test(&atari_scc.cha_a_ctrl)) {
 		ATARIHW_SET(SCC);
-		printk("SCC ");
+		pr_cont(" SCC");
 	}
 	if (scc_test(&st_escc.cha_b_ctrl)) {
 		ATARIHW_SET(ST_ESCC);
-		printk("ST_ESCC ");
+		pr_cont(" ST_ESCC");
 	}
 	if (hwreg_present(&tt_scu.sys_mask)) {
 		ATARIHW_SET(SCU);
 		/* Assume a VME bus if there's a SCU */
 		ATARIHW_SET(VME);
-		printk("VME SCU ");
+		pr_cont(" VME SCU");
 	}
 	if (hwreg_present((void *)(0xffff9210))) {
 		ATARIHW_SET(ANALOG_JOY);
-		printk("ANALOG_JOY ");
+		pr_cont(" ANALOG_JOY");
 	}
 	if (hwreg_present(blitter.halftone)) {
 		ATARIHW_SET(BLITTER);
-		printk("BLITTER ");
+		pr_cont(" BLITTER");
 	}
 	if (hwreg_present((void *)0xfff00039)) {
 		ATARIHW_SET(IDE);
-		printk("IDE ");
+		pr_cont(" IDE");
 	}
 #if 1 /* This maybe wrong */
 	if (!MACH_IS_MEDUSA && hwreg_present(&tt_microwire.data) &&
@@ -355,31 +350,29 @@ void __init config_atari(void)
 		ATARIHW_SET(MICROWIRE);
 		while (tt_microwire.mask != 0x7ff)
 			;
-		printk("MICROWIRE ");
+		pr_cont(" MICROWIRE");
 	}
 #endif
 	if (hwreg_present(&tt_rtc.regsel)) {
 		ATARIHW_SET(TT_CLK);
-		printk("TT_CLK ");
+		pr_cont(" TT_CLK");
 		mach_hwclk = atari_tt_hwclk;
-		mach_set_clock_mmss = atari_tt_set_clock_mmss;
 	}
 	if (hwreg_present(&mste_rtc.sec_ones)) {
 		ATARIHW_SET(MSTE_CLK);
-		printk("MSTE_CLK ");
+		pr_cont(" MSTE_CLK");
 		mach_hwclk = atari_mste_hwclk;
-		mach_set_clock_mmss = atari_mste_set_clock_mmss;
 	}
 	if (!MACH_IS_MEDUSA && hwreg_present(&dma_wd.fdc_speed) &&
 	    hwreg_write(&dma_wd.fdc_speed, 0)) {
 		ATARIHW_SET(FDCSPEED);
-		printk("FDC_SPEED ");
+		pr_cont(" FDC_SPEED");
 	}
 	if (!ATARIHW_PRESENT(ST_SCSI)) {
 		ATARIHW_SET(ACSI);
-		printk("ACSI ");
+		pr_cont(" ACSI");
 	}
-	printk("\n");
+	pr_cont("\n");
 
 	if (CPU_IS_040_OR_060)
 		/* Now it seems to be safe to turn of the tt0 transparent
@@ -629,7 +622,7 @@ static void atari_get_hardware_list(struct seq_file *m)
 	if (ATARIHW_PRESENT(name))			\
 		seq_printf(m, "\t%s\n", str)
 
-	seq_printf(m, "Detected hardware:\n");
+	seq_puts(m, "Detected hardware:\n");
 	ATARIHW_ANNOUNCE(STND_SHIFTER, "ST Shifter");
 	ATARIHW_ANNOUNCE(EXTD_SHIFTER, "STe Shifter");
 	ATARIHW_ANNOUNCE(TT_SHIFTER, "TT Shifter");
@@ -858,8 +851,38 @@ static struct platform_device *atari_netusbee_devices[] __initdata = {
 };
 #endif /* CONFIG_ATARI_ETHERNEC */
 
+#if IS_ENABLED(CONFIG_ATARI_SCSI)
+static const struct resource atari_scsi_st_rsrc[] __initconst = {
+	{
+		.flags = IORESOURCE_IRQ,
+		.start = IRQ_MFP_FSCSI,
+		.end   = IRQ_MFP_FSCSI,
+	},
+};
+
+static const struct resource atari_scsi_tt_rsrc[] __initconst = {
+	{
+		.flags = IORESOURCE_IRQ,
+		.start = IRQ_TT_MFP_SCSI,
+		.end   = IRQ_TT_MFP_SCSI,
+	},
+};
+#endif
+
+/*
+ * Falcon IDE interface
+ */
+
+#define FALCON_IDE_BASE	0xfff00000
+
+static const struct resource atari_falconide_rsrc[] __initconst = {
+	DEFINE_RES_MEM(FALCON_IDE_BASE, 0x38),
+	DEFINE_RES_MEM(FALCON_IDE_BASE + 0x38, 2),
+};
+
 int __init atari_platform_init(void)
 {
+	struct platform_device *pdev;
 	int rv = 0;
 
 	if (!MACH_IS_ATARI)
@@ -891,6 +914,22 @@ int __init atari_platform_init(void)
 		iounmap(enec_virt);
 	}
 #endif
+
+#if IS_ENABLED(CONFIG_ATARI_SCSI)
+	if (ATARIHW_PRESENT(ST_SCSI))
+		platform_device_register_simple("atari_scsi", -1,
+			atari_scsi_st_rsrc, ARRAY_SIZE(atari_scsi_st_rsrc));
+	else if (ATARIHW_PRESENT(TT_SCSI))
+		platform_device_register_simple("atari_scsi", -1,
+			atari_scsi_tt_rsrc, ARRAY_SIZE(atari_scsi_tt_rsrc));
+#endif
+
+	if (ATARIHW_PRESENT(IDE)) {
+		pdev = platform_device_register_simple("atari-falcon-ide", -1,
+			atari_falconide_rsrc, ARRAY_SIZE(atari_falconide_rsrc));
+		if (IS_ERR(pdev))
+			rv = PTR_ERR(pdev);
+	}
 
 	return rv;
 }

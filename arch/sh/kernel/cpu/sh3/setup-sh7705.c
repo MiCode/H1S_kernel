@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * SH7705 Setup
  *
  *  Copyright (C) 2006 - 2009  Paul Mundt
  *  Copyright (C) 2007  Nobuhiro Iwamatsu
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/platform_device.h>
 #include <linux/init.h>
@@ -17,6 +14,7 @@
 #include <linux/sh_intc.h>
 #include <asm/rtc.h>
 #include <cpu/serial.h>
+#include <asm/platform_early.h>
 
 enum {
 	UNUSED = 0,
@@ -70,9 +68,7 @@ static DECLARE_INTC_DESC(intc_desc, "sh7705", vectors, NULL,
 			 NULL, prio_registers, NULL);
 
 static struct plat_sci_port scif0_platform_data = {
-	.flags		= UPF_BOOT_AUTOCONF,
-	.scscr		= SCSCR_TIE | SCSCR_RIE  | SCSCR_TE |
-			  SCSCR_RE  | SCSCR_CKE1 | SCSCR_CKE0,
+	.scscr		= SCSCR_CKE1,
 	.type		= PORT_SCIF,
 	.ops		= &sh770x_sci_port_ops,
 	.regtype	= SCIx_SH7705_SCIF_REGTYPE,
@@ -94,8 +90,6 @@ static struct platform_device scif0_device = {
 };
 
 static struct plat_sci_port scif1_platform_data = {
-	.flags		= UPF_BOOT_AUTOCONF,
-	.scscr		= SCSCR_TIE | SCSCR_RIE | SCSCR_TE | SCSCR_RE,
 	.type		= PORT_SCIF,
 	.ops		= &sh770x_sci_port_ops,
 	.regtype	= SCIx_SH7705_SCIF_REGTYPE,
@@ -143,25 +137,18 @@ static struct platform_device rtc_device = {
 };
 
 static struct sh_timer_config tmu0_platform_data = {
-	.channel_offset = 0x02,
-	.timer_bit = 0,
-	.clockevent_rating = 200,
+	.channels_mask = 7,
 };
 
 static struct resource tmu0_resources[] = {
-	[0] = {
-		.start	= 0xfffffe94,
-		.end	= 0xfffffe9f,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= evt2irq(0x400),
-		.flags	= IORESOURCE_IRQ,
-	},
+	DEFINE_RES_MEM(0xfffffe90, 0x2c),
+	DEFINE_RES_IRQ(evt2irq(0x400)),
+	DEFINE_RES_IRQ(evt2irq(0x420)),
+	DEFINE_RES_IRQ(evt2irq(0x440)),
 };
 
 static struct platform_device tmu0_device = {
-	.name		= "sh_tmu",
+	.name		= "sh-tmu-sh3",
 	.id		= 0,
 	.dev = {
 		.platform_data	= &tmu0_platform_data,
@@ -170,67 +157,10 @@ static struct platform_device tmu0_device = {
 	.num_resources	= ARRAY_SIZE(tmu0_resources),
 };
 
-static struct sh_timer_config tmu1_platform_data = {
-	.channel_offset = 0xe,
-	.timer_bit = 1,
-	.clocksource_rating = 200,
-};
-
-static struct resource tmu1_resources[] = {
-	[0] = {
-		.start	= 0xfffffea0,
-		.end	= 0xfffffeab,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= evt2irq(0x420),
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device tmu1_device = {
-	.name		= "sh_tmu",
-	.id		= 1,
-	.dev = {
-		.platform_data	= &tmu1_platform_data,
-	},
-	.resource	= tmu1_resources,
-	.num_resources	= ARRAY_SIZE(tmu1_resources),
-};
-
-static struct sh_timer_config tmu2_platform_data = {
-	.channel_offset = 0x1a,
-	.timer_bit = 2,
-};
-
-static struct resource tmu2_resources[] = {
-	[0] = {
-		.start	= 0xfffffeac,
-		.end	= 0xfffffebb,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= evt2irq(0x440),
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device tmu2_device = {
-	.name		= "sh_tmu",
-	.id		= 2,
-	.dev = {
-		.platform_data	= &tmu2_platform_data,
-	},
-	.resource	= tmu2_resources,
-	.num_resources	= ARRAY_SIZE(tmu2_resources),
-};
-
 static struct platform_device *sh7705_devices[] __initdata = {
 	&scif0_device,
 	&scif1_device,
 	&tmu0_device,
-	&tmu1_device,
-	&tmu2_device,
 	&rtc_device,
 };
 
@@ -245,13 +175,11 @@ static struct platform_device *sh7705_early_devices[] __initdata = {
 	&scif0_device,
 	&scif1_device,
 	&tmu0_device,
-	&tmu1_device,
-	&tmu2_device,
 };
 
 void __init plat_early_device_setup(void)
 {
-	early_platform_add_devices(sh7705_early_devices,
+	sh_early_platform_add_devices(sh7705_early_devices,
 				   ARRAY_SIZE(sh7705_early_devices));
 }
 

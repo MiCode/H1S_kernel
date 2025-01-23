@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * IBM eServer Hypervisor Virtual Console Server Device Driver
  * Copyright (C) 2003, 2004 IBM Corp.
  *  Ryan S. Arnold (rsa@us.ibm.com)
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  *
  * Author(s) :  Ryan S. Arnold <rsa@us.ibm.com>
  *
@@ -60,11 +47,12 @@
  * using the 2.6 Linux kernel kref construct.
  *
  * For direction on installation and usage of this driver please reference
- * Documentation/powerpc/hvcs.txt.
+ * Documentation/powerpc/hvcs.rst.
  */
 
 #include <linux/device.h>
 #include <linux/init.h>
+#include <linux/completion.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/kref.h>
@@ -81,7 +69,8 @@
 #include <linux/tty_flip.h>
 #include <asm/hvconsole.h>
 #include <asm/hvcserver.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
+#include <linux/termios_internal.h>
 #include <asm/vio.h>
 
 /*
@@ -189,7 +178,7 @@ MODULE_VERSION(HVCS_DRIVER_VERSION);
  * that will cause echoing or we'll go into recursive loop echoing chars back
  * and forth with the console drivers.
  */
-static struct ktermios hvcs_tty_termios = {
+static const struct ktermios hvcs_tty_termios = {
 	.c_iflag = IGNBRK | IGNPAR,
 	.c_oflag = OPOST,
 	.c_cflag = B38400 | CS8 | CREAD | HUPCL,
@@ -209,8 +198,6 @@ module_param(hvcs_parm_num_devs, int, 0);
 
 static const char hvcs_driver_name[] = "hvcs";
 static const char hvcs_device_node[] = "hvcs";
-static const char hvcs_driver_string[]
-	= "IBM hvcs (Hypervisor Virtual Console Server) Driver";
 
 /* Status of partner info rescan triggered via sysfs. */
 static int hvcs_rescan_status;
@@ -299,42 +286,18 @@ struct hvcs_struct {
 	char p_location_code[HVCS_CLC_LENGTH + 1]; /* CLC + Null Term */
 	struct list_head next; /* list management */
 	struct vio_dev *vdev;
+	struct completion *destroyed;
 };
 
 static LIST_HEAD(hvcs_structs);
 static DEFINE_SPINLOCK(hvcs_structs_lock);
 static DEFINE_MUTEX(hvcs_init_mutex);
 
-static void hvcs_unthrottle(struct tty_struct *tty);
-static void hvcs_throttle(struct tty_struct *tty);
-static irqreturn_t hvcs_handle_interrupt(int irq, void *dev_instance);
-
-static int hvcs_write(struct tty_struct *tty,
-		const unsigned char *buf, int count);
-static int hvcs_write_room(struct tty_struct *tty);
-static int hvcs_chars_in_buffer(struct tty_struct *tty);
-
-static int hvcs_has_pi(struct hvcs_struct *hvcsd);
-static void hvcs_set_pi(struct hvcs_partner_info *pi,
-		struct hvcs_struct *hvcsd);
 static int hvcs_get_pi(struct hvcs_struct *hvcsd);
 static int hvcs_rescan_devices_list(void);
 
-static int hvcs_partner_connect(struct hvcs_struct *hvcsd);
 static void hvcs_partner_free(struct hvcs_struct *hvcsd);
 
-static int hvcs_enable_device(struct hvcs_struct *hvcsd,
-		uint32_t unit_address, unsigned int irq, struct vio_dev *dev);
-
-static int hvcs_open(struct tty_struct *tty, struct file *filp);
-static void hvcs_close(struct tty_struct *tty, struct file *filp);
-static void hvcs_hangup(struct tty_struct * tty);
-
-static int hvcs_probe(struct vio_dev *dev,
-		const struct vio_device_id *id);
-static int hvcs_remove(struct vio_dev *dev);
-static int __init hvcs_module_init(void);
-static void __exit hvcs_module_exit(void);
 static int hvcs_initialize(void);
 
 #define HVCS_SCHED_READ	0x00000001
@@ -471,7 +434,7 @@ static ssize_t hvcs_index_show(struct device *dev, struct device_attribute *attr
 
 static DEVICE_ATTR(index, S_IRUGO, hvcs_index_show, NULL);
 
-static struct attribute *hvcs_attrs[] = {
+static struct attribute *hvcs_dev_attrs[] = {
 	&dev_attr_partner_vtys.attr,
 	&dev_attr_partner_clcs.attr,
 	&dev_attr_current_vty.attr,
@@ -480,17 +443,15 @@ static struct attribute *hvcs_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group hvcs_attr_group = {
-	.attrs = hvcs_attrs,
-};
+ATTRIBUTE_GROUPS(hvcs_dev);
 
-static ssize_t hvcs_rescan_show(struct device_driver *ddp, char *buf)
+static ssize_t rescan_show(struct device_driver *ddp, char *buf)
 {
 	/* A 1 means it is updating, a 0 means it is done updating */
 	return snprintf(buf, PAGE_SIZE, "%d\n", hvcs_rescan_status);
 }
 
-static ssize_t hvcs_rescan_store(struct device_driver *ddp, const char * buf,
+static ssize_t rescan_store(struct device_driver *ddp, const char * buf,
 		size_t count)
 {
 	if ((simple_strtol(buf, NULL, 0) != 1)
@@ -505,8 +466,14 @@ static ssize_t hvcs_rescan_store(struct device_driver *ddp, const char * buf,
 	return count;
 }
 
-static DRIVER_ATTR(rescan,
-	S_IRUGO | S_IWUSR, hvcs_rescan_show, hvcs_rescan_store);
+static DRIVER_ATTR_RW(rescan);
+
+static struct attribute *hvcs_attrs[] = {
+	&driver_attr_rescan.attr,
+	NULL,
+};
+
+ATTRIBUTE_GROUPS(hvcs);
 
 static void hvcs_kick(void)
 {
@@ -600,7 +567,7 @@ static int hvcs_io(struct hvcs_struct *hvcsd)
 
 	hvcs_try_write(hvcsd);
 
-	if (!tty || test_bit(TTY_THROTTLED, &tty->flags)) {
+	if (!tty || tty_throttled(tty)) {
 		hvcsd->todo_mask &= ~(HVCS_READ_MASK);
 		goto bail;
 	} else if (!(hvcsd->todo_mask & (HVCS_READ_MASK)))
@@ -621,11 +588,10 @@ static int hvcs_io(struct hvcs_struct *hvcsd)
 		hvcsd->todo_mask |= HVCS_QUICK_READ;
 
 	spin_unlock_irqrestore(&hvcsd->lock, flags);
-	/* This is synch because tty->low_latency == 1 */
-	if(got)
+	/* This is synch -- FIXME :js: it is not! */
+	if (got)
 		tty_flip_buffer_push(&hvcsd->port);
-
-	if (!got) {
+	else {
 		/* Do this _after_ the flip_buffer_push */
 		spin_lock_irqsave(&hvcsd->lock, flags);
 		vio_enable_interrupts(hvcsd->vdev);
@@ -676,7 +642,7 @@ static int khvcsd(void *unused)
 	return 0;
 }
 
-static struct vio_device_id hvcs_driver_table[] = {
+static const struct vio_device_id hvcs_driver_table[] = {
 	{"serial-server", "hvterm2"},
 	{ "", "" }
 };
@@ -699,11 +665,13 @@ static void hvcs_destruct_port(struct tty_port *p)
 {
 	struct hvcs_struct *hvcsd = container_of(p, struct hvcs_struct, port);
 	struct vio_dev *vdev;
+	struct completion *comp;
 	unsigned long flags;
 
 	spin_lock(&hvcs_structs_lock);
 	spin_lock_irqsave(&hvcsd->lock, flags);
 
+	comp = hvcsd->destroyed;
 	/* the list_del poisons the pointers */
 	list_del(&(hvcsd->next));
 
@@ -723,15 +691,16 @@ static void hvcs_destruct_port(struct tty_port *p)
 
 	hvcsd->p_unit_address = 0;
 	hvcsd->p_partition_ID = 0;
+	hvcsd->destroyed = NULL;
 	hvcs_return_index(hvcsd->index);
 	memset(&hvcsd->p_location_code[0], 0x00, HVCS_CLC_LENGTH + 1);
 
 	spin_unlock_irqrestore(&hvcsd->lock, flags);
 	spin_unlock(&hvcs_structs_lock);
 
-	sysfs_remove_group(&vdev->dev.kobj, &hvcs_attr_group);
-
 	kfree(hvcsd);
+	if (comp)
+		complete(comp);
 }
 
 static const struct tty_port_operations hvcs_port_ops = {
@@ -762,7 +731,6 @@ static int hvcs_probe(
 {
 	struct hvcs_struct *hvcsd;
 	int index, rc;
-	int retval;
 
 	if (!dev || !id) {
 		printk(KERN_ERR "HVCS: probed with invalid parameter.\n");
@@ -819,13 +787,6 @@ static int hvcs_probe(
 	list_add_tail(&(hvcsd->next), &hvcs_structs);
 	spin_unlock(&hvcs_structs_lock);
 
-	retval = sysfs_create_group(&dev->dev.kobj, &hvcs_attr_group);
-	if (retval) {
-		printk(KERN_ERR "HVCS: Can't create sysfs attrs for vty-server@%X\n",
-		       hvcsd->vdev->unit_address);
-		return retval;
-	}
-
 	printk(KERN_INFO "HVCS: vty-server@%X added to the vio bus.\n", dev->unit_address);
 
 	/*
@@ -835,40 +796,35 @@ static int hvcs_probe(
 	return 0;
 }
 
-static int hvcs_remove(struct vio_dev *dev)
+static void hvcs_remove(struct vio_dev *dev)
 {
 	struct hvcs_struct *hvcsd = dev_get_drvdata(&dev->dev);
+	DECLARE_COMPLETION_ONSTACK(comp);
 	unsigned long flags;
 	struct tty_struct *tty;
-
-	if (!hvcsd)
-		return -ENODEV;
 
 	/* By this time the vty-server won't be getting any more interrupts */
 
 	spin_lock_irqsave(&hvcsd->lock, flags);
 
-	tty = hvcsd->port.tty;
+	hvcsd->destroyed = &comp;
+	tty = tty_port_tty_get(&hvcsd->port);
 
 	spin_unlock_irqrestore(&hvcsd->lock, flags);
 
 	/*
-	 * Let the last holder of this object cause it to be removed, which
-	 * would probably be tty_hangup below.
-	 */
-	tty_port_put(&hvcsd->port);
-
-	/*
-	 * The hangup is a scheduled function which will auto chain call
-	 * hvcs_hangup.  The tty should always be valid at this time unless a
+	 * The tty should always be valid at this time unless a
 	 * simultaneous tty close already cleaned up the hvcs_struct.
 	 */
-	if (tty)
-		tty_hangup(tty);
+	if (tty) {
+		tty_vhangup(tty);
+		tty_kref_put(tty);
+	}
 
+	tty_port_put(&hvcsd->port);
+	wait_for_completion(&comp);
 	printk(KERN_INFO "HVCS: vty-server@%X removed from the"
 			" vio bus.\n", dev->unit_address);
-	return 0;
 };
 
 static struct vio_driver hvcs_vio_driver = {
@@ -876,6 +832,10 @@ static struct vio_driver hvcs_vio_driver = {
 	.probe		= hvcs_probe,
 	.remove		= hvcs_remove,
 	.name		= hvcs_driver_name,
+	.driver = {
+		.groups = hvcs_groups,
+		.dev_groups = hvcs_dev_groups,
+	},
 };
 
 /* Only called from hvcs_get_pi please */
@@ -885,8 +845,8 @@ static void hvcs_set_pi(struct hvcs_partner_info *pi, struct hvcs_struct *hvcsd)
 	hvcsd->p_partition_ID  = pi->partition_ID;
 
 	/* copy the null-term char too */
-	strlcpy(&hvcsd->p_location_code[0],
-			&pi->location_code[0], sizeof(hvcsd->p_location_code));
+	strscpy(hvcsd->p_location_code, pi->location_code,
+		sizeof(hvcsd->p_location_code));
 }
 
 /*
@@ -1044,8 +1004,8 @@ static int hvcs_enable_device(struct hvcs_struct *hvcsd, uint32_t unit_address,
 	 * It is possible that the vty-server was removed between the time that
 	 * the conn was registered and now.
 	 */
-	if (!(rc = request_irq(irq, &hvcs_handle_interrupt,
-				0, "ibmhvcs", hvcsd))) {
+	rc = request_irq(irq, &hvcs_handle_interrupt, 0, "ibmhvcs", hvcsd);
+	if (!rc) {
 		/*
 		 * It is possible the vty-server was removed after the irq was
 		 * requested but before we have time to enable interrupts.
@@ -1216,7 +1176,10 @@ static void hvcs_close(struct tty_struct *tty, struct file *filp)
 	hvcsd = tty->driver_data;
 
 	spin_lock_irqsave(&hvcsd->lock, flags);
-	if (--hvcsd->port.count == 0) {
+	if (hvcsd->port.count == 0) {
+		spin_unlock_irqrestore(&hvcsd->lock, flags);
+		return;
+	} else if (--hvcsd->port.count == 0) {
 
 		vio_disable_interrupts(hvcsd->vdev);
 
@@ -1230,20 +1193,12 @@ static void hvcs_close(struct tty_struct *tty, struct file *filp)
 		irq = hvcsd->vdev->irq;
 		spin_unlock_irqrestore(&hvcsd->lock, flags);
 
-		tty_wait_until_sent_from_close(tty, HVCS_CLOSE_WAIT);
-
-		/*
-		 * This line is important because it tells hvcs_open that this
-		 * device needs to be re-configured the next time hvcs_open is
-		 * called.
-		 */
-		tty->driver_data = NULL;
+		tty_wait_until_sent(tty, HVCS_CLOSE_WAIT);
 
 		free_irq(irq, hvcsd);
 		return;
 	} else if (hvcsd->port.count < 0) {
-		printk(KERN_ERR "HVCS: vty-server@%X open_count: %d"
-				" is missmanaged.\n",
+		printk(KERN_ERR "HVCS: vty-server@%X open_count: %d is mismanaged.\n",
 		hvcsd->vdev->unit_address, hvcsd->port.count);
 	}
 
@@ -1254,6 +1209,13 @@ static void hvcs_cleanup(struct tty_struct * tty)
 {
 	struct hvcs_struct *hvcsd = tty->driver_data;
 
+	/*
+	 * This line is important because it tells hvcs_open that this
+	 * device needs to be re-configured the next time hvcs_open is
+	 * called.
+	 */
+	tty->driver_data = NULL;
+
 	tty_port_put(&hvcsd->port);
 }
 
@@ -1261,12 +1223,9 @@ static void hvcs_hangup(struct tty_struct * tty)
 {
 	struct hvcs_struct *hvcsd = tty->driver_data;
 	unsigned long flags;
-	int temp_open_count;
 	int irq;
 
 	spin_lock_irqsave(&hvcsd->lock, flags);
-	/* Preserve this so that we know how many kref refs to put */
-	temp_open_count = hvcsd->port.count;
 
 	/*
 	 * Don't kref put inside the spinlock because the destruction
@@ -1276,11 +1235,7 @@ static void hvcs_hangup(struct tty_struct * tty)
 	vio_disable_interrupts(hvcsd->vdev);
 
 	hvcsd->todo_mask = 0;
-
-	/* I don't think the tty needs the hvcs_struct pointer after a hangup */
-	tty->driver_data = NULL;
 	hvcsd->port.tty = NULL;
-
 	hvcsd->port.count = 0;
 
 	/* This will drop any buffered data on the floor which is OK in a hangup
@@ -1293,21 +1248,6 @@ static void hvcs_hangup(struct tty_struct * tty)
 	spin_unlock_irqrestore(&hvcsd->lock, flags);
 
 	free_irq(irq, hvcsd);
-
-	/*
-	 * We need to kref_put() for every open_count we have since the
-	 * tty_hangup() function doesn't invoke a close per open connection on a
-	 * non-console device.
-	 */
-	while(temp_open_count) {
-		--temp_open_count;
-		/*
-		 * The final put will trigger destruction of the hvcs_struct.
-		 * NOTE:  If this hangup was signaled from user space then the
-		 * final put will never happen.
-		 */
-		tty_port_put(&hvcsd->port);
-	}
 }
 
 /*
@@ -1317,15 +1257,14 @@ static void hvcs_hangup(struct tty_struct * tty)
  * tty_hangup will allow hvcs_write time to complete execution before it
  * terminates our device.
  */
-static int hvcs_write(struct tty_struct *tty,
-		const unsigned char *buf, int count)
+static ssize_t hvcs_write(struct tty_struct *tty, const u8 *buf, size_t count)
 {
 	struct hvcs_struct *hvcsd = tty->driver_data;
 	unsigned int unit_address;
 	const unsigned char *charbuf;
 	unsigned long flags;
-	int total_sent = 0;
-	int tosend = 0;
+	size_t total_sent = 0;
+	size_t tosend = 0;
 	int result = 0;
 
 	/*
@@ -1360,7 +1299,8 @@ static int hvcs_write(struct tty_struct *tty,
 	unit_address = hvcsd->vdev->unit_address;
 
 	while (count > 0) {
-		tosend = min(count, (HVCS_BUFF_LEN - hvcsd->chars_in_buffer));
+		tosend = min_t(size_t, count,
+			       (HVCS_BUFF_LEN - hvcsd->chars_in_buffer));
 		/*
 		 * No more space, this probably means that the last call to
 		 * hvcs_write() didn't succeed and the buffer was filled up.
@@ -1422,7 +1362,7 @@ static int hvcs_write(struct tty_struct *tty,
  * absolutely WILL BUFFER if we can't send it.  This driver MUST honor the
  * return value, hence the reason for hvcs_struct buffering.
  */
-static int hvcs_write_room(struct tty_struct *tty)
+static unsigned int hvcs_write_room(struct tty_struct *tty)
 {
 	struct hvcs_struct *hvcsd = tty->driver_data;
 
@@ -1432,7 +1372,7 @@ static int hvcs_write_room(struct tty_struct *tty)
 	return HVCS_BUFF_LEN - hvcsd->chars_in_buffer;
 }
 
-static int hvcs_chars_in_buffer(struct tty_struct *tty)
+static unsigned int hvcs_chars_in_buffer(struct tty_struct *tty)
 {
 	struct hvcs_struct *hvcsd = tty->driver_data;
 
@@ -1456,7 +1396,8 @@ static int hvcs_alloc_index_list(int n)
 {
 	int i;
 
-	hvcs_index_list = kmalloc(n * sizeof(hvcs_index_count),GFP_KERNEL);
+	hvcs_index_list = kmalloc_array(n, sizeof(hvcs_index_count),
+					GFP_KERNEL);
 	if (!hvcs_index_list)
 		return -ENOMEM;
 	hvcs_index_count = n;
@@ -1490,10 +1431,11 @@ static int hvcs_initialize(void)
 	} else
 		num_ttys_to_alloc = hvcs_parm_num_devs;
 
-	hvcs_tty_driver = alloc_tty_driver(num_ttys_to_alloc);
-	if (!hvcs_tty_driver) {
+	hvcs_tty_driver = tty_alloc_driver(num_ttys_to_alloc,
+			TTY_DRIVER_REAL_RAW);
+	if (IS_ERR(hvcs_tty_driver)) {
 		mutex_unlock(&hvcs_init_mutex);
-		return -ENOMEM;
+		return PTR_ERR(hvcs_tty_driver);
 	}
 
 	if (hvcs_alloc_index_list(num_ttys_to_alloc)) {
@@ -1518,7 +1460,6 @@ static int hvcs_initialize(void)
 	 * throw us into a horrible recursive echo-echo-echo loop.
 	 */
 	hvcs_tty_driver->init_termios = hvcs_tty_termios;
-	hvcs_tty_driver->flags = TTY_DRIVER_REAL_RAW;
 
 	tty_set_operations(hvcs_tty_driver, &hvcs_ops);
 
@@ -1554,7 +1495,7 @@ buff_alloc_fail:
 register_fail:
 	hvcs_free_index_list();
 index_fail:
-	put_tty_driver(hvcs_tty_driver);
+	tty_driver_kref_put(hvcs_tty_driver);
 	hvcs_tty_driver = NULL;
 	mutex_unlock(&hvcs_init_mutex);
 	return rc;
@@ -1569,13 +1510,6 @@ static int __init hvcs_module_init(void)
 	}
 
 	pr_info("HVCS: Driver registered.\n");
-
-	/* This needs to be done AFTER the vio_register_driver() call or else
-	 * the kobjects won't be initialized properly.
-	 */
-	rc = driver_create_file(&(hvcs_vio_driver.driver), &driver_attr_rescan);
-	if (rc)
-		pr_warning(KERN_ERR "HVCS: Failed to create rescan file (err %d)\n", rc);
 
 	return 0;
 }
@@ -1601,13 +1535,11 @@ static void __exit hvcs_module_exit(void)
 	hvcs_pi_buff = NULL;
 	spin_unlock(&hvcs_pi_lock);
 
-	driver_remove_file(&hvcs_vio_driver.driver, &driver_attr_rescan);
-
 	tty_unregister_driver(hvcs_tty_driver);
 
 	hvcs_free_index_list();
 
-	put_tty_driver(hvcs_tty_driver);
+	tty_driver_kref_put(hvcs_tty_driver);
 
 	printk(KERN_INFO "HVCS: driver module removed.\n");
 }

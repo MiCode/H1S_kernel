@@ -1,25 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef __SOUND_GUS_H
 #define __SOUND_GUS_H
 
 /*
  *  Global structures used for GUS part of ALSA driver
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <sound/pcm.h>
@@ -27,7 +12,7 @@
 #include <sound/timer.h>
 #include <sound/seq_midi_emul.h>
 #include <sound/seq_device.h>
-#include <asm/io.h>
+#include <linux/io.h>
 
 /* IO ports */
 
@@ -591,7 +576,7 @@ int snd_gf1_new_mixer(struct snd_gus_card * gus);
 
 /* gus_pcm.c */
 
-int snd_gf1_pcm_new(struct snd_gus_card * gus, int pcm_dev, int control_index, struct snd_pcm ** rpcm);
+int snd_gf1_pcm_new(struct snd_gus_card *gus, int pcm_dev, int control_index);
 
 #ifdef CONFIG_SND_DEBUG
 extern void snd_gf1_print_voice_registers(struct snd_gus_card * gus);
@@ -620,12 +605,16 @@ void snd_gus_irq_profile_init(struct snd_gus_card *gus);
 
 /* gus_uart.c */
 
-int snd_gf1_rawmidi_new(struct snd_gus_card * gus, int device, struct snd_rawmidi **rrawmidi);
+int snd_gf1_rawmidi_new(struct snd_gus_card *gus, int device);
 
 /* gus_dram.c */
 int snd_gus_dram_write(struct snd_gus_card *gus, char __user *ptr,
 		       unsigned int addr, unsigned int size);
 int snd_gus_dram_read(struct snd_gus_card *gus, char __user *ptr,
 		      unsigned int addr, unsigned int size, int rom);
+
+/* gus_timer.c */
+void snd_gf1_timers_init(struct snd_gus_card *gus);
+void snd_gf1_timers_done(struct snd_gus_card *gus);
 
 #endif /* __SOUND_GUS_H */

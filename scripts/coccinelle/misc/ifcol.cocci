@@ -1,17 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /// Find confusingly indented code in or after an if.  An if branch should
 /// be indented.  The code following an if should not be indented.
 /// Sometimes, code after an if that is indented is actually intended to be
 /// part of the if branch.
 ///
-/// This has a high rate of false positives, because Coccinelle's column
-/// calculation does not distinguish between spaces and tabs, so code that
-/// is not visually aligned may be considered to be in the same column.
-///
+//# This has a high rate of false positives, because Coccinelle's column
+//# calculation does not distinguish between spaces and tabs, so code that
+//# is not visually aligned may be considered to be in the same column.
+//
 // Confidence: Low
-// Copyright: (C) 2010 Nicolas Palix, DIKU.  GPLv2.
-// Copyright: (C) 2010 Julia Lawall, DIKU.  GPLv2.
-// Copyright: (C) 2010 Gilles Muller, INRIA/LiP6.  GPLv2.
-// URL: http://coccinelle.lip6.fr/
+// Copyright: (C) 2010 Nicolas Palix, DIKU.
+// Copyright: (C) 2010 Julia Lawall, DIKU.
+// Copyright: (C) 2010 Gilles Muller, INRIA/LiP6.
+// URL: https://coccinelle.gitlabpages.inria.fr/website
 // Comments:
 // Options: --no-includes --include-headers
 

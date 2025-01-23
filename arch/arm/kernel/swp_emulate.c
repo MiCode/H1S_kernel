@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/kernel/swp_emulate.c
  *
  *  Copyright (C) 2009 ARM Limited
  *  __user_* functions adapted from include/asm/uaccess.h
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  *  Implements emulation of the SWP/SWPB instructions using load-exclusive and
  *  store-exclusive for processors that have them disabled (or future ones that
@@ -23,25 +20,28 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/sched.h>
+#include <linux/sched/mm.h>
 #include <linux/syscalls.h>
 #include <linux/perf_event.h>
 
 #include <asm/opcodes.h>
+#include <asm/system_info.h>
 #include <asm/traps.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 /*
  * Error-checking SWP macros implemented using ldrex{b}/strex{b}
  */
 #define __user_swpX_asm(data, addr, res, temp, B)		\
 	__asm__ __volatile__(					\
-	"	mov		%2, %1\n"			\
-	"0:	ldrex"B"	%1, [%3]\n"			\
-	"1:	strex"B"	%0, %2, [%3]\n"			\
+	".arch armv7-a\n"					\
+	"0:	ldrex"B"	%2, [%3]\n"			\
+	"1:	strex"B"	%0, %1, [%3]\n"			\
 	"	cmp		%0, #0\n"			\
+	"	moveq		%1, %2\n"			\
 	"	movne		%0, %4\n"			\
 	"2:\n"							\
-	"	.section	 .fixup,\"ax\"\n"		\
+	"	.section	 .text.fixup,\"ax\"\n"		\
 	"	.align		2\n"				\
 	"3:	mov		%0, %5\n"			\
 	"	b		2b\n"				\
@@ -89,18 +89,6 @@ static int proc_status_show(struct seq_file *m, void *v)
 		seq_printf(m, "Last process:\t\t%d\n", previous_pid);
 	return 0;
 }
-
-static int proc_status_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, proc_status_show, PDE_DATA(inode));
-}
-
-static const struct file_operations proc_status_fops = {
-	.open		= proc_status_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 #endif
 
 /*
@@ -108,21 +96,20 @@ static const struct file_operations proc_status_fops = {
  */
 static void set_segfault(struct pt_regs *regs, unsigned long addr)
 {
-	siginfo_t info;
+	int si_code;
 
-	down_read(&current->mm->mmap_sem);
+	mmap_read_lock(current->mm);
 	if (find_vma(current->mm, addr) == NULL)
-		info.si_code = SEGV_MAPERR;
+		si_code = SEGV_MAPERR;
 	else
-		info.si_code = SEGV_ACCERR;
-	up_read(&current->mm->mmap_sem);
-
-	info.si_signo = SIGSEGV;
-	info.si_errno = 0;
-	info.si_addr  = (void *) instruction_pointer(regs);
+		si_code = SEGV_ACCERR;
+	mmap_read_unlock(current->mm);
 
 	pr_debug("SWP{B} emulation: access caused memory abort!\n");
-	arm_notify_die("Illegal memory access", regs, &info, 0, 0);
+	arm_notify_die("Illegal memory access", regs,
+		       SIGSEGV, si_code,
+		       (void __user *)instruction_pointer(regs),
+		       0, 0);
 
 	abtcounter++;
 }
@@ -140,19 +127,14 @@ static int emulate_swpX(unsigned int address, unsigned int *data,
 
 	while (1) {
 		unsigned long temp;
+		unsigned int __ua_flags;
 
-		/*
-		 * Barrier required between accessing protected resource and
-		 * releasing a lock for it. Legacy code might not have done
-		 * this, and we cannot determine that this is not the case
-		 * being emulated, so insert always.
-		 */
-		smp_mb();
-
+		__ua_flags = uaccess_save_and_enable();
 		if (type == TYPE_SWPB)
 			__user_swpb_asm(*data, address, res, temp);
 		else
 			__user_swp_asm(*data, address, res, temp);
+		uaccess_restore(__ua_flags);
 
 		if (likely(res != -EAGAIN) || signal_pending(current))
 			break;
@@ -161,13 +143,6 @@ static int emulate_swpX(unsigned int address, unsigned int *data,
 	}
 
 	if (res == 0) {
-		/*
-		 * Barrier also required between acquiring a lock for a
-		 * protected resource and accessing the resource. Inserted for
-		 * same reason as above.
-		 */
-		smp_mb();
-
 		if (type == TYPE_SWPB)
 			swpbcounter++;
 		else
@@ -221,7 +196,7 @@ static int swp_handler(struct pt_regs *regs, unsigned int instr)
 		 destreg, EXTRACT_REG_NUM(instr, RT2_OFFSET), data);
 
 	/* Check access in reasonable access range for both SWP and SWPB */
-	if (!access_ok(VERIFY_WRITE, (address & ~3), 4)) {
+	if (!access_ok((void __user *)(address & ~3), 4)) {
 		pr_debug("SWP{B} emulation: access to %p not allowed!\n",
 			 (void *)address);
 		res = -EFAULT;
@@ -266,12 +241,16 @@ static struct undef_hook swp_hook = {
  */
 static int __init swp_emulation_init(void)
 {
+	if (cpu_architecture() < CPU_ARCH_ARMv7)
+		return 0;
+
 #ifdef CONFIG_PROC_FS
-	if (!proc_create("cpu/swp_emulation", S_IRUGO, NULL, &proc_status_fops))
+	if (!proc_create_single("cpu/swp_emulation", S_IRUGO, NULL,
+			proc_status_show))
 		return -ENOMEM;
 #endif /* CONFIG_PROC_FS */
 
-	printk(KERN_NOTICE "Registering SWP/SWPB emulation handler\n");
+	pr_notice("Registering SWP/SWPB emulation handler\n");
 	register_undef_hook(&swp_hook);
 
 	return 0;

@@ -1,12 +1,9 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0
+ *
  * arch/sh/kernel/cpu/sh3/entry.S
  *
  *  Copyright (C) 1999, 2000, 2002  Niibe Yutaka
  *  Copyright (C) 2003 - 2012  Paul Mundt
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/sys.h>
 #include <linux/errno.h>
@@ -17,7 +14,6 @@
 #include <cpu/mmu_context.h>
 #include <asm/page.h>
 #include <asm/cache.h>
-#include <asm/thread_info.h>
 
 ! NOTE:
 ! GNU as (as of 2.9.1) changes bf/s into bt/s and bra, when the address
@@ -474,9 +470,9 @@ ENTRY(handle_interrupt)
 	mov	r4, r0		! save vector->jmp table offset for later
 
 	shlr2	r4		! vector to IRQ# conversion
-	add	#-0x10, r4
 
-	cmp/pz	r4		! is it a valid IRQ?
+	mov	#0x10, r5
+	cmp/hs	r5, r4		! is it a valid IRQ?
 	bt	10f
 
 	/*

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/mach-pxa/mfp-pxa2xx.c
  *
@@ -7,10 +8,6 @@
  *  functions, this is by concept samilar to the MFP configuration
  *  on PXA3xx,  what's more important, the low power pin state and
  *  wakeup detection are also supported by the same framework.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
  */
 #include <linux/gpio.h>
 #include <linux/gpio-pxa.h>
@@ -19,9 +16,11 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/syscore_ops.h>
+#include <linux/soc/pxa/cpu.h>
 
-#include <mach/pxa2xx-regs.h>
-#include <mach/mfp-pxa2xx.h>
+#include "pxa2xx-regs.h"
+#include "mfp-pxa2xx.h"
+#include "mfp-pxa27x.h"
 
 #include "generic.h"
 
@@ -93,8 +92,8 @@ static int __mfp_config_gpio(unsigned gpio, unsigned long c)
 		break;
 	default:
 		/* warning and fall through, treat as MFP_LPM_DEFAULT */
-		pr_warning("%s: GPIO%d: unsupported low power mode\n",
-				__func__, gpio);
+		pr_warn("%s: GPIO%d: unsupported low power mode\n",
+			__func__, gpio);
 		break;
 	}
 
@@ -107,14 +106,12 @@ static int __mfp_config_gpio(unsigned gpio, unsigned long c)
 	 * configurations of those pins not able to wakeup
 	 */
 	if ((c & MFP_LPM_CAN_WAKEUP) && !gpio_desc[gpio].can_wakeup) {
-		pr_warning("%s: GPIO%d unable to wakeup\n",
-				__func__, gpio);
+		pr_warn("%s: GPIO%d unable to wakeup\n", __func__, gpio);
 		return -EINVAL;
 	}
 
 	if ((c & MFP_LPM_CAN_WAKEUP) && is_out) {
-		pr_warning("%s: output GPIO%d unable to wakeup\n",
-				__func__, gpio);
+		pr_warn("%s: output GPIO%d unable to wakeup\n", __func__, gpio);
 		return -EINVAL;
 	}
 
@@ -126,7 +123,7 @@ static inline int __mfp_validate(int mfp)
 	int gpio = mfp_to_gpio(mfp);
 
 	if ((mfp > MFP_PIN_GPIO127) || !gpio_desc[gpio].valid) {
-		pr_warning("%s: GPIO%d is invalid pin\n", __func__, gpio);
+		pr_warn("%s: GPIO%d is invalid pin\n", __func__, gpio);
 		return -1;
 	}
 
@@ -230,11 +227,7 @@ static void __init pxa25x_mfp_init(void)
 	int i;
 
 	/* running before pxa_gpio_probe() */
-#ifdef CONFIG_CPU_PXA26x
-	pxa_last_gpio = 89;
-#else
 	pxa_last_gpio = 84;
-#endif
 	for (i = 0; i <= pxa_last_gpio; i++)
 		gpio_desc[i].valid = 1;
 

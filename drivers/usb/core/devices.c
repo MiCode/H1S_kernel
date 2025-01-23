@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * devices.c
  * (C) Copyright 1999 Randy Dunlap.
@@ -5,26 +6,12 @@
  *     (proc file per device)
  * (C) Copyright 1999 Deti Fliegl (new USB architecture)
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  *************************************************************
  *
  * <mountpoint>/devices contains USB topology, device, config, class,
  * interface, & endpoint data.
  *
- * I considered using /proc/bus/usb/devices/device# for each device
+ * I considered using /dev/bus/usb/device# for each device
  * as it is attached or detached, but I didn't like this for some
  * reason -- maybe it's just too deep of a directory structure.
  * I also don't like looking in multiple places to gather and view
@@ -40,7 +27,7 @@
  *   Converted the whole proc stuff to real
  *   read methods. Now not the whole device list needs to fit
  *   into one page, only the device list for one bus.
- *   Added a poll method to /proc/bus/usb/devices, to wake
+ *   Added a poll method to /sys/kernel/debug/usb/devices, to wake
  *   up an eventual usbd
  * 2000-01-04: Thomas Sailer <sailer@ife.ee.ethz.ch>
  *   Turned into its own filesystem
@@ -52,7 +39,6 @@
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include <linux/gfp.h>
-#include <linux/poll.h>
 #include <linux/usb.h>
 #include <linux/usbdevice_fs.h>
 #include <linux/usb/hcd.h>
@@ -110,29 +96,6 @@ static const char format_endpt[] =
 /* E:  Ad=xx(s) Atr=xx(ssss) MxPS=dddd Ivl=D?s */
   "E:  Ad=%02x(%c) Atr=%02x(%-4s) MxPS=%4d Ivl=%d%cs\n";
 
-
-/*
- * Need access to the driver and USB bus lists.
- * extern struct list_head usb_bus_list;
- * However, these will come from functions that return ptrs to each of them.
- */
-
-/*
- * Wait for an connect/disconnect event to happen. We initialize
- * the event counter with an odd number, and each event will increment
- * the event counter by two, so it will always _stay_ odd. That means
- * that it will never be zero, so "event 0" will never match a current
- * event, and thus 'poll' will always trigger as readable for the first
- * time it gets called.
- */
-static struct device_connect_event {
-	atomic_t count;
-	wait_queue_head_t wait;
-} device_event = {
-	.count = ATOMIC_INIT(1),
-	.wait = __WAIT_QUEUE_HEAD_INITIALIZER(device_event.wait)
-};
-
 struct class_info {
 	int class;
 	char *class_name;
@@ -153,6 +116,10 @@ static const struct class_info clas_info[] = {
 	{USB_CLASS_CSCID,		"scard"},
 	{USB_CLASS_CONTENT_SEC,		"c-sec"},
 	{USB_CLASS_VIDEO,		"video"},
+	{USB_CLASS_PERSONAL_HEALTHCARE,	"perhc"},
+	{USB_CLASS_AUDIO_VIDEO,		"av"},
+	{USB_CLASS_BILLBOARD,		"blbrd"},
+	{USB_CLASS_USB_TYPE_C_BRIDGE,	"bridg"},
 	{USB_CLASS_WIRELESS_CONTROLLER,	"wlcon"},
 	{USB_CLASS_MISC,		"misc"},
 	{USB_CLASS_APP_SPEC,		"app."},
@@ -161,12 +128,6 @@ static const struct class_info clas_info[] = {
 };
 
 /*****************************************************************/
-
-void usbfs_conn_disc_event(void)
-{
-	atomic_add(2, &device_event.count);
-	wake_up(&device_event.wait);
-}
 
 static const char *class_decode(const int class)
 {
@@ -189,58 +150,39 @@ static char *usb_dump_endpoint_descriptor(int speed, char *start, char *end,
 
 	dir = usb_endpoint_dir_in(desc) ? 'I' : 'O';
 
-	if (speed == USB_SPEED_HIGH) {
-		switch (usb_endpoint_maxp(desc) & (0x03 << 11)) {
-		case 1 << 11:
-			bandwidth = 2; break;
-		case 2 << 11:
-			bandwidth = 3; break;
-		}
-	}
+	if (speed == USB_SPEED_HIGH)
+		bandwidth = usb_endpoint_maxp_mult(desc);
 
 	/* this isn't checking for illegal values */
 	switch (usb_endpoint_type(desc)) {
 	case USB_ENDPOINT_XFER_CONTROL:
 		type = "Ctrl";
-		if (speed == USB_SPEED_HIGH)	/* uframes per NAK */
-			interval = desc->bInterval;
-		else
-			interval = 0;
 		dir = 'B';			/* ctrl is bidirectional */
 		break;
 	case USB_ENDPOINT_XFER_ISOC:
 		type = "Isoc";
-		interval = 1 << (desc->bInterval - 1);
 		break;
 	case USB_ENDPOINT_XFER_BULK:
 		type = "Bulk";
-		if (speed == USB_SPEED_HIGH && dir == 'O') /* uframes per NAK */
-			interval = desc->bInterval;
-		else
-			interval = 0;
 		break;
 	case USB_ENDPOINT_XFER_INT:
 		type = "Int.";
-		if (speed == USB_SPEED_HIGH || speed == USB_SPEED_SUPER)
-			interval = 1 << (desc->bInterval - 1);
-		else
-			interval = desc->bInterval;
 		break;
 	default:	/* "can't happen" */
 		return start;
 	}
-	interval *= (speed == USB_SPEED_HIGH ||
-		     speed == USB_SPEED_SUPER) ? 125 : 1000;
-	if (interval % 1000)
+
+	interval = usb_decode_interval(desc, speed);
+	if (interval % 1000) {
 		unit = 'u';
-	else {
+	} else {
 		unit = 'm';
 		interval /= 1000;
 	}
 
 	start += sprintf(start, format_endpt, desc->bEndpointAddress, dir,
 			 desc->bmAttributes, type,
-			 (usb_endpoint_maxp(desc) & 0x07ff) *
+			 usb_endpoint_maxp(desc) *
 			 bandwidth,
 			 interval, unit);
 	return start;
@@ -286,8 +228,6 @@ static char *usb_dump_interface(int speed, char *start, char *end,
 
 	start = usb_dump_interface_descriptor(start, end, intfc, iface, setno);
 	for (i = 0; i < desc->desc.bNumEndpoints; i++) {
-		if (start > end)
-			return start;
 		start = usb_dump_endpoint_descriptor(speed,
 				start, end, &desc->endpoint[i].desc);
 	}
@@ -322,7 +262,7 @@ static char *usb_dump_config_descriptor(char *start, char *end,
 
 	if (start > end)
 		return start;
-	if (speed == USB_SPEED_SUPER)
+	if (speed >= USB_SPEED_SUPER)
 		mul = 8;
 	else
 		mul = 2;
@@ -360,8 +300,6 @@ static char *usb_dump_config(int speed, char *start, char *end,
 		intfc = config->intf_cache[i];
 		interface = config->interface[i];
 		for (j = 0; j < intfc->num_altsetting; j++) {
-			if (start > end)
-				return start;
 			start = usb_dump_interface(speed,
 				start, end, intfc, interface, j);
 		}
@@ -427,19 +365,11 @@ static char *usb_dump_desc(char *start, char *end, struct usb_device *dev)
 {
 	int i;
 
-	if (start > end)
-		return start;
-
 	start = usb_dump_device_descriptor(start, end, &dev->descriptor);
-
-	if (start > end)
-		return start;
 
 	start = usb_dump_device_strings(start, end, dev);
 
 	for (i = 0; i < dev->descriptor.bNumConfigurations; i++) {
-		if (start > end)
-			return start;
 		start = usb_dump_config(dev->speed,
 				start, end, dev->config + i,
 				/* active ? */
@@ -447,41 +377,6 @@ static char *usb_dump_desc(char *start, char *end, struct usb_device *dev)
 	}
 	return start;
 }
-
-
-#ifdef PROC_EXTRA /* TBD: may want to add this code later */
-
-static char *usb_dump_hub_descriptor(char *start, char *end,
-				     const struct usb_hub_descriptor *desc)
-{
-	int leng = USB_DT_HUB_NONVAR_SIZE;
-	unsigned char *ptr = (unsigned char *)desc;
-
-	if (start > end)
-		return start;
-	start += sprintf(start, "Interface:");
-	while (leng && start <= end) {
-		start += sprintf(start, " %02x", *ptr);
-		ptr++; leng--;
-	}
-	*start++ = '\n';
-	return start;
-}
-
-static char *usb_dump_string(char *start, char *end,
-			     const struct usb_device *dev, char *id, int index)
-{
-	if (start > end)
-		return start;
-	start += sprintf(start, "Interface:");
-	if (index <= dev->maxstring && dev->stringindex &&
-	    dev->stringindex[index])
-		start += sprintf(start, "%s: %.100s ", id,
-				 dev->stringindex[index]);
-	return start;
-}
-
-#endif /* PROC_EXTRA */
 
 /*****************************************************************/
 
@@ -529,11 +424,12 @@ static ssize_t usb_device_dump(char __user **buffer, size_t *nbytes,
 	case USB_SPEED_UNKNOWN:		/* usb 1.1 root hub code */
 	case USB_SPEED_FULL:
 		speed = "12"; break;
-	case USB_SPEED_WIRELESS:	/* Wireless has no real fixed speed */
 	case USB_SPEED_HIGH:
 		speed = "480"; break;
 	case USB_SPEED_SUPER:
 		speed = "5000"; break;
+	case USB_SPEED_SUPER_PLUS:
+		speed = "10000"; break;
 	default:
 		speed = "??";
 	}
@@ -553,7 +449,7 @@ static ssize_t usb_device_dump(char __user **buffer, size_t *nbytes,
 
 		/* super/high speed reserves 80%, full/low reserves 90% */
 		if (usbdev->speed == USB_SPEED_HIGH ||
-		    usbdev->speed == USB_SPEED_SUPER)
+		    usbdev->speed >= USB_SPEED_SUPER)
 			max = 800;
 		else
 			max = FRAME_TIME_MAX_USECS_ALLOC;
@@ -616,17 +512,16 @@ static ssize_t usb_device_read(struct file *file, char __user *buf,
 	struct usb_bus *bus;
 	ssize_t ret, total_written = 0;
 	loff_t skip_bytes = *ppos;
+	int id;
 
 	if (*ppos < 0)
 		return -EINVAL;
 	if (nbytes <= 0)
 		return 0;
-	if (!access_ok(VERIFY_WRITE, buf, nbytes))
-		return -EFAULT;
 
-	mutex_lock(&usb_bus_list_lock);
+	mutex_lock(&usb_bus_idr_lock);
 	/* print devices for all busses */
-	list_for_each_entry(bus, &usb_bus_list, bus_list) {
+	idr_for_each_entry(&usb_bus_idr, bus, id) {
 		/* recurse through all children of the root hub */
 		if (!bus_to_hcd(bus)->rh_registered)
 			continue;
@@ -635,58 +530,16 @@ static ssize_t usb_device_read(struct file *file, char __user *buf,
 				      bus->root_hub, bus, 0, 0, 0);
 		usb_unlock_device(bus->root_hub);
 		if (ret < 0) {
-			mutex_unlock(&usb_bus_list_lock);
+			mutex_unlock(&usb_bus_idr_lock);
 			return ret;
 		}
 		total_written += ret;
 	}
-	mutex_unlock(&usb_bus_list_lock);
+	mutex_unlock(&usb_bus_idr_lock);
 	return total_written;
 }
 
-/* Kernel lock for "lastev" protection */
-static unsigned int usb_device_poll(struct file *file,
-				    struct poll_table_struct *wait)
-{
-	unsigned int event_count;
-
-	poll_wait(file, &device_event.wait, wait);
-
-	event_count = atomic_read(&device_event.count);
-	if (file->f_version != event_count) {
-		file->f_version = event_count;
-		return POLLIN | POLLRDNORM;
-	}
-
-	return 0;
-}
-
-static loff_t usb_device_lseek(struct file *file, loff_t offset, int orig)
-{
-	loff_t ret;
-
-	mutex_lock(&file_inode(file)->i_mutex);
-
-	switch (orig) {
-	case 0:
-		file->f_pos = offset;
-		ret = file->f_pos;
-		break;
-	case 1:
-		file->f_pos += offset;
-		ret = file->f_pos;
-		break;
-	case 2:
-	default:
-		ret = -EINVAL;
-	}
-
-	mutex_unlock(&file_inode(file)->i_mutex);
-	return ret;
-}
-
 const struct file_operations usbfs_devices_fops = {
-	.llseek =	usb_device_lseek,
+	.llseek =	no_seek_end_llseek,
 	.read =		usb_device_read,
-	.poll =		usb_device_poll,
 };

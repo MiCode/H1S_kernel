@@ -1,16 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright 2010 Broadcom
  * Copyright 2012 Simon Arlott, Chris Boot, Stephen Warren
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  *
  * Quirk 1: Shortcut interrupts don't set the bank 1/2 register pending bits
  *
@@ -48,12 +39,10 @@
 #include <linux/slab.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/irqchip.h>
 #include <linux/irqdomain.h>
 
 #include <asm/exception.h>
-#include <asm/mach/irq.h>
-
-#include "irqchip.h"
 
 /* Put the bank and irq (32 bits) into the hwirq */
 #define MAKE_HWIRQ(b, n)	((b << 5) | (n))
@@ -72,14 +61,15 @@
 					| SHORTCUT1_MASK | SHORTCUT2_MASK)
 
 #define REG_FIQ_CONTROL		0x0c
+#define FIQ_CONTROL_ENABLE	BIT(7)
 
 #define NR_BANKS		3
 #define IRQS_PER_BANK		32
 
-static int reg_pending[] __initconst = { 0x00, 0x04, 0x08 };
-static int reg_enable[] __initconst = { 0x18, 0x10, 0x14 };
-static int reg_disable[] __initconst = { 0x24, 0x1c, 0x20 };
-static int bank_irqs[] __initconst = { 8, 32, 32 };
+static const int reg_pending[] __initconst = { 0x00, 0x04, 0x08 };
+static const int reg_enable[] __initconst = { 0x18, 0x10, 0x14 };
+static const int reg_disable[] __initconst = { 0x24, 0x1c, 0x20 };
+static const int bank_irqs[] __initconst = { 8, 32, 32 };
 
 static const int shortcuts[] = {
 	7, 9, 10, 18, 19,		/* Bank 1 */
@@ -95,8 +85,9 @@ struct armctrl_ic {
 };
 
 static struct armctrl_ic intc __read_mostly;
-static asmlinkage void __exception_irq_entry bcm2835_handle_irq(
+static void __exception_irq_entry bcm2835_handle_irq(
 	struct pt_regs *regs);
+static void bcm2836_chained_handle_irq(struct irq_desc *desc);
 
 static void armctrl_mask_irq(struct irq_data *d)
 {
@@ -135,25 +126,26 @@ static int armctrl_xlate(struct irq_domain *d, struct device_node *ctrlr,
 	return 0;
 }
 
-static struct irq_domain_ops armctrl_ops = {
+static const struct irq_domain_ops armctrl_ops = {
 	.xlate = armctrl_xlate
 };
 
 static int __init armctrl_of_init(struct device_node *node,
-	struct device_node *parent)
+				  struct device_node *parent,
+				  bool is_2836)
 {
 	void __iomem *base;
 	int irq, b, i;
+	u32 reg;
 
 	base = of_iomap(node, 0);
 	if (!base)
-		panic("%s: unable to map IC registers\n",
-			node->full_name);
+		panic("%pOF: unable to map IC registers\n", node);
 
 	intc.domain = irq_domain_add_linear(node, MAKE_HWIRQ(NR_BANKS, 0),
 			&armctrl_ops, NULL);
 	if (!intc.domain)
-		panic("%s: unable to create IRQ domain\n", node->full_name);
+		panic("%pOF: unable to create IRQ domain\n", node);
 
 	for (b = 0; b < NR_BANKS; b++) {
 		intc.pending[b] = base + reg_pending[b];
@@ -165,13 +157,50 @@ static int __init armctrl_of_init(struct device_node *node,
 			BUG_ON(irq <= 0);
 			irq_set_chip_and_handler(irq, &armctrl_chip,
 				handle_level_irq);
-			set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
+			irq_set_probe(irq);
+		}
+
+		reg = readl_relaxed(intc.enable[b]);
+		if (reg) {
+			writel_relaxed(reg, intc.disable[b]);
+			pr_err(FW_BUG "Bootloader left irq enabled: "
+			       "bank %d irq %*pbl\n", b, IRQS_PER_BANK, &reg);
 		}
 	}
 
-	set_handle_irq(bcm2835_handle_irq);
+	reg = readl_relaxed(base + REG_FIQ_CONTROL);
+	if (reg & FIQ_CONTROL_ENABLE) {
+		writel_relaxed(0, base + REG_FIQ_CONTROL);
+		pr_err(FW_BUG "Bootloader left fiq enabled\n");
+	}
+
+	if (is_2836) {
+		int parent_irq = irq_of_parse_and_map(node, 0);
+
+		if (!parent_irq) {
+			panic("%pOF: unable to get parent interrupt.\n",
+			      node);
+		}
+		irq_set_chained_handler(parent_irq, bcm2836_chained_handle_irq);
+	} else {
+		set_handle_irq(bcm2835_handle_irq);
+	}
+
 	return 0;
 }
+
+static int __init bcm2835_armctrl_of_init(struct device_node *node,
+					  struct device_node *parent)
+{
+	return armctrl_of_init(node, parent, false);
+}
+
+static int __init bcm2836_armctrl_of_init(struct device_node *node,
+					  struct device_node *parent)
+{
+	return armctrl_of_init(node, parent, true);
+}
+
 
 /*
  * Handle each interrupt across the entire interrupt controller.  This reads the
@@ -179,44 +208,56 @@ static int __init armctrl_of_init(struct device_node *node,
  * handle_IRQ may briefly re-enable interrupts for soft IRQ handling.
  */
 
-static void armctrl_handle_bank(int bank, struct pt_regs *regs)
+static u32 armctrl_translate_bank(int bank)
 {
-	u32 stat, irq;
+	u32 stat = readl_relaxed(intc.pending[bank]);
 
-	while ((stat = readl_relaxed(intc.pending[bank]))) {
-		irq = MAKE_HWIRQ(bank, ffs(stat) - 1);
-		handle_IRQ(irq_linear_revmap(intc.domain, irq), regs);
-	}
+	return MAKE_HWIRQ(bank, ffs(stat) - 1);
 }
 
-static void armctrl_handle_shortcut(int bank, struct pt_regs *regs,
-	u32 stat)
+static u32 armctrl_translate_shortcut(int bank, u32 stat)
 {
-	u32 irq = MAKE_HWIRQ(bank, shortcuts[ffs(stat >> SHORTCUT_SHIFT) - 1]);
-	handle_IRQ(irq_linear_revmap(intc.domain, irq), regs);
+	return MAKE_HWIRQ(bank, shortcuts[ffs(stat >> SHORTCUT_SHIFT) - 1]);
 }
 
-static asmlinkage void __exception_irq_entry bcm2835_handle_irq(
+static u32 get_next_armctrl_hwirq(void)
+{
+	u32 stat = readl_relaxed(intc.pending[0]) & BANK0_VALID_MASK;
+
+	if (stat == 0)
+		return ~0;
+	else if (stat & BANK0_HWIRQ_MASK)
+		return MAKE_HWIRQ(0, ffs(stat & BANK0_HWIRQ_MASK) - 1);
+	else if (stat & SHORTCUT1_MASK)
+		return armctrl_translate_shortcut(1, stat & SHORTCUT1_MASK);
+	else if (stat & SHORTCUT2_MASK)
+		return armctrl_translate_shortcut(2, stat & SHORTCUT2_MASK);
+	else if (stat & BANK1_HWIRQ)
+		return armctrl_translate_bank(1);
+	else if (stat & BANK2_HWIRQ)
+		return armctrl_translate_bank(2);
+	else
+		BUG();
+}
+
+static void __exception_irq_entry bcm2835_handle_irq(
 	struct pt_regs *regs)
 {
-	u32 stat, irq;
+	u32 hwirq;
 
-	while ((stat = readl_relaxed(intc.pending[0]) & BANK0_VALID_MASK)) {
-		if (stat & BANK0_HWIRQ_MASK) {
-			irq = MAKE_HWIRQ(0, ffs(stat & BANK0_HWIRQ_MASK) - 1);
-			handle_IRQ(irq_linear_revmap(intc.domain, irq), regs);
-		} else if (stat & SHORTCUT1_MASK) {
-			armctrl_handle_shortcut(1, regs, stat & SHORTCUT1_MASK);
-		} else if (stat & SHORTCUT2_MASK) {
-			armctrl_handle_shortcut(2, regs, stat & SHORTCUT2_MASK);
-		} else if (stat & BANK1_HWIRQ) {
-			armctrl_handle_bank(1, regs);
-		} else if (stat & BANK2_HWIRQ) {
-			armctrl_handle_bank(2, regs);
-		} else {
-			BUG();
-		}
-	}
+	while ((hwirq = get_next_armctrl_hwirq()) != ~0)
+		generic_handle_domain_irq(intc.domain, hwirq);
 }
 
-IRQCHIP_DECLARE(bcm2835_armctrl_ic, "brcm,bcm2835-armctrl-ic", armctrl_of_init);
+static void bcm2836_chained_handle_irq(struct irq_desc *desc)
+{
+	u32 hwirq;
+
+	while ((hwirq = get_next_armctrl_hwirq()) != ~0)
+		generic_handle_domain_irq(intc.domain, hwirq);
+}
+
+IRQCHIP_DECLARE(bcm2835_armctrl_ic, "brcm,bcm2835-armctrl-ic",
+		bcm2835_armctrl_of_init);
+IRQCHIP_DECLARE(bcm2836_armctrl_ic, "brcm,bcm2836-armctrl-ic",
+		bcm2836_armctrl_of_init);

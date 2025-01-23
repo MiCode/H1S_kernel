@@ -1,18 +1,46 @@
+# SPDX-License-Identifier: GPL-2.0
 ####
 # kbuild: Generic definitions
 
 # Convenient variables
 comma   := ,
+quote   := "
 squote  := '
 empty   :=
 space   := $(empty) $(empty)
+space_escape := _-_SPACE_-_
+pound := \#
+define newline
+
+
+endef
+
+###
+# Comparison macros.
+# Usage: $(call test-lt, $(CONFIG_LLD_VERSION), 150000)
+#
+# Use $(intcmp ...) if supported. (Make >= 4.4)
+# Otherwise, fall back to the 'test' shell command.
+ifeq ($(intcmp 1,0,,,y),y)
+test-ge = $(intcmp $(strip $1)0, $(strip $2)0,,y,y)
+test-gt = $(intcmp $(strip $1)0, $(strip $2)0,,,y)
+else
+test-ge = $(shell test $(strip $1)0 -ge $(strip $2)0 && echo y)
+test-gt = $(shell test $(strip $1)0 -gt $(strip $2)0 && echo y)
+endif
+test-le = $(call test-ge, $2, $1)
+test-lt = $(call test-gt, $2, $1)
 
 ###
 # Name of target with a '.' as filename prefix. foo/bar.o => foo/.bar.o
 dot-target = $(dir $@).$(notdir $@)
 
 ###
-# The temporary file to save gcc -MD generated dependencies must not
+# Name of target with a '.tmp_' as filename prefix. foo/bar.o => foo/.tmp_bar.o
+tmp-target = $(dir $@).tmp_$(notdir $@)
+
+###
+# The temporary file to save gcc -MMD generated dependencies must not
 # contain a comma
 depfile = $(subst $(comma),_,$(dot-target).d)
 
@@ -21,12 +49,31 @@ depfile = $(subst $(comma),_,$(dot-target).d)
 basetarget = $(basename $(notdir $@))
 
 ###
-# filename of first prerequisite with directory and extension stripped
-baseprereq = $(basename $(notdir $<))
+# real prerequisites without phony targets
+real-prereqs = $(filter-out $(PHONY), $^)
 
 ###
 # Escape single quote for use in echo statements
 escsq = $(subst $(squote),'\$(squote)',$1)
+
+###
+# Quote a string to pass it to C files. foo => '"foo"'
+stringify = $(squote)$(quote)$1$(quote)$(squote)
+
+###
+# The path to Kbuild or Makefile. Kbuild has precedence over Makefile.
+kbuild-dir = $(if $(filter /%,$(src)),$(src),$(srctree)/$(src))
+kbuild-file = $(or $(wildcard $(kbuild-dir)/Kbuild),$(kbuild-dir)/Makefile)
+
+###
+# Read a file, replacing newlines with spaces
+#
+# Make 4.2 or later can read a file by using its builtin function.
+ifneq ($(filter-out 3.% 4.0 4.1, $(MAKE_VERSION)),)
+read-file = $(subst $(newline),$(space),$(file < $1))
+else
+read-file = $(shell cat $1 2>/dev/null)
+endif
 
 ###
 # Easy method for doing a status message
@@ -38,155 +85,79 @@ kecho := $($(quiet)kecho)
 ###
 # filechk is used to check if the content of a generated file is updated.
 # Sample usage:
-# define filechk_sample
-#	echo $KERNELRELEASE
-# endef
-# version.h : Makefile
+#
+# filechk_sample = echo $(KERNELRELEASE)
+# version.h: FORCE
 #	$(call filechk,sample)
+#
 # The rule defined shall write to stdout the content of the new file.
 # The existing file will be compared with the new one.
 # - If no file exist it is created
 # - If the content differ the new file is used
 # - If they are equal no change, and no timestamp update
-# - stdin is piped in from the first prerequisite ($<) so one has
-#   to specify a valid file as first prerequisite (often the kbuild file)
 define filechk
-	$(Q)set -e;				\
-	$(kecho) '  CHK     $@';		\
-	mkdir -p $(dir $@);			\
-	$(filechk_$(1)) < $< > $@.tmp;		\
-	if [ -r $@ ] && cmp -s $@ $@.tmp; then	\
-		rm -f $@.tmp;			\
-	else					\
-		$(kecho) '  UPD     $@';	\
-		mv -f $@.tmp $@;		\
+	$(check-FORCE)
+	$(Q)set -e;						\
+	mkdir -p $(dir $@);					\
+	trap "rm -f $(tmp-target)" EXIT;			\
+	{ $(filechk_$(1)); } > $(tmp-target);			\
+	if [ ! -r $@ ] || ! cmp -s $@ $(tmp-target); then	\
+		$(kecho) '  UPD     $@';			\
+		mv -f $(tmp-target) $@;				\
 	fi
 endef
-
-######
-# gcc support functions
-# See documentation in Documentation/kbuild/makefiles.txt
-
-# cc-cross-prefix
-# Usage: CROSS_COMPILE := $(call cc-cross-prefix, m68k-linux-gnu- m68k-linux-)
-# Return first prefix where a prefix$(CC) is found in PATH.
-# If no $(CC) found in PATH with listed prefixes return nothing
-cc-cross-prefix =  \
-	$(word 1, $(foreach c,$(1),                                   \
-		$(shell set -e;                                       \
-		if (which $(strip $(c))$(CC)) > /dev/null 2>&1 ; then \
-			echo $(c);                                    \
-		fi)))
-
-# output directory for tests below
-TMPOUT := $(if $(KBUILD_EXTMOD),$(firstword $(KBUILD_EXTMOD))/)
-
-# try-run
-# Usage: option = $(call try-run, $(CC)...-o "$$TMP",option-ok,otherwise)
-# Exit code chooses option. "$$TMP" is can be used as temporary file and
-# is automatically cleaned up.
-try-run = $(shell set -e;		\
-	TMP="$(TMPOUT).$$$$.tmp";	\
-	TMPO="$(TMPOUT).$$$$.o";	\
-	if ($(1)) >/dev/null 2>&1;	\
-	then echo "$(2)";		\
-	else echo "$(3)";		\
-	fi;				\
-	rm -f "$$TMP" "$$TMPO")
-
-# as-option
-# Usage: cflags-y += $(call as-option,-Wa$(comma)-isa=foo,)
-
-as-option = $(call try-run,\
-	$(CC) $(KBUILD_CFLAGS) $(1) -c -x assembler /dev/null -o "$$TMP",$(1),$(2))
-
-# as-instr
-# Usage: cflags-y += $(call as-instr,instr,option1,option2)
-
-as-instr = $(call try-run,\
-	printf "%b\n" "$(1)" | $(CC) $(KBUILD_AFLAGS) -c -x assembler -o "$$TMP" -,$(2),$(3))
-
-# cc-option
-# Usage: cflags-y += $(call cc-option,-march=winchip-c6,-march=i586)
-
-cc-option = $(call try-run,\
-	$(CC) $(KBUILD_CPPFLAGS) $(KBUILD_CFLAGS) $(1) -c -x c /dev/null -o "$$TMP",$(1),$(2))
-
-# cc-option-yn
-# Usage: flag := $(call cc-option-yn,-march=winchip-c6)
-cc-option-yn = $(call try-run,\
-	$(CC) $(KBUILD_CPPFLAGS) $(KBUILD_CFLAGS) $(1) -c -x c /dev/null -o "$$TMP",y,n)
-
-# cc-option-align
-# Prefix align with either -falign or -malign
-cc-option-align = $(subst -functions=0,,\
-	$(call cc-option,-falign-functions=0,-malign-functions=0))
-
-# cc-disable-warning
-# Usage: cflags-y += $(call cc-disable-warning,unused-but-set-variable)
-cc-disable-warning = $(call try-run,\
-	$(CC) $(KBUILD_CPPFLAGS) $(KBUILD_CFLAGS) -W$(strip $(1)) -c -x c /dev/null -o "$$TMP",-Wno-$(strip $(1)))
-
-# cc-version
-# Usage gcc-ver := $(call cc-version)
-cc-version = $(shell $(CONFIG_SHELL) $(srctree)/scripts/gcc-version.sh $(CC))
-
-# cc-fullversion
-# Usage gcc-ver := $(call cc-fullversion)
-cc-fullversion = $(shell $(CONFIG_SHELL) \
-	$(srctree)/scripts/gcc-version.sh -p $(CC))
-
-# cc-ifversion
-# Usage:  EXTRA_CFLAGS += $(call cc-ifversion, -lt, 0402, -O1)
-cc-ifversion = $(shell [ $(call cc-version, $(CC)) $(1) $(2) ] && echo $(3))
-
-# cc-ldoption
-# Usage: ldflags += $(call cc-ldoption, -Wl$(comma)--hash-style=both)
-cc-ldoption = $(call try-run,\
-	$(CC) $(1) -nostdlib -x c /dev/null -o "$$TMP",$(1),$(2))
-
-# ld-option
-# Usage: LDFLAGS += $(call ld-option, -X)
-ld-option = $(call try-run,\
-	$(CC) -x c /dev/null -c -o "$$TMPO" ; $(LD) $(1) "$$TMPO" -o "$$TMP",$(1),$(2))
-
-# ar-option
-# Usage: KBUILD_ARFLAGS := $(call ar-option,D)
-# Important: no spaces around options
-ar-option = $(call try-run, $(AR) rc$(1) "$$TMP",$(1),$(2))
-
-######
 
 ###
 # Shorthand for $(Q)$(MAKE) -f scripts/Makefile.build obj=
 # Usage:
 # $(Q)$(MAKE) $(build)=dir
-build := -f $(if $(KBUILD_SRC),$(srctree)/)scripts/Makefile.build obj
+build := -f $(srctree)/scripts/Makefile.build obj
 
 ###
-# Shorthand for $(Q)$(MAKE) -f scripts/Makefile.modbuiltin obj=
+# Shorthand for $(Q)$(MAKE) -f scripts/Makefile.dtbinst obj=
 # Usage:
-# $(Q)$(MAKE) $(modbuiltin)=dir
-modbuiltin := -f $(if $(KBUILD_SRC),$(srctree)/)scripts/Makefile.modbuiltin obj
+# $(Q)$(MAKE) $(dtbinst)=dir
+dtbinst := -f $(srctree)/scripts/Makefile.dtbinst obj
 
-# Prefix -I with $(srctree) if it is not an absolute path.
-# skip if -I has no parameter
-addtree = $(if $(patsubst -I%,%,$(1)), \
-$(if $(filter-out -I/%,$(1)),$(patsubst -I%,-I$(srctree)/%,$(1))) $(1))
+###
+# Shorthand for $(Q)$(MAKE) -f scripts/Makefile.clean obj=
+# Usage:
+# $(Q)$(MAKE) $(clean)=dir
+clean := -f $(srctree)/scripts/Makefile.clean obj
 
-# Find all -I options and call addtree
-flags = $(foreach o,$($(1)),$(if $(filter -I%,$(o)),$(call addtree,$(o)),$(o)))
+# pring log
+#
+# If quiet is "silent_", print nothing and sink stdout
+# If quiet is "quiet_", print short log
+# If quiet is empty, print short log and whole command
+silent_log_print = exec >/dev/null;
+ quiet_log_print = $(if $(quiet_cmd_$1), echo '  $(call escsq,$(quiet_cmd_$1)$(why))';)
+       log_print = echo '$(pound) $(call escsq,$(or $(quiet_cmd_$1),cmd_$1 $@)$(why))'; \
+                   echo '  $(call escsq,$(cmd_$1))';
 
-# echo command.
-# Short version is used, if $(quiet) equals `quiet_', otherwise full one.
-echo-cmd = $(if $($(quiet)cmd_$(1)),\
-	echo '  $(call escsq,$($(quiet)cmd_$(1)))$(echo-why)';)
+# Delete the target on interruption
+#
+# GNU Make automatically deletes the target if it has already been changed by
+# the interrupted recipe. So, you can safely stop the build by Ctrl-C (Make
+# will delete incomplete targets), and resume it later.
+#
+# However, this does not work when the stderr is piped to another program, like
+#  $ make >&2 | tee log
+# Make dies with SIGPIPE before cleaning the targets.
+#
+# To address it, we clean the target in signal traps.
+#
+# Make deletes the target when it catches SIGHUP, SIGINT, SIGQUIT, SIGTERM.
+# So, we cover them, and also SIGPIPE just in case.
+#
+# Of course, this is unneeded for phony targets.
+delete-on-interrupt = \
+	$(if $(filter-out $(PHONY), $@), \
+		$(foreach sig, HUP INT QUIT TERM PIPE, \
+			trap 'rm -f $@; trap - $(sig); kill -s $(sig) $$$$' $(sig);))
 
-# printing commands
-cmd = @$(echo-cmd) $(cmd_$(1))
-
-# Add $(obj)/ for paths that are not absolute
-objectify = $(foreach o,$(1),$(if $(filter /%,$(o)),$(o),$(obj)/$(o)))
+# print and execute commands
+cmd = @$(if $(cmd_$(1)),set -e; $($(quiet)log_print) $(delete-on-interrupt) $(cmd_$(1)),:)
 
 ###
 # if_changed      - execute command if any prerequisite is newer than
@@ -194,51 +165,63 @@ objectify = $(foreach o,$(1),$(if $(filter /%,$(o)),$(o),$(obj)/$(o)))
 # if_changed_dep  - as if_changed, but uses fixdep to reveal dependencies
 #                   including used config symbols
 # if_changed_rule - as if_changed but execute rule instead
-# See Documentation/kbuild/makefiles.txt for more info
+# See Documentation/kbuild/makefiles.rst for more info
 
 ifneq ($(KBUILD_NOCMDDEP),1)
-# Check if both arguments has same arguments. Result is empty string if equal.
-# User may override this check using make KBUILD_NOCMDDEP=1
-arg-check = $(strip $(filter-out $(cmd_$(1)), $(cmd_$@)) \
-                    $(filter-out $(cmd_$@),   $(cmd_$(1))) )
+# Check if both commands are the same including their order. Result is empty
+# string if equal. User may override this check using make KBUILD_NOCMDDEP=1
+# If the target does not exist, the *.cmd file should not be included so
+# $(savedcmd_$@) gets empty. Then, target will be built even if $(newer-prereqs)
+# happens to become empty.
+cmd-check = $(filter-out $(subst $(space),$(space_escape),$(strip $(savedcmd_$@))), \
+                         $(subst $(space),$(space_escape),$(strip $(cmd_$1))))
 else
-arg-check = $(if $(strip $(cmd_$@)),,1)
+# We still need to detect missing targets.
+cmd-check = $(if $(strip $(savedcmd_$@)),,1)
 endif
 
-# >'< substitution is for echo to work,
-# >$< substitution to preserve $ when reloading .cmd file
-# note: when using inline perl scripts [perl -e '...$$t=1;...']
-# in $(cmd_xxx) double $$ your perl vars
-make-cmd = $(subst \\,\\\\,$(subst \#,\\\#,$(subst $$,$$$$,$(call escsq,$(cmd_$(1))))))
+# Replace >$< with >$$< to preserve $ when reloading the .cmd file
+# (needed for make)
+# Replace >#< with >$(pound)< to avoid starting a comment in the .cmd file
+# (needed for make)
+# Replace >'< with >'\''< to be able to enclose the whole string in '...'
+# (needed for the shell)
+make-cmd = $(call escsq,$(subst $(pound),$$(pound),$(subst $$,$$$$,$(cmd_$(1)))))
 
-# Find any prerequisites that is newer than target or that does not exist.
+# Find any prerequisites that are newer than target or that do not exist.
 # PHONY targets skipped in both cases.
-any-prereq = $(filter-out $(PHONY),$?) $(filter-out $(PHONY) $(wildcard $^),$^)
+# If there is no prerequisite other than phony targets, $(newer-prereqs) becomes
+# empty even if the target does not exist. cmd-check saves this corner case.
+newer-prereqs = $(filter-out $(PHONY),$?)
+
+# It is a typical mistake to forget the FORCE prerequisite. Check it here so
+# no more breakage will slip in.
+check-FORCE = $(if $(filter FORCE, $^),,$(warning FORCE prerequisite is missing))
+
+if-changed-cond = $(newer-prereqs)$(cmd-check)$(check-FORCE)
 
 # Execute command if command has changed or prerequisite(s) are updated.
-#
-if_changed = $(if $(strip $(any-prereq) $(arg-check)),                       \
-	@set -e;                                                             \
-	$(echo-cmd) $(cmd_$(1));                                             \
-	echo 'cmd_$@ := $(make-cmd)' > $(dot-target).cmd)
+if_changed = $(if $(if-changed-cond),$(cmd_and_savecmd),@:)
+
+cmd_and_savecmd =                                                            \
+	$(cmd);                                                              \
+	printf '%s\n' 'savedcmd_$@ := $(make-cmd)' > $(dot-target).cmd
 
 # Execute the command and also postprocess generated .d dependencies file.
-if_changed_dep = $(if $(strip $(any-prereq) $(arg-check) ),                  \
-	@set -e;                                                             \
-	$(echo-cmd) $(cmd_$(1));                                             \
-	scripts/basic/fixdep $(depfile) $@ '$(make-cmd)' > $(dot-target).tmp;\
-	rm -f $(depfile);                                                    \
-	mv -f $(dot-target).tmp $(dot-target).cmd)
+if_changed_dep = $(if $(if-changed-cond),$(cmd_and_fixdep),@:)
+
+cmd_and_fixdep =                                                             \
+	$(cmd);                                                              \
+	scripts/basic/fixdep $(depfile) $@ '$(make-cmd)' > $(dot-target).cmd;\
+	rm -f $(depfile)
 
 # Usage: $(call if_changed_rule,foo)
 # Will check if $(cmd_foo) or any of the prerequisites changed,
 # and if so will execute $(rule_foo).
-if_changed_rule = $(if $(strip $(any-prereq) $(arg-check) ),                 \
-	@set -e;                                                             \
-	$(rule_$(1)))
+if_changed_rule = $(if $(if-changed-cond),$(rule_$(1)),@:)
 
 ###
-# why - tell why a a target got build
+# why - tell why a target got built
 #       enabled by make V=2
 #       Output (listed in the order they are checked):
 #          (1) - due to target is PHONY
@@ -256,13 +239,13 @@ if_changed_rule = $(if $(strip $(any-prereq) $(arg-check) ),                 \
 # (5) No dir/.target.cmd file (used to store command line)
 # (6) No dir/.target.cmd file and target not listed in $(targets)
 #     This is a good hint that there is a bug in the kbuild file
-ifeq ($(KBUILD_VERBOSE),2)
-why =                                                                        \
+ifneq ($(findstring 2, $(KBUILD_VERBOSE)),)
+_why =                                                                        \
     $(if $(filter $@, $(PHONY)),- due to target is PHONY,                    \
         $(if $(wildcard $@),                                                 \
-            $(if $(strip $(any-prereq)),- due to: $(any-prereq),             \
-                $(if $(arg-check),                                           \
-                    $(if $(cmd_$@),- due to command line change,             \
+            $(if $(newer-prereqs),- due to: $(newer-prereqs),                \
+                $(if $(cmd-check),                                           \
+                    $(if $(savedcmd_$@),- due to command line change,        \
                         $(if $(filter $@, $(targets)),                       \
                             - due to missing .cmd file,                      \
                             - due to $(notdir $@) not in $$(targets)         \
@@ -274,5 +257,23 @@ why =                                                                        \
          )                                                                   \
      )
 
-echo-why = $(call escsq, $(strip $(why)))
+why = $(space)$(strip $(_why))
+endif
+
+###############################################################################
+
+# delete partially updated (i.e. corrupted) files on error
+.DELETE_ON_ERROR:
+
+# do not delete intermediate files automatically
+#
+# .NOTINTERMEDIATE is more correct, but only available on newer Make versions.
+# Make 4.4 introduced .NOTINTERMEDIATE, and it appears in .FEATURES, but the
+# global .NOTINTERMEDIATE does not work. We can use it on Make > 4.4.
+# Use .SECONDARY for older Make versions, but "newer-prereq" cannot detect
+# deleted files.
+ifneq ($(and $(filter notintermediate, $(.FEATURES)),$(filter-out 4.4,$(MAKE_VERSION))),)
+.NOTINTERMEDIATE:
+else
+.SECONDARY:
 endif

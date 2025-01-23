@@ -1,5 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0-only
 config EXT2_FS
 	tristate "Second extended fs support"
+	select BUFFER_HEAD
+	select FS_IOMAP
+	select LEGACY_DIRECT_IO
 	help
 	  Ext2 is a standard Linux file system for hard disks.
 
@@ -13,8 +17,7 @@ config EXT2_FS_XATTR
 	depends on EXT2_FS
 	help
 	  Extended attributes are name:value pairs associated with inodes by
-	  the kernel or by users (see the attr(5) manual page, or visit
-	  <http://acl.bestbits.at/> for details).
+	  the kernel or by users (see the attr(5) manual page for details).
 
 	  If unsure, say N.
 
@@ -25,9 +28,6 @@ config EXT2_FS_POSIX_ACL
 	help
 	  Posix Access Control Lists (ACLs) support permissions for users and
 	  groups beyond the owner/group/world scheme.
-
-	  To learn more about Access Control Lists, visit the Posix ACLs for
-	  Linux website <http://acl.bestbits.at/>.
 
 	  If you don't know what Access Control Lists are, say N
 
@@ -42,14 +42,3 @@ config EXT2_FS_SECURITY
 
 	  If you are not using a security module that requires using
 	  extended attributes for file security labels, say N.
-
-config EXT2_FS_XIP
-	bool "Ext2 execute in place support"
-	depends on EXT2_FS && MMU
-	help
-	  Execute in place can be used on memory-backed block devices. If you
-	  enable this option, you can select to mount block devices which are
-	  capable of this feature without using the page cache.
-
-	  If you do not use a block device that is capable of using this,
-	  or if unsure, say N.

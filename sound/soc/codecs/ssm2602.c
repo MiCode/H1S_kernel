@@ -1,58 +1,32 @@
-/*
- * File:         sound/soc/codecs/ssm2602.c
- * Author:       Cliff Cai <Cliff.Cai@analog.com>
- *
- * Created:      Tue June 06 2008
- * Description:  Driver for ssm2602 sound chip
- *
- * Modified:
- *               Copyright 2008 Analog Devices Inc.
- *
- * Bugs:         Enter bugs at http://blackfin.uclinux.org/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see the file COPYING, or write
- * to the Free Software Foundation, Inc.,
- * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// File:         sound/soc/codecs/ssm2602.c
+// Author:       Cliff Cai <Cliff.Cai@analog.com>
+//
+// Created:      Tue June 06 2008
+// Description:  Driver for ssm2602 sound chip
+//
+// Modified:
+//               Copyright 2008 Analog Devices Inc.
+//
+// Bugs:         Enter bugs at http://blackfin.uclinux.org/
 
-#include <linux/module.h>
-#include <linux/moduleparam.h>
-#include <linux/init.h>
 #include <linux/delay.h>
-#include <linux/pm.h>
-#include <linux/i2c.h>
-#include <linux/spi/spi.h>
+#include <linux/module.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
-#include <sound/core.h>
+
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
-#include <sound/initval.h>
 #include <sound/tlv.h>
 
 #include "ssm2602.h"
 
-enum ssm2602_type {
-	SSM2602,
-	SSM2604,
-};
-
 /* codec private data */
 struct ssm2602_priv {
 	unsigned int sysclk;
-	struct snd_pcm_hw_constraint_list *sysclk_constraints;
+	const struct snd_pcm_hw_constraint_list *sysclk_constraints;
 
 	struct regmap *regmap;
 
@@ -66,31 +40,50 @@ struct ssm2602_priv {
  * using 2 wire for device control, so we cache them instead.
  * There is no point in caching the reset register
  */
-static const u16 ssm2602_reg[SSM2602_CACHEREGNUM] = {
-	0x0097, 0x0097, 0x0079, 0x0079,
-	0x000a, 0x0008, 0x009f, 0x000a,
-	0x0000, 0x0000
+static const struct reg_default ssm2602_reg[SSM2602_CACHEREGNUM] = {
+	{ .reg = 0x00, .def = 0x0097 },
+	{ .reg = 0x01, .def = 0x0097 },
+	{ .reg = 0x02, .def = 0x0079 },
+	{ .reg = 0x03, .def = 0x0079 },
+	{ .reg = 0x04, .def = 0x000a },
+	{ .reg = 0x05, .def = 0x0008 },
+	{ .reg = 0x06, .def = 0x009f },
+	{ .reg = 0x07, .def = 0x000a },
+	{ .reg = 0x08, .def = 0x0000 },
+	{ .reg = 0x09, .def = 0x0000 }
+};
+
+/*
+ * ssm2602 register patch
+ * Workaround for playback distortions after power up: activates digital
+ * core, and then powers on output, DAC, and whole chip at the same time
+ */
+
+static const struct reg_sequence ssm2602_patch[] = {
+	{ SSM2602_ACTIVE, 0x01 },
+	{ SSM2602_PWR,    0x07 },
+	{ SSM2602_RESET,  0x00 },
 };
 
 
 /*Appending several "None"s just for OSS mixer use*/
 static const char *ssm2602_input_select[] = {
-	"Line", "Mic", "None", "None", "None",
-	"None", "None", "None",
+	"Line", "Mic",
 };
 
 static const char *ssm2602_deemph[] = {"None", "32Khz", "44.1Khz", "48Khz"};
 
 static const struct soc_enum ssm2602_enum[] = {
-	SOC_ENUM_SINGLE(SSM2602_APANA, 2, 2, ssm2602_input_select),
-	SOC_ENUM_SINGLE(SSM2602_APDIGI, 1, 4, ssm2602_deemph),
+	SOC_ENUM_SINGLE(SSM2602_APANA, 2, ARRAY_SIZE(ssm2602_input_select),
+			ssm2602_input_select),
+	SOC_ENUM_SINGLE(SSM2602_APDIGI, 1, ARRAY_SIZE(ssm2602_deemph),
+			ssm2602_deemph),
 };
 
-static const unsigned int ssm260x_outmix_tlv[] = {
-	TLV_DB_RANGE_HEAD(2),
+static const DECLARE_TLV_DB_RANGE(ssm260x_outmix_tlv,
 	0, 47, TLV_DB_SCALE_ITEM(TLV_DB_GAIN_MUTE, 0, 0),
-	48, 127, TLV_DB_SCALE_ITEM(-7400, 100, 0),
-};
+	48, 127, TLV_DB_SCALE_ITEM(-7400, 100, 0)
+);
 
 static const DECLARE_TLV_DB_SCALE(ssm260x_inpga_tlv, -3450, 150, 0);
 static const DECLARE_TLV_DB_SCALE(ssm260x_sidetone_tlv, -1500, 300, 0);
@@ -116,7 +109,6 @@ SOC_SINGLE_TLV("Sidetone Playback Volume", SSM2602_APANA, 6, 3, 1,
 
 SOC_SINGLE("Mic Boost (+20dB)", SSM2602_APANA, 0, 1, 0),
 SOC_SINGLE("Mic Boost2 (+20dB)", SSM2602_APANA, 8, 1, 0),
-SOC_SINGLE("Mic Switch", SSM2602_APANA, 1, 1, 1),
 };
 
 /* Output Mixer */
@@ -126,9 +118,30 @@ SOC_DAPM_SINGLE("HiFi Playback Switch", SSM2602_APANA, 4, 1, 0),
 SOC_DAPM_SINGLE("Mic Sidetone Switch", SSM2602_APANA, 5, 1, 0),
 };
 
+static const struct snd_kcontrol_new mic_ctl =
+	SOC_DAPM_SINGLE("Switch", SSM2602_APANA, 1, 1, 1);
+
 /* Input mux */
 static const struct snd_kcontrol_new ssm2602_input_mux_controls =
 SOC_DAPM_ENUM("Input Select", ssm2602_enum[0]);
+
+static int ssm2602_mic_switch_event(struct snd_soc_dapm_widget *w,
+				struct snd_kcontrol *kcontrol, int event)
+{
+	/*
+	 * According to the ssm2603 data sheet (control register sequencing),
+	 * the digital core should be activated only after all necessary bits
+	 * in the power register are enabled, and a delay determined by the
+	 * decoupling capacitor on the VMID pin has passed. If the digital core
+	 * is activated too early, or even before the ADC is powered up, audible
+	 * artifacts appear at the beginning and end of the recorded signal.
+	 *
+	 * In practice, audible artifacts disappear well over 500 ms.
+	 */
+	msleep(500);
+
+	return 0;
+}
 
 static const struct snd_soc_dapm_widget ssm260x_dapm_widgets[] = {
 SND_SOC_DAPM_DAC("DAC", "HiFi Playback", SSM2602_PWR, 3, 1),
@@ -150,6 +163,9 @@ SND_SOC_DAPM_MIXER("Output Mixer", SSM2602_PWR, 4, 1,
 
 SND_SOC_DAPM_MUX("Input Mux", SND_SOC_NOPM, 0, 0, &ssm2602_input_mux_controls),
 SND_SOC_DAPM_MICBIAS("Mic Bias", SSM2602_PWR, 1, 1),
+
+SND_SOC_DAPM_SWITCH_E("Mic Switch", SSM2602_APANA, 1, 1, &mic_ctl,
+		ssm2602_mic_switch_event, SND_SOC_DAPM_PRE_PMU),
 
 SND_SOC_DAPM_OUTPUT("LHPOUT"),
 SND_SOC_DAPM_OUTPUT("RHPOUT"),
@@ -183,8 +199,10 @@ static const struct snd_soc_dapm_route ssm2602_routes[] = {
 	{"LHPOUT", NULL, "Output Mixer"},
 
 	{"Input Mux", "Line", "Line Input"},
-	{"Input Mux", "Mic", "Mic Bias"},
+	{"Input Mux", "Mic", "Mic Switch"},
 	{"ADC", NULL, "Input Mux"},
+
+	{"Mic Switch", NULL, "Mic Bias"},
 
 	{"Mic Bias", NULL, "MICIN"},
 };
@@ -197,16 +215,16 @@ static const unsigned int ssm2602_rates_12288000[] = {
 	8000, 16000, 32000, 48000, 96000,
 };
 
-static struct snd_pcm_hw_constraint_list ssm2602_constraints_12288000 = {
+static const struct snd_pcm_hw_constraint_list ssm2602_constraints_12288000 = {
 	.list = ssm2602_rates_12288000,
 	.count = ARRAY_SIZE(ssm2602_rates_12288000),
 };
 
 static const unsigned int ssm2602_rates_11289600[] = {
-	8000, 44100, 88200,
+	8000, 11025, 22050, 44100, 88200,
 };
 
-static struct snd_pcm_hw_constraint_list ssm2602_constraints_11289600 = {
+static const struct snd_pcm_hw_constraint_list ssm2602_constraints_11289600 = {
 	.list = ssm2602_rates_11289600,
 	.count = ARRAY_SIZE(ssm2602_rates_11289600),
 };
@@ -248,6 +266,16 @@ static const struct ssm2602_coeff ssm2602_coeff_table[] = {
 	{18432000, 96000, SSM2602_COEFF_SRATE(0x7, 0x1, 0x0)},
 	{12000000, 96000, SSM2602_COEFF_SRATE(0x7, 0x0, 0x1)},
 
+	/* 11.025k */
+	{11289600, 11025, SSM2602_COEFF_SRATE(0xc, 0x0, 0x0)},
+	{16934400, 11025, SSM2602_COEFF_SRATE(0xc, 0x1, 0x0)},
+	{12000000, 11025, SSM2602_COEFF_SRATE(0xc, 0x1, 0x1)},
+
+	/* 22.05k */
+	{11289600, 22050, SSM2602_COEFF_SRATE(0xd, 0x0, 0x0)},
+	{16934400, 22050, SSM2602_COEFF_SRATE(0xd, 0x1, 0x0)},
+	{12000000, 22050, SSM2602_COEFF_SRATE(0xd, 0x1, 0x1)},
+
 	/* 44.1k */
 	{11289600, 44100, SSM2602_COEFF_SRATE(0x8, 0x0, 0x0)},
 	{16934400, 44100, SSM2602_COEFF_SRATE(0x8, 0x1, 0x0)},
@@ -264,9 +292,12 @@ static inline int ssm2602_get_coeff(int mclk, int rate)
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(ssm2602_coeff_table); i++) {
-		if (ssm2602_coeff_table[i].rate == rate &&
-			ssm2602_coeff_table[i].mclk == mclk)
-			return ssm2602_coeff_table[i].srate;
+		if (ssm2602_coeff_table[i].rate == rate) {
+			if (ssm2602_coeff_table[i].mclk == mclk)
+				return ssm2602_coeff_table[i].srate;
+			if (ssm2602_coeff_table[i].mclk == mclk / 2)
+				return ssm2602_coeff_table[i].srate | SRATE_CORECLK_DIV2;
+		}
 	}
 	return -EINVAL;
 }
@@ -275,8 +306,8 @@ static int ssm2602_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *params,
 	struct snd_soc_dai *dai)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct ssm2602_priv *ssm2602 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = dai->component;
+	struct ssm2602_priv *ssm2602 = snd_soc_component_get_drvdata(component);
 	int srate = ssm2602_get_coeff(ssm2602->sysclk, params_rate(params));
 	unsigned int iface;
 
@@ -286,17 +317,17 @@ static int ssm2602_hw_params(struct snd_pcm_substream *substream,
 	regmap_write(ssm2602->regmap, SSM2602_SRATE, srate);
 
 	/* bit size */
-	switch (params_format(params)) {
-	case SNDRV_PCM_FORMAT_S16_LE:
+	switch (params_width(params)) {
+	case 16:
 		iface = 0x0;
 		break;
-	case SNDRV_PCM_FORMAT_S20_3LE:
+	case 20:
 		iface = 0x4;
 		break;
-	case SNDRV_PCM_FORMAT_S24_LE:
+	case 24:
 		iface = 0x8;
 		break;
-	case SNDRV_PCM_FORMAT_S32_LE:
+	case 32:
 		iface = 0xc;
 		break;
 	default:
@@ -310,8 +341,8 @@ static int ssm2602_hw_params(struct snd_pcm_substream *substream,
 static int ssm2602_startup(struct snd_pcm_substream *substream,
 			   struct snd_soc_dai *dai)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct ssm2602_priv *ssm2602 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = dai->component;
+	struct ssm2602_priv *ssm2602 = snd_soc_component_get_drvdata(component);
 
 	if (ssm2602->sysclk_constraints) {
 		snd_pcm_hw_constraint_list(substream->runtime, 0,
@@ -322,9 +353,9 @@ static int ssm2602_startup(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static int ssm2602_mute(struct snd_soc_dai *dai, int mute)
+static int ssm2602_mute(struct snd_soc_dai *dai, int mute, int direction)
 {
-	struct ssm2602_priv *ssm2602 = snd_soc_codec_get_drvdata(dai->codec);
+	struct ssm2602_priv *ssm2602 = snd_soc_component_get_drvdata(dai->component);
 
 	if (mute)
 		regmap_update_bits(ssm2602->regmap, SSM2602_APDIGI,
@@ -339,8 +370,8 @@ static int ssm2602_mute(struct snd_soc_dai *dai, int mute)
 static int ssm2602_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 		int clk_id, unsigned int freq, int dir)
 {
-	struct snd_soc_codec *codec = codec_dai->codec;
-	struct ssm2602_priv *ssm2602 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = codec_dai->component;
+	struct ssm2602_priv *ssm2602 = snd_soc_component_get_drvdata(component);
 
 	if (dir == SND_SOC_CLOCK_IN) {
 		if (clk_id != SSM2602_SYSCLK)
@@ -349,18 +380,24 @@ static int ssm2602_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 		switch (freq) {
 		case 12288000:
 		case 18432000:
+		case 24576000:
+		case 36864000:
 			ssm2602->sysclk_constraints = &ssm2602_constraints_12288000;
 			break;
 		case 11289600:
 		case 16934400:
+		case 22579200:
+		case 33868800:
 			ssm2602->sysclk_constraints = &ssm2602_constraints_11289600;
 			break;
 		case 12000000:
+		case 24000000:
 			ssm2602->sysclk_constraints = NULL;
 			break;
 		default:
 			return -EINVAL;
 		}
+
 		ssm2602->sysclk = freq;
 	} else {
 		unsigned int mask;
@@ -391,15 +428,15 @@ static int ssm2602_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 static int ssm2602_set_dai_fmt(struct snd_soc_dai *codec_dai,
 		unsigned int fmt)
 {
-	struct ssm2602_priv *ssm2602 = snd_soc_codec_get_drvdata(codec_dai->codec);
+	struct ssm2602_priv *ssm2602 = snd_soc_component_get_drvdata(codec_dai->component);
 	unsigned int iface = 0;
 
 	/* set master/slave audio interface */
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_CBP_CFP:
 		iface |= 0x0040;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		break;
 	default:
 		return -EINVAL;
@@ -447,10 +484,10 @@ static int ssm2602_set_dai_fmt(struct snd_soc_dai *codec_dai,
 	return 0;
 }
 
-static int ssm2602_set_bias_level(struct snd_soc_codec *codec,
+static int ssm2602_set_bias_level(struct snd_soc_component *component,
 				 enum snd_soc_bias_level level)
 {
-	struct ssm2602_priv *ssm2602 = snd_soc_codec_get_drvdata(codec);
+	struct ssm2602_priv *ssm2602 = snd_soc_component_get_drvdata(component);
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
@@ -474,11 +511,11 @@ static int ssm2602_set_bias_level(struct snd_soc_codec *codec,
 		break;
 
 	}
-	codec->dapm.bias_level = level;
 	return 0;
 }
 
-#define SSM2602_RATES (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |\
+#define SSM2602_RATES (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_11025 |\
+		SNDRV_PCM_RATE_16000 | SNDRV_PCM_RATE_22050 |\
 		SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_44100 |\
 		SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_88200 |\
 		SNDRV_PCM_RATE_96000)
@@ -489,9 +526,10 @@ static int ssm2602_set_bias_level(struct snd_soc_codec *codec,
 static const struct snd_soc_dai_ops ssm2602_dai_ops = {
 	.startup	= ssm2602_startup,
 	.hw_params	= ssm2602_hw_params,
-	.digital_mute	= ssm2602_mute,
+	.mute_stream	= ssm2602_mute,
 	.set_sysclk	= ssm2602_set_dai_sysclk,
 	.set_fmt	= ssm2602_set_dai_fmt,
+	.no_capture_mute = 1,
 };
 
 static struct snd_soc_dai_driver ssm2602_dai = {
@@ -509,30 +547,23 @@ static struct snd_soc_dai_driver ssm2602_dai = {
 		.rates = SSM2602_RATES,
 		.formats = SSM2602_FORMATS,},
 	.ops = &ssm2602_dai_ops,
-	.symmetric_rates = 1,
-	.symmetric_samplebits = 1,
+	.symmetric_rate = 1,
+	.symmetric_sample_bits = 1,
 };
 
-static int ssm2602_suspend(struct snd_soc_codec *codec)
+static int ssm2602_resume(struct snd_soc_component *component)
 {
-	ssm2602_set_bias_level(codec, SND_SOC_BIAS_OFF);
-	return 0;
-}
-
-static int ssm2602_resume(struct snd_soc_codec *codec)
-{
-	struct ssm2602_priv *ssm2602 = snd_soc_codec_get_drvdata(codec);
+	struct ssm2602_priv *ssm2602 = snd_soc_component_get_drvdata(component);
 
 	regcache_sync(ssm2602->regmap);
-	ssm2602_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
 
 	return 0;
 }
 
-static int ssm2602_probe(struct snd_soc_codec *codec)
+static int ssm2602_component_probe(struct snd_soc_component *component)
 {
-	struct ssm2602_priv *ssm2602 = snd_soc_codec_get_drvdata(codec);
-	struct snd_soc_dapm_context *dapm = &codec->dapm;
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct ssm2602_priv *ssm2602 = snd_soc_component_get_drvdata(component);
 	int ret;
 
 	regmap_update_bits(ssm2602->regmap, SSM2602_LOUT1V,
@@ -540,7 +571,7 @@ static int ssm2602_probe(struct snd_soc_codec *codec)
 	regmap_update_bits(ssm2602->regmap, SSM2602_ROUT1V,
 			    ROUT1V_RLHP_BOTH, ROUT1V_RLHP_BOTH);
 
-	ret = snd_soc_add_codec_controls(codec, ssm2602_snd_controls,
+	ret = snd_soc_add_component_controls(component, ssm2602_snd_controls,
 			ARRAY_SIZE(ssm2602_snd_controls));
 	if (ret)
 		return ret;
@@ -554,9 +585,9 @@ static int ssm2602_probe(struct snd_soc_codec *codec)
 			ARRAY_SIZE(ssm2602_routes));
 }
 
-static int ssm2604_probe(struct snd_soc_codec *codec)
+static int ssm2604_component_probe(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = &codec->dapm;
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
 	int ret;
 
 	ret = snd_soc_dapm_new_controls(dapm, ssm2604_dapm_widgets,
@@ -568,23 +599,19 @@ static int ssm2604_probe(struct snd_soc_codec *codec)
 			ARRAY_SIZE(ssm2604_routes));
 }
 
-static int ssm260x_probe(struct snd_soc_codec *codec)
+static int ssm260x_component_probe(struct snd_soc_component *component)
 {
-	struct ssm2602_priv *ssm2602 = snd_soc_codec_get_drvdata(codec);
+	struct ssm2602_priv *ssm2602 = snd_soc_component_get_drvdata(component);
 	int ret;
-
-	codec->control_data = ssm2602->regmap;
-	ret = snd_soc_codec_set_cache_io(codec, 0, 0, SND_SOC_REGMAP);
-	if (ret < 0) {
-		dev_err(codec->dev, "Failed to set cache I/O: %d\n", ret);
-		return ret;
-	}
 
 	ret = regmap_write(ssm2602->regmap, SSM2602_RESET, 0);
 	if (ret < 0) {
-		dev_err(codec->dev, "Failed to issue reset: %d\n", ret);
+		dev_err(component->dev, "Failed to issue reset: %d\n", ret);
 		return ret;
 	}
+
+	regmap_register_patch(ssm2602->regmap, ssm2602_patch,
+			      ARRAY_SIZE(ssm2602_patch));
 
 	/* set the update bits */
 	regmap_update_bits(ssm2602->regmap, SSM2602_LINVOL,
@@ -597,41 +624,30 @@ static int ssm260x_probe(struct snd_soc_codec *codec)
 
 	switch (ssm2602->type) {
 	case SSM2602:
-		ret = ssm2602_probe(codec);
+		ret = ssm2602_component_probe(component);
 		break;
 	case SSM2604:
-		ret = ssm2604_probe(codec);
+		ret = ssm2604_component_probe(component);
 		break;
 	}
 
-	if (ret)
-		return ret;
-
-	ssm2602_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
-
-	return 0;
+	return ret;
 }
 
-/* remove everything here */
-static int ssm2602_remove(struct snd_soc_codec *codec)
-{
-	ssm2602_set_bias_level(codec, SND_SOC_BIAS_OFF);
-	return 0;
-}
-
-static struct snd_soc_codec_driver soc_codec_dev_ssm2602 = {
-	.probe =	ssm260x_probe,
-	.remove =	ssm2602_remove,
-	.suspend =	ssm2602_suspend,
-	.resume =	ssm2602_resume,
-	.set_bias_level = ssm2602_set_bias_level,
-
-	.controls = ssm260x_snd_controls,
-	.num_controls = ARRAY_SIZE(ssm260x_snd_controls),
-	.dapm_widgets = ssm260x_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(ssm260x_dapm_widgets),
-	.dapm_routes = ssm260x_routes,
-	.num_dapm_routes = ARRAY_SIZE(ssm260x_routes),
+static const struct snd_soc_component_driver soc_component_dev_ssm2602 = {
+	.probe			= ssm260x_component_probe,
+	.resume			= ssm2602_resume,
+	.set_bias_level		= ssm2602_set_bias_level,
+	.controls		= ssm260x_snd_controls,
+	.num_controls		= ARRAY_SIZE(ssm260x_snd_controls),
+	.dapm_widgets		= ssm260x_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(ssm260x_dapm_widgets),
+	.dapm_routes		= ssm260x_routes,
+	.num_dapm_routes	= ARRAY_SIZE(ssm260x_routes),
+	.suspend_bias_off	= 1,
+	.idle_bias_on		= 1,
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
 };
 
 static bool ssm2602_register_volatile(struct device *dev, unsigned int reg)
@@ -639,7 +655,7 @@ static bool ssm2602_register_volatile(struct device *dev, unsigned int reg)
 	return reg == SSM2602_RESET;
 }
 
-static const struct regmap_config ssm2602_regmap_config = {
+const struct regmap_config ssm2602_regmap_config = {
 	.val_bits = 9,
 	.reg_bits = 7,
 
@@ -647,137 +663,31 @@ static const struct regmap_config ssm2602_regmap_config = {
 	.volatile_reg = ssm2602_register_volatile,
 
 	.cache_type = REGCACHE_RBTREE,
-	.reg_defaults_raw = ssm2602_reg,
-	.num_reg_defaults_raw = ARRAY_SIZE(ssm2602_reg),
+	.reg_defaults = ssm2602_reg,
+	.num_reg_defaults = ARRAY_SIZE(ssm2602_reg),
 };
+EXPORT_SYMBOL_GPL(ssm2602_regmap_config);
 
-#if defined(CONFIG_SPI_MASTER)
-static int ssm2602_spi_probe(struct spi_device *spi)
+int ssm2602_probe(struct device *dev, enum ssm2602_type type,
+	struct regmap *regmap)
 {
 	struct ssm2602_priv *ssm2602;
-	int ret;
 
-	ssm2602 = devm_kzalloc(&spi->dev, sizeof(struct ssm2602_priv),
-			       GFP_KERNEL);
+	if (IS_ERR(regmap))
+		return PTR_ERR(regmap);
+
+	ssm2602 = devm_kzalloc(dev, sizeof(*ssm2602), GFP_KERNEL);
 	if (ssm2602 == NULL)
 		return -ENOMEM;
 
-	spi_set_drvdata(spi, ssm2602);
-	ssm2602->type = SSM2602;
+	dev_set_drvdata(dev, ssm2602);
+	ssm2602->type = type;
+	ssm2602->regmap = regmap;
 
-	ssm2602->regmap = devm_regmap_init_spi(spi, &ssm2602_regmap_config);
-	if (IS_ERR(ssm2602->regmap))
-		return PTR_ERR(ssm2602->regmap);
-
-	ret = snd_soc_register_codec(&spi->dev,
-			&soc_codec_dev_ssm2602, &ssm2602_dai, 1);
-	return ret;
+	return devm_snd_soc_register_component(dev, &soc_component_dev_ssm2602,
+		&ssm2602_dai, 1);
 }
-
-static int ssm2602_spi_remove(struct spi_device *spi)
-{
-	snd_soc_unregister_codec(&spi->dev);
-	return 0;
-}
-
-static struct spi_driver ssm2602_spi_driver = {
-	.driver = {
-		.name	= "ssm2602",
-		.owner	= THIS_MODULE,
-	},
-	.probe		= ssm2602_spi_probe,
-	.remove		= ssm2602_spi_remove,
-};
-#endif
-
-#if IS_ENABLED(CONFIG_I2C)
-/*
- * ssm2602 2 wire address is determined by GPIO5
- * state during powerup.
- *    low  = 0x1a
- *    high = 0x1b
- */
-static int ssm2602_i2c_probe(struct i2c_client *i2c,
-			     const struct i2c_device_id *id)
-{
-	struct ssm2602_priv *ssm2602;
-	int ret;
-
-	ssm2602 = devm_kzalloc(&i2c->dev, sizeof(struct ssm2602_priv),
-			       GFP_KERNEL);
-	if (ssm2602 == NULL)
-		return -ENOMEM;
-
-	i2c_set_clientdata(i2c, ssm2602);
-	ssm2602->type = id->driver_data;
-
-	ssm2602->regmap = devm_regmap_init_i2c(i2c, &ssm2602_regmap_config);
-	if (IS_ERR(ssm2602->regmap))
-		return PTR_ERR(ssm2602->regmap);
-
-	ret = snd_soc_register_codec(&i2c->dev,
-			&soc_codec_dev_ssm2602, &ssm2602_dai, 1);
-	return ret;
-}
-
-static int ssm2602_i2c_remove(struct i2c_client *client)
-{
-	snd_soc_unregister_codec(&client->dev);
-	return 0;
-}
-
-static const struct i2c_device_id ssm2602_i2c_id[] = {
-	{ "ssm2602", SSM2602 },
-	{ "ssm2603", SSM2602 },
-	{ "ssm2604", SSM2604 },
-	{ }
-};
-MODULE_DEVICE_TABLE(i2c, ssm2602_i2c_id);
-
-/* corgi i2c codec control layer */
-static struct i2c_driver ssm2602_i2c_driver = {
-	.driver = {
-		.name = "ssm2602",
-		.owner = THIS_MODULE,
-	},
-	.probe = ssm2602_i2c_probe,
-	.remove = ssm2602_i2c_remove,
-	.id_table = ssm2602_i2c_id,
-};
-#endif
-
-
-static int __init ssm2602_modinit(void)
-{
-	int ret = 0;
-
-#if defined(CONFIG_SPI_MASTER)
-	ret = spi_register_driver(&ssm2602_spi_driver);
-	if (ret)
-		return ret;
-#endif
-
-#if IS_ENABLED(CONFIG_I2C)
-	ret = i2c_add_driver(&ssm2602_i2c_driver);
-	if (ret)
-		return ret;
-#endif
-
-	return ret;
-}
-module_init(ssm2602_modinit);
-
-static void __exit ssm2602_exit(void)
-{
-#if defined(CONFIG_SPI_MASTER)
-	spi_unregister_driver(&ssm2602_spi_driver);
-#endif
-
-#if IS_ENABLED(CONFIG_I2C)
-	i2c_del_driver(&ssm2602_i2c_driver);
-#endif
-}
-module_exit(ssm2602_exit);
+EXPORT_SYMBOL_GPL(ssm2602_probe);
 
 MODULE_DESCRIPTION("ASoC SSM2602/SSM2603/SSM2604 driver");
 MODULE_AUTHOR("Cliff Cai");

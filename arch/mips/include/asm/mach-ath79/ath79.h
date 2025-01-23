@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  Atheros AR71XX/AR724X/AR913X common definitions
  *
@@ -5,10 +6,6 @@
  *  Copyright (C) 2008 Imre Kaloz <kaloz@openwrt.org>
  *
  *  Parts of this file are based on Atheros' 2.6.15 BSP
- *
- *  This program is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License version 2 as published
- *  by the Free Software Foundation.
  */
 
 #ifndef __ASM_MACH_ATH79_H
@@ -32,8 +29,11 @@ enum ath79_soc_type {
 	ATH79_SOC_AR9341,
 	ATH79_SOC_AR9342,
 	ATH79_SOC_AR9344,
+	ATH79_SOC_QCA9533,
 	ATH79_SOC_QCA9556,
 	ATH79_SOC_QCA9558,
+	ATH79_SOC_TP9343,
+	ATH79_SOC_QCA956X,
 };
 
 extern enum ath79_soc_type ath79_soc;
@@ -100,6 +100,16 @@ static inline int soc_is_ar934x(void)
 	return soc_is_ar9341() || soc_is_ar9342() || soc_is_ar9344();
 }
 
+static inline int soc_is_qca9533(void)
+{
+	return ath79_soc == ATH79_SOC_QCA9533;
+}
+
+static inline int soc_is_qca953x(void)
+{
+	return soc_is_qca9533();
+}
+
 static inline int soc_is_qca9556(void)
 {
 	return ath79_soc == ATH79_SOC_QCA9556;
@@ -115,7 +125,29 @@ static inline int soc_is_qca955x(void)
 	return soc_is_qca9556() || soc_is_qca9558();
 }
 
-extern void __iomem *ath79_ddr_base;
+static inline int soc_is_tp9343(void)
+{
+	return ath79_soc == ATH79_SOC_TP9343;
+}
+
+static inline int soc_is_qca9561(void)
+{
+	return ath79_soc == ATH79_SOC_QCA956X;
+}
+
+static inline int soc_is_qca9563(void)
+{
+	return ath79_soc == ATH79_SOC_QCA956X;
+}
+
+static inline int soc_is_qca956x(void)
+{
+	return soc_is_qca9561() || soc_is_qca9563();
+}
+
+void ath79_ddr_wb_flush(unsigned int reg);
+void ath79_ddr_set_pci_windows(void);
+
 extern void __iomem *ath79_pll_base;
 extern void __iomem *ath79_reset_base;
 
@@ -132,6 +164,7 @@ static inline u32 ath79_pll_rr(unsigned reg)
 static inline void ath79_reset_wr(unsigned reg, u32 val)
 {
 	__raw_writel(val, ath79_reset_base + reg);
+	(void) __raw_readl(ath79_reset_base + reg); /* flush */
 }
 
 static inline u32 ath79_reset_rr(unsigned reg)

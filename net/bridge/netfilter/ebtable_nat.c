@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  ebtable_nat
  *
@@ -9,10 +10,11 @@
  */
 
 #include <linux/netfilter_bridge/ebtables.h>
+#include <uapi/linux/netfilter_bridge.h>
 #include <linux/module.h>
 
 #define NAT_VALID_HOOKS ((1 << NF_BR_PRE_ROUTING) | (1 << NF_BR_LOCAL_OUT) | \
-   (1 << NF_BR_POST_ROUTING))
+			 (1 << NF_BR_POST_ROUTING))
 
 static struct ebt_entries initial_chains[] = {
 	{
@@ -41,96 +43,74 @@ static struct ebt_replace_kernel initial_table = {
 	.entries	= (char *)initial_chains,
 };
 
-static int check(const struct ebt_table_info *info, unsigned int valid_hooks)
-{
-	if (valid_hooks & ~NAT_VALID_HOOKS)
-		return -EINVAL;
-	return 0;
-}
-
-static struct ebt_table frame_nat = {
+static const struct ebt_table frame_nat = {
 	.name		= "nat",
 	.table		= &initial_table,
 	.valid_hooks	= NAT_VALID_HOOKS,
-	.check		= check,
 	.me		= THIS_MODULE,
 };
 
-static unsigned int
-ebt_nat_in(const struct nf_hook_ops *ops, struct sk_buff *skb,
-	   const struct net_device *in, const struct net_device *out,
-	   int (*okfn)(struct sk_buff *))
-{
-	return ebt_do_table(ops->hooknum, skb, in, out,
-			    dev_net(in)->xt.frame_nat);
-}
-
-static unsigned int
-ebt_nat_out(const struct nf_hook_ops *ops, struct sk_buff *skb,
-	    const struct net_device *in, const struct net_device *out,
-	    int (*okfn)(struct sk_buff *))
-{
-	return ebt_do_table(ops->hooknum, skb, in, out,
-			    dev_net(out)->xt.frame_nat);
-}
-
-static struct nf_hook_ops ebt_ops_nat[] __read_mostly = {
+static const struct nf_hook_ops ebt_ops_nat[] = {
 	{
-		.hook		= ebt_nat_out,
-		.owner		= THIS_MODULE,
+		.hook		= ebt_do_table,
 		.pf		= NFPROTO_BRIDGE,
 		.hooknum	= NF_BR_LOCAL_OUT,
 		.priority	= NF_BR_PRI_NAT_DST_OTHER,
 	},
 	{
-		.hook		= ebt_nat_out,
-		.owner		= THIS_MODULE,
+		.hook		= ebt_do_table,
 		.pf		= NFPROTO_BRIDGE,
 		.hooknum	= NF_BR_POST_ROUTING,
 		.priority	= NF_BR_PRI_NAT_SRC,
 	},
 	{
-		.hook		= ebt_nat_in,
-		.owner		= THIS_MODULE,
+		.hook		= ebt_do_table,
 		.pf		= NFPROTO_BRIDGE,
 		.hooknum	= NF_BR_PRE_ROUTING,
 		.priority	= NF_BR_PRI_NAT_DST_BRIDGED,
 	},
 };
 
-static int __net_init frame_nat_net_init(struct net *net)
+static int frame_nat_table_init(struct net *net)
 {
-	net->xt.frame_nat = ebt_register_table(net, &frame_nat);
-	return PTR_ERR_OR_ZERO(net->xt.frame_nat);
+	return ebt_register_table(net, &frame_nat, ebt_ops_nat);
+}
+
+static void __net_exit frame_nat_net_pre_exit(struct net *net)
+{
+	ebt_unregister_table_pre_exit(net, "nat");
 }
 
 static void __net_exit frame_nat_net_exit(struct net *net)
 {
-	ebt_unregister_table(net, net->xt.frame_nat);
+	ebt_unregister_table(net, "nat");
 }
 
 static struct pernet_operations frame_nat_net_ops = {
-	.init = frame_nat_net_init,
 	.exit = frame_nat_net_exit,
+	.pre_exit = frame_nat_net_pre_exit,
 };
 
 static int __init ebtable_nat_init(void)
 {
-	int ret;
+	int ret = ebt_register_template(&frame_nat, frame_nat_table_init);
+
+	if (ret)
+		return ret;
 
 	ret = register_pernet_subsys(&frame_nat_net_ops);
-	if (ret < 0)
+	if (ret) {
+		ebt_unregister_template(&frame_nat);
 		return ret;
-	ret = nf_register_hooks(ebt_ops_nat, ARRAY_SIZE(ebt_ops_nat));
-	if (ret < 0)
-		unregister_pernet_subsys(&frame_nat_net_ops);
+	}
+
 	return ret;
 }
 
 static void __exit ebtable_nat_fini(void)
 {
-	nf_unregister_hooks(ebt_ops_nat, ARRAY_SIZE(ebt_ops_nat));
 	unregister_pernet_subsys(&frame_nat_net_ops);
+	ebt_unregister_template(&frame_nat);
 }
 
 module_init(ebtable_nat_init);

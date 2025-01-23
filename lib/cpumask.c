@@ -1,67 +1,43 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/bitops.h>
 #include <linux/cpumask.h>
 #include <linux/export.h>
-#include <linux/bootmem.h>
-
-int __first_cpu(const cpumask_t *srcp)
-{
-	return min_t(int, NR_CPUS, find_first_bit(srcp->bits, NR_CPUS));
-}
-EXPORT_SYMBOL(__first_cpu);
-
-int __next_cpu(int n, const cpumask_t *srcp)
-{
-	return min_t(int, NR_CPUS, find_next_bit(srcp->bits, NR_CPUS, n+1));
-}
-EXPORT_SYMBOL(__next_cpu);
-
-#if NR_CPUS > 64
-int __next_cpu_nr(int n, const cpumask_t *srcp)
-{
-	return min_t(int, nr_cpu_ids,
-				find_next_bit(srcp->bits, nr_cpu_ids, n+1));
-}
-EXPORT_SYMBOL(__next_cpu_nr);
-#endif
+#include <linux/memblock.h>
+#include <linux/numa.h>
 
 /**
- * cpumask_next_and - get the next cpu in *src1p & *src2p
- * @n: the cpu prior to the place to search (ie. return will be > @n)
- * @src1p: the first cpumask pointer
- * @src2p: the second cpumask pointer
+ * cpumask_next_wrap - helper to implement for_each_cpu_wrap
+ * @n: the cpu prior to the place to search
+ * @mask: the cpumask pointer
+ * @start: the start point of the iteration
+ * @wrap: assume @n crossing @start terminates the iteration
  *
- * Returns >= nr_cpu_ids if no further cpus set in both.
- */
-int cpumask_next_and(int n, const struct cpumask *src1p,
-		     const struct cpumask *src2p)
-{
-	while ((n = cpumask_next(n, src1p)) < nr_cpu_ids)
-		if (cpumask_test_cpu(n, src2p))
-			break;
-	return n;
-}
-EXPORT_SYMBOL(cpumask_next_and);
-
-/**
- * cpumask_any_but - return a "random" in a cpumask, but not this one.
- * @mask: the cpumask to search
- * @cpu: the cpu to ignore.
+ * Returns >= nr_cpu_ids on completion
  *
- * Often used to find any cpu but smp_processor_id() in a mask.
- * Returns >= nr_cpu_ids if no cpus set.
+ * Note: the @wrap argument is required for the start condition when
+ * we cannot assume @start is set in @mask.
  */
-int cpumask_any_but(const struct cpumask *mask, unsigned int cpu)
+unsigned int cpumask_next_wrap(int n, const struct cpumask *mask, int start, bool wrap)
 {
-	unsigned int i;
+	unsigned int next;
 
-	cpumask_check(cpu);
-	for_each_cpu(i, mask)
-		if (i != cpu)
-			break;
-	return i;
+again:
+	next = cpumask_next(n, mask);
+
+	if (wrap && n < start && next >= start) {
+		return nr_cpumask_bits;
+
+	} else if (next >= nr_cpumask_bits) {
+		wrap = true;
+		n = -1;
+		goto again;
+	}
+
+	return next;
 }
+EXPORT_SYMBOL(cpumask_next_wrap);
 
 /* These are not inline because of header tangles. */
 #ifdef CONFIG_CPUMASK_OFFSTACK
@@ -69,6 +45,7 @@ int cpumask_any_but(const struct cpumask *mask, unsigned int cpu)
  * alloc_cpumask_var_node - allocate a struct cpumask on a given node
  * @mask: pointer to cpumask_var_t where the cpumask is returned
  * @flags: GFP_ flags
+ * @node: memory node from which to allocate or %NUMA_NO_NODE
  *
  * Only defined when CONFIG_CPUMASK_OFFSTACK=y, otherwise is
  * a nop returning a constant 1 (in <linux/cpumask.h>)
@@ -89,45 +66,10 @@ bool alloc_cpumask_var_node(cpumask_var_t *mask, gfp_t flags, int node)
 		dump_stack();
 	}
 #endif
-	/* FIXME: Bandaid to save us from old primitives which go to NR_CPUS. */
-	if (*mask) {
-		unsigned char *ptr = (unsigned char *)cpumask_bits(*mask);
-		unsigned int tail;
-		tail = BITS_TO_LONGS(NR_CPUS - nr_cpumask_bits) * sizeof(long);
-		memset(ptr + cpumask_size() - tail, 0, tail);
-	}
 
 	return *mask != NULL;
 }
 EXPORT_SYMBOL(alloc_cpumask_var_node);
-
-bool zalloc_cpumask_var_node(cpumask_var_t *mask, gfp_t flags, int node)
-{
-	return alloc_cpumask_var_node(mask, flags | __GFP_ZERO, node);
-}
-EXPORT_SYMBOL(zalloc_cpumask_var_node);
-
-/**
- * alloc_cpumask_var - allocate a struct cpumask
- * @mask: pointer to cpumask_var_t where the cpumask is returned
- * @flags: GFP_ flags
- *
- * Only defined when CONFIG_CPUMASK_OFFSTACK=y, otherwise is
- * a nop returning a constant 1 (in <linux/cpumask.h>).
- *
- * See alloc_cpumask_var_node.
- */
-bool alloc_cpumask_var(cpumask_var_t *mask, gfp_t flags)
-{
-	return alloc_cpumask_var_node(mask, flags, NUMA_NO_NODE);
-}
-EXPORT_SYMBOL(alloc_cpumask_var);
-
-bool zalloc_cpumask_var(cpumask_var_t *mask, gfp_t flags)
-{
-	return alloc_cpumask_var(mask, flags | __GFP_ZERO);
-}
-EXPORT_SYMBOL(zalloc_cpumask_var);
 
 /**
  * alloc_bootmem_cpumask_var - allocate a struct cpumask from the bootmem arena.
@@ -140,7 +82,10 @@ EXPORT_SYMBOL(zalloc_cpumask_var);
  */
 void __init alloc_bootmem_cpumask_var(cpumask_var_t *mask)
 {
-	*mask = memblock_virt_alloc(cpumask_size(), 0);
+	*mask = memblock_alloc(cpumask_size(), SMP_CACHE_BYTES);
+	if (!*mask)
+		panic("%s: Failed to allocate %u bytes\n", __func__,
+		      cpumask_size());
 }
 
 /**
@@ -161,6 +106,94 @@ EXPORT_SYMBOL(free_cpumask_var);
  */
 void __init free_bootmem_cpumask_var(cpumask_var_t mask)
 {
-	memblock_free_early(__pa(mask), cpumask_size());
+	memblock_free(mask, cpumask_size());
 }
 #endif
+
+/**
+ * cpumask_local_spread - select the i'th cpu based on NUMA distances
+ * @i: index number
+ * @node: local numa_node
+ *
+ * Returns online CPU according to a numa aware policy; local cpus are returned
+ * first, followed by non-local ones, then it wraps around.
+ *
+ * For those who wants to enumerate all CPUs based on their NUMA distances,
+ * i.e. call this function in a loop, like:
+ *
+ * for (i = 0; i < num_online_cpus(); i++) {
+ *	cpu = cpumask_local_spread(i, node);
+ *	do_something(cpu);
+ * }
+ *
+ * There's a better alternative based on for_each()-like iterators:
+ *
+ *	for_each_numa_hop_mask(mask, node) {
+ *		for_each_cpu_andnot(cpu, mask, prev)
+ *			do_something(cpu);
+ *		prev = mask;
+ *	}
+ *
+ * It's simpler and more verbose than above. Complexity of iterator-based
+ * enumeration is O(sched_domains_numa_levels * nr_cpu_ids), while
+ * cpumask_local_spread() when called for each cpu is
+ * O(sched_domains_numa_levels * nr_cpu_ids * log(nr_cpu_ids)).
+ */
+unsigned int cpumask_local_spread(unsigned int i, int node)
+{
+	unsigned int cpu;
+
+	/* Wrap: we always want a cpu. */
+	i %= num_online_cpus();
+
+	cpu = (node == NUMA_NO_NODE) ?
+		cpumask_nth(i, cpu_online_mask) :
+		sched_numa_find_nth_cpu(cpu_online_mask, i, node);
+
+	WARN_ON(cpu >= nr_cpu_ids);
+	return cpu;
+}
+EXPORT_SYMBOL(cpumask_local_spread);
+
+static DEFINE_PER_CPU(int, distribute_cpu_mask_prev);
+
+/**
+ * cpumask_any_and_distribute - Return an arbitrary cpu within src1p & src2p.
+ * @src1p: first &cpumask for intersection
+ * @src2p: second &cpumask for intersection
+ *
+ * Iterated calls using the same srcp1 and srcp2 will be distributed within
+ * their intersection.
+ *
+ * Returns >= nr_cpu_ids if the intersection is empty.
+ */
+unsigned int cpumask_any_and_distribute(const struct cpumask *src1p,
+			       const struct cpumask *src2p)
+{
+	unsigned int next, prev;
+
+	/* NOTE: our first selection will skip 0. */
+	prev = __this_cpu_read(distribute_cpu_mask_prev);
+
+	next = find_next_and_bit_wrap(cpumask_bits(src1p), cpumask_bits(src2p),
+					nr_cpumask_bits, prev + 1);
+	if (next < nr_cpu_ids)
+		__this_cpu_write(distribute_cpu_mask_prev, next);
+
+	return next;
+}
+EXPORT_SYMBOL(cpumask_any_and_distribute);
+
+unsigned int cpumask_any_distribute(const struct cpumask *srcp)
+{
+	unsigned int next, prev;
+
+	/* NOTE: our first selection will skip 0. */
+	prev = __this_cpu_read(distribute_cpu_mask_prev);
+	next = find_next_bit_wrap(cpumask_bits(srcp), nr_cpumask_bits, prev + 1);
+	if (next < nr_cpu_ids)
+		__this_cpu_write(distribute_cpu_mask_prev, next);
+
+	return next;
+}
+EXPORT_SYMBOL(cpumask_any_distribute);

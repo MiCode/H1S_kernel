@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * System Specific setup for Traverse Technologies GEOS.
  * At the moment this means setup of GPIO control of LEDs.
@@ -9,22 +10,17 @@
  * TODO: There are large similarities with leds-net5501.c
  * by Alessandro Zummo <a.zummo@towertech.it>
  * In the future leds-net5501.c should be migrated over to platform
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2
- * as published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/string.h>
-#include <linux/module.h>
 #include <linux/leds.h>
 #include <linux/platform_device.h>
-#include <linux/gpio.h>
 #include <linux/input.h>
 #include <linux/gpio_keys.h>
+#include <linux/gpio/machine.h>
 #include <linux/dmi.h>
 
 #include <asm/geode.h>
@@ -58,27 +54,32 @@ static struct platform_device geos_buttons_dev = {
 static struct gpio_led geos_leds[] = {
 	{
 		.name = "geos:1",
-		.gpio = 6,
 		.default_trigger = "default-on",
-		.active_low = 1,
 	},
 	{
 		.name = "geos:2",
-		.gpio = 25,
 		.default_trigger = "default-off",
-		.active_low = 1,
 	},
 	{
 		.name = "geos:3",
-		.gpio = 27,
 		.default_trigger = "default-off",
-		.active_low = 1,
 	},
 };
 
 static struct gpio_led_platform_data geos_leds_data = {
 	.num_leds = ARRAY_SIZE(geos_leds),
 	.leds = geos_leds,
+};
+
+static struct gpiod_lookup_table geos_leds_gpio_table = {
+	.dev_id = "leds-gpio",
+	.table = {
+		/* The Geode GPIOs should be on the CS5535 companion chip */
+		GPIO_LOOKUP_IDX("cs5535-gpio", 6, NULL, 0, GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP_IDX("cs5535-gpio", 25, NULL, 1, GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP_IDX("cs5535-gpio", 27, NULL, 2, GPIO_ACTIVE_LOW),
+		{ }
+	},
 };
 
 static struct platform_device geos_leds_dev = {
@@ -95,6 +96,7 @@ static struct platform_device *geos_devs[] __initdata = {
 static void __init register_geos(void)
 {
 	/* Setup LED control through leds-gpio driver */
+	gpiod_add_lookup_table(&geos_leds_gpio_table);
 	platform_add_devices(geos_devs, ARRAY_SIZE(geos_devs));
 }
 
@@ -120,9 +122,4 @@ static int __init geos_init(void)
 
 	return 0;
 }
-
-module_init(geos_init);
-
-MODULE_AUTHOR("Philip Prindeville <philipp@redfish-solutions.com>");
-MODULE_DESCRIPTION("Traverse Technologies Geos System Setup");
-MODULE_LICENSE("GPL");
+device_initcall(geos_init);

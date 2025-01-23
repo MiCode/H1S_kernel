@@ -1,7 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) ST-Ericsson SA 2010
  *
- * License Terms: GNU General Public License v2
  * Authors: Sundar Iyer <sundar.iyer@stericsson.com> for ST-Ericsson
  *          Bengt Jonsson <bengt.g.jonsson@stericsson.com> for ST-Ericsson
  *
@@ -67,74 +67,29 @@ static int power_state_active_get(void)
 
 static struct ux500_regulator_debug {
 	struct dentry *dir;
-	struct dentry *status_file;
-	struct dentry *power_state_cnt_file;
 	struct dbx500_regulator_info *regulator_array;
 	int num_regulators;
 	u8 *state_before_suspend;
 	u8 *state_after_suspend;
 } rdebug;
 
-void ux500_regulator_suspend_debug(void)
+static int ux500_regulator_power_state_cnt_show(struct seq_file *s, void *p)
 {
-	int i;
-	for (i = 0; i < rdebug.num_regulators; i++)
-		rdebug.state_before_suspend[i] =
-			rdebug.regulator_array[i].is_enabled;
-}
-
-void ux500_regulator_resume_debug(void)
-{
-	int i;
-	for (i = 0; i < rdebug.num_regulators; i++)
-		rdebug.state_after_suspend[i] =
-			rdebug.regulator_array[i].is_enabled;
-}
-
-static int ux500_regulator_power_state_cnt_print(struct seq_file *s, void *p)
-{
-	struct device *dev = s->private;
-	int err;
-
 	/* print power state count */
-	err = seq_printf(s, "ux500-regulator power state count: %i\n",
-		power_state_active_get());
-	if (err < 0)
-		dev_err(dev, "seq_printf overflow\n");
+	seq_printf(s, "ux500-regulator power state count: %i\n",
+		   power_state_active_get());
 
 	return 0;
 }
+DEFINE_SHOW_ATTRIBUTE(ux500_regulator_power_state_cnt);
 
-static int ux500_regulator_power_state_cnt_open(struct inode *inode,
-	struct file *file)
+static int ux500_regulator_status_show(struct seq_file *s, void *p)
 {
-	return single_open(file, ux500_regulator_power_state_cnt_print,
-		inode->i_private);
-}
-
-static const struct file_operations ux500_regulator_power_state_cnt_fops = {
-	.open = ux500_regulator_power_state_cnt_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-	.owner = THIS_MODULE,
-};
-
-static int ux500_regulator_status_print(struct seq_file *s, void *p)
-{
-	struct device *dev = s->private;
-	int err;
 	int i;
 
 	/* print dump header */
-	err = seq_printf(s, "ux500-regulator status:\n");
-	if (err < 0)
-		dev_err(dev, "seq_printf overflow\n");
-
-	err = seq_printf(s, "%31s : %8s : %8s\n", "current",
-		"before", "after");
-	if (err < 0)
-		dev_err(dev, "seq_printf overflow\n");
+	seq_puts(s, "ux500-regulator status:\n");
+	seq_printf(s, "%31s : %8s : %8s\n", "current", "before", "after");
 
 	for (i = 0; i < rdebug.num_regulators; i++) {
 		struct dbx500_regulator_info *info;
@@ -142,37 +97,16 @@ static int ux500_regulator_status_print(struct seq_file *s, void *p)
 		info = &rdebug.regulator_array[i];
 
 		/* print status */
-		err = seq_printf(s, "%20s : %8s : %8s : %8s\n", info->desc.name,
-			info->is_enabled ? "enabled" : "disabled",
-			rdebug.state_before_suspend[i] ? "enabled" : "disabled",
-			rdebug.state_after_suspend[i] ? "enabled" : "disabled");
-		if (err < 0)
-			dev_err(dev, "seq_printf overflow\n");
+		seq_printf(s, "%20s : %8s : %8s : %8s\n",
+			   info->desc.name,
+			   info->is_enabled ? "enabled" : "disabled",
+			   rdebug.state_before_suspend[i] ? "enabled" : "disabled",
+			   rdebug.state_after_suspend[i] ? "enabled" : "disabled");
 	}
 
 	return 0;
 }
-
-static int ux500_regulator_status_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, ux500_regulator_status_print,
-		inode->i_private);
-}
-
-static const struct file_operations ux500_regulator_status_fops = {
-	.open = ux500_regulator_status_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-	.owner = THIS_MODULE,
-};
-
-int __attribute__((weak)) dbx500_regulator_testcase(
-	struct dbx500_regulator_info *regulator_info,
-	int num_regulators)
-{
-	return 0;
-}
+DEFINE_SHOW_ATTRIBUTE(ux500_regulator_status);
 
 int
 ux500_regulator_debug_init(struct platform_device *pdev,
@@ -181,53 +115,32 @@ ux500_regulator_debug_init(struct platform_device *pdev,
 {
 	/* create directory */
 	rdebug.dir = debugfs_create_dir("ux500-regulator", NULL);
-	if (!rdebug.dir)
-		goto exit_no_debugfs;
 
 	/* create "status" file */
-	rdebug.status_file = debugfs_create_file("status",
-		S_IRUGO, rdebug.dir, &pdev->dev,
-		&ux500_regulator_status_fops);
-	if (!rdebug.status_file)
-		goto exit_destroy_dir;
+	debugfs_create_file("status", 0444, rdebug.dir, &pdev->dev,
+			    &ux500_regulator_status_fops);
 
 	/* create "power-state-count" file */
-	rdebug.power_state_cnt_file = debugfs_create_file("power-state-count",
-		S_IRUGO, rdebug.dir, &pdev->dev,
-		&ux500_regulator_power_state_cnt_fops);
-	if (!rdebug.power_state_cnt_file)
-		goto exit_destroy_status;
+	debugfs_create_file("power-state-count", 0444, rdebug.dir,
+			    &pdev->dev, &ux500_regulator_power_state_cnt_fops);
 
 	rdebug.regulator_array = regulator_info;
 	rdebug.num_regulators = num_regulators;
 
 	rdebug.state_before_suspend = kzalloc(num_regulators, GFP_KERNEL);
-	if (!rdebug.state_before_suspend) {
-		dev_err(&pdev->dev,
-			"could not allocate memory for saving state\n");
+	if (!rdebug.state_before_suspend)
 		goto exit_destroy_power_state;
-	}
 
 	rdebug.state_after_suspend = kzalloc(num_regulators, GFP_KERNEL);
-	if (!rdebug.state_after_suspend) {
-		dev_err(&pdev->dev,
-			"could not allocate memory for saving state\n");
+	if (!rdebug.state_after_suspend)
 		goto exit_free;
-	}
 
-	dbx500_regulator_testcase(regulator_info, num_regulators);
 	return 0;
 
 exit_free:
 	kfree(rdebug.state_before_suspend);
 exit_destroy_power_state:
-	debugfs_remove(rdebug.power_state_cnt_file);
-exit_destroy_status:
-	debugfs_remove(rdebug.status_file);
-exit_destroy_dir:
-	debugfs_remove(rdebug.dir);
-exit_no_debugfs:
-	dev_err(&pdev->dev, "failed to create debugfs entries.\n");
+	debugfs_remove_recursive(rdebug.dir);
 	return -ENOMEM;
 }
 

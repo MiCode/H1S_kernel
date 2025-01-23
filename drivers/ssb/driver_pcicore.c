@@ -8,13 +8,13 @@
  * Licensed under the GNU/GPL. See COPYING for details.
  */
 
+#include "ssb_private.h"
+
 #include <linux/ssb/ssb.h>
 #include <linux/pci.h>
 #include <linux/export.h>
 #include <linux/delay.h>
 #include <linux/ssb/ssb_embedded.h>
-
-#include "ssb_private.h"
 
 static u32 ssb_pcie_read(struct ssb_pcicore *pc, u32 address);
 static void ssb_pcie_write(struct ssb_pcicore *pc, u32 address, u32 data);
@@ -55,7 +55,8 @@ void pcicore_write16(struct ssb_pcicore *pc, u16 offset, u16 value)
 #include <asm/paccess.h>
 /* Probe a 32bit value on the bus and catch bus exceptions.
  * Returns nonzero on a bus exception.
- * This is MIPS specific */
+ * This is MIPS specific
+ */
 #define mips_busprobe32(val, addr)	get_dbe((val), ((u32 *)(addr)))
 
 /* Assume one-hot slot wiring */
@@ -115,14 +116,14 @@ static int ssb_extpci_read_config(struct ssb_pcicore *pc,
 	u32 addr, val;
 	void __iomem *mmio;
 
-	SSB_WARN_ON(!pc->hostmode);
+	WARN_ON(!pc->hostmode);
 	if (unlikely(len != 1 && len != 2 && len != 4))
 		goto out;
 	addr = get_cfgspace_addr(pc, bus, dev, func, off);
 	if (unlikely(!addr))
 		goto out;
 	err = -ENOMEM;
-	mmio = ioremap_nocache(addr, len);
+	mmio = ioremap(addr, len);
 	if (!mmio)
 		goto out;
 
@@ -161,14 +162,14 @@ static int ssb_extpci_write_config(struct ssb_pcicore *pc,
 	u32 addr, val = 0;
 	void __iomem *mmio;
 
-	SSB_WARN_ON(!pc->hostmode);
+	WARN_ON(!pc->hostmode);
 	if (unlikely(len != 1 && len != 2 && len != 4))
 		goto out;
 	addr = get_cfgspace_addr(pc, bus, dev, func, off);
 	if (unlikely(!addr))
 		goto out;
 	err = -ENOMEM;
-	mmio = ioremap_nocache(addr, len);
+	mmio = ioremap(addr, len);
 	if (!mmio)
 		goto out;
 
@@ -255,7 +256,8 @@ static struct pci_controller ssb_pcicore_controller = {
 };
 
 /* This function is called when doing a pci_enable_device().
- * We must first check if the device is a device on the PCI-core bridge. */
+ * We must first check if the device is a device on the PCI-core bridge.
+ */
 int ssb_pcicore_plat_dev_init(struct pci_dev *d)
 {
 	if (d->bus->ops != &ssb_pcicore_pciops) {
@@ -263,7 +265,7 @@ int ssb_pcicore_plat_dev_init(struct pci_dev *d)
 		return -ENODEV;
 	}
 
-	ssb_info("PCI: Fixing up device %s\n", pci_name(d));
+	dev_info(&d->dev, "PCI: Fixing up device %s\n", pci_name(d));
 
 	/* Fix up interrupt lines */
 	d->irq = ssb_mips_irq(extpci_core->dev) + 2;
@@ -284,12 +286,12 @@ static void ssb_pcicore_fixup_pcibridge(struct pci_dev *dev)
 	if (dev->bus->number != 0 || PCI_SLOT(dev->devfn) != 0)
 		return;
 
-	ssb_info("PCI: Fixing up bridge %s\n", pci_name(dev));
+	dev_info(&dev->dev, "PCI: Fixing up bridge %s\n", pci_name(dev));
 
 	/* Enable PCI bridge bus mastering and memory space */
 	pci_set_master(dev);
 	if (pcibios_enable_device(dev, ~0) < 0) {
-		ssb_err("PCI: SSB bridge enable failed\n");
+		dev_err(&dev->dev, "PCI: SSB bridge enable failed\n");
 		return;
 	}
 
@@ -298,7 +300,8 @@ static void ssb_pcicore_fixup_pcibridge(struct pci_dev *dev)
 
 	/* Make sure our latency is high enough to handle the devices behind us */
 	lat = 168;
-	ssb_info("PCI: Fixing latency timer of device %s to %u\n",
+	dev_info(&dev->dev,
+		 "PCI: Fixing latency timer of device %s to %u\n",
 		 pci_name(dev), lat);
 	pci_write_config_byte(dev, PCI_LATENCY_TIMER, lat);
 }
@@ -322,7 +325,7 @@ static void ssb_pcicore_init_hostmode(struct ssb_pcicore *pc)
 		return;
 	extpci_core = pc;
 
-	ssb_dbg("PCIcore in host mode found\n");
+	dev_dbg(pc->dev->dev, "PCIcore in host mode found\n");
 	/* Reset devices on the external PCI bus */
 	val = SSB_PCICORE_CTL_RST_OE;
 	val |= SSB_PCICORE_CTL_CLK_OE;
@@ -337,7 +340,7 @@ static void ssb_pcicore_init_hostmode(struct ssb_pcicore *pc)
 	udelay(1); /* Assertion time demanded by the PCI standard */
 
 	if (pc->dev->bus->has_cardbus_slot) {
-		ssb_dbg("CardBus slot detected\n");
+		dev_dbg(pc->dev->dev, "CardBus slot detected\n");
 		pc->cardbusmode = 1;
 		/* GPIO 1 resets the bridge */
 		ssb_gpio_out(pc->dev->bus, 1, 1);
@@ -357,6 +360,16 @@ static void ssb_pcicore_init_hostmode(struct ssb_pcicore *pc)
 	pcicore_write32(pc, SSB_PCICORE_SBTOPCI2,
 			SSB_PCICORE_SBTOPCI_MEM | SSB_PCI_DMA);
 
+	/*
+	 * Accessing PCI config without a proper delay after devices reset (not
+	 * GPIO reset) was causing reboots on WRT300N v1.0 (BCM4704).
+	 * Tested delay 850 us lowered reboot chance to 50-80%, 1000 us fixed it
+	 * completely. Flushing all writes was also tested but with no luck.
+	 * The same problem was reported for WRT350N v1 (BCM4705), so we just
+	 * sleep here unconditionally.
+	 */
+	usleep_range(1000, 2000);
+
 	/* Enable PCI bridge BAR0 prefetch and burst */
 	val = PCI_COMMAND_MASTER | PCI_COMMAND_MEMORY;
 	ssb_extpci_write_config(pc, 0, 0, 0, PCI_COMMAND, &val, 2);
@@ -370,11 +383,13 @@ static void ssb_pcicore_init_hostmode(struct ssb_pcicore *pc)
 
 	/* Ok, ready to run, register it to the system.
 	 * The following needs change, if we want to port hostmode
-	 * to non-MIPS platform. */
-	ssb_pcicore_controller.io_map_base = (unsigned long)ioremap_nocache(SSB_PCI_MEM, 0x04000000);
+	 * to non-MIPS platform.
+	 */
+	ssb_pcicore_controller.io_map_base = (unsigned long)ioremap(SSB_PCI_MEM, 0x04000000);
 	set_io_port_base(ssb_pcicore_controller.io_map_base);
 	/* Give some time to the PCI controller to configure itself with the new
-	 * values. Not waiting at this point causes crashes of the machine. */
+	 * values. Not waiting at this point causes crashes of the machine.
+	 */
 	mdelay(10);
 	register_pci_controller(&ssb_pcicore_controller);
 }
@@ -394,7 +409,8 @@ static int pcicore_is_in_hostmode(struct ssb_pcicore *pc)
 		return 0;
 
 	/* The 200-pin BCM4712 package does not bond out PCI. Even when
-	 * PCI is bonded out, some boards may leave the pins floating. */
+	 * PCI is bonded out, some boards may leave the pins floating.
+	 */
 	if (bus->chip_id == 0x4712) {
 		if (bus->chip_package == SSB_CHIPPACK_BCM4712S)
 			return 0;
@@ -674,7 +690,8 @@ int ssb_pcicore_dev_irqvecs_enable(struct ssb_pcicore *pc,
 	if (dev->bus->bustype != SSB_BUSTYPE_PCI) {
 		/* This SSB device is not on a PCI host-bus. So the IRQs are
 		 * not routed through the PCI core.
-		 * So we must not enable routing through the PCI core. */
+		 * So we must not enable routing through the PCI core.
+		 */
 		goto out;
 	}
 
@@ -691,7 +708,7 @@ int ssb_pcicore_dev_irqvecs_enable(struct ssb_pcicore *pc,
 		/* Calculate the "coremask" for the device. */
 		coremask = (1 << dev->core_index);
 
-		SSB_WARN_ON(bus->bustype != SSB_BUSTYPE_PCI);
+		WARN_ON(bus->bustype != SSB_BUSTYPE_PCI);
 		err = pci_read_config_dword(bus->host_pci, SSB_PCI_IRQMASK, &tmp);
 		if (err)
 			goto out;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/types.h>
 #include <linux/netfilter.h>
 #include <net/tcp.h>
@@ -98,14 +99,14 @@ static void nf_ct_sack_block_adjust(struct sk_buff *skb,
 			new_end_seq = htonl(ntohl(sack->end_seq) -
 				      seq->offset_before);
 
-		pr_debug("sack_adjust: start_seq: %d->%d, end_seq: %d->%d\n",
-			 ntohl(sack->start_seq), new_start_seq,
-			 ntohl(sack->end_seq), new_end_seq);
+		pr_debug("sack_adjust: start_seq: %u->%u, end_seq: %u->%u\n",
+			 ntohl(sack->start_seq), ntohl(new_start_seq),
+			 ntohl(sack->end_seq), ntohl(new_end_seq));
 
 		inet_proto_csum_replace4(&tcph->check, skb,
-					 sack->start_seq, new_start_seq, 0);
+					 sack->start_seq, new_start_seq, false);
 		inet_proto_csum_replace4(&tcph->check, skb,
-					 sack->end_seq, new_end_seq, 0);
+					 sack->end_seq, new_end_seq, false);
 		sack->start_seq = new_start_seq;
 		sack->end_seq = new_end_seq;
 		sackoff += sizeof(*sack);
@@ -115,19 +116,20 @@ static void nf_ct_sack_block_adjust(struct sk_buff *skb,
 /* TCP SACK sequence number adjustment */
 static unsigned int nf_ct_sack_adjust(struct sk_buff *skb,
 				      unsigned int protoff,
-				      struct tcphdr *tcph,
 				      struct nf_conn *ct,
 				      enum ip_conntrack_info ctinfo)
 {
-	unsigned int dir, optoff, optend;
+	struct tcphdr *tcph = (void *)skb->data + protoff;
 	struct nf_conn_seqadj *seqadj = nfct_seqadj(ct);
+	unsigned int dir, optoff, optend;
 
 	optoff = protoff + sizeof(struct tcphdr);
 	optend = protoff + tcph->doff * 4;
 
-	if (!skb_make_writable(skb, optend))
+	if (skb_ensure_writable(skb, optend))
 		return 0;
 
+	tcph = (void *)skb->data + protoff;
 	dir = CTINFO2DIR(ctinfo);
 
 	while (optoff < optend) {
@@ -169,12 +171,12 @@ int nf_ct_seq_adjust(struct sk_buff *skb,
 	s32 seqoff, ackoff;
 	struct nf_conn_seqadj *seqadj = nfct_seqadj(ct);
 	struct nf_ct_seqadj *this_way, *other_way;
-	int res;
+	int res = 1;
 
 	this_way  = &seqadj->seq[dir];
 	other_way = &seqadj->seq[!dir];
 
-	if (!skb_make_writable(skb, protoff + sizeof(*tcph)))
+	if (skb_ensure_writable(skb, protoff + sizeof(*tcph)))
 		return 0;
 
 	tcph = (void *)skb->data + protoff;
@@ -184,26 +186,31 @@ int nf_ct_seq_adjust(struct sk_buff *skb,
 	else
 		seqoff = this_way->offset_before;
 
+	newseq = htonl(ntohl(tcph->seq) + seqoff);
+	inet_proto_csum_replace4(&tcph->check, skb, tcph->seq, newseq, false);
+	pr_debug("Adjusting sequence number from %u->%u\n",
+		 ntohl(tcph->seq), ntohl(newseq));
+	tcph->seq = newseq;
+
+	if (!tcph->ack)
+		goto out;
+
 	if (after(ntohl(tcph->ack_seq) - other_way->offset_before,
 		  other_way->correction_pos))
 		ackoff = other_way->offset_after;
 	else
 		ackoff = other_way->offset_before;
 
-	newseq = htonl(ntohl(tcph->seq) + seqoff);
 	newack = htonl(ntohl(tcph->ack_seq) - ackoff);
-
-	inet_proto_csum_replace4(&tcph->check, skb, tcph->seq, newseq, 0);
-	inet_proto_csum_replace4(&tcph->check, skb, tcph->ack_seq, newack, 0);
-
-	pr_debug("Adjusting sequence number from %u->%u, ack from %u->%u\n",
+	inet_proto_csum_replace4(&tcph->check, skb, tcph->ack_seq, newack,
+				 false);
+	pr_debug("Adjusting ack number from %u->%u, ack from %u->%u\n",
 		 ntohl(tcph->seq), ntohl(newseq), ntohl(tcph->ack_seq),
 		 ntohl(newack));
-
-	tcph->seq = newseq;
 	tcph->ack_seq = newack;
 
-	res = nf_ct_sack_adjust(skb, protoff, tcph, ct, ctinfo);
+	res = nf_ct_sack_adjust(skb, protoff, ct, ctinfo);
+out:
 	spin_unlock_bh(&ct->lock);
 
 	return res;
@@ -225,19 +232,3 @@ s32 nf_ct_seq_offset(const struct nf_conn *ct,
 		 this_way->offset_after : this_way->offset_before;
 }
 EXPORT_SYMBOL_GPL(nf_ct_seq_offset);
-
-static struct nf_ct_ext_type nf_ct_seqadj_extend __read_mostly = {
-	.len	= sizeof(struct nf_conn_seqadj),
-	.align	= __alignof__(struct nf_conn_seqadj),
-	.id	= NF_CT_EXT_SEQADJ,
-};
-
-int nf_conntrack_seqadj_init(void)
-{
-	return nf_ct_extend_register(&nf_ct_seqadj_extend);
-}
-
-void nf_conntrack_seqadj_fini(void)
-{
-	nf_ct_extend_unregister(&nf_ct_seqadj_extend);
-}

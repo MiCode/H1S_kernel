@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #define pr_fmt(fmt) KBUILD_MODNAME ":%s: " fmt, __func__
 
 #ifdef CONFIG_PROC_FS
@@ -7,7 +8,7 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/proc_fs.h>
-#include <linux/time.h>
+#include <linux/ktime.h>
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
 #include <linux/atmmpc.h>
@@ -52,16 +53,12 @@ static ssize_t proc_mpc_write(struct file *file, const char __user *buff,
 
 static int parse_qos(const char *buff);
 
-/*
- *   Define allowed FILE OPERATIONS
- */
-static const struct file_operations mpc_file_operations = {
-	.owner =	THIS_MODULE,
-	.open =		proc_mpc_open,
-	.read =		seq_read,
-	.llseek =	seq_lseek,
-	.write =	proc_mpc_write,
-	.release =	seq_release,
+static const struct proc_ops mpc_proc_ops = {
+	.proc_open	= proc_mpc_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_write	= proc_mpc_write,
+	.proc_release	= seq_release,
 };
 
 /*
@@ -137,7 +134,7 @@ static int mpc_show(struct seq_file *m, void *v)
 	int i;
 	in_cache_entry *in_entry;
 	eg_cache_entry *eg_entry;
-	struct timeval now;
+	time64_t now;
 	unsigned char ip_string[16];
 
 	if (v == SEQ_START_TOKEN) {
@@ -147,15 +144,17 @@ static int mpc_show(struct seq_file *m, void *v)
 
 	seq_printf(m, "\nInterface %d:\n\n", mpc->dev_num);
 	seq_printf(m, "Ingress Entries:\nIP address      State      Holding time  Packets fwded  VPI  VCI\n");
-	do_gettimeofday(&now);
+	now = ktime_get_seconds();
 
 	for (in_entry = mpc->in_cache; in_entry; in_entry = in_entry->next) {
+		unsigned long seconds_delta = now - in_entry->time;
+
 		sprintf(ip_string, "%pI4", &in_entry->ctrl_info.in_dst_ip);
 		seq_printf(m, "%-16s%s%-14lu%-12u",
 			   ip_string,
 			   ingress_state_string(in_entry->entry_state),
 			   in_entry->ctrl_info.holding_time -
-			   (now.tv_sec-in_entry->tv.tv_sec),
+			   seconds_delta,
 			   in_entry->packets_fwded);
 		if (in_entry->shortcut)
 			seq_printf(m, "   %-3d  %-3d",
@@ -168,13 +167,14 @@ static int mpc_show(struct seq_file *m, void *v)
 	seq_printf(m, "Egress Entries:\nIngress MPC ATM addr\nCache-id        State      Holding time  Packets recvd  Latest IP addr   VPI VCI\n");
 	for (eg_entry = mpc->eg_cache; eg_entry; eg_entry = eg_entry->next) {
 		unsigned char *p = eg_entry->ctrl_info.in_MPC_data_ATM_addr;
+		unsigned long seconds_delta = now - eg_entry->time;
+
 		for (i = 0; i < ATM_ESA_LEN; i++)
 			seq_printf(m, "%02x", p[i]);
 		seq_printf(m, "\n%-16lu%s%-14lu%-15u",
 			   (unsigned long)ntohl(eg_entry->ctrl_info.cache_id),
 			   egress_state_string(eg_entry->entry_state),
-			   (eg_entry->ctrl_info.holding_time -
-			    (now.tv_sec-eg_entry->tv.tv_sec)),
+			   (eg_entry->ctrl_info.holding_time - seconds_delta),
 			   eg_entry->packets_rcvd);
 
 		/* latest IP address */
@@ -219,11 +219,12 @@ static ssize_t proc_mpc_write(struct file *file, const char __user *buff,
 	if (!page)
 		return -ENOMEM;
 
-	for (p = page, len = 0; len < nbytes; p++, len++) {
+	for (p = page, len = 0; len < nbytes; p++) {
 		if (get_user(*p, buff++)) {
 			free_page((unsigned long)page);
 			return -EFAULT;
 		}
+		len += 1;
 		if (*p == '\0' || *p == '\n')
 			break;
 	}
@@ -272,7 +273,7 @@ static int parse_qos(const char *buff)
 	qos.rxtp.max_pcr = rx_pcr;
 	qos.rxtp.max_sdu = rx_sdu;
 	qos.aal = ATM_AAL5;
-	dprintk("parse_qos(): setting qos paramameters to tx=%d,%d rx=%d,%d\n",
+	dprintk("parse_qos(): setting qos parameters to tx=%d,%d rx=%d,%d\n",
 		qos.txtp.max_pcr, qos.txtp.max_sdu,
 		qos.rxtp.max_pcr, qos.rxtp.max_sdu);
 
@@ -287,7 +288,7 @@ int mpc_proc_init(void)
 {
 	struct proc_dir_entry *p;
 
-	p = proc_create(STAT_FILE_NAME, 0, atm_proc_root, &mpc_file_operations);
+	p = proc_create(STAT_FILE_NAME, 0, atm_proc_root, &mpc_proc_ops);
 	if (!p) {
 		pr_err("Unable to initialize /proc/atm/%s\n", STAT_FILE_NAME);
 		return -ENOMEM;
@@ -304,9 +305,3 @@ void mpc_proc_clean(void)
 }
 
 #endif /* CONFIG_PROC_FS */
-
-
-
-
-
-

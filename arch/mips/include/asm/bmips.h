@@ -48,8 +48,8 @@
 #include <asm/r4kcache.h>
 #include <asm/smp-ops.h>
 
-extern struct plat_smp_ops bmips43xx_smp_ops;
-extern struct plat_smp_ops bmips5000_smp_ops;
+extern const struct plat_smp_ops bmips43xx_smp_ops;
+extern const struct plat_smp_ops bmips5000_smp_ops;
 
 static inline int register_bmips_smp_ops(void)
 {
@@ -75,18 +75,20 @@ static inline int register_bmips_smp_ops(void)
 #endif
 }
 
-extern char bmips_reset_nmi_vec;
-extern char bmips_reset_nmi_vec_end;
-extern char bmips_smp_movevec;
-extern char bmips_smp_int_vec;
-extern char bmips_smp_int_vec_end;
+extern char bmips_reset_nmi_vec[];
+extern char bmips_reset_nmi_vec_end[];
+extern char bmips_smp_movevec[];
+extern char bmips_smp_int_vec[];
+extern char bmips_smp_int_vec_end[];
 
 extern int bmips_smp_enabled;
 extern int bmips_cpu_offset;
 extern cpumask_t bmips_booted_mask;
+extern unsigned long bmips_tp1_irqs;
 
 extern void bmips_ebase_setup(void);
 extern asmlinkage void plat_wired_tlb_setup(void);
+extern void bmips_cpu_setup(void);
 
 static inline unsigned long bmips_read_zscm_reg(unsigned int offset)
 {

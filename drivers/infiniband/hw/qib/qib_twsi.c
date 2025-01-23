@@ -105,6 +105,7 @@ static void scl_out(struct qib_devdata *dd, u8 bit)
 		udelay(2);
 	else {
 		int rise_usec;
+
 		for (rise_usec = SCL_WAIT_USEC; rise_usec > 0; rise_usec -= 2) {
 			if (mask & dd->f_gpio_mod(dd, 0, 0, 0))
 				break;
@@ -167,6 +168,7 @@ static void stop_cmd(struct qib_devdata *dd);
 /**
  * rd_byte - read a byte, sending STOP on last, else ACK
  * @dd: the qlogic_ib device
+ * @last: identifies the last read
  *
  * Returns byte shifted out of device
  */
@@ -326,6 +328,7 @@ int qib_twsi_reset(struct qib_devdata *dd)
 static int qib_twsi_wr(struct qib_devdata *dd, int data, int flags)
 {
 	int ret = 1;
+
 	if (flags & QIB_TWSI_START)
 		start_seq(dd);
 
@@ -435,8 +438,7 @@ int qib_twsi_blk_wr(struct qib_devdata *dd, int dev, int addr,
 	int sub_len;
 	const u8 *bp = buffer;
 	int max_wait_time, i;
-	int ret;
-	ret = 1;
+	int ret = 1;
 
 	while (len > 0) {
 		if (dev == QIB_TWSI_NO_DEV) {

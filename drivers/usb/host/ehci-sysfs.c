@@ -1,26 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright (C) 2007 by Alan Stern
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 /* this file is part of ehci-hcd.c */
 
 
 /* Display the ports dedicated to the companion controller */
-static ssize_t show_companion(struct device *dev,
+static ssize_t companion_show(struct device *dev,
 			      struct device_attribute *attr,
 			      char *buf)
 {
@@ -29,7 +16,7 @@ static ssize_t show_companion(struct device *dev,
 	int			count = PAGE_SIZE;
 	char			*ptr = buf;
 
-	ehci = hcd_to_ehci(bus_to_hcd(dev_get_drvdata(dev)));
+	ehci = hcd_to_ehci(dev_get_drvdata(dev));
 	nports = HCS_N_PORTS(ehci->hcs_params);
 
 	for (index = 0; index < nports; ++index) {
@@ -47,14 +34,14 @@ static ssize_t show_companion(struct device *dev,
  * Syntax is "[-]portnum", where a leading '-' sign means
  * return control of the port to the EHCI controller.
  */
-static ssize_t store_companion(struct device *dev,
+static ssize_t companion_store(struct device *dev,
 			       struct device_attribute *attr,
 			       const char *buf, size_t count)
 {
 	struct ehci_hcd		*ehci;
 	int			portnum, new_owner;
 
-	ehci = hcd_to_ehci(bus_to_hcd(dev_get_drvdata(dev)));
+	ehci = hcd_to_ehci(dev_get_drvdata(dev));
 	new_owner = PORT_OWNER;		/* Owned by companion */
 	if (sscanf(buf, "%d", &portnum) != 1)
 		return -EINVAL;
@@ -72,26 +59,26 @@ static ssize_t store_companion(struct device *dev,
 	set_owner(ehci, portnum, new_owner);
 	return count;
 }
-static DEVICE_ATTR(companion, 0644, show_companion, store_companion);
+static DEVICE_ATTR_RW(companion);
 
 
 /*
  * Display / Set uframe_periodic_max
  */
-static ssize_t show_uframe_periodic_max(struct device *dev,
+static ssize_t uframe_periodic_max_show(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
 {
 	struct ehci_hcd		*ehci;
 	int			n;
 
-	ehci = hcd_to_ehci(bus_to_hcd(dev_get_drvdata(dev)));
+	ehci = hcd_to_ehci(dev_get_drvdata(dev));
 	n = scnprintf(buf, PAGE_SIZE, "%d\n", ehci->uframe_periodic_max);
 	return n;
 }
 
 
-static ssize_t store_uframe_periodic_max(struct device *dev,
+static ssize_t uframe_periodic_max_store(struct device *dev,
 					struct device_attribute *attr,
 					const char *buf, size_t count)
 {
@@ -101,7 +88,7 @@ static ssize_t store_uframe_periodic_max(struct device *dev,
 	unsigned long		flags;
 	ssize_t			ret;
 
-	ehci = hcd_to_ehci(bus_to_hcd(dev_get_drvdata(dev)));
+	ehci = hcd_to_ehci(dev_get_drvdata(dev));
 	if (kstrtouint(buf, 0, &uframe_periodic_max) < 0)
 		return -EINVAL;
 
@@ -132,7 +119,7 @@ static ssize_t store_uframe_periodic_max(struct device *dev,
 
 		if (allocated_max > uframe_periodic_max) {
 			ehci_info(ehci,
-				"cannot decrease uframe_periodic_max becase "
+				"cannot decrease uframe_periodic_max because "
 				"periodic bandwidth is already allocated "
 				"(%u > %u)\n",
 				allocated_max, uframe_periodic_max);
@@ -156,7 +143,7 @@ out_unlock:
 	spin_unlock_irqrestore (&ehci->lock, flags);
 	return ret;
 }
-static DEVICE_ATTR(uframe_periodic_max, 0644, show_uframe_periodic_max, store_uframe_periodic_max);
+static DEVICE_ATTR_RW(uframe_periodic_max);
 
 
 static inline int create_sysfs_files(struct ehci_hcd *ehci)

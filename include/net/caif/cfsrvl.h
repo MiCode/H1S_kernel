@@ -1,7 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) ST-Ericsson AB 2010
  * Author:	Sjur Brendeland
- * License terms: GNU General Public License (GPL) version 2
  */
 
 #ifndef CFSRVL_H_
@@ -32,9 +32,6 @@ struct cflayer *cfvidl_create(u8 linkid, struct dev_info *dev_info);
 struct cflayer *cfrfml_create(u8 linkid, struct dev_info *dev_info,
 				int mtu_size);
 struct cflayer *cfdbgl_create(u8 linkid, struct dev_info *dev_info);
-
-void cfsrvl_ctrlcmd(struct cflayer *layr, enum caif_ctrlcmd ctrl,
-		     int phyid);
 
 bool cfsrvl_phyid_match(struct cflayer *layer, int phyid);
 

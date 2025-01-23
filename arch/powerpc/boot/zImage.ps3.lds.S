@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 OUTPUT_ARCH(powerpc:common)
 ENTRY(_zimage_start)
 EXTERN(_zimage_start)
@@ -7,7 +8,7 @@ SECTIONS
   .kernel:vmlinux.bin : { *(.kernel:vmlinux.bin) }
   _vmlinux_end =  .;
 
-  . = ALIGN(4096);
+  . = ALIGN(8);
   _dtb_start = .;
   .kernel:dtb : { *(.kernel:dtb) }
   _dtb_end = .;

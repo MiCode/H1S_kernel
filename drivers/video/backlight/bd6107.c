@@ -1,20 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ROHM Semiconductor BD6107 LED Driver
  *
  * Copyright (C) 2013 Ideas on board SPRL
  *
  * Contact: Laurent Pinchart <laurent.pinchart@ideasonboard.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/backlight.h>
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/fb.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/platform_data/bd6107.h>
@@ -74,6 +71,7 @@ struct bd6107 {
 	struct i2c_client *client;
 	struct backlight_device *backlight;
 	struct bd6107_platform_data *pdata;
+	struct gpio_desc *reset;
 };
 
 static int bd6107_write(struct bd6107 *bd, u8 reg, u8 data)
@@ -84,12 +82,7 @@ static int bd6107_write(struct bd6107 *bd, u8 reg, u8 data)
 static int bd6107_backlight_update_status(struct backlight_device *backlight)
 {
 	struct bd6107 *bd = bl_get_data(backlight);
-	int brightness = backlight->props.brightness;
-
-	if (backlight->props.power != FB_BLANK_UNBLANK ||
-	    backlight->props.fb_blank != FB_BLANK_UNBLANK ||
-	    backlight->props.state & (BL_CORE_SUSPENDED | BL_CORE_FBBLANK))
-		brightness = 0;
+	int brightness = backlight_get_brightness(backlight);
 
 	if (brightness) {
 		bd6107_write(bd, BD6107_PORTSEL, BD6107_PORTSEL_LEDM(2) |
@@ -97,17 +90,13 @@ static int bd6107_backlight_update_status(struct backlight_device *backlight)
 		bd6107_write(bd, BD6107_MAINCNT1, brightness);
 		bd6107_write(bd, BD6107_LEDCNT1, BD6107_LEDCNT1_LEDONOFF1);
 	} else {
-		gpio_set_value(bd->pdata->reset, 0);
+		/* Assert the reset line (gpiolib will handle active low) */
+		gpiod_set_value(bd->reset, 1);
 		msleep(24);
-		gpio_set_value(bd->pdata->reset, 1);
+		gpiod_set_value(bd->reset, 0);
 	}
 
 	return 0;
-}
-
-static int bd6107_backlight_get_brightness(struct backlight_device *backlight)
-{
-	return backlight->props.brightness;
 }
 
 static int bd6107_backlight_check_fb(struct backlight_device *backlight,
@@ -115,18 +104,16 @@ static int bd6107_backlight_check_fb(struct backlight_device *backlight,
 {
 	struct bd6107 *bd = bl_get_data(backlight);
 
-	return bd->pdata->fbdev == NULL || bd->pdata->fbdev == info->dev;
+	return !bd->pdata->dev || bd->pdata->dev == info->device;
 }
 
 static const struct backlight_ops bd6107_backlight_ops = {
 	.options	= BL_CORE_SUSPENDRESUME,
 	.update_status	= bd6107_backlight_update_status,
-	.get_brightness	= bd6107_backlight_get_brightness,
 	.check_fb	= bd6107_backlight_check_fb,
 };
 
-static int bd6107_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int bd6107_probe(struct i2c_client *client)
 {
 	struct bd6107_platform_data *pdata = dev_get_platdata(&client->dev);
 	struct backlight_device *backlight;
@@ -134,8 +121,8 @@ static int bd6107_probe(struct i2c_client *client,
 	struct bd6107 *bd;
 	int ret;
 
-	if (pdata == NULL || !pdata->reset) {
-		dev_err(&client->dev, "No reset GPIO in platform data\n");
+	if (pdata == NULL) {
+		dev_err(&client->dev, "No platform data\n");
 		return -EINVAL;
 	}
 
@@ -153,10 +140,16 @@ static int bd6107_probe(struct i2c_client *client,
 	bd->client = client;
 	bd->pdata = pdata;
 
-	ret = devm_gpio_request_one(&client->dev, pdata->reset,
-				    GPIOF_DIR_OUT | GPIOF_INIT_LOW, "reset");
-	if (ret < 0) {
+	/*
+	 * Request the reset GPIO line with GPIOD_OUT_HIGH meaning asserted,
+	 * so in the machine descriptor table (or other hardware description),
+	 * the line should be flagged as active low so this will assert
+	 * the reset.
+	 */
+	bd->reset = devm_gpiod_get(&client->dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(bd->reset)) {
 		dev_err(&client->dev, "unable to request reset GPIO\n");
+		ret = PTR_ERR(bd->reset);
 		return ret;
 	}
 
@@ -181,14 +174,12 @@ static int bd6107_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int bd6107_remove(struct i2c_client *client)
+static void bd6107_remove(struct i2c_client *client)
 {
 	struct backlight_device *backlight = i2c_get_clientdata(client);
 
 	backlight->props.brightness = 0;
 	backlight_update_status(backlight);
-
-	return 0;
 }
 
 static const struct i2c_device_id bd6107_ids[] = {

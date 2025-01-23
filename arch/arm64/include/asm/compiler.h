@@ -1,30 +1,40 @@
-/*
- * Based on arch/arm/include/asm/compiler.h
- *
- * Copyright (C) 2012 ARM Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_COMPILER_H
 #define __ASM_COMPILER_H
 
-/*
- * This is used to ensure the compiler did actually allocate the register we
- * asked it for some inline assembly sequences.  Apparently we can't trust the
- * compiler from one version to another so a bit of paranoia won't hurt.  This
- * string is meant to be concatenated with the inline asm string and will
- * cause compilation to stop on mismatch.  (for details, see gcc PR 15089)
- */
-#define __asmeq(x, y)  ".ifnc " x "," y " ; .err ; .endif\n\t"
+#ifdef ARM64_ASM_ARCH
+#define ARM64_ASM_PREAMBLE ".arch " ARM64_ASM_ARCH "\n"
+#else
+#define ARM64_ASM_PREAMBLE
+#endif
 
-#endif	/* __ASM_COMPILER_H */
+#define xpaclri(ptr)							\
+({									\
+	register unsigned long __xpaclri_ptr asm("x30") = (ptr);	\
+									\
+	asm(								\
+	ARM64_ASM_PREAMBLE						\
+	"	hint	#7\n"						\
+	: "+r" (__xpaclri_ptr));					\
+									\
+	__xpaclri_ptr;							\
+})
+
+#ifdef CONFIG_ARM64_PTR_AUTH_KERNEL
+#define ptrauth_strip_kernel_insn_pac(ptr)	xpaclri(ptr)
+#else
+#define ptrauth_strip_kernel_insn_pac(ptr)	(ptr)
+#endif
+
+#ifdef CONFIG_ARM64_PTR_AUTH
+#define ptrauth_strip_user_insn_pac(ptr)	xpaclri(ptr)
+#else
+#define ptrauth_strip_user_insn_pac(ptr)	(ptr)
+#endif
+
+#if !defined(CONFIG_BUILTIN_RETURN_ADDRESS_STRIPS_PAC)
+#define __builtin_return_address(val)					\
+	(void *)(ptrauth_strip_kernel_insn_pac((unsigned long)__builtin_return_address(val)))
+#endif
+
+#endif /* __ASM_COMPILER_H */

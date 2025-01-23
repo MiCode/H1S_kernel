@@ -1,14 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * ak4671.h  --  audio driver for AK4671
  *
  * Copyright (C) 2009 Samsung Electronics Co.Ltd
  * Author: Joonyoung Shim <jy0922.shim@samsung.com>
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #ifndef _AK4671_H
@@ -104,8 +99,6 @@
 #define AK4671_SIDETONE_VOLUME_CONTROL		0x58
 #define AK4671_DIGITAL_MIXING_CONTROL2		0x59
 #define AK4671_SAR_ADC_CONTROL			0x5a
-
-#define AK4671_CACHEREGNUM			(AK4671_SAR_ADC_CONTROL + 1)
 
 /* Bitfield Definitions */
 

@@ -26,21 +26,23 @@
 #ifndef _I915_DRM_H_
 #define _I915_DRM_H_
 
-#include <drm/i915_pciids.h>
-#include <uapi/drm/i915_drm.h>
+#include <linux/types.h>
 
 /* For use by IPS driver */
-extern unsigned long i915_read_mch_val(void);
-extern bool i915_gpu_raise(void);
-extern bool i915_gpu_lower(void);
-extern bool i915_gpu_busy(void);
-extern bool i915_gpu_turbo_disable(void);
+unsigned long i915_read_mch_val(void);
+bool i915_gpu_raise(void);
+bool i915_gpu_lower(void);
+bool i915_gpu_busy(void);
+bool i915_gpu_turbo_disable(void);
+
+/* Exported from arch/x86/kernel/early-quirks.c */
+extern struct resource intel_graphics_stolen_res;
 
 /*
  * The Bridge device's PCI config space has information about the
  * fb aperture size and the amount of pre-reserved memory.
  * This is all handled in the intel-gtt.ko module. i915.ko only
- * cares about the vga bit for the vga rbiter.
+ * cares about the vga bit for the vga arbiter.
  */
 #define INTEL_GMCH_CTRL		0x52
 #define INTEL_GMCH_VGA_DISABLE  (1 << 1)
@@ -55,6 +57,12 @@ extern bool i915_gpu_turbo_disable(void);
 #define    BDW_GMCH_GMS_MASK    0xff
 
 #define I830_GMCH_CTRL			0x52
+
+#define I830_GMCH_GMS_MASK		0x70
+#define I830_GMCH_GMS_LOCAL		0x10
+#define I830_GMCH_GMS_STOLEN_512	0x20
+#define I830_GMCH_GMS_STOLEN_1024	0x30
+#define I830_GMCH_GMS_STOLEN_8192	0x40
 
 #define I855_GMCH_GMS_MASK		0xF0
 #define I855_GMCH_GMS_STOLEN_0M		0x0
@@ -71,5 +79,24 @@ extern bool i915_gpu_turbo_disable(void);
 #define INTEL_GMCH_GMS_STOLEN_160M	(0xb << 4)
 #define INTEL_GMCH_GMS_STOLEN_224M	(0xc << 4)
 #define INTEL_GMCH_GMS_STOLEN_352M	(0xd << 4)
+
+#define I830_DRB3		0x63
+#define I85X_DRB3		0x43
+#define I865_TOUD		0xc4
+
+#define I830_ESMRAMC		0x91
+#define I845_ESMRAMC		0x9e
+#define I85X_ESMRAMC		0x61
+#define    TSEG_ENABLE		(1 << 0)
+#define    I830_TSEG_SIZE_512K	(0 << 1)
+#define    I830_TSEG_SIZE_1M	(1 << 1)
+#define    I845_TSEG_SIZE_MASK	(3 << 1)
+#define    I845_TSEG_SIZE_512K	(2 << 1)
+#define    I845_TSEG_SIZE_1M	(3 << 1)
+
+#define INTEL_BSM		0x5c
+#define INTEL_GEN11_BSM_DW0	0xc0
+#define INTEL_GEN11_BSM_DW1	0xc4
+#define   INTEL_BSM_MASK	(-(1u << 20))
 
 #endif				/* _I915_DRM_H_ */

@@ -12,7 +12,7 @@
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
 #include <asm/processor.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/cache.h>
 #include <asm/io.h>
 
@@ -22,7 +22,7 @@ enum cache_type {
 	CACHE_TYPE_UNIFIED,
 };
 
-static int cache_seq_show(struct seq_file *file, void *iter)
+static int cache_debugfs_show(struct seq_file *file, void *iter)
 {
 	unsigned int cache_type = (unsigned int)file->private;
 	struct cache_info *cache;
@@ -36,7 +36,7 @@ static int cache_seq_show(struct seq_file *file, void *iter)
 	 */
 	jump_to_uncached();
 
-	ccr = __raw_readl(CCR);
+	ccr = __raw_readl(SH_CCR);
 	if ((ccr & CCR_CACHE_ENABLE) == 0) {
 		back_to_cached();
 
@@ -94,37 +94,14 @@ static int cache_seq_show(struct seq_file *file, void *iter)
 	return 0;
 }
 
-static int cache_debugfs_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, cache_seq_show, inode->i_private);
-}
-
-static const struct file_operations cache_debugfs_fops = {
-	.owner		= THIS_MODULE,
-	.open		= cache_debugfs_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(cache_debugfs);
 
 static int __init cache_debugfs_init(void)
 {
-	struct dentry *dcache_dentry, *icache_dentry;
-
-	dcache_dentry = debugfs_create_file("dcache", S_IRUSR, arch_debugfs_dir,
-					    (unsigned int *)CACHE_TYPE_DCACHE,
-					    &cache_debugfs_fops);
-	if (!dcache_dentry)
-		return -ENOMEM;
-
-	icache_dentry = debugfs_create_file("icache", S_IRUSR, arch_debugfs_dir,
-					    (unsigned int *)CACHE_TYPE_ICACHE,
-					    &cache_debugfs_fops);
-	if (!icache_dentry) {
-		debugfs_remove(dcache_dentry);
-		return -ENOMEM;
-	}
-
+	debugfs_create_file("dcache", S_IRUSR, arch_debugfs_dir,
+			    (void *)CACHE_TYPE_DCACHE, &cache_debugfs_fops);
+	debugfs_create_file("icache", S_IRUSR, arch_debugfs_dir,
+			    (void *)CACHE_TYPE_ICACHE, &cache_debugfs_fops);
 	return 0;
 }
 module_init(cache_debugfs_init);

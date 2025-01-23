@@ -1,14 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * arch/arm/plat-spear/include/plat/pl080.h
  *
  * DMAC pl080 definitions for SPEAr platform
  *
  * Copyright (C) 2012 ST Microelectronics
- * Viresh Kumar <viresh.linux@gmail.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
+ * Viresh Kumar <vireshk@kernel.org>
  */
 
 #ifndef __PLAT_PL080_H

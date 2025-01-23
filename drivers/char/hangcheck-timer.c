@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * hangcheck-timer.c
  *
@@ -6,20 +7,6 @@
  * Copyright (C) 2002, 2003 Oracle.  All rights reserved.
  *
  * Author: Joel Becker <joel.becker@oracle.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License version 2 as published by the Free Software Foundation.
- * 
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- * 
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
 /*
@@ -32,7 +19,7 @@
  * timer and 180 seconds for the margin of error.  IOW, a timer is set
  * for 60 seconds.  When the timer fires, the callback checks the
  * actual duration that the timer waited.  If the duration exceeds the
- * alloted time and margin (here 60 + 180, or 240 seconds), the machine
+ * allotted time and margin (here 60 + 180, or 240 seconds), the machine
  * is restarted.  A healthy machine will have the duration match the
  * expected timeout very closely.
  */
@@ -46,10 +33,10 @@
 #include <linux/reboot.h>
 #include <linux/init.h>
 #include <linux/delay.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/sysrq.h>
 #include <linux/timer.h>
-#include <linux/time.h>
+#include <linux/hrtimer.h>
 
 #define VERSION_STR "0.9.1"
 
@@ -117,38 +104,20 @@ __setup("hcheck_reboot", hangcheck_parse_reboot);
 __setup("hcheck_dump_tasks", hangcheck_parse_dump_tasks);
 #endif /* not MODULE */
 
-#if defined(CONFIG_S390)
-# define HAVE_MONOTONIC
-# define TIMER_FREQ 1000000000ULL
-#else
-# define TIMER_FREQ 1000000000ULL
-#endif
-
-#ifdef HAVE_MONOTONIC
-extern unsigned long long monotonic_clock(void);
-#else
-static inline unsigned long long monotonic_clock(void)
-{
-	struct timespec ts;
-	getrawmonotonic(&ts);
-	return timespec_to_ns(&ts);
-}
-#endif  /* HAVE_MONOTONIC */
-
+#define TIMER_FREQ 1000000000ULL
 
 /* Last time scheduled */
 static unsigned long long hangcheck_tsc, hangcheck_tsc_margin;
 
-static void hangcheck_fire(unsigned long);
+static void hangcheck_fire(struct timer_list *);
 
-static DEFINE_TIMER(hangcheck_ticktock, hangcheck_fire, 0, 0);
+static DEFINE_TIMER(hangcheck_ticktock, hangcheck_fire);
 
-
-static void hangcheck_fire(unsigned long data)
+static void hangcheck_fire(struct timer_list *unused)
 {
 	unsigned long long cur_tsc, tsc_diff;
 
-	cur_tsc = monotonic_clock();
+	cur_tsc = ktime_get_ns();
 
 	if (cur_tsc > hangcheck_tsc)
 		tsc_diff = cur_tsc - hangcheck_tsc;
@@ -177,7 +146,7 @@ static void hangcheck_fire(unsigned long data)
 			tsc_diff, tsc_diff - hangcheck_tick*TIMER_FREQ);
 #endif
 	mod_timer(&hangcheck_ticktock, jiffies + (hangcheck_tick*HZ));
-	hangcheck_tsc = monotonic_clock();
+	hangcheck_tsc = ktime_get_ns();
 }
 
 
@@ -185,16 +154,11 @@ static int __init hangcheck_init(void)
 {
 	printk("Hangcheck: starting hangcheck timer %s (tick is %d seconds, margin is %d seconds).\n",
 	       VERSION_STR, hangcheck_tick, hangcheck_margin);
-#if defined (HAVE_MONOTONIC)
-	printk("Hangcheck: Using monotonic_clock().\n");
-#else
-	printk("Hangcheck: Using getrawmonotonic().\n");
-#endif  /* HAVE_MONOTONIC */
 	hangcheck_tsc_margin =
-		(unsigned long long)(hangcheck_margin + hangcheck_tick);
-	hangcheck_tsc_margin *= (unsigned long long)TIMER_FREQ;
+		(unsigned long long)hangcheck_margin + hangcheck_tick;
+	hangcheck_tsc_margin *= TIMER_FREQ;
 
-	hangcheck_tsc = monotonic_clock();
+	hangcheck_tsc = ktime_get_ns();
 	mod_timer(&hangcheck_ticktock, jiffies + (hangcheck_tick*HZ));
 
 	return 0;

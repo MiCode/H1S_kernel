@@ -1,14 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/kernel/cpu/sh4a/setup-sh7734.c
-
+ *
  * SH7734 Setup
  *
  * Copyright (C) 2011,2012 Nobuhiro Iwamatsu <nobuhiro.iwamatsu.yj@renesas.com>
  * Copyright (C) 2011,2012 Renesas Solutions Corp.
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 
 #include <linux/platform_device.h>
@@ -21,14 +18,14 @@
 #include <linux/io.h>
 #include <asm/clock.h>
 #include <asm/irq.h>
+#include <asm/platform_early.h>
 #include <cpu/sh7734.h>
 
 /* SCIF */
 static struct plat_sci_port scif0_platform_data = {
-	.flags          = UPF_BOOT_AUTOCONF,
-	.scscr          = SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.scscr          = SCSCR_REIE,
 	.type           = PORT_SCIF,
-	.regtype        = SCIx_SH4_SCIF_REGTYPE,
+	.regtype        = SCIx_SH4_SCIF_BRG_REGTYPE,
 };
 
 static struct resource scif0_resources[] = {
@@ -47,10 +44,9 @@ static struct platform_device scif0_device = {
 };
 
 static struct plat_sci_port scif1_platform_data = {
-	.flags          = UPF_BOOT_AUTOCONF,
-	.scscr          = SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.scscr          = SCSCR_REIE,
 	.type           = PORT_SCIF,
-	.regtype        = SCIx_SH4_SCIF_REGTYPE,
+	.regtype        = SCIx_SH4_SCIF_BRG_REGTYPE,
 };
 
 static struct resource scif1_resources[] = {
@@ -69,10 +65,9 @@ static struct platform_device scif1_device = {
 };
 
 static struct plat_sci_port scif2_platform_data = {
-	.flags          = UPF_BOOT_AUTOCONF,
-	.scscr          = SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.scscr          = SCSCR_REIE,
 	.type           = PORT_SCIF,
-	.regtype        = SCIx_SH4_SCIF_REGTYPE,
+	.regtype        = SCIx_SH4_SCIF_BRG_REGTYPE,
 };
 
 static struct resource scif2_resources[] = {
@@ -91,10 +86,9 @@ static struct platform_device scif2_device = {
 };
 
 static struct plat_sci_port scif3_platform_data = {
-	.flags          = UPF_BOOT_AUTOCONF,
-	.scscr          = SCSCR_RE | SCSCR_TE | SCSCR_REIE | SCSCR_TOIE,
+	.scscr          = SCSCR_REIE | SCSCR_TOIE,
 	.type           = PORT_SCIF,
-	.regtype        = SCIx_SH4_SCIF_REGTYPE,
+	.regtype        = SCIx_SH4_SCIF_BRG_REGTYPE,
 };
 
 static struct resource scif3_resources[] = {
@@ -113,10 +107,9 @@ static struct platform_device scif3_device = {
 };
 
 static struct plat_sci_port scif4_platform_data = {
-	.flags          = UPF_BOOT_AUTOCONF,
-	.scscr          = SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.scscr          = SCSCR_REIE,
 	.type           = PORT_SCIF,
-	.regtype        = SCIx_SH4_SCIF_REGTYPE,
+	.regtype        = SCIx_SH4_SCIF_BRG_REGTYPE,
 };
 
 static struct resource scif4_resources[] = {
@@ -135,10 +128,9 @@ static struct platform_device scif4_device = {
 };
 
 static struct plat_sci_port scif5_platform_data = {
-	.flags          = UPF_BOOT_AUTOCONF,
-	.scscr          = SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.scscr          = SCSCR_REIE,
 	.type           = PORT_SCIF,
-	.regtype		= SCIx_SH4_SCIF_REGTYPE,
+	.regtype	= SCIx_SH4_SCIF_BRG_REGTYPE,
 };
 
 static struct resource scif5_resources[] = {
@@ -200,25 +192,18 @@ static struct platform_device i2c0_device = {
 
 /* TMU */
 static struct sh_timer_config tmu0_platform_data = {
-	.channel_offset = 0x04,
-	.timer_bit = 0,
-	.clockevent_rating = 200,
+	.channels_mask = 7,
 };
 
 static struct resource tmu0_resources[] = {
-	[0] = {
-		.start	= 0xFFD80008,
-		.end	= 0xFFD80014 - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= evt2irq(0x400),
-		.flags	= IORESOURCE_IRQ,
-	},
+	DEFINE_RES_MEM(0xffd80000, 0x30),
+	DEFINE_RES_IRQ(evt2irq(0x400)),
+	DEFINE_RES_IRQ(evt2irq(0x420)),
+	DEFINE_RES_IRQ(evt2irq(0x440)),
 };
 
 static struct platform_device tmu0_device = {
-	.name	= "sh_tmu",
+	.name		= "sh-tmu",
 	.id		= 0,
 	.dev = {
 		.platform_data	= &tmu0_platform_data,
@@ -228,26 +213,19 @@ static struct platform_device tmu0_device = {
 };
 
 static struct sh_timer_config tmu1_platform_data = {
-	.channel_offset = 0x10,
-	.timer_bit = 1,
-	.clocksource_rating = 200,
+	.channels_mask = 7,
 };
 
 static struct resource tmu1_resources[] = {
-	[0] = {
-		.start	= 0xFFD80014,
-		.end	= 0xFFD80020 - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= evt2irq(0x420),
-		.flags	= IORESOURCE_IRQ,
-	},
+	DEFINE_RES_MEM(0xffd81000, 0x30),
+	DEFINE_RES_IRQ(evt2irq(0x480)),
+	DEFINE_RES_IRQ(evt2irq(0x4a0)),
+	DEFINE_RES_IRQ(evt2irq(0x4c0)),
 };
 
 static struct platform_device tmu1_device = {
-	.name		= "sh_tmu",
-	.id			= 1,
+	.name		= "sh-tmu",
+	.id		= 1,
 	.dev = {
 		.platform_data	= &tmu1_platform_data,
 	},
@@ -256,193 +234,24 @@ static struct platform_device tmu1_device = {
 };
 
 static struct sh_timer_config tmu2_platform_data = {
-	.channel_offset = 0x1c,
-	.timer_bit = 2,
+	.channels_mask = 7,
 };
 
 static struct resource tmu2_resources[] = {
-	[0] = {
-		.start	= 0xFFD80020,
-		.end	= 0xFFD80030 - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= evt2irq(0x440),
-		.flags	= IORESOURCE_IRQ,
-	},
+	DEFINE_RES_MEM(0xffd82000, 0x30),
+	DEFINE_RES_IRQ(evt2irq(0x500)),
+	DEFINE_RES_IRQ(evt2irq(0x520)),
+	DEFINE_RES_IRQ(evt2irq(0x540)),
 };
 
 static struct platform_device tmu2_device = {
-	.name		= "sh_tmu",
-	.id			= 2,
+	.name		= "sh-tmu",
+	.id		= 2,
 	.dev = {
 		.platform_data	= &tmu2_platform_data,
 	},
 	.resource	= tmu2_resources,
 	.num_resources	= ARRAY_SIZE(tmu2_resources),
-};
-
-
-static struct sh_timer_config tmu3_platform_data = {
-	.channel_offset = 0x04,
-	.timer_bit = 0,
-};
-
-static struct resource tmu3_resources[] = {
-	[0] = {
-		.start	= 0xFFD81008,
-		.end	= 0xFFD81014 - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= evt2irq(0x480),
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device tmu3_device = {
-	.name		= "sh_tmu",
-	.id			= 3,
-	.dev = {
-		.platform_data	= &tmu3_platform_data,
-	},
-	.resource	= tmu3_resources,
-	.num_resources	= ARRAY_SIZE(tmu3_resources),
-};
-
-static struct sh_timer_config tmu4_platform_data = {
-	.channel_offset = 0x10,
-	.timer_bit = 1,
-};
-
-static struct resource tmu4_resources[] = {
-	[0] = {
-		.start	= 0xFFD81014,
-		.end	= 0xFFD81020 - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= evt2irq(0x4A0),
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device tmu4_device = {
-	.name		= "sh_tmu",
-	.id			= 4,
-	.dev = {
-		.platform_data	= &tmu4_platform_data,
-	},
-	.resource	= tmu4_resources,
-	.num_resources	= ARRAY_SIZE(tmu4_resources),
-};
-
-static struct sh_timer_config tmu5_platform_data = {
-	.channel_offset = 0x1c,
-	.timer_bit = 2,
-};
-
-static struct resource tmu5_resources[] = {
-	[0] = {
-		.start	= 0xFFD81020,
-		.end	= 0xFFD81030 - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= evt2irq(0x4C0),
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device tmu5_device = {
-	.name		= "sh_tmu",
-	.id			= 5,
-	.dev = {
-		.platform_data	= &tmu5_platform_data,
-	},
-	.resource	= tmu5_resources,
-	.num_resources	= ARRAY_SIZE(tmu5_resources),
-};
-
-static struct sh_timer_config tmu6_platform_data = {
-	.channel_offset = 0x4,
-	.timer_bit = 0,
-};
-
-static struct resource tmu6_resources[] = {
-	[0] = {
-		.start	= 0xFFD82008,
-		.end	= 0xFFD82014 - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= evt2irq(0x500),
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device tmu6_device = {
-	.name		= "sh_tmu",
-	.id			= 6,
-	.dev = {
-		.platform_data	= &tmu6_platform_data,
-	},
-	.resource	= tmu6_resources,
-	.num_resources	= ARRAY_SIZE(tmu6_resources),
-};
-
-static struct sh_timer_config tmu7_platform_data = {
-	.channel_offset = 0x10,
-	.timer_bit = 1,
-};
-
-static struct resource tmu7_resources[] = {
-	[0] = {
-		.start	= 0xFFD82014,
-		.end	= 0xFFD82020 - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= evt2irq(0x520),
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device tmu7_device = {
-	.name		= "sh_tmu",
-	.id			= 7,
-	.dev = {
-		.platform_data	= &tmu7_platform_data,
-	},
-	.resource	= tmu7_resources,
-	.num_resources	= ARRAY_SIZE(tmu7_resources),
-};
-
-static struct sh_timer_config tmu8_platform_data = {
-	.channel_offset = 0x1c,
-	.timer_bit = 2,
-};
-
-static struct resource tmu8_resources[] = {
-	[0] = {
-		.start	= 0xFFD82020,
-		.end	= 0xFFD82030 - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= evt2irq(0x540),
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device tmu8_device = {
-	.name		= "sh_tmu",
-	.id			= 8,
-	.dev = {
-		.platform_data	= &tmu8_platform_data,
-	},
-	.resource	= tmu8_resources,
-	.num_resources	= ARRAY_SIZE(tmu8_resources),
 };
 
 static struct platform_device *sh7734_devices[] __initdata = {
@@ -455,12 +264,6 @@ static struct platform_device *sh7734_devices[] __initdata = {
 	&tmu0_device,
 	&tmu1_device,
 	&tmu2_device,
-	&tmu3_device,
-	&tmu4_device,
-	&tmu5_device,
-	&tmu6_device,
-	&tmu7_device,
-	&tmu8_device,
 	&rtc_device,
 };
 
@@ -474,17 +277,11 @@ static struct platform_device *sh7734_early_devices[] __initdata = {
 	&tmu0_device,
 	&tmu1_device,
 	&tmu2_device,
-	&tmu3_device,
-	&tmu4_device,
-	&tmu5_device,
-	&tmu6_device,
-	&tmu7_device,
-	&tmu8_device,
 };
 
 void __init plat_early_device_setup(void)
 {
-	early_platform_add_devices(sh7734_early_devices,
+	sh_early_platform_add_devices(sh7734_early_devices,
 		ARRAY_SIZE(sh7734_early_devices));
 }
 

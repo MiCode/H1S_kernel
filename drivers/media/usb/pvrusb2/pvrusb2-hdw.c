@@ -1,21 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *
- *
  *  Copyright (C) 2005 Mike Isely <isely@pobox.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
 #include <linux/errno.h>
@@ -320,6 +306,8 @@ static const struct pvr2_fx2cmd_descdef pvr2_fx2cmd_desc[] = {
 	{FX2CMD_ONAIR_DTV_STREAMING_OFF, "onair dtv stream off"},
 	{FX2CMD_ONAIR_DTV_POWER_ON, "onair dtv power on"},
 	{FX2CMD_ONAIR_DTV_POWER_OFF, "onair dtv power off"},
+	{FX2CMD_HCW_DEMOD_RESET_PIN, "hcw demod reset pin"},
+	{FX2CMD_HCW_MAKO_SLEEP_PIN, "hcw mako sleep pin"},
 };
 
 
@@ -334,10 +322,10 @@ static void pvr2_hdw_state_log_state(struct pvr2_hdw *);
 static int pvr2_hdw_cmd_usbstream(struct pvr2_hdw *hdw,int runFl);
 static int pvr2_hdw_commit_setup(struct pvr2_hdw *hdw);
 static int pvr2_hdw_get_eeprom_addr(struct pvr2_hdw *hdw);
-static void pvr2_hdw_quiescent_timeout(unsigned long);
-static void pvr2_hdw_decoder_stabilization_timeout(unsigned long);
-static void pvr2_hdw_encoder_wait_timeout(unsigned long);
-static void pvr2_hdw_encoder_run_timeout(unsigned long);
+static void pvr2_hdw_quiescent_timeout(struct timer_list *);
+static void pvr2_hdw_decoder_stabilization_timeout(struct timer_list *);
+static void pvr2_hdw_encoder_wait_timeout(struct timer_list *);
+static void pvr2_hdw_encoder_run_timeout(struct timer_list *);
 static int pvr2_issue_simple_cmd(struct pvr2_hdw *,u32);
 static int pvr2_send_request_ex(struct pvr2_hdw *hdw,
 				unsigned int timeout,int probe_fl,
@@ -670,7 +658,9 @@ static int ctrl_get_input(struct pvr2_ctrl *cptr,int *vp)
 
 static int ctrl_check_input(struct pvr2_ctrl *cptr,int v)
 {
-	return ((1 << v) & cptr->hdw->input_allowed_mask) != 0;
+	if (v < 0 || v > PVR2_CVAL_INPUT_MAX)
+		return 0;
+	return ((1UL << v) & cptr->hdw->input_allowed_mask) != 0;
 }
 
 static int ctrl_set_input(struct pvr2_ctrl *cptr,int m,int v)
@@ -794,7 +784,7 @@ static int ctrl_cx2341x_set(struct pvr2_ctrl *cptr,int m,int v)
 
 static unsigned int ctrl_cx2341x_getv4lflags(struct pvr2_ctrl *cptr)
 {
-	struct v4l2_queryctrl qctrl;
+	struct v4l2_queryctrl qctrl = {};
 	struct pvr2_ctl_info *info;
 	qctrl.id = cptr->info->v4l_id;
 	cx2341x_ctrl_query(&cptr->hdw->enc_ctl_state,&qctrl);
@@ -874,10 +864,9 @@ static int ctrl_std_sym_to_val(struct pvr2_ctrl *cptr,
 			       const char *bufPtr,unsigned int bufSize,
 			       int *mskp,int *valp)
 {
-	int ret;
 	v4l2_std_id id;
-	ret = pvr2_std_str_to_id(&id,bufPtr,bufSize);
-	if (ret < 0) return ret;
+	if (!pvr2_std_str_to_id(&id, bufPtr, bufSize))
+		return -EINVAL;
 	if (mskp) *mskp = id;
 	if (valp) *valp = id;
 	return 0;
@@ -1371,8 +1360,7 @@ static int pvr2_locate_firmware(struct pvr2_hdw *hdw,
 				       fwnames[idx],
 				       &hdw->usb_dev->dev);
 		if (!ret) {
-			trace_firmware("Located %s firmware: %s;"
-				       " uploading...",
+			trace_firmware("Located %s firmware: %s; uploading...",
 				       fwtypename,
 				       fwnames[idx]);
 			return idx;
@@ -1383,21 +1371,17 @@ static int pvr2_locate_firmware(struct pvr2_hdw *hdw,
 		return ret;
 	}
 	pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-		   "***WARNING***"
-		   " Device %s firmware"
-		   " seems to be missing.",
+		   "***WARNING*** Device %s firmware seems to be missing.",
 		   fwtypename);
 	pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-		   "Did you install the pvrusb2 firmware files"
-		   " in their proper location?");
+		   "Did you install the pvrusb2 firmware files in their proper location?");
 	if (fwcount == 1) {
 		pvr2_trace(PVR2_TRACE_ERROR_LEGS,
 			   "request_firmware unable to locate %s file %s",
 			   fwtypename,fwnames[0]);
 	} else {
 		pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-			   "request_firmware unable to locate"
-			   " one of the following %s files:",
+			   "request_firmware unable to locate one of the following %s files:",
 			   fwtypename);
 		for (idx = 0; idx < fwcount; idx++) {
 			pvr2_trace(PVR2_TRACE_ERROR_LEGS,
@@ -1431,8 +1415,7 @@ static int pvr2_upload_firmware1(struct pvr2_hdw *hdw)
 	if (!hdw->hdw_desc->fx2_firmware.cnt) {
 		hdw->fw1_state = FW1_STATE_OK;
 		pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-			   "Connected device type defines"
-			   " no firmware to upload; ignoring firmware");
+			   "Connected device type defines no firmware to upload; ignoring firmware");
 		return -ENOTTY;
 	}
 
@@ -1457,13 +1440,11 @@ static int pvr2_upload_firmware1(struct pvr2_hdw *hdw)
 	    (!(hdw->hdw_desc->flag_fx2_16kb && (fwsize == 0x4000)))) {
 		if (hdw->hdw_desc->flag_fx2_16kb) {
 			pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-				   "Wrong fx2 firmware size"
-				   " (expected 8192 or 16384, got %u)",
+				   "Wrong fx2 firmware size (expected 8192 or 16384, got %u)",
 				   fwsize);
 		} else {
 			pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-				   "Wrong fx2 firmware size"
-				   " (expected 8192, got %u)",
+				   "Wrong fx2 firmware size (expected 8192, got %u)",
 				   fwsize);
 		}
 		release_firmware(fw_entry);
@@ -1486,7 +1467,7 @@ static int pvr2_upload_firmware1(struct pvr2_hdw *hdw)
 	for (address = 0; address < fwsize; address += 0x800) {
 		memcpy(fw_ptr, fw_entry->data + address, 0x800);
 		ret += usb_control_msg(hdw->usb_dev, pipe, 0xa0, 0x40, address,
-				       0, fw_ptr, 0x800, HZ);
+				       0, fw_ptr, 0x800, 1000);
 	}
 
 	trace_firmware("Upload done, releasing device's CPU");
@@ -1585,8 +1566,7 @@ int pvr2_upload_firmware2(struct pvr2_hdw *hdw)
 
 	if (fw_len % sizeof(u32)) {
 		pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-			   "size of %s firmware"
-			   " must be a multiple of %zu bytes",
+			   "size of %s firmware must be a multiple of %zu bytes",
 			   fw_files[fwidx],sizeof(u32));
 		release_firmware(fw_entry);
 		ret = -EINVAL;
@@ -1625,7 +1605,7 @@ int pvr2_upload_firmware2(struct pvr2_hdw *hdw)
 			((u32 *)fw_ptr)[icnt] = swab32(((u32 *)fw_ptr)[icnt]);
 
 		ret |= usb_bulk_msg(hdw->usb_dev, pipe, fw_ptr,bcnt,
-				    &actual_length, HZ);
+				    &actual_length, 1000);
 		ret |= (actual_length != bcnt);
 		if (ret) break;
 		fw_done += bcnt;
@@ -1691,7 +1671,7 @@ static int pvr2_decoder_enable(struct pvr2_hdw *hdw,int enablefl)
 	}
 	if (!hdw->flag_decoder_missed) {
 		pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-			   "WARNING: No decoder present");
+			   "***WARNING*** No decoder present");
 		hdw->flag_decoder_missed = !0;
 		trace_stbit("flag_decoder_missed",
 			    hdw->flag_decoder_missed);
@@ -1711,7 +1691,7 @@ static int pvr2_hdw_untrip_unlocked(struct pvr2_hdw *hdw)
 	if (!hdw->flag_tripped) return 0;
 	hdw->flag_tripped = 0;
 	pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-		   "Clearing driver error statuss");
+		   "Clearing driver error status");
 	return !0;
 }
 
@@ -1738,16 +1718,16 @@ int pvr2_hdw_get_streaming(struct pvr2_hdw *hdw)
 int pvr2_hdw_set_streaming(struct pvr2_hdw *hdw,int enable_flag)
 {
 	int ret,st;
-	LOCK_TAKE(hdw->big_lock); do {
-		pvr2_hdw_untrip_unlocked(hdw);
-		if ((!enable_flag) != !(hdw->state_pipeline_req)) {
-			hdw->state_pipeline_req = enable_flag != 0;
-			pvr2_trace(PVR2_TRACE_START_STOP,
-				   "/*--TRACE_STREAM--*/ %s",
-				   enable_flag ? "enable" : "disable");
-		}
-		pvr2_hdw_state_sched(hdw);
-	} while (0); LOCK_GIVE(hdw->big_lock);
+	LOCK_TAKE(hdw->big_lock);
+	pvr2_hdw_untrip_unlocked(hdw);
+	if (!enable_flag != !hdw->state_pipeline_req) {
+		hdw->state_pipeline_req = enable_flag != 0;
+		pvr2_trace(PVR2_TRACE_START_STOP,
+			   "/*--TRACE_STREAM--*/ %s",
+			   enable_flag ? "enable" : "disable");
+	}
+	pvr2_hdw_state_sched(hdw);
+	LOCK_GIVE(hdw->big_lock);
 	if ((ret = pvr2_hdw_wait(hdw,0)) < 0) return ret;
 	if (enable_flag) {
 		while ((st = hdw->master_state) != PVR2_STATE_RUN) {
@@ -1887,8 +1867,7 @@ static void pvr2_hdw_setup_std(struct pvr2_hdw *hdw)
 
 	bcnt = pvr2_std_id_to_str(buf,sizeof(buf),hdw->std_mask_eeprom);
 	pvr2_trace(PVR2_TRACE_STD,
-		   "Supported video standard(s) reported available"
-		   " in hardware: %.*s",
+		   "Supported video standard(s) reported available in hardware: %.*s",
 		   bcnt,buf);
 
 	hdw->std_mask_avail = hdw->std_mask_eeprom;
@@ -1897,8 +1876,7 @@ static void pvr2_hdw_setup_std(struct pvr2_hdw *hdw)
 	if (std2) {
 		bcnt = pvr2_std_id_to_str(buf,sizeof(buf),std2);
 		pvr2_trace(PVR2_TRACE_STD,
-			   "Expanding supported video standards"
-			   " to include: %.*s",
+			   "Expanding supported video standards to include: %.*s",
 			   bcnt,buf);
 		hdw->std_mask_avail |= std2;
 	}
@@ -1917,8 +1895,8 @@ static void pvr2_hdw_setup_std(struct pvr2_hdw *hdw)
 	if (std3) {
 		bcnt = pvr2_std_id_to_str(buf,sizeof(buf),std3);
 		pvr2_trace(PVR2_TRACE_STD,
-			   "Initial video standard"
-			   " (determined by device type): %.*s",bcnt,buf);
+			   "Initial video standard (determined by device type): %.*s",
+			   bcnt, buf);
 		hdw->std_mask_cur = std3;
 		hdw->std_dirty = !0;
 		return;
@@ -1980,8 +1958,7 @@ static void pvr2_hdw_cx25840_vbi_hack(struct pvr2_hdw *hdw)
 	}
 
 	pvr2_trace(PVR2_TRACE_INIT,
-		   "Module ID %u:"
-		   " Executing cx25840 VBI hack",
+		   "Module ID %u: Executing cx25840 VBI hack",
 		   hdw->decoder_client_id);
 	memset(&fmt, 0, sizeof(fmt));
 	fmt.type = V4L2_BUF_TYPE_SLICED_VBI_CAPTURE;
@@ -2007,8 +1984,7 @@ static int pvr2_hdw_load_subdev(struct pvr2_hdw *hdw,
 	fname = (mid < ARRAY_SIZE(module_names)) ? module_names[mid] : NULL;
 	if (!fname) {
 		pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-			   "Module ID %u for device %s has no name?"
-			   "  The driver might have a configuration problem.",
+			   "Module ID %u for device %s has no name?  The driver might have a configuration problem.",
 			   mid,
 			   hdw->hdw_desc->description);
 		return -EINVAL;
@@ -2027,32 +2003,27 @@ static int pvr2_hdw_load_subdev(struct pvr2_hdw *hdw,
 						 ARRAY_SIZE(i2caddr));
 		if (i2ccnt) {
 			pvr2_trace(PVR2_TRACE_INIT,
-				   "Module ID %u:"
-				   " Using default i2c address list",
+				   "Module ID %u: Using default i2c address list",
 				   mid);
 		}
 	}
 
 	if (!i2ccnt) {
 		pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-			   "Module ID %u (%s) for device %s:"
-			   " No i2c addresses."
-			   "  The driver might have a configuration problem.",
+			   "Module ID %u (%s) for device %s: No i2c addresses.	The driver might have a configuration problem.",
 			   mid, fname, hdw->hdw_desc->description);
 		return -EINVAL;
 	}
 
 	if (i2ccnt == 1) {
 		pvr2_trace(PVR2_TRACE_INIT,
-			   "Module ID %u:"
-			   " Setting up with specified i2c address 0x%x",
+			   "Module ID %u: Setting up with specified i2c address 0x%x",
 			   mid, i2caddr[0]);
 		sd = v4l2_i2c_new_subdev(&hdw->v4l2_dev, &hdw->i2c_adap,
 					 fname, i2caddr[0], NULL);
 	} else {
 		pvr2_trace(PVR2_TRACE_INIT,
-			   "Module ID %u:"
-			   " Setting up with address probe list",
+			   "Module ID %u: Setting up with address probe list",
 			   mid);
 		sd = v4l2_i2c_new_subdev(&hdw->v4l2_dev, &hdw->i2c_adap,
 					 fname, 0, i2caddr);
@@ -2060,9 +2031,7 @@ static int pvr2_hdw_load_subdev(struct pvr2_hdw *hdw,
 
 	if (!sd) {
 		pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-			   "Module ID %u (%s) for device %s failed to load."
-			   "  Possible missing sub-device kernel module or"
-			   " initialization failure within module.",
+			   "Module ID %u (%s) for device %s failed to load.  Possible missing sub-device kernel module or initialization failure within module.",
 			   mid, fname, hdw->hdw_desc->description);
 		return -EIO;
 	}
@@ -2124,18 +2093,14 @@ static void pvr2_hdw_setup_low(struct pvr2_hdw *hdw)
 				 == 0);
 			if (reloadFl) {
 				pvr2_trace(PVR2_TRACE_INIT,
-					   "USB endpoint config looks strange"
-					   "; possibly firmware needs to be"
-					   " loaded");
+					   "USB endpoint config looks strange; possibly firmware needs to be loaded");
 			}
 		}
 		if (!reloadFl) {
 			reloadFl = !pvr2_hdw_check_firmware(hdw);
 			if (reloadFl) {
 				pvr2_trace(PVR2_TRACE_INIT,
-					   "Check for FX2 firmware failed"
-					   "; possibly firmware needs to be"
-					   " loaded");
+					   "Check for FX2 firmware failed; possibly firmware needs to be loaded");
 			}
 		}
 		if (reloadFl) {
@@ -2165,9 +2130,27 @@ static void pvr2_hdw_setup_low(struct pvr2_hdw *hdw)
 				      ((0) << 16));
 	}
 
-	// This step MUST happen after the earlier powerup step.
+	/* This step MUST happen after the earlier powerup step */
 	pvr2_i2c_core_init(hdw);
 	if (!pvr2_hdw_dev_ok(hdw)) return;
+
+	/* Reset demod only on Hauppauge 160xxx platform */
+	if (le16_to_cpu(hdw->usb_dev->descriptor.idVendor) == 0x2040 &&
+	    (le16_to_cpu(hdw->usb_dev->descriptor.idProduct) == 0x7502 ||
+	     le16_to_cpu(hdw->usb_dev->descriptor.idProduct) == 0x7510)) {
+		pr_info("%s(): resetting 160xxx demod\n", __func__);
+		/* TODO: not sure this is proper place to reset once only */
+		pvr2_issue_simple_cmd(hdw,
+				      FX2CMD_HCW_DEMOD_RESET_PIN |
+				      (1 << 8) |
+				      ((0) << 16));
+		usleep_range(10000, 10500);
+		pvr2_issue_simple_cmd(hdw,
+				      FX2CMD_HCW_DEMOD_RESET_PIN |
+				      (1 << 8) |
+				      ((1) << 16));
+		usleep_range(10000, 10500);
+	}
 
 	pvr2_hdw_load_modules(hdw);
 	if (!pvr2_hdw_dev_ok(hdw)) return;
@@ -2200,8 +2183,7 @@ static void pvr2_hdw_setup_low(struct pvr2_hdw *hdw)
 		if (!pvr2_hdw_dev_ok(hdw)) return;
 		if (ret < 0) {
 			pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-				   "Unable to determine location of eeprom,"
-				   " skipping");
+				   "Unable to determine location of eeprom, skipping");
 		} else {
 			hdw->eeprom_addr = ret;
 			pvr2_eeprom_analyze(hdw);
@@ -2254,8 +2236,7 @@ static void pvr2_hdw_setup_low(struct pvr2_hdw *hdw)
 		idx = get_default_error_tolerance(hdw);
 		if (idx) {
 			pvr2_trace(PVR2_TRACE_INIT,
-				   "pvr2_hdw_setup: video stream %p"
-				   " setting tolerance %u",
+				   "pvr2_hdw_setup: video stream %p setting tolerance %u",
 				   hdw->vid_stream,idx);
 		}
 		pvr2_stream_setup(hdw->vid_stream,hdw->usb_dev,
@@ -2285,16 +2266,13 @@ static void pvr2_hdw_setup(struct pvr2_hdw *hdw)
 			if (hdw->flag_init_ok) {
 				pvr2_trace(
 					PVR2_TRACE_INFO,
-					"Device initialization"
-					" completed successfully.");
+					"Device initialization completed successfully.");
 				break;
 			}
 			if (hdw->fw1_state == FW1_STATE_RELOAD) {
 				pvr2_trace(
 					PVR2_TRACE_INFO,
-					"Device microcontroller firmware"
-					" (re)loaded; it should now reset"
-					" and reconnect.");
+					"Device microcontroller firmware (re)loaded; it should now reset and reconnect.");
 				break;
 			}
 			pvr2_trace(
@@ -2303,48 +2281,35 @@ static void pvr2_hdw_setup(struct pvr2_hdw *hdw)
 			if (hdw->fw1_state == FW1_STATE_MISSING) {
 				pvr2_trace(
 					PVR2_TRACE_ERROR_LEGS,
-					"Giving up since device"
-					" microcontroller firmware"
-					" appears to be missing.");
+					"Giving up since device microcontroller firmware appears to be missing.");
 				break;
 			}
 		}
 		if (hdw->flag_modulefail) {
 			pvr2_trace(
 				PVR2_TRACE_ERROR_LEGS,
-				"***WARNING*** pvrusb2 driver initialization"
-				" failed due to the failure of one or more"
-				" sub-device kernel modules.");
+				"***WARNING*** pvrusb2 driver initialization failed due to the failure of one or more sub-device kernel modules.");
 			pvr2_trace(
 				PVR2_TRACE_ERROR_LEGS,
-				"You need to resolve the failing condition"
-				" before this driver can function.  There"
-				" should be some earlier messages giving more"
-				" information about the problem.");
+				"You need to resolve the failing condition before this driver can function.  There should be some earlier messages giving more information about the problem.");
 			break;
 		}
 		if (procreload) {
 			pvr2_trace(
 				PVR2_TRACE_ERROR_LEGS,
-				"Attempting pvrusb2 recovery by reloading"
-				" primary firmware.");
+				"Attempting pvrusb2 recovery by reloading primary firmware.");
 			pvr2_trace(
 				PVR2_TRACE_ERROR_LEGS,
-				"If this works, device should disconnect"
-				" and reconnect in a sane state.");
+				"If this works, device should disconnect and reconnect in a sane state.");
 			hdw->fw1_state = FW1_STATE_UNKNOWN;
 			pvr2_upload_firmware1(hdw);
 		} else {
 			pvr2_trace(
 				PVR2_TRACE_ERROR_LEGS,
-				"***WARNING*** pvrusb2 device hardware"
-				" appears to be jammed"
-				" and I can't clear it.");
+				"***WARNING*** pvrusb2 device hardware appears to be jammed and I can't clear it.");
 			pvr2_trace(
 				PVR2_TRACE_ERROR_LEGS,
-				"You might need to power cycle"
-				" the pvrusb2 device"
-				" in order to recover.");
+				"You might need to power cycle the pvrusb2 device in order to recover.");
 		}
 	} while (0);
 	pvr2_trace(PVR2_TRACE_INIT,"pvr2_hdw_setup(hdw=%p) end",hdw);
@@ -2396,12 +2361,9 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 	hdw_desc = (const struct pvr2_device_desc *)(devid->driver_info);
 
 	if (hdw_desc == NULL) {
-		pvr2_trace(PVR2_TRACE_INIT, "pvr2_hdw_create:"
-			   " No device description pointer,"
-			   " unable to continue.");
-		pvr2_trace(PVR2_TRACE_INIT, "If you have a new device type,"
-			   " please contact Mike Isely <isely@pobox.com>"
-			   " to get it included in the driver\n");
+		pvr2_trace(PVR2_TRACE_INIT, "pvr2_hdw_create: No device description pointer, unable to continue.");
+		pvr2_trace(PVR2_TRACE_INIT,
+			   "If you have a new device type, please contact Mike Isely <isely@pobox.com> to get it included in the driver");
 		goto fail;
 	}
 
@@ -2413,34 +2375,25 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 	if (hdw_desc->flag_is_experimental) {
 		pvr2_trace(PVR2_TRACE_INFO, "**********");
 		pvr2_trace(PVR2_TRACE_INFO,
-			   "WARNING: Support for this device (%s) is"
-			   " experimental.", hdw_desc->description);
+			   "***WARNING*** Support for this device (%s) is experimental.",
+							      hdw_desc->description);
 		pvr2_trace(PVR2_TRACE_INFO,
-			   "Important functionality might not be"
-			   " entirely working.");
+			   "Important functionality might not be entirely working.");
 		pvr2_trace(PVR2_TRACE_INFO,
-			   "Please consider contacting the driver author to"
-			   " help with further stabilization of the driver.");
+			   "Please consider contacting the driver author to help with further stabilization of the driver.");
 		pvr2_trace(PVR2_TRACE_INFO, "**********");
 	}
 	if (!hdw) goto fail;
 
-	init_timer(&hdw->quiescent_timer);
-	hdw->quiescent_timer.data = (unsigned long)hdw;
-	hdw->quiescent_timer.function = pvr2_hdw_quiescent_timeout;
+	timer_setup(&hdw->quiescent_timer, pvr2_hdw_quiescent_timeout, 0);
 
-	init_timer(&hdw->decoder_stabilization_timer);
-	hdw->decoder_stabilization_timer.data = (unsigned long)hdw;
-	hdw->decoder_stabilization_timer.function =
-		pvr2_hdw_decoder_stabilization_timeout;
+	timer_setup(&hdw->decoder_stabilization_timer,
+		    pvr2_hdw_decoder_stabilization_timeout, 0);
 
-	init_timer(&hdw->encoder_wait_timer);
-	hdw->encoder_wait_timer.data = (unsigned long)hdw;
-	hdw->encoder_wait_timer.function = pvr2_hdw_encoder_wait_timeout;
+	timer_setup(&hdw->encoder_wait_timer, pvr2_hdw_encoder_wait_timeout,
+		    0);
 
-	init_timer(&hdw->encoder_run_timer);
-	hdw->encoder_run_timer.data = (unsigned long)hdw;
-	hdw->encoder_run_timer.function = pvr2_hdw_encoder_run_timeout;
+	timer_setup(&hdw->encoder_run_timer, pvr2_hdw_encoder_run_timeout, 0);
 
 	hdw->master_state = PVR2_STATE_DEAD;
 
@@ -2471,7 +2424,7 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 
 	hdw->control_cnt = CTRLDEF_COUNT;
 	hdw->control_cnt += MPEGDEF_COUNT;
-	hdw->controls = kzalloc(sizeof(struct pvr2_ctrl) * hdw->control_cnt,
+	hdw->controls = kcalloc(hdw->control_cnt, sizeof(struct pvr2_ctrl),
 				GFP_KERNEL);
 	if (!hdw->controls) goto fail;
 	hdw->hdw_desc = hdw_desc;
@@ -2491,7 +2444,7 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 	/* Ensure that default input choice is a valid one. */
 	m = hdw->input_avail_mask;
 	if (m) for (idx = 0; idx < (sizeof(m) << 3); idx++) {
-		if (!((1 << idx) & m)) continue;
+		if (!((1UL << idx) & m)) continue;
 		hdw->input_val = idx;
 		break;
 	}
@@ -2517,9 +2470,8 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 		if (!(qctrl.flags & V4L2_CTRL_FLAG_READ_ONLY)) {
 			ciptr->set_value = ctrl_cx2341x_set;
 		}
-		strncpy(hdw->mpeg_ctrl_info[idx].desc,qctrl.name,
-			PVR2_CTLD_INFO_DESC_SIZE);
-		hdw->mpeg_ctrl_info[idx].desc[PVR2_CTLD_INFO_DESC_SIZE-1] = 0;
+		strscpy(hdw->mpeg_ctrl_info[idx].desc, qctrl.name,
+			sizeof(hdw->mpeg_ctrl_info[idx].desc));
 		ciptr->default_value = qctrl.default_value;
 		switch (qctrl.type) {
 		default:
@@ -2548,11 +2500,11 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 	// Initialize control data regarding video standard masks
 	valid_std_mask = pvr2_std_get_usable();
 	for (idx = 0; idx < 32; idx++) {
-		if (!(valid_std_mask & (1 << idx))) continue;
+		if (!(valid_std_mask & (1UL << idx))) continue;
 		cnt1 = pvr2_std_id_to_str(
 			hdw->std_mask_names[idx],
 			sizeof(hdw->std_mask_names[idx])-1,
-			1 << idx);
+			1UL << idx);
 		hdw->std_mask_names[idx][cnt1] = 0;
 	}
 	cptr = pvr2_hdw_get_ctrl_by_id(hdw,PVR2_CID_STDAVAIL);
@@ -2606,14 +2558,21 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 			   "Error registering with v4l core, giving up");
 		goto fail;
 	}
-	mutex_lock(&pvr2_unit_mtx); do {
+	mutex_lock(&pvr2_unit_mtx);
+	do {
 		for (idx = 0; idx < PVR_NUM; idx++) {
 			if (unit_pointers[idx]) continue;
 			hdw->unit_number = idx;
 			unit_pointers[idx] = hdw;
 			break;
 		}
-	} while (0); mutex_unlock(&pvr2_unit_mtx);
+	} while (0);
+	mutex_unlock(&pvr2_unit_mtx);
+
+	INIT_WORK(&hdw->workpoll, pvr2_hdw_worker_poll);
+
+	if (hdw->unit_number == -1)
+		goto fail;
 
 	cnt1 = 0;
 	cnt2 = scnprintf(hdw->name+cnt1,sizeof(hdw->name)-cnt1,"pvrusb2");
@@ -2625,9 +2584,6 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 	}
 	if (cnt1 >= sizeof(hdw->name)) cnt1 = sizeof(hdw->name)-1;
 	hdw->name[cnt1] = 0;
-
-	hdw->workqueue = create_singlethread_workqueue(hdw->name);
-	INIT_WORK(&hdw->workpoll,pvr2_hdw_worker_poll);
 
 	pvr2_trace(PVR2_TRACE_INIT,"Driver unit number is %d, name is %s",
 		   hdw->unit_number,hdw->name);
@@ -2649,15 +2605,12 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 	return hdw;
  fail:
 	if (hdw) {
-		del_timer_sync(&hdw->quiescent_timer);
-		del_timer_sync(&hdw->decoder_stabilization_timer);
-		del_timer_sync(&hdw->encoder_run_timer);
-		del_timer_sync(&hdw->encoder_wait_timer);
-		if (hdw->workqueue) {
-			flush_workqueue(hdw->workqueue);
-			destroy_workqueue(hdw->workqueue);
-			hdw->workqueue = NULL;
-		}
+		timer_shutdown_sync(&hdw->quiescent_timer);
+		timer_shutdown_sync(&hdw->decoder_stabilization_timer);
+		timer_shutdown_sync(&hdw->encoder_run_timer);
+		timer_shutdown_sync(&hdw->encoder_wait_timer);
+		flush_work(&hdw->workpoll);
+		v4l2_device_unregister(&hdw->v4l2_dev);
 		usb_free_urb(hdw->ctl_read_urb);
 		usb_free_urb(hdw->ctl_write_urb);
 		kfree(hdw->ctl_read_buffer);
@@ -2714,15 +2667,11 @@ void pvr2_hdw_destroy(struct pvr2_hdw *hdw)
 {
 	if (!hdw) return;
 	pvr2_trace(PVR2_TRACE_INIT,"pvr2_hdw_destroy: hdw=%p",hdw);
-	if (hdw->workqueue) {
-		flush_workqueue(hdw->workqueue);
-		destroy_workqueue(hdw->workqueue);
-		hdw->workqueue = NULL;
-	}
-	del_timer_sync(&hdw->quiescent_timer);
-	del_timer_sync(&hdw->decoder_stabilization_timer);
-	del_timer_sync(&hdw->encoder_run_timer);
-	del_timer_sync(&hdw->encoder_wait_timer);
+	flush_work(&hdw->workpoll);
+	timer_shutdown_sync(&hdw->quiescent_timer);
+	timer_shutdown_sync(&hdw->decoder_stabilization_timer);
+	timer_shutdown_sync(&hdw->encoder_run_timer);
+	timer_shutdown_sync(&hdw->encoder_wait_timer);
 	if (hdw->fw_buffer) {
 		kfree(hdw->fw_buffer);
 		hdw->fw_buffer = NULL;
@@ -2731,16 +2680,17 @@ void pvr2_hdw_destroy(struct pvr2_hdw *hdw)
 		pvr2_stream_destroy(hdw->vid_stream);
 		hdw->vid_stream = NULL;
 	}
-	pvr2_i2c_core_done(hdw);
 	v4l2_device_unregister(&hdw->v4l2_dev);
-	pvr2_hdw_remove_usb_stuff(hdw);
-	mutex_lock(&pvr2_unit_mtx); do {
+	pvr2_hdw_disconnect(hdw);
+	mutex_lock(&pvr2_unit_mtx);
+	do {
 		if ((hdw->unit_number >= 0) &&
 		    (hdw->unit_number < PVR_NUM) &&
 		    (unit_pointers[hdw->unit_number] == hdw)) {
 			unit_pointers[hdw->unit_number] = NULL;
 		}
-	} while (0); mutex_unlock(&pvr2_unit_mtx);
+	} while (0);
+	mutex_unlock(&pvr2_unit_mtx);
 	kfree(hdw->controls);
 	kfree(hdw->mpeg_ctrl_info);
 	kfree(hdw);
@@ -2758,6 +2708,7 @@ void pvr2_hdw_disconnect(struct pvr2_hdw *hdw)
 {
 	pvr2_trace(PVR2_TRACE_INIT,"pvr2_hdw_disconnect(hdw=%p)",hdw);
 	LOCK_TAKE(hdw->big_lock);
+	pvr2_i2c_core_done(hdw);
 	LOCK_TAKE(hdw->ctl_lock);
 	pvr2_hdw_remove_usb_stuff(hdw);
 	LOCK_GIVE(hdw->ctl_lock);
@@ -2856,11 +2807,15 @@ static void pvr2_subdev_set_control(struct pvr2_hdw *hdw, int id,
 				    const char *name, int val)
 {
 	struct v4l2_control ctrl;
+	struct v4l2_subdev *sd;
+
 	pvr2_trace(PVR2_TRACE_CHIPS, "subdev v4l2 %s=%d", name, val);
 	memset(&ctrl, 0, sizeof(ctrl));
 	ctrl.id = id;
 	ctrl.value = val;
-	v4l2_device_call_all(&hdw->v4l2_dev, 0, core, s_ctrl, &ctrl);
+
+	v4l2_device_for_each_subdev(sd, &hdw->v4l2_dev)
+		v4l2_s_ctrl(NULL, sd->ctrl_handler, &ctrl);
 }
 
 #define PVR2_SUBDEV_SET_CONTROL(hdw, id, lab) \
@@ -2910,7 +2865,7 @@ static void pvr2_subdev_update(struct pvr2_hdw *hdw)
 			v4l2_std_id vs;
 			vs = hdw->std_mask_cur;
 			v4l2_device_call_all(&hdw->v4l2_dev, 0,
-					     core, s_std, vs);
+					     video, s_std, vs);
 			pvr2_hdw_cx25840_vbi_hack(hdw);
 		}
 		hdw->tuner_signal_stale = !0;
@@ -2962,14 +2917,17 @@ static void pvr2_subdev_update(struct pvr2_hdw *hdw)
 	}
 
 	if (hdw->res_hor_dirty || hdw->res_ver_dirty || hdw->force_dirty) {
-		struct v4l2_mbus_framefmt fmt;
-		memset(&fmt, 0, sizeof(fmt));
-		fmt.width = hdw->res_hor_val;
-		fmt.height = hdw->res_ver_val;
-		fmt.code = V4L2_MBUS_FMT_FIXED;
+		struct v4l2_subdev_format format = {
+			.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+		};
+
+		format.format.width = hdw->res_hor_val;
+		format.format.height = hdw->res_ver_val;
+		format.format.code = MEDIA_BUS_FMT_FIXED;
 		pvr2_trace(PVR2_TRACE_CHIPS, "subdev v4l2 set_size(%dx%d)",
-			   fmt.width, fmt.height);
-		v4l2_device_call_all(&hdw->v4l2_dev, 0, video, s_mbus_fmt, &fmt);
+			   format.format.width, format.format.height);
+		v4l2_device_call_all(&hdw->v4l2_dev, 0, pad, set_fmt,
+				     NULL, &format);
 	}
 
 	if (hdw->srate_dirty || hdw->force_dirty) {
@@ -3327,12 +3285,14 @@ int pvr2_hdw_get_cropcap(struct pvr2_hdw *hdw, struct v4l2_cropcap *pp)
 /* Return information about the tuner */
 int pvr2_hdw_get_tuner_status(struct pvr2_hdw *hdw,struct v4l2_tuner *vtp)
 {
-	LOCK_TAKE(hdw->big_lock); do {
+	LOCK_TAKE(hdw->big_lock);
+	do {
 		if (hdw->tuner_signal_stale) {
 			pvr2_hdw_status_poll(hdw);
 		}
 		memcpy(vtp,&hdw->tuner_signal_info,sizeof(struct v4l2_tuner));
-	} while (0); LOCK_GIVE(hdw->big_lock);
+	} while (0);
+	LOCK_GIVE(hdw->big_lock);
 	return 0;
 }
 
@@ -3347,14 +3307,16 @@ struct pvr2_stream *pvr2_hdw_get_video_stream(struct pvr2_hdw *hp)
 void pvr2_hdw_trigger_module_log(struct pvr2_hdw *hdw)
 {
 	int nr = pvr2_hdw_get_unit_number(hdw);
-	LOCK_TAKE(hdw->big_lock); do {
-		printk(KERN_INFO "pvrusb2: =================  START STATUS CARD #%d  =================\n", nr);
+	LOCK_TAKE(hdw->big_lock);
+	do {
+		pr_info("pvrusb2: =================  START STATUS CARD #%d  =================\n", nr);
 		v4l2_device_call_all(&hdw->v4l2_dev, 0, core, log_status);
 		pvr2_trace(PVR2_TRACE_INFO,"cx2341x config:");
 		cx2341x_log_status(&hdw->enc_ctl_state, "pvrusb2");
 		pvr2_hdw_state_log_state(hdw);
-		printk(KERN_INFO "pvrusb2: ==================  END STATUS CARD #%d  ==================\n", nr);
-	} while (0); LOCK_GIVE(hdw->big_lock);
+		pr_info("pvrusb2: ==================  END STATUS CARD #%d  ==================\n", nr);
+	} while (0);
+	LOCK_GIVE(hdw->big_lock);
 }
 
 
@@ -3372,11 +3334,10 @@ static u8 *pvr2_full_eeprom_fetch(struct pvr2_hdw *hdw)
 	int ret;
 	int mode16 = 0;
 	unsigned pcnt,tcnt;
-	eeprom = kmalloc(EEPROM_SIZE,GFP_KERNEL);
+	eeprom = kzalloc(EEPROM_SIZE, GFP_KERNEL);
 	if (!eeprom) {
 		pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-			   "Failed to allocate memory"
-			   " required to read eeprom");
+			   "Failed to allocate memory required to read eeprom");
 		return NULL;
 	}
 
@@ -3393,8 +3354,8 @@ static u8 *pvr2_full_eeprom_fetch(struct pvr2_hdw *hdw)
 	   strange but it's what they do) */
 	mode16 = (addr & 1);
 	eepromSize = (mode16 ? EEPROM_SIZE : 256);
-	trace_eeprom("Examining %d byte eeprom at location 0x%x"
-		     " using %d bit addressing",eepromSize,addr,
+	trace_eeprom("Examining %d byte eeprom at location 0x%x using %d bit addressing",
+		     eepromSize, addr,
 		     mode16 ? 16 : 8);
 
 	msg[0].addr = addr;
@@ -3408,7 +3369,6 @@ static u8 *pvr2_full_eeprom_fetch(struct pvr2_hdw *hdw)
 	   (1) we're only fetching part of the eeprom, and (2) if we were
 	   getting the whole thing our I2C driver can't grab it in one
 	   pass - which is what tveeprom is otherwise going to attempt */
-	memset(eeprom,0,EEPROM_SIZE);
 	for (tcnt = 0; tcnt < EEPROM_SIZE; tcnt += pcnt) {
 		pcnt = 16;
 		if (pcnt + tcnt > EEPROM_SIZE) pcnt = EEPROM_SIZE-tcnt;
@@ -3440,7 +3400,8 @@ void pvr2_hdw_cpufw_set_enabled(struct pvr2_hdw *hdw,
 	int ret;
 	u16 address;
 	unsigned int pipe;
-	LOCK_TAKE(hdw->big_lock); do {
+	LOCK_TAKE(hdw->big_lock);
+	do {
 		if ((hdw->fw_buffer == NULL) == !enable_flag) break;
 
 		if (!enable_flag) {
@@ -3461,8 +3422,8 @@ void pvr2_hdw_cpufw_set_enabled(struct pvr2_hdw *hdw,
 		if (hdw->fw_cpu_flag) {
 			hdw->fw_size = (mode == 1) ? 0x4000 : 0x2000;
 			pvr2_trace(PVR2_TRACE_FIRMWARE,
-				   "Preparing to suck out CPU firmware"
-				   " (size=%u)", hdw->fw_size);
+				   "Preparing to suck out CPU firmware (size=%u)",
+				   hdw->fw_size);
 			hdw->fw_buffer = kzalloc(hdw->fw_size,GFP_KERNEL);
 			if (!hdw->fw_buffer) {
 				hdw->fw_size = 0;
@@ -3484,7 +3445,7 @@ void pvr2_hdw_cpufw_set_enabled(struct pvr2_hdw *hdw,
 						      0xa0,0xc0,
 						      address,0,
 						      hdw->fw_buffer+address,
-						      0x800,HZ);
+						      0x800,1000);
 				if (ret < 0) break;
 			}
 
@@ -3503,8 +3464,8 @@ void pvr2_hdw_cpufw_set_enabled(struct pvr2_hdw *hdw,
 			pvr2_trace(PVR2_TRACE_FIRMWARE,
 				   "Done sucking down EEPROM contents");
 		}
-
-	} while (0); LOCK_GIVE(hdw->big_lock);
+	} while (0);
+	LOCK_GIVE(hdw->big_lock);
 }
 
 
@@ -3519,7 +3480,8 @@ int pvr2_hdw_cpufw_get(struct pvr2_hdw *hdw,unsigned int offs,
 		       char *buf,unsigned int cnt)
 {
 	int ret = -EINVAL;
-	LOCK_TAKE(hdw->big_lock); do {
+	LOCK_TAKE(hdw->big_lock);
+	do {
 		if (!buf) break;
 		if (!cnt) break;
 
@@ -3544,7 +3506,8 @@ int pvr2_hdw_cpufw_get(struct pvr2_hdw *hdw,unsigned int offs,
 			   "Read firmware data offs=%d cnt=%d",
 			   offs,cnt);
 		ret = cnt;
-	} while (0); LOCK_GIVE(hdw->big_lock);
+	} while (0);
+	LOCK_GIVE(hdw->big_lock);
 
 	return ret;
 }
@@ -3592,10 +3555,16 @@ static void pvr2_ctl_read_complete(struct urb *urb)
 	complete(&hdw->ctl_done);
 }
 
+struct hdw_timer {
+	struct timer_list timer;
+	struct pvr2_hdw *hdw;
+};
 
-static void pvr2_ctl_timeout(unsigned long data)
+static void pvr2_ctl_timeout(struct timer_list *t)
 {
-	struct pvr2_hdw *hdw = (struct pvr2_hdw *)data;
+	struct hdw_timer *timer = from_timer(timer, t, timer);
+	struct pvr2_hdw *hdw = timer->hdw;
+
 	if (hdw->ctl_write_pend_flag || hdw->ctl_read_pend_flag) {
 		hdw->ctl_timeout_flag = !0;
 		if (hdw->ctl_write_pend_flag)
@@ -3617,24 +3586,24 @@ static int pvr2_send_request_ex(struct pvr2_hdw *hdw,
 {
 	unsigned int idx;
 	int status = 0;
-	struct timer_list timer;
+	struct hdw_timer timer = {
+		.hdw = hdw,
+	};
+
 	if (!hdw->ctl_lock_held) {
 		pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-			   "Attempted to execute control transfer"
-			   " without lock!!");
+			   "Attempted to execute control transfer without lock!!");
 		return -EDEADLK;
 	}
 	if (!hdw->flag_ok && !probe_fl) {
 		pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-			   "Attempted to execute control transfer"
-			   " when device not ok");
+			   "Attempted to execute control transfer when device not ok");
 		return -EIO;
 	}
 	if (!(hdw->ctl_read_urb && hdw->ctl_write_urb)) {
 		if (!probe_fl) {
 			pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-				   "Attempted to execute control transfer"
-				   " when USB is disconnected");
+				   "Attempted to execute control transfer when USB is disconnected");
 		}
 		return -ENOTTY;
 	}
@@ -3645,16 +3614,14 @@ static int pvr2_send_request_ex(struct pvr2_hdw *hdw,
 	if (write_len > PVR2_CTL_BUFFSIZE) {
 		pvr2_trace(
 			PVR2_TRACE_ERROR_LEGS,
-			"Attempted to execute %d byte"
-			" control-write transfer (limit=%d)",
+			"Attempted to execute %d byte control-write transfer (limit=%d)",
 			write_len,PVR2_CTL_BUFFSIZE);
 		return -EINVAL;
 	}
 	if (read_len > PVR2_CTL_BUFFSIZE) {
 		pvr2_trace(
 			PVR2_TRACE_ERROR_LEGS,
-			"Attempted to execute %d byte"
-			" control-read transfer (limit=%d)",
+			"Attempted to execute %d byte control-read transfer (limit=%d)",
 			write_len,PVR2_CTL_BUFFSIZE);
 		return -EINVAL;
 	}
@@ -3667,11 +3634,10 @@ static int pvr2_send_request_ex(struct pvr2_hdw *hdw,
 
 
 	hdw->cmd_debug_state = 1;
-	if (write_len) {
+	if (write_len && write_data)
 		hdw->cmd_debug_code = ((unsigned char *)write_data)[0];
-	} else {
+	else
 		hdw->cmd_debug_code = 0;
-	}
 	hdw->cmd_debug_write_len = write_len;
 	hdw->cmd_debug_read_len = read_len;
 
@@ -3680,12 +3646,10 @@ static int pvr2_send_request_ex(struct pvr2_hdw *hdw,
 	hdw->ctl_timeout_flag = 0;
 	hdw->ctl_write_pend_flag = 0;
 	hdw->ctl_read_pend_flag = 0;
-	init_timer(&timer);
-	timer.expires = jiffies + timeout;
-	timer.data = (unsigned long)hdw;
-	timer.function = pvr2_ctl_timeout;
+	timer_setup_on_stack(&timer.timer, pvr2_ctl_timeout, 0);
+	timer.timer.expires = jiffies + timeout;
 
-	if (write_len) {
+	if (write_len && write_data) {
 		hdw->cmd_debug_state = 2;
 		/* Transfer write data to internal buffer */
 		for (idx = 0; idx < write_len; idx++) {
@@ -3703,11 +3667,17 @@ static int pvr2_send_request_ex(struct pvr2_hdw *hdw,
 				  hdw);
 		hdw->ctl_write_urb->actual_length = 0;
 		hdw->ctl_write_pend_flag = !0;
+		if (usb_urb_ep_type_check(hdw->ctl_write_urb)) {
+			pvr2_trace(
+				PVR2_TRACE_ERROR_LEGS,
+				"Invalid write control endpoint");
+			return -EINVAL;
+		}
 		status = usb_submit_urb(hdw->ctl_write_urb,GFP_KERNEL);
 		if (status < 0) {
 			pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-				   "Failed to submit write-control"
-				   " URB status=%d",status);
+				   "Failed to submit write-control URB status=%d",
+status);
 			hdw->ctl_write_pend_flag = 0;
 			goto done;
 		}
@@ -3727,18 +3697,24 @@ static int pvr2_send_request_ex(struct pvr2_hdw *hdw,
 				  hdw);
 		hdw->ctl_read_urb->actual_length = 0;
 		hdw->ctl_read_pend_flag = !0;
+		if (usb_urb_ep_type_check(hdw->ctl_read_urb)) {
+			pvr2_trace(
+				PVR2_TRACE_ERROR_LEGS,
+				"Invalid read control endpoint");
+			return -EINVAL;
+		}
 		status = usb_submit_urb(hdw->ctl_read_urb,GFP_KERNEL);
 		if (status < 0) {
 			pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-				   "Failed to submit read-control"
-				   " URB status=%d",status);
+				   "Failed to submit read-control URB status=%d",
+status);
 			hdw->ctl_read_pend_flag = 0;
 			goto done;
 		}
 	}
 
 	/* Start timer */
-	add_timer(&timer);
+	add_timer(&timer.timer);
 
 	/* Now wait for all I/O to complete */
 	hdw->cmd_debug_state = 4;
@@ -3748,7 +3724,7 @@ static int pvr2_send_request_ex(struct pvr2_hdw *hdw,
 	hdw->cmd_debug_state = 5;
 
 	/* Stop timer */
-	del_timer_sync(&timer);
+	del_timer_sync(&timer.timer);
 
 	hdw->cmd_debug_state = 6;
 	status = 0;
@@ -3773,8 +3749,7 @@ static int pvr2_send_request_ex(struct pvr2_hdw *hdw,
 			status = hdw->ctl_write_urb->status;
 			if (!probe_fl) {
 				pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-					   "control-write URB failure,"
-					   " status=%d",
+					   "control-write URB failure, status=%d",
 					   status);
 			}
 			goto done;
@@ -3784,15 +3759,14 @@ static int pvr2_send_request_ex(struct pvr2_hdw *hdw,
 			status = -EIO;
 			if (!probe_fl) {
 				pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-					   "control-write URB short,"
-					   " expected=%d got=%d",
+					   "control-write URB short, expected=%d got=%d",
 					   write_len,
 					   hdw->ctl_write_urb->actual_length);
 			}
 			goto done;
 		}
 	}
-	if (read_len) {
+	if (read_len && read_data) {
 		/* Validate results of read request */
 		if ((hdw->ctl_read_urb->status != 0) &&
 		    (hdw->ctl_read_urb->status != -ENOENT) &&
@@ -3803,8 +3777,7 @@ static int pvr2_send_request_ex(struct pvr2_hdw *hdw,
 			status = hdw->ctl_read_urb->status;
 			if (!probe_fl) {
 				pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-					   "control-read URB failure,"
-					   " status=%d",
+					   "control-read URB failure, status=%d",
 					   status);
 			}
 			goto done;
@@ -3814,8 +3787,7 @@ static int pvr2_send_request_ex(struct pvr2_hdw *hdw,
 			status = -EIO;
 			if (!probe_fl) {
 				pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-					   "control-read URB short,"
-					   " expected=%d got=%d",
+					   "control-read URB short, expected=%d got=%d",
 					   read_len,
 					   hdw->ctl_read_urb->actual_length);
 			}
@@ -3834,6 +3806,8 @@ static int pvr2_send_request_ex(struct pvr2_hdw *hdw,
 	if ((status < 0) && (!probe_fl)) {
 		pvr2_hdw_render_useless(hdw);
 	}
+	destroy_timer_on_stack(&timer.timer);
+
 	return status;
 }
 
@@ -4012,7 +3986,7 @@ void pvr2_hdw_cpureset_assert(struct pvr2_hdw *hdw,int val)
 	/* Write the CPUCS register on the 8051.  The lsb of the register
 	   is the reset bit; a 1 asserts reset while a 0 clears it. */
 	pipe = usb_sndctrlpipe(hdw->usb_dev, 0);
-	ret = usb_control_msg(hdw->usb_dev,pipe,0xa0,0x40,0xe600,0,da,1,HZ);
+	ret = usb_control_msg(hdw->usb_dev,pipe,0xa0,0x40,0xe600,0,da,1,1000);
 	if (ret < 0) {
 		pvr2_trace(PVR2_TRACE_ERROR_LEGS,
 			   "cpureset_assert(%d) error=%d",val,ret);
@@ -4035,11 +4009,6 @@ int pvr2_hdw_cmd_powerup(struct pvr2_hdw *hdw)
 }
 
 
-int pvr2_hdw_cmd_powerdown(struct pvr2_hdw *hdw)
-{
-	return pvr2_issue_simple_cmd(hdw,FX2CMD_POWER_OFF);
-}
-
 
 int pvr2_hdw_cmd_decoder_reset(struct pvr2_hdw *hdw)
 {
@@ -4060,6 +4029,20 @@ int pvr2_hdw_cmd_decoder_reset(struct pvr2_hdw *hdw)
 static int pvr2_hdw_cmd_hcw_demod_reset(struct pvr2_hdw *hdw, int onoff)
 {
 	hdw->flag_ok = !0;
+
+	/* Use this for Hauppauge 160xxx only */
+	if (le16_to_cpu(hdw->usb_dev->descriptor.idVendor) == 0x2040 &&
+	    (le16_to_cpu(hdw->usb_dev->descriptor.idProduct) == 0x7502 ||
+	     le16_to_cpu(hdw->usb_dev->descriptor.idProduct) == 0x7510)) {
+		pr_debug("%s(): resetting demod on Hauppauge 160xxx platform skipped\n",
+			 __func__);
+		/* Can't reset 160xxx or it will trash Demod tristate */
+		return pvr2_issue_simple_cmd(hdw,
+					     FX2CMD_HCW_MAKO_SLEEP_PIN |
+					     (1 << 8) |
+					     ((onoff ? 1 : 0) << 16));
+	}
+
 	return pvr2_issue_simple_cmd(hdw,
 				     FX2CMD_HCW_DEMOD_RESETIN |
 				     (1 << 8) |
@@ -4301,9 +4284,8 @@ static int state_eval_encoder_config(struct pvr2_hdw *hdw)
 				   the encoder. */
 				if (!hdw->state_encoder_waitok) {
 					hdw->encoder_wait_timer.expires =
-						jiffies +
-						(HZ * TIME_MSEC_ENCODER_WAIT
-						 / 1000);
+						jiffies + msecs_to_jiffies(
+						TIME_MSEC_ENCODER_WAIT);
 					add_timer(&hdw->encoder_wait_timer);
 				}
 			}
@@ -4426,8 +4408,8 @@ static int state_eval_encoder_run(struct pvr2_hdw *hdw)
 		if (pvr2_encoder_start(hdw) < 0) return !0;
 		hdw->state_encoder_run = !0;
 		if (!hdw->state_encoder_runok) {
-			hdw->encoder_run_timer.expires =
-				jiffies + (HZ * TIME_MSEC_ENCODER_OK / 1000);
+			hdw->encoder_run_timer.expires = jiffies +
+				 msecs_to_jiffies(TIME_MSEC_ENCODER_OK);
 			add_timer(&hdw->encoder_run_timer);
 		}
 	}
@@ -4437,47 +4419,47 @@ static int state_eval_encoder_run(struct pvr2_hdw *hdw)
 
 
 /* Timeout function for quiescent timer. */
-static void pvr2_hdw_quiescent_timeout(unsigned long data)
+static void pvr2_hdw_quiescent_timeout(struct timer_list *t)
 {
-	struct pvr2_hdw *hdw = (struct pvr2_hdw *)data;
+	struct pvr2_hdw *hdw = from_timer(hdw, t, quiescent_timer);
 	hdw->state_decoder_quiescent = !0;
 	trace_stbit("state_decoder_quiescent",hdw->state_decoder_quiescent);
 	hdw->state_stale = !0;
-	queue_work(hdw->workqueue,&hdw->workpoll);
+	schedule_work(&hdw->workpoll);
 }
 
 
 /* Timeout function for decoder stabilization timer. */
-static void pvr2_hdw_decoder_stabilization_timeout(unsigned long data)
+static void pvr2_hdw_decoder_stabilization_timeout(struct timer_list *t)
 {
-	struct pvr2_hdw *hdw = (struct pvr2_hdw *)data;
+	struct pvr2_hdw *hdw = from_timer(hdw, t, decoder_stabilization_timer);
 	hdw->state_decoder_ready = !0;
 	trace_stbit("state_decoder_ready", hdw->state_decoder_ready);
 	hdw->state_stale = !0;
-	queue_work(hdw->workqueue, &hdw->workpoll);
+	schedule_work(&hdw->workpoll);
 }
 
 
 /* Timeout function for encoder wait timer. */
-static void pvr2_hdw_encoder_wait_timeout(unsigned long data)
+static void pvr2_hdw_encoder_wait_timeout(struct timer_list *t)
 {
-	struct pvr2_hdw *hdw = (struct pvr2_hdw *)data;
+	struct pvr2_hdw *hdw = from_timer(hdw, t, encoder_wait_timer);
 	hdw->state_encoder_waitok = !0;
 	trace_stbit("state_encoder_waitok",hdw->state_encoder_waitok);
 	hdw->state_stale = !0;
-	queue_work(hdw->workqueue,&hdw->workpoll);
+	schedule_work(&hdw->workpoll);
 }
 
 
 /* Timeout function for encoder run timer. */
-static void pvr2_hdw_encoder_run_timeout(unsigned long data)
+static void pvr2_hdw_encoder_run_timeout(struct timer_list *t)
 {
-	struct pvr2_hdw *hdw = (struct pvr2_hdw *)data;
+	struct pvr2_hdw *hdw = from_timer(hdw, t, encoder_run_timer);
 	if (!hdw->state_encoder_runok) {
 		hdw->state_encoder_runok = !0;
 		trace_stbit("state_encoder_runok",hdw->state_encoder_runok);
 		hdw->state_stale = !0;
-		queue_work(hdw->workqueue,&hdw->workpoll);
+		schedule_work(&hdw->workpoll);
 	}
 }
 
@@ -4518,9 +4500,8 @@ static int state_eval_decoder_run(struct pvr2_hdw *hdw)
 				   but before we did the pending check. */
 				if (!hdw->state_decoder_quiescent) {
 					hdw->quiescent_timer.expires =
-						jiffies +
-						(HZ * TIME_MSEC_DECODER_WAIT
-						 / 1000);
+						jiffies + msecs_to_jiffies(
+						TIME_MSEC_DECODER_WAIT);
 					add_timer(&hdw->quiescent_timer);
 				}
 			}
@@ -4544,9 +4525,8 @@ static int state_eval_decoder_run(struct pvr2_hdw *hdw)
 		hdw->state_decoder_run = !0;
 		if (hdw->decoder_client_id == PVR2_CLIENT_ID_SAA7115) {
 			hdw->decoder_stabilization_timer.expires =
-				jiffies +
-				(HZ * TIME_MSEC_DECODER_STABILIZATION_WAIT /
-				 1000);
+				jiffies + msecs_to_jiffies(
+				TIME_MSEC_DECODER_STABILIZATION_WAIT);
 			add_timer(&hdw->decoder_stabilization_timer);
 		} else {
 			hdw->state_decoder_ready = !0;
@@ -4700,7 +4680,7 @@ static unsigned int print_input_mask(unsigned int msk,
 	unsigned int idx,ccnt;
 	unsigned int tcnt = 0;
 	for (idx = 0; idx < ARRAY_SIZE(control_values_input); idx++) {
-		if (!((1 << idx) & msk)) continue;
+		if (!((1UL << idx) & msk)) continue;
 		ccnt = scnprintf(buf+tcnt,
 				 acnt-tcnt,
 				 "%s%s",
@@ -4810,9 +4790,7 @@ static unsigned int pvr2_hdw_report_unlocked(struct pvr2_hdw *hdw,int which,
 				      0);
 		return scnprintf(
 			buf,acnt,
-			"Bytes streamed=%u"
-			" URBs: queued=%u idle=%u ready=%u"
-			" processed=%u failed=%u",
+			"Bytes streamed=%u URBs: queued=%u idle=%u ready=%u processed=%u failed=%u",
 			stats.bytes_processed,
 			stats.buffers_in_queue,
 			stats.buffers_in_idle,
@@ -4905,16 +4883,19 @@ static void pvr2_hdw_state_log_state(struct pvr2_hdw *hdw)
 	for (idx = 0; ; idx++) {
 		ccnt = pvr2_hdw_report_unlocked(hdw,idx,buf,sizeof(buf));
 		if (!ccnt) break;
-		printk(KERN_INFO "%s %.*s\n",hdw->name,ccnt,buf);
+		pr_info("%s %.*s\n", hdw->name, ccnt, buf);
 	}
 	ccnt = pvr2_hdw_report_clients(hdw, buf, sizeof(buf));
+	if (ccnt >= sizeof(buf))
+		ccnt = sizeof(buf);
+
 	ucnt = 0;
 	while (ucnt < ccnt) {
 		lcnt = 0;
 		while ((lcnt + ucnt < ccnt) && (buf[lcnt + ucnt] != '\n')) {
 			lcnt++;
 		}
-		printk(KERN_INFO "%s %.*s\n", hdw->name, lcnt, buf + ucnt);
+		pr_info("%s %.*s\n", hdw->name, lcnt, buf + ucnt);
 		ucnt += lcnt + 1;
 	}
 }
@@ -4990,7 +4971,7 @@ static void pvr2_hdw_state_sched(struct pvr2_hdw *hdw)
 	if (hdw->state_stale) return;
 	hdw->state_stale = !0;
 	trace_stbit("state_stale",hdw->state_stale);
-	queue_work(hdw->workqueue,&hdw->workpoll);
+	schedule_work(&hdw->workpoll);
 }
 
 
@@ -5021,8 +5002,7 @@ int pvr2_hdw_gpio_chg_dir(struct pvr2_hdw *hdw,u32 msk,u32 val)
 		if (ret) return ret;
 		nval = (cval & ~msk) | (val & msk);
 		pvr2_trace(PVR2_TRACE_GPIO,
-			   "GPIO direction changing 0x%x:0x%x"
-			   " from 0x%x to 0x%x",
+			   "GPIO direction changing 0x%x:0x%x from 0x%x to 0x%x",
 			   msk,val,cval,nval);
 	} else {
 		nval = val;
@@ -5063,11 +5043,9 @@ void pvr2_hdw_status_poll(struct pvr2_hdw *hdw)
 	/* Note: There apparently is no replacement for VIDIOC_CROPCAP
 	   using v4l2-subdev - therefore we can't support that AT ALL right
 	   now.  (Of course, no sub-drivers seem to implement it either.
-	   But now it's a a chicken and egg problem...) */
+	   But now it's a chicken and egg problem...) */
 	v4l2_device_call_all(&hdw->v4l2_dev, 0, tuner, g_tuner, vtp);
-	pvr2_trace(PVR2_TRACE_CHIPS, "subdev status poll"
-		   " type=%u strength=%u audio=0x%x cap=0x%x"
-		   " low=%u hi=%u",
+	pvr2_trace(PVR2_TRACE_CHIPS, "subdev status poll type=%u strength=%u audio=0x%x cap=0x%x low=%u hi=%u",
 		   vtp->type,
 		   vtp->signal, vtp->rxsubchans, vtp->capability,
 		   vtp->rangelow, vtp->rangehigh);
@@ -5129,7 +5107,7 @@ int pvr2_hdw_set_input_allowed(struct pvr2_hdw *hdw,
 			break;
 		}
 		hdw->input_allowed_mask = nv;
-		if ((1 << hdw->input_val) & hdw->input_allowed_mask) {
+		if ((1UL << hdw->input_val) & hdw->input_allowed_mask) {
 			/* Current mode is still in the allowed mask, so
 			   we're done. */
 			break;
@@ -5142,7 +5120,7 @@ int pvr2_hdw_set_input_allowed(struct pvr2_hdw *hdw,
 		}
 		m = hdw->input_allowed_mask;
 		for (idx = 0; idx < (sizeof(m) << 3); idx++) {
-			if (!((1 << idx) & m)) continue;
+			if (!((1UL << idx) & m)) continue;
 			pvr2_hdw_set_input(hdw,idx);
 			break;
 		}

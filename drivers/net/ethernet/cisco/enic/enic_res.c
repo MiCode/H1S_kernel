@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2008-2010 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
- *
- * This program is free software; you may redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
  */
 
 #include <linux/kernel.h>
@@ -71,6 +58,7 @@ int enic_get_vnic_config(struct enic *enic)
 	GET_CONFIG(intr_mode);
 	GET_CONFIG(intr_timer_usec);
 	GET_CONFIG(loop_tag);
+	GET_CONFIG(num_arfs);
 
 	c->wq_desc_count =
 		min_t(u32, ENIC_MAX_WQ_DESCS,
@@ -148,6 +136,7 @@ int enic_set_nic_cfg(struct enic *enic, u8 rss_default_cpu, u8 rss_hash_type,
 	u8 rss_hash_bits, u8 rss_base_cpu, u8 rss_enable, u8 tso_ipid_split_en,
 	u8 ig_vlan_strip_en)
 {
+	enum vnic_devcmd_cmd cmd = CMD_NIC_CFG;
 	u64 a0, a1;
 	u32 nic_cfg;
 	int wait = 1000;
@@ -159,7 +148,11 @@ int enic_set_nic_cfg(struct enic *enic, u8 rss_default_cpu, u8 rss_hash_type,
 	a0 = nic_cfg;
 	a1 = 0;
 
-	return vnic_dev_cmd(enic->vdev, CMD_NIC_CFG, &a0, &a1, wait);
+	if (rss_hash_type & (NIC_CFG_RSS_HASH_TYPE_UDP_IPV4 |
+			     NIC_CFG_RSS_HASH_TYPE_UDP_IPV6))
+		cmd = CMD_NIC_CFG_CHK;
+
+	return vnic_dev_cmd(enic->vdev, cmd, &a0, &a1, wait);
 }
 
 int enic_set_rss_key(struct enic *enic, dma_addr_t key_pa, u64 len)

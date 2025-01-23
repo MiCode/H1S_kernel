@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2007 PA Semi, Inc
  *
@@ -8,21 +9,6 @@
  *
  * Based on arch/powerpc/platforms/cell/cbe_cpufreq.c:
  * (C) Copyright IBM Deutschland Entwicklung GmbH 2005
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  */
 
 #include <linux/cpufreq.h>
@@ -32,9 +18,10 @@
 
 #include <asm/hw_irq.h>
 #include <asm/io.h>
-#include <asm/prom.h>
 #include <asm/time.h>
 #include <asm/smp.h>
+
+#include <platforms/pasemi/pasemi.h>
 
 #define SDCASR_REG		0x0100
 #define SDCASR_REG_STRIDE	0x1000
@@ -60,12 +47,12 @@ static int current_astate;
 
 /* We support 5(A0-A4) power states excluding turbo(A5-A6) modes */
 static struct cpufreq_frequency_table pas_freqs[] = {
-	{0,	0},
-	{1,	0},
-	{2,	0},
-	{3,	0},
-	{4,	0},
-	{0,	CPUFREQ_TABLE_END},
+	{0, 0,	0},
+	{0, 1,	0},
+	{0, 2,	0},
+	{0, 3,	0},
+	{0, 4,	0},
+	{0, 0,	CPUFREQ_TABLE_END},
 };
 
 /*
@@ -136,17 +123,27 @@ void restore_astate(int cpu)
 
 static int pas_cpufreq_cpu_init(struct cpufreq_policy *policy)
 {
+	struct cpufreq_frequency_table *pos;
 	const u32 *max_freqp;
 	u32 max_freq;
-	int i, cur_astate;
+	int cur_astate, idx;
 	struct resource res;
 	struct device_node *cpu, *dn;
 	int err = -ENODEV;
 
 	cpu = of_get_cpu_node(policy->cpu, NULL);
-
 	if (!cpu)
 		goto out;
+
+	max_freqp = of_get_property(cpu, "clock-frequency", NULL);
+	of_node_put(cpu);
+	if (!max_freqp) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	/* we need the freq in kHz */
+	max_freq = *max_freqp / 1000;
 
 	dn = of_find_compatible_node(NULL, NULL, "1682m-sdc");
 	if (!dn)
@@ -183,24 +180,13 @@ static int pas_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	}
 
 	pr_debug("init cpufreq on CPU %d\n", policy->cpu);
-
-	max_freqp = of_get_property(cpu, "clock-frequency", NULL);
-	if (!max_freqp) {
-		err = -EINVAL;
-		goto out_unmap_sdcpwr;
-	}
-
-	/* we need the freq in kHz */
-	max_freq = *max_freqp / 1000;
-
 	pr_debug("max clock-frequency is at %u kHz\n", max_freq);
 	pr_debug("initializing frequency table\n");
 
 	/* initialize frequency table */
-	for (i=0; pas_freqs[i].frequency!=CPUFREQ_TABLE_END; i++) {
-		pas_freqs[i].frequency =
-			get_astate_freq(pas_freqs[i].driver_data) * 100000;
-		pr_debug("%d: %d\n", i, pas_freqs[i].frequency);
+	cpufreq_for_each_entry_idx(pos, pas_freqs, idx) {
+		pos->frequency = get_astate_freq(pos->driver_data) * 100000;
+		pr_debug("%d: %d\n", idx, pos->frequency);
 	}
 
 	cur_astate = get_cur_astate(policy->cpu);
@@ -209,10 +195,8 @@ static int pas_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	policy->cur = pas_freqs[cur_astate].frequency;
 	ppc_proc_freq = policy->cur * 1000ul;
 
-	return cpufreq_generic_init(policy, pas_freqs, get_gizmo_latency());
-
-out_unmap_sdcpwr:
-	iounmap(sdcpwr_mapbase);
+	cpufreq_generic_init(policy, pas_freqs, get_gizmo_latency());
+	return 0;
 
 out_unmap_sdcasr:
 	iounmap(sdcasr_mapbase);
@@ -226,7 +210,7 @@ static int pas_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 	 * We don't support CPU hotplug. Don't unmap after the system
 	 * has already made it to a running state.
 	 */
-	if (system_state != SYSTEM_BOOTING)
+	if (system_state >= SYSTEM_RUNNING)
 		return 0;
 
 	if (sdcasr_mapbase)
@@ -234,7 +218,6 @@ static int pas_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 	if (sdcpwr_mapbase)
 		iounmap(sdcpwr_mapbase);
 
-	cpufreq_frequency_table_put_attr(policy->cpu);
 	return 0;
 }
 

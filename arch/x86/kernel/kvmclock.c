@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*  KVM paravirtual clock driver. A clocksource implementation
     Copyright (C) 2008 Glauber de Oliveira Costa, Red Hat Inc.
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include <linux/clocksource.h>
@@ -23,73 +10,99 @@
 #include <asm/apic.h>
 #include <linux/percpu.h>
 #include <linux/hardirq.h>
-#include <linux/memblock.h>
+#include <linux/cpuhotplug.h>
+#include <linux/sched.h>
+#include <linux/sched/clock.h>
+#include <linux/mm.h>
+#include <linux/slab.h>
+#include <linux/set_memory.h>
+#include <linux/cc_platform.h>
 
+#include <asm/hypervisor.h>
 #include <asm/x86_init.h>
-#include <asm/reboot.h>
+#include <asm/kvmclock.h>
 
-static int kvmclock = 1;
-static int msr_kvm_system_time = MSR_KVM_SYSTEM_TIME;
-static int msr_kvm_wall_clock = MSR_KVM_WALL_CLOCK;
+static int kvmclock __initdata = 1;
+static int kvmclock_vsyscall __initdata = 1;
+static int msr_kvm_system_time __ro_after_init;
+static int msr_kvm_wall_clock __ro_after_init;
+static u64 kvm_sched_clock_offset __ro_after_init;
 
-static int parse_no_kvmclock(char *arg)
+static int __init parse_no_kvmclock(char *arg)
 {
 	kvmclock = 0;
 	return 0;
 }
 early_param("no-kvmclock", parse_no_kvmclock);
 
-/* The hypervisor will put information about time periodically here */
-static struct pvclock_vsyscall_time_info *hv_clock;
-static struct pvclock_wall_clock wall_clock;
+static int __init parse_no_kvmclock_vsyscall(char *arg)
+{
+	kvmclock_vsyscall = 0;
+	return 0;
+}
+early_param("no-kvmclock-vsyscall", parse_no_kvmclock_vsyscall);
+
+/* Aligned to page sizes to match whats mapped via vsyscalls to userspace */
+#define HVC_BOOT_ARRAY_SIZE \
+	(PAGE_SIZE / sizeof(struct pvclock_vsyscall_time_info))
+
+static struct pvclock_vsyscall_time_info
+			hv_clock_boot[HVC_BOOT_ARRAY_SIZE] __bss_decrypted __aligned(PAGE_SIZE);
+static struct pvclock_wall_clock wall_clock __bss_decrypted;
+static struct pvclock_vsyscall_time_info *hvclock_mem;
+DEFINE_PER_CPU(struct pvclock_vsyscall_time_info *, hv_clock_per_cpu);
+EXPORT_PER_CPU_SYMBOL_GPL(hv_clock_per_cpu);
 
 /*
  * The wallclock is the time of day when we booted. Since then, some time may
  * have elapsed since the hypervisor wrote the data. So we try to account for
  * that with system time
  */
-static void kvm_get_wallclock(struct timespec *now)
+static void kvm_get_wallclock(struct timespec64 *now)
 {
-	struct pvclock_vcpu_time_info *vcpu_time;
-	int low, high;
-	int cpu;
-
-	low = (int)__pa_symbol(&wall_clock);
-	high = ((u64)__pa_symbol(&wall_clock) >> 32);
-
-	native_write_msr(msr_kvm_wall_clock, low, high);
-
+	wrmsrl(msr_kvm_wall_clock, slow_virt_to_phys(&wall_clock));
 	preempt_disable();
-	cpu = smp_processor_id();
-
-	vcpu_time = &hv_clock[cpu].pvti;
-	pvclock_read_wallclock(&wall_clock, vcpu_time, now);
-
+	pvclock_read_wallclock(&wall_clock, this_cpu_pvti(), now);
 	preempt_enable();
 }
 
-static int kvm_set_wallclock(const struct timespec *now)
+static int kvm_set_wallclock(const struct timespec64 *now)
 {
-	return -1;
+	return -ENODEV;
 }
 
-static cycle_t kvm_clock_read(void)
+static u64 kvm_clock_read(void)
 {
-	struct pvclock_vcpu_time_info *src;
-	cycle_t ret;
-	int cpu;
+	u64 ret;
 
 	preempt_disable_notrace();
-	cpu = smp_processor_id();
-	src = &hv_clock[cpu].pvti;
-	ret = pvclock_clocksource_read(src);
+	ret = pvclock_clocksource_read_nowd(this_cpu_pvti());
 	preempt_enable_notrace();
 	return ret;
 }
 
-static cycle_t kvm_clock_get_cycles(struct clocksource *cs)
+static u64 kvm_clock_get_cycles(struct clocksource *cs)
 {
 	return kvm_clock_read();
+}
+
+static noinstr u64 kvm_sched_clock_read(void)
+{
+	return pvclock_clocksource_read_nowd(this_cpu_pvti()) - kvm_sched_clock_offset;
+}
+
+static inline void kvm_sched_clock_init(bool stable)
+{
+	if (!stable)
+		clear_sched_clock_stable();
+	kvm_sched_clock_offset = kvm_clock_read();
+	paravirt_set_sched_clock(kvm_sched_clock_read);
+
+	pr_info("kvm-clock: using sched offset of %llu cycles",
+		kvm_sched_clock_offset);
+
+	BUILD_BUG_ON(sizeof(kvm_sched_clock_offset) >
+		sizeof(((struct pvclock_vcpu_time_info *)NULL)->system_time));
 }
 
 /*
@@ -103,19 +116,11 @@ static cycle_t kvm_clock_get_cycles(struct clocksource *cs)
  */
 static unsigned long kvm_get_tsc_khz(void)
 {
-	struct pvclock_vcpu_time_info *src;
-	int cpu;
-	unsigned long tsc_khz;
-
-	preempt_disable();
-	cpu = smp_processor_id();
-	src = &hv_clock[cpu].pvti;
-	tsc_khz = pvclock_tsc_khz(src);
-	preempt_enable();
-	return tsc_khz;
+	setup_force_cpu_cap(X86_FEATURE_TSC_KNOWN_FREQ);
+	return pvclock_tsc_khz(this_cpu_pvti());
 }
 
-static void kvm_get_preset_lpj(void)
+static void __init kvm_get_preset_lpj(void)
 {
 	unsigned long khz;
 	u64 lpj;
@@ -129,48 +134,47 @@ static void kvm_get_preset_lpj(void)
 
 bool kvm_check_and_clear_guest_paused(void)
 {
+	struct pvclock_vsyscall_time_info *src = this_cpu_hvclock();
 	bool ret = false;
-	struct pvclock_vcpu_time_info *src;
-	int cpu = smp_processor_id();
 
-	if (!hv_clock)
+	if (!src)
 		return ret;
 
-	src = &hv_clock[cpu].pvti;
-	if ((src->flags & PVCLOCK_GUEST_STOPPED) != 0) {
-		src->flags &= ~PVCLOCK_GUEST_STOPPED;
+	if ((src->pvti.flags & PVCLOCK_GUEST_STOPPED) != 0) {
+		src->pvti.flags &= ~PVCLOCK_GUEST_STOPPED;
 		pvclock_touch_watchdogs();
 		ret = true;
 	}
-
 	return ret;
 }
 
-static struct clocksource kvm_clock = {
-	.name = "kvm-clock",
-	.read = kvm_clock_get_cycles,
-	.rating = 400,
-	.mask = CLOCKSOURCE_MASK(64),
-	.flags = CLOCK_SOURCE_IS_CONTINUOUS,
-};
-
-int kvm_register_clock(char *txt)
+static int kvm_cs_enable(struct clocksource *cs)
 {
-	int cpu = smp_processor_id();
-	int low, high, ret;
-	struct pvclock_vcpu_time_info *src;
+	vclocks_set_used(VDSO_CLOCKMODE_PVCLOCK);
+	return 0;
+}
 
-	if (!hv_clock)
-		return 0;
+struct clocksource kvm_clock = {
+	.name	= "kvm-clock",
+	.read	= kvm_clock_get_cycles,
+	.rating	= 400,
+	.mask	= CLOCKSOURCE_MASK(64),
+	.flags	= CLOCK_SOURCE_IS_CONTINUOUS,
+	.enable	= kvm_cs_enable,
+};
+EXPORT_SYMBOL_GPL(kvm_clock);
 
-	src = &hv_clock[cpu].pvti;
-	low = (int)slow_virt_to_phys(src) | 1;
-	high = ((u64)slow_virt_to_phys(src) >> 32);
-	ret = native_write_msr_safe(msr_kvm_system_time, low, high);
-	printk(KERN_INFO "kvm-clock: cpu %d, msr %x:%x, %s\n",
-	       cpu, high, low, txt);
+static void kvm_register_clock(char *txt)
+{
+	struct pvclock_vsyscall_time_info *src = this_cpu_hvclock();
+	u64 pa;
 
-	return ret;
+	if (!src)
+		return;
+
+	pa = slow_virt_to_phys(&src->pvti) | 0x01ULL;
+	wrmsrl(msr_kvm_system_time, pa);
+	pr_debug("kvm-clock: cpu %d, msr %llx, %s", smp_processor_id(), pa, txt);
 }
 
 static void kvm_save_sched_clock_state(void)
@@ -185,124 +189,161 @@ static void kvm_restore_sched_clock_state(void)
 #ifdef CONFIG_X86_LOCAL_APIC
 static void kvm_setup_secondary_clock(void)
 {
+	kvm_register_clock("secondary cpu clock");
+}
+#endif
+
+void kvmclock_disable(void)
+{
+	if (msr_kvm_system_time)
+		native_write_msr(msr_kvm_system_time, 0, 0);
+}
+
+static void __init kvmclock_init_mem(void)
+{
+	unsigned long ncpus;
+	unsigned int order;
+	struct page *p;
+	int r;
+
+	if (HVC_BOOT_ARRAY_SIZE >= num_possible_cpus())
+		return;
+
+	ncpus = num_possible_cpus() - HVC_BOOT_ARRAY_SIZE;
+	order = get_order(ncpus * sizeof(*hvclock_mem));
+
+	p = alloc_pages(GFP_KERNEL, order);
+	if (!p) {
+		pr_warn("%s: failed to alloc %d pages", __func__, (1U << order));
+		return;
+	}
+
+	hvclock_mem = page_address(p);
+
 	/*
-	 * Now that the first cpu already had this clocksource initialized,
-	 * we shouldn't fail.
+	 * hvclock is shared between the guest and the hypervisor, must
+	 * be mapped decrypted.
 	 */
-	WARN_ON(kvm_register_clock("secondary cpu clock"));
+	if (cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT)) {
+		r = set_memory_decrypted((unsigned long) hvclock_mem,
+					 1UL << order);
+		if (r) {
+			__free_pages(p, order);
+			hvclock_mem = NULL;
+			pr_warn("kvmclock: set_memory_decrypted() failed. Disabling\n");
+			return;
+		}
+	}
+
+	memset(hvclock_mem, 0, PAGE_SIZE << order);
 }
+
+static int __init kvm_setup_vsyscall_timeinfo(void)
+{
+	if (!kvm_para_available() || !kvmclock || nopv)
+		return 0;
+
+	kvmclock_init_mem();
+
+#ifdef CONFIG_X86_64
+	if (per_cpu(hv_clock_per_cpu, 0) && kvmclock_vsyscall) {
+		u8 flags;
+
+		flags = pvclock_read_flags(&hv_clock_boot[0].pvti);
+		if (!(flags & PVCLOCK_TSC_STABLE_BIT))
+			return 0;
+
+		kvm_clock.vdso_clock_mode = VDSO_CLOCKMODE_PVCLOCK;
+	}
 #endif
 
-/*
- * After the clock is registered, the host will keep writing to the
- * registered memory location. If the guest happens to shutdown, this memory
- * won't be valid. In cases like kexec, in which you install a new kernel, this
- * means a random memory location will be kept being written. So before any
- * kind of shutdown from our side, we unregister the clock by writting anything
- * that does not have the 'enable' bit set in the msr
- */
-#ifdef CONFIG_KEXEC
-static void kvm_crash_shutdown(struct pt_regs *regs)
-{
-	native_write_msr(msr_kvm_system_time, 0, 0);
-	kvm_disable_steal_time();
-	native_machine_crash_shutdown(regs);
+	return 0;
 }
-#endif
+early_initcall(kvm_setup_vsyscall_timeinfo);
 
-static void kvm_shutdown(void)
+static int kvmclock_setup_percpu(unsigned int cpu)
 {
-	native_write_msr(msr_kvm_system_time, 0, 0);
-	kvm_disable_steal_time();
-	native_machine_shutdown();
+	struct pvclock_vsyscall_time_info *p = per_cpu(hv_clock_per_cpu, cpu);
+
+	/*
+	 * The per cpu area setup replicates CPU0 data to all cpu
+	 * pointers. So carefully check. CPU0 has been set up in init
+	 * already.
+	 */
+	if (!cpu || (p && p != per_cpu(hv_clock_per_cpu, 0)))
+		return 0;
+
+	/* Use the static page for the first CPUs, allocate otherwise */
+	if (cpu < HVC_BOOT_ARRAY_SIZE)
+		p = &hv_clock_boot[cpu];
+	else if (hvclock_mem)
+		p = hvclock_mem + cpu - HVC_BOOT_ARRAY_SIZE;
+	else
+		return -ENOMEM;
+
+	per_cpu(hv_clock_per_cpu, cpu) = p;
+	return p ? 0 : -ENOMEM;
 }
 
 void __init kvmclock_init(void)
 {
-	unsigned long mem;
-	int size;
+	u8 flags;
 
-	size = PAGE_ALIGN(sizeof(struct pvclock_vsyscall_time_info)*NR_CPUS);
-
-	if (!kvm_para_available())
+	if (!kvm_para_available() || !kvmclock)
 		return;
 
-	if (kvmclock && kvm_para_has_feature(KVM_FEATURE_CLOCKSOURCE2)) {
+	if (kvm_para_has_feature(KVM_FEATURE_CLOCKSOURCE2)) {
 		msr_kvm_system_time = MSR_KVM_SYSTEM_TIME_NEW;
 		msr_kvm_wall_clock = MSR_KVM_WALL_CLOCK_NEW;
-	} else if (!(kvmclock && kvm_para_has_feature(KVM_FEATURE_CLOCKSOURCE)))
-		return;
-
-	printk(KERN_INFO "kvm-clock: Using msrs %x and %x",
-		msr_kvm_system_time, msr_kvm_wall_clock);
-
-	mem = memblock_alloc(size, PAGE_SIZE);
-	if (!mem)
-		return;
-	hv_clock = __va(mem);
-	memset(hv_clock, 0, size);
-
-	if (kvm_register_clock("boot clock")) {
-		hv_clock = NULL;
-		memblock_free(mem, size);
+	} else if (kvm_para_has_feature(KVM_FEATURE_CLOCKSOURCE)) {
+		msr_kvm_system_time = MSR_KVM_SYSTEM_TIME;
+		msr_kvm_wall_clock = MSR_KVM_WALL_CLOCK;
+	} else {
 		return;
 	}
-	pv_time_ops.sched_clock = kvm_clock_read;
-	x86_platform.calibrate_tsc = kvm_get_tsc_khz;
-	x86_platform.get_wallclock = kvm_get_wallclock;
-	x86_platform.set_wallclock = kvm_set_wallclock;
-#ifdef CONFIG_X86_LOCAL_APIC
-	x86_cpuinit.early_percpu_clock_init =
-		kvm_setup_secondary_clock;
-#endif
-	x86_platform.save_sched_clock_state = kvm_save_sched_clock_state;
-	x86_platform.restore_sched_clock_state = kvm_restore_sched_clock_state;
-	machine_ops.shutdown  = kvm_shutdown;
-#ifdef CONFIG_KEXEC
-	machine_ops.crash_shutdown  = kvm_crash_shutdown;
-#endif
-	kvm_get_preset_lpj();
-	clocksource_register_hz(&kvm_clock, NSEC_PER_SEC);
-	pv_info.paravirt_enabled = 1;
-	pv_info.name = "KVM";
+
+	if (cpuhp_setup_state(CPUHP_BP_PREPARE_DYN, "kvmclock:setup_percpu",
+			      kvmclock_setup_percpu, NULL) < 0) {
+		return;
+	}
+
+	pr_info("kvm-clock: Using msrs %x and %x",
+		msr_kvm_system_time, msr_kvm_wall_clock);
+
+	this_cpu_write(hv_clock_per_cpu, &hv_clock_boot[0]);
+	kvm_register_clock("primary cpu clock");
+	pvclock_set_pvti_cpu0_va(hv_clock_boot);
 
 	if (kvm_para_has_feature(KVM_FEATURE_CLOCKSOURCE_STABLE_BIT))
 		pvclock_set_flags(PVCLOCK_TSC_STABLE_BIT);
-}
 
-int __init kvm_setup_vsyscall_timeinfo(void)
-{
-#ifdef CONFIG_X86_64
-	int cpu;
-	int ret;
-	u8 flags;
-	struct pvclock_vcpu_time_info *vcpu_time;
-	unsigned int size;
+	flags = pvclock_read_flags(&hv_clock_boot[0].pvti);
+	kvm_sched_clock_init(flags & PVCLOCK_TSC_STABLE_BIT);
 
-	if (!hv_clock)
-		return 0;
-
-	size = PAGE_ALIGN(sizeof(struct pvclock_vsyscall_time_info)*NR_CPUS);
-
-	preempt_disable();
-	cpu = smp_processor_id();
-
-	vcpu_time = &hv_clock[cpu].pvti;
-	flags = pvclock_read_flags(vcpu_time);
-
-	if (!(flags & PVCLOCK_TSC_STABLE_BIT)) {
-		preempt_enable();
-		return 1;
-	}
-
-	if ((ret = pvclock_init_vsyscall(hv_clock, size))) {
-		preempt_enable();
-		return ret;
-	}
-
-	preempt_enable();
-
-	kvm_clock.archdata.vclock_mode = VCLOCK_PVCLOCK;
+	x86_platform.calibrate_tsc = kvm_get_tsc_khz;
+	x86_platform.calibrate_cpu = kvm_get_tsc_khz;
+	x86_platform.get_wallclock = kvm_get_wallclock;
+	x86_platform.set_wallclock = kvm_set_wallclock;
+#ifdef CONFIG_X86_LOCAL_APIC
+	x86_cpuinit.early_percpu_clock_init = kvm_setup_secondary_clock;
 #endif
-	return 0;
+	x86_platform.save_sched_clock_state = kvm_save_sched_clock_state;
+	x86_platform.restore_sched_clock_state = kvm_restore_sched_clock_state;
+	kvm_get_preset_lpj();
+
+	/*
+	 * X86_FEATURE_NONSTOP_TSC is TSC runs at constant rate
+	 * with P/T states and does not stop in deep C-states.
+	 *
+	 * Invariant TSC exposed by host means kvmclock is not necessary:
+	 * can use TSC as clocksource.
+	 *
+	 */
+	if (boot_cpu_has(X86_FEATURE_CONSTANT_TSC) &&
+	    boot_cpu_has(X86_FEATURE_NONSTOP_TSC) &&
+	    !check_tsc_unstable())
+		kvm_clock.rating = 299;
+
+	clocksource_register_hz(&kvm_clock, NSEC_PER_SEC);
+	pv_info.name = "KVM";
 }

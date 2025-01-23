@@ -1,26 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Wistron laptop button driver
  * Copyright (C) 2005 Miloslav Trmac <mitr@volny.cz>
  * Copyright (C) 2005 Bernhard Rosenkraenzer <bero@arklinux.org>
  * Copyright (C) 2005 Dmitry Torokhov <dtor@mail.ru>
- *
- * You can redistribute and/or modify this program under the terms of the
- * GNU General Public License version 2 as published by the Free Software
- * Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
- * Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 59 Temple Place Suite 330, Boston, MA 02111-1307, USA.
  */
 #include <linux/io.h>
 #include <linux/dmi.h>
 #include <linux/init.h>
-#include <linux/input-polldev.h>
+#include <linux/input.h>
 #include <linux/input/sparse-keymap.h>
 #include <linux/interrupt.h>
 #include <linux/jiffies.h>
@@ -275,6 +263,16 @@ static struct key_entry keymap_fs_amilo_pro_v3505[] __initdata = {
 	{ KE_KEY,       0x36, {KEY_WWW} },           /* www button */
 	{ KE_WIFI,      0x78 },                      /* satellite dish button */
 	{ KE_END,       0 }
+};
+
+static struct key_entry keymap_fs_amilo_pro_v8210[] __initdata = {
+	{ KE_KEY,       0x01, {KEY_HELP} },          /* Fn+F1 */
+	{ KE_KEY,       0x06, {KEY_DISPLAYTOGGLE} }, /* Fn+F4 */
+	{ KE_BLUETOOTH, 0x30 },                      /* Fn+F10 */
+	{ KE_KEY,       0x31, {KEY_MAIL} },          /* mail button */
+	{ KE_KEY,       0x36, {KEY_WWW} },           /* www button */
+	{ KE_WIFI,      0x78 },                      /* satelite dish button */
+	{ KE_END,       FE_WIFI_LED }
 };
 
 static struct key_entry keymap_fujitsu_n3510[] __initdata = {
@@ -654,6 +652,15 @@ static const struct dmi_system_id dmi_ids[] __initconst = {
 		.driver_data = keymap_fs_amilo_pro_v3505
 	},
 	{
+		/* Fujitsu-Siemens Amilo Pro Edition V8210 */
+		.callback = dmi_matched,
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "FUJITSU SIEMENS"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "AMILO Pro Series V8210"),
+		},
+		.driver_data = keymap_fs_amilo_pro_v8210
+	},
+	{
 		/* Fujitsu-Siemens Amilo M7400 */
 		.callback = dmi_matched,
 		.matches = {
@@ -1023,7 +1030,7 @@ static int __init select_keymap(void)
 
  /* Input layer interface */
 
-static struct input_polled_dev *wistron_idev;
+static struct input_dev *wistron_idev;
 static unsigned long jiffies_last_press;
 static bool wifi_enabled;
 static bool bluetooth_enabled;
@@ -1107,7 +1114,7 @@ static inline void wistron_led_resume(void)
 static void handle_key(u8 code)
 {
 	const struct key_entry *key =
-		sparse_keymap_entry_from_scancode(wistron_idev->input, code);
+		sparse_keymap_entry_from_scancode(wistron_idev, code);
 
 	if (key) {
 		switch (key->type) {
@@ -1126,14 +1133,14 @@ static void handle_key(u8 code)
 			break;
 
 		default:
-			sparse_keymap_report_entry(wistron_idev->input,
-						   key, 1, true);
+			sparse_keymap_report_entry(wistron_idev, key, 1, true);
 			break;
 		}
 		jiffies_last_press = jiffies;
-	} else
+	} else {
 		printk(KERN_NOTICE
 			"wistron_btns: Unknown key code %02X\n", code);
+	}
 }
 
 static void poll_bios(bool discard)
@@ -1151,21 +1158,23 @@ static void poll_bios(bool discard)
 	}
 }
 
-static void wistron_flush(struct input_polled_dev *dev)
+static int wistron_flush(struct input_dev *dev)
 {
 	/* Flush stale event queue */
 	poll_bios(true);
+
+	return 0;
 }
 
-static void wistron_poll(struct input_polled_dev *dev)
+static void wistron_poll(struct input_dev *dev)
 {
 	poll_bios(false);
 
 	/* Increase poll frequency if user is currently pressing keys (< 2s ago) */
 	if (time_before(jiffies, jiffies_last_press + 2 * HZ))
-		dev->poll_interval = POLL_INTERVAL_BURST;
+		input_set_poll_interval(dev, POLL_INTERVAL_BURST);
 	else
-		dev->poll_interval = POLL_INTERVAL_DEFAULT;
+		input_set_poll_interval(dev, POLL_INTERVAL_DEFAULT);
 }
 
 static int wistron_setup_keymap(struct input_dev *dev,
@@ -1201,37 +1210,37 @@ static int wistron_setup_keymap(struct input_dev *dev,
 
 static int setup_input_dev(void)
 {
-	struct input_dev *input_dev;
 	int error;
 
-	wistron_idev = input_allocate_polled_device();
+	wistron_idev = input_allocate_device();
 	if (!wistron_idev)
 		return -ENOMEM;
 
+	wistron_idev->name = "Wistron laptop buttons";
+	wistron_idev->phys = "wistron/input0";
+	wistron_idev->id.bustype = BUS_HOST;
+	wistron_idev->dev.parent = &wistron_device->dev;
+
 	wistron_idev->open = wistron_flush;
-	wistron_idev->poll = wistron_poll;
-	wistron_idev->poll_interval = POLL_INTERVAL_DEFAULT;
 
-	input_dev = wistron_idev->input;
-	input_dev->name = "Wistron laptop buttons";
-	input_dev->phys = "wistron/input0";
-	input_dev->id.bustype = BUS_HOST;
-	input_dev->dev.parent = &wistron_device->dev;
-
-	error = sparse_keymap_setup(input_dev, keymap, wistron_setup_keymap);
+	error = sparse_keymap_setup(wistron_idev, keymap, wistron_setup_keymap);
 	if (error)
 		goto err_free_dev;
 
-	error = input_register_polled_device(wistron_idev);
+	error = input_setup_polling(wistron_idev, wistron_poll);
 	if (error)
-		goto err_free_keymap;
+		goto err_free_dev;
+
+	input_set_poll_interval(wistron_idev, POLL_INTERVAL_DEFAULT);
+
+	error = input_register_device(wistron_idev);
+	if (error)
+		goto err_free_dev;
 
 	return 0;
 
- err_free_keymap:
-	sparse_keymap_free(input_dev);
  err_free_dev:
-	input_free_polled_device(wistron_idev);
+	input_free_device(wistron_idev);
 	return error;
 }
 
@@ -1280,15 +1289,12 @@ static int wistron_probe(struct platform_device *dev)
 static int wistron_remove(struct platform_device *dev)
 {
 	wistron_led_remove();
-	input_unregister_polled_device(wistron_idev);
-	sparse_keymap_free(wistron_idev->input);
-	input_free_polled_device(wistron_idev);
+	input_unregister_device(wistron_idev);
 	bios_detach();
 
 	return 0;
 }
 
-#ifdef CONFIG_PM
 static int wistron_suspend(struct device *dev)
 {
 	if (have_wifi)
@@ -1323,15 +1329,11 @@ static const struct dev_pm_ops wistron_pm_ops = {
 	.poweroff	= wistron_suspend,
 	.restore	= wistron_resume,
 };
-#endif
 
 static struct platform_driver wistron_driver = {
 	.driver		= {
 		.name	= "wistron-bios",
-		.owner	= THIS_MODULE,
-#ifdef CONFIG_PM
-		.pm	= &wistron_pm_ops,
-#endif
+		.pm	= pm_sleep_ptr(&wistron_pm_ops),
 	},
 	.probe		= wistron_probe,
 	.remove		= wistron_remove,

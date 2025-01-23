@@ -37,22 +37,41 @@
 #include <linux/kthread.h>
 #include <linux/if_vlan.h>
 #include <linux/udp.h>
+#include <linux/highmem.h>
 
 #include <net/tcp.h>
 
 #include <xen/xen.h>
 #include <xen/events.h>
 #include <xen/interface/memory.h>
+#include <xen/page.h>
 
 #include <asm/xen/hypercall.h>
-#include <asm/xen/page.h>
 
 /* Provide an option to disable split event channels at load time as
  * event channels are limited resource. Split event channels are
  * enabled by default.
  */
-bool separate_tx_rx_irq = 1;
+bool separate_tx_rx_irq = true;
 module_param(separate_tx_rx_irq, bool, 0644);
+
+/* The time that packets can stay on the guest Rx internal queue
+ * before they are dropped.
+ */
+unsigned int rx_drain_timeout_msecs = 10000;
+module_param(rx_drain_timeout_msecs, uint, 0444);
+
+/* The length of time before the frontend is considered unresponsive
+ * because it isn't providing Rx slots.
+ */
+unsigned int rx_stall_timeout_msecs = 60000;
+module_param(rx_stall_timeout_msecs, uint, 0444);
+
+#define MAX_QUEUES_DEFAULT 8
+unsigned int xenvif_max_queues;
+module_param_named(max_queues, xenvif_max_queues, uint, 0644);
+MODULE_PARM_DESC(max_queues,
+		 "Maximum number of queues per virtual interface");
 
 /*
  * This is the maximum slots a skb can have. If a guest sends a skb
@@ -62,68 +81,75 @@ module_param(separate_tx_rx_irq, bool, 0644);
 static unsigned int fatal_skb_slots = FATAL_SKB_SLOTS_DEFAULT;
 module_param(fatal_skb_slots, uint, 0444);
 
-/*
- * To avoid confusion, we define XEN_NETBK_LEGACY_SLOTS_MAX indicating
- * the maximum slots a valid packet can use. Now this value is defined
- * to be XEN_NETIF_NR_SLOTS_MIN, which is supposed to be supported by
- * all backend.
+/* The amount to copy out of the first guest Tx slot into the skb's
+ * linear area.  If the first slot has more data, it will be mapped
+ * and put into the first frag.
+ *
+ * This is sized to avoid pulling headers from the frags for most
+ * TCP/IP packets.
  */
-#define XEN_NETBK_LEGACY_SLOTS_MAX XEN_NETIF_NR_SLOTS_MIN
+#define XEN_NETBACK_TX_COPY_LEN 128
 
-/*
- * If head != INVALID_PENDING_RING_IDX, it means this tx request is head of
- * one or more merged tx requests, otherwise it is the continuation of
- * previous tx request.
+/* This is the maximum number of flows in the hash cache. */
+#define XENVIF_HASH_CACHE_SIZE_DEFAULT 64
+unsigned int xenvif_hash_cache_size = XENVIF_HASH_CACHE_SIZE_DEFAULT;
+module_param_named(hash_cache_size, xenvif_hash_cache_size, uint, 0644);
+MODULE_PARM_DESC(hash_cache_size, "Number of flows in the hash cache");
+
+/* The module parameter tells that we have to put data
+ * for xen-netfront with the XDP_PACKET_HEADROOM offset
+ * needed for XDP processing
  */
-static inline int pending_tx_is_head(struct xenvif *vif, RING_IDX idx)
-{
-	return vif->pending_tx_info[idx].head != INVALID_PENDING_RING_IDX;
-}
+bool provides_xdp_headroom = true;
+module_param(provides_xdp_headroom, bool, 0644);
 
-static void xenvif_idx_release(struct xenvif *vif, u16 pending_idx,
-			       u8 status);
+static void xenvif_idx_release(struct xenvif_queue *queue, u16 pending_idx,
+			       s8 status);
 
-static void make_tx_response(struct xenvif *vif,
-			     struct xen_netif_tx_request *txp,
-			     s8       st);
+static void make_tx_response(struct xenvif_queue *queue,
+			     const struct xen_netif_tx_request *txp,
+			     unsigned int extra_count,
+			     s8 status);
 
-static inline int tx_work_todo(struct xenvif *vif);
-static inline int rx_work_todo(struct xenvif *vif);
+static void xenvif_idx_unmap(struct xenvif_queue *queue, u16 pending_idx);
 
-static struct xen_netif_rx_response *make_rx_response(struct xenvif *vif,
-					     u16      id,
-					     s8       st,
-					     u16      offset,
-					     u16      size,
-					     u16      flags);
+static inline int tx_work_todo(struct xenvif_queue *queue);
 
-static inline unsigned long idx_to_pfn(struct xenvif *vif,
+static inline unsigned long idx_to_pfn(struct xenvif_queue *queue,
 				       u16 idx)
 {
-	return page_to_pfn(vif->mmap_pages[idx]);
+	return page_to_pfn(queue->mmap_pages[idx]);
 }
 
-static inline unsigned long idx_to_kaddr(struct xenvif *vif,
+static inline unsigned long idx_to_kaddr(struct xenvif_queue *queue,
 					 u16 idx)
 {
-	return (unsigned long)pfn_to_kaddr(idx_to_pfn(vif, idx));
+	return (unsigned long)pfn_to_kaddr(idx_to_pfn(queue, idx));
 }
 
-/* This is a miniumum size for the linear area to avoid lots of
- * calls to __pskb_pull_tail() as we set up checksum offsets. The
- * value 128 was chosen as it covers all IPv4 and most likely
- * IPv6 headers.
+#define callback_param(vif, pending_idx) \
+	(vif->pending_tx_info[pending_idx].callback_struct)
+
+/* Find the containing VIF's structure from a pointer in pending_tx_info array
  */
-#define PKT_PROT_LEN 128
+static inline struct xenvif_queue *ubuf_to_queue(const struct ubuf_info_msgzc *ubuf)
+{
+	u16 pending_idx = ubuf->desc;
+	struct pending_tx_info *temp =
+		container_of(ubuf, struct pending_tx_info, callback_struct);
+	return container_of(temp - pending_idx,
+			    struct xenvif_queue,
+			    pending_tx_info[0]);
+}
 
 static u16 frag_get_pending_idx(skb_frag_t *frag)
 {
-	return (u16)frag->page_offset;
+	return (u16)skb_frag_off(frag);
 }
 
 static void frag_set_pending_idx(skb_frag_t *frag, u16 pending_idx)
 {
-	frag->page_offset = pending_idx;
+	skb_frag_off_set(frag, pending_idx);
 }
 
 static inline pending_ring_idx_t pending_index(unsigned i)
@@ -131,492 +157,26 @@ static inline pending_ring_idx_t pending_index(unsigned i)
 	return i & (MAX_PENDING_REQS-1);
 }
 
-static inline pending_ring_idx_t nr_pending_reqs(struct xenvif *vif)
+void xenvif_kick_thread(struct xenvif_queue *queue)
 {
-	return MAX_PENDING_REQS -
-		vif->pending_prod + vif->pending_cons;
+	wake_up(&queue->wq);
 }
 
-bool xenvif_rx_ring_slots_available(struct xenvif *vif, int needed)
-{
-	RING_IDX prod, cons;
-
-	do {
-		prod = vif->rx.sring->req_prod;
-		cons = vif->rx.req_cons;
-
-		if (prod - cons >= needed)
-			return true;
-
-		vif->rx.sring->req_event = prod + 1;
-
-		/* Make sure event is visible before we check prod
-		 * again.
-		 */
-		mb();
-	} while (vif->rx.sring->req_prod != prod);
-
-	return false;
-}
-
-/*
- * Returns true if we should start a new receive buffer instead of
- * adding 'size' bytes to a buffer which currently contains 'offset'
- * bytes.
- */
-static bool start_new_rx_buffer(int offset, unsigned long size, int head)
-{
-	/* simple case: we have completely filled the current buffer. */
-	if (offset == MAX_BUFFER_OFFSET)
-		return true;
-
-	/*
-	 * complex case: start a fresh buffer if the current frag
-	 * would overflow the current buffer but only if:
-	 *     (i)   this frag would fit completely in the next buffer
-	 * and (ii)  there is already some data in the current buffer
-	 * and (iii) this is not the head buffer.
-	 *
-	 * Where:
-	 * - (i) stops us splitting a frag into two copies
-	 *   unless the frag is too large for a single buffer.
-	 * - (ii) stops us from leaving a buffer pointlessly empty.
-	 * - (iii) stops us leaving the first buffer
-	 *   empty. Strictly speaking this is already covered
-	 *   by (ii) but is explicitly checked because
-	 *   netfront relies on the first buffer being
-	 *   non-empty and can crash otherwise.
-	 *
-	 * This means we will effectively linearise small
-	 * frags but do not needlessly split large buffers
-	 * into multiple copies tend to give large frags their
-	 * own buffers as before.
-	 */
-	if ((offset + size > MAX_BUFFER_OFFSET) &&
-	    (size <= MAX_BUFFER_OFFSET) && offset && !head)
-		return true;
-
-	return false;
-}
-
-struct netrx_pending_operations {
-	unsigned copy_prod, copy_cons;
-	unsigned meta_prod, meta_cons;
-	struct gnttab_copy *copy;
-	struct xenvif_rx_meta *meta;
-	int copy_off;
-	grant_ref_t copy_gref;
-};
-
-static struct xenvif_rx_meta *get_next_rx_buffer(struct xenvif *vif,
-						 struct netrx_pending_operations *npo)
-{
-	struct xenvif_rx_meta *meta;
-	struct xen_netif_rx_request *req;
-
-	req = RING_GET_REQUEST(&vif->rx, vif->rx.req_cons++);
-
-	meta = npo->meta + npo->meta_prod++;
-	meta->gso_type = XEN_NETIF_GSO_TYPE_NONE;
-	meta->gso_size = 0;
-	meta->size = 0;
-	meta->id = req->id;
-
-	npo->copy_off = 0;
-	npo->copy_gref = req->gref;
-
-	return meta;
-}
-
-/*
- * Set up the grant operations for this fragment. If it's a flipping
- * interface, we also set up the unmap request from here.
- */
-static void xenvif_gop_frag_copy(struct xenvif *vif, struct sk_buff *skb,
-				 struct netrx_pending_operations *npo,
-				 struct page *page, unsigned long size,
-				 unsigned long offset, int *head)
-{
-	struct gnttab_copy *copy_gop;
-	struct xenvif_rx_meta *meta;
-	unsigned long bytes;
-	int gso_type;
-
-	/* Data must not cross a page boundary. */
-	BUG_ON(size + offset > PAGE_SIZE<<compound_order(page));
-
-	meta = npo->meta + npo->meta_prod - 1;
-
-	/* Skip unused frames from start of page */
-	page += offset >> PAGE_SHIFT;
-	offset &= ~PAGE_MASK;
-
-	while (size > 0) {
-		BUG_ON(offset >= PAGE_SIZE);
-		BUG_ON(npo->copy_off > MAX_BUFFER_OFFSET);
-
-		bytes = PAGE_SIZE - offset;
-
-		if (bytes > size)
-			bytes = size;
-
-		if (start_new_rx_buffer(npo->copy_off, bytes, *head)) {
-			/*
-			 * Netfront requires there to be some data in the head
-			 * buffer.
-			 */
-			BUG_ON(*head);
-
-			meta = get_next_rx_buffer(vif, npo);
-		}
-
-		if (npo->copy_off + bytes > MAX_BUFFER_OFFSET)
-			bytes = MAX_BUFFER_OFFSET - npo->copy_off;
-
-		copy_gop = npo->copy + npo->copy_prod++;
-		copy_gop->flags = GNTCOPY_dest_gref;
-		copy_gop->len = bytes;
-
-		copy_gop->source.domid = DOMID_SELF;
-		copy_gop->source.u.gmfn = virt_to_mfn(page_address(page));
-		copy_gop->source.offset = offset;
-
-		copy_gop->dest.domid = vif->domid;
-		copy_gop->dest.offset = npo->copy_off;
-		copy_gop->dest.u.ref = npo->copy_gref;
-
-		npo->copy_off += bytes;
-		meta->size += bytes;
-
-		offset += bytes;
-		size -= bytes;
-
-		/* Next frame */
-		if (offset == PAGE_SIZE && size) {
-			BUG_ON(!PageCompound(page));
-			page++;
-			offset = 0;
-		}
-
-		/* Leave a gap for the GSO descriptor. */
-		if (skb_shinfo(skb)->gso_type & SKB_GSO_TCPV4)
-			gso_type = XEN_NETIF_GSO_TYPE_TCPV4;
-		else if (skb_shinfo(skb)->gso_type & SKB_GSO_TCPV6)
-			gso_type = XEN_NETIF_GSO_TYPE_TCPV6;
-		else
-			gso_type = XEN_NETIF_GSO_TYPE_NONE;
-
-		if (*head && ((1 << gso_type) & vif->gso_mask))
-			vif->rx.req_cons++;
-
-		*head = 0; /* There must be something in this buffer now. */
-
-	}
-}
-
-/*
- * Prepare an SKB to be transmitted to the frontend.
- *
- * This function is responsible for allocating grant operations, meta
- * structures, etc.
- *
- * It returns the number of meta structures consumed. The number of
- * ring slots used is always equal to the number of meta slots used
- * plus the number of GSO descriptors used. Currently, we use either
- * zero GSO descriptors (for non-GSO packets) or one descriptor (for
- * frontend-side LRO).
- */
-static int xenvif_gop_skb(struct sk_buff *skb,
-			  struct netrx_pending_operations *npo)
-{
-	struct xenvif *vif = netdev_priv(skb->dev);
-	int nr_frags = skb_shinfo(skb)->nr_frags;
-	int i;
-	struct xen_netif_rx_request *req;
-	struct xenvif_rx_meta *meta;
-	unsigned char *data;
-	int head = 1;
-	int old_meta_prod;
-	int gso_type;
-	int gso_size;
-
-	old_meta_prod = npo->meta_prod;
-
-	if (skb_shinfo(skb)->gso_type & SKB_GSO_TCPV4) {
-		gso_type = XEN_NETIF_GSO_TYPE_TCPV4;
-		gso_size = skb_shinfo(skb)->gso_size;
-	} else if (skb_shinfo(skb)->gso_type & SKB_GSO_TCPV6) {
-		gso_type = XEN_NETIF_GSO_TYPE_TCPV6;
-		gso_size = skb_shinfo(skb)->gso_size;
-	} else {
-		gso_type = XEN_NETIF_GSO_TYPE_NONE;
-		gso_size = 0;
-	}
-
-	/* Set up a GSO prefix descriptor, if necessary */
-	if ((1 << gso_type) & vif->gso_prefix_mask) {
-		req = RING_GET_REQUEST(&vif->rx, vif->rx.req_cons++);
-		meta = npo->meta + npo->meta_prod++;
-		meta->gso_type = gso_type;
-		meta->gso_size = gso_size;
-		meta->size = 0;
-		meta->id = req->id;
-	}
-
-	req = RING_GET_REQUEST(&vif->rx, vif->rx.req_cons++);
-	meta = npo->meta + npo->meta_prod++;
-
-	if ((1 << gso_type) & vif->gso_mask) {
-		meta->gso_type = gso_type;
-		meta->gso_size = gso_size;
-	} else {
-		meta->gso_type = XEN_NETIF_GSO_TYPE_NONE;
-		meta->gso_size = 0;
-	}
-
-	meta->size = 0;
-	meta->id = req->id;
-	npo->copy_off = 0;
-	npo->copy_gref = req->gref;
-
-	data = skb->data;
-	while (data < skb_tail_pointer(skb)) {
-		unsigned int offset = offset_in_page(data);
-		unsigned int len = PAGE_SIZE - offset;
-
-		if (data + len > skb_tail_pointer(skb))
-			len = skb_tail_pointer(skb) - data;
-
-		xenvif_gop_frag_copy(vif, skb, npo,
-				     virt_to_page(data), len, offset, &head);
-		data += len;
-	}
-
-	for (i = 0; i < nr_frags; i++) {
-		xenvif_gop_frag_copy(vif, skb, npo,
-				     skb_frag_page(&skb_shinfo(skb)->frags[i]),
-				     skb_frag_size(&skb_shinfo(skb)->frags[i]),
-				     skb_shinfo(skb)->frags[i].page_offset,
-				     &head);
-	}
-
-	return npo->meta_prod - old_meta_prod;
-}
-
-/*
- * This is a twin to xenvif_gop_skb.  Assume that xenvif_gop_skb was
- * used to set up the operations on the top of
- * netrx_pending_operations, which have since been done.  Check that
- * they didn't give any errors and advance over them.
- */
-static int xenvif_check_gop(struct xenvif *vif, int nr_meta_slots,
-			    struct netrx_pending_operations *npo)
-{
-	struct gnttab_copy     *copy_op;
-	int status = XEN_NETIF_RSP_OKAY;
-	int i;
-
-	for (i = 0; i < nr_meta_slots; i++) {
-		copy_op = npo->copy + npo->copy_cons++;
-		if (copy_op->status != GNTST_okay) {
-			netdev_dbg(vif->dev,
-				   "Bad status %d from copy to DOM%d.\n",
-				   copy_op->status, vif->domid);
-			status = XEN_NETIF_RSP_ERROR;
-		}
-	}
-
-	return status;
-}
-
-static void xenvif_add_frag_responses(struct xenvif *vif, int status,
-				      struct xenvif_rx_meta *meta,
-				      int nr_meta_slots)
-{
-	int i;
-	unsigned long offset;
-
-	/* No fragments used */
-	if (nr_meta_slots <= 1)
-		return;
-
-	nr_meta_slots--;
-
-	for (i = 0; i < nr_meta_slots; i++) {
-		int flags;
-		if (i == nr_meta_slots - 1)
-			flags = 0;
-		else
-			flags = XEN_NETRXF_more_data;
-
-		offset = 0;
-		make_rx_response(vif, meta[i].id, status, offset,
-				 meta[i].size, flags);
-	}
-}
-
-struct skb_cb_overlay {
-	int meta_slots_used;
-};
-
-void xenvif_kick_thread(struct xenvif *vif)
-{
-	wake_up(&vif->wq);
-}
-
-static void xenvif_rx_action(struct xenvif *vif)
-{
-	s8 status;
-	u16 flags;
-	struct xen_netif_rx_response *resp;
-	struct sk_buff_head rxq;
-	struct sk_buff *skb;
-	LIST_HEAD(notify);
-	int ret;
-	unsigned long offset;
-	struct skb_cb_overlay *sco;
-	bool need_to_notify = false;
-	bool ring_full = false;
-
-	struct netrx_pending_operations npo = {
-		.copy  = vif->grant_copy_op,
-		.meta  = vif->meta,
-	};
-
-	skb_queue_head_init(&rxq);
-
-	while ((skb = skb_dequeue(&vif->rx_queue)) != NULL) {
-		int max_slots_needed;
-		int i;
-
-		/* We need a cheap worse case estimate for the number of
-		 * slots we'll use.
-		 */
-
-		max_slots_needed = DIV_ROUND_UP(offset_in_page(skb->data) +
-						skb_headlen(skb),
-						PAGE_SIZE);
-		for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
-			unsigned int size;
-			size = skb_frag_size(&skb_shinfo(skb)->frags[i]);
-			max_slots_needed += DIV_ROUND_UP(size, PAGE_SIZE);
-		}
-		if (skb_shinfo(skb)->gso_type & SKB_GSO_TCPV4 ||
-		    skb_shinfo(skb)->gso_type & SKB_GSO_TCPV6)
-			max_slots_needed++;
-
-		/* If the skb may not fit then bail out now */
-		if (!xenvif_rx_ring_slots_available(vif, max_slots_needed)) {
-			skb_queue_head(&vif->rx_queue, skb);
-			need_to_notify = true;
-			ring_full = true;
-			break;
-		}
-
-		sco = (struct skb_cb_overlay *)skb->cb;
-		sco->meta_slots_used = xenvif_gop_skb(skb, &npo);
-		BUG_ON(sco->meta_slots_used > max_slots_needed);
-
-		__skb_queue_tail(&rxq, skb);
-	}
-
-	BUG_ON(npo.meta_prod > ARRAY_SIZE(vif->meta));
-
-	vif->rx_queue_stopped = !npo.copy_prod && ring_full;
-
-	if (!npo.copy_prod)
-		goto done;
-
-	BUG_ON(npo.copy_prod > MAX_GRANT_COPY_OPS);
-	gnttab_batch_copy(vif->grant_copy_op, npo.copy_prod);
-
-	while ((skb = __skb_dequeue(&rxq)) != NULL) {
-		sco = (struct skb_cb_overlay *)skb->cb;
-
-		if ((1 << vif->meta[npo.meta_cons].gso_type) &
-		    vif->gso_prefix_mask) {
-			resp = RING_GET_RESPONSE(&vif->rx,
-						 vif->rx.rsp_prod_pvt++);
-
-			resp->flags = XEN_NETRXF_gso_prefix | XEN_NETRXF_more_data;
-
-			resp->offset = vif->meta[npo.meta_cons].gso_size;
-			resp->id = vif->meta[npo.meta_cons].id;
-			resp->status = sco->meta_slots_used;
-
-			npo.meta_cons++;
-			sco->meta_slots_used--;
-		}
-
-
-		vif->dev->stats.tx_bytes += skb->len;
-		vif->dev->stats.tx_packets++;
-
-		status = xenvif_check_gop(vif, sco->meta_slots_used, &npo);
-
-		if (sco->meta_slots_used == 1)
-			flags = 0;
-		else
-			flags = XEN_NETRXF_more_data;
-
-		if (skb->ip_summed == CHECKSUM_PARTIAL) /* local packet? */
-			flags |= XEN_NETRXF_csum_blank | XEN_NETRXF_data_validated;
-		else if (skb->ip_summed == CHECKSUM_UNNECESSARY)
-			/* remote but checksummed. */
-			flags |= XEN_NETRXF_data_validated;
-
-		offset = 0;
-		resp = make_rx_response(vif, vif->meta[npo.meta_cons].id,
-					status, offset,
-					vif->meta[npo.meta_cons].size,
-					flags);
-
-		if ((1 << vif->meta[npo.meta_cons].gso_type) &
-		    vif->gso_mask) {
-			struct xen_netif_extra_info *gso =
-				(struct xen_netif_extra_info *)
-				RING_GET_RESPONSE(&vif->rx,
-						  vif->rx.rsp_prod_pvt++);
-
-			resp->flags |= XEN_NETRXF_extra_info;
-
-			gso->u.gso.type = vif->meta[npo.meta_cons].gso_type;
-			gso->u.gso.size = vif->meta[npo.meta_cons].gso_size;
-			gso->u.gso.pad = 0;
-			gso->u.gso.features = 0;
-
-			gso->type = XEN_NETIF_EXTRA_TYPE_GSO;
-			gso->flags = 0;
-		}
-
-		xenvif_add_frag_responses(vif, status,
-					  vif->meta + npo.meta_cons + 1,
-					  sco->meta_slots_used);
-
-		RING_PUSH_RESPONSES_AND_CHECK_NOTIFY(&vif->rx, ret);
-
-		need_to_notify |= !!ret;
-
-		npo.meta_cons += sco->meta_slots_used;
-		dev_kfree_skb(skb);
-	}
-
-done:
-	if (need_to_notify)
-		notify_remote_via_irq(vif->rx_irq);
-}
-
-void xenvif_check_rx_xenvif(struct xenvif *vif)
+void xenvif_napi_schedule_or_enable_events(struct xenvif_queue *queue)
 {
 	int more_to_do;
 
-	RING_FINAL_CHECK_FOR_REQUESTS(&vif->tx, more_to_do);
+	RING_FINAL_CHECK_FOR_REQUESTS(&queue->tx, more_to_do);
 
 	if (more_to_do)
-		napi_schedule(&vif->napi);
+		napi_schedule(&queue->napi);
+	else if (atomic_fetch_andnot(NETBK_TX_EOI | NETBK_COMMON_EOI,
+				     &queue->eoi_pending) &
+		 (NETBK_TX_EOI | NETBK_COMMON_EOI))
+		xen_irq_lateeoi(queue->tx_irq, 0);
 }
 
-static void tx_add_credit(struct xenvif *vif)
+static void tx_add_credit(struct xenvif_queue *queue)
 {
 	unsigned long max_burst, max_credit;
 
@@ -624,51 +184,56 @@ static void tx_add_credit(struct xenvif *vif)
 	 * Allow a burst big enough to transmit a jumbo packet of up to 128kB.
 	 * Otherwise the interface can seize up due to insufficient credit.
 	 */
-	max_burst = RING_GET_REQUEST(&vif->tx, vif->tx.req_cons)->size;
-	max_burst = min(max_burst, 131072UL);
-	max_burst = max(max_burst, vif->credit_bytes);
+	max_burst = max(131072UL, queue->credit_bytes);
 
 	/* Take care that adding a new chunk of credit doesn't wrap to zero. */
-	max_credit = vif->remaining_credit + vif->credit_bytes;
-	if (max_credit < vif->remaining_credit)
+	max_credit = queue->remaining_credit + queue->credit_bytes;
+	if (max_credit < queue->remaining_credit)
 		max_credit = ULONG_MAX; /* wrapped: clamp to ULONG_MAX */
 
-	vif->remaining_credit = min(max_credit, max_burst);
+	queue->remaining_credit = min(max_credit, max_burst);
+	queue->rate_limited = false;
 }
 
-static void tx_credit_callback(unsigned long data)
+void xenvif_tx_credit_callback(struct timer_list *t)
 {
-	struct xenvif *vif = (struct xenvif *)data;
-	tx_add_credit(vif);
-	xenvif_check_rx_xenvif(vif);
+	struct xenvif_queue *queue = from_timer(queue, t, credit_timeout);
+	tx_add_credit(queue);
+	xenvif_napi_schedule_or_enable_events(queue);
 }
 
-static void xenvif_tx_err(struct xenvif *vif,
-			  struct xen_netif_tx_request *txp, RING_IDX end)
+static void xenvif_tx_err(struct xenvif_queue *queue,
+			  struct xen_netif_tx_request *txp,
+			  unsigned int extra_count, RING_IDX end)
 {
-	RING_IDX cons = vif->tx.req_cons;
+	RING_IDX cons = queue->tx.req_cons;
 
 	do {
-		make_tx_response(vif, txp, XEN_NETIF_RSP_ERROR);
+		make_tx_response(queue, txp, extra_count, XEN_NETIF_RSP_ERROR);
 		if (cons == end)
 			break;
-		txp = RING_GET_REQUEST(&vif->tx, cons++);
+		RING_COPY_REQUEST(&queue->tx, cons++, txp);
+		extra_count = 0; /* only the first frag can have extras */
 	} while (1);
-	vif->tx.req_cons = cons;
+	queue->tx.req_cons = cons;
 }
 
 static void xenvif_fatal_tx_err(struct xenvif *vif)
 {
 	netdev_err(vif->dev, "fatal error; disabling device\n");
-	xenvif_carrier_off(vif);
+	vif->disabled = true;
+	/* Disable the vif from queue 0's kthread */
+	if (vif->num_queues)
+		xenvif_kick_thread(&vif->queues[0]);
 }
 
-static int xenvif_count_requests(struct xenvif *vif,
+static int xenvif_count_requests(struct xenvif_queue *queue,
 				 struct xen_netif_tx_request *first,
+				 unsigned int extra_count,
 				 struct xen_netif_tx_request *txp,
 				 int work_to_do)
 {
-	RING_IDX cons = vif->tx.req_cons;
+	RING_IDX cons = queue->tx.req_cons;
 	int slots = 0;
 	int drop_err = 0;
 	int more_data;
@@ -680,10 +245,10 @@ static int xenvif_count_requests(struct xenvif *vif,
 		struct xen_netif_tx_request dropped_tx = { 0 };
 
 		if (slots >= work_to_do) {
-			netdev_err(vif->dev,
+			netdev_err(queue->vif->dev,
 				   "Asked for %d slots but exceeds this limit\n",
 				   work_to_do);
-			xenvif_fatal_tx_err(vif);
+			xenvif_fatal_tx_err(queue->vif);
 			return -ENODATA;
 		}
 
@@ -691,10 +256,10 @@ static int xenvif_count_requests(struct xenvif *vif,
 		 * considered malicious.
 		 */
 		if (unlikely(slots >= fatal_skb_slots)) {
-			netdev_err(vif->dev,
+			netdev_err(queue->vif->dev,
 				   "Malicious frontend using %d slots, threshold %u\n",
 				   slots, fatal_skb_slots);
-			xenvif_fatal_tx_err(vif);
+			xenvif_fatal_tx_err(queue->vif);
 			return -E2BIG;
 		}
 
@@ -707,7 +272,7 @@ static int xenvif_count_requests(struct xenvif *vif,
 		 */
 		if (!drop_err && slots >= XEN_NETBK_LEGACY_SLOTS_MAX) {
 			if (net_ratelimit())
-				netdev_dbg(vif->dev,
+				netdev_dbg(queue->vif->dev,
 					   "Too many slots (%d) exceeding limit (%d), dropping packet\n",
 					   slots, XEN_NETBK_LEGACY_SLOTS_MAX);
 			drop_err = -E2BIG;
@@ -716,8 +281,7 @@ static int xenvif_count_requests(struct xenvif *vif,
 		if (drop_err)
 			txp = &dropped_tx;
 
-		memcpy(txp, RING_GET_REQUEST(&vif->tx, cons + slots),
-		       sizeof(*txp));
+		RING_COPY_REQUEST(&queue->tx, cons + slots, txp);
 
 		/* If the guest submitted a frame >= 64 KiB then
 		 * first->size overflowed and following slots will
@@ -730,7 +294,7 @@ static int xenvif_count_requests(struct xenvif *vif,
 		 */
 		if (!drop_err && txp->size > first->size) {
 			if (net_ratelimit())
-				netdev_dbg(vif->dev,
+				netdev_dbg(queue->vif->dev,
 					   "Invalid tx request, slot size %u > remaining size %u\n",
 					   txp->size, first->size);
 			drop_err = -EIO;
@@ -739,10 +303,10 @@ static int xenvif_count_requests(struct xenvif *vif,
 		first->size -= txp->size;
 		slots++;
 
-		if (unlikely((txp->offset + txp->size) > PAGE_SIZE)) {
-			netdev_err(vif->dev, "Cross page boundary, txp->offset: %x, size: %u\n",
+		if (unlikely((txp->offset + txp->size) > XEN_PAGE_SIZE)) {
+			netdev_err(queue->vif->dev, "Cross page boundary, txp->offset: %u, size: %u\n",
 				 txp->offset, txp->size);
-			xenvif_fatal_tx_err(vif);
+			xenvif_fatal_tx_err(queue->vif);
 			return -EINVAL;
 		}
 
@@ -754,219 +318,377 @@ static int xenvif_count_requests(struct xenvif *vif,
 	} while (more_data);
 
 	if (drop_err) {
-		xenvif_tx_err(vif, first, cons + slots);
+		xenvif_tx_err(queue, first, extra_count, cons + slots);
 		return drop_err;
 	}
 
 	return slots;
 }
 
-static struct page *xenvif_alloc_page(struct xenvif *vif,
-				      u16 pending_idx)
+
+struct xenvif_tx_cb {
+	u16 copy_pending_idx[XEN_NETBK_LEGACY_SLOTS_MAX + 1];
+	u8 copy_count;
+	u32 split_mask;
+};
+
+#define XENVIF_TX_CB(skb) ((struct xenvif_tx_cb *)(skb)->cb)
+#define copy_pending_idx(skb, i) (XENVIF_TX_CB(skb)->copy_pending_idx[i])
+#define copy_count(skb) (XENVIF_TX_CB(skb)->copy_count)
+
+static inline void xenvif_tx_create_map_op(struct xenvif_queue *queue,
+					   u16 pending_idx,
+					   struct xen_netif_tx_request *txp,
+					   unsigned int extra_count,
+					   struct gnttab_map_grant_ref *mop)
 {
-	struct page *page;
+	queue->pages_to_map[mop-queue->tx_map_ops] = queue->mmap_pages[pending_idx];
+	gnttab_set_map_op(mop, idx_to_kaddr(queue, pending_idx),
+			  GNTMAP_host_map | GNTMAP_readonly,
+			  txp->gref, queue->vif->domid);
 
-	page = alloc_page(GFP_ATOMIC|__GFP_COLD);
-	if (!page)
-		return NULL;
-	vif->mmap_pages[pending_idx] = page;
-
-	return page;
+	memcpy(&queue->pending_tx_info[pending_idx].req, txp,
+	       sizeof(*txp));
+	queue->pending_tx_info[pending_idx].extra_count = extra_count;
 }
 
-static struct gnttab_copy *xenvif_get_requests(struct xenvif *vif,
-					       struct sk_buff *skb,
-					       struct xen_netif_tx_request *txp,
-					       struct gnttab_copy *gop)
+static inline struct sk_buff *xenvif_alloc_skb(unsigned int size)
+{
+	struct sk_buff *skb =
+		alloc_skb(size + NET_SKB_PAD + NET_IP_ALIGN,
+			  GFP_ATOMIC | __GFP_NOWARN);
+
+	BUILD_BUG_ON(sizeof(*XENVIF_TX_CB(skb)) > sizeof(skb->cb));
+	if (unlikely(skb == NULL))
+		return NULL;
+
+	/* Packets passed to netif_rx() must have some headroom. */
+	skb_reserve(skb, NET_SKB_PAD + NET_IP_ALIGN);
+
+	/* Initialize it here to avoid later surprises */
+	skb_shinfo(skb)->destructor_arg = NULL;
+
+	return skb;
+}
+
+static void xenvif_get_requests(struct xenvif_queue *queue,
+				struct sk_buff *skb,
+				struct xen_netif_tx_request *first,
+				struct xen_netif_tx_request *txfrags,
+			        unsigned *copy_ops,
+			        unsigned *map_ops,
+				unsigned int frag_overflow,
+				struct sk_buff *nskb,
+				unsigned int extra_count,
+				unsigned int data_len)
 {
 	struct skb_shared_info *shinfo = skb_shinfo(skb);
 	skb_frag_t *frags = shinfo->frags;
-	u16 pending_idx = *((u16 *)skb->data);
-	u16 head_idx = 0;
-	int slot, start;
-	struct page *page;
-	pending_ring_idx_t index, start_idx = 0;
-	uint16_t dst_offset;
+	u16 pending_idx;
+	pending_ring_idx_t index;
 	unsigned int nr_slots;
-	struct pending_tx_info *first = NULL;
+	struct gnttab_copy *cop = queue->tx_copy_ops + *copy_ops;
+	struct gnttab_map_grant_ref *gop = queue->tx_map_ops + *map_ops;
+	struct xen_netif_tx_request *txp = first;
 
-	/* At this point shinfo->nr_frags is in fact the number of
-	 * slots, which can be as large as XEN_NETBK_LEGACY_SLOTS_MAX.
-	 */
-	nr_slots = shinfo->nr_frags;
+	nr_slots = shinfo->nr_frags + frag_overflow + 1;
 
-	/* Skip first skb fragment if it is on same page as header fragment. */
-	start = (frag_get_pending_idx(&shinfo->frags[0]) == pending_idx);
+	copy_count(skb) = 0;
+	XENVIF_TX_CB(skb)->split_mask = 0;
 
-	/* Coalesce tx requests, at this point the packet passed in
-	 * should be <= 64K. Any packets larger than 64K have been
-	 * handled in xenvif_count_requests().
-	 */
-	for (shinfo->nr_frags = slot = start; slot < nr_slots;
-	     shinfo->nr_frags++) {
-		struct pending_tx_info *pending_tx_info =
-			vif->pending_tx_info;
+	/* Create copy ops for exactly data_len bytes into the skb head. */
+	__skb_put(skb, data_len);
+	while (data_len > 0) {
+		int amount = data_len > txp->size ? txp->size : data_len;
+		bool split = false;
 
-		page = alloc_page(GFP_ATOMIC|__GFP_COLD);
-		if (!page)
-			goto err;
+		cop->source.u.ref = txp->gref;
+		cop->source.domid = queue->vif->domid;
+		cop->source.offset = txp->offset;
 
-		dst_offset = 0;
-		first = NULL;
-		while (dst_offset < PAGE_SIZE && slot < nr_slots) {
-			gop->flags = GNTCOPY_source_gref;
+		cop->dest.domid = DOMID_SELF;
+		cop->dest.offset = (offset_in_page(skb->data +
+						   skb_headlen(skb) -
+						   data_len)) & ~XEN_PAGE_MASK;
+		cop->dest.u.gmfn = virt_to_gfn(skb->data + skb_headlen(skb)
+				               - data_len);
 
-			gop->source.u.ref = txp->gref;
-			gop->source.domid = vif->domid;
-			gop->source.offset = txp->offset;
-
-			gop->dest.domid = DOMID_SELF;
-
-			gop->dest.offset = dst_offset;
-			gop->dest.u.gmfn = virt_to_mfn(page_address(page));
-
-			if (dst_offset + txp->size > PAGE_SIZE) {
-				/* This page can only merge a portion
-				 * of tx request. Do not increment any
-				 * pointer / counter here. The txp
-				 * will be dealt with in future
-				 * rounds, eventually hitting the
-				 * `else` branch.
-				 */
-				gop->len = PAGE_SIZE - dst_offset;
-				txp->offset += gop->len;
-				txp->size -= gop->len;
-				dst_offset += gop->len; /* quit loop */
-			} else {
-				/* This tx request can be merged in the page */
-				gop->len = txp->size;
-				dst_offset += gop->len;
-
-				index = pending_index(vif->pending_cons++);
-
-				pending_idx = vif->pending_ring[index];
-
-				memcpy(&pending_tx_info[pending_idx].req, txp,
-				       sizeof(*txp));
-
-				/* Poison these fields, corresponding
-				 * fields for head tx req will be set
-				 * to correct values after the loop.
-				 */
-				vif->mmap_pages[pending_idx] = (void *)(~0UL);
-				pending_tx_info[pending_idx].head =
-					INVALID_PENDING_RING_IDX;
-
-				if (!first) {
-					first = &pending_tx_info[pending_idx];
-					start_idx = index;
-					head_idx = pending_idx;
-				}
-
-				txp++;
-				slot++;
-			}
-
-			gop++;
+		/* Don't cross local page boundary! */
+		if (cop->dest.offset + amount > XEN_PAGE_SIZE) {
+			amount = XEN_PAGE_SIZE - cop->dest.offset;
+			XENVIF_TX_CB(skb)->split_mask |= 1U << copy_count(skb);
+			split = true;
 		}
 
-		first->req.offset = 0;
-		first->req.size = dst_offset;
-		first->head = start_idx;
-		vif->mmap_pages[head_idx] = page;
-		frag_set_pending_idx(&frags[shinfo->nr_frags], head_idx);
+		cop->len = amount;
+		cop->flags = GNTCOPY_source_gref;
+
+		index = pending_index(queue->pending_cons);
+		pending_idx = queue->pending_ring[index];
+		callback_param(queue, pending_idx).ctx = NULL;
+		copy_pending_idx(skb, copy_count(skb)) = pending_idx;
+		if (!split)
+			copy_count(skb)++;
+
+		cop++;
+		data_len -= amount;
+
+		if (amount == txp->size) {
+			/* The copy op covered the full tx_request */
+
+			memcpy(&queue->pending_tx_info[pending_idx].req,
+			       txp, sizeof(*txp));
+			queue->pending_tx_info[pending_idx].extra_count =
+				(txp == first) ? extra_count : 0;
+
+			if (txp == first)
+				txp = txfrags;
+			else
+				txp++;
+			queue->pending_cons++;
+			nr_slots--;
+		} else {
+			/* The copy op partially covered the tx_request.
+			 * The remainder will be mapped or copied in the next
+			 * iteration.
+			 */
+			txp->offset += amount;
+			txp->size -= amount;
+		}
 	}
 
-	BUG_ON(shinfo->nr_frags > MAX_SKB_FRAGS);
+	for (shinfo->nr_frags = 0; nr_slots > 0 && shinfo->nr_frags < MAX_SKB_FRAGS;
+	     nr_slots--) {
+		if (unlikely(!txp->size)) {
+			make_tx_response(queue, txp, 0, XEN_NETIF_RSP_OKAY);
+			++txp;
+			continue;
+		}
 
-	return gop;
-err:
-	/* Unwind, freeing all pages and sending error responses. */
-	while (shinfo->nr_frags-- > start) {
-		xenvif_idx_release(vif,
-				frag_get_pending_idx(&frags[shinfo->nr_frags]),
-				XEN_NETIF_RSP_ERROR);
+		index = pending_index(queue->pending_cons++);
+		pending_idx = queue->pending_ring[index];
+		xenvif_tx_create_map_op(queue, pending_idx, txp,
+				        txp == first ? extra_count : 0, gop);
+		frag_set_pending_idx(&frags[shinfo->nr_frags], pending_idx);
+		++shinfo->nr_frags;
+		++gop;
+
+		if (txp == first)
+			txp = txfrags;
+		else
+			txp++;
 	}
-	/* The head too, if necessary. */
-	if (start)
-		xenvif_idx_release(vif, pending_idx, XEN_NETIF_RSP_ERROR);
 
-	return NULL;
+	if (nr_slots > 0) {
+
+		shinfo = skb_shinfo(nskb);
+		frags = shinfo->frags;
+
+		for (shinfo->nr_frags = 0; shinfo->nr_frags < nr_slots; ++txp) {
+			if (unlikely(!txp->size)) {
+				make_tx_response(queue, txp, 0,
+						 XEN_NETIF_RSP_OKAY);
+				continue;
+			}
+
+			index = pending_index(queue->pending_cons++);
+			pending_idx = queue->pending_ring[index];
+			xenvif_tx_create_map_op(queue, pending_idx, txp, 0,
+						gop);
+			frag_set_pending_idx(&frags[shinfo->nr_frags],
+					     pending_idx);
+			++shinfo->nr_frags;
+			++gop;
+		}
+
+		if (shinfo->nr_frags) {
+			skb_shinfo(skb)->frag_list = nskb;
+			nskb = NULL;
+		}
+	}
+
+	if (nskb) {
+		/* A frag_list skb was allocated but it is no longer needed
+		 * because enough slots were converted to copy ops above or some
+		 * were empty.
+		 */
+		kfree_skb(nskb);
+	}
+
+	(*copy_ops) = cop - queue->tx_copy_ops;
+	(*map_ops) = gop - queue->tx_map_ops;
 }
 
-static int xenvif_tx_check_gop(struct xenvif *vif,
-			       struct sk_buff *skb,
-			       struct gnttab_copy **gopp)
+static inline void xenvif_grant_handle_set(struct xenvif_queue *queue,
+					   u16 pending_idx,
+					   grant_handle_t handle)
 {
-	struct gnttab_copy *gop = *gopp;
-	u16 pending_idx = *((u16 *)skb->data);
+	if (unlikely(queue->grant_tx_handle[pending_idx] !=
+		     NETBACK_INVALID_HANDLE)) {
+		netdev_err(queue->vif->dev,
+			   "Trying to overwrite active handle! pending_idx: 0x%x\n",
+			   pending_idx);
+		BUG();
+	}
+	queue->grant_tx_handle[pending_idx] = handle;
+}
+
+static inline void xenvif_grant_handle_reset(struct xenvif_queue *queue,
+					     u16 pending_idx)
+{
+	if (unlikely(queue->grant_tx_handle[pending_idx] ==
+		     NETBACK_INVALID_HANDLE)) {
+		netdev_err(queue->vif->dev,
+			   "Trying to unmap invalid handle! pending_idx: 0x%x\n",
+			   pending_idx);
+		BUG();
+	}
+	queue->grant_tx_handle[pending_idx] = NETBACK_INVALID_HANDLE;
+}
+
+static int xenvif_tx_check_gop(struct xenvif_queue *queue,
+			       struct sk_buff *skb,
+			       struct gnttab_map_grant_ref **gopp_map,
+			       struct gnttab_copy **gopp_copy)
+{
+	struct gnttab_map_grant_ref *gop_map = *gopp_map;
+	u16 pending_idx;
+	/* This always points to the shinfo of the skb being checked, which
+	 * could be either the first or the one on the frag_list
+	 */
 	struct skb_shared_info *shinfo = skb_shinfo(skb);
-	struct pending_tx_info *tx_info;
+	/* If this is non-NULL, we are currently checking the frag_list skb, and
+	 * this points to the shinfo of the first one
+	 */
+	struct skb_shared_info *first_shinfo = NULL;
 	int nr_frags = shinfo->nr_frags;
-	int i, err, start;
-	u16 peek; /* peek into next tx request */
+	const bool sharedslot = nr_frags &&
+				frag_get_pending_idx(&shinfo->frags[0]) ==
+				    copy_pending_idx(skb, copy_count(skb) - 1);
+	int i, err = 0;
 
-	/* Check status of header. */
-	err = gop->status;
-	if (unlikely(err))
-		xenvif_idx_release(vif, pending_idx, XEN_NETIF_RSP_ERROR);
+	for (i = 0; i < copy_count(skb); i++) {
+		int newerr;
 
-	/* Skip first skb fragment if it is on same page as header fragment. */
-	start = (frag_get_pending_idx(&shinfo->frags[0]) == pending_idx);
+		/* Check status of header. */
+		pending_idx = copy_pending_idx(skb, i);
 
-	for (i = start; i < nr_frags; i++) {
+		newerr = (*gopp_copy)->status;
+
+		/* Split copies need to be handled together. */
+		if (XENVIF_TX_CB(skb)->split_mask & (1U << i)) {
+			(*gopp_copy)++;
+			if (!newerr)
+				newerr = (*gopp_copy)->status;
+		}
+		if (likely(!newerr)) {
+			/* The first frag might still have this slot mapped */
+			if (i < copy_count(skb) - 1 || !sharedslot)
+				xenvif_idx_release(queue, pending_idx,
+						   XEN_NETIF_RSP_OKAY);
+		} else {
+			err = newerr;
+			if (net_ratelimit())
+				netdev_dbg(queue->vif->dev,
+					   "Grant copy of header failed! status: %d pending_idx: %u ref: %u\n",
+					   (*gopp_copy)->status,
+					   pending_idx,
+					   (*gopp_copy)->source.u.ref);
+			/* The first frag might still have this slot mapped */
+			if (i < copy_count(skb) - 1 || !sharedslot)
+				xenvif_idx_release(queue, pending_idx,
+						   XEN_NETIF_RSP_ERROR);
+		}
+		(*gopp_copy)++;
+	}
+
+check_frags:
+	for (i = 0; i < nr_frags; i++, gop_map++) {
 		int j, newerr;
-		pending_ring_idx_t head;
 
 		pending_idx = frag_get_pending_idx(&shinfo->frags[i]);
-		tx_info = &vif->pending_tx_info[pending_idx];
-		head = tx_info->head;
 
 		/* Check error status: if okay then remember grant handle. */
-		do {
-			newerr = (++gop)->status;
-			if (newerr)
-				break;
-			peek = vif->pending_ring[pending_index(++head)];
-		} while (!pending_tx_is_head(vif, peek));
+		newerr = gop_map->status;
 
 		if (likely(!newerr)) {
+			xenvif_grant_handle_set(queue,
+						pending_idx,
+						gop_map->handle);
 			/* Had a previous error? Invalidate this fragment. */
-			if (unlikely(err))
-				xenvif_idx_release(vif, pending_idx,
-						   XEN_NETIF_RSP_OKAY);
+			if (unlikely(err)) {
+				xenvif_idx_unmap(queue, pending_idx);
+				/* If the mapping of the first frag was OK, but
+				 * the header's copy failed, and they are
+				 * sharing a slot, send an error
+				 */
+				if (i == 0 && !first_shinfo && sharedslot)
+					xenvif_idx_release(queue, pending_idx,
+							   XEN_NETIF_RSP_ERROR);
+				else
+					xenvif_idx_release(queue, pending_idx,
+							   XEN_NETIF_RSP_OKAY);
+			}
 			continue;
 		}
 
 		/* Error on this fragment: respond to client with an error. */
-		xenvif_idx_release(vif, pending_idx, XEN_NETIF_RSP_ERROR);
+		if (net_ratelimit())
+			netdev_dbg(queue->vif->dev,
+				   "Grant map of %d. frag failed! status: %d pending_idx: %u ref: %u\n",
+				   i,
+				   gop_map->status,
+				   pending_idx,
+				   gop_map->ref);
+
+		xenvif_idx_release(queue, pending_idx, XEN_NETIF_RSP_ERROR);
 
 		/* Not the first error? Preceding frags already invalidated. */
 		if (err)
 			continue;
 
-		/* First error: invalidate header and preceding fragments. */
-		pending_idx = *((u16 *)skb->data);
-		xenvif_idx_release(vif, pending_idx, XEN_NETIF_RSP_OKAY);
-		for (j = start; j < i; j++) {
+		/* Invalidate preceding fragments of this skb. */
+		for (j = 0; j < i; j++) {
 			pending_idx = frag_get_pending_idx(&shinfo->frags[j]);
-			xenvif_idx_release(vif, pending_idx,
+			xenvif_idx_unmap(queue, pending_idx);
+			xenvif_idx_release(queue, pending_idx,
 					   XEN_NETIF_RSP_OKAY);
+		}
+
+		/* And if we found the error while checking the frag_list, unmap
+		 * the first skb's frags
+		 */
+		if (first_shinfo) {
+			for (j = 0; j < first_shinfo->nr_frags; j++) {
+				pending_idx = frag_get_pending_idx(&first_shinfo->frags[j]);
+				xenvif_idx_unmap(queue, pending_idx);
+				xenvif_idx_release(queue, pending_idx,
+						   XEN_NETIF_RSP_OKAY);
+			}
 		}
 
 		/* Remember the error: invalidate all subsequent fragments. */
 		err = newerr;
 	}
 
-	*gopp = gop + 1;
+	if (skb_has_frag_list(skb) && !first_shinfo) {
+		first_shinfo = shinfo;
+		shinfo = skb_shinfo(shinfo->frag_list);
+		nr_frags = shinfo->nr_frags;
+
+		goto check_frags;
+	}
+
+	*gopp_map = gop_map;
 	return err;
 }
 
-static void xenvif_fill_frags(struct xenvif *vif, struct sk_buff *skb)
+static void xenvif_fill_frags(struct xenvif_queue *queue, struct sk_buff *skb)
 {
 	struct skb_shared_info *shinfo = skb_shinfo(skb);
 	int nr_frags = shinfo->nr_frags;
 	int i;
+	u16 prev_pending_idx = INVALID_PENDING_IDX;
 
 	for (i = 0; i < nr_frags; i++) {
 		skb_frag_t *frag = shinfo->frags + i;
@@ -976,46 +698,58 @@ static void xenvif_fill_frags(struct xenvif *vif, struct sk_buff *skb)
 
 		pending_idx = frag_get_pending_idx(frag);
 
-		txp = &vif->pending_tx_info[pending_idx].req;
-		page = virt_to_page(idx_to_kaddr(vif, pending_idx));
+		/* If this is not the first frag, chain it to the previous*/
+		if (prev_pending_idx == INVALID_PENDING_IDX)
+			skb_shinfo(skb)->destructor_arg =
+				&callback_param(queue, pending_idx);
+		else
+			callback_param(queue, prev_pending_idx).ctx =
+				&callback_param(queue, pending_idx);
+
+		callback_param(queue, pending_idx).ctx = NULL;
+		prev_pending_idx = pending_idx;
+
+		txp = &queue->pending_tx_info[pending_idx].req;
+		page = virt_to_page((void *)idx_to_kaddr(queue, pending_idx));
 		__skb_fill_page_desc(skb, i, page, txp->offset, txp->size);
 		skb->len += txp->size;
 		skb->data_len += txp->size;
 		skb->truesize += txp->size;
 
-		/* Take an extra reference to offset xenvif_idx_release */
-		get_page(vif->mmap_pages[pending_idx]);
-		xenvif_idx_release(vif, pending_idx, XEN_NETIF_RSP_OKAY);
+		/* Take an extra reference to offset network stack's put_page */
+		get_page(queue->mmap_pages[pending_idx]);
 	}
 }
 
-static int xenvif_get_extras(struct xenvif *vif,
-				struct xen_netif_extra_info *extras,
-				int work_to_do)
+static int xenvif_get_extras(struct xenvif_queue *queue,
+			     struct xen_netif_extra_info *extras,
+			     unsigned int *extra_count,
+			     int work_to_do)
 {
 	struct xen_netif_extra_info extra;
-	RING_IDX cons = vif->tx.req_cons;
+	RING_IDX cons = queue->tx.req_cons;
 
 	do {
 		if (unlikely(work_to_do-- <= 0)) {
-			netdev_err(vif->dev, "Missing extra info\n");
-			xenvif_fatal_tx_err(vif);
+			netdev_err(queue->vif->dev, "Missing extra info\n");
+			xenvif_fatal_tx_err(queue->vif);
 			return -EBADR;
 		}
 
-		memcpy(&extra, RING_GET_REQUEST(&vif->tx, cons),
-		       sizeof(extra));
+		RING_COPY_REQUEST(&queue->tx, cons, &extra);
+
+		queue->tx.req_cons = ++cons;
+		(*extra_count)++;
+
 		if (unlikely(!extra.type ||
 			     extra.type >= XEN_NETIF_EXTRA_TYPE_MAX)) {
-			vif->tx.req_cons = ++cons;
-			netdev_err(vif->dev,
+			netdev_err(queue->vif->dev,
 				   "Invalid extra type: %d\n", extra.type);
-			xenvif_fatal_tx_err(vif);
+			xenvif_fatal_tx_err(queue->vif);
 			return -EINVAL;
 		}
 
 		memcpy(&extras[extra.type - 1], &extra, sizeof(extra));
-		vif->tx.req_cons = ++cons;
 	} while (extra.flags & XEN_NETIF_EXTRA_FLAG_MORE);
 
 	return work_to_do;
@@ -1050,7 +784,7 @@ static int xenvif_set_skb_gso(struct xenvif *vif,
 	return 0;
 }
 
-static int checksum_setup(struct xenvif *vif, struct sk_buff *skb)
+static int checksum_setup(struct xenvif_queue *queue, struct sk_buff *skb)
 {
 	bool recalculate_partial_csum = false;
 
@@ -1060,7 +794,7 @@ static int checksum_setup(struct xenvif *vif, struct sk_buff *skb)
 	 * recalculate the partial checksum.
 	 */
 	if (skb->ip_summed != CHECKSUM_PARTIAL && skb_is_gso(skb)) {
-		vif->rx_gso_checksum_fixup++;
+		queue->stats.rx_gso_checksum_fixup++;
 		skb->ip_summed = CHECKSUM_PARTIAL;
 		recalculate_partial_csum = true;
 	}
@@ -1072,31 +806,30 @@ static int checksum_setup(struct xenvif *vif, struct sk_buff *skb)
 	return skb_checksum_setup(skb, recalculate_partial_csum);
 }
 
-static bool tx_credit_exceeded(struct xenvif *vif, unsigned size)
+static bool tx_credit_exceeded(struct xenvif_queue *queue, unsigned size)
 {
 	u64 now = get_jiffies_64();
-	u64 next_credit = vif->credit_window_start +
-		msecs_to_jiffies(vif->credit_usec / 1000);
+	u64 next_credit = queue->credit_window_start +
+		msecs_to_jiffies(queue->credit_usec / 1000);
 
 	/* Timer could already be pending in rare cases. */
-	if (timer_pending(&vif->credit_timeout))
+	if (timer_pending(&queue->credit_timeout)) {
+		queue->rate_limited = true;
 		return true;
+	}
 
 	/* Passed the point where we can replenish credit? */
 	if (time_after_eq64(now, next_credit)) {
-		vif->credit_window_start = now;
-		tx_add_credit(vif);
+		queue->credit_window_start = now;
+		tx_add_credit(queue);
 	}
 
 	/* Still too big to send right now? Set a callback. */
-	if (size > vif->remaining_credit) {
-		vif->credit_timeout.data     =
-			(unsigned long)vif;
-		vif->credit_timeout.function =
-			tx_credit_callback;
-		mod_timer(&vif->credit_timeout,
+	if (size > queue->remaining_credit) {
+		mod_timer(&queue->credit_timeout,
 			  next_credit);
-		vif->credit_window_start = next_credit;
+		queue->credit_window_start = next_credit;
+		queue->rate_limited = true;
 
 		return true;
 	}
@@ -1104,210 +837,364 @@ static bool tx_credit_exceeded(struct xenvif *vif, unsigned size)
 	return false;
 }
 
-static unsigned xenvif_tx_build_gops(struct xenvif *vif, int budget)
-{
-	struct gnttab_copy *gop = vif->tx_copy_ops, *request_gop;
-	struct sk_buff *skb;
-	int ret;
+/* No locking is required in xenvif_mcast_add/del() as they are
+ * only ever invoked from NAPI poll. An RCU list is used because
+ * xenvif_mcast_match() is called asynchronously, during start_xmit.
+ */
 
-	while ((nr_pending_reqs(vif) + XEN_NETBK_LEGACY_SLOTS_MAX
-		< MAX_PENDING_REQS) &&
-	       (skb_queue_len(&vif->tx_queue) < budget)) {
+static int xenvif_mcast_add(struct xenvif *vif, const u8 *addr)
+{
+	struct xenvif_mcast_addr *mcast;
+
+	if (vif->fe_mcast_count == XEN_NETBK_MCAST_MAX) {
+		if (net_ratelimit())
+			netdev_err(vif->dev,
+				   "Too many multicast addresses\n");
+		return -ENOSPC;
+	}
+
+	mcast = kzalloc(sizeof(*mcast), GFP_ATOMIC);
+	if (!mcast)
+		return -ENOMEM;
+
+	ether_addr_copy(mcast->addr, addr);
+	list_add_tail_rcu(&mcast->entry, &vif->fe_mcast_addr);
+	vif->fe_mcast_count++;
+
+	return 0;
+}
+
+static void xenvif_mcast_del(struct xenvif *vif, const u8 *addr)
+{
+	struct xenvif_mcast_addr *mcast;
+
+	list_for_each_entry_rcu(mcast, &vif->fe_mcast_addr, entry) {
+		if (ether_addr_equal(addr, mcast->addr)) {
+			--vif->fe_mcast_count;
+			list_del_rcu(&mcast->entry);
+			kfree_rcu(mcast, rcu);
+			break;
+		}
+	}
+}
+
+bool xenvif_mcast_match(struct xenvif *vif, const u8 *addr)
+{
+	struct xenvif_mcast_addr *mcast;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(mcast, &vif->fe_mcast_addr, entry) {
+		if (ether_addr_equal(addr, mcast->addr)) {
+			rcu_read_unlock();
+			return true;
+		}
+	}
+	rcu_read_unlock();
+
+	return false;
+}
+
+void xenvif_mcast_addr_list_free(struct xenvif *vif)
+{
+	/* No need for locking or RCU here. NAPI poll and TX queue
+	 * are stopped.
+	 */
+	while (!list_empty(&vif->fe_mcast_addr)) {
+		struct xenvif_mcast_addr *mcast;
+
+		mcast = list_first_entry(&vif->fe_mcast_addr,
+					 struct xenvif_mcast_addr,
+					 entry);
+		--vif->fe_mcast_count;
+		list_del(&mcast->entry);
+		kfree(mcast);
+	}
+}
+
+static void xenvif_tx_build_gops(struct xenvif_queue *queue,
+				     int budget,
+				     unsigned *copy_ops,
+				     unsigned *map_ops)
+{
+	struct sk_buff *skb, *nskb;
+	int ret;
+	unsigned int frag_overflow;
+
+	while (skb_queue_len(&queue->tx_queue) < budget) {
 		struct xen_netif_tx_request txreq;
 		struct xen_netif_tx_request txfrags[XEN_NETBK_LEGACY_SLOTS_MAX];
-		struct page *page;
 		struct xen_netif_extra_info extras[XEN_NETIF_EXTRA_TYPE_MAX-1];
-		u16 pending_idx;
+		unsigned int extra_count;
 		RING_IDX idx;
 		int work_to_do;
 		unsigned int data_len;
-		pending_ring_idx_t index;
 
-		if (vif->tx.sring->req_prod - vif->tx.req_cons >
+		if (queue->tx.sring->req_prod - queue->tx.req_cons >
 		    XEN_NETIF_TX_RING_SIZE) {
-			netdev_err(vif->dev,
+			netdev_err(queue->vif->dev,
 				   "Impossible number of requests. "
 				   "req_prod %d, req_cons %d, size %ld\n",
-				   vif->tx.sring->req_prod, vif->tx.req_cons,
+				   queue->tx.sring->req_prod, queue->tx.req_cons,
 				   XEN_NETIF_TX_RING_SIZE);
-			xenvif_fatal_tx_err(vif);
-			continue;
+			xenvif_fatal_tx_err(queue->vif);
+			break;
 		}
 
-		work_to_do = RING_HAS_UNCONSUMED_REQUESTS(&vif->tx);
+		work_to_do = XEN_RING_NR_UNCONSUMED_REQUESTS(&queue->tx);
 		if (!work_to_do)
 			break;
 
-		idx = vif->tx.req_cons;
+		idx = queue->tx.req_cons;
 		rmb(); /* Ensure that we see the request before we copy it. */
-		memcpy(&txreq, RING_GET_REQUEST(&vif->tx, idx), sizeof(txreq));
+		RING_COPY_REQUEST(&queue->tx, idx, &txreq);
 
 		/* Credit-based scheduling. */
-		if (txreq.size > vif->remaining_credit &&
-		    tx_credit_exceeded(vif, txreq.size))
+		if (txreq.size > queue->remaining_credit &&
+		    tx_credit_exceeded(queue, txreq.size))
 			break;
 
-		vif->remaining_credit -= txreq.size;
+		queue->remaining_credit -= txreq.size;
 
 		work_to_do--;
-		vif->tx.req_cons = ++idx;
+		queue->tx.req_cons = ++idx;
 
 		memset(extras, 0, sizeof(extras));
+		extra_count = 0;
 		if (txreq.flags & XEN_NETTXF_extra_info) {
-			work_to_do = xenvif_get_extras(vif, extras,
+			work_to_do = xenvif_get_extras(queue, extras,
+						       &extra_count,
 						       work_to_do);
-			idx = vif->tx.req_cons;
+			idx = queue->tx.req_cons;
 			if (unlikely(work_to_do < 0))
 				break;
 		}
 
-		ret = xenvif_count_requests(vif, &txreq, txfrags, work_to_do);
+		if (extras[XEN_NETIF_EXTRA_TYPE_MCAST_ADD - 1].type) {
+			struct xen_netif_extra_info *extra;
+
+			extra = &extras[XEN_NETIF_EXTRA_TYPE_MCAST_ADD - 1];
+			ret = xenvif_mcast_add(queue->vif, extra->u.mcast.addr);
+
+			make_tx_response(queue, &txreq, extra_count,
+					 (ret == 0) ?
+					 XEN_NETIF_RSP_OKAY :
+					 XEN_NETIF_RSP_ERROR);
+			continue;
+		}
+
+		if (extras[XEN_NETIF_EXTRA_TYPE_MCAST_DEL - 1].type) {
+			struct xen_netif_extra_info *extra;
+
+			extra = &extras[XEN_NETIF_EXTRA_TYPE_MCAST_DEL - 1];
+			xenvif_mcast_del(queue->vif, extra->u.mcast.addr);
+
+			make_tx_response(queue, &txreq, extra_count,
+					 XEN_NETIF_RSP_OKAY);
+			continue;
+		}
+
+		data_len = (txreq.size > XEN_NETBACK_TX_COPY_LEN) ?
+			XEN_NETBACK_TX_COPY_LEN : txreq.size;
+
+		ret = xenvif_count_requests(queue, &txreq, extra_count,
+					    txfrags, work_to_do);
+
 		if (unlikely(ret < 0))
 			break;
 
 		idx += ret;
 
 		if (unlikely(txreq.size < ETH_HLEN)) {
-			netdev_dbg(vif->dev,
+			netdev_dbg(queue->vif->dev,
 				   "Bad packet size: %d\n", txreq.size);
-			xenvif_tx_err(vif, &txreq, idx);
+			xenvif_tx_err(queue, &txreq, extra_count, idx);
 			break;
 		}
 
 		/* No crossing a page as the payload mustn't fragment. */
-		if (unlikely((txreq.offset + txreq.size) > PAGE_SIZE)) {
-			netdev_err(vif->dev,
-				   "txreq.offset: %x, size: %u, end: %lu\n",
-				   txreq.offset, txreq.size,
-				   (txreq.offset&~PAGE_MASK) + txreq.size);
-			xenvif_fatal_tx_err(vif);
+		if (unlikely((txreq.offset + txreq.size) > XEN_PAGE_SIZE)) {
+			netdev_err(queue->vif->dev, "Cross page boundary, txreq.offset: %u, size: %u\n",
+				   txreq.offset, txreq.size);
+			xenvif_fatal_tx_err(queue->vif);
 			break;
 		}
 
-		index = pending_index(vif->pending_cons);
-		pending_idx = vif->pending_ring[index];
+		if (ret >= XEN_NETBK_LEGACY_SLOTS_MAX - 1 && data_len < txreq.size)
+			data_len = txreq.size;
 
-		data_len = (txreq.size > PKT_PROT_LEN &&
-			    ret < XEN_NETBK_LEGACY_SLOTS_MAX) ?
-			PKT_PROT_LEN : txreq.size;
-
-		skb = alloc_skb(data_len + NET_SKB_PAD + NET_IP_ALIGN,
-				GFP_ATOMIC | __GFP_NOWARN);
+		skb = xenvif_alloc_skb(data_len);
 		if (unlikely(skb == NULL)) {
-			netdev_dbg(vif->dev,
+			netdev_dbg(queue->vif->dev,
 				   "Can't allocate a skb in start_xmit.\n");
-			xenvif_tx_err(vif, &txreq, idx);
+			xenvif_tx_err(queue, &txreq, extra_count, idx);
 			break;
 		}
 
-		/* Packets passed to netif_rx() must have some headroom. */
-		skb_reserve(skb, NET_SKB_PAD + NET_IP_ALIGN);
+		skb_shinfo(skb)->nr_frags = ret;
+		/* At this point shinfo->nr_frags is in fact the number of
+		 * slots, which can be as large as XEN_NETBK_LEGACY_SLOTS_MAX.
+		 */
+		frag_overflow = 0;
+		nskb = NULL;
+		if (skb_shinfo(skb)->nr_frags > MAX_SKB_FRAGS) {
+			frag_overflow = skb_shinfo(skb)->nr_frags - MAX_SKB_FRAGS;
+			BUG_ON(frag_overflow > MAX_SKB_FRAGS);
+			skb_shinfo(skb)->nr_frags = MAX_SKB_FRAGS;
+			nskb = xenvif_alloc_skb(0);
+			if (unlikely(nskb == NULL)) {
+				skb_shinfo(skb)->nr_frags = 0;
+				kfree_skb(skb);
+				xenvif_tx_err(queue, &txreq, extra_count, idx);
+				if (net_ratelimit())
+					netdev_err(queue->vif->dev,
+						   "Can't allocate the frag_list skb.\n");
+				break;
+			}
+		}
 
 		if (extras[XEN_NETIF_EXTRA_TYPE_GSO - 1].type) {
 			struct xen_netif_extra_info *gso;
 			gso = &extras[XEN_NETIF_EXTRA_TYPE_GSO - 1];
 
-			if (xenvif_set_skb_gso(vif, skb, gso)) {
+			if (xenvif_set_skb_gso(queue->vif, skb, gso)) {
 				/* Failure in xenvif_set_skb_gso is fatal. */
+				skb_shinfo(skb)->nr_frags = 0;
 				kfree_skb(skb);
+				kfree_skb(nskb);
 				break;
 			}
 		}
 
-		/* XXX could copy straight to head */
-		page = xenvif_alloc_page(vif, pending_idx);
-		if (!page) {
-			kfree_skb(skb);
-			xenvif_tx_err(vif, &txreq, idx);
-			break;
+		if (extras[XEN_NETIF_EXTRA_TYPE_HASH - 1].type) {
+			struct xen_netif_extra_info *extra;
+			enum pkt_hash_types type = PKT_HASH_TYPE_NONE;
+
+			extra = &extras[XEN_NETIF_EXTRA_TYPE_HASH - 1];
+
+			switch (extra->u.hash.type) {
+			case _XEN_NETIF_CTRL_HASH_TYPE_IPV4:
+			case _XEN_NETIF_CTRL_HASH_TYPE_IPV6:
+				type = PKT_HASH_TYPE_L3;
+				break;
+
+			case _XEN_NETIF_CTRL_HASH_TYPE_IPV4_TCP:
+			case _XEN_NETIF_CTRL_HASH_TYPE_IPV6_TCP:
+				type = PKT_HASH_TYPE_L4;
+				break;
+
+			default:
+				break;
+			}
+
+			if (type != PKT_HASH_TYPE_NONE)
+				skb_set_hash(skb,
+					     *(u32 *)extra->u.hash.value,
+					     type);
 		}
 
-		gop->source.u.ref = txreq.gref;
-		gop->source.domid = vif->domid;
-		gop->source.offset = txreq.offset;
+		xenvif_get_requests(queue, skb, &txreq, txfrags, copy_ops,
+				    map_ops, frag_overflow, nskb, extra_count,
+				    data_len);
 
-		gop->dest.u.gmfn = virt_to_mfn(page_address(page));
-		gop->dest.domid = DOMID_SELF;
-		gop->dest.offset = txreq.offset;
+		__skb_queue_tail(&queue->tx_queue, skb);
 
-		gop->len = txreq.size;
-		gop->flags = GNTCOPY_source_gref;
-
-		gop++;
-
-		memcpy(&vif->pending_tx_info[pending_idx].req,
-		       &txreq, sizeof(txreq));
-		vif->pending_tx_info[pending_idx].head = index;
-		*((u16 *)skb->data) = pending_idx;
-
-		__skb_put(skb, data_len);
-
-		skb_shinfo(skb)->nr_frags = ret;
-		if (data_len < txreq.size) {
-			skb_shinfo(skb)->nr_frags++;
-			frag_set_pending_idx(&skb_shinfo(skb)->frags[0],
-					     pending_idx);
-		} else {
-			frag_set_pending_idx(&skb_shinfo(skb)->frags[0],
-					     INVALID_PENDING_IDX);
-		}
-
-		vif->pending_cons++;
-
-		request_gop = xenvif_get_requests(vif, skb, txfrags, gop);
-		if (request_gop == NULL) {
-			kfree_skb(skb);
-			xenvif_tx_err(vif, &txreq, idx);
-			break;
-		}
-		gop = request_gop;
-
-		__skb_queue_tail(&vif->tx_queue, skb);
-
-		vif->tx.req_cons = idx;
-
-		if ((gop-vif->tx_copy_ops) >= ARRAY_SIZE(vif->tx_copy_ops))
-			break;
+		queue->tx.req_cons = idx;
 	}
 
-	return gop - vif->tx_copy_ops;
+	return;
 }
 
-
-static int xenvif_tx_submit(struct xenvif *vif)
+/* Consolidate skb with a frag_list into a brand new one with local pages on
+ * frags. Returns 0 or -ENOMEM if can't allocate new pages.
+ */
+static int xenvif_handle_frag_list(struct xenvif_queue *queue, struct sk_buff *skb)
 {
-	struct gnttab_copy *gop = vif->tx_copy_ops;
+	unsigned int offset = skb_headlen(skb);
+	skb_frag_t frags[MAX_SKB_FRAGS];
+	int i, f;
+	struct ubuf_info *uarg;
+	struct sk_buff *nskb = skb_shinfo(skb)->frag_list;
+
+	queue->stats.tx_zerocopy_sent += 2;
+	queue->stats.tx_frag_overflow++;
+
+	xenvif_fill_frags(queue, nskb);
+	/* Subtract frags size, we will correct it later */
+	skb->truesize -= skb->data_len;
+	skb->len += nskb->len;
+	skb->data_len += nskb->len;
+
+	/* create a brand new frags array and coalesce there */
+	for (i = 0; offset < skb->len; i++) {
+		struct page *page;
+		unsigned int len;
+
+		BUG_ON(i >= MAX_SKB_FRAGS);
+		page = alloc_page(GFP_ATOMIC);
+		if (!page) {
+			int j;
+			skb->truesize += skb->data_len;
+			for (j = 0; j < i; j++)
+				put_page(skb_frag_page(&frags[j]));
+			return -ENOMEM;
+		}
+
+		if (offset + PAGE_SIZE < skb->len)
+			len = PAGE_SIZE;
+		else
+			len = skb->len - offset;
+		if (skb_copy_bits(skb, offset, page_address(page), len))
+			BUG();
+
+		offset += len;
+		skb_frag_fill_page_desc(&frags[i], page, 0, len);
+	}
+
+	/* Release all the original (foreign) frags. */
+	for (f = 0; f < skb_shinfo(skb)->nr_frags; f++)
+		skb_frag_unref(skb, f);
+	uarg = skb_shinfo(skb)->destructor_arg;
+	/* increase inflight counter to offset decrement in callback */
+	atomic_inc(&queue->inflight_packets);
+	uarg->callback(NULL, uarg, true);
+	skb_shinfo(skb)->destructor_arg = NULL;
+
+	/* Fill the skb with the new (local) frags. */
+	memcpy(skb_shinfo(skb)->frags, frags, i * sizeof(skb_frag_t));
+	skb_shinfo(skb)->nr_frags = i;
+	skb->truesize += i * PAGE_SIZE;
+
+	return 0;
+}
+
+static int xenvif_tx_submit(struct xenvif_queue *queue)
+{
+	struct gnttab_map_grant_ref *gop_map = queue->tx_map_ops;
+	struct gnttab_copy *gop_copy = queue->tx_copy_ops;
 	struct sk_buff *skb;
 	int work_done = 0;
 
-	while ((skb = __skb_dequeue(&vif->tx_queue)) != NULL) {
+	while ((skb = __skb_dequeue(&queue->tx_queue)) != NULL) {
 		struct xen_netif_tx_request *txp;
 		u16 pending_idx;
-		unsigned data_len;
 
-		pending_idx = *((u16 *)skb->data);
-		txp = &vif->pending_tx_info[pending_idx].req;
+		pending_idx = copy_pending_idx(skb, 0);
+		txp = &queue->pending_tx_info[pending_idx].req;
 
 		/* Check the remap error code. */
-		if (unlikely(xenvif_tx_check_gop(vif, skb, &gop))) {
-			netdev_dbg(vif->dev, "netback grant failed.\n");
+		if (unlikely(xenvif_tx_check_gop(queue, skb, &gop_map, &gop_copy))) {
+			/* If there was an error, xenvif_tx_check_gop is
+			 * expected to release all the frags which were mapped,
+			 * so kfree_skb shouldn't do it again
+			 */
 			skb_shinfo(skb)->nr_frags = 0;
+			if (skb_has_frag_list(skb)) {
+				struct sk_buff *nskb =
+						skb_shinfo(skb)->frag_list;
+				skb_shinfo(nskb)->nr_frags = 0;
+			}
 			kfree_skb(skb);
 			continue;
-		}
-
-		data_len = skb->len;
-		memcpy(skb->data,
-		       (void *)(idx_to_kaddr(vif, pending_idx)|txp->offset),
-		       data_len);
-		if (data_len < txp->size) {
-			/* Append the packet payload as a fragment. */
-			txp->offset += data_len;
-			txp->size -= data_len;
-		} else {
-			/* Schedule a response immediately. */
-			xenvif_idx_release(vif, pending_idx,
-					   XEN_NETIF_RSP_OKAY);
 		}
 
 		if (txp->flags & XEN_NETTXF_csum_blank)
@@ -1315,44 +1202,75 @@ static int xenvif_tx_submit(struct xenvif *vif)
 		else if (txp->flags & XEN_NETTXF_data_validated)
 			skb->ip_summed = CHECKSUM_UNNECESSARY;
 
-		xenvif_fill_frags(vif, skb);
+		xenvif_fill_frags(queue, skb);
 
-		if (skb_is_nonlinear(skb) && skb_headlen(skb) < PKT_PROT_LEN) {
-			int target = min_t(int, skb->len, PKT_PROT_LEN);
-			__pskb_pull_tail(skb, target - skb_headlen(skb));
+		if (unlikely(skb_has_frag_list(skb))) {
+			struct sk_buff *nskb = skb_shinfo(skb)->frag_list;
+			xenvif_skb_zerocopy_prepare(queue, nskb);
+			if (xenvif_handle_frag_list(queue, skb)) {
+				if (net_ratelimit())
+					netdev_err(queue->vif->dev,
+						   "Not enough memory to consolidate frag_list!\n");
+				xenvif_skb_zerocopy_prepare(queue, skb);
+				kfree_skb(skb);
+				continue;
+			}
+			/* Copied all the bits from the frag list -- free it. */
+			skb_frag_list_init(skb);
+			kfree_skb(nskb);
 		}
 
-		skb->dev      = vif->dev;
+		skb->dev      = queue->vif->dev;
 		skb->protocol = eth_type_trans(skb, skb->dev);
 		skb_reset_network_header(skb);
 
-		if (checksum_setup(vif, skb)) {
-			netdev_dbg(vif->dev,
+		if (checksum_setup(queue, skb)) {
+			netdev_dbg(queue->vif->dev,
 				   "Can't setup checksum in net_tx_action\n");
+			/* We have to set this flag to trigger the callback */
+			if (skb_shinfo(skb)->destructor_arg)
+				xenvif_skb_zerocopy_prepare(queue, skb);
 			kfree_skb(skb);
 			continue;
 		}
 
-		skb_probe_transport_header(skb, 0);
+		skb_probe_transport_header(skb);
 
 		/* If the packet is GSO then we will have just set up the
 		 * transport header offset in checksum_setup so it's now
 		 * straightforward to calculate gso_segs.
 		 */
 		if (skb_is_gso(skb)) {
-			int mss = skb_shinfo(skb)->gso_size;
-			int hdrlen = skb_transport_header(skb) -
-				skb_mac_header(skb) +
-				tcp_hdrlen(skb);
+			int mss, hdrlen;
+
+			/* GSO implies having the L4 header. */
+			WARN_ON_ONCE(!skb_transport_header_was_set(skb));
+			if (unlikely(!skb_transport_header_was_set(skb))) {
+				kfree_skb(skb);
+				continue;
+			}
+
+			mss = skb_shinfo(skb)->gso_size;
+			hdrlen = skb_tcp_all_headers(skb);
 
 			skb_shinfo(skb)->gso_segs =
 				DIV_ROUND_UP(skb->len - hdrlen, mss);
 		}
 
-		vif->dev->stats.rx_bytes += skb->len;
-		vif->dev->stats.rx_packets++;
+		queue->stats.rx_bytes += skb->len;
+		queue->stats.rx_packets++;
 
 		work_done++;
+
+		/* Set this flag right before netif_receive_skb, otherwise
+		 * someone might think this packet already left netback, and
+		 * do a skb_copy_ubufs while we are still in control of the
+		 * skb. E.g. the __pskb_pull_tail earlier can do such thing.
+		 */
+		if (skb_shinfo(skb)->destructor_arg) {
+			xenvif_skb_zerocopy_prepare(queue, skb);
+			queue->stats.tx_zerocopy_sent++;
+		}
 
 		netif_receive_skb(skb);
 	}
@@ -1360,220 +1278,459 @@ static int xenvif_tx_submit(struct xenvif *vif)
 	return work_done;
 }
 
-/* Called after netfront has transmitted */
-int xenvif_tx_action(struct xenvif *vif, int budget)
+void xenvif_zerocopy_callback(struct sk_buff *skb, struct ubuf_info *ubuf_base,
+			      bool zerocopy_success)
 {
-	unsigned nr_gops;
-	int work_done;
+	unsigned long flags;
+	pending_ring_idx_t index;
+	struct ubuf_info_msgzc *ubuf = uarg_to_msgzc(ubuf_base);
+	struct xenvif_queue *queue = ubuf_to_queue(ubuf);
 
-	if (unlikely(!tx_work_todo(vif)))
+	/* This is the only place where we grab this lock, to protect callbacks
+	 * from each other.
+	 */
+	spin_lock_irqsave(&queue->callback_lock, flags);
+	do {
+		u16 pending_idx = ubuf->desc;
+		ubuf = (struct ubuf_info_msgzc *) ubuf->ctx;
+		BUG_ON(queue->dealloc_prod - queue->dealloc_cons >=
+			MAX_PENDING_REQS);
+		index = pending_index(queue->dealloc_prod);
+		queue->dealloc_ring[index] = pending_idx;
+		/* Sync with xenvif_tx_dealloc_action:
+		 * insert idx then incr producer.
+		 */
+		smp_wmb();
+		queue->dealloc_prod++;
+	} while (ubuf);
+	spin_unlock_irqrestore(&queue->callback_lock, flags);
+
+	if (likely(zerocopy_success))
+		queue->stats.tx_zerocopy_success++;
+	else
+		queue->stats.tx_zerocopy_fail++;
+	xenvif_skb_zerocopy_complete(queue);
+}
+
+static inline void xenvif_tx_dealloc_action(struct xenvif_queue *queue)
+{
+	struct gnttab_unmap_grant_ref *gop;
+	pending_ring_idx_t dc, dp;
+	u16 pending_idx, pending_idx_release[MAX_PENDING_REQS];
+	unsigned int i = 0;
+
+	dc = queue->dealloc_cons;
+	gop = queue->tx_unmap_ops;
+
+	/* Free up any grants we have finished using */
+	do {
+		dp = queue->dealloc_prod;
+
+		/* Ensure we see all indices enqueued by all
+		 * xenvif_zerocopy_callback().
+		 */
+		smp_rmb();
+
+		while (dc != dp) {
+			BUG_ON(gop - queue->tx_unmap_ops >= MAX_PENDING_REQS);
+			pending_idx =
+				queue->dealloc_ring[pending_index(dc++)];
+
+			pending_idx_release[gop - queue->tx_unmap_ops] =
+				pending_idx;
+			queue->pages_to_unmap[gop - queue->tx_unmap_ops] =
+				queue->mmap_pages[pending_idx];
+			gnttab_set_unmap_op(gop,
+					    idx_to_kaddr(queue, pending_idx),
+					    GNTMAP_host_map,
+					    queue->grant_tx_handle[pending_idx]);
+			xenvif_grant_handle_reset(queue, pending_idx);
+			++gop;
+		}
+
+	} while (dp != queue->dealloc_prod);
+
+	queue->dealloc_cons = dc;
+
+	if (gop - queue->tx_unmap_ops > 0) {
+		int ret;
+		ret = gnttab_unmap_refs(queue->tx_unmap_ops,
+					NULL,
+					queue->pages_to_unmap,
+					gop - queue->tx_unmap_ops);
+		if (ret) {
+			netdev_err(queue->vif->dev, "Unmap fail: nr_ops %tu ret %d\n",
+				   gop - queue->tx_unmap_ops, ret);
+			for (i = 0; i < gop - queue->tx_unmap_ops; ++i) {
+				if (gop[i].status != GNTST_okay)
+					netdev_err(queue->vif->dev,
+						   " host_addr: 0x%llx handle: 0x%x status: %d\n",
+						   gop[i].host_addr,
+						   gop[i].handle,
+						   gop[i].status);
+			}
+			BUG();
+		}
+	}
+
+	for (i = 0; i < gop - queue->tx_unmap_ops; ++i)
+		xenvif_idx_release(queue, pending_idx_release[i],
+				   XEN_NETIF_RSP_OKAY);
+}
+
+
+/* Called after netfront has transmitted */
+int xenvif_tx_action(struct xenvif_queue *queue, int budget)
+{
+	unsigned nr_mops = 0, nr_cops = 0;
+	int work_done, ret;
+
+	if (unlikely(!tx_work_todo(queue)))
 		return 0;
 
-	nr_gops = xenvif_tx_build_gops(vif, budget);
+	xenvif_tx_build_gops(queue, budget, &nr_cops, &nr_mops);
 
-	if (nr_gops == 0)
+	if (nr_cops == 0)
 		return 0;
 
-	gnttab_batch_copy(vif->tx_copy_ops, nr_gops);
+	gnttab_batch_copy(queue->tx_copy_ops, nr_cops);
+	if (nr_mops != 0) {
+		ret = gnttab_map_refs(queue->tx_map_ops,
+				      NULL,
+				      queue->pages_to_map,
+				      nr_mops);
+		if (ret) {
+			unsigned int i;
 
-	work_done = xenvif_tx_submit(vif);
+			netdev_err(queue->vif->dev, "Map fail: nr %u ret %d\n",
+				   nr_mops, ret);
+			for (i = 0; i < nr_mops; ++i)
+				WARN_ON_ONCE(queue->tx_map_ops[i].status ==
+				             GNTST_okay);
+		}
+	}
+
+	work_done = xenvif_tx_submit(queue);
 
 	return work_done;
 }
 
-static void xenvif_idx_release(struct xenvif *vif, u16 pending_idx,
-			       u8 status)
+static void _make_tx_response(struct xenvif_queue *queue,
+			     const struct xen_netif_tx_request *txp,
+			     unsigned int extra_count,
+			     s8 status)
 {
-	struct pending_tx_info *pending_tx_info;
-	pending_ring_idx_t head;
-	u16 peek; /* peek into next tx request */
+	RING_IDX i = queue->tx.rsp_prod_pvt;
+	struct xen_netif_tx_response *resp;
 
-	BUG_ON(vif->mmap_pages[pending_idx] == (void *)(~0UL));
+	resp = RING_GET_RESPONSE(&queue->tx, i);
+	resp->id     = txp->id;
+	resp->status = status;
 
-	/* Already complete? */
-	if (vif->mmap_pages[pending_idx] == NULL)
-		return;
+	while (extra_count-- != 0)
+		RING_GET_RESPONSE(&queue->tx, ++i)->status = XEN_NETIF_RSP_NULL;
 
-	pending_tx_info = &vif->pending_tx_info[pending_idx];
-
-	head = pending_tx_info->head;
-
-	BUG_ON(!pending_tx_is_head(vif, head));
-	BUG_ON(vif->pending_ring[pending_index(head)] != pending_idx);
-
-	do {
-		pending_ring_idx_t index;
-		pending_ring_idx_t idx = pending_index(head);
-		u16 info_idx = vif->pending_ring[idx];
-
-		pending_tx_info = &vif->pending_tx_info[info_idx];
-		make_tx_response(vif, &pending_tx_info->req, status);
-
-		/* Setting any number other than
-		 * INVALID_PENDING_RING_IDX indicates this slot is
-		 * starting a new packet / ending a previous packet.
-		 */
-		pending_tx_info->head = 0;
-
-		index = pending_index(vif->pending_prod++);
-		vif->pending_ring[index] = vif->pending_ring[info_idx];
-
-		peek = vif->pending_ring[pending_index(++head)];
-
-	} while (!pending_tx_is_head(vif, peek));
-
-	put_page(vif->mmap_pages[pending_idx]);
-	vif->mmap_pages[pending_idx] = NULL;
+	queue->tx.rsp_prod_pvt = ++i;
 }
 
-
-static void make_tx_response(struct xenvif *vif,
-			     struct xen_netif_tx_request *txp,
-			     s8       st)
+static void push_tx_responses(struct xenvif_queue *queue)
 {
-	RING_IDX i = vif->tx.rsp_prod_pvt;
-	struct xen_netif_tx_response *resp;
 	int notify;
 
-	resp = RING_GET_RESPONSE(&vif->tx, i);
-	resp->id     = txp->id;
-	resp->status = st;
-
-	if (txp->flags & XEN_NETTXF_extra_info)
-		RING_GET_RESPONSE(&vif->tx, ++i)->status = XEN_NETIF_RSP_NULL;
-
-	vif->tx.rsp_prod_pvt = ++i;
-	RING_PUSH_RESPONSES_AND_CHECK_NOTIFY(&vif->tx, notify);
+	RING_PUSH_RESPONSES_AND_CHECK_NOTIFY(&queue->tx, notify);
 	if (notify)
-		notify_remote_via_irq(vif->tx_irq);
+		notify_remote_via_irq(queue->tx_irq);
 }
 
-static struct xen_netif_rx_response *make_rx_response(struct xenvif *vif,
-					     u16      id,
-					     s8       st,
-					     u16      offset,
-					     u16      size,
-					     u16      flags)
+static void xenvif_idx_release(struct xenvif_queue *queue, u16 pending_idx,
+			       s8 status)
 {
-	RING_IDX i = vif->rx.rsp_prod_pvt;
-	struct xen_netif_rx_response *resp;
+	struct pending_tx_info *pending_tx_info;
+	pending_ring_idx_t index;
+	unsigned long flags;
 
-	resp = RING_GET_RESPONSE(&vif->rx, i);
-	resp->offset     = offset;
-	resp->flags      = flags;
-	resp->id         = id;
-	resp->status     = (s16)size;
-	if (st < 0)
-		resp->status = (s16)st;
+	pending_tx_info = &queue->pending_tx_info[pending_idx];
 
-	vif->rx.rsp_prod_pvt = ++i;
+	spin_lock_irqsave(&queue->response_lock, flags);
 
-	return resp;
+	_make_tx_response(queue, &pending_tx_info->req,
+			  pending_tx_info->extra_count, status);
+
+	/* Release the pending index before pusing the Tx response so
+	 * its available before a new Tx request is pushed by the
+	 * frontend.
+	 */
+	index = pending_index(queue->pending_prod++);
+	queue->pending_ring[index] = pending_idx;
+
+	push_tx_responses(queue);
+
+	spin_unlock_irqrestore(&queue->response_lock, flags);
 }
 
-static inline int rx_work_todo(struct xenvif *vif)
+static void make_tx_response(struct xenvif_queue *queue,
+			     const struct xen_netif_tx_request *txp,
+			     unsigned int extra_count,
+			     s8 status)
 {
-	return (!skb_queue_empty(&vif->rx_queue) && !vif->rx_queue_stopped) ||
-		vif->rx_event;
+	unsigned long flags;
+
+	spin_lock_irqsave(&queue->response_lock, flags);
+
+	_make_tx_response(queue, txp, extra_count, status);
+	push_tx_responses(queue);
+
+	spin_unlock_irqrestore(&queue->response_lock, flags);
 }
 
-static inline int tx_work_todo(struct xenvif *vif)
+static void xenvif_idx_unmap(struct xenvif_queue *queue, u16 pending_idx)
 {
+	int ret;
+	struct gnttab_unmap_grant_ref tx_unmap_op;
 
-	if (likely(RING_HAS_UNCONSUMED_REQUESTS(&vif->tx)) &&
-	    (nr_pending_reqs(vif) + XEN_NETBK_LEGACY_SLOTS_MAX
-	     < MAX_PENDING_REQS))
+	gnttab_set_unmap_op(&tx_unmap_op,
+			    idx_to_kaddr(queue, pending_idx),
+			    GNTMAP_host_map,
+			    queue->grant_tx_handle[pending_idx]);
+	xenvif_grant_handle_reset(queue, pending_idx);
+
+	ret = gnttab_unmap_refs(&tx_unmap_op, NULL,
+				&queue->mmap_pages[pending_idx], 1);
+	if (ret) {
+		netdev_err(queue->vif->dev,
+			   "Unmap fail: ret: %d pending_idx: %d host_addr: %llx handle: 0x%x status: %d\n",
+			   ret,
+			   pending_idx,
+			   tx_unmap_op.host_addr,
+			   tx_unmap_op.handle,
+			   tx_unmap_op.status);
+		BUG();
+	}
+}
+
+static inline int tx_work_todo(struct xenvif_queue *queue)
+{
+	if (likely(RING_HAS_UNCONSUMED_REQUESTS(&queue->tx)))
 		return 1;
 
 	return 0;
 }
 
-void xenvif_unmap_frontend_rings(struct xenvif *vif)
+static inline bool tx_dealloc_work_todo(struct xenvif_queue *queue)
 {
-	if (vif->tx.sring)
-		xenbus_unmap_ring_vfree(xenvif_to_xenbus_device(vif),
-					vif->tx.sring);
-	if (vif->rx.sring)
-		xenbus_unmap_ring_vfree(xenvif_to_xenbus_device(vif),
-					vif->rx.sring);
+	return queue->dealloc_cons != queue->dealloc_prod;
 }
 
-int xenvif_map_frontend_rings(struct xenvif *vif,
-			      grant_ref_t tx_ring_ref,
-			      grant_ref_t rx_ring_ref)
+void xenvif_unmap_frontend_data_rings(struct xenvif_queue *queue)
+{
+	if (queue->tx.sring)
+		xenbus_unmap_ring_vfree(xenvif_to_xenbus_device(queue->vif),
+					queue->tx.sring);
+	if (queue->rx.sring)
+		xenbus_unmap_ring_vfree(xenvif_to_xenbus_device(queue->vif),
+					queue->rx.sring);
+}
+
+int xenvif_map_frontend_data_rings(struct xenvif_queue *queue,
+				   grant_ref_t tx_ring_ref,
+				   grant_ref_t rx_ring_ref)
 {
 	void *addr;
 	struct xen_netif_tx_sring *txs;
 	struct xen_netif_rx_sring *rxs;
+	RING_IDX rsp_prod, req_prod;
+	int err;
 
-	int err = -ENOMEM;
-
-	err = xenbus_map_ring_valloc(xenvif_to_xenbus_device(vif),
-				     tx_ring_ref, &addr);
+	err = xenbus_map_ring_valloc(xenvif_to_xenbus_device(queue->vif),
+				     &tx_ring_ref, 1, &addr);
 	if (err)
 		goto err;
 
 	txs = (struct xen_netif_tx_sring *)addr;
-	BACK_RING_INIT(&vif->tx, txs, PAGE_SIZE);
+	rsp_prod = READ_ONCE(txs->rsp_prod);
+	req_prod = READ_ONCE(txs->req_prod);
 
-	err = xenbus_map_ring_valloc(xenvif_to_xenbus_device(vif),
-				     rx_ring_ref, &addr);
+	BACK_RING_ATTACH(&queue->tx, txs, rsp_prod, XEN_PAGE_SIZE);
+
+	err = -EIO;
+	if (req_prod - rsp_prod > RING_SIZE(&queue->tx))
+		goto err;
+
+	err = xenbus_map_ring_valloc(xenvif_to_xenbus_device(queue->vif),
+				     &rx_ring_ref, 1, &addr);
 	if (err)
 		goto err;
 
 	rxs = (struct xen_netif_rx_sring *)addr;
-	BACK_RING_INIT(&vif->rx, rxs, PAGE_SIZE);
+	rsp_prod = READ_ONCE(rxs->rsp_prod);
+	req_prod = READ_ONCE(rxs->req_prod);
+
+	BACK_RING_ATTACH(&queue->rx, rxs, rsp_prod, XEN_PAGE_SIZE);
+
+	err = -EIO;
+	if (req_prod - rsp_prod > RING_SIZE(&queue->rx))
+		goto err;
 
 	return 0;
 
 err:
-	xenvif_unmap_frontend_rings(vif);
+	xenvif_unmap_frontend_data_rings(queue);
 	return err;
 }
 
-void xenvif_stop_queue(struct xenvif *vif)
+static bool xenvif_dealloc_kthread_should_stop(struct xenvif_queue *queue)
 {
-	if (!vif->can_queue)
-		return;
-
-	netif_stop_queue(vif->dev);
+	/* Dealloc thread must remain running until all inflight
+	 * packets complete.
+	 */
+	return kthread_should_stop() &&
+		!atomic_read(&queue->inflight_packets);
 }
 
-static void xenvif_start_queue(struct xenvif *vif)
+int xenvif_dealloc_kthread(void *data)
 {
-	if (xenvif_schedulable(vif))
-		netif_wake_queue(vif->dev);
-}
+	struct xenvif_queue *queue = data;
 
-int xenvif_kthread(void *data)
-{
-	struct xenvif *vif = data;
-	struct sk_buff *skb;
-
-	while (!kthread_should_stop()) {
-		wait_event_interruptible(vif->wq,
-					 rx_work_todo(vif) ||
-					 kthread_should_stop());
-		if (kthread_should_stop())
+	for (;;) {
+		wait_event_interruptible(queue->dealloc_wq,
+					 tx_dealloc_work_todo(queue) ||
+					 xenvif_dealloc_kthread_should_stop(queue));
+		if (xenvif_dealloc_kthread_should_stop(queue))
 			break;
 
-		if (!skb_queue_empty(&vif->rx_queue))
-			xenvif_rx_action(vif);
-
-		vif->rx_event = false;
-
-		if (skb_queue_empty(&vif->rx_queue) &&
-		    netif_queue_stopped(vif->dev))
-			xenvif_start_queue(vif);
-
+		xenvif_tx_dealloc_action(queue);
 		cond_resched();
 	}
 
-	/* Bin any remaining skbs */
-	while ((skb = skb_dequeue(&vif->rx_queue)) != NULL)
-		dev_kfree_skb(skb);
+	/* Unmap anything remaining*/
+	if (tx_dealloc_work_todo(queue))
+		xenvif_tx_dealloc_action(queue);
 
 	return 0;
+}
+
+static void make_ctrl_response(struct xenvif *vif,
+			       const struct xen_netif_ctrl_request *req,
+			       u32 status, u32 data)
+{
+	RING_IDX idx = vif->ctrl.rsp_prod_pvt;
+	struct xen_netif_ctrl_response rsp = {
+		.id = req->id,
+		.type = req->type,
+		.status = status,
+		.data = data,
+	};
+
+	*RING_GET_RESPONSE(&vif->ctrl, idx) = rsp;
+	vif->ctrl.rsp_prod_pvt = ++idx;
+}
+
+static void push_ctrl_response(struct xenvif *vif)
+{
+	int notify;
+
+	RING_PUSH_RESPONSES_AND_CHECK_NOTIFY(&vif->ctrl, notify);
+	if (notify)
+		notify_remote_via_irq(vif->ctrl_irq);
+}
+
+static void process_ctrl_request(struct xenvif *vif,
+				 const struct xen_netif_ctrl_request *req)
+{
+	u32 status = XEN_NETIF_CTRL_STATUS_NOT_SUPPORTED;
+	u32 data = 0;
+
+	switch (req->type) {
+	case XEN_NETIF_CTRL_TYPE_SET_HASH_ALGORITHM:
+		status = xenvif_set_hash_alg(vif, req->data[0]);
+		break;
+
+	case XEN_NETIF_CTRL_TYPE_GET_HASH_FLAGS:
+		status = xenvif_get_hash_flags(vif, &data);
+		break;
+
+	case XEN_NETIF_CTRL_TYPE_SET_HASH_FLAGS:
+		status = xenvif_set_hash_flags(vif, req->data[0]);
+		break;
+
+	case XEN_NETIF_CTRL_TYPE_SET_HASH_KEY:
+		status = xenvif_set_hash_key(vif, req->data[0],
+					     req->data[1]);
+		break;
+
+	case XEN_NETIF_CTRL_TYPE_GET_HASH_MAPPING_SIZE:
+		status = XEN_NETIF_CTRL_STATUS_SUCCESS;
+		data = XEN_NETBK_MAX_HASH_MAPPING_SIZE;
+		break;
+
+	case XEN_NETIF_CTRL_TYPE_SET_HASH_MAPPING_SIZE:
+		status = xenvif_set_hash_mapping_size(vif,
+						      req->data[0]);
+		break;
+
+	case XEN_NETIF_CTRL_TYPE_SET_HASH_MAPPING:
+		status = xenvif_set_hash_mapping(vif, req->data[0],
+						 req->data[1],
+						 req->data[2]);
+		break;
+
+	default:
+		break;
+	}
+
+	make_ctrl_response(vif, req, status, data);
+	push_ctrl_response(vif);
+}
+
+static void xenvif_ctrl_action(struct xenvif *vif)
+{
+	for (;;) {
+		RING_IDX req_prod, req_cons;
+
+		req_prod = vif->ctrl.sring->req_prod;
+		req_cons = vif->ctrl.req_cons;
+
+		/* Make sure we can see requests before we process them. */
+		rmb();
+
+		if (req_cons == req_prod)
+			break;
+
+		while (req_cons != req_prod) {
+			struct xen_netif_ctrl_request req;
+
+			RING_COPY_REQUEST(&vif->ctrl, req_cons, &req);
+			req_cons++;
+
+			process_ctrl_request(vif, &req);
+		}
+
+		vif->ctrl.req_cons = req_cons;
+		vif->ctrl.sring->req_event = req_cons + 1;
+	}
+}
+
+static bool xenvif_ctrl_work_todo(struct xenvif *vif)
+{
+	if (likely(RING_HAS_UNCONSUMED_REQUESTS(&vif->ctrl)))
+		return true;
+
+	return false;
+}
+
+irqreturn_t xenvif_ctrl_irq_fn(int irq, void *data)
+{
+	struct xenvif *vif = data;
+	unsigned int eoi_flag = XEN_EOI_FLAG_SPURIOUS;
+
+	while (xenvif_ctrl_work_todo(vif)) {
+		xenvif_ctrl_action(vif);
+		eoi_flag = 0;
+	}
+
+	xen_irq_lateeoi(irq, eoi_flag);
+
+	return IRQ_HANDLED;
 }
 
 static int __init netback_init(void)
@@ -1582,6 +1739,13 @@ static int __init netback_init(void)
 
 	if (!xen_domain())
 		return -ENODEV;
+
+	/* Allow as many queues as there are CPUs but max. 8 if user has not
+	 * specified a value.
+	 */
+	if (xenvif_max_queues == 0)
+		xenvif_max_queues = min_t(unsigned int, MAX_QUEUES_DEFAULT,
+					  num_online_cpus());
 
 	if (fatal_skb_slots < XEN_NETBK_LEGACY_SLOTS_MAX) {
 		pr_info("fatal_skb_slots too small (%d), bump it to XEN_NETBK_LEGACY_SLOTS_MAX (%d)\n",
@@ -1593,6 +1757,10 @@ static int __init netback_init(void)
 	if (rc)
 		goto failed_init;
 
+#ifdef CONFIG_DEBUG_FS
+	xen_netback_dbg_root = debugfs_create_dir("xen-netback", NULL);
+#endif /* CONFIG_DEBUG_FS */
+
 	return 0;
 
 failed_init:
@@ -1603,6 +1771,9 @@ module_init(netback_init);
 
 static void __exit netback_fini(void)
 {
+#ifdef CONFIG_DEBUG_FS
+	debugfs_remove_recursive(xen_netback_dbg_root);
+#endif /* CONFIG_DEBUG_FS */
 	xenvif_xenbus_fini();
 }
 module_exit(netback_fini);

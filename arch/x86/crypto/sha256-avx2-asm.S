@@ -48,8 +48,8 @@
 # This code schedules 2 blocks at a time, with 4 lanes per block
 ########################################################################
 
-#ifdef CONFIG_AS_AVX2
 #include <linux/linkage.h>
+#include <linux/cfi_types.h>
 
 ## assume buffers not aligned
 #define	VMOVDQ vmovdqu
@@ -91,15 +91,13 @@ BYTE_FLIP_MASK = %ymm13
 X_BYTE_FLIP_MASK = %xmm13 # XMM version of BYTE_FLIP_MASK
 
 NUM_BLKS = %rdx	# 3rd arg
-CTX	= %rsi  # 2nd arg
-INP	= %rdi	# 1st arg
+INP	= %rsi  # 2nd arg
+CTX	= %rdi	# 1st arg
 c	= %ecx
 d	= %r8d
 e       = %edx	# clobbers NUM_BLKS
-y3	= %edi	# clobbers INP
+y3	= %esi	# clobbers INP
 
-
-TBL	= %rbp
 SRND	= CTX	# SRND is same register as CTX
 
 a = %eax
@@ -120,15 +118,13 @@ _XMM_SAVE_SIZE	= 0
 _INP_END_SIZE	= 8
 _INP_SIZE	= 8
 _CTX_SIZE	= 8
-_RSP_SIZE	= 8
 
 _XFER		= 0
 _XMM_SAVE	= _XFER     + _XFER_SIZE
 _INP_END	= _XMM_SAVE + _XMM_SAVE_SIZE
 _INP		= _INP_END  + _INP_END_SIZE
 _CTX		= _INP      + _INP_SIZE
-_RSP		= _CTX      + _CTX_SIZE
-STACK_SIZE	= _RSP      + _RSP_SIZE
+STACK_SIZE	= _CTX      + _CTX_SIZE
 
 # rotate_Xs
 # Rotate values of symbols X0...X3
@@ -522,34 +518,32 @@ STACK_SIZE	= _RSP      + _RSP_SIZE
 .endm
 
 ########################################################################
-## void sha256_transform_rorx(void *input_data, UINT32 digest[8], UINT64 num_blks)
-## arg 1 : pointer to input data
-## arg 2 : pointer to digest
+## void sha256_transform_rorx(struct sha256_state *state, const u8 *data, int blocks)
+## arg 1 : pointer to state
+## arg 2 : pointer to input data
 ## arg 3 : Num blocks
 ########################################################################
 .text
-ENTRY(sha256_transform_rorx)
-.align 32
+SYM_TYPED_FUNC_START(sha256_transform_rorx)
 	pushq	%rbx
-	pushq	%rbp
 	pushq	%r12
 	pushq	%r13
 	pushq	%r14
 	pushq	%r15
 
-	mov	%rsp, %rax
+	push	%rbp
+	mov	%rsp, %rbp
+
 	subq	$STACK_SIZE, %rsp
 	and	$-32, %rsp	# align rsp to 32 byte boundary
-	mov	%rax, _RSP(%rsp)
-
 
 	shl	$6, NUM_BLKS	# convert to bytes
-	jz	done_hash
+	jz	.Ldone_hash
 	lea	-64(INP, NUM_BLKS), NUM_BLKS # pointer to last block
 	mov	NUM_BLKS, _INP_END(%rsp)
 
 	cmp	NUM_BLKS, INP
-	je	only_one_block
+	je	.Lonly_one_block
 
 	## load initial digest
 	mov	(CTX), a
@@ -567,9 +561,7 @@ ENTRY(sha256_transform_rorx)
 
 	mov	CTX, _CTX(%rsp)
 
-loop0:
-	lea     K256(%rip), TBL
-
+.Lloop0:
 	## Load first 16 dwords from two blocks
 	VMOVDQ	0*32(INP),XTMP0
 	VMOVDQ	1*32(INP),XTMP1
@@ -588,7 +580,7 @@ loop0:
 	vperm2i128	$0x20, XTMP3, XTMP1, X2
 	vperm2i128	$0x31, XTMP3, XTMP1, X3
 
-last_block_enter:
+.Llast_block_enter:
 	add	$64, INP
 	mov	INP, _INP(%rsp)
 
@@ -596,33 +588,40 @@ last_block_enter:
 	xor	SRND, SRND
 
 .align 16
-loop1:
-	vpaddd	0*32(TBL, SRND), X0, XFER
+.Lloop1:
+	leaq	K256+0*32(%rip), INP		## reuse INP as scratch reg
+	vpaddd	(INP, SRND), X0, XFER
 	vmovdqa XFER, 0*32+_XFER(%rsp, SRND)
 	FOUR_ROUNDS_AND_SCHED	_XFER + 0*32
 
-	vpaddd	1*32(TBL, SRND), X0, XFER
+	leaq	K256+1*32(%rip), INP
+	vpaddd	(INP, SRND), X0, XFER
 	vmovdqa XFER, 1*32+_XFER(%rsp, SRND)
 	FOUR_ROUNDS_AND_SCHED	_XFER + 1*32
 
-	vpaddd	2*32(TBL, SRND), X0, XFER
+	leaq	K256+2*32(%rip), INP
+	vpaddd	(INP, SRND), X0, XFER
 	vmovdqa XFER, 2*32+_XFER(%rsp, SRND)
 	FOUR_ROUNDS_AND_SCHED	_XFER + 2*32
 
-	vpaddd	3*32(TBL, SRND), X0, XFER
+	leaq	K256+3*32(%rip), INP
+	vpaddd	(INP, SRND), X0, XFER
 	vmovdqa XFER, 3*32+_XFER(%rsp, SRND)
 	FOUR_ROUNDS_AND_SCHED	_XFER + 3*32
 
 	add	$4*32, SRND
 	cmp	$3*4*32, SRND
-	jb	loop1
+	jb	.Lloop1
 
-loop2:
+.Lloop2:
 	## Do last 16 rounds with no scheduling
-	vpaddd	0*32(TBL, SRND), X0, XFER
+	leaq	K256+0*32(%rip), INP
+	vpaddd	(INP, SRND), X0, XFER
 	vmovdqa XFER, 0*32+_XFER(%rsp, SRND)
 	DO_4ROUNDS	_XFER + 0*32
-	vpaddd	1*32(TBL, SRND), X1, XFER
+
+	leaq	K256+1*32(%rip), INP
+	vpaddd	(INP, SRND), X1, XFER
 	vmovdqa XFER, 1*32+_XFER(%rsp, SRND)
 	DO_4ROUNDS	_XFER + 1*32
 	add	$2*32, SRND
@@ -631,7 +630,7 @@ loop2:
 	vmovdqa	X3, X1
 
 	cmp	$4*4*32, SRND
-	jb	loop2
+	jb	.Lloop2
 
 	mov	_CTX(%rsp), CTX
 	mov	_INP(%rsp), INP
@@ -646,17 +645,17 @@ loop2:
 	addm    (4*7)(CTX),h
 
 	cmp	_INP_END(%rsp), INP
-	ja	done_hash
+	ja	.Ldone_hash
 
 	#### Do second block using previously scheduled results
 	xor	SRND, SRND
 .align 16
-loop3:
+.Lloop3:
 	DO_4ROUNDS	 _XFER + 0*32 + 16
 	DO_4ROUNDS	 _XFER + 1*32 + 16
 	add	$2*32, SRND
 	cmp	$4*4*32, SRND
-	jb	loop3
+	jb	.Lloop3
 
 	mov	_CTX(%rsp), CTX
 	mov	_INP(%rsp), INP
@@ -672,13 +671,10 @@ loop3:
 	addm    (4*7)(CTX),h
 
 	cmp	_INP_END(%rsp), INP
-	jb	loop0
-	ja	done_hash
+	jb	.Lloop0
+	ja	.Ldone_hash
 
-do_last_block:
-	#### do last block
-	lea	K256(%rip), TBL
-
+.Ldo_last_block:
 	VMOVDQ	0*16(INP),XWORD0
 	VMOVDQ	1*16(INP),XWORD1
 	VMOVDQ	2*16(INP),XWORD2
@@ -689,9 +685,9 @@ do_last_block:
 	vpshufb	X_BYTE_FLIP_MASK, XWORD2, XWORD2
 	vpshufb	X_BYTE_FLIP_MASK, XWORD3, XWORD3
 
-	jmp	last_block_enter
+	jmp	.Llast_block_enter
 
-only_one_block:
+.Lonly_one_block:
 
 	## load initial digest
 	mov	(4*0)(CTX),a
@@ -708,22 +704,22 @@ only_one_block:
 	vmovdqa	_SHUF_DC00(%rip), SHUF_DC00
 
 	mov	CTX, _CTX(%rsp)
-	jmp	do_last_block
+	jmp	.Ldo_last_block
 
-done_hash:
+.Ldone_hash:
 
-	mov	_RSP(%rsp), %rsp
+	mov	%rbp, %rsp
+	pop	%rbp
 
 	popq	%r15
 	popq	%r14
 	popq	%r13
 	popq	%r12
-	popq	%rbp
 	popq	%rbx
-	ret
-ENDPROC(sha256_transform_rorx)
+	RET
+SYM_FUNC_END(sha256_transform_rorx)
 
-.data
+.section	.rodata.cst512.K256, "aM", @progbits, 512
 .align 64
 K256:
 	.long	0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5
@@ -759,14 +755,19 @@ K256:
 	.long	0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
 	.long	0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
 
+.section	.rodata.cst32.PSHUFFLE_BYTE_FLIP_MASK, "aM", @progbits, 32
+.align 32
 PSHUFFLE_BYTE_FLIP_MASK:
 	.octa 0x0c0d0e0f08090a0b0405060700010203,0x0c0d0e0f08090a0b0405060700010203
 
 # shuffle xBxA -> 00BA
+.section	.rodata.cst32._SHUF_00BA, "aM", @progbits, 32
+.align 32
 _SHUF_00BA:
 	.octa 0xFFFFFFFFFFFFFFFF0b0a090803020100,0xFFFFFFFFFFFFFFFF0b0a090803020100
 
 # shuffle xDxC -> DC00
+.section	.rodata.cst32._SHUF_DC00, "aM", @progbits, 32
+.align 32
 _SHUF_DC00:
 	.octa 0x0b0a090803020100FFFFFFFFFFFFFFFF,0x0b0a090803020100FFFFFFFFFFFFFFFF
-#endif

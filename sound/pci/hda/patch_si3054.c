@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Universal Interface for Intel High Definition Audio Codec
  *
@@ -5,21 +6,6 @@
  *
  * Copyright (c) 2005 Sasha Khapyorsky <sashak@alsa-project.org>
  *                    Takashi Iwai <tiwai@suse.de>
- *
- *
- *  This driver is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This driver is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <linux/init.h>
@@ -27,7 +13,7 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <sound/core.h>
-#include "hda_codec.h"
+#include <sound/hda_codec.h>
 #include "hda_local.h"
 
 /* si3054 verbs */
@@ -83,7 +69,6 @@
 
 struct si3054_spec {
 	unsigned international;
-	struct hda_pcm pcm;
 };
 
 
@@ -170,8 +155,8 @@ static int si3054_pcm_open(struct hda_pcm_stream *hinfo,
 			   struct hda_codec *codec,
 			    struct snd_pcm_substream *substream)
 {
-	static unsigned int rates[] = { 8000, 9600, 16000 };
-	static struct snd_pcm_hw_constraint_list hw_constraints_rates = {
+	static const unsigned int rates[] = { 8000, 9600, 16000 };
+	static const struct snd_pcm_hw_constraint_list hw_constraints_rates = {
 		.count = ARRAY_SIZE(rates),
 		.list = rates,
 		.mask = 0,
@@ -199,15 +184,15 @@ static const struct hda_pcm_stream si3054_pcm = {
 
 static int si3054_build_pcms(struct hda_codec *codec)
 {
-	struct si3054_spec *spec = codec->spec;
-	struct hda_pcm *info = &spec->pcm;
-	codec->num_pcms = 1;
-	codec->pcm_info = info;
-	info->name = "Si3054 Modem";
+	struct hda_pcm *info;
+
+	info = snd_hda_codec_pcm_new(codec, "Si3054 Modem");
+	if (!info)
+		return -ENOMEM;
 	info->stream[SNDRV_PCM_STREAM_PLAYBACK] = si3054_pcm;
 	info->stream[SNDRV_PCM_STREAM_CAPTURE]  = si3054_pcm;
-	info->stream[SNDRV_PCM_STREAM_PLAYBACK].nid = codec->mfg;
-	info->stream[SNDRV_PCM_STREAM_CAPTURE].nid = codec->mfg;
+	info->stream[SNDRV_PCM_STREAM_PLAYBACK].nid = codec->core.mfg;
+	info->stream[SNDRV_PCM_STREAM_CAPTURE].nid = codec->core.mfg;
 	info->pcm_type = HDA_PCM_TYPE_MODEM;
 	return 0;
 }
@@ -223,8 +208,12 @@ static int si3054_init(struct hda_codec *codec)
 	unsigned wait_count;
 	u16 val;
 
+	if (snd_hdac_regmap_add_vendor_verb(&codec->core,
+					    SI3054_VERB_WRITE_NODE))
+		return -ENOMEM;
+
 	snd_hda_codec_write(codec, AC_NODE_ROOT, 0, AC_VERB_SET_CODEC_RESET, 0);
-	snd_hda_codec_write(codec, codec->mfg, 0, AC_VERB_SET_STREAM_FORMAT, 0);
+	snd_hda_codec_write(codec, codec->core.mfg, 0, AC_VERB_SET_STREAM_FORMAT, 0);
 	SET_REG(codec, SI3054_LINE_RATE, 9600);
 	SET_REG(codec, SI3054_LINE_LEVEL, SI3054_DTAG_MASK|SI3054_ATAG_MASK);
 	SET_REG(codec, SI3054_EXTENDED_MID, 0);
@@ -236,7 +225,7 @@ static int si3054_init(struct hda_codec *codec)
 	} while ((val & SI3054_MEI_READY) != SI3054_MEI_READY && wait_count--);
 
 	if((val&SI3054_MEI_READY) != SI3054_MEI_READY) {
-		snd_printk(KERN_ERR "si3054: cannot initialize. EXT MID = %04x\n", val);
+		codec_err(codec, "si3054: cannot initialize. EXT MID = %04x\n", val);
 		/* let's pray that this is no fatal error */
 		/* return -EACCES; */
 	}
@@ -247,7 +236,8 @@ static int si3054_init(struct hda_codec *codec)
 	SET_REG(codec, SI3054_LINE_CFG1,0x200);
 
 	if((GET_REG(codec,SI3054_LINE_STATUS) & (1<<6)) == 0) {
-		snd_printd("Link Frame Detect(FDT) is not ready (line status: %04x)\n",
+		codec_dbg(codec,
+			  "Link Frame Detect(FDT) is not ready (line status: %04x)\n",
 				GET_REG(codec,SI3054_LINE_STATUS));
 	}
 
@@ -285,53 +275,30 @@ static int patch_si3054(struct hda_codec *codec)
 /*
  * patch entries
  */
-static const struct hda_codec_preset snd_hda_preset_si3054[] = {
- 	{ .id = 0x163c3055, .name = "Si3054", .patch = patch_si3054 },
- 	{ .id = 0x163c3155, .name = "Si3054", .patch = patch_si3054 },
- 	{ .id = 0x11c13026, .name = "Si3054", .patch = patch_si3054 },
- 	{ .id = 0x11c13055, .name = "Si3054", .patch = patch_si3054 },
- 	{ .id = 0x11c13155, .name = "Si3054", .patch = patch_si3054 },
- 	{ .id = 0x10573055, .name = "Si3054", .patch = patch_si3054 },
- 	{ .id = 0x10573057, .name = "Si3054", .patch = patch_si3054 },
- 	{ .id = 0x10573155, .name = "Si3054", .patch = patch_si3054 },
+static const struct hda_device_id snd_hda_id_si3054[] = {
+	HDA_CODEC_ENTRY(0x163c3055, "Si3054", patch_si3054),
+	HDA_CODEC_ENTRY(0x163c3155, "Si3054", patch_si3054),
+	HDA_CODEC_ENTRY(0x11c13026, "Si3054", patch_si3054),
+	HDA_CODEC_ENTRY(0x11c13055, "Si3054", patch_si3054),
+	HDA_CODEC_ENTRY(0x11c13155, "Si3054", patch_si3054),
+	HDA_CODEC_ENTRY(0x10573055, "Si3054", patch_si3054),
+	HDA_CODEC_ENTRY(0x10573057, "Si3054", patch_si3054),
+	HDA_CODEC_ENTRY(0x10573155, "Si3054", patch_si3054),
 	/* VIA HDA on Clevo m540 */
-	{ .id = 0x11063288, .name = "Si3054", .patch = patch_si3054 },
+	HDA_CODEC_ENTRY(0x11063288, "Si3054", patch_si3054),
 	/* Asus A8J Modem (SM56) */
-	{ .id = 0x15433155, .name = "Si3054", .patch = patch_si3054 },
+	HDA_CODEC_ENTRY(0x15433155, "Si3054", patch_si3054),
 	/* LG LW20 modem */
-	{ .id = 0x18540018, .name = "Si3054", .patch = patch_si3054 },
+	HDA_CODEC_ENTRY(0x18540018, "Si3054", patch_si3054),
 	{}
 };
-
-MODULE_ALIAS("snd-hda-codec-id:163c3055");
-MODULE_ALIAS("snd-hda-codec-id:163c3155");
-MODULE_ALIAS("snd-hda-codec-id:11c13026");
-MODULE_ALIAS("snd-hda-codec-id:11c13055");
-MODULE_ALIAS("snd-hda-codec-id:11c13155");
-MODULE_ALIAS("snd-hda-codec-id:10573055");
-MODULE_ALIAS("snd-hda-codec-id:10573057");
-MODULE_ALIAS("snd-hda-codec-id:10573155");
-MODULE_ALIAS("snd-hda-codec-id:11063288");
-MODULE_ALIAS("snd-hda-codec-id:15433155");
-MODULE_ALIAS("snd-hda-codec-id:18540018");
+MODULE_DEVICE_TABLE(hdaudio, snd_hda_id_si3054);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Si3054 HD-audio modem codec");
 
-static struct hda_codec_preset_list si3054_list = {
-	.preset = snd_hda_preset_si3054,
-	.owner = THIS_MODULE,
+static struct hda_codec_driver si3054_driver = {
+	.id = snd_hda_id_si3054,
 };
 
-static int __init patch_si3054_init(void)
-{
-	return snd_hda_add_codec_preset(&si3054_list);
-}
-
-static void __exit patch_si3054_exit(void)
-{
-	snd_hda_delete_codec_preset(&si3054_list);
-}
-
-module_init(patch_si3054_init)
-module_exit(patch_si3054_exit)
+module_hda_codec_driver(si3054_driver);

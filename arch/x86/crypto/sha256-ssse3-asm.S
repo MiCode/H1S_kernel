@@ -47,6 +47,7 @@
 ########################################################################
 
 #include <linux/linkage.h>
+#include <linux/cfi_types.h>
 
 ## assume buffers not aligned
 #define    MOVDQ movdqu
@@ -88,14 +89,14 @@ SHUF_DC00 = %xmm11      # shuffle xDxC -> DC00
 BYTE_FLIP_MASK = %xmm12
 
 NUM_BLKS = %rdx   # 3rd arg
-CTX = %rsi        # 2nd arg
-INP = %rdi        # 1st arg
+INP = %rsi        # 2nd arg
+CTX = %rdi        # 1st arg
 
-SRND = %rdi       # clobbers INP
+SRND = %rsi       # clobbers INP
 c = %ecx
 d = %r8d
 e = %edx
-TBL = %rbp
+TBL = %r12
 a = %eax
 b = %ebx
 
@@ -347,27 +348,28 @@ a = TMP_
 .endm
 
 ########################################################################
-## void sha256_transform_ssse3(void *input_data, UINT32 digest[8], UINT64 num_blks)
-## arg 1 : pointer to input data
-## arg 2 : pointer to digest
+## void sha256_transform_ssse3(struct sha256_state *state, const u8 *data,
+##			       int blocks);
+## arg 1 : pointer to state
+##	   (struct sha256_state is assumed to begin with u32 state[8])
+## arg 2 : pointer to input data
 ## arg 3 : Num blocks
 ########################################################################
 .text
-ENTRY(sha256_transform_ssse3)
-.align 32
+SYM_TYPED_FUNC_START(sha256_transform_ssse3)
 	pushq   %rbx
-	pushq   %rbp
+	pushq   %r12
 	pushq   %r13
 	pushq   %r14
 	pushq   %r15
-	pushq   %r12
+	pushq   %rbp
+	mov	%rsp, %rbp
 
-	mov	%rsp, %r12
 	subq    $STACK_SIZE, %rsp
 	and	$~15, %rsp
 
 	shl     $6, NUM_BLKS		 # convert to bytes
-	jz      done_hash
+	jz      .Ldone_hash
 	add     INP, NUM_BLKS
 	mov     NUM_BLKS, _INP_END(%rsp) # pointer to end of data
 
@@ -385,7 +387,7 @@ ENTRY(sha256_transform_ssse3)
 	movdqa  _SHUF_00BA(%rip), SHUF_00BA
 	movdqa  _SHUF_DC00(%rip), SHUF_DC00
 
-loop0:
+.Lloop0:
 	lea     K256(%rip), TBL
 
 	## byte swap first 16 dwords
@@ -399,7 +401,7 @@ loop0:
 	## schedule 48 input dwords, by doing 3 rounds of 16 each
 	mov     $3, SRND
 .align 16
-loop1:
+.Lloop1:
 	movdqa  (TBL), XFER
 	paddd   X0, XFER
 	movdqa  XFER, _XFER(%rsp)
@@ -422,10 +424,10 @@ loop1:
 	FOUR_ROUNDS_AND_SCHED
 
 	sub     $1, SRND
-	jne     loop1
+	jne     .Lloop1
 
 	mov     $2, SRND
-loop2:
+.Lloop2:
 	paddd   (TBL), X0
 	movdqa  X0, _XFER(%rsp)
 	DO_ROUND        0
@@ -444,7 +446,7 @@ loop2:
 	movdqa  X3, X1
 
 	sub     $1, SRND
-	jne     loop2
+	jne     .Lloop2
 
 	addm    (4*0)(CTX),a
 	addm    (4*1)(CTX),b
@@ -458,23 +460,22 @@ loop2:
 	mov     _INP(%rsp), INP
 	add     $64, INP
 	cmp     _INP_END(%rsp), INP
-	jne     loop0
+	jne     .Lloop0
 
-done_hash:
+.Ldone_hash:
 
-	mov	%r12, %rsp
-
-	popq    %r12
+	mov	%rbp, %rsp
+	popq	%rbp
 	popq    %r15
 	popq    %r14
 	popq    %r13
-	popq    %rbp
+	popq    %r12
 	popq    %rbx
 
-	ret
-ENDPROC(sha256_transform_ssse3)
+	RET
+SYM_FUNC_END(sha256_transform_ssse3)
 
-.data
+.section	.rodata.cst256.K256, "aM", @progbits, 256
 .align 64
 K256:
         .long 0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5
@@ -494,13 +495,19 @@ K256:
         .long 0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208
         .long 0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
 
+.section	.rodata.cst16.PSHUFFLE_BYTE_FLIP_MASK, "aM", @progbits, 16
+.align 16
 PSHUFFLE_BYTE_FLIP_MASK:
 	.octa 0x0c0d0e0f08090a0b0405060700010203
 
+.section	.rodata.cst16._SHUF_00BA, "aM", @progbits, 16
+.align 16
 # shuffle xBxA -> 00BA
 _SHUF_00BA:
 	.octa 0xFFFFFFFFFFFFFFFF0b0a090803020100
 
+.section	.rodata.cst16._SHUF_DC00, "aM", @progbits, 16
+.align 16
 # shuffle xDxC -> DC00
 _SHUF_DC00:
 	.octa 0x0b0a090803020100FFFFFFFFFFFFFFFF

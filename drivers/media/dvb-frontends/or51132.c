@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *    Support for OR51132 (pcHDTV HD-3000) - VSB/QAM
- *
  *
  *    Copyright (C) 2007 Trent Piepho <xyzzy@speakeasy.org>
  *
@@ -8,21 +8,6 @@
  *
  *    Based on code from Jack Kelliher (kelliher@xmission.com)
  *                           Copyright (C) 2002 & pcHDTV, inc.
- *
- *    This program is free software; you can redistribute it and/or modify
- *    it under the terms of the GNU General Public License as published by
- *    the Free Software Foundation; either version 2 of the License, or
- *    (at your option) any later version.
- *
- *    This program is distributed in the hope that it will be useful,
- *    but WITHOUT ANY WARRANTY; without even the implied warranty of
- *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU General Public License for more details.
- *
- *    You should have received a copy of the GNU General Public License
- *    along with this program; if not, write to the Free Software
- *    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
 */
 
 /*
@@ -42,8 +27,8 @@
 #include <linux/slab.h>
 #include <asm/byteorder.h>
 
-#include "dvb_math.h"
-#include "dvb_frontend.h"
+#include <linux/int_log.h>
+#include <media/dvb_frontend.h>
 #include "or51132.h"
 
 static int debug;
@@ -63,7 +48,7 @@ struct or51132_state
 	struct dvb_frontend frontend;
 
 	/* Demodulator private data */
-	fe_modulation_t current_modulation;
+	enum fe_modulation current_modulation;
 	u32 snr; /* Result of last SNR calculation */
 
 	/* Tuner private data */
@@ -137,7 +122,7 @@ static int or51132_load_firmware (struct dvb_frontend* fe, const struct firmware
 	u32 firmwareAsize, firmwareBsize;
 	int i,ret;
 
-	dprintk("Firmware is %Zd bytes\n",fw->size);
+	dprintk("Firmware is %zd bytes\n",fw->size);
 
 	/* Get size of firmware A and B */
 	firmwareAsize = le32_to_cpu(*((__le32*)fw->data));
@@ -292,7 +277,7 @@ static int or51132_setmode(struct dvb_frontend* fe)
 #define MOD_FWCLASS_UNKNOWN	0
 #define MOD_FWCLASS_VSB		1
 #define MOD_FWCLASS_QAM		2
-static int modulation_fw_class(fe_modulation_t modulation)
+static int modulation_fw_class(enum fe_modulation modulation)
 {
 	switch(modulation) {
 	case VSB_8:
@@ -342,15 +327,13 @@ static int or51132_set_parameters(struct dvb_frontend *fe)
 		       fwname);
 		ret = request_firmware(&fw, fwname, state->i2c->dev.parent);
 		if (ret) {
-			printk(KERN_WARNING "or51132: No firmware up"
-			       "loaded(timeout or file not found?)\n");
+			printk(KERN_WARNING "or51132: No firmware uploaded(timeout or file not found?)\n");
 			return ret;
 		}
 		ret = or51132_load_firmware(fe, fw);
 		release_firmware(fw);
 		if (ret) {
-			printk(KERN_WARNING "or51132: Writing firmware to "
-			       "device failed!\n");
+			printk(KERN_WARNING "or51132: Writing firmware to device failed!\n");
 			return ret;
 		}
 		printk("or51132: Firmware upload complete.\n");
@@ -375,9 +358,9 @@ static int or51132_set_parameters(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int or51132_get_parameters(struct dvb_frontend* fe)
+static int or51132_get_parameters(struct dvb_frontend* fe,
+				  struct dtv_frontend_properties *p)
 {
-	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
 	struct or51132_state* state = fe->demodulator_priv;
 	int status;
 	int retry = 1;
@@ -415,7 +398,7 @@ start:
 	return 0;
 }
 
-static int or51132_read_status(struct dvb_frontend* fe, fe_status_t* status)
+static int or51132_read_status(struct dvb_frontend *fe, enum fe_status *status)
 {
 	struct or51132_state* state = fe->demodulator_priv;
 	int reg;
@@ -499,8 +482,8 @@ start:
 	switch (reg&0xff) {
 	case 0x06:
 		if (reg & 0x1000) usK = 3 << 24;
-		/* Fall through to QAM64 case */
-	case 0x43:
+		fallthrough;
+	case 0x43: /* QAM64 */
 		c = 150204167;
 		break;
 	case 0x45:
@@ -561,7 +544,7 @@ static void or51132_release(struct dvb_frontend* fe)
 	kfree(state);
 }
 
-static struct dvb_frontend_ops or51132_ops;
+static const struct dvb_frontend_ops or51132_ops;
 
 struct dvb_frontend* or51132_attach(const struct or51132_config* config,
 				    struct i2c_adapter* i2c)
@@ -585,13 +568,13 @@ struct dvb_frontend* or51132_attach(const struct or51132_config* config,
 	return &state->frontend;
 }
 
-static struct dvb_frontend_ops or51132_ops = {
+static const struct dvb_frontend_ops or51132_ops = {
 	.delsys = { SYS_ATSC, SYS_DVBC_ANNEX_B },
 	.info = {
 		.name			= "Oren OR51132 VSB/QAM Frontend",
-		.frequency_min		= 44000000,
-		.frequency_max		= 958000000,
-		.frequency_stepsize	= 166666,
+		.frequency_min_hz	=  44 * MHz,
+		.frequency_max_hz	= 958 * MHz,
+		.frequency_stepsize_hz	= 166666,
 		.caps = FE_CAN_FEC_1_2 | FE_CAN_FEC_2_3 | FE_CAN_FEC_3_4 |
 			FE_CAN_FEC_5_6 | FE_CAN_FEC_7_8 | FE_CAN_FEC_AUTO |
 			FE_CAN_QAM_64 | FE_CAN_QAM_256 | FE_CAN_QAM_AUTO |
@@ -622,10 +605,4 @@ MODULE_AUTHOR("Kirk Lapray");
 MODULE_AUTHOR("Trent Piepho");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(or51132_attach);
-
-/*
- * Local variables:
- * c-basic-offset: 8
- * End:
- */
+EXPORT_SYMBOL_GPL(or51132_attach);

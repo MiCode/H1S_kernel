@@ -1,22 +1,6 @@
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
  * mount.c - operations for initializing and mounting configfs.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  *
  * Based on sysfs:
  * 	sysfs is Copyright (C) 2001, 2002, 2003 Patrick Mochel
@@ -27,6 +11,7 @@
 #include <linux/fs.h>
 #include <linux/module.h>
 #include <linux/mount.h>
+#include <linux/fs_context.h>
 #include <linux/pagemap.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -41,9 +26,18 @@ static struct vfsmount *configfs_mount = NULL;
 struct kmem_cache *configfs_dir_cachep;
 static int configfs_mnt_count = 0;
 
+
+static void configfs_free_inode(struct inode *inode)
+{
+	if (S_ISLNK(inode->i_mode))
+		kfree(inode->i_link);
+	free_inode_nonrcu(inode);
+}
+
 static const struct super_operations configfs_ops = {
 	.statfs		= simple_statfs,
 	.drop_inode	= generic_delete_inode,
+	.free_inode	= configfs_free_inode,
 };
 
 static struct config_group configfs_root_group = {
@@ -66,13 +60,13 @@ static struct configfs_dirent configfs_root = {
 	.s_iattr	= NULL,
 };
 
-static int configfs_fill_super(struct super_block *sb, void *data, int silent)
+static int configfs_fill_super(struct super_block *sb, struct fs_context *fc)
 {
 	struct inode *inode;
 	struct dentry *root;
 
-	sb->s_blocksize = PAGE_CACHE_SIZE;
-	sb->s_blocksize_bits = PAGE_CACHE_SHIFT;
+	sb->s_blocksize = PAGE_SIZE;
+	sb->s_blocksize_bits = PAGE_SHIFT;
 	sb->s_magic = CONFIGFS_MAGIC;
 	sb->s_op = &configfs_ops;
 	sb->s_time_gran = 1;
@@ -85,7 +79,7 @@ static int configfs_fill_super(struct super_block *sb, void *data, int silent)
 		/* directory inodes start off with i_nlink == 2 (for "." entry) */
 		inc_nlink(inode);
 	} else {
-		pr_debug("configfs: could not get root inode\n");
+		pr_debug("could not get root inode\n");
 		return -ENOMEM;
 	}
 
@@ -102,16 +96,25 @@ static int configfs_fill_super(struct super_block *sb, void *data, int silent)
 	return 0;
 }
 
-static struct dentry *configfs_do_mount(struct file_system_type *fs_type,
-	int flags, const char *dev_name, void *data)
+static int configfs_get_tree(struct fs_context *fc)
 {
-	return mount_single(fs_type, flags, data, configfs_fill_super);
+	return get_tree_single(fc, configfs_fill_super);
+}
+
+static const struct fs_context_operations configfs_context_ops = {
+	.get_tree	= configfs_get_tree,
+};
+
+static int configfs_init_fs_context(struct fs_context *fc)
+{
+	fc->ops = &configfs_context_ops;
+	return 0;
 }
 
 static struct file_system_type configfs_fs_type = {
 	.owner		= THIS_MODULE,
 	.name		= "configfs",
-	.mount		= configfs_do_mount,
+	.init_fs_context = configfs_init_fs_context,
 	.kill_sb	= kill_litter_super,
 };
 MODULE_ALIAS_FS("configfs");
@@ -129,8 +132,6 @@ void configfs_release_fs(void)
 }
 
 
-static struct kobject *config_kobj;
-
 static int __init configfs_init(void)
 {
 	int err = -ENOMEM;
@@ -141,24 +142,18 @@ static int __init configfs_init(void)
 	if (!configfs_dir_cachep)
 		goto out;
 
-	config_kobj = kobject_create_and_add("config", kernel_kobj);
-	if (!config_kobj)
-		goto out2;
-
-	err = configfs_inode_init();
+	err = sysfs_create_mount_point(kernel_kobj, "config");
 	if (err)
-		goto out3;
+		goto out2;
 
 	err = register_filesystem(&configfs_fs_type);
 	if (err)
-		goto out4;
+		goto out3;
 
 	return 0;
-out4:
-	printk(KERN_ERR "configfs: Unable to register filesystem!\n");
-	configfs_inode_exit();
 out3:
-	kobject_put(config_kobj);
+	pr_err("Unable to register filesystem!\n");
+	sysfs_remove_mount_point(kernel_kobj, "config");
 out2:
 	kmem_cache_destroy(configfs_dir_cachep);
 	configfs_dir_cachep = NULL;
@@ -169,10 +164,9 @@ out:
 static void __exit configfs_exit(void)
 {
 	unregister_filesystem(&configfs_fs_type);
-	kobject_put(config_kobj);
+	sysfs_remove_mount_point(kernel_kobj, "config");
 	kmem_cache_destroy(configfs_dir_cachep);
 	configfs_dir_cachep = NULL;
-	configfs_inode_exit();
 }
 
 MODULE_AUTHOR("Oracle");
@@ -180,5 +174,5 @@ MODULE_LICENSE("GPL");
 MODULE_VERSION("0.0.2");
 MODULE_DESCRIPTION("Simple RAM filesystem for user driven kernel subsystem configuration.");
 
-module_init(configfs_init);
+core_initcall(configfs_init);
 module_exit(configfs_exit);

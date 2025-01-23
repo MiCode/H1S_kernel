@@ -31,7 +31,6 @@
 #include <linux/spinlock.h>
 #include <linux/delay.h>
 #include <linux/ioport.h>
-#include <linux/pci_ids.h>
 
 #include <asm/irq.h>
 #include <asm/io.h>
@@ -40,7 +39,6 @@
 MODULE_AUTHOR("Laurent Canet <canetl@esiee.fr>, Thibaut Varene <varenet@parisc-linux.org>, Helge Deller <deller@gmx.de>");
 MODULE_DESCRIPTION("HP GSC PS2 port driver");
 MODULE_LICENSE("GPL");
-MODULE_DEVICE_TABLE(parisc, gscps2_device_tbl);
 
 #define PFX "gscps2.c: "
 
@@ -93,7 +91,7 @@ struct gscps2port {
 	struct parisc_device *padev;
 	struct serio *port;
 	spinlock_t lock;
-	char *addr;
+	char __iomem *addr;
 	u8 act, append; /* position in buffer[] */
 	struct {
 		u8 data;
@@ -116,7 +114,7 @@ struct gscps2port {
  * wait_TBE() - wait for Transmit Buffer Empty
  */
 
-static int wait_TBE(char *addr)
+static int wait_TBE(char __iomem *addr)
 {
 	int timeout = 25000; /* device is expected to react within 250 msec */
 	while (gscps2_readb_status(addr) & GSC_STAT_TBNE) {
@@ -148,14 +146,14 @@ static void gscps2_flush(struct gscps2port *ps2port)
 static inline int gscps2_writeb_output(struct gscps2port *ps2port, u8 data)
 {
 	unsigned long flags;
-	char *addr = ps2port->addr;
+	char __iomem *addr = ps2port->addr;
 
 	if (!wait_TBE(addr)) {
 		printk(KERN_DEBUG PFX "timeout - could not write byte %#x\n", data);
 		return 0;
 	}
 
-	while (gscps2_readb_status(ps2port->addr) & GSC_STAT_RBNE)
+	while (gscps2_readb_status(addr) & GSC_STAT_RBNE)
 		/* wait */;
 
 	spin_lock_irqsave(&ps2port->lock, flags);
@@ -202,13 +200,12 @@ static void gscps2_enable(struct gscps2port *ps2port, int enable)
 
 static void gscps2_reset(struct gscps2port *ps2port)
 {
-	char *addr = ps2port->addr;
 	unsigned long flags;
 
 	/* reset the interface */
 	spin_lock_irqsave(&ps2port->lock, flags);
 	gscps2_flush(ps2port);
-	writeb(0xff, addr+GSC_RESET);
+	writeb(0xff, ps2port->addr + GSC_RESET);
 	gscps2_flush(ps2port);
 	spin_unlock_irqrestore(&ps2port->lock, flags);
 }
@@ -327,7 +324,7 @@ static void gscps2_close(struct serio *port)
  * @return: success/error report
  */
 
-static int gscps2_probe(struct parisc_device *dev)
+static int __init gscps2_probe(struct parisc_device *dev)
 {
 	struct gscps2port *ps2port;
 	struct serio *serio;
@@ -352,7 +349,11 @@ static int gscps2_probe(struct parisc_device *dev)
 
 	ps2port->port = serio;
 	ps2port->padev = dev;
-	ps2port->addr = ioremap_nocache(hpa, GSC_STATUS + 4);
+	ps2port->addr = ioremap(hpa, GSC_STATUS + 4);
+	if (!ps2port->addr) {
+		ret = -ENOMEM;
+		goto fail_nomem;
+	}
 	spin_lock_init(&ps2port->lock);
 
 	gscps2_reset(ps2port);
@@ -360,7 +361,7 @@ static int gscps2_probe(struct parisc_device *dev)
 
 	snprintf(serio->name, sizeof(serio->name), "gsc-ps2-%s",
 		 (ps2port->id == GSC_ID_KEYBOARD) ? "keyboard" : "mouse");
-	strlcpy(serio->phys, dev_name(&dev->dev), sizeof(serio->phys));
+	strscpy(serio->phys, dev_name(&dev->dev), sizeof(serio->phys));
 	serio->id.type		= SERIO_8042;
 	serio->write		= gscps2_write;
 	serio->open		= gscps2_open;
@@ -384,9 +385,9 @@ static int gscps2_probe(struct parisc_device *dev)
 		goto fail;
 #endif
 
-	printk(KERN_INFO "serio: %s port at 0x%p irq %d @ %s\n",
+	pr_info("serio: %s port at 0x%08lx irq %d @ %s\n",
 		ps2port->port->name,
-		ps2port->addr,
+		hpa,
 		ps2port->padev->irq,
 		ps2port->port->phys);
 
@@ -414,7 +415,7 @@ fail_nomem:
  * @return: success/error report
  */
 
-static int gscps2_remove(struct parisc_device *dev)
+static void __exit gscps2_remove(struct parisc_device *dev)
 {
 	struct gscps2port *ps2port = dev_get_drvdata(&dev->dev);
 
@@ -428,23 +429,23 @@ static int gscps2_remove(struct parisc_device *dev)
 #endif
 	dev_set_drvdata(&dev->dev, NULL);
 	kfree(ps2port);
-	return 0;
 }
 
 
-static struct parisc_device_id gscps2_device_tbl[] = {
+static const struct parisc_device_id gscps2_device_tbl[] __initconst = {
 	{ HPHW_FIO, HVERSION_REV_ANY_ID, HVERSION_ANY_ID, 0x00084 }, /* LASI PS/2 */
 #ifdef DINO_TESTED
 	{ HPHW_FIO, HVERSION_REV_ANY_ID, HVERSION_ANY_ID, 0x00096 }, /* DINO PS/2 */
 #endif
 	{ 0, }	/* 0 terminated list */
 };
+MODULE_DEVICE_TABLE(parisc, gscps2_device_tbl);
 
-static struct parisc_driver parisc_ps2_driver = {
+static struct parisc_driver parisc_ps2_driver __refdata = {
 	.name		= "gsc_ps2",
 	.id_table	= gscps2_device_tbl,
 	.probe		= gscps2_probe,
-	.remove		= gscps2_remove,
+	.remove		= __exit_p(gscps2_remove),
 };
 
 static int __init gscps2_init(void)

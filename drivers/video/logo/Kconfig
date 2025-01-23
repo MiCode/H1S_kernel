@@ -1,10 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Logo configuration
 #
 
 menuconfig LOGO
 	bool "Bootup logo"
-	depends on FB || SGI_NEWPORT_CONSOLE
+	depends on FB_CORE || SGI_NEWPORT_CONSOLE
 	help
 	  Enable and select frame buffer bootup logos.
 
@@ -27,16 +28,6 @@ config LOGO_LINUX_CLUT224
 	bool "Standard 224-color Linux logo"
 	default y
 
-config LOGO_BLACKFIN_VGA16
-	bool "16-colour Blackfin Processor Linux logo"
-	depends on BLACKFIN
-	default y
-
-config LOGO_BLACKFIN_CLUT224
-	bool "224-colour Blackfin Processor Linux logo"
-	depends on BLACKFIN
-	default y
-
 config LOGO_DEC_CLUT224
 	bool "224-color Digital Equipment Corporation Linux logo"
 	depends on MACH_DECSTATION || ALPHA
@@ -54,7 +45,7 @@ config LOGO_PARISC_CLUT224
 
 config LOGO_SGI_CLUT224
 	bool "224-color SGI Linux logo"
-	depends on SGI_IP22 || SGI_IP27 || SGI_IP32 || X86_VISWS
+	depends on SGI_IP22 || SGI_IP27 || SGI_IP32
 	default y
 
 config LOGO_SUN_CLUT224
@@ -75,11 +66,6 @@ config LOGO_SUPERH_VGA16
 config LOGO_SUPERH_CLUT224
 	bool "224-color SuperH Linux logo"
 	depends on SUPERH
-	default y
-
-config LOGO_M32R_CLUT224
-	bool "224-color M32R Linux logo"
-	depends on M32R
 	default y
 
 endif # LOGO

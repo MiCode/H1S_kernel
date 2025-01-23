@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This is a module which is used for rejecting packets.
  */
 
 /* (C) 1999-2001 Paul `Rusty' Russell
  * (C) 2002-2004 Netfilter Core Team <coreteam@netfilter.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/module.h>
@@ -20,7 +17,7 @@
 #include <linux/netfilter/x_tables.h>
 #include <linux/netfilter_ipv4/ip_tables.h>
 #include <linux/netfilter_ipv4/ipt_REJECT.h>
-#ifdef CONFIG_BRIDGE_NETFILTER
+#if IS_ENABLED(CONFIG_BRIDGE_NETFILTER)
 #include <linux/netfilter_bridge.h>
 #endif
 
@@ -34,31 +31,33 @@ static unsigned int
 reject_tg(struct sk_buff *skb, const struct xt_action_param *par)
 {
 	const struct ipt_reject_info *reject = par->targinfo;
+	int hook = xt_hooknum(par);
 
 	switch (reject->with) {
 	case IPT_ICMP_NET_UNREACHABLE:
-		nf_send_unreach(skb, ICMP_NET_UNREACH);
+		nf_send_unreach(skb, ICMP_NET_UNREACH, hook);
 		break;
 	case IPT_ICMP_HOST_UNREACHABLE:
-		nf_send_unreach(skb, ICMP_HOST_UNREACH);
+		nf_send_unreach(skb, ICMP_HOST_UNREACH, hook);
 		break;
 	case IPT_ICMP_PROT_UNREACHABLE:
-		nf_send_unreach(skb, ICMP_PROT_UNREACH);
+		nf_send_unreach(skb, ICMP_PROT_UNREACH, hook);
 		break;
 	case IPT_ICMP_PORT_UNREACHABLE:
-		nf_send_unreach(skb, ICMP_PORT_UNREACH);
+		nf_send_unreach(skb, ICMP_PORT_UNREACH, hook);
 		break;
 	case IPT_ICMP_NET_PROHIBITED:
-		nf_send_unreach(skb, ICMP_NET_ANO);
+		nf_send_unreach(skb, ICMP_NET_ANO, hook);
 		break;
 	case IPT_ICMP_HOST_PROHIBITED:
-		nf_send_unreach(skb, ICMP_HOST_ANO);
+		nf_send_unreach(skb, ICMP_HOST_ANO, hook);
 		break;
 	case IPT_ICMP_ADMIN_PROHIBITED:
-		nf_send_unreach(skb, ICMP_PKT_FILTERED);
+		nf_send_unreach(skb, ICMP_PKT_FILTERED, hook);
 		break;
 	case IPT_TCP_RESET:
-		nf_send_reset(skb, par->hooknum);
+		nf_send_reset(xt_net(par), par->state->sk, skb, hook);
+		break;
 	case IPT_ICMP_ECHOREPLY:
 		/* Doesn't happen. */
 		break;
@@ -73,13 +72,13 @@ static int reject_tg_check(const struct xt_tgchk_param *par)
 	const struct ipt_entry *e = par->entryinfo;
 
 	if (rejinfo->with == IPT_ICMP_ECHOREPLY) {
-		pr_info("ECHOREPLY no longer supported.\n");
+		pr_info_ratelimited("ECHOREPLY no longer supported.\n");
 		return -EINVAL;
 	} else if (rejinfo->with == IPT_TCP_RESET) {
 		/* Must specify that it's a TCP packet */
 		if (e->ip.proto != IPPROTO_TCP ||
 		    (e->ip.invflags & XT_INV_PROTO)) {
-			pr_info("TCP_RESET invalid for non-tcp\n");
+			pr_info_ratelimited("TCP_RESET invalid for non-tcp\n");
 			return -EINVAL;
 		}
 	}

@@ -1,21 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
 	Mantis PCI bridge driver
 
 	Copyright (C) Manu Abraham (abraham.manu@gmail.com)
 
-	This program is free software; you can redistribute it and/or modify
-	it under the terms of the GNU General Public License as published by
-	the Free Software Foundation; either version 2 of the License, or
-	(at your option) any later version.
-
-	This program is distributed in the hope that it will be useful,
-	but WITHOUT ANY WARRANTY; without even the implied warranty of
-	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-	GNU General Public License for more details.
-
-	You should have received a copy of the GNU General Public License
-	along with this program; if not, write to the Free Software
-	Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
 #ifndef __MANTIS_COMMON_H
@@ -25,6 +13,7 @@
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
 
+#include "mantis_reg.h"
 #include "mantis_uart.h"
 
 #include "mantis_link.h"
@@ -68,12 +57,13 @@
 #define TECHNISAT		0x1ae4
 #define TERRATEC		0x153b
 
-#define MAKE_ENTRY(__subven, __subdev, __configptr) {			\
+#define MAKE_ENTRY(__subven, __subdev, __configptr, __rc) {		\
 		.vendor		= TWINHAN_TECHNOLOGIES,			\
 		.device		= MANTIS,				\
 		.subvendor	= (__subven),				\
 		.subdevice	= (__subdev),				\
-		.driver_data	= (unsigned long) (__configptr)		\
+		.driver_data	= (unsigned long)			\
+			&(struct mantis_pci_drvdata){__configptr, __rc}	\
 }
 
 enum mantis_i2c_mode {
@@ -99,6 +89,11 @@ struct mantis_hwconfig {
 	u8			reset;
 
 	enum mantis_i2c_mode	i2c_mode;
+};
+
+struct mantis_pci_drvdata {
+	struct mantis_hwconfig *hwconfig;
+	char *rc_map_name;
 };
 
 struct mantis_pci {
@@ -127,10 +122,11 @@ struct mantis_pci {
 	u32			last_block;
 	u8			*buf_cpu;
 	dma_addr_t		buf_dma;
-	u32			*risc_cpu;
+	__le32			*risc_cpu;
 	dma_addr_t		risc_dma;
 
 	struct tasklet_struct	tasklet;
+	spinlock_t		intmask_lock;
 
 	struct i2c_adapter	adapter;
 	int			i2c_rc;
@@ -165,15 +161,32 @@ struct mantis_pci {
 
 	struct mantis_ca	*mantis_ca;
 
-	wait_queue_head_t	uart_wq;
 	struct work_struct	uart_work;
-	spinlock_t		uart_lock;
 
 	struct rc_dev		*rc;
-	char			input_name[80];
+	char			device_name[80];
 	char			input_phys[80];
+	char			*rc_map_name;
 };
 
 #define MANTIS_HIF_STATUS	(mantis->gpio_status)
+
+static inline void mantis_mask_ints(struct mantis_pci *mantis, u32 mask)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&mantis->intmask_lock, flags);
+	mmwrite(mmread(MANTIS_INT_MASK) & ~mask, MANTIS_INT_MASK);
+	spin_unlock_irqrestore(&mantis->intmask_lock, flags);
+}
+
+static inline void mantis_unmask_ints(struct mantis_pci *mantis, u32 mask)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&mantis->intmask_lock, flags);
+	mmwrite(mmread(MANTIS_INT_MASK) | mask, MANTIS_INT_MASK);
+	spin_unlock_irqrestore(&mantis->intmask_lock, flags);
+}
 
 #endif /* __MANTIS_COMMON_H */

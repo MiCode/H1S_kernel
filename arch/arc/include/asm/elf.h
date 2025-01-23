@@ -1,28 +1,25 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __ASM_ARC_ELF_H
 #define __ASM_ARC_ELF_H
 
 #include <linux/types.h>
+#include <linux/elf-em.h>
 #include <uapi/asm/elf.h>
 
-/* These ELF defines belong to uapi but libc elf.h already defines them */
-#define EM_ARCOMPACT		93
+#define EM_ARC_INUSE		(IS_ENABLED(CONFIG_ISA_ARCOMPACT) ? \
+					EM_ARCOMPACT : EM_ARCV2)
 
 /* ARC Relocations (kernel Modules only) */
 #define  R_ARC_32		0x4
 #define  R_ARC_32_ME		0x1B
-#define  R_ARC_S25H_PCREL	0x10
-#define  R_ARC_S25W_PCREL	0x11
+#define  R_ARC_32_PCREL		0x31
 
 /*to set parameters in the core dumps */
-#define ELF_ARCH		EM_ARCOMPACT
+#define ELF_ARCH		EM_ARC_INUSE
 #define ELF_CLASS		ELFCLASS32
 
 #ifdef CONFIG_CPU_BIG_ENDIAN
@@ -50,7 +47,7 @@ extern int elf_check_arch(const struct elf32_hdr *);
  * the loader.  We need to make sure that it is out of the way of the program
  * that it will "exec", and that there is sufficient room for the brk.
  */
-#define ELF_ET_DYN_BASE		(2 * TASK_SIZE / 3)
+#define ELF_ET_DYN_BASE		(2UL * TASK_SIZE / 3)
 
 /*
  * When the program starts, a1 contains a pointer to a function to be

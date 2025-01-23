@@ -1,11 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0
+#include <linux/ftrace.h>
 #include <linux/init.h>
 #include <linux/slab.h>
+#include <linux/mm_types.h>
+#include <linux/pgtable.h>
 
+#include <asm/bugs.h>
 #include <asm/cacheflush.h>
 #include <asm/idmap.h>
-#include <asm/pgalloc.h>
-#include <asm/pgtable.h>
-#include <asm/memory.h>
+#include <asm/page.h>
 #include <asm/smp_plat.h>
 #include <asm/suspend.h>
 #include <asm/tlbflush.h>
@@ -14,10 +17,6 @@ extern int __cpu_suspend(unsigned long, int (*)(unsigned long), u32 cpuid);
 extern void cpu_resume_mmu(void);
 
 #ifdef CONFIG_MMU
-/*
- * Hide the first two arguments to __cpu_suspend - these are an implementation
- * detail which platform code shouldn't have to know about.
- */
 int cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 {
 	struct mm_struct *mm = current->active_mm;
@@ -28,16 +27,27 @@ int cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 		return -EINVAL;
 
 	/*
+	 * Function graph tracer state gets incosistent when the kernel
+	 * calls functions that never return (aka suspend finishers) hence
+	 * disable graph tracing during their execution.
+	 */
+	pause_graph_tracing();
+
+	/*
 	 * Provide a temporary page table with an identity mapping for
 	 * the MMU-enable code, required for resuming.  On successful
 	 * resume (indicated by a zero return code), we need to switch
 	 * back to the correct page tables.
 	 */
 	ret = __cpu_suspend(arg, fn, __mpidr);
+
+	unpause_graph_tracing();
+
 	if (ret == 0) {
 		cpu_switch_mm(mm->pgd, mm);
 		local_flush_bp_all();
 		local_flush_tlb_all();
+		check_other_bugs();
 	}
 
 	return ret;
@@ -46,7 +56,13 @@ int cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 int cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 {
 	u32 __mpidr = cpu_logical_map(smp_processor_id());
-	return __cpu_suspend(arg, fn, __mpidr);
+	int ret;
+
+	pause_graph_tracing();
+	ret = __cpu_suspend(arg, fn, __mpidr);
+	unpause_graph_tracing();
+
+	return ret;
 }
 #define	idmap_pgd	NULL
 #endif

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* pci_fire.c: Sun4u platform PCI-E controller support.
  *
  * Copyright (C) 2007 David S. Miller (davem@davemloft.net)
@@ -9,7 +10,9 @@
 #include <linux/msi.h>
 #include <linux/export.h>
 #include <linux/irq.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
+#include <linux/numa.h>
 
 #include <asm/prom.h>
 #include <asm/irq.h>
@@ -415,7 +418,7 @@ static int pci_fire_pbm_init(struct pci_pbm_info *pbm,
 	struct device_node *dp = op->dev.of_node;
 	int err;
 
-	pbm->numa_node = -1;
+	pbm->numa_node = NUMA_NO_NODE;
 
 	pbm->pci_ops = &sun4u_pci_ops;
 	pbm->config_space_reg_bits = 12;
@@ -508,7 +511,6 @@ static const struct of_device_id fire_match[] = {
 static struct platform_driver fire_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = fire_match,
 	},
 	.probe		= fire_probe,

@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *
  * Copyright (c) 2003 Gerd Knorr
  * Copyright (c) 2003 Pavel Machek
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -73,12 +60,13 @@ static void ir_handle_key(struct bttv *btv)
 
 	if ((ir->mask_keydown && (gpio & ir->mask_keydown)) ||
 	    (ir->mask_keyup   && !(gpio & ir->mask_keyup))) {
-		rc_keydown_notimeout(ir->dev, data, 0);
+		rc_keydown_notimeout(ir->dev, RC_PROTO_UNKNOWN, data, 0);
 	} else {
 		/* HACK: Probably, ir->mask_keydown is missing
 		   for this board */
 		if (btv->c.type == BTTV_BOARD_WINFAST2000)
-			rc_keydown_notimeout(ir->dev, data, 0);
+			rc_keydown_notimeout(ir->dev, RC_PROTO_UNKNOWN, data,
+					     0);
 
 		rc_keyup(ir->dev);
 	}
@@ -96,18 +84,18 @@ static void ir_enltv_handle_key(struct bttv *btv)
 	data = ir_extract_bits(gpio, ir->mask_keycode);
 
 	/* Check if it is keyup */
-	keyup = (gpio & ir->mask_keyup) ? 1 << 31 : 0;
+	keyup = (gpio & ir->mask_keyup) ? 1UL << 31 : 0;
 
 	if ((ir->last_gpio & 0x7f) != data) {
 		dprintk("gpio=0x%x code=%d | %s\n",
 			gpio, data,
 			(gpio & ir->mask_keyup) ? " up" : "up/down");
 
-		rc_keydown_notimeout(ir->dev, data, 0);
+		rc_keydown_notimeout(ir->dev, RC_PROTO_UNKNOWN, data, 0);
 		if (keyup)
 			rc_keyup(ir->dev);
 	} else {
-		if ((ir->last_gpio & 1 << 31) == keyup)
+		if ((ir->last_gpio & 1UL << 31) == keyup)
 			return;
 
 		dprintk("(cnt) gpio=0x%x code=%d | %s\n",
@@ -117,7 +105,8 @@ static void ir_enltv_handle_key(struct bttv *btv)
 		if (keyup)
 			rc_keyup(ir->dev);
 		else
-			rc_keydown_notimeout(ir->dev, data, 0);
+			rc_keydown_notimeout(ir->dev, RC_PROTO_UNKNOWN, data,
+					     0);
 	}
 
 	ir->last_gpio = data | keyup;
@@ -135,10 +124,10 @@ void bttv_input_irq(struct bttv *btv)
 		ir_handle_key(btv);
 }
 
-static void bttv_input_timer(unsigned long data)
+static void bttv_input_timer(struct timer_list *t)
 {
-	struct bttv *btv = (struct bttv*)data;
-	struct bttv_ir *ir = btv->remote;
+	struct bttv_ir *ir = from_timer(ir, t, timer);
+	struct bttv *btv = ir->btv;
 
 	if (btv->c.type == BTTV_BOARD_ENLTV_FM_2)
 		ir_enltv_handle_key(btv);
@@ -154,10 +143,10 @@ static void bttv_input_timer(unsigned long data)
  * testing.
  */
 
-#define RC5_START(x)	(((x) >> 12) & 3)
-#define RC5_TOGGLE(x)	(((x) >> 11) & 1)
-#define RC5_ADDR(x)	(((x) >> 6) & 31)
-#define RC5_INSTR(x)	((x) & 63)
+#define RC5_START(x)	(((x) >> 12) & 0x03)
+#define RC5_TOGGLE(x)	(((x) >> 11) & 0x01)
+#define RC5_ADDR(x)	(((x) >> 6)  & 0x1f)
+#define RC5_INSTR(x)	(((x) >> 0)  & 0x3f)
 
 /* decode raw bit pattern to RC5 code */
 static u32 bttv_rc5_decode(unsigned int code)
@@ -185,30 +174,27 @@ static u32 bttv_rc5_decode(unsigned int code)
 			return 0;
 		}
 	}
-	dprintk("code=%x, rc5=%x, start=%x, toggle=%x, address=%x, "
-		"instr=%x\n", rc5, org_code, RC5_START(rc5),
+	dprintk("code=%x, rc5=%x, start=%x, toggle=%x, address=%x, instr=%x\n",
+		rc5, org_code, RC5_START(rc5),
 		RC5_TOGGLE(rc5), RC5_ADDR(rc5), RC5_INSTR(rc5));
 	return rc5;
 }
 
-static void bttv_rc5_timer_end(unsigned long data)
+static void bttv_rc5_timer_end(struct timer_list *t)
 {
-	struct bttv_ir *ir = (struct bttv_ir *)data;
-	struct timeval tv;
-	u32 gap;
-	u32 rc5 = 0;
+	struct bttv_ir *ir = from_timer(ir, t, timer);
+	ktime_t tv;
+	u32 gap, rc5, scancode;
+	u8 toggle, command, system;
 
 	/* get time */
-	do_gettimeofday(&tv);
+	tv = ktime_get();
 
+	gap = ktime_to_us(ktime_sub(tv, ir->base_time));
 	/* avoid overflow with gap >1s */
-	if (tv.tv_sec - ir->base_time.tv_sec > 1) {
+	if (gap > USEC_PER_SEC) {
 		gap = 200000;
-	} else {
-		gap = 1000000 * (tv.tv_sec - ir->base_time.tv_sec) +
-		    tv.tv_usec - ir->base_time.tv_usec;
 	}
-
 	/* signal we're ready to start a new code */
 	ir->active = false;
 
@@ -221,32 +207,35 @@ static void bttv_rc5_timer_end(unsigned long data)
 	if (ir->last_bit < 20) {
 		/* ignore spurious codes (caused by light/other remotes) */
 		dprintk("short code: %x\n", ir->code);
-	} else {
-		ir->code = (ir->code << ir->shift_by) | 1;
-		rc5 = bttv_rc5_decode(ir->code);
-
-		/* two start bits? */
-		if (RC5_START(rc5) != ir->start) {
-			pr_info(DEVNAME ":"
-			       " rc5 start bits invalid: %u\n", RC5_START(rc5));
-
-			/* right address? */
-		} else if (RC5_ADDR(rc5) == ir->addr) {
-			u32 toggle = RC5_TOGGLE(rc5);
-			u32 instr = RC5_INSTR(rc5);
-
-			/* Good code */
-			rc_keydown(ir->dev, instr, toggle);
-			dprintk("instruction %x, toggle %x\n",
-				instr, toggle);
-		}
+		return;
 	}
+
+	ir->code = (ir->code << ir->shift_by) | 1;
+	rc5 = bttv_rc5_decode(ir->code);
+
+	toggle = RC5_TOGGLE(rc5);
+	system = RC5_ADDR(rc5);
+	command = RC5_INSTR(rc5);
+
+	switch (RC5_START(rc5)) {
+	case 0x3:
+		break;
+	case 0x2:
+		command += 0x40;
+		break;
+	default:
+		return;
+	}
+
+	scancode = RC_SCANCODE_RC5(system, command);
+	rc_keydown(ir->dev, RC_PROTO_RC5, scancode, toggle);
+	dprintk("scancode %x, toggle %x\n", scancode, toggle);
 }
 
 static int bttv_rc5_irq(struct bttv *btv)
 {
 	struct bttv_ir *ir = btv->remote;
-	struct timeval tv;
+	ktime_t tv;
 	u32 gpio;
 	u32 gap;
 	unsigned long current_jiffies;
@@ -256,14 +245,12 @@ static int bttv_rc5_irq(struct bttv *btv)
 
 	/* get time of bit */
 	current_jiffies = jiffies;
-	do_gettimeofday(&tv);
+	tv = ktime_get();
 
+	gap = ktime_to_us(ktime_sub(tv, ir->base_time));
 	/* avoid overflow with gap >1s */
-	if (tv.tv_sec - ir->base_time.tv_sec > 1) {
+	if (gap > USEC_PER_SEC) {
 		gap = 200000;
-	} else {
-		gap = 1000000 * (tv.tv_sec - ir->base_time.tv_sec) +
-		    tv.tv_usec - ir->base_time.tv_usec;
 	}
 
 	dprintk("RC5 IRQ: gap %d us for %s\n",
@@ -300,18 +287,16 @@ static int bttv_rc5_irq(struct bttv *btv)
 
 /* ---------------------------------------------------------------------- */
 
-static void bttv_ir_start(struct bttv *btv, struct bttv_ir *ir)
+static void bttv_ir_start(struct bttv_ir *ir)
 {
 	if (ir->polling) {
-		setup_timer(&ir->timer, bttv_input_timer, (unsigned long)btv);
+		timer_setup(&ir->timer, bttv_input_timer, 0);
 		ir->timer.expires  = jiffies + msecs_to_jiffies(1000);
 		add_timer(&ir->timer);
 	} else if (ir->rc5_gpio) {
 		/* set timer_end for code completion */
-		setup_timer(&ir->timer, bttv_rc5_timer_end, (unsigned long)ir);
+		timer_setup(&ir->timer, bttv_rc5_timer_end, 0);
 		ir->shift_by = 1;
-		ir->start = 3;
-		ir->addr = 0x0;
 		ir->rc5_remote_gap = ir_rc5_remote_gap;
 	}
 }
@@ -335,13 +320,18 @@ static void bttv_ir_stop(struct bttv *btv)
  * Get_key functions used by I2C remotes
  */
 
-static int get_key_pv951(struct IR_i2c *ir, u32 *ir_key, u32 *ir_raw)
+static int get_key_pv951(struct IR_i2c *ir, enum rc_proto *protocol,
+			 u32 *scancode, u8 *toggle)
 {
+	int rc;
 	unsigned char b;
 
 	/* poll IR chip */
-	if (1 != i2c_master_recv(ir->c, &b, 1)) {
+	rc = i2c_master_recv(ir->c, &b, 1);
+	if (rc != 1) {
 		dprintk("read error\n");
+		if (rc < 0)
+			return rc;
 		return -EIO;
 	}
 
@@ -354,23 +344,24 @@ static int get_key_pv951(struct IR_i2c *ir, u32 *ir_key, u32 *ir_raw)
 	 * NOTE:
 	 * lirc_i2c maps the pv951 code as:
 	 *	addr = 0x61D6
-	 * 	cmd = bit_reverse (b)
+	 *	cmd = bit_reverse (b)
 	 * So, it seems that this device uses NEC extended
 	 * I decided to not fix the table, due to two reasons:
-	 * 	1) Without the actual device, this is only a guess;
-	 * 	2) As the addr is not reported via I2C, nor can be changed,
-	 * 	   the device is bound to the vendor-provided RC.
+	 *	1) Without the actual device, this is only a guess;
+	 *	2) As the addr is not reported via I2C, nor can be changed,
+	 *	   the device is bound to the vendor-provided RC.
 	 */
 
-	*ir_key = b;
-	*ir_raw = b;
+	*protocol = RC_PROTO_UNKNOWN;
+	*scancode = b;
+	*toggle = 0;
 	return 1;
 }
 
 /* Instantiate the I2C IR receiver device, if present */
 void init_bttv_i2c_ir(struct bttv *btv)
 {
-	const unsigned short addr_list[] = {
+	static const unsigned short addr_list[] = {
 		0x1a, 0x18, 0x64, 0x30, 0x71,
 		I2C_CLIENT_END
 	};
@@ -382,7 +373,7 @@ void init_bttv_i2c_ir(struct bttv *btv)
 
 	memset(&info, 0, sizeof(struct i2c_board_info));
 	memset(&btv->init_data, 0, sizeof(btv->init_data));
-	strlcpy(info.type, "ir_video", I2C_NAME_SIZE);
+	strscpy(info.type, "ir_video", I2C_NAME_SIZE);
 
 	switch (btv->c.type) {
 	case BTTV_BOARD_PV951:
@@ -395,7 +386,7 @@ void init_bttv_i2c_ir(struct bttv *btv)
 
 	if (btv->init_data.name) {
 		info.platform_data = &btv->init_data;
-		i2c_dev = i2c_new_device(&btv->c.i2c_adap, &info);
+		i2c_dev = i2c_new_client_device(&btv->c.i2c_adap, &info);
 	} else {
 		/*
 		 * The external IR receiver is at i2c address 0x34 (0x35 for
@@ -405,9 +396,9 @@ void init_bttv_i2c_ir(struct bttv *btv)
 		 * internal.
 		 * That's why we probe 0x1a (~0x34) first. CB
 		 */
-		i2c_dev = i2c_new_probed_device(&btv->c.i2c_adap, &info, addr_list, NULL);
+		i2c_dev = i2c_new_scanned_device(&btv->c.i2c_adap, &info, addr_list, NULL);
 	}
-	if (NULL == i2c_dev)
+	if (IS_ERR(i2c_dev))
 		return;
 
 #if defined(CONFIG_MODULES) && defined(MODULE)
@@ -426,7 +417,7 @@ int bttv_input_init(struct bttv *btv)
 		return -ENODEV;
 
 	ir = kzalloc(sizeof(*ir),GFP_KERNEL);
-	rc = rc_allocate_device();
+	rc = rc_allocate_device(RC_DRIVER_SCANCODE);
 	if (!ir || !rc)
 		goto err_out_free;
 
@@ -483,14 +474,15 @@ int bttv_input_init(struct bttv *btv)
 	case BTTV_BOARD_ASKEY_CPH03X:
 	case BTTV_BOARD_CONCEPTRONIC_CTVFMI2:
 	case BTTV_BOARD_CONTVFMI:
+	case BTTV_BOARD_KWORLD_VSTREAM_XPERT:
 		ir_codes         = RC_MAP_PIXELVIEW;
 		ir->mask_keycode = 0x001F00;
 		ir->mask_keyup   = 0x006000;
 		ir->polling      = 50; // ms
 		break;
 	case BTTV_BOARD_NEBULA_DIGITV:
-		ir_codes = RC_MAP_NEBULA;
-		ir->rc5_gpio = true;
+		ir_codes         = RC_MAP_NEBULA;
+		ir->rc5_gpio     = true;
 		break;
 	case BTTV_BOARD_MACHTV_MAGICTV:
 		ir_codes         = RC_MAP_APAC_VIEWCOMP;
@@ -513,7 +505,8 @@ int bttv_input_init(struct bttv *btv)
 						   ir->mask_keycode);
 		break;
 	}
-	if (NULL == ir_codes) {
+
+	if (!ir_codes) {
 		dprintk("Ooops: IR config error [card=%d]\n", btv->c.type);
 		err = -ENODEV;
 		goto err_out_free;
@@ -533,13 +526,14 @@ int bttv_input_init(struct bttv *btv)
 
 	/* init input device */
 	ir->dev = rc;
+	ir->btv = btv;
 
 	snprintf(ir->name, sizeof(ir->name), "bttv IR (card=%d)",
 		 btv->c.type);
 	snprintf(ir->phys, sizeof(ir->phys), "pci-%s/ir0",
 		 pci_name(btv->c.pci));
 
-	rc->input_name = ir->name;
+	rc->device_name = ir->name;
 	rc->input_phys = ir->phys;
 	rc->input_id.bustype = BUS_PCI;
 	rc->input_id.version = 1;
@@ -555,7 +549,7 @@ int bttv_input_init(struct bttv *btv)
 	rc->driver_name = MODULE_NAME;
 
 	btv->remote = ir;
-	bttv_ir_start(btv, ir);
+	bttv_ir_start(ir);
 
 	/* all done */
 	err = rc_register_device(rc);

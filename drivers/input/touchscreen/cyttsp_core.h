@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Header file for:
  * Cypress TrueTouch(TM) Standard Product (TTSP) touchscreen drivers.
@@ -9,22 +10,7 @@
  * Copyright (C) 2009, 2010, 2011 Cypress Semiconductor, Inc.
  * Copyright (C) 2012 Javier Martinez Canillas <javier@dowhile0.org>
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2, and only version 2, as published by the
- * Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- *
  * Contact Cypress Semiconductor at www.cypress.com <kev@cypress.com>
- *
  */
 
 
@@ -36,7 +22,7 @@
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/device.h>
-#include <linux/input/cyttsp.h>
+#include <linux/regulator/consumer.h>
 
 #define CY_NUM_RETRY		16 /* max number of retries for read ops */
 
@@ -128,8 +114,6 @@ struct cyttsp {
 	struct device *dev;
 	int irq;
 	struct input_dev *input;
-	char phys[32];
-	const struct cyttsp_platform_data *pdata;
 	const struct cyttsp_bus_ops *bus_ops;
 	struct cyttsp_bootloader_data bl_data;
 	struct cyttsp_sysinfo_data sysinfo_data;
@@ -138,12 +122,20 @@ struct cyttsp {
 	enum cyttsp_state state;
 	bool suspended;
 
+	struct regulator_bulk_data regulators[2];
+	struct gpio_desc *reset_gpio;
+	bool use_hndshk;
+	u8 act_dist;
+	u8 act_intrvl;
+	u8 tch_tmout;
+	u8 lp_intrvl;
+	u8 *bl_keys;
+
 	u8 xfer_buf[] ____cacheline_aligned;
 };
 
 struct cyttsp *cyttsp_probe(const struct cyttsp_bus_ops *bus_ops,
 			    struct device *dev, int irq, size_t xfer_buf_size);
-void cyttsp_remove(struct cyttsp *ts);
 
 int cyttsp_i2c_write_block_data(struct device *dev, u8 *xfer_buf, u16 addr,
 		u8 length, const void *values);

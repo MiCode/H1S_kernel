@@ -1,13 +1,19 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * header file for ADAV80X parts
  *
  * Copyright 2011 Analog Devices Inc.
- *
- * Licensed under the GPL-2 or later.
  */
 
 #ifndef _ADAV80X_H
 #define _ADAV80X_H
+
+#include <linux/regmap.h>
+
+struct device;
+
+extern const struct regmap_config adav80x_regmap_config;
+int adav80x_bus_probe(struct device *dev, struct regmap *regmap);
 
 enum adav80x_pll_src {
 	ADAV80X_PLL_SRC_XIN,

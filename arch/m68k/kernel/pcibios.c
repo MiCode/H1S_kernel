@@ -1,10 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * pci.c -- basic PCI support code
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  *
  * (C) Copyright 2011, Greg Ungerer <gerg@uclinux.org>
  */
@@ -62,7 +58,7 @@ int pcibios_enable_device(struct pci_dev *dev, int mask)
 
 		r = dev->resource + idx;
 		if (!r->start && r->end) {
-			pr_err(KERN_ERR "PCI: Device %s not available because of resource collisions\n",
+			pr_err("PCI: Device %s not available because of resource collisions\n",
 				pci_name(dev));
 			return -EINVAL;
 		}
@@ -96,9 +92,3 @@ void pcibios_fixup_bus(struct pci_bus *bus)
 		pci_write_config_byte(dev, PCI_LATENCY_TIMER, 32);
 	}
 }
-
-char *pcibios_setup(char *str)
-{
-	return str;
-}
-

@@ -51,14 +51,14 @@ There are a couple of variants of perf kvm:
   'perf kvm stat <command>' to run a command and gather performance counter
   statistics.
   Especially, perf 'kvm stat record/report' generates a statistical analysis
-  of KVM events. Currently, vmexit, mmio and ioport events are supported.
-  'perf kvm stat record <command>' records kvm events and the events between
-  start and end <command>.
+  of KVM events. Currently, vmexit, mmio (x86 only) and ioport (x86 only)
+  events are supported. 'perf kvm stat record <command>' records kvm events
+  and the events between start and end <command>.
   And this command produces a file which contains tracing results of kvm
   events.
 
   'perf kvm stat report' reports statistical data which includes events
-  handled time, samples, and so on.
+  handled sample, percent_sample, time, percent_time, max_t, min_t, mean_t.
 
   'perf kvm stat live' reports statistical data in a live mode (similar to
   record + report but with statistical data updated live at a given display
@@ -68,31 +68,22 @@ OPTIONS
 -------
 -i::
 --input=<path>::
-        Input file name.
+        Input file name, for the 'report', 'diff' and 'buildid-list' subcommands.
 -o::
 --output=<path>::
-        Output file name.
+        Output file name, for the 'record' subcommand. Doesn't work with 'report',
+        just redirect the output to a file when using 'report'.
 --host::
         Collect host side performance profile.
 --guest::
         Collect guest side performance profile.
---guestmount=<path>::
-	Guest os root file system mount directory. Users mounts guest os
-        root directories under <path> by a specific filesystem access method,
-	typically, sshfs. For example, start 2 guest os. The one's pid is 8888
-	and the other's is 9999.
-        #mkdir ~/guestmount; cd ~/guestmount
-        #sshfs -o allow_other,direct_io -p 5551 localhost:/ 8888/
-        #sshfs -o allow_other,direct_io -p 5552 localhost:/ 9999/
-        #perf kvm --host --guest --guestmount=~/guestmount top
---guestkallsyms=<path>::
-        Guest os /proc/kallsyms file copy. 'perf' kvm' reads it to get guest
-	kernel symbols. Users copy it out from guest os.
---guestmodules=<path>::
-	Guest os /proc/modules file copy. 'perf' kvm' reads it to get guest
-	kernel module information. Users copy it out from guest os.
---guestvmlinux=<path>::
-	Guest os kernel vmlinux.
+
+:GMEXAMPLECMD: kvm --host --guest
+:GMEXAMPLESUBCMD: top
+include::guest-files.txt[]
+
+--stdio:: Use the stdio interface.
+
 -v::
 --verbose::
 	Be more verbose (show counter open errors, etc).
@@ -100,15 +91,18 @@ OPTIONS
 STAT REPORT OPTIONS
 -------------------
 --vcpu=<value>::
-       analyze events which occures on this vcpu. (default: all vcpus)
+       analyze events which occur on this vcpu. (default: all vcpus)
 
 --event=<value>::
-       event to be analyzed. Possible values: vmexit, mmio, ioport.
-       (default: vmexit)
+       event to be analyzed. Possible values: vmexit, mmio (x86 only),
+       ioport (x86 only). (default: vmexit)
 -k::
 --key=<value>::
        Sorting key. Possible values: sample (default, sort by samples
-       number), time (sort by average time).
+       number), percent_sample (sort by sample percentage), time
+       (sort by average time), precent_time (sort by time percentage),
+       max_t (sort by maximum time), min_t (sort by minimum time), mean_t
+       (sort by mean time).
 -p::
 --pid=::
     Analyze events only for given process ID(s) (comma separated list).
@@ -134,11 +128,12 @@ STAT LIVE OPTIONS
     Analyze events only for given process ID(s) (comma separated list).
 
 --vcpu=<value>::
-       analyze events which occures on this vcpu. (default: all vcpus)
+       analyze events which occur on this vcpu. (default: all vcpus)
 
 
 --event=<value>::
-       event to be analyzed. Possible values: vmexit, mmio, ioport.
+       event to be analyzed. Possible values: vmexit,
+       mmio (x86 only), ioport (x86 only).
        (default: vmexit)
 
 -k::
@@ -147,7 +142,14 @@ STAT LIVE OPTIONS
        number), time (sort by average time).
 
 --duration=<value>::
-       Show events other than HLT that take longer than duration usecs.
+       Show events other than HLT (x86 only) or Wait state (s390 only)
+       that take longer than duration usecs.
+
+--proc-map-timeout::
+	When processing pre-existing threads /proc/XXX/mmap, it may take
+	a long time, because the file may be huge. A time out is needed
+	in such cases.
+	This option sets the time out limit. The default value is 500 ms.
 
 SEE ALSO
 --------

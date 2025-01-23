@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 
 #ifndef _ST_H
 #define _ST_H
@@ -34,7 +35,6 @@ struct st_request {
 
 /* The tape buffer descriptor. */
 struct st_buffer {
-	unsigned char dma;	/* DMA-able buffer */
 	unsigned char cleared;  /* internal buffer cleared after open? */
 	unsigned short do_dio;  /* direct i/o set up? */
 	int buffer_size;
@@ -92,11 +92,31 @@ struct st_partstat {
 	int drv_file;
 };
 
+/* Tape statistics */
+struct scsi_tape_stats {
+	atomic64_t read_byte_cnt;  /* bytes read */
+	atomic64_t write_byte_cnt; /* bytes written */
+	atomic64_t in_flight;      /* Number of I/Os in flight */
+	atomic64_t read_cnt;       /* Count of read requests */
+	atomic64_t write_cnt;      /* Count of write requests */
+	atomic64_t other_cnt;      /* Count of other requests either
+				    * implicit or from user space
+				    * ioctl. */
+	atomic64_t resid_cnt;      /* Count of resid_len > 0 */
+	atomic64_t tot_read_time;  /* ktime spent completing reads */
+	atomic64_t tot_write_time; /* ktime spent completing writes */
+	atomic64_t tot_io_time;    /* ktime spent doing any I/O */
+	ktime_t read_time;         /* holds ktime request was queued */
+	ktime_t write_time;        /* holds ktime request was queued */
+	ktime_t other_time;        /* holds ktime request was queued */
+	atomic_t last_read_size;   /* Number of bytes issued for last read */
+	atomic_t last_write_size;  /* Number of bytes issued for last write */
+};
+
 #define ST_NBR_PARTITIONS 4
 
 /* The tape drive descriptor */
 struct scsi_tape {
-	struct scsi_driver *driver;
 	struct scsi_device *device;
 	struct mutex lock;	/* For serialization */
 	struct completion wait;	/* For SCSI commands */
@@ -111,7 +131,6 @@ struct scsi_tape {
 	unsigned char two_fm;
 	unsigned char fast_mteom;
 	unsigned char immediate;
-	unsigned char restr_dma;
 	unsigned char scsi2_logical;
 	unsigned char default_drvbuffer;	/* 0xff = don't touch, value 3 bits */
 	unsigned char cln_mode;			/* 0 = none, otherwise sense byte nbr */
@@ -126,8 +145,6 @@ struct scsi_tape {
 	unsigned char immediate_filemark;	/* write filemark immediately */
 	int tape_type;
 	int long_timeout;	/* timeout for commands known to take long time */
-
-	unsigned long max_pfn;	/* the maximum page number reachable by the HBA */
 
 	/* Mode characteristics */
 	struct st_modedef modes[ST_NBR_MODES];
@@ -169,8 +186,9 @@ struct scsi_tape {
 	unsigned char last_cmnd[6];
 	unsigned char last_sense[16];
 #endif
-	struct gendisk *disk;
+	char name[DISK_NAME_LEN];
 	struct kref     kref;
+	struct scsi_tape_stats *stats;
 };
 
 /* Bit masks for use_pf */

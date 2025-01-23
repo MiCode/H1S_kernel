@@ -1,6 +1,4 @@
-menu "Kernel hacking"
-
-source "lib/Kconfig.debug"
+# SPDX-License-Identifier: GPL-2.0
 
 config GPROF
 	bool "Enable gprof support"
@@ -18,6 +16,8 @@ config GPROF
 config GCOV
 	bool "Enable gcov support"
 	depends on DEBUG_INFO
+	depends on !KCOV
+	depends on !MODULES
 	help
 	  This option allows developers to retrieve coverage data from a UML
 	  session.
@@ -31,10 +31,8 @@ config GCOV
 config EARLY_PRINTK
 	bool "Early printk"
 	default y
-	---help---
+	help
 	  Write kernel log output directly to stdout.
 
 	  This is useful for kernel debugging when your machine crashes very
 	  early before the console code is initialized.
-
-endmenu

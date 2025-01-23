@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 
 #include <linux/ceph/ceph_debug.h>
 
@@ -6,7 +7,7 @@
 
 #include <linux/ceph/buffer.h>
 #include <linux/ceph/decode.h>
-#include <linux/ceph/libceph.h> /* for ceph_kv{malloc,free} */
+#include <linux/ceph/libceph.h> /* for kvmalloc */
 
 struct ceph_buffer *ceph_buffer_new(size_t len, gfp_t gfp)
 {
@@ -16,7 +17,7 @@ struct ceph_buffer *ceph_buffer_new(size_t len, gfp_t gfp)
 	if (!b)
 		return NULL;
 
-	b->vec.iov_base = ceph_kvmalloc(len, gfp);
+	b->vec.iov_base = kvmalloc(len, gfp);
 	if (!b->vec.iov_base) {
 		kfree(b);
 		return NULL;
@@ -35,7 +36,7 @@ void ceph_buffer_release(struct kref *kref)
 	struct ceph_buffer *b = container_of(kref, struct ceph_buffer, kref);
 
 	dout("buffer_release %p\n", b);
-	ceph_kvfree(b->vec.iov_base);
+	kvfree(b->vec.iov_base);
 	kfree(b);
 }
 EXPORT_SYMBOL(ceph_buffer_release);

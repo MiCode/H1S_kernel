@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Remote Network Driver Interface Specification (RNDIS)
  * definitions of the magic numbers used by this protocol
@@ -65,6 +66,7 @@
 #define	RNDIS_STATUS_MEDIA_SPECIFIC_INDICATION	0x40010012
 #define RNDIS_STATUS_WW_INDICATION		RDIA_SPECIFIC_INDICATION
 #define RNDIS_STATUS_LINK_SPEED_CHANGE		0x40010013L
+#define RNDIS_STATUS_NETWORK_CHANGE		0x40010018
 
 #define RNDIS_STATUS_NOT_RESETTABLE		0x80010001
 #define RNDIS_STATUS_SOFT_ERRORS		0x80010003

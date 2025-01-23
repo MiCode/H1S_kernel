@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* net/atm/raw.c - Raw AAL0 and AAL5 transports */
 
 /* Written 1995-2000 by Werner Almesberger, EPFL LRC/ICA */
@@ -25,7 +26,7 @@ static void atm_push_raw(struct atm_vcc *vcc, struct sk_buff *skb)
 		struct sock *sk = sk_atm(vcc);
 
 		skb_queue_tail(&sk->sk_receive_queue, skb);
-		sk->sk_data_ready(sk, skb->len);
+		sk->sk_data_ready(sk);
 	}
 }
 
@@ -34,8 +35,8 @@ static void atm_pop_raw(struct atm_vcc *vcc, struct sk_buff *skb)
 	struct sock *sk = sk_atm(vcc);
 
 	pr_debug("(%d) %d -= %d\n",
-		 vcc->vci, sk_wmem_alloc_get(sk), skb->truesize);
-	atomic_sub(skb->truesize, &sk->sk_wmem_alloc);
+		 vcc->vci, sk_wmem_alloc_get(sk), ATM_SKB(skb)->acct_truesize);
+	WARN_ON(refcount_sub_and_test(ATM_SKB(skb)->acct_truesize, &sk->sk_wmem_alloc));
 	dev_kfree_skb_any(skb);
 	sk->sk_write_space(sk);
 }
@@ -53,6 +54,8 @@ static int atm_send_aal0(struct atm_vcc *vcc, struct sk_buff *skb)
 		kfree_skb(skb);
 		return -EADDRNOTAVAIL;
 	}
+	if (vcc->dev->ops->send_bh)
+		return vcc->dev->ops->send_bh(vcc, skb);
 	return vcc->dev->ops->send(vcc, skb);
 }
 
@@ -70,7 +73,10 @@ int atm_init_aal34(struct atm_vcc *vcc)
 	vcc->push = atm_push_raw;
 	vcc->pop = atm_pop_raw;
 	vcc->push_oam = NULL;
-	vcc->send = vcc->dev->ops->send;
+	if (vcc->dev->ops->send_bh)
+		vcc->send = vcc->dev->ops->send_bh;
+	else
+		vcc->send = vcc->dev->ops->send;
 	return 0;
 }
 
@@ -79,7 +85,10 @@ int atm_init_aal5(struct atm_vcc *vcc)
 	vcc->push = atm_push_raw;
 	vcc->pop = atm_pop_raw;
 	vcc->push_oam = NULL;
-	vcc->send = vcc->dev->ops->send;
+	if (vcc->dev->ops->send_bh)
+		vcc->send = vcc->dev->ops->send_bh;
+	else
+		vcc->send = vcc->dev->ops->send;
 	return 0;
 }
 EXPORT_SYMBOL(atm_init_aal5);

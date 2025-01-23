@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ADXRS450/ADXRS453 Digital Output Gyroscope Driver
  *
  * Copyright 2011 Analog Devices Inc.
- *
- * Licensed under the GPL-2.
  */
 
 #include <linux/interrupt.h>
@@ -74,7 +73,7 @@ enum {
 struct adxrs450_state {
 	struct spi_device	*us;
 	struct mutex		buf_lock;
-	__be32			tx ____cacheline_aligned;
+	__be32			tx __aligned(IIO_DMA_MINALIGN);
 	__be32			rx;
 
 };
@@ -405,7 +404,6 @@ static const struct iio_chan_spec adxrs450_channels[2][2] = {
 };
 
 static const struct iio_info adxrs450_info = {
-	.driver_module = THIS_MODULE,
 	.read_raw = &adxrs450_read_raw,
 	.write_raw = &adxrs450_write_raw,
 };
@@ -426,7 +424,6 @@ static int adxrs450_probe(struct spi_device *spi)
 	/* This is only used for removal purposes */
 	spi_set_drvdata(spi, indio_dev);
 
-	indio_dev->dev.parent = &spi->dev;
 	indio_dev->info = &adxrs450_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels =
@@ -456,7 +453,6 @@ MODULE_DEVICE_TABLE(spi, adxrs450_id);
 static struct spi_driver adxrs450_driver = {
 	.driver = {
 		.name = "adxrs450",
-		.owner = THIS_MODULE,
 	},
 	.probe = adxrs450_probe,
 	.id_table	= adxrs450_id,

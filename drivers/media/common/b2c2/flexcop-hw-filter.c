@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Linux driver for digital TV devices equipped with B2C2 FlexcopII(b)/III
  * flexcop-hw-filter.c - pid and mac address filtering and control functions
@@ -68,7 +69,7 @@ vpid.vregname.field = onoff ? pid : 0x1fff; \
 vpid.vregname.trans_field = transval; \
 v208.ctrl_208.enablefield = onoff; \
 fc->write_ibi_reg(fc, vregname, vpid); \
-fc->write_ibi_reg(fc, ctrl_208, v208);
+fc->write_ibi_reg(fc, ctrl_208, v208)
 
 static void flexcop_pid_Stream1_PID_ctrl(struct flexcop_device *fc,
 		u16 pid, int onoff)
@@ -116,6 +117,10 @@ static void flexcop_pid_control(struct flexcop_device *fc,
 
 	deb_ts("setting pid: %5d %04x at index %d '%s'\n",
 			pid, pid, index, onoff ? "on" : "off");
+
+	/* First 6 can be buggy - skip over them if option set */
+	if (fc->skip_6_hw_pid_filter)
+		index += 6;
 
 	/* We could use bit magic here to reduce source code size.
 	 * I decided against it, but to use the real register names */
@@ -170,7 +175,10 @@ static int flexcop_toggle_fullts_streaming(struct flexcop_device *fc, int onoff)
 int flexcop_pid_feed_control(struct flexcop_device *fc,
 		struct dvb_demux_feed *dvbdmxfeed, int onoff)
 {
-	int max_pid_filter = 6 + fc->has_32_hw_pid_filter*32;
+	int max_pid_filter = 6;
+
+	max_pid_filter -= 6 * fc->skip_6_hw_pid_filter;
+	max_pid_filter += 32 * fc->has_32_hw_pid_filter;
 
 	fc->feedcount += onoff ? 1 : -1; /* the number of PIDs/Feed currently requested */
 	if (dvbdmxfeed->index >= max_pid_filter)
@@ -217,7 +225,12 @@ void flexcop_hw_filter_init(struct flexcop_device *fc)
 {
 	int i;
 	flexcop_ibi_value v;
-	for (i = 0; i < 6 + 32*fc->has_32_hw_pid_filter; i++)
+	int max_pid_filter = 6;
+
+	max_pid_filter -= 6 * fc->skip_6_hw_pid_filter;
+	max_pid_filter += 32 * fc->has_32_hw_pid_filter;
+
+	for (i = 0; i < max_pid_filter; i++)
 		flexcop_pid_control(fc, i, 0x1fff, 0);
 
 	flexcop_pid_group_filter(fc, 0, 0x1fe0);

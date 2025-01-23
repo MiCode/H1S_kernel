@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /* atm_zatm.h - Driver-specific declarations of the ZATM driver (for use by
 		driver-specific utilities) */
 
@@ -34,12 +35,6 @@ struct zatm_pool_req {
 	int pool_num;			/* pool number */
 	struct zatm_pool_info info;	/* actual information */
 };
-
-struct zatm_t_hist {
-	struct timeval real;		/* real (wall-clock) time */
-	struct timeval expected;	/* expected real time */
-};
-
 
 #define ZATM_OAM_POOL		0	/* free buffer pool for OAM cells */
 #define ZATM_AAL0_POOL		1	/* free buffer pool for AAL0 cells */

@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * linux/fs/jbd2/recovery.c
  *
  * Written by Stephen C. Tweedie <sct@redhat.com>, 1999
  *
  * Copyright 1999-2000 Red Hat Software --- All Rights Reserved
- *
- * This file is part of the Linux kernel and is made available under
- * the terms of the GNU General Public License, version 2, or at your
- * option, any later version, incorporated herein by reference.
  *
  * Journal recovery routines for the generic filesystem journaling code;
  * part of the ext2fs journaling system.
@@ -32,13 +29,13 @@ struct recovery_info
 {
 	tid_t		start_transaction;
 	tid_t		end_transaction;
+	unsigned long	head_block;
 
 	int		nr_replays;
 	int		nr_revokes;
 	int		nr_revoke_hits;
 };
 
-enum passtype {PASS_SCAN, PASS_REVOKE, PASS_REPLAY};
 static int do_one_pass(journal_t *journal,
 				struct recovery_info *info, enum passtype pass);
 static int scan_revoke_records(journal_t *, struct buffer_head *,
@@ -78,8 +75,8 @@ static int do_readahead(journal_t *journal, unsigned int start)
 
 	/* Do up to 128K of readahead */
 	max = start + (128 * 1024 / journal->j_blocksize);
-	if (max > journal->j_maxlen)
-		max = journal->j_maxlen;
+	if (max > journal->j_total_len)
+		max = journal->j_total_len;
 
 	/* Do the readahead itself.  We'll submit MAXBUF buffer_heads at
 	 * a time to the block device IO layer. */
@@ -104,7 +101,7 @@ static int do_readahead(journal_t *journal, unsigned int start)
 		if (!buffer_uptodate(bh) && !buffer_locked(bh)) {
 			bufs[nbufs++] = bh;
 			if (nbufs == MAXBUF) {
-				ll_rw_block(READ, nbufs, bufs);
+				bh_readahead_batch(nbufs, bufs, 0);
 				journal_brelse_array(bufs, nbufs);
 				nbufs = 0;
 			}
@@ -113,7 +110,7 @@ static int do_readahead(journal_t *journal, unsigned int start)
 	}
 
 	if (nbufs)
-		ll_rw_block(READ, nbufs, bufs);
+		bh_readahead_batch(nbufs, bufs, 0);
 	err = 0;
 
 failed:
@@ -138,9 +135,9 @@ static int jread(struct buffer_head **bhp, journal_t *journal,
 
 	*bhp = NULL;
 
-	if (offset >= journal->j_maxlen) {
+	if (offset >= journal->j_total_len) {
 		printk(KERN_ERR "JBD2: corrupted journal superblock\n");
-		return -EIO;
+		return -EFSCORRUPTED;
 	}
 
 	err = jbd2_journal_bmap(journal, offset, &blocknr);
@@ -156,9 +153,14 @@ static int jread(struct buffer_head **bhp, journal_t *journal,
 		return -ENOMEM;
 
 	if (!buffer_uptodate(bh)) {
-		/* If this is a brand new buffer, start readahead.
-                   Otherwise, we assume we are already reading it.  */
-		if (!buffer_req(bh))
+		/*
+		 * If this is a brand new buffer, start readahead.
+		 * Otherwise, we assume we are already reading it.
+		 */
+		bool need_readahead = !buffer_req(bh);
+
+		bh_read_nowait(bh, 0);
+		if (need_readahead)
 			do_readahead(journal, offset);
 		wait_on_buffer(bh);
 	}
@@ -174,18 +176,17 @@ static int jread(struct buffer_head **bhp, journal_t *journal,
 	return 0;
 }
 
-static int jbd2_descr_block_csum_verify(journal_t *j,
-					void *buf)
+static int jbd2_descriptor_block_csum_verify(journal_t *j, void *buf)
 {
 	struct jbd2_journal_block_tail *tail;
 	__be32 provided;
 	__u32 calculated;
 
-	if (!JBD2_HAS_INCOMPAT_FEATURE(j, JBD2_FEATURE_INCOMPAT_CSUM_V2))
+	if (!jbd2_journal_has_csum_v2or3(j))
 		return 1;
 
-	tail = (struct jbd2_journal_block_tail *)(buf + j->j_blocksize -
-			sizeof(struct jbd2_journal_block_tail));
+	tail = (struct jbd2_journal_block_tail *)((char *)buf +
+		j->j_blocksize - sizeof(struct jbd2_journal_block_tail));
 	provided = tail->t_checksum;
 	tail->t_checksum = 0;
 	calculated = jbd2_chksum(j, j->j_csum_seed, buf, j->j_blocksize);
@@ -201,24 +202,24 @@ static int jbd2_descr_block_csum_verify(journal_t *j,
 static int count_tags(journal_t *journal, struct buffer_head *bh)
 {
 	char *			tagp;
-	journal_block_tag_t *	tag;
+	journal_block_tag_t	tag;
 	int			nr = 0, size = journal->j_blocksize;
 	int			tag_bytes = journal_tag_bytes(journal);
 
-	if (JBD2_HAS_INCOMPAT_FEATURE(journal, JBD2_FEATURE_INCOMPAT_CSUM_V2))
+	if (jbd2_journal_has_csum_v2or3(journal))
 		size -= sizeof(struct jbd2_journal_block_tail);
 
 	tagp = &bh->b_data[sizeof(journal_header_t)];
 
 	while ((tagp - bh->b_data + tag_bytes) <= size) {
-		tag = (journal_block_tag_t *) tagp;
+		memcpy(&tag, tagp, sizeof(tag));
 
 		nr++;
 		tagp += tag_bytes;
-		if (!(tag->t_flags & cpu_to_be16(JBD2_FLAG_SAME_UUID)))
+		if (!(tag.t_flags & cpu_to_be16(JBD2_FLAG_SAME_UUID)))
 			tagp += 16;
 
-		if (tag->t_flags & cpu_to_be16(JBD2_FLAG_LAST_TAG))
+		if (tag.t_flags & cpu_to_be16(JBD2_FLAG_LAST_TAG))
 			break;
 	}
 
@@ -232,6 +233,43 @@ do {									\
 	if (var >= (journal)->j_last)					\
 		var -= ((journal)->j_last - (journal)->j_first);	\
 } while (0)
+
+static int fc_do_one_pass(journal_t *journal,
+			  struct recovery_info *info, enum passtype pass)
+{
+	unsigned int expected_commit_id = info->end_transaction;
+	unsigned long next_fc_block;
+	struct buffer_head *bh;
+	int err = 0;
+
+	next_fc_block = journal->j_fc_first;
+	if (!journal->j_fc_replay_callback)
+		return 0;
+
+	while (next_fc_block <= journal->j_fc_last) {
+		jbd2_debug(3, "Fast commit replay: next block %ld\n",
+			  next_fc_block);
+		err = jread(&bh, journal, next_fc_block);
+		if (err) {
+			jbd2_debug(3, "Fast commit replay: read error\n");
+			break;
+		}
+
+		err = journal->j_fc_replay_callback(journal, bh, pass,
+					next_fc_block - journal->j_fc_first,
+					expected_commit_id);
+		brelse(bh);
+		next_fc_block++;
+		if (err < 0 || err == JBD2_FC_REPLAY_STOP)
+			break;
+		err = 0;
+	}
+
+	if (err)
+		jbd2_debug(3, "Fast commit replay failed, err = %d\n", err);
+
+	return err;
+}
 
 /**
  * jbd2_journal_recover - recovers a on-disk journal
@@ -251,6 +289,8 @@ int jbd2_journal_recover(journal_t *journal)
 	journal_superblock_t *	sb;
 
 	struct recovery_info	info;
+	errseq_t		wb_err;
+	struct address_space	*mapping;
 
 	memset(&info, 0, sizeof(info));
 	sb = journal->j_superblock;
@@ -260,37 +300,46 @@ int jbd2_journal_recover(journal_t *journal)
 	 * is always zero if, and only if, the journal was cleanly
 	 * unmounted.
 	 */
-
 	if (!sb->s_start) {
-		jbd_debug(1, "No recovery required, last transaction %d\n",
-			  be32_to_cpu(sb->s_sequence));
+		jbd2_debug(1, "No recovery required, last transaction %d, head block %u\n",
+			  be32_to_cpu(sb->s_sequence), be32_to_cpu(sb->s_head));
 		journal->j_transaction_sequence = be32_to_cpu(sb->s_sequence) + 1;
+		journal->j_head = be32_to_cpu(sb->s_head);
 		return 0;
 	}
 
+	wb_err = 0;
+	mapping = journal->j_fs_dev->bd_inode->i_mapping;
+	errseq_check_and_advance(&mapping->wb_err, &wb_err);
 	err = do_one_pass(journal, &info, PASS_SCAN);
 	if (!err)
 		err = do_one_pass(journal, &info, PASS_REVOKE);
 	if (!err)
 		err = do_one_pass(journal, &info, PASS_REPLAY);
 
-	jbd_debug(1, "JBD2: recovery, exit status %d, "
+	jbd2_debug(1, "JBD2: recovery, exit status %d, "
 		  "recovered transactions %u to %u\n",
 		  err, info.start_transaction, info.end_transaction);
-	jbd_debug(1, "JBD2: Replayed %d and revoked %d/%d blocks\n",
+	jbd2_debug(1, "JBD2: Replayed %d and revoked %d/%d blocks\n",
 		  info.nr_replays, info.nr_revoke_hits, info.nr_revokes);
 
 	/* Restart the log at the next transaction ID, thus invalidating
 	 * any existing commit records in the log. */
 	journal->j_transaction_sequence = ++info.end_transaction;
+	journal->j_head = info.head_block;
+	jbd2_debug(1, "JBD2: last transaction %d, head block %lu\n",
+		  journal->j_transaction_sequence, journal->j_head);
 
 	jbd2_journal_clear_revoke(journal);
 	err2 = sync_blockdev(journal->j_fs_dev);
 	if (!err)
 		err = err2;
+	err2 = errseq_check_and_advance(&mapping->wb_err, &wb_err);
+	if (!err)
+		err = err2;
 	/* Make sure all replayed data is on permanent storage */
 	if (journal->j_flags & JBD2_BARRIER) {
-		err2 = blkdev_issue_flush(journal->j_fs_dev, GFP_KERNEL, NULL);
+		err2 = blkdev_issue_flush(journal->j_fs_dev);
 		if (!err)
 			err = err2;
 	}
@@ -304,7 +353,7 @@ int jbd2_journal_recover(journal_t *journal)
  * Locate any valid recovery information from the journal and set up the
  * journal structures in memory to ignore it (presumably because the
  * caller has evidence that it is out of date).
- * This function does'nt appear to be exorted..
+ * This function doesn't appear to be exported..
  *
  * We perform one pass over the journal to allow us to tell the user how
  * much recovery information is being erased, and to let us initialise
@@ -323,25 +372,28 @@ int jbd2_journal_skip_recovery(journal_t *journal)
 	if (err) {
 		printk(KERN_ERR "JBD2: error %d scanning journal\n", err);
 		++journal->j_transaction_sequence;
+		journal->j_head = journal->j_first;
 	} else {
 #ifdef CONFIG_JBD2_DEBUG
 		int dropped = info.end_transaction - 
 			be32_to_cpu(journal->j_superblock->s_sequence);
-		jbd_debug(1,
+		jbd2_debug(1,
 			  "JBD2: ignoring %d transaction%s from the journal.\n",
 			  dropped, (dropped == 1) ? "" : "s");
 #endif
 		journal->j_transaction_sequence = ++info.end_transaction;
+		journal->j_head = info.head_block;
 	}
 
 	journal->j_tail = 0;
 	return err;
 }
 
-static inline unsigned long long read_tag_block(int tag_bytes, journal_block_tag_t *tag)
+static inline unsigned long long read_tag_block(journal_t *journal,
+						journal_block_tag_t *tag)
 {
 	unsigned long long block = be32_to_cpu(tag->t_blocknr);
-	if (tag_bytes > JBD2_TAG_SIZE32)
+	if (jbd2_has_feature_64bit(journal))
 		block |= (u64)be32_to_cpu(tag->t_blocknr_high) << 32;
 	return block;
 }
@@ -384,7 +436,7 @@ static int jbd2_commit_block_csum_verify(journal_t *j, void *buf)
 	__be32 provided;
 	__u32 calculated;
 
-	if (!JBD2_HAS_INCOMPAT_FEATURE(j, JBD2_FEATURE_INCOMPAT_CSUM_V2))
+	if (!jbd2_journal_has_csum_v2or3(j))
 		return 1;
 
 	h = buf;
@@ -397,26 +449,30 @@ static int jbd2_commit_block_csum_verify(journal_t *j, void *buf)
 }
 
 static int jbd2_block_tag_csum_verify(journal_t *j, journal_block_tag_t *tag,
+				      journal_block_tag3_t *tag3,
 				      void *buf, __u32 sequence)
 {
 	__u32 csum32;
 	__be32 seq;
 
-	if (!JBD2_HAS_INCOMPAT_FEATURE(j, JBD2_FEATURE_INCOMPAT_CSUM_V2))
+	if (!jbd2_journal_has_csum_v2or3(j))
 		return 1;
 
 	seq = cpu_to_be32(sequence);
 	csum32 = jbd2_chksum(j, j->j_csum_seed, (__u8 *)&seq, sizeof(seq));
 	csum32 = jbd2_chksum(j, csum32, buf, j->j_blocksize);
 
-	return tag->t_checksum == cpu_to_be16(csum32);
+	if (jbd2_has_feature_csum3(j))
+		return tag3->t_checksum == cpu_to_be32(csum32);
+	else
+		return tag->t_checksum == cpu_to_be16(csum32);
 }
 
 static int do_one_pass(journal_t *journal,
 			struct recovery_info *info, enum passtype pass)
 {
 	unsigned int		first_commit_ID, next_commit_ID;
-	unsigned long		next_log_block;
+	unsigned long		next_log_block, head_block;
 	int			err, success = 0;
 	journal_superblock_t *	sb;
 	journal_header_t *	tmp;
@@ -426,6 +482,9 @@ static int do_one_pass(journal_t *journal,
 	int			tag_bytes = journal_tag_bytes(journal);
 	__u32			crc32_sum = ~0; /* Transactional Checksums */
 	int			descr_csum_size = 0;
+	int			block_error = 0;
+	bool			need_check_commit_time = false;
+	__u64			last_trans_commit_time = 0, commit_time;
 
 	/*
 	 * First thing is to establish what we expect to find in the log
@@ -436,12 +495,13 @@ static int do_one_pass(journal_t *journal,
 	sb = journal->j_superblock;
 	next_commit_ID = be32_to_cpu(sb->s_sequence);
 	next_log_block = be32_to_cpu(sb->s_start);
+	head_block = next_log_block;
 
 	first_commit_ID = next_commit_ID;
 	if (pass == PASS_SCAN)
 		info->start_transaction = first_commit_ID;
 
-	jbd_debug(1, "Starting recovery pass %d\n", pass);
+	jbd2_debug(1, "Starting recovery pass %d\n", pass);
 
 	/*
 	 * Now we walk through the log, transaction by transaction,
@@ -453,7 +513,7 @@ static int do_one_pass(journal_t *journal,
 	while (1) {
 		int			flags;
 		char *			tagp;
-		journal_block_tag_t *	tag;
+		journal_block_tag_t	tag;
 		struct buffer_head *	obh;
 		struct buffer_head *	nbh;
 
@@ -467,14 +527,14 @@ static int do_one_pass(journal_t *journal,
 			if (tid_geq(next_commit_ID, info->end_transaction))
 				break;
 
-		jbd_debug(2, "Scanning for sequence ID %u at %lu/%lu\n",
+		jbd2_debug(2, "Scanning for sequence ID %u at %lu/%lu\n",
 			  next_commit_ID, next_log_block, journal->j_last);
 
 		/* Skip over each chunk of the transaction looking
 		 * either the next descriptor block or the final commit
 		 * record. */
 
-		jbd_debug(3, "JBD2: checking block %ld\n", next_log_block);
+		jbd2_debug(3, "JBD2: checking block %ld\n", next_log_block);
 		err = jread(&bh, journal, next_log_block);
 		if (err)
 			goto failed;
@@ -497,7 +557,7 @@ static int do_one_pass(journal_t *journal,
 
 		blocktype = be32_to_cpu(tmp->h_blocktype);
 		sequence = be32_to_cpu(tmp->h_sequence);
-		jbd_debug(3, "Found magic %d, sequence %d\n",
+		jbd2_debug(3, "Found magic %d, sequence %d\n",
 			  blocktype, sequence);
 
 		if (sequence != next_commit_ID) {
@@ -512,15 +572,27 @@ static int do_one_pass(journal_t *journal,
 		switch(blocktype) {
 		case JBD2_DESCRIPTOR_BLOCK:
 			/* Verify checksum first */
-			if (JBD2_HAS_INCOMPAT_FEATURE(journal,
-					JBD2_FEATURE_INCOMPAT_CSUM_V2))
+			if (jbd2_journal_has_csum_v2or3(journal))
 				descr_csum_size =
 					sizeof(struct jbd2_journal_block_tail);
 			if (descr_csum_size > 0 &&
-			    !jbd2_descr_block_csum_verify(journal,
-							  bh->b_data)) {
-				err = -EIO;
-				goto failed;
+			    !jbd2_descriptor_block_csum_verify(journal,
+							       bh->b_data)) {
+				/*
+				 * PASS_SCAN can see stale blocks due to lazy
+				 * journal init. Don't error out on those yet.
+				 */
+				if (pass != PASS_SCAN) {
+					pr_err("JBD2: Invalid checksum recovering block %lu in log\n",
+					       next_log_block);
+					err = -EFSBADCRC;
+					brelse(bh);
+					goto failed;
+				}
+				need_check_commit_time = true;
+				jbd2_debug(1,
+					"invalid descriptor block found in %lu\n",
+					next_log_block);
 			}
 
 			/* If it is a valid descriptor block, replay it
@@ -529,8 +601,8 @@ static int do_one_pass(journal_t *journal,
 			 * just skip over the blocks it describes. */
 			if (pass != PASS_REPLAY) {
 				if (pass == PASS_SCAN &&
-				    JBD2_HAS_COMPAT_FEATURE(journal,
-					    JBD2_FEATURE_COMPAT_CHECKSUM) &&
+				    jbd2_has_feature_checksum(journal) &&
+				    !need_check_commit_time &&
 				    !info->end_transaction) {
 					if (calc_chksums(journal, bh,
 							&next_log_block,
@@ -556,8 +628,8 @@ static int do_one_pass(journal_t *journal,
 			       <= journal->j_blocksize - descr_csum_size) {
 				unsigned long io_block;
 
-				tag = (journal_block_tag_t *) tagp;
-				flags = be16_to_cpu(tag->t_flags);
+				memcpy(&tag, tagp, sizeof(tag));
+				flags = be16_to_cpu(tag.t_flags);
 
 				io_block = next_log_block++;
 				wrap(journal, next_log_block);
@@ -574,8 +646,8 @@ static int do_one_pass(journal_t *journal,
 					unsigned long long blocknr;
 
 					J_ASSERT(obh != NULL);
-					blocknr = read_tag_block(tag_bytes,
-								 tag);
+					blocknr = read_tag_block(journal,
+								 &tag);
 
 					/* If the block has been
 					 * revoked, then we're all done
@@ -590,15 +662,16 @@ static int do_one_pass(journal_t *journal,
 
 					/* Look for block corruption */
 					if (!jbd2_block_tag_csum_verify(
-						journal, tag, obh->b_data,
-						be32_to_cpu(tmp->h_sequence))) {
+			journal, &tag, (journal_block_tag3_t *)tagp,
+			obh->b_data, be32_to_cpu(tmp->h_sequence))) {
 						brelse(obh);
-						success = -EIO;
+						success = -EFSBADCRC;
 						printk(KERN_ERR "JBD2: Invalid "
 						       "checksum recovering "
-						       "block %llu in log\n",
-						       blocknr);
-						continue;
+						       "data block %llu in "
+						       "log\n", blocknr);
+						block_error = 1;
+						goto skip_write;
 					}
 
 					/* Find a buffer for the new
@@ -629,7 +702,6 @@ static int do_one_pass(journal_t *journal,
 					mark_buffer_dirty(nbh);
 					BUFFER_TRACE(nbh, "marking uptodate");
 					++info->nr_replays;
-					/* ll_rw_block(WRITE, 1, &nbh); */
 					unlock_buffer(nbh);
 					brelse(obh);
 					brelse(nbh);
@@ -678,21 +750,46 @@ static int do_one_pass(journal_t *journal,
 			 *	 mentioned conditions. Hence assume
 			 *	 "Interrupted Commit".)
 			 */
+			commit_time = be64_to_cpu(
+				((struct commit_header *)bh->b_data)->h_commit_sec);
+			/*
+			 * If need_check_commit_time is set, it means we are in
+			 * PASS_SCAN and csum verify failed before. If
+			 * commit_time is increasing, it's the same journal,
+			 * otherwise it is stale journal block, just end this
+			 * recovery.
+			 */
+			if (need_check_commit_time) {
+				if (commit_time >= last_trans_commit_time) {
+					pr_err("JBD2: Invalid checksum found in transaction %u\n",
+					       next_commit_ID);
+					err = -EFSBADCRC;
+					brelse(bh);
+					goto failed;
+				}
+			ignore_crc_mismatch:
+				/*
+				 * It likely does not belong to same journal,
+				 * just end this recovery with success.
+				 */
+				jbd2_debug(1, "JBD2: Invalid checksum ignored in transaction %u, likely stale data\n",
+					  next_commit_ID);
+				brelse(bh);
+				goto done;
+			}
 
-			/* Found an expected commit block: if checksums
-			 * are present verify them in PASS_SCAN; else not
+			/*
+			 * Found an expected commit block: if checksums
+			 * are present, verify them in PASS_SCAN; else not
 			 * much to do other than move on to the next sequence
-			 * number. */
+			 * number.
+			 */
 			if (pass == PASS_SCAN &&
-			    JBD2_HAS_COMPAT_FEATURE(journal,
-				    JBD2_FEATURE_COMPAT_CHECKSUM)) {
-				int chksum_err, chksum_seen;
+			    jbd2_has_feature_checksum(journal)) {
 				struct commit_header *cbh =
 					(struct commit_header *)bh->b_data;
 				unsigned found_chksum =
 					be32_to_cpu(cbh->h_chksum[0]);
-
-				chksum_err = chksum_seen = 0;
 
 				if (info->end_transaction) {
 					journal->j_failed_commit =
@@ -701,58 +798,55 @@ static int do_one_pass(journal_t *journal,
 					break;
 				}
 
-				if (crc32_sum == found_chksum &&
-				    cbh->h_chksum_type == JBD2_CRC32_CHKSUM &&
-				    cbh->h_chksum_size ==
-						JBD2_CRC32_CHKSUM_SIZE)
-				       chksum_seen = 1;
-				else if (!(cbh->h_chksum_type == 0 &&
-					     cbh->h_chksum_size == 0 &&
-					     found_chksum == 0 &&
-					     !chksum_seen))
-				/*
-				 * If fs is mounted using an old kernel and then
-				 * kernel with journal_chksum is used then we
-				 * get a situation where the journal flag has
-				 * checksum flag set but checksums are not
-				 * present i.e chksum = 0, in the individual
-				 * commit blocks.
-				 * Hence to avoid checksum failures, in this
-				 * situation, this extra check is added.
-				 */
-						chksum_err = 1;
+				/* Neither checksum match nor unused? */
+				if (!((crc32_sum == found_chksum &&
+				       cbh->h_chksum_type ==
+						JBD2_CRC32_CHKSUM &&
+				       cbh->h_chksum_size ==
+						JBD2_CRC32_CHKSUM_SIZE) ||
+				      (cbh->h_chksum_type == 0 &&
+				       cbh->h_chksum_size == 0 &&
+				       found_chksum == 0)))
+					goto chksum_error;
 
-				if (chksum_err) {
-					info->end_transaction = next_commit_ID;
-
-					if (!JBD2_HAS_INCOMPAT_FEATURE(journal,
-					   JBD2_FEATURE_INCOMPAT_ASYNC_COMMIT)){
-						journal->j_failed_commit =
-							next_commit_ID;
-						brelse(bh);
-						break;
-					}
-				}
 				crc32_sum = ~0;
 			}
 			if (pass == PASS_SCAN &&
 			    !jbd2_commit_block_csum_verify(journal,
 							   bh->b_data)) {
+			chksum_error:
+				if (commit_time < last_trans_commit_time)
+					goto ignore_crc_mismatch;
 				info->end_transaction = next_commit_ID;
+				info->head_block = head_block;
 
-				if (!JBD2_HAS_INCOMPAT_FEATURE(journal,
-				     JBD2_FEATURE_INCOMPAT_ASYNC_COMMIT)) {
+				if (!jbd2_has_feature_async_commit(journal)) {
 					journal->j_failed_commit =
 						next_commit_ID;
 					brelse(bh);
 					break;
 				}
 			}
+			if (pass == PASS_SCAN) {
+				last_trans_commit_time = commit_time;
+				head_block = next_log_block;
+			}
 			brelse(bh);
 			next_commit_ID++;
 			continue;
 
 		case JBD2_REVOKE_BLOCK:
+			/*
+			 * Check revoke block crc in pass_scan, if csum verify
+			 * failed, check commit block time later.
+			 */
+			if (pass == PASS_SCAN &&
+			    !jbd2_descriptor_block_csum_verify(journal,
+							       bh->b_data)) {
+				jbd2_debug(1, "JBD2: invalid revoke block found in %lu\n",
+					  next_log_block);
+				need_check_commit_time = true;
+			}
 			/* If we aren't in the REVOKE pass, then we can
 			 * just skip over this block. */
 			if (pass != PASS_REVOKE) {
@@ -768,7 +862,7 @@ static int do_one_pass(journal_t *journal,
 			continue;
 
 		default:
-			jbd_debug(3, "Unrecognised magic %d, end of scan.\n",
+			jbd2_debug(3, "Unrecognised magic %d, end of scan.\n",
 				  blocktype);
 			brelse(bh);
 			goto done;
@@ -786,6 +880,8 @@ static int do_one_pass(journal_t *journal,
 	if (pass == PASS_SCAN) {
 		if (!info->end_transaction)
 			info->end_transaction = next_commit_ID;
+		if (!info->head_block)
+			info->head_block = head_block;
 	} else {
 		/* It's really bad news if different passes end up at
 		 * different places (but possible due to IO errors). */
@@ -798,30 +894,18 @@ static int do_one_pass(journal_t *journal,
 		}
 	}
 
+	if (jbd2_has_feature_fast_commit(journal) &&  pass != PASS_REVOKE) {
+		err = fc_do_one_pass(journal, info, pass);
+		if (err)
+			success = err;
+	}
+
+	if (block_error && success == 0)
+		success = -EIO;
 	return success;
 
  failed:
 	return err;
-}
-
-static int jbd2_revoke_block_csum_verify(journal_t *j,
-					 void *buf)
-{
-	struct jbd2_journal_revoke_tail *tail;
-	__be32 provided;
-	__u32 calculated;
-
-	if (!JBD2_HAS_INCOMPAT_FEATURE(j, JBD2_FEATURE_INCOMPAT_CSUM_V2))
-		return 1;
-
-	tail = (struct jbd2_journal_revoke_tail *)(buf + j->j_blocksize -
-			sizeof(struct jbd2_journal_revoke_tail));
-	provided = tail->r_checksum;
-	tail->r_checksum = 0;
-	calculated = jbd2_chksum(j, j->j_csum_seed, buf, j->j_blocksize);
-	tail->r_checksum = provided;
-
-	return provided == cpu_to_be32(calculated);
 }
 
 /* Scan a revoke record, marking all blocks mentioned as revoked. */
@@ -831,16 +915,21 @@ static int scan_revoke_records(journal_t *journal, struct buffer_head *bh,
 {
 	jbd2_journal_revoke_header_t *header;
 	int offset, max;
+	unsigned csum_size = 0;
+	__u32 rcount;
 	int record_len = 4;
 
 	header = (jbd2_journal_revoke_header_t *) bh->b_data;
 	offset = sizeof(jbd2_journal_revoke_header_t);
-	max = be32_to_cpu(header->r_count);
+	rcount = be32_to_cpu(header->r_count);
 
-	if (!jbd2_revoke_block_csum_verify(journal, header))
+	if (jbd2_journal_has_csum_v2or3(journal))
+		csum_size = sizeof(struct jbd2_journal_block_tail);
+	if (rcount > journal->j_blocksize - csum_size)
 		return -EINVAL;
+	max = rcount;
 
-	if (JBD2_HAS_INCOMPAT_FEATURE(journal, JBD2_FEATURE_INCOMPAT_64BIT))
+	if (jbd2_has_feature_64bit(journal))
 		record_len = 8;
 
 	while (offset + record_len <= max) {

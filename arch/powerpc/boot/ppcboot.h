@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * This interface is used for compatibility with old U-boots *ONLY*.
  * Please do not imitate or extend this.
@@ -6,21 +7,6 @@
 /*
  * (C) Copyright 2000, 2001
  * Wolfgang Denk, DENX Software Engineering, wd@denx.de.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of
- * the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	 See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston,
- * MA 02111-1307 USA
  */
 
 #ifndef __PPCBOOT_H__
@@ -43,7 +29,7 @@ typedef struct bd_info {
 	unsigned long	bi_sramstart;	/* start of SRAM memory */
 	unsigned long	bi_sramsize;	/* size	 of SRAM memory */
 #if defined(TARGET_8xx) || defined(TARGET_CPM2) || defined(TARGET_85xx) ||\
-	defined(TARGET_83xx)
+	defined(TARGET_83xx) || defined(TARGET_86xx)
 	unsigned long	bi_immr_base;	/* base of IMMR register */
 #endif
 #if defined(TARGET_PPC_MPC52xx)

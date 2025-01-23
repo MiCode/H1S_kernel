@@ -27,12 +27,12 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/sched.h>
+#include <linux/sched/task_stack.h>
 #include <linux/ptrace.h>
 #include <linux/signal.h>
 #include <linux/elf.h>
 #include <linux/audit.h>
 #include <linux/seccomp.h>
-#include <linux/tracehook.h>
 
 #include <linux/errno.h>
 #include <asm/processor.h>
@@ -132,14 +132,14 @@ long arch_ptrace(struct task_struct *child, long request,
 	return rval;
 }
 
-asmlinkage long do_syscall_trace_enter(struct pt_regs *regs)
+asmlinkage unsigned long do_syscall_trace_enter(struct pt_regs *regs)
 {
-	long ret = 0;
+	unsigned long ret = 0;
 
 	secure_computing_strict(regs->r12);
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE) &&
-	    tracehook_report_syscall_entry(regs))
+	    ptrace_report_syscall_entry(regs))
 		/*
 		 * Tracing decided this syscall should not happen.
 		 * We'll return a bogus call number to get an ENOSYS
@@ -147,8 +147,7 @@ asmlinkage long do_syscall_trace_enter(struct pt_regs *regs)
 		 */
 		ret = -1L;
 
-	audit_syscall_entry(EM_MICROBLAZE, regs->r12, regs->r5, regs->r6,
-			    regs->r7, regs->r8);
+	audit_syscall_entry(regs->r12, regs->r5, regs->r6, regs->r7, regs->r8);
 
 	return ret ?: regs->r12;
 }
@@ -161,7 +160,7 @@ asmlinkage void do_syscall_trace_leave(struct pt_regs *regs)
 
 	step = test_thread_flag(TIF_SINGLESTEP);
 	if (step || test_thread_flag(TIF_SYSCALL_TRACE))
-		tracehook_report_syscall_exit(regs, step);
+		ptrace_report_syscall_exit(regs, step);
 }
 
 void ptrace_disable(struct task_struct *child)

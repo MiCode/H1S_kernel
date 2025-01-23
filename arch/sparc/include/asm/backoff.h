@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SPARC64_BACKOFF_H
 #define _SPARC64_BACKOFF_H
 
@@ -17,7 +18,7 @@
  *
  * When we spin, we try to use an operation that will cause the
  * current cpu strand to block, and therefore make the core fully
- * available to any other other runnable strands.  There are two
+ * available to any other runnable strands.  There are two
  * options, based upon cpu capabilities.
  *
  * On all cpus prior to SPARC-T4 we do three dummy reads of the

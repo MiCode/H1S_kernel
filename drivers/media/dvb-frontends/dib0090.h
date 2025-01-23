@@ -1,11 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Linux-DVB Driver for DiBcom's DiB0090 base-band RF Tuner.
  *
  * Copyright (C) 2005-7 DiBcom (http://www.dibcom.fr/)
- *
- * This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License as
- *	published by the Free Software Foundation, version 2.
  */
 #ifndef DIB0090_H
 #define DIB0090_H
@@ -75,7 +72,7 @@ struct dib0090_config {
 	u8 force_crystal_mode;
 };
 
-#if IS_ENABLED(CONFIG_DVB_TUNER_DIB0090)
+#if IS_REACHABLE(CONFIG_DVB_TUNER_DIB0090)
 extern struct dvb_frontend *dib0090_register(struct dvb_frontend *fe, struct i2c_adapter *i2c, const struct dib0090_config *config);
 extern struct dvb_frontend *dib0090_fw_register(struct dvb_frontend *fe, struct i2c_adapter *i2c, const struct dib0090_config *config);
 extern void dib0090_dcc_freq(struct dvb_frontend *fe, u8 fast);

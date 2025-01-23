@@ -21,7 +21,7 @@ void pnic_do_nway(struct net_device *dev)
 	struct tulip_private *tp = netdev_priv(dev);
 	void __iomem *ioaddr = tp->base_addr;
 	u32 phy_reg = ioread32(ioaddr + 0xB8);
-	u32 new_csr6 = tp->csr6 & ~0x40C40200;
+	u32 new_csr6;
 
 	if (phy_reg & 0x78000000) { /* Ignore baseT4 */
 		if (phy_reg & 0x20000000)		dev->if_port = 5;
@@ -44,7 +44,7 @@ void pnic_do_nway(struct net_device *dev)
 			tp->csr6 = new_csr6;
 			/* Restart Tx */
 			tulip_restart_rxtx(tp);
-			dev->trans_start = jiffies;
+			netif_trans_update(dev);
 		}
 	}
 }
@@ -70,7 +70,7 @@ void pnic_lnk_change(struct net_device *dev, int csr5)
 			iowrite32(tp->csr6, ioaddr + CSR6);
 			iowrite32(0x30, ioaddr + CSR12);
 			iowrite32(0x0201F078, ioaddr + 0xB8); /* Turn on autonegotiation. */
-			dev->trans_start = jiffies;
+			netif_trans_update(dev);
 		}
 	} else if (ioread32(ioaddr + CSR5) & TPLnkPass) {
 		if (tulip_media_cap[dev->if_port] & MediaIsMII) {
@@ -84,10 +84,10 @@ void pnic_lnk_change(struct net_device *dev, int csr5)
 	}
 }
 
-void pnic_timer(unsigned long data)
+void pnic_timer(struct timer_list *t)
 {
-	struct net_device *dev = (struct net_device *)data;
-	struct tulip_private *tp = netdev_priv(dev);
+	struct tulip_private *tp = from_timer(tp, t, timer);
+	struct net_device *dev = tp->dev;
 	void __iomem *ioaddr = tp->base_addr;
 	int next_tick = 60*HZ;
 
@@ -147,7 +147,7 @@ void pnic_timer(unsigned long data)
 				tp->csr6 = new_csr6;
 				/* Restart Tx */
 				tulip_restart_rxtx(tp);
-				dev->trans_start = jiffies;
+				netif_trans_update(dev);
 				if (tulip_debug > 1)
 					dev_info(&dev->dev,
 						 "Changing PNIC configuration to %s %s-duplex, CSR6 %08x\n",

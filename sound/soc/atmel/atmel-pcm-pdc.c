@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * atmel-pcm.c  --  ALSA PCM interface for the Atmel atmel SoC.
  *
@@ -15,20 +16,6 @@
  * Author:	Nicolas Pitre
  * Created:	Nov 30, 2004
  * Copyright:	(C) 2004 MontaVista Software, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/module.h>
@@ -46,6 +33,23 @@
 
 #include "atmel-pcm.h"
 
+
+static int atmel_pcm_new(struct snd_soc_component *component,
+			 struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_card *card = rtd->card->snd_card;
+	int ret;
+
+	ret = dma_coerce_mask_and_coherent(card->dev, DMA_BIT_MASK(32));
+	if (ret)
+		return ret;
+
+	snd_pcm_set_managed_buffer_all(rtd->pcm, SNDRV_DMA_TYPE_DEV,
+				       card->dev, ATMEL_SSC_DMABUF_SIZE,
+				       ATMEL_SSC_DMABUF_SIZE);
+
+	return 0;
+}
 
 /*--------------------------------------------------------------------------*\
  * Hardware definition
@@ -76,12 +80,6 @@ struct atmel_runtime_data {
 	size_t period_size;
 
 	dma_addr_t period_ptr;		/* physical address of next period */
-
-	/* PDC register save */
-	u32 pdc_xpr_save;
-	u32 pdc_xcr_save;
-	u32 pdc_xnpr_save;
-	u32 pdc_xncr_save;
 };
 
 /*--------------------------------------------------------------------------*\
@@ -136,20 +134,18 @@ static void atmel_pcm_dma_irq(u32 ssc_sr,
 /*--------------------------------------------------------------------------*\
  * PCM operations
 \*--------------------------------------------------------------------------*/
-static int atmel_pcm_hw_params(struct snd_pcm_substream *substream,
-	struct snd_pcm_hw_params *params)
+static int atmel_pcm_hw_params(struct snd_soc_component *component,
+			       struct snd_pcm_substream *substream,
+			       struct snd_pcm_hw_params *params)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct atmel_runtime_data *prtd = runtime->private_data;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 
 	/* this may get called several times by oss emulation
 	 * with different params */
 
-	snd_pcm_set_runtime_buffer(substream, &substream->dma_buffer);
-	runtime->dma_bytes = params_buffer_bytes(params);
-
-	prtd->params = snd_soc_dai_get_dma_data(rtd->cpu_dai, substream);
+	prtd->params = snd_soc_dai_get_dma_data(asoc_rtd_to_cpu(rtd, 0), substream);
 	prtd->params->dma_intr_handler = atmel_pcm_dma_irq;
 
 	prtd->dma_buffer = runtime->dma_addr;
@@ -165,7 +161,8 @@ static int atmel_pcm_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static int atmel_pcm_hw_free(struct snd_pcm_substream *substream)
+static int atmel_pcm_hw_free(struct snd_soc_component *component,
+			     struct snd_pcm_substream *substream)
 {
 	struct atmel_runtime_data *prtd = substream->runtime->private_data;
 	struct atmel_pcm_dma_params *params = prtd->params;
@@ -179,7 +176,8 @@ static int atmel_pcm_hw_free(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-static int atmel_pcm_prepare(struct snd_pcm_substream *substream)
+static int atmel_pcm_prepare(struct snd_soc_component *component,
+			     struct snd_pcm_substream *substream)
 {
 	struct atmel_runtime_data *prtd = substream->runtime->private_data;
 	struct atmel_pcm_dma_params *params = prtd->params;
@@ -191,8 +189,8 @@ static int atmel_pcm_prepare(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-static int atmel_pcm_trigger(struct snd_pcm_substream *substream,
-	int cmd)
+static int atmel_pcm_trigger(struct snd_soc_component *component,
+			     struct snd_pcm_substream *substream, int cmd)
 {
 	struct snd_pcm_runtime *rtd = substream->runtime;
 	struct atmel_runtime_data *prtd = rtd->private_data;
@@ -257,8 +255,8 @@ static int atmel_pcm_trigger(struct snd_pcm_substream *substream,
 	return ret;
 }
 
-static snd_pcm_uframes_t atmel_pcm_pointer(
-	struct snd_pcm_substream *substream)
+static snd_pcm_uframes_t atmel_pcm_pointer(struct snd_soc_component *component,
+					   struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct atmel_runtime_data *prtd = runtime->private_data;
@@ -275,7 +273,8 @@ static snd_pcm_uframes_t atmel_pcm_pointer(
 	return x;
 }
 
-static int atmel_pcm_open(struct snd_pcm_substream *substream)
+static int atmel_pcm_open(struct snd_soc_component *component,
+			  struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct atmel_runtime_data *prtd;
@@ -300,7 +299,8 @@ static int atmel_pcm_open(struct snd_pcm_substream *substream)
 	return ret;
 }
 
-static int atmel_pcm_close(struct snd_pcm_substream *substream)
+static int atmel_pcm_close(struct snd_soc_component *component,
+			   struct snd_pcm_substream *substream)
 {
 	struct atmel_runtime_data *prtd = substream->runtime->private_data;
 
@@ -308,92 +308,23 @@ static int atmel_pcm_close(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-static struct snd_pcm_ops atmel_pcm_ops = {
+static const struct snd_soc_component_driver atmel_soc_platform = {
 	.open		= atmel_pcm_open,
 	.close		= atmel_pcm_close,
-	.ioctl		= snd_pcm_lib_ioctl,
 	.hw_params	= atmel_pcm_hw_params,
 	.hw_free	= atmel_pcm_hw_free,
 	.prepare	= atmel_pcm_prepare,
 	.trigger	= atmel_pcm_trigger,
 	.pointer	= atmel_pcm_pointer,
-	.mmap		= atmel_pcm_mmap,
-};
-
-
-/*--------------------------------------------------------------------------*\
- * ASoC platform driver
-\*--------------------------------------------------------------------------*/
-#ifdef CONFIG_PM
-static int atmel_pcm_suspend(struct snd_soc_dai *dai)
-{
-	struct snd_pcm_runtime *runtime = dai->runtime;
-	struct atmel_runtime_data *prtd;
-	struct atmel_pcm_dma_params *params;
-
-	if (!runtime)
-		return 0;
-
-	prtd = runtime->private_data;
-	params = prtd->params;
-
-	/* disable the PDC and save the PDC registers */
-
-	ssc_writel(params->ssc->regs, PDC_PTCR, params->mask->pdc_disable);
-
-	prtd->pdc_xpr_save = ssc_readx(params->ssc->regs, params->pdc->xpr);
-	prtd->pdc_xcr_save = ssc_readx(params->ssc->regs, params->pdc->xcr);
-	prtd->pdc_xnpr_save = ssc_readx(params->ssc->regs, params->pdc->xnpr);
-	prtd->pdc_xncr_save = ssc_readx(params->ssc->regs, params->pdc->xncr);
-
-	return 0;
-}
-
-static int atmel_pcm_resume(struct snd_soc_dai *dai)
-{
-	struct snd_pcm_runtime *runtime = dai->runtime;
-	struct atmel_runtime_data *prtd;
-	struct atmel_pcm_dma_params *params;
-
-	if (!runtime)
-		return 0;
-
-	prtd = runtime->private_data;
-	params = prtd->params;
-
-	/* restore the PDC registers and enable the PDC */
-	ssc_writex(params->ssc->regs, params->pdc->xpr, prtd->pdc_xpr_save);
-	ssc_writex(params->ssc->regs, params->pdc->xcr, prtd->pdc_xcr_save);
-	ssc_writex(params->ssc->regs, params->pdc->xnpr, prtd->pdc_xnpr_save);
-	ssc_writex(params->ssc->regs, params->pdc->xncr, prtd->pdc_xncr_save);
-
-	ssc_writel(params->ssc->regs, PDC_PTCR, params->mask->pdc_enable);
-	return 0;
-}
-#else
-#define atmel_pcm_suspend	NULL
-#define atmel_pcm_resume	NULL
-#endif
-
-static struct snd_soc_platform_driver atmel_soc_platform = {
-	.ops		= &atmel_pcm_ops,
-	.pcm_new	= atmel_pcm_new,
-	.pcm_free	= atmel_pcm_free,
-	.suspend	= atmel_pcm_suspend,
-	.resume		= atmel_pcm_resume,
+	.pcm_construct	= atmel_pcm_new,
 };
 
 int atmel_pcm_pdc_platform_register(struct device *dev)
 {
-	return snd_soc_register_platform(dev, &atmel_soc_platform);
+	return devm_snd_soc_register_component(dev, &atmel_soc_platform,
+					       NULL, 0);
 }
 EXPORT_SYMBOL(atmel_pcm_pdc_platform_register);
-
-void atmel_pcm_pdc_platform_unregister(struct device *dev)
-{
-	snd_soc_unregister_platform(dev);
-}
-EXPORT_SYMBOL(atmel_pcm_pdc_platform_unregister);
 
 MODULE_AUTHOR("Sedji Gaouaou <sedji.gaouaou@atmel.com>");
 MODULE_DESCRIPTION("Atmel PCM module");

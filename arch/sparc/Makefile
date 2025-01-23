@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # sparc/Makefile
 #
@@ -8,10 +9,10 @@
 # Copyright (C) 1998 Jakub Jelinek (jj@ultra.linux.cz)
 
 # We are not yet configured - so test on arch
-ifeq ($(ARCH),sparc)
-        KBUILD_DEFCONFIG := sparc32_defconfig
-else
+ifeq ($(ARCH),sparc64)
         KBUILD_DEFCONFIG := sparc64_defconfig
+else
+        KBUILD_DEFCONFIG := sparc32_defconfig
 endif
 
 ifeq ($(CONFIG_SPARC32),y)
@@ -20,11 +21,17 @@ ifeq ($(CONFIG_SPARC32),y)
 #
 
 CHECKFLAGS     += -D__sparc__
-LDFLAGS        := -m elf32_sparc
+KBUILD_LDFLAGS := -m elf32_sparc
 export BITS    := 32
 UTS_MACHINE    := sparc
 
+# We are adding -Wa,-Av8 to KBUILD_CFLAGS to deal with a specs bug in some
+# versions of gcc.  Some gcc versions won't pass -Av8 to binutils when you
+# give -mcpu=v8.  This silently worked with older bintutils versions but
+# does not any more.
 KBUILD_CFLAGS  += -m32 -mcpu=v8 -pipe -mno-fpu -fcall-used-g5 -fcall-used-g7
+KBUILD_CFLAGS  += -Wa,-Av8
+
 KBUILD_AFLAGS  += -m32 -Wa,-Av8
 
 else
@@ -32,8 +39,8 @@ else
 # sparc64
 #
 
-CHECKFLAGS    += -D__sparc__ -D__sparc_v9__ -D__arch64__ -m64
-LDFLAGS       := -m elf64_sparc
+CHECKFLAGS    += -D__sparc__ -D__sparc_v9__ -D__arch64__
+KBUILD_LDFLAGS := -m elf64_sparc
 export BITS   := 64
 UTS_MACHINE   := sparc64
 
@@ -49,16 +56,11 @@ endif
 
 endif
 
-head-y                 := arch/sparc/kernel/head_$(BITS).o
-
-# See arch/sparc/Kbuild for the core part of the kernel
-core-y                 += arch/sparc/
-
 libs-y                 += arch/sparc/prom/
 libs-y                 += arch/sparc/lib/
 
 drivers-$(CONFIG_PM) += arch/sparc/power/
-drivers-$(CONFIG_OPROFILE)	+= arch/sparc/oprofile/
+drivers-$(CONFIG_FB_CORE) += arch/sparc/video/
 
 boot := arch/sparc/boot
 
@@ -68,25 +70,25 @@ all: zImage
 image zImage uImage tftpboot.img vmlinux.aout: vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@
 
-archclean:
-	$(Q)$(MAKE) $(clean)=$(boot)
+install:
+	$(call cmd,install)
+
+archheaders:
+	$(Q)$(MAKE) $(build)=arch/sparc/kernel/syscalls all
+
+PHONY += vdso_install
+vdso_install:
+	$(Q)$(MAKE) $(build)=arch/sparc/vdso $@
 
 # This is the image used for packaging
 KBUILD_IMAGE := $(boot)/zImage
 
 # Don't use tabs in echo arguments.
-ifeq ($(ARCH),sparc)
 define archhelp
-  echo  '* image        - kernel image ($(boot)/image)'
-  echo  '* zImage       - stripped kernel image ($(boot)/zImage)'
+  echo  '* vmlinux      - standard SPARC kernel'
+  echo  '  image        - kernel image ($(boot)/image)'
+  echo  '* zImage       - stripped/compressed kernel image ($(boot)/zImage)'
   echo  '  uImage       - U-Boot SPARC32 Image (only for LEON)'
+  echo  '  vmlinux.aout - a.out kernel for SPARC64'
   echo  '  tftpboot.img - image prepared for tftp'
 endef
-else
-define archhelp
-  echo  '* vmlinux      - standard sparc64 kernel'
-  echo  '* zImage       - stripped and compressed sparc64 kernel ($(boot)/zImage)'
-  echo  '  vmlinux.aout - a.out kernel for sparc64'
-  echo  '  tftpboot.img - image prepared for tftp'
-endef
-endif

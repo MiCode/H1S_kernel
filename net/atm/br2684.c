@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Ethernet netdevice using ATM AAL5 as underlying carrier
  * (RFC1483 obsoleted by RFC2684) for Linux
@@ -92,8 +93,8 @@ struct br2684_dev {
  * This lock should be held for writing any time the list of devices or
  * their attached vcc's could be altered.  It should be held for reading
  * any time these are being queried.  Note that we sometimes need to
- * do read-locking under interrupt context, so write locking must block
- * the current CPU's interrupts
+ * do read-locking under interrupting context, so write locking must block
+ * the current CPU's interrupts.
  */
 static DEFINE_RWLOCK(devs_lock);
 
@@ -252,8 +253,7 @@ static int br2684_xmit_vcc(struct sk_buff *skb, struct net_device *dev,
 
 	ATM_SKB(skb)->vcc = atmvcc = brvcc->atmvcc;
 	pr_debug("atm_skb(%p)->vcc(%p)->dev(%p)\n", skb, atmvcc, atmvcc->dev);
-	atomic_add(skb->truesize, &sk_atm(atmvcc)->sk_wmem_alloc);
-	ATM_SKB(skb)->atm_options = atmvcc->atm_options;
+	atm_account_tx(atmvcc, skb);
 	dev->stats.tx_packets++;
 	dev->stats.tx_bytes += skb->len;
 
@@ -577,10 +577,12 @@ static int br2684_regvcc(struct atm_vcc *atmvcc, void __user * arg)
 	pr_debug("vcc=%p, encaps=%d, brvcc=%p\n", atmvcc, be.encaps, brvcc);
 	if (list_empty(&brdev->brvccs) && !brdev->mac_was_set) {
 		unsigned char *esi = atmvcc->dev->esi;
+		const u8 one = 1;
+
 		if (esi[0] | esi[1] | esi[2] | esi[3] | esi[4] | esi[5])
-			memcpy(net_dev->dev_addr, esi, net_dev->addr_len);
+			dev_addr_set(net_dev, esi);
 		else
-			net_dev->dev_addr[2] = 1;
+			dev_addr_mod(net_dev, 2, &one, 1);
 	}
 	list_add(&brvcc->brvccs, &brdev->brvccs);
 	write_unlock_irq(&devs_lock);
@@ -620,14 +622,12 @@ error:
 static const struct net_device_ops br2684_netdev_ops = {
 	.ndo_start_xmit 	= br2684_start_xmit,
 	.ndo_set_mac_address	= br2684_mac_addr,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_validate_addr	= eth_validate_addr,
 };
 
 static const struct net_device_ops br2684_netdev_ops_routed = {
 	.ndo_start_xmit 	= br2684_start_xmit,
 	.ndo_set_mac_address	= br2684_mac_addr,
-	.ndo_change_mtu		= eth_change_mtu
 };
 
 static void br2684_setup(struct net_device *netdev)
@@ -651,7 +651,9 @@ static void br2684_setup_routed(struct net_device *netdev)
 	netdev->hard_header_len = sizeof(llc_oui_ipv4); /* worst case */
 	netdev->netdev_ops = &br2684_netdev_ops_routed;
 	netdev->addr_len = 0;
-	netdev->mtu = 1500;
+	netdev->mtu = ETH_DATA_LEN;
+	netdev->min_mtu = 0;
+	netdev->max_mtu = ETH_MAX_MTU;
 	netdev->type = ARPHRD_PPP;
 	netdev->flags = IFF_POINTOPOINT | IFF_NOARP | IFF_MULTICAST;
 	netdev->tx_queue_len = 100;
@@ -682,8 +684,8 @@ static int br2684_create(void __user *arg)
 
 	netdev = alloc_netdev(sizeof(struct br2684_dev),
 			      ni.ifname[0] ? ni.ifname : "nas%d",
-			      (payload == p_routed) ?
-			      br2684_setup_routed : br2684_setup);
+			      NET_NAME_UNKNOWN,
+			      (payload == p_routed) ? br2684_setup_routed : br2684_setup);
 	if (!netdev)
 		return -ENOMEM;
 
@@ -802,13 +804,10 @@ static int br2684_seq_show(struct seq_file *seq, void *v)
 			   (brdev->payload == p_bridged) ? "bridged" : "routed",
 			   brvcc->copies_failed, brvcc->copies_needed);
 #ifdef CONFIG_ATM_BR2684_IPFILTER
-#define b1(var, byte)	((u8 *) &brvcc->filter.var)[byte]
-#define bs(var)		b1(var, 0), b1(var, 1), b1(var, 2), b1(var, 3)
 		if (brvcc->filter.netmask != 0)
-			seq_printf(seq, "    filter=%d.%d.%d.%d/"
-				   "%d.%d.%d.%d\n", bs(prefix), bs(netmask));
-#undef bs
-#undef b1
+			seq_printf(seq, "    filter=%pI4/%pI4\n",
+				   &brvcc->filter.prefix,
+				   &brvcc->filter.netmask);
 #endif /* CONFIG_ATM_BR2684_IPFILTER */
 	}
 	return 0;
@@ -821,19 +820,6 @@ static const struct seq_operations br2684_seq_ops = {
 	.show = br2684_seq_show,
 };
 
-static int br2684_proc_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &br2684_seq_ops);
-}
-
-static const struct file_operations br2684_proc_ops = {
-	.owner = THIS_MODULE,
-	.open = br2684_proc_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = seq_release,
-};
-
 extern struct proc_dir_entry *atm_proc_root;	/* from proc.c */
 #endif /* CONFIG_PROC_FS */
 
@@ -841,7 +827,7 @@ static int __init br2684_init(void)
 {
 #ifdef CONFIG_PROC_FS
 	struct proc_dir_entry *p;
-	p = proc_create("br2684", 0, atm_proc_root, &br2684_proc_ops);
+	p = proc_create_seq("br2684", 0, atm_proc_root, &br2684_seq_ops);
 	if (p == NULL)
 		return -ENOMEM;
 #endif

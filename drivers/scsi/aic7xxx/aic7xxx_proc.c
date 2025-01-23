@@ -97,17 +97,17 @@ ahc_format_transinfo(struct seq_file *m, struct ahc_transinfo *tinfo)
 	u_int freq;
 	u_int mb;
 
-        speed = 3300;
-        freq = 0;
+	speed = 3300;
+	freq = 0;
 	if (tinfo->offset != 0) {
 		freq = ahc_calc_syncsrate(tinfo->period);
 		speed = freq;
 	}
 	speed *= (0x01 << tinfo->width);
-        mb = speed / 1000;
-        if (mb > 0)
+	mb = speed / 1000;
+	if (mb > 0)
 		seq_printf(m, "%d.%03dMB/s transfers", mb, speed % 1000);
-        else
+	else
 		seq_printf(m, "%dKB/s transfers", speed);
 
 	if (freq != 0) {
@@ -119,15 +119,15 @@ ahc_format_transinfo(struct seq_file *m, struct ahc_transinfo *tinfo)
 
 	if (tinfo->width > 0) {
 		if (freq != 0) {
-			seq_printf(m, ", ");
+			seq_puts(m, ", ");
 		} else {
-			seq_printf(m, " (");
+			seq_puts(m, " (");
 		}
 		seq_printf(m, "%dbit)", 8 * (0x01 << tinfo->width));
 	} else if (freq != 0) {
-		seq_printf(m, ")");
+		seq_putc(m, ')');
 	}
-	seq_printf(m, "\n");
+	seq_putc(m, '\n');
 }
 
 static void
@@ -145,15 +145,15 @@ ahc_dump_target_state(struct ahc_softc *ahc, struct seq_file *m,
 	if ((ahc->features & AHC_TWIN) != 0)
 		seq_printf(m, "Channel %c ", channel);
 	seq_printf(m, "Target %d Negotiation Settings\n", target_id);
-	seq_printf(m, "\tUser: ");
+	seq_puts(m, "\tUser: ");
 	ahc_format_transinfo(m, &tinfo->user);
 	starget = ahc->platform_data->starget[target_offset];
 	if (!starget)
 		return;
 
-	seq_printf(m, "\tGoal: ");
+	seq_puts(m, "\tGoal: ");
 	ahc_format_transinfo(m, &tinfo->goal);
-	seq_printf(m, "\tCurr: ");
+	seq_puts(m, "\tCurr: ");
 	ahc_format_transinfo(m, &tinfo->curr);
 
 	for (lun = 0; lun < AHC_NUM_LUNS; lun++) {
@@ -175,7 +175,7 @@ ahc_dump_device_state(struct seq_file *m, struct scsi_device *sdev)
 
 	seq_printf(m, "\tChannel %c Target %d Lun %d Settings\n",
 		  sdev->sdev_target->channel + 'A',
-		  sdev->sdev_target->id, sdev->lun);
+		   sdev->sdev_target->id, (u8)sdev->lun);
 
 	seq_printf(m, "\t\tCommands Queued %ld\n", dev->commands_issued);
 	seq_printf(m, "\t\tCommands Active %d\n", dev->active);
@@ -234,7 +234,7 @@ ahc_proc_write_seeprom(struct Scsi_Host *shost, char *buffer, int length)
 	if ((ahc->chip & AHC_VL) != 0) {
 		sd.sd_control_offset = SEECTL_2840;
 		sd.sd_status_offset = STATUS_2840;
-		sd.sd_dataout_offset = STATUS_2840;		
+		sd.sd_dataout_offset = STATUS_2840;
 		sd.sd_chip = C46;
 		sd.sd_MS = 0;
 		sd.sd_RDY = EEPROM_TF;
@@ -255,7 +255,8 @@ ahc_proc_write_seeprom(struct Scsi_Host *shost, char *buffer, int length)
 		u_int start_addr;
 
 		if (ahc->seep_config == NULL) {
-			ahc->seep_config = kmalloc(sizeof(*ahc->seep_config), GFP_ATOMIC);
+			ahc->seep_config = kmalloc(sizeof(*ahc->seep_config),
+						   GFP_ATOMIC);
 			if (ahc->seep_config == NULL) {
 				printk("aic7xxx: Unable to allocate serial "
 				       "eeprom buffer.  Write failing\n");
@@ -303,19 +304,19 @@ ahc_linux_show_info(struct seq_file *m, struct Scsi_Host *shost)
 
 
 	if (ahc->seep_config == NULL)
-		seq_printf(m, "No Serial EEPROM\n");
+		seq_puts(m, "No Serial EEPROM\n");
 	else {
-		seq_printf(m, "Serial EEPROM:\n");
+		seq_puts(m, "Serial EEPROM:\n");
 		for (i = 0; i < sizeof(*ahc->seep_config)/2; i++) {
 			if (((i % 8) == 0) && (i != 0)) {
-				seq_printf(m, "\n");
+				seq_putc(m, '\n');
 			}
 			seq_printf(m, "0x%.4x ",
 				  ((uint16_t*)ahc->seep_config)[i]);
 		}
-		seq_printf(m, "\n");
+		seq_putc(m, '\n');
 	}
-	seq_printf(m, "\n");
+	seq_putc(m, '\n');
 
 	max_targ = 16;
 	if ((ahc->features & (AHC_WIDE|AHC_TWIN)) == 0)

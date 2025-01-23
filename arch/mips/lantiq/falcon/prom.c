@@ -1,10 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
  *
  * Copyright (C) 2012 Thomas Langer <thomas.langer@lantiq.com>
- * Copyright (C) 2012 John Crispin <blogic@openwrt.org>
+ * Copyright (C) 2012 John Crispin <john@phrozen.org>
  */
 
 #include <linux/kernel.h>

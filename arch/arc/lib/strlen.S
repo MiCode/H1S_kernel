@@ -1,14 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
-#include <asm/linkage.h>
+#include <linux/linkage.h>
 
-ARC_ENTRY strlen
+ENTRY_CFI(strlen)
 	or	r3,r0,7
 	ld	r2,[r3,-7]
 	ld.a	r6,[r3,-3]
@@ -80,4 +77,4 @@ ARC_ENTRY strlen
 .Learly_end:
 	b.d	.Lend
 	sub_s.ne r1,r1,r1
-ARC_EXIT strlen
+END_CFI(strlen)

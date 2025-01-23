@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Descending-priority-sorted double-linked list
  *
@@ -11,8 +12,6 @@
  *
  * Simplifications of the original code by
  * Oleg Nesterov <oleg@tv-sign.ru>
- *
- * Licensed under the FSF's GNU Public License v2 or later.
  *
  * Based on simple lists (include/linux/list.h).
  *
@@ -70,13 +69,15 @@
  * is lowest priority.
  *
  * No locking is done, up to the caller.
- *
  */
 #ifndef _LINUX_PLIST_H_
 #define _LINUX_PLIST_H_
 
-#include <linux/kernel.h>
+#include <linux/container_of.h>
 #include <linux/list.h>
+#include <linux/types.h>
+
+#include <asm/bug.h>
 
 struct plist_head {
 	struct list_head node_list;
@@ -96,6 +97,13 @@ struct plist_node {
 {							\
 	.node_list = LIST_HEAD_INIT((head).node_list)	\
 }
+
+/**
+ * PLIST_HEAD - declare and init plist_head
+ * @head:	name for struct plist_head variable
+ */
+#define PLIST_HEAD(head) \
+	struct plist_head head = PLIST_HEAD_INIT(head)
 
 /**
  * PLIST_NODE_INIT - static struct plist_node initializer
@@ -134,6 +142,8 @@ static inline void plist_node_init(struct plist_node *node, int prio)
 extern void plist_add(struct plist_node *node, struct plist_head *head);
 extern void plist_del(struct plist_node *node, struct plist_head *head);
 
+extern void plist_requeue(struct plist_node *node, struct plist_head *head);
+
 /**
  * plist_for_each - iterate over the plist
  * @pos:	the type * to use as a loop counter
@@ -141,6 +151,16 @@ extern void plist_del(struct plist_node *node, struct plist_head *head);
  */
 #define plist_for_each(pos, head)	\
 	 list_for_each_entry(pos, &(head)->node_list, node_list)
+
+/**
+ * plist_for_each_continue - continue iteration over the plist
+ * @pos:	the type * to use as a loop cursor
+ * @head:	the head for your list
+ *
+ * Continue to iterate over plist, continuing after the current position.
+ */
+#define plist_for_each_continue(pos, head)	\
+	 list_for_each_entry_continue(pos, &(head)->node_list, node_list)
 
 /**
  * plist_for_each_safe - iterate safely over a plist of given type
@@ -157,17 +177,29 @@ extern void plist_del(struct plist_node *node, struct plist_head *head);
  * plist_for_each_entry	- iterate over list of given type
  * @pos:	the type * to use as a loop counter
  * @head:	the head for your list
- * @mem:	the name of the list_struct within the struct
+ * @mem:	the name of the list_head within the struct
  */
 #define plist_for_each_entry(pos, head, mem)	\
 	 list_for_each_entry(pos, &(head)->node_list, mem.node_list)
+
+/**
+ * plist_for_each_entry_continue - continue iteration over list of given type
+ * @pos:	the type * to use as a loop cursor
+ * @head:	the head for your list
+ * @m:		the name of the list_head within the struct
+ *
+ * Continue to iterate over list of given type, continuing after
+ * the current position.
+ */
+#define plist_for_each_entry_continue(pos, head, m)	\
+	list_for_each_entry_continue(pos, &(head)->node_list, m.node_list)
 
 /**
  * plist_for_each_entry_safe - iterate safely over list of given type
  * @pos:	the type * to use as a loop counter
  * @n:		another type * to use as temporary storage
  * @head:	the head for your list
- * @m:		the name of the list_struct within the struct
+ * @m:		the name of the list_head within the struct
  *
  * Iterate over list of given type, safe against removal of list entry.
  */
@@ -198,9 +230,9 @@ static inline int plist_node_empty(const struct plist_node *node)
  * plist_first_entry - get the struct for the first entry
  * @head:	the &struct plist_head pointer
  * @type:	the type of the struct this is embedded in
- * @member:	the name of the list_struct within the struct
+ * @member:	the name of the list_head within the struct
  */
-#ifdef CONFIG_DEBUG_PI_LIST
+#ifdef CONFIG_DEBUG_PLIST
 # define plist_first_entry(head, type, member)	\
 ({ \
 	WARN_ON(plist_head_empty(head)); \
@@ -215,9 +247,9 @@ static inline int plist_node_empty(const struct plist_node *node)
  * plist_last_entry - get the struct for the last entry
  * @head:	the &struct plist_head pointer
  * @type:	the type of the struct this is embedded in
- * @member:	the name of the list_struct within the struct
+ * @member:	the name of the list_head within the struct
  */
-#ifdef CONFIG_DEBUG_PI_LIST
+#ifdef CONFIG_DEBUG_PLIST
 # define plist_last_entry(head, type, member)	\
 ({ \
 	WARN_ON(plist_head_empty(head)); \
@@ -227,6 +259,20 @@ static inline int plist_node_empty(const struct plist_node *node)
 # define plist_last_entry(head, type, member)	\
 	container_of(plist_last(head), type, member)
 #endif
+
+/**
+ * plist_next - get the next entry in list
+ * @pos:	the type * to cursor
+ */
+#define plist_next(pos) \
+	list_next_entry(pos, node_list)
+
+/**
+ * plist_prev - get the prev entry in list
+ * @pos:	the type * to cursor
+ */
+#define plist_prev(pos) \
+	list_prev_entry(pos, node_list)
 
 /**
  * plist_first - return the first node (and thus, highest priority)

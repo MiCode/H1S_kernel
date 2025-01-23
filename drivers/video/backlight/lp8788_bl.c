@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * TI LP8788 MFD - backlight driver
  *
  * Copyright 2012 Texas Instruments
  *
  * Author: Milo(Woogyom) Kim <milo.kim@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #include <linux/backlight.h>
@@ -145,6 +141,12 @@ static void lp8788_pwm_ctrl(struct lp8788_bl *bl, int br, int max_br)
 		}
 
 		bl->pwm = pwm;
+
+		/*
+		 * FIXME: pwm_apply_args() should be removed when switching to
+		 * the atomic PWM API.
+		 */
+		pwm_apply_args(pwm);
 	}
 
 	pwm_config(bl->pwm, duty, period);
@@ -176,15 +178,9 @@ static int lp8788_bl_update_status(struct backlight_device *bl_dev)
 	return 0;
 }
 
-static int lp8788_bl_get_brightness(struct backlight_device *bl_dev)
-{
-	return bl_dev->props.brightness;
-}
-
 static const struct backlight_ops lp8788_bl_ops = {
 	.options = BL_CORE_SUSPENDRESUME,
 	.update_status = lp8788_bl_update_status,
-	.get_brightness = lp8788_bl_get_brightness,
 };
 
 static int lp8788_backlight_register(struct lp8788_bl *bl)
@@ -195,6 +191,7 @@ static int lp8788_backlight_register(struct lp8788_bl *bl)
 	int init_brt;
 	char *name;
 
+	memset(&props, 0, sizeof(struct backlight_properties));
 	props.type = BACKLIGHT_PLATFORM;
 	props.max_brightness = MAX_BRIGHTNESS;
 
@@ -227,8 +224,7 @@ static void lp8788_backlight_unregister(struct lp8788_bl *bl)
 {
 	struct backlight_device *bl_dev = bl->bl_dev;
 
-	if (bl_dev)
-		backlight_device_unregister(bl_dev);
+	backlight_device_unregister(bl_dev);
 }
 
 static ssize_t lp8788_get_bl_ctl_mode(struct device *dev,
@@ -303,7 +299,7 @@ err_dev:
 	return ret;
 }
 
-static int lp8788_backlight_remove(struct platform_device *pdev)
+static void lp8788_backlight_remove(struct platform_device *pdev)
 {
 	struct lp8788_bl *bl = platform_get_drvdata(pdev);
 	struct backlight_device *bl_dev = bl->bl_dev;
@@ -312,16 +308,13 @@ static int lp8788_backlight_remove(struct platform_device *pdev)
 	backlight_update_status(bl_dev);
 	sysfs_remove_group(&pdev->dev.kobj, &lp8788_attr_group);
 	lp8788_backlight_unregister(bl);
-
-	return 0;
 }
 
 static struct platform_driver lp8788_bl_driver = {
 	.probe = lp8788_backlight_probe,
-	.remove = lp8788_backlight_remove,
+	.remove_new = lp8788_backlight_remove,
 	.driver = {
 		.name = LP8788_DEV_BACKLIGHT,
-		.owner = THIS_MODULE,
 	},
 };
 module_platform_driver(lp8788_bl_driver);

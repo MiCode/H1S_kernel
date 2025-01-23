@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Driver for s390 chsc subchannels
  *
@@ -10,12 +11,12 @@
 #include <linux/slab.h>
 #include <linux/compat.h>
 #include <linux/device.h>
+#include <linux/io.h>
 #include <linux/module.h>
 #include <linux/uaccess.h>
 #include <linux/miscdevice.h>
 #include <linux/kernel_stat.h>
 
-#include <asm/compat.h>
 #include <asm/cio.h>
 #include <asm/chsc.h>
 #include <asm/isc.h>
@@ -43,11 +44,7 @@ static DEFINE_MUTEX(on_close_mutex);
 
 static void CHSC_LOG_HEX(int level, void *data, int length)
 {
-	while (length > 0) {
-		debug_event(chsc_debug_log_id, level, data, length);
-		length -= chsc_debug_log_id->buf_size;
-		data += chsc_debug_log_id->buf_size;
-	}
+	debug_event(chsc_debug_log_id, level, data, length);
 }
 
 MODULE_AUTHOR("IBM Corporation");
@@ -58,7 +55,7 @@ static void chsc_subchannel_irq(struct subchannel *sch)
 {
 	struct chsc_private *private = dev_get_drvdata(&sch->dev);
 	struct chsc_request *request = private->request;
-	struct irb *irb = (struct irb *)&S390_lowcore.irb;
+	struct irb *irb = this_cpu_ptr(&cio_irb);
 
 	CHSC_LOG(4, "irb");
 	CHSC_LOG_HEX(4, irb, sizeof(*irb));
@@ -89,22 +86,17 @@ static int chsc_subchannel_probe(struct subchannel *sch)
 	if (!private)
 		return -ENOMEM;
 	dev_set_drvdata(&sch->dev, private);
-	ret = cio_enable_subchannel(sch, (u32)(unsigned long)sch);
+	ret = cio_enable_subchannel(sch, (u32)virt_to_phys(sch));
 	if (ret) {
 		CHSC_MSG(0, "Failed to enable 0.%x.%04x: %d\n",
 			 sch->schid.ssid, sch->schid.sch_no, ret);
 		dev_set_drvdata(&sch->dev, NULL);
 		kfree(private);
-	} else {
-		if (dev_get_uevent_suppress(&sch->dev)) {
-			dev_set_uevent_suppress(&sch->dev, 0);
-			kobject_uevent(&sch->dev.kobj, KOBJ_ADD);
-		}
 	}
 	return ret;
 }
 
-static int chsc_subchannel_remove(struct subchannel *sch)
+static void chsc_subchannel_remove(struct subchannel *sch)
 {
 	struct chsc_private *private;
 
@@ -116,37 +108,11 @@ static int chsc_subchannel_remove(struct subchannel *sch)
 		put_device(&sch->dev);
 	}
 	kfree(private);
-	return 0;
 }
 
 static void chsc_subchannel_shutdown(struct subchannel *sch)
 {
 	cio_disable_subchannel(sch);
-}
-
-static int chsc_subchannel_prepare(struct subchannel *sch)
-{
-	int cc;
-	struct schib schib;
-	/*
-	 * Don't allow suspend while the subchannel is not idle
-	 * since we don't have a way to clear the subchannel and
-	 * cannot disable it with a request running.
-	 */
-	cc = stsch_err(sch->schid, &schib);
-	if (!cc && scsw_stctl(&schib.scsw))
-		return -EAGAIN;
-	return 0;
-}
-
-static int chsc_subchannel_freeze(struct subchannel *sch)
-{
-	return cio_disable_subchannel(sch);
-}
-
-static int chsc_subchannel_restore(struct subchannel *sch)
-{
-	return cio_enable_subchannel(sch, (u32)(unsigned long)sch);
 }
 
 static struct css_device_id chsc_subchannel_ids[] = {
@@ -165,16 +131,11 @@ static struct css_driver chsc_subchannel_driver = {
 	.probe = chsc_subchannel_probe,
 	.remove = chsc_subchannel_remove,
 	.shutdown = chsc_subchannel_shutdown,
-	.prepare = chsc_subchannel_prepare,
-	.freeze = chsc_subchannel_freeze,
-	.thaw = chsc_subchannel_restore,
-	.restore = chsc_subchannel_restore,
 };
 
 static int __init chsc_init_dbfs(void)
 {
-	chsc_debug_msg_id = debug_register("chsc_msg", 16, 1,
-					   16 * sizeof(long));
+	chsc_debug_msg_id = debug_register("chsc_msg", 8, 1, 4 * sizeof(long));
 	if (!chsc_debug_msg_id)
 		goto out;
 	debug_register_view(chsc_debug_msg_id, &debug_sprintf_view);
@@ -186,8 +147,7 @@ static int __init chsc_init_dbfs(void)
 	debug_set_level(chsc_debug_log_id, 2);
 	return 0;
 out:
-	if (chsc_debug_msg_id)
-		debug_unregister(chsc_debug_msg_id);
+	debug_unregister(chsc_debug_msg_id);
 	return -ENOMEM;
 }
 
@@ -209,7 +169,7 @@ static void chsc_cleanup_sch_driver(void)
 
 static DEFINE_SPINLOCK(chsc_lock);
 
-static int chsc_subchannel_match_next_free(struct device *dev, void *data)
+static int chsc_subchannel_match_next_free(struct device *dev, const void *data)
 {
 	struct subchannel *sch = to_subchannel(dev);
 
@@ -554,7 +514,7 @@ static int chsc_ioctl_info_cu(void __user *user_cd)
 		goto out_free;
 	}
 	scucd_area->request.length = 0x0010;
-	scucd_area->request.code = 0x0028;
+	scucd_area->request.code = 0x0026;
 	scucd_area->m = cd->m;
 	scucd_area->fmt1 = cd->fmt;
 	scucd_area->cssid = cd->cssid;

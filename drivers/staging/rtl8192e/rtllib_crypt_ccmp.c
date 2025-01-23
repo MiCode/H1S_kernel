@@ -1,12 +1,7 @@
-/*
- * Host AP crypt: host-based CCMP encryption implementation for Host AP driver
+// SPDX-License-Identifier: GPL-2.0
+/* Host AP crypt: host-based CCMP encryption implementation for Host AP driver
  *
  * Copyright (c) 2003-2004, Jouni Malinen <jkmaline@cc.hut.fi>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation. See README and COPYING for
- * more details.
  */
 
 #include <linux/module.h>
@@ -22,6 +17,7 @@
 #include "rtllib.h"
 
 #include <linux/crypto.h>
+#include <crypto/aead.h>
 
 #include <linux/scatterlist.h>
 
@@ -38,25 +34,18 @@ struct rtllib_ccmp_data {
 	u8 tx_pn[CCMP_PN_LEN];
 	u8 rx_pn[CCMP_PN_LEN];
 
-	u32 dot11RSNAStatsCCMPFormatErrors;
-	u32 dot11RSNAStatsCCMPReplays;
-	u32 dot11RSNAStatsCCMPDecryptErrors;
+	u32 dot11rsna_stats_ccmp_format_errors;
+	u32 dot11rsna_stats_ccmp_replays;
+	u32 dot11rsna_stats_ccmp_decrypt_errors;
 
 	int key_idx;
 
-	struct crypto_tfm *tfm;
+	struct crypto_aead *tfm;
 
 	/* scratch buffers for virt_to_page() (crypto API) */
-	u8 tx_b0[AES_BLOCK_LEN], tx_b[AES_BLOCK_LEN],
-		tx_e[AES_BLOCK_LEN], tx_s0[AES_BLOCK_LEN];
-	u8 rx_b0[AES_BLOCK_LEN], rx_b[AES_BLOCK_LEN], rx_a[AES_BLOCK_LEN];
+	u8 tx_aad[2 * AES_BLOCK_LEN];
+	u8 rx_aad[2 * AES_BLOCK_LEN];
 };
-
-static void rtllib_ccmp_aes_encrypt(struct crypto_tfm *tfm,
-			     const u8 pt[16], u8 ct[16])
-{
-	crypto_cipher_encrypt_one((void *)tfm, ct, pt);
-}
 
 static void *rtllib_ccmp_init(int key_idx)
 {
@@ -67,10 +56,9 @@ static void *rtllib_ccmp_init(int key_idx)
 		goto fail;
 	priv->key_idx = key_idx;
 
-	priv->tfm = (void *)crypto_alloc_cipher("aes", 0, CRYPTO_ALG_ASYNC);
+	priv->tfm = crypto_alloc_aead("ccm(aes)", 0, CRYPTO_ALG_ASYNC);
 	if (IS_ERR(priv->tfm)) {
-		printk(KERN_DEBUG "rtllib_crypt_ccmp: could not allocate "
-		       "crypto API aes\n");
+		pr_debug("Could not allocate crypto API aes\n");
 		priv->tfm = NULL;
 		goto fail;
 	}
@@ -79,73 +67,59 @@ static void *rtllib_ccmp_init(int key_idx)
 fail:
 	if (priv) {
 		if (priv->tfm)
-			crypto_free_cipher((void *)priv->tfm);
+			crypto_free_aead(priv->tfm);
 		kfree(priv);
 	}
 
 	return NULL;
 }
 
-
 static void rtllib_ccmp_deinit(void *priv)
 {
 	struct rtllib_ccmp_data *_priv = priv;
+
 	if (_priv && _priv->tfm)
-		crypto_free_cipher((void *)_priv->tfm);
+		crypto_free_aead(_priv->tfm);
 	kfree(priv);
 }
 
-
-static inline void xor_block(u8 *b, u8 *a, size_t len)
-{
-	int i;
-	for (i = 0; i < len; i++)
-		b[i] ^= a[i];
-}
-
-
-
-static void ccmp_init_blocks(struct crypto_tfm *tfm,
-			     struct rtllib_hdr_4addr *hdr,
-			     u8 *pn, size_t dlen, u8 *b0, u8 *auth,
-			     u8 *s0)
+static int ccmp_init_iv_and_aad(struct rtllib_hdr_4addr *hdr,
+				u8 *pn, u8 *iv, u8 *aad)
 {
 	u8 *pos, qc = 0;
 	size_t aad_len;
 	u16 fc;
 	int a4_included, qc_included;
-	u8 aad[2 * AES_BLOCK_LEN];
 
 	fc = le16_to_cpu(hdr->frame_ctl);
 	a4_included = ((fc & (RTLLIB_FCTL_TODS | RTLLIB_FCTL_FROMDS)) ==
 		       (RTLLIB_FCTL_TODS | RTLLIB_FCTL_FROMDS));
-	/*
-	qc_included = ((WLAN_FC_GET_TYPE(fc) == RTLLIB_FTYPE_DATA) &&
-		       (WLAN_FC_GET_STYPE(fc) & 0x08));
-	*/
+
 	qc_included = ((WLAN_FC_GET_TYPE(fc) == RTLLIB_FTYPE_DATA) &&
 		       (WLAN_FC_GET_STYPE(fc) & 0x80));
 	aad_len = 22;
 	if (a4_included)
 		aad_len += 6;
 	if (qc_included) {
-		pos = (u8 *) &hdr->addr4;
+		pos = (u8 *)&hdr->addr4;
 		if (a4_included)
 			pos += 6;
 		qc = *pos & 0x0f;
 		aad_len += 2;
 	}
-	/* CCM Initial Block:
-	 * Flag (Include authentication header, M=3 (8-octet MIC),
-	 *       L=1 (2-octet Dlen))
-	 * Nonce: 0x00 | A2 | PN
-	 * Dlen */
-	b0[0] = 0x59;
-	b0[1] = qc;
-	memcpy(b0 + 2, hdr->addr2, ETH_ALEN);
-	memcpy(b0 + 8, pn, CCMP_PN_LEN);
-	b0[14] = (dlen >> 8) & 0xff;
-	b0[15] = dlen & 0xff;
+	/* In CCM, the initial vectors (IV) used for CTR mode encryption and CBC
+	 * mode authentication are not allowed to collide, yet both are derived
+	 * from the same vector. We only set L := 1 here to indicate that the
+	 * data size can be represented in (L+1) bytes. The CCM layer will take
+	 * care of storing the data length in the top (L+1) bytes and setting
+	 * and clearing the other bits as is required to derive the two IVs.
+	 */
+	iv[0] = 0x1;
+
+	/* Nonce: QC | A2 | PN */
+	iv[1] = qc;
+	memcpy(iv + 2, hdr->addr2, ETH_ALEN);
+	memcpy(iv + 8, pn, CCMP_PN_LEN);
 
 	/* AAD:
 	 * FC with bits 4..6 and 11..13 masked to zero; 14 is always one
@@ -154,40 +128,30 @@ static void ccmp_init_blocks(struct crypto_tfm *tfm,
 	 * A4 (if present)
 	 * QC (if present)
 	 */
-	pos = (u8 *) hdr;
-	aad[0] = 0; /* aad_len >> 8 */
-	aad[1] = aad_len & 0xff;
-	aad[2] = pos[0] & 0x8f;
-	aad[3] = pos[1] & 0xc7;
-	memcpy(aad + 4, hdr->addr1, 3 * ETH_ALEN);
-	pos = (u8 *) &hdr->seq_ctl;
-	aad[22] = pos[0] & 0x0f;
-	aad[23] = 0; /* all bits masked */
-	memset(aad + 24, 0, 8);
+	pos = (u8 *)hdr;
+	aad[0] = pos[0] & 0x8f;
+	aad[1] = pos[1] & 0xc7;
+	memcpy(&aad[2], &hdr->addr1, ETH_ALEN);
+	memcpy(&aad[8], &hdr->addr2, ETH_ALEN);
+	memcpy(&aad[14], &hdr->addr3, ETH_ALEN);
+	pos = (u8 *)&hdr->seq_ctl;
+	aad[20] = pos[0] & 0x0f;
+	aad[21] = 0; /* all bits masked */
+	memset(aad + 22, 0, 8);
 	if (a4_included)
-		memcpy(aad + 24, hdr->addr4, ETH_ALEN);
+		memcpy(aad + 22, hdr->addr4, ETH_ALEN);
 	if (qc_included) {
-		aad[a4_included ? 30 : 24] = qc;
+		aad[a4_included ? 28 : 22] = qc;
 		/* rest of QC masked */
 	}
 
-	/* Start with the first block and AAD */
-	rtllib_ccmp_aes_encrypt(tfm, b0, auth);
-	xor_block(auth, aad, AES_BLOCK_LEN);
-	rtllib_ccmp_aes_encrypt(tfm, auth, auth);
-	xor_block(auth, &aad[AES_BLOCK_LEN], AES_BLOCK_LEN);
-	rtllib_ccmp_aes_encrypt(tfm, auth, auth);
-	b0[0] &= 0x07;
-	b0[14] = b0[15] = 0;
-	rtllib_ccmp_aes_encrypt(tfm, b0, s0);
+	return aad_len;
 }
-
-
 
 static int rtllib_ccmp_encrypt(struct sk_buff *skb, int hdr_len, void *priv)
 {
 	struct rtllib_ccmp_data *key = priv;
-	int data_len, i;
+	int i;
 	u8 *pos;
 	struct rtllib_hdr_4addr *hdr;
 	struct cb_desc *tcb_desc = (struct cb_desc *)(skb->cb +
@@ -197,7 +161,6 @@ static int rtllib_ccmp_encrypt(struct sk_buff *skb, int hdr_len, void *priv)
 	    skb->len < hdr_len)
 		return -1;
 
-	data_len = skb->len - hdr_len;
 	pos = skb_push(skb, CCMP_HDR_LEN);
 	memmove(pos, pos + CCMP_HDR_LEN, hdr_len);
 	pos += hdr_len;
@@ -219,43 +182,39 @@ static int rtllib_ccmp_encrypt(struct sk_buff *skb, int hdr_len, void *priv)
 	*pos++ = key->tx_pn[1];
 	*pos++ = key->tx_pn[0];
 
-
-	hdr = (struct rtllib_hdr_4addr *) skb->data;
+	hdr = (struct rtllib_hdr_4addr *)skb->data;
 	if (!tcb_desc->bHwSec) {
-		int blocks, last, len;
-		u8 *mic;
-		u8 *b0 = key->tx_b0;
-		u8 *b = key->tx_b;
-		u8 *e = key->tx_e;
-		u8 *s0 = key->tx_s0;
+		struct aead_request *req;
+		struct scatterlist sg[2];
+		u8 *aad = key->tx_aad;
+		u8 iv[AES_BLOCK_LEN];
+		int aad_len, ret;
+		int data_len = skb->len - hdr_len - CCMP_HDR_LEN;
 
-		mic = skb_put(skb, CCMP_MIC_LEN);
+		req = aead_request_alloc(key->tfm, GFP_ATOMIC);
+		if (!req)
+			return -ENOMEM;
 
-		ccmp_init_blocks(key->tfm, hdr, key->tx_pn, data_len,
-				 b0, b, s0);
+		aad_len = ccmp_init_iv_and_aad(hdr, key->tx_pn, iv, aad);
 
-		blocks = (data_len + AES_BLOCK_LEN - 1) / AES_BLOCK_LEN;
-		last = data_len % AES_BLOCK_LEN;
+		skb_put(skb, CCMP_MIC_LEN);
+		sg_init_table(sg, 2);
+		sg_set_buf(&sg[0], aad, aad_len);
+		sg_set_buf(&sg[1], skb->data + hdr_len + CCMP_HDR_LEN,
+			   data_len + CCMP_MIC_LEN);
 
-		for (i = 1; i <= blocks; i++) {
-			len = (i == blocks && last) ? last : AES_BLOCK_LEN;
-			/* Authentication */
-			xor_block(b, pos, len);
-			rtllib_ccmp_aes_encrypt(key->tfm, b, b);
-			/* Encryption, with counter */
-			b0[14] = (i >> 8) & 0xff;
-			b0[15] = i & 0xff;
-			rtllib_ccmp_aes_encrypt(key->tfm, b0, e);
-			xor_block(pos, e, len);
-			pos += len;
-		}
+		aead_request_set_callback(req, 0, NULL, NULL);
+		aead_request_set_ad(req, aad_len);
+		aead_request_set_crypt(req, sg, sg, data_len, iv);
 
-		for (i = 0; i < CCMP_MIC_LEN; i++)
-			mic[i] = b[i] ^ s0[i];
+		ret = crypto_aead_encrypt(req);
+		aead_request_free(req);
+
+		return ret;
 	}
+
 	return 0;
 }
-
 
 static int rtllib_ccmp_decrypt(struct sk_buff *skb, int hdr_len, void *priv)
 {
@@ -267,32 +226,31 @@ static int rtllib_ccmp_decrypt(struct sk_buff *skb, int hdr_len, void *priv)
 	u8 pn[6];
 
 	if (skb->len < hdr_len + CCMP_HDR_LEN + CCMP_MIC_LEN) {
-		key->dot11RSNAStatsCCMPFormatErrors++;
+		key->dot11rsna_stats_ccmp_format_errors++;
 		return -1;
 	}
 
-	hdr = (struct rtllib_hdr_4addr *) skb->data;
+	hdr = (struct rtllib_hdr_4addr *)skb->data;
 	pos = skb->data + hdr_len;
 	keyidx = pos[3];
 	if (!(keyidx & (1 << 5))) {
 		if (net_ratelimit()) {
-			printk(KERN_DEBUG "CCMP: received packet without ExtIV"
-			       " flag from %pM\n", hdr->addr2);
+			pr_debug("CCMP: received packet without ExtIV flag from %pM\n",
+				 hdr->addr2);
 		}
-		key->dot11RSNAStatsCCMPFormatErrors++;
+		key->dot11rsna_stats_ccmp_format_errors++;
 		return -2;
 	}
 	keyidx >>= 6;
 	if (key->key_idx != keyidx) {
-		printk(KERN_DEBUG "CCMP: RX tkey->key_idx=%d frame "
-		       "keyidx=%d priv=%p\n", key->key_idx, keyidx, priv);
+		pr_debug("CCMP: RX tkey->key_idx=%d frame keyidx=%d priv=%p\n",
+			 key->key_idx, keyidx, priv);
 		return -6;
 	}
 	if (!key->key_set) {
 		if (net_ratelimit()) {
-			printk(KERN_DEBUG "CCMP: received packet from %pM"
-			       " with keyid=%d that does not have a configured"
-			       " key\n", hdr->addr2, keyidx);
+			pr_debug("CCMP: received packet from %pM with keyid=%d that does not have a configured key\n",
+				 hdr->addr2, keyidx);
 		}
 		return -3;
 	}
@@ -305,44 +263,40 @@ static int rtllib_ccmp_decrypt(struct sk_buff *skb, int hdr_len, void *priv)
 	pn[5] = pos[0];
 	pos += 8;
 	if (memcmp(pn, key->rx_pn, CCMP_PN_LEN) <= 0) {
-		key->dot11RSNAStatsCCMPReplays++;
+		key->dot11rsna_stats_ccmp_replays++;
 		return -4;
 	}
 	if (!tcb_desc->bHwSec) {
-		size_t data_len = skb->len - hdr_len - CCMP_HDR_LEN -
-				  CCMP_MIC_LEN;
-		u8 *mic = skb->data + skb->len - CCMP_MIC_LEN;
-		u8 *b0 = key->rx_b0;
-		u8 *b = key->rx_b;
-		u8 *a = key->rx_a;
-		int i, blocks, last, len;
+		size_t data_len = skb->len - hdr_len - CCMP_HDR_LEN;
+		struct aead_request *req;
+		struct scatterlist sg[2];
+		u8 *aad = key->rx_aad;
+		u8 iv[AES_BLOCK_LEN];
+		int aad_len, ret;
 
+		req = aead_request_alloc(key->tfm, GFP_ATOMIC);
+		if (!req)
+			return -ENOMEM;
 
-		ccmp_init_blocks(key->tfm, hdr, pn, data_len, b0, a, b);
-		xor_block(mic, b, CCMP_MIC_LEN);
+		aad_len = ccmp_init_iv_and_aad(hdr, pn, iv, aad);
 
-		blocks = (data_len + AES_BLOCK_LEN - 1) / AES_BLOCK_LEN;
-		last = data_len % AES_BLOCK_LEN;
+		sg_init_table(sg, 2);
+		sg_set_buf(&sg[0], aad, aad_len);
+		sg_set_buf(&sg[1], pos, data_len);
 
-		for (i = 1; i <= blocks; i++) {
-			len = (i == blocks && last) ? last : AES_BLOCK_LEN;
-			/* Decrypt, with counter */
-			b0[14] = (i >> 8) & 0xff;
-			b0[15] = i & 0xff;
-			rtllib_ccmp_aes_encrypt(key->tfm, b0, b);
-			xor_block(pos, b, len);
-			/* Authentication */
-			xor_block(a, pos, len);
-			rtllib_ccmp_aes_encrypt(key->tfm, a, a);
-			pos += len;
-		}
+		aead_request_set_callback(req, 0, NULL, NULL);
+		aead_request_set_ad(req, aad_len);
+		aead_request_set_crypt(req, sg, sg, data_len, iv);
 
-		if (memcmp(mic, a, CCMP_MIC_LEN) != 0) {
+		ret = crypto_aead_decrypt(req);
+		aead_request_free(req);
+
+		if (ret) {
 			if (net_ratelimit()) {
-				printk(KERN_DEBUG "CCMP: decrypt failed: STA="
-				" %pM\n", hdr->addr2);
+				pr_debug("CCMP: decrypt failed: STA= %pM\n",
+					 hdr->addr2);
 			}
-			key->dot11RSNAStatsCCMPDecryptErrors++;
+			key->dot11rsna_stats_ccmp_decrypt_errors++;
 			return -5;
 		}
 
@@ -356,12 +310,11 @@ static int rtllib_ccmp_decrypt(struct sk_buff *skb, int hdr_len, void *priv)
 	return keyidx;
 }
 
-
 static int rtllib_ccmp_set_key(void *key, int len, u8 *seq, void *priv)
 {
 	struct rtllib_ccmp_data *data = priv;
 	int keyidx;
-	struct crypto_tfm *tfm = data->tfm;
+	struct crypto_aead *tfm = data->tfm;
 
 	keyidx = data->key_idx;
 	memset(data, 0, sizeof(*data));
@@ -378,15 +331,17 @@ static int rtllib_ccmp_set_key(void *key, int len, u8 *seq, void *priv)
 			data->rx_pn[4] = seq[1];
 			data->rx_pn[5] = seq[0];
 		}
-		crypto_cipher_setkey((void *)data->tfm, data->key, CCMP_TK_LEN);
-	} else if (len == 0)
+		if (crypto_aead_setauthsize(data->tfm, CCMP_MIC_LEN) ||
+		    crypto_aead_setkey(data->tfm, data->key, CCMP_TK_LEN))
+			return -1;
+	} else if (len == 0) {
 		data->key_set = 0;
-	else
+	} else {
 		return -1;
+	}
 
 	return 0;
 }
-
 
 static int rtllib_ccmp_get_key(void *key, int len, u8 *seq, void *priv)
 {
@@ -411,19 +366,17 @@ static int rtllib_ccmp_get_key(void *key, int len, u8 *seq, void *priv)
 	return CCMP_TK_LEN;
 }
 
-
 static void rtllib_ccmp_print_stats(struct seq_file *m, void *priv)
 {
 	struct rtllib_ccmp_data *ccmp = priv;
+
 	seq_printf(m,
-		   "key[%d] alg=CCMP key_set=%d "
-		   "tx_pn=%pM rx_pn=%pM "
-		   "format_errors=%d replays=%d decrypt_errors=%d\n",
+		   "key[%d] alg=CCMP key_set=%d tx_pn=%pM rx_pn=%pM format_errors=%d replays=%d decrypt_errors=%d\n",
 		   ccmp->key_idx, ccmp->key_set,
 		   ccmp->tx_pn, ccmp->rx_pn,
-		   ccmp->dot11RSNAStatsCCMPFormatErrors,
-		   ccmp->dot11RSNAStatsCCMPReplays,
-		   ccmp->dot11RSNAStatsCCMPDecryptErrors);
+		   ccmp->dot11rsna_stats_ccmp_format_errors,
+		   ccmp->dot11rsna_stats_ccmp_replays,
+		   ccmp->dot11rsna_stats_ccmp_decrypt_errors);
 }
 
 static struct lib80211_crypto_ops rtllib_crypt_ccmp = {
@@ -442,12 +395,10 @@ static struct lib80211_crypto_ops rtllib_crypt_ccmp = {
 	.owner			= THIS_MODULE,
 };
 
-
 static int __init rtllib_crypto_ccmp_init(void)
 {
 	return lib80211_register_crypto_ops(&rtllib_crypt_ccmp);
 }
-
 
 static void __exit rtllib_crypto_ccmp_exit(void)
 {

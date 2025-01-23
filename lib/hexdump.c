@@ -1,16 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * lib/hexdump.c
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation. See README and COPYING for
- * more details.
  */
 
 #include <linux/types.h>
 #include <linux/ctype.h>
+#include <linux/errno.h>
 #include <linux/kernel.h>
+#include <linux/minmax.h>
 #include <linux/export.h>
+#include <asm/unaligned.h>
 
 const char hex_asc[] = "0123456789abcdef";
 EXPORT_SYMBOL(hex_asc);
@@ -23,15 +22,33 @@ EXPORT_SYMBOL(hex_asc_upper);
  *
  * hex_to_bin() converts one hex digit to its actual value or -1 in case of bad
  * input.
+ *
+ * This function is used to load cryptographic keys, so it is coded in such a
+ * way that there are no conditions or memory accesses that depend on data.
+ *
+ * Explanation of the logic:
+ * (ch - '9' - 1) is negative if ch <= '9'
+ * ('0' - 1 - ch) is negative if ch >= '0'
+ * we "and" these two values, so the result is negative if ch is in the range
+ *	'0' ... '9'
+ * we are only interested in the sign, so we do a shift ">> 8"; note that right
+ *	shift of a negative value is implementation-defined, so we cast the
+ *	value to (unsigned) before the shift --- we have 0xffffff if ch is in
+ *	the range '0' ... '9', 0 otherwise
+ * we "and" this value with (ch - '0' + 1) --- we have a value 1 ... 10 if ch is
+ *	in the range '0' ... '9', 0 otherwise
+ * we add this value to -1 --- we have a value 0 ... 9 if ch is in the range '0'
+ *	... '9', -1 otherwise
+ * the next line is similar to the previous one, but we need to decode both
+ *	uppercase and lowercase letters, so we use (ch & 0xdf), which converts
+ *	lowercase to uppercase
  */
-int hex_to_bin(char ch)
+int hex_to_bin(unsigned char ch)
 {
-	if ((ch >= '0') && (ch <= '9'))
-		return ch - '0';
-	ch = tolower(ch);
-	if ((ch >= 'a') && (ch <= 'f'))
-		return ch - 'a' + 10;
-	return -1;
+	unsigned char cu = ch & 0xdf;
+	return -1 +
+		((ch - '0' +  1) & (unsigned)((ch - '9' - 1) & ('0' - 1 - ch)) >> 8) +
+		((cu - 'A' + 11) & (unsigned)((cu - 'F' - 1) & ('A' - 1 - cu)) >> 8);
 }
 EXPORT_SYMBOL(hex_to_bin);
 
@@ -41,22 +58,41 @@ EXPORT_SYMBOL(hex_to_bin);
  * @src: ascii hexadecimal string
  * @count: result length
  *
- * Return 0 on success, -1 in case of bad input.
+ * Return 0 on success, -EINVAL in case of bad input.
  */
 int hex2bin(u8 *dst, const char *src, size_t count)
 {
 	while (count--) {
-		int hi = hex_to_bin(*src++);
-		int lo = hex_to_bin(*src++);
+		int hi, lo;
 
-		if ((hi < 0) || (lo < 0))
-			return -1;
+		hi = hex_to_bin(*src++);
+		if (unlikely(hi < 0))
+			return -EINVAL;
+		lo = hex_to_bin(*src++);
+		if (unlikely(lo < 0))
+			return -EINVAL;
 
 		*dst++ = (hi << 4) | lo;
 	}
 	return 0;
 }
 EXPORT_SYMBOL(hex2bin);
+
+/**
+ * bin2hex - convert binary data to an ascii hexadecimal string
+ * @dst: ascii hexadecimal result
+ * @src: binary data
+ * @count: binary data length
+ */
+char *bin2hex(char *dst, const void *src, size_t count)
+{
+	const unsigned char *_src = src;
+
+	while (count--)
+		dst = hex_byte_pack(dst, *_src++);
+	return dst;
+}
+EXPORT_SYMBOL(bin2hex);
 
 /**
  * hex_dump_to_buffer - convert a blob of data to "hex ASCII" in memory
@@ -81,85 +117,112 @@ EXPORT_SYMBOL(hex2bin);
  *
  * example output buffer:
  * 40 41 42 43 44 45 46 47 48 49 4a 4b 4c 4d 4e 4f  @ABCDEFGHIJKLMNO
+ *
+ * Return:
+ * The amount of bytes placed in the buffer without terminating NUL. If the
+ * output was truncated, then the return value is the number of bytes
+ * (excluding the terminating NUL) which would have been written to the final
+ * string if enough space had been available.
  */
-void hex_dump_to_buffer(const void *buf, size_t len, int rowsize,
-			int groupsize, char *linebuf, size_t linebuflen,
-			bool ascii)
+int hex_dump_to_buffer(const void *buf, size_t len, int rowsize, int groupsize,
+		       char *linebuf, size_t linebuflen, bool ascii)
 {
 	const u8 *ptr = buf;
+	int ngroups;
 	u8 ch;
 	int j, lx = 0;
 	int ascii_column;
+	int ret;
 
 	if (rowsize != 16 && rowsize != 32)
 		rowsize = 16;
 
-	if (!len)
-		goto nil;
 	if (len > rowsize)		/* limit to one line at a time */
 		len = rowsize;
+	if (!is_power_of_2(groupsize) || groupsize > 8)
+		groupsize = 1;
 	if ((len % groupsize) != 0)	/* no mixed size output */
 		groupsize = 1;
 
-	switch (groupsize) {
-	case 8: {
+	ngroups = len / groupsize;
+	ascii_column = rowsize * 2 + rowsize / groupsize + 1;
+
+	if (!linebuflen)
+		goto overflow1;
+
+	if (!len)
+		goto nil;
+
+	if (groupsize == 8) {
 		const u64 *ptr8 = buf;
-		int ngroups = len / groupsize;
 
-		for (j = 0; j < ngroups; j++)
-			lx += scnprintf(linebuf + lx, linebuflen - lx,
-					"%s%16.16llx", j ? " " : "",
-					(unsigned long long)*(ptr8 + j));
-		ascii_column = 17 * ngroups + 2;
-		break;
-	}
-
-	case 4: {
+		for (j = 0; j < ngroups; j++) {
+			ret = snprintf(linebuf + lx, linebuflen - lx,
+				       "%s%16.16llx", j ? " " : "",
+				       get_unaligned(ptr8 + j));
+			if (ret >= linebuflen - lx)
+				goto overflow1;
+			lx += ret;
+		}
+	} else if (groupsize == 4) {
 		const u32 *ptr4 = buf;
-		int ngroups = len / groupsize;
 
-		for (j = 0; j < ngroups; j++)
-			lx += scnprintf(linebuf + lx, linebuflen - lx,
-					"%s%8.8x", j ? " " : "", *(ptr4 + j));
-		ascii_column = 9 * ngroups + 2;
-		break;
-	}
-
-	case 2: {
+		for (j = 0; j < ngroups; j++) {
+			ret = snprintf(linebuf + lx, linebuflen - lx,
+				       "%s%8.8x", j ? " " : "",
+				       get_unaligned(ptr4 + j));
+			if (ret >= linebuflen - lx)
+				goto overflow1;
+			lx += ret;
+		}
+	} else if (groupsize == 2) {
 		const u16 *ptr2 = buf;
-		int ngroups = len / groupsize;
 
-		for (j = 0; j < ngroups; j++)
-			lx += scnprintf(linebuf + lx, linebuflen - lx,
-					"%s%4.4x", j ? " " : "", *(ptr2 + j));
-		ascii_column = 5 * ngroups + 2;
-		break;
-	}
-
-	default:
-		for (j = 0; (j < len) && (lx + 3) <= linebuflen; j++) {
+		for (j = 0; j < ngroups; j++) {
+			ret = snprintf(linebuf + lx, linebuflen - lx,
+				       "%s%4.4x", j ? " " : "",
+				       get_unaligned(ptr2 + j));
+			if (ret >= linebuflen - lx)
+				goto overflow1;
+			lx += ret;
+		}
+	} else {
+		for (j = 0; j < len; j++) {
+			if (linebuflen < lx + 2)
+				goto overflow2;
 			ch = ptr[j];
 			linebuf[lx++] = hex_asc_hi(ch);
+			if (linebuflen < lx + 2)
+				goto overflow2;
 			linebuf[lx++] = hex_asc_lo(ch);
+			if (linebuflen < lx + 2)
+				goto overflow2;
 			linebuf[lx++] = ' ';
 		}
 		if (j)
 			lx--;
-
-		ascii_column = 3 * rowsize + 2;
-		break;
 	}
 	if (!ascii)
 		goto nil;
 
-	while (lx < (linebuflen - 1) && lx < (ascii_column - 1))
+	while (lx < ascii_column) {
+		if (linebuflen < lx + 2)
+			goto overflow2;
 		linebuf[lx++] = ' ';
-	for (j = 0; (j < len) && (lx + 2) < linebuflen; j++) {
+	}
+	for (j = 0; j < len; j++) {
+		if (linebuflen < lx + 2)
+			goto overflow2;
 		ch = ptr[j];
 		linebuf[lx++] = (isascii(ch) && isprint(ch)) ? ch : '.';
 	}
 nil:
+	linebuf[lx] = '\0';
+	return lx;
+overflow2:
 	linebuf[lx++] = '\0';
+overflow1:
+	return ascii ? ascii_column + len : (groupsize * 2 + 1) * ngroups - 1;
 }
 EXPORT_SYMBOL(hex_dump_to_buffer);
 
@@ -229,25 +292,4 @@ void print_hex_dump(const char *level, const char *prefix_str, int prefix_type,
 }
 EXPORT_SYMBOL(print_hex_dump);
 
-#if !defined(CONFIG_DYNAMIC_DEBUG)
-/**
- * print_hex_dump_bytes - shorthand form of print_hex_dump() with default params
- * @prefix_str: string to prefix each line with;
- *  caller supplies trailing spaces for alignment if desired
- * @prefix_type: controls whether prefix of an offset, address, or none
- *  is printed (%DUMP_PREFIX_OFFSET, %DUMP_PREFIX_ADDRESS, %DUMP_PREFIX_NONE)
- * @buf: data blob to dump
- * @len: number of bytes in the @buf
- *
- * Calls print_hex_dump(), with log level of KERN_DEBUG,
- * rowsize of 16, groupsize of 1, and ASCII output included.
- */
-void print_hex_dump_bytes(const char *prefix_str, int prefix_type,
-			  const void *buf, size_t len)
-{
-	print_hex_dump(KERN_DEBUG, prefix_str, prefix_type, 16, 1,
-		       buf, len, true);
-}
-EXPORT_SYMBOL(print_hex_dump_bytes);
-#endif /* !defined(CONFIG_DYNAMIC_DEBUG) */
 #endif /* defined(CONFIG_PRINTK) */

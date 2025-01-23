@@ -1,9 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_M68K_THREAD_INFO_H
 #define _ASM_M68K_THREAD_INFO_H
 
 #include <asm/types.h>
 #include <asm/page.h>
-#include <asm/segment.h>
 
 /*
  * On machines with 4k pages we default to an 8k thread size, though we
@@ -26,27 +26,17 @@
 struct thread_info {
 	struct task_struct	*task;		/* main task structure */
 	unsigned long		flags;
-	struct exec_domain	*exec_domain;	/* execution domain */
-	mm_segment_t		addr_limit;	/* thread address space */
 	int			preempt_count;	/* 0 => preemptable, <0 => BUG */
 	__u32			cpu;		/* should always be 0 on m68k */
 	unsigned long		tp_value;	/* thread pointer */
-	struct restart_block    restart_block;
 };
 #endif /* __ASSEMBLY__ */
 
 #define INIT_THREAD_INFO(tsk)			\
 {						\
 	.task		= &tsk,			\
-	.exec_domain	= &default_exec_domain,	\
-	.addr_limit	= KERNEL_DS,		\
 	.preempt_count	= INIT_PREEMPT_COUNT,	\
-	.restart_block = {			\
-		.fn = do_no_restart_syscall,	\
-	},					\
 }
-
-#define init_stack		(init_thread_union.stack)
 
 #ifndef __ASSEMBLY__
 /* how to get the thread information struct from C */
@@ -63,18 +53,27 @@ static inline struct thread_info *current_thread_info(void)
 }
 #endif
 
-#define init_thread_info	(init_thread_union.thread_info)
-
 /* entry.S relies on these definitions!
  * bits 0-7 are tested at every exception exit
  * bits 8-15 are also tested at syscall exit
  */
+#define TIF_NOTIFY_SIGNAL	4
 #define TIF_NOTIFY_RESUME	5	/* callback before returning to user */
 #define TIF_SIGPENDING		6	/* signal pending */
 #define TIF_NEED_RESCHED	7	/* rescheduling necessary */
+#define TIF_SECCOMP		13	/* seccomp syscall filtering active */
 #define TIF_DELAYED_TRACE	14	/* single step a syscall */
 #define TIF_SYSCALL_TRACE	15	/* syscall trace active */
 #define TIF_MEMDIE		16	/* is terminating due to OOM killer */
 #define TIF_RESTORE_SIGMASK	18	/* restore signal mask in do_signal */
+
+#define _TIF_NOTIFY_RESUME	(1 << TIF_NOTIFY_RESUME)
+#define _TIF_SIGPENDING		(1 << TIF_SIGPENDING)
+#define _TIF_NEED_RESCHED	(1 << TIF_NEED_RESCHED)
+#define _TIF_SECCOMP		(1 << TIF_SECCOMP)
+#define _TIF_DELAYED_TRACE	(1 << TIF_DELAYED_TRACE)
+#define _TIF_SYSCALL_TRACE	(1 << TIF_SYSCALL_TRACE)
+#define _TIF_MEMDIE		(1 << TIF_MEMDIE)
+#define _TIF_RESTORE_SIGMASK	(1 << TIF_RESTORE_SIGMASK)
 
 #endif	/* _ASM_M68K_THREAD_INFO_H */

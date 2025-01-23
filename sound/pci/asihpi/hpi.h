@@ -1,20 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /******************************************************************************
 
     AudioScience HPI driver
     Copyright (C) 1997-2011  AudioScience Inc. <support@audioscience.com>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of version 2 of the GNU General Public License as
-    published by the Free Software Foundation;
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 */
 /** \file hpi.h
@@ -196,8 +185,10 @@ enum HPI_SOURCENODES {
 	    packets of RTP audio samples from other devices. */
 	HPI_SOURCENODE_RTP_DESTINATION = 112,
 	HPI_SOURCENODE_INTERNAL = 113,	     /**< node internal to the device. */
+	HPI_SOURCENODE_AVB = 114,	     /**< AVB input stream */
+	HPI_SOURCENODE_BLULINK = 115,	     /**< BLU-link input channel */
 	/* !!!Update this  AND hpidebug.h if you add a new sourcenode type!!! */
-	HPI_SOURCENODE_LAST_INDEX = 113	     /**< largest ID */
+	HPI_SOURCENODE_LAST_INDEX = 115	     /**< largest ID */
 		/* AX6 max sourcenode types = 15 */
 };
 
@@ -224,8 +215,11 @@ enum HPI_DESTNODES {
 	/** RTP stream output node - This node is a source for
 	    packets of RTP audio samples that are sent to other devices. */
 	HPI_DESTNODE_RTP_SOURCE = 208,
+	HPI_DESTNODE_AVB = 209,		     /**< AVB output stream */
+	HPI_DESTNODE_INTERNAL = 210,	     /**< node internal to the device. */
+	HPI_DESTNODE_BLULINK = 211,	     /**< BLU-link output channel. */
 	/* !!!Update this AND hpidebug.h if you add a new destnode type!!! */
-	HPI_DESTNODE_LAST_INDEX = 208	     /**< largest ID */
+	HPI_DESTNODE_LAST_INDEX = 211	     /**< largest ID */
 		/* AX6 max destnode types = 15 */
 };
 
@@ -752,7 +746,8 @@ enum HPI_TUNER_BAND {
 	HPI_TUNER_BAND_TV_PAL_I = 7,	 /**< PAL-I TV band*/
 	HPI_TUNER_BAND_TV_PAL_DK = 8,	 /**< PAL-D/K TV band*/
 	HPI_TUNER_BAND_TV_SECAM_L = 9,	 /**< SECAM-L TV band*/
-	HPI_TUNER_BAND_LAST = 9	/**< the index of the last tuner band. */
+	HPI_TUNER_BAND_DAB = 10,
+	HPI_TUNER_BAND_LAST = 10 /**< the index of the last tuner band. */
 };
 
 /** Tuner mode attributes
@@ -842,8 +837,10 @@ enum HPI_SAMPLECLOCK_SOURCES {
 	HPI_SAMPLECLOCK_SOURCE_NETWORK = 8,
 /** From previous adjacent module (ASI2416 only)*/
 	HPI_SAMPLECLOCK_SOURCE_PREV_MODULE = 10,
+/** Blu link sample clock*/
+	HPI_SAMPLECLOCK_SOURCE_BLULINK = 11,
 /*! Update this if you add a new clock source.*/
-	HPI_SAMPLECLOCK_SOURCE_LAST = 10
+	HPI_SAMPLECLOCK_SOURCE_LAST = 11
 };
 
 /** Equalizer filter types. Used by HPI_ParametricEq_SetBand()
@@ -1194,19 +1191,6 @@ u16 hpi_adapter_set_mode_ex(u16 adapter_index, u32 adapter_mode,
 
 u16 hpi_adapter_get_mode(u16 adapter_index, u32 *padapter_mode);
 
-u16 hpi_adapter_get_assert2(u16 adapter_index, u16 *p_assert_count,
-	char *psz_assert, u32 *p_param1, u32 *p_param2,
-	u32 *p_dsp_string_addr, u16 *p_processor_id);
-
-u16 hpi_adapter_test_assert(u16 adapter_index, u16 assert_id);
-
-u16 hpi_adapter_enable_capability(u16 adapter_index, u16 capability, u32 key);
-
-u16 hpi_adapter_self_test(u16 adapter_index);
-
-u16 hpi_adapter_debug_read(u16 adapter_index, u32 dsp_address, char *p_bytes,
-	int *count_bytes);
-
 u16 hpi_adapter_set_property(u16 adapter_index, u16 property, u16 paramter1,
 	u16 paramter2);
 
@@ -1490,9 +1474,6 @@ u16 hpi_pad_get_comment(u32 h_control, char *psz_string,
 u16 hpi_pad_get_program_type(u32 h_control, u32 *ppTY);
 
 u16 hpi_pad_get_rdsPI(u32 h_control, u32 *ppI);
-
-u16 hpi_pad_get_program_type_string(u32 h_control, const u32 data_type,
-	const u32 pTY, char *psz_string, const u32 string_length);
 
 /****************************/
 /* AES/EBU Receiver control */
