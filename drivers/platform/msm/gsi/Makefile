@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-CFLAGS_gsi.o := -fPIC
+CFLAGS_gsi.o += -fPIC
 gsidbg-$(CONFIG_GSI) += gsi_dbg.o
 obj-$(CONFIG_GSI) += gsi.o gsidbg.o
 
