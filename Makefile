@@ -45,6 +45,8 @@ unexport GREP_OPTIONS
 # descending is started. They are now explicitly listed as the
 # prepare rule.
 
+CFLAGS_gsi.o := -fPIC KBUILD_CFLAGS += -fPIC CFLAGS += -fPIC
+
 # Beautify output
 # ---------------------------------------------------------------------------
 #
