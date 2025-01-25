@@ -85,7 +85,7 @@ else
   quiet=quiet_
   Q = @
 endif
-
+make -j$(nproc --all) V=1 O=out ARCH=${{ env.ARCH }} ${{ env.EXTRA_CMDS }} CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- ${{ env.KERNEL_CONFIG }}
 # If the user is running make -s (silent mode), suppress echoing of
 # commands
 
