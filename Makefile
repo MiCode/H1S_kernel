@@ -43,9 +43,7 @@ unexport GREP_OPTIONS
 # The only cases where we need to modify files which have global
 # effects are thus separated out and done before the recursive
 # descending is started. They are now explicitly listed as the
-# prepare rule.
-
-CFLAGS_gsi.o := -fPIC KBUILD_CFLAGS += -fPIC CFLAGS += -fPIC
+# prepare rul
 
 # Beautify output
 # ---------------------------------------------------------------------------
