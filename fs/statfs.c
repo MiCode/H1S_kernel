@@ -9,6 +9,10 @@
 #include <linux/security.h>
 #include <linux/uaccess.h>
 #include <linux/compat.h>
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#include <linux/susfs_def.h>
+#include "mount.h"
+#endif
 #include "internal.h"
 
 static int flags_by_mnt(int mnt_flags)
@@ -70,11 +74,23 @@ static int statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf)
 int vfs_statfs(const struct path *path, struct kstatfs *buf)
 {
 	int error;
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	struct mount *mnt;
 
+	mnt = real_mount(path->mnt);
+	if (likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC)) {
+		for (; mnt->mnt_id >= DEFAULT_SUS_MNT_ID; mnt = mnt->mnt_parent) {}
+	}
+	error = statfs_by_dentry(mnt->mnt.mnt_root, buf);
+	if (!error)
+		buf->f_flags = calculate_f_flags(&mnt->mnt);
+	return error;
+#else
 	error = statfs_by_dentry(path->dentry, buf);
 	if (!error)
 		buf->f_flags = calculate_f_flags(path->mnt);
 	return error;
+#endif
 }
 EXPORT_SYMBOL(vfs_statfs);
 
@@ -93,6 +109,22 @@ retry:
 			goto retry;
 		}
 	}
+#ifdef CONFIG_KSU_SUSFS_SUS_OVERLAYFS
+	/* - When mounting overlay, the f_flags are set with 'ro' and 'relatime',
+	 *   but this is an abnormal status, as when we inspect the output from mountinfo,
+	 *   we will find that all partitions set with 'ro' will have 'noatime' set as well.
+	 * - But what is strange here is that the vfsmnt f_flags of the lowest layer has corrent f_flags set,
+	 *   and still it is always changed to 'relatime' instead of 'noatime' for the final result,
+	 *   I can't think of any other reason to explain about this, maybe the f_flags is set by its own
+	 *   filesystem implementation but not the one from overlayfs.
+	 * - Anyway we just cannot use the retrieved f_flags from ovl_getattr() of overlayfs,
+	 *   we need to run one more check for user_statfs() and fd_statfs() by ourselves.
+	 */
+	if (unlikely((st->f_flags & ST_RDONLY) && (st->f_flags & ST_RELATIME))) {
+		st->f_flags &= ~ST_RELATIME;
+		st->f_flags |= ST_NOATIME;
+	}
+#endif
 	return error;
 }
 
@@ -104,6 +136,12 @@ int fd_statfs(int fd, struct kstatfs *st)
 		error = vfs_statfs(&f.file->f_path, st);
 		fdput(f);
 	}
+#ifdef CONFIG_KSU_SUSFS_SUS_OVERLAYFS
+	if (unlikely((st->f_flags & ST_RDONLY) && (st->f_flags & ST_RELATIME))) {
+		st->f_flags &= ~ST_RELATIME;
+		st->f_flags |= ST_NOATIME;
+	}
+#endif
 	return error;
 }
 
@@ -224,6 +262,11 @@ int vfs_ustat(dev_t dev, struct kstatfs *sbuf)
 	if (!s)
 		return -EINVAL;
 
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	if (unlikely(s->s_root->d_inode->i_state & INODE_STATE_SUS_MOUNT)) {
+		return -EINVAL;
+	}
+#endif
 	err = statfs_by_dentry(s->s_root, sbuf);
 	drop_super(s);
 	return err;
