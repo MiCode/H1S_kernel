@@ -362,7 +362,7 @@ static bool mtk_dsi_doze_state(struct mtk_dsi *dsi)
 	return state->prop_val[CRTC_PROP_DOZE_ACTIVE];
 }
 
-bool get_dsi_doze_state()
+bool get_dsi_doze_state(void)
 {
 	struct mtk_dsi *dsi = NULL;
 	struct drm_crtc *crtc = NULL;
