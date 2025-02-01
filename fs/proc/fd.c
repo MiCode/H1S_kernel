@@ -12,6 +12,9 @@
 #include <linux/fs.h>
 
 #include <linux/proc_fs.h>
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#include <linux/susfs_def.h>
+#endif
 
 #include "../mount.h"
 #include "internal.h"
@@ -23,6 +26,9 @@ static int seq_show(struct seq_file *m, void *v)
 	int f_flags = 0, ret = -ENOENT;
 	struct file *file = NULL;
 	struct task_struct *task;
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	struct mount *mnt = NULL;
+#endif
 
 	task = get_proc_task(m->private);
 	if (!task)
@@ -53,9 +59,20 @@ static int seq_show(struct seq_file *m, void *v)
 	if (ret)
 		return ret;
 
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	mnt = real_mount(file->f_path.mnt);
+	if (likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC) &&
+			mnt->mnt_id >= DEFAULT_SUS_MNT_ID) {
+		for (; mnt->mnt_id >= DEFAULT_SUS_MNT_ID; mnt = mnt->mnt_parent) { }
+	}
+	seq_printf(m, "pos:\t%lli\nflags:\t0%o\nmnt_id:\t%i\n",
+			(long long)file->f_pos, f_flags,
+			mnt->mnt_id);
+#else
 	seq_printf(m, "pos:\t%lli\nflags:\t0%o\nmnt_id:\t%i\n",
 		   (long long)file->f_pos, f_flags,
 		   real_mount(file->f_path.mnt)->mnt_id);
+#endif
 
 	show_fd_locks(m, file, files);
 	if (seq_has_overflowed(m))
