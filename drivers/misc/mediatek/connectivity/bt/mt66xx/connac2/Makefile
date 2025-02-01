@@ -5,22 +5,21 @@ MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
 ###############################################################################
 # Necessary Check
 
-ifeq ($(AUTOCONF_H),)
-    $(error AUTOCONF_H is not defined)
+ifneq ($(KERNEL_OUT),)
+    ccflags-y += -imacros $(KERNEL_OUT)/include/generated/autoconf.h
 endif
 
-$(warning connac20 bt driver: _MTK_BT_CHIP = $(_MTK_BT_CHIP))
 CONNAC20_CHIPID=$(subst MTK_CONSYS_MT,,$(_MTK_BT_CHIP))
 ccflags-y += -D CONNAC20_CHIPID=$(CONNAC20_CHIPID)
-$(warning connac20 bt driver: CONNAC20_CHIPID = $(CONNAC20_CHIPID))
 
 # only for sw-ready-go
 ifeq ($(_MTK_BT_CHIP), MTK_CONSYS_MT6893)
 ifneq ($(filter yes, $(_MTK_PLAT_MT6885_EMULATION)),)
-    $(warning connac20 bt driver: 6885 emulation is set!)
     ccflags-y += -D CONNAC20_CHIPID=6885
 endif
 endif
+
+ccflags-y += -Wno-error
 
 ifndef TOP
     TOP := $(srctree)/..
@@ -29,7 +28,7 @@ endif
 USE_DEVICE_NODE := y
 #CUSTOMER_FW_UPDATE := y
 
-ccflags-y += -imacros $(AUTOCONF_H) -DCHIP_IF_BTIF
+ccflags-y += -DCHIP_IF_BTIF
 
 # Customized feature, load 1b fw bin
 #ccflags-y += -D BT_CUS_FEATURE
@@ -59,11 +58,13 @@ endif
 # ---------------------------------------------------
 # Include Path
 # ---------------------------------------------------
-CONN_INFRA_SRC := $(TOP)/vendor/mediatek/kernel_modules/connectivity/conninfra
-WMT_SRC := $(TOP)/vendor/mediatek/kernel_modules/connectivity/common
+CONN_INFRA_SRC := $(srctree)/drivers/misc/mediatek/connectivity/conninfra
+WMT_SRC := $(srctree)/drivers/misc/mediatek/connectivity/common
 BTIF_SRC := $(srctree)/drivers/misc/mediatek/btif
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/connectivity/common
 ccflags-y += -I$(CONN_INFRA_SRC)/include
+ccflags-y += -I$(CONN_INFRA_SRC)/base/include
+ccflags-y += -I$(CONN_INFRA_SRC)/conf/include
 ccflags-y += -I$(CONN_INFRA_SRC)/debug_utility/include
 ccflags-y += -I$(CONN_INFRA_SRC)/debug_utility/
 ifneq ($(CONFIG_MTK_CONNSYS_DEDICATED_LOG_PATH),)
